@@ -190,7 +190,7 @@ h1 {
 
 .features-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   gap: clamp(20px, 4vw, 46px);
   padding-top: clamp(34px, 6vw, 64px);
   padding-bottom: clamp(34px, 6vw, 64px);
@@ -376,7 +376,7 @@ footer {
     min-height: 560px;
   }
 
-  .features {
+  .features-grid {
     grid-template-columns: 1fr;
   }
 
