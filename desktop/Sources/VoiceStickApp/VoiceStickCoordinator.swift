@@ -64,9 +64,9 @@ final class VoiceStickCoordinator {
             self.cancelActiveCycleIfDeviceDisconnected()
             self.checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
             if !connectedDevices.isEmpty {
-                self.statusController.setStatus("Connected")
+                self.statusController.setStatus("Ready")
             } else {
-                self.statusController.setStatus(self.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Scanning")
+                self.statusController.setStatus(self.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
             }
         }
 
@@ -121,16 +121,22 @@ final class VoiceStickCoordinator {
 
     private func configureASRCallbacks() {
         asr.onPartial = { [weak self] text in
-            self?.statusController.showPartial(text)
-            self?.sendUIStateForActiveDevice("thinking", text: text)
+            DispatchQueue.main.async {
+                self?.statusController.showPartial(text)
+                self?.sendUIStateForActiveDevice("thinking", text: text)
+            }
         }
 
         asr.onFinal = { [weak self] text in
-            self?.finishWithFinalText(text)
+            DispatchQueue.main.async {
+                self?.finishWithFinalText(text)
+            }
         }
 
         asr.onError = { [weak self] message in
-            self?.finishWithASRError(message)
+            DispatchQueue.main.async {
+                self?.finishWithASRError(message)
+            }
         }
 
         asr.onUpgradeURL = { url in
@@ -151,7 +157,7 @@ final class VoiceStickCoordinator {
         pairedDeviceIDs = deviceIDs
         statusController.setPairedDeviceIDs(deviceIDs)
         statusController.setConnectedDevices([])
-        statusController.setStatus(deviceIDs.isEmpty ? "Pair a VoiceStick" : "Scanning")
+        statusController.setStatus(deviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
         ble.updatePairedDeviceIDs(deviceIDs)
     }
 
@@ -321,12 +327,15 @@ final class VoiceStickCoordinator {
                 cancelShortRecording()
             } else if asrStarted {
                 debugAudioRecorder.finish()
-                statusController.setStatus("Finalizing")
+                statusController.setStatus("Processing")
                 sendUIStateForActiveDevice("thinking")
             } else {
                 debugAudioRecorder.finish()
-                startASRAndFlushBufferedChunks(lastChunkIsFinal: true)
-                statusController.setStatus("Finalizing")
+                if !startASRAndFlushBufferedChunks(lastChunkIsFinal: true) {
+                    finishWithASRError("Failed to start ASR")
+                    return
+                }
+                statusController.setStatus("Processing")
                 sendUIStateForActiveDevice("thinking")
             }
         }
@@ -348,7 +357,7 @@ final class VoiceStickCoordinator {
         activeSessionID = nil
         activeSessionStartedAt = nil
         sendOrBufferOggChunk(finalChunk, isLast: true, canStartASR: true)
-        statusController.setStatus("Finalizing")
+        statusController.setStatus("Processing")
         sendUIStateForActiveDevice("thinking")
     }
 
@@ -365,14 +374,16 @@ final class VoiceStickCoordinator {
 
         bufferedOggChunks.append(chunk)
         guard canStartASR else { return }
-        startASRAndFlushBufferedChunks(lastChunkIsFinal: isLast)
+        if !startASRAndFlushBufferedChunks(lastChunkIsFinal: isLast) {
+            finishWithASRError("Failed to start ASR")
+        }
     }
 
-    private func startASRAndFlushBufferedChunks(lastChunkIsFinal: Bool) {
-        guard !asrStarted else { return }
+    private func startASRAndFlushBufferedChunks(lastChunkIsFinal: Bool) -> Bool {
+        guard !asrStarted else { return true }
         guard asr.start() else {
             bufferedOggChunks.removeAll(keepingCapacity: true)
-            return
+            return false
         }
 
         asrStarted = true
@@ -383,6 +394,7 @@ final class VoiceStickCoordinator {
             asr.sendOggOpusChunk(lastChunk, isLast: lastChunkIsFinal)
         }
         bufferedOggChunks.removeAll(keepingCapacity: true)
+        return true
     }
 
     private func cancelShortRecording() {
@@ -393,7 +405,7 @@ final class VoiceStickCoordinator {
         sentFinalAudioChunk = false
         pastedFinalText = false
         debugAudioRecorder.discard()
-        statusController.setStatus("Connected")
+        statusController.setStatus("Ready")
         statusController.hideOverlay()
         sendUIStateForActiveDevice("ready")
         activePeripheralID = nil
@@ -555,6 +567,8 @@ final class VoiceStickCoordinator {
     }
 
     private func cancelRecognitionInProgress() {
+        activeSessionID = nil
+        activeSessionStartedAt = nil
         asr.cancel()
         pendingPasteState = .idle
         finishRecognitionCycle()

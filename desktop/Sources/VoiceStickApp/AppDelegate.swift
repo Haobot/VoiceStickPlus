@@ -89,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 updaterController.updater.checkForUpdates()
             }
         }
-        statusController.setStatus(config.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Scanning")
+        statusController.setStatus(config.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
         coordinator.start()
     }
 

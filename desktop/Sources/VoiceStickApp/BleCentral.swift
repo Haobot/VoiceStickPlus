@@ -69,6 +69,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var controlCharacteristics: [UUID: CBCharacteristic] = [:]
     private var otaCharacteristics: [UUID: CBCharacteristic] = [:]
     private var firmwareUpdateSession: FirmwareUpdateSession?
+    private var isWorkspaceSleeping = false
 
     var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
     var onAudioFrame: ((UUID, AudioFrame) -> Void)?
@@ -182,6 +183,9 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
+            if !isWorkspaceSleeping {
+                restoreConnectedPeripherals()
+            }
             scanIfReady()
         case .unknown, .resetting, .unsupported, .unauthorized, .poweredOff:
             clearConnectionState()
@@ -193,6 +197,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+        guard !isWorkspaceSleeping else { return }
         guard shouldConnect(localName: localName, peripheralName: peripheral.name) else { return }
         if let existingPeripheral = peripherals[peripheral.identifier] {
             if existingPeripheral.state == .disconnected {
@@ -219,12 +224,14 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         removePeripheral(peripheral)
         onConnectionChange?(currentConnectedDevices)
+        guard !isWorkspaceSleeping else { return }
         scanIfReady()
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         removePeripheral(peripheral)
         onConnectionChange?(currentConnectedDevices)
+        guard !isWorkspaceSleeping else { return }
         scanIfReady()
     }
 
@@ -413,11 +420,54 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     private func scanIfReady() {
         guard let central, central.state == .poweredOn else { return }
+        guard !isWorkspaceSleeping else {
+            central.stopScan()
+            return
+        }
         if pairedDeviceIDs.isEmpty {
             central.stopScan()
         } else {
             central.scanForPeripherals(withServices: [CBUUID(string: BleProtocol.serviceUUID)])
         }
+    }
+
+    private func restoreConnectedPeripherals() {
+        guard let central, central.state == .poweredOn, !isWorkspaceSleeping, !pairedDeviceIDs.isEmpty else { return }
+        let serviceUUID = CBUUID(string: BleProtocol.serviceUUID)
+        let restoredPeripherals = central.retrieveConnectedPeripherals(withServices: [serviceUUID])
+        guard !restoredPeripherals.isEmpty else { return }
+
+        var didRestore = false
+        for peripheral in restoredPeripherals {
+            guard let device = knownDevice(for: peripheral) else {
+                continue
+            }
+            discoveredDevices[peripheral.identifier] = device
+            connectedDevices[peripheral.identifier] = device
+            peripherals[peripheral.identifier] = peripheral
+            peripheral.delegate = self
+            peripheral.discoverServices([serviceUUID])
+            didRestore = true
+        }
+        if didRestore {
+            onConnectionChange?(currentConnectedDevices)
+        }
+    }
+
+    private func knownDevice(for peripheral: CBPeripheral) -> ConnectedVoiceStickDevice? {
+        if let device = discoveredDevices[peripheral.identifier] {
+            return device
+        }
+        if let device = connectedDevice(localName: nil, peripheralName: peripheral.name) {
+            return device
+        }
+        guard pairedDeviceIDs.count == 1, let deviceID = pairedDeviceIDs.first else {
+            return nil
+        }
+        return ConnectedVoiceStickDevice(
+            name: peripheral.name ?? "VS-\(deviceID)",
+            deviceID: deviceID
+        )
     }
 
     private func clearConnectionState() {
@@ -445,10 +495,18 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     @objc private func workspaceWillSleep() {
+        isWorkspaceSleeping = true
+        central?.stopScan()
+        sendUIState("ready")
+        for peripheral in peripherals.values where peripheral.state != .disconnected {
+            central?.cancelPeripheralConnection(peripheral)
+        }
         clearConnectionState()
     }
 
     @objc private func workspaceDidWake() {
+        isWorkspaceSleeping = false
+        restoreConnectedPeripherals()
         scanIfReady()
     }
 

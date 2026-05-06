@@ -3,56 +3,46 @@ import AppKit
 final class StatusController {
     private enum AppStatus {
         case needsPairing
-        case scanning
-        case connected
         case listening
-        case transcribing
-        case finalizing
+        case processing
         case ready
-        case paused
         case error
 
         init(text: String) {
             let normalized = text.lowercased()
             if normalized.contains("pair") {
                 self = .needsPairing
-            } else if normalized.contains("scan") || normalized.contains("match") {
-                self = .scanning
-            } else if normalized.contains("connect") {
-                self = .connected
             } else if normalized.contains("listen") {
                 self = .listening
-            } else if normalized.contains("final") {
-                self = .finalizing
-            } else if normalized.contains("ready") || normalized.contains("no speech") {
-                self = .ready
-            } else if normalized.contains("pause") {
-                self = .paused
             } else if normalized.contains("error") || normalized.contains("failed") {
                 self = .error
+            } else if normalized.contains("process") || normalized.contains("final") || normalized.contains("transcrib") {
+                self = .processing
+            } else if normalized.contains("ready") ||
+                        normalized.contains("connect") ||
+                        normalized.contains("scan") ||
+                        normalized.contains("match") ||
+                        normalized.contains("pause") ||
+                        normalized.contains("no speech") {
+                self = .ready
             } else {
-                self = .transcribing
+                self = .processing
             }
         }
 
-        var symbolName: String {
+        func symbolName(hasConnectedDevices: Bool) -> String {
             switch self {
             case .needsPairing:
                 return "dot.radiowaves.left.and.right"
-            case .scanning:
-                return "antenna.radiowaves.left.and.right"
-            case .connected:
-                return "link.circle.fill"
             case .listening:
                 return "mic.fill"
-            case .transcribing:
+            case .processing:
                 return "waveform"
-            case .finalizing:
-                return "hourglass"
             case .ready:
+                if !hasConnectedDevices {
+                    return "dot.radiowaves.left.and.right"
+                }
                 return "link.circle.fill"
-            case .paused:
-                return "pause.circle"
             case .error:
                 return "exclamationmark.triangle"
             }
@@ -62,20 +52,12 @@ final class StatusController {
             switch self {
             case .needsPairing:
                 return "Pair VoiceStick"
-            case .scanning:
-                return "Matching"
-            case .connected:
-                return "Connected"
             case .listening:
                 return "Listening"
-            case .transcribing:
-                return "Transcribing"
-            case .finalizing:
-                return "Finalizing"
+            case .processing:
+                return "Processing"
             case .ready:
                 return "Ready"
-            case .paused:
-                return "Paused"
             case .error:
                 return "Error"
             }
@@ -85,15 +67,11 @@ final class StatusController {
             switch self {
             case .needsPairing:
                 return "Pair"
-            case .scanning:
-                return "Matching"
-            case .transcribing:
-                return "Transcribing"
-            case .finalizing:
-                return "Finalizing"
+            case .processing:
+                return "Processing"
             case .error:
                 return "Error"
-            case .connected, .listening, .ready, .paused:
+            case .listening, .ready:
                 return nil
             }
         }
@@ -330,7 +308,7 @@ final class StatusController {
     private func updateStatusButton(_ status: AppStatus) {
         guard let button = statusItem.button else { return }
         button.image = Self.symbolImage(
-            named: status.symbolName,
+            named: status.symbolName(hasConnectedDevices: !connectedDevices.isEmpty),
             accessibilityDescription: status.accessibilityDescription
         )
         button.title = status.visibleTitle ?? ""
