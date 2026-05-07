@@ -200,7 +200,7 @@ async function flashFirmware() {
         <h1>{{ t('hero.title') }}</h1>
         <p class="lead">{{ t('hero.lead') }}</p>
         <div class="actions">
-          <a class="button primary" :href="macDownloadUrl">{{ t('hero.downloadMac') }}</a>
+          <a class="button primary mac" :href="macDownloadUrl">{{ t('hero.downloadMac') }}</a>
           <a class="button primary windows" :href="windowsDownloadUrl">{{ t('hero.downloadWindows') }}</a>
         </div>
       </div>
