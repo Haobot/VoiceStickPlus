@@ -95,7 +95,6 @@ private:
     static constexpr int kWindowResizeSnap = 12;
     static constexpr int kCornerRadius = 24;
     static constexpr int kMaxContentWidth = 780;
-    static constexpr int kMinContentWidth = kMaxContentWidth / 2;
     static constexpr int kMinContentHeight = 112;
     static constexpr int kHorizontalPadding = 28;
     static constexpr int kVerticalPadding = 24;

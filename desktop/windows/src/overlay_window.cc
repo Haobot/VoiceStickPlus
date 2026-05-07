@@ -325,7 +325,6 @@ void OverlayWindow::Reposition() {
     const int vertical_padding = Dp(kVerticalPadding);
     const int indicator_size = Dp(kIndicatorSize);
     const int content_spacing = Dp(kContentSpacing);
-    const int min_content_width = Dp(kMinContentWidth);
     const int min_content_height = Dp(kMinContentHeight);
     const int side_chrome_width = horizontal_padding + indicator_size +
                                   content_spacing + horizontal_padding;
@@ -344,12 +343,16 @@ void OverlayWindow::Reposition() {
     const float measured_text_width = single_line_text.width;
     const float desired_text_width = std::min(measured_text_width,
                                               static_cast<float>(max_text_width));
-    const int desired_content_width = static_cast<int>(std::ceil(desired_text_width)) +
-                                      side_chrome_width;
-    int content_width = desired_content_width > min_content_width
-        ? available_max_width
-        : min_content_width;
-    const int text_width = std::max(1, content_width - side_chrome_width);
+    const int one_third_text_width = std::max(1, max_text_width / 3);
+    const int two_thirds_text_width = std::max(one_third_text_width,
+                                               (max_text_width * 2) / 3);
+    int text_width = max_text_width;
+    if (desired_text_width <= static_cast<float>(one_third_text_width)) {
+        text_width = one_third_text_width;
+    } else if (desired_text_width <= static_cast<float>(two_thirds_text_width)) {
+        text_width = two_thirds_text_width;
+    }
+    int content_width = text_width + side_chrome_width;
 
     should_wrap_text_ = measured_text_width > static_cast<float>(max_text_width);
     const auto laid_out_text = should_wrap_text_

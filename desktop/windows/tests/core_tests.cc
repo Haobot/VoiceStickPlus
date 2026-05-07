@@ -243,6 +243,37 @@ void TestAsrProtocol() {
     assert(parsed.has_value());
     assert(parsed->is_final);
     assert(parsed->text == "hello");
+
+    auto start_connection = AsrProtocol::MakeStartConnectionFrame(config);
+    assert(start_connection.size() > 12);
+    assert((start_connection[1] >> 4) == 0x01);
+    assert((start_connection[1] & 0x0f) == 0x04);
+    assert(ReadBe32(std::span(start_connection.data() + 4, 4)) == 1);
+
+    const std::string session_id = "session-1";
+    auto start_session = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    assert(ReadBe32(std::span(start_session.data() + 4, 4)) == 100);
+    assert(ReadBe32(std::span(start_session.data() + 8, 4)) == session_id.size());
+    assert(std::string(reinterpret_cast<const char*>(start_session.data() + 12),
+                       session_id.size()) == session_id);
+
+    ByteVector opus = {1, 2, 3};
+    auto task = AsrProtocol::MakeTaskRequestFrame(opus, session_id);
+    assert((task[1] >> 4) == 0x02);
+    assert(ReadBe32(std::span(task.data() + 4, 4)) == 200);
+
+    const std::string event_body = "{\"result\":{\"text\":\"hi\"}}";
+    ByteVector event_response = {0x11, 0x94, 0x10, 0x00};
+    AppendBe32(event_response, 451);
+    AppendBe32(event_response, static_cast<std::uint32_t>(session_id.size()));
+    event_response.insert(event_response.end(), session_id.begin(), session_id.end());
+    AppendBe32(event_response, static_cast<std::uint32_t>(event_body.size()));
+    event_response.insert(event_response.end(), event_body.begin(), event_body.end());
+    auto parsed_event = AsrProtocol::ParseEventResponse(event_response);
+    assert(parsed_event.has_value());
+    assert(parsed_event->event == AsrEvent::kAsrResponse);
+    assert(parsed_event->session_id == session_id);
+    assert(AsrProtocol::ExtractTranscript(parsed_event->payload_text) == "hi");
 }
 
 void TestAppConfig() {

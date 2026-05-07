@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>
@@ -25,14 +26,45 @@ public:
     void Cancel() override;
 
 private:
+    enum class ConnectionState {
+        kDisconnected,
+        kConnecting,
+        kReady,
+    };
+
+    enum class SessionState {
+        kIdle,
+        kStarting,
+        kStreaming,
+        kFinishing,
+    };
+
+    struct QueuedAudioChunk {
+        ByteVector data;
+        bool is_last = false;
+    };
+
+    bool StartLegacySession();
+    bool StartReusableSession();
+    void CancelLegacySession();
+    void CancelReusableSession();
+    void ShutdownReusableConnection();
     void RunWebSocket();
+    void RunReusableWebSocket();
     void FlushQueuedFrames(HINTERNET websocket);
+    void FlushQueuedAudioChunks(HINTERNET websocket);
     void ReceiveOne(HINTERNET websocket);
+    void ReceiveOneReusable(HINTERNET websocket);
+    void HandleReusableResponse(std::span<const std::uint8_t> data, HINTERNET websocket);
+    void SendReusableAudio(std::span<const std::uint8_t> data, bool is_last);
+    void FinishReusableSessionIfNeeded(HINTERNET websocket);
+    void FailReusableSession(const std::string& message);
 
     static bool SendFrame(HINTERNET websocket, const ByteVector& frame);
     static void AddHeader(HINTERNET request, std::string_view name, std::string_view value);
     static std::string QueryStatusCode(HINTERNET request);
     static std::string LastErrorText();
+    static std::string GenerateSessionId();
     static void CloseHandles(HINTERNET session, HINTERNET connect,
                              HINTERNET request, HINTERNET websocket);
 
@@ -41,6 +73,11 @@ private:
     std::thread worker_;
     std::mutex mutex_;
     std::vector<ByteVector> queued_frames_;
+    std::vector<QueuedAudioChunk> queued_audio_chunks_;
+    ConnectionState connection_state_ = ConnectionState::kDisconnected;
+    SessionState session_state_ = SessionState::kIdle;
+    std::string current_session_id_;
+    std::string latest_session_transcript_;
     HINTERNET websocket_ = nullptr;
 };
 
