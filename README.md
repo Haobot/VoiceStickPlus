@@ -7,7 +7,9 @@ Hold the front button on the StickS3 to record. When you release it, the macOS m
 ## Project Layout
 
 - `firmware/`: ESP-IDF firmware for M5Stack StickS3 / ESP32-S3.
-- `desktop/`: Swift Package for the native macOS menu bar app.
+- `desktop/macos/`: Swift Package for the native macOS menu bar app.
+- `desktop/windows/`: Windows desktop app workspace.
+- `desktop/linux/`: Linux desktop app workspace.
 - `docs/protocol.md`: BLE protocol between StickS3 and macOS.
 - `docs/volcengine-asr.md`: trimmed Volcengine ASR notes used by the desktop client.
 - `scripts/`: sprite slicing, palette tuning, and LVGL ARGB binary conversion helpers.
@@ -124,7 +126,7 @@ Firmware dependencies are declared through the ESP-IDF component manager:
 The desktop app is a Swift Package targeting macOS 12 or newer.
 
 ```sh
-cd desktop
+cd desktop/macos
 swift build
 ```
 
@@ -187,7 +189,7 @@ Create it from the example:
 
 ```sh
 mkdir -p "$HOME/Library/Application Support/VoiceStick"
-cp desktop/Config/config.example.toml "$HOME/Library/Application Support/VoiceStick/config.toml"
+cp desktop/macos/Config/config.example.toml "$HOME/Library/Application Support/VoiceStick/config.toml"
 ```
 
 Example:

@@ -6,11 +6,11 @@ sdkconfig.old
 *.xcodeproj/project.xcworkspace/
 DerivedData/
 .build/
-desktop/.build-*/
+desktop/macos/.build-*/
 .swiftpm/
 Package.resolved
-!desktop/Package.resolved
-Config/config.toml
+!desktop/macos/Package.resolved
+desktop/macos/Config/config.toml
 *.log
 *.p12
 __pycache__/

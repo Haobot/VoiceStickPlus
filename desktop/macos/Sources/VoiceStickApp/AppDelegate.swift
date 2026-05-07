@@ -203,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
             Bundle.main.resourceURL?.appendingPathComponent("AppIcon.icns"),
             cwd.appendingPathComponent("Resources/AppIcon.icns"),
-            cwd.appendingPathComponent("desktop/Resources/AppIcon.icns"),
+            cwd.appendingPathComponent("desktop/macos/Resources/AppIcon.icns"),
             executableDirectory?.appendingPathComponent("../../Resources/AppIcon.icns").standardizedFileURL,
             executableDirectory?.appendingPathComponent("../../../Resources/AppIcon.icns").standardizedFileURL,
             executableDirectory?.appendingPathComponent("../../../../Resources/AppIcon.icns").standardizedFileURL

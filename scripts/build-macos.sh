@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/.."
-DESKTOP_DIR="$ROOT_DIR/desktop"
+DESKTOP_DIR="$ROOT_DIR/desktop/macos"
 BUILD_DIR="$ROOT_DIR/build"
 PLIST="$DESKTOP_DIR/Sources/VoiceStickApp/Info.plist"
 VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"

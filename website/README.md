@@ -21,7 +21,7 @@ https://78.github.io/voicestick/appcast.xml
 1. Generate Sparkle keys once and keep the private key out of git:
 
    ```bash
-   cd desktop
+   cd desktop/macos
    swift package resolve
    find .build -name generate_keys -type f -perm -111 -print -quit
    .build/artifacts/sparkle/Sparkle/bin/generate_keys --account voicestick
