@@ -14,7 +14,6 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/timers.h"
 #include "nvs_flash.h"
 
 #include "host/ble_att.h"
@@ -87,12 +86,12 @@ static const ble_uuid128_t s_ota_state_uuid =
 
 static void start_advertising(void);
 static void stop_advertising(void);
-static TimerHandle_t s_adv_retry_timer;
+static struct ble_npl_callout s_adv_retry_callout;
 #define ADV_RETRY_DELAY_MS 1000
 
-static void adv_retry_timer_cb(TimerHandle_t timer)
+static void adv_retry_callout_cb(struct ble_npl_event *ev)
 {
-    (void)timer;
+    (void)ev;
     if (!s_connected && !ble_gap_adv_active()) {
         ESP_LOGI(TAG, "retrying advertising after earlier failure");
         start_advertising();
@@ -608,9 +607,8 @@ static void start_advertising(void)
     if (rc != 0) {
         ESP_LOGW(TAG, "start advertising failed rc=%d, will retry in %d ms",
                  rc, ADV_RETRY_DELAY_MS);
-        if (s_adv_retry_timer) {
-            xTimerStart(s_adv_retry_timer, 0);
-        }
+        ble_npl_callout_reset(&s_adv_retry_callout,
+                              pdMS_TO_TICKS(ADV_RETRY_DELAY_MS));
         return;
     }
 
@@ -697,8 +695,8 @@ esp_err_t voice_ble_init(void)
     rc = ble_gatts_add_svcs(s_gatt_services);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "add gatt failed rc=%d", rc);
 
-    s_adv_retry_timer = xTimerCreate("adv_retry", pdMS_TO_TICKS(ADV_RETRY_DELAY_MS),
-                                      pdFALSE, NULL, adv_retry_timer_cb);
+    ble_npl_callout_init(&s_adv_retry_callout, nimble_port_get_dflt_eventq(),
+                         adv_retry_callout_cb, NULL);
 
     nimble_port_freertos_init(nimble_host_task);
     ESP_LOGI(TAG, "BLE initialized as %s", s_device_name);
