@@ -202,8 +202,6 @@ async function flashFirmware() {
         <div class="actions">
           <a class="button primary" :href="macDownloadUrl">{{ t('hero.downloadMac') }}</a>
           <a class="button primary windows" :href="windowsDownloadUrl">{{ t('hero.downloadWindows') }}</a>
-          <a class="button secondary" href="#flash">{{ t('hero.flash') }}</a>
-          <a class="button secondary" :href="githubUrl">{{ t('hero.source') }}</a>
         </div>
       </div>
       <div class="product-visual" :aria-label="t('hero.imageAlt')">
