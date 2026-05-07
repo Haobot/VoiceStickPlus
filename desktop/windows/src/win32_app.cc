@@ -362,7 +362,7 @@ void Win32App::AddTrayIcon() {
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
     data.uID = kTrayIconId;
-    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     data.uCallbackMessage = kTrayCallbackMessage;
     data.hIcon = static_cast<HICON>(LoadImageW(
         instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_TRAY), IMAGE_ICON,
@@ -370,7 +370,7 @@ void Win32App::AddTrayIcon() {
         LR_DEFAULTCOLOR | LR_SHARED));
     if (!data.hIcon) data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_APP));
     if (!data.hIcon) data.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-    wcscpy_s(data.szTip, L"VoiceStick");
+    wcscpy_s(data.szTip, L"VoiceStick - Not connected");
     if (!Shell_NotifyIconW(NIM_ADD, &data)) {
         LogLine("Shell_NotifyIcon NIM_ADD failed: " + std::to_string(GetLastError()));
         return;
@@ -489,8 +489,9 @@ void Win32App::RebuildTooltip() {
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
     data.uID = kTrayIconId;
-    data.uFlags = NIF_TIP;
-    auto tip = Utf16(status_ + " - " + std::to_string(connected_devices_.size()) + " connected");
+    data.uFlags = NIF_TIP | NIF_SHOWTIP;
+    auto tip = Utf16(std::string("VoiceStick - ") +
+                     (connected_devices_.empty() ? "Not connected" : "Connected"));
     wcsncpy_s(data.szTip, tip.c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &data);
 }
