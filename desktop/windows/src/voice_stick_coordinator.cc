@@ -58,6 +58,10 @@ void VoiceStickCoordinator::Start() {
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         ui_->SetPairingError(device_id, message);
     };
+    ble_->on_scan_error = [this](std::string message) {
+        LogCoordinatorLine("BLE scan error: " + message);
+        ui_->SetStatus("Turn on Bluetooth");
+    };
     ble_->on_state_event = [this](std::string device_id, StateEvent event) {
         HandleStateEvent(event, device_id);
     };

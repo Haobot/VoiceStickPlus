@@ -45,6 +45,20 @@ std::string FormatBluetoothAddress(std::uint64_t address) {
     return buffer;
 }
 
+std::string FormatHresult(std::int32_t code) {
+    char buffer[16]{};
+    snprintf(buffer, sizeof(buffer), "0x%08X", static_cast<unsigned int>(code));
+    return buffer;
+}
+
+std::wstring ScanStartFailureText(const winrt::hresult_error& error) {
+    std::string message = "Turn on Bluetooth to scan (" + FormatHresult(error.code()) + ")";
+    const auto detail = winrt::to_string(error.message());
+    if (!detail.empty()) message += ": " + detail;
+    auto text = winrt::to_hstring(message);
+    return std::wstring(text.c_str());
+}
+
 BluetoothAddressKind AddressKindFromArgs(
     const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs& args) {
     using winrt::Windows::Devices::Bluetooth::BluetoothAddressType;
@@ -375,13 +389,35 @@ void PairDeviceDialog::StartScan() {
     received_token_ = watcher_.Received([this](const auto& watcher, const auto& args) {
         HandleAdvertisement(watcher, args);
     });
-    watcher_.Start();
+    try {
+        watcher_.Start();
+    } catch (const winrt::hresult_error& error) {
+        try {
+            watcher_.Received(received_token_);
+        } catch (...) {
+        }
+        watcher_ = nullptr;
+        const auto text = ScanStartFailureText(error);
+        SetWindowTextW(status_label_, text.c_str());
+        EnableWindow(pair_button_, FALSE);
+    } catch (...) {
+        try {
+            watcher_.Received(received_token_);
+        } catch (...) {
+        }
+        watcher_ = nullptr;
+        SetWindowTextW(status_label_, L"Bluetooth scan failed.");
+        EnableWindow(pair_button_, FALSE);
+    }
 }
 
 void PairDeviceDialog::StopScan() {
     if (!watcher_) return;
-    watcher_.Received(received_token_);
-    watcher_.Stop();
+    try {
+        watcher_.Received(received_token_);
+        watcher_.Stop();
+    } catch (...) {
+    }
     watcher_ = nullptr;
 }
 

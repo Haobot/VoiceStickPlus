@@ -60,6 +60,7 @@ public:
 
     std::function<void(std::vector<ConnectedDevice>)> on_connection_change;
     std::function<void(std::string, std::string)> on_connection_error;
+    std::function<void(std::string)> on_scan_error;
     std::function<void(std::string, StateEvent)> on_state_event;
     std::function<void(std::string, AudioFrame)> on_audio_frame;
 };

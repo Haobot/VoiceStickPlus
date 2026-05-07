@@ -118,6 +118,20 @@ std::string FormatBluetoothAddress(std::uint64_t address) {
     return buffer;
 }
 
+std::string FormatHresult(std::int32_t code) {
+    char buffer[16]{};
+    snprintf(buffer, sizeof(buffer), "0x%08X", static_cast<unsigned int>(code));
+    return buffer;
+}
+
+std::string ScanStartFailureMessage(const winrt::hresult_error& error) {
+    std::string message = "Bluetooth LE scan failed (HRESULT=" + FormatHresult(error.code()) + ")";
+    const auto detail = winrt::to_string(error.message());
+    if (!detail.empty()) message += ": " + detail;
+    message += ". Turn on Bluetooth in Windows Settings, then restart VoiceStick or update paired devices.";
+    return message;
+}
+
 std::string GattStatusName(GattCommunicationStatus status) {
     switch (status) {
     case GattCommunicationStatus::Success:
@@ -359,14 +373,42 @@ void BleCentralWin::StartScan() {
     // and WinRT's per-PDU filter would drop the scan response so we'd never
     // see the device id. Filter on device_id in HandleAdvertisement instead.
     received_token_ = watcher_.Received({this, &BleCentralWin::HandleAdvertisement});
-    watcher_.Start();
-    LogBleLine("scan started");
+    try {
+        watcher_.Start();
+        LogBleLine("scan started");
+    } catch (const winrt::hresult_error& error) {
+        const auto message = ScanStartFailureMessage(error);
+        LogBleLine("scan start failed: " + message);
+        try {
+            watcher_.Received(received_token_);
+        } catch (...) {
+        }
+        watcher_ = nullptr;
+        PublishConnections();
+        if (on_scan_error) on_scan_error(message);
+    } catch (...) {
+        const std::string message = "Bluetooth LE scan failed with an unknown error.";
+        LogBleLine("scan start failed: unknown error");
+        try {
+            watcher_.Received(received_token_);
+        } catch (...) {
+        }
+        watcher_ = nullptr;
+        PublishConnections();
+        if (on_scan_error) on_scan_error(message);
+    }
 }
 
 void BleCentralWin::StopScan() {
     if (watcher_) {
-        watcher_.Received(received_token_);
-        watcher_.Stop();
+        try {
+            watcher_.Received(received_token_);
+            watcher_.Stop();
+        } catch (const winrt::hresult_error& error) {
+            LogBleLine("scan stop failed: hr=" + FormatHresult(error.code()));
+        } catch (...) {
+            LogBleLine("scan stop failed: unknown error");
+        }
         watcher_ = nullptr;
         LogBleLine("scan stopped");
     }
@@ -413,12 +455,6 @@ namespace {
 winrt::Windows::Foundation::IAsyncAction WaitMs(std::chrono::milliseconds delay) {
     using winrt::Windows::Foundation::TimeSpan;
     co_await winrt::resume_after(TimeSpan{delay});
-}
-
-std::string FormatHresult(std::int32_t code) {
-    char buffer[16]{};
-    snprintf(buffer, sizeof(buffer), "0x%08X", static_cast<unsigned int>(code));
-    return buffer;
 }
 
 std::string UnpairStatusName(DeviceUnpairingResultStatus status) {
