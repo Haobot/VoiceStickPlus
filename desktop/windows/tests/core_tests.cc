@@ -1,6 +1,7 @@
 #include "asr_protocol.h"
 #include "ble_protocol.h"
 #include "byte_utils.h"
+#include "firmware_manifest.h"
 #include "ogg_opus_muxer.h"
 #include "voice_stick_coordinator.h"
 
@@ -8,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -39,6 +41,13 @@ public:
                      const std::optional<std::string>& device_id) override {
         sent_ui_states.push_back(SentUiState{state, text, device_id});
     }
+    void UpdateFirmware(ByteVector,
+                        const std::string&,
+                        std::function<void(FirmwareUpdateProgress)>,
+                        std::function<void(bool, std::string)> completion) override {
+        completion(false, "not implemented");
+    }
+    void CancelFirmwareUpdate() override {}
     bool IsConnected(const std::string& device_id) const override {
         return connected_device_ids.contains(device_id);
     }
@@ -80,6 +89,9 @@ public:
     void SetDeviceInfo(const DeviceInfo& info) override {
         device_infos.push_back(info);
     }
+    void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override {
+        firmware_info_by_device_id = info_by_device_id;
+    }
     void SetPairingError(const std::string& device_id, const std::string& message) override {
         pairing_errors.push_back(device_id + ":" + message);
     }
@@ -114,6 +126,7 @@ public:
     std::vector<std::string> statuses;
     std::vector<ConnectedDevice> connected_devices;
     std::vector<DeviceInfo> device_infos;
+    std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
     std::vector<std::string> pairing_errors;
     std::vector<std::string> paired_device_ids;
     std::vector<std::string> partials;
@@ -244,6 +257,37 @@ void TestAppConfig() {
     AppConfig volcengine = AppConfig::Defaults();
     volcengine.asr_provider = AsrProvider::kVolcengine;
     assert(volcengine.ActiveWebsocketUrl().starts_with("wss://openspeech.bytedance.com/"));
+
+    PairedDeviceEntry entry;
+    entry.device_id = "5A74";
+    entry.bluetooth_address = 0x70041DDA5A76;
+    entry.address_kind = BluetoothAddressKind::kPublic;
+    entry.name = "VS-5A74";
+    entry.hardware = "stick_s3";
+    entry.firmware_version = "0.1.2";
+    AppConfig cache = AppConfig::Defaults();
+    cache.paired_devices.push_back(entry);
+    cache.paired_device_ids.push_back(entry.device_id);
+    assert(cache.paired_devices.front().hardware == "stick_s3");
+    assert(cache.paired_devices.front().firmware_version == "0.1.2");
+}
+
+void TestFirmwareManifestParsingAndVersionCompare() {
+    const std::string json =
+        "{\"hardware\":\"sticks3\",\"version\":\"0.2.3\",\"ota_url\":\"https://example.test/ota.bin\","
+        "\"ota_sha256\":\"abc\",\"ota_size\":123,\"merged_url\":\"https://example.test/merged.bin\","
+        "\"merged_sha256\":\"def\",\"merged_size\":456}";
+    auto manifest = ParseFirmwareManifest(json);
+    assert(manifest.has_value());
+    assert(manifest->hardware == "sticks3");
+    assert(manifest->version == "0.2.3");
+    assert(manifest->ota_size == 123);
+    assert(FirmwareVersion::IsOlderThan("0.2.2", "0.2.3"));
+    assert(FirmwareVersion::IsOlderThan("0.2.3-beta", "0.2.3"));
+    assert(!FirmwareVersion::IsOlderThan("0.2.3", "0.2.3-beta"));
+    assert(IsFirmwareHardwareCompatible("sticks3", "0.1.2", "stick_s3"));
+    assert(IsFirmwareHardwareCompatible("", "0.1.2", "stick_s3"));
+    assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
 }
 
 void TestCoordinatorCancelsShortPrimaryPress() {
@@ -367,6 +411,7 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
+    TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();

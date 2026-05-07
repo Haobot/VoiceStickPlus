@@ -13,6 +13,7 @@ Package.resolved
 desktop/macos/Config/config.toml
 *.log
 *.p12
+scripts/.signing_sha1
 __pycache__/
 *.py[cod]
 node_modules/

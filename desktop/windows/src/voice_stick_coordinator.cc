@@ -14,6 +14,10 @@ void LogCoordinatorLine(const std::string& message) {
     LogCoordinator(message);
 }
 
+bool IsFirmwareManifestCompatible(const DeviceFirmwareInfo& info, const FirmwareManifest& manifest) {
+    return IsFirmwareHardwareCompatible(info.hardware, info.current_version, manifest.hardware);
+}
+
 } // namespace
 
 VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
@@ -27,12 +31,28 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
       ui_(ui),
       input_injector_(input_injector),
       debug_audio_recorder_(config_.debug_audio_cache, config_.debug_audio_directory),
-      paired_device_ids_(config_.paired_device_ids) {}
+      paired_device_ids_(config_.paired_device_ids) {
+    for (const auto& entry : config_.paired_devices) {
+        if (entry.device_id.empty()) continue;
+        auto& info = firmware_info_by_device_id_[entry.device_id];
+        info.hardware = entry.hardware;
+        info.current_version = entry.firmware_version;
+    }
+}
+
+VoiceStickCoordinator::~VoiceStickCoordinator() {
+    Shutdown();
+    alive_->store(false);
+    if (firmware_manifest_thread_.joinable()) {
+        firmware_manifest_thread_.join();
+    }
+}
 
 void VoiceStickCoordinator::Start() {
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
         ui_->SetConnectedDevices(devices);
         CancelActiveCycleIfDeviceDisconnected();
+        CheckFirmwareUpdatesIfNeeded(false, false);
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
@@ -46,6 +66,17 @@ void VoiceStickCoordinator::Start() {
     };
     ConfigureAsrCallbacks();
     ble_->Start();
+    CheckFirmwareUpdatesIfNeeded(false, false);
+}
+
+void VoiceStickCoordinator::Shutdown() {
+    asr_->Cancel();
+    active_session_id_.reset();
+    active_device_id_.reset();
+    active_session_started_at_ = {};
+    pending_paste_state_ = {};
+    debug_audio_recorder_.Discard();
+    ble_->Shutdown();
 }
 
 void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
@@ -66,6 +97,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
         paired_device_ids_ = config_.paired_device_ids;
         ui_->SetPairedDeviceIds(paired_device_ids_);
         ble_->UpdatePairedDeviceIds(paired_device_ids_);
+        CheckFirmwareUpdatesIfNeeded(false, false);
     }
 }
 
@@ -89,6 +121,15 @@ void VoiceStickCoordinator::ConfirmPairedDeviceIds(const std::vector<std::string
     config_.paired_device_ids = device_ids;
     ui_->SetPairedDeviceIds(paired_device_ids_);
     ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
+    for (const auto& entry : config_.paired_devices) {
+        if (std::find(paired_device_ids_.begin(), paired_device_ids_.end(), entry.device_id) == paired_device_ids_.end()) {
+            continue;
+        }
+        auto& info = firmware_info_by_device_id_[entry.device_id];
+        if (info.hardware.empty()) info.hardware = entry.hardware;
+        if (info.current_version.empty()) info.current_version = entry.firmware_version;
+    }
+    CheckFirmwareUpdatesIfNeeded(false, false);
 }
 
 void VoiceStickCoordinator::RemovePairedDevice(const std::string& device_id) {
@@ -117,6 +158,42 @@ bool VoiceStickCoordinator::RestoreLastInputConfirmation() {
     return RestoreLastInputConfirmation(last_recoverable_device_id_);
 }
 
+void VoiceStickCoordinator::CheckFirmwareUpdatesNow() {
+    CheckFirmwareUpdatesIfNeeded(true, true);
+}
+
+void VoiceStickCoordinator::UpdateFirmwareFromLatest(
+    const std::string& device_id,
+    std::function<void(FirmwareUpdateProgress)> progress,
+    std::function<void(bool, std::string)> completion) {
+    std::optional<FirmwareManifest> manifest;
+    {
+        std::lock_guard lock(firmware_mutex_);
+        manifest = latest_firmware_manifest_;
+    }
+    if (!manifest.has_value()) {
+        completion(false, "Firmware update manifest is not loaded yet.");
+        return;
+    }
+
+    auto client = firmware_manifest_client_;
+    std::thread([this, alive = alive_, client = std::move(client), device_id, manifest = std::move(*manifest),
+                 progress = std::move(progress), completion = std::move(completion)]() mutable {
+        std::string error;
+        auto image = client.DownloadOtaSync(manifest, error);
+        if (!alive->load()) return;
+        if (!image.has_value()) {
+            completion(false, error.empty() ? "Failed to download firmware." : error);
+            return;
+        }
+        ble_->UpdateFirmware(std::move(*image), device_id, std::move(progress), std::move(completion));
+    }).detach();
+}
+
+void VoiceStickCoordinator::CancelFirmwareUpdate() {
+    ble_->CancelFirmwareUpdate();
+}
+
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     asr_->on_partial = [this](std::string text) {
         ui_->ShowPartial(text);
@@ -133,6 +210,7 @@ void VoiceStickCoordinator::ConfigureAsrCallbacks() {
 void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std::string& device_id) {
     if (event.event == "device_info") {
         ui_->SetDeviceInfo(DeviceInfo{device_id, event.hardware, event.firmware_version});
+        UpdateDeviceFirmwareInfo(event, device_id);
     } else if (event.event == "button_down") {
         HandleButtonDown(event, device_id);
     } else if (event.event == "button_up") {
@@ -392,6 +470,119 @@ void VoiceStickCoordinator::FinishRecognitionCycle() {
     sent_final_audio_chunk_ = false;
     pasted_final_text_ = false;
     buffered_ogg_chunks_.clear();
+}
+
+void VoiceStickCoordinator::UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id) {
+    std::string hardware_to_save;
+    std::string version_to_save;
+    {
+        std::lock_guard lock(firmware_mutex_);
+        auto& info = firmware_info_by_device_id_[device_id];
+        if (!event.hardware.empty()) {
+            info.hardware = event.hardware;
+            hardware_to_save = event.hardware;
+        }
+        if (!event.firmware_version.empty()) {
+            info.current_version = event.firmware_version;
+            version_to_save = event.firmware_version;
+        }
+        info.error_message.clear();
+    }
+    if (!hardware_to_save.empty() || !version_to_save.empty()) {
+        config_.SavePairedDeviceInfo(device_id, hardware_to_save, version_to_save);
+    }
+    RefreshFirmwareAvailability();
+    CheckFirmwareUpdatesIfNeeded(false, false);
+}
+
+void VoiceStickCoordinator::CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors) {
+    if (paired_device_ids_.empty() && !force) return;
+    {
+        std::lock_guard lock(firmware_mutex_);
+        if (firmware_manifest_check_in_flight_) return;
+        if (!force && has_last_firmware_manifest_check_at_ &&
+            std::chrono::steady_clock::now() - last_firmware_manifest_check_at_ < kFirmwareManifestCacheDuration) {
+            // Use the cached manifest to refresh any newly connected device info.
+        } else {
+            firmware_manifest_check_in_flight_ = true;
+            SetFirmwareChecking(true);
+            if (firmware_manifest_thread_.joinable()) {
+                firmware_manifest_thread_.join();
+            }
+            auto alive = alive_;
+            firmware_manifest_thread_ = std::thread([this, alive, show_errors] {
+                std::string error;
+                auto manifest = firmware_manifest_client_.FetchManifestSync(error);
+                if (!alive->load()) return;
+                {
+                    std::lock_guard callback_lock(firmware_mutex_);
+                    firmware_manifest_check_in_flight_ = false;
+                    for (auto& [_, info] : firmware_info_by_device_id_) {
+                        info.is_checking = false;
+                    }
+                    if (manifest.has_value()) {
+                        LogCoordinatorLine("firmware manifest version=" + manifest->version +
+                                           " hardware=" + manifest->hardware);
+                        latest_firmware_manifest_ = std::move(manifest);
+                        last_firmware_manifest_check_at_ = std::chrono::steady_clock::now();
+                        has_last_firmware_manifest_check_at_ = true;
+                        for (auto& [_, info] : firmware_info_by_device_id_) {
+                            info.error_message.clear();
+                        }
+                    } else {
+                        LogCoordinatorLine("firmware manifest check failed: " + error);
+                        for (const auto& device_id : paired_device_ids_) {
+                            if (show_errors || firmware_info_by_device_id_.contains(device_id)) {
+                                firmware_info_by_device_id_[device_id].error_message = error;
+                            }
+                        }
+                    }
+                }
+                RefreshFirmwareAvailability();
+            });
+            return;
+        }
+    }
+    RefreshFirmwareAvailability();
+}
+
+void VoiceStickCoordinator::RefreshFirmwareAvailability() {
+    std::map<std::string, DeviceFirmwareInfo> snapshot;
+    {
+        std::lock_guard lock(firmware_mutex_);
+        for (auto& [device_id, info] : firmware_info_by_device_id_) {
+            info.latest_version.clear();
+            info.update_available = false;
+            if (latest_firmware_manifest_.has_value() &&
+                IsFirmwareManifestCompatible(info, *latest_firmware_manifest_)) {
+                info.latest_version = latest_firmware_manifest_->version;
+                if (!info.current_version.empty()) {
+                    info.update_available = FirmwareVersion::IsOlderThan(
+                        info.current_version, latest_firmware_manifest_->version);
+                }
+                LogCoordinatorLine("firmware availability VS-" + device_id +
+                                   " hardware=" + (info.hardware.empty() ? "<empty>" : info.hardware) +
+                                   " current=" + (info.current_version.empty() ? "<empty>" : info.current_version) +
+                                   " latest=" + info.latest_version +
+                                   " update=" + (info.update_available ? "true" : "false"));
+            }
+            snapshot[device_id] = info;
+        }
+    }
+    ui_->SetFirmwareInfo(snapshot);
+}
+
+void VoiceStickCoordinator::SetFirmwareChecking(bool is_checking) {
+    std::map<std::string, DeviceFirmwareInfo> snapshot;
+    {
+        for (const auto& device_id : paired_device_ids_) {
+            auto& info = firmware_info_by_device_id_[device_id];
+            info.is_checking = is_checking;
+            if (is_checking) info.error_message.clear();
+            snapshot[device_id] = info;
+        }
+    }
+    ui_->SetFirmwareInfo(snapshot);
 }
 
 bool VoiceStickCoordinator::IsWaitingForFinalText() const {

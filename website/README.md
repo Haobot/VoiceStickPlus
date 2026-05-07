@@ -1,6 +1,6 @@
 # VoiceStick Website
 
-Vue + Vite source for the VoiceStick homepage and Sparkle appcast. The site uses
+Vue + Vite source for the VoiceStick homepage and Sparkle/WinSparkle appcast. The site uses
 `vue-i18n` for Simplified Chinese and English, and picks Chinese automatically
 when the browser language starts with `zh`.
 
@@ -10,7 +10,7 @@ Suggested GitHub Pages URL for this repository:
 https://78.github.io/voicestick/
 ```
 
-The macOS app checks the generated root-level appcast:
+The macOS and Windows apps check the generated root-level appcast:
 
 ```text
 https://78.github.io/voicestick/appcast.xml
@@ -74,7 +74,8 @@ The generated `dist/` directory is deployed to GitHub Pages. `public/appcast.xml
 ## GitHub Actions
 
 - `.github/workflows/release.yml` runs on `v*` tags or manual dispatch. It builds the macOS app, signs and notarizes the DMG, uploads DMG/ZIP/signature assets to the matching GitHub Release, builds versioned OTA and merged firmware images, publishes the firmware manifest to OSS, rewrites `public/appcast.xml`, builds the Vue site, and deploys `website/dist` to GitHub Pages.
-- `.github/workflows/deploy-website.yml` runs when `website/**` changes on `main`. Before deploying, it reads the latest GitHub Release and regenerates `public/appcast.xml` from the latest ZIP asset and signature, so website-only deploys do not overwrite the update feed with a stale placeholder.
+- `scripts/build-msi.bat` runs on the local Windows signing machine with the USB signing key inserted. Upload the generated `VoiceStick_<version>.msi` to the matching GitHub Release.
+- `.github/workflows/deploy-website.yml` runs when `website/**` changes on `main` or when manually dispatched after uploading a Windows MSI. Before deploying, it reads the current live appcast and latest GitHub Release, then regenerates `public/appcast.xml` from the latest ZIP/signature and optional MSI assets. If the latest Release has no Windows MSI yet, the previous Windows item is preserved.
 
 Required repository secrets for release builds:
 

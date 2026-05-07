@@ -3,8 +3,10 @@
 #include "asr_client_win.h"
 #include "ble_central_win.h"
 #include "log.h"
+#include "resource.h"
 
 #include <Shellapi.h>
+#include <winsparkle.h>
 
 #include <algorithm>
 #include <cctype>
@@ -19,12 +21,18 @@ constexpr UINT kUiDispatchMessage = WM_APP + 2;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT kMenuRestore = 1001;
 constexpr UINT kMenuSettings = 1002;
-constexpr UINT kMenuOpenConfig = 1003;
-constexpr UINT kMenuOpenDebug = 1004;
 constexpr UINT kMenuQuit = 1005;
 constexpr UINT kMenuPairScan = 1006;
+constexpr UINT kMenuCheckFirmwareUpdates = 1007;
+constexpr UINT kMenuCheckAppUpdates = 1008;
 constexpr UINT kMenuForgetBase = 2100;
 constexpr UINT kMenuForgetEnd = 2199;
+constexpr UINT kMenuUpdateFirmwareBase = 2200;
+constexpr UINT kMenuUpdateFirmwareEnd = 2299;
+
+#ifndef VOICESTICK_APPCAST_URL
+#define VOICESTICK_APPCAST_URL "https://78.github.io/voicestick/appcast.xml"
+#endif
 
 void LogLine(std::string_view message) {
     voicestick::LogApp(message);
@@ -39,11 +47,33 @@ std::wstring Utf16FromUtf8(std::string_view text) {
     return wide;
 }
 
+std::wstring FirmwareIdentityText(const std::string& hardware, const std::string& version) {
+    if (!hardware.empty() && !version.empty()) {
+        return Utf16FromUtf8(hardware + " " + version);
+    }
+    if (!hardware.empty()) {
+        return Utf16FromUtf8(hardware);
+    }
+    if (!version.empty()) {
+        return L"Firmware " + Utf16FromUtf8(version);
+    }
+    return L"Firmware Unknown";
+}
 
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
     paired_device_ids_ = config_.paired_device_ids;
+    for (const auto& entry : config_.paired_devices) {
+        if (entry.device_id.empty()) continue;
+        if (!entry.hardware.empty() || !entry.firmware_version.empty()) {
+            device_info_map_[entry.device_id] = DeviceInfo{
+                entry.device_id,
+                entry.hardware,
+                entry.firmware_version,
+            };
+        }
+    }
 }
 
 int Win32App::Run() {
@@ -53,6 +83,11 @@ int Win32App::Run() {
         LogLine("CreateWindowInternal failed");
         return 1;
     }
+    win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
+    win_sparkle_set_automatic_check_for_updates(1);
+    win_sparkle_set_update_check_interval(86400);
+    win_sparkle_init();
+
     RegisterTaskbarMessage();
     AddTrayIcon();
     auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
@@ -77,6 +112,7 @@ int Win32App::Run() {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    win_sparkle_cleanup();
     RemoveTrayIcon();
     return static_cast<int>(message.wParam);
 }
@@ -108,12 +144,22 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
     });
 }
 
+void Win32App::SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) {
+    DispatchToUi([this, info_by_device_id] {
+        firmware_info_map_ = info_by_device_id;
+    });
+}
+
 void Win32App::HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info) {
     LogLine("Pairing completed VS-" + device_id +
             (info && !info->firmware_version.empty()
                  ? " firmware=" + info->firmware_version
                  : " firmware=<unknown>"));
     if (pending_pairing_entry_ && pending_pairing_entry_->device_id == device_id) {
+        if (info) {
+            pending_pairing_entry_->hardware = info->hardware;
+            pending_pairing_entry_->firmware_version = info->firmware_version;
+        }
         config_.SavePairedDevice(*pending_pairing_entry_);
         pending_pairing_entry_.reset();
         paired_device_ids_ = config_.paired_device_ids;
@@ -231,17 +277,17 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         case kMenuPairScan:
             ShowPairDeviceDialog();
             return 0;
+        case kMenuCheckFirmwareUpdates:
+            if (coordinator_) coordinator_->CheckFirmwareUpdatesNow();
+            return 0;
+        case kMenuCheckAppUpdates:
+            win_sparkle_check_update_with_ui();
+            return 0;
         case kMenuSettings:
             ShowSettings();
             return 0;
-        case kMenuOpenConfig:
-            OpenPath(AppConfig::ConfigDirectory());
-            return 0;
-        case kMenuOpenDebug:
-            OpenPath(config_.debug_audio_directory);
-            return 0;
         case kMenuQuit:
-            DestroyWindow(hwnd_);
+            ShutdownAndQuit();
             return 0;
         default: {
             UINT cmd = LOWORD(w_param);
@@ -252,6 +298,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                     coordinator_->RemovePairedDevice(device_id);
                     config_.RemovePairedDevice(device_id);
                     LogLine("Forgot device VS-" + device_id);
+                }
+            } else if (cmd >= kMenuUpdateFirmwareBase && cmd <= kMenuUpdateFirmwareEnd) {
+                std::size_t index = cmd - kMenuUpdateFirmwareBase;
+                if (index < paired_device_ids_.size()) {
+                    StartFirmwareUpdate(paired_device_ids_[index]);
                 }
             }
             return 0;
@@ -266,6 +317,14 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
     default:
         return DefWindowProcW(hwnd_, message, w_param, l_param);
     }
+}
+
+void Win32App::ShutdownAndQuit() {
+    if (is_shutting_down_) return;
+    is_shutting_down_ = true;
+    pair_device_dialog_.reset();
+    if (coordinator_) coordinator_->Shutdown();
+    DestroyWindow(hwnd_);
 }
 
 void Win32App::DispatchToUi(std::function<void()> action) {
@@ -288,6 +347,7 @@ bool Win32App::CreateWindowInternal() {
     wc.hInstance = instance_;
     wc.lpszClassName = L"VoiceStickWindow";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_APP));
     RegisterClassW(&wc);
     hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"VoiceStick", 0, 0, 0, 0, 0,
                             nullptr, nullptr, instance_, this);
@@ -304,7 +364,12 @@ void Win32App::AddTrayIcon() {
     data.uID = kTrayIconId;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = kTrayCallbackMessage;
-    data.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    data.hIcon = static_cast<HICON>(LoadImageW(
+        instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_TRAY), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR | LR_SHARED));
+    if (!data.hIcon) data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_APP));
+    if (!data.hIcon) data.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wcscpy_s(data.szTip, L"VoiceStick");
     if (!Shell_NotifyIconW(NIM_ADD, &data)) {
         LogLine("Shell_NotifyIcon NIM_ADD failed: " + std::to_string(GetLastError()));
@@ -357,11 +422,46 @@ void Win32App::ShowTrayMenu() {
         const wchar_t* status_text = connected ? L"Connected" : L"Scanning...";
         AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, status_text);
 
-        // Firmware version
+        // Hardware + firmware version
         auto info_it = device_info_map_.find(id);
-        if (info_it != device_info_map_.end() && !info_it->second.firmware_version.empty()) {
-            auto fw_text = L"Firmware " + Utf16(info_it->second.firmware_version);
-            AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, fw_text.c_str());
+        auto firmware_it = firmware_info_map_.find(id);
+        const std::string hardware =
+            info_it != device_info_map_.end() && !info_it->second.hardware.empty()
+                ? info_it->second.hardware
+                : (firmware_it != firmware_info_map_.end() ? firmware_it->second.hardware : std::string{});
+        const std::string firmware_version =
+            info_it != device_info_map_.end() && !info_it->second.firmware_version.empty()
+                ? info_it->second.firmware_version
+                : (firmware_it != firmware_info_map_.end() ? firmware_it->second.current_version : std::string{});
+        auto identity_text = FirmwareIdentityText(hardware, firmware_version);
+        AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, identity_text.c_str());
+
+        if (firmware_it != firmware_info_map_.end()) {
+            const auto& firmware = firmware_it->second;
+            if (firmware.is_checking) {
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, L"Checking for firmware updates...");
+            } else if (!firmware.error_message.empty()) {
+                auto error_text = L"Firmware Check Failed";
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, error_text);
+            } else if (firmware.update_available && !firmware.latest_version.empty()) {
+                auto update_text = L"Update available: " + Utf16(firmware.latest_version);
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, update_text.c_str());
+                auto update_action = L"Update to " + Utf16(firmware.latest_version) + L"...";
+                AppendMenuW(submenu,
+                            connected ? MF_STRING : (MF_STRING | MF_DISABLED),
+                            kMenuUpdateFirmwareBase + static_cast<UINT>(i),
+                            update_action.c_str());
+            } else if (!firmware.latest_version.empty() && !firmware.current_version.empty()) {
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, L"Firmware Up to Date");
+            } else if (!firmware.latest_version.empty()) {
+                auto latest_text = L"Latest firmware " + Utf16(firmware.latest_version);
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, latest_text.c_str());
+                auto update_action = L"Update to " + Utf16(firmware.latest_version) + L"...";
+                AppendMenuW(submenu,
+                            connected ? MF_STRING : (MF_STRING | MF_DISABLED),
+                            kMenuUpdateFirmwareBase + static_cast<UINT>(i),
+                            update_action.c_str());
+            }
         }
 
         AppendMenuW(submenu, MF_SEPARATOR, 0, nullptr);
@@ -373,8 +473,8 @@ void Win32App::ShowTrayMenu() {
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings...");
-    AppendMenuW(menu, MF_STRING, kMenuOpenConfig, L"Open Config Folder");
-    AppendMenuW(menu, MF_STRING, kMenuOpenDebug, L"Open Debug Audio Folder");
+    AppendMenuW(menu, MF_STRING, kMenuCheckFirmwareUpdates, L"Check for Firmware Updates");
+    AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates, L"Check for App Updates...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit");
     POINT point{};
@@ -429,6 +529,36 @@ void Win32App::ShowSettings() {
     settings_dialog_->Show();
 }
 
+void Win32App::StartFirmwareUpdate(const std::string& device_id) {
+    if (!coordinator_) return;
+    auto firmware_it = firmware_info_map_.find(device_id);
+    const std::string version = firmware_it != firmware_info_map_.end()
+                                    ? firmware_it->second.latest_version
+                                    : std::string();
+    firmware_update_dialog_ = std::make_unique<FirmwareUpdateDialog>(
+        instance_, hwnd_, version.empty() ? "latest" : version);
+    firmware_update_dialog_->on_cancel = [this] {
+        if (coordinator_) coordinator_->CancelFirmwareUpdate();
+    };
+    firmware_update_dialog_->Show();
+    coordinator_->UpdateFirmwareFromLatest(
+        device_id,
+        [this](FirmwareUpdateProgress progress) {
+            DispatchToUi([this, progress] {
+                if (firmware_update_dialog_) firmware_update_dialog_->UpdateProgress(progress);
+            });
+        },
+        [this](bool success, std::string message) {
+            DispatchToUi([this, success, message] {
+                if (firmware_update_dialog_) firmware_update_dialog_->Finish(success, message);
+                if (success) {
+                    ShowNotification("VoiceStick firmware updated",
+                                     "The device is rebooting into the new firmware.");
+                }
+            });
+        });
+}
+
 void Win32App::PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                           BluetoothAddressKind address_kind, const std::string& name) {
     if (coordinator_) {
@@ -450,11 +580,6 @@ void Win32App::ShowNotification(const std::string& title, const std::string& bod
     wcsncpy_s(data.szInfo, body_w.c_str(), _TRUNCATE);
     data.dwInfoFlags = NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY, &data);
-}
-
-void Win32App::OpenPath(const std::filesystem::path& path) {
-    std::filesystem::create_directories(path);
-    ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 std::wstring Win32App::Utf16(const std::string& text) const {

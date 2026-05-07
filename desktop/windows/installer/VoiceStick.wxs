@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="VoiceStick"
+           Manufacturer="TenClass"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="EA755DA7-1A4E-4ED2-8051-4E31B55FCA6B"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="!(loc.DowngradeError)" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)\desktop\windows\installer\license.rtf" />
+
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchCheckbox)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <SetProperty Id="WixShellExecTarget" Value="[INSTALLFOLDER]VoiceStick.exe"
+                 After="CostFinalize" Sequence="ui" />
+    <CustomAction Id="LaunchApplication" DllEntry="WixShellExec" Impersonate="yes"
+                  BinaryRef="Wix4UtilCA_X86" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
+    </UI>
+
+    <Icon Id="VoiceStickIcon" SourceFile="$(var.ProjectDir)\desktop\windows\resources\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="VoiceStickIcon" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="VoiceStick">
+        <Component Id="VoiceStickExe" Guid="*" Bitness="always64">
+          <File Id="VoiceStickExeFile" Source="$(var.BuildDir)\VoiceStick.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="WinSparkleDll" Guid="*" Bitness="always64">
+          <File Id="WinSparkleDllFile" Source="$(var.BuildDir)\WinSparkle.dll" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="VoiceStickMenuFolder" Name="VoiceStick">
+        <Component Id="StartMenuShortcut" Guid="*">
+          <Shortcut Id="VoiceStickStartMenuShortcut"
+                    Name="VoiceStick"
+                    Target="[INSTALLFOLDER]VoiceStick.exe"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="VoiceStickIcon" />
+          <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\TenClass\VoiceStick"
+                         Name="startmenu" Type="integer" Value="1"
+                         KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="*">
+        <Shortcut Id="VoiceStickDesktopShortcut"
+                  Name="VoiceStick"
+                  Target="[INSTALLFOLDER]VoiceStick.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="VoiceStickIcon" />
+        <RegistryValue Root="HKCU" Key="Software\TenClass\VoiceStick"
+                       Name="desktop_shortcut" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="VoiceStick" Level="1">
+      <ComponentRef Id="VoiceStickExe" />
+      <ComponentRef Id="WinSparkleDll" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+  </Package>
+</Wix>

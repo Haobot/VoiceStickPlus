@@ -3,15 +3,19 @@
 #include "app_config.h"
 #include "ble_protocol.h"
 #include "debug_audio_recorder.h"
+#include "firmware_manifest.h"
 #include "ogg_opus_muxer.h"
 
+#include <atomic>
 #include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace voicestick {
@@ -27,6 +31,12 @@ struct DeviceInfo {
     std::string firmware_version;
 };
 
+struct FirmwareUpdateProgress {
+    int written_bytes = 0;
+    int total_bytes = 0;
+    bool is_device_confirmed = false;
+};
+
 class BleCentral {
 public:
     virtual ~BleCentral() = default;
@@ -39,8 +49,14 @@ public:
     virtual void SendUiState(const std::string& state,
                                const std::string& text,
                                const std::optional<std::string>& device_id) = 0;
+    virtual void UpdateFirmware(ByteVector image,
+                                const std::string& device_id,
+                                std::function<void(FirmwareUpdateProgress)> progress,
+                                std::function<void(bool, std::string)> completion) = 0;
+    virtual void CancelFirmwareUpdate() = 0;
     virtual bool IsConnected(const std::string& device_id) const = 0;
     virtual void CancelPendingConnect(const std::string& device_id) {}
+    virtual void Shutdown() {}
 
     std::function<void(std::vector<ConnectedDevice>)> on_connection_change;
     std::function<void(std::string, std::string)> on_connection_error;
@@ -67,6 +83,7 @@ public:
     virtual void SetStatus(const std::string& status) = 0;
     virtual void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) = 0;
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
+    virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;
     virtual void SetPairingError(const std::string& device_id, const std::string& message) = 0;
     virtual void SetPairedDeviceIds(const std::vector<std::string>& ids) = 0;
     virtual void SetHasRecoverableInput(bool has_recoverable_input) = 0;
@@ -91,8 +108,10 @@ public:
                           std::unique_ptr<AsrClient> asr,
                           VoiceStickUi* ui,
                           InputInjector* input_injector);
+    ~VoiceStickCoordinator();
 
     void Start();
+    void Shutdown();
     void UpdateConfig(AppConfig config);
     void ReconnectPairedDevices();
     void ConnectPairedDevice(const std::string& device_id,
@@ -103,6 +122,11 @@ public:
     void RemovePairedDevice(const std::string& device_id);
     void CancelPendingConnect(const std::string& device_id);
     bool RestoreLastInputConfirmation();
+    void CheckFirmwareUpdatesNow();
+    void UpdateFirmwareFromLatest(const std::string& device_id,
+                                  std::function<void(FirmwareUpdateProgress)> progress,
+                                  std::function<void(bool, std::string)> completion);
+    void CancelFirmwareUpdate();
 
 private:
     enum class PendingPasteKind {
@@ -149,6 +173,10 @@ private:
     void CancelRecognitionInProgress();
     void CancelActiveCycleIfDeviceDisconnected();
     void FinishRecognitionCycle();
+    void UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id);
+    void CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors);
+    void RefreshFirmwareAvailability();
+    void SetFirmwareChecking(bool is_checking);
     bool IsWaitingForFinalText() const;
     void SetSessionState(SessionState state, std::string_view reason);
     void EnterReady(std::string_view reason, bool hide_overlay = true);
@@ -182,8 +210,18 @@ private:
     std::optional<std::string> last_recoverable_text_;
     std::optional<std::string> last_recoverable_device_id_;
     std::vector<std::string> paired_device_ids_;
+    std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id_;
+    std::optional<FirmwareManifest> latest_firmware_manifest_;
+    std::chrono::steady_clock::time_point last_firmware_manifest_check_at_{};
+    bool has_last_firmware_manifest_check_at_ = false;
+    bool firmware_manifest_check_in_flight_ = false;
+    FirmwareManifestClient firmware_manifest_client_;
+    std::mutex firmware_mutex_;
+    std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};
+    std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
+    static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
 };
 
 } // namespace voicestick

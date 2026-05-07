@@ -130,10 +130,56 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     return event;
 }
 
+std::optional<FirmwareOtaStateEvent> BleProtocol::ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data) {
+    if (data.size() < 4 || data[0] != 1 || data[1] != ota_type_state) return std::nullopt;
+    const auto payload_len = ReadLe16(data.subspan(2, 2));
+    if (data.size() < 4u + payload_len) return std::nullopt;
+    const auto json = Utf8FromBytes(data.subspan(4, payload_len));
+    FirmwareOtaStateEvent event;
+    event.event = JsonStringValue(json, "event");
+    if (event.event.empty()) return std::nullopt;
+    event.transfer_id = JsonU32Value(json, "transfer_id");
+    event.written = JsonU32Value(json, "written");
+    event.size = JsonU32Value(json, "size");
+    event.code = JsonStringValue(json, "code");
+    event.reboot_ms = JsonU32Value(json, "reboot_ms");
+    return event;
+}
+
 ByteVector BleProtocol::UiStatePayload(std::string_view state, std::string_view text) {
     const auto json = std::string("{\"event\":\"ui_state\",\"state\":\"") +
                       JsonEscape(state) + "\",\"text\":\"" + JsonEscape(text) + "\"}";
     return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::OtaBeginPayload(std::uint32_t image_size, std::uint32_t transfer_id) {
+    ByteVector data = {1, ota_type_begin, 12, 0};
+    AppendLe32(data, image_size);
+    AppendLe32(data, transfer_id);
+    return data;
+}
+
+ByteVector BleProtocol::OtaDataPayload(std::uint32_t transfer_id,
+                                       std::uint32_t offset,
+                                       std::span<const std::uint8_t> chunk) {
+    ByteVector data = {1, ota_type_data, 12, 0};
+    AppendLe32(data, transfer_id);
+    AppendLe32(data, offset);
+    data.insert(data.end(), chunk.begin(), chunk.end());
+    return data;
+}
+
+ByteVector BleProtocol::OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size) {
+    ByteVector data = {1, ota_type_end, 12, 0};
+    AppendLe32(data, transfer_id);
+    AppendLe32(data, image_size);
+    return data;
+}
+
+ByteVector BleProtocol::OtaAbortPayload(std::uint32_t transfer_id) {
+    ByteVector data = {1, ota_type_abort, 8, 0};
+    AppendLe32(data, transfer_id);
+    return data;
 }
 
 std::optional<std::string> BleProtocol::DeviceIdFromName(std::string_view name) {

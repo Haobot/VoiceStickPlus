@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_config.h"
+#include "firmware_update_dialog.h"
 #include "input_injector_win.h"
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
@@ -9,7 +10,6 @@
 
 #include <Windows.h>
 
-#include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
@@ -26,6 +26,7 @@ public:
     void SetStatus(const std::string& status) override;
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) override;
     void SetDeviceInfo(const DeviceInfo& info) override;
+    void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
     void SetPairingError(const std::string& device_id, const std::string& message) override;
     void SetPairedDeviceIds(const std::vector<std::string>& ids) override;
     void SetHasRecoverableInput(bool has_recoverable_input) override;
@@ -47,13 +48,14 @@ private:
     void RegisterTaskbarMessage();
     void ShowPairDeviceDialog();
     void ShowSettings();
+    void StartFirmwareUpdate(const std::string& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);
     void HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info);
     void ShowNotification(const std::string& title, const std::string& body);
-    void OpenPath(const std::filesystem::path& path);
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
+    void ShutdownAndQuit();
 
     HINSTANCE instance_;
     HWND hwnd_ = nullptr;
@@ -64,14 +66,17 @@ private:
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
+    std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;
     class BleCentralWin* ble_central_ = nullptr;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;
     std::vector<std::string> paired_device_ids_;
     std::map<std::string, DeviceInfo> device_info_map_;
+    std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     bool has_recoverable_input_ = false;
+    bool is_shutting_down_ = false;
 };
 
 } // namespace voicestick

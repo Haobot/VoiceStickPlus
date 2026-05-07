@@ -40,21 +40,34 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          curl -fsSL "https://78.github.io/voicestick/appcast.xml" \
+            -o website/public/appcast.xml || true
           tag="$(gh release view --json tagName -q .tagName)"
           version="${tag#v}"
           zip_asset="VoiceStick-${version}.zip"
           sig_asset="VoiceStick-${version}.signature"
           zip_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${zip_asset}\") | .size")"
+          msi_asset="VoiceStick_${version}.msi"
+          msi_length="$(gh release view "$tag" --json assets \
+            -q ".assets[] | select(.name == \"${msi_asset}\") | .size" || true)"
           gh release download "$tag" --pattern "$sig_asset" --dir "$RUNNER_TEMP"
           signature="$(cat "$RUNNER_TEMP/$sig_asset" | tr -d '\n')"
           notes="$(gh release view "$tag" --json body -q .body)"
-          python3 scripts/update-appcast.py \
+          args=(
             --version "$version" \
             --zip-url "https://github.com/78/voicestick/releases/download/${tag}/${zip_asset}" \
             --signature "$signature" \
             --length "$zip_length" \
             --release-notes "$notes"
+          )
+          if [ -n "${msi_length:-}" ]; then
+            args+=(
+              --msi-url "https://github.com/78/voicestick/releases/download/${tag}/${msi_asset}" \
+              --msi-length "$msi_length" \
+            )
+          fi
+          python3 scripts/update-appcast.py "${args[@]}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

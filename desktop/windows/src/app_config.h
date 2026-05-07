@@ -23,6 +23,8 @@ struct PairedDeviceEntry {
     std::uint64_t bluetooth_address = 0;
     BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
     std::string name;
+    std::string hardware;
+    std::string firmware_version;
 };
 
 struct AppConfig {
@@ -46,6 +48,9 @@ struct AppConfig {
 
     void Save() const;
     void SavePairedDevice(const PairedDeviceEntry& entry);
+    void SavePairedDeviceInfo(const std::string& device_id,
+                              const std::string& hardware,
+                              const std::string& firmware_version);
     void RemovePairedDevice(const std::string& device_id);
     std::string ActiveApiKey() const;
     std::string ActiveWebsocketUrl() const;

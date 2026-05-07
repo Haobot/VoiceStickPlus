@@ -117,7 +117,7 @@ namespace {
 
 PairedDeviceEntry ParsePairedDeviceEntry(std::string_view line) {
     PairedDeviceEntry entry;
-    // Format: device_id,bluetooth_address_hex,address_kind,name
+    // Format: device_id,bluetooth_address_hex,address_kind,name[,hardware,firmware_version]
     std::size_t start = 0;
     auto next_field = [&]() -> std::string {
         if (start > line.size()) return {};
@@ -137,6 +137,8 @@ PairedDeviceEntry ParsePairedDeviceEntry(std::string_view line) {
     if (kind_str == "1") entry.address_kind = BluetoothAddressKind::kPublic;
     else if (kind_str == "2") entry.address_kind = BluetoothAddressKind::kRandom;
     entry.name = next_field();
+    entry.hardware = next_field();
+    entry.firmware_version = next_field();
     return entry;
 }
 
@@ -144,7 +146,8 @@ std::string FormatPairedDeviceEntry(const PairedDeviceEntry& entry) {
     char addr_buf[17]{};
     snprintf(addr_buf, sizeof(addr_buf), "%012llX", static_cast<unsigned long long>(entry.bluetooth_address));
     return entry.device_id + "," + addr_buf + "," +
-           std::to_string(static_cast<int>(entry.address_kind)) + "," + entry.name;
+           std::to_string(static_cast<int>(entry.address_kind)) + "," + entry.name + "," +
+           entry.hardware + "," + entry.firmware_version;
 }
 
 } // namespace
@@ -229,6 +232,31 @@ void AppConfig::SavePairedDevice(const PairedDeviceEntry& entry) {
     }
     if (std::find(paired_device_ids.begin(), paired_device_ids.end(), entry.device_id) == paired_device_ids.end()) {
         paired_device_ids.push_back(entry.device_id);
+    }
+    Save();
+}
+
+void AppConfig::SavePairedDeviceInfo(const std::string& device_id,
+                                     const std::string& hardware,
+                                     const std::string& firmware_version) {
+    bool found = false;
+    for (auto& existing : paired_devices) {
+        if (existing.device_id == device_id) {
+            if (!hardware.empty()) existing.hardware = hardware;
+            if (!firmware_version.empty()) existing.firmware_version = firmware_version;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        PairedDeviceEntry entry;
+        entry.device_id = device_id;
+        entry.hardware = hardware;
+        entry.firmware_version = firmware_version;
+        paired_devices.push_back(entry);
+    }
+    if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
+        paired_device_ids.push_back(device_id);
     }
     Save();
 }

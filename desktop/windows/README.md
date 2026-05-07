@@ -10,8 +10,9 @@ Current scope:
 - BLE advertisement scanning through C++/WinRT.
 - Core VoiceStick protocol parsing, Ogg Opus muxing, ASR binary framing, and coordinator state machine.
 - Text insertion through clipboard plus `SendInput`.
+- App self-update checks through WinSparkle, using the same appcast feed as the macOS Sparkle updater.
 
-Firmware OTA, app self-update, installer packaging, and full BLE GATT characteristic I/O are intentionally left for follow-up hardware validation work.
+Full BLE GATT characteristic I/O is intentionally left for follow-up hardware validation work.
 
 ## Build
 
@@ -31,8 +32,17 @@ cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary
 Run:
 
 ```powershell
-desktop\windows\build-x64\VoiceStickApp.exe
+desktop\windows\build-x64\VoiceStick.exe
 ```
+
+Build a signed MSI locally:
+
+```powershell
+$env:SIGNING_SHA1 = "YOUR_CERT_THUMBPRINT"
+scripts\build-msi.bat
+```
+
+Upload `desktop\windows\build-msi-x64\VoiceStick_<version>.msi` to the matching GitHub Release, then manually run the `Deploy Website to GitHub Pages` workflow. The MSI is the WinSparkle update package; the appcast entry records the GitHub Release MSI URL, byte length, version, Windows OS marker, and `/passive` installer argument.
 
 If an older `desktop\windows\build` directory was configured from the wrong Visual Studio environment, delete it or ignore it. Mixing an x86 CMake cache with x64 SDK libraries causes link errors.
 

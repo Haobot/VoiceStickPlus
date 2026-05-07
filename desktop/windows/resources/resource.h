@@ -1,0 +1,4 @@
+#pragma once
+
+#define IDI_VOICESTICK_APP 101
+#define IDI_VOICESTICK_TRAY 102
