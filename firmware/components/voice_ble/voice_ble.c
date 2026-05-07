@@ -14,6 +14,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "nvs_flash.h"
 
 #include "host/ble_att.h"
@@ -43,6 +44,15 @@ static char s_device_name[8] = VOICE_BLE_DEVICE_NAME_PREFIX "-0000";
 static voice_ble_connection_cb_t s_connection_cb;
 static voice_ble_control_cb_t s_control_cb;
 static voice_ble_ota_cb_t s_ota_cb;
+
+typedef enum {
+    CONN_ITVL_NONE,
+    CONN_ITVL_FAST,
+    CONN_ITVL_SLOW,
+} conn_itvl_target_t;
+
+static conn_itvl_target_t s_itvl_target;
+static bool s_itvl_update_pending;
 
 typedef struct {
     bool active;
@@ -77,6 +87,17 @@ static const ble_uuid128_t s_ota_state_uuid =
 
 static void start_advertising(void);
 static void stop_advertising(void);
+static TimerHandle_t s_adv_retry_timer;
+#define ADV_RETRY_DELAY_MS 1000
+
+static void adv_retry_timer_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    if (!s_connected && !ble_gap_adv_active()) {
+        ESP_LOGI(TAG, "retrying advertising after earlier failure");
+        start_advertising();
+    }
+}
 
 static uint16_t read_le16(const uint8_t *data)
 {
@@ -477,6 +498,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         s_audio_subscribed = false;
         s_state_subscribed = false;
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        s_itvl_target = CONN_ITVL_NONE;
+        s_itvl_update_pending = false;
         start_advertising();
         if (s_connection_cb) {
             s_connection_cb(false);
@@ -506,6 +529,28 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             }
         }
         return 0;
+
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc desc;
+        int find_rc = ble_gap_conn_find(event->conn_update.conn_handle, &desc);
+        if (find_rc == 0) {
+            ESP_LOGI(TAG, "conn updated: status=%d interval=%u latency=%u timeout=%u",
+                     event->conn_update.status,
+                     desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+        } else {
+            ESP_LOGI(TAG, "conn updated: status=%d (desc unavailable)",
+                     event->conn_update.status);
+        }
+        if (s_itvl_update_pending) {
+            s_itvl_update_pending = false;
+            if (s_itvl_target == CONN_ITVL_FAST) {
+                voice_ble_request_fast_interval();
+            } else if (s_itvl_target == CONN_ITVL_SLOW) {
+                voice_ble_request_slow_interval();
+            }
+        }
+        return 0;
+    }
 
     case BLE_GAP_EVENT_MTU:
         ESP_LOGD(TAG, "mtu=%u", event->mtu.value);
@@ -561,7 +606,11 @@ static void start_advertising(void)
 
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event_cb, NULL);
     if (rc != 0) {
-        ESP_LOGE(TAG, "start advertising failed rc=%d", rc);
+        ESP_LOGW(TAG, "start advertising failed rc=%d, will retry in %d ms",
+                 rc, ADV_RETRY_DELAY_MS);
+        if (s_adv_retry_timer) {
+            xTimerStart(s_adv_retry_timer, 0);
+        }
         return;
     }
 
@@ -636,6 +685,9 @@ esp_err_t voice_ble_init(void)
 
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sync_cb = on_sync;
+    ble_hs_cfg.sm_bonding = 0;
+    ble_hs_cfg.sm_our_key_dist = 0;
+    ble_hs_cfg.sm_their_key_dist = 0;
 
     int rc = ble_svc_gap_device_name_set(s_device_name);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "set device name failed rc=%d", rc);
@@ -644,6 +696,9 @@ esp_err_t voice_ble_init(void)
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "count gatt failed rc=%d", rc);
     rc = ble_gatts_add_svcs(s_gatt_services);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "add gatt failed rc=%d", rc);
+
+    s_adv_retry_timer = xTimerCreate("adv_retry", pdMS_TO_TICKS(ADV_RETRY_DELAY_MS),
+                                      pdFALSE, NULL, adv_retry_timer_cb);
 
     nimble_port_freertos_init(nimble_host_task);
     ESP_LOGI(TAG, "BLE initialized as %s", s_device_name);
@@ -700,9 +755,6 @@ esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
         return ESP_ERR_INVALID_SIZE;
     }
 
-    ESP_LOGD(TAG, "audio session=%" PRIu32 " seq=%" PRIu32 " flags=0x%02x len=%u",
-             session_id, seq, flags, (unsigned)len);
-
     uint8_t header[16] = {
         1,
         0x01,
@@ -724,6 +776,7 @@ esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
 
     struct os_mbuf *om = ble_hs_mbuf_from_flat(header, sizeof(header));
     if (!om) {
+        ESP_LOGW(TAG, "tx seq=%" PRIu32 " mbuf alloc failed", seq);
         return ESP_ERR_NO_MEM;
     }
 
@@ -731,15 +784,77 @@ esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
         int rc = os_mbuf_append(om, opus_payload, len);
         if (rc != 0) {
             os_mbuf_free_chain(om);
+            ESP_LOGW(TAG, "tx seq=%" PRIu32 " mbuf append failed rc=%d", seq, rc);
             return ESP_FAIL;
         }
     }
 
     int rc = ble_gatts_notify_custom(s_conn_handle, s_audio_attr_handle, om);
     if (rc != 0) {
+        ESP_LOGW(TAG, "tx seq=%" PRIu32 " notify failed rc=%d", seq, rc);
         return ESP_FAIL;
     }
 
+    ESP_LOGI(TAG, "tx seq=%" PRIu32 " %u bytes, sram: %" PRIu32 " bytes",
+             seq, (unsigned)(sizeof(header) + len), esp_get_free_internal_heap_size());
+    return ESP_OK;
+}
+
+esp_err_t voice_ble_request_fast_interval(void)
+{
+    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_itvl_target = CONN_ITVL_FAST;
+    struct ble_gap_upd_params params = {
+        .itvl_min = 12,   // 15ms
+        .itvl_max = 24,   // 30ms
+        .latency = 0,
+        .supervision_timeout = 200,  // 2s
+        .min_ce_len = 0,
+        .max_ce_len = 0,
+    };
+    int rc = ble_gap_update_params(s_conn_handle, &params);
+    if (rc == BLE_HS_EALREADY) {
+        s_itvl_update_pending = true;
+        ESP_LOGD(TAG, "fast interval deferred (update in progress)");
+        return ESP_OK;
+    }
+    if (rc != 0) {
+        ESP_LOGW(TAG, "fast interval request failed rc=%d", rc);
+        return ESP_FAIL;
+    }
+    s_itvl_update_pending = false;
+    ESP_LOGI(TAG, "requested fast conn interval 15-30ms");
+    return ESP_OK;
+}
+
+esp_err_t voice_ble_request_slow_interval(void)
+{
+    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_itvl_target = CONN_ITVL_SLOW;
+    struct ble_gap_upd_params params = {
+        .itvl_min = 40,   // 50ms
+        .itvl_max = 160,  // 200ms
+        .latency = 4,
+        .supervision_timeout = 500,  // 5s
+        .min_ce_len = 0,
+        .max_ce_len = 0,
+    };
+    int rc = ble_gap_update_params(s_conn_handle, &params);
+    if (rc == BLE_HS_EALREADY) {
+        s_itvl_update_pending = true;
+        ESP_LOGD(TAG, "slow interval deferred (update in progress)");
+        return ESP_OK;
+    }
+    if (rc != 0) {
+        ESP_LOGW(TAG, "slow interval request failed rc=%d", rc);
+        return ESP_FAIL;
+    }
+    s_itvl_update_pending = false;
+    ESP_LOGI(TAG, "requested slow conn interval 50-200ms");
     return ESP_OK;
 }
 

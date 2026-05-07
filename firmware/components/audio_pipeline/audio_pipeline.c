@@ -10,6 +10,7 @@
 #include "esp_codec_dev_defaults.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "hal/i2s_types.h"
 #include "opus.h"
@@ -23,18 +24,31 @@ static const char *TAG = "audio_pipeline";
 #define AUDIO_CHANNELS 1
 #define AUDIO_FRAME_MS 60
 #define AUDIO_FRAME_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)
-#define AUDIO_STEREO_SAMPLES (AUDIO_FRAME_SAMPLES * 2)
-#define OPUS_BITRATE 16000
+#define OPUS_BITRATE 20000
 #define OPUS_MAX_PACKET_SIZE 220
-#define OPUS_COMPLEXITY 4
+#define OPUS_COMPLEXITY 1
+
+#define TX_QUEUE_DEPTH 50
+#define TX_RETRY_DELAY_MS 30
+#define TX_MAX_RETRIES 50
+#define TX_DRAIN_TIMEOUT_MS 500
+
+typedef struct {
+    uint32_t session_id;
+    uint32_t seq;
+    uint8_t  flags;
+    uint16_t len;
+    uint8_t  data[OPUS_MAX_PACKET_SIZE];
+} audio_packet_t;
 
 static atomic_bool s_running;
 static bool s_initialized;
 static uint32_t s_session_id;
 static uint32_t s_seq;
 static TaskHandle_t s_audio_task;
+static TaskHandle_t s_tx_task;
+static QueueHandle_t s_tx_queue;
 static i2s_chan_handle_t s_rx_handle;
-static i2s_chan_handle_t s_tx_handle;
 static esp_codec_dev_handle_t s_codec;
 static OpusEncoder *s_opus_encoder;
 
@@ -142,7 +156,7 @@ static esp_err_t init_opus(void)
                                          OPUS_APPLICATION_VOIP, &error);
     ESP_RETURN_ON_FALSE(s_opus_encoder != NULL && error == OPUS_OK,
                         ESP_FAIL, TAG, "create opus encoder error=%d", error);
-    opus_encoder_ctl(s_opus_encoder, OPUS_SET_VBR(1));
+    opus_encoder_ctl(s_opus_encoder, OPUS_SET_VBR(0));
     opus_encoder_ctl(s_opus_encoder, OPUS_SET_BITRATE(OPUS_BITRATE));
     opus_encoder_ctl(s_opus_encoder, OPUS_SET_DTX(0));
     opus_encoder_ctl(s_opus_encoder, OPUS_SET_COMPLEXITY(OPUS_COMPLEXITY));
@@ -154,8 +168,9 @@ static void audio_task(void *arg)
 {
     (void)arg;
     int16_t mono[AUDIO_FRAME_SAMPLES];
-    uint8_t opus_packet[OPUS_MAX_PACKET_SIZE];
-    uint32_t sent = 0;
+    uint8_t opus_buf[OPUS_MAX_PACKET_SIZE];
+    uint32_t enqueued = 0;
+    uint32_t dropped = 0;
 
     while (atomic_load(&s_running)) {
         esp_err_t err = esp_codec_dev_read(s_codec, mono, sizeof(mono));
@@ -164,41 +179,124 @@ static void audio_task(void *arg)
             continue;
         }
 
-        int32_t peak = 0;
-        for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
-            int32_t sample = mono[i];
-            if (sample < 0) {
-                sample = -sample;
-            }
-            if (sample > peak) {
-                peak = sample;
-            }
-        }
-
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
-                                         opus_packet, sizeof(opus_packet));
+                                         opus_buf, sizeof(opus_buf));
         if (encoded < 0) {
             ESP_LOGE(TAG, "opus encode failed: %d", (int)encoded);
             continue;
         }
 
-        uint8_t flags = s_seq == 0 ? 0x01 : 0x00;
-        err = voice_ble_send_audio(s_session_id, s_seq++, flags, opus_packet, encoded);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "send audio failed: %s", esp_err_to_name(err));
-            continue;
-        }
+        audio_packet_t pkt = {
+            .session_id = s_session_id,
+            .seq = s_seq,
+            .flags = (s_seq == 0) ? VOICE_BLE_FLAG_START : 0x00,
+            .len = (uint16_t)encoded,
+        };
+        memcpy(pkt.data, opus_buf, encoded);
 
-        sent++;
-        if ((sent % 20) == 1) {
-            ESP_LOGD(TAG, "audio frame seq=%" PRIu32 " opus=%d bytes=%u peak=%" PRId32,
-                     s_seq - 1, (int)encoded, (unsigned)sizeof(mono), peak);
+        if (xQueueSend(s_tx_queue, &pkt, 0) == pdTRUE) {
+            s_seq++;
+            enqueued++;
+        } else {
+            /* Queue full: drop oldest packet to make room */
+            audio_packet_t discard;
+            xQueueReceive(s_tx_queue, &discard, 0);
+            xQueueSend(s_tx_queue, &pkt, 0);
+            s_seq++;
+            enqueued++;
+            dropped++;
+            if (dropped == 1 || (dropped % 20) == 0) {
+                ESP_LOGW(TAG, "tx queue overflow, dropped oldest (total=%" PRIu32 ")", dropped);
+            }
         }
     }
 
-    ESP_LOGI(TAG, "audio task exit");
+    ESP_LOGI(TAG, "audio task exit: enqueued=%" PRIu32 " overflow_drops=%" PRIu32,
+             enqueued, dropped);
     s_audio_task = NULL;
     vTaskDelete(NULL);
+}
+
+static void tx_task(void *arg)
+{
+    (void)arg;
+    audio_packet_t pkt;
+    uint32_t sent = 0;
+    uint32_t tx_dropped = 0;
+
+    while (true) {
+        if (xQueueReceive(s_tx_queue, &pkt, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        /* Sentinel: END flag with no payload signals drain mode */
+        if (pkt.flags == VOICE_BLE_FLAG_END && pkt.len == 0) {
+            goto drain;
+        }
+
+        int retries = 0;
+        while (true) {
+            esp_err_t err = voice_ble_send_audio(pkt.session_id, pkt.seq,
+                                                 pkt.flags, pkt.data, pkt.len);
+            if (err == ESP_OK) {
+                sent++;
+                break;
+            }
+            retries++;
+            if (retries >= TX_MAX_RETRIES) {
+                tx_dropped++;
+                if (tx_dropped == 1 || (tx_dropped % 20) == 0) {
+                    ESP_LOGW(TAG, "tx failed after %d retries seq=%" PRIu32
+                             " (total_dropped=%" PRIu32 ")",
+                             TX_MAX_RETRIES, pkt.seq, tx_dropped);
+                }
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(TX_RETRY_DELAY_MS));
+        }
+    }
+
+drain:
+    {
+        TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(TX_DRAIN_TIMEOUT_MS);
+        while (xQueueReceive(s_tx_queue, &pkt, 0) == pdTRUE) {
+            if (pkt.flags == VOICE_BLE_FLAG_END && pkt.len == 0) {
+                break;
+            }
+            if (xTaskGetTickCount() >= deadline) {
+                UBaseType_t remaining = uxQueueMessagesWaiting(s_tx_queue);
+                if (remaining > 0) {
+                    ESP_LOGW(TAG, "drain timeout, discarding %u packets",
+                             (unsigned)remaining);
+                }
+                xQueueReset(s_tx_queue);
+                break;
+            }
+            int retries = 0;
+            while (true) {
+                esp_err_t err = voice_ble_send_audio(pkt.session_id, pkt.seq,
+                                                     pkt.flags, pkt.data, pkt.len);
+                if (err == ESP_OK) {
+                    sent++;
+                    break;
+                }
+                retries++;
+                if (retries >= TX_MAX_RETRIES || xTaskGetTickCount() >= deadline) {
+                    tx_dropped++;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(TX_RETRY_DELAY_MS));
+            }
+        }
+
+        /* Send the END marker over BLE */
+        voice_ble_send_audio(s_session_id, s_seq, VOICE_BLE_FLAG_END, NULL, 0);
+        voice_ble_request_slow_interval();
+
+        ESP_LOGI(TAG, "tx task exit: sent=%" PRIu32 " dropped=%" PRIu32, sent, tx_dropped);
+        s_tx_task = NULL;
+        vTaskDelete(NULL);
+    }
 }
 
 esp_err_t audio_pipeline_init(void)
@@ -211,8 +309,11 @@ esp_err_t audio_pipeline_init(void)
     ESP_RETURN_ON_ERROR(init_codec(), TAG, "codec init");
     ESP_RETURN_ON_ERROR(init_opus(), TAG, "opus init");
 
+    s_tx_queue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(audio_packet_t));
+    ESP_RETURN_ON_FALSE(s_tx_queue != NULL, ESP_ERR_NO_MEM, TAG, "create tx queue");
+
     s_initialized = true;
-    ESP_LOGI(TAG, "audio pipeline ready: es8311 -> opus -> ble");
+    ESP_LOGI(TAG, "audio pipeline ready: es8311 -> opus -> queue -> ble");
     return ESP_OK;
 }
 
@@ -223,17 +324,31 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         return ESP_OK;
     }
 
+    voice_ble_request_fast_interval();
+
+    xQueueReset(s_tx_queue);
     s_session_id = session_id;
     s_seq = 0;
     opus_encoder_ctl(s_opus_encoder, OPUS_RESET_STATE);
     atomic_store(&s_running, true);
     ESP_LOGI(TAG, "start session %" PRIu32, session_id);
 
-    BaseType_t ok = xTaskCreatePinnedToCore(audio_task, "audio_pipeline", 32768,
-                                            NULL, 5, &s_audio_task, 1);
+    BaseType_t ok = xTaskCreatePinnedToCore(tx_task, "audio_tx", 4096,
+                                            NULL, 6, &s_tx_task, 0);
+    if (ok != pdPASS) {
+        atomic_store(&s_running, false);
+        s_tx_task = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    ok = xTaskCreatePinnedToCore(audio_task, "audio_pipeline", 32768,
+                                 NULL, 5, &s_audio_task, 1);
     if (ok != pdPASS) {
         atomic_store(&s_running, false);
         s_audio_task = NULL;
+        /* Signal tx_task to exit */
+        audio_packet_t sentinel = { .flags = VOICE_BLE_FLAG_END, .len = 0 };
+        xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -246,7 +361,15 @@ esp_err_t audio_pipeline_stop(void)
     }
     atomic_store(&s_running, false);
     ESP_LOGI(TAG, "stop session %" PRIu32, s_session_id);
-    voice_ble_send_audio(s_session_id, s_seq++, 0x02, NULL, 0);
+
+    /* Send sentinel to trigger tx_task drain and exit */
+    audio_packet_t sentinel = {
+        .session_id = s_session_id,
+        .seq = s_seq,
+        .flags = VOICE_BLE_FLAG_END,
+        .len = 0,
+    };
+    xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
     return ESP_OK;
 }
 

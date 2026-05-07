@@ -42,6 +42,8 @@ bool voice_ble_is_ready(void);
 bool voice_ble_ota_is_active(void);
 esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
                                const uint8_t *opus_payload, size_t len);
+esp_err_t voice_ble_request_fast_interval(void);
+esp_err_t voice_ble_request_slow_interval(void);
 esp_err_t voice_ble_send_device_info(void);
 esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id);
 esp_err_t voice_ble_send_button_up(const char *button, uint32_t duration_ms,

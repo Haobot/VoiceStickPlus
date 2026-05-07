@@ -501,6 +501,7 @@ static void app_event_task(void *arg)
 
         switch (event.type) {
         case APP_EVENT_FRONT_DOWN:
+            ESP_LOGI(TAG, "button front down");
             note_activity();
             s_primary_down_us = esp_timer_get_time();
             s_primary_session_id = start_recording();
@@ -513,6 +514,7 @@ static void app_event_task(void *arg)
             }
             break;
         case APP_EVENT_FRONT_UP:
+            ESP_LOGI(TAG, "button front up");
             note_activity();
             const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
             if (s_recording) {
@@ -531,11 +533,13 @@ static void app_event_task(void *arg)
             s_primary_session_id = 0;
             break;
         case APP_EVENT_SIDE_DOWN:
+            ESP_LOGI(TAG, "button side down");
             note_activity();
             s_secondary_down_us = esp_timer_get_time();
             voice_ble_send_button_down("secondary", 0);
             break;
         case APP_EVENT_SIDE_UP:
+            ESP_LOGI(TAG, "button side up");
             note_activity();
             voice_ble_send_button_up("secondary", elapsed_button_ms(s_secondary_down_us), 0);
             s_secondary_down_us = 0;
