@@ -154,6 +154,7 @@ static void ota_send_error(const char *code, esp_err_t err)
     if (s_ota_cb) {
         s_ota_cb(VOICE_BLE_OTA_EVENT_ERROR, s_ota.written, s_ota.image_size);
     }
+    voice_ble_request_slow_interval();
 }
 
 static int ota_begin(uint32_t transfer_id, uint32_t image_size)
@@ -187,6 +188,8 @@ static int ota_begin(uint32_t transfer_id, uint32_t image_size)
     s_ota.next_progress = OTA_PROGRESS_NOTIFY_BYTES;
     s_ota.handle = handle;
     s_ota.partition = partition;
+
+    voice_ble_request_fast_interval();
 
     char json[160];
     snprintf(json, sizeof(json),
@@ -223,6 +226,8 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
     }
 
     s_ota.written += payload_len;
+    ESP_LOGD(TAG, "OTA write offset=%" PRIu32 " len=%u total=%" PRIu32 "/%" PRIu32,
+             offset, payload_len, s_ota.written, s_ota.image_size);
     if (s_ota.written >= s_ota.next_progress || s_ota.written == s_ota.image_size) {
         char json[128];
         snprintf(json, sizeof(json),
@@ -233,6 +238,9 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
         if (s_ota_cb) {
             s_ota_cb(VOICE_BLE_OTA_EVENT_PROGRESS, s_ota.written, s_ota.image_size);
         }
+        ESP_LOGI(TAG, "OTA progress %" PRIu32 "/%" PRIu32 " (%d%%)",
+                 s_ota.written, s_ota.image_size,
+                 (int)(s_ota.written * 100 / s_ota.image_size));
         while (s_ota.written >= s_ota.next_progress) {
             s_ota.next_progress += OTA_PROGRESS_NOTIFY_BYTES;
         }
@@ -292,6 +300,7 @@ static int ota_abort(uint32_t transfer_id)
     if (s_ota_cb) {
         s_ota_cb(VOICE_BLE_OTA_EVENT_ABORT, 0, 0);
     }
+    voice_ble_request_slow_interval();
     return 0;
 }
 
