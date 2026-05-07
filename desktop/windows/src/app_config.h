@@ -1,0 +1,58 @@
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+namespace voicestick {
+
+enum class AsrProvider {
+    kVoiceStickCloud,
+    kVolcengine,
+};
+
+enum class BluetoothAddressKind : std::uint8_t {
+    kUnspecified = 0,
+    kPublic = 1,
+    kRandom = 2,
+};
+
+struct PairedDeviceEntry {
+    std::string device_id;
+    std::uint64_t bluetooth_address = 0;
+    BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
+    std::string name;
+};
+
+struct AppConfig {
+    AsrProvider asr_provider = AsrProvider::kVolcengine;
+    std::string voicestick_api_key;
+    std::string voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/";
+    std::string volcengine_api_key;
+    std::string resource_id = "volc.seedasr.sauc.duration";
+    std::vector<std::string> paired_device_ids;
+    std::vector<PairedDeviceEntry> paired_devices;
+    bool auto_enter = true;
+    bool debug_audio_cache = false;
+    std::filesystem::path debug_audio_directory;
+
+    static std::filesystem::path ConfigDirectory();
+    static std::filesystem::path ConfigPath();
+    static std::filesystem::path DefaultDebugAudioDirectory();
+    static AppConfig Defaults();
+    static AppConfig Load();
+    static const std::vector<std::string>& SupportedResourceIds();
+
+    void Save() const;
+    void SavePairedDevice(const PairedDeviceEntry& entry);
+    void RemovePairedDevice(const std::string& device_id);
+    std::string ActiveApiKey() const;
+    std::string ActiveWebsocketUrl() const;
+};
+
+std::string AsrProviderName(AsrProvider provider);
+AsrProvider AsrProviderFromName(std::string_view name);
+std::vector<std::string> ParseDeviceIdList(std::string_view text);
+
+} // namespace voicestick
