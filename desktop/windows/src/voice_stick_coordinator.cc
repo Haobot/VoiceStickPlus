@@ -50,15 +50,14 @@ void VoiceStickCoordinator::Start() {
 
 void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     const bool was_recognizing = asr_started_ || active_session_id_.has_value() ||
-                                 (!sent_final_audio_chunk_ && !pending_paste_state_.IsIdle());
+                                 !pending_paste_state_.IsIdle();
     if (was_recognizing) {
         asr_->Cancel();
         active_session_id_.reset();
-        active_device_id_.reset();
         pending_paste_state_ = {};
         debug_audio_recorder_.Discard();
-        ui_->HideOverlay();
         FinishRecognitionCycle();
+        EnterReady("config_update_cancel");
     }
 
     config_ = std::move(config);
@@ -104,10 +103,9 @@ void VoiceStickCoordinator::RemovePairedDevice(const std::string& device_id) {
         asr_->Cancel();
         debug_audio_recorder_.Discard();
         active_session_id_.reset();
-        active_device_id_.reset();
         pending_paste_state_ = {};
         FinishRecognitionCycle();
-        ui_->HideOverlay();
+        EnterReady("forget_active_device");
     }
     LogCoordinatorLine("forget paired device VS-" + device_id);
     ui_->SetPairedDeviceIds(paired_device_ids_);
@@ -159,12 +157,12 @@ void VoiceStickCoordinator::HandleButtonUp(const StateEvent& event, const std::s
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
                                                        const std::string& device_id) {
     if (HandleFrontButtonDuringPendingPaste(device_id)) return;
-    if (active_device_id_.has_value()) {
-        if (*active_device_id_ != device_id) ble_->SendUiState("ready", "", device_id);
+    if (IsWaitingForFinalText()) {
+        RefreshDeviceUiState(device_id);
         return;
     }
-    if (sent_final_audio_chunk_ && asr_started_ && pending_paste_state_.IsIdle() && !pasted_final_text_) {
-        ble_->SendUiState("ready", "", device_id);
+    if (active_device_id_.has_value()) {
+        RefreshDeviceUiState(device_id);
         return;
     }
     if (!session_id.has_value()) return;
@@ -184,6 +182,7 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         is_showing_asr_error_ = false;
         ogg_muxer_.Reset();
         debug_audio_recorder_.Start(device_id, session_id);
+        SetSessionState(SessionState::kRecording, "primary_down");
     }
     ui_->ShowListening();
     SendUiStateForActiveDevice("recording");
@@ -199,7 +198,6 @@ void VoiceStickCoordinator::HandlePrimaryButtonUp(const std::string& device_id) 
     } else if (received_audio_frames_ == 0) {
         FinishWithAsrError("No audio frames from device");
     } else {
-        SendUiStateForActiveDevice("thinking");
         SendFinalOggChunkIfNeeded(duration);
     }
 }
@@ -230,8 +228,7 @@ void VoiceStickCoordinator::HandleAudioFrame(const AudioFrame& frame, const std:
         sent_final_audio_chunk_ = true;
         active_session_id_.reset();
         debug_audio_recorder_.Finish();
-        ui_->SetStatus("Processing");
-        SendUiStateForActiveDevice("thinking");
+        EnterFinalizing("audio_end");
     }
     const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - t0).count();
@@ -254,8 +251,7 @@ void VoiceStickCoordinator::SendFinalOggChunkIfNeeded(double recording_duration_
     debug_audio_recorder_.Finish();
     active_session_id_.reset();
     SendOrBufferOggChunk(final_chunk, true, true);
-    ui_->SetStatus("Processing");
-    SendUiStateForActiveDevice("thinking");
+    EnterFinalizing("final_audio_sent");
 }
 
 void VoiceStickCoordinator::SendOrBufferOggChunk(const ByteVector& chunk, bool is_last, bool can_start_asr) {
@@ -289,10 +285,7 @@ void VoiceStickCoordinator::CancelShortRecording() {
     asr_->Cancel();
     debug_audio_recorder_.Discard();
     FinishRecognitionCycle();
-    ui_->SetStatus("Ready");
-    ui_->HideOverlay();
-    SendUiStateForActiveDevice("ready");
-    active_device_id_.reset();
+    EnterReady("short_recording");
 }
 
 void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
@@ -302,17 +295,14 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
         pending_paste_state_ = {};
         ui_->ShowFinalCountdown("No speech", [this] {
             FinishRecognitionCycle();
-            SendUiStateForActiveDevice("ready");
-            active_device_id_.reset();
+            EnterReady("empty_final_done", false);
         });
         return;
     }
     last_recoverable_text_ = text;
     last_recoverable_device_id_ = active_device_id_;
     ui_->SetHasRecoverableInput(true);
-    pending_paste_state_ = {PendingPasteKind::kWaitingToPaste, text};
-    ui_->ShowFinalCountdown(text, [this, text] { CommitPendingPaste(text); });
-    SendUiStateForActiveDevice("pending_confirmation", text);
+    EnterPendingConfirmation(text, "asr_final");
 }
 
 void VoiceStickCoordinator::FinishWithAsrError(const std::string& message) {
@@ -321,18 +311,13 @@ void VoiceStickCoordinator::FinishWithAsrError(const std::string& message) {
     active_session_id_.reset();
     debug_audio_recorder_.Discard();
     FinishRecognitionCycle();
-    is_showing_asr_error_ = true;
-    SendUiStateForActiveDevice("error", message);
-    ui_->ShowError(message, [this] { RecoverFromAsrError(false); });
+    EnterError(message, "asr_error");
 }
 
 void VoiceStickCoordinator::RecoverFromAsrError(bool hide_overlay) {
     if (!is_showing_asr_error_) return;
     is_showing_asr_error_ = false;
-    if (hide_overlay) ui_->HideOverlay();
-    ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
-    SendUiStateForActiveDevice("ready");
-    active_device_id_.reset();
+    EnterReady("error_recovered", hide_overlay);
 }
 
 void VoiceStickCoordinator::CommitPendingPaste(const std::string& text) {
@@ -343,9 +328,7 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& text) {
     pending_paste_state_ = {};
     FinishRecognitionCycle();
     input_injector_->Paste(text, config_.auto_enter);
-    ui_->SetStatus("Ready");
-    SendUiStateForActiveDevice("ready");
-    active_device_id_.reset();
+    EnterReady("paste_complete", false);
 }
 
 bool VoiceStickCoordinator::RestoreLastInputConfirmation(std::optional<std::string> device_id) {
@@ -353,9 +336,7 @@ bool VoiceStickCoordinator::RestoreLastInputConfirmation(std::optional<std::stri
         return false;
     }
     active_device_id_ = std::move(device_id);
-    pending_paste_state_ = {PendingPasteKind::kPaused, *last_recoverable_text_};
-    ui_->ShowPausedFinal(*last_recoverable_text_);
-    SendUiStateForActiveDevice("pending_confirmation", *last_recoverable_text_);
+    EnterPausedConfirmation(*last_recoverable_text_, "restore_last_input");
     return true;
 }
 
@@ -363,9 +344,7 @@ bool VoiceStickCoordinator::HandleFrontButtonDuringPendingPaste(const std::strin
     if (pending_paste_state_.IsIdle()) return false;
     if (active_device_id_ != device_id) return true;
     if (pending_paste_state_.kind == PendingPasteKind::kWaitingToPaste) {
-        pending_paste_state_.kind = PendingPasteKind::kPaused;
-        ui_->ShowPausedFinal(pending_paste_state_.text);
-        SendUiStateForActiveDevice("pending_confirmation", pending_paste_state_.text);
+        EnterPausedConfirmation(pending_paste_state_.text, "pause_pending_paste");
         return true;
     }
     ui_->HideOverlay([this, text = pending_paste_state_.text] { CommitPendingPaste(text); });
@@ -374,8 +353,9 @@ bool VoiceStickCoordinator::HandleFrontButtonDuringPendingPaste(const std::strin
 
 void VoiceStickCoordinator::CancelPendingPaste(const std::string& device_id) {
     if (active_session_id_.has_value()) return;
-    if (sent_final_audio_chunk_ && asr_started_ && pending_paste_state_.IsIdle() && !pasted_final_text_) {
+    if (IsWaitingForFinalText()) {
         if (active_device_id_ == device_id) CancelRecognitionInProgress();
+        else RefreshDeviceUiState(device_id);
         return;
     }
     if (pending_paste_state_.IsIdle()) {
@@ -385,10 +365,7 @@ void VoiceStickCoordinator::CancelPendingPaste(const std::string& device_id) {
     if (active_device_id_ != device_id) return;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
-    ui_->HideOverlay();
-    ui_->SetStatus("Ready");
-    SendUiStateForActiveDevice("ready");
-    active_device_id_.reset();
+    EnterReady("cancel_pending_paste");
 }
 
 void VoiceStickCoordinator::CancelRecognitionInProgress() {
@@ -396,10 +373,7 @@ void VoiceStickCoordinator::CancelRecognitionInProgress() {
     asr_->Cancel();
     pending_paste_state_ = {};
     FinishRecognitionCycle();
-    ui_->HideOverlay();
-    ui_->SetStatus("Ready");
-    SendUiStateForActiveDevice("ready");
-    active_device_id_.reset();
+    EnterReady("cancel_recognition");
 }
 
 void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
@@ -407,10 +381,9 @@ void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
         asr_->Cancel();
         pending_paste_state_ = {};
         active_session_id_.reset();
-        active_device_id_.reset();
         debug_audio_recorder_.Discard();
         FinishRecognitionCycle();
-        ui_->HideOverlay();
+        EnterReady("device_disconnected");
     }
 }
 
@@ -419,6 +392,89 @@ void VoiceStickCoordinator::FinishRecognitionCycle() {
     sent_final_audio_chunk_ = false;
     pasted_final_text_ = false;
     buffered_ogg_chunks_.clear();
+}
+
+bool VoiceStickCoordinator::IsWaitingForFinalText() const {
+    return session_state_ == SessionState::kFinalizing;
+}
+
+void VoiceStickCoordinator::SetSessionState(SessionState state, std::string_view reason) {
+    if (session_state_ == state) return;
+    auto state_name = [](SessionState value) {
+        switch (value) {
+        case SessionState::kReady: return "ready";
+        case SessionState::kRecording: return "recording";
+        case SessionState::kFinalizing: return "finalizing";
+        case SessionState::kPendingConfirmation: return "pending_confirmation";
+        case SessionState::kPausedConfirmation: return "paused_confirmation";
+        case SessionState::kError: return "error";
+        }
+        return "unknown";
+    };
+    LogCoordinatorLine("state " + std::string(state_name(session_state_)) +
+                       " -> " + state_name(state) +
+                       (reason.empty() ? std::string() : " reason=" + std::string(reason)));
+    session_state_ = state;
+}
+
+void VoiceStickCoordinator::EnterReady(std::string_view reason, bool hide_overlay) {
+    SetSessionState(SessionState::kReady, reason);
+    ui_->SetStatus("Ready");
+    SendUiStateForActiveDevice("ready");
+    if (hide_overlay) ui_->HideOverlay();
+    active_device_id_.reset();
+}
+
+void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {
+    SetSessionState(SessionState::kFinalizing, reason);
+    ui_->SetStatus("Processing");
+    SendUiStateForActiveDevice("thinking");
+}
+
+void VoiceStickCoordinator::EnterPendingConfirmation(const std::string& text, std::string_view reason) {
+    pending_paste_state_ = {PendingPasteKind::kWaitingToPaste, text};
+    SetSessionState(SessionState::kPendingConfirmation, reason);
+    ui_->ShowFinalCountdown(text, [this, text] { CommitPendingPaste(text); });
+    SendUiStateForActiveDevice("pending_confirmation", text);
+}
+
+void VoiceStickCoordinator::EnterPausedConfirmation(const std::string& text, std::string_view reason) {
+    pending_paste_state_ = {PendingPasteKind::kPaused, text};
+    SetSessionState(SessionState::kPausedConfirmation, reason);
+    ui_->ShowPausedFinal(text);
+    SendUiStateForActiveDevice("pending_confirmation", text);
+}
+
+void VoiceStickCoordinator::EnterError(const std::string& message, std::string_view reason) {
+    is_showing_asr_error_ = true;
+    SetSessionState(SessionState::kError, reason);
+    SendUiStateForActiveDevice("error", message);
+    ui_->ShowError(message, [this] { RecoverFromAsrError(false); });
+}
+
+void VoiceStickCoordinator::RefreshDeviceUiState(const std::string& device_id) {
+    switch (session_state_) {
+    case SessionState::kRecording:
+        ble_->SendUiState(active_device_id_ == device_id ? "recording" : "ready", "", device_id);
+        break;
+    case SessionState::kFinalizing:
+        ble_->SendUiState(active_device_id_ == device_id ? "thinking" : "ready", "", device_id);
+        break;
+    case SessionState::kPendingConfirmation:
+    case SessionState::kPausedConfirmation:
+        if (active_device_id_ == device_id) {
+            ble_->SendUiState("pending_confirmation", pending_paste_state_.text, device_id);
+        } else {
+            ble_->SendUiState("ready", "", device_id);
+        }
+        break;
+    case SessionState::kError:
+        ble_->SendUiState(active_device_id_ == device_id ? "error" : "ready", "", device_id);
+        break;
+    case SessionState::kReady:
+        ble_->SendUiState("ready", "", device_id);
+        break;
+    }
 }
 
 void VoiceStickCoordinator::SendUiStateForActiveDevice(const std::string& state, const std::string& text) {

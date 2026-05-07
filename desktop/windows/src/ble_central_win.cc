@@ -806,8 +806,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             [this, device_id](const GattCharacteristic&, const auto& args) {
                 auto bytes = BytesFromBuffer(args.CharacteristicValue());
                 auto frame = BleProtocol::ParseAudioFrame(bytes);
-                if (frame.has_value() && on_audio_frame) {
-                    on_audio_frame(device_id, *frame);
+                if (frame.has_value()) {
+                    DispatchToUiThread([this, device_id, f = std::move(*frame)]() {
+                        if (on_audio_frame) on_audio_frame(device_id, f);
+                    });
                 }
             });
         session->state_value_changed_token = session->state_characteristic.ValueChanged(

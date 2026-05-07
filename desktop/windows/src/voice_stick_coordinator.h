@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace voicestick {
@@ -110,6 +111,15 @@ private:
         kPaused,
     };
 
+    enum class SessionState {
+        kReady,
+        kRecording,
+        kFinalizing,
+        kPendingConfirmation,
+        kPausedConfirmation,
+        kError,
+    };
+
     struct PendingPasteState {
         PendingPasteKind kind = PendingPasteKind::kIdle;
         std::string text;
@@ -139,6 +149,14 @@ private:
     void CancelRecognitionInProgress();
     void CancelActiveCycleIfDeviceDisconnected();
     void FinishRecognitionCycle();
+    bool IsWaitingForFinalText() const;
+    void SetSessionState(SessionState state, std::string_view reason);
+    void EnterReady(std::string_view reason, bool hide_overlay = true);
+    void EnterFinalizing(std::string_view reason);
+    void EnterPendingConfirmation(const std::string& text, std::string_view reason);
+    void EnterPausedConfirmation(const std::string& text, std::string_view reason);
+    void EnterError(const std::string& message, std::string_view reason);
+    void RefreshDeviceUiState(const std::string& device_id);
     void SendUiStateForActiveDevice(const std::string& state, const std::string& text = "");
     double CurrentRecordingDurationSeconds() const;
 
@@ -150,6 +168,7 @@ private:
     std::mutex audio_mutex_;
     OggOpusMuxer ogg_muxer_{16000, 1};
     DebugAudioRecorder debug_audio_recorder_;
+    SessionState session_state_ = SessionState::kReady;
     std::optional<std::uint32_t> active_session_id_;
     std::optional<std::string> active_device_id_;
     std::chrono::steady_clock::time_point active_session_started_at_;
