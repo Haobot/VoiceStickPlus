@@ -69,6 +69,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var controlCharacteristics: [UUID: CBCharacteristic] = [:]
     private var otaCharacteristics: [UUID: CBCharacteristic] = [:]
     private var firmwareUpdateSession: FirmwareUpdateSession?
+    private var interactionMode: InteractionMode = .holdToTalk
     private var isWorkspaceSleeping = false
 
     var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
@@ -129,6 +130,22 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
     }
 
+    func sendInteractionMode(_ mode: InteractionMode, to peripheralID: UUID? = nil) {
+        interactionMode = mode
+        let data = BleProtocol.interactionModePayload(mode)
+        if let peripheralID {
+            if let characteristic = controlCharacteristics[peripheralID] {
+                peripherals[peripheralID]?.writeValue(data, for: characteristic, type: .withoutResponse)
+            }
+            return
+        }
+
+        for (id, characteristic) in controlCharacteristics {
+            peripherals[id]?.writeValue(data, for: characteristic, type: .withoutResponse)
+        }
+    }
+
+
     func updateFirmware(image: Data, for deviceID: String,
                         progress: @escaping (FirmwareUpdateProgress) -> Void,
                         completion: @escaping (Result<Void, Error>) -> Void) {
@@ -178,6 +195,10 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     func isConnected(_ peripheralID: UUID) -> Bool {
         connectedDevices[peripheralID] != nil
+    }
+
+    func isConnected(deviceID: String) -> Bool {
+        connectedDevices.values.contains { $0.deviceID == deviceID }
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -251,6 +272,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             case BleProtocol.controlUUID:
                 controlCharacteristics[peripheral.identifier] = characteristic
                 sendUIState("ready", to: peripheral.identifier)
+                sendInteractionMode(interactionMode, to: peripheral.identifier)
             case BleProtocol.otaRXUUID:
                 otaCharacteristics[peripheral.identifier] = characteristic
             case BleProtocol.otaStateUUID:

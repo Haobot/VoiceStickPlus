@@ -1,6 +1,7 @@
 #include "app_config.h"
 
 #include "ble_protocol.h"
+#include "toml.hpp"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -9,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 
@@ -79,6 +81,26 @@ std::string TomlEscape(std::string_view value) {
         out.push_back(ch);
     }
     return out;
+}
+
+std::optional<std::string> TomlString(const toml::table& table, std::string_view key) {
+    return table[key].value<std::string>();
+}
+
+std::optional<bool> TomlBool(const toml::table& table, std::string_view key) {
+    return table[key].value<bool>();
+}
+
+std::vector<std::string> TomlStringArray(const toml::table& table, std::string_view key) {
+    std::vector<std::string> values;
+    const auto* array = table[key].as_array();
+    if (!array) return values;
+    for (const auto& node : *array) {
+        if (auto value = node.value<std::string>()) {
+            values.push_back(*value);
+        }
+    }
+    return values;
 }
 
 } // namespace
@@ -152,10 +174,30 @@ std::string FormatPairedDeviceEntry(const PairedDeviceEntry& entry) {
 
 } // namespace
 
-AppConfig AppConfig::Load() {
-    AppConfig config = Defaults();
-    std::ifstream input(ConfigPath());
-    if (!input) return config;
+namespace {
+
+void ApplyConfigValue(AppConfig& config, const std::string& key, const std::string& value) {
+    if (key == "asr_provider") config.asr_provider = AsrProviderFromName(value);
+    if (key == "voicestick_api_key") config.voicestick_api_key = value;
+    if (key == "voicestick_cloud_url") config.voicestick_cloud_url = value;
+    if (key == "volcengine_api_key" || key == "api_key") config.volcengine_api_key = value;
+    if (key == "llm_base_url") config.llm_base_url = value;
+    if (key == "llm_api_key") config.llm_api_key = value;
+    if (key == "llm_model") config.llm_model = value;
+    if (key == "interaction_mode") config.interaction_mode = InteractionModeFromName(value);
+    if (key == "resource_id") config.resource_id = value;
+    if (key == "paired_device_ids") config.paired_device_ids = ParseDeviceIdList(value);
+    if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
+    if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
+    if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
+    if (key == "paired_device") {
+        auto entry = ParsePairedDeviceEntry(value);
+        if (!entry.device_id.empty()) config.paired_devices.push_back(entry);
+    }
+}
+
+AppConfig LoadLegacyConfig(std::istream& input) {
+    AppConfig config = AppConfig::Defaults();
 
     std::string line;
     while (std::getline(input, line)) {
@@ -165,20 +207,46 @@ AppConfig AppConfig::Load() {
         if (equals == std::string::npos) continue;
         const auto key = Trim(line.substr(0, equals));
         const auto value = Unquote(line.substr(equals + 1));
+        ApplyConfigValue(config, key, value);
+    }
+    return config;
+}
 
-        if (key == "asr_provider") config.asr_provider = AsrProviderFromName(value);
-        if (key == "voicestick_api_key") config.voicestick_api_key = value;
-        if (key == "voicestick_cloud_url") config.voicestick_cloud_url = value;
-        if (key == "volcengine_api_key" || key == "api_key") config.volcengine_api_key = value;
-        if (key == "resource_id") config.resource_id = value;
-        if (key == "paired_device_ids") config.paired_device_ids = ParseDeviceIdList(value);
-        if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
-        if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
-        if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
-        if (key == "paired_device") {
+} // namespace
+
+AppConfig AppConfig::Load() {
+    AppConfig config = Defaults();
+    std::ifstream input(ConfigPath());
+    if (!input) return config;
+
+    try {
+        auto table = toml::parse(input, ConfigPath().native());
+
+        if (auto value = TomlString(table, "asr_provider")) config.asr_provider = AsrProviderFromName(*value);
+        if (auto value = TomlString(table, "voicestick_api_key")) config.voicestick_api_key = *value;
+        if (auto value = TomlString(table, "voicestick_cloud_url")) config.voicestick_cloud_url = *value;
+        if (auto value = TomlString(table, "volcengine_api_key")) config.volcengine_api_key = *value;
+        if (auto value = TomlString(table, "api_key")) config.volcengine_api_key = *value;
+        if (auto value = TomlString(table, "llm_base_url")) config.llm_base_url = *value;
+        if (auto value = TomlString(table, "llm_api_key")) config.llm_api_key = *value;
+        if (auto value = TomlString(table, "llm_model")) config.llm_model = *value;
+        if (auto value = TomlString(table, "interaction_mode")) config.interaction_mode = InteractionModeFromName(*value);
+        if (auto value = TomlString(table, "resource_id")) config.resource_id = *value;
+        if (auto value = TomlString(table, "paired_device_ids")) config.paired_device_ids = ParseDeviceIdList(*value);
+        if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
+        if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
+        if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
+            config.debug_audio_directory = std::filesystem::path(*value);
+        }
+        for (const auto& value : TomlStringArray(table, "paired_device")) {
             auto entry = ParsePairedDeviceEntry(value);
             if (!entry.device_id.empty()) config.paired_devices.push_back(entry);
         }
+        return config;
+    } catch (const toml::parse_error&) {
+        input.clear();
+        input.seekg(0);
+        return LoadLegacyConfig(input);
     }
     return config;
 }
@@ -198,13 +266,21 @@ void AppConfig::Save() const {
     output << "voicestick_api_key = \"" << TomlEscape(voicestick_api_key) << "\"\n";
     output << "voicestick_cloud_url = \"" << TomlEscape(voicestick_cloud_url) << "\"\n";
     output << "volcengine_api_key = \"" << TomlEscape(volcengine_api_key) << "\"\n";
+    output << "llm_base_url = \"" << TomlEscape(llm_base_url) << "\"\n";
+    output << "llm_api_key = \"" << TomlEscape(llm_api_key) << "\"\n";
+    output << "llm_model = \"" << TomlEscape(llm_model) << "\"\n";
+    output << "interaction_mode = \"" << InteractionModeName(interaction_mode) << "\"\n";
     output << "resource_id = \"" << TomlEscape(resource_id) << "\"\n";
     output << "paired_device_ids = \"" << paired.str() << "\"\n";
     output << "auto_enter = " << (auto_enter ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
-    for (const auto& entry : paired_devices) {
-        output << "paired_device = \"" << TomlEscape(FormatPairedDeviceEntry(entry)) << "\"\n";
+    if (!paired_devices.empty()) {
+        output << "paired_device = [\n";
+        for (const auto& entry : paired_devices) {
+            output << "  \"" << TomlEscape(FormatPairedDeviceEntry(entry)) << "\",\n";
+        }
+        output << "]\n";
     }
 }
 
@@ -278,6 +354,14 @@ std::string AsrProviderName(AsrProvider provider) {
 
 AsrProvider AsrProviderFromName(std::string_view name) {
     return name == "voicestick_cloud" ? AsrProvider::kVoiceStickCloud : AsrProvider::kVolcengine;
+}
+
+std::string InteractionModeName(InteractionMode mode) {
+    return mode == InteractionMode::kClickToTalk ? "click_to_talk" : "hold_to_talk";
+}
+
+InteractionMode InteractionModeFromName(std::string_view name) {
+    return name == "click_to_talk" ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {

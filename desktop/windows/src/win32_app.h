@@ -52,6 +52,7 @@ private:
     void RegisterTaskbarMessage();
     void ShowPairDeviceDialog();
     void ShowSettings();
+    void SaveInputOptions();
     void StartFirmwareUpdate(const std::string& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);

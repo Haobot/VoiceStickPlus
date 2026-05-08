@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <exception>
 #include <optional>
 
 namespace voicestick {
@@ -23,8 +24,10 @@ constexpr UINT kMenuRestore = 1001;
 constexpr UINT kMenuSettings = 1002;
 constexpr UINT kMenuQuit = 1005;
 constexpr UINT kMenuPairScan = 1006;
-constexpr UINT kMenuCheckFirmwareUpdates = 1007;
 constexpr UINT kMenuCheckAppUpdates = 1008;
+constexpr UINT kMenuHoldToTalk = 1009;
+constexpr UINT kMenuClickToTalk = 1010;
+constexpr UINT kMenuAutoEnter = 1011;
 constexpr UINT kMenuForgetBase = 2100;
 constexpr UINT kMenuForgetEnd = 2199;
 constexpr UINT kMenuUpdateFirmwareBase = 2200;
@@ -300,6 +303,18 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         case kMenuCheckAppUpdates:
             win_sparkle_check_update_with_ui();
             return 0;
+        case kMenuHoldToTalk:
+            config_.interaction_mode = InteractionMode::kHoldToTalk;
+            SaveInputOptions();
+            return 0;
+        case kMenuClickToTalk:
+            config_.interaction_mode = InteractionMode::kClickToTalk;
+            SaveInputOptions();
+            return 0;
+        case kMenuAutoEnter:
+            config_.auto_enter = !config_.auto_enter;
+            SaveInputOptions();
+            return 0;
         case kMenuSettings:
             ShowSettings();
             return 0;
@@ -489,6 +504,21 @@ void Win32App::ShowTrayMenu() {
     }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    HMENU interaction_menu = CreatePopupMenu();
+    AppendMenuW(interaction_menu,
+                MF_STRING | (config_.interaction_mode == InteractionMode::kHoldToTalk ? MF_CHECKED : 0),
+                kMenuHoldToTalk,
+                L"Hold to Talk");
+    AppendMenuW(interaction_menu,
+                MF_STRING | (config_.interaction_mode == InteractionMode::kClickToTalk ? MF_CHECKED : 0),
+                kMenuClickToTalk,
+                L"Click to Talk");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(interaction_menu), L"Interaction");
+    AppendMenuW(menu,
+                MF_STRING | (config_.auto_enter ? MF_CHECKED : 0),
+                kMenuAutoEnter,
+                L"Press Return After Paste");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings...");
     AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates, L"Check for App Updates...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -498,6 +528,17 @@ void Win32App::ShowTrayMenu() {
     SetForegroundWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, point.x, point.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
+}
+
+void Win32App::SaveInputOptions() {
+    try {
+        config_.Save();
+        if (coordinator_) coordinator_->UpdateConfig(config_);
+        LogLine("Input options saved");
+    } catch (const std::exception& error) {
+        LogLine(std::string("Input options save failed: ") + error.what());
+        SetStatus("Input save failed");
+    }
 }
 
 void Win32App::RebuildTooltip() {

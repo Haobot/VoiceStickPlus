@@ -152,6 +152,12 @@ ByteVector BleProtocol::UiStatePayload(std::string_view state, std::string_view 
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::InteractionModePayload(std::string_view mode) {
+    const auto json = std::string("{\"event\":\"interaction_mode\",\"mode\":\"") +
+                      JsonEscape(mode) + "\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::OtaBeginPayload(std::uint32_t image_size, std::uint32_t transfer_id) {
     ByteVector data = {1, ota_type_begin, 12, 0};
     AppendLe32(data, image_size);

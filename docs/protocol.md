@@ -72,7 +72,7 @@ business actions such as "cancel" or "confirm"; the app owns that interpretation
 Currently emitted state events:
 
 ```json
-{"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"ui_states":["ready","recording","thinking","pending_confirmation","error"]}
+{"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"interaction_modes":["hold_to_talk","click_to_talk"],"ui_states":["ready","recording","thinking","pending_confirmation","error"]}
 {"event":"button_down","button":"primary","session_id":1234}
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
 {"event":"button_down","button":"secondary"}
@@ -104,6 +104,8 @@ Current desktop events:
 {"event":"ui_state","state":"thinking","text":"partial text"}
 {"event":"ui_state","state":"pending_confirmation","text":"final text"}
 {"event":"ui_state","state":"error","text":"ASR timeout"}
+{"event":"interaction_mode","mode":"hold_to_talk"}
+{"event":"interaction_mode","mode":"click_to_talk"}
 ```
 
 The desktop helper always includes a `text` field, even for states without text
@@ -112,6 +114,11 @@ showing the recording cat when the primary button starts audio, but the app's
 `ui_state` is the authoritative display state. Current StickS3 firmware does not
 render recognition text on-device because the LVGL font set does not include
 Chinese glyphs; `text` is used only to choose fixed English hints.
+
+`interaction_mode` controls the front-button behavior and idle screen hint.
+`hold_to_talk` starts audio on primary down and stops on primary up.
+`click_to_talk` starts audio on the first primary click and stops on the next
+primary click.
 
 Deprecated app-to-firmware events:
 

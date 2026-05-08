@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace voicestick;
@@ -41,6 +42,10 @@ public:
                      const std::optional<std::string>& device_id) override {
         sent_ui_states.push_back(SentUiState{state, text, device_id});
     }
+    void SendInteractionMode(InteractionMode mode,
+                             const std::optional<std::string>& device_id) override {
+        sent_interaction_modes.push_back(std::pair{mode, device_id});
+    }
     void UpdateFirmware(ByteVector,
                         const std::string&,
                         std::function<void(FirmwareUpdateProgress)>,
@@ -55,6 +60,7 @@ public:
     std::vector<std::string> paired_device_ids;
     std::set<std::string> connected_device_ids;
     std::vector<SentUiState> sent_ui_states;
+    std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
 };
 
 class FakeAsrClient : public AsrClient {

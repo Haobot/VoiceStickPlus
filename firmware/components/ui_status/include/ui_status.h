@@ -10,6 +10,7 @@ void ui_status_prepare_deep_sleep(void);
 void ui_status_set_device_name(const char *device_name);
 void ui_status_set_advertising(void);
 void ui_status_set_pairing(const char *device_name);
+void ui_status_set_idle_hint(const char *hint);
 void ui_status_set_idle(void);
 void ui_status_set_idle_dimmed(bool dimmed);
 void ui_status_set_recording(uint32_t session_id);

@@ -4,7 +4,9 @@ final class SettingsWindowController: NSWindowController {
     private let providerPopup = NSPopUpButton()
     private let apiKeyField = NSTextField()
     private let resourcePopup = NSPopUpButton()
-    private let autoEnterButton = NSButton(checkboxWithTitle: "Press Return after paste", target: nil, action: nil)
+    private let llmBaseURLField = NSTextField()
+    private let llmAPIKeyField = NSTextField()
+    private let llmModelField = NSTextField()
     private let debugAudioButton = NSButton(checkboxWithTitle: "Save debug audio files", target: nil, action: nil)
     private let debugAudioDirectoryField = NSTextField()
     private let statusLabel = NSTextField(labelWithString: "")
@@ -17,7 +19,7 @@ final class SettingsWindowController: NSWindowController {
     init(config: AppConfig = AppConfig.load()) {
         self.config = config
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 460),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -51,9 +53,6 @@ final class SettingsWindowController: NSWindowController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
 
-        stack.addArrangedSubview(sectionTitle("Device"))
-        stack.addArrangedSubview(row(label: "After Paste", control: autoEnterButton))
-
         stack.addArrangedSubview(sectionTitle("ASR"))
         configureProviderPopup()
         stack.addArrangedSubview(row(label: "Provider", control: providerPopup))
@@ -62,6 +61,11 @@ final class SettingsWindowController: NSWindowController {
         let resourceRow = row(label: "Resource ID", control: resourcePopup)
         self.resourceRow = resourceRow
         stack.addArrangedSubview(resourceRow)
+
+        stack.addArrangedSubview(sectionTitle("LLM"))
+        stack.addArrangedSubview(row(label: "Base URL", control: llmBaseURLField))
+        stack.addArrangedSubview(row(label: "API Key", control: llmAPIKeyField))
+        stack.addArrangedSubview(row(label: "Model", control: llmModelField))
 
         stack.addArrangedSubview(sectionTitle("Debug"))
         stack.addArrangedSubview(row(label: "Audio Cache", control: debugAudioButton))
@@ -122,7 +126,9 @@ final class SettingsWindowController: NSWindowController {
         currentDisplayedProvider = config.asrProvider
         providerPopup.selectItem(withTitle: config.asrProvider.displayName)
         apiKeyField.stringValue = apiKey(for: config.asrProvider)
-        autoEnterButton.state = config.autoEnter ? .on : .off
+        llmBaseURLField.stringValue = config.llmBaseURL
+        llmAPIKeyField.stringValue = config.llmAPIKey
+        llmModelField.stringValue = config.llmModel
         debugAudioButton.state = config.debugAudioCache ? .on : .off
         debugAudioDirectoryField.stringValue = config.debugAudioDirectory.path
 
@@ -162,9 +168,13 @@ final class SettingsWindowController: NSWindowController {
             voiceStickAPIKey: config.voiceStickAPIKey,
             voiceStickCloudURL: config.voiceStickCloudURL,
             volcengineAPIKey: config.volcengineAPIKey,
+            llmBaseURL: llmBaseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            llmAPIKey: llmAPIKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            llmModel: llmModelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            interactionMode: config.interactionMode,
             resourceID: resourceID,
             pairedDeviceIDs: config.pairedDeviceIDs,
-            autoEnter: autoEnterButton.state == .on,
+            autoEnter: config.autoEnter,
             debugAudioCache: debugAudioButton.state == .on,
             debugAudioDirectory: URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)
         )

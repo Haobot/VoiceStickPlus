@@ -68,6 +68,7 @@ final class VoiceStickCoordinator {
             self.refreshFirmwareAvailability()
             if !connectedDevices.isEmpty {
                 self.statusController.setStatus("Ready")
+                self.ble.sendInteractionMode(self.config.interactionMode)
             } else {
                 self.statusController.setStatus(self.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
             }
@@ -111,6 +112,7 @@ final class VoiceStickCoordinator {
         }
 
         self.config = config
+        ble.sendInteractionMode(config.interactionMode)
         debugAudioRecorder = DebugAudioRecorder(
             enabled: config.debugAudioCache,
             directory: config.debugAudioDirectory

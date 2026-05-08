@@ -278,7 +278,30 @@ void BleCentralWin::SendUiState(const std::string& state,
     }
 
     for (auto& session : targets) {
-        WriteUiStateAsync(std::move(session), payload);
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::SendInteractionMode(InteractionMode mode,
+                                        const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::InteractionModePayload(InteractionModeName(mode));
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+        }
+    }
+
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
     }
 }
 
@@ -1070,7 +1093,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
     }
 }
 
-winrt::fire_and_forget BleCentralWin::WriteUiStateAsync(std::shared_ptr<DeviceSession> session, ByteVector payload) {
+winrt::fire_and_forget BleCentralWin::WriteControlPayloadAsync(std::shared_ptr<DeviceSession> session, ByteVector payload) {
     try {
         if (!session || !session->ready || !session->control_characteristic) co_return;
         DataWriter writer;

@@ -192,7 +192,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         provider_combo_ = nullptr;
         api_key_edit_ = nullptr;
         resource_combo_ = nullptr;
-        auto_enter_check_ = nullptr;
+        llm_base_url_edit_ = nullptr;
+        llm_api_key_edit_ = nullptr;
+        llm_model_edit_ = nullptr;
         debug_audio_check_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
@@ -250,7 +252,9 @@ void SettingsDialog::DestroyControls() {
     provider_combo_ = nullptr;
     api_key_edit_ = nullptr;
     resource_combo_ = nullptr;
-    auto_enter_check_ = nullptr;
+    llm_base_url_edit_ = nullptr;
+    llm_api_key_edit_ = nullptr;
+    llm_model_edit_ = nullptr;
     debug_audio_check_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
@@ -303,12 +307,23 @@ void SettingsDialog::BuildControls() {
     }
     y += row_h + Dp(16);
 
-    remember_label(CreateLabel(hwnd_, L"Device:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, L"LLM Base URL:", Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
-    auto_enter_check_ = remember(CreateButton(hwnd_, L"Press Enter after paste", ctrl_x, y,
-                                              ctrl_w, Dp(22), kIdAutoEnter, instance_,
-                                              BS_AUTOCHECKBOX));
+    llm_base_url_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
+                                             kIdLlmBaseUrlEdit, instance_));
     y += row_h + Dp(10);
+
+    remember_label(CreateLabel(hwnd_, L"LLM API Key:", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    llm_api_key_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
+                                            kIdLlmApiKeyEdit, instance_, ES_PASSWORD));
+    y += row_h + Dp(10);
+
+    remember_label(CreateLabel(hwnd_, L"LLM Model:", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    llm_model_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
+                                          kIdLlmModelEdit, instance_));
+    y += row_h + Dp(16);
 
     remember_label(CreateLabel(hwnd_, L"Debug:", Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
@@ -351,7 +366,10 @@ void SettingsDialog::LoadConfigIntoControls() {
                                             reinterpret_cast<LPARAM>(resource_wide.c_str())));
     SendMessageW(resource_combo_, CB_SETCURSEL, idx >= 0 ? idx : 0, 0);
 
-    SendMessageW(auto_enter_check_, BM_SETCHECK, config_.auto_enter ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(llm_base_url_edit_, Utf16(config_.llm_base_url).c_str());
+    SetWindowTextW(llm_api_key_edit_, Utf16(config_.llm_api_key).c_str());
+    SetWindowTextW(llm_model_edit_, Utf16(config_.llm_model).c_str());
+
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
@@ -370,6 +388,9 @@ void SettingsDialog::SaveSettings() {
         config_.volcengine_api_key = api_key;
     }
     config_.asr_provider = new_provider;
+    config_.llm_base_url = Utf8(GetWindowText(llm_base_url_edit_));
+    config_.llm_api_key = Utf8(GetWindowText(llm_api_key_edit_));
+    config_.llm_model = Utf8(GetWindowText(llm_model_edit_));
 
     wchar_t resource_buf[256]{};
     int res_idx = static_cast<int>(SendMessageW(resource_combo_, CB_GETCURSEL, 0, 0));
@@ -379,7 +400,6 @@ void SettingsDialog::SaveSettings() {
         config_.resource_id = Utf8(resource_buf);
     }
 
-    config_.auto_enter = SendMessageW(auto_enter_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
     auto dir = GetWindowText(debug_dir_edit_);

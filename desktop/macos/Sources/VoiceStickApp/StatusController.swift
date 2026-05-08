@@ -87,6 +87,8 @@ final class StatusController {
     var onForgetDevice: ((String) -> Void)?
     var onUpdateFirmwareDevice: ((String) -> Void)?
     var onRestoreLastInput: (() -> Bool)?
+    var onSetInteractionMode: ((InteractionMode) -> Void)?
+    var onSetAutoEnter: ((Bool) -> Void)?
     var onCheckForUpdates: (() -> Void)? {
         didSet { rebuildMenu() }
     }
@@ -95,9 +97,15 @@ final class StatusController {
     private var pairedDeviceIDs: [String]
     private var connectedDevices: [ConnectedVoiceStickDevice] = []
     private var firmwareInfoByDeviceID: [String: DeviceFirmwareInfo] = [:]
+    private var interactionMode: InteractionMode
+    private var autoEnter: Bool
 
-    init(pairedDeviceIDs: [String] = []) {
+    init(pairedDeviceIDs: [String] = [],
+         interactionMode: InteractionMode = .holdToTalk,
+         autoEnter: Bool = true) {
         self.pairedDeviceIDs = pairedDeviceIDs
+        self.interactionMode = interactionMode
+        self.autoEnter = autoEnter
         self.needsPairing = pairedDeviceIDs.isEmpty
         updateStatusButton(.ready)
         rebuildMenu()
@@ -128,6 +136,13 @@ final class StatusController {
         rebuildMenu()
     }
 
+    func setInputOptions(interactionMode: InteractionMode, autoEnter: Bool) {
+        guard self.interactionMode != interactionMode || self.autoEnter != autoEnter else { return }
+        self.interactionMode = interactionMode
+        self.autoEnter = autoEnter
+        rebuildMenu()
+    }
+
     private func rebuildMenu() {
         menu.removeAllItems()
         if hasRecoverableInput {
@@ -140,6 +155,8 @@ final class StatusController {
         }
 
         addDeviceItems()
+
+        addInputItems()
 
         menu.addItem(makeMenuItem(
             title: "Pair Device...",
@@ -178,6 +195,44 @@ final class StatusController {
         ))
 
         statusItem.menu = menu
+    }
+
+    private func addInputItems() {
+        let interactionItem = makeMenuItem(
+            title: "Interaction",
+            symbolName: "hand.tap",
+            action: nil
+        )
+        let interactionSubmenu = NSMenu()
+        let holdItem = makeMenuItem(
+            title: InteractionMode.holdToTalk.displayName,
+            symbolName: "hand.tap",
+            action: #selector(selectInteractionMode)
+        )
+        holdItem.representedObject = InteractionMode.holdToTalk.rawValue
+        holdItem.state = interactionMode == .holdToTalk ? .on : .off
+        interactionSubmenu.addItem(holdItem)
+
+        let clickItem = makeMenuItem(
+            title: InteractionMode.clickToTalk.displayName,
+            symbolName: "cursorarrow.click",
+            action: #selector(selectInteractionMode)
+        )
+        clickItem.representedObject = InteractionMode.clickToTalk.rawValue
+        clickItem.state = interactionMode == .clickToTalk ? .on : .off
+        interactionSubmenu.addItem(clickItem)
+
+        interactionItem.submenu = interactionSubmenu
+        menu.addItem(interactionItem)
+
+        let afterPasteItem = makeMenuItem(
+            title: "Press Return After Paste",
+            symbolName: "return",
+            action: #selector(toggleAutoEnter)
+        )
+        afterPasteItem.state = autoEnter ? .on : .off
+        menu.addItem(afterPasteItem)
+        menu.addItem(NSMenuItem.separator())
     }
 
     private func addDeviceItems() {
@@ -351,6 +406,22 @@ final class StatusController {
 
     @objc private func restoreLastInput() {
         _ = onRestoreLastInput?()
+    }
+
+    @objc private func selectInteractionMode(_ sender: NSMenuItem) {
+        guard
+            let rawValue = sender.representedObject as? String,
+            let mode = InteractionMode(rawValue: rawValue)
+        else { return }
+        interactionMode = mode
+        rebuildMenu()
+        onSetInteractionMode?(mode)
+    }
+
+    @objc private func toggleAutoEnter() {
+        autoEnter.toggle()
+        rebuildMenu()
+        onSetAutoEnter?(autoEnter)
     }
 
     @objc private func checkForUpdates() {

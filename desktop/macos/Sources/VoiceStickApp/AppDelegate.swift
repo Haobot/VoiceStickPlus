@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindowController: OnboardingWindowController?
     private var firmwareUpdateWindowController: FirmwareUpdateWindowController?
     private var updaterController: SPUStandardUpdaterController?
+    private var config = AppConfig.defaults
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMainMenu()
@@ -46,7 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startApp(config: AppConfig) {
-        let statusController = StatusController(pairedDeviceIDs: config.pairedDeviceIDs)
+        self.config = config
+        let statusController = StatusController(
+            pairedDeviceIDs: config.pairedDeviceIDs,
+            interactionMode: config.interactionMode,
+            autoEnter: config.autoEnter
+        )
         let coordinator = VoiceStickCoordinator(config: config, statusController: statusController)
 
         self.statusController = statusController
@@ -57,7 +63,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let controller = self?.settingsWindowController ?? SettingsWindowController()
             self?.settingsWindowController = controller
             controller.onConfigChanged = { [weak self] config in
+                self?.config = config
                 self?.statusController?.setPairedDeviceIDs(config.pairedDeviceIDs)
+                self?.statusController?.setInputOptions(
+                    interactionMode: config.interactionMode,
+                    autoEnter: config.autoEnter
+                )
                 self?.coordinator?.updateConfig(config)
             }
             self?.showDockIconWhileWindowVisible(controller)
@@ -83,6 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController.onRestoreLastInput = { [weak self] in
             self?.coordinator?.restoreLastInputConfirmation() ?? false
         }
+        statusController.onSetInteractionMode = { [weak self] mode in
+            self?.updateInputOptions(interactionMode: mode, autoEnter: nil)
+        }
+        statusController.onSetAutoEnter = { [weak self] autoEnter in
+            self?.updateInputOptions(interactionMode: nil, autoEnter: autoEnter)
+        }
         if Self.hasSparklePublicKey {
             let updaterController = SPUStandardUpdaterController(
                 startingUpdater: true,
@@ -96,6 +113,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusController.setStatus(config.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
         coordinator.start()
+    }
+
+    private func updateInputOptions(interactionMode: InteractionMode?, autoEnter: Bool?) {
+        var config = self.config
+        if let interactionMode {
+            config.interactionMode = interactionMode
+        }
+        if let autoEnter {
+            config.autoEnter = autoEnter
+        }
+        do {
+            try config.save()
+            self.config = config
+            statusController?.setInputOptions(
+                interactionMode: config.interactionMode,
+                autoEnter: config.autoEnter
+            )
+            coordinator?.updateConfig(config)
+        } catch {
+            statusController?.setStatus("Input save failed")
+        }
     }
 
     private func showOnboarding() {
@@ -136,6 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             do {
                 try config.save()
+                self?.config = config
                 self?.statusController?.setPairedDeviceIDs(config.pairedDeviceIDs)
                 self?.coordinator?.updatePairedDeviceIDs(config.pairedDeviceIDs)
                 self?.coordinator?.checkFirmwareAfterPairing(deviceID: deviceID)

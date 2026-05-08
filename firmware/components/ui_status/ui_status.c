@@ -68,6 +68,7 @@ static ui_status_icons_t s_icons;
 static ui_status_icon_scene_t s_scene = UI_STATUS_ICON_BOOT;
 static char s_status_text[UI_STATUS_TEXT_MAX] = "Booting";
 static char s_hint_text[UI_HINT_TEXT_MAX] = "Starting up";
+static char s_idle_hint_text[UI_HINT_TEXT_MAX] = "Hold to Talk";
 static char s_device_name[16] = "BLE";
 static bool s_dimmed;
 
@@ -416,10 +417,21 @@ void ui_status_set_pairing(const char *device_name)
     set_scene(UI_STATUS_ICON_PAIRING, "Pairing", device_name ? device_name : "VS-0000");
 }
 
+void ui_status_set_idle_hint(const char *hint)
+{
+    _lock_acquire(&s_lvgl_lock);
+    strlcpy(s_idle_hint_text, hint && hint[0] ? hint : "Hold to Talk", sizeof(s_idle_hint_text));
+    if (s_scene == UI_STATUS_ICON_IDLE) {
+        strlcpy(s_hint_text, s_idle_hint_text, sizeof(s_hint_text));
+        render_current_locked();
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
 void ui_status_set_idle(void)
 {
     ESP_LOGD(TAG, "idle");
-    set_scene(UI_STATUS_ICON_IDLE, "Ready", "Hold to talk");
+    set_scene(UI_STATUS_ICON_IDLE, "Ready", s_idle_hint_text);
 }
 
 void ui_status_set_idle_dimmed(bool dimmed)

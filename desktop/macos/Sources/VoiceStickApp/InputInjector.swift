@@ -8,7 +8,7 @@ final class InputInjector {
         let pasteboard = NSPasteboard.general
         let previousItems = pasteboard.pasteboardItems?.map(PasteboardItemSnapshot.init)
 
-        pasteboard.clearContents()
+        pasteboard.prepareForNewContents(with: .currentHostOnly)
         pasteboard.setString(text, forType: .string)
         let temporaryChangeCount = pasteboard.changeCount
         sendCommandV()
@@ -24,7 +24,7 @@ final class InputInjector {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             guard pasteboard.changeCount == temporaryChangeCount else { return }
 
-            pasteboard.clearContents()
+            pasteboard.prepareForNewContents(with: .currentHostOnly)
             let restoredItems = previousItems?.map(\.pasteboardItem) ?? []
             if !restoredItems.isEmpty {
                 pasteboard.writeObjects(restoredItems)

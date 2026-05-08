@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace voicestick {
@@ -10,6 +11,11 @@ namespace voicestick {
 enum class AsrProvider {
     kVoiceStickCloud,
     kVolcengine,
+};
+
+enum class InteractionMode {
+    kHoldToTalk,
+    kClickToTalk,
 };
 
 enum class BluetoothAddressKind : std::uint8_t {
@@ -34,6 +40,10 @@ struct AppConfig {
     std::string voicestick_api_key;
     std::string voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/";
     std::string volcengine_api_key;
+    std::string llm_base_url = "https://api.openai.com/v1";
+    std::string llm_api_key;
+    std::string llm_model = "gpt-5.5";
+    InteractionMode interaction_mode = InteractionMode::kHoldToTalk;
     std::string resource_id = "volc.seedasr.sauc.duration";
     std::vector<std::string> paired_device_ids;
     std::vector<PairedDeviceEntry> paired_devices;
@@ -60,6 +70,8 @@ struct AppConfig {
 
 std::string AsrProviderName(AsrProvider provider);
 AsrProvider AsrProviderFromName(std::string_view name);
+std::string InteractionModeName(InteractionMode mode);
+InteractionMode InteractionModeFromName(std::string_view name);
 std::vector<std::string> ParseDeviceIdList(std::string_view text);
 
 } // namespace voicestick

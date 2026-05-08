@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import TOMLKit
 
 enum ASRProvider: String {
     case voiceStickCloud = "voicestick_cloud"
@@ -15,11 +16,29 @@ enum ASRProvider: String {
     }
 }
 
+enum InteractionMode: String {
+    case holdToTalk = "hold_to_talk"
+    case clickToTalk = "click_to_talk"
+
+    var displayName: String {
+        switch self {
+        case .holdToTalk:
+            return "Hold to Talk"
+        case .clickToTalk:
+            return "Click to Talk"
+        }
+    }
+}
+
 struct AppConfig {
     var asrProvider: ASRProvider
     var voiceStickAPIKey: String
     var voiceStickCloudURL: String
     var volcengineAPIKey: String
+    var llmBaseURL: String
+    var llmAPIKey: String
+    var llmModel: String
+    var interactionMode: InteractionMode
     var resourceID: String
     var pairedDeviceIDs: [String]
     var autoEnter: Bool
@@ -65,6 +84,10 @@ struct AppConfig {
             voiceStickAPIKey: "",
             voiceStickCloudURL: defaultVoiceStickCloudURL,
             volcengineAPIKey: "",
+            llmBaseURL: "https://api.openai.com/v1",
+            llmAPIKey: "",
+            llmModel: "gpt-5.5",
+            interactionMode: .holdToTalk,
             resourceID: supportedResourceIDs[0],
             pairedDeviceIDs: [],
             autoEnter: true,
@@ -80,6 +103,48 @@ struct AppConfig {
             return defaults
         }
 
+        guard let file = try? TOMLDecoder().decode(ConfigFile.self, from: TOMLTable(string: text)) else {
+            return loadLegacy(text: text, defaults: defaults)
+        }
+
+        return AppConfig(
+            asrProvider: asrProviderValue(file.asr_provider, default: defaults.asrProvider),
+            voiceStickAPIKey: file.voicestick_api_key ?? defaults.voiceStickAPIKey,
+            voiceStickCloudURL: file.voicestick_cloud_url ?? defaults.voiceStickCloudURL,
+            volcengineAPIKey: file.volcengine_api_key ?? file.api_key ?? defaults.volcengineAPIKey,
+            llmBaseURL: file.llm_base_url ?? defaults.llmBaseURL,
+            llmAPIKey: file.llm_api_key ?? defaults.llmAPIKey,
+            llmModel: file.llm_model ?? defaults.llmModel,
+            interactionMode: interactionModeValue(file.interaction_mode, default: defaults.interactionMode),
+            resourceID: resourceIDValue(file.resource_id, default: defaults.resourceID),
+            pairedDeviceIDs: deviceIDList(file.paired_device_ids ?? ""),
+            autoEnter: file.auto_enter ?? defaults.autoEnter,
+            debugAudioCache: file.debug_audio_cache ?? defaults.debugAudioCache,
+            debugAudioDirectory: directoryValue(file.debug_audio_dir, default: defaults.debugAudioDirectory)
+        )
+    }
+
+    func save() throws {
+        try FileManager.default.createDirectory(at: Self.configDirectory, withIntermediateDirectories: true)
+        let text = """
+        asr_provider = "\(asrProvider.rawValue)"
+        voicestick_api_key = "\(voiceStickAPIKey.tomlEscaped)"
+        voicestick_cloud_url = "\(voiceStickCloudURL.tomlEscaped)"
+        volcengine_api_key = "\(volcengineAPIKey.tomlEscaped)"
+        llm_base_url = "\(llmBaseURL.tomlEscaped)"
+        llm_api_key = "\(llmAPIKey.tomlEscaped)"
+        llm_model = "\(llmModel.tomlEscaped)"
+        interaction_mode = "\(interactionMode.rawValue)"
+        resource_id = "\(resourceID.tomlEscaped)"
+        paired_device_ids = "\(pairedDeviceIDs.joined(separator: ",").tomlEscaped)"
+        auto_enter = \(autoEnter.tomlValue)
+        debug_audio_cache = \(debugAudioCache.tomlValue)
+        debug_audio_dir = "\(debugAudioDirectory.path.tomlEscaped)"
+        """
+        try text.write(to: Self.configURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func loadLegacy(text: String, defaults: AppConfig) -> AppConfig {
         var values: [String: String] = [:]
         for rawLine in text.split(separator: "\n") {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -95,28 +160,16 @@ struct AppConfig {
             voiceStickAPIKey: values["voicestick_api_key"] ?? defaults.voiceStickAPIKey,
             voiceStickCloudURL: values["voicestick_cloud_url"] ?? defaults.voiceStickCloudURL,
             volcengineAPIKey: values["volcengine_api_key"] ?? values["api_key"] ?? defaults.volcengineAPIKey,
+            llmBaseURL: values["llm_base_url"] ?? defaults.llmBaseURL,
+            llmAPIKey: values["llm_api_key"] ?? defaults.llmAPIKey,
+            llmModel: values["llm_model"] ?? defaults.llmModel,
+            interactionMode: interactionModeValue(values["interaction_mode"], default: defaults.interactionMode),
             resourceID: resourceIDValue(values["resource_id"], default: defaults.resourceID),
             pairedDeviceIDs: deviceIDList(values["paired_device_ids"] ?? ""),
             autoEnter: boolValue(values["auto_enter"], default: defaults.autoEnter),
             debugAudioCache: boolValue(values["debug_audio_cache"], default: defaults.debugAudioCache),
             debugAudioDirectory: directoryValue(values["debug_audio_dir"], default: defaults.debugAudioDirectory)
         )
-    }
-
-    func save() throws {
-        try FileManager.default.createDirectory(at: Self.configDirectory, withIntermediateDirectories: true)
-        let text = """
-        asr_provider = "\(asrProvider.rawValue)"
-        voicestick_api_key = "\(voiceStickAPIKey.tomlEscaped)"
-        voicestick_cloud_url = "\(voiceStickCloudURL.tomlEscaped)"
-        volcengine_api_key = "\(volcengineAPIKey.tomlEscaped)"
-        resource_id = "\(resourceID.tomlEscaped)"
-        paired_device_ids = "\(pairedDeviceIDs.joined(separator: ",").tomlEscaped)"
-        auto_enter = \(autoEnter.tomlValue)
-        debug_audio_cache = \(debugAudioCache.tomlValue)
-        debug_audio_dir = "\(debugAudioDirectory.path.tomlEscaped)"
-        """
-        try text.write(to: Self.configURL, atomically: true, encoding: .utf8)
     }
 
     static func openConfigDirectory() {
@@ -152,6 +205,11 @@ struct AppConfig {
         return provider
     }
 
+    private static func interactionModeValue(_ text: String?, default defaultValue: InteractionMode) -> InteractionMode {
+        guard let text, let mode = InteractionMode(rawValue: text) else { return defaultValue }
+        return mode
+    }
+
     private static func resourceIDValue(_ text: String?, default defaultValue: String) -> String {
         guard let text, supportedResourceIDs.contains(text) else { return defaultValue }
         return text
@@ -175,6 +233,23 @@ struct AppConfig {
                 }
             }
     }
+}
+
+private struct ConfigFile: Decodable {
+    var asr_provider: String?
+    var voicestick_api_key: String?
+    var voicestick_cloud_url: String?
+    var volcengine_api_key: String?
+    var api_key: String?
+    var llm_base_url: String?
+    var llm_api_key: String?
+    var llm_model: String?
+    var interaction_mode: String?
+    var resource_id: String?
+    var paired_device_ids: String?
+    var auto_enter: Bool?
+    var debug_audio_cache: Bool?
+    var debug_audio_dir: String?
 }
 
 private extension Bool {

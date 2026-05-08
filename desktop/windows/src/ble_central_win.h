@@ -34,6 +34,8 @@ public:
     void SendUiState(const std::string& state,
                        const std::string& text,
                        const std::optional<std::string>& device_id) override;
+    void SendInteractionMode(InteractionMode mode,
+                             const std::optional<std::string>& device_id) override;
     void UpdateFirmware(ByteVector image,
                         const std::string& device_id,
                         std::function<void(FirmwareUpdateProgress)> progress,
@@ -84,7 +86,7 @@ private:
                                               BluetoothAddressKind address_kind,
                                               std::string local_name,
                                               std::string device_id);
-    winrt::fire_and_forget WriteUiStateAsync(std::shared_ptr<DeviceSession> session, ByteVector payload);
+    winrt::fire_and_forget WriteControlPayloadAsync(std::shared_ptr<DeviceSession> session, ByteVector payload);
     winrt::fire_and_forget UpdateFirmwareAsync(std::shared_ptr<DeviceSession> session,
                                                std::shared_ptr<FirmwareUpdateSession> update_session);
     void HandleFirmwareOtaStateEvent(const std::string& device_id, const FirmwareOtaStateEvent& event);

@@ -4,6 +4,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace voicestick {
@@ -54,6 +55,7 @@ public:
     static std::optional<StateEvent> ParseStateEvent(std::span<const std::uint8_t> data);
     static std::optional<FirmwareOtaStateEvent> ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data);
     static ByteVector UiStatePayload(std::string_view state, std::string_view text);
+    static ByteVector InteractionModePayload(std::string_view mode);
     static ByteVector OtaBeginPayload(std::uint32_t image_size, std::uint32_t transfer_id);
     static ByteVector OtaDataPayload(std::uint32_t transfer_id, std::uint32_t offset, std::span<const std::uint8_t> chunk);
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);

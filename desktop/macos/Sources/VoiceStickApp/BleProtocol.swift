@@ -112,6 +112,14 @@ enum BleProtocol {
         return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
     }
 
+    static func interactionModePayload(_ mode: InteractionMode) -> Data {
+        let payload = [
+            "event": "interaction_mode",
+            "mode": mode.rawValue
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
     static func otaBeginPayload(imageSize: UInt32, transferID: UInt32) -> Data {
         var data = Data([1, otaTypeBegin, 12, 0])
         data.appendLittleEndian(imageSize)

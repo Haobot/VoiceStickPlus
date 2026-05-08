@@ -65,6 +65,13 @@ typedef enum {
 static app_ui_state_t s_app_ui_state = APP_UI_STATE_READY;
 
 typedef enum {
+    INTERACTION_MODE_HOLD_TO_TALK,
+    INTERACTION_MODE_CLICK_TO_TALK,
+} interaction_mode_t;
+
+static interaction_mode_t s_interaction_mode = INTERACTION_MODE_HOLD_TO_TALK;
+
+typedef enum {
     APP_EVENT_FRONT_DOWN,
     APP_EVENT_FRONT_UP,
     APP_EVENT_SIDE_DOWN,
@@ -94,6 +101,7 @@ static void update_battery_status(void);
 static void queue_app_event(app_event_type_t type);
 static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, uint32_t size);
 static void queue_ui_state_event(const char *state, const char *text);
+static void apply_interaction_mode(interaction_mode_t mode);
 
 static bool is_external_powered(void)
 {
@@ -426,9 +434,19 @@ static void ble_control_cb(const char *json)
     const cJSON *event = cJSON_GetObjectItemCaseSensitive(root, "event");
     const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
     const cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
     if (cJSON_IsString(event) && strcmp(event->valuestring, "ui_state") == 0 &&
         cJSON_IsString(state)) {
         queue_ui_state_event(state->valuestring, cJSON_IsString(text) ? text->valuestring : "");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "interaction_mode") == 0 &&
+               cJSON_IsString(mode)) {
+        if (strcmp(mode->valuestring, "click_to_talk") == 0) {
+            apply_interaction_mode(INTERACTION_MODE_CLICK_TO_TALK);
+        } else if (strcmp(mode->valuestring, "hold_to_talk") == 0) {
+            apply_interaction_mode(INTERACTION_MODE_HOLD_TO_TALK);
+        } else {
+            ESP_LOGW(TAG, "unknown interaction_mode %s", mode->valuestring);
+        }
     }
     cJSON_Delete(root);
 }
@@ -471,6 +489,17 @@ static void apply_app_ui_state(const char *state, const char *text)
     }
 }
 
+static void apply_interaction_mode(interaction_mode_t mode)
+{
+    s_interaction_mode = mode;
+    ui_status_set_idle_hint(mode == INTERACTION_MODE_CLICK_TO_TALK ? "Click to Talk" : "Hold to Talk");
+    if (s_app_ui_state == APP_UI_STATE_READY && !s_recording) {
+        ui_status_set_idle();
+    }
+    ESP_LOGI(TAG, "interaction mode %s",
+             mode == INTERACTION_MODE_CLICK_TO_TALK ? "click_to_talk" : "hold_to_talk");
+}
+
 static void ble_ota_cb(voice_ble_ota_event_t event, uint32_t written, uint32_t size)
 {
     switch (event) {
@@ -503,19 +532,38 @@ static void app_event_task(void *arg)
         case APP_EVENT_FRONT_DOWN:
             ESP_LOGI(TAG, "button front down");
             note_activity();
-            s_primary_down_us = esp_timer_get_time();
-            s_primary_session_id = start_recording();
-            esp_err_t primary_down_err = voice_ble_send_button_down("primary",
+            if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK && s_recording) {
+                const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
+                s_primary_session_id = stop_recording();
+                esp_err_t primary_up_err = voice_ble_send_button_up("primary", primary_duration_ms,
                                                                     s_primary_session_id);
-            if (s_primary_session_id != 0 && primary_down_err != ESP_OK) {
-                (void)stop_recording();
+                if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
+                    apply_app_ui_state("ready", "");
+                } else if (s_primary_session_id != 0) {
+                    s_app_ui_state = APP_UI_STATE_THINKING;
+                    ui_status_set_partial_text("");
+                    restart_host_response_timer();
+                }
+                s_primary_down_us = 0;
                 s_primary_session_id = 0;
-                apply_app_ui_state("ready", "");
+            } else {
+                s_primary_down_us = esp_timer_get_time();
+                s_primary_session_id = start_recording();
+                esp_err_t primary_down_err = voice_ble_send_button_down("primary",
+                                                                        s_primary_session_id);
+                if (s_primary_session_id != 0 && primary_down_err != ESP_OK) {
+                    (void)stop_recording();
+                    s_primary_session_id = 0;
+                    apply_app_ui_state("ready", "");
+                }
             }
             break;
         case APP_EVENT_FRONT_UP:
             ESP_LOGI(TAG, "button front up");
             note_activity();
+            if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK) {
+                break;
+            }
             const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
             if (s_recording) {
                 s_primary_session_id = stop_recording();

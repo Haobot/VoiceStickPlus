@@ -207,6 +207,10 @@ asr_provider = "volcengine"
 voicestick_api_key = ""
 voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/"
 volcengine_api_key = "your_volcengine_asr_api_key"
+llm_base_url = "https://api.openai.com/v1"
+llm_api_key = "your_openai_compatible_llm_api_key"
+llm_model = "gpt-5.5"
+interaction_mode = "hold_to_talk"
 resource_id = "volc.seedasr.sauc.duration"
 paired_device_ids = ""
 auto_enter = true
@@ -222,6 +226,10 @@ Fields:
 | `volcengine_api_key` | Direct Volcengine API key, sent as `X-Api-Key` |
 | `voicestick_api_key` | VoiceStick Cloud relay API key, sent as `X-Api-Key` |
 | `voicestick_cloud_url` | Cloud relay WebSocket URL |
+| `llm_base_url` | OpenAI-compatible LLM API base URL |
+| `llm_api_key` | API key for the LLM provider |
+| `llm_model` | LLM model name |
+| `interaction_mode` | Front button interaction: `hold_to_talk` or `click_to_talk` |
 | `resource_id` | Volcengine resource ID |
 | `paired_device_ids` | Comma-separated 4-digit hex IDs, for example `C3D8,09AF` |
 | `auto_enter` | Whether to press Return after paste |
