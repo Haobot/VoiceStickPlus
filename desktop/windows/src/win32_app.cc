@@ -164,6 +164,7 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
         pending_pairing_entry_.reset();
         paired_device_ids_ = config_.paired_device_ids;
         if (coordinator_) coordinator_->ConfirmPairedDeviceIds(config_.paired_device_ids);
+        if (coordinator_) coordinator_->CheckFirmwareAfterPairing(device_id);
         LogLine("Confirmed paired device VS-" + device_id);
     }
     std::string detail = "VS-" + device_id + " paired";
@@ -182,6 +183,25 @@ void Win32App::SetPairingError(const std::string& device_id, const std::string& 
         }
         if (pair_device_dialog_) pair_device_dialog_->SetPairingError(device_id, message);
         LogLine("Pairing error VS-" + device_id + ": " + message);
+    });
+}
+
+void Win32App::ShowFirmwareUpdatePrompt(const std::string& device_id,
+                                        const std::string& current_version,
+                                        const std::string& latest_version,
+                                        bool is_below_minimum) {
+    DispatchToUi([this, device_id, current_version, latest_version, is_below_minimum] {
+        const auto message = L"VS-" + Utf16(device_id) + L" is running firmware " +
+                             Utf16(current_version) + L".\n\nThe latest firmware is " +
+                             Utf16(latest_version) + L".";
+        const int result = MessageBoxW(
+            hwnd_,
+            message.c_str(),
+            is_below_minimum ? L"Firmware update recommended" : L"Firmware update available",
+            MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1);
+        if (result == IDYES) {
+            StartFirmwareUpdate(device_id);
+        }
     });
 }
 
@@ -276,9 +296,6 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             return 0;
         case kMenuPairScan:
             ShowPairDeviceDialog();
-            return 0;
-        case kMenuCheckFirmwareUpdates:
-            if (coordinator_) coordinator_->CheckFirmwareUpdatesNow();
             return 0;
         case kMenuCheckAppUpdates:
             win_sparkle_check_update_with_ui();
@@ -473,7 +490,6 @@ void Win32App::ShowTrayMenu() {
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings...");
-    AppendMenuW(menu, MF_STRING, kMenuCheckFirmwareUpdates, L"Check for Firmware Updates");
     AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates, L"Check for App Updates...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit");

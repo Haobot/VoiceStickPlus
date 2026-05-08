@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -86,6 +87,10 @@ public:
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;
     virtual void SetPairingError(const std::string& device_id, const std::string& message) = 0;
+    virtual void ShowFirmwareUpdatePrompt(const std::string& device_id,
+                                          const std::string& current_version,
+                                          const std::string& latest_version,
+                                          bool is_below_minimum) = 0;
     virtual void SetPairedDeviceIds(const std::vector<std::string>& ids) = 0;
     virtual void SetHasRecoverableInput(bool has_recoverable_input) = 0;
     virtual void ShowListening() = 0;
@@ -124,6 +129,7 @@ public:
     void CancelPendingConnect(const std::string& device_id);
     bool RestoreLastInputConfirmation();
     void CheckFirmwareUpdatesNow();
+    void CheckFirmwareAfterPairing(const std::string& device_id);
     void UpdateFirmwareFromLatest(const std::string& device_id,
                                   std::function<void(FirmwareUpdateProgress)> progress,
                                   std::function<void(bool, std::string)> completion);
@@ -178,6 +184,8 @@ private:
     void CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors);
     void RefreshFirmwareAvailability();
     void SetFirmwareChecking(bool is_checking);
+    bool ShouldShowFirmwareUpdatePromptAfterPairing(const std::string& device_id,
+                                                    const DeviceFirmwareInfo& info);
     bool IsWaitingForFinalText() const;
     void SetSessionState(SessionState state, std::string_view reason);
     void EnterReady(std::string_view reason, bool hide_overlay = true);
@@ -216,6 +224,7 @@ private:
     std::chrono::steady_clock::time_point last_firmware_manifest_check_at_{};
     bool has_last_firmware_manifest_check_at_ = false;
     bool firmware_manifest_check_in_flight_ = false;
+    std::set<std::string> pending_firmware_update_prompt_device_ids_;
     FirmwareManifestClient firmware_manifest_client_;
     std::mutex firmware_mutex_;
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};

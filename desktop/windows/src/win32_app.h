@@ -28,6 +28,10 @@ public:
     void SetDeviceInfo(const DeviceInfo& info) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
     void SetPairingError(const std::string& device_id, const std::string& message) override;
+    void ShowFirmwareUpdatePrompt(const std::string& device_id,
+                                  const std::string& current_version,
+                                  const std::string& latest_version,
+                                  bool is_below_minimum) override;
     void SetPairedDeviceIds(const std::vector<std::string>& ids) override;
     void SetHasRecoverableInput(bool has_recoverable_input) override;
     void ShowListening() override;

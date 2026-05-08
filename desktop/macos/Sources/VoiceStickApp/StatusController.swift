@@ -86,7 +86,6 @@ final class StatusController {
     var onPairDevice: (() -> Void)?
     var onForgetDevice: ((String) -> Void)?
     var onUpdateFirmwareDevice: ((String) -> Void)?
-    var onCheckFirmwareUpdates: (() -> Void)?
     var onRestoreLastInput: (() -> Bool)?
     var onCheckForUpdates: (() -> Void)? {
         didSet { rebuildMenu() }
@@ -161,12 +160,6 @@ final class StatusController {
             title: "Website",
             symbolName: "safari",
             action: #selector(openWebsite)
-        ))
-
-        menu.addItem(makeMenuItem(
-            title: "Check for Firmware Updates",
-            symbolName: "arrow.down.circle",
-            action: #selector(checkFirmwareUpdates)
         ))
 
         if onCheckForUpdates != nil {
@@ -354,10 +347,6 @@ final class StatusController {
     @objc private func updateFirmwareForDevice(_ sender: NSMenuItem) {
         guard let deviceID = sender.representedObject as? String else { return }
         onUpdateFirmwareDevice?(deviceID)
-    }
-
-    @objc private func checkFirmwareUpdates() {
-        onCheckFirmwareUpdates?()
     }
 
     @objc private func restoreLastInput() {
