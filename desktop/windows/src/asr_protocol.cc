@@ -1,6 +1,7 @@
 #include "asr_protocol.h"
 
 #include <algorithm>
+#include <sstream>
 #include <utility>
 
 namespace voicestick {
@@ -47,6 +48,20 @@ std::string JsonStringValue(std::string_view json, std::string_view key) {
         }
     }
     return {};
+}
+
+std::string HotwordsCorpusJson(const AppConfig& config) {
+    if (config.asr_hotwords.empty()) return {};
+
+    std::ostringstream context;
+    context << "{\"hotwords\":[";
+    for (std::size_t i = 0; i < config.asr_hotwords.size(); ++i) {
+        if (i != 0) context << ",";
+        context << "{\"word\":\"" << JsonEscape(config.asr_hotwords[i]) << "\"}";
+    }
+    context << "]}";
+
+    return ",\"corpus\":{\"context\":\"" + JsonEscape(context.str()) + "\"}";
 }
 
 } // namespace
@@ -204,7 +219,7 @@ std::string AsrProtocol::SessionPayload(const AppConfig& config) {
            "\"request\":{\"model_name\":\"bigmodel\",\"enable_nonstream\":true,"
            "\"show_utterances\":false,\"result_type\":\"full\",\"enable_ddc\":true,"
            "\"resource_id\":\"" +
-           JsonEscape(config.resource_id) + "\"}}";
+           JsonEscape(config.resource_id) + "\"" + HotwordsCorpusJson(config) + "}}";
 }
 
 std::string AsrProtocol::ConnectionPayload(const AppConfig& config) {

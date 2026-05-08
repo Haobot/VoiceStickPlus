@@ -68,8 +68,22 @@ std::wstring GetWindowText(HWND hwnd) {
     return text;
 }
 
+std::string JoinHotwords(const std::vector<std::string>& hotwords) {
+    std::string text;
+    for (const auto& hotword : hotwords) {
+        if (!text.empty()) text += "\r\n";
+        text += hotword;
+    }
+    return text;
+}
+
 HWND CreateLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h, HINSTANCE inst) {
     return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                           x, y, w, h, parent, nullptr, inst, nullptr);
+}
+
+HWND CreateLeftLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h, HINSTANCE inst) {
+    return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
                            x, y, w, h, parent, nullptr, inst, nullptr);
 }
 
@@ -77,6 +91,14 @@ HWND CreateEdit(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE inst
                 DWORD extra_style = 0) {
     return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | extra_style,
+                           x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
+                           inst, nullptr);
+}
+
+HWND CreateMultilineEdit(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE inst) {
+    return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+                               ES_AUTOVSCROLL | ES_WANTRETURN,
                            x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
                            inst, nullptr);
 }
@@ -192,6 +214,7 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         provider_combo_ = nullptr;
         api_key_edit_ = nullptr;
         resource_combo_ = nullptr;
+        hotwords_edit_ = nullptr;
         llm_base_url_edit_ = nullptr;
         llm_api_key_edit_ = nullptr;
         llm_model_edit_ = nullptr;
@@ -252,6 +275,7 @@ void SettingsDialog::DestroyControls() {
     provider_combo_ = nullptr;
     api_key_edit_ = nullptr;
     resource_combo_ = nullptr;
+    hotwords_edit_ = nullptr;
     llm_base_url_edit_ = nullptr;
     llm_api_key_edit_ = nullptr;
     llm_model_edit_ = nullptr;
@@ -306,6 +330,15 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(Utf16(id).c_str()));
     }
     y += row_h + Dp(16);
+
+    remember_label(CreateLabel(hwnd_, L"Hotwords:", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    hotwords_edit_ = remember(CreateMultilineEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(74),
+                                                  kIdHotwordsEdit, instance_));
+    y += Dp(80);
+    remember_label(CreateLeftLabel(hwnd_, L"Separate hotwords with commas or new lines.",
+                                   ctrl_x, y, ctrl_w, Dp(16), instance_));
+    y += Dp(26);
 
     remember_label(CreateLabel(hwnd_, L"LLM Base URL:", Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
@@ -366,6 +399,7 @@ void SettingsDialog::LoadConfigIntoControls() {
                                             reinterpret_cast<LPARAM>(resource_wide.c_str())));
     SendMessageW(resource_combo_, CB_SETCURSEL, idx >= 0 ? idx : 0, 0);
 
+    SetWindowTextW(hotwords_edit_, Utf16(JoinHotwords(config_.asr_hotwords)).c_str());
     SetWindowTextW(llm_base_url_edit_, Utf16(config_.llm_base_url).c_str());
     SetWindowTextW(llm_api_key_edit_, Utf16(config_.llm_api_key).c_str());
     SetWindowTextW(llm_model_edit_, Utf16(config_.llm_model).c_str());
@@ -391,6 +425,7 @@ void SettingsDialog::SaveSettings() {
     config_.llm_base_url = Utf8(GetWindowText(llm_base_url_edit_));
     config_.llm_api_key = Utf8(GetWindowText(llm_api_key_edit_));
     config_.llm_model = Utf8(GetWindowText(llm_model_edit_));
+    config_.asr_hotwords = ParseHotwordList(Utf8(GetWindowText(hotwords_edit_)));
 
     wchar_t resource_buf[256]{};
     int res_idx = static_cast<int>(SendMessageW(resource_combo_, CB_GETCURSEL, 0, 0));

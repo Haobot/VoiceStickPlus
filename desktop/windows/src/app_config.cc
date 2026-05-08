@@ -235,6 +235,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "llm_model") config.llm_model = value;
     if (key == "interaction_mode") config.interaction_mode = InteractionModeFromName(value);
     if (key == "resource_id") config.resource_id = value;
+    if (key == "asr_hotwords") config.asr_hotwords = ParseHotwordList(value);
     if (key == "paired_device_ids") config.paired_device_ids = ParseDeviceIdList(value);
     if (key == "device_theme_colors") {
         config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(value, OverlayThemeColorFromName);
@@ -287,6 +288,7 @@ AppConfig AppConfig::Load() {
         if (auto value = TomlString(table, "llm_model")) config.llm_model = *value;
         if (auto value = TomlString(table, "interaction_mode")) config.interaction_mode = InteractionModeFromName(*value);
         if (auto value = TomlString(table, "resource_id")) config.resource_id = *value;
+        if (auto value = TomlString(table, "asr_hotwords")) config.asr_hotwords = ParseHotwordList(*value);
         if (auto value = TomlString(table, "paired_device_ids")) config.paired_device_ids = ParseDeviceIdList(*value);
         if (auto value = TomlString(table, "device_theme_colors")) {
             config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(*value, OverlayThemeColorFromName);
@@ -332,6 +334,12 @@ void AppConfig::Save() const {
     output << "llm_model = \"" << TomlEscape(llm_model) << "\"\n";
     output << "interaction_mode = \"" << InteractionModeName(interaction_mode) << "\"\n";
     output << "resource_id = \"" << TomlEscape(resource_id) << "\"\n";
+    std::ostringstream hotwords;
+    for (std::size_t i = 0; i < asr_hotwords.size(); ++i) {
+        if (i != 0) hotwords << ",";
+        hotwords << asr_hotwords[i];
+    }
+    output << "asr_hotwords = \"" << TomlEscape(hotwords.str()) << "\"\n";
     output << "paired_device_ids = \"" << paired.str() << "\"\n";
     output << "device_theme_colors = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeColor>(
         device_theme_colors, paired_device_ids, OverlayThemeColor::kWhite, OverlayThemeColorName)) << "\"\n";
@@ -512,6 +520,22 @@ std::vector<std::string> ParseDeviceIdList(std::string_view text) {
         start = comma + 1;
     }
     return ids;
+}
+
+std::vector<std::string> ParseHotwordList(std::string_view text) {
+    std::vector<std::string> hotwords;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        auto end = text.find_first_of(",\r\n", start);
+        const auto part = text.substr(start, end == std::string_view::npos ? text.size() - start : end - start);
+        auto hotword = Trim(std::string(part));
+        if (!hotword.empty() && std::find(hotwords.begin(), hotwords.end(), hotword) == hotwords.end()) {
+            hotwords.push_back(std::move(hotword));
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return hotwords;
 }
 
 } // namespace voicestick

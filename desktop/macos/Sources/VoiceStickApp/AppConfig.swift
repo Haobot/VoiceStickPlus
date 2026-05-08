@@ -89,6 +89,7 @@ struct AppConfig {
     var llmModel: String
     var interactionMode: InteractionMode
     var resourceID: String
+    var asrHotwords: [String]
     var pairedDeviceIDs: [String]
     var deviceThemeColors: [String: OverlayThemeColor]
     var deviceOverlayPositions: [String: OverlayPosition]
@@ -140,6 +141,7 @@ struct AppConfig {
             llmModel: "gpt-5.5",
             interactionMode: .holdToTalk,
             resourceID: supportedResourceIDs[0],
+            asrHotwords: [],
             pairedDeviceIDs: [],
             deviceThemeColors: [:],
             deviceOverlayPositions: [:],
@@ -170,6 +172,7 @@ struct AppConfig {
             llmModel: file.llm_model ?? defaults.llmModel,
             interactionMode: interactionModeValue(file.interaction_mode, default: defaults.interactionMode),
             resourceID: resourceIDValue(file.resource_id, default: defaults.resourceID),
+            asrHotwords: hotwordList(file.asr_hotwords ?? ""),
             pairedDeviceIDs: deviceIDList(file.paired_device_ids ?? ""),
             deviceThemeColors: deviceThemeColorMap(file.device_theme_colors ?? ""),
             deviceOverlayPositions: deviceOverlayPositionMap(file.device_overlay_positions ?? ""),
@@ -191,6 +194,7 @@ struct AppConfig {
         llm_model = "\(llmModel.tomlEscaped)"
         interaction_mode = "\(interactionMode.rawValue)"
         resource_id = "\(resourceID.tomlEscaped)"
+        asr_hotwords = "\(asrHotwords.joined(separator: ",").tomlEscaped)"
         paired_device_ids = "\(pairedDeviceIDs.joined(separator: ",").tomlEscaped)"
         device_theme_colors = "\(deviceThemeColorText.tomlEscaped)"
         device_overlay_positions = "\(deviceOverlayPositionText.tomlEscaped)"
@@ -222,6 +226,7 @@ struct AppConfig {
             llmModel: values["llm_model"] ?? defaults.llmModel,
             interactionMode: interactionModeValue(values["interaction_mode"], default: defaults.interactionMode),
             resourceID: resourceIDValue(values["resource_id"], default: defaults.resourceID),
+            asrHotwords: hotwordList(values["asr_hotwords"] ?? ""),
             pairedDeviceIDs: deviceIDList(values["paired_device_ids"] ?? ""),
             deviceThemeColors: deviceThemeColorMap(values["device_theme_colors"] ?? ""),
             deviceOverlayPositions: deviceOverlayPositionMap(values["device_overlay_positions"] ?? ""),
@@ -293,6 +298,19 @@ struct AppConfig {
             }
     }
 
+    static func hotwordList(_ text: String) -> [String] {
+        text.split { character in
+            character == "," || character == "\n" || character == "\r"
+        }
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: []) { hotwords, hotword in
+                if !hotwords.contains(hotword) {
+                    hotwords.append(hotword)
+                }
+            }
+    }
+
     static func deviceThemeColorMap(_ text: String) -> [String: OverlayThemeColor] {
         text.split(separator: ",").reduce(into: [:]) { colorsByDeviceID, rawPair in
             let parts = rawPair.split(separator: ":", maxSplits: 1).map(String.init)
@@ -357,6 +375,7 @@ private struct ConfigFile: Decodable {
     var llm_model: String?
     var interaction_mode: String?
     var resource_id: String?
+    var asr_hotwords: String?
     var paired_device_ids: String?
     var device_theme_colors: String?
     var device_overlay_positions: String?

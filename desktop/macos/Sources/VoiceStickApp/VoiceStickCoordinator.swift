@@ -18,7 +18,7 @@ final class VoiceStickCoordinator {
     private var config: AppConfig
     private let statusController: StatusController
     private let ble: BleCentral
-    private var asr: VolcengineASRClient
+    private var asr: any ASRClient
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
     private let inputInjector = InputInjector()
     private let firmwareManifestClient = FirmwareManifestClient()
@@ -398,7 +398,7 @@ final class VoiceStickCoordinator {
 
     private func startASRAndFlushBufferedChunks(lastChunkIsFinal: Bool) -> Bool {
         guard !asrStarted else { return true }
-        guard asr.start() else {
+        guard asr.start(options: ASRSessionOptions(hotwords: config.asrHotwords)) else {
             bufferedOggChunks.removeAll(keepingCapacity: true)
             return false
         }

@@ -6,7 +6,23 @@ enum ASRResultType: String {
     case single
 }
 
-final class VolcengineASRClient {
+struct ASRSessionOptions {
+    var hotwords: [String] = []
+}
+
+protocol ASRClient: AnyObject {
+    var onPartial: ((String) -> Void)? { get set }
+    var onFinal: ((String) -> Void)? { get set }
+    var onError: ((String) -> Void)? { get set }
+    var onUpgradeURL: ((URL) -> Void)? { get set }
+
+    func start(options: ASRSessionOptions) -> Bool
+    func sendOggOpusChunk(_ data: Data, isLast: Bool)
+    func finish()
+    func cancel()
+}
+
+final class VolcengineASRClient: ASRClient {
     private enum ConnectionState {
         case disconnected
         case connecting
@@ -62,6 +78,7 @@ final class VolcengineASRClient {
     private var currentSessionID: String?
     private var queuedAudioChunks: [QueuedAudioChunk] = []
     private var latestSessionTranscript = ""
+    private var sessionOptions = ASRSessionOptions()
     private var sequence: Int32 = 0
     private var finished = false
 
@@ -81,14 +98,14 @@ final class VolcengineASRClient {
     }
 
     @discardableResult
-    func start() -> Bool {
+    func start(options: ASRSessionOptions) -> Bool {
         if config.asrProvider == .volcengine {
-            return startReusableSession()
+            return startReusableSession(options: options)
         }
-        return startLegacySession()
+        return startLegacySession(options: options)
     }
 
-    private func startLegacySession() -> Bool {
+    private func startLegacySession(options: ASRSessionOptions) -> Bool {
         let apiKey = activeAPIKey
         guard !apiKey.isEmpty else {
             let message = "Missing ASR API key"
@@ -112,6 +129,7 @@ final class VolcengineASRClient {
         request.setValue("-1", forHTTPHeaderField: "X-Api-Sequence")
 
         sequence = 0
+        sessionOptions = options
         finished = false
         NSLog("ASR start provider=\(config.asrProvider.rawValue) connect_id=\(connectID)")
         let task = URLSession.shared.webSocketTask(with: request)
@@ -122,7 +140,7 @@ final class VolcengineASRClient {
         return true
     }
 
-    private func startReusableSession() -> Bool {
+    private func startReusableSession(options: ASRSessionOptions) -> Bool {
         let apiKey = activeAPIKey
         guard !apiKey.isEmpty else {
             let message = "Missing ASR API key"
@@ -137,7 +155,7 @@ final class VolcengineASRClient {
         }
 
         queue.async { [weak self] in
-            self?.beginReusableSession()
+            self?.beginReusableSession(options: options)
         }
         return true
     }
@@ -200,13 +218,14 @@ final class VolcengineASRClient {
         webSocket = nil
     }
 
-    private func beginReusableSession() {
+    private func beginReusableSession(options: ASRSessionOptions) {
         guard sessionState == .idle else {
             notifyError("ASR session already active")
             return
         }
 
         currentSessionID = UUID().uuidString
+        sessionOptions = options
         latestSessionTranscript = ""
         queuedAudioChunks.removeAll(keepingCapacity: true)
         sessionState = .starting
@@ -346,12 +365,13 @@ final class VolcengineASRClient {
     }
 
     private func sendFullClientRequest() {
-        let request: [String: Any] = [
+        var request: [String: Any] = [
             "model_name": "bigmodel",
             "enable_nonstream": true,
             "show_utterances": false,
             "enable_ddc": true
         ]
+        addHotwordsIfNeeded(to: &request)
 
         let payload: [String: Any] = [
             "user": ["uid": "voice-stick-local"],
@@ -772,17 +792,38 @@ final class VolcengineASRClient {
     }
 
     private func sessionPayload() -> [String: Any] {
-        [
+        var request: [String: Any] = [
+            "model_name": "bigmodel",
+            "enable_nonstream": true,
+            "show_utterances": showUtterances,
+            "result_type": resultType.rawValue,
+            "enable_ddc": true
+        ]
+        addHotwordsIfNeeded(to: &request)
+
+        return [
             "user": ["uid": "voice-stick-local"],
             "audio": ["format": "ogg", "codec": "opus", "rate": 16_000, "bits": 16, "channel": 1],
-            "request": [
-                "model_name": "bigmodel",
-                "enable_nonstream": true,
-                "show_utterances": showUtterances,
-                "result_type": resultType.rawValue,
-                "enable_ddc": true
-            ]
+            "request": request
         ]
+    }
+
+    private func addHotwordsIfNeeded(to request: inout [String: Any]) {
+        let hotwords = sessionOptions.hotwords
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !hotwords.isEmpty else { return }
+
+        let context: [String: Any] = [
+            "hotwords": hotwords.map { ["word": $0] }
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: context),
+              let contextString = String(data: data, encoding: .utf8) else {
+            NSLog("ASR hotwords context JSON serialization failed")
+            return
+        }
+
+        request["corpus"] = ["context": contextString]
     }
 
     private func parsedErrorMessage(code: UInt32, message: String) -> (message: String, upgradeURL: URL?) {

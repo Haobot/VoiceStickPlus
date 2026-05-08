@@ -41,6 +41,7 @@ private:
     HWND provider_combo_ = nullptr;
     HWND api_key_edit_ = nullptr;
     HWND resource_combo_ = nullptr;
+    HWND hotwords_edit_ = nullptr;
     HWND llm_base_url_edit_ = nullptr;
     HWND llm_api_key_edit_ = nullptr;
     HWND llm_model_edit_ = nullptr;
@@ -53,18 +54,19 @@ private:
     std::vector<HWND> label_controls_;
 
     static constexpr int kClientWidth = 520;
-    static constexpr int kClientHeight = 420;
+    static constexpr int kClientHeight = 500;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
     static constexpr UINT kIdResourceCombo = 2003;
-    static constexpr UINT kIdLlmBaseUrlEdit = 2004;
-    static constexpr UINT kIdLlmApiKeyEdit = 2005;
-    static constexpr UINT kIdLlmModelEdit = 2006;
-    static constexpr UINT kIdDebugAudio = 2007;
-    static constexpr UINT kIdDebugDirEdit = 2008;
-    static constexpr UINT kIdChooseDir = 2009;
-    static constexpr UINT kIdSave = 2010;
-    static constexpr UINT kIdCancel = 2011;
+    static constexpr UINT kIdHotwordsEdit = 2004;
+    static constexpr UINT kIdLlmBaseUrlEdit = 2005;
+    static constexpr UINT kIdLlmApiKeyEdit = 2006;
+    static constexpr UINT kIdLlmModelEdit = 2007;
+    static constexpr UINT kIdDebugAudio = 2008;
+    static constexpr UINT kIdDebugDirEdit = 2009;
+    static constexpr UINT kIdChooseDir = 2010;
+    static constexpr UINT kIdSave = 2011;
+    static constexpr UINT kIdCancel = 2012;
 };
 
 } // namespace voicestick

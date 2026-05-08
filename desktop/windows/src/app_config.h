@@ -63,6 +63,7 @@ struct AppConfig {
     std::string llm_model = "gpt-5.5";
     InteractionMode interaction_mode = InteractionMode::kHoldToTalk;
     std::string resource_id = "volc.seedasr.sauc.duration";
+    std::vector<std::string> asr_hotwords;
     std::vector<std::string> paired_device_ids;
     std::vector<PairedDeviceEntry> paired_devices;
     std::map<std::string, OverlayThemeColor> device_theme_colors;
@@ -99,5 +100,6 @@ std::string OverlayPositionName(OverlayPosition position);
 OverlayPosition OverlayPositionFromName(std::string_view name);
 std::string OverlayPositionDisplayName(OverlayPosition position);
 std::vector<std::string> ParseDeviceIdList(std::string_view text);
+std::vector<std::string> ParseHotwordList(std::string_view text);
 
 } // namespace voicestick

@@ -4,6 +4,8 @@ final class SettingsWindowController: NSWindowController {
     private let providerPopup = NSPopUpButton()
     private let apiKeyField = NSTextField()
     private let resourcePopup = NSPopUpButton()
+    private let hotwordsTextView = NSTextView()
+    private let hotwordsScrollView = NSScrollView()
     private let llmBaseURLField = NSTextField()
     private let llmAPIKeyField = NSTextField()
     private let llmModelField = NSTextField()
@@ -19,7 +21,7 @@ final class SettingsWindowController: NSWindowController {
     init(config: AppConfig = AppConfig.load()) {
         self.config = config
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -39,6 +41,7 @@ final class SettingsWindowController: NSWindowController {
         config = AppConfig.load()
         loadConfigIntoFields()
         showWindow(nil)
+        window?.makeFirstResponder(providerPopup)
         window?.center()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -61,6 +64,9 @@ final class SettingsWindowController: NSWindowController {
         let resourceRow = row(label: "Resource ID", control: resourcePopup)
         self.resourceRow = resourceRow
         stack.addArrangedSubview(resourceRow)
+        configureHotwordsTextView()
+        stack.addArrangedSubview(row(label: "Hotwords", control: hotwordsScrollView))
+        stack.addArrangedSubview(hintRow("Separate hotwords with commas or new lines."))
 
         stack.addArrangedSubview(sectionTitle("LLM"))
         stack.addArrangedSubview(row(label: "Base URL", control: llmBaseURLField))
@@ -86,13 +92,11 @@ final class SettingsWindowController: NSWindowController {
         buttonRow.alignment = .centerY
         buttonRow.spacing = 10
         let openFolderButton = NSButton(title: "Open Config Folder", target: self, action: #selector(openConfigFolder))
-        let openDebugFolderButton = NSButton(title: "Open Debug Audio Folder", target: self, action: #selector(openDebugAudioFolder))
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let saveButton = NSButton(title: "Save", target: self, action: #selector(saveSettings))
         saveButton.keyEquivalent = "\r"
         buttonRow.addArrangedSubview(openFolderButton)
-        buttonRow.addArrangedSubview(openDebugFolderButton)
         buttonRow.addArrangedSubview(statusLabel)
         buttonRow.addArrangedSubview(spacer)
         buttonRow.addArrangedSubview(saveButton)
@@ -122,10 +126,22 @@ final class SettingsWindowController: NSWindowController {
         providerPopup.action = #selector(providerSelectionChanged)
     }
 
+    private func configureHotwordsTextView() {
+        hotwordsScrollView.hasVerticalScroller = true
+        hotwordsScrollView.borderType = .bezelBorder
+        hotwordsScrollView.documentView = hotwordsTextView
+        hotwordsScrollView.heightAnchor.constraint(equalToConstant: 78).isActive = true
+
+        hotwordsTextView.isRichText = false
+        hotwordsTextView.font = .systemFont(ofSize: 13)
+        hotwordsTextView.textContainerInset = NSSize(width: 4, height: 4)
+    }
+
     private func loadConfigIntoFields() {
         currentDisplayedProvider = config.asrProvider
         providerPopup.selectItem(withTitle: config.asrProvider.displayName)
         apiKeyField.stringValue = apiKey(for: config.asrProvider)
+        hotwordsTextView.string = config.asrHotwords.joined(separator: ",")
         llmBaseURLField.stringValue = config.llmBaseURL
         llmAPIKeyField.stringValue = config.llmAPIKey
         llmModelField.stringValue = config.llmModel
@@ -173,6 +189,7 @@ final class SettingsWindowController: NSWindowController {
             llmModel: llmModelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
             interactionMode: config.interactionMode,
             resourceID: resourceID,
+            asrHotwords: AppConfig.hotwordList(hotwordsTextView.string),
             pairedDeviceIDs: config.pairedDeviceIDs,
             deviceThemeColors: config.deviceThemeColors,
             deviceOverlayPositions: config.deviceOverlayPositions,
@@ -193,11 +210,6 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func openConfigFolder() {
         AppConfig.openConfigDirectory()
-    }
-
-    @objc private func openDebugAudioFolder() {
-        let directory = URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)
-        AppConfig.openDebugAudioDirectory(directory)
     }
 
     private func selectedProvider() -> ASRProvider {
@@ -250,11 +262,30 @@ final class SettingsWindowController: NSWindowController {
         labelView.alignment = .right
         labelView.textColor = .secondaryLabelColor
         labelView.widthAnchor.constraint(equalToConstant: 120).isActive = true
-        if control is NSTextField || control is NSPopUpButton || control is NSStackView {
+        if control is NSTextField || control is NSPopUpButton || control is NSStackView || control is NSScrollView {
             control.widthAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
         }
         row.addArrangedSubview(labelView)
         row.addArrangedSubview(control)
+        return row
+    }
+
+    private func hintRow(_ text: String) -> NSStackView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 12
+
+        let spacer = NSView()
+        spacer.widthAnchor.constraint(equalToConstant: 120).isActive = true
+
+        let label = NSTextField(labelWithString: text)
+        label.textColor = .secondaryLabelColor
+        label.font = .systemFont(ofSize: 11)
+        label.widthAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(label)
         return row
     }
 }

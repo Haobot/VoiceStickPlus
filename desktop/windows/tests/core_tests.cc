@@ -247,10 +247,17 @@ void TestOggMuxer() {
 
 void TestAsrProtocol() {
     AppConfig config = AppConfig::Defaults();
+    config.asr_hotwords = {"小智", "VoiceStick"};
     auto request = AsrProtocol::MakeClientRequestFrame(config);
     assert(request.size() > 8);
     assert(request[0] == 0x11);
     assert((request[1] >> 4) == 0x01);
+    const auto payload_size = ReadBe32(std::span(request.data() + 4, 4));
+    assert(payload_size == request.size() - 8);
+    const std::string payload(reinterpret_cast<const char*>(request.data() + 8), request.size() - 8);
+    assert(payload.find("\"corpus\"") != std::string::npos);
+    assert(payload.find("\\\"hotwords\\\"") != std::string::npos);
+    assert(payload.find("\\\"word\\\":\\\"VoiceStick\\\"") != std::string::npos);
 
     const std::string body = "{\"result\":{\"text\":\"hello\"}}";
     ByteVector response = {0x11, 0x93, 0x10, 0x00};
@@ -325,6 +332,8 @@ void TestAppConfig() {
     assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);
     assert(OverlayPositionName(OverlayPosition::kBottomLeft) == "bottom_left");
     assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");
+    const auto hotwords = ParseHotwordList(" 小智,VoiceStick\r\n小智\n豆包 ");
+    assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));
 }
 
 void TestFirmwareManifestParsingAndVersionCompare() {
