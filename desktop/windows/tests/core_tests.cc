@@ -95,6 +95,13 @@ public:
     void SetPairingError(const std::string& device_id, const std::string& message) override {
         pairing_errors.push_back(device_id + ":" + message);
     }
+    void ShowFirmwareUpdatePrompt(const std::string& device_id,
+                                  const std::string& current_version,
+                                  const std::string& latest_version,
+                                  bool is_below_minimum) override {
+        firmware_update_prompts.push_back(device_id + ":" + current_version + ":" + latest_version +
+                                          (is_below_minimum ? ":minimum" : ":latest"));
+    }
     void SetPairedDeviceIds(const std::vector<std::string>& ids) override {
         paired_device_ids = ids;
     }
@@ -128,6 +135,7 @@ public:
     std::vector<DeviceInfo> device_infos;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
     std::vector<std::string> pairing_errors;
+    std::vector<std::string> firmware_update_prompts;
     std::vector<std::string> paired_device_ids;
     std::vector<std::string> partials;
     std::vector<std::string> final_countdowns;

@@ -53,6 +53,7 @@ struct AppConfig {
     static let firmwareManifestURL = URL(
         string: "https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/manifest.json"
     )!
+    static let minimumCompatibleFirmwareVersion = "0.2.6"
 
     static var configExists: Bool {
         FileManager.default.fileExists(atPath: configURL.path)

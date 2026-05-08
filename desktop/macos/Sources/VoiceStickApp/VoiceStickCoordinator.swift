@@ -42,8 +42,11 @@ final class VoiceStickCoordinator {
     private var latestFirmwareManifest: FirmwareManifest?
     private var lastFirmwareManifestCheckAt: Date?
     private var firmwareManifestCheckInFlight = false
+    private var firmwareManifestRefreshTimer: Timer?
+    private var pendingFirmwareUpdatePromptDeviceIDs: Set<String> = []
     private var errorRecoveryToken = 0
     private var isShowingASRError = false
+    var onFirmwareUpdatePrompt: ((String, String, String, Bool) -> Void)?
 
     init(config: AppConfig, statusController: StatusController) {
         self.config = config
@@ -62,7 +65,7 @@ final class VoiceStickCoordinator {
             guard let self else { return }
             self.statusController.setConnectedDevices(connectedDevices)
             self.cancelActiveCycleIfDeviceDisconnected()
-            self.checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
+            self.refreshFirmwareAvailability()
             if !connectedDevices.isEmpty {
                 self.statusController.setStatus("Ready")
             } else {
@@ -81,6 +84,11 @@ final class VoiceStickCoordinator {
         configureASRCallbacks()
         ble.start()
         checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
+        startFirmwareManifestRefreshTimer()
+    }
+
+    deinit {
+        firmwareManifestRefreshTimer?.invalidate()
     }
 
     func updateConfig(_ config: AppConfig) {
@@ -182,6 +190,12 @@ final class VoiceStickCoordinator {
 
     func checkFirmwareUpdatesNow() {
         checkFirmwareUpdatesIfNeeded(force: true, showErrors: true)
+    }
+
+    func checkFirmwareAfterPairing(deviceID: String) {
+        pendingFirmwareUpdatePromptDeviceIDs.insert(deviceID)
+        checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
+        refreshFirmwareAvailability()
     }
 
     func updateFirmwareFromLatest(for deviceID: String,
@@ -609,7 +623,13 @@ final class VoiceStickCoordinator {
         info.errorMessage = nil
         firmwareInfoByDeviceID[deviceID] = info
         refreshFirmwareAvailability()
-        checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
+    }
+
+    private func startFirmwareManifestRefreshTimer() {
+        firmwareManifestRefreshTimer?.invalidate()
+        firmwareManifestRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
+            self?.checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
+        }
     }
 
     private func checkFirmwareUpdatesIfNeeded(force: Bool, showErrors: Bool) {
@@ -632,11 +652,13 @@ final class VoiceStickCoordinator {
                 self.setFirmwareChecking(false)
                 switch result {
                 case .success(let manifest):
+                    NSLog("Firmware manifest version=\(manifest.version) hardware=\(manifest.hardware)")
                     self.lastFirmwareManifestCheckAt = Date()
                     self.latestFirmwareManifest = manifest
                     self.clearFirmwareErrors()
                     self.refreshFirmwareAvailability()
                 case .failure(let error):
+                    NSLog("Firmware manifest check failed: \(error.localizedDescription)")
                     if showErrors {
                         self.setFirmwareError(error.localizedDescription)
                     } else {
@@ -651,19 +673,52 @@ final class VoiceStickCoordinator {
         for (deviceID, var info) in firmwareInfoByDeviceID {
             info.latestVersion = nil
             info.updateAvailable = false
-            guard let manifest = latestFirmwareManifest,
-                  let hardware = info.hardware,
-                  hardware == manifest.hardware else {
+            guard let manifest = latestFirmwareManifest else {
+                firmwareInfoByDeviceID[deviceID] = info
+                continue
+            }
+            guard let hardware = info.hardware else {
+                firmwareInfoByDeviceID[deviceID] = info
+                continue
+            }
+            guard let currentVersion = info.currentVersion else {
+                firmwareInfoByDeviceID[deviceID] = info
+                continue
+            }
+            guard hardware == manifest.hardware else {
+                NSLog("Firmware availability VS-\(deviceID) hardware=\(hardware) current=\(currentVersion) latest=\(manifest.version) update=false reason=hardware_mismatch manifest_hardware=\(manifest.hardware)")
                 firmwareInfoByDeviceID[deviceID] = info
                 continue
             }
             info.latestVersion = manifest.version
-            if let currentVersion = info.currentVersion {
-                info.updateAvailable = FirmwareVersion.isVersion(currentVersion, olderThan: manifest.version)
-            }
+            info.updateAvailable = FirmwareVersion.isVersion(currentVersion, olderThan: manifest.version)
             firmwareInfoByDeviceID[deviceID] = info
+            NSLog("Firmware availability VS-\(deviceID) hardware=\(hardware) current=\(currentVersion) latest=\(manifest.version) update=\(info.updateAvailable)")
+            maybeShowFirmwareUpdatePromptAfterPairing(deviceID: deviceID, info: info)
         }
         statusController.setFirmwareInfo(firmwareInfoByDeviceID)
+    }
+
+    private func maybeShowFirmwareUpdatePromptAfterPairing(deviceID: String, info: DeviceFirmwareInfo) {
+        guard
+            pendingFirmwareUpdatePromptDeviceIDs.contains(deviceID),
+            let currentVersion = info.currentVersion,
+            let latestVersion = info.latestVersion
+        else {
+            return
+        }
+        guard info.updateAvailable else {
+            pendingFirmwareUpdatePromptDeviceIDs.remove(deviceID)
+            return
+        }
+        pendingFirmwareUpdatePromptDeviceIDs.remove(deviceID)
+        let isBelowMinimum = FirmwareVersion.isVersion(
+            currentVersion,
+            olderThan: AppConfig.minimumCompatibleFirmwareVersion
+        )
+        DispatchQueue.main.async { [onFirmwareUpdatePrompt] in
+            onFirmwareUpdatePrompt?(deviceID, currentVersion, latestVersion, isBelowMinimum)
+        }
     }
 
     private func setFirmwareChecking(_ isChecking: Bool) {

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <tuple>
 #include <utility>
 
 namespace voicestick {
@@ -52,7 +53,7 @@ void VoiceStickCoordinator::Start() {
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
         ui_->SetConnectedDevices(devices);
         CancelActiveCycleIfDeviceDisconnected();
-        CheckFirmwareUpdatesIfNeeded(false, false);
+        RefreshFirmwareAvailability();
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
@@ -71,6 +72,13 @@ void VoiceStickCoordinator::Start() {
     ConfigureAsrCallbacks();
     ble_->Start();
     CheckFirmwareUpdatesIfNeeded(false, false);
+    std::thread([this, alive = alive_] {
+        while (alive->load()) {
+            std::this_thread::sleep_for(std::chrono::hours(1));
+            if (!alive->load()) return;
+            CheckFirmwareUpdatesIfNeeded(false, false);
+        }
+    }).detach();
 }
 
 void VoiceStickCoordinator::Shutdown() {
@@ -164,6 +172,15 @@ bool VoiceStickCoordinator::RestoreLastInputConfirmation() {
 
 void VoiceStickCoordinator::CheckFirmwareUpdatesNow() {
     CheckFirmwareUpdatesIfNeeded(true, true);
+}
+
+void VoiceStickCoordinator::CheckFirmwareAfterPairing(const std::string& device_id) {
+    {
+        std::lock_guard lock(firmware_mutex_);
+        pending_firmware_update_prompt_device_ids_.insert(device_id);
+    }
+    CheckFirmwareUpdatesIfNeeded(false, false);
+    RefreshFirmwareAvailability();
 }
 
 void VoiceStickCoordinator::UpdateFirmwareFromLatest(
@@ -496,7 +513,6 @@ void VoiceStickCoordinator::UpdateDeviceFirmwareInfo(const StateEvent& event, co
         config_.SavePairedDeviceInfo(device_id, hardware_to_save, version_to_save);
     }
     RefreshFirmwareAvailability();
-    CheckFirmwareUpdatesIfNeeded(false, false);
 }
 
 void VoiceStickCoordinator::CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors) {
@@ -552,21 +568,41 @@ void VoiceStickCoordinator::CheckFirmwareUpdatesIfNeeded(bool force, bool show_e
 
 void VoiceStickCoordinator::RefreshFirmwareAvailability() {
     std::map<std::string, DeviceFirmwareInfo> snapshot;
+    std::vector<std::tuple<std::string, std::string, std::string, bool>> update_prompts;
     {
         std::lock_guard lock(firmware_mutex_);
         for (auto& [device_id, info] : firmware_info_by_device_id_) {
             info.latest_version.clear();
             info.update_available = false;
-            if (latest_firmware_manifest_.has_value() &&
-                IsFirmwareManifestCompatible(info, *latest_firmware_manifest_)) {
+            if (!latest_firmware_manifest_.has_value() ||
+                info.hardware.empty() ||
+                info.current_version.empty()) {
+                snapshot[device_id] = info;
+                continue;
+            }
+            if (!IsFirmwareManifestCompatible(info, *latest_firmware_manifest_)) {
+                LogCoordinatorLine("firmware availability VS-" + device_id +
+                                   " hardware=" + info.hardware +
+                                   " current=" + info.current_version +
+                                   " latest=" + latest_firmware_manifest_->version +
+                                   " update=false reason=hardware_mismatch manifest_hardware=" +
+                                   latest_firmware_manifest_->hardware);
+            } else {
                 info.latest_version = latest_firmware_manifest_->version;
-                if (!info.current_version.empty()) {
-                    info.update_available = FirmwareVersion::IsOlderThan(
-                        info.current_version, latest_firmware_manifest_->version);
+                info.update_available = FirmwareVersion::IsOlderThan(
+                    info.current_version, latest_firmware_manifest_->version);
+                if (ShouldShowFirmwareUpdatePromptAfterPairing(device_id, info)) {
+                    update_prompts.emplace_back(
+                        device_id,
+                        info.current_version,
+                        info.latest_version,
+                        FirmwareVersion::IsOlderThan(
+                            info.current_version,
+                            AppConfig::minimum_compatible_firmware_version));
                 }
                 LogCoordinatorLine("firmware availability VS-" + device_id +
-                                   " hardware=" + (info.hardware.empty() ? "<empty>" : info.hardware) +
-                                   " current=" + (info.current_version.empty() ? "<empty>" : info.current_version) +
+                                   " hardware=" + info.hardware +
+                                   " current=" + info.current_version +
                                    " latest=" + info.latest_version +
                                    " update=" + (info.update_available ? "true" : "false"));
             }
@@ -574,6 +610,23 @@ void VoiceStickCoordinator::RefreshFirmwareAvailability() {
         }
     }
     ui_->SetFirmwareInfo(snapshot);
+    for (const auto& [device_id, current_version, latest_version, is_below_minimum] : update_prompts) {
+        ui_->ShowFirmwareUpdatePrompt(device_id, current_version, latest_version, is_below_minimum);
+    }
+}
+
+bool VoiceStickCoordinator::ShouldShowFirmwareUpdatePromptAfterPairing(const std::string& device_id,
+                                                                       const DeviceFirmwareInfo& info) {
+    if (!pending_firmware_update_prompt_device_ids_.contains(device_id) ||
+        info.current_version.empty() || info.latest_version.empty()) {
+        return false;
+    }
+    if (!info.update_available) {
+        pending_firmware_update_prompt_device_ids_.erase(device_id);
+        return false;
+    }
+    pending_firmware_update_prompt_device_ids_.erase(device_id);
+    return true;
 }
 
 void VoiceStickCoordinator::SetFirmwareChecking(bool is_checking) {

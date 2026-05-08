@@ -28,6 +28,8 @@ struct PairedDeviceEntry {
 };
 
 struct AppConfig {
+    static constexpr std::string_view minimum_compatible_firmware_version = "0.2.6";
+
     AsrProvider asr_provider = AsrProvider::kVolcengine;
     std::string voicestick_api_key;
     std::string voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/";

@@ -72,8 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController.onUpdateFirmwareDevice = { [weak self] deviceID in
             self?.updateFirmwareFromLatest(for: deviceID)
         }
-        statusController.onCheckFirmwareUpdates = { [weak self] in
-            self?.coordinator?.checkFirmwareUpdatesNow()
+        coordinator.onFirmwareUpdatePrompt = { [weak self] deviceID, currentVersion, latestVersion, isBelowMinimum in
+            self?.showFirmwareUpdatePrompt(
+                deviceID: deviceID,
+                currentVersion: currentVersion,
+                latestVersion: latestVersion,
+                isBelowMinimum: isBelowMinimum
+            )
         }
         statusController.onRestoreLastInput = { [weak self] in
             self?.coordinator?.restoreLastInputConfirmation() ?? false
@@ -133,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try config.save()
                 self?.statusController?.setPairedDeviceIDs(config.pairedDeviceIDs)
                 self?.coordinator?.updatePairedDeviceIDs(config.pairedDeviceIDs)
+                self?.coordinator?.checkFirmwareAfterPairing(deviceID: deviceID)
             } catch {
                 self?.statusController?.setStatus("Pair save failed")
             }
@@ -160,6 +166,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.firmwareUpdateWindowController?.finish(result: result)
             }
         })
+    }
+
+    private func showFirmwareUpdatePrompt(deviceID: String,
+                                          currentVersion: String,
+                                          latestVersion: String,
+                                          isBelowMinimum: Bool) {
+        let alert = NSAlert()
+        alert.messageText = isBelowMinimum ? "Firmware update recommended" : "Firmware update available"
+        alert.informativeText = "VS-\(deviceID) is running firmware \(currentVersion). The latest firmware is \(latestVersion)."
+        alert.addButton(withTitle: "Update Firmware")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn {
+            updateFirmwareFromLatest(for: deviceID)
+        }
     }
 
     private func showDockIconWhileWindowVisible(_ windowController: NSWindowController) {
