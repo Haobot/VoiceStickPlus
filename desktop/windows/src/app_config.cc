@@ -7,6 +7,7 @@
 #include <ShlObj.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -243,6 +244,9 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "device_overlay_positions") {
         config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(value, OverlayPositionFromName);
     }
+    if (key == "output_target") config.default_output_profile.target = OutputTargetFromName(value);
+    if (key == "text_transform") config.default_output_profile.transform = TextTransformFromName(value);
+    if (key == "translation_target" && !value.empty()) config.default_output_profile.translation_target = value;
     if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
@@ -266,6 +270,19 @@ AppConfig LoadLegacyConfig(std::istream& input) {
         ApplyConfigValue(config, key, value);
     }
     return config;
+}
+
+OutputProfile ParseOutputProfile(const toml::table& table, const OutputProfile& fallback, bool include_target) {
+    OutputProfile profile = fallback;
+    if (include_target) {
+        if (auto value = TomlString(table, "target")) profile.target = OutputTargetFromName(*value);
+    }
+    if (auto value = TomlString(table, "transform")) profile.transform = TextTransformFromName(*value);
+    if (auto value = TomlString(table, "translation_target"); value && !value->empty()) {
+        profile.translation_target = Trim(*value);
+        if (profile.translation_target.empty()) profile.translation_target = fallback.translation_target;
+    }
+    return profile;
 }
 
 } // namespace
@@ -295,6 +312,32 @@ AppConfig AppConfig::Load() {
         }
         if (auto value = TomlString(table, "device_overlay_positions")) {
             config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(*value, OverlayPositionFromName);
+        }
+        if (auto value = TomlString(table, "output_target")) {
+            config.default_output_profile.target = OutputTargetFromName(*value);
+        }
+        if (auto value = TomlString(table, "text_transform")) {
+            config.default_output_profile.transform = TextTransformFromName(*value);
+        }
+        if (auto value = TomlString(table, "translation_target"); value && !value->empty()) {
+            config.default_output_profile.translation_target = Trim(*value);
+        }
+        if (const auto* output = table["output"].as_table()) {
+            config.default_output_profile = ParseOutputProfile(
+                *output, config.default_output_profile, true);
+        }
+        if (const auto* devices = table["device"].as_table()) {
+            for (const auto& [key, node] : *devices) {
+                const auto device_id = BleProtocol::NormalizeDeviceId(std::string_view(key.str()));
+                if (device_id.size() != 4) continue;
+                const auto* device_table = node.as_table();
+                if (!device_table) continue;
+                const auto* output = (*device_table)["output"].as_table();
+                if (!output) continue;
+                config.device_output_profiles[device_id] = ParseOutputProfile(
+                    *output, config.default_output_profile, false);
+                config.device_output_profiles[device_id].target = config.default_output_profile.target;
+            }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
@@ -354,6 +397,22 @@ void AppConfig::Save() const {
             output << "  \"" << TomlEscape(FormatPairedDeviceEntry(entry)) << "\",\n";
         }
         output << "]\n";
+    }
+    output << "\n[output]\n";
+    output << "target = \"" << OutputTargetName(default_output_profile.target) << "\"\n";
+    output << "transform = \"" << TextTransformName(default_output_profile.transform) << "\"\n";
+    output << "translation_target = \"" << TomlEscape(default_output_profile.translation_target) << "\"\n";
+    for (const auto& [device_id, profile] : device_output_profiles) {
+        if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
+            continue;
+        }
+        OutputProfile comparable = profile;
+        comparable.target = default_output_profile.target;
+        OutputProfile default_comparable = default_output_profile;
+        if (comparable == default_comparable) continue;
+        output << "\n[device." << device_id << ".output]\n";
+        output << "transform = \"" << TextTransformName(profile.transform) << "\"\n";
+        output << "translation_target = \"" << TomlEscape(profile.translation_target) << "\"\n";
     }
 }
 
@@ -420,7 +479,18 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
         paired_device_ids.end());
     device_theme_colors.erase(device_id);
     device_overlay_positions.erase(device_id);
+    device_output_profiles.erase(device_id);
     Save();
+}
+
+OutputProfile AppConfig::OutputProfileForDevice(const std::optional<std::string>& device_id) const {
+    if (!device_id.has_value()) return default_output_profile;
+    const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
+    auto it = device_output_profiles.find(normalized);
+    if (it == device_output_profiles.end()) return default_output_profile;
+    OutputProfile profile = it->second;
+    profile.target = default_output_profile.target;
+    return profile;
 }
 
 std::string AsrProviderName(AsrProvider provider) {
@@ -504,6 +574,30 @@ std::string OverlayPositionDisplayName(OverlayPosition position) {
     default:
         return "Center";
     }
+}
+
+std::string OutputTargetName(OutputTarget target) {
+    return target == OutputTarget::kSubtitle ? "subtitle" : "focused_app";
+}
+
+OutputTarget OutputTargetFromName(std::string_view name) {
+    return name == "subtitle" ? OutputTarget::kSubtitle : OutputTarget::kFocusedApp;
+}
+
+std::string OutputTargetDisplayName(OutputTarget target) {
+    return target == OutputTarget::kSubtitle ? "Subtitle" : "Focused App";
+}
+
+std::string TextTransformName(TextTransform transform) {
+    return transform == TextTransform::kTranslate ? "translate" : "original";
+}
+
+TextTransform TextTransformFromName(std::string_view name) {
+    return name == "translate" ? TextTransform::kTranslate : TextTransform::kOriginal;
+}
+
+std::string TextTransformDisplayName(TextTransform transform) {
+    return transform == TextTransform::kTranslate ? "Translate" : "Original";
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {

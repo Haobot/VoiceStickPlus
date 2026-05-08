@@ -25,10 +25,13 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
                                              std::unique_ptr<BleCentral> ble,
                                              std::unique_ptr<AsrClient> asr,
                                              VoiceStickUi* ui,
-                                             InputInjector* input_injector)
+                                             InputInjector* input_injector,
+                                             std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory)
     : config_(std::move(config)),
       ble_(std::move(ble)),
       asr_(std::move(asr)),
+      asr_factory_(std::move(asr_factory)),
+      translator_(config_),
       ui_(ui),
       input_injector_(input_injector),
       debug_audio_recorder_(config_.debug_audio_cache, config_.debug_audio_directory),
@@ -42,8 +45,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
 }
 
 VoiceStickCoordinator::~VoiceStickCoordinator() {
-    Shutdown();
     alive_->store(false);
+    Shutdown();
     if (firmware_manifest_thread_.joinable()) {
         firmware_manifest_thread_.join();
     }
@@ -51,6 +54,7 @@ VoiceStickCoordinator::~VoiceStickCoordinator() {
 
 void VoiceStickCoordinator::Start() {
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
+        if (is_shutdown_) return;
         ui_->SetConnectedDevices(devices);
         CancelActiveCycleIfDeviceDisconnected();
         RefreshFirmwareAvailability();
@@ -58,16 +62,20 @@ void VoiceStickCoordinator::Start() {
         ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
+        if (is_shutdown_) return;
         ui_->SetPairingError(device_id, message);
     };
     ble_->on_scan_error = [this](std::string message) {
+        if (is_shutdown_) return;
         LogCoordinatorLine("BLE scan error: " + message);
         ui_->SetStatus("Turn on Bluetooth");
     };
     ble_->on_state_event = [this](std::string device_id, StateEvent event) {
+        if (is_shutdown_) return;
         HandleStateEvent(event, device_id);
     };
     ble_->on_audio_frame = [this](std::string device_id, AudioFrame frame) {
+        if (is_shutdown_) return;
         HandleAudioFrame(frame, device_id);
     };
     ConfigureAsrCallbacks();
@@ -83,7 +91,20 @@ void VoiceStickCoordinator::Start() {
 }
 
 void VoiceStickCoordinator::Shutdown() {
+    if (is_shutdown_) return;
+    is_shutdown_ = true;
+    ble_->on_connection_change = nullptr;
+    ble_->on_connection_error = nullptr;
+    ble_->on_scan_error = nullptr;
+    ble_->on_state_event = nullptr;
+    ble_->on_audio_frame = nullptr;
     asr_->Cancel();
+    for (auto& [_, cycle] : subtitle_cycles_) {
+        if (cycle->asr) cycle->asr->Cancel();
+        cycle->debug_audio_recorder.Discard();
+    }
+    subtitle_cycles_.clear();
+    ui_->HideSubtitles();
     active_session_id_.reset();
     active_device_id_.reset();
     active_session_started_at_ = {};
@@ -94,9 +115,15 @@ void VoiceStickCoordinator::Shutdown() {
 
 void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     const bool was_recognizing = asr_started_ || active_session_id_.has_value() ||
-                                 !pending_paste_state_.IsIdle();
+                                 !pending_paste_state_.IsIdle() || !subtitle_cycles_.empty();
     if (was_recognizing) {
         asr_->Cancel();
+        for (auto& [_, cycle] : subtitle_cycles_) {
+            if (cycle->asr) cycle->asr->Cancel();
+            cycle->debug_audio_recorder.Discard();
+        }
+        subtitle_cycles_.clear();
+        ui_->HideSubtitles();
         active_session_id_.reset();
         pending_paste_state_ = {};
         debug_audio_recorder_.Discard();
@@ -105,8 +132,13 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     }
 
     config_ = std::move(config);
+    translator_ = LLMTranslationClient(config_);
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
+    if (asr_factory_) {
+        asr_ = asr_factory_(config_);
+        ConfigureAsrCallbacks();
+    }
     if (paired_device_ids_ != config_.paired_device_ids) {
         paired_device_ids_ = config_.paired_device_ids;
         ui_->SetPairedDeviceIds(paired_device_ids_);
@@ -222,11 +254,32 @@ void VoiceStickCoordinator::ConfigureAsrCallbacks() {
         ui_->ShowPartial(text, active_device_id_);
         SendUiStateForActiveDevice("thinking", text);
     };
+    asr_->on_segment = [this](AsrSegment segment) {
+        HandleDefiniteSegment(segment);
+    };
     asr_->on_final = [this](std::string text) {
         FinishWithFinalText(text);
     };
     asr_->on_error = [this](std::string message) {
         FinishWithAsrError(message);
+    };
+}
+
+void VoiceStickCoordinator::ConfigureSubtitleAsrCallbacks(SubtitleCycle* cycle) {
+    if (!cycle || !cycle->asr) return;
+    const auto device_id = cycle->device_id;
+    cycle->asr->on_partial = [this, device_id](std::string text) {
+        ui_->ShowPartial(text, device_id);
+        ble_->SendUiState("thinking", text, device_id);
+    };
+    cycle->asr->on_segment = [this, device_id](AsrSegment segment) {
+        HandleSubtitleDefiniteSegment(segment, device_id);
+    };
+    cycle->asr->on_final = [this, device_id](std::string text) {
+        FinishSubtitleCycleWithFinalText(device_id, text);
+    };
+    cycle->asr->on_error = [this, device_id](std::string message) {
+        FinishSubtitleCycleWithError(device_id, message);
     };
 }
 
@@ -251,12 +304,20 @@ void VoiceStickCoordinator::HandleButtonUp(const StateEvent& event, const std::s
     if (event.button == "primary") {
         HandlePrimaryButtonUp(device_id);
     } else if (event.button == "secondary") {
+        if (subtitle_cycles_.contains(device_id)) {
+            CancelSubtitleCycle(device_id, "secondary_cancel");
+            return;
+        }
         CancelPendingPaste(device_id);
     }
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
                                                        const std::string& device_id) {
+    if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
+        HandleSubtitlePrimaryButtonDown(session_id, device_id);
+        return;
+    }
     if (HandleFrontButtonDuringPendingPaste(device_id)) return;
     if (IsWaitingForFinalText()) {
         RefreshDeviceUiState(device_id);
@@ -290,6 +351,10 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonUp(const std::string& device_id) {
+    if (subtitle_cycles_.contains(device_id)) {
+        HandleSubtitlePrimaryButtonUp(device_id);
+        return;
+    }
     std::lock_guard lock(audio_mutex_);
     if (!active_session_id_.has_value() || active_device_id_ != device_id) return;
     const double duration = CurrentRecordingDurationSeconds();
@@ -305,6 +370,10 @@ void VoiceStickCoordinator::HandlePrimaryButtonUp(const std::string& device_id) 
 
 void VoiceStickCoordinator::HandleAudioFrame(const AudioFrame& frame, const std::string& device_id) {
     const auto t0 = std::chrono::steady_clock::now();
+    if (subtitle_cycles_.contains(device_id)) {
+        HandleSubtitleAudioFrame(frame, device_id);
+        return;
+    }
     std::lock_guard lock(audio_mutex_);
     if (!active_session_id_.has_value() || frame.session_id != *active_session_id_ || active_device_id_ != device_id) {
         return;
@@ -340,6 +409,130 @@ void VoiceStickCoordinator::HandleAudioFrame(const AudioFrame& frame, const std:
     }
 }
 
+void VoiceStickCoordinator::HandleSubtitlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
+                                                            const std::string& device_id) {
+    if (!session_id.has_value() || subtitle_cycles_.contains(device_id)) return;
+    if (!asr_factory_) {
+        ui_->ShowError("Subtitle ASR is not available", device_id, [this, device_id] {
+            ble_->SendUiState("ready", "", device_id);
+        });
+        return;
+    }
+    auto cycle = std::make_unique<SubtitleCycle>();
+    cycle->device_id = device_id;
+    cycle->session_id = *session_id;
+    cycle->started_at = std::chrono::steady_clock::now();
+    cycle->asr = asr_factory_(config_);
+    cycle->debug_audio_recorder = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
+    ConfigureSubtitleAsrCallbacks(cycle.get());
+    cycle->debug_audio_recorder.Start(device_id, session_id);
+    subtitle_cycles_[device_id] = std::move(cycle);
+    ui_->ShowListening(device_id);
+    ble_->SendUiState("recording", "", device_id);
+}
+
+void VoiceStickCoordinator::HandleSubtitlePrimaryButtonUp(const std::string& device_id) {
+    auto it = subtitle_cycles_.find(device_id);
+    if (it == subtitle_cycles_.end()) return;
+    auto* cycle = it->second.get();
+    const double duration = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - cycle->started_at).count();
+    if (duration < kMinimumRecordingDurationSeconds) {
+        CancelSubtitleCycle(device_id, "short_recording");
+    } else if (cycle->received_audio_frames == 0) {
+        FinishSubtitleCycleWithError(device_id, "No audio frames from device");
+    } else {
+        ble_->SendUiState("thinking", "", device_id);
+        SendSubtitleFinalOggChunkIfNeeded(device_id);
+    }
+}
+
+void VoiceStickCoordinator::HandleSubtitleAudioFrame(const AudioFrame& frame, const std::string& device_id) {
+    auto it = subtitle_cycles_.find(device_id);
+    if (it == subtitle_cycles_.end()) return;
+    auto* cycle = it->second.get();
+    if (frame.session_id != cycle->session_id) return;
+    if (frame.IsEnd() && frame.payload.empty()) {
+        SendSubtitleFinalOggChunkIfNeeded(device_id);
+        return;
+    }
+    if (frame.payload.empty()) return;
+    if (cycle->last_audio_seq.has_value() && frame.seq != *cycle->last_audio_seq + 1) {
+        LogCoordinatorLine("subtitle audio seq gap dev=VS-" + device_id +
+                           " session=" + std::to_string(cycle->session_id) +
+                           " expected=" + std::to_string(*cycle->last_audio_seq + 1) +
+                           " got=" + std::to_string(frame.seq));
+    }
+    cycle->last_audio_seq = frame.seq;
+    ++cycle->received_audio_frames;
+    const double duration = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - cycle->started_at).count();
+    auto ogg_chunk = cycle->ogg_muxer.Append(frame.payload, frame.IsEnd());
+    cycle->debug_audio_recorder.Append(ogg_chunk);
+    SendOrBufferSubtitleOggChunk(cycle, ogg_chunk, frame.IsEnd(),
+                                 duration >= kMinimumRecordingDurationSeconds);
+    if (frame.IsEnd()) {
+        cycle->sent_final_audio_chunk = true;
+        cycle->debug_audio_recorder.Finish();
+        ble_->SendUiState("thinking", "", device_id);
+    }
+}
+
+void VoiceStickCoordinator::SendSubtitleFinalOggChunkIfNeeded(const std::string& device_id) {
+    auto it = subtitle_cycles_.find(device_id);
+    if (it == subtitle_cycles_.end()) return;
+    auto* cycle = it->second.get();
+    if (cycle->sent_final_audio_chunk) return;
+    cycle->sent_final_audio_chunk = true;
+    const double duration = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - cycle->started_at).count();
+    if (!cycle->asr_started && duration < kMinimumRecordingDurationSeconds) {
+        CancelSubtitleCycle(device_id, "short_recording");
+        return;
+    }
+    auto final_chunk = cycle->ogg_muxer.Finish();
+    cycle->debug_audio_recorder.Append(final_chunk);
+    cycle->debug_audio_recorder.Finish();
+    SendOrBufferSubtitleOggChunk(cycle, final_chunk, true, true);
+}
+
+void VoiceStickCoordinator::SendOrBufferSubtitleOggChunk(SubtitleCycle* cycle,
+                                                         const ByteVector& chunk,
+                                                         bool is_last,
+                                                         bool can_start_asr) {
+    if (!cycle || !cycle->asr) return;
+    if (cycle->asr_started) {
+        cycle->asr->SendOggOpusChunk(chunk, is_last);
+        return;
+    }
+    cycle->buffered_ogg_chunks.push_back(chunk);
+    if (can_start_asr && !StartSubtitleAsrAndFlushBufferedChunks(cycle, is_last)) {
+        FinishSubtitleCycleWithError(cycle->device_id, "Failed to start ASR");
+    }
+}
+
+bool VoiceStickCoordinator::StartSubtitleAsrAndFlushBufferedChunks(SubtitleCycle* cycle,
+                                                                   bool last_chunk_is_final) {
+    if (!cycle || !cycle->asr) return false;
+    if (cycle->asr_started) return true;
+    AsrSessionOptions options;
+    options.hotwords = config_.asr_hotwords;
+    const bool use_definite_segments = ShouldUseDefiniteSegments(OutputProfileForDevice(cycle->device_id));
+    options.show_utterances = use_definite_segments;
+    options.result_type = use_definite_segments ? AsrResultType::kSingle : AsrResultType::kFull;
+    if (!cycle->asr->Start(options)) {
+        cycle->buffered_ogg_chunks.clear();
+        return false;
+    }
+    cycle->asr_started = true;
+    for (std::size_t i = 0; i < cycle->buffered_ogg_chunks.size(); ++i) {
+        const bool is_last = (i + 1 == cycle->buffered_ogg_chunks.size()) && last_chunk_is_final;
+        cycle->asr->SendOggOpusChunk(cycle->buffered_ogg_chunks[i], is_last);
+    }
+    cycle->buffered_ogg_chunks.clear();
+    return true;
+}
+
 void VoiceStickCoordinator::SendFinalOggChunkIfNeeded(double recording_duration_seconds) {
     if (sent_final_audio_chunk_) return;
     sent_final_audio_chunk_ = true;
@@ -368,7 +561,13 @@ void VoiceStickCoordinator::SendOrBufferOggChunk(const ByteVector& chunk, bool i
 
 bool VoiceStickCoordinator::StartAsrAndFlushBufferedChunks(bool last_chunk_is_final) {
     if (asr_started_) return true;
-    if (!asr_->Start()) {
+    AsrSessionOptions options;
+    options.hotwords = config_.asr_hotwords;
+    const auto profile = OutputProfileForDevice(active_device_id_);
+    const bool use_definite_segments = ShouldUseDefiniteSegments(profile);
+    options.show_utterances = use_definite_segments;
+    options.result_type = use_definite_segments ? AsrResultType::kSingle : AsrResultType::kFull;
+    if (!asr_->Start(options)) {
         buffered_ogg_chunks_.clear();
         return false;
     }
@@ -392,6 +591,16 @@ void VoiceStickCoordinator::CancelShortRecording() {
 void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
     if (pasted_final_text_) return;
     pasted_final_text_ = true;
+    const auto profile = OutputProfileForDevice(active_device_id_);
+    if (profile.target == OutputTarget::kSubtitle) {
+        if (!text.empty() && active_device_id_.has_value()) {
+            ShowSubtitleText(text, profile, *active_device_id_);
+        }
+        pending_paste_state_ = {};
+        FinishRecognitionCycle();
+        EnterReady("subtitle_final_done");
+        return;
+    }
     if (text.empty()) {
         pending_paste_state_ = {};
         ui_->ShowFinalCountdown("No speech", active_device_id_, [this] {
@@ -400,10 +609,109 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
         });
         return;
     }
+    if (profile.transform == TextTransform::kTranslate) {
+        ui_->SetStatus("Translating");
+        TransformText(text, profile, [this](bool ok, std::string result) {
+            if (ok) {
+                last_recoverable_text_ = result;
+                last_recoverable_device_id_ = active_device_id_;
+                ui_->SetHasRecoverableInput(true);
+                EnterPendingConfirmation(result, "translation_final");
+            } else {
+                FinishWithAsrError(result);
+            }
+        });
+        return;
+    }
     last_recoverable_text_ = text;
     last_recoverable_device_id_ = active_device_id_;
     ui_->SetHasRecoverableInput(true);
     EnterPendingConfirmation(text, "asr_final");
+}
+
+void VoiceStickCoordinator::HandleDefiniteSegment(const AsrSegment& segment) {
+    if (!segment.definite || !active_device_id_.has_value()) return;
+    const auto profile = OutputProfileForDevice(active_device_id_);
+    if (!ShouldUseDefiniteSegments(profile)) return;
+    ui_->HideOverlay();
+    ShowSubtitleText(segment.text, profile, *active_device_id_);
+}
+
+void VoiceStickCoordinator::HandleSubtitleDefiniteSegment(const AsrSegment& segment,
+                                                          const std::string& device_id) {
+    if (!segment.definite || !subtitle_cycles_.contains(device_id)) return;
+    const auto profile = OutputProfileForDevice(device_id);
+    if (!ShouldUseDefiniteSegments(profile)) return;
+    ui_->HideOverlay();
+    ShowSubtitleText(segment.text, profile, device_id);
+}
+
+void VoiceStickCoordinator::FinishSubtitleCycleWithFinalText(const std::string& device_id,
+                                                             const std::string& text) {
+    auto it = subtitle_cycles_.find(device_id);
+    if (it == subtitle_cycles_.end() || it->second->finished_final_text) return;
+    it->second->finished_final_text = true;
+    const auto profile = OutputProfileForDevice(device_id);
+    if (!text.empty()) {
+        ShowSubtitleText(text, profile, device_id);
+    }
+    FinishSubtitleCycle(device_id, true);
+}
+
+void VoiceStickCoordinator::FinishSubtitleCycleWithError(const std::string& device_id,
+                                                         const std::string& message) {
+    auto it = subtitle_cycles_.find(device_id);
+    if (it == subtitle_cycles_.end()) return;
+    LogCoordinatorLine("subtitle ASR error VS-" + device_id + ": " + message);
+    if (it->second->asr) it->second->asr->Cancel();
+    it->second->debug_audio_recorder.Discard();
+    ui_->ShowError(message, device_id, [this, device_id] {
+        ble_->SendUiState("ready", "", device_id);
+    });
+    subtitle_cycles_.erase(it);
+}
+
+void VoiceStickCoordinator::CancelSubtitleCycle(const std::string& device_id, std::string_view reason) {
+    auto it = subtitle_cycles_.find(device_id);
+    if (it == subtitle_cycles_.end()) return;
+    LogCoordinatorLine("cancel subtitle cycle VS-" + device_id + " reason=" + std::string(reason));
+    if (it->second->asr) it->second->asr->Cancel();
+    it->second->debug_audio_recorder.Discard();
+    ui_->HideOverlay();
+    ble_->SendUiState("ready", "", device_id);
+    subtitle_cycles_.erase(it);
+}
+
+void VoiceStickCoordinator::FinishSubtitleCycle(const std::string& device_id, bool hide_overlay) {
+    auto it = subtitle_cycles_.find(device_id);
+    if (it == subtitle_cycles_.end()) return;
+    if (hide_overlay) ui_->HideOverlay();
+    ui_->SetStatus("Ready");
+    ble_->SendUiState("ready", "", device_id);
+    subtitle_cycles_.erase(it);
+}
+
+void VoiceStickCoordinator::ShowSubtitleText(const std::string& text,
+                                             const OutputProfile& profile,
+                                             const std::string& device_id) {
+    TransformText(text, profile, [this, device_id](bool ok, std::string result) {
+        if (ok) {
+            ui_->HideOverlay();
+            ui_->ShowSubtitle(result, device_id, ThemeColorForDevice(device_id));
+        } else {
+            ui_->ShowError(result, device_id, [] {});
+        }
+    });
+}
+
+void VoiceStickCoordinator::TransformText(const std::string& text,
+                                          const OutputProfile& profile,
+                                          std::function<void(bool, std::string)> completion) {
+    if (profile.transform != TextTransform::kTranslate) {
+        completion(true, text);
+        return;
+    }
+    translator_.Translate(text, profile.translation_target, config_.asr_hotwords, std::move(completion));
 }
 
 void VoiceStickCoordinator::FinishWithAsrError(const std::string& message) {
@@ -478,6 +786,17 @@ void VoiceStickCoordinator::CancelRecognitionInProgress() {
 }
 
 void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
+    if (is_shutdown_) return;
+    for (auto it = subtitle_cycles_.begin(); it != subtitle_cycles_.end();) {
+        if (!ble_->IsConnected(it->first)) {
+            if (it->second->asr) it->second->asr->Cancel();
+            it->second->debug_audio_recorder.Discard();
+            ui_->HideOverlay();
+            it = subtitle_cycles_.erase(it);
+        } else {
+            ++it;
+        }
+    }
     if (active_device_id_.has_value() && !ble_->IsConnected(*active_device_id_)) {
         asr_->Cancel();
         pending_paste_state_ = {};
@@ -729,6 +1048,20 @@ void VoiceStickCoordinator::RefreshDeviceUiState(const std::string& device_id) {
 
 void VoiceStickCoordinator::SendUiStateForActiveDevice(const std::string& state, const std::string& text) {
     ble_->SendUiState(state, text, active_device_id_);
+}
+
+OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<std::string>& device_id) const {
+    return config_.OutputProfileForDevice(device_id);
+}
+
+OverlayThemeColor VoiceStickCoordinator::ThemeColorForDevice(const std::string& device_id) const {
+    auto it = config_.device_theme_colors.find(device_id);
+    return it == config_.device_theme_colors.end() ? OverlayThemeColor::kWhite : it->second;
+}
+
+bool VoiceStickCoordinator::ShouldUseDefiniteSegments(const OutputProfile& profile) const {
+    return profile.target == OutputTarget::kSubtitle &&
+           config_.interaction_mode == InteractionMode::kClickToTalk;
 }
 
 double VoiceStickCoordinator::CurrentRecordingDurationSeconds() const {

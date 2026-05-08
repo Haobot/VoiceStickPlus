@@ -65,7 +65,8 @@ public:
 
 class FakeAsrClient : public AsrClient {
 public:
-    bool Start() override {
+    bool Start(AsrSessionOptions options = {}) override {
+        last_options = std::move(options);
         started = true;
         return start_result;
     }
@@ -82,6 +83,7 @@ public:
     bool cancelled = false;
     int sent_chunks = 0;
     bool last_chunk_was_final = false;
+    AsrSessionOptions last_options;
 };
 
 class FakeUi : public VoiceStickUi {
@@ -139,6 +141,14 @@ public:
         ++hide_overlay_count;
         if (on_hidden) on_hidden();
     }
+    void ShowSubtitle(const std::string& text,
+                      const std::string& device_id,
+                      OverlayThemeColor color) override {
+        subtitles.push_back(device_id + ":" + text + ":" + OverlayThemeColorName(color));
+    }
+    void HideSubtitles() override {
+        ++hide_subtitles_count;
+    }
 
     std::vector<std::string> statuses;
     std::vector<ConnectedDevice> connected_devices;
@@ -151,11 +161,13 @@ public:
     std::vector<std::string> final_countdowns;
     std::vector<std::string> paused_finals;
     std::vector<std::string> errors;
+    std::vector<std::string> subtitles;
     std::function<void()> final_countdown_completion;
     std::function<void()> error_completion;
     bool has_recoverable_input_set = false;
     int show_listening_count = 0;
     int hide_overlay_count = 0;
+    int hide_subtitles_count = 0;
 };
 
 class FakeInputInjector : public InputInjector {
@@ -299,6 +311,30 @@ void TestAsrProtocol() {
     assert(parsed_event->event == AsrEvent::kAsrResponse);
     assert(parsed_event->session_id == session_id);
     assert(AsrProtocol::ExtractTranscript(parsed_event->payload_text) == "hi");
+
+    AsrSessionOptions options;
+    options.hotwords = {"VoiceStick"};
+    options.show_utterances = true;
+    options.result_type = AsrResultType::kSingle;
+    auto utterance_request = AsrProtocol::MakeClientRequestFrame(config, options);
+    const std::string utterance_payload(
+        reinterpret_cast<const char*>(utterance_request.data() + 8),
+        utterance_request.size() - 8);
+    assert(utterance_payload.find("\"show_utterances\":true") != std::string::npos);
+    assert(utterance_payload.find("\"result_type\":\"single\"") != std::string::npos);
+
+    const std::string segment_json =
+        "{\"result\":{\"text\":\"hello world\",\"utterances\":["
+        "{\"text\":\"hello\",\"definite\":true,\"start_time\":0,\"end_time\":500},"
+        "{\"text\":\"world\",\"definite\":false,\"start_time\":500,\"end_time\":900}]}}";
+    auto segments = AsrProtocol::ExtractSegments(segment_json);
+    assert(segments.size() == 2);
+    assert(segments[0].text == "hello");
+    assert(segments[0].definite);
+    std::set<std::string> emitted;
+    auto definite = AsrProtocol::ExtractNewDefiniteSegments(segment_json, &emitted);
+    assert(definite.size() == 1);
+    assert(AsrProtocol::ExtractNewDefiniteSegments(segment_json, &emitted).empty());
 }
 
 void TestAppConfig() {
@@ -332,6 +368,19 @@ void TestAppConfig() {
     assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);
     assert(OverlayPositionName(OverlayPosition::kBottomLeft) == "bottom_left");
     assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");
+    cache.default_output_profile.target = OutputTarget::kSubtitle;
+    cache.default_output_profile.transform = TextTransform::kOriginal;
+    cache.device_output_profiles["5A74"] = OutputProfile{
+        OutputTarget::kSubtitle,
+        TextTransform::kTranslate,
+        "zh-Hans",
+    };
+    auto profile = cache.OutputProfileForDevice(std::optional<std::string>("5A74"));
+    assert(profile.target == OutputTarget::kSubtitle);
+    assert(profile.transform == TextTransform::kTranslate);
+    assert(profile.translation_target == "zh-Hans");
+    assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
+    assert(TextTransformFromName("translate") == TextTransform::kTranslate);
     const auto hotwords = ParseHotwordList(" 小智,VoiceStick\r\n小智\n豆包 ");
     assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));
 }
@@ -466,6 +515,50 @@ void TestCoordinatorOtherDeviceDuringRecordingGetsReady() {
     assert(ble_ptr->sent_ui_states.back().device_id == std::optional<std::string>("6B85"));
 }
 
+void TestCoordinatorSubtitleOutputSkipsPaste() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    FakeAsrClient* subtitle_asr_ptr = nullptr;
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    config.device_theme_colors["5A74"] = OverlayThemeColor::kBlue;
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [&](const AppConfig&) {
+            auto asr = std::make_unique<FakeAsrClient>();
+            subtitle_asr_ptr = asr.get();
+            return asr;
+        });
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 12));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(12, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
+    assert(subtitle_asr_ptr != nullptr);
+    assert(subtitle_asr_ptr->started);
+    assert(subtitle_asr_ptr->last_options.show_utterances);
+    assert(subtitle_asr_ptr->last_options.result_type == AsrResultType::kSingle);
+    subtitle_asr_ptr->on_partial("interim subtitle");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "interim subtitle");
+    subtitle_asr_ptr->on_final("hello subtitle");
+
+    assert(input.pasted_text.empty());
+    assert(!ui.subtitles.empty());
+    assert(ui.subtitles.back() == "5A74:hello subtitle:blue");
+    assert(ui.hide_overlay_count > 0);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
 } // namespace
 
 int main() {
@@ -481,5 +574,6 @@ int main() {
     TestCoordinatorSecondaryCancelsFinalizing();
     TestCoordinatorPrimaryPausesPendingConfirmation();
     TestCoordinatorOtherDeviceDuringRecordingGetsReady();
+    TestCoordinatorSubtitleOutputSkipsPaste();
     return 0;
 }

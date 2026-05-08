@@ -33,6 +33,7 @@ add_library(voicestick_core
     src/ble_protocol.cc
     src/debug_audio_recorder.cc
     src/firmware_manifest.cc
+    src/llm_translation_client.cc
     third_party/cjson/cJSON.c
     src/log.cc
     src/ogg_crc.cc
@@ -53,6 +54,7 @@ add_executable(VoiceStickApp WIN32
     src/ble_central_win.cc
     src/firmware_update_dialog.cc
     src/overlay_window.cc
+    src/subtitle_window.cc
     src/pair_device_dialog.cc
     src/settings_dialog.cc
     resources/VoiceStick.rc

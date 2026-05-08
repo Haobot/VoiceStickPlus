@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <exception>
+#include <iterator>
 #include <optional>
 
 namespace voicestick {
@@ -28,6 +29,8 @@ constexpr UINT kMenuCheckAppUpdates = 1008;
 constexpr UINT kMenuHoldToTalk = 1009;
 constexpr UINT kMenuClickToTalk = 1010;
 constexpr UINT kMenuAutoEnter = 1011;
+constexpr UINT kMenuOutputFocusedApp = 1012;
+constexpr UINT kMenuOutputSubtitle = 1013;
 constexpr UINT kMenuForgetBase = 2100;
 constexpr UINT kMenuForgetEnd = 2199;
 constexpr UINT kMenuUpdateFirmwareBase = 2200;
@@ -36,7 +39,10 @@ constexpr UINT kMenuThemeColorBase = 2300;
 constexpr UINT kMenuThemeColorEnd = 2899;
 constexpr UINT kMenuOverlayPositionBase = 2900;
 constexpr UINT kMenuOverlayPositionEnd = 3399;
+constexpr UINT kMenuTranslationBase = 3400;
+constexpr UINT kMenuTranslationEnd = 5799;
 constexpr UINT kMenuOptionsPerDevice = 6;
+constexpr UINT kMenuTranslationsPerDevice = 24;
 
 #ifndef VOICESTICK_APPCAST_URL
 #define VOICESTICK_APPCAST_URL "https://78.github.io/voicestick/appcast.xml"
@@ -85,6 +91,34 @@ constexpr OverlayPosition kOverlayPositions[] = {
     OverlayPosition::kBottomRight,
 };
 
+struct TranslationTarget {
+    const char* code;
+    const wchar_t* name;
+};
+
+constexpr TranslationTarget kTranslationTargets[] = {
+    {"en", L"English"},
+    {"zh-Hans", L"Chinese (Simplified)"},
+    {"zh-Hant", L"Chinese (Traditional)"},
+    {"ja", L"Japanese"},
+    {"ko", L"Korean"},
+    {"ru", L"Russian"},
+    {"fr", L"French"},
+    {"de", L"German"},
+    {"es", L"Spanish"},
+    {"it", L"Italian"},
+    {"pt", L"Portuguese"},
+    {"nl", L"Dutch"},
+    {"sv", L"Swedish"},
+    {"pl", L"Polish"},
+    {"tr", L"Turkish"},
+    {"ar", L"Arabic"},
+    {"hi", L"Hindi"},
+    {"id", L"Indonesian"},
+    {"vi", L"Vietnamese"},
+    {"th", L"Thai"},
+};
+
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
@@ -122,7 +156,10 @@ int Win32App::Run() {
         std::move(ble),
         std::make_unique<AsrClientWin>(config_),
         this,
-        &input_injector_);
+        &input_injector_,
+        [](const AppConfig& config) {
+            return std::make_unique<AsrClientWin>(config);
+        });
     coordinator_->Start();
 
     for (const auto& entry : config_.paired_devices) {
@@ -287,6 +324,20 @@ void Win32App::HideOverlay(std::function<void()> on_hidden) {
     });
 }
 
+void Win32App::ShowSubtitle(const std::string& text,
+                            const std::string& device_id,
+                            OverlayThemeColor color) {
+    DispatchToUi([this, text, device_id, color] {
+        if (subtitles_) subtitles_->ShowSubtitle(text, device_id, color);
+    });
+}
+
+void Win32App::HideSubtitles() {
+    DispatchToUi([this] {
+        if (subtitles_) subtitles_->HideAll();
+    });
+}
+
 LRESULT CALLBACK Win32App::WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
     auto* app = reinterpret_cast<Win32App*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -346,6 +397,14 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             config_.auto_enter = !config_.auto_enter;
             SaveInputOptions();
             return 0;
+        case kMenuOutputFocusedApp:
+            config_.default_output_profile.target = OutputTarget::kFocusedApp;
+            SaveInputOptions();
+            return 0;
+        case kMenuOutputSubtitle:
+            config_.default_output_profile.target = OutputTarget::kSubtitle;
+            SaveInputOptions();
+            return 0;
         case kMenuSettings:
             ShowSettings();
             return 0;
@@ -382,6 +441,23 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size() &&
                     position_index < (sizeof(kOverlayPositions) / sizeof(kOverlayPositions[0]))) {
                     SaveDeviceOverlayPosition(paired_device_ids_[index], kOverlayPositions[position_index]);
+                }
+            } else if (cmd >= kMenuTranslationBase && cmd <= kMenuTranslationEnd) {
+                const std::size_t offset = cmd - kMenuTranslationBase;
+                const std::size_t index = offset / kMenuTranslationsPerDevice;
+                const std::size_t translation_index = offset % kMenuTranslationsPerDevice;
+                if (index < paired_device_ids_.size()) {
+                    auto profile = config_.OutputProfileForDevice(paired_device_ids_[index]);
+                    if (translation_index == 0) {
+                        profile.transform = TextTransform::kOriginal;
+                    } else {
+                        const std::size_t target_index = translation_index - 1;
+                        if (target_index < std::size(kTranslationTargets)) {
+                            profile.transform = TextTransform::kTranslate;
+                            profile.translation_target = kTranslationTargets[target_index].code;
+                        }
+                    }
+                    SaveDeviceOutputProfile(paired_device_ids_[index], profile);
                 }
             }
             return 0;
@@ -433,6 +509,7 @@ bool Win32App::CreateWindowInternal() {
     if (!hwnd_) return false;
 
     overlay_ = std::make_unique<OverlayWindow>(instance_, hwnd_);
+    subtitles_ = std::make_unique<SubtitleWindow>(instance_, hwnd_);
     return true;
 }
 
@@ -549,6 +626,27 @@ void Win32App::ShowTrayMenu() {
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(position_menu), L"Overlay Position");
 
+        HMENU translation_menu = CreatePopupMenu();
+        const auto current_profile = config_.OutputProfileForDevice(id);
+        AppendMenuW(
+            translation_menu,
+            MF_STRING | (current_profile.transform == TextTransform::kOriginal ? MF_CHECKED : 0),
+            kMenuTranslationBase + static_cast<UINT>(i * kMenuTranslationsPerDevice),
+            L"Original");
+        AppendMenuW(translation_menu, MF_SEPARATOR, 0, nullptr);
+        for (std::size_t target_index = 0; target_index < std::size(kTranslationTargets); ++target_index) {
+            const auto& target = kTranslationTargets[target_index];
+            const auto checked = current_profile.transform == TextTransform::kTranslate &&
+                                 current_profile.translation_target == target.code;
+            auto title = std::wstring(L"Translate to ") + target.name;
+            AppendMenuW(
+                translation_menu,
+                MF_STRING | (checked ? MF_CHECKED : 0),
+                kMenuTranslationBase + static_cast<UINT>(i * kMenuTranslationsPerDevice + target_index + 1),
+                title.c_str());
+        }
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu), L"Translation");
+
         if (firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
             if (firmware.is_checking) {
@@ -595,6 +693,18 @@ void Win32App::ShowTrayMenu() {
                 kMenuClickToTalk,
                 L"Click to Talk");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(interaction_menu), L"Interaction");
+
+    HMENU output_menu = CreatePopupMenu();
+    AppendMenuW(output_menu,
+                MF_STRING | (config_.default_output_profile.target == OutputTarget::kFocusedApp ? MF_CHECKED : 0),
+                kMenuOutputFocusedApp,
+                L"Focused App");
+    AppendMenuW(output_menu,
+                MF_STRING | (config_.default_output_profile.target == OutputTarget::kSubtitle ? MF_CHECKED : 0),
+                kMenuOutputSubtitle,
+                L"Subtitle");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(output_menu), L"Output");
+
     AppendMenuW(menu,
                 MF_STRING | (config_.auto_enter ? MF_CHECKED : 0),
                 kMenuAutoEnter,
@@ -651,6 +761,27 @@ void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPo
     } catch (const std::exception& error) {
         LogLine(std::string("Overlay position save failed: ") + error.what());
         SetStatus("Position save failed");
+    }
+}
+
+void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile) {
+    try {
+        profile.target = config_.default_output_profile.target;
+        OutputProfile default_profile = config_.default_output_profile;
+        default_profile.target = profile.target;
+        if (profile.transform == default_profile.transform &&
+            profile.translation_target == default_profile.translation_target) {
+            config_.device_output_profiles.erase(device_id);
+        } else {
+            config_.device_output_profiles[device_id] = profile;
+        }
+        config_.Save();
+        if (coordinator_) coordinator_->UpdateConfig(config_);
+        LogLine("Output profile saved VS-" + device_id + "=" +
+                TextTransformName(profile.transform) + ":" + profile.translation_target);
+    } catch (const std::exception& error) {
+        LogLine(std::string("Output profile save failed: ") + error.what());
+        SetStatus("Output save failed");
     }
 }
 

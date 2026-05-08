@@ -6,6 +6,7 @@
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
 #include "settings_dialog.h"
+#include "subtitle_window.h"
 #include "voice_stick_coordinator.h"
 
 #include <Windows.h>
@@ -44,6 +45,10 @@ public:
                    const std::optional<std::string>& device_id,
                    std::function<void()> on_complete) override;
     void HideOverlay(std::function<void()> on_hidden = {}) override;
+    void ShowSubtitle(const std::string& text,
+                      const std::string& device_id,
+                      OverlayThemeColor color) override;
+    void HideSubtitles() override;
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -59,6 +64,7 @@ private:
     void SaveInputOptions();
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
+    void SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile);
     void ApplyOverlayStyle(const std::optional<std::string>& device_id);
     void StartFirmwareUpdate(const std::string& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
@@ -80,6 +86,7 @@ private:
     std::unique_ptr<SettingsDialog> settings_dialog_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;
+    std::unique_ptr<SubtitleWindow> subtitles_;
     class BleCentralWin* ble_central_ = nullptr;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;

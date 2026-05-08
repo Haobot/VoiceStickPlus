@@ -10,6 +10,7 @@
 #include <atomic>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <thread>
 #include <vector>
@@ -21,7 +22,7 @@ public:
     explicit AsrClientWin(AppConfig config);
     ~AsrClientWin() override;
 
-    bool Start() override;
+    bool Start(AsrSessionOptions options = {}) override;
     void SendOggOpusChunk(std::span<const std::uint8_t> data, bool is_last) override;
     void Cancel() override;
 
@@ -80,6 +81,8 @@ private:
     SessionState session_state_ = SessionState::kIdle;
     std::string current_session_id_;
     std::string latest_session_transcript_;
+    std::set<std::string> emitted_definite_segment_keys_;
+    AsrSessionOptions session_options_;
     HINTERNET websocket_ = nullptr;
 };
 

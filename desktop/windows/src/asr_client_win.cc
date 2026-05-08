@@ -76,11 +76,16 @@ AsrClientWin::~AsrClientWin() {
     }
 }
 
-bool AsrClientWin::Start() {
+bool AsrClientWin::Start(AsrSessionOptions options) {
     if (config_.ActiveApiKey().empty()) {
         if (on_error) on_error("Missing ASR API key");
         return false;
     }
+    session_options_ = std::move(options);
+    if (session_options_.hotwords.empty()) {
+        session_options_.hotwords = config_.asr_hotwords;
+    }
+    emitted_definite_segment_keys_.clear();
     if (config_.asr_provider == AsrProvider::kVolcengine) {
         return StartReusableSession();
     }
@@ -118,7 +123,7 @@ bool AsrClientWin::StartReusableSession() {
     if (ready_websocket) {
         return SendReusableFrameOrFail(
             ready_websocket,
-            AsrProtocol::MakeStartSessionFrame(config_, ready_session_id),
+            AsrProtocol::MakeStartSessionFrame(config_, ready_session_id, session_options_),
             "start ASR session");
     }
 
@@ -184,11 +189,13 @@ void AsrClientWin::CancelReusableSession() {
     std::lock_guard lock(mutex_);
     queued_audio_chunks_.clear();
     latest_session_transcript_.clear();
+    emitted_definite_segment_keys_.clear();
     if (session_state_ == SessionState::kStarting ||
         session_state_ == SessionState::kStreaming ||
         session_state_ == SessionState::kFinishing) {
         if (websocket_ && !current_session_id_.empty()) {
-            SendFrame(websocket_, AsrProtocol::MakeCancelSessionFrame(config_, current_session_id_));
+            SendFrame(websocket_, AsrProtocol::MakeCancelSessionFrame(
+                config_, current_session_id_, session_options_));
         }
     }
     current_session_id_.clear();
@@ -201,7 +208,7 @@ void AsrClientWin::ShutdownReusableConnection() {
         std::lock_guard lock(mutex_);
         if (websocket_) {
             if (connection_state_ == ConnectionState::kReady) {
-                SendFrame(websocket_, AsrProtocol::MakeFinishConnectionFrame(config_));
+                SendFrame(websocket_, AsrProtocol::MakeFinishConnectionFrame(config_, session_options_));
             }
             WinHttpCloseHandle(websocket_);
             websocket_ = nullptr;
@@ -209,6 +216,7 @@ void AsrClientWin::ShutdownReusableConnection() {
         queued_audio_chunks_.clear();
         current_session_id_.clear();
         latest_session_transcript_.clear();
+        emitted_definite_segment_keys_.clear();
         session_state_ = SessionState::kIdle;
         connection_state_ = ConnectionState::kDisconnected;
     }
@@ -299,7 +307,7 @@ void AsrClientWin::RunWebSocket() {
     WinHttpCloseHandle(request);
     request = nullptr;
 
-    auto client_frame = AsrProtocol::MakeClientRequestFrame(config_);
+    auto client_frame = AsrProtocol::MakeClientRequestFrame(config_, session_options_);
     SendFrame(websocket, client_frame);
     {
         std::lock_guard lock(mutex_);
@@ -397,7 +405,7 @@ void AsrClientWin::RunReusableWebSocket() {
         websocket_ = websocket;
         connection_state_ = ConnectionState::kConnecting;
     }
-    if (!SendReusableFrameOrFail(websocket, AsrProtocol::MakeStartConnectionFrame(config_),
+    if (!SendReusableFrameOrFail(websocket, AsrProtocol::MakeStartConnectionFrame(config_, session_options_),
                                  "start ASR connection")) {
         CloseHandles(session, connect, request, websocket);
         return;
@@ -469,9 +477,19 @@ void AsrClientWin::ReceiveOne(HINTERNET websocket) {
         if (on_error) on_error(response->text);
         if (response->upgrade_url && on_upgrade_url) on_upgrade_url(*response->upgrade_url);
     } else if (response->is_final) {
+        auto segments = AsrProtocol::ExtractNewDefiniteSegments(
+            response->text, &emitted_definite_segment_keys_);
+        for (const auto& segment : segments) {
+            if (on_segment) on_segment(segment);
+        }
         if (on_final) on_final(response->text);
     } else if (!response->text.empty()) {
+        auto segments = AsrProtocol::ExtractNewDefiniteSegments(
+            response->text, &emitted_definite_segment_keys_);
         if (on_partial) on_partial(response->text);
+        for (const auto& segment : segments) {
+            if (on_segment) on_segment(segment);
+        }
     }
 }
 
@@ -522,9 +540,19 @@ void AsrClientWin::HandleReusableResponse(std::span<const std::uint8_t> data, HI
             FailReusableSession(response->text);
             if (response->upgrade_url && on_upgrade_url) on_upgrade_url(*response->upgrade_url);
         } else if (response->is_final) {
+            auto segments = AsrProtocol::ExtractNewDefiniteSegments(
+                response->text, &emitted_definite_segment_keys_);
+            for (const auto& segment : segments) {
+                if (on_segment) on_segment(segment);
+            }
             if (on_final) on_final(response->text);
         } else if (!response->text.empty()) {
+            auto segments = AsrProtocol::ExtractNewDefiniteSegments(
+                response->text, &emitted_definite_segment_keys_);
             if (on_partial) on_partial(response->text);
+            for (const auto& segment : segments) {
+                if (on_segment) on_segment(segment);
+            }
         }
         return;
     }
@@ -542,7 +570,7 @@ void AsrClientWin::HandleReusableResponse(std::span<const std::uint8_t> data, HI
         }
         if (should_start_session && !session_id.empty()) {
             SendReusableFrameOrFail(websocket,
-                                    AsrProtocol::MakeStartSessionFrame(config_, session_id),
+                                    AsrProtocol::MakeStartSessionFrame(config_, session_id, session_options_),
                                     "start ASR session");
         }
         break;
@@ -577,13 +605,19 @@ void AsrClientWin::HandleReusableResponse(std::span<const std::uint8_t> data, HI
     case AsrEvent::kAsrResponse:
     case AsrEvent::kAsrInfo: {
         std::string transcript;
+        std::vector<AsrSegment> segments;
         {
             std::lock_guard lock(mutex_);
             if (response.session_id != current_session_id_) return;
             transcript = AsrProtocol::ExtractTranscript(response.payload_text);
             if (!transcript.empty()) latest_session_transcript_ = transcript;
+            segments = AsrProtocol::ExtractNewDefiniteSegments(
+                response.payload_text, &emitted_definite_segment_keys_);
         }
         if (!transcript.empty() && on_partial) on_partial(transcript);
+        for (const auto& segment : segments) {
+            if (on_segment) on_segment(segment);
+        }
         break;
     }
 
@@ -595,6 +629,7 @@ void AsrClientWin::HandleReusableResponse(std::span<const std::uint8_t> data, HI
             final_text = latest_session_transcript_;
             current_session_id_.clear();
             latest_session_transcript_.clear();
+            emitted_definite_segment_keys_.clear();
             queued_audio_chunks_.clear();
             session_state_ = SessionState::kIdle;
         }
@@ -608,6 +643,7 @@ void AsrClientWin::HandleReusableResponse(std::span<const std::uint8_t> data, HI
             if (response.session_id == current_session_id_) {
                 current_session_id_.clear();
                 latest_session_transcript_.clear();
+                emitted_definite_segment_keys_.clear();
                 queued_audio_chunks_.clear();
                 session_state_ = SessionState::kIdle;
             }
@@ -666,7 +702,8 @@ void AsrClientWin::FinishReusableSessionIfNeeded(HINTERNET websocket) {
         session_state_ = SessionState::kFinishing;
         session_id = current_session_id_;
     }
-    SendReusableFrameOrFail(websocket, AsrProtocol::MakeFinishSessionFrame(config_, session_id),
+    SendReusableFrameOrFail(websocket,
+                            AsrProtocol::MakeFinishSessionFrame(config_, session_id, session_options_),
                             "finish ASR session");
 }
 

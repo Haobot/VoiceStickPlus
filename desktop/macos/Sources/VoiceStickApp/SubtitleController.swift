@@ -206,7 +206,7 @@ final class SubtitleController {
 
     private func laneWidth(for text: String) -> CGFloat {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return 960 }
-        let maxWidth = min(maxLaneWidth, screen.visibleFrame.width * 0.94)
+        let maxWidth = min(maxLaneWidth, screen.visibleFrame.width * 0.86)
         let measured = measuredSingleLineWidth(text)
         return min(maxWidth, max(minLaneWidth, measured + laneChromeWidth))
     }

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,16 @@ enum class OverlayPosition {
     kBottomRight,
 };
 
+enum class OutputTarget {
+    kFocusedApp,
+    kSubtitle,
+};
+
+enum class TextTransform {
+    kOriginal,
+    kTranslate,
+};
+
 enum class BluetoothAddressKind : std::uint8_t {
     kUnspecified = 0,
     kPublic = 1,
@@ -49,6 +60,14 @@ struct PairedDeviceEntry {
     std::string name;
     std::string hardware;
     std::string firmware_version;
+};
+
+struct OutputProfile {
+    OutputTarget target = OutputTarget::kFocusedApp;
+    TextTransform transform = TextTransform::kOriginal;
+    std::string translation_target = "en";
+
+    bool operator==(const OutputProfile& other) const = default;
 };
 
 struct AppConfig {
@@ -68,6 +87,8 @@ struct AppConfig {
     std::vector<PairedDeviceEntry> paired_devices;
     std::map<std::string, OverlayThemeColor> device_theme_colors;
     std::map<std::string, OverlayPosition> device_overlay_positions;
+    OutputProfile default_output_profile;
+    std::map<std::string, OutputProfile> device_output_profiles;
     bool auto_enter = true;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -87,6 +108,7 @@ struct AppConfig {
     void RemovePairedDevice(const std::string& device_id);
     std::string ActiveApiKey() const;
     std::string ActiveWebsocketUrl() const;
+    OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
 };
 
 std::string AsrProviderName(AsrProvider provider);
@@ -99,6 +121,12 @@ std::string OverlayThemeColorDisplayName(OverlayThemeColor color);
 std::string OverlayPositionName(OverlayPosition position);
 OverlayPosition OverlayPositionFromName(std::string_view name);
 std::string OverlayPositionDisplayName(OverlayPosition position);
+std::string OutputTargetName(OutputTarget target);
+OutputTarget OutputTargetFromName(std::string_view name);
+std::string OutputTargetDisplayName(OutputTarget target);
+std::string TextTransformName(TextTransform transform);
+TextTransform TextTransformFromName(std::string_view name);
+std::string TextTransformDisplayName(TextTransform transform);
 std::vector<std::string> ParseDeviceIdList(std::string_view text);
 std::vector<std::string> ParseHotwordList(std::string_view text);
 

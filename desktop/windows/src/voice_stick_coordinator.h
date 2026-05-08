@@ -1,9 +1,11 @@
 #pragma once
 
 #include "app_config.h"
+#include "asr_protocol.h"
 #include "ble_protocol.h"
 #include "debug_audio_recorder.h"
 #include "firmware_manifest.h"
+#include "llm_translation_client.h"
 #include "ogg_opus_muxer.h"
 
 #include <atomic>
@@ -71,11 +73,12 @@ public:
 class AsrClient {
 public:
     virtual ~AsrClient() = default;
-    virtual bool Start() = 0;
+    virtual bool Start(AsrSessionOptions options = {}) = 0;
     virtual void SendOggOpusChunk(std::span<const std::uint8_t> data, bool is_last) = 0;
     virtual void Cancel() = 0;
 
     std::function<void(std::string)> on_partial;
+    std::function<void(AsrSegment)> on_segment;
     std::function<void(std::string)> on_final;
     std::function<void(std::string)> on_error;
     std::function<void(std::string)> on_upgrade_url;
@@ -105,6 +108,10 @@ public:
                            const std::optional<std::string>& device_id,
                            std::function<void()> on_complete) = 0;
     virtual void HideOverlay(std::function<void()> on_hidden = {}) = 0;
+    virtual void ShowSubtitle(const std::string& text,
+                              const std::string& device_id,
+                              OverlayThemeColor color) = 0;
+    virtual void HideSubtitles() = 0;
 };
 
 class InputInjector {
@@ -119,7 +126,8 @@ public:
                           std::unique_ptr<BleCentral> ble,
                           std::unique_ptr<AsrClient> asr,
                           VoiceStickUi* ui,
-                          InputInjector* input_injector);
+                          InputInjector* input_injector,
+                          std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory = {});
     ~VoiceStickCoordinator();
 
     void Start();
@@ -164,13 +172,45 @@ private:
         bool IsIdle() const { return kind == PendingPasteKind::kIdle; }
     };
 
+    struct SubtitleCycle {
+        std::string device_id;
+        std::uint32_t session_id = 0;
+        std::chrono::steady_clock::time_point started_at;
+        std::unique_ptr<AsrClient> asr;
+        OggOpusMuxer ogg_muxer{16000, 1};
+        DebugAudioRecorder debug_audio_recorder{false, {}};
+        int received_audio_frames = 0;
+        std::optional<std::uint32_t> last_audio_seq;
+        std::vector<ByteVector> buffered_ogg_chunks;
+        bool asr_started = false;
+        bool sent_final_audio_chunk = false;
+        bool finished_final_text = false;
+    };
+
     void ConfigureAsrCallbacks();
+    void ConfigureSubtitleAsrCallbacks(SubtitleCycle* cycle);
     void HandleStateEvent(const StateEvent& event, const std::string& device_id);
     void HandleButtonDown(const StateEvent& event, const std::string& device_id);
     void HandleButtonUp(const StateEvent& event, const std::string& device_id);
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);
     void HandleAudioFrame(const AudioFrame& frame, const std::string& device_id);
+    void HandleSubtitlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
+    void HandleSubtitlePrimaryButtonUp(const std::string& device_id);
+    void HandleSubtitleAudioFrame(const AudioFrame& frame, const std::string& device_id);
+    void SendSubtitleFinalOggChunkIfNeeded(const std::string& device_id);
+    void SendOrBufferSubtitleOggChunk(SubtitleCycle* cycle, const ByteVector& chunk,
+                                      bool is_last, bool can_start_asr);
+    bool StartSubtitleAsrAndFlushBufferedChunks(SubtitleCycle* cycle, bool last_chunk_is_final);
+    void HandleDefiniteSegment(const AsrSegment& segment);
+    void HandleSubtitleDefiniteSegment(const AsrSegment& segment, const std::string& device_id);
+    void FinishSubtitleCycleWithFinalText(const std::string& device_id, const std::string& text);
+    void FinishSubtitleCycleWithError(const std::string& device_id, const std::string& message);
+    void CancelSubtitleCycle(const std::string& device_id, std::string_view reason);
+    void FinishSubtitleCycle(const std::string& device_id, bool hide_overlay);
+    void ShowSubtitleText(const std::string& text, const OutputProfile& profile, const std::string& device_id);
+    void TransformText(const std::string& text, const OutputProfile& profile,
+                       std::function<void(bool, std::string)> completion);
     void SendFinalOggChunkIfNeeded(double recording_duration_seconds);
     void SendOrBufferOggChunk(const ByteVector& chunk, bool is_last, bool can_start_asr);
     bool StartAsrAndFlushBufferedChunks(bool last_chunk_is_final);
@@ -201,11 +241,16 @@ private:
     void EnterError(const std::string& message, std::string_view reason);
     void RefreshDeviceUiState(const std::string& device_id);
     void SendUiStateForActiveDevice(const std::string& state, const std::string& text = "");
+    OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
+    OverlayThemeColor ThemeColorForDevice(const std::string& device_id) const;
+    bool ShouldUseDefiniteSegments(const OutputProfile& profile) const;
     double CurrentRecordingDurationSeconds() const;
 
     AppConfig config_;
     std::unique_ptr<BleCentral> ble_;
     std::unique_ptr<AsrClient> asr_;
+    std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory_;
+    LLMTranslationClient translator_;
     VoiceStickUi* ui_;
     InputInjector* input_injector_;
     std::mutex audio_mutex_;
@@ -236,6 +281,8 @@ private:
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
+    bool is_shutdown_ = false;
+    std::map<std::string, std::unique_ptr<SubtitleCycle>> subtitle_cycles_;
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
 };

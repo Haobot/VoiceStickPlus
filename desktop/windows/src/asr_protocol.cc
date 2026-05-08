@@ -1,6 +1,9 @@
 #include "asr_protocol.h"
 
+#include "cJSON.h"
+
 #include <algorithm>
+#include <memory>
 #include <sstream>
 #include <utility>
 
@@ -50,24 +53,55 @@ std::string JsonStringValue(std::string_view json, std::string_view key) {
     return {};
 }
 
-std::string HotwordsCorpusJson(const AppConfig& config) {
-    if (config.asr_hotwords.empty()) return {};
+std::string AsrResultTypeName(AsrResultType type) {
+    return type == AsrResultType::kSingle ? "single" : "full";
+}
+
+std::vector<std::string> EffectiveHotwords(const AppConfig& config, const AsrSessionOptions& options) {
+    return options.hotwords.empty() ? config.asr_hotwords : options.hotwords;
+}
+
+std::string HotwordsCorpusJson(const AppConfig& config, const AsrSessionOptions& options) {
+    const auto hotwords = EffectiveHotwords(config, options);
+    if (hotwords.empty()) return {};
 
     std::ostringstream context;
     context << "{\"hotwords\":[";
-    for (std::size_t i = 0; i < config.asr_hotwords.size(); ++i) {
+    for (std::size_t i = 0; i < hotwords.size(); ++i) {
         if (i != 0) context << ",";
-        context << "{\"word\":\"" << JsonEscape(config.asr_hotwords[i]) << "\"}";
+        context << "{\"word\":\"" << JsonEscape(hotwords[i]) << "\"}";
     }
     context << "]}";
 
     return ",\"corpus\":{\"context\":\"" + JsonEscape(context.str()) + "\"}";
 }
 
+void AppendUtteranceSegments(cJSON* utterances, std::vector<AsrSegment>* segments) {
+    if (!cJSON_IsArray(utterances)) return;
+    cJSON* utterance = nullptr;
+    cJSON_ArrayForEach(utterance, utterances) {
+        if (!cJSON_IsObject(utterance)) continue;
+        auto* text = cJSON_GetObjectItemCaseSensitive(utterance, "text");
+        if (!cJSON_IsString(text) || text->valuestring == nullptr || text->valuestring[0] == '\0') {
+            continue;
+        }
+        AsrSegment segment;
+        segment.text = text->valuestring;
+        auto* definite = cJSON_GetObjectItemCaseSensitive(utterance, "definite");
+        segment.definite = cJSON_IsTrue(definite);
+        auto* start_time = cJSON_GetObjectItemCaseSensitive(utterance, "start_time");
+        if (cJSON_IsNumber(start_time)) segment.start_time = start_time->valueint;
+        auto* end_time = cJSON_GetObjectItemCaseSensitive(utterance, "end_time");
+        if (cJSON_IsNumber(end_time)) segment.end_time = end_time->valueint;
+        segments->push_back(std::move(segment));
+    }
+}
+
 } // namespace
 
-ByteVector AsrProtocol::MakeClientRequestFrame(const AppConfig& config) {
-    const std::string payload = SessionPayload(config);
+ByteVector AsrProtocol::MakeClientRequestFrame(const AppConfig& config,
+                                               const AsrSessionOptions& options) {
+    const std::string payload = SessionPayload(config, options);
     return MakeBinaryFrame(0x01, 0x00, 0x01, 0x00, ByteVector(payload.begin(), payload.end()));
 }
 
@@ -75,32 +109,40 @@ ByteVector AsrProtocol::MakeAudioFrame(std::span<const std::uint8_t> ogg_data, b
     return MakeBinaryFrame(0x02, is_last ? 0x02 : 0x00, 0x00, 0x00, ogg_data);
 }
 
-ByteVector AsrProtocol::MakeStartConnectionFrame(const AppConfig& config) {
-    const auto payload = ConnectionPayload(config);
+ByteVector AsrProtocol::MakeStartConnectionFrame(const AppConfig& config,
+                                                 const AsrSessionOptions& options) {
+    const auto payload = ConnectionPayload(config, options);
     return MakeEventFrame(0x01, AsrEvent::kStartConnection, {}, 0x01,
                           ByteVector(payload.begin(), payload.end()));
 }
 
-ByteVector AsrProtocol::MakeFinishConnectionFrame(const AppConfig& config) {
-    const auto payload = ConnectionPayload(config);
+ByteVector AsrProtocol::MakeFinishConnectionFrame(const AppConfig& config,
+                                                  const AsrSessionOptions& options) {
+    const auto payload = ConnectionPayload(config, options);
     return MakeEventFrame(0x01, AsrEvent::kFinishConnection, {}, 0x01,
                           ByteVector(payload.begin(), payload.end()));
 }
 
-ByteVector AsrProtocol::MakeStartSessionFrame(const AppConfig& config, std::string_view session_id) {
-    const auto payload = SessionPayload(config);
+ByteVector AsrProtocol::MakeStartSessionFrame(const AppConfig& config,
+                                              std::string_view session_id,
+                                              const AsrSessionOptions& options) {
+    const auto payload = SessionPayload(config, options);
     return MakeEventFrame(0x01, AsrEvent::kStartSession, session_id, 0x01,
                           ByteVector(payload.begin(), payload.end()));
 }
 
-ByteVector AsrProtocol::MakeFinishSessionFrame(const AppConfig& config, std::string_view session_id) {
-    const auto payload = ConnectionPayload(config);
+ByteVector AsrProtocol::MakeFinishSessionFrame(const AppConfig& config,
+                                               std::string_view session_id,
+                                               const AsrSessionOptions& options) {
+    const auto payload = ConnectionPayload(config, options);
     return MakeEventFrame(0x01, AsrEvent::kFinishSession, session_id, 0x01,
                           ByteVector(payload.begin(), payload.end()));
 }
 
-ByteVector AsrProtocol::MakeCancelSessionFrame(const AppConfig& config, std::string_view session_id) {
-    const auto payload = ConnectionPayload(config);
+ByteVector AsrProtocol::MakeCancelSessionFrame(const AppConfig& config,
+                                               std::string_view session_id,
+                                               const AsrSessionOptions& options) {
+    const auto payload = ConnectionPayload(config, options);
     return MakeEventFrame(0x01, AsrEvent::kCancelSession, session_id, 0x01,
                           ByteVector(payload.begin(), payload.end()));
 }
@@ -213,18 +255,61 @@ std::string AsrProtocol::ExtractTranscript(std::string_view json_or_text) {
     return json_or_text.find('{') == std::string_view::npos ? std::string(json_or_text) : std::string();
 }
 
-std::string AsrProtocol::SessionPayload(const AppConfig& config) {
+std::vector<AsrSegment> AsrProtocol::ExtractSegments(std::string_view json_or_text) {
+    std::vector<AsrSegment> segments;
+    auto* root = cJSON_ParseWithLength(json_or_text.data(), json_or_text.size());
+    if (!root) return segments;
+    auto cleanup = std::unique_ptr<cJSON, decltype(&cJSON_Delete)>(root, cJSON_Delete);
+
+    auto* result = cJSON_GetObjectItemCaseSensitive(root, "result");
+    if (cJSON_IsObject(result)) {
+        AppendUtteranceSegments(cJSON_GetObjectItemCaseSensitive(result, "utterances"), &segments);
+    } else if (cJSON_IsArray(result)) {
+        cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, result) {
+            if (cJSON_IsObject(item)) {
+                AppendUtteranceSegments(cJSON_GetObjectItemCaseSensitive(item, "utterances"), &segments);
+            }
+        }
+    }
+    return segments;
+}
+
+std::vector<AsrSegment> AsrProtocol::ExtractNewDefiniteSegments(
+    std::string_view json_or_text,
+    std::set<std::string>* emitted_segment_keys) {
+    std::vector<AsrSegment> definite_segments;
+    for (auto& segment : ExtractSegments(json_or_text)) {
+        if (!segment.definite) continue;
+        auto key = SegmentKey(segment);
+        if (emitted_segment_keys && emitted_segment_keys->contains(key)) continue;
+        if (emitted_segment_keys) emitted_segment_keys->insert(std::move(key));
+        definite_segments.push_back(std::move(segment));
+    }
+    return definite_segments;
+}
+
+std::string AsrProtocol::SegmentKey(const AsrSegment& segment) {
+    return std::to_string(segment.start_time.value_or(-1)) + ":" +
+           std::to_string(segment.end_time.value_or(-1)) + ":" + segment.text;
+}
+
+std::string AsrProtocol::SessionPayload(const AppConfig& config, const AsrSessionOptions& options) {
     return "{\"user\":{\"uid\":\"voice-stick-local\"},"
            "\"audio\":{\"format\":\"ogg\",\"codec\":\"opus\",\"rate\":16000,\"bits\":16,\"channel\":1},"
            "\"request\":{\"model_name\":\"bigmodel\",\"enable_nonstream\":true,"
-           "\"show_utterances\":false,\"result_type\":\"full\",\"enable_ddc\":true,"
+           "\"show_utterances\":" +
+           std::string(options.show_utterances ? "true" : "false") +
+           ",\"result_type\":\"" +
+           AsrResultTypeName(options.result_type) +
+           "\",\"enable_ddc\":true,"
            "\"resource_id\":\"" +
-           JsonEscape(config.resource_id) + "\"" + HotwordsCorpusJson(config) + "}}";
+           JsonEscape(config.resource_id) + "\"" + HotwordsCorpusJson(config, options) + "}}";
 }
 
-std::string AsrProtocol::ConnectionPayload(const AppConfig& config) {
+std::string AsrProtocol::ConnectionPayload(const AppConfig& config, const AsrSessionOptions& options) {
     return "{\"namespace\":\"BidirectionalASR\",\"event\":0,\"req_params\":" +
-           SessionPayload(config) + "}";
+           SessionPayload(config, options) + "}";
 }
 
 ByteVector AsrProtocol::MakeBinaryFrame(std::uint8_t message_type,
