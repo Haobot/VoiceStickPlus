@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -103,6 +104,54 @@ std::vector<std::string> TomlStringArray(const toml::table& table, std::string_v
     return values;
 }
 
+template <typename Value>
+std::map<std::string, Value> ParseDeviceValueMap(
+    std::string_view text,
+    std::function<Value(std::string_view)> parse_value) {
+    std::map<std::string, Value> result;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const auto comma = text.find(',', start);
+        const auto part = comma == std::string_view::npos
+            ? text.substr(start)
+            : text.substr(start, comma - start);
+        const auto colon = part.find(':');
+        if (colon != std::string_view::npos) {
+            auto device_id = BleProtocol::NormalizeDeviceId(part.substr(0, colon));
+            auto value = Trim(std::string(part.substr(colon + 1)));
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (device_id.size() == 4 && !value.empty()) {
+                result[device_id] = parse_value(value);
+            }
+        }
+        if (comma == std::string_view::npos) break;
+        start = comma + 1;
+    }
+    return result;
+}
+
+template <typename Value>
+std::string FormatDeviceValueMap(const std::map<std::string, Value>& values,
+                                 const std::vector<std::string>& paired_device_ids,
+                                 Value default_value,
+                                 std::function<std::string(Value)> format_value) {
+    std::ostringstream out;
+    bool first = true;
+    for (const auto& [device_id, value] : values) {
+        if (value == default_value) continue;
+        if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) ==
+            paired_device_ids.end()) {
+            continue;
+        }
+        if (!first) out << ",";
+        first = false;
+        out << device_id << ":" << format_value(value);
+    }
+    return out.str();
+}
+
 } // namespace
 
 const std::vector<std::string>& AppConfig::SupportedResourceIds() {
@@ -187,6 +236,12 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "interaction_mode") config.interaction_mode = InteractionModeFromName(value);
     if (key == "resource_id") config.resource_id = value;
     if (key == "paired_device_ids") config.paired_device_ids = ParseDeviceIdList(value);
+    if (key == "device_theme_colors") {
+        config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(value, OverlayThemeColorFromName);
+    }
+    if (key == "device_overlay_positions") {
+        config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(value, OverlayPositionFromName);
+    }
     if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
@@ -233,6 +288,12 @@ AppConfig AppConfig::Load() {
         if (auto value = TomlString(table, "interaction_mode")) config.interaction_mode = InteractionModeFromName(*value);
         if (auto value = TomlString(table, "resource_id")) config.resource_id = *value;
         if (auto value = TomlString(table, "paired_device_ids")) config.paired_device_ids = ParseDeviceIdList(*value);
+        if (auto value = TomlString(table, "device_theme_colors")) {
+            config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(*value, OverlayThemeColorFromName);
+        }
+        if (auto value = TomlString(table, "device_overlay_positions")) {
+            config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(*value, OverlayPositionFromName);
+        }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
@@ -272,6 +333,10 @@ void AppConfig::Save() const {
     output << "interaction_mode = \"" << InteractionModeName(interaction_mode) << "\"\n";
     output << "resource_id = \"" << TomlEscape(resource_id) << "\"\n";
     output << "paired_device_ids = \"" << paired.str() << "\"\n";
+    output << "device_theme_colors = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeColor>(
+        device_theme_colors, paired_device_ids, OverlayThemeColor::kWhite, OverlayThemeColorName)) << "\"\n";
+    output << "device_overlay_positions = \"" << TomlEscape(FormatDeviceValueMap<OverlayPosition>(
+        device_overlay_positions, paired_device_ids, OverlayPosition::kCenter, OverlayPositionName)) << "\"\n";
     output << "auto_enter = " << (auto_enter ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
@@ -345,6 +410,8 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
     paired_device_ids.erase(
         std::remove(paired_device_ids.begin(), paired_device_ids.end(), device_id),
         paired_device_ids.end());
+    device_theme_colors.erase(device_id);
+    device_overlay_positions.erase(device_id);
     Save();
 }
 
@@ -362,6 +429,73 @@ std::string InteractionModeName(InteractionMode mode) {
 
 InteractionMode InteractionModeFromName(std::string_view name) {
     return name == "click_to_talk" ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
+}
+
+std::string OverlayThemeColorName(OverlayThemeColor color) {
+    switch (color) {
+    case OverlayThemeColor::kPink: return "pink";
+    case OverlayThemeColor::kGreen: return "green";
+    case OverlayThemeColor::kYellow: return "yellow";
+    case OverlayThemeColor::kBlue: return "blue";
+    case OverlayThemeColor::kPurple: return "purple";
+    case OverlayThemeColor::kWhite:
+    default:
+        return "white";
+    }
+}
+
+OverlayThemeColor OverlayThemeColorFromName(std::string_view name) {
+    if (name == "pink") return OverlayThemeColor::kPink;
+    if (name == "green") return OverlayThemeColor::kGreen;
+    if (name == "yellow") return OverlayThemeColor::kYellow;
+    if (name == "blue") return OverlayThemeColor::kBlue;
+    if (name == "purple") return OverlayThemeColor::kPurple;
+    return OverlayThemeColor::kWhite;
+}
+
+std::string OverlayThemeColorDisplayName(OverlayThemeColor color) {
+    switch (color) {
+    case OverlayThemeColor::kPink: return "Pink";
+    case OverlayThemeColor::kGreen: return "Green";
+    case OverlayThemeColor::kYellow: return "Yellow";
+    case OverlayThemeColor::kBlue: return "Blue";
+    case OverlayThemeColor::kPurple: return "Purple";
+    case OverlayThemeColor::kWhite:
+    default:
+        return "White";
+    }
+}
+
+std::string OverlayPositionName(OverlayPosition position) {
+    switch (position) {
+    case OverlayPosition::kTopLeft: return "top_left";
+    case OverlayPosition::kTopRight: return "top_right";
+    case OverlayPosition::kBottomLeft: return "bottom_left";
+    case OverlayPosition::kBottomRight: return "bottom_right";
+    case OverlayPosition::kCenter:
+    default:
+        return "center";
+    }
+}
+
+OverlayPosition OverlayPositionFromName(std::string_view name) {
+    if (name == "top_left") return OverlayPosition::kTopLeft;
+    if (name == "top_right") return OverlayPosition::kTopRight;
+    if (name == "bottom_left") return OverlayPosition::kBottomLeft;
+    if (name == "bottom_right") return OverlayPosition::kBottomRight;
+    return OverlayPosition::kCenter;
+}
+
+std::string OverlayPositionDisplayName(OverlayPosition position) {
+    switch (position) {
+    case OverlayPosition::kTopLeft: return "Top Left";
+    case OverlayPosition::kTopRight: return "Top Right";
+    case OverlayPosition::kBottomLeft: return "Bottom Left";
+    case OverlayPosition::kBottomRight: return "Bottom Right";
+    case OverlayPosition::kCenter:
+    default:
+        return "Center";
+    }
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {

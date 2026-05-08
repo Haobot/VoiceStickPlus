@@ -114,20 +114,24 @@ public:
     void SetHasRecoverableInput(bool has_recoverable_input) override {
         has_recoverable_input_set = has_recoverable_input;
     }
-    void ShowListening() override {
+    void ShowListening(const std::optional<std::string>&) override {
         ++show_listening_count;
     }
-    void ShowPartial(const std::string& text) override {
+    void ShowPartial(const std::string& text, const std::optional<std::string>&) override {
         partials.push_back(text);
     }
-    void ShowFinalCountdown(const std::string& text, std::function<void()> on_complete) override {
+    void ShowFinalCountdown(const std::string& text,
+                            const std::optional<std::string>&,
+                            std::function<void()> on_complete) override {
         final_countdowns.push_back(text);
         final_countdown_completion = std::move(on_complete);
     }
-    void ShowPausedFinal(const std::string& text) override {
+    void ShowPausedFinal(const std::string& text, const std::optional<std::string>&) override {
         paused_finals.push_back(text);
     }
-    void ShowError(const std::string& text, std::function<void()> on_complete) override {
+    void ShowError(const std::string& text,
+                   const std::optional<std::string>&,
+                   std::function<void()> on_complete) override {
         errors.push_back(text);
         error_completion = std::move(on_complete);
     }
@@ -315,6 +319,12 @@ void TestAppConfig() {
     cache.paired_device_ids.push_back(entry.device_id);
     assert(cache.paired_devices.front().hardware == "stick_s3");
     assert(cache.paired_devices.front().firmware_version == "0.1.2");
+    assert(OverlayThemeColorFromName("pink") == OverlayThemeColor::kPink);
+    assert(OverlayThemeColorName(OverlayThemeColor::kGreen) == "green");
+    assert(OverlayThemeColorDisplayName(OverlayThemeColor::kYellow) == "Yellow");
+    assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);
+    assert(OverlayPositionName(OverlayPosition::kBottomLeft) == "bottom_left");
+    assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");
 }
 
 void TestFirmwareManifestParsingAndVersionCompare() {

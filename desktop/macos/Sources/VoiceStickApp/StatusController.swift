@@ -86,6 +86,8 @@ final class StatusController {
     var onPairDevice: (() -> Void)?
     var onForgetDevice: ((String) -> Void)?
     var onUpdateFirmwareDevice: ((String) -> Void)?
+    var onSetDeviceThemeColor: ((String, OverlayThemeColor) -> Void)?
+    var onSetDeviceOverlayPosition: ((String, OverlayPosition) -> Void)?
     var onRestoreLastInput: (() -> Bool)?
     var onSetInteractionMode: ((InteractionMode) -> Void)?
     var onSetAutoEnter: ((Bool) -> Void)?
@@ -95,15 +97,21 @@ final class StatusController {
     private var needsPairing: Bool
     private var hasRecoverableInput = false
     private var pairedDeviceIDs: [String]
+    private var deviceThemeColors: [String: OverlayThemeColor]
+    private var deviceOverlayPositions: [String: OverlayPosition]
     private var connectedDevices: [ConnectedVoiceStickDevice] = []
     private var firmwareInfoByDeviceID: [String: DeviceFirmwareInfo] = [:]
     private var interactionMode: InteractionMode
     private var autoEnter: Bool
 
     init(pairedDeviceIDs: [String] = [],
+         deviceThemeColors: [String: OverlayThemeColor] = [:],
+         deviceOverlayPositions: [String: OverlayPosition] = [:],
          interactionMode: InteractionMode = .holdToTalk,
          autoEnter: Bool = true) {
         self.pairedDeviceIDs = pairedDeviceIDs
+        self.deviceThemeColors = deviceThemeColors
+        self.deviceOverlayPositions = deviceOverlayPositions
         self.interactionMode = interactionMode
         self.autoEnter = autoEnter
         self.needsPairing = pairedDeviceIDs.isEmpty
@@ -113,7 +121,19 @@ final class StatusController {
 
     func setPairedDeviceIDs(_ deviceIDs: [String]) {
         pairedDeviceIDs = deviceIDs
+        deviceThemeColors = deviceThemeColors.filter { deviceIDs.contains($0.key) }
+        deviceOverlayPositions = deviceOverlayPositions.filter { deviceIDs.contains($0.key) }
         needsPairing = deviceIDs.isEmpty
+        rebuildMenu()
+    }
+
+    func setDeviceThemeColors(_ colors: [String: OverlayThemeColor]) {
+        deviceThemeColors = colors.filter { pairedDeviceIDs.contains($0.key) }
+        rebuildMenu()
+    }
+
+    func setDeviceOverlayPositions(_ positions: [String: OverlayPosition]) {
+        deviceOverlayPositions = positions.filter { pairedDeviceIDs.contains($0.key) }
         rebuildMenu()
     }
 
@@ -261,6 +281,10 @@ final class StatusController {
             submenu.addItem(stateItem)
             submenu.addItem(NSMenuItem.separator())
 
+            addThemeColorItems(to: submenu, deviceID: deviceID)
+            addOverlayPositionItems(to: submenu, deviceID: deviceID)
+            submenu.addItem(NSMenuItem.separator())
+
             addFirmwareItems(to: submenu, deviceID: deviceID, isConnected: connectedDevice != nil)
 
             let forgetItem = makeMenuItem(
@@ -275,6 +299,52 @@ final class StatusController {
         }
 
         menu.addItem(NSMenuItem.separator())
+    }
+
+    private func addThemeColorItems(to submenu: NSMenu, deviceID: String) {
+        let currentColor = deviceThemeColors[deviceID] ?? .white
+        let themeItem = makeMenuItem(
+            title: "Theme Color",
+            symbolName: "paintpalette",
+            action: nil
+        )
+        let themeSubmenu = NSMenu()
+        for color in OverlayThemeColor.allCases {
+            let colorItem = NSMenuItem(
+                title: color.displayName,
+                action: #selector(selectDeviceThemeColor),
+                keyEquivalent: ""
+            )
+            colorItem.target = self
+            colorItem.representedObject = "\(deviceID):\(color.rawValue)"
+            colorItem.state = currentColor == color ? .on : .off
+            themeSubmenu.addItem(colorItem)
+        }
+        themeItem.submenu = themeSubmenu
+        submenu.addItem(themeItem)
+    }
+
+    private func addOverlayPositionItems(to submenu: NSMenu, deviceID: String) {
+        let currentPosition = deviceOverlayPositions[deviceID] ?? .center
+        let positionItem = makeMenuItem(
+            title: "Overlay Position",
+            symbolName: "rectangle.inset.filled",
+            action: nil
+        )
+        let positionSubmenu = NSMenu()
+        for position in OverlayPosition.allCases {
+            let item = NSMenuItem(
+                title: position.displayName,
+                action: #selector(selectDeviceOverlayPosition),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = "\(deviceID):\(position.rawValue)"
+            item.state = currentPosition == position ? .on : .off
+            positionSubmenu.addItem(item)
+        }
+        positionItem.submenu = positionSubmenu
+        submenu.addItem(positionItem)
     }
 
     private func addFirmwareItems(to submenu: NSMenu, deviceID: String, isConnected: Bool) {
@@ -325,27 +395,32 @@ final class StatusController {
         }
     }
 
-    func showListening() {
+    func showListening(deviceID: String? = nil) {
         setStatus("Listening")
+        applyOverlayStyle(for: deviceID)
         overlay.showListening(text: "")
     }
 
-    func showPartial(_ text: String) {
+    func showPartial(_ text: String, deviceID: String? = nil) {
         setStatus(text.isEmpty ? "Listening" : text)
+        applyOverlayStyle(for: deviceID)
         overlay.showListening(text: text)
     }
 
-    func showFinal(_ text: String, onHidden: (() -> Void)? = nil) {
+    func showFinal(_ text: String, deviceID: String? = nil, onHidden: (() -> Void)? = nil) {
         setStatus(text.isEmpty ? "No speech" : "Ready")
+        applyOverlayStyle(for: deviceID)
         overlay.showFinal(text: text, onHidden: onHidden)
     }
 
-    func showPausedFinal(_ text: String) {
+    func showPausedFinal(_ text: String, deviceID: String? = nil) {
+        applyOverlayStyle(for: deviceID)
         overlay.showPaused(text: text)
     }
 
-    func showError(_ text: String, onHidden: (() -> Void)? = nil) {
+    func showError(_ text: String, deviceID: String? = nil, onHidden: (() -> Void)? = nil) {
         setStatus("ASR error: \(text)")
+        applyOverlayStyle(for: deviceID)
         overlay.showError(text, onHidden: onHidden)
     }
 
@@ -386,6 +461,21 @@ final class StatusController {
         return image
     }
 
+    private func themeColor(for deviceID: String?) -> OverlayThemeColor {
+        guard let deviceID else { return .white }
+        return deviceThemeColors[AppConfig.normalizedDeviceID(deviceID)] ?? .white
+    }
+
+    private func overlayPosition(for deviceID: String?) -> OverlayPosition {
+        guard let deviceID else { return .center }
+        return deviceOverlayPositions[AppConfig.normalizedDeviceID(deviceID)] ?? .center
+    }
+
+    private func applyOverlayStyle(for deviceID: String?) {
+        overlay.setThemeColor(themeColor(for: deviceID))
+        overlay.setPosition(overlayPosition(for: deviceID))
+    }
+
     @objc private func openSettings() {
         onOpenSettings?()
     }
@@ -402,6 +492,36 @@ final class StatusController {
     @objc private func updateFirmwareForDevice(_ sender: NSMenuItem) {
         guard let deviceID = sender.representedObject as? String else { return }
         onUpdateFirmwareDevice?(deviceID)
+    }
+
+    @objc private func selectDeviceThemeColor(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? String else { return }
+        let parts = selection.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let color = OverlayThemeColor(rawValue: parts[1]) else { return }
+        let deviceID = AppConfig.normalizedDeviceID(parts[0])
+        if color == .white {
+            deviceThemeColors.removeValue(forKey: deviceID)
+        } else {
+            deviceThemeColors[deviceID] = color
+        }
+        rebuildMenu()
+        onSetDeviceThemeColor?(deviceID, color)
+    }
+
+    @objc private func selectDeviceOverlayPosition(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? String else { return }
+        let parts = selection.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let position = OverlayPosition(rawValue: parts[1]) else { return }
+        let deviceID = AppConfig.normalizedDeviceID(parts[0])
+        if position == .center {
+            deviceOverlayPositions.removeValue(forKey: deviceID)
+        } else {
+            deviceOverlayPositions[deviceID] = position
+        }
+        rebuildMenu()
+        onSetDeviceOverlayPosition?(deviceID, position)
     }
 
     @objc private func restoreLastInput() {

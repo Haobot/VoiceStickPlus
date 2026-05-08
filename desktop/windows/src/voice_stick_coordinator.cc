@@ -219,7 +219,7 @@ void VoiceStickCoordinator::CancelFirmwareUpdate() {
 
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     asr_->on_partial = [this](std::string text) {
-        ui_->ShowPartial(text);
+        ui_->ShowPartial(text, active_device_id_);
         SendUiStateForActiveDevice("thinking", text);
     };
     asr_->on_final = [this](std::string text) {
@@ -285,7 +285,7 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         debug_audio_recorder_.Start(device_id, session_id);
         SetSessionState(SessionState::kRecording, "primary_down");
     }
-    ui_->ShowListening();
+    ui_->ShowListening(active_device_id_);
     SendUiStateForActiveDevice("recording");
 }
 
@@ -394,7 +394,7 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
     pasted_final_text_ = true;
     if (text.empty()) {
         pending_paste_state_ = {};
-        ui_->ShowFinalCountdown("No speech", [this] {
+        ui_->ShowFinalCountdown("No speech", active_device_id_, [this] {
             FinishRecognitionCycle();
             EnterReady("empty_final_done", false);
         });
@@ -684,14 +684,14 @@ void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {
 void VoiceStickCoordinator::EnterPendingConfirmation(const std::string& text, std::string_view reason) {
     pending_paste_state_ = {PendingPasteKind::kWaitingToPaste, text};
     SetSessionState(SessionState::kPendingConfirmation, reason);
-    ui_->ShowFinalCountdown(text, [this, text] { CommitPendingPaste(text); });
+    ui_->ShowFinalCountdown(text, active_device_id_, [this, text] { CommitPendingPaste(text); });
     SendUiStateForActiveDevice("pending_confirmation", text);
 }
 
 void VoiceStickCoordinator::EnterPausedConfirmation(const std::string& text, std::string_view reason) {
     pending_paste_state_ = {PendingPasteKind::kPaused, text};
     SetSessionState(SessionState::kPausedConfirmation, reason);
-    ui_->ShowPausedFinal(text);
+    ui_->ShowPausedFinal(text, active_device_id_);
     SendUiStateForActiveDevice("pending_confirmation", text);
 }
 
@@ -699,7 +699,7 @@ void VoiceStickCoordinator::EnterError(const std::string& message, std::string_v
     is_showing_asr_error_ = true;
     SetSessionState(SessionState::kError, reason);
     SendUiStateForActiveDevice("error", message);
-    ui_->ShowError(message, [this] { RecoverFromAsrError(false); });
+    ui_->ShowError(message, active_device_id_, [this] { RecoverFromAsrError(false); });
 }
 
 void VoiceStickCoordinator::RefreshDeviceUiState(const std::string& device_id) {

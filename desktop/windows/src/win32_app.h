@@ -34,11 +34,15 @@ public:
                                   bool is_below_minimum) override;
     void SetPairedDeviceIds(const std::vector<std::string>& ids) override;
     void SetHasRecoverableInput(bool has_recoverable_input) override;
-    void ShowListening() override;
-    void ShowPartial(const std::string& text) override;
-    void ShowFinalCountdown(const std::string& text, std::function<void()> on_complete) override;
-    void ShowPausedFinal(const std::string& text) override;
-    void ShowError(const std::string& text, std::function<void()> on_complete) override;
+    void ShowListening(const std::optional<std::string>& device_id) override;
+    void ShowPartial(const std::string& text, const std::optional<std::string>& device_id) override;
+    void ShowFinalCountdown(const std::string& text,
+                            const std::optional<std::string>& device_id,
+                            std::function<void()> on_complete) override;
+    void ShowPausedFinal(const std::string& text, const std::optional<std::string>& device_id) override;
+    void ShowError(const std::string& text,
+                   const std::optional<std::string>& device_id,
+                   std::function<void()> on_complete) override;
     void HideOverlay(std::function<void()> on_hidden = {}) override;
 
 private:
@@ -53,6 +57,9 @@ private:
     void ShowPairDeviceDialog();
     void ShowSettings();
     void SaveInputOptions();
+    void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
+    void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
+    void ApplyOverlayStyle(const std::optional<std::string>& device_id);
     void StartFirmwareUpdate(const std::string& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);

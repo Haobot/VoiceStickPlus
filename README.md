@@ -213,6 +213,8 @@ llm_model = "gpt-5.5"
 interaction_mode = "hold_to_talk"
 resource_id = "volc.seedasr.sauc.duration"
 paired_device_ids = ""
+device_theme_colors = ""
+device_overlay_positions = ""
 auto_enter = true
 debug_audio_cache = false
 # debug_audio_dir = "~/Library/Application Support/VoiceStick/DebugAudio"
@@ -232,6 +234,8 @@ Fields:
 | `interaction_mode` | Front button interaction: `hold_to_talk` or `click_to_talk` |
 | `resource_id` | Volcengine resource ID |
 | `paired_device_ids` | Comma-separated 4-digit hex IDs, for example `C3D8,09AF` |
+| `device_theme_colors` | Optional per-device overlay colors, for example `C3D8:pink,09AF:green` |
+| `device_overlay_positions` | Optional per-device overlay positions, for example `C3D8:top_left,09AF:bottom_right` |
 | `auto_enter` | Whether to press Return after paste |
 | `debug_audio_cache` | Whether to save debug Ogg Opus files |
 | `debug_audio_dir` | Debug audio output directory |

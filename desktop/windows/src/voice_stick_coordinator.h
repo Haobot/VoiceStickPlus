@@ -95,11 +95,15 @@ public:
                                           bool is_below_minimum) = 0;
     virtual void SetPairedDeviceIds(const std::vector<std::string>& ids) = 0;
     virtual void SetHasRecoverableInput(bool has_recoverable_input) = 0;
-    virtual void ShowListening() = 0;
-    virtual void ShowPartial(const std::string& text) = 0;
-    virtual void ShowFinalCountdown(const std::string& text, std::function<void()> on_complete) = 0;
-    virtual void ShowPausedFinal(const std::string& text) = 0;
-    virtual void ShowError(const std::string& text, std::function<void()> on_complete) = 0;
+    virtual void ShowListening(const std::optional<std::string>& device_id) = 0;
+    virtual void ShowPartial(const std::string& text, const std::optional<std::string>& device_id) = 0;
+    virtual void ShowFinalCountdown(const std::string& text,
+                                    const std::optional<std::string>& device_id,
+                                    std::function<void()> on_complete) = 0;
+    virtual void ShowPausedFinal(const std::string& text, const std::optional<std::string>& device_id) = 0;
+    virtual void ShowError(const std::string& text,
+                           const std::optional<std::string>& device_id,
+                           std::function<void()> on_complete) = 0;
     virtual void HideOverlay(std::function<void()> on_hidden = {}) = 0;
 };
 

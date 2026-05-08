@@ -132,8 +132,9 @@ final class VoiceStickCoordinator {
     private func configureASRCallbacks() {
         asr.onPartial = { [weak self] text in
             DispatchQueue.main.async {
-                self?.statusController.showPartial(text)
-                self?.sendUIStateForActiveDevice("thinking", text: text)
+                guard let self else { return }
+                self.statusController.showPartial(text, deviceID: self.activeDeviceID)
+                self.sendUIStateForActiveDevice("thinking", text: text)
             }
         }
 
@@ -295,7 +296,7 @@ final class VoiceStickCoordinator {
         isShowingASRError = false
         oggMuxer.reset()
         debugAudioRecorder.start(deviceID: deviceID(for: peripheralID), sessionID: sessionID)
-        statusController.showListening()
+        statusController.showListening(deviceID: deviceID(for: peripheralID))
         sendUIStateForActiveDevice("recording")
     }
 
@@ -432,7 +433,7 @@ final class VoiceStickCoordinator {
         if text.isEmpty {
             pastedFinalText = true
             pendingPasteState = .idle
-            statusController.showFinal(text) { [weak self] in
+            statusController.showFinal(text, deviceID: activeDeviceID) { [weak self] in
                 self?.finishRecognitionCycle()
                 self?.sendUIStateForActiveDevice("ready")
                 self?.activePeripheralID = nil
@@ -445,7 +446,7 @@ final class VoiceStickCoordinator {
         lastRecoverablePeripheralID = activePeripheralID
         statusController.setHasRecoverableInput(true)
         pendingPasteState = .waitingToPaste(text: text)
-        statusController.showFinal(text) { [weak self] in
+        statusController.showFinal(text, deviceID: activeDeviceID) { [weak self] in
             self?.commitPendingPaste(text: text)
         }
         sendUIStateForActiveDevice("pending_confirmation", text: text)
@@ -463,7 +464,7 @@ final class VoiceStickCoordinator {
         errorRecoveryToken += 1
         let token = errorRecoveryToken
         sendUIStateForActiveDevice("error", text: message)
-        statusController.showError(message) { [weak self] in
+        statusController.showError(message, deviceID: activeDeviceID) { [weak self] in
             guard let self, self.errorRecoveryToken == token else { return }
             self.recoverFromASRError(hideOverlay: false)
         }
@@ -536,7 +537,7 @@ final class VoiceStickCoordinator {
 
         activePeripheralID = peripheralID
         pendingPasteState = .paused(text: text)
-        statusController.showPausedFinal(text)
+        statusController.showPausedFinal(text, deviceID: activeDeviceID)
         sendUIStateForActiveDevice("pending_confirmation", text: text)
         return true
     }
@@ -548,7 +549,7 @@ final class VoiceStickCoordinator {
         case .waitingToPaste(let text):
             guard activePeripheralID == peripheralID else { return true }
             pendingPasteState = .paused(text: text)
-            statusController.showPausedFinal(text)
+            statusController.showPausedFinal(text, deviceID: deviceID(for: peripheralID))
             sendUIStateForActiveDevice("pending_confirmation", text: text)
             return true
         case .paused(let text):
@@ -753,6 +754,10 @@ final class VoiceStickCoordinator {
 
     private func sendUIStateForActiveDevice(_ state: String, text: String = "") {
         ble.sendUIState(state, text: text, to: activePeripheralID)
+    }
+
+    private var activeDeviceID: String? {
+        activePeripheralID.flatMap { ble.deviceID(for: $0) }
     }
 
     private func deviceID(for peripheralID: UUID) -> String? {

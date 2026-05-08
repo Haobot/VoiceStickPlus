@@ -30,6 +30,55 @@ enum InteractionMode: String {
     }
 }
 
+enum OverlayThemeColor: String, CaseIterable {
+    case white
+    case pink
+    case green
+    case yellow
+    case blue
+    case purple
+
+    var displayName: String {
+        switch self {
+        case .white:
+            return "White"
+        case .pink:
+            return "Pink"
+        case .green:
+            return "Green"
+        case .yellow:
+            return "Yellow"
+        case .blue:
+            return "Blue"
+        case .purple:
+            return "Purple"
+        }
+    }
+}
+
+enum OverlayPosition: String, CaseIterable {
+    case center
+    case topLeft = "top_left"
+    case topRight = "top_right"
+    case bottomLeft = "bottom_left"
+    case bottomRight = "bottom_right"
+
+    var displayName: String {
+        switch self {
+        case .center:
+            return "Center"
+        case .topLeft:
+            return "Top Left"
+        case .topRight:
+            return "Top Right"
+        case .bottomLeft:
+            return "Bottom Left"
+        case .bottomRight:
+            return "Bottom Right"
+        }
+    }
+}
+
 struct AppConfig {
     var asrProvider: ASRProvider
     var voiceStickAPIKey: String
@@ -41,6 +90,8 @@ struct AppConfig {
     var interactionMode: InteractionMode
     var resourceID: String
     var pairedDeviceIDs: [String]
+    var deviceThemeColors: [String: OverlayThemeColor]
+    var deviceOverlayPositions: [String: OverlayPosition]
     var autoEnter: Bool
     var debugAudioCache: Bool
     var debugAudioDirectory: URL
@@ -90,6 +141,8 @@ struct AppConfig {
             interactionMode: .holdToTalk,
             resourceID: supportedResourceIDs[0],
             pairedDeviceIDs: [],
+            deviceThemeColors: [:],
+            deviceOverlayPositions: [:],
             autoEnter: true,
             debugAudioCache: false,
             debugAudioDirectory: defaultDebugAudioDirectory
@@ -118,6 +171,8 @@ struct AppConfig {
             interactionMode: interactionModeValue(file.interaction_mode, default: defaults.interactionMode),
             resourceID: resourceIDValue(file.resource_id, default: defaults.resourceID),
             pairedDeviceIDs: deviceIDList(file.paired_device_ids ?? ""),
+            deviceThemeColors: deviceThemeColorMap(file.device_theme_colors ?? ""),
+            deviceOverlayPositions: deviceOverlayPositionMap(file.device_overlay_positions ?? ""),
             autoEnter: file.auto_enter ?? defaults.autoEnter,
             debugAudioCache: file.debug_audio_cache ?? defaults.debugAudioCache,
             debugAudioDirectory: directoryValue(file.debug_audio_dir, default: defaults.debugAudioDirectory)
@@ -137,6 +192,8 @@ struct AppConfig {
         interaction_mode = "\(interactionMode.rawValue)"
         resource_id = "\(resourceID.tomlEscaped)"
         paired_device_ids = "\(pairedDeviceIDs.joined(separator: ",").tomlEscaped)"
+        device_theme_colors = "\(deviceThemeColorText.tomlEscaped)"
+        device_overlay_positions = "\(deviceOverlayPositionText.tomlEscaped)"
         auto_enter = \(autoEnter.tomlValue)
         debug_audio_cache = \(debugAudioCache.tomlValue)
         debug_audio_dir = "\(debugAudioDirectory.path.tomlEscaped)"
@@ -166,6 +223,8 @@ struct AppConfig {
             interactionMode: interactionModeValue(values["interaction_mode"], default: defaults.interactionMode),
             resourceID: resourceIDValue(values["resource_id"], default: defaults.resourceID),
             pairedDeviceIDs: deviceIDList(values["paired_device_ids"] ?? ""),
+            deviceThemeColors: deviceThemeColorMap(values["device_theme_colors"] ?? ""),
+            deviceOverlayPositions: deviceOverlayPositionMap(values["device_overlay_positions"] ?? ""),
             autoEnter: boolValue(values["auto_enter"], default: defaults.autoEnter),
             debugAudioCache: boolValue(values["debug_audio_cache"], default: defaults.debugAudioCache),
             debugAudioDirectory: directoryValue(values["debug_audio_dir"], default: defaults.debugAudioDirectory)
@@ -233,6 +292,58 @@ struct AppConfig {
                 }
             }
     }
+
+    static func deviceThemeColorMap(_ text: String) -> [String: OverlayThemeColor] {
+        text.split(separator: ",").reduce(into: [:]) { colorsByDeviceID, rawPair in
+            let parts = rawPair.split(separator: ":", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { return }
+            let deviceID = normalizedDeviceID(parts[0])
+            let colorName = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard deviceID.count == 4,
+                  deviceID.allSatisfy(\.isHexDigit),
+                  let color = OverlayThemeColor(rawValue: colorName) else { return }
+            colorsByDeviceID[deviceID] = color
+        }
+    }
+
+    func themeColor(for deviceID: String?) -> OverlayThemeColor {
+        guard let deviceID else { return .white }
+        return deviceThemeColors[Self.normalizedDeviceID(deviceID)] ?? .white
+    }
+
+    static func deviceOverlayPositionMap(_ text: String) -> [String: OverlayPosition] {
+        text.split(separator: ",").reduce(into: [:]) { positionsByDeviceID, rawPair in
+            let parts = rawPair.split(separator: ":", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { return }
+            let deviceID = normalizedDeviceID(parts[0])
+            let positionName = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard deviceID.count == 4,
+                  deviceID.allSatisfy(\.isHexDigit),
+                  let position = OverlayPosition(rawValue: positionName) else { return }
+            positionsByDeviceID[deviceID] = position
+        }
+    }
+
+    func overlayPosition(for deviceID: String?) -> OverlayPosition {
+        guard let deviceID else { return .center }
+        return deviceOverlayPositions[Self.normalizedDeviceID(deviceID)] ?? .center
+    }
+
+    private var deviceThemeColorText: String {
+        deviceThemeColors
+            .filter { pairedDeviceIDs.contains($0.key) && $0.value != .white }
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key):\($0.value.rawValue)" }
+            .joined(separator: ",")
+    }
+
+    private var deviceOverlayPositionText: String {
+        deviceOverlayPositions
+            .filter { pairedDeviceIDs.contains($0.key) && $0.value != .center }
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key):\($0.value.rawValue)" }
+            .joined(separator: ",")
+    }
 }
 
 private struct ConfigFile: Decodable {
@@ -247,6 +358,8 @@ private struct ConfigFile: Decodable {
     var interaction_mode: String?
     var resource_id: String?
     var paired_device_ids: String?
+    var device_theme_colors: String?
+    var device_overlay_positions: String?
     var auto_enter: Bool?
     var debug_audio_cache: Bool?
     var debug_audio_dir: String?

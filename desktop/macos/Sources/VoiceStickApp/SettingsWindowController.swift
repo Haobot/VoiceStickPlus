@@ -174,6 +174,8 @@ final class SettingsWindowController: NSWindowController {
             interactionMode: config.interactionMode,
             resourceID: resourceID,
             pairedDeviceIDs: config.pairedDeviceIDs,
+            deviceThemeColors: config.deviceThemeColors,
+            deviceOverlayPositions: config.deviceOverlayPositions,
             autoEnter: config.autoEnter,
             debugAudioCache: debugAudioButton.state == .on,
             debugAudioDirectory: URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)

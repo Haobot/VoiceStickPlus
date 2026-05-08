@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app_config.h"
+
 #include <Windows.h>
 
 #include <functional>
@@ -23,6 +25,8 @@ public:
     void ShowPausedFinal(const std::string& text);
     void ShowError(const std::string& text, std::function<void()> on_complete);
     void Hide(std::function<void()> on_hidden = {});
+    void SetThemeColor(OverlayThemeColor color);
+    void SetPosition(OverlayPosition position);
 
     HWND hwnd() const { return hwnd_; }
     void OnTimer(UINT_PTR timer_id);
@@ -36,6 +40,9 @@ private:
     void Reposition();
     bool StepWindowAnimation();
     void ApplyAnimatedWindowBounds();
+    POINT TargetWindowOrigin(const RECT& work_area, int width, int height) const;
+    int VisualOffsetX(int width, int visual_width) const;
+    int VisualOffsetY(int height, int visual_height) const;
     bool NeedsWindowAnimation() const;
     void UpdateLayeredBitmap();
     bool EnsureFrameBitmap(int width, int height);
@@ -69,9 +76,10 @@ private:
     int animated_window_height_ = 0;
     int target_window_width_ = 0;
     int target_window_height_ = 0;
+    int target_window_x_ = 0;
     int target_window_y_ = 0;
-    int target_work_left_ = 0;
-    int target_work_width_ = 0;
+    OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
+    OverlayPosition position_ = OverlayPosition::kCenter;
     ULONGLONG countdown_started_at_ms_ = 0;
     int countdown_duration_ms_ = 1200;
     UINT dpi_ = 96;
@@ -113,6 +121,7 @@ private:
     static constexpr int kShadowPadding = 12;
     static constexpr int kShadowBlur = 11;
     static constexpr int kShadowYOffset = 2;
+    static constexpr int kPositionMargin = 28;
     static constexpr int kMaxAlpha = 255;
 };
 

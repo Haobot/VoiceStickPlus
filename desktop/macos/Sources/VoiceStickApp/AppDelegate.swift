@@ -50,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.config = config
         let statusController = StatusController(
             pairedDeviceIDs: config.pairedDeviceIDs,
+            deviceThemeColors: config.deviceThemeColors,
+            deviceOverlayPositions: config.deviceOverlayPositions,
             interactionMode: config.interactionMode,
             autoEnter: config.autoEnter
         )
@@ -65,6 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.onConfigChanged = { [weak self] config in
                 self?.config = config
                 self?.statusController?.setPairedDeviceIDs(config.pairedDeviceIDs)
+                self?.statusController?.setDeviceThemeColors(config.deviceThemeColors)
+                self?.statusController?.setDeviceOverlayPositions(config.deviceOverlayPositions)
                 self?.statusController?.setInputOptions(
                     interactionMode: config.interactionMode,
                     autoEnter: config.autoEnter
@@ -100,6 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController.onSetAutoEnter = { [weak self] autoEnter in
             self?.updateInputOptions(interactionMode: nil, autoEnter: autoEnter)
         }
+        statusController.onSetDeviceThemeColor = { [weak self] deviceID, color in
+            self?.updateDeviceThemeColor(deviceID: deviceID, color: color)
+        }
+        statusController.onSetDeviceOverlayPosition = { [weak self] deviceID, position in
+            self?.updateDeviceOverlayPosition(deviceID: deviceID, position: position)
+        }
         if Self.hasSparklePublicKey {
             let updaterController = SPUStandardUpdaterController(
                 startingUpdater: true,
@@ -133,6 +143,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             coordinator?.updateConfig(config)
         } catch {
             statusController?.setStatus("Input save failed")
+        }
+    }
+
+    private func updateDeviceThemeColor(deviceID: String, color: OverlayThemeColor) {
+        var config = self.config
+        if color == .white {
+            config.deviceThemeColors.removeValue(forKey: deviceID)
+        } else {
+            config.deviceThemeColors[deviceID] = color
+        }
+        do {
+            try config.save()
+            self.config = config
+            statusController?.setDeviceThemeColors(config.deviceThemeColors)
+        } catch {
+            statusController?.setStatus("Theme save failed")
+        }
+    }
+
+    private func updateDeviceOverlayPosition(deviceID: String, position: OverlayPosition) {
+        var config = self.config
+        if position == .center {
+            config.deviceOverlayPositions.removeValue(forKey: deviceID)
+        } else {
+            config.deviceOverlayPositions[deviceID] = position
+        }
+        do {
+            try config.save()
+            self.config = config
+            statusController?.setDeviceOverlayPositions(config.deviceOverlayPositions)
+        } catch {
+            statusController?.setStatus("Position save failed")
         }
     }
 
@@ -176,6 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try config.save()
                 self?.config = config
                 self?.statusController?.setPairedDeviceIDs(config.pairedDeviceIDs)
+                self?.statusController?.setDeviceThemeColors(config.deviceThemeColors)
+                self?.statusController?.setDeviceOverlayPositions(config.deviceOverlayPositions)
                 self?.coordinator?.updatePairedDeviceIDs(config.pairedDeviceIDs)
                 self?.coordinator?.checkFirmwareAfterPairing(deviceID: deviceID)
             } catch {
@@ -279,9 +323,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func forgetDevice(_ deviceID: String) {
         var config = AppConfig.load()
         config.pairedDeviceIDs.removeAll { $0 == deviceID }
+        config.deviceThemeColors.removeValue(forKey: deviceID)
+        config.deviceOverlayPositions.removeValue(forKey: deviceID)
         do {
             try config.save()
             statusController?.setPairedDeviceIDs(config.pairedDeviceIDs)
+            statusController?.setDeviceThemeColors(config.deviceThemeColors)
+            statusController?.setDeviceOverlayPositions(config.deviceOverlayPositions)
             statusController?.setConnectedDevices([])
             coordinator?.updatePairedDeviceIDs(config.pairedDeviceIDs)
         } catch {

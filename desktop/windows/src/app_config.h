@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,6 +17,23 @@ enum class AsrProvider {
 enum class InteractionMode {
     kHoldToTalk,
     kClickToTalk,
+};
+
+enum class OverlayThemeColor {
+    kWhite,
+    kPink,
+    kGreen,
+    kYellow,
+    kBlue,
+    kPurple,
+};
+
+enum class OverlayPosition {
+    kCenter,
+    kTopLeft,
+    kTopRight,
+    kBottomLeft,
+    kBottomRight,
 };
 
 enum class BluetoothAddressKind : std::uint8_t {
@@ -47,6 +65,8 @@ struct AppConfig {
     std::string resource_id = "volc.seedasr.sauc.duration";
     std::vector<std::string> paired_device_ids;
     std::vector<PairedDeviceEntry> paired_devices;
+    std::map<std::string, OverlayThemeColor> device_theme_colors;
+    std::map<std::string, OverlayPosition> device_overlay_positions;
     bool auto_enter = true;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -72,6 +92,12 @@ std::string AsrProviderName(AsrProvider provider);
 AsrProvider AsrProviderFromName(std::string_view name);
 std::string InteractionModeName(InteractionMode mode);
 InteractionMode InteractionModeFromName(std::string_view name);
+std::string OverlayThemeColorName(OverlayThemeColor color);
+OverlayThemeColor OverlayThemeColorFromName(std::string_view name);
+std::string OverlayThemeColorDisplayName(OverlayThemeColor color);
+std::string OverlayPositionName(OverlayPosition position);
+OverlayPosition OverlayPositionFromName(std::string_view name);
+std::string OverlayPositionDisplayName(OverlayPosition position);
 std::vector<std::string> ParseDeviceIdList(std::string_view text);
 
 } // namespace voicestick

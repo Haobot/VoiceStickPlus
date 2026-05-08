@@ -18,6 +18,9 @@ final class OverlayController {
     private let maxWidth: CGFloat = 645
     private let minHeight: CGFloat = 112
     private let textLineHeightMultiple: CGFloat = 1.1
+    private let positionMargin: CGFloat = 28
+    private var themeColor: OverlayThemeColor = .white
+    private var position: OverlayPosition = .center
 
     init() {
         window = NSPanel(
@@ -38,7 +41,7 @@ final class OverlayController {
 
         container.wantsLayer = true
         if let layer = container.layer {
-            layer.backgroundColor = NSColor.white.withAlphaComponent(0.8).cgColor
+            layer.backgroundColor = Self.backgroundColor(for: themeColor).cgColor
             layer.cornerRadius = 24
             layer.cornerCurve = .continuous
             layer.masksToBounds = true
@@ -79,6 +82,20 @@ final class OverlayController {
             hintLabel.trailingAnchor.constraint(equalTo: textLabel.trailingAnchor),
             hintLabel.topAnchor.constraint(equalTo: textLabel.bottomAnchor, constant: 8)
         ])
+    }
+
+    func setThemeColor(_ color: OverlayThemeColor) {
+        guard themeColor != color else { return }
+        themeColor = color
+        container.layer?.backgroundColor = Self.backgroundColor(for: color).cgColor
+    }
+
+    func setPosition(_ position: OverlayPosition) {
+        guard self.position != position else { return }
+        self.position = position
+        if window.isVisible {
+            reposition(for: textLabel.stringValue)
+        }
     }
 
     func showListening(text: String) {
@@ -201,10 +218,44 @@ final class OverlayController {
         let height = max(measuredHeight, largestVisibleHeight ?? 0)
         largestVisibleHeight = height
 
-        let x = visibleFrame.midX - width / 2
-        let y = visibleFrame.midY - height / 2
+        let origin = frameOrigin(
+            in: visibleFrame,
+            windowSize: NSSize(width: width, height: height)
+        )
+        let x = origin.x
+        let y = origin.y
         let frame = NSRect(x: x, y: y, width: width, height: height)
         window.setFrame(frame, display: true)
+    }
+
+    private func frameOrigin(in visibleFrame: NSRect, windowSize: NSSize) -> CGPoint {
+        switch position {
+        case .center:
+            return CGPoint(
+                x: visibleFrame.midX - windowSize.width / 2,
+                y: visibleFrame.midY - windowSize.height / 2
+            )
+        case .topLeft:
+            return CGPoint(
+                x: visibleFrame.minX + positionMargin,
+                y: visibleFrame.maxY - positionMargin - windowSize.height
+            )
+        case .topRight:
+            return CGPoint(
+                x: visibleFrame.maxX - positionMargin - windowSize.width,
+                y: visibleFrame.maxY - positionMargin - windowSize.height
+            )
+        case .bottomLeft:
+            return CGPoint(
+                x: visibleFrame.minX + positionMargin,
+                y: visibleFrame.minY + positionMargin
+            )
+        case .bottomRight:
+            return CGPoint(
+                x: visibleFrame.maxX - positionMargin - windowSize.width,
+                y: visibleFrame.minY + positionMargin
+            )
+        }
     }
 
     private var textLeadingInset: CGFloat {
@@ -251,6 +302,23 @@ final class OverlayController {
     private func lineSpacing(for font: NSFont) -> CGFloat {
         let naturalLineHeight = ceil(font.boundingRectForFont.height)
         return max(0, ceil(naturalLineHeight * textLineHeightMultiple) - naturalLineHeight)
+    }
+
+    private static func backgroundColor(for color: OverlayThemeColor) -> NSColor {
+        switch color {
+        case .white:
+            return NSColor.white.withAlphaComponent(0.8)
+        case .pink:
+            return NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.9, alpha: 0.86)
+        case .green:
+            return NSColor(calibratedRed: 0.84, green: 0.95, blue: 0.84, alpha: 0.86)
+        case .yellow:
+            return NSColor(calibratedRed: 1.0, green: 0.94, blue: 0.72, alpha: 0.86)
+        case .blue:
+            return NSColor(calibratedRed: 0.82, green: 0.91, blue: 1.0, alpha: 0.86)
+        case .purple:
+            return NSColor(calibratedRed: 0.9, green: 0.84, blue: 1.0, alpha: 0.86)
+        }
     }
 }
 
