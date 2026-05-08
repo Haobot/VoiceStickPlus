@@ -200,6 +200,14 @@ AudioFrame AudioDataFrame(std::uint32_t session_id, std::uint32_t seq, bool is_e
     return frame;
 }
 
+AudioFrame EmptyEndFrame(std::uint32_t session_id, std::uint32_t seq) {
+    AudioFrame frame;
+    frame.session_id = session_id;
+    frame.seq = seq;
+    frame.flags = 0x02;
+    return frame;
+}
+
 bool HasUiState(const FakeBleCentral& ble, const std::string& state, const std::string& device_id) {
     return std::any_of(ble.sent_ui_states.begin(), ble.sent_ui_states.end(),
                        [&](const SentUiState& sent) {
@@ -559,6 +567,88 @@ void TestCoordinatorSubtitleOutputSkipsPaste() {
     assert(HasUiState(*ble_ptr, "ready", "5A74"));
 }
 
+void TestCoordinatorSubtitleFinalDoesNotBlockNextSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    std::vector<FakeAsrClient*> subtitle_asrs;
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.interaction_mode = InteractionMode::kHoldToTalk;
+    config.device_theme_colors["5A74"] = OverlayThemeColor::kBlue;
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [&](const AppConfig&) {
+            auto asr = std::make_unique<FakeAsrClient>();
+            subtitle_asrs.push_back(asr.get());
+            return asr;
+        });
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 12));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(12, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
+    assert(subtitle_asrs.size() == 1);
+    assert(subtitle_asrs[0]->started);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+
+    const auto ready_count_after_first_release = std::count_if(
+        ble_ptr->sent_ui_states.begin(), ble_ptr->sent_ui_states.end(), [](const SentUiState& sent) {
+            return sent.state == "ready" && sent.device_id == std::optional<std::string>("5A74");
+        });
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 13));
+    assert(subtitle_asrs.size() == 2);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+
+    subtitle_asrs[0]->on_final("first late subtitle");
+    assert(!ui.subtitles.empty());
+    assert(ui.subtitles.back() == "5A74:first late subtitle:blue");
+    const auto ready_count_after_late_final = std::count_if(
+        ble_ptr->sent_ui_states.begin(), ble_ptr->sent_ui_states.end(), [](const SentUiState& sent) {
+            return sent.state == "ready" && sent.device_id == std::optional<std::string>("5A74");
+        });
+    assert(ready_count_after_late_final == ready_count_after_first_release);
+}
+
+void TestCoordinatorShortSubtitleEndReturnsReady() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.interaction_mode = InteractionMode::kHoldToTalk;
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [](const AppConfig&) {
+            return std::make_unique<FakeAsrClient>();
+        });
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 12));
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(12, 1));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
+
+    assert(ui.hide_overlay_count > 0);
+    assert(!ui.statuses.empty());
+    assert(ui.statuses.back() == "Ready");
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
 } // namespace
 
 int main() {
@@ -575,5 +665,7 @@ int main() {
     TestCoordinatorPrimaryPausesPendingConfirmation();
     TestCoordinatorOtherDeviceDuringRecordingGetsReady();
     TestCoordinatorSubtitleOutputSkipsPaste();
+    TestCoordinatorSubtitleFinalDoesNotBlockNextSession();
+    TestCoordinatorShortSubtitleEndReturnsReady();
     return 0;
 }

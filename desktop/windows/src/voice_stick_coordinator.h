@@ -198,16 +198,24 @@ private:
     void HandleSubtitlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandleSubtitlePrimaryButtonUp(const std::string& device_id);
     void HandleSubtitleAudioFrame(const AudioFrame& frame, const std::string& device_id);
-    void SendSubtitleFinalOggChunkIfNeeded(const std::string& device_id);
+    void SendSubtitleFinalOggChunkIfNeeded(const std::string& device_id, std::uint32_t session_id);
     void SendOrBufferSubtitleOggChunk(SubtitleCycle* cycle, const ByteVector& chunk,
                                       bool is_last, bool can_start_asr);
     bool StartSubtitleAsrAndFlushBufferedChunks(SubtitleCycle* cycle, bool last_chunk_is_final);
     void HandleDefiniteSegment(const AsrSegment& segment);
     void HandleSubtitleDefiniteSegment(const AsrSegment& segment, const std::string& device_id);
-    void FinishSubtitleCycleWithFinalText(const std::string& device_id, const std::string& text);
-    void FinishSubtitleCycleWithError(const std::string& device_id, const std::string& message);
+    void FinishSubtitleCycleWithFinalText(const std::string& device_id, std::uint32_t session_id,
+                                          const std::string& text);
+    void FinishSubtitleCycleWithError(const std::string& device_id, std::uint32_t session_id,
+                                      const std::string& message);
     void CancelSubtitleCycle(const std::string& device_id, std::string_view reason);
-    void FinishSubtitleCycle(const std::string& device_id, bool hide_overlay);
+    void FinishSubtitleCycle(const std::string& device_id, std::uint32_t session_id, bool hide_overlay);
+    SubtitleCycle* FindSubtitleCycle(const std::string& device_id, std::uint32_t session_id);
+    SubtitleCycle* FindActiveSubtitleCycle(const std::string& device_id);
+    bool IsActiveSubtitleCycle(const std::string& device_id, std::uint32_t session_id) const;
+    bool HasActiveSubtitleSession(const std::string& device_id) const;
+    void ClearActiveSubtitleSession(const std::string& device_id, std::uint32_t session_id);
+    void CancelSubtitleCyclesForDevice(const std::string& device_id, std::string_view reason);
     void ShowSubtitleText(const std::string& text, const OutputProfile& profile, const std::string& device_id);
     void TransformText(const std::string& text, const OutputProfile& profile,
                        std::function<void(bool, std::string)> completion);
@@ -282,7 +290,8 @@ private:
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;
-    std::map<std::string, std::unique_ptr<SubtitleCycle>> subtitle_cycles_;
+    std::map<std::pair<std::string, std::uint32_t>, std::unique_ptr<SubtitleCycle>> subtitle_cycles_;
+    std::map<std::string, std::uint32_t> active_subtitle_sessions_;
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
 };
