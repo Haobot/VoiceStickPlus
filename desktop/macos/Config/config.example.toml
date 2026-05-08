@@ -14,3 +14,17 @@ device_overlay_positions = ""
 auto_enter = true
 debug_audio_cache = false
 # debug_audio_dir = "~/Library/Application Support/VoiceStick/DebugAudio"
+
+[output]
+target = "focused_app"
+transform = "original"
+translation_target = "en"
+
+# Optional per-device output overrides:
+# [device.C3D8.output]
+# transform = "translate"
+# translation_target = "en"
+#
+# [device."09AF".output]
+# transform = "translate"
+# translation_target = "zh-Hans"

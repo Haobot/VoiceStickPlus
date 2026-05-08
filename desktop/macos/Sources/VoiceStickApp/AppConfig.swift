@@ -79,6 +79,50 @@ enum OverlayPosition: String, CaseIterable {
     }
 }
 
+enum OutputTarget: String, CaseIterable {
+    case focusedApp = "focused_app"
+    case subtitle
+
+    var displayName: String {
+        switch self {
+        case .focusedApp:
+            return "Focused App"
+        case .subtitle:
+            return "Subtitle"
+        }
+    }
+}
+
+enum TextTransform: String, CaseIterable {
+    case original
+    case translate
+
+    var displayName: String {
+        switch self {
+        case .original:
+            return "Original"
+        case .translate:
+            return "Translate"
+        }
+    }
+}
+
+struct OutputProfile: Equatable {
+    var target: OutputTarget
+    var transform: TextTransform
+    var translationTarget: String
+
+    static let `default` = OutputProfile(
+        target: .focusedApp,
+        transform: .original,
+        translationTarget: "en"
+    )
+
+    var usesSubtitleASR: Bool {
+        target == .subtitle
+    }
+}
+
 struct AppConfig {
     var asrProvider: ASRProvider
     var voiceStickAPIKey: String
@@ -93,6 +137,8 @@ struct AppConfig {
     var pairedDeviceIDs: [String]
     var deviceThemeColors: [String: OverlayThemeColor]
     var deviceOverlayPositions: [String: OverlayPosition]
+    var defaultOutputProfile: OutputProfile
+    var deviceOutputProfiles: [String: OutputProfile]
     var autoEnter: Bool
     var debugAudioCache: Bool
     var debugAudioDirectory: URL
@@ -145,6 +191,8 @@ struct AppConfig {
             pairedDeviceIDs: [],
             deviceThemeColors: [:],
             deviceOverlayPositions: [:],
+            defaultOutputProfile: .default,
+            deviceOutputProfiles: [:],
             autoEnter: true,
             debugAudioCache: false,
             debugAudioDirectory: defaultDebugAudioDirectory
@@ -176,6 +224,21 @@ struct AppConfig {
             pairedDeviceIDs: deviceIDList(file.paired_device_ids ?? ""),
             deviceThemeColors: deviceThemeColorMap(file.device_theme_colors ?? ""),
             deviceOverlayPositions: deviceOverlayPositionMap(file.device_overlay_positions ?? ""),
+            defaultOutputProfile: outputProfile(
+                target: file.output?.target ?? file.output_target,
+                transform: file.output?.transform ?? file.text_transform,
+                translationTarget: file.output?.translation_target ?? file.translation_target,
+                default: defaults.defaultOutputProfile
+            ),
+            deviceOutputProfiles: deviceOutputProfileMap(
+                file.device,
+                defaultProfile: outputProfile(
+                    target: file.output?.target ?? file.output_target,
+                    transform: file.output?.transform ?? file.text_transform,
+                    translationTarget: file.output?.translation_target ?? file.translation_target,
+                    default: defaults.defaultOutputProfile
+                )
+            ),
             autoEnter: file.auto_enter ?? defaults.autoEnter,
             debugAudioCache: file.debug_audio_cache ?? defaults.debugAudioCache,
             debugAudioDirectory: directoryValue(file.debug_audio_dir, default: defaults.debugAudioDirectory)
@@ -201,8 +264,14 @@ struct AppConfig {
         auto_enter = \(autoEnter.tomlValue)
         debug_audio_cache = \(debugAudioCache.tomlValue)
         debug_audio_dir = "\(debugAudioDirectory.path.tomlEscaped)"
+
+        [output]
+        target = "\(defaultOutputProfile.target.rawValue)"
+        transform = "\(defaultOutputProfile.transform.rawValue)"
+        translation_target = "\(defaultOutputProfile.translationTarget.tomlEscaped)"
         """
-        try text.write(to: Self.configURL, atomically: true, encoding: .utf8)
+        let deviceText = deviceOutputProfileText
+        try (text + deviceText).write(to: Self.configURL, atomically: true, encoding: .utf8)
     }
 
     private static func loadLegacy(text: String, defaults: AppConfig) -> AppConfig {
@@ -230,6 +299,13 @@ struct AppConfig {
             pairedDeviceIDs: deviceIDList(values["paired_device_ids"] ?? ""),
             deviceThemeColors: deviceThemeColorMap(values["device_theme_colors"] ?? ""),
             deviceOverlayPositions: deviceOverlayPositionMap(values["device_overlay_positions"] ?? ""),
+            defaultOutputProfile: outputProfile(
+                target: values["output_target"],
+                transform: values["text_transform"],
+                translationTarget: values["translation_target"],
+                default: defaults.defaultOutputProfile
+            ),
+            deviceOutputProfiles: [:],
             autoEnter: boolValue(values["auto_enter"], default: defaults.autoEnter),
             debugAudioCache: boolValue(values["debug_audio_cache"], default: defaults.debugAudioCache),
             debugAudioDirectory: directoryValue(values["debug_audio_dir"], default: defaults.debugAudioDirectory)
@@ -272,6 +348,31 @@ struct AppConfig {
     private static func interactionModeValue(_ text: String?, default defaultValue: InteractionMode) -> InteractionMode {
         guard let text, let mode = InteractionMode(rawValue: text) else { return defaultValue }
         return mode
+    }
+
+    private static func outputTargetValue(_ text: String?, default defaultValue: OutputTarget) -> OutputTarget {
+        guard let text, let target = OutputTarget(rawValue: text) else { return defaultValue }
+        return target
+    }
+
+    private static func textTransformValue(_ text: String?, default defaultValue: TextTransform) -> TextTransform {
+        guard let text, let transform = TextTransform(rawValue: text) else { return defaultValue }
+        return transform
+    }
+
+    private static func outputProfile(
+        target: String?,
+        transform: String?,
+        translationTarget: String?,
+        default defaultValue: OutputProfile
+    ) -> OutputProfile {
+        OutputProfile(
+            target: outputTargetValue(target, default: defaultValue.target),
+            transform: textTransformValue(transform, default: defaultValue.transform),
+            translationTarget: (translationTarget?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+                $0.isEmpty ? nil : $0
+            } ?? defaultValue.translationTarget
+        )
     }
 
     private static func resourceIDValue(_ text: String?, default defaultValue: String) -> String {
@@ -347,6 +448,36 @@ struct AppConfig {
         return deviceOverlayPositions[Self.normalizedDeviceID(deviceID)] ?? .center
     }
 
+    func outputProfile(for deviceID: String?) -> OutputProfile {
+        guard let deviceID, let deviceProfile = deviceOutputProfiles[Self.normalizedDeviceID(deviceID)] else {
+            return defaultOutputProfile
+        }
+        return OutputProfile(
+            target: defaultOutputProfile.target,
+            transform: deviceProfile.transform,
+            translationTarget: deviceProfile.translationTarget
+        )
+    }
+
+    private static func deviceOutputProfileMap(
+        _ devices: [String: DeviceConfigFile]?,
+        defaultProfile: OutputProfile
+    ) -> [String: OutputProfile] {
+        guard let devices else { return [:] }
+        return devices.reduce(into: [:]) { profiles, pair in
+            let deviceID = normalizedDeviceID(pair.key)
+            guard deviceID.count == 4, deviceID.allSatisfy(\.isHexDigit), let output = pair.value.output else {
+                return
+            }
+            profiles[deviceID] = outputProfile(
+                target: nil,
+                transform: output.transform,
+                translationTarget: output.translation_target,
+                default: defaultProfile
+            )
+        }
+    }
+
     private var deviceThemeColorText: String {
         deviceThemeColors
             .filter { pairedDeviceIDs.contains($0.key) && $0.value != .white }
@@ -362,6 +493,21 @@ struct AppConfig {
             .map { "\($0.key):\($0.value.rawValue)" }
             .joined(separator: ",")
     }
+
+    private var deviceOutputProfileText: String {
+        deviceOutputProfiles
+            .filter { pairedDeviceIDs.contains($0.key) && $0.value != defaultOutputProfile }
+            .sorted { $0.key < $1.key }
+            .map { deviceID, profile in
+                """
+
+                [device.\(deviceID).output]
+                transform = "\(profile.transform.rawValue)"
+                translation_target = "\(profile.translationTarget.tomlEscaped)"
+                """
+            }
+            .joined(separator: "\n")
+    }
 }
 
 private struct ConfigFile: Decodable {
@@ -374,6 +520,9 @@ private struct ConfigFile: Decodable {
     var llm_api_key: String?
     var llm_model: String?
     var interaction_mode: String?
+    var output_target: String?
+    var text_transform: String?
+    var translation_target: String?
     var resource_id: String?
     var asr_hotwords: String?
     var paired_device_ids: String?
@@ -382,6 +531,18 @@ private struct ConfigFile: Decodable {
     var auto_enter: Bool?
     var debug_audio_cache: Bool?
     var debug_audio_dir: String?
+    var output: OutputConfigFile?
+    var device: [String: DeviceConfigFile]?
+}
+
+private struct OutputConfigFile: Decodable {
+    var target: String?
+    var transform: String?
+    var translation_target: String?
+}
+
+private struct DeviceConfigFile: Decodable {
+    var output: OutputConfigFile?
 }
 
 private extension Bool {

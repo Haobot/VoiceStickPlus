@@ -53,7 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             deviceThemeColors: config.deviceThemeColors,
             deviceOverlayPositions: config.deviceOverlayPositions,
             interactionMode: config.interactionMode,
-            autoEnter: config.autoEnter
+            autoEnter: config.autoEnter,
+            defaultOutputProfile: config.defaultOutputProfile,
+            deviceOutputProfiles: config.deviceOutputProfiles
         )
         let coordinator = VoiceStickCoordinator(config: config, statusController: statusController)
 
@@ -73,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     interactionMode: config.interactionMode,
                     autoEnter: config.autoEnter
                 )
+                self?.statusController?.setDefaultOutputProfile(config.defaultOutputProfile)
+                self?.statusController?.setDeviceOutputProfiles(config.deviceOutputProfiles)
                 self?.coordinator?.updateConfig(config)
             }
             self?.showDockIconWhileWindowVisible(controller)
@@ -103,6 +107,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusController.onSetAutoEnter = { [weak self] autoEnter in
             self?.updateInputOptions(interactionMode: nil, autoEnter: autoEnter)
+        }
+        statusController.onSetDefaultOutputProfile = { [weak self] profile in
+            self?.updateDefaultOutputProfile(profile)
+        }
+        statusController.onSetDeviceOutputProfile = { [weak self] deviceID, profile in
+            self?.updateDeviceOutputProfile(deviceID: deviceID, profile: profile)
         }
         statusController.onSetDeviceThemeColor = { [weak self] deviceID, color in
             self?.updateDeviceThemeColor(deviceID: deviceID, color: color)
@@ -159,6 +169,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusController?.setDeviceThemeColors(config.deviceThemeColors)
         } catch {
             statusController?.setStatus("Theme save failed")
+        }
+    }
+
+    private func updateDefaultOutputProfile(_ profile: OutputProfile) {
+        var config = self.config
+        config.defaultOutputProfile = profile
+        do {
+            try config.save()
+            self.config = config
+            statusController?.setDefaultOutputProfile(profile)
+            coordinator?.updateConfig(config)
+        } catch {
+            statusController?.setStatus("Output save failed")
+        }
+    }
+
+    private func updateDeviceOutputProfile(deviceID: String, profile: OutputProfile) {
+        var config = self.config
+        let storedProfile = OutputProfile(
+            target: config.defaultOutputProfile.target,
+            transform: profile.transform,
+            translationTarget: profile.translationTarget
+        )
+        if storedProfile.transform == config.defaultOutputProfile.transform &&
+            storedProfile.translationTarget == config.defaultOutputProfile.translationTarget {
+            config.deviceOutputProfiles.removeValue(forKey: deviceID)
+        } else {
+            config.deviceOutputProfiles[deviceID] = storedProfile
+        }
+        do {
+            try config.save()
+            self.config = config
+            statusController?.setDeviceOutputProfiles(config.deviceOutputProfiles)
+            coordinator?.updateConfig(config)
+        } catch {
+            statusController?.setStatus("Output save failed")
         }
     }
 

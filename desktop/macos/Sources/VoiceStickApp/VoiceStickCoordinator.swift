@@ -15,10 +15,43 @@ final class VoiceStickCoordinator {
         }
     }
 
+    private final class SubtitleCycle {
+        let peripheralID: UUID
+        let deviceID: String?
+        let sessionID: UInt32
+        let startedAt: Date
+        let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
+        let debugAudioRecorder: DebugAudioRecorder
+        var asr: any ASRClient
+        var receivedAudioFrames = 0
+        var bufferedOggChunks: [Data] = []
+        var asrStarted = false
+        var sentFinalAudioChunk = false
+        var finishedFinalText = false
+
+        init(peripheralID: UUID, deviceID: String?, sessionID: UInt32, config: AppConfig) {
+            self.peripheralID = peripheralID
+            self.deviceID = deviceID
+            self.sessionID = sessionID
+            self.startedAt = Date()
+            self.asr = VolcengineASRClient(config: config)
+            self.debugAudioRecorder = DebugAudioRecorder(
+                enabled: config.debugAudioCache,
+                directory: config.debugAudioDirectory
+            )
+        }
+
+        var duration: TimeInterval {
+            Date().timeIntervalSince(startedAt)
+        }
+    }
+
     private var config: AppConfig
     private let statusController: StatusController
     private let ble: BleCentral
     private var asr: any ASRClient
+    private var translator: LLMTranslationClient
+    private let subtitleController = SubtitleController()
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
     private let inputInjector = InputInjector()
     private let firmwareManifestClient = FirmwareManifestClient()
@@ -46,6 +79,7 @@ final class VoiceStickCoordinator {
     private var pendingFirmwareUpdatePromptDeviceIDs: Set<String> = []
     private var errorRecoveryToken = 0
     private var isShowingASRError = false
+    private var subtitleCycles: [UUID: SubtitleCycle] = [:]
     var onFirmwareUpdatePrompt: ((String, String, String, Bool) -> Void)?
 
     init(config: AppConfig, statusController: StatusController) {
@@ -54,6 +88,7 @@ final class VoiceStickCoordinator {
         self.pairedDeviceIDs = config.pairedDeviceIDs
         self.ble = BleCentral(pairedDeviceIDs: config.pairedDeviceIDs)
         self.asr = VolcengineASRClient(config: config)
+        self.translator = LLMTranslationClient(config: config)
         self.debugAudioRecorder = DebugAudioRecorder(
             enabled: config.debugAudioCache,
             directory: config.debugAudioDirectory
@@ -93,19 +128,26 @@ final class VoiceStickCoordinator {
     }
 
     func updateConfig(_ config: AppConfig) {
-        let wasRecognizing = asrStarted || activeSessionID != nil || isWaitingForFinalText
+        let wasRecognizing = asrStarted || activeSessionID != nil || isWaitingForFinalText || !subtitleCycles.isEmpty
         if wasRecognizing {
             asr.onPartial = nil
+            asr.onSegment = nil
             asr.onFinal = nil
             asr.onError = nil
             asr.onUpgradeURL = nil
             asr.cancel()
+            for cycle in subtitleCycles.values {
+                cycle.asr.cancel()
+                cycle.debugAudioRecorder.discard()
+            }
+            subtitleCycles.removeAll()
             activeSessionID = nil
             activePeripheralID = nil
             activeSessionStartedAt = nil
             pendingPasteState = .idle
             debugAudioRecorder.discard()
             statusController.hideOverlay()
+            subtitleController.hideAll()
             sendUIStateForActiveDevice("ready")
             activePeripheralID = nil
             finishRecognitionCycle()
@@ -118,6 +160,7 @@ final class VoiceStickCoordinator {
             directory: config.debugAudioDirectory
         )
         asr = VolcengineASRClient(config: config)
+        translator = LLMTranslationClient(config: config)
         configureASRCallbacks()
 
         if pairedDeviceIDs != config.pairedDeviceIDs {
@@ -135,6 +178,12 @@ final class VoiceStickCoordinator {
                 guard let self else { return }
                 self.statusController.showPartial(text, deviceID: self.activeDeviceID)
                 self.sendUIStateForActiveDevice("thinking", text: text)
+            }
+        }
+
+        asr.onSegment = { [weak self] segment in
+            DispatchQueue.main.async {
+                self?.handleDefiniteSegment(segment)
             }
         }
 
@@ -160,6 +209,37 @@ final class VoiceStickCoordinator {
                 if alert.runModal() == .alertFirstButtonReturn {
                     NSWorkspace.shared.open(url)
                 }
+            }
+        }
+    }
+
+    private func configureSubtitleASRCallbacks(for cycle: SubtitleCycle) {
+        let peripheralID = cycle.peripheralID
+        cycle.asr.onPartial = { [weak self] text in
+            DispatchQueue.main.async {
+                guard let self, let cycle = self.subtitleCycles[peripheralID] else { return }
+                self.statusController.showPartial(text, deviceID: cycle.deviceID)
+                self.ble.sendUIState("thinking", text: text, to: peripheralID)
+            }
+        }
+        cycle.asr.onSegment = { [weak self] segment in
+            DispatchQueue.main.async {
+                self?.handleSubtitleDefiniteSegment(segment, peripheralID: peripheralID)
+            }
+        }
+        cycle.asr.onFinal = { [weak self] text in
+            DispatchQueue.main.async {
+                self?.finishSubtitleCycleWithFinalText(peripheralID: peripheralID, text: text)
+            }
+        }
+        cycle.asr.onError = { [weak self] message in
+            DispatchQueue.main.async {
+                self?.finishSubtitleCycleWithError(peripheralID: peripheralID, message: message)
+            }
+        }
+        cycle.asr.onUpgradeURL = { url in
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(url)
             }
         }
     }
@@ -258,6 +338,10 @@ final class VoiceStickCoordinator {
         case "primary":
             handlePrimaryButtonUp(peripheralID: peripheralID)
         case "secondary":
+            if subtitleCycles[peripheralID] != nil {
+                cancelSubtitleCycle(peripheralID: peripheralID, reason: "secondary_cancel")
+                return
+            }
             cancelPendingPaste(peripheralID: peripheralID)
         default:
             break
@@ -265,6 +349,10 @@ final class VoiceStickCoordinator {
     }
 
     private func handlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID) {
+        if config.defaultOutputProfile.target == .subtitle {
+            handleSubtitlePrimaryButtonDown(sessionID: sessionID, peripheralID: peripheralID)
+            return
+        }
         if handleFrontButtonDuringPendingPaste(peripheralID: peripheralID) {
             return
         }
@@ -301,6 +389,10 @@ final class VoiceStickCoordinator {
     }
 
     private func handlePrimaryButtonUp(peripheralID: UUID) {
+        if subtitleCycles[peripheralID] != nil {
+            handleSubtitlePrimaryButtonUp(peripheralID: peripheralID)
+            return
+        }
         guard activeSessionID != nil, activePeripheralID == peripheralID else {
             return
         }
@@ -319,6 +411,10 @@ final class VoiceStickCoordinator {
     }
 
     private func handleAudioFrame(_ frame: AudioFrame, peripheralID: UUID) {
+        if subtitleCycles[peripheralID] != nil {
+            handleSubtitleAudioFrame(frame, peripheralID: peripheralID)
+            return
+        }
         guard frame.sessionID == activeSessionID, activePeripheralID == peripheralID else { return }
 
         if frame.isEnd && frame.payload.isEmpty {
@@ -356,6 +452,124 @@ final class VoiceStickCoordinator {
                 sendUIStateForActiveDevice("thinking")
             }
         }
+    }
+
+    private func handleSubtitlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID) {
+        guard let sessionID else { return }
+        if subtitleCycles[peripheralID] != nil {
+            return
+        }
+        let deviceID = deviceID(for: peripheralID)
+        let cycle = SubtitleCycle(
+            peripheralID: peripheralID,
+            deviceID: deviceID,
+            sessionID: sessionID,
+            config: config
+        )
+        configureSubtitleASRCallbacks(for: cycle)
+        subtitleCycles[peripheralID] = cycle
+        cycle.debugAudioRecorder.start(deviceID: deviceID, sessionID: sessionID)
+        statusController.showListening(deviceID: deviceID)
+        ble.sendUIState("recording", to: peripheralID)
+    }
+
+    private func handleSubtitlePrimaryButtonUp(peripheralID: UUID) {
+        guard let cycle = subtitleCycles[peripheralID] else { return }
+        if cycle.duration < minimumRecordingDuration {
+            cancelSubtitleCycle(peripheralID: peripheralID, reason: "short_recording")
+        } else if cycle.receivedAudioFrames == 0 {
+            finishSubtitleCycleWithError(peripheralID: peripheralID, message: "No audio frames from device")
+        } else {
+            ble.sendUIState("thinking", to: peripheralID)
+            sendSubtitleFinalOggChunkIfNeeded(peripheralID: peripheralID)
+        }
+    }
+
+    private func handleSubtitleAudioFrame(_ frame: AudioFrame, peripheralID: UUID) {
+        guard let cycle = subtitleCycles[peripheralID], frame.sessionID == cycle.sessionID else { return }
+        if frame.isEnd && frame.payload.isEmpty {
+            sendSubtitleFinalOggChunkIfNeeded(peripheralID: peripheralID)
+            return
+        }
+        guard !frame.payload.isEmpty else { return }
+        cycle.receivedAudioFrames += 1
+        let oggChunk = cycle.oggMuxer.append(opusPayload: frame.payload, isLast: frame.isEnd)
+        cycle.debugAudioRecorder.append(oggChunk)
+        sendOrBufferSubtitleOggChunk(
+            oggChunk,
+            isLast: frame.isEnd,
+            canStartASR: cycle.duration >= minimumRecordingDuration,
+            peripheralID: peripheralID
+        )
+        if frame.isEnd {
+            cycle.sentFinalAudioChunk = true
+            if !cycle.asrStarted && cycle.duration < minimumRecordingDuration {
+                cancelSubtitleCycle(peripheralID: peripheralID, reason: "short_recording")
+            } else if cycle.asrStarted {
+                cycle.debugAudioRecorder.finish()
+                statusController.setStatus("Processing")
+                ble.sendUIState("thinking", to: peripheralID)
+            } else {
+                cycle.debugAudioRecorder.finish()
+                if !startSubtitleASRAndFlushBufferedChunks(peripheralID: peripheralID, lastChunkIsFinal: true) {
+                    finishSubtitleCycleWithError(peripheralID: peripheralID, message: "Failed to start ASR")
+                    return
+                }
+                statusController.setStatus("Processing")
+                ble.sendUIState("thinking", to: peripheralID)
+            }
+        }
+    }
+
+    private func sendSubtitleFinalOggChunkIfNeeded(peripheralID: UUID) {
+        guard let cycle = subtitleCycles[peripheralID], !cycle.sentFinalAudioChunk else { return }
+        cycle.sentFinalAudioChunk = true
+        if !cycle.asrStarted && cycle.duration < minimumRecordingDuration {
+            cancelSubtitleCycle(peripheralID: peripheralID, reason: "short_recording")
+            return
+        }
+        let finalChunk = cycle.oggMuxer.finish()
+        cycle.debugAudioRecorder.append(finalChunk)
+        cycle.debugAudioRecorder.finish()
+        sendOrBufferSubtitleOggChunk(finalChunk, isLast: true, canStartASR: true, peripheralID: peripheralID)
+        statusController.setStatus("Processing")
+        ble.sendUIState("thinking", to: peripheralID)
+    }
+
+    private func sendOrBufferSubtitleOggChunk(_ chunk: Data, isLast: Bool, canStartASR: Bool, peripheralID: UUID) {
+        guard let cycle = subtitleCycles[peripheralID] else { return }
+        if cycle.asrStarted {
+            cycle.asr.sendOggOpusChunk(chunk, isLast: isLast)
+            return
+        }
+        cycle.bufferedOggChunks.append(chunk)
+        guard canStartASR else { return }
+        if !startSubtitleASRAndFlushBufferedChunks(peripheralID: peripheralID, lastChunkIsFinal: isLast) {
+            finishSubtitleCycleWithError(peripheralID: peripheralID, message: "Failed to start ASR")
+        }
+    }
+
+    private func startSubtitleASRAndFlushBufferedChunks(peripheralID: UUID, lastChunkIsFinal: Bool) -> Bool {
+        guard let cycle = subtitleCycles[peripheralID] else { return false }
+        guard !cycle.asrStarted else { return true }
+        let useDefiniteSegments = shouldUseDefiniteSegments(for: outputProfile(for: cycle.deviceID))
+        guard cycle.asr.start(options: ASRSessionOptions(
+            hotwords: config.asrHotwords,
+            resultType: useDefiniteSegments ? .single : .full,
+            showUtterances: useDefiniteSegments
+        )) else {
+            cycle.bufferedOggChunks.removeAll(keepingCapacity: true)
+            return false
+        }
+        cycle.asrStarted = true
+        for bufferedChunk in cycle.bufferedOggChunks.dropLast() {
+            cycle.asr.sendOggOpusChunk(bufferedChunk, isLast: false)
+        }
+        if let lastChunk = cycle.bufferedOggChunks.last {
+            cycle.asr.sendOggOpusChunk(lastChunk, isLast: lastChunkIsFinal)
+        }
+        cycle.bufferedOggChunks.removeAll(keepingCapacity: true)
+        return true
     }
 
     private func sendFinalOggChunkIfNeeded(recordingDuration: TimeInterval) {
@@ -398,7 +612,13 @@ final class VoiceStickCoordinator {
 
     private func startASRAndFlushBufferedChunks(lastChunkIsFinal: Bool) -> Bool {
         guard !asrStarted else { return true }
-        guard asr.start(options: ASRSessionOptions(hotwords: config.asrHotwords)) else {
+        let profile = outputProfile(for: activeDeviceID)
+        let useDefiniteSegments = shouldUseDefiniteSegments(for: profile)
+        guard asr.start(options: ASRSessionOptions(
+            hotwords: config.asrHotwords,
+            resultType: useDefiniteSegments ? .single : .full,
+            showUtterances: useDefiniteSegments
+        )) else {
             bufferedOggChunks.removeAll(keepingCapacity: true)
             return false
         }
@@ -430,6 +650,21 @@ final class VoiceStickCoordinator {
 
     private func finishWithFinalText(_ text: String) {
         guard !pastedFinalText else { return }
+        let profile = outputProfile(for: activeDeviceID)
+        if profile.target == .subtitle {
+            pastedFinalText = true
+            pendingPasteState = .idle
+            let deviceID = activeDeviceID
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                showSubtitleText(text, profile: profile, deviceID: deviceID)
+            }
+            finishRecognitionCycle()
+            statusController.hideOverlay()
+            statusController.setStatus("Ready")
+            sendUIStateForActiveDevice("ready")
+            activePeripheralID = nil
+            return
+        }
         if text.isEmpty {
             pastedFinalText = true
             pendingPasteState = .idle
@@ -441,6 +676,25 @@ final class VoiceStickCoordinator {
             return
         }
 
+        if profile.transform == .translate {
+            pastedFinalText = true
+            statusController.setStatus("Translating")
+            transformText(text, profile: profile, deviceID: activeDeviceID) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let translatedText):
+                    self.enterPendingConfirmation(text: translatedText)
+                case .failure(let error):
+                    self.finishWithASRError(error.localizedDescription)
+                }
+            }
+            return
+        }
+
+        enterPendingConfirmation(text: text)
+    }
+
+    private func enterPendingConfirmation(text: String) {
         pastedFinalText = true
         lastRecoverableText = text
         lastRecoverablePeripheralID = activePeripheralID
@@ -450,6 +704,102 @@ final class VoiceStickCoordinator {
             self?.commitPendingPaste(text: text)
         }
         sendUIStateForActiveDevice("pending_confirmation", text: text)
+    }
+
+    private func handleDefiniteSegment(_ segment: ASRSegment) {
+        guard segment.definite, let deviceID = activeDeviceID else { return }
+        let profile = outputProfile(for: deviceID)
+        guard shouldUseDefiniteSegments(for: profile) else { return }
+        statusController.hideOverlay(deviceID: deviceID)
+        showSubtitleText(segment.text, profile: profile, deviceID: deviceID)
+    }
+
+    private func handleSubtitleDefiniteSegment(_ segment: ASRSegment, peripheralID: UUID) {
+        guard segment.definite, let cycle = subtitleCycles[peripheralID] else { return }
+        let profile = outputProfile(for: cycle.deviceID)
+        guard shouldUseDefiniteSegments(for: profile) else { return }
+        statusController.hideOverlay(deviceID: cycle.deviceID)
+        showSubtitleText(segment.text, profile: profile, deviceID: cycle.deviceID)
+    }
+
+    private func finishSubtitleCycleWithFinalText(peripheralID: UUID, text: String) {
+        guard let cycle = subtitleCycles[peripheralID], !cycle.finishedFinalText else { return }
+        cycle.finishedFinalText = true
+        let profile = outputProfile(for: cycle.deviceID)
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            showSubtitleText(text, profile: profile, deviceID: cycle.deviceID)
+        }
+        finishSubtitleCycle(peripheralID: peripheralID, hideOverlay: true)
+    }
+
+    private func finishSubtitleCycleWithError(peripheralID: UUID, message: String) {
+        guard let cycle = subtitleCycles[peripheralID] else { return }
+        NSLog("ASR error VS-\(cycle.deviceID ?? "unknown"): \(message)")
+        cycle.asr.cancel()
+        cycle.debugAudioRecorder.discard()
+        statusController.showError(message, deviceID: cycle.deviceID) { [weak self] in
+            self?.ble.sendUIState("ready", to: peripheralID)
+        }
+        subtitleCycles.removeValue(forKey: peripheralID)
+    }
+
+    private func cancelSubtitleCycle(peripheralID: UUID, reason: String) {
+        guard let cycle = subtitleCycles[peripheralID] else { return }
+        NSLog("Cancel subtitle cycle VS-\(cycle.deviceID ?? "unknown") reason=\(reason)")
+        cycle.asr.cancel()
+        cycle.debugAudioRecorder.discard()
+        statusController.hideOverlay(deviceID: cycle.deviceID)
+        ble.sendUIState("ready", to: peripheralID)
+        subtitleCycles.removeValue(forKey: peripheralID)
+    }
+
+    private func finishSubtitleCycle(peripheralID: UUID, hideOverlay: Bool) {
+        guard let cycle = subtitleCycles[peripheralID] else { return }
+        if hideOverlay {
+            statusController.hideOverlay(deviceID: cycle.deviceID)
+        }
+        statusController.setStatus("Ready")
+        ble.sendUIState("ready", to: peripheralID)
+        subtitleCycles.removeValue(forKey: peripheralID)
+    }
+
+    private func showSubtitleText(_ text: String, profile: OutputProfile, deviceID: String?) {
+        guard let deviceID else { return }
+        transformText(text, profile: profile, deviceID: deviceID) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let outputText):
+                self.subtitleController.show(
+                    text: outputText,
+                    deviceID: deviceID,
+                    color: self.config.themeColor(for: deviceID)
+                )
+            case .failure(let error):
+                self.statusController.showError(error.localizedDescription, deviceID: deviceID)
+            }
+        }
+    }
+
+    private func transformText(
+        _ text: String,
+        profile: OutputProfile,
+        deviceID: String?,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        guard profile.transform == .translate else {
+            completion(.success(text))
+            return
+        }
+        translator.translate(
+            text,
+            targetLanguage: profile.translationTarget,
+            hotwords: config.asrHotwords
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard self != nil else { return }
+                completion(result)
+            }
+        }
     }
 
     private func finishWithASRError(_ message: String) {
@@ -596,6 +946,14 @@ final class VoiceStickCoordinator {
     }
 
     private func cancelActiveCycleIfDeviceDisconnected() {
+        let disconnectedSubtitlePeripheralIDs = subtitleCycles.keys.filter { !ble.isConnected($0) }
+        for peripheralID in disconnectedSubtitlePeripheralIDs {
+            guard let cycle = subtitleCycles[peripheralID] else { continue }
+            cycle.asr.cancel()
+            cycle.debugAudioRecorder.discard()
+            statusController.hideOverlay(deviceID: cycle.deviceID)
+            subtitleCycles.removeValue(forKey: peripheralID)
+        }
         guard let activePeripheralID, !ble.isConnected(activePeripheralID) else { return }
         asr.cancel()
         pendingPasteState = .idle
@@ -605,6 +963,7 @@ final class VoiceStickCoordinator {
         debugAudioRecorder.discard()
         finishRecognitionCycle()
         statusController.hideOverlay()
+        subtitleController.hideAll()
     }
 
     private func finishRecognitionCycle() {
@@ -758,6 +1117,14 @@ final class VoiceStickCoordinator {
 
     private var activeDeviceID: String? {
         activePeripheralID.flatMap { ble.deviceID(for: $0) }
+    }
+
+    private func outputProfile(for deviceID: String?) -> OutputProfile {
+        config.outputProfile(for: deviceID)
+    }
+
+    private func shouldUseDefiniteSegments(for profile: OutputProfile) -> Bool {
+        profile.target == .subtitle && config.interactionMode == .clickToTalk
     }
 
     private func deviceID(for peripheralID: UUID) -> String? {

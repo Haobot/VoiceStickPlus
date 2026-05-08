@@ -8,10 +8,20 @@ enum ASRResultType: String {
 
 struct ASRSessionOptions {
     var hotwords: [String] = []
+    var resultType: ASRResultType = .full
+    var showUtterances: Bool = false
+}
+
+struct ASRSegment {
+    let text: String
+    let definite: Bool
+    let startTime: Int?
+    let endTime: Int?
 }
 
 protocol ASRClient: AnyObject {
     var onPartial: ((String) -> Void)? { get set }
+    var onSegment: ((ASRSegment) -> Void)? { get set }
     var onFinal: ((String) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
     var onUpgradeURL: ((URL) -> Void)? { get set }
@@ -78,11 +88,13 @@ final class VolcengineASRClient: ASRClient {
     private var currentSessionID: String?
     private var queuedAudioChunks: [QueuedAudioChunk] = []
     private var latestSessionTranscript = ""
+    private var emittedDefiniteSegmentKeys: Set<String> = []
     private var sessionOptions = ASRSessionOptions()
     private var sequence: Int32 = 0
     private var finished = false
 
     var onPartial: ((String) -> Void)?
+    var onSegment: ((ASRSegment) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onUpgradeURL: ((URL) -> Void)?
@@ -130,6 +142,7 @@ final class VolcengineASRClient: ASRClient {
 
         sequence = 0
         sessionOptions = options
+        emittedDefiniteSegmentKeys.removeAll(keepingCapacity: true)
         finished = false
         NSLog("ASR start provider=\(config.asrProvider.rawValue) connect_id=\(connectID)")
         let task = URLSession.shared.webSocketTask(with: request)
@@ -227,6 +240,7 @@ final class VolcengineASRClient: ASRClient {
         currentSessionID = UUID().uuidString
         sessionOptions = options
         latestSessionTranscript = ""
+        emittedDefiniteSegmentKeys.removeAll(keepingCapacity: true)
         queuedAudioChunks.removeAll(keepingCapacity: true)
         sessionState = .starting
 
@@ -326,6 +340,7 @@ final class VolcengineASRClient: ASRClient {
 
         queuedAudioChunks.removeAll(keepingCapacity: true)
         latestSessionTranscript = ""
+        emittedDefiniteSegmentKeys.removeAll(keepingCapacity: true)
         currentSessionID = nil
         sessionState = .idle
     }
@@ -352,6 +367,7 @@ final class VolcengineASRClient: ASRClient {
     private func failReusableSession(_ message: String) {
         queuedAudioChunks.removeAll(keepingCapacity: true)
         latestSessionTranscript = ""
+        emittedDefiniteSegmentKeys.removeAll(keepingCapacity: true)
         currentSessionID = nil
         sessionState = .idle
         closeReusableWebSocket(sendFinishConnection: false)
@@ -368,7 +384,8 @@ final class VolcengineASRClient: ASRClient {
         var request: [String: Any] = [
             "model_name": "bigmodel",
             "enable_nonstream": true,
-            "show_utterances": false,
+            "show_utterances": sessionOptions.showUtterances,
+            "result_type": sessionOptions.resultType.rawValue,
             "enable_ddc": true
         ]
         addHotwordsIfNeeded(to: &request)
@@ -677,10 +694,18 @@ final class VolcengineASRClient: ASRClient {
             guard response.sessionID == currentSessionID, let text = response.payloadText else { return }
             logASRResponse(text, isFinalResponse: false)
             let transcript = extractTranscript(from: text)
+            let definiteSegments = extractNewDefiniteSegments(from: text)
             if !transcript.isEmpty {
                 latestSessionTranscript = transcript
                 DispatchQueue.main.async { [weak self] in
                     self?.onPartial?(transcript)
+                }
+            }
+            if !definiteSegments.isEmpty {
+                DispatchQueue.main.async { [weak self] in
+                    for segment in definiteSegments {
+                        self?.onSegment?(segment)
+                    }
                 }
             }
 
@@ -693,6 +718,7 @@ final class VolcengineASRClient: ASRClient {
             NSLog("ASR reusable session_finished session_id=\(response.sessionID ?? "") text_len=\(finalText.count)")
             currentSessionID = nil
             latestSessionTranscript = ""
+            emittedDefiniteSegmentKeys.removeAll(keepingCapacity: true)
             queuedAudioChunks.removeAll(keepingCapacity: true)
             sessionState = .idle
             DispatchQueue.main.async { [weak self] in
@@ -703,6 +729,7 @@ final class VolcengineASRClient: ASRClient {
             if response.sessionID == currentSessionID {
                 currentSessionID = nil
                 latestSessionTranscript = ""
+                emittedDefiniteSegmentKeys.removeAll(keepingCapacity: true)
                 queuedAudioChunks.removeAll(keepingCapacity: true)
                 sessionState = .idle
             }
@@ -795,8 +822,8 @@ final class VolcengineASRClient: ASRClient {
         var request: [String: Any] = [
             "model_name": "bigmodel",
             "enable_nonstream": true,
-            "show_utterances": showUtterances,
-            "result_type": resultType.rawValue,
+            "show_utterances": sessionOptions.showUtterances,
+            "result_type": sessionOptions.resultType.rawValue,
             "enable_ddc": true
         ]
         addHotwordsIfNeeded(to: &request)
@@ -843,11 +870,15 @@ final class VolcengineASRClient: ASRClient {
 
     private func handleASRText(_ text: String, isFinalResponse: Bool) {
         let transcript = extractTranscript(from: text)
+        let definiteSegments = extractNewDefiniteSegments(from: text)
 
         if isFinalResponse {
             onFinal?(transcript)
         } else if !transcript.isEmpty {
             onPartial?(transcript)
+        }
+        for segment in definiteSegments {
+            onSegment?(segment)
         }
     }
 
@@ -883,6 +914,51 @@ final class VolcengineASRClient: ASRClient {
         }
 
         return ""
+    }
+
+    private func extractNewDefiniteSegments(from text: String) -> [ASRSegment] {
+        guard let object = parseJSONPayload(text) else { return [] }
+        return extractSegments(from: object)
+            .filter(\.definite)
+            .filter { segment in
+                let key = segmentKey(segment)
+                if emittedDefiniteSegmentKeys.contains(key) {
+                    return false
+                }
+                emittedDefiniteSegmentKeys.insert(key)
+                return true
+            }
+    }
+
+    private func extractSegments(from object: [String: Any]) -> [ASRSegment] {
+        if let result = object["result"] as? [String: Any],
+           let utterances = result["utterances"] as? [[String: Any]] {
+            return utterances.compactMap(segment)
+        }
+
+        if let results = object["result"] as? [[String: Any]] {
+            return results.flatMap { result in
+                (result["utterances"] as? [[String: Any]])?.compactMap(segment) ?? []
+            }
+        }
+
+        return []
+    }
+
+    private func segment(from utterance: [String: Any]) -> ASRSegment? {
+        guard let text = utterance["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return ASRSegment(
+            text: text,
+            definite: utterance["definite"] as? Bool ?? false,
+            startTime: utterance["start_time"] as? Int,
+            endTime: utterance["end_time"] as? Int
+        )
+    }
+
+    private func segmentKey(_ segment: ASRSegment) -> String {
+        "\(segment.startTime ?? -1):\(segment.endTime ?? -1):\(segment.text)"
     }
 
     private func parseJSONPayload(_ text: String) -> [String: Any]? {

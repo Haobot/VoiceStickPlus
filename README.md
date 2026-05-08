@@ -212,12 +212,23 @@ llm_api_key = "your_openai_compatible_llm_api_key"
 llm_model = "gpt-5.5"
 interaction_mode = "hold_to_talk"
 resource_id = "volc.seedasr.sauc.duration"
+asr_hotwords = "小智,VoiceStick"
 paired_device_ids = ""
 device_theme_colors = ""
 device_overlay_positions = ""
 auto_enter = true
 debug_audio_cache = false
 # debug_audio_dir = "~/Library/Application Support/VoiceStick/DebugAudio"
+
+[output]
+target = "focused_app"
+transform = "original"
+translation_target = "en"
+
+# Optional per-device subtitle translation:
+# [device.C3D8.output]
+# transform = "translate"
+# translation_target = "en"
 ```
 
 Fields:
@@ -233,12 +244,17 @@ Fields:
 | `llm_model` | LLM model name |
 | `interaction_mode` | Front button interaction: `hold_to_talk` or `click_to_talk` |
 | `resource_id` | Volcengine resource ID |
+| `asr_hotwords` | Comma-separated ASR hotwords; also passed to the LLM as translation terminology hints |
 | `paired_device_ids` | Comma-separated 4-digit hex IDs, for example `C3D8,09AF` |
 | `device_theme_colors` | Optional per-device overlay colors, for example `C3D8:pink,09AF:green` |
 | `device_overlay_positions` | Optional per-device overlay positions, for example `C3D8:top_left,09AF:bottom_right` |
 | `auto_enter` | Whether to press Return after paste |
 | `debug_audio_cache` | Whether to save debug Ogg Opus files |
 | `debug_audio_dir` | Debug audio output directory |
+| `[output].target` | `focused_app` or `subtitle` |
+| `[output].transform` | `original` or `translate` |
+| `[output].translation_target` | Target language code for LLM translation, for example `en` or `zh-Hans` |
+| `[device.<id>.output]` | Optional per-device override for text transform and translation target |
 
 Supported Volcengine `resource_id` values:
 

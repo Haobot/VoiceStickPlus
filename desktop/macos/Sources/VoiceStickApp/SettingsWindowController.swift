@@ -193,6 +193,8 @@ final class SettingsWindowController: NSWindowController {
             pairedDeviceIDs: config.pairedDeviceIDs,
             deviceThemeColors: config.deviceThemeColors,
             deviceOverlayPositions: config.deviceOverlayPositions,
+            defaultOutputProfile: config.defaultOutputProfile,
+            deviceOutputProfiles: config.deviceOutputProfiles,
             autoEnter: config.autoEnter,
             debugAudioCache: debugAudioButton.state == .on,
             debugAudioDirectory: URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)

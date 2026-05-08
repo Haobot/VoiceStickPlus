@@ -21,6 +21,7 @@ final class OverlayController {
     private let positionMargin: CGFloat = 28
     private var themeColor: OverlayThemeColor = .white
     private var position: OverlayPosition = .center
+    private var stackIndex = 0
 
     init() {
         window = NSPanel(
@@ -33,7 +34,7 @@ final class OverlayController {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.ignoresMouseEvents = true
-        window.level = .floating
+        window.level = .screenSaver
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         window.animationBehavior = .utilityWindow
         window.contentView = container
@@ -93,6 +94,14 @@ final class OverlayController {
     func setPosition(_ position: OverlayPosition) {
         guard self.position != position else { return }
         self.position = position
+        if window.isVisible {
+            reposition(for: textLabel.stringValue)
+        }
+    }
+
+    func setStackIndex(_ index: Int) {
+        guard stackIndex != index else { return }
+        stackIndex = index
         if window.isVisible {
             reposition(for: textLabel.stringValue)
         }
@@ -229,33 +238,51 @@ final class OverlayController {
     }
 
     private func frameOrigin(in visibleFrame: NSRect, windowSize: NSSize) -> CGPoint {
+        let gap: CGFloat = 14
+        let stackStep = windowSize.height + gap
+        let direction = stackDirection(for: stackIndex)
+        let offset = CGFloat(abs(direction)) * stackStep * CGFloat(direction.signum())
         switch position {
         case .center:
             return CGPoint(
                 x: visibleFrame.midX - windowSize.width / 2,
-                y: visibleFrame.midY - windowSize.height / 2
+                y: clamp(
+                    visibleFrame.midY - windowSize.height / 2 + offset,
+                    min: visibleFrame.minY + positionMargin,
+                    max: visibleFrame.maxY - positionMargin - windowSize.height
+                )
             )
         case .topLeft:
             return CGPoint(
                 x: visibleFrame.minX + positionMargin,
-                y: visibleFrame.maxY - positionMargin - windowSize.height
+                y: visibleFrame.maxY - positionMargin - windowSize.height - CGFloat(stackIndex) * stackStep
             )
         case .topRight:
             return CGPoint(
                 x: visibleFrame.maxX - positionMargin - windowSize.width,
-                y: visibleFrame.maxY - positionMargin - windowSize.height
+                y: visibleFrame.maxY - positionMargin - windowSize.height - CGFloat(stackIndex) * stackStep
             )
         case .bottomLeft:
             return CGPoint(
                 x: visibleFrame.minX + positionMargin,
-                y: visibleFrame.minY + positionMargin
+                y: visibleFrame.minY + positionMargin + CGFloat(stackIndex) * stackStep
             )
         case .bottomRight:
             return CGPoint(
                 x: visibleFrame.maxX - positionMargin - windowSize.width,
-                y: visibleFrame.minY + positionMargin
+                y: visibleFrame.minY + positionMargin + CGFloat(stackIndex) * stackStep
             )
         }
+    }
+
+    private func stackDirection(for index: Int) -> Int {
+        guard index > 0 else { return 0 }
+        let magnitude = (index + 1) / 2
+        return index % 2 == 1 ? -magnitude : magnitude
+    }
+
+    private func clamp(_ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat) -> CGFloat {
+        Swift.max(minValue, Swift.min(maxValue, value))
     }
 
     private var textLeadingInset: CGFloat {
