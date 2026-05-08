@@ -17,6 +17,26 @@
             "name": "Release VoiceStickApp (desktop)",
             "program": "${workspaceFolder:voice-stick}/desktop/.build/release/VoiceStickApp",
             "preLaunchTask": "swift: Build Release VoiceStickApp (desktop)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:voice-stick}/desktop/macos",
+            "name": "Debug VoiceStickApp (desktop/macos)",
+            "target": "VoiceStickApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug VoiceStickApp (desktop/macos)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:voice-stick}/desktop/macos",
+            "name": "Release VoiceStickApp (desktop/macos)",
+            "target": "VoiceStickApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release VoiceStickApp (desktop/macos)"
         }
     ]
 }
