@@ -581,6 +581,12 @@ void TestCoordinatorSubtitleOutputSkipsPaste() {
     std::this_thread::sleep_for(std::chrono::milliseconds(520));
     ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
     assert(subtitle_asr_ptr != nullptr);
+    assert(!subtitle_asr_ptr->started);
+    subtitle_asr_ptr->on_partial("early subtitle");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "early subtitle");
+    assert(ble_ptr->sent_ui_states.back().text != "early subtitle");
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(12, 2));
     assert(subtitle_asr_ptr->started);
     assert(subtitle_asr_ptr->last_options.show_utterances);
     assert(subtitle_asr_ptr->last_options.result_type == AsrResultType::kSingle);
@@ -625,7 +631,7 @@ void TestCoordinatorSubtitleFinalDoesNotBlockNextSession() {
     std::this_thread::sleep_for(std::chrono::milliseconds(520));
     ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
     assert(subtitle_asrs.size() == 1);
-    assert(subtitle_asrs[0]->started);
+    assert(!subtitle_asrs[0]->started);
     assert(HasUiState(*ble_ptr, "ready", "5A74"));
 
     const auto ready_count_after_first_release = std::count_if(
@@ -637,6 +643,8 @@ void TestCoordinatorSubtitleFinalDoesNotBlockNextSession() {
     assert(subtitle_asrs.size() == 2);
     assert(ble_ptr->sent_ui_states.back().state == "recording");
 
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(12, 2));
+    assert(subtitle_asrs[0]->started);
     subtitle_asrs[0]->on_final("first late subtitle");
     assert(!ui.subtitles.empty());
     assert(ui.subtitles.back() == "5A74:first late subtitle:blue");
@@ -678,6 +686,57 @@ void TestCoordinatorShortSubtitleEndReturnsReady() {
     assert(HasUiState(*ble_ptr, "ready", "5A74"));
 }
 
+void TestCoordinatorClickToTalkPrimaryClickTogglesRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(21, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 21));
+
+    assert(!asr_ptr->started);
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(21, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+void TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 22));
+    asr_ptr->on_partial("early");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "early");
+    assert(ble_ptr->sent_ui_states.back().text != "early");
+
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(22, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 22));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(22, 2));
+    asr_ptr->on_partial("late");
+
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+    assert(ble_ptr->sent_ui_states.back().text == "late");
+}
+
 } // namespace
 
 int main() {
@@ -697,5 +756,7 @@ int main() {
     TestCoordinatorSubtitleOutputSkipsPaste();
     TestCoordinatorSubtitleFinalDoesNotBlockNextSession();
     TestCoordinatorShortSubtitleEndReturnsReady();
+    TestCoordinatorClickToTalkPrimaryClickTogglesRecording();
+    TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio();
     return 0;
 }

@@ -623,15 +623,22 @@ void AsrClientWin::HandleReusableResponse(std::span<const std::uint8_t> data, HI
 
     case AsrEvent::kSessionFinished: {
         std::string final_text;
+        std::vector<AsrSegment> segments;
         {
             std::lock_guard lock(mutex_);
             if (response.session_id != current_session_id_) return;
-            final_text = latest_session_transcript_;
+            final_text = AsrProtocol::ExtractTranscript(response.payload_text);
+            if (final_text.empty()) final_text = latest_session_transcript_;
+            segments = AsrProtocol::ExtractNewDefiniteSegments(
+                response.payload_text, &emitted_definite_segment_keys_);
             current_session_id_.clear();
             latest_session_transcript_.clear();
             emitted_definite_segment_keys_.clear();
             queued_audio_chunks_.clear();
             session_state_ = SessionState::kIdle;
+        }
+        for (const auto& segment : segments) {
+            if (on_segment) on_segment(segment);
         }
         if (on_final) on_final(final_text);
         break;

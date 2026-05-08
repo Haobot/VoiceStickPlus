@@ -185,6 +185,8 @@ private:
         bool asr_started = false;
         bool sent_final_audio_chunk = false;
         bool finished_final_text = false;
+        bool waiting_for_audio_end = false;
+        std::uint64_t audio_end_wait_generation = 0;
     };
 
     void ConfigureAsrCallbacks();
@@ -192,12 +194,18 @@ private:
     void HandleStateEvent(const StateEvent& event, const std::string& device_id);
     void HandleButtonDown(const StateEvent& event, const std::string& device_id);
     void HandleButtonUp(const StateEvent& event, const std::string& device_id);
+    void HandleButtonClick(const StateEvent& event, const std::string& device_id);
+    void HandleSecondaryButtonClick(const std::string& device_id);
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);
     void HandleAudioFrame(const AudioFrame& frame, const std::string& device_id);
     void HandleSubtitlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandleSubtitlePrimaryButtonUp(const std::string& device_id);
     void HandleSubtitleAudioFrame(const AudioFrame& frame, const std::string& device_id);
+    void BeginWaitingForSubtitleAudioEnd(SubtitleCycle* cycle, std::string_view reason);
+    void ScheduleSubtitleAudioEndTimeout(const std::string& device_id, std::uint32_t session_id);
+    void CancelSubtitleAudioEndTimeout(SubtitleCycle* cycle);
+    void FinishSubtitleAudioInput(SubtitleCycle* cycle);
     void SendSubtitleFinalOggChunkIfNeeded(const std::string& device_id, std::uint32_t session_id);
     void SendOrBufferSubtitleOggChunk(SubtitleCycle* cycle, const ByteVector& chunk,
                                       bool is_last, bool can_start_asr);
@@ -210,13 +218,18 @@ private:
                                       const std::string& message);
     void CancelSubtitleCycle(const std::string& device_id, std::string_view reason);
     void FinishSubtitleCycle(const std::string& device_id, std::uint32_t session_id, bool hide_overlay);
+    bool ShouldHideOverlayForFinishedSubtitleCycle(const std::string& device_id, std::uint32_t session_id) const;
+    bool CanUpdateOverlayForSubtitleCycle(const std::string& device_id, std::uint32_t session_id) const;
+    bool ShouldSendPartialToDevice() const;
+    bool ShouldSendSubtitlePartialToDevice(const SubtitleCycle* cycle) const;
     SubtitleCycle* FindSubtitleCycle(const std::string& device_id, std::uint32_t session_id);
     SubtitleCycle* FindActiveSubtitleCycle(const std::string& device_id);
     bool IsActiveSubtitleCycle(const std::string& device_id, std::uint32_t session_id) const;
     bool HasActiveSubtitleSession(const std::string& device_id) const;
     void ClearActiveSubtitleSession(const std::string& device_id, std::uint32_t session_id);
     void CancelSubtitleCyclesForDevice(const std::string& device_id, std::string_view reason);
-    void ShowSubtitleText(const std::string& text, const OutputProfile& profile, const std::string& device_id);
+    void ShowSubtitleText(const std::string& text, const OutputProfile& profile, const std::string& device_id,
+                          std::function<void(bool)> completion = {});
     void TransformText(const std::string& text, const OutputProfile& profile,
                        std::function<void(bool, std::string)> completion);
     void BeginWaitingForAudioEnd(std::string_view reason);

@@ -269,15 +269,25 @@ void BleCentralWin::SendUiState(const std::string& state,
             auto it = sessions_by_device_id_.find(*device_id);
             if (it != sessions_by_device_id_.end() && it->second->ready) {
                 targets.push_back(it->second);
+            } else {
+                LogBleLine("send ui_state skipped state=" + state +
+                           " dev=VS-" + *device_id +
+                           " text_len=" + std::to_string(text.size()));
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
                 if (session->ready) targets.push_back(session);
             }
+            LogBleLine("send ui_state broadcast state=" + state +
+                       " targets=" + std::to_string(targets.size()) +
+                       " text_len=" + std::to_string(text.size()));
         }
     }
 
     for (auto& session : targets) {
+        LogBleLine("send ui_state state=" + state +
+                   " dev=VS-" + session->device.id +
+                   " text_len=" + std::to_string(text.size()));
         WriteControlPayloadAsync(std::move(session), payload);
     }
 }
