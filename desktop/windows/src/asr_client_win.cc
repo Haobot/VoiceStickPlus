@@ -33,6 +33,20 @@ bool StartsWithScheme(std::string_view text, std::string_view scheme) {
            });
 }
 
+constexpr int kAsrResolveTimeoutMs = 5000;
+constexpr int kAsrConnectTimeoutMs = 5000;
+constexpr int kAsrSendTimeoutMs = 5000;
+constexpr int kAsrReceiveTimeoutMs = 15000;
+
+void SetAsrWinHttpTimeouts(HINTERNET handle) {
+    if (!handle) return;
+    WinHttpSetTimeouts(handle,
+                       kAsrResolveTimeoutMs,
+                       kAsrConnectTimeoutMs,
+                       kAsrSendTimeoutMs,
+                       kAsrReceiveTimeoutMs);
+}
+
 std::optional<std::wstring> WinHttpUrlFromWebSocketUrl(std::string_view websocket_url) {
     std::string http_url;
     if (StartsWithScheme(websocket_url, "wss://")) {
@@ -81,6 +95,8 @@ bool AsrClientWin::StartLegacySession() {
 }
 
 bool AsrClientWin::StartReusableSession() {
+    HINTERNET ready_websocket = nullptr;
+    std::string ready_session_id;
     {
         std::lock_guard lock(mutex_);
         if (session_state_ != SessionState::kIdle) {
@@ -92,12 +108,18 @@ bool AsrClientWin::StartReusableSession() {
         queued_audio_chunks_.clear();
         session_state_ = SessionState::kStarting;
         if (connection_state_ == ConnectionState::kReady && websocket_) {
-            SendFrame(websocket_, AsrProtocol::MakeStartSessionFrame(config_, current_session_id_));
-            return true;
+            ready_websocket = websocket_;
+            ready_session_id = current_session_id_;
         }
         if (connection_state_ == ConnectionState::kConnecting && worker_.joinable()) {
             return true;
         }
+    }
+    if (ready_websocket) {
+        return SendReusableFrameOrFail(
+            ready_websocket,
+            AsrProtocol::MakeStartSessionFrame(config_, ready_session_id),
+            "start ASR session");
     }
 
     ShutdownReusableConnection();
@@ -218,6 +240,7 @@ void AsrClientWin::RunWebSocket() {
         if (on_error) on_error("Failed to start ASR network session: " + LastErrorText());
         return;
     }
+    SetAsrWinHttpTimeouts(session);
     std::wstring host(components.lpszHostName, components.dwHostNameLength);
     HINTERNET connect = WinHttpConnect(session, host.c_str(), components.nPort, 0);
     if (!connect) {
@@ -241,6 +264,7 @@ void AsrClientWin::RunWebSocket() {
         if (on_error) on_error("Failed to create ASR request: " + LastErrorText());
         return;
     }
+    SetAsrWinHttpTimeouts(request);
 
     AddHeader(request, "X-Api-Key", config_.ActiveApiKey());
     AddHeader(request, "X-Api-Request-Id", "voice-stick-windows");
@@ -271,6 +295,7 @@ void AsrClientWin::RunWebSocket() {
                                : "ASR WebSocket upgrade failed: HTTP " + status_code);
         return;
     }
+    SetAsrWinHttpTimeouts(websocket);
     WinHttpCloseHandle(request);
     request = nullptr;
 
@@ -310,6 +335,7 @@ void AsrClientWin::RunReusableWebSocket() {
         FailReusableSession("Failed to start ASR network session: " + LastErrorText());
         return;
     }
+    SetAsrWinHttpTimeouts(session);
     std::wstring host(components.lpszHostName, components.dwHostNameLength);
     HINTERNET connect = WinHttpConnect(session, host.c_str(), components.nPort, 0);
     if (!connect) {
@@ -333,6 +359,7 @@ void AsrClientWin::RunReusableWebSocket() {
         FailReusableSession("Failed to create ASR request: " + LastErrorText());
         return;
     }
+    SetAsrWinHttpTimeouts(request);
 
     AddHeader(request, "X-Api-Key", config_.ActiveApiKey());
     AddHeader(request, "X-Api-Request-Id", GenerateSessionId());
@@ -361,6 +388,7 @@ void AsrClientWin::RunReusableWebSocket() {
                             : "ASR WebSocket upgrade failed: HTTP " + status_code);
         return;
     }
+    SetAsrWinHttpTimeouts(websocket);
     WinHttpCloseHandle(request);
     request = nullptr;
 
@@ -369,7 +397,11 @@ void AsrClientWin::RunReusableWebSocket() {
         websocket_ = websocket;
         connection_state_ = ConnectionState::kConnecting;
     }
-    SendFrame(websocket, AsrProtocol::MakeStartConnectionFrame(config_));
+    if (!SendReusableFrameOrFail(websocket, AsrProtocol::MakeStartConnectionFrame(config_),
+                                 "start ASR connection")) {
+        CloseHandles(session, connect, request, websocket);
+        return;
+    }
     while (!cancelled_) {
         ReceiveOneReusable(websocket);
     }
@@ -401,7 +433,11 @@ void AsrClientWin::FlushQueuedAudioChunks(HINTERNET websocket) {
         session_id = current_session_id_;
     }
     for (const auto& chunk : chunks) {
-        SendFrame(websocket, AsrProtocol::MakeTaskRequestFrame(chunk.data, session_id));
+        if (!SendReusableFrameOrFail(websocket,
+                                     AsrProtocol::MakeTaskRequestFrame(chunk.data, session_id),
+                                     "send ASR audio")) {
+            return;
+        }
         if (chunk.is_last) {
             FinishReusableSessionIfNeeded(websocket);
         }
@@ -446,7 +482,16 @@ void AsrClientWin::ReceiveOneReusable(HINTERNET websocket) {
     const DWORD result = WinHttpWebSocketReceive(websocket, buffer.data(),
                                                  static_cast<DWORD>(buffer.size()),
                                                  &bytes_read, &type);
-    if (result != ERROR_SUCCESS || bytes_read == 0) return;
+    if (result == ERROR_WINHTTP_TIMEOUT) return;
+    if (result != ERROR_SUCCESS) {
+        FailReusableSession("ASR WebSocket receive failed: " + std::to_string(result));
+        return;
+    }
+    if (type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
+        FailReusableSession("ASR WebSocket disconnected");
+        return;
+    }
+    if (bytes_read == 0) return;
     if (type != WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE &&
         type != WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE) {
         return;
@@ -496,7 +541,9 @@ void AsrClientWin::HandleReusableResponse(std::span<const std::uint8_t> data, HI
             session_id = current_session_id_;
         }
         if (should_start_session && !session_id.empty()) {
-            SendFrame(websocket, AsrProtocol::MakeStartSessionFrame(config_, session_id));
+            SendReusableFrameOrFail(websocket,
+                                    AsrProtocol::MakeStartSessionFrame(config_, session_id),
+                                    "start ASR session");
         }
         break;
     }
@@ -595,7 +642,10 @@ void AsrClientWin::SendReusableAudio(std::span<const std::uint8_t> data, bool is
         FailReusableSession("ASR WebSocket is not connected");
         return;
     }
-    SendFrame(websocket, AsrProtocol::MakeTaskRequestFrame(data, session_id));
+    if (!SendReusableFrameOrFail(websocket, AsrProtocol::MakeTaskRequestFrame(data, session_id),
+                                 "send ASR audio")) {
+        return;
+    }
     if (is_last) {
         FinishReusableSessionIfNeeded(websocket);
     }
@@ -616,14 +666,17 @@ void AsrClientWin::FinishReusableSessionIfNeeded(HINTERNET websocket) {
         session_state_ = SessionState::kFinishing;
         session_id = current_session_id_;
     }
-    SendFrame(websocket, AsrProtocol::MakeFinishSessionFrame(config_, session_id));
+    SendReusableFrameOrFail(websocket, AsrProtocol::MakeFinishSessionFrame(config_, session_id),
+                            "finish ASR session");
 }
 
 void AsrClientWin::FailReusableSession(const std::string& message) {
     const bool was_cancelled = cancelled_.load();
+    bool had_active_session = false;
     cancelled_ = true;
     {
         std::lock_guard lock(mutex_);
+        had_active_session = session_state_ != SessionState::kIdle;
         queued_audio_chunks_.clear();
         current_session_id_.clear();
         latest_session_transcript_.clear();
@@ -631,7 +684,14 @@ void AsrClientWin::FailReusableSession(const std::string& message) {
         connection_state_ = ConnectionState::kDisconnected;
         websocket_ = nullptr;
     }
-    if (!was_cancelled && on_error) on_error(message);
+    if (!was_cancelled && had_active_session && on_error) on_error(message);
+}
+
+bool AsrClientWin::SendReusableFrameOrFail(HINTERNET websocket, const ByteVector& frame,
+                                           const std::string& context) {
+    if (SendFrame(websocket, frame)) return true;
+    FailReusableSession("Failed to " + context);
+    return false;
 }
 
 void AsrClientWin::AddHeader(HINTERNET request, std::string_view name, std::string_view value) {

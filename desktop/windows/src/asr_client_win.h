@@ -59,6 +59,8 @@ private:
     void SendReusableAudio(std::span<const std::uint8_t> data, bool is_last);
     void FinishReusableSessionIfNeeded(HINTERNET websocket);
     void FailReusableSession(const std::string& message);
+    bool SendReusableFrameOrFail(HINTERNET websocket, const ByteVector& frame,
+                                 const std::string& context);
 
     static bool SendFrame(HINTERNET websocket, const ByteVector& frame);
     static void AddHeader(HINTERNET request, std::string_view name, std::string_view value);

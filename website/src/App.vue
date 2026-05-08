@@ -184,7 +184,6 @@ async function flashFirmware() {
       </a>
       <nav>
         <a href="#flash">{{ t('nav.flash') }}</a>
-        <a href="#download">{{ t('nav.download') }}</a>
         <a :href="githubUrl">{{ t('nav.github') }}</a>
         <button class="language-button" type="button" :aria-label="t('language.label')" @click="toggleLanguage">
           {{ languageLabel }}
