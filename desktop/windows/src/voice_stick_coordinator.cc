@@ -221,7 +221,7 @@ void VoiceStickCoordinator::CheckFirmwareAfterPairing(const std::string& device_
         std::lock_guard lock(firmware_mutex_);
         pending_firmware_update_prompt_device_ids_.insert(device_id);
     }
-    CheckFirmwareUpdatesIfNeeded(false, false);
+    CheckFirmwareUpdatesIfNeeded(true, false);
     RefreshFirmwareAvailability();
 }
 

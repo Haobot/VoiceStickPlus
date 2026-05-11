@@ -144,8 +144,12 @@ std::string DownloadText(const std::string& url, std::string& error) {
         return {};
     }
 
+    constexpr wchar_t kNoCacheHeaders[] =
+        L"Cache-Control: no-cache\r\n"
+        L"Pragma: no-cache\r\n";
+
     std::string body;
-    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+    if (!WinHttpSendRequest(request, kNoCacheHeaders, static_cast<DWORD>(-1),
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
         !WinHttpReceiveResponse(request, nullptr)) {
         error = "Failed to fetch firmware manifest.";
