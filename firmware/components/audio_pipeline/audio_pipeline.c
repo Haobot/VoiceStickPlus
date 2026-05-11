@@ -49,8 +49,14 @@ static uint32_t s_seq;
 static TaskHandle_t s_audio_task;
 static TaskHandle_t s_tx_task;
 static QueueHandle_t s_tx_queue;
+
+/* Per-session resources: created on start, destroyed on stop */
 static i2s_chan_handle_t s_rx_handle;
 static esp_codec_dev_handle_t s_codec;
+static const audio_codec_ctrl_if_t *s_ctrl_if;
+static const audio_codec_data_if_t *s_data_if;
+static const audio_codec_gpio_if_t *s_gpio_if;
+static const audio_codec_if_t *s_codec_if;
 static OpusEncoder *s_opus_encoder;
 
 static bool tasks_exited(void)
@@ -114,23 +120,23 @@ static esp_err_t init_codec(void)
         .addr = ES8311_CODEC_DEFAULT_ADDR,
         .bus_handle = i2c_bus,
     };
-    const audio_codec_ctrl_if_t *ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
-    ESP_RETURN_ON_FALSE(ctrl_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec i2c ctrl");
+    s_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
+    ESP_RETURN_ON_FALSE(s_ctrl_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec i2c ctrl");
 
     audio_codec_i2s_cfg_t i2s_cfg = {
         .port = I2S_NUM_1,
         .rx_handle = s_rx_handle,
         .tx_handle = NULL,
     };
-    const audio_codec_data_if_t *data_if = audio_codec_new_i2s_data(&i2s_cfg);
-    ESP_RETURN_ON_FALSE(data_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec i2s data");
+    s_data_if = audio_codec_new_i2s_data(&i2s_cfg);
+    ESP_RETURN_ON_FALSE(s_data_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec i2s data");
 
-    const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
-    ESP_RETURN_ON_FALSE(gpio_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec gpio");
+    s_gpio_if = audio_codec_new_gpio();
+    ESP_RETURN_ON_FALSE(s_gpio_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec gpio");
 
     es8311_codec_cfg_t es8311_cfg = {
-        .ctrl_if = ctrl_if,
-        .gpio_if = gpio_if,
+        .ctrl_if = s_ctrl_if,
+        .gpio_if = s_gpio_if,
         .codec_mode = ESP_CODEC_DEV_WORK_MODE_ADC,
         .pa_pin = -1,
         .pa_reverted = false,
@@ -144,13 +150,13 @@ static esp_err_t init_codec(void)
             .codec_dac_voltage = 3.3,
         },
     };
-    const audio_codec_if_t *codec_if = es8311_codec_new(&es8311_cfg);
-    ESP_RETURN_ON_FALSE(codec_if != NULL, ESP_ERR_NO_MEM, TAG, "create es8311");
+    s_codec_if = es8311_codec_new(&es8311_cfg);
+    ESP_RETURN_ON_FALSE(s_codec_if != NULL, ESP_ERR_NO_MEM, TAG, "create es8311");
 
     esp_codec_dev_cfg_t dev_cfg = {
         .dev_type = ESP_CODEC_DEV_TYPE_IN,
-        .codec_if = codec_if,
-        .data_if = data_if,
+        .codec_if = s_codec_if,
+        .data_if = s_data_if,
     };
     s_codec = esp_codec_dev_new(&dev_cfg);
     ESP_RETURN_ON_FALSE(s_codec != NULL, ESP_ERR_NO_MEM, TAG, "create codec dev");
@@ -182,6 +188,56 @@ static esp_err_t init_opus(void)
     opus_encoder_ctl(s_opus_encoder, OPUS_SET_COMPLEXITY(OPUS_COMPLEXITY));
     opus_encoder_ctl(s_opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     return ESP_OK;
+}
+
+static void deinit_opus(void)
+{
+    if (s_opus_encoder) {
+        opus_encoder_destroy(s_opus_encoder);
+        s_opus_encoder = NULL;
+    }
+}
+
+static void deinit_codec(void)
+{
+    if (s_codec) {
+        esp_codec_dev_close(s_codec);
+        esp_codec_dev_delete(s_codec);
+        s_codec = NULL;
+    }
+    if (s_codec_if) {
+        audio_codec_delete_codec_if(s_codec_if);
+        s_codec_if = NULL;
+    }
+    if (s_data_if) {
+        audio_codec_delete_data_if(s_data_if);
+        s_data_if = NULL;
+    }
+    if (s_gpio_if) {
+        audio_codec_delete_gpio_if(s_gpio_if);
+        s_gpio_if = NULL;
+    }
+    if (s_ctrl_if) {
+        audio_codec_delete_ctrl_if(s_ctrl_if);
+        s_ctrl_if = NULL;
+    }
+}
+
+static void deinit_i2s(void)
+{
+    if (s_rx_handle) {
+        /* Channel is already disabled by codec close; just release it. */
+        i2s_del_channel(s_rx_handle);
+        s_rx_handle = NULL;
+    }
+}
+
+static void deinit_session_resources(void)
+{
+    deinit_opus();
+    deinit_codec();
+    deinit_i2s();
+    ESP_LOGI(TAG, "session resources released");
 }
 
 static void audio_task(void *arg)
@@ -313,6 +369,12 @@ drain:
         voice_ble_send_audio(s_session_id, s_seq, VOICE_BLE_FLAG_END, NULL, 0);
 
         ESP_LOGI(TAG, "tx task exit: sent=%" PRIu32 " dropped=%" PRIu32, sent, tx_dropped);
+
+        /* Wait for audio_task to finish before destroying shared resources */
+        while (s_audio_task != NULL) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        deinit_session_resources();
         s_tx_task = NULL;
         vTaskDelete(NULL);
     }
@@ -324,15 +386,11 @@ esp_err_t audio_pipeline_init(void)
         return ESP_OK;
     }
 
-    ESP_RETURN_ON_ERROR(init_i2s(), TAG, "i2s init");
-    ESP_RETURN_ON_ERROR(init_codec(), TAG, "codec init");
-    ESP_RETURN_ON_ERROR(init_opus(), TAG, "opus init");
-
     s_tx_queue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(audio_packet_t));
     ESP_RETURN_ON_FALSE(s_tx_queue != NULL, ESP_ERR_NO_MEM, TAG, "create tx queue");
 
     s_initialized = true;
-    ESP_LOGI(TAG, "audio pipeline ready: es8311 -> opus -> queue -> ble");
+    ESP_LOGI(TAG, "audio pipeline ready (resources allocated on demand)");
     return ESP_OK;
 }
 
@@ -344,6 +402,21 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     }
     ESP_RETURN_ON_ERROR(wait_for_tasks_to_exit(pdMS_TO_TICKS(TASK_EXIT_WAIT_MS)),
                         TAG, "wait previous session exit");
+
+    ESP_RETURN_ON_ERROR(init_i2s(), TAG, "i2s init");
+    esp_err_t err = init_codec();
+    if (err != ESP_OK) {
+        deinit_i2s();
+        ESP_LOGE(TAG, "codec init: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = init_opus();
+    if (err != ESP_OK) {
+        deinit_codec();
+        deinit_i2s();
+        ESP_LOGE(TAG, "opus init: %s", esp_err_to_name(err));
+        return err;
+    }
 
     voice_ble_request_fast_interval();
 
@@ -358,6 +431,7 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     if (ok != pdPASS) {
         atomic_store(&s_running, false);
         s_tx_task = NULL;
+        deinit_session_resources();
         return ESP_ERR_NO_MEM;
     }
 
@@ -366,7 +440,6 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     if (ok != pdPASS) {
         atomic_store(&s_running, false);
         s_audio_task = NULL;
-        /* Signal tx_task to exit */
         audio_packet_t sentinel = {
             .session_id = s_session_id,
             .seq = s_seq,
@@ -375,6 +448,7 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         };
         xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
         (void)wait_for_tasks_to_exit(pdMS_TO_TICKS(TASK_EXIT_WAIT_MS));
+        /* tx_task cleans up session resources on exit */
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "start session %" PRIu32, session_id);

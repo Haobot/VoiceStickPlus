@@ -13,7 +13,9 @@
 #include "esp_pm.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
+#include "driver/rtc_io.h"
 #include "esp_timer.h"
+#include "hal/gpio_types.h"
 #include "iot_button.h"
 
 #include "audio_pipeline.h"
@@ -280,13 +282,31 @@ static void enter_deep_sleep(void)
         return;
     }
 
-    ESP_LOGI(TAG, "entering deep sleep, wake on front button GPIO%d low", wake_gpio);
+    if (gpio_get_level(wake_gpio) == 0) {
+        ESP_LOGI(TAG, "skip deep sleep: front button is pressed");
+        restart_deep_sleep_timer();
+        return;
+    }
+
+    ESP_LOGI(TAG, "entering deep sleep, wake on front button GPIO%d low (level=%d)",
+             wake_gpio, gpio_get_level(wake_gpio));
     release_recording_pm_locks();
     ESP_ERROR_CHECK_WITHOUT_ABORT(ui_status_set_brightness(0));
     ui_status_prepare_deep_sleep();
     stick_s3_board_prepare_deep_sleep();
 
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_pull_mode(wake_gpio, GPIO_PULLUP_ONLY));
+    /* Clear any stale wakeup source bits left over from light sleep / esp_pm
+       configuration (e.g. gpio_wakeup_enable on the PMIC IRQ line). Without
+       this the chip can wake immediately from an unrelated trigger. */
+    (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+    /* Keep RTC peripherals powered so the internal pull-up on the wake pin
+       remains effective in deep sleep; combined with the explicit RTC pull-up
+       below this prevents GPIO%d from floating low and self-waking. */
+    (void)esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+    (void)rtc_gpio_pulldown_dis(wake_gpio);
+    (void)rtc_gpio_pullup_en(wake_gpio);
+
     esp_err_t err = esp_sleep_enable_ext1_wakeup_io(1ULL << wake_gpio,
                                                     ESP_EXT1_WAKEUP_ANY_LOW);
     if (err != ESP_OK) {
@@ -295,7 +315,22 @@ static void enter_deep_sleep(void)
         return;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(50));
+    /* Wait for the wake pin to settle high (button release bounce, parasitic
+       capacitance, etc.). If it stays low we would just wake up immediately
+       after esp_deep_sleep_start(), so abort and retry later. */
+    int wait_ms = 0;
+    while (gpio_get_level(wake_gpio) == 0 && wait_ms < 200) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ms += 10;
+    }
+    if (gpio_get_level(wake_gpio) == 0) {
+        ESP_LOGW(TAG, "front button still low after %d ms, abort deep sleep", wait_ms);
+        restart_deep_sleep_timer();
+        return;
+    }
+
+    ESP_LOGI(TAG, "deep sleep go (wait_ms=%d level=%d)", wait_ms,
+             gpio_get_level(wake_gpio));
     esp_deep_sleep_start();
 }
 
@@ -652,6 +687,8 @@ static void app_event_task(void *arg)
             ui_status_set_pairing(voice_ble_device_name());
             break;
         case APP_EVENT_POWER_IRQ:
+            gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
+            /* fall through */
         case APP_EVENT_BATTERY_REFRESH:
             update_battery_status();
             break;
@@ -704,6 +741,7 @@ static esp_err_t init_gpio_button(gpio_num_t gpio_num, button_handle_t *button)
     const button_gpio_config_t gpio_config = {
         .gpio_num = gpio_num,
         .active_level = 0,
+        .enable_power_save = true
     };
 
     return iot_button_new_gpio_device(&button_config, &gpio_config, button);
@@ -829,6 +867,7 @@ static esp_err_t init_battery_refresh_timer(void)
 static void IRAM_ATTR pmic_irq_isr(void *arg)
 {
     (void)arg;
+    gpio_intr_disable(STICK_S3_PIN_PMIC_IRQ);
 
     BaseType_t high_task_woken = pdFALSE;
     queue_app_event_from_isr(APP_EVENT_POWER_IRQ, &high_task_woken);
@@ -844,9 +883,14 @@ static esp_err_t init_pmic_irq(void)
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
     esp_err_t err = gpio_config(&irq_config);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = gpio_wakeup_enable(STICK_S3_PIN_PMIC_IRQ, GPIO_INTR_LOW_LEVEL);
     if (err != ESP_OK) {
         return err;
     }
@@ -856,7 +900,21 @@ static esp_err_t init_pmic_irq(void)
         return err;
     }
 
-    return gpio_isr_handler_add(STICK_S3_PIN_PMIC_IRQ, pmic_irq_isr, NULL);
+    err = gpio_isr_handler_add(STICK_S3_PIN_PMIC_IRQ, pmic_irq_isr, NULL);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = gpio_set_intr_type(STICK_S3_PIN_PMIC_IRQ, GPIO_INTR_LOW_LEVEL);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return ESP_OK;
 }
 
 static void update_battery_status(void)
@@ -895,8 +953,9 @@ static void update_battery_status(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "boot reset_reason=%d wakeup_cause=%d",
-             esp_reset_reason(), esp_sleep_get_wakeup_cause());
+    ESP_LOGI(TAG, "boot reset_reason=%d wakeup_cause=%d ext1_status=0x%llx",
+             esp_reset_reason(), esp_sleep_get_wakeup_cause(),
+             (unsigned long long)esp_sleep_get_ext1_wakeup_status());
 
     ESP_ERROR_CHECK(init_power_management());
     ESP_ERROR_CHECK(stick_s3_board_init());
@@ -932,4 +991,12 @@ void app_main(void)
     update_battery_status();
     ESP_ERROR_CHECK(init_battery_refresh_timer());
     ESP_ERROR_CHECK(init_pmic_irq());
+
+    ESP_LOGI(TAG, "configuring PMIC");
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = CONFIG_XTAL_FREQ,
+        .light_sleep_enable = true,
+    };
+    esp_pm_configure(&pm_config);
 }
