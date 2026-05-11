@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindowController: OnboardingWindowController?
     private var firmwareUpdateWindowController: FirmwareUpdateWindowController?
     private var updaterController: SPUStandardUpdaterController?
+    private var dockIconWindowIDs = Set<ObjectIdentifier>()
     private var config = AppConfig.defaults
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -316,6 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         configureApplicationIcon()
         guard let window = windowController.window else { return }
+        dockIconWindowIDs.insert(ObjectIdentifier(window))
 
         NotificationCenter.default.addObserver(
             self,
@@ -326,6 +328,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func windowWillCloseForDockIcon(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            dockIconWindowIDs.remove(ObjectIdentifier(window))
+        }
         NotificationCenter.default.removeObserver(
             self,
             name: NSWindow.willCloseNotification,
@@ -336,8 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func hideDockIconIfNoWindowsAreVisible() {
         DispatchQueue.main.async {
-            let hasVisibleWindow = NSApp.windows.contains { $0.isVisible }
-            if !hasVisibleWindow {
+            if self.dockIconWindowIDs.isEmpty {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
