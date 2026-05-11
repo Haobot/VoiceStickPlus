@@ -108,7 +108,14 @@ final class FirmwareManifestClient {
     }
 
     func fetchManifest(completion: @escaping (Result<FirmwareManifest, Error>) -> Void) {
-        URLSession.shared.dataTask(with: manifestURL) { data, response, error in
+        var request = URLRequest(
+            url: manifestURL,
+            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData
+        )
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
             if let error {
                 completion(.failure(error))
                 return

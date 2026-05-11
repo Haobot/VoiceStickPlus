@@ -177,6 +177,9 @@ final class VoiceStickCoordinator {
             guard let self else { return }
             self.statusController.setConnectedDevices(connectedDevices)
             self.cancelActiveCycleIfDeviceDisconnected()
+            if !connectedDevices.isEmpty {
+                self.checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
+            }
             self.refreshFirmwareAvailability()
             if !connectedDevices.isEmpty {
                 self.statusController.setStatus("Ready")
