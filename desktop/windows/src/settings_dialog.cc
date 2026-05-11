@@ -320,7 +320,7 @@ void SettingsDialog::BuildControls() {
 
     const int label_w = Dp(110);
     const int ctrl_x = Dp(130);
-    const int ctrl_w = Dp(350);
+    const int ctrl_w = Dp(kClientWidth - 170);
     const int row_h = Dp(28);
     int y = Dp(20);
 
@@ -474,7 +474,15 @@ void SettingsDialog::UpdateProviderVisibility() {
     ShowWindow(resource_label_, is_volcengine ? SW_SHOW : SW_HIDE);
     const bool is_cloud = (idx == 0);
     const bool api_key_empty = GetWindowText(api_key_edit_).empty();
-    ShowWindow(apply_trial_button_, is_cloud && api_key_empty ? SW_SHOW : SW_HIDE);
+    const bool show_trial_button = is_cloud && api_key_empty;
+    ShowWindow(apply_trial_button_, show_trial_button ? SW_SHOW : SW_HIDE);
+    if (api_key_edit_) {
+        const int ctrl_w = Dp(kClientWidth - 170);
+        const int apply_btn_w = Dp(102);
+        const int api_key_w = show_trial_button ? ctrl_w - apply_btn_w - Dp(8) : ctrl_w;
+        SetWindowPos(api_key_edit_, nullptr, 0, 0, api_key_w, Dp(24),
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 void SettingsDialog::ApplyTrialApiKey() {

@@ -77,8 +77,12 @@ public:
     void Cancel() override {
         cancelled = true;
     }
+    std::string LastStartError() const override {
+        return start_error;
+    }
 
     bool start_result = true;
+    std::string start_error;
     bool started = false;
     bool cancelled = false;
     int sent_chunks = 0;
@@ -218,6 +222,19 @@ bool HasUiState(const FakeBleCentral& ble, const std::string& state, const std::
     return std::any_of(ble.sent_ui_states.begin(), ble.sent_ui_states.end(),
                        [&](const SentUiState& sent) {
                            return sent.state == state &&
+                                  sent.device_id.has_value() &&
+                                  *sent.device_id == device_id;
+                       });
+}
+
+bool HasUiStateText(const FakeBleCentral& ble,
+                    const std::string& state,
+                    const std::string& text,
+                    const std::string& device_id) {
+    return std::any_of(ble.sent_ui_states.begin(), ble.sent_ui_states.end(),
+                       [&](const SentUiState& sent) {
+                           return sent.state == state &&
+                                  sent.text == text &&
                                   sent.device_id.has_value() &&
                                   *sent.device_id == device_id;
                        });
@@ -755,6 +772,53 @@ void TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio() {
     assert(ble_ptr->sent_ui_states.back().text == "late");
 }
 
+void TestCoordinatorShowsDetailedAsrStartError() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    asr_ptr->start_result = false;
+    asr_ptr->start_error = "Missing ASR API key";
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 23));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(23, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 23));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(23, 2));
+
+    assert(!ui.errors.empty());
+    assert(ui.errors.back() == "Missing ASR API key");
+    assert(HasUiStateText(*ble_ptr, "error", "Missing ASR API key", "5A74"));
+}
+
+void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 24));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(24, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 24));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(24, 2));
+    asr_ptr->on_error("ASR 44002: VoiceStick Cloud API key is invalid.");
+    asr_ptr->on_upgrade_url("https://example.test/upgrade",
+                            "ASR 44002: VoiceStick Cloud API key is invalid.");
+
+    assert(HasUiStateText(*ble_ptr, "error", "ASR 44002: VoiceStick Cloud API key is invalid.", "5A74"));
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+    assert(!ui.cloud_upgrades.empty());
+}
+
 } // namespace
 
 int main() {
@@ -776,5 +840,7 @@ int main() {
     TestCoordinatorShortSubtitleEndReturnsReady();
     TestCoordinatorClickToTalkPrimaryClickTogglesRecording();
     TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio();
+    TestCoordinatorShowsDetailedAsrStartError();
+    TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
     return 0;
 }

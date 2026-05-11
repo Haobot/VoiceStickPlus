@@ -55,7 +55,7 @@ private:
     std::vector<HWND> all_controls_;
     std::vector<HWND> label_controls_;
 
-    static constexpr int kClientWidth = 520;
+    static constexpr int kClientWidth = 640;
     static constexpr int kClientHeight = 500;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;

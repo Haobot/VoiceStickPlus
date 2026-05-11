@@ -76,6 +76,7 @@ public:
     virtual bool Start(AsrSessionOptions options = {}) = 0;
     virtual void SendOggOpusChunk(std::span<const std::uint8_t> data, bool is_last) = 0;
     virtual void Cancel() = 0;
+    virtual std::string LastStartError() const { return {}; }
 
     std::function<void(std::string)> on_partial;
     std::function<void(AsrSegment)> on_segment;

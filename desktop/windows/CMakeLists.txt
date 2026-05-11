@@ -57,6 +57,7 @@ add_executable(VoiceStickApp WIN32
     src/overlay_window.cc
     src/subtitle_window.cc
     src/pair_device_dialog.cc
+    src/onboarding_dialog.cc
     src/settings_dialog.cc
     resources/VoiceStick.rc
 )

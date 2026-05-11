@@ -25,6 +25,7 @@ public:
     bool Start(AsrSessionOptions options = {}) override;
     void SendOggOpusChunk(std::span<const std::uint8_t> data, bool is_last) override;
     void Cancel() override;
+    std::string LastStartError() const override;
 
 private:
     enum class ConnectionState {
@@ -49,14 +50,14 @@ private:
     void CancelReusableSession();
     void ShutdownReusableConnection();
     void RunReusableWebSocket();
-    void FlushQueuedAudioChunks(HINTERNET websocket);
+    void FlushQueuedAudioChunks();
     void ReceiveOneReusable(HINTERNET websocket);
     void HandleReusableResponse(std::span<const std::uint8_t> data, HINTERNET websocket);
     void SendReusableAudio(std::span<const std::uint8_t> data, bool is_last);
-    void FinishReusableSessionIfNeeded(HINTERNET websocket);
+    void FinishReusableSessionIfNeeded();
     void FailReusableSession(const std::string& message);
-    bool SendReusableFrameOrFail(HINTERNET websocket, const ByteVector& frame,
-                                 const std::string& context);
+    void SetLastStartError(std::string message);
+    bool SendReusableFrameOrFail(const ByteVector& frame, const std::string& context);
 
     static bool SendFrame(HINTERNET websocket, const ByteVector& frame);
     static void AddHeader(HINTERNET request, std::string_view name, std::string_view value);
@@ -69,7 +70,7 @@ private:
     AppConfig config_;
     std::atomic_bool cancelled_ = false;
     std::thread worker_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::vector<QueuedAudioChunk> queued_audio_chunks_;
     ConnectionState connection_state_ = ConnectionState::kDisconnected;
     SessionState session_state_ = SessionState::kIdle;
@@ -78,6 +79,7 @@ private:
     std::set<std::string> emitted_definite_segment_keys_;
     AsrSessionOptions session_options_;
     HINTERNET websocket_ = nullptr;
+    std::string last_start_error_;
 };
 
 } // namespace voicestick

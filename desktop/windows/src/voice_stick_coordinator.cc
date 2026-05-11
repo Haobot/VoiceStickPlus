@@ -19,6 +19,11 @@ bool IsFirmwareManifestCompatible(const DeviceFirmwareInfo& info, const Firmware
     return IsFirmwareHardwareCompatible(info.hardware, info.current_version, manifest.hardware);
 }
 
+std::string AsrStartFailureMessage(const AsrClient& asr) {
+    const auto message = asr.LastStartError();
+    return message.empty() ? "Failed to start ASR" : message;
+}
+
 } // namespace
 
 VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
@@ -269,7 +274,9 @@ void VoiceStickCoordinator::ConfigureAsrCallbacks() {
         FinishWithAsrError(message);
     };
     asr_->on_upgrade_url = [this](std::string url, std::string message) {
-        ui_->ShowCloudUpgrade(message, url, active_device_id_);
+        const auto device_id = active_device_id_;
+        RecoverFromAsrError(false);
+        ui_->ShowCloudUpgrade(message, url, device_id);
     };
 }
 
@@ -296,6 +303,7 @@ void VoiceStickCoordinator::ConfigureSubtitleAsrCallbacks(SubtitleCycle* cycle) 
         FinishSubtitleCycleWithError(device_id, session_id, message);
     };
     cycle->asr->on_upgrade_url = [this, device_id](std::string url, std::string message) {
+        ble_->SendUiState("ready", "", device_id);
         ui_->ShowCloudUpgrade(message, url, device_id);
     };
 }
@@ -644,8 +652,14 @@ void VoiceStickCoordinator::SendOrBufferSubtitleOggChunk(SubtitleCycle* cycle,
         return;
     }
     cycle->buffered_ogg_chunks.push_back(chunk);
+    const auto device_id = cycle->device_id;
+    const auto session_id = cycle->session_id;
     if (can_start_asr && !StartSubtitleAsrAndFlushBufferedChunks(cycle, is_last)) {
-        FinishSubtitleCycleWithError(cycle->device_id, cycle->session_id, "Failed to start ASR");
+        std::string message = "Failed to start ASR";
+        if (auto* current_cycle = FindSubtitleCycle(device_id, session_id); current_cycle && current_cycle->asr) {
+            message = AsrStartFailureMessage(*current_cycle->asr);
+        }
+        FinishSubtitleCycleWithError(device_id, session_id, message);
     }
 }
 
@@ -658,10 +672,17 @@ bool VoiceStickCoordinator::StartSubtitleAsrAndFlushBufferedChunks(SubtitleCycle
     const bool use_definite_segments = ShouldUseDefiniteSegments(OutputProfileForDevice(cycle->device_id));
     options.show_utterances = use_definite_segments;
     options.result_type = use_definite_segments ? AsrResultType::kSingle : AsrResultType::kFull;
-    if (!cycle->asr->Start(options)) {
-        cycle->buffered_ogg_chunks.clear();
+    const auto device_id = cycle->device_id;
+    const auto session_id = cycle->session_id;
+    auto* asr = cycle->asr.get();
+    if (!asr->Start(options)) {
+        if (auto* current_cycle = FindSubtitleCycle(device_id, session_id)) {
+            current_cycle->buffered_ogg_chunks.clear();
+        }
         return false;
     }
+    cycle = FindSubtitleCycle(device_id, session_id);
+    if (!cycle || cycle->asr.get() != asr) return false;
     cycle->asr_started = true;
     for (std::size_t i = 0; i < cycle->buffered_ogg_chunks.size(); ++i) {
         const bool is_last = (i + 1 == cycle->buffered_ogg_chunks.size()) && last_chunk_is_final;
@@ -699,7 +720,7 @@ void VoiceStickCoordinator::SendOrBufferOggChunk(const ByteVector& chunk, bool i
     }
     buffered_ogg_chunks_.push_back(chunk);
     if (can_start_asr && !StartAsrAndFlushBufferedChunks(is_last)) {
-        FinishWithAsrError("Failed to start ASR");
+        if (!is_showing_asr_error_) FinishWithAsrError(AsrStartFailureMessage(*asr_));
     }
 }
 

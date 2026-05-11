@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "firmware_update_dialog.h"
 #include "input_injector_win.h"
+#include "onboarding_dialog.h"
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
 #include "settings_dialog.h"
@@ -62,6 +63,8 @@ private:
     void ShowTrayMenu();
     void RebuildTooltip();
     void RegisterTaskbarMessage();
+    bool ShowOnboardingIfNeeded();
+    bool ShowOnboarding();
     void ShowPairDeviceDialog();
     void ShowSettings();
     void SaveInputOptions();

@@ -148,7 +148,6 @@ int Win32App::Run() {
     win_sparkle_init();
 
     RegisterTaskbarMessage();
-    AddTrayIcon();
     auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
     ble_central_ = ble.get();
     coordinator_ = std::make_unique<VoiceStickCoordinator>(
@@ -168,6 +167,14 @@ int Win32App::Run() {
                                              entry.address_kind, entry.name);
         }
     }
+
+    if (!ShowOnboardingIfNeeded()) {
+        ShutdownAndQuit();
+        win_sparkle_cleanup();
+        return 0;
+    }
+
+    AddTrayIcon();
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -840,6 +847,30 @@ void Win32App::RebuildTooltip() {
 
 void Win32App::RegisterTaskbarMessage() {
     taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
+}
+
+bool Win32App::ShowOnboardingIfNeeded() {
+    if (!NeedsOnboarding(config_)) return true;
+    if (!ShowOnboarding()) {
+        LogLine("Initial onboarding cancelled; exiting");
+        return false;
+    }
+    return true;
+}
+
+bool Win32App::ShowOnboarding() {
+    OnboardingDialog dialog(instance_, hwnd_, config_);
+    dialog.on_pair_device_requested = [this] {
+        ShowPairDeviceDialog();
+    };
+    dialog.on_config_completed = [this](AppConfig new_config) {
+        config_ = std::move(new_config);
+        paired_device_ids_ = config_.paired_device_ids;
+        if (coordinator_) coordinator_->UpdateConfig(config_);
+        RebuildTooltip();
+        LogLine("Onboarding completed");
+    };
+    return dialog.Show();
 }
 
 void Win32App::ShowPairDeviceDialog() {
