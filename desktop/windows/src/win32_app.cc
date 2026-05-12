@@ -7,9 +7,11 @@
 
 #include <Shellapi.h>
 #include <winsparkle.h>
+#include <winrt/base.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <exception>
 #include <iterator>
 #include <optional>
@@ -136,54 +138,78 @@ Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig:
 }
 
 int Win32App::Run() {
-    LogLine("VoiceStickApp starting");
-    ui_thread_id_ = GetCurrentThreadId();
-    if (!CreateWindowInternal()) {
-        LogLine("CreateWindowInternal failed");
-        return 1;
-    }
-    win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
-    win_sparkle_set_automatic_check_for_updates(1);
-    win_sparkle_set_update_check_interval(86400);
-    win_sparkle_init();
-
-    RegisterTaskbarMessage();
-    auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
-    ble_central_ = ble.get();
-    coordinator_ = std::make_unique<VoiceStickCoordinator>(
-        config_,
-        std::move(ble),
-        std::make_unique<AsrClientWin>(config_),
-        this,
-        &input_injector_,
-        [](const AppConfig& config) {
-            return std::make_unique<AsrClientWin>(config);
-        });
-    coordinator_->Start();
-
-    for (const auto& entry : config_.paired_devices) {
-        if (entry.bluetooth_address != 0) {
-            coordinator_->ConnectPairedDevice(entry.device_id, entry.bluetooth_address,
-                                             entry.address_kind, entry.name);
+    try {
+        LogLine("VoiceStickApp starting");
+        ui_thread_id_ = GetCurrentThreadId();
+        LogLine("Creating main window");
+        if (!CreateWindowInternal()) {
+            LogLine("CreateWindowInternal failed");
+            return 1;
         }
-    }
+        LogLine("Main window created");
 
-    if (!ShowOnboardingIfNeeded()) {
-        ShutdownAndQuit();
+        RegisterTaskbarMessage();
+        AddTrayIcon();
+
+        LogLine("Initializing WinSparkle");
+        win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
+        win_sparkle_set_automatic_check_for_updates(1);
+        win_sparkle_set_update_check_interval(86400);
+        win_sparkle_init();
+        LogLine("WinSparkle initialized");
+
+        LogLine("Creating BLE coordinator");
+        auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
+        ble_central_ = ble.get();
+        coordinator_ = std::make_unique<VoiceStickCoordinator>(
+            config_,
+            std::move(ble),
+            std::make_unique<AsrClientWin>(config_),
+            this,
+            &input_injector_,
+            [](const AppConfig& config) {
+                return std::make_unique<AsrClientWin>(config);
+            });
+        LogLine("Starting coordinator");
+        coordinator_->Start();
+        LogLine("Coordinator started");
+
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.bluetooth_address != 0) {
+                LogLine("Queueing paired device connect VS-" + entry.device_id);
+                coordinator_->ConnectPairedDevice(entry.device_id, entry.bluetooth_address,
+                                                 entry.address_kind, entry.name);
+            }
+        }
+
+        LogLine("Checking onboarding");
+        if (!ShowOnboardingIfNeeded()) {
+            LogLine("Onboarding did not complete; exiting");
+            ShutdownAndQuit();
+            win_sparkle_cleanup();
+            RemoveTrayIcon();
+            return 0;
+        }
+        LogLine("Startup complete; entering message loop");
+
+        MSG message{};
+        while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
         win_sparkle_cleanup();
-        return 0;
+        RemoveTrayIcon();
+        return static_cast<int>(message.wParam);
+    } catch (const winrt::hresult_error& error) {
+        LogLine("Fatal WinRT error: hr=" + std::to_string(static_cast<std::int32_t>(error.code())) +
+                " message=" + winrt::to_string(error.message()));
+    } catch (const std::exception& error) {
+        LogLine(std::string("Fatal exception: ") + error.what());
+    } catch (...) {
+        LogLine("Fatal unknown exception");
     }
-
-    AddTrayIcon();
-
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-    }
-    win_sparkle_cleanup();
     RemoveTrayIcon();
-    return static_cast<int>(message.wParam);
+    return 1;
 }
 
 void Win32App::SetStatus(const std::string& status) {
@@ -527,6 +553,7 @@ void Win32App::DispatchToUi(std::function<void()> action) {
 
 
 bool Win32App::CreateWindowInternal() {
+    LogLine("Registering window class");
     WNDCLASSW wc{};
     wc.lpfnWndProc = Win32App::WindowProc;
     wc.hInstance = instance_;
@@ -534,11 +561,14 @@ bool Win32App::CreateWindowInternal() {
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_APP));
     RegisterClassW(&wc);
+    LogLine("Creating hidden app window");
     hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"VoiceStick", 0, 0, 0, 0, 0,
                             nullptr, nullptr, instance_, this);
     if (!hwnd_) return false;
 
+    LogLine("Creating overlay window object");
     overlay_ = std::make_unique<OverlayWindow>(instance_, hwnd_);
+    LogLine("Creating subtitle window object");
     subtitles_ = std::make_unique<SubtitleWindow>(instance_, hwnd_);
     return true;
 }
