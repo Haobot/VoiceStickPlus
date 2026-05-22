@@ -6,9 +6,15 @@ set "ROOT_DIR=%cd%"
 set "SOURCE_DIR=%ROOT_DIR%\desktop\windows"
 set "BUILD_DIR=%SOURCE_DIR%\build-x64"
 set "LOG_FILE=%ROOT_DIR%\build_output.log"
+set "SETUP_LOG=%ROOT_DIR%\build_setup.log"
+set "CONFIGURE_LOG=%ROOT_DIR%\build_configure.log"
+set "BUILD_LOG=%ROOT_DIR%\build_compile.log"
 set "VS_INSTALL_PATH="
 
 > "%LOG_FILE%" echo Starting build at %date% %time%
+> "%SETUP_LOG%" echo === MSVC environment setup log ===
+> "%CONFIGURE_LOG%" echo === CMake configure log ===
+> "%BUILD_LOG%" echo === Build log ===
 
 echo.
 echo [1/4] Cleaning up leftover processes...
@@ -59,40 +65,41 @@ if not defined VS_INSTALL_PATH (
 )
 
 echo   - Using Visual Studio 2022 from: %VS_INSTALL_PATH%
-call "%VS_INSTALL_PATH%\VC\Auxiliary\Build\vcvars64.bat" >> "%LOG_FILE%" 2>&1
+call "%VS_INSTALL_PATH%\VC\Auxiliary\Build\vcvars64.bat" >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
     echo ERROR: Failed to setup MSVC environment
+    echo See build_setup.log for details
     exit /b 1
 )
 
 echo.
 echo [4/4] Running CMake build...
->> "%LOG_FILE%" echo.
->> "%LOG_FILE%" echo === Running CMake configuration ===
-cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" -G Ninja >> "%LOG_FILE%" 2>&1
+>> "%CONFIGURE_LOG%" echo.
+>> "%CONFIGURE_LOG%" echo === Running CMake configuration ===
+cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" -G Ninja >> "%CONFIGURE_LOG%" 2>&1
 if errorlevel 1 (
     echo ERROR: CMake configuration failed
-    >> "%LOG_FILE%" echo CMake FAILED
     echo.
-    echo See build_output.log for details
+    echo See build_configure.log for details
     exit /b 1
 )
 
->> "%LOG_FILE%" echo.
->> "%LOG_FILE%" echo === Running build ===
-cmake --build "%BUILD_DIR%" >> "%LOG_FILE%" 2>&1
+>> "%BUILD_LOG%" echo.
+>> "%BUILD_LOG%" echo === Running build ===
+cmake --build "%BUILD_DIR%" >> "%BUILD_LOG%" 2>&1
 if errorlevel 1 (
     echo ERROR: Build failed
-    >> "%LOG_FILE%" echo Build FAILED
     echo.
-    echo See build_output.log for details
+    echo See build_compile.log for details
     exit /b 1
 )
 
 echo.
 echo Build SUCCEEDED! Output: %BUILD_DIR%\VoiceStick.exe
->> "%LOG_FILE%" echo.
->> "%LOG_FILE%" echo === Build SUCCEEDED at %date% %time% ===
+>> "%LOG_FILE%" echo Build SUCCEEDED at %date% %time%
+>> "%LOG_FILE%" echo Setup log: %SETUP_LOG%
+>> "%LOG_FILE%" echo Configure log: %CONFIGURE_LOG%
+>> "%LOG_FILE%" echo Build log: %BUILD_LOG%
 
 endlocal
 exit /b 0
