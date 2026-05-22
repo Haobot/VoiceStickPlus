@@ -32,7 +32,9 @@
       "Bash(cp tray.ico icons/tray_battery_0.ico)",
       "Bash(cp tray.ico icons/tray_battery_25.ico)",
       "Bash(cp tray.ico icons/tray_battery_50.ico)",
-      "Bash(cp tray.ico icons/tray_battery_75.ico)"
+      "Bash(cp tray.ico icons/tray_battery_75.ico)",
+      "Bash(ninja)",
+      "Bash(ninja VoiceStickApp)"
     ]
   }
 }

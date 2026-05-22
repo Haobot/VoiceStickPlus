@@ -115,6 +115,13 @@ public:
     void SetDeviceInfo(const DeviceInfo& info) override {
         device_infos.push_back(info);
     }
+    void SetDeviceBattery(const std::string& device_id, int level_percent,
+                           bool charging, bool usb_powered) override {
+        (void)device_id;
+        (void)level_percent;
+        (void)charging;
+        (void)usb_powered;
+    }
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override {
         firmware_info_by_device_id = info_by_device_id;
     }
