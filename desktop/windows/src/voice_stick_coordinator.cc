@@ -1410,7 +1410,8 @@ void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
 
     auto target_device = ResolveHotkeyTargetDevice();
     if (!target_device) {
-        ui_->SetStatus("No VoiceStick connected");
+        ui_->SetStatus("Hotkey: no VoiceStick connected");
+        LogApp("hotkey pressed but no connected device");
         return;
     }
 
@@ -1420,6 +1421,8 @@ void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
         hotkey_active_device_id_ = target_device;
     }
     ble_->SendRemoteButton(RemoteButtonAction::kDown, "primary", target_device, request_id);
+    ui_->SetStatus("Recording (hotkey) on VS-" + *target_device);
+    LogApp("hotkey pressed, starting recording on VS-" + *target_device);
 }
 
 void VoiceStickCoordinator::HandleGlobalHotkeyReleased() {
@@ -1436,6 +1439,7 @@ void VoiceStickCoordinator::HandleGlobalHotkeyReleased() {
     if (target_device && ble_->IsConnected(*target_device)) {
         const auto request_id = next_hotkey_request_id_++;
         ble_->SendRemoteButton(RemoteButtonAction::kUp, "primary", target_device, request_id);
+        LogApp("hotkey released, stopping recording on VS-" + *target_device);
     }
 }
 

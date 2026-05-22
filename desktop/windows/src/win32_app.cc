@@ -45,6 +45,22 @@ constexpr UINT kMenuTranslationBase = 3400;
 constexpr UINT kMenuTranslationEnd = 5799;
 constexpr UINT kMenuOptionsPerDevice = 6;
 constexpr UINT kMenuTranslationsPerDevice = 24;
+constexpr UINT kMenuHotkeyEnabled = 5801;
+constexpr UINT kMenuHotkeyBase = 5810;
+constexpr UINT kMenuHotkeyEnd = 5899;
+
+struct HotkeyPreset {
+    const char* name;
+    const wchar_t* display_name;
+};
+
+constexpr HotkeyPreset kHotkeyPresets[] = {
+    {"Ctrl+Alt+V", L"Ctrl + Alt + V"},
+    {"Ctrl+Shift+V", L"Ctrl + Shift + V"},
+    {"Alt+V", L"Alt + V"},
+    {"Win+Alt+V", L"Win + Alt + V"},
+    {"Ctrl+Alt+Space", L"Ctrl + Alt + Space"},
+};
 
 #ifndef VOICESTICK_APPCAST_URL
 #define VOICESTICK_APPCAST_URL "https://78.github.io/voicestick/appcast.xml"
@@ -182,8 +198,16 @@ int Win32App::Run() {
         global_hotkey_->on_released = [this] {
             if (coordinator_) coordinator_->HandleGlobalHotkeyReleased();
         };
-        if (!global_hotkey_->Register(config_.global_hotkey_enabled ? config_.global_hotkey : "")) {
-            LogLine("Global hotkey registration failed");
+        if (config_.global_hotkey_enabled) {
+            if (!global_hotkey_->Register(config_.global_hotkey)) {
+                LogLine("Global hotkey registration failed, hotkey conflict or invalid");
+                SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
+            } else {
+                LogLine("Global hotkey registered: " + config_.global_hotkey);
+                SetStatus("Global hotkey: " + config_.global_hotkey);
+            }
+        } else {
+            LogLine("Global hotkey disabled by config");
         }
 
         for (const auto& entry : config_.paired_devices) {
@@ -482,8 +506,27 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         case kMenuQuit:
             ShutdownAndQuit();
             return 0;
+        case kMenuHotkeyEnabled:
+            config_.global_hotkey_enabled = !config_.global_hotkey_enabled;
+            SaveInputOptions();
+            if (config_.global_hotkey_enabled) {
+                SetStatus("Global hotkey enabled: " + config_.global_hotkey);
+            } else {
+                SetStatus("Global hotkey disabled");
+            }
+            return 0;
         default: {
             UINT cmd = LOWORD(w_param);
+            if (cmd >= kMenuHotkeyBase && cmd <= kMenuHotkeyEnd) {
+                std::size_t index = cmd - kMenuHotkeyBase;
+                if (index < sizeof(kHotkeyPresets) / sizeof(kHotkeyPresets[0])) {
+                    config_.global_hotkey = kHotkeyPresets[index].name;
+                    config_.global_hotkey_enabled = true;
+                    SaveInputOptions();
+                    SetStatus("Global hotkey set to: " + config_.global_hotkey);
+                }
+                return 0;
+            }
             if (cmd >= kMenuForgetBase && cmd <= kMenuForgetEnd) {
                 std::size_t index = cmd - kMenuForgetBase;
                 if (index < paired_device_ids_.size() && coordinator_) {
@@ -772,6 +815,27 @@ void Win32App::ShowTrayMenu() {
                 L"Click to Talk");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(interaction_menu), L"Interaction");
 
+    HMENU hotkey_menu = CreatePopupMenu();
+    AppendMenuW(hotkey_menu,
+                MF_STRING | (config_.global_hotkey_enabled ? MF_CHECKED : 0),
+                kMenuHotkeyEnabled,
+                L"Enable Global Hotkey");
+    AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
+    for (std::size_t i = 0; i < sizeof(kHotkeyPresets) / sizeof(kHotkeyPresets[0]); ++i) {
+        const auto& preset = kHotkeyPresets[i];
+        const auto checked = config_.global_hotkey_enabled && config_.global_hotkey == preset.name;
+        AppendMenuW(
+            hotkey_menu,
+            MF_STRING | (checked ? MF_CHECKED : 0),
+            kMenuHotkeyBase + static_cast<UINT>(i),
+            preset.display_name);
+    }
+    if (global_hotkey_ && !global_hotkey_->IsRegistered()) {
+        AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, L"⚠ Hotkey registration failed (conflict)");
+    }
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(hotkey_menu), L"Global Hotkey");
+
     HMENU output_menu = CreatePopupMenu();
     AppendMenuW(output_menu,
                 MF_STRING | (config_.default_output_profile.target == OutputTarget::kFocusedApp ? MF_CHECKED : 0),
@@ -805,7 +869,18 @@ void Win32App::SaveInputOptions() {
         if (coordinator_) coordinator_->UpdateConfig(config_);
         if (global_hotkey_) {
             global_hotkey_->Unregister();
-            global_hotkey_->Register(config_.global_hotkey_enabled ? config_.global_hotkey : "");
+            if (config_.global_hotkey_enabled) {
+                if (global_hotkey_->Register(config_.global_hotkey)) {
+                    LogLine("Global hotkey registered: " + config_.global_hotkey);
+                    SetStatus("Global hotkey: " + config_.global_hotkey);
+                } else {
+                    LogLine("Global hotkey registration failed: " + config_.global_hotkey);
+                    SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
+                }
+            } else {
+                SetStatus("Global hotkey disabled");
+                LogLine("Global hotkey disabled");
+            }
         }
         LogLine("Input options saved");
     } catch (const std::exception& error) {
