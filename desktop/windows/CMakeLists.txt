@@ -61,6 +61,7 @@ add_executable(VoiceStickApp WIN32
     src/pair_device_dialog.cc
     src/onboarding_dialog.cc
     src/settings_dialog.cc
+    src/hotkey_settings_dialog.cc
     resources/VoiceStick.rc
 )
 

@@ -32,6 +32,8 @@ public:
     std::function<void()> on_released;
 
     static std::optional<Binding> ParseHotkeyString(const std::string& text);
+    static std::string BindingToString(const Binding& binding);
+    static bool TestBinding(const Binding& binding);
 
 private:
     void StartReleasePolling();

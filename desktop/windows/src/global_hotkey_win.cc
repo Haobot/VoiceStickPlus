@@ -94,7 +94,67 @@ UINT ModifierToVkey(UINT mod) {
     }
 }
 
+std::string VkeyToName(UINT vk) {
+    if (vk >= 'A' && vk <= 'Z') {
+        return std::string(1, static_cast<char>(vk));
+    }
+    if (vk >= '0' && vk <= '9') {
+        return std::string(1, static_cast<char>(vk));
+    }
+    switch (vk) {
+        case VK_SPACE: return "Space";
+        case VK_RETURN: return "Enter";
+        case VK_ESCAPE: return "Esc";
+        case VK_TAB: return "Tab";
+        case VK_BACK: return "Backspace";
+        case VK_DELETE: return "Delete";
+        default: break;
+    }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        return "F" + std::to_string(vk - VK_F1 + 1);
+    }
+    return std::string();
+}
+
 } // namespace
+
+std::string GlobalHotkeyWin::BindingToString(const Binding& binding) {
+    std::vector<std::string> parts;
+    if (binding.modifiers & MOD_CONTROL) parts.push_back("Ctrl");
+    if (binding.modifiers & MOD_ALT) parts.push_back("Alt");
+    if (binding.modifiers & MOD_SHIFT) parts.push_back("Shift");
+    if (binding.modifiers & MOD_WIN) parts.push_back("Win");
+    const auto key_name = VkeyToName(binding.vk);
+    if (!key_name.empty()) {
+        parts.push_back(key_name);
+    }
+    std::string result;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) result += "+";
+        result += parts[i];
+    }
+    return result;
+}
+
+bool GlobalHotkeyWin::TestBinding(const Binding& binding) {
+    static const int kTestId = 9999;
+    static HWND dummy_hwnd = nullptr;
+    if (!dummy_hwnd) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"VoiceStickHotkeyTestWindow";
+        RegisterClassW(&wc);
+        dummy_hwnd = CreateWindowExW(0, L"VoiceStickHotkeyTestWindow", L"", 0, 0, 0, 0, 0,
+                                     HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+    }
+    UINT modifiers = binding.modifiers | MOD_NOREPEAT;
+    if (!::RegisterHotKey(dummy_hwnd, kTestId, modifiers, binding.vk)) {
+        return false;
+    }
+    ::UnregisterHotKey(dummy_hwnd, kTestId);
+    return true;
+}
 
 std::optional<GlobalHotkeyWin::Binding> GlobalHotkeyWin::ParseHotkeyString(const std::string& text) {
     auto parts = SplitString(text, '+');
