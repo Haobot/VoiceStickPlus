@@ -2,6 +2,7 @@
 
 #include "app_config.h"
 #include "firmware_update_dialog.h"
+#include "global_hotkey_win.h"
 #include "input_injector_win.h"
 #include "onboarding_dialog.h"
 #include "overlay_window.h"
@@ -87,6 +88,7 @@ private:
     UINT taskbar_created_message_ = 0;
     AppConfig config_;
     InputInjectorWin input_injector_;
+    std::unique_ptr<GlobalHotkeyWin> global_hotkey_;
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;

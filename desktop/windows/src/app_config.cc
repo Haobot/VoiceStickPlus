@@ -248,6 +248,8 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "text_transform") config.default_output_profile.transform = TextTransformFromName(value);
     if (key == "translation_target" && !value.empty()) config.default_output_profile.translation_target = value;
     if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
+    if (key == "global_hotkey_enabled") config.global_hotkey_enabled = BoolValue(value, config.global_hotkey_enabled);
+    if (key == "global_hotkey") config.global_hotkey = value;
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
     if (key == "paired_device") {
@@ -340,6 +342,8 @@ AppConfig AppConfig::Load() {
             }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
+        if (auto value = TomlBool(table, "global_hotkey_enabled")) config.global_hotkey_enabled = *value;
+        if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
             config.debug_audio_directory = std::filesystem::path(*value);
@@ -389,6 +393,8 @@ void AppConfig::Save() const {
     output << "device_overlay_positions = \"" << TomlEscape(FormatDeviceValueMap<OverlayPosition>(
         device_overlay_positions, paired_device_ids, OverlayPosition::kCenter, OverlayPositionName)) << "\"\n";
     output << "auto_enter = " << (auto_enter ? "true" : "false") << "\n";
+    output << "global_hotkey_enabled = " << (global_hotkey_enabled ? "true" : "false") << "\n";
+    output << "global_hotkey = \"" << TomlEscape(global_hotkey) << "\"\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
     if (!paired_devices.empty()) {

@@ -324,6 +324,37 @@ void BleCentralWin::SendInteractionMode(InteractionMode mode,
     }
 }
 
+void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
+                                     const std::string& button,
+                                     const std::optional<std::string>& device_id,
+                                     std::uint32_t request_id) {
+    std::string_view action_name = (action == RemoteButtonAction::kDown) ? "down" : "up";
+    auto payload = BleProtocol::RemoteButtonPayload(action_name, button, "global_hotkey", request_id);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            } else {
+                LogBleLine("send remote_button_" + std::string(action_name) +
+                           " skipped dev=VS-" + *device_id);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+            LogBleLine("send remote_button_" + std::string(action_name) +
+                       " broadcast target_count=" + std::to_string(targets.size()));
+        }
+    }
+
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
 bool BleCentralWin::IsConnected(const std::string& device_id) const {
     std::lock_guard lock(mutex_);
     auto it = sessions_by_device_id_.find(device_id);

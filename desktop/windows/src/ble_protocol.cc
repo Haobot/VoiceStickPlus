@@ -158,6 +158,18 @@ ByteVector BleProtocol::InteractionModePayload(std::string_view mode) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::RemoteButtonPayload(std::string_view action,
+                                            std::string_view button,
+                                            std::string_view source,
+                                            std::uint32_t request_id) {
+    const auto json = std::string("{\"event\":\"remote_button_") +
+                      std::string(action) +
+                      "\",\"button\":\"" + JsonEscape(button) +
+                      "\",\"source\":\"" + JsonEscape(source) +
+                      "\",\"request_id\":" + std::to_string(request_id) + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::OtaBeginPayload(std::uint32_t image_size, std::uint32_t transfer_id) {
     ByteVector data = {1, ota_type_begin, 12, 0};
     AppendLe32(data, image_size);

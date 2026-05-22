@@ -27,6 +27,13 @@ struct SentUiState {
     std::optional<std::string> device_id;
 };
 
+struct SentRemoteButton {
+    RemoteButtonAction action;
+    std::string button;
+    std::optional<std::string> device_id;
+    std::uint32_t request_id;
+};
+
 class FakeBleCentral : public BleCentral {
 public:
     void Start() override {}
@@ -46,6 +53,12 @@ public:
                              const std::optional<std::string>& device_id) override {
         sent_interaction_modes.push_back(std::pair{mode, device_id});
     }
+    void SendRemoteButton(RemoteButtonAction action,
+                          const std::string& button,
+                          const std::optional<std::string>& device_id,
+                          std::uint32_t request_id) override {
+        sent_remote_buttons.push_back(SentRemoteButton{action, button, device_id, request_id});
+    }
     void UpdateFirmware(ByteVector,
                         const std::string&,
                         std::function<void(FirmwareUpdateProgress)>,
@@ -61,6 +74,7 @@ public:
     std::set<std::string> connected_device_ids;
     std::vector<SentUiState> sent_ui_states;
     std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
+    std::vector<SentRemoteButton> sent_remote_buttons;
 };
 
 class FakeAsrClient : public AsrClient {

@@ -36,6 +36,10 @@ public:
                        const std::optional<std::string>& device_id) override;
     void SendInteractionMode(InteractionMode mode,
                              const std::optional<std::string>& device_id) override;
+    void SendRemoteButton(RemoteButtonAction action,
+                          const std::string& button,
+                          const std::optional<std::string>& device_id,
+                          std::uint32_t request_id) override;
     void UpdateFirmware(ByteVector image,
                         const std::string& device_id,
                         std::function<void(FirmwareUpdateProgress)> progress,
