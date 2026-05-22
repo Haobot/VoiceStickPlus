@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -55,6 +56,19 @@ static int64_t s_secondary_down_us;
 static uint32_t s_primary_session_id;
 
 typedef enum {
+    APP_INPUT_SOURCE_PHYSICAL,
+    APP_INPUT_SOURCE_REMOTE,
+} app_input_source_t;
+
+typedef enum {
+    PRIMARY_OWNER_NONE,
+    PRIMARY_OWNER_PHYSICAL,
+    PRIMARY_OWNER_REMOTE,
+} primary_owner_t;
+
+static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
+
+typedef enum {
     APP_UI_STATE_READY,
     APP_UI_STATE_RECORDING,
     APP_UI_STATE_THINKING,
@@ -108,6 +122,8 @@ typedef enum {
 
 typedef struct {
     app_event_type_t type;
+    app_input_source_t source;
+    uint32_t request_id;
     uint32_t written;
     uint32_t size;
     char state[32];
@@ -119,6 +135,10 @@ static void queue_app_event(app_event_type_t type);
 static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, uint32_t size);
 static void queue_ui_state_event(const char *state, const char *text);
 static void apply_interaction_mode(interaction_mode_t mode);
+static void queue_primary_down_event(app_input_source_t source, uint32_t request_id);
+static void queue_primary_up_event(app_input_source_t source, uint32_t request_id);
+static void handle_primary_down(app_input_source_t source, uint32_t request_id);
+static void handle_primary_up(app_input_source_t source, uint32_t request_id);
 
 static bool is_external_powered(void)
 {
@@ -400,6 +420,8 @@ static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, ui
     if (s_app_event_queue) {
         app_event_t event = {
             .type = type,
+            .source = APP_INPUT_SOURCE_PHYSICAL,
+            .request_id = 0,
             .written = written,
             .size = size,
         };
@@ -412,10 +434,36 @@ static void queue_app_event_from_isr(app_event_type_t type, BaseType_t *high_tas
     if (s_app_event_queue) {
         app_event_t event = {
             .type = type,
+            .source = APP_INPUT_SOURCE_PHYSICAL,
+            .request_id = 0,
             .written = 0,
             .size = 0,
         };
         (void)xQueueSendFromISR(s_app_event_queue, &event, high_task_woken);
+    }
+}
+
+static void queue_primary_down_event(app_input_source_t source, uint32_t request_id)
+{
+    if (s_app_event_queue) {
+        app_event_t event = {
+            .type = APP_EVENT_FRONT_DOWN,
+            .source = source,
+            .request_id = request_id,
+        };
+        (void)xQueueSend(s_app_event_queue, &event, 0);
+    }
+}
+
+static void queue_primary_up_event(app_input_source_t source, uint32_t request_id)
+{
+    if (s_app_event_queue) {
+        app_event_t event = {
+            .type = APP_EVENT_FRONT_UP,
+            .source = source,
+            .request_id = request_id,
+        };
+        (void)xQueueSend(s_app_event_queue, &event, 0);
     }
 }
 
@@ -452,14 +500,14 @@ static void front_button_down_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
     (void)usr_data;
-    queue_app_event(APP_EVENT_FRONT_DOWN);
+    queue_primary_down_event(APP_INPUT_SOURCE_PHYSICAL, 0);
 }
 
 static void front_button_up_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
     (void)usr_data;
-    queue_app_event(APP_EVENT_FRONT_UP);
+    queue_primary_up_event(APP_INPUT_SOURCE_PHYSICAL, 0);
 }
 
 static void side_button_down_cb(void *button_handle, void *usr_data)
@@ -493,6 +541,12 @@ static void ble_control_cb(const char *json)
     const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
     const cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
     const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    const cJSON *button = cJSON_GetObjectItemCaseSensitive(root, "button");
+    const cJSON *request_id_json = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+    uint32_t request_id = 0;
+    if (cJSON_IsNumber(request_id_json)) {
+        request_id = (uint32_t)request_id_json->valueint;
+    }
     if (cJSON_IsString(event) && strcmp(event->valuestring, "ui_state") == 0 &&
         cJSON_IsString(state)) {
         queue_ui_state_event(state->valuestring, cJSON_IsString(text) ? text->valuestring : "");
@@ -505,6 +559,14 @@ static void ble_control_cb(const char *json)
         } else {
             ESP_LOGW(TAG, "unknown interaction_mode %s", mode->valuestring);
         }
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
+               cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
+        ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, request_id);
+        queue_primary_down_event(APP_INPUT_SOURCE_REMOTE, request_id);
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_up") == 0 &&
+               cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
+        ESP_LOGI(TAG, "remote primary up request_id=%" PRIu32, request_id);
+        queue_primary_up_event(APP_INPUT_SOURCE_REMOTE, request_id);
     }
     cJSON_Delete(root);
 }
@@ -519,6 +581,87 @@ static uint32_t elapsed_button_ms(int64_t down_us)
         elapsed_us = 0;
     }
     return (uint32_t)(elapsed_us / 1000);
+}
+
+static void handle_primary_down(app_input_source_t source, uint32_t request_id)
+{
+    (void)request_id;
+    ESP_LOGI(TAG, "button front down source=%d", source);
+    note_activity();
+
+    if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
+        if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != source) {
+            ESP_LOGI(TAG, "ignore primary down from source=%d, owner is %d", source, s_primary_owner);
+            return;
+        }
+    }
+
+    if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK && s_recording) {
+        const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
+        s_primary_session_id = stop_recording();
+        esp_err_t primary_up_err = voice_ble_send_button_click("primary", primary_duration_ms,
+                                                               s_primary_session_id);
+        if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
+            apply_app_ui_state("ready", "");
+        }
+        s_primary_down_us = 0;
+        s_primary_session_id = 0;
+        s_primary_owner = PRIMARY_OWNER_NONE;
+    } else {
+        s_primary_down_us = esp_timer_get_time();
+        if (s_app_ui_state == APP_UI_STATE_PENDING_CONFIRMATION) {
+            ESP_LOGI(TAG, "button front down as pending confirmation control");
+            s_primary_session_id = 0;
+            (void)voice_ble_send_button_click("primary", 0, 0);
+            return;
+        }
+        s_primary_session_id = start_recording();
+        if (s_primary_session_id == 0) {
+            s_primary_down_us = 0;
+            return;
+        }
+        s_primary_owner = (primary_owner_t)source;
+        esp_err_t primary_down_err = s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK
+            ? voice_ble_send_button_click("primary", 0, s_primary_session_id)
+            : voice_ble_send_button_down("primary", s_primary_session_id);
+        if (s_primary_session_id != 0 && primary_down_err != ESP_OK) {
+            (void)stop_recording();
+            s_primary_session_id = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            apply_app_ui_state("ready", "");
+        }
+    }
+}
+
+static void handle_primary_up(app_input_source_t source, uint32_t request_id)
+{
+    (void)request_id;
+    ESP_LOGI(TAG, "button front up source=%d", source);
+    note_activity();
+    if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK) {
+        return;
+    }
+
+    if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != source) {
+        ESP_LOGI(TAG, "ignore primary up from source=%d, owner is %d", source, s_primary_owner);
+        return;
+    }
+
+    if (!s_recording && s_primary_session_id == 0 && s_primary_down_us == 0) {
+        return;
+    }
+    const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
+    if (s_recording) {
+        s_primary_session_id = stop_recording();
+    }
+    esp_err_t primary_up_err = voice_ble_send_button_up("primary", primary_duration_ms,
+                                                        s_primary_session_id);
+    if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
+        apply_app_ui_state("ready", "");
+    }
+    s_primary_down_us = 0;
+    s_primary_session_id = 0;
+    s_primary_owner = PRIMARY_OWNER_NONE;
 }
 
 static void apply_app_ui_state(const char *state, const char *text)
@@ -601,61 +744,10 @@ static void app_event_task(void *arg)
 
         switch (event.type) {
         case APP_EVENT_FRONT_DOWN:
-            ESP_LOGI(TAG, "button front down");
-            note_activity();
-            if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK && s_recording) {
-                const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
-                s_primary_session_id = stop_recording();
-                esp_err_t primary_up_err = voice_ble_send_button_click("primary", primary_duration_ms,
-                                                                       s_primary_session_id);
-                if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
-                    apply_app_ui_state("ready", "");
-                }
-                s_primary_down_us = 0;
-                s_primary_session_id = 0;
-            } else {
-                s_primary_down_us = esp_timer_get_time();
-                if (s_app_ui_state == APP_UI_STATE_PENDING_CONFIRMATION) {
-                    ESP_LOGI(TAG, "button front down as pending confirmation control");
-                    s_primary_session_id = 0;
-                    (void)voice_ble_send_button_click("primary", 0, 0);
-                    break;
-                }
-                s_primary_session_id = start_recording();
-                if (s_primary_session_id == 0) {
-                    s_primary_down_us = 0;
-                    break;
-                }
-                esp_err_t primary_down_err = s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK
-                    ? voice_ble_send_button_click("primary", 0, s_primary_session_id)
-                    : voice_ble_send_button_down("primary", s_primary_session_id);
-                if (s_primary_session_id != 0 && primary_down_err != ESP_OK) {
-                    (void)stop_recording();
-                    s_primary_session_id = 0;
-                    apply_app_ui_state("ready", "");
-                }
-            }
+            handle_primary_down(event.source, event.request_id);
             break;
         case APP_EVENT_FRONT_UP:
-            ESP_LOGI(TAG, "button front up");
-            note_activity();
-            if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK) {
-                break;
-            }
-            if (!s_recording && s_primary_session_id == 0 && s_primary_down_us == 0) {
-                break;
-            }
-            const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
-            if (s_recording) {
-                s_primary_session_id = stop_recording();
-            }
-            esp_err_t primary_up_err = voice_ble_send_button_up("primary", primary_duration_ms,
-                                                                s_primary_session_id);
-            if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
-                apply_app_ui_state("ready", "");
-            }
-            s_primary_down_us = 0;
-            s_primary_session_id = 0;
+            handle_primary_up(event.source, event.request_id);
             break;
         case APP_EVENT_SIDE_DOWN:
             ESP_LOGI(TAG, "button side down");
@@ -680,6 +772,9 @@ static void app_event_task(void *arg)
             s_recording = false;
             s_ota_updating = false;
             s_app_ui_state = APP_UI_STATE_READY;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            s_primary_down_us = 0;
+            s_primary_session_id = 0;
             stop_host_response_timer();
             audio_pipeline_stop();
             release_recording_pm_locks();

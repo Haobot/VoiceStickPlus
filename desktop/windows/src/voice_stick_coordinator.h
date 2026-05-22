@@ -23,6 +23,11 @@
 
 namespace voicestick {
 
+enum class RemoteButtonAction {
+    kDown,
+    kUp,
+};
+
 struct ConnectedDevice {
     std::string id;
     std::string name;
@@ -54,6 +59,10 @@ public:
                                const std::optional<std::string>& device_id) = 0;
     virtual void SendInteractionMode(InteractionMode mode,
                                      const std::optional<std::string>& device_id) = 0;
+    virtual void SendRemoteButton(RemoteButtonAction action,
+                                  const std::string& button,
+                                  const std::optional<std::string>& device_id,
+                                  std::uint32_t request_id) = 0;
     virtual void UpdateFirmware(ByteVector image,
                                 const std::string& device_id,
                                 std::function<void(FirmwareUpdateProgress)> progress,
@@ -152,6 +161,9 @@ public:
                                   std::function<void(FirmwareUpdateProgress)> progress,
                                   std::function<void(bool, std::string)> completion);
     void CancelFirmwareUpdate();
+
+    void HandleGlobalHotkeyPressed();
+    void HandleGlobalHotkeyReleased();
 
 private:
     enum class PendingPasteKind {
@@ -274,6 +286,7 @@ private:
     OverlayThemeColor ThemeColorForDevice(const std::string& device_id) const;
     bool ShouldUseDefiniteSegments(const OutputProfile& profile) const;
     double CurrentRecordingDurationSeconds() const;
+    std::optional<std::string> ResolveHotkeyTargetDevice() const;
 
     AppConfig config_;
     std::unique_ptr<BleCentral> ble_;
@@ -301,6 +314,10 @@ private:
     std::optional<std::string> last_recoverable_text_;
     std::optional<std::string> last_recoverable_device_id_;
     std::vector<std::string> paired_device_ids_;
+    std::vector<std::string> connected_device_ids_;
+    bool hotkey_is_down_ = false;
+    std::optional<std::string> hotkey_active_device_id_;
+    std::uint32_t next_hotkey_request_id_ = 1;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id_;
     std::optional<FirmwareManifest> latest_firmware_manifest_;
     std::chrono::steady_clock::time_point last_firmware_manifest_check_at_{};

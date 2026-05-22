@@ -174,6 +174,18 @@ int Win32App::Run() {
         coordinator_->Start();
         LogLine("Coordinator started");
 
+        LogLine("Initializing global hotkey");
+        global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
+        global_hotkey_->on_pressed = [this] {
+            if (coordinator_) coordinator_->HandleGlobalHotkeyPressed();
+        };
+        global_hotkey_->on_released = [this] {
+            if (coordinator_) coordinator_->HandleGlobalHotkeyReleased();
+        };
+        if (!global_hotkey_->Register(config_.global_hotkey_enabled ? config_.global_hotkey : "")) {
+            LogLine("Global hotkey registration failed");
+        }
+
         for (const auto& entry : config_.paired_devices) {
             if (entry.bluetooth_address != 0) {
                 LogLine("Queueing paired device connect VS-" + entry.device_id);
@@ -417,6 +429,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         if (ble_central_) ble_central_->ProcessDispatchedCallbacks();
         return 0;
     }
+    if (global_hotkey_ && global_hotkey_->HandleMessage(message, w_param, l_param)) {
+        return 0;
+    }
     if (message == taskbar_created_message_) {
         AddTrayIcon();
         return 0;
@@ -533,6 +548,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
 void Win32App::ShutdownAndQuit() {
     if (is_shutting_down_) return;
     is_shutting_down_ = true;
+    if (global_hotkey_) {
+        global_hotkey_->Unregister();
+    }
     pair_device_dialog_.reset();
     if (coordinator_) coordinator_->Shutdown();
     DestroyWindow(hwnd_);
@@ -785,6 +803,10 @@ void Win32App::SaveInputOptions() {
     try {
         config_.Save();
         if (coordinator_) coordinator_->UpdateConfig(config_);
+        if (global_hotkey_) {
+            global_hotkey_->Unregister();
+            global_hotkey_->Register(config_.global_hotkey_enabled ? config_.global_hotkey : "");
+        }
         LogLine("Input options saved");
     } catch (const std::exception& error) {
         LogLine(std::string("Input options save failed: ") + error.what());

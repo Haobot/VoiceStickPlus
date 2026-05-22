@@ -60,6 +60,10 @@ VoiceStickCoordinator::~VoiceStickCoordinator() {
 void VoiceStickCoordinator::Start() {
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
         if (is_shutdown_) return;
+        connected_device_ids_.clear();
+        for (const auto& dev : devices) {
+            connected_device_ids_.push_back(dev.id);
+        }
         ui_->SetConnectedDevices(devices);
         CancelActiveCycleIfDeviceDisconnected();
         RefreshFirmwareAvailability();
@@ -1381,6 +1385,58 @@ bool VoiceStickCoordinator::ShouldUseDefiniteSegments(const OutputProfile& profi
 
 double VoiceStickCoordinator::CurrentRecordingDurationSeconds() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - active_session_started_at_).count();
+}
+
+std::optional<std::string> VoiceStickCoordinator::ResolveHotkeyTargetDevice() const {
+    if (active_device_id_.has_value() &&
+        std::find(connected_device_ids_.begin(), connected_device_ids_.end(), *active_device_id_) !=
+            connected_device_ids_.end()) {
+        return active_device_id_;
+    }
+    for (const auto& device_id : paired_device_ids_) {
+        if (std::find(connected_device_ids_.begin(), connected_device_ids_.end(), device_id) !=
+            connected_device_ids_.end()) {
+            return device_id;
+        }
+    }
+    if (!connected_device_ids_.empty()) {
+        return connected_device_ids_.front();
+    }
+    return std::nullopt;
+}
+
+void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
+    if (hotkey_is_down_) return;
+
+    auto target_device = ResolveHotkeyTargetDevice();
+    if (!target_device) {
+        ui_->SetStatus("No VoiceStick connected");
+        return;
+    }
+
+    const auto request_id = next_hotkey_request_id_++;
+    if (config_.interaction_mode == InteractionMode::kHoldToTalk) {
+        hotkey_is_down_ = true;
+        hotkey_active_device_id_ = target_device;
+    }
+    ble_->SendRemoteButton(RemoteButtonAction::kDown, "primary", target_device, request_id);
+}
+
+void VoiceStickCoordinator::HandleGlobalHotkeyReleased() {
+    if (config_.interaction_mode == InteractionMode::kClickToTalk) {
+        return;
+    }
+
+    if (!hotkey_is_down_) return;
+
+    auto target_device = hotkey_active_device_id_;
+    hotkey_is_down_ = false;
+    hotkey_active_device_id_.reset();
+
+    if (target_device && ble_->IsConnected(*target_device)) {
+        const auto request_id = next_hotkey_request_id_++;
+        ble_->SendRemoteButton(RemoteButtonAction::kUp, "primary", target_device, request_id);
+    }
 }
 
 } // namespace voicestick
