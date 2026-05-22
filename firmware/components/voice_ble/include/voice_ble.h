@@ -50,3 +50,4 @@ esp_err_t voice_ble_send_button_up(const char *button, uint32_t duration_ms,
                                    uint32_t session_id);
 esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
                                       uint32_t session_id);
+esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered);

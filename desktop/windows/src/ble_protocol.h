@@ -26,6 +26,9 @@ struct StateEvent {
     std::optional<std::uint32_t> duration_ms;
     std::string hardware;
     std::string firmware_version;
+    std::optional<int> battery_level;
+    std::optional<bool> battery_charging;
+    std::optional<bool> battery_usb_powered;
 };
 
 struct FirmwareOtaStateEvent {

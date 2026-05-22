@@ -261,7 +261,7 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
     DispatchToUi([this, devices] {
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
-        RebuildTooltip();
+        UpdateTrayIcon();
     });
 }
 
@@ -274,6 +274,18 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
         if (pair_device_dialog_) {
             pair_device_dialog_->SetDeviceInfo(info);
         }
+    });
+}
+
+void Win32App::SetDeviceBattery(const std::string& device_id, int level_percent,
+                                 bool charging, bool usb_powered) {
+    DispatchToUi([this, device_id, level_percent, charging, usb_powered] {
+        LogLine("SetDeviceBattery VS-" + device_id +
+                " level=" + std::to_string(level_percent) +
+                " charging=" + std::to_string(charging) +
+                " usb=" + std::to_string(usb_powered));
+        device_battery_map_[device_id] = {level_percent, charging, usb_powered};
+        UpdateTrayIcon();
     });
 }
 
@@ -996,10 +1008,69 @@ void Win32App::RebuildTooltip() {
     data.hWnd = hwnd_;
     data.uID = kTrayIconId;
     data.uFlags = NIF_TIP | NIF_SHOWTIP;
-    auto tip = Utf16(std::string("VoiceStick - ") +
-                     (connected_devices_.empty() ? "Not connected" : "Connected"));
+    std::wstring tip = L"VoiceStick";
+    if (connected_devices_.empty()) {
+        tip += L" - 未连接";
+    } else {
+        bool first = true;
+        for (const auto& device : connected_devices_) {
+            if (!first) tip += L", ";
+            first = false;
+            tip += Utf16(device.name);
+            const auto it = device_battery_map_.find(device.id);
+            if (it != device_battery_map_.end()) {
+                tip += L" (" + std::to_wstring(it->second.level_percent) + L"%";
+                if (it->second.charging) tip += L", 充电中";
+                tip += L")";
+            }
+        }
+    }
     wcsncpy_s(data.szTip, tip.c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
+void Win32App::UpdateTrayIcon() {
+    if (!hwnd_) return;
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = kTrayIconId;
+    data.uFlags = NIF_ICON;
+
+    HICON icon = nullptr;
+    if (connected_devices_.empty()) {
+        icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_DISCONNECTED));
+    } else {
+        int min_level = 100;
+        bool charging = false;
+        for (const auto& device : connected_devices_) {
+            const auto it = device_battery_map_.find(device.id);
+            if (it != device_battery_map_.end()) {
+                min_level = std::min(min_level, it->second.level_percent);
+                if (it->second.charging) charging = true;
+            }
+        }
+        if (charging) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_CHARGING));
+        } else if (min_level >= 75) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_100));
+        } else if (min_level >= 50) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_75));
+        } else if (min_level >= 25) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_50));
+        } else if (min_level > 0) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_25));
+        } else {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_0));
+        }
+    }
+    if (!icon) {
+        icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_TRAY));
+    }
+    data.hIcon = icon;
+    Shell_NotifyIconW(NIM_MODIFY, &data);
+    if (icon) DestroyIcon(icon);
+    RebuildTooltip();
 }
 
 void Win32App::RegisterTaskbarMessage() {

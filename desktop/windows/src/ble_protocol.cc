@@ -82,6 +82,36 @@ std::optional<std::uint32_t> JsonU32Value(std::string_view json, std::string_vie
     return value;
 }
 
+std::optional<int> JsonIntValue(std::string_view json, std::string_view key) {
+    const std::string needle = "\"" + std::string(key) + "\"";
+    auto key_pos = json.find(needle);
+    if (key_pos == std::string_view::npos) return std::nullopt;
+    auto colon = json.find(':', key_pos + needle.size());
+    if (colon == std::string_view::npos) return std::nullopt;
+    auto begin = colon + 1;
+    while (begin < json.size() && std::isspace(static_cast<unsigned char>(json[begin]))) ++begin;
+    auto end = begin;
+    while (end < json.size() && (std::isdigit(static_cast<unsigned char>(json[end])) || json[end] == '-')) ++end;
+    if (begin == end) return std::nullopt;
+    int value = 0;
+    auto result = std::from_chars(json.data() + begin, json.data() + end, value);
+    if (result.ec != std::errc()) return std::nullopt;
+    return value;
+}
+
+std::optional<bool> JsonBoolValue(std::string_view json, std::string_view key) {
+    const std::string needle = "\"" + std::string(key) + "\"";
+    auto key_pos = json.find(needle);
+    if (key_pos == std::string_view::npos) return std::nullopt;
+    auto colon = json.find(':', key_pos + needle.size());
+    if (colon == std::string_view::npos) return std::nullopt;
+    auto begin = colon + 1;
+    while (begin < json.size() && std::isspace(static_cast<unsigned char>(json[begin]))) ++begin;
+    if (json.substr(begin, 4) == "true") return true;
+    if (json.substr(begin, 5) == "false") return false;
+    return std::nullopt;
+}
+
 std::string JsonEscape(std::string_view text) {
     std::string out;
     out.reserve(text.size() + 8);
@@ -127,6 +157,9 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.duration_ms = JsonU32Value(json, "duration_ms");
     event.hardware = JsonStringValue(json, "hardware");
     event.firmware_version = JsonStringValue(json, "firmware_version");
+    event.battery_level = JsonIntValue(json, "level");
+    event.battery_charging = JsonBoolValue(json, "charging");
+    event.battery_usb_powered = JsonBoolValue(json, "usb_powered");
     return event;
 }
 

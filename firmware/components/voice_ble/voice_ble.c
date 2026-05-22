@@ -969,3 +969,15 @@ esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
              button, session_id, duration_ms);
     return send_state_json(json);
 }
+
+esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered)
+{
+    char json[128];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"battery_status\",\"level\":%d,\"charging\":%s,\"usb_powered\":%s}",
+             level_percent,
+             charging ? "true" : "false",
+             usb_powered ? "true" : "false");
+    ESP_LOGI(TAG, "battery status level=%d charging=%d usb=%d", level_percent, charging, usb_powered);
+    return send_state_json(json);
+}
