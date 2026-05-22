@@ -193,7 +193,6 @@ int Win32App::Run() {
         LogLine("Initializing global hotkey");
         global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
         global_hotkey_->on_pressed = [this] {
-            ShowNotification("VoiceStick 热键已触发", "正在启动录音，松开热键结束识别");
             if (coordinator_) coordinator_->HandleGlobalHotkeyPressed();
         };
         global_hotkey_->on_released = [this] {

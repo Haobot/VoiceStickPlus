@@ -54,6 +54,7 @@ public:
                       const std::string& device_id,
                       OverlayThemeColor color) override;
     void HideSubtitles() override;
+    void ShowNotification(const std::string& title, const std::string& body) override;
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -77,7 +78,6 @@ private:
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);
     void HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info);
-    void ShowNotification(const std::string& title, const std::string& body);
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
     void ShutdownAndQuit();

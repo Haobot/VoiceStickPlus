@@ -1406,22 +1406,37 @@ std::optional<std::string> VoiceStickCoordinator::ResolveHotkeyTargetDevice() co
 }
 
 void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
-    if (hotkey_is_down_) return;
+    if (hotkey_is_down_) {
+        LogApp("hotkey pressed but already down, skipping");
+        return;
+    }
+
+    LogApp("hotkey pressed, resolving target device...");
+    LogApp("  connected_device_ids: " + std::to_string(connected_device_ids_.size()));
+    for (const auto& id : connected_device_ids_) {
+        LogApp("    - VS-" + id);
+    }
+    LogApp("  active_device_id: " + (active_device_id_.has_value() ? "VS-" + *active_device_id_ : "none"));
 
     auto target_device = ResolveHotkeyTargetDevice();
     if (!target_device) {
         ui_->SetStatus("Hotkey: no VoiceStick connected");
+        ui_->ShowNotification("热键触发失败", "未检测到已连接的VoiceStick设备");
         LogApp("hotkey pressed but no connected device");
         return;
     }
+
+    LogApp("  resolved target device: VS-" + *target_device);
 
     const auto request_id = next_hotkey_request_id_++;
     if (config_.interaction_mode == InteractionMode::kHoldToTalk) {
         hotkey_is_down_ = true;
         hotkey_active_device_id_ = target_device;
     }
+    LogApp("  sending remote_button_down to VS-" + *target_device + ", request_id=" + std::to_string(request_id));
     ble_->SendRemoteButton(RemoteButtonAction::kDown, "primary", target_device, request_id);
     ui_->SetStatus("Recording (hotkey) on VS-" + *target_device);
+    ui_->ShowNotification("热键已触发", "正在 VS-" + *target_device + " 上启动录音，松开热键结束识别");
     LogApp("hotkey pressed, starting recording on VS-" + *target_device);
 }
 
