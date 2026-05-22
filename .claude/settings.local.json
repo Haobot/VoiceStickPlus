@@ -3,7 +3,12 @@
     "allow": [
       "Bash(cmd /c 'call \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\" > /dev/null 2>&1 && \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\IDE\\\\CommonExtensions\\\\Microsoft\\\\CMake\\\\CMake\\\\bin\\\\ctest.exe\" --test-dir build-x64 --output-on-failure')",
       "Bash(cmd *)",
-      "Bash(cmake --version)"
+      "Bash(cmake --version)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Bash(whereis cl.exe)",
+      "Bash(whereis cmake.exe)",
+      "Bash(winget --version)"
     ]
   }
 }
