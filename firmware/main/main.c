@@ -60,6 +60,8 @@ typedef enum {
     APP_INPUT_SOURCE_REMOTE,
 } app_input_source_t;
 
+static void apply_app_ui_state(const char *state, const char *text);
+
 typedef enum {
     PRIMARY_OWNER_NONE,
     PRIMARY_OWNER_PHYSICAL,
@@ -590,7 +592,9 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     note_activity();
 
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
-        if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != source) {
+        const primary_owner_t owner_from_source = (source == APP_INPUT_SOURCE_PHYSICAL)
+            ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
+        if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
             ESP_LOGI(TAG, "ignore primary down from source=%d, owner is %d", source, s_primary_owner);
             return;
         }
@@ -620,7 +624,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             s_primary_down_us = 0;
             return;
         }
-        s_primary_owner = (primary_owner_t)source;
+        s_primary_owner = (source == APP_INPUT_SOURCE_PHYSICAL)
+            ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
         esp_err_t primary_down_err = s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK
             ? voice_ble_send_button_click("primary", 0, s_primary_session_id)
             : voice_ble_send_button_down("primary", s_primary_session_id);
@@ -642,7 +647,9 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         return;
     }
 
-    if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != source) {
+    const primary_owner_t owner_from_source = (source == APP_INPUT_SOURCE_PHYSICAL)
+        ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
+    if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
         ESP_LOGI(TAG, "ignore primary up from source=%d, owner is %d", source, s_primary_owner);
         return;
     }

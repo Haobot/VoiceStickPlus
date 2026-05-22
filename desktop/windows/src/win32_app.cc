@@ -201,7 +201,9 @@ int Win32App::Run() {
         if (config_.global_hotkey_enabled) {
             if (!global_hotkey_->Register(config_.global_hotkey)) {
                 LogLine("Global hotkey registration failed, hotkey conflict or invalid");
-                ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请在菜单中更换其他热键");
+                if (config_.debug_audio_cache) {
+                    ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请在菜单中更换其他热键");
+                }
                 SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
             } else {
                 LogLine("Global hotkey registered: " + config_.global_hotkey);

@@ -1421,7 +1421,9 @@ void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
     auto target_device = ResolveHotkeyTargetDevice();
     if (!target_device) {
         ui_->SetStatus("Hotkey: no VoiceStick connected");
-        ui_->ShowNotification("热键触发失败", "未检测到已连接的VoiceStick设备");
+        if (config_.debug_audio_cache) {
+            ui_->ShowNotification("热键触发失败", "未检测到已连接的VoiceStick设备");
+        }
         LogApp("hotkey pressed but no connected device");
         return;
     }
@@ -1436,7 +1438,9 @@ void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
     LogApp("  sending remote_button_down to VS-" + *target_device + ", request_id=" + std::to_string(request_id));
     ble_->SendRemoteButton(RemoteButtonAction::kDown, "primary", target_device, request_id);
     ui_->SetStatus("Recording (hotkey) on VS-" + *target_device);
-    ui_->ShowNotification("热键已触发", "正在 VS-" + *target_device + " 上启动录音，松开热键结束识别");
+    if (config_.debug_audio_cache) {
+        ui_->ShowNotification("热键已触发", "正在 VS-" + *target_device + " 上启动录音，松开热键结束识别");
+    }
     LogApp("hotkey pressed, starting recording on VS-" + *target_device);
 }
 
