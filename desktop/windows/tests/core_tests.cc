@@ -172,6 +172,9 @@ public:
     void HideSubtitles() override {
         ++hide_subtitles_count;
     }
+    void ShowNotification(const std::string& title, const std::string& body) override {
+        notifications.push_back(title + ":" + body);
+    }
 
     std::vector<std::string> statuses;
     std::vector<ConnectedDevice> connected_devices;
@@ -186,6 +189,7 @@ public:
     std::vector<std::string> paused_finals;
     std::vector<std::string> errors;
     std::vector<std::string> subtitles;
+    std::vector<std::string> notifications;
     std::function<void()> final_countdown_completion;
     std::function<void()> error_completion;
     bool has_recoverable_input_set = false;

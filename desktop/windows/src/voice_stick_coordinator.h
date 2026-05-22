@@ -125,6 +125,7 @@ public:
                               const std::string& device_id,
                               OverlayThemeColor color) = 0;
     virtual void HideSubtitles() = 0;
+    virtual void ShowNotification(const std::string& title, const std::string& body) = 0;
 };
 
 class InputInjector {
