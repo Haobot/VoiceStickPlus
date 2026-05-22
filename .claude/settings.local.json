@@ -8,7 +8,8 @@
       "Read(//c/Program Files \\(x86\\)/**)",
       "Bash(whereis cl.exe)",
       "Bash(whereis cmake.exe)",
-      "Bash(winget --version)"
+      "Bash(winget --version)",
+      "Bash(winget install *)"
     ]
   }
 }
