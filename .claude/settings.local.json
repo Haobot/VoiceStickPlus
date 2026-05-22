@@ -9,7 +9,8 @@
       "Bash(whereis cl.exe)",
       "Bash(whereis cmake.exe)",
       "Bash(winget --version)",
-      "Bash(winget install *)"
+      "Bash(winget install *)",
+      "Bash(net session *)"
     ]
   }
 }
