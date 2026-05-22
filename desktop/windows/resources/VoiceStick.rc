@@ -6,6 +6,13 @@
 
 IDI_VOICESTICK_APP ICON "app.ico"
 IDI_VOICESTICK_TRAY ICON "tray.ico"
+IDI_TRAY_DISCONNECTED ICON "icons/tray_disconnected.ico"
+IDI_TRAY_BATTERY_0 ICON "icons/tray_battery_0.ico"
+IDI_TRAY_BATTERY_25 ICON "icons/tray_battery_25.ico"
+IDI_TRAY_BATTERY_50 ICON "icons/tray_battery_50.ico"
+IDI_TRAY_BATTERY_75 ICON "icons/tray_battery_75.ico"
+IDI_TRAY_BATTERY_100 ICON "icons/tray_battery_100.ico"
+IDI_TRAY_BATTERY_CHARGING ICON "icons/tray_battery_charging.ico"
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION VOICESTICK_VERSION_RC

@@ -42,6 +42,7 @@ static bool s_recording_pm_locked;
 static bool s_ota_pm_locked;
 static bool s_battery_charging;
 static bool s_usb_powered;
+static int s_battery_level = 0;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_deep_sleep_timer;
@@ -1040,9 +1041,14 @@ static void update_battery_status(void)
     if (err == ESP_OK) {
         const bool external_power_changed = (charging != s_battery_charging) ||
                                             (usb_powered != s_usb_powered);
+        const bool level_changed = (level != s_battery_level);
         s_battery_charging = charging;
         s_usb_powered = usb_powered;
+        s_battery_level = level;
         ui_status_set_battery(level, charging, usb_powered);
+        if (voice_ble_is_connected() && (external_power_changed || level_changed)) {
+            voice_ble_send_battery_status(level, charging, usb_powered);
+        }
         if (external_power_changed) {
             ESP_LOGI(TAG, "power source changed charging=%d usb=%d",
                      charging, usb_powered);

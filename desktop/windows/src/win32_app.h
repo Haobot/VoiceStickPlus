@@ -22,6 +22,12 @@
 
 namespace voicestick {
 
+struct DeviceBattery {
+    int level_percent = 0;
+    bool charging = false;
+    bool usb_powered = false;
+};
+
 class Win32App : public VoiceStickUi {
 public:
     explicit Win32App(HINSTANCE instance);
@@ -30,6 +36,8 @@ public:
     void SetStatus(const std::string& status) override;
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) override;
     void SetDeviceInfo(const DeviceInfo& info) override;
+    void SetDeviceBattery(const std::string& device_id, int level_percent,
+                           bool charging, bool usb_powered) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
     void SetPairingError(const std::string& device_id, const std::string& message) override;
     void ShowFirmwareUpdatePrompt(const std::string& device_id,
@@ -65,6 +73,7 @@ private:
     void RemoveTrayIcon();
     void ShowTrayMenu();
     void RebuildTooltip();
+    void UpdateTrayIcon();
     void RegisterTaskbarMessage();
     bool ShowOnboardingIfNeeded();
     bool ShowOnboarding();
@@ -101,6 +110,7 @@ private:
     std::vector<ConnectedDevice> connected_devices_;
     std::vector<std::string> paired_device_ids_;
     std::map<std::string, DeviceInfo> device_info_map_;
+    std::map<std::string, DeviceBattery> device_battery_map_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     bool has_recoverable_input_ = false;

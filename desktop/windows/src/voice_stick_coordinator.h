@@ -100,6 +100,8 @@ public:
     virtual void SetStatus(const std::string& status) = 0;
     virtual void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) = 0;
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
+    virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
+                                   bool charging, bool usb_powered) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;
     virtual void SetPairingError(const std::string& device_id, const std::string& message) = 0;
     virtual void ShowFirmwareUpdatePrompt(const std::string& device_id,

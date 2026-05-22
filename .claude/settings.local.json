@@ -27,7 +27,12 @@
       "Bash(tasklist)",
       "Bash(./scripts/build-msi.bat)",
       "Bash(C:/Program Files \\(x86\\)/Microsoft Visual Studio/Installer/vswhere.exe *)",
-      "Bash(wix build *)"
+      "Bash(wix build *)",
+      "Bash(cp tray.ico icons/tray_disconnected.ico)",
+      "Bash(cp tray.ico icons/tray_battery_0.ico)",
+      "Bash(cp tray.ico icons/tray_battery_25.ico)",
+      "Bash(cp tray.ico icons/tray_battery_50.ico)",
+      "Bash(cp tray.ico icons/tray_battery_75.ico)"
     ]
   }
 }

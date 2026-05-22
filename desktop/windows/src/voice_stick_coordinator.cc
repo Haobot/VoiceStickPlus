@@ -316,6 +316,12 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
     if (event.event == "device_info") {
         ui_->SetDeviceInfo(DeviceInfo{device_id, event.hardware, event.firmware_version});
         UpdateDeviceFirmwareInfo(event, device_id);
+    } else if (event.event == "battery_status") {
+        if (event.battery_level.has_value()) {
+            ui_->SetDeviceBattery(device_id, event.battery_level.value(),
+                                   event.battery_charging.value_or(false),
+                                   event.battery_usb_powered.value_or(false));
+        }
     } else if (event.event == "button_down") {
         HandleButtonDown(event, device_id);
     } else if (event.event == "button_up") {
