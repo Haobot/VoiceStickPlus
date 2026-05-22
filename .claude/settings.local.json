@@ -16,7 +16,8 @@
       "Bash(powershell.exe -Command \"& { . 'C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2022\\\\BuildTools\\\\Common7\\\\Tools\\\\Launch-VsDevShell.ps1' -Arch amd64; cmake -S . -B build-x64 -G Ninja; ninja -C build-x64 }\")",
       "Bash(cmd.exe *)",
       "Bash(powershell.exe *)",
-      "Bash(build.bat)"
+      "Bash(build.bat)",
+      "Bash(ninja --version)"
     ]
   }
 }
