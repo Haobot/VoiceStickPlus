@@ -9,6 +9,63 @@
 namespace voicestick {
 
 namespace {
+HotkeySettingsDialog* g_active_dialog = nullptr;
+}
+
+LRESULT CALLBACK HotkeySettingsDialog::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0 && g_active_dialog && g_active_dialog->is_capturing_) {
+        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+            KBDLLHOOKSTRUCT* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+            const UINT vk = kb->vkCode;
+            switch (vk) {
+                case VK_CONTROL:
+                case VK_LCONTROL:
+                case VK_RCONTROL:
+                    g_active_dialog->captured_modifiers_ |= MOD_CONTROL;
+                    return 1;
+                case VK_MENU:
+                case VK_LMENU:
+                case VK_RMENU:
+                    g_active_dialog->captured_modifiers_ |= MOD_ALT;
+                    return 1;
+                case VK_SHIFT:
+                case VK_LSHIFT:
+                case VK_RSHIFT:
+                    g_active_dialog->captured_modifiers_ |= MOD_SHIFT;
+                    return 1;
+                case VK_LWIN:
+                case VK_RWIN:
+                    g_active_dialog->captured_modifiers_ |= MOD_WIN;
+                    return 1;
+                case VK_ESCAPE: {
+                    g_active_dialog->captured_modifiers_ = 0;
+                    g_active_dialog->captured_vk_ = 0;
+                    break;
+                }
+                default:
+                    if (g_active_dialog->captured_modifiers_ == 0) {
+                        SetWindowTextW(g_active_dialog->hint_label_,
+                                       L"错误：至少需要1个修饰键（Ctrl/Alt/Shift/Win）");
+                        break;
+                    }
+                    g_active_dialog->captured_vk_ = vk;
+                    break;
+            }
+            g_active_dialog->is_capturing_ = false;
+            if (g_active_dialog->keyboard_hook_) {
+                UnhookWindowsHookEx(g_active_dialog->keyboard_hook_);
+                g_active_dialog->keyboard_hook_ = nullptr;
+            }
+            HotkeySettingsDialog* dlg = g_active_dialog;
+            g_active_dialog = nullptr;
+            dlg->UpdateHotkeyDisplay();
+            return 1;
+        }
+    }
+    return CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
+
+namespace {
 
 void AlignDialogData(std::vector<BYTE>* buffer, std::size_t alignment) {
     while (buffer->size() % alignment != 0) {
@@ -169,8 +226,12 @@ void HotkeySettingsDialog::DestroyControls() {
 }
 
 void HotkeySettingsDialog::UpdateHotkeyDisplay() {
-    if (!is_capturing_ || captured_vk_ == 0) {
-        SetWindowTextW(hotkey_capture_button_, L"点击录制快捷键");
+    if (captured_vk_ == 0) {
+        if (is_capturing_) {
+            SetWindowTextW(hotkey_capture_button_, L"请按下快捷键组合...");
+        } else {
+            SetWindowTextW(hotkey_capture_button_, L"点击录制快捷键");
+        }
         EnableWindow(ok_button_, FALSE);
         return;
     }
@@ -184,53 +245,15 @@ void HotkeySettingsDialog::UpdateHotkeyDisplay() {
 }
 
 void HotkeySettingsDialog::OnHotkeyCapture() {
-    is_capturing_ = true;
+    if (keyboard_hook_) return;
     captured_modifiers_ = 0;
     captured_vk_ = 0;
     SetWindowTextW(hotkey_capture_button_, L"请按下快捷键组合...");
-    SetFocus(hwnd_);
+    g_active_dialog = this;
+    is_capturing_ = true;
+    keyboard_hook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
 }
 
-void HotkeySettingsDialog::OnKeyDown(WPARAM vk) {
-    if (!is_capturing_) return;
-
-    switch (vk) {
-        case VK_CONTROL:
-        case VK_LCONTROL:
-        case VK_RCONTROL:
-            captured_modifiers_ |= MOD_CONTROL;
-            break;
-        case VK_MENU:
-        case VK_LMENU:
-        case VK_RMENU:
-            captured_modifiers_ |= MOD_ALT;
-            break;
-        case VK_SHIFT:
-        case VK_LSHIFT:
-        case VK_RSHIFT:
-            captured_modifiers_ |= MOD_SHIFT;
-            break;
-        case VK_LWIN:
-        case VK_RWIN:
-            captured_modifiers_ |= MOD_WIN;
-            break;
-        case VK_ESCAPE:
-            is_capturing_ = false;
-            ReleaseCapture();
-            UpdateHotkeyDisplay();
-            return;
-        default:
-            if (captured_modifiers_ == 0) {
-                SetWindowTextW(hint_label_, L"错误：至少需要1个修饰键（Ctrl/Alt/Shift/Win）");
-                return;
-            }
-            captured_vk_ = static_cast<UINT>(vk);
-            is_capturing_ = false;
-            ReleaseCapture();
-            UpdateHotkeyDisplay();
-            break;
-    }
-}
 
 bool HotkeySettingsDialog::ValidateAndSave() {
     if (captured_modifiers_ == 0 || captured_vk_ == 0) {
@@ -274,16 +297,17 @@ INT_PTR HotkeySettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
             }
             break;
         }
-        case WM_KEYDOWN:
-        case WM_SYSKEYDOWN:
-            OnKeyDown(w_param);
-            return TRUE;
         case WM_DPICHANGED:
             DestroyControls();
             BuildControls();
             UpdateHotkeyDisplay();
             return 0;
         case WM_DESTROY:
+            if (keyboard_hook_) {
+                UnhookWindowsHookEx(keyboard_hook_);
+                keyboard_hook_ = nullptr;
+                g_active_dialog = nullptr;
+            }
             DestroyControls();
             return 0;
         default:
