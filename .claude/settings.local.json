@@ -13,7 +13,8 @@
       "Bash(net session *)",
       "Bash(cmd.exe /c \"C:\\\\Dev\\\\FFE\\\\George\\\\voicestick\\\\desktop\\\\windows\\\\build.bat > C:\\\\Dev\\\\FFE\\\\George\\\\voicestick\\\\desktop\\\\windows\\\\build.log 2>&1\")",
       "Bash(echo \"Exit code: $?\")",
-      "Bash(powershell.exe -Command \"& { . 'C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2022\\\\BuildTools\\\\Common7\\\\Tools\\\\Launch-VsDevShell.ps1' -Arch amd64; cmake -S . -B build-x64 -G Ninja; ninja -C build-x64 }\")"
+      "Bash(powershell.exe -Command \"& { . 'C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2022\\\\BuildTools\\\\Common7\\\\Tools\\\\Launch-VsDevShell.ps1' -Arch amd64; cmake -S . -B build-x64 -G Ninja; ninja -C build-x64 }\")",
+      "Bash(cmd.exe *)"
     ]
   }
 }
