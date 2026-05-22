@@ -56,11 +56,9 @@ struct HotkeyPreset {
 };
 
 constexpr HotkeyPreset kHotkeyPresets[] = {
-    {"Ctrl+Alt+V", L"Ctrl + Alt + V"},
-    {"Ctrl+Shift+V", L"Ctrl + Shift + V"},
-    {"Alt+V", L"Alt + V"},
-    {"Win+Alt+V", L"Win + Alt + V"},
-    {"Ctrl+Alt+Space", L"Ctrl + Alt + Space"},
+    {"Alt+X", L"Alt + X"},
+    {"Win+Alt+X", L"Win + Alt + X"},
+    {"Ctrl+Alt+X", L"Ctrl + Alt + X"},
 };
 
 #ifndef VOICESTICK_APPCAST_URL
@@ -836,9 +834,13 @@ void Win32App::ShowTrayMenu() {
                 kMenuHotkeyEnabled,
                 L"Enable Global Hotkey");
     AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
+    bool is_custom_hotkey = true;
     for (std::size_t i = 0; i < sizeof(kHotkeyPresets) / sizeof(kHotkeyPresets[0]); ++i) {
         const auto& preset = kHotkeyPresets[i];
         const auto checked = config_.global_hotkey_enabled && config_.global_hotkey == preset.name;
+        if (config_.global_hotkey == preset.name) {
+            is_custom_hotkey = false;
+        }
         AppendMenuW(
             hotkey_menu,
             MF_STRING | (checked ? MF_CHECKED : 0),
@@ -846,7 +848,15 @@ void Win32App::ShowTrayMenu() {
             preset.display_name);
     }
     AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hotkey_menu, MF_STRING, kMenuHotkeyCustom, L"自定义快捷键...");
+    std::wstring custom_menu_text = L"自定义快捷键...";
+    UINT custom_menu_flags = MF_STRING;
+    if (is_custom_hotkey && !config_.global_hotkey.empty()) {
+        custom_menu_text = L"自定义: " + Utf16FromUtf8(config_.global_hotkey);
+        if (config_.global_hotkey_enabled) {
+            custom_menu_flags |= MF_CHECKED;
+        }
+    }
+    AppendMenuW(hotkey_menu, custom_menu_flags, kMenuHotkeyCustom, custom_menu_text.c_str());
     if (global_hotkey_ && !global_hotkey_->IsRegistered()) {
         AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, L"⚠ Hotkey registration failed (conflict)");
