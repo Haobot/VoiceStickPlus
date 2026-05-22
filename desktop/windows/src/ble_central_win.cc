@@ -351,6 +351,11 @@ void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
     }
 
     for (auto& session : targets) {
+        LogBleLine("send remote_button_" + std::string(action_name) +
+                   " dev=VS-" + session->device.id +
+                   " button=" + button +
+                   " request_id=" + std::to_string(request_id) +
+                   " payload_len=" + std::to_string(payload.size()));
         WriteControlPayloadAsync(std::move(session), payload);
     }
 }
