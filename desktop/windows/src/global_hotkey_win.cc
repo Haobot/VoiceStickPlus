@@ -138,6 +138,11 @@ GlobalHotkeyWin::~GlobalHotkeyWin() {
 bool GlobalHotkeyWin::Register(const std::string& hotkey_string) {
     Unregister();
 
+    if (hotkey_string.empty()) {
+        LogHotkey("global hotkey disabled");
+        return false;
+    }
+
     auto binding = ParseHotkeyString(hotkey_string);
     if (!binding) {
         LogHotkey("failed to parse hotkey string: " + hotkey_string);
