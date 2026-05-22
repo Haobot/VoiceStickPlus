@@ -193,6 +193,7 @@ int Win32App::Run() {
         LogLine("Initializing global hotkey");
         global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
         global_hotkey_->on_pressed = [this] {
+            ShowNotification("VoiceStick 热键已触发", "正在启动录音，松开热键结束识别");
             if (coordinator_) coordinator_->HandleGlobalHotkeyPressed();
         };
         global_hotkey_->on_released = [this] {
@@ -201,6 +202,7 @@ int Win32App::Run() {
         if (config_.global_hotkey_enabled) {
             if (!global_hotkey_->Register(config_.global_hotkey)) {
                 LogLine("Global hotkey registration failed, hotkey conflict or invalid");
+                ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请在菜单中更换其他热键");
                 SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
             } else {
                 LogLine("Global hotkey registered: " + config_.global_hotkey);
@@ -875,6 +877,7 @@ void Win32App::SaveInputOptions() {
                     SetStatus("Global hotkey: " + config_.global_hotkey);
                 } else {
                     LogLine("Global hotkey registration failed: " + config_.global_hotkey);
+                    ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请更换其他热键");
                     SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
                 }
             } else {

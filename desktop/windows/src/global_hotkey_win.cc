@@ -52,10 +52,10 @@ std::optional<UINT> ParseSingleKey(const std::string& key) {
     if (lower.size() == 1) {
         char ch = static_cast<char>(std::toupper(lower[0]));
         if (ch >= 'A' && ch <= 'Z') {
-            return VkKeyScanA(ch) & 0xFF;
+            return static_cast<UINT>(ch);
         }
         if (ch >= '0' && ch <= '9') {
-            return VkKeyScanA(ch) & 0xFF;
+            return static_cast<UINT>(ch);
         }
     }
 
@@ -208,10 +208,13 @@ bool GlobalHotkeyWin::IsBindingStillDown() const {
 
 bool GlobalHotkeyWin::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
     if (message == WM_HOTKEY) {
-        if (w_param == hotkey_id_ && registered_ && !is_down_) {
-            is_down_ = true;
-            if (on_pressed) on_pressed();
-            StartReleasePolling();
+        if (w_param == hotkey_id_ && registered_) {
+            if (!is_down_) {
+                is_down_ = true;
+                LogHotkey("hotkey pressed: " + binding_.display_text);
+                if (on_pressed) on_pressed();
+                StartReleasePolling();
+            }
         }
         return true;
     }
