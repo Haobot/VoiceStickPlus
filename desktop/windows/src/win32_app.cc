@@ -878,7 +878,9 @@ void Win32App::SaveInputOptions() {
                     SetStatus("Global hotkey: " + config_.global_hotkey);
                 } else {
                     LogLine("Global hotkey registration failed: " + config_.global_hotkey);
-                    ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请更换其他热键");
+                    if (config_.debug_audio_cache) {
+                        ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请更换其他热键");
+                    }
                     SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
                 }
             } else {
