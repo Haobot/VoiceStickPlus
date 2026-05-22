@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-本文件为 Claude Code (claude.ai/code) 提供在本仓库工作时的指导。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+本文件为 Claude Code 在本仓库工作时提供指导，工作语言为简体中文。
 
 ## 项目概述
 
@@ -62,7 +64,19 @@ SPARKLE_PUBLIC_ED_KEY="..." ../../scripts/build-macos.sh --release
 ```
 
 ### Windows 桌面端（CMake + Ninja，MSVC 2022 x64）
-在仓库根目录的 PowerShell 中执行（需安装 VS 2022）：
+仓库根目录提供了便捷构建脚本，无需手动配置环境：
+```bat
+:: 一键构建并签名打包 MSI 安装包（需签名证书）
+build_native.bat
+
+:: 仅构建调试版本
+build_win.bat
+
+:: 运行全部测试
+test.bat
+```
+
+手动构建（在仓库根目录的 PowerShell 中执行，需安装 VS 2022）：
 ```powershell
 # 配置并构建
 cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -S desktop\windows -B desktop\windows\build-x64 -G Ninja -DCMAKE_MAKE_PROGRAM="C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"'
@@ -78,6 +92,12 @@ cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary
 desktop\windows\build-x64\VoiceStick.exe
 ```
 
+发布打包（签名 MSI 安装包，用于 WinSparkle 自动更新）：
+```bat
+scripts\build-msi.bat
+```
+生成的 MSI 需上传到对应 GitHub Release，然后手动运行 `Deploy Website to GitHub Pages` 工作流更新更新源。
+
 ### 网站（Vite + Vue 3）
 ```sh
 cd website
@@ -86,6 +106,33 @@ npm run dev        # 本地开发服务器
 npm run build      # 生产构建
 npm run preview    # 预览生产构建
 ```
+
+## 核心交互模型
+
+桌面端是唯一的状态持有者，固件仅上报原始按键事件并渲染收到的 `ui_state`。核心按键行为：
+
+| 状态 | 主键（正面） | 侧键 |
+|---|---|---|
+| 连接空闲 | 按住开始录音 | 恢复上一次输入确认 |
+| 录音中 | 释放结束录音 | 不取消当前录音 |
+| 识别中 | 忽略新录音 | 取消正在进行的识别 |
+| 确认倒计时中 | 暂停自动粘贴，进入手动确认 | 取消待粘贴文本 |
+| 手动确认中 | 确认粘贴 | 取消待粘贴文本 |
+
+支持两种交互模式：`hold_to_talk`（按住说话，默认）和 `click_to_talk`（点击切换录音状态）。
+文本输出支持两种模式：`focused_app`（粘贴到当前聚焦窗口，默认自动按回车）、`subtitle`（仅显示字幕）；还支持通过 LLM 对识别结果进行翻译，可按设备单独配置。
+
+## 配置文件
+
+示例配置位于 `desktop/macos/Config/config.example.toml`，配置路径：
+- macOS：`~/Library/Application Support/VoiceStick/config.toml`
+- Windows：`%APPDATA%\VoiceStick\config.toml`
+
+常用配置项：
+- `asr_provider`: `volcengine`（火山引擎直连）或 `voicestick_cloud`（云端中转）
+- `auto_enter`: 粘贴后是否自动按回车（默认 true）
+- `debug_audio_cache`: 是否保存调试音频（Ogg Opus 格式）
+- `interaction_mode`: 交互模式 `hold_to_talk` / `click_to_talk`
 
 ## 重要约定与注意事项
 
