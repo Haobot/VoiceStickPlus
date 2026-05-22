@@ -46,6 +46,7 @@ constexpr UINT kMenuTranslationEnd = 5799;
 constexpr UINT kMenuOptionsPerDevice = 6;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
+constexpr UINT kMenuHotkeyCustom = 5802;
 constexpr UINT kMenuHotkeyBase = 5810;
 constexpr UINT kMenuHotkeyEnd = 5899;
 
@@ -518,6 +519,17 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 SetStatus("Global hotkey disabled");
             }
             return 0;
+        case kMenuHotkeyCustom: {
+            auto dialog = std::make_unique<HotkeySettingsDialog>(instance_, hwnd_);
+            dialog->on_hotkey_confirmed = [this](const std::string& hotkey) {
+                config_.global_hotkey = hotkey;
+                config_.global_hotkey_enabled = true;
+                SaveInputOptions();
+                SetStatus("Global hotkey set to: " + hotkey);
+            };
+            dialog->Show();
+            return 0;
+        }
         default: {
             UINT cmd = LOWORD(w_param);
             if (cmd >= kMenuHotkeyBase && cmd <= kMenuHotkeyEnd) {
@@ -833,6 +845,8 @@ void Win32App::ShowTrayMenu() {
             kMenuHotkeyBase + static_cast<UINT>(i),
             preset.display_name);
     }
+    AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hotkey_menu, MF_STRING, kMenuHotkeyCustom, L"自定义快捷键...");
     if (global_hotkey_ && !global_hotkey_->IsRegistered()) {
         AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, L"⚠ Hotkey registration failed (conflict)");

@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "firmware_update_dialog.h"
 #include "global_hotkey_win.h"
+#include "hotkey_settings_dialog.h"
 #include "input_injector_win.h"
 #include "onboarding_dialog.h"
 #include "overlay_window.h"
