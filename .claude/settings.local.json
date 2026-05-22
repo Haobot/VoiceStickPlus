@@ -24,7 +24,10 @@
       "Bash(curl -sL https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip -o wix3.zip)",
       "Bash(unzip -q wix3.zip -d wix3)",
       "Bash(./build_win.bat)",
-      "Bash(tasklist)"
+      "Bash(tasklist)",
+      "Bash(./scripts/build-msi.bat)",
+      "Bash(C:/Program Files \\(x86\\)/Microsoft Visual Studio/Installer/vswhere.exe *)",
+      "Bash(wix build *)"
     ]
   }
 }
