@@ -35,6 +35,27 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo === Build and tests SUCCEEDED ===
+echo === Building MSI installer ===
+dotnet tool restore
+wix build ^
+  -ext WixToolset.UI.wixext ^
+  -ext WixToolset.Util.wixext ^
+  -arch x64 ^
+  -d ProductVersion=0.3.4 ^
+  -d ProjectDir=C:\Dev\FFE\George\voicestick ^
+  -d BuildDir=C:\Dev\FFE\George\voicestick\desktop\windows\build-x64 ^
+  -culture zh-CN ^
+  -loc installer\zh-CN.wxl ^
+  -o build-x64\VoiceStick-0.3.4-x64.msi ^
+  installer\VoiceStick.wxs
+if errorlevel 1 (
+    echo MSI build FAILED
+    exit /b 1
+)
+
+echo === Build, tests, and MSI installer SUCCEEDED ===
+echo Output:
+echo   Executable: desktop\windows\build-x64\VoiceStick.exe
+echo   Installer:  desktop\windows\build-x64\VoiceStick-0.3.4-x64.msi
 endlocal
 exit /b 0
