@@ -415,7 +415,8 @@ static uint32_t start_recording(void)
         ESP_LOGE(TAG, "audio start failed: %s", esp_err_to_name(err));
         release_recording_pm_locks();
         char message[64];
-        snprintf(message, sizeof(message), "Audio start: %s", esp_err_to_name(err));
+        snprintf(message, sizeof(message), "Audio %s: %s",
+                 audio_pipeline_last_error_step(), esp_err_to_name(err));
         ui_status_set_error(message);
         return 0;
     }

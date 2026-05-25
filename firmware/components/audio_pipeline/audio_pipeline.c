@@ -62,6 +62,7 @@ static const audio_codec_data_if_t *s_data_if;
 static const audio_codec_gpio_if_t *s_gpio_if;
 static const audio_codec_if_t *s_codec_if;
 static OpusEncoder *s_opus_encoder;
+static const char *s_last_error_step = "none";
 
 static bool tasks_exited(void)
 {
@@ -85,6 +86,8 @@ static esp_err_t wait_for_tasks_to_exit(TickType_t timeout_ticks)
 static esp_err_t init_i2s(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    chan_cfg.dma_desc_num = 4;
+    chan_cfg.dma_frame_num = 120;
     chan_cfg.auto_clear = true;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx_handle, &s_rx_handle),
                         TAG, "create i2s channel");
@@ -424,20 +427,32 @@ esp_err_t audio_pipeline_init(void)
 
 esp_err_t audio_pipeline_start(uint32_t session_id)
 {
+    s_last_error_step = "none";
     ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
     if (atomic_load(&s_running)) {
         return ESP_OK;
     }
-    ESP_RETURN_ON_ERROR(wait_for_tasks_to_exit(pdMS_TO_TICKS(TASK_EXIT_WAIT_MS)),
-                        TAG, "wait previous session exit");
+    s_last_error_step = "wait";
+    esp_err_t err = wait_for_tasks_to_exit(pdMS_TO_TICKS(TASK_EXIT_WAIT_MS));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wait previous session exit: %s", esp_err_to_name(err));
+        return err;
+    }
 
-    ESP_RETURN_ON_ERROR(init_i2s(), TAG, "i2s init");
-    esp_err_t err = init_codec();
+    s_last_error_step = "i2s";
+    err = init_i2s();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s init: %s", esp_err_to_name(err));
+        return err;
+    }
+    s_last_error_step = "codec";
+    err = init_codec();
     if (err != ESP_OK) {
         deinit_i2s();
         ESP_LOGE(TAG, "codec init: %s", esp_err_to_name(err));
         return err;
     }
+    s_last_error_step = "opus";
     err = init_opus();
     if (err != ESP_OK) {
         deinit_codec();
@@ -454,6 +469,7 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     opus_encoder_ctl(s_opus_encoder, OPUS_RESET_STATE);
     atomic_store(&s_running, true);
 
+    s_last_error_step = "tx_task";
     BaseType_t ok = xTaskCreatePinnedToCore(tx_task, "audio_tx", 4096,
                                             NULL, 6, &s_tx_task, 0);
     if (ok != pdPASS) {
@@ -463,7 +479,8 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         return ESP_ERR_NO_MEM;
     }
 
-    ok = xTaskCreatePinnedToCore(audio_task, "audio_pipeline", 32768,
+    s_last_error_step = "audio_task";
+    ok = xTaskCreatePinnedToCore(audio_task, "audio_pipeline", 24576,
                                  NULL, 5, &s_audio_task, 1);
     if (ok != pdPASS) {
         atomic_store(&s_running, false);
@@ -479,8 +496,14 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         /* tx_task cleans up session resources on exit */
         return ESP_ERR_NO_MEM;
     }
+    s_last_error_step = "none";
     ESP_LOGI(TAG, "start session %" PRIu32, session_id);
     return ESP_OK;
+}
+
+const char *audio_pipeline_last_error_step(void)
+{
+    return s_last_error_step;
 }
 
 esp_err_t audio_pipeline_stop(void)
