@@ -27,6 +27,7 @@ Voice Stick 将 M5Stack StickS3 (ESP32-S3) 改造为桌面端蓝牙按键语音�
      - `desktop/macos/` — Swift/SwiftPM，目标 macOS 12+，使用 CoreBluetooth、Sparkle 自动更新
      - `desktop/windows/` — C++20/Win32/C++/WinRT，目标 Windows 10 1903+，使用 WinSparkle 自动更新
      - `desktop/linux/` — 占位工作目录
+   - Windows 端通过 `voicestick_core` 复用配置解析、BLE 协议、Ogg Opus 封装、ASR 帧格式、LLM 翻译客户端、调试音频缓存和协调器状态机；Win32 外壳只负责托盘、窗口、BLE、剪贴板/按键注入与更新 UI。
 
 3. **`website/`** — Vue 3 + Vite 站点，托管浏览器端 USB 固件烧录工具、Sparkle/WinSparkle 用的 appcast XML 更新源、落地页，通过 GitHub Pages 发布
 
@@ -88,6 +89,9 @@ cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary
 # 运行单个测试（按名称正则过滤）
 cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir desktop\windows\build-x64 --output-on-failure -R <测试名称正则>'
 
+# 当前 Windows 测试目标名
+cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir desktop\windows\build-x64 --output-on-failure -R voicestick_windows_tests'
+
 # 运行
 desktop\windows\build-x64\VoiceStick.exe
 ```
@@ -106,6 +110,7 @@ npm run dev        # 本地开发服务器
 npm run build      # 生产构建
 npm run preview    # 预览生产构建
 ```
+`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。
 
 ## 核心交互模型
 
@@ -142,6 +147,7 @@ npm run preview    # 预览生产构建
   - macOS：`~/Library/Application Support/VoiceStick/config.toml`
   - Windows：`%APPDATA%\VoiceStick\config.toml`
 - **发布流程：** 推送与 `./VERSION` 匹配的 `v<版本号>` 标签。GitHub Actions 会构建 macOS 应用和固件，将固件 OTA/清单上传至阿里云 OSS，将产物发布到 GitHub Releases，并部署网站/appcast 到 GitHub Pages。签名后的 Windows MSI 需从本地签名机单独上传，然后重新运行 `Deploy Website to GitHub Pages` 工作流以收录 MSI 更新条目。详见 `docs/release.md`。
-- **测试：** 仅 Windows 桌面端存在 CTest 测试套件（`desktop/windows/tests/`）。macOS Swift 与固件目前无专用测试套件。仓库内未提交 Lint 配置。
+- **测试：** 仅 Windows 桌面端存在 CTest 测试套件（`desktop/windows/tests/`），当前测试可执行文件/CTest 名称为 `voicestick_windows_tests`。macOS Swift、固件与网站目前无专用测试套件；仓库内未提交 Lint 配置。
+- **Windows 构建目录：** 使用 `desktop/windows/build-x64`。如果旧的 `desktop/windows/build` 曾用错误的 Visual Studio 环境配置，可删除或忽略；混用 x86 CMake 缓存与 x64 SDK 库会导致链接错误。
 - **Windows 代码风格：** 遵循 Google C++ 命名规范：`snake_case` 文件名/变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
 - **固件引脚定义：** `firmware/components/stick_s3_board/include/stick_s3_board.h`
