@@ -434,12 +434,12 @@ static uint32_t stop_recording(void)
     }
 
     const uint32_t session_id = audio_pipeline_session_id();
+    play_prompt_tone(440);
     s_recording = false;
     audio_pipeline_stop();
     release_recording_pm_locks();
     restart_display_dim_timer();
     restart_deep_sleep_timer();
-    play_prompt_tone(440);
     return session_id;
 }
 
