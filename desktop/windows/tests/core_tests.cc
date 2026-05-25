@@ -667,6 +667,7 @@ void TestCoordinatorMainFinalPastesWithoutConfirmation() {
     assert(input.pasted_enter);
     assert(ui.final_countdowns.empty());
     assert(ui.paused_finals.empty());
+    assert(ui.hide_overlay_count == 1);
     assert(HasUiState(*ble_ptr, "ready", "5A74"));
 }
 
