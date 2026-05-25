@@ -1048,7 +1048,7 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& text) {
     const bool should_press_enter = config_.auto_enter;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
-    EnterReady("paste_complete", false);
+    EnterReady("paste_complete");
     input_injector_->Paste(text, should_press_enter);
 }
 
