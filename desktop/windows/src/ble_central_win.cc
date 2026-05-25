@@ -742,21 +742,13 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         LogBleLine("connecting VS-" + device_id + " address=" + FormatBluetoothAddress(bluetooth_address) +
                    " kind=" + AddressKindName(address_kind));
 
-        // Proactively remove any stale Windows pairing/bond before connecting.
-        // ESP32/NimBLE peripherals lose their bond when reset, but Windows
-        // caches the old LTK and tries to encrypt with it, causing
-        // BLE_HS_EENCRYPT_KEY_SZ (status=26) on the device and
-        // Unreachable GATT status on Windows.
-        {
-            auto probe_device = co_await open_device(address_type);
-            if (probe_device) {
-                if (co_await TryUnpairAsync(probe_device.DeviceId())) {
-                    LogBleLine("cleared stale Windows pairing for VS-" + device_id);
-                    co_await WaitMs(std::chrono::milliseconds(500));
-                }
-                probe_device.Close();
-            }
-        }
+        // Skip the pre-emptive unpair that was previously done here.
+        // Now that the firmware enables NimBLE bonding, the Windows bond
+        // (LTK) should be kept so that reconnection after a Stick or host
+        // reboot can skip the pairing exchange and establish encryption
+        // directly.  If the bond is stale (e.g. firmware was reflashed
+        // without preserving NVS), the service-discovery retry loop below
+        // will detect the failure and call TryUnpairAsync as a fallback.
 
         session->ble_device = co_await open_device(address_type);
         if (!session->ble_device) {
