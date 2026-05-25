@@ -43,6 +43,7 @@ static char s_device_name[8] = VOICE_BLE_DEVICE_NAME_PREFIX "-0000";
 static voice_ble_connection_cb_t s_connection_cb;
 static voice_ble_control_cb_t s_control_cb;
 static voice_ble_ota_cb_t s_ota_cb;
+static uint32_t s_adv_started_ms;
 
 typedef enum {
     CONN_ITVL_NONE,
@@ -465,7 +466,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_audio_subscribed = false;
             s_state_subscribed = false;
             s_conn_handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "connected handle=%u", s_conn_handle);
+            uint32_t connected_ms = esp_log_timestamp();
+            ESP_LOGI(TAG, "connected handle=%u ts=%" PRIu32 " since_adv=%" PRIu32 "ms",
+                     s_conn_handle, connected_ms, connected_ms - s_adv_started_ms);
             stop_advertising();
             // Some BLE centrals (notably WinRT on Windows) do not always
             // initiate the ATT MTU exchange themselves. Without it the MTU
@@ -609,8 +612,8 @@ static void start_advertising(void)
     memset(&params, 0, sizeof(params));
     params.conn_mode = BLE_GAP_CONN_MODE_UND;
     params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    params.itvl_min = BLE_GAP_ADV_ITVL_MS(60);
-    params.itvl_max = BLE_GAP_ADV_ITVL_MS(120);
+    params.itvl_min = BLE_GAP_ADV_ITVL_MS(30);
+    params.itvl_max = BLE_GAP_ADV_ITVL_MS(60);
 
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event_cb, NULL);
     if (rc != 0) {
@@ -621,7 +624,8 @@ static void start_advertising(void)
         return;
     }
 
-    ESP_LOGI(TAG, "advertising as %s", s_device_name);
+    s_adv_started_ms = esp_log_timestamp();
+    ESP_LOGI(TAG, "advertising as %s itvl=30-60ms ts=%" PRIu32, s_device_name, s_adv_started_ms);
 }
 
 static void stop_advertising(void)
