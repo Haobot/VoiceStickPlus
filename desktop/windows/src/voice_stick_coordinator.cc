@@ -1426,9 +1426,16 @@ void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
 
     auto target_device = ResolveHotkeyTargetDevice();
     if (!target_device) {
-        ui_->SetStatus("Hotkey: no VoiceStick connected");
-        if (config_.debug_audio_cache) {
-            ui_->ShowNotification("热键触发失败", "未检测到已连接的VoiceStick设备");
+        if (paired_device_ids_.empty()) {
+            ui_->SetStatus("Hotkey: pair a VoiceStick first");
+            if (config_.debug_audio_cache) {
+                ui_->ShowNotification("热键触发失败", "请先配对 VoiceStick 设备");
+            }
+        } else {
+            ui_->SetStatus("Hotkey: VoiceStick not connected; press the main button to wake it");
+            if (config_.debug_audio_cache) {
+                ui_->ShowNotification("热键触发失败", "设备可能已休眠，请按主键唤醒后重试。");
+            }
         }
         LogApp("hotkey pressed but no connected device");
         return;
