@@ -480,7 +480,7 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     }
 
     s_last_error_step = "audio_task";
-    ok = xTaskCreatePinnedToCore(audio_task, "audio_pipeline", 24576,
+    ok = xTaskCreatePinnedToCore(audio_task, "audio_pipeline", 32768,
                                  NULL, 5, &s_audio_task, 1);
     if (ok != pdPASS) {
         atomic_store(&s_running, false);

@@ -403,6 +403,7 @@ static uint32_t start_recording(void)
     }
 
     const uint32_t session_id = s_session_id++;
+    play_prompt_tone(880);
     esp_err_t err = acquire_recording_pm_locks();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "acquire recording pm locks failed: %s", esp_err_to_name(err));
@@ -425,7 +426,6 @@ static uint32_t start_recording(void)
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
     restart_deep_sleep_timer();
-    play_prompt_tone(880);
     ui_status_set_recording(session_id);
     return session_id;
 }
