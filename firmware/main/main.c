@@ -148,6 +148,12 @@ static bool is_external_powered(void)
     return s_battery_charging || s_usb_powered;
 }
 
+static bool deep_sleep_allowed_now(void)
+{
+    return !s_recording && !s_ota_updating && !voice_ble_ota_is_active() &&
+           !voice_ble_is_connected() && !is_external_powered();
+}
+
 static esp_err_t init_power_management(void)
 {
     const esp_pm_config_t pm_config = {
@@ -238,13 +244,17 @@ static void restart_deep_sleep_timer(void)
     }
 
     (void)esp_timer_stop(s_deep_sleep_timer);
-    if (!s_recording && !s_ota_updating && !is_external_powered()) {
+    if (deep_sleep_allowed_now()) {
         esp_err_t err = esp_timer_start_once(s_deep_sleep_timer, DEEP_SLEEP_TIMEOUT_US);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "start deep sleep timer failed: %s", esp_err_to_name(err));
         }
+    } else if (voice_ble_is_connected()) {
+        ESP_LOGD(TAG, "deep sleep timer paused while BLE is connected");
     } else if (is_external_powered()) {
         ESP_LOGD(TAG, "deep sleep timer paused while external power is present");
+    } else if (s_recording || s_ota_updating || voice_ble_ota_is_active()) {
+        ESP_LOGD(TAG, "deep sleep timer paused while recording or OTA is active");
     }
 }
 
@@ -273,6 +283,12 @@ static void stop_host_response_timer(void)
 static void enter_deep_sleep(void)
 {
     if (s_recording || s_ota_updating || voice_ble_ota_is_active()) {
+        restart_deep_sleep_timer();
+        return;
+    }
+
+    if (voice_ble_is_connected()) {
+        ESP_LOGI(TAG, "skip deep sleep while BLE is connected");
         restart_deep_sleep_timer();
         return;
     }
@@ -788,6 +804,8 @@ static void app_event_task(void *arg)
             release_recording_pm_locks();
             release_ota_pm_locks();
             ui_status_set_pairing(voice_ble_device_name());
+            restart_display_dim_timer();
+            restart_deep_sleep_timer();
             break;
         case APP_EVENT_POWER_IRQ:
             gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);

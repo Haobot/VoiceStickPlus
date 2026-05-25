@@ -471,6 +471,48 @@ void TestFirmwareManifestParsingAndVersionCompare() {
     assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
 }
 
+void TestCoordinatorHotkeyWithoutConnectionShowsWakeHint() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.debug_audio_cache = true;
+    config.paired_device_ids.push_back("5A74");
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    coordinator.HandleGlobalHotkeyPressed();
+
+    assert(ble_ptr->sent_remote_buttons.empty());
+    assert(!ui.statuses.empty());
+    assert(ui.statuses.back() == "Hotkey: VoiceStick not connected; press the main button to wake it");
+    assert(!ui.notifications.empty());
+    assert(ui.notifications.back().find("按主键唤醒") != std::string::npos);
+}
+
+void TestCoordinatorHotkeyWithConnectionSendsRemoteButton() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids.push_back("5A74");
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.HandleGlobalHotkeyPressed();
+
+    assert(ble_ptr->sent_remote_buttons.size() == 1);
+    assert(ble_ptr->sent_remote_buttons.back().action == RemoteButtonAction::kDown);
+    assert(ble_ptr->sent_remote_buttons.back().button == "primary");
+    assert(ble_ptr->sent_remote_buttons.back().device_id == std::optional<std::string>("5A74"));
+}
+
 void TestCoordinatorCancelsShortPrimaryPress() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -854,6 +896,8 @@ int main() {
     TestAsrProtocol();
     TestAppConfig();
     TestFirmwareManifestParsingAndVersionCompare();
+    TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
+    TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();
