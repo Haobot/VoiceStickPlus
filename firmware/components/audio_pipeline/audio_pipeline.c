@@ -1,6 +1,7 @@
 #include "audio_pipeline.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -24,6 +25,8 @@ static const char *TAG = "audio_pipeline";
 #define AUDIO_CHANNELS 1
 #define AUDIO_FRAME_MS 60
 #define AUDIO_FRAME_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)
+#define TONE_CHUNK_SAMPLES 256
+#define TONE_CHANNELS 2
 #define OPUS_BITRATE 20000
 #define OPUS_MAX_PACKET_SIZE 220
 #define OPUS_COMPLEXITY 1
@@ -52,6 +55,7 @@ static QueueHandle_t s_tx_queue;
 
 /* Per-session resources: created on start, destroyed on stop */
 static i2s_chan_handle_t s_rx_handle;
+static i2s_chan_handle_t s_tx_handle;
 static esp_codec_dev_handle_t s_codec;
 static const audio_codec_ctrl_if_t *s_ctrl_if;
 static const audio_codec_data_if_t *s_data_if;
@@ -82,13 +86,13 @@ static esp_err_t init_i2s(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, NULL, &s_rx_handle),
+    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx_handle, &s_rx_handle),
                         TAG, "create i2s channel");
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                        I2S_SLOT_MODE_MONO),
+                                                        I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = STICK_S3_PIN_ES8311_MCLK,
             .bclk = STICK_S3_PIN_ES8311_BCLK,
@@ -106,7 +110,10 @@ static esp_err_t init_i2s(void)
 
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_rx_handle, &std_cfg),
                         TAG, "init i2s rx");
+    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx_handle, &std_cfg),
+                        TAG, "init i2s tx");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx_handle), TAG, "enable i2s rx");
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_handle), TAG, "enable i2s tx");
     return ESP_OK;
 }
 
@@ -126,7 +133,7 @@ static esp_err_t init_codec(void)
     audio_codec_i2s_cfg_t i2s_cfg = {
         .port = I2S_NUM_1,
         .rx_handle = s_rx_handle,
-        .tx_handle = NULL,
+        .tx_handle = s_tx_handle,
     };
     s_data_if = audio_codec_new_i2s_data(&i2s_cfg);
     ESP_RETURN_ON_FALSE(s_data_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec i2s data");
@@ -137,7 +144,7 @@ static esp_err_t init_codec(void)
     es8311_codec_cfg_t es8311_cfg = {
         .ctrl_if = s_ctrl_if,
         .gpio_if = s_gpio_if,
-        .codec_mode = ESP_CODEC_DEV_WORK_MODE_ADC,
+        .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
         .pa_pin = -1,
         .pa_reverted = false,
         .master_mode = false,
@@ -154,7 +161,7 @@ static esp_err_t init_codec(void)
     ESP_RETURN_ON_FALSE(s_codec_if != NULL, ESP_ERR_NO_MEM, TAG, "create es8311");
 
     esp_codec_dev_cfg_t dev_cfg = {
-        .dev_type = ESP_CODEC_DEV_TYPE_IN,
+        .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
         .codec_if = s_codec_if,
         .data_if = s_data_if,
     };
@@ -163,8 +170,8 @@ static esp_err_t init_codec(void)
 
     esp_codec_dev_sample_info_t sample_cfg = {
         .bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT,
-        .channel = 1,
-        .channel_mask = I2S_STD_SLOT_LEFT,
+        .channel = 2,
+        .channel_mask = 0x03,
         .sample_rate = AUDIO_SAMPLE_RATE,
         .mclk_multiple = 0,
     };
@@ -226,9 +233,12 @@ static void deinit_codec(void)
 static void deinit_i2s(void)
 {
     if (s_rx_handle) {
-        /* Channel is already disabled by codec close; just release it. */
         i2s_del_channel(s_rx_handle);
         s_rx_handle = NULL;
+    }
+    if (s_tx_handle) {
+        i2s_del_channel(s_tx_handle);
+        s_tx_handle = NULL;
     }
 }
 
@@ -243,16 +253,20 @@ static void deinit_session_resources(void)
 static void audio_task(void *arg)
 {
     (void)arg;
+    int16_t stereo[AUDIO_FRAME_SAMPLES * 2];
     int16_t mono[AUDIO_FRAME_SAMPLES];
     uint8_t opus_buf[OPUS_MAX_PACKET_SIZE];
     uint32_t enqueued = 0;
     uint32_t dropped = 0;
 
     while (atomic_load(&s_running)) {
-        esp_err_t err = esp_codec_dev_read(s_codec, mono, sizeof(mono));
+        esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "codec read failed: %s", esp_err_to_name(err));
             continue;
+        }
+        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
+            mono[i] = stereo[i * 2];
         }
 
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
@@ -471,6 +485,48 @@ esp_err_t audio_pipeline_stop(void)
         .len = 0,
     };
     xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
+    return ESP_OK;
+}
+
+esp_err_t audio_pipeline_play_tone(uint32_t frequency_hz, uint32_t duration_ms, uint8_t volume_percent)
+{
+    ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
+    const bool use_existing_session = atomic_load(&s_running) && s_codec != NULL;
+    if (!use_existing_session) {
+        ESP_RETURN_ON_ERROR(wait_for_tasks_to_exit(pdMS_TO_TICKS(TASK_EXIT_WAIT_MS)),
+                            TAG, "wait previous session exit before tone");
+        ESP_RETURN_ON_ERROR(init_i2s(), TAG, "tone i2s init");
+        esp_err_t err = init_codec();
+        if (err != ESP_OK) {
+            deinit_i2s();
+            return err;
+        }
+    }
+
+    esp_codec_dev_set_out_vol(s_codec, volume_percent);
+    const uint32_t total_samples = (AUDIO_SAMPLE_RATE * duration_ms) / 1000;
+    int16_t samples[TONE_CHUNK_SAMPLES * TONE_CHANNELS];
+    uint32_t generated = 0;
+    while (generated < total_samples) {
+        uint32_t chunk = total_samples - generated;
+        if (chunk > TONE_CHUNK_SAMPLES) chunk = TONE_CHUNK_SAMPLES;
+        for (uint32_t i = 0; i < chunk; ++i) {
+            const float phase = 2.0f * 3.14159265358979323846f *
+                                (float)frequency_hz * (float)(generated + i) /
+                                (float)AUDIO_SAMPLE_RATE;
+            const int16_t sample = (int16_t)(sinf(phase) * 12000.0f);
+            samples[i * 2] = sample;
+            samples[i * 2 + 1] = sample;
+        }
+        esp_err_t err = esp_codec_dev_write(s_codec, samples, chunk * TONE_CHANNELS * sizeof(samples[0]));
+        if (err != ESP_OK) {
+            if (!use_existing_session) deinit_session_resources();
+            return err;
+        }
+        generated += chunk;
+    }
+
+    if (!use_existing_session) deinit_session_resources();
     return ESP_OK;
 }
 

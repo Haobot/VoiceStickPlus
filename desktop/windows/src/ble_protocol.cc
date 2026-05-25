@@ -191,6 +191,12 @@ ByteVector BleProtocol::InteractionModePayload(std::string_view mode) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::PromptTonePayload(bool enabled) {
+    const auto json = std::string("{\"event\":\"prompt_tone\",\"enabled\":") +
+                      (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::RemoteButtonPayload(std::string_view action,
                                             std::string_view button,
                                             std::string_view source,

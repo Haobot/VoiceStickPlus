@@ -69,6 +69,7 @@ void VoiceStickCoordinator::Start() {
         RefreshFirmwareAvailability();
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
+        ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -146,6 +147,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     config_ = std::move(config);
     translator_ = LLMTranslationClient(config_);
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
+    ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
         asr_ = asr_factory_(config_);
@@ -1326,10 +1328,8 @@ void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {
 }
 
 void VoiceStickCoordinator::EnterPendingConfirmation(const std::string& text, std::string_view reason) {
-    pending_paste_state_ = {PendingPasteKind::kWaitingToPaste, text};
-    SetSessionState(SessionState::kPendingConfirmation, reason);
-    ui_->ShowFinalCountdown(text, active_device_id_, [this, text] { CommitPendingPaste(text); });
-    SendUiStateForActiveDevice("pending_confirmation", text);
+    (void)reason;
+    CompletePendingPaste(text);
 }
 
 void VoiceStickCoordinator::EnterPausedConfirmation(const std::string& text, std::string_view reason) {
