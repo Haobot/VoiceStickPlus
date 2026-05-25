@@ -11,6 +11,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -118,6 +119,7 @@ private:
     std::set<std::string> cancelled_device_ids_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
+    std::chrono::steady_clock::time_point scan_started_at_{};
 
 public:
     static constexpr UINT WM_BLE_DISPATCH = WM_APP + 100;
