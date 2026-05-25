@@ -171,7 +171,7 @@ static esp_err_t init_codec(void)
     esp_codec_dev_sample_info_t sample_cfg = {
         .bits_per_sample = I2S_DATA_BIT_WIDTH_16BIT,
         .channel = 2,
-        .channel_mask = 0x03,
+        .channel_mask = 0,
         .sample_rate = AUDIO_SAMPLE_RATE,
         .mclk_multiple = 0,
     };
@@ -233,11 +233,25 @@ static void deinit_codec(void)
 static void deinit_i2s(void)
 {
     if (s_rx_handle) {
-        i2s_del_channel(s_rx_handle);
+        esp_err_t err = i2s_channel_disable(s_rx_handle);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "disable i2s rx failed: %s", esp_err_to_name(err));
+        }
+        err = i2s_del_channel(s_rx_handle);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "delete i2s rx failed: %s", esp_err_to_name(err));
+        }
         s_rx_handle = NULL;
     }
     if (s_tx_handle) {
-        i2s_del_channel(s_tx_handle);
+        esp_err_t err = i2s_channel_disable(s_tx_handle);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "disable i2s tx failed: %s", esp_err_to_name(err));
+        }
+        err = i2s_del_channel(s_tx_handle);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "delete i2s tx failed: %s", esp_err_to_name(err));
+        }
         s_tx_handle = NULL;
     }
 }
