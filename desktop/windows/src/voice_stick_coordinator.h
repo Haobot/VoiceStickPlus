@@ -59,6 +59,8 @@ public:
                                const std::optional<std::string>& device_id) = 0;
     virtual void SendInteractionMode(InteractionMode mode,
                                      const std::optional<std::string>& device_id) = 0;
+    virtual void SendPromptToneEnabled(bool enabled,
+                                       const std::optional<std::string>& device_id) = 0;
     virtual void SendRemoteButton(RemoteButtonAction action,
                                   const std::string& button,
                                   const std::optional<std::string>& device_id,

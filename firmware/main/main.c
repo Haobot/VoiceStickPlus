@@ -28,8 +28,8 @@ static const char *TAG = "voice_stick";
 
 #define BATTERY_REFRESH_FALLBACK_MS (10 * 1000)
 #define DISPLAY_DIM_TIMEOUT_MS (30 * 1000)
-#define DISPLAY_ACTIVE_BRIGHTNESS 128
-#define DISPLAY_DIM_BRIGHTNESS 32
+#define DISPLAY_ACTIVE_BRIGHTNESS 64
+#define DISPLAY_DIM_BRIGHTNESS 16
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
 #define BATTERY_REFRESH_FALLBACK_US (BATTERY_REFRESH_FALLBACK_MS * 1000ULL)
 #define DEEP_SLEEP_TIMEOUT_MS (5 * 60 * 1000)
@@ -43,6 +43,7 @@ static bool s_ota_pm_locked;
 static bool s_battery_charging;
 static bool s_usb_powered;
 static int s_battery_level = 0;
+static bool s_prompt_tone_enabled = true;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_deep_sleep_timer;
@@ -152,6 +153,17 @@ static bool deep_sleep_allowed_now(void)
 {
     return !s_recording && !s_ota_updating && !voice_ble_ota_is_active() &&
            !voice_ble_is_connected() && !is_external_powered();
+}
+
+static void play_prompt_tone(uint32_t frequency_hz)
+{
+    if (!s_prompt_tone_enabled) {
+        return;
+    }
+    esp_err_t err = audio_pipeline_play_tone(frequency_hz, 80, 50);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "prompt tone failed: %s", esp_err_to_name(err));
+    }
 }
 
 static esp_err_t init_power_management(void)
@@ -410,6 +422,7 @@ static uint32_t start_recording(void)
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
     restart_deep_sleep_timer();
+    play_prompt_tone(880);
     ui_status_set_recording(session_id);
     return session_id;
 }
@@ -426,6 +439,7 @@ static uint32_t stop_recording(void)
     release_recording_pm_locks();
     restart_display_dim_timer();
     restart_deep_sleep_timer();
+    play_prompt_tone(440);
     return session_id;
 }
 
@@ -561,6 +575,7 @@ static void ble_control_cb(const char *json)
     const cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
     const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
     const cJSON *button = cJSON_GetObjectItemCaseSensitive(root, "button");
+    const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
     const cJSON *request_id_json = cJSON_GetObjectItemCaseSensitive(root, "request_id");
     uint32_t request_id = 0;
     if (cJSON_IsNumber(request_id_json)) {
@@ -578,6 +593,10 @@ static void ble_control_cb(const char *json)
         } else {
             ESP_LOGW(TAG, "unknown interaction_mode %s", mode->valuestring);
         }
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "prompt_tone") == 0 &&
+               cJSON_IsBool(enabled)) {
+        s_prompt_tone_enabled = cJSON_IsTrue(enabled);
+        ESP_LOGI(TAG, "prompt tone %s", s_prompt_tone_enabled ? "enabled" : "disabled");
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
                cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
         ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, request_id);

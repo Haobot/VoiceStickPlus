@@ -36,6 +36,8 @@ public:
                        const std::optional<std::string>& device_id) override;
     void SendInteractionMode(InteractionMode mode,
                              const std::optional<std::string>& device_id) override;
+    void SendPromptToneEnabled(bool enabled,
+                               const std::optional<std::string>& device_id) override;
     void SendRemoteButton(RemoteButtonAction action,
                           const std::string& button,
                           const std::optional<std::string>& device_id,

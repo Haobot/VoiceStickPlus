@@ -53,6 +53,10 @@ public:
                              const std::optional<std::string>& device_id) override {
         sent_interaction_modes.push_back(std::pair{mode, device_id});
     }
+    void SendPromptToneEnabled(bool enabled,
+                               const std::optional<std::string>& device_id) override {
+        sent_prompt_tones.push_back(std::pair{enabled, device_id});
+    }
     void SendRemoteButton(RemoteButtonAction action,
                           const std::string& button,
                           const std::optional<std::string>& device_id,
@@ -74,6 +78,7 @@ public:
     std::set<std::string> connected_device_ids;
     std::vector<SentUiState> sent_ui_states;
     std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_prompt_tones;
     std::vector<SentRemoteButton> sent_remote_buttons;
 };
 
@@ -291,6 +296,13 @@ void TestAudioFrameParsing() {
     assert(parsed->payload.size() == 3);
 }
 
+void TestBleControlPayloads() {
+    auto enabled = BleProtocol::PromptTonePayload(true);
+    auto disabled = BleProtocol::PromptTonePayload(false);
+    assert(std::string(enabled.begin(), enabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":true}");
+    assert(std::string(disabled.begin(), disabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":false}");
+}
+
 void TestStateParsing() {
     const std::string json = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
     ByteVector frame = {1, 0x10};
@@ -471,6 +483,32 @@ void TestFirmwareManifestParsingAndVersionCompare() {
     assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
 }
 
+void TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.prompt_tone_enabled = false;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    assert(!ble_ptr->sent_prompt_tones.empty());
+    assert(ble_ptr->sent_prompt_tones.back().first == false);
+    assert(!ble_ptr->sent_prompt_tones.back().second.has_value());
+
+    AppConfig updated = config;
+    updated.prompt_tone_enabled = true;
+    coordinator.UpdateConfig(updated);
+
+    assert(ble_ptr->sent_prompt_tones.back().first == true);
+    assert(!ble_ptr->sent_prompt_tones.back().second.has_value());
+}
+
 void TestCoordinatorHotkeyWithoutConnectionShowsWakeHint() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -608,7 +646,7 @@ void TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd() {
     assert(asr_ptr->last_chunk_was_final);
 }
 
-void TestCoordinatorPrimaryPausesPendingConfirmation() {
+void TestCoordinatorMainFinalPastesWithoutConfirmation() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -625,14 +663,11 @@ void TestCoordinatorPrimaryPausesPendingConfirmation() {
     ble_ptr->on_audio_frame("5A74", EmptyEndFrame(9, 2));
     asr_ptr->on_final("hello");
 
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary"));
-
-    assert(ui.final_countdowns.size() == 1);
-    assert(ui.final_countdowns.back() == "hello");
-    assert(ui.paused_finals.size() == 1);
-    assert(ui.paused_finals.back() == "hello");
-    assert(ble_ptr->sent_ui_states.back().state == "pending_confirmation");
-    assert(ble_ptr->sent_ui_states.back().text == "hello");
+    assert(input.pasted_text == "hello");
+    assert(input.pasted_enter);
+    assert(ui.final_countdowns.empty());
+    assert(ui.paused_finals.empty());
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
 }
 
 void TestCoordinatorOtherDeviceDuringRecordingGetsReady() {
@@ -891,18 +926,20 @@ void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
 int main() {
     TestDeviceIds();
     TestAudioFrameParsing();
+    TestBleControlPayloads();
     TestStateParsing();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
     TestFirmwareManifestParsingAndVersionCompare();
+    TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();
     TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd();
-    TestCoordinatorPrimaryPausesPendingConfirmation();
+    TestCoordinatorMainFinalPastesWithoutConfirmation();
     TestCoordinatorOtherDeviceDuringRecordingGetsReady();
     TestCoordinatorSubtitleOutputSkipsPaste();
     TestCoordinatorSubtitleFinalDoesNotBlockNextSession();

@@ -234,6 +234,7 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         llm_base_url_edit_ = nullptr;
         llm_api_key_edit_ = nullptr;
         llm_model_edit_ = nullptr;
+        prompt_tone_check_ = nullptr;
         debug_audio_check_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
@@ -296,6 +297,7 @@ void SettingsDialog::DestroyControls() {
     llm_base_url_edit_ = nullptr;
     llm_api_key_edit_ = nullptr;
     llm_model_edit_ = nullptr;
+    prompt_tone_check_ = nullptr;
     debug_audio_check_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
@@ -380,6 +382,13 @@ void SettingsDialog::BuildControls() {
                                           kIdLlmModelEdit, instance_));
     y += row_h + Dp(16);
 
+    remember_label(CreateLabel(hwnd_, L"Prompt:", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    prompt_tone_check_ = remember(CreateButton(hwnd_, L"Play recording start and end tones", ctrl_x, y,
+                                               ctrl_w, Dp(22), kIdPromptTone, instance_,
+                                               BS_AUTOCHECKBOX));
+    y += row_h + Dp(10);
+
     remember_label(CreateLabel(hwnd_, L"Debug:", Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_audio_check_ = remember(CreateButton(hwnd_, L"Save debug audio files", ctrl_x, y,
@@ -426,6 +435,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     SetWindowTextW(llm_api_key_edit_, Utf16(config_.llm_api_key).c_str());
     SetWindowTextW(llm_model_edit_, Utf16(config_.llm_model).c_str());
 
+    SendMessageW(prompt_tone_check_, BM_SETCHECK, config_.prompt_tone_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
@@ -457,6 +467,7 @@ void SettingsDialog::SaveSettings() {
         config_.resource_id = Utf8(resource_buf);
     }
 
+    config_.prompt_tone_enabled = SendMessageW(prompt_tone_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
     auto dir = GetWindowText(debug_dir_edit_);
