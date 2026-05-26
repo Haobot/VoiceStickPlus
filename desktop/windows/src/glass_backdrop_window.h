@@ -30,6 +30,7 @@ private:
     void ApplyRegion(const RECT& bounds);
     void PaintCarrierSurface();
     void PaintCachedSurface(const RECT& bounds);
+    int BlurRadius() const;
     COLORREF ThemeTint() const;
     void PaintFallback();
 
