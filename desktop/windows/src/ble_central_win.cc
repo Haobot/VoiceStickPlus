@@ -414,10 +414,6 @@ void BleCentralWin::UpdateFirmware(ByteVector image,
             return;
         }
         session = it->second;
-        if (!session->ota_rx_characteristic || !session->ota_state_characteristic) {
-            completion(false, "The connected firmware does not expose BLE OTA.");
-            return;
-        }
         if (image.size() > 3 * 1024 * 1024) {
             completion(false, "Firmware image is larger than the OTA partition.");
             return;
@@ -1063,8 +1059,6 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         auto audio_result = discover_characteristic(winrt::guid{BleProtocol::audio_uuid}, "audio_tx");
         auto state_result = discover_characteristic(winrt::guid{BleProtocol::state_uuid}, "state_tx");
         auto control_result = discover_characteristic(winrt::guid{BleProtocol::control_uuid}, "control_rx");
-        auto ota_rx_result = discover_characteristic(winrt::guid{BleProtocol::ota_rx_uuid}, "ota_rx");
-        auto ota_state_result = discover_characteristic(winrt::guid{BleProtocol::ota_state_uuid}, "ota_state");
         if (!audio_result || audio_result.Status() != GattCommunicationStatus::Success || audio_result.Characteristics().Size() == 0) {
             fail("audio_tx discovery failed: " + (audio_result ? GattStatusName(audio_result.Status()) : std::string("timeout")));
             co_return;
@@ -1081,26 +1075,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         session->audio_characteristic = audio_result.Characteristics().GetAt(0);
         session->state_characteristic = state_result.Characteristics().GetAt(0);
         session->control_characteristic = control_result.Characteristics().GetAt(0);
-        if (ota_rx_result && ota_rx_result.Status() == GattCommunicationStatus::Success &&
-            ota_rx_result.Characteristics().Size() > 0) {
-            session->ota_rx_characteristic = ota_rx_result.Characteristics().GetAt(0);
-        }
-        if (ota_state_result && ota_state_result.Status() == GattCommunicationStatus::Success &&
-            ota_state_result.Characteristics().Size() > 0) {
-            session->ota_state_characteristic = ota_state_result.Characteristics().GetAt(0);
-        }
         if (!HasNotify(session->audio_characteristic) || !HasNotify(session->state_characteristic) ||
             !HasWriteWithoutResponse(session->control_characteristic)) {
             fail("required GATT characteristic properties are missing");
             co_return;
-        }
-        if (session->ota_rx_characteristic &&
-            !HasWrite(session->ota_rx_characteristic) &&
-            !HasWriteWithoutResponse(session->ota_rx_characteristic)) {
-            session->ota_rx_characteristic = nullptr;
-        }
-        if (session->ota_state_characteristic && !HasNotify(session->ota_state_characteristic)) {
-            session->ota_state_characteristic = nullptr;
         }
 
         session->audio_value_changed_token = session->audio_characteristic.ValueChanged(
@@ -1132,21 +1110,6 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     if (on_state_event) on_state_event(device_id, e);
                 });
             });
-        if (session->ota_state_characteristic) {
-            session->ota_state_value_changed_token = session->ota_state_characteristic.ValueChanged(
-                [this, device_id](const GattCharacteristic&, const auto& args) {
-                    auto bytes = BytesFromBuffer(args.CharacteristicValue());
-                    auto event = BleProtocol::ParseFirmwareOtaStateEvent(bytes);
-                    if (!event.has_value()) {
-                        LogBleLine("ota state notify VS-" + device_id + " parse failed");
-                        return;
-                    }
-                    DispatchToUiThread([this, device_id, e = std::move(*event)]() {
-                        HandleFirmwareOtaStateEvent(device_id, e);
-                    });
-                });
-        }
-
         // Give the Windows BTHLE driver a brief moment to wire the
         // ValueChanged handlers in before we ask for notifications. Without
         // this gap the very first notification can race past the handler.
@@ -1180,29 +1143,15 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                    " status=" + GattStatusName(audio_subscribe));
         log_stage("audio_subscribe_done", "status=" + GattStatusName(audio_subscribe));
 
-        GattCommunicationStatus ota_subscribe = GattCommunicationStatus::Success;
-        if (session->ota_state_characteristic) {
-            log_stage("ota_state_subscribe_begin");
-            ota_subscribe = co_await session->ota_state_characteristic
-                .WriteClientCharacteristicConfigurationDescriptorAsync(
-                    GattClientCharacteristicConfigurationDescriptorValue::Notify);
-            LogBleLine("ota state subscribe VS-" + device_id +
-                       " status=" + GattStatusName(ota_subscribe));
-            log_stage("ota_state_subscribe_done", "status=" + GattStatusName(ota_subscribe));
-        }
-
         if (audio_subscribe != GattCommunicationStatus::Success ||
-            state_subscribe != GattCommunicationStatus::Success ||
-            ota_subscribe != GattCommunicationStatus::Success) {
+            state_subscribe != GattCommunicationStatus::Success) {
             fail("notification subscription failed: audio=" + GattStatusName(audio_subscribe) +
-                 " state=" + GattStatusName(state_subscribe) +
-                 " ota=" + GattStatusName(ota_subscribe));
+                 " state=" + GattStatusName(state_subscribe));
             co_return;
         }
 
         session->audio_subscribed = true;
         session->state_subscribed = true;
-        session->ota_state_subscribed = session->ota_state_characteristic != nullptr;
         session->ready = true;
         {
             std::lock_guard lock(mutex_);
@@ -1239,11 +1188,98 @@ winrt::fire_and_forget BleCentralWin::WriteControlPayloadAsync(std::shared_ptr<D
     }
 }
 
+winrt::Windows::Foundation::IAsyncOperation<bool> BleCentralWin::EnsureOtaCharacteristicsAsync(
+    std::shared_ptr<DeviceSession> session,
+    std::string device_id) {
+    using winrt::Windows::Foundation::AsyncStatus;
+    using GattCharsResult = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicsResult;
+
+    if (!session || !session->service) co_return false;
+    if (session->ota_rx_characteristic && session->ota_state_characteristic &&
+        session->ota_state_subscribed) {
+        co_return true;
+    }
+
+    co_await winrt::resume_background();
+    auto discover_ota_characteristic = [&](const winrt::guid& uuid,
+                                           const char* label) -> GattCharsResult {
+        LogBleLine("OTA lazy characteristic discovery begin VS-" + device_id + " label=" + label);
+        auto op = session->service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode::Uncached);
+        if (op.wait_for(kCharacteristicDiscoveryTimeout) == AsyncStatus::Started) {
+            op.Cancel();
+            LogBleLine("OTA lazy characteristic discovery timed out VS-" + device_id + " label=" + label);
+            return nullptr;
+        }
+        auto result = op.GetResults();
+        LogBleLine("OTA lazy characteristic discovery done VS-" + device_id +
+                   " label=" + label +
+                   " status=" + GattStatusName(result.Status()) +
+                   " count=" + std::to_string(result.Characteristics().Size()));
+        return result;
+    };
+
+    if (!session->ota_rx_characteristic) {
+        auto ota_rx_result = discover_ota_characteristic(winrt::guid{BleProtocol::ota_rx_uuid}, "ota_rx");
+        if (!ota_rx_result || ota_rx_result.Status() != GattCommunicationStatus::Success ||
+            ota_rx_result.Characteristics().Size() == 0) {
+            co_return false;
+        }
+        auto characteristic = ota_rx_result.Characteristics().GetAt(0);
+        if (!HasWrite(characteristic) && !HasWriteWithoutResponse(characteristic)) {
+            co_return false;
+        }
+        session->ota_rx_characteristic = characteristic;
+    }
+
+    if (!session->ota_state_characteristic) {
+        auto ota_state_result = discover_ota_characteristic(winrt::guid{BleProtocol::ota_state_uuid}, "ota_state");
+        if (!ota_state_result || ota_state_result.Status() != GattCommunicationStatus::Success ||
+            ota_state_result.Characteristics().Size() == 0) {
+            co_return false;
+        }
+        auto characteristic = ota_state_result.Characteristics().GetAt(0);
+        if (!HasNotify(characteristic)) {
+            co_return false;
+        }
+        session->ota_state_characteristic = characteristic;
+    }
+
+    if (session->ota_state_value_changed_token.value == 0) {
+        session->ota_state_value_changed_token = session->ota_state_characteristic.ValueChanged(
+            [this, device_id](const GattCharacteristic&, const auto& args) {
+                auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                auto event = BleProtocol::ParseFirmwareOtaStateEvent(bytes);
+                if (!event.has_value()) {
+                    LogBleLine("ota state notify VS-" + device_id + " parse failed");
+                    return;
+                }
+                DispatchToUiThread([this, device_id, e = std::move(*event)]() {
+                    HandleFirmwareOtaStateEvent(device_id, e);
+                });
+            });
+    }
+
+    if (!session->ota_state_subscribed) {
+        LogBleLine("subscribing OTA state notifications VS-" + device_id);
+        auto status = co_await session->ota_state_characteristic
+            .WriteClientCharacteristicConfigurationDescriptorAsync(
+                GattClientCharacteristicConfigurationDescriptorValue::Notify);
+        LogBleLine("ota state subscribe VS-" + device_id + " status=" + GattStatusName(status));
+        if (status != GattCommunicationStatus::Success) {
+            co_return false;
+        }
+        session->ota_state_subscribed = true;
+    }
+
+    co_return true;
+}
+
 winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
     std::shared_ptr<DeviceSession> session,
     std::shared_ptr<FirmwareUpdateSession> update_session) {
     try {
-        if (!session || !update_session || !session->ota_rx_characteristic) {
+        if (!session || !update_session ||
+            !(co_await EnsureOtaCharacteristicsAsync(session, update_session->device_id))) {
             FinishFirmwareUpdate(update_session, false, "The connected firmware does not expose BLE OTA.");
             co_return;
         }
