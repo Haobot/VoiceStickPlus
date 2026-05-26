@@ -839,6 +839,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     ComPtr<IDWriteTextLayout> hint_layout;
     if (!hint_.empty()) {
         auto hint_format = CreateTextFormat(SizePxF(kHintFontSize, 12, 11), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        if (hint_format) hint_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         hint_layout = CreateTextLayout(hint_, hint_format.Get(), text_width, false);
         if (hint_layout) {
             DWRITE_TEXT_METRICS metrics{};
@@ -861,7 +862,8 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     const float block_visual_height = block_visual_bottom - block_visual_top;
     const float content_top = static_cast<float>(visual_y + shadow_padding);
     const float content_height = static_cast<float>(visual_height - shadow_padding * 2);
-    const float block_y = content_top + std::max(0.0f, (content_height - block_visual_height) / 2.0f) - block_visual_top;
+    const float vertical_optical_offset = hint_.empty() ? SizePxF(3, 2, 2) : 0.0f;
+    const float block_y = content_top + std::max(0.0f, (content_height - block_visual_height) / 2.0f) - block_visual_top + vertical_optical_offset;
 
     auto render_target = CreateBitmapRenderTarget(bits, width, height);
     if (!render_target.target || !render_target.bitmap) return;
