@@ -1,0 +1,37 @@
+#pragma once
+
+#include "app_config.h"
+
+#include <Windows.h>
+
+namespace voicestick {
+
+class GlassBackdropWindow {
+public:
+    GlassBackdropWindow(HINSTANCE instance, HWND owner);
+    ~GlassBackdropWindow();
+
+    void Show(const RECT& bounds);
+    void Move(const RECT& bounds);
+    void Hide();
+    void SetCornerRadius(int radius_px);
+    void SetTheme(OverlayThemeColor color);
+    bool HasGlassEffect() const { return glass_effect_enabled_; }
+
+private:
+    void ApplyBackdrop();
+    void ApplyRegion(const RECT& bounds);
+    COLORREF ThemeTint() const;
+    void PaintFallback();
+
+    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+    HINSTANCE instance_ = nullptr;
+    HWND owner_ = nullptr;
+    HWND hwnd_ = nullptr;
+    int corner_radius_px_ = 24;
+    OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
+    bool glass_effect_enabled_ = false;
+};
+
+} // namespace voicestick
