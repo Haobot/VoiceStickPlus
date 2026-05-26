@@ -241,6 +241,9 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "device_theme_colors") {
         config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(value, OverlayThemeColorFromName);
     }
+    if (key == "device_theme_sizes") {
+        config.device_theme_sizes = ParseDeviceValueMap<OverlayThemeSize>(value, OverlayThemeSizeFromName);
+    }
     if (key == "device_overlay_positions") {
         config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(value, OverlayPositionFromName);
     }
@@ -312,6 +315,9 @@ AppConfig AppConfig::Load() {
         if (auto value = TomlString(table, "paired_device_ids")) config.paired_device_ids = ParseDeviceIdList(*value);
         if (auto value = TomlString(table, "device_theme_colors")) {
             config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(*value, OverlayThemeColorFromName);
+        }
+        if (auto value = TomlString(table, "device_theme_sizes")) {
+            config.device_theme_sizes = ParseDeviceValueMap<OverlayThemeSize>(*value, OverlayThemeSizeFromName);
         }
         if (auto value = TomlString(table, "device_overlay_positions")) {
             config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(*value, OverlayPositionFromName);
@@ -392,6 +398,8 @@ void AppConfig::Save() const {
     output << "paired_device_ids = \"" << paired.str() << "\"\n";
     output << "device_theme_colors = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeColor>(
         device_theme_colors, paired_device_ids, OverlayThemeColor::kWhite, OverlayThemeColorName)) << "\"\n";
+    output << "device_theme_sizes = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeSize>(
+        device_theme_sizes, paired_device_ids, OverlayThemeSize::kBig, OverlayThemeSizeName)) << "\"\n";
     output << "device_overlay_positions = \"" << TomlEscape(FormatDeviceValueMap<OverlayPosition>(
         device_overlay_positions, paired_device_ids, OverlayPosition::kCenter, OverlayPositionName)) << "\"\n";
     output << "auto_enter = " << (auto_enter ? "true" : "false") << "\n";
@@ -487,6 +495,7 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
         std::remove(paired_device_ids.begin(), paired_device_ids.end(), device_id),
         paired_device_ids.end());
     device_theme_colors.erase(device_id);
+    device_theme_sizes.erase(device_id);
     device_overlay_positions.erase(device_id);
     device_output_profiles.erase(device_id);
     Save();
@@ -553,6 +562,32 @@ std::string OverlayThemeColorDisplayName(OverlayThemeColor color) {
     case OverlayThemeColor::kWhite:
     default:
         return "White";
+    }
+}
+
+std::string OverlayThemeSizeName(OverlayThemeSize size) {
+    switch (size) {
+    case OverlayThemeSize::kMedium: return "medium";
+    case OverlayThemeSize::kSmall: return "small";
+    case OverlayThemeSize::kBig:
+    default:
+        return "big";
+    }
+}
+
+OverlayThemeSize OverlayThemeSizeFromName(std::string_view name) {
+    if (name == "medium") return OverlayThemeSize::kMedium;
+    if (name == "small") return OverlayThemeSize::kSmall;
+    return OverlayThemeSize::kBig;
+}
+
+std::string OverlayThemeSizeDisplayName(OverlayThemeSize size) {
+    switch (size) {
+    case OverlayThemeSize::kMedium: return "Medium";
+    case OverlayThemeSize::kSmall: return "Small";
+    case OverlayThemeSize::kBig:
+    default:
+        return "Big";
     }
 }
 

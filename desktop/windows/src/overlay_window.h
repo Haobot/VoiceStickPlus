@@ -28,6 +28,7 @@ public:
     void ShowError(const std::string& text, std::function<void()> on_complete);
     void Hide(std::function<void()> on_hidden = {});
     void SetThemeColor(OverlayThemeColor color);
+    void SetThemeSize(OverlayThemeSize size);
     void SetPosition(OverlayPosition position);
 
     HWND hwnd() const { return hwnd_; }
@@ -57,6 +58,8 @@ private:
     void RefreshDpi();
     int Dp(int px) const;
     float DpF(int px) const;
+    int SizePx(int big_px, int medium_px, int small_px) const;
+    float SizePxF(int big_px, int medium_px, int small_px) const;
     void PaintContent(Gdiplus::Graphics& graphics, int width, int height);
     void PaintText(void* bits, int width, int height);
     void PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, int size);
@@ -92,6 +95,7 @@ private:
     float text_scroll_to_offset_ = 0.0f;
     float last_text_scroll_offset_ = 0.0f;
     OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
+    OverlayThemeSize theme_size_ = OverlayThemeSize::kBig;
     OverlayPosition position_ = OverlayPosition::kCenter;
     ULONGLONG countdown_started_at_ms_ = 0;
     int countdown_duration_ms_ = 1200;

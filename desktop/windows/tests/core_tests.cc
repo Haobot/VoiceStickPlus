@@ -448,6 +448,11 @@ void TestAppConfig() {
     assert(OverlayThemeColorName(OverlayThemeColor::kBlack) == "black");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kYellow) == "Yellow");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kBlack) == "Black");
+    assert(OverlayThemeSizeFromName("medium") == OverlayThemeSize::kMedium);
+    assert(OverlayThemeSizeFromName("small") == OverlayThemeSize::kSmall);
+    assert(OverlayThemeSizeFromName("big") == OverlayThemeSize::kBig);
+    assert(OverlayThemeSizeName(OverlayThemeSize::kMedium) == "medium");
+    assert(OverlayThemeSizeDisplayName(OverlayThemeSize::kSmall) == "Small");
     assert(OverlayPositionFromName("bottom_center") == OverlayPosition::kBottomCenter);
     assert(OverlayPositionFromName("middle_bottom") == OverlayPosition::kBottomCenter);
     assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);

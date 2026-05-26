@@ -39,11 +39,13 @@ constexpr UINT kMenuUpdateFirmwareBase = 2200;
 constexpr UINT kMenuUpdateFirmwareEnd = 2299;
 constexpr UINT kMenuThemeColorBase = 2300;
 constexpr UINT kMenuThemeColorEnd = 2899;
-constexpr UINT kMenuOverlayPositionBase = 2900;
-constexpr UINT kMenuOverlayPositionEnd = 3399;
-constexpr UINT kMenuTranslationBase = 3400;
+constexpr UINT kMenuThemeSizeBase = 2900;
+constexpr UINT kMenuThemeSizeEnd = 3399;
+constexpr UINT kMenuOverlayPositionBase = 3400;
+constexpr UINT kMenuOverlayPositionEnd = 3999;
+constexpr UINT kMenuTranslationBase = 4000;
 constexpr UINT kMenuTranslationEnd = 5799;
-constexpr UINT kMenuOptionsPerDevice = 6;
+constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
 constexpr UINT kMenuHotkeyCustom = 5802;
@@ -99,6 +101,12 @@ constexpr OverlayThemeColor kOverlayThemeColors[] = {
     OverlayThemeColor::kYellow,
     OverlayThemeColor::kBlue,
     OverlayThemeColor::kPurple,
+};
+
+constexpr OverlayThemeSize kOverlayThemeSizes[] = {
+    OverlayThemeSize::kBig,
+    OverlayThemeSize::kMedium,
+    OverlayThemeSize::kSmall,
 };
 
 constexpr OverlayPosition kOverlayPositions[] = {
@@ -575,6 +583,14 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                     color_index < (sizeof(kOverlayThemeColors) / sizeof(kOverlayThemeColors[0]))) {
                     SaveDeviceThemeColor(paired_device_ids_[index], kOverlayThemeColors[color_index]);
                 }
+            } else if (cmd >= kMenuThemeSizeBase && cmd <= kMenuThemeSizeEnd) {
+                const std::size_t offset = cmd - kMenuThemeSizeBase;
+                const std::size_t index = offset / kMenuOptionsPerDevice;
+                const std::size_t size_index = offset % kMenuOptionsPerDevice;
+                if (index < paired_device_ids_.size() &&
+                    size_index < (sizeof(kOverlayThemeSizes) / sizeof(kOverlayThemeSizes[0]))) {
+                    SaveDeviceThemeSize(paired_device_ids_[index], kOverlayThemeSizes[size_index]);
+                }
             } else if (cmd >= kMenuOverlayPositionBase && cmd <= kMenuOverlayPositionEnd) {
                 const std::size_t offset = cmd - kMenuOverlayPositionBase;
                 const std::size_t index = offset / kMenuOptionsPerDevice;
@@ -756,6 +772,23 @@ void Win32App::ShowTrayMenu() {
                 Utf16(OverlayThemeColorDisplayName(color)).c_str());
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu), L"Theme Color");
+
+        HMENU size_menu = CreatePopupMenu();
+        const auto size_it = config_.device_theme_sizes.find(id);
+        const auto current_size = size_it != config_.device_theme_sizes.end()
+            ? size_it->second
+            : OverlayThemeSize::kBig;
+        for (std::size_t size_index = 0;
+             size_index < sizeof(kOverlayThemeSizes) / sizeof(kOverlayThemeSizes[0]);
+             ++size_index) {
+            const auto sz = kOverlayThemeSizes[size_index];
+            AppendMenuW(
+                size_menu,
+                MF_STRING | (current_size == sz ? MF_CHECKED : 0),
+                kMenuThemeSizeBase + static_cast<UINT>(i * kMenuOptionsPerDevice + size_index),
+                Utf16(OverlayThemeSizeDisplayName(sz)).c_str());
+        }
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(size_menu), L"Theme Size");
 
         HMENU position_menu = CreatePopupMenu();
         const auto position_it = config_.device_overlay_positions.find(id);
@@ -949,6 +982,22 @@ void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeCo
     }
 }
 
+void Win32App::SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size) {
+    try {
+        if (size == OverlayThemeSize::kBig) {
+            config_.device_theme_sizes.erase(device_id);
+        } else {
+            config_.device_theme_sizes[device_id] = size;
+        }
+        config_.Save();
+        ApplyOverlayStyle(device_id);
+        LogLine("Theme size saved VS-" + device_id + "=" + OverlayThemeSizeName(size));
+    } catch (const std::exception& error) {
+        LogLine(std::string("Theme size save failed: ") + error.what());
+        SetStatus("Theme size save failed");
+    }
+}
+
 void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position) {
     try {
         if (position == OverlayPosition::kCenter) {
@@ -989,11 +1038,16 @@ void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfi
 void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {
     if (!overlay_) return;
     OverlayThemeColor color = OverlayThemeColor::kWhite;
+    OverlayThemeSize size = OverlayThemeSize::kBig;
     OverlayPosition position = OverlayPosition::kCenter;
     if (device_id.has_value()) {
         if (auto color_it = config_.device_theme_colors.find(*device_id);
             color_it != config_.device_theme_colors.end()) {
             color = color_it->second;
+        }
+        if (auto size_it = config_.device_theme_sizes.find(*device_id);
+            size_it != config_.device_theme_sizes.end()) {
+            size = size_it->second;
         }
         if (auto position_it = config_.device_overlay_positions.find(*device_id);
             position_it != config_.device_overlay_positions.end()) {
@@ -1001,6 +1055,7 @@ void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {
         }
     }
     overlay_->SetThemeColor(color);
+    overlay_->SetThemeSize(size);
     overlay_->SetPosition(position);
 }
 

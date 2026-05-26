@@ -81,6 +81,7 @@ private:
     void ShowSettings();
     void SaveInputOptions();
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
+    void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
     void SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile);
     void ApplyOverlayStyle(const std::optional<std::string>& device_id);
