@@ -9,9 +9,15 @@ namespace voicestick {
 
 namespace {
 
-constexpr int kWhiteThemeBlurRadius = 96;
-constexpr int kBlackThemeBlurRadius = 50;
-constexpr int kDefaultBlurRadius = 66;
+struct GlassMaterialPreset {
+    int blur_radius = 66;
+    float average_mix_strength = 0.22f;
+    float tint_mix_strength = 0.12f;
+};
+
+constexpr GlassMaterialPreset kWhiteMaterial{96, 0.22f, 0.12f};
+constexpr GlassMaterialPreset kBlackMaterial{50, 0.22f, 0.12f};
+constexpr GlassMaterialPreset kDefaultMaterial{66, 0.22f, 0.12f};
 constexpr BYTE kSurfaceAlpha = 236;
 
 int ClampByte(int value) {
@@ -21,6 +27,17 @@ int ClampByte(int value) {
 BYTE MixByte(BYTE source, BYTE target, float strength) {
     return static_cast<BYTE>(std::clamp(
         static_cast<int>(std::lround(source + (target - source) * strength)), 0, 255));
+}
+
+const GlassMaterialPreset& MaterialPreset(OverlayThemeColor color) {
+    switch (color) {
+    case OverlayThemeColor::kBlack:
+        return kBlackMaterial;
+    case OverlayThemeColor::kWhite:
+        return kWhiteMaterial;
+    default:
+        return kDefaultMaterial;
+    }
 }
 
 BYTE RoundedCoverage(int x, int y, int width, int height, int radius) {
@@ -240,7 +257,7 @@ void GlassBackdropWindow::PaintCarrierSurface() {
         cached_height_ = height;
         cached_left_ = window_rect.left;
         cached_top_ = window_rect.top;
-        BoxBlur(cached_pixels_, cached_width_, cached_height_, BlurRadius());
+        BoxBlur(cached_pixels_, cached_width_, cached_height_, MaterialPreset(theme_color_).blur_radius);
         ApplyFrostedMaterial(cached_pixels_);
         std::vector<std::uint32_t> output = cached_pixels_;
         ApplyRoundedAlpha(output, width, height, corner_radius_px_);
@@ -325,19 +342,18 @@ void GlassBackdropWindow::ApplyFrostedMaterial(std::vector<std::uint32_t>& pixel
     const BYTE tint_green = GetGValue(tint);
     const BYTE tint_blue = GetBValue(tint);
 
-    constexpr float kAverageMixStrength = 0.22f;
-    constexpr float kTintMixStrength = 0.12f;
+    const auto& material = MaterialPreset(theme_color_);
     for (auto& pixel : pixels) {
         BYTE blue = static_cast<BYTE>(pixel & 0xff);
         BYTE green = static_cast<BYTE>((pixel >> 8) & 0xff);
         BYTE red = static_cast<BYTE>((pixel >> 16) & 0xff);
 
-        red = MixByte(red, average_red, kAverageMixStrength);
-        green = MixByte(green, average_green, kAverageMixStrength);
-        blue = MixByte(blue, average_blue, kAverageMixStrength);
-        red = MixByte(red, tint_red, kTintMixStrength);
-        green = MixByte(green, tint_green, kTintMixStrength);
-        blue = MixByte(blue, tint_blue, kTintMixStrength);
+        red = MixByte(red, average_red, material.average_mix_strength);
+        green = MixByte(green, average_green, material.average_mix_strength);
+        blue = MixByte(blue, average_blue, material.average_mix_strength);
+        red = MixByte(red, tint_red, material.tint_mix_strength);
+        green = MixByte(green, tint_green, material.tint_mix_strength);
+        blue = MixByte(blue, tint_blue, material.tint_mix_strength);
 
         pixel = static_cast<std::uint32_t>(blue) |
                 (static_cast<std::uint32_t>(green) << 8) |
@@ -345,16 +361,6 @@ void GlassBackdropWindow::ApplyFrostedMaterial(std::vector<std::uint32_t>& pixel
     }
 }
 
-int GlassBackdropWindow::BlurRadius() const {
-    switch (theme_color_) {
-    case OverlayThemeColor::kBlack:
-        return kBlackThemeBlurRadius;
-    case OverlayThemeColor::kWhite:
-        return kWhiteThemeBlurRadius;
-    default:
-        return kDefaultBlurRadius;
-    }
-}
 
 COLORREF GlassBackdropWindow::ThemeTint() const {
     switch (theme_color_) {

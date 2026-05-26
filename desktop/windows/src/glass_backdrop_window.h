@@ -31,7 +31,6 @@ private:
     void PaintCarrierSurface();
     void PaintCachedSurface(const RECT& bounds);
     void ApplyFrostedMaterial(std::vector<std::uint32_t>& pixels) const;
-    int BlurRadius() const;
     COLORREF ThemeTint() const;
     void PaintFallback();
 
