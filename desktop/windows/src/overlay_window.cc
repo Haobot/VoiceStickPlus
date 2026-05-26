@@ -345,7 +345,7 @@ void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& 
 void OverlayWindow::Reposition() {
     RefreshDpi();
 
-    RECT work_area = GetWorkAreaForWindow(parent_ ? parent_ : hwnd_);
+    RECT work_area = GetWorkAreaForCursor();
     const int screen_w = work_area.right - work_area.left;
     const int screen_h = work_area.bottom - work_area.top;
 
@@ -557,7 +557,7 @@ int OverlayWindow::VisualOffsetY(int height, int visual_height) const {
 }
 
 void OverlayWindow::RefreshDpi() {
-    dpi_ = GetDpiForHwnd(parent_ ? parent_ : hwnd_);
+    dpi_ = GetDpiForCursorMonitor();
     if (backdrop_) backdrop_->SetCornerRadius(Dp(kCornerRadius));
 }
 
