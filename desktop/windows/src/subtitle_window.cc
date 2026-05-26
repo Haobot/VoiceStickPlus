@@ -243,6 +243,8 @@ SubtitleWindow::SubtitleWindow(HINSTANCE instance, HWND parent)
         this);
     if (hwnd_) {
         RefreshDpi();
+        backdrop_ = std::make_unique<GlassBackdropWindow>(instance_, parent_);
+        backdrop_->SetCornerRadius(Dp(kLaneCornerRadius));
     }
 }
 
@@ -270,6 +272,8 @@ void SubtitleWindow::HideAll() {
     if (!hwnd_) return;
     lanes_.clear();
     ShowWindow(hwnd_, SW_HIDE);
+    if (backdrop_) backdrop_->Hide();
+    backdrop_bounds_valid_ = false;
 }
 
 LRESULT CALLBACK SubtitleWindow::WndProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
@@ -312,19 +316,46 @@ LRESULT SubtitleWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
 void SubtitleWindow::Render() {
     if (lanes_.empty()) {
         ShowWindow(hwnd_, SW_HIDE);
+        if (backdrop_) backdrop_->Hide();
+        backdrop_bounds_valid_ = false;
         return;
     }
 
     const WindowLayout layout = ComputeLayout();
     if (layout.width <= 0 || layout.height <= 0 || layout.lanes.empty()) {
         ShowWindow(hwnd_, SW_HIDE);
+        if (backdrop_) backdrop_->Hide();
+        backdrop_bounds_valid_ = false;
         return;
     }
 
+    SyncBackdrop(layout);
     SetWindowPos(hwnd_, HWND_TOPMOST,
                  layout.x, layout.y, layout.width, layout.height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     UpdateLayeredBitmap(layout);
+}
+
+RECT SubtitleWindow::BackdropBounds(const WindowLayout& layout) const {
+    return RECT{
+        layout.x + Dp(kWindowSidePadding),
+        layout.y + Dp(kWindowEdgePadding),
+        layout.x + layout.width - Dp(kWindowSidePadding),
+        layout.y + layout.height - Dp(kWindowEdgePadding),
+    };
+}
+
+void SubtitleWindow::SyncBackdrop(const WindowLayout& layout) {
+    if (!backdrop_ || layout.width <= 0 || layout.height <= 0) return;
+    const RECT bounds = BackdropBounds(layout);
+    const bool bounds_changed = !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &bounds);
+    if (bounds_changed) {
+        backdrop_->Show(bounds);
+        last_backdrop_bounds_ = bounds;
+        backdrop_bounds_valid_ = true;
+    }
+    SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 SubtitleWindow::WindowLayout SubtitleWindow::ComputeLayout() const {
@@ -428,8 +459,11 @@ void SubtitleWindow::UpdateLayeredBitmap(const WindowLayout& layout) {
 
             Gdiplus::GraphicsPath background_path;
             AddRoundedRect(background_path, lane_rect, DpF(kLaneCornerRadius));
-            Gdiplus::SolidBrush background_brush(Gdiplus::Color(158, 0, 0, 0));
+            Gdiplus::SolidBrush background_brush(Gdiplus::Color(kLaneScrimAlpha, 0, 0, 0));
             graphics.FillPath(&background_brush, &background_path);
+            Gdiplus::Pen border_pen(Gdiplus::Color(kLaneBorderAlpha, 255, 255, 255),
+                                    std::max(1.0f, DpF(1)));
+            graphics.DrawPath(&border_pen, &background_path);
 
             const auto color = ColorValue(entry.lane->color);
             const BYTE red = static_cast<BYTE>((color >> 16) & 0xff);
@@ -485,6 +519,10 @@ void SubtitleWindow::UpdateLayeredBitmap(const WindowLayout& layout) {
                                                 DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             auto text_layout = CreateTextLayout(entry.lane->text, text_format.Get(),
                                                 text_width, text_height);
+            const float shadow_offset = std::max(1.0f, DpF(2));
+            DrawTextLayout(render_target.target.Get(), text_layout.Get(),
+                           text_x + shadow_offset, text_y + shadow_offset,
+                           kTextShadowAlpha, 0, 0, 0);
             DrawTextLayout(render_target.target.Get(), text_layout.Get(),
                            text_x, text_y,
                            255, 255, 255, 255);
@@ -567,6 +605,7 @@ float SubtitleWindow::DpF(int px) const {
 
 void SubtitleWindow::RefreshDpi() {
     dpi_ = hwnd_ ? GetDpiForHwnd(hwnd_) : 96;
+    if (backdrop_) backdrop_->SetCornerRadius(Dp(kLaneCornerRadius));
 }
 
 unsigned int SubtitleWindow::ColorValue(OverlayThemeColor color) const {
