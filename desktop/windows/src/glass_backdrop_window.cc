@@ -1,77 +1,113 @@
 #include "glass_backdrop_window.h"
 
-#include <dwmapi.h>
-#include <objidl.h>
-#include <gdiplus.h>
-
 #include <algorithm>
-
-#pragma comment(lib, "Dwmapi.lib")
-#pragma comment(lib, "Gdiplus.lib")
+#include <cmath>
+#include <cstdint>
+#include <vector>
 
 namespace voicestick {
 
 namespace {
 
-constexpr DWORD kColorNone = 0xFFFFFFFE;
-constexpr DWORD kDwmwaWindowCornerPreference = 33;
-constexpr DWORD kDwmwaBorderColor = 34;
-constexpr DWORD kDwmwaSystemBackdropType = 38;
-constexpr int kDwmWindowCornerPreferenceRound = 2;
-constexpr int kDwmSystemBackdropTypeTransientWindow = 3;
-constexpr int kDwmSystemBackdropTypeAcrylic = 4;
+constexpr int kBlurRadius = 14;
+constexpr BYTE kSurfaceAlpha = 236;
 
-enum AccentState {
-    ACCENT_DISABLED = 0,
-    ACCENT_ENABLE_GRADIENT = 1,
-    ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
-    ACCENT_ENABLE_BLURBEHIND = 3,
-    ACCENT_ENABLE_ACRYLICBLURBEHIND = 4,
-};
-
-struct AccentPolicy {
-    int state = ACCENT_DISABLED;
-    int flags = 0;
-    int gradient_color = 0;
-    int animation_id = 0;
-};
-
-struct WindowCompositionAttributeData {
-    int attribute = 0;
-    void* data = nullptr;
-    SIZE_T size = 0;
-};
-
-using SetWindowCompositionAttributeFn = BOOL(WINAPI*)(HWND, WindowCompositionAttributeData*);
-
-ULONG_PTR EnsureGdiplus() {
-    static ULONG_PTR token = [] {
-        ULONG_PTR startup_token = 0;
-        Gdiplus::GdiplusStartupInput input;
-        Gdiplus::GdiplusStartup(&startup_token, &input, nullptr);
-        return startup_token;
-    }();
-    return token;
+int ClampByte(int value) {
+    return std::clamp(value, 0, 255);
 }
 
-void AddRoundedRect(Gdiplus::GraphicsPath& path, Gdiplus::RectF rect, float radius) {
-    const float diameter = radius * 2.0f;
-    path.AddArc(rect.X, rect.Y, diameter, diameter, 180.0f, 90.0f);
-    path.AddArc(rect.GetRight() - diameter, rect.Y, diameter, diameter, 270.0f, 90.0f);
-    path.AddArc(rect.GetRight() - diameter, rect.GetBottom() - diameter,
-                diameter, diameter, 0.0f, 90.0f);
-    path.AddArc(rect.X, rect.GetBottom() - diameter, diameter, diameter, 90.0f, 90.0f);
-    path.CloseFigure();
+BYTE RoundedCoverage(int x, int y, int width, int height, int radius) {
+    const float px = static_cast<float>(x) + 0.5f;
+    const float py = static_cast<float>(y) + 0.5f;
+    const float left = 0.5f;
+    const float top = 0.5f;
+    const float right = static_cast<float>(width) - 0.5f;
+    const float bottom = static_cast<float>(height) - 0.5f;
+    const float r = static_cast<float>(std::clamp(radius, 1, std::max(1, std::min(width, height) / 2)));
+
+    const float dx = std::max({left + r - px, 0.0f, px - (right - r)});
+    const float dy = std::max({top + r - py, 0.0f, py - (bottom - r)});
+    const float distance = std::sqrt(dx * dx + dy * dy);
+    const float coverage = std::clamp(r + 0.5f - distance, 0.0f, 1.0f);
+    return static_cast<BYTE>(coverage * static_cast<float>(kSurfaceAlpha));
 }
 
-int AccentColor(COLORREF tint, BYTE alpha) {
-    const int red = GetRValue(tint);
-    const int green = GetGValue(tint);
-    const int blue = GetBValue(tint);
-    return (static_cast<int>(alpha) << 24) |
-           (blue << 16) |
-           (green << 8) |
-           red;
+void BoxBlur(std::vector<std::uint32_t>& pixels, int width, int height, int radius) {
+    if (pixels.empty() || width <= 0 || height <= 0 || radius <= 0) return;
+
+    std::vector<std::uint32_t> temp(pixels.size());
+    const int diameter = radius * 2 + 1;
+
+    for (int y = 0; y < height; ++y) {
+        int red = 0;
+        int green = 0;
+        int blue = 0;
+        for (int i = -radius; i <= radius; ++i) {
+            const int x = std::clamp(i, 0, width - 1);
+            const std::uint32_t pixel = pixels[static_cast<std::size_t>(y) * width + x];
+            blue += pixel & 0xff;
+            green += (pixel >> 8) & 0xff;
+            red += (pixel >> 16) & 0xff;
+        }
+        for (int x = 0; x < width; ++x) {
+            temp[static_cast<std::size_t>(y) * width + x] =
+                static_cast<std::uint32_t>(blue / diameter) |
+                (static_cast<std::uint32_t>(green / diameter) << 8) |
+                (static_cast<std::uint32_t>(red / diameter) << 16);
+
+            const int remove_x = std::clamp(x - radius, 0, width - 1);
+            const int add_x = std::clamp(x + radius + 1, 0, width - 1);
+            const std::uint32_t remove_pixel = pixels[static_cast<std::size_t>(y) * width + remove_x];
+            const std::uint32_t add_pixel = pixels[static_cast<std::size_t>(y) * width + add_x];
+            blue += static_cast<int>(add_pixel & 0xff) - static_cast<int>(remove_pixel & 0xff);
+            green += static_cast<int>((add_pixel >> 8) & 0xff) - static_cast<int>((remove_pixel >> 8) & 0xff);
+            red += static_cast<int>((add_pixel >> 16) & 0xff) - static_cast<int>((remove_pixel >> 16) & 0xff);
+        }
+    }
+
+    for (int x = 0; x < width; ++x) {
+        int red = 0;
+        int green = 0;
+        int blue = 0;
+        for (int i = -radius; i <= radius; ++i) {
+            const int y = std::clamp(i, 0, height - 1);
+            const std::uint32_t pixel = temp[static_cast<std::size_t>(y) * width + x];
+            blue += pixel & 0xff;
+            green += (pixel >> 8) & 0xff;
+            red += (pixel >> 16) & 0xff;
+        }
+        for (int y = 0; y < height; ++y) {
+            pixels[static_cast<std::size_t>(y) * width + x] =
+                static_cast<std::uint32_t>(blue / diameter) |
+                (static_cast<std::uint32_t>(green / diameter) << 8) |
+                (static_cast<std::uint32_t>(red / diameter) << 16);
+
+            const int remove_y = std::clamp(y - radius, 0, height - 1);
+            const int add_y = std::clamp(y + radius + 1, 0, height - 1);
+            const std::uint32_t remove_pixel = temp[static_cast<std::size_t>(remove_y) * width + x];
+            const std::uint32_t add_pixel = temp[static_cast<std::size_t>(add_y) * width + x];
+            blue += static_cast<int>(add_pixel & 0xff) - static_cast<int>(remove_pixel & 0xff);
+            green += static_cast<int>((add_pixel >> 8) & 0xff) - static_cast<int>((remove_pixel >> 8) & 0xff);
+            red += static_cast<int>((add_pixel >> 16) & 0xff) - static_cast<int>((remove_pixel >> 16) & 0xff);
+        }
+    }
+}
+
+void ApplyRoundedAlpha(std::vector<std::uint32_t>& pixels, int width, int height, int radius) {
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t index = static_cast<std::size_t>(y) * width + x;
+            const std::uint32_t pixel = pixels[index];
+            const int alpha = RoundedCoverage(x, y, width, height, radius);
+            const int blue = ClampByte(static_cast<int>(pixel & 0xff) * alpha / 255);
+            const int green = ClampByte(static_cast<int>((pixel >> 8) & 0xff) * alpha / 255);
+            const int red = ClampByte(static_cast<int>((pixel >> 16) & 0xff) * alpha / 255);
+            pixels[index] = static_cast<std::uint32_t>(blue) |
+                            (static_cast<std::uint32_t>(green) << 8) |
+                            (static_cast<std::uint32_t>(red) << 16) |
+                            (static_cast<std::uint32_t>(alpha) << 24);
+        }
+    }
 }
 
 } // namespace
@@ -86,10 +122,9 @@ GlassBackdropWindow::GlassBackdropWindow(HINSTANCE instance, HWND owner)
     RegisterClassW(&wc);
 
     hwnd_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
         wc.lpszClassName, L"", WS_POPUP,
         0, 0, 1, 1, owner_, nullptr, instance_, this);
-    EnsureGdiplus();
     ApplyBackdrop();
 }
 
@@ -100,7 +135,7 @@ GlassBackdropWindow::~GlassBackdropWindow() {
 }
 
 void GlassBackdropWindow::Show(const RECT& bounds) {
-    if (!hwnd_) return;
+    if (!hwnd_ || !CanShow()) return;
     const bool was_visible = visible_;
     visible_ = true;
     Move(bounds);
@@ -112,17 +147,18 @@ void GlassBackdropWindow::Show(const RECT& bounds) {
 }
 
 void GlassBackdropWindow::Move(const RECT& bounds) {
-    if (!hwnd_) return;
+    if (!hwnd_ || !CanShow()) return;
     if (bounds_valid_ && EqualRect(&last_bounds_, &bounds)) return;
 
     const int width = std::max(1L, bounds.right - bounds.left);
     const int height = std::max(1L, bounds.bottom - bounds.top);
+    if (visible_) ShowWindow(hwnd_, SW_HIDE);
     SetWindowPos(hwnd_, HWND_TOPMOST, bounds.left, bounds.top, width, height,
-                 SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : 0));
-    ApplyRegion(bounds);
+                 SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOZORDER);
     last_bounds_ = bounds;
     bounds_valid_ = true;
-    if (visible_ && !glass_effect_enabled_) PaintFallback();
+    PaintCarrierSurface();
+    if (visible_) ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 
 void GlassBackdropWindow::Hide(bool animated) {
@@ -138,77 +174,60 @@ void GlassBackdropWindow::Hide(bool animated) {
 
 void GlassBackdropWindow::SetCornerRadius(int radius_px) {
     corner_radius_px_ = std::max(1, radius_px);
-    RECT bounds{};
-    if (hwnd_ && GetWindowRect(hwnd_, &bounds)) ApplyRegion(bounds);
+    bounds_valid_ = false;
 }
 
 void GlassBackdropWindow::SetTheme(OverlayThemeColor color) {
-    if (theme_color_ == color) return;
     theme_color_ = color;
-    ApplyBackdrop();
-    if (!glass_effect_enabled_) PaintFallback();
 }
 
 void GlassBackdropWindow::ApplyBackdrop() {
-    if (!hwnd_) return;
-    glass_effect_enabled_ = false;
-
-    const int corner = kDwmWindowCornerPreferenceRound;
-    DwmSetWindowAttribute(hwnd_, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
-    const DWORD border_color = kColorNone;
-    DwmSetWindowAttribute(hwnd_, kDwmwaBorderColor, &border_color, sizeof(border_color));
-
-    auto* user32 = GetModuleHandleW(L"user32.dll");
-    auto* set_composition = user32
-        ? reinterpret_cast<SetWindowCompositionAttributeFn>(
-              GetProcAddress(user32, "SetWindowCompositionAttribute"))
-        : nullptr;
-    if (set_composition) {
-        AccentPolicy accent{};
-        accent.state = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-        accent.gradient_color = AccentColor(RGB(24, 24, 27), 132);
-        WindowCompositionAttributeData data{};
-        data.attribute = 19;
-        data.data = &accent;
-        data.size = sizeof(accent);
-        if (set_composition(hwnd_, &data)) {
-            glass_effect_enabled_ = true;
-            return;
-        }
-    }
-
-    const int acrylic_backdrop = kDwmSystemBackdropTypeAcrylic;
-    if (SUCCEEDED(DwmSetWindowAttribute(hwnd_, kDwmwaSystemBackdropType,
-                                        &acrylic_backdrop, sizeof(acrylic_backdrop)))) {
-        glass_effect_enabled_ = true;
-        return;
-    }
-
-    const int backdrop_type = kDwmSystemBackdropTypeTransientWindow;
-    if (SUCCEEDED(DwmSetWindowAttribute(hwnd_, kDwmwaSystemBackdropType,
-                                        &backdrop_type, sizeof(backdrop_type)))) {
-        glass_effect_enabled_ = true;
-        return;
-    }
-
-    if (set_composition) {
-        AccentPolicy accent{};
-        accent.state = ACCENT_ENABLE_BLURBEHIND;
-        accent.gradient_color = AccentColor(RGB(24, 24, 27), 96);
-        WindowCompositionAttributeData data{};
-        data.attribute = 19;
-        data.data = &accent;
-        data.size = sizeof(accent);
-        if (set_composition(hwnd_, &data)) glass_effect_enabled_ = true;
-    }
+    glass_effect_enabled_ = hwnd_ != nullptr;
 }
 
 void GlassBackdropWindow::ApplyRegion(const RECT& bounds) {
-    const int width = std::max(1L, bounds.right - bounds.left);
-    const int height = std::max(1L, bounds.bottom - bounds.top);
-    const int diameter = std::max(1, corner_radius_px_ * 2);
-    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
-    SetWindowRgn(hwnd_, region, TRUE);
+}
+
+void GlassBackdropWindow::PaintCarrierSurface() {
+    if (!hwnd_) return;
+
+    RECT window_rect{};
+    if (!GetWindowRect(hwnd_, &window_rect)) return;
+    const int width = std::max(1L, window_rect.right - window_rect.left);
+    const int height = std::max(1L, window_rect.bottom - window_rect.top);
+
+    HDC screen_dc = GetDC(nullptr);
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    BITMAPINFO bitmap_info{};
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth = width;
+    bitmap_info.bmiHeader.biHeight = -height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screen_dc, &bitmap_info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ old_bitmap = bitmap ? SelectObject(memory_dc, bitmap) : nullptr;
+    if (bits && bitmap && BitBlt(memory_dc, 0, 0, width, height, screen_dc,
+                                 window_rect.left, window_rect.top, SRCCOPY | CAPTUREBLT)) {
+        auto* raw_pixels = static_cast<std::uint32_t*>(bits);
+        std::vector<std::uint32_t> pixels(raw_pixels, raw_pixels + static_cast<std::size_t>(width) * height);
+        BoxBlur(pixels, width, height, kBlurRadius);
+        ApplyRoundedAlpha(pixels, width, height, corner_radius_px_);
+        std::copy(pixels.begin(), pixels.end(), raw_pixels);
+
+        POINT destination{window_rect.left, window_rect.top};
+        POINT source{};
+        SIZE size{width, height};
+        BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(hwnd_, screen_dc, &destination, &size, memory_dc,
+                            &source, 0, &blend, ULW_ALPHA);
+    }
+    if (old_bitmap) SelectObject(memory_dc, old_bitmap);
+    if (bitmap) DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
 }
 
 COLORREF GlassBackdropWindow::ThemeTint() const {
@@ -230,28 +249,7 @@ COLORREF GlassBackdropWindow::ThemeTint() const {
 }
 
 void GlassBackdropWindow::PaintFallback() {
-    if (!hwnd_) return;
-    RECT client{};
-    if (!GetClientRect(hwnd_, &client)) return;
-
-    HDC dc = GetDC(hwnd_);
-    if (!dc) return;
-    Gdiplus::Graphics graphics(dc);
-    graphics.SetPageUnit(Gdiplus::UnitPixel);
-    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-
-    Gdiplus::RectF rect(0.5f, 0.5f,
-                        static_cast<float>(client.right - client.left) - 1.0f,
-                        static_cast<float>(client.bottom - client.top) - 1.0f);
-    Gdiplus::GraphicsPath path;
-    AddRoundedRect(path, rect, static_cast<float>(corner_radius_px_));
-    Gdiplus::SolidBrush brush(Gdiplus::Color(112, 24, 24, 27));
-    graphics.FillPath(&brush, &path);
-    Gdiplus::Pen border(Gdiplus::Color(26, 255, 255, 255), 1.0f);
-    graphics.DrawPath(&border, &path);
-    ReleaseDC(hwnd_, dc);
+    PaintCarrierSurface();
 }
 
 LRESULT CALLBACK GlassBackdropWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -269,7 +267,6 @@ LRESULT CALLBACK GlassBackdropWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LP
         PAINTSTRUCT ps{};
         BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
-        if (!self->glass_effect_enabled_) self->PaintFallback();
         return 0;
     }
     case WM_ERASEBKGND:
@@ -277,7 +274,6 @@ LRESULT CALLBACK GlassBackdropWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LP
     default:
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
-    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 } // namespace voicestick

@@ -338,10 +338,10 @@ void SubtitleWindow::Render() {
 
 RECT SubtitleWindow::BackdropBounds(const WindowLayout& layout) const {
     return RECT{
-        layout.x + Dp(kWindowSidePadding),
-        layout.y + Dp(kWindowEdgePadding),
-        layout.x + layout.width - Dp(kWindowSidePadding),
-        layout.y + layout.height - Dp(kWindowEdgePadding),
+        layout.x + Dp(kWindowSidePadding) + 1,
+        layout.y + Dp(kWindowEdgePadding) + 1,
+        layout.x + layout.width - Dp(kWindowSidePadding) - 1,
+        layout.y + layout.height - Dp(kWindowEdgePadding) - 1,
     };
 }
 

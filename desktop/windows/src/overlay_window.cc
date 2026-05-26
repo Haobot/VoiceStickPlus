@@ -403,8 +403,8 @@ void OverlayWindow::Reposition() {
     animated_window_width_ = target_window_width_;
     animated_window_height_ = target_window_height_;
 
-    UpdateLayeredBitmap();
     SyncBackdrop(target_window_width_, target_window_height_, true);
+    UpdateLayeredBitmap();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 
@@ -429,6 +429,7 @@ bool OverlayWindow::StepWindowAnimation() {
     animated_window_height_ = step(animated_window_height_, target_window_height_,
                                    kWindowHeightResizeStep);
     InvalidateStaticLayer();
+    SyncBackdrop(target_window_width_, target_window_height_, false);
     ApplyAnimatedWindowBounds();
     return true;
 }
@@ -443,11 +444,12 @@ RECT OverlayWindow::BackdropBounds(int width, int height) const {
     const int visual_height = std::clamp(animated_window_height_, 1, height);
     const int visual_x = VisualOffsetX(width, visual_width);
     const int visual_y = VisualOffsetY(height, visual_height);
+    const int inset = shadow_padding + 1;
     return RECT{
-        target_window_x_ + visual_x + shadow_padding,
-        target_window_y_ + visual_y + shadow_padding,
-        target_window_x_ + visual_x + visual_width - shadow_padding,
-        target_window_y_ + visual_y + visual_height - shadow_padding,
+        target_window_x_ + visual_x + inset,
+        target_window_y_ + visual_y + inset,
+        target_window_x_ + visual_x + visual_width - inset,
+        target_window_y_ + visual_y + visual_height - inset,
     };
 }
 
@@ -457,11 +459,14 @@ void OverlayWindow::SyncBackdrop(int width, int height, bool show) {
     const bool bounds_changed = !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &bounds);
     if (!show && !bounds_changed) return;
 
+    const bool content_visible = IsWindowVisible(hwnd_) != FALSE;
+    if (content_visible) ShowWindow(hwnd_, SW_HIDE);
     if (show) {
         backdrop_->Show(bounds);
     } else {
         backdrop_->Move(bounds);
     }
+    if (content_visible) ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
     if (show || bounds_changed) {
         SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -578,7 +583,6 @@ void OverlayWindow::UpdateLayeredBitmap() {
     SIZE size = {width, height};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, static_cast<BYTE>(current_alpha_), AC_SRC_ALPHA};
     UpdateLayeredWindow(hwnd_, screen_dc, &destination, &size, frame_dc_, &source, 0, &blend, ULW_ALPHA);
-    if (mode_ != Mode::kHidden) SyncBackdrop(width, height, false);
 
     ReleaseDC(nullptr, screen_dc);
 }
@@ -680,7 +684,7 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
                                    static_cast<float>(visual_height - shadow_padding * 2) - 1.0f);
 
     for (int layer = shadow_blur; layer >= 1; --layer) {
-        const float t = static_cast<float>(shadow_blur - layer + 1) / static_cast<float>(shadow_blur);
+        const float t = static_cast<float>(shadow_blur - layer + 1) / static_cast<float>(std::max(1, shadow_blur));
         const float spread = static_cast<float>(layer);
         const BYTE alpha = static_cast<BYTE>(std::clamp(28.0f * t * t, 2.0f, 28.0f));
         Gdiplus::RectF shadow_rect(background_rect.X - spread,

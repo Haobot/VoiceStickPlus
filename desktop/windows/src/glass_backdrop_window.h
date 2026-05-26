@@ -17,11 +17,13 @@ public:
     void SetCornerRadius(int radius_px);
     void SetTheme(OverlayThemeColor color);
     bool HasGlassEffect() const { return glass_effect_enabled_; }
+    bool CanShow() const { return glass_effect_enabled_; }
     HWND hwnd() const { return hwnd_; }
 
 private:
     void ApplyBackdrop();
     void ApplyRegion(const RECT& bounds);
+    void PaintCarrierSurface();
     COLORREF ThemeTint() const;
     void PaintFallback();
 

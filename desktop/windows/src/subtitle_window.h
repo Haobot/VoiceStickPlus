@@ -110,8 +110,8 @@ private:
     static constexpr int kTextFontSize = 64;
     static constexpr int kMinTextFontSize = 44;
     static constexpr int kDeviceFontSize = 14;
-    static constexpr BYTE kLaneScrimAlpha = 92;
-    static constexpr BYTE kLaneBorderAlpha = 28;
+    static constexpr BYTE kLaneScrimAlpha = 0;
+    static constexpr BYTE kLaneBorderAlpha = 32;
     static constexpr BYTE kTextShadowAlpha = 170;
 };
 
