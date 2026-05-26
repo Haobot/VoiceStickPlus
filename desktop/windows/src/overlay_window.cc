@@ -730,12 +730,13 @@ void OverlayWindow::UpdateLayeredBitmap() {
         const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
         const int indicator_size = SizePx(kIndicatorSize, 22, 18);
         const int indicator_slot_width = horizontal_padding + indicator_size;
+        const int indicator_center_offset = SizePx(kIndicatorCenterOffset, 3, 2);
         const int visual_width = std::clamp(animated_window_width_, 1, width);
         const int visual_height = std::clamp(animated_window_height_, 1, height);
         const int visual_x = VisualOffsetX(width, visual_width);
         const int visual_y = VisualOffsetY(height, visual_height);
         const int content_height = visual_height - shadow_padding * 2;
-        const int indicator_x = visual_x + shadow_padding + (indicator_slot_width - indicator_size) / 2;
+        const int indicator_x = visual_x + shadow_padding + (indicator_slot_width - indicator_size) / 2 + indicator_center_offset;
         const int indicator_y = visual_y + shadow_padding + (content_height - indicator_size) / 2;
         PaintIndicator(graphics, indicator_x, indicator_y, indicator_size);
     }
