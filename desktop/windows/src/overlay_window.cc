@@ -225,6 +225,7 @@ OverlayWindow::OverlayWindow(HINSTANCE instance, HWND parent)
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
         wc.lpszClassName, L"", WS_POPUP,
         0, 0, 1, 1, parent_, nullptr, instance_, this);
+    backdrop_ = std::make_unique<GlassBackdropWindow>(instance_, parent_);
     EnsureGdiplus();
 }
 
@@ -267,6 +268,7 @@ void OverlayWindow::ShowError(const std::string& text, std::function<void()> on_
 void OverlayWindow::SetThemeColor(OverlayThemeColor color) {
     if (theme_color_ == color) return;
     theme_color_ = color;
+    if (backdrop_) backdrop_->SetTheme(color);
     InvalidateStaticLayer();
     if (mode_ != Mode::kHidden) UpdateLayeredBitmap();
 }
@@ -402,6 +404,7 @@ void OverlayWindow::Reposition() {
     animated_window_height_ = target_window_height_;
 
     UpdateLayeredBitmap();
+    SyncBackdrop(target_window_width_, target_window_height_, true);
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 
@@ -432,6 +435,32 @@ bool OverlayWindow::StepWindowAnimation() {
 
 void OverlayWindow::ApplyAnimatedWindowBounds() {
     UpdateLayeredBitmap();
+}
+
+RECT OverlayWindow::BackdropBounds(int width, int height) const {
+    const int shadow_padding = Dp(kShadowPadding);
+    const int visual_width = std::clamp(animated_window_width_, 1, width);
+    const int visual_height = std::clamp(animated_window_height_, 1, height);
+    const int visual_x = VisualOffsetX(width, visual_width);
+    const int visual_y = VisualOffsetY(height, visual_height);
+    return RECT{
+        target_window_x_ + visual_x + shadow_padding,
+        target_window_y_ + visual_y + shadow_padding,
+        target_window_x_ + visual_x + visual_width - shadow_padding,
+        target_window_y_ + visual_y + visual_height - shadow_padding,
+    };
+}
+
+void OverlayWindow::SyncBackdrop(int width, int height, bool show) {
+    if (!backdrop_ || width <= 0 || height <= 0) return;
+    const RECT bounds = BackdropBounds(width, height);
+    if (show) {
+        backdrop_->Show(bounds);
+    } else {
+        backdrop_->Move(bounds);
+    }
+    SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 POINT OverlayWindow::TargetWindowOrigin(const RECT& work_area, int width, int height) const {
@@ -484,6 +513,7 @@ int OverlayWindow::VisualOffsetY(int height, int visual_height) const {
 
 void OverlayWindow::RefreshDpi() {
     dpi_ = GetDpiForHwnd(parent_ ? parent_ : hwnd_);
+    if (backdrop_) backdrop_->SetCornerRadius(Dp(kCornerRadius));
 }
 
 int OverlayWindow::Dp(int px) const {
@@ -541,6 +571,7 @@ void OverlayWindow::UpdateLayeredBitmap() {
     SIZE size = {width, height};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, static_cast<BYTE>(current_alpha_), AC_SRC_ALPHA};
     UpdateLayeredWindow(hwnd_, screen_dc, &destination, &size, frame_dc_, &source, 0, &blend, ULW_ALPHA);
+    if (mode_ != Mode::kHidden) SyncBackdrop(width, height, false);
 
     ReleaseDC(nullptr, screen_dc);
 }
@@ -680,10 +711,19 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
     default:
         break;
     }
-    Gdiplus::SolidBrush background_brush(Gdiplus::Color(kBackgroundAlpha, red, green, blue));
-    graphics.FillPath(&background_brush, &background_path);
+    Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(kGlassScrimAlpha, red, green, blue));
+    graphics.FillPath(&scrim_brush, &background_path);
 
-    Gdiplus::Pen border_pen(Gdiplus::Color(36, 225, 225, 225),
+    Gdiplus::RectF highlight_rect(background_rect.X + DpF(1),
+                                  background_rect.Y + DpF(1),
+                                  background_rect.Width - DpF(2),
+                                  std::max(DpF(18), background_rect.Height * 0.42f));
+    Gdiplus::GraphicsPath highlight_path;
+    AddRoundedRect(highlight_path, highlight_rect, static_cast<float>(corner_radius));
+    Gdiplus::SolidBrush highlight_brush(Gdiplus::Color(kGlassHighlightAlpha, 255, 255, 255));
+    graphics.FillPath(&highlight_brush, &highlight_path);
+
+    Gdiplus::Pen border_pen(Gdiplus::Color(kGlassBorderAlpha, 255, 255, 255),
                             std::max(1.0f, DpF(1)));
     graphics.DrawPath(&border_pen, &background_path);
 }
@@ -748,6 +788,12 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
         static_cast<float>(visual_y + visual_height - shadow_padding));
     render_target.target->BeginDraw();
     render_target.target->PushAxisAlignedClip(text_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    const float shadow_offset = std::max(1.0f, DpF(1));
+    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_x + shadow_offset,
+                   block_y + shadow_offset, kTextShadowAlpha, 255);
+    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x + shadow_offset,
+                   block_y + text_metrics.height + gap + shadow_offset,
+                   kTextShadowAlpha, 255);
     DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_x, block_y,
                    kTextAlpha, kInkRgb);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x,
@@ -832,6 +878,7 @@ void OverlayWindow::StartFadeOut() {
     target_alpha_ = 0;
     UpdateLayeredBitmap();
     ShowWindow(hwnd_, SW_HIDE);
+    if (backdrop_) backdrop_->Hide();
     mode_ = Mode::kHidden;
     largest_visible_width_ = 0;
     largest_visible_height_ = 0;

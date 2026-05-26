@@ -1,6 +1,7 @@
 #include "glass_backdrop_window.h"
 
 #include <dwmapi.h>
+#include <objidl.h>
 #include <gdiplus.h>
 
 #include <algorithm>
@@ -18,8 +19,6 @@ constexpr DWORD kDwmwaBorderColor = 34;
 constexpr DWORD kDwmwaSystemBackdropType = 38;
 constexpr int kDwmWindowCornerPreferenceRound = 2;
 constexpr int kDwmSystemBackdropTypeTransientWindow = 3;
-
-ACCENT_POLICY;
 
 enum AccentState {
     ACCENT_DISABLED = 0,
@@ -101,6 +100,7 @@ GlassBackdropWindow::~GlassBackdropWindow() {
 
 void GlassBackdropWindow::Show(const RECT& bounds) {
     if (!hwnd_) return;
+    visible_ = true;
     Move(bounds);
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
@@ -110,12 +110,13 @@ void GlassBackdropWindow::Move(const RECT& bounds) {
     const int width = std::max(1L, bounds.right - bounds.left);
     const int height = std::max(1L, bounds.bottom - bounds.top);
     SetWindowPos(hwnd_, HWND_TOPMOST, bounds.left, bounds.top, width, height,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                 SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : 0));
     ApplyRegion(bounds);
-    if (!glass_effect_enabled_) PaintFallback();
+    if (visible_ && !glass_effect_enabled_) PaintFallback();
 }
 
 void GlassBackdropWindow::Hide() {
+    visible_ = false;
     if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
 }
 

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "app_config.h"
+#include "glass_backdrop_window.h"
 
 #include <Windows.h>
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,8 @@ private:
     int VisualOffsetX(int width, int visual_width) const;
     int VisualOffsetY(int height, int visual_height) const;
     bool NeedsWindowAnimation() const;
+    RECT BackdropBounds(int width, int height) const;
+    void SyncBackdrop(int width, int height, bool show);
     void UpdateLayeredBitmap();
     bool EnsureFrameBitmap(int width, int height);
     void ReleaseFrameBitmap();
@@ -63,6 +67,7 @@ private:
     HINSTANCE instance_;
     HWND parent_;
     HWND hwnd_ = nullptr;
+    std::unique_ptr<GlassBackdropWindow> backdrop_;
     Mode mode_ = Mode::kHidden;
     std::wstring text_;
     std::wstring hint_;
@@ -112,10 +117,13 @@ private:
     static constexpr float kTextLineHeightMultiplier = 1.5f;
     static constexpr float kTextBaselineMultiplier = 0.92f;
     static constexpr int kHintFontSize = 14;
-    static constexpr BYTE kBackgroundAlpha = 219;
-    static constexpr BYTE kInkRgb = 40;
-    static constexpr BYTE kTextAlpha = 216;
-    static constexpr BYTE kHintAlpha = 108;
+    static constexpr BYTE kGlassScrimAlpha = 72;
+    static constexpr BYTE kGlassBorderAlpha = 64;
+    static constexpr BYTE kGlassHighlightAlpha = 48;
+    static constexpr BYTE kInkRgb = 28;
+    static constexpr BYTE kTextAlpha = 242;
+    static constexpr BYTE kTextShadowAlpha = 72;
+    static constexpr BYTE kHintAlpha = 148;
     static constexpr BYTE kIndicatorAlpha = 170;
     static constexpr BYTE kIndicatorTrackAlpha = 45;
     static constexpr int kShadowPadding = 12;
