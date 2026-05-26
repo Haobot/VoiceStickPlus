@@ -350,7 +350,10 @@ void SubtitleWindow::SyncBackdrop(const WindowLayout& layout) {
     const RECT bounds = BackdropBounds(layout);
     const bool bounds_changed = !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &bounds);
     if (bounds_changed) {
+        const bool content_visible = IsWindowVisible(hwnd_) != FALSE;
+        if (content_visible) ShowWindow(hwnd_, SW_HIDE);
         backdrop_->Show(bounds);
+        if (content_visible) ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
         last_backdrop_bounds_ = bounds;
         backdrop_bounds_valid_ = true;
     }

@@ -123,13 +123,13 @@ private:
     static constexpr BYTE kGlassBorderAlpha = 34;
     static constexpr BYTE kInkRgb = 246;
     static constexpr BYTE kTextAlpha = 248;
-    static constexpr BYTE kTextShadowAlpha = 150;
+    static constexpr BYTE kTextShadowAlpha = 72;
     static constexpr BYTE kHintAlpha = 180;
     static constexpr BYTE kIndicatorAlpha = 218;
     static constexpr BYTE kIndicatorTrackAlpha = 72;
     static constexpr int kShadowPadding = 20;
-    static constexpr int kShadowBlur = 12;
-    static constexpr int kShadowYOffset = 2;
+    static constexpr int kShadowBlur = 0;
+    static constexpr int kShadowYOffset = 0;
     static constexpr int kPositionMargin = 28;
     static constexpr int kMaxAlpha = 255;
 };
