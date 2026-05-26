@@ -58,6 +58,9 @@ public:
                                const std::optional<std::string>& device_id) override {
         sent_prompt_tones.push_back(std::pair{enabled, device_id});
     }
+    void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
+        battery_status_requests.push_back(device_id);
+    }
     void SendRemoteButton(RemoteButtonAction action,
                           const std::string& button,
                           const std::optional<std::string>& device_id,
@@ -80,6 +83,7 @@ public:
     std::vector<SentUiState> sent_ui_states;
     std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
     std::vector<std::pair<bool, std::optional<std::string>>> sent_prompt_tones;
+    std::vector<std::optional<std::string>> battery_status_requests;
     std::vector<SentRemoteButton> sent_remote_buttons;
 };
 
@@ -300,8 +304,10 @@ void TestAudioFrameParsing() {
 void TestBleControlPayloads() {
     auto enabled = BleProtocol::PromptTonePayload(true);
     auto disabled = BleProtocol::PromptTonePayload(false);
+    auto battery_request = BleProtocol::BatteryStatusRequestPayload();
     assert(std::string(enabled.begin(), enabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":true}");
     assert(std::string(disabled.begin(), disabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":false}");
+    assert(std::string(battery_request.begin(), battery_request.end()) == "{\"event\":\"battery_status_request\"}");
 }
 
 void TestStateParsing() {
@@ -494,6 +500,10 @@ void TestAppConfig() {
     assert(UiLanguageFromLocaleName(L"") == UiLanguage::kEnglish);
     assert(!Tr(StringId::kSettingsTitle, UiLanguage::kEnglish).empty());
     assert(Tr(StringId::kSettingsTitle, UiLanguage::kSimplifiedChinese) == "VoiceStick 设置");
+    assert(BatteryStatusText(83, false, false, UiLanguage::kEnglish) == "83%");
+    assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");
+    assert(BatteryStatusText(83, false, true, UiLanguage::kSimplifiedChinese) == "83%，外接电源");
+    assert(DeviceTitleWithBattery(L"VS-5A74", 83, true, false, UiLanguage::kSimplifiedChinese) == L"VS-5A74 (83%，充电中)");
     assert(LocalizationTablesAreComplete());
     const auto hotwords = ParseHotwordList(" 小智,VoiceStick\r\n小智\n豆包 ");
     assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));

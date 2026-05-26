@@ -197,6 +197,11 @@ ByteVector BleProtocol::PromptTonePayload(bool enabled) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::BatteryStatusRequestPayload() {
+    const std::string json = "{\"event\":\"battery_status_request\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::RemoteButtonPayload(std::string_view action,
                                             std::string_view button,
                                             std::string_view source,

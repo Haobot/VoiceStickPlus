@@ -11,6 +11,7 @@
 #include <winrt/base.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <exception>
@@ -557,6 +558,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
     }
     if (message == kTrayCallbackMessage) {
         const auto event = static_cast<UINT>(LOWORD(l_param));
+        if (event == NIN_POPUPOPEN || event == WM_MOUSEMOVE) {
+            RebuildTooltip();
+            RequestConnectedBatteryStatus();
+            return 0;
+        }
         if (event == WM_RBUTTONUP || event == WM_LBUTTONUP ||
             event == WM_CONTEXTMENU || event == NIN_SELECT || event == NIN_KEYSELECT) {
             ShowTrayMenu();
@@ -784,6 +790,7 @@ void Win32App::RemoveTrayIcon() {
 }
 
 void Win32App::ShowTrayMenu() {
+    RequestConnectedBatteryStatus();
     HMENU menu = CreatePopupMenu();
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
     if (has_recoverable_input_) {
@@ -943,7 +950,17 @@ void Win32App::ShowTrayMenu() {
         AppendMenuW(submenu, MF_STRING, kMenuForgetBase + static_cast<UINT>(i),
                     TrW(StringId::kMenuForgetDevice, language).c_str());
 
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), Utf16(title).c_str());
+        std::wstring menu_title = Utf16(title);
+        const auto battery_it = device_battery_map_.find(id);
+        if (battery_it != device_battery_map_.end()) {
+            const auto& battery = battery_it->second;
+            menu_title = DeviceTitleWithBattery(menu_title,
+                                                battery.level_percent,
+                                                battery.charging,
+                                                battery.usb_powered,
+                                                language);
+        }
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), menu_title.c_str());
     }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -1164,13 +1181,16 @@ void Win32App::RebuildTooltip() {
         for (const auto& device : connected_devices_) {
             if (!first) tip += L", ";
             first = false;
-            tip += Utf16(device.name);
+            std::wstring device_text = Utf16(device.name.empty() ? "VS-" + device.id : device.name);
             const auto it = device_battery_map_.find(device.id);
             if (it != device_battery_map_.end()) {
-                tip += L" (" + std::to_wstring(it->second.level_percent) + L"%";
-                if (it->second.charging) tip += language == UiLanguage::kSimplifiedChinese ? L", 充电中" : L", charging";
-                tip += L")";
+                device_text = DeviceTitleWithBattery(device_text,
+                                                     it->second.level_percent,
+                                                     it->second.charging,
+                                                     it->second.usb_powered,
+                                                     language);
             }
+            tip += device_text;
         }
     }
     wcsncpy_s(data.szTip, tip.c_str(), _TRUNCATE);
@@ -1219,6 +1239,17 @@ void Win32App::UpdateTrayIcon() {
     Shell_NotifyIconW(NIM_MODIFY, &data);
     if (icon) DestroyIcon(icon);
     RebuildTooltip();
+}
+
+void Win32App::RequestConnectedBatteryStatus() {
+    if (!ble_central_ || connected_devices_.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (last_battery_status_request_ != std::chrono::steady_clock::time_point{} &&
+        now - last_battery_status_request_ < std::chrono::seconds(1)) {
+        return;
+    }
+    last_battery_status_request_ = now;
+    ble_central_->RequestBatteryStatus(std::nullopt);
 }
 
 void Win32App::RegisterTaskbarMessage() {

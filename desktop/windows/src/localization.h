@@ -126,6 +126,13 @@ std::string Tr(StringId id, UiLanguage language);
 // 返回 UTF-16 本地化文本，适用于 Win32 宽字符 API
 std::wstring TrW(StringId id, UiLanguage language);
 
+std::string BatteryStatusText(int level_percent, bool charging, bool usb_powered, UiLanguage language);
+std::wstring DeviceTitleWithBattery(const std::wstring& title,
+                                    int level_percent,
+                                    bool charging,
+                                    bool usb_powered,
+                                    UiLanguage language);
+
 // 检查英文表和中文表是否对所有 StringId 都有非空条目
 bool LocalizationTablesAreComplete();
 
