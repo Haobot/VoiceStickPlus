@@ -28,6 +28,8 @@ Voice Stick 将 M5Stack StickS3 (ESP32-S3) 改造为桌面端蓝牙按键语音�
      - `desktop/windows/` — C++20/Win32/C++/WinRT，目标 Windows 10 1903+，使用 WinSparkle 自动更新
      - `desktop/linux/` — 占位工作目录
    - Windows 端通过 `voicestick_core` 复用配置解析、BLE 协议、Ogg Opus 封装、ASR 帧格式、LLM 翻译客户端、调试音频缓存和协调器状态机；Win32 外壳只负责托盘、窗口、BLE、剪贴板/按键注入与更新 UI。
+   - macOS 端对应实现集中在 `desktop/macos/Sources/VoiceStickApp/`，其中 `VoiceStickCoordinator` 承载交互状态机，`BleCentral` 负责 CoreBluetooth，`OggOpusMuxer` 与 `ASRWebSocketClient` 负责音频转发链路，`InputInjector` 负责粘贴和回车注入。
+   - Windows 端主入口为 `VoiceStickApp` 目标，核心库为 `voicestick_core`；平台外壳代码在 `win32_app`、`ble_central_win`、`input_injector_win`、窗口/对话框类中，跨平台业务逻辑优先放入 `voicestick_core` 并覆盖 `voicestick_windows_tests`。
 
 3. **`website/`** — Vue 3 + Vite 站点，托管浏览器端 USB 固件烧录工具、Sparkle/WinSparkle 用的 appcast XML 更新源、落地页，通过 GitHub Pages 发布
 
@@ -58,24 +60,22 @@ cd desktop/macos
 swift build              # 调试构建
 swift run VoiceStickApp  # 本地运行
 ```
-发布构建 + 生成 DMG：
+发布构建 + 生成 DMG（在仓库根目录执行）：
 ```sh
-SPARKLE_PUBLIC_ED_KEY="..." ../../scripts/build-macos.sh --release
-../../scripts/make-dmg.sh
+SPARKLE_PUBLIC_ED_KEY="..." scripts/build-macos.sh --release
+scripts/make-dmg.sh
 ```
 
 ### Windows 桌面端（CMake + Ninja，MSVC 2022 x64）
 仓库根目录提供了便捷构建脚本，无需手动配置环境：
 ```bat
-:: 一键构建并签名打包 MSI 安装包（需签名证书）
-build_native.bat
-
-:: 仅构建调试版本
+:: 仅构建调试版本，会自动结束残留 VoiceStick/cmake/ninja/cl/link 进程并重建 build-x64
 build_win.bat
 
-:: 运行全部测试
-test.bat
+:: 构建、运行 CTest，并生成本地 MSI 安装包（依赖本机 VS Build Tools/WiX 配置）
+build_native.bat
 ```
+`test.bat` 目前只是占位脚本，不运行 CTest；需要测试时使用下方 `ctest` 命令。
 
 手动构建（在仓库根目录的 PowerShell 中执行，需安装 VS 2022）：
 ```powershell
@@ -110,7 +110,7 @@ npm run dev        # 本地开发服务器
 npm run build      # 生产构建
 npm run preview    # 预览生产构建
 ```
-`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。
+`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。`website/node_modules/` 已出现在工作树中，搜索仓库时应排除依赖目录以免噪声过多。
 
 ## 核心交互模型
 
@@ -147,7 +147,7 @@ npm run preview    # 预览生产构建
   - macOS：`~/Library/Application Support/VoiceStick/config.toml`
   - Windows：`%APPDATA%\VoiceStick\config.toml`
 - **发布流程：** 推送与 `./VERSION` 匹配的 `v<版本号>` 标签。GitHub Actions 会构建 macOS 应用和固件，将固件 OTA/清单上传至阿里云 OSS，将产物发布到 GitHub Releases，并部署网站/appcast 到 GitHub Pages。签名后的 Windows MSI 需从本地签名机单独上传，然后重新运行 `Deploy Website to GitHub Pages` 工作流以收录 MSI 更新条目。详见 `docs/release.md`。
-- **测试：** 仅 Windows 桌面端存在 CTest 测试套件（`desktop/windows/tests/`），当前测试可执行文件/CTest 名称为 `voicestick_windows_tests`。macOS Swift、固件与网站目前无专用测试套件；仓库内未提交 Lint 配置。
+- **测试：** 仅 Windows 桌面端存在 CTest 测试套件（`desktop/windows/tests/`），当前测试可执行文件/CTest 名称为 `voicestick_windows_tests`。测试目标只链接 `voicestick_core`，因此新增核心行为应优先写成不依赖 Win32 UI 的测试。macOS Swift、固件与网站目前无专用测试套件；仓库内未提交 Lint 配置。
 - **Windows 构建目录：** 使用 `desktop/windows/build-x64`。如果旧的 `desktop/windows/build` 曾用错误的 Visual Studio 环境配置，可删除或忽略；混用 x86 CMake 缓存与 x64 SDK 库会导致链接错误。
 - **Windows 代码风格：** 遵循 Google C++ 命名规范：`snake_case` 文件名/变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
 - **固件引脚定义：** `firmware/components/stick_s3_board/include/stick_s3_board.h`
