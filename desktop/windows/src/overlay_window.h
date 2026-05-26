@@ -61,6 +61,8 @@ private:
     float DpF(int px) const;
     int SizePx(int big_px, int medium_px, int small_px) const;
     float SizePxF(int big_px, int medium_px, int small_px) const;
+    int IndicatorLeftMargin() const;
+    int TextIndicatorGap() const;
     void PaintContent(Gdiplus::Graphics& graphics, int width, int height);
     void PaintText(void* bits, int width, int height);
     void PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, int size);
