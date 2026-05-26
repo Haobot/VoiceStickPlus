@@ -48,6 +48,7 @@ private:
     bool NeedsWindowAnimation() const;
     RECT BackdropBounds(int width, int height) const;
     void SyncBackdrop(int width, int height, bool show);
+    void ResizeBackdropWithoutRepaint(int width, int height);
     void UpdateLayeredBitmap();
     bool EnsureFrameBitmap(int width, int height);
     void ReleaseFrameBitmap();
@@ -105,9 +106,9 @@ private:
     static constexpr UINT_PTR kAnimationTimerId = 52;
     static constexpr int kFadeStepMs = 16;
     static constexpr int kAnimationStepMs = 16;
-    static constexpr int kWindowWidthResizeStep = 96;
-    static constexpr int kWindowHeightResizeStep = 36;
-    static constexpr int kWindowResizeSnap = 12;
+    static constexpr int kWindowWidthResizeStep = 40;
+    static constexpr int kWindowHeightResizeStep = 18;
+    static constexpr int kWindowResizeSnap = 6;
     static constexpr int kCornerRadius = 24;
     static constexpr int kMaxContentWidth = 780;
     static constexpr int kMinContentHeight = 112;

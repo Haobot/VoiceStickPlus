@@ -294,7 +294,6 @@ void OverlayWindow::OnTimer(UINT_PTR timer_id) {
     } else if (timer_id == kAnimationTimerId) {
         animation_frame_++;
         const bool window_moved = StepWindowAnimation();
-        UpdateLayeredBitmap();
         if (!window_moved && mode_ != Mode::kListening && mode_ != Mode::kCountdown) {
             KillTimer(hwnd_, kAnimationTimerId);
         }
@@ -437,8 +436,11 @@ bool OverlayWindow::StepWindowAnimation() {
     animated_window_height_ = step(animated_window_height_, target_window_height_,
                                    kWindowHeightResizeStep);
     InvalidateStaticLayer();
-    SyncBackdrop(target_window_width_, target_window_height_, false);
+    ResizeBackdropWithoutRepaint(target_window_width_, target_window_height_);
     ApplyAnimatedWindowBounds();
+    if (!NeedsWindowAnimation()) {
+        SyncBackdrop(target_window_width_, target_window_height_, false);
+    }
     return true;
 }
 
@@ -481,6 +483,16 @@ void OverlayWindow::SyncBackdrop(int width, int height, bool show) {
     }
     last_backdrop_bounds_ = bounds;
     backdrop_bounds_valid_ = true;
+}
+
+void OverlayWindow::ResizeBackdropWithoutRepaint(int width, int height) {
+    if (!backdrop_ || width <= 0 || height <= 0 || !backdrop_bounds_valid_) return;
+    const RECT bounds = BackdropBounds(width, height);
+    if (EqualRect(&last_backdrop_bounds_, &bounds)) return;
+    backdrop_->ResizeWithoutRepaint(bounds);
+    SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    last_backdrop_bounds_ = bounds;
 }
 
 POINT OverlayWindow::TargetWindowOrigin(const RECT& work_area, int width, int height) const {
