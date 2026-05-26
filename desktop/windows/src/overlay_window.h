@@ -48,6 +48,7 @@ private:
     int VisualOffsetY(int height, int visual_height) const;
     bool NeedsWindowAnimation() const;
     RECT BackdropBounds(int width, int height) const;
+    void ResolveAutoThemeColor(const RECT& bounds);
     void SyncBackdrop(int width, int height, bool show);
     void ResizeBackdropWithoutRepaint(int width, int height);
     void UpdateLayeredBitmap();
@@ -95,6 +96,7 @@ private:
     float text_scroll_to_offset_ = 0.0f;
     float last_text_scroll_offset_ = 0.0f;
     OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
+    OverlayThemeColor resolved_theme_color_ = OverlayThemeColor::kWhite;
     OverlayThemeSize theme_size_ = OverlayThemeSize::kBig;
     OverlayPosition position_ = OverlayPosition::kCenter;
     ULONGLONG countdown_started_at_ms_ = 0;

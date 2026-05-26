@@ -40,6 +40,11 @@ struct BitmapRenderTarget {
     UINT buffer_size = 0;
 };
 
+struct BackgroundBrightness {
+    bool valid = false;
+    double luma = 0.5;
+};
+
 std::wstring Utf16FromUtf8(std::string_view text) {
     if (text.empty()) return {};
     const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
@@ -69,6 +74,64 @@ void AddRoundedRect(Gdiplus::GraphicsPath& path, Gdiplus::RectF rect, float radi
                 diameter, diameter, 0.0f, 90.0f);
     path.AddArc(rect.X, rect.GetBottom() - diameter, diameter, diameter, 90.0f, 90.0f);
     path.CloseFigure();
+}
+
+BackgroundBrightness SampleBackgroundBrightness(const RECT& bounds) {
+    const int source_width = bounds.right - bounds.left;
+    const int source_height = bounds.bottom - bounds.top;
+    if (source_width <= 0 || source_height <= 0) return {};
+
+    constexpr int kSampleWidth = 24;
+    constexpr int kSampleHeight = 12;
+    HDC screen_dc = GetDC(nullptr);
+    if (!screen_dc) return {};
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    if (!memory_dc) {
+        ReleaseDC(nullptr, screen_dc);
+        return {};
+    }
+
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = kSampleWidth;
+    info.bmiHeader.biHeight = -kSampleHeight;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(memory_dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        DeleteDC(memory_dc);
+        ReleaseDC(nullptr, screen_dc);
+        return {};
+    }
+
+    HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
+    const BOOL copied = StretchBlt(memory_dc, 0, 0, kSampleWidth, kSampleHeight,
+                                   screen_dc, bounds.left, bounds.top,
+                                   source_width, source_height, SRCCOPY | CAPTUREBLT);
+    SelectObject(memory_dc, old_bitmap);
+
+    BackgroundBrightness result{};
+    if (copied) {
+        const auto* pixels = static_cast<const BYTE*>(bits);
+        double total_luma = 0.0;
+        for (int i = 0; i < kSampleWidth * kSampleHeight; ++i) {
+            const BYTE b = pixels[i * 4 + 0];
+            const BYTE g = pixels[i * 4 + 1];
+            const BYTE r = pixels[i * 4 + 2];
+            total_luma += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
+        }
+        result.valid = true;
+        result.luma = total_luma / static_cast<double>(kSampleWidth * kSampleHeight);
+    }
+
+    DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return result;
 }
 
 IDWriteFactory* SharedDwriteFactory() {
@@ -270,7 +333,10 @@ void OverlayWindow::ShowError(const std::string& text, std::function<void()> on_
 void OverlayWindow::SetThemeColor(OverlayThemeColor color) {
     if (theme_color_ == color) return;
     theme_color_ = color;
-    if (backdrop_) backdrop_->SetTheme(color);
+    if (color != OverlayThemeColor::kAuto) {
+        resolved_theme_color_ = color;
+    }
+    if (backdrop_) backdrop_->SetTheme(resolved_theme_color_);
     InvalidateStaticLayer();
     if (mode_ != Mode::kHidden) UpdateLayeredBitmap();
 }
@@ -422,6 +488,8 @@ void OverlayWindow::Reposition() {
         animated_window_height_ = target_window_height_;
     }
 
+    ResolveAutoThemeColor(BackdropBounds(target_window_width_, target_window_height_));
+
     const bool resizing = !first_layout && NeedsWindowAnimation();
     if (resizing && backdrop_) {
         const int saved_width = animated_window_width_;
@@ -519,6 +587,24 @@ void OverlayWindow::ResizeBackdropWithoutRepaint(int width, int height) {
     SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     last_backdrop_bounds_ = bounds;
+}
+
+void OverlayWindow::ResolveAutoThemeColor(const RECT& bounds) {
+    if (theme_color_ != OverlayThemeColor::kAuto) return;
+    const auto brightness = SampleBackgroundBrightness(bounds);
+    if (!brightness.valid) return;
+
+    OverlayThemeColor next_color = resolved_theme_color_;
+    if (brightness.luma <= 0.42) {
+        next_color = OverlayThemeColor::kWhite;
+    } else if (brightness.luma >= 0.58) {
+        next_color = OverlayThemeColor::kBlack;
+    }
+    if (next_color == resolved_theme_color_) return;
+
+    resolved_theme_color_ = next_color;
+    if (backdrop_) backdrop_->SetTheme(resolved_theme_color_);
+    InvalidateStaticLayer();
 }
 
 POINT OverlayWindow::TargetWindowOrigin(const RECT& work_area, int width, int height) const {
@@ -910,7 +996,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
 }
 
 BYTE OverlayWindow::InkRgb() const {
-    return theme_color_ == OverlayThemeColor::kBlack ? 16 : kInkRgb;
+    return resolved_theme_color_ == OverlayThemeColor::kBlack ? 16 : kInkRgb;
 }
 
 void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, int size) {
