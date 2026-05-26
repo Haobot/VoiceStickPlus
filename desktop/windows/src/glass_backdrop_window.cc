@@ -10,7 +10,7 @@ namespace voicestick {
 namespace {
 
 constexpr int kWhiteThemeBlurRadius = 96;
-constexpr int kBlackThemeBlurRadius = 5啊，现在这个效果就是比较好。0;
+constexpr int kBlackThemeBlurRadius = 50;
 constexpr int kDefaultBlurRadius = 66;
 constexpr BYTE kSurfaceAlpha = 236;
 
