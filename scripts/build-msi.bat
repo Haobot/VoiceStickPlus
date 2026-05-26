@@ -63,7 +63,7 @@ if not defined SIGNING_SHA1 (
     )
 )
 if not defined SIGNING_SHA1 (
-    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$certs = @(Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue) + @(Get-ChildItem Cert:\LocalMachine\My -CodeSigningCert -ErrorAction SilentlyContinue); $valid = @($certs | Where-Object { $_.NotAfter -gt (Get-Date) }); if ($valid.Count -eq 1) { $valid[0].Thumbprint }"`) do set "SIGNING_SHA1=%%i"
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$certs = @(Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue) + @(Get-ChildItem Cert:\LocalMachine\My -CodeSigningCert -ErrorAction SilentlyContinue); $trusted = @(); foreach ($cert in $certs) { if ($cert.NotAfter -le (Get-Date) -or -not $cert.HasPrivateKey) { continue }; $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain; $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck; if ($chain.Build($cert)) { $trusted += $cert } }; if ($trusted.Count -eq 1) { $trusted[0].Thumbprint }"`) do set "SIGNING_SHA1=%%i"
 )
 if defined SIGNING_SHA1 set "SIGNING_SHA1=%SIGNING_SHA1: =%"
 
@@ -95,16 +95,27 @@ echo [2/4] Signing binaries...
 if defined SIGNING_SHA1 (
     set SIGN_ARGS=/v /fd sha256 /sha1 %SIGNING_SHA1% /tr http://rfc3161timestamp.globalsign.com/advanced /td sha256
 ) else (
-    set SIGN_ARGS=/v /fd sha256 /a /uw /tr http://rfc3161timestamp.globalsign.com/advanced /td sha256
+    echo ERROR: No trusted code signing certificate found. Set SIGNING_SHA1 to a trusted certificate thumbprint.
+    exit /b 1
 )
 "%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStick.exe"
 if errorlevel 1 (
     echo ERROR: Signing VoiceStick.exe failed.
     exit /b 1
 )
+"%SIGNTOOL%" verify /pa "%BUILD_DIR%\VoiceStick.exe"
+if errorlevel 1 (
+    echo ERROR: VoiceStick.exe signature is not trusted.
+    exit /b 1
+)
 "%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\WinSparkle.dll"
 if errorlevel 1 (
     echo ERROR: Signing WinSparkle.dll failed.
+    exit /b 1
+)
+"%SIGNTOOL%" verify /pa "%BUILD_DIR%\WinSparkle.dll"
+if errorlevel 1 (
+    echo ERROR: WinSparkle.dll signature is not trusted.
     exit /b 1
 )
 
@@ -143,6 +154,11 @@ echo [4/4] Signing MSI...
 "%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStick_%VERSION%.msi"
 if errorlevel 1 (
     echo ERROR: Signing MSI failed.
+    exit /b 1
+)
+"%SIGNTOOL%" verify /pa "%BUILD_DIR%\VoiceStick_%VERSION%.msi"
+if errorlevel 1 (
+    echo ERROR: MSI signature is not trusted.
     exit /b 1
 )
 
