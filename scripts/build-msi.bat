@@ -39,6 +39,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
+cmake --build "%BUILD_DIR%" --target clean
+if errorlevel 1 (
+    echo ERROR: CMake clean failed.
+    exit /b 1
+)
+
 cmake --build "%BUILD_DIR%" --config RelWithDebInfo
 if errorlevel 1 (
     echo ERROR: CMake build failed.
