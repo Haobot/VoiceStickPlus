@@ -119,9 +119,9 @@ private:
     static constexpr float kTextLineHeightMultiplier = 1.5f;
     static constexpr float kTextBaselineMultiplier = 0.92f;
     static constexpr int kHintFontSize = 14;
-    static constexpr BYTE kGlassScrimAlpha = 72;
-    static constexpr BYTE kGlassBorderAlpha = 64;
-    static constexpr BYTE kGlassHighlightAlpha = 48;
+    static constexpr BYTE kGlassScrimAlpha = 94;
+    static constexpr BYTE kGlassBorderAlpha = 86;
+    static constexpr BYTE kGlassHighlightAlpha = 72;
     static constexpr BYTE kInkRgb = 28;
     static constexpr BYTE kTextAlpha = 242;
     static constexpr BYTE kTextShadowAlpha = 72;
