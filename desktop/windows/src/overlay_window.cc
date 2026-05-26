@@ -394,17 +394,25 @@ void OverlayWindow::Reposition() {
     largest_visible_width_ = content_width;
     largest_visible_height_ = content_height;
 
+    const bool first_layout = animated_window_width_ <= 0 || animated_window_height_ <= 0;
     target_window_width_ = content_width + shadow_padding * 2;
     target_window_height_ = content_height + shadow_padding * 2;
     const POINT origin = TargetWindowOrigin(work_area, target_window_width_, target_window_height_);
     target_window_x_ = origin.x;
     target_window_y_ = origin.y;
 
-    animated_window_width_ = target_window_width_;
-    animated_window_height_ = target_window_height_;
+    if (first_layout) {
+        animated_window_width_ = target_window_width_;
+        animated_window_height_ = target_window_height_;
+    }
 
+    const RECT backdrop_bounds = BackdropBounds(target_window_width_, target_window_height_);
+    const bool backdrop_needs_sync = !IsWindowVisible(hwnd_) ||
+        !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &backdrop_bounds);
+    if (backdrop_needs_sync) {
+        SyncBackdrop(target_window_width_, target_window_height_, true);
+    }
     UpdateLayeredBitmap();
-    SyncBackdrop(target_window_width_, target_window_height_, true);
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 
@@ -457,7 +465,7 @@ void OverlayWindow::SyncBackdrop(int width, int height, bool show) {
     if (!backdrop_ || width <= 0 || height <= 0) return;
     const RECT bounds = BackdropBounds(width, height);
     const bool bounds_changed = !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &bounds);
-    if (!show && !bounds_changed) return;
+    if (!bounds_changed && IsWindowVisible(backdrop_->hwnd())) return;
 
     const bool content_visible = IsWindowVisible(hwnd_) != FALSE;
     if (content_visible) ShowWindow(hwnd_, SW_HIDE);
