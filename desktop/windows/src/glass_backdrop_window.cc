@@ -86,11 +86,10 @@ GlassBackdropWindow::GlassBackdropWindow(HINSTANCE instance, HWND owner)
     RegisterClassW(&wc);
 
     hwnd_ = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
         wc.lpszClassName, L"", WS_POPUP,
         0, 0, 1, 1, owner_, nullptr, instance_, this);
     EnsureGdiplus();
-    SetOpacity(0);
     ApplyBackdrop();
 }
 
@@ -105,8 +104,11 @@ void GlassBackdropWindow::Show(const RECT& bounds) {
     const bool was_visible = visible_;
     visible_ = true;
     Move(bounds);
-    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-    if (!was_visible) StartFade(true);
+    if (!was_visible) {
+        AnimateWindow(hwnd_, kFadeDurationMs, AW_BLEND | AW_ACTIVATE);
+    } else {
+        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    }
 }
 
 void GlassBackdropWindow::Move(const RECT& bounds) {
@@ -128,10 +130,8 @@ void GlassBackdropWindow::Hide(bool animated) {
     visible_ = false;
     bounds_valid_ = false;
     if (animated) {
-        StartFade(false);
+        AnimateWindow(hwnd_, kFadeDurationMs, AW_BLEND | AW_HIDE);
     } else {
-        KillTimer(hwnd_, kFadeTimerId);
-        SetOpacity(0);
         ShowWindow(hwnd_, SW_HIDE);
     }
 }
@@ -166,7 +166,7 @@ void GlassBackdropWindow::ApplyBackdrop() {
     if (set_composition) {
         AccentPolicy accent{};
         accent.state = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-        accent.gradient_color = AccentColor(ThemeTint(), 156);
+        accent.gradient_color = AccentColor(RGB(24, 24, 27), 132);
         WindowCompositionAttributeData data{};
         data.attribute = 19;
         data.data = &accent;
@@ -194,7 +194,7 @@ void GlassBackdropWindow::ApplyBackdrop() {
     if (set_composition) {
         AccentPolicy accent{};
         accent.state = ACCENT_ENABLE_BLURBEHIND;
-        accent.gradient_color = AccentColor(ThemeTint(), 128);
+        accent.gradient_color = AccentColor(RGB(24, 24, 27), 96);
         WindowCompositionAttributeData data{};
         data.attribute = 19;
         data.data = &accent;
@@ -209,20 +209,6 @@ void GlassBackdropWindow::ApplyRegion(const RECT& bounds) {
     const int diameter = std::max(1, corner_radius_px_ * 2);
     HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
     SetWindowRgn(hwnd_, region, TRUE);
-}
-
-void GlassBackdropWindow::SetOpacity(BYTE opacity) {
-    current_opacity_ = opacity;
-    if (hwnd_) SetLayeredWindowAttributes(hwnd_, 0, current_opacity_, LWA_ALPHA);
-}
-
-void GlassBackdropWindow::StartFade(bool show) {
-    if (!hwnd_) return;
-    KillTimer(hwnd_, kFadeTimerId);
-    if (show) {
-        if (current_opacity_ == 0) SetOpacity(1);
-    }
-    SetTimer(hwnd_, kFadeTimerId, kFadeStepMs, nullptr);
 }
 
 COLORREF GlassBackdropWindow::ThemeTint() const {
@@ -256,15 +242,14 @@ void GlassBackdropWindow::PaintFallback() {
     graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
-    const auto tint = ThemeTint();
     Gdiplus::RectF rect(0.5f, 0.5f,
                         static_cast<float>(client.right - client.left) - 1.0f,
                         static_cast<float>(client.bottom - client.top) - 1.0f);
     Gdiplus::GraphicsPath path;
     AddRoundedRect(path, rect, static_cast<float>(corner_radius_px_));
-    Gdiplus::SolidBrush brush(Gdiplus::Color(176, GetRValue(tint), GetGValue(tint), GetBValue(tint)));
+    Gdiplus::SolidBrush brush(Gdiplus::Color(112, 24, 24, 27));
     graphics.FillPath(&brush, &path);
-    Gdiplus::Pen border(Gdiplus::Color(64, 255, 255, 255), 1.0f);
+    Gdiplus::Pen border(Gdiplus::Color(26, 255, 255, 255), 1.0f);
     graphics.DrawPath(&border, &path);
     ReleaseDC(hwnd_, dc);
 }
@@ -287,23 +272,6 @@ LRESULT CALLBACK GlassBackdropWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LP
         if (!self->glass_effect_enabled_) self->PaintFallback();
         return 0;
     }
-    case WM_TIMER:
-        if (wp == kFadeTimerId) {
-            if (self->visible_) {
-                const int next = std::min<int>(kTargetOpacity, self->current_opacity_ + kFadeStep);
-                self->SetOpacity(static_cast<BYTE>(next));
-                if (next >= kTargetOpacity) KillTimer(hwnd, kFadeTimerId);
-            } else {
-                const int next = std::max<int>(0, self->current_opacity_ - kFadeStep);
-                self->SetOpacity(static_cast<BYTE>(next));
-                if (next == 0) {
-                    KillTimer(hwnd, kFadeTimerId);
-                    ShowWindow(hwnd, SW_HIDE);
-                }
-            }
-            return 0;
-        }
-        break;
     case WM_ERASEBKGND:
         return 1;
     default:

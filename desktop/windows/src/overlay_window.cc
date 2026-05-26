@@ -680,8 +680,9 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
                                    static_cast<float>(visual_height - shadow_padding * 2) - 1.0f);
 
     for (int layer = shadow_blur; layer >= 1; --layer) {
+        const float t = static_cast<float>(shadow_blur - layer + 1) / static_cast<float>(shadow_blur);
         const float spread = static_cast<float>(layer);
-        const BYTE alpha = static_cast<BYTE>(2 + (shadow_blur - layer));
+        const BYTE alpha = static_cast<BYTE>(std::clamp(28.0f * t * t, 2.0f, 28.0f));
         Gdiplus::RectF shadow_rect(background_rect.X - spread,
                                    background_rect.Y - spread + static_cast<float>(shadow_y_offset),
                                    background_rect.Width + spread * 2.0f,
@@ -695,30 +696,7 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
     Gdiplus::GraphicsPath background_path;
     AddRoundedRect(background_path, background_rect, static_cast<float>(corner_radius));
 
-    BYTE red = 252;
-    BYTE green = 252;
-    BYTE blue = 252;
-    switch (theme_color_) {
-    case OverlayThemeColor::kPink:
-        red = 255; green = 214; blue = 230;
-        break;
-    case OverlayThemeColor::kGreen:
-        red = 214; green = 242; blue = 214;
-        break;
-    case OverlayThemeColor::kYellow:
-        red = 255; green = 240; blue = 184;
-        break;
-    case OverlayThemeColor::kBlue:
-        red = 209; green = 232; blue = 255;
-        break;
-    case OverlayThemeColor::kPurple:
-        red = 230; green = 214; blue = 255;
-        break;
-    case OverlayThemeColor::kWhite:
-    default:
-        break;
-    }
-    Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(kGlassScrimAlpha, red, green, blue));
+    Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(kGlassScrimAlpha, 24, 24, 27));
     graphics.FillPath(&scrim_brush, &background_path);
 
     Gdiplus::RectF highlight_rect(background_rect.X + DpF(1),
@@ -797,10 +775,10 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     render_target.target->PushAxisAlignedClip(text_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const float shadow_offset = std::max(1.0f, DpF(1));
     DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_x + shadow_offset,
-                   block_y + shadow_offset, kTextShadowAlpha, 255);
+                   block_y + shadow_offset, kTextShadowAlpha, 0);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x + shadow_offset,
                    block_y + text_metrics.height + gap + shadow_offset,
-                   kTextShadowAlpha, 255);
+                   kTextShadowAlpha, 0);
     DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_x, block_y,
                    kTextAlpha, kInkRgb);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x,
