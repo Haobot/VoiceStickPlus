@@ -112,7 +112,7 @@ private:
     static constexpr int kDeviceFontSize = 14;
     static constexpr BYTE kLaneScrimAlpha = 0;
     static constexpr BYTE kLaneBorderAlpha = 32;
-    static constexpr BYTE kTextShadowAlpha = 170;
+    static constexpr BYTE kTextShadowAlpha = 88;
 };
 
 } // namespace voicestick

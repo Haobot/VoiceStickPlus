@@ -403,8 +403,8 @@ void OverlayWindow::Reposition() {
     animated_window_width_ = target_window_width_;
     animated_window_height_ = target_window_height_;
 
-    SyncBackdrop(target_window_width_, target_window_height_, true);
     UpdateLayeredBitmap();
+    SyncBackdrop(target_window_width_, target_window_height_, true);
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 

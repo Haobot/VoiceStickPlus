@@ -139,11 +139,7 @@ void GlassBackdropWindow::Show(const RECT& bounds) {
     const bool was_visible = visible_;
     visible_ = true;
     Move(bounds);
-    if (!was_visible) {
-        AnimateWindow(hwnd_, kFadeDurationMs, AW_BLEND | AW_ACTIVATE);
-    } else {
-        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-    }
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 
 void GlassBackdropWindow::Move(const RECT& bounds) {
@@ -165,11 +161,7 @@ void GlassBackdropWindow::Hide(bool animated) {
     if (!hwnd_ || !visible_) return;
     visible_ = false;
     bounds_valid_ = false;
-    if (animated) {
-        AnimateWindow(hwnd_, kFadeDurationMs, AW_BLEND | AW_HIDE);
-    } else {
-        ShowWindow(hwnd_, SW_HIDE);
-    }
+    ShowWindow(hwnd_, SW_HIDE);
 }
 
 void GlassBackdropWindow::SetCornerRadius(int radius_px) {
