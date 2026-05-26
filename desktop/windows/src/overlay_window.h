@@ -119,8 +119,8 @@ private:
     static constexpr float kTextLineHeightMultiplier = 1.5f;
     static constexpr float kTextBaselineMultiplier = 0.92f;
     static constexpr int kHintFontSize = 14;
-    static constexpr BYTE kGlassScrimAlpha = 90;
-    static constexpr BYTE kGlassBorderAlpha = 32;
+    static constexpr BYTE kGlassScrimAlpha = 0;
+    static constexpr BYTE kGlassBorderAlpha = 34;
     static constexpr BYTE kInkRgb = 246;
     static constexpr BYTE kTextAlpha = 248;
     static constexpr BYTE kTextShadowAlpha = 150;
@@ -128,7 +128,7 @@ private:
     static constexpr BYTE kIndicatorAlpha = 218;
     static constexpr BYTE kIndicatorTrackAlpha = 72;
     static constexpr int kShadowPadding = 20;
-    static constexpr int kShadowBlur = 24;
+    static constexpr int kShadowBlur = 12;
     static constexpr int kShadowYOffset = 2;
     static constexpr int kPositionMargin = 28;
     static constexpr int kMaxAlpha = 255;
