@@ -39,6 +39,7 @@ private:
     AppConfig config_;
     UINT dpi_ = 96;
 
+    HWND language_combo_ = nullptr;
     HWND provider_combo_ = nullptr;
     HWND api_key_edit_ = nullptr;
     HWND apply_trial_button_ = nullptr;
@@ -57,7 +58,8 @@ private:
     std::vector<HWND> label_controls_;
 
     static constexpr int kClientWidth = 640;
-    static constexpr int kClientHeight = 540;
+    static constexpr int kClientHeight = 585;
+    static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
     static constexpr UINT kIdResourceCombo = 2003;

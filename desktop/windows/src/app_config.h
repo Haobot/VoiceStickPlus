@@ -20,6 +20,12 @@ enum class InteractionMode {
     kClickToTalk,
 };
 
+enum class UiLanguage {
+    kSystem,
+    kEnglish,
+    kSimplifiedChinese,
+};
+
 enum class OverlayThemeColor {
     kWhite,
     kAuto,
@@ -90,6 +96,7 @@ struct AppConfig {
     std::string llm_api_key;
     std::string llm_model = "gpt-5.5";
     InteractionMode interaction_mode = InteractionMode::kHoldToTalk;
+    UiLanguage ui_language = UiLanguage::kSystem;
     std::string resource_id = "volc.seedasr.sauc.duration";
     std::vector<std::string> asr_hotwords;
     std::vector<std::string> paired_device_ids;
@@ -128,6 +135,10 @@ std::string AsrProviderName(AsrProvider provider);
 AsrProvider AsrProviderFromName(std::string_view name);
 std::string InteractionModeName(InteractionMode mode);
 InteractionMode InteractionModeFromName(std::string_view name);
+std::string UiLanguageName(UiLanguage language);
+UiLanguage UiLanguageFromName(std::string_view name);
+UiLanguage UiLanguageFromLocaleName(std::wstring_view locale_name);
+UiLanguage EffectiveUiLanguage(UiLanguage configured);
 std::string OverlayThemeColorName(OverlayThemeColor color);
 OverlayThemeColor OverlayThemeColorFromName(std::string_view name);
 std::string OverlayThemeColorDisplayName(OverlayThemeColor color);
