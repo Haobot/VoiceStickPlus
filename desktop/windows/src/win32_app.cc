@@ -103,6 +103,7 @@ constexpr OverlayThemeColor kOverlayThemeColors[] = {
 
 constexpr OverlayPosition kOverlayPositions[] = {
     OverlayPosition::kCenter,
+    OverlayPosition::kMiddleBottom,
     OverlayPosition::kTopLeft,
     OverlayPosition::kTopRight,
     OverlayPosition::kBottomLeft,

@@ -448,9 +448,12 @@ void TestAppConfig() {
     assert(OverlayThemeColorName(OverlayThemeColor::kBlack) == "black");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kYellow) == "Yellow");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kBlack) == "Black");
+    assert(OverlayPositionFromName("middle_bottom") == OverlayPosition::kMiddleBottom);
     assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);
     assert(OverlayPositionName(OverlayPosition::kBottomLeft) == "bottom_left");
+    assert(OverlayPositionName(OverlayPosition::kMiddleBottom) == "middle_bottom");
     assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");
+    assert(OverlayPositionDisplayName(OverlayPosition::kMiddleBottom) == "Middle Bottom");
     cache.default_output_profile.target = OutputTarget::kSubtitle;
     cache.default_output_profile.transform = TextTransform::kOriginal;
     cache.device_output_profiles["5A74"] = OutputProfile{
