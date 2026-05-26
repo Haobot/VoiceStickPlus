@@ -16,7 +16,14 @@ echo Building VoiceStick v%VERSION% MSI installer...
 
 :: Initialize VS build environment (cmake, ninja, cl, rc, etc.)
 set VSWHERE="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-for /f "delims=" %%i in ('%VSWHERE% -latest -property installationPath') do set VS_PATH=%%i
+if exist %VSWHERE% (
+    for /f "delims=" %%i in ('%VSWHERE% -latest -property installationPath') do set VS_PATH=%%i
+)
+if not exist "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" (
+    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" (
+        set "VS_PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools"
+    )
+)
 if not exist "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" (
     echo ERROR: Could not find vcvarsall.bat. Is Visual Studio installed?
     exit /b 1
@@ -56,9 +63,9 @@ if not defined SIGNING_SHA1 (
     )
 )
 if not defined SIGNING_SHA1 (
-    echo ERROR: Set SIGNING_SHA1 env var, or create scripts\.signing_sha1 with your cert thumbprint ^(SHA1^).
-    exit /b 1
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$certs = @(Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue) + @(Get-ChildItem Cert:\LocalMachine\My -CodeSigningCert -ErrorAction SilentlyContinue); $valid = @($certs | Where-Object { $_.NotAfter -gt (Get-Date) }); if ($valid.Count -eq 1) { $valid[0].Thumbprint }"`) do set "SIGNING_SHA1=%%i"
 )
+if defined SIGNING_SHA1 set "SIGNING_SHA1=%SIGNING_SHA1: =%"
 
 if defined SIGNTOOL_PATH (
     set SIGNTOOL=%SIGNTOOL_PATH%
@@ -67,14 +74,29 @@ if defined SIGNTOOL_PATH (
 )
 where "%SIGNTOOL%" >nul 2>&1
 if errorlevel 1 (
-    if exist "D:\Workspace\???\signtool.exe" (
+    if exist "%ProgramFiles(x86)%\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe" (
+        set "SIGNTOOL=%ProgramFiles(x86)%\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
+    ) else if exist "%ProgramFiles(x86)%\Windows Kits\10\App Certification Kit\signtool.exe" (
+        set "SIGNTOOL=%ProgramFiles(x86)%\Windows Kits\10\App Certification Kit\signtool.exe"
+    ) else if exist "D:\Workspace\???\signtool.exe" (
         set SIGNTOOL=D:\Workspace\???\signtool.exe
+    )
+)
+if not exist "%SIGNTOOL%" (
+    where "%SIGNTOOL%" >nul 2>&1
+    if errorlevel 1 (
+        echo ERROR: signtool.exe not found. Set SIGNTOOL_PATH to the full signtool.exe path.
+        exit /b 1
     )
 )
 
 echo.
 echo [2/4] Signing binaries...
-set SIGN_ARGS=/v /fd sha256 /sha1 %SIGNING_SHA1% /tr http://rfc3161timestamp.globalsign.com/advanced /td sha256
+if defined SIGNING_SHA1 (
+    set SIGN_ARGS=/v /fd sha256 /sha1 %SIGNING_SHA1% /tr http://rfc3161timestamp.globalsign.com/advanced /td sha256
+) else (
+    set SIGN_ARGS=/v /fd sha256 /a /uw /tr http://rfc3161timestamp.globalsign.com/advanced /td sha256
+)
 "%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStick.exe"
 if errorlevel 1 (
     echo ERROR: Signing VoiceStick.exe failed.
@@ -90,7 +112,11 @@ if errorlevel 1 (
 echo.
 echo [3/4] Building MSI with WiX...
 if not defined WIX_PATH (
-    set WIX_PATH=C:\Program Files\WiX Toolset v6.0\bin\wix.exe
+    if exist "%USERPROFILE%\.dotnet\tools\wix.exe" (
+        set "WIX_PATH=%USERPROFILE%\.dotnet\tools\wix.exe"
+    ) else (
+        set WIX_PATH=C:\Program Files\WiX Toolset v6.0\bin\wix.exe
+    )
 )
 if not exist "%WIX_PATH%" (
     echo ERROR: WiX not found at %WIX_PATH%
