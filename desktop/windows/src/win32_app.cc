@@ -93,6 +93,7 @@ std::wstring FirmwareIdentityText(const std::string& hardware, const std::string
 
 constexpr OverlayThemeColor kOverlayThemeColors[] = {
     OverlayThemeColor::kWhite,
+    OverlayThemeColor::kBlack,
     OverlayThemeColor::kPink,
     OverlayThemeColor::kGreen,
     OverlayThemeColor::kYellow,

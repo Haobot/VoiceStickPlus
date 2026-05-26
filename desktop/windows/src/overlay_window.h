@@ -60,6 +60,7 @@ private:
     void PaintContent(Gdiplus::Graphics& graphics, int width, int height);
     void PaintText(void* bits, int width, int height);
     void PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, int size);
+    BYTE InkRgb() const;
     void StartFadeIn();
     void StartFadeOut();
 

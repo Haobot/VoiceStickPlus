@@ -743,6 +743,7 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
 }
 
 void OverlayWindow::PaintText(void* bits, int width, int height) {
+    const BYTE ink_rgb = InkRgb();
     const int shadow_padding = Dp(kShadowPadding);
     const int horizontal_padding = Dp(kHorizontalPadding);
     const int indicator_size = Dp(kIndicatorSize);
@@ -838,9 +839,9 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
                    block_y + text_metrics.height + gap + shadow_offset,
                    kTextShadowAlpha, 0);
     DrawTextLayout(render_target.target.Get(), current_text.layout.Get(), text_draw_x, block_y,
-                   kTextAlpha, kInkRgb);
+                   kTextAlpha, ink_rgb);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x,
-                   block_y + text_metrics.height + gap, kHintAlpha, kInkRgb);
+                   block_y + text_metrics.height + gap, kHintAlpha, ink_rgb);
     render_target.target->PopAxisAlignedClip();
     if (SUCCEEDED(render_target.target->EndDraw())) {
         render_target.bitmap->CopyPixels(nullptr, render_target.stride,
@@ -849,7 +850,12 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     }
 }
 
+BYTE OverlayWindow::InkRgb() const {
+    return theme_color_ == OverlayThemeColor::kBlack ? 16 : kInkRgb;
+}
+
 void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, int size) {
+    const BYTE ink_rgb = InkRgb();
     const int cx = x + size / 2;
     const int cy = y + size / 2;
 
@@ -861,7 +867,7 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
         const int start_x = cx - total_w / 2;
         const double elapsed = static_cast<double>(GetTickCount64() % 100000) / 1000.0;
 
-        Gdiplus::SolidBrush bar_brush(Gdiplus::Color(kIndicatorAlpha, kInkRgb, kInkRgb, kInkRgb));
+        Gdiplus::SolidBrush bar_brush(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb));
         for (int i = 0; i < num_bars; ++i) {
             const double phase = elapsed * 4.2 + i * 0.9;
             const int bar_h = Dp(7) + static_cast<int>(Dp(9) * (0.5 + 0.5 * std::sin(phase)));
@@ -875,9 +881,9 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
             graphics.FillPath(&bar_brush, &bar_path);
         }
     } else if (mode_ == Mode::kCountdown) {
-        Gdiplus::Pen track_pen(Gdiplus::Color(kIndicatorTrackAlpha, kInkRgb,
-                                              kInkRgb, kInkRgb), DpF(3));
-        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, kInkRgb, kInkRgb, kInkRgb), DpF(3));
+        Gdiplus::Pen track_pen(Gdiplus::Color(kIndicatorTrackAlpha, ink_rgb,
+                                              ink_rgb, ink_rgb), DpF(3));
+        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), DpF(3));
         ring_pen.SetStartCap(Gdiplus::LineCapRound);
         ring_pen.SetEndCap(Gdiplus::LineCapRound);
         const int inset = Dp(5);
@@ -897,7 +903,7 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
             graphics.DrawArc(&ring_pen, ring_rect, -90.0f, -360.0f * remaining);
         }
     } else if (mode_ == Mode::kPaused) {
-        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, kInkRgb, kInkRgb, kInkRgb), DpF(3));
+        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), DpF(3));
         const int inset = Dp(5);
         graphics.DrawEllipse(&ring_pen, x + inset, y + inset, size - inset * 2, size - inset * 2);
     } else if (mode_ == Mode::kError) {

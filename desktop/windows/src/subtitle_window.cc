@@ -613,6 +613,7 @@ void SubtitleWindow::RefreshDpi() {
 
 unsigned int SubtitleWindow::ColorValue(OverlayThemeColor color) const {
     switch (color) {
+    case OverlayThemeColor::kBlack: return 0x101010;
     case OverlayThemeColor::kPink: return 0xff6b9e;
     case OverlayThemeColor::kGreen: return 0x4fd68c;
     case OverlayThemeColor::kYellow: return 0xffc742;
