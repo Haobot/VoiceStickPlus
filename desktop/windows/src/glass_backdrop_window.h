@@ -30,6 +30,8 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND owner_ = nullptr;
     HWND hwnd_ = nullptr;
+    RECT last_bounds_{};
+    bool bounds_valid_ = false;
     int corner_radius_px_ = 24;
     OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
     bool glass_effect_enabled_ = false;

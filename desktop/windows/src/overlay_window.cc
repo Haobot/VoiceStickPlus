@@ -454,13 +454,20 @@ RECT OverlayWindow::BackdropBounds(int width, int height) const {
 void OverlayWindow::SyncBackdrop(int width, int height, bool show) {
     if (!backdrop_ || width <= 0 || height <= 0) return;
     const RECT bounds = BackdropBounds(width, height);
+    const bool bounds_changed = !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &bounds);
+    if (!show && !bounds_changed) return;
+
     if (show) {
         backdrop_->Show(bounds);
     } else {
         backdrop_->Move(bounds);
     }
-    SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (show || bounds_changed) {
+        SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    last_backdrop_bounds_ = bounds;
+    backdrop_bounds_valid_ = true;
 }
 
 POINT OverlayWindow::TargetWindowOrigin(const RECT& work_area, int width, int height) const {
@@ -879,6 +886,7 @@ void OverlayWindow::StartFadeOut() {
     UpdateLayeredBitmap();
     ShowWindow(hwnd_, SW_HIDE);
     if (backdrop_) backdrop_->Hide();
+    backdrop_bounds_valid_ = false;
     mode_ = Mode::kHidden;
     largest_visible_width_ = 0;
     largest_visible_height_ = 0;
