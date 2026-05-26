@@ -354,21 +354,10 @@ void OverlayWindow::Reposition() {
     const auto single_line_text = MeasureText(text_, text_font_size,
                                               static_cast<float>(max_text_width) * 4.0f,
                                               false, text_line_height, text_baseline);
-    const float measured_text_width = single_line_text.width;
-    const float desired_text_width = std::min(measured_text_width,
-                                              static_cast<float>(max_text_width));
-    const int one_third_text_width = std::max(1, max_text_width / 3);
-    const int two_thirds_text_width = std::max(one_third_text_width,
-                                               (max_text_width * 2) / 3);
-    int text_width = max_text_width;
-    if (desired_text_width <= static_cast<float>(one_third_text_width)) {
-        text_width = one_third_text_width;
-    } else if (desired_text_width <= static_cast<float>(two_thirds_text_width)) {
-        text_width = two_thirds_text_width;
-    }
+    const int text_width = max_text_width;
     int content_width = text_width + side_chrome_width;
 
-    should_wrap_text_ = measured_text_width > static_cast<float>(max_text_width);
+    should_wrap_text_ = false;
     const auto laid_out_text = should_wrap_text_
         ? MeasureText(text_, text_font_size, static_cast<float>(text_width), true,
                       text_line_height, text_baseline)
@@ -756,9 +745,13 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     const float text_font_size = DpF(kTextFontSize);
     const float text_line_height = text_font_size * kTextLineHeightMultiplier;
     const float text_baseline = text_font_size * kTextBaselineMultiplier;
+    const auto measured_text = MeasureText(text_, text_font_size, text_width * 8.0f,
+                                           false, text_line_height, text_baseline);
+    const float layout_width = std::max(text_width, measured_text.width + DpF(8));
     auto text_format = CreateTextFormat(text_font_size);
-    auto text_layout = CreateTextLayout(text_, text_format.Get(), text_width,
-                                        should_wrap_text_, text_line_height,
+    if (text_format) text_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    auto text_layout = CreateTextLayout(text_, text_format.Get(), layout_width,
+                                        false, text_line_height,
                                         text_baseline);
     TextLayoutSize text_metrics;
     if (text_layout) {
@@ -792,19 +785,20 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     auto render_target = CreateBitmapRenderTarget(bits, width, height);
     if (!render_target.target || !render_target.bitmap) return;
     const D2D1_RECT_F text_clip = D2D1::RectF(
-        static_cast<float>(visual_x + shadow_padding),
+        text_x,
         static_cast<float>(visual_y + shadow_padding),
-        static_cast<float>(visual_x + visual_width - shadow_padding),
+        text_x + text_width,
         static_cast<float>(visual_y + visual_height - shadow_padding));
+    const float text_draw_x = text_x - std::max(0.0f, text_metrics.width - text_width);
     render_target.target->BeginDraw();
     render_target.target->PushAxisAlignedClip(text_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const float shadow_offset = std::max(1.0f, DpF(1));
-    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_x + shadow_offset,
+    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_draw_x + shadow_offset,
                    block_y + shadow_offset, kTextShadowAlpha, 0);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x + shadow_offset,
                    block_y + text_metrics.height + gap + shadow_offset,
                    kTextShadowAlpha, 0);
-    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_x, block_y,
+    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_draw_x, block_y,
                    kTextAlpha, kInkRgb);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x,
                    block_y + text_metrics.height + gap, kHintAlpha, kInkRgb);
