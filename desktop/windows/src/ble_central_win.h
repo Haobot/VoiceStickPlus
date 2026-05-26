@@ -94,6 +94,9 @@ private:
                                               std::string local_name,
                                               std::string device_id);
     winrt::fire_and_forget WriteControlPayloadAsync(std::shared_ptr<DeviceSession> session, ByteVector payload);
+    winrt::Windows::Foundation::IAsyncOperation<bool> EnsureOtaCharacteristicsAsync(
+        std::shared_ptr<DeviceSession> session,
+        std::string device_id);
     winrt::fire_and_forget UpdateFirmwareAsync(std::shared_ptr<DeviceSession> session,
                                                std::shared_ptr<FirmwareUpdateSession> update_session);
     void HandleFirmwareOtaStateEvent(const std::string& device_id, const FirmwareOtaStateEvent& event);
