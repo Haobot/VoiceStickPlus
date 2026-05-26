@@ -128,6 +128,7 @@ private:
     static constexpr int kVerticalPadding = 16;
     static constexpr int kIndicatorSize = 26;
     static constexpr int kContentSpacing = 12;
+    static constexpr int kTextSafetySpacing = 6;
     static constexpr int kTextFontSize = 21;
     static constexpr float kTextLineHeightMultiplier = 1.5f;
     static constexpr float kTextBaselineMultiplier = 0.92f;
