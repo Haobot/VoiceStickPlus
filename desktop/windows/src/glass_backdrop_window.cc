@@ -18,6 +18,11 @@ int ClampByte(int value) {
     return std::clamp(value, 0, 255);
 }
 
+BYTE MixByte(BYTE source, BYTE target, float strength) {
+    return static_cast<BYTE>(std::clamp(
+        static_cast<int>(std::lround(source + (target - source) * strength)), 0, 255));
+}
+
 BYTE RoundedCoverage(int x, int y, int width, int height, int radius) {
     const float px = static_cast<float>(x) + 0.5f;
     const float py = static_cast<float>(y) + 0.5f;
@@ -236,6 +241,7 @@ void GlassBackdropWindow::PaintCarrierSurface() {
         cached_left_ = window_rect.left;
         cached_top_ = window_rect.top;
         BoxBlur(cached_pixels_, cached_width_, cached_height_, BlurRadius());
+        ApplyFrostedMaterial(cached_pixels_);
         std::vector<std::uint32_t> output = cached_pixels_;
         ApplyRoundedAlpha(output, width, height, corner_radius_px_);
         std::copy(output.begin(), output.end(), raw_pixels);
@@ -296,6 +302,47 @@ void GlassBackdropWindow::PaintCachedSurface(const RECT& bounds) {
     if (bitmap) DeleteObject(bitmap);
     DeleteDC(memory_dc);
     ReleaseDC(nullptr, screen_dc);
+}
+
+void GlassBackdropWindow::ApplyFrostedMaterial(std::vector<std::uint32_t>& pixels) const {
+    if (pixels.empty()) return;
+
+    long long total_red = 0;
+    long long total_green = 0;
+    long long total_blue = 0;
+    for (const auto pixel : pixels) {
+        total_blue += pixel & 0xff;
+        total_green += (pixel >> 8) & 0xff;
+        total_red += (pixel >> 16) & 0xff;
+    }
+
+    const auto count = static_cast<long long>(pixels.size());
+    const BYTE average_red = static_cast<BYTE>(total_red / count);
+    const BYTE average_green = static_cast<BYTE>(total_green / count);
+    const BYTE average_blue = static_cast<BYTE>(total_blue / count);
+    const COLORREF tint = ThemeTint();
+    const BYTE tint_red = GetRValue(tint);
+    const BYTE tint_green = GetGValue(tint);
+    const BYTE tint_blue = GetBValue(tint);
+
+    constexpr float kAverageMixStrength = 0.22f;
+    constexpr float kTintMixStrength = 0.12f;
+    for (auto& pixel : pixels) {
+        BYTE blue = static_cast<BYTE>(pixel & 0xff);
+        BYTE green = static_cast<BYTE>((pixel >> 8) & 0xff);
+        BYTE red = static_cast<BYTE>((pixel >> 16) & 0xff);
+
+        red = MixByte(red, average_red, kAverageMixStrength);
+        green = MixByte(green, average_green, kAverageMixStrength);
+        blue = MixByte(blue, average_blue, kAverageMixStrength);
+        red = MixByte(red, tint_red, kTintMixStrength);
+        green = MixByte(green, tint_green, kTintMixStrength);
+        blue = MixByte(blue, tint_blue, kTintMixStrength);
+
+        pixel = static_cast<std::uint32_t>(blue) |
+                (static_cast<std::uint32_t>(green) << 8) |
+                (static_cast<std::uint32_t>(red) << 16);
+    }
 }
 
 int GlassBackdropWindow::BlurRadius() const {
