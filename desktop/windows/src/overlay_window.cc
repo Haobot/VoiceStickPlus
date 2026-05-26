@@ -864,7 +864,7 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
     AddRoundedRect(background_path, background_rect, static_cast<float>(corner_radius));
 
     if (resolved_theme_color_ == OverlayThemeColor::kBlack) {
-        Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(8, 255, 255, 255));
+        Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(1, 255, 255, 255));
         graphics.FillPath(&scrim_brush, &background_path);
         Gdiplus::Pen border_pen(Gdiplus::Color(68, 16, 16, 16), std::max(1.0f, DpF(1)));
         graphics.DrawPath(&border_pen, &background_path);
@@ -872,7 +872,7 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
     }
 
     if (resolved_theme_color_ == OverlayThemeColor::kWhite) {
-        Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(10, 0, 0, 0));
+        Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(1, 0, 0, 0));
         graphics.FillPath(&scrim_brush, &background_path);
     } else {
         Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(kGlassScrimAlpha, 24, 24, 27));
