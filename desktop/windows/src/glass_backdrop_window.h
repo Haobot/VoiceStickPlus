@@ -4,6 +4,9 @@
 
 #include <Windows.h>
 
+#include <cstdint>
+#include <vector>
+
 namespace voicestick {
 
 class GlassBackdropWindow {
@@ -13,6 +16,7 @@ public:
 
     void Show(const RECT& bounds);
     void Move(const RECT& bounds);
+    void ResizeWithoutRepaint(const RECT& bounds);
     void Hide(bool animated = true);
     void SetCornerRadius(int radius_px);
     void SetTheme(OverlayThemeColor color);
@@ -24,6 +28,7 @@ private:
     void ApplyBackdrop();
     void ApplyRegion(const RECT& bounds);
     void PaintCarrierSurface();
+    void PaintCachedSurface(const RECT& bounds);
     COLORREF ThemeTint() const;
     void PaintFallback();
 
@@ -38,6 +43,9 @@ private:
     OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
     bool glass_effect_enabled_ = false;
     bool visible_ = false;
+    std::vector<std::uint32_t> cached_pixels_;
+    int cached_width_ = 0;
+    int cached_height_ = 0;
 
     static constexpr DWORD kFadeDurationMs = 140;
 };

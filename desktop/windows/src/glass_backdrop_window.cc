@@ -157,6 +157,18 @@ void GlassBackdropWindow::Move(const RECT& bounds) {
     if (visible_) ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 
+void GlassBackdropWindow::ResizeWithoutRepaint(const RECT& bounds) {
+    if (!hwnd_ || !CanShow()) return;
+    if (bounds_valid_ && EqualRect(&last_bounds_, &bounds)) return;
+
+    const int width = std::max(1L, bounds.right - bounds.left);
+    const int height = std::max(1L, bounds.bottom - bounds.top);
+    SetWindowPos(hwnd_, nullptr, bounds.left, bounds.top, width, height,
+                 SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW);
+    last_bounds_ = bounds;
+    bounds_valid_ = true;
+}
+
 void GlassBackdropWindow::Hide(bool animated) {
     if (!hwnd_ || !visible_) return;
     visible_ = false;
