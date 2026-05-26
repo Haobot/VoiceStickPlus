@@ -56,6 +56,7 @@ add_executable(VoiceStickApp WIN32
     src/global_hotkey_win.cc
     src/voice_stick_cloud_api_win.cc
     src/firmware_update_dialog.cc
+    src/glass_backdrop_window.cc
     src/overlay_window.cc
     src/subtitle_window.cc
     src/pair_device_dialog.cc
@@ -81,6 +82,7 @@ target_link_libraries(VoiceStickApp PRIVATE
     user32
     d2d1
     dwrite
+    dwmapi
     gdi32
     gdiplus
     windowscodecs
