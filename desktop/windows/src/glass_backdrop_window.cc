@@ -9,7 +9,9 @@ namespace voicestick {
 
 namespace {
 
-constexpr int kBlurRadius = 14;
+constexpr int kWhiteThemeBlurRadius = 80;
+constexpr int kBlackThemeBlurRadius = 38;
+constexpr int kDefaultBlurRadius = 66;
 constexpr BYTE kSurfaceAlpha = 236;
 
 int ClampByte(int value) {
@@ -233,7 +235,7 @@ void GlassBackdropWindow::PaintCarrierSurface() {
         cached_height_ = height;
         cached_left_ = window_rect.left;
         cached_top_ = window_rect.top;
-        BoxBlur(cached_pixels_, cached_width_, cached_height_, kBlurRadius);
+        BoxBlur(cached_pixels_, cached_width_, cached_height_, BlurRadius());
         std::vector<std::uint32_t> output = cached_pixels_;
         ApplyRoundedAlpha(output, width, height, corner_radius_px_);
         std::copy(output.begin(), output.end(), raw_pixels);
@@ -294,6 +296,17 @@ void GlassBackdropWindow::PaintCachedSurface(const RECT& bounds) {
     if (bitmap) DeleteObject(bitmap);
     DeleteDC(memory_dc);
     ReleaseDC(nullptr, screen_dc);
+}
+
+int GlassBackdropWindow::BlurRadius() const {
+    switch (theme_color_) {
+    case OverlayThemeColor::kBlack:
+        return kBlackThemeBlurRadius;
+    case OverlayThemeColor::kWhite:
+        return kWhiteThemeBlurRadius;
+    default:
+        return kDefaultBlurRadius;
+    }
 }
 
 COLORREF GlassBackdropWindow::ThemeTint() const {
