@@ -86,6 +86,10 @@ private:
     int target_window_height_ = 0;
     int target_window_x_ = 0;
     int target_window_y_ = 0;
+    ULONGLONG text_transition_started_at_ms_ = 0;
+    float text_scroll_from_offset_ = 0.0f;
+    float text_scroll_to_offset_ = 0.0f;
+    float last_text_scroll_offset_ = 0.0f;
     OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
     OverlayPosition position_ = OverlayPosition::kCenter;
     ULONGLONG countdown_started_at_ms_ = 0;
@@ -106,6 +110,7 @@ private:
     static constexpr UINT_PTR kAnimationTimerId = 52;
     static constexpr int kFadeStepMs = 16;
     static constexpr int kAnimationStepMs = 16;
+    static constexpr int kTextTransitionMs = 140;
     static constexpr int kWindowWidthResizeStep = 40;
     static constexpr int kWindowHeightResizeStep = 18;
     static constexpr int kWindowResizeSnap = 6;

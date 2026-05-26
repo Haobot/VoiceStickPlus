@@ -198,7 +198,7 @@ BitmapRenderTarget CreateBitmapRenderTarget(void* bits, int width, int height) {
 
 void DrawTextLayout(ID2D1RenderTarget* target, IDWriteTextLayout* layout,
                     float x, float y, BYTE alpha, BYTE rgb) {
-    if (!target || !layout) return;
+    if (!target || !layout || alpha == 0) return;
 
     const float c = static_cast<float>(rgb) / 255.0f;
     ComPtr<ID2D1SolidColorBrush> brush;
@@ -294,7 +294,8 @@ void OverlayWindow::OnTimer(UINT_PTR timer_id) {
     } else if (timer_id == kAnimationTimerId) {
         animation_frame_++;
         const bool window_moved = StepWindowAnimation();
-        if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown)) {
+        const bool text_transitioning = text_transition_started_at_ms_ != 0;
+        if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown || text_transitioning)) {
             InvalidateStaticLayer();
             UpdateLayeredBitmap();
         }
@@ -313,13 +314,23 @@ void OverlayWindow::OnPaint() {
 
 void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& hint) {
     KillTimer(hwnd_, kAutoHideTimerId);
+    const std::wstring next_text = Utf16FromUtf8(text);
+    if (mode_ != Mode::kHidden && next_text != text_) {
+        text_scroll_from_offset_ = last_text_scroll_offset_;
+        text_transition_started_at_ms_ = GetTickCount64();
+    } else if (mode_ == Mode::kHidden) {
+        text_transition_started_at_ms_ = 0;
+        text_scroll_from_offset_ = 0.0f;
+        text_scroll_to_offset_ = 0.0f;
+        last_text_scroll_offset_ = 0.0f;
+    }
     mode_ = mode;
-    text_ = Utf16FromUtf8(text);
+    text_ = next_text;
     hint_ = hint.empty() ? std::wstring() : Utf16FromUtf8(hint);
     InvalidateStaticLayer();
     Reposition();
 
-    if (mode == Mode::kListening || mode == Mode::kCountdown || NeedsWindowAnimation()) {
+    if (mode == Mode::kListening || mode == Mode::kCountdown || NeedsWindowAnimation() || text_transition_started_at_ms_ != 0) {
         SetTimer(hwnd_, kAnimationTimerId, kAnimationStepMs, nullptr);
     } else {
         KillTimer(hwnd_, kAnimationTimerId);
@@ -749,24 +760,34 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     const float text_font_size = DpF(kTextFontSize);
     const float text_line_height = text_font_size * kTextLineHeightMultiplier;
     const float text_baseline = text_font_size * kTextBaselineMultiplier;
-    const auto measured_text = MeasureText(text_, text_font_size, text_width * 8.0f,
-                                           false, text_line_height, text_baseline);
-    const float layout_width = std::max(text_width, measured_text.width + DpF(8));
-    auto text_format = CreateTextFormat(text_font_size);
-    if (text_format) text_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    auto text_layout = CreateTextLayout(text_, text_format.Get(), layout_width,
-                                        false, text_line_height,
-                                        text_baseline);
-    TextLayoutSize text_metrics;
-    if (text_layout) {
-        DWRITE_TEXT_METRICS metrics{};
-        if (SUCCEEDED(text_layout->GetMetrics(&metrics))) {
-            text_metrics.width =
-                std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
-            text_metrics.height = std::ceil(metrics.height);
-            text_metrics.line_count = std::max<UINT32>(1, metrics.lineCount);
+    struct FlowTextLayout {
+        ComPtr<IDWriteTextLayout> layout;
+        TextLayoutSize metrics;
+        float draw_x = 0.0f;
+    };
+    auto make_flow_layout = [&](const std::wstring& value) {
+        FlowTextLayout result;
+        const auto measured_text = MeasureText(value, text_font_size, text_width * 8.0f,
+                                               false, text_line_height, text_baseline);
+        const float layout_width = std::max(text_width, measured_text.width + DpF(8));
+        auto text_format = CreateTextFormat(text_font_size);
+        if (text_format) text_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        result.layout = CreateTextLayout(value, text_format.Get(), layout_width,
+                                         false, text_line_height, text_baseline);
+        if (result.layout) {
+            DWRITE_TEXT_METRICS metrics{};
+            if (SUCCEEDED(result.layout->GetMetrics(&metrics))) {
+                result.metrics.width =
+                    std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
+                result.metrics.height = std::ceil(metrics.height);
+                result.metrics.line_count = std::max<UINT32>(1, metrics.lineCount);
+            }
         }
-    }
+        result.draw_x = text_x - std::max(0.0f, result.metrics.width - text_width);
+        return result;
+    };
+    FlowTextLayout current_text = make_flow_layout(text_);
+    TextLayoutSize text_metrics = current_text.metrics;
 
     TextLayoutSize hint_metrics;
     ComPtr<IDWriteTextLayout> hint_layout;
@@ -793,16 +814,30 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
         static_cast<float>(visual_y + shadow_padding),
         text_x + text_width,
         static_cast<float>(visual_y + visual_height - shadow_padding));
-    const float text_draw_x = text_x - std::max(0.0f, text_metrics.width - text_width);
+    text_scroll_to_offset_ = std::max(0.0f, current_text.metrics.width - text_width);
+    float scroll_offset = text_scroll_to_offset_;
+    if (text_transition_started_at_ms_ != 0) {
+        const ULONGLONG elapsed_ms = GetTickCount64() - text_transition_started_at_ms_;
+        const float progress = std::clamp(static_cast<float>(elapsed_ms) /
+                                          static_cast<float>(kTextTransitionMs), 0.0f, 1.0f);
+        const float eased = 1.0f - (1.0f - progress) * (1.0f - progress);
+        scroll_offset = text_scroll_from_offset_ +
+                        (text_scroll_to_offset_ - text_scroll_from_offset_) * eased;
+        if (progress >= 1.0f) {
+            text_transition_started_at_ms_ = 0;
+        }
+    }
+    last_text_scroll_offset_ = scroll_offset;
+    const float text_draw_x = text_x - scroll_offset;
     render_target.target->BeginDraw();
     render_target.target->PushAxisAlignedClip(text_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const float shadow_offset = std::max(1.0f, DpF(1));
-    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_draw_x + shadow_offset,
+    DrawTextLayout(render_target.target.Get(), current_text.layout.Get(), text_draw_x + shadow_offset,
                    block_y + shadow_offset, kTextShadowAlpha, 0);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x + shadow_offset,
                    block_y + text_metrics.height + gap + shadow_offset,
                    kTextShadowAlpha, 0);
-    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_draw_x, block_y,
+    DrawTextLayout(render_target.target.Get(), current_text.layout.Get(), text_draw_x, block_y,
                    kTextAlpha, kInkRgb);
     DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x,
                    block_y + text_metrics.height + gap, kHintAlpha, kInkRgb);
