@@ -529,6 +529,7 @@ InteractionMode InteractionModeFromName(std::string_view name) {
 
 std::string OverlayThemeColorName(OverlayThemeColor color) {
     switch (color) {
+    case OverlayThemeColor::kAuto: return "auto";
     case OverlayThemeColor::kBlack: return "black";
     case OverlayThemeColor::kPink: return "pink";
     case OverlayThemeColor::kGreen: return "green";
@@ -542,6 +543,7 @@ std::string OverlayThemeColorName(OverlayThemeColor color) {
 }
 
 OverlayThemeColor OverlayThemeColorFromName(std::string_view name) {
+    if (name == "auto") return OverlayThemeColor::kAuto;
     if (name == "black") return OverlayThemeColor::kBlack;
     if (name == "pink") return OverlayThemeColor::kPink;
     if (name == "green") return OverlayThemeColor::kGreen;
@@ -553,6 +555,7 @@ OverlayThemeColor OverlayThemeColorFromName(std::string_view name) {
 
 std::string OverlayThemeColorDisplayName(OverlayThemeColor color) {
     switch (color) {
+    case OverlayThemeColor::kAuto: return "Auto";
     case OverlayThemeColor::kBlack: return "Black";
     case OverlayThemeColor::kPink: return "Pink";
     case OverlayThemeColor::kGreen: return "Green";

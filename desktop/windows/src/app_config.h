@@ -22,6 +22,7 @@ enum class InteractionMode {
 
 enum class OverlayThemeColor {
     kWhite,
+    kAuto,
     kBlack,
     kPink,
     kGreen,
