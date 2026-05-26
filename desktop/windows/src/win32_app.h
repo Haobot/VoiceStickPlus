@@ -14,6 +14,7 @@
 
 #include <Windows.h>
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <optional>
@@ -74,6 +75,7 @@ private:
     void ShowTrayMenu();
     void RebuildTooltip();
     void UpdateTrayIcon();
+    void RequestConnectedBatteryStatus();
     void RegisterTaskbarMessage();
     bool ShowOnboardingIfNeeded();
     bool ShowOnboarding();
@@ -116,6 +118,7 @@ private:
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;
+    std::chrono::steady_clock::time_point last_battery_status_request_{};
 };
 
 } // namespace voicestick

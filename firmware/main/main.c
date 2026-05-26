@@ -116,6 +116,7 @@ typedef enum {
     APP_EVENT_BLE_DISCONNECTED,
     APP_EVENT_POWER_IRQ,
     APP_EVENT_BATTERY_REFRESH,
+    APP_EVENT_BATTERY_STATUS_REQUEST,
     APP_EVENT_ENTER_DEEP_SLEEP,
     APP_EVENT_OTA_BEGIN,
     APP_EVENT_OTA_PROGRESS,
@@ -135,6 +136,7 @@ typedef struct {
 } app_event_t;
 
 static void update_battery_status(void);
+static void send_current_battery_status(void);
 static void queue_app_event(app_event_type_t type);
 static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, uint32_t size);
 static void queue_ui_state_event(const char *state, const char *text);
@@ -600,6 +602,8 @@ static void ble_control_cb(const char *json)
                cJSON_IsBool(enabled)) {
         s_prompt_tone_enabled = cJSON_IsTrue(enabled);
         ESP_LOGI(TAG, "prompt tone %s", s_prompt_tone_enabled ? "enabled" : "disabled");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "battery_status_request") == 0) {
+        queue_app_event(APP_EVENT_BATTERY_STATUS_REQUEST);
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
                cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
         ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, request_id);
@@ -813,6 +817,7 @@ static void app_event_task(void *arg)
             s_app_ui_state = APP_UI_STATE_READY;
             ui_status_set_idle();
             note_activity();
+            send_current_battery_status();
             break;
         case APP_EVENT_BLE_DISCONNECTED:
             s_recording = false;
@@ -834,6 +839,10 @@ static void app_event_task(void *arg)
             /* fall through */
         case APP_EVENT_BATTERY_REFRESH:
             update_battery_status();
+            break;
+        case APP_EVENT_BATTERY_STATUS_REQUEST:
+            update_battery_status();
+            send_current_battery_status();
             break;
         case APP_EVENT_ENTER_DEEP_SLEEP:
             enter_deep_sleep();
@@ -1097,6 +1106,14 @@ static void update_battery_status(void)
     } else {
         ESP_LOGW(TAG, "battery read failed: %s", esp_err_to_name(err));
     }
+}
+
+static void send_current_battery_status(void)
+{
+    if (!voice_ble_is_connected()) {
+        return;
+    }
+    voice_ble_send_battery_status(s_battery_level, s_battery_charging, s_usb_powered);
 }
 
 void app_main(void)

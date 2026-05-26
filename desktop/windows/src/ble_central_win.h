@@ -39,6 +39,7 @@ public:
                              const std::optional<std::string>& device_id) override;
     void SendPromptToneEnabled(bool enabled,
                                const std::optional<std::string>& device_id) override;
+    void RequestBatteryStatus(const std::optional<std::string>& device_id) override;
     void SendRemoteButton(RemoteButtonAction action,
                           const std::string& button,
                           const std::optional<std::string>& device_id,

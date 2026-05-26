@@ -235,6 +235,24 @@ std::wstring TrW(StringId id, UiLanguage language) {
     return Utf16FromUtf8(Tr(id, language));
 }
 
+std::string BatteryStatusText(int level_percent, bool charging, bool usb_powered, UiLanguage language) {
+    std::string text = std::to_string(level_percent) + "%";
+    if (charging) {
+        text += language == UiLanguage::kSimplifiedChinese ? "，充电中" : ", charging";
+    } else if (usb_powered) {
+        text += language == UiLanguage::kSimplifiedChinese ? "，外接电源" : ", plugged in";
+    }
+    return text;
+}
+
+std::wstring DeviceTitleWithBattery(const std::wstring& title,
+                                    int level_percent,
+                                    bool charging,
+                                    bool usb_powered,
+                                    UiLanguage language) {
+    return title + L" (" + Utf16FromUtf8(BatteryStatusText(level_percent, charging, usb_powered, language)) + L")";
+}
+
 bool LocalizationTablesAreComplete() {
     for (std::size_t i = 0; i < kStringCount; ++i) {
         if (kEnglish[i].empty() || kChinese[i].empty()) return false;
