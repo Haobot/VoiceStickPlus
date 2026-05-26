@@ -442,9 +442,12 @@ void TestAppConfig() {
     cache.paired_device_ids.push_back(entry.device_id);
     assert(cache.paired_devices.front().hardware == "stick_s3");
     assert(cache.paired_devices.front().firmware_version == "0.1.2");
+    assert(OverlayThemeColorFromName("black") == OverlayThemeColor::kBlack);
     assert(OverlayThemeColorFromName("pink") == OverlayThemeColor::kPink);
     assert(OverlayThemeColorName(OverlayThemeColor::kGreen) == "green");
+    assert(OverlayThemeColorName(OverlayThemeColor::kBlack) == "black");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kYellow) == "Yellow");
+    assert(OverlayThemeColorDisplayName(OverlayThemeColor::kBlack) == "Black");
     assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);
     assert(OverlayPositionName(OverlayPosition::kBottomLeft) == "bottom_left");
     assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");

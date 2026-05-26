@@ -298,6 +298,8 @@ void GlassBackdropWindow::PaintCachedSurface(const RECT& bounds) {
 
 COLORREF GlassBackdropWindow::ThemeTint() const {
     switch (theme_color_) {
+    case OverlayThemeColor::kBlack:
+        return RGB(252, 252, 252);
     case OverlayThemeColor::kPink:
         return RGB(255, 214, 230);
     case OverlayThemeColor::kGreen:
