@@ -32,7 +32,7 @@ enum class OverlayThemeColor {
 
 enum class OverlayPosition {
     kCenter,
-    kMiddleBottom,
+    kBottomCenter,
     kTopLeft,
     kTopRight,
     kBottomLeft,

@@ -558,7 +558,7 @@ std::string OverlayThemeColorDisplayName(OverlayThemeColor color) {
 
 std::string OverlayPositionName(OverlayPosition position) {
     switch (position) {
-    case OverlayPosition::kMiddleBottom: return "middle_bottom";
+    case OverlayPosition::kBottomCenter: return "bottom_center";
     case OverlayPosition::kTopLeft: return "top_left";
     case OverlayPosition::kTopRight: return "top_right";
     case OverlayPosition::kBottomLeft: return "bottom_left";
@@ -570,7 +570,7 @@ std::string OverlayPositionName(OverlayPosition position) {
 }
 
 OverlayPosition OverlayPositionFromName(std::string_view name) {
-    if (name == "middle_bottom") return OverlayPosition::kMiddleBottom;
+    if (name == "bottom_center" || name == "middle_bottom") return OverlayPosition::kBottomCenter;
     if (name == "top_left") return OverlayPosition::kTopLeft;
     if (name == "top_right") return OverlayPosition::kTopRight;
     if (name == "bottom_left") return OverlayPosition::kBottomLeft;
@@ -580,7 +580,7 @@ OverlayPosition OverlayPositionFromName(std::string_view name) {
 
 std::string OverlayPositionDisplayName(OverlayPosition position) {
     switch (position) {
-    case OverlayPosition::kMiddleBottom: return "Middle Bottom";
+    case OverlayPosition::kBottomCenter: return "Bottom Center";
     case OverlayPosition::kTopLeft: return "Top Left";
     case OverlayPosition::kTopRight: return "Top Right";
     case OverlayPosition::kBottomLeft: return "Bottom Left";

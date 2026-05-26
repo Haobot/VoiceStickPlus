@@ -521,8 +521,8 @@ POINT OverlayWindow::TargetWindowOrigin(const RECT& work_area, int width, int he
         return POINT{work_area.left + margin, work_area.bottom - margin - height};
     case OverlayPosition::kBottomRight:
         return POINT{work_area.right - margin - width, work_area.bottom - margin - height};
-    case OverlayPosition::kMiddleBottom: {
-        const int bottom_gap = std::max(margin * 3, screen_h / 6);
+    case OverlayPosition::kBottomCenter: {
+        const int bottom_gap = std::max(margin * 3, screen_h / 9);
         return POINT{work_area.left + (screen_w - width) / 2,
                      work_area.bottom - bottom_gap - height};
     }
@@ -541,7 +541,7 @@ int OverlayWindow::VisualOffsetX(int width, int visual_width) const {
     case OverlayPosition::kTopRight:
     case OverlayPosition::kBottomRight:
         return width - visual_width;
-    case OverlayPosition::kMiddleBottom:
+    case OverlayPosition::kBottomCenter:
     case OverlayPosition::kCenter:
     default:
         return (width - visual_width) / 2;
@@ -552,7 +552,7 @@ int OverlayWindow::VisualOffsetY(int height, int visual_height) const {
     switch (position_) {
     case OverlayPosition::kBottomLeft:
     case OverlayPosition::kBottomRight:
-    case OverlayPosition::kMiddleBottom:
+    case OverlayPosition::kBottomCenter:
         return height - visual_height;
     case OverlayPosition::kTopLeft:
     case OverlayPosition::kTopRight:
