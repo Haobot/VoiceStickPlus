@@ -699,14 +699,6 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
     Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(kGlassScrimAlpha, 24, 24, 27));
     graphics.FillPath(&scrim_brush, &background_path);
 
-    Gdiplus::RectF highlight_rect(background_rect.X + DpF(1),
-                                  background_rect.Y + DpF(1),
-                                  background_rect.Width - DpF(2),
-                                  std::max(DpF(18), background_rect.Height * 0.42f));
-    Gdiplus::GraphicsPath highlight_path;
-    AddRoundedRect(highlight_path, highlight_rect, static_cast<float>(corner_radius));
-    Gdiplus::SolidBrush highlight_brush(Gdiplus::Color(kGlassHighlightAlpha, 255, 255, 255));
-    graphics.FillPath(&highlight_brush, &highlight_path);
 
     Gdiplus::Pen border_pen(Gdiplus::Color(kGlassBorderAlpha, 255, 255, 255),
                             std::max(1.0f, DpF(1)));
