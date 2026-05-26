@@ -29,6 +29,7 @@ constexpr float kTextLayoutMaxHeight = 10000.0f;
 struct TextLayoutSize {
     float width = 0.0f;
     float height = 0.0f;
+    float top = 0.0f;
     UINT32 line_count = 1;
 };
 
@@ -164,6 +165,7 @@ TextLayoutSize MeasureText(const std::wstring& text, float font_size,
     if (SUCCEEDED(layout->GetMetrics(&metrics))) {
         result.width = std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
         result.height = std::ceil(metrics.height);
+        result.top = metrics.top;
         result.line_count = std::max<UINT32>(1, metrics.lineCount);
     }
     return result;
@@ -823,6 +825,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
                 result.metrics.width =
                     std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
                 result.metrics.height = std::ceil(metrics.height);
+                result.metrics.top = metrics.top;
                 result.metrics.line_count = std::max<UINT32>(1, metrics.lineCount);
             }
         }
@@ -842,14 +845,23 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
             if (SUCCEEDED(hint_layout->GetMetrics(&metrics))) {
                 hint_metrics.width = std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
                 hint_metrics.height = std::ceil(metrics.height);
+                hint_metrics.top = metrics.top;
             }
         }
     }
 
     const float gap = hint_.empty() ? 0.0f : SizePxF(8, 6, 5);
-    const float block_height = text_metrics.height + gap + hint_metrics.height;
-    const float block_y = static_cast<float>(visual_y + shadow_padding) +
-                          std::max(0.0f, (static_cast<float>(visual_height - shadow_padding * 2) - block_height) / 2.0f);
+    const float text_visual_top = text_metrics.top;
+    const float text_visual_bottom = text_metrics.top + text_metrics.height;
+    const float hint_y = text_metrics.height + gap;
+    const float block_visual_top = text_visual_top;
+    const float block_visual_bottom = hint_.empty()
+        ? text_visual_bottom
+        : std::max(text_visual_bottom, hint_y + hint_metrics.top + hint_metrics.height);
+    const float block_visual_height = block_visual_bottom - block_visual_top;
+    const float content_top = static_cast<float>(visual_y + shadow_padding);
+    const float content_height = static_cast<float>(visual_height - shadow_padding * 2);
+    const float block_y = content_top + std::max(0.0f, (content_height - block_visual_height) / 2.0f) - block_visual_top;
 
     auto render_target = CreateBitmapRenderTarget(bits, width, height);
     if (!render_target.target || !render_target.bitmap) return;
