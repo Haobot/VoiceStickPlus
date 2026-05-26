@@ -148,6 +148,73 @@ constexpr TranslationTarget kTranslationTargets[] = {
     {"th", L"Thai"},
 };
 
+std::wstring LocalizedThemeColorName(OverlayThemeColor color, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return Utf16FromUtf8(OverlayThemeColorDisplayName(color));
+    switch (color) {
+    case OverlayThemeColor::kAuto: return L"自动";
+    case OverlayThemeColor::kBlack: return L"黑色";
+    case OverlayThemeColor::kPink: return L"粉色";
+    case OverlayThemeColor::kGreen: return L"绿色";
+    case OverlayThemeColor::kYellow: return L"黄色";
+    case OverlayThemeColor::kBlue: return L"蓝色";
+    case OverlayThemeColor::kPurple: return L"紫色";
+    case OverlayThemeColor::kWhite:
+    default:
+        return L"白色";
+    }
+}
+
+std::wstring LocalizedThemeSizeName(OverlayThemeSize size, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return Utf16FromUtf8(OverlayThemeSizeDisplayName(size));
+    switch (size) {
+    case OverlayThemeSize::kMedium: return L"中";
+    case OverlayThemeSize::kSmall: return L"小";
+    case OverlayThemeSize::kBig:
+    default:
+        return L"大";
+    }
+}
+
+std::wstring LocalizedOverlayPositionName(OverlayPosition position, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return Utf16FromUtf8(OverlayPositionDisplayName(position));
+    switch (position) {
+    case OverlayPosition::kBottomCenter: return L"底部居中";
+    case OverlayPosition::kTopLeft: return L"左上";
+    case OverlayPosition::kTopRight: return L"右上";
+    case OverlayPosition::kBottomLeft: return L"左下";
+    case OverlayPosition::kBottomRight: return L"右下";
+    case OverlayPosition::kCenter:
+    default:
+        return L"居中";
+    }
+}
+
+std::wstring LocalizedTranslationTargetName(const TranslationTarget& target, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return target.name;
+    const std::string_view code(target.code);
+    if (code == "en") return L"英文";
+    if (code == "zh-Hans") return L"简体中文";
+    if (code == "zh-Hant") return L"繁体中文";
+    if (code == "ja") return L"日文";
+    if (code == "ko") return L"韩文";
+    if (code == "ru") return L"俄文";
+    if (code == "fr") return L"法文";
+    if (code == "de") return L"德文";
+    if (code == "es") return L"西班牙文";
+    if (code == "it") return L"意大利文";
+    if (code == "pt") return L"葡萄牙文";
+    if (code == "nl") return L"荷兰文";
+    if (code == "sv") return L"瑞典文";
+    if (code == "pl") return L"波兰文";
+    if (code == "tr") return L"土耳其文";
+    if (code == "ar") return L"阿拉伯文";
+    if (code == "hi") return L"印地文";
+    if (code == "id") return L"印尼文";
+    if (code == "vi") return L"越南文";
+    if (code == "th") return L"泰文";
+    return target.name;
+}
+
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
@@ -778,7 +845,7 @@ void Win32App::ShowTrayMenu() {
                 theme_menu,
                 MF_STRING | (current_theme == color ? MF_CHECKED : 0),
                 kMenuThemeColorBase + static_cast<UINT>(i * kMenuOptionsPerDevice + color_index),
-                Utf16(OverlayThemeColorDisplayName(color)).c_str());
+                LocalizedThemeColorName(color, language).c_str());
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu),
                     TrW(StringId::kMenuThemeColor, language).c_str());
@@ -796,7 +863,7 @@ void Win32App::ShowTrayMenu() {
                 size_menu,
                 MF_STRING | (current_size == sz ? MF_CHECKED : 0),
                 kMenuThemeSizeBase + static_cast<UINT>(i * kMenuOptionsPerDevice + size_index),
-                Utf16(OverlayThemeSizeDisplayName(sz)).c_str());
+                LocalizedThemeSizeName(sz, language).c_str());
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(size_menu),
                     TrW(StringId::kMenuThemeSize, language).c_str());
@@ -814,7 +881,7 @@ void Win32App::ShowTrayMenu() {
                 position_menu,
                 MF_STRING | (current_position == position ? MF_CHECKED : 0),
                 kMenuOverlayPositionBase + static_cast<UINT>(i * kMenuOptionsPerDevice + position_index),
-                Utf16(OverlayPositionDisplayName(position)).c_str());
+                LocalizedOverlayPositionName(position, language).c_str());
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(position_menu),
                     TrW(StringId::kMenuOverlayPosition, language).c_str());
@@ -831,7 +898,9 @@ void Win32App::ShowTrayMenu() {
             const auto& target = kTranslationTargets[target_index];
             const auto checked = current_profile.transform == TextTransform::kTranslate &&
                                  current_profile.translation_target == target.code;
-            auto title = std::wstring(L"Translate to ") + target.name;
+            auto title = language == UiLanguage::kSimplifiedChinese
+                ? std::wstring(L"翻译为 ") + LocalizedTranslationTargetName(target, language)
+                : std::wstring(L"Translate to ") + LocalizedTranslationTargetName(target, language);
             AppendMenuW(
                 translation_menu,
                 MF_STRING | (checked ? MF_CHECKED : 0),
