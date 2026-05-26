@@ -146,6 +146,12 @@ void GlassBackdropWindow::Move(const RECT& bounds) {
     if (!hwnd_ || !CanShow()) return;
     if (bounds_valid_ && EqualRect(&last_bounds_, &bounds)) return;
 
+    Capture(bounds);
+}
+
+void GlassBackdropWindow::Capture(const RECT& bounds) {
+    if (!hwnd_ || !CanShow()) return;
+
     const int width = std::max(1L, bounds.right - bounds.left);
     const int height = std::max(1L, bounds.bottom - bounds.top);
     if (visible_) ShowWindow(hwnd_, SW_HIDE);
@@ -167,12 +173,18 @@ void GlassBackdropWindow::ResizeWithoutRepaint(const RECT& bounds) {
                  SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW);
     last_bounds_ = bounds;
     bounds_valid_ = true;
+    PaintCachedSurface(bounds);
 }
 
 void GlassBackdropWindow::Hide(bool animated) {
     if (!hwnd_ || !visible_) return;
     visible_ = false;
     bounds_valid_ = false;
+    cached_pixels_.clear();
+    cached_width_ = 0;
+    cached_height_ = 0;
+    cached_left_ = 0;
+    cached_top_ = 0;
     ShowWindow(hwnd_, SW_HIDE);
 }
 
@@ -216,12 +228,62 @@ void GlassBackdropWindow::PaintCarrierSurface() {
     if (bits && bitmap && BitBlt(memory_dc, 0, 0, width, height, screen_dc,
                                  window_rect.left, window_rect.top, SRCCOPY | CAPTUREBLT)) {
         auto* raw_pixels = static_cast<std::uint32_t*>(bits);
-        std::vector<std::uint32_t> pixels(raw_pixels, raw_pixels + static_cast<std::size_t>(width) * height);
-        BoxBlur(pixels, width, height, kBlurRadius);
-        ApplyRoundedAlpha(pixels, width, height, corner_radius_px_);
-        std::copy(pixels.begin(), pixels.end(), raw_pixels);
+        cached_pixels_.assign(raw_pixels, raw_pixels + static_cast<std::size_t>(width) * height);
+        cached_width_ = width;
+        cached_height_ = height;
+        cached_left_ = window_rect.left;
+        cached_top_ = window_rect.top;
+        BoxBlur(cached_pixels_, cached_width_, cached_height_, kBlurRadius);
+        std::vector<std::uint32_t> output = cached_pixels_;
+        ApplyRoundedAlpha(output, width, height, corner_radius_px_);
+        std::copy(output.begin(), output.end(), raw_pixels);
 
         POINT destination{window_rect.left, window_rect.top};
+        POINT source{};
+        SIZE size{width, height};
+        BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(hwnd_, screen_dc, &destination, &size, memory_dc,
+                            &source, 0, &blend, ULW_ALPHA);
+    }
+    if (old_bitmap) SelectObject(memory_dc, old_bitmap);
+    if (bitmap) DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
+}
+
+void GlassBackdropWindow::PaintCachedSurface(const RECT& bounds) {
+    if (!hwnd_ || cached_pixels_.empty() || cached_width_ <= 0 || cached_height_ <= 0) return;
+
+    const int width = std::max(1L, bounds.right - bounds.left);
+    const int height = std::max(1L, bounds.bottom - bounds.top);
+    HDC screen_dc = GetDC(nullptr);
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    BITMAPINFO bitmap_info{};
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth = width;
+    bitmap_info.bmiHeader.biHeight = -height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screen_dc, &bitmap_info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ old_bitmap = bitmap ? SelectObject(memory_dc, bitmap) : nullptr;
+    if (bits && bitmap) {
+        auto* raw_pixels = static_cast<std::uint32_t*>(bits);
+        for (int y = 0; y < height; ++y) {
+            const int source_y = std::clamp(static_cast<int>(bounds.top) - cached_top_ + y, 0, cached_height_ - 1);
+            for (int x = 0; x < width; ++x) {
+                const int source_x = std::clamp(static_cast<int>(bounds.left) - cached_left_ + x, 0, cached_width_ - 1);
+                raw_pixels[static_cast<std::size_t>(y) * width + x] =
+                    cached_pixels_[static_cast<std::size_t>(source_y) * cached_width_ + source_x];
+            }
+        }
+        std::vector<std::uint32_t> output(raw_pixels, raw_pixels + static_cast<std::size_t>(width) * height);
+        ApplyRoundedAlpha(output, width, height, corner_radius_px_);
+        std::copy(output.begin(), output.end(), raw_pixels);
+
+        POINT destination{bounds.left, bounds.top};
         POINT source{};
         SIZE size{width, height};
         BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};

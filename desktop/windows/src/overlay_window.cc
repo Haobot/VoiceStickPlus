@@ -405,11 +405,23 @@ void OverlayWindow::Reposition() {
         animated_window_height_ = target_window_height_;
     }
 
-    const RECT backdrop_bounds = BackdropBounds(target_window_width_, target_window_height_);
-    const bool backdrop_needs_sync = !IsWindowVisible(hwnd_) ||
-        !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &backdrop_bounds);
-    if (backdrop_needs_sync) {
+    const bool resizing = !first_layout && NeedsWindowAnimation();
+    if (resizing && backdrop_) {
+        const int saved_width = animated_window_width_;
+        const int saved_height = animated_window_height_;
+        animated_window_width_ = target_window_width_;
+        animated_window_height_ = target_window_height_;
         SyncBackdrop(target_window_width_, target_window_height_, true);
+        animated_window_width_ = saved_width;
+        animated_window_height_ = saved_height;
+        ResizeBackdropWithoutRepaint(target_window_width_, target_window_height_);
+    } else {
+        const RECT backdrop_bounds = BackdropBounds(target_window_width_, target_window_height_);
+        const bool backdrop_needs_sync = !IsWindowVisible(hwnd_) ||
+            !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &backdrop_bounds);
+        if (backdrop_needs_sync) {
+            SyncBackdrop(target_window_width_, target_window_height_, true);
+        }
     }
     UpdateLayeredBitmap();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
@@ -438,9 +450,6 @@ bool OverlayWindow::StepWindowAnimation() {
     InvalidateStaticLayer();
     ResizeBackdropWithoutRepaint(target_window_width_, target_window_height_);
     ApplyAnimatedWindowBounds();
-    if (!NeedsWindowAnimation()) {
-        SyncBackdrop(target_window_width_, target_window_height_, false);
-    }
     return true;
 }
 

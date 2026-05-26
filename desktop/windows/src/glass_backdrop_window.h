@@ -16,6 +16,7 @@ public:
 
     void Show(const RECT& bounds);
     void Move(const RECT& bounds);
+    void Capture(const RECT& bounds);
     void ResizeWithoutRepaint(const RECT& bounds);
     void Hide(bool animated = true);
     void SetCornerRadius(int radius_px);
@@ -46,6 +47,8 @@ private:
     std::vector<std::uint32_t> cached_pixels_;
     int cached_width_ = 0;
     int cached_height_ = 0;
+    int cached_left_ = 0;
+    int cached_top_ = 0;
 
     static constexpr DWORD kFadeDurationMs = 140;
 };
