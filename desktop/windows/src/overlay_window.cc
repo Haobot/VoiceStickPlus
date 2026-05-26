@@ -294,6 +294,10 @@ void OverlayWindow::OnTimer(UINT_PTR timer_id) {
     } else if (timer_id == kAnimationTimerId) {
         animation_frame_++;
         const bool window_moved = StepWindowAnimation();
+        if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown)) {
+            InvalidateStaticLayer();
+            UpdateLayeredBitmap();
+        }
         if (!window_moved && mode_ != Mode::kListening && mode_ != Mode::kCountdown) {
             KillTimer(hwnd_, kAnimationTimerId);
         }
@@ -815,20 +819,25 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
     const int cy = y + size / 2;
 
     if (mode_ == Mode::kListening) {
-        const int bar_width = Dp(4);
-        const int spacing = Dp(5);
+        const int bar_width = std::max(2, Dp(3));
+        const int spacing = Dp(4);
         const int num_bars = 3;
         const int total_w = num_bars * bar_width + (num_bars - 1) * spacing;
-        int start_x = cx - total_w / 2;
+        const int start_x = cx - total_w / 2;
         const double elapsed = static_cast<double>(GetTickCount64() % 100000) / 1000.0;
 
         Gdiplus::SolidBrush bar_brush(Gdiplus::Color(kIndicatorAlpha, kInkRgb, kInkRgb, kInkRgb));
         for (int i = 0; i < num_bars; ++i) {
-            const double phase = elapsed * 5.5 + i * 0.85;
-            const int bar_h = Dp(9) + static_cast<int>(Dp(10) * (0.5 + 0.5 * std::sin(phase)));
-            int bx = start_x + i * (bar_width + spacing);
-            int by = cy - bar_h / 2;
-            graphics.FillRectangle(&bar_brush, bx, by, bar_width, bar_h);
+            const double phase = elapsed * 4.2 + i * 0.9;
+            const int bar_h = Dp(7) + static_cast<int>(Dp(9) * (0.5 + 0.5 * std::sin(phase)));
+            const int bx = start_x + i * (bar_width + spacing);
+            const int by = cy - bar_h / 2;
+            Gdiplus::GraphicsPath bar_path;
+            AddRoundedRect(bar_path,
+                           Gdiplus::RectF(static_cast<float>(bx), static_cast<float>(by),
+                                          static_cast<float>(bar_width), static_cast<float>(bar_h)),
+                           static_cast<float>(bar_width) / 2.0f);
+            graphics.FillPath(&bar_brush, &bar_path);
         }
     } else if (mode_ == Mode::kCountdown) {
         Gdiplus::Pen track_pen(Gdiplus::Color(kIndicatorTrackAlpha, kInkRgb,
