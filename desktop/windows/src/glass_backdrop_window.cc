@@ -19,6 +19,7 @@ constexpr DWORD kDwmwaBorderColor = 34;
 constexpr DWORD kDwmwaSystemBackdropType = 38;
 constexpr int kDwmWindowCornerPreferenceRound = 2;
 constexpr int kDwmSystemBackdropTypeTransientWindow = 3;
+constexpr int kDwmSystemBackdropTypeAcrylic = 4;
 
 enum AccentState {
     ACCENT_DISABLED = 0,
@@ -85,10 +86,11 @@ GlassBackdropWindow::GlassBackdropWindow(HINSTANCE instance, HWND owner)
     RegisterClassW(&wc);
 
     hwnd_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
         wc.lpszClassName, L"", WS_POPUP,
         0, 0, 1, 1, owner_, nullptr, instance_, this);
     EnsureGdiplus();
+    SetOpacity(0);
     ApplyBackdrop();
 }
 
@@ -100,9 +102,11 @@ GlassBackdropWindow::~GlassBackdropWindow() {
 
 void GlassBackdropWindow::Show(const RECT& bounds) {
     if (!hwnd_) return;
+    const bool was_visible = visible_;
     visible_ = true;
     Move(bounds);
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    if (!was_visible) StartFade(true);
 }
 
 void GlassBackdropWindow::Move(const RECT& bounds) {
@@ -119,10 +123,17 @@ void GlassBackdropWindow::Move(const RECT& bounds) {
     if (visible_ && !glass_effect_enabled_) PaintFallback();
 }
 
-void GlassBackdropWindow::Hide() {
+void GlassBackdropWindow::Hide(bool animated) {
+    if (!hwnd_ || !visible_) return;
     visible_ = false;
     bounds_valid_ = false;
-    if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
+    if (animated) {
+        StartFade(false);
+    } else {
+        KillTimer(hwnd_, kFadeTimerId);
+        SetOpacity(0);
+        ShowWindow(hwnd_, SW_HIDE);
+    }
 }
 
 void GlassBackdropWindow::SetCornerRadius(int radius_px) {
@@ -147,6 +158,32 @@ void GlassBackdropWindow::ApplyBackdrop() {
     const DWORD border_color = kColorNone;
     DwmSetWindowAttribute(hwnd_, kDwmwaBorderColor, &border_color, sizeof(border_color));
 
+    auto* user32 = GetModuleHandleW(L"user32.dll");
+    auto* set_composition = user32
+        ? reinterpret_cast<SetWindowCompositionAttributeFn>(
+              GetProcAddress(user32, "SetWindowCompositionAttribute"))
+        : nullptr;
+    if (set_composition) {
+        AccentPolicy accent{};
+        accent.state = ACCENT_ENABLE_ACRYLICBLURBEHIND;
+        accent.gradient_color = AccentColor(ThemeTint(), 156);
+        WindowCompositionAttributeData data{};
+        data.attribute = 19;
+        data.data = &accent;
+        data.size = sizeof(accent);
+        if (set_composition(hwnd_, &data)) {
+            glass_effect_enabled_ = true;
+            return;
+        }
+    }
+
+    const int acrylic_backdrop = kDwmSystemBackdropTypeAcrylic;
+    if (SUCCEEDED(DwmSetWindowAttribute(hwnd_, kDwmwaSystemBackdropType,
+                                        &acrylic_backdrop, sizeof(acrylic_backdrop)))) {
+        glass_effect_enabled_ = true;
+        return;
+    }
+
     const int backdrop_type = kDwmSystemBackdropTypeTransientWindow;
     if (SUCCEEDED(DwmSetWindowAttribute(hwnd_, kDwmwaSystemBackdropType,
                                         &backdrop_type, sizeof(backdrop_type)))) {
@@ -154,27 +191,16 @@ void GlassBackdropWindow::ApplyBackdrop() {
         return;
     }
 
-    auto* user32 = GetModuleHandleW(L"user32.dll");
-    if (!user32) return;
-    auto* set_composition = reinterpret_cast<SetWindowCompositionAttributeFn>(
-        GetProcAddress(user32, "SetWindowCompositionAttribute"));
-    if (!set_composition) return;
-
-    AccentPolicy accent{};
-    accent.state = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-    accent.gradient_color = AccentColor(ThemeTint(), 96);
-    WindowCompositionAttributeData data{};
-    data.attribute = 19;
-    data.data = &accent;
-    data.size = sizeof(accent);
-    if (set_composition(hwnd_, &data)) {
-        glass_effect_enabled_ = true;
-        return;
+    if (set_composition) {
+        AccentPolicy accent{};
+        accent.state = ACCENT_ENABLE_BLURBEHIND;
+        accent.gradient_color = AccentColor(ThemeTint(), 128);
+        WindowCompositionAttributeData data{};
+        data.attribute = 19;
+        data.data = &accent;
+        data.size = sizeof(accent);
+        if (set_composition(hwnd_, &data)) glass_effect_enabled_ = true;
     }
-
-    accent.state = ACCENT_ENABLE_BLURBEHIND;
-    accent.gradient_color = AccentColor(ThemeTint(), 72);
-    if (set_composition(hwnd_, &data)) glass_effect_enabled_ = true;
 }
 
 void GlassBackdropWindow::ApplyRegion(const RECT& bounds) {
@@ -183,6 +209,20 @@ void GlassBackdropWindow::ApplyRegion(const RECT& bounds) {
     const int diameter = std::max(1, corner_radius_px_ * 2);
     HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
     SetWindowRgn(hwnd_, region, TRUE);
+}
+
+void GlassBackdropWindow::SetOpacity(BYTE opacity) {
+    current_opacity_ = opacity;
+    if (hwnd_) SetLayeredWindowAttributes(hwnd_, 0, current_opacity_, LWA_ALPHA);
+}
+
+void GlassBackdropWindow::StartFade(bool show) {
+    if (!hwnd_) return;
+    KillTimer(hwnd_, kFadeTimerId);
+    if (show) {
+        if (current_opacity_ == 0) SetOpacity(1);
+    }
+    SetTimer(hwnd_, kFadeTimerId, kFadeStepMs, nullptr);
 }
 
 COLORREF GlassBackdropWindow::ThemeTint() const {
@@ -247,11 +287,29 @@ LRESULT CALLBACK GlassBackdropWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LP
         if (!self->glass_effect_enabled_) self->PaintFallback();
         return 0;
     }
+    case WM_TIMER:
+        if (wp == kFadeTimerId) {
+            if (self->visible_) {
+                const int next = std::min<int>(kTargetOpacity, self->current_opacity_ + kFadeStep);
+                self->SetOpacity(static_cast<BYTE>(next));
+                if (next >= kTargetOpacity) KillTimer(hwnd, kFadeTimerId);
+            } else {
+                const int next = std::max<int>(0, self->current_opacity_ - kFadeStep);
+                self->SetOpacity(static_cast<BYTE>(next));
+                if (next == 0) {
+                    KillTimer(hwnd, kFadeTimerId);
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+            }
+            return 0;
+        }
+        break;
     case WM_ERASEBKGND:
         return 1;
     default:
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 } // namespace voicestick
