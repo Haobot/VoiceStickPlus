@@ -432,10 +432,10 @@ void OverlayWindow::Reposition() {
     const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
     const int vertical_padding = SizePx(kVerticalPadding, 12, 10);
     const int indicator_size = SizePx(kIndicatorSize, 22, 18);
-    const int indicator_slot_width = horizontal_padding + indicator_size;
-    const int content_spacing = SizePx(kContentSpacing, 16, 14) + SizePx(kTextSafetySpacing, 5, 4);
+    const int indicator_left_margin = IndicatorLeftMargin();
+    const int text_indicator_gap = TextIndicatorGap();
     const int min_content_height = SizePx(kMinContentHeight, 68, 56);
-    const int side_chrome_width = indicator_slot_width + content_spacing + horizontal_padding;
+    const int side_chrome_width = indicator_left_margin + indicator_size + text_indicator_gap + horizontal_padding;
 
     // Same layout algorithm for all modes, mirroring the macOS implementation.
     const int available_max_width = std::min(SizePx(kMaxContentWidth, 500, 380),
@@ -699,6 +699,14 @@ float OverlayWindow::SizePxF(int big_px, int medium_px, int small_px) const {
     }
 }
 
+int OverlayWindow::IndicatorLeftMargin() const {
+    return SizePx(18, 15, 13);
+}
+
+int OverlayWindow::TextIndicatorGap() const {
+    return SizePx(9, 8, 7);
+}
+
 void OverlayWindow::UpdateLayeredBitmap() {
     RECT window_rect{};
     GetWindowRect(hwnd_, &window_rect);
@@ -727,16 +735,13 @@ void OverlayWindow::UpdateLayeredBitmap() {
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
         const int shadow_padding = Dp(kShadowPadding);
-        const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
         const int indicator_size = SizePx(kIndicatorSize, 22, 18);
-        const int indicator_slot_width = horizontal_padding + indicator_size;
-        const int indicator_center_offset = SizePx(kIndicatorCenterOffset, 3, 2);
         const int visual_width = std::clamp(animated_window_width_, 1, width);
         const int visual_height = std::clamp(animated_window_height_, 1, height);
         const int visual_x = VisualOffsetX(width, visual_width);
         const int visual_y = VisualOffsetY(height, visual_height);
         const int content_height = visual_height - shadow_padding * 2;
-        const int indicator_x = visual_x + shadow_padding + (indicator_slot_width - indicator_size) / 2 + indicator_center_offset;
+        const int indicator_x = visual_x + shadow_padding + IndicatorLeftMargin();
         const int indicator_y = visual_y + shadow_padding + (content_height - indicator_size) / 2;
         PaintIndicator(graphics, indicator_x, indicator_y, indicator_size);
     }
@@ -891,15 +896,15 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     const int shadow_padding = Dp(kShadowPadding);
     const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
     const int indicator_size = SizePx(kIndicatorSize, 22, 18);
-    const int indicator_slot_width = horizontal_padding + indicator_size;
-    const int content_spacing = SizePx(kContentSpacing, 16, 14) + SizePx(kTextSafetySpacing, 5, 4);
+    const int indicator_left_margin = IndicatorLeftMargin();
+    const int text_indicator_gap = TextIndicatorGap();
     const int visual_width = std::clamp(animated_window_width_, 1, width);
     const int visual_height = std::clamp(animated_window_height_, 1, height);
     const int visual_x = VisualOffsetX(width, visual_width);
     const int visual_y = VisualOffsetY(height, visual_height);
-    const float text_x = static_cast<float>(visual_x + shadow_padding + indicator_slot_width + content_spacing);
+    const float text_x = static_cast<float>(visual_x + shadow_padding + indicator_left_margin + indicator_size + text_indicator_gap);
     const float text_width = static_cast<float>(visual_width - shadow_padding * 2 -
-                                                indicator_slot_width - horizontal_padding - content_spacing);
+                                                indicator_left_margin - indicator_size - text_indicator_gap - horizontal_padding);
 
     const float text_font_size = SizePxF(kTextFontSize, 18, 16);
     const float text_line_height = text_font_size * kTextLineHeightMultiplier;
