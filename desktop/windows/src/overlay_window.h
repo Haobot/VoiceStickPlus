@@ -121,7 +121,6 @@ private:
     static constexpr int kHintFontSize = 14;
     static constexpr BYTE kGlassScrimAlpha = 90;
     static constexpr BYTE kGlassBorderAlpha = 32;
-    static constexpr BYTE kGlassHighlightAlpha = 28;
     static constexpr BYTE kInkRgb = 246;
     static constexpr BYTE kTextAlpha = 248;
     static constexpr BYTE kTextShadowAlpha = 150;
