@@ -68,6 +68,8 @@ private:
     HWND parent_;
     HWND hwnd_ = nullptr;
     std::unique_ptr<GlassBackdropWindow> backdrop_;
+    RECT last_backdrop_bounds_{};
+    bool backdrop_bounds_valid_ = false;
     Mode mode_ = Mode::kHidden;
     std::wstring text_;
     std::wstring hint_;

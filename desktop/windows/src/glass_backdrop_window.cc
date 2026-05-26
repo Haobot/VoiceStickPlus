@@ -107,16 +107,21 @@ void GlassBackdropWindow::Show(const RECT& bounds) {
 
 void GlassBackdropWindow::Move(const RECT& bounds) {
     if (!hwnd_) return;
+    if (bounds_valid_ && EqualRect(&last_bounds_, &bounds)) return;
+
     const int width = std::max(1L, bounds.right - bounds.left);
     const int height = std::max(1L, bounds.bottom - bounds.top);
     SetWindowPos(hwnd_, HWND_TOPMOST, bounds.left, bounds.top, width, height,
                  SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : 0));
     ApplyRegion(bounds);
+    last_bounds_ = bounds;
+    bounds_valid_ = true;
     if (visible_ && !glass_effect_enabled_) PaintFallback();
 }
 
 void GlassBackdropWindow::Hide() {
     visible_ = false;
+    bounds_valid_ = false;
     if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
 }
 
