@@ -10,11 +10,13 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cwctype>
 #include <fstream>
 #include <functional>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 
 namespace voicestick {
 
@@ -41,6 +43,13 @@ std::string Trim(std::string value) {
     auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
     value.erase(value.begin(), std::find_if_not(value.begin(), value.end(), is_space));
     value.erase(std::find_if_not(value.rbegin(), value.rend(), is_space).base(), value.end());
+    return value;
+}
+
+std::wstring Lowercase(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
     return value;
 }
 
@@ -235,6 +244,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "llm_api_key") config.llm_api_key = value;
     if (key == "llm_model") config.llm_model = value;
     if (key == "interaction_mode") config.interaction_mode = InteractionModeFromName(value);
+    if (key == "ui_language") config.ui_language = UiLanguageFromName(value);
     if (key == "resource_id") config.resource_id = value;
     if (key == "asr_hotwords") config.asr_hotwords = ParseHotwordList(value);
     if (key == "paired_device_ids") config.paired_device_ids = ParseDeviceIdList(value);
@@ -310,6 +320,7 @@ AppConfig AppConfig::Load() {
         if (auto value = TomlString(table, "llm_api_key")) config.llm_api_key = *value;
         if (auto value = TomlString(table, "llm_model")) config.llm_model = *value;
         if (auto value = TomlString(table, "interaction_mode")) config.interaction_mode = InteractionModeFromName(*value);
+        if (auto value = TomlString(table, "ui_language")) config.ui_language = UiLanguageFromName(*value);
         if (auto value = TomlString(table, "resource_id")) config.resource_id = *value;
         if (auto value = TomlString(table, "asr_hotwords")) config.asr_hotwords = ParseHotwordList(*value);
         if (auto value = TomlString(table, "paired_device_ids")) config.paired_device_ids = ParseDeviceIdList(*value);
@@ -388,6 +399,7 @@ void AppConfig::Save() const {
     output << "llm_api_key = \"" << TomlEscape(llm_api_key) << "\"\n";
     output << "llm_model = \"" << TomlEscape(llm_model) << "\"\n";
     output << "interaction_mode = \"" << InteractionModeName(interaction_mode) << "\"\n";
+    output << "ui_language = \"" << UiLanguageName(ui_language) << "\"\n";
     output << "resource_id = \"" << TomlEscape(resource_id) << "\"\n";
     std::ostringstream hotwords;
     for (std::size_t i = 0; i < asr_hotwords.size(); ++i) {
@@ -525,6 +537,56 @@ std::string InteractionModeName(InteractionMode mode) {
 
 InteractionMode InteractionModeFromName(std::string_view name) {
     return name == "click_to_talk" ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
+}
+
+std::string UiLanguageName(UiLanguage language) {
+    switch (language) {
+    case UiLanguage::kEnglish: return "en";
+    case UiLanguage::kSimplifiedChinese: return "zh-Hans";
+    case UiLanguage::kSystem:
+    default:
+        return "system";
+    }
+}
+
+UiLanguage UiLanguageFromName(std::string_view name) {
+    if (name == "en") return UiLanguage::kEnglish;
+    if (name == "zh-Hans" || name == "zh_CN" || name == "zh-CN" || name == "zh") {
+        return UiLanguage::kSimplifiedChinese;
+    }
+    return UiLanguage::kSystem;
+}
+
+UiLanguage UiLanguageFromLocaleName(std::wstring_view locale_name) {
+    if (locale_name.empty()) return UiLanguage::kEnglish;
+    auto locale = Lowercase(std::wstring(locale_name));
+    if (locale == L"zh" || locale.starts_with(L"zh-") || locale.starts_with(L"zh_")) {
+        return UiLanguage::kSimplifiedChinese;
+    }
+    if (locale == L"en" || locale.starts_with(L"en-") || locale.starts_with(L"en_")) {
+        return UiLanguage::kEnglish;
+    }
+    return UiLanguage::kEnglish;
+}
+
+UiLanguage EffectiveUiLanguage(UiLanguage configured) {
+    if (configured != UiLanguage::kSystem) return configured;
+
+    ULONG count = 0;
+    ULONG buffer_length = 0;
+    if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, nullptr, &buffer_length) && buffer_length > 0) {
+        std::wstring buffer(buffer_length, L'\0');
+        if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, buffer.data(), &buffer_length)) {
+            const wchar_t* first = buffer.c_str();
+            if (*first != L'\0') return UiLanguageFromLocaleName(first);
+        }
+    }
+
+    wchar_t locale_name[LOCALE_NAME_MAX_LENGTH] = {};
+    if (GetUserDefaultLocaleName(locale_name, LOCALE_NAME_MAX_LENGTH) > 0) {
+        return UiLanguageFromLocaleName(locale_name);
+    }
+    return UiLanguage::kEnglish;
 }
 
 std::string OverlayThemeColorName(OverlayThemeColor color) {

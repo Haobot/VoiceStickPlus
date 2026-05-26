@@ -35,6 +35,7 @@ add_library(voicestick_core
     src/debug_audio_recorder.cc
     src/firmware_manifest.cc
     src/llm_translation_client.cc
+    src/localization.cc
     third_party/cjson/cJSON.c
     src/log.cc
     src/ogg_crc.cc

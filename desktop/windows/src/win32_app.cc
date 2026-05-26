@@ -2,6 +2,7 @@
 
 #include "asr_client_win.h"
 #include "ble_central_win.h"
+#include "localization.h"
 #include "log.h"
 #include "resource.h"
 
@@ -212,7 +213,9 @@ int Win32App::Run() {
             if (!global_hotkey_->Register(config_.global_hotkey)) {
                 LogLine("Global hotkey registration failed, hotkey conflict or invalid");
                 if (config_.debug_audio_cache) {
-                    ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请在菜单中更换其他热键");
+                    const auto language = EffectiveUiLanguage(config_.ui_language);
+                    ShowNotification(Tr(StringId::kNotificationHotkeyConflictTitle, language),
+                                     config_.global_hotkey + " " + Tr(StringId::kNotificationHotkeyConflictBody, language));
                 }
                 SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
             } else {
@@ -715,12 +718,17 @@ void Win32App::RemoveTrayIcon() {
 
 void Win32App::ShowTrayMenu() {
     HMENU menu = CreatePopupMenu();
-    if (has_recoverable_input_) AppendMenuW(menu, MF_STRING, kMenuRestore, L"Restore Last Input");
-    AppendMenuW(menu, MF_STRING, kMenuPairScan, L"Pair Device...");
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    if (has_recoverable_input_) {
+        AppendMenuW(menu, MF_STRING, kMenuRestore,
+                    TrW(StringId::kMenuRestoreLastInput, language).c_str());
+    }
+    AppendMenuW(menu, MF_STRING, kMenuPairScan, TrW(StringId::kMenuPairDevice, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     if (paired_device_ids_.empty() && connected_devices_.empty()) {
-        AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, L"No paired VoiceStick devices");
+        AppendMenuW(menu, MF_STRING | MF_DISABLED, 0,
+                    TrW(StringId::kStatusNoPairedDevices, language).c_str());
     }
 
     auto find_connected = [&](const std::string& id) -> const ConnectedDevice* {
@@ -740,8 +748,8 @@ void Win32App::ShowTrayMenu() {
         HMENU submenu = CreatePopupMenu();
 
         // Status
-        const wchar_t* status_text = connected ? L"Connected" : L"Scanning...";
-        AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, status_text);
+        auto status_text = TrW(connected ? StringId::kStatusConnected : StringId::kStatusScanning, language);
+        AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, status_text.c_str());
 
         // Hardware + firmware version
         auto info_it = device_info_map_.find(id);
@@ -772,7 +780,8 @@ void Win32App::ShowTrayMenu() {
                 kMenuThemeColorBase + static_cast<UINT>(i * kMenuOptionsPerDevice + color_index),
                 Utf16(OverlayThemeColorDisplayName(color)).c_str());
         }
-        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu), L"Theme Color");
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu),
+                    TrW(StringId::kMenuThemeColor, language).c_str());
 
         HMENU size_menu = CreatePopupMenu();
         const auto size_it = config_.device_theme_sizes.find(id);
@@ -789,7 +798,8 @@ void Win32App::ShowTrayMenu() {
                 kMenuThemeSizeBase + static_cast<UINT>(i * kMenuOptionsPerDevice + size_index),
                 Utf16(OverlayThemeSizeDisplayName(sz)).c_str());
         }
-        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(size_menu), L"Theme Size");
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(size_menu),
+                    TrW(StringId::kMenuThemeSize, language).c_str());
 
         HMENU position_menu = CreatePopupMenu();
         const auto position_it = config_.device_overlay_positions.find(id);
@@ -806,7 +816,8 @@ void Win32App::ShowTrayMenu() {
                 kMenuOverlayPositionBase + static_cast<UINT>(i * kMenuOptionsPerDevice + position_index),
                 Utf16(OverlayPositionDisplayName(position)).c_str());
         }
-        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(position_menu), L"Overlay Position");
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(position_menu),
+                    TrW(StringId::kMenuOverlayPosition, language).c_str());
 
         HMENU translation_menu = CreatePopupMenu();
         const auto current_profile = config_.OutputProfileForDevice(id);
@@ -814,7 +825,7 @@ void Win32App::ShowTrayMenu() {
             translation_menu,
             MF_STRING | (current_profile.transform == TextTransform::kOriginal ? MF_CHECKED : 0),
             kMenuTranslationBase + static_cast<UINT>(i * kMenuTranslationsPerDevice),
-            L"Original");
+            TrW(StringId::kMenuOriginal, language).c_str());
         AppendMenuW(translation_menu, MF_SEPARATOR, 0, nullptr);
         for (std::size_t target_index = 0; target_index < std::size(kTranslationTargets); ++target_index) {
             const auto& target = kTranslationTargets[target_index];
@@ -827,7 +838,8 @@ void Win32App::ShowTrayMenu() {
                 kMenuTranslationBase + static_cast<UINT>(i * kMenuTranslationsPerDevice + target_index + 1),
                 title.c_str());
         }
-        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu), L"Translation");
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu),
+                    TrW(StringId::kMenuTranslation, language).c_str());
 
         if (firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
@@ -845,7 +857,8 @@ void Win32App::ShowTrayMenu() {
                             kMenuUpdateFirmwareBase + static_cast<UINT>(i),
                             update_action.c_str());
             } else if (!firmware.latest_version.empty() && !firmware.current_version.empty()) {
-                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, L"Firmware Up to Date");
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
+                            TrW(StringId::kMenuFirmwareUpToDate, language).c_str());
             } else if (!firmware.latest_version.empty()) {
                 auto latest_text = L"Latest firmware " + Utf16(firmware.latest_version);
                 AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, latest_text.c_str());
@@ -859,7 +872,7 @@ void Win32App::ShowTrayMenu() {
 
         AppendMenuW(submenu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(submenu, MF_STRING, kMenuForgetBase + static_cast<UINT>(i),
-                    L"Forget This Device");
+                    TrW(StringId::kMenuForgetDevice, language).c_str());
 
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), Utf16(title).c_str());
     }
@@ -869,18 +882,19 @@ void Win32App::ShowTrayMenu() {
     AppendMenuW(interaction_menu,
                 MF_STRING | (config_.interaction_mode == InteractionMode::kHoldToTalk ? MF_CHECKED : 0),
                 kMenuHoldToTalk,
-                L"Hold to Talk");
+                TrW(StringId::kMenuHoldToTalk, language).c_str());
     AppendMenuW(interaction_menu,
                 MF_STRING | (config_.interaction_mode == InteractionMode::kClickToTalk ? MF_CHECKED : 0),
                 kMenuClickToTalk,
-                L"Click to Talk");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(interaction_menu), L"Interaction");
+                TrW(StringId::kMenuClickToTalk, language).c_str());
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(interaction_menu),
+                TrW(StringId::kMenuInteraction, language).c_str());
 
     HMENU hotkey_menu = CreatePopupMenu();
     AppendMenuW(hotkey_menu,
                 MF_STRING | (config_.global_hotkey_enabled ? MF_CHECKED : 0),
                 kMenuHotkeyEnabled,
-                L"Enable Global Hotkey");
+                TrW(StringId::kMenuHotkeyEnabled, language).c_str());
     AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
     bool is_custom_hotkey = true;
     for (std::size_t i = 0; i < sizeof(kHotkeyPresets) / sizeof(kHotkeyPresets[0]); ++i) {
@@ -896,10 +910,10 @@ void Win32App::ShowTrayMenu() {
             preset.display_name);
     }
     AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
-    std::wstring custom_menu_text = L"自定义快捷键...";
+    std::wstring custom_menu_text = TrW(StringId::kMenuHotkeyCustom, language);
     UINT custom_menu_flags = MF_STRING;
     if (is_custom_hotkey && !config_.global_hotkey.empty()) {
-        custom_menu_text = L"自定义: " + Utf16FromUtf8(config_.global_hotkey);
+        custom_menu_text = TrW(StringId::kMenuHotkeyCustom, language) + L" " + Utf16FromUtf8(config_.global_hotkey);
         if (config_.global_hotkey_enabled) {
             custom_menu_flags |= MF_CHECKED;
         }
@@ -907,30 +921,34 @@ void Win32App::ShowTrayMenu() {
     AppendMenuW(hotkey_menu, custom_menu_flags, kMenuHotkeyCustom, custom_menu_text.c_str());
     if (global_hotkey_ && !global_hotkey_->IsRegistered()) {
         AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, L"⚠ Hotkey registration failed (conflict)");
+        AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0,
+                    TrW(StringId::kMenuHotkeyConflictTitle, language).c_str());
     }
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(hotkey_menu), L"Global Hotkey");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(hotkey_menu),
+                TrW(StringId::kMenuHotkey, language).c_str());
 
     HMENU output_menu = CreatePopupMenu();
     AppendMenuW(output_menu,
                 MF_STRING | (config_.default_output_profile.target == OutputTarget::kFocusedApp ? MF_CHECKED : 0),
                 kMenuOutputFocusedApp,
-                L"Focused App");
+                TrW(StringId::kMenuOutputFocusedApp, language).c_str());
     AppendMenuW(output_menu,
                 MF_STRING | (config_.default_output_profile.target == OutputTarget::kSubtitle ? MF_CHECKED : 0),
                 kMenuOutputSubtitle,
-                L"Subtitle");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(output_menu), L"Output");
+                TrW(StringId::kMenuOutputSubtitle, language).c_str());
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(output_menu),
+                TrW(StringId::kMenuOutput, language).c_str());
 
     AppendMenuW(menu,
                 MF_STRING | (config_.auto_enter ? MF_CHECKED : 0),
                 kMenuAutoEnter,
-                L"Press Return After Paste");
+                TrW(StringId::kMenuAutoEnter, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings...");
-    AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates, L"Check for App Updates...");
+    AppendMenuW(menu, MF_STRING, kMenuSettings, TrW(StringId::kMenuSettings, language).c_str());
+    AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
+                TrW(StringId::kMenuCheckAppUpdates, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit");
+    AppendMenuW(menu, MF_STRING, kMenuQuit, TrW(StringId::kMenuQuit, language).c_str());
     POINT point{};
     GetCursorPos(&point);
     SetForegroundWindow(hwnd_);
@@ -951,7 +969,9 @@ void Win32App::SaveInputOptions() {
                 } else {
                     LogLine("Global hotkey registration failed: " + config_.global_hotkey);
                     if (config_.debug_audio_cache) {
-                        ShowNotification("热键注册失败", config_.global_hotkey + " 已被其他程序占用，请更换其他热键");
+                        const auto language = EffectiveUiLanguage(config_.ui_language);
+                        ShowNotification(Tr(StringId::kNotificationHotkeyConflictTitle, language),
+                                         config_.global_hotkey + " " + Tr(StringId::kNotificationHotkeyConflictBody, language));
                     }
                     SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
                 }
@@ -1066,9 +1086,10 @@ void Win32App::RebuildTooltip() {
     data.hWnd = hwnd_;
     data.uID = kTrayIconId;
     data.uFlags = NIF_TIP | NIF_SHOWTIP;
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
     std::wstring tip = L"VoiceStick";
     if (connected_devices_.empty()) {
-        tip += L" - 未连接";
+        tip += L" - " + TrW(StringId::kStatusDisconnected, language);
     } else {
         bool first = true;
         for (const auto& device : connected_devices_) {
@@ -1078,7 +1099,7 @@ void Win32App::RebuildTooltip() {
             const auto it = device_battery_map_.find(device.id);
             if (it != device_battery_map_.end()) {
                 tip += L" (" + std::to_wstring(it->second.level_percent) + L"%";
-                if (it->second.charging) tip += L", 充电中";
+                if (it->second.charging) tip += language == UiLanguage::kSimplifiedChinese ? L", 充电中" : L", charging";
                 tip += L")";
             }
         }
@@ -1183,6 +1204,7 @@ void Win32App::ShowSettings() {
         settings_dialog_->on_config_changed = [this](AppConfig new_config) {
             config_ = std::move(new_config);
             if (coordinator_) coordinator_->UpdateConfig(config_);
+            RebuildTooltip();
             LogLine("Settings saved");
         };
     }

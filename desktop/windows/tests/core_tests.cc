@@ -2,6 +2,7 @@
 #include "ble_protocol.h"
 #include "byte_utils.h"
 #include "firmware_manifest.h"
+#include "localization.h"
 #include "ogg_opus_muxer.h"
 #include "voice_stick_coordinator.h"
 
@@ -476,6 +477,24 @@ void TestAppConfig() {
     assert(profile.translation_target == "zh-Hans");
     assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
     assert(TextTransformFromName("translate") == TextTransform::kTranslate);
+    assert(AppConfig::Defaults().ui_language == UiLanguage::kSystem);
+    assert(UiLanguageFromName("system") == UiLanguage::kSystem);
+    assert(UiLanguageFromName("en") == UiLanguage::kEnglish);
+    assert(UiLanguageFromName("zh-Hans") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromName("invalid") == UiLanguage::kSystem);
+    assert(UiLanguageName(UiLanguage::kSystem) == "system");
+    assert(UiLanguageName(UiLanguage::kEnglish) == "en");
+    assert(UiLanguageName(UiLanguage::kSimplifiedChinese) == "zh-Hans");
+    assert(UiLanguageFromLocaleName(L"en-US") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"en-GB") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"zh-CN") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"zh-Hans") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"zh-TW") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"ja-JP") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"") == UiLanguage::kEnglish);
+    assert(!Tr(StringId::kSettingsTitle, UiLanguage::kEnglish).empty());
+    assert(Tr(StringId::kSettingsTitle, UiLanguage::kSimplifiedChinese) == "VoiceStick 设置");
+    assert(LocalizationTablesAreComplete());
     const auto hotwords = ParseHotwordList(" 小智,VoiceStick\r\n小智\n豆包 ");
     assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));
 }
