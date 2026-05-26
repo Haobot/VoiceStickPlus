@@ -273,6 +273,17 @@ void OverlayWindow::SetThemeColor(OverlayThemeColor color) {
     if (mode_ != Mode::kHidden) UpdateLayeredBitmap();
 }
 
+void OverlayWindow::SetThemeSize(OverlayThemeSize size) {
+    if (theme_size_ == size) return;
+    theme_size_ = size;
+    largest_visible_width_ = 0;
+    largest_visible_height_ = 0;
+    animated_window_width_ = 0;
+    animated_window_height_ = 0;
+    InvalidateStaticLayer();
+    if (mode_ != Mode::kHidden) Reposition();
+}
+
 void OverlayWindow::SetPosition(OverlayPosition position) {
     if (position_ == position) return;
     position_ = position;
@@ -350,20 +361,20 @@ void OverlayWindow::Reposition() {
     const int screen_h = work_area.bottom - work_area.top;
 
     const int shadow_padding = Dp(kShadowPadding);
-    const int horizontal_padding = Dp(kHorizontalPadding);
-    const int vertical_padding = Dp(kVerticalPadding);
-    const int indicator_size = Dp(kIndicatorSize);
-    const int content_spacing = Dp(kContentSpacing);
-    const int min_content_height = Dp(kMinContentHeight);
+    const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
+    const int vertical_padding = SizePx(kVerticalPadding, 12, 10);
+    const int indicator_size = SizePx(kIndicatorSize, 22, 18);
+    const int content_spacing = SizePx(kContentSpacing, 10, 8);
+    const int min_content_height = SizePx(kMinContentHeight, 68, 56);
     const int side_chrome_width = horizontal_padding + indicator_size +
                                   content_spacing + horizontal_padding;
 
     // Same layout algorithm for all modes, mirroring the macOS implementation.
-    const int available_max_width = std::min(Dp(kMaxContentWidth),
+    const int available_max_width = std::min(SizePx(kMaxContentWidth, 500, 380),
                                              screen_w - Dp(48) - shadow_padding * 2);
     const int max_text_width = std::max(1, available_max_width - side_chrome_width);
 
-    const float text_font_size = DpF(kTextFontSize);
+    const float text_font_size = SizePxF(kTextFontSize, 18, 16);
     const float text_line_height = text_font_size * kTextLineHeightMultiplier;
     const float text_baseline = text_font_size * kTextBaselineMultiplier;
     const auto single_line_text = MeasureText(text_, text_font_size,
@@ -380,8 +391,8 @@ void OverlayWindow::Reposition() {
     const float text_height = laid_out_text.height;
     const float hint_height = hint_.empty()
         ? 0.0f
-        : MeasureText(hint_, DpF(kHintFontSize), static_cast<float>(text_width), false).height +
-              DpF(8);
+        : MeasureText(hint_, SizePxF(kHintFontSize, 12, 11), static_cast<float>(text_width), false).height +
+              SizePxF(8, 6, 5);
 
     const int max_content_height = std::max(min_content_height,
                                             screen_h - Dp(120) - shadow_padding * 2);
@@ -576,6 +587,30 @@ float OverlayWindow::DpF(int px) const {
     return ScaleF(px, dpi_);
 }
 
+int OverlayWindow::SizePx(int big_px, int medium_px, int small_px) const {
+    switch (theme_size_) {
+    case OverlayThemeSize::kMedium:
+        return Dp(medium_px);
+    case OverlayThemeSize::kSmall:
+        return Dp(small_px);
+    case OverlayThemeSize::kBig:
+    default:
+        return Dp(big_px);
+    }
+}
+
+float OverlayWindow::SizePxF(int big_px, int medium_px, int small_px) const {
+    switch (theme_size_) {
+    case OverlayThemeSize::kMedium:
+        return DpF(medium_px);
+    case OverlayThemeSize::kSmall:
+        return DpF(small_px);
+    case OverlayThemeSize::kBig:
+    default:
+        return DpF(big_px);
+    }
+}
+
 void OverlayWindow::UpdateLayeredBitmap() {
     RECT window_rect{};
     GetWindowRect(hwnd_, &window_rect);
@@ -752,9 +787,9 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
 void OverlayWindow::PaintText(void* bits, int width, int height) {
     const BYTE ink_rgb = InkRgb();
     const int shadow_padding = Dp(kShadowPadding);
-    const int horizontal_padding = Dp(kHorizontalPadding);
-    const int indicator_size = Dp(kIndicatorSize);
-    const int content_spacing = Dp(kContentSpacing);
+    const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
+    const int indicator_size = SizePx(kIndicatorSize, 22, 18);
+    const int content_spacing = SizePx(kContentSpacing, 10, 8);
     const int visual_width = std::clamp(animated_window_width_, 1, width);
     const int visual_height = std::clamp(animated_window_height_, 1, height);
     const int visual_x = VisualOffsetX(width, visual_width);
@@ -765,7 +800,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
                                                 horizontal_padding * 2 -
                                                 indicator_size - content_spacing);
 
-    const float text_font_size = DpF(kTextFontSize);
+    const float text_font_size = SizePxF(kTextFontSize, 18, 16);
     const float text_line_height = text_font_size * kTextLineHeightMultiplier;
     const float text_baseline = text_font_size * kTextBaselineMultiplier;
     struct FlowTextLayout {
@@ -777,7 +812,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
         FlowTextLayout result;
         const auto measured_text = MeasureText(value, text_font_size, text_width * 8.0f,
                                                false, text_line_height, text_baseline);
-        const float layout_width = std::max(text_width, measured_text.width + DpF(8));
+        const float layout_width = std::max(text_width, measured_text.width + SizePxF(8, 6, 5));
         auto text_format = CreateTextFormat(text_font_size);
         if (text_format) text_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         result.layout = CreateTextLayout(value, text_format.Get(), layout_width,
@@ -800,7 +835,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     TextLayoutSize hint_metrics;
     ComPtr<IDWriteTextLayout> hint_layout;
     if (!hint_.empty()) {
-        auto hint_format = CreateTextFormat(DpF(kHintFontSize), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        auto hint_format = CreateTextFormat(SizePxF(kHintFontSize, 12, 11), DWRITE_FONT_WEIGHT_SEMI_BOLD);
         hint_layout = CreateTextLayout(hint_, hint_format.Get(), text_width, false);
         if (hint_layout) {
             DWRITE_TEXT_METRICS metrics{};
@@ -810,7 +845,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
         }
     }
 
-    const float gap = hint_.empty() ? 0.0f : DpF(8);
+    const float gap = hint_.empty() ? 0.0f : SizePxF(8, 6, 5);
     const float block_height = text_metrics.height + gap + hint_metrics.height;
     const float block_y = static_cast<float>(visual_y + shadow_padding) +
                           std::max(0.0f, (static_cast<float>(visual_height - shadow_padding * 2) - block_height) / 2.0f);
@@ -867,8 +902,8 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
     const int cy = y + size / 2;
 
     if (mode_ == Mode::kListening) {
-        const int bar_width = std::max(2, Dp(3));
-        const int spacing = Dp(4);
+        const int bar_width = std::max(2, SizePx(3, 3, 2));
+        const int spacing = SizePx(4, 3, 3);
         const int num_bars = 3;
         const int total_w = num_bars * bar_width + (num_bars - 1) * spacing;
         const int start_x = cx - total_w / 2;
@@ -877,7 +912,7 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
         Gdiplus::SolidBrush bar_brush(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb));
         for (int i = 0; i < num_bars; ++i) {
             const double phase = elapsed * 4.2 + i * 0.9;
-            const int bar_h = Dp(7) + static_cast<int>(Dp(9) * (0.5 + 0.5 * std::sin(phase)));
+            const int bar_h = SizePx(7, 6, 5) + static_cast<int>(SizePx(9, 7, 6) * (0.5 + 0.5 * std::sin(phase)));
             const int bx = start_x + i * (bar_width + spacing);
             const int by = cy - bar_h / 2;
             Gdiplus::GraphicsPath bar_path;
@@ -889,11 +924,11 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
         }
     } else if (mode_ == Mode::kCountdown) {
         Gdiplus::Pen track_pen(Gdiplus::Color(kIndicatorTrackAlpha, ink_rgb,
-                                              ink_rgb, ink_rgb), DpF(3));
-        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), DpF(3));
+                                              ink_rgb, ink_rgb), SizePxF(3, 2, 2));
+        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), SizePxF(3, 2, 2));
         ring_pen.SetStartCap(Gdiplus::LineCapRound);
         ring_pen.SetEndCap(Gdiplus::LineCapRound);
-        const int inset = Dp(5);
+        const int inset = SizePx(5, 4, 4);
         Gdiplus::RectF ring_rect(static_cast<Gdiplus::REAL>(x + inset),
                                  static_cast<Gdiplus::REAL>(y + inset),
                                  static_cast<Gdiplus::REAL>(size - inset * 2),
@@ -910,12 +945,12 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
             graphics.DrawArc(&ring_pen, ring_rect, -90.0f, -360.0f * remaining);
         }
     } else if (mode_ == Mode::kPaused) {
-        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), DpF(3));
-        const int inset = Dp(5);
+        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), SizePxF(3, 2, 2));
+        const int inset = SizePx(5, 4, 4);
         graphics.DrawEllipse(&ring_pen, x + inset, y + inset, size - inset * 2, size - inset * 2);
     } else if (mode_ == Mode::kError) {
-        Gdiplus::Pen ring_pen(Gdiplus::Color(255, 200, 60, 60), DpF(3));
-        const int inset = Dp(5);
+        Gdiplus::Pen ring_pen(Gdiplus::Color(255, 200, 60, 60), SizePxF(3, 2, 2));
+        const int inset = SizePx(5, 4, 4);
         graphics.DrawEllipse(&ring_pen, x + inset, y + inset, size - inset * 2, size - inset * 2);
 
         const int x_inset = size / 3;

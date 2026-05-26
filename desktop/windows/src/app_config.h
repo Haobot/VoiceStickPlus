@@ -39,6 +39,12 @@ enum class OverlayPosition {
     kBottomRight,
 };
 
+enum class OverlayThemeSize {
+    kBig,
+    kMedium,
+    kSmall,
+};
+
 enum class OutputTarget {
     kFocusedApp,
     kSubtitle,
@@ -88,6 +94,7 @@ struct AppConfig {
     std::vector<std::string> paired_device_ids;
     std::vector<PairedDeviceEntry> paired_devices;
     std::map<std::string, OverlayThemeColor> device_theme_colors;
+    std::map<std::string, OverlayThemeSize> device_theme_sizes;
     std::map<std::string, OverlayPosition> device_overlay_positions;
     OutputProfile default_output_profile;
     std::map<std::string, OutputProfile> device_output_profiles;
@@ -123,6 +130,9 @@ InteractionMode InteractionModeFromName(std::string_view name);
 std::string OverlayThemeColorName(OverlayThemeColor color);
 OverlayThemeColor OverlayThemeColorFromName(std::string_view name);
 std::string OverlayThemeColorDisplayName(OverlayThemeColor color);
+std::string OverlayThemeSizeName(OverlayThemeSize size);
+OverlayThemeSize OverlayThemeSizeFromName(std::string_view name);
+std::string OverlayThemeSizeDisplayName(OverlayThemeSize size);
 std::string OverlayPositionName(OverlayPosition position);
 OverlayPosition OverlayPositionFromName(std::string_view name);
 std::string OverlayPositionDisplayName(OverlayPosition position);
