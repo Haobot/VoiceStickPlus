@@ -364,7 +364,7 @@ void OverlayWindow::Reposition() {
     const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
     const int vertical_padding = SizePx(kVerticalPadding, 12, 10);
     const int indicator_size = SizePx(kIndicatorSize, 22, 18);
-    const int content_spacing = SizePx(kContentSpacing, 10, 8);
+    const int content_spacing = SizePx(kContentSpacing, 16, 14);
     const int min_content_height = SizePx(kMinContentHeight, 68, 56);
     const int side_chrome_width = horizontal_padding + indicator_size +
                                   content_spacing + horizontal_padding;
@@ -789,7 +789,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     const int shadow_padding = Dp(kShadowPadding);
     const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
     const int indicator_size = SizePx(kIndicatorSize, 22, 18);
-    const int content_spacing = SizePx(kContentSpacing, 10, 8);
+    const int content_spacing = SizePx(kContentSpacing, 16, 14);
     const int visual_width = std::clamp(animated_window_width_, 1, width);
     const int visual_height = std::clamp(animated_window_height_, 1, height);
     const int visual_x = VisualOffsetX(width, visual_width);
@@ -840,6 +840,7 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
         if (hint_layout) {
             DWRITE_TEXT_METRICS metrics{};
             if (SUCCEEDED(hint_layout->GetMetrics(&metrics))) {
+                hint_metrics.width = std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
                 hint_metrics.height = std::ceil(metrics.height);
             }
         }
@@ -871,18 +872,20 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
         }
     }
     last_text_scroll_offset_ = scroll_offset;
-    const float text_draw_x = text_x - scroll_offset;
+    const float centered_offset = std::max(0.0f, (text_width - current_text.metrics.width) / 2.0f);
+    const float text_draw_x = text_x + centered_offset - scroll_offset;
     render_target.target->BeginDraw();
     render_target.target->PushAxisAlignedClip(text_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const float shadow_offset = std::max(1.0f, DpF(1));
     DrawTextLayout(render_target.target.Get(), current_text.layout.Get(), text_draw_x + shadow_offset,
                    block_y + shadow_offset, kTextShadowAlpha, 0);
-    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x + shadow_offset,
+    const float hint_draw_x = text_x + std::max(0.0f, (text_width - hint_metrics.width) / 2.0f);
+    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), hint_draw_x + shadow_offset,
                    block_y + text_metrics.height + gap + shadow_offset,
                    kTextShadowAlpha, 0);
     DrawTextLayout(render_target.target.Get(), current_text.layout.Get(), text_draw_x, block_y,
                    kTextAlpha, ink_rgb);
-    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x,
+    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), hint_draw_x,
                    block_y + text_metrics.height + gap, kHintAlpha, ink_rgb);
     render_target.target->PopAxisAlignedClip();
     if (SUCCEEDED(render_target.target->EndDraw())) {
