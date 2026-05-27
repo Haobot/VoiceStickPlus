@@ -280,6 +280,22 @@ void TestDeviceIds() {
     assert(BleProtocol::NormalizeDeviceId("09af") == "09AF");
     assert(!BleProtocol::DeviceIdFromName("Other").has_value());
     assert(BleProtocol::DeviceIdFromName("VS-C3D8").value() == "C3D8");
+
+    const ByteVector complete_name_ad = {0x02, 0x01, 0x06, 0x08, 0x09, 'V', 'S', '-', 'C', '3', 'D', '8'};
+    assert(BleProtocol::LocalNameFromAdvertisementData(complete_name_ad).value() == "VS-C3D8");
+    const ByteVector shortened_name_ad = {0x08, 0x08, 'V', 'S', '-', 'A', '1', 'B', '2'};
+    assert(BleProtocol::LocalNameFromAdvertisementData(shortened_name_ad).value() == "VS-A1B2");
+    const ByteVector malformed_ad = {0x08, 0x09, 'V', 'S'};
+    assert(!BleProtocol::LocalNameFromAdvertisementData(malformed_ad).has_value());
+    const ByteVector service_uuid_ad = {
+        0x02, 0x01, 0x06,
+        0x11, 0x07,
+        0x00, 0x51, 0xfc, 0xea, 0x3c, 0x3a, 0xf7, 0x88,
+        0x23, 0x4b, 0x6f, 0x6e, 0x84, 0x0b, 0x2f, 0x8f,
+    };
+    assert(BleProtocol::HasVoiceStickServiceUuid(service_uuid_ad));
+    assert(!BleProtocol::HasVoiceStickServiceUuid(complete_name_ad));
+    assert(BleProtocol::DeviceIdFromBluetoothAddress(0xAABBCCDDEEFF) == "EEFF");
 }
 
 void TestAudioFrameParsing() {

@@ -71,15 +71,15 @@ scripts/make-dmg.sh
 ```
 
 ### Windows 桌面端（CMake + Ninja，MSVC 2022 x64）
-仓库根目录提供了便捷构建脚本，无需手动配置环境：
+仓库根目录提供了便捷构建脚本，无需手动进入 VS 开发者命令行：
 ```bat
-:: 仅构建调试版本，会自动结束残留 VoiceStick/cmake/ninja/cl/link 进程并重建 build-x64
+:: 推荐的通用本地构建入口：自动查找 VS 2022，结束残留 VoiceStick/cmake/ninja/cl/link 进程，并重建 build-x64
 build_win.bat
 
-:: 构建、运行 CTest，并生成本地 MSI 安装包（依赖本机 VS Build Tools/WiX 配置）
+:: 本机发布辅助脚本：构建、运行 CTest，并生成本地 MSI；包含本机绝对路径和硬编码版本，复用前先检查内容
 build_native.bat
 ```
-`test.bat` 目前只是占位脚本，不运行 CTest；需要测试时使用下方 `ctest` 命令。
+`build_win.bat` 只构建，不运行 CTest。`test.bat` 目前只是占位脚本，不运行 CTest；需要测试时使用下方 `ctest` 命令。
 
 手动构建（先进入 VS 2022 x64 开发者环境，或调用本机 `vcvars64.bat` 后执行）：
 ```powershell
