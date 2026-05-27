@@ -5,6 +5,7 @@
 
 #include <CommCtrl.h>
 #include <winrt/Windows.Foundation.Metadata.h>
+#include <winrt/Windows.Storage.Streams.h>
 #include <winrt/base.h>
 
 #include <algorithm>
@@ -32,6 +33,39 @@ HMENU ControlId(int id) {
 
 std::string Utf8FromHstring(const winrt::hstring& value) {
     return winrt::to_string(value);
+}
+
+ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer) {
+    winrt::Windows::Storage::Streams::DataReader reader =
+        winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer);
+    ByteVector bytes(reader.UnconsumedBufferLength());
+    if (!bytes.empty()) reader.ReadBytes(bytes);
+    return bytes;
+}
+
+struct AdvertisementIdentity {
+    std::string local_name;
+    bool has_voice_stick_service = false;
+};
+
+AdvertisementIdentity AdvertisementIdentityFrom(
+    const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisement& advertisement) {
+    AdvertisementIdentity identity;
+    identity.local_name = Utf8FromHstring(advertisement.LocalName());
+
+    ByteVector ad_data;
+    for (const auto& section : advertisement.DataSections()) {
+        const auto data = BytesFromBuffer(section.Data());
+        if (data.size() > 0xff - 1) continue;
+        ad_data.push_back(static_cast<std::uint8_t>(data.size() + 1));
+        ad_data.push_back(section.DataType());
+        ad_data.insert(ad_data.end(), data.begin(), data.end());
+    }
+    if (identity.local_name.empty()) {
+        identity.local_name = BleProtocol::LocalNameFromAdvertisementData(ad_data).value_or(std::string());
+    }
+    identity.has_voice_stick_service = BleProtocol::HasVoiceStickServiceUuid(ad_data);
+    return identity;
 }
 
 std::string FormatBluetoothAddress(std::uint64_t address) {
@@ -435,8 +469,12 @@ void PairDeviceDialog::StopScan() {
 void PairDeviceDialog::HandleAdvertisement(
     const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher&,
     const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs& args) {
-    const auto name = Utf8FromHstring(args.Advertisement().LocalName());
-    auto device_id = BleProtocol::DeviceIdFromName(name);
+    const auto identity = AdvertisementIdentityFrom(args.Advertisement());
+    const auto bluetooth_address = args.BluetoothAddress();
+    auto device_id = BleProtocol::DeviceIdFromName(identity.local_name);
+    if (!device_id.has_value() && identity.has_voice_stick_service) {
+        device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+    }
     if (!device_id.has_value()) return;
     // Already-paired devices belong to the auto-reconnect path, not the
     // pairing list; surfacing them here lets the user accidentally pair the
@@ -444,9 +482,9 @@ void PairDeviceDialog::HandleAdvertisement(
     if (IsExistingDevice(*device_id)) return;
 
     PairingDevice device;
-    device.bluetooth_address = args.BluetoothAddress();
+    device.bluetooth_address = bluetooth_address;
     device.address_kind = AddressKindFromArgs(args);
-    device.name = name.empty() ? "VS-" + *device_id : name;
+    device.name = identity.local_name.empty() ? "VS-" + *device_id : identity.local_name;
     device.device_id = *device_id;
     device.rssi = args.RawSignalStrengthInDBm();
 

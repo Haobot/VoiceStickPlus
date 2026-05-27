@@ -70,6 +70,9 @@ public:
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);
     static ByteVector OtaAbortPayload(std::uint32_t transfer_id);
     static std::optional<std::string> DeviceIdFromName(std::string_view name);
+    static std::optional<std::string> LocalNameFromAdvertisementData(std::span<const std::uint8_t> data);
+    static bool HasVoiceStickServiceUuid(std::span<const std::uint8_t> data);
+    static std::string DeviceIdFromBluetoothAddress(std::uint64_t bluetooth_address);
     static std::string NormalizeDeviceId(std::string_view text);
 };
 

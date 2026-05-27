@@ -620,6 +620,9 @@ static void start_advertising_with_mode(bool fast)
     fields.uuids128 = &s_service_uuid;
     fields.num_uuids128 = 1;
     fields.uuids128_is_complete = 1;
+    fields.name = (const uint8_t *)s_device_name;
+    fields.name_len = strlen(s_device_name);
+    fields.name_is_complete = 0;
 
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {

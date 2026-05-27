@@ -86,6 +86,38 @@ std::string Utf8FromHstring(const winrt::hstring& value) {
     return winrt::to_string(value);
 }
 
+ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer) {
+    DataReader reader = DataReader::FromBuffer(buffer);
+    ByteVector bytes(reader.UnconsumedBufferLength());
+    if (!bytes.empty()) reader.ReadBytes(bytes);
+    return bytes;
+}
+
+struct AdvertisementIdentity {
+    std::string local_name;
+    bool has_voice_stick_service = false;
+};
+
+AdvertisementIdentity AdvertisementIdentityFrom(
+    const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisement& advertisement) {
+    AdvertisementIdentity identity;
+    identity.local_name = Utf8FromHstring(advertisement.LocalName());
+
+    ByteVector ad_data;
+    for (const auto& section : advertisement.DataSections()) {
+        const auto data = BytesFromBuffer(section.Data());
+        if (data.size() > 0xff - 1) continue;
+        ad_data.push_back(static_cast<std::uint8_t>(data.size() + 1));
+        ad_data.push_back(section.DataType());
+        ad_data.insert(ad_data.end(), data.begin(), data.end());
+    }
+    if (identity.local_name.empty()) {
+        identity.local_name = BleProtocol::LocalNameFromAdvertisementData(ad_data).value_or(std::string());
+    }
+    identity.has_voice_stick_service = BleProtocol::HasVoiceStickServiceUuid(ad_data);
+    return identity;
+}
+
 bool HasNotify(const GattCharacteristic& characteristic) {
     return (characteristic.CharacteristicProperties() & GattCharacteristicProperties::Notify) ==
            GattCharacteristicProperties::Notify;
@@ -546,11 +578,13 @@ void BleCentralWin::StopScan() {
 
 void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
                                         const BluetoothLEAdvertisementReceivedEventArgs& args) {
-    const auto local_name = Utf8FromHstring(args.Advertisement().LocalName());
-    auto device_id = BleProtocol::DeviceIdFromName(local_name);
-    if (!device_id.has_value()) return;
-
+    const auto identity = AdvertisementIdentityFrom(args.Advertisement());
     const auto bluetooth_address = args.BluetoothAddress();
+    auto device_id = BleProtocol::DeviceIdFromName(identity.local_name);
+    if (!device_id.has_value() && identity.has_voice_stick_service) {
+        device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+    }
+    if (!device_id.has_value()) return;
     BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
     if (CanReadAdvertisementAddressType()) {
         try {
@@ -582,7 +616,7 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
                FormatBluetoothAddress(bluetooth_address) +
                " kind=" + AddressKindName(address_kind) +
                " scan_to_adv_ms=" + std::to_string(ElapsedMs(scan_started_at_)));
-    ConnectDeviceAsync(bluetooth_address, address_kind, local_name, *device_id);
+    ConnectDeviceAsync(bluetooth_address, address_kind, identity.local_name, *device_id);
 }
 
 namespace {
