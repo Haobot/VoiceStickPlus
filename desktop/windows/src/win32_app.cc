@@ -17,6 +17,7 @@
 #include <exception>
 #include <iterator>
 #include <optional>
+#include <stdexcept>
 
 namespace voicestick {
 
@@ -33,6 +34,7 @@ constexpr UINT kMenuCheckAppUpdates = 1008;
 constexpr UINT kMenuHoldToTalk = 1009;
 constexpr UINT kMenuClickToTalk = 1010;
 constexpr UINT kMenuAutoEnter = 1011;
+constexpr UINT kMenuLaunchAtLogin = 1014;
 constexpr UINT kMenuOutputFocusedApp = 1012;
 constexpr UINT kMenuOutputSubtitle = 1013;
 constexpr UINT kMenuForgetBase = 2100;
@@ -71,6 +73,18 @@ constexpr HotkeyPreset kHotkeyPresets[] = {
 
 void LogLine(std::string_view message) {
     voicestick::LogApp(message);
+}
+
+std::wstring CurrentExecutableCommand() {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) return {};
+    path.resize(length);
+    return L"\"" + path + L"\"";
 }
 
 std::wstring Utf16FromUtf8(std::string_view text) {
@@ -245,6 +259,11 @@ int Win32App::Run() {
 
         RegisterTaskbarMessage();
         AddTrayIcon();
+        try {
+            SyncLaunchAtLogin();
+        } catch (const std::exception& error) {
+            LogLine(std::string("Launch at login sync skipped: ") + error.what());
+        }
 
         LogLine("Initializing WinSparkle");
         win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
@@ -591,6 +610,10 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             return 0;
         case kMenuAutoEnter:
             config_.auto_enter = !config_.auto_enter;
+            SaveInputOptions();
+            return 0;
+        case kMenuLaunchAtLogin:
+            config_.launch_at_login = !config_.launch_at_login;
             SaveInputOptions();
             return 0;
         case kMenuOutputFocusedApp:
@@ -1029,6 +1052,10 @@ void Win32App::ShowTrayMenu() {
                 MF_STRING | (config_.auto_enter ? MF_CHECKED : 0),
                 kMenuAutoEnter,
                 TrW(StringId::kMenuAutoEnter, language).c_str());
+    AppendMenuW(menu,
+                MF_STRING | (config_.launch_at_login ? MF_CHECKED : 0),
+                kMenuLaunchAtLogin,
+                TrW(StringId::kMenuLaunchAtLogin, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, TrW(StringId::kMenuSettings, language).c_str());
     AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
@@ -1042,9 +1069,45 @@ void Win32App::ShowTrayMenu() {
     DestroyMenu(menu);
 }
 
+void Win32App::SyncLaunchAtLogin() {
+    HKEY key = nullptr;
+    const wchar_t* run_key = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const LSTATUS open_status = RegCreateKeyExW(HKEY_CURRENT_USER, run_key, 0, nullptr, 0,
+                                                KEY_SET_VALUE, nullptr, &key, nullptr);
+    if (open_status != ERROR_SUCCESS) {
+        throw std::runtime_error("failed to open startup registry key");
+    }
+
+    if (config_.launch_at_login) {
+        const auto command = CurrentExecutableCommand();
+        if (command.empty()) {
+            RegCloseKey(key);
+            throw std::runtime_error("failed to resolve executable path");
+        }
+        const DWORD byte_size = static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t));
+        const LSTATUS set_status = RegSetValueExW(key, L"VoiceStick", 0, REG_SZ,
+                                                  reinterpret_cast<const BYTE*>(command.c_str()),
+                                                  byte_size);
+        RegCloseKey(key);
+        if (set_status != ERROR_SUCCESS) {
+            throw std::runtime_error("failed to enable startup registry value");
+        }
+        LogLine("Launch at login enabled");
+        return;
+    }
+
+    const LSTATUS delete_status = RegDeleteValueW(key, L"VoiceStick");
+    RegCloseKey(key);
+    if (delete_status != ERROR_SUCCESS && delete_status != ERROR_FILE_NOT_FOUND) {
+        throw std::runtime_error("failed to disable startup registry value");
+    }
+    LogLine("Launch at login disabled");
+}
+
 void Win32App::SaveInputOptions() {
     try {
         config_.Save();
+        SyncLaunchAtLogin();
         if (coordinator_) coordinator_->UpdateConfig(config_);
         if (global_hotkey_) {
             global_hotkey_->Unregister();
@@ -1173,9 +1236,9 @@ void Win32App::RebuildTooltip() {
     data.uID = kTrayIconId;
     data.uFlags = NIF_TIP | NIF_SHOWTIP;
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
-    std::wstring tip = L"VoiceStick";
+    std::wstring tip;
     if (connected_devices_.empty()) {
-        tip += L" - " + TrW(StringId::kStatusDisconnected, language);
+        tip = L"VoiceStick - " + TrW(StringId::kStatusDisconnected, language);
     } else {
         bool first = true;
         for (const auto& device : connected_devices_) {
@@ -1303,7 +1366,7 @@ void Win32App::ShowSettings() {
         settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
         settings_dialog_->on_config_changed = [this](AppConfig new_config) {
             config_ = std::move(new_config);
-            if (coordinator_) coordinator_->UpdateConfig(config_);
+            SaveInputOptions();
             RebuildTooltip();
             LogLine("Settings saved");
         };

@@ -484,6 +484,7 @@ void TestAppConfig() {
     assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
     assert(TextTransformFromName("translate") == TextTransform::kTranslate);
     assert(AppConfig::Defaults().ui_language == UiLanguage::kSystem);
+    assert(!AppConfig::Defaults().launch_at_login);
     assert(UiLanguageFromName("system") == UiLanguage::kSystem);
     assert(UiLanguageFromName("en") == UiLanguage::kEnglish);
     assert(UiLanguageFromName("zh-Hans") == UiLanguage::kSimplifiedChinese);
@@ -500,6 +501,8 @@ void TestAppConfig() {
     assert(UiLanguageFromLocaleName(L"") == UiLanguage::kEnglish);
     assert(!Tr(StringId::kSettingsTitle, UiLanguage::kEnglish).empty());
     assert(Tr(StringId::kSettingsTitle, UiLanguage::kSimplifiedChinese) == "VoiceStick 设置");
+    assert(Tr(StringId::kSettingsLaunchAtLogin, UiLanguage::kEnglish) == "Start VoiceStick when Windows starts");
+    assert(Tr(StringId::kMenuLaunchAtLogin, UiLanguage::kSimplifiedChinese) == "开机自启动");
     assert(BatteryStatusText(83, false, false, UiLanguage::kEnglish) == "83%");
     assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");
     assert(BatteryStatusText(83, false, true, UiLanguage::kSimplifiedChinese) == "83%，外接电源");
