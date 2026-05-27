@@ -264,6 +264,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "global_hotkey_enabled") config.global_hotkey_enabled = BoolValue(value, config.global_hotkey_enabled);
     if (key == "global_hotkey") config.global_hotkey = value;
     if (key == "prompt_tone_enabled") config.prompt_tone_enabled = BoolValue(value, config.prompt_tone_enabled);
+    if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
     if (key == "paired_device") {
@@ -363,6 +364,7 @@ AppConfig AppConfig::Load() {
         if (auto value = TomlBool(table, "global_hotkey_enabled")) config.global_hotkey_enabled = *value;
         if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
         if (auto value = TomlBool(table, "prompt_tone_enabled")) config.prompt_tone_enabled = *value;
+        if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
             config.debug_audio_directory = std::filesystem::path(*value);
@@ -418,6 +420,7 @@ void AppConfig::Save() const {
     output << "global_hotkey_enabled = " << (global_hotkey_enabled ? "true" : "false") << "\n";
     output << "global_hotkey = \"" << TomlEscape(global_hotkey) << "\"\n";
     output << "prompt_tone_enabled = " << (prompt_tone_enabled ? "true" : "false") << "\n";
+    output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
     if (!paired_devices.empty()) {

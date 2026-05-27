@@ -110,6 +110,7 @@ struct AppConfig {
     bool global_hotkey_enabled = true;
     std::string global_hotkey = "Alt+X";
     bool prompt_tone_enabled = true;
+    bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
 

@@ -37,6 +37,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLlmApiKey)] = "API Key";
     table[Index(StringId::kSettingsLlmModel)] = "Model";
     table[Index(StringId::kSettingsPromptTone)] = "Play prompt tone on device";
+    table[Index(StringId::kSettingsLaunchAtLogin)] = "Start VoiceStick when Windows starts";
     table[Index(StringId::kSettingsDebugAudio)] = "Save debug audio files";
     table[Index(StringId::kSettingsDebugDir)] = "Audio Folder";
     table[Index(StringId::kSettingsChooseDir)] = "Choose...";
@@ -59,6 +60,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuHoldToTalk)] = "Hold to Talk";
     table[Index(StringId::kMenuClickToTalk)] = "Click to Talk";
     table[Index(StringId::kMenuAutoEnter)] = "Press Return After Paste";
+    table[Index(StringId::kMenuLaunchAtLogin)] = "Start at Login";
     table[Index(StringId::kMenuOutput)] = "Output";
     table[Index(StringId::kMenuOutputFocusedApp)] = "Focused App";
     table[Index(StringId::kMenuOutputSubtitle)] = "Subtitle";
@@ -132,6 +134,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLlmApiKey)] = "API Key";
     table[Index(StringId::kSettingsLlmModel)] = "模型";
     table[Index(StringId::kSettingsPromptTone)] = "在设备上播放提示音";
+    table[Index(StringId::kSettingsLaunchAtLogin)] = "Windows 启动时自动运行 VoiceStick";
     table[Index(StringId::kSettingsDebugAudio)] = "保存调试音频文件";
     table[Index(StringId::kSettingsDebugDir)] = "音频文件夹";
     table[Index(StringId::kSettingsChooseDir)] = "选择...";
@@ -154,6 +157,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuHoldToTalk)] = "按住说话";
     table[Index(StringId::kMenuClickToTalk)] = "点击说话";
     table[Index(StringId::kMenuAutoEnter)] = "粘贴后按回车";
+    table[Index(StringId::kMenuLaunchAtLogin)] = "开机自启动";
     table[Index(StringId::kMenuOutput)] = "输出";
     table[Index(StringId::kMenuOutputFocusedApp)] = "当前应用";
     table[Index(StringId::kMenuOutputSubtitle)] = "字幕";
