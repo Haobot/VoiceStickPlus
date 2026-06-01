@@ -4,6 +4,7 @@
 #include "firmware_manifest.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
+#include "pair_device_helper.h"
 #include "voice_stick_coordinator.h"
 
 #include <algorithm>
@@ -296,6 +297,35 @@ void TestDeviceIds() {
     assert(BleProtocol::HasVoiceStickServiceUuid(service_uuid_ad));
     assert(!BleProtocol::HasVoiceStickServiceUuid(complete_name_ad));
     assert(BleProtocol::DeviceIdFromBluetoothAddress(0xAABBCCDDEEFF) == "EEFF");
+}
+
+void TestPairDeviceHelpers() {
+    assert(ParseManualPairDeviceId("abcd").value() == "ABCD");
+    assert(ParseManualPairDeviceId("VS-abcd").value() == "ABCD");
+    assert(ParseManualPairDeviceId(" vs-09af ").value() == "09AF");
+    assert(!ParseManualPairDeviceId("VS-123").has_value());
+    assert(!ParseManualPairDeviceId("VoiceStick").has_value());
+
+    PairingCandidate ready;
+    ready.device_id = "C3D8";
+    ready.display_name = "VS-C3D8";
+    ready.bluetooth_address = 0xAABBCCDDEEFF;
+    ready.id_source = PairingCandidateIdSource::kName;
+    assert(CandidateDisplayTitle(ready) == "VS-C3D8");
+    assert(CanPairCandidate(ready));
+
+    PairingCandidate existing = ready;
+    existing.is_existing_device = true;
+    assert(CandidateDisplayTitle(existing) == "VS-C3D8 (paired)");
+    assert(!CanPairCandidate(existing));
+
+    PairingCandidate temporary = ready;
+    temporary.device_id = "EEFF";
+    temporary.display_name.clear();
+    temporary.id_source = PairingCandidateIdSource::kAddressFallback;
+    temporary.is_temporary_candidate = true;
+    assert(CandidateDisplayTitle(temporary) == "VoiceStick (waiting for name)");
+    assert(!CanPairCandidate(temporary));
 }
 
 void TestAudioFrameParsing() {
@@ -989,6 +1019,7 @@ void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
 
 int main() {
     TestDeviceIds();
+    TestPairDeviceHelpers();
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();

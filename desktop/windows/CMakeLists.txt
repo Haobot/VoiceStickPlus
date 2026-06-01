@@ -40,6 +40,7 @@ add_library(voicestick_core
     src/log.cc
     src/ogg_crc.cc
     src/ogg_opus_muxer.cc
+    src/pair_device_helper.cc
     src/voice_stick_coordinator.cc
 )
 

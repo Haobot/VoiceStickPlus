@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pair_device_helper.h"
 #include "voice_stick_coordinator.h"
 
 #include <Windows.h>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace voicestick {
@@ -31,16 +33,13 @@ public:
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices);
     void SetDeviceInfo(const DeviceInfo& info);
     void SetPairingError(const std::string& device_id, const std::string& message);
+    void SetManualPairHandler(std::function<void(std::string)> handler) { on_pair_manual_ = std::move(handler); }
 
     std::function<void(std::string device_id)> on_pair_timeout;
 
 private:
     struct PairingDevice {
-        std::uint64_t bluetooth_address = 0;
-        BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
-        std::string name;
-        std::string device_id;
-        int rssi = 0;
+        PairingCandidate candidate;
     };
 
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -49,6 +48,8 @@ private:
     void BuildContent();
     void StartScan();
     void StopScan();
+    void RestartScanIfNeeded();
+    void PairManualDeviceId();
     void HandleAdvertisement(
         const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher& watcher,
         const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs& args);
@@ -75,6 +76,8 @@ private:
     HWND device_list_ = nullptr;
     HWND pair_button_ = nullptr;
     HWND cancel_button_ = nullptr;
+    HWND manual_id_label_ = nullptr;
+    HWND manual_id_edit_ = nullptr;
     HFONT ui_font_ = nullptr;
     UINT dpi_ = 96;
     std::vector<BYTE> dialog_template_;
@@ -82,7 +85,11 @@ private:
     std::vector<std::string> existing_device_ids_;
     std::function<void(std::string, std::uint64_t, BluetoothAddressKind, std::string)> on_pair_;
     std::function<void(std::string, std::optional<DeviceInfo>)> on_pair_completed_;
+    std::function<void(std::string)> on_pair_manual_;
     bool pairing_finalized_ = false;
+    std::uint64_t received_advertisement_count_ = 0;
+    std::uint64_t voice_stick_candidate_count_ = 0;
+    std::uint64_t scan_restart_count_ = 0;
     std::vector<PairingDevice> devices_;
     std::mutex mutex_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
