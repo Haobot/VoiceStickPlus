@@ -2,6 +2,7 @@
 
 #include "ble_protocol.h"
 #include "dpi_util.h"
+#include "log.h"
 
 #include <CommCtrl.h>
 #include <winrt/Windows.Foundation.Metadata.h>
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <utility>
 
 namespace voicestick {
@@ -24,8 +26,11 @@ constexpr UINT kPairingSucceededMessage = WM_APP + 22;
 constexpr UINT kPairingErrorMessage = WM_APP + 23;
 constexpr UINT_PTR kPairingTimeoutTimerId = 2;
 constexpr UINT_PTR kPairingFinalizeTimerId = 3;
+constexpr UINT_PTR kScanRestartTimerId = 4;
 constexpr UINT kPairingFinalizeDelayMs = 2500;
+constexpr UINT kScanRestartDelayMs = 15000;
 constexpr int kDeviceListId = 101;
+constexpr int kManualIdEditId = 102;
 
 HMENU ControlId(int id) {
     return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
@@ -84,6 +89,10 @@ std::string FormatHresult(std::int32_t code) {
     char buffer[16]{};
     snprintf(buffer, sizeof(buffer), "0x%08X", static_cast<unsigned int>(code));
     return buffer;
+}
+
+void LogBleLine(const std::string& message) {
+    LogBle(message);
 }
 
 std::wstring ScanStartFailureText(const winrt::hresult_error& error) {
@@ -283,6 +292,10 @@ INT_PTR PairDeviceDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_p
             HandlePairingFinalize();
             return TRUE;
         }
+        if (w_param == kScanRestartTimerId) {
+            RestartScanIfNeeded();
+            return TRUE;
+        }
         return FALSE;
     case WM_NOTIFY: {
         auto* notify = reinterpret_cast<NMHDR*>(l_param);
@@ -311,12 +324,15 @@ INT_PTR PairDeviceDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_p
     case WM_DESTROY:
         KillTimer(hwnd_, kPairingTimeoutTimerId);
         KillTimer(hwnd_, kPairingFinalizeTimerId);
+        KillTimer(hwnd_, kScanRestartTimerId);
         StopScan();
         hwnd_ = nullptr;
         status_label_ = nullptr;
         device_list_ = nullptr;
         pair_button_ = nullptr;
         cancel_button_ = nullptr;
+        manual_id_label_ = nullptr;
+        manual_id_edit_ = nullptr;
         return TRUE;
     default:
         return FALSE;
@@ -350,7 +366,7 @@ void PairDeviceDialog::RebuildUi() {
 
     const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_STYLE));
     const DWORD ex_style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_EXSTYLE));
-    RECT desired{0, 0, Dp(440), Dp(320)};
+    RECT desired{0, 0, Dp(440), Dp(370)};
     AdjustWindowRectExForDpi(&desired, style, FALSE, ex_style, dpi_);
     SetWindowPos(hwnd_, nullptr, 0, 0, desired.right - desired.left,
                  desired.bottom - desired.top, SWP_NOMOVE | SWP_NOZORDER);
@@ -363,10 +379,14 @@ void PairDeviceDialog::DestroyControls() {
     if (status_label_ && IsWindow(status_label_)) DestroyWindow(status_label_);
     if (pair_button_ && IsWindow(pair_button_)) DestroyWindow(pair_button_);
     if (cancel_button_ && IsWindow(cancel_button_)) DestroyWindow(cancel_button_);
+    if (manual_id_label_ && IsWindow(manual_id_label_)) DestroyWindow(manual_id_label_);
+    if (manual_id_edit_ && IsWindow(manual_id_edit_)) DestroyWindow(manual_id_edit_);
     device_list_ = nullptr;
     status_label_ = nullptr;
     pair_button_ = nullptr;
     cancel_button_ = nullptr;
+    manual_id_label_ = nullptr;
+    manual_id_edit_ = nullptr;
     if (ui_font_) {
         DeleteObject(ui_font_);
         ui_font_ = nullptr;
@@ -382,12 +402,16 @@ void PairDeviceDialog::BuildContent() {
     ui_font_ = CreateUiFont(dpi_);
     const HFONT font = ui_font_;
     const int margin = Dp(16);
-    const int list_height = Dp(200);
+    const int list_height = Dp(190);
+    const int manual_label_height = Dp(22);
+    const int manual_edit_height = Dp(26);
     const int button_width = Dp(86);
     const int button_height = Dp(30);
     const int button_gap = Dp(10);
     const int client_width = Dp(440);
-    const int button_y = margin + list_height + Dp(16);
+    const int manual_label_y = margin + list_height + Dp(10);
+    const int manual_edit_y = manual_label_y + manual_label_height + Dp(4);
+    const int button_y = manual_edit_y + manual_edit_height + Dp(16);
     const int cancel_x = client_width - margin - button_width;
     const int pair_x = cancel_x - button_gap - button_width;
 
@@ -406,6 +430,16 @@ void PairDeviceDialog::BuildContent() {
     InsertColumn(device_list_, 2, L"Bluetooth Address",
                  list_width - Dp(150) - Dp(86));
 
+    manual_id_label_ = CreateWindowExW(0, L"STATIC", L"Can't find it? Enter the 4-digit ID shown on the Stick:",
+                                       WS_CHILD | WS_VISIBLE,
+                                       margin, manual_label_y, client_width - 2 * margin,
+                                       manual_label_height, hwnd_, nullptr, instance_, nullptr);
+    manual_id_edit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                                      margin, manual_edit_y, Dp(130), manual_edit_height, hwnd_,
+                                      ControlId(kManualIdEditId), instance_, nullptr);
+    SendMessageW(manual_id_edit_, EM_SETLIMITTEXT, 7, 0);
+
     status_label_ = CreateWindowExW(0, L"STATIC", L"Scanning", WS_CHILD | WS_VISIBLE,
                                     margin, button_y + Dp(5), pair_x - margin - button_gap,
                                     Dp(22), hwnd_, nullptr, instance_, nullptr);
@@ -415,7 +449,7 @@ void PairDeviceDialog::BuildContent() {
     cancel_button_ = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                      cancel_x, button_y, button_width, button_height, hwnd_,
                                      ControlId(IDCANCEL), instance_, nullptr);
-    for (HWND control : {device_list_, status_label_, pair_button_, cancel_button_}) {
+    for (HWND control : {device_list_, manual_id_label_, manual_id_edit_, status_label_, pair_button_, cancel_button_}) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
 }
@@ -428,6 +462,8 @@ void PairDeviceDialog::StartScan() {
     }
     RebuildList();
     SetWindowTextW(status_label_, L"Scanning");
+    if (hwnd_) SetTimer(hwnd_, kScanRestartTimerId, kScanRestartDelayMs, nullptr);
+    LogBleLine("pair scan started restart_count=" + std::to_string(scan_restart_count_));
     watcher_ = winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher();
     watcher_.ScanningMode(
         winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode::Active);
@@ -443,20 +479,23 @@ void PairDeviceDialog::StartScan() {
         }
         watcher_ = nullptr;
         const auto text = ScanStartFailureText(error);
+        LogBleLine("pair scan start failed hr=" + FormatHresult(error.code()));
         SetWindowTextW(status_label_, text.c_str());
-        EnableWindow(pair_button_, FALSE);
+        EnableWindow(pair_button_, TRUE);
     } catch (...) {
         try {
             watcher_.Received(received_token_);
         } catch (...) {
         }
         watcher_ = nullptr;
+        LogBleLine("pair scan start failed unknown");
         SetWindowTextW(status_label_, L"Bluetooth scan failed.");
-        EnableWindow(pair_button_, FALSE);
+        EnableWindow(pair_button_, TRUE);
     }
 }
 
 void PairDeviceDialog::StopScan() {
+    if (hwnd_) KillTimer(hwnd_, kScanRestartTimerId);
     if (!watcher_) return;
     try {
         watcher_.Received(received_token_);
@@ -464,42 +503,77 @@ void PairDeviceDialog::StopScan() {
     } catch (...) {
     }
     watcher_ = nullptr;
+    LogBleLine("pair scan stopped received=" + std::to_string(received_advertisement_count_) +
+               " candidates=" + std::to_string(voice_stick_candidate_count_));
+}
+
+void PairDeviceDialog::RestartScanIfNeeded() {
+    if (pairing_device_id_.has_value()) return;
+    bool has_candidates = false;
+    {
+        std::lock_guard lock(mutex_);
+        has_candidates = !devices_.empty();
+    }
+    if (has_candidates) return;
+
+    ++scan_restart_count_;
+    LogBleLine("pair scan restarting after empty window restart_count=" +
+               std::to_string(scan_restart_count_));
+    SetWindowTextW(status_label_, L"Still scanning... retrying Bluetooth scan");
+    StartScan();
 }
 
 void PairDeviceDialog::HandleAdvertisement(
     const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher&,
     const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs& args) {
+    ++received_advertisement_count_;
     const auto identity = AdvertisementIdentityFrom(args.Advertisement());
     const auto bluetooth_address = args.BluetoothAddress();
     auto device_id = BleProtocol::DeviceIdFromName(identity.local_name);
+    PairingCandidateIdSource id_source = PairingCandidateIdSource::kName;
+    bool is_temporary = false;
     if (!device_id.has_value() && identity.has_voice_stick_service) {
         device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+        id_source = PairingCandidateIdSource::kAddressFallback;
+        is_temporary = true;
     }
-    if (!device_id.has_value()) return;
-    // Already-paired devices belong to the auto-reconnect path, not the
-    // pairing list; surfacing them here lets the user accidentally pair the
-    // same device a second time.
-    if (IsExistingDevice(*device_id)) return;
+    if (!device_id.has_value()) {
+        LogBleLine("pair scan ignored address=" + FormatBluetoothAddress(bluetooth_address) +
+                   " reason=no_name_or_service rssi=" + std::to_string(args.RawSignalStrengthInDBm()));
+        return;
+    }
 
     PairingDevice device;
-    device.bluetooth_address = bluetooth_address;
-    device.address_kind = AddressKindFromArgs(args);
-    device.name = identity.local_name.empty() ? "VS-" + *device_id : identity.local_name;
-    device.device_id = *device_id;
-    device.rssi = args.RawSignalStrengthInDBm();
+    device.candidate.bluetooth_address = bluetooth_address;
+    device.candidate.address_kind = AddressKindFromArgs(args);
+    device.candidate.display_name = identity.local_name.empty() ? "VS-" + *device_id : identity.local_name;
+    device.candidate.device_id = *device_id;
+    device.candidate.rssi = args.RawSignalStrengthInDBm();
+    device.candidate.id_source = id_source;
+    device.candidate.is_existing_device = IsExistingDevice(*device_id);
+    device.candidate.is_temporary_candidate = is_temporary;
+
+    ++voice_stick_candidate_count_;
+    LogBleLine("pair scan candidate id=VS-" + *device_id +
+               " address=" + FormatBluetoothAddress(bluetooth_address) +
+               " source=" + std::string(is_temporary ? "service" : "name") +
+               " existing=" + std::string(device.candidate.is_existing_device ? "true" : "false") +
+               " rssi=" + std::to_string(device.candidate.rssi));
 
     {
         std::lock_guard lock(mutex_);
         auto it = std::find_if(devices_.begin(), devices_.end(), [&](const PairingDevice& existing) {
-            return existing.bluetooth_address == device.bluetooth_address;
+            return existing.candidate.bluetooth_address == device.candidate.bluetooth_address;
         });
         if (it == devices_.end()) {
             devices_.push_back(device);
+        } else if (it->candidate.is_temporary_candidate && !device.candidate.is_temporary_candidate) {
+            *it = device;
         } else {
             *it = device;
         }
         std::sort(devices_.begin(), devices_.end(), [](const PairingDevice& lhs, const PairingDevice& rhs) {
-            return lhs.rssi > rhs.rssi;
+            return lhs.candidate.rssi > rhs.candidate.rssi;
         });
     }
     if (hwnd_) PostMessageW(hwnd_, kDeviceListChangedMessage, 0, 0);
@@ -518,9 +592,7 @@ void PairDeviceDialog::RebuildList() {
     }
     for (std::size_t index = 0; index < devices.size(); ++index) {
         const auto& device = devices[index];
-        std::string title = "VS-" + device.device_id;
-        if (IsExistingDevice(device.device_id)) title += " (paired)";
-        auto name = Utf16(title);
+        auto name = Utf16(CandidateDisplayTitle(device.candidate));
         LVITEMW item{};
         item.mask = LVIF_TEXT;
         item.iItem = static_cast<int>(index);
@@ -528,10 +600,10 @@ void PairDeviceDialog::RebuildList() {
         item.pszText = name.data();
         SendMessageW(device_list_, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item));
 
-        auto signal = Utf16(std::to_string(device.rssi) + " dBm");
+        auto signal = Utf16(std::to_string(device.candidate.rssi) + " dBm");
         SetListViewText(device_list_, static_cast<int>(index), 1, &signal);
 
-        auto address = Utf16(FormatBluetoothAddress(device.bluetooth_address));
+        auto address = Utf16(FormatBluetoothAddress(device.candidate.bluetooth_address));
         SetListViewText(device_list_, static_cast<int>(index), 2, &address);
     }
     if (!devices.empty()) {
@@ -544,7 +616,9 @@ void PairDeviceDialog::RebuildList() {
         SendMessageW(device_list_, LVM_ENSUREVISIBLE, static_cast<WPARAM>(selection), FALSE);
     }
 
-    const auto status = devices.empty() ? L"Scanning" : Utf16(std::to_string(devices.size()) + " found");
+    const auto status = devices.empty()
+                            ? Utf16("Scanning (" + std::to_string(received_advertisement_count_) + " advertisements)")
+                            : Utf16(std::to_string(devices.size()) + " found");
     SetWindowTextW(status_label_, status.c_str());
 }
 
@@ -559,10 +633,47 @@ void PairDeviceDialog::PairSelectedDevice() {
         devices = devices_;
     }
     if (selected < 0 || selected >= static_cast<int>(devices.size())) {
+        PairManualDeviceId();
+        return;
+    }
+    const auto& device = devices[static_cast<std::size_t>(selected)];
+    if (device.candidate.is_existing_device) {
+        SetWindowTextW(status_label_, L"This device is already paired. Forget it first or wait for reconnect.");
+        return;
+    }
+    if (device.candidate.is_temporary_candidate) {
+        SetWindowTextW(status_label_, L"Waiting for device name. Move the Stick closer or enter its ID below.");
+        return;
+    }
+    if (!CanPairCandidate(device.candidate)) {
+        SetWindowTextW(status_label_, L"Select a VoiceStick with a device ID");
+        return;
+    }
+    BeginPairing(device);
+}
+
+void PairDeviceDialog::PairManualDeviceId() {
+    if (!manual_id_edit_) {
         SetWindowTextW(status_label_, L"Select a device");
         return;
     }
-    BeginPairing(devices[static_cast<std::size_t>(selected)]);
+    wchar_t buffer[32]{};
+    GetWindowTextW(manual_id_edit_, buffer, static_cast<int>(sizeof(buffer) / sizeof(buffer[0])));
+    const auto input = winrt::to_string(winrt::hstring(buffer));
+    auto device_id = ParseManualPairDeviceId(input);
+    if (!device_id.has_value()) {
+        SetWindowTextW(status_label_, L"Enter the 4-digit ID shown on the Stick screen");
+        return;
+    }
+    if (IsExistingDevice(*device_id)) {
+        SetWindowTextW(status_label_, L"This device is already paired. Forget it first or wait for reconnect.");
+        return;
+    }
+    StopScan();
+    SetWindowTextW(status_label_, Utf16("Saved VS-" + *device_id + "; waiting for advertisement...").c_str());
+    EnableWindow(pair_button_, FALSE);
+    if (on_pair_manual_) on_pair_manual_(*device_id);
+    Close();
 }
 
 void PairDeviceDialog::Close() {
@@ -571,16 +682,20 @@ void PairDeviceDialog::Close() {
 }
 
 void PairDeviceDialog::BeginPairing(const PairingDevice& device) {
-    pairing_device_id_ = device.device_id;
+    pairing_device_id_ = device.candidate.device_id;
     StopScan();
     EnableWindow(device_list_, FALSE);
+    EnableWindow(manual_id_edit_, FALSE);
     EnableWindow(pair_button_, FALSE);
     SetWindowTextW(pair_button_, L"Pairing...");
-    auto status = Utf16("Pairing VS-" + device.device_id + "...");
+    auto status = Utf16("Pairing VS-" + device.candidate.device_id + "...");
     SetWindowTextW(status_label_, status.c_str());
     SetTimer(hwnd_, kPairingTimeoutTimerId, 30000, nullptr);
     if (on_pair_) {
-        on_pair_(device.device_id, device.bluetooth_address, device.address_kind, device.name);
+        on_pair_(device.candidate.device_id,
+                 device.candidate.bluetooth_address,
+                 device.candidate.address_kind,
+                 device.candidate.display_name);
     }
 }
 
@@ -626,6 +741,7 @@ void PairDeviceDialog::HandlePairingError(const std::string& message) {
     pairing_device_id_.reset();
     pairing_finalized_ = false;
     EnableWindow(device_list_, TRUE);
+    EnableWindow(manual_id_edit_, TRUE);
     EnableWindow(pair_button_, TRUE);
     SetWindowTextW(pair_button_, L"Retry");
     SetWindowTextW(status_label_, Utf16(message).c_str());
@@ -639,6 +755,7 @@ void PairDeviceDialog::HandlePairingTimeout() {
     pairing_device_id_.reset();
     pairing_finalized_ = false;
     EnableWindow(device_list_, TRUE);
+    EnableWindow(manual_id_edit_, TRUE);
     EnableWindow(pair_button_, TRUE);
     SetWindowTextW(pair_button_, L"Pair");
     SetWindowTextW(status_label_, L"Pairing timed out");

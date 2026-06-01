@@ -1353,6 +1353,9 @@ void Win32App::ShowPairDeviceDialog() {
         [this](std::string device_id, std::optional<DeviceInfo> info) {
             HandlePairingCompleted(device_id, std::move(info));
         });
+    pair_device_dialog_->SetManualPairHandler([this](std::string device_id) {
+        PairDeviceByManualId(device_id);
+    });
     pair_device_dialog_->on_pair_timeout = [this](std::string device_id) {
         pending_pairing_entry_.reset();
         if (coordinator_) coordinator_->CancelPendingConnect(device_id);
@@ -1411,6 +1414,20 @@ void Win32App::PairDevice(const std::string& device_id, std::uint64_t bluetooth_
         coordinator_->ConnectPairedDevice(device_id, bluetooth_address, address_kind, name);
         LogLine("Pairing device VS-" + device_id);
     }
+}
+
+void Win32App::PairDeviceByManualId(const std::string& device_id) {
+    config_.SavePairedDeviceInfo(device_id, {}, {});
+    pending_pairing_entry_.reset();
+    paired_device_ids_ = config_.paired_device_ids;
+    if (coordinator_) {
+        coordinator_->ConfirmPairedDeviceIds(config_.paired_device_ids);
+        coordinator_->ReconnectPairedDevices();
+    }
+    ShowNotification("VoiceStick pairing saved",
+                     "Waiting for VS-" + device_id + " to advertise.");
+    RebuildTooltip();
+    LogLine("Manual pairing saved VS-" + device_id);
 }
 
 void Win32App::ShowNotification(const std::string& title, const std::string& body) {

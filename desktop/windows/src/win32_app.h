@@ -91,6 +91,7 @@ private:
     void StartFirmwareUpdate(const std::string& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);
+    void PairDeviceByManualId(const std::string& device_id);
     void HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info);
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
