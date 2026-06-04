@@ -168,6 +168,8 @@ public:
                                   std::function<void(bool, std::string)> completion);
     void CancelFirmwareUpdate();
 
+    static OverlayThemeColor ThemeColorForConfig(const AppConfig& config, const std::string& device_id);
+
     void HandleGlobalHotkeyPressed();
     void HandleGlobalHotkeyReleased();
 

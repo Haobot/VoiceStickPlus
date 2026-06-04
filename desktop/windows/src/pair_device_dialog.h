@@ -23,6 +23,7 @@ class PairDeviceDialog {
 public:
     PairDeviceDialog(HINSTANCE instance,
                      HWND owner,
+                     UiLanguage language,
                      std::vector<std::string> existing_device_ids,
                      std::function<void(std::string, std::uint64_t, BluetoothAddressKind, std::string)> on_pair,
                      std::function<void(std::string, std::optional<DeviceInfo>)> on_pair_completed);
@@ -79,6 +80,7 @@ private:
     HWND manual_id_label_ = nullptr;
     HWND manual_id_edit_ = nullptr;
     HFONT ui_font_ = nullptr;
+    UiLanguage language_ = UiLanguage::kEnglish;
     UINT dpi_ = 96;
     std::vector<BYTE> dialog_template_;
     std::optional<std::string> pairing_device_id_;

@@ -504,6 +504,8 @@ void TestAppConfig() {
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kAuto) == "Auto");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kYellow) == "Yellow");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kBlack) == "Black");
+    assert(DefaultOverlayThemeColor() == OverlayThemeColor::kAuto);
+    assert(VoiceStickCoordinator::ThemeColorForConfig(AppConfig::Defaults(), "5A74") == OverlayThemeColor::kAuto);
     assert(OverlayThemeSizeFromName("medium") == OverlayThemeSize::kMedium);
     assert(OverlayThemeSizeFromName("small") == OverlayThemeSize::kSmall);
     assert(OverlayThemeSizeFromName("big") == OverlayThemeSize::kBig);
@@ -516,6 +518,7 @@ void TestAppConfig() {
     assert(OverlayPositionName(OverlayPosition::kBottomCenter) == "bottom_center");
     assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");
     assert(OverlayPositionDisplayName(OverlayPosition::kBottomCenter) == "Bottom Center");
+    assert(DefaultOverlayPosition() == OverlayPosition::kBottomCenter);
     cache.default_output_profile.target = OutputTarget::kSubtitle;
     cache.default_output_profile.transform = TextTransform::kOriginal;
     cache.device_output_profiles["5A74"] = OutputProfile{
@@ -549,6 +552,10 @@ void TestAppConfig() {
     assert(Tr(StringId::kSettingsTitle, UiLanguage::kSimplifiedChinese) == "VoiceStick 设置");
     assert(Tr(StringId::kSettingsLaunchAtLogin, UiLanguage::kEnglish) == "Start VoiceStick when Windows starts");
     assert(Tr(StringId::kMenuLaunchAtLogin, UiLanguage::kSimplifiedChinese) == "开机自启动");
+    assert(Tr(StringId::kPairManualIdHint, UiLanguage::kEnglish) == "Can't find it? Enter the 4-digit ID shown on the Stick:");
+    assert(Tr(StringId::kPairManualIdHint, UiLanguage::kSimplifiedChinese) == "找不到设备？请输入 Stick 屏幕显示的 4 位 ID：");
+    assert(Tr(StringId::kHotkeyCapturePrompt, UiLanguage::kEnglish) == "Press a hotkey combination...");
+    assert(Tr(StringId::kFirmwareUpdateFinalizing, UiLanguage::kSimplifiedChinese) == "正在完成固件更新...");
     assert(BatteryStatusText(83, false, false, UiLanguage::kEnglish) == "83%");
     assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");
     assert(BatteryStatusText(83, false, true, UiLanguage::kSimplifiedChinese) == "83%，外接电源");

@@ -1,6 +1,7 @@
 #include "hotkey_settings_dialog.h"
 
 #include "global_hotkey_win.h"
+#include "localization.h"
 #include "log.h"
 #include "dpi_util.h"
 
@@ -45,7 +46,8 @@ LRESULT CALLBACK HotkeySettingsDialog::LowLevelKeyboardProc(int nCode, WPARAM wP
                 default:
                     if (g_active_dialog->captured_modifiers_ == 0) {
                         SetWindowTextW(g_active_dialog->hint_label_,
-                                       L"错误：至少需要1个修饰键（Ctrl/Alt/Shift/Win）");
+                                       TrW(StringId::kHotkeyMissingModifier,
+                                           g_active_dialog->language_).c_str());
                         break;
                     }
                     g_active_dialog->captured_vk_ = vk;
@@ -114,8 +116,8 @@ std::wstring Utf16FromUtf8(const std::string& utf8) {
 
 } // namespace
 
-HotkeySettingsDialog::HotkeySettingsDialog(HINSTANCE instance, HWND parent)
-    : instance_(instance), parent_(parent) {}
+HotkeySettingsDialog::HotkeySettingsDialog(HINSTANCE instance, HWND parent, UiLanguage language)
+    : instance_(instance), parent_(parent), language_(language) {}
 
 HotkeySettingsDialog::~HotkeySettingsDialog() {
     DestroyControls();
@@ -158,7 +160,7 @@ LPCDLGTEMPLATE HotkeySettingsDialog::BuildDialogTemplate() {
     AppendDialogData(&dialog_template_, &dialog_template, sizeof(dialog_template));
     AppendDialogWord(&dialog_template_, 0);
     AppendDialogWord(&dialog_template_, 0);
-    AppendDialogWideString(&dialog_template_, L"自定义快捷键");
+    AppendDialogWideString(&dialog_template_, TrW(StringId::kHotkeyTitle, language_).c_str());
     AppendDialogWord(&dialog_template_, 9);
     AppendDialogWideString(&dialog_template_, L"Segoe UI");
     return reinterpret_cast<LPCDLGTEMPLATE>(dialog_template_.data());
@@ -178,18 +180,19 @@ void HotkeySettingsDialog::BuildControls() {
     const int button_height = Dp(32);
     const int capture_height = Dp(48);
 
-    hotkey_label_ = CreateLabel(hwnd_, L"当前快捷键：", margin, margin, Dp(120), Dp(20), instance_);
+    hotkey_label_ = CreateLabel(hwnd_, TrW(StringId::kHotkeyCurrent, language_).c_str(),
+                                margin, margin, Dp(120), Dp(20), instance_);
     SendMessageW(hotkey_label_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
     all_controls_.push_back(hotkey_label_);
 
-    hotkey_capture_button_ = CreateButton(hwnd_, L"点击录制快捷键",
+    hotkey_capture_button_ = CreateButton(hwnd_, TrW(StringId::kHotkeyCaptureButton, language_).c_str(),
                                           margin, margin + Dp(32),
                                           client.right - margin * 2, capture_height,
                                           kIdHotkeyCapture, instance_);
     SendMessageW(hotkey_capture_button_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
     all_controls_.push_back(hotkey_capture_button_);
 
-    hint_label_ = CreateLabel(hwnd_, L"提示：至少需要1个修饰键（Ctrl/Alt/Shift/Win）+ 1个主键",
+    hint_label_ = CreateLabel(hwnd_, TrW(StringId::kHotkeyHint, language_).c_str(),
                               margin, margin + Dp(32) + capture_height + Dp(8),
                               client.right - margin * 2, Dp(20), instance_);
     SendMessageW(hint_label_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
@@ -197,7 +200,7 @@ void HotkeySettingsDialog::BuildControls() {
 
     const int button_width = Dp(100);
     const int button_y = client.bottom - margin - button_height;
-    ok_button_ = CreateButton(hwnd_, L"确定",
+    ok_button_ = CreateButton(hwnd_, TrW(StringId::kOk, language_).c_str(),
                               client.right - margin * 2 - button_width * 2,
                               button_y, button_width, button_height,
                               kIdOk, instance_);
@@ -205,7 +208,7 @@ void HotkeySettingsDialog::BuildControls() {
     EnableWindow(ok_button_, FALSE);
     all_controls_.push_back(ok_button_);
 
-    cancel_button_ = CreateButton(hwnd_, L"取消",
+    cancel_button_ = CreateButton(hwnd_, TrW(StringId::kCancel, language_).c_str(),
                                   client.right - margin - button_width,
                                   button_y, button_width, button_height,
                                   kIdCancel, instance_);
@@ -228,9 +231,9 @@ void HotkeySettingsDialog::DestroyControls() {
 void HotkeySettingsDialog::UpdateHotkeyDisplay() {
     if (captured_vk_ == 0) {
         if (is_capturing_) {
-            SetWindowTextW(hotkey_capture_button_, L"请按下快捷键组合...");
+            SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCapturePrompt, language_).c_str());
         } else {
-            SetWindowTextW(hotkey_capture_button_, L"点击录制快捷键");
+            SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCaptureButton, language_).c_str());
         }
         EnableWindow(ok_button_, FALSE);
         return;
@@ -248,7 +251,7 @@ void HotkeySettingsDialog::OnHotkeyCapture() {
     if (keyboard_hook_) return;
     captured_modifiers_ = 0;
     captured_vk_ = 0;
-    SetWindowTextW(hotkey_capture_button_, L"请按下快捷键组合...");
+    SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCapturePrompt, language_).c_str());
     g_active_dialog = this;
     is_capturing_ = true;
     keyboard_hook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
@@ -263,7 +266,8 @@ bool HotkeySettingsDialog::ValidateAndSave() {
     binding.modifiers = captured_modifiers_;
     binding.vk = captured_vk_;
     if (!GlobalHotkeyWin::TestBinding(binding)) {
-        MessageBoxW(hwnd_, L"该快捷键已被其他程序占用，请选择其他组合", L"热键冲突",
+        MessageBoxW(hwnd_, TrW(StringId::kHotkeyConflictMessage, language_).c_str(),
+                    TrW(StringId::kHotkeyConflictTitle, language_).c_str(),
                     MB_OK | MB_ICONWARNING);
         return false;
     }

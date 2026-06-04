@@ -2,6 +2,7 @@
 
 #include "ble_protocol.h"
 #include "dpi_util.h"
+#include "localization.h"
 #include "log.h"
 
 #include <CommCtrl.h>
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <utility>
@@ -175,15 +177,26 @@ void SetListViewText(HWND list_view, int item_index, int subitem_index, std::wst
                  reinterpret_cast<LPARAM>(&item));
 }
 
+std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
+    for (const auto& value : values) {
+        const auto pos = text.find(L"%s");
+        if (pos == std::wstring::npos) break;
+        text.replace(pos, 2, value);
+    }
+    return text;
+}
+
 } // namespace
 
 PairDeviceDialog::PairDeviceDialog(HINSTANCE instance,
                                    HWND owner,
+                                   UiLanguage language,
                                    std::vector<std::string> existing_device_ids,
                                    std::function<void(std::string, std::uint64_t, BluetoothAddressKind, std::string)> on_pair,
                                    std::function<void(std::string, std::optional<DeviceInfo>)> on_pair_completed)
     : instance_(instance),
       owner_(owner),
+      language_(language),
       existing_device_ids_(std::move(existing_device_ids)),
       on_pair_(std::move(on_pair)),
       on_pair_completed_(std::move(on_pair_completed)) {}
@@ -355,7 +368,7 @@ LPCDLGTEMPLATE PairDeviceDialog::BuildDialogTemplate() {
     AppendDialogData(&dialog_template_, &dialog_template, sizeof(dialog_template));
     AppendDialogWord(&dialog_template_, 0);
     AppendDialogWord(&dialog_template_, 0);
-    AppendDialogWideString(&dialog_template_, L"Pair VoiceStick");
+    AppendDialogWideString(&dialog_template_, TrW(StringId::kPairTitle, language_).c_str());
     AppendDialogWord(&dialog_template_, 9);
     AppendDialogWideString(&dialog_template_, L"Segoe UI");
     return reinterpret_cast<LPCDLGTEMPLATE>(dialog_template_.data());
@@ -426,11 +439,14 @@ void PairDeviceDialog::BuildContent() {
     const int scrollbar_width = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_);
     const int list_width = client_width - 2 * margin - scrollbar_width - Dp(6);
     InsertColumn(device_list_, 0, L"VoiceStick", Dp(150));
-    InsertColumn(device_list_, 1, L"Signal", Dp(86));
-    InsertColumn(device_list_, 2, L"Bluetooth Address",
+    const auto signal_title = TrW(StringId::kPairSignal, language_);
+    InsertColumn(device_list_, 1, signal_title.c_str(), Dp(86));
+    const auto address_title = TrW(StringId::kPairBluetoothAddress, language_);
+    InsertColumn(device_list_, 2, address_title.c_str(),
                  list_width - Dp(150) - Dp(86));
 
-    manual_id_label_ = CreateWindowExW(0, L"STATIC", L"Can't find it? Enter the 4-digit ID shown on the Stick:",
+    const auto manual_id_hint = TrW(StringId::kPairManualIdHint, language_);
+    manual_id_label_ = CreateWindowExW(0, L"STATIC", manual_id_hint.c_str(),
                                        WS_CHILD | WS_VISIBLE,
                                        margin, manual_label_y, client_width - 2 * margin,
                                        manual_label_height, hwnd_, nullptr, instance_, nullptr);
@@ -440,13 +456,16 @@ void PairDeviceDialog::BuildContent() {
                                       ControlId(kManualIdEditId), instance_, nullptr);
     SendMessageW(manual_id_edit_, EM_SETLIMITTEXT, 7, 0);
 
-    status_label_ = CreateWindowExW(0, L"STATIC", L"Scanning", WS_CHILD | WS_VISIBLE,
+    const auto scanning_text = TrW(StringId::kPairScanning, language_);
+    status_label_ = CreateWindowExW(0, L"STATIC", scanning_text.c_str(), WS_CHILD | WS_VISIBLE,
                                     margin, button_y + Dp(5), pair_x - margin - button_gap,
                                     Dp(22), hwnd_, nullptr, instance_, nullptr);
-    pair_button_ = CreateWindowExW(0, L"BUTTON", L"Pair", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+    const auto pair_text = TrW(StringId::kPairButton, language_);
+    pair_button_ = CreateWindowExW(0, L"BUTTON", pair_text.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                                    pair_x, button_y, button_width, button_height, hwnd_,
                                    ControlId(IDOK), instance_, nullptr);
-    cancel_button_ = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+    const auto cancel_text = TrW(StringId::kCancel, language_);
+    cancel_button_ = CreateWindowExW(0, L"BUTTON", cancel_text.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                      cancel_x, button_y, button_width, button_height, hwnd_,
                                      ControlId(IDCANCEL), instance_, nullptr);
     for (HWND control : {device_list_, manual_id_label_, manual_id_edit_, status_label_, pair_button_, cancel_button_}) {
@@ -461,7 +480,7 @@ void PairDeviceDialog::StartScan() {
         devices_.clear();
     }
     RebuildList();
-    SetWindowTextW(status_label_, L"Scanning");
+    SetWindowTextW(status_label_, TrW(StringId::kPairScanning, language_).c_str());
     if (hwnd_) SetTimer(hwnd_, kScanRestartTimerId, kScanRestartDelayMs, nullptr);
     LogBleLine("pair scan started restart_count=" + std::to_string(scan_restart_count_));
     watcher_ = winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher();
@@ -489,7 +508,7 @@ void PairDeviceDialog::StartScan() {
         }
         watcher_ = nullptr;
         LogBleLine("pair scan start failed unknown");
-        SetWindowTextW(status_label_, L"Bluetooth scan failed.");
+        SetWindowTextW(status_label_, TrW(StringId::kPairScanFailed, language_).c_str());
         EnableWindow(pair_button_, TRUE);
     }
 }
@@ -519,7 +538,7 @@ void PairDeviceDialog::RestartScanIfNeeded() {
     ++scan_restart_count_;
     LogBleLine("pair scan restarting after empty window restart_count=" +
                std::to_string(scan_restart_count_));
-    SetWindowTextW(status_label_, L"Still scanning... retrying Bluetooth scan");
+    SetWindowTextW(status_label_, TrW(StringId::kPairStillScanning, language_).c_str());
     StartScan();
 }
 
@@ -617,8 +636,10 @@ void PairDeviceDialog::RebuildList() {
     }
 
     const auto status = devices.empty()
-                            ? Utf16("Scanning (" + std::to_string(received_advertisement_count_) + " advertisements)")
-                            : Utf16(std::to_string(devices.size()) + " found");
+                            ? FormatText(TrW(StringId::kPairScanningCount, language_),
+                                         {Utf16(std::to_string(received_advertisement_count_))})
+                            : FormatText(TrW(StringId::kPairFoundCount, language_),
+                                         {Utf16(std::to_string(devices.size()))});
     SetWindowTextW(status_label_, status.c_str());
 }
 
@@ -638,15 +659,15 @@ void PairDeviceDialog::PairSelectedDevice() {
     }
     const auto& device = devices[static_cast<std::size_t>(selected)];
     if (device.candidate.is_existing_device) {
-        SetWindowTextW(status_label_, L"This device is already paired. Forget it first or wait for reconnect.");
+        SetWindowTextW(status_label_, TrW(StringId::kPairAlreadyPaired, language_).c_str());
         return;
     }
     if (device.candidate.is_temporary_candidate) {
-        SetWindowTextW(status_label_, L"Waiting for device name. Move the Stick closer or enter its ID below.");
+        SetWindowTextW(status_label_, TrW(StringId::kPairWaitingForName, language_).c_str());
         return;
     }
     if (!CanPairCandidate(device.candidate)) {
-        SetWindowTextW(status_label_, L"Select a VoiceStick with a device ID");
+        SetWindowTextW(status_label_, TrW(StringId::kPairSelectDeviceWithId, language_).c_str());
         return;
     }
     BeginPairing(device);
@@ -654,7 +675,7 @@ void PairDeviceDialog::PairSelectedDevice() {
 
 void PairDeviceDialog::PairManualDeviceId() {
     if (!manual_id_edit_) {
-        SetWindowTextW(status_label_, L"Select a device");
+        SetWindowTextW(status_label_, TrW(StringId::kPairSelectDevice, language_).c_str());
         return;
     }
     wchar_t buffer[32]{};
@@ -662,15 +683,16 @@ void PairDeviceDialog::PairManualDeviceId() {
     const auto input = winrt::to_string(winrt::hstring(buffer));
     auto device_id = ParseManualPairDeviceId(input);
     if (!device_id.has_value()) {
-        SetWindowTextW(status_label_, L"Enter the 4-digit ID shown on the Stick screen");
+        SetWindowTextW(status_label_, TrW(StringId::kPairEnterManualId, language_).c_str());
         return;
     }
     if (IsExistingDevice(*device_id)) {
-        SetWindowTextW(status_label_, L"This device is already paired. Forget it first or wait for reconnect.");
+        SetWindowTextW(status_label_, TrW(StringId::kPairAlreadyPaired, language_).c_str());
         return;
     }
     StopScan();
-    SetWindowTextW(status_label_, Utf16("Saved VS-" + *device_id + "; waiting for advertisement...").c_str());
+    SetWindowTextW(status_label_, FormatText(TrW(StringId::kPairSavedManualWaiting, language_),
+                                             {Utf16(*device_id)}).c_str());
     EnableWindow(pair_button_, FALSE);
     if (on_pair_manual_) on_pair_manual_(*device_id);
     Close();
@@ -687,8 +709,9 @@ void PairDeviceDialog::BeginPairing(const PairingDevice& device) {
     EnableWindow(device_list_, FALSE);
     EnableWindow(manual_id_edit_, FALSE);
     EnableWindow(pair_button_, FALSE);
-    SetWindowTextW(pair_button_, L"Pairing...");
-    auto status = Utf16("Pairing VS-" + device.candidate.device_id + "...");
+    SetWindowTextW(pair_button_, TrW(StringId::kPairConnecting, language_).c_str());
+    auto status = FormatText(TrW(StringId::kPairPairingDevice, language_),
+                             {Utf16(device.candidate.device_id)});
     SetWindowTextW(status_label_, status.c_str());
     SetTimer(hwnd_, kPairingTimeoutTimerId, 30000, nullptr);
     if (on_pair_) {
@@ -701,7 +724,8 @@ void PairDeviceDialog::BeginPairing(const PairingDevice& device) {
 
 void PairDeviceDialog::HandlePairingConnected() {
     if (!pairing_device_id_.has_value() || pairing_finalized_) return;
-    auto status = Utf16("Connected to VS-" + *pairing_device_id_ + ". Finishing up...");
+    auto status = FormatText(TrW(StringId::kPairConnectedFinishing, language_),
+                             {Utf16(*pairing_device_id_)});
     SetWindowTextW(status_label_, status.c_str());
     // Give the device a brief window to push device_info via state notification,
     // but treat the BLE link being up as success even if device_info never
@@ -728,8 +752,9 @@ void PairDeviceDialog::FinalizePairing(std::optional<DeviceInfo> info) {
     KillTimer(hwnd_, kPairingFinalizeTimerId);
     const auto device_id = *pairing_device_id_;
     auto status = info && !info->firmware_version.empty()
-                      ? Utf16("Paired VS-" + device_id + " firmware " + info->firmware_version)
-                      : Utf16("Paired VS-" + device_id);
+                      ? FormatText(TrW(StringId::kPairPairedDeviceFirmware, language_),
+                                   {Utf16(device_id), Utf16(info->firmware_version)})
+                      : FormatText(TrW(StringId::kPairPairedDevice, language_), {Utf16(device_id)});
     SetWindowTextW(status_label_, status.c_str());
     if (on_pair_completed_) on_pair_completed_(device_id, std::move(info));
     Close();
@@ -743,7 +768,7 @@ void PairDeviceDialog::HandlePairingError(const std::string& message) {
     EnableWindow(device_list_, TRUE);
     EnableWindow(manual_id_edit_, TRUE);
     EnableWindow(pair_button_, TRUE);
-    SetWindowTextW(pair_button_, L"Retry");
+    SetWindowTextW(pair_button_, TrW(StringId::kPairRetry, language_).c_str());
     SetWindowTextW(status_label_, Utf16(message).c_str());
     StartScan();
 }
@@ -757,8 +782,8 @@ void PairDeviceDialog::HandlePairingTimeout() {
     EnableWindow(device_list_, TRUE);
     EnableWindow(manual_id_edit_, TRUE);
     EnableWindow(pair_button_, TRUE);
-    SetWindowTextW(pair_button_, L"Pair");
-    SetWindowTextW(status_label_, L"Pairing timed out");
+    SetWindowTextW(pair_button_, TrW(StringId::kPairButton, language_).c_str());
+    SetWindowTextW(status_label_, TrW(StringId::kPairTimedOut, language_).c_str());
     if (on_pair_timeout && timed_out_device) on_pair_timeout(*timed_out_device);
     StartScan();
 }

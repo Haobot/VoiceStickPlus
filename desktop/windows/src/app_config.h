@@ -140,6 +140,8 @@ std::string UiLanguageName(UiLanguage language);
 UiLanguage UiLanguageFromName(std::string_view name);
 UiLanguage UiLanguageFromLocaleName(std::wstring_view locale_name);
 UiLanguage EffectiveUiLanguage(UiLanguage configured);
+OverlayThemeColor DefaultOverlayThemeColor();
+OverlayPosition DefaultOverlayPosition();
 std::string OverlayThemeColorName(OverlayThemeColor color);
 OverlayThemeColor OverlayThemeColorFromName(std::string_view name);
 std::string OverlayThemeColorDisplayName(OverlayThemeColor color);
