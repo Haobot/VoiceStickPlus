@@ -69,6 +69,7 @@ private:
     int Dp(int px) const;
     void RebuildUi();
     void DestroyControls();
+    std::uint64_t NowMs() const;
 
     HINSTANCE instance_;
     HWND owner_;
@@ -93,6 +94,7 @@ private:
     std::uint64_t voice_stick_candidate_count_ = 0;
     std::uint64_t scan_restart_count_ = 0;
     std::vector<PairingDevice> devices_;
+    std::vector<RetainedPairingCandidate> retained_named_candidates_;
     std::mutex mutex_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};

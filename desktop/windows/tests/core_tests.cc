@@ -326,6 +326,37 @@ void TestPairDeviceHelpers() {
     temporary.is_temporary_candidate = true;
     assert(CandidateDisplayTitle(temporary) == "VoiceStick (waiting for name)");
     assert(!CanPairCandidate(temporary));
+
+    std::vector<PairingCandidate> candidates;
+    MergePairingCandidate(&candidates, temporary);
+    assert(candidates.size() == 1);
+    assert(VisiblePairingCandidates(candidates, {}, 1000, 3000).empty());
+    ready.bluetooth_address = 0x112233445566;
+    ready.device_id = temporary.device_id;
+    ready.display_name = "VS-EEFF";
+    MergePairingCandidate(&candidates, ready);
+    assert(candidates.size() == 1);
+    assert(!candidates.front().is_temporary_candidate);
+    assert(candidates.front().display_name == "VS-EEFF");
+
+    PairingCandidate late_temporary = temporary;
+    late_temporary.bluetooth_address = 0x66778899AABB;
+    MergePairingCandidate(&candidates, late_temporary);
+    assert(candidates.size() == 1);
+    assert(!candidates.front().is_temporary_candidate);
+
+    candidates.push_back(late_temporary);
+    std::vector<RetainedPairingCandidate> retained;
+    RetainNamedPairingCandidate(&retained, candidates.front(), 1000);
+    const auto visible = VisiblePairingCandidates(candidates, retained, 2000, 3000);
+    assert(visible.size() == 1);
+    assert(!visible.front().is_temporary_candidate);
+
+    std::vector<PairingCandidate> temporary_only{late_temporary};
+    const auto retained_visible = VisiblePairingCandidates(temporary_only, retained, 2500, 3000);
+    assert(retained_visible.size() == 1);
+    assert(retained_visible.front().display_name == "VS-EEFF");
+    assert(VisiblePairingCandidates(temporary_only, retained, 5001, 3000).empty());
 }
 
 void TestAudioFrameParsing() {
