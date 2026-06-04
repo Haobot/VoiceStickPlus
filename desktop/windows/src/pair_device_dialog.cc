@@ -11,6 +11,7 @@
 #include <winrt/base.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <initializer_list>
@@ -31,6 +32,7 @@ constexpr UINT_PTR kPairingFinalizeTimerId = 3;
 constexpr UINT_PTR kScanRestartTimerId = 4;
 constexpr UINT kPairingFinalizeDelayMs = 2500;
 constexpr UINT kScanRestartDelayMs = 15000;
+constexpr std::uint64_t kNamedCandidateRetainWindowMs = 3000;
 constexpr int kDeviceListId = 101;
 constexpr int kManualIdEditId = 102;
 
@@ -581,15 +583,19 @@ void PairDeviceDialog::HandleAdvertisement(
 
     {
         std::lock_guard lock(mutex_);
-        auto it = std::find_if(devices_.begin(), devices_.end(), [&](const PairingDevice& existing) {
-            return existing.candidate.bluetooth_address == device.candidate.bluetooth_address;
-        });
-        if (it == devices_.end()) {
-            devices_.push_back(device);
-        } else if (it->candidate.is_temporary_candidate && !device.candidate.is_temporary_candidate) {
-            *it = device;
-        } else {
-            *it = device;
+        if (!device.candidate.is_temporary_candidate) {
+            RetainNamedPairingCandidate(&retained_named_candidates_, device.candidate, NowMs());
+        }
+        std::vector<PairingCandidate> candidates;
+        candidates.reserve(devices_.size() + 1);
+        for (const auto& existing : devices_) {
+            candidates.push_back(existing.candidate);
+        }
+        MergePairingCandidate(&candidates, device.candidate);
+        devices_.clear();
+        devices_.reserve(candidates.size());
+        for (const auto& candidate : candidates) {
+            devices_.push_back(PairingDevice{candidate});
         }
         std::sort(devices_.begin(), devices_.end(), [](const PairingDevice& lhs, const PairingDevice& rhs) {
             return lhs.candidate.rssi > rhs.candidate.rssi;
@@ -607,7 +613,17 @@ void PairDeviceDialog::RebuildList() {
     std::vector<PairingDevice> devices;
     {
         std::lock_guard lock(mutex_);
-        devices = devices_;
+        std::vector<PairingCandidate> candidates;
+        candidates.reserve(devices_.size());
+        for (const auto& device : devices_) {
+            candidates.push_back(device.candidate);
+        }
+        for (const auto& candidate : VisiblePairingCandidates(candidates,
+                                                              retained_named_candidates_,
+                                                              NowMs(),
+                                                              kNamedCandidateRetainWindowMs)) {
+            devices.push_back(PairingDevice{candidate});
+        }
     }
     for (std::size_t index = 0; index < devices.size(); ++index) {
         const auto& device = devices[index];
@@ -804,6 +820,12 @@ std::wstring PairDeviceDialog::Utf16(const std::string& text) const {
 
 int PairDeviceDialog::Dp(int px) const {
     return voicestick::ScalePx(px, dpi_);
+}
+
+std::uint64_t PairDeviceDialog::NowMs() const {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 } // namespace voicestick
