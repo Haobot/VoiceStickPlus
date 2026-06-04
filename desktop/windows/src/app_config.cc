@@ -411,11 +411,11 @@ void AppConfig::Save() const {
     output << "asr_hotwords = \"" << TomlEscape(hotwords.str()) << "\"\n";
     output << "paired_device_ids = \"" << paired.str() << "\"\n";
     output << "device_theme_colors = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeColor>(
-        device_theme_colors, paired_device_ids, OverlayThemeColor::kWhite, OverlayThemeColorName)) << "\"\n";
+        device_theme_colors, paired_device_ids, DefaultOverlayThemeColor(), OverlayThemeColorName)) << "\"\n";
     output << "device_theme_sizes = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeSize>(
         device_theme_sizes, paired_device_ids, OverlayThemeSize::kBig, OverlayThemeSizeName)) << "\"\n";
     output << "device_overlay_positions = \"" << TomlEscape(FormatDeviceValueMap<OverlayPosition>(
-        device_overlay_positions, paired_device_ids, OverlayPosition::kCenter, OverlayPositionName)) << "\"\n";
+        device_overlay_positions, paired_device_ids, DefaultOverlayPosition(), OverlayPositionName)) << "\"\n";
     output << "auto_enter = " << (auto_enter ? "true" : "false") << "\n";
     output << "global_hotkey_enabled = " << (global_hotkey_enabled ? "true" : "false") << "\n";
     output << "global_hotkey = \"" << TomlEscape(global_hotkey) << "\"\n";
@@ -590,6 +590,14 @@ UiLanguage EffectiveUiLanguage(UiLanguage configured) {
         return UiLanguageFromLocaleName(locale_name);
     }
     return UiLanguage::kEnglish;
+}
+
+OverlayThemeColor DefaultOverlayThemeColor() {
+    return OverlayThemeColor::kAuto;
+}
+
+OverlayPosition DefaultOverlayPosition() {
+    return OverlayPosition::kBottomCenter;
 }
 
 std::string OverlayThemeColorName(OverlayThemeColor color) {

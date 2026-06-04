@@ -2,6 +2,8 @@
 
 #include <Windows.h>
 
+#include "app_config.h"
+
 #include <functional>
 #include <string>
 #include <vector>
@@ -10,7 +12,7 @@ namespace voicestick {
 
 class HotkeySettingsDialog {
 public:
-    explicit HotkeySettingsDialog(HINSTANCE instance, HWND parent);
+    HotkeySettingsDialog(HINSTANCE instance, HWND parent, UiLanguage language);
     ~HotkeySettingsDialog();
 
     void Show();
@@ -34,6 +36,7 @@ private:
     HWND hwnd_ = nullptr;
     UINT dpi_ = 96;
     HFONT ui_font_ = nullptr;
+    UiLanguage language_ = UiLanguage::kEnglish;
 
     HWND hotkey_label_ = nullptr;
     HWND hotkey_capture_button_ = nullptr;

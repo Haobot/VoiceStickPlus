@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cstdint>
 #include <exception>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
@@ -94,6 +95,24 @@ std::wstring Utf16FromUtf8(std::string_view text) {
     std::wstring wide(static_cast<std::size_t>(length), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
     return wide;
+}
+
+std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
+    for (const auto& value : values) {
+        const auto pos = text.find(L"%s");
+        if (pos == std::wstring::npos) break;
+        text.replace(pos, 2, value);
+    }
+    return text;
+}
+
+std::string FormatUtf8(std::string text, std::initializer_list<std::string> values) {
+    for (const auto& value : values) {
+        const auto pos = text.find("%s");
+        if (pos == std::string::npos) break;
+        text.replace(pos, 2, value);
+    }
+    return text;
 }
 
 std::wstring FirmwareIdentityText(const std::string& hardware, const std::string& version) {
@@ -418,7 +437,7 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
     if (info && !info->firmware_version.empty()) {
         detail += ", firmware " + info->firmware_version;
     }
-    ShowNotification("VoiceStick paired", detail);
+    ShowNotification(Tr(StringId::kNotificationPairedTitle, EffectiveUiLanguage(config_.ui_language)), detail);
     RebuildTooltip();
 }
 
@@ -437,13 +456,15 @@ void Win32App::ShowFirmwareUpdatePrompt(const std::string& device_id,
                                         const std::string& latest_version,
                                         bool is_below_minimum) {
     DispatchToUi([this, device_id, current_version, latest_version, is_below_minimum] {
-        const auto message = L"VS-" + Utf16(device_id) + L" is running firmware " +
-                             Utf16(current_version) + L".\n\nThe latest firmware is " +
-                             Utf16(latest_version) + L".";
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto message = FormatText(TrW(StringId::kFirmwareUpdatePromptBody, language),
+                                        {Utf16(device_id), Utf16(current_version), Utf16(latest_version)});
         const int result = MessageBoxW(
             hwnd_,
             message.c_str(),
-            is_below_minimum ? L"Firmware update recommended" : L"Firmware update available",
+            TrW(is_below_minimum ? StringId::kFirmwareUpdatePromptTitleRequired
+                                 : StringId::kFirmwareUpdatePromptTitleAvailable,
+                language).c_str(),
             MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1);
         if (result == IDYES) {
             StartFirmwareUpdate(device_id);
@@ -508,9 +529,10 @@ void Win32App::ShowCloudUpgrade(const std::string& message,
     DispatchToUi([this, message, url, device_id] {
         ApplyOverlayStyle(device_id);
         auto show_dialog = [this, message, url] {
-            const auto text = Utf16(message + "\n\nOpen the VoiceStick Cloud page?");
+            const auto language = EffectiveUiLanguage(config_.ui_language);
+            const auto text = Utf16(message) + L"\n\n" + TrW(StringId::kCloudOpenPageQuestion, language);
             const int result = MessageBoxW(hwnd_, text.c_str(),
-                                           L"VoiceStick Cloud needs attention",
+                                           TrW(StringId::kCloudNeedsAttentionTitle, language).c_str(),
                                            MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1);
             if (result == IDYES) {
                 const auto wide_url = Utf16(url);
@@ -640,7 +662,8 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             }
             return 0;
         case kMenuHotkeyCustom: {
-            auto dialog = std::make_unique<HotkeySettingsDialog>(instance_, hwnd_);
+            auto dialog = std::make_unique<HotkeySettingsDialog>(
+                instance_, hwnd_, EffectiveUiLanguage(config_.ui_language));
             dialog->on_hotkey_confirmed = [this](const std::string& hotkey) {
                 config_.global_hotkey = hotkey;
                 config_.global_hotkey_enabled = true;
@@ -866,7 +889,7 @@ void Win32App::ShowTrayMenu() {
         const auto theme_it = config_.device_theme_colors.find(id);
         const auto current_theme = theme_it != config_.device_theme_colors.end()
             ? theme_it->second
-            : OverlayThemeColor::kWhite;
+            : DefaultOverlayThemeColor();
         for (std::size_t color_index = 0;
              color_index < sizeof(kOverlayThemeColors) / sizeof(kOverlayThemeColors[0]);
              ++color_index) {
@@ -902,7 +925,7 @@ void Win32App::ShowTrayMenu() {
         const auto position_it = config_.device_overlay_positions.find(id);
         const auto current_position = position_it != config_.device_overlay_positions.end()
             ? position_it->second
-            : OverlayPosition::kCenter;
+            : DefaultOverlayPosition();
         for (std::size_t position_index = 0;
              position_index < sizeof(kOverlayPositions) / sizeof(kOverlayPositions[0]);
              ++position_index) {
@@ -943,14 +966,17 @@ void Win32App::ShowTrayMenu() {
         if (firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
             if (firmware.is_checking) {
-                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, L"Checking for firmware updates...");
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
+                            TrW(StringId::kFirmwareChecking, language).c_str());
             } else if (!firmware.error_message.empty()) {
-                auto error_text = L"Firmware Check Failed";
-                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, error_text);
+                auto error_text = TrW(StringId::kFirmwareCheckFailed, language);
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, error_text.c_str());
             } else if (firmware.update_available && !firmware.latest_version.empty()) {
-                auto update_text = L"Update available: " + Utf16(firmware.latest_version);
+                auto update_text = FormatText(TrW(StringId::kFirmwareUpdateAvailableMenu, language),
+                                              {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, update_text.c_str());
-                auto update_action = L"Update to " + Utf16(firmware.latest_version) + L"...";
+                auto update_action = FormatText(TrW(StringId::kFirmwareUpdateTo, language),
+                                                {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu,
                             connected ? MF_STRING : (MF_STRING | MF_DISABLED),
                             kMenuUpdateFirmwareBase + static_cast<UINT>(i),
@@ -959,9 +985,11 @@ void Win32App::ShowTrayMenu() {
                 AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
                             TrW(StringId::kMenuFirmwareUpToDate, language).c_str());
             } else if (!firmware.latest_version.empty()) {
-                auto latest_text = L"Latest firmware " + Utf16(firmware.latest_version);
+                auto latest_text = FormatText(TrW(StringId::kFirmwareLatestMenu, language),
+                                             {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, latest_text.c_str());
-                auto update_action = L"Update to " + Utf16(firmware.latest_version) + L"...";
+                auto update_action = FormatText(TrW(StringId::kFirmwareUpdateTo, language),
+                                                {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu,
                             connected ? MF_STRING : (MF_STRING | MF_DISABLED),
                             kMenuUpdateFirmwareBase + static_cast<UINT>(i),
@@ -1138,7 +1166,7 @@ void Win32App::SaveInputOptions() {
 
 void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color) {
     try {
-        if (color == OverlayThemeColor::kWhite) {
+        if (color == DefaultOverlayThemeColor()) {
             config_.device_theme_colors.erase(device_id);
         } else {
             config_.device_theme_colors[device_id] = color;
@@ -1170,7 +1198,7 @@ void Win32App::SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSiz
 
 void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position) {
     try {
-        if (position == OverlayPosition::kCenter) {
+        if (position == DefaultOverlayPosition()) {
             config_.device_overlay_positions.erase(device_id);
         } else {
             config_.device_overlay_positions[device_id] = position;
@@ -1207,9 +1235,9 @@ void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfi
 
 void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {
     if (!overlay_) return;
-    OverlayThemeColor color = OverlayThemeColor::kWhite;
+    OverlayThemeColor color = DefaultOverlayThemeColor();
     OverlayThemeSize size = OverlayThemeSize::kBig;
-    OverlayPosition position = OverlayPosition::kCenter;
+    OverlayPosition position = DefaultOverlayPosition();
     if (device_id.has_value()) {
         if (auto color_it = config_.device_theme_colors.find(*device_id);
             color_it != config_.device_theme_colors.end()) {
@@ -1345,7 +1373,7 @@ bool Win32App::ShowOnboarding() {
 
 void Win32App::ShowPairDeviceDialog() {
     pair_device_dialog_ = std::make_unique<PairDeviceDialog>(
-        instance_, hwnd_, config_.paired_device_ids,
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), config_.paired_device_ids,
         [this](std::string device_id, std::uint64_t bluetooth_address,
                BluetoothAddressKind address_kind, std::string name) {
             PairDevice(device_id, bluetooth_address, address_kind, name);
@@ -1384,7 +1412,7 @@ void Win32App::StartFirmwareUpdate(const std::string& device_id) {
                                     ? firmware_it->second.latest_version
                                     : std::string();
     firmware_update_dialog_ = std::make_unique<FirmwareUpdateDialog>(
-        instance_, hwnd_, version.empty() ? "latest" : version);
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), version.empty() ? "latest" : version);
     firmware_update_dialog_->on_cancel = [this] {
         if (coordinator_) coordinator_->CancelFirmwareUpdate();
     };
@@ -1400,8 +1428,9 @@ void Win32App::StartFirmwareUpdate(const std::string& device_id) {
             DispatchToUi([this, success, message] {
                 if (firmware_update_dialog_) firmware_update_dialog_->Finish(success, message);
                 if (success) {
-                    ShowNotification("VoiceStick firmware updated",
-                                     "The device is rebooting into the new firmware.");
+                    const auto language = EffectiveUiLanguage(config_.ui_language);
+                    ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
+                                     Tr(StringId::kNotificationFirmwareUpdatedBody, language));
                 }
             });
         });
@@ -1424,8 +1453,9 @@ void Win32App::PairDeviceByManualId(const std::string& device_id) {
         coordinator_->ConfirmPairedDeviceIds(config_.paired_device_ids);
         coordinator_->ReconnectPairedDevices();
     }
-    ShowNotification("VoiceStick pairing saved",
-                     "Waiting for VS-" + device_id + " to advertise.");
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    ShowNotification(Tr(StringId::kNotificationManualPairSavedTitle, language),
+                     FormatUtf8(Tr(StringId::kNotificationManualPairSavedBody, language), {device_id}));
     RebuildTooltip();
     LogLine("Manual pairing saved VS-" + device_id);
 }

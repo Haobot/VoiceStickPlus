@@ -1380,8 +1380,13 @@ OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<
 }
 
 OverlayThemeColor VoiceStickCoordinator::ThemeColorForDevice(const std::string& device_id) const {
-    auto it = config_.device_theme_colors.find(device_id);
-    return it == config_.device_theme_colors.end() ? OverlayThemeColor::kWhite : it->second;
+    return ThemeColorForConfig(config_, device_id);
+}
+
+OverlayThemeColor VoiceStickCoordinator::ThemeColorForConfig(const AppConfig& config,
+                                                             const std::string& device_id) {
+    auto it = config.device_theme_colors.find(device_id);
+    return it == config.device_theme_colors.end() ? DefaultOverlayThemeColor() : it->second;
 }
 
 bool VoiceStickCoordinator::ShouldUseDefiniteSegments(const OutputProfile& profile) const {

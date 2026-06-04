@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app_config.h"
 #include "voice_stick_coordinator.h"
 
 #include <Windows.h>
@@ -12,7 +13,7 @@ namespace voicestick {
 
 class FirmwareUpdateDialog {
 public:
-    FirmwareUpdateDialog(HINSTANCE instance, HWND owner, std::string version);
+    FirmwareUpdateDialog(HINSTANCE instance, HWND owner, UiLanguage language, std::string version);
     ~FirmwareUpdateDialog();
 
     void Show();
@@ -41,6 +42,7 @@ private:
     HWND cancel_button_ = nullptr;
     HWND close_button_ = nullptr;
     HFONT ui_font_ = nullptr;
+    UiLanguage language_ = UiLanguage::kEnglish;
     std::string version_;
     UINT dpi_ = 96;
     int displayed_percent_ = 0;
