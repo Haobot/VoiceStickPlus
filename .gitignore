@@ -26,3 +26,4 @@ docs/app_icon/
 dependencies.lock
 /tmp/
 desktop/windows/
+dist/

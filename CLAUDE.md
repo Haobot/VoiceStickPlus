@@ -12,9 +12,9 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 
 - `firmware/`：ESP-IDF C 固件，目标板为 M5Stack StickS3 / ESP32-S3。
 - `desktop/macos/`：SwiftPM/AppKit 菜单栏应用，目标 macOS 12+。
-- `desktop/windows/`：C++20 / Win32 / C++/WinRT 托盘应用，目标 Windows 10 1903+。
+- `desktop/windows/`：C++20 / Win32 / C++/WinRT 托盘应用，目标 Windows 10 1903+；2019 年 Windows 10 构建会走地址直连的 BLE 兼容路径。
 - `desktop/linux/`：Linux 桌面端占位目录。
-- `website/`：Vue 3 + Vite 站点，包含 Web Serial 固件烧录工具和 appcast 发布页面。
+- `website/`：Vue 3 + Vite 站点，包含 Web Serial 固件烧录工具、`vue-i18n` 中英文落地页和 appcast 发布页面。
 - `docs/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等设计/运维文档。
 
 ## 常用命令
@@ -40,7 +40,7 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
 ```
 
-固件依赖由 ESP-IDF component manager 管理，核心依赖包括 `espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`。
+固件依赖由 ESP-IDF component manager 管理，核心依赖包括 `espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`。当前分区表为两个 3 MB OTA app slot 加约 1984 KB `storage` 分区。
 
 ### macOS 桌面端（SwiftPM）
 
@@ -82,12 +82,14 @@ cmake --build desktop\windows\build-x64
 ctest --test-dir desktop\windows\build-x64 --output-on-failure
 ```
 
-运行单个/一组测试（按 CTest 名称正则过滤）：
+运行单个/一组 CTest 目标（按 CTest 名称正则过滤）：
 
 ```powershell
 ctest --test-dir desktop\windows\build-x64 --output-on-failure -R <测试名称正则>
 ctest --test-dir desktop\windows\build-x64 --output-on-failure -R voicestick_windows_tests
 ```
+
+`voicestick_windows_tests` 是一个基于 `assert` 的测试可执行文件，目前不支持按测试函数名过滤；新增核心测试时把 `Test...()` 函数加入 `desktop/windows/tests/core_tests.cc` 的 `main()`。
 
 运行应用：
 
@@ -113,7 +115,7 @@ npm run build
 npm run preview
 ```
 
-`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。修改网站后用 `npm run build` 作为最小验证。CI 中网站部署使用 Node 22 和 `npm ci`。
+CI 使用 Node 22 和 `npm ci`。`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。修改网站后用 `npm run build` 作为最小验证；修改下载链接或固件回退地址时同步检查 `website/package.json` 的版本号。
 
 ### Lint / 格式化状态
 
@@ -175,7 +177,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
 
 ### 网站实现
 
-`website/src/App.vue` 承载主要页面和 Web Serial 烧录流程；`website/src/i18n/zh-CN.json` 与 `website/src/i18n/en-US.json` 保存中英文文案。新增或修改 UI 文案时同步维护两个语言文件。搜索仓库时排除 `website/node_modules/` 以免噪声过多。
+`website/src/App.vue` 承载主要页面和 Web Serial 烧录流程；`website/src/i18n/zh-CN.json` 与 `website/src/i18n/en-US.json` 保存中英文文案，浏览器语言以 `zh` 开头时默认中文。浏览器烧录器读取 `VITE_FIRMWARE_MANIFEST_URL` 指向的固件 manifest，并使用其中的 `merged_url`；加载失败时按 `website/package.json` 版本拼出回退 merged 固件 URL。新增或修改 UI 文案时同步维护两个语言文件。搜索仓库时排除 `website/node_modules/` 以免噪声过多。
 
 ## 核心交互模型
 
@@ -214,7 +216,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
 
 ## 发布流程要点
 
-推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`：构建固件和 macOS 产物，发布 GitHub Release，并将固件 OTA/merged 镜像与 `manifest.json` 上传到阿里云 OSS。Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并上传到对应 Release，然后手动运行 `Deploy Website to GitHub Pages` 工作流，让共享 appcast 收录 MSI 更新条目。
+推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`：构建固件和 macOS 产物，发布 GitHub Release，并将固件 OTA/merged 镜像与 `manifest.json` 上传到阿里云 OSS。Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并上传到对应 Release，然后手动运行 `Deploy Website to GitHub Pages` 工作流；该工作流会读取当前线上 appcast 和最新 GitHub Release，补齐可选 MSI 条目，若最新 Release 没有 MSI 会保留旧 Windows 条目。
 
 完整发布步骤见 `docs/release.md`。
 
