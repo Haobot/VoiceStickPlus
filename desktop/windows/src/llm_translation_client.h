@@ -1,9 +1,7 @@
 #pragma once
 
 #include "app_config.h"
-
-#include <Windows.h>
-#include <Winhttp.h>
+#include "llm_chat_client.h"
 
 #include <functional>
 #include <string>
@@ -12,30 +10,20 @@
 
 namespace voicestick {
 
-class LLMTranslationClient {
+// LLM 翻译客户端：复用 LLMChatClient 的网络层，仅提供翻译 system prompt。
+// 翻译 prompt 已融合源文本精修要求（去停顿空格 / 修标点 / 去口头语）。
+class LLMTranslationClient : public LLMChatClient {
 public:
-    explicit LLMTranslationClient(AppConfig config);
+    using LLMChatClient::LLMChatClient;
 
     void Translate(std::string text,
                    std::string target_language,
                    std::vector<std::string> hotwords,
                    std::function<void(bool, std::string)> completion) const;
-    static std::wstring Utf16FromUtf8(std::string_view text);
-    static std::string Utf8FromUtf16(std::wstring_view text);
 
-private:
-    std::string TranslateSync(const std::string& text,
-                              const std::string& target_language,
-                              const std::vector<std::string>& hotwords,
-                              std::string* error) const;
-    std::string ChatCompletionsPathAndQuery(std::wstring* host, INTERNET_PORT* port, bool* secure,
-                                            std::string* error) const;
+    // 构造翻译 system prompt（已融合源文本精修要求：去停顿空格 / 修标点 / 去口头语）。
     static std::string SystemPrompt(const std::string& target_language,
                                     const std::vector<std::string>& hotwords);
-    static std::string JsonEscape(std::string_view text);
-    static std::string LastErrorText();
-
-    AppConfig config_;
 };
 
 } // namespace voicestick

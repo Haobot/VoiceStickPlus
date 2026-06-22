@@ -37,6 +37,7 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
       asr_(std::move(asr)),
       asr_factory_(std::move(asr_factory)),
       translator_(config_),
+      refiner_(config_),
       ui_(ui),
       input_injector_(input_injector),
       debug_audio_recorder_(config_.debug_audio_cache, config_.debug_audio_directory),
@@ -146,6 +147,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
 
     config_ = std::move(config);
     translator_ = LLMTranslationClient(config_);
+    refiner_ = LLMRefinementClient(config_);
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
     ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
@@ -802,10 +804,14 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
         });
         return;
     }
-    last_recoverable_text_ = text;
-    last_recoverable_device_id_ = active_device_id_;
-    ui_->SetHasRecoverableInput(true);
-    EnterPendingConfirmation(text, "asr_final");
+    if (config_.refine_enabled) ui_->SetStatus("Refining");
+    TransformText(text, profile, [this](bool ok, std::string result) {
+        (void)ok;
+        last_recoverable_text_ = result;
+        last_recoverable_device_id_ = active_device_id_;
+        ui_->SetHasRecoverableInput(true);
+        EnterPendingConfirmation(result, "asr_final");
+    });
 }
 
 void VoiceStickCoordinator::HandleDefiniteSegment(const AsrSegment& segment) {
@@ -985,11 +991,19 @@ void VoiceStickCoordinator::ShowSubtitleText(const std::string& text,
 void VoiceStickCoordinator::TransformText(const std::string& text,
                                           const OutputProfile& profile,
                                           std::function<void(bool, std::string)> completion) {
-    if (profile.transform != TextTransform::kTranslate) {
-        completion(true, text);
+    if (profile.transform == TextTransform::kTranslate) {
+        translator_.Translate(text, profile.translation_target, config_.asr_hotwords, std::move(completion));
         return;
     }
-    translator_.Translate(text, profile.translation_target, config_.asr_hotwords, std::move(completion));
+    // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
+    if (config_.refine_enabled && !text.empty()) {
+        refiner_.Refine(text, config_.refine_prompt,
+                        [text, completion = std::move(completion)](bool ok, std::string result) mutable {
+                            completion(true, ok ? result : text);
+                        });
+        return;
+    }
+    completion(true, text);
 }
 
 void VoiceStickCoordinator::BeginWaitingForAudioEnd(std::string_view reason) {

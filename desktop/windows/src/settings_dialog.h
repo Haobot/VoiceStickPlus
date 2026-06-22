@@ -48,6 +48,7 @@ private:
     HWND llm_base_url_edit_ = nullptr;
     HWND llm_api_key_edit_ = nullptr;
     HWND llm_model_edit_ = nullptr;
+    HWND refine_check_ = nullptr;
     HWND prompt_tone_check_ = nullptr;
     HWND launch_at_login_check_ = nullptr;
     HWND debug_audio_check_ = nullptr;
@@ -68,6 +69,7 @@ private:
     static constexpr UINT kIdLlmBaseUrlEdit = 2005;
     static constexpr UINT kIdLlmApiKeyEdit = 2006;
     static constexpr UINT kIdLlmModelEdit = 2007;
+    static constexpr UINT kIdRefineText = 2016;
     static constexpr UINT kIdPromptTone = 2008;
     static constexpr UINT kIdLaunchAtLogin = 2009;
     static constexpr UINT kIdDebugAudio = 2010;

@@ -38,7 +38,9 @@ add_library(voicestick_core
     src/ble_protocol.cc
     src/debug_audio_recorder.cc
     src/firmware_manifest.cc
+    src/llm_chat_client.cc
     src/llm_translation_client.cc
+    src/llm_refinement_client.cc
     src/localization.cc
     third_party/cjson/cJSON.c
     src/log.cc
