@@ -217,6 +217,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
 - `[output].target`：`focused_app` 或 `subtitle`。
 - `[output].transform`：`original` 或 `translate`。
 - `[device.<id>.output]`：按设备覆盖输出/翻译设置。
+- `refine_enabled`：是否对 ASR 原文做 LLM 精修（去停顿空格、修标点、去口头语），默认 `true`；翻译路径的精修已融入翻译 prompt，不受此开关额外调用影响。`refine_prompt` 可覆盖内置精修 prompt（为空用默认）。
 
 ## 辅助脚本
 

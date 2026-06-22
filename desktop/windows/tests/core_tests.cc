@@ -1,7 +1,9 @@
 #include "asr_protocol.h"
 #include "ble_protocol.h"
 #include "byte_utils.h"
+#include "cJSON.h"
 #include "firmware_manifest.h"
+#include "llm_refinement_client.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
 #include "pair_device_helper.h"
@@ -596,6 +598,47 @@ void TestAppConfig() {
     assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));
 }
 
+void TestLlmRefinePromptAndPayload() {
+    // 内置默认精修 prompt 含三类清理要求关键词。
+    const auto prompt = LLMRefinementClient::BuildRefinePrompt("");
+    assert(prompt.find("pause spaces") != std::string::npos);
+    assert(prompt.find("punctuation") != std::string::npos);
+    assert(prompt.find("filler") != std::string::npos);
+
+    // 非空 override 去空白后原样返回。
+    const auto custom = LLMRefinementClient::BuildRefinePrompt("  my custom prompt  ");
+    assert(custom == "my custom prompt");
+
+    // 翻译 prompt 已融合精修要求，且保留翻译语义与热词。
+    const auto translation_prompt = LLMTranslationClient::SystemPrompt("en", {});
+    assert(translation_prompt.find("Translate") != std::string::npos);
+    assert(translation_prompt.find("pause spaces") != std::string::npos);
+    const auto translation_with_hotwords = LLMTranslationClient::SystemPrompt("zh-Hans", {"小智", "VoiceStick"});
+    assert(translation_with_hotwords.find("小智") != std::string::npos);
+    assert(translation_with_hotwords.find("VoiceStick") != std::string::npos);
+
+    // 请求体为合法 JSON：temperature:0、system+user 两条消息、model 透传。
+    const auto payload = LLMChatClient::BuildChatPayload("gpt-x", "sys-prompt", "hello world");
+    assert(payload.find("\"model\":\"gpt-x\"") != std::string::npos);
+    assert(payload.find("\"temperature\":0") != std::string::npos);
+    assert(payload.find("\"role\":\"system\"") != std::string::npos);
+    assert(payload.find("\"role\":\"user\"") != std::string::npos);
+    auto* root = cJSON_Parse(payload.c_str());
+    assert(root != nullptr);
+    auto* model = cJSON_GetObjectItemCaseSensitive(root, "model");
+    assert(cJSON_IsString(model) && std::string(model->valuestring) == "gpt-x");
+    auto* messages = cJSON_GetObjectItemCaseSensitive(root, "messages");
+    assert(cJSON_IsArray(messages) && cJSON_GetArraySize(messages) == 2);
+    auto* user_msg = cJSON_GetArrayItem(messages, 1);
+    auto* user_content = cJSON_GetObjectItemCaseSensitive(user_msg, "content");
+    assert(cJSON_IsString(user_content) && std::string(user_content->valuestring) == "hello world");
+    cJSON_Delete(root);
+
+    // 精修默认开启、prompt 默认空。
+    assert(AppConfig::Defaults().refine_enabled == true);
+    assert(AppConfig::Defaults().refine_prompt.empty());
+}
+
 void TestFirmwareManifestParsingAndVersionCompare() {
     const std::string json =
         "{\"hardware\":\"sticks3\",\"version\":\"0.2.3\",\"ota_url\":\"https://example.test/ota.bin\","
@@ -1064,6 +1107,7 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
+    TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();

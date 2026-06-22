@@ -6,6 +6,7 @@
 #include "debug_audio_recorder.h"
 #include "firmware_manifest.h"
 #include "llm_translation_client.h"
+#include "llm_refinement_client.h"
 #include "ogg_opus_muxer.h"
 
 #include <atomic>
@@ -301,6 +302,7 @@ private:
     std::unique_ptr<AsrClient> asr_;
     std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory_;
     LLMTranslationClient translator_;
+    LLMRefinementClient refiner_;
     VoiceStickUi* ui_;
     InputInjector* input_injector_;
     std::mutex audio_mutex_;
