@@ -1,0 +1,228 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+本文件为 Claude Code 在本仓库工作时提供指导，工作语言为简体中文。
+
+## 项目概览
+
+Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备负责采集按键与音频并通过 BLE 上报；桌面端负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录和 Sparkle/WinSparkle 更新源。
+
+主要目录：
+
+- `firmware/`：ESP-IDF C 固件，目标板为 M5Stack StickS3 / ESP32-S3。
+- `desktop/macos/`：SwiftPM/AppKit 菜单栏应用，目标 macOS 12+。
+- `desktop/windows/`：C++20 / Win32 / C++/WinRT 托盘应用，目标 Windows 10 1903+；2019 年 Windows 10 构建会走地址直连的 BLE 兼容路径。
+- `desktop/linux/`：Linux 桌面端占位目录。
+- `website/`：Vue 3 + Vite 站点，包含 Web Serial 固件烧录工具、`vue-i18n` 中英文落地页和 appcast 发布页面。
+- `docs/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等设计/运维文档。
+
+## 常用命令
+
+### 固件（ESP-IDF v5.5.1，目标 `esp32s3`）
+
+```sh
+cd firmware
+. "$HOME/esp/v5.5.1/esp-idf/export.sh"
+idf.py set-target esp32s3
+idf.py build
+```
+
+烧录和串口监视：
+
+```sh
+idf.py -p /dev/cu.usbmodemXXXX flash monitor
+```
+
+设备仍使用旧单应用分区表时，首次升级到当前 OTA 分区表需要擦除后重刷：
+
+```sh
+idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
+```
+
+固件依赖由 ESP-IDF component manager 管理，核心依赖包括 `espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`。当前分区表为两个 3 MB OTA app slot 加约 1984 KB `storage` 分区。
+
+### macOS 桌面端（SwiftPM）
+
+```sh
+cd desktop/macos
+swift build
+swift run VoiceStickApp
+```
+
+macOS 端目前没有专用测试目标。运行时会请求蓝牙权限；文本注入依赖模拟 `Command-V` 和可选 Return，如系统拦截按键事件，需要给终端或应用授予辅助功能权限。
+
+发布构建和 DMG（在仓库根目录执行）：
+
+```sh
+SPARKLE_PUBLIC_ED_KEY="..." scripts/build-macos.sh --release
+scripts/make-dmg.sh
+```
+
+### Windows 桌面端（CMake + Ninja + MSVC 2022 x64）
+
+推荐从仓库根目录使用：
+
+```bat
+build_win.bat
+```
+
+`build_win.bat` 会自动查找 VS 2022、结束残留的 `VoiceStick.exe` / `ninja.exe` / `cmake.exe` / `cl.exe` / `link.exe`，删除并重建 `desktop\windows\build-x64`，只构建不运行 CTest。运行前确认没有其它构建任务依赖这些进程。
+
+手动构建（先进入 VS 2022 x64 开发者环境，或先调用 `vcvars64.bat`）：
+
+```powershell
+cmake -S desktop\windows -B desktop\windows\build-x64 -G Ninja
+cmake --build desktop\windows\build-x64
+```
+
+运行全部 Windows 测试：
+
+```powershell
+ctest --test-dir desktop\windows\build-x64 --output-on-failure
+```
+
+运行单个/一组 CTest 目标（按 CTest 名称正则过滤）：
+
+```powershell
+ctest --test-dir desktop\windows\build-x64 --output-on-failure -R <测试名称正则>
+ctest --test-dir desktop\windows\build-x64 --output-on-failure -R voicestick_windows_tests
+```
+
+`voicestick_windows_tests` 是一个基于 `assert` 的测试可执行文件，目前不支持按测试函数名过滤；新增核心测试时把 `Test...()` 函数加入 `desktop/windows/tests/core_tests.cc` 的 `main()`。
+
+运行应用：
+
+```powershell
+desktop\windows\build-x64\VoiceStick.exe
+```
+
+发布打包（签名 MSI，用于 WinSparkle 更新）：
+
+```bat
+scripts\build-msi.bat
+```
+
+`build_native.bat`、`do_build.bat`、`run_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
+
+### 网站（Vue 3 + Vite）
+
+```sh
+cd website
+npm install
+npm run dev
+npm run build
+npm run preview
+```
+
+CI 使用 Node 22 和 `npm ci`。`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。修改网站后用 `npm run build` 作为最小验证；修改下载链接或固件回退地址时同步检查 `website/package.json` 的版本号。
+
+### Lint / 格式化状态
+
+仓库当前未提交统一 lint/formatter 配置；不要臆造 `npm run lint`、Swift lint 或 C++ lint 命令。修改对应组件后运行该组件已有的构建/测试命令作为验证。
+
+## 高层架构
+
+### BLE 协议边界
+
+BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
+
+- `audio_tx`（通知，`0x5101`）：Opus 音频帧，设备 → 主机。
+- `state_tx`（通知，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
+- `control_rx`（无响应写，`0x5103`）：`ui_state`、OTA 控制等，主机 → 设备。
+
+完整帧格式见 `docs/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
+
+### 固件职责
+
+固件只负责硬件 I/O、音频编码、BLE 通信、电源管理和显示主机下发的 UI 状态，不持有桌面交互状态机。
+
+- `firmware/main/main.c` 编排按键、BLE、录音会话、UI 状态、电源管理和 OTA 事件。
+- `components/audio_pipeline/` 从 ES8311 I2S 麦克风读取 16 kHz 单声道 PCM，编码为 Opus 后通过回调交给 BLE 层。
+- `components/voice_ble/` 实现 GATT 服务、音频/状态通知、主机控制写入和 BLE OTA 数据流。
+- `components/ui_status/` 基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示和 OTA 进度。
+- `components/stick_s3_board/` 集中维护 StickS3 引脚、LCD、PMIC、I2S/codec 等板级初始化；引脚定义在 `firmware/components/stick_s3_board/include/stick_s3_board.h`。
+
+### 桌面端职责
+
+桌面端是状态唯一可信源，负责：BLE 配对和多设备连接、交互状态机、Opus→Ogg Opus 封装、ASR WebSocket、LLM 翻译、悬浮窗/字幕、文本注入、配置管理和自动更新。
+
+核心音频路径：
+
+```text
+StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> paste/subtitle
+```
+
+主机端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
+
+### macOS 实现
+
+macOS 代码集中在 `desktop/macos/Sources/VoiceStickApp/`：
+
+- `VoiceStickCoordinator`：交互状态机。
+- `BleCentral` / `BleProtocol`：CoreBluetooth 和协议解析。
+- `OggOpusMuxer` / `ASRWebSocketClient`：音频封装和 ASR 链路。
+- `InputInjector`：剪贴板粘贴和 Return 注入。
+- `OverlayController` / `SubtitleController` / `StatusController`：悬浮窗、字幕和菜单栏状态。
+- `FirmwareManifest` / `FirmwareUpdateWindowController`：固件更新检查和窗口。
+
+### Windows 实现
+
+Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
+
+- `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译、调试音频缓存、固件清单解析、日志、本地化和协调器状态机。
+- `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
+
+新增核心行为优先放入 `voicestick_core`，并在 `desktop/windows/tests/core_tests.cc` 覆盖；测试目标名为 `voicestick_windows_tests`。Windows 代码遵循 Google C++ 命名风格：`snake_case` 文件名/变量，`CapWords` 类型，`MixedCase()` 方法，4 空格缩进。
+
+### 网站实现
+
+`website/src/App.vue` 承载主要页面和 Web Serial 烧录流程；`website/src/i18n/zh-CN.json` 与 `website/src/i18n/en-US.json` 保存中英文文案，浏览器语言以 `zh` 开头时默认中文。浏览器烧录器读取 `VITE_FIRMWARE_MANIFEST_URL` 指向的固件 manifest，并使用其中的 `merged_url`；加载失败时按 `website/package.json` 版本拼出回退 merged 固件 URL。新增或修改 UI 文案时同步维护两个语言文件。搜索仓库时排除 `website/node_modules/` 以免噪声过多。
+
+## 核心交互模型
+
+固件上报原始按键事实，桌面端解释为交互行为并回写 `ui_state`：
+
+| 状态 | 主键（正面） | 侧键 |
+|---|---|---|
+| 未配对/未连接 | 不录音，屏幕显示 `VS-XXXX` | 无有效动作 |
+| 连接空闲 | 按住开始录音 | 恢复上一次输入确认 |
+| 录音中 | 释放结束录音 | 不取消当前录音 |
+| 识别中 | 忽略新录音 | 取消正在进行的识别 |
+| 确认倒计时中 | 暂停自动粘贴，进入手动确认 | 取消待粘贴文本 |
+| 手动确认中 | 确认粘贴 | 取消待粘贴文本 |
+
+支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式。文本输出支持 `focused_app`（默认粘贴到当前焦点，默认自动按 Return）和 `subtitle`（仅显示字幕）。识别结果可通过 OpenAI-compatible LLM 做翻译，也可按设备单独覆盖输出设置。
+
+## 配置文件
+
+示例配置：`desktop/macos/Config/config.example.toml`
+
+运行时配置路径：
+
+- macOS：`~/Library/Application Support/VoiceStick/config.toml`
+- Windows：`%APPDATA%\VoiceStick\config.toml`
+- Windows 调试音频缓存：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
+
+常用配置项：
+
+- `asr_provider`：`volcengine` 或 `voicestick_cloud`。
+- `auto_enter`：粘贴后是否自动按 Return。
+- `debug_audio_cache`：是否保存调试 Ogg Opus 音频。
+- `interaction_mode`：`hold_to_talk` 或 `click_to_talk`。
+- `[output].target`：`focused_app` 或 `subtitle`。
+- `[output].transform`：`original` 或 `translate`。
+- `[device.<id>.output]`：按设备覆盖输出/翻译设置。
+
+## 发布流程要点
+
+推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`：构建固件和 macOS 产物，发布 GitHub Release，并将固件 OTA/merged 镜像与 `manifest.json` 上传到阿里云 OSS。Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并上传到对应 Release，然后手动运行 `Deploy Website to GitHub Pages` 工作流；该工作流会读取当前线上 appcast 和最新 GitHub Release，补齐可选 MSI 条目，若最新 Release 没有 MSI 会保留旧 Windows 条目。
+
+完整发布步骤见 `docs/release.md`。
+
+## 重要约定
+
+- 交互状态机在桌面端，不在固件中；修改交互流程时优先改桌面协调器。
+- 固件通常只在新增/调整 `ui_state` 展示、硬件 I/O、BLE 协议或 OTA 行为时修改。
+- 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `docs/`、macOS、Windows、网站和发布脚本。
+- Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。
