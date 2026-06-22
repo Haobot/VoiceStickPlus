@@ -601,7 +601,7 @@ void TestAppConfig() {
 void TestLlmRefinePromptAndPayload() {
     // 内置默认精修 prompt 含三类清理要求关键词。
     const auto prompt = LLMRefinementClient::BuildRefinePrompt("");
-    assert(prompt.find("pause spaces") != std::string::npos);
+    assert(prompt.find("speech pauses") != std::string::npos);
     assert(prompt.find("punctuation") != std::string::npos);
     assert(prompt.find("filler") != std::string::npos);
 
@@ -827,7 +827,9 @@ void TestCoordinatorMainFinalPastesWithoutConfirmation() {
     auto* asr_ptr = asr.get();
     FakeUi ui;
     FakeInputInjector input;
-    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 本用例验证同步粘贴流程，关闭异步精修以免触发真实 LLM 调用
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 9));
@@ -874,6 +876,7 @@ void TestCoordinatorSubtitleOutputSkipsPaste() {
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kSubtitle;
     config.interaction_mode = InteractionMode::kClickToTalk;
+    config.refine_enabled = false;  // 字幕用例验证同步显示流程，关闭异步精修以免触发真实 LLM 调用
     config.device_theme_colors["5A74"] = OverlayThemeColor::kBlue;
     VoiceStickCoordinator coordinator(
         config,
@@ -924,6 +927,7 @@ void TestCoordinatorSubtitleFinalDoesNotBlockNextSession() {
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kSubtitle;
     config.interaction_mode = InteractionMode::kHoldToTalk;
+    config.refine_enabled = false;  // 字幕用例验证同步显示流程，关闭异步精修以免触发真实 LLM 调用
     config.device_theme_colors["5A74"] = OverlayThemeColor::kBlue;
     VoiceStickCoordinator coordinator(
         config,
