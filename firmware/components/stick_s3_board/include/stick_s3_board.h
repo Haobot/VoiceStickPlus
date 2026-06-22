@@ -36,5 +36,11 @@ esp_err_t stick_s3_board_battery_charging(bool *charging);
 esp_err_t stick_s3_board_usb_powered(bool *usb_powered);
 esp_err_t stick_s3_board_clear_power_irqs(uint8_t *sys_status);
 void stick_s3_board_prepare_deep_sleep(void);
+// 独立控制 L3B 层（LCD 背光/MIC/SPK）供电，用于 S2 熄屏保连态：关 L3B 降功耗但不进 deep sleep。
+// enable=true 打开 L3B（恢复亮屏），false 关闭 L3B（熄屏）。不触碰其它电源层。
+void stick_s3_board_set_l3b_power(bool enable);
+// M5PM1 软件关机（写 SYS_CMD=0xA1）。调用前应已保持 L1(IMU) 供电并配置 PYG4 唤醒源。
+// 关机后整机断电，仅 L0+L1 供电，靠按键或 IMU 翻转唤醒 M5PM1 重新上电冷启动。
+void stick_s3_board_power_off(void);
 bool stick_s3_front_button_pressed(void);
 bool stick_s3_side_button_pressed(void);

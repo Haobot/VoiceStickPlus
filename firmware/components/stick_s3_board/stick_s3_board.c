@@ -3,6 +3,8 @@
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "stick_s3_board";
 static i2c_master_bus_handle_t s_i2c_bus;
@@ -20,6 +22,11 @@ static i2c_master_dev_handle_t s_pmic_dev;
 #define M5PM1_REG_GPIO_IN 0x12
 #define M5PM1_REG_GPIO_DRV 0x13
 #define M5PM1_REG_GPIO_FUNC0 0x16
+// GPIO4(PYG4) 功能与上下拉寄存器（BMI270 INT1 经此唤醒 M5PM1）。
+#define M5PM1_REG_GPIO4_PUPD 0x15
+#define M5PM1_REG_GPIO4_FUNC 0x17
+#define M5PM1_REG_SYS_CMD 0x0C
+#define M5PM1_REG_WAKE_SRC 0x05
 #define M5PM1_REG_BAT_L 0x22
 #define M5PM1_REG_VIN_L 0x24
 #define M5PM1_REG_IRQ_STATUS1 0x40
@@ -38,6 +45,14 @@ static i2c_master_dev_handle_t s_pmic_dev;
 #define M5PM1_GPIO_FUNC_IRQ(pin)  (0x01 << ((pin) * 2))
 #define M5PM1_IRQ_SYS_5VIN_INSERT BIT(0)
 #define M5PM1_IRQ_SYS_5VIN_REMOVE BIT(1)
+
+// SYS_CMD(0x0C)：[7:4]=密钥 0xA，[1:0]=命令；0xA1=关机（据 M5PM1 库 sysCmd 源码）。
+#define M5PM1_SYS_CMD_KEY 0xA0
+#define M5PM1_SYS_CMD_OFF 0x01
+#define M5PM1_SYS_CMD_SHUTDOWN (M5PM1_SYS_CMD_KEY | M5PM1_SYS_CMD_OFF)
+// GPIO4(PYG4) 功能寄存器 [1:0]：00=GPIO 01=IRQ 10=WAKE 11=PWM1（据 M5PM1 库）。
+#define M5PM1_GPIO4_FUNC_MASK 0x03
+#define M5PM1_GPIO4_FUNC_WAKE 0x02
 
 static bool read_active_low_button(gpio_num_t pin)
 {
@@ -364,6 +379,48 @@ void stick_s3_board_prepare_deep_sleep(void)
                                                   M5PM1_GPIO2_L3B_POWER_EN, 0));
     ESP_ERROR_CHECK_WITHOUT_ABORT(pmic_update_reg(M5PM1_REG_GPIO_DRV,
                                                   M5PM1_GPIO2_L3B_POWER_EN, 0));
+}
+
+void stick_s3_board_set_l3b_power(bool enable)
+{
+    if (!s_pmic_dev) {
+        return;
+    }
+    // L3B 由 GPIO2 输出驱动（init_pmic 中已设为 push-pull 输出）。
+    // enable=true 拉高输出点亮 L3B（背光/MIC/SPK），false 拉低熄屏省电。
+    const uint8_t set_mask = enable ? M5PM1_GPIO2_L3B_POWER_EN : 0;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pmic_update_reg(M5PM1_REG_GPIO_OUT,
+                                                  M5PM1_GPIO2_L3B_POWER_EN, set_mask));
+}
+
+void stick_s3_board_power_off(void)
+{
+    if (!s_pmic_dev) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "M5PM1 power off (shutdown)");
+
+    // 保持 L1(IMU) 供电并锁定：关机后 LDO 不掉电，IMU 继续低功耗检测，
+    // 翻转触发 INT1→PYG4 唤醒 M5PM1。init_pmic 已置 LDO_EN + LDO_HOLD，此处确保。
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pmic_update_reg(M5PM1_REG_PWR_CFG,
+                                                  0, M5PM1_PWR_CFG_LDO_EN));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pmic_update_reg(M5PM1_REG_HOLD_CFG,
+                                                  0, M5PM1_HOLD_CFG_LDO_HOLD));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pmic_update_reg(M5PM1_REG_PWR_CFG,
+                                                  0, M5PM1_PWR_CFG_LED_CTRL));
+
+    // 把 GPIO4(PYG4) 配为 WAKE 模式，作为 IMU INT1 唤醒源。
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pmic_update_reg(M5PM1_REG_GPIO4_FUNC,
+                                                  M5PM1_GPIO4_FUNC_MASK,
+                                                  M5PM1_GPIO4_FUNC_WAKE));
+
+    // 关 L3B（背光/MIC/SPK）降功耗。
+    stick_s3_board_set_l3b_power(false);
+
+    // 软件关机：写前延时 120ms（M5PM1 库 sysCmd 要求）。之后整机断电，仅 L0+L1 供电。
+    vTaskDelay(pdMS_TO_TICKS(120));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(pmic_write_reg(M5PM1_REG_SYS_CMD, M5PM1_SYS_CMD_SHUTDOWN));
 }
 
 bool stick_s3_side_button_pressed(void)
