@@ -101,7 +101,7 @@ final class PairDeviceWindowController: NSWindowController, CBCentralManagerDele
             return
         }
         statusLabel.stringValue = "Scanning"
-        central.scanForPeripherals(withServices: [CBUUID(string: BleProtocol.serviceUUID)])
+        central.scanForPeripherals(withServices: nil)
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,

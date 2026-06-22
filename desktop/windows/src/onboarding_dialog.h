@@ -55,6 +55,7 @@ private:
     HWND parent_;
     HWND hwnd_ = nullptr;
     AppConfig config_;
+    UiLanguage language_ = UiLanguage::kEnglish;
     Step step_ = Step::kDevice;
     UINT dpi_ = 96;
     HFONT ui_font_ = nullptr;

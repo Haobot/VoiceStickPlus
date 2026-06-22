@@ -10,11 +10,13 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cwctype>
 #include <fstream>
 #include <functional>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 
 namespace voicestick {
 
@@ -41,6 +43,13 @@ std::string Trim(std::string value) {
     auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
     value.erase(value.begin(), std::find_if_not(value.begin(), value.end(), is_space));
     value.erase(std::find_if_not(value.rbegin(), value.rend(), is_space).base(), value.end());
+    return value;
+}
+
+std::wstring Lowercase(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
     return value;
 }
 
@@ -235,11 +244,15 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "llm_api_key") config.llm_api_key = value;
     if (key == "llm_model") config.llm_model = value;
     if (key == "interaction_mode") config.interaction_mode = InteractionModeFromName(value);
+    if (key == "ui_language") config.ui_language = UiLanguageFromName(value);
     if (key == "resource_id") config.resource_id = value;
     if (key == "asr_hotwords") config.asr_hotwords = ParseHotwordList(value);
     if (key == "paired_device_ids") config.paired_device_ids = ParseDeviceIdList(value);
     if (key == "device_theme_colors") {
         config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(value, OverlayThemeColorFromName);
+    }
+    if (key == "device_theme_sizes") {
+        config.device_theme_sizes = ParseDeviceValueMap<OverlayThemeSize>(value, OverlayThemeSizeFromName);
     }
     if (key == "device_overlay_positions") {
         config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(value, OverlayPositionFromName);
@@ -248,6 +261,10 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "text_transform") config.default_output_profile.transform = TextTransformFromName(value);
     if (key == "translation_target" && !value.empty()) config.default_output_profile.translation_target = value;
     if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
+    if (key == "global_hotkey_enabled") config.global_hotkey_enabled = BoolValue(value, config.global_hotkey_enabled);
+    if (key == "global_hotkey") config.global_hotkey = value;
+    if (key == "prompt_tone_enabled") config.prompt_tone_enabled = BoolValue(value, config.prompt_tone_enabled);
+    if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
     if (key == "paired_device") {
@@ -304,11 +321,15 @@ AppConfig AppConfig::Load() {
         if (auto value = TomlString(table, "llm_api_key")) config.llm_api_key = *value;
         if (auto value = TomlString(table, "llm_model")) config.llm_model = *value;
         if (auto value = TomlString(table, "interaction_mode")) config.interaction_mode = InteractionModeFromName(*value);
+        if (auto value = TomlString(table, "ui_language")) config.ui_language = UiLanguageFromName(*value);
         if (auto value = TomlString(table, "resource_id")) config.resource_id = *value;
         if (auto value = TomlString(table, "asr_hotwords")) config.asr_hotwords = ParseHotwordList(*value);
         if (auto value = TomlString(table, "paired_device_ids")) config.paired_device_ids = ParseDeviceIdList(*value);
         if (auto value = TomlString(table, "device_theme_colors")) {
             config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(*value, OverlayThemeColorFromName);
+        }
+        if (auto value = TomlString(table, "device_theme_sizes")) {
+            config.device_theme_sizes = ParseDeviceValueMap<OverlayThemeSize>(*value, OverlayThemeSizeFromName);
         }
         if (auto value = TomlString(table, "device_overlay_positions")) {
             config.device_overlay_positions = ParseDeviceValueMap<OverlayPosition>(*value, OverlayPositionFromName);
@@ -340,6 +361,10 @@ AppConfig AppConfig::Load() {
             }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
+        if (auto value = TomlBool(table, "global_hotkey_enabled")) config.global_hotkey_enabled = *value;
+        if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
+        if (auto value = TomlBool(table, "prompt_tone_enabled")) config.prompt_tone_enabled = *value;
+        if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
             config.debug_audio_directory = std::filesystem::path(*value);
@@ -376,6 +401,7 @@ void AppConfig::Save() const {
     output << "llm_api_key = \"" << TomlEscape(llm_api_key) << "\"\n";
     output << "llm_model = \"" << TomlEscape(llm_model) << "\"\n";
     output << "interaction_mode = \"" << InteractionModeName(interaction_mode) << "\"\n";
+    output << "ui_language = \"" << UiLanguageName(ui_language) << "\"\n";
     output << "resource_id = \"" << TomlEscape(resource_id) << "\"\n";
     std::ostringstream hotwords;
     for (std::size_t i = 0; i < asr_hotwords.size(); ++i) {
@@ -385,10 +411,16 @@ void AppConfig::Save() const {
     output << "asr_hotwords = \"" << TomlEscape(hotwords.str()) << "\"\n";
     output << "paired_device_ids = \"" << paired.str() << "\"\n";
     output << "device_theme_colors = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeColor>(
-        device_theme_colors, paired_device_ids, OverlayThemeColor::kWhite, OverlayThemeColorName)) << "\"\n";
+        device_theme_colors, paired_device_ids, DefaultOverlayThemeColor(), OverlayThemeColorName)) << "\"\n";
+    output << "device_theme_sizes = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeSize>(
+        device_theme_sizes, paired_device_ids, OverlayThemeSize::kBig, OverlayThemeSizeName)) << "\"\n";
     output << "device_overlay_positions = \"" << TomlEscape(FormatDeviceValueMap<OverlayPosition>(
-        device_overlay_positions, paired_device_ids, OverlayPosition::kCenter, OverlayPositionName)) << "\"\n";
+        device_overlay_positions, paired_device_ids, DefaultOverlayPosition(), OverlayPositionName)) << "\"\n";
     output << "auto_enter = " << (auto_enter ? "true" : "false") << "\n";
+    output << "global_hotkey_enabled = " << (global_hotkey_enabled ? "true" : "false") << "\n";
+    output << "global_hotkey = \"" << TomlEscape(global_hotkey) << "\"\n";
+    output << "prompt_tone_enabled = " << (prompt_tone_enabled ? "true" : "false") << "\n";
+    output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
     if (!paired_devices.empty()) {
@@ -478,6 +510,7 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
         std::remove(paired_device_ids.begin(), paired_device_ids.end(), device_id),
         paired_device_ids.end());
     device_theme_colors.erase(device_id);
+    device_theme_sizes.erase(device_id);
     device_overlay_positions.erase(device_id);
     device_output_profiles.erase(device_id);
     Save();
@@ -509,8 +542,68 @@ InteractionMode InteractionModeFromName(std::string_view name) {
     return name == "click_to_talk" ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 }
 
+std::string UiLanguageName(UiLanguage language) {
+    switch (language) {
+    case UiLanguage::kEnglish: return "en";
+    case UiLanguage::kSimplifiedChinese: return "zh-Hans";
+    case UiLanguage::kSystem:
+    default:
+        return "system";
+    }
+}
+
+UiLanguage UiLanguageFromName(std::string_view name) {
+    if (name == "en") return UiLanguage::kEnglish;
+    if (name == "zh-Hans" || name == "zh_CN" || name == "zh-CN" || name == "zh") {
+        return UiLanguage::kSimplifiedChinese;
+    }
+    return UiLanguage::kSystem;
+}
+
+UiLanguage UiLanguageFromLocaleName(std::wstring_view locale_name) {
+    if (locale_name.empty()) return UiLanguage::kEnglish;
+    auto locale = Lowercase(std::wstring(locale_name));
+    if (locale == L"zh" || locale.starts_with(L"zh-") || locale.starts_with(L"zh_")) {
+        return UiLanguage::kSimplifiedChinese;
+    }
+    if (locale == L"en" || locale.starts_with(L"en-") || locale.starts_with(L"en_")) {
+        return UiLanguage::kEnglish;
+    }
+    return UiLanguage::kEnglish;
+}
+
+UiLanguage EffectiveUiLanguage(UiLanguage configured) {
+    if (configured != UiLanguage::kSystem) return configured;
+
+    ULONG count = 0;
+    ULONG buffer_length = 0;
+    if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, nullptr, &buffer_length) && buffer_length > 0) {
+        std::wstring buffer(buffer_length, L'\0');
+        if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, buffer.data(), &buffer_length)) {
+            const wchar_t* first = buffer.c_str();
+            if (*first != L'\0') return UiLanguageFromLocaleName(first);
+        }
+    }
+
+    wchar_t locale_name[LOCALE_NAME_MAX_LENGTH] = {};
+    if (GetUserDefaultLocaleName(locale_name, LOCALE_NAME_MAX_LENGTH) > 0) {
+        return UiLanguageFromLocaleName(locale_name);
+    }
+    return UiLanguage::kEnglish;
+}
+
+OverlayThemeColor DefaultOverlayThemeColor() {
+    return OverlayThemeColor::kAuto;
+}
+
+OverlayPosition DefaultOverlayPosition() {
+    return OverlayPosition::kBottomCenter;
+}
+
 std::string OverlayThemeColorName(OverlayThemeColor color) {
     switch (color) {
+    case OverlayThemeColor::kAuto: return "auto";
+    case OverlayThemeColor::kBlack: return "black";
     case OverlayThemeColor::kPink: return "pink";
     case OverlayThemeColor::kGreen: return "green";
     case OverlayThemeColor::kYellow: return "yellow";
@@ -523,6 +616,8 @@ std::string OverlayThemeColorName(OverlayThemeColor color) {
 }
 
 OverlayThemeColor OverlayThemeColorFromName(std::string_view name) {
+    if (name == "auto") return OverlayThemeColor::kAuto;
+    if (name == "black") return OverlayThemeColor::kBlack;
     if (name == "pink") return OverlayThemeColor::kPink;
     if (name == "green") return OverlayThemeColor::kGreen;
     if (name == "yellow") return OverlayThemeColor::kYellow;
@@ -533,6 +628,8 @@ OverlayThemeColor OverlayThemeColorFromName(std::string_view name) {
 
 std::string OverlayThemeColorDisplayName(OverlayThemeColor color) {
     switch (color) {
+    case OverlayThemeColor::kAuto: return "Auto";
+    case OverlayThemeColor::kBlack: return "Black";
     case OverlayThemeColor::kPink: return "Pink";
     case OverlayThemeColor::kGreen: return "Green";
     case OverlayThemeColor::kYellow: return "Yellow";
@@ -544,8 +641,35 @@ std::string OverlayThemeColorDisplayName(OverlayThemeColor color) {
     }
 }
 
+std::string OverlayThemeSizeName(OverlayThemeSize size) {
+    switch (size) {
+    case OverlayThemeSize::kMedium: return "medium";
+    case OverlayThemeSize::kSmall: return "small";
+    case OverlayThemeSize::kBig:
+    default:
+        return "big";
+    }
+}
+
+OverlayThemeSize OverlayThemeSizeFromName(std::string_view name) {
+    if (name == "medium") return OverlayThemeSize::kMedium;
+    if (name == "small") return OverlayThemeSize::kSmall;
+    return OverlayThemeSize::kBig;
+}
+
+std::string OverlayThemeSizeDisplayName(OverlayThemeSize size) {
+    switch (size) {
+    case OverlayThemeSize::kMedium: return "Medium";
+    case OverlayThemeSize::kSmall: return "Small";
+    case OverlayThemeSize::kBig:
+    default:
+        return "Big";
+    }
+}
+
 std::string OverlayPositionName(OverlayPosition position) {
     switch (position) {
+    case OverlayPosition::kBottomCenter: return "bottom_center";
     case OverlayPosition::kTopLeft: return "top_left";
     case OverlayPosition::kTopRight: return "top_right";
     case OverlayPosition::kBottomLeft: return "bottom_left";
@@ -557,6 +681,7 @@ std::string OverlayPositionName(OverlayPosition position) {
 }
 
 OverlayPosition OverlayPositionFromName(std::string_view name) {
+    if (name == "bottom_center" || name == "middle_bottom") return OverlayPosition::kBottomCenter;
     if (name == "top_left") return OverlayPosition::kTopLeft;
     if (name == "top_right") return OverlayPosition::kTopRight;
     if (name == "bottom_left") return OverlayPosition::kBottomLeft;
@@ -566,6 +691,7 @@ OverlayPosition OverlayPositionFromName(std::string_view name) {
 
 std::string OverlayPositionDisplayName(OverlayPosition position) {
     switch (position) {
+    case OverlayPosition::kBottomCenter: return "Bottom Center";
     case OverlayPosition::kTopLeft: return "Top Left";
     case OverlayPosition::kTopRight: return "Top Right";
     case OverlayPosition::kBottomLeft: return "Bottom Left";

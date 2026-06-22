@@ -2,6 +2,7 @@
 
 #include "asr_client_win.h"
 #include "ble_central_win.h"
+#include "localization.h"
 #include "log.h"
 #include "resource.h"
 
@@ -10,11 +11,14 @@
 #include <winrt/base.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <exception>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
+#include <stdexcept>
 
 namespace voicestick {
 
@@ -31,6 +35,7 @@ constexpr UINT kMenuCheckAppUpdates = 1008;
 constexpr UINT kMenuHoldToTalk = 1009;
 constexpr UINT kMenuClickToTalk = 1010;
 constexpr UINT kMenuAutoEnter = 1011;
+constexpr UINT kMenuLaunchAtLogin = 1014;
 constexpr UINT kMenuOutputFocusedApp = 1012;
 constexpr UINT kMenuOutputSubtitle = 1013;
 constexpr UINT kMenuForgetBase = 2100;
@@ -39,12 +44,29 @@ constexpr UINT kMenuUpdateFirmwareBase = 2200;
 constexpr UINT kMenuUpdateFirmwareEnd = 2299;
 constexpr UINT kMenuThemeColorBase = 2300;
 constexpr UINT kMenuThemeColorEnd = 2899;
-constexpr UINT kMenuOverlayPositionBase = 2900;
-constexpr UINT kMenuOverlayPositionEnd = 3399;
-constexpr UINT kMenuTranslationBase = 3400;
+constexpr UINT kMenuThemeSizeBase = 2900;
+constexpr UINT kMenuThemeSizeEnd = 3399;
+constexpr UINT kMenuOverlayPositionBase = 3400;
+constexpr UINT kMenuOverlayPositionEnd = 3999;
+constexpr UINT kMenuTranslationBase = 4000;
 constexpr UINT kMenuTranslationEnd = 5799;
-constexpr UINT kMenuOptionsPerDevice = 6;
+constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
+constexpr UINT kMenuHotkeyEnabled = 5801;
+constexpr UINT kMenuHotkeyCustom = 5802;
+constexpr UINT kMenuHotkeyBase = 5810;
+constexpr UINT kMenuHotkeyEnd = 5899;
+
+struct HotkeyPreset {
+    const char* name;
+    const wchar_t* display_name;
+};
+
+constexpr HotkeyPreset kHotkeyPresets[] = {
+    {"Alt+X", L"Alt + X"},
+    {"Win+Alt+X", L"Win + Alt + X"},
+    {"Ctrl+Alt+X", L"Ctrl + Alt + X"},
+};
 
 #ifndef VOICESTICK_APPCAST_URL
 #define VOICESTICK_APPCAST_URL "https://78.github.io/voicestick/appcast.xml"
@@ -54,6 +76,18 @@ void LogLine(std::string_view message) {
     voicestick::LogApp(message);
 }
 
+std::wstring CurrentExecutableCommand() {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) return {};
+    path.resize(length);
+    return L"\"" + path + L"\"";
+}
+
 std::wstring Utf16FromUtf8(std::string_view text) {
     if (text.empty()) return {};
     const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
@@ -61,6 +95,24 @@ std::wstring Utf16FromUtf8(std::string_view text) {
     std::wstring wide(static_cast<std::size_t>(length), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
     return wide;
+}
+
+std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
+    for (const auto& value : values) {
+        const auto pos = text.find(L"%s");
+        if (pos == std::wstring::npos) break;
+        text.replace(pos, 2, value);
+    }
+    return text;
+}
+
+std::string FormatUtf8(std::string text, std::initializer_list<std::string> values) {
+    for (const auto& value : values) {
+        const auto pos = text.find("%s");
+        if (pos == std::string::npos) break;
+        text.replace(pos, 2, value);
+    }
+    return text;
 }
 
 std::wstring FirmwareIdentityText(const std::string& hardware, const std::string& version) {
@@ -77,7 +129,9 @@ std::wstring FirmwareIdentityText(const std::string& hardware, const std::string
 }
 
 constexpr OverlayThemeColor kOverlayThemeColors[] = {
+    OverlayThemeColor::kAuto,
     OverlayThemeColor::kWhite,
+    OverlayThemeColor::kBlack,
     OverlayThemeColor::kPink,
     OverlayThemeColor::kGreen,
     OverlayThemeColor::kYellow,
@@ -85,8 +139,15 @@ constexpr OverlayThemeColor kOverlayThemeColors[] = {
     OverlayThemeColor::kPurple,
 };
 
+constexpr OverlayThemeSize kOverlayThemeSizes[] = {
+    OverlayThemeSize::kBig,
+    OverlayThemeSize::kMedium,
+    OverlayThemeSize::kSmall,
+};
+
 constexpr OverlayPosition kOverlayPositions[] = {
     OverlayPosition::kCenter,
+    OverlayPosition::kBottomCenter,
     OverlayPosition::kTopLeft,
     OverlayPosition::kTopRight,
     OverlayPosition::kBottomLeft,
@@ -121,6 +182,73 @@ constexpr TranslationTarget kTranslationTargets[] = {
     {"th", L"Thai"},
 };
 
+std::wstring LocalizedThemeColorName(OverlayThemeColor color, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return Utf16FromUtf8(OverlayThemeColorDisplayName(color));
+    switch (color) {
+    case OverlayThemeColor::kAuto: return L"自动";
+    case OverlayThemeColor::kBlack: return L"黑色";
+    case OverlayThemeColor::kPink: return L"粉色";
+    case OverlayThemeColor::kGreen: return L"绿色";
+    case OverlayThemeColor::kYellow: return L"黄色";
+    case OverlayThemeColor::kBlue: return L"蓝色";
+    case OverlayThemeColor::kPurple: return L"紫色";
+    case OverlayThemeColor::kWhite:
+    default:
+        return L"白色";
+    }
+}
+
+std::wstring LocalizedThemeSizeName(OverlayThemeSize size, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return Utf16FromUtf8(OverlayThemeSizeDisplayName(size));
+    switch (size) {
+    case OverlayThemeSize::kMedium: return L"中";
+    case OverlayThemeSize::kSmall: return L"小";
+    case OverlayThemeSize::kBig:
+    default:
+        return L"大";
+    }
+}
+
+std::wstring LocalizedOverlayPositionName(OverlayPosition position, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return Utf16FromUtf8(OverlayPositionDisplayName(position));
+    switch (position) {
+    case OverlayPosition::kBottomCenter: return L"底部居中";
+    case OverlayPosition::kTopLeft: return L"左上";
+    case OverlayPosition::kTopRight: return L"右上";
+    case OverlayPosition::kBottomLeft: return L"左下";
+    case OverlayPosition::kBottomRight: return L"右下";
+    case OverlayPosition::kCenter:
+    default:
+        return L"居中";
+    }
+}
+
+std::wstring LocalizedTranslationTargetName(const TranslationTarget& target, UiLanguage language) {
+    if (language != UiLanguage::kSimplifiedChinese) return target.name;
+    const std::string_view code(target.code);
+    if (code == "en") return L"英文";
+    if (code == "zh-Hans") return L"简体中文";
+    if (code == "zh-Hant") return L"繁体中文";
+    if (code == "ja") return L"日文";
+    if (code == "ko") return L"韩文";
+    if (code == "ru") return L"俄文";
+    if (code == "fr") return L"法文";
+    if (code == "de") return L"德文";
+    if (code == "es") return L"西班牙文";
+    if (code == "it") return L"意大利文";
+    if (code == "pt") return L"葡萄牙文";
+    if (code == "nl") return L"荷兰文";
+    if (code == "sv") return L"瑞典文";
+    if (code == "pl") return L"波兰文";
+    if (code == "tr") return L"土耳其文";
+    if (code == "ar") return L"阿拉伯文";
+    if (code == "hi") return L"印地文";
+    if (code == "id") return L"印尼文";
+    if (code == "vi") return L"越南文";
+    if (code == "th") return L"泰文";
+    return target.name;
+}
+
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
@@ -150,6 +278,11 @@ int Win32App::Run() {
 
         RegisterTaskbarMessage();
         AddTrayIcon();
+        try {
+            SyncLaunchAtLogin();
+        } catch (const std::exception& error) {
+            LogLine(std::string("Launch at login sync skipped: ") + error.what());
+        }
 
         LogLine("Initializing WinSparkle");
         win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
@@ -173,6 +306,31 @@ int Win32App::Run() {
         LogLine("Starting coordinator");
         coordinator_->Start();
         LogLine("Coordinator started");
+
+        LogLine("Initializing global hotkey");
+        global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
+        global_hotkey_->on_pressed = [this] {
+            if (coordinator_) coordinator_->HandleGlobalHotkeyPressed();
+        };
+        global_hotkey_->on_released = [this] {
+            if (coordinator_) coordinator_->HandleGlobalHotkeyReleased();
+        };
+        if (config_.global_hotkey_enabled) {
+            if (!global_hotkey_->Register(config_.global_hotkey)) {
+                LogLine("Global hotkey registration failed, hotkey conflict or invalid");
+                if (config_.debug_audio_cache) {
+                    const auto language = EffectiveUiLanguage(config_.ui_language);
+                    ShowNotification(Tr(StringId::kNotificationHotkeyConflictTitle, language),
+                                     config_.global_hotkey + " " + Tr(StringId::kNotificationHotkeyConflictBody, language));
+                }
+                SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
+            } else {
+                LogLine("Global hotkey registered: " + config_.global_hotkey);
+                SetStatus("Global hotkey: " + config_.global_hotkey);
+            }
+        } else {
+            LogLine("Global hotkey disabled by config");
+        }
 
         for (const auto& entry : config_.paired_devices) {
             if (entry.bluetooth_address != 0) {
@@ -223,7 +381,7 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
     DispatchToUi([this, devices] {
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
-        RebuildTooltip();
+        UpdateTrayIcon();
     });
 }
 
@@ -236,6 +394,18 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
         if (pair_device_dialog_) {
             pair_device_dialog_->SetDeviceInfo(info);
         }
+    });
+}
+
+void Win32App::SetDeviceBattery(const std::string& device_id, int level_percent,
+                                 bool charging, bool usb_powered) {
+    DispatchToUi([this, device_id, level_percent, charging, usb_powered] {
+        LogLine("SetDeviceBattery VS-" + device_id +
+                " level=" + std::to_string(level_percent) +
+                " charging=" + std::to_string(charging) +
+                " usb=" + std::to_string(usb_powered));
+        device_battery_map_[device_id] = {level_percent, charging, usb_powered};
+        UpdateTrayIcon();
     });
 }
 
@@ -267,7 +437,7 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
     if (info && !info->firmware_version.empty()) {
         detail += ", firmware " + info->firmware_version;
     }
-    ShowNotification("VoiceStick paired", detail);
+    ShowNotification(Tr(StringId::kNotificationPairedTitle, EffectiveUiLanguage(config_.ui_language)), detail);
     RebuildTooltip();
 }
 
@@ -286,13 +456,15 @@ void Win32App::ShowFirmwareUpdatePrompt(const std::string& device_id,
                                         const std::string& latest_version,
                                         bool is_below_minimum) {
     DispatchToUi([this, device_id, current_version, latest_version, is_below_minimum] {
-        const auto message = L"VS-" + Utf16(device_id) + L" is running firmware " +
-                             Utf16(current_version) + L".\n\nThe latest firmware is " +
-                             Utf16(latest_version) + L".";
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto message = FormatText(TrW(StringId::kFirmwareUpdatePromptBody, language),
+                                        {Utf16(device_id), Utf16(current_version), Utf16(latest_version)});
         const int result = MessageBoxW(
             hwnd_,
             message.c_str(),
-            is_below_minimum ? L"Firmware update recommended" : L"Firmware update available",
+            TrW(is_below_minimum ? StringId::kFirmwareUpdatePromptTitleRequired
+                                 : StringId::kFirmwareUpdatePromptTitleAvailable,
+                language).c_str(),
             MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1);
         if (result == IDYES) {
             StartFirmwareUpdate(device_id);
@@ -357,9 +529,10 @@ void Win32App::ShowCloudUpgrade(const std::string& message,
     DispatchToUi([this, message, url, device_id] {
         ApplyOverlayStyle(device_id);
         auto show_dialog = [this, message, url] {
-            const auto text = Utf16(message + "\n\nOpen the VoiceStick Cloud page?");
+            const auto language = EffectiveUiLanguage(config_.ui_language);
+            const auto text = Utf16(message) + L"\n\n" + TrW(StringId::kCloudOpenPageQuestion, language);
             const int result = MessageBoxW(hwnd_, text.c_str(),
-                                           L"VoiceStick Cloud needs attention",
+                                           TrW(StringId::kCloudNeedsAttentionTitle, language).c_str(),
                                            MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1);
             if (result == IDYES) {
                 const auto wide_url = Utf16(url);
@@ -417,12 +590,20 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         if (ble_central_) ble_central_->ProcessDispatchedCallbacks();
         return 0;
     }
+    if (global_hotkey_ && global_hotkey_->HandleMessage(message, w_param, l_param)) {
+        return 0;
+    }
     if (message == taskbar_created_message_) {
         AddTrayIcon();
         return 0;
     }
     if (message == kTrayCallbackMessage) {
         const auto event = static_cast<UINT>(LOWORD(l_param));
+        if (event == NIN_POPUPOPEN || event == WM_MOUSEMOVE) {
+            RebuildTooltip();
+            RequestConnectedBatteryStatus();
+            return 0;
+        }
         if (event == WM_RBUTTONUP || event == WM_LBUTTONUP ||
             event == WM_CONTEXTMENU || event == NIN_SELECT || event == NIN_KEYSELECT) {
             ShowTrayMenu();
@@ -453,6 +634,10 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             config_.auto_enter = !config_.auto_enter;
             SaveInputOptions();
             return 0;
+        case kMenuLaunchAtLogin:
+            config_.launch_at_login = !config_.launch_at_login;
+            SaveInputOptions();
+            return 0;
         case kMenuOutputFocusedApp:
             config_.default_output_profile.target = OutputTarget::kFocusedApp;
             SaveInputOptions();
@@ -467,8 +652,39 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         case kMenuQuit:
             ShutdownAndQuit();
             return 0;
+        case kMenuHotkeyEnabled:
+            config_.global_hotkey_enabled = !config_.global_hotkey_enabled;
+            SaveInputOptions();
+            if (config_.global_hotkey_enabled) {
+                SetStatus("Global hotkey enabled: " + config_.global_hotkey);
+            } else {
+                SetStatus("Global hotkey disabled");
+            }
+            return 0;
+        case kMenuHotkeyCustom: {
+            auto dialog = std::make_unique<HotkeySettingsDialog>(
+                instance_, hwnd_, EffectiveUiLanguage(config_.ui_language));
+            dialog->on_hotkey_confirmed = [this](const std::string& hotkey) {
+                config_.global_hotkey = hotkey;
+                config_.global_hotkey_enabled = true;
+                SaveInputOptions();
+                SetStatus("Global hotkey set to: " + hotkey);
+            };
+            dialog->Show();
+            return 0;
+        }
         default: {
             UINT cmd = LOWORD(w_param);
+            if (cmd >= kMenuHotkeyBase && cmd <= kMenuHotkeyEnd) {
+                std::size_t index = cmd - kMenuHotkeyBase;
+                if (index < sizeof(kHotkeyPresets) / sizeof(kHotkeyPresets[0])) {
+                    config_.global_hotkey = kHotkeyPresets[index].name;
+                    config_.global_hotkey_enabled = true;
+                    SaveInputOptions();
+                    SetStatus("Global hotkey set to: " + config_.global_hotkey);
+                }
+                return 0;
+            }
             if (cmd >= kMenuForgetBase && cmd <= kMenuForgetEnd) {
                 std::size_t index = cmd - kMenuForgetBase;
                 if (index < paired_device_ids_.size() && coordinator_) {
@@ -489,6 +705,14 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size() &&
                     color_index < (sizeof(kOverlayThemeColors) / sizeof(kOverlayThemeColors[0]))) {
                     SaveDeviceThemeColor(paired_device_ids_[index], kOverlayThemeColors[color_index]);
+                }
+            } else if (cmd >= kMenuThemeSizeBase && cmd <= kMenuThemeSizeEnd) {
+                const std::size_t offset = cmd - kMenuThemeSizeBase;
+                const std::size_t index = offset / kMenuOptionsPerDevice;
+                const std::size_t size_index = offset % kMenuOptionsPerDevice;
+                if (index < paired_device_ids_.size() &&
+                    size_index < (sizeof(kOverlayThemeSizes) / sizeof(kOverlayThemeSizes[0]))) {
+                    SaveDeviceThemeSize(paired_device_ids_[index], kOverlayThemeSizes[size_index]);
                 }
             } else if (cmd >= kMenuOverlayPositionBase && cmd <= kMenuOverlayPositionEnd) {
                 const std::size_t offset = cmd - kMenuOverlayPositionBase;
@@ -533,6 +757,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
 void Win32App::ShutdownAndQuit() {
     if (is_shutting_down_) return;
     is_shutting_down_ = true;
+    if (global_hotkey_) {
+        global_hotkey_->Unregister();
+    }
     pair_device_dialog_.reset();
     if (coordinator_) coordinator_->Shutdown();
     DestroyWindow(hwnd_);
@@ -609,13 +836,19 @@ void Win32App::RemoveTrayIcon() {
 }
 
 void Win32App::ShowTrayMenu() {
+    RequestConnectedBatteryStatus();
     HMENU menu = CreatePopupMenu();
-    if (has_recoverable_input_) AppendMenuW(menu, MF_STRING, kMenuRestore, L"Restore Last Input");
-    AppendMenuW(menu, MF_STRING, kMenuPairScan, L"Pair Device...");
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    if (has_recoverable_input_) {
+        AppendMenuW(menu, MF_STRING, kMenuRestore,
+                    TrW(StringId::kMenuRestoreLastInput, language).c_str());
+    }
+    AppendMenuW(menu, MF_STRING, kMenuPairScan, TrW(StringId::kMenuPairDevice, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     if (paired_device_ids_.empty() && connected_devices_.empty()) {
-        AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, L"No paired VoiceStick devices");
+        AppendMenuW(menu, MF_STRING | MF_DISABLED, 0,
+                    TrW(StringId::kStatusNoPairedDevices, language).c_str());
     }
 
     auto find_connected = [&](const std::string& id) -> const ConnectedDevice* {
@@ -635,8 +868,8 @@ void Win32App::ShowTrayMenu() {
         HMENU submenu = CreatePopupMenu();
 
         // Status
-        const wchar_t* status_text = connected ? L"Connected" : L"Scanning...";
-        AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, status_text);
+        auto status_text = TrW(connected ? StringId::kStatusConnected : StringId::kStatusScanning, language);
+        AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, status_text.c_str());
 
         // Hardware + firmware version
         auto info_it = device_info_map_.find(id);
@@ -656,7 +889,7 @@ void Win32App::ShowTrayMenu() {
         const auto theme_it = config_.device_theme_colors.find(id);
         const auto current_theme = theme_it != config_.device_theme_colors.end()
             ? theme_it->second
-            : OverlayThemeColor::kWhite;
+            : DefaultOverlayThemeColor();
         for (std::size_t color_index = 0;
              color_index < sizeof(kOverlayThemeColors) / sizeof(kOverlayThemeColors[0]);
              ++color_index) {
@@ -665,15 +898,34 @@ void Win32App::ShowTrayMenu() {
                 theme_menu,
                 MF_STRING | (current_theme == color ? MF_CHECKED : 0),
                 kMenuThemeColorBase + static_cast<UINT>(i * kMenuOptionsPerDevice + color_index),
-                Utf16(OverlayThemeColorDisplayName(color)).c_str());
+                LocalizedThemeColorName(color, language).c_str());
         }
-        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu), L"Theme Color");
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu),
+                    TrW(StringId::kMenuThemeColor, language).c_str());
+
+        HMENU size_menu = CreatePopupMenu();
+        const auto size_it = config_.device_theme_sizes.find(id);
+        const auto current_size = size_it != config_.device_theme_sizes.end()
+            ? size_it->second
+            : OverlayThemeSize::kBig;
+        for (std::size_t size_index = 0;
+             size_index < sizeof(kOverlayThemeSizes) / sizeof(kOverlayThemeSizes[0]);
+             ++size_index) {
+            const auto sz = kOverlayThemeSizes[size_index];
+            AppendMenuW(
+                size_menu,
+                MF_STRING | (current_size == sz ? MF_CHECKED : 0),
+                kMenuThemeSizeBase + static_cast<UINT>(i * kMenuOptionsPerDevice + size_index),
+                LocalizedThemeSizeName(sz, language).c_str());
+        }
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(size_menu),
+                    TrW(StringId::kMenuThemeSize, language).c_str());
 
         HMENU position_menu = CreatePopupMenu();
         const auto position_it = config_.device_overlay_positions.find(id);
         const auto current_position = position_it != config_.device_overlay_positions.end()
             ? position_it->second
-            : OverlayPosition::kCenter;
+            : DefaultOverlayPosition();
         for (std::size_t position_index = 0;
              position_index < sizeof(kOverlayPositions) / sizeof(kOverlayPositions[0]);
              ++position_index) {
@@ -682,9 +934,10 @@ void Win32App::ShowTrayMenu() {
                 position_menu,
                 MF_STRING | (current_position == position ? MF_CHECKED : 0),
                 kMenuOverlayPositionBase + static_cast<UINT>(i * kMenuOptionsPerDevice + position_index),
-                Utf16(OverlayPositionDisplayName(position)).c_str());
+                LocalizedOverlayPositionName(position, language).c_str());
         }
-        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(position_menu), L"Overlay Position");
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(position_menu),
+                    TrW(StringId::kMenuOverlayPosition, language).c_str());
 
         HMENU translation_menu = CreatePopupMenu();
         const auto current_profile = config_.OutputProfileForDevice(id);
@@ -692,42 +945,51 @@ void Win32App::ShowTrayMenu() {
             translation_menu,
             MF_STRING | (current_profile.transform == TextTransform::kOriginal ? MF_CHECKED : 0),
             kMenuTranslationBase + static_cast<UINT>(i * kMenuTranslationsPerDevice),
-            L"Original");
+            TrW(StringId::kMenuOriginal, language).c_str());
         AppendMenuW(translation_menu, MF_SEPARATOR, 0, nullptr);
         for (std::size_t target_index = 0; target_index < std::size(kTranslationTargets); ++target_index) {
             const auto& target = kTranslationTargets[target_index];
             const auto checked = current_profile.transform == TextTransform::kTranslate &&
                                  current_profile.translation_target == target.code;
-            auto title = std::wstring(L"Translate to ") + target.name;
+            auto title = language == UiLanguage::kSimplifiedChinese
+                ? std::wstring(L"翻译为 ") + LocalizedTranslationTargetName(target, language)
+                : std::wstring(L"Translate to ") + LocalizedTranslationTargetName(target, language);
             AppendMenuW(
                 translation_menu,
                 MF_STRING | (checked ? MF_CHECKED : 0),
                 kMenuTranslationBase + static_cast<UINT>(i * kMenuTranslationsPerDevice + target_index + 1),
                 title.c_str());
         }
-        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu), L"Translation");
+        AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu),
+                    TrW(StringId::kMenuTranslation, language).c_str());
 
         if (firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
             if (firmware.is_checking) {
-                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, L"Checking for firmware updates...");
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
+                            TrW(StringId::kFirmwareChecking, language).c_str());
             } else if (!firmware.error_message.empty()) {
-                auto error_text = L"Firmware Check Failed";
-                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, error_text);
+                auto error_text = TrW(StringId::kFirmwareCheckFailed, language);
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, error_text.c_str());
             } else if (firmware.update_available && !firmware.latest_version.empty()) {
-                auto update_text = L"Update available: " + Utf16(firmware.latest_version);
+                auto update_text = FormatText(TrW(StringId::kFirmwareUpdateAvailableMenu, language),
+                                              {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, update_text.c_str());
-                auto update_action = L"Update to " + Utf16(firmware.latest_version) + L"...";
+                auto update_action = FormatText(TrW(StringId::kFirmwareUpdateTo, language),
+                                                {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu,
                             connected ? MF_STRING : (MF_STRING | MF_DISABLED),
                             kMenuUpdateFirmwareBase + static_cast<UINT>(i),
                             update_action.c_str());
             } else if (!firmware.latest_version.empty() && !firmware.current_version.empty()) {
-                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, L"Firmware Up to Date");
+                AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
+                            TrW(StringId::kMenuFirmwareUpToDate, language).c_str());
             } else if (!firmware.latest_version.empty()) {
-                auto latest_text = L"Latest firmware " + Utf16(firmware.latest_version);
+                auto latest_text = FormatText(TrW(StringId::kFirmwareLatestMenu, language),
+                                             {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, latest_text.c_str());
-                auto update_action = L"Update to " + Utf16(firmware.latest_version) + L"...";
+                auto update_action = FormatText(TrW(StringId::kFirmwareUpdateTo, language),
+                                                {Utf16(firmware.latest_version)});
                 AppendMenuW(submenu,
                             connected ? MF_STRING : (MF_STRING | MF_DISABLED),
                             kMenuUpdateFirmwareBase + static_cast<UINT>(i),
@@ -737,9 +999,19 @@ void Win32App::ShowTrayMenu() {
 
         AppendMenuW(submenu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(submenu, MF_STRING, kMenuForgetBase + static_cast<UINT>(i),
-                    L"Forget This Device");
+                    TrW(StringId::kMenuForgetDevice, language).c_str());
 
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), Utf16(title).c_str());
+        std::wstring menu_title = Utf16(title);
+        const auto battery_it = device_battery_map_.find(id);
+        if (battery_it != device_battery_map_.end()) {
+            const auto& battery = battery_it->second;
+            menu_title = DeviceTitleWithBattery(menu_title,
+                                                battery.level_percent,
+                                                battery.charging,
+                                                battery.usb_powered,
+                                                language);
+        }
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), menu_title.c_str());
     }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -747,33 +1019,77 @@ void Win32App::ShowTrayMenu() {
     AppendMenuW(interaction_menu,
                 MF_STRING | (config_.interaction_mode == InteractionMode::kHoldToTalk ? MF_CHECKED : 0),
                 kMenuHoldToTalk,
-                L"Hold to Talk");
+                TrW(StringId::kMenuHoldToTalk, language).c_str());
     AppendMenuW(interaction_menu,
                 MF_STRING | (config_.interaction_mode == InteractionMode::kClickToTalk ? MF_CHECKED : 0),
                 kMenuClickToTalk,
-                L"Click to Talk");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(interaction_menu), L"Interaction");
+                TrW(StringId::kMenuClickToTalk, language).c_str());
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(interaction_menu),
+                TrW(StringId::kMenuInteraction, language).c_str());
+
+    HMENU hotkey_menu = CreatePopupMenu();
+    AppendMenuW(hotkey_menu,
+                MF_STRING | (config_.global_hotkey_enabled ? MF_CHECKED : 0),
+                kMenuHotkeyEnabled,
+                TrW(StringId::kMenuHotkeyEnabled, language).c_str());
+    AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
+    bool is_custom_hotkey = true;
+    for (std::size_t i = 0; i < sizeof(kHotkeyPresets) / sizeof(kHotkeyPresets[0]); ++i) {
+        const auto& preset = kHotkeyPresets[i];
+        const auto checked = config_.global_hotkey_enabled && config_.global_hotkey == preset.name;
+        if (config_.global_hotkey == preset.name) {
+            is_custom_hotkey = false;
+        }
+        AppendMenuW(
+            hotkey_menu,
+            MF_STRING | (checked ? MF_CHECKED : 0),
+            kMenuHotkeyBase + static_cast<UINT>(i),
+            preset.display_name);
+    }
+    AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
+    std::wstring custom_menu_text = TrW(StringId::kMenuHotkeyCustom, language);
+    UINT custom_menu_flags = MF_STRING;
+    if (is_custom_hotkey && !config_.global_hotkey.empty()) {
+        custom_menu_text = TrW(StringId::kMenuHotkeyCustom, language) + L" " + Utf16FromUtf8(config_.global_hotkey);
+        if (config_.global_hotkey_enabled) {
+            custom_menu_flags |= MF_CHECKED;
+        }
+    }
+    AppendMenuW(hotkey_menu, custom_menu_flags, kMenuHotkeyCustom, custom_menu_text.c_str());
+    if (global_hotkey_ && !global_hotkey_->IsRegistered()) {
+        AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0,
+                    TrW(StringId::kMenuHotkeyConflictTitle, language).c_str());
+    }
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(hotkey_menu),
+                TrW(StringId::kMenuHotkey, language).c_str());
 
     HMENU output_menu = CreatePopupMenu();
     AppendMenuW(output_menu,
                 MF_STRING | (config_.default_output_profile.target == OutputTarget::kFocusedApp ? MF_CHECKED : 0),
                 kMenuOutputFocusedApp,
-                L"Focused App");
+                TrW(StringId::kMenuOutputFocusedApp, language).c_str());
     AppendMenuW(output_menu,
                 MF_STRING | (config_.default_output_profile.target == OutputTarget::kSubtitle ? MF_CHECKED : 0),
                 kMenuOutputSubtitle,
-                L"Subtitle");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(output_menu), L"Output");
+                TrW(StringId::kMenuOutputSubtitle, language).c_str());
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(output_menu),
+                TrW(StringId::kMenuOutput, language).c_str());
 
     AppendMenuW(menu,
                 MF_STRING | (config_.auto_enter ? MF_CHECKED : 0),
                 kMenuAutoEnter,
-                L"Press Return After Paste");
+                TrW(StringId::kMenuAutoEnter, language).c_str());
+    AppendMenuW(menu,
+                MF_STRING | (config_.launch_at_login ? MF_CHECKED : 0),
+                kMenuLaunchAtLogin,
+                TrW(StringId::kMenuLaunchAtLogin, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings...");
-    AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates, L"Check for App Updates...");
+    AppendMenuW(menu, MF_STRING, kMenuSettings, TrW(StringId::kMenuSettings, language).c_str());
+    AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
+                TrW(StringId::kMenuCheckAppUpdates, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit");
+    AppendMenuW(menu, MF_STRING, kMenuQuit, TrW(StringId::kMenuQuit, language).c_str());
     POINT point{};
     GetCursorPos(&point);
     SetForegroundWindow(hwnd_);
@@ -781,10 +1097,66 @@ void Win32App::ShowTrayMenu() {
     DestroyMenu(menu);
 }
 
+void Win32App::SyncLaunchAtLogin() {
+    HKEY key = nullptr;
+    const wchar_t* run_key = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const LSTATUS open_status = RegCreateKeyExW(HKEY_CURRENT_USER, run_key, 0, nullptr, 0,
+                                                KEY_SET_VALUE, nullptr, &key, nullptr);
+    if (open_status != ERROR_SUCCESS) {
+        throw std::runtime_error("failed to open startup registry key");
+    }
+
+    if (config_.launch_at_login) {
+        const auto command = CurrentExecutableCommand();
+        if (command.empty()) {
+            RegCloseKey(key);
+            throw std::runtime_error("failed to resolve executable path");
+        }
+        const DWORD byte_size = static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t));
+        const LSTATUS set_status = RegSetValueExW(key, L"VoiceStick", 0, REG_SZ,
+                                                  reinterpret_cast<const BYTE*>(command.c_str()),
+                                                  byte_size);
+        RegCloseKey(key);
+        if (set_status != ERROR_SUCCESS) {
+            throw std::runtime_error("failed to enable startup registry value");
+        }
+        LogLine("Launch at login enabled");
+        return;
+    }
+
+    const LSTATUS delete_status = RegDeleteValueW(key, L"VoiceStick");
+    RegCloseKey(key);
+    if (delete_status != ERROR_SUCCESS && delete_status != ERROR_FILE_NOT_FOUND) {
+        throw std::runtime_error("failed to disable startup registry value");
+    }
+    LogLine("Launch at login disabled");
+}
+
 void Win32App::SaveInputOptions() {
     try {
         config_.Save();
+        SyncLaunchAtLogin();
         if (coordinator_) coordinator_->UpdateConfig(config_);
+        if (global_hotkey_) {
+            global_hotkey_->Unregister();
+            if (config_.global_hotkey_enabled) {
+                if (global_hotkey_->Register(config_.global_hotkey)) {
+                    LogLine("Global hotkey registered: " + config_.global_hotkey);
+                    SetStatus("Global hotkey: " + config_.global_hotkey);
+                } else {
+                    LogLine("Global hotkey registration failed: " + config_.global_hotkey);
+                    if (config_.debug_audio_cache) {
+                        const auto language = EffectiveUiLanguage(config_.ui_language);
+                        ShowNotification(Tr(StringId::kNotificationHotkeyConflictTitle, language),
+                                         config_.global_hotkey + " " + Tr(StringId::kNotificationHotkeyConflictBody, language));
+                    }
+                    SetStatus("Hotkey registration failed: " + config_.global_hotkey + " (conflict)");
+                }
+            } else {
+                SetStatus("Global hotkey disabled");
+                LogLine("Global hotkey disabled");
+            }
+        }
         LogLine("Input options saved");
     } catch (const std::exception& error) {
         LogLine(std::string("Input options save failed: ") + error.what());
@@ -794,7 +1166,7 @@ void Win32App::SaveInputOptions() {
 
 void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color) {
     try {
-        if (color == OverlayThemeColor::kWhite) {
+        if (color == DefaultOverlayThemeColor()) {
             config_.device_theme_colors.erase(device_id);
         } else {
             config_.device_theme_colors[device_id] = color;
@@ -808,9 +1180,25 @@ void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeCo
     }
 }
 
+void Win32App::SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size) {
+    try {
+        if (size == OverlayThemeSize::kBig) {
+            config_.device_theme_sizes.erase(device_id);
+        } else {
+            config_.device_theme_sizes[device_id] = size;
+        }
+        config_.Save();
+        ApplyOverlayStyle(device_id);
+        LogLine("Theme size saved VS-" + device_id + "=" + OverlayThemeSizeName(size));
+    } catch (const std::exception& error) {
+        LogLine(std::string("Theme size save failed: ") + error.what());
+        SetStatus("Theme size save failed");
+    }
+}
+
 void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position) {
     try {
-        if (position == OverlayPosition::kCenter) {
+        if (position == DefaultOverlayPosition()) {
             config_.device_overlay_positions.erase(device_id);
         } else {
             config_.device_overlay_positions[device_id] = position;
@@ -847,12 +1235,17 @@ void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfi
 
 void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {
     if (!overlay_) return;
-    OverlayThemeColor color = OverlayThemeColor::kWhite;
-    OverlayPosition position = OverlayPosition::kCenter;
+    OverlayThemeColor color = DefaultOverlayThemeColor();
+    OverlayThemeSize size = OverlayThemeSize::kBig;
+    OverlayPosition position = DefaultOverlayPosition();
     if (device_id.has_value()) {
         if (auto color_it = config_.device_theme_colors.find(*device_id);
             color_it != config_.device_theme_colors.end()) {
             color = color_it->second;
+        }
+        if (auto size_it = config_.device_theme_sizes.find(*device_id);
+            size_it != config_.device_theme_sizes.end()) {
+            size = size_it->second;
         }
         if (auto position_it = config_.device_overlay_positions.find(*device_id);
             position_it != config_.device_overlay_positions.end()) {
@@ -860,6 +1253,7 @@ void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {
         }
     }
     overlay_->SetThemeColor(color);
+    overlay_->SetThemeSize(size);
     overlay_->SetPosition(position);
 }
 
@@ -869,10 +1263,84 @@ void Win32App::RebuildTooltip() {
     data.hWnd = hwnd_;
     data.uID = kTrayIconId;
     data.uFlags = NIF_TIP | NIF_SHOWTIP;
-    auto tip = Utf16(std::string("VoiceStick - ") +
-                     (connected_devices_.empty() ? "Not connected" : "Connected"));
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    std::wstring tip;
+    if (connected_devices_.empty()) {
+        tip = L"VoiceStick - " + TrW(StringId::kStatusDisconnected, language);
+    } else {
+        bool first = true;
+        for (const auto& device : connected_devices_) {
+            if (!first) tip += L", ";
+            first = false;
+            std::wstring device_text = Utf16(device.name.empty() ? "VS-" + device.id : device.name);
+            const auto it = device_battery_map_.find(device.id);
+            if (it != device_battery_map_.end()) {
+                device_text = DeviceTitleWithBattery(device_text,
+                                                     it->second.level_percent,
+                                                     it->second.charging,
+                                                     it->second.usb_powered,
+                                                     language);
+            }
+            tip += device_text;
+        }
+    }
     wcsncpy_s(data.szTip, tip.c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
+void Win32App::UpdateTrayIcon() {
+    if (!hwnd_) return;
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = kTrayIconId;
+    data.uFlags = NIF_ICON;
+
+    HICON icon = nullptr;
+    if (connected_devices_.empty()) {
+        icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_DISCONNECTED));
+    } else {
+        int min_level = 100;
+        bool charging = false;
+        for (const auto& device : connected_devices_) {
+            const auto it = device_battery_map_.find(device.id);
+            if (it != device_battery_map_.end()) {
+                min_level = std::min(min_level, it->second.level_percent);
+                if (it->second.charging) charging = true;
+            }
+        }
+        if (charging) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_CHARGING));
+        } else if (min_level >= 75) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_100));
+        } else if (min_level >= 50) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_75));
+        } else if (min_level >= 25) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_50));
+        } else if (min_level > 0) {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_25));
+        } else {
+            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_0));
+        }
+    }
+    if (!icon) {
+        icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_TRAY));
+    }
+    data.hIcon = icon;
+    Shell_NotifyIconW(NIM_MODIFY, &data);
+    if (icon) DestroyIcon(icon);
+    RebuildTooltip();
+}
+
+void Win32App::RequestConnectedBatteryStatus() {
+    if (!ble_central_ || connected_devices_.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (last_battery_status_request_ != std::chrono::steady_clock::time_point{} &&
+        now - last_battery_status_request_ < std::chrono::seconds(1)) {
+        return;
+    }
+    last_battery_status_request_ = now;
+    ble_central_->RequestBatteryStatus(std::nullopt);
 }
 
 void Win32App::RegisterTaskbarMessage() {
@@ -905,7 +1373,7 @@ bool Win32App::ShowOnboarding() {
 
 void Win32App::ShowPairDeviceDialog() {
     pair_device_dialog_ = std::make_unique<PairDeviceDialog>(
-        instance_, hwnd_, config_.paired_device_ids,
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), config_.paired_device_ids,
         [this](std::string device_id, std::uint64_t bluetooth_address,
                BluetoothAddressKind address_kind, std::string name) {
             PairDevice(device_id, bluetooth_address, address_kind, name);
@@ -913,6 +1381,9 @@ void Win32App::ShowPairDeviceDialog() {
         [this](std::string device_id, std::optional<DeviceInfo> info) {
             HandlePairingCompleted(device_id, std::move(info));
         });
+    pair_device_dialog_->SetManualPairHandler([this](std::string device_id) {
+        PairDeviceByManualId(device_id);
+    });
     pair_device_dialog_->on_pair_timeout = [this](std::string device_id) {
         pending_pairing_entry_.reset();
         if (coordinator_) coordinator_->CancelPendingConnect(device_id);
@@ -926,7 +1397,8 @@ void Win32App::ShowSettings() {
         settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
         settings_dialog_->on_config_changed = [this](AppConfig new_config) {
             config_ = std::move(new_config);
-            if (coordinator_) coordinator_->UpdateConfig(config_);
+            SaveInputOptions();
+            RebuildTooltip();
             LogLine("Settings saved");
         };
     }
@@ -940,7 +1412,7 @@ void Win32App::StartFirmwareUpdate(const std::string& device_id) {
                                     ? firmware_it->second.latest_version
                                     : std::string();
     firmware_update_dialog_ = std::make_unique<FirmwareUpdateDialog>(
-        instance_, hwnd_, version.empty() ? "latest" : version);
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), version.empty() ? "latest" : version);
     firmware_update_dialog_->on_cancel = [this] {
         if (coordinator_) coordinator_->CancelFirmwareUpdate();
     };
@@ -956,8 +1428,9 @@ void Win32App::StartFirmwareUpdate(const std::string& device_id) {
             DispatchToUi([this, success, message] {
                 if (firmware_update_dialog_) firmware_update_dialog_->Finish(success, message);
                 if (success) {
-                    ShowNotification("VoiceStick firmware updated",
-                                     "The device is rebooting into the new firmware.");
+                    const auto language = EffectiveUiLanguage(config_.ui_language);
+                    ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
+                                     Tr(StringId::kNotificationFirmwareUpdatedBody, language));
                 }
             });
         });
@@ -970,6 +1443,21 @@ void Win32App::PairDevice(const std::string& device_id, std::uint64_t bluetooth_
         coordinator_->ConnectPairedDevice(device_id, bluetooth_address, address_kind, name);
         LogLine("Pairing device VS-" + device_id);
     }
+}
+
+void Win32App::PairDeviceByManualId(const std::string& device_id) {
+    config_.SavePairedDeviceInfo(device_id, {}, {});
+    pending_pairing_entry_.reset();
+    paired_device_ids_ = config_.paired_device_ids;
+    if (coordinator_) {
+        coordinator_->ConfirmPairedDeviceIds(config_.paired_device_ids);
+        coordinator_->ReconnectPairedDevices();
+    }
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    ShowNotification(Tr(StringId::kNotificationManualPairSavedTitle, language),
+                     FormatUtf8(Tr(StringId::kNotificationManualPairSavedBody, language), {device_id}));
+    RebuildTooltip();
+    LogLine("Manual pairing saved VS-" + device_id);
 }
 
 void Win32App::ShowNotification(const std::string& title, const std::string& body) {

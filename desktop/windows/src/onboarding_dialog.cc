@@ -1,12 +1,14 @@
 #include "onboarding_dialog.h"
 
 #include "dpi_util.h"
+#include "localization.h"
 #include "voice_stick_cloud_api_win.h"
 
 #include <CommCtrl.h>
 #include <Shellapi.h>
 
 #include <algorithm>
+#include <initializer_list>
 #include <string>
 #include <utility>
 
@@ -67,6 +69,15 @@ HWND CreateCombo(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE ins
                            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), instance, nullptr);
 }
 
+std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
+    for (const auto& value : values) {
+        const auto pos = text.find(L"%s");
+        if (pos == std::wstring::npos) break;
+        text.replace(pos, 2, value);
+    }
+    return text;
+}
+
 } // namespace
 
 bool NeedsOnboarding(const AppConfig& config) {
@@ -86,6 +97,7 @@ OnboardingDialog::~OnboardingDialog() {
 
 bool OnboardingDialog::Show() {
     config_ = AppConfig::Load();
+    language_ = EffectiveUiLanguage(config_.ui_language);
     const INT_PTR result = DialogBoxIndirectParamW(instance_, BuildDialogTemplate(), parent_,
                                                    OnboardingDialog::DialogProc,
                                                    reinterpret_cast<LPARAM>(this));
@@ -187,7 +199,7 @@ LPCDLGTEMPLATE OnboardingDialog::BuildDialogTemplate() {
     AppendDialogData(&dialog_template_, &dialog_template, sizeof(dialog_template));
     AppendDialogWord(&dialog_template_, 0);
     AppendDialogWord(&dialog_template_, 0);
-    AppendDialogWideString(&dialog_template_, L"Set up VoiceStick");
+    AppendDialogWideString(&dialog_template_, TrW(StringId::kOnboardingSetupTitle, language_).c_str());
     AppendDialogWord(&dialog_template_, 9);
     AppendDialogWideString(&dialog_template_, L"Segoe UI");
     return reinterpret_cast<LPCDLGTEMPLATE>(dialog_template_.data());
@@ -233,12 +245,14 @@ void OnboardingDialog::BuildControls() {
         return control;
     };
 
-    remember(CreateStatic(hwnd_, L"Set up VoiceStick", Dp(28), Dp(22), Dp(300), Dp(30),
-                          instance_));
-    remember(CreateStatic(hwnd_, L"Device", Dp(32), Dp(86), Dp(140), Dp(22), instance_));
-    remember(CreateStatic(hwnd_, L"Voice Recognition", Dp(32), Dp(124), Dp(140), Dp(22),
-                          instance_));
-    remember(CreateStatic(hwnd_, L"Ready", Dp(32), Dp(162), Dp(140), Dp(22), instance_));
+    remember(CreateStatic(hwnd_, TrW(StringId::kOnboardingSetupTitle, language_).c_str(),
+                          Dp(28), Dp(22), Dp(300), Dp(30), instance_));
+    remember(CreateStatic(hwnd_, TrW(StringId::kOnboardingDeviceStep, language_).c_str(),
+                          Dp(32), Dp(86), Dp(140), Dp(22), instance_));
+    remember(CreateStatic(hwnd_, TrW(StringId::kOnboardingAsrStep, language_).c_str(),
+                          Dp(32), Dp(124), Dp(140), Dp(22), instance_));
+    remember(CreateStatic(hwnd_, TrW(StringId::kOnboardingReadyStep, language_).c_str(),
+                          Dp(32), Dp(162), Dp(140), Dp(22), instance_));
 
     const int content_x = Dp(210);
     const int content_y = Dp(76);
@@ -257,39 +271,48 @@ void OnboardingDialog::BuildControls() {
 
     status_label_ = remember(CreateStatic(hwnd_, L"", Dp(28), Dp(374), Dp(430), Dp(22),
                                           instance_));
-    back_button_ = remember(CreateButton(hwnd_, L"Back", Dp(kClientWidth - 250), Dp(400),
+    back_button_ = remember(CreateButton(hwnd_, TrW(StringId::kOnboardingBack, language_).c_str(),
+                                         Dp(kClientWidth - 250), Dp(400),
                                          Dp(76), Dp(30), kIdBack, instance_));
-    next_button_ = remember(CreateButton(hwnd_, step_ == Step::kReady ? L"Finish" : L"Next",
+    next_button_ = remember(CreateButton(hwnd_, step_ == Step::kReady
+                                             ? TrW(StringId::kOnboardingFinish, language_).c_str()
+                                             : TrW(StringId::kOnboardingNext, language_).c_str(),
                                          Dp(kClientWidth - 164), Dp(400),
                                          Dp(76), Dp(30), kIdNext, instance_));
-    remember(CreateButton(hwnd_, L"Cancel", Dp(kClientWidth - 78), Dp(400),
+    remember(CreateButton(hwnd_, TrW(StringId::kCancel, language_).c_str(),
+                          Dp(kClientWidth - 78), Dp(400),
                           Dp(60), Dp(30), kIdCancel, instance_));
 
     EnableWindow(back_button_, step_ != Step::kDevice);
     for (HWND control : controls_) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
-    if (step_ == Step::kDevice && HasDevice()) SetStatus(L"Device paired. Continue to voice recognition.");
+    if (step_ == Step::kDevice && HasDevice()) {
+        SetStatus(TrW(StringId::kOnboardingDevicePairedContinue, language_));
+    }
     if (step_ == Step::kAsr) LoadConfigIntoControls();
 }
 
 void OnboardingDialog::BuildDeviceStep(int x, int y, int w) {
-    controls_.push_back(CreateStatic(hwnd_, L"Pair your VoiceStick device.", x, y, w, Dp(28),
-                                     instance_));
+    controls_.push_back(CreateStatic(hwnd_, TrW(StringId::kOnboardingPairDeviceTitle, language_).c_str(),
+                                     x, y, w, Dp(28), instance_));
     controls_.push_back(CreateStatic(hwnd_, DeviceSummary().c_str(), x, y + Dp(42), w, Dp(24),
                                      instance_));
     controls_.push_back(CreateStatic(hwnd_,
-        L"Turn on your StickS3, then use the pairing window to select it.",
+        TrW(StringId::kOnboardingPairDeviceDescription, language_).c_str(),
         x, y + Dp(76), w, Dp(40), instance_));
-    controls_.push_back(CreateButton(hwnd_, HasDevice() ? L"Pair Another Device..." : L"Pair Device...",
+    controls_.push_back(CreateButton(hwnd_, HasDevice()
+                                                 ? TrW(StringId::kOnboardingPairAnotherDevice, language_).c_str()
+                                                 : TrW(StringId::kOnboardingPairDeviceButton, language_).c_str(),
                                      x, y + Dp(132), Dp(160), Dp(30),
                                      kIdPairDevice, instance_));
 }
 
 void OnboardingDialog::BuildAsrStep(int x, int y, int w) {
-    controls_.push_back(CreateStatic(hwnd_, L"Choose your speech recognition service.", x, y, w,
-                                     Dp(24), instance_));
-    controls_.push_back(CreateStatic(hwnd_, L"Provider:", x, y + Dp(48), Dp(92), Dp(22),
+    controls_.push_back(CreateStatic(hwnd_, TrW(StringId::kOnboardingChooseAsr, language_).c_str(),
+                                     x, y, w, Dp(24), instance_));
+    controls_.push_back(CreateStatic(hwnd_, TrW(StringId::kOnboardingProvider, language_).c_str(),
+                                     x, y + Dp(48), Dp(92), Dp(22),
                                      instance_, SS_RIGHT));
     provider_combo_ = CreateCombo(hwnd_, x + Dp(104), y + Dp(44), w - Dp(104),
                                   Dp(200), kIdProviderCombo, instance_);
@@ -297,17 +320,20 @@ void OnboardingDialog::BuildAsrStep(int x, int y, int w) {
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
 
-    controls_.push_back(CreateStatic(hwnd_, L"API Key:", x, y + Dp(88), Dp(92), Dp(22),
+    controls_.push_back(CreateStatic(hwnd_, TrW(StringId::kOnboardingApiKey, language_).c_str(),
+                                     x, y + Dp(88), Dp(92), Dp(22),
                                      instance_, SS_RIGHT));
     api_key_edit_ = CreateEdit(hwnd_, x + Dp(104), y + Dp(84), w - Dp(222), Dp(24),
                                kIdApiKeyEdit, instance_, ES_PASSWORD);
     controls_.push_back(api_key_edit_);
-    apply_trial_button_ = CreateButton(hwnd_, L"Apply Trial", x + w - Dp(108),
+    apply_trial_button_ = CreateButton(hwnd_, TrW(StringId::kSettingsApplyTrial, language_).c_str(),
+                                       x + w - Dp(108),
                                        y + Dp(84), Dp(108), Dp(24),
                                        kIdApplyTrial, instance_);
     controls_.push_back(apply_trial_button_);
 
-    resource_label_ = CreateStatic(hwnd_, L"Resource:", x, y + Dp(128), Dp(92), Dp(22),
+    resource_label_ = CreateStatic(hwnd_, TrW(StringId::kOnboardingResource, language_).c_str(),
+                                   x, y + Dp(128), Dp(92), Dp(22),
                                    instance_, SS_RIGHT);
     controls_.push_back(resource_label_);
     resource_combo_ = CreateCombo(hwnd_, x + Dp(104), y + Dp(124), w - Dp(104),
@@ -319,15 +345,17 @@ void OnboardingDialog::BuildAsrStep(int x, int y, int w) {
 }
 
 void OnboardingDialog::BuildReadyStep(int x, int y, int w) {
-    controls_.push_back(CreateStatic(hwnd_, L"VoiceStick is ready.", x, y, w, Dp(28), instance_));
+    controls_.push_back(CreateStatic(hwnd_, TrW(StringId::kOnboardingReadyTitle, language_).c_str(),
+                                     x, y, w, Dp(28), instance_));
     controls_.push_back(CreateStatic(hwnd_, DeviceSummary().c_str(), x, y + Dp(46), w, Dp(24),
                                      instance_));
-    const auto provider = config_.asr_provider == AsrProvider::kVoiceStickCloud
-                              ? L"ASR: VoiceStick Cloud"
-                              : L"ASR: Volcengine";
-    controls_.push_back(CreateStatic(hwnd_, provider, x, y + Dp(82), w, Dp(24), instance_));
+    const auto provider_name = config_.asr_provider == AsrProvider::kVoiceStickCloud
+                                   ? L"VoiceStick Cloud"
+                                   : L"Volcengine";
+    const auto provider = FormatText(TrW(StringId::kOnboardingAsrSummary, language_), {provider_name});
+    controls_.push_back(CreateStatic(hwnd_, provider.c_str(), x, y + Dp(82), w, Dp(24), instance_));
     controls_.push_back(CreateStatic(hwnd_,
-        L"Press the front button on your device to dictate into the focused app.",
+        TrW(StringId::kOnboardingReadyInstruction, language_).c_str(),
         x, y + Dp(124), w, Dp(40), instance_));
 }
 
@@ -381,7 +409,7 @@ void OnboardingDialog::UpdateProviderVisibility() {
 void OnboardingDialog::ApplyTrialApiKey() {
     SaveControlsIntoConfig();
     if (config_.asr_provider != AsrProvider::kVoiceStickCloud) return;
-    SetStatus(L"Applying trial API key...");
+    SetStatus(TrW(StringId::kOnboardingApplyingTrial, language_));
     EnableWindow(apply_trial_button_, FALSE);
     UpdateWindow(hwnd_);
     const auto device_id = config_.paired_device_ids.empty() ? std::string() : config_.paired_device_ids.front();
@@ -390,7 +418,7 @@ void OnboardingDialog::ApplyTrialApiKey() {
     if (!result.api_key.empty()) {
         config_.voicestick_api_key = result.api_key;
         SetWindowTextW(api_key_edit_, Utf16(result.api_key).c_str());
-        SetStatus(L"Trial API key applied.");
+        SetStatus(TrW(StringId::kOnboardingTrialApplied, language_));
         UpdateProviderVisibility();
         return;
     }
@@ -399,15 +427,17 @@ void OnboardingDialog::ApplyTrialApiKey() {
         auto* shell_result = ShellExecuteW(hwnd_, L"open", wide_url.c_str(),
                                            nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(shell_result) <= 32) {
-            SetStatus(L"Could not open the trial application page.");
+            SetStatus(TrW(StringId::kOnboardingTrialOpenFailed, language_));
             UpdateProviderVisibility();
             return;
         }
-        SetStatus(L"Opened trial application page.");
+        SetStatus(TrW(StringId::kOnboardingTrialPageOpened, language_));
         UpdateProviderVisibility();
         return;
     }
-    SetStatus(Utf16(result.error.empty() ? "Could not apply a trial API key." : result.error));
+    SetStatus(result.error.empty()
+                  ? TrW(StringId::kOnboardingTrialApplyFailed, language_)
+                  : Utf16(result.error));
     UpdateProviderVisibility();
 }
 
@@ -421,7 +451,7 @@ void OnboardingDialog::GoNext() {
     if (step_ == Step::kDevice) {
         config_ = AppConfig::Load();
         if (!HasDevice()) {
-            SetStatus(L"Pair a VoiceStick device first.");
+            SetStatus(TrW(StringId::kOnboardingPairDeviceFirst, language_));
             return;
         }
         step_ = Step::kAsr;
@@ -431,7 +461,7 @@ void OnboardingDialog::GoNext() {
     if (step_ == Step::kAsr) {
         SaveControlsIntoConfig();
         if (!HasApiKey()) {
-            SetStatus(L"Enter an API key or apply a trial key.");
+            SetStatus(TrW(StringId::kOnboardingEnterApiKey, language_));
             return;
         }
         step_ = Step::kReady;
@@ -461,10 +491,9 @@ bool OnboardingDialog::HasApiKey() const {
 }
 
 std::wstring OnboardingDialog::DeviceSummary() const {
-    if (config_.paired_device_ids.empty()) return L"Device: Not paired";
-    std::wstring summary = L"Device: VS-";
-    summary += Utf16(config_.paired_device_ids.front());
-    return summary;
+    if (config_.paired_device_ids.empty()) return TrW(StringId::kOnboardingDeviceNotPaired, language_);
+    return FormatText(TrW(StringId::kOnboardingDeviceSummary, language_),
+                      {Utf16(config_.paired_device_ids.front())});
 }
 
 std::wstring OnboardingDialog::Utf16(const std::string& text) const {

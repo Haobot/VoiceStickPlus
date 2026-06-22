@@ -1,10 +1,12 @@
 #pragma once
 
 #include "app_config.h"
+#include "glass_backdrop_window.h"
 
 #include <Windows.h>
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,7 @@ public:
     void ShowError(const std::string& text, std::function<void()> on_complete);
     void Hide(std::function<void()> on_hidden = {});
     void SetThemeColor(OverlayThemeColor color);
+    void SetThemeSize(OverlayThemeSize size);
     void SetPosition(OverlayPosition position);
 
     HWND hwnd() const { return hwnd_; }
@@ -44,6 +47,10 @@ private:
     int VisualOffsetX(int width, int visual_width) const;
     int VisualOffsetY(int height, int visual_height) const;
     bool NeedsWindowAnimation() const;
+    RECT BackdropBounds(int width, int height) const;
+    void ResolveAutoThemeColor(const RECT& bounds);
+    void SyncBackdrop(int width, int height, bool show);
+    void ResizeBackdropWithoutRepaint(int width, int height);
     void UpdateLayeredBitmap();
     bool EnsureFrameBitmap(int width, int height);
     void ReleaseFrameBitmap();
@@ -52,9 +59,14 @@ private:
     void RefreshDpi();
     int Dp(int px) const;
     float DpF(int px) const;
+    int SizePx(int big_px, int medium_px, int small_px) const;
+    float SizePxF(int big_px, int medium_px, int small_px) const;
+    int IndicatorLeftMargin() const;
+    int TextIndicatorGap() const;
     void PaintContent(Gdiplus::Graphics& graphics, int width, int height);
     void PaintText(void* bits, int width, int height);
     void PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, int size);
+    BYTE InkRgb() const;
     void StartFadeIn();
     void StartFadeOut();
 
@@ -63,6 +75,9 @@ private:
     HINSTANCE instance_;
     HWND parent_;
     HWND hwnd_ = nullptr;
+    std::unique_ptr<GlassBackdropWindow> backdrop_;
+    RECT last_backdrop_bounds_{};
+    bool backdrop_bounds_valid_ = false;
     Mode mode_ = Mode::kHidden;
     std::wstring text_;
     std::wstring hint_;
@@ -78,7 +93,13 @@ private:
     int target_window_height_ = 0;
     int target_window_x_ = 0;
     int target_window_y_ = 0;
+    ULONGLONG text_transition_started_at_ms_ = 0;
+    float text_scroll_from_offset_ = 0.0f;
+    float text_scroll_to_offset_ = 0.0f;
+    float last_text_scroll_offset_ = 0.0f;
     OverlayThemeColor theme_color_ = OverlayThemeColor::kWhite;
+    OverlayThemeColor resolved_theme_color_ = OverlayThemeColor::kWhite;
+    OverlayThemeSize theme_size_ = OverlayThemeSize::kBig;
     OverlayPosition position_ = OverlayPosition::kCenter;
     ULONGLONG countdown_started_at_ms_ = 0;
     int countdown_duration_ms_ = 1200;
@@ -98,29 +119,34 @@ private:
     static constexpr UINT_PTR kAnimationTimerId = 52;
     static constexpr int kFadeStepMs = 16;
     static constexpr int kAnimationStepMs = 16;
-    static constexpr int kWindowWidthResizeStep = 96;
-    static constexpr int kWindowHeightResizeStep = 36;
-    static constexpr int kWindowResizeSnap = 12;
-    static constexpr int kCornerRadius = 24;
-    static constexpr int kMaxContentWidth = 780;
-    static constexpr int kMinContentHeight = 112;
-    static constexpr int kHorizontalPadding = 28;
-    static constexpr int kVerticalPadding = 24;
-    static constexpr int kIndicatorSize = 34;
-    static constexpr int kContentSpacing = 16;
-    static constexpr int kTextFontSize = 26;
+    static constexpr int kTextTransitionMs = 140;
+    static constexpr int kWindowWidthResizeStep = 40;
+    static constexpr int kWindowHeightResizeStep = 18;
+    static constexpr int kWindowResizeSnap = 6;
+    static constexpr int kCornerRadius = 20;
+    static constexpr int kMaxContentWidth = 620;
+    static constexpr int kMinContentHeight = 84;
+    static constexpr int kHorizontalPadding = 20;
+    static constexpr int kVerticalPadding = 16;
+    static constexpr int kIndicatorSize = 26;
+    static constexpr int kContentSpacing = 0;
+    static constexpr int kIndicatorCenterOffset = 8;
+    static constexpr int kTextSafetySpacing = 0;
+    static constexpr int kTextFontSize = 21;
     static constexpr float kTextLineHeightMultiplier = 1.5f;
     static constexpr float kTextBaselineMultiplier = 0.92f;
     static constexpr int kHintFontSize = 14;
-    static constexpr BYTE kBackgroundAlpha = 219;
-    static constexpr BYTE kInkRgb = 40;
-    static constexpr BYTE kTextAlpha = 216;
-    static constexpr BYTE kHintAlpha = 108;
-    static constexpr BYTE kIndicatorAlpha = 170;
-    static constexpr BYTE kIndicatorTrackAlpha = 45;
+    static constexpr BYTE kGlassScrimAlpha = 0;
+    static constexpr BYTE kGlassBorderAlpha = 34;
+    static constexpr BYTE kInkRgb = 246;
+    static constexpr BYTE kTextAlpha = 248;
+    static constexpr BYTE kTextShadowAlpha = 72;
+    static constexpr BYTE kHintAlpha = 180;
+    static constexpr BYTE kIndicatorAlpha = 218;
+    static constexpr BYTE kIndicatorTrackAlpha = 72;
     static constexpr int kShadowPadding = 12;
-    static constexpr int kShadowBlur = 11;
-    static constexpr int kShadowYOffset = 2;
+    static constexpr int kShadowBlur = 0;
+    static constexpr int kShadowYOffset = 0;
     static constexpr int kPositionMargin = 28;
     static constexpr int kMaxAlpha = 255;
 };

@@ -10,6 +10,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 include(FetchContent)
 
 FetchContent_Declare(
@@ -35,10 +39,12 @@ add_library(voicestick_core
     src/debug_audio_recorder.cc
     src/firmware_manifest.cc
     src/llm_translation_client.cc
+    src/localization.cc
     third_party/cjson/cJSON.c
     src/log.cc
     src/ogg_crc.cc
     src/ogg_opus_muxer.cc
+    src/pair_device_helper.cc
     src/voice_stick_coordinator.cc
 )
 
@@ -53,13 +59,16 @@ add_executable(VoiceStickApp WIN32
     src/asr_client_win.cc
     src/input_injector_win.cc
     src/ble_central_win.cc
+    src/global_hotkey_win.cc
     src/voice_stick_cloud_api_win.cc
     src/firmware_update_dialog.cc
+    src/glass_backdrop_window.cc
     src/overlay_window.cc
     src/subtitle_window.cc
     src/pair_device_dialog.cc
     src/onboarding_dialog.cc
     src/settings_dialog.cc
+    src/hotkey_settings_dialog.cc
     resources/VoiceStick.rc
 )
 
@@ -79,6 +88,7 @@ target_link_libraries(VoiceStickApp PRIVATE
     user32
     d2d1
     dwrite
+    dwmapi
     gdi32
     gdiplus
     windowscodecs
