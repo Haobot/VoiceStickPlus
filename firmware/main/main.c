@@ -20,6 +20,7 @@
 #include "iot_button.h"
 
 #include "audio_pipeline.h"
+#include "bmi270.h"
 #include "stick_s3_board.h"
 #include "ui_status.h"
 #include "voice_ble.h"
@@ -28,16 +29,23 @@ static const char *TAG = "voice_stick";
 
 #define BATTERY_REFRESH_FALLBACK_MS (10 * 1000)
 #define DISPLAY_DIM_TIMEOUT_MS (30 * 1000)
+#define DISPLAY_OFF_TIMEOUT_MS (60 * 1000)      // T_off：S1 Resting → S2 ScreenOff
+#define POWEROFF_TIMEOUT_MS (10 * 60 * 1000)    // T_pwr：S2 ScreenOff → S3 PowerOff（连接态）
 #define DISPLAY_ACTIVE_BRIGHTNESS 32
 #define DISPLAY_DIM_BRIGHTNESS 8
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
+#define DISPLAY_OFF_TIMEOUT_US (DISPLAY_OFF_TIMEOUT_MS * 1000ULL)
+#define POWEROFF_TIMEOUT_US (POWEROFF_TIMEOUT_MS * 1000ULL)
 #define BATTERY_REFRESH_FALLBACK_US (BATTERY_REFRESH_FALLBACK_MS * 1000ULL)
-#define DEEP_SLEEP_TIMEOUT_MS (5 * 60 * 1000)
-#define DEEP_SLEEP_TIMEOUT_US (DEEP_SLEEP_TIMEOUT_MS * 1000ULL)
+// BMI270 拿起轮询周期。仅在 S1(Resting)/S2(ScreenOff) 态启用：用户放下设备后拿起即亮屏回 S0。
+// 周期过长会丢快速拿起动作，过短增加功耗；500ms 兼顾两者。BMI270 不在线时轮询空转无开销。
+#define PICKUP_POLL_INTERVAL_MS (500)
+#define PICKUP_POLL_INTERVAL_US (PICKUP_POLL_INTERVAL_MS * 1000ULL)
 
 static bool s_recording;
 static bool s_ota_updating;
-static bool s_display_dimmed;
+static bool s_display_dimmed;   // S1 Resting：背光降到 8
+static bool s_screen_off;       // S2 ScreenOff：背光 0 + L3B 关，BLE 保连
 static bool s_recording_pm_locked;
 static bool s_ota_pm_locked;
 static bool s_battery_charging;
@@ -46,9 +54,11 @@ static int s_battery_level = 0;
 static bool s_prompt_tone_enabled = true;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
-static esp_timer_handle_t s_deep_sleep_timer;
+static esp_timer_handle_t s_display_off_timer;   // S1→S2
+static esp_timer_handle_t s_poweroff_timer;      // S2→S3（原 deep_sleep_timer 改造）
 static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
+static esp_timer_handle_t s_pickup_poll_timer;
 static uint32_t s_session_id = 1;
 static QueueHandle_t s_app_event_queue;
 static button_handle_t s_front_button;
@@ -117,12 +127,13 @@ typedef enum {
     APP_EVENT_POWER_IRQ,
     APP_EVENT_BATTERY_REFRESH,
     APP_EVENT_BATTERY_STATUS_REQUEST,
-    APP_EVENT_ENTER_DEEP_SLEEP,
     APP_EVENT_OTA_BEGIN,
     APP_EVENT_OTA_PROGRESS,
     APP_EVENT_OTA_DONE,
     APP_EVENT_OTA_END,
     APP_EVENT_HOST_RESPONSE_TIMEOUT,
+    APP_EVENT_PICKUP,
+    APP_EVENT_ENTER_POWER_OFF,
 } app_event_type_t;
 
 typedef struct {
@@ -151,10 +162,12 @@ static bool is_external_powered(void)
     return s_battery_charging || s_usb_powered;
 }
 
-static bool deep_sleep_allowed_now(void)
+// S3 关机准入：允许 BLE 连接态关机（关机即断连），但录音/OTA/USB 供电时禁止。
+// 阶段 2 走 deep sleep 路径 B，阶段 3 升级为 M5PM1 真关机（路径 A）。
+static bool poweroff_allowed_now(void)
 {
     return !s_recording && !s_ota_updating && !voice_ble_ota_is_active() &&
-           !voice_ble_is_connected() && !is_external_powered();
+           !is_external_powered();
 }
 
 static void play_prompt_tone(uint32_t frequency_hz)
@@ -241,7 +254,6 @@ static void restart_display_dim_timer(void)
     if (!s_display_dim_timer) {
         return;
     }
-
     (void)esp_timer_stop(s_display_dim_timer);
     if (!s_recording && !s_ota_updating) {
         esp_err_t err = esp_timer_start_once(s_display_dim_timer, DISPLAY_DIM_TIMEOUT_US);
@@ -251,30 +263,55 @@ static void restart_display_dim_timer(void)
     }
 }
 
-static void restart_deep_sleep_timer(void)
+// S1→S2 计时器：仅当已进入 Resting（dimmed）且无录音/OTA 时才推进。
+static void restart_display_off_timer(void)
 {
-    if (!s_deep_sleep_timer) {
+    if (!s_display_off_timer) {
         return;
     }
-
-    (void)esp_timer_stop(s_deep_sleep_timer);
-    if (deep_sleep_allowed_now()) {
-        esp_err_t err = esp_timer_start_once(s_deep_sleep_timer, DEEP_SLEEP_TIMEOUT_US);
+    (void)esp_timer_stop(s_display_off_timer);
+    if (s_display_dimmed && !s_screen_off && !s_recording && !s_ota_updating) {
+        esp_err_t err = esp_timer_start_once(s_display_off_timer, DISPLAY_OFF_TIMEOUT_US);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "start deep sleep timer failed: %s", esp_err_to_name(err));
+            ESP_LOGW(TAG, "start display-off timer failed: %s", esp_err_to_name(err));
         }
-    } else if (voice_ble_is_connected()) {
-        ESP_LOGD(TAG, "deep sleep timer paused while BLE is connected");
-    } else if (is_external_powered()) {
-        ESP_LOGD(TAG, "deep sleep timer paused while external power is present");
-    } else if (s_recording || s_ota_updating || voice_ble_ota_is_active()) {
-        ESP_LOGD(TAG, "deep sleep timer paused while recording or OTA is active");
     }
 }
 
+// S2→S3 关机计时器（原 deep_sleep_timer 改造，T_pwr=10min）。
+// 允许 BLE 连接态关机；USB 供电/录音/OTA 时暂停。
+static void restart_poweroff_timer(void)
+{
+    if (!s_poweroff_timer) {
+        return;
+    }
+    (void)esp_timer_stop(s_poweroff_timer);
+    if (poweroff_allowed_now()) {
+        esp_err_t err = esp_timer_start_once(s_poweroff_timer, POWEROFF_TIMEOUT_US);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "start poweroff timer failed: %s", esp_err_to_name(err));
+        }
+    } else if (is_external_powered()) {
+        ESP_LOGD(TAG, "poweroff timer paused while external power is present");
+    } else if (s_recording || s_ota_updating || voice_ble_ota_is_active()) {
+        ESP_LOGD(TAG, "poweroff timer paused while recording or OTA is active");
+    }
+}
+
+// 前向声明：拿起轮询定时器在 note_activity 之后定义，但 note_activity 需调用其启停接口。
+static void set_pickup_polling_enabled(bool enabled);
+
+// 活动复位钩子：按键/拿起/BLE事件/UI变化时调用，回到 S0 Active 态并重启全部空闲计时器。
 static void note_activity(void)
 {
-    if (s_display_dimmed) {
+    if (s_screen_off) {
+        // S2→S0：恢复背光 + 重开 L3B 供电（背光/MIC/SPK）。
+        (void)ui_status_set_brightness(DISPLAY_ACTIVE_BRIGHTNESS);
+        stick_s3_board_set_l3b_power(true);
+        s_screen_off = false;
+        ui_status_set_idle_dimmed(false);
+    } else if (s_display_dimmed) {
+        // S1→S0：恢复背光。
         esp_err_t err = ui_status_set_brightness(DISPLAY_ACTIVE_BRIGHTNESS);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "restore brightness failed: %s", esp_err_to_name(err));
@@ -283,8 +320,11 @@ static void note_activity(void)
             ui_status_set_idle_dimmed(false);
         }
     }
+    // 回到 Active 态：停止拿起轮询，重启三级空闲计时器。
+    set_pickup_polling_enabled(false);
     restart_display_dim_timer();
-    restart_deep_sleep_timer();
+    restart_display_off_timer();
+    restart_poweroff_timer();
 }
 
 static void stop_host_response_timer(void)
@@ -294,22 +334,18 @@ static void stop_host_response_timer(void)
     }
 }
 
-static void enter_deep_sleep(void)
+// S3 关机。阶段 2 走路径 B（deep sleep），阶段 3 升级为路径 A（M5PM1 真关机 + IMU 唤醒）。
+// 允许 BLE 连接态关机（关机即断连）；USB 供电/录音/OTA 时跳过并重启计时器。
+static void enter_power_off(void)
 {
     if (s_recording || s_ota_updating || voice_ble_ota_is_active()) {
-        restart_deep_sleep_timer();
-        return;
-    }
-
-    if (voice_ble_is_connected()) {
-        ESP_LOGI(TAG, "skip deep sleep while BLE is connected");
-        restart_deep_sleep_timer();
+        restart_poweroff_timer();
         return;
     }
 
     if (is_external_powered()) {
-        ESP_LOGI(TAG, "skip deep sleep while charging or USB powered");
-        restart_deep_sleep_timer();
+        ESP_LOGI(TAG, "skip power off while charging or USB powered");
+        restart_poweroff_timer();
         return;
     }
 
@@ -322,27 +358,16 @@ static void enter_deep_sleep(void)
     if (power_err == ESP_OK && (charging || usb_powered)) {
         s_battery_charging = charging;
         s_usb_powered = usb_powered;
-        ESP_LOGI(TAG, "skip deep sleep after fresh power check charging=%d usb=%d",
+        ESP_LOGI(TAG, "skip power off after fresh power check charging=%d usb=%d",
                  charging, usb_powered);
-        restart_deep_sleep_timer();
+        restart_poweroff_timer();
         return;
     }
 
     const gpio_num_t wake_gpio = STICK_S3_PIN_BUTTON_FRONT;
-    if (!esp_sleep_is_valid_wakeup_gpio(wake_gpio)) {
-        ESP_LOGE(TAG, "GPIO%d cannot wake from deep sleep", wake_gpio);
-        restart_deep_sleep_timer();
-        return;
-    }
 
-    if (gpio_get_level(wake_gpio) == 0) {
-        ESP_LOGI(TAG, "skip deep sleep: front button is pressed");
-        restart_deep_sleep_timer();
-        return;
-    }
-
-    ESP_LOGI(TAG, "entering deep sleep, wake on front button GPIO%d low (level=%d)",
-             wake_gpio, gpio_get_level(wake_gpio));
+    ESP_LOGI(TAG, "entering power off (deep sleep path B), wake on front button GPIO%d",
+             wake_gpio);
     release_recording_pm_locks();
     ESP_ERROR_CHECK_WITHOUT_ABORT(ui_status_set_brightness(0));
     ui_status_prepare_deep_sleep();
@@ -364,7 +389,7 @@ static void enter_deep_sleep(void)
                                                     ESP_EXT1_WAKEUP_ANY_LOW);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "enable deep sleep wake failed: %s", esp_err_to_name(err));
-        restart_deep_sleep_timer();
+        restart_poweroff_timer();
         return;
     }
 
@@ -377,12 +402,12 @@ static void enter_deep_sleep(void)
         wait_ms += 10;
     }
     if (gpio_get_level(wake_gpio) == 0) {
-        ESP_LOGW(TAG, "front button still low after %d ms, abort deep sleep", wait_ms);
-        restart_deep_sleep_timer();
+        ESP_LOGW(TAG, "front button still low after %d ms, abort power off", wait_ms);
+        restart_poweroff_timer();
         return;
     }
 
-    ESP_LOGI(TAG, "deep sleep go (wait_ms=%d level=%d)", wait_ms,
+    ESP_LOGI(TAG, "power off go (wait_ms=%d level=%d)", wait_ms,
              gpio_get_level(wake_gpio));
     esp_deep_sleep_start();
 }
@@ -427,7 +452,7 @@ static uint32_t start_recording(void)
     s_recording = true;
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
-    restart_deep_sleep_timer();
+    restart_poweroff_timer();
     ui_status_set_recording(session_id);
     return session_id;
 }
@@ -444,7 +469,7 @@ static uint32_t stop_recording(void)
     audio_pipeline_stop();
     release_recording_pm_locks();
     restart_display_dim_timer();
-    restart_deep_sleep_timer();
+    restart_poweroff_timer();
     return session_id;
 }
 
@@ -832,7 +857,7 @@ static void app_event_task(void *arg)
             release_ota_pm_locks();
             ui_status_set_pairing(voice_ble_device_name());
             restart_display_dim_timer();
-            restart_deep_sleep_timer();
+            restart_poweroff_timer();
             break;
         case APP_EVENT_POWER_IRQ:
             gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
@@ -844,8 +869,8 @@ static void app_event_task(void *arg)
             update_battery_status();
             send_current_battery_status();
             break;
-        case APP_EVENT_ENTER_DEEP_SLEEP:
-            enter_deep_sleep();
+        case APP_EVENT_ENTER_POWER_OFF:
+            enter_power_off();
             break;
         case APP_EVENT_OTA_BEGIN:
             s_ota_updating = true;
@@ -881,6 +906,14 @@ static void app_event_task(void *arg)
                                  s_app_ui_state == APP_UI_STATE_THINKING)) {
                 ESP_LOGW(TAG, "host response timeout, returning to ready");
                 apply_app_ui_state("ready", "");
+            }
+            break;
+        case APP_EVENT_PICKUP:
+            // 拿起唤醒：仅在 Resting 态有意义，亮屏回 Active。
+            // note_activity 会停止轮询并重置计时器。
+            if (s_display_dimmed) {
+                ESP_LOGI(TAG, "pickup detected, waking display");
+                note_activity();
             }
             break;
         }
@@ -950,7 +983,11 @@ static void display_dim_timer_cb(void *arg)
         if (err == ESP_OK) {
             s_display_dimmed = true;
             ui_status_set_idle_dimmed(true);
-            ESP_LOGI(TAG, "display dimmed after inactivity");
+            // 进入 S1 Resting：启动拿起轮询 + S1→S2 与 S2→S3 计时器。
+            set_pickup_polling_enabled(true);
+            restart_display_off_timer();
+            restart_poweroff_timer();
+            ESP_LOGI(TAG, "display dimmed after inactivity (S1)");
         } else {
             ESP_LOGW(TAG, "dim display failed: %s", esp_err_to_name(err));
         }
@@ -966,10 +1003,22 @@ static esp_err_t init_display_dim_timer(void)
     return esp_timer_create(&timer_args, &s_display_dim_timer);
 }
 
-static void deep_sleep_timer_cb(void *arg)
+static void poweroff_timer_cb(void *arg)
 {
     (void)arg;
-    queue_app_event(APP_EVENT_ENTER_DEEP_SLEEP);
+    queue_app_event(APP_EVENT_ENTER_POWER_OFF);
+}
+
+static void display_off_timer_cb(void *arg)
+{
+    (void)arg;
+    // 仅在 S1(Resting) 态推进到 S2。S2 关背光 + 关 L3B，BLE 保连。
+    if (s_display_dimmed && !s_screen_off && !s_recording && !s_ota_updating) {
+        (void)ui_status_set_brightness(0);
+        stick_s3_board_set_l3b_power(false);
+        s_screen_off = true;
+        ESP_LOGI(TAG, "display off after inactivity (S2), BLE kept");
+    }
 }
 
 static void host_response_timer_cb(void *arg)
@@ -978,13 +1027,22 @@ static void host_response_timer_cb(void *arg)
     queue_app_event(APP_EVENT_HOST_RESPONSE_TIMEOUT);
 }
 
-static esp_err_t init_deep_sleep_timer(void)
+static esp_err_t init_poweroff_timer(void)
 {
     const esp_timer_create_args_t timer_args = {
-        .callback = deep_sleep_timer_cb,
-        .name = "deep_sleep",
+        .callback = poweroff_timer_cb,
+        .name = "poweroff",
     };
-    return esp_timer_create(&timer_args, &s_deep_sleep_timer);
+    return esp_timer_create(&timer_args, &s_poweroff_timer);
+}
+
+static esp_err_t init_display_off_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = display_off_timer_cb,
+        .name = "display_off",
+    };
+    return esp_timer_create(&timer_args, &s_display_off_timer);
 }
 
 static esp_err_t init_host_response_timer(void)
@@ -1014,6 +1072,47 @@ static esp_err_t init_battery_refresh_timer(void)
         return err;
     }
     return esp_timer_start_periodic(s_battery_refresh_timer, BATTERY_REFRESH_FALLBACK_US);
+}
+
+// 拿起检测轮询：仅在 S1(Resting) 态启用。
+// 进入 Resting 时启动，回到 Active 或进入录音/OTA 时停止，避免无谓的 I2C 读与功耗。
+static void set_pickup_polling_enabled(bool enabled)
+{
+    if (!s_pickup_poll_timer || !bmi270_present()) {
+        return;
+    }
+    if (enabled) {
+        if (!esp_timer_is_active(s_pickup_poll_timer)) {
+            esp_err_t err = esp_timer_start_periodic(s_pickup_poll_timer, PICKUP_POLL_INTERVAL_US);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "start pickup poll failed: %s", esp_err_to_name(err));
+            }
+        }
+    } else {
+        (void)esp_timer_stop(s_pickup_poll_timer);
+    }
+}
+
+static void pickup_poll_timer_cb(void *arg)
+{
+    (void)arg;
+    // 仅在 Resting（dimmed 且非录音/OTA）态判定拿起，其余态直接忽略避免误触。
+    if (!s_display_dimmed || s_recording || s_ota_updating) {
+        return;
+    }
+    if (bmi270_pickup_detected()) {
+        queue_app_event(APP_EVENT_PICKUP);
+    }
+}
+
+static esp_err_t init_pickup_poll_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = pickup_poll_timer_cb,
+        .name = "pickup_poll",
+        .skip_unhandled_events = true,
+    };
+    return esp_timer_create(&timer_args, &s_pickup_poll_timer);
 }
 
 static void IRAM_ATTR pmic_irq_isr(void *arg)
@@ -1101,7 +1200,7 @@ static void update_battery_status(void)
         if (external_power_changed) {
             ESP_LOGI(TAG, "power source changed charging=%d usb=%d",
                      charging, usb_powered);
-            restart_deep_sleep_timer();
+            restart_poweroff_timer();
         }
     } else {
         ESP_LOGW(TAG, "battery read failed: %s", esp_err_to_name(err));
@@ -1126,8 +1225,12 @@ void app_main(void)
     ESP_ERROR_CHECK(stick_s3_board_init());
     ESP_ERROR_CHECK(ui_status_init());
     ESP_ERROR_CHECK(init_display_dim_timer());
-    ESP_ERROR_CHECK(init_deep_sleep_timer());
+    ESP_ERROR_CHECK(init_display_off_timer());
+    ESP_ERROR_CHECK(init_poweroff_timer());
     ESP_ERROR_CHECK(init_host_response_timer());
+    ESP_ERROR_CHECK(init_pickup_poll_timer());
+    // BMI270 初始化在 I2C 总线就绪后；探测失败时优雅降级，不影响主流程。
+    (void)bmi270_init();
     note_activity();
     voice_ble_set_connection_callback(ble_connection_cb);
     voice_ble_set_control_callback(ble_control_cb);
