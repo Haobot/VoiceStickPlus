@@ -7,15 +7,28 @@
 
 namespace voicestick {
 
+inline UINT GetFallbackDpi() {
+    HDC dc = GetDC(nullptr);
+    UINT dpi = static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSX));
+    ReleaseDC(nullptr, dc);
+    return dpi != 0 ? dpi : 96;
+}
+
 inline UINT GetDpiForHwnd(HWND hwnd) {
     if (hwnd) {
         UINT dpi = GetDpiForWindow(hwnd);
         if (dpi != 0) return dpi;
     }
-    HDC dc = GetDC(nullptr);
-    UINT dpi = static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSX));
-    ReleaseDC(nullptr, dc);
-    return dpi != 0 ? dpi : 96;
+    return GetFallbackDpi();
+}
+
+inline UINT GetDpiForMonitorHandle(HMONITOR monitor) {
+    UINT dpi_x = 0;
+    UINT dpi_y = 0;
+    if (monitor && SUCCEEDED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)) && dpi_x != 0) {
+        return dpi_x;
+    }
+    return GetFallbackDpi();
 }
 
 inline int ScalePx(int px, UINT dpi) {
@@ -26,18 +39,35 @@ inline float ScaleF(int px, UINT dpi) {
     return static_cast<float>(ScalePx(px, dpi));
 }
 
-// Per-Monitor DPI-aware work area for the monitor that contains `hwnd`.
-// Falls back to the primary monitor work area if the monitor cannot be determined.
-inline RECT GetWorkAreaForWindow(HWND hwnd) {
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+inline RECT GetWorkAreaForMonitor(HMONITOR monitor) {
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
-    if (GetMonitorInfoW(monitor, &mi)) {
+    if (monitor && GetMonitorInfoW(monitor, &mi)) {
         return mi.rcWork;
     }
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     return work;
+}
+
+inline HMONITOR GetCursorMonitor() {
+    POINT cursor{};
+    if (GetCursorPos(&cursor)) {
+        return MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    }
+    return MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+}
+
+inline RECT GetWorkAreaForWindow(HWND hwnd) {
+    return GetWorkAreaForMonitor(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY));
+}
+
+inline RECT GetWorkAreaForCursor() {
+    return GetWorkAreaForMonitor(GetCursorMonitor());
+}
+
+inline UINT GetDpiForCursorMonitor() {
+    return GetDpiForMonitorHandle(GetCursorMonitor());
 }
 
 inline HFONT CreateUiFont(UINT dpi) {

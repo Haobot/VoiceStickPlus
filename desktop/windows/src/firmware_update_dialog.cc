@@ -1,11 +1,13 @@
 #include "firmware_update_dialog.h"
 
 #include "dpi_util.h"
+#include "localization.h"
 
 #include <CommCtrl.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <initializer_list>
 #include <string_view>
 #include <utility>
 
@@ -47,10 +49,19 @@ void AppendDialogWideString(std::vector<BYTE>* buffer, const wchar_t* text) {
     AppendDialogWord(buffer, 0);
 }
 
+std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
+    for (const auto& value : values) {
+        const auto pos = text.find(L"%s");
+        if (pos == std::wstring::npos) break;
+        text.replace(pos, 2, value);
+    }
+    return text;
+}
+
 } // namespace
 
-FirmwareUpdateDialog::FirmwareUpdateDialog(HINSTANCE instance, HWND owner, std::string version)
-    : instance_(instance), owner_(owner), version_(std::move(version)) {}
+FirmwareUpdateDialog::FirmwareUpdateDialog(HINSTANCE instance, HWND owner, UiLanguage language, std::string version)
+    : instance_(instance), owner_(owner), language_(language), version_(std::move(version)) {}
 
 FirmwareUpdateDialog::~FirmwareUpdateDialog() {
     if (hwnd_) DestroyWindow(hwnd_);
@@ -85,8 +96,9 @@ void FirmwareUpdateDialog::UpdateProgress(const FirmwareUpdateProgress& progress
     displayed_percent_ = percent;
     SendMessageW(progress_bar_, PBM_SETPOS, percent, 0);
     SetText(percent_label_, std::to_wstring(percent) + L"%");
-    SetText(detail_label_, percent >= 100 ? L"Finalizing firmware update..."
-                                          : L"Transferring firmware over BLE...");
+    SetText(detail_label_, TrW(percent >= 100 ? StringId::kFirmwareUpdateFinalizing
+                                               : StringId::kFirmwareUpdateTransferring,
+                               language_));
 }
 
 void FirmwareUpdateDialog::Finish(bool success, const std::string& message) {
@@ -95,13 +107,15 @@ void FirmwareUpdateDialog::Finish(bool success, const std::string& message) {
     EnableWindow(close_button_, TRUE);
     if (success) {
         displayed_percent_ = 100;
-        SetText(title_label_, L"Firmware Updated");
-        SetText(detail_label_, L"The device is rebooting into the new firmware.");
+        SetText(title_label_, TrW(StringId::kFirmwareUpdatedTitle, language_));
+        SetText(detail_label_, TrW(StringId::kFirmwareUpdatedDetail, language_));
         SendMessageW(progress_bar_, PBM_SETPOS, 100, 0);
         SetText(percent_label_, L"100%");
     } else {
-        SetText(title_label_, L"Update Failed");
-        SetText(detail_label_, Utf16(message.empty() ? "Firmware update failed." : message));
+        SetText(title_label_, TrW(StringId::kFirmwareUpdateFailed, language_));
+        SetText(detail_label_, message.empty()
+                                   ? TrW(StringId::kFirmwareUpdateFailed, language_)
+                                   : Utf16(message));
     }
 }
 
@@ -124,8 +138,8 @@ INT_PTR FirmwareUpdateDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
     case WM_COMMAND:
         if (LOWORD(w_param) == kCancelId) {
             EnableWindow(cancel_button_, FALSE);
-            SetText(title_label_, L"Cancelling Firmware Update");
-            SetText(detail_label_, L"Stopping transfer and asking the device to abort.");
+            SetText(title_label_, TrW(StringId::kFirmwareCancellingTitle, language_));
+            SetText(detail_label_, TrW(StringId::kFirmwareCancellingDetail, language_));
             if (on_cancel) on_cancel();
             return TRUE;
         }
@@ -176,7 +190,7 @@ LPCDLGTEMPLATE FirmwareUpdateDialog::BuildDialogTemplate() {
     AppendDialogData(&dialog_template_, &dialog, sizeof(dialog));
     AppendDialogWord(&dialog_template_, 0);
     AppendDialogWord(&dialog_template_, 0);
-    AppendDialogWideString(&dialog_template_, L"Firmware Update");
+    AppendDialogWideString(&dialog_template_, TrW(StringId::kFirmwareUpdateTitle, language_).c_str());
     AppendDialogWord(&dialog_template_, 9);
     AppendDialogWideString(&dialog_template_, L"Segoe UI");
     return reinterpret_cast<LPCDLGTEMPLATE>(dialog_template_.data());
@@ -202,10 +216,10 @@ void FirmwareUpdateDialog::BuildUi() {
         return control;
     };
 
-    title_label_ = remember(CreateWindowExW(0, L"STATIC", L"Updating Firmware",
+    title_label_ = remember(CreateWindowExW(0, L"STATIC", TrW(StringId::kFirmwareUpdating, language_).c_str(),
                                             WS_CHILD | WS_VISIBLE, Dp(24), Dp(20), Dp(370), Dp(24),
                                             hwnd_, nullptr, instance_, nullptr));
-    const auto detail = L"Downloading OTA firmware " + Utf16(version_) + L"...";
+    const auto detail = FormatText(TrW(StringId::kFirmwareDownloading, language_), {Utf16(version_)});
     detail_label_ = remember(CreateWindowExW(0, L"STATIC", detail.c_str(),
                                              WS_CHILD | WS_VISIBLE, Dp(24), Dp(52), Dp(380), Dp(36),
                                              hwnd_, nullptr, instance_, nullptr));
@@ -216,12 +230,12 @@ void FirmwareUpdateDialog::BuildUi() {
     percent_label_ = remember(CreateWindowExW(0, L"STATIC", L"0%",
                                               WS_CHILD | WS_VISIBLE | SS_RIGHT, Dp(350), Dp(100), Dp(55), Dp(20),
                                               hwnd_, nullptr, instance_, nullptr));
-    cancel_button_ = remember(CreateWindowExW(0, L"BUTTON", L"Cancel",
+    cancel_button_ = remember(CreateWindowExW(0, L"BUTTON", TrW(StringId::kCancel, language_).c_str(),
                                               WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                               Dp(235), Dp(145), Dp(80), Dp(28),
                                               hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelId)),
                                               instance_, nullptr));
-    close_button_ = remember(CreateWindowExW(0, L"BUTTON", L"Close",
+    close_button_ = remember(CreateWindowExW(0, L"BUTTON", TrW(StringId::kClose, language_).c_str(),
                                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                              Dp(325), Dp(145), Dp(80), Dp(28),
                                              hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCloseId)),

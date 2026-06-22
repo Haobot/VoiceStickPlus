@@ -43,6 +43,7 @@ static char s_device_name[8] = VOICE_BLE_DEVICE_NAME_PREFIX "-0000";
 static voice_ble_connection_cb_t s_connection_cb;
 static voice_ble_control_cb_t s_control_cb;
 static voice_ble_ota_cb_t s_ota_cb;
+static uint32_t s_adv_started_ms;
 
 typedef enum {
     CONN_ITVL_NONE,
@@ -85,9 +86,16 @@ static const ble_uuid128_t s_ota_state_uuid =
                      0x23, 0x4b, 0x6f, 0x6e, 0x84, 0x0b, 0x2f, 0x8f);
 
 static void start_advertising(void);
+static void start_advertising_with_mode(bool fast);
 static void stop_advertising(void);
 static struct ble_npl_callout s_adv_retry_callout;
+static struct ble_npl_callout s_adv_slow_callout;
 #define ADV_RETRY_DELAY_MS 1000
+#define ADV_FAST_WINDOW_MS 60000
+#define ADV_FAST_ITVL_MIN_MS 20
+#define ADV_FAST_ITVL_MAX_MS 30
+#define ADV_SLOW_ITVL_MIN_MS 100
+#define ADV_SLOW_ITVL_MAX_MS 200
 
 static void adv_retry_callout_cb(struct ble_npl_event *ev)
 {
@@ -96,6 +104,17 @@ static void adv_retry_callout_cb(struct ble_npl_event *ev)
         ESP_LOGI(TAG, "retrying advertising after earlier failure");
         start_advertising();
     }
+}
+
+static void adv_slow_callout_cb(struct ble_npl_event *ev)
+{
+    (void)ev;
+    if (s_connected || !ble_gap_adv_active()) {
+        return;
+    }
+    ESP_LOGI(TAG, "fast advertising window elapsed; switching to slow advertising");
+    stop_advertising();
+    start_advertising_with_mode(false);
 }
 
 static uint16_t read_le16(const uint8_t *data)
@@ -465,7 +484,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_audio_subscribed = false;
             s_state_subscribed = false;
             s_conn_handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "connected handle=%u", s_conn_handle);
+            uint32_t connected_ms = esp_log_timestamp();
+            ESP_LOGI(TAG, "connected handle=%u ts=%" PRIu32 " since_adv=%" PRIu32 "ms",
+                     s_conn_handle, connected_ms, connected_ms - s_adv_started_ms);
             stop_advertising();
             // Some BLE centrals (notably WinRT on Windows) do not always
             // initiate the ATT MTU exchange themselves. Without it the MTU
@@ -475,10 +496,17 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             // peer. Initiate the exchange from our side as a defensive
             // measure so the link is usable for both audio and state.
             {
+                struct ble_gap_conn_desc desc;
+                int desc_rc = ble_gap_conn_find(s_conn_handle, &desc);
+                if (desc_rc == 0) {
+                    ESP_LOGI(TAG, "conn initial: interval=%u latency=%u timeout=%u",
+                             desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+                }
                 int mtu_rc = ble_gattc_exchange_mtu(s_conn_handle, NULL, NULL);
                 if (mtu_rc != 0 && mtu_rc != BLE_HS_EALREADY) {
                     ESP_LOGW(TAG, "mtu exchange request failed rc=%d", mtu_rc);
                 }
+                (void)voice_ble_request_fast_interval();
             }
             if (s_connection_cb) {
                 s_connection_cb(true);
@@ -571,6 +599,11 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
 
 static void start_advertising(void)
 {
+    start_advertising_with_mode(true);
+}
+
+static void start_advertising_with_mode(bool fast)
+{
     if (s_connected) {
         ESP_LOGD(TAG, "skip advertising while connected");
         return;
@@ -605,12 +638,14 @@ static void start_advertising(void)
         return;
     }
 
+    const int itvl_min_ms = fast ? ADV_FAST_ITVL_MIN_MS : ADV_SLOW_ITVL_MIN_MS;
+    const int itvl_max_ms = fast ? ADV_FAST_ITVL_MAX_MS : ADV_SLOW_ITVL_MAX_MS;
     struct ble_gap_adv_params params;
     memset(&params, 0, sizeof(params));
     params.conn_mode = BLE_GAP_CONN_MODE_UND;
     params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    params.itvl_min = BLE_GAP_ADV_ITVL_MS(60);
-    params.itvl_max = BLE_GAP_ADV_ITVL_MS(120);
+    params.itvl_min = BLE_GAP_ADV_ITVL_MS(itvl_min_ms);
+    params.itvl_max = BLE_GAP_ADV_ITVL_MS(itvl_max_ms);
 
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event_cb, NULL);
     if (rc != 0) {
@@ -621,11 +656,19 @@ static void start_advertising(void)
         return;
     }
 
-    ESP_LOGI(TAG, "advertising as %s", s_device_name);
+    s_adv_started_ms = esp_log_timestamp();
+    ESP_LOGI(TAG, "advertising as %s mode=%s itvl=%d-%dms ts=%" PRIu32,
+             s_device_name, fast ? "fast" : "slow", itvl_min_ms, itvl_max_ms,
+             s_adv_started_ms);
+    if (fast) {
+        ble_npl_callout_reset(&s_adv_slow_callout,
+                              pdMS_TO_TICKS(ADV_FAST_WINDOW_MS));
+    }
 }
 
 static void stop_advertising(void)
 {
+    ble_npl_callout_stop(&s_adv_slow_callout);
     if (!ble_gap_adv_active()) {
         return;
     }
@@ -692,9 +735,11 @@ esp_err_t voice_ble_init(void)
 
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sync_cb = on_sync;
-    ble_hs_cfg.sm_bonding = 0;
-    ble_hs_cfg.sm_our_key_dist = 0;
-    ble_hs_cfg.sm_their_key_dist = 0;
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
 
     int rc = ble_svc_gap_device_name_set(s_device_name);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "set device name failed rc=%d", rc);
@@ -706,6 +751,8 @@ esp_err_t voice_ble_init(void)
 
     ble_npl_callout_init(&s_adv_retry_callout, nimble_port_get_dflt_eventq(),
                          adv_retry_callout_cb, NULL);
+    ble_npl_callout_init(&s_adv_slow_callout, nimble_port_get_dflt_eventq(),
+                         adv_slow_callout_cb, NULL);
 
     nimble_port_freertos_init(nimble_host_task);
     ESP_LOGI(TAG, "BLE initialized as %s", s_device_name);
@@ -967,5 +1014,17 @@ esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
     }
     ESP_LOGI(TAG, "button click button=%s session=%" PRIu32 " duration_ms=%" PRIu32,
              button, session_id, duration_ms);
+    return send_state_json(json);
+}
+
+esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered)
+{
+    char json[128];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"battery_status\",\"level\":%d,\"charging\":%s,\"usb_powered\":%s}",
+             level_percent,
+             charging ? "true" : "false",
+             usb_powered ? "true" : "false");
+    ESP_LOGI(TAG, "battery status level=%d charging=%d usb=%d", level_percent, charging, usb_powered);
     return send_state_json(json);
 }

@@ -29,6 +29,7 @@ constexpr float kTextLayoutMaxHeight = 10000.0f;
 struct TextLayoutSize {
     float width = 0.0f;
     float height = 0.0f;
+    float top = 0.0f;
     UINT32 line_count = 1;
 };
 
@@ -37,6 +38,11 @@ struct BitmapRenderTarget {
     ComPtr<ID2D1RenderTarget> target;
     UINT stride = 0;
     UINT buffer_size = 0;
+};
+
+struct BackgroundBrightness {
+    bool valid = false;
+    double luma = 0.5;
 };
 
 std::wstring Utf16FromUtf8(std::string_view text) {
@@ -68,6 +74,64 @@ void AddRoundedRect(Gdiplus::GraphicsPath& path, Gdiplus::RectF rect, float radi
                 diameter, diameter, 0.0f, 90.0f);
     path.AddArc(rect.X, rect.GetBottom() - diameter, diameter, diameter, 90.0f, 90.0f);
     path.CloseFigure();
+}
+
+BackgroundBrightness SampleBackgroundBrightness(const RECT& bounds) {
+    const int source_width = bounds.right - bounds.left;
+    const int source_height = bounds.bottom - bounds.top;
+    if (source_width <= 0 || source_height <= 0) return {};
+
+    constexpr int kSampleWidth = 24;
+    constexpr int kSampleHeight = 12;
+    HDC screen_dc = GetDC(nullptr);
+    if (!screen_dc) return {};
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    if (!memory_dc) {
+        ReleaseDC(nullptr, screen_dc);
+        return {};
+    }
+
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = kSampleWidth;
+    info.bmiHeader.biHeight = -kSampleHeight;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(memory_dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        DeleteDC(memory_dc);
+        ReleaseDC(nullptr, screen_dc);
+        return {};
+    }
+
+    HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
+    const BOOL copied = StretchBlt(memory_dc, 0, 0, kSampleWidth, kSampleHeight,
+                                   screen_dc, bounds.left, bounds.top,
+                                   source_width, source_height, SRCCOPY | CAPTUREBLT);
+    SelectObject(memory_dc, old_bitmap);
+
+    BackgroundBrightness result{};
+    if (copied) {
+        const auto* pixels = static_cast<const BYTE*>(bits);
+        double total_luma = 0.0;
+        for (int i = 0; i < kSampleWidth * kSampleHeight; ++i) {
+            const BYTE b = pixels[i * 4 + 0];
+            const BYTE g = pixels[i * 4 + 1];
+            const BYTE r = pixels[i * 4 + 2];
+            total_luma += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
+        }
+        result.valid = true;
+        result.luma = total_luma / static_cast<double>(kSampleWidth * kSampleHeight);
+    }
+
+    DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return result;
 }
 
 IDWriteFactory* SharedDwriteFactory() {
@@ -164,6 +228,7 @@ TextLayoutSize MeasureText(const std::wstring& text, float font_size,
     if (SUCCEEDED(layout->GetMetrics(&metrics))) {
         result.width = std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
         result.height = std::ceil(metrics.height);
+        result.top = metrics.top;
         result.line_count = std::max<UINT32>(1, metrics.lineCount);
     }
     return result;
@@ -198,7 +263,7 @@ BitmapRenderTarget CreateBitmapRenderTarget(void* bits, int width, int height) {
 
 void DrawTextLayout(ID2D1RenderTarget* target, IDWriteTextLayout* layout,
                     float x, float y, BYTE alpha, BYTE rgb) {
-    if (!target || !layout) return;
+    if (!target || !layout || alpha == 0) return;
 
     const float c = static_cast<float>(rgb) / 255.0f;
     ComPtr<ID2D1SolidColorBrush> brush;
@@ -225,6 +290,7 @@ OverlayWindow::OverlayWindow(HINSTANCE instance, HWND parent)
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
         wc.lpszClassName, L"", WS_POPUP,
         0, 0, 1, 1, parent_, nullptr, instance_, this);
+    backdrop_ = std::make_unique<GlassBackdropWindow>(instance_, parent_);
     EnsureGdiplus();
 }
 
@@ -267,8 +333,23 @@ void OverlayWindow::ShowError(const std::string& text, std::function<void()> on_
 void OverlayWindow::SetThemeColor(OverlayThemeColor color) {
     if (theme_color_ == color) return;
     theme_color_ = color;
+    if (color != OverlayThemeColor::kAuto) {
+        resolved_theme_color_ = color;
+    }
+    if (backdrop_) backdrop_->SetTheme(resolved_theme_color_);
     InvalidateStaticLayer();
     if (mode_ != Mode::kHidden) UpdateLayeredBitmap();
+}
+
+void OverlayWindow::SetThemeSize(OverlayThemeSize size) {
+    if (theme_size_ == size) return;
+    theme_size_ = size;
+    largest_visible_width_ = 0;
+    largest_visible_height_ = 0;
+    animated_window_width_ = 0;
+    animated_window_height_ = 0;
+    InvalidateStaticLayer();
+    if (mode_ != Mode::kHidden) Reposition();
 }
 
 void OverlayWindow::SetPosition(OverlayPosition position) {
@@ -292,7 +373,11 @@ void OverlayWindow::OnTimer(UINT_PTR timer_id) {
     } else if (timer_id == kAnimationTimerId) {
         animation_frame_++;
         const bool window_moved = StepWindowAnimation();
-        UpdateLayeredBitmap();
+        const bool text_transitioning = text_transition_started_at_ms_ != 0;
+        if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown || text_transitioning)) {
+            InvalidateStaticLayer();
+            UpdateLayeredBitmap();
+        }
         if (!window_moved && mode_ != Mode::kListening && mode_ != Mode::kCountdown) {
             KillTimer(hwnd_, kAnimationTimerId);
         }
@@ -308,13 +393,23 @@ void OverlayWindow::OnPaint() {
 
 void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& hint) {
     KillTimer(hwnd_, kAutoHideTimerId);
+    const std::wstring next_text = Utf16FromUtf8(text);
+    if (mode_ != Mode::kHidden && next_text != text_) {
+        text_scroll_from_offset_ = last_text_scroll_offset_;
+        text_transition_started_at_ms_ = GetTickCount64();
+    } else if (mode_ == Mode::kHidden) {
+        text_transition_started_at_ms_ = 0;
+        text_scroll_from_offset_ = 0.0f;
+        text_scroll_to_offset_ = 0.0f;
+        last_text_scroll_offset_ = 0.0f;
+    }
     mode_ = mode;
-    text_ = Utf16FromUtf8(text);
+    text_ = next_text;
     hint_ = hint.empty() ? std::wstring() : Utf16FromUtf8(hint);
     InvalidateStaticLayer();
     Reposition();
 
-    if (mode == Mode::kListening || mode == Mode::kCountdown || NeedsWindowAnimation()) {
+    if (mode == Mode::kListening || mode == Mode::kCountdown || NeedsWindowAnimation() || text_transition_started_at_ms_ != 0) {
         SetTimer(hwnd_, kAnimationTimerId, kAnimationStepMs, nullptr);
     } else {
         KillTimer(hwnd_, kAnimationTimerId);
@@ -329,45 +424,34 @@ void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& 
 void OverlayWindow::Reposition() {
     RefreshDpi();
 
-    RECT work_area = GetWorkAreaForWindow(parent_ ? parent_ : hwnd_);
+    RECT work_area = GetWorkAreaForCursor();
     const int screen_w = work_area.right - work_area.left;
     const int screen_h = work_area.bottom - work_area.top;
 
     const int shadow_padding = Dp(kShadowPadding);
-    const int horizontal_padding = Dp(kHorizontalPadding);
-    const int vertical_padding = Dp(kVerticalPadding);
-    const int indicator_size = Dp(kIndicatorSize);
-    const int content_spacing = Dp(kContentSpacing);
-    const int min_content_height = Dp(kMinContentHeight);
-    const int side_chrome_width = horizontal_padding + indicator_size +
-                                  content_spacing + horizontal_padding;
+    const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
+    const int vertical_padding = SizePx(kVerticalPadding, 12, 10);
+    const int indicator_size = SizePx(kIndicatorSize, 22, 18);
+    const int indicator_left_margin = IndicatorLeftMargin();
+    const int text_indicator_gap = TextIndicatorGap();
+    const int min_content_height = SizePx(kMinContentHeight, 68, 56);
+    const int side_chrome_width = indicator_left_margin + indicator_size + text_indicator_gap + horizontal_padding;
 
     // Same layout algorithm for all modes, mirroring the macOS implementation.
-    const int available_max_width = std::min(Dp(kMaxContentWidth),
+    const int available_max_width = std::min(SizePx(kMaxContentWidth, 500, 380),
                                              screen_w - Dp(48) - shadow_padding * 2);
     const int max_text_width = std::max(1, available_max_width - side_chrome_width);
 
-    const float text_font_size = DpF(kTextFontSize);
+    const float text_font_size = SizePxF(kTextFontSize, 18, 16);
     const float text_line_height = text_font_size * kTextLineHeightMultiplier;
     const float text_baseline = text_font_size * kTextBaselineMultiplier;
     const auto single_line_text = MeasureText(text_, text_font_size,
                                               static_cast<float>(max_text_width) * 4.0f,
                                               false, text_line_height, text_baseline);
-    const float measured_text_width = single_line_text.width;
-    const float desired_text_width = std::min(measured_text_width,
-                                              static_cast<float>(max_text_width));
-    const int one_third_text_width = std::max(1, max_text_width / 3);
-    const int two_thirds_text_width = std::max(one_third_text_width,
-                                               (max_text_width * 2) / 3);
-    int text_width = max_text_width;
-    if (desired_text_width <= static_cast<float>(one_third_text_width)) {
-        text_width = one_third_text_width;
-    } else if (desired_text_width <= static_cast<float>(two_thirds_text_width)) {
-        text_width = two_thirds_text_width;
-    }
+    const int text_width = max_text_width;
     int content_width = text_width + side_chrome_width;
 
-    should_wrap_text_ = measured_text_width > static_cast<float>(max_text_width);
+    should_wrap_text_ = false;
     const auto laid_out_text = should_wrap_text_
         ? MeasureText(text_, text_font_size, static_cast<float>(text_width), true,
                       text_line_height, text_baseline)
@@ -375,8 +459,8 @@ void OverlayWindow::Reposition() {
     const float text_height = laid_out_text.height;
     const float hint_height = hint_.empty()
         ? 0.0f
-        : MeasureText(hint_, DpF(kHintFontSize), static_cast<float>(text_width), false).height +
-              DpF(8);
+        : MeasureText(hint_, SizePxF(kHintFontSize, 12, 11), static_cast<float>(text_width), false).height +
+              SizePxF(8, 6, 5);
 
     const int max_content_height = std::max(min_content_height,
                                             screen_h - Dp(120) - shadow_padding * 2);
@@ -392,15 +476,38 @@ void OverlayWindow::Reposition() {
     largest_visible_width_ = content_width;
     largest_visible_height_ = content_height;
 
+    const bool first_layout = animated_window_width_ <= 0 || animated_window_height_ <= 0;
     target_window_width_ = content_width + shadow_padding * 2;
     target_window_height_ = content_height + shadow_padding * 2;
     const POINT origin = TargetWindowOrigin(work_area, target_window_width_, target_window_height_);
     target_window_x_ = origin.x;
     target_window_y_ = origin.y;
 
-    animated_window_width_ = target_window_width_;
-    animated_window_height_ = target_window_height_;
+    if (first_layout) {
+        animated_window_width_ = target_window_width_;
+        animated_window_height_ = target_window_height_;
+    }
 
+    ResolveAutoThemeColor(BackdropBounds(target_window_width_, target_window_height_));
+
+    const bool resizing = !first_layout && NeedsWindowAnimation();
+    if (resizing && backdrop_) {
+        const int saved_width = animated_window_width_;
+        const int saved_height = animated_window_height_;
+        animated_window_width_ = target_window_width_;
+        animated_window_height_ = target_window_height_;
+        SyncBackdrop(target_window_width_, target_window_height_, true);
+        animated_window_width_ = saved_width;
+        animated_window_height_ = saved_height;
+        ResizeBackdropWithoutRepaint(target_window_width_, target_window_height_);
+    } else {
+        const RECT backdrop_bounds = BackdropBounds(target_window_width_, target_window_height_);
+        const bool backdrop_needs_sync = !IsWindowVisible(hwnd_) ||
+            !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &backdrop_bounds);
+        if (backdrop_needs_sync) {
+            SyncBackdrop(target_window_width_, target_window_height_, true);
+        }
+    }
     UpdateLayeredBitmap();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
@@ -426,12 +533,78 @@ bool OverlayWindow::StepWindowAnimation() {
     animated_window_height_ = step(animated_window_height_, target_window_height_,
                                    kWindowHeightResizeStep);
     InvalidateStaticLayer();
+    ResizeBackdropWithoutRepaint(target_window_width_, target_window_height_);
     ApplyAnimatedWindowBounds();
     return true;
 }
 
 void OverlayWindow::ApplyAnimatedWindowBounds() {
     UpdateLayeredBitmap();
+}
+
+RECT OverlayWindow::BackdropBounds(int width, int height) const {
+    const int shadow_padding = Dp(kShadowPadding);
+    const int visual_width = std::clamp(animated_window_width_, 1, width);
+    const int visual_height = std::clamp(animated_window_height_, 1, height);
+    const int visual_x = VisualOffsetX(width, visual_width);
+    const int visual_y = VisualOffsetY(height, visual_height);
+    const int inset = shadow_padding + 1;
+    return RECT{
+        target_window_x_ + visual_x + inset,
+        target_window_y_ + visual_y + inset,
+        target_window_x_ + visual_x + visual_width - inset,
+        target_window_y_ + visual_y + visual_height - inset,
+    };
+}
+
+void OverlayWindow::SyncBackdrop(int width, int height, bool show) {
+    if (!backdrop_ || width <= 0 || height <= 0) return;
+    const RECT bounds = BackdropBounds(width, height);
+    const bool bounds_changed = !backdrop_bounds_valid_ || !EqualRect(&last_backdrop_bounds_, &bounds);
+    if (!bounds_changed && IsWindowVisible(backdrop_->hwnd())) return;
+
+    const bool content_visible = IsWindowVisible(hwnd_) != FALSE;
+    if (content_visible) ShowWindow(hwnd_, SW_HIDE);
+    if (show) {
+        backdrop_->Show(bounds);
+    } else {
+        backdrop_->Move(bounds);
+    }
+    if (content_visible) ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    if (show || bounds_changed) {
+        SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    last_backdrop_bounds_ = bounds;
+    backdrop_bounds_valid_ = true;
+}
+
+void OverlayWindow::ResizeBackdropWithoutRepaint(int width, int height) {
+    if (!backdrop_ || width <= 0 || height <= 0 || !backdrop_bounds_valid_) return;
+    const RECT bounds = BackdropBounds(width, height);
+    if (EqualRect(&last_backdrop_bounds_, &bounds)) return;
+    backdrop_->ResizeWithoutRepaint(bounds);
+    SetWindowPos(backdrop_->hwnd(), hwnd_, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    last_backdrop_bounds_ = bounds;
+}
+
+void OverlayWindow::ResolveAutoThemeColor(const RECT& bounds) {
+    if (theme_color_ != OverlayThemeColor::kAuto) return;
+    const auto brightness = SampleBackgroundBrightness(bounds);
+    if (!brightness.valid) return;
+
+    OverlayThemeColor next_color = resolved_theme_color_;
+    if (brightness.luma <= 0.42) {
+        next_color = OverlayThemeColor::kWhite;
+    } else if (brightness.luma >= 0.58) {
+        next_color = OverlayThemeColor::kBlack;
+    }
+    if (next_color == resolved_theme_color_) return;
+
+    resolved_theme_color_ = next_color;
+    if (backdrop_) backdrop_->SetTheme(resolved_theme_color_);
+    InvalidateStaticLayer();
 }
 
 POINT OverlayWindow::TargetWindowOrigin(const RECT& work_area, int width, int height) const {
@@ -447,6 +620,11 @@ POINT OverlayWindow::TargetWindowOrigin(const RECT& work_area, int width, int he
         return POINT{work_area.left + margin, work_area.bottom - margin - height};
     case OverlayPosition::kBottomRight:
         return POINT{work_area.right - margin - width, work_area.bottom - margin - height};
+    case OverlayPosition::kBottomCenter: {
+        const int bottom_gap = std::max(margin * 3, screen_h / 9);
+        return POINT{work_area.left + (screen_w - width) / 2,
+                     work_area.bottom - bottom_gap - height};
+    }
     case OverlayPosition::kCenter:
     default:
         return POINT{work_area.left + (screen_w - width) / 2,
@@ -462,6 +640,7 @@ int OverlayWindow::VisualOffsetX(int width, int visual_width) const {
     case OverlayPosition::kTopRight:
     case OverlayPosition::kBottomRight:
         return width - visual_width;
+    case OverlayPosition::kBottomCenter:
     case OverlayPosition::kCenter:
     default:
         return (width - visual_width) / 2;
@@ -472,6 +651,7 @@ int OverlayWindow::VisualOffsetY(int height, int visual_height) const {
     switch (position_) {
     case OverlayPosition::kBottomLeft:
     case OverlayPosition::kBottomRight:
+    case OverlayPosition::kBottomCenter:
         return height - visual_height;
     case OverlayPosition::kTopLeft:
     case OverlayPosition::kTopRight:
@@ -483,7 +663,8 @@ int OverlayWindow::VisualOffsetY(int height, int visual_height) const {
 }
 
 void OverlayWindow::RefreshDpi() {
-    dpi_ = GetDpiForHwnd(parent_ ? parent_ : hwnd_);
+    dpi_ = GetDpiForCursorMonitor();
+    if (backdrop_) backdrop_->SetCornerRadius(Dp(kCornerRadius));
 }
 
 int OverlayWindow::Dp(int px) const {
@@ -492,6 +673,38 @@ int OverlayWindow::Dp(int px) const {
 
 float OverlayWindow::DpF(int px) const {
     return ScaleF(px, dpi_);
+}
+
+int OverlayWindow::SizePx(int big_px, int medium_px, int small_px) const {
+    switch (theme_size_) {
+    case OverlayThemeSize::kMedium:
+        return Dp(medium_px);
+    case OverlayThemeSize::kSmall:
+        return Dp(small_px);
+    case OverlayThemeSize::kBig:
+    default:
+        return Dp(big_px);
+    }
+}
+
+float OverlayWindow::SizePxF(int big_px, int medium_px, int small_px) const {
+    switch (theme_size_) {
+    case OverlayThemeSize::kMedium:
+        return DpF(medium_px);
+    case OverlayThemeSize::kSmall:
+        return DpF(small_px);
+    case OverlayThemeSize::kBig:
+    default:
+        return DpF(big_px);
+    }
+}
+
+int OverlayWindow::IndicatorLeftMargin() const {
+    return SizePx(18, 15, 13);
+}
+
+int OverlayWindow::TextIndicatorGap() const {
+    return SizePx(9, 8, 7);
 }
 
 void OverlayWindow::UpdateLayeredBitmap() {
@@ -522,14 +735,13 @@ void OverlayWindow::UpdateLayeredBitmap() {
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
         const int shadow_padding = Dp(kShadowPadding);
-        const int horizontal_padding = Dp(kHorizontalPadding);
-        const int indicator_size = Dp(kIndicatorSize);
+        const int indicator_size = SizePx(kIndicatorSize, 22, 18);
         const int visual_width = std::clamp(animated_window_width_, 1, width);
         const int visual_height = std::clamp(animated_window_height_, 1, height);
         const int visual_x = VisualOffsetX(width, visual_width);
         const int visual_y = VisualOffsetY(height, visual_height);
         const int content_height = visual_height - shadow_padding * 2;
-        const int indicator_x = visual_x + shadow_padding + horizontal_padding;
+        const int indicator_x = visual_x + shadow_padding + IndicatorLeftMargin();
         const int indicator_y = visual_y + shadow_padding + (content_height - indicator_size) / 2;
         PaintIndicator(graphics, indicator_x, indicator_y, indicator_size);
     }
@@ -642,8 +854,9 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
                                    static_cast<float>(visual_height - shadow_padding * 2) - 1.0f);
 
     for (int layer = shadow_blur; layer >= 1; --layer) {
+        const float t = static_cast<float>(shadow_blur - layer + 1) / static_cast<float>(std::max(1, shadow_blur));
         const float spread = static_cast<float>(layer);
-        const BYTE alpha = static_cast<BYTE>(2 + (shadow_blur - layer));
+        const BYTE alpha = static_cast<BYTE>(std::clamp(28.0f * t * t, 2.0f, 28.0f));
         Gdiplus::RectF shadow_rect(background_rect.X - spread,
                                    background_rect.Y - spread + static_cast<float>(shadow_y_offset),
                                    background_rect.Width + spread * 2.0f,
@@ -657,101 +870,141 @@ void OverlayWindow::PaintContent(Gdiplus::Graphics& graphics, int width, int hei
     Gdiplus::GraphicsPath background_path;
     AddRoundedRect(background_path, background_rect, static_cast<float>(corner_radius));
 
-    BYTE red = 252;
-    BYTE green = 252;
-    BYTE blue = 252;
-    switch (theme_color_) {
-    case OverlayThemeColor::kPink:
-        red = 255; green = 214; blue = 230;
-        break;
-    case OverlayThemeColor::kGreen:
-        red = 214; green = 242; blue = 214;
-        break;
-    case OverlayThemeColor::kYellow:
-        red = 255; green = 240; blue = 184;
-        break;
-    case OverlayThemeColor::kBlue:
-        red = 209; green = 232; blue = 255;
-        break;
-    case OverlayThemeColor::kPurple:
-        red = 230; green = 214; blue = 255;
-        break;
-    case OverlayThemeColor::kWhite:
-    default:
-        break;
+    if (resolved_theme_color_ == OverlayThemeColor::kBlack) {
+        Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(1, 255, 255, 255));
+        graphics.FillPath(&scrim_brush, &background_path);
+        Gdiplus::Pen border_pen(Gdiplus::Color(68, 16, 16, 16), std::max(1.0f, DpF(1)));
+        graphics.DrawPath(&border_pen, &background_path);
+        return;
     }
-    Gdiplus::SolidBrush background_brush(Gdiplus::Color(kBackgroundAlpha, red, green, blue));
-    graphics.FillPath(&background_brush, &background_path);
 
-    Gdiplus::Pen border_pen(Gdiplus::Color(36, 225, 225, 225),
+    if (resolved_theme_color_ == OverlayThemeColor::kWhite) {
+        Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(1, 0, 0, 0));
+        graphics.FillPath(&scrim_brush, &background_path);
+    } else {
+        Gdiplus::SolidBrush scrim_brush(Gdiplus::Color(kGlassScrimAlpha, 24, 24, 27));
+        graphics.FillPath(&scrim_brush, &background_path);
+    }
+
+    Gdiplus::Pen border_pen(Gdiplus::Color(kGlassBorderAlpha, 255, 255, 255),
                             std::max(1.0f, DpF(1)));
     graphics.DrawPath(&border_pen, &background_path);
 }
 
 void OverlayWindow::PaintText(void* bits, int width, int height) {
+    const BYTE ink_rgb = InkRgb();
     const int shadow_padding = Dp(kShadowPadding);
-    const int horizontal_padding = Dp(kHorizontalPadding);
-    const int indicator_size = Dp(kIndicatorSize);
-    const int content_spacing = Dp(kContentSpacing);
+    const int horizontal_padding = SizePx(kHorizontalPadding, 16, 14);
+    const int indicator_size = SizePx(kIndicatorSize, 22, 18);
+    const int indicator_left_margin = IndicatorLeftMargin();
+    const int text_indicator_gap = TextIndicatorGap();
     const int visual_width = std::clamp(animated_window_width_, 1, width);
     const int visual_height = std::clamp(animated_window_height_, 1, height);
     const int visual_x = VisualOffsetX(width, visual_width);
     const int visual_y = VisualOffsetY(height, visual_height);
-    const int indicator_x = visual_x + shadow_padding + horizontal_padding;
-    const float text_x = static_cast<float>(indicator_x + indicator_size + content_spacing);
+    const float text_x = static_cast<float>(visual_x + shadow_padding + indicator_left_margin + indicator_size + text_indicator_gap);
     const float text_width = static_cast<float>(visual_width - shadow_padding * 2 -
-                                                horizontal_padding * 2 -
-                                                indicator_size - content_spacing);
+                                                indicator_left_margin - indicator_size - text_indicator_gap - horizontal_padding);
 
-    const float text_font_size = DpF(kTextFontSize);
+    const float text_font_size = SizePxF(kTextFontSize, 18, 16);
     const float text_line_height = text_font_size * kTextLineHeightMultiplier;
     const float text_baseline = text_font_size * kTextBaselineMultiplier;
-    auto text_format = CreateTextFormat(text_font_size);
-    auto text_layout = CreateTextLayout(text_, text_format.Get(), text_width,
-                                        should_wrap_text_, text_line_height,
-                                        text_baseline);
-    TextLayoutSize text_metrics;
-    if (text_layout) {
-        DWRITE_TEXT_METRICS metrics{};
-        if (SUCCEEDED(text_layout->GetMetrics(&metrics))) {
-            text_metrics.width =
-                std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
-            text_metrics.height = std::ceil(metrics.height);
-            text_metrics.line_count = std::max<UINT32>(1, metrics.lineCount);
+    struct FlowTextLayout {
+        ComPtr<IDWriteTextLayout> layout;
+        TextLayoutSize metrics;
+        float draw_x = 0.0f;
+    };
+    auto make_flow_layout = [&](const std::wstring& value) {
+        FlowTextLayout result;
+        const auto measured_text = MeasureText(value, text_font_size, text_width * 8.0f,
+                                               false, text_line_height, text_baseline);
+        const float layout_width = std::max(text_width, measured_text.width + SizePxF(8, 6, 5));
+        auto text_format = CreateTextFormat(text_font_size);
+        if (text_format) text_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        result.layout = CreateTextLayout(value, text_format.Get(), layout_width,
+                                         false, text_line_height, text_baseline);
+        if (result.layout) {
+            DWRITE_TEXT_METRICS metrics{};
+            if (SUCCEEDED(result.layout->GetMetrics(&metrics))) {
+                result.metrics.width =
+                    std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
+                result.metrics.height = std::ceil(metrics.height);
+                result.metrics.top = metrics.top;
+                result.metrics.line_count = std::max<UINT32>(1, metrics.lineCount);
+            }
         }
-    }
+        result.draw_x = text_x - std::max(0.0f, result.metrics.width - text_width);
+        return result;
+    };
+    FlowTextLayout current_text = make_flow_layout(text_);
+    TextLayoutSize text_metrics = current_text.metrics;
 
     TextLayoutSize hint_metrics;
     ComPtr<IDWriteTextLayout> hint_layout;
     if (!hint_.empty()) {
-        auto hint_format = CreateTextFormat(DpF(kHintFontSize), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        auto hint_format = CreateTextFormat(SizePxF(kHintFontSize, 12, 11), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        if (hint_format) hint_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         hint_layout = CreateTextLayout(hint_, hint_format.Get(), text_width, false);
         if (hint_layout) {
             DWRITE_TEXT_METRICS metrics{};
             if (SUCCEEDED(hint_layout->GetMetrics(&metrics))) {
+                hint_metrics.width = std::ceil(std::max(metrics.width, metrics.widthIncludingTrailingWhitespace));
                 hint_metrics.height = std::ceil(metrics.height);
+                hint_metrics.top = metrics.top;
             }
         }
     }
 
-    const float gap = hint_.empty() ? 0.0f : DpF(8);
-    const float block_height = text_metrics.height + gap + hint_metrics.height;
-    const float block_y = static_cast<float>(visual_y + shadow_padding) +
-                          std::max(0.0f, (static_cast<float>(visual_height - shadow_padding * 2) - block_height) / 2.0f);
+    const float gap = hint_.empty() ? 0.0f : SizePxF(8, 6, 5);
+    const float text_visual_top = text_metrics.top;
+    const float text_visual_bottom = text_metrics.top + text_metrics.height;
+    const float hint_y = text_metrics.height + gap;
+    const float block_visual_top = text_visual_top;
+    const float block_visual_bottom = hint_.empty()
+        ? text_visual_bottom
+        : std::max(text_visual_bottom, hint_y + hint_metrics.top + hint_metrics.height);
+    const float block_visual_height = block_visual_bottom - block_visual_top;
+    const float content_top = static_cast<float>(visual_y + shadow_padding);
+    const float content_height = static_cast<float>(visual_height - shadow_padding * 2);
+    const float vertical_optical_offset = hint_.empty() ? SizePxF(3, 2, 2) : 0.0f;
+    const float block_y = content_top + std::max(0.0f, (content_height - block_visual_height) / 2.0f) - block_visual_top + vertical_optical_offset;
 
     auto render_target = CreateBitmapRenderTarget(bits, width, height);
     if (!render_target.target || !render_target.bitmap) return;
     const D2D1_RECT_F text_clip = D2D1::RectF(
-        static_cast<float>(visual_x + shadow_padding),
+        text_x,
         static_cast<float>(visual_y + shadow_padding),
-        static_cast<float>(visual_x + visual_width - shadow_padding),
+        text_x + text_width,
         static_cast<float>(visual_y + visual_height - shadow_padding));
+    text_scroll_to_offset_ = std::max(0.0f, current_text.metrics.width - text_width);
+    float scroll_offset = text_scroll_to_offset_;
+    if (text_transition_started_at_ms_ != 0) {
+        const ULONGLONG elapsed_ms = GetTickCount64() - text_transition_started_at_ms_;
+        const float progress = std::clamp(static_cast<float>(elapsed_ms) /
+                                          static_cast<float>(kTextTransitionMs), 0.0f, 1.0f);
+        const float eased = 1.0f - (1.0f - progress) * (1.0f - progress);
+        scroll_offset = text_scroll_from_offset_ +
+                        (text_scroll_to_offset_ - text_scroll_from_offset_) * eased;
+        if (progress >= 1.0f) {
+            text_transition_started_at_ms_ = 0;
+        }
+    }
+    last_text_scroll_offset_ = scroll_offset;
+    const float centered_offset = std::max(0.0f, (text_width - current_text.metrics.width) / 2.0f);
+    const float text_draw_x = text_x + centered_offset - scroll_offset;
     render_target.target->BeginDraw();
     render_target.target->PushAxisAlignedClip(text_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    DrawTextLayout(render_target.target.Get(), text_layout.Get(), text_x, block_y,
-                   kTextAlpha, kInkRgb);
-    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), text_x,
-                   block_y + text_metrics.height + gap, kHintAlpha, kInkRgb);
+    const float shadow_offset = std::max(1.0f, DpF(1));
+    DrawTextLayout(render_target.target.Get(), current_text.layout.Get(), text_draw_x + shadow_offset,
+                   block_y + shadow_offset, kTextShadowAlpha, 0);
+    const float hint_draw_x = text_x + std::max(0.0f, (text_width - hint_metrics.width) / 2.0f);
+    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), hint_draw_x + shadow_offset,
+                   block_y + text_metrics.height + gap + shadow_offset,
+                   kTextShadowAlpha, 0);
+    DrawTextLayout(render_target.target.Get(), current_text.layout.Get(), text_draw_x, block_y,
+                   kTextAlpha, ink_rgb);
+    DrawTextLayout(render_target.target.Get(), hint_layout.Get(), hint_draw_x,
+                   block_y + text_metrics.height + gap, kHintAlpha, ink_rgb);
     render_target.target->PopAxisAlignedClip();
     if (SUCCEEDED(render_target.target->EndDraw())) {
         render_target.bitmap->CopyPixels(nullptr, render_target.stride,
@@ -760,33 +1013,43 @@ void OverlayWindow::PaintText(void* bits, int width, int height) {
     }
 }
 
+BYTE OverlayWindow::InkRgb() const {
+    return resolved_theme_color_ == OverlayThemeColor::kBlack ? 16 : kInkRgb;
+}
+
 void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, int size) {
+    const BYTE ink_rgb = InkRgb();
     const int cx = x + size / 2;
     const int cy = y + size / 2;
 
     if (mode_ == Mode::kListening) {
-        const int bar_width = Dp(4);
-        const int spacing = Dp(5);
+        const int bar_width = std::max(2, SizePx(3, 3, 2));
+        const int spacing = SizePx(4, 3, 3);
         const int num_bars = 3;
         const int total_w = num_bars * bar_width + (num_bars - 1) * spacing;
-        int start_x = cx - total_w / 2;
+        const int start_x = cx - total_w / 2;
         const double elapsed = static_cast<double>(GetTickCount64() % 100000) / 1000.0;
 
-        Gdiplus::SolidBrush bar_brush(Gdiplus::Color(kIndicatorAlpha, kInkRgb, kInkRgb, kInkRgb));
+        Gdiplus::SolidBrush bar_brush(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb));
         for (int i = 0; i < num_bars; ++i) {
-            const double phase = elapsed * 5.5 + i * 0.85;
-            const int bar_h = Dp(9) + static_cast<int>(Dp(10) * (0.5 + 0.5 * std::sin(phase)));
-            int bx = start_x + i * (bar_width + spacing);
-            int by = cy - bar_h / 2;
-            graphics.FillRectangle(&bar_brush, bx, by, bar_width, bar_h);
+            const double phase = elapsed * 4.2 + i * 0.9;
+            const int bar_h = SizePx(7, 6, 5) + static_cast<int>(SizePx(9, 7, 6) * (0.5 + 0.5 * std::sin(phase)));
+            const int bx = start_x + i * (bar_width + spacing);
+            const int by = cy - bar_h / 2;
+            Gdiplus::GraphicsPath bar_path;
+            AddRoundedRect(bar_path,
+                           Gdiplus::RectF(static_cast<float>(bx), static_cast<float>(by),
+                                          static_cast<float>(bar_width), static_cast<float>(bar_h)),
+                           static_cast<float>(bar_width) / 2.0f);
+            graphics.FillPath(&bar_brush, &bar_path);
         }
     } else if (mode_ == Mode::kCountdown) {
-        Gdiplus::Pen track_pen(Gdiplus::Color(kIndicatorTrackAlpha, kInkRgb,
-                                              kInkRgb, kInkRgb), DpF(3));
-        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, kInkRgb, kInkRgb, kInkRgb), DpF(3));
+        Gdiplus::Pen track_pen(Gdiplus::Color(kIndicatorTrackAlpha, ink_rgb,
+                                              ink_rgb, ink_rgb), SizePxF(3, 2, 2));
+        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), SizePxF(3, 2, 2));
         ring_pen.SetStartCap(Gdiplus::LineCapRound);
         ring_pen.SetEndCap(Gdiplus::LineCapRound);
-        const int inset = Dp(5);
+        const int inset = SizePx(5, 4, 4);
         Gdiplus::RectF ring_rect(static_cast<Gdiplus::REAL>(x + inset),
                                  static_cast<Gdiplus::REAL>(y + inset),
                                  static_cast<Gdiplus::REAL>(size - inset * 2),
@@ -803,12 +1066,12 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
             graphics.DrawArc(&ring_pen, ring_rect, -90.0f, -360.0f * remaining);
         }
     } else if (mode_ == Mode::kPaused) {
-        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, kInkRgb, kInkRgb, kInkRgb), DpF(3));
-        const int inset = Dp(5);
+        Gdiplus::Pen ring_pen(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb), SizePxF(3, 2, 2));
+        const int inset = SizePx(5, 4, 4);
         graphics.DrawEllipse(&ring_pen, x + inset, y + inset, size - inset * 2, size - inset * 2);
     } else if (mode_ == Mode::kError) {
-        Gdiplus::Pen ring_pen(Gdiplus::Color(255, 200, 60, 60), DpF(3));
-        const int inset = Dp(5);
+        Gdiplus::Pen ring_pen(Gdiplus::Color(255, 200, 60, 60), SizePxF(3, 2, 2));
+        const int inset = SizePx(5, 4, 4);
         graphics.DrawEllipse(&ring_pen, x + inset, y + inset, size - inset * 2, size - inset * 2);
 
         const int x_inset = size / 3;
@@ -832,6 +1095,8 @@ void OverlayWindow::StartFadeOut() {
     target_alpha_ = 0;
     UpdateLayeredBitmap();
     ShowWindow(hwnd_, SW_HIDE);
+    if (backdrop_) backdrop_->Hide();
+    backdrop_bounds_valid_ = false;
     mode_ = Mode::kHidden;
     largest_visible_width_ = 0;
     largest_visible_height_ = 0;

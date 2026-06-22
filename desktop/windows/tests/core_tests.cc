@@ -2,7 +2,9 @@
 #include "ble_protocol.h"
 #include "byte_utils.h"
 #include "firmware_manifest.h"
+#include "localization.h"
 #include "ogg_opus_muxer.h"
+#include "pair_device_helper.h"
 #include "voice_stick_coordinator.h"
 
 #include <algorithm>
@@ -27,6 +29,13 @@ struct SentUiState {
     std::optional<std::string> device_id;
 };
 
+struct SentRemoteButton {
+    RemoteButtonAction action;
+    std::string button;
+    std::optional<std::string> device_id;
+    std::uint32_t request_id;
+};
+
 class FakeBleCentral : public BleCentral {
 public:
     void Start() override {}
@@ -46,6 +55,19 @@ public:
                              const std::optional<std::string>& device_id) override {
         sent_interaction_modes.push_back(std::pair{mode, device_id});
     }
+    void SendPromptToneEnabled(bool enabled,
+                               const std::optional<std::string>& device_id) override {
+        sent_prompt_tones.push_back(std::pair{enabled, device_id});
+    }
+    void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
+        battery_status_requests.push_back(device_id);
+    }
+    void SendRemoteButton(RemoteButtonAction action,
+                          const std::string& button,
+                          const std::optional<std::string>& device_id,
+                          std::uint32_t request_id) override {
+        sent_remote_buttons.push_back(SentRemoteButton{action, button, device_id, request_id});
+    }
     void UpdateFirmware(ByteVector,
                         const std::string&,
                         std::function<void(FirmwareUpdateProgress)>,
@@ -61,6 +83,9 @@ public:
     std::set<std::string> connected_device_ids;
     std::vector<SentUiState> sent_ui_states;
     std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_prompt_tones;
+    std::vector<std::optional<std::string>> battery_status_requests;
+    std::vector<SentRemoteButton> sent_remote_buttons;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -100,6 +125,13 @@ public:
     }
     void SetDeviceInfo(const DeviceInfo& info) override {
         device_infos.push_back(info);
+    }
+    void SetDeviceBattery(const std::string& device_id, int level_percent,
+                           bool charging, bool usb_powered) override {
+        (void)device_id;
+        (void)level_percent;
+        (void)charging;
+        (void)usb_powered;
     }
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override {
         firmware_info_by_device_id = info_by_device_id;
@@ -158,6 +190,9 @@ public:
     void HideSubtitles() override {
         ++hide_subtitles_count;
     }
+    void ShowNotification(const std::string& title, const std::string& body) override {
+        notifications.push_back(title + ":" + body);
+    }
 
     std::vector<std::string> statuses;
     std::vector<ConnectedDevice> connected_devices;
@@ -172,6 +207,7 @@ public:
     std::vector<std::string> paused_finals;
     std::vector<std::string> errors;
     std::vector<std::string> subtitles;
+    std::vector<std::string> notifications;
     std::function<void()> final_countdown_completion;
     std::function<void()> error_completion;
     bool has_recoverable_input_set = false;
@@ -245,6 +281,82 @@ void TestDeviceIds() {
     assert(BleProtocol::NormalizeDeviceId("09af") == "09AF");
     assert(!BleProtocol::DeviceIdFromName("Other").has_value());
     assert(BleProtocol::DeviceIdFromName("VS-C3D8").value() == "C3D8");
+
+    const ByteVector complete_name_ad = {0x02, 0x01, 0x06, 0x08, 0x09, 'V', 'S', '-', 'C', '3', 'D', '8'};
+    assert(BleProtocol::LocalNameFromAdvertisementData(complete_name_ad).value() == "VS-C3D8");
+    const ByteVector shortened_name_ad = {0x08, 0x08, 'V', 'S', '-', 'A', '1', 'B', '2'};
+    assert(BleProtocol::LocalNameFromAdvertisementData(shortened_name_ad).value() == "VS-A1B2");
+    const ByteVector malformed_ad = {0x08, 0x09, 'V', 'S'};
+    assert(!BleProtocol::LocalNameFromAdvertisementData(malformed_ad).has_value());
+    const ByteVector service_uuid_ad = {
+        0x02, 0x01, 0x06,
+        0x11, 0x07,
+        0x00, 0x51, 0xfc, 0xea, 0x3c, 0x3a, 0xf7, 0x88,
+        0x23, 0x4b, 0x6f, 0x6e, 0x84, 0x0b, 0x2f, 0x8f,
+    };
+    assert(BleProtocol::HasVoiceStickServiceUuid(service_uuid_ad));
+    assert(!BleProtocol::HasVoiceStickServiceUuid(complete_name_ad));
+    assert(BleProtocol::DeviceIdFromBluetoothAddress(0xAABBCCDDEEFF) == "EEFF");
+}
+
+void TestPairDeviceHelpers() {
+    assert(ParseManualPairDeviceId("abcd").value() == "ABCD");
+    assert(ParseManualPairDeviceId("VS-abcd").value() == "ABCD");
+    assert(ParseManualPairDeviceId(" vs-09af ").value() == "09AF");
+    assert(!ParseManualPairDeviceId("VS-123").has_value());
+    assert(!ParseManualPairDeviceId("VoiceStick").has_value());
+
+    PairingCandidate ready;
+    ready.device_id = "C3D8";
+    ready.display_name = "VS-C3D8";
+    ready.bluetooth_address = 0xAABBCCDDEEFF;
+    ready.id_source = PairingCandidateIdSource::kName;
+    assert(CandidateDisplayTitle(ready) == "VS-C3D8");
+    assert(CanPairCandidate(ready));
+
+    PairingCandidate existing = ready;
+    existing.is_existing_device = true;
+    assert(CandidateDisplayTitle(existing) == "VS-C3D8 (paired)");
+    assert(!CanPairCandidate(existing));
+
+    PairingCandidate temporary = ready;
+    temporary.device_id = "EEFF";
+    temporary.display_name.clear();
+    temporary.id_source = PairingCandidateIdSource::kAddressFallback;
+    temporary.is_temporary_candidate = true;
+    assert(CandidateDisplayTitle(temporary) == "VoiceStick (waiting for name)");
+    assert(!CanPairCandidate(temporary));
+
+    std::vector<PairingCandidate> candidates;
+    MergePairingCandidate(&candidates, temporary);
+    assert(candidates.size() == 1);
+    assert(VisiblePairingCandidates(candidates, {}, 1000, 3000).empty());
+    ready.bluetooth_address = 0x112233445566;
+    ready.device_id = temporary.device_id;
+    ready.display_name = "VS-EEFF";
+    MergePairingCandidate(&candidates, ready);
+    assert(candidates.size() == 1);
+    assert(!candidates.front().is_temporary_candidate);
+    assert(candidates.front().display_name == "VS-EEFF");
+
+    PairingCandidate late_temporary = temporary;
+    late_temporary.bluetooth_address = 0x66778899AABB;
+    MergePairingCandidate(&candidates, late_temporary);
+    assert(candidates.size() == 1);
+    assert(!candidates.front().is_temporary_candidate);
+
+    candidates.push_back(late_temporary);
+    std::vector<RetainedPairingCandidate> retained;
+    RetainNamedPairingCandidate(&retained, candidates.front(), 1000);
+    const auto visible = VisiblePairingCandidates(candidates, retained, 2000, 3000);
+    assert(visible.size() == 1);
+    assert(!visible.front().is_temporary_candidate);
+
+    std::vector<PairingCandidate> temporary_only{late_temporary};
+    const auto retained_visible = VisiblePairingCandidates(temporary_only, retained, 2500, 3000);
+    assert(retained_visible.size() == 1);
+    assert(retained_visible.front().display_name == "VS-EEFF");
+    assert(VisiblePairingCandidates(temporary_only, retained, 5001, 3000).empty());
 }
 
 void TestAudioFrameParsing() {
@@ -264,6 +376,15 @@ void TestAudioFrameParsing() {
     assert(parsed->IsStart());
     assert(parsed->IsEnd());
     assert(parsed->payload.size() == 3);
+}
+
+void TestBleControlPayloads() {
+    auto enabled = BleProtocol::PromptTonePayload(true);
+    auto disabled = BleProtocol::PromptTonePayload(false);
+    auto battery_request = BleProtocol::BatteryStatusRequestPayload();
+    assert(std::string(enabled.begin(), enabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":true}");
+    assert(std::string(disabled.begin(), disabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":false}");
+    assert(std::string(battery_request.begin(), battery_request.end()) == "{\"event\":\"battery_status_request\"}");
 }
 
 void TestStateParsing() {
@@ -405,12 +526,30 @@ void TestAppConfig() {
     cache.paired_device_ids.push_back(entry.device_id);
     assert(cache.paired_devices.front().hardware == "stick_s3");
     assert(cache.paired_devices.front().firmware_version == "0.1.2");
+    assert(OverlayThemeColorFromName("auto") == OverlayThemeColor::kAuto);
+    assert(OverlayThemeColorFromName("black") == OverlayThemeColor::kBlack);
     assert(OverlayThemeColorFromName("pink") == OverlayThemeColor::kPink);
+    assert(OverlayThemeColorName(OverlayThemeColor::kAuto) == "auto");
     assert(OverlayThemeColorName(OverlayThemeColor::kGreen) == "green");
+    assert(OverlayThemeColorName(OverlayThemeColor::kBlack) == "black");
+    assert(OverlayThemeColorDisplayName(OverlayThemeColor::kAuto) == "Auto");
     assert(OverlayThemeColorDisplayName(OverlayThemeColor::kYellow) == "Yellow");
+    assert(OverlayThemeColorDisplayName(OverlayThemeColor::kBlack) == "Black");
+    assert(DefaultOverlayThemeColor() == OverlayThemeColor::kAuto);
+    assert(VoiceStickCoordinator::ThemeColorForConfig(AppConfig::Defaults(), "5A74") == OverlayThemeColor::kAuto);
+    assert(OverlayThemeSizeFromName("medium") == OverlayThemeSize::kMedium);
+    assert(OverlayThemeSizeFromName("small") == OverlayThemeSize::kSmall);
+    assert(OverlayThemeSizeFromName("big") == OverlayThemeSize::kBig);
+    assert(OverlayThemeSizeName(OverlayThemeSize::kMedium) == "medium");
+    assert(OverlayThemeSizeDisplayName(OverlayThemeSize::kSmall) == "Small");
+    assert(OverlayPositionFromName("bottom_center") == OverlayPosition::kBottomCenter);
+    assert(OverlayPositionFromName("middle_bottom") == OverlayPosition::kBottomCenter);
     assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);
     assert(OverlayPositionName(OverlayPosition::kBottomLeft) == "bottom_left");
+    assert(OverlayPositionName(OverlayPosition::kBottomCenter) == "bottom_center");
     assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");
+    assert(OverlayPositionDisplayName(OverlayPosition::kBottomCenter) == "Bottom Center");
+    assert(DefaultOverlayPosition() == OverlayPosition::kBottomCenter);
     cache.default_output_profile.target = OutputTarget::kSubtitle;
     cache.default_output_profile.transform = TextTransform::kOriginal;
     cache.device_output_profiles["5A74"] = OutputProfile{
@@ -424,6 +563,35 @@ void TestAppConfig() {
     assert(profile.translation_target == "zh-Hans");
     assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
     assert(TextTransformFromName("translate") == TextTransform::kTranslate);
+    assert(AppConfig::Defaults().ui_language == UiLanguage::kSystem);
+    assert(!AppConfig::Defaults().launch_at_login);
+    assert(UiLanguageFromName("system") == UiLanguage::kSystem);
+    assert(UiLanguageFromName("en") == UiLanguage::kEnglish);
+    assert(UiLanguageFromName("zh-Hans") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromName("invalid") == UiLanguage::kSystem);
+    assert(UiLanguageName(UiLanguage::kSystem) == "system");
+    assert(UiLanguageName(UiLanguage::kEnglish) == "en");
+    assert(UiLanguageName(UiLanguage::kSimplifiedChinese) == "zh-Hans");
+    assert(UiLanguageFromLocaleName(L"en-US") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"en-GB") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"zh-CN") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"zh-Hans") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"zh-TW") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"ja-JP") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"") == UiLanguage::kEnglish);
+    assert(!Tr(StringId::kSettingsTitle, UiLanguage::kEnglish).empty());
+    assert(Tr(StringId::kSettingsTitle, UiLanguage::kSimplifiedChinese) == "VoiceStick 设置");
+    assert(Tr(StringId::kSettingsLaunchAtLogin, UiLanguage::kEnglish) == "Start VoiceStick when Windows starts");
+    assert(Tr(StringId::kMenuLaunchAtLogin, UiLanguage::kSimplifiedChinese) == "开机自启动");
+    assert(Tr(StringId::kPairManualIdHint, UiLanguage::kEnglish) == "Can't find it? Enter the 4-digit ID shown on the Stick:");
+    assert(Tr(StringId::kPairManualIdHint, UiLanguage::kSimplifiedChinese) == "找不到设备？请输入 Stick 屏幕显示的 4 位 ID：");
+    assert(Tr(StringId::kHotkeyCapturePrompt, UiLanguage::kEnglish) == "Press a hotkey combination...");
+    assert(Tr(StringId::kFirmwareUpdateFinalizing, UiLanguage::kSimplifiedChinese) == "正在完成固件更新...");
+    assert(BatteryStatusText(83, false, false, UiLanguage::kEnglish) == "83%");
+    assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");
+    assert(BatteryStatusText(83, false, true, UiLanguage::kSimplifiedChinese) == "83%，外接电源");
+    assert(DeviceTitleWithBattery(L"VS-5A74", 83, true, false, UiLanguage::kSimplifiedChinese) == L"VS-5A74 (83%，充电中)");
+    assert(LocalizationTablesAreComplete());
     const auto hotwords = ParseHotwordList(" 小智,VoiceStick\r\n小智\n豆包 ");
     assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));
 }
@@ -444,6 +612,74 @@ void TestFirmwareManifestParsingAndVersionCompare() {
     assert(IsFirmwareHardwareCompatible("sticks3", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
+}
+
+void TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.prompt_tone_enabled = false;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    assert(!ble_ptr->sent_prompt_tones.empty());
+    assert(ble_ptr->sent_prompt_tones.back().first == false);
+    assert(!ble_ptr->sent_prompt_tones.back().second.has_value());
+
+    AppConfig updated = config;
+    updated.prompt_tone_enabled = true;
+    coordinator.UpdateConfig(updated);
+
+    assert(ble_ptr->sent_prompt_tones.back().first == true);
+    assert(!ble_ptr->sent_prompt_tones.back().second.has_value());
+}
+
+void TestCoordinatorHotkeyWithoutConnectionShowsWakeHint() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.debug_audio_cache = true;
+    config.paired_device_ids.push_back("5A74");
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    coordinator.HandleGlobalHotkeyPressed();
+
+    assert(ble_ptr->sent_remote_buttons.empty());
+    assert(!ui.statuses.empty());
+    assert(ui.statuses.back() == "Hotkey: VoiceStick not connected; press the main button to wake it");
+    assert(!ui.notifications.empty());
+    assert(ui.notifications.back().find("按主键唤醒") != std::string::npos);
+}
+
+void TestCoordinatorHotkeyWithConnectionSendsRemoteButton() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids.push_back("5A74");
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.HandleGlobalHotkeyPressed();
+
+    assert(ble_ptr->sent_remote_buttons.size() == 1);
+    assert(ble_ptr->sent_remote_buttons.back().action == RemoteButtonAction::kDown);
+    assert(ble_ptr->sent_remote_buttons.back().button == "primary");
+    assert(ble_ptr->sent_remote_buttons.back().device_id == std::optional<std::string>("5A74"));
 }
 
 void TestCoordinatorCancelsShortPrimaryPress() {
@@ -541,7 +777,7 @@ void TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd() {
     assert(asr_ptr->last_chunk_was_final);
 }
 
-void TestCoordinatorPrimaryPausesPendingConfirmation() {
+void TestCoordinatorMainFinalPastesWithoutConfirmation() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -558,14 +794,12 @@ void TestCoordinatorPrimaryPausesPendingConfirmation() {
     ble_ptr->on_audio_frame("5A74", EmptyEndFrame(9, 2));
     asr_ptr->on_final("hello");
 
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary"));
-
-    assert(ui.final_countdowns.size() == 1);
-    assert(ui.final_countdowns.back() == "hello");
-    assert(ui.paused_finals.size() == 1);
-    assert(ui.paused_finals.back() == "hello");
-    assert(ble_ptr->sent_ui_states.back().state == "pending_confirmation");
-    assert(ble_ptr->sent_ui_states.back().text == "hello");
+    assert(input.pasted_text == "hello");
+    assert(input.pasted_enter);
+    assert(ui.final_countdowns.empty());
+    assert(ui.paused_finals.empty());
+    assert(ui.hide_overlay_count == 1);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
 }
 
 void TestCoordinatorOtherDeviceDuringRecordingGetsReady() {
@@ -823,17 +1057,22 @@ void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
 
 int main() {
     TestDeviceIds();
+    TestPairDeviceHelpers();
     TestAudioFrameParsing();
+    TestBleControlPayloads();
     TestStateParsing();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
     TestFirmwareManifestParsingAndVersionCompare();
+    TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();
+    TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
+    TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();
     TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd();
-    TestCoordinatorPrimaryPausesPendingConfirmation();
+    TestCoordinatorMainFinalPastesWithoutConfirmation();
     TestCoordinatorOtherDeviceDuringRecordingGetsReady();
     TestCoordinatorSubtitleOutputSkipsPaste();
     TestCoordinatorSubtitleFinalDoesNotBlockNextSession();

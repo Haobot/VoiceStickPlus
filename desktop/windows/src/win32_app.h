@@ -2,6 +2,8 @@
 
 #include "app_config.h"
 #include "firmware_update_dialog.h"
+#include "global_hotkey_win.h"
+#include "hotkey_settings_dialog.h"
 #include "input_injector_win.h"
 #include "onboarding_dialog.h"
 #include "overlay_window.h"
@@ -12,6 +14,7 @@
 
 #include <Windows.h>
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <optional>
@@ -19,6 +22,12 @@
 #include <vector>
 
 namespace voicestick {
+
+struct DeviceBattery {
+    int level_percent = 0;
+    bool charging = false;
+    bool usb_powered = false;
+};
 
 class Win32App : public VoiceStickUi {
 public:
@@ -28,6 +37,8 @@ public:
     void SetStatus(const std::string& status) override;
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) override;
     void SetDeviceInfo(const DeviceInfo& info) override;
+    void SetDeviceBattery(const std::string& device_id, int level_percent,
+                           bool charging, bool usb_powered) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
     void SetPairingError(const std::string& device_id, const std::string& message) override;
     void ShowFirmwareUpdatePrompt(const std::string& device_id,
@@ -53,6 +64,7 @@ public:
                       const std::string& device_id,
                       OverlayThemeColor color) override;
     void HideSubtitles() override;
+    void ShowNotification(const std::string& title, const std::string& body) override;
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -62,21 +74,25 @@ private:
     void RemoveTrayIcon();
     void ShowTrayMenu();
     void RebuildTooltip();
+    void UpdateTrayIcon();
+    void RequestConnectedBatteryStatus();
     void RegisterTaskbarMessage();
     bool ShowOnboardingIfNeeded();
     bool ShowOnboarding();
     void ShowPairDeviceDialog();
     void ShowSettings();
     void SaveInputOptions();
+    void SyncLaunchAtLogin();
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
+    void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
     void SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile);
     void ApplyOverlayStyle(const std::optional<std::string>& device_id);
     void StartFirmwareUpdate(const std::string& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);
+    void PairDeviceByManualId(const std::string& device_id);
     void HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info);
-    void ShowNotification(const std::string& title, const std::string& body);
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
     void ShutdownAndQuit();
@@ -87,6 +103,7 @@ private:
     UINT taskbar_created_message_ = 0;
     AppConfig config_;
     InputInjectorWin input_injector_;
+    std::unique_ptr<GlobalHotkeyWin> global_hotkey_;
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
@@ -98,10 +115,12 @@ private:
     std::vector<ConnectedDevice> connected_devices_;
     std::vector<std::string> paired_device_ids_;
     std::map<std::string, DeviceInfo> device_info_map_;
+    std::map<std::string, DeviceBattery> device_battery_map_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;
+    std::chrono::steady_clock::time_point last_battery_status_request_{};
 };
 
 } // namespace voicestick

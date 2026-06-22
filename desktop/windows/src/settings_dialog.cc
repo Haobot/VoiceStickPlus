@@ -1,5 +1,6 @@
 #include "settings_dialog.h"
 #include "dpi_util.h"
+#include "localization.h"
 #include "voice_stick_cloud_api_win.h"
 
 #include <ShlObj.h>
@@ -234,6 +235,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         llm_base_url_edit_ = nullptr;
         llm_api_key_edit_ = nullptr;
         llm_model_edit_ = nullptr;
+        prompt_tone_check_ = nullptr;
+        launch_at_login_check_ = nullptr;
         debug_audio_check_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
@@ -296,6 +299,7 @@ void SettingsDialog::DestroyControls() {
     llm_base_url_edit_ = nullptr;
     llm_api_key_edit_ = nullptr;
     llm_model_edit_ = nullptr;
+    prompt_tone_check_ = nullptr;
     debug_audio_check_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
@@ -323,8 +327,26 @@ void SettingsDialog::BuildControls() {
     const int ctrl_w = Dp(kClientWidth - 170);
     const int row_h = Dp(28);
     int y = Dp(20);
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    SetWindowTextW(hwnd_, TrW(StringId::kSettingsTitle, language).c_str());
 
-    remember_label(CreateLabel(hwnd_, L"Provider:", Dp(10), y + Dp(3), label_w,
+    auto label_text = [&](StringId id) {
+        return TrW(id, language) + L":";
+    };
+
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLanguage).c_str(), Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    language_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(140),
+                                           kIdLanguageCombo, instance_));
+    SendMessageW(language_combo_, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageSystem, language).c_str()));
+    SendMessageW(language_combo_, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageEnglish, language).c_str()));
+    SendMessageW(language_combo_, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageChineseSimplified, language).c_str()));
+    y += row_h + Dp(10);
+
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsProvider).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     provider_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(200),
                                            kIdProviderCombo, instance_));
@@ -332,18 +354,18 @@ void SettingsDialog::BuildControls() {
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
     y += row_h + Dp(10);
 
-    remember_label(CreateLabel(hwnd_, L"API Key:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     const int apply_btn_w = Dp(102);
     api_key_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - apply_btn_w - Dp(8), Dp(24),
                                         kIdApiKeyEdit, instance_, ES_PASSWORD));
-    apply_trial_button_ = remember(CreateButton(hwnd_, L"Apply Trial",
+    apply_trial_button_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsApplyTrial, language).c_str(),
                                                 ctrl_x + ctrl_w - apply_btn_w, y,
                                                 apply_btn_w, Dp(24),
                                                 kIdApplyTrialApiKey, instance_));
     y += row_h + Dp(10);
 
-    resource_label_ = remember_label(CreateLabel(hwnd_, L"Resource ID:", Dp(10),
+    resource_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsResourceId).c_str(), Dp(10),
                                                  y + Dp(3), label_w, Dp(20), instance_));
     resource_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(200),
                                            kIdResourceCombo, instance_));
@@ -353,53 +375,67 @@ void SettingsDialog::BuildControls() {
     }
     y += row_h + Dp(16);
 
-    remember_label(CreateLabel(hwnd_, L"Hotwords:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsHotwords).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     hotwords_edit_ = remember(CreateMultilineEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(74),
                                                   kIdHotwordsEdit, instance_));
     y += Dp(80);
-    remember_label(CreateLeftLabel(hwnd_, L"Separate hotwords with commas or new lines.",
+    remember_label(CreateLeftLabel(hwnd_, TrW(StringId::kSettingsHotwordsHint, language).c_str(),
                                    ctrl_x, y, ctrl_w, Dp(16), instance_));
     y += Dp(26);
 
-    remember_label(CreateLabel(hwnd_, L"LLM Base URL:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmBaseUrl).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     llm_base_url_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
                                              kIdLlmBaseUrlEdit, instance_));
     y += row_h + Dp(10);
 
-    remember_label(CreateLabel(hwnd_, L"LLM API Key:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmApiKey).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     llm_api_key_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
                                             kIdLlmApiKeyEdit, instance_, ES_PASSWORD));
     y += row_h + Dp(10);
 
-    remember_label(CreateLabel(hwnd_, L"LLM Model:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmModel).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     llm_model_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
                                           kIdLlmModelEdit, instance_));
     y += row_h + Dp(16);
 
-    remember_label(CreateLabel(hwnd_, L"Debug:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
-    debug_audio_check_ = remember(CreateButton(hwnd_, L"Save debug audio files", ctrl_x, y,
+    prompt_tone_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsPromptTone, language).c_str(), ctrl_x, y,
+                                               ctrl_w, Dp(22), kIdPromptTone, instance_,
+                                               BS_AUTOCHECKBOX));
+    y += row_h + Dp(10);
+
+    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    launch_at_login_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsLaunchAtLogin, language).c_str(), ctrl_x, y,
+                                                   ctrl_w, Dp(22), kIdLaunchAtLogin, instance_,
+                                                   BS_AUTOCHECKBOX));
+    y += row_h + Dp(10);
+
+    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(), ctrl_x, y,
                                                ctrl_w, Dp(22), kIdDebugAudio, instance_,
                                                BS_AUTOCHECKBOX));
     y += row_h + Dp(10);
 
-    remember_label(CreateLabel(hwnd_, L"Audio Folder:", Dp(10), y + Dp(3), label_w,
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
                                           Dp(24), kIdDebugDirEdit, instance_, ES_READONLY));
-    remember(CreateButton(hwnd_, L"Browse...", ctrl_x + ctrl_w - Dp(75), y,
+    remember(CreateButton(hwnd_, TrW(StringId::kSettingsChooseDir, language).c_str(), ctrl_x + ctrl_w - Dp(75), y,
                           Dp(75), Dp(24), kIdChooseDir, instance_));
     y += row_h + Dp(20);
 
     const int btn_w = Dp(80);
     const int btn_h = Dp(30);
-    remember(CreateButton(hwnd_, L"Save", Dp(kClientWidth - 200), y, btn_w, btn_h,
+    remember(CreateButton(hwnd_, TrW(StringId::kSave, language).c_str(), Dp(kClientWidth - 200), y, btn_w, btn_h,
                           kIdSave, instance_));
-    remember(CreateButton(hwnd_, L"Cancel", Dp(kClientWidth - 105), y, btn_w, btn_h,
+    remember(CreateButton(hwnd_, TrW(StringId::kCancel, language).c_str(), Dp(kClientWidth - 105), y, btn_w, btn_h,
                           kIdCancel, instance_));
 
     for (HWND control : all_controls_) {
@@ -408,6 +444,11 @@ void SettingsDialog::BuildControls() {
 }
 
 void SettingsDialog::LoadConfigIntoControls() {
+    int language_index = 0;
+    if (config_.ui_language == UiLanguage::kEnglish) language_index = 1;
+    if (config_.ui_language == UiLanguage::kSimplifiedChinese) language_index = 2;
+    SendMessageW(language_combo_, CB_SETCURSEL, language_index, 0);
+
     SendMessageW(provider_combo_, CB_SETCURSEL,
                  config_.asr_provider == AsrProvider::kVoiceStickCloud ? 0 : 1, 0);
 
@@ -426,6 +467,8 @@ void SettingsDialog::LoadConfigIntoControls() {
     SetWindowTextW(llm_api_key_edit_, Utf16(config_.llm_api_key).c_str());
     SetWindowTextW(llm_model_edit_, Utf16(config_.llm_model).c_str());
 
+    SendMessageW(prompt_tone_check_, BM_SETCHECK, config_.prompt_tone_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(launch_at_login_check_, BM_SETCHECK, config_.launch_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
@@ -433,6 +476,15 @@ void SettingsDialog::LoadConfigIntoControls() {
 }
 
 void SettingsDialog::SaveSettings() {
+    int language_idx = static_cast<int>(SendMessageW(language_combo_, CB_GETCURSEL, 0, 0));
+    if (language_idx == 1) {
+        config_.ui_language = UiLanguage::kEnglish;
+    } else if (language_idx == 2) {
+        config_.ui_language = UiLanguage::kSimplifiedChinese;
+    } else {
+        config_.ui_language = UiLanguage::kSystem;
+    }
+
     int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
     AsrProvider new_provider = (provider_idx == 0) ? AsrProvider::kVoiceStickCloud
                                                    : AsrProvider::kVolcengine;
@@ -457,6 +509,8 @@ void SettingsDialog::SaveSettings() {
         config_.resource_id = Utf8(resource_buf);
     }
 
+    config_.prompt_tone_enabled = SendMessageW(prompt_tone_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.launch_at_login = SendMessageW(launch_at_login_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
     auto dir = GetWindowText(debug_dir_edit_);
@@ -488,9 +542,10 @@ void SettingsDialog::UpdateProviderVisibility() {
 void SettingsDialog::ApplyTrialApiKey() {
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
     if (idx != 0) return;
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
 
     EnableWindow(apply_trial_button_, FALSE);
-    SetWindowTextW(apply_trial_button_, L"Applying...");
+    SetWindowTextW(apply_trial_button_, TrW(StringId::kSettingsApplyingTrial, language).c_str());
     UpdateWindow(apply_trial_button_);
 
     const std::string device_id = config_.paired_device_ids.empty()
@@ -498,7 +553,7 @@ void SettingsDialog::ApplyTrialApiKey() {
                                       : config_.paired_device_ids.front();
     auto result = ApplyVoiceStickCloudTrialApiKey(config_.voicestick_cloud_url, device_id);
 
-    SetWindowTextW(apply_trial_button_, L"Apply Trial");
+    SetWindowTextW(apply_trial_button_, TrW(StringId::kSettingsApplyTrial, language).c_str());
     EnableWindow(apply_trial_button_, TRUE);
 
     if (!result.api_key.empty()) {
@@ -512,17 +567,17 @@ void SettingsDialog::ApplyTrialApiKey() {
         auto* shell_result = ShellExecuteW(hwnd_, L"open", wide_url.c_str(),
                                            nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(shell_result) <= 32) {
-            MessageBoxW(hwnd_, L"Could not open the VoiceStick Cloud signup page.",
-                        L"Could Not Apply Trial API Key", MB_ICONERROR | MB_OK);
+            MessageBoxW(hwnd_, TrW(StringId::kSettingsTrialFailedMessage, language).c_str(),
+                        TrW(StringId::kSettingsTrialFailedTitle, language).c_str(), MB_ICONERROR | MB_OK);
         }
         UpdateProviderVisibility();
         return;
     }
 
     MessageBoxW(hwnd_, Utf16(result.error.empty()
-                             ? "Could not apply a trial API Key."
+                             ? Tr(StringId::kSettingsTrialFailedMessage, language)
                              : result.error).c_str(),
-                L"Could Not Apply Trial API Key", MB_ICONERROR | MB_OK);
+                TrW(StringId::kSettingsTrialFailedTitle, language).c_str(), MB_ICONERROR | MB_OK);
     UpdateProviderVisibility();
 }
 

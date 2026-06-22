@@ -42,13 +42,21 @@ constexpr std::chrono::milliseconds kServiceDiscoveryRetryDelay{1000};
 constexpr std::chrono::milliseconds kServiceDiscoveryTimeout{8000};
 constexpr std::chrono::milliseconds kCharacteristicDiscoveryTimeout{5000};
 constexpr std::chrono::milliseconds kDeviceReopenDelay{800};
-constexpr std::chrono::milliseconds kConnectionSettleDelay{300};
+constexpr std::chrono::milliseconds kConnectionSettleDelay{100};
+constexpr std::chrono::milliseconds kValueChangedHandlerSettleDelay{100};
+constexpr std::chrono::milliseconds kDeviceInfoSettleDelay{100};
 
 // HRESULT_FROM_WIN32(ERROR_BAD_COMMAND): Windows surfaces this for our
 // scenario when the OS thinks the device is already paired/bonded but the
 // remote refuses or rolled its keys. We special-case it to suggest unpairing.
 constexpr std::int32_t kErrorBadCommand = static_cast<std::int32_t>(0x80070016);
 constexpr std::int32_t kErrorTimeout = static_cast<std::int32_t>(0x800705B4);
+
+long long ElapsedMs(std::chrono::steady_clock::time_point start) {
+    if (start == std::chrono::steady_clock::time_point{}) return -1;
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+}
 
 BluetoothAddressType ToBluetoothAddressType(BluetoothAddressKind kind) {
     switch (kind) {
@@ -76,6 +84,38 @@ const char* AddressKindName(BluetoothAddressKind kind) {
 
 std::string Utf8FromHstring(const winrt::hstring& value) {
     return winrt::to_string(value);
+}
+
+ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer) {
+    DataReader reader = DataReader::FromBuffer(buffer);
+    ByteVector bytes(reader.UnconsumedBufferLength());
+    if (!bytes.empty()) reader.ReadBytes(bytes);
+    return bytes;
+}
+
+struct AdvertisementIdentity {
+    std::string local_name;
+    bool has_voice_stick_service = false;
+};
+
+AdvertisementIdentity AdvertisementIdentityFrom(
+    const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisement& advertisement) {
+    AdvertisementIdentity identity;
+    identity.local_name = Utf8FromHstring(advertisement.LocalName());
+
+    ByteVector ad_data;
+    for (const auto& section : advertisement.DataSections()) {
+        const auto data = BytesFromBuffer(section.Data());
+        if (data.size() > 0xff - 1) continue;
+        ad_data.push_back(static_cast<std::uint8_t>(data.size() + 1));
+        ad_data.push_back(section.DataType());
+        ad_data.insert(ad_data.end(), data.begin(), data.end());
+    }
+    if (identity.local_name.empty()) {
+        identity.local_name = BleProtocol::LocalNameFromAdvertisementData(ad_data).value_or(std::string());
+    }
+    identity.has_voice_stick_service = BleProtocol::HasVoiceStickServiceUuid(ad_data);
+    return identity;
 }
 
 bool HasNotify(const GattCharacteristic& characteristic) {
@@ -324,6 +364,88 @@ void BleCentralWin::SendInteractionMode(InteractionMode mode,
     }
 }
 
+void BleCentralWin::SendPromptToneEnabled(bool enabled,
+                                          const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::PromptTonePayload(enabled);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+        }
+    }
+
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::RequestBatteryStatus(const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::BatteryStatusRequestPayload();
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+        }
+    }
+
+    for (auto& session : targets) {
+        LogBleLine("request battery_status dev=VS-" + session->device.id);
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
+                                     const std::string& button,
+                                     const std::optional<std::string>& device_id,
+                                     std::uint32_t request_id) {
+    std::string_view action_name = (action == RemoteButtonAction::kDown) ? "down" : "up";
+    auto payload = BleProtocol::RemoteButtonPayload(action_name, button, "global_hotkey", request_id);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            } else {
+                LogBleLine("send remote_button_" + std::string(action_name) +
+                           " skipped dev=VS-" + *device_id);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+            LogBleLine("send remote_button_" + std::string(action_name) +
+                       " broadcast target_count=" + std::to_string(targets.size()));
+        }
+    }
+
+    for (auto& session : targets) {
+        LogBleLine("send remote_button_" + std::string(action_name) +
+                   " dev=VS-" + session->device.id +
+                   " button=" + button +
+                   " request_id=" + std::to_string(request_id) +
+                   " payload_len=" + std::to_string(payload.size()));
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
 bool BleCentralWin::IsConnected(const std::string& device_id) const {
     std::lock_guard lock(mutex_);
     auto it = sessions_by_device_id_.find(device_id);
@@ -347,10 +469,6 @@ void BleCentralWin::UpdateFirmware(ByteVector image,
             return;
         }
         session = it->second;
-        if (!session->ota_rx_characteristic || !session->ota_state_characteristic) {
-            completion(false, "The connected firmware does not expose BLE OTA.");
-            return;
-        }
         if (image.size() > 3 * 1024 * 1024) {
             completion(false, "Firmware image is larger than the OTA partition.");
             return;
@@ -417,6 +535,7 @@ void BleCentralWin::StartScan() {
     received_token_ = watcher_.Received({this, &BleCentralWin::HandleAdvertisement});
     try {
         watcher_.Start();
+        scan_started_at_ = std::chrono::steady_clock::now();
         LogBleLine("scan started");
     } catch (const winrt::hresult_error& error) {
         const auto message = ScanStartFailureMessage(error);
@@ -452,17 +571,20 @@ void BleCentralWin::StopScan() {
             LogBleLine("scan stop failed: unknown error");
         }
         watcher_ = nullptr;
+        scan_started_at_ = {};
         LogBleLine("scan stopped");
     }
 }
 
 void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
                                         const BluetoothLEAdvertisementReceivedEventArgs& args) {
-    const auto local_name = Utf8FromHstring(args.Advertisement().LocalName());
-    auto device_id = BleProtocol::DeviceIdFromName(local_name);
-    if (!device_id.has_value()) return;
-
+    const auto identity = AdvertisementIdentityFrom(args.Advertisement());
     const auto bluetooth_address = args.BluetoothAddress();
+    auto device_id = BleProtocol::DeviceIdFromName(identity.local_name);
+    if (!device_id.has_value() && identity.has_voice_stick_service) {
+        device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+    }
+    if (!device_id.has_value()) return;
     BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
     if (CanReadAdvertisementAddressType()) {
         try {
@@ -492,8 +614,9 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
 
     LogBleLine("advertisement matched VS-" + *device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
-               " kind=" + AddressKindName(address_kind));
-    ConnectDeviceAsync(bluetooth_address, address_kind, local_name, *device_id);
+               " kind=" + AddressKindName(address_kind) +
+               " scan_to_adv_ms=" + std::to_string(ElapsedMs(scan_started_at_)));
+    ConnectDeviceAsync(bluetooth_address, address_kind, identity.local_name, *device_id);
 }
 
 namespace {
@@ -679,26 +802,31 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
     };
 
     try {
+        const auto connect_started_at = std::chrono::steady_clock::now();
+        auto stage_started_at = connect_started_at;
+        auto log_stage = [&](const std::string& stage, const std::string& extra = {}) {
+            std::string line = "connect stage VS-" + device_id + " stage=" + stage +
+                               " t=" + std::to_string(ElapsedMs(connect_started_at)) + "ms" +
+                               " dt=" + std::to_string(ElapsedMs(stage_started_at)) + "ms";
+            if (!extra.empty()) line += " " + extra;
+            LogBleLine(line);
+            stage_started_at = std::chrono::steady_clock::now();
+        };
         const auto address_type = ToBluetoothAddressType(address_kind);
         LogBleLine("connecting VS-" + device_id + " address=" + FormatBluetoothAddress(bluetooth_address) +
                    " kind=" + AddressKindName(address_kind));
+        log_stage("connect_begin", "address=" + FormatBluetoothAddress(bluetooth_address) +
+                                   " kind=" + AddressKindName(address_kind));
 
-        // Proactively remove any stale Windows pairing/bond before connecting.
-        // ESP32/NimBLE peripherals lose their bond when reset, but Windows
-        // caches the old LTK and tries to encrypt with it, causing
-        // BLE_HS_EENCRYPT_KEY_SZ (status=26) on the device and
-        // Unreachable GATT status on Windows.
-        {
-            auto probe_device = co_await open_device(address_type);
-            if (probe_device) {
-                if (co_await TryUnpairAsync(probe_device.DeviceId())) {
-                    LogBleLine("cleared stale Windows pairing for VS-" + device_id);
-                    co_await WaitMs(std::chrono::milliseconds(500));
-                }
-                probe_device.Close();
-            }
-        }
+        // Skip the pre-emptive unpair that was previously done here.
+        // Now that the firmware enables NimBLE bonding, the Windows bond
+        // (LTK) should be kept so that reconnection after a Stick or host
+        // reboot can skip the pairing exchange and establish encryption
+        // directly.  If the bond is stale (e.g. firmware was reflashed
+        // without preserving NVS), the service-discovery retry loop below
+        // will detect the failure and call TryUnpairAsync as a fallback.
 
+        log_stage("open_device_begin");
         session->ble_device = co_await open_device(address_type);
         if (!session->ble_device) {
             fail("Windows could not open the BLE device. Make sure the device is advertising and try again.");
@@ -706,38 +834,52 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         }
         LogBleLine("BluetoothLEDevice opened VS-" + device_id +
                    " device_id=" + winrt::to_string(session->ble_device.DeviceId()));
+        log_stage("open_device_done", "device_id=" + winrt::to_string(session->ble_device.DeviceId()));
         attach_device_handlers(session);
 
         // Give the controller a brief moment to actually establish the link
         // before triggering service discovery.
+        log_stage("settle_begin", "delay_ms=" + std::to_string(kConnectionSettleDelay.count()));
         co_await WaitMs(kConnectionSettleDelay);
+        log_stage("settle_done");
 
         try {
+            log_stage("gatt_session_begin");
             session->gatt_session = co_await GattSession::FromDeviceIdAsync(
                 session->ble_device.BluetoothDeviceId());
             if (session->gatt_session) {
                 session->gatt_session.MaintainConnection(true);
                 LogBleLine("GattSession created+maintained VS-" + device_id +
                            " max_pdu_size=" + std::to_string(session->gatt_session.MaxPduSize()));
+                log_stage("gatt_session_done", "max_pdu_size=" + std::to_string(session->gatt_session.MaxPduSize()));
+            } else {
+                log_stage("gatt_session_done", "session=null");
             }
         } catch (const winrt::hresult_error& error) {
             LogBleLine("early GattSession unavailable VS-" + device_id + ": " +
                        FormatHresult(error.code()));
+            log_stage("gatt_session_failed", "hr=" + FormatHresult(error.code()));
         }
 
         // Give MaintainConnection time to establish the link-layer
         // connection before triggering service discovery.
-        constexpr int kConnectionPollIntervalMs = 500;
-        constexpr int kConnectionPollAttempts = 8;
-        for (int poll = 0; poll < kConnectionPollAttempts; ++poll) {
+        constexpr int kConnectionPollIntervalMs = 100;
+        constexpr int kConnectionPollMaxMs = 4000;
+        constexpr int kConnectionPollAttempts = kConnectionPollMaxMs / kConnectionPollIntervalMs;
+        log_stage("wait_connected_begin", "poll_interval_ms=" + std::to_string(kConnectionPollIntervalMs));
+        int polls = 0;
+        for (; polls < kConnectionPollAttempts &&
+               session->ble_device.ConnectionStatus() != BluetoothConnectionStatus::Connected;
+             ++polls) {
             co_await WaitMs(std::chrono::milliseconds(kConnectionPollIntervalMs));
-            if (session->ble_device.ConnectionStatus() == BluetoothConnectionStatus::Connected) {
-                LogBleLine("link-layer connected VS-" + device_id +
-                           " after " + std::to_string((poll + 1) * kConnectionPollIntervalMs) + "ms");
-                break;
-            }
+        }
+        if (session->ble_device.ConnectionStatus() == BluetoothConnectionStatus::Connected) {
+            LogBleLine("link-layer connected VS-" + device_id +
+                       " after " + std::to_string(polls * kConnectionPollIntervalMs) + "ms");
         }
         auto pre_status = session->ble_device.ConnectionStatus();
+        log_stage("wait_connected_done", "polls=" + std::to_string(polls) +
+                                         " status=" + std::string(pre_status == BluetoothConnectionStatus::Connected ? "connected" : "disconnected"));
         LogBleLine("pre-discovery status VS-" + device_id + " = " +
                    (pre_status == BluetoothConnectionStatus::Connected ? "connected" : "disconnected") +
                    " max_pdu_size=" + (session->gatt_session
@@ -757,13 +899,15 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     co_return;
                 }
             }
-            const auto cache_mode = (attempt == kServiceDiscoveryAttempts)
+            const auto cache_mode = (attempt == 1)
                                         ? BluetoothCacheMode::Cached
                                         : BluetoothCacheMode::Uncached;
 
             std::int32_t throw_hresult = 0;
             std::string throw_message;
             try {
+                log_stage("service_discovery_begin", "attempt=" + std::to_string(attempt) +
+                                                     " mode=" + std::string(cache_mode == BluetoothCacheMode::Uncached ? "uncached" : "cached"));
                 auto async_op = session->ble_device.GetGattServicesAsync(cache_mode);
                 constexpr int kPollMs = 500;
                 const int max_polls = static_cast<int>(kServiceDiscoveryTimeout.count()) / kPollMs;
@@ -785,12 +929,15 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     async_op.Cancel();
                     throw_hresult = kErrorTimeout;
                     throw_message = "service discovery timed out";
+                    log_stage("service_discovery_timeout", "attempt=" + std::to_string(attempt));
                 } else {
                     service_result = async_op.GetResults();
                 }
             } catch (const winrt::hresult_error& error) {
                 throw_hresult = error.code();
                 throw_message = winrt::to_string(error.message());
+                log_stage("service_discovery_throw", "attempt=" + std::to_string(attempt) +
+                                                    " hr=" + FormatHresult(throw_hresult));
             }
 
             if (throw_hresult != 0) {
@@ -854,6 +1001,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                        (cache_mode == BluetoothCacheMode::Uncached ? "uncached" : "cached") +
                        " status=" + GattStatusName(status) +
                        " count=" + std::to_string(count));
+            log_stage("service_discovery_done", "attempt=" + std::to_string(attempt) +
+                                                 " mode=" + std::string(cache_mode == BluetoothCacheMode::Uncached ? "uncached" : "cached") +
+                                                 " status=" + GattStatusName(status) +
+                                                 " count=" + std::to_string(count));
 
             if (status == GattCommunicationStatus::Success && count > 0) {
                 const winrt::guid wanted{BleProtocol::service_uuid};
@@ -918,6 +1069,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         }
 
         LogBleLine("service discovered VS-" + device_id);
+        log_stage("service_discovered");
 
         if (!session->gatt_session) {
             try {
@@ -946,20 +1098,24 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
         auto discover_characteristic = [&](const winrt::guid& uuid,
                                            const char* label) -> GattCharsResult {
+            log_stage("characteristic_discovery_begin", "label=" + std::string(label));
             auto op = session->service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode::Uncached);
             if (op.wait_for(kCharacteristicDiscoveryTimeout) == AsyncStatus::Started) {
                 op.Cancel();
                 LogBleLine(std::string(label) + " characteristic discovery timed out VS-" + device_id);
+                log_stage("characteristic_discovery_timeout", "label=" + std::string(label));
                 return nullptr;
             }
-            return op.GetResults();
+            auto result = op.GetResults();
+            log_stage("characteristic_discovery_done", "label=" + std::string(label) +
+                                                        " status=" + GattStatusName(result.Status()) +
+                                                        " count=" + std::to_string(result.Characteristics().Size()));
+            return result;
         };
 
         auto audio_result = discover_characteristic(winrt::guid{BleProtocol::audio_uuid}, "audio_tx");
         auto state_result = discover_characteristic(winrt::guid{BleProtocol::state_uuid}, "state_tx");
         auto control_result = discover_characteristic(winrt::guid{BleProtocol::control_uuid}, "control_rx");
-        auto ota_rx_result = discover_characteristic(winrt::guid{BleProtocol::ota_rx_uuid}, "ota_rx");
-        auto ota_state_result = discover_characteristic(winrt::guid{BleProtocol::ota_state_uuid}, "ota_state");
         if (!audio_result || audio_result.Status() != GattCommunicationStatus::Success || audio_result.Characteristics().Size() == 0) {
             fail("audio_tx discovery failed: " + (audio_result ? GattStatusName(audio_result.Status()) : std::string("timeout")));
             co_return;
@@ -976,26 +1132,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         session->audio_characteristic = audio_result.Characteristics().GetAt(0);
         session->state_characteristic = state_result.Characteristics().GetAt(0);
         session->control_characteristic = control_result.Characteristics().GetAt(0);
-        if (ota_rx_result && ota_rx_result.Status() == GattCommunicationStatus::Success &&
-            ota_rx_result.Characteristics().Size() > 0) {
-            session->ota_rx_characteristic = ota_rx_result.Characteristics().GetAt(0);
-        }
-        if (ota_state_result && ota_state_result.Status() == GattCommunicationStatus::Success &&
-            ota_state_result.Characteristics().Size() > 0) {
-            session->ota_state_characteristic = ota_state_result.Characteristics().GetAt(0);
-        }
         if (!HasNotify(session->audio_characteristic) || !HasNotify(session->state_characteristic) ||
             !HasWriteWithoutResponse(session->control_characteristic)) {
             fail("required GATT characteristic properties are missing");
             co_return;
-        }
-        if (session->ota_rx_characteristic &&
-            !HasWrite(session->ota_rx_characteristic) &&
-            !HasWriteWithoutResponse(session->ota_rx_characteristic)) {
-            session->ota_rx_characteristic = nullptr;
-        }
-        if (session->ota_state_characteristic && !HasNotify(session->ota_state_characteristic)) {
-            session->ota_state_characteristic = nullptr;
         }
 
         session->audio_value_changed_token = session->audio_characteristic.ValueChanged(
@@ -1027,25 +1167,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     if (on_state_event) on_state_event(device_id, e);
                 });
             });
-        if (session->ota_state_characteristic) {
-            session->ota_state_value_changed_token = session->ota_state_characteristic.ValueChanged(
-                [this, device_id](const GattCharacteristic&, const auto& args) {
-                    auto bytes = BytesFromBuffer(args.CharacteristicValue());
-                    auto event = BleProtocol::ParseFirmwareOtaStateEvent(bytes);
-                    if (!event.has_value()) {
-                        LogBleLine("ota state notify VS-" + device_id + " parse failed");
-                        return;
-                    }
-                    DispatchToUiThread([this, device_id, e = std::move(*event)]() {
-                        HandleFirmwareOtaStateEvent(device_id, e);
-                    });
-                });
-        }
-
         // Give the Windows BTHLE driver a brief moment to wire the
         // ValueChanged handlers in before we ask for notifications. Without
         // this gap the very first notification can race past the handler.
-        co_await WaitMs(std::chrono::milliseconds(150));
+        co_await WaitMs(kValueChangedHandlerSettleDelay);
 
         // Subscribe to state first so the firmware delivers device_info as
         // soon as possible; the audio CCCD write is heavier (Windows seems
@@ -1053,45 +1178,37 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         // notifications on a high-throughput characteristic), and putting
         // state second has been observed to push device_info out by ~1s.
         LogBleLine("subscribing state notifications VS-" + device_id);
+        log_stage("state_subscribe_begin");
         auto state_subscribe = co_await session->state_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
         LogBleLine("state subscribe VS-" + device_id +
                    " status=" + GattStatusName(state_subscribe));
+        log_stage("state_subscribe_done", "status=" + GattStatusName(state_subscribe));
 
         // Let device_info ride out on the air before we issue another ATT op
         // (CCCD writes serialize the ATT channel and can delay the firmware's
         // outgoing notification by tens to hundreds of ms).
-        co_await WaitMs(std::chrono::milliseconds(250));
+        co_await WaitMs(kDeviceInfoSettleDelay);
 
         LogBleLine("subscribing audio notifications VS-" + device_id);
+        log_stage("audio_subscribe_begin");
         auto audio_subscribe = co_await session->audio_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
         LogBleLine("audio subscribe VS-" + device_id +
                    " status=" + GattStatusName(audio_subscribe));
-
-        GattCommunicationStatus ota_subscribe = GattCommunicationStatus::Success;
-        if (session->ota_state_characteristic) {
-            ota_subscribe = co_await session->ota_state_characteristic
-                .WriteClientCharacteristicConfigurationDescriptorAsync(
-                    GattClientCharacteristicConfigurationDescriptorValue::Notify);
-            LogBleLine("ota state subscribe VS-" + device_id +
-                       " status=" + GattStatusName(ota_subscribe));
-        }
+        log_stage("audio_subscribe_done", "status=" + GattStatusName(audio_subscribe));
 
         if (audio_subscribe != GattCommunicationStatus::Success ||
-            state_subscribe != GattCommunicationStatus::Success ||
-            ota_subscribe != GattCommunicationStatus::Success) {
+            state_subscribe != GattCommunicationStatus::Success) {
             fail("notification subscription failed: audio=" + GattStatusName(audio_subscribe) +
-                 " state=" + GattStatusName(state_subscribe) +
-                 " ota=" + GattStatusName(ota_subscribe));
+                 " state=" + GattStatusName(state_subscribe));
             co_return;
         }
 
         session->audio_subscribed = true;
         session->state_subscribed = true;
-        session->ota_state_subscribed = session->ota_state_characteristic != nullptr;
         session->ready = true;
         {
             std::lock_guard lock(mutex_);
@@ -1100,6 +1217,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         }
         PublishConnections();
         LogBleLine("connected VS-" + device_id);
+        log_stage("ready");
         SendUiState("ready", "", device_id);
     } catch (const winrt::hresult_error& error) {
         std::string message = "WinRT error " + FormatHresult(error.code()) +
@@ -1127,11 +1245,98 @@ winrt::fire_and_forget BleCentralWin::WriteControlPayloadAsync(std::shared_ptr<D
     }
 }
 
+winrt::Windows::Foundation::IAsyncOperation<bool> BleCentralWin::EnsureOtaCharacteristicsAsync(
+    std::shared_ptr<DeviceSession> session,
+    std::string device_id) {
+    using winrt::Windows::Foundation::AsyncStatus;
+    using GattCharsResult = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicsResult;
+
+    if (!session || !session->service) co_return false;
+    if (session->ota_rx_characteristic && session->ota_state_characteristic &&
+        session->ota_state_subscribed) {
+        co_return true;
+    }
+
+    co_await winrt::resume_background();
+    auto discover_ota_characteristic = [&](const winrt::guid& uuid,
+                                           const char* label) -> GattCharsResult {
+        LogBleLine("OTA lazy characteristic discovery begin VS-" + device_id + " label=" + label);
+        auto op = session->service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode::Uncached);
+        if (op.wait_for(kCharacteristicDiscoveryTimeout) == AsyncStatus::Started) {
+            op.Cancel();
+            LogBleLine("OTA lazy characteristic discovery timed out VS-" + device_id + " label=" + label);
+            return nullptr;
+        }
+        auto result = op.GetResults();
+        LogBleLine("OTA lazy characteristic discovery done VS-" + device_id +
+                   " label=" + label +
+                   " status=" + GattStatusName(result.Status()) +
+                   " count=" + std::to_string(result.Characteristics().Size()));
+        return result;
+    };
+
+    if (!session->ota_rx_characteristic) {
+        auto ota_rx_result = discover_ota_characteristic(winrt::guid{BleProtocol::ota_rx_uuid}, "ota_rx");
+        if (!ota_rx_result || ota_rx_result.Status() != GattCommunicationStatus::Success ||
+            ota_rx_result.Characteristics().Size() == 0) {
+            co_return false;
+        }
+        auto characteristic = ota_rx_result.Characteristics().GetAt(0);
+        if (!HasWrite(characteristic) && !HasWriteWithoutResponse(characteristic)) {
+            co_return false;
+        }
+        session->ota_rx_characteristic = characteristic;
+    }
+
+    if (!session->ota_state_characteristic) {
+        auto ota_state_result = discover_ota_characteristic(winrt::guid{BleProtocol::ota_state_uuid}, "ota_state");
+        if (!ota_state_result || ota_state_result.Status() != GattCommunicationStatus::Success ||
+            ota_state_result.Characteristics().Size() == 0) {
+            co_return false;
+        }
+        auto characteristic = ota_state_result.Characteristics().GetAt(0);
+        if (!HasNotify(characteristic)) {
+            co_return false;
+        }
+        session->ota_state_characteristic = characteristic;
+    }
+
+    if (session->ota_state_value_changed_token.value == 0) {
+        session->ota_state_value_changed_token = session->ota_state_characteristic.ValueChanged(
+            [this, device_id](const GattCharacteristic&, const auto& args) {
+                auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                auto event = BleProtocol::ParseFirmwareOtaStateEvent(bytes);
+                if (!event.has_value()) {
+                    LogBleLine("ota state notify VS-" + device_id + " parse failed");
+                    return;
+                }
+                DispatchToUiThread([this, device_id, e = std::move(*event)]() {
+                    HandleFirmwareOtaStateEvent(device_id, e);
+                });
+            });
+    }
+
+    if (!session->ota_state_subscribed) {
+        LogBleLine("subscribing OTA state notifications VS-" + device_id);
+        auto status = co_await session->ota_state_characteristic
+            .WriteClientCharacteristicConfigurationDescriptorAsync(
+                GattClientCharacteristicConfigurationDescriptorValue::Notify);
+        LogBleLine("ota state subscribe VS-" + device_id + " status=" + GattStatusName(status));
+        if (status != GattCommunicationStatus::Success) {
+            co_return false;
+        }
+        session->ota_state_subscribed = true;
+    }
+
+    co_return true;
+}
+
 winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
     std::shared_ptr<DeviceSession> session,
     std::shared_ptr<FirmwareUpdateSession> update_session) {
     try {
-        if (!session || !update_session || !session->ota_rx_characteristic) {
+        if (!session || !update_session ||
+            !(co_await EnsureOtaCharacteristicsAsync(session, update_session->device_id))) {
             FinishFirmwareUpdate(update_session, false, "The connected firmware does not expose BLE OTA.");
             co_return;
         }

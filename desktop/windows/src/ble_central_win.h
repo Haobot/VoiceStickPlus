@@ -11,6 +11,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -36,6 +37,13 @@ public:
                        const std::optional<std::string>& device_id) override;
     void SendInteractionMode(InteractionMode mode,
                              const std::optional<std::string>& device_id) override;
+    void SendPromptToneEnabled(bool enabled,
+                               const std::optional<std::string>& device_id) override;
+    void RequestBatteryStatus(const std::optional<std::string>& device_id) override;
+    void SendRemoteButton(RemoteButtonAction action,
+                          const std::string& button,
+                          const std::optional<std::string>& device_id,
+                          std::uint32_t request_id) override;
     void UpdateFirmware(ByteVector image,
                         const std::string& device_id,
                         std::function<void(FirmwareUpdateProgress)> progress,
@@ -87,6 +95,9 @@ private:
                                               std::string local_name,
                                               std::string device_id);
     winrt::fire_and_forget WriteControlPayloadAsync(std::shared_ptr<DeviceSession> session, ByteVector payload);
+    winrt::Windows::Foundation::IAsyncOperation<bool> EnsureOtaCharacteristicsAsync(
+        std::shared_ptr<DeviceSession> session,
+        std::string device_id);
     winrt::fire_and_forget UpdateFirmwareAsync(std::shared_ptr<DeviceSession> session,
                                                std::shared_ptr<FirmwareUpdateSession> update_session);
     void HandleFirmwareOtaStateEvent(const std::string& device_id, const FirmwareOtaStateEvent& event);
@@ -112,6 +123,7 @@ private:
     std::set<std::string> cancelled_device_ids_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
+    std::chrono::steady_clock::time_point scan_started_at_{};
 
 public:
     static constexpr UINT WM_BLE_DISPATCH = WM_APP + 100;

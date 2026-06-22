@@ -26,6 +26,9 @@ struct StateEvent {
     std::optional<std::uint32_t> duration_ms;
     std::string hardware;
     std::string firmware_version;
+    std::optional<int> battery_level;
+    std::optional<bool> battery_charging;
+    std::optional<bool> battery_usb_powered;
 };
 
 struct FirmwareOtaStateEvent {
@@ -56,11 +59,20 @@ public:
     static std::optional<FirmwareOtaStateEvent> ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data);
     static ByteVector UiStatePayload(std::string_view state, std::string_view text);
     static ByteVector InteractionModePayload(std::string_view mode);
+    static ByteVector PromptTonePayload(bool enabled);
+    static ByteVector BatteryStatusRequestPayload();
+    static ByteVector RemoteButtonPayload(std::string_view action,
+                                          std::string_view button,
+                                          std::string_view source,
+                                          std::uint32_t request_id);
     static ByteVector OtaBeginPayload(std::uint32_t image_size, std::uint32_t transfer_id);
     static ByteVector OtaDataPayload(std::uint32_t transfer_id, std::uint32_t offset, std::span<const std::uint8_t> chunk);
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);
     static ByteVector OtaAbortPayload(std::uint32_t transfer_id);
     static std::optional<std::string> DeviceIdFromName(std::string_view name);
+    static std::optional<std::string> LocalNameFromAdvertisementData(std::span<const std::uint8_t> data);
+    static bool HasVoiceStickServiceUuid(std::span<const std::uint8_t> data);
+    static std::string DeviceIdFromBluetoothAddress(std::uint64_t bluetooth_address);
     static std::string NormalizeDeviceId(std::string_view text);
 };
 

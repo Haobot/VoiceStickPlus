@@ -1,10 +1,12 @@
 #pragma once
 
 #include "app_config.h"
+#include "glass_backdrop_window.h"
 
 #include <Windows.h>
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -50,6 +52,8 @@ private:
     LRESULT HandleMessage(UINT message, WPARAM w_param, LPARAM l_param);
     void Render();
     WindowLayout ComputeLayout() const;
+    RECT BackdropBounds(const WindowLayout& layout) const;
+    void SyncBackdrop(const WindowLayout& layout);
     void UpdateLayeredBitmap(const WindowLayout& layout);
     bool EnsureFrameBitmap(int width, int height);
     void ReleaseFrameBitmap();
@@ -63,6 +67,9 @@ private:
     HINSTANCE instance_;
     HWND parent_;
     HWND hwnd_ = nullptr;
+    std::unique_ptr<GlassBackdropWindow> backdrop_;
+    RECT last_backdrop_bounds_{};
+    bool backdrop_bounds_valid_ = false;
     UINT dpi_ = 96;
     std::map<std::string, Lane> lanes_;
     int generation_ = 0;
@@ -103,6 +110,9 @@ private:
     static constexpr int kTextFontSize = 64;
     static constexpr int kMinTextFontSize = 44;
     static constexpr int kDeviceFontSize = 14;
+    static constexpr BYTE kLaneScrimAlpha = 0;
+    static constexpr BYTE kLaneBorderAlpha = 32;
+    static constexpr BYTE kTextShadowAlpha = 88;
 };
 
 } // namespace voicestick

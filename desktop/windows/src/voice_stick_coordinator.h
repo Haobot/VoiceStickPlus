@@ -23,6 +23,11 @@
 
 namespace voicestick {
 
+enum class RemoteButtonAction {
+    kDown,
+    kUp,
+};
+
 struct ConnectedDevice {
     std::string id;
     std::string name;
@@ -54,6 +59,13 @@ public:
                                const std::optional<std::string>& device_id) = 0;
     virtual void SendInteractionMode(InteractionMode mode,
                                      const std::optional<std::string>& device_id) = 0;
+    virtual void SendPromptToneEnabled(bool enabled,
+                                       const std::optional<std::string>& device_id) = 0;
+    virtual void RequestBatteryStatus(const std::optional<std::string>& device_id) = 0;
+    virtual void SendRemoteButton(RemoteButtonAction action,
+                                  const std::string& button,
+                                  const std::optional<std::string>& device_id,
+                                  std::uint32_t request_id) = 0;
     virtual void UpdateFirmware(ByteVector image,
                                 const std::string& device_id,
                                 std::function<void(FirmwareUpdateProgress)> progress,
@@ -91,6 +103,8 @@ public:
     virtual void SetStatus(const std::string& status) = 0;
     virtual void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) = 0;
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
+    virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
+                                   bool charging, bool usb_powered) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;
     virtual void SetPairingError(const std::string& device_id, const std::string& message) = 0;
     virtual void ShowFirmwareUpdatePrompt(const std::string& device_id,
@@ -116,6 +130,7 @@ public:
                               const std::string& device_id,
                               OverlayThemeColor color) = 0;
     virtual void HideSubtitles() = 0;
+    virtual void ShowNotification(const std::string& title, const std::string& body) = 0;
 };
 
 class InputInjector {
@@ -152,6 +167,11 @@ public:
                                   std::function<void(FirmwareUpdateProgress)> progress,
                                   std::function<void(bool, std::string)> completion);
     void CancelFirmwareUpdate();
+
+    static OverlayThemeColor ThemeColorForConfig(const AppConfig& config, const std::string& device_id);
+
+    void HandleGlobalHotkeyPressed();
+    void HandleGlobalHotkeyReleased();
 
 private:
     enum class PendingPasteKind {
@@ -274,6 +294,7 @@ private:
     OverlayThemeColor ThemeColorForDevice(const std::string& device_id) const;
     bool ShouldUseDefiniteSegments(const OutputProfile& profile) const;
     double CurrentRecordingDurationSeconds() const;
+    std::optional<std::string> ResolveHotkeyTargetDevice() const;
 
     AppConfig config_;
     std::unique_ptr<BleCentral> ble_;
@@ -301,6 +322,10 @@ private:
     std::optional<std::string> last_recoverable_text_;
     std::optional<std::string> last_recoverable_device_id_;
     std::vector<std::string> paired_device_ids_;
+    std::vector<std::string> connected_device_ids_;
+    bool hotkey_is_down_ = false;
+    std::optional<std::string> hotkey_active_device_id_;
+    std::uint32_t next_hotkey_request_id_ = 1;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id_;
     std::optional<FirmwareManifest> latest_firmware_manifest_;
     std::chrono::steady_clock::time_point last_firmware_manifest_check_at_{};

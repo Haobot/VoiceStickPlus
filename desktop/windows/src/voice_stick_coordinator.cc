@@ -60,11 +60,16 @@ VoiceStickCoordinator::~VoiceStickCoordinator() {
 void VoiceStickCoordinator::Start() {
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
         if (is_shutdown_) return;
+        connected_device_ids_.clear();
+        for (const auto& dev : devices) {
+            connected_device_ids_.push_back(dev.id);
+        }
         ui_->SetConnectedDevices(devices);
         CancelActiveCycleIfDeviceDisconnected();
         RefreshFirmwareAvailability();
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
+        ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -142,6 +147,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     config_ = std::move(config);
     translator_ = LLMTranslationClient(config_);
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
+    ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
         asr_ = asr_factory_(config_);
@@ -312,6 +318,12 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
     if (event.event == "device_info") {
         ui_->SetDeviceInfo(DeviceInfo{device_id, event.hardware, event.firmware_version});
         UpdateDeviceFirmwareInfo(event, device_id);
+    } else if (event.event == "battery_status") {
+        if (event.battery_level.has_value()) {
+            ui_->SetDeviceBattery(device_id, event.battery_level.value(),
+                                   event.battery_charging.value_or(false),
+                                   event.battery_usb_powered.value_or(false));
+        }
     } else if (event.event == "button_down") {
         HandleButtonDown(event, device_id);
     } else if (event.event == "button_up") {
@@ -1036,7 +1048,7 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& text) {
     const bool should_press_enter = config_.auto_enter;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
-    EnterReady("paste_complete", false);
+    EnterReady("paste_complete");
     input_injector_->Paste(text, should_press_enter);
 }
 
@@ -1316,10 +1328,8 @@ void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {
 }
 
 void VoiceStickCoordinator::EnterPendingConfirmation(const std::string& text, std::string_view reason) {
-    pending_paste_state_ = {PendingPasteKind::kWaitingToPaste, text};
-    SetSessionState(SessionState::kPendingConfirmation, reason);
-    ui_->ShowFinalCountdown(text, active_device_id_, [this, text] { CommitPendingPaste(text); });
-    SendUiStateForActiveDevice("pending_confirmation", text);
+    (void)reason;
+    CompletePendingPaste(text);
 }
 
 void VoiceStickCoordinator::EnterPausedConfirmation(const std::string& text, std::string_view reason) {
@@ -1370,8 +1380,13 @@ OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<
 }
 
 OverlayThemeColor VoiceStickCoordinator::ThemeColorForDevice(const std::string& device_id) const {
-    auto it = config_.device_theme_colors.find(device_id);
-    return it == config_.device_theme_colors.end() ? OverlayThemeColor::kWhite : it->second;
+    return ThemeColorForConfig(config_, device_id);
+}
+
+OverlayThemeColor VoiceStickCoordinator::ThemeColorForConfig(const AppConfig& config,
+                                                             const std::string& device_id) {
+    auto it = config.device_theme_colors.find(device_id);
+    return it == config.device_theme_colors.end() ? DefaultOverlayThemeColor() : it->second;
 }
 
 bool VoiceStickCoordinator::ShouldUseDefiniteSegments(const OutputProfile& profile) const {
@@ -1381,6 +1396,88 @@ bool VoiceStickCoordinator::ShouldUseDefiniteSegments(const OutputProfile& profi
 
 double VoiceStickCoordinator::CurrentRecordingDurationSeconds() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - active_session_started_at_).count();
+}
+
+std::optional<std::string> VoiceStickCoordinator::ResolveHotkeyTargetDevice() const {
+    if (active_device_id_.has_value() &&
+        std::find(connected_device_ids_.begin(), connected_device_ids_.end(), *active_device_id_) !=
+            connected_device_ids_.end()) {
+        return active_device_id_;
+    }
+    for (const auto& device_id : paired_device_ids_) {
+        if (std::find(connected_device_ids_.begin(), connected_device_ids_.end(), device_id) !=
+            connected_device_ids_.end()) {
+            return device_id;
+        }
+    }
+    if (!connected_device_ids_.empty()) {
+        return connected_device_ids_.front();
+    }
+    return std::nullopt;
+}
+
+void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
+    if (hotkey_is_down_) {
+        LogApp("hotkey pressed but already down, skipping");
+        return;
+    }
+
+    LogApp("hotkey pressed, resolving target device...");
+    LogApp("  connected_device_ids: " + std::to_string(connected_device_ids_.size()));
+    for (const auto& id : connected_device_ids_) {
+        LogApp("    - VS-" + id);
+    }
+    LogApp("  active_device_id: " + (active_device_id_.has_value() ? "VS-" + *active_device_id_ : "none"));
+
+    auto target_device = ResolveHotkeyTargetDevice();
+    if (!target_device) {
+        if (paired_device_ids_.empty()) {
+            ui_->SetStatus("Hotkey: pair a VoiceStick first");
+            if (config_.debug_audio_cache) {
+                ui_->ShowNotification("热键触发失败", "请先配对 VoiceStick 设备");
+            }
+        } else {
+            ui_->SetStatus("Hotkey: VoiceStick not connected; press the main button to wake it");
+            if (config_.debug_audio_cache) {
+                ui_->ShowNotification("热键触发失败", "设备可能已休眠，请按主键唤醒后重试。");
+            }
+        }
+        LogApp("hotkey pressed but no connected device");
+        return;
+    }
+
+    LogApp("  resolved target device: VS-" + *target_device);
+
+    const auto request_id = next_hotkey_request_id_++;
+    if (config_.interaction_mode == InteractionMode::kHoldToTalk) {
+        hotkey_is_down_ = true;
+        hotkey_active_device_id_ = target_device;
+    }
+    LogApp("  sending remote_button_down to VS-" + *target_device + ", request_id=" + std::to_string(request_id));
+    ble_->SendRemoteButton(RemoteButtonAction::kDown, "primary", target_device, request_id);
+    ui_->SetStatus("Recording (hotkey) on VS-" + *target_device);
+    if (config_.debug_audio_cache) {
+        ui_->ShowNotification("热键已触发", "正在 VS-" + *target_device + " 上启动录音，松开热键结束识别");
+    }
+    LogApp("hotkey pressed, starting recording on VS-" + *target_device);
+}
+
+void VoiceStickCoordinator::HandleGlobalHotkeyReleased() {
+    if (config_.interaction_mode == InteractionMode::kClickToTalk) {
+        return;
+    }
+
+    if (!hotkey_is_down_) return;
+
+    auto target_device = hotkey_active_device_id_;
+    hotkey_is_down_ = false;
+    hotkey_active_device_id_.reset();
+
+    if (target_device && ble_->IsConnected(*target_device)) {
+        const auto request_id = next_hotkey_request_id_++;
+        ble_->SendRemoteButton(RemoteButtonAction::kUp, "primary", target_device, request_id);
+        LogApp("hotkey released, stopping recording on VS-" + *target_device);
+    }
 }
 
 } // namespace voicestick
