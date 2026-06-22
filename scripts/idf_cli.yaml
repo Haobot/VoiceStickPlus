@@ -1,0 +1,32 @@
+# ESP-IDF 固件开发脚本配置（scripts/idf_cli.py 使用）
+# 路径相对于本文件所在目录解析。
+
+default:
+  # IDF 路径：留空则自动探测（IDF_PATH 环境变量 -> C:\Espressif\frameworks\esp-idf-v* -> ~/esp/esp-idf）。
+  idf_path: ""
+  idf_tools_path: ""        # 留空则自动探测（IDF_TOOLS_PATH 环境变量 -> C:\Espressif）
+  project_dir: "../firmware"  # idf.py 工程目录
+  target: "esp32s3"         # ESP-IDF 目标芯片
+  port: ""                  # 串口：留空=自动检测；COMx / /dev/ttyUSBx
+  baudrate: 921600          # 烧录波特率（esptool）
+  monitor_baudrate: 115200  # 串口监控波特率（ESP-IDF 日志默认 115200）
+  flash_baud_before_monitor: true  # monitor 前自动复位设备以捕获 boot 日志
+
+# 串口自动检测评分规则（参考 arduino-cli.py，适配 ESP32-S3）
+serial_detection:
+  enabled: true
+  state_file: ".idf_cli_state.json"  # 记忆上次成功端口
+  description_keywords: ["esp32", "usb serial", "usb-serial", "jtag", "uart", "cp210", "ch340", "ch343", "wch", "ftdi"]
+  manufacturer_keywords: ["espressif", "wch", "silicon labs", "ftdi"]
+  hwid_keywords:
+    - "vid:pid=303a:"     # ESP32-S3 原生 USB-CDC
+    - "vid:pid=1a86:"     # CH340/CH343（CDC 模式）
+    - "vid:pid=2bdf:"     # WCH CH343（vendor 模式，M5StickS3 常见）
+    - "vid:pid=10c4:ea60" # CP210x
+    - "vid:pid=0403:6001" # FT232
+  # 优先匹配（同分时优先选择），可填具体 VID:PID 如 "303a:0001"
+  preferred_vid_pid: []
+
+logging:
+  file: "idf_cli.log"
+  level: "INFO"
