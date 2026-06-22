@@ -31,11 +31,13 @@ static const char *TAG = "voice_stick";
 #define DISPLAY_DIM_TIMEOUT_MS (30 * 1000)
 #define DISPLAY_OFF_TIMEOUT_MS (60 * 1000)      // T_off：S1 Resting → S2 ScreenOff
 #define POWEROFF_TIMEOUT_MS (10 * 60 * 1000)    // T_pwr：S2 ScreenOff → S3 PowerOff（连接态）
+#define DISC_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)  // T_disc：BLE 断连 → S3 PowerOff
 #define DISPLAY_ACTIVE_BRIGHTNESS 32
 #define DISPLAY_DIM_BRIGHTNESS 8
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
 #define DISPLAY_OFF_TIMEOUT_US (DISPLAY_OFF_TIMEOUT_MS * 1000ULL)
 #define POWEROFF_TIMEOUT_US (POWEROFF_TIMEOUT_MS * 1000ULL)
+#define DISC_POWEROFF_TIMEOUT_US (DISC_POWEROFF_TIMEOUT_MS * 1000ULL)
 #define BATTERY_REFRESH_FALLBACK_US (BATTERY_REFRESH_FALLBACK_MS * 1000ULL)
 // BMI270 拿起轮询周期。仅在 S1(Resting)/S2(ScreenOff) 态启用：用户放下设备后拿起即亮屏回 S0。
 // 周期过长会丢快速拿起动作，过短增加功耗；500ms 兼顾两者。BMI270 不在线时轮询空转无开销。
@@ -56,6 +58,7 @@ static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_display_off_timer;   // S1→S2
 static esp_timer_handle_t s_poweroff_timer;      // S2→S3（原 deep_sleep_timer 改造）
+static esp_timer_handle_t s_disc_poweroff_timer; // BLE 断连→S3
 static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
 static esp_timer_handle_t s_pickup_poll_timer;
@@ -300,6 +303,9 @@ static void restart_poweroff_timer(void)
 
 // 前向声明：拿起轮询定时器在 note_activity 之后定义，但 note_activity 需调用其启停接口。
 static void set_pickup_polling_enabled(bool enabled);
+// 前向声明：断连关机定时器在事件循环之后定义，但 BLE 连接/断连 case 需调用其启停接口。
+static void start_disc_poweroff_timer(void);
+static void cancel_disc_poweroff_timer(void);
 
 // 活动复位钩子：按键/拿起/BLE事件/UI变化时调用，回到 S0 Active 态并重启全部空闲计时器。
 static void note_activity(void)
@@ -366,10 +372,31 @@ static void enter_power_off(void)
 
     const gpio_num_t wake_gpio = STICK_S3_PIN_BUTTON_FRONT;
 
-    ESP_LOGI(TAG, "entering power off (deep sleep path B), wake on front button GPIO%d",
-             wake_gpio);
+    // 关机前收尾：关背光、停录音 PM 锁。
     release_recording_pm_locks();
     ESP_ERROR_CHECK_WITHOUT_ABORT(ui_status_set_brightness(0));
+
+    // 路径 A：M5PM1 真关机 + BMI270 拿起唤醒。
+    // 先让 IMU 进入 any-motion 检测 + INT1 输出（关机后经 PYG4 唤醒 M5PM1），
+    // 再写 M5PM1 SYS_CMD=0xA1 软件关机。成功后整机断电，函数不返回。
+    if (bmi270_present()) {
+        esp_err_t wake_err = bmi270_enable_pickup_wake();
+        if (wake_err == ESP_OK) {
+            ESP_LOGI(TAG, "power off via M5PM1 shutdown (path A), IMU pickup wake armed");
+            stick_s3_board_power_off();
+            // 不应到达此处；若 M5PM1 未断电则回退路径 B。
+            ESP_LOGW(TAG, "M5PM1 shutdown did not power off, fallback to deep sleep");
+        } else {
+            ESP_LOGW(TAG, "pickup wake setup failed, fallback to deep sleep: %s",
+                     esp_err_to_name(wake_err));
+        }
+    } else {
+        ESP_LOGI(TAG, "BMI270 absent, power off via deep sleep (path B)");
+    }
+
+    // 路径 B（备份）：ESP32 deep sleep，前键 ext1 唤醒。
+    ESP_LOGI(TAG, "entering power off (deep sleep path B), wake on front button GPIO%d",
+             wake_gpio);
     ui_status_prepare_deep_sleep();
     stick_s3_board_prepare_deep_sleep();
 
@@ -841,6 +868,7 @@ static void app_event_task(void *arg)
         case APP_EVENT_BLE_CONNECTED:
             s_app_ui_state = APP_UI_STATE_READY;
             ui_status_set_idle();
+            cancel_disc_poweroff_timer();
             note_activity();
             send_current_battery_status();
             break;
@@ -856,8 +884,10 @@ static void app_event_task(void *arg)
             release_recording_pm_locks();
             release_ota_pm_locks();
             ui_status_set_pairing(voice_ble_device_name());
+            // 断连后改用 T_disc 倒计时关机（替代连接态 T_pwr）；重连则取消。
+            (void)esp_timer_stop(s_poweroff_timer);
             restart_display_dim_timer();
-            restart_poweroff_timer();
+            start_disc_poweroff_timer();
             break;
         case APP_EVENT_POWER_IRQ:
             gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
@@ -1034,6 +1064,54 @@ static esp_err_t init_poweroff_timer(void)
         .name = "poweroff",
     };
     return esp_timer_create(&timer_args, &s_poweroff_timer);
+}
+
+// BLE 断连关机：断连后 T_disc 内若未重连则关机。USB 供电时不启动。
+static void disc_poweroff_timer_cb(void *arg)
+{
+    (void)arg;
+    // 二次确认：重连后取消，或 USB 供电则放弃。
+    if (voice_ble_is_connected() || is_external_powered()) {
+        return;
+    }
+    queue_app_event(APP_EVENT_ENTER_POWER_OFF);
+}
+
+static esp_err_t init_disc_poweroff_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = disc_poweroff_timer_cb,
+        .name = "disc_poweroff",
+    };
+    return esp_timer_create(&timer_args, &s_disc_poweroff_timer);
+}
+
+// BLE 断连时启动 T_disc 倒计时（USB 供电时不启动，避免充电中关机）。
+static void start_disc_poweroff_timer(void)
+{
+    if (!s_disc_poweroff_timer) {
+        return;
+    }
+    (void)esp_timer_stop(s_disc_poweroff_timer);
+    if (!is_external_powered()) {
+        esp_err_t err = esp_timer_start_once(s_disc_poweroff_timer, DISC_POWEROFF_TIMEOUT_US);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "start disc poweroff timer failed: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "BLE disconnected, will power off in %d min if not reconnected",
+                     DISC_POWEROFF_TIMEOUT_MS / 60000);
+        }
+    } else {
+        ESP_LOGD(TAG, "disc poweroff timer skipped while external power present");
+    }
+}
+
+static void cancel_disc_poweroff_timer(void)
+{
+    if (s_disc_poweroff_timer && esp_timer_is_active(s_disc_poweroff_timer)) {
+        (void)esp_timer_stop(s_disc_poweroff_timer);
+        ESP_LOGI(TAG, "BLE reconnected, disc poweroff timer cancelled");
+    }
 }
 
 static esp_err_t init_display_off_timer(void)
@@ -1227,6 +1305,7 @@ void app_main(void)
     ESP_ERROR_CHECK(init_display_dim_timer());
     ESP_ERROR_CHECK(init_display_off_timer());
     ESP_ERROR_CHECK(init_poweroff_timer());
+    ESP_ERROR_CHECK(init_disc_poweroff_timer());
     ESP_ERROR_CHECK(init_host_response_timer());
     ESP_ERROR_CHECK(init_pickup_poll_timer());
     // BMI270 初始化在 I2C 总线就绪后；探测失败时优雅降级，不影响主流程。
