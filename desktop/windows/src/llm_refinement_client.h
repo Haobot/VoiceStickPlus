@@ -12,7 +12,9 @@ namespace voicestick {
 // （去停顿空格、修标点、去口头语）。精修是 best-effort：调用方应在失败时回退原文。
 class LLMRefinementClient : public LLMChatClient {
 public:
-    using LLMChatClient::LLMChatClient;
+    // 基类构造函数为 protected（仅供子类复用网络层），继承构造会保持 protected 访问性，
+    // 因此外部无法构造；这里显式提供 public 构造转发，使协调器能按值持有本类。
+    explicit LLMRefinementClient(AppConfig config) : LLMChatClient(std::move(config)) {}
 
     void Refine(std::string text,
                 std::string prompt_override,

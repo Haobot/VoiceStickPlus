@@ -14,7 +14,9 @@ namespace voicestick {
 // 翻译 prompt 已融合源文本精修要求（去停顿空格 / 修标点 / 去口头语）。
 class LLMTranslationClient : public LLMChatClient {
 public:
-    using LLMChatClient::LLMChatClient;
+    // 基类构造函数为 protected（仅供子类复用网络层），继承构造会保持 protected 访问性，
+    // 因此外部无法构造；这里显式提供 public 构造转发，使协调器能按值持有本类。
+    explicit LLMTranslationClient(AppConfig config) : LLMChatClient(std::move(config)) {}
 
     void Translate(std::string text,
                    std::string target_language,
