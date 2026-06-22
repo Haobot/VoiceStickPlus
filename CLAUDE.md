@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 本文件为 Claude Code 在本仓库工作时提供指导，工作语言为简体中文。
 
+仓库根目录的 `AGENTS.md` 是本文件的同源副本，面向通用 AI 编码助手，内容（项目概览、构建命令、代码架构）与本文基本一致。修改本文涉及的整体性内容时，同步更新 `AGENTS.md`，避免两份文档漂移；以本文为权威源。
+
 ## 项目概览
 
 Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备负责采集按键与音频并通过 BLE 上报；桌面端负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录和 Sparkle/WinSparkle 更新源。
@@ -51,6 +53,8 @@ swift run VoiceStickApp
 ```
 
 macOS 端目前没有专用测试目标。运行时会请求蓝牙权限；文本注入依赖模拟 `Command-V` 和可选 Return，如系统拦截按键事件，需要给终端或应用授予辅助功能权限。
+
+SwiftPM 依赖见 `desktop/macos/Package.swift`：`sparkle-project/Sparkle` 2.6+（自动更新）、`LebJe/TOMLKit` 0.6+（配置解析）、内置 `CZlib`（Ogg CRC）。新增或升级依赖时在此文件修改。
 
 发布构建和 DMG（在仓库根目录执行）：
 
@@ -213,6 +217,17 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
 - `[output].target`：`focused_app` 或 `subtitle`。
 - `[output].transform`：`original` 或 `translate`。
 - `[device.<id>.output]`：按设备覆盖输出/翻译设置。
+
+## 辅助脚本
+
+`scripts/` 存放跨组件的构建与资源处理脚本，改动相关产物时按需调用：
+
+- `build-macos.sh` / `make-dmg.sh`：macOS 发布构建与 DMG 打包。
+- `build-msi.bat`：Windows 签名 MSI 打包（WinSparkle 更新源）。
+- `update-appcast.py`：根据 GitHub Release 更新 `website/public/appcast.xml`。
+- `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源，改 `ui_status` 图像资源后用。
+- `slice_cat_sprites.py` / `tune_cat_sprites.py`：切片与调校状态界面精灵图。
+- `probe_asr_websocket_ping.py`：探测 ASR WebSocket 连通性，调试 ASR 链路时用。
 
 ## 发布流程要点
 
