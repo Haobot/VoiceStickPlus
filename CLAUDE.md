@@ -17,7 +17,7 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 - `desktop/windows/`：C++20 / Win32 / C++/WinRT 托盘应用，目标 Windows 10 1903+；2019 年 Windows 10 构建会走地址直连的 BLE 兼容路径。
 - `desktop/linux/`：Linux 桌面端占位目录。
 - `website/`：Vue 3 + Vite 站点，包含 Web Serial 固件烧录工具、`vue-i18n` 中英文落地页和 appcast 发布页面。
-- `docs/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等设计/运维文档。
+- `Doc/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等参考文档（`Doc/Ref/`），以及实施方案 RFC（`Doc/Plan/`）。仓库实际目录为大写 `Doc/`，不是 `docs/`。
 
 ## 常用命令
 
@@ -135,7 +135,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `state_tx`（通知，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
 - `control_rx`（无响应写，`0x5103`）：`ui_state`、OTA 控制等，主机 → 设备。
 
-完整帧格式见 `docs/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
+完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 
 ### 固件职责
 
@@ -234,11 +234,11 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
 
 推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`：构建固件和 macOS 产物，发布 GitHub Release，并将固件 OTA/merged 镜像与 `manifest.json` 上传到阿里云 OSS。Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并上传到对应 Release，然后手动运行 `Deploy Website to GitHub Pages` 工作流；该工作流会读取当前线上 appcast 和最新 GitHub Release，补齐可选 MSI 条目，若最新 Release 没有 MSI 会保留旧 Windows 条目。
 
-完整发布步骤见 `docs/release.md`。
+完整发布步骤见 `Doc/Ref/release.md`。
 
 ## 重要约定
 
 - 交互状态机在桌面端，不在固件中；修改交互流程时优先改桌面协调器。
 - 固件通常只在新增/调整 `ui_state` 展示、硬件 I/O、BLE 协议或 OTA 行为时修改。
-- 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `docs/`、macOS、Windows、网站和发布脚本。
+- 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `Doc/Ref/`、macOS、Windows、网站和发布脚本。
 - Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。
