@@ -310,21 +310,15 @@ static void cancel_disc_poweroff_timer(void);
 // 活动复位钩子：按键/拿起/BLE事件/UI变化时调用，回到 S0 Active 态并重启全部空闲计时器。
 static void note_activity(void)
 {
-    if (s_screen_off) {
-        // S2→S0：恢复背光 + 重开 L3B 供电（背光/MIC/SPK）。
-        (void)ui_status_set_brightness(DISPLAY_ACTIVE_BRIGHTNESS);
-        stick_s3_board_set_l3b_power(true);
-        s_screen_off = false;
-        ui_status_set_idle_dimmed(false);
-    } else if (s_display_dimmed) {
-        // S1→S0：恢复背光。
+    if (s_screen_off || s_display_dimmed) {
+        // S2/S1 → S0：恢复正常背光。S2 因没关 L3B、panel 一直供电，PWM 恢复即亮屏。
         esp_err_t err = ui_status_set_brightness(DISPLAY_ACTIVE_BRIGHTNESS);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "restore brightness failed: %s", esp_err_to_name(err));
-        } else {
-            s_display_dimmed = false;
-            ui_status_set_idle_dimmed(false);
         }
+        s_screen_off = false;
+        s_display_dimmed = false;
+        ui_status_set_idle_dimmed(false);
     }
     // 回到 Active 态：停止拿起轮询，重启三级空闲计时器。
     set_pickup_polling_enabled(false);
@@ -1043,12 +1037,15 @@ static void poweroff_timer_cb(void *arg)
 static void display_off_timer_cb(void *arg)
 {
     (void)arg;
-    // 仅在 S1(Resting) 态推进到 S2。S2 关背光 + 关 L3B，BLE 保连。
+    // 仅在 S1(Resting) 态推进到 S2。S2 只把背光 PWM 设为 0，不关 L3B 层电源。
+    // 关 L3B 会让 LCD panel 也掉电，唤醒后 panel 状态丢失需要重新 init 才能显示
+    // （PWM 即使恢复 duty=32 也只是背光通电、panel 仍黑屏）。
+    // 背光 PWM duty=0 时 LED 不通电，省电等价于关 L3B 的背光部分；MIC/SPK 在 S2 不工作
+    // 时本就不耗电，因此 L3B 实际省电收益有限。BLE 与 panel 持续供电换取唤醒即亮屏。
     if (s_display_dimmed && !s_screen_off && !s_recording && !s_ota_updating) {
         (void)ui_status_set_brightness(0);
-        stick_s3_board_set_l3b_power(false);
         s_screen_off = true;
-        ESP_LOGI(TAG, "display off after inactivity (S2), BLE kept");
+        ESP_LOGI(TAG, "display off after inactivity (S2), BLE & panel kept");
     }
 }
 

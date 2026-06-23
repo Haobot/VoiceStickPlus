@@ -282,9 +282,21 @@ class IdfEnvironment:
         else:
             cmd_str = f'source "{init_script}" >/dev/null 2>&1 && env'
 
+        # 系统环境变量 IDF_PATH 可能指向不存在的旧版本（如 v5.5.3 但实际装的是 v5.5.1），
+        # init.bat 会按 IDF_PATH 找文件失败。这里用脚本探测到的真实路径覆盖，
+        # 同时剥离 MSys 标记避免子进程被识别为 MSys。
+        init_env = os.environ.copy()
+        init_env["IDF_PATH"] = self.idf_path
+        if self.tools_path:
+            init_env["IDF_TOOLS_PATH"] = self.tools_path
+        for k in ("MSYSTEM", "MSYSTEM_PREFIX", "MSYSTEM_CHOST", "MSYSTEM_CARCH",
+                  "MINGW_CHOST", "MINGW_PREFIX", "MINGW_PACKAGE_PREFIX"):
+            init_env.pop(k, None)
+
         try:
             result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True,
-                                    encoding='utf-8', errors='replace', timeout=60)
+                                    encoding='utf-8', errors='replace', timeout=60,
+                                    env=init_env)
         except subprocess.TimeoutExpired:
             self.logger.error("IDF 环境初始化超时")
             sys.exit(2)
@@ -556,10 +568,18 @@ class EspIdfAutomation:
                 spinner = Spinner(message, delay=0.15, enable_progress=use_progress)
                 spinner.__enter__()
 
+            # 子进程环境：剥离 MSys/Mingw 标记。从 Git Bash 调脚本时父进程带 MSYSTEM 等
+            # 变量，idf.py 检测到会拒绝运行（"MSys/Mingw is no longer supported"）并以
+            # 退出码 0 静默退出，导致看似编译成功实则什么都没做。
+            sub_env = os.environ.copy()
+            for k in ("MSYSTEM", "MSYSTEM_PREFIX", "MSYSTEM_CHOST", "MSYSTEM_CARCH",
+                      "MINGW_CHOST", "MINGW_PREFIX", "MINGW_PACKAGE_PREFIX"):
+                sub_env.pop(k, None)
+
             process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding='utf-8', errors='replace',
-                bufsize=1, universal_newlines=True, cwd=cwd,
+                bufsize=1, universal_newlines=True, cwd=cwd, env=sub_env,
             )
             stdout_lines = []
             pending = ""
@@ -584,6 +604,16 @@ class EspIdfAutomation:
             stdout_full = "\n".join(stdout_lines)
             if returncode != 0:
                 raise subprocess.CalledProcessError(returncode, cmd, output=stdout_full, stderr="")
+            # idf.py 在 MSys/Mingw / 未注入环境等场景下会以退出码 0 静默拒绝运行，
+            # 必须查输出关键字判定是否真的执行了构建/烧录流程。
+            for refuse_kw in ("MSys/Mingw is no longer supported",
+                              "is not recognized as an internal or external command"):
+                if refuse_kw in stdout_full:
+                    if spinner:
+                        spinner.__exit__(RuntimeError, RuntimeError(refuse_kw), None)
+                    self.logger.error(f"命令拒绝运行：{refuse_kw}")
+                    self.logger.error(f"输出:\n{stdout_full}")
+                    return False, stdout_full
             if spinner:
                 spinner.__exit__(None, None, None)
             self.logger.info(f"命令成功 (耗时 {time.time()-start:.2f}s)")
