@@ -16,7 +16,12 @@ static const char *TAG = "bmi270";
 
 // BMI270 寄存器地址（据 Bosch BMI270-Sensor-API bmi2_defs.h 确认）。
 #define BMI270_REG_CHIP_ID 0x00
-#define BMI270_REG_ACC_X_LSB 0x0C  // ACC X/Y/Z 各 2 字节 little-endian，共 6 字节
+#define BMI270_REG_ACC_X_LSB 0x0C  // ACC X/Y/Z 各 2 字节 little-endian
+// MPU6886 寄存器（兼容 MPU6050 布局）。
+#define MPU6886_REG_WHO_AM_I 0x75
+#define MPU6886_REG_ACC_XOUT_H 0x3B  // ACC X/Y/Z 各 2 字节 big-endian
+#define MPU6886_REG_PWR_MGMT_1 0x6B
+#define MPU6886_REG_PWR_MGMT_2 0x6C
 #define BMI270_REG_INTERNAL_STATUS 0x21
 #define BMI270_REG_FEAT_PAGE 0x2F
 #define BMI270_REG_FEATURES 0x30
@@ -34,6 +39,14 @@ static const char *TAG = "bmi270";
 #define BMI270_CHIP_ID 0x24
 #define BMI270_SOFT_RESET_CMD 0xB6
 #define BMI270_PWR_CTRL_ACC_EN 0x04  // bit2
+#define MPU6886_WHO_AM_I_VAL 0x70   // MPU6886 的 WHO_AM_I 返回值
+
+// IMU 类型枚举
+typedef enum {
+    IMU_NONE,
+    IMU_BMI270,
+    IMU_MPU6886,
+} imu_type_t;
 #define BMI270_INIT_CTRL_LOAD_EN 0x01
 #define BMI270_INTERNAL_STATUS_INIT_OK 0x01
 // INT1_IO_CTRL：bit3=OUTPUT_EN(0x08)，bit1=LEVEL(0=active low)。push-pull+active low+out_en=0x08。
@@ -55,6 +68,7 @@ static const uint8_t kCandidateAddrs[] = {0x68, 0x69};
 
 static i2c_master_dev_handle_t s_dev;
 static bool s_present;
+static imu_type_t s_imu_type = IMU_NONE;  // 探测到的 IMU 型号
 
 // 轮询基线：上次采样的合加速度幅值（1g ≈ 4096 LSB @ 2g 量程，14-bit 左对齐到 16-bit）。
 // 用 float 便于做平方和，避免 int 溢出。
@@ -62,9 +76,8 @@ static float s_last_acc_mag;
 static bool s_has_baseline;
 
 // 拿起判定阈值：合加速度幅值变化量（单位：LSB）。
-// 2g 量程下 1g≈4096 LSB；0.3g≈1228 LSB。拿起动作瞬时加速度通常 >0.5g，
-// 取 1500 LSB 兼顾灵敏度与抗桌面振动误触。待实测标定。
-#define BMI270_PICKUP_DELTA_THRESHOLD 1500.0f
+// 降低到 800 LSB（~0.2g）增强灵敏度，并配合首次基线建立后小幅运动也触发。
+#define BMI270_PICKUP_DELTA_THRESHOLD 800.0f
 
 static esp_err_t bmi270_read_reg(uint8_t reg, uint8_t *value)
 {
@@ -180,7 +193,8 @@ static esp_err_t configure_any_motion(void)
     return bmi270_write_reg(BMI270_REG_INT_LATCH, 0x00);
 }
 
-// 探测 BMI270：尝试候选地址，读到 CHIP_ID=0x24 即命中。
+// 探测 IMU：先按 BMI270 模式读 CHIP_ID(0x00)=0x24；失败则按 MPU6886 读 WHO_AM_I(0x75)=0x70。
+// 命中后置 s_dev 和 s_imu_type。
 static esp_err_t probe_device(void)
 {
     i2c_master_bus_handle_t bus = stick_s3_board_i2c_bus();
@@ -204,20 +218,31 @@ static esp_err_t probe_device(void)
             continue;
         }
 
+        // 先按 BMI270 探测：CHIP_ID(0x00)=0x24
         uint8_t chip_id = 0;
         err = bmi270_read_reg(BMI270_REG_CHIP_ID, &chip_id);
         if (err == ESP_OK && chip_id == BMI270_CHIP_ID) {
+            s_imu_type = IMU_BMI270;
             ESP_LOGI(TAG, "BMI270 found at 0x%02x chip_id=0x%02x", kCandidateAddrs[i], chip_id);
             return ESP_OK;
         }
-        ESP_LOGD(TAG, "probe 0x%02x -> id=0x%02x err=%s", kCandidateAddrs[i], chip_id,
-                 esp_err_to_name(err));
+        // 再按 MPU6886 探测：WHO_AM_I(0x75)=0x70（兼容老批次 StickS3）
+        uint8_t who = 0;
+        err = bmi270_read_reg(MPU6886_REG_WHO_AM_I, &who);
+        if (err == ESP_OK && who == MPU6886_WHO_AM_I_VAL) {
+            s_imu_type = IMU_MPU6886;
+            ESP_LOGI(TAG, "MPU6886 found at 0x%02x who=0x%02x", kCandidateAddrs[i], who);
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "probe 0x%02x: BMI270 id=0x%02x, MPU6886 who=0x%02x",
+                 kCandidateAddrs[i], chip_id, who);
     }
 
     if (s_dev) {
         i2c_master_bus_rm_device(s_dev);
         s_dev = NULL;
     }
+    s_imu_type = IMU_NONE;
     return ESP_ERR_NOT_FOUND;
 }
 
@@ -225,38 +250,47 @@ esp_err_t bmi270_init(void)
 {
     esp_err_t err = probe_device();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "BMI270 not found, pickup wake disabled: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "IMU not found at 0x68/0x69, pickup wake disabled: %s", esp_err_to_name(err));
         s_present = false;
+        s_imu_type = IMU_NONE;
         return ESP_OK;  // 优雅降级，非致命
     }
 
     s_present = true;
 
-    // softreset，等 2ms（BMI270 datasheet 要求）。
-    (void)bmi270_write_reg(BMI270_REG_CMD, BMI270_SOFT_RESET_CMD);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    if (s_imu_type == IMU_BMI270) {
+        // softreset，等 2ms（BMI270 datasheet 要求）。
+        (void)bmi270_write_reg(BMI270_REG_CMD, BMI270_SOFT_RESET_CMD);
+        vTaskDelay(pdMS_TO_TICKS(2));
 
-    // softreset 后设备地址可能需要重新添加（部分 BMI270 复位会断开 I2C 设备层状态），
-    // 重新探测一次以确保句柄有效。
-    err = probe_device();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "BMI270 lost after softreset: %s", esp_err_to_name(err));
-        s_present = false;
-        return ESP_OK;
+        // softreset 后设备地址可能需要重新添加。
+        err = probe_device();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "BMI270 lost after softreset: %s", esp_err_to_name(err));
+            s_present = false;
+            return ESP_OK;
+        }
+
+        // 关闭高级电源保存（ADV_POW_EN=0），确保 ACC 稳定输出。
+        (void)bmi270_write_reg(BMI270_REG_PWR_CONF, 0x00);
+        vTaskDelay(pdMS_TO_TICKS(5));
+
+        // 开 ACC（PWR_CTRL bit2）。
+        (void)bmi270_write_reg(BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_EN);
+        vTaskDelay(pdMS_TO_TICKS(5));
+
+        s_has_baseline = false;
+        ESP_LOGI(TAG, "BMI270 initialized (acc on, polling mode)");
+    } else if (s_imu_type == IMU_MPU6886) {
+        // 唤醒 MPU6886：PWR_MGMT_1 写 0 退出 sleep。
+        (void)bmi270_write_reg(MPU6886_REG_PWR_MGMT_1, 0x00);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        // 禁用所有 gyro 和 temp 待机（省电），只留 ACC。
+        (void)bmi270_write_reg(MPU6886_REG_PWR_MGMT_2, 0x07);  // 010_111: disable gyro axes + temp
+
+        s_has_baseline = false;
+        ESP_LOGI(TAG, "MPU6886 initialized (acc on, polling mode)");
     }
-
-    // 关闭高级电源保存（ADV_POW_EN=0），确保 ACC 稳定输出。
-    (void)bmi270_write_reg(BMI270_REG_PWR_CONF, 0x00);
-    vTaskDelay(pdMS_TO_TICKS(5));
-
-    // 开 ACC（PWR_CTRL bit2）。陀螺仪不需要，省电。
-    // ACC_RANGE(0x41) softreset 默认 0x00=±2g，1g≈4096 LSB @14-bit，与阈值换算一致，无需改。
-    // ACC_CONF(0x40) softreset 默认 0x28=100Hz+normal BWP，足够轮询，无需改。
-    (void)bmi270_write_reg(BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_EN);
-    vTaskDelay(pdMS_TO_TICKS(5));
-
-    s_has_baseline = false;
-    ESP_LOGI(TAG, "BMI270 initialized (acc on, polling mode)");
     return ESP_OK;
 }
 
@@ -272,16 +306,27 @@ bool bmi270_pickup_detected(void)
     }
 
     uint8_t data[6] = {0};
-    esp_err_t err = bmi270_read_regs(BMI270_REG_ACC_X_LSB, data, sizeof(data));
-    if (err != ESP_OK) {
+    int16_t x, y, z;
+
+    if (s_imu_type == IMU_BMI270) {
+        if (bmi270_read_regs(BMI270_REG_ACC_X_LSB, data, 6) != ESP_OK) {
+            return false;
+        }
+        // BMI270 ACC 为 14-bit 左对齐到 16-bit little-endian，低 2 bit 为新数据标志等保留。
+        x = (int16_t)(((uint16_t)data[1] << 8) | data[0]) >> 2;
+        y = (int16_t)(((uint16_t)data[3] << 8) | data[2]) >> 2;
+        z = (int16_t)(((uint16_t)data[5] << 8) | data[4]) >> 2;
+    } else if (s_imu_type == IMU_MPU6886) {
+        if (bmi270_read_regs(MPU6886_REG_ACC_XOUT_H, data, 6) != ESP_OK) {
+            return false;
+        }
+        // MPU6886 ACC 为 16-bit big-endian，默认 ±2g 量程下 1g≈16384 LSB（需 4 倍缩放后比阈值）。
+        x = (int16_t)((data[0] << 8) | data[1]) >> 2;  // 缩放到与 BMI270 同尺度（14-bit）
+        y = (int16_t)((data[2] << 8) | data[3]) >> 2;
+        z = (int16_t)((data[4] << 8) | data[5]) >> 2;
+    } else {
         return false;
     }
-
-    // BMI270 ACC 为 14-bit 左对齐到 16-bit little-endian，低 2 bit 为新数据标志等保留。
-    // 右移 2 位取 14-bit 有符号值，再转 int16。
-    int16_t x = (int16_t)(((uint16_t)data[1] << 8) | data[0]) >> 2;
-    int16_t y = (int16_t)(((uint16_t)data[3] << 8) | data[2]) >> 2;
-    int16_t z = (int16_t)(((uint16_t)data[5] << 8) | data[4]) >> 2;
 
     const float mag = sqrtf((float)x * x + (float)y * y + (float)z * z);
 
