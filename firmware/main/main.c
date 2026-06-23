@@ -376,15 +376,15 @@ static void enter_power_off(void)
     release_recording_pm_locks();
     ESP_ERROR_CHECK_WITHOUT_ABORT(ui_status_set_brightness(0));
 
-    // 路径 A：M5PM1 真关机 + BMI270 拿起唤醒。
-    // 先让 IMU 进入 any-motion 检测 + INT1 输出（关机后经 PYG4 唤醒 M5PM1），
-    // 再写 M5PM1 SYS_CMD=0xA1 软件关机。成功后整机断电，函数不返回。
+    // 路径 A（M5PM1 真关机 + BMI270 拿起唤醒）暂禁用：关机位 0x0C=0xA1 与 PYG4 WAKE 配置
+    // 在无法获取串口日志的情况下难以验证，且若关机未真正执行会污染后续 deep sleep 唤醒源。
+    // 待串口日志恢复后单独调试启用。当前 S3 走路径 B（deep sleep），前键 ext1 唤醒。
+#if 0
     if (bmi270_present()) {
         esp_err_t wake_err = bmi270_enable_pickup_wake();
         if (wake_err == ESP_OK) {
             ESP_LOGI(TAG, "power off via M5PM1 shutdown (path A), IMU pickup wake armed");
             stick_s3_board_power_off();
-            // 不应到达此处；若 M5PM1 未断电则回退路径 B。
             ESP_LOGW(TAG, "M5PM1 shutdown did not power off, fallback to deep sleep");
         } else {
             ESP_LOGW(TAG, "pickup wake setup failed, fallback to deep sleep: %s",
@@ -393,8 +393,9 @@ static void enter_power_off(void)
     } else {
         ESP_LOGI(TAG, "BMI270 absent, power off via deep sleep (path B)");
     }
+#endif
 
-    // 路径 B（备份）：ESP32 deep sleep，前键 ext1 唤醒。
+    // 路径 B：ESP32 deep sleep，前键 ext1 唤醒。
     ESP_LOGI(TAG, "entering power off (deep sleep path B), wake on front button GPIO%d",
              wake_gpio);
     ui_status_prepare_deep_sleep();
@@ -1342,8 +1343,14 @@ void app_main(void)
     ESP_LOGI(TAG, "configuring PMIC");
     esp_pm_config_t pm_config = {
         .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-        .min_freq_mhz = CONFIG_XTAL_FREQ,
-        .light_sleep_enable = true,
+        // 把 min_freq 设为与 max_freq 相同（即禁用 CPU 降频）：
+        // ESP32-S3 原生 USB-Serial-JTAG 需要稳定的 PLL 时钟产生 USB 48MHz，
+        // CPU 降到 40MHz (XTAL) 时 PLL 可能被关，导致 USB 设备不可用（COM 端口出现 PermissionError 13）。
+        // 同时关闭自动 light sleep：USB-Serial-JTAG 控制台下 light sleep 会让 USB 挂起、
+        // CONFIG_PM_SLP_DISABLE_GPIO=y 让按键 gpio_wakeup 失效。
+        // S0/S1/S2 省电靠：背光分级 + L3B 开关 + BLE modem sleep；S3 deep sleep 才是深度省电。
+        .min_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .light_sleep_enable = false,
     };
     esp_pm_configure(&pm_config);
 }
