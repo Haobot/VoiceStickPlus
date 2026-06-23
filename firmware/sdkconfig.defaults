@@ -31,5 +31,12 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
+# TLS 握手内存峰值优化，为后续 esp_https_ota 做准备
+# OTA 双槽 rollback (BOOTLOADER_APP_ROLLBACK_ENABLE / APP_ROLLBACK_ENABLE) 暂未启用：
+# 需要先在 voice_ble.c 的 BLE OTA 路径 + 未来 voice_net 的 HTTPS OTA 路径里都补上
+# esp_ota_mark_app_valid_cancel_rollback 调用，避免每次升级被回滚。详见
+# Doc/Plan/wifi-sta-ble-provisioning.md §4.4。
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
 CONFIG_BT_CTRL_MODEM_SLEEP=y
 CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y

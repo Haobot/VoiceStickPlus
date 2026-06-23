@@ -39,7 +39,7 @@ website/                   Vue 3 + Vite 站点
   src/App.vue              主页面与 Web Serial 烧录流程
   src/i18n/                中英文文案（zh-CN.json、en-US.json）
   public/appcast.xml       Sparkle / WinSparkle 更新源
-docs/                      BLE 协议、发布流程、ASR 接口说明
+Doc/                       BLE 协议（Doc/Ref/protocol.md）、发布流程（Doc/Ref/release.md）、ASR 接口、实施方案 RFC（Doc/Plan/）
 scripts/                   构建脚本、精灵图处理、LVGL ARGB 转换、ASR 探测、appcast 更新
 VERSION                    单一版本来源（当前 0.3.4）
 ```
@@ -195,7 +195,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `control_rx`（write without response，`0x5103`）：`ui_state`、OTA 控制等，主机 → 设备。
 - `ota_rx` / `ota_tx`：BLE OTA 数据通道。
 
-完整帧格式见 `docs/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
+完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 
 ## 开发约定
 
@@ -225,7 +225,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - **交互状态机在桌面端，不在固件中**；修改交互流程时优先改桌面协调器（`VoiceStickCoordinator`）。
 - 固件通常只在新增/调整 `ui_state` 展示、硬件 I/O、BLE 协议或 OTA 行为时修改。
-- 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `docs/`、macOS、Windows、网站和发布脚本。
+- 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `Doc/Ref/`、macOS、Windows、网站和发布脚本。
 
 ### 配置文件
 
@@ -282,7 +282,7 @@ Windows 特殊流程：
 - `ALIYUN_OSS_ENDPOINT`、`ALIYUN_OSS_BUCKET`
 - 仓库变量 `ALIYUN_OSS_PUBLIC_BASE_URL`、可选 `ALIYUN_OSS_PREFIX`
 
-完整发布步骤见 `docs/release.md`。
+完整发布步骤见 `Doc/Ref/release.md`。
 
 ## 安全与敏感信息
 
@@ -297,5 +297,5 @@ Windows 特殊流程：
 - 搜索仓库时请排除 `website/node_modules/` 和 `firmware/build/` 以免噪声过多。
 - Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。
 - `build_native.bat`、`do_build.bat`、`run_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
-- 修改协议或公共数据结构时，必须同时更新 `docs/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
+- 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
 - 修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
