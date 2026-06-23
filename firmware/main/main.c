@@ -1152,9 +1152,10 @@ static esp_err_t init_battery_refresh_timer(void)
 
 // 拿起检测轮询：仅在 S1(Resting) 态启用。
 // 进入 Resting 时启动，回到 Active 或进入录音/OTA 时停止，避免无谓的 I2C 读与功耗。
+// IMU 不在线时定时器仍启动但 bmi270_pickup_detected 返回 false，轮询空转无开销。
 static void set_pickup_polling_enabled(bool enabled)
 {
-    if (!s_pickup_poll_timer || !bmi270_present()) {
+    if (!s_pickup_poll_timer) {
         return;
     }
     if (enabled) {
