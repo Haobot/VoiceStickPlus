@@ -51,3 +51,6 @@ esp_err_t voice_ble_send_button_up(const char *button, uint32_t duration_ms,
 esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
                                       uint32_t session_id);
 esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered);
+// 把 voice_net 拼好的 wifi_status JSON 透传到 state_tx（type=0x10）。
+// 协议见 Doc/Ref/protocol.md "Wi-Fi Provisioning and HTTPS OTA Pull"。
+esp_err_t voice_ble_send_wifi_status(const char *json);

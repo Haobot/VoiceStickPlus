@@ -1028,3 +1028,10 @@ esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool u
     ESP_LOGI(TAG, "battery status level=%d charging=%d usb=%d", level_percent, charging, usb_powered);
     return send_state_json(json);
 }
+
+esp_err_t voice_ble_send_wifi_status(const char *json)
+{
+    if (!json) return ESP_ERR_INVALID_ARG;
+    // 不再用 ESP_LOGI 打印 JSON 全文——SSID 不算秘密，但避免日志洪水
+    return send_state_json(json);
+}
