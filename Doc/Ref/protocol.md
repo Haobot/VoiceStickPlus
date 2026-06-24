@@ -77,6 +77,7 @@ Currently emitted state events:
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
 {"event":"button_down","button":"secondary"}
 {"event":"button_up","button":"secondary","duration_ms":90}
+{"event":"wifi_status","state":"connected","ssid":"MyHomeWiFi","ip":"192.168.1.42","rssi":-54,"last_error":"","ota_pull":{"state":"idle","progress_pct":0,"url":"","last_error":""},"ota_pending_verify":false,"park_locked":true}
 ```
 
 Buttons are named by role instead of physical placement. On StickS3, the front
@@ -130,6 +131,96 @@ Deprecated app-to-firmware events:
 | `paste_done` | `ui_state:ready` | Once pasted, the device returns to ready. |
 | `paste_cancelled` | `ui_state:ready` | Once cancelled, the device returns to ready. |
 | `error` | `ui_state:error` with `text` | Errors are another UI state. |
+
+## Wi-Fi Provisioning and HTTPS OTA Pull
+
+设备通过 BLE `control_rx` 接收 Wi-Fi STA 凭据，连接成功后通过 `state_tx`
+（type=0x10）上报 `wifi_status` 快照。Wi-Fi 仅作为运维侧路使用：HTTPS 拉取
+OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行共存。详细背景与
+风险见 `Doc/Plan/wifi-sta-ble-provisioning.md`。
+
+### 桌面端 → 固件（control_rx，JSON 文本）
+
+| event | 字段 | 语义 |
+| --- | --- | --- |
+| `wifi_set` | `ssid` (≤32 ASCII)、`password` (≤63，可空) | 写 NVS，延迟 800 ms 后 `esp_wifi_connect`；先让 BLE 回包 |
+| `wifi_clear` | — | 擦除 NVS 凭据，断开 STA |
+| `wifi_status_request` | — | 立刻补推一帧 `wifi_status` |
+| `ota_pull` | `url` (HTTPS, ≤256)、`sha256_hex` (可选) | 启动 `esp_https_ota` task |
+| `ota_commit` | — | 调 `esp_ota_mark_app_valid_cancel_rollback`，确认新固件健康 |
+
+示例：
+
+```json
+{"event":"wifi_set","ssid":"MyHomeWiFi","password":"p@ss\"w0rd"}
+{"event":"wifi_set","ssid":"OpenAP","password":""}
+{"event":"wifi_clear"}
+{"event":"wifi_status_request"}
+{"event":"ota_pull","url":"https://oss.example.com/voicestick/0.4.0.bin","sha256_hex":"deadbeef..."}
+{"event":"ota_pull","url":"https://oss.example.com/voicestick/0.4.0.bin"}
+{"event":"ota_commit"}
+```
+
+字段长度由固件硬校验；超长直接丢弃，下一帧 `wifi_status.last_error =
+"payload_too_large"`。所有写日志路径必须把 `password` 字段脱敏为 `<redacted>`。
+
+### 固件 → 桌面端（state_tx，event=`wifi_status`）
+
+完整快照，**不做差分推送**——桌面端解析时直接覆盖本地缓存：
+
+```json
+{
+  "event": "wifi_status",
+  "state": "disabled|configured|connecting|connected|disconnected|error",
+  "ssid": "MyHomeWiFi",
+  "ip": "192.168.1.42",
+  "rssi": -54,
+  "last_error": "",
+  "ota_pull": {
+    "state": "idle|downloading|finishing|success|failed",
+    "progress_pct": 0,
+    "url": "",
+    "last_error": ""
+  },
+  "ota_pending_verify": false,
+  "park_locked": true
+}
+```
+
+推送时机：状态切换 / OTA 进度每 5% / BLE 重连接后主动一次 / 收到 `wifi_status_request` 时。
+
+### 错误码 `last_error` 枚举
+
+| code | 触发条件 |
+| --- | --- |
+| `""` | 无错 |
+| `payload_too_large` | SSID / 密码 / URL 字段越界 |
+| `no_ssid` | `WIFI_REASON_NO_AP_FOUND` |
+| `auth_failed` | 4-way handshake 失败 |
+| `timeout` | 30 s 内未拿到 IP |
+| `park_required` | OTA 期间收到 `wifi_set`，拒绝以免中断升级 |
+| `ota_url_invalid` | URL 非 HTTPS 或长度越界 |
+| `ota_park_required` | OTA 启动时录音或 BLE OTA 进行中 |
+| `ota_http_failed` | `esp_https_ota` 错误（HTTP 状态非 2xx、TLS 失败等） |
+| `ota_validate_failed` | SHA256 不匹配或 `esp_ota_end` 校验失败 |
+
+**首次写入保留**：`last_error` 非空时后续瞬态事件不能覆盖，直到下次成功事件或显式 `wifi_clear` 才清零。
+
+### Park gate（业务侧锁）
+
+`park_locked=true` 当且仅当：录音空闲 + 当前未在 BLE OTA + 当前未在 HTTPS OTA。OTA pull 启动前固件侧硬校验 `park_locked`，未锁立刻回 `ota_park_required`。
+
+### OTA `pending_verify` 健康签到
+
+启用 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` + `CONFIG_APP_ROLLBACK_ENABLE=y` 后：
+
+- 新固件首次启动 bootloader 标记 `ESP_OTA_IMG_PENDING_VERIFY`，固件侧暴露在 `wifi_status.ota_pending_verify=true`。
+- 默认行为：固件在 "主循环跑过 ≥10 s + BLE 至少一次连接成功" 后自动 `esp_ota_mark_app_valid_cancel_rollback()`。
+- 严格模式（可选）：桌面端 UI 看到 `ota_pending_verify=true` 红色横幅 → 用户点 Commit → 下发 `ota_commit` → 固件签到。
+- 超时未签到（5 分钟） → 设备重启 → bootloader 自动回滚到上一槽。
+
+**注意**：rollback 配置必须与所有 OTA 路径的 mark_valid 调用同时上线（包括现有 BLE OTA），否则会出现"升级后每次重启都被回滚"的死锁。本期上线计划见
+`Doc/Plan/wifi-sta-ble-provisioning.md` §4.4。
 
 ## BLE OTA
 

@@ -389,6 +389,126 @@ void TestBleControlPayloads() {
     assert(std::string(battery_request.begin(), battery_request.end()) == "{\"event\":\"battery_status_request\"}");
 }
 
+void TestBleWifiPayloads() {
+    // 与 Doc/Plan/wifi-sta-ble-provisioning.md §3.1 协议表对齐：
+    // 全部走 control_rx，UTF-8 JSON 文本，无 type/长度头。
+    {
+        const auto set = BleProtocol::WifiSetPayload("MyHomeWiFi", "p@ss\"w0rd");
+        const std::string expected =
+            "{\"event\":\"wifi_set\",\"ssid\":\"MyHomeWiFi\",\"password\":\"p@ss\\\"w0rd\"}";
+        assert(std::string(set.begin(), set.end()) == expected);
+    }
+    {
+        // 空密码代表开放网络，仍需带 password 字段保持解析端不需要分支。
+        const auto set_open = BleProtocol::WifiSetPayload("OpenAP", "");
+        const std::string expected = "{\"event\":\"wifi_set\",\"ssid\":\"OpenAP\",\"password\":\"\"}";
+        assert(std::string(set_open.begin(), set_open.end()) == expected);
+    }
+    {
+        const auto clear = BleProtocol::WifiClearPayload();
+        assert(std::string(clear.begin(), clear.end()) == "{\"event\":\"wifi_clear\"}");
+    }
+    {
+        const auto request = BleProtocol::WifiStatusRequestPayload();
+        assert(std::string(request.begin(), request.end()) == "{\"event\":\"wifi_status_request\"}");
+    }
+    {
+        const auto pull = BleProtocol::OtaPullPayload(
+            "https://oss.example.com/voicestick/firmware/0.4.0.bin",
+            "deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567");
+        const std::string expected =
+            "{\"event\":\"ota_pull\",\"url\":\"https://oss.example.com/voicestick/firmware/0.4.0.bin\","
+            "\"sha256_hex\":\"deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567\"}";
+        assert(std::string(pull.begin(), pull.end()) == expected);
+    }
+    {
+        // sha256 可选，省略时字段不出现，便于固件侧"无校验"分支判断。
+        const auto pull_no_sha = BleProtocol::OtaPullPayload(
+            "https://oss.example.com/voicestick/firmware/0.4.0.bin", "");
+        const std::string expected =
+            "{\"event\":\"ota_pull\",\"url\":\"https://oss.example.com/voicestick/firmware/0.4.0.bin\"}";
+        assert(std::string(pull_no_sha.begin(), pull_no_sha.end()) == expected);
+    }
+    {
+        const auto commit = BleProtocol::OtaCommitPayload();
+        assert(std::string(commit.begin(), commit.end()) == "{\"event\":\"ota_commit\"}");
+    }
+}
+
+void TestBleWifiStatusParsing() {
+    // 与 §3.2 wifi_status 字段表对齐：完整快照，无差分。
+    const std::string json =
+        "{\"event\":\"wifi_status\","
+        "\"state\":\"connected\","
+        "\"ssid\":\"MyHomeWiFi\","
+        "\"ip\":\"192.168.1.42\","
+        "\"rssi\":-54,"
+        "\"last_error\":\"\","
+        "\"ota_pull\":{\"state\":\"downloading\",\"progress_pct\":35,"
+        "\"url\":\"https://oss.example.com/voicestick/firmware/0.4.0.bin\","
+        "\"last_error\":\"\"},"
+        "\"ota_pending_verify\":true,"
+        "\"park_locked\":false}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "wifi_status");
+    assert(event->wifi.has_value());
+    const auto& wifi = *event->wifi;
+    assert(wifi.state == "connected");
+    assert(wifi.ssid == "MyHomeWiFi");
+    assert(wifi.ip == "192.168.1.42");
+    assert(wifi.rssi.has_value() && *wifi.rssi == -54);
+    assert(wifi.last_error.empty());
+    assert(wifi.ota_pull_state == "downloading");
+    assert(wifi.ota_pull_progress_pct.has_value() && *wifi.ota_pull_progress_pct == 35);
+    assert(wifi.ota_pull_url == "https://oss.example.com/voicestick/firmware/0.4.0.bin");
+    assert(wifi.ota_pull_last_error.empty());
+    assert(wifi.ota_pending_verify == true);
+    assert(wifi.park_locked == false);
+}
+
+void TestBleWifiStatusParsingErrorState() {
+    // 错误码"首次写入保留"是固件侧职责，桌面端解析必须如实把错误码传上去。
+    const std::string json =
+        "{\"event\":\"wifi_status\","
+        "\"state\":\"error\","
+        "\"ssid\":\"WrongPass\","
+        "\"ip\":\"\","
+        "\"rssi\":-72,"
+        "\"last_error\":\"auth_failed\","
+        "\"ota_pull\":{\"state\":\"idle\",\"progress_pct\":0,\"url\":\"\",\"last_error\":\"\"},"
+        "\"ota_pending_verify\":false,"
+        "\"park_locked\":true}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "wifi_status");
+    assert(event->wifi.has_value());
+    assert(event->wifi->state == "error");
+    assert(event->wifi->last_error == "auth_failed");
+    assert(event->wifi->rssi.has_value() && *event->wifi->rssi == -72);
+    assert(event->wifi->park_locked == true);
+}
+
+void TestBleStateParsingWithoutWifiHasNoWifi() {
+    // 现有 button_down 事件不带 wifi 子结构，wifi 字段必须 nullopt 避免误用。
+    const std::string json = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "button_down");
+    assert(!event->wifi.has_value());
+}
+
 void TestStateParsing() {
     const std::string json = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
     ByteVector frame = {1, 0x10};
@@ -1107,7 +1227,11 @@ int main() {
     TestPairDeviceHelpers();
     TestAudioFrameParsing();
     TestBleControlPayloads();
+    TestBleWifiPayloads();
     TestStateParsing();
+    TestBleWifiStatusParsing();
+    TestBleWifiStatusParsingErrorState();
+    TestBleStateParsingWithoutWifiHasNoWifi();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
