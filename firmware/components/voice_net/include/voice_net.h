@@ -37,6 +37,18 @@ void voice_net_publish_status(void);
 // 没有持久化凭据时是 no-op。
 void voice_net_resume_if_configured(void);
 
+// 由 main.c 注入的"是否允许启动 OTA"查询回调。voice_net 在 ota_pull 启动前会调用，
+// 返回 false 时拒绝并把 wifi_status.last_error 置为 "ota_park_required"。
+// 实现应检查：!s_recording && !s_ota_updating && !voice_ble_ota_is_active()。
+// 详见 Doc/Plan/wifi-sta-ble-provisioning.md §2.5 Park gate。
+typedef bool (*voice_net_park_query_fn)(void);
+void voice_net_set_park_query(voice_net_park_query_fn cb);
+
+// 桌面端 control_rx 收到 ota_pull 时调用：启动 esp_https_ota 拉取固件。
+// url 必须以 https:// 开头且长度 ≤256；sha256_hex 可选（暂未实施校验，预留字段）。
+// 内部异步执行，进度通过 wifi_status.ota_pull 子对象上报。
+void voice_net_start_ota_pull(const char *url, const char *sha256_hex);
+
 #ifdef __cplusplus
 }
 #endif
