@@ -11,6 +11,7 @@
 #include "settings_dialog.h"
 #include "subtitle_window.h"
 #include "voice_stick_coordinator.h"
+#include "wifi_settings_dialog.h"
 
 #include <Windows.h>
 
@@ -39,6 +40,8 @@ public:
     void SetDeviceInfo(const DeviceInfo& info) override;
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override;
+    void SetDeviceWifiStatus(const std::string& device_id,
+                              const WifiStatusSnapshot& snapshot) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
     void SetPairingError(const std::string& device_id, const std::string& message) override;
     void ShowFirmwareUpdatePrompt(const std::string& device_id,
@@ -81,6 +84,7 @@ private:
     bool ShowOnboarding();
     void ShowPairDeviceDialog();
     void ShowSettings();
+    void ShowWifiSettings(const std::string& device_id);
     void SaveInputOptions();
     void SyncLaunchAtLogin();
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
@@ -107,6 +111,7 @@ private:
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
+    std::map<std::string, std::unique_ptr<WifiSettingsDialog>> wifi_settings_dialogs_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;
     std::unique_ptr<SubtitleWindow> subtitles_;
@@ -116,6 +121,7 @@ private:
     std::vector<std::string> paired_device_ids_;
     std::map<std::string, DeviceInfo> device_info_map_;
     std::map<std::string, DeviceBattery> device_battery_map_;
+    std::map<std::string, WifiStatusSnapshot> device_wifi_status_map_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     bool has_recoverable_input_ = false;

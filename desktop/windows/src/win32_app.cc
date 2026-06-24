@@ -5,6 +5,7 @@
 #include "localization.h"
 #include "log.h"
 #include "resource.h"
+#include "wifi_credentials_win.h"
 
 #include <Shellapi.h>
 #include <winsparkle.h>
@@ -56,6 +57,8 @@ constexpr UINT kMenuHotkeyEnabled = 5801;
 constexpr UINT kMenuHotkeyCustom = 5802;
 constexpr UINT kMenuHotkeyBase = 5810;
 constexpr UINT kMenuHotkeyEnd = 5899;
+constexpr UINT kMenuWifiSettingsBase = 5900;
+constexpr UINT kMenuWifiSettingsEnd = 5999;
 
 struct HotkeyPreset {
     const char* name;
@@ -95,6 +98,15 @@ std::wstring Utf16FromUtf8(std::string_view text) {
     std::wstring wide(static_cast<std::size_t>(length), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
     return wide;
+}
+
+std::string Utf8FromUtf16(std::wstring_view text) {
+    if (text.empty()) return {};
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (length <= 0) return {};
+    std::string out(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), length, nullptr, nullptr);
+    return out;
 }
 
 std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
@@ -409,6 +421,21 @@ void Win32App::SetDeviceBattery(const std::string& device_id, int level_percent,
     });
 }
 
+void Win32App::SetDeviceWifiStatus(const std::string& device_id,
+                                   const WifiStatusSnapshot& snapshot) {
+    DispatchToUi([this, device_id, snapshot] {
+        LogLine("SetDeviceWifiStatus VS-" + device_id +
+                " state=" + snapshot.state +
+                " ip=" + (snapshot.ip.empty() ? "<empty>" : snapshot.ip) +
+                " ota=" + snapshot.ota_pull_state);
+        device_wifi_status_map_[device_id] = snapshot;
+        auto it = wifi_settings_dialogs_.find(device_id);
+        if (it != wifi_settings_dialogs_.end() && it->second) {
+            it->second->UpdateStatus(snapshot);
+        }
+    });
+}
+
 void Win32App::SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) {
     DispatchToUi([this, info_by_device_id] {
         firmware_info_map_ = info_by_device_id;
@@ -697,6 +724,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 std::size_t index = cmd - kMenuUpdateFirmwareBase;
                 if (index < paired_device_ids_.size()) {
                     StartFirmwareUpdate(paired_device_ids_[index]);
+                }
+            } else if (cmd >= kMenuWifiSettingsBase && cmd <= kMenuWifiSettingsEnd) {
+                std::size_t index = cmd - kMenuWifiSettingsBase;
+                if (index < paired_device_ids_.size()) {
+                    ShowWifiSettings(paired_device_ids_[index]);
                 }
             } else if (cmd >= kMenuThemeColorBase && cmd <= kMenuThemeColorEnd) {
                 const std::size_t offset = cmd - kMenuThemeColorBase;
@@ -998,6 +1030,10 @@ void Win32App::ShowTrayMenu() {
         }
 
         AppendMenuW(submenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(submenu,
+                    connected ? MF_STRING : (MF_STRING | MF_DISABLED),
+                    kMenuWifiSettingsBase + static_cast<UINT>(i),
+                    language == UiLanguage::kSimplifiedChinese ? L"Wi-Fi 与 OTA..." : L"Wi-Fi && OTA...");
         AppendMenuW(submenu, MF_STRING, kMenuForgetBase + static_cast<UINT>(i),
                     TrW(StringId::kMenuForgetDevice, language).c_str());
 
@@ -1403,6 +1439,56 @@ void Win32App::ShowSettings() {
         };
     }
     settings_dialog_->Show();
+}
+
+void Win32App::ShowWifiSettings(const std::string& device_id) {
+    if (!coordinator_) return;
+
+    WifiSettingsDialog::Options options;
+    options.device_id = device_id;
+    options.device_name = "VS-" + device_id;
+    if (auto it = device_info_map_.find(device_id); it != device_info_map_.end()) {
+        options.device_name = "VS-" + device_id;
+        options.firmware_version = it->second.firmware_version;
+    }
+    options.language = EffectiveUiLanguage(config_.ui_language);
+    if (auto it = config_.device_wifi_profiles.find(device_id); it != config_.device_wifi_profiles.end()) {
+        options.profile = it->second;
+    }
+    options.saved_password = WifiCredentialsWin::ReadPassword(device_id);
+    if (auto it = device_wifi_status_map_.find(device_id); it != device_wifi_status_map_.end()) {
+        options.status = it->second;
+    }
+
+    WifiSettingsDialog::Callbacks callbacks;
+    callbacks.apply_wifi = [this, device_id](std::string ssid, std::wstring password) {
+        WifiCredentialsWin::WritePassword(device_id, password);
+        if (coordinator_) coordinator_->ConfigureDeviceWifi(device_id, ssid, Utf8FromUtf16(password));
+    };
+    callbacks.clear_wifi = [this, device_id] {
+        WifiCredentialsWin::DeletePassword(device_id);
+        config_.device_wifi_profiles.erase(device_id);
+        config_.Save();
+        if (coordinator_) coordinator_->ClearDeviceWifi(device_id);
+    };
+    callbacks.refresh_status = [this, device_id] {
+        if (coordinator_) coordinator_->RequestDeviceWifiStatus(device_id);
+    };
+    callbacks.start_ota = [this, device_id](std::string url, std::string sha256) {
+        if (coordinator_) coordinator_->StartDeviceOtaPull(device_id, url, sha256);
+    };
+    callbacks.commit_ota = [this, device_id] {
+        if (coordinator_) coordinator_->CommitDeviceOta(device_id);
+    };
+    callbacks.save_profile = [this, device_id](WifiDeviceProfile profile) {
+        config_.device_wifi_profiles[device_id] = std::move(profile);
+        config_.Save();
+    };
+
+    auto& dialog = wifi_settings_dialogs_[device_id];
+    dialog = std::make_unique<WifiSettingsDialog>(instance_, hwnd_, std::move(options), std::move(callbacks));
+    dialog->Show();
+    coordinator_->RequestDeviceWifiStatus(device_id);
 }
 
 void Win32App::StartFirmwareUpdate(const std::string& device_id) {

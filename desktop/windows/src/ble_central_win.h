@@ -44,6 +44,15 @@ public:
                           const std::string& button,
                           const std::optional<std::string>& device_id,
                           std::uint32_t request_id) override;
+    void SendWifiSet(const std::string& device_id,
+                     const std::string& ssid,
+                     const std::string& password) override;
+    void SendWifiClear(const std::string& device_id) override;
+    void SendWifiStatusRequest(const std::string& device_id) override;
+    void SendOtaPull(const std::string& device_id,
+                     const std::string& url,
+                     const std::string& sha256_hex) override;
+    void SendOtaCommit(const std::string& device_id) override;
     void UpdateFirmware(ByteVector image,
                         const std::string& device_id,
                         std::function<void(FirmwareUpdateProgress)> progress,

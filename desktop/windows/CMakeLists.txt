@@ -83,6 +83,8 @@ add_executable(VoiceStickApp WIN32
     src/onboarding_dialog.cc
     src/settings_dialog.cc
     src/hotkey_settings_dialog.cc
+    src/wifi_credentials_win.cc
+    src/wifi_settings_dialog.cc
     resources/VoiceStick.rc
 )
 

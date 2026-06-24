@@ -27,3 +27,4 @@ dependencies.lock
 /tmp/
 desktop/windows/
 dist/
+.superpowers/

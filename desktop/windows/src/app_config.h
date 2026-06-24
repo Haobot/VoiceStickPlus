@@ -85,6 +85,16 @@ struct OutputProfile {
     bool operator==(const OutputProfile& other) const = default;
 };
 
+struct WifiDeviceProfile {
+    std::string ssid;
+    std::string ota_url;
+    std::string ota_sha256_hex;
+
+    bool IsEmpty() const {
+        return ssid.empty() && ota_url.empty() && ota_sha256_hex.empty();
+    }
+};
+
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
 
@@ -110,6 +120,7 @@ struct AppConfig {
     std::map<std::string, OverlayPosition> device_overlay_positions;
     OutputProfile default_output_profile;
     std::map<std::string, OutputProfile> device_output_profiles;
+    std::map<std::string, WifiDeviceProfile> device_wifi_profiles;
     bool auto_enter = true;
     bool global_hotkey_enabled = true;
     std::string global_hotkey = "Alt+X";
