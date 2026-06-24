@@ -152,8 +152,7 @@ static void build_status_json(char *dst, size_t cap)
     memcpy(ip_local, s_status.ip, sizeof(s_status.ip));
     xSemaphoreGive(s_status_mutex);
 
-    // ota_pull 子对象从 voice_net_ota 模块读真实状态；ota_pending_verify 暂留 false
-    // （rollback 配置未启用，下一轮 §9 与 mark_app_valid 一起接入）。
+    // ota_pull 子对象从 voice_net_ota 模块读真实状态；
     // park_locked 通过注入的 query 回调实时计算：录音空闲且 BLE OTA 不在跑就 true。
     const char *ota_state_str = voice_net_ota_state_string(voice_net_ota_get_state());
     const int   ota_pct = voice_net_ota_get_progress_pct();
@@ -162,24 +161,27 @@ static void build_status_json(char *dst, size_t cap)
     json_escape_into(ota_url_esc, sizeof(ota_url_esc), voice_net_ota_get_url());
     json_escape_into(ota_err_esc, sizeof(ota_err_esc), voice_net_ota_get_last_error());
     const bool park_locked = s_park_query ? s_park_query() : true;
+    const bool pending_verify = voice_net_is_pending_verify();
 
     if (has_rssi) {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"rssi\":%d,\"last_error\":\"%s\","
             "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
-            "\"ota_pending_verify\":false,\"park_locked\":%s}",
+            "\"ota_pending_verify\":%s,\"park_locked\":%s}",
             state_to_string(state), ssid_esc, ip_local, rssi, err_esc,
             ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
+            pending_verify ? "true" : "false",
             park_locked ? "true" : "false");
     } else {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"last_error\":\"%s\","
             "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
-            "\"ota_pending_verify\":false,\"park_locked\":%s}",
+            "\"ota_pending_verify\":%s,\"park_locked\":%s}",
             state_to_string(state), ssid_esc, ip_local, err_esc,
             ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
+            pending_verify ? "true" : "false",
             park_locked ? "true" : "false");
     }
 }
@@ -470,6 +472,9 @@ esp_err_t voice_net_init(voice_net_status_publish_fn publish)
     }
 
     s_publish = publish;
+
+    // 最早期检测 PENDING_VERIFY：必须在任何耗时初始化前调，固定 boot uptime 基准。
+    voice_net_ota_detect_pending_verify();
 
     s_status_mutex = xSemaphoreCreateMutex();
     if (!s_status_mutex) return ESP_ERR_NO_MEM;

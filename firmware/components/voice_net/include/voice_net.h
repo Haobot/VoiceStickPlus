@@ -49,6 +49,20 @@ void voice_net_set_park_query(voice_net_park_query_fn cb);
 // 内部异步执行，进度通过 wifi_status.ota_pull 子对象上报。
 void voice_net_start_ota_pull(const char *url, const char *sha256_hex);
 
+// 显式确认新固件健康，调 esp_ota_mark_app_valid_cancel_rollback。
+// 桌面端 control_rx 收到 ota_commit 时由 main.c 调用；voice_net 内部也会在
+// "boot 起来 N 秒 + BLE 至少连过一次" 时自动调一次（自动签到）。
+// 没有 PENDING_VERIFY 状态时是 no-op。
+void voice_net_mark_app_valid(void);
+
+// 由 main.c 在 BLE 连上时调用一次，让 voice_net 知道"健康信号"满足，
+// 配合启动时长可以触发自动签到。重复调用幂等。
+void voice_net_notify_ble_connected(void);
+
+// 查询当前固件是否处于 PENDING_VERIFY 状态（新固件首次启动）。
+// 用于 wifi_status.ota_pending_verify 字段。
+bool voice_net_is_pending_verify(void);
+
 #ifdef __cplusplus
 }
 #endif

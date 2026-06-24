@@ -698,6 +698,10 @@ static void ble_control_cb(const char *json)
         } else {
             ESP_LOGW(TAG, "ota_pull missing url");
         }
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "ota_commit") == 0) {
+        // 桌面端手动确认新固件健康：调 esp_ota_mark_app_valid_cancel_rollback。
+        ESP_LOGI(TAG, "ota_commit");
+        voice_net_mark_app_valid();
     }
     cJSON_Delete(root);
 }
@@ -909,6 +913,9 @@ static void app_event_task(void *arg)
             voice_net_publish_status();
             // 此时 BLE 已稳定，如有 NVS 凭据可以安全地启动 Wi-Fi（避免 boot 期与 BLE 抢资源）。
             voice_net_resume_if_configured();
+            // PENDING_VERIFY 健康签到的第二个条件：BLE 至少连过一次。
+            // 配合启动 ≥10 秒后自动 mark_app_valid，避免 boot-loop 固件被签到。
+            voice_net_notify_ble_connected();
             break;
         case APP_EVENT_BLE_DISCONNECTED:
             s_recording = false;

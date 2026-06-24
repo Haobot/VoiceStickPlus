@@ -28,6 +28,7 @@
 #include "esp_https_ota.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -39,6 +40,17 @@ static const char *TAG = "voice_net_ota";
 #define OTA_PROGRESS_STEP_PCT 5         // 进度每变化 5% 推一次 wifi_status
 
 static atomic_bool s_ota_in_progress = ATOMIC_VAR_INIT(false);
+
+// pending_verify 健康签到状态：
+// - s_pending_verify: 新固件首次启动时由 voice_net_init 检测一次，记下来。
+// - s_app_valid_marked: 是否已经成功调过 esp_ota_mark_app_valid_cancel_rollback。
+// - s_boot_uptime_ms / s_ble_seen_connected: 自动签到的双条件（≥N 秒 + BLE 连过一次），
+//   避免新固件刚起来 panic 前就被标记 valid 失去回滚机会。
+#define MARK_VALID_MIN_UPTIME_MS  10000
+static atomic_bool s_pending_verify    = ATOMIC_VAR_INIT(false);
+static atomic_bool s_app_valid_marked  = ATOMIC_VAR_INIT(false);
+static atomic_bool s_ble_seen_connected = ATOMIC_VAR_INIT(false);
+static int64_t     s_boot_uptime_anchor_us = 0;
 
 // 上报字段，由 voice_net.c 的快照拼装函数读。
 // 简单起见用原子标志位 + 小字符串（互斥保护见 voice_net.c 的 s_status_mutex）。
@@ -241,4 +253,73 @@ void voice_net_start_ota_pull_internal(const char *url, const char *sha256_hex,
         set_ota_error("ota_http_failed");
         voice_net_publish_status();
     }
+}
+
+// ---- pending_verify 健康签到 ----
+//
+// 在 boot 早期由 voice_net_init 调一次：检测当前运行槽位是否处于
+// PENDING_VERIFY 状态（新固件首次启动）。如果是，记下来等满足双条件
+// （uptime ≥ N + BLE 至少连过一次）后调 esp_ota_mark_app_valid_cancel_rollback。
+//
+// 没开 rollback 配置时（CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE not set），
+// esp_ota_get_state_partition 通常返回 ESP_OTA_IMG_VALID 或 UNDEFINED，
+// 永远不会进 PENDING_VERIFY 分支——这些函数都是 no-op 安全的，可以
+// 先于 sdkconfig 改动落地。
+
+void voice_net_ota_detect_pending_verify(void)
+{
+    s_boot_uptime_anchor_us = esp_timer_get_time();
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return;
+
+    esp_ota_img_states_t state;
+    if (esp_ota_get_state_partition(running, &state) != ESP_OK) {
+        ESP_LOGW(TAG, "get_state_partition failed");
+        return;
+    }
+
+    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+        atomic_store(&s_pending_verify, true);
+        ESP_LOGW(TAG, "pending_verify: running partition %s waiting for health confirmation",
+                 running->label);
+    } else {
+        ESP_LOGI(TAG, "running partition %s state=%d (no pending verify)",
+                 running->label, (int)state);
+    }
+}
+
+bool voice_net_is_pending_verify(void)
+{
+    return atomic_load(&s_pending_verify);
+}
+
+void voice_net_notify_ble_connected(void)
+{
+    atomic_store(&s_ble_seen_connected, true);
+    // 看是否满足自动签到条件
+    if (atomic_load(&s_app_valid_marked)) return;
+    if (!atomic_load(&s_pending_verify)) return;
+    int64_t uptime_ms = (esp_timer_get_time() - s_boot_uptime_anchor_us) / 1000;
+    if (uptime_ms >= MARK_VALID_MIN_UPTIME_MS) {
+        voice_net_mark_app_valid();
+    }
+}
+
+void voice_net_mark_app_valid(void)
+{
+    if (atomic_exchange(&s_app_valid_marked, true)) return;  // 已签到，幂等
+
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        atomic_store(&s_pending_verify, false);
+        ESP_LOGI(TAG, "mark_app_valid_cancel_rollback ok");
+    } else if (err == ESP_ERR_NOT_SUPPORTED || err == ESP_ERR_INVALID_STATE) {
+        // 未启用 rollback 配置 / 当前分区状态不需要签到——都不算错。
+        ESP_LOGD(TAG, "mark_valid no-op: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGW(TAG, "mark_valid failed: %s", esp_err_to_name(err));
+        atomic_store(&s_app_valid_marked, false);  // 失败后允许重试
+    }
+    voice_net_publish_status();
 }
