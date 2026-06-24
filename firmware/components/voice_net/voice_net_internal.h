@@ -38,3 +38,7 @@ int                   voice_net_ota_get_progress_pct(void);
 const char           *voice_net_ota_get_url(void);
 const char           *voice_net_ota_get_last_error(void);
 const char           *voice_net_ota_state_string(voice_net_ota_state_t s);
+
+// boot 早期检测 PENDING_VERIFY 状态：由 voice_net_init 调用一次，记下来后续
+// 满足条件时自动 mark_app_valid。详见 voice_net_ota.c 末尾的说明。
+void voice_net_ota_detect_pending_verify(void);
