@@ -226,6 +226,7 @@ void WifiSettingsDialog::RefreshStatusText() {
     std::ostringstream ota;
     ota << "OTA: " << (s.ota_pull_state.empty() ? "idle" : s.ota_pull_state)
         << "  " << s.ota_pull_progress_pct.value_or(0) << "%";
+    if (!s.running_partition.empty()) ota << "  分区=" << s.running_partition;
     if (!s.ota_pull_last_error.empty()) ota << "  错误=" << s.ota_pull_last_error;
     if (s.ota_pending_verify) ota << "  等待健康确认";
     SetText(ota_status_label_, Utf16(ota.str()));

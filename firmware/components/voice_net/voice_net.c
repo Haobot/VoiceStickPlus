@@ -24,6 +24,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -164,26 +165,28 @@ static void build_status_json(char *dst, size_t cap)
     json_escape_into(ota_err_esc, sizeof(ota_err_esc), voice_net_ota_get_last_error());
     const bool park_locked = s_park_query ? s_park_query() : true;
     const bool pending_verify = voice_net_is_pending_verify();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const char *running_partition = running ? running->label : "unknown";
 
     if (has_rssi) {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"rssi\":%d,\"last_error\":\"%s\","
             "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
-            "\"ota_pending_verify\":%s,\"park_locked\":%s}",
+            "\"ota_pending_verify\":%s,\"running_partition\":\"%s\",\"park_locked\":%s}",
             state_to_string(state), ssid_esc, ip_local, rssi, err_esc,
             ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
-            pending_verify ? "true" : "false",
+            pending_verify ? "true" : "false", running_partition,
             park_locked ? "true" : "false");
     } else {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"last_error\":\"%s\","
             "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
-            "\"ota_pending_verify\":%s,\"park_locked\":%s}",
+            "\"ota_pending_verify\":%s,\"running_partition\":\"%s\",\"park_locked\":%s}",
             state_to_string(state), ssid_esc, ip_local, err_esc,
             ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
-            pending_verify ? "true" : "false",
+            pending_verify ? "true" : "false", running_partition,
             park_locked ? "true" : "false");
     }
 }

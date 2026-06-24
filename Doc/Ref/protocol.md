@@ -190,6 +190,7 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
     "last_error": ""
   },
   "ota_pending_verify": false,
+  "running_partition": "ota_0",
   "park_locked": true
 }
 ```
