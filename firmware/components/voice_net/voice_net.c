@@ -45,8 +45,7 @@ typedef enum {
     VN_CMD_APPLY_CREDENTIALS = 1,
     VN_CMD_CONNECT_TIMEOUT,
     VN_CMD_START_DISCOVERY,    // 拿到 IP 后启动 mDNS + SNTP，跑在 6KB worker 栈上
-    VN_CMD_PUBLISH_STATUS,     // 拼装 wifi_status JSON 并推送 BLE state_tx
-                               // ——build_status_json 局部 buffer ~1.7KB，必须跑专用栈
+    VN_CMD_PUBLISH_STATUS,     // 状态变化异步发布，避免 sys_evt 栈溢出
 } voice_net_cmd_t;
 
 #define VOICE_NET_TASK_STACK_SIZE 6144
@@ -156,7 +155,10 @@ static void build_status_json(char *dst, size_t cap)
     // park_locked 通过注入的 query 回调实时计算：录音空闲且 BLE OTA 不在跑就 true。
     const char *ota_state_str = voice_net_ota_state_string(voice_net_ota_get_state());
     const int   ota_pct = voice_net_ota_get_progress_pct();
-    char        ota_url_esc[2 * 256 + 1] = {0};
+    // 状态帧中的 URL 仅用于 UI 展示，截断到 128 字节以内，避免 build_status_json
+    // 局部栈过大导致 sys_evt / BLE 任务栈紧张。真实 OTA 下载 URL 保存在 ota_task_arg_t，
+    // 不受这里截断影响。
+    char        ota_url_esc[128] = {0};
     char        ota_err_esc[2 * 24 + 1] = {0};
     json_escape_into(ota_url_esc, sizeof(ota_url_esc), voice_net_ota_get_url());
     json_escape_into(ota_err_esc, sizeof(ota_err_esc), voice_net_ota_get_last_error());
@@ -189,7 +191,7 @@ static void build_status_json(char *dst, size_t cap)
 static void do_publish_locked_snapshot(void)
 {
     if (!s_publish) return;
-    char buf[1024];                          // url ≤256 + 转义 + 其他字段，1KB 足够
+    char buf[768];
     build_status_json(buf, sizeof(buf));
     esp_err_t err = s_publish(buf);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -198,17 +200,28 @@ static void do_publish_locked_snapshot(void)
     }
 }
 
-// 投递 publish 命令到 worker task：build_status_json 局部 buffer ~1.7KB，
-// 不能在 sys_evt (2304B) 或 BLE 协议任务栈上直接跑。
-static void publish_locked_snapshot(void)
+// 同步发布：仅用于 BLE 主动请求（wifi_status_request），避免客户端订阅后立刻 request
+// 却因 worker 排队而错过。调用方必须确保栈够。
+static void publish_locked_snapshot_sync(void)
+{
+    do_publish_locked_snapshot();
+}
+
+// 异步发布：用于 sys_evt / timer / OTA task 等内部状态变化，统一转到 voice_net_task
+// 6KB 栈上拼 JSON，避免 sys_evt 栈溢出。
+static void publish_locked_snapshot_async(void)
 {
     if (!s_cmd_queue) {
-        // init 阶段队列还没建：少数路径会到这里，调直接版本（init 上下文栈足够）。
         do_publish_locked_snapshot();
         return;
     }
     voice_net_cmd_t cmd = VN_CMD_PUBLISH_STATUS;
     xQueueSend(s_cmd_queue, &cmd, pdMS_TO_TICKS(50));
+}
+
+static void publish_locked_snapshot(void)
+{
+    publish_locked_snapshot_async();
 }
 
 // 进入新状态。clear_error=true 时把 last_error 清空（成功路径用），
@@ -643,7 +656,7 @@ void voice_net_clear_credentials(void)
 void voice_net_publish_status(void)
 {
     if (!atomic_load(&s_inited)) return;
-    publish_locked_snapshot();
+    publish_locked_snapshot_sync();
 }
 
 void voice_net_set_park_query(voice_net_park_query_fn cb)

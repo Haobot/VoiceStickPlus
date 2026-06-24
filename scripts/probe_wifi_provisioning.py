@@ -12,6 +12,7 @@
 
 import argparse
 import asyncio
+import getpass
 import json
 import sys
 import time
@@ -53,10 +54,13 @@ async def main():
     ap.add_argument("--prefix", default="VS")
     ap.add_argument("--ssid", help="下发 wifi_set 的 SSID")
     ap.add_argument("--password", default="", help="下发 wifi_set 的密码（默认空表示开放网络）")
+    ap.add_argument("--password-prompt", action="store_true", help="交互式输入密码（不回显，避免密码出现在命令行历史）")
     ap.add_argument("--clear", action="store_true", help="下发 wifi_clear")
     ap.add_argument("--scan", type=float, default=5.0, help="BLE 扫描时长（秒）")
     ap.add_argument("--listen", type=float, default=35.0, help="订阅 state_tx 监听总时长（秒）")
     args = ap.parse_args()
+    if args.password_prompt:
+        args.password = getpass.getpass("Wi-Fi password: ")
 
     dev = await find_device(args.prefix, args.scan)
     if not dev:

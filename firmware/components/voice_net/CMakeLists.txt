@@ -3,5 +3,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES nvs_flash esp_wifi esp_netif esp_event esp_hw_support json lwip
-    PRIV_REQUIRES espressif__mdns voice_ble app_update esp_http_client esp_https_ota mbedtls esp-tls
+    PRIV_REQUIRES espressif__mdns voice_ble app_update esp_http_client mbedtls esp-tls
 )

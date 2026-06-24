@@ -146,7 +146,7 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
 | `wifi_set` | `ssid` (≤32 ASCII)、`password` (≤63，可空) | 写 NVS，延迟 800 ms 后 `esp_wifi_connect`；先让 BLE 回包 |
 | `wifi_clear` | — | 擦除 NVS 凭据，断开 STA |
 | `wifi_status_request` | — | 立刻补推一帧 `wifi_status` |
-| `ota_pull` | `url` (HTTPS, ≤256)、`sha256_hex` (可选) | 启动 `esp_https_ota` task |
+| `ota_pull` | `url` (HTTPS 或局域网 HTTP, ≤256)、`sha256_hex` (HTTP 必填，HTTPS 可选) | 启动固件主动 OTA pull；HTTP 仅允许私有 IPv4 |
 | `ota_commit` | — | 调 `esp_ota_mark_app_valid_cancel_rollback`，确认新固件健康 |
 
 示例：
@@ -158,11 +158,18 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
 {"event":"wifi_status_request"}
 {"event":"ota_pull","url":"https://oss.example.com/voicestick/0.4.0.bin","sha256_hex":"deadbeef..."}
 {"event":"ota_pull","url":"https://oss.example.com/voicestick/0.4.0.bin"}
+{"event":"ota_pull","url":"http://192.168.3.96:8000/voice_stick.bin","sha256_hex":"64位hex"}
 {"event":"ota_commit"}
 ```
 
 字段长度由固件硬校验；超长直接丢弃，下一帧 `wifi_status.last_error =
 "payload_too_large"`。所有写日志路径必须把 `password` 字段脱敏为 `<redacted>`。
+
+`ota_pull.url` 规则：
+
+- `https://`：证书链由 IDF 证书包校验，`sha256_hex` 可选；若提供，固件额外比对镜像 SHA256。
+- `http://`：只允许私有 IPv4 字面量（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`），不接受域名或公网 IP，且必须提供 64 位十六进制 `sha256_hex`。
+- HTTP 明文路径仅用于局域网调试；完整性由 `sha256_hex` 保证。
 
 ### 固件 → 桌面端（state_tx，event=`wifi_status`）
 
@@ -199,10 +206,12 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
 | `auth_failed` | 4-way handshake 失败 |
 | `timeout` | 30 s 内未拿到 IP |
 | `park_required` | OTA 期间收到 `wifi_set`，拒绝以免中断升级 |
-| `ota_url_invalid` | URL 非 HTTPS 或长度越界 |
+| `ota_url_invalid` | URL 非法、HTTP host 非私有 IPv4、HTTP 缺少 `sha256_hex` 或 URL 长度越界 |
+| `ota_sha256_invalid` | `sha256_hex` 不是 64 位十六进制 |
+| `ota_sha256_mismatch` | 下载镜像 SHA256 与 `sha256_hex` 不一致 |
 | `ota_park_required` | OTA 启动时录音或 BLE OTA 进行中 |
-| `ota_http_failed` | `esp_https_ota` 错误（HTTP 状态非 2xx、TLS 失败等） |
-| `ota_validate_failed` | SHA256 不匹配或 `esp_ota_end` 校验失败 |
+| `ota_http_failed` | TCP/HTTP 状态/读取错误（含 HTTP 状态非 2xx、TLS 失败等） |
+| `ota_validate_failed` | `esp_ota_write` / `esp_ota_end` / `esp_ota_set_boot_partition` 失败 |
 
 **首次写入保留**：`last_error` 非空时后续瞬态事件不能覆盖，直到下次成功事件或显式 `wifi_clear` 才清零。
 
