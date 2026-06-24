@@ -174,6 +174,14 @@ static bool poweroff_allowed_now(void)
            !is_external_powered();
 }
 
+// Park gate for HTTPS OTA pull: 见 Doc/Plan §2.5。语义为"录音空闲且没有任何
+// OTA 路径在跑"，确保 HTTPS 拉取不与 BLE OTA 抢分区或与录音抢音频带宽。
+// 由 voice_net 通过 voice_net_set_park_query 注入。
+static bool is_park_locked_for_ota(void)
+{
+    return !s_recording && !s_ota_updating && !voice_ble_ota_is_active();
+}
+
 static void play_prompt_tone(uint32_t frequency_hz)
 {
     if (!s_prompt_tone_enabled) {
@@ -678,6 +686,18 @@ static void ble_control_cb(const char *json)
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_status_request") == 0) {
         ESP_LOGD(TAG, "wifi_status_request");
         voice_net_publish_status();
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "ota_pull") == 0) {
+        // HTTPS pull OTA：Doc/Ref/protocol.md "Wi-Fi Provisioning" §ota_pull。
+        // Park gate 由 voice_net 内部通过注入的回调查询，未锁会被拒绝。
+        const cJSON *url = cJSON_GetObjectItemCaseSensitive(root, "url");
+        const cJSON *sha = cJSON_GetObjectItemCaseSensitive(root, "sha256_hex");
+        if (cJSON_IsString(url)) {
+            ESP_LOGI(TAG, "ota_pull url=%s", url->valuestring);
+            voice_net_start_ota_pull(url->valuestring,
+                                     cJSON_IsString(sha) ? sha->valuestring : NULL);
+        } else {
+            ESP_LOGW(TAG, "ota_pull missing url");
+        }
     }
     cJSON_Delete(root);
 }
@@ -1352,6 +1372,8 @@ void app_main(void)
     if (net_err != ESP_OK) {
         ESP_LOGE(TAG, "voice_net init failed: %s", esp_err_to_name(net_err));
     }
+    // 注入 Park gate：HTTPS OTA pull 启动前会查询，未锁则拒绝。
+    voice_net_set_park_query(is_park_locked_for_ota);
 
     esp_err_t audio_err = audio_pipeline_init();
     if (audio_err != ESP_OK) {

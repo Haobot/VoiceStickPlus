@@ -45,6 +45,8 @@ typedef enum {
     VN_CMD_APPLY_CREDENTIALS = 1,
     VN_CMD_CONNECT_TIMEOUT,
     VN_CMD_START_DISCOVERY,    // 拿到 IP 后启动 mDNS + SNTP，跑在 6KB worker 栈上
+    VN_CMD_PUBLISH_STATUS,     // 拼装 wifi_status JSON 并推送 BLE state_tx
+                               // ——build_status_json 局部 buffer ~1.7KB，必须跑专用栈
 } voice_net_cmd_t;
 
 #define VOICE_NET_TASK_STACK_SIZE 6144
@@ -87,6 +89,7 @@ typedef struct {
 } wifi_snapshot_t;
 
 static voice_net_status_publish_fn s_publish = NULL;
+static voice_net_park_query_fn     s_park_query = NULL;
 static SemaphoreHandle_t           s_status_mutex = NULL;
 static wifi_snapshot_t             s_status;
 static TimerHandle_t               s_apply_timer = NULL;
@@ -149,35 +152,61 @@ static void build_status_json(char *dst, size_t cap)
     memcpy(ip_local, s_status.ip, sizeof(s_status.ip));
     xSemaphoreGive(s_status_mutex);
 
-    // ota_pull / ota_pending_verify / park_locked 留固定占位，下一轮接入 HTTPS OTA
-    // 时再让它们反映真实状态；桌面端解析端已经支持完整结构。
+    // ota_pull 子对象从 voice_net_ota 模块读真实状态；ota_pending_verify 暂留 false
+    // （rollback 配置未启用，下一轮 §9 与 mark_app_valid 一起接入）。
+    // park_locked 通过注入的 query 回调实时计算：录音空闲且 BLE OTA 不在跑就 true。
+    const char *ota_state_str = voice_net_ota_state_string(voice_net_ota_get_state());
+    const int   ota_pct = voice_net_ota_get_progress_pct();
+    char        ota_url_esc[2 * 256 + 1] = {0};
+    char        ota_err_esc[2 * 24 + 1] = {0};
+    json_escape_into(ota_url_esc, sizeof(ota_url_esc), voice_net_ota_get_url());
+    json_escape_into(ota_err_esc, sizeof(ota_err_esc), voice_net_ota_get_last_error());
+    const bool park_locked = s_park_query ? s_park_query() : true;
+
     if (has_rssi) {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"rssi\":%d,\"last_error\":\"%s\","
-            "\"ota_pull\":{\"state\":\"idle\",\"progress_pct\":0,\"url\":\"\",\"last_error\":\"\"},"
-            "\"ota_pending_verify\":false,\"park_locked\":true}",
-            state_to_string(state), ssid_esc, ip_local, rssi, err_esc);
+            "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
+            "\"ota_pending_verify\":false,\"park_locked\":%s}",
+            state_to_string(state), ssid_esc, ip_local, rssi, err_esc,
+            ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
+            park_locked ? "true" : "false");
     } else {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"last_error\":\"%s\","
-            "\"ota_pull\":{\"state\":\"idle\",\"progress_pct\":0,\"url\":\"\",\"last_error\":\"\"},"
-            "\"ota_pending_verify\":false,\"park_locked\":true}",
-            state_to_string(state), ssid_esc, ip_local, err_esc);
+            "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
+            "\"ota_pending_verify\":false,\"park_locked\":%s}",
+            state_to_string(state), ssid_esc, ip_local, err_esc,
+            ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
+            park_locked ? "true" : "false");
     }
 }
 
-static void publish_locked_snapshot(void)
+static void do_publish_locked_snapshot(void)
 {
     if (!s_publish) return;
-    char buf[512];
+    char buf[1024];                          // url ≤256 + 转义 + 其他字段，1KB 足够
     build_status_json(buf, sizeof(buf));
     esp_err_t err = s_publish(buf);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         // BLE 未连接时 send_state_json 会返 INVALID_STATE，不算异常。
         ESP_LOGD(TAG, "publish failed: %s", esp_err_to_name(err));
     }
+}
+
+// 投递 publish 命令到 worker task：build_status_json 局部 buffer ~1.7KB，
+// 不能在 sys_evt (2304B) 或 BLE 协议任务栈上直接跑。
+static void publish_locked_snapshot(void)
+{
+    if (!s_cmd_queue) {
+        // init 阶段队列还没建：少数路径会到这里，调直接版本（init 上下文栈足够）。
+        do_publish_locked_snapshot();
+        return;
+    }
+    voice_net_cmd_t cmd = VN_CMD_PUBLISH_STATUS;
+    xQueueSend(s_cmd_queue, &cmd, pdMS_TO_TICKS(50));
 }
 
 // 进入新状态。clear_error=true 时把 last_error 清空（成功路径用），
@@ -359,6 +388,9 @@ static void voice_net_task(void *arg)
             // 跑在专用 task 上避免 sys_evt 栈不够。
             voice_net_discovery_start_mdns();
             voice_net_discovery_start_sntp();
+            break;
+        case VN_CMD_PUBLISH_STATUS:
+            do_publish_locked_snapshot();
             break;
         default:
             ESP_LOGW(TAG, "unknown cmd %d", cmd);
@@ -607,4 +639,18 @@ void voice_net_publish_status(void)
 {
     if (!atomic_load(&s_inited)) return;
     publish_locked_snapshot();
+}
+
+void voice_net_set_park_query(voice_net_park_query_fn cb)
+{
+    s_park_query = cb;
+}
+
+void voice_net_start_ota_pull(const char *url, const char *sha256_hex)
+{
+    if (!atomic_load(&s_inited)) {
+        ESP_LOGW(TAG, "ota_pull: voice_net not inited");
+        return;
+    }
+    voice_net_start_ota_pull_internal(url, sha256_hex, s_park_query);
 }
