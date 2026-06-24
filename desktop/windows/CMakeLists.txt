@@ -16,9 +16,21 @@ endif()
 
 include(FetchContent)
 
+# 默认从 github 拉 WinSparkle；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地缓存：
+#   set VOICESTICK_WINSPARKLE_URL=file:///C:/cache/WinSparkle-0.9.2.zip
+# 或 cmake -DVOICESTICK_WINSPARKLE_URL=file:///... -S desktop\windows -B desktop\windows\build-x64 -G Ninja
+set(_winsparkle_default_url "https://github.com/vslavik/winsparkle/releases/download/v0.9.2/WinSparkle-0.9.2.zip")
+if(DEFINED ENV{VOICESTICK_WINSPARKLE_URL})
+    set(_winsparkle_url "$ENV{VOICESTICK_WINSPARKLE_URL}")
+elseif(DEFINED VOICESTICK_WINSPARKLE_URL)
+    set(_winsparkle_url "${VOICESTICK_WINSPARKLE_URL}")
+else()
+    set(_winsparkle_url "${_winsparkle_default_url}")
+endif()
+message(STATUS "WinSparkle source: ${_winsparkle_url}")
 FetchContent_Declare(
     winsparkle
-    URL https://github.com/vslavik/winsparkle/releases/download/v0.9.2/WinSparkle-0.9.2.zip
+    URL ${_winsparkle_url}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(winsparkle)

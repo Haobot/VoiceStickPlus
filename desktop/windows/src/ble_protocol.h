@@ -19,6 +19,21 @@ struct AudioFrame {
     bool IsEnd() const { return (flags & 0x02) != 0; }
 };
 
+struct WifiStatusSnapshot {
+    // 与 Doc/Ref/protocol.md §wifi 协议对齐：固件下发的完整快照，不做差分。
+    std::string state;                                 // disabled|configured|connecting|connected|disconnected|error
+    std::string ssid;
+    std::string ip;
+    std::optional<int> rssi;
+    std::string last_error;                            // 错误码枚举见协议表；空字符串代表无错
+    std::string ota_pull_state;                        // idle|downloading|finishing|success|failed
+    std::optional<int> ota_pull_progress_pct;          // 0..100
+    std::string ota_pull_url;
+    std::string ota_pull_last_error;
+    bool ota_pending_verify = false;                   // 新固件首次启动等待业务侧 mark_valid
+    bool park_locked = true;                           // 录音空闲且未 OTA 时为 true
+};
+
 struct StateEvent {
     std::string event;
     std::string button;
@@ -29,6 +44,7 @@ struct StateEvent {
     std::optional<int> battery_level;
     std::optional<bool> battery_charging;
     std::optional<bool> battery_usb_powered;
+    std::optional<WifiStatusSnapshot> wifi;            // 仅 event=="wifi_status" 时有值
 };
 
 struct FirmwareOtaStateEvent {
@@ -69,6 +85,12 @@ public:
     static ByteVector OtaDataPayload(std::uint32_t transfer_id, std::uint32_t offset, std::span<const std::uint8_t> chunk);
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);
     static ByteVector OtaAbortPayload(std::uint32_t transfer_id);
+    // Wi-Fi STA 配置 + HTTPS pull OTA（详见 Doc/Plan/wifi-sta-ble-provisioning.md §3.1）
+    static ByteVector WifiSetPayload(std::string_view ssid, std::string_view password);
+    static ByteVector WifiClearPayload();
+    static ByteVector WifiStatusRequestPayload();
+    static ByteVector OtaPullPayload(std::string_view url, std::string_view sha256_hex);
+    static ByteVector OtaCommitPayload();
     static std::optional<std::string> DeviceIdFromName(std::string_view name);
     static std::optional<std::string> LocalNameFromAdvertisementData(std::span<const std::uint8_t> data);
     static bool HasVoiceStickServiceUuid(std::span<const std::uint8_t> data);
