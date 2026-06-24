@@ -31,6 +31,7 @@ struct WifiStatusSnapshot {
     std::string ota_pull_url;
     std::string ota_pull_last_error;
     bool ota_pending_verify = false;                   // 新固件首次启动等待业务侧 mark_valid
+    std::string running_partition;                     // ota_0|ota_1，用于 OTA 后确认当前槽位
     bool park_locked = true;                           // 录音空闲且未 OTA 时为 true
 };
 

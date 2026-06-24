@@ -489,6 +489,7 @@ void TestBleWifiStatusParsing() {
         "\"url\":\"https://oss.example.com/voicestick/firmware/0.4.0.bin\","
         "\"last_error\":\"\"},"
         "\"ota_pending_verify\":true,"
+        "\"running_partition\":\"ota_1\","
         "\"park_locked\":false}";
     ByteVector frame = {1, 0x10};
     AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
@@ -509,6 +510,7 @@ void TestBleWifiStatusParsing() {
     assert(wifi.ota_pull_url == "https://oss.example.com/voicestick/firmware/0.4.0.bin");
     assert(wifi.ota_pull_last_error.empty());
     assert(wifi.ota_pending_verify == true);
+    assert(wifi.running_partition == "ota_1");
     assert(wifi.park_locked == false);
 }
 
