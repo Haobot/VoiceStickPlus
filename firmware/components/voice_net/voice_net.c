@@ -44,6 +44,7 @@ ESP_EVENT_DEFINE_BASE(VOICE_NET_EVENT_BASE);
 typedef enum {
     VN_CMD_APPLY_CREDENTIALS = 1,
     VN_CMD_CONNECT_TIMEOUT,
+    VN_CMD_START_DISCOVERY,    // 拿到 IP 后启动 mDNS + SNTP，跑在 6KB worker 栈上
 } voice_net_cmd_t;
 
 #define VOICE_NET_TASK_STACK_SIZE 6144
@@ -340,7 +341,7 @@ static void do_apply_pending_credentials(void)
     start_connect_attempt();
 }
 
-// 专用 worker task：从队列消费 cmd，独立 6KB 栈安全调用 esp_wifi API。
+// 专用 worker task：从队列消费 cmd，独立 6KB 栈安全调用 esp_wifi / mdns / sntp API。
 static void voice_net_task(void *arg)
 {
     (void)arg;
@@ -352,6 +353,12 @@ static void voice_net_task(void *arg)
             break;
         case VN_CMD_CONNECT_TIMEOUT:
             do_connect_timeout();
+            break;
+        case VN_CMD_START_DISCOVERY:
+            // mdns_init / esp_netif_sntp_init 内部都会调 lwip 链路 API，
+            // 跑在专用 task 上避免 sys_evt 栈不够。
+            voice_net_discovery_start_mdns();
+            voice_net_discovery_start_sntp();
             break;
         default:
             ESP_LOGW(TAG, "unknown cmd %d", cmd);
@@ -414,6 +421,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGI(TAG, "GOT_IP ip=" IPSTR " rssi=%d", IP2STR(&e->ip_info.ip),
                  have_rssi ? ap.rssi : 0);
         set_state(NET_STATE_CONNECTED, true);  // 成功路径清掉 last_error
+
+        // 首次拿到 IP 后启动 mDNS + SNTP，跑在 voice_net_task 上避免 sys_evt 栈不够。
+        // 内部 idempotent；后续断开重连不会重复启动。
+        voice_net_cmd_t disc_cmd = VN_CMD_START_DISCOVERY;
+        xQueueSend(s_cmd_queue, &disc_cmd, pdMS_TO_TICKS(100));
     }
 }
 
