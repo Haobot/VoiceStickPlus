@@ -24,6 +24,7 @@
 #include "stick_s3_board.h"
 #include "ui_status.h"
 #include "voice_ble.h"
+#include "voice_net.h"
 
 static const char *TAG = "voice_stick";
 
@@ -659,6 +660,24 @@ static void ble_control_cb(const char *json)
                cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
         ESP_LOGI(TAG, "remote primary up request_id=%" PRIu32, request_id);
         queue_primary_up_event(APP_INPUT_SOURCE_REMOTE, request_id);
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_set") == 0) {
+        // Wi-Fi STA 配网（Doc/Ref/protocol.md "Wi-Fi Provisioning"）。
+        // 密码字段日志侧脱敏，不打印任何字符。
+        const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(root, "ssid");
+        const cJSON *password = cJSON_GetObjectItemCaseSensitive(root, "password");
+        if (cJSON_IsString(ssid)) {
+            ESP_LOGI(TAG, "wifi_set ssid=%s password=<redacted>", ssid->valuestring);
+            voice_net_apply_credentials(ssid->valuestring,
+                                        cJSON_IsString(password) ? password->valuestring : "");
+        } else {
+            ESP_LOGW(TAG, "wifi_set missing ssid");
+        }
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_clear") == 0) {
+        ESP_LOGI(TAG, "wifi_clear");
+        voice_net_clear_credentials();
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_status_request") == 0) {
+        ESP_LOGD(TAG, "wifi_status_request");
+        voice_net_publish_status();
     }
     cJSON_Delete(root);
 }
@@ -866,6 +885,10 @@ static void app_event_task(void *arg)
             cancel_disc_poweroff_timer();
             note_activity();
             send_current_battery_status();
+            // 桌面端连上后立刻同步一份网络快照，让 Wi-Fi 面板 UI 不用等下一次事件。
+            voice_net_publish_status();
+            // 此时 BLE 已稳定，如有 NVS 凭据可以安全地启动 Wi-Fi（避免 boot 期与 BLE 抢资源）。
+            voice_net_resume_if_configured();
             break;
         case APP_EVENT_BLE_DISCONNECTED:
             s_recording = false;
@@ -1321,6 +1344,13 @@ void app_main(void)
         ui_status_set_error("BLE init failed");
     } else {
         ui_status_set_device_name(voice_ble_device_name());
+    }
+
+    // Wi-Fi STA 子系统：依赖 voice_ble_init 已 nvs_flash_init。
+    // 失败不阻塞主流程——voicestick 主链路是 BLE，Wi-Fi 仅运维侧路。
+    esp_err_t net_err = voice_net_init(voice_ble_send_wifi_status);
+    if (net_err != ESP_OK) {
+        ESP_LOGE(TAG, "voice_net init failed: %s", esp_err_to_name(net_err));
     }
 
     esp_err_t audio_err = audio_pipeline_init();

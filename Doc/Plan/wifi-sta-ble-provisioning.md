@@ -250,9 +250,11 @@ bool voice_net_park_locked(void) {
 | 风险 | 缓解 |
 |---|---|
 | Octal PSRAM 开启后 BLE 控制器初始化异常 | 先空 sketch 验证 PSRAM，再分步引入 BLE / Wi-Fi |
+| **Boot 期间 esp_wifi_start 与 BLE 抢 RF 资源导致 LCD Pairing 反复闪烁** | **`voice_net_init` 只 `esp_wifi_init` 不 start；真正的 `esp_wifi_set_mode + start` 延迟到 `voice_net_apply_credentials` / `voice_net_resume_if_configured`，由 main.c 在 BLE 稳定连上后触发。2026/06/24 在 S3-PICO-1 上实测验证。** |
 | Wi-Fi 与 BLE 2.4 GHz 共存导致音频采集异常 | `esp_wifi_set_max_tx_power` 限制；如有干扰，回退"录音期间暂停 Wi-Fi RX" |
 | `pending_verify` 自动签到假阳 → 坏固件标记 valid 失去回滚 | 双条件："主循环 ≥10 s + BLE 至少一次连接成功" |
 | BLE WriteWithoutResponse 不带 ack，桌面端不知是否到达 | 桌面端发完 `wifi_set` 启动 35 s 计时器等 `wifi_status` 回包，超时视作失败 |
+| `wifi_set` 触发 esp_wifi_start 时 BLE 会被单点冲击断开 | 桌面端做自动重连即可恢复；实测设备本身不 crash，配对历史也不丢 |
 | 用户填错 SSID 但密码"碰巧"匹配 → 显示 `no_ssid` 用户疑惑 | UI 文案：`未找到该名称的 Wi-Fi 网络（请检查 SSID 拼写）` |
 
 ## 9. 范围外（明确不做）
