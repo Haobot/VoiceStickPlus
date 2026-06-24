@@ -357,11 +357,18 @@ AppConfig AppConfig::Load() {
                 if (device_id.size() != 4) continue;
                 const auto* device_table = node.as_table();
                 if (!device_table) continue;
-                const auto* output = (*device_table)["output"].as_table();
-                if (!output) continue;
-                config.device_output_profiles[device_id] = ParseOutputProfile(
-                    *output, config.default_output_profile, false);
-                config.device_output_profiles[device_id].target = config.default_output_profile.target;
+                if (const auto* output = (*device_table)["output"].as_table()) {
+                    config.device_output_profiles[device_id] = ParseOutputProfile(
+                        *output, config.default_output_profile, false);
+                    config.device_output_profiles[device_id].target = config.default_output_profile.target;
+                }
+                if (const auto* wifi = (*device_table)["wifi"].as_table()) {
+                    WifiDeviceProfile profile;
+                    if (auto value = TomlString(*wifi, "ssid")) profile.ssid = Trim(*value);
+                    if (auto value = TomlString(*wifi, "ota_url")) profile.ota_url = Trim(*value);
+                    if (auto value = TomlString(*wifi, "ota_sha256_hex")) profile.ota_sha256_hex = Trim(*value);
+                    if (!profile.IsEmpty()) config.device_wifi_profiles[device_id] = std::move(profile);
+                }
             }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
@@ -452,6 +459,16 @@ void AppConfig::Save() const {
         output << "transform = \"" << TextTransformName(profile.transform) << "\"\n";
         output << "translation_target = \"" << TomlEscape(profile.translation_target) << "\"\n";
     }
+    for (const auto& [device_id, profile] : device_wifi_profiles) {
+        if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
+            continue;
+        }
+        if (profile.IsEmpty()) continue;
+        output << "\n[device." << device_id << ".wifi]\n";
+        output << "ssid = \"" << TomlEscape(profile.ssid) << "\"\n";
+        output << "ota_url = \"" << TomlEscape(profile.ota_url) << "\"\n";
+        output << "ota_sha256_hex = \"" << TomlEscape(profile.ota_sha256_hex) << "\"\n";
+    }
 }
 
 std::string AppConfig::ActiveApiKey() const {
@@ -519,6 +536,7 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
     device_theme_sizes.erase(device_id);
     device_overlay_positions.erase(device_id);
     device_output_profiles.erase(device_id);
+    device_wifi_profiles.erase(device_id);
     Save();
 }
 

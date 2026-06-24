@@ -265,6 +265,30 @@ void VoiceStickCoordinator::CancelFirmwareUpdate() {
     ble_->CancelFirmwareUpdate();
 }
 
+void VoiceStickCoordinator::ConfigureDeviceWifi(const std::string& device_id,
+                                                const std::string& ssid,
+                                                const std::string& password) {
+    ble_->SendWifiSet(device_id, ssid, password);
+}
+
+void VoiceStickCoordinator::ClearDeviceWifi(const std::string& device_id) {
+    ble_->SendWifiClear(device_id);
+}
+
+void VoiceStickCoordinator::RequestDeviceWifiStatus(const std::string& device_id) {
+    ble_->SendWifiStatusRequest(device_id);
+}
+
+void VoiceStickCoordinator::StartDeviceOtaPull(const std::string& device_id,
+                                               const std::string& url,
+                                               const std::string& sha256_hex) {
+    ble_->SendOtaPull(device_id, url, sha256_hex);
+}
+
+void VoiceStickCoordinator::CommitDeviceOta(const std::string& device_id) {
+    ble_->SendOtaCommit(device_id);
+}
+
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     asr_->on_partial = [this](std::string text) {
         ui_->ShowPartial(text, active_device_id_);
@@ -325,6 +349,10 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
             ui_->SetDeviceBattery(device_id, event.battery_level.value(),
                                    event.battery_charging.value_or(false),
                                    event.battery_usb_powered.value_or(false));
+        }
+    } else if (event.event == "wifi_status") {
+        if (event.wifi.has_value()) {
+            ui_->SetDeviceWifiStatus(device_id, *event.wifi);
         }
     } else if (event.event == "button_down") {
         HandleButtonDown(event, device_id);

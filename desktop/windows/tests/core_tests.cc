@@ -38,6 +38,18 @@ struct SentRemoteButton {
     std::uint32_t request_id;
 };
 
+struct SentWifiSet {
+    std::string device_id;
+    std::string ssid;
+    std::string password;
+};
+
+struct SentOtaPull {
+    std::string device_id;
+    std::string url;
+    std::string sha256_hex;
+};
+
 class FakeBleCentral : public BleCentral {
 public:
     void Start() override {}
@@ -70,6 +82,25 @@ public:
                           std::uint32_t request_id) override {
         sent_remote_buttons.push_back(SentRemoteButton{action, button, device_id, request_id});
     }
+    void SendWifiSet(const std::string& device_id,
+                     const std::string& ssid,
+                     const std::string& password) override {
+        sent_wifi_sets.push_back(SentWifiSet{device_id, ssid, password});
+    }
+    void SendWifiClear(const std::string& device_id) override {
+        sent_wifi_clears.push_back(device_id);
+    }
+    void SendWifiStatusRequest(const std::string& device_id) override {
+        sent_wifi_status_requests.push_back(device_id);
+    }
+    void SendOtaPull(const std::string& device_id,
+                     const std::string& url,
+                     const std::string& sha256_hex) override {
+        sent_ota_pulls.push_back(SentOtaPull{device_id, url, sha256_hex});
+    }
+    void SendOtaCommit(const std::string& device_id) override {
+        sent_ota_commits.push_back(device_id);
+    }
     void UpdateFirmware(ByteVector,
                         const std::string&,
                         std::function<void(FirmwareUpdateProgress)>,
@@ -88,6 +119,11 @@ public:
     std::vector<std::pair<bool, std::optional<std::string>>> sent_prompt_tones;
     std::vector<std::optional<std::string>> battery_status_requests;
     std::vector<SentRemoteButton> sent_remote_buttons;
+    std::vector<SentWifiSet> sent_wifi_sets;
+    std::vector<std::string> sent_wifi_clears;
+    std::vector<std::string> sent_wifi_status_requests;
+    std::vector<SentOtaPull> sent_ota_pulls;
+    std::vector<std::string> sent_ota_commits;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -134,6 +170,10 @@ public:
         (void)level_percent;
         (void)charging;
         (void)usb_powered;
+    }
+    void SetDeviceWifiStatus(const std::string& device_id,
+                              const WifiStatusSnapshot& snapshot) override {
+        wifi_statuses[device_id] = snapshot;
     }
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override {
         firmware_info_by_device_id = info_by_device_id;
@@ -199,6 +239,7 @@ public:
     std::vector<std::string> statuses;
     std::vector<ConnectedDevice> connected_devices;
     std::vector<DeviceInfo> device_infos;
+    std::map<std::string, WifiStatusSnapshot> wifi_statuses;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
     std::vector<std::string> pairing_errors;
     std::vector<std::string> firmware_update_prompts;
@@ -497,6 +538,61 @@ void TestBleWifiStatusParsingErrorState() {
     assert(event->wifi->park_locked == true);
 }
 
+void TestCoordinatorDispatchesWifiStatusToUi() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    WifiStatusSnapshot wifi;
+    wifi.state = "connected";
+    wifi.ssid = "newhome_iot";
+    wifi.ip = "192.168.3.160";
+    wifi.rssi = -88;
+    wifi.ota_pull_state = "idle";
+    wifi.ota_pull_progress_pct = 0;
+    wifi.park_locked = true;
+
+    StateEvent event;
+    event.event = "wifi_status";
+    event.wifi = wifi;
+    ble_ptr->on_state_event("D010", event);
+
+    assert(ui.wifi_statuses.size() == 1);
+    assert(ui.wifi_statuses["D010"].state == "connected");
+    assert(ui.wifi_statuses["D010"].ssid == "newhome_iot");
+    assert(ui.wifi_statuses["D010"].ip == "192.168.3.160");
+}
+
+void TestCoordinatorForwardsWifiCommands() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+
+    coordinator.ConfigureDeviceWifi("D010", "newhome_iot", "secret");
+    coordinator.RequestDeviceWifiStatus("D010");
+    coordinator.StartDeviceOtaPull("D010", "http://192.168.3.96:8000/voice_stick.bin", "aabb");
+    coordinator.CommitDeviceOta("D010");
+    coordinator.ClearDeviceWifi("D010");
+
+    assert(ble_ptr->sent_wifi_sets.size() == 1);
+    assert(ble_ptr->sent_wifi_sets[0].device_id == "D010");
+    assert(ble_ptr->sent_wifi_sets[0].ssid == "newhome_iot");
+    assert(ble_ptr->sent_wifi_sets[0].password == "secret");
+    assert(ble_ptr->sent_wifi_status_requests == std::vector<std::string>{"D010"});
+    assert(ble_ptr->sent_ota_pulls.size() == 1);
+    assert(ble_ptr->sent_ota_pulls[0].url == "http://192.168.3.96:8000/voice_stick.bin");
+    assert(ble_ptr->sent_ota_pulls[0].sha256_hex == "aabb");
+    assert(ble_ptr->sent_ota_commits == std::vector<std::string>{"D010"});
+    assert(ble_ptr->sent_wifi_clears == std::vector<std::string>{"D010"});
+}
+
 void TestBleStateParsingWithoutWifiHasNoWifi() {
     // 现有 button_down 事件不带 wifi 子结构，wifi 字段必须 nullopt 避免误用。
     const std::string json = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
@@ -683,6 +779,14 @@ void TestAppConfig() {
     assert(profile.target == OutputTarget::kSubtitle);
     assert(profile.transform == TextTransform::kTranslate);
     assert(profile.translation_target == "zh-Hans");
+    cache.device_wifi_profiles["5A74"] = WifiDeviceProfile{
+        "newhome_iot",
+        "http://192.168.3.96:8000/voice_stick.bin",
+        "77b11c58c6b3ed254570e06628af79890780bb6f229320c2c118998e6fda0d4d",
+    };
+    assert(cache.device_wifi_profiles["5A74"].ssid == "newhome_iot");
+    assert(!cache.device_wifi_profiles["5A74"].IsEmpty());
+    assert(WifiDeviceProfile{}.IsEmpty());
     assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
     assert(TextTransformFromName("translate") == TextTransform::kTranslate);
     assert(AppConfig::Defaults().ui_language == UiLanguage::kSystem);
@@ -1231,6 +1335,8 @@ int main() {
     TestStateParsing();
     TestBleWifiStatusParsing();
     TestBleWifiStatusParsingErrorState();
+    TestCoordinatorDispatchesWifiStatusToUi();
+    TestCoordinatorForwardsWifiCommands();
     TestBleStateParsingWithoutWifiHasNoWifi();
     TestOggMuxer();
     TestAsrProtocol();
