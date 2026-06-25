@@ -58,6 +58,7 @@ static lv_display_t *s_display;
 static lv_obj_t *s_screen;
 static lv_obj_t *s_top_label;
 static lv_obj_t *s_ble_dot;
+static lv_obj_t *s_imu_label;
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_hint_label;
 static lv_obj_t *s_battery_shell;
@@ -199,6 +200,7 @@ static void render_scene_locked(ui_status_icon_scene_t scene, const char *status
     lv_obj_set_style_text_color(s_battery_label, muted, 0);
     lv_obj_set_style_border_color(s_battery_shell, muted, 0);
     lv_obj_set_style_bg_color(s_battery_tip, muted, 0);
+    lv_obj_set_style_text_color(s_imu_label, text, 0);
 
     ui_status_icons_start_anim(&s_icons, scene);
 }
@@ -230,6 +232,17 @@ static void create_status_ui(void)
     s_ble_dot = create_blob(s_screen, 8, 8, lv_color_hex(0x8fb8ff));
     lv_obj_align(s_ble_dot, LV_ALIGN_TOP_LEFT, 0, 6);
 
+    // 顶部常驻 IMU 行：实时显示 XYZ 三轴加速度，多行大字。放在最顶部，
+    // 末尾经 lv_obj_move_foreground 提到最顶图层，确保不被状态图标遮挡。
+    s_imu_label = lv_label_create(s_screen);
+    lv_label_set_text(s_imu_label, "X: -- g\nY: -- g\nZ: -- g");
+    lv_obj_set_style_text_font(s_imu_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_imu_label, lv_color_hex(0x3f3440), 0);
+    lv_label_set_long_mode(s_imu_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_imu_label, LCD_H_RES - 16);
+    lv_obj_set_style_text_align(s_imu_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_imu_label, LV_ALIGN_TOP_MID, 0, 14);
+
     create_battery_ui(s_screen);
     ui_status_icons_create(&s_icons, s_screen);
 
@@ -248,6 +261,9 @@ static void create_status_ui(void)
     lv_obj_set_style_text_color(s_hint_label, lv_color_hex(0x7f7180), 0);
     lv_label_set_text(s_hint_label, "Starting up");
     lv_obj_align(s_hint_label, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+    // 提到最顶图层，确保 IMU 数值不被状态图标等后创建的元素遮挡。
+    lv_obj_move_foreground(s_imu_label);
 
     s_ready = true;
     render_current_locked();
@@ -486,6 +502,15 @@ void ui_status_set_partial_text(const char *text)
 {
     ESP_LOGD(TAG, "partial: %s", text ? text : "");
     set_scene(UI_STATUS_ICON_TRANSCRIBING, "Thinking", text ? text : "");
+}
+
+void ui_status_set_imu_text(const char *text)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready) {
+        lv_label_set_text(s_imu_label, text ? text : "");
+    }
+    _lock_release(&s_lvgl_lock);
 }
 
 void ui_status_set_ota_progress(uint32_t written, uint32_t size)
