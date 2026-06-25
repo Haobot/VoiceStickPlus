@@ -2,7 +2,7 @@
 
 本文件面向 AI 编码助手，帮助其在没有先验知识的情况下快速理解并正确修改本仓库。
 
-本文件是仓库根目录 `CLAUDE.md` 的同源副本，内容（项目概览、构建命令、代码架构）基本一致，以 `CLAUDE.md` 为权威源。修改整体性内容时两份同步更新，避免漂移。
+本文件是仓库根目录 `CLAUDE.md` 的同源副本，面向通用 AI 编码助手，内容（项目概览、构建命令、代码架构）基本一致，以 `CLAUDE.md` 为权威源。修改整体性内容时两份同步更新，避免漂移。
 
 ## 项目概览
 
@@ -11,8 +11,8 @@ VoiceStick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音
 主要功能：
 - 按住 StickS3 正面按钮录音，松开后桌面端将音频发往 ASR，识别结果显示在悬浮窗/字幕中，确认后粘贴到当前焦点输入框。
 - 支持 Volcengine（字节跳动）直接接入和 VoiceStick Cloud 中继两种 ASR 提供商。
-- 支持 OpenAI-compatible LLM 翻译。
-- 支持 BLE OTA 固件更新。
+- 支持 OpenAI-compatible LLM 翻译与 ASR 原文精修。
+- 支持 BLE OTA 与 Wi-Fi / LAN HTTP(S) OTA 两种固件更新路径。
 - 支持 macOS 12+ 和 Windows 10 1903+。
 
 ## 仓库目录结构
@@ -27,24 +27,30 @@ firmware/                  ESP-IDF C 固件（ESP32-S3）
     voice_net/             Wi-Fi STA 配网、mDNS/局域网发现、LAN HTTP(S) OTA pull
     bmi270/                BMI270 IMU 驱动
     ui_status/             ST7789/LVGL 状态界面、亮度、休眠、OTA 进度
+  components/ 同级还有 ESP-IDF component manager 拉取的依赖（如 button、esp_codec_dev、esp-opus、lvgl）
 desktop/macos/             SwiftPM/AppKit 菜单栏应用（macOS 12+）
   Package.swift            Swift 5.9，依赖 Sparkle、TOMLKit、CZlib
   Sources/VoiceStickApp/   Swift 源码
+  Config/config.example.toml  配置示例（与 Windows 共享字段）
 desktop/windows/           C++20 / Win32 / C++/WinRT 托盘应用（Windows 10 1903+）
   CMakeLists.txt           拆分为 voicestick_core 库、VoiceStickApp、VoiceStickCtl
   src/                     C++ 源码
   tests/core_tests.cc      核心库单元测试
   installer/               WiX MSI 安装包定义
   third_party/             cjson、tomlplusplus
+  resources/               图标、对话框资源、VoiceStick.rc
 desktop/linux/             Linux 桌面端占位目录
 website/                   Vue 3 + Vite 站点
   src/App.vue              主页面与 Web Serial 烧录流程
   src/i18n/                中英文文案（zh-CN.json、en-US.json）
   public/appcast.xml       Sparkle / WinSparkle 更新源
-Doc/                       BLE 协议（Doc/Ref/protocol.md）、发布流程（Doc/Ref/release.md）、ASR 接口、实施方案 RFC（Doc/Plan/）
 scripts/                   构建脚本、精灵图处理、LVGL ARGB 转换、ASR 探测、appcast 更新
+Doc/                       BLE 协议（Doc/Ref/protocol.md）、发布流程（Doc/Ref/release.md）、ASR 接口、实施方案 RFC（Doc/Plan/）
 VERSION                    单一版本来源（当前 0.3.4）
+firmware/version.txt       固件向桌面端报告自身版本，发布前必须与 VERSION 一致
 ```
+
+仓库实际文档目录为大写 `Doc/`，不是 `docs/`。
 
 ## 技术栈
 
@@ -57,9 +63,9 @@ VERSION                    单一版本来源（当前 0.3.4）
 | 脚本 | Python 3, Bash, Batch | — | — |
 
 关键外部依赖：
-- 固件：`espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`
-- macOS：`sparkle-project/Sparkle` (2.6+)、`LebJe/TOMLKit` (0.6+)
-- Windows：WinSparkle 0.9.2（FetchContent）、WiX Toolset v6、WinHTTP、bcrypt
+- 固件：`espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`（由 ESP-IDF component manager 管理）。
+- macOS：`sparkle-project/Sparkle` (2.6+)、`LebJe/TOMLKit` (0.6+)。
+- Windows：WinSparkle 0.9.2（FetchContent）、WiX Toolset v6、WinHTTP、bcrypt。
 
 ## 构建与测试命令
 
@@ -77,6 +83,13 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```sh
 idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
 ```
+
+Windows 上不便直接用 `idf.py` 时，可用仓库提供的封装脚本：
+```bat
+python scripts/idf_cli.py -cus -p COM17
+```
+
+当前分区表 `firmware/partitions_ota.csv` 为两个 3 MB OTA app slot 加约 1984 KB `storage` 分区。
 
 ### macOS 桌面端（SwiftPM）
 
@@ -202,16 +215,14 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 
-## 开发约定
-
-### 代码风格
+## 代码风格
 
 - **Swift（macOS）**：遵循标准 Swift/APIKit 命名。使用 `swift build` 验证编译。
 - **C++（Windows）**：遵循 Google C++ 命名风格：`snake_case` 文件名和变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
 - **C（固件）**：ESP-IDF 风格，组件通过 `idf_component_register` 注册，组件间通过 `REQUIRES` 声明依赖。
 - **仓库当前未提交统一 lint/formatter 配置**；不要臆造 `npm run lint`、Swift lint 或 C++ lint 命令。修改对应组件后运行该组件已有的构建/测试命令作为验证。
 
-### 核心交互模型
+## 核心交互模型
 
 固件上报原始按键事实（`button_down` / `button_up`），桌面端解释为交互行为并回写 `ui_state`：
 
@@ -226,13 +237,13 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式。文本输出支持 `focused_app`（默认粘贴到当前焦点，默认自动按 Return）和 `subtitle`（仅显示字幕）。识别结果可通过 OpenAI-compatible LLM 做翻译，也可按设备单独覆盖输出设置。
 
-### 状态机归属
+## 状态机归属
 
 - **交互状态机在桌面端，不在固件中**；修改交互流程时优先改桌面协调器（`VoiceStickCoordinator`）。
 - 固件通常只在新增/调整 `ui_state` 展示、硬件 I/O、BLE 协议或 OTA 行为时修改。
 - 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `Doc/Ref/`、macOS、Windows、网站和发布脚本。
 
-### 配置文件
+## 配置文件
 
 示例配置：`desktop/macos/Config/config.example.toml`
 
@@ -241,21 +252,16 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - Windows：`%APPDATA%\VoiceStick\config.toml`
 
 常用配置项：
-- `asr_provider`：`volcengine` 或 `voicestick_cloud`
-- `auto_enter`：粘贴后是否自动按 Return
-- `debug_audio_cache`：是否保存调试 Ogg Opus 音频
-- `interaction_mode`：`hold_to_talk` 或 `click_to_talk`
-- `[output].target`：`focused_app` 或 `subtitle`
-- `[output].transform`：`original` 或 `translate`
-- `[device.<id>.output]`：按设备覆盖输出/翻译设置
+- `asr_provider`：`volcengine` 或 `voicestick_cloud`。
+- `auto_enter`：粘贴后是否自动按 Return。
+- `debug_audio_cache`：是否保存调试 Ogg Opus 音频。
+- `interaction_mode`：`hold_to_talk` 或 `click_to_talk`。
+- `[output].target`：`focused_app` 或 `subtitle`。
+- `[output].transform`：`original` 或 `translate`。
+- `[device.<id>.output]`：按设备覆盖输出/翻译设置。
+- `refine_enabled`：是否对 ASR 原文做 LLM 精修（去停顿空格、修标点、去口头语），默认 `true`；翻译路径的精修已融入翻译 prompt，不受此开关额外调用影响。`refine_prompt` 可覆盖内置精修 prompt（为空用默认）。
 
 Windows 调试音频缓存目录：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
-
-### 版本管理
-
-版本单一来源是仓库根目录的 `VERSION` 文件（纯文本，不含换行）。发布前还需要同步更新 `firmware/version.txt`，因为固件通过该文件向桌面端报告自身版本，版本不一致会导致 OTA 检测异常。
-
-推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `0.3.4` 时，标签必须是 `v0.3.4`。
 
 ## 测试策略
 
@@ -263,6 +269,12 @@ Windows 调试音频缓存目录：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
 - **macOS**：目前没有专用测试目标。验证方式主要是编译通过（`swift build`）和运行时手动测试。
 - **固件**：没有自动化单元测试。验证方式是 `idf.py build` 编译通过，以及真机/开发板运行时测试。
 - **网站**：没有自动化测试。验证方式是 `npm run build` 构建通过。
+
+## 版本管理
+
+版本单一来源是仓库根目录的 `VERSION` 文件（纯文本，不含换行）。发布前还需要同步更新 `firmware/version.txt`，因为固件通过该文件向桌面端报告自身版本，版本不一致会导致 OTA 检测异常。
+
+推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `0.3.4` 时，标签必须是 `v0.3.4`。
 
 ## 发布与部署流程
 
@@ -289,6 +301,19 @@ Windows 特殊流程：
 
 完整发布步骤见 `Doc/Ref/release.md`。
 
+## 辅助脚本
+
+`scripts/` 存放跨组件的构建与资源处理脚本：
+
+- `build-macos.sh` / `make-dmg.sh`：macOS 发布构建与 DMG 打包。
+- `build-msi.bat`：Windows 签名 MSI 打包（WinSparkle 更新源）。
+- `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。
+- `update-appcast.py`：根据 GitHub Release 更新 `website/public/appcast.xml`。
+- `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源。
+- `slice_cat_sprites.py` / `tune_cat_sprites.py`：切片与调校状态界面精灵图。
+- `probe_asr_websocket_ping.py`：探测 ASR WebSocket 连通性。
+- `probe_wifi_provisioning.py`：探测/调试 Wi-Fi 配网与 LAN OTA 链路。
+
 ## 安全与敏感信息
 
 - **不要提交 API key**。`config.toml` 包含 `volcengine_api_key`、`voicestick_api_key`、`llm_api_key`，均被 `.gitignore` 排除在版本控制外。
@@ -296,6 +321,7 @@ Windows 特殊流程：
 - Windows 应用使用 `SendInput` 进行粘贴，使用 WinHTTP 进行网络通信。
 - 固件 OTA 更新时，桌面端会校验 `ota_size` 和 `ota_sha256` 后再写入设备。
 - 发布产物（macOS DMG/ZIP、Windows MSI、固件 bin）均需签名或校验。
+- Wi-Fi 凭据经 BLE 下发后持久化到 NVS；所有写日志路径必须把 `password` 字段脱敏为 `<redacted>`。
 
 ## 给 Agent 的重要提示
 
