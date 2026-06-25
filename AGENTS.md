@@ -24,12 +24,14 @@ firmware/                  ESP-IDF C 固件（ESP32-S3）
     stick_s3_board/        板级初始化：引脚、LCD、PMIC、I2S/codec
     audio_pipeline/        从 ES8311 读取 16 kHz 单声道 PCM，编码为 Opus
     voice_ble/             GATT 服务、音频/状态通知、控制写入、BLE OTA 数据流
+    voice_net/             Wi-Fi STA 配网、mDNS/局域网发现、LAN HTTP(S) OTA pull
+    bmi270/                BMI270 IMU 驱动
     ui_status/             ST7789/LVGL 状态界面、亮度、休眠、OTA 进度
 desktop/macos/             SwiftPM/AppKit 菜单栏应用（macOS 12+）
   Package.swift            Swift 5.9，依赖 Sparkle、TOMLKit、CZlib
   Sources/VoiceStickApp/   Swift 源码
 desktop/windows/           C++20 / Win32 / C++/WinRT 托盘应用（Windows 10 1903+）
-  CMakeLists.txt           拆分为 voicestick_core 库和 VoiceStickApp 可执行文件
+  CMakeLists.txt           拆分为 voicestick_core 库、VoiceStickApp、VoiceStickCtl
   src/                     C++ 源码
   tests/core_tests.cc      核心库单元测试
   installer/               WiX MSI 安装包定义
@@ -149,6 +151,8 @@ npm run preview
 - `components/audio_pipeline/`：从 ES8311 I2S 麦克风读取 16 kHz 单声道 PCM，编码为 Opus 后通过回调交给 BLE 层。
 - `components/voice_ble/`：实现 GATT 服务、音频/状态通知、主机控制写入和 BLE OTA 数据流。
 - `components/ui_status/`：基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示和 OTA 进度。
+- `components/voice_net/`：Wi-Fi STA 配网、mDNS/局域网发现和 HTTP(S) LAN OTA pull（`esp_https_ota`）。凭据由桌面端经 `control_rx` 下发并持久化到 NVS，状态通过 `state_tx` 的 `wifi_status` 帧回报；Wi-Fi 必须等 BLE 稳定连接后再启动，OTA pull 前要过 main.c 注入的 park gate。契约见 `Doc/Ref/protocol.md`，计划见 `Doc/Plan/wifi-sta-ble-provisioning.md`、`Doc/Plan/lan-http-ota-pull-design.md`。
+- `components/bmi270/`：BMI270 IMU 驱动。
 - `components/stick_s3_board/`：集中维护 StickS3 引脚、LCD、PMIC、I2S/codec 等板级初始化。引脚定义在 `firmware/components/stick_s3_board/include/stick_s3_board.h`。
 
 ### 桌面端职责
@@ -175,10 +179,11 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 ### Windows 实现
 
-`desktop/windows/CMakeLists.txt` 中拆成两个目标：
+`desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 - `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译、调试音频缓存、固件清单解析、日志、本地化和协调器状态机。
 - `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
+- `VoiceStickCtl`（`src/voice_stick_ctl.cc` + `src/ota_command.cc`）：命令行 OTA 工具，经 BLE 触发 Wi-Fi 配网与 LAN HTTP OTA pull，调试固件升级用。
 
 新增核心行为优先放入 `voicestick_core`，并在 `desktop/windows/tests/core_tests.cc` 覆盖；测试目标名为 `voicestick_windows_tests`。
 
@@ -191,8 +196,8 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - `audio_tx`（notify，`0x5101`）：Opus 音频帧，设备 → 主机。
-- `state_tx`（notify，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
-- `control_rx`（write without response，`0x5103`）：`ui_state`、OTA 控制等，主机 → 设备。
+- `state_tx`（notify，`0x5102`）：按键事件、电量、固件版本、`wifi_status`（Wi-Fi/IP/OTA pull 进度）等，设备 → 主机。
+- `control_rx`（write without response，`0x5103`）：`ui_state`、BLE OTA 控制、`wifi_set`/`wifi_clear`/`wifi_status_request`、`ota_pull`/`ota_commit` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
 - `ota_rx` / `ota_tx`：BLE OTA 数据通道。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
