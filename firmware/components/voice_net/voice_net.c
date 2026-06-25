@@ -156,12 +156,10 @@ static void build_status_json(char *dst, size_t cap)
     // park_locked 通过注入的 query 回调实时计算：录音空闲且 BLE OTA 不在跑就 true。
     const char *ota_state_str = voice_net_ota_state_string(voice_net_ota_get_state());
     const int   ota_pct = voice_net_ota_get_progress_pct();
-    // 状态帧中的 URL 仅用于 UI 展示，截断到 128 字节以内，避免 build_status_json
-    // 局部栈过大导致 sys_evt / BLE 任务栈紧张。真实 OTA 下载 URL 保存在 ota_task_arg_t，
-    // 不受这里截断影响。
-    char        ota_url_esc[128] = {0};
+    // 状态帧中不再携带 ota_pull.url：完整 URL 可能很长，加上 Wi-Fi 字段后很容易超过
+    // BLE MTU（Windows 协商后约 244 字节），导致桌面端 ParseStateEvent 失败、UI 不更新。
+    // OTA 进度/错误只需要 state、progress_pct、last_error，URL 由桌面端自己持有。
     char        ota_err_esc[2 * 24 + 1] = {0};
-    json_escape_into(ota_url_esc, sizeof(ota_url_esc), voice_net_ota_get_url());
     json_escape_into(ota_err_esc, sizeof(ota_err_esc), voice_net_ota_get_last_error());
     const bool park_locked = s_park_query ? s_park_query() : true;
     const bool pending_verify = voice_net_is_pending_verify();
@@ -172,20 +170,20 @@ static void build_status_json(char *dst, size_t cap)
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"rssi\":%d,\"last_error\":\"%s\","
-            "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
-            "\"ota_pending_verify\":%s,\"running_partition\":\"%s\",\"park_locked\":%s}",
+            "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"last_error\":\"%s\"},"
+            "\"pending\":%s,\"partition\":\"%s\",\"park\":%s}",
             state_to_string(state), ssid_esc, ip_local, rssi, err_esc,
-            ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
+            ota_state_str, ota_pct, ota_err_esc,
             pending_verify ? "true" : "false", running_partition,
             park_locked ? "true" : "false");
     } else {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
             "\"last_error\":\"%s\","
-            "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"url\":\"%s\",\"last_error\":\"%s\"},"
-            "\"ota_pending_verify\":%s,\"running_partition\":\"%s\",\"park_locked\":%s}",
+            "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"last_error\":\"%s\"},"
+            "\"pending\":%s,\"partition\":\"%s\",\"park\":%s}",
             state_to_string(state), ssid_esc, ip_local, err_esc,
-            ota_state_str, ota_pct, ota_url_esc, ota_err_esc,
+            ota_state_str, ota_pct, ota_err_esc,
             pending_verify ? "true" : "false", running_partition,
             park_locked ? "true" : "false");
     }

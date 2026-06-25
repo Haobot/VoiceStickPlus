@@ -77,7 +77,7 @@ Currently emitted state events:
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
 {"event":"button_down","button":"secondary"}
 {"event":"button_up","button":"secondary","duration_ms":90}
-{"event":"wifi_status","state":"connected","ssid":"MyHomeWiFi","ip":"192.168.1.42","rssi":-54,"last_error":"","ota_pull":{"state":"idle","progress_pct":0,"url":"","last_error":""},"ota_pending_verify":false,"park_locked":true}
+{"event":"wifi_status","state":"connected","ssid":"MyHomeWiFi","ip":"192.168.1.42","rssi":-54,"last_error":"","ota_pull":{"state":"idle","progress_pct":0,"last_error":""},"pending":false,"partition":"ota_0","park":true}
 ```
 
 Buttons are named by role instead of physical placement. On StickS3, the front
@@ -186,14 +186,17 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
   "ota_pull": {
     "state": "idle|downloading|finishing|success|failed",
     "progress_pct": 0,
-    "url": "",
     "last_error": ""
   },
-  "ota_pending_verify": false,
-  "running_partition": "ota_0",
-  "park_locked": true
+  "pending": false,
+  "partition": "ota_0",
+  "park": true
 }
 ```
+
+> **MTU 注意**：`ota_pull` 中不再携带 `url` 字段。完整 OTA URL 可能很长，加上
+> Wi-Fi 字段后容易超过 BLE MTU（Windows 协商后约 244 字节），导致桌面端解析失败、
+> UI 不更新。URL 由发起 `ota_pull` 的桌面端自行保存，设备侧只回报状态、进度和错误码。
 
 推送时机：状态切换 / OTA 进度每 5% / BLE 重连接后主动一次 / 收到 `wifi_status_request` 时。
 
@@ -218,15 +221,15 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
 
 ### Park gate（业务侧锁）
 
-`park_locked=true` 当且仅当：录音空闲 + 当前未在 BLE OTA + 当前未在 HTTPS OTA。OTA pull 启动前固件侧硬校验 `park_locked`，未锁立刻回 `ota_park_required`。
+`park=true` 当且仅当：录音空闲 + 当前未在 BLE OTA + 当前未在 HTTPS OTA。OTA pull 启动前固件侧硬校验 `park`，未锁立刻回 `ota_park_required`。
 
 ### OTA `pending_verify` 健康签到
 
 启用 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` + `CONFIG_APP_ROLLBACK_ENABLE=y` 后：
 
-- 新固件首次启动 bootloader 标记 `ESP_OTA_IMG_PENDING_VERIFY`，固件侧暴露在 `wifi_status.ota_pending_verify=true`。
+- 新固件首次启动 bootloader 标记 `ESP_OTA_IMG_PENDING_VERIFY`，固件侧暴露在 `wifi_status.pending=true`。
 - 默认行为：固件在 "主循环跑过 ≥10 s + BLE 至少一次连接成功" 后自动 `esp_ota_mark_app_valid_cancel_rollback()`。
-- 严格模式（可选）：桌面端 UI 看到 `ota_pending_verify=true` 红色横幅 → 用户点 Commit → 下发 `ota_commit` → 固件签到。
+- 严格模式（可选）：桌面端 UI 看到 `pending=true` 红色横幅 → 用户点 Commit → 下发 `ota_commit` → 固件签到。
 - 超时未签到（5 分钟） → 设备重启 → bootloader 自动回滚到上一槽。
 
 **注意**：rollback 配置必须与所有 OTA 路径的 mark_valid 调用同时上线（包括现有 BLE OTA），否则会出现"升级后每次重启都被回滚"的死锁。本期上线计划见
