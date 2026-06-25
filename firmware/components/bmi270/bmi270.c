@@ -17,6 +17,9 @@ static const char *TAG = "bmi270";
 // BMI270 寄存器地址（据 Bosch BMI270-Sensor-API bmi2_defs.h 确认）。
 #define BMI270_REG_CHIP_ID 0x00
 #define BMI270_REG_ACC_X_LSB 0x0C  // ACC X/Y/Z 各 2 字节 little-endian
+#define BMI270_REG_ACC_RANGE 0x41  // ACC 量程：低 2 位 0=±2g/1=±4g/2=±8g/3=±16g
+#define BMI270_REG_ACC_CONF 0x40   // ACC 配置：ODR/带宽/性能模式
+#define BMI270_REG_STATUS 0x03     // 状态：bit7=acc 数据就绪
 // MPU6886 寄存器（兼容 MPU6050 布局）。
 #define MPU6886_REG_WHO_AM_I 0x75
 #define MPU6886_REG_ACC_XOUT_H 0x3B  // ACC X/Y/Z 各 2 字节 big-endian
@@ -39,7 +42,13 @@ static const char *TAG = "bmi270";
 #define BMI270_CHIP_ID 0x24
 #define BMI270_SOFT_RESET_CMD 0xB6
 #define BMI270_PWR_CTRL_ACC_EN 0x04  // bit2
+#define BMI270_ACC_RANGE_2G 0x00     // ACC_RANGE 写 ±2g，固定 4096 LSB/g 换算尺度
+#define BMI270_ACC_CONF_NORMAL_100HZ 0xA8  // 性能滤波 + 100Hz ODR（Bosch 复位默认值）
 #define MPU6886_WHO_AM_I_VAL 0x70   // MPU6886 的 WHO_AM_I 返回值
+
+// 加速度换算：BMI270 14-bit 左对齐与 MPU6886 16-bit 均经 >>2 归一到 14-bit 同尺度，
+// ±2g 量程下 1g ≈ 4096 LSB。
+#define BMI270_LSB_PER_G 4096.0f
 
 // IMU 类型枚举
 typedef enum {
@@ -259,9 +268,10 @@ esp_err_t bmi270_init(void)
     s_present = true;
 
     if (s_imu_type == IMU_BMI270) {
-        // softreset，等 2ms（BMI270 datasheet 要求）。
+        // softreset 后等 10ms 让 POR 完成（datasheet 最少 2ms，但 esp_restart 软重启
+        // 时 IMU 不断电，偏短的延时偶发导致后续配置写入丢失、ACC 不输出，故加大）。
         (void)bmi270_write_reg(BMI270_REG_CMD, BMI270_SOFT_RESET_CMD);
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(pdMS_TO_TICKS(10));
 
         // softreset 后设备地址可能需要重新添加。
         err = probe_device();
@@ -271,16 +281,36 @@ esp_err_t bmi270_init(void)
             return ESP_OK;
         }
 
-        // 关闭高级电源保存（ADV_POW_EN=0），确保 ACC 稳定输出。
-        (void)bmi270_write_reg(BMI270_REG_PWR_CONF, 0x00);
-        vTaskDelay(pdMS_TO_TICKS(5));
+        // 关键：BMI270 上电后必须加载 8KB config file 并等 INTERNAL_STATUS=0x01，
+        // feature engine 就绪后 ACC 才会输出有效数据。缺这步时 STATUS data-ready 不置位、
+        // ACC 读数恒为 0——基础 ACC 同样依赖 config file，不只是 any-motion feature。
+        esp_err_t cfg_err = load_config_file();
+        if (cfg_err != ESP_OK) {
+            ESP_LOGE(TAG, "BMI270 config load failed: %s (acc data will be invalid)",
+                     esp_err_to_name(cfg_err));
+        }
 
-        // 开 ACC（PWR_CTRL bit2）。
-        (void)bmi270_write_reg(BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_EN);
+        // config 就绪后配 ACC：性能模式 + 100Hz + ±2g，最后使能 ACC。
+        (void)bmi270_write_reg(BMI270_REG_ACC_CONF, BMI270_ACC_CONF_NORMAL_100HZ);
         vTaskDelay(pdMS_TO_TICKS(5));
+        (void)bmi270_write_reg(BMI270_REG_ACC_RANGE, BMI270_ACC_RANGE_2G);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        (void)bmi270_write_reg(BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_EN);
+        vTaskDelay(pdMS_TO_TICKS(10));
+
+        // 读回诊断：正常应为 int_status=0x01（config ok）、status bit7=0x80（acc 数据就绪）。
+        uint8_t pwr_ctrl = 0, acc_conf = 0, acc_range = 0, int_status = 0, status = 0;
+        (void)bmi270_read_reg(BMI270_REG_PWR_CTRL, &pwr_ctrl);
+        (void)bmi270_read_reg(BMI270_REG_ACC_CONF, &acc_conf);
+        (void)bmi270_read_reg(BMI270_REG_ACC_RANGE, &acc_range);
+        (void)bmi270_read_reg(BMI270_REG_INTERNAL_STATUS, &int_status);
+        (void)bmi270_read_reg(BMI270_REG_STATUS, &status);
 
         s_has_baseline = false;
-        ESP_LOGI(TAG, "BMI270 initialized (acc on, polling mode)");
+        ESP_LOGI(TAG,
+                 "BMI270 initialized: pwr_ctrl=0x%02x acc_conf=0x%02x acc_range=0x%02x "
+                 "int_status=0x%02x status=0x%02x",
+                 pwr_ctrl, acc_conf, acc_range, int_status, status);
     } else if (s_imu_type == IMU_MPU6886) {
         // 唤醒 MPU6886：PWR_MGMT_1 写 0 退出 sleep。
         (void)bmi270_write_reg(MPU6886_REG_PWR_MGMT_1, 0x00);
@@ -299,32 +329,64 @@ bool bmi270_present(void)
     return s_present;
 }
 
-bool bmi270_pickup_detected(void)
+// 读取三轴原始加速度（归一到 14-bit 同尺度）。BMI270 与 MPU6886 寄存器布局/字节序不同，
+// 在此集中处理，供拿起检测与 g 值换算复用。不在线或读失败返回非 ESP_OK。
+static esp_err_t read_acc_raw(int16_t *x, int16_t *y, int16_t *z)
 {
     if (!s_present) {
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
 
     uint8_t data[6] = {0};
-    int16_t x, y, z;
 
     if (s_imu_type == IMU_BMI270) {
-        if (bmi270_read_regs(BMI270_REG_ACC_X_LSB, data, 6) != ESP_OK) {
-            return false;
+        esp_err_t err = bmi270_read_regs(BMI270_REG_ACC_X_LSB, data, 6);
+        if (err != ESP_OK) {
+            return err;
         }
         // BMI270 ACC 为 14-bit 左对齐到 16-bit little-endian，低 2 bit 为新数据标志等保留。
-        x = (int16_t)(((uint16_t)data[1] << 8) | data[0]) >> 2;
-        y = (int16_t)(((uint16_t)data[3] << 8) | data[2]) >> 2;
-        z = (int16_t)(((uint16_t)data[5] << 8) | data[4]) >> 2;
-    } else if (s_imu_type == IMU_MPU6886) {
-        if (bmi270_read_regs(MPU6886_REG_ACC_XOUT_H, data, 6) != ESP_OK) {
-            return false;
+        *x = (int16_t)(((uint16_t)data[1] << 8) | data[0]) >> 2;
+        *y = (int16_t)(((uint16_t)data[3] << 8) | data[2]) >> 2;
+        *z = (int16_t)(((uint16_t)data[5] << 8) | data[4]) >> 2;
+        return ESP_OK;
+    }
+    if (s_imu_type == IMU_MPU6886) {
+        esp_err_t err = bmi270_read_regs(MPU6886_REG_ACC_XOUT_H, data, 6);
+        if (err != ESP_OK) {
+            return err;
         }
-        // MPU6886 ACC 为 16-bit big-endian，默认 ±2g 量程下 1g≈16384 LSB（需 4 倍缩放后比阈值）。
-        x = (int16_t)((data[0] << 8) | data[1]) >> 2;  // 缩放到与 BMI270 同尺度（14-bit）
-        y = (int16_t)((data[2] << 8) | data[3]) >> 2;
-        z = (int16_t)((data[4] << 8) | data[5]) >> 2;
-    } else {
+        // MPU6886 ACC 为 16-bit big-endian，默认 ±2g 量程下 1g≈16384 LSB，>>2 缩放到 BMI270 同尺度。
+        *x = (int16_t)((data[0] << 8) | data[1]) >> 2;
+        *y = (int16_t)((data[2] << 8) | data[3]) >> 2;
+        *z = (int16_t)((data[4] << 8) | data[5]) >> 2;
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t bmi270_read_acc_g(float *x_g, float *y_g, float *z_g)
+{
+    int16_t x, y, z;
+    esp_err_t err = read_acc_raw(&x, &y, &z);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (x_g) {
+        *x_g = (float)x / BMI270_LSB_PER_G;
+    }
+    if (y_g) {
+        *y_g = (float)y / BMI270_LSB_PER_G;
+    }
+    if (z_g) {
+        *z_g = (float)z / BMI270_LSB_PER_G;
+    }
+    return ESP_OK;
+}
+
+bool bmi270_pickup_detected(void)
+{
+    int16_t x, y, z;
+    if (read_acc_raw(&x, &y, &z) != ESP_OK) {
         return false;
     }
 

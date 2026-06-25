@@ -45,6 +45,10 @@ static const char *TAG = "voice_stick";
 #define PICKUP_POLL_INTERVAL_MS (500)
 #define PICKUP_POLL_INTERVAL_US (PICKUP_POLL_INTERVAL_MS * 1000ULL)
 
+// IMU X 轴加速度上屏轮询周期。200ms 人眼可读、I²C 负载低；IMU 走 I²C 与录音 I²S 不同总线，
+// 故常驻运行不随状态机开关。BMI270 不在线时仅刷一次 "IMU: n/a"。
+#define IMU_POLL_INTERVAL_US (200 * 1000ULL)
+
 static bool s_recording;
 static bool s_ota_updating;
 static bool s_display_dimmed;   // S1 Resting：背光降到 8
@@ -63,6 +67,7 @@ static esp_timer_handle_t s_disc_poweroff_timer; // BLE 断连→S3
 static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
 static esp_timer_handle_t s_pickup_poll_timer;
+static esp_timer_handle_t s_imu_poll_timer;
 static uint32_t s_session_id = 1;
 static QueueHandle_t s_app_event_queue;
 static button_handle_t s_front_button;
@@ -1242,6 +1247,41 @@ static esp_err_t init_pickup_poll_timer(void)
     return esp_timer_create(&timer_args, &s_pickup_poll_timer);
 }
 
+// IMU X 轴加速度上屏轮询：读 X 轴并刷新顶部常驻行 + 串口日志。
+// IMU 不在线时仅在首次刷一次 "IMU: n/a" 并停表，避免空转刷屏。
+static void imu_poll_timer_cb(void *arg)
+{
+    (void)arg;
+
+    if (!bmi270_present()) {
+        ui_status_set_imu_text("IMU: n/a");
+        (void)esp_timer_stop(s_imu_poll_timer);
+        return;
+    }
+
+    float x_g = 0.0f;
+    float y_g = 0.0f;
+    float z_g = 0.0f;
+    if (bmi270_read_acc_g(&x_g, &y_g, &z_g) != ESP_OK) {
+        return;
+    }
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "X:%+.2f g\nY:%+.2f g\nZ:%+.2f g", x_g, y_g, z_g);
+    ui_status_set_imu_text(buf);
+    ESP_LOGI(TAG, "IMU acc X=%+.2f Y=%+.2f Z=%+.2f g", x_g, y_g, z_g);
+}
+
+static esp_err_t init_imu_poll_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = imu_poll_timer_cb,
+        .name = "imu_poll",
+        .skip_unhandled_events = true,
+    };
+    return esp_timer_create(&timer_args, &s_imu_poll_timer);
+}
+
 static void IRAM_ATTR pmic_irq_isr(void *arg)
 {
     (void)arg;
@@ -1359,6 +1399,9 @@ void app_main(void)
     ESP_ERROR_CHECK(init_pickup_poll_timer());
     // BMI270 初始化在 I2C 总线就绪后；探测失败时优雅降级，不影响主流程。
     (void)bmi270_init();
+    // IMU X 轴加速度常驻上屏：定时器在 ui_status 与 IMU 就绪后启动，常驻运行。
+    ESP_ERROR_CHECK(init_imu_poll_timer());
+    ESP_ERROR_CHECK(esp_timer_start_periodic(s_imu_poll_timer, IMU_POLL_INTERVAL_US));
     note_activity();
     voice_ble_set_connection_callback(ble_connection_cb);
     voice_ble_set_control_callback(ble_control_cb);
