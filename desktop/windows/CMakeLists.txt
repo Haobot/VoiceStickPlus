@@ -58,6 +58,7 @@ add_library(voicestick_core
     src/log.cc
     src/ogg_crc.cc
     src/ogg_opus_muxer.cc
+    src/ota_command.cc
     src/pair_device_helper.cc
     src/voice_stick_coordinator.cc
 )
@@ -111,6 +112,16 @@ target_link_libraries(VoiceStickApp PRIVATE
     comctl32
     ole32
     advapi32
+)
+
+add_executable(VoiceStickCtl
+    src/voice_stick_ctl.cc
+)
+
+target_link_libraries(VoiceStickCtl PRIVATE
+    voicestick_core
+    user32
+    shell32
 )
 
 add_custom_command(TARGET VoiceStickApp POST_BUILD

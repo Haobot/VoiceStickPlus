@@ -890,8 +890,8 @@ esp_err_t voice_ble_request_slow_interval(void)
     }
     s_itvl_target = CONN_ITVL_SLOW;
     struct ble_gap_upd_params params = {
-        .itvl_min = 40,   // 50ms
-        .itvl_max = 160,  // 200ms
+        .itvl_min = 80,   // 100ms
+        .itvl_max = 320,  // 400ms
         .latency = 4,
         .supervision_timeout = 500,  // 5s
         .min_ce_len = 0,
