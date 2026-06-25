@@ -7,10 +7,12 @@
 
 #include "driver/i2s_std.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "hal/i2s_types.h"
@@ -270,6 +272,8 @@ static void deinit_session_resources(void)
 static void audio_task(void *arg)
 {
     (void)arg;
+    /* 缓冲放回任务栈：本任务栈分配在 PSRAM（见 audio_pipeline_start），栈上局部不占
+     * 内部 RAM；放栈上比 static .bss 更省内部 RAM，且无单实例之外的重入问题。 */
     int16_t stereo[AUDIO_FRAME_SAMPLES * 2];
     int16_t mono[AUDIO_FRAME_SAMPLES];
     uint8_t opus_buf[OPUS_MAX_PACKET_SIZE];
@@ -318,10 +322,11 @@ static void audio_task(void *arg)
         }
     }
 
-    ESP_LOGI(TAG, "audio task exit: enqueued=%" PRIu32 " overflow_drops=%" PRIu32,
-             enqueued, dropped);
+    ESP_LOGI(TAG, "audio task exit: enqueued=%" PRIu32 " overflow_drops=%" PRIu32
+             " stack_hwm=%u",
+             enqueued, dropped, (unsigned)uxTaskGetStackHighWaterMark(NULL));
     s_audio_task = NULL;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 static void tx_task(void *arg)
@@ -480,9 +485,19 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     }
 
     s_last_error_step = "audio_task";
-    ok = xTaskCreatePinnedToCore(audio_task, "audio_pipeline", 32768,
-                                 NULL, 5, &s_audio_task, 1);
+    /* 任务栈分配在 PSRAM（MALLOC_CAP_SPIRAM）：Wi-Fi 常驻会占满内部 RAM，
+     * CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768 又把内部 RAM 留给 DMA/Wi-Fi，
+     * 普通 xTaskCreate 在共存场景下凑不出 24KB 连续内部 RAM 会 ESP_ERR_NO_MEM。
+     * 放 PSRAM 后不占内部 RAM；本任务只做 codec 读取与 opus 编码，不在 cache 禁用期
+     * （flash 写）运行（OTA 与录音互斥），PSRAM 栈安全。栈 32768 给足余量杜绝溢出。
+     * 配套：自删用 vTaskDeleteWithCaps。 */
+    ok = xTaskCreatePinnedToCoreWithCaps(audio_task, "audio_pipeline", 32768,
+                                         NULL, 5, &s_audio_task, 1, MALLOC_CAP_SPIRAM);
     if (ok != pdPASS) {
+        ESP_LOGE(TAG, "create audio task failed, free internal=%u largest_internal=%u free_spiram=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         atomic_store(&s_running, false);
         s_audio_task = NULL;
         audio_packet_t sentinel = {
