@@ -27,9 +27,11 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/sha256.h"
+#include "voice_ble.h"
 
 static const char *TAG = "voice_net_ota";
 
@@ -218,11 +220,30 @@ static void ota_task(void *arg)
     uint8_t *buf = NULL;
     bool ota_begun = false;
     bool ota_ended = false;
+    wifi_ps_type_t orig_ps = WIFI_PS_NONE;
+    bool ps_changed = false;
+
+    // OTA 期间关闭 Wi-Fi 省电模式，把射频保持在 active 状态，避免 Modem-sleep
+    // 把 TCP 吞吐压到极低。OTA 结束后在 cleanup 恢复原来的 power-save 配置。
+    if (esp_wifi_get_ps(&orig_ps) == ESP_OK) {
+        if (esp_wifi_set_ps(WIFI_PS_NONE) == ESP_OK) {
+            ps_changed = true;
+            ESP_LOGI(TAG, "wifi power-save disabled for OTA (was %d)", (int)orig_ps);
+        }
+    }
+
+    // BLE 连接默认使用 15-30 ms 快速间隔，空包频繁占用射频；OTA 期间请求慢速间隔
+    //（50-200 ms），把更多 airtime 让给 Wi-Fi，下完再恢复快速交互间隔。
+    (void)voice_ble_request_slow_interval();
+
+    const int64_t start_us = esp_timer_get_time();
 
     esp_http_client_config_t http_cfg = {
         .url = p->url,
         .timeout_ms = 20000,
         .keep_alive_enable = false,
+        .buffer_size = OTA_READ_BUF_SIZE,
+        .buffer_size_tx = OTA_READ_BUF_SIZE,
     };
     if (p->scheme == OTA_SCHEME_HTTPS) {
         http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
@@ -323,7 +344,6 @@ static void ota_task(void *arg)
             voice_net_publish_status();
             last_reported_pct = pct;
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     uint8_t digest[32];
@@ -360,14 +380,22 @@ static void ota_task(void *arg)
 
     s_ota_progress_pct = 100;
     set_ota_state(VOICE_NET_OTA_STATE_SUCCESS);
-    ESP_LOGI(TAG, "ota success bytes=%lld sha256=%s, restarting in 1s",
-             written, digest_hex);
+    const int64_t elapsed_us = esp_timer_get_time() - start_us;
+    const float elapsed_s = elapsed_us > 0 ? (float)elapsed_us / 1e6f : 0.0f;
+    const float kB_per_s = elapsed_s > 0.0f ? (float)written / 1024.0f / elapsed_s : 0.0f;
+    ESP_LOGI(TAG, "ota success bytes=%lld sha256=%s time=%.2fs throughput=%.1f kB/s, restarting in 1s",
+             written, digest_hex, elapsed_s, kB_per_s);
 
     atomic_store(&s_ota_in_progress, false);
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 
 cleanup:
+    (void)voice_ble_request_fast_interval();
+    if (ps_changed) {
+        esp_wifi_set_ps(orig_ps);
+        ESP_LOGI(TAG, "wifi power-save restored to %d", (int)orig_ps);
+    }
     if (ota_begun && !ota_ended && ota_handle) {
         esp_ota_abort(ota_handle);
     }
