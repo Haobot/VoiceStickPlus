@@ -23,6 +23,7 @@
 
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -494,10 +495,16 @@ void voice_net_start_ota_pull_internal(const char *url, const char *sha256_hex,
     }
 
     atomic_store(&s_ota_in_progress, true);
+    /* 注意：ota_task 走普通 xTaskCreate（内部 RAM 栈），不可改用 PSRAM 栈。
+     * 它在 esp_ota_write 写 flash 期间运行，flash 操作会临时关闭 cache，而 PSRAM
+     * 也经 cache 访问——PSRAM 栈在那一刻访问会触发 Cache disabled 崩溃。8KB 栈较小，
+     * 内部 RAM OOM 概率本就低，且 OTA 与录音互斥时无 audio_task 占用，内部 RAM 更宽裕。 */
     BaseType_t ok = xTaskCreate(ota_task, "voice_net_ota", OTA_TASK_STACK_SIZE, p,
                                 OTA_TASK_PRIORITY, NULL);
     if (ok != pdPASS) {
-        ESP_LOGE(TAG, "xTaskCreate failed");
+        ESP_LOGE(TAG, "ota_task create failed, free internal=%u largest_internal=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         atomic_store(&s_ota_in_progress, false);
         free(p);
         set_ota_error("ota_http_failed");
