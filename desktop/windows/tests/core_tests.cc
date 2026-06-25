@@ -478,6 +478,7 @@ void TestBleWifiPayloads() {
 
 void TestBleWifiStatusParsing() {
     // 与 §3.2 wifi_status 字段表对齐：完整快照，无差分。
+    // 固件侧为避免 BLE MTU 溢出，ota_pull 子对象中不再携带 url 字段，桌面端解析应兼容缺失。
     const std::string json =
         "{\"event\":\"wifi_status\","
         "\"state\":\"connected\","
@@ -486,11 +487,10 @@ void TestBleWifiStatusParsing() {
         "\"rssi\":-54,"
         "\"last_error\":\"\","
         "\"ota_pull\":{\"state\":\"downloading\",\"progress_pct\":35,"
-        "\"url\":\"https://oss.example.com/voicestick/firmware/0.4.0.bin\","
         "\"last_error\":\"\"},"
-        "\"ota_pending_verify\":true,"
-        "\"running_partition\":\"ota_1\","
-        "\"park_locked\":false}";
+        "\"pending\":true,"
+        "\"partition\":\"ota_1\","
+        "\"park\":false}";
     ByteVector frame = {1, 0x10};
     AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
     frame.insert(frame.end(), json.begin(), json.end());
@@ -507,7 +507,7 @@ void TestBleWifiStatusParsing() {
     assert(wifi.last_error.empty());
     assert(wifi.ota_pull_state == "downloading");
     assert(wifi.ota_pull_progress_pct.has_value() && *wifi.ota_pull_progress_pct == 35);
-    assert(wifi.ota_pull_url == "https://oss.example.com/voicestick/firmware/0.4.0.bin");
+    assert(wifi.ota_pull_url.empty());
     assert(wifi.ota_pull_last_error.empty());
     assert(wifi.ota_pending_verify == true);
     assert(wifi.running_partition == "ota_1");
@@ -524,8 +524,8 @@ void TestBleWifiStatusParsingErrorState() {
         "\"rssi\":-72,"
         "\"last_error\":\"auth_failed\","
         "\"ota_pull\":{\"state\":\"idle\",\"progress_pct\":0,\"url\":\"\",\"last_error\":\"\"},"
-        "\"ota_pending_verify\":false,"
-        "\"park_locked\":true}";
+        "\"pending\":false,"
+        "\"park\":true}";
     ByteVector frame = {1, 0x10};
     AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
     frame.insert(frame.end(), json.begin(), json.end());

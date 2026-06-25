@@ -220,10 +220,10 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
         wifi.ip = JsonStringValue(outer, "ip");
         wifi.rssi = JsonIntValue(outer, "rssi");
         wifi.last_error = JsonStringValue(outer, "last_error");
-        auto pending = JsonBoolValue(outer, "ota_pending_verify");
+        auto pending = JsonBoolValue(outer, "pending");
         if (pending.has_value()) wifi.ota_pending_verify = *pending;
-        wifi.running_partition = JsonStringValue(outer, "running_partition");
-        auto parked = JsonBoolValue(outer, "park_locked");
+        wifi.running_partition = JsonStringValue(outer, "partition");
+        auto parked = JsonBoolValue(outer, "park");
         if (parked.has_value()) wifi.park_locked = *parked;
         event.wifi = std::move(wifi);
     }

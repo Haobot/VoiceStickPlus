@@ -215,6 +215,18 @@ std::string PreviewBytes(std::span<const std::uint8_t> bytes, std::size_t limit 
     return out;
 }
 
+std::string HexDump(std::span<const std::uint8_t> bytes) {
+    std::string out;
+    out.reserve(bytes.size() * 3);
+    static const char* hex = "0123456789abcdef";
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        if (i > 0) out.push_back(' ');
+        out.push_back(hex[bytes[i] >> 4]);
+        out.push_back(hex[bytes[i] & 0x0f]);
+    }
+    return out;
+}
+
 } // namespace
 
 BleCentralWin::BleCentralWin(std::vector<std::string> paired_device_ids, HWND dispatch_hwnd)
@@ -1240,7 +1252,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                            " preview=" + PreviewBytes(bytes));
                 auto event = BleProtocol::ParseStateEvent(bytes);
                 if (!event.has_value()) {
-                    LogBleLine("state notify VS-" + device_id + " parse failed");
+                    LogBleLine("state notify VS-" + device_id + " parse failed hex=" + HexDump(bytes));
                     return;
                 }
                 LogBleLine("state event VS-" + device_id + " type=" + event->event +
