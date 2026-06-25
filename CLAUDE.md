@@ -132,8 +132,8 @@ CI 使用 Node 22 和 `npm ci`。`website/package.json` 目前只定义了 `dev`
 BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - `audio_tx`（通知，`0x5101`）：Opus 音频帧，设备 → 主机。
-- `state_tx`（通知，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
-- `control_rx`（无响应写，`0x5103`）：`ui_state`、OTA 控制等，主机 → 设备。
+- `state_tx`（通知，`0x5102`）：按键事件、电量、固件版本、`wifi_status`（Wi-Fi/IP/OTA pull 进度）等，设备 → 主机。
+- `control_rx`（无响应写，`0x5103`）：`ui_state`、BLE OTA 控制、`wifi_set`/`wifi_clear`/`wifi_status_request`、`ota_pull`/`ota_commit` 等，主机 → 设备。注意 `control_rx` 写入受 BLE MTU 限制，`wifi_status` 等 JSON 需控制长度避免溢出。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 
@@ -145,6 +145,8 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `components/audio_pipeline/` 从 ES8311 I2S 麦克风读取 16 kHz 单声道 PCM，编码为 Opus 后通过回调交给 BLE 层。
 - `components/voice_ble/` 实现 GATT 服务、音频/状态通知、主机控制写入和 BLE OTA 数据流。
 - `components/ui_status/` 基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示和 OTA 进度。
+- `components/voice_net/` 负责 Wi-Fi STA 配网、mDNS/局域网发现和 HTTP(S) LAN OTA pull（`esp_https_ota`）。凭据由桌面端经 `control_rx` 下发并持久化到 NVS，状态通过 `state_tx` 的 `wifi_status` 帧回报。为避免 boot 期与 BLE 抢资源，Wi-Fi 必须等 BLE 稳定连接后再 `voice_net_resume_if_configured` 启动；OTA pull 启动前要经过 main.c 注入的 park gate（非录音、无其它 OTA 进行中），否则置 `last_error=ota_park_required`。契约见 `Doc/Ref/protocol.md`，实施计划见 `Doc/Plan/wifi-sta-ble-provisioning.md`、`Doc/Plan/lan-http-ota-pull-design.md`。
+- `components/bmi270/` BMI270 IMU 驱动。
 - `components/stick_s3_board/` 集中维护 StickS3 引脚、LCD、PMIC、I2S/codec 等板级初始化；引脚定义在 `firmware/components/stick_s3_board/include/stick_s3_board.h`。
 
 ### 桌面端职责
@@ -172,10 +174,11 @@ macOS 代码集中在 `desktop/macos/Sources/VoiceStickApp/`：
 
 ### Windows 实现
 
-Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
+Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 - `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译、调试音频缓存、固件清单解析、日志、本地化和协调器状态机。
 - `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
+- `VoiceStickCtl`（`src/voice_stick_ctl.cc` + `src/ota_command.cc`）：命令行 OTA 工具，用于在不开主程序的情况下经 BLE 触发 Wi-Fi 配网与 LAN HTTP OTA pull，调试固件升级时使用。
 
 新增核心行为优先放入 `voicestick_core`，并在 `desktop/windows/tests/core_tests.cc` 覆盖；测试目标名为 `voicestick_windows_tests`。Windows 代码遵循 Google C++ 命名风格：`snake_case` 文件名/变量，`CapWords` 类型，`MixedCase()` 方法，4 空格缩进。
 
@@ -225,10 +228,12 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成两个目标：
 
 - `build-macos.sh` / `make-dmg.sh`：macOS 发布构建与 DMG 打包。
 - `build-msi.bat`：Windows 签名 MSI 打包（WinSparkle 更新源）。
+- `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。
 - `update-appcast.py`：根据 GitHub Release 更新 `website/public/appcast.xml`。
 - `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源，改 `ui_status` 图像资源后用。
 - `slice_cat_sprites.py` / `tune_cat_sprites.py`：切片与调校状态界面精灵图。
 - `probe_asr_websocket_ping.py`：探测 ASR WebSocket 连通性，调试 ASR 链路时用。
+- `probe_wifi_provisioning.py`：探测/调试 Wi-Fi 配网与 LAN OTA 链路时用。
 
 ## 发布流程要点
 
