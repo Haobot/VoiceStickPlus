@@ -38,8 +38,9 @@ static const char *TAG = "voice_net_ota";
 #define OTA_URL_MAX_LEN       256
 #define OTA_TASK_STACK_SIZE   8192
 #define OTA_TASK_PRIORITY     4
-#define OTA_PROGRESS_STEP_PCT 5
-#define OTA_READ_BUF_SIZE     (16 * 1024)
+#define OTA_PROGRESS_STEP_PCT     5
+#define OTA_READ_BUF_SIZE         (16 * 1024)
+#define OTA_NO_PROGRESS_TIMEOUT_MS 30000
 
 static atomic_bool s_ota_in_progress = ATOMIC_VAR_INIT(false);
 
@@ -222,6 +223,8 @@ static void ota_task(void *arg)
     bool ota_ended = false;
     wifi_ps_type_t orig_ps = WIFI_PS_NONE;
     bool ps_changed = false;
+    wifi_bandwidth_t orig_bw = WIFI_BW_HT20;
+    bool bw_changed = false;
 
     // OTA 期间关闭 Wi-Fi 省电模式，把射频保持在 active 状态，避免 Modem-sleep
     // 把 TCP 吞吐压到极低。OTA 结束后在 cleanup 恢复原来的 power-save 配置。
@@ -229,6 +232,16 @@ static void ota_task(void *arg)
         if (esp_wifi_set_ps(WIFI_PS_NONE) == ESP_OK) {
             ps_changed = true;
             ESP_LOGI(TAG, "wifi power-save disabled for OTA (was %d)", (int)orig_ps);
+        }
+    }
+
+    // 在路由器支持时把 STA 带宽切到 HT40，提升空口速率；OTA 结束后恢复。
+    if (esp_wifi_get_bandwidth(WIFI_IF_STA, &orig_bw) == ESP_OK) {
+        if (orig_bw != WIFI_BW_HT40) {
+            if (esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40) == ESP_OK) {
+                bw_changed = true;
+                ESP_LOGI(TAG, "wifi bandwidth set to HT40 for OTA (was %d)", (int)orig_bw);
+            }
         }
     }
 
@@ -306,6 +319,7 @@ static void ota_task(void *arg)
 
     int64_t written = 0;
     int last_reported_pct = -1;
+    int64_t last_progress_us = esp_timer_get_time();
     ESP_LOGI(TAG, "ota download started: url=%s status=%d content_length=%d partition=%s",
              p->url, status_code, content_length, target->label);
 
@@ -320,9 +334,20 @@ static void ota_task(void *arg)
         }
         if (read == 0) {
             if (esp_http_client_is_complete_data_received(client)) break;
+            const int64_t idle_ms = (esp_timer_get_time() - last_progress_us) / 1000;
+            if (idle_ms >= OTA_NO_PROGRESS_TIMEOUT_MS) {
+                ESP_LOGE(TAG, "http read stalled: written=%lld content_length=%d idle_ms=%lld",
+                         written, content_length, idle_ms);
+                set_ota_error("ota_http_timeout");
+                set_ota_state(VOICE_NET_OTA_STATE_FAILED);
+                mbedtls_sha256_free(&sha);
+                goto cleanup;
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+
+        last_progress_us = esp_timer_get_time();
 
         err = esp_ota_write(ota_handle, buf, read);
         if (err != ESP_OK) {
@@ -380,18 +405,23 @@ static void ota_task(void *arg)
 
     s_ota_progress_pct = 100;
     set_ota_state(VOICE_NET_OTA_STATE_SUCCESS);
+    (void)voice_ble_request_fast_interval();
     const int64_t elapsed_us = esp_timer_get_time() - start_us;
     const float elapsed_s = elapsed_us > 0 ? (float)elapsed_us / 1e6f : 0.0f;
     const float kB_per_s = elapsed_s > 0.0f ? (float)written / 1024.0f / elapsed_s : 0.0f;
-    ESP_LOGI(TAG, "ota success bytes=%lld sha256=%s time=%.2fs throughput=%.1f kB/s, restarting in 1s",
+    ESP_LOGI(TAG, "ota success bytes=%lld sha256=%s time=%.2fs throughput=%.1f kB/s, restarting in 3s",
              written, digest_hex, elapsed_s, kB_per_s);
 
     atomic_store(&s_ota_in_progress, false);
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(3000));
     esp_restart();
 
 cleanup:
     (void)voice_ble_request_fast_interval();
+    if (bw_changed) {
+        esp_wifi_set_bandwidth(WIFI_IF_STA, orig_bw);
+        ESP_LOGI(TAG, "wifi bandwidth restored to %d", (int)orig_bw);
+    }
     if (ps_changed) {
         esp_wifi_set_ps(orig_ps);
         ESP_LOGI(TAG, "wifi power-save restored to %d", (int)orig_ps);

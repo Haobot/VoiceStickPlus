@@ -6,6 +6,7 @@
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
+#include "ota_command.h"
 #include "pair_device_helper.h"
 #include "voice_stick_coordinator.h"
 
@@ -512,6 +513,98 @@ void TestBleWifiStatusParsing() {
     assert(wifi.ota_pending_verify == true);
     assert(wifi.running_partition == "ota_1");
     assert(wifi.park_locked == false);
+}
+
+void TestOtaCommandParsingAndValidation() {
+    const std::vector<std::string> args = {
+        "ota-pull",
+        "--device", "VS-5D74",
+        "--url", "http://192.168.3.96:8000/voice_stick.bin",
+        "--sha256", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--wait", "healthy",
+        "--timeout", "120",
+        "--json",
+    };
+    std::string error;
+    auto command = ParseOtaCommandLine(args, &error);
+    assert(command.has_value());
+    assert(error.empty());
+    assert(command->device_id == "5D74");
+    assert(command->url == "http://192.168.3.96:8000/voice_stick.bin");
+    assert(command->sha256_hex == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    assert(command->wait_mode == OtaWaitMode::kHealthy);
+    assert(command->timeout_sec == 120);
+    assert(command->json_output == true);
+
+    error.clear();
+    assert(!ValidateOtaPullCommand(OtaPullCommand{
+        .device_id = "5D74",
+        .url = "http://192.168.3.96:8000/voice_stick.bin",
+        .sha256_hex = "",
+    }, &error));
+    assert(error.find("sha256") != std::string::npos);
+
+    error.clear();
+    assert(ValidateOtaPullCommand(OtaPullCommand{
+        .device_id = "5D74",
+        .url = "https://example.com/voice_stick.bin",
+        .sha256_hex = "",
+    }, &error));
+}
+
+void TestOtaHealthyRequiresFreshReconnectStatus() {
+    OtaHealthyDecisionInput stale;
+    stale.saw_success = true;
+    stale.ota_pending_verify = false;
+    stale.running_partition = "ota_1";
+    assert(!ShouldCompleteOtaHealthy(stale));
+
+    OtaHealthyDecisionInput disconnected = stale;
+    disconnected.saw_disconnect_after_success = true;
+    assert(!ShouldCompleteOtaHealthy(disconnected));
+
+    OtaHealthyDecisionInput reconnected = disconnected;
+    reconnected.saw_reconnect_after_success = true;
+    assert(!ShouldCompleteOtaHealthy(reconnected));
+
+    OtaHealthyDecisionInput fresh = reconnected;
+    fresh.wifi_status_after_reconnect = true;
+    assert(ShouldCompleteOtaHealthy(fresh));
+
+    fresh.ota_pending_verify = true;
+    assert(!ShouldCompleteOtaHealthy(fresh));
+}
+
+void TestOtaCommandConfigFallbackAndIpcJson() {
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"5D74"};
+    config.device_wifi_profiles["5D74"].ota_url = "http://192.168.3.96:8000/voice_stick.bin";
+    config.device_wifi_profiles["5D74"].ota_sha256_hex =
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    OtaPullCommand command;
+    command.timeout_sec = 90;
+    std::string error;
+    assert(ResolveOtaPullCommandFromConfig(config, &command, &error));
+    assert(command.device_id == "5D74");
+    assert(command.url == "http://192.168.3.96:8000/voice_stick.bin");
+    assert(command.sha256_hex == "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210");
+
+    command.request_id = "req-1";
+    command.reply_pipe = "\\\\.\\pipe\\VoiceStick.Ota.test";
+    command.wait_mode = OtaWaitMode::kSuccess;
+    command.json_output = true;
+    const auto json = SerializeOtaIpcRequest(command);
+    auto parsed = ParseOtaIpcRequest(json, &error);
+    assert(parsed.has_value());
+    assert(parsed->request_id == "req-1");
+    assert(parsed->reply_pipe == "\\\\.\\pipe\\VoiceStick.Ota.test");
+    assert(parsed->device_id == "5D74");
+    assert(parsed->url == command.url);
+    assert(parsed->sha256_hex == command.sha256_hex);
+    assert(parsed->wait_mode == OtaWaitMode::kSuccess);
+    assert(parsed->timeout_sec == 90);
+    assert(parsed->json_output == true);
 }
 
 void TestBleWifiStatusParsingErrorState() {
@@ -1336,6 +1429,9 @@ int main() {
     TestBleWifiPayloads();
     TestStateParsing();
     TestBleWifiStatusParsing();
+    TestOtaCommandParsingAndValidation();
+    TestOtaHealthyRequiresFreshReconnectStatus();
+    TestOtaCommandConfigFallbackAndIpcJson();
     TestBleWifiStatusParsingErrorState();
     TestCoordinatorDispatchesWifiStatusToUi();
     TestCoordinatorForwardsWifiCommands();
