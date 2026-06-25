@@ -925,7 +925,15 @@ void Win32App::PumpPendingOtaCommands() {
 
     for (auto& [request_id, pending] : pending_ota_commands_) {
         if (now >= pending.deadline) {
-            failures.push_back({request_id, "timeout", "OTA 命令超时"});
+            std::string message = "OTA 命令超时";
+            if (pending.sent) {
+                message += " last_progress=" + std::to_string(pending.last_progress);
+                auto wifi_it = device_wifi_status_map_.find(pending.command.device_id);
+                if (wifi_it != device_wifi_status_map_.end()) {
+                    message += " last_state=" + (wifi_it->second.ota_pull_state.empty() ? "<empty>" : wifi_it->second.ota_pull_state);
+                }
+            }
+            failures.push_back({request_id, "timeout", message});
             continue;
         }
 
@@ -952,6 +960,12 @@ void Win32App::PumpPendingOtaCommands() {
                 healthy.wifi_status_after_reconnect = pending.wifi_status_after_reconnect;
                 healthy.ota_pending_verify = wifi_it->second.ota_pending_verify;
                 healthy.running_partition = wifi_it->second.running_partition;
+                if (ShouldSendOtaCommit(healthy, pending.commit_sent)) {
+                    if (coordinator_) coordinator_->CommitDeviceOta(command.device_id);
+                    pending.commit_sent = true;
+                    pending.next_wifi_request = now + std::chrono::seconds(2);
+                    WriteOtaCommandLine(command, "commit pending=true partition=" + wifi_it->second.running_partition);
+                }
                 if (ShouldCompleteOtaHealthy(healthy)) {
                     WriteOtaCommandLine(command, "healthy pending=false partition=" + wifi_it->second.running_partition);
                     to_complete_ok.push_back(request_id);
@@ -988,7 +1002,17 @@ void Win32App::PumpPendingOtaCommands() {
             continue;
         }
 
-        if (wifi_it == device_wifi_status_map_.end()) continue;
+        if (wifi_it == device_wifi_status_map_.end()) {
+            if (now >= pending.next_wifi_request && coordinator_) {
+                coordinator_->RequestDeviceWifiStatus(command.device_id);
+                pending.next_wifi_request = now + std::chrono::seconds(2);
+            }
+            continue;
+        }
+        if (now >= pending.next_wifi_request && coordinator_) {
+            coordinator_->RequestDeviceWifiStatus(command.device_id);
+            pending.next_wifi_request = now + std::chrono::seconds(2);
+        }
         const auto& wifi = wifi_it->second;
         const int progress = wifi.ota_pull_progress_pct.value_or(0);
         if ((wifi.ota_pull_state == "downloading" || wifi.ota_pull_state == "finishing") &&

@@ -573,6 +573,11 @@ void TestOtaHealthyRequiresFreshReconnectStatus() {
 
     fresh.ota_pending_verify = true;
     assert(!ShouldCompleteOtaHealthy(fresh));
+    assert(ShouldSendOtaCommit(fresh, false));
+    assert(!ShouldSendOtaCommit(fresh, true));
+
+    fresh.ota_pending_verify = false;
+    assert(!ShouldSendOtaCommit(fresh, false));
 }
 
 void TestOtaCommandConfigFallbackAndIpcJson() {

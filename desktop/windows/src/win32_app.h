@@ -122,6 +122,7 @@ private:
         bool saw_disconnect_after_success = false;
         bool saw_reconnect_after_success = false;
         bool wifi_status_after_reconnect = false;
+        bool commit_sent = false;
         bool completed = false;
         int last_progress = -1;
     };
