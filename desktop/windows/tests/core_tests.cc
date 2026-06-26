@@ -74,6 +74,11 @@ public:
                                const std::optional<std::string>& device_id) override {
         sent_prompt_tones.push_back(std::pair{enabled, device_id});
     }
+    void SendShowImuDebug(bool enabled,
+                          const std::optional<std::string>& device_id) override {
+        (void)enabled;
+        (void)device_id;
+    }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
