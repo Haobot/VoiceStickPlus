@@ -51,6 +51,11 @@ struct SentOtaPull {
     std::string sha256_hex;
 };
 
+struct SentImuWakeSensitivity {
+    int threshold_lsb = 0;
+    std::optional<std::string> device_id;
+};
+
 class FakeBleCentral : public BleCentral {
 public:
     void Start() override {}
@@ -78,6 +83,10 @@ public:
                           const std::optional<std::string>& device_id) override {
         (void)enabled;
         (void)device_id;
+    }
+    void SendImuWakeSensitivity(int threshold_lsb,
+                                const std::optional<std::string>& device_id) override {
+        sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
     }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
@@ -130,6 +139,7 @@ public:
     std::vector<std::string> sent_wifi_status_requests;
     std::vector<SentOtaPull> sent_ota_pulls;
     std::vector<std::string> sent_ota_commits;
+    std::vector<SentImuWakeSensitivity> sent_imu_wake_sensitivities;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -922,6 +932,17 @@ void TestAppConfig() {
     assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");
     assert(BatteryStatusText(83, false, true, UiLanguage::kSimplifiedChinese) == "83%，外接电源");
     assert(DeviceTitleWithBattery(L"VS-5A74", 83, true, false, UiLanguage::kSimplifiedChinese) == L"VS-5A74 (83%，充电中)");
+    assert(ImuWakeSensitivityFromName("low") == ImuWakeSensitivity::kLow);
+    assert(ImuWakeSensitivityFromName("medium") == ImuWakeSensitivity::kMedium);
+    assert(ImuWakeSensitivityFromName("high") == ImuWakeSensitivity::kHigh);
+    assert(ImuWakeSensitivityFromName("invalid") == ImuWakeSensitivity::kLow);
+    assert(ImuWakeSensitivityName(ImuWakeSensitivity::kLow) == "low");
+    assert(ImuWakeSensitivityName(ImuWakeSensitivity::kMedium) == "medium");
+    assert(ImuWakeSensitivityName(ImuWakeSensitivity::kHigh) == "high");
+    assert(ImuWakeSensitivityDisplayName(ImuWakeSensitivity::kLow) == "Low");
+    assert(ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity::kLow) == 800);
+    assert(ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity::kMedium) == 500);
+    assert(ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity::kHigh) == 250);
     assert(LocalizationTablesAreComplete());
     const auto hotwords = ParseHotwordList(" 小智,VoiceStick\r\n小智\n豆包 ");
     assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));
@@ -1010,6 +1031,32 @@ void TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate() {
 
     assert(ble_ptr->sent_prompt_tones.back().first == true);
     assert(!ble_ptr->sent_prompt_tones.back().second.has_value());
+}
+
+void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.imu_wake_sensitivity = ImuWakeSensitivity::kHigh;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    assert(!ble_ptr->sent_imu_wake_sensitivities.empty());
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 250);
+    assert(!ble_ptr->sent_imu_wake_sensitivities.back().device_id.has_value());
+
+    AppConfig updated = config;
+    updated.imu_wake_sensitivity = ImuWakeSensitivity::kMedium;
+    coordinator.UpdateConfig(updated);
+
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 500);
+    assert(!ble_ptr->sent_imu_wake_sensitivities.back().device_id.has_value());
 }
 
 void TestCoordinatorHotkeyWithoutConnectionShowsWakeHint() {
@@ -1452,6 +1499,7 @@ int main() {
     TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();
+    TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();

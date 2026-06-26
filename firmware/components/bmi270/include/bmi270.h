@@ -31,6 +31,14 @@ bool bmi270_present(void);
 // 返回 true 表示本次轮询检测到拿起。BMI270 不在线时恒返回 false。
 bool bmi270_pickup_detected(void);
 
+// 动态设置/读取在线轮询拿起阈值（单位：LSB）。
+void bmi270_set_pickup_threshold(float threshold_lsb);
+float bmi270_get_pickup_threshold(void);
+
+#define BMI270_PICKUP_THRESHOLD_DEFAULT_LSB 800.0f
+#define BMI270_PICKUP_THRESHOLD_MIN_LSB     50.0f
+#define BMI270_PICKUP_THRESHOLD_MAX_LSB     2000.0f
+
 // 读取三轴加速度，单位 g（重力加速度）。BMI270 与 MPU6886 均归一到 ±2g 量程同尺度。
 // 不在线时返回 ESP_ERR_INVALID_STATE 且不修改出参。x_g/y_g/z_g 可为 NULL（按需取用）。
 esp_err_t bmi270_read_acc_g(float *x_g, float *y_g, float *z_g);
