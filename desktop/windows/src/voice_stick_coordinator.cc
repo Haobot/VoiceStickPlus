@@ -71,6 +71,7 @@ void VoiceStickCoordinator::Start() {
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
         ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
+        ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -150,6 +151,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     refiner_ = LLMRefinementClient(config_);
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
     ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
+    ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
         asr_ = asr_factory_(config_);
