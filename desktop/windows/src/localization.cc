@@ -41,6 +41,10 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Start VoiceStick when Windows starts";
     table[Index(StringId::kSettingsDebugAudio)] = "Save debug audio files";
     table[Index(StringId::kSettingsShowImuDebug)] = "Show accelerometer debug values";
+    table[Index(StringId::kSettingsImuWakeSensitivity)] = "Wake Sensitivity";
+    table[Index(StringId::kSettingsImuWakeSensitivityLow)] = "Low";
+    table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "Medium";
+    table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "High";
     table[Index(StringId::kSettingsDebugDir)] = "Audio Folder";
     table[Index(StringId::kSettingsChooseDir)] = "Choose...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "Open Config Folder";
@@ -218,6 +222,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Windows 启动时自动运行 VoiceStick";
     table[Index(StringId::kSettingsDebugAudio)] = "保存调试音频文件";
     table[Index(StringId::kSettingsShowImuDebug)] = "显示加速度调试数值";
+    table[Index(StringId::kSettingsImuWakeSensitivity)] = "拿起灵敏度";
+    table[Index(StringId::kSettingsImuWakeSensitivityLow)] = "低";
+    table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "中";
+    table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "高";
     table[Index(StringId::kSettingsDebugDir)] = "音频文件夹";
     table[Index(StringId::kSettingsChooseDir)] = "选择...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "打开配置文件夹";

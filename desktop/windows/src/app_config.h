@@ -20,6 +20,12 @@ enum class InteractionMode {
     kClickToTalk,
 };
 
+enum class ImuWakeSensitivity {
+    kLow,
+    kMedium,
+    kHigh,
+};
+
 enum class UiLanguage {
     kSystem,
     kEnglish,
@@ -126,6 +132,7 @@ struct AppConfig {
     std::string global_hotkey = "Alt+X";
     bool prompt_tone_enabled = true;
     bool show_imu_debug = false;
+    ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -175,5 +182,9 @@ TextTransform TextTransformFromName(std::string_view name);
 std::string TextTransformDisplayName(TextTransform transform);
 std::vector<std::string> ParseDeviceIdList(std::string_view text);
 std::vector<std::string> ParseHotwordList(std::string_view text);
+std::string ImuWakeSensitivityName(ImuWakeSensitivity sensitivity);
+ImuWakeSensitivity ImuWakeSensitivityFromName(std::string_view name);
+std::string ImuWakeSensitivityDisplayName(ImuWakeSensitivity sensitivity);
+int ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity sensitivity);
 
 } // namespace voicestick

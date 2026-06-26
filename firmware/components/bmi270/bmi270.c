@@ -86,7 +86,7 @@ static bool s_has_baseline;
 
 // 拿起判定阈值：合加速度幅值变化量（单位：LSB）。
 // 降低到 800 LSB（~0.2g）增强灵敏度，并配合首次基线建立后小幅运动也触发。
-#define BMI270_PICKUP_DELTA_THRESHOLD 800.0f
+static float s_pickup_threshold = BMI270_PICKUP_THRESHOLD_DEFAULT_LSB;
 
 static esp_err_t bmi270_read_reg(uint8_t reg, uint8_t *value)
 {
@@ -402,7 +402,7 @@ bool bmi270_pickup_detected(void)
     // 更新基线（慢跟随，避免单次大动作后基线停留在峰值导致后续检测失灵）。
     s_last_acc_mag = mag;
 
-    if (delta >= BMI270_PICKUP_DELTA_THRESHOLD) {
+    if (delta >= s_pickup_threshold) {
         ESP_LOGD(TAG, "pickup detected delta=%.0f mag=%.0f", delta, mag);
         return true;
     }
@@ -448,4 +448,19 @@ esp_err_t bmi270_enable_pickup_wake(void)
 
     ESP_LOGI(TAG, "pickup wake enabled (any-motion 50mg/20ms, INT1 active low)");
     return ESP_OK;
+}
+
+void bmi270_set_pickup_threshold(float threshold_lsb)
+{
+    if (threshold_lsb < 0.0f) {
+        ESP_LOGW(TAG, "negative pickup threshold %.1f ignored, using 0", threshold_lsb);
+        threshold_lsb = 0.0f;
+    }
+    s_pickup_threshold = threshold_lsb;
+    ESP_LOGI(TAG, "pickup threshold set to %.0f LSB", s_pickup_threshold);
+}
+
+float bmi270_get_pickup_threshold(void)
+{
+    return s_pickup_threshold;
 }

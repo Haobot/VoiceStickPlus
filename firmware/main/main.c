@@ -25,6 +25,7 @@
 #include "ui_status.h"
 #include "voice_ble.h"
 #include "voice_net.h"
+#include "nvs.h"
 
 static const char *TAG = "voice_stick";
 
@@ -179,6 +180,8 @@ static void queue_primary_down_event(app_input_source_t source, uint32_t request
 static void queue_primary_up_event(app_input_source_t source, uint32_t request_id);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
+static void load_pickup_threshold_from_nvs(void);
+static void save_pickup_threshold_to_nvs(int32_t threshold);
 
 static bool is_external_powered(void)
 {
@@ -656,6 +659,7 @@ static void ble_control_cb(const char *json)
     const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
     const cJSON *button = cJSON_GetObjectItemCaseSensitive(root, "button");
     const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+    const cJSON *threshold_item = cJSON_GetObjectItemCaseSensitive(root, "threshold");
     const cJSON *request_id_json = cJSON_GetObjectItemCaseSensitive(root, "request_id");
     uint32_t request_id = 0;
     if (cJSON_IsNumber(request_id_json)) {
@@ -725,6 +729,19 @@ static void ble_control_cb(const char *json)
         // 桌面端手动确认新固件健康：调 esp_ota_mark_app_valid_cancel_rollback。
         ESP_LOGI(TAG, "ota_commit");
         voice_net_mark_app_valid();
+    } else if (cJSON_IsString(event) &&
+               strcmp(event->valuestring, "imu_wake_sensitivity") == 0 &&
+               cJSON_IsNumber(threshold_item)) {
+        double threshold_raw = threshold_item->valuedouble;
+        if (threshold_raw < BMI270_PICKUP_THRESHOLD_MIN_LSB) {
+            threshold_raw = BMI270_PICKUP_THRESHOLD_MIN_LSB;
+        } else if (threshold_raw > BMI270_PICKUP_THRESHOLD_MAX_LSB) {
+            threshold_raw = BMI270_PICKUP_THRESHOLD_MAX_LSB;
+        }
+        int32_t threshold = (int32_t)threshold_raw;
+        bmi270_set_pickup_threshold((float)threshold);
+        save_pickup_threshold_to_nvs(threshold);
+        ESP_LOGI(TAG, "imu_wake_sensitivity threshold=%" PRId32, threshold);
     }
     cJSON_Delete(root);
 }
@@ -1435,6 +1452,56 @@ static void send_current_battery_status(void)
     voice_ble_send_battery_status(s_battery_level, s_battery_charging, s_usb_powered);
 }
 
+static void load_pickup_threshold_from_nvs(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
+    int32_t threshold = (int32_t)BMI270_PICKUP_THRESHOLD_DEFAULT_LSB;
+    if (err == ESP_OK) {
+        err = nvs_get_i32(handle, "pickup_thr", &threshold);
+        if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "load pickup threshold failed: %s", esp_err_to_name(err));
+        }
+        nvs_close(handle);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+    }
+
+    if (threshold < (int32_t)BMI270_PICKUP_THRESHOLD_MIN_LSB) {
+        threshold = (int32_t)BMI270_PICKUP_THRESHOLD_MIN_LSB;
+    } else if (threshold > (int32_t)BMI270_PICKUP_THRESHOLD_MAX_LSB) {
+        threshold = (int32_t)BMI270_PICKUP_THRESHOLD_MAX_LSB;
+    }
+
+    bmi270_set_pickup_threshold((float)threshold);
+    ESP_LOGI(TAG, "pickup threshold loaded from nvs: %" PRId32, threshold);
+}
+
+static void save_pickup_threshold_to_nvs(int32_t threshold)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = nvs_set_i32(handle, "pickup_thr", threshold);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "save pickup threshold failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return;
+    }
+
+    err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit pickup threshold failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "pickup threshold saved to nvs: %" PRId32, threshold);
+    }
+    nvs_close(handle);
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "boot reset_reason=%d wakeup_cause=%d ext1_status=0x%llx",
@@ -1476,6 +1543,9 @@ void app_main(void)
     } else {
         ui_status_set_device_name(voice_ble_device_name());
     }
+
+    // 从 NVS 恢复拿起检测阈值；voice_ble_init 已初始化 NVS flash。
+    load_pickup_threshold_from_nvs();
 
     // Wi-Fi STA 子系统：依赖 voice_ble_init 已 nvs_flash_init。
     // 失败不阻塞主流程——voicestick 主链路是 BLE，Wi-Fi 仅运维侧路。
