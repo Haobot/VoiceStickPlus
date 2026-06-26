@@ -33,6 +33,7 @@ enum class StringId {
     kSettingsPromptTone,
     kSettingsLaunchAtLogin,
     kSettingsDebugAudio,
+    kSettingsShowImuDebug,
     kSettingsDebugDir,
     kSettingsChooseDir,
     kSettingsOpenConfigFolder,
