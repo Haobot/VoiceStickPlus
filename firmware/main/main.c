@@ -64,6 +64,7 @@ static bool s_battery_charging;
 static bool s_usb_powered;
 static int s_battery_level = 0;
 static bool s_prompt_tone_enabled = true;
+static bool s_show_imu_debug = false;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_display_off_timer;   // S1→S2
@@ -676,6 +677,10 @@ static void ble_control_cb(const char *json)
                cJSON_IsBool(enabled)) {
         s_prompt_tone_enabled = cJSON_IsTrue(enabled);
         ESP_LOGI(TAG, "prompt tone %s", s_prompt_tone_enabled ? "enabled" : "disabled");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "show_imu_debug") == 0 &&
+               cJSON_IsBool(enabled)) {
+        s_show_imu_debug = cJSON_IsTrue(enabled);
+        ESP_LOGI(TAG, "imu debug %s", s_show_imu_debug ? "enabled" : "disabled");
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "battery_status_request") == 0) {
         queue_app_event(APP_EVENT_BATTERY_STATUS_REQUEST);
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
