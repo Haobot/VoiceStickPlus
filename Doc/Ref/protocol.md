@@ -94,7 +94,7 @@ Deprecated firmware-to-app events:
 
 ## Control Event
 
-The Mac writes compact JSON to `control_rx`. Control events are authoritative UI
+The desktop app writes compact JSON to `control_rx`. Control events are authoritative UI
 state from the app to the firmware display.
 
 Current desktop events:
@@ -107,10 +107,17 @@ Current desktop events:
 {"event":"ui_state","state":"error","text":"ASR timeout"}
 {"event":"interaction_mode","mode":"hold_to_talk"}
 {"event":"interaction_mode","mode":"click_to_talk"}
+{"event":"show_imu_debug","enabled":true}
 ```
 
-The desktop helper always includes a `text` field, even for states without text
-content. Firmware may immediately render local physical feedback, such as
+| Event | Field | Direction | Meaning |
+| --- | --- | --- | --- |
+| `ui_state` | `state`: string, `text`: string | Mac -> StickS3 | Authoritative display state from the app to the firmware display. |
+| `interaction_mode` | `mode`: string | Mac -> StickS3 | Controls the front-button behavior and idle screen hint. |
+| `show_imu_debug` | `enabled`: boolean | Windows -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
+
+For `ui_state`, the desktop helper always includes a `text` field; older firmware
+can ignore it. Firmware may immediately render local physical feedback, such as
 showing the recording cat when the primary button starts audio, but the app's
 `ui_state` is the authoritative display state. Current StickS3 firmware does not
 render recognition text on-device because the LVGL font set does not include
