@@ -314,6 +314,15 @@ Windows 特殊流程：
 - `probe_asr_websocket_ping.py`：探测 ASR WebSocket 连通性。
 - `probe_wifi_provisioning.py`：探测/调试 Wi-Fi 配网与 LAN OTA 链路。
 
+## 项目 Skills
+
+本仓库在 `.agents/skills/` 下维护项目级 Skill，Agent 在相关场景会自动加载：
+
+- `byted-web-search`：火山引擎豆包搜索，联网事实核查与信息检索场景优先使用。
+- `sticks3-flash-ota`：M5Stack StickS3 固件烧录与 OTA 升级的标准流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
+
+新增或修改 Skill 后，当前 Kimi Code 会话需要重启才能刷新可用技能列表。
+
 ## 安全与敏感信息
 
 - **不要提交 API key**。`config.toml` 包含 `volcengine_api_key`、`voicestick_api_key`、`llm_api_key`，均被 `.gitignore` 排除在版本控制外。

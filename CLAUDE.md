@@ -248,3 +248,12 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 - 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `Doc/Ref/`、macOS、Windows、网站和发布脚本。
 - Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。
 - `.gitignore` 整体忽略了 `desktop/windows/`，提交 Windows 端源码改动时必须用 `git add -f`，否则会被静默漏提交。
+
+## 项目 Skills
+
+本仓库在 `.agents/skills/` 下维护项目级 Skill，Agent 在相关场景会自动加载：
+
+- `byted-web-search`：火山引擎豆包搜索，联网事实核查与信息检索场景优先使用。
+- `sticks3-flash-ota`：M5Stack StickS3 固件烧录与 OTA 升级的标准流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
+
+新增或修改 Skill 后，当前 Kimi Code 会话需要重启才能刷新可用技能列表。

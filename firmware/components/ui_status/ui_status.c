@@ -340,7 +340,7 @@ esp_err_t ui_status_init(void)
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(panel), TAG, "reset panel");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel), TAG, "init panel");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(panel, true), TAG, "invert panel colors");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(panel, false, false), TAG, "mirror panel");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(panel, true, true), TAG, "mirror panel");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(panel, LCD_X_GAP, LCD_Y_GAP), TAG, "set panel gap");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(panel, true), TAG, "turn display on");
 
