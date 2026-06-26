@@ -49,6 +49,11 @@ static const char *TAG = "voice_stick";
 // 故常驻运行不随状态机开关。BMI270 不在线时仅刷一次 "IMU: n/a"。
 #define IMU_POLL_INTERVAL_US (200 * 1000ULL)
 
+// 基于 IMU X 轴的显示方向自动旋转。
+// 当前握持方向 X 为正时画面不变；旋转 180° 后 X 为负，画面也旋转 180°。
+#define ORIENTATION_THRESHOLD_G      0.5f
+#define ORIENTATION_CONFIRM_COUNT    2
+
 static bool s_recording;
 static bool s_ota_updating;
 static bool s_display_dimmed;   // S1 Resting：背光降到 8
@@ -75,6 +80,14 @@ static button_handle_t s_side_button;
 static int64_t s_primary_down_us;
 static int64_t s_secondary_down_us;
 static uint32_t s_primary_session_id;
+
+typedef enum {
+    DISPLAY_ORIENTATION_NORMAL = 0,
+    DISPLAY_ORIENTATION_UPSIDE_DOWN = 1,
+} display_orientation_t;
+
+static display_orientation_t s_display_orientation = DISPLAY_ORIENTATION_NORMAL;
+static int s_orientation_confirm_count = 0;
 
 typedef enum {
     APP_INPUT_SOURCE_PHYSICAL,
@@ -1247,6 +1260,33 @@ static esp_err_t init_pickup_poll_timer(void)
     return esp_timer_create(&timer_args, &s_pickup_poll_timer);
 }
 
+static void update_display_orientation(float x_g)
+{
+    display_orientation_t desired = s_display_orientation;
+
+    if (s_display_orientation == DISPLAY_ORIENTATION_NORMAL) {
+        if (x_g < -ORIENTATION_THRESHOLD_G) {
+            desired = DISPLAY_ORIENTATION_UPSIDE_DOWN;
+        }
+    } else {
+        if (x_g > ORIENTATION_THRESHOLD_G) {
+            desired = DISPLAY_ORIENTATION_NORMAL;
+        }
+    }
+
+    if (desired == s_display_orientation) {
+        s_orientation_confirm_count = 0;
+        return;
+    }
+
+    s_orientation_confirm_count++;
+    if (s_orientation_confirm_count >= ORIENTATION_CONFIRM_COUNT) {
+        s_display_orientation = desired;
+        s_orientation_confirm_count = 0;
+        ui_status_set_orientation(s_display_orientation == DISPLAY_ORIENTATION_UPSIDE_DOWN);
+    }
+}
+
 // IMU X 轴加速度上屏轮询：读 X 轴并刷新顶部常驻行 + 串口日志。
 // IMU 不在线时仅在首次刷一次 "IMU: n/a" 并停表，避免空转刷屏。
 static void imu_poll_timer_cb(void *arg)
@@ -1265,6 +1305,8 @@ static void imu_poll_timer_cb(void *arg)
     if (bmi270_read_acc_g(&x_g, &y_g, &z_g) != ESP_OK) {
         return;
     }
+
+    update_display_orientation(x_g);
 
     char buf[48];
     snprintf(buf, sizeof(buf), "X:%+.2f g\nY:%+.2f g\nZ:%+.2f g", x_g, y_g, z_g);
@@ -1399,6 +1441,14 @@ void app_main(void)
     ESP_ERROR_CHECK(init_pickup_poll_timer());
     // BMI270 初始化在 I2C 总线就绪后；探测失败时优雅降级，不影响主流程。
     (void)bmi270_init();
+    // 根据初始握持方向设置屏幕方向，避免启动后方向与实际相反。
+    float initial_x_g = 0.0f;
+    if (bmi270_present() && bmi270_read_acc_g(&initial_x_g, NULL, NULL) == ESP_OK) {
+        s_display_orientation = (initial_x_g < 0.0f)
+            ? DISPLAY_ORIENTATION_UPSIDE_DOWN
+            : DISPLAY_ORIENTATION_NORMAL;
+        ui_status_set_orientation(s_display_orientation == DISPLAY_ORIENTATION_UPSIDE_DOWN);
+    }
     // IMU X 轴加速度常驻上屏：定时器在 ui_status 与 IMU 就绪后启动，常驻运行。
     ESP_ERROR_CHECK(init_imu_poll_timer());
     ESP_ERROR_CHECK(esp_timer_start_periodic(s_imu_poll_timer, IMU_POLL_INTERVAL_US));

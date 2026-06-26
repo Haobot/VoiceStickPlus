@@ -55,6 +55,7 @@ static const char *TAG = "ui_status";
 static _lock_t s_lvgl_lock;
 static bool s_ready;
 static lv_display_t *s_display;
+static esp_lcd_panel_handle_t s_panel;
 static lv_obj_t *s_screen;
 static lv_obj_t *s_top_label;
 static lv_obj_t *s_ble_dot;
@@ -329,20 +330,19 @@ esp_err_t ui_status_init(void)
                                                  &io_config, &io),
                         TAG, "create lcd panel io");
 
-    esp_lcd_panel_handle_t panel = NULL;
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = STICK_S3_PIN_LCD_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
     };
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7789(io, &panel_config, &panel),
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7789(io, &panel_config, &s_panel),
                         TAG, "create st7789 panel");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(panel), TAG, "reset panel");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel), TAG, "init panel");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(panel, true), TAG, "invert panel colors");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(panel, true, true), TAG, "mirror panel");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(panel, LCD_X_GAP, LCD_Y_GAP), TAG, "set panel gap");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(panel, true), TAG, "turn display on");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel), TAG, "reset panel");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "init panel");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(s_panel, true), TAG, "invert panel colors");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(s_panel, true, true), TAG, "mirror panel");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(s_panel, LCD_X_GAP, LCD_Y_GAP), TAG, "set panel gap");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "turn display on");
 
     lv_init();
     s_display = lv_display_create(LCD_H_RES, LCD_V_RES);
@@ -354,7 +354,7 @@ esp_err_t ui_status_init(void)
     ESP_RETURN_ON_FALSE(buf1 && buf2, ESP_ERR_NO_MEM, TAG, "allocate lvgl draw buffers");
 
     lv_display_set_buffers(s_display, buf1, buf2, draw_buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
-    lv_display_set_user_data(s_display, panel);
+    lv_display_set_user_data(s_display, s_panel);
     lv_display_set_color_format(s_display, LV_COLOR_FORMAT_RGB565);
     lv_display_set_flush_cb(s_display, lvgl_flush_cb);
 
@@ -510,6 +510,29 @@ void ui_status_set_imu_text(const char *text)
     if (s_ready) {
         lv_label_set_text(s_imu_label, text ? text : "");
     }
+    _lock_release(&s_lvgl_lock);
+}
+
+void ui_status_set_orientation(bool upside_down)
+{
+    if (!s_display || !s_panel) {
+        return;
+    }
+
+    _lock_acquire(&s_lvgl_lock);
+
+    lv_display_rotation_t rotation = upside_down
+        ? LV_DISPLAY_ROTATION_180
+        : LV_DISPLAY_ROTATION_0;
+
+    // 当前初始化使用 mirror(true,true)。LVGL 软件旋转 180° 会翻转坐标方向，
+    // 因此把 mirror 取反，使物理扫描方向与渲染方向一致。
+    bool mirror_x = !upside_down;
+    bool mirror_y = !upside_down;
+
+    lv_display_set_rotation(s_display, rotation);
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, mirror_x, mirror_y));
+
     _lock_release(&s_lvgl_lock);
 }
 
