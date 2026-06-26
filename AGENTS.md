@@ -20,25 +20,26 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 桌面端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
 
-当前版本：`0.3.4`（见仓库根目录 `VERSION`）。
+当前版本：`1.6.8`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致（当前均为 `1.6.8`）。
 
 ## 仓库目录结构
 
 ```text
 firmware/                       ESP-IDF C 固件（ESP32-S3）
   main/main.c                   主循环：按键、BLE、录音会话、UI 状态、电源管理、OTA
-  main/idf_component.yml        主组件依赖声明
+  main/idf_component.yml        主组件依赖声明（当前仅依赖 espressif/button）
   components/
     stick_s3_board/             板级初始化：引脚、LCD、PMIC、I2S/codec
     audio_pipeline/             从 ES8311 读取 16 kHz 单声道 PCM，编码为 Opus
     voice_ble/                  GATT 服务、音频/状态通知、控制写入、BLE OTA 数据流
     voice_net/                  Wi-Fi STA 配网、mDNS/局域网发现、LAN HTTP(S) OTA pull
     bmi270/                     BMI270 IMU 驱动
-    ui_status/                  ST7789/LVGL 状态界面、亮度、休眠、OTA 进度
+    ui_status/                  ST7789/LVGL 状态界面、亮度、休眠、OTA 进度、Wi-Fi 信息
   managed_components/           ESP-IDF component manager 拉取的依赖
   partitions_ota.csv            分区表：两个 3 MB OTA app slot + 约 1984 KB storage
   version.txt                   固件向桌面端报告自身版本，发布前必须与 VERSION 一致
   CMakeLists.txt                ESP-IDF 项目入口
+  sdkconfig                     当前 sdkconfig（被 .gitignore 忽略，勿随意提交）
 
 desktop/macos/                  SwiftPM / AppKit 菜单栏应用（macOS 12+）
   Package.swift                 Swift 5.9，依赖 Sparkle、TOMLKit、CZlib
@@ -59,7 +60,7 @@ desktop/windows/                C++20 / Win32 / C++/WinRT 托盘应用（Windows
 desktop/linux/                  Linux 桌面端占位目录
 
 website/                        Vue 3 + Vite 站点
-  package.json                  Node 项目配置，依赖 vue、vue-i18n、esptool-js、vite
+  package.json                  Node 项目配置，当前 version 字段为 0.3.4
   vite.config.js                base: '/voicestick/'
   src/App.vue                   主页面与 Web Serial 烧录流程
   src/i18n/                     中英文文案（zh-CN.json、en-US.json）
@@ -69,6 +70,7 @@ scripts/                        构建脚本、精灵图处理、LVGL ARGB 转�
 Doc/                            BLE 协议（Doc/Ref/protocol.md）、发布流程（Doc/Ref/release.md）、
                                 ASR 接口、实施方案 RFC（Doc/Plan/）
 VERSION                         单一版本来源（纯文本，不含换行）
+ArduFlux.json                   ArduFlux IDE 配置文件（非版本控制重点）
 ```
 
 仓库实际文档目录为大写 `Doc/`，不是 `docs/`。
@@ -163,6 +165,8 @@ desktop\windows\build-x64\VoiceStick.exe
 scripts\build-msi.bat
 ```
 
+注意：`build_native.bat` 会一并构建、测试并生成 MSI，但内部硬编码了旧版本号与本地路径，复用前需检查内容；`do_build.bat` 是更早期的本地构建脚本；根目录 `test.bat` 只是占位脚本，不运行 CTest。
+
 ### 网站（Vue 3 + Vite，Node 22）
 
 ```sh
@@ -184,7 +188,7 @@ npm run preview
 - `firmware/main/main.c`：编排按键、BLE、录音会话、UI 状态、电源管理和 OTA 事件。
 - `components/audio_pipeline/`：从 ES8311 I2S 麦克风读取 16 kHz 单声道 PCM，编码为 Opus 后通过回调交给 BLE 层。
 - `components/voice_ble/`：实现 GATT 服务、音频/状态通知、主机控制写入和 BLE OTA 数据流。
-- `components/ui_status/`：基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示和 OTA 进度。
+- `components/ui_status/`：基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示、OTA 进度，以及由桌面端开关控制的 Wi-Fi 信息（SSID/IP）显示。
 - `components/voice_net/`：Wi-Fi STA 配网、mDNS/局域网发现和 HTTP(S) LAN OTA pull（`esp_https_ota`）。凭据由桌面端经 `control_rx` 下发并持久化到 NVS，状态通过 `state_tx` 的 `wifi_status` 帧回报；Wi-Fi 必须等 BLE 稳定连接后再启动，OTA pull 前要过 main.c 注入的 park gate。契约见 `Doc/Ref/protocol.md`，计划见 `Doc/Plan/wifi-sta-ble-provisioning.md`、`Doc/Plan/lan-http-ota-pull-design.md`。
 - `components/bmi270/`：BMI270 IMU 驱动。
 - `components/stick_s3_board/`：集中维护 StickS3 引脚、LCD、PMIC、I2S/codec 等板级初始化。引脚定义在 `firmware/components/stick_s3_board/include/stick_s3_board.h`。
@@ -209,7 +213,7 @@ npm run preview
 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 - `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译、调试音频缓存、固件清单解析、日志、本地化和协调器状态机。
-- `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
+- `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新/Wi-Fi 设置等对话框。
 - `VoiceStickCtl`（`src/voice_stick_ctl.cc` + `src/ota_command.cc`）：命令行 OTA 工具，经 BLE 触发 Wi-Fi 配网与 LAN HTTP OTA pull，调试固件升级用。
 
 新增核心行为优先放入 `voicestick_core`，并在 `desktop/windows/tests/core_tests.cc` 覆盖；测试目标名为 `voicestick_windows_tests`。
@@ -224,7 +228,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - `audio_tx`（notify，`0x5101`）：Opus 音频帧，设备 → 主机。
 - `state_tx`（notify，`0x5102`）：按键事件、电量、固件版本、`wifi_status`（Wi-Fi/IP/OTA pull 进度）等，设备 → 主机。
-- `control_rx`（write without response，`0x5103`）：`ui_state`、BLE OTA 控制、`wifi_set`/`wifi_clear`/`wifi_status_request`、`ota_pull`/`ota_commit` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
+- `control_rx`（write without response，`0x5103`）：`ui_state`、BLE OTA 控制、`wifi_set`/`wifi_clear`/`wifi_status_request`、`ota_pull`/`ota_commit`、`show_imu_debug`、`show_wifi_info`、`imu_wake_sensitivity` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
 - `ota_rx` / `ota_tx`：BLE OTA 数据通道。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
@@ -264,14 +268,17 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `debug_audio_cache`：是否保存调试 Ogg Opus 音频。
 - `prompt_tone_enabled`（Windows 桌面端）：是否在录音启停时播放提示音，默认 `true`。
 - `show_imu_debug`（Windows 桌面端）：是否在设备屏幕上显示 IMU 加速度调试数值，默认 `false`。
+- `show_device_wifi_info`（Windows 桌面端）：是否在设备屏幕上显示已连接 Wi-Fi 的 SSID 与 IP，默认 `false`。
 - `interaction_mode`：`hold_to_talk` 或 `click_to_talk`。
 - `[output].target`：`focused_app` 或 `subtitle`。
 - `[output].transform`：`original` 或 `translate`。
 - `[output].translation_target`：目标语言代码，如 `en` 或 `zh-Hans`。
 - `[device.<id>.output]`：按设备覆盖输出/翻译设置。
+- `[device.<id>.wifi_info]`：按设备持久化保存已连接 Wi-Fi 的 SSID 与 IP（由 Windows 端写入）。
 - `refine_enabled`：是否对 ASR 原文做 LLM 精修（去停顿空格、修标点、去口头语），默认 `true`；翻译路径的精修已融入翻译 prompt，不受此开关额外调用影响。`refine_prompt` 可覆盖内置精修 prompt（为空用默认）。
 - `asr_hotwords`：逗号分隔的 ASR 热词，同时作为术语提示传给 LLM。
 - `paired_device_ids`：逗号分隔的 4 位十六进制 ID，如 `C3D8,09AF`。
+- `resource_id`：火山引擎 resource ID，支持 `volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
 
 Windows 调试音频缓存目录：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
 
@@ -293,7 +300,7 @@ Windows 调试音频缓存目录：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
 
 版本单一来源是仓库根目录的 `VERSION` 文件（纯文本，不含换行）。发布前还需要同步更新 `firmware/version.txt`，因为固件通过该文件向桌面端报告自身版本，版本不一致会导致 OTA 检测异常。
 
-推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `0.3.4` 时，标签必须是 `v0.3.4`。
+推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `1.6.8` 时，标签必须是 `v1.6.8`。
 
 ## 发布与部署流程
 
