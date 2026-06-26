@@ -1292,7 +1292,7 @@ static void update_display_orientation(float x_g)
     }
 }
 
-// IMU X 轴加速度上屏轮询：读 X 轴并刷新顶部常驻行 + 串口日志。
+// IMU 轮询：读三轴加速度、更新朝向自动旋转、按需上屏调试值。
 // IMU 不在线时仅在首次刷一次 "IMU: n/a" 并停表，避免空转刷屏。
 static void imu_poll_timer_cb(void *arg)
 {
@@ -1313,10 +1313,16 @@ static void imu_poll_timer_cb(void *arg)
 
     update_display_orientation(x_g);
 
+    ESP_LOGI(TAG, "IMU acc X=%+.2f Y=%+.2f Z=%+.2f g", x_g, y_g, z_g);
+
+    if (!s_show_imu_debug) {
+        ui_status_set_imu_text("");
+        return;
+    }
+
     char buf[48];
     snprintf(buf, sizeof(buf), "X:%+.2f g\nY:%+.2f g\nZ:%+.2f g", x_g, y_g, z_g);
     ui_status_set_imu_text(buf);
-    ESP_LOGI(TAG, "IMU acc X=%+.2f Y=%+.2f Z=%+.2f g", x_g, y_g, z_g);
 }
 
 static esp_err_t init_imu_poll_timer(void)
