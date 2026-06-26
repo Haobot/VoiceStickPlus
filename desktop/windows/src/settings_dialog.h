@@ -52,6 +52,7 @@ private:
     HWND prompt_tone_check_ = nullptr;
     HWND launch_at_login_check_ = nullptr;
     HWND debug_audio_check_ = nullptr;
+    HWND show_imu_debug_check_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -60,7 +61,7 @@ private:
     std::vector<HWND> label_controls_;
 
     static constexpr int kClientWidth = 640;
-    static constexpr int kClientHeight = 660;
+    static constexpr int kClientHeight = 690;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -73,6 +74,7 @@ private:
     static constexpr UINT kIdPromptTone = 2008;
     static constexpr UINT kIdLaunchAtLogin = 2009;
     static constexpr UINT kIdDebugAudio = 2010;
+    static constexpr UINT kIdShowImuDebug = 2017;
     static constexpr UINT kIdDebugDirEdit = 2011;
     static constexpr UINT kIdChooseDir = 2012;
     static constexpr UINT kIdSave = 2013;
