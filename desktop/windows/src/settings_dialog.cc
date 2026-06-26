@@ -238,6 +238,7 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         prompt_tone_check_ = nullptr;
         launch_at_login_check_ = nullptr;
         debug_audio_check_ = nullptr;
+        show_imu_debug_check_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
         all_controls_.clear();
@@ -301,6 +302,7 @@ void SettingsDialog::DestroyControls() {
     llm_model_edit_ = nullptr;
     prompt_tone_check_ = nullptr;
     debug_audio_check_ = nullptr;
+    show_imu_debug_check_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
     if (ui_font_) {
@@ -430,6 +432,13 @@ void SettingsDialog::BuildControls() {
                                                BS_AUTOCHECKBOX));
     y += row_h + Dp(10);
 
+    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    show_imu_debug_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsShowImuDebug, language).c_str(), ctrl_x, y,
+                                                  ctrl_w, Dp(22), kIdShowImuDebug, instance_,
+                                                  BS_AUTOCHECKBOX));
+    y += row_h + Dp(10);
+
     remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
@@ -479,6 +488,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(prompt_tone_check_, BM_SETCHECK, config_.prompt_tone_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(launch_at_login_check_, BM_SETCHECK, config_.launch_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(show_imu_debug_check_, BM_SETCHECK, config_.show_imu_debug ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
     UpdateProviderVisibility();
@@ -522,6 +532,7 @@ void SettingsDialog::SaveSettings() {
     config_.prompt_tone_enabled = SendMessageW(prompt_tone_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.launch_at_login = SendMessageW(launch_at_login_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.show_imu_debug = SendMessageW(show_imu_debug_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
