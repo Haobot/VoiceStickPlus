@@ -262,6 +262,8 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `asr_provider`：`volcengine` 或 `voicestick_cloud`。
 - `auto_enter`：粘贴后是否自动按 Return。
 - `debug_audio_cache`：是否保存调试 Ogg Opus 音频。
+- `prompt_tone_enabled`（Windows 桌面端）：是否在录音启停时播放提示音，默认 `true`。
+- `show_imu_debug`（Windows 桌面端）：是否在设备屏幕上显示 IMU 加速度调试数值，默认 `false`。
 - `interaction_mode`：`hold_to_talk` 或 `click_to_talk`。
 - `[output].target`：`focused_app` 或 `subtitle`。
 - `[output].transform`：`original` 或 `translate`。
