@@ -508,6 +508,11 @@ void OverlayWindow::Reposition() {
             SyncBackdrop(target_window_width_, target_window_height_, true);
         }
     }
+    if (target_window_width_ > 0 && target_window_height_ > 0) {
+        SetWindowPos(hwnd_, HWND_TOPMOST, target_window_x_, target_window_y_,
+                     target_window_width_, target_window_height_,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
     UpdateLayeredBitmap();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
