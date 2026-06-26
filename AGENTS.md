@@ -6,48 +6,69 @@
 
 ## 项目概览
 
-VoiceStick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。硬件端负责采集按键与音频，通过 BLE 上报给桌面端；桌面端负责交互状态机、ASR（语音识别）、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录，以及 Sparkle / WinSparkle 更新源。
+VoiceStick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。
 
-主要功能：
-- 按住 StickS3 正面按钮录音，松开后桌面端将音频发往 ASR，识别结果显示在悬浮窗/字幕中，确认后粘贴到当前焦点输入框。
-- 支持 Volcengine（字节跳动）直接接入和 VoiceStick Cloud 中继两种 ASR 提供商。
-- 支持 OpenAI-compatible LLM 翻译与 ASR 原文精修。
-- 支持 BLE OTA 与 Wi-Fi / LAN HTTP(S) OTA 两种固件更新路径。
-- 支持 macOS 12+ 和 Windows 10 1903+。
+- **固件端**：负责采集按键与音频，通过 BLE 上报给桌面端；同时负责电源管理、设备显示、BLE OTA 与 Wi-Fi / LAN HTTP(S) OTA。
+- **桌面端**：是交互状态的唯一可信源，负责 BLE 配对与多设备连接、Opus → Ogg Opus 封装、ASR WebSocket、LLM 翻译与精修、悬浮窗/字幕、文本注入、配置管理和自动更新。
+- **网站端**：负责落地页、浏览器端 USB 固件烧录，以及 Sparkle / WinSparkle 更新源。
+
+核心音频数据流：
+
+```text
+StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> paste/subtitle
+```
+
+桌面端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
+
+当前版本：`0.3.4`（见仓库根目录 `VERSION`）。
 
 ## 仓库目录结构
 
 ```text
-firmware/                  ESP-IDF C 固件（ESP32-S3）
-  main/main.c              主循环：按键、BLE、录音会话、UI 状态、电源管理、OTA
+firmware/                       ESP-IDF C 固件（ESP32-S3）
+  main/main.c                   主循环：按键、BLE、录音会话、UI 状态、电源管理、OTA
+  main/idf_component.yml        主组件依赖声明
   components/
-    stick_s3_board/        板级初始化：引脚、LCD、PMIC、I2S/codec
-    audio_pipeline/        从 ES8311 读取 16 kHz 单声道 PCM，编码为 Opus
-    voice_ble/             GATT 服务、音频/状态通知、控制写入、BLE OTA 数据流
-    voice_net/             Wi-Fi STA 配网、mDNS/局域网发现、LAN HTTP(S) OTA pull
-    bmi270/                BMI270 IMU 驱动
-    ui_status/             ST7789/LVGL 状态界面、亮度、休眠、OTA 进度
-  components/ 同级还有 ESP-IDF component manager 拉取的依赖（如 button、esp_codec_dev、esp-opus、lvgl）
-desktop/macos/             SwiftPM/AppKit 菜单栏应用（macOS 12+）
-  Package.swift            Swift 5.9，依赖 Sparkle、TOMLKit、CZlib
-  Sources/VoiceStickApp/   Swift 源码
-  Config/config.example.toml  配置示例（与 Windows 共享字段）
-desktop/windows/           C++20 / Win32 / C++/WinRT 托盘应用（Windows 10 1903+）
-  CMakeLists.txt           拆分为 voicestick_core 库、VoiceStickApp、VoiceStickCtl
-  src/                     C++ 源码
-  tests/core_tests.cc      核心库单元测试
-  installer/               WiX MSI 安装包定义
-  third_party/             cjson、tomlplusplus
-  resources/               图标、对话框资源、VoiceStick.rc
-desktop/linux/             Linux 桌面端占位目录
-website/                   Vue 3 + Vite 站点
-  src/App.vue              主页面与 Web Serial 烧录流程
-  src/i18n/                中英文文案（zh-CN.json、en-US.json）
-  public/appcast.xml       Sparkle / WinSparkle 更新源
-scripts/                   构建脚本、精灵图处理、LVGL ARGB 转换、ASR 探测、appcast 更新
-Doc/                       BLE 协议（Doc/Ref/protocol.md）、发布流程（Doc/Ref/release.md）、ASR 接口、实施方案 RFC（Doc/Plan/）
-VERSION                    单一版本来源（当前 0.3.4）
-firmware/version.txt       固件向桌面端报告自身版本，发布前必须与 VERSION 一致
+    stick_s3_board/             板级初始化：引脚、LCD、PMIC、I2S/codec
+    audio_pipeline/             从 ES8311 读取 16 kHz 单声道 PCM，编码为 Opus
+    voice_ble/                  GATT 服务、音频/状态通知、控制写入、BLE OTA 数据流
+    voice_net/                  Wi-Fi STA 配网、mDNS/局域网发现、LAN HTTP(S) OTA pull
+    bmi270/                     BMI270 IMU 驱动
+    ui_status/                  ST7789/LVGL 状态界面、亮度、休眠、OTA 进度
+  managed_components/           ESP-IDF component manager 拉取的依赖
+  partitions_ota.csv            分区表：两个 3 MB OTA app slot + 约 1984 KB storage
+  version.txt                   固件向桌面端报告自身版本，发布前必须与 VERSION 一致
+  CMakeLists.txt                ESP-IDF 项目入口
+
+desktop/macos/                  SwiftPM / AppKit 菜单栏应用（macOS 12+）
+  Package.swift                 Swift 5.9，依赖 Sparkle、TOMLKit、CZlib
+  Sources/VoiceStickApp/        Swift 源码
+  Sources/CZlib/                zlib CRC 桥接
+  Config/config.example.toml    配置示例（与 Windows 共享字段）
+  Resources/                    图标、Info.plist 等资源
+
+desktop/windows/                C++20 / Win32 / C++/WinRT 托盘应用（Windows 10 1903+）
+  CMakeLists.txt                拆分为 voicestick_core、VoiceStickApp、VoiceStickCtl
+  src/                          C++ 源码
+  tests/core_tests.cc           核心库单元测试
+  installer/                    WiX MSI 安装包定义
+  third_party/                  cjson、tomlplusplus
+  resources/                    图标、对话框资源、VoiceStick.rc
+  build-x64/                    推荐构建目录（由 build_win.bat 创建）
+
+desktop/linux/                  Linux 桌面端占位目录
+
+website/                        Vue 3 + Vite 站点
+  package.json                  Node 项目配置，依赖 vue、vue-i18n、esptool-js、vite
+  vite.config.js                base: '/voicestick/'
+  src/App.vue                   主页面与 Web Serial 烧录流程
+  src/i18n/                     中英文文案（zh-CN.json、en-US.json）
+  public/appcast.xml            Sparkle / WinSparkle 更新源
+
+scripts/                        构建脚本、精灵图处理、LVGL ARGB 转换、ASR 探测、appcast 更新
+Doc/                            BLE 协议（Doc/Ref/protocol.md）、发布流程（Doc/Ref/release.md）、
+                                ASR 接口、实施方案 RFC（Doc/Plan/）
+VERSION                         单一版本来源（纯文本，不含换行）
 ```
 
 仓库实际文档目录为大写 `Doc/`，不是 `docs/`。
@@ -63,13 +84,13 @@ firmware/version.txt       固件向桌面端报告自身版本，发布前必�
 | 脚本 | Python 3, Bash, Batch | — | — |
 
 关键外部依赖：
-- 固件：`espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`（由 ESP-IDF component manager 管理）。
-- macOS：`sparkle-project/Sparkle` (2.6+)、`LebJe/TOMLKit` (0.6+)。
-- Windows：WinSparkle 0.9.2（FetchContent）、WiX Toolset v6、WinHTTP、bcrypt。
+- **固件**：`espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`（由 ESP-IDF component manager 管理）。
+- **macOS**：`sparkle-project/Sparkle` (2.6+)、`LebJe/TOMLKit` (0.6+)。
+- **Windows**：WinSparkle 0.9.2（FetchContent）、WiX Toolset v6、WinHTTP、bcrypt。
 
 ## 构建与测试命令
 
-### 固件（ESP-IDF v5.5.1）
+### 固件（ESP-IDF v5.5.1，目标 `esp32s3`）
 
 ```sh
 cd firmware
@@ -142,7 +163,7 @@ desktop\windows\build-x64\VoiceStick.exe
 scripts\build-msi.bat
 ```
 
-### 网站（Vue 3 + Vite）
+### 网站（Vue 3 + Vite，Node 22）
 
 ```sh
 cd website
@@ -171,13 +192,6 @@ npm run preview
 ### 桌面端职责
 
 桌面端是状态唯一可信源，负责：BLE 配对和多设备连接、交互状态机、Opus→Ogg Opus 封装、ASR WebSocket、LLM 翻译、悬浮窗/字幕、文本注入、配置管理和自动更新。
-
-核心音频路径：
-```text
-StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> paste/subtitle
-```
-
-主机端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
 
 ### macOS 实现
 
@@ -215,13 +229,6 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 
-## 代码风格
-
-- **Swift（macOS）**：遵循标准 Swift/APIKit 命名。使用 `swift build` 验证编译。
-- **C++（Windows）**：遵循 Google C++ 命名风格：`snake_case` 文件名和变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
-- **C（固件）**：ESP-IDF 风格，组件通过 `idf_component_register` 注册，组件间通过 `REQUIRES` 声明依赖。
-- **仓库当前未提交统一 lint/formatter 配置**；不要臆造 `npm run lint`、Swift lint 或 C++ lint 命令。修改对应组件后运行该组件已有的构建/测试命令作为验证。
-
 ## 核心交互模型
 
 固件上报原始按键事实（`button_down` / `button_up`），桌面端解释为交互行为并回写 `ui_state`：
@@ -258,10 +265,20 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `interaction_mode`：`hold_to_talk` 或 `click_to_talk`。
 - `[output].target`：`focused_app` 或 `subtitle`。
 - `[output].transform`：`original` 或 `translate`。
+- `[output].translation_target`：目标语言代码，如 `en` 或 `zh-Hans`。
 - `[device.<id>.output]`：按设备覆盖输出/翻译设置。
 - `refine_enabled`：是否对 ASR 原文做 LLM 精修（去停顿空格、修标点、去口头语），默认 `true`；翻译路径的精修已融入翻译 prompt，不受此开关额外调用影响。`refine_prompt` 可覆盖内置精修 prompt（为空用默认）。
+- `asr_hotwords`：逗号分隔的 ASR 热词，同时作为术语提示传给 LLM。
+- `paired_device_ids`：逗号分隔的 4 位十六进制 ID，如 `C3D8,09AF`。
 
 Windows 调试音频缓存目录：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
+
+## 代码风格
+
+- **Swift（macOS）**：遵循标准 Swift/APIKit 命名。使用 `swift build` 验证编译。
+- **C++（Windows）**：遵循 Google C++ 命名风格：`snake_case` 文件名和变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
+- **C（固件）**：ESP-IDF 风格，组件通过 `idf_component_register` 注册，组件间通过 `REQUIRES` 声明依赖。
+- **仓库当前未提交统一 lint/formatter 配置**；不要臆造 `npm run lint`、Swift lint 或 C++ lint 命令。修改对应组件后运行该组件已有的构建/测试命令作为验证。
 
 ## 测试策略
 
