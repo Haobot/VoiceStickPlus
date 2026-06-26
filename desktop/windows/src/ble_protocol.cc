@@ -265,6 +265,12 @@ ByteVector BleProtocol::PromptTonePayload(bool enabled) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::ShowImuDebugPayload(bool enabled) {
+    const auto json = std::string("{\"event\":\"show_imu_debug\",\"enabled\":") +
+                      (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::BatteryStatusRequestPayload() {
     const std::string json = "{\"event\":\"battery_status_request\"}";
     return ByteVector(json.begin(), json.end());
