@@ -77,6 +77,7 @@ public:
     static ByteVector UiStatePayload(std::string_view state, std::string_view text);
     static ByteVector InteractionModePayload(std::string_view mode);
     static ByteVector PromptTonePayload(bool enabled);
+    static ByteVector ShowImuDebugPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();
     static ByteVector RemoteButtonPayload(std::string_view action,
                                           std::string_view button,
