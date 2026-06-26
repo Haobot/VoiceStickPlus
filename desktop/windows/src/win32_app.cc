@@ -443,6 +443,24 @@ void Win32App::SetDeviceWifiStatus(const std::string& device_id,
                 " ip=" + (snapshot.ip.empty() ? "<empty>" : snapshot.ip) +
                 " ota=" + snapshot.ota_pull_state);
         device_wifi_status_map_[device_id] = snapshot;
+
+        bool wifi_info_changed = false;
+        auto& info = config_.device_wifi_infos[device_id];
+        if (info.ssid != snapshot.ssid) {
+            info.ssid = snapshot.ssid;
+            wifi_info_changed = true;
+        }
+        if (info.ip != snapshot.ip) {
+            info.ip = snapshot.ip;
+            wifi_info_changed = true;
+        }
+        if (wifi_info_changed) {
+            config_.Save();
+        }
+        if (settings_dialog_) {
+            settings_dialog_->RefreshWifiInfo();
+        }
+
         auto it = wifi_settings_dialogs_.find(device_id);
         if (it != wifi_settings_dialogs_.end() && it->second) {
             it->second->UpdateStatus(snapshot);
@@ -1672,6 +1690,12 @@ void Win32App::ShowSettings() {
             SaveInputOptions();
             RebuildTooltip();
             LogLine("Settings saved");
+        };
+        settings_dialog_->on_request_wifi_status = [this]() {
+            if (!coordinator_) return;
+            for (const auto& device : connected_devices_) {
+                coordinator_->RequestDeviceWifiStatus(device.id);
+            }
         };
     }
     settings_dialog_->Show();
