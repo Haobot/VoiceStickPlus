@@ -108,6 +108,7 @@ Current desktop events:
 {"event":"interaction_mode","mode":"hold_to_talk"}
 {"event":"interaction_mode","mode":"click_to_talk"}
 {"event":"show_imu_debug","enabled":true}
+{"event":"show_wifi_info","enabled":true}
 {"event":"imu_wake_sensitivity","threshold":500}
 ```
 
@@ -116,6 +117,7 @@ Current desktop events:
 | `ui_state` | `state`: string, `text`: string | Mac -> StickS3 | Authoritative display state from the app to the firmware display. |
 | `interaction_mode` | `mode`: string | Mac -> StickS3 | Controls the front-button behavior and idle screen hint. |
 | `show_imu_debug` | `enabled`: boolean | Windows -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
+| `show_wifi_info` | `enabled`: boolean | Windows -> StickS3 | Toggles on-screen display of the connected Wi-Fi SSID and IP below the IMU debug line. Default false. |
 | `imu_wake_sensitivity` | `threshold`: integer (LSB) | Windows -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware

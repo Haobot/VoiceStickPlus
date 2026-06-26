@@ -64,6 +64,8 @@ public:
                                        const std::optional<std::string>& device_id) = 0;
     virtual void SendShowImuDebug(bool enabled,
                                   const std::optional<std::string>& device_id) = 0;
+    virtual void SendShowWifiInfo(bool enabled,
+                                  const std::optional<std::string>& device_id) = 0;
     virtual void SendImuWakeSensitivity(int threshold_lsb,
                                         const std::optional<std::string>& device_id) = 0;
     virtual void RequestBatteryStatus(const std::optional<std::string>& device_id) = 0;

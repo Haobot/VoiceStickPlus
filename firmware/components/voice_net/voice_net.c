@@ -90,6 +90,7 @@ typedef struct {
 
 static voice_net_status_publish_fn s_publish = NULL;
 static voice_net_park_query_fn     s_park_query = NULL;
+static voice_net_status_changed_fn s_status_changed_cb = NULL;
 static SemaphoreHandle_t           s_status_mutex = NULL;
 static wifi_snapshot_t             s_status;
 static TimerHandle_t               s_apply_timer = NULL;
@@ -243,6 +244,17 @@ static void set_state(net_state_t new_state, bool clear_error)
         s_status.has_rssi = false;
     }
     xSemaphoreGive(s_status_mutex);
+
+    if (s_status_changed_cb) {
+        char ssid[33] = {0};
+        char ip[16] = {0};
+        xSemaphoreTake(s_status_mutex, portMAX_DELAY);
+        strlcpy(ssid, s_status.ssid, sizeof(ssid));
+        strlcpy(ip, s_status.ip, sizeof(ip));
+        xSemaphoreGive(s_status_mutex);
+        s_status_changed_cb(ssid, ip, state_to_string(new_state));
+    }
+
     publish_locked_snapshot();
 }
 
@@ -663,6 +675,38 @@ void voice_net_publish_status(void)
 void voice_net_set_park_query(voice_net_park_query_fn cb)
 {
     s_park_query = cb;
+}
+
+void voice_net_set_status_changed_callback(voice_net_status_changed_fn cb)
+{
+    s_status_changed_cb = cb;
+}
+
+void voice_net_get_status(char *ssid, size_t ssid_size, char *ip, size_t ip_size, const char **state)
+{
+    if (ssid && ssid_size > 0) {
+        ssid[0] = '\0';
+    }
+    if (ip && ip_size > 0) {
+        ip[0] = '\0';
+    }
+    if (state) {
+        *state = state_to_string(NET_STATE_DISABLED);
+    }
+    if (!atomic_load(&s_inited)) {
+        return;
+    }
+    xSemaphoreTake(s_status_mutex, portMAX_DELAY);
+    if (ssid && ssid_size > 0) {
+        strlcpy(ssid, s_status.ssid, ssid_size);
+    }
+    if (ip && ip_size > 0) {
+        strlcpy(ip, s_status.ip, ip_size);
+    }
+    if (state) {
+        *state = state_to_string(s_status.state);
+    }
+    xSemaphoreGive(s_status_mutex);
 }
 
 void voice_net_start_ota_pull(const char *url, const char *sha256_hex)

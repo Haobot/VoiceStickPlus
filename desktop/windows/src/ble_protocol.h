@@ -78,6 +78,7 @@ public:
     static ByteVector InteractionModePayload(std::string_view mode);
     static ByteVector PromptTonePayload(bool enabled);
     static ByteVector ShowImuDebugPayload(bool enabled);
+    static ByteVector ShowWifiInfoPayload(bool enabled);
     static ByteVector ImuWakeSensitivityPayload(int threshold_lsb);
     static ByteVector BatteryStatusRequestPayload();
     static ByteVector RemoteButtonPayload(std::string_view action,

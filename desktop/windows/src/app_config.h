@@ -101,6 +101,13 @@ struct WifiDeviceProfile {
     }
 };
 
+struct DeviceWifiInfo {
+    std::string ssid;
+    std::string ip;
+
+    bool operator==(const DeviceWifiInfo& other) const = default;
+};
+
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
 
@@ -133,6 +140,8 @@ struct AppConfig {
     bool prompt_tone_enabled = true;
     bool show_imu_debug = false;
     ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
+    bool show_device_wifi_info = false;
+    std::map<std::string, DeviceWifiInfo> device_wifi_infos;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -142,9 +151,11 @@ struct AppConfig {
     static std::filesystem::path DefaultDebugAudioDirectory();
     static AppConfig Defaults();
     static AppConfig Load();
+    static AppConfig Load(const std::filesystem::path& path);
     static const std::vector<std::string>& SupportedResourceIds();
 
     void Save() const;
+    void Save(const std::filesystem::path& path) const;
     void SavePairedDevice(const PairedDeviceEntry& entry);
     void SavePairedDeviceInfo(const std::string& device_id,
                               const std::string& hardware,

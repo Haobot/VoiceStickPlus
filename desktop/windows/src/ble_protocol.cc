@@ -271,6 +271,12 @@ ByteVector BleProtocol::ShowImuDebugPayload(bool enabled) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::ShowWifiInfoPayload(bool enabled) {
+    const auto json = std::string("{\"event\":\"show_wifi_info\",\"enabled\":") +
+                      (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::ImuWakeSensitivityPayload(int threshold_lsb) {
     const auto json = std::string("{\"event\":\"imu_wake_sensitivity\",\"threshold\":") +
                       std::to_string(threshold_lsb) + "}";

@@ -18,6 +18,8 @@ void ui_status_set_battery(int level_percent, bool charging, bool usb_powered);
 void ui_status_set_partial_text(const char *text);
 // 刷新屏幕顶部常驻 IMU 行（实时显示 X 轴加速度等调试数值）。
 void ui_status_set_imu_text(const char *text);
+// 刷新屏幕顶部 IMU 下方的 Wi-Fi 信息行（由桌面端 show_wifi_info 开关控制）。
+void ui_status_set_wifi_text(const char *text);
 // 根据设备方向设置屏幕旋转：false 为正常方向（0°），true 为倒置（180°）。
 void ui_status_set_orientation(bool upside_down);
 void ui_status_set_ota_progress(uint32_t written, uint32_t size);

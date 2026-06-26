@@ -268,6 +268,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "prompt_tone_enabled") config.prompt_tone_enabled = BoolValue(value, config.prompt_tone_enabled);
     if (key == "show_imu_debug") config.show_imu_debug = BoolValue(value, config.show_imu_debug);
     if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
+    if (key == "show_device_wifi_info") config.show_device_wifi_info = BoolValue(value, config.show_device_wifi_info);
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
@@ -309,12 +310,16 @@ OutputProfile ParseOutputProfile(const toml::table& table, const OutputProfile& 
 } // namespace
 
 AppConfig AppConfig::Load() {
+    return Load(ConfigPath());
+}
+
+AppConfig AppConfig::Load(const std::filesystem::path& path) {
     AppConfig config = Defaults();
-    std::ifstream input(ConfigPath());
+    std::ifstream input(path);
     if (!input) return config;
 
     try {
-        auto table = toml::parse(input, ConfigPath().native());
+        auto table = toml::parse(input, path.native());
 
         if (auto value = TomlString(table, "asr_provider")) config.asr_provider = AsrProviderFromName(*value);
         if (auto value = TomlString(table, "voicestick_api_key")) config.voicestick_api_key = *value;
@@ -371,6 +376,12 @@ AppConfig AppConfig::Load() {
                     if (auto value = TomlString(*wifi, "ota_sha256_hex")) profile.ota_sha256_hex = Trim(*value);
                     if (!profile.IsEmpty()) config.device_wifi_profiles[device_id] = std::move(profile);
                 }
+                if (const auto* wifi_info = (*device_table)["wifi_info"].as_table()) {
+                    DeviceWifiInfo info;
+                    if (auto value = TomlString(*wifi_info, "ssid")) info.ssid = Trim(*value);
+                    if (auto value = TomlString(*wifi_info, "ip")) info.ip = Trim(*value);
+                    config.device_wifi_infos[device_id] = std::move(info);
+                }
             }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
@@ -379,6 +390,7 @@ AppConfig AppConfig::Load() {
         if (auto value = TomlBool(table, "prompt_tone_enabled")) config.prompt_tone_enabled = *value;
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
+        if (auto value = TomlBool(table, "show_device_wifi_info")) config.show_device_wifi_info = *value;
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
@@ -398,8 +410,12 @@ AppConfig AppConfig::Load() {
 }
 
 void AppConfig::Save() const {
-    std::filesystem::create_directories(ConfigDirectory());
-    std::ofstream output(ConfigPath(), std::ios::trunc);
+    Save(ConfigPath());
+}
+
+void AppConfig::Save(const std::filesystem::path& path) const {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::trunc);
     if (!output) {
         throw std::runtime_error("failed to open config for writing");
     }
@@ -439,6 +455,7 @@ void AppConfig::Save() const {
     output << "prompt_tone_enabled = " << (prompt_tone_enabled ? "true" : "false") << "\n";
     output << "show_imu_debug = " << (show_imu_debug ? "true" : "false") << "\n";
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
+    output << "show_device_wifi_info = " << (show_device_wifi_info ? "true" : "false") << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
@@ -474,6 +491,14 @@ void AppConfig::Save() const {
         output << "ssid = \"" << TomlEscape(profile.ssid) << "\"\n";
         output << "ota_url = \"" << TomlEscape(profile.ota_url) << "\"\n";
         output << "ota_sha256_hex = \"" << TomlEscape(profile.ota_sha256_hex) << "\"\n";
+    }
+    for (const auto& [device_id, info] : device_wifi_infos) {
+        if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
+            continue;
+        }
+        output << "\n[device." << device_id << ".wifi_info]\n";
+        output << "ssid = \"" << TomlEscape(info.ssid) << "\"\n";
+        output << "ip = \"" << TomlEscape(info.ip) << "\"\n";
     }
 }
 
@@ -543,6 +568,7 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
     device_overlay_positions.erase(device_id);
     device_output_profiles.erase(device_id);
     device_wifi_profiles.erase(device_id);
+    device_wifi_infos.erase(device_id);
     Save();
 }
 

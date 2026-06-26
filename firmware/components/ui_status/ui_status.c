@@ -62,6 +62,7 @@ static lv_obj_t *s_ble_dot;
 static lv_obj_t *s_imu_label;
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_hint_label;
+static lv_obj_t *s_wifi_label;
 static lv_obj_t *s_battery_shell;
 static lv_obj_t *s_battery_fill;
 static lv_obj_t *s_battery_tip;
@@ -198,6 +199,7 @@ static void render_scene_locked(ui_status_icon_scene_t scene, const char *status
     lv_obj_set_style_bg_color(s_ble_dot, ble, 0);
     lv_obj_set_style_text_color(s_status_label, text, 0);
     lv_obj_set_style_text_color(s_hint_label, hint_color, 0);
+    lv_obj_set_style_text_color(s_wifi_label, text, 0);
     lv_obj_set_style_text_color(s_battery_label, muted, 0);
     lv_obj_set_style_border_color(s_battery_shell, muted, 0);
     lv_obj_set_style_bg_color(s_battery_tip, muted, 0);
@@ -265,6 +267,18 @@ static void create_status_ui(void)
 
     // 提到最顶图层，确保 IMU 数值不被状态图标等后创建的元素遮挡。
     lv_obj_move_foreground(s_imu_label);
+
+    // Wi-Fi 信息行：由 Windows 端 show_wifi_info 开关控制，显示 STA 当前 SSID/IP。
+    s_wifi_label = lv_label_create(s_screen);
+    lv_label_set_text(s_wifi_label, "");
+    lv_obj_set_style_text_font(s_wifi_label, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(s_wifi_label, lv_color_hex(0x3f3440), 0);
+    lv_label_set_long_mode(s_wifi_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_wifi_label, LCD_H_RES - 16);
+    lv_obj_set_style_text_align(s_wifi_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_wifi_label, LV_ALIGN_TOP_MID, 0, 80);
+    lv_obj_add_flag(s_wifi_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_wifi_label);
 
     s_ready = true;
     render_current_locked();
@@ -509,6 +523,21 @@ void ui_status_set_imu_text(const char *text)
     _lock_acquire(&s_lvgl_lock);
     if (s_ready) {
         lv_label_set_text(s_imu_label, text ? text : "");
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
+void ui_status_set_wifi_text(const char *text)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready) {
+        if (text && text[0]) {
+            lv_label_set_text(s_wifi_label, text);
+            lv_obj_clear_flag(s_wifi_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_label_set_text(s_wifi_label, "");
+            lv_obj_add_flag(s_wifi_label, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     _lock_release(&s_lvgl_lock);
 }

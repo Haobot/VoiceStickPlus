@@ -84,6 +84,10 @@ public:
         (void)enabled;
         (void)device_id;
     }
+    void SendShowWifiInfo(bool enabled,
+                          const std::optional<std::string>& device_id) override {
+        sent_show_wifi_infos.push_back(std::pair{enabled, device_id});
+    }
     void SendImuWakeSensitivity(int threshold_lsb,
                                 const std::optional<std::string>& device_id) override {
         sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
@@ -132,6 +136,7 @@ public:
     std::vector<SentUiState> sent_ui_states;
     std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
     std::vector<std::pair<bool, std::optional<std::string>>> sent_prompt_tones;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_show_wifi_infos;
     std::vector<std::optional<std::string>> battery_status_requests;
     std::vector<SentRemoteButton> sent_remote_buttons;
     std::vector<SentWifiSet> sent_wifi_sets;
@@ -833,6 +838,25 @@ void TestAsrProtocol() {
     assert(AsrProtocol::ExtractNewDefiniteSegments(segment_json, &emitted).empty());
 }
 
+void TestAppConfigWifiInfoRoundTrip() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_wifi_info_test.toml";
+    std::filesystem::remove(temp);
+
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"5D74"};
+    config.show_device_wifi_info = true;
+    config.device_wifi_infos["5D74"] = DeviceWifiInfo{"newhome_iot", "192.168.3.160"};
+    config.Save(temp);
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.show_device_wifi_info == true);
+    assert(loaded.device_wifi_infos.contains("5D74"));
+    assert(loaded.device_wifi_infos.at("5D74").ssid == "newhome_iot");
+    assert(loaded.device_wifi_infos.at("5D74").ip == "192.168.3.160");
+
+    std::filesystem::remove(temp);
+}
+
 void TestAppConfig() {
     AppConfig cloud = AppConfig::Defaults();
     assert(cloud.asr_provider == AsrProvider::kVoiceStickCloud);
@@ -1496,6 +1520,7 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
+    TestAppConfigWifiInfoRoundTrip();
     TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();

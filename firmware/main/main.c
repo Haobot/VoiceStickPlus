@@ -66,6 +66,7 @@ static bool s_usb_powered;
 static int s_battery_level = 0;
 static bool s_prompt_tone_enabled = true;
 static bool s_show_imu_debug = false;
+static bool s_show_wifi_info = false;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_display_off_timer;   // S1→S2
@@ -176,6 +177,7 @@ static void queue_app_event(app_event_type_t type);
 static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, uint32_t size);
 static void queue_ui_state_event(const char *state, const char *text);
 static void apply_interaction_mode(interaction_mode_t mode);
+static void update_wifi_info_ui(void);
 static void queue_primary_down_event(app_input_source_t source, uint32_t request_id);
 static void queue_primary_up_event(app_input_source_t source, uint32_t request_id);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
@@ -685,6 +687,11 @@ static void ble_control_cb(const char *json)
                cJSON_IsBool(enabled)) {
         s_show_imu_debug = cJSON_IsTrue(enabled);
         ESP_LOGI(TAG, "show_imu_debug %s", s_show_imu_debug ? "enabled" : "disabled");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "show_wifi_info") == 0 &&
+               cJSON_IsBool(enabled)) {
+        s_show_wifi_info = cJSON_IsTrue(enabled);
+        ESP_LOGI(TAG, "show_wifi_info %s", s_show_wifi_info ? "enabled" : "disabled");
+        update_wifi_info_ui();
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "battery_status_request") == 0) {
         queue_app_event(APP_EVENT_BATTERY_STATUS_REQUEST);
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
@@ -1352,6 +1359,35 @@ static esp_err_t init_imu_poll_timer(void)
     return esp_timer_create(&timer_args, &s_imu_poll_timer);
 }
 
+static void update_wifi_info_ui(void)
+{
+    if (!s_show_wifi_info) {
+        ui_status_set_wifi_text("");
+        return;
+    }
+
+    char ssid[33] = {0};
+    char ip[16] = {0};
+    const char *state = NULL;
+    voice_net_get_status(ssid, sizeof(ssid), ip, sizeof(ip), &state);
+
+    if (strcmp(state, "connected") == 0 && ssid[0] != '\0') {
+        char text[64];
+        snprintf(text, sizeof(text), "%s\n%s", ssid, ip[0] != '\0' ? ip : "-");
+        ui_status_set_wifi_text(text);
+    } else {
+        ui_status_set_wifi_text("WIFI Idle");
+    }
+}
+
+static void on_voice_net_status_changed(const char *ssid, const char *ip, const char *state)
+{
+    (void)ssid;
+    (void)ip;
+    (void)state;
+    update_wifi_info_ui();
+}
+
 static void IRAM_ATTR pmic_irq_isr(void *arg)
 {
     (void)arg;
@@ -1553,6 +1589,7 @@ void app_main(void)
     if (net_err != ESP_OK) {
         ESP_LOGE(TAG, "voice_net init failed: %s", esp_err_to_name(net_err));
     }
+    voice_net_set_status_changed_callback(on_voice_net_status_changed);
     // 注入 Park gate：HTTPS OTA pull 启动前会查询，未锁则拒绝。
     voice_net_set_park_query(is_park_locked_for_ota);
 

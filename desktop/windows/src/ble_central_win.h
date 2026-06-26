@@ -41,6 +41,8 @@ public:
                                const std::optional<std::string>& device_id) override;
     void SendShowImuDebug(bool enabled,
                           const std::optional<std::string>& device_id) override;
+    void SendShowWifiInfo(bool enabled,
+                          const std::optional<std::string>& device_id) override;
     void SendImuWakeSensitivity(int threshold_lsb,
                                 const std::optional<std::string>& device_id) override;
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override;
