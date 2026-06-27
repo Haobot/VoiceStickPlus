@@ -197,7 +197,7 @@ npm run preview
 - `components/audio_pipeline/`：从 ES8311 I2S 麦克风读取 16 kHz 单声道 PCM，编码为 Opus 后通过回调交给 BLE 层。
 - `components/voice_ble/`：实现 GATT 服务、音频/状态通知、主机控制写入和 BLE OTA 数据流。
 - `components/ui_status/`：基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示、OTA 进度，以及由桌面端开关控制的 Wi-Fi 信息（SSID/IP）显示。
-- `components/voice_net/`：Wi-Fi STA 配网、mDNS/局域网发现和 HTTP(S) LAN OTA pull（`esp_https_ota`）。凭据由桌面端经 `control_rx` 下发并持久化到 NVS，状态通过 `state_tx` 的 `wifi_status` 帧回报；Wi-Fi 必须等 BLE 稳定连接后再启动，OTA pull 前要过 main.c 注入的 park gate。契约见 `Doc/Ref/protocol.md`，计划见 `Doc/Plan/wifi-sta-ble-provisioning.md`、`Doc/Plan/lan-http-ota-pull-design.md`。
+- `components/voice_net/`：Wi-Fi STA 配网、mDNS/局域网发现和 HTTP(S) LAN OTA pull（`esp_https_ota`）。凭据由桌面端经 `control_rx` 下发并持久化到 NVS，状态通过 `state_tx` 的 `wifi_status` 帧回报；Wi-Fi 必须等 BLE 稳定连接后再启动，OTA pull 前要过 main.c 注入的 park gate。Wi-Fi 射频按需启停：空闲倒计时归零或录音开始时自动关闭，下次操作命令到达时自动重启。契约见 `Doc/Ref/protocol.md`，计划见 `Doc/Plan/wifi-sta-ble-provisioning.md`、`Doc/Plan/lan-http-ota-pull-design.md`、`Doc/Plan/wifi-on-demand-power-management.md`。
 - `components/bmi270/`：BMI270 IMU 驱动。
 - `components/stick_s3_board/`：集中维护 StickS3 引脚、LCD、PMIC、I2S/codec 等板级初始化。引脚定义在 `firmware/components/stick_s3_board/include/stick_s3_board.h`。
 

@@ -196,6 +196,7 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
   "ip": "192.168.1.42",
   "rssi": -54,
   "last_error": "",
+  "radio_on": false,
   "ota_pull": {
     "state": "idle|downloading|finishing|success|failed",
     "progress_pct": 0,
@@ -206,6 +207,14 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
   "park": true
 }
 ```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `radio_on` | bool | Wi-Fi 射频是否已启动（`esp_wifi_start` 已调用且未 `stop`）。`false` 时 `state` 固定为 `"disabled"`，`rssi` 省略。旧版桌面端忽略此字段。 |
+
+> **按需启停**：Wi-Fi 射频在空闲倒计时（默认 60 s）归零后自动关闭，或在录音开始时立即关闭。
+> 下次 `wifi_set` / `wifi_scan` / `ota_pull` 命令到达时自动重新启动。
+> 详见 `Doc/Plan/wifi-on-demand-power-management.md`。
 
 > **MTU 注意**：`ota_pull` 中不再携带 `url` 字段。完整 OTA URL 可能很长，加上
 > Wi-Fi 字段后容易超过 BLE MTU（Windows 协商后约 244 字节），导致桌面端解析失败、

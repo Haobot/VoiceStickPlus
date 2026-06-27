@@ -90,8 +90,15 @@ static void set_ota_error(const char *code)
 
 static void set_ota_state(voice_net_ota_state_t st)
 {
+    voice_net_ota_state_t prev = s_ota_state;
     s_ota_state = st;
     voice_net_publish_status();
+
+    // OTA 结束时通知 voice_net.c 重启空闲倒计时，Wi-Fi 在窗口期后自动关闭。
+    if ((st == VOICE_NET_OTA_STATE_SUCCESS || st == VOICE_NET_OTA_STATE_FAILED)
+        && prev != st) {
+        voice_net_notify_ota_ended();
+    }
 }
 
 typedef enum {

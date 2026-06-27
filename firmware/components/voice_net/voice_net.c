@@ -36,8 +36,15 @@
 
 static const char *TAG = "voice_net";
 
-#define WIFI_CONNECT_TIMEOUT_MS 30000      // 协议 §3.3：30s 拿不到 IP 视为 timeout
-#define WIFI_APPLY_DELAY_MS     800        // 协议 §3.1：让 BLE 回包先走完再 reconnect
+#define WIFI_CONNECT_TIMEOUT_MS   30000    // 协议 §3.3：30s 拿不到 IP 视为 timeout
+#define WIFI_APPLY_DELAY_MS       800      // 协议 §3.1：让 BLE 回包先走完再 reconnect
+
+// Wi-Fi 按需启停空闲倒计时（秒），详见 Doc/Plan/wifi-on-demand-power-management.md
+#define WIFI_IDLE_TIMEOUT_SEC        60    // 通用空闲倒计时
+#define WIFI_IDLE_SCAN_TIMEOUT_SEC   10    // 扫描完成后短倒计时
+#define WIFI_IDLE_OTA_POST_SEC       30    // OTA 完成后额外窗口
+#define WIFI_IDLE_PROVISION_SEC      60    // 配网验证窗口
+#define WIFI_IDLE_DISCONNECTED_SEC   10    // 异常断连后短倒计时
 
 // 专用 voice_net worker task 处理所有 esp_wifi 重活：esp_wifi_set_config / connect /
 // disconnect 单次调用要 ~3-4 KB 局部 buffer（wpa_supplicant 链路），Tmr Svc (2048) 和
@@ -49,6 +56,8 @@ typedef enum {
     VN_CMD_START_DISCOVERY,    // 拿到 IP 后启动 mDNS + SNTP，跑在 6KB worker 栈上
     VN_CMD_PUBLISH_STATUS,     // 状态变化异步发布，避免 sys_evt 栈溢出
     VN_CMD_DO_SCAN,            // Wi-Fi 扫描，跑在 6KB worker 栈上
+    VN_CMD_IDLE_TIMEOUT,       // 空闲倒计时归零 → 关闭 Wi-Fi 射频
+    VN_CMD_STOP_WIFI,          // 立即关闭 Wi-Fi 射频（录音触发 / wifi_clear）
 } voice_net_cmd_t;
 
 #define VOICE_NET_TASK_STACK_SIZE 6144
@@ -104,6 +113,19 @@ static atomic_bool                 s_inited = ATOMIC_VAR_INIT(false);
 // 避免 boot 期间 esp_wifi_init+start 与 BLE 抢 RF/modem 资源导致 BLE 反复断连
 // （表现为 UI Pairing 界面反复闪烁）。
 static bool                        s_wifi_started = false;
+
+// Wi-Fi 按需启停：空闲倒计时租约类型。
+typedef enum {
+    LEASE_NONE = 0,       // Wi-Fi 未启动或已关闭
+    LEASE_SCAN,           // 扫描完成后，短租约
+    LEASE_PROVISION,      // 配网验证期
+    LEASE_OTA_POST,       // OTA 下载完成后
+    LEASE_DEFAULT,        // 通用
+} wifi_lease_reason_t;
+
+static TimerHandle_t               s_idle_timer = NULL;
+static wifi_lease_reason_t         s_lease_reason = LEASE_NONE;
+static atomic_bool                 s_wifi_stopping = ATOMIC_VAR_INIT(false);
 
 // JSON 字符串字段转义（与桌面端 BleProtocol::JsonEscape 一致：
 // 双引号 / 反斜杠 / 控制字符）。
@@ -169,23 +191,27 @@ static void build_status_json(char *dst, size_t cap)
     const esp_partition_t *running = esp_ota_get_running_partition();
     const char *running_partition = running ? running->label : "unknown";
 
+    const bool radio_on = s_wifi_started;
+
     if (has_rssi) {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
-            "\"rssi\":%d,\"last_error\":\"%s\","
+            "\"rssi\":%d,\"last_error\":\"%s\",\"radio_on\":%s,"
             "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"last_error\":\"%s\"},"
             "\"pending\":%s,\"partition\":\"%s\",\"park\":%s}",
             state_to_string(state), ssid_esc, ip_local, rssi, err_esc,
+            radio_on ? "true" : "false",
             ota_state_str, ota_pct, ota_err_esc,
             pending_verify ? "true" : "false", running_partition,
             park_locked ? "true" : "false");
     } else {
         snprintf(dst, cap,
             "{\"event\":\"wifi_status\",\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\","
-            "\"last_error\":\"%s\","
+            "\"last_error\":\"%s\",\"radio_on\":%s,"
             "\"ota_pull\":{\"state\":\"%s\",\"progress_pct\":%d,\"last_error\":\"%s\"},"
             "\"pending\":%s,\"partition\":\"%s\",\"park\":%s}",
             state_to_string(state), ssid_esc, ip_local, err_esc,
+            radio_on ? "true" : "false",
             ota_state_str, ota_pct, ota_err_esc,
             pending_verify ? "true" : "false", running_partition,
             park_locked ? "true" : "false");
@@ -226,6 +252,114 @@ static void publish_locked_snapshot_async(void)
 static void publish_locked_snapshot(void)
 {
     publish_locked_snapshot_async();
+}
+
+// ── Wi-Fi 按需启停：空闲倒计时与射频关闭 ──
+// 详见 Doc/Plan/wifi-on-demand-power-management.md
+
+// 前向声明（新函数块中的内部函数在此之后才定义，但被前面的函数调用）
+static void set_state(net_state_t new_state, bool clear_error);
+static void wifi_idle_timer_reset(wifi_lease_reason_t reason);
+
+// 条件检查：是否可以安全关闭 WiFi 射频。
+// 有 HTTPS OTA 进行中或 Park gate 未锁定（录音/BLE OTA 中）时拒绝关闭。
+static bool wifi_stop_is_safe(void)
+{
+    if (voice_net_ota_is_active()) return false;
+    if (s_park_query && !s_park_query()) return false;
+    return true;
+}
+
+// 将 lease_reason 映射为倒计时秒数。
+static int idle_timeout_for_reason(wifi_lease_reason_t reason)
+{
+    switch (reason) {
+    case LEASE_SCAN:       return WIFI_IDLE_SCAN_TIMEOUT_SEC;
+    case LEASE_PROVISION:  return WIFI_IDLE_PROVISION_SEC;
+    case LEASE_OTA_POST:   return WIFI_IDLE_OTA_POST_SEC;
+    case LEASE_DEFAULT:    return WIFI_IDLE_TIMEOUT_SEC;
+    default:               return WIFI_IDLE_TIMEOUT_SEC;
+    }
+}
+
+// 执行真正的 esp_wifi_stop。跑在 voice_net_task 上（6KB 栈），
+// 避免在 timer callback (Tmr Svc 2KB) 或 sys_evt (2.3KB) 中调用大栈 API。
+static void do_wifi_stop(void)
+{
+    if (!s_wifi_started) return;
+    if (atomic_exchange(&s_wifi_stopping, true)) {
+        ESP_LOGD(TAG, "wifi_stop already in progress");
+        return;
+    }
+
+    if (!wifi_stop_is_safe()) {
+        ESP_LOGW(TAG, "wifi_stop blocked: not safe (OTA active or park unlocked)");
+        atomic_store(&s_wifi_stopping, false);
+        // 重置倒计时，下次再试
+        if (s_lease_reason != LEASE_NONE) {
+            wifi_idle_timer_reset(s_lease_reason);
+        }
+        return;
+    }
+
+    ESP_LOGI(TAG, "stopping Wi-Fi radio (lease=%d)", (int)s_lease_reason);
+    s_lease_reason = LEASE_NONE;
+    xTimerStop(s_idle_timer, 0);
+
+    esp_err_t err = esp_wifi_stop();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(err));
+    }
+    s_wifi_started = false;
+    atomic_store(&s_wifi_stopping, false);
+
+    // 清掉 IP/RSSI 等动态字段，保留 ssid（凭据还在 NVS，下次 resume 还能用）
+    xSemaphoreTake(s_status_mutex, portMAX_DELAY);
+    s_status.ip[0] = '\0';
+    s_status.has_rssi = false;
+    xSemaphoreGive(s_status_mutex);
+
+    set_state(NET_STATE_DISABLED, true);
+    ESP_LOGI(TAG, "Wi-Fi radio stopped");
+}
+
+// 空闲倒计时到期回调（跑在 Tmr Svc 上下文）。投递到 voice_net_task 执行实际关闭。
+static void wifi_idle_timeout_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    voice_net_cmd_t cmd = VN_CMD_IDLE_TIMEOUT;
+    xQueueSend(s_cmd_queue, &cmd, pdMS_TO_TICKS(100));
+}
+
+// 处理空闲超时命令（跑在 voice_net_task 上）。
+static void do_idle_timeout(void)
+{
+    if (!wifi_stop_is_safe()) {
+        // 当前不安全（OTA 刚启动或录音中），延长倒计时再试
+        ESP_LOGD(TAG, "idle timeout deferred: not safe to stop");
+        if (s_lease_reason != LEASE_NONE) {
+            wifi_idle_timer_reset(s_lease_reason);
+        }
+        return;
+    }
+    do_wifi_stop();
+}
+
+// 重置/启动空闲倒计时。根据 reason 选择时长。
+static void wifi_idle_timer_reset(wifi_lease_reason_t reason)
+{
+    if (!s_wifi_started) return;
+    if (voice_net_ota_is_active()) {
+        ESP_LOGD(TAG, "idle timer skipped: OTA in progress");
+        return;  // OTA 期间不启动倒计时
+    }
+
+    s_lease_reason = reason;
+    int timeout_sec = idle_timeout_for_reason(reason);
+    xTimerStop(s_idle_timer, 0);
+    xTimerChangePeriod(s_idle_timer, pdMS_TO_TICKS(timeout_sec * 1000), 0);
+    xTimerStart(s_idle_timer, 0);
+    ESP_LOGD(TAG, "idle timer reset: reason=%d timeout=%ds", (int)reason, timeout_sec);
 }
 
 // 进入新状态。clear_error=true 时把 last_error 清空（成功路径用），
@@ -343,6 +477,8 @@ static esp_err_t ensure_wifi_started(void)
         return err;
     }
     s_wifi_started = true;
+    // 新启动的 Wi-Fi 栈进入默认租约：60s 内无操作自动关闭。
+    wifi_idle_timer_reset(LEASE_DEFAULT);
     ESP_LOGI(TAG, "wifi stack started (lazy)");
     return ESP_OK;
 }
@@ -574,6 +710,9 @@ static void do_wifi_scan(void)
     free(ap_records);
     #undef MAX_SCAN_RESULTS
     #undef MAX_SCAN_JSON_BYTES
+
+    // 扫描完成后重置空闲倒计时为短租约（10s），超时自动关闭 Wi-Fi 射频。
+    wifi_idle_timer_reset(LEASE_SCAN);
 }
 
 // 专用 worker task：从队列消费 cmd，独立 6KB 栈安全调用 esp_wifi / mdns / sntp API。
@@ -601,6 +740,12 @@ static void voice_net_task(void *arg)
         case VN_CMD_DO_SCAN:
             do_wifi_scan();
             break;
+        case VN_CMD_IDLE_TIMEOUT:
+            do_idle_timeout();
+            break;
+        case VN_CMD_STOP_WIFI:
+            do_wifi_stop();
+            break;
         default:
             ESP_LOGW(TAG, "unknown cmd %d", cmd);
             break;
@@ -624,8 +769,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             ESP_LOGW(TAG, "STA_DISCONNECTED reason=%u", e ? e->reason : 0);
             const char *code = e ? reason_to_error_code(e->reason) : NULL;
             if (code) {
+                // 终端错误（auth_failed / no_ssid）：自动重连无望，启动短倒计时关闭 Wi-Fi。
                 set_last_error_once(code);
                 set_state(NET_STATE_ERROR, false);
+                wifi_idle_timer_reset(LEASE_SCAN);  // 复用 10s 短租约
             } else {
                 // 已连接后被踢，回到 disconnected；不视为用户可见错误。
                 xSemaphoreTake(s_status_mutex, portMAX_DELAY);
@@ -636,6 +783,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                 if (!was_connected) {
                     // 仍在尝试阶段，等 connect_timeout 兜底，不主动重试避免抖动
                 }
+                // 非终端断连：保持当前租约（Wi-Fi 栈会自动重连）。
+                // 若长时间无法恢复，由现有租约倒计时兜底关闭。
             }
             break;
         }
@@ -662,6 +811,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGI(TAG, "GOT_IP ip=" IPSTR " rssi=%d", IP2STR(&e->ip_info.ip),
                  have_rssi ? ap.rssi : 0);
         set_state(NET_STATE_CONNECTED, true);  // 成功路径清掉 last_error
+
+        // 连接成功后重置空闲倒计时为配网/连接验证窗口（60s）。
+        // 此后若没有 scan / ota_pull 等操作刷新租约，Wi-Fi 会在倒计时归零后自动关闭。
+        wifi_idle_timer_reset(LEASE_PROVISION);
 
         // 首次拿到 IP 后启动 mDNS + SNTP，跑在 voice_net_task 上避免 sys_evt 栈不够。
         // 内部 idempotent；后续断开重连不会重复启动。
@@ -694,7 +847,9 @@ esp_err_t voice_net_init(voice_net_status_publish_fn publish)
     s_connect_timeout_timer = xTimerCreate("vn_conn_to",
                                            pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS),
                                            pdFALSE, NULL, connect_timeout_cb);
-    if (!s_apply_timer || !s_connect_timeout_timer) return ESP_ERR_NO_MEM;
+    s_idle_timer = xTimerCreate("vn_idle", pdMS_TO_TICKS(WIFI_IDLE_TIMEOUT_SEC * 1000),
+                                pdFALSE, NULL, wifi_idle_timeout_cb);
+    if (!s_apply_timer || !s_connect_timeout_timer || !s_idle_timer) return ESP_ERR_NO_MEM;
 
     // esp_netif / esp_event：voicestick 主链路从未启用过 Wi-Fi，这里第一次初始化。
     esp_err_t err = esp_netif_init();
@@ -835,7 +990,13 @@ void voice_net_clear_credentials(void)
     voice_net_nvs_clear();
     s_pending_ssid[0] = '\0';
     s_pending_password[0] = '\0';
+
+    // 停止空闲倒计时并投递关闭命令（在 voice_net_task 上安全执行 esp_wifi_stop）。
+    s_lease_reason = LEASE_NONE;
+    xTimerStop(s_idle_timer, 0);
     esp_wifi_disconnect();
+    voice_net_cmd_t cmd = VN_CMD_STOP_WIFI;
+    xQueueSend(s_cmd_queue, &cmd, pdMS_TO_TICKS(100));
 
     xSemaphoreTake(s_status_mutex, portMAX_DELAY);
     s_status.ssid[0] = '\0';
@@ -912,5 +1073,60 @@ void voice_net_start_ota_pull(const char *url, const char *sha256_hex)
         ESP_LOGW(TAG, "ota_pull: voice_net not inited");
         return;
     }
+    // OTA 需要 Wi-Fi 射频已启动。如果之前因空闲倒计时或录音被关闭，
+    // 这里重新启动。
+    ensure_wifi_started();
+    // 停止空闲倒计时——OTA 期间 Wi-Fi 由 voice_net_ota 完全控制。
+    s_lease_reason = LEASE_NONE;
+    xTimerStop(s_idle_timer, 0);
+    // 如果 NVS 有凭据但当前未连接，触发快速重连（OTA 需要 IP）。
+    if (s_pending_ssid[0] != '\0') {
+        xSemaphoreTake(s_status_mutex, portMAX_DELAY);
+        bool needs_connect = (s_status.state != NET_STATE_CONNECTED
+                           && s_status.state != NET_STATE_CONNECTING);
+        xSemaphoreGive(s_status_mutex);
+        if (needs_connect) {
+            ESP_LOGI(TAG, "ota_pull: triggering reconnect for %s", s_pending_ssid);
+            set_state(NET_STATE_CONNECTING, true);
+            xTimerStop(s_apply_timer, 0);
+            xTimerChangePeriod(s_apply_timer, pdMS_TO_TICKS(100), 0);
+            xTimerStart(s_apply_timer, 0);
+        }
+    }
     voice_net_start_ota_pull_internal(url, sha256_hex, s_park_query);
+}
+
+// ── 录音联动：录音开始时关闭 Wi-Fi 省电 + 避免 2.4GHz 同频干扰 ──
+
+void voice_net_on_recording_started(void)
+{
+    if (!atomic_load(&s_inited)) return;
+    if (!s_wifi_started) return;
+    if (voice_net_ota_is_active()) {
+        ESP_LOGD(TAG, "recording start: keep Wi-Fi for active OTA");
+        return;
+    }
+    ESP_LOGI(TAG, "recording start: stopping Wi-Fi radio");
+    // 立即停止空闲倒计时，投递关闭命令到 voice_net_task。
+    s_lease_reason = LEASE_NONE;
+    xTimerStop(s_idle_timer, 0);
+    voice_net_cmd_t cmd = VN_CMD_STOP_WIFI;
+    xQueueSend(s_cmd_queue, &cmd, pdMS_TO_TICKS(100));
+}
+
+void voice_net_on_recording_stopped(void)
+{
+    // 录音结束不自动恢复 Wi-Fi——下次需要时由操作命令（scan / ota_pull / wifi_set）触发。
+    // 保留为 hook，便于未来策略变化。
+    (void)0;
+}
+
+// OTA 结束通知：由 voice_net_ota.c 在 OTA SUCCESS / FAILED 时调用。
+// 重置空闲倒计时为 OTA 后短窗口（30s），给桌面端 commit 留时间，超时自动关闭 Wi-Fi。
+void voice_net_notify_ota_ended(void)
+{
+    if (!atomic_load(&s_inited)) return;
+    if (!s_wifi_started) return;
+    ESP_LOGI(TAG, "OTA ended, restarting idle timer for post-OTA window");
+    wifi_idle_timer_reset(LEASE_OTA_POST);
 }
