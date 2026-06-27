@@ -577,6 +577,22 @@ void BleCentralWin::SendWifiStatusRequest(const std::string& device_id) {
     WriteControlPayloadAsync(std::move(session), payload);
 }
 
+void BleCentralWin::SendWifiScan(const std::string& device_id) {
+    auto payload = BleProtocol::WifiScanPayload();
+    std::shared_ptr<DeviceSession> session;
+    {
+        std::lock_guard lock(mutex_);
+        auto it = sessions_by_device_id_.find(device_id);
+        if (it != sessions_by_device_id_.end() && it->second->ready) session = it->second;
+    }
+    if (!session) {
+        LogBleLine("send wifi_scan skipped dev=VS-" + device_id);
+        return;
+    }
+    LogBleLine("send wifi_scan dev=VS-" + device_id);
+    WriteControlPayloadAsync(std::move(session), payload);
+}
+
 void BleCentralWin::SendOtaPull(const std::string& device_id,
                                 const std::string& url,
                                 const std::string& sha256_hex) {

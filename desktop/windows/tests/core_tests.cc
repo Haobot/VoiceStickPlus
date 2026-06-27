@@ -109,6 +109,9 @@ public:
     void SendWifiClear(const std::string& device_id) override {
         sent_wifi_clears.push_back(device_id);
     }
+    void SendWifiScan(const std::string& device_id) override {
+        sent_wifi_scans.push_back(device_id);
+    }
     void SendWifiStatusRequest(const std::string& device_id) override {
         sent_wifi_status_requests.push_back(device_id);
     }
@@ -141,6 +144,7 @@ public:
     std::vector<SentRemoteButton> sent_remote_buttons;
     std::vector<SentWifiSet> sent_wifi_sets;
     std::vector<std::string> sent_wifi_clears;
+    std::vector<std::string> sent_wifi_scans;
     std::vector<std::string> sent_wifi_status_requests;
     std::vector<SentOtaPull> sent_ota_pulls;
     std::vector<std::string> sent_ota_commits;
@@ -195,6 +199,10 @@ public:
     void SetDeviceWifiStatus(const std::string& device_id,
                               const WifiStatusSnapshot& snapshot) override {
         wifi_statuses[device_id] = snapshot;
+    }
+    void SetDeviceWifiScanResult(const std::string& device_id,
+                                  const WifiScanResult& result) override {
+        wifi_scan_results[device_id] = result;
     }
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override {
         firmware_info_by_device_id = info_by_device_id;
@@ -261,6 +269,7 @@ public:
     std::vector<ConnectedDevice> connected_devices;
     std::vector<DeviceInfo> device_infos;
     std::map<std::string, WifiStatusSnapshot> wifi_statuses;
+    std::map<std::string, WifiScanResult> wifi_scan_results;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
     std::vector<std::string> pairing_errors;
     std::vector<std::string> firmware_update_prompts;

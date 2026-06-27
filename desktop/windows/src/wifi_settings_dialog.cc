@@ -13,6 +13,7 @@ namespace {
 
 enum : int {
     kIdSsid = 3001,
+    kIdScan,
     kIdPassword,
     kIdShowPassword,
     kIdApply,
@@ -24,6 +25,8 @@ enum : int {
     kIdOtaCommit,
     kIdClose,
 };
+
+constexpr UINT_PTR kScanTimeoutTimerId = 100;
 
 void AlignDialogData(std::vector<BYTE>* buffer, std::size_t alignment) {
     while (buffer->size() % alignment != 0) buffer->push_back(0);
@@ -53,6 +56,9 @@ bool IsSha256Hex(std::string_view value) {
 }
 
 } // namespace
+
+// 剥离扫描结果下拉项 RSSI 后缀的前向声明
+std::wstring StripRssiSuffix(const std::wstring& text);
 
 WifiSettingsDialog::WifiSettingsDialog(HINSTANCE instance, HWND parent, Options options, Callbacks callbacks)
     : instance_(instance), parent_(parent), options_(std::move(options)), callbacks_(std::move(callbacks)) {
@@ -103,6 +109,7 @@ INT_PTR WifiSettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
         switch (LOWORD(w_param)) {
         case kIdApply: OnApplyWifi(); return TRUE;
         case kIdClear: OnClearWifi(); return TRUE;
+        case kIdScan: OnScanWifi(); return TRUE;
         case kIdRefresh: if (callbacks_.refresh_status) callbacks_.refresh_status(); return TRUE;
         case kIdOtaStart: OnStartOta(); return TRUE;
         case kIdOtaCommit: OnCommitOta(); return TRUE;
@@ -117,7 +124,20 @@ INT_PTR WifiSettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
         dpi_ = HIWORD(w_param);
         LayoutControls();
         return TRUE;
+    case WM_TIMER:
+        if (w_param == kScanTimeoutTimerId) {
+            KillTimer(hwnd_, kScanTimeoutTimerId);
+            // 仅当按钮仍禁用时才展示超时——避免 KillTimer 后已排队的
+            // WM_TIMER 消息覆盖掉 PopulateWifiScanResults 刚填好的结果。
+            if (!IsWindowEnabled(scan_button_)) {
+                EnableWindow(scan_button_, TRUE);
+                SetText(scan_button_, Utf16("扫描"));
+                SetText(ssid_combo_, Utf16("扫描超时，请重试"));
+            }
+        }
+        return TRUE;
     case WM_CLOSE:
+        KillTimer(hwnd_, kScanTimeoutTimerId);
         DestroyWindow(hwnd_); hwnd_ = nullptr; return TRUE;
     case WM_DESTROY:
         hwnd_ = nullptr; return TRUE;
@@ -150,7 +170,10 @@ void WifiSettingsDialog::BuildControls() {
         return h;
     };
     device_label_ = make(L"STATIC", L"", 0, 0);
-    ssid_edit_ = make(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, kIdSsid);
+    ssid_combo_ = make(L"COMBOBOX", L"",
+                       CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL,
+                       kIdSsid);
+    scan_button_ = make(L"BUTTON", L"扫描", BS_PUSHBUTTON, kIdScan);
     password_edit_ = make(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD, kIdPassword);
     show_password_check_ = make(L"BUTTON", L"显示密码", BS_AUTOCHECKBOX, kIdShowPassword);
     apply_button_ = make(L"BUTTON", L"应用并连接", BS_PUSHBUTTON, kIdApply);
@@ -178,7 +201,8 @@ void WifiSettingsDialog::LayoutControls() {
     };
     place(device_label_, x, y, w, Dp(24)); y += Dp(34);
     place(CreateWindowExW(0, L"STATIC", L"SSID", WS_CHILD | WS_VISIBLE, x, y+Dp(4), Dp(90), Dp(22), hwnd_, nullptr, instance_, nullptr), x, y+Dp(4), Dp(90), Dp(22));
-    place(ssid_edit_, x+Dp(100), y, w-Dp(100), Dp(26)); y += Dp(34);
+    place(ssid_combo_, x+Dp(100), y, w-Dp(190), Dp(200));  // ComboBox: 高度含下拉列表
+    place(scan_button_, x+w-Dp(82), y+Dp(1), Dp(75), Dp(26)); y += Dp(34);
     place(CreateWindowExW(0, L"STATIC", L"密码", WS_CHILD | WS_VISIBLE, x, y+Dp(4), Dp(90), Dp(22), hwnd_, nullptr, instance_, nullptr), x, y+Dp(4), Dp(90), Dp(22));
     place(password_edit_, x+Dp(100), y, w-Dp(100), Dp(26)); y += Dp(34);
     place(show_password_check_, x+Dp(100), y, Dp(120), Dp(24));
@@ -201,7 +225,7 @@ void WifiSettingsDialog::LayoutControls() {
 void WifiSettingsDialog::LoadInitialValues() {
     SetText(device_label_, Utf16("设备 VS-" + options_.device_id +
         (options_.firmware_version.empty() ? "" : "  固件 " + options_.firmware_version)));
-    SetText(ssid_edit_, Utf16(options_.profile.ssid));
+    SetText(ssid_combo_, Utf16(options_.profile.ssid));
     if (options_.saved_password) SetText(password_edit_, *options_.saved_password);
     SetText(ota_url_edit_, Utf16(options_.profile.ota_url));
     SetText(ota_sha_edit_, Utf16(options_.profile.ota_sha256_hex));
@@ -234,7 +258,10 @@ void WifiSettingsDialog::RefreshStatusText() {
 }
 
 void WifiSettingsDialog::OnApplyWifi() {
-    auto ssid = Utf8(GetText(ssid_edit_));
+    auto ssid_raw = GetText(ssid_combo_);
+    // 剥离扫描结果中追加的 RSSI 后缀 "  (-XX dBm)"，避免把
+    // "newhome_iot  (-85 dBm)" 整串当 SSID 发给固件。
+    auto ssid = Utf8(StripRssiSuffix(ssid_raw));
     auto password = GetText(password_edit_);
     WifiDeviceProfile profile = options_.profile;
     profile.ssid = ssid;
@@ -245,7 +272,41 @@ void WifiSettingsDialog::OnApplyWifi() {
 }
 
 void WifiSettingsDialog::OnClearWifi() {
+    // 清空凭据时同步清空本地密码和 SSID 输入框
+    SetText(password_edit_, L"");
+    SetText(ssid_combo_, L"");
     if (callbacks_.clear_wifi) callbacks_.clear_wifi();
+}
+
+void WifiSettingsDialog::OnScanWifi() {
+    // 禁用扫描按钮并显示"扫描中…"
+    EnableWindow(scan_button_, FALSE);
+    SetText(scan_button_, Utf16("扫描中…"));
+    // 15 秒超时自恢复：防止固件侧异常导致按钮永久卡死
+    SetTimer(hwnd_, kScanTimeoutTimerId, 15000, nullptr);
+    if (callbacks_.scan_wifi) callbacks_.scan_wifi();
+}
+
+void WifiSettingsDialog::PopulateWifiScanResults(const std::vector<WifiApInfo>& aps) {
+    // 取消超时定时器
+    KillTimer(hwnd_, kScanTimeoutTimerId);
+    // 恢复扫描按钮
+    EnableWindow(scan_button_, TRUE);
+    SetText(scan_button_, Utf16("扫描"));
+
+    // 清空现有下拉项
+    SendMessageW(ssid_combo_, CB_RESETCONTENT, 0, 0);
+
+    // 填充扫描结果
+    for (const auto& ap : aps) {
+        std::wstring item = Utf16(ap.ssid);
+        item += L"  (" + std::to_wstring(ap.rssi) + L" dBm)";
+        SendMessageW(ssid_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
+    }
+
+    if (aps.empty()) {
+        SetText(ssid_combo_, Utf16("未找到可用 2.4GHz WiFi"));
+    }
 }
 
 void WifiSettingsDialog::OnStartOta() {
@@ -256,7 +317,7 @@ void WifiSettingsDialog::OnStartOta() {
         return;
     }
     WifiDeviceProfile profile = options_.profile;
-    profile.ssid = Utf8(GetText(ssid_edit_));
+    profile.ssid = Utf8(StripRssiSuffix(GetText(ssid_combo_)));
     profile.ota_url = url;
     profile.ota_sha256_hex = sha;
     if (callbacks_.save_profile) callbacks_.save_profile(profile);
@@ -271,6 +332,17 @@ void WifiSettingsDialog::ToggleShowPassword() {
     const bool show = SendMessageW(show_password_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     SendMessageW(password_edit_, EM_SETPASSWORDCHAR, show ? 0 : L'●', 0);
     InvalidateRect(password_edit_, nullptr, TRUE);
+}
+
+// 剥离扫描结果下拉项中追加的 "  (-XX dBm)" RSSI 后缀。
+// 手动输入的纯 SSID 不含此后缀，原样返回。
+std::wstring StripRssiSuffix(const std::wstring& text) {
+    // 匹配 "  (-" 之后跟数字 + " dBm)" 的尾部模式
+    auto pos = text.rfind(L"  (-");
+    if (pos == std::wstring::npos) return text;
+    // 简单校验：以 " dBm)" 结尾
+    if (text.size() < pos + 8 || text.substr(text.size() - 5) != L" dBm)") return text;
+    return text.substr(0, pos);
 }
 
 std::wstring WifiSettingsDialog::GetText(HWND control) const {

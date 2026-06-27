@@ -474,6 +474,19 @@ void Win32App::SetDeviceWifiStatus(const std::string& device_id,
     });
 }
 
+void Win32App::SetDeviceWifiScanResult(const std::string& device_id,
+                                        const WifiScanResult& result) {
+    DispatchToUi([this, device_id, result] {
+        LogLine("SetDeviceWifiScanResult VS-" + device_id +
+                " aps=" + std::to_string(result.aps.size()));
+        device_wifi_scan_results_[device_id] = result;
+        auto it = wifi_settings_dialogs_.find(device_id);
+        if (it != wifi_settings_dialogs_.end() && it->second) {
+            it->second->PopulateWifiScanResults(result.aps);
+        }
+    });
+}
+
 void Win32App::SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) {
     DispatchToUi([this, info_by_device_id] {
         firmware_info_map_ = info_by_device_id;
@@ -1730,6 +1743,9 @@ void Win32App::ShowWifiSettings(const std::string& device_id) {
         config_.device_wifi_profiles.erase(device_id);
         config_.Save();
         if (coordinator_) coordinator_->ClearDeviceWifi(device_id);
+    };
+    callbacks.scan_wifi = [this, device_id] {
+        if (coordinator_) coordinator_->ScanDeviceWifi(device_id);
     };
     callbacks.refresh_status = [this, device_id] {
         if (coordinator_) coordinator_->RequestDeviceWifiStatus(device_id);

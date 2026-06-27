@@ -35,6 +35,18 @@ struct WifiStatusSnapshot {
     bool park_locked = true;                           // 录音空闲且未 OTA 时为 true
 };
 
+// 固件 wifi_scan_result 中单个 AP 信息
+struct WifiApInfo {
+    std::string ssid;
+    int rssi = 0;
+    int auth = 0;  // 0=OPEN, 1=WEP, 2=WPA_PSK, 3=WPA2_PSK, 4=WPA_WPA2_PSK, ...
+};
+
+// 固件 wifi_scan_result 事件载荷
+struct WifiScanResult {
+    std::vector<WifiApInfo> aps;
+};
+
 struct StateEvent {
     std::string event;
     std::string button;
@@ -46,6 +58,7 @@ struct StateEvent {
     std::optional<bool> battery_charging;
     std::optional<bool> battery_usb_powered;
     std::optional<WifiStatusSnapshot> wifi;            // 仅 event=="wifi_status" 时有值
+    std::optional<WifiScanResult> wifi_scan;           // 仅 event=="wifi_scan_result" 时有值
 };
 
 struct FirmwareOtaStateEvent {
@@ -93,6 +106,7 @@ public:
     static ByteVector WifiSetPayload(std::string_view ssid, std::string_view password);
     static ByteVector WifiClearPayload();
     static ByteVector WifiStatusRequestPayload();
+    static ByteVector WifiScanPayload();
     static ByteVector OtaPullPayload(std::string_view url, std::string_view sha256_hex);
     static ByteVector OtaCommitPayload();
     static std::optional<std::string> DeviceIdFromName(std::string_view name);

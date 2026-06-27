@@ -70,6 +70,10 @@ void voice_net_set_status_changed_callback(voice_net_status_changed_fn cb);
 // 读取当前 Wi-Fi STA 快照。ssid/ip 缓冲区由调用方提供；state 为内部静态字符串，无需释放。
 void voice_net_get_status(char *ssid, size_t ssid_size, char *ip, size_t ip_size, const char **state);
 
+// 桌面端 control_rx 收到 wifi_scan 时调用：启动周围 2.4GHz AP 扫描，
+// 结果通过 state_tx 以 wifi_scan_result 事件异步回报。
+void voice_net_start_scan(void);
+
 #ifdef __cplusplus
 }
 #endif

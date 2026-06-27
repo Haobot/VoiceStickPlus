@@ -286,6 +286,10 @@ void VoiceStickCoordinator::ClearDeviceWifi(const std::string& device_id) {
     ble_->SendWifiClear(device_id);
 }
 
+void VoiceStickCoordinator::ScanDeviceWifi(const std::string& device_id) {
+    ble_->SendWifiScan(device_id);
+}
+
 void VoiceStickCoordinator::RequestDeviceWifiStatus(const std::string& device_id) {
     ble_->SendWifiStatusRequest(device_id);
 }
@@ -364,6 +368,10 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
     } else if (event.event == "wifi_status") {
         if (event.wifi.has_value()) {
             ui_->SetDeviceWifiStatus(device_id, *event.wifi);
+        }
+    } else if (event.event == "wifi_scan_result") {
+        if (event.wifi_scan.has_value()) {
+            ui_->SetDeviceWifiScanResult(device_id, *event.wifi_scan);
         }
     } else if (event.event == "button_down") {
         HandleButtonDown(event, device_id);

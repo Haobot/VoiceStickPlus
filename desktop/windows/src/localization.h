@@ -42,6 +42,8 @@ enum class StringId {
     kSettingsDeviceWifiSsid,
     kSettingsDeviceWifiIp,
     kSettingsDeviceWifiIdle,
+    kWifiScan,
+    kWifiScanning,
     kSettingsDebugDir,
     kSettingsChooseDir,
     kSettingsOpenConfigFolder,

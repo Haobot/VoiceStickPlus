@@ -44,6 +44,8 @@ public:
                            bool charging, bool usb_powered) override;
     void SetDeviceWifiStatus(const std::string& device_id,
                               const WifiStatusSnapshot& snapshot) override;
+    void SetDeviceWifiScanResult(const std::string& device_id,
+                                  const WifiScanResult& result) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
     void SetPairingError(const std::string& device_id, const std::string& message) override;
     void ShowFirmwareUpdatePrompt(const std::string& device_id,
@@ -148,6 +150,7 @@ private:
     std::map<std::string, DeviceInfo> device_info_map_;
     std::map<std::string, DeviceBattery> device_battery_map_;
     std::map<std::string, WifiStatusSnapshot> device_wifi_status_map_;
+    std::map<std::string, WifiScanResult> device_wifi_scan_results_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::map<std::string, PendingOtaCommand> pending_ota_commands_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;

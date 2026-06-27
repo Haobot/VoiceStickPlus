@@ -161,6 +161,53 @@ std::string JsonEscape(std::string_view text) {
     return out;
 }
 
+// 解析 JSON 顶层 key 对应的数组，返回每个数组元素的子串（{...} 对象或原始值）。
+// 用于 wifi_scan_result 的 "aps":[{...},{...}] 等字段。
+std::vector<std::string_view> JsonArrayItems(std::string_view json, std::string_view key) {
+    std::vector<std::string_view> items;
+    const std::string needle = "\"" + std::string(key) + "\"";
+    auto key_pos = json.find(needle);
+    if (key_pos == std::string_view::npos) return items;
+    auto colon = json.find(':', key_pos + needle.size());
+    if (colon == std::string_view::npos) return items;
+    auto begin = colon + 1;
+    while (begin < json.size() && std::isspace(static_cast<unsigned char>(json[begin]))) ++begin;
+    if (begin >= json.size() || json[begin] != '[') return items;
+
+    // 遍历数组，切分每个顶层元素
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    auto elem_start = begin + 1;
+    for (auto i = begin + 1; i < json.size(); ++i) {
+        char ch = json[i];
+        if (in_string) {
+            if (escaped) { escaped = false; continue; }
+            if (ch == '\\') { escaped = true; continue; }
+            if (ch == '"') { in_string = false; }
+            continue;
+        }
+        if (ch == '"') { in_string = true; continue; }
+        if (ch == '{' || ch == '[') { ++depth; continue; }
+        if (ch == '}' || ch == ']') {
+            if (ch == ']' && depth == 0) {
+                // 数组结束，处理最后一个元素（如果有）
+                if (elem_start < i) {
+                    items.push_back(json.substr(elem_start, i - elem_start));
+                }
+                return items;
+            }
+            --depth;
+            continue;
+        }
+        if (ch == ',' && depth == 0) {
+            items.push_back(json.substr(elem_start, i - elem_start));
+            elem_start = i + 1;
+        }
+    }
+    return items;
+}
+
 } // namespace
 
 std::optional<AudioFrame> BleProtocol::ParseAudioFrame(std::span<const std::uint8_t> data) {
@@ -226,6 +273,19 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
         auto parked = JsonBoolValue(outer, "park");
         if (parked.has_value()) wifi.park_locked = *parked;
         event.wifi = std::move(wifi);
+    }
+
+    if (event.event == "wifi_scan_result") {
+        WifiScanResult scan;
+        const auto aps = JsonArrayItems(json, "aps");
+        for (const auto& ap : aps) {
+            WifiApInfo info;
+            info.ssid = JsonStringValue(ap, "ssid");
+            info.rssi = JsonIntValue(ap, "rssi").value_or(0);
+            info.auth = JsonIntValue(ap, "auth").value_or(0);
+            if (!info.ssid.empty()) scan.aps.push_back(std::move(info));
+        }
+        event.wifi_scan = std::move(scan);
     }
 
     return event;
@@ -344,6 +404,11 @@ ByteVector BleProtocol::WifiClearPayload() {
 
 ByteVector BleProtocol::WifiStatusRequestPayload() {
     const std::string json = "{\"event\":\"wifi_status_request\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::WifiScanPayload() {
+    const std::string json = "{\"event\":\"wifi_scan\"}";
     return ByteVector(json.begin(), json.end());
 }
 

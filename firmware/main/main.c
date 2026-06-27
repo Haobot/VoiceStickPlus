@@ -720,6 +720,9 @@ static void ble_control_cb(const char *json)
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_status_request") == 0) {
         ESP_LOGD(TAG, "wifi_status_request");
         voice_net_publish_status();
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_scan") == 0) {
+        ESP_LOGI(TAG, "wifi_scan");
+        voice_net_start_scan();
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "ota_pull") == 0) {
         // HTTPS pull OTA：Doc/Ref/protocol.md "Wi-Fi Provisioning" §ota_pull。
         // Park gate 由 voice_net 内部通过注入的回调查询，未锁会被拒绝。
