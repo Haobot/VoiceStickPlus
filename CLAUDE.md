@@ -19,6 +19,47 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 - `website/`：Vue 3 + Vite 站点，包含 Web Serial 固件烧录工具、`vue-i18n` 中英文落地页和 appcast 发布页面。
 - `Doc/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等参考文档（`Doc/Ref/`），以及实施方案 RFC（`Doc/Plan/`）。仓库实际目录为大写 `Doc/`，不是 `docs/`。
 
+仓库关键文件树：
+
+```text
+firmware/
+  main/main.c                      主循环：按键、BLE、录音、UI、电源、OTA
+  components/
+    stick_s3_board/                板级初始化：引脚、LCD、PMIC、I2S/codec
+    audio_pipeline/                ES8311 → 16kHz PCM → Opus
+    voice_ble/                     GATT 服务、通知、控制写入、BLE OTA
+    voice_net/                     Wi-Fi STA 配网、mDNS、LAN HTTP(S) OTA pull
+    bmi270/                        BMI270 IMU 驱动
+    ui_status/                     ST7789/LVGL 渲染、亮度、休眠、Wi-Fi 信息
+  partitions_ota.csv               两个 3MB OTA slot + ~1984KB storage
+  version.txt                      固件版本（发布前须与 VERSION 一致）
+desktop/macos/
+  Package.swift                    Swift 5.9，Sparkle + TOMLKit + CZlib
+  Sources/VoiceStickApp/           Swift 源码
+  Config/config.example.toml       配置示例
+desktop/windows/
+  CMakeLists.txt                   拆为 voicestick_core + VoiceStickApp + VoiceStickCtl
+  src/voice_stick_coordinator.cc   交互状态机（核心）
+  src/ble_central_win.cc           BLE 平台层
+  src/asr_client_win.cc            ASR WebSocket 客户端
+  src/input_injector_win.cc        SendInput / 剪贴板注入
+  src/llm_chat_client.cc           LLM 精修
+  src/llm_translation_client.cc    LLM 翻译
+  src/ogg_opus_muxer.cc            Opus → Ogg Opus 封装
+  src/ota_command.cc               OTA 命令编解码
+  tests/core_tests.cc              核心库单元测试
+website/
+  src/App.vue                      主页面与 Web Serial 烧录
+  src/i18n/zh-CN.json              中文文案
+  src/i18n/en-US.json              英文文案
+  public/appcast.xml               Sparkle/WinSparkle 更新源
+scripts/                           构建与资源脚本
+Doc/Ref/protocol.md                BLE 协议帧格式
+Doc/Plan/                          实施方案 RFC
+VERSION                            单一版本来源（纯文本）
+ArduFlux.json                      ArduFlux IDE 配置（非版本控制重点）
+```
+
 ## 常用命令
 
 ### 固件（ESP-IDF v5.5.1，目标 `esp32s3`）
@@ -107,7 +148,7 @@ desktop\windows\build-x64\VoiceStick.exe
 scripts\build-msi.bat
 ```
 
-`build_native.bat`、`do_build.bat`、`run_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
+`build_native.bat` 会一并构建、测试并生成 MSI，但内部硬编码了旧版本号与本地路径，**复用前必须先检查内容**；`do_build.bat`、`run_build.bat`、`desktop\windows\build.bat` 同样包含本机绝对路径或固定版本号，不可盲用。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
 
 ### 网站（Vue 3 + Vite）
 
@@ -214,21 +255,51 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 常用配置项：
 
 - `asr_provider`：`volcengine` 或 `voicestick_cloud`。
+- `volcengine_api_key` / `voicestick_api_key` / `voicestick_cloud_url`：ASR 服务的 API key 与 WebSocket URL。
+- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI-compatible LLM 接口，用于翻译和精修。
+- `resource_id`：火山引擎 resource ID，支持 `volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
+- `asr_hotwords`：逗号分隔的 ASR 热词，同时作为术语提示传给 LLM。
 - `auto_enter`：粘贴后是否自动按 Return。
-- `debug_audio_cache`：是否保存调试 Ogg Opus 音频。
+- `debug_audio_cache`：是否保存调试 Ogg Opus 音频（Windows 默认路径 `%LOCALAPPDATA%\VoiceStick\DebugAudio`）。
+- `prompt_tone_enabled`：是否在录音启停时播放提示音，默认 `true`。
 - `interaction_mode`：`hold_to_talk` 或 `click_to_talk`。
 - `[output].target`：`focused_app` 或 `subtitle`。
 - `[output].transform`：`original` 或 `translate`。
+- `[output].translation_target`：目标语言代码，如 `en` 或 `zh-Hans`。
 - `[device.<id>.output]`：按设备覆盖输出/翻译设置。
 - `refine_enabled`：是否对 ASR 原文做 LLM 精修（去停顿空格、修标点、去口头语），默认 `true`；翻译路径的精修已融入翻译 prompt，不受此开关额外调用影响。`refine_prompt` 可覆盖内置精修 prompt（为空用默认）。
+- `paired_device_ids`：逗号分隔的 4 位十六进制设备 ID，如 `C3D8,09AF`。用于限制仅连接指定设备。
+- `show_imu_debug`：是否在设备屏幕上显示 IMU 加速度调试数值，默认 `false`。
+- `show_device_wifi_info`：是否在设备屏幕上显示已连接 Wi-Fi 的 SSID 与 IP，默认 `false`。
+- `device_theme_colors` / `device_overlay_positions`：按设备覆盖悬浮窗颜色和位置。
+- `[device.<id>.wifi_info]`：按设备持久化保存已连接 Wi-Fi 的 SSID 与 IP（由桌面端写入）。
+- `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `off` / `low` / `medium` / `high`。
+
+## 安全与敏感信息
+
+- **绝对不要提交 API key**。`config.toml` 中的 `volcengine_api_key`、`voicestick_api_key`、`llm_api_key` 均被 `.gitignore` 排除。
+- Wi-Fi 凭据经 BLE 下发后持久化到固件 NVS；所有写日志路径必须把 `password` 字段脱敏为 `<redacted>`。
+- 固件 OTA 更新时，桌面端会校验 `ota_size` 和 `ota_sha256` 后再写入设备。
+- 发布产物（macOS DMG/ZIP、Windows MSI、固件 bin）均需签名或校验。
+
+## 测试策略
+
+- **Windows**：`desktop/windows/tests/core_tests.cc` 使用自定义 Fake/Mock 对 `voicestick_core` 中的状态机、配置解析、协议编解码、Ogg Opus mux 等进行单元测试。测试目标名为 `voicestick_windows_tests`（CMake CTest 目标）。新增核心行为时在 `core_tests.cc` 的 `main()` 中添加 `Test...()` 函数注册。
+- **macOS**：目前没有专用测试目标。验证方式为 `swift build` 编译通过和运行时手动测试。
+- **固件**：没有自动化单元测试。验证方式为 `idf.py build` 编译通过和真机运行时测试。
+- **网站**：没有自动化测试。验证方式为 `npm run build` 构建通过。
+
+## 版本管理
+
+版本单一来源是仓库根目录的 `VERSION` 文件（纯文本，不含换行）。发布前必须同步更新 `firmware/version.txt`，确保与 `VERSION` 内容一致——固件通过该文件向桌面端报告自身版本，版本不一致会导致 OTA 检测异常。
 
 ## 辅助脚本
 
-`scripts/` 存放跨组件的构建与资源处理脚本，改动相关产物时按需调用：
+`scripts/` 存放跨组件的构建与资源处理脚本，改动相关产物时按需调用；`scripts/ref/` 存放脚本的参考配置：
 
 - `build-macos.sh` / `make-dmg.sh`：macOS 发布构建与 DMG 打包。
 - `build-msi.bat`：Windows 签名 MSI 打包（WinSparkle 更新源）。
-- `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。
+- `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。配置文件为 `scripts/idf_cli.yaml`。
 - `update-appcast.py`：根据 GitHub Release 更新 `website/public/appcast.xml`。
 - `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源，改 `ui_status` 图像资源后用。
 - `slice_cat_sprites.py` / `tune_cat_sprites.py`：切片与调校状态界面精灵图。
@@ -256,4 +327,4 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 - `byted-web-search`：火山引擎豆包搜索，联网事实核查与信息检索场景优先使用。
 - `sticks3-flash-ota`：M5Stack StickS3 固件烧录与 OTA 升级的标准流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
 
-新增或修改 Skill 后，当前 Kimi Code 会话需要重启才能刷新可用技能列表。
+新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
