@@ -592,6 +592,15 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         ESP_LOGD(TAG, "mtu=%u", event->mtu.value);
         return 0;
 
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        // auth_mode: 0=open,1=unauth,2=auth(Just Works),3=auth+SC
+        // status=0 表示加密建立成功（配对/bond 完成或已有 bond 被复用）。
+        // 将此信息写入日志有助于诊断 bond 相关的重连问题。
+        ESP_LOGI(TAG, "encryption changed conn=%u status=%d",
+                 event->enc_change.conn_handle,
+                 event->enc_change.status);
+        return 0;
+
     default:
         return 0;
     }
