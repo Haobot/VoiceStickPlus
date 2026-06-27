@@ -27,6 +27,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 ```text
 firmware/                       ESP-IDF C 固件（ESP32-S3）
   main/main.c                   主循环：按键、BLE、录音会话、UI 状态、电源管理、OTA
+  main/CMakeLists.txt           主组件注册与依赖声明
   main/idf_component.yml        主组件依赖声明（当前仅依赖 espressif/button）
   components/
     stick_s3_board/             板级初始化：引脚、LCD、PMIC、I2S/codec
@@ -56,6 +57,7 @@ desktop/windows/                C++20 / Win32 / C++/WinRT 托盘应用（Windows
   third_party/                  cjson、tomlplusplus
   resources/                    图标、对话框资源、VoiceStick.rc
   build-x64/                    推荐构建目录（由 build_win.bat 创建）
+  build-msi-x64/                签名 MSI 构建目录（由 scripts/build-msi.bat 创建）
 
 desktop/linux/                  Linux 桌面端占位目录
 
@@ -63,7 +65,7 @@ website/                        Vue 3 + Vite 站点
   package.json                  Node 项目配置，当前 version 字段为 0.3.4
   vite.config.js                base: '/voicestick/'
   src/App.vue                   主页面与 Web Serial 烧录流程
-  src/i18n/                     中英文文案（zh-CN.json、en-US.json）
+  src/i18n/                     中英文文案（zh-CN.json、en-US.json、index.js）
   public/appcast.xml            Sparkle / WinSparkle 更新源
 
 scripts/                        构建脚本、精灵图处理、LVGL ARGB 转换、ASR 探测、appcast 更新
@@ -86,7 +88,13 @@ ArduFlux.json                   ArduFlux IDE 配置文件（非版本控制重�
 | 脚本 | Python 3, Bash, Batch | — | — |
 
 关键外部依赖：
-- **固件**：`espressif/button`、`espressif/esp_codec_dev`、`78/esp-opus`、`lvgl/lvgl`（由 ESP-IDF component manager 管理）。
+- **固件**：
+  - `espressif/button`（主组件与按键驱动）
+  - `espressif/esp_codec_dev`（audio_pipeline 组件）
+  - `78/esp-opus`（audio_pipeline 组件，Opus 编码）
+  - `lvgl/lvgl`（ui_status 组件，9.2.0）
+  - `espressif/mdns`（voice_net 组件）
+  由 ESP-IDF component manager 通过各 `idf_component.yml` 管理。
 - **macOS**：`sparkle-project/Sparkle` (2.6+)、`LebJe/TOMLKit` (0.6+)。
 - **Windows**：WinSparkle 0.9.2（FetchContent）、WiX Toolset v6、WinHTTP、bcrypt。
 
@@ -165,7 +173,7 @@ desktop\windows\build-x64\VoiceStick.exe
 scripts\build-msi.bat
 ```
 
-注意：`build_native.bat` 会一并构建、测试并生成 MSI，但内部硬编码了旧版本号与本地路径，复用前需检查内容；`do_build.bat` 是更早期的本地构建脚本；根目录 `test.bat` 只是占位脚本，不运行 CTest。
+注意：`build_native.bat` 会一并构建、测试并生成 MSI，但内部硬编码了旧版本号与本地路径，复用前需检查内容；`do_build.bat` 是更早期的本地构建脚本；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
 
 ### 网站（Vue 3 + Vite，Node 22）
 
@@ -220,7 +228,7 @@ npm run preview
 
 ### 网站实现
 
-`website/src/App.vue` 承载主要页面和 Web Serial 烧录流程；`website/src/i18n/zh-CN.json` 与 `website/src/i18n/en-US.json` 保存中英文文案。新增或修改 UI 文案时同步维护两个语言文件。
+`website/src/App.vue` 承载主要页面和 Web Serial 烧录流程；`website/src/i18n/zh-CN.json` 与 `website/src/i18n/en-US.json` 保存中英文文案，`index.js` 初始化 `vue-i18n`。新增或修改 UI 文案时同步维护两个语言文件。
 
 ### BLE 协议边界
 
