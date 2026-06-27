@@ -354,6 +354,8 @@ Windows 特殊流程：
 
 - `byted-web-search`：火山引擎豆包搜索，联网事实核查与信息检索场景优先使用。
 - `sticks3-flash-ota`：M5Stack StickS3 固件烧录与 OTA 升级的标准流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
+- `build-windows`：Windows 桌面端（VoiceStick.exe）构建与 CTest 流程；改完 `desktop/windows/` 下 C++ 源码后验证编译和测试。
+- `build-firmware`：固件 ESP-IDF 构建流程；改完 `firmware/` 下 C 源码或 sdkconfig 后验证编译。
 
 新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
 
