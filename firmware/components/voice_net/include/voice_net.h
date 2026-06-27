@@ -74,6 +74,15 @@ void voice_net_get_status(char *ssid, size_t ssid_size, char *ip, size_t ip_size
 // 结果通过 state_tx 以 wifi_scan_result 事件异步回报。
 void voice_net_start_scan(void);
 
+// 录音联动：main.c 在录音开始时调用。若 Wi-Fi 当前处于 idle（无 OTA 进行中），
+// 立即关掉 Wi-Fi 射频以省电并避免 2.4GHz 同频干扰 BLE 音频传输。
+// 录音结束后不自动恢复——下次需要时由操作命令（scan / ota_pull / wifi_set）重新触发。
+void voice_net_on_recording_started(void);
+
+// 录音联动：main.c 在录音结束时调用。当前为空操作（Wi-Fi 不会自动重开），
+// 但保留 hook 以备未来策略变化。
+void voice_net_on_recording_stopped(void);
+
 #ifdef __cplusplus
 }
 #endif

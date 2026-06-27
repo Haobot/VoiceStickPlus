@@ -505,6 +505,7 @@ static uint32_t start_recording(void)
     }
 
     s_recording = true;
+    voice_net_on_recording_started();  // 录音期间关 Wi-Fi 省电 + 避免 2.4GHz 干扰
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
     restart_poweroff_timer();
@@ -521,6 +522,7 @@ static uint32_t stop_recording(void)
     const uint32_t session_id = audio_pipeline_session_id();
     play_prompt_tone(440);
     s_recording = false;
+    voice_net_on_recording_stopped();  // 保留 hook（当前为空操作）
     audio_pipeline_stop();
     release_recording_pm_locks();
     restart_display_dim_timer();

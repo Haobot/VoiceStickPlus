@@ -29,6 +29,10 @@ typedef enum {
     VOICE_NET_OTA_STATE_FAILED,
 } voice_net_ota_state_t;
 
+// OTA 结束时由 voice_net_ota.c 调用，通知 voice_net.c 重启空闲倒计时，
+// 以便在 OTA 完成后按 LEASE_OTA_POST（30s）自动关闭 Wi-Fi 射频。
+void voice_net_notify_ota_ended(void);
+
 // 真正的 OTA 启动入口（voice_net.c 转发用，注入 Park gate 回调）。
 void voice_net_start_ota_pull_internal(const char *url, const char *sha256_hex,
                                        voice_net_park_query_fn park_cb);
