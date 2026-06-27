@@ -29,3 +29,7 @@ desktop/windows/
 dist/
 .superpowers/
 .worktrees/
+%SETUP_LOG%
+%BUILD_LOG%
+%CONFIGURE_LOG%
+%LOG_FILE%
