@@ -27,6 +27,7 @@ public:
     struct Callbacks {
         std::function<void(std::string ssid, std::wstring password)> apply_wifi;
         std::function<void()> clear_wifi;
+        std::function<void()> scan_wifi;
         std::function<void()> refresh_status;
         std::function<void(std::string url, std::string sha256)> start_ota;
         std::function<void()> commit_ota;
@@ -38,6 +39,7 @@ public:
 
     void Show();
     void UpdateStatus(const WifiStatusSnapshot& status);
+    void PopulateWifiScanResults(const std::vector<WifiApInfo>& aps);
     HWND hwnd() const { return hwnd_; }
 
 private:
@@ -52,6 +54,7 @@ private:
     void RefreshStatusText();
     void OnApplyWifi();
     void OnClearWifi();
+    void OnScanWifi();
     void OnStartOta();
     void OnCommitOta();
     void ToggleShowPassword();
@@ -71,7 +74,8 @@ private:
     std::vector<BYTE> dialog_template_;
 
     HWND device_label_ = nullptr;
-    HWND ssid_edit_ = nullptr;
+    HWND ssid_combo_ = nullptr;
+    HWND scan_button_ = nullptr;
     HWND password_edit_ = nullptr;
     HWND show_password_check_ = nullptr;
     HWND apply_button_ = nullptr;

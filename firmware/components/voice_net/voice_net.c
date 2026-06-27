@@ -19,6 +19,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_event.h"
@@ -47,6 +48,7 @@ typedef enum {
     VN_CMD_CONNECT_TIMEOUT,
     VN_CMD_START_DISCOVERY,    // 拿到 IP 后启动 mDNS + SNTP，跑在 6KB worker 栈上
     VN_CMD_PUBLISH_STATUS,     // 状态变化异步发布，避免 sys_evt 栈溢出
+    VN_CMD_DO_SCAN,            // Wi-Fi 扫描，跑在 6KB worker 栈上
 } voice_net_cmd_t;
 
 #define VOICE_NET_TASK_STACK_SIZE 6144
@@ -398,6 +400,182 @@ static void do_apply_pending_credentials(void)
     start_connect_attempt();
 }
 
+// Wi-Fi 扫描：投递到 voice_net_task 后在此执行，确保栈够。
+// 扫描结果由 WIFI_EVENT_SCAN_DONE 事件异步回报。
+static void do_wifi_scan(void)
+{
+    if (ensure_wifi_started() != ESP_OK) {
+        ESP_LOGE(TAG, "scan: wifi not started");
+        // 推送空结果告知桌面端扫描失败，避免 UI 卡死
+        if (s_publish) {
+            s_publish("{\"event\":\"wifi_scan_result\",\"aps\":[]}");
+        }
+        return;
+    }
+
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,        // 全频道扫描
+        .show_hidden = true,  // 也显示隐藏 SSID 的 AP
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 100,   // 每频道最少 100ms
+                .max = 300,   // 每频道最多 300ms
+            }
+        },
+    };
+
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);  // true = 阻塞直到扫描完成
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "scan start failed: %s", esp_err_to_name(err));
+        // 推送空 scan result 告知桌面端扫描失败
+        if (s_publish) {
+            s_publish("{\"event\":\"wifi_scan_result\",\"aps\":[]}");
+        }
+        return;
+    }
+
+    // 扫描完成，读取结果
+    uint16_t ap_count = 0;
+    err = esp_wifi_scan_get_ap_num(&ap_count);
+    if (err != ESP_OK || ap_count == 0) {
+        ESP_LOGI(TAG, "scan: no APs found");
+        if (s_publish) {
+            s_publish("{\"event\":\"wifi_scan_result\",\"aps\":[]}");
+        }
+        return;
+    }
+
+    // 限制读取数量，wifi_ap_record_t 每个约 196 字节
+    uint16_t max_read = ap_count > 30 ? 30 : ap_count;
+    wifi_ap_record_t *ap_records = calloc(max_read, sizeof(wifi_ap_record_t));
+    if (!ap_records) {
+        ESP_LOGE(TAG, "scan: OOM for %u records", max_read);
+        if (s_publish) {
+            s_publish("{\"event\":\"wifi_scan_result\",\"aps\":[]}");
+        }
+        return;
+    }
+
+    err = esp_wifi_scan_get_ap_records(&max_read, ap_records);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "scan get records failed: %s", esp_err_to_name(err));
+        free(ap_records);
+        if (s_publish) {
+            s_publish("{\"event\":\"wifi_scan_result\",\"aps\":[]}");
+        }
+        return;
+    }
+
+    // 过滤：仅 2.4GHz、非空 SSID，按 RSSI 降序。
+    // 2.4GHz 信道范围 1-14。
+    // BLE 通知 MTU 通常 512 字节，扣除 ATT 头(3) + state 帧头(4) 后
+    // JSON 安全上限约 470 字节。每个 AP 条目约 40-70 字节，
+    // MAX_SCAN_RESULTS=8 保证典型 SSID 不超限，但仍以 JSON 字节数
+    // 为最终截断依据（见下方 MAX_SCAN_JSON_BYTES）。
+    #define MAX_SCAN_RESULTS 8
+    #define MAX_SCAN_JSON_BYTES 470
+
+    // 先筛选有效 AP
+    wifi_ap_record_t filtered[MAX_SCAN_RESULTS];
+    int filtered_count = 0;
+
+    for (uint16_t i = 0; i < max_read && filtered_count < MAX_SCAN_RESULTS; i++) {
+        wifi_ap_record_t *ap = &ap_records[i];
+        // 跳过非 2.4GHz（primary channel 不在 1-14 范围）和空 SSID
+        if (ap->primary < 1 || ap->primary > 14) continue;
+        if (ap->ssid[0] == '\0') continue;
+        filtered[filtered_count++] = *ap;
+    }
+
+    // 按 RSSI 降序冒泡排序
+    for (int i = 0; i < filtered_count - 1; i++) {
+        for (int j = i + 1; j < filtered_count; j++) {
+            if (filtered[j].rssi > filtered[i].rssi) {
+                wifi_ap_record_t tmp = filtered[i];
+                filtered[i] = filtered[j];
+                filtered[j] = tmp;
+            }
+        }
+    }
+
+    // 构建 scan_result JSON。auth 映射到 ESP Wi-Fi 标准枚举值：
+    // 0=OPEN, 1=WEP, 2=WPA_PSK, 3=WPA2_PSK, 4=WPA_WPA2_PSK,
+    // 5=WPA2_ENTERPRISE, 6=WPA3_PSK, 7=WPA2_WPA3_PSK
+    // JSON 受 BLE MTU 约束：超过 MAX_SCAN_JSON_BYTES 的 AP 被截断。
+    // 不使用 snprintf(NULL,0,…) 预估——ESP32 newlib 对此行为不一。
+    // 改为：用固定上限预检，snprintf 时通过 remain 控制写入量，
+    // 返回 >remain 表示被截断，立即停止。
+    char buf[768];
+    int off = snprintf(buf, sizeof(buf), "{\"event\":\"wifi_scan_result\",\"aps\":[");
+    int published_count = 0;
+    for (int i = 0; i < filtered_count; i++) {
+        char ssid_esc[2 * 33] = {0};
+        json_escape_into(ssid_esc, sizeof(ssid_esc), (const char *)filtered[i].ssid);
+
+        // 预留 4 字节给结尾 "]}"、"\0" 和 ',' 前导（最坏 1 字节额外）
+        int remain = MAX_SCAN_JSON_BYTES - off - 3;
+        if (remain <= 0) {
+            ESP_LOGI(TAG, "scan: capped at %d APs (json limit %d bytes)",
+                     i, MAX_SCAN_JSON_BYTES);
+            break;
+        }
+        // 写入时留 1 字节给 '\0'；snprintf 返回 >= remain+1 表示被截断。
+        int written = snprintf(buf + off, remain + 1,
+                               "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                               i > 0 ? "," : "",
+                               ssid_esc,
+                               filtered[i].rssi,
+                               (int)filtered[i].authmode);
+        if (written < 0 || written > remain) {
+            ESP_LOGI(TAG, "scan: capped at %d APs (chunk too large)", i);
+            break;
+        }
+        off += written;
+        published_count = i + 1;
+    }
+    // 安全关闭 JSON（buf 有 768 字节，结尾足够）
+    snprintf(buf + off, sizeof(buf) - off, "]}");
+
+    int final_json_len = (int)strlen(buf);
+    ESP_LOGI(TAG, "scan done: %d scanned, %d published, json_len=%d",
+             filtered_count, published_count, final_json_len);
+
+    if (s_publish) {
+        esp_err_t pub_err = s_publish(buf);
+        if (pub_err != ESP_OK) {
+            ESP_LOGE(TAG, "scan publish failed: %s (json_len=%d)",
+                     esp_err_to_name(pub_err), final_json_len);
+            // 如果因 JSON 太大失败，尝试只发信号最强的 AP
+            if (published_count > 1) {
+                ESP_LOGW(TAG, "scan retry with single AP");
+                int retry_off = snprintf(buf, sizeof(buf),
+                                         "{\"event\":\"wifi_scan_result\",\"aps\":[");
+                char retry_esc[2 * 33] = {0};
+                json_escape_into(retry_esc, sizeof(retry_esc),
+                                 (const char *)filtered[0].ssid);
+                retry_off += snprintf(buf + retry_off, sizeof(buf) - retry_off,
+                                      "{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                                      retry_esc, filtered[0].rssi,
+                                      (int)filtered[0].authmode);
+                snprintf(buf + retry_off, sizeof(buf) - retry_off, "]}");
+                ESP_LOGI(TAG, "scan retry json_len=%d", (int)strlen(buf));
+                pub_err = s_publish(buf);
+                if (pub_err != ESP_OK) {
+                    ESP_LOGE(TAG, "scan retry publish also failed: %s",
+                             esp_err_to_name(pub_err));
+                }
+            }
+        }
+    }
+
+    free(ap_records);
+    #undef MAX_SCAN_RESULTS
+    #undef MAX_SCAN_JSON_BYTES
+}
+
 // 专用 worker task：从队列消费 cmd，独立 6KB 栈安全调用 esp_wifi / mdns / sntp API。
 static void voice_net_task(void *arg)
 {
@@ -419,6 +597,9 @@ static void voice_net_task(void *arg)
             break;
         case VN_CMD_PUBLISH_STATUS:
             do_publish_locked_snapshot();
+            break;
+        case VN_CMD_DO_SCAN:
+            do_wifi_scan();
             break;
         default:
             ESP_LOGW(TAG, "unknown cmd %d", cmd);
@@ -707,6 +888,22 @@ void voice_net_get_status(char *ssid, size_t ssid_size, char *ip, size_t ip_size
         *state = state_to_string(s_status.state);
     }
     xSemaphoreGive(s_status_mutex);
+}
+
+void voice_net_start_scan(void)
+{
+    if (!atomic_load(&s_inited)) {
+        ESP_LOGW(TAG, "scan: voice_net not inited");
+        return;
+    }
+    if (!s_cmd_queue) {
+        ESP_LOGW(TAG, "scan: cmd queue not ready");
+        return;
+    }
+    voice_net_cmd_t cmd = VN_CMD_DO_SCAN;
+    if (xQueueSend(s_cmd_queue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "scan: cmd queue full, dropping scan request");
+    }
 }
 
 void voice_net_start_ota_pull(const char *url, const char *sha256_hex)

@@ -157,6 +157,7 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
 | `wifi_set` | `ssid` (≤32 ASCII)、`password` (≤63，可空) | 写 NVS，延迟 800 ms 后 `esp_wifi_connect`；先让 BLE 回包 |
 | `wifi_clear` | — | 擦除 NVS 凭据，断开 STA |
 | `wifi_status_request` | — | 立刻补推一帧 `wifi_status` |
+| `wifi_scan` | — | 启动周围 2.4GHz Wi-Fi 扫描，结果通过 `wifi_scan_result` 异步回报 |
 | `ota_pull` | `url` (HTTPS 或局域网 HTTP, ≤256)、`sha256_hex` (HTTP 必填，HTTPS 可选) | 启动固件主动 OTA pull；HTTP 仅允许私有 IPv4 |
 | `ota_commit` | — | 调 `esp_ota_mark_app_valid_cancel_rollback`，确认新固件健康 |
 
@@ -167,6 +168,7 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
 {"event":"wifi_set","ssid":"OpenAP","password":""}
 {"event":"wifi_clear"}
 {"event":"wifi_status_request"}
+{"event":"wifi_scan"}
 {"event":"ota_pull","url":"https://oss.example.com/voicestick/0.4.0.bin","sha256_hex":"deadbeef..."}
 {"event":"ota_pull","url":"https://oss.example.com/voicestick/0.4.0.bin"}
 {"event":"ota_pull","url":"http://192.168.3.96:8000/voice_stick.bin","sha256_hex":"64位hex"}
@@ -210,6 +212,35 @@ OTA、mDNS 发现、SNTP 时间同步。BLE 仍是主交互链路，二者并行
 > UI 不更新。URL 由发起 `ota_pull` 的桌面端自行保存，设备侧只回报状态、进度和错误码。
 
 推送时机：状态切换 / OTA 进度每 5% / BLE 重连接后主动一次 / 收到 `wifi_status_request` 时。
+
+### 固件 → 桌面端（state_tx，event=`wifi_scan_result`）
+
+固件收到 `wifi_scan` 后，扫描周围 2.4GHz Wi-Fi AP，按 RSSI 降序返回最多 15 个非空 SSID：
+
+```json
+{
+  "event": "wifi_scan_result",
+  "aps": [
+    {"ssid": "MyWiFi", "rssi": -45, "auth": 3},
+    {"ssid": "NeighborWiFi", "rssi": -70, "auth": 0}
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `aps` | array | AP 列表，按 RSSI 降序，最多 15 个 |
+| `aps[].ssid` | string | AP 名称（空 SSID 的 AP 被过滤） |
+| `aps[].rssi` | int | 信号强度 (dBm)，负值 |
+| `aps[].auth` | int | 认证模式：0=OPEN, 1=WEP, 2=WPA_PSK, 3=WPA2_PSK, 4=WPA_WPA2_PSK, 5=WPA2_ENTERPRISE, 6=WPA3_PSK, 7=WPA2_WPA3_PSK |
+
+过滤规则：
+- 仅返回 2.4 GHz 频段（channel 1-14）的 AP
+- 跳过空 SSID（隐藏网络）
+- RSSI 降序排列，最多 15 个
+- 扫描失败或无结果时返回 `{"event":"wifi_scan_result","aps":[]}`
+
+扫描通过 `esp_wifi_scan_start` 实现，跑在专用 `voice_net_task` 上（6 KB 栈），约 2-5 秒完成。
 
 ### 错误码 `last_error` 枚举
 

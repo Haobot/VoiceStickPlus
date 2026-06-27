@@ -55,6 +55,7 @@ public:
                      const std::string& password) override;
     void SendWifiClear(const std::string& device_id) override;
     void SendWifiStatusRequest(const std::string& device_id) override;
+    void SendWifiScan(const std::string& device_id) override;
     void SendOtaPull(const std::string& device_id,
                      const std::string& url,
                      const std::string& sha256_hex) override;
