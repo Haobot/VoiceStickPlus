@@ -136,6 +136,9 @@ private:
     std::shared_ptr<FirmwareUpdateSession> firmware_update_session_;
     std::set<std::uint64_t> connecting_addresses_;
     std::set<std::string> cancelled_device_ids_;
+    // 连接失败后的退避期：key=蓝牙地址，value=可以重新尝试连接的最早时间点。
+    // 避免 tight-loop（失败→扫描→立即重试→再失败）。
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> connect_cooldown_until_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
     std::chrono::steady_clock::time_point scan_started_at_{};

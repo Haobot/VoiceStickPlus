@@ -774,6 +774,16 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
         if (!paired_device_ids_.contains(*device_id)) return;
         if (sessions_by_device_id_.contains(*device_id)) return;
         if (connecting_addresses_.contains(bluetooth_address)) return;
+        // 退避检查：上一次连接失败后 5 秒内跳过同一设备的广告
+        {
+            auto it = connect_cooldown_until_.find(bluetooth_address);
+            if (it != connect_cooldown_until_.end()) {
+                if (std::chrono::steady_clock::now() < it->second) {
+                    return; // 仍在退避期内
+                }
+                connect_cooldown_until_.erase(it);
+            }
+        }
         connecting_addresses_.insert(bluetooth_address);
     }
 
@@ -876,10 +886,22 @@ bool IsLikelyStaleBondError(std::int32_t hresult) {
     // A timeout also frequently indicates a stale bond: GetGattServicesAsync
     // hangs indefinitely when Windows holds a long-term key the peripheral
     // no longer recognises.
-    return hresult == kErrorBadCommand ||
-           hresult == kErrorTimeout ||
-           hresult == static_cast<std::int32_t>(0x800710DF) || // ERROR_DEVICE_NOT_AVAILABLE
-           hresult == static_cast<std::int32_t>(0x8007048F);   // ERROR_DEVICE_NOT_CONNECTED
+    //
+    // Additions beyond the original four were selected from real-world
+    // WinRT BLE traces: E_ACCESS_DENIED when the controller-level encryption
+    // handshake fails; E_ELEMENT_NOT_FOUND when the OS GATT cache references
+    // a stale attribute database; ERROR_GEN_FAILURE when the BLE radio
+    // returns a generic hardware failure after repeated encryption errors;
+    // ERROR_OUTOFMEMORY when the OS BLE stack is in a degraded state
+    // following bond-related retries.
+    return hresult == kErrorBadCommand ||                                           // 0x80070016  ERROR_BAD_COMMAND
+           hresult == kErrorTimeout ||                                               // 0x800705B4  ERROR_TIMEOUT
+           hresult == static_cast<std::int32_t>(0x800710DF) ||                       // ERROR_DEVICE_NOT_AVAILABLE
+           hresult == static_cast<std::int32_t>(0x8007048F) ||                       // ERROR_DEVICE_NOT_CONNECTED
+           hresult == static_cast<std::int32_t>(0x80070005) ||                       // E_ACCESS_DENIED
+           hresult == static_cast<std::int32_t>(0x80070490) ||                       // E_ELEMENT_NOT_FOUND
+           hresult == static_cast<std::int32_t>(0x8007001F) ||                       // ERROR_GEN_FAILURE
+           hresult == static_cast<std::int32_t>(0x8007000E);                         // ERROR_OUTOFMEMORY
 }
 
 } // namespace
@@ -913,6 +935,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
     auto fail = [this, bluetooth_address, device_id, session, detach_device_handlers](const std::string& message) {
         {
             std::lock_guard lock(mutex_);
+            // 连接失败后设置 5 秒退避期，防止扫描→立即重试→再失败的 tight-loop。
+            // 5 秒足以让 Windows BLE 栈从异常状态中恢复，同时用户感知的延迟可接受。
+            connect_cooldown_until_[bluetooth_address] =
+                std::chrono::steady_clock::now() + std::chrono::seconds(5);
             connecting_addresses_.erase(bluetooth_address);
             cancelled_device_ids_.erase(device_id);
         }
@@ -1113,9 +1139,41 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 if (!unpair_attempted && IsLikelyStaleBondError(throw_hresult)) {
                     unpair_attempted = true;
                     LogBleLine("attempting to remove stale Windows pairing for VS-" + device_id);
-                    if (co_await TryUnpairAsync(session->ble_device.DeviceId())) {
-                        LogBleLine("stale Windows pairing removed for VS-" + device_id);
+                    co_await TryUnpairAsync(session->ble_device.DeviceId());
+
+                    // 仅 OS 级 unpair 不够——Windows BTHLE 驱动在
+                    // controller 级别独立缓存加密密钥。必须重置
+                    // Bluetooth radio 清空硬件 key cache，与下方的
+                    // Unreachable 恢复路径保持一致。
+                    LogBleLine("stale bond: tearing down device handles before radio reset");
+                    detach_device_handlers(session);
+                    if (session->gatt_session) {
+                        try { session->gatt_session.MaintainConnection(false); session->gatt_session.Close(); } catch (...) {}
+                        session->gatt_session = nullptr;
                     }
+                    try { session->ble_device.Close(); } catch (...) {}
+                    session->ble_device = nullptr;
+
+                    if (co_await TryResetBluetoothRadioAsync()) {
+                        LogBleLine("stale bond: radio reset succeeded, reopening device");
+                    } else {
+                        LogBleLine("stale bond: radio reset skipped/failed, reopening after delay");
+                        co_await WaitMs(kDeviceReopenDelay);
+                    }
+
+                    session->ble_device = co_await open_device(address_type);
+                    if (!session->ble_device) {
+                        fail("Windows could not reopen the BLE device after stale bond recovery.");
+                        co_return;
+                    }
+                    attach_device_handlers(session);
+                    try {
+                        session->gatt_session = co_await GattSession::FromDeviceIdAsync(
+                            session->ble_device.BluetoothDeviceId());
+                        if (session->gatt_session) session->gatt_session.MaintainConnection(true);
+                    } catch (...) {}
+                    co_await WaitMs(kConnectionSettleDelay);
+                    continue;
                 }
                 if (attempt < kServiceDiscoveryAttempts) {
                     // Tear the device object down completely and re-open it.
