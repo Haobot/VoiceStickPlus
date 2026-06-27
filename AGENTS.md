@@ -337,11 +337,11 @@ Windows 特殊流程：
 
 ## 辅助脚本
 
-`scripts/` 存放跨组件的构建与资源处理脚本：
+`scripts/` 存放跨组件的构建与资源处理脚本；`scripts/ref/` 存放脚本的参考配置：
 
 - `build-macos.sh` / `make-dmg.sh`：macOS 发布构建与 DMG 打包。
 - `build-msi.bat`：Windows 签名 MSI 打包（WinSparkle 更新源）。
-- `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。
+- `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。配置文件为 `scripts/idf_cli.yaml`。
 - `update-appcast.py`：根据 GitHub Release 更新 `website/public/appcast.xml`。
 - `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源。
 - `slice_cat_sprites.py` / `tune_cat_sprites.py`：切片与调校状态界面精灵图。
@@ -355,7 +355,7 @@ Windows 特殊流程：
 - `byted-web-search`：火山引擎豆包搜索，联网事实核查与信息检索场景优先使用。
 - `sticks3-flash-ota`：M5Stack StickS3 固件烧录与 OTA 升级的标准流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
 
-新增或修改 Skill 后，当前 Kimi Code 会话需要重启才能刷新可用技能列表。
+新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
 
 ## 安全与敏感信息
 
