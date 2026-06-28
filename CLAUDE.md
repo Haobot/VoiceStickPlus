@@ -10,6 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备负责采集按键与音频并通过 BLE 上报；桌面端负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录和 Sparkle/WinSparkle 更新源。
 
+当前版本：`1.6.8`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致。
+
 主要目录：
 
 - `firmware/`：ESP-IDF C 固件，目标板为 M5Stack StickS3 / ESP32-S3。
@@ -249,8 +251,12 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 运行时配置路径：
 
 - macOS：`~/Library/Application Support/VoiceStick/config.toml`
-- Windows：`%APPDATA%\VoiceStick\config.toml`
-- Windows 调试音频缓存：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
+- Windows（标准安装）：`%APPDATA%\VoiceStick\config.toml`
+- Windows（便携模式）：程序同目录下的 `config.toml`
+- Windows 调试音频缓存（标准安装）：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
+- Windows 调试音频缓存（便携模式）：程序同目录下的 `DebugAudio\`
+
+**便携模式**：程序启动时检测同目录是否存在 `config.toml`，若存在则自动激活便携模式。便携模式下所有数据（配置、日志、调试音频）存储在程序目录而非系统 `%APPDATA%`，且禁用开机自启和自动更新（WinSparkle）。删除同目录 `config.toml` 后恢复标准安装版行为。便携版通过 `scripts/package-portable.bat` 构建打包。
 
 常用配置项：
 
@@ -289,6 +295,13 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 - **固件**：没有自动化单元测试。验证方式为 `idf.py build` 编译通过和真机运行时测试。
 - **网站**：没有自动化测试。验证方式为 `npm run build` 构建通过。
 
+## 代码风格
+
+- **Swift（macOS）**：遵循标准 Swift/AppKit 命名。使用 `swift build` 验证编译。
+- **C++（Windows）**：遵循 Google C++ 命名风格：`snake_case` 文件名和变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
+- **C（固件）**：ESP-IDF 风格，组件通过 `idf_component_register` 注册，组件间通过 `REQUIRES` 声明依赖。
+- **仓库当前未提交统一 lint/formatter 配置**；不要臆造 `npm run lint`、Swift lint 或 C++ lint 命令。修改对应组件后运行该组件已有的构建/测试命令作为验证。
+
 ## 版本管理
 
 版本单一来源是仓库根目录的 `VERSION` 文件（纯文本，不含换行）。发布前必须同步更新 `firmware/version.txt`，确保与 `VERSION` 内容一致——固件通过该文件向桌面端报告自身版本，版本不一致会导致 OTA 检测异常。
@@ -299,6 +312,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 - `build-macos.sh` / `make-dmg.sh`：macOS 发布构建与 DMG 打包。
 - `build-msi.bat`：Windows 签名 MSI 打包（WinSparkle 更新源）。
+- `package-portable.bat`：构建 Windows 绿色便携版 ZIP 包，含预置 `config.toml` 模板和说明文件。
 - `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。配置文件为 `scripts/idf_cli.yaml`。
 - `update-appcast.py`：根据 GitHub Release 更新 `website/public/appcast.xml`。
 - `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源，改 `ui_status` 图像资源后用。
