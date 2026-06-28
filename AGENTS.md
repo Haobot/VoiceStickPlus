@@ -20,7 +20,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 桌面端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
 
-当前版本：`1.6.8`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致（当前均为 `1.6.8`）。
+当前版本：`1.6.8`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致。
 
 ## 仓库目录结构
 
@@ -268,7 +268,8 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 运行时配置路径：
 - macOS：`~/Library/Application Support/VoiceStick/config.toml`
-- Windows：`%APPDATA%\VoiceStick\config.toml`
+- Windows（标准安装）：`%APPDATA%\VoiceStick\config.toml`
+- Windows（便携模式）：程序同目录下的 `config.toml`
 
 常用配置项：
 - `asr_provider`：`volcengine` 或 `voicestick_cloud`。
@@ -288,7 +289,11 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `paired_device_ids`：逗号分隔的 4 位十六进制 ID，如 `C3D8,09AF`。
 - `resource_id`：火山引擎 resource ID，支持 `volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
 
-Windows 调试音频缓存目录：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
+Windows 调试音频缓存目录：
+- 标准安装：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
+- 便携模式：程序同目录下的 `DebugAudio\`
+
+**便携模式**：程序同目录存在 `config.toml` 时自动激活。数据存储于程序目录，禁用开机自启和自动更新。便携版构建用 `scripts/package-portable.bat`。
 
 ## 代码风格
 
@@ -341,6 +346,7 @@ Windows 特殊流程：
 
 - `build-macos.sh` / `make-dmg.sh`：macOS 发布构建与 DMG 打包。
 - `build-msi.bat`：Windows 签名 MSI 打包（WinSparkle 更新源）。
+- `package-portable.bat`：构建 Windows 绿色便携版 ZIP 包，含预置 `config.toml` 模板和说明文件。
 - `idf_cli.py`：ESP-IDF 编译/烧录/串口监控一体化脚本（`-c`/`-u`/`-s`/`-cus`，`-p COM17` 指定端口），Windows 上不便直接用 `idf.py` 时的便捷入口。配置文件为 `scripts/idf_cli.yaml`。
 - `update-appcast.py`：根据 GitHub Release 更新 `website/public/appcast.xml`。
 - `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源。
