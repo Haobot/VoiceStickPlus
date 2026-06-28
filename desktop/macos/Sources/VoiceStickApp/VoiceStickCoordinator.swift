@@ -408,9 +408,32 @@ final class VoiceStickCoordinator {
             handleButtonUp(event, peripheralID: peripheralID)
         case "button_click":
             handleButtonClick(event, peripheralID: peripheralID)
+        case "button_double_click":
+            handleButtonDoubleClick(event, peripheralID: peripheralID)
         default:
             break
         }
+    }
+
+    private func handleButtonDoubleClick(_ event: StateEvent, peripheralID: UUID) {
+        guard event.button == "primary" else { return }
+        NSLog("Double-click detected on VS-\(deviceID(for: peripheralID) ?? "unknown"), sending Enter")
+
+        // 取消当前活跃录音（如果有）。
+        if case .recording(_, let recordingPeripheralID, _) = mainInputState,
+           recordingPeripheralID == peripheralID {
+            cancelRecognitionInProgress()
+        }
+        // 取消字幕会话。
+        cancelSubtitleCycles(peripheralID: peripheralID, reason: "double_click")
+
+        // 注入 Enter 按键。
+        inputInjector.sendEnter()
+
+        // 回到就绪状态。
+        ble.sendUIState("ready", to: peripheralID)
+        mainInputState = .ready
+        statusController.setStatus("Ready")
     }
 
     private func handleButtonDown(_ event: StateEvent, peripheralID: UUID) {

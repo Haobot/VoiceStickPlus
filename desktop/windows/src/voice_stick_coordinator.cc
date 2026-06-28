@@ -125,6 +125,7 @@ void VoiceStickCoordinator::Shutdown() {
     active_subtitle_sessions_.clear();
     ui_->HideSubtitles();
     CancelAudioEndTimeout();
+    CancelStreamingRefinement();
     active_session_id_.reset();
     active_device_id_.reset();
     active_session_started_at_ = {};
@@ -379,6 +380,8 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
         HandleButtonUp(event, device_id);
     } else if (event.event == "button_click") {
         HandleButtonClick(event, device_id);
+    } else if (event.event == "button_double_click") {
+        HandleButtonDoubleClick(event, device_id);
     }
 }
 
@@ -438,6 +441,30 @@ void VoiceStickCoordinator::HandleSecondaryButtonClick(const std::string& device
         return;
     }
     CancelPendingPaste(device_id);
+}
+
+void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id) {
+    if (event.button != "primary") return;
+    LogCoordinatorLine("double-click detected on VS-" + device_id + ", sending Enter");
+    // 如果当前有活跃录音，取消它。
+    {
+        std::lock_guard lock(audio_mutex_);
+        if (active_session_id_.has_value() && active_device_id_ == device_id) {
+            CancelAudioEndTimeout();
+            asr_->Cancel();
+            pending_paste_state_ = {};
+            active_session_id_.reset();
+            debug_audio_recorder_.Discard();
+            FinishRecognitionCycle();
+        }
+    }
+    // Subtitle 模式下的活跃字幕会话也一并取消。
+    CancelSubtitleCyclesForDevice(device_id, "double_click");
+    // 注入 Enter 按键。
+    input_injector_->SendEnter();
+    // 回到就绪状态。
+    ble_->SendUiState("ready", "", device_id);
+    EnterReady("double_click_enter");
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
@@ -1044,10 +1071,56 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
     if (config_.refine_enabled && !text.empty()) {
-        refiner_.Refine(text, config_.refine_prompt,
-                        [text, completion = std::move(completion)](bool ok, std::string result) mutable {
-                            completion(true, ok ? result : text);
-                        });
+        // 取消上一轮可能残留的流式精修
+        CancelStreamingRefinement();
+        refinement_cancel_token_ = std::make_shared<std::atomic_bool>(false);
+
+        auto alive = alive_;
+        auto cancel = refinement_cancel_token_;
+        auto device_id = active_device_id_;
+
+        // 节流状态：跨 on_token 回调共享，每 ~60ms 最多更新一次 UI
+        struct ThrottleState {
+            std::mutex mutex;
+            std::string accumulated;
+            std::chrono::steady_clock::time_point last_update{};
+        };
+        auto throttle = std::make_shared<ThrottleState>();
+
+        refiner_.RefineStream(
+            text,
+            config_.refine_prompt,
+            // on_token（后台线程）：节流式更新悬浮窗
+            [this, alive, cancel, device_id, throttle](std::string token) {
+                if (!alive->load() || (cancel && cancel->load())) return;
+                std::string current;
+                bool should_update = false;
+                {
+                    std::lock_guard lock(throttle->mutex);
+                    throttle->accumulated += token;
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - throttle->last_update >= std::chrono::milliseconds(60)) {
+                        throttle->last_update = now;
+                        current = throttle->accumulated;
+                        should_update = true;
+                    }
+                }
+                if (should_update) {
+                    ui_->ShowPartial(current, device_id);
+                }
+            },
+            // on_complete（后台线程）：最终文本已就绪
+            [this, alive, cancel, text, device_id, throttle,
+             completion = std::move(completion)](bool ok, std::string result) mutable {
+                if (!alive->load() || (cancel && cancel->load())) return;
+                // 用最终的累积文本做最后一次 UI 刷新
+                if (ok && !result.empty()) {
+                    ui_->ShowPartial(result, device_id);
+                }
+                CancelStreamingRefinement();
+                completion(true, ok ? result : text);
+            },
+            cancel);
         return;
     }
     completion(true, text);
@@ -1160,6 +1233,7 @@ void VoiceStickCoordinator::CancelRecognitionInProgress() {
     active_session_id_.reset();
     active_session_started_at_ = {};
     CancelAudioEndTimeout();
+    CancelStreamingRefinement();
     asr_->Cancel();
     pending_paste_state_ = {};
     FinishRecognitionCycle();
@@ -1194,8 +1268,16 @@ void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
     }
 }
 
+void VoiceStickCoordinator::CancelStreamingRefinement() {
+    if (refinement_cancel_token_) {
+        refinement_cancel_token_->store(true);
+        refinement_cancel_token_.reset();
+    }
+}
+
 void VoiceStickCoordinator::FinishRecognitionCycle() {
     CancelAudioEndTimeout();
+    CancelStreamingRefinement();
     asr_started_ = false;
     sent_final_audio_chunk_ = false;
     pasted_final_text_ = false;

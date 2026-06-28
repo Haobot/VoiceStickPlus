@@ -30,6 +30,7 @@ enum class StringId {
     kSettingsLlmApiKey,
     kSettingsLlmModel,
     kSettingsRefineText,
+    kSettingsRefinePrompt,
     kSettingsPromptTone,
     kSettingsLaunchAtLogin,
     kSettingsDebugAudio,
