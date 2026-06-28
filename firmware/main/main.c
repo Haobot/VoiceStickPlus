@@ -46,6 +46,11 @@ static const char *TAG = "voice_stick";
 #define PICKUP_POLL_INTERVAL_MS (500)
 #define PICKUP_POLL_INTERVAL_US (PICKUP_POLL_INTERVAL_MS * 1000ULL)
 
+// 主按键双击检测参数。按住超过 HOLD_THRESHOLD 视为正常录音（长按）；短于此时间的按压
+// 可能为双击的第一击。释放后在 WINDOW 时间内再次按下，确认双击并发送 Enter。
+#define DOUBLE_CLICK_MAX_PRESS_MS 300
+#define DOUBLE_CLICK_WINDOW_MS 500
+
 // IMU X 轴加速度上屏轮询周期。200ms 人眼可读、I²C 负载低；IMU 走 I²C 与录音 I²S 不同总线，
 // 故常驻运行不随状态机开关。BMI270 不在线时仅刷一次 "IMU: n/a"。
 #define IMU_POLL_INTERVAL_US (200 * 1000ULL)
@@ -83,6 +88,12 @@ static button_handle_t s_side_button;
 static int64_t s_primary_down_us;
 static int64_t s_secondary_down_us;
 static uint32_t s_primary_session_id;
+static bool s_double_click_pending;          // 等待第二次按下（双击窗口内）
+static bool s_double_click_second_press;     // 第二次按下进行中，忽略其释放
+static bool s_hold_threshold_pending;        // 按住阈值计时中（300ms 后确认为长按）
+static esp_timer_handle_t s_double_click_timer;
+static uint32_t s_pending_button_up_duration_ms; // 暂存第一次短按的时长（窗口超时后补发 button_up）
+static int64_t s_click_to_talk_first_click_us;  // click_to_talk 模式首次点击时刻（用于双击检测）
 
 typedef enum {
     DISPLAY_ORIENTATION_NORMAL = 0,
@@ -776,6 +787,39 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     ESP_LOGI(TAG, "button front down source=%d", source);
     note_activity();
 
+    // 远程按键（热键）不走双击检测，直接走原有逻辑。
+    if (source == APP_INPUT_SOURCE_PHYSICAL) {
+        // 双击窗口内第二次按下：确认双击，发送 button_double_click。
+        if (s_double_click_pending) {
+            ESP_LOGI(TAG, "button front down as double-click second press");
+            s_double_click_pending = false;
+            (void)esp_timer_stop(s_double_click_timer);
+            (void)voice_ble_send_button_double_click("primary");
+            // 标记第二次按下，忽略其后续释放事件。
+            s_double_click_second_press = true;
+            s_primary_down_us = esp_timer_get_time();
+            return;
+        }
+
+        // click_to_talk 模式已录音时：检测是否为双击的第二击。
+        if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK && s_recording &&
+            s_click_to_talk_first_click_us > 0) {
+            int64_t elapsed_us = esp_timer_get_time() - s_click_to_talk_first_click_us;
+            if (elapsed_us < DOUBLE_CLICK_WINDOW_MS * 1000LL) {
+                ESP_LOGI(TAG, "button front down as double-click in click_to_talk mode");
+                (void)stop_recording();
+                (void)voice_ble_send_button_double_click("primary");
+                s_click_to_talk_first_click_us = 0;
+                s_primary_down_us = 0;
+                s_primary_session_id = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                apply_app_ui_state("ready", "");
+                return;
+            }
+            s_click_to_talk_first_click_us = 0;
+        }
+    }
+
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
         const primary_owner_t owner_from_source = (source == APP_INPUT_SOURCE_PHYSICAL)
             ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
@@ -804,10 +848,29 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             (void)voice_ble_send_button_click("primary", 0, 0);
             return;
         }
+
+        // hold_to_talk：立即播放提示音提供反馈，但不启动录音也不发送 BLE 事件。
+        // 启动 300ms 按住阈值定时器，超时后确认为长按 → 启动录音 + 发送 button_down。
+        // 若在阈值内释放 → 进入双击检测窗口（不产生任何桌面端浮窗）。
+        if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK &&
+            source == APP_INPUT_SOURCE_PHYSICAL) {
+            play_prompt_tone(880);
+            s_hold_threshold_pending = true;
+            s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+            (void)esp_timer_start_once(s_double_click_timer,
+                                       DOUBLE_CLICK_MAX_PRESS_MS * 1000ULL);
+            return;
+        }
+
         s_primary_session_id = start_recording();
         if (s_primary_session_id == 0) {
             s_primary_down_us = 0;
             return;
+        }
+        // click_to_talk 模式记录首次点击时刻，用于后续双击检测。
+        if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK &&
+            source == APP_INPUT_SOURCE_PHYSICAL) {
+            s_click_to_talk_first_click_us = esp_timer_get_time();
         }
         s_primary_owner = (source == APP_INPUT_SOURCE_PHYSICAL)
             ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
@@ -828,7 +891,30 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     (void)request_id;
     ESP_LOGI(TAG, "button front up source=%d", source);
     note_activity();
+
+    // 双击第二击的释放：忽略，不触发任何事件。
+    if (s_double_click_second_press) {
+        ESP_LOGI(TAG, "button front up ignored (second press of double-click)");
+        s_double_click_second_press = false;
+        s_primary_down_us = 0;
+        return;
+    }
+
     if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK) {
+        return;
+    }
+
+    // hold_to_talk：按住阈值计时中释放 → 短按，进入双击检测窗口。
+    // 此时录音尚未启动，无 button_down 发送过，桌面端无感知。
+    if (s_hold_threshold_pending) {
+        s_hold_threshold_pending = false;
+        (void)esp_timer_stop(s_double_click_timer);
+        const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
+        ESP_LOGI(TAG, "button front up during hold threshold, entering double-click window (%" PRIu32 " ms)", duration_ms);
+        s_double_click_pending = true;
+        s_pending_button_up_duration_ms = duration_ms;
+        (void)esp_timer_start_once(s_double_click_timer,
+                                   DOUBLE_CLICK_WINDOW_MS * 1000ULL);
         return;
     }
 
@@ -846,6 +932,20 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     if (s_recording) {
         s_primary_session_id = stop_recording();
     }
+
+    // 双击检测：短按（< 300ms）可能为双击的第一击，暂缓发送 button_up。
+    // 若 500ms 内无第二次按下则补发（桌面端因 < 0.5s 自动丢弃录音）。
+    if (source == APP_INPUT_SOURCE_PHYSICAL &&
+        primary_duration_ms > 0 &&
+        primary_duration_ms < DOUBLE_CLICK_MAX_PRESS_MS) {
+        ESP_LOGI(TAG, "button front up short press, entering double-click window");
+        s_double_click_pending = true;
+        s_pending_button_up_duration_ms = primary_duration_ms;
+        (void)esp_timer_start_once(s_double_click_timer,
+                                   DOUBLE_CLICK_WINDOW_MS * 1000ULL);
+        return;
+    }
+
     esp_err_t primary_up_err = voice_ble_send_button_up("primary", primary_duration_ms,
                                                         s_primary_session_id);
     if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
@@ -976,6 +1076,11 @@ static void app_event_task(void *arg)
             s_primary_owner = PRIMARY_OWNER_NONE;
             s_primary_down_us = 0;
             s_primary_session_id = 0;
+            s_double_click_pending = false;
+            s_double_click_second_press = false;
+            s_hold_threshold_pending = false;
+            s_click_to_talk_first_click_us = 0;
+            (void)esp_timer_stop(s_double_click_timer);
             stop_host_response_timer();
             audio_pipeline_stop();
             release_recording_pm_locks();
@@ -1155,6 +1260,54 @@ static void host_response_timer_cb(void *arg)
 {
     (void)arg;
     queue_app_event(APP_EVENT_HOST_RESPONSE_TIMEOUT);
+}
+
+// 双击/按住阈值共用定时器回调。
+// 阶段一（s_hold_threshold_pending）：按住 300ms 确认 → 启动录音，发送 button_down。
+// 阶段二（s_double_click_pending）：双击窗口 500ms 超时 → 单次短击，发送 button_click。
+static void double_click_timer_cb(void *arg)
+{
+    (void)arg;
+
+    if (s_hold_threshold_pending) {
+        // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
+        s_hold_threshold_pending = false;
+        if (gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0) {
+            ESP_LOGI(TAG, "hold threshold reached, starting recording");
+            s_primary_session_id = start_recording();
+            if (s_primary_session_id != 0) {
+                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id);
+                if (err != ESP_OK) {
+                    (void)stop_recording();
+                    s_primary_session_id = 0;
+                    s_primary_owner = PRIMARY_OWNER_NONE;
+                    apply_app_ui_state("ready", "");
+                }
+            } else {
+                s_primary_down_us = 0;
+            }
+        }
+        return;
+    }
+
+    if (s_double_click_pending) {
+        // 双击窗口超时：单次短击。
+        s_double_click_pending = false;
+        ESP_LOGI(TAG, "double-click window expired, sending button_click");
+        voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0);
+        s_primary_down_us = 0;
+        s_primary_session_id = 0;
+        s_primary_owner = PRIMARY_OWNER_NONE;
+    }
+}
+
+static esp_err_t init_double_click_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = double_click_timer_cb,
+        .name = "double_click",
+    };
+    return esp_timer_create(&timer_args, &s_double_click_timer);
 }
 
 static esp_err_t init_poweroff_timer(void)
@@ -1557,6 +1710,7 @@ void app_main(void)
     ESP_ERROR_CHECK(init_poweroff_timer());
     ESP_ERROR_CHECK(init_disc_poweroff_timer());
     ESP_ERROR_CHECK(init_host_response_timer());
+    ESP_ERROR_CHECK(init_double_click_timer());
     ESP_ERROR_CHECK(init_pickup_poll_timer());
     // BMI270 初始化在 I2C 总线就绪后；探测失败时优雅降级，不影响主流程。
     (void)bmi270_init();

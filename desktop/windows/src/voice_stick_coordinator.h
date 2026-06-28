@@ -158,6 +158,7 @@ class InputInjector {
 public:
     virtual ~InputInjector() = default;
     virtual void Paste(const std::string& text, bool press_enter) = 0;
+    virtual void SendEnter() = 0;
 };
 
 class VoiceStickCoordinator {
@@ -250,6 +251,7 @@ private:
     void HandleButtonDown(const StateEvent& event, const std::string& device_id);
     void HandleButtonUp(const StateEvent& event, const std::string& device_id);
     void HandleButtonClick(const StateEvent& event, const std::string& device_id);
+    void HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id);
     void HandleSecondaryButtonClick(const std::string& device_id);
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);
@@ -306,6 +308,7 @@ private:
     void CancelRecognitionInProgress();
     void CancelActiveCycleIfDeviceDisconnected();
     void FinishRecognitionCycle();
+    void CancelStreamingRefinement();
     void UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id);
     void CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors);
     void RefreshFirmwareAvailability();
@@ -367,6 +370,7 @@ private:
     FirmwareManifestClient firmware_manifest_client_;
     std::mutex firmware_mutex_;
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};
+    std::shared_ptr<std::atomic_bool> refinement_cancel_token_;
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;

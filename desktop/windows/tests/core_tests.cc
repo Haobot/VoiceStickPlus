@@ -295,9 +295,11 @@ public:
         pasted_text = text;
         pasted_enter = press_enter;
     }
+    void SendEnter() override { send_enter_called = true; }
 
     std::string pasted_text;
     bool pasted_enter = false;
+    bool send_enter_called = false;
 };
 
 StateEvent ButtonEvent(const std::string& event,
@@ -982,11 +984,11 @@ void TestAppConfig() {
 }
 
 void TestLlmRefinePromptAndPayload() {
-    // 内置默认精修 prompt 含三类清理要求关键词。
+    // 内置默认精修 prompt 含三类清理要求关键词（中文）。
     const auto prompt = LLMRefinementClient::BuildRefinePrompt("");
-    assert(prompt.find("speech pauses") != std::string::npos);
-    assert(prompt.find("punctuation") != std::string::npos);
-    assert(prompt.find("filler") != std::string::npos);
+    assert(prompt.find("语音停顿") != std::string::npos);
+    assert(prompt.find("标点") != std::string::npos);
+    assert(prompt.find("填充词") != std::string::npos);
 
     // 非空 override 去空白后原样返回。
     const auto custom = LLMRefinementClient::BuildRefinePrompt("  my custom prompt  ");
@@ -1020,6 +1022,49 @@ void TestLlmRefinePromptAndPayload() {
     // 精修默认开启、prompt 默认空。
     assert(AppConfig::Defaults().refine_enabled == true);
     assert(AppConfig::Defaults().refine_prompt.empty());
+
+    // refine_prompt 多行字符串 TOML 保存/加载往返测试：
+    // 验证换行等控制字符被正确转义为 \n 等 TOML 转义序列，确保回读一致。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_refine_prompt_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.refine_enabled = true;
+        // 含换行、tab、双引号和反斜杠的自定义 prompt
+        config.refine_prompt =
+            "你是一个后处理器。\n"
+            "规则：\n"
+            "\t• 去除\"多余\"空格\n"
+            "\t• 修正标点\\格式\n"
+            "仅返回文本。";
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.refine_enabled == true);
+        assert(loaded.refine_prompt == config.refine_prompt);
+        assert(loaded.refine_prompt.find("你是一个后处理器") != std::string::npos);
+        assert(loaded.refine_prompt.find("\n\t• ") != std::string::npos);
+        assert(loaded.refine_prompt.find("\"多余\"") != std::string::npos);
+        assert(loaded.refine_prompt.find("标点\\格式") != std::string::npos);
+
+        std::filesystem::remove(temp);
+    }
+
+    // refine_prompt 为空字符串时，保存为 "" 再加载仍为空（不落盘为带转义的多行）。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_refine_prompt_empty_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.refine_prompt.clear();
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.refine_prompt.empty());
+
+        std::filesystem::remove(temp);
+    }
 }
 
 void TestFirmwareManifestParsingAndVersionCompare() {
@@ -1509,6 +1554,81 @@ void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
     assert(!ui.cloud_upgrades.empty());
 }
 
+void TestSseParser() {
+    // 正常 token
+    bool done = false;
+    const auto line1 = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}";
+    auto token1 = LLMChatClient::ParseSseLine(line1, &done);
+    assert(!done);
+    assert(token1 == "Hello");
+
+    // 空 delta（finish_reason 但没有 content）
+    const auto line2 = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}";
+    auto token2 = LLMChatClient::ParseSseLine(line2, &done);
+    assert(!done);
+    assert(token2.empty());
+
+    // [DONE] 信号
+    const auto line3 = "data: [DONE]";
+    auto token3 = LLMChatClient::ParseSseLine(line3, &done);
+    assert(done);
+    assert(token3.empty());
+
+    // 注释行（以 : 开头）
+    bool done4 = false;
+    auto token4 = LLMChatClient::ParseSseLine(": heartbeat", &done4);
+    assert(!done4);
+    assert(token4.empty());
+
+    // 空行
+    bool done5 = false;
+    auto token5 = LLMChatClient::ParseSseLine("", &done5);
+    assert(!done5);
+    assert(token5.empty());
+
+    // data: 后有前导空格
+    bool done6 = false;
+    const auto line6 = "data:     {\"choices\":[{\"delta\":{\"content\":\"World\"}}]}";
+    auto token6 = LLMChatClient::ParseSseLine(line6, &done6);
+    assert(!done6);
+    assert(token6 == "World");
+
+    // 非法 JSON（不崩溃，返回空）
+    bool done7 = false;
+    auto token7 = LLMChatClient::ParseSseLine("data: {not valid json", &done7);
+    assert(!done7);
+    assert(token7.empty());
+
+    // 多字节 UTF-8 中文 token
+    bool done8 = false;
+    const auto line8 = "data: {\"choices\":[{\"delta\":{\"content\":\"你好世界\"}}]}";
+    auto token8 = LLMChatClient::ParseSseLine(line8, &done8);
+    assert(!done8);
+    assert(token8 == "你好世界");
+
+    // 非 data: 前缀的 event: 行（SSE event 字段，忽略）
+    bool done9 = false;
+    auto token9 = LLMChatClient::ParseSseLine("event: message", &done9);
+    assert(!done9);
+    assert(token9.empty());
+}
+
+void TestStreamPayload() {
+    // 流式 payload 包含 "stream":true
+    const auto payload = LLMChatClient::BuildChatPayload("gpt-x", "sys", "user text", /*stream=*/true);
+    assert(payload.find("\"stream\":true") != std::string::npos);
+    assert(payload.find("\"model\":\"gpt-x\"") != std::string::npos);
+    assert(payload.find("\"temperature\":0") != std::string::npos);
+
+    // 非流式 payload 不含 stream 字段（向后兼容）
+    const auto regular = LLMChatClient::BuildChatPayload("gpt-x", "sys", "user text", /*stream=*/false);
+    assert(regular.find("\"stream\"") == std::string::npos);
+
+    // 默认无 stream 参数（向后兼容）
+    const auto default_payload = LLMChatClient::BuildChatPayload("gpt-x", "sys", "user text");
+    assert(default_payload.find("\"stream\"") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -1549,5 +1669,7 @@ int main() {
     TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio();
     TestCoordinatorShowsDetailedAsrStartError();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
+    TestSseParser();
+    TestStreamPayload();
     return 0;
 }

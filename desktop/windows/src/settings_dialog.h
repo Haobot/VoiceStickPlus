@@ -32,6 +32,7 @@ private:
     void SaveSettings();
     void UpdateProviderVisibility();
     void UpdateWifiInfoVisibility();
+    void UpdateRefinePromptVisibility();
     std::pair<std::wstring, std::wstring> CurrentDeviceWifiInfoText() const;
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
@@ -54,6 +55,8 @@ private:
     HWND llm_api_key_edit_ = nullptr;
     HWND llm_model_edit_ = nullptr;
     HWND refine_check_ = nullptr;
+    HWND refine_prompt_label_ = nullptr;
+    HWND refine_prompt_edit_ = nullptr;
     HWND prompt_tone_check_ = nullptr;
     HWND launch_at_login_check_ = nullptr;
     HWND debug_audio_check_ = nullptr;
@@ -72,7 +75,7 @@ private:
     std::vector<HWND> label_controls_;
 
     static constexpr int kClientWidth = 640;
-    static constexpr int kClientHeight = 840;
+    static constexpr int kClientHeight = 920;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -95,6 +98,7 @@ private:
     static constexpr UINT kIdSave = 2013;
     static constexpr UINT kIdCancel = 2014;
     static constexpr UINT kIdApplyTrialApiKey = 2015;
+    static constexpr UINT kIdRefinePromptEdit = 2022;
 };
 
 } // namespace voicestick

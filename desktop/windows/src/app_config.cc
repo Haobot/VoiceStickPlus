@@ -88,8 +88,25 @@ std::string TomlEscape(std::string_view value) {
     std::string out;
     out.reserve(value.size());
     for (char ch : value) {
-        if (ch == '\\' || ch == '"') out.push_back('\\');
-        out.push_back(ch);
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\b': out += "\\b";  break;
+            case '\t': out += "\\t";  break;
+            case '\n': out += "\\n";  break;
+            case '\f': out += "\\f";  break;
+            case '\r': out += "\\r";  break;
+            default:
+                if (static_cast<unsigned char>(ch) < 0x20) {
+                    // 其他控制字符用 \uXXXX 转义
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04X", static_cast<unsigned char>(ch));
+                    out += buf;
+                } else {
+                    out.push_back(ch);
+                }
+                break;
+        }
     }
     return out;
 }

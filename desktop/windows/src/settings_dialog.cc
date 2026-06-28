@@ -1,5 +1,6 @@
 #include "settings_dialog.h"
 #include "dpi_util.h"
+#include "llm_refinement_client.h"
 #include "localization.h"
 #include "log.h"
 #include "voice_stick_cloud_api_win.h"
@@ -205,6 +206,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
                 UpdateWifiInfoVisibility();
             }
             return TRUE;
+        case kIdRefineText:
+            if (HIWORD(w_param) == BN_CLICKED) UpdateRefinePromptVisibility();
+            return TRUE;
         }
         break;
     case WM_CLOSE:
@@ -243,6 +247,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         llm_model_edit_ = nullptr;
         prompt_tone_check_ = nullptr;
         launch_at_login_check_ = nullptr;
+        refine_prompt_label_ = nullptr;
+        refine_prompt_edit_ = nullptr;
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
         imu_wake_sensitivity_combo_ = nullptr;
@@ -313,6 +319,8 @@ void SettingsDialog::DestroyControls() {
     llm_api_key_edit_ = nullptr;
     llm_model_edit_ = nullptr;
     prompt_tone_check_ = nullptr;
+    refine_prompt_label_ = nullptr;
+    refine_prompt_edit_ = nullptr;
     debug_audio_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     imu_wake_sensitivity_combo_ = nullptr;
@@ -429,6 +437,13 @@ void SettingsDialog::BuildControls() {
                                           BS_AUTOCHECKBOX));
     y += row_h + Dp(16);
 
+    refine_prompt_label_ = remember_label(CreateLabel(hwnd_,
+        label_text(StringId::kSettingsRefinePrompt).c_str(),
+        Dp(10), y + Dp(3), label_w, Dp(20), instance_));
+    refine_prompt_edit_ = remember(CreateMultilineEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(64),
+                                                        kIdRefinePromptEdit, instance_));
+    y += Dp(70);
+
     remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     prompt_tone_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsPromptTone, language).c_str(), ctrl_x, y,
@@ -536,6 +551,13 @@ void SettingsDialog::LoadConfigIntoControls() {
     SetWindowTextW(llm_model_edit_, Utf16(config_.llm_model).c_str());
 
     SendMessageW(refine_check_, BM_SETCHECK, config_.refine_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    {
+        std::string src = config_.refine_prompt.empty()
+            ? LLMRefinementClient::BuildRefinePrompt("")
+            : config_.refine_prompt;
+        SetWindowTextW(refine_prompt_edit_, Utf16(src).c_str());
+    }
+    UpdateRefinePromptVisibility();
 
     SendMessageW(prompt_tone_check_, BM_SETCHECK, config_.prompt_tone_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(launch_at_login_check_, BM_SETCHECK, config_.launch_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -586,6 +608,24 @@ void SettingsDialog::SaveSettings() {
     config_.llm_api_key = Utf8(GetWindowText(llm_api_key_edit_));
     config_.llm_model = Utf8(GetWindowText(llm_model_edit_));
     config_.refine_enabled = SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    {
+        auto prompt = Utf8(GetWindowText(refine_prompt_edit_));
+        // 归一化 \r\n → \n（编辑控件返回 CRLF，LLM 用 LF）。
+        std::string normalized;
+        normalized.reserve(prompt.size());
+        for (std::size_t i = 0; i < prompt.size(); ++i) {
+            if (prompt[i] == '\r' && i + 1 < prompt.size() && prompt[i + 1] == '\n') {
+                normalized.push_back('\n');
+                ++i;
+            } else if (prompt[i] == '\r') {
+                normalized.push_back('\n');
+            } else {
+                normalized.push_back(prompt[i]);
+            }
+        }
+        auto default_prompt = LLMRefinementClient::BuildRefinePrompt("");
+        config_.refine_prompt = (normalized == default_prompt) ? std::string() : normalized;
+    }
     config_.asr_hotwords = ParseHotwordList(Utf8(GetWindowText(hotwords_edit_)));
 
     wchar_t resource_buf[256]{};
@@ -722,6 +762,13 @@ void SettingsDialog::UpdateWifiInfoVisibility() {
     ShowWindow(wifi_ssid_edit_, cmd);
     ShowWindow(wifi_ip_label_, cmd);
     ShowWindow(wifi_ip_edit_, cmd);
+}
+
+void SettingsDialog::UpdateRefinePromptVisibility() {
+    const bool show = SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const int cmd = show ? SW_SHOW : SW_HIDE;
+    ShowWindow(refine_prompt_label_, cmd);
+    ShowWindow(refine_prompt_edit_, cmd);
 }
 
 void SettingsDialog::RefreshWifiInfo() {

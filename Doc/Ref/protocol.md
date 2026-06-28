@@ -77,12 +77,17 @@ Currently emitted state events:
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
 {"event":"button_down","button":"secondary"}
 {"event":"button_up","button":"secondary","duration_ms":90}
+{"event":"button_double_click","button":"primary"}
 {"event":"wifi_status","state":"connected","ssid":"MyHomeWiFi","ip":"192.168.1.42","rssi":-54,"last_error":"","ota_pull":{"state":"idle","progress_pct":0,"last_error":""},"pending":false,"partition":"ota_0","park":true}
 ```
 
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is
 included when a `primary` press starts or stops a local audio recording.
+
+`button_double_click` is emitted when the firmware detects two consecutive short
+presses of the primary button within 500 ms (each press < 300 ms). The desktop
+responds by injecting an Enter key event. See `Doc/Plan/primary-button-double-click.md`.
 
 Deprecated firmware-to-app events:
 

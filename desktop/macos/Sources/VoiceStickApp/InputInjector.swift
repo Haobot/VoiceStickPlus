@@ -55,7 +55,7 @@ final class InputInjector {
         commandUp?.post(tap: .cghidEventTap)
     }
 
-    private func sendReturn() {
+    func sendEnter() {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: false)
@@ -63,6 +63,10 @@ final class InputInjector {
         keyUp?.flags = []
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
+    }
+
+    private func sendReturn() {
+        sendEnter()
     }
 }
 
