@@ -292,18 +292,26 @@ int Win32App::Run() {
 
         RegisterTaskbarMessage();
         AddTrayIcon();
-        try {
-            SyncLaunchAtLogin();
-        } catch (const std::exception& error) {
-            LogLine(std::string("Launch at login sync skipped: ") + error.what());
+        if (!config_.portable_mode) {
+            try {
+                SyncLaunchAtLogin();
+            } catch (const std::exception& error) {
+                LogLine(std::string("Launch at login sync skipped: ") + error.what());
+            }
+        } else {
+            LogLine("Portable mode — skipping launch-at-login registration");
         }
 
-        LogLine("Initializing WinSparkle");
-        win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
-        win_sparkle_set_automatic_check_for_updates(1);
-        win_sparkle_set_update_check_interval(86400);
-        win_sparkle_init();
-        LogLine("WinSparkle initialized");
+        if (!config_.portable_mode) {
+            LogLine("Initializing WinSparkle");
+            win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
+            win_sparkle_set_automatic_check_for_updates(1);
+            win_sparkle_set_update_check_interval(86400);
+            win_sparkle_init();
+            LogLine("WinSparkle initialized");
+        } else {
+            LogLine("Portable mode — skipping WinSparkle init");
+        }
 
         LogLine("Creating BLE coordinator");
         auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
@@ -709,7 +717,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             ShowPairDeviceDialog();
             return 0;
         case kMenuCheckAppUpdates:
-            win_sparkle_check_update_with_ui();
+            if (!config_.portable_mode) {
+                win_sparkle_check_update_with_ui();
+            }
             return 0;
         case kMenuHoldToTalk:
             config_.interaction_mode = InteractionMode::kHoldToTalk;
@@ -1383,14 +1393,18 @@ void Win32App::ShowTrayMenu() {
                 MF_STRING | (config_.auto_enter ? MF_CHECKED : 0),
                 kMenuAutoEnter,
                 TrW(StringId::kMenuAutoEnter, language).c_str());
-    AppendMenuW(menu,
-                MF_STRING | (config_.launch_at_login ? MF_CHECKED : 0),
-                kMenuLaunchAtLogin,
-                TrW(StringId::kMenuLaunchAtLogin, language).c_str());
+    if (!config_.portable_mode) {
+        AppendMenuW(menu,
+                    MF_STRING | (config_.launch_at_login ? MF_CHECKED : 0),
+                    kMenuLaunchAtLogin,
+                    TrW(StringId::kMenuLaunchAtLogin, language).c_str());
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, TrW(StringId::kMenuSettings, language).c_str());
-    AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
-                TrW(StringId::kMenuCheckAppUpdates, language).c_str());
+    if (!config_.portable_mode) {
+        AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
+                    TrW(StringId::kMenuCheckAppUpdates, language).c_str());
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuQuit, TrW(StringId::kMenuQuit, language).c_str());
     POINT point{};
@@ -1401,6 +1415,10 @@ void Win32App::ShowTrayMenu() {
 }
 
 void Win32App::SyncLaunchAtLogin() {
+    if (config_.portable_mode) {
+        LogLine("Portable mode — skipping launch-at-login sync");
+        return;
+    }
     HKEY key = nullptr;
     const wchar_t* run_key = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     const LSTATUS open_status = RegCreateKeyExW(HKEY_CURRENT_USER, run_key, 0, nullptr, 0,

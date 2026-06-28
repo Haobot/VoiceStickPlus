@@ -145,7 +145,14 @@ struct AppConfig {
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
+    // 便携模式：当 exe 同级目录存在 config.toml 时自动激活，
+    // 所有数据（配置/日志/调试音频）存储在 exe 目录而非 %APPDATA%。
+    bool portable_mode = false;
 
+    // 返回 exe 所在目录，便携模式下所有数据的根目录。
+    static std::filesystem::path PortableBaseDirectory();
+    // 检测是否为便携模式：exe 同级目录存在 config.toml 文件。
+    static bool IsPortableMode();
     static std::filesystem::path ConfigDirectory();
     static std::filesystem::path ConfigPath();
     static std::filesystem::path DefaultDebugAudioDirectory();
