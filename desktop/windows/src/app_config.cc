@@ -176,7 +176,26 @@ const std::vector<std::string>& AppConfig::SupportedResourceIds() {
     return ids;
 }
 
+std::filesystem::path AppConfig::PortableBaseDirectory() {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    path.resize(length);
+    return std::filesystem::path(path).parent_path();
+}
+
+bool AppConfig::IsPortableMode() {
+    std::error_code ec;
+    return std::filesystem::exists(PortableBaseDirectory() / L"config.toml", ec);
+}
+
 std::filesystem::path AppConfig::ConfigDirectory() {
+    if (IsPortableMode()) {
+        return PortableBaseDirectory();
+    }
     return KnownFolder(FOLDERID_RoamingAppData, L"APPDATA") / L"VoiceStick";
 }
 
@@ -185,6 +204,9 @@ std::filesystem::path AppConfig::ConfigPath() {
 }
 
 std::filesystem::path AppConfig::DefaultDebugAudioDirectory() {
+    if (IsPortableMode()) {
+        return PortableBaseDirectory() / L"DebugAudio";
+    }
     return KnownFolder(FOLDERID_LocalAppData, L"LOCALAPPDATA") / L"VoiceStick" / L"DebugAudio";
 }
 
@@ -310,7 +332,9 @@ OutputProfile ParseOutputProfile(const toml::table& table, const OutputProfile& 
 } // namespace
 
 AppConfig AppConfig::Load() {
-    return Load(ConfigPath());
+    AppConfig config = Load(ConfigPath());
+    config.portable_mode = IsPortableMode();
+    return config;
 }
 
 AppConfig AppConfig::Load(const std::filesystem::path& path) {
