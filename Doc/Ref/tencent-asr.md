@@ -14,6 +14,19 @@ Voice Stick Windows 桌面端支持腾讯云实时语音识别（ASR）作为 `a
 | WebSocket ASR | URL 查询参数 HMAC-SHA1 签名 |
 | 热词表管理 | HTTP Header `Authorization: TC3-HMAC-SHA256 ...` |
 
+### WebSocket 签名原文
+
+对除 `signature` 外的所有 URL 参数按 key 字典序排序，拼接为：
+
+```
+asr.cloud.tencent.com/asr/v2/<appid>?engine_model_type=...&expired=...&needvad=...&nonce=...&secretid=...&timestamp=...&voice_format=...&voice_id=...
+```
+
+注意：
+- 签名原文**不含** `wss://` 协议头。
+- 参数值使用原始值（不对 value 做 URL encode）。
+- 用 `SecretKey` 对原文做 HMAC-SHA1，结果 Base64 编码后再 URL encode 作为 `signature` 参数。
+
 ## 引擎模型
 
 | 值 | 说明 |
@@ -29,7 +42,7 @@ Voice Stick Windows 桌面端支持腾讯云实时语音识别（ASR）作为 `a
 
 1. 客户端连接 WebSocket（URL 已包含 `voice_format`、`needvad`、`hotword_list` 等参数）
 2. 服务端握手确认: `{"code": 0, "message": "success", "voice_id": "..."}`
-3. 客户端发送二进制帧: Opus 音频数据，每帧封装为 `Opus`(4B) + 大端长度(2B) + Opus 一帧压缩数据
+3. 客户端发送二进制帧: Opus 音频数据，每帧封装为 `opus`(4B，全小写) + 大端长度(2B) + Opus 一帧压缩数据
 4. 服务端发送文本帧: 识别结果 `{"code": 0, "result": {"slice_type": 0/1/2, "voice_text_str": "..."}}`
 5. 音频发送完毕后，客户端发送文本帧: `{"type": "end"}`（小写，固定格式）
 6. 服务端发送最终结果并关闭连接
