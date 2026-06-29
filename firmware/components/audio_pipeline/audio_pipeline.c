@@ -34,8 +34,8 @@ static const char *TAG = "audio_pipeline";
 #define OPUS_COMPLEXITY 1
 
 #define TX_QUEUE_DEPTH 50
-#define TX_RETRY_DELAY_MS 30
-#define TX_MAX_RETRIES 50
+#define TX_RETRY_DELAY_MS 10
+#define TX_MAX_RETRIES 30
 #define TX_DRAIN_TIMEOUT_MS 500
 #define TASK_EXIT_WAIT_MS 800
 

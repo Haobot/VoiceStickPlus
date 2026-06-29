@@ -496,6 +496,12 @@ static uint32_t start_recording(void)
     }
 
     const uint32_t session_id = s_session_id++;
+    // 提前请求 fast conn interval：conn update 是异步过程，需等 central 同意，
+    // 耗时可达数百毫秒。若等到 audio_pipeline_start 内部才请求，录音前半段
+    // 仍跑在 slow interval，链路吞吐不足导致 mbuf 堆积丢帧、ASR 流开头缺口、
+    // 识别到输入卡顿。这里在提示音与 audio 初始化期间并行启动 conn update，
+    // 等真正产帧时 interval 多半已切到 7.5ms。
+    voice_ble_request_fast_interval();
     play_prompt_tone(880);
     esp_err_t err = acquire_recording_pm_locks();
     if (err != ESP_OK) {
