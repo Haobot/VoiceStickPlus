@@ -506,6 +506,20 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (mtu_rc != 0 && mtu_rc != BLE_HS_EALREADY) {
                     ESP_LOGW(TAG, "mtu exchange request failed rc=%d", mtu_rc);
                 }
+                // 音频帧（~116 字节）以 25fps 上报，1M PHY 下每 connection event
+                // 可发数据量有限，链路吞吐不足会导致 host mbuf 队列堆积、丢帧。
+                // LL 层 2M PHY 已启用（CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY），
+                // 这里在连接建立时请求 2M PHY 把链路吞吐翻倍。mask 同时含 1M，
+                // central 不支持 2M 时自动回退，零兼容风险。PHY 更新异步完成，
+                // 结果由 BLE_GAP_EVENT_PHY_UPDATE_COMPLETE 回报。
+                int phy_rc = ble_gap_set_prefered_le_phy(
+                    s_conn_handle,
+                    BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
+                    BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
+                    0);
+                if (phy_rc != 0 && phy_rc != BLE_HS_EALREADY) {
+                    ESP_LOGW(TAG, "request 2M phy failed rc=%d", phy_rc);
+                }
                 (void)voice_ble_request_fast_interval();
             }
             if (s_connection_cb) {
@@ -590,6 +604,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_MTU:
         ESP_LOGD(TAG, "mtu=%u", event->mtu.value);
+        return 0;
+
+    case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+        ESP_LOGI(TAG, "phy updated: status=%d tx_phy=%u rx_phy=%u",
+                 event->phy_updated.status,
+                 event->phy_updated.tx_phy, event->phy_updated.rx_phy);
         return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
@@ -870,12 +890,13 @@ esp_err_t voice_ble_request_fast_interval(void)
     }
     s_itvl_target = CONN_ITVL_FAST;
     struct ble_gap_upd_params params = {
-        .itvl_min = 12,   // 15ms
-        .itvl_max = 24,   // 30ms
+        .itvl_min = 6,    // 7.5ms，固定不留给 central 上浮空间
+        .itvl_max = 6,    // 7.5ms
         .latency = 0,
         .supervision_timeout = 200,  // 2s
-        .min_ce_len = 0,
-        .max_ce_len = 0,
+        .min_ce_len = 8,  // 每 connection event 至少 5ms，1M PHY 下尽量多发几个
+                          // 音频通知，缓解 host mbuf 队列堆积导致的 alloc failed
+        .max_ce_len = 8,
     };
     int rc = ble_gap_update_params(s_conn_handle, &params);
     if (rc == BLE_HS_EALREADY) {
@@ -888,7 +909,7 @@ esp_err_t voice_ble_request_fast_interval(void)
         return ESP_FAIL;
     }
     s_itvl_update_pending = false;
-    ESP_LOGI(TAG, "requested fast conn interval 15-30ms");
+    ESP_LOGI(TAG, "requested fast conn interval 7.5ms (fixed)");
     return ESP_OK;
 }
 
