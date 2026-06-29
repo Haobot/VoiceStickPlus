@@ -25,7 +25,7 @@ static const char *TAG = "audio_pipeline";
 
 #define AUDIO_SAMPLE_RATE 16000
 #define AUDIO_CHANNELS 1
-#define AUDIO_FRAME_MS 60
+#define AUDIO_FRAME_MS 40
 #define AUDIO_FRAME_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)
 #define TONE_CHUNK_SAMPLES 256
 #define TONE_CHANNELS 2

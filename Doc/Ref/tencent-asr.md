@@ -25,13 +25,16 @@ Voice Stick Windows 桌面端支持腾讯云实时语音识别（ASR）作为 `a
 
 ## WebSocket 协议
 
-1. 客户端连接 WebSocket
-2. 客户端发送文本帧: `{"type": "START", "data": {"voice_format": 10, "sample_rate": 16000, ...}}`
-3. 服务端确认: `{"code": 0, "message": "success", "message_id": "..."}`
-4. 客户端发送二进制帧: Opus 音频数据
-5. 服务端发送文本帧: 识别结果 `{"code": 0, "result": {"slice_type": 0/1/2, "voice_text_str": "..."}}`
-6. 客户端发送文本帧: `{"type": "END"}`
-7. 服务端发送最终结果并关闭
+参考 [腾讯云实时语音识别（WebSocket）API](https://cloud.tencent.com/document/product/1093/48982)。
+
+1. 客户端连接 WebSocket（URL 已包含 `voice_format`、`needvad`、`hotword_list` 等参数）
+2. 服务端握手确认: `{"code": 0, "message": "success", "voice_id": "..."}`
+3. 客户端发送二进制帧: Opus 音频数据，每帧封装为 `Opus`(4B) + 大端长度(2B) + Opus 一帧压缩数据
+4. 服务端发送文本帧: 识别结果 `{"code": 0, "result": {"slice_type": 0/1/2, "voice_text_str": "..."}}`
+5. 音频发送完毕后，客户端发送文本帧: `{"type": "end"}`（小写，固定格式）
+6. 服务端发送最终结果并关闭连接
+
+注意：腾讯云实时 ASR **没有 START 消息**，所有配置通过 URL 查询参数传递；结束消息必须是 `"end"` 小写。
 
 ### slice_type
 
