@@ -22,6 +22,31 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 当前版本：`1.6.8`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致。
 
+## 关键配置文件
+
+| 文件 | 用途 |
+|---|---|
+| `VERSION` | 单一版本来源，纯文本，不含换行 |
+| `firmware/version.txt` | 固件向桌面端报告的版本，发布前必须与 `VERSION` 一致 |
+| `firmware/CMakeLists.txt` | ESP-IDF 项目入口，定义 `project(voice_stick)` |
+| `firmware/main/CMakeLists.txt` | 主组件注册，声明 `SRCS` 与 `REQUIRES` |
+| `firmware/main/idf_component.yml` | 主组件依赖（当前仅 `espressif/button: ^4.1.6`） |
+| `firmware/components/*/CMakeLists.txt` | 各组件源码与依赖声明 |
+| `firmware/components/*/idf_component.yml` | 组件级 ESP-IDF component manager 依赖 |
+| `firmware/partitions_ota.csv` | 8 MB flash 分区表：两个 3 MB OTA app slot + 约 1984 KB `storage` |
+| `desktop/macos/Package.swift` | SwiftPM 包定义，依赖 Sparkle、TOMLKit、CZlib |
+| `desktop/windows/CMakeLists.txt` | Windows 桌面端 CMake，拆分为 `voicestick_core`、`VoiceStickApp`、`VoiceStickCtl` |
+| `desktop/windows/src/version.h.in` | Windows 版本资源模板，由 CMake 从 `VERSION` 填充 |
+| `website/package.json` | Node 项目配置，当前 `version` 为 `0.3.4` |
+| `website/vite.config.js` | Vite 配置，`base: '/voicestick/'` |
+| `website/public/appcast.xml` | Sparkle / WinSparkle 更新源 |
+| `.github/workflows/release.yml` | 推送 `v*` 标签时触发：构建固件、构建 macOS、发布 Release、上传 OSS |
+| `.github/workflows/deploy-website.yml` | 部署网站到 GitHub Pages，并更新 appcast |
+| `scripts/idf_cli.yaml` | `idf_cli.py` 的配置文件 |
+| `ArduFlux.json` | ArduFlux IDE 配置文件（非版本控制重点） |
+
+仓库没有 `pyproject.toml`、`Cargo.toml`、`package.json`（根目录）等全局配置文件；各子系统使用各自原生构建配置。
+
 ## 仓库目录结构
 
 ```text
@@ -89,11 +114,11 @@ ArduFlux.json                   ArduFlux IDE 配置文件（非版本控制重�
 
 关键外部依赖：
 - **固件**：
-  - `espressif/button`（主组件与按键驱动）
-  - `espressif/esp_codec_dev`（audio_pipeline 组件）
-  - `78/esp-opus`（audio_pipeline 组件，Opus 编码）
-  - `lvgl/lvgl`（ui_status 组件，9.2.0）
-  - `espressif/mdns`（voice_net 组件）
+  - `espressif/button: ^4.1.6`（主组件与按键驱动）
+  - `espressif/esp_codec_dev: ^1.3.4`（audio_pipeline 组件）
+  - `78/esp-opus: ^1.0.5`（audio_pipeline 组件，Opus 编码）
+  - `lvgl/lvgl: 9.2.0`（ui_status 组件）
+  - `espressif/mdns: ^1.2`（voice_net 组件）
   由 ESP-IDF component manager 通过各 `idf_component.yml` 管理。
 - **macOS**：`sparkle-project/Sparkle` (2.6+)、`LebJe/TOMLKit` (0.6+)。
 - **Windows**：WinSparkle 0.9.2（FetchContent）、WiX Toolset v6、WinHTTP、bcrypt。
@@ -119,6 +144,13 @@ Windows 上不便直接用 `idf.py` 时，可用仓库提供的封装脚本：
 ```bat
 python scripts/idf_cli.py -cus -p COM17
 ```
+
+`idf_cli.py` 常用参数：
+- `-c`：编译（compile）
+- `-u`：上传/烧录（upload）
+- `-s`：串口监控（serial monitor）
+- `-cus`：编译 + 烧录 + 监控
+- `-p COMxx`：指定串口
 
 当前分区表 `firmware/partitions_ota.csv` 为两个 3 MB OTA app slot 加约 1984 KB `storage` 分区。
 
@@ -272,7 +304,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - Windows（便携模式）：程序同目录下的 `config.toml`
 
 常用配置项：
-- `asr_provider`：`volcengine` 或 `voicestick_cloud`。
+- `asr_provider`：`volcengine`、`voicestick_cloud` 或 `tencent`。
 - `auto_enter`：粘贴后是否自动按 Return。
 - `debug_audio_cache`：是否保存调试 Ogg Opus 音频。
 - `prompt_tone_enabled`（Windows 桌面端）：是否在录音启停时播放提示音，默认 `true`。
@@ -288,6 +320,9 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `asr_hotwords`：逗号分隔的 ASR 热词，同时作为术语提示传给 LLM。
 - `paired_device_ids`：逗号分隔的 4 位十六进制 ID，如 `C3D8,09AF`。
 - `resource_id`：火山引擎 resource ID，支持 `volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
+- `tencent_secret_id` / `tencent_secret_key` / `tencent_appid` / `tencent_engine_model_type` / `tencent_hotword_id`：腾讯云 ASR 配置（仅 `asr_provider = "tencent"` 时有效）。
+- `device_theme_colors` / `device_overlay_positions`：按设备覆盖悬浮窗颜色和位置。
+- `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `off` / `low` / `medium` / `high`。
 
 Windows 调试音频缓存目录：
 - 标准安装：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
@@ -300,6 +335,7 @@ Windows 调试音频缓存目录：
 - **Swift（macOS）**：遵循标准 Swift/APIKit 命名。使用 `swift build` 验证编译。
 - **C++（Windows）**：遵循 Google C++ 命名风格：`snake_case` 文件名和变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
 - **C（固件）**：ESP-IDF 风格，组件通过 `idf_component_register` 注册，组件间通过 `REQUIRES` 声明依赖。
+- **Vue/JS（网站）**：使用标准 Vue 3 Composition API 风格。
 - **仓库当前未提交统一 lint/formatter 配置**；不要臆造 `npm run lint`、Swift lint 或 C++ lint 命令。修改对应组件后运行该组件已有的构建/测试命令作为验证。
 
 ## 测试策略
@@ -324,6 +360,8 @@ Windows 调试音频缓存目录：
 3. **发布 GitHub Release**：合并固件和 macOS 产物并创建 Release。
 4. **上传固件到阿里云 OSS**：OTA 镜像、merged 镜像和 `manifest.json` 同时上传到版本目录和 `latest/` 目录。
 5. **触发网站部署**：自动运行 `deploy-website.yml`，更新 `appcast.xml`。
+
+`deploy-website.yml` 还会读取当前 GitHub Release 的 macOS ZIP/签名与可选的 Windows MSI，调用 `scripts/update-appcast.py` 重写 `website/public/appcast.xml`。
 
 Windows 特殊流程：
 - Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名。
@@ -367,7 +405,7 @@ Windows 特殊流程：
 
 ## 安全与敏感信息
 
-- **不要提交 API key**。`config.toml` 包含 `volcengine_api_key`、`voicestick_api_key`、`llm_api_key`，均被 `.gitignore` 排除在版本控制外。
+- **不要提交 API key**。`config.toml` 包含 `volcengine_api_key`、`voicestick_api_key`、`llm_api_key`、`tencent_secret_key` 等，均被 `.gitignore` 排除在版本控制外。
 - macOS 应用请求蓝牙权限；文本注入使用模拟键盘事件，需授予辅助功能权限。
 - Windows 应用使用 `SendInput` 进行粘贴，使用 WinHTTP 进行网络通信。
 - 固件 OTA 更新时，桌面端会校验 `ota_size` 和 `ota_sha256` 后再写入设备。
@@ -382,3 +420,4 @@ Windows 特殊流程：
 - `build_native.bat`、`do_build.bat`、`run_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
 - 修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
+- 修改 `VERSION` 时，必须同步更新 `firmware/version.txt`。

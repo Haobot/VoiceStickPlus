@@ -1802,31 +1802,44 @@ void TestTencentResultParsing() {
     assert(segments2.empty());
 }
 
-void TestTencentStartMessage() {
-    AppConfig config = AppConfig::Defaults();
-    AsrSessionOptions options;
-    options.hotwords = {"小智", "语音输入"};
 
-    auto msg = AsrClientTencent::MakeStartMessage(config, options, "test-voice-id");
-    assert(msg.find("\"type\":\"START\"") != std::string::npos);
-    assert(msg.find("\"voice_format\":10") != std::string::npos);
-    assert(msg.find("\"sample_rate\":16000") != std::string::npos);
-    assert(msg.find("\"needvad\":1") != std::string::npos);
-    assert(msg.find("\"voice_id\":\"test-voice-id\"") != std::string::npos);
-    assert(msg.find("\"hotword_list\":\"小智,语音输入\"") != std::string::npos);
-    assert(msg.find("\"filter_dirty\":1") != std::string::npos);
-    assert(msg.find("\"word_info\":1") != std::string::npos);
-
-    // 无热词时不应有 hotword_list
-    AsrSessionOptions empty_options;
-    auto msg_no_hotwords = AsrClientTencent::MakeStartMessage(config, empty_options, "id2");
-    assert(msg_no_hotwords.find("hotword_list") == std::string::npos);
-}
 
 void TestTencentEndMessage() {
-    auto msg = AsrClientTencent::MakeEndMessage("my-voice-id");
-    assert(msg.find("\"type\":\"END\"") != std::string::npos);
-    assert(msg.find("\"voice_id\":\"my-voice-id\"") != std::string::npos);
+    auto msg = AsrClientTencent::MakeEndMessage();
+    assert(msg == R"({"type":"end"})");
+}
+
+void TestTencentOpusEncapsulation() {
+    // 构造一个最小 Ogg Opus 音频页（不含有效 CRC，ExtractTencentOpusFrame 不校验 CRC）。
+    // Ogg 页结构：OggS(4) + version(1) + type(1) + granule(8) + serial(4) + seq(4) + crc(4) + segments(1) + table(1) + payload
+    std::vector<std::uint8_t> ogg_page;
+    ogg_page.insert(ogg_page.end(), {'O', 'g', 'g', 'S', 0, 0});
+    for (int i = 0; i < 8; ++i) ogg_page.push_back(0);  // granule
+    for (int i = 0; i < 4; ++i) ogg_page.push_back(0);  // serial
+    for (int i = 0; i < 4; ++i) ogg_page.push_back(0);  // seq
+    for (int i = 0; i < 4; ++i) ogg_page.push_back(0);  // crc placeholder
+    ogg_page.push_back(1);  // 1 segment
+    ogg_page.push_back(4);  // segment length = 4
+    ogg_page.insert(ogg_page.end(), {0x01, 0x02, 0x03, 0x04});  // fake Opus payload
+
+    auto frame = AsrClientTencent::ExtractTencentOpusFrame(std::span(ogg_page));
+    assert(frame.size() == 4 + 2 + 4);
+    assert(frame[0] == 'O' && frame[1] == 'p' && frame[2] == 'u' && frame[3] == 's');
+    assert(frame[4] == 0x00 && frame[5] == 0x04);  // big-endian length = 4
+    assert(frame[6] == 0x01 && frame[7] == 0x02 && frame[8] == 0x03 && frame[9] == 0x04);
+
+    // OpusHead/OpusTags 头包应返回空
+    std::vector<std::uint8_t> head_page;
+    head_page.insert(head_page.end(), {'O', 'g', 'g', 'S', 0, 0});
+    for (int i = 0; i < 8; ++i) head_page.push_back(0);
+    for (int i = 0; i < 4; ++i) head_page.push_back(0);
+    for (int i = 0; i < 4; ++i) head_page.push_back(0);
+    for (int i = 0; i < 4; ++i) head_page.push_back(0);
+    head_page.push_back(1);
+    head_page.push_back(8);
+    head_page.insert(head_page.end(), {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd'});
+    auto head_frame = AsrClientTencent::ExtractTencentOpusFrame(std::span(head_page));
+    assert(head_frame.empty());
 }
 
 void TestTencentVoiceIdGeneration() {
@@ -1888,8 +1901,8 @@ int main() {
     TestTencentSignatureGeneration();
     TestTencentUrlConstruction();
     TestTencentResultParsing();
-    TestTencentStartMessage();
     TestTencentEndMessage();
+    TestTencentOpusEncapsulation();
     TestTencentVoiceIdGeneration();
     return 0;
 }
