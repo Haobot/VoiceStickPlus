@@ -26,6 +26,9 @@
 #include "voice_ble.h"
 #include "voice_net.h"
 #include "nvs.h"
+#ifdef VOICE_NET_DISABLE
+#include "esp_ota_ops.h"  // 禁用 Wi-Fi 后由 main.c 直接签到 mark_app_valid
+#endif
 
 static const char *TAG = "voice_stick";
 
@@ -1769,6 +1772,20 @@ void app_main(void)
         ui_status_set_pairing(voice_ble_device_name());
     }
     ESP_LOGI(TAG, "Voice Stick booted");
+
+#ifdef VOICE_NET_DISABLE
+    // 禁用 Wi-Fi 后，原 voice_net 的"启动 N 秒 + BLE 连过一次"自动签到不再执行。
+    // 保留 OTA rollback（CONFIG_APP_ROLLBACK_ENABLE=y），这里直接标记当前固件有效，
+    // 否则新固件首次启动会被 bootloader 在超时后回滚。COM 口烧录的 OTA 同样依赖此签到。
+    esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
+    if (mark_err == ESP_OK) {
+        ESP_LOGI(TAG, "mark_app_valid_cancel_rollback ok");
+    } else if (mark_err == ESP_ERR_NOT_SUPPORTED || mark_err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGD(TAG, "mark_valid no-op: %s", esp_err_to_name(mark_err));
+    } else {
+        ESP_LOGW(TAG, "mark_valid failed: %s", esp_err_to_name(mark_err));
+    }
+#endif
 
     update_battery_status();
     ESP_ERROR_CHECK(init_battery_refresh_timer());

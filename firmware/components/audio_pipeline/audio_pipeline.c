@@ -33,7 +33,7 @@ static const char *TAG = "audio_pipeline";
 #define OPUS_MAX_PACKET_SIZE 220
 #define OPUS_COMPLEXITY 1
 
-#define TX_QUEUE_DEPTH 50
+#define TX_QUEUE_DEPTH 80
 #define TX_RETRY_DELAY_MS 10
 #define TX_MAX_RETRIES 30
 #define TX_DRAIN_TIMEOUT_MS 500
