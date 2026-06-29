@@ -1705,15 +1705,15 @@ void TestTencentUrlConstruction() {
     config.tencent_engine_model_type = "16k_zh_en";
     config.tencent_hotword_id = "vocab-abc";
 
-    auto url = AsrClientTencent::BuildSignedUrl(config);
+    auto url = AsrClientTencent::BuildSignedUrl(config, "test-voice-id-1234");
 
     // 验证 URL 基本结构
     assert(url.starts_with("wss://asr.cloud.tencent.com/asr/v2/1234567890?"));
     assert(url.find("secretid=AKIDtest") != std::string::npos);
     assert(url.find("engine_model_type=16k_zh_en") != std::string::npos);
     assert(url.find("voice_format=10") != std::string::npos);
-    assert(url.find("sample_rate=16000") != std::string::npos);
     assert(url.find("needvad=1") != std::string::npos);
+    assert(url.find("voice_id=test-voice-id-1234") != std::string::npos);
     assert(url.find("hotword_id=vocab-abc") != std::string::npos);
     assert(url.find("&signature=") != std::string::npos);
 

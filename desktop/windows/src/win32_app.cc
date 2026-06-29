@@ -267,6 +267,14 @@ std::wstring LocalizedTranslationTargetName(const TranslationTarget& target, UiL
 } // namespace
 
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
+    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
+           " portable_mode=" + std::string(config_.portable_mode ? "true" : "false") +
+           " provider=" + AsrProviderName(config_.asr_provider));
+    if (config_.asr_provider == AsrProvider::kTencent) {
+        LogApp("Tencent config appid=" + config_.tencent_appid +
+               " secret_id=" + config_.tencent_secret_id.substr(0, 8) + "..." +
+               " secret_key_len=" + std::to_string(config_.tencent_secret_key.size()));
+    }
     paired_device_ids_ = config_.paired_device_ids;
     for (const auto& entry : config_.paired_devices) {
         if (entry.device_id.empty()) continue;
