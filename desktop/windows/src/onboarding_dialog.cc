@@ -319,6 +319,7 @@ void OnboardingDialog::BuildAsrStep(int x, int y, int w) {
     controls_.push_back(provider_combo_);
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
+    SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
 
     controls_.push_back(CreateStatic(hwnd_, TrW(StringId::kOnboardingApiKey, language_).c_str(),
                                      x, y + Dp(88), Dp(92), Dp(22),
@@ -349,9 +350,14 @@ void OnboardingDialog::BuildReadyStep(int x, int y, int w) {
                                      x, y, w, Dp(28), instance_));
     controls_.push_back(CreateStatic(hwnd_, DeviceSummary().c_str(), x, y + Dp(46), w, Dp(24),
                                      instance_));
-    const auto provider_name = config_.asr_provider == AsrProvider::kVoiceStickCloud
-                                   ? L"VoiceStick Cloud"
-                                   : L"Volcengine";
+    const auto provider_name = [&]() -> const wchar_t* {
+        switch (config_.asr_provider) {
+            case AsrProvider::kVoiceStickCloud: return L"VoiceStick Cloud";
+            case AsrProvider::kVolcengine: return L"Volcengine";
+            case AsrProvider::kTencent: return L"Tencent Cloud ASR";
+        }
+        return L"VoiceStick Cloud";
+    }();
     const auto provider = FormatText(TrW(StringId::kOnboardingAsrSummary, language_), {provider_name});
     controls_.push_back(CreateStatic(hwnd_, provider.c_str(), x, y + Dp(82), w, Dp(24), instance_));
     controls_.push_back(CreateStatic(hwnd_,
@@ -361,11 +367,18 @@ void OnboardingDialog::BuildReadyStep(int x, int y, int w) {
 
 void OnboardingDialog::LoadConfigIntoControls() {
     if (!provider_combo_) return;
-    SendMessageW(provider_combo_, CB_SETCURSEL,
-                 config_.asr_provider == AsrProvider::kVoiceStickCloud ? 0 : 1, 0);
-    const auto& key = config_.asr_provider == AsrProvider::kVoiceStickCloud
-                          ? config_.voicestick_api_key
-                          : config_.volcengine_api_key;
+    int provider_idx = 0;
+    if (config_.asr_provider == AsrProvider::kVolcengine) provider_idx = 1;
+    if (config_.asr_provider == AsrProvider::kTencent) provider_idx = 2;
+    SendMessageW(provider_combo_, CB_SETCURSEL, provider_idx, 0);
+    const auto& key = [&]() -> const std::string& {
+        switch (config_.asr_provider) {
+            case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
+            case AsrProvider::kVolcengine: return config_.volcengine_api_key;
+            case AsrProvider::kTencent: return config_.tencent_secret_id;
+        }
+        return config_.voicestick_api_key;
+    }();
     SetWindowTextW(api_key_edit_, Utf16(key).c_str());
     const auto resource = Utf16(config_.resource_id);
     int idx = static_cast<int>(SendMessageW(resource_combo_, CB_FINDSTRINGEXACT, -1,
@@ -377,12 +390,15 @@ void OnboardingDialog::LoadConfigIntoControls() {
 void OnboardingDialog::SaveControlsIntoConfig() {
     if (!provider_combo_) return;
     const int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    config_.asr_provider = provider_idx == 0 ? AsrProvider::kVoiceStickCloud : AsrProvider::kVolcengine;
+    AsrProvider new_provider = AsrProvider::kVoiceStickCloud;
+    if (provider_idx == 1) new_provider = AsrProvider::kVolcengine;
+    if (provider_idx == 2) new_provider = AsrProvider::kTencent;
+    config_.asr_provider = new_provider;
     const auto api_key = Utf8(GetText(api_key_edit_));
-    if (config_.asr_provider == AsrProvider::kVoiceStickCloud) {
-        config_.voicestick_api_key = api_key;
-    } else {
-        config_.volcengine_api_key = api_key;
+    switch (new_provider) {
+        case AsrProvider::kVoiceStickCloud: config_.voicestick_api_key = api_key; break;
+        case AsrProvider::kVolcengine: config_.volcengine_api_key = api_key; break;
+        case AsrProvider::kTencent: config_.tencent_secret_id = api_key; break;
     }
     wchar_t resource_buf[256]{};
     const int resource_idx = static_cast<int>(SendMessageW(resource_combo_, CB_GETCURSEL, 0, 0));

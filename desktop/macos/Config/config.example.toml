@@ -1,7 +1,16 @@
+# asr_provider = "voicestick_cloud"   # VoiceStick Cloud
+# asr_provider = "volcengine"         # 火山引擎（默认）
+# asr_provider = "tencent"            # 腾讯云 ASR（普方英大模型）
 asr_provider = "volcengine"
 voicestick_api_key = ""
 voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/"
 volcengine_api_key = "your_volcengine_asr_api_key"
+# 腾讯云 ASR 配置（仅在 asr_provider = "tencent" 时需要）
+# tencent_secret_id = "AKID..."
+# tencent_secret_key = "..."
+# tencent_appid = "1234567890"
+# tencent_engine_model_type = "16k_zh_en"   # 普方英大模型（普通话+粤语+英语+方言）
+# tencent_hotword_id = ""                    # 可选，热词表 VocabId；为空时自动创建
 llm_base_url = "https://api.openai.com/v1"
 llm_api_key = "your_openai_compatible_llm_api_key"
 llm_model = "gpt-5.5"

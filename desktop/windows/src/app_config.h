@@ -13,6 +13,7 @@ namespace voicestick {
 enum class AsrProvider {
     kVoiceStickCloud,
     kVolcengine,
+    kTencent,
 };
 
 enum class InteractionMode {
@@ -115,6 +116,11 @@ struct AppConfig {
     std::string voicestick_api_key;
     std::string voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/";
     std::string volcengine_api_key;
+    std::string tencent_secret_id;
+    std::string tencent_secret_key;
+    std::string tencent_appid;
+    std::string tencent_engine_model_type = "16k_zh_en";
+    std::string tencent_hotword_id;
     std::string llm_base_url = "https://api.openai.com/v1";
     std::string llm_api_key;
     std::string llm_model = "gpt-5.5";

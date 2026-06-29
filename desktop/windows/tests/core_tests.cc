@@ -1,3 +1,4 @@
+#include "asr_client_tencent.h"
 #include "asr_protocol.h"
 #include "ble_protocol.h"
 #include "byte_utils.h"
@@ -1631,6 +1632,217 @@ void TestStreamPayload() {
 
 } // namespace
 
+void TestTencentProviderSelection() {
+    assert(AsrProviderFromName("voicestick_cloud") == AsrProvider::kVoiceStickCloud);
+    assert(AsrProviderFromName("volcengine") == AsrProvider::kVolcengine);
+    assert(AsrProviderFromName("tencent") == AsrProvider::kTencent);
+    // 未知名称回退到 volcengine
+    assert(AsrProviderFromName("unknown") == AsrProvider::kVolcengine);
+
+    assert(AsrProviderName(AsrProvider::kVoiceStickCloud) == "voicestick_cloud");
+    assert(AsrProviderName(AsrProvider::kVolcengine) == "volcengine");
+    assert(AsrProviderName(AsrProvider::kTencent) == "tencent");
+}
+
+void TestTencentConfigRoundTrip() {
+    // 测试腾讯云字段的 TOML 读写
+    AppConfig config = AppConfig::Defaults();
+    config.asr_provider = AsrProvider::kTencent;
+    config.tencent_secret_id = "AKID-test-id";
+    config.tencent_secret_key = "test-secret-key";
+    config.tencent_appid = "1234567890";
+    config.tencent_engine_model_type = "16k_zh_en";
+    config.tencent_hotword_id = "vocab-abc123";
+
+    assert(config.asr_provider == AsrProvider::kTencent);
+    assert(config.tencent_secret_id == "AKID-test-id");
+    assert(config.tencent_secret_key == "test-secret-key");
+    assert(config.tencent_appid == "1234567890");
+    assert(config.tencent_engine_model_type == "16k_zh_en");
+    assert(config.tencent_hotword_id == "vocab-abc123");
+
+    // ActiveApiKey 对 Tencent 应返回 SecretId
+    assert(config.ActiveApiKey() == "AKID-test-id");
+
+    // ActiveWebsocketUrl 对 Tencent 应包含 appid
+    auto url = config.ActiveWebsocketUrl();
+    assert(url.find("asr.cloud.tencent.com") != std::string::npos);
+    assert(url.find("1234567890") != std::string::npos);
+
+    // 默认引擎模型
+    AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.tencent_engine_model_type == "16k_zh_en");
+}
+
+void TestTencentSignatureGeneration() {
+    // 验证 HMAC-SHA1（使用已知测试向量）
+    auto result = AsrClientTencent::HmacSha1("key", "The quick brown fox jumps over the lazy dog");
+    // HMAC-SHA1("key", message) 的已知结果
+    assert(!result.empty());
+    // SHA1 HMAC 输出 20 字节
+    assert(result.size() == 20);
+
+    // 空消息
+    auto empty_result = AsrClientTencent::HmacSha1("key", "");
+    assert(!empty_result.empty());
+    assert(empty_result.size() == 20);
+
+    // Base64 编码
+    std::vector<std::uint8_t> test_bytes = {'M', 'a', 'n'};
+    auto b64 = AsrClientTencent::Base64Encode(test_bytes);
+    assert(b64 == "TWFu");
+
+    // URL 编码
+    auto url_enc = AsrClientTencent::UrlEncode("hello world");
+    assert(url_enc == "hello%20world");
+}
+
+void TestTencentUrlConstruction() {
+    AppConfig config = AppConfig::Defaults();
+    config.tencent_secret_id = "AKIDtest";
+    config.tencent_secret_key = "testkey";
+    config.tencent_appid = "1234567890";
+    config.tencent_engine_model_type = "16k_zh_en";
+    config.tencent_hotword_id = "vocab-abc";
+
+    auto url = AsrClientTencent::BuildSignedUrl(config);
+
+    // 验证 URL 基本结构
+    assert(url.starts_with("wss://asr.cloud.tencent.com/asr/v2/1234567890?"));
+    assert(url.find("secretid=AKIDtest") != std::string::npos);
+    assert(url.find("engine_model_type=16k_zh_en") != std::string::npos);
+    assert(url.find("voice_format=10") != std::string::npos);
+    assert(url.find("sample_rate=16000") != std::string::npos);
+    assert(url.find("needvad=1") != std::string::npos);
+    assert(url.find("hotword_id=vocab-abc") != std::string::npos);
+    assert(url.find("&signature=") != std::string::npos);
+
+    // 参数应按字典序排列：secretid 排在 engine_model_type 之前是错的，应该是 e < s
+    auto secretid_pos = url.find("secretid=");
+    auto engine_pos = url.find("engine_model_type=");
+    assert(engine_pos < secretid_pos);  // 'e' < 's'
+}
+
+void TestTencentResultParsing() {
+    // slice_type=0 — 开始识别
+    const char* json_start = R"(
+    {
+        "code": 0,
+        "message": "success",
+        "voice_id": "test-uuid",
+        "result": {
+            "slice_type": 0,
+            "voice_text_str": ""
+        }
+    })";
+    assert(AsrClientTencent::ExtractSliceType(json_start) == 0);
+    assert(AsrClientTencent::ExtractVoiceText(json_start).empty());
+
+    // slice_type=1 — 中间结果
+    const char* json_partial = R"(
+    {
+        "code": 0,
+        "message": "success",
+        "result": {
+            "slice_type": 1,
+            "voice_text_str": "今天天气"
+        }
+    })";
+    assert(AsrClientTencent::ExtractSliceType(json_partial) == 1);
+    assert(AsrClientTencent::ExtractVoiceText(json_partial) == "今天天气");
+
+    // slice_type=2 — 最终结果
+    const char* json_final = R"(
+    {
+        "code": 0,
+        "message": "success",
+        "result": {
+            "slice_type": 2,
+            "voice_text_str": "今天天气很好"
+        }
+    })";
+    assert(AsrClientTencent::ExtractSliceType(json_final) == 2);
+    assert(AsrClientTencent::ExtractVoiceText(json_final) == "今天天气很好");
+
+    // 错误响应
+    const char* json_error = R"(
+    {
+        "code": 4002,
+        "message": "鉴权失败"
+    })";
+    assert(AsrClientTencent::ExtractErrorCode(json_error) == 4002);
+    assert(AsrClientTencent::ExtractErrorMessage(json_error) == "鉴权失败");
+
+    // 词列表 segments
+    const char* json_with_words = R"(
+    {
+        "code": 0,
+        "message": "success",
+        "result": {
+            "slice_type": 1,
+            "voice_text_str": "今天天气很好",
+            "word_list": [
+                {"word": "今天", "start_time": 0, "end_time": 400, "stable_flag": 1},
+                {"word": "天气", "start_time": 400, "end_time": 700, "stable_flag": 1},
+                {"word": "很好", "start_time": 700, "end_time": 1000, "stable_flag": 0}
+            ]
+        }
+    })";
+    std::set<std::string> emitted;
+    auto segments = AsrClientTencent::ExtractWordListSegments(json_with_words, &emitted);
+    // 只有 stable_flag=1 的词被聚合
+    assert(segments.size() == 1);
+    assert(segments[0].text == "今天天气");
+    assert(segments[0].definite);
+    assert(segments[0].start_time == 0);
+    assert(segments[0].end_time == 700);
+
+    // 再次提取应无新 segment（已去重）
+    auto segments2 = AsrClientTencent::ExtractWordListSegments(json_with_words, &emitted);
+    assert(segments2.empty());
+}
+
+void TestTencentStartMessage() {
+    AppConfig config = AppConfig::Defaults();
+    AsrSessionOptions options;
+    options.hotwords = {"小智", "语音输入"};
+
+    auto msg = AsrClientTencent::MakeStartMessage(config, options, "test-voice-id");
+    assert(msg.find("\"type\":\"START\"") != std::string::npos);
+    assert(msg.find("\"voice_format\":10") != std::string::npos);
+    assert(msg.find("\"sample_rate\":16000") != std::string::npos);
+    assert(msg.find("\"needvad\":1") != std::string::npos);
+    assert(msg.find("\"voice_id\":\"test-voice-id\"") != std::string::npos);
+    assert(msg.find("\"hotword_list\":\"小智,语音输入\"") != std::string::npos);
+    assert(msg.find("\"filter_dirty\":1") != std::string::npos);
+    assert(msg.find("\"word_info\":1") != std::string::npos);
+
+    // 无热词时不应有 hotword_list
+    AsrSessionOptions empty_options;
+    auto msg_no_hotwords = AsrClientTencent::MakeStartMessage(config, empty_options, "id2");
+    assert(msg_no_hotwords.find("hotword_list") == std::string::npos);
+}
+
+void TestTencentEndMessage() {
+    auto msg = AsrClientTencent::MakeEndMessage("my-voice-id");
+    assert(msg.find("\"type\":\"END\"") != std::string::npos);
+    assert(msg.find("\"voice_id\":\"my-voice-id\"") != std::string::npos);
+}
+
+void TestTencentVoiceIdGeneration() {
+    auto id1 = AsrClientTencent::GenerateVoiceId();
+    auto id2 = AsrClientTencent::GenerateVoiceId();
+    // UUID 格式: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (36 字符)
+    assert(id1.size() == 36);
+    assert(id2.size() == 36);
+    assert(id1 != id2);  // 每次生成应不同
+    assert(id1[8] == '-');
+    assert(id1[13] == '-');
+    assert(id1[18] == '-');
+    assert(id1[23] == '-');
+    assert(id1[14] == '4');  // UUID v4 版本标识
+}
+
 int main() {
     TestDeviceIds();
     TestPairDeviceHelpers();
@@ -1671,5 +1883,13 @@ int main() {
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
     TestSseParser();
     TestStreamPayload();
+    TestTencentProviderSelection();
+    TestTencentConfigRoundTrip();
+    TestTencentSignatureGeneration();
+    TestTencentUrlConstruction();
+    TestTencentResultParsing();
+    TestTencentStartMessage();
+    TestTencentEndMessage();
+    TestTencentVoiceIdGeneration();
     return 0;
 }

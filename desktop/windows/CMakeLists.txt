@@ -72,6 +72,8 @@ add_executable(VoiceStickApp WIN32
     src/main.cc
     src/win32_app.cc
     src/asr_client_win.cc
+    src/asr_client_tencent.cc
+    src/tencent_asr_vocab_client.cc
     src/input_injector_win.cc
     src/ble_central_win.cc
     src/global_hotkey_win.cc
@@ -132,9 +134,11 @@ add_custom_command(TARGET VoiceStickApp POST_BUILD
 
 add_executable(voicestick_windows_tests
     tests/core_tests.cc
+    src/asr_client_tencent.cc
+    src/tencent_asr_vocab_client.cc
 )
 
-target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core)
+target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt)
 
 enable_testing()
 add_test(NAME voicestick_windows_tests COMMAND voicestick_windows_tests)

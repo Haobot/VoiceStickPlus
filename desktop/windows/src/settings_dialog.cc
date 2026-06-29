@@ -380,6 +380,7 @@ void SettingsDialog::BuildControls() {
                                            kIdProviderCombo, instance_));
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
+    SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
     y += row_h + Dp(10);
 
     remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(), Dp(10), y + Dp(3), label_w,
@@ -532,12 +533,19 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.ui_language == UiLanguage::kSimplifiedChinese) language_index = 2;
     SendMessageW(language_combo_, CB_SETCURSEL, language_index, 0);
 
-    SendMessageW(provider_combo_, CB_SETCURSEL,
-                 config_.asr_provider == AsrProvider::kVoiceStickCloud ? 0 : 1, 0);
+    int provider_idx = 0;
+    if (config_.asr_provider == AsrProvider::kVolcengine) provider_idx = 1;
+    if (config_.asr_provider == AsrProvider::kTencent) provider_idx = 2;
+    SendMessageW(provider_combo_, CB_SETCURSEL, provider_idx, 0);
 
-    const auto& key = config_.asr_provider == AsrProvider::kVoiceStickCloud
-                          ? config_.voicestick_api_key
-                          : config_.volcengine_api_key;
+    const auto& key = [&]() -> const std::string& {
+        switch (config_.asr_provider) {
+            case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
+            case AsrProvider::kVolcengine: return config_.volcengine_api_key;
+            case AsrProvider::kTencent: return config_.tencent_secret_id;
+        }
+        return config_.voicestick_api_key;
+    }();
     SetWindowTextW(api_key_edit_, Utf16(key).c_str());
 
     auto resource_wide = Utf16(config_.resource_id);
@@ -594,14 +602,15 @@ void SettingsDialog::SaveSettings() {
     }
 
     int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    AsrProvider new_provider = (provider_idx == 0) ? AsrProvider::kVoiceStickCloud
-                                                   : AsrProvider::kVolcengine;
+    AsrProvider new_provider = AsrProvider::kVoiceStickCloud;
+    if (provider_idx == 1) new_provider = AsrProvider::kVolcengine;
+    if (provider_idx == 2) new_provider = AsrProvider::kTencent;
 
     auto api_key = Utf8(GetWindowText(api_key_edit_));
-    if (new_provider == AsrProvider::kVoiceStickCloud) {
-        config_.voicestick_api_key = api_key;
-    } else {
-        config_.volcengine_api_key = api_key;
+    switch (new_provider) {
+        case AsrProvider::kVoiceStickCloud: config_.voicestick_api_key = api_key; break;
+        case AsrProvider::kVolcengine: config_.volcengine_api_key = api_key; break;
+        case AsrProvider::kTencent: config_.tencent_secret_id = api_key; break;
     }
     config_.asr_provider = new_provider;
     config_.llm_base_url = Utf8(GetWindowText(llm_base_url_edit_));
@@ -664,6 +673,7 @@ void SettingsDialog::UpdateProviderVisibility() {
     ShowWindow(resource_combo_, is_volcengine ? SW_SHOW : SW_HIDE);
     ShowWindow(resource_label_, is_volcengine ? SW_SHOW : SW_HIDE);
     const bool is_cloud = (idx == 0);
+    const bool is_tencent = (idx == 2);
     const bool api_key_empty = GetWindowText(api_key_edit_).empty();
     const bool show_trial_button = is_cloud && api_key_empty;
     ShowWindow(apply_trial_button_, show_trial_button ? SW_SHOW : SW_HIDE);
@@ -673,6 +683,10 @@ void SettingsDialog::UpdateProviderVisibility() {
         const int api_key_w = show_trial_button ? ctrl_w - apply_btn_w - Dp(8) : ctrl_w;
         SetWindowPos(api_key_edit_, nullptr, 0, 0, api_key_w, Dp(24),
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    // 腾讯云不需要试用按钮
+    if (is_tencent && apply_trial_button_) {
+        ShowWindow(apply_trial_button_, SW_HIDE);
     }
 }
 

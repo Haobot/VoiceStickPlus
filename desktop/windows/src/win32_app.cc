@@ -1,6 +1,7 @@
 #include "win32_app.h"
 
 #include "asr_client_win.h"
+#include "asr_client_tencent.h"
 #include "ble_central_win.h"
 #include "localization.h"
 #include "log.h"
@@ -316,14 +317,27 @@ int Win32App::Run() {
         LogLine("Creating BLE coordinator");
         auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
         ble_central_ = ble.get();
+
+        // 根据 asr_provider 创建对应的 ASR 客户端
+        auto make_asr = [](const AppConfig& cfg) -> std::unique_ptr<AsrClient> {
+            LogApp("make_asr: provider=" + AsrProviderName(cfg.asr_provider) +
+                   " appid=" + cfg.tencent_appid);
+            if (cfg.asr_provider == AsrProvider::kTencent) {
+                LogApp("make_asr: creating AsrClientTencent");
+                return std::make_unique<AsrClientTencent>(cfg);
+            }
+            LogApp("make_asr: creating AsrClientWin");
+            return std::make_unique<AsrClientWin>(cfg);
+        };
+
         coordinator_ = std::make_unique<VoiceStickCoordinator>(
             config_,
             std::move(ble),
-            std::make_unique<AsrClientWin>(config_),
+            make_asr(config_),
             this,
             &input_injector_,
-            [](const AppConfig& config) {
-                return std::make_unique<AsrClientWin>(config);
+            [make_asr](const AppConfig& config) {
+                return make_asr(config);
             });
         LogLine("Starting coordinator");
         coordinator_->Start();
