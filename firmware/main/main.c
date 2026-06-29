@@ -857,6 +857,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             play_prompt_tone(880);
             s_hold_threshold_pending = true;
             s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+            s_primary_down_us = esp_timer_get_time();
             (void)esp_timer_start_once(s_double_click_timer,
                                        DOUBLE_CLICK_MAX_PRESS_MS * 1000ULL);
             return;

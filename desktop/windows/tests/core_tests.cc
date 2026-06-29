@@ -1824,8 +1824,8 @@ void TestTencentOpusEncapsulation() {
 
     auto frame = AsrClientTencent::ExtractTencentOpusFrame(std::span(ogg_page));
     assert(frame.size() == 4 + 2 + 4);
-    assert(frame[0] == 'O' && frame[1] == 'p' && frame[2] == 'u' && frame[3] == 's');
-    assert(frame[4] == 0x00 && frame[5] == 0x04);  // big-endian length = 4
+    assert(frame[0] == 'o' && frame[1] == 'p' && frame[2] == 'u' && frame[3] == 's');
+    assert(frame[4] == 0x04 && frame[5] == 0x00);  // little-endian length = 4
     assert(frame[6] == 0x01 && frame[7] == 0x02 && frame[8] == 0x03 && frame[9] == 0x04);
 
     // OpusHead/OpusTags 头包应返回空
