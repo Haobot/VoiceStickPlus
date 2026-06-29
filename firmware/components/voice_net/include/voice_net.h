@@ -7,13 +7,66 @@
 extern "C" {
 #endif
 
-// 桌面端通过 BLE 下发 Wi-Fi STA 凭据后，固件用 state_tx 回报当前快照。
+// 桌面端通过 BLE 下发 Wi-Fi STA 凾据后，固件用 state_tx 回报当前快照。
 // 协议契约见 Doc/Ref/protocol.md "Wi-Fi Provisioning and HTTPS OTA Pull" 章节，
 // 实施计划见 Doc/Plan/wifi-sta-ble-provisioning.md。
 
 // 上层注入：把已经拼好的 wifi_status JSON 文本推到 BLE state_tx 通道。
 // voice_net 不直接依赖 voice_ble，避免组件互相引用。
 typedef esp_err_t (*voice_net_status_publish_fn)(const char *json);
+
+// 由 main.c 注入的"是否允许启动 OTA"查询回调。voice_net 在 ota_pull 启动前会调用，
+// 返回 false 时拒绝并把 wifi_status.last_error 置为 "ota_park_required"。
+// 实现应检查：!s_recording && !s_ota_updating && !voice_ble_ota_is_active()。
+// 详见 Doc/Plan/wifi-sta-ble-provisioning.md §2.5 Park gate。
+typedef bool (*voice_net_park_query_fn)(void);
+
+// Wi-Fi STA 状态变化回调：state 为字符串，如 "disabled"/"configured"/"connecting"/"connected"/"error"。
+typedef void (*voice_net_status_changed_fn)(const char *ssid, const char *ip, const char *state);
+
+// ============================================================================
+// 条件编译禁用 Wi-Fi：定义 VOICE_NET_DISABLE（顶层 CMakeLists.txt 控制）后，
+// voice_net 组件不链接任何 esp_wifi/esp_http_client/mdns/mbedtls 代码，全部 API
+// 退化为空 stub。用途：Wi-Fi 仅用于 OTA 调试，走 COM 口烧录后无需 Wi-Fi，禁用可
+// 释放内部 RAM 与 2.4GHz 射频给 BLE 音频传输（消除共存干扰、扩大 mbuf 池空间）。
+// 回退：顶层 CMakeLists.txt 注释掉 set(VOICE_NET_DISABLE ON ...) 即恢复。
+// ============================================================================
+#ifdef VOICE_NET_DISABLE
+
+static inline esp_err_t voice_net_init(voice_net_status_publish_fn publish) {
+    (void)publish; return ESP_OK;
+}
+static inline void voice_net_apply_credentials(const char *ssid, const char *password) {
+    (void)ssid; (void)password;
+}
+static inline void voice_net_clear_credentials(void) {}
+static inline void voice_net_publish_status(void) {}
+static inline void voice_net_resume_if_configured(void) {}
+static inline void voice_net_set_park_query(voice_net_park_query_fn cb) { (void)cb; }
+static inline void voice_net_start_ota_pull(const char *url, const char *sha256_hex) {
+    (void)url; (void)sha256_hex;
+}
+// OTA rollback 仍保留（CONFIG_APP_ROLLBACK_ENABLE=y），禁用 Wi-Fi 后由 main.c
+// 在启动时直接调 esp_ota_mark_app_valid_cancel_rollback 签到；ota_commit 命令
+// 走此 stub 为空操作（启动时已自动签到，无需重复）。
+static inline void voice_net_mark_app_valid(void) {}
+static inline void voice_net_notify_ble_connected(void) {}
+static inline bool voice_net_is_pending_verify(void) { return false; }
+static inline void voice_net_set_status_changed_callback(voice_net_status_changed_fn cb) {
+    (void)cb;
+}
+// state 必须指向静态字符串，避免 update_wifi_info_ui 里 strcmp(NULL) 崩溃。
+static inline void voice_net_get_status(char *ssid, size_t ssid_size,
+                                        char *ip, size_t ip_size, const char **state) {
+    if (ssid && ssid_size) ssid[0] = '\0';
+    if (ip && ip_size) ip[0] = '\0';
+    if (state) *state = "disabled";
+}
+static inline void voice_net_start_scan(void) {}
+static inline void voice_net_on_recording_started(void) {}
+static inline void voice_net_on_recording_stopped(void) {}
+
+#else // 正常实现：voice_net 组件提供真实 Wi-Fi STA / OTA pull 功能
 
 // 初始化 Wi-Fi STA 子系统：注册事件回调、加载 NVS 凭据、有凭据则立即异步连接。
 // 必须在 voice_ble_init 之后调用（依赖其完成 nvs_flash_init）。
@@ -37,11 +90,6 @@ void voice_net_publish_status(void);
 // 没有持久化凭据时是 no-op。
 void voice_net_resume_if_configured(void);
 
-// 由 main.c 注入的"是否允许启动 OTA"查询回调。voice_net 在 ota_pull 启动前会调用，
-// 返回 false 时拒绝并把 wifi_status.last_error 置为 "ota_park_required"。
-// 实现应检查：!s_recording && !s_ota_updating && !voice_ble_ota_is_active()。
-// 详见 Doc/Plan/wifi-sta-ble-provisioning.md §2.5 Park gate。
-typedef bool (*voice_net_park_query_fn)(void);
 void voice_net_set_park_query(voice_net_park_query_fn cb);
 
 // 桌面端 control_rx 收到 ota_pull 时调用：启动 esp_https_ota 拉取固件。
@@ -63,8 +111,6 @@ void voice_net_notify_ble_connected(void);
 // 用于 wifi_status.ota_pending_verify 字段。
 bool voice_net_is_pending_verify(void);
 
-// Wi-Fi STA 状态变化回调：state 为字符串，如 "disabled"/"configured"/"connecting"/"connected"/"error"。
-typedef void (*voice_net_status_changed_fn)(const char *ssid, const char *ip, const char *state);
 void voice_net_set_status_changed_callback(voice_net_status_changed_fn cb);
 
 // 读取当前 Wi-Fi STA 快照。ssid/ip 缓冲区由调用方提供；state 为内部静态字符串，无需释放。
@@ -82,6 +128,8 @@ void voice_net_on_recording_started(void);
 // 录音联动：main.c 在录音结束时调用。当前为空操作（Wi-Fi 不会自动重开），
 // 但保留 hook 以备未来策略变化。
 void voice_net_on_recording_stopped(void);
+
+#endif // VOICE_NET_DISABLE
 
 #ifdef __cplusplus
 }
