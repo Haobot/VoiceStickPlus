@@ -279,6 +279,11 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "voicestick_api_key") config.voicestick_api_key = value;
     if (key == "voicestick_cloud_url") config.voicestick_cloud_url = value;
     if (key == "volcengine_api_key" || key == "api_key") config.volcengine_api_key = value;
+    if (key == "tencent_secret_id") config.tencent_secret_id = value;
+    if (key == "tencent_secret_key") config.tencent_secret_key = value;
+    if (key == "tencent_appid") config.tencent_appid = value;
+    if (key == "tencent_engine_model_type") config.tencent_engine_model_type = value;
+    if (key == "tencent_hotword_id") config.tencent_hotword_id = value;
     if (key == "llm_base_url") config.llm_base_url = value;
     if (key == "llm_api_key") config.llm_api_key = value;
     if (key == "llm_model") config.llm_model = value;
@@ -367,6 +372,11 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "voicestick_cloud_url")) config.voicestick_cloud_url = *value;
         if (auto value = TomlString(table, "volcengine_api_key")) config.volcengine_api_key = *value;
         if (auto value = TomlString(table, "api_key")) config.volcengine_api_key = *value;
+        if (auto value = TomlString(table, "tencent_secret_id")) config.tencent_secret_id = *value;
+        if (auto value = TomlString(table, "tencent_secret_key")) config.tencent_secret_key = *value;
+        if (auto value = TomlString(table, "tencent_appid")) config.tencent_appid = *value;
+        if (auto value = TomlString(table, "tencent_engine_model_type")) config.tencent_engine_model_type = *value;
+        if (auto value = TomlString(table, "tencent_hotword_id")) config.tencent_hotword_id = *value;
         if (auto value = TomlString(table, "llm_base_url")) config.llm_base_url = *value;
         if (auto value = TomlString(table, "llm_api_key")) config.llm_api_key = *value;
         if (auto value = TomlString(table, "llm_model")) config.llm_model = *value;
@@ -469,6 +479,11 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "voicestick_api_key = \"" << TomlEscape(voicestick_api_key) << "\"\n";
     output << "voicestick_cloud_url = \"" << TomlEscape(voicestick_cloud_url) << "\"\n";
     output << "volcengine_api_key = \"" << TomlEscape(volcengine_api_key) << "\"\n";
+    output << "tencent_secret_id = \"" << TomlEscape(tencent_secret_id) << "\"\n";
+    output << "tencent_secret_key = \"" << TomlEscape(tencent_secret_key) << "\"\n";
+    output << "tencent_appid = \"" << TomlEscape(tencent_appid) << "\"\n";
+    output << "tencent_engine_model_type = \"" << TomlEscape(tencent_engine_model_type) << "\"\n";
+    output << "tencent_hotword_id = \"" << TomlEscape(tencent_hotword_id) << "\"\n";
     output << "llm_base_url = \"" << TomlEscape(llm_base_url) << "\"\n";
     output << "llm_api_key = \"" << TomlEscape(llm_api_key) << "\"\n";
     output << "llm_model = \"" << TomlEscape(llm_model) << "\"\n";
@@ -544,11 +559,20 @@ void AppConfig::Save(const std::filesystem::path& path) const {
 }
 
 std::string AppConfig::ActiveApiKey() const {
-    return asr_provider == AsrProvider::kVoiceStickCloud ? voicestick_api_key : volcengine_api_key;
+    switch (asr_provider) {
+        case AsrProvider::kVoiceStickCloud: return voicestick_api_key;
+        case AsrProvider::kVolcengine: return volcengine_api_key;
+        case AsrProvider::kTencent: return tencent_secret_id;
+    }
+    return {};
 }
 
 std::string AppConfig::ActiveWebsocketUrl() const {
     if (asr_provider == AsrProvider::kVolcengine) return kVolcengineUrl;
+    if (asr_provider == AsrProvider::kTencent) {
+        // 腾讯云 WebSocket URL 由 AsrClientTencent 动态构建（含签名），此处返回静态前缀仅供诊断
+        return "wss://asr.cloud.tencent.com/asr/v2/" + tencent_appid;
+    }
     auto url = Trim(voicestick_cloud_url);
     return url.empty() ? AppConfig{}.voicestick_cloud_url : url;
 }
@@ -624,11 +648,18 @@ OutputProfile AppConfig::OutputProfileForDevice(const std::optional<std::string>
 }
 
 std::string AsrProviderName(AsrProvider provider) {
-    return provider == AsrProvider::kVoiceStickCloud ? "voicestick_cloud" : "volcengine";
+    switch (provider) {
+        case AsrProvider::kVoiceStickCloud: return "voicestick_cloud";
+        case AsrProvider::kVolcengine: return "volcengine";
+        case AsrProvider::kTencent: return "tencent";
+    }
+    return "voicestick_cloud";
 }
 
 AsrProvider AsrProviderFromName(std::string_view name) {
-    return name == "voicestick_cloud" ? AsrProvider::kVoiceStickCloud : AsrProvider::kVolcengine;
+    if (name == "voicestick_cloud") return AsrProvider::kVoiceStickCloud;
+    if (name == "tencent") return AsrProvider::kTencent;
+    return AsrProvider::kVolcengine;
 }
 
 std::string InteractionModeName(InteractionMode mode) {
