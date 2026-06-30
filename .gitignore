@@ -34,3 +34,4 @@ dist/
 %CONFIGURE_LOG%
 %LOG_FILE%
 scripts/.idf_cli_state.json
+.claude/settings.local.json
