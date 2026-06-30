@@ -230,6 +230,9 @@ public:
     void ShowPartial(const std::string& text, const std::optional<std::string>&) override {
         partials.push_back(text);
     }
+    void AppendPartial(const std::string& text, const std::optional<std::string>&) override {
+        partials.push_back(text);
+    }
     void ShowFinalCountdown(const std::string& text,
                             const std::optional<std::string>&,
                             std::function<void()> on_complete) override {

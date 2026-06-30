@@ -312,6 +312,12 @@ void OverlayWindow::ShowPartial(const std::string& text) {
     Show(Mode::kListening, text.empty() ? "Processing..." : text);
 }
 
+void OverlayWindow::AppendPartial(const std::string& text) {
+    // 流式精修高频追加：跳过文字滚动过渡动画，直接显示当前累积文本。
+    Show(Mode::kListening, text.empty() ? "Processing..." : text,
+         /*hint=*/"", /*skip_text_transition=*/true);
+}
+
 void OverlayWindow::ShowFinalCountdown(const std::string& text, std::function<void()> on_complete) {
     countdown_duration_ms_ = 1200;
     countdown_started_at_ms_ = GetTickCount64();
@@ -374,11 +380,18 @@ void OverlayWindow::OnTimer(UINT_PTR timer_id) {
         animation_frame_++;
         const bool window_moved = StepWindowAnimation();
         const bool text_transitioning = text_transition_started_at_ms_ != 0;
-        if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown || text_transitioning)) {
+        // 仅在文字滚动过渡进行时才重建 static layer（含昂贵的 D2D 文本布局）。
+        // window_moved 时 StepWindowAnimation 已自行 InvalidateStaticLayer；
+        // kListening 静态文本时复用缓存 static layer，UpdateLayeredBitmap 只重绘动态指示器，
+        // 消除每 16ms 全量重建文本布局导致的 UI 线程过载。
+        if (!window_moved && text_transitioning) {
             InvalidateStaticLayer();
             UpdateLayeredBitmap();
+        } else if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown)) {
+            // 静态文本：仅重绘动态指示器（音浪条），不重建文本布局。
+            UpdateLayeredBitmap();
         }
-        if (!window_moved && mode_ != Mode::kListening && mode_ != Mode::kCountdown) {
+        if (!window_moved && mode_ != Mode::kListening && mode_ != Mode::kCountdown && !text_transitioning) {
             KillTimer(hwnd_, kAnimationTimerId);
         }
     }
@@ -391,10 +404,17 @@ void OverlayWindow::OnPaint() {
     UpdateLayeredBitmap();
 }
 
-void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& hint) {
+void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& hint,
+                         bool skip_text_transition) {
     KillTimer(hwnd_, kAutoHideTimerId);
     const std::wstring next_text = Utf16FromUtf8(text);
-    if (mode_ != Mode::kHidden && next_text != text_) {
+    if (skip_text_transition) {
+        // 流式追加：直接用当前滚动偏移作为目标，不启动 140ms 过渡动画，
+        // 避免高频 token 反复重置动画导致 scroll_offset 中途跳动闪动。
+        text_scroll_from_offset_ = last_text_scroll_offset_;
+        text_scroll_to_offset_ = last_text_scroll_offset_;
+        text_transition_started_at_ms_ = 0;
+    } else if (mode_ != Mode::kHidden && next_text != text_) {
         text_scroll_from_offset_ = last_text_scroll_offset_;
         text_transition_started_at_ms_ = GetTickCount64();
     } else if (mode_ == Mode::kHidden) {
