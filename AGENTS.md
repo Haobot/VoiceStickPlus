@@ -100,7 +100,7 @@ VERSION                         单一版本来源（纯文本，不含换行）
 ArduFlux.json                   ArduFlux IDE 配置文件（非版本控制重点）
 ```
 
-仓库实际文档目录为大写 `Doc/`，不是 `docs/`。
+注意仓库里大写 `Doc/` 与小写 `docs/` 同时存在：前者是本项目文档，后者是 superpowers 工具的工作目录（`docs/superpowers/plans/`、`docs/superpowers/specs/`），二者无关，修改文档时认准大写 `Doc/`。
 
 ## 技术栈
 
@@ -417,7 +417,7 @@ Windows 特殊流程：
 - 搜索仓库时请排除 `website/node_modules/` 和 `firmware/build/` 以免噪声过多。
 - Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。
 - `.gitignore` 整体忽略了 `desktop/windows/`，提交 Windows 端源码改动时必须用 `git add -f`，否则会被静默漏提交。
-- `build_native.bat`、`do_build.bat`、`run_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
+- `build_native.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
 - 修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
 - 修改 `VERSION` 时，必须同步更新 `firmware/version.txt`。

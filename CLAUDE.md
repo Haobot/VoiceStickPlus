@@ -19,7 +19,7 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 - `desktop/windows/`：C++20 / Win32 / C++/WinRT 托盘应用，目标 Windows 10 1903+；2019 年 Windows 10 构建会走地址直连的 BLE 兼容路径。
 - `desktop/linux/`：Linux 桌面端占位目录。
 - `website/`：Vue 3 + Vite 站点，包含 Web Serial 固件烧录工具、`vue-i18n` 中英文落地页和 appcast 发布页面。
-- `Doc/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等参考文档（`Doc/Ref/`），以及实施方案 RFC（`Doc/Plan/`）。仓库实际目录为大写 `Doc/`，不是 `docs/`。
+- `Doc/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等参考文档（`Doc/Ref/`），以及实施方案 RFC（`Doc/Plan/`）。注意仓库里大写 `Doc/` 与小写 `docs/` 同时存在：前者是本项目文档，后者是 superpowers 工具的工作目录（`docs/superpowers/plans/`、`docs/superpowers/specs/`），二者无关，修改文档时认准大写 `Doc/`。
 
 仓库关键文件树：
 
@@ -150,7 +150,7 @@ desktop\windows\build-x64\VoiceStick.exe
 scripts\build-msi.bat
 ```
 
-`build_native.bat` 会一并构建、测试并生成 MSI，但内部硬编码了旧版本号与本地路径，**复用前必须先检查内容**；`do_build.bat`、`run_build.bat`、`desktop\windows\build.bat` 同样包含本机绝对路径或固定版本号，不可盲用。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
+`build_native.bat` 会一并构建、测试并生成 MSI，但内部硬编码了旧版本号与本地路径，**复用前必须先检查内容**；`do_build.bat`、`desktop\windows\build.bat` 同样包含本机绝对路径或固定版本号，不可盲用。根目录 `test.bat` 目前只是占位脚本，不运行 CTest。
 
 ### 网站（Vue 3 + Vite）
 
