@@ -1802,7 +1802,49 @@ void TestTencentResultParsing() {
     assert(segments2.empty());
 }
 
+void TestTencentFinalFlagParsing() {
+    // final=1：整段音频识别结束（顶层字段，无 result）
+    const char* json_final_end = R"(
+    {
+        "code": 0,
+        "message": "success",
+        "voice_id": "test-uuid",
+        "message_id": "test-uuid_241",
+        "final": 1
+    })";
+    assert(AsrClientTencent::ExtractFinalFlag(json_final_end) == 1);
 
+    // 无 final 字段（握手确认 / 普通识别结果）→ 0
+    const char* json_handshake = R"(
+    {
+        "code": 0,
+        "message": "success",
+        "voice_id": "test-uuid"
+    })";
+    assert(AsrClientTencent::ExtractFinalFlag(json_handshake) == 0);
+
+    const char* json_result = R"(
+    {
+        "code": 0,
+        "message": "success",
+        "result": {
+            "slice_type": 2,
+            "voice_text_str": "今天天气很好"
+        }
+    })";
+    assert(AsrClientTencent::ExtractFinalFlag(json_result) == 0);
+}
+
+void TestTencentSentenceAccumulation() {
+    // 空累积 + 首句 → 首句
+    assert(AsrClientTencent::AccumulateSentence("", "今天天气很好") == "今天天气很好");
+    // 已累积 + 新句 → 拼接
+    assert(AsrClientTencent::AccumulateSentence("今天天气很好", "我们去看电影") == "今天天气很好我们去看电影");
+    // 空句不改变累积
+    assert(AsrClientTencent::AccumulateSentence("今天天气很好", "") == "今天天气很好");
+    // 两者皆空 → 空
+    assert(AsrClientTencent::AccumulateSentence("", "").empty());
+}
 
 void TestTencentEndMessage() {
     auto msg = AsrClientTencent::MakeEndMessage();
@@ -1901,6 +1943,8 @@ int main() {
     TestTencentSignatureGeneration();
     TestTencentUrlConstruction();
     TestTencentResultParsing();
+    TestTencentFinalFlagParsing();
+    TestTencentSentenceAccumulation();
     TestTencentEndMessage();
     TestTencentOpusEncapsulation();
     TestTencentVoiceIdGeneration();
