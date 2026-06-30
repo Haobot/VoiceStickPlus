@@ -20,7 +20,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 桌面端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
 
-当前版本：`1.6.8`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致。
+当前版本：`1.7.1`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致。
 
 ## 关键配置文件
 
@@ -349,7 +349,7 @@ Windows 调试音频缓存目录：
 
 版本单一来源是仓库根目录的 `VERSION` 文件（纯文本，不含换行）。发布前还需要同步更新 `firmware/version.txt`，因为固件通过该文件向桌面端报告自身版本，版本不一致会导致 OTA 检测异常。
 
-推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `1.6.8` 时，标签必须是 `v1.6.8`。
+推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `1.7.1` 时，标签必须是 `v1.7.1`。
 
 ## 发布与部署流程
 
