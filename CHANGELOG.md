@@ -1,5 +1,18 @@
 # CHANGELOG.md
 
+## 2026-06-30 v1.7.1
+
+- 版本号从 `v1.6.8` 更新到 `v1.7.1`。
+- fix(固件): hold_to_talk 连接就绪过渡期录音启动增加重试。
+  - 设备重连后 Windows 需重新做 GATT 服务发现 + 特征值订阅才能让 `ble_ready` 置位（约 1.5–2s）。在此过渡期内按住按钮触发 hold threshold，`start_recording` 会因 `ble_ready=0` 被拒，且只调一次不再重试，用户必须松开重按。
+  - `firmware/main/main.c`：hold threshold 到点因 `ble_ready=0` 被拒时，只要按钮仍按下就按 100ms 间隔重试，覆盖订阅过渡期；超时（2s）或松开则干净放弃。只对 `ble_ready=0` 这一可恢复原因重试，ota/ui_state 等不可恢复原因走原放弃逻辑。复用 `s_double_click_timer`，新增 `s_recording_retry_pending` 状态，`handle_primary_up` 与断连清理同步处理。
+  - 新增 `Doc/Plan/hold-to-talk-recording-start-retry.md`。
+- fix(固件): 扩大 NimBLE mbuf 池并节流告警，消除音频通知瞬时耗尽。
+  - 长录音中 central 处理慢 / conn interval 偏大时，NimBLE host 队列堆积未发送 notification，MSYS_1 池（100 块 ×256B）瞬时耗尽，出现 `tx seq=N mbuf alloc failed` 刷屏并丢帧。
+  - `firmware/sdkconfig` / `sdkconfig.defaults`：`CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT` 100→200（多占约 25KB 内部 RAM，Wi-Fi 已禁用空间充裕）。真机长录音验证再无 alloc failed。
+  - `firmware/components/voice_ble/voice_ble.c`：`voice_ble_send_audio` 的 alloc failed 告警节流（`s_mbuf_fail_streak`，每 10 次打印一条，恢复时打印恢复计数），断连清零。
+- docs: 修正 `CLAUDE.md`/`AGENTS.md` 中 `Doc`/`docs` 措辞与 `run_build.bat` 悬空引用。
+
 ## 2026-06-26 v1.6.8
 
 - 版本号从 `v1.6.7` 更新到 `v1.6.8`。
