@@ -56,6 +56,7 @@ public:
     void SetHasRecoverableInput(bool has_recoverable_input) override;
     void ShowListening(const std::optional<std::string>& device_id) override;
     void ShowPartial(const std::string& text, const std::optional<std::string>& device_id) override;
+    void AppendPartial(const std::string& text, const std::optional<std::string>& device_id) override;
     void ShowFinalCountdown(const std::string& text,
                             const std::optional<std::string>& device_id,
                             std::function<void()> on_complete) override;

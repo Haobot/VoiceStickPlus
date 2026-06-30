@@ -23,6 +23,9 @@ public:
 
     void ShowListening();
     void ShowPartial(const std::string& text);
+    // 流式追加：与 ShowPartial 类似但不触发文字滚动过渡动画。
+    // 供流式精修高频追加 token 使用，避免 140ms 滚动动画被高频更新反复重置导致闪动。
+    void AppendPartial(const std::string& text);
     void ShowFinalCountdown(const std::string& text, std::function<void()> on_complete);
     void ShowPausedFinal(const std::string& text);
     void ShowError(const std::string& text, std::function<void()> on_complete);
@@ -39,7 +42,8 @@ public:
 private:
     enum class Mode { kListening, kCountdown, kPaused, kError, kHidden };
 
-    void Show(Mode mode, const std::string& text, const std::string& hint = "");
+    void Show(Mode mode, const std::string& text, const std::string& hint = "",
+              bool skip_text_transition = false);
     void Reposition();
     bool StepWindowAnimation();
     void ApplyAnimatedWindowBounds();

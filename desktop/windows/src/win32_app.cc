@@ -606,6 +606,13 @@ void Win32App::ShowPartial(const std::string& text, const std::optional<std::str
     });
 }
 
+void Win32App::AppendPartial(const std::string& text, const std::optional<std::string>& device_id) {
+    DispatchToUi([this, text, device_id] {
+        ApplyOverlayStyle(std::optional<std::string>(device_id));
+        if (overlay_) overlay_->AppendPartial(text);
+    });
+}
+
 void Win32App::ShowFinalCountdown(const std::string& text,
                                   const std::optional<std::string>& device_id,
                                   std::function<void()> on_complete) {

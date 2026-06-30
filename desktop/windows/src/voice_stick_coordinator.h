@@ -136,6 +136,8 @@ public:
     virtual void SetHasRecoverableInput(bool has_recoverable_input) = 0;
     virtual void ShowListening(const std::optional<std::string>& device_id) = 0;
     virtual void ShowPartial(const std::string& text, const std::optional<std::string>& device_id) = 0;
+    // 流式精修追加：与 ShowPartial 类似但不触发文字滚动过渡动画，供流式 token 高频追加使用。
+    virtual void AppendPartial(const std::string& text, const std::optional<std::string>& device_id) = 0;
     virtual void ShowFinalCountdown(const std::string& text,
                                     const std::optional<std::string>& device_id,
                                     std::function<void()> on_complete) = 0;
