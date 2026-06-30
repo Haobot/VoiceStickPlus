@@ -1071,56 +1071,18 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
     if (config_.refine_enabled && !text.empty()) {
-        // 取消上一轮可能残留的流式精修
-        CancelStreamingRefinement();
-        refinement_cancel_token_ = std::make_shared<std::atomic_bool>(false);
-
-        auto alive = alive_;
-        auto cancel = refinement_cancel_token_;
-        auto device_id = active_device_id_;
-
-        // 节流状态：跨 on_token 回调共享，每 ~60ms 最多更新一次 UI
-        struct ThrottleState {
-            std::mutex mutex;
-            std::string accumulated;
-            std::chrono::steady_clock::time_point last_update{};
-        };
-        auto throttle = std::make_shared<ThrottleState>();
-
-        refiner_.RefineStream(
+        // 非流式精修：走 ChatAsync 后台线程，精修期间悬浮窗只显示 Refining 状态，
+        // 完成后一次性把结果交给 completion。流式 on_token 高频刷新悬浮窗会触发
+        // overlay 每 16ms 全量重建 D2D 文本布局导致卡死/闪动，故先回退止血；
+        // 流式精修待阶段2优化 overlay 渲染后再恢复（RefineStream 保留备用）。
+        refiner_.Refine(
             text,
             config_.refine_prompt,
-            // on_token（后台线程）：节流式更新悬浮窗
-            [this, alive, cancel, device_id, throttle](std::string token) {
-                if (!alive->load() || (cancel && cancel->load())) return;
-                std::string current;
-                bool should_update = false;
-                {
-                    std::lock_guard lock(throttle->mutex);
-                    throttle->accumulated += token;
-                    auto now = std::chrono::steady_clock::now();
-                    if (now - throttle->last_update >= std::chrono::milliseconds(60)) {
-                        throttle->last_update = now;
-                        current = throttle->accumulated;
-                        should_update = true;
-                    }
-                }
-                if (should_update) {
-                    ui_->ShowPartial(current, device_id);
-                }
-            },
-            // on_complete（后台线程）：最终文本已就绪
-            [this, alive, cancel, text, device_id, throttle,
+            [this, alive = alive_, text,
              completion = std::move(completion)](bool ok, std::string result) mutable {
-                if (!alive->load() || (cancel && cancel->load())) return;
-                // 用最终的累积文本做最后一次 UI 刷新
-                if (ok && !result.empty()) {
-                    ui_->ShowPartial(result, device_id);
-                }
-                CancelStreamingRefinement();
-                completion(true, ok ? result : text);
-            },
-            cancel);
+                if (!alive->load()) return;
+                completion(true, ok && !result.empty() ? result : text);
+            });
         return;
     }
     completion(true, text);
