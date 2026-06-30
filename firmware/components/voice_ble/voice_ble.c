@@ -33,6 +33,7 @@ static const char *TAG = "voice_ble";
 static bool s_connected;
 static bool s_audio_subscribed;
 static bool s_state_subscribed;
+static uint32_t s_mbuf_fail_streak;   // 连续 mbuf alloc failed 次数（用于告警节流）
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint8_t s_own_addr_type;
 static uint16_t s_audio_attr_handle;
@@ -547,6 +548,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         s_connected = false;
         s_audio_subscribed = false;
         s_state_subscribed = false;
+        s_mbuf_fail_streak = 0;
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s_itvl_target = CONN_ITVL_NONE;
         s_itvl_update_pending = false;
@@ -859,7 +861,14 @@ esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
 
     struct os_mbuf *om = ble_hs_mbuf_from_flat(header, sizeof(header));
     if (!om) {
-        ESP_LOGW(TAG, "tx seq=%" PRIu32 " mbuf alloc failed", seq);
+        // mbuf 池瞬时耗尽（central 处理慢 / interval 偏大时 host 队列堆积）。
+        // 上层 tx_task 会重试，这里按 10 次节流打印，避免 10ms 间隔重试刷屏；
+        // 成功发送时在下方打印恢复计数。
+        if (s_mbuf_fail_streak == 0 || (s_mbuf_fail_streak % 10) == 0) {
+            ESP_LOGW(TAG, "tx seq=%" PRIu32 " mbuf alloc failed (streak=%" PRIu32 ")",
+                     seq, s_mbuf_fail_streak + 1);
+        }
+        s_mbuf_fail_streak++;
         return ESP_ERR_NO_MEM;
     }
 
@@ -876,6 +885,11 @@ esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
     if (rc != 0) {
         ESP_LOGW(TAG, "tx seq=%" PRIu32 " notify failed rc=%d", seq, rc);
         return ESP_FAIL;
+    }
+
+    if (s_mbuf_fail_streak > 0) {
+        ESP_LOGI(TAG, "tx recovered after %" PRIu32 " mbuf failures", s_mbuf_fail_streak);
+        s_mbuf_fail_streak = 0;
     }
 
     ESP_LOGI(TAG, "tx seq=%" PRIu32 " %u bytes, sram: %" PRIu32 " bytes",
