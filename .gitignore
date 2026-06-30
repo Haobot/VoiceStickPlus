@@ -33,3 +33,4 @@ dist/
 %BUILD_LOG%
 %CONFIGURE_LOG%
 %LOG_FILE%
+scripts/.idf_cli_state.json
