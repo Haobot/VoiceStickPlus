@@ -11,6 +11,8 @@
 #include <Shellapi.h>
 #include <winsparkle.h>
 #include <winrt/base.h>
+#include <taskschd.h>
+#include <comdef.h>
 
 #include <algorithm>
 #include <chrono>
@@ -1448,38 +1450,79 @@ void Win32App::SyncLaunchAtLogin() {
         LogLine("Portable mode — skipping launch-at-login sync");
         return;
     }
-    HKEY key = nullptr;
-    const wchar_t* run_key = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-    const LSTATUS open_status = RegCreateKeyExW(HKEY_CURRENT_USER, run_key, 0, nullptr, 0,
-                                                KEY_SET_VALUE, nullptr, &key, nullptr);
-    if (open_status != ERROR_SUCCESS) {
-        throw std::runtime_error("failed to open startup registry key");
-    }
+    // exe 清单要求 requireAdministrator，HKCU\...\Run 启动提权程序会被 UAC 阻挡，
+    // 因此自启改用任务计划程序：登录触发 + RunLevel=Highest（等价管理员），由系统拉起。
+    constexpr wchar_t kTaskName[] = L"VoiceStickAutoStart";
+    try {
+        using namespace winrt;
+        init_apartment();
+        // 用 COM 任务计划程序 API（taskschd.h）注册/删除任务。
+        com_ptr<ITaskService> service;
+        check_hresult(CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(service.put())));
+        check_hresult(service->Connect(_variant_t(), _variant_t(), _variant_t(), _variant_t()));
 
-    if (config_.launch_at_login) {
+        com_ptr<ITaskFolder> root_folder;
+        check_hresult(service->GetFolder(_bstr_t(L"\\"), root_folder.put()));
+
+        if (!config_.launch_at_login) {
+            const HRESULT hr = root_folder->DeleteTask(_bstr_t(kTaskName), 0);
+            if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
+                check_hresult(hr);
+            }
+            LogLine("Launch at login disabled (task deleted)");
+            return;
+        }
+
         const auto command = CurrentExecutableCommand();
         if (command.empty()) {
-            RegCloseKey(key);
             throw std::runtime_error("failed to resolve executable path");
         }
-        const DWORD byte_size = static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t));
-        const LSTATUS set_status = RegSetValueExW(key, L"VoiceStick", 0, REG_SZ,
-                                                  reinterpret_cast<const BYTE*>(command.c_str()),
-                                                  byte_size);
-        RegCloseKey(key);
-        if (set_status != ERROR_SUCCESS) {
-            throw std::runtime_error("failed to enable startup registry value");
-        }
-        LogLine("Launch at login enabled");
-        return;
-    }
 
-    const LSTATUS delete_status = RegDeleteValueW(key, L"VoiceStick");
-    RegCloseKey(key);
-    if (delete_status != ERROR_SUCCESS && delete_status != ERROR_FILE_NOT_FOUND) {
-        throw std::runtime_error("failed to disable startup registry value");
+        com_ptr<ITaskDefinition> definition;
+        check_hresult(service->NewTask(0, definition.put()));
+
+        com_ptr<ITriggerCollection> triggers;
+        check_hresult(definition->get_Triggers(triggers.put()));
+        com_ptr<ITrigger> trigger;
+        check_hresult(triggers->Create(TASK_TRIGGER_LOGON, trigger.put()));
+        com_ptr<ILogonTrigger> logon_trigger;
+        check_hresult(trigger->QueryInterface(IID_PPV_ARGS(logon_trigger.put())));
+
+        com_ptr<IActionCollection> actions;
+        check_hresult(definition->get_Actions(actions.put()));
+        com_ptr<IAction> action;
+        check_hresult(actions->Create(TASK_ACTION_EXEC, action.put()));
+        com_ptr<IExecAction> exec_action;
+        check_hresult(action->QueryInterface(IID_PPV_ARGS(exec_action.put())));
+        // CurrentExecutableCommand 返回带引号的路径，ExecAction 的 Path 不接受引号，
+        // 取去掉外层引号后的纯路径作为可执行文件路径。
+        std::wstring exe_path = command;
+        if (exe_path.size() >= 2 && exe_path.front() == L'"' && exe_path.back() == L'"') {
+            exe_path = exe_path.substr(1, exe_path.size() - 2);
+        }
+        check_hresult(exec_action->put_Path(_bstr_t(exe_path.c_str())));
+
+        com_ptr<ITaskSettings> settings;
+        check_hresult(definition->get_Settings(settings.put()));
+        check_hresult(settings->put_StartWhenAvailable(VARIANT_TRUE));
+
+        com_ptr<IRegistrationInfo> reg_info;
+        check_hresult(definition->get_RegistrationInfo(reg_info.put()));
+        check_hresult(reg_info->put_Author(_bstr_t(L"VoiceStick")));
+
+        com_ptr<IRegisteredTask> registered;
+        check_hresult(root_folder->RegisterTaskDefinition(
+            _bstr_t(kTaskName), definition.get(), TASK_CREATE_OR_UPDATE,
+            _variant_t(), _variant_t(),
+            TASK_LOGON_INTERACTIVE_TOKEN, _variant_t(), registered.put()));
+        LogLine("Launch at login enabled (scheduled task registered)");
+    } catch (const winrt::hresult_error& error) {
+        LogLine("Launch at login sync failed: hr=" +
+                std::to_string(static_cast<std::int32_t>(error.code())) +
+                " msg=" + winrt::to_string(error.message()));
+        throw std::runtime_error("failed to sync launch-at-login scheduled task");
     }
-    LogLine("Launch at login disabled");
 }
 
 void Win32App::SaveInputOptions() {
