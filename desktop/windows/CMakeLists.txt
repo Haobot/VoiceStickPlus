@@ -98,6 +98,20 @@ target_compile_definitions(VoiceStickApp PRIVATE
 
 set_target_properties(VoiceStickApp PROPERTIES OUTPUT_NAME VoiceStick)
 
+# 嵌入管理员权限清单（requireAdministrator），让 exe 启动即提升到 High 完整性，
+# 绕过 UIPI 向微信 4.0 等高完整性窗口粘贴文本。CMake 的 vs_link_exe 包装器会拦截
+# /MANIFEST* 链接标志并嵌入默认 asInvoker 清单，因此改用 POST_BUILD 步骤以 mt.exe
+# 把自定义清单写入资源 ID 1（CREATEPROCESS_MANIFEST_RESOURCE_ID），直接覆盖默认清单。
+# VoiceStick.rc 不声明 RT_MANIFEST，避免与 mt.exe 重复嵌入冲突。
+# 详见 Doc/Plan/windows-uipi-elevated-injection.md。
+if(MSVC)
+    add_custom_command(TARGET VoiceStickApp POST_BUILD
+        COMMAND "${CMAKE_MT}" -nologo
+                -manifest "${CMAKE_CURRENT_SOURCE_DIR}/resources/VoiceStick.manifest"
+                "-outputresource:$<TARGET_FILE:VoiceStickApp>;#1"
+        COMMENT "Embedding requireAdministrator manifest into VoiceStick.exe")
+endif()
+
 target_link_libraries(VoiceStickApp PRIVATE
     voicestick_core
     winsparkle_lib
@@ -114,6 +128,7 @@ target_link_libraries(VoiceStickApp PRIVATE
     comctl32
     ole32
     advapi32
+    taskschd
 )
 
 add_executable(VoiceStickCtl
