@@ -54,6 +54,13 @@ static const char *TAG = "voice_stick";
 #define DOUBLE_CLICK_MAX_PRESS_MS 300
 #define DOUBLE_CLICK_WINDOW_MS 500
 
+// hold_to_talk 在 BLE 连接就绪过渡期被拒时的录音启动重试参数。
+// 设备重连后 Windows 需重新做服务发现 + 特征值订阅才能让 ble_ready 置位（约 1.5–2s），
+// 在此窗口内按住按钮触发 hold threshold，start_recording 会因 ble_ready=0 被拒。
+// 按住期间按短间隔重试，覆盖订阅过渡期；超时或松开则干净放弃。
+#define RECORDING_RETRY_INTERVAL_MS 100   // 重试间隔
+#define RECORDING_RETRY_WINDOW_MS   2000  // 重试总窗口（覆盖订阅过渡期 ~1.5s + 余量）
+
 // IMU X 轴加速度上屏轮询周期。200ms 人眼可读、I²C 负载低；IMU 走 I²C 与录音 I²S 不同总线，
 // 故常驻运行不随状态机开关。BMI270 不在线时仅刷一次 "IMU: n/a"。
 #define IMU_POLL_INTERVAL_US (200 * 1000ULL)
@@ -94,6 +101,8 @@ static uint32_t s_primary_session_id;
 static bool s_double_click_pending;          // 等待第二次按下（双击窗口内）
 static bool s_double_click_second_press;     // 第二次按下进行中，忽略其释放
 static bool s_hold_threshold_pending;        // 按住阈值计时中（300ms 后确认为长按）
+static bool s_recording_retry_pending;       // ble_ready 未就绪，按住等待录音启动重试中
+static int64_t s_recording_retry_deadline_us;  // 录音启动重试放弃时刻
 static esp_timer_handle_t s_double_click_timer;
 static uint32_t s_pending_button_up_duration_ms; // 暂存第一次短按的时长（窗口超时后补发 button_up）
 static int64_t s_click_to_talk_first_click_us;  // click_to_talk 模式首次点击时刻（用于双击检测）
@@ -928,6 +937,18 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         return;
     }
 
+    // 录音启动重试期间松开：从未发过 button_down、录音也未启动，干净退出，
+    // 不走正常 button_up 路径（否则会发无对应 button_down 的 button_up）。
+    if (s_recording_retry_pending) {
+        s_recording_retry_pending = false;
+        (void)esp_timer_stop(s_double_click_timer);
+        ESP_LOGI(TAG, "button front up during recording start retry, aborting");
+        s_primary_down_us = 0;
+        s_primary_session_id = 0;
+        s_primary_owner = PRIMARY_OWNER_NONE;
+        return;
+    }
+
     const primary_owner_t owner_from_source = (source == APP_INPUT_SOURCE_PHYSICAL)
         ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
     if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
@@ -1089,6 +1110,7 @@ static void app_event_task(void *arg)
             s_double_click_pending = false;
             s_double_click_second_press = false;
             s_hold_threshold_pending = false;
+            s_recording_retry_pending = false;
             s_click_to_talk_first_click_us = 0;
             (void)esp_timer_stop(s_double_click_timer);
             stop_host_response_timer();
@@ -1279,6 +1301,48 @@ static void double_click_timer_cb(void *arg)
 {
     (void)arg;
 
+    if (s_recording_retry_pending) {
+        // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
+        s_recording_retry_pending = false;
+        // 用户已松开 → 干净放弃（未发过 button_down，无需补 button_up）。
+        if (gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) != 0) {
+            ESP_LOGI(TAG, "recording start retry aborted: button released");
+            s_primary_down_us = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            return;
+        }
+        if (esp_timer_get_time() >= s_recording_retry_deadline_us) {
+            ESP_LOGW(TAG, "recording start retry timed out (ble not ready in window)");
+            s_primary_down_us = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            return;
+        }
+        if (!voice_ble_is_ready()) {
+            // 仍未就绪，继续重试。
+            s_recording_retry_pending = true;
+            (void)esp_timer_start_once(s_double_click_timer,
+                                       RECORDING_RETRY_INTERVAL_MS * 1000ULL);
+            return;
+        }
+        // ble_ready 已就绪，启动录音（复用现有成功路径）。
+        ESP_LOGI(TAG, "recording start retry: ble ready, starting");
+        s_primary_session_id = start_recording();
+        if (s_primary_session_id != 0) {
+            esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id);
+            if (err != ESP_OK) {
+                (void)stop_recording();
+                s_primary_session_id = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                apply_app_ui_state("ready", "");
+            }
+        } else {
+            // ble_ready=1 仍失败 → 不可恢复原因，放弃。
+            s_primary_down_us = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+        }
+        return;
+    }
+
     if (s_hold_threshold_pending) {
         // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
         s_hold_threshold_pending = false;
@@ -1293,7 +1357,17 @@ static void double_click_timer_cb(void *arg)
                     s_primary_owner = PRIMARY_OWNER_NONE;
                     apply_app_ui_state("ready", "");
                 }
+            } else if (!voice_ble_is_ready()) {
+                // ble_ready=0 可恢复：按住等待重试，覆盖 Windows 订阅完成的过渡期。
+                ESP_LOGI(TAG, "ble not ready, deferring recording start (retrying)");
+                s_recording_retry_pending = true;
+                s_recording_retry_deadline_us =
+                    esp_timer_get_time() + RECORDING_RETRY_WINDOW_MS * 1000LL;
+                (void)esp_timer_start_once(s_double_click_timer,
+                                           RECORDING_RETRY_INTERVAL_MS * 1000ULL);
+                // 保留 s_primary_owner / s_primary_down_us 不变。
             } else {
+                // 不可恢复原因，放弃。
                 s_primary_down_us = 0;
             }
         }
