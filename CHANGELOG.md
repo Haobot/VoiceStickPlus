@@ -1,5 +1,17 @@
 # CHANGELOG.md
 
+## 2026-06-30 v1.7.2
+
+- 版本号从 `v1.7.1` 更新到 `v1.7.2`。
+- fix(windows): 修复开启精修后悬浮窗持续闪动、程序卡死。
+  - 根因：`OverlayWindow::OnTimer` 在 `kListening` 模式下每 16ms 无条件 `InvalidateStaticLayer`，导致 `BuildStaticLayer`/`PaintText` 每 16ms 全量重建 D2D 文本布局（`CreateTextLayout` 不缓存），UI 线程渲染过载卡死；流式精修 token 每 ~60ms 重置 140ms 文字滚动过渡动画，`scroll_offset` 中途反复跳动闪动。
+  - `desktop/windows/src/overlay_window.cc/.h`：`OnTimer` 在 kListening 静态文本时不重建 static layer，仅重绘动态指示器（音浪条），复用缓存文本布局；新增 `AppendPartial` 流式追加入口，跳过文字滚动过渡动画；`Show` 增加 `skip_text_transition` 参数。
+  - `desktop/windows/src/voice_stick_coordinator.cc/.h`：`UiDelegate` 增加 `AppendPartial` 纯虚；`TransformText` 精修分支恢复 `refiner_.RefineStream`，`on_token` 节流式调 `AppendPartial` 逐字流式显示。
+  - `desktop/windows/src/win32_app.cc/.h`：`AppendPartial` 转发至 `overlay_->AppendPartial`。
+  - `desktop/windows/tests/core_tests.cc`：`FakeUi` 补 `AppendPartial` 实现。
+  - 新增 `Doc/Plan/overlay-render-streaming-refine.md`。
+  - 实测精修耗时 2.5~12.8s 随文本长度增长，LLM 延迟不可压缩；"压缩总时间"方向（definite 分段并行 / 倒计时并行）经查证否决，优化重心为"让精修等待可感知"。
+
 ## 2026-06-30 v1.7.1
 
 - 版本号从 `v1.6.8` 更新到 `v1.7.1`。
