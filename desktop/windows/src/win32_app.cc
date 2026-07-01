@@ -6,7 +6,6 @@
 #include "localization.h"
 #include "log.h"
 #include "resource.h"
-#include "wifi_credentials_win.h"
 
 #include <Shellapi.h>
 #include <winsparkle.h>
@@ -31,7 +30,6 @@ namespace {
 
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kUiDispatchMessage = WM_APP + 2;
-constexpr UINT kOtaCommandTimerId = 44;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT kMenuRestore = 1001;
 constexpr UINT kMenuSettings = 1002;
@@ -62,8 +60,6 @@ constexpr UINT kMenuHotkeyEnabled = 5801;
 constexpr UINT kMenuHotkeyCustom = 5802;
 constexpr UINT kMenuHotkeyBase = 5810;
 constexpr UINT kMenuHotkeyEnd = 5899;
-constexpr UINT kMenuWifiSettingsBase = 5900;
-constexpr UINT kMenuWifiSettingsEnd = 5999;
 
 struct HotkeyPreset {
     const char* name;
@@ -427,18 +423,6 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
     DispatchToUi([this, devices] {
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
-        for (auto& [_, pending] : pending_ota_commands_) {
-            const bool connected = IsDeviceConnectedForOta(pending.command.device_id);
-            if (pending.saw_success && !connected && !pending.saw_disconnect_after_success) {
-                pending.saw_disconnect_after_success = true;
-                WriteOtaCommandLine(pending.command, "reconnecting");
-            } else if (pending.saw_disconnect_after_success && connected && !pending.saw_reconnect_after_success) {
-                pending.saw_reconnect_after_success = true;
-                pending.next_wifi_request = std::chrono::steady_clock::now();
-                WriteOtaCommandLine(pending.command, "reconnected");
-            }
-        }
-        PumpPendingOtaCommands();
         UpdateTrayIcon();
     });
 }
@@ -464,58 +448,6 @@ void Win32App::SetDeviceBattery(const std::string& device_id, int level_percent,
                 " usb=" + std::to_string(usb_powered));
         device_battery_map_[device_id] = {level_percent, charging, usb_powered};
         UpdateTrayIcon();
-    });
-}
-
-void Win32App::SetDeviceWifiStatus(const std::string& device_id,
-                                   const WifiStatusSnapshot& snapshot) {
-    DispatchToUi([this, device_id, snapshot] {
-        LogLine("SetDeviceWifiStatus VS-" + device_id +
-                " state=" + snapshot.state +
-                " ip=" + (snapshot.ip.empty() ? "<empty>" : snapshot.ip) +
-                " ota=" + snapshot.ota_pull_state);
-        device_wifi_status_map_[device_id] = snapshot;
-
-        bool wifi_info_changed = false;
-        auto& info = config_.device_wifi_infos[device_id];
-        if (info.ssid != snapshot.ssid) {
-            info.ssid = snapshot.ssid;
-            wifi_info_changed = true;
-        }
-        if (info.ip != snapshot.ip) {
-            info.ip = snapshot.ip;
-            wifi_info_changed = true;
-        }
-        if (wifi_info_changed) {
-            config_.Save();
-        }
-        if (settings_dialog_) {
-            settings_dialog_->RefreshWifiInfo();
-        }
-
-        auto it = wifi_settings_dialogs_.find(device_id);
-        if (it != wifi_settings_dialogs_.end() && it->second) {
-            it->second->UpdateStatus(snapshot);
-        }
-        for (auto& [_, pending] : pending_ota_commands_) {
-            if (pending.command.device_id == device_id && pending.saw_reconnect_after_success) {
-                pending.wifi_status_after_reconnect = true;
-            }
-        }
-        PumpPendingOtaCommands();
-    });
-}
-
-void Win32App::SetDeviceWifiScanResult(const std::string& device_id,
-                                        const WifiScanResult& result) {
-    DispatchToUi([this, device_id, result] {
-        LogLine("SetDeviceWifiScanResult VS-" + device_id +
-                " aps=" + std::to_string(result.aps.size()));
-        device_wifi_scan_results_[device_id] = result;
-        auto it = wifi_settings_dialogs_.find(device_id);
-        if (it != wifi_settings_dialogs_.end() && it->second) {
-            it->second->PopulateWifiScanResults(result.aps);
-        }
     });
 }
 
@@ -707,11 +639,6 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         if (ble_central_) ble_central_->ProcessDispatchedCallbacks();
         return 0;
     }
-    if (message == WM_COPYDATA) {
-        auto* copy_data = reinterpret_cast<COPYDATASTRUCT*>(l_param);
-        if (copy_data) HandleCopyData(*copy_data);
-        return TRUE;
-    }
     if (global_hotkey_ && global_hotkey_->HandleMessage(message, w_param, l_param)) {
         return 0;
     }
@@ -733,12 +660,6 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         }
     }
     switch (message) {
-    case WM_TIMER:
-        if (w_param == kOtaCommandTimerId) {
-            PumpPendingOtaCommands();
-            return 0;
-        }
-        break;
     case WM_COMMAND:
         switch (LOWORD(w_param)) {
         case kMenuRestore:
@@ -828,11 +749,6 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size()) {
                     StartFirmwareUpdate(paired_device_ids_[index]);
                 }
-            } else if (cmd >= kMenuWifiSettingsBase && cmd <= kMenuWifiSettingsEnd) {
-                std::size_t index = cmd - kMenuWifiSettingsBase;
-                if (index < paired_device_ids_.size()) {
-                    ShowWifiSettings(paired_device_ids_[index]);
-                }
             } else if (cmd >= kMenuThemeColorBase && cmd <= kMenuThemeColorEnd) {
                 const std::size_t offset = cmd - kMenuThemeColorBase;
                 const std::size_t index = offset / kMenuOptionsPerDevice;
@@ -915,208 +831,6 @@ void Win32App::DispatchToUi(std::function<void()> action) {
     }
 }
 
-void Win32App::HandleCopyData(const COPYDATASTRUCT& copy_data) {
-    if (!copy_data.lpData || copy_data.cbData == 0) return;
-    std::string json(reinterpret_cast<const char*>(copy_data.lpData),
-                     reinterpret_cast<const char*>(copy_data.lpData) + copy_data.cbData);
-    if (!json.empty() && json.back() == '\0') json.pop_back();
-
-    std::string error;
-    auto command = ParseOtaIpcRequest(json, &error);
-    if (!command) {
-        LogLine("ipc ota_pull parse failed: " + error);
-        return;
-    }
-    if (!ValidateOtaPullCommand(*command, &error)) {
-        LogLine("ipc ota_pull validation failed: " + error);
-        return;
-    }
-    StartPendingOtaCommand(std::move(*command));
-}
-
-void Win32App::StartPendingOtaCommand(OtaPullCommand command) {
-    if (command.request_id.empty()) {
-        command.request_id = "ota-" + std::to_string(GetTickCount64());
-    }
-    LogLine("ipc ota_pull request id=" + command.request_id +
-            " dev=VS-" + command.device_id +
-            " wait=" + OtaWaitModeName(command.wait_mode) +
-            " timeout=" + std::to_string(command.timeout_sec));
-
-    PendingOtaCommand pending;
-    pending.command = command;
-    pending.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(command.timeout_sec);
-    if (!command.reply_pipe.empty()) {
-        pending.reply.open(std::filesystem::path(Utf16FromUtf8(command.reply_pipe)), std::ios::out | std::ios::binary);
-    }
-    pending.next_wifi_request = std::chrono::steady_clock::now();
-    auto request_id = pending.command.request_id;
-    pending_ota_commands_[request_id] = std::move(pending);
-    WriteOtaCommandLine(pending_ota_commands_[request_id].command,
-                        "accepted device=" + pending_ota_commands_[request_id].command.device_id);
-    SetTimer(hwnd_, kOtaCommandTimerId, 500, nullptr);
-    PumpPendingOtaCommands();
-}
-
-bool Win32App::IsDeviceConnectedForOta(const std::string& device_id) const {
-    return std::any_of(connected_devices_.begin(), connected_devices_.end(),
-                       [&](const ConnectedDevice& device) {
-                           return device.id == device_id;
-                       });
-}
-
-void Win32App::WriteOtaCommandLine(const OtaPullCommand& command, const std::string& line) {
-    auto it = pending_ota_commands_.find(command.request_id);
-    if (it == pending_ota_commands_.end()) return;
-    if (it->second.reply.is_open()) {
-        it->second.reply << line << "\n";
-        it->second.reply.flush();
-    }
-    LogLine("ipc ota_pull " + line);
-}
-
-void Win32App::CompletePendingOtaCommand(const std::string& request_id, bool ok,
-                                         const std::string& code,
-                                         const std::string& message) {
-    auto it = pending_ota_commands_.find(request_id);
-    if (it == pending_ota_commands_.end()) return;
-    auto command = it->second.command;
-    WriteOtaCommandLine(command, ok ? "done ok=true" : "error code=" + code + " message=" + message);
-    pending_ota_commands_.erase(it);
-    if (pending_ota_commands_.empty()) {
-        KillTimer(hwnd_, kOtaCommandTimerId);
-    }
-}
-
-void Win32App::PumpPendingOtaCommands() {
-    if (pending_ota_commands_.empty()) return;
-    std::vector<std::string> to_complete_ok;
-    struct Failure { std::string id; std::string code; std::string message; };
-    std::vector<Failure> failures;
-    const auto now = std::chrono::steady_clock::now();
-
-    for (auto& [request_id, pending] : pending_ota_commands_) {
-        if (now >= pending.deadline) {
-            std::string message = "OTA 命令超时";
-            if (pending.sent) {
-                message += " last_progress=" + std::to_string(pending.last_progress);
-                auto wifi_it = device_wifi_status_map_.find(pending.command.device_id);
-                if (wifi_it != device_wifi_status_map_.end()) {
-                    message += " last_state=" + (wifi_it->second.ota_pull_state.empty() ? "<empty>" : wifi_it->second.ota_pull_state);
-                }
-            }
-            failures.push_back({request_id, "timeout", message});
-            continue;
-        }
-
-        const auto& command = pending.command;
-        const bool connected = IsDeviceConnectedForOta(command.device_id);
-        if (!connected) {
-            continue;
-        }
-
-        auto wifi_it = device_wifi_status_map_.find(command.device_id);
-        if (pending.saw_success && command.wait_mode == OtaWaitMode::kHealthy) {
-            if (!pending.saw_disconnect_after_success || !pending.saw_reconnect_after_success) {
-                continue;
-            }
-            if (now >= pending.next_wifi_request && coordinator_) {
-                coordinator_->RequestDeviceWifiStatus(command.device_id);
-                pending.next_wifi_request = now + std::chrono::seconds(2);
-            }
-            if (wifi_it != device_wifi_status_map_.end()) {
-                OtaHealthyDecisionInput healthy;
-                healthy.saw_success = pending.saw_success;
-                healthy.saw_disconnect_after_success = pending.saw_disconnect_after_success;
-                healthy.saw_reconnect_after_success = pending.saw_reconnect_after_success;
-                healthy.wifi_status_after_reconnect = pending.wifi_status_after_reconnect;
-                healthy.ota_pending_verify = wifi_it->second.ota_pending_verify;
-                healthy.running_partition = wifi_it->second.running_partition;
-                if (ShouldSendOtaCommit(healthy, pending.commit_sent)) {
-                    if (coordinator_) coordinator_->CommitDeviceOta(command.device_id);
-                    pending.commit_sent = true;
-                    pending.next_wifi_request = now + std::chrono::seconds(2);
-                    WriteOtaCommandLine(command, "commit pending=true partition=" + wifi_it->second.running_partition);
-                }
-                if (ShouldCompleteOtaHealthy(healthy)) {
-                    WriteOtaCommandLine(command, "healthy pending=false partition=" + wifi_it->second.running_partition);
-                    to_complete_ok.push_back(request_id);
-                }
-            }
-            continue;
-        }
-
-        if (!pending.sent) {
-            if (now >= pending.next_wifi_request && coordinator_) {
-                coordinator_->RequestDeviceWifiStatus(command.device_id);
-                pending.next_wifi_request = now + std::chrono::seconds(2);
-            }
-            if (wifi_it == device_wifi_status_map_.end()) {
-                continue;
-            }
-            const auto& wifi = wifi_it->second;
-            if (wifi.state == "error") {
-                failures.push_back({request_id, "wifi_error", wifi.last_error.empty() ? "Wi-Fi 状态错误" : wifi.last_error});
-                continue;
-            }
-            if (wifi.state != "connected" || wifi.ip.empty()) {
-                continue;
-            }
-            if (!wifi.park_locked) {
-                failures.push_back({request_id, "park_required", "设备正在忙，暂不能 OTA"});
-                continue;
-            }
-            WriteOtaCommandLine(command, "ready device=" + command.device_id + " wifi=connected ip=" + wifi.ip);
-            if (coordinator_) coordinator_->StartDeviceOtaPull(command.device_id, command.url, command.sha256_hex);
-            pending.sent = true;
-            pending.next_wifi_request = now + std::chrono::seconds(2);
-            WriteOtaCommandLine(command, "ota start");
-            continue;
-        }
-
-        if (wifi_it == device_wifi_status_map_.end()) {
-            if (now >= pending.next_wifi_request && coordinator_) {
-                coordinator_->RequestDeviceWifiStatus(command.device_id);
-                pending.next_wifi_request = now + std::chrono::seconds(2);
-            }
-            continue;
-        }
-        if (now >= pending.next_wifi_request && coordinator_) {
-            coordinator_->RequestDeviceWifiStatus(command.device_id);
-            pending.next_wifi_request = now + std::chrono::seconds(2);
-        }
-        const auto& wifi = wifi_it->second;
-        const int progress = wifi.ota_pull_progress_pct.value_or(0);
-        if ((wifi.ota_pull_state == "downloading" || wifi.ota_pull_state == "finishing") &&
-            progress != pending.last_progress) {
-            pending.saw_progress = true;
-            pending.last_progress = progress;
-            WriteOtaCommandLine(command, "ota " + wifi.ota_pull_state + " " + std::to_string(progress) + "%");
-        }
-        if (pending.saw_progress && wifi.ota_pull_state == "failed") {
-            failures.push_back({request_id,
-                                wifi.ota_pull_last_error.empty() ? "ota_failed" : wifi.ota_pull_last_error,
-                                "设备报告 OTA 失败"});
-            continue;
-        }
-        if (pending.saw_progress && wifi.ota_pull_state == "success") {
-            if (!pending.saw_success) {
-                pending.saw_success = true;
-                WriteOtaCommandLine(command, "ota success");
-            }
-            if (command.wait_mode == OtaWaitMode::kSuccess) {
-                to_complete_ok.push_back(request_id);
-            }
-        }
-    }
-
-    for (const auto& id : to_complete_ok) {
-        CompletePendingOtaCommand(id, true, {}, {});
-    }
-    for (const auto& failure : failures) {
-        CompletePendingOtaCommand(failure.id, false, failure.code, failure.message);
-    }
-}
 
 
 bool Win32App::CreateWindowInternal() {
@@ -1338,10 +1052,6 @@ void Win32App::ShowTrayMenu() {
         }
 
         AppendMenuW(submenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(submenu,
-                    connected ? MF_STRING : (MF_STRING | MF_DISABLED),
-                    kMenuWifiSettingsBase + static_cast<UINT>(i),
-                    language == UiLanguage::kSimplifiedChinese ? L"Wi-Fi 与 OTA..." : L"Wi-Fi && OTA...");
         AppendMenuW(submenu, MF_STRING, kMenuForgetBase + static_cast<UINT>(i),
                     TrW(StringId::kMenuForgetDevice, language).c_str());
 
@@ -1797,67 +1507,8 @@ void Win32App::ShowSettings() {
             RebuildTooltip();
             LogLine("Settings saved");
         };
-        settings_dialog_->on_request_wifi_status = [this]() {
-            if (!coordinator_) return;
-            for (const auto& device : connected_devices_) {
-                coordinator_->RequestDeviceWifiStatus(device.id);
-            }
-        };
     }
     settings_dialog_->Show();
-}
-
-void Win32App::ShowWifiSettings(const std::string& device_id) {
-    if (!coordinator_) return;
-
-    WifiSettingsDialog::Options options;
-    options.device_id = device_id;
-    options.device_name = "VS-" + device_id;
-    if (auto it = device_info_map_.find(device_id); it != device_info_map_.end()) {
-        options.device_name = "VS-" + device_id;
-        options.firmware_version = it->second.firmware_version;
-    }
-    options.language = EffectiveUiLanguage(config_.ui_language);
-    if (auto it = config_.device_wifi_profiles.find(device_id); it != config_.device_wifi_profiles.end()) {
-        options.profile = it->second;
-    }
-    options.saved_password = WifiCredentialsWin::ReadPassword(device_id);
-    if (auto it = device_wifi_status_map_.find(device_id); it != device_wifi_status_map_.end()) {
-        options.status = it->second;
-    }
-
-    WifiSettingsDialog::Callbacks callbacks;
-    callbacks.apply_wifi = [this, device_id](std::string ssid, std::wstring password) {
-        WifiCredentialsWin::WritePassword(device_id, password);
-        if (coordinator_) coordinator_->ConfigureDeviceWifi(device_id, ssid, Utf8FromUtf16(password));
-    };
-    callbacks.clear_wifi = [this, device_id] {
-        WifiCredentialsWin::DeletePassword(device_id);
-        config_.device_wifi_profiles.erase(device_id);
-        config_.Save();
-        if (coordinator_) coordinator_->ClearDeviceWifi(device_id);
-    };
-    callbacks.scan_wifi = [this, device_id] {
-        if (coordinator_) coordinator_->ScanDeviceWifi(device_id);
-    };
-    callbacks.refresh_status = [this, device_id] {
-        if (coordinator_) coordinator_->RequestDeviceWifiStatus(device_id);
-    };
-    callbacks.start_ota = [this, device_id](std::string url, std::string sha256) {
-        if (coordinator_) coordinator_->StartDeviceOtaPull(device_id, url, sha256);
-    };
-    callbacks.commit_ota = [this, device_id] {
-        if (coordinator_) coordinator_->CommitDeviceOta(device_id);
-    };
-    callbacks.save_profile = [this, device_id](WifiDeviceProfile profile) {
-        config_.device_wifi_profiles[device_id] = std::move(profile);
-        config_.Save();
-    };
-
-    auto& dialog = wifi_settings_dialogs_[device_id];
-    dialog = std::make_unique<WifiSettingsDialog>(instance_, hwnd_, std::move(options), std::move(callbacks));
-    dialog->Show();
-    coordinator_->RequestDeviceWifiStatus(device_id);
 }
 
 void Win32App::StartFirmwareUpdate(const std::string& device_id) {

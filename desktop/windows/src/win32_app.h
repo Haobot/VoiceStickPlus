@@ -6,18 +6,15 @@
 #include "hotkey_settings_dialog.h"
 #include "input_injector_win.h"
 #include "onboarding_dialog.h"
-#include "ota_command.h"
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
 #include "settings_dialog.h"
 #include "subtitle_window.h"
 #include "voice_stick_coordinator.h"
-#include "wifi_settings_dialog.h"
 
 #include <Windows.h>
 
 #include <chrono>
-#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -42,10 +39,6 @@ public:
     void SetDeviceInfo(const DeviceInfo& info) override;
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override;
-    void SetDeviceWifiStatus(const std::string& device_id,
-                              const WifiStatusSnapshot& snapshot) override;
-    void SetDeviceWifiScanResult(const std::string& device_id,
-                                  const WifiScanResult& result) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
     void SetPairingError(const std::string& device_id, const std::string& message) override;
     void ShowFirmwareUpdatePrompt(const std::string& device_id,
@@ -89,7 +82,6 @@ private:
     bool ShowOnboarding();
     void ShowPairDeviceDialog();
     void ShowSettings();
-    void ShowWifiSettings(const std::string& device_id);
     void SaveInputOptions();
     void SyncLaunchAtLogin();
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
@@ -105,30 +97,6 @@ private:
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
     void ShutdownAndQuit();
-    void HandleCopyData(const COPYDATASTRUCT& copy_data);
-    void StartPendingOtaCommand(OtaPullCommand command);
-    void PumpPendingOtaCommands();
-    void CompletePendingOtaCommand(const std::string& request_id, bool ok,
-                                   const std::string& code,
-                                   const std::string& message);
-    void WriteOtaCommandLine(const OtaPullCommand& command, const std::string& line);
-    bool IsDeviceConnectedForOta(const std::string& device_id) const;
-
-    struct PendingOtaCommand {
-        OtaPullCommand command;
-        std::ofstream reply;
-        std::chrono::steady_clock::time_point deadline{};
-        std::chrono::steady_clock::time_point next_wifi_request{};
-        bool sent = false;
-        bool saw_progress = false;
-        bool saw_success = false;
-        bool saw_disconnect_after_success = false;
-        bool saw_reconnect_after_success = false;
-        bool wifi_status_after_reconnect = false;
-        bool commit_sent = false;
-        bool completed = false;
-        int last_progress = -1;
-    };
 
     HINSTANCE instance_;
     HWND hwnd_ = nullptr;
@@ -140,7 +108,6 @@ private:
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
-    std::map<std::string, std::unique_ptr<WifiSettingsDialog>> wifi_settings_dialogs_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;
     std::unique_ptr<SubtitleWindow> subtitles_;
@@ -150,10 +117,7 @@ private:
     std::vector<std::string> paired_device_ids_;
     std::map<std::string, DeviceInfo> device_info_map_;
     std::map<std::string, DeviceBattery> device_battery_map_;
-    std::map<std::string, WifiStatusSnapshot> device_wifi_status_map_;
-    std::map<std::string, WifiScanResult> device_wifi_scan_results_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
-    std::map<std::string, PendingOtaCommand> pending_ota_commands_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;

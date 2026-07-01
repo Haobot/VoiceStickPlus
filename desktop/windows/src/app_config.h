@@ -92,23 +92,6 @@ struct OutputProfile {
     bool operator==(const OutputProfile& other) const = default;
 };
 
-struct WifiDeviceProfile {
-    std::string ssid;
-    std::string ota_url;
-    std::string ota_sha256_hex;
-
-    bool IsEmpty() const {
-        return ssid.empty() && ota_url.empty() && ota_sha256_hex.empty();
-    }
-};
-
-struct DeviceWifiInfo {
-    std::string ssid;
-    std::string ip;
-
-    bool operator==(const DeviceWifiInfo& other) const = default;
-};
-
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
 
@@ -139,15 +122,12 @@ struct AppConfig {
     std::map<std::string, OverlayPosition> device_overlay_positions;
     OutputProfile default_output_profile;
     std::map<std::string, OutputProfile> device_output_profiles;
-    std::map<std::string, WifiDeviceProfile> device_wifi_profiles;
     bool auto_enter = true;
     bool global_hotkey_enabled = true;
     std::string global_hotkey = "Alt+X";
     bool prompt_tone_enabled = true;
     bool show_imu_debug = false;
     ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
-    bool show_device_wifi_info = false;
-    std::map<std::string, DeviceWifiInfo> device_wifi_infos;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;

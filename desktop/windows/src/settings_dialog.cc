@@ -201,11 +201,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdApiKeyEdit:
             if (HIWORD(w_param) == EN_CHANGE) UpdateProviderVisibility();
             return TRUE;
-        case kIdShowDeviceWifiInfo:
-            if (HIWORD(w_param) == BN_CLICKED) {
-                UpdateWifiInfoVisibility();
-            }
-            return TRUE;
         case kIdRefineText:
             if (HIWORD(w_param) == BN_CLICKED) UpdateRefinePromptVisibility();
             return TRUE;
@@ -252,11 +247,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
         imu_wake_sensitivity_combo_ = nullptr;
-        show_device_wifi_info_check_ = nullptr;
-        wifi_ssid_label_ = nullptr;
-        wifi_ssid_edit_ = nullptr;
-        wifi_ip_label_ = nullptr;
-        wifi_ip_edit_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
         all_controls_.clear();
@@ -324,11 +314,6 @@ void SettingsDialog::DestroyControls() {
     debug_audio_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     imu_wake_sensitivity_combo_ = nullptr;
-    show_device_wifi_info_check_ = nullptr;
-    wifi_ssid_label_ = nullptr;
-    wifi_ssid_edit_ = nullptr;
-    wifi_ip_label_ = nullptr;
-    wifi_ip_edit_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
     if (ui_font_) {
@@ -485,28 +470,6 @@ void SettingsDialog::BuildControls() {
                  reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityHigh, language).c_str()));
     y += row_h + Dp(10);
 
-    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    show_device_wifi_info_check_ = remember(CreateButton(hwnd_,
-        TrW(StringId::kSettingsShowDeviceWifiInfo, language).c_str(),
-        ctrl_x, y, ctrl_w, Dp(22), kIdShowDeviceWifiInfo, instance_,
-        BS_AUTOCHECKBOX));
-    y += row_h + Dp(10);
-
-    wifi_ssid_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDeviceWifiSsid).c_str(),
-                                                  Dp(10), y + Dp(3), label_w,
-                                                  Dp(20), instance_));
-    wifi_ssid_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
-                                          kIdWifiSsidEdit, instance_, ES_READONLY));
-    y += row_h + Dp(10);
-
-    wifi_ip_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDeviceWifiIp).c_str(),
-                                                Dp(10), y + Dp(3), label_w,
-                                                Dp(20), instance_));
-    wifi_ip_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
-                                        kIdWifiIpEdit, instance_, ES_READONLY));
-    y += row_h + Dp(10);
-
     remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
@@ -575,16 +538,6 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kMedium) sensitivity_index = 1;
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kHigh) sensitivity_index = 2;
     SendMessageW(imu_wake_sensitivity_combo_, CB_SETCURSEL, sensitivity_index, 0);
-    SendMessageW(show_device_wifi_info_check_, BM_SETCHECK,
-                 config_.show_device_wifi_info ? BST_CHECKED : BST_UNCHECKED, 0);
-    const auto [ssid_text, ip_text] = CurrentDeviceWifiInfoText();
-    SetWindowTextW(wifi_ssid_edit_, ssid_text.c_str());
-    SetWindowTextW(wifi_ip_edit_, ip_text.c_str());
-    UpdateWifiInfoVisibility();
-    if (on_request_wifi_status) {
-        on_request_wifi_status();
-    }
-    LogApp("SettingsDialog loaded ssid=" + Utf8(ssid_text) + " ip=" + Utf8(ip_text));
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
@@ -657,7 +610,6 @@ void SettingsDialog::SaveSettings() {
     } else {
         config_.imu_wake_sensitivity = ImuWakeSensitivity::kLow;
     }
-    config_.show_device_wifi_info = SendMessageW(show_device_wifi_info_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
@@ -769,45 +721,11 @@ bool SettingsDialog::IsLabelControl(HWND control) const {
            label_controls_.end();
 }
 
-void SettingsDialog::UpdateWifiInfoVisibility() {
-    const bool show = SendMessageW(show_device_wifi_info_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    const int cmd = show ? SW_SHOW : SW_HIDE;
-    ShowWindow(wifi_ssid_label_, cmd);
-    ShowWindow(wifi_ssid_edit_, cmd);
-    ShowWindow(wifi_ip_label_, cmd);
-    ShowWindow(wifi_ip_edit_, cmd);
-}
-
 void SettingsDialog::UpdateRefinePromptVisibility() {
     const bool show = SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const int cmd = show ? SW_SHOW : SW_HIDE;
     ShowWindow(refine_prompt_label_, cmd);
     ShowWindow(refine_prompt_edit_, cmd);
-}
-
-void SettingsDialog::RefreshWifiInfo() {
-    if (!hwnd_) return;
-    config_ = AppConfig::Load();
-    const auto [ssid_text, ip_text] = CurrentDeviceWifiInfoText();
-    SetWindowTextW(wifi_ssid_edit_, ssid_text.c_str());
-    SetWindowTextW(wifi_ip_edit_, ip_text.c_str());
-    LogApp("SettingsDialog refreshed ssid=" + Utf8(ssid_text) + " ip=" + Utf8(ip_text));
-}
-
-std::pair<std::wstring, std::wstring> SettingsDialog::CurrentDeviceWifiInfoText() const {
-    const auto language = EffectiveUiLanguage(config_.ui_language);
-    for (const auto& device_id : config_.paired_device_ids) {
-        auto it = config_.device_wifi_infos.find(device_id);
-        if (it != config_.device_wifi_infos.end()) {
-            const auto& info = it->second;
-            const std::wstring ssid = info.ssid.empty()
-                                          ? TrW(StringId::kSettingsDeviceWifiIdle, language)
-                                          : Utf16(info.ssid);
-            const std::wstring ip = info.ip.empty() ? L"-" : Utf16(info.ip);
-            return {ssid, ip};
-        }
-    }
-    return {TrW(StringId::kSettingsDeviceWifiIdle, language), L"-"};
 }
 
 int SettingsDialog::Dp(int px) const {

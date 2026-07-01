@@ -58,7 +58,6 @@ add_library(voicestick_core
     src/log.cc
     src/ogg_crc.cc
     src/ogg_opus_muxer.cc
-    src/ota_command.cc
     src/pair_device_helper.cc
     src/voice_stick_coordinator.cc
 )
@@ -86,8 +85,6 @@ add_executable(VoiceStickApp WIN32
     src/onboarding_dialog.cc
     src/settings_dialog.cc
     src/hotkey_settings_dialog.cc
-    src/wifi_credentials_win.cc
-    src/wifi_settings_dialog.cc
     resources/VoiceStick.rc
 )
 
@@ -129,16 +126,6 @@ target_link_libraries(VoiceStickApp PRIVATE
     ole32
     advapi32
     taskschd
-)
-
-add_executable(VoiceStickCtl
-    src/voice_stick_ctl.cc
-)
-
-target_link_libraries(VoiceStickCtl PRIVATE
-    voicestick_core
-    user32
-    shell32
 )
 
 add_custom_command(TARGET VoiceStickApp POST_BUILD
