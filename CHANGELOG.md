@@ -1,5 +1,13 @@
 # CHANGELOG.md
 
+## 2026-07-01 v1.8.0
+
+- **breaking**: 移除 Wi-Fi STA 配网与局域网 HTTP(S) OTA pull 全链路，固件升级改走 BLE OTA（与 USB COM 口烧录，后者未来实现）。
+  - 固件：删除 `components/voice_net/` 整个组件、`VOICE_NET_DISABLE` 宏与 `main.c` 全部 `voice_net_*` 调用点；`ota_commit` 改为直接 `esp_ota_mark_app_valid_cancel_rollback`；boot 兜底签到改为无条件；清理 `sdkconfig.defaults` 中 Wi-Fi/mDNS/TLS 相关项；`ui_status` 移除 Wi-Fi 信息行。
+  - Windows：删除 `wifi_settings_dialog`/`wifi_credentials_win`/`ota_command`/`voice_stick_ctl` 四个源文件与 `VoiceStickCtl` 目标；清理 `ble_protocol`/`app_config`/`coordinator`/`ble_central_win`/`win32_app`/`settings_dialog`/`localization` 中 Wi-Fi/LAN-OTA 符号与 10 个 `core_tests`；保留 BLE OTA、固件清单、WinSparkle。
+  - 文档：`Doc/Ref/protocol.md` 删 Wi-Fi 章节、`show_wifi_info`/`wifi_status` 帧；删除 5 个 `Doc/Plan` 方案文件与 `scripts/probe_wifi_provisioning.py`；`CLAUDE.md`/`AGENTS.md` 逐行清理。
+  - macOS 端零改动（从未实现 Wi-Fi/LAN-OTA）。
+
 ## 2026-06-30 v1.7.2
 
 - 版本号从 `v1.7.1` 更新到 `v1.7.2`。

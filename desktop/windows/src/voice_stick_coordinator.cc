@@ -72,12 +72,8 @@ void VoiceStickCoordinator::Start() {
         ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
         ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
         ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
-        ble_->SendShowWifiInfo(config_.show_device_wifi_info, std::nullopt);
         ble_->SendImuWakeSensitivity(
             ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
-        for (const auto& dev : devices) {
-            ble_->SendWifiStatusRequest(dev.id);
-        }
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -159,7 +155,6 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
     ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
-    ble_->SendShowWifiInfo(config_.show_device_wifi_info, std::nullopt);
     ble_->SendImuWakeSensitivity(
         ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
@@ -277,34 +272,6 @@ void VoiceStickCoordinator::CancelFirmwareUpdate() {
     ble_->CancelFirmwareUpdate();
 }
 
-void VoiceStickCoordinator::ConfigureDeviceWifi(const std::string& device_id,
-                                                const std::string& ssid,
-                                                const std::string& password) {
-    ble_->SendWifiSet(device_id, ssid, password);
-}
-
-void VoiceStickCoordinator::ClearDeviceWifi(const std::string& device_id) {
-    ble_->SendWifiClear(device_id);
-}
-
-void VoiceStickCoordinator::ScanDeviceWifi(const std::string& device_id) {
-    ble_->SendWifiScan(device_id);
-}
-
-void VoiceStickCoordinator::RequestDeviceWifiStatus(const std::string& device_id) {
-    ble_->SendWifiStatusRequest(device_id);
-}
-
-void VoiceStickCoordinator::StartDeviceOtaPull(const std::string& device_id,
-                                               const std::string& url,
-                                               const std::string& sha256_hex) {
-    ble_->SendOtaPull(device_id, url, sha256_hex);
-}
-
-void VoiceStickCoordinator::CommitDeviceOta(const std::string& device_id) {
-    ble_->SendOtaCommit(device_id);
-}
-
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     asr_->on_partial = [this](std::string text) {
         ui_->ShowPartial(text, active_device_id_);
@@ -365,14 +332,6 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
             ui_->SetDeviceBattery(device_id, event.battery_level.value(),
                                    event.battery_charging.value_or(false),
                                    event.battery_usb_powered.value_or(false));
-        }
-    } else if (event.event == "wifi_status") {
-        if (event.wifi.has_value()) {
-            ui_->SetDeviceWifiStatus(device_id, *event.wifi);
-        }
-    } else if (event.event == "wifi_scan_result") {
-        if (event.wifi_scan.has_value()) {
-            ui_->SetDeviceWifiScanResult(device_id, *event.wifi_scan);
         }
     } else if (event.event == "button_down") {
         HandleButtonDown(event, device_id);

@@ -46,12 +46,6 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsImuWakeSensitivityLow)] = "Low";
     table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "Medium";
     table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "High";
-    table[Index(StringId::kSettingsShowDeviceWifiInfo)] = "Show connected Wi-Fi info";
-    table[Index(StringId::kSettingsDeviceWifiSsid)] = "Wi-Fi SSID";
-    table[Index(StringId::kSettingsDeviceWifiIp)] = "IP Address";
-    table[Index(StringId::kSettingsDeviceWifiIdle)] = "WIFI Idle";
-    table[Index(StringId::kWifiScan)] = "Scan";
-    table[Index(StringId::kWifiScanning)] = "Scanning...";
     table[Index(StringId::kSettingsDebugDir)] = "Audio Folder";
     table[Index(StringId::kSettingsChooseDir)] = "Choose...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "Open Config Folder";
@@ -234,12 +228,6 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsImuWakeSensitivityLow)] = "低";
     table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "中";
     table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "高";
-    table[Index(StringId::kSettingsShowDeviceWifiInfo)] = "显示已连接 Wi-Fi 信息";
-    table[Index(StringId::kSettingsDeviceWifiSsid)] = "Wi-Fi SSID";
-    table[Index(StringId::kSettingsDeviceWifiIp)] = "IP 地址";
-    table[Index(StringId::kSettingsDeviceWifiIdle)] = "WIFI Idle";
-    table[Index(StringId::kWifiScan)] = "扫描";
-    table[Index(StringId::kWifiScanning)] = "扫描中…";
     table[Index(StringId::kSettingsDebugDir)] = "音频文件夹";
     table[Index(StringId::kSettingsChooseDir)] = "选择...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "打开配置文件夹";

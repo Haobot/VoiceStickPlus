@@ -16,10 +16,8 @@ public:
     ~SettingsDialog();
 
     void Show();
-    void RefreshWifiInfo();
 
     std::function<void(AppConfig)> on_config_changed;
-    std::function<void()> on_request_wifi_status;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -31,9 +29,7 @@ private:
     void LoadConfigIntoControls();
     void SaveSettings();
     void UpdateProviderVisibility();
-    void UpdateWifiInfoVisibility();
     void UpdateRefinePromptVisibility();
-    std::pair<std::wstring, std::wstring> CurrentDeviceWifiInfoText() const;
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     bool IsLabelControl(HWND control) const;
@@ -62,11 +58,6 @@ private:
     HWND debug_audio_check_ = nullptr;
     HWND show_imu_debug_check_ = nullptr;
     HWND imu_wake_sensitivity_combo_ = nullptr;
-    HWND show_device_wifi_info_check_ = nullptr;
-    HWND wifi_ssid_label_ = nullptr;
-    HWND wifi_ssid_edit_ = nullptr;
-    HWND wifi_ip_label_ = nullptr;
-    HWND wifi_ip_edit_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -90,9 +81,6 @@ private:
     static constexpr UINT kIdDebugAudio = 2010;
     static constexpr UINT kIdShowImuDebug = 2017;
     static constexpr UINT kIdImuWakeSensitivity = 2018;
-    static constexpr UINT kIdShowDeviceWifiInfo = 2019;
-    static constexpr UINT kIdWifiSsidEdit = 2020;
-    static constexpr UINT kIdWifiIpEdit = 2021;
     static constexpr UINT kIdDebugDirEdit = 2011;
     static constexpr UINT kIdChooseDir = 2012;
     static constexpr UINT kIdSave = 2013;

@@ -8,7 +8,7 @@
 
 VoiceStick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。
 
-- **固件端**：负责采集按键与音频，通过 BLE 上报给桌面端；同时负责电源管理、设备显示、BLE OTA 与 Wi-Fi / LAN HTTP(S) OTA。
+- **固件端**：负责采集按键与音频，通过 BLE 上报给桌面端；同时负责电源管理、设备显示、BLE OTA。
 - **桌面端**：是交互状态的唯一可信源，负责 BLE 配对与多设备连接、Opus → Ogg Opus 封装、ASR WebSocket、LLM 翻译与精修、悬浮窗/字幕、文本注入、配置管理和自动更新。
 - **网站端**：负责落地页、浏览器端 USB 固件烧录，以及 Sparkle / WinSparkle 更新源。
 
@@ -20,7 +20,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 桌面端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
 
-当前版本：`1.7.2`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致。
+当前版本：`1.8.0`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致。
 
 ## 关键配置文件
 
@@ -35,7 +35,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 | `firmware/components/*/idf_component.yml` | 组件级 ESP-IDF component manager 依赖 |
 | `firmware/partitions_ota.csv` | 8 MB flash 分区表：两个 3 MB OTA app slot + 约 1984 KB `storage` |
 | `desktop/macos/Package.swift` | SwiftPM 包定义，依赖 Sparkle、TOMLKit、CZlib |
-| `desktop/windows/CMakeLists.txt` | Windows 桌面端 CMake，拆分为 `voicestick_core`、`VoiceStickApp`、`VoiceStickCtl` |
+| `desktop/windows/CMakeLists.txt` | Windows 桌面端 CMake，拆分为 `voicestick_core`、`VoiceStickApp` |
 | `desktop/windows/src/version.h.in` | Windows 版本资源模板，由 CMake 从 `VERSION` 填充 |
 | `website/package.json` | Node 项目配置，当前 `version` 为 `0.3.4` |
 | `website/vite.config.js` | Vite 配置，`base: '/voicestick/'` |
@@ -58,9 +58,8 @@ firmware/                       ESP-IDF C 固件（ESP32-S3）
     stick_s3_board/             板级初始化：引脚、LCD、PMIC、I2S/codec
     audio_pipeline/             从 ES8311 读取 16 kHz 单声道 PCM，编码为 Opus
     voice_ble/                  GATT 服务、音频/状态通知、控制写入、BLE OTA 数据流
-    voice_net/                  Wi-Fi STA 配网、mDNS/局域网发现、LAN HTTP(S) OTA pull
     bmi270/                     BMI270 IMU 驱动
-    ui_status/                  ST7789/LVGL 状态界面、亮度、休眠、OTA 进度、Wi-Fi 信息
+    ui_status/                  ST7789/LVGL 状态界面、亮度、休眠、OTA 进度
   managed_components/           ESP-IDF component manager 拉取的依赖
   partitions_ota.csv            分区表：两个 3 MB OTA app slot + 约 1984 KB storage
   version.txt                   固件向桌面端报告自身版本，发布前必须与 VERSION 一致
@@ -75,7 +74,7 @@ desktop/macos/                  SwiftPM / AppKit 菜单栏应用（macOS 12+）
   Resources/                    图标、Info.plist 等资源
 
 desktop/windows/                C++20 / Win32 / C++/WinRT 托盘应用（Windows 10 1903+）
-  CMakeLists.txt                拆分为 voicestick_core、VoiceStickApp、VoiceStickCtl
+  CMakeLists.txt                拆分为 voicestick_core、VoiceStickApp
   src/                          C++ 源码
   tests/core_tests.cc           核心库单元测试
   installer/                    WiX MSI 安装包定义
@@ -118,7 +117,6 @@ ArduFlux.json                   ArduFlux IDE 配置文件（非版本控制重�
   - `espressif/esp_codec_dev: ^1.3.4`（audio_pipeline 组件）
   - `78/esp-opus: ^1.0.5`（audio_pipeline 组件，Opus 编码）
   - `lvgl/lvgl: 9.2.0`（ui_status 组件）
-  - `espressif/mdns: ^1.2`（voice_net 组件）
   由 ESP-IDF component manager 通过各 `idf_component.yml` 管理。
 - **macOS**：`sparkle-project/Sparkle` (2.6+)、`LebJe/TOMLKit` (0.6+)。
 - **Windows**：WinSparkle 0.9.2（FetchContent）、WiX Toolset v6、WinHTTP、bcrypt。
@@ -228,8 +226,7 @@ npm run preview
 - `firmware/main/main.c`：编排按键、BLE、录音会话、UI 状态、电源管理和 OTA 事件。
 - `components/audio_pipeline/`：从 ES8311 I2S 麦克风读取 16 kHz 单声道 PCM，编码为 Opus 后通过回调交给 BLE 层。
 - `components/voice_ble/`：实现 GATT 服务、音频/状态通知、主机控制写入和 BLE OTA 数据流。
-- `components/ui_status/`：基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示、OTA 进度，以及由桌面端开关控制的 Wi-Fi 信息（SSID/IP）显示。
-- `components/voice_net/`：Wi-Fi STA 配网、mDNS/局域网发现和 HTTP(S) LAN OTA pull（`esp_https_ota`）。凭据由桌面端经 `control_rx` 下发并持久化到 NVS，状态通过 `state_tx` 的 `wifi_status` 帧回报；Wi-Fi 必须等 BLE 稳定连接后再启动，OTA pull 前要过 main.c 注入的 park gate。Wi-Fi 射频按需启停：空闲倒计时归零或录音开始时自动关闭，下次操作命令到达时自动重启。契约见 `Doc/Ref/protocol.md`，计划见 `Doc/Plan/wifi-sta-ble-provisioning.md`、`Doc/Plan/lan-http-ota-pull-design.md`、`Doc/Plan/wifi-on-demand-power-management.md`。
+- `components/ui_status/`：基于 ST7789/LVGL 渲染状态界面、亮度、休眠前显示、OTA 进度。
 - `components/bmi270/`：BMI270 IMU 驱动。
 - `components/stick_s3_board/`：集中维护 StickS3 引脚、LCD、PMIC、I2S/codec 等板级初始化。引脚定义在 `firmware/components/stick_s3_board/include/stick_s3_board.h`。
 
@@ -253,8 +250,7 @@ npm run preview
 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 - `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译、调试音频缓存、固件清单解析、日志、本地化和协调器状态机。
-- `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新/Wi-Fi 设置等对话框。
-- `VoiceStickCtl`（`src/voice_stick_ctl.cc` + `src/ota_command.cc`）：命令行 OTA 工具，经 BLE 触发 Wi-Fi 配网与 LAN HTTP OTA pull，调试固件升级用。
+- `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
 
 新增核心行为优先放入 `voicestick_core`，并在 `desktop/windows/tests/core_tests.cc` 覆盖；测试目标名为 `voicestick_windows_tests`。
 
@@ -267,8 +263,8 @@ npm run preview
 BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - `audio_tx`（notify，`0x5101`）：Opus 音频帧，设备 → 主机。
-- `state_tx`（notify，`0x5102`）：按键事件、电量、固件版本、`wifi_status`（Wi-Fi/IP/OTA pull 进度）等，设备 → 主机。
-- `control_rx`（write without response，`0x5103`）：`ui_state`、BLE OTA 控制、`wifi_set`/`wifi_clear`/`wifi_status_request`、`ota_pull`/`ota_commit`、`show_imu_debug`、`show_wifi_info`、`imu_wake_sensitivity` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
+- `state_tx`（notify，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
+- `control_rx`（write without response，`0x5103`）：`ui_state`、`interaction_mode`、`prompt_tone`、`show_imu_debug`、`imu_wake_sensitivity`、`ota_commit` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
 - `ota_rx` / `ota_tx`：BLE OTA 数据通道。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
@@ -309,13 +305,11 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `debug_audio_cache`：是否保存调试 Ogg Opus 音频。
 - `prompt_tone_enabled`（Windows 桌面端）：是否在录音启停时播放提示音，默认 `true`。
 - `show_imu_debug`（Windows 桌面端）：是否在设备屏幕上显示 IMU 加速度调试数值，默认 `false`。
-- `show_device_wifi_info`（Windows 桌面端）：是否在设备屏幕上显示已连接 Wi-Fi 的 SSID 与 IP，默认 `false`。
 - `interaction_mode`：`hold_to_talk` 或 `click_to_talk`。
 - `[output].target`：`focused_app` 或 `subtitle`。
 - `[output].transform`：`original` 或 `translate`。
 - `[output].translation_target`：目标语言代码，如 `en` 或 `zh-Hans`。
 - `[device.<id>.output]`：按设备覆盖输出/翻译设置。
-- `[device.<id>.wifi_info]`：按设备持久化保存已连接 Wi-Fi 的 SSID 与 IP（由 Windows 端写入）。
 - `refine_enabled`：是否对 ASR 原文做 LLM 精修（去停顿空格、修标点、去口头语），默认 `true`；翻译路径的精修已融入翻译 prompt，不受此开关额外调用影响。`refine_prompt` 可覆盖内置精修 prompt（为空用默认）。
 - `asr_hotwords`：逗号分隔的 ASR 热词，同时作为术语提示传给 LLM。
 - `paired_device_ids`：逗号分隔的 4 位十六进制 ID，如 `C3D8,09AF`。
@@ -349,7 +343,7 @@ Windows 调试音频缓存目录：
 
 版本单一来源是仓库根目录的 `VERSION` 文件（纯文本，不含换行）。发布前还需要同步更新 `firmware/version.txt`，因为固件通过该文件向桌面端报告自身版本，版本不一致会导致 OTA 检测异常。
 
-推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `1.7.2` 时，标签必须是 `v1.7.2`。
+推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`。例如 `VERSION` 内容为 `1.8.0` 时，标签必须是 `v1.8.0`。
 
 ## 发布与部署流程
 
@@ -390,8 +384,6 @@ Windows 特殊流程：
 - `png_to_lvgl_argb_bin.py`：把 PNG 转成固件 LVGL 用的 ARGB 二进制资源。
 - `slice_cat_sprites.py` / `tune_cat_sprites.py`：切片与调校状态界面精灵图。
 - `probe_asr_websocket_ping.py`：探测 ASR WebSocket 连通性。
-- `probe_wifi_provisioning.py`：探测/调试 Wi-Fi 配网与 LAN OTA 链路。
-
 ## 项目 Skills
 
 本仓库在 `.agents/skills/` 下维护项目级 Skill，Agent 在相关场景会自动加载：
@@ -410,8 +402,6 @@ Windows 特殊流程：
 - Windows 应用使用 `SendInput` 进行粘贴，使用 WinHTTP 进行网络通信。
 - 固件 OTA 更新时，桌面端会校验 `ota_size` 和 `ota_sha256` 后再写入设备。
 - 发布产物（macOS DMG/ZIP、Windows MSI、固件 bin）均需签名或校验。
-- Wi-Fi 凭据经 BLE 下发后持久化到 NVS；所有写日志路径必须把 `password` 字段脱敏为 `<redacted>`。
-
 ## 给 Agent 的重要提示
 
 - 搜索仓库时请排除 `website/node_modules/` 和 `firmware/build/` 以免噪声过多。

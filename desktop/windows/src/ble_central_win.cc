@@ -422,29 +422,6 @@ void BleCentralWin::SendShowImuDebug(bool enabled,
     }
 }
 
-void BleCentralWin::SendShowWifiInfo(bool enabled,
-                                     const std::optional<std::string>& device_id) {
-    auto payload = BleProtocol::ShowWifiInfoPayload(enabled);
-    std::vector<std::shared_ptr<DeviceSession>> targets;
-    {
-        std::lock_guard lock(mutex_);
-        if (device_id.has_value()) {
-            auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
-                targets.push_back(it->second);
-            }
-        } else {
-            for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
-            }
-        }
-    }
-
-    for (auto& session : targets) {
-        WriteControlPayloadAsync(std::move(session), payload);
-    }
-}
-
 void BleCentralWin::SendImuWakeSensitivity(int threshold_lsb,
                                            const std::optional<std::string>& device_id) {
     auto payload = BleProtocol::ImuWakeSensitivityPayload(threshold_lsb);
@@ -525,106 +502,6 @@ void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
                    " payload_len=" + std::to_string(payload.size()));
         WriteControlPayloadAsync(std::move(session), payload);
     }
-}
-
-void BleCentralWin::SendWifiSet(const std::string& device_id,
-                                const std::string& ssid,
-                                const std::string& password) {
-    auto payload = BleProtocol::WifiSetPayload(ssid, password);
-    std::shared_ptr<DeviceSession> session;
-    {
-        std::lock_guard lock(mutex_);
-        auto it = sessions_by_device_id_.find(device_id);
-        if (it != sessions_by_device_id_.end() && it->second->ready) session = it->second;
-    }
-    if (!session) {
-        LogBleLine("send wifi_set skipped dev=VS-" + device_id);
-        return;
-    }
-    LogBleLine("send wifi_set dev=VS-" + device_id + " ssid=" + ssid + " password=<redacted>");
-    WriteControlPayloadAsync(std::move(session), payload);
-}
-
-void BleCentralWin::SendWifiClear(const std::string& device_id) {
-    auto payload = BleProtocol::WifiClearPayload();
-    std::shared_ptr<DeviceSession> session;
-    {
-        std::lock_guard lock(mutex_);
-        auto it = sessions_by_device_id_.find(device_id);
-        if (it != sessions_by_device_id_.end() && it->second->ready) session = it->second;
-    }
-    if (!session) {
-        LogBleLine("send wifi_clear skipped dev=VS-" + device_id);
-        return;
-    }
-    LogBleLine("send wifi_clear dev=VS-" + device_id);
-    WriteControlPayloadAsync(std::move(session), payload);
-}
-
-void BleCentralWin::SendWifiStatusRequest(const std::string& device_id) {
-    auto payload = BleProtocol::WifiStatusRequestPayload();
-    std::shared_ptr<DeviceSession> session;
-    {
-        std::lock_guard lock(mutex_);
-        auto it = sessions_by_device_id_.find(device_id);
-        if (it != sessions_by_device_id_.end() && it->second->ready) session = it->second;
-    }
-    if (!session) {
-        LogBleLine("send wifi_status_request skipped dev=VS-" + device_id);
-        return;
-    }
-    LogBleLine("send wifi_status_request dev=VS-" + device_id);
-    WriteControlPayloadAsync(std::move(session), payload);
-}
-
-void BleCentralWin::SendWifiScan(const std::string& device_id) {
-    auto payload = BleProtocol::WifiScanPayload();
-    std::shared_ptr<DeviceSession> session;
-    {
-        std::lock_guard lock(mutex_);
-        auto it = sessions_by_device_id_.find(device_id);
-        if (it != sessions_by_device_id_.end() && it->second->ready) session = it->second;
-    }
-    if (!session) {
-        LogBleLine("send wifi_scan skipped dev=VS-" + device_id);
-        return;
-    }
-    LogBleLine("send wifi_scan dev=VS-" + device_id);
-    WriteControlPayloadAsync(std::move(session), payload);
-}
-
-void BleCentralWin::SendOtaPull(const std::string& device_id,
-                                const std::string& url,
-                                const std::string& sha256_hex) {
-    auto payload = BleProtocol::OtaPullPayload(url, sha256_hex);
-    std::shared_ptr<DeviceSession> session;
-    {
-        std::lock_guard lock(mutex_);
-        auto it = sessions_by_device_id_.find(device_id);
-        if (it != sessions_by_device_id_.end() && it->second->ready) session = it->second;
-    }
-    if (!session) {
-        LogBleLine("send ota_pull skipped dev=VS-" + device_id);
-        return;
-    }
-    LogBleLine("send ota_pull dev=VS-" + device_id + " url=" + url + " sha256_len=" + std::to_string(sha256_hex.size()));
-    WriteControlPayloadAsync(std::move(session), payload);
-}
-
-void BleCentralWin::SendOtaCommit(const std::string& device_id) {
-    auto payload = BleProtocol::OtaCommitPayload();
-    std::shared_ptr<DeviceSession> session;
-    {
-        std::lock_guard lock(mutex_);
-        auto it = sessions_by_device_id_.find(device_id);
-        if (it != sessions_by_device_id_.end() && it->second->ready) session = it->second;
-    }
-    if (!session) {
-        LogBleLine("send ota_commit skipped dev=VS-" + device_id);
-        return;
-    }
-    LogBleLine("send ota_commit dev=VS-" + device_id);
-    WriteControlPayloadAsync(std::move(session), payload);
 }
 
 bool BleCentralWin::IsConnected(const std::string& device_id) const {

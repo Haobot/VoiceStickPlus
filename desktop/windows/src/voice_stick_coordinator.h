@@ -64,8 +64,6 @@ public:
                                        const std::optional<std::string>& device_id) = 0;
     virtual void SendShowImuDebug(bool enabled,
                                   const std::optional<std::string>& device_id) = 0;
-    virtual void SendShowWifiInfo(bool enabled,
-                                  const std::optional<std::string>& device_id) = 0;
     virtual void SendImuWakeSensitivity(int threshold_lsb,
                                         const std::optional<std::string>& device_id) = 0;
     virtual void RequestBatteryStatus(const std::optional<std::string>& device_id) = 0;
@@ -73,16 +71,6 @@ public:
                                   const std::string& button,
                                   const std::optional<std::string>& device_id,
                                   std::uint32_t request_id) = 0;
-    virtual void SendWifiSet(const std::string& device_id,
-                             const std::string& ssid,
-                             const std::string& password) = 0;
-    virtual void SendWifiClear(const std::string& device_id) = 0;
-    virtual void SendWifiStatusRequest(const std::string& device_id) = 0;
-    virtual void SendWifiScan(const std::string& device_id) = 0;
-    virtual void SendOtaPull(const std::string& device_id,
-                             const std::string& url,
-                             const std::string& sha256_hex) = 0;
-    virtual void SendOtaCommit(const std::string& device_id) = 0;
     virtual void UpdateFirmware(ByteVector image,
                                 const std::string& device_id,
                                 std::function<void(FirmwareUpdateProgress)> progress,
@@ -122,10 +110,6 @@ public:
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
     virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
                                    bool charging, bool usb_powered) = 0;
-    virtual void SetDeviceWifiStatus(const std::string& device_id,
-                                      const WifiStatusSnapshot& snapshot) = 0;
-    virtual void SetDeviceWifiScanResult(const std::string& device_id,
-                                         const WifiScanResult& result) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;
     virtual void SetPairingError(const std::string& device_id, const std::string& message) = 0;
     virtual void ShowFirmwareUpdatePrompt(const std::string& device_id,
@@ -191,16 +175,6 @@ public:
                                   std::function<void(FirmwareUpdateProgress)> progress,
                                   std::function<void(bool, std::string)> completion);
     void CancelFirmwareUpdate();
-    void ConfigureDeviceWifi(const std::string& device_id,
-                             const std::string& ssid,
-                             const std::string& password);
-    void ClearDeviceWifi(const std::string& device_id);
-    void ScanDeviceWifi(const std::string& device_id);
-    void RequestDeviceWifiStatus(const std::string& device_id);
-    void StartDeviceOtaPull(const std::string& device_id,
-                            const std::string& url,
-                            const std::string& sha256_hex);
-    void CommitDeviceOta(const std::string& device_id);
 
     static OverlayThemeColor ThemeColorForConfig(const AppConfig& config, const std::string& device_id);
 

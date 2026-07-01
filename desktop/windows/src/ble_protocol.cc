@@ -112,39 +112,6 @@ std::optional<bool> JsonBoolValue(std::string_view json, std::string_view key) {
     return std::nullopt;
 }
 
-// 提取 JSON 顶层 key 对应的对象字面量子串（含两侧 {}），不做嵌套校验外的容错。
-// 用于把 wifi_status 的 "ota_pull": {...} 子对象切出来再独立查字段，避免与外层同名字段
-// （state、last_error）冲突。
-std::string_view JsonObjectSlice(std::string_view json, std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\"";
-    auto key_pos = json.find(needle);
-    if (key_pos == std::string_view::npos) return {};
-    auto colon = json.find(':', key_pos + needle.size());
-    if (colon == std::string_view::npos) return {};
-    auto begin = colon + 1;
-    while (begin < json.size() && std::isspace(static_cast<unsigned char>(json[begin]))) ++begin;
-    if (begin >= json.size() || json[begin] != '{') return {};
-    int depth = 0;
-    bool in_string = false;
-    bool escaped = false;
-    for (auto i = begin; i < json.size(); ++i) {
-        char ch = json[i];
-        if (in_string) {
-            if (escaped) { escaped = false; continue; }
-            if (ch == '\\') { escaped = true; continue; }
-            if (ch == '"') { in_string = false; }
-            continue;
-        }
-        if (ch == '"') { in_string = true; continue; }
-        if (ch == '{') ++depth;
-        else if (ch == '}') {
-            --depth;
-            if (depth == 0) return json.substr(begin, i - begin + 1);
-        }
-    }
-    return {};
-}
-
 std::string JsonEscape(std::string_view text) {
     std::string out;
     out.reserve(text.size() + 8);
@@ -159,53 +126,6 @@ std::string JsonEscape(std::string_view text) {
         }
     }
     return out;
-}
-
-// 解析 JSON 顶层 key 对应的数组，返回每个数组元素的子串（{...} 对象或原始值）。
-// 用于 wifi_scan_result 的 "aps":[{...},{...}] 等字段。
-std::vector<std::string_view> JsonArrayItems(std::string_view json, std::string_view key) {
-    std::vector<std::string_view> items;
-    const std::string needle = "\"" + std::string(key) + "\"";
-    auto key_pos = json.find(needle);
-    if (key_pos == std::string_view::npos) return items;
-    auto colon = json.find(':', key_pos + needle.size());
-    if (colon == std::string_view::npos) return items;
-    auto begin = colon + 1;
-    while (begin < json.size() && std::isspace(static_cast<unsigned char>(json[begin]))) ++begin;
-    if (begin >= json.size() || json[begin] != '[') return items;
-
-    // 遍历数组，切分每个顶层元素
-    int depth = 0;
-    bool in_string = false;
-    bool escaped = false;
-    auto elem_start = begin + 1;
-    for (auto i = begin + 1; i < json.size(); ++i) {
-        char ch = json[i];
-        if (in_string) {
-            if (escaped) { escaped = false; continue; }
-            if (ch == '\\') { escaped = true; continue; }
-            if (ch == '"') { in_string = false; }
-            continue;
-        }
-        if (ch == '"') { in_string = true; continue; }
-        if (ch == '{' || ch == '[') { ++depth; continue; }
-        if (ch == '}' || ch == ']') {
-            if (ch == ']' && depth == 0) {
-                // 数组结束，处理最后一个元素（如果有）
-                if (elem_start < i) {
-                    items.push_back(json.substr(elem_start, i - elem_start));
-                }
-                return items;
-            }
-            --depth;
-            continue;
-        }
-        if (ch == ',' && depth == 0) {
-            items.push_back(json.substr(elem_start, i - elem_start));
-            elem_start = i + 1;
-        }
-    }
-    return items;
 }
 
 } // namespace
@@ -240,53 +160,6 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.battery_level = JsonIntValue(json, "level");
     event.battery_charging = JsonBoolValue(json, "charging");
     event.battery_usb_powered = JsonBoolValue(json, "usb_powered");
-
-    if (event.event == "wifi_status") {
-        WifiStatusSnapshot wifi;
-        // 顶层字段直接从 JSON 提取，但 ota_pull 子对象与外层有同名字段（state/last_error），
-        // 必须先把子对象切出来再独立查，避免误命中外层。
-        const auto ota_slice = JsonObjectSlice(json, "ota_pull");
-        if (!ota_slice.empty()) {
-            wifi.ota_pull_state = JsonStringValue(ota_slice, "state");
-            wifi.ota_pull_progress_pct = JsonIntValue(ota_slice, "progress_pct");
-            wifi.ota_pull_url = JsonStringValue(ota_slice, "url");
-            wifi.ota_pull_last_error = JsonStringValue(ota_slice, "last_error");
-        }
-        // 切掉 ota_pull 子对象后查询外层字段，确保 state / last_error 取的是顶层值。
-        std::string outer(json);
-        if (!ota_slice.empty()) {
-            // 把 ota_pull 整段（连同 key 和 :）从外层字符串里抹掉。
-            const auto key_pos = outer.find("\"ota_pull\"");
-            if (key_pos != std::string::npos) {
-                const auto end_pos = static_cast<std::size_t>(ota_slice.data() - json.data()) + ota_slice.size();
-                outer.erase(key_pos, end_pos - key_pos);
-            }
-        }
-        wifi.state = JsonStringValue(outer, "state");
-        wifi.ssid = JsonStringValue(outer, "ssid");
-        wifi.ip = JsonStringValue(outer, "ip");
-        wifi.rssi = JsonIntValue(outer, "rssi");
-        wifi.last_error = JsonStringValue(outer, "last_error");
-        auto pending = JsonBoolValue(outer, "pending");
-        if (pending.has_value()) wifi.ota_pending_verify = *pending;
-        wifi.running_partition = JsonStringValue(outer, "partition");
-        auto parked = JsonBoolValue(outer, "park");
-        if (parked.has_value()) wifi.park_locked = *parked;
-        event.wifi = std::move(wifi);
-    }
-
-    if (event.event == "wifi_scan_result") {
-        WifiScanResult scan;
-        const auto aps = JsonArrayItems(json, "aps");
-        for (const auto& ap : aps) {
-            WifiApInfo info;
-            info.ssid = JsonStringValue(ap, "ssid");
-            info.rssi = JsonIntValue(ap, "rssi").value_or(0);
-            info.auth = JsonIntValue(ap, "auth").value_or(0);
-            if (!info.ssid.empty()) scan.aps.push_back(std::move(info));
-        }
-        event.wifi_scan = std::move(scan);
-    }
 
     return event;
 }
@@ -327,12 +200,6 @@ ByteVector BleProtocol::PromptTonePayload(bool enabled) {
 
 ByteVector BleProtocol::ShowImuDebugPayload(bool enabled) {
     const auto json = std::string("{\"event\":\"show_imu_debug\",\"enabled\":") +
-                      (enabled ? "true" : "false") + "}";
-    return ByteVector(json.begin(), json.end());
-}
-
-ByteVector BleProtocol::ShowWifiInfoPayload(bool enabled) {
-    const auto json = std::string("{\"event\":\"show_wifi_info\",\"enabled\":") +
                       (enabled ? "true" : "false") + "}";
     return ByteVector(json.begin(), json.end());
 }
@@ -388,44 +255,6 @@ ByteVector BleProtocol::OtaAbortPayload(std::uint32_t transfer_id) {
     ByteVector data = {1, ota_type_abort, 8, 0};
     AppendLe32(data, transfer_id);
     return data;
-}
-
-ByteVector BleProtocol::WifiSetPayload(std::string_view ssid, std::string_view password) {
-    // 与 Doc/Plan §3.1 对齐：密码为空表示开放网络，仍带 password 字段保持解析端不分支。
-    const auto json = std::string("{\"event\":\"wifi_set\",\"ssid\":\"") +
-                      JsonEscape(ssid) + "\",\"password\":\"" + JsonEscape(password) + "\"}";
-    return ByteVector(json.begin(), json.end());
-}
-
-ByteVector BleProtocol::WifiClearPayload() {
-    const std::string json = "{\"event\":\"wifi_clear\"}";
-    return ByteVector(json.begin(), json.end());
-}
-
-ByteVector BleProtocol::WifiStatusRequestPayload() {
-    const std::string json = "{\"event\":\"wifi_status_request\"}";
-    return ByteVector(json.begin(), json.end());
-}
-
-ByteVector BleProtocol::WifiScanPayload() {
-    const std::string json = "{\"event\":\"wifi_scan\"}";
-    return ByteVector(json.begin(), json.end());
-}
-
-ByteVector BleProtocol::OtaPullPayload(std::string_view url, std::string_view sha256_hex) {
-    // sha256_hex 可选：留空时不带字段，固件侧据此走"无校验"分支；URL 必须由调用方校验为 HTTPS。
-    std::string json = std::string("{\"event\":\"ota_pull\",\"url\":\"") +
-                       JsonEscape(url) + "\"";
-    if (!sha256_hex.empty()) {
-        json += std::string(",\"sha256_hex\":\"") + JsonEscape(sha256_hex) + "\"";
-    }
-    json += "}";
-    return ByteVector(json.begin(), json.end());
-}
-
-ByteVector BleProtocol::OtaCommitPayload() {
-    const std::string json = "{\"event\":\"ota_commit\"}";
-    return ByteVector(json.begin(), json.end());
 }
 
 std::optional<std::string> BleProtocol::DeviceIdFromName(std::string_view name) {

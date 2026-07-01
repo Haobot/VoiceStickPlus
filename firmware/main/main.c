@@ -24,11 +24,8 @@
 #include "stick_s3_board.h"
 #include "ui_status.h"
 #include "voice_ble.h"
-#include "voice_net.h"
 #include "nvs.h"
-#ifdef VOICE_NET_DISABLE
-#include "esp_ota_ops.h"  // 禁用 Wi-Fi 后由 main.c 直接签到 mark_app_valid
-#endif
+#include "esp_ota_ops.h"  // OTA rollback 签到：esp_ota_mark_app_valid_cancel_rollback
 
 static const char *TAG = "voice_stick";
 
@@ -81,7 +78,6 @@ static bool s_usb_powered;
 static int s_battery_level = 0;
 static bool s_prompt_tone_enabled = true;
 static bool s_show_imu_debug = false;
-static bool s_show_wifi_info = false;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_display_off_timer;   // S1→S2
@@ -200,7 +196,6 @@ static void queue_app_event(app_event_type_t type);
 static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, uint32_t size);
 static void queue_ui_state_event(const char *state, const char *text);
 static void apply_interaction_mode(interaction_mode_t mode);
-static void update_wifi_info_ui(void);
 static void queue_primary_down_event(app_input_source_t source, uint32_t request_id);
 static void queue_primary_up_event(app_input_source_t source, uint32_t request_id);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
@@ -219,14 +214,6 @@ static bool poweroff_allowed_now(void)
 {
     return !s_recording && !s_ota_updating && !voice_ble_ota_is_active() &&
            !is_external_powered();
-}
-
-// Park gate for HTTPS OTA pull: 见 Doc/Plan §2.5。语义为"录音空闲且没有任何
-// OTA 路径在跑"，确保 HTTPS 拉取不与 BLE OTA 抢分区或与录音抢音频带宽。
-// 由 voice_net 通过 voice_net_set_park_query 注入。
-static bool is_park_locked_for_ota(void)
-{
-    return !s_recording && !s_ota_updating && !voice_ble_ota_is_active();
 }
 
 static void play_prompt_tone(uint32_t frequency_hz)
@@ -534,7 +521,6 @@ static uint32_t start_recording(void)
     }
 
     s_recording = true;
-    voice_net_on_recording_started();  // 录音期间关 Wi-Fi 省电 + 避免 2.4GHz 干扰
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
     restart_poweroff_timer();
@@ -551,7 +537,6 @@ static uint32_t stop_recording(void)
     const uint32_t session_id = audio_pipeline_session_id();
     play_prompt_tone(440);
     s_recording = false;
-    voice_net_on_recording_stopped();  // 保留 hook（当前为空操作）
     audio_pipeline_stop();
     release_recording_pm_locks();
     restart_display_dim_timer();
@@ -718,11 +703,6 @@ static void ble_control_cb(const char *json)
                cJSON_IsBool(enabled)) {
         s_show_imu_debug = cJSON_IsTrue(enabled);
         ESP_LOGI(TAG, "show_imu_debug %s", s_show_imu_debug ? "enabled" : "disabled");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "show_wifi_info") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_show_wifi_info = cJSON_IsTrue(enabled);
-        ESP_LOGI(TAG, "show_wifi_info %s", s_show_wifi_info ? "enabled" : "disabled");
-        update_wifi_info_ui();
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "battery_status_request") == 0) {
         queue_app_event(APP_EVENT_BATTERY_STATUS_REQUEST);
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
@@ -733,43 +713,15 @@ static void ble_control_cb(const char *json)
                cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
         ESP_LOGI(TAG, "remote primary up request_id=%" PRIu32, request_id);
         queue_primary_up_event(APP_INPUT_SOURCE_REMOTE, request_id);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_set") == 0) {
-        // Wi-Fi STA 配网（Doc/Ref/protocol.md "Wi-Fi Provisioning"）。
-        // 密码字段日志侧脱敏，不打印任何字符。
-        const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(root, "ssid");
-        const cJSON *password = cJSON_GetObjectItemCaseSensitive(root, "password");
-        if (cJSON_IsString(ssid)) {
-            ESP_LOGI(TAG, "wifi_set ssid=%s password=<redacted>", ssid->valuestring);
-            voice_net_apply_credentials(ssid->valuestring,
-                                        cJSON_IsString(password) ? password->valuestring : "");
-        } else {
-            ESP_LOGW(TAG, "wifi_set missing ssid");
-        }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_clear") == 0) {
-        ESP_LOGI(TAG, "wifi_clear");
-        voice_net_clear_credentials();
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_status_request") == 0) {
-        ESP_LOGD(TAG, "wifi_status_request");
-        voice_net_publish_status();
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "wifi_scan") == 0) {
-        ESP_LOGI(TAG, "wifi_scan");
-        voice_net_start_scan();
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "ota_pull") == 0) {
-        // HTTPS pull OTA：Doc/Ref/protocol.md "Wi-Fi Provisioning" §ota_pull。
-        // Park gate 由 voice_net 内部通过注入的回调查询，未锁会被拒绝。
-        const cJSON *url = cJSON_GetObjectItemCaseSensitive(root, "url");
-        const cJSON *sha = cJSON_GetObjectItemCaseSensitive(root, "sha256_hex");
-        if (cJSON_IsString(url)) {
-            ESP_LOGI(TAG, "ota_pull url=%s", url->valuestring);
-            voice_net_start_ota_pull(url->valuestring,
-                                     cJSON_IsString(sha) ? sha->valuestring : NULL);
-        } else {
-            ESP_LOGW(TAG, "ota_pull missing url");
-        }
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "ota_commit") == 0) {
-        // 桌面端手动确认新固件健康：调 esp_ota_mark_app_valid_cancel_rollback。
+        // 桌面端手动确认新固件健康：直接签到 mark_app_valid_cancel_rollback。
+        // 正常情况下 boot 时已无条件自动签到，此命令作为手动兜底。
         ESP_LOGI(TAG, "ota_commit");
-        voice_net_mark_app_valid();
+        esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
+        if (mark_err != ESP_OK && mark_err != ESP_ERR_NOT_SUPPORTED &&
+            mark_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "ota_commit mark_valid failed: %s", esp_err_to_name(mark_err));
+        }
     } else if (cJSON_IsString(event) &&
                strcmp(event->valuestring, "imu_wake_sensitivity") == 0 &&
                cJSON_IsNumber(threshold_item)) {
@@ -1092,13 +1044,6 @@ static void app_event_task(void *arg)
             cancel_disc_poweroff_timer();
             note_activity();
             send_current_battery_status();
-            // 桌面端连上后立刻同步一份网络快照，让 Wi-Fi 面板 UI 不用等下一次事件。
-            voice_net_publish_status();
-            // 此时 BLE 已稳定，如有 NVS 凭据可以安全地启动 Wi-Fi（避免 boot 期与 BLE 抢资源）。
-            voice_net_resume_if_configured();
-            // PENDING_VERIFY 健康签到的第二个条件：BLE 至少连过一次。
-            // 配合启动 ≥10 秒后自动 mark_app_valid，避免 boot-loop 固件被签到。
-            voice_net_notify_ble_connected();
             break;
         case APP_EVENT_BLE_DISCONNECTED:
             s_recording = false;
@@ -1601,35 +1546,6 @@ static esp_err_t init_imu_poll_timer(void)
     return esp_timer_create(&timer_args, &s_imu_poll_timer);
 }
 
-static void update_wifi_info_ui(void)
-{
-    if (!s_show_wifi_info) {
-        ui_status_set_wifi_text("");
-        return;
-    }
-
-    char ssid[33] = {0};
-    char ip[16] = {0};
-    const char *state = NULL;
-    voice_net_get_status(ssid, sizeof(ssid), ip, sizeof(ip), &state);
-
-    if (strcmp(state, "connected") == 0 && ssid[0] != '\0') {
-        char text[64];
-        snprintf(text, sizeof(text), "%s\n%s", ssid, ip[0] != '\0' ? ip : "-");
-        ui_status_set_wifi_text(text);
-    } else {
-        ui_status_set_wifi_text("WIFI Idle");
-    }
-}
-
-static void on_voice_net_status_changed(const char *ssid, const char *ip, const char *state)
-{
-    (void)ssid;
-    (void)ip;
-    (void)state;
-    update_wifi_info_ui();
-}
-
 static void IRAM_ATTR pmic_irq_isr(void *arg)
 {
     (void)arg;
@@ -1826,16 +1742,6 @@ void app_main(void)
     // 从 NVS 恢复拿起检测阈值；voice_ble_init 已初始化 NVS flash。
     load_pickup_threshold_from_nvs();
 
-    // Wi-Fi STA 子系统：依赖 voice_ble_init 已 nvs_flash_init。
-    // 失败不阻塞主流程——voicestick 主链路是 BLE，Wi-Fi 仅运维侧路。
-    esp_err_t net_err = voice_net_init(voice_ble_send_wifi_status);
-    if (net_err != ESP_OK) {
-        ESP_LOGE(TAG, "voice_net init failed: %s", esp_err_to_name(net_err));
-    }
-    voice_net_set_status_changed_callback(on_voice_net_status_changed);
-    // 注入 Park gate：HTTPS OTA pull 启动前会查询，未锁则拒绝。
-    voice_net_set_park_query(is_park_locked_for_ota);
-
     esp_err_t audio_err = audio_pipeline_init();
     if (audio_err != ESP_OK) {
         ESP_LOGE(TAG, "audio init failed: %s", esp_err_to_name(audio_err));
@@ -1847,10 +1753,9 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Voice Stick booted");
 
-#ifdef VOICE_NET_DISABLE
-    // 禁用 Wi-Fi 后，原 voice_net 的"启动 N 秒 + BLE 连过一次"自动签到不再执行。
-    // 保留 OTA rollback（CONFIG_APP_ROLLBACK_ENABLE=y），这里直接标记当前固件有效，
-    // 否则新固件首次启动会被 bootloader 在超时后回滚。COM 口烧录的 OTA 同样依赖此签到。
+    // OTA rollback 签到（CONFIG_APP_ROLLBACK_ENABLE=y）：新固件首次启动处于
+    // PENDING_VERIFY，必须签到否则 bootloader 超时回滚。BLE OTA 与 COM 口烧录的
+    // OTA 都依赖此签到，故 boot 时无条件直接 mark_app_valid_cancel_rollback。
     esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
     if (mark_err == ESP_OK) {
         ESP_LOGI(TAG, "mark_app_valid_cancel_rollback ok");
@@ -1859,7 +1764,6 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "mark_valid failed: %s", esp_err_to_name(mark_err));
     }
-#endif
 
     update_battery_status();
     ESP_ERROR_CHECK(init_battery_refresh_timer());
