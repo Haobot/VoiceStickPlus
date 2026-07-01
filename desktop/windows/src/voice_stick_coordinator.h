@@ -64,6 +64,8 @@ public:
                                        const std::optional<std::string>& device_id) = 0;
     virtual void SendShowImuDebug(bool enabled,
                                   const std::optional<std::string>& device_id) = 0;
+    virtual void SendTapEnabled(bool enabled,
+                                const std::optional<std::string>& device_id) = 0;
     virtual void SendImuWakeSensitivity(int threshold_lsb,
                                         const std::optional<std::string>& device_id) = 0;
     virtual void RequestBatteryStatus(const std::optional<std::string>& device_id) = 0;
@@ -145,6 +147,8 @@ public:
     virtual ~InputInjector() = default;
     virtual void Paste(const std::string& text, bool press_enter) = 0;
     virtual void SendEnter() = 0;
+    // 注入一次下方向键，用于敲击手势在候选/选项间向下切换。
+    virtual void SendArrowDown() = 0;
 };
 
 class VoiceStickCoordinator {
@@ -228,6 +232,7 @@ private:
     void HandleButtonUp(const StateEvent& event, const std::string& device_id);
     void HandleButtonClick(const StateEvent& event, const std::string& device_id);
     void HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id);
+    void HandleTapEvent(const StateEvent& event, const std::string& device_id);
     void HandleSecondaryButtonClick(const std::string& device_id);
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);

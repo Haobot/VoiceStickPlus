@@ -62,4 +62,9 @@ void InputInjectorWin::SendEnter() {
     SendKey(VK_RETURN, false);
 }
 
+void InputInjectorWin::SendArrowDown() {
+    SendKey(VK_DOWN, true);
+    SendKey(VK_DOWN, false);
+}
+
 } // namespace voicestick

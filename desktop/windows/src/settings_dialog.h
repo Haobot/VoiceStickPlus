@@ -58,6 +58,7 @@ private:
     HWND debug_audio_check_ = nullptr;
     HWND show_imu_debug_check_ = nullptr;
     HWND imu_wake_sensitivity_combo_ = nullptr;
+    HWND tap_to_arrow_check_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -81,6 +82,7 @@ private:
     static constexpr UINT kIdDebugAudio = 2010;
     static constexpr UINT kIdShowImuDebug = 2017;
     static constexpr UINT kIdImuWakeSensitivity = 2018;
+    static constexpr UINT kIdTapToArrow = 2019;
     static constexpr UINT kIdDebugDirEdit = 2011;
     static constexpr UINT kIdChooseDir = 2012;
     static constexpr UINT kIdSave = 2013;

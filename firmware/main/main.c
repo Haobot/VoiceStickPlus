@@ -61,6 +61,8 @@ static const char *TAG = "voice_stick";
 // IMU X 轴加速度上屏轮询周期。200ms 人眼可读、I²C 负载低；IMU 走 I²C 与录音 I²S 不同总线，
 // 故常驻运行不随状态机开关。BMI270 不在线时仅刷一次 "IMU: n/a"。
 #define IMU_POLL_INTERVAL_US (200 * 1000ULL)
+// 敲击检测轮询周期。10ms=100Hz，覆盖 ~10-50ms 宽的敲击脉冲；录音/识别态暂停以降功耗。
+#define TAP_POLL_INTERVAL_US (10 * 1000ULL)
 
 // 基于 IMU X 轴的显示方向自动旋转。
 // 当前握持方向 X 为正时画面不变；旋转 180° 后 X 为负，画面也旋转 180°。
@@ -78,6 +80,7 @@ static bool s_usb_powered;
 static int s_battery_level = 0;
 static bool s_prompt_tone_enabled = true;
 static bool s_show_imu_debug = false;
+static bool s_tap_enabled = true;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_display_off_timer;   // S1→S2
@@ -87,6 +90,7 @@ static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
 static esp_timer_handle_t s_pickup_poll_timer;
 static esp_timer_handle_t s_imu_poll_timer;
+static esp_timer_handle_t s_tap_poll_timer;
 static uint32_t s_session_id = 1;
 static QueueHandle_t s_app_event_queue;
 static button_handle_t s_front_button;
@@ -177,6 +181,7 @@ typedef enum {
     APP_EVENT_OTA_END,
     APP_EVENT_HOST_RESPONSE_TIMEOUT,
     APP_EVENT_PICKUP,
+    APP_EVENT_TAP,
     APP_EVENT_ENTER_POWER_OFF,
 } app_event_type_t;
 
@@ -202,6 +207,9 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
 static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
+static void load_tap_settings_from_nvs(void);
+static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity);
+static void set_tap_polling_enabled(bool enabled);
 
 static bool is_external_powered(void)
 {
@@ -735,6 +743,28 @@ static void ble_control_cb(const char *json)
         bmi270_set_pickup_threshold((float)threshold);
         save_pickup_threshold_to_nvs(threshold);
         ESP_LOGI(TAG, "imu_wake_sensitivity threshold=%" PRId32, threshold);
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_enabled") == 0 &&
+               cJSON_IsBool(enabled)) {
+        s_tap_enabled = cJSON_IsTrue(enabled);
+        bmi270_set_tap_enabled(s_tap_enabled);
+        set_tap_polling_enabled(s_tap_enabled);
+        save_tap_settings_to_nvs(s_tap_enabled, (int32_t)-1);
+        ESP_LOGI(TAG, "tap_enabled %s", s_tap_enabled ? "true" : "false");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0 &&
+               cJSON_IsString(mode)) {
+        int32_t sensitivity = 1;  // medium default
+        if (strcmp(mode->valuestring, "low") == 0) {
+            sensitivity = 0;
+        } else if (strcmp(mode->valuestring, "high") == 0) {
+            sensitivity = 2;
+        } else if (strcmp(mode->valuestring, "medium") == 0) {
+            sensitivity = 1;
+        } else {
+            ESP_LOGW(TAG, "unknown tap_sensitivity %s", mode->valuestring);
+        }
+        bmi270_set_tap_sensitivity((int)sensitivity);
+        save_tap_settings_to_nvs(s_tap_enabled, sensitivity);
+        ESP_LOGI(TAG, "tap_sensitivity=%" PRId32, sensitivity);
     }
     cJSON_Delete(root);
 }
@@ -1125,6 +1155,16 @@ static void app_event_task(void *arg)
                 note_activity();
             }
             break;
+        case APP_EVENT_TAP:
+            // 敲击手势：仅在 BLE 已连接且未录音/识别时上报，避免干扰语音周期。
+            if (voice_ble_is_connected() && !s_recording && !s_ota_updating &&
+                (s_app_ui_state == APP_UI_STATE_READY ||
+                 s_app_ui_state == APP_UI_STATE_PENDING_CONFIRMATION)) {
+                ESP_LOGI(TAG, "tap detected, sending to host");
+                voice_ble_send_tap("double");
+                note_activity();
+            }
+            break;
         }
     }
 }
@@ -1476,6 +1516,45 @@ static esp_err_t init_pickup_poll_timer(void)
     return esp_timer_create(&timer_args, &s_pickup_poll_timer);
 }
 
+// 敲击检测轮询：10ms 周期，仅在启用、BMI270 在线、未录音/OTA、BLE 已连接时工作。
+static void tap_poll_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_tap_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
+        return;
+    }
+    if (bmi270_tap_poll()) {
+        queue_app_event(APP_EVENT_TAP);
+    }
+}
+
+static esp_err_t init_tap_poll_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = tap_poll_timer_cb,
+        .name = "tap_poll",
+        .skip_unhandled_events = true,
+    };
+    return esp_timer_create(&timer_args, &s_tap_poll_timer);
+}
+
+static void set_tap_polling_enabled(bool enabled)
+{
+    if (!s_tap_poll_timer) {
+        return;
+    }
+    if (enabled) {
+        if (!esp_timer_is_active(s_tap_poll_timer)) {
+            esp_err_t err = esp_timer_start_periodic(s_tap_poll_timer, TAP_POLL_INTERVAL_US);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "start tap poll failed: %s", esp_err_to_name(err));
+            }
+        }
+    } else {
+        (void)esp_timer_stop(s_tap_poll_timer);
+    }
+}
+
 static void update_display_orientation(float x_g)
 {
     display_orientation_t desired = s_display_orientation;
@@ -1531,8 +1610,14 @@ static void imu_poll_timer_cb(void *arg)
         return;
     }
 
-    char buf[48];
-    snprintf(buf, sizeof(buf), "X:%+.2f g\nY:%+.2f g\nZ:%+.2f g", x_g, y_g, z_g);
+    float x_dps = 0.0f, y_dps = 0.0f, z_dps = 0.0f;
+    (void)bmi270_read_gyr_dps(&x_dps, &y_dps, &z_dps);
+
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+             "A:%+.2f,%+.2f,%+.2f\nG:%+.1f,%+.1f,%+.1f\nT:%s",
+             x_g, y_g, z_g, x_dps, y_dps, z_dps,
+             s_tap_enabled ? "on" : "off");
     ui_status_set_imu_text(buf);
 }
 
@@ -1696,6 +1781,69 @@ static void save_pickup_threshold_to_nvs(int32_t threshold)
     nvs_close(handle);
 }
 
+static void load_tap_settings_from_nvs(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
+    int32_t enabled = 1;  // 默认开启
+    int32_t sensitivity = 2;  // high
+    if (err == ESP_OK) {
+        esp_err_t e = nvs_get_i32(handle, "tap_en", &enabled);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "load tap enabled failed: %s", esp_err_to_name(e));
+        }
+        e = nvs_get_i32(handle, "tap_lvl", &sensitivity);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "load tap sensitivity failed: %s", esp_err_to_name(e));
+        }
+        nvs_close(handle);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+    }
+
+    if (sensitivity < 0 || sensitivity > 2) {
+        sensitivity = 1;
+    }
+
+    s_tap_enabled = (enabled != 0);
+    bmi270_set_tap_enabled(s_tap_enabled);
+    bmi270_set_tap_sensitivity((int)sensitivity);
+    ESP_LOGI(TAG, "tap settings loaded from nvs: enabled=%d sensitivity=%" PRId32, s_tap_enabled, sensitivity);
+}
+
+static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    if (enabled) {
+        err = nvs_set_i32(handle, "tap_en", 1);
+    } else {
+        err = nvs_set_i32(handle, "tap_en", 0);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "save tap enabled failed: %s", esp_err_to_name(err));
+    }
+    if (sensitivity >= 0 && sensitivity <= 2) {
+        err = nvs_set_i32(handle, "tap_lvl", sensitivity);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "save tap sensitivity failed: %s", esp_err_to_name(err));
+        }
+    }
+
+    err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit tap settings failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "tap settings saved to nvs: enabled=%d sensitivity=%" PRId32, enabled ? 1 : 0, sensitivity);
+    }
+    nvs_close(handle);
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "boot reset_reason=%d wakeup_cause=%d ext1_status=0x%llx",
@@ -1712,6 +1860,7 @@ void app_main(void)
     ESP_ERROR_CHECK(init_host_response_timer());
     ESP_ERROR_CHECK(init_double_click_timer());
     ESP_ERROR_CHECK(init_pickup_poll_timer());
+    ESP_ERROR_CHECK(init_tap_poll_timer());
     // BMI270 初始化在 I2C 总线就绪后；探测失败时优雅降级，不影响主流程。
     (void)bmi270_init();
     // 根据初始握持方向设置屏幕方向，避免启动后方向与实际相反。
@@ -1739,8 +1888,10 @@ void app_main(void)
         ui_status_set_device_name(voice_ble_device_name());
     }
 
-    // 从 NVS 恢复拿起检测阈值；voice_ble_init 已初始化 NVS flash。
+    // 从 NVS 恢复拿起检测阈值与敲击手势设置；voice_ble_init 已初始化 NVS flash。
     load_pickup_threshold_from_nvs();
+    load_tap_settings_from_nvs();
+    set_tap_polling_enabled(s_tap_enabled);
 
     esp_err_t audio_err = audio_pipeline_init();
     if (audio_err != ESP_OK) {

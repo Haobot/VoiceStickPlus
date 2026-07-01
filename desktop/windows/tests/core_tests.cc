@@ -72,6 +72,10 @@ public:
         (void)enabled;
         (void)device_id;
     }
+    void SendTapEnabled(bool enabled,
+                        const std::optional<std::string>& device_id) override {
+        sent_tap_enabled.push_back(std::pair{enabled, device_id});
+    }
     void SendImuWakeSensitivity(int threshold_lsb,
                                 const std::optional<std::string>& device_id) override {
         sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
@@ -104,6 +108,7 @@ public:
     std::vector<std::optional<std::string>> battery_status_requests;
     std::vector<SentRemoteButton> sent_remote_buttons;
     std::vector<SentImuWakeSensitivity> sent_imu_wake_sensitivities;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_tap_enabled;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -244,10 +249,12 @@ public:
         pasted_enter = press_enter;
     }
     void SendEnter() override { send_enter_called = true; }
+    void SendArrowDown() override { ++arrow_down_count; }
 
     std::string pasted_text;
     bool pasted_enter = false;
     bool send_enter_called = false;
+    int arrow_down_count = 0;
 };
 
 StateEvent ButtonEvent(const std::string& event,
@@ -257,6 +264,14 @@ StateEvent ButtonEvent(const std::string& event,
     state_event.event = event;
     state_event.button = button;
     state_event.session_id = session_id;
+    return state_event;
+}
+
+// 构造敲击事件（固件上报的 {"event":"tap","kind":"double"}）。
+StateEvent TapEvent(const std::string& kind = "double") {
+    StateEvent state_event;
+    state_event.event = "tap";
+    state_event.button = kind;  // 复用 button 字段承载 kind，与协议解析一致
     return state_event;
 }
 
@@ -1178,6 +1193,89 @@ void TestCoordinatorShowsDetailedAsrStartError() {
     assert(HasUiStateText(*ble_ptr, "error", "Missing ASR API key", "5A74"));
 }
 
+void TestTapEventInjectsArrowDown() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 1);
+    assert(!ble_ptr->sent_ui_states.empty());
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+}
+
+void TestTapDisabledWhenConfigOff() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.tap_to_arrow = false;  // 总开关关闭
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 0);
+}
+
+void TestTapIgnoredDuringRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入录音态（hold_to_talk 默认，主键按下即录音）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    // 录音中 tap 应被忽略，不注入方向键，也不取消当前录音。
+    assert(input.arrow_down_count == 0);
+}
+
+void TestTapRepeatedEventsInjectEachTime() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 连续两次 tap 应各注入一次方向键，第二次不被第一次的 ready 回写阻塞。
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 2);
+}
+
 void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -1572,6 +1670,10 @@ int main() {
     TestCoordinatorClickToTalkPrimaryClickTogglesRecording();
     TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio();
     TestCoordinatorShowsDetailedAsrStartError();
+    TestTapEventInjectsArrowDown();
+    TestTapDisabledWhenConfigOff();
+    TestTapIgnoredDuringRecording();
+    TestTapRepeatedEventsInjectEachTime();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
     TestSseParser();
     TestStreamPayload();

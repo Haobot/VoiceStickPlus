@@ -1070,6 +1070,15 @@ esp_err_t voice_ble_send_button_double_click(const char *button)
     return send_state_json(json);
 }
 
+esp_err_t voice_ble_send_tap(const char *kind)
+{
+    char json[64];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"tap\",\"button\":\"%s\"}", kind ? kind : "double");
+    ESP_LOGI(TAG, "tap kind=%s", kind ? kind : "double");
+    return send_state_json(json);
+}
+
 esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered)
 {
     char json[128];
