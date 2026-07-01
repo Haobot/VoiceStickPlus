@@ -78,6 +78,7 @@ Currently emitted state events:
 {"event":"button_down","button":"secondary"}
 {"event":"button_up","button":"secondary","duration_ms":90}
 {"event":"button_double_click","button":"primary"}
+{"event":"tap","button":"double"}
 ```
 
 Buttons are named by role instead of physical placement. On StickS3, the front
@@ -87,6 +88,11 @@ included when a `primary` press starts or stops a local audio recording.
 `button_double_click` is emitted when the firmware detects two consecutive short
 presses of the primary button within 500 ms (each press < 300 ms). The desktop
 responds by injecting an Enter key event. See `Doc/Plan/primary-button-double-click.md`.
+
+`tap` is emitted when the firmware detects a double-tap on the device casing
+(via the BMI270 accelerometer + gyroscope software state machine). The `button`
+field carries the tap kind (`"double"`). The desktop responds by injecting a Down
+arrow key event when `tap_to_arrow` is enabled. See `Doc/Plan/imu-tap-detection.md`.
 
 Deprecated firmware-to-app events:
 
@@ -113,6 +119,8 @@ Current desktop events:
 {"event":"interaction_mode","mode":"click_to_talk"}
 {"event":"show_imu_debug","enabled":true}
 {"event":"imu_wake_sensitivity","threshold":500}
+{"event":"tap_enabled","enabled":true}
+{"event":"tap_sensitivity","level":"medium"}
 ```
 
 | Event | Field | Direction | Meaning |
@@ -121,6 +129,8 @@ Current desktop events:
 | `interaction_mode` | `mode`: string | Mac -> StickS3 | Controls the front-button behavior and idle screen hint. |
 | `show_imu_debug` | `enabled`: boolean | Windows -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
 | `imu_wake_sensitivity` | `threshold`: integer (LSB) | Windows -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
+| `tap_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables the double-tap on-device gesture detection. Default false. |
+| `tap_sensitivity` | `level`: string (`low`/`medium`/`high`) | Windows -> StickS3 | Sets the double-tap detection sensitivity. Default `medium`. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as

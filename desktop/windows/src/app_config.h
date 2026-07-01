@@ -128,6 +128,8 @@ struct AppConfig {
     bool prompt_tone_enabled = true;
     bool show_imu_debug = false;
     ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
+    // 敲击手势：双击设备外壳时注入下方向键，用于在候选/选项间向下切换。
+    bool tap_to_arrow = false;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;

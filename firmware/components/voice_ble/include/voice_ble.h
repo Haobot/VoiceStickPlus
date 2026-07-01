@@ -51,4 +51,6 @@ esp_err_t voice_ble_send_button_up(const char *button, uint32_t duration_ms,
 esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
                                       uint32_t session_id);
 esp_err_t voice_ble_send_button_double_click(const char *button);
+// 发送敲击事件（如 double-tap）。kind 建议为 "double"，空时默认 double。
+esp_err_t voice_ble_send_tap(const char *kind);
 esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered);

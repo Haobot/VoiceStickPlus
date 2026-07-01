@@ -204,6 +204,12 @@ ByteVector BleProtocol::ShowImuDebugPayload(bool enabled) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::TapEnabledPayload(bool enabled) {
+    const auto json = std::string("{\"event\":\"tap_enabled\",\"enabled\":") +
+                      (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::ImuWakeSensitivityPayload(int threshold_lsb) {
     const auto json = std::string("{\"event\":\"imu_wake_sensitivity\",\"threshold\":") +
                       std::to_string(threshold_lsb) + "}";

@@ -31,7 +31,7 @@ bool bmi270_present(void);
 // 返回 true 表示本次轮询检测到拿起。BMI270 不在线时恒返回 false。
 bool bmi270_pickup_detected(void);
 
-// 动态设置/读取在线轮询拿起阈值（单位：LSB）。
+// 设置/读取拿起判定阈值（单位：LSB）。BMI270 不在线时写入仍会保存，后续上线生效。
 void bmi270_set_pickup_threshold(float threshold_lsb);
 float bmi270_get_pickup_threshold(void);
 
@@ -42,6 +42,20 @@ float bmi270_get_pickup_threshold(void);
 // 读取三轴加速度，单位 g（重力加速度）。BMI270 与 MPU6886 均归一到 ±2g 量程同尺度。
 // 不在线时返回 ESP_ERR_INVALID_STATE 且不修改出参。x_g/y_g/z_g 可为 NULL（按需取用）。
 esp_err_t bmi270_read_acc_g(float *x_g, float *y_g, float *z_g);
+
+// 读取三轴陀螺仪角速度，单位 dps（度/秒）。仅 BMI270 支持；MPU6886 返回 ESP_ERR_NOT_SUPPORTED。
+// 不在线时返回 ESP_ERR_INVALID_STATE。x_dps/y_dps/z_dps 可为 NULL（按需取用）。
+esp_err_t bmi270_read_gyr_dps(float *x_dps, float *y_dps, float *z_dps);
+
+// 敲击检测轮询：10ms 调用一次，返回 true 表示检出一次 double-tap。
+// 内部结合 ACC 脉冲与 GYR 平静条件排除挥动。未使能或 MPU6886 时恒返回 false。
+bool bmi270_tap_poll(void);
+
+// 开关敲击检测。关闭时重置状态机。
+void bmi270_set_tap_enabled(bool enable);
+
+// 设置敲击灵敏度：0=low, 1=medium, 2=high。越界时 fallback 到 medium。
+void bmi270_set_tap_sensitivity(int level);
 
 // [阶段 3 关机态用] 加载 8KB config file，配置 any-motion feature 与 INT1 输出，
 // 使 IMU 在 M5PM1 关机后继续低功耗检测，翻转经 PYG4 唤醒 M5PM1。

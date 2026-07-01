@@ -12,6 +12,7 @@ class InputInjectorWin : public InputInjector {
 public:
     void Paste(const std::string& text, bool press_enter) override;
     void SendEnter() override;
+    void SendArrowDown() override;
 
 private:
     static std::wstring Utf16FromUtf8(const std::string& text);

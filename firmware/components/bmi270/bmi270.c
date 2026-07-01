@@ -5,6 +5,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "stick_s3_board.h"
@@ -17,8 +18,11 @@ static const char *TAG = "bmi270";
 // BMI270 寄存器地址（据 Bosch BMI270-Sensor-API bmi2_defs.h 确认）。
 #define BMI270_REG_CHIP_ID 0x00
 #define BMI270_REG_ACC_X_LSB 0x0C  // ACC X/Y/Z 各 2 字节 little-endian
+#define BMI270_REG_GYR_X_LSB 0x12  // GYR X/Y/Z 各 2 字节 little-endian
 #define BMI270_REG_ACC_RANGE 0x41  // ACC 量程：低 2 位 0=±2g/1=±4g/2=±8g/3=±16g
 #define BMI270_REG_ACC_CONF 0x40   // ACC 配置：ODR/带宽/性能模式
+#define BMI270_REG_GYR_RANGE 0x43  // GYR 量程：低 2 位 0=±2000/1=±1000/2=±500/3=±250 dps
+#define BMI270_REG_GYR_CONF 0x42   // GYR 配置：ODR/带宽/性能模式
 #define BMI270_REG_STATUS 0x03     // 状态：bit7=acc 数据就绪
 // MPU6886 寄存器（兼容 MPU6050 布局）。
 #define MPU6886_REG_WHO_AM_I 0x75
@@ -35,6 +39,7 @@ static const char *TAG = "bmi270";
 #define BMI270_REG_INT1_IO_CTRL 0x53
 #define BMI270_REG_INT_LATCH 0x55
 #define BMI270_REG_INT1_MAP_FEAT 0x56
+#define BMI270_REG_INT_STATUS_0 0x1C
 #define BMI270_REG_PWR_CTRL 0x7D
 #define BMI270_REG_PWR_CONF 0x7C
 #define BMI270_REG_CMD 0x7E
@@ -42,13 +47,21 @@ static const char *TAG = "bmi270";
 #define BMI270_CHIP_ID 0x24
 #define BMI270_SOFT_RESET_CMD 0xB6
 #define BMI270_PWR_CTRL_ACC_EN 0x04  // bit2
+#define BMI270_PWR_CTRL_GYR_EN 0x02  // bit1（Bosch bmi2_defs.h: BMI2_GYR_EN_MASK=0x02）
 #define BMI270_ACC_RANGE_2G 0x00     // ACC_RANGE 写 ±2g，固定 4096 LSB/g 换算尺度
 #define BMI270_ACC_CONF_NORMAL_100HZ 0xA8  // 性能滤波 + 100Hz ODR（Bosch 复位默认值）
+#define BMI270_GYR_RANGE_500DPS 0x02       // GYR_RANGE 写 ±500dps，灵敏度 ≈65.5 LSB/dps
+// GYR_CONF (0x42)：bits[7:4]=ODR, bits[3:2]=BW, bits[1:0]=性能模式。
+// ODR 编码与 ACC 不同：100Hz=0x08，默认性能模式 bit0=1。
+#define BMI270_GYR_CONF_NORMAL_100HZ 0x83  // 100Hz + 性能模式（ODR=0x08<<4=0x80, 性能bit0=0x01, BW=0x0）
 #define MPU6886_WHO_AM_I_VAL 0x70   // MPU6886 的 WHO_AM_I 返回值
 
 // 加速度换算：BMI270 14-bit 左对齐与 MPU6886 16-bit 均经 >>2 归一到 14-bit 同尺度，
 // ±2g 量程下 1g ≈ 4096 LSB。
 #define BMI270_LSB_PER_G 4096.0f
+// 陀螺仪换算：BMI270 ±500dps 量程下灵敏度 ≈ 65.5 LSB/dps。
+#define BMI270_DPS_PER_LSB_500DPS (1.0f / 65.5f)
+#define BMI270_GYR_LSB_PER_DPS 65.5f
 
 // IMU 类型枚举
 typedef enum {
@@ -65,6 +78,7 @@ typedef enum {
 // any-motion feature 在 page 1，start_addr=0x0C，16 字节布局。
 #define BMI270_ANY_MOT_PAGE 1
 #define BMI270_ANY_MOT_OFFSET 0x0C
+
 #define BMI270_FEAT_BURST_BYTES 16
 // any-motion 字段：duration=0x01(20ms), xyz_sel=0xE0, threshold=0x68(50mg), enable bit7=0x80。
 #define BMI270_ANY_MOT_DURATION_LSB 0x01
@@ -87,6 +101,46 @@ static bool s_has_baseline;
 // 拿起判定阈值：合加速度幅值变化量（单位：LSB）。
 // 降低到 800 LSB（~0.2g）增强灵敏度，并配合首次基线建立后小幅运动也触发。
 static float s_pickup_threshold = BMI270_PICKUP_THRESHOLD_DEFAULT_LSB;
+
+// 敲击检测状态机参数与状态。
+// 灵敏度档位：low（保守，高阈值）→ medium → high（灵敏，低阈值）。
+typedef enum {
+    TAP_SENSITIVITY_LOW = 0,
+    TAP_SENSITIVITY_MEDIUM,
+    TAP_SENSITIVITY_HIGH,
+    TAP_SENSITIVITY_COUNT,
+} tap_sensitivity_t;
+
+typedef enum {
+    TAP_STATE_IDLE,
+    TAP_STATE_FIRST,
+} tap_state_t;
+
+// 灵敏度参数表：ACC 突变阈值（g，相对于慢跟随基线）与 GYR 平静阈值（dps）。
+// 手持敲击设备本体时，ACC 会有明显脉冲而 GYR 保持小；挥动设备时 GYR 会同步上升。
+// 注意：read_acc_mag_and_gyr_mag 返回的 acc_mag 是 g 值，不是 raw LSB。
+typedef struct {
+    float acc_thr_g;
+    float gyr_calm_thr_dps;
+} tap_params_t;
+
+static const tap_params_t kTapParams[TAP_SENSITIVITY_COUNT] = {
+    [TAP_SENSITIVITY_LOW]    = { .acc_thr_g = 1.5f,  .gyr_calm_thr_dps = 25.0f },   // 保守：需 ≥1.5g 冲击
+    [TAP_SENSITIVITY_MEDIUM] = { .acc_thr_g = 1.0f,  .gyr_calm_thr_dps = 35.0f },   // 默认：需 ≥1.0g
+    [TAP_SENSITIVITY_HIGH]   = { .acc_thr_g = 0.6f,  .gyr_calm_thr_dps = 45.0f },   // 灵敏：需 ≥0.6g
+};
+
+#define TAP_MIN_GAP_MS   80
+#define TAP_MAX_GAP_MS   400
+#define TAP_DEBOUNCE_MS  50
+
+static bool s_tap_enabled = false;
+static tap_sensitivity_t s_tap_sensitivity = TAP_SENSITIVITY_MEDIUM;
+static tap_state_t s_tap_state = TAP_STATE_IDLE;
+static int64_t s_tap_first_us = 0;
+static float s_tap_acc_baseline = 0.0f;
+static bool s_tap_has_baseline = false;
+static int64_t s_tap_debounce_until_us = 0;
 
 static esp_err_t bmi270_read_reg(uint8_t reg, uint8_t *value)
 {
@@ -290,27 +344,35 @@ esp_err_t bmi270_init(void)
                      esp_err_to_name(cfg_err));
         }
 
-        // config 就绪后配 ACC：性能模式 + 100Hz + ±2g，最后使能 ACC。
+        // config 就绪后配 ACC：性能模式 + 100Hz + ±2g。
         (void)bmi270_write_reg(BMI270_REG_ACC_CONF, BMI270_ACC_CONF_NORMAL_100HZ);
         vTaskDelay(pdMS_TO_TICKS(5));
         (void)bmi270_write_reg(BMI270_REG_ACC_RANGE, BMI270_ACC_RANGE_2G);
         vTaskDelay(pdMS_TO_TICKS(5));
-        (void)bmi270_write_reg(BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_EN);
+        // 同步配 GYR：性能模式 + 100Hz + ±500dps，供敲击检测做挥动排除。
+        (void)bmi270_write_reg(BMI270_REG_GYR_CONF, BMI270_GYR_CONF_NORMAL_100HZ);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        (void)bmi270_write_reg(BMI270_REG_GYR_RANGE, BMI270_GYR_RANGE_500DPS);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        // 同时使能 ACC 与 GYR。
+        (void)bmi270_write_reg(BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_EN | BMI270_PWR_CTRL_GYR_EN);
         vTaskDelay(pdMS_TO_TICKS(10));
 
         // 读回诊断：正常应为 int_status=0x01（config ok）、status bit7=0x80（acc 数据就绪）。
-        uint8_t pwr_ctrl = 0, acc_conf = 0, acc_range = 0, int_status = 0, status = 0;
+        uint8_t pwr_ctrl = 0, acc_conf = 0, acc_range = 0, gyr_conf = 0, gyr_range = 0, int_status = 0, status = 0;
         (void)bmi270_read_reg(BMI270_REG_PWR_CTRL, &pwr_ctrl);
         (void)bmi270_read_reg(BMI270_REG_ACC_CONF, &acc_conf);
         (void)bmi270_read_reg(BMI270_REG_ACC_RANGE, &acc_range);
+        (void)bmi270_read_reg(BMI270_REG_GYR_CONF, &gyr_conf);
+        (void)bmi270_read_reg(BMI270_REG_GYR_RANGE, &gyr_range);
         (void)bmi270_read_reg(BMI270_REG_INTERNAL_STATUS, &int_status);
         (void)bmi270_read_reg(BMI270_REG_STATUS, &status);
 
         s_has_baseline = false;
         ESP_LOGI(TAG,
                  "BMI270 initialized: pwr_ctrl=0x%02x acc_conf=0x%02x acc_range=0x%02x "
-                 "int_status=0x%02x status=0x%02x",
-                 pwr_ctrl, acc_conf, acc_range, int_status, status);
+                 "gyr_conf=0x%02x gyr_range=0x%02x int_status=0x%02x status=0x%02x",
+                 pwr_ctrl, acc_conf, acc_range, gyr_conf, gyr_range, int_status, status);
     } else if (s_imu_type == IMU_MPU6886) {
         // 唤醒 MPU6886：PWR_MGMT_1 写 0 退出 sleep。
         (void)bmi270_write_reg(MPU6886_REG_PWR_MGMT_1, 0x00);
@@ -381,6 +443,155 @@ esp_err_t bmi270_read_acc_g(float *x_g, float *y_g, float *z_g)
         *z_g = (float)z / BMI270_LSB_PER_G;
     }
     return ESP_OK;
+}
+
+esp_err_t bmi270_read_gyr_dps(float *x_dps, float *y_dps, float *z_dps)
+{
+    if (!s_present) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    // 软件敲击检测仅 BMI270 支持；MPU6886 未启用陀螺仪，直接返回不支持。
+    if (s_imu_type != IMU_BMI270) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    uint8_t data[6] = {0};
+    esp_err_t err = bmi270_read_regs(BMI270_REG_GYR_X_LSB, data, 6);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    // BMI270 GYR 为 16-bit signed little-endian，±500dps 量程下灵敏度 65.5 LSB/dps。
+    const float x = (float)(int16_t)(((uint16_t)data[1] << 8) | data[0]) / BMI270_GYR_LSB_PER_DPS;
+    const float y = (float)(int16_t)(((uint16_t)data[3] << 8) | data[2]) / BMI270_GYR_LSB_PER_DPS;
+    const float z = (float)(int16_t)(((uint16_t)data[5] << 8) | data[4]) / BMI270_GYR_LSB_PER_DPS;
+
+    if (x_dps) {
+        *x_dps = x;
+    }
+    if (y_dps) {
+        *y_dps = y;
+    }
+    if (z_dps) {
+        *z_dps = z;
+    }
+    return ESP_OK;
+}
+
+// 读取当前 ACC 合加速度幅值与 GYR 角速度幅值，供敲击状态机使用。
+// 返回 true 表示成功读到有效数据。仅 BMI270 支持敲击检测。
+static bool read_acc_mag_and_gyr_mag(float *acc_mag, float *gyr_mag)
+{
+    float x_g, y_g, z_g;
+    float x_dps, y_dps, z_dps;
+    if (bmi270_read_acc_g(&x_g, &y_g, &z_g) != ESP_OK) {
+        return false;
+    }
+    if (bmi270_read_gyr_dps(&x_dps, &y_dps, &z_dps) != ESP_OK) {
+        return false;
+    }
+    *acc_mag = sqrtf(x_g * x_g + y_g * y_g + z_g * z_g);
+    *gyr_mag = sqrtf(x_dps * x_dps + y_dps * y_dps + z_dps * z_dps);
+    return true;
+}
+
+// 检测一次 ACC 敲击脉冲（非挥动确认）。
+// 命中返回 true，同时更新基线与去抖时间。
+static bool detect_tap_impulse(const tap_params_t *params, int64_t now_us)
+{
+    if (now_us < s_tap_debounce_until_us) {
+        return false;
+    }
+
+    float acc_mag, gyr_mag;
+    if (!read_acc_mag_and_gyr_mag(&acc_mag, &gyr_mag)) {
+        return false;
+    }
+
+    if (!s_tap_has_baseline) {
+        s_tap_acc_baseline = acc_mag;
+        s_tap_has_baseline = true;
+        ESP_LOGI(TAG, "tap baseline=%.4f g", acc_mag);
+        return false;
+    }
+
+    const float delta = fabsf(acc_mag - s_tap_acc_baseline);
+    s_tap_acc_baseline = acc_mag;
+
+    // 每 100 次打印一次 delta/gyr，确认状态机在跑。
+    static int dbg_cnt = 0;
+    if (++dbg_cnt >= 100) {
+        dbg_cnt = 0;
+        ESP_LOGI(TAG, "tap poll: delta=%.4f gyr=%.2f thr=%.2f/%.1f",
+                 delta, gyr_mag, params->acc_thr_g, params->gyr_calm_thr_dps);
+    }
+
+    if (delta >= params->acc_thr_g && gyr_mag <= params->gyr_calm_thr_dps) {
+        ESP_LOGI(TAG, "tap impulse: delta=%.4f gyr=%.2f", delta, gyr_mag);
+        s_tap_debounce_until_us = now_us + (TAP_DEBOUNCE_MS * 1000LL);
+        return true;
+    }
+    return false;
+}
+
+bool bmi270_tap_poll(void)
+{
+    if (!s_tap_enabled || s_imu_type != IMU_BMI270) {
+        return false;
+    }
+
+    const int64_t now_us = esp_timer_get_time();
+    const tap_params_t *params = &kTapParams[s_tap_sensitivity];
+
+    switch (s_tap_state) {
+        case TAP_STATE_IDLE:
+            if (detect_tap_impulse(params, now_us)) {
+                s_tap_state = TAP_STATE_FIRST;
+                s_tap_first_us = now_us;
+            }
+            return false;
+
+        case TAP_STATE_FIRST: {
+            const int64_t elapsed_ms = (now_us - s_tap_first_us) / 1000LL;
+            if (elapsed_ms > TAP_MAX_GAP_MS) {
+                // 超窗口，视为单击，回到 IDLE。
+                s_tap_state = TAP_STATE_IDLE;
+                return false;
+            }
+            if (elapsed_ms < TAP_MIN_GAP_MS) {
+                return false;
+            }
+            if (detect_tap_impulse(params, now_us)) {
+                s_tap_state = TAP_STATE_IDLE;
+                ESP_LOGD(TAG, "double tap detected");
+                return true;
+            }
+            return false;
+        }
+
+        default:
+            s_tap_state = TAP_STATE_IDLE;
+            return false;
+    }
+}
+
+void bmi270_set_tap_enabled(bool enable)
+{
+    s_tap_enabled = enable;
+    if (!enable) {
+        s_tap_state = TAP_STATE_IDLE;
+        s_tap_has_baseline = false;
+    }
+    ESP_LOGI(TAG, "tap detection %s", enable ? "enabled" : "disabled");
+}
+
+void bmi270_set_tap_sensitivity(int level)
+{
+    if (level < 0 || level >= TAP_SENSITIVITY_COUNT) {
+        level = TAP_SENSITIVITY_MEDIUM;
+    }
+    s_tap_sensitivity = (tap_sensitivity_t)level;
+    ESP_LOGI(TAG, "tap sensitivity set to %d", level);
 }
 
 bool bmi270_pickup_detected(void)

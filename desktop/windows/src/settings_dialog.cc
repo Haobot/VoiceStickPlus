@@ -247,6 +247,7 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
         imu_wake_sensitivity_combo_ = nullptr;
+        tap_to_arrow_check_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
         all_controls_.clear();
@@ -314,6 +315,7 @@ void SettingsDialog::DestroyControls() {
     debug_audio_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     imu_wake_sensitivity_combo_ = nullptr;
+    tap_to_arrow_check_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
     if (ui_font_) {
@@ -470,6 +472,13 @@ void SettingsDialog::BuildControls() {
                  reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityHigh, language).c_str()));
     y += row_h + Dp(10);
 
+    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    tap_to_arrow_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsTapToArrow, language).c_str(), ctrl_x, y,
+                                                  ctrl_w, Dp(22), kIdTapToArrow, instance_,
+                                                  BS_AUTOCHECKBOX));
+    y += row_h + Dp(10);
+
     remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
@@ -534,6 +543,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(launch_at_login_check_, BM_SETCHECK, config_.launch_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(show_imu_debug_check_, BM_SETCHECK, config_.show_imu_debug ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(tap_to_arrow_check_, BM_SETCHECK, config_.tap_to_arrow ? BST_CHECKED : BST_UNCHECKED, 0);
     int sensitivity_index = 0;
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kMedium) sensitivity_index = 1;
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kHigh) sensitivity_index = 2;
@@ -602,6 +612,7 @@ void SettingsDialog::SaveSettings() {
     config_.launch_at_login = SendMessageW(launch_at_login_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.show_imu_debug = SendMessageW(show_imu_debug_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.tap_to_arrow = SendMessageW(tap_to_arrow_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     int sensitivity_idx = static_cast<int>(SendMessageW(imu_wake_sensitivity_combo_, CB_GETCURSEL, 0, 0));
     if (sensitivity_idx == 1) {
         config_.imu_wake_sensitivity = ImuWakeSensitivity::kMedium;

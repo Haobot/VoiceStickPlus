@@ -72,6 +72,7 @@ void VoiceStickCoordinator::Start() {
         ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
         ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
         ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
+        ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
         ble_->SendImuWakeSensitivity(
             ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
     };
@@ -155,6 +156,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
     ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
+    ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
     ble_->SendImuWakeSensitivity(
         ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
@@ -341,6 +343,8 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
         HandleButtonClick(event, device_id);
     } else if (event.event == "button_double_click") {
         HandleButtonDoubleClick(event, device_id);
+    } else if (event.event == "tap") {
+        HandleTapEvent(event, device_id);
     }
 }
 
@@ -424,6 +428,21 @@ void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, con
     // 回到就绪状态。
     ble_->SendUiState("ready", "", device_id);
     EnterReady("double_click_enter");
+}
+
+void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::string& device_id) {
+    (void)event;
+    // 总开关关闭则忽略。
+    if (!config_.tap_to_arrow) return;
+    // 录音中或识别中忽略敲击，避免震动干扰当前语音周期。
+    // 与双击主键不同：tap 不取消录音/识别，仅在不冲突时注入方向键。
+    if (session_state_ == SessionState::kRecording ||
+        session_state_ == SessionState::kFinalizing) {
+        return;
+    }
+    LogCoordinatorLine("tap detected on VS-" + device_id + ", sending ArrowDown");
+    input_injector_->SendArrowDown();
+    ble_->SendUiState("ready", "", device_id);
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
