@@ -260,7 +260,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 常用配置项：
 
-- `asr_provider`：`volcengine` 或 `voicestick_cloud`。
+- `asr_provider`：`volcengine`、`voicestick_cloud` 或 `tencent`（腾讯云 ASR，需配合 `tencent_secret_id` / `tencent_secret_key` / `tencent_appid` / `tencent_engine_model_type` / `tencent_hotword_id`，详见 `Doc/Ref/tencent-asr.md`）。
 - `volcengine_api_key` / `voicestick_api_key` / `voicestick_cloud_url`：ASR 服务的 API key 与 WebSocket URL。
 - `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI-compatible LLM 接口，用于翻译和精修。
 - `resource_id`：火山引擎 resource ID，支持 `volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
