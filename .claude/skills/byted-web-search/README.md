@@ -19,7 +19,7 @@ npx skills add https://skills.volces.com/skills/bytedance/agentkit-samples -s by
 ## 验证
 
 ```bash
-python3 scripts/web_search.py "北京今日天气" --api-key "您的Key"
+python scripts/web_search.py "北京今日天气" --api-key "您的Key"
 ```
 
 ## 快速开始

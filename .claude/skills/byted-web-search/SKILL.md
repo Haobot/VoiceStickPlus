@@ -163,7 +163,7 @@ byted-web-search "具体搜索词" [--time-range OneWeek]
 在 skill 根目录执行（cwd 为 `{baseDir}`，或使用脚本绝对路径）：
 
 ```bash
-cd {baseDir} && python3 scripts/web_search.py "搜索词" [--count 10] [--type image]
+cd {baseDir} && python scripts/web_search.py "搜索词" [--count 10] [--type image]
 ```
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
