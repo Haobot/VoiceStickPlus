@@ -1455,7 +1455,10 @@ void Win32App::SyncLaunchAtLogin() {
     constexpr wchar_t kTaskName[] = L"VoiceStickAutoStart";
     try {
         using namespace winrt;
-        init_apartment();
+        // 主线程已在 main.cc 以 STA 初始化 COM，这里必须用同模型；
+        // 无参 init_apartment() 默认 MTA，与已存在的 STA 冲突会抛 RPC_E_CHANGED_MODE，
+        // 导致任务注册整体失败、登录后不自启。同模型重复 init 只返回 S_FALSE。
+        init_apartment(apartment_type::single_threaded);
         // 用 COM 任务计划程序 API（taskschd.h）注册/删除任务。
         com_ptr<ITaskService> service;
         check_hresult(CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER,
