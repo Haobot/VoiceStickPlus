@@ -63,6 +63,10 @@ static const char *TAG = "voice_stick";
 #define IMU_POLL_INTERVAL_US (200 * 1000ULL)
 // 敲击检测轮询周期。10ms=100Hz，覆盖 ~10-50ms 宽的敲击脉冲；录音/识别态暂停以降功耗。
 #define TAP_POLL_INTERVAL_US (10 * 1000ULL)
+// 按键事件后抑制敲击检测的窗口：覆盖"按下→录音启动"（hold_to_talk 300ms hold + 80ms 提示音
+// + codec 初始化）及松开后手指余震。该窗口内 tap 轮询直接 return，避免按语音键的手指动作
+// 被 IMU 误判为双击。仅作用于非录音态（录音态本就门控关闭 tap）。
+#define TAP_SUPPRESS_AFTER_BUTTON_MS 600
 
 // 基于 IMU X 轴的显示方向自动旋转。
 // 当前握持方向 X 为正时画面不变；旋转 180° 后 X 为负，画面也旋转 180°。
@@ -81,6 +85,10 @@ static int s_battery_level = 0;
 static bool s_prompt_tone_enabled = true;
 static bool s_show_imu_debug = false;
 static bool s_tap_enabled = true;
+// 按键事件后的敲击检测抑制截止时间戳（us）。在此之前 tap_poll_timer_cb 直接 return。
+// 仅在 handle_primary_down/up（app_event 任务）与 tap_poll_timer_cb（timer 任务）读写，
+// 均为任务上下文非 ISR，单 64 位读写在 ESP32-S3 上可接受，无需锁。
+static int64_t s_tap_suppress_until_us = 0;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_display_off_timer;   // S1→S2
@@ -794,6 +802,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     (void)request_id;
     ESP_LOGI(TAG, "button front down source=%d", source);
     note_activity();
+    // 按键按下抑制敲击检测，避免手指动作被 IMU 误判为双击（见 TAP_SUPPRESS_AFTER_BUTTON_MS）。
+    s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
 
     // 远程按键（热键）不走双击检测，直接走原有逻辑。
     if (source == APP_INPUT_SOURCE_PHYSICAL) {
@@ -900,6 +910,8 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     (void)request_id;
     ESP_LOGI(TAG, "button front up source=%d", source);
     note_activity();
+    // 按键松开同样抑制，覆盖松开瞬间手指余震。
+    s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
 
     // 双击第二击的释放：忽略，不触发任何事件。
     if (s_double_click_second_press) {
@@ -1529,6 +1541,10 @@ static void tap_poll_timer_cb(void *arg)
 {
     (void)arg;
     if (!s_tap_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
+        return;
+    }
+    // 按键事件抑制窗口内不检测，避免按语音键的手指动作误触发双击。
+    if (esp_timer_get_time() < s_tap_suppress_until_us) {
         return;
     }
     if (bmi270_tap_poll()) {
