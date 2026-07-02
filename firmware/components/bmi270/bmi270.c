@@ -115,29 +115,33 @@ typedef enum {
     TAP_STATE_FIRST,
 } tap_state_t;
 
-// 灵敏度参数表：ACC 突变阈值（g，相对于慢跟随基线）与 GYR 平静阈值（dps）。
-// 手持敲击设备本体时，ACC 会有明显脉冲而 GYR 保持小；挥动设备时 GYR 会同步上升。
-// 注意：read_acc_mag_and_gyr_mag 返回的 acc_mag 是 g 值，不是 raw LSB。
+// 灵敏度参数表：ACC 突变阈值（g，相对于慢跟随基线）、GYR 平静阈值（dps）、
+// 主轴集中度阈值（主轴 delta 占三轴 delta 之和的最小比例）。
+// 手持敲击设备本体时，ACC 能量集中在单一法向轴；桌面震动/整体平移则三轴均匀扰动。
+// 集中度判据用于拒绝后者，降低误触。GYR 仍用于排除挥动/旋转。
+// 注意：read_acc_g 返回 g 值，不是 raw LSB。
 typedef struct {
     float acc_thr_g;
     float gyr_calm_thr_dps;
+    float axis_concentration_ratio;  // 主轴 delta 占比下限，[0,1]
 } tap_params_t;
 
 // 10 档参数表（索引 0..9 对应用户面向档 1..10）：
 // ACC 阈值随档位升高线性递减（更易触发），GYR 平静门线性递增（更容忍旋转扰动）。
+// 集中度阈值各档统一 0.6：敲击主轴能量占比通常 >0.7，三轴均匀扰动 <0.5。
 // 档 1 = 旧版最灵敏档（0.50g/50dps）作为新基线；档 10 = 极灵敏（0.15g/90dps）。
 // 旧版 1..10 档（1.60→0.50g）整体偏迟钝，用户反馈"10 档仍不够灵敏"，故整体下移。
 static const tap_params_t kTapParams[TAP_SENSITIVITY_COUNT] = {
-    { .acc_thr_g = 0.50f, .gyr_calm_thr_dps = 50.0f },  // 档1 = 旧版最灵敏档
-    { .acc_thr_g = 0.46f, .gyr_calm_thr_dps = 54.4f },  // 档2
-    { .acc_thr_g = 0.42f, .gyr_calm_thr_dps = 58.9f },  // 档3
-    { .acc_thr_g = 0.38f, .gyr_calm_thr_dps = 63.3f },  // 档4
-    { .acc_thr_g = 0.34f, .gyr_calm_thr_dps = 67.8f },  // 档5（默认）
-    { .acc_thr_g = 0.31f, .gyr_calm_thr_dps = 72.2f },  // 档6
-    { .acc_thr_g = 0.27f, .gyr_calm_thr_dps = 76.7f },  // 档7
-    { .acc_thr_g = 0.23f, .gyr_calm_thr_dps = 81.1f },  // 档8
-    { .acc_thr_g = 0.19f, .gyr_calm_thr_dps = 85.6f },  // 档9
-    { .acc_thr_g = 0.15f, .gyr_calm_thr_dps = 90.0f },  // 档10 极灵敏
+    { .acc_thr_g = 0.50f, .gyr_calm_thr_dps = 50.0f, .axis_concentration_ratio = 0.6f },  // 档1
+    { .acc_thr_g = 0.46f, .gyr_calm_thr_dps = 54.4f, .axis_concentration_ratio = 0.6f },  // 档2
+    { .acc_thr_g = 0.42f, .gyr_calm_thr_dps = 58.9f, .axis_concentration_ratio = 0.6f },  // 档3
+    { .acc_thr_g = 0.38f, .gyr_calm_thr_dps = 63.3f, .axis_concentration_ratio = 0.6f },  // 档4
+    { .acc_thr_g = 0.34f, .gyr_calm_thr_dps = 67.8f, .axis_concentration_ratio = 0.6f },  // 档5（默认）
+    { .acc_thr_g = 0.31f, .gyr_calm_thr_dps = 72.2f, .axis_concentration_ratio = 0.6f },  // 档6
+    { .acc_thr_g = 0.27f, .gyr_calm_thr_dps = 76.7f, .axis_concentration_ratio = 0.6f },  // 档7
+    { .acc_thr_g = 0.23f, .gyr_calm_thr_dps = 81.1f, .axis_concentration_ratio = 0.6f },  // 档8
+    { .acc_thr_g = 0.19f, .gyr_calm_thr_dps = 85.6f, .axis_concentration_ratio = 0.6f },  // 档9
+    { .acc_thr_g = 0.15f, .gyr_calm_thr_dps = 90.0f, .axis_concentration_ratio = 0.6f },  // 档10
 };
 
 #define TAP_MIN_GAP_MS   80
@@ -148,9 +152,12 @@ static bool s_tap_enabled = false;
 static tap_sensitivity_t s_tap_sensitivity = TAP_SENSITIVITY_DEFAULT_LEVEL - 1;
 static tap_state_t s_tap_state = TAP_STATE_IDLE;
 static int64_t s_tap_first_us = 0;
-static float s_tap_acc_baseline = 0.0f;
+// 三轴各自基线（g）：平静期慢速 EMA 跟随，冲击/衰减期极慢跟随（不冻结，避免姿态变化后基线卡死）。
+static float s_tap_baseline_g[3] = {0.0f, 0.0f, 0.0f};
 static bool s_tap_has_baseline = false;
 static int64_t s_tap_debounce_until_us = 0;
+// 上一帧主轴 delta（g），用于脉冲瞬时性判据（敲击是上升沿，持续偏移不是）。
+static float s_tap_last_delta_dom = 0.0f;
 
 static esp_err_t bmi270_read_reg(uint8_t reg, uint8_t *value)
 {
@@ -488,65 +495,105 @@ esp_err_t bmi270_read_gyr_dps(float *x_dps, float *y_dps, float *z_dps)
     return ESP_OK;
 }
 
-// 读取当前 ACC 合加速度幅值与 GYR 角速度幅值，供敲击状态机使用。
-// 返回 true 表示成功读到有效数据。仅 BMI270 支持敲击检测。
-static bool read_acc_mag_and_gyr_mag(float *acc_mag, float *gyr_mag)
+// 读取当前 ACC 三轴（g）与 GYR 合角速度幅值（dps），供敲击状态机使用。
+// 保留 ACC 三轴分量以做主轴集中度判据。返回 true 表示成功读到有效数据。
+static bool read_acc_axes_and_gyr_mag(float acc_g[3], float *gyr_mag)
 {
-    float x_g, y_g, z_g;
     float x_dps, y_dps, z_dps;
-    if (bmi270_read_acc_g(&x_g, &y_g, &z_g) != ESP_OK) {
+    if (bmi270_read_acc_g(&acc_g[0], &acc_g[1], &acc_g[2]) != ESP_OK) {
         return false;
     }
     if (bmi270_read_gyr_dps(&x_dps, &y_dps, &z_dps) != ESP_OK) {
         return false;
     }
-    *acc_mag = sqrtf(x_g * x_g + y_g * y_g + z_g * z_g);
     *gyr_mag = sqrtf(x_dps * x_dps + y_dps * y_dps + z_dps * z_dps);
     return true;
 }
 
-// 检测一次 ACC 敲击脉冲（非挥动确认）。
-// 命中返回 true，同时更新基线与去抖时间。
+// 检测一次 ACC 敲击脉冲。
+// 命中条件（同时满足）：
+//   (1) 主轴 delta >= acc_thr_g       （单一轴上有足够大的突变）
+//   (2) 主轴集中度 >= axis_concentration_ratio（能量集中在单一轴，拒绝三轴均匀扰动）
+//   (3) gyr_mag <= gyr_calm_thr_dps   （未在挥动/旋转）
+//   (4) 脉冲瞬时性：当前 delta 明显大于上一帧 delta（上升沿）。持续偏移（姿态变化后基线
+//       未追上）前后帧 delta 都大，不满足上升沿 → 拒绝。这是防止"举起设备持续误触发"的关键。
+// 命中返回 true，同时更新去抖时间。
+// 基线策略：平静期慢 EMA(0.2) 跟随；冲击/偏移期极慢 EMA(0.02) 跟随——不冻结，让基线最终
+// 能追上姿态变化，避免 dom 持续超阈值导致永久误判。冲击是瞬时（几 ms），极慢 EMA 不会在
+// 双击窗口（<400ms）内明显抬高基线导致第二击漏检。
 static bool detect_tap_impulse(const tap_params_t *params, int64_t now_us)
 {
     if (now_us < s_tap_debounce_until_us) {
         return false;
     }
 
-    float acc_mag, gyr_mag;
-    if (!read_acc_mag_and_gyr_mag(&acc_mag, &gyr_mag)) {
+    float acc_g[3];
+    float gyr_mag;
+    if (!read_acc_axes_and_gyr_mag(acc_g, &gyr_mag)) {
         return false;
     }
 
     if (!s_tap_has_baseline) {
-        s_tap_acc_baseline = acc_mag;
+        s_tap_baseline_g[0] = acc_g[0];
+        s_tap_baseline_g[1] = acc_g[1];
+        s_tap_baseline_g[2] = acc_g[2];
         s_tap_has_baseline = true;
-        ESP_LOGI(TAG, "tap baseline=%.4f g", acc_mag);
+        ESP_LOGI(TAG, "tap baseline=%.4f/%.4f/%.4f g", acc_g[0], acc_g[1], acc_g[2]);
         return false;
     }
 
-    const float delta = fabsf(acc_mag - s_tap_acc_baseline);
-    // 基线更新策略：仅在"平静期"（delta 明显小于阈值）用慢速 EMA 跟随，
-    // 冲击/衰减期冻结基线。避免第一击冲击抬高基线导致第二击 delta 变小而漏检。
-    const float quiet_thr = params->acc_thr_g * 0.3f;
-    if (delta < quiet_thr) {
-        s_tap_acc_baseline = s_tap_acc_baseline * 0.8f + acc_mag * 0.2f;
-    }
+    // 三轴各自 delta 与总和，找主轴。
+    const float dx = fabsf(acc_g[0] - s_tap_baseline_g[0]);
+    const float dy = fabsf(acc_g[1] - s_tap_baseline_g[1]);
+    const float dz = fabsf(acc_g[2] - s_tap_baseline_g[2]);
+    const float delta_sum = dx + dy + dz;
+    const float delta_dom = dx > dy ? (dx > dz ? dx : dz) : (dy > dz ? dy : dz);
 
-    // 每 100 次打印一次 delta/gyr，确认状态机在跑。
+    // 基线更新：平静期慢跟随（alpha=0.2），偏移/冲击期极慢跟随（alpha=0.02）。
+    // 不冻结 → 姿态变化后基线能在 ~1s 内追上，避免持续误判。
+    const float quiet_thr = params->acc_thr_g * 0.3f;
+    const float baseline_alpha = (delta_dom < quiet_thr) ? 0.2f : 0.02f;
+    s_tap_baseline_g[0] = s_tap_baseline_g[0] * (1.0f - baseline_alpha) + acc_g[0] * baseline_alpha;
+    s_tap_baseline_g[1] = s_tap_baseline_g[1] * (1.0f - baseline_alpha) + acc_g[1] * baseline_alpha;
+    s_tap_baseline_g[2] = s_tap_baseline_g[2] * (1.0f - baseline_alpha) + acc_g[2] * baseline_alpha;
+
+    // 每 100 次打印一次状态，确认状态机在跑。
     static int dbg_cnt = 0;
     if (++dbg_cnt >= 100) {
         dbg_cnt = 0;
-        ESP_LOGI(TAG, "tap poll: delta=%.4f gyr=%.2f thr=%.2f/%.1f",
-                 delta, gyr_mag, params->acc_thr_g, params->gyr_calm_thr_dps);
+        const float concentration = delta_sum > 0.0f ? delta_dom / delta_sum : 0.0f;
+        ESP_LOGI(TAG, "tap poll: dom=%.4f last=%.4f conc=%.2f gyr=%.2f thr=%.2f/%.1f/%.2f",
+                 delta_dom, s_tap_last_delta_dom, concentration, gyr_mag,
+                 params->acc_thr_g, params->gyr_calm_thr_dps, params->axis_concentration_ratio);
     }
 
-    if (delta >= params->acc_thr_g && gyr_mag <= params->gyr_calm_thr_dps) {
-        ESP_LOGI(TAG, "tap impulse: delta=%.4f gyr=%.2f", delta, gyr_mag);
-        s_tap_debounce_until_us = now_us + (TAP_DEBOUNCE_MS * 1000LL);
-        return true;
+    const bool impulse = delta_dom >= params->acc_thr_g &&
+                         gyr_mag <= params->gyr_calm_thr_dps;
+    if (!impulse) {
+        s_tap_last_delta_dom = delta_dom;
+        return false;
     }
-    return false;
+    // 集中度判据。
+    const float concentration = delta_dom / delta_sum;
+    if (concentration < params->axis_concentration_ratio) {
+        ESP_LOGD(TAG, "tap rejected: low concentration %.2f (dom=%.4f sum=%.4f)",
+                 concentration, delta_dom, delta_sum);
+        s_tap_last_delta_dom = delta_dom;
+        return false;
+    }
+    // 脉冲瞬时性判据：当前 delta 必须明显大于上一帧（上升沿）。
+    // 阈值取 acc_thr_g 的 0.5 倍：敲击第一帧 delta 远大于静止帧；持续偏移则前后帧接近。
+    const float rising_edge = s_tap_last_delta_dom + params->acc_thr_g * 0.5f;
+    if (delta_dom < rising_edge) {
+        ESP_LOGD(TAG, "tap rejected: not rising edge dom=%.4f last=%.4f",
+                 delta_dom, s_tap_last_delta_dom);
+        s_tap_last_delta_dom = delta_dom;
+        return false;
+    }
+    ESP_LOGI(TAG, "tap impulse: dom=%.4f conc=%.2f gyr=%.2f", delta_dom, concentration, gyr_mag);
+    s_tap_last_delta_dom = 0.0f;  // 命中后重置，去抖期结束后允许下一次上升沿
+    s_tap_debounce_until_us = now_us + (TAP_DEBOUNCE_MS * 1000LL);
+    return true;
 }
 
 bool bmi270_tap_poll(void)
