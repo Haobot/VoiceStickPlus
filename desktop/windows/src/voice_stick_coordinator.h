@@ -328,6 +328,8 @@ private:
     std::optional<std::uint32_t> active_session_id_;
     std::optional<std::string> active_device_id_;
     std::chrono::steady_clock::time_point active_session_started_at_;
+    // 敲击注入方向键的节流时间戳：两次注入最短间隔 500ms，避免连击导致光标连续下移。
+    std::chrono::steady_clock::time_point last_tap_inject_at_{};
     int received_audio_frames_ = 0;
     std::optional<std::uint32_t> last_audio_seq_;
     std::vector<ByteVector> buffered_ogg_chunks_;

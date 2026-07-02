@@ -125,18 +125,19 @@ typedef struct {
 
 // 10 档参数表（索引 0..9 对应用户面向档 1..10）：
 // ACC 阈值随档位升高线性递减（更易触发），GYR 平静门线性递增（更容忍旋转扰动）。
-// 档 2/5/9 近似原 low/medium/high 体验。
+// 档 1 = 旧版最灵敏档（0.50g/50dps）作为新基线；档 10 = 极灵敏（0.15g/90dps）。
+// 旧版 1..10 档（1.60→0.50g）整体偏迟钝，用户反馈"10 档仍不够灵敏"，故整体下移。
 static const tap_params_t kTapParams[TAP_SENSITIVITY_COUNT] = {
-    { .acc_thr_g = 1.60f, .gyr_calm_thr_dps = 20.0f },  // 档1 极迟钝
-    { .acc_thr_g = 1.48f, .gyr_calm_thr_dps = 23.3f },  // 档2 ≈原 low
-    { .acc_thr_g = 1.36f, .gyr_calm_thr_dps = 26.7f },  // 档3
-    { .acc_thr_g = 1.23f, .gyr_calm_thr_dps = 30.0f },  // 档4
-    { .acc_thr_g = 1.11f, .gyr_calm_thr_dps = 33.3f },  // 档5 ≈原 medium（默认）
-    { .acc_thr_g = 0.99f, .gyr_calm_thr_dps = 36.7f },  // 档6
-    { .acc_thr_g = 0.86f, .gyr_calm_thr_dps = 40.0f },  // 档7
-    { .acc_thr_g = 0.74f, .gyr_calm_thr_dps = 43.3f },  // 档8
-    { .acc_thr_g = 0.62f, .gyr_calm_thr_dps = 46.7f },  // 档9 ≈原 high
-    { .acc_thr_g = 0.50f, .gyr_calm_thr_dps = 50.0f },  // 档10 极灵敏
+    { .acc_thr_g = 0.50f, .gyr_calm_thr_dps = 50.0f },  // 档1 = 旧版最灵敏档
+    { .acc_thr_g = 0.46f, .gyr_calm_thr_dps = 54.4f },  // 档2
+    { .acc_thr_g = 0.42f, .gyr_calm_thr_dps = 58.9f },  // 档3
+    { .acc_thr_g = 0.38f, .gyr_calm_thr_dps = 63.3f },  // 档4
+    { .acc_thr_g = 0.34f, .gyr_calm_thr_dps = 67.8f },  // 档5（默认）
+    { .acc_thr_g = 0.31f, .gyr_calm_thr_dps = 72.2f },  // 档6
+    { .acc_thr_g = 0.27f, .gyr_calm_thr_dps = 76.7f },  // 档7
+    { .acc_thr_g = 0.23f, .gyr_calm_thr_dps = 81.1f },  // 档8
+    { .acc_thr_g = 0.19f, .gyr_calm_thr_dps = 85.6f },  // 档9
+    { .acc_thr_g = 0.15f, .gyr_calm_thr_dps = 90.0f },  // 档10 极灵敏
 };
 
 #define TAP_MIN_GAP_MS   80
