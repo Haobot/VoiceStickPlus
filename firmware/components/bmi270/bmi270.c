@@ -103,12 +103,11 @@ static bool s_has_baseline;
 static float s_pickup_threshold = BMI270_PICKUP_THRESHOLD_DEFAULT_LSB;
 
 // 敲击检测状态机参数与状态。
-// 灵敏度档位：low（保守，高阈值）→ medium → high（灵敏，低阈值）。
+// 灵敏度档位 1..10：1=最不灵敏（需大力敲，高 ACC 阈值），10=最灵敏（轻触即发，低 ACC 阈值）。
+// 用户面向 level 取值 1..10，内部存 level-1 作为 kTapParams 数组索引。
 typedef enum {
-    TAP_SENSITIVITY_LOW = 0,
-    TAP_SENSITIVITY_MEDIUM,
-    TAP_SENSITIVITY_HIGH,
-    TAP_SENSITIVITY_COUNT,
+    TAP_SENSITIVITY_COUNT = 10,         // 档位总数
+    TAP_SENSITIVITY_DEFAULT_LEVEL = 5,  // 用户面向默认档（1..10），对应原 medium 体验
 } tap_sensitivity_t;
 
 typedef enum {
@@ -124,10 +123,20 @@ typedef struct {
     float gyr_calm_thr_dps;
 } tap_params_t;
 
+// 10 档参数表（索引 0..9 对应用户面向档 1..10）：
+// ACC 阈值随档位升高线性递减（更易触发），GYR 平静门线性递增（更容忍旋转扰动）。
+// 档 2/5/9 近似原 low/medium/high 体验。
 static const tap_params_t kTapParams[TAP_SENSITIVITY_COUNT] = {
-    [TAP_SENSITIVITY_LOW]    = { .acc_thr_g = 1.5f,  .gyr_calm_thr_dps = 25.0f },   // 保守：需 ≥1.5g 冲击
-    [TAP_SENSITIVITY_MEDIUM] = { .acc_thr_g = 1.0f,  .gyr_calm_thr_dps = 35.0f },   // 默认：需 ≥1.0g
-    [TAP_SENSITIVITY_HIGH]   = { .acc_thr_g = 0.6f,  .gyr_calm_thr_dps = 45.0f },   // 灵敏：需 ≥0.6g
+    { .acc_thr_g = 1.60f, .gyr_calm_thr_dps = 20.0f },  // 档1 极迟钝
+    { .acc_thr_g = 1.48f, .gyr_calm_thr_dps = 23.3f },  // 档2 ≈原 low
+    { .acc_thr_g = 1.36f, .gyr_calm_thr_dps = 26.7f },  // 档3
+    { .acc_thr_g = 1.23f, .gyr_calm_thr_dps = 30.0f },  // 档4
+    { .acc_thr_g = 1.11f, .gyr_calm_thr_dps = 33.3f },  // 档5 ≈原 medium（默认）
+    { .acc_thr_g = 0.99f, .gyr_calm_thr_dps = 36.7f },  // 档6
+    { .acc_thr_g = 0.86f, .gyr_calm_thr_dps = 40.0f },  // 档7
+    { .acc_thr_g = 0.74f, .gyr_calm_thr_dps = 43.3f },  // 档8
+    { .acc_thr_g = 0.62f, .gyr_calm_thr_dps = 46.7f },  // 档9 ≈原 high
+    { .acc_thr_g = 0.50f, .gyr_calm_thr_dps = 50.0f },  // 档10 极灵敏
 };
 
 #define TAP_MIN_GAP_MS   80
@@ -135,7 +144,7 @@ static const tap_params_t kTapParams[TAP_SENSITIVITY_COUNT] = {
 #define TAP_DEBOUNCE_MS  50
 
 static bool s_tap_enabled = false;
-static tap_sensitivity_t s_tap_sensitivity = TAP_SENSITIVITY_MEDIUM;
+static tap_sensitivity_t s_tap_sensitivity = TAP_SENSITIVITY_DEFAULT_LEVEL - 1;
 static tap_state_t s_tap_state = TAP_STATE_IDLE;
 static int64_t s_tap_first_us = 0;
 static float s_tap_acc_baseline = 0.0f;
@@ -516,7 +525,12 @@ static bool detect_tap_impulse(const tap_params_t *params, int64_t now_us)
     }
 
     const float delta = fabsf(acc_mag - s_tap_acc_baseline);
-    s_tap_acc_baseline = acc_mag;
+    // 基线更新策略：仅在"平静期"（delta 明显小于阈值）用慢速 EMA 跟随，
+    // 冲击/衰减期冻结基线。避免第一击冲击抬高基线导致第二击 delta 变小而漏检。
+    const float quiet_thr = params->acc_thr_g * 0.3f;
+    if (delta < quiet_thr) {
+        s_tap_acc_baseline = s_tap_acc_baseline * 0.8f + acc_mag * 0.2f;
+    }
 
     // 每 100 次打印一次 delta/gyr，确认状态机在跑。
     static int dbg_cnt = 0;
@@ -587,10 +601,11 @@ void bmi270_set_tap_enabled(bool enable)
 
 void bmi270_set_tap_sensitivity(int level)
 {
-    if (level < 0 || level >= TAP_SENSITIVITY_COUNT) {
-        level = TAP_SENSITIVITY_MEDIUM;
+    // 用户面向 level 取值 1..10，内部存 level-1 作为数组索引。
+    if (level < 1 || level > TAP_SENSITIVITY_COUNT) {
+        level = TAP_SENSITIVITY_DEFAULT_LEVEL;
     }
-    s_tap_sensitivity = (tap_sensitivity_t)level;
+    s_tap_sensitivity = (tap_sensitivity_t)(level - 1);
     ESP_LOGI(TAG, "tap sensitivity set to %d", level);
 }
 

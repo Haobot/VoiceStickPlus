@@ -54,7 +54,8 @@ bool bmi270_tap_poll(void);
 // 开关敲击检测。关闭时重置状态机。
 void bmi270_set_tap_enabled(bool enable);
 
-// 设置敲击灵敏度：0=low, 1=medium, 2=high。越界时 fallback 到 medium。
+// 设置敲击灵敏度：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
+// 越界（<1 或 >10）时 fallback 到默认档 5。
 void bmi270_set_tap_sensitivity(int level);
 
 // [阶段 3 关机态用] 加载 8KB config file，配置 any-motion feature 与 INT1 输出，

@@ -124,6 +124,13 @@ HWND CreateCombo(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE ins
                            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
 }
 
+HWND CreateTrackbar(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE inst) {
+    return CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+                           WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
+                           x, y, w, h, parent,
+                           reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config)
@@ -206,6 +213,12 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         }
         break;
+    case WM_HSCROLL:
+        // 滑块拖动时实时刷新右侧档位数值。
+        if (reinterpret_cast<HWND>(l_param) == tap_sensitivity_trackbar_) {
+            UpdateTapSensitivityLabel();
+        }
+        return TRUE;
     case WM_CLOSE:
         EndDialog(hwnd_, IDCANCEL);
         return TRUE;
@@ -316,6 +329,8 @@ void SettingsDialog::DestroyControls() {
     show_imu_debug_check_ = nullptr;
     imu_wake_sensitivity_combo_ = nullptr;
     tap_to_arrow_check_ = nullptr;
+    tap_sensitivity_trackbar_ = nullptr;
+    tap_sensitivity_value_label_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
     if (ui_font_) {
@@ -325,6 +340,12 @@ void SettingsDialog::DestroyControls() {
 }
 
 void SettingsDialog::BuildControls() {
+    // 注册 trackbar (滑块) 控件类，供敲击灵敏度 1~10 档使用。
+    INITCOMMONCONTROLSEX icc{};
+    icc.dwSize = sizeof(icc);
+    icc.dwICC = ICC_BAR_CLASSES;
+    InitCommonControlsEx(&icc);
+
     ui_font_ = CreateUiFont(dpi_);
     const HFONT font = ui_font_;
 
@@ -479,6 +500,20 @@ void SettingsDialog::BuildControls() {
                                                   BS_AUTOCHECKBOX));
     y += row_h + Dp(10);
 
+    // 敲击灵敏度 1~10 档滑块：1=最不灵敏（需大力敲），10=最灵敏（轻触即发）。
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsTapSensitivity).c_str(), Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    tap_sensitivity_trackbar_ = remember(CreateTrackbar(hwnd_, ctrl_x, y, ctrl_w - Dp(50), Dp(28),
+                                                        kIdTapSensitivity, instance_));
+    SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
+    SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
+    SendMessageW(tap_sensitivity_trackbar_, TBM_SETTICFREQ, 1, 0);
+    SendMessageW(tap_sensitivity_trackbar_, TBM_SETPAGESIZE, 0, 1);
+    // 右侧静态文本实时显示当前档位数值。
+    tap_sensitivity_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", ctrl_x + ctrl_w - Dp(40), y + Dp(5), Dp(30),
+                                                            Dp(20), instance_));
+    y += row_h + Dp(10);
+
     remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
@@ -548,6 +583,8 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kMedium) sensitivity_index = 1;
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kHigh) sensitivity_index = 2;
     SendMessageW(imu_wake_sensitivity_combo_, CB_SETCURSEL, sensitivity_index, 0);
+    SendMessageW(tap_sensitivity_trackbar_, TBM_SETPOS, TRUE, config_.tap_sensitivity);
+    UpdateTapSensitivityLabel();
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
@@ -621,6 +658,8 @@ void SettingsDialog::SaveSettings() {
     } else {
         config_.imu_wake_sensitivity = ImuWakeSensitivity::kLow;
     }
+    int tap_level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
+    config_.tap_sensitivity = TapSensitivityClamp(tap_level);
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
@@ -737,6 +776,12 @@ void SettingsDialog::UpdateRefinePromptVisibility() {
     const int cmd = show ? SW_SHOW : SW_HIDE;
     ShowWindow(refine_prompt_label_, cmd);
     ShowWindow(refine_prompt_edit_, cmd);
+}
+
+void SettingsDialog::UpdateTapSensitivityLabel() {
+    if (!tap_sensitivity_trackbar_ || !tap_sensitivity_value_label_) return;
+    const int level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
+    SetWindowTextW(tap_sensitivity_value_label_, std::to_wstring(level).c_str());
 }
 
 int SettingsDialog::Dp(int px) const {

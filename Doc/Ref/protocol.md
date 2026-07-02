@@ -120,7 +120,7 @@ Current desktop events:
 {"event":"show_imu_debug","enabled":true}
 {"event":"imu_wake_sensitivity","threshold":500}
 {"event":"tap_enabled","enabled":true}
-{"event":"tap_sensitivity","level":"medium"}
+{"event":"tap_sensitivity","level":5}
 ```
 
 | Event | Field | Direction | Meaning |
@@ -130,7 +130,7 @@ Current desktop events:
 | `show_imu_debug` | `enabled`: boolean | Windows -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
 | `imu_wake_sensitivity` | `threshold`: integer (LSB) | Windows -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
 | `tap_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables the double-tap on-device gesture detection. Default false. |
-| `tap_sensitivity` | `level`: string (`low`/`medium`/`high`) | Windows -> StickS3 | Sets the double-tap detection sensitivity. Default `medium`. |
+| `tap_sensitivity` | `level`: integer (1..10) | Windows -> StickS3 | Sets the double-tap detection sensitivity. 1=least sensitive (hardest tap), 10=most sensitive (lightest tap). Default 5. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as

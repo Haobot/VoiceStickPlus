@@ -130,6 +130,8 @@ struct AppConfig {
     ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
     // 敲击手势：双击设备外壳时注入下方向键，用于在候选/选项间向下切换。
     bool tap_to_arrow = false;
+    // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
+    int tap_sensitivity = 5;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -192,5 +194,7 @@ std::string ImuWakeSensitivityName(ImuWakeSensitivity sensitivity);
 ImuWakeSensitivity ImuWakeSensitivityFromName(std::string_view name);
 std::string ImuWakeSensitivityDisplayName(ImuWakeSensitivity sensitivity);
 int ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity sensitivity);
+// 将敲击灵敏度钳位到 1..10，越界或非法值返回默认档 5。
+int TapSensitivityClamp(int level);
 
 } // namespace voicestick

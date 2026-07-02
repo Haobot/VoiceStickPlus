@@ -73,6 +73,7 @@ void VoiceStickCoordinator::Start() {
         ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
         ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
         ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
+        ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
         ble_->SendImuWakeSensitivity(
             ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
     };
@@ -157,6 +158,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
     ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
     ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
+    ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
     ble_->SendImuWakeSensitivity(
         ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
