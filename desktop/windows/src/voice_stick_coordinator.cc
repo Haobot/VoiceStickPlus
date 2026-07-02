@@ -865,7 +865,15 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
         });
         return;
     }
-    if (config_.refine_enabled) ui_->SetStatus("Refining");
+    if (config_.refine_enabled) {
+        ui_->SetStatus("Refining");
+        // 立即把 ASR 原文刷上悬浮窗并进入精修态（kRefining 指示器 + 末尾闪烁光标），
+        // 让用户在 LLM 首 token 到达前（建连 + TTFT 约 1~2s）就能看到识别结果，
+        // 而非冻结在旧 partial 上造成"卡住"感。精修流式 token 随后经 AppendPartial 覆盖。
+        if (active_device_id_.has_value()) {
+            ui_->ShowRefining(text, *active_device_id_);
+        }
+    }
     TransformText(text, profile, [this](bool ok, std::string result) {
         (void)ok;
         last_recoverable_text_ = result;

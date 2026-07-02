@@ -194,6 +194,9 @@ public:
     void AppendPartial(const std::string& text, const std::optional<std::string>&) override {
         partials.push_back(text);
     }
+    void ShowRefining(const std::string& text, const std::optional<std::string>&) override {
+        refining_texts.push_back(text);
+    }
     void ShowFinalCountdown(const std::string& text,
                             const std::optional<std::string>&,
                             std::function<void()> on_complete) override {
@@ -238,6 +241,7 @@ public:
     std::vector<std::string> firmware_update_prompts;
     std::vector<std::string> paired_device_ids;
     std::vector<std::string> partials;
+    std::vector<std::string> refining_texts;
     std::vector<std::string> cloud_upgrades;
     std::vector<std::string> final_countdowns;
     std::vector<std::string> paused_finals;
@@ -1049,6 +1053,42 @@ void TestCoordinatorMainFinalPastesWithoutConfirmation() {
     assert(HasUiState(*ble_ptr, "ready", "5A74"));
 }
 
+// 开启精修时，ASR final 到达后应立即把原文刷上悬浮窗（ShowRefining），
+// 而非冻结在旧 partial 上等待 LLM 首 token。空 llm_api_key 使精修快速失败回退到原文。
+void TestCoordinatorRefineShowsOriginalTextImmediately() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    // refine_enabled 默认 true；llm_api_key 默认空 → RefineStream 同步 on_error →
+    // ChatAsync 后台快速失败 → on_complete(false, 原文) 回退。
+    assert(config.refine_enabled);
+    assert(config.llm_api_key.empty());
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(21, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(21, 2));
+    asr_ptr->on_final("hello refine");
+
+    // 关键断言：final 后立即调用 ShowRefining 显示原文，不等 LLM 首 token。
+    assert(!ui.refining_texts.empty());
+    assert(ui.refining_texts.front() == "hello refine");
+
+    // 等待后台精修失败回退完成，最终粘贴原文。
+    for (int i = 0; i < 50 && input.pasted_text.empty(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    assert(input.pasted_text == "hello refine");
+    assert(input.pasted_enter);
+}
+
 void TestCoordinatorOtherDeviceDuringRecordingGetsReady() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -1773,6 +1813,7 @@ int main() {
     TestCoordinatorSecondaryCancelsFinalizing();
     TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd();
     TestCoordinatorMainFinalPastesWithoutConfirmation();
+    TestCoordinatorRefineShowsOriginalTextImmediately();
     TestCoordinatorOtherDeviceDuringRecordingGetsReady();
     TestCoordinatorSubtitleOutputSkipsPaste();
     TestCoordinatorSubtitleFinalDoesNotBlockNextSession();

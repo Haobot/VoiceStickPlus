@@ -309,12 +309,25 @@ void OverlayWindow::ShowListening() {
 }
 
 void OverlayWindow::ShowPartial(const std::string& text) {
+    // 最终结果显示：退出精修态，不再追加光标。
+    refining_ = false;
     Show(Mode::kListening, text.empty() ? "Processing..." : text);
 }
 
 void OverlayWindow::AppendPartial(const std::string& text) {
     // 流式精修高频追加：跳过文字滚动过渡动画，直接显示当前累积文本。
-    Show(Mode::kListening, text.empty() ? "Processing..." : text,
+    // 精修态下保持 kRefining 指示器（三点跳动），提示"正在改写"。
+    Show(refining_ ? Mode::kRefining : Mode::kListening,
+         text.empty() ? "Processing..." : text,
+         /*hint=*/"", /*skip_text_transition=*/true);
+}
+
+void OverlayWindow::ShowRefining(const std::string& text) {
+    // 进入精修态：kRefining 指示器（三点跳动）+ ASR 原文，让用户在 LLM 首 token
+    // 到达前看到识别结果。文本本身不加光标（保持 static layer 复用，避免每帧重建
+    // D2D 文本布局），"精修中"由指示器动效表达。
+    refining_ = true;
+    Show(Mode::kRefining, text.empty() ? "Processing..." : text,
          /*hint=*/"", /*skip_text_transition=*/true);
 }
 
@@ -367,6 +380,7 @@ void OverlayWindow::SetPosition(OverlayPosition position) {
 void OverlayWindow::Hide(std::function<void()> on_hidden) {
     KillTimer(hwnd_, kAutoHideTimerId);
     KillTimer(hwnd_, kAnimationTimerId);
+    refining_ = false;  // 退出精修态
     auto completion = on_hidden ? std::move(on_hidden) : std::move(pending_callback_);
     pending_callback_ = std::move(completion);
     StartFadeOut();
@@ -387,11 +401,13 @@ void OverlayWindow::OnTimer(UINT_PTR timer_id) {
         if (!window_moved && text_transitioning) {
             InvalidateStaticLayer();
             UpdateLayeredBitmap();
-        } else if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown)) {
-            // 静态文本：仅重绘动态指示器（音浪条），不重建文本布局。
+        } else if (!window_moved && (mode_ == Mode::kListening || mode_ == Mode::kCountdown ||
+                                     mode_ == Mode::kRefining)) {
+            // 静态文本：仅重绘动态指示器（音浪条 / 倒计时环 / 精修三点跳动），不重建文本布局。
             UpdateLayeredBitmap();
         }
-        if (!window_moved && mode_ != Mode::kListening && mode_ != Mode::kCountdown && !text_transitioning) {
+        if (!window_moved && mode_ != Mode::kListening && mode_ != Mode::kCountdown &&
+            mode_ != Mode::kRefining && !text_transitioning) {
             KillTimer(hwnd_, kAnimationTimerId);
         }
     }
@@ -407,6 +423,8 @@ void OverlayWindow::OnPaint() {
 void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& hint,
                          bool skip_text_transition) {
     KillTimer(hwnd_, kAutoHideTimerId);
+    // 切到非精修模式时退出精修态，避免 refining_ 残留导致后续 AppendPartial 误判。
+    if (mode != Mode::kRefining) refining_ = false;
     const std::wstring next_text = Utf16FromUtf8(text);
     if (skip_text_transition) {
         // 流式追加：直接用当前滚动偏移作为目标，不启动 140ms 过渡动画，
@@ -429,7 +447,8 @@ void OverlayWindow::Show(Mode mode, const std::string& text, const std::string& 
     InvalidateStaticLayer();
     Reposition();
 
-    if (mode == Mode::kListening || mode == Mode::kCountdown || NeedsWindowAnimation() || text_transition_started_at_ms_ != 0) {
+    if (mode == Mode::kListening || mode == Mode::kCountdown || mode == Mode::kRefining ||
+        NeedsWindowAnimation() || text_transition_started_at_ms_ != 0) {
         SetTimer(hwnd_, kAnimationTimerId, kAnimationStepMs, nullptr);
     } else {
         KillTimer(hwnd_, kAnimationTimerId);
@@ -1067,6 +1086,31 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
                                           static_cast<float>(bar_width), static_cast<float>(bar_h)),
                            static_cast<float>(bar_width) / 2.0f);
             graphics.FillPath(&bar_brush, &bar_path);
+        }
+    } else if (mode_ == Mode::kRefining) {
+        // 精修态：三个圆点依次起伏，节奏平缓，表"正在改写"（区别于 kListening 的音浪条）。
+        const int dot_diameter = std::max(SizePx(6, 5, 4), 4);
+        const int spacing = SizePx(4, 3, 3);
+        const int num_dots = 3;
+        const int total_w = num_dots * dot_diameter + (num_dots - 1) * spacing;
+        const int start_x = cx - total_w / 2;
+        const double elapsed = static_cast<double>(GetTickCount64() % 100000) / 1000.0;
+
+        Gdiplus::SolidBrush dot_brush(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb));
+        for (int i = 0; i < num_dots; ++i) {
+            // 每个点相位错开 0.35s，起伏幅度较小，呈"思考"般的轻柔跳动。
+            const double phase = elapsed * 3.0 + i * 0.35;
+            const double wave = 0.5 + 0.5 * std::sin(phase * 2.0 * 3.14159265358979 / 1.2);
+            const int dx = start_x + i * (dot_diameter + spacing);
+            // 垂直中心随波动上移（wave 越大越靠上），幅度限制在点直径内。
+            const int dy = cy - dot_diameter / 2 - static_cast<int>(wave * dot_diameter * 0.5);
+            Gdiplus::GraphicsPath dot_path;
+            AddRoundedRect(dot_path,
+                           Gdiplus::RectF(static_cast<float>(dx), static_cast<float>(dy),
+                                          static_cast<float>(dot_diameter),
+                                          static_cast<float>(dot_diameter)),
+                           static_cast<float>(dot_diameter) / 2.0f);
+            graphics.FillPath(&dot_brush, &dot_path);
         }
     } else if (mode_ == Mode::kCountdown) {
         Gdiplus::Pen track_pen(Gdiplus::Color(kIndicatorTrackAlpha, ink_rgb,
