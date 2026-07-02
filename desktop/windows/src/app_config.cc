@@ -84,6 +84,18 @@ bool BoolValue(const std::string& value, bool fallback) {
     return fallback;
 }
 
+int IntValue(const std::string& value, int fallback) {
+    if (value.empty()) return fallback;
+    try {
+        std::size_t pos = 0;
+        const int parsed = std::stoi(value, &pos);
+        if (pos != value.size()) return fallback;
+        return parsed;
+    } catch (...) {
+        return fallback;
+    }
+}
+
 std::string TomlEscape(std::string_view value) {
     std::string out;
     out.reserve(value.size());
@@ -117,6 +129,10 @@ std::optional<std::string> TomlString(const toml::table& table, std::string_view
 
 std::optional<bool> TomlBool(const toml::table& table, std::string_view key) {
     return table[key].value<bool>();
+}
+
+std::optional<int> TomlInt(const toml::table& table, std::string_view key) {
+    return table[key].value<int>();
 }
 
 std::vector<std::string> TomlStringArray(const toml::table& table, std::string_view key) {
@@ -313,6 +329,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "show_imu_debug") config.show_imu_debug = BoolValue(value, config.show_imu_debug);
     if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
+    if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
@@ -429,6 +446,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
+        if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
@@ -499,6 +517,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "show_imu_debug = " << (show_imu_debug ? "true" : "false") << "\n";
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
+    output << "tap_sensitivity = " << tap_sensitivity << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
@@ -855,6 +874,11 @@ int ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity sensitivity) {
     default:
         return 800;
     }
+}
+
+int TapSensitivityClamp(int level) {
+    if (level < 1 || level > 10) return 5;
+    return level;
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {

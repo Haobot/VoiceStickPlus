@@ -66,6 +66,8 @@ public:
                                   const std::optional<std::string>& device_id) = 0;
     virtual void SendTapEnabled(bool enabled,
                                 const std::optional<std::string>& device_id) = 0;
+    virtual void SendTapSensitivity(int level,
+                                    const std::optional<std::string>& device_id) = 0;
     virtual void SendImuWakeSensitivity(int threshold_lsb,
                                         const std::optional<std::string>& device_id) = 0;
     virtual void RequestBatteryStatus(const std::optional<std::string>& device_id) = 0;

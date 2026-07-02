@@ -43,6 +43,8 @@ public:
                           const std::optional<std::string>& device_id) override;
     void SendTapEnabled(bool enabled,
                         const std::optional<std::string>& device_id) override;
+    void SendTapSensitivity(int level,
+                            const std::optional<std::string>& device_id) override;
     void SendImuWakeSensitivity(int threshold_lsb,
                                 const std::optional<std::string>& device_id) override;
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override;

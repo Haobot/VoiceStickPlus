@@ -750,17 +750,25 @@ static void ble_control_cb(const char *json)
         set_tap_polling_enabled(s_tap_enabled);
         save_tap_settings_to_nvs(s_tap_enabled, (int32_t)-1);
         ESP_LOGI(TAG, "tap_enabled %s", s_tap_enabled ? "true" : "false");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0 &&
-               cJSON_IsString(mode)) {
-        int32_t sensitivity = 1;  // medium default
-        if (strcmp(mode->valuestring, "low") == 0) {
-            sensitivity = 0;
-        } else if (strcmp(mode->valuestring, "high") == 0) {
-            sensitivity = 2;
-        } else if (strcmp(mode->valuestring, "medium") == 0) {
-            sensitivity = 1;
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0) {
+        // 灵敏度 1..10（用户面向）：1=最不灵敏，10=最灵敏，默认 5。
+        // 兼容 legacy 字符串 low/medium/high -> 2/5/9。
+        const cJSON *level_item = cJSON_GetObjectItemCaseSensitive(root, "level");
+        int32_t sensitivity = 5;
+        if (cJSON_IsNumber(level_item)) {
+            sensitivity = (int32_t)level_item->valueint;
+        } else if (cJSON_IsString(level_item)) {
+            if (strcmp(level_item->valuestring, "low") == 0) {
+                sensitivity = 2;
+            } else if (strcmp(level_item->valuestring, "medium") == 0) {
+                sensitivity = 5;
+            } else if (strcmp(level_item->valuestring, "high") == 0) {
+                sensitivity = 9;
+            } else {
+                ESP_LOGW(TAG, "unknown tap_sensitivity %s", level_item->valuestring);
+            }
         } else {
-            ESP_LOGW(TAG, "unknown tap_sensitivity %s", mode->valuestring);
+            ESP_LOGW(TAG, "tap_sensitivity missing level field");
         }
         bmi270_set_tap_sensitivity((int)sensitivity);
         save_tap_settings_to_nvs(s_tap_enabled, sensitivity);
@@ -1786,14 +1794,30 @@ static void load_tap_settings_from_nvs(void)
     nvs_handle_t handle;
     esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
     int32_t enabled = 1;  // 默认开启
-    int32_t sensitivity = 2;  // high
+    int32_t sensitivity = 5;  // 默认档 5（对应原 medium 体验）
+    bool migrated = false;
     if (err == ESP_OK) {
         esp_err_t e = nvs_get_i32(handle, "tap_en", &enabled);
         if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "load tap enabled failed: %s", esp_err_to_name(e));
         }
-        e = nvs_get_i32(handle, "tap_lvl", &sensitivity);
-        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+        // 优先读新 key tap_lvl2（用户面向 1..10）
+        e = nvs_get_i32(handle, "tap_lvl2", &sensitivity);
+        if (e == ESP_ERR_NVS_NOT_FOUND) {
+            // 旧 key tap_lvl 存的是 0/1/2 索引（low/medium/high），一次性迁移到 1..10 尺度
+            int32_t legacy = 0;
+            e = nvs_get_i32(handle, "tap_lvl", &legacy);
+            if (e == ESP_OK) {
+                switch (legacy) {
+                    case 0:  sensitivity = 2; break;  // low
+                    case 1:  sensitivity = 5; break;  // medium
+                    case 2:  sensitivity = 9; break;  // high
+                    default: sensitivity = 5; break;
+                }
+                migrated = true;
+                ESP_LOGI(TAG, "tap sensitivity migrated from legacy %" PRId32 " to %" PRId32, legacy, sensitivity);
+            }
+        } else if (e != ESP_OK) {
             ESP_LOGW(TAG, "load tap sensitivity failed: %s", esp_err_to_name(e));
         }
         nvs_close(handle);
@@ -1801,14 +1825,24 @@ static void load_tap_settings_from_nvs(void)
         ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
     }
 
-    if (sensitivity < 0 || sensitivity > 2) {
-        sensitivity = 1;
+    if (sensitivity < 1 || sensitivity > 10) {
+        sensitivity = 5;
     }
 
     s_tap_enabled = (enabled != 0);
     bmi270_set_tap_enabled(s_tap_enabled);
     bmi270_set_tap_sensitivity((int)sensitivity);
     ESP_LOGI(TAG, "tap settings loaded from nvs: enabled=%d sensitivity=%" PRId32, s_tap_enabled, sensitivity);
+
+    // 迁移后持久化到新 key 并删除旧 key，避免重复迁移。
+    if (migrated) {
+        save_tap_settings_to_nvs(s_tap_enabled, sensitivity);
+        if (nvs_open("voicestick", NVS_READWRITE, &handle) == ESP_OK) {
+            nvs_erase_key(handle, "tap_lvl");
+            nvs_commit(handle);
+            nvs_close(handle);
+        }
+    }
 }
 
 static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity)
@@ -1828,8 +1862,8 @@ static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "save tap enabled failed: %s", esp_err_to_name(err));
     }
-    if (sensitivity >= 0 && sensitivity <= 2) {
-        err = nvs_set_i32(handle, "tap_lvl", sensitivity);
+    if (sensitivity >= 1 && sensitivity <= 10) {
+        err = nvs_set_i32(handle, "tap_lvl2", sensitivity);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "save tap sensitivity failed: %s", esp_err_to_name(err));
         }

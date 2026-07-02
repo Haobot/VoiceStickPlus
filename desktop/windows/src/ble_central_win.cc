@@ -468,6 +468,29 @@ void BleCentralWin::SendImuWakeSensitivity(int threshold_lsb,
     }
 }
 
+void BleCentralWin::SendTapSensitivity(int level,
+                                       const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::TapSensitivityPayload(level);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+        }
+    }
+
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
 void BleCentralWin::RequestBatteryStatus(const std::optional<std::string>& device_id) {
     auto payload = BleProtocol::BatteryStatusRequestPayload();
     std::vector<std::shared_ptr<DeviceSession>> targets;

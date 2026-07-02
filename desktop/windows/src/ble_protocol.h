@@ -63,6 +63,7 @@ public:
     static ByteVector ShowImuDebugPayload(bool enabled);
     static ByteVector ImuWakeSensitivityPayload(int threshold_lsb);
     static ByteVector TapEnabledPayload(bool enabled);
+    static ByteVector TapSensitivityPayload(int level);
     static ByteVector BatteryStatusRequestPayload();
     static ByteVector RemoteButtonPayload(std::string_view action,
                                           std::string_view button,

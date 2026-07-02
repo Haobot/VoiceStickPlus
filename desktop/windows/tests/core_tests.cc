@@ -44,6 +44,11 @@ struct SentImuWakeSensitivity {
     std::optional<std::string> device_id;
 };
 
+struct SentTapSensitivity {
+    int level = 0;
+    std::optional<std::string> device_id;
+};
+
 class FakeBleCentral : public BleCentral {
 public:
     void Start() override {}
@@ -75,6 +80,10 @@ public:
     void SendTapEnabled(bool enabled,
                         const std::optional<std::string>& device_id) override {
         sent_tap_enabled.push_back(std::pair{enabled, device_id});
+    }
+    void SendTapSensitivity(int level,
+                            const std::optional<std::string>& device_id) override {
+        sent_tap_sensitivities.push_back(SentTapSensitivity{level, device_id});
     }
     void SendImuWakeSensitivity(int threshold_lsb,
                                 const std::optional<std::string>& device_id) override {
@@ -109,6 +118,7 @@ public:
     std::vector<SentRemoteButton> sent_remote_buttons;
     std::vector<SentImuWakeSensitivity> sent_imu_wake_sensitivities;
     std::vector<std::pair<bool, std::optional<std::string>>> sent_tap_enabled;
+    std::vector<SentTapSensitivity> sent_tap_sensitivities;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -423,6 +433,12 @@ void TestBleControlPayloads() {
     assert(std::string(enabled.begin(), enabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":true}");
     assert(std::string(disabled.begin(), disabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":false}");
     assert(std::string(battery_request.begin(), battery_request.end()) == "{\"event\":\"battery_status_request\"}");
+
+    // 敲击灵敏度 1~10 档，桌面端下发数值 level。
+    auto tap_sens = BleProtocol::TapSensitivityPayload(5);
+    assert(std::string(tap_sens.begin(), tap_sens.end()) == "{\"event\":\"tap_sensitivity\",\"level\":5}");
+    auto tap_sens_high = BleProtocol::TapSensitivityPayload(10);
+    assert(std::string(tap_sens_high.begin(), tap_sens_high.end()) == "{\"event\":\"tap_sensitivity\",\"level\":10}");
 }
 
 void TestStateParsing() {
@@ -798,6 +814,75 @@ void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
 
     assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 500);
     assert(!ble_ptr->sent_imu_wake_sensitivities.back().device_id.has_value());
+}
+
+void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.tap_sensitivity = 7;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    assert(!ble_ptr->sent_tap_sensitivities.empty());
+    assert(ble_ptr->sent_tap_sensitivities.back().level == 7);
+    assert(!ble_ptr->sent_tap_sensitivities.back().device_id.has_value());
+
+    AppConfig updated = config;
+    updated.tap_sensitivity = 3;
+    coordinator.UpdateConfig(updated);
+
+    assert(ble_ptr->sent_tap_sensitivities.back().level == 3);
+    assert(!ble_ptr->sent_tap_sensitivities.back().device_id.has_value());
+}
+
+void TestAppConfigTapSensitivityRoundTrip() {
+    // 默认档 5。
+    assert(AppConfig::Defaults().tap_sensitivity == 5);
+
+    // 钳位：越界值回退默认档 5，合法值透传。
+    assert(TapSensitivityClamp(0) == 5);
+    assert(TapSensitivityClamp(11) == 5);
+    assert(TapSensitivityClamp(-1) == 5);
+    assert(TapSensitivityClamp(1) == 1);
+    assert(TapSensitivityClamp(10) == 10);
+    assert(TapSensitivityClamp(3) == 3);
+
+    // TOML 保存/加载往返。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_tap_sensitivity_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.tap_sensitivity = 8;
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.tap_sensitivity == 8);
+
+        std::filesystem::remove(temp);
+    }
+
+    // 越界值落盘后回读应被钳位到默认档 5。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_tap_sensitivity_clamp_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.tap_sensitivity = 99;
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.tap_sensitivity == 5);
+
+        std::filesystem::remove(temp);
+    }
 }
 
 void TestCoordinatorHotkeyWithoutConnectionShowsWakeHint() {
@@ -1652,10 +1737,12 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
+    TestAppConfigTapSensitivityRoundTrip();
     TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
+    TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();

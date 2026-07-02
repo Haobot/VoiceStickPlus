@@ -30,6 +30,7 @@ private:
     void SaveSettings();
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
+    void UpdateTapSensitivityLabel();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     bool IsLabelControl(HWND control) const;
@@ -59,6 +60,8 @@ private:
     HWND show_imu_debug_check_ = nullptr;
     HWND imu_wake_sensitivity_combo_ = nullptr;
     HWND tap_to_arrow_check_ = nullptr;
+    HWND tap_sensitivity_trackbar_ = nullptr;
+    HWND tap_sensitivity_value_label_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -67,7 +70,7 @@ private:
     std::vector<HWND> label_controls_;
 
     static constexpr int kClientWidth = 640;
-    static constexpr int kClientHeight = 920;
+    static constexpr int kClientHeight = 960;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -89,6 +92,7 @@ private:
     static constexpr UINT kIdCancel = 2014;
     static constexpr UINT kIdApplyTrialApiKey = 2015;
     static constexpr UINT kIdRefinePromptEdit = 2022;
+    static constexpr UINT kIdTapSensitivity = 2023;
 };
 
 } // namespace voicestick

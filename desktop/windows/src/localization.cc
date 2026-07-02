@@ -47,6 +47,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "Medium";
     table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "High";
     table[Index(StringId::kSettingsTapToArrow)] = "Double-tap device to press Down arrow";
+    table[Index(StringId::kSettingsTapSensitivity)] = "Tap Sensitivity (1=hard, 10=light)";
     table[Index(StringId::kSettingsDebugDir)] = "Audio Folder";
     table[Index(StringId::kSettingsChooseDir)] = "Choose...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "Open Config Folder";
@@ -230,6 +231,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "中";
     table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "高";
     table[Index(StringId::kSettingsTapToArrow)] = "双击设备按下方向键↓";
+    table[Index(StringId::kSettingsTapSensitivity)] = "敲击灵敏度（1=重，10=轻）";
     table[Index(StringId::kSettingsDebugDir)] = "音频文件夹";
     table[Index(StringId::kSettingsChooseDir)] = "选择...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "打开配置文件夹";
