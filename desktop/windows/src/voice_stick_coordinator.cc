@@ -442,6 +442,13 @@ void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::s
         session_state_ == SessionState::kFinalizing) {
         return;
     }
+    // 节流：两次方向键注入最短间隔 500ms，防止快速连击导致光标连续下移。
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_tap_inject_at_ < std::chrono::milliseconds(500)) {
+        LogCoordinatorLine("tap detected on VS-" + device_id + ", throttled (<500ms since last)");
+        return;
+    }
+    last_tap_inject_at_ = now;
     LogCoordinatorLine("tap detected on VS-" + device_id + ", sending ArrowDown");
     input_injector_->SendArrowDown();
     ble_->SendUiState("ready", "", device_id);

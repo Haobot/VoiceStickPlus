@@ -1340,7 +1340,7 @@ void TestTapIgnoredDuringRecording() {
     assert(input.arrow_down_count == 0);
 }
 
-void TestTapRepeatedEventsInjectEachTime() {
+void TestTapThrottledWithin500ms() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -1354,8 +1354,31 @@ void TestTapRepeatedEventsInjectEachTime() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
 
-    // 连续两次 tap 应各注入一次方向键，第二次不被第一次的 ready 回写阻塞。
+    // 500ms 内连续两次 tap：第二次应被节流，只注入一次方向键。
     ble_ptr->on_state_event("5A74", TapEvent("double"));
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 1);
+}
+
+void TestTapThrottleRecoversAfter500ms() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 第一次 tap 注入；间隔超过 500ms 后第二次 tap 应再次注入。
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+    assert(input.arrow_down_count == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
     ble_ptr->on_state_event("5A74", TapEvent("double"));
 
     assert(input.arrow_down_count == 2);
@@ -1760,7 +1783,8 @@ int main() {
     TestTapEventInjectsArrowDown();
     TestTapDisabledWhenConfigOff();
     TestTapIgnoredDuringRecording();
-    TestTapRepeatedEventsInjectEachTime();
+    TestTapThrottledWithin500ms();
+    TestTapThrottleRecoversAfter500ms();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
     TestSseParser();
     TestStreamPayload();
