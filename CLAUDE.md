@@ -39,7 +39,7 @@ desktop/macos/
   Sources/VoiceStickApp/           Swift 源码
   Config/config.example.toml       配置示例
 desktop/windows/
-  CMakeLists.txt                   拆为 voicestick_core + VoiceStickApp + VoiceStickCtl
+  CMakeLists.txt                   拆为 voicestick_core + VoiceStickApp + voicestick_windows_tests
   src/voice_stick_coordinator.cc   交互状态机（核心）
   src/ble_central_win.cc           BLE 平台层
   src/asr_client_win.cc            ASR WebSocket 客户端

@@ -126,6 +126,9 @@ public:
     virtual void ShowPartial(const std::string& text, const std::optional<std::string>& device_id) = 0;
     // 流式精修追加：与 ShowPartial 类似但不触发文字滚动过渡动画，供流式 token 高频追加使用。
     virtual void AppendPartial(const std::string& text, const std::optional<std::string>& device_id) = 0;
+    // 进入精修态：切到 kRefining 模式并立即显示 ASR 原文（带闪烁光标），让用户在 LLM
+    // 首 token 到达前就能看到识别结果，消除"卡住空白"感。精修流式 token 随后经 AppendPartial 覆盖。
+    virtual void ShowRefining(const std::string& text, const std::optional<std::string>& device_id) = 0;
     virtual void ShowFinalCountdown(const std::string& text,
                                     const std::optional<std::string>& device_id,
                                     std::function<void()> on_complete) = 0;

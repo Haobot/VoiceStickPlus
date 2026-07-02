@@ -25,7 +25,12 @@ public:
     void ShowPartial(const std::string& text);
     // 流式追加：与 ShowPartial 类似但不触发文字滚动过渡动画。
     // 供流式精修高频追加 token 使用，避免 140ms 滚动动画被高频更新反复重置导致闪动。
+    // 精修态（ShowRefining 后）下追加保持 kRefining 指示器与末尾光标。
     void AppendPartial(const std::string& text);
+    // 进入精修态：切 kRefining 指示器（三点跳动），显示 ASR 原文并在末尾追加闪烁光标，
+    // 让用户在 LLM 首 token 到达前看到识别结果而非空白。精修流式 token 经 AppendPartial
+    // 覆盖；精修完成由 ShowPartial（最终结果）或 Hide 复位出精修态。
+    void ShowRefining(const std::string& text);
     void ShowFinalCountdown(const std::string& text, std::function<void()> on_complete);
     void ShowPausedFinal(const std::string& text);
     void ShowError(const std::string& text, std::function<void()> on_complete);
@@ -40,7 +45,7 @@ public:
     void OnDpiChanged(UINT new_dpi, const RECT* suggested_rect);
 
 private:
-    enum class Mode { kListening, kCountdown, kPaused, kError, kHidden };
+    enum class Mode { kListening, kCountdown, kPaused, kError, kHidden, kRefining };
 
     void Show(Mode mode, const std::string& text, const std::string& hint = "",
               bool skip_text_transition = false);
@@ -83,6 +88,9 @@ private:
     RECT last_backdrop_bounds_{};
     bool backdrop_bounds_valid_ = false;
     Mode mode_ = Mode::kHidden;
+    // 精修态标志：ShowRefining 置 true，AppendPartial 据此保持 kRefining 并追加光标；
+    // ShowPartial（最终结果）/Hide 复位为 false。
+    bool refining_ = false;
     std::wstring text_;
     std::wstring hint_;
     std::function<void()> pending_callback_;
