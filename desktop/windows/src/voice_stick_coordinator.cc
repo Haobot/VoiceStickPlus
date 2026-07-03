@@ -516,7 +516,7 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
 
 AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
-    p.gain = config_.air_mouse_gain;
+    p.gain = static_cast<double>(config_.air_mouse_sensitivity) * 2.0;
     p.tau = config_.air_mouse_tau;
     p.gamma = config_.air_mouse_gamma;
     p.invert_y = config_.air_mouse_invert_y;

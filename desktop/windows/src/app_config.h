@@ -132,8 +132,8 @@ struct AppConfig {
     bool tap_to_arrow = false;
     // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
     int tap_sensitivity = 5;
-    // 体感鼠标：速度增益（omega → v_target）。默认 4.0，真机标定后调整。
-    double air_mouse_gain = 4.0;
+    // 体感鼠标：灵敏度档位 1~10（1=最慢，10=最快），映射 gain=sensitivity×2.0。默认 5。
+    int air_mouse_sensitivity = 5;
     // 体感鼠标：速度跟踪时间常数（秒），越大惯性/缓停越长。默认 0.10。
     double air_mouse_tau = 0.10;
     // 体感鼠标：加速曲线幂律指数，>1 慢稳快猛。默认 1.35。
@@ -204,7 +204,7 @@ std::string ImuWakeSensitivityDisplayName(ImuWakeSensitivity sensitivity);
 int ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity sensitivity);
 // 将敲击灵敏度钳位到 1..10，越界或非法值返回默认档 5。
 int TapSensitivityClamp(int level);
-double AirMouseGainClamp(double gain);
+int AirMouseSensitivityClamp(int level);
 double AirMouseTauClamp(double tau);
 double AirMouseGammaClamp(double gamma);
 

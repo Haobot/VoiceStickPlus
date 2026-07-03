@@ -349,7 +349,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
     if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
-    if (key == "air_mouse_gain") config.air_mouse_gain = AirMouseGainClamp(DoubleValue(value, config.air_mouse_gain));
+    if (key == "air_mouse_sensitivity") config.air_mouse_sensitivity = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity));
     if (key == "air_mouse_tau") config.air_mouse_tau = AirMouseTauClamp(DoubleValue(value, config.air_mouse_tau));
     if (key == "air_mouse_gamma") config.air_mouse_gamma = AirMouseGammaClamp(DoubleValue(value, config.air_mouse_gamma));
     if (key == "air_mouse_invert_y") config.air_mouse_invert_y = BoolValue(value, config.air_mouse_invert_y);
@@ -470,7 +470,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
         if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
-        if (auto value = TomlDouble(table, "air_mouse_gain")) config.air_mouse_gain = AirMouseGainClamp(*value);
+        if (auto value = TomlInt(table, "air_mouse_sensitivity")) config.air_mouse_sensitivity = AirMouseSensitivityClamp(*value);
         if (auto value = TomlDouble(table, "air_mouse_tau")) config.air_mouse_tau = AirMouseTauClamp(*value);
         if (auto value = TomlDouble(table, "air_mouse_gamma")) config.air_mouse_gamma = AirMouseGammaClamp(*value);
         if (auto value = TomlBool(table, "air_mouse_invert_y")) config.air_mouse_invert_y = *value;
@@ -545,7 +545,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
     output << "tap_sensitivity = " << tap_sensitivity << "\n";
-    output << "air_mouse_gain = " << air_mouse_gain << "\n";
+    output << "air_mouse_sensitivity = " << air_mouse_sensitivity << "\n";
     output << "air_mouse_tau = " << air_mouse_tau << "\n";
     output << "air_mouse_gamma = " << air_mouse_gamma << "\n";
     output << "air_mouse_invert_y = " << (air_mouse_invert_y ? "true" : "false") << "\n";
@@ -912,10 +912,10 @@ int TapSensitivityClamp(int level) {
     return level;
 }
 
-double AirMouseGainClamp(double gain) {
-    // 灵敏度倍率约束在合理范围，越界回落默认 4.0，避免配置笔误导致光标失控或静止。
-    if (!(gain > 0.0) || gain > 20.0) return 4.0;
-    return gain;
+int AirMouseSensitivityClamp(int level) {
+    // 灵敏度档位 1~10，越界回落默认 5。
+    if (level < 1 || level > 10) return 5;
+    return level;
 }
 
 double AirMouseTauClamp(double tau) {

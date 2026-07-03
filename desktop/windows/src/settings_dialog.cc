@@ -217,6 +217,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         // 滑块拖动时实时刷新右侧档位数值。
         if (reinterpret_cast<HWND>(l_param) == tap_sensitivity_trackbar_) {
             UpdateTapSensitivityLabel();
+        } else if (reinterpret_cast<HWND>(l_param) == air_mouse_sensitivity_trackbar_) {
+            UpdateAirMouseSensitivityLabel();
         }
         return TRUE;
     case WM_CLOSE:
@@ -331,6 +333,8 @@ void SettingsDialog::DestroyControls() {
     tap_to_arrow_check_ = nullptr;
     tap_sensitivity_trackbar_ = nullptr;
     tap_sensitivity_value_label_ = nullptr;
+    air_mouse_sensitivity_trackbar_ = nullptr;
+    air_mouse_sensitivity_value_label_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
     if (ui_font_) {
@@ -514,6 +518,19 @@ void SettingsDialog::BuildControls() {
                                                             Dp(20), instance_));
     y += row_h + Dp(10);
 
+    // 体感鼠标灵敏度 1~10 档滑块：1=最慢，10=最快，映射 gain=sensitivity×2.0。
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsAirMouseSensitivity).c_str(), Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    air_mouse_sensitivity_trackbar_ = remember(CreateTrackbar(hwnd_, ctrl_x, y, ctrl_w - Dp(50), Dp(28),
+                                                                kIdAirMouseSensitivity, instance_));
+    SendMessageW(air_mouse_sensitivity_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
+    SendMessageW(air_mouse_sensitivity_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
+    SendMessageW(air_mouse_sensitivity_trackbar_, TBM_SETTICFREQ, 1, 0);
+    SendMessageW(air_mouse_sensitivity_trackbar_, TBM_SETPAGESIZE, 0, 1);
+    air_mouse_sensitivity_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", ctrl_x + ctrl_w - Dp(40), y + Dp(5), Dp(30),
+                                                                   Dp(20), instance_));
+    y += row_h + Dp(10);
+
     remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
@@ -585,6 +602,8 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(imu_wake_sensitivity_combo_, CB_SETCURSEL, sensitivity_index, 0);
     SendMessageW(tap_sensitivity_trackbar_, TBM_SETPOS, TRUE, config_.tap_sensitivity);
     UpdateTapSensitivityLabel();
+    SendMessageW(air_mouse_sensitivity_trackbar_, TBM_SETPOS, TRUE, config_.air_mouse_sensitivity);
+    UpdateAirMouseSensitivityLabel();
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
@@ -660,6 +679,8 @@ void SettingsDialog::SaveSettings() {
     }
     int tap_level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
     config_.tap_sensitivity = TapSensitivityClamp(tap_level);
+    int air_level = static_cast<int>(SendMessageW(air_mouse_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
+    config_.air_mouse_sensitivity = AirMouseSensitivityClamp(air_level);
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
@@ -782,6 +803,12 @@ void SettingsDialog::UpdateTapSensitivityLabel() {
     if (!tap_sensitivity_trackbar_ || !tap_sensitivity_value_label_) return;
     const int level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
     SetWindowTextW(tap_sensitivity_value_label_, std::to_wstring(level).c_str());
+}
+
+void SettingsDialog::UpdateAirMouseSensitivityLabel() {
+    if (!air_mouse_sensitivity_trackbar_ || !air_mouse_sensitivity_value_label_) return;
+    const int level = static_cast<int>(SendMessageW(air_mouse_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
+    SetWindowTextW(air_mouse_sensitivity_value_label_, std::to_wstring(level).c_str());
 }
 
 int SettingsDialog::Dp(int px) const {

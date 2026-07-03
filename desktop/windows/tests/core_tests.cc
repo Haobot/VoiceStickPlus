@@ -1539,7 +1539,7 @@ void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_gain = 4.0;
+    config.air_mouse_sensitivity = 5;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -1569,7 +1569,7 @@ void TestCoordinatorAirMouseTickMovesCursor() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_gain = 4.0;
+    config.air_mouse_sensitivity = 5;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -1592,7 +1592,7 @@ void TestCoordinatorAirMouseStateResetOnToggle() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_gain = 4.0;
+    config.air_mouse_sensitivity = 5;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -2183,7 +2183,7 @@ void TestAirMouseStepDtJitterRobust() {
 // 体感鼠标配置项 Save/Load 往返 + Clamp 边界。
 void TestAppConfigAirMouseRoundTrip() {
     AppConfig config;
-    config.air_mouse_gain = 6.0;
+    config.air_mouse_sensitivity = 7;
     config.air_mouse_tau = 0.15;
     config.air_mouse_gamma = 1.5;
     config.air_mouse_invert_y = true;
@@ -2191,14 +2191,14 @@ void TestAppConfigAirMouseRoundTrip() {
     config.Save(path);
     const auto loaded = AppConfig::Load(path);
     std::filesystem::remove(path);
-    assert(std::fabs(loaded.air_mouse_gain - 6.0) < 1e-9);
+    assert(loaded.air_mouse_sensitivity == 7);
     assert(std::fabs(loaded.air_mouse_tau - 0.15) < 1e-9);
     assert(std::fabs(loaded.air_mouse_gamma - 1.5) < 1e-9);
     assert(loaded.air_mouse_invert_y == true);
 
     // Clamp 边界：越界回落默认值。
-    assert(AirMouseGainClamp(0.0) == 4.0);
-    assert(AirMouseGainClamp(30.0) == 4.0);
+    assert(AirMouseSensitivityClamp(0) == 5);
+    assert(AirMouseSensitivityClamp(11) == 5);
     assert(AirMouseTauClamp(0.005) == 0.10);
     assert(AirMouseTauClamp(1.0) == 0.10);
     assert(AirMouseGammaClamp(0.5) == 1.35);
