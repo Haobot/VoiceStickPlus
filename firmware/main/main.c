@@ -118,6 +118,11 @@ static int64_t s_recording_retry_deadline_us;  // 录音启动重试放弃时刻
 static esp_timer_handle_t s_double_click_timer;
 static uint32_t s_pending_button_up_duration_ms; // 暂存第一次短按的时长（窗口超时后补发 button_up）
 static int64_t s_click_to_talk_first_click_us;  // click_to_talk 模式首次点击时刻（用于双击检测）
+// 侧键双击检测：与主键独立。单击延迟到双击窗口超时后确认为 button_click；窗口内第二击发
+// button_double_click。用于桌面端把侧键单击/双击映射到不同语义（进体感 vs 恢复上次输入）。
+static bool s_side_click_pending;                // 侧键等待第二击（双击窗口内）
+static uint32_t s_side_pending_duration_ms;      // 暂存第一次侧键短按时长（窗口超时后补发 button_click）
+static esp_timer_handle_t s_side_double_click_timer;
 
 typedef enum {
     DISPLAY_ORIENTATION_NORMAL = 0,
@@ -807,6 +812,51 @@ static uint32_t elapsed_button_ms(int64_t down_us)
     return (uint32_t)(elapsed_us / 1000);
 }
 
+// 侧键双击窗口超时：确认为单次点击，补发 button_click secondary（原单击语义）。
+static void side_double_click_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_side_click_pending) {
+        return;
+    }
+    s_side_click_pending = false;
+    ESP_LOGI(TAG, "button side single-click (double-click window timeout)");
+    (void)voice_ble_send_button_click("secondary", s_side_pending_duration_ms, 0);
+}
+
+// 侧键释放：单击延迟到双击窗口超时后确认；窗口内第二击直接发 button_double_click。
+// 桌面端据此把侧键单击/双击映射到不同语义（单击进体感、双击恢复上次输入）。
+static void handle_side_up(void)
+{
+    const uint32_t duration_ms = elapsed_button_ms(s_secondary_down_us);
+    s_secondary_down_us = 0;
+
+    // 双击窗口内第二次释放：确认双击。
+    if (s_side_click_pending) {
+        s_side_click_pending = false;
+        (void)esp_timer_stop(s_side_double_click_timer);
+        ESP_LOGI(TAG, "button side double-click");
+        (void)voice_ble_send_button_double_click("secondary");
+        return;
+    }
+
+    // 第一次释放：进入双击窗口，暂缓单击语义。
+    s_side_click_pending = true;
+    s_side_pending_duration_ms = duration_ms;
+    (void)esp_timer_start_once(s_side_double_click_timer,
+                               DOUBLE_CLICK_WINDOW_MS * 1000ULL);
+}
+
+static esp_err_t init_side_double_click_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = side_double_click_timer_cb,
+        .name = "side_double_click",
+        .skip_unhandled_events = true,
+    };
+    return esp_timer_create(&timer_args, &s_side_double_click_timer);
+}
+
 static void handle_primary_down(app_input_source_t source, uint32_t request_id)
 {
     (void)request_id;
@@ -814,6 +864,15 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     note_activity();
     // 按键按下抑制敲击检测，避免手指动作被 IMU 误判为双击（见 TAP_SUPPRESS_AFTER_BUTTON_MS）。
     s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
+
+    // 体感鼠标态：主键不启动本地录音（否则设备录音、屏幕卡 Recording，而桌面端在体感态
+    // 会无视 button_down 不起 ASR，两端状态分裂）。仅记录按下时刻，松开时上报 button_click
+    // 供桌面端映射为鼠标左键。
+    if (s_air_mouse_enabled && source == APP_INPUT_SOURCE_PHYSICAL) {
+        s_primary_down_us = esp_timer_get_time();
+        s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+        return;
+    }
 
     // 远程按键（热键）不走双击检测，直接走原有逻辑。
     if (source == APP_INPUT_SOURCE_PHYSICAL) {
@@ -922,6 +981,15 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     note_activity();
     // 按键松开同样抑制，覆盖松开瞬间手指余震。
     s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
+
+    // 体感鼠标态：主键松开上报 button_click，桌面端映射为鼠标左键单击。不涉及录音。
+    if (s_air_mouse_enabled && source == APP_INPUT_SOURCE_PHYSICAL) {
+        const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
+        (void)voice_ble_send_button_click("primary", duration_ms, 0);
+        s_primary_down_us = 0;
+        s_primary_owner = PRIMARY_OWNER_NONE;
+        return;
+    }
 
     // 双击第二击的释放：忽略，不触发任何事件。
     if (s_double_click_second_press) {
@@ -1092,8 +1160,7 @@ static void app_event_task(void *arg)
         case APP_EVENT_SIDE_UP:
             ESP_LOGI(TAG, "button side up");
             note_activity();
-            voice_ble_send_button_click("secondary", elapsed_button_ms(s_secondary_down_us), 0);
-            s_secondary_down_us = 0;
+            handle_side_up();
             break;
         case APP_EVENT_UI_STATE:
             apply_app_ui_state(event.state, event.text);
@@ -1622,6 +1689,9 @@ static void set_air_mouse_enabled(bool enabled)
     }
     if (enabled) {
         bmi270_air_mouse_start();
+        // 请求 7.5ms fast conn interval：50Hz motion 帧在 slow interval(100~400ms)下会被
+        // 严重限流导致光标卡顿。conn update 异步，进入时立即请求，等真正发帧时多半已切换。
+        (void)voice_ble_request_fast_interval();
         if (!esp_timer_is_active(s_air_mouse_poll_timer)) {
             esp_err_t err = esp_timer_start_periodic(s_air_mouse_poll_timer, AIR_MOUSE_POLL_INTERVAL_US);
             if (err != ESP_OK) {
@@ -1631,6 +1701,10 @@ static void set_air_mouse_enabled(bool enabled)
     } else {
         (void)esp_timer_stop(s_air_mouse_poll_timer);
         bmi270_air_mouse_stop();
+        // 退出体感恢复省电的 slow interval（若此时未在录音）。
+        if (!s_recording) {
+            (void)voice_ble_request_slow_interval();
+        }
     }
 }
 
@@ -1964,6 +2038,7 @@ void app_main(void)
     ESP_ERROR_CHECK(init_disc_poweroff_timer());
     ESP_ERROR_CHECK(init_host_response_timer());
     ESP_ERROR_CHECK(init_double_click_timer());
+    ESP_ERROR_CHECK(init_side_double_click_timer());
     ESP_ERROR_CHECK(init_pickup_poll_timer());
     ESP_ERROR_CHECK(init_tap_poll_timer());
     ESP_ERROR_CHECK(init_air_mouse_poll_timer());

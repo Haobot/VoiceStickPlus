@@ -167,11 +167,21 @@ static bool s_air_mouse_has_bias = false;
 // 校准累加：进入后前若干帧用于估计零偏，不产生位移。
 static int s_air_mouse_calib_count = 0;
 static float s_air_mouse_calib_sum[3] = {0.0f, 0.0f, 0.0f};
+// 上一帧原始角速度（dps），用于帧间抖动（jerk）判静止——与零偏无关，可自愈初始校准误差。
+static float s_air_mouse_prev_raw[3] = {0.0f, 0.0f, 0.0f};
+static bool s_air_mouse_has_prev = false;
 // 零偏校准采样帧数（20ms/帧，约 200ms）。
 #define AIR_MOUSE_CALIB_FRAMES 10
 // 死区（dps）：静止时陀螺仪残余噪声，低于此值视为不动，消除漂移。
-#define AIR_MOUSE_DEADZONE_DPS 2.0f
-// 映射系数：角速度(dps) → 整型光标位移。真机标定初值，保守偏小。
+// 陀螺仪静止噪声约 1~3 dps，取 4 dps 留足余量彻底消抖。
+#define AIR_MOUSE_DEADZONE_DPS 4.0f
+// 静止判据（dps）：相邻帧原始角速度变化（jerk）都低于此值时视为静止。
+// 用帧间抖动而非"去偏后幅值"判静止：与零偏大小无关，即使初始校准偏差很大也能判定静止
+// 并继续 EMA 收敛零偏，可自愈初始校准误差（否则去偏残差自锁导致零偏永不更新、光标持续漂）。
+#define AIR_MOUSE_STILL_JERK_DPS 3.0f
+// 静止时零偏 EMA 跟随系数：缓慢吸收陀螺仪温漂与初始校准误差，抵消长期漂移。
+#define AIR_MOUSE_BIAS_ALPHA 0.05f
+// 映射系数：角速度(dps) → 整型光标位移。真机标定初值。
 #define AIR_MOUSE_SCALE 0.6f
 // int16 位移饱和上限，避免单帧跳变过大。
 #define AIR_MOUSE_MAX_DELTA 127
@@ -691,6 +701,7 @@ void bmi270_air_mouse_start(void)
     s_air_mouse_calib_sum[0] = 0.0f;
     s_air_mouse_calib_sum[1] = 0.0f;
     s_air_mouse_calib_sum[2] = 0.0f;
+    s_air_mouse_has_prev = false;  // 重置 jerk 判静止的历史帧
     ESP_LOGI(TAG, "air mouse started (calibrating zero-bias)");
 }
 
@@ -711,8 +722,30 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
         return false;
     }
 
-    // 零偏校准阶段：累加前若干帧求均值，期间不产生位移。
+    // 零偏校准阶段：只累加"静止帧"（用相邻帧 jerk 判静止），一旦检测到运动就清空重来，
+    // 直到攒够 AIR_MOUSE_CALIB_FRAMES 帧连续静止才定标。避免进入体感瞬间手还在动
+    // （刚按完侧键）把运动误当零偏（曾观测到 -20dps 污染，导致静止时持续漂移）。
     if (!s_air_mouse_has_bias) {
+        bool calib_still = false;
+        if (s_air_mouse_has_prev) {
+            calib_still = fabsf(x_dps - s_air_mouse_prev_raw[0]) < AIR_MOUSE_STILL_JERK_DPS &&
+                          fabsf(y_dps - s_air_mouse_prev_raw[1]) < AIR_MOUSE_STILL_JERK_DPS &&
+                          fabsf(z_dps - s_air_mouse_prev_raw[2]) < AIR_MOUSE_STILL_JERK_DPS;
+        }
+        s_air_mouse_prev_raw[0] = x_dps;
+        s_air_mouse_prev_raw[1] = y_dps;
+        s_air_mouse_prev_raw[2] = z_dps;
+        s_air_mouse_has_prev = true;
+
+        if (!calib_still) {
+            // 有运动：清空累加，等设备静止下来再重新采集。
+            s_air_mouse_calib_count = 0;
+            s_air_mouse_calib_sum[0] = 0.0f;
+            s_air_mouse_calib_sum[1] = 0.0f;
+            s_air_mouse_calib_sum[2] = 0.0f;
+            return false;
+        }
+
         s_air_mouse_calib_sum[0] += x_dps;
         s_air_mouse_calib_sum[1] += y_dps;
         s_air_mouse_calib_sum[2] += z_dps;
@@ -731,11 +764,37 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
     float gx = x_dps - s_air_mouse_bias_dps[0];
     float gy = y_dps - s_air_mouse_bias_dps[1];
     float gz = z_dps - s_air_mouse_bias_dps[2];
+    (void)gz;  // 竖握时 gz 为绕屏幕法线自转，不用于光标
 
-    // 轴向映射（设备竖握）：yaw(绕 Z 轴 = gz) → 水平 dx；pitch(绕 X 轴 = gx) → 垂直 dy。
-    // 符号与轴选择为真机标定初值，联调阶段确认（见 imu-air-mouse 方案第 9 节）。
-    float mv_x = gz;
-    float mv_y = gx;
+    // 持续追踪零偏：用相邻帧原始角速度的变化量（jerk）判静止——与零偏无关，
+    // 即使初始校准偏差很大（去偏后残差仍很大）也能正确判定静止，用 EMA 把零偏
+    // 收敛到真实值，自愈初始误差并抵消温漂。静止时用原始值追踪，避免残差自锁。
+    bool still = false;
+    if (s_air_mouse_has_prev) {
+        still = fabsf(x_dps - s_air_mouse_prev_raw[0]) < AIR_MOUSE_STILL_JERK_DPS &&
+                fabsf(y_dps - s_air_mouse_prev_raw[1]) < AIR_MOUSE_STILL_JERK_DPS &&
+                fabsf(z_dps - s_air_mouse_prev_raw[2]) < AIR_MOUSE_STILL_JERK_DPS;
+    }
+    s_air_mouse_prev_raw[0] = x_dps;
+    s_air_mouse_prev_raw[1] = y_dps;
+    s_air_mouse_prev_raw[2] = z_dps;
+    s_air_mouse_has_prev = true;
+
+    if (still) {
+        // EMA 让零偏收敛到当前原始角速度（静止时原始值≈真实零偏）。
+        s_air_mouse_bias_dps[0] += (x_dps - s_air_mouse_bias_dps[0]) * AIR_MOUSE_BIAS_ALPHA;
+        s_air_mouse_bias_dps[1] += (y_dps - s_air_mouse_bias_dps[1]) * AIR_MOUSE_BIAS_ALPHA;
+        s_air_mouse_bias_dps[2] += (z_dps - s_air_mouse_bias_dps[2]) * AIR_MOUSE_BIAS_ALPHA;
+        // 静止帧不产生位移，避免残余噪声漏过死区累积成漂移。
+        return false;
+    }
+
+    // 轴向映射（设备竖握，X 轴沿屏幕长边朝上）：
+    //   水平 dx = 绕竖直 X 轴自转 = gx（左右转手腕）；
+    //   垂直 dy = 俯仰 = gy（顶端上下点头，实测「X 加速度递减时 gy 为正」）。
+    // gz（绕屏幕法线）不参与。符号为真机标定初值，联调阶段确认。
+    float mv_x = gx;
+    float mv_y = gy;
 
     // 死区：静止残余噪声归零，消除漂移。
     if (fabsf(mv_x) < AIR_MOUSE_DEADZONE_DPS) mv_x = 0.0f;

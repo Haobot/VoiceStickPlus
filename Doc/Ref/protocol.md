@@ -89,6 +89,14 @@ included when a `primary` press starts or stops a local audio recording.
 presses of the primary button within 500 ms (each press < 300 ms). The desktop
 responds by injecting an Enter key event. See `Doc/Plan/primary-button-double-click.md`.
 
+The firmware also emits `button_double_click` with `button:"secondary"` when it
+detects two consecutive short presses of the side button within 500 ms. To
+distinguish single from double clicks, a single side press is deferred: the
+`button_click` with `button:"secondary"` is sent only after the 500 ms
+double-click window expires. The desktop maps a secondary single-click to
+entering/leaving air-mouse mode and a secondary double-click to restoring the
+last input confirmation. See `Doc/Plan/imu-air-mouse.md`.
+
 `tap` is emitted when the firmware detects a double-tap on the device casing
 (via the BMI270 accelerometer + gyroscope software state machine). The `button`
 field carries the tap kind (`"double"`). The desktop responds by injecting a Down

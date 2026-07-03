@@ -296,6 +296,14 @@ StateEvent ButtonEvent(const std::string& event,
     return state_event;
 }
 
+// 构造双击事件（固件上报的 {"event":"button_double_click","button":"..."}）。
+StateEvent DoubleClickEvent(const std::string& button) {
+    StateEvent state_event;
+    state_event.event = "button_double_click";
+    state_event.button = button;
+    return state_event;
+}
+
 // 构造敲击事件（固件上报的 {"event":"tap","kind":"double"}）。
 StateEvent TapEvent(const std::string& kind = "double") {
     StateEvent state_event;
@@ -1489,12 +1497,12 @@ void TestCoordinatorAirMouseToggleViaSecondary() {
     ble_ptr->sent_air_mouse_enabled.clear();
 
     // 空闲态侧键单击 → 进入体感，下发 air_mouse_enabled:true。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     assert(!ble_ptr->sent_air_mouse_enabled.empty());
     assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
 
     // 再次侧键单击 → 退出体感，下发 air_mouse_enabled:false。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
 }
 
@@ -1512,7 +1520,7 @@ void TestCoordinatorAirMousePrimaryClickIsLeftButton() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入体感态。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
 
     // 主键单击 → 左键点击，不启动 ASR/录音。
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 5));
@@ -1539,7 +1547,7 @@ void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
     assert(input.move_mouse_count == 0);
 
     // 进入体感态后 motion 驱动光标移动。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     ble_ptr->on_motion_event("5A74", MotionEvent{10, -5});
     assert(input.move_mouse_count == 1);
 }
@@ -1560,7 +1568,7 @@ void TestCoordinatorAirMouseGatesRecordingAndTap() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入体感态。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
 
     // 主键按下不启动录音。
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
@@ -1570,6 +1578,60 @@ void TestCoordinatorAirMouseGatesRecordingAndTap() {
     // tap 被忽略。
     ble_ptr->on_state_event("5A74", TapEvent("double"));
     assert(input.arrow_down_count == 0);
+}
+
+// 侧键双击恢复上次输入确认（与单击进体感分离）。
+void TestCoordinatorSecondaryDoubleClickRestoresLastInput() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 关闭异步精修，走同步粘贴以填充 last_recoverable_text_
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 先完成一次录音→final→粘贴，产生可恢复输入。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 9));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(9, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 9));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(9, 2));
+    asr_ptr->on_final("hello");
+    assert(input.pasted_text == "hello");
+
+    // 空闲态侧键双击 → 恢复上次输入（ShowPausedFinal），不进入体感。
+    ble_ptr->sent_air_mouse_enabled.clear();
+    ble_ptr->on_state_event("5A74", DoubleClickEvent("secondary"));
+    assert(!ui.paused_finals.empty());
+    assert(ui.paused_finals.back() == "hello");
+    assert(ble_ptr->sent_air_mouse_enabled.empty());  // 双击不触发体感
+}
+
+// 体感态下侧键双击被忽略（不恢复输入，避免冲突）。
+void TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+
+    // 体感态下双击被忽略：无恢复、体感仍开启。
+    ble_ptr->on_state_event("5A74", DoubleClickEvent("secondary"));
+    assert(ui.paused_finals.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
 }
 
 void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
@@ -1979,6 +2041,8 @@ int main() {
     TestCoordinatorAirMousePrimaryClickIsLeftButton();
     TestCoordinatorMotionMovesCursorOnlyWhenActive();
     TestCoordinatorAirMouseGatesRecordingAndTap();
+    TestCoordinatorSecondaryDoubleClickRestoresLastInput();
+    TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
     TestSseParser();
     TestStreamPayload();
