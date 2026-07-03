@@ -330,7 +330,7 @@ Windows 调试音频缓存目录：
 
 ## 代码风格
 
-- **Swift（macOS）**：遵循标准 Swift/APIKit 命名。使用 `swift build` 验证编译。
+- **Swift（macOS）**：遵循标准 Swift/AppKit 命名。使用 `swift build` 验证编译。
 - **C++（Windows）**：遵循 Google C++ 命名风格：`snake_case` 文件名和变量，`CapWords` 类型名，`MixedCase()` 方法名，4 空格缩进。
 - **C（固件）**：ESP-IDF 风格，组件通过 `idf_component_register` 注册，组件间通过 `REQUIRES` 声明依赖。
 - **Vue/JS（网站）**：使用标准 Vue 3 Composition API 风格。

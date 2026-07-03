@@ -62,8 +62,10 @@ GATT service UUID: `8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 | Name | UUID | Direction | Properties | Payload |
 | --- | --- | --- | --- | --- |
 | `audio_tx` | `…5101` | Device → Host | notify | Opus audio frames |
-| `state_tx` | `…5102` | Device → Host | notify | Button events, battery, firmware version, `wifi_status` |
-| `control_rx` | `…5103` | Host → Device | write without response | `ui_state`, BLE OTA control, Wi-Fi provisioning, `ota_pull`/`ota_commit` |
+| `state_tx` | `…5102` | Device → Host | notify | Button events, battery, firmware version |
+| `control_rx` | `…5103` | Host → Device | write without response | `ui_state`, interaction/tap/air-mouse settings, `ota_commit` |
+| `ota_rx` | `…5104` | Host → Device | write / write without response | BLE OTA control and data frames |
+| `ota_tx` | `…5105` | Device → Host | notify | BLE OTA state frames |
 
 See `Doc/Ref/protocol.md` for the full frame format. When changing BLE messages, update the firmware, macOS, Windows, and the docs together.
 
@@ -103,10 +105,10 @@ Or manually, from a VS 2022 x64 developer environment:
 cmake -S desktop\windows -B desktop\windows\build-x64 -G Ninja
 cmake --build desktop\windows\build-x64
 ctest --test-dir desktop\windows\build-x64 --output-on-failure
-desktop\windows\build-x64\VoiceStickApp.exe
+desktop\windows\build-x64\VoiceStick.exe
 ```
 
-`VoiceStickCtl.exe` is a command-line OTA tool that triggers Wi-Fi provisioning and LAN HTTP OTA over BLE for debugging firmware upgrades.
+The `VoiceStickApp` CMake target outputs `VoiceStick.exe`. Firmware upgrades go over BLE OTA (desktop app) or USB serial flashing; there is no Wi-Fi/LAN OTA path.
 
 ### Website (Vue 3 + Vite, Node 22)
 
@@ -130,7 +132,7 @@ Create it from the example at `desktop/macos/Config/config.example.toml`.
 
 | Field | Description |
 | --- | --- |
-| `asr_provider` | `volcengine` or `voicestick_cloud` |
+| `asr_provider` | `volcengine`, `voicestick_cloud`, or `tencent` |
 | `volcengine_api_key` | Direct Volcengine API key (`X-Api-Key`) |
 | `voicestick_api_key` / `voicestick_cloud_url` | VoiceStick Cloud relay key and WebSocket URL |
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM for translation and refinement |
@@ -163,9 +165,9 @@ You can also edit `paired_device_ids` manually. When IDs are saved, the desktop 
 ## Firmware Updates
 
 - **BLE OTA**: the desktop app checks a signed-by-hash manifest on launch, device connect/reconnect, and manual refresh, then pushes the OTA image over BLE per connected device after verifying size and SHA-256.
-- **Wi-Fi / LAN HTTP OTA**: the desktop app provisions Wi-Fi STA credentials over BLE; the device then pulls the firmware over HTTP(S) on the local network. Wi-Fi only starts after BLE is stably connected, and an OTA pull must pass a park gate (not recording, no other OTA in progress).
+- **USB serial flashing**: the browser flasher (or `idf.py flash`) writes the merged image at offset `0x0` over USB.
 
-See `Doc/Ref/release.md` for the full release process and `Doc/Plan/` for the Wi-Fi provisioning and LAN OTA designs.
+See `Doc/Ref/release.md` for the full release process.
 
 ## Debug Audio
 
