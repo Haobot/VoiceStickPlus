@@ -281,7 +281,9 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 - `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `low` / `medium` / `high`。
 - `tap_to_arrow`：Windows 端是否把固件检测到的双击敲击事件注入为方向键 Down，默认 `false`。
 - `tap_sensitivity`：双击敲击灵敏度，整数 `1..10`，数值越大越灵敏，默认 `5`。
-- `air_mouse_gain`：体感鼠标光标灵敏度倍率（浮点，默认 `1.0`），作用于固件上报的整型位移，仅 Windows 端使用。
+- `air_mouse_gain`：体感鼠标速度增益（浮点，默认 `4.0`），作用于加速曲线 `v_target = |ω|^γ × gain`，仅 Windows 端使用。
+- `air_mouse_tau`：体感鼠标速度跟踪时间常数（秒，默认 `0.10`），一阶低通 `dv/dt=(v_target-v)/tau`，越大惯性/缓停越长。
+- `air_mouse_gamma`：体感鼠标加速曲线幂律指数（默认 `1.35`），>1 慢稳快猛。
 - `air_mouse_invert_y`：体感鼠标是否反转 Y 轴，默认 `false`。
 
 ## 安全与敏感信息

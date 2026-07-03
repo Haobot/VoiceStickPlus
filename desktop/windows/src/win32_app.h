@@ -122,6 +122,9 @@ private:
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;
+    static constexpr UINT_PTR kAirMouseTimerId = 100;
+    static constexpr UINT kAirMouseTickIntervalMs = 16;  // ~60Hz
+    bool air_mouse_timer_active_ = false;
     std::chrono::steady_clock::time_point last_battery_status_request_{};
 };
 

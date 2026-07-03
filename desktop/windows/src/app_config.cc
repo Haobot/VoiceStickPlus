@@ -350,6 +350,8 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
     if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
     if (key == "air_mouse_gain") config.air_mouse_gain = AirMouseGainClamp(DoubleValue(value, config.air_mouse_gain));
+    if (key == "air_mouse_tau") config.air_mouse_tau = AirMouseTauClamp(DoubleValue(value, config.air_mouse_tau));
+    if (key == "air_mouse_gamma") config.air_mouse_gamma = AirMouseGammaClamp(DoubleValue(value, config.air_mouse_gamma));
     if (key == "air_mouse_invert_y") config.air_mouse_invert_y = BoolValue(value, config.air_mouse_invert_y);
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
@@ -469,6 +471,8 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
         if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
         if (auto value = TomlDouble(table, "air_mouse_gain")) config.air_mouse_gain = AirMouseGainClamp(*value);
+        if (auto value = TomlDouble(table, "air_mouse_tau")) config.air_mouse_tau = AirMouseTauClamp(*value);
+        if (auto value = TomlDouble(table, "air_mouse_gamma")) config.air_mouse_gamma = AirMouseGammaClamp(*value);
         if (auto value = TomlBool(table, "air_mouse_invert_y")) config.air_mouse_invert_y = *value;
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
@@ -542,6 +546,8 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
     output << "tap_sensitivity = " << tap_sensitivity << "\n";
     output << "air_mouse_gain = " << air_mouse_gain << "\n";
+    output << "air_mouse_tau = " << air_mouse_tau << "\n";
+    output << "air_mouse_gamma = " << air_mouse_gamma << "\n";
     output << "air_mouse_invert_y = " << (air_mouse_invert_y ? "true" : "false") << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
@@ -907,9 +913,21 @@ int TapSensitivityClamp(int level) {
 }
 
 double AirMouseGainClamp(double gain) {
-    // 灵敏度倍率约束在合理范围，越界回落默认 1.0，避免配置笔误导致光标失控或静止。
-    if (!(gain > 0.0) || gain > 20.0) return 1.0;
+    // 灵敏度倍率约束在合理范围，越界回落默认 4.0，避免配置笔误导致光标失控或静止。
+    if (!(gain > 0.0) || gain > 20.0) return 4.0;
     return gain;
+}
+
+double AirMouseTauClamp(double tau) {
+    // 速度跟踪时间常数约束在 [0.02, 0.5]，越界回落默认 0.10。
+    if (!(tau > 0.0) || tau > 0.5 || tau < 0.02) return 0.10;
+    return tau;
+}
+
+double AirMouseGammaClamp(double gamma) {
+    // 加速曲线幂律指数约束在 [1.0, 2.0]，越界回落默认 1.35。
+    if (!(gamma >= 1.0) || gamma > 2.0) return 1.35;
+    return gamma;
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {
