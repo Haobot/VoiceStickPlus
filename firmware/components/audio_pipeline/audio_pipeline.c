@@ -117,6 +117,12 @@ static esp_err_t init_i2s(void)
                         TAG, "init i2s rx");
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx_handle, &std_cfg),
                         TAG, "init i2s tx");
+    /* 必须在此 enable：esp_codec_dev_open 随后会做一次 reconfig，流程为
+     * disable→init_std→enable。若通道此刻未使能，reconfig 的 disable 会触发驱动
+     * "the channel has not been enabled yet" ERROR。先 enable 让通道进入 RUNNING，
+     * reconfig 的 disable 才能正常回到 READY 再重新 enable。
+     * 停止侧不再重复 disable：esp_codec_dev_close 已成对 disable 两个通道，
+     * deinit_i2s 只需 i2s_del_channel 即可，避免再次 disable 已 disable 的通道。 */
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx_handle), TAG, "enable i2s rx");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_handle), TAG, "enable i2s tx");
     return ESP_OK;
@@ -237,23 +243,20 @@ static void deinit_codec(void)
 
 static void deinit_i2s(void)
 {
+    /* 通道的 enable/disable 由 esp_codec_dev_open/close 成对管理，close 后通道
+     * 已处于 READY 态可直接删除。此处若再 i2s_channel_disable，会对已 disable
+     * 的通道重复调用，驱动内部先打 "the channel has not been enabled yet"
+     * ERROR 再返回 ESP_ERR_INVALID_STATE，应用层判断返回码无法抑制该日志，
+     * 故直接删除句柄即可。 */
     if (s_rx_handle) {
-        esp_err_t err = i2s_channel_disable(s_rx_handle);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "disable i2s rx failed: %s", esp_err_to_name(err));
-        }
-        err = i2s_del_channel(s_rx_handle);
+        esp_err_t err = i2s_del_channel(s_rx_handle);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "delete i2s rx failed: %s", esp_err_to_name(err));
         }
         s_rx_handle = NULL;
     }
     if (s_tx_handle) {
-        esp_err_t err = i2s_channel_disable(s_tx_handle);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "disable i2s tx failed: %s", esp_err_to_name(err));
-        }
-        err = i2s_del_channel(s_tx_handle);
+        esp_err_t err = i2s_del_channel(s_tx_handle);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "delete i2s tx failed: %s", esp_err_to_name(err));
         }
