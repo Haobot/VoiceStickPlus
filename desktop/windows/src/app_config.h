@@ -140,6 +140,13 @@ struct AppConfig {
     double air_mouse_tau = 0.05;
     // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。
     bool air_mouse_invert_y = false;
+    // 体感鼠标：三段线性增益曲线参数（运行期可变，热调参面板可调）。
+    // 默认 15/50/0.15/4.0（2026-07-04 真机标定），详见 air_mouse_kin.h AirMouseCurveParams。
+    // 运行期组装时经 AirMouseCurveClamp 钳位（low<high 不变式、界限），配置文件可存原值。
+    double air_mouse_curve_low_thresh = 15.0;
+    double air_mouse_curve_high_thresh = 50.0;
+    double air_mouse_curve_low_factor = 0.15;
+    double air_mouse_curve_high_factor = 4.0;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;

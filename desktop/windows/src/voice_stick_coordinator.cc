@@ -49,6 +49,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
         info.hardware = entry.hardware;
         info.current_version = entry.firmware_version;
     }
+    // 运行期 air_mouse 参数初值从配置加载（AirMouseTick 用，热调参面板经 UpdateAirMouseParams 改）。
+    live_air_mouse_params_ = AirMouseParamsFromConfig();
 }
 
 VoiceStickCoordinator::~VoiceStickCoordinator() {
@@ -158,6 +160,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     }
 
     config_ = std::move(config);
+    live_air_mouse_params_ = AirMouseParamsFromConfig();  // config_ 变化，运行期 live 参数跟随
     translator_ = LLMTranslationClient(config_);
     refiner_ = LLMRefinementClient(config_);
     ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
@@ -533,13 +536,25 @@ AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 16.0;
     p.tau = config_.air_mouse_tau;
     p.invert_y = config_.air_mouse_invert_y;
+    // 曲线参数从配置组装，经 AirMouseCurveClamp 钳位（防配置越界致曲线退化或除零）。
+    p.curve.low_thresh = config_.air_mouse_curve_low_thresh;
+    p.curve.high_thresh = config_.air_mouse_curve_high_thresh;
+    p.curve.low_factor = config_.air_mouse_curve_low_factor;
+    p.curve.high_factor = config_.air_mouse_curve_high_factor;
+    p.curve = AirMouseCurveClamp(p.curve);
     return p;
+}
+
+void VoiceStickCoordinator::UpdateAirMouseParams(const AirMouseParams& params) {
+    // 热调参轻量路径：仅更新运行期参数，不存盘、不重建 LLM 客户端。
+    // AirMouseTick 用 live_air_mouse_params_，下个 tick 即时生效。保存由调用方写 config_ + Save。
+    live_air_mouse_params_ = params;
 }
 
 void VoiceStickCoordinator::AirMouseTick() {
     if (air_mouse_states_.empty()) return;
     const auto now = std::chrono::steady_clock::now();
-    const auto params = AirMouseParamsFromConfig();
+    const auto params = live_air_mouse_params_;  // 运行期 live 参数（热调参即时生效，不走 UpdateConfig）
     const double stale_age_sec = std::chrono::duration<double>(kAirMouseOmegaStaleAge).count();
     // 固定 dt = tick 周期（WM_TIMER 60Hz 稳定）；stale 判断用 last_omega_t。
     const double dt = std::chrono::duration<double>(kAirMouseTickInterval).count();

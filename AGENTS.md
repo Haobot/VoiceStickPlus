@@ -324,7 +324,8 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `air_mouse_sensitivity_y`：体感鼠标上下（pitch）灵敏度档位（整数 `1..10`，默认 `5`），映射 `gain_y = sensitivity_y × 16`。
 - `air_mouse_tau`：体感鼠标速度环时间常数（秒，默认 `0.05`），手停滑行 ≈ 3×tau，越大缓停越长。
 - `air_mouse_invert_y`：体感鼠标是否反转 Y 轴，默认 `false`。
-- 体感鼠标增益曲线（非配置项，编译期常量，真机标定）：`v_target = omega × gain × factor(|omega|)`，三段线性——微调段 `|omega|<5` → factor `0.3`（精准对位），中段 `5..40` 线性插值 `0.3→4.0`，甩动段 `|omega|≥40` → factor `4.0`（跨屏），慢稳快猛。固件死区 `3 dps`（下调自 4 dps，配合 jerk 静止判据 + 静止帧归零兜底，让微调段信号不被源头截断）。曲线参数见 `desktop/windows/src/air_mouse_kin.h`，方案见 `Doc/Plan/air-mouse-gain-curve.md`。
+- 体感鼠标增益曲线（配置项，运行期可变，热调参面板可调，默认真机标定值）：`v_target = omega × gain × factor(|omega|, curve)`，三段线性——微调段 `|omega|<15` → factor `0.15`（精准对位），中段 `15..50` 线性插值 `0.15→4.0`，甩动段 `|omega|≥50` → factor `4.0`（跨屏），慢稳快猛。曲线四参数（`air_mouse_curve_low_thresh/high_thresh/low_factor/high_factor`，默认 `15/50/0.15/4.0`）经 `AirMouseCurveClamp` 钳位，托盘菜单「体感鼠标调参」打开非模态热调参窗口实时调节（滑块即时生效走 `UpdateAirMouseParams` 轻量路径不重建 LLM，保存持久化）。曲线参数见 `desktop/windows/src/air_mouse_kin.h` `AirMouseCurveParams`，方案见 `Doc/Plan/air-mouse-gain-curve.md` 与 `air-mouse-still-tuning.md`。
+- 体感鼠标静止判据滞回（固件 `bmi270.c`）：位移上报门控用去偏后幅值带滞回的 STILL/ACTIVE 状态机（`AIR_MOUSE_OMEGA_ENTER_DPS=4` / `AIR_MOUSE_OMEGA_EXIT_DPS=2`），与 jerk 静止判据解耦——EMA 收敛零偏仍用 jerk（真静止才更新），上报门控用幅值滞回。修复匀速慢转被 jerk 误判静止吃帧（jerk 小只代表匀速不代表没动，`|omega|=10 > ENTER` → ACTIVE → 上报）。固件死区 `3 dps` 配合静止帧归零 + 零偏 EMA 自愈 + NVS 持久化兜底防漂移。
 
 Windows 调试音频缓存目录：
 - 标准安装：`%LOCALAPPDATA%\VoiceStick\DebugAudio`

@@ -9,6 +9,7 @@
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
 #include "settings_dialog.h"
+#include "air_mouse_tuning_window.h"
 #include "subtitle_window.h"
 #include "voice_stick_coordinator.h"
 
@@ -83,6 +84,7 @@ private:
     bool ShowOnboarding();
     void ShowPairDeviceDialog();
     void ShowSettings();
+    void ShowAirMouseTuning();
     void SaveInputOptions();
     void SyncLaunchAtLogin();
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
@@ -109,6 +111,7 @@ private:
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
+    std::unique_ptr<AirMouseTuningWindow> air_mouse_tuning_window_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;
     std::unique_ptr<SubtitleWindow> subtitles_;

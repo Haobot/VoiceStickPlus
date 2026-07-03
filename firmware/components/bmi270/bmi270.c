@@ -171,6 +171,10 @@ static float s_air_mouse_calib_sum[3] = {0.0f, 0.0f, 0.0f};
 // 上一帧原始角速度（dps），用于帧间抖动（jerk）判静止——与零偏无关，可自愈初始校准误差。
 static float s_air_mouse_prev_raw[3] = {0.0f, 0.0f, 0.0f};
 static bool s_air_mouse_has_prev = false;
+// 位移上报门控状态（滞回状态机）：true=ACTIVE（上报位移），false=STILL（不上报，可 EMA 收敛零偏）。
+// 与 jerk 静止判据解耦：EMA 收敛用 jerk（真静止才更新零偏），上报门控用去偏后幅值带滞回。
+// 修复匀速慢转被误判静止吃帧——jerk 小只代表匀速不代表没动（见 AIR_MOUSE_OMEGA_ENTER/EXIT）。
+static bool s_air_mouse_is_active = false;
 // settling 截止时刻（us）：进入体感后此时间内冻结 EMA，防按键余震污染零偏。
 static int64_t s_air_mouse_settle_until_us = 0;
 // 零偏是否被运行期 EMA 修改过，决定退出时是否存盘。
@@ -184,7 +188,17 @@ static bool s_air_mouse_bias_dirty = false;
 // 静止判据（dps）：相邻帧原始角速度变化（jerk）都低于此值时视为静止。
 // 用帧间抖动而非"去偏后幅值"判静止：与零偏大小无关，即使初始校准偏差很大也能判定静止
 // 并继续 EMA 收敛零偏，可自愈初始校准误差（否则去偏残差自锁导致零偏永不更新、光标持续漂）。
+// 注意：jerk 仅用于 EMA 收敛判据，不再复用到"是否上报位移"——jerk 小只代表角速度稳定
+// （匀速），不代表没动；匀速慢转 jerk≈0 会被误判静止→不上报→慢转被吃帧。上报门控改用
+// 去偏后幅值带滞回（见下 OMEGA_ENTER/EXIT），与 EMA 解耦。详见 Doc/Plan/air-mouse-still-tuning.md。
 #define AIR_MOUSE_STILL_JERK_DPS 3.0f
+// 位移上报门控滞回阈值（dps）：STILL/ACTIVE 状态机用。
+//   ACTIVE→STILL：|gx|<EXIT 且 |gy|<EXIT（停手即停，不看 jerk）
+//   STILL→ACTIVE：|gx|>ENTER 或 |gy|>ENTER（明确意图才动）
+// 滞回带 ENTER>EXIT 防边界抖动反复横跳。EXIT<死区<ENTER，无矛盾：死区以下早被归零，
+// 状态机只决定是否进入上报流程。匀速慢转 |omega|=10 > ENTER → ACTIVE → 上报（修复吃帧）。
+#define AIR_MOUSE_OMEGA_ENTER_DPS 4.0f   // STILL→ACTIVE 阈值，略高于死区，明确意图才动
+#define AIR_MOUSE_OMEGA_EXIT_DPS  2.0f   // ACTIVE→STILL 阈值，低于死区，确实静止才停
 // 静止时零偏 EMA 跟随系数：缓慢吸收陀螺仪温漂与初始校准误差，抵消长期漂移。
 #define AIR_MOUSE_BIAS_ALPHA 0.05f
 // 映射系数：角速度(dps) → 整型光标位移。真机标定初值。
@@ -758,6 +772,7 @@ void bmi270_air_mouse_start(void)
     s_air_mouse_settle_until_us = esp_timer_get_time() + (AIR_MOUSE_SETTLE_MS * 1000LL);
     s_air_mouse_bias_dirty = false;
     s_air_mouse_has_prev = false;  // 重置 jerk 判静止的历史帧
+    s_air_mouse_is_active = false;  // 重置滞回状态机，进入即 STILL（不上报直到明确转动）
 
     float loaded[3] = {0.0f, 0.0f, 0.0f};
     if (air_mouse_load_bias(loaded)) {
@@ -853,29 +868,55 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
     // 持续追踪零偏：用相邻帧原始角速度的变化量（jerk）判静止——与零偏无关，
     // 即使初始校准偏差很大（去偏后残差仍很大）也能正确判定静止，用 EMA 把零偏
     // 收敛到真实值，自愈初始误差并抵消温漂。静止时用原始值追踪，避免残差自锁。
-    bool still = false;
+    // 注意：jerk 仅用于 EMA 收敛判据，不再复用到"是否上报位移"——jerk 小只代表
+    // 角速度稳定（匀速），不代表没动；匀速慢转 jerk≈0 会被误判静止吃帧（见下滞回）。
+    bool still_by_jerk = false;
     if (s_air_mouse_has_prev) {
-        still = fabsf(x_dps - s_air_mouse_prev_raw[0]) < AIR_MOUSE_STILL_JERK_DPS &&
-                fabsf(y_dps - s_air_mouse_prev_raw[1]) < AIR_MOUSE_STILL_JERK_DPS &&
-                fabsf(z_dps - s_air_mouse_prev_raw[2]) < AIR_MOUSE_STILL_JERK_DPS;
+        still_by_jerk = fabsf(x_dps - s_air_mouse_prev_raw[0]) < AIR_MOUSE_STILL_JERK_DPS &&
+                        fabsf(y_dps - s_air_mouse_prev_raw[1]) < AIR_MOUSE_STILL_JERK_DPS &&
+                        fabsf(z_dps - s_air_mouse_prev_raw[2]) < AIR_MOUSE_STILL_JERK_DPS;
     }
     s_air_mouse_prev_raw[0] = x_dps;
     s_air_mouse_prev_raw[1] = y_dps;
     s_air_mouse_prev_raw[2] = z_dps;
     s_air_mouse_has_prev = true;
 
-    if (still) {
-        // settling 期内冻结 EMA：按键余震可能被误判静止，此时不更新零偏防污染持久化值。
-        // settling 后 EMA 收敛零偏到真实值（静止时原始值≈真实零偏），自愈温漂与初始误差。
-        if (esp_timer_get_time() >= s_air_mouse_settle_until_us) {
-            s_air_mouse_bias_dps[0] += (x_dps - s_air_mouse_bias_dps[0]) * AIR_MOUSE_BIAS_ALPHA;
-            s_air_mouse_bias_dps[1] += (y_dps - s_air_mouse_bias_dps[1]) * AIR_MOUSE_BIAS_ALPHA;
-            s_air_mouse_bias_dps[2] += (z_dps - s_air_mouse_bias_dps[2]) * AIR_MOUSE_BIAS_ALPHA;
-            s_air_mouse_bias_dirty = true;
+    // 位移上报门控：去偏后幅值带滞回的 STILL/ACTIVE 状态机（与 EMA 收敛解耦）。
+    //   ACTIVE→STILL：|gx|<EXIT 且 |gy|<EXIT（停手即停，不看 jerk）
+    //   STILL→ACTIVE：|gx|>ENTER 或 |gy|>ENTER（明确意图才动）
+    // 修复匀速慢转被 jerk 误判静止吃帧：匀速慢转 |omega|=10 > ENTER → ACTIVE → 上报。
+    const float abs_gx = fabsf(gx);
+    const float abs_gy = fabsf(gy);
+    if (s_air_mouse_is_active) {
+        if (abs_gx < AIR_MOUSE_OMEGA_EXIT_DPS && abs_gy < AIR_MOUSE_OMEGA_EXIT_DPS) {
+            s_air_mouse_is_active = false;
         }
-        // 静止帧不产生位移，避免残余噪声漏过死区累积成漂移。
+    } else {
+        if (abs_gx > AIR_MOUSE_OMEGA_ENTER_DPS || abs_gy > AIR_MOUSE_OMEGA_ENTER_DPS) {
+            s_air_mouse_is_active = true;
+        }
+    }
+
+    // EMA 收敛零偏：仅 STILL 且 jerk 静止且 settling 过时（与上报门控解耦）。
+    // settling 期内冻结 EMA：按键余震可能被误判静止，此时不更新零偏防污染持久化值。
+    // settling 后 EMA 收敛零偏到真实值（静止时原始值≈真实零偏），自愈温漂与初始误差。
+    if (!s_air_mouse_is_active && still_by_jerk &&
+        esp_timer_get_time() >= s_air_mouse_settle_until_us) {
+        s_air_mouse_bias_dps[0] += (x_dps - s_air_mouse_bias_dps[0]) * AIR_MOUSE_BIAS_ALPHA;
+        s_air_mouse_bias_dps[1] += (y_dps - s_air_mouse_bias_dps[1]) * AIR_MOUSE_BIAS_ALPHA;
+        s_air_mouse_bias_dps[2] += (z_dps - s_air_mouse_bias_dps[2]) * AIR_MOUSE_BIAS_ALPHA;
+        s_air_mouse_bias_dirty = true;
+    }
+
+    // STILL 帧不产生位移（滞回静止，避免边界抖动与残余噪声漏过死区累积漂移）。
+    if (!s_air_mouse_is_active) {
         return false;
     }
+
+    // 调参可视化日志：真机可通过 idf.py monitor / idf_cli.py -s 采集，grep 统计 ACTIVE 占比，
+    // 验证匀速慢转持续 ACTIVE 不丢帧（修复前会间歇 STILL）。
+    ESP_LOGD(TAG, "air mouse active=%d gx=%.1f gy=%.1f jerk_still=%d",
+             s_air_mouse_is_active, gx, gy, still_by_jerk ? 1 : 0);
 
     // 轴向映射（设备竖握，X 轴沿屏幕长边朝上）：
     //   水平 dx = 绕竖直 X 轴自转 = gx（左右转手腕）；

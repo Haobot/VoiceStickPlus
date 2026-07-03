@@ -2266,29 +2266,29 @@ void TestAirMouseStepStopsWhenStale() {
 }
 
 // ===== 三段线性增益曲线测试 =====
-// v_target = omega × gain × factor(|omega|)，factor 三段线性（参数见 air_mouse_kin.h）：
-//   微调段 |omega| < kAirMouseLowThresh  → kAirMouseLowFactor
-//   中段  kLowThresh ≤ |omega| < kHighThresh → 线性插值 kLowFactor→kHighFactor
-//   甩动段 |omega| ≥ kAirMouseHighThresh → kAirMouseHighFactor
-// 测试引用 header 常量，参数标定迭代时无需改测试。约束曲线形状与拐点连续性。
+// v_target = omega × gain × factor(|omega|, curve)，factor 三段线性（curve 见 air_mouse_kin.h）：
+//   微调段 |omega| < low_thresh  → low_factor
+//   中段  low_thresh ≤ |omega| < high_thresh → 线性插值 low_factor→high_factor
+//   甩动段 |omega| ≥ high_thresh → high_factor
+// 测试引用 p.curve.*（运行期参数），约束曲线形状、拐点连续性、curve 注入与 clamp。
 
-// 微调段：omega=kLowThresh/2，稳态 vx ≈ omega×gain×kLowFactor。
+// 微调段：omega=low_thresh/2，稳态 vx ≈ omega×gain×low_factor。
 void TestAirMouseStepGainCurveLowRange() {
     AirMouseKinState s;
-    AirMouseParams p;  // 默认 gain_x=16, tau=0.05
-    const int omega = static_cast<int>(kAirMouseLowThresh / 2.0);  // 微调段内
+    AirMouseParams p;  // 默认 gain_x=16, tau=0.05, curve={15,50,0.15,4.0}
+    const int omega = static_cast<int>(p.curve.low_thresh / 2.0);  // 微调段内
     for (int i = 0; i < 200; ++i) AirMouseStep(s, omega, 0, 0.016, false, p);
-    const double v_target = omega * p.gain_x * kAirMouseLowFactor;
+    const double v_target = omega * p.gain_x * p.curve.low_factor;
     assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
 }
 
-// 甩动段：omega=kHighThresh×2，稳态 vx ≈ omega×gain×kHighFactor。
+// 甩动段：omega=high_thresh×2，稳态 vx ≈ omega×gain×high_factor。
 void TestAirMouseStepGainCurveHighRange() {
     AirMouseKinState s;
     AirMouseParams p;
-    const int omega = static_cast<int>(kAirMouseHighThresh * 2.0);  // 甩动段内
+    const int omega = static_cast<int>(p.curve.high_thresh * 2.0);  // 甩动段内
     for (int i = 0; i < 200; ++i) AirMouseStep(s, omega, 0, 0.016, false, p);
-    const double v_target = omega * p.gain_x * kAirMouseHighFactor;
+    const double v_target = omega * p.gain_x * p.curve.high_factor;
     assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
 }
 
@@ -2296,9 +2296,9 @@ void TestAirMouseStepGainCurveHighRange() {
 void TestAirMouseStepGainCurveMidRange() {
     AirMouseKinState s;
     AirMouseParams p;
-    const int omega = static_cast<int>((kAirMouseLowThresh + kAirMouseHighThresh) / 2.0);
-    const double factor = kAirMouseLowFactor + (kAirMouseHighFactor - kAirMouseLowFactor) *
-        (omega - kAirMouseLowThresh) / (kAirMouseHighThresh - kAirMouseLowThresh);
+    const int omega = static_cast<int>((p.curve.low_thresh + p.curve.high_thresh) / 2.0);
+    const double factor = p.curve.low_factor + (p.curve.high_factor - p.curve.low_factor) *
+        (omega - p.curve.low_thresh) / (p.curve.high_thresh - p.curve.low_thresh);
     for (int i = 0; i < 200; ++i) AirMouseStep(s, omega, 0, 0.016, false, p);
     const double v_target = omega * p.gain_x * factor;
     assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
@@ -2312,36 +2312,103 @@ void TestAirMouseStepGainCurveShape() {
         for (int i = 0; i < 200; ++i) AirMouseStep(s, omega, 0, 0.016, false, p);
         return s.vx;
     };
-    const int w_low = static_cast<int>(kAirMouseLowThresh / 2.0);
-    const int w_high = static_cast<int>(kAirMouseHighThresh * 2.0);
+    const int w_low = static_cast<int>(p.curve.low_thresh / 2.0);
+    const int w_high = static_cast<int>(p.curve.high_thresh * 2.0);
     assert(steady_v(w_low) < steady_v(w_high));                   // 单调
     assert(steady_v(w_low) / w_low < steady_v(w_high) / w_high);  // 微调段斜率 < 甩动段
 }
 
-// 拐点连续：omega=kLowThresh（微调段上限=中段下限）处 factor=kLowFactor，无上跳。
+// 拐点连续：omega=low_thresh（微调段上限=中段下限）处 factor=low_factor，无上跳。
 void TestAirMouseStepGainCurveContinuousAtLowThreshold() {
     AirMouseKinState s;
     AirMouseParams p;
-    const int omega = static_cast<int>(kAirMouseLowThresh);  // 拐点
+    const int omega = static_cast<int>(p.curve.low_thresh);  // 拐点
     for (int i = 0; i < 200; ++i) AirMouseStep(s, omega, 0, 0.016, false, p);
-    // 拐点处中段起点 factor=kLowFactor，与微调段外推连续
-    const double v_target = omega * p.gain_x * kAirMouseLowFactor;
+    // 拐点处中段起点 factor=low_factor，与微调段外推连续
+    const double v_target = omega * p.gain_x * p.curve.low_factor;
     assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
 }
 
-// 负向对称：omega=-kHighThresh×2 稳态 |vx| ≈ omega×gain×kHighFactor（factor 用 |omega|）。
+// 负向对称：omega=-high_thresh×2 稳态 |vx| ≈ omega×gain×high_factor（factor 用 |omega|）。
 void TestAirMouseStepGainCurveNegative() {
     AirMouseParams p;
-    const int omega = static_cast<int>(kAirMouseHighThresh * 2.0);
+    const int omega = static_cast<int>(p.curve.high_thresh * 2.0);
     AirMouseKinState sp, sn;
     for (int i = 0; i < 200; ++i) {
         AirMouseStep(sp, omega, 0, 0.016, false, p);
         AirMouseStep(sn, -omega, 0, 0.016, false, p);
     }
-    const double v_target = omega * p.gain_x * kAirMouseHighFactor;
+    const double v_target = omega * p.gain_x * p.curve.high_factor;
     assert(std::fabs(sp.vx - v_target) < std::fabs(v_target) * 0.05);
     assert(std::fabs(sn.vx + v_target) < std::fabs(v_target) * 0.05);  // 负向对称
     assert(sn.vx < 0.0);
+}
+
+// ===== 曲线参数运行期化（热调参）测试 =====
+
+// curve 注入：自定义 curve 下 factor 与默认 curve 不同，证明 curve 参数生效。
+// 红灯：stub 忽略 curve，f_custom==f_default，断言失败；绿灯：实现用 curve.* 后通过。
+void TestAirMouseGainFactorAcceptsCurveParams() {
+    AirMouseCurveParams c;
+    c.low_thresh = 10.0;
+    c.high_thresh = 30.0;
+    c.low_factor = 0.2;
+    c.high_factor = 5.0;
+    // omega=20 落自定义中段（10..30）：factor=0.2+(5.0-0.2)*(20-10)/(30-10)=2.6
+    // omega=20 落默认中段（15..50）：factor=0.15+(4.0-0.15)*(20-15)/(50-15)≈0.70
+    const double f_custom = AirMouseGainFactor(20.0, c);
+    const double f_default = AirMouseGainFactor(20.0, AirMouseCurveParams{});
+    assert(std::fabs(f_custom - 2.6) < 0.02);
+    assert(std::fabs(f_default - 0.70) < 0.02);
+    assert(std::fabs(f_custom - f_default) > 1.0);  // curve 注入确实改变 factor
+}
+
+// 默认 curve 与历史 constexpr 值一致（回归保护）。
+void TestAirMouseGainFactorDefaultCurveMatchesLegacy() {
+    AirMouseCurveParams c;  // 默认 {15, 50, 0.15, 4.0}
+    assert(std::fabs(AirMouseGainFactor(5.0, c) - 0.15) < 1e-9);    // 微调段
+    assert(std::fabs(AirMouseGainFactor(100.0, c) - 4.0) < 1e-9);   // 甩动段
+    // 中段中点 factor=0.15+(4.0-0.15)*0.5=2.075
+    assert(std::fabs(AirMouseGainFactor(32.5, c) - 2.075) < 1e-9);
+}
+
+// step 用 params.curve：同 omega、不同 curve → 不同稳态 vx。
+void TestAirMouseStepUsesCurveParams() {
+    AirMouseParams p_low;   // 默认 curve low_factor=0.15
+    AirMouseParams p_high;  // 高 low_factor
+    p_high.curve.low_factor = 0.5;
+    const int omega = 5;  // 微调段内
+    AirMouseKinState s_low, s_high;
+    for (int i = 0; i < 200; ++i) {
+        AirMouseStep(s_low, omega, 0, 0.016, false, p_low);
+        AirMouseStep(s_high, omega, 0, 0.016, false, p_high);
+    }
+    // 微调段 v_target=omega×gain×low_factor，p_high 的 low_factor 高 → vx 更大
+    assert(s_high.vx > s_low.vx * 2.0);
+}
+
+// clamp：越界值钳位到合法范围，且保证 low_thresh < high_thresh。
+void TestAirMouseCurveClamp() {
+    AirMouseCurveParams c;
+    c.low_thresh = 0.0;       // 低于下限 1.0
+    c.high_thresh = 1000.0;   // 高于上限 80.0
+    c.low_factor = -1.0;      // 低于下限 0.05
+    c.high_factor = 100.0;    // 高于上限 6.0
+    const auto clamped = AirMouseCurveClamp(c);
+    assert(clamped.low_thresh >= 1.0);
+    assert(clamped.high_thresh <= 80.0);
+    assert(clamped.low_factor >= 0.05);
+    assert(clamped.high_factor <= 6.0);
+    assert(clamped.low_thresh < clamped.high_thresh);  // 不变式
+}
+
+// clamp：low_thresh ≥ high_thresh 时强制 low < high（防中段除零）。
+void TestAirMouseCurveClampLowBelowHigh() {
+    AirMouseCurveParams c;
+    c.low_thresh = 60.0;   // 高于 high_thresh 默认 50
+    c.high_thresh = 50.0;
+    const auto clamped = AirMouseCurveClamp(c);
+    assert(clamped.low_thresh < clamped.high_thresh);
 }
 
 // 分轴 gain：gain_x ≠ gain_y 时，同 omega 下 vx ≠ vy。
@@ -2398,6 +2465,10 @@ void TestAppConfigAirMouseRoundTrip() {
     config.air_mouse_sensitivity_y = 6;
     config.air_mouse_tau = 0.15;
     config.air_mouse_invert_y = true;
+    config.air_mouse_curve_low_thresh = 12.0;
+    config.air_mouse_curve_high_thresh = 45.0;
+    config.air_mouse_curve_low_factor = 0.2;
+    config.air_mouse_curve_high_factor = 3.5;
     const auto path = std::filesystem::temp_directory_path() / "voicestick_air_mouse_test.toml";
     config.Save(path);
     const auto loaded = AppConfig::Load(path);
@@ -2406,6 +2477,10 @@ void TestAppConfigAirMouseRoundTrip() {
     assert(loaded.air_mouse_sensitivity_y == 6);
     assert(std::fabs(loaded.air_mouse_tau - 0.15) < 1e-9);
     assert(loaded.air_mouse_invert_y == true);
+    assert(std::fabs(loaded.air_mouse_curve_low_thresh - 12.0) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_curve_high_thresh - 45.0) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_curve_low_factor - 0.2) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_curve_high_factor - 3.5) < 1e-9);
 
     // Clamp 边界：越界回落默认值。
     assert(AirMouseSensitivityClamp(0) == 5);
@@ -2429,6 +2504,11 @@ int main() {
     TestAirMouseStepGainCurveShape();
     TestAirMouseStepGainCurveContinuousAtLowThreshold();
     TestAirMouseStepGainCurveNegative();
+    TestAirMouseGainFactorAcceptsCurveParams();
+    TestAirMouseGainFactorDefaultCurveMatchesLegacy();
+    TestAirMouseStepUsesCurveParams();
+    TestAirMouseCurveClamp();
+    TestAirMouseCurveClampLowBelowHigh();
     TestAirMouseStepAxisGain();
     TestAirMouseStepInvertY();
     TestAirMouseStepDtJitterRobust();
