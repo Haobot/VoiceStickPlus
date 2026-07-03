@@ -10,26 +10,16 @@ AirMouseStepResult AirMouseStep(AirMouseKinState& state,
                                 double dt_seconds,
                                 bool omega_is_stale,
                                 const AirMouseParams& params) {
-    // stale 时 omega 视为 0：手停后不积分 θ，仅衰减（光标慢停）。
+    // stale 时 omega 视为 0：手停后 v_target=0，v 经 tau 快速归零（手停即停）。
     const double ox = omega_is_stale ? 0.0 : static_cast<double>(omega_x);
     double oy = omega_is_stale ? 0.0 : static_cast<double>(omega_y);
     if (params.invert_y) oy = -oy;
 
-    // 积分角速度得相对偏转角 θ：手腕转到 θ 停住 → θ 保持 → 光标持续移动。
-    state.theta_x += ox * dt_seconds;
-    state.theta_y += oy * dt_seconds;
+    // 速度控制：目标速度直接跟随角速度，omega=0 即 v_target=0（手停即停）。
+    const double v_target_x = ox * params.gain_x;
+    const double v_target_y = oy * params.gain_y;
 
-    // 慢衰减防漂移：每帧 θ × exp(-dt/decay_tau)。短期（几秒）θ 基本保持，长期回中，
-    // 压制陀螺仪零偏残差累积。decay_tau=8s 时 0.16s 仅衰减 2%。
-    const double decay = std::exp(-dt_seconds / params.decay_tau);
-    state.theta_x *= decay;
-    state.theta_y *= decay;
-
-    // 角度→目标速度（分轴 gain：左右/上下独立灵敏度）。
-    const double v_target_x = state.theta_x * params.gain_x;
-    const double v_target_y = state.theta_y * params.gain_y;
-
-    // 速度环（一阶低通）：dv/dt=(v_target-v)/tau，平滑光标速度。
+    // 速度环（一阶低通）：平滑陀螺仪噪声，手停后 v 经 tau 衰减归零（滑行 ≈ 3×tau）。
     const double alpha = 1.0 - std::exp(-dt_seconds / params.tau);
     state.vx += (v_target_x - state.vx) * alpha;
     state.vy += (v_target_y - state.vy) * alpha;

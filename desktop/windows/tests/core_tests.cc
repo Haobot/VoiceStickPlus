@@ -1556,7 +1556,7 @@ void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
     ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
     assert(input.move_mouse_count == 0);
 
-    // AirMouseTick 驱动角度控制；累积 θ 后注入光标位移。
+    // AirMouseTick 驱动速度控制；v 累积后注入光标位移。
     for (int i = 0; i < 20; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
         coordinator.AirMouseTick();
@@ -1758,11 +1758,11 @@ void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
         ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});  // 真机典型手腕角速度（日志实测 dx≈15~24）
         coordinator.AirMouseTick();
     }
-    assert(input.total_dx >= 400);  // 平均速度 ≥500px/s，最高档应明显快
+    assert(input.total_dx >= 1500);  // 速度模型即时达速，0.8s 应远超 400（10级 gain=160）
 }
 
-// 10 级灵敏度下，持续转动 5s 的平均光标速度应受 decay_tau 限制(≤3000px/s)，
-// 防止 θ 长期累积导致光标爆走。约束 decay_tau 不可过大。
+// 10 级灵敏度下，持续转动 5s 的平均光标速度应受 gain 限制(≤5000px/s)，
+// 防止 gain 过大致光标过快。速度模型恒速不累积，约束 gain 不可过大。
 void TestCoordinatorAirMouseSustainedRunBounded() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -1783,7 +1783,38 @@ void TestCoordinatorAirMouseSustainedRunBounded() {
         coordinator.AirMouseTick();
     }
     const double avg_speed = static_cast<double>(input.total_dx) / 5.0;
-    assert(avg_speed <= 3000.0);  // 长转不爆走
+    assert(avg_speed <= 5000.0);  // 长转不过快
+}
+
+// 手停即停（协调器）：转动 1s 后上报 omega=0（手停），v_target=0，v 快速归零。
+// 旧角度模型 theta 按 decay_tau 慢衰减致 v 不归零，手停后仍大幅滑行；此测试约束速度模型。
+void TestCoordinatorAirMouseStopsOnZeroOmega() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.air_mouse_sensitivity_x = 10;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    for (int i = 0; i < 60; ++i) {  // 转动 1s @60Hz
+        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_during = input.total_dx;
+    assert(dx_during > 0);  // 转动中有位移
+    for (int i = 0; i < 60; ++i) {  // 手停：上报 omega=0 1s
+        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_after = input.total_dx - dx_during;
+    assert(dx_after < 300);  // 手停后位移有界（速度模型 v≈v0×tau≈192；旧角度模型 ~641）
 }
 
 // 侧键双击恢复上次输入确认（与单击进体感分离）。
@@ -2207,54 +2238,44 @@ void TestTencentVoiceIdGeneration() {
     assert(id1[14] == '4');  // UUID v4 版本标识
 }
 
-// ===== AirMouseStep 纯函数测试（角度控制）=====
-// 验证积分角度 + 慢衰减 + 分轴 gain + 亚像素累积的核心运动学。
+// ===== AirMouseStep 纯函数测试（速度控制）=====
+// 验证 v 跟随 omega×gain + 速度环低通 + 分轴 gain + 亚像素累积的核心运动学。
 
-// omega 恒定，θ 单调增长（积分角速度）。
-void TestAirMouseStepAngleIntegrates() {
+// omega 恒定，v 跟随 v_target=omega×gain（速度环收敛，v 单调趋向 v_target）。
+void TestAirMouseStepVelocityFollowsOmega() {
     AirMouseKinState s;
     AirMouseParams p;
     AirMouseStep(s, 10, 0, 0.016, false, p);
-    const double t1 = s.theta_x;
+    const double v1 = s.vx;
     AirMouseStep(s, 10, 0, 0.016, false, p);
-    const double t2 = s.theta_x;
-    assert(t1 > 0.0);
-    assert(t2 > t1);  // 积分单调增
+    const double v2 = s.vx;
+    assert(v1 > 0.0);
+    assert(v2 > v1);  // 速度环收敛，v 增长
 }
 
-// stale 时 omega=0，θ 仅衰减（不积分）。
-void TestAirMouseStepAngleDecaysWhenStale() {
+// 速度控制：stale（手停）后 v_target=0，v 经 tau 快速归零（手停即停）。
+// 旧角度模型 decay_tau 慢衰减致 v 不归零，此测试约束速度模型。
+void TestAirMouseStepStopsWhenStale() {
     AirMouseKinState s;
     AirMouseParams p;
-    for (int i = 0; i < 50; ++i) AirMouseStep(s, 10, 0, 0.016, false, p);
-    assert(s.theta_x > 1.0);
-    const double t0 = s.theta_x;
-    for (int i = 0; i < 100; ++i) AirMouseStep(s, 10, 0, 0.016, true, p);  // stale
-    assert(s.theta_x < t0);  // 衰减
-    assert(s.theta_x > 0.0);  // decay_tau=8s 慢衰减，未到 0
+    p.tau = 0.05;
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, 10, 0, 0.016, false, p);  // 转动积累 v
+    assert(s.vx > 1.0);  // 转动中有速度
+    for (int i = 0; i < 100; ++i) AirMouseStep(s, 10, 0, 0.016, true, p);  // stale 1.6s
+    assert(std::fabs(s.vx) < 1.0);  // v 快速归零（手停即停）
 }
 
-// stale 短期 θ 基本保持（decay_tau=8s，0.16s 仅衰减 2%）。
-void TestAirMouseStepAngleHoldsShortTerm() {
-    AirMouseKinState s;
-    AirMouseParams p;
-    for (int i = 0; i < 50; ++i) AirMouseStep(s, 10, 0, 0.016, false, p);
-    const double t0 = s.theta_x;
-    for (int i = 0; i < 10; ++i) AirMouseStep(s, 10, 0, 0.016, true, p);  // 0.16s
-    assert(s.theta_x > t0 * 0.95);  // 保持 >95%
-}
-
-// v 跟踪 v_target = θ × gain（θ 增长慢，需足够帧让 v 一阶低通收敛）。
-void TestAirMouseStepVelocityFromAngle() {
+// v 稳态正比于 omega×gain（v_target=omega×gain，速度环收敛后 v≈v_target）。
+void TestAirMouseStepVelocityProportionalToOmega() {
     AirMouseKinState s;
     AirMouseParams p;
     for (int i = 0; i < 200; ++i) AirMouseStep(s, 10, 0, 0.016, false, p);  // 3.2s
-    const double v_target = s.theta_x * p.gain_x;
+    const double v_target = 10.0 * p.gain_x;
     assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
     assert(s.vx > 0.0);
 }
 
-// 分轴 gain：gain_x ≠ gain_y 时，同 omega 下 v_target_x ≠ v_target_y。
+// 分轴 gain：gain_x ≠ gain_y 时，同 omega 下 vx ≠ vy。
 void TestAirMouseStepAxisGain() {
     AirMouseParams p;
     p.gain_x = 10.0;
@@ -2264,31 +2285,26 @@ void TestAirMouseStepAxisGain() {
         AirMouseStep(sx, 10, 0, 0.016, false, p);
         AirMouseStep(sy, 0, 10, 0.016, false, p);
     }
-    assert(std::fabs(sx.theta_x - sy.theta_y) < 1e-6);  // 同 omega 积分 θ 相同
-    assert(sx.vx > sy.vy);  // gain_x > gain_y → v_x > v_y
+    assert(sx.vx > sy.vy);  // gain_x > gain_y → vx > vy
 }
 
-// invert_y：θ_y 反向。
+// invert_y：vy 反向。
 void TestAirMouseStepInvertY() {
     AirMouseKinState s;
     AirMouseParams p;
     p.invert_y = true;
     for (int i = 0; i < 50; ++i) AirMouseStep(s, 0, 10, 0.016, false, p);
-    assert(s.theta_y < 0.0);  // 反向
+    assert(s.vy < 0.0);  // 反向
 }
 
-// dt 抖动下 θ/v 平滑有限。
+// dt 抖动下 v 平滑有限。
 void TestAirMouseStepDtJitterRobust() {
     AirMouseKinState s;
     AirMouseParams p;
     const double dts[] = {0.016, 0.024, 0.008, 0.020, 0.012};
-    double prev = 0.0;
     for (int i = 0; i < 50; ++i) {
         AirMouseStep(s, 80, 0, dts[i % 5], false, p);
-        assert(std::isfinite(s.theta_x));
         assert(std::isfinite(s.vx));
-        assert(s.theta_x >= prev - 1e-6);  // 恒正 omega 下 θ 非降
-        prev = s.theta_x;
     }
 }
 
@@ -2325,8 +2341,8 @@ void TestAppConfigAirMouseRoundTrip() {
     // Clamp 边界：越界回落默认值。
     assert(AirMouseSensitivityClamp(0) == 5);
     assert(AirMouseSensitivityClamp(11) == 5);
-    assert(AirMouseTauClamp(0.005) == 0.10);
-    assert(AirMouseTauClamp(1.0) == 0.10);
+    assert(AirMouseTauClamp(0.005) == 0.05);
+    assert(AirMouseTauClamp(1.0) == 0.05);
 }
 
 int main() {
@@ -2336,10 +2352,9 @@ int main() {
     TestBleControlPayloads();
     TestStateParsing();
     TestMotionFrameParsing();
-    TestAirMouseStepAngleIntegrates();
-    TestAirMouseStepAngleDecaysWhenStale();
-    TestAirMouseStepAngleHoldsShortTerm();
-    TestAirMouseStepVelocityFromAngle();
+    TestAirMouseStepVelocityFollowsOmega();
+    TestAirMouseStepStopsWhenStale();
+    TestAirMouseStepVelocityProportionalToOmega();
     TestAirMouseStepAxisGain();
     TestAirMouseStepInvertY();
     TestAirMouseStepDtJitterRobust();
@@ -2385,6 +2400,7 @@ int main() {
     TestCoordinatorAirMouseResetOnForget();
     TestCoordinatorAirMouseHighSensitivityRealisticSpeed();
     TestCoordinatorAirMouseSustainedRunBounded();
+    TestCoordinatorAirMouseStopsOnZeroOmega();
     TestCoordinatorSecondaryDoubleClickRestoresLastInput();
     TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();

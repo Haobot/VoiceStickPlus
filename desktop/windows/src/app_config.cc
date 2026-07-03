@@ -919,8 +919,8 @@ int AirMouseSensitivityClamp(int level) {
 }
 
 double AirMouseTauClamp(double tau) {
-    // 速度跟踪时间常数约束在 [0.02, 0.5]，越界回落默认 0.10。
-    if (!(tau > 0.0) || tau > 0.5 || tau < 0.02) return 0.10;
+    // 速度环时间常数约束在 [0.02, 0.5]，越界回落默认 0.05（手停即停）。
+    if (!(tau > 0.0) || tau > 0.5 || tau < 0.02) return 0.05;
     return tau;
 }
 
