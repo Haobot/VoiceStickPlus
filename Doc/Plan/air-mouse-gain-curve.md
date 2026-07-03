@@ -77,6 +77,20 @@ double v_target = ox × base_gain × factor(|ox|)
 `firmware/components/bmi270/bmi270.c`：
 - `AIR_MOUSE_DEADZONE_DPS` 4.0 → 3.0，更新注释（噪声余量从"4 dps 留足"改为"3 dps，依赖 jerk 静止判据+静止归零兜底"）。
 
+### 3.5 真机标定迭代（2026-07-04）
+
+初版参数（3.2 节 kLowThresh=5/kLowFactor=0.3）真机验证：甩动跨屏、手停即停、静止不漂移均达标，但**微调段慢转难精准对位图标**。
+
+根因：微调段 |omega|<5（即 <8.3dps）太窄，手腕慢转自然 10~20dps 超出微调段进入中段被放大（omega=15dps 即 out=9 落中段 factor=0.72，v=518px/s 冲过头）。问题不在 factor 高低，而在微调段覆盖范围太窄，慢转进不了低增益区。
+
+调整：
+- `kAirMouseLowThresh` 5→15（覆盖慢转 ≈0~25dps，慢转不进中段）
+- `kAirMouseLowFactor` 0.3→0.15（微调段更低增益，更精准）
+- `kAirMouseHighThresh` 40→50（中段过渡区上移）
+- `kAirMouseHighFactor` 4.0 不变（甩动跨屏已达标）
+
+新参数下 omega=24（典型转动）：factor=0.15+3.85×9/35=1.14，v=24×160×1.14=4377 px/s（旧 8873），典型转动速度降一半，微调更可控。测试改引用 header 常量，参数迭代无需改测试。
+
 ## 4. TDD 测试计划（`tests/core_tests.cc`）
 
 ### 4.1 红灯（新增，覆盖三段形状）

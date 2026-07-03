@@ -24,10 +24,11 @@ struct AirMouseParams {
 //   微调段 |omega| < kAirMouseLowThresh   → factor = kAirMouseLowFactor  （压低，精准对位）
 //   中段  kAirMouseLowThresh ≤ |omega| < kAirMouseHighThresh → 线性插值 kLowFactor→kHighFactor
 //   甩动段 |omega| ≥ kAirMouseHighThresh  → factor = kAirMouseHighFactor （放大，跨屏）
-// 阈值换算自用户原方案 0.15/1.2 rad/s（×0.6 离散化到 int16 omega 域）。详见 Doc/Plan/air-mouse-gain-curve.md。
-constexpr double kAirMouseLowThresh = 5.0;    // ≈8.6dps≈0.15rad/s 微调段上限
-constexpr double kAirMouseHighThresh = 40.0;  // ≈66dps≈1.16rad/s 甩动段下限
-constexpr double kAirMouseLowFactor = 0.3;    // 微调段相对增益（压低，精准对位）
+// 微调段刻意宽（覆盖慢转 ≈0~25dps）+ factor 低：慢转不进中段被放大，精准对位图标。
+// 真机标定迭代值（2026-07-04：拓宽微调段+降 factor 修复"慢转难精准对位"），详见 Doc/Plan/air-mouse-gain-curve.md。
+constexpr double kAirMouseLowThresh = 15.0;   // ≈25dps 微调段上限（覆盖慢转，勿过窄致慢转进中段放大）
+constexpr double kAirMouseHighThresh = 50.0;  // ≈83dps 甩动段下限
+constexpr double kAirMouseLowFactor = 0.15;   // 微调段相对增益（压低，精准对位）
 constexpr double kAirMouseHighFactor = 4.0;   // 甩动段相对增益（放大，跨屏）
 
 // 三段线性增益因子（输入 |omega|，输出相对增益倍率）。纯函数，可单测拐点连续性。
