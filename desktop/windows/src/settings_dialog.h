@@ -31,7 +31,8 @@ private:
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
     void UpdateTapSensitivityLabel();
-    void UpdateAirMouseSensitivityLabel();
+    void UpdateAirMouseSensitivityXLabel();
+    void UpdateAirMouseSensitivityYLabel();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     bool IsLabelControl(HWND control) const;
@@ -63,8 +64,10 @@ private:
     HWND tap_to_arrow_check_ = nullptr;
     HWND tap_sensitivity_trackbar_ = nullptr;
     HWND tap_sensitivity_value_label_ = nullptr;
-    HWND air_mouse_sensitivity_trackbar_ = nullptr;
-    HWND air_mouse_sensitivity_value_label_ = nullptr;
+    HWND air_mouse_sensitivity_x_trackbar_ = nullptr;
+    HWND air_mouse_sensitivity_x_value_label_ = nullptr;
+    HWND air_mouse_sensitivity_y_trackbar_ = nullptr;
+    HWND air_mouse_sensitivity_y_value_label_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -73,7 +76,7 @@ private:
     std::vector<HWND> label_controls_;
 
     static constexpr int kClientWidth = 640;
-    static constexpr int kClientHeight = 1000;
+    static constexpr int kClientHeight = 1040;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -96,7 +99,8 @@ private:
     static constexpr UINT kIdApplyTrialApiKey = 2015;
     static constexpr UINT kIdRefinePromptEdit = 2022;
     static constexpr UINT kIdTapSensitivity = 2023;
-    static constexpr UINT kIdAirMouseSensitivity = 2024;
+    static constexpr UINT kIdAirMouseSensitivityX = 2024;
+    static constexpr UINT kIdAirMouseSensitivityY = 2025;
 };
 
 } // namespace voicestick

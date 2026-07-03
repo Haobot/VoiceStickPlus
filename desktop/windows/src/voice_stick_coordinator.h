@@ -359,8 +359,6 @@ private:
         std::int16_t last_omega_x = 0;
         std::int16_t last_omega_y = 0;
         std::chrono::steady_clock::time_point last_omega_t;
-        std::chrono::steady_clock::time_point last_tick_t;
-        bool has_last_tick = false;
     };
     std::map<std::string, AirMouseDeviceState> air_mouse_states_;
     AirMouseParams AirMouseParamsFromConfig() const;

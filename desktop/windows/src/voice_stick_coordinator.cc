@@ -516,9 +516,9 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
 
 AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
-    p.gain = static_cast<double>(config_.air_mouse_sensitivity) * 2.0;
+    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 2.0;
+    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 2.0;
     p.tau = config_.air_mouse_tau;
-    p.gamma = config_.air_mouse_gamma;
     p.invert_y = config_.air_mouse_invert_y;
     return p;
 }
@@ -528,16 +528,13 @@ void VoiceStickCoordinator::AirMouseTick() {
     const auto now = std::chrono::steady_clock::now();
     const auto params = AirMouseParamsFromConfig();
     const double stale_age_sec = std::chrono::duration<double>(kAirMouseOmegaStaleAge).count();
+    // 固定 dt = tick 周期（WM_TIMER 60Hz 稳定）；stale 判断用 last_omega_t。
+    const double dt = std::chrono::duration<double>(kAirMouseTickInterval).count();
     for (auto& [device_id, state] : air_mouse_states_) {
-        const double dt = state.has_last_tick
-            ? std::chrono::duration<double>(now - state.last_tick_t).count()
-            : std::chrono::duration<double>(kAirMouseTickInterval).count();
         const double omega_age = std::chrono::duration<double>(now - state.last_omega_t).count();
         const bool stale = omega_age > stale_age_sec;
         const auto result = AirMouseStep(state.kin, state.last_omega_x, state.last_omega_y,
                                         dt, stale, params);
-        state.last_tick_t = now;
-        state.has_last_tick = true;
         if (result.dx != 0 || result.dy != 0) {
             input_injector_->MoveMouse(result.dx, result.dy);
         }

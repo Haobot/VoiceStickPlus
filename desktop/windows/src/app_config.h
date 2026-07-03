@@ -132,12 +132,12 @@ struct AppConfig {
     bool tap_to_arrow = false;
     // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
     int tap_sensitivity = 5;
-    // 体感鼠标：灵敏度档位 1~10（1=最慢，10=最快），映射 gain=sensitivity×2.0。默认 5。
-    int air_mouse_sensitivity = 5;
+    // 体感鼠标：左右（yaw）灵敏度档位 1~10，映射 gain_x=sensitivity_x×2.0。默认 5。
+    int air_mouse_sensitivity_x = 5;
+    // 体感鼠标：上下（pitch）灵敏度档位 1~10，映射 gain_y=sensitivity_y×2.0。默认 5。
+    int air_mouse_sensitivity_y = 5;
     // 体感鼠标：速度跟踪时间常数（秒），越大惯性/缓停越长。默认 0.10。
     double air_mouse_tau = 0.10;
-    // 体感鼠标：加速曲线幂律指数，>1 慢稳快猛。默认 1.35。
-    double air_mouse_gamma = 1.35;
     // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。
     bool air_mouse_invert_y = false;
     bool launch_at_login = false;
@@ -206,6 +206,5 @@ int ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity sensitivity);
 int TapSensitivityClamp(int level);
 int AirMouseSensitivityClamp(int level);
 double AirMouseTauClamp(double tau);
-double AirMouseGammaClamp(double gamma);
 
 } // namespace voicestick
