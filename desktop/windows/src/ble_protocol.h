@@ -19,6 +19,12 @@ struct AudioFrame {
     bool IsEnd() const { return (flags & 0x02) != 0; }
 };
 
+// 体感鼠标运动帧：固件已完成零偏校准+死区+缩放的整型光标位移。
+struct MotionEvent {
+    std::int16_t dx = 0;
+    std::int16_t dy = 0;
+};
+
 struct StateEvent {
     std::string event;
     std::string button;
@@ -54,8 +60,12 @@ public:
     static constexpr std::uint8_t ota_type_abort = 0x23;
     static constexpr std::uint8_t ota_type_state = 0x30;
 
+    static constexpr std::uint8_t state_type_json = 0x10;
+    static constexpr std::uint8_t state_type_motion = 0x11;
+
     static std::optional<AudioFrame> ParseAudioFrame(std::span<const std::uint8_t> data);
     static std::optional<StateEvent> ParseStateEvent(std::span<const std::uint8_t> data);
+    static std::optional<MotionEvent> ParseMotionFrame(std::span<const std::uint8_t> data);
     static std::optional<FirmwareOtaStateEvent> ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data);
     static ByteVector UiStatePayload(std::string_view state, std::string_view text);
     static ByteVector InteractionModePayload(std::string_view mode);
@@ -64,6 +74,7 @@ public:
     static ByteVector ImuWakeSensitivityPayload(int threshold_lsb);
     static ByteVector TapEnabledPayload(bool enabled);
     static ByteVector TapSensitivityPayload(int level);
+    static ByteVector AirMouseEnabledPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();
     static ByteVector RemoteButtonPayload(std::string_view action,
                                           std::string_view button,

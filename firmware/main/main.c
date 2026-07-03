@@ -63,6 +63,8 @@ static const char *TAG = "voice_stick";
 #define IMU_POLL_INTERVAL_US (200 * 1000ULL)
 // 敲击检测轮询周期。10ms=100Hz，覆盖 ~10-50ms 宽的敲击脉冲；录音/识别态暂停以降功耗。
 #define TAP_POLL_INTERVAL_US (10 * 1000ULL)
+// 体感鼠标轮询周期。20ms=50Hz，光标移动足够流畅且 BLE/I²C 负载低。仅体感态运行。
+#define AIR_MOUSE_POLL_INTERVAL_US (20 * 1000ULL)
 // 按键事件后抑制敲击检测的窗口：覆盖"按下→录音启动"（hold_to_talk 300ms hold + 80ms 提示音
 // + codec 初始化）及松开后手指余震。该窗口内 tap 轮询直接 return，避免按语音键的手指动作
 // 被 IMU 误判为双击。仅作用于非录音态（录音态本就门控关闭 tap）。
@@ -99,6 +101,8 @@ static esp_timer_handle_t s_host_response_timer;
 static esp_timer_handle_t s_pickup_poll_timer;
 static esp_timer_handle_t s_imu_poll_timer;
 static esp_timer_handle_t s_tap_poll_timer;
+static esp_timer_handle_t s_air_mouse_poll_timer;
+static bool s_air_mouse_enabled = false;
 static uint32_t s_session_id = 1;
 static QueueHandle_t s_app_event_queue;
 static button_handle_t s_front_button;
@@ -218,6 +222,7 @@ static void save_pickup_threshold_to_nvs(int32_t threshold);
 static void load_tap_settings_from_nvs(void);
 static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity);
 static void set_tap_polling_enabled(bool enabled);
+static void set_air_mouse_enabled(bool enabled);
 
 static bool is_external_powered(void)
 {
@@ -781,6 +786,11 @@ static void ble_control_cb(const char *json)
         bmi270_set_tap_sensitivity((int)sensitivity);
         save_tap_settings_to_nvs(s_tap_enabled, sensitivity);
         ESP_LOGI(TAG, "tap_sensitivity=%" PRId32, sensitivity);
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "air_mouse_enabled") == 0 &&
+               cJSON_IsBool(enabled)) {
+        // 体感鼠标开关：由桌面端状态机权威控制。开启时校准零偏并启动 20ms 轮询上报 motion。
+        set_air_mouse_enabled(cJSON_IsTrue(enabled));
+        ESP_LOGI(TAG, "air_mouse_enabled %s", cJSON_IsTrue(enabled) ? "true" : "false");
     }
     cJSON_Delete(root);
 }
@@ -1579,6 +1589,51 @@ static void set_tap_polling_enabled(bool enabled)
     }
 }
 
+// 体感鼠标轮询：读陀螺仪→整型位移→直接发 motion 帧。参照 imu_poll_timer_cb 在 timer
+// 任务里做 I²C + BLE notify（负载轻，非 Wi-Fi 重活，不违反 timer cb 栈约束）。
+static void air_mouse_poll_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_air_mouse_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
+        return;
+    }
+    int16_t dx = 0;
+    int16_t dy = 0;
+    if (bmi270_air_mouse_poll(&dx, &dy)) {
+        (void)voice_ble_send_motion(dx, dy);
+    }
+}
+
+static esp_err_t init_air_mouse_poll_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = air_mouse_poll_timer_cb,
+        .name = "air_mouse_poll",
+        .skip_unhandled_events = true,
+    };
+    return esp_timer_create(&timer_args, &s_air_mouse_poll_timer);
+}
+
+static void set_air_mouse_enabled(bool enabled)
+{
+    s_air_mouse_enabled = enabled;
+    if (!s_air_mouse_poll_timer) {
+        return;
+    }
+    if (enabled) {
+        bmi270_air_mouse_start();
+        if (!esp_timer_is_active(s_air_mouse_poll_timer)) {
+            esp_err_t err = esp_timer_start_periodic(s_air_mouse_poll_timer, AIR_MOUSE_POLL_INTERVAL_US);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "start air mouse poll failed: %s", esp_err_to_name(err));
+            }
+        }
+    } else {
+        (void)esp_timer_stop(s_air_mouse_poll_timer);
+        bmi270_air_mouse_stop();
+    }
+}
+
 static void update_display_orientation(float x_g)
 {
     display_orientation_t desired = s_display_orientation;
@@ -1911,6 +1966,7 @@ void app_main(void)
     ESP_ERROR_CHECK(init_double_click_timer());
     ESP_ERROR_CHECK(init_pickup_poll_timer());
     ESP_ERROR_CHECK(init_tap_poll_timer());
+    ESP_ERROR_CHECK(init_air_mouse_poll_timer());
     // BMI270 初始化在 I2C 总线就绪后；探测失败时优雅降级，不影响主流程。
     (void)bmi270_init();
     // 根据初始握持方向设置屏幕方向，避免启动后方向与实际相反。

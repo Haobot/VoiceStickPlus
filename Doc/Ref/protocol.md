@@ -94,6 +94,28 @@ responds by injecting an Enter key event. See `Doc/Plan/primary-button-double-cl
 field carries the tap kind (`"double"`). The desktop responds by injecting a Down
 arrow key event when `tap_to_arrow` is enabled. See `Doc/Plan/imu-tap-detection.md`.
 
+### Motion Frame
+
+Air-mouse motion is a high-rate stream (~50 Hz), so it uses a compact binary frame
+on the same `state_tx` characteristic instead of JSON. Consumers dispatch on the
+second byte (`type`): `0x10` is the JSON state event above, `0x11` is a motion frame.
+
+All multibyte fields are little-endian.
+
+```text
+struct MotionBleFrame {
+  uint8_t  version;   // 1
+  uint8_t  type;      // 0x11 motion
+  int16_t  dx;        // horizontal cursor delta, right positive
+  int16_t  dy;        // vertical cursor delta, down positive
+}
+```
+
+`dx`/`dy` are already gyro-bias-corrected, dead-zoned, and scaled to integer cursor
+deltas by the firmware; the desktop applies only an acceleration/gain curve and
+accumulates them. Motion frames are emitted only while air-mouse mode is enabled
+(see `air_mouse_enabled` control event). See `Doc/Plan/imu-air-mouse.md`.
+
 Deprecated firmware-to-app events:
 
 | Event | Replacement | Reason |
@@ -121,6 +143,7 @@ Current desktop events:
 {"event":"imu_wake_sensitivity","threshold":500}
 {"event":"tap_enabled","enabled":true}
 {"event":"tap_sensitivity","level":5}
+{"event":"air_mouse_enabled","enabled":true}
 ```
 
 | Event | Field | Direction | Meaning |
@@ -131,6 +154,7 @@ Current desktop events:
 | `imu_wake_sensitivity` | `threshold`: integer (LSB) | Windows -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
 | `tap_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables the double-tap on-device gesture detection. Default false. |
 | `tap_sensitivity` | `level`: integer (1..10) | Windows -> StickS3 | Sets the double-tap detection sensitivity. 1=least sensitive (hardest tap), 10=most sensitive (lightest tap). Default 5. |
+| `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. Default false. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as

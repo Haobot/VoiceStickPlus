@@ -175,7 +175,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - `audio_tx`（通知，`0x5101`）：Opus 音频帧，设备 → 主机。
 - `state_tx`（通知，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
-- `control_rx`（无响应写，`0x5103`）：`ui_state`、`interaction_mode`、`prompt_tone`、`show_imu_debug`、`imu_wake_sensitivity`、`ota_commit` 等，主机 → 设备。注意 `control_rx` 写入受 BLE MTU 限制，JSON 需控制长度避免溢出。
+- `control_rx`（无响应写，`0x5103`）：`ui_state`、`interaction_mode`、`prompt_tone`、`show_imu_debug`、`imu_wake_sensitivity`、`tap_enabled`、`tap_sensitivity`、`air_mouse_enabled`、`ota_commit` 等，主机 → 设备。注意 `control_rx` 写入受 BLE MTU 限制，JSON 需控制长度避免溢出。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 
@@ -274,7 +274,11 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 - `paired_device_ids`：逗号分隔的 4 位十六进制设备 ID，如 `C3D8,09AF`。用于限制仅连接指定设备。
 - `show_imu_debug`：是否在设备屏幕上显示 IMU 加速度调试数值，默认 `false`。
 - `device_theme_colors` / `device_overlay_positions`：按设备覆盖悬浮窗颜色和位置。
-- `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `off` / `low` / `medium` / `high`。
+- `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `low` / `medium` / `high`。
+- `tap_to_arrow`：Windows 端是否把固件检测到的双击敲击事件注入为方向键 Down，默认 `false`。
+- `tap_sensitivity`：双击敲击灵敏度，整数 `1..10`，数值越大越灵敏，默认 `5`。
+- `air_mouse_gain`：体感鼠标光标灵敏度倍率（浮点，默认 `1.0`），作用于固件上报的整型位移，仅 Windows 端使用。
+- `air_mouse_invert_y`：体感鼠标是否反转 Y 轴，默认 `false`。
 
 ## 安全与敏感信息
 

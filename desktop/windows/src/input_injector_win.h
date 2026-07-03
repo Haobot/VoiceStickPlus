@@ -13,6 +13,8 @@ public:
     void Paste(const std::string& text, bool press_enter) override;
     void SendEnter() override;
     void SendArrowDown() override;
+    void MoveMouse(int dx, int dy) override;
+    void ClickLeftButton() override;
 
 private:
     static std::wstring Utf16FromUtf8(const std::string& text);
