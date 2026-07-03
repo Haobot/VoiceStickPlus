@@ -45,6 +45,7 @@ set_target_properties(winsparkle_lib PROPERTIES
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 
 add_library(voicestick_core
+    src/air_mouse_kin.cc
     src/app_config.cc
     src/asr_protocol.cc
     src/ble_protocol.cc

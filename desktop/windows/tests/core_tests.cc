@@ -1,3 +1,4 @@
+#include "air_mouse_kin.h"
 #include "asr_client_tencent.h"
 #include "asr_protocol.h"
 #include "ble_protocol.h"
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <optional>
@@ -1529,14 +1531,17 @@ void TestCoordinatorAirMousePrimaryClickIsLeftButton() {
     assert(ui.show_listening_count == 0);
 }
 
-// 体感态下 motion 帧驱动光标移动；非体感态忽略。
+// 体感态下 motion 帧只更新 omega，不直接注入；由 AirMouseTick 驱动光标移动。非体感态忽略。
 void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
     FakeUi ui;
     FakeInputInjector input;
-    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    AppConfig config = AppConfig::Defaults();
+    config.air_mouse_gain = 4.0;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
 
     ble_ptr->connected_device_ids.insert("5A74");
@@ -1546,10 +1551,97 @@ void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
     ble_ptr->on_motion_event("5A74", MotionEvent{10, -5});
     assert(input.move_mouse_count == 0);
 
-    // 进入体感态后 motion 驱动光标移动。
+    // 进入体感态后 motion 不直接注入（由 AirMouseTick 驱动）。
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
-    ble_ptr->on_motion_event("5A74", MotionEvent{10, -5});
+    ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
+    assert(input.move_mouse_count == 0);
+
+    // AirMouseTick 驱动速度环并注入光标位移。
+    coordinator.AirMouseTick();
     assert(input.move_mouse_count == 1);
+}
+
+// AirMouseTick 驱动速度环：进入体感 + motion 后，tick 产生非零位移。
+void TestCoordinatorAirMouseTickMovesCursor() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.air_mouse_gain = 4.0;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
+
+    coordinator.AirMouseTick();
+    assert(input.move_mouse_count >= 1);
+    assert(input.total_dx > 0);  // omega_x=100 正向，位移为正
+}
+
+// 退出再进入体感，速度状态复位（v 从 0 开始，无残留漂移）。
+void TestCoordinatorAirMouseStateResetOnToggle() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.air_mouse_gain = 4.0;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入并累积速度。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
+    coordinator.AirMouseTick();
+    assert(input.move_mouse_count >= 1);
+
+    // 退出再进入：状态应复位。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    const int count_before = input.move_mouse_count;
+    // 无 motion，立即 tick：v=0、omega=0，应产生零位移（不调 MoveMouse）。
+    coordinator.AirMouseTick();
+    assert(input.move_mouse_count == count_before);
+}
+
+// 进入/退出体感触发 on_air_mouse_active_changed 回调。
+void TestCoordinatorAirMouseActiveChangedCallback() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    bool callback_called = false;
+    bool last_active = false;
+    coordinator.on_air_mouse_active_changed = [&](bool active) {
+        callback_called = true;
+        last_active = active;
+    };
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感 → 回调 true。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(callback_called);
+    assert(last_active);
+
+    // 退出 → 回调 false。
+    callback_called = false;
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(callback_called);
+    assert(!last_active);
 }
 
 // 体感态下主键长按（button_down）不启动录音，tap 事件被忽略。
@@ -2001,6 +2093,118 @@ void TestTencentVoiceIdGeneration() {
     assert(id1[14] == '4');  // UUID v4 版本标识
 }
 
+// ===== AirMouseStep 纯函数测试（RFC 6.1）=====
+// 验证一阶低通速度跟踪 + 幂律加速曲线的核心运动学。
+
+// 固定 omega 连续 step，v 收敛到 v_target=sign×|omega|^gamma×gain。
+void TestAirMouseStepSteadyStateTracksTarget() {
+    AirMouseKinState s;
+    AirMouseParams p;  // 默认 tau=0.10, gamma=1.35, gain=4.0
+    const std::int16_t omega = 100;
+    // 50 帧 × 16ms = 0.8s ≈ 8×tau，一阶低通已充分收敛。
+    for (int i = 0; i < 50; ++i) {
+        AirMouseStep(s, omega, 0, 0.016, false, p);
+    }
+    const double v_target = std::pow(static_cast<double>(omega), p.gamma) * p.gain;
+    assert(std::fabs(s.vx - v_target) < v_target * 0.02);  // 收敛误差 <2%
+}
+
+// 从静止突变到 omega，前几帧 v 逐步爬升（加速感，非瞬变到目标）。
+void TestAirMouseStepAccelerationRamp() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    const double v_target = std::pow(100.0, p.gamma) * p.gain;
+    AirMouseStep(s, 100, 0, 0.016, false, p);
+    assert(s.vx > 0.0);
+    assert(s.vx < v_target * 0.5);  // 第一帧远未达目标
+    double prev = s.vx;
+    for (int i = 0; i < 5; ++i) {
+        AirMouseStep(s, 100, 0, 0.016, false, p);
+        assert(s.vx > prev);  // 单调爬升
+        prev = s.vx;
+    }
+}
+
+// omega_is_stale=true 时 omega 视为 0，v 按指数衰减到 0（缓停）。
+void TestAirMouseStepStaleDecaysToZero() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    for (int i = 0; i < 30; ++i) {
+        AirMouseStep(s, 100, 0, 0.016, false, p);
+    }
+    assert(s.vx > 1.0);
+    double prev = s.vx;
+    for (int i = 0; i < 60; ++i) {  // 60×16ms ≈ 1s ≈ 10×tau
+        AirMouseStep(s, 100, 0, 0.016, true, p);
+        assert(s.vx < prev);  // 单调衰减
+        prev = s.vx;
+    }
+    assert(s.vx < 1.0);  // 衰减到接近 0
+}
+
+// 幂律 gamma>1：小 omega 的稳态 v 与大 omega 的比值小于线性比 0.1（慢稳快猛）。
+void TestAirMouseStepGammaShape() {
+    AirMouseParams p;
+    AirMouseKinState s10;
+    for (int i = 0; i < 50; ++i) AirMouseStep(s10, 10, 0, 0.016, false, p);
+    AirMouseKinState s100;
+    for (int i = 0; i < 50; ++i) AirMouseStep(s100, 100, 0, 0.016, false, p);
+    const double ratio = s10.vx / s100.vx;
+    assert(ratio < 0.1);  // 幂律使小输入更压低
+    assert(ratio > 0.0);
+}
+
+// invert_y=true 时 Y 轴目标速度符号反转。
+void TestAirMouseStepInvertY() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.invert_y = true;
+    for (int i = 0; i < 50; ++i) {
+        AirMouseStep(s, 0, 10, 0.016, false, p);
+    }
+    const double v_target_y = -std::pow(10.0, p.gamma) * p.gain;  // 反转为负
+    assert(std::fabs(s.vy - v_target_y) < std::fabs(v_target_y) * 0.02);
+}
+
+// dt 抖动（16/24/8/20/12ms 交替）下 v 有限且大致单调非降。
+void TestAirMouseStepDtJitterRobust() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    const double dts[] = {0.016, 0.024, 0.008, 0.020, 0.012};
+    double prev = 0.0;
+    for (int i = 0; i < 50; ++i) {
+        AirMouseStep(s, 80, 0, dts[i % 5], false, p);
+        assert(std::isfinite(s.vx));
+        assert(s.vx >= prev - 1e-6);  // 恒正 omega 下 v 非降
+        prev = s.vx;
+    }
+}
+
+// 体感鼠标配置项 Save/Load 往返 + Clamp 边界。
+void TestAppConfigAirMouseRoundTrip() {
+    AppConfig config;
+    config.air_mouse_gain = 6.0;
+    config.air_mouse_tau = 0.15;
+    config.air_mouse_gamma = 1.5;
+    config.air_mouse_invert_y = true;
+    const auto path = std::filesystem::temp_directory_path() / "voicestick_air_mouse_test.toml";
+    config.Save(path);
+    const auto loaded = AppConfig::Load(path);
+    std::filesystem::remove(path);
+    assert(std::fabs(loaded.air_mouse_gain - 6.0) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_tau - 0.15) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_gamma - 1.5) < 1e-9);
+    assert(loaded.air_mouse_invert_y == true);
+
+    // Clamp 边界：越界回落默认值。
+    assert(AirMouseGainClamp(0.0) == 4.0);
+    assert(AirMouseGainClamp(30.0) == 4.0);
+    assert(AirMouseTauClamp(0.005) == 0.10);
+    assert(AirMouseTauClamp(1.0) == 0.10);
+    assert(AirMouseGammaClamp(0.5) == 1.35);
+    assert(AirMouseGammaClamp(3.0) == 1.35);
+}
+
 int main() {
     TestDeviceIds();
     TestPairDeviceHelpers();
@@ -2008,10 +2212,17 @@ int main() {
     TestBleControlPayloads();
     TestStateParsing();
     TestMotionFrameParsing();
+    TestAirMouseStepSteadyStateTracksTarget();
+    TestAirMouseStepAccelerationRamp();
+    TestAirMouseStepStaleDecaysToZero();
+    TestAirMouseStepGammaShape();
+    TestAirMouseStepInvertY();
+    TestAirMouseStepDtJitterRobust();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();
+    TestAppConfigAirMouseRoundTrip();
     TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();
@@ -2040,6 +2251,9 @@ int main() {
     TestCoordinatorAirMouseToggleViaSecondary();
     TestCoordinatorAirMousePrimaryClickIsLeftButton();
     TestCoordinatorMotionMovesCursorOnlyWhenActive();
+    TestCoordinatorAirMouseTickMovesCursor();
+    TestCoordinatorAirMouseStateResetOnToggle();
+    TestCoordinatorAirMouseActiveChangedCallback();
     TestCoordinatorAirMouseGatesRecordingAndTap();
     TestCoordinatorSecondaryDoubleClickRestoresLastInput();
     TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse();

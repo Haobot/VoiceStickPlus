@@ -1,5 +1,6 @@
 #pragma once
 
+#include "air_mouse_kin.h"
 #include "app_config.h"
 #include "asr_protocol.h"
 #include "ble_protocol.h"
@@ -198,6 +199,10 @@ public:
 
     void HandleGlobalHotkeyPressed();
     void HandleGlobalHotkeyReleased();
+    // 体感鼠标 60Hz tick：由平台层定时器驱动，对每个激活设备做速度环 step 并注入光标位移。
+    void AirMouseTick();
+    // 体感鼠标激活态变化通知（true=有设备进入体感，false=全部退出）。平台层据此启停定时器。
+    std::function<void(bool)> on_air_mouse_active_changed;
 
 private:
     enum class PendingPasteKind {
@@ -348,6 +353,19 @@ private:
     std::chrono::steady_clock::time_point last_tap_inject_at_{};
     // 体感鼠标当前处于激活态的设备集合（按 device_id）。空表示无设备在体感态。
     std::set<std::string> air_mouse_active_devices_;
+    // 体感鼠标每设备运动学状态（速度 v + 最近 omega 采样与时间戳）。
+    struct AirMouseDeviceState {
+        AirMouseKinState kin;
+        std::int16_t last_omega_x = 0;
+        std::int16_t last_omega_y = 0;
+        std::chrono::steady_clock::time_point last_omega_t;
+        std::chrono::steady_clock::time_point last_tick_t;
+        bool has_last_tick = false;
+    };
+    std::map<std::string, AirMouseDeviceState> air_mouse_states_;
+    AirMouseParams AirMouseParamsFromConfig() const;
+    static constexpr std::chrono::milliseconds kAirMouseTickInterval{16};   // ~60Hz
+    static constexpr std::chrono::milliseconds kAirMouseOmegaStaleAge{30}; // omega 超 30ms 视为静止
     int received_audio_frames_ = 0;
     std::optional<std::uint32_t> last_audio_seq_;
     std::vector<ByteVector> buffered_ogg_chunks_;

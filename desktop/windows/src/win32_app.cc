@@ -346,6 +346,16 @@ int Win32App::Run() {
                 return make_asr(config);
             });
         LogLine("Starting coordinator");
+        coordinator_->on_air_mouse_active_changed = [this](bool active) {
+            // 有设备进入体感时启动 60Hz 定时器驱动 AirMouseTick；全部退出时停止。
+            if (active && !air_mouse_timer_active_) {
+                SetTimer(hwnd_, kAirMouseTimerId, kAirMouseTickIntervalMs, nullptr);
+                air_mouse_timer_active_ = true;
+            } else if (!active && air_mouse_timer_active_) {
+                KillTimer(hwnd_, kAirMouseTimerId);
+                air_mouse_timer_active_ = false;
+            }
+        };
         coordinator_->Start();
         LogLine("Coordinator started");
 
@@ -802,6 +812,12 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         }
         }
         return 0;
+    case WM_TIMER:
+        if (w_param == kAirMouseTimerId && coordinator_) {
+            coordinator_->AirMouseTick();
+            return 0;
+        }
+        break;
     case WM_DESTROY:
         pair_device_dialog_.reset();
         ble_central_ = nullptr;

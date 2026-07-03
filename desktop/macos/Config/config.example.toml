@@ -27,6 +27,12 @@ auto_enter = true
 debug_audio_cache = false
 # debug_audio_dir = "~/Library/Application Support/VoiceStick/DebugAudio"
 
+# 体感鼠标（侧键单击进入）：陀螺仪角速度经一阶低通速度环 + 幂律加速曲线驱动光标。
+air_mouse_gain = 4.0       # 速度增益，越大同样角速度光标越快
+air_mouse_tau = 0.10       # 速度跟踪时间常数（秒），越大惯性/缓停越长
+air_mouse_gamma = 1.35     # 加速曲线幂律指数，>1 慢稳快猛
+air_mouse_invert_y = false # 反转 Y 轴（适配用户习惯）
+
 [output]
 target = "focused_app"
 transform = "original"

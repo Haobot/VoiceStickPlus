@@ -496,29 +496,62 @@ bool VoiceStickCoordinator::IsAirMouseActive(const std::string& device_id) const
 
 bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
     if (IsAirMouseActive(device_id)) {
-        // 退出体感：清位、通知固件停表、恢复设备就绪显示。
+        // 退出体感：清位、清运动学状态、通知固件停表、恢复设备就绪显示。
         air_mouse_active_devices_.erase(device_id);
+        air_mouse_states_.erase(device_id);
         ble_->SendAirMouseEnabled(false, device_id);
         ble_->SendUiState("ready", "", device_id);
         LogCoordinatorLine("air mouse disabled on VS-" + device_id);
+        if (on_air_mouse_active_changed) on_air_mouse_active_changed(!air_mouse_states_.empty());
         return false;
     }
-    // 进入体感：置位、通知固件校准并上报 motion。
+    // 进入体感：置位、初始化运动学状态、通知固件校准并上报 motion。
     air_mouse_active_devices_.insert(device_id);
+    air_mouse_states_[device_id] = AirMouseDeviceState{};
     ble_->SendAirMouseEnabled(true, device_id);
     LogCoordinatorLine("air mouse enabled on VS-" + device_id);
+    if (on_air_mouse_active_changed) on_air_mouse_active_changed(!air_mouse_states_.empty());
     return true;
 }
 
+AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
+    AirMouseParams p;
+    p.gain = config_.air_mouse_gain;
+    p.tau = config_.air_mouse_tau;
+    p.gamma = config_.air_mouse_gamma;
+    p.invert_y = config_.air_mouse_invert_y;
+    return p;
+}
+
+void VoiceStickCoordinator::AirMouseTick() {
+    if (air_mouse_states_.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    const auto params = AirMouseParamsFromConfig();
+    const double stale_age_sec = std::chrono::duration<double>(kAirMouseOmegaStaleAge).count();
+    for (auto& [device_id, state] : air_mouse_states_) {
+        const double dt = state.has_last_tick
+            ? std::chrono::duration<double>(now - state.last_tick_t).count()
+            : std::chrono::duration<double>(kAirMouseTickInterval).count();
+        const double omega_age = std::chrono::duration<double>(now - state.last_omega_t).count();
+        const bool stale = omega_age > stale_age_sec;
+        const auto result = AirMouseStep(state.kin, state.last_omega_x, state.last_omega_y,
+                                        dt, stale, params);
+        state.last_tick_t = now;
+        state.has_last_tick = true;
+        if (result.dx != 0 || result.dy != 0) {
+            input_injector_->MoveMouse(result.dx, result.dy);
+        }
+    }
+}
+
 void VoiceStickCoordinator::HandleMotionEvent(const MotionEvent& event, const std::string& device_id) {
-    // 仅在该设备处于体感态时驱动光标；否则丢弃（固件在退出后应已停发）。
+    // 仅在该设备处于体感态时更新 omega；光标位移由 AirMouseTick 统一驱动，避免 50Hz 输入
+    // 抖动直注，且让静止时定时器能继续衰减 v 实现缓停。
     if (!IsAirMouseActive(device_id)) return;
-    const double gain = config_.air_mouse_gain;
-    const int dx = static_cast<int>(std::lround(event.dx * gain));
-    int dy = static_cast<int>(std::lround(event.dy * gain));
-    if (config_.air_mouse_invert_y) dy = -dy;
-    if (dx == 0 && dy == 0) return;
-    input_injector_->MoveMouse(dx, dy);
+    auto& state = air_mouse_states_[device_id];
+    state.last_omega_x = event.dx;
+    state.last_omega_y = event.dy;
+    state.last_omega_t = std::chrono::steady_clock::now();
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
