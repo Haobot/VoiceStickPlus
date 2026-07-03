@@ -62,8 +62,10 @@ GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 | 名称 | UUID | 方向 | 属性 | 载荷 |
 | --- | --- | --- | --- | --- |
 | `audio_tx` | `…5101` | 设备 → 主机 | notify | Opus 音频帧 |
-| `state_tx` | `…5102` | 设备 → 主机 | notify | 按键事件、电量、固件版本、`wifi_status` |
-| `control_rx` | `…5103` | 主机 → 设备 | write without response | `ui_state`、BLE OTA 控制、Wi-Fi 配网、`ota_pull`/`ota_commit` |
+| `state_tx` | `…5102` | 设备 → 主机 | notify | 按键事件、电量、固件版本 |
+| `control_rx` | `…5103` | 主机 → 设备 | write without response | `ui_state`、交互/敲击/体感鼠标设置、`ota_commit` |
+| `ota_rx` | `…5104` | 主机 → 设备 | write / write without response | BLE OTA 控制与数据帧 |
+| `ota_tx` | `…5105` | 设备 → 主机 | notify | BLE OTA 状态帧 |
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时需同步更新固件、macOS、Windows 和文档。
 
@@ -103,10 +105,10 @@ build_win.bat
 cmake -S desktop\windows -B desktop\windows\build-x64 -G Ninja
 cmake --build desktop\windows\build-x64
 ctest --test-dir desktop\windows\build-x64 --output-on-failure
-desktop\windows\build-x64\VoiceStickApp.exe
+desktop\windows\build-x64\VoiceStick.exe
 ```
 
-`VoiceStickCtl.exe` 是命令行 OTA 工具，经 BLE 触发 Wi-Fi 配网与 LAN HTTP OTA，用于调试固件升级。
+`VoiceStickApp` CMake 目标的产物是 `VoiceStick.exe`。固件升级走 BLE OTA（桌面端）或 USB 串口烧录，没有 Wi-Fi/LAN OTA 路径。
 
 ### 网站（Vue 3 + Vite，Node 22）
 
@@ -130,7 +132,7 @@ npm run build    # 最小验证
 
 | 字段 | 说明 |
 | --- | --- |
-| `asr_provider` | `volcengine` 或 `voicestick_cloud` |
+| `asr_provider` | `volcengine`、`voicestick_cloud` 或 `tencent` |
 | `volcengine_api_key` | 火山引擎直连 API key（`X-Api-Key`） |
 | `voicestick_api_key` / `voicestick_cloud_url` | VoiceStick Cloud 中继 key 与 WebSocket URL |
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM，用于翻译与精修 |
@@ -163,9 +165,9 @@ npm run build    # 最小验证
 ## 固件更新
 
 - **BLE OTA**：桌面端在启动、设备连接/重连和手动刷新时检查按哈希签名的 manifest，校验大小与 SHA-256 后按已连接设备经 BLE 推送 OTA 镜像。
-- **Wi-Fi / LAN HTTP OTA**：桌面端经 BLE 下发 Wi-Fi STA 凭据，设备随后在局域网经 HTTP(S) 拉取固件。Wi-Fi 必须在 BLE 稳定连接后才启动，OTA pull 启动前须通过 park gate（非录音、无其它 OTA 进行中）。
+- **USB 串口烧录**：浏览器烧录器（或 `idf.py flash`）在偏移 `0x0` 经 USB 写入 merged 镜像。
 
-完整发布流程见 `Doc/Ref/release.md`，Wi-Fi 配网与 LAN OTA 设计见 `Doc/Plan/`。
+完整发布流程见 `Doc/Ref/release.md`。
 
 ## 调试音频
 
