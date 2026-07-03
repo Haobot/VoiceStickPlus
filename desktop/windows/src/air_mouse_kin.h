@@ -9,6 +9,8 @@ namespace voicestick {
 struct AirMouseKinState {
     double vx = 0.0;
     double vy = 0.0;
+    double fx = 0.0;  // 亚像素位移累积：小 v 时保留小数，够 1px 才输出，避免 round 丢失精细移动
+    double fy = 0.0;
 };
 
 // 体感鼠标加速度/PD 参数（由配置项填充，真机标定）。

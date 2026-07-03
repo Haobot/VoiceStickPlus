@@ -2180,6 +2180,21 @@ void TestAirMouseStepDtJitterRobust() {
     }
 }
 
+// 亚像素累积：小 omega 稳态 v 小，单帧 v×dt<0.5 会被 round 丢成 0；累积多帧才输出 1px，
+// 让精细微调连续移动而非不动/跳变。
+void TestAirMouseStepSubPixelAccumulation() {
+    AirMouseKinState s;
+    AirMouseParams p;  // gain=4, gamma=1.35
+    // omega=3：v_target=3^1.35×4≈16.7 px/s，稳态单帧 v×dt≈0.27，round 为 0。
+    int total_dx = 0;
+    for (int i = 0; i < 100; ++i) {
+        const auto r = AirMouseStep(s, 3, 0, 0.016, false, p);
+        total_dx += r.dx;
+    }
+    assert(total_dx > 0);   // 亚像素累积后小动作有位移（非全 0）
+    assert(total_dx < 100); // 且非每帧 1px（亚像素，非整数放大）
+}
+
 // 体感鼠标配置项 Save/Load 往返 + Clamp 边界。
 void TestAppConfigAirMouseRoundTrip() {
     AppConfig config;
@@ -2218,6 +2233,7 @@ int main() {
     TestAirMouseStepGammaShape();
     TestAirMouseStepInvertY();
     TestAirMouseStepDtJitterRobust();
+    TestAirMouseStepSubPixelAccumulation();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();

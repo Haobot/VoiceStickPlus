@@ -32,10 +32,17 @@ AirMouseStepResult AirMouseStep(AirMouseKinState& state,
     state.vx += (v_target_x - state.vx) * alpha;
     state.vy += (v_target_y - state.vy) * alpha;
 
-    // 输出位移 = v × dt，四舍五入到整像素，供 SendInput 相对移动。
+    // 亚像素累积：v×dt 加到 fx，输出整数部分，保留小数。小 v 时单帧不足 1px，
+    // 累积多帧才输出，避免 round 丢失精细移动（精细动作精度的关键）。
+    state.fx += state.vx * dt_seconds;
+    state.fy += state.vy * dt_seconds;
+    const int dx_int = static_cast<int>(state.fx);  // 向 0 截断，正负对称
+    const int dy_int = static_cast<int>(state.fy);
+    state.fx -= dx_int;
+    state.fy -= dy_int;
     AirMouseStepResult result;
-    result.dx = static_cast<int>(std::lround(state.vx * dt_seconds));
-    result.dy = static_cast<int>(std::lround(state.vy * dt_seconds));
+    result.dx = dx_int;
+    result.dy = dy_int;
     return result;
 }
 
