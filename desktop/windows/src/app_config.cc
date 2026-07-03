@@ -349,9 +349,9 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
     if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
-    if (key == "air_mouse_sensitivity") config.air_mouse_sensitivity = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity));
+    if (key == "air_mouse_sensitivity_x") config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_x));
+    if (key == "air_mouse_sensitivity_y") config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_y));
     if (key == "air_mouse_tau") config.air_mouse_tau = AirMouseTauClamp(DoubleValue(value, config.air_mouse_tau));
-    if (key == "air_mouse_gamma") config.air_mouse_gamma = AirMouseGammaClamp(DoubleValue(value, config.air_mouse_gamma));
     if (key == "air_mouse_invert_y") config.air_mouse_invert_y = BoolValue(value, config.air_mouse_invert_y);
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
@@ -470,9 +470,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
         if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
-        if (auto value = TomlInt(table, "air_mouse_sensitivity")) config.air_mouse_sensitivity = AirMouseSensitivityClamp(*value);
+        if (auto value = TomlInt(table, "air_mouse_sensitivity_x")) config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(*value);
+        if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
         if (auto value = TomlDouble(table, "air_mouse_tau")) config.air_mouse_tau = AirMouseTauClamp(*value);
-        if (auto value = TomlDouble(table, "air_mouse_gamma")) config.air_mouse_gamma = AirMouseGammaClamp(*value);
         if (auto value = TomlBool(table, "air_mouse_invert_y")) config.air_mouse_invert_y = *value;
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
@@ -545,9 +545,9 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
     output << "tap_sensitivity = " << tap_sensitivity << "\n";
-    output << "air_mouse_sensitivity = " << air_mouse_sensitivity << "\n";
+    output << "air_mouse_sensitivity_x = " << air_mouse_sensitivity_x << "\n";
+    output << "air_mouse_sensitivity_y = " << air_mouse_sensitivity_y << "\n";
     output << "air_mouse_tau = " << air_mouse_tau << "\n";
-    output << "air_mouse_gamma = " << air_mouse_gamma << "\n";
     output << "air_mouse_invert_y = " << (air_mouse_invert_y ? "true" : "false") << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
@@ -922,12 +922,6 @@ double AirMouseTauClamp(double tau) {
     // 速度跟踪时间常数约束在 [0.02, 0.5]，越界回落默认 0.10。
     if (!(tau > 0.0) || tau > 0.5 || tau < 0.02) return 0.10;
     return tau;
-}
-
-double AirMouseGammaClamp(double gamma) {
-    // 加速曲线幂律指数约束在 [1.0, 2.0]，越界回落默认 1.35。
-    if (!(gamma >= 1.0) || gamma > 2.0) return 1.35;
-    return gamma;
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {
