@@ -5,18 +5,35 @@
 namespace voicestick {
 
 // 三段线性增益因子：微调段压低、中段线性过渡、甩动段放大（慢稳快猛）。
-// 拐点 kLowThresh/kHighThresh 处两侧 factor 连续，无跳变。
-double AirMouseGainFactor(double omega_abs) {
+// 拐点 low_thresh/high_thresh 处两侧 factor 连续，无跳变。curve 运行期可变（热调参）。
+double AirMouseGainFactor(double omega_abs, const AirMouseCurveParams& curve) {
     const double a = std::fabs(omega_abs);
-    if (a < kAirMouseLowThresh) {
-        return kAirMouseLowFactor;
+    if (a < curve.low_thresh) {
+        return curve.low_factor;
     }
-    if (a < kAirMouseHighThresh) {
-        // 中段线性插值 kLowFactor → kHighFactor。
-        return kAirMouseLowFactor + (kAirMouseHighFactor - kAirMouseLowFactor) *
-               (a - kAirMouseLowThresh) / (kAirMouseHighThresh - kAirMouseLowThresh);
+    if (a < curve.high_thresh) {
+        // 中段线性插值 low_factor → high_factor。
+        return curve.low_factor + (curve.high_factor - curve.low_factor) *
+               (a - curve.low_thresh) / (curve.high_thresh - curve.low_thresh);
     }
-    return kAirMouseHighFactor;
+    return curve.high_factor;
+}
+
+// 钳位曲线参数到合法范围，保证 low_thresh < high_thresh（防中段除零与曲线退化）。
+// 配置解析与热调参 UI 均复用：越界值夹紧到标定上下限，low≥high 时退 low=high-1。
+AirMouseCurveParams AirMouseCurveClamp(AirMouseCurveParams curve) {
+    if (curve.low_thresh < 1.0) curve.low_thresh = 1.0;
+    if (curve.low_thresh > 30.0) curve.low_thresh = 30.0;
+    if (curve.high_thresh < 30.0) curve.high_thresh = 30.0;
+    if (curve.high_thresh > 80.0) curve.high_thresh = 80.0;
+    if (curve.low_thresh >= curve.high_thresh) {
+        curve.low_thresh = curve.high_thresh - 1.0;
+    }
+    if (curve.low_factor < 0.05) curve.low_factor = 0.05;
+    if (curve.low_factor > 0.5) curve.low_factor = 0.5;
+    if (curve.high_factor < 2.0) curve.high_factor = 2.0;
+    if (curve.high_factor > 6.0) curve.high_factor = 6.0;
+    return curve;
 }
 
 AirMouseStepResult AirMouseStep(AirMouseKinState& state,
@@ -32,8 +49,8 @@ AirMouseStepResult AirMouseStep(AirMouseKinState& state,
 
     // 速度控制：目标速度 = omega × gain × factor(|omega|)（三段线性增益曲线，慢稳快猛）。
     // omega=0 即 v_target=0（手停即停）。
-    const double v_target_x = ox * params.gain_x * AirMouseGainFactor(ox);
-    const double v_target_y = oy * params.gain_y * AirMouseGainFactor(oy);
+    const double v_target_x = ox * params.gain_x * AirMouseGainFactor(ox, params.curve);
+    const double v_target_y = oy * params.gain_y * AirMouseGainFactor(oy, params.curve);
 
     // 速度环（一阶低通）：平滑陀螺仪噪声，手停后 v 经 tau 衰减归零（滑行 ≈ 3×tau）。
     const double alpha = 1.0 - std::exp(-dt_seconds / params.tau);

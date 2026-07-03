@@ -353,6 +353,10 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "air_mouse_sensitivity_y") config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_y));
     if (key == "air_mouse_tau") config.air_mouse_tau = AirMouseTauClamp(DoubleValue(value, config.air_mouse_tau));
     if (key == "air_mouse_invert_y") config.air_mouse_invert_y = BoolValue(value, config.air_mouse_invert_y);
+    if (key == "air_mouse_curve_low_thresh") config.air_mouse_curve_low_thresh = DoubleValue(value, config.air_mouse_curve_low_thresh);
+    if (key == "air_mouse_curve_high_thresh") config.air_mouse_curve_high_thresh = DoubleValue(value, config.air_mouse_curve_high_thresh);
+    if (key == "air_mouse_curve_low_factor") config.air_mouse_curve_low_factor = DoubleValue(value, config.air_mouse_curve_low_factor);
+    if (key == "air_mouse_curve_high_factor") config.air_mouse_curve_high_factor = DoubleValue(value, config.air_mouse_curve_high_factor);
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
@@ -474,6 +478,10 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
         if (auto value = TomlDouble(table, "air_mouse_tau")) config.air_mouse_tau = AirMouseTauClamp(*value);
         if (auto value = TomlBool(table, "air_mouse_invert_y")) config.air_mouse_invert_y = *value;
+        if (auto value = TomlDouble(table, "air_mouse_curve_low_thresh")) config.air_mouse_curve_low_thresh = *value;
+        if (auto value = TomlDouble(table, "air_mouse_curve_high_thresh")) config.air_mouse_curve_high_thresh = *value;
+        if (auto value = TomlDouble(table, "air_mouse_curve_low_factor")) config.air_mouse_curve_low_factor = *value;
+        if (auto value = TomlDouble(table, "air_mouse_curve_high_factor")) config.air_mouse_curve_high_factor = *value;
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
@@ -549,6 +557,10 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "air_mouse_sensitivity_y = " << air_mouse_sensitivity_y << "\n";
     output << "air_mouse_tau = " << air_mouse_tau << "\n";
     output << "air_mouse_invert_y = " << (air_mouse_invert_y ? "true" : "false") << "\n";
+    output << "air_mouse_curve_low_thresh = " << air_mouse_curve_low_thresh << "\n";
+    output << "air_mouse_curve_high_thresh = " << air_mouse_curve_high_thresh << "\n";
+    output << "air_mouse_curve_low_factor = " << air_mouse_curve_low_factor << "\n";
+    output << "air_mouse_curve_high_factor = " << air_mouse_curve_high_factor << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";

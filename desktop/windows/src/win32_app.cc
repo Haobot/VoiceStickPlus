@@ -36,6 +36,7 @@ constexpr UINT kMenuSettings = 1002;
 constexpr UINT kMenuQuit = 1005;
 constexpr UINT kMenuPairScan = 1006;
 constexpr UINT kMenuCheckAppUpdates = 1008;
+constexpr UINT kMenuAirMouseTuning = 1007;
 constexpr UINT kMenuHoldToTalk = 1009;
 constexpr UINT kMenuClickToTalk = 1010;
 constexpr UINT kMenuAutoEnter = 1011;
@@ -717,6 +718,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         case kMenuSettings:
             ShowSettings();
             return 0;
+        case kMenuAirMouseTuning:
+            ShowAirMouseTuning();
+            return 0;
         case kMenuQuit:
             ShutdownAndQuit();
             return 0;
@@ -1165,6 +1169,7 @@ void Win32App::ShowTrayMenu() {
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, TrW(StringId::kMenuSettings, language).c_str());
+    AppendMenuW(menu, MF_STRING, kMenuAirMouseTuning, L"体感鼠标调参（热调参）");
     if (!config_.portable_mode) {
         AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
                     TrW(StringId::kMenuCheckAppUpdates, language).c_str());
@@ -1532,6 +1537,31 @@ void Win32App::ShowSettings() {
         };
     }
     settings_dialog_->Show();
+}
+
+void Win32App::ShowAirMouseTuning() {
+    if (!air_mouse_tuning_window_) {
+        air_mouse_tuning_window_ = std::make_unique<AirMouseTuningWindow>(
+            instance_, hwnd_,
+            coordinator_ ? coordinator_->GetAirMouseParamsForTuning() : AirMouseParams{});
+        air_mouse_tuning_window_->on_params_changed = [this](const AirMouseTuningState& state) {
+            if (coordinator_) coordinator_->UpdateAirMouseParams(state.ToParams());
+        };
+        air_mouse_tuning_window_->on_save_requested = [this](const AirMouseTuningState& state) {
+            config_.air_mouse_sensitivity_x = state.sensitivity_x;
+            config_.air_mouse_sensitivity_y = state.sensitivity_y;
+            config_.air_mouse_tau = state.tau;
+            config_.air_mouse_invert_y = state.invert_y;
+            config_.air_mouse_curve_low_thresh = state.curve.low_thresh;
+            config_.air_mouse_curve_high_thresh = state.curve.high_thresh;
+            config_.air_mouse_curve_low_factor = state.curve.low_factor;
+            config_.air_mouse_curve_high_factor = state.curve.high_factor;
+            config_.Save();
+            if (coordinator_) coordinator_->UpdateConfig(config_);
+            LogLine("Air mouse tuning saved");
+        };
+    }
+    air_mouse_tuning_window_->Show();
 }
 
 void Win32App::StartFirmwareUpdate(const std::string& device_id) {

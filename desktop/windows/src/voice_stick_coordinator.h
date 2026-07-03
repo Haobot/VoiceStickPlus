@@ -179,6 +179,10 @@ public:
     void Start();
     void Shutdown();
     void UpdateConfig(AppConfig config);
+    // 热调参：仅更新运行期 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
+    void UpdateAirMouseParams(const AirMouseParams& params);
+    // 取当前运行期 air_mouse 参数（调参窗口初始值）。
+    AirMouseParams GetAirMouseParamsForTuning() const { return live_air_mouse_params_; }
     void ReconnectPairedDevices();
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
@@ -361,6 +365,7 @@ private:
         std::chrono::steady_clock::time_point last_omega_t;
     };
     std::map<std::string, AirMouseDeviceState> air_mouse_states_;
+    AirMouseParams live_air_mouse_params_;  // 运行期参数（AirMouseTick 用，热调参面板经 UpdateAirMouseParams 即时改）
     AirMouseParams AirMouseParamsFromConfig() const;
     static constexpr std::chrono::milliseconds kAirMouseTickInterval{16};   // ~60Hz
     static constexpr std::chrono::milliseconds kAirMouseOmegaStaleAge{30}; // omega 超 30ms 视为静止
