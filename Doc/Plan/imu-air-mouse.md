@@ -121,7 +121,7 @@ state_tx 的 ValueChanged 回调中，先看第 2 字节：`0x11` → `ParseMoti
 
 - `InputInjector` 抽象新增：`virtual void MoveMouse(int dx, int dy) = 0;`、`virtual void ClickLeftButton() = 0;`（down+up），可选 `PressLeftButton/ReleaseLeftButton` 供后续拖拽。
 - 协调器新增每设备 `air_mouse_active_` 标志（沿用现有按 device_id 组织的多设备结构）。
-- **进入/退出**：`HandleSecondaryButtonClick` 中——当前若 air_mouse 关，则进入：置位、`ble_->SendAirMouseEnabled(true)`、（可选）下发 `ui_state` 提示、暂停 tap 注入；若开，则退出：清位、`SendAirMouseEnabled(false)`。注意侧键原语义（idle 时恢复上次输入确认）需保留——仅在无待恢复输入时用于切换，或明确"体感态优先"（真机确认，先按"体感态开则单击退出，否则走原逻辑"实现）。
+- **进入/退出**：`HandleSecondaryButtonClick`（侧键单击）中——air_mouse 关则进入（置位、`SendAirMouseEnabled(true)`），开则退出（清位、`SendAirMouseEnabled(false)`）；有活跃录音/识别/待粘贴时侧键单击仍走原取消语义。**侧键原「恢复上次输入确认」已迁移到侧键双击**：固件区分侧键单/双击（单击延迟到 500ms 双击窗口超时后发 `button_click secondary`，窗口内第二击发 `button_double_click secondary`），桌面端 `HandleButtonDoubleClick` 的 secondary 分支调 `RestoreLastInputConfirmation`。两手势彻底分离，无抢占。
 - **移动**：新增 `OnMotionEvent(device_id, dx, dy)`——仅当该设备 `air_mouse_active_` 时，经加速曲线（`out = dx * gain`，可加非线性）后 `input_injector_->MoveMouse(out_x, out_y)`。
 - **点击**：`HandleButtonClick` 中，若 `air_mouse_active_` 为 true，则 `input_injector_->ClickLeftButton()` 并 return，不走录音/字幕逻辑。
 - **门控**：`air_mouse_active_` 为 true 时，`HandlePrimaryButtonDown`（录音启动）与 `HandleTapEvent` 均短路返回，避免冲突。
@@ -174,5 +174,5 @@ void ClickLeftButton() override;              // LEFTDOWN + LEFTUP
 
 - **轴向/符号不确定**：真机第一版可能上下/左右反，标定阶段解决；`air_mouse_invert_y` 兜底。
 - **漂移**：若死区+零偏仍漂，考虑桌面端二次死区或固件周期性重校准（静止 N 帧重采基线）。
-- **侧键语义冲突**：侧键原"恢复上次输入"与"切换体感"共用，需在 idle 有待恢复输入时明确优先级，标定期确认交互，必要时回退到"体感态仅用于退出、进入改用双击侧键"等方案。
+- **侧键语义冲突**：已解决——侧键单击=进/退体感，侧键双击=恢复上次输入，固件层区分单/双击（见 6.3）。代价：侧键单击响应延迟 500ms（与主键单击手感一致）。
 - **回退**：所有改动以新增为主（新帧类型、新事件、新态标志），关闭 air_mouse 后行为与现状完全一致，风险可控。

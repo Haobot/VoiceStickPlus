@@ -422,18 +422,27 @@ void VoiceStickCoordinator::HandleSecondaryButtonClick(const std::string& device
         CancelSubtitleCyclesForDevice(device_id, "secondary_cancel");
         return;
     }
-    // 有活跃录音/识别/待粘贴：保留侧键原取消/恢复语义，不被体感抢占。
+    // 有活跃录音/识别/待粘贴：侧键单击保留原取消语义。
     if (active_session_id_.has_value() || IsWaitingForFinalText() ||
         !pending_paste_state_.IsIdle()) {
         CancelPendingPaste(device_id);
         return;
     }
-    // 真正空闲：侧键单击进入体感鼠标模式（体感优先决策，见 air-mouse-secondary-conflict 记忆）。
-    // 注意：这会让空闲态侧键不再触发"恢复上次输入"，该取舍待用户最终确认。
+    // 真正空闲：侧键单击进入体感鼠标模式。
+    // 「恢复上次输入确认」已改由侧键双击触发（见 HandleButtonDoubleClick 的 secondary 分支），
+    // 与进入体感的单击手势分离，避免抢占。
     ToggleAirMouse(device_id);
 }
 
 void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id) {
+    // 侧键双击：恢复上次输入确认（与侧键单击=进/退体感分离）。
+    if (event.button == "secondary") {
+        // 体感态下忽略侧键双击的恢复语义，避免与体感操作冲突。
+        if (IsAirMouseActive(device_id)) return;
+        LogCoordinatorLine("secondary double-click on VS-" + device_id + ", restoring last input");
+        RestoreLastInputConfirmation(device_id);
+        return;
+    }
     if (event.button != "primary") return;
     LogCoordinatorLine("double-click detected on VS-" + device_id + ", sending Enter");
     // 如果当前有活跃录音，取消它。
