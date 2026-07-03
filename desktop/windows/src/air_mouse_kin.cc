@@ -4,6 +4,21 @@
 
 namespace voicestick {
 
+// 三段线性增益因子：微调段压低、中段线性过渡、甩动段放大（慢稳快猛）。
+// 拐点 kLowThresh/kHighThresh 处两侧 factor 连续，无跳变。
+double AirMouseGainFactor(double omega_abs) {
+    const double a = std::fabs(omega_abs);
+    if (a < kAirMouseLowThresh) {
+        return kAirMouseLowFactor;
+    }
+    if (a < kAirMouseHighThresh) {
+        // 中段线性插值 kLowFactor → kHighFactor。
+        return kAirMouseLowFactor + (kAirMouseHighFactor - kAirMouseLowFactor) *
+               (a - kAirMouseLowThresh) / (kAirMouseHighThresh - kAirMouseLowThresh);
+    }
+    return kAirMouseHighFactor;
+}
+
 AirMouseStepResult AirMouseStep(AirMouseKinState& state,
                                 std::int16_t omega_x,
                                 std::int16_t omega_y,
@@ -15,9 +30,10 @@ AirMouseStepResult AirMouseStep(AirMouseKinState& state,
     double oy = omega_is_stale ? 0.0 : static_cast<double>(omega_y);
     if (params.invert_y) oy = -oy;
 
-    // 速度控制：目标速度直接跟随角速度，omega=0 即 v_target=0（手停即停）。
-    const double v_target_x = ox * params.gain_x;
-    const double v_target_y = oy * params.gain_y;
+    // 速度控制：目标速度 = omega × gain × factor(|omega|)（三段线性增益曲线，慢稳快猛）。
+    // omega=0 即 v_target=0（手停即停）。
+    const double v_target_x = ox * params.gain_x * AirMouseGainFactor(ox);
+    const double v_target_y = oy * params.gain_y * AirMouseGainFactor(oy);
 
     // 速度环（一阶低通）：平滑陀螺仪噪声，手停后 v 经 tau 衰减归零（滑行 ≈ 3×tau）。
     const double alpha = 1.0 - std::exp(-dt_seconds / params.tau);

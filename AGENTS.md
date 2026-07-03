@@ -324,6 +324,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `air_mouse_sensitivity_y`：体感鼠标上下（pitch）灵敏度档位（整数 `1..10`，默认 `5`），映射 `gain_y = sensitivity_y × 16`。
 - `air_mouse_tau`：体感鼠标速度环时间常数（秒，默认 `0.05`），手停滑行 ≈ 3×tau，越大缓停越长。
 - `air_mouse_invert_y`：体感鼠标是否反转 Y 轴，默认 `false`。
+- 体感鼠标增益曲线（非配置项，编译期常量，真机标定）：`v_target = omega × gain × factor(|omega|)`，三段线性——微调段 `|omega|<5` → factor `0.3`（精准对位），中段 `5..40` 线性插值 `0.3→4.0`，甩动段 `|omega|≥40` → factor `4.0`（跨屏），慢稳快猛。固件死区 `3 dps`（下调自 4 dps，配合 jerk 静止判据 + 静止帧归零兜底，让微调段信号不被源头截断）。曲线参数见 `desktop/windows/src/air_mouse_kin.h`，方案见 `Doc/Plan/air-mouse-gain-curve.md`。
 
 Windows 调试音频缓存目录：
 - 标准安装：`%LOCALAPPDATA%\VoiceStick\DebugAudio`
