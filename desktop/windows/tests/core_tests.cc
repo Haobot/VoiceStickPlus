@@ -1761,8 +1761,8 @@ void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
     assert(input.total_dx >= 1500);  // 速度模型即时达速，0.8s 应远超 400（10级 gain=160）
 }
 
-// 10 级灵敏度下，持续转动 5s 的平均光标速度应受 gain 限制(≤5000px/s)，
-// 防止 gain 过大致光标过快。速度模型恒速不累积，约束 gain 不可过大。
+// 10 级灵敏度下，持续转动 5s 的平均光标速度受增益曲线限制。
+// omega=24 落中段 factor≈2.31，稳态 v≈8873px/s；上限 12000 留余量，约束曲线/增益不可过大。
 void TestCoordinatorAirMouseSustainedRunBounded() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -1783,7 +1783,7 @@ void TestCoordinatorAirMouseSustainedRunBounded() {
         coordinator.AirMouseTick();
     }
     const double avg_speed = static_cast<double>(input.total_dx) / 5.0;
-    assert(avg_speed <= 5000.0);  // 长转不过快
+    assert(avg_speed <= 12000.0);  // 长转不过快（中段放大后上限放宽）
 }
 
 // 手停即停（协调器）：转动 1s 后上报 omega=0（手停），v_target=0，v 快速归零。
@@ -1814,7 +1814,7 @@ void TestCoordinatorAirMouseStopsOnZeroOmega() {
         coordinator.AirMouseTick();
     }
     const int dx_after = input.total_dx - dx_during;
-    assert(dx_after < 300);  // 手停后位移有界（速度模型 v≈v0×tau≈192；旧角度模型 ~641）
+    assert(dx_after < 700);  // 手停后位移有界（增益曲线 omega=24 中段 v0≈8873，v0×tau≈443，离散积分≈518；上限 700 留余量。旧角度模型 ~641）
 }
 
 // 侧键双击恢复上次输入确认（与单击进体感分离）。
@@ -2265,14 +2265,77 @@ void TestAirMouseStepStopsWhenStale() {
     assert(std::fabs(s.vx) < 1.0);  // v 快速归零（手停即停）
 }
 
-// v 稳态正比于 omega×gain（v_target=omega×gain，速度环收敛后 v≈v_target）。
-void TestAirMouseStepVelocityProportionalToOmega() {
+// ===== 三段线性增益曲线测试 =====
+// v_target = omega × gain × factor(|omega|)，factor 三段线性：
+//   微调段 |omega|<5 → 0.3；中段 5..40 → 0.3..4.0 线性插值；甩动段 |omega|>=40 → 4.0。
+// 慢稳快猛：微调段压低精准对位，甩动段放大跨屏。当前线性实现 v_target=omega×gain
+// 无 factor，下列测试约束曲线形状（红灯：线性下断言全失败）。
+
+// 微调段（omega=3）：factor=0.3，稳态 vx ≈ 3×gain×0.3，低于线性 3×gain。
+void TestAirMouseStepGainCurveLowRange() {
+    AirMouseKinState s;
+    AirMouseParams p;  // 默认 gain_x=16, tau=0.05
+    for (int i = 0; i < 200; ++i) AirMouseStep(s, 3, 0, 0.016, false, p);
+    const double v_target = 3.0 * p.gain_x * 0.3;
+    assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
+    assert(s.vx < 3.0 * p.gain_x);  // 低于线性（factor<1）
+}
+
+// 甩动段（omega=80）：factor=4.0，稳态 vx ≈ 80×gain×4.0，高于线性 80×gain。
+void TestAirMouseStepGainCurveHighRange() {
     AirMouseKinState s;
     AirMouseParams p;
-    for (int i = 0; i < 200; ++i) AirMouseStep(s, 10, 0, 0.016, false, p);  // 3.2s
-    const double v_target = 10.0 * p.gain_x;
+    for (int i = 0; i < 200; ++i) AirMouseStep(s, 80, 0, 0.016, false, p);
+    const double v_target = 80.0 * p.gain_x * 4.0;
     assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
-    assert(s.vx > 0.0);
+    assert(s.vx > 80.0 * p.gain_x);  // 高于线性（factor>1）
+}
+
+// 中段（omega=20）：factor=0.3+3.7×15/35≈1.886，稳态 vx ≈ 20×gain×1.886。
+void TestAirMouseStepGainCurveMidRange() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    for (int i = 0; i < 200; ++i) AirMouseStep(s, 20, 0, 0.016, false, p);
+    const double factor = 0.3 + (4.0 - 0.3) * (20.0 - 5.0) / (40.0 - 5.0);
+    const double v_target = 20.0 * p.gain_x * factor;
+    assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
+}
+
+// 曲线形状：微调段低于线性、中段与甩动段高于线性（慢稳快猛）。
+void TestAirMouseStepGainCurveShape() {
+    AirMouseParams p;
+    auto steady_v = [&](int omega) {
+        AirMouseKinState s;
+        for (int i = 0; i < 200; ++i) AirMouseStep(s, omega, 0, 0.016, false, p);
+        return s.vx;
+    };
+    assert(steady_v(3) < 3.0 * p.gain_x);     // 微调段 factor=0.3 < 1
+    assert(steady_v(20) > 20.0 * p.gain_x);   // 中段 factor≈1.886 > 1
+    assert(steady_v(80) > 80.0 * p.gain_x);   // 甩动段 factor=4.0 > 1
+}
+
+// 拐点连续：omega=5（微调段上限=中段下限）处 factor=0.3，无上跳。
+void TestAirMouseStepGainCurveContinuousAtLowThreshold() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    for (int i = 0; i < 200; ++i) AirMouseStep(s, 5, 0, 0.016, false, p);
+    // 拐点处微调段外推与中段起点 factor 都=0.3，v_target=5×gain×0.3
+    const double v_target = 5.0 * p.gain_x * 0.3;
+    assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
+}
+
+// 负向对称：omega=-80 稳态 vx ≈ -80×gain×4.0，|vx| 与正向相等（factor 用 |omega|）。
+void TestAirMouseStepGainCurveNegative() {
+    AirMouseParams p;
+    AirMouseKinState sp, sn;
+    for (int i = 0; i < 200; ++i) {
+        AirMouseStep(sp, 80, 0, 0.016, false, p);
+        AirMouseStep(sn, -80, 0, 0.016, false, p);
+    }
+    const double v_target = 80.0 * p.gain_x * 4.0;
+    assert(std::fabs(sp.vx - v_target) < std::fabs(v_target) * 0.05);
+    assert(std::fabs(sn.vx + v_target) < std::fabs(v_target) * 0.05);  // 负向对称
+    assert(sn.vx < 0.0);
 }
 
 // 分轴 gain：gain_x ≠ gain_y 时，同 omega 下 vx ≠ vy。
@@ -2354,7 +2417,12 @@ int main() {
     TestMotionFrameParsing();
     TestAirMouseStepVelocityFollowsOmega();
     TestAirMouseStepStopsWhenStale();
-    TestAirMouseStepVelocityProportionalToOmega();
+    TestAirMouseStepGainCurveLowRange();
+    TestAirMouseStepGainCurveHighRange();
+    TestAirMouseStepGainCurveMidRange();
+    TestAirMouseStepGainCurveShape();
+    TestAirMouseStepGainCurveContinuousAtLowThreshold();
+    TestAirMouseStepGainCurveNegative();
     TestAirMouseStepAxisGain();
     TestAirMouseStepInvertY();
     TestAirMouseStepDtJitterRobust();
