@@ -41,6 +41,7 @@ enum class StringId {
     kSettingsImuWakeSensitivityHigh,
     kSettingsTapToArrow,
     kSettingsTapSensitivity,
+    kSettingsAirMouseSensitivity,
     kSettingsDebugDir,
     kSettingsChooseDir,
     kSettingsOpenConfigFolder,
