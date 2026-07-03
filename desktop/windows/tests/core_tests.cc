@@ -1678,6 +1678,65 @@ void TestCoordinatorAirMouseGatesRecordingAndTap() {
     assert(input.arrow_down_count == 0);
 }
 
+// 设备断连时清理体感态，避免残留激活拦截重连后的主键录音。
+void TestCoordinatorAirMouseResetOnDisconnect() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    bool last_active = false;
+    coordinator.on_air_mouse_active_changed = [&](bool active) { last_active = active; };
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态 → 回调 true。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(last_active);
+
+    // 断连 → 体感态必须清理（回调 false），否则残留激活会吞掉后续主键录音。
+    ble_ptr->connected_device_ids.erase("5A74");
+    ble_ptr->on_connection_change({});
+    assert(!last_active);
+
+    // 重连后主键按下应启动录音（体感已清，不再被拦截）。
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->sent_air_mouse_enabled.clear();
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+    assert(ui.show_listening_count >= 1);
+    // 重连后不应残留体感下发。
+    assert(ble_ptr->sent_air_mouse_enabled.empty());
+}
+
+// forget 设备时清理体感态，避免残留拦截重连后的主键录音。
+void TestCoordinatorAirMouseResetOnForget() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"5A74"};
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    bool last_active = false;
+    coordinator.on_air_mouse_active_changed = [&](bool active) { last_active = active; };
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(last_active);
+
+    // forget → 体感态必须清理（回调 false + 下发 false 通知固件停表）。
+    coordinator.RemovePairedDevice("5A74");
+    assert(!last_active);
+    assert(!ble_ptr->sent_air_mouse_enabled.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
+}
+
 // 侧键双击恢复上次输入确认（与单击进体感分离）。
 void TestCoordinatorSecondaryDoubleClickRestoresLastInput() {
     auto ble = std::make_unique<FakeBleCentral>();
@@ -2273,6 +2332,8 @@ int main() {
     TestCoordinatorAirMouseStateResetOnToggle();
     TestCoordinatorAirMouseActiveChangedCallback();
     TestCoordinatorAirMouseGatesRecordingAndTap();
+    TestCoordinatorAirMouseResetOnDisconnect();
+    TestCoordinatorAirMouseResetOnForget();
     TestCoordinatorSecondaryDoubleClickRestoresLastInput();
     TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();

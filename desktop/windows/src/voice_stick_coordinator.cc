@@ -216,6 +216,16 @@ void VoiceStickCoordinator::RemovePairedDevice(const std::string& device_id) {
     if (it == paired_device_ids_.end()) return;
     paired_device_ids_.erase(it);
     config_.paired_device_ids = paired_device_ids_;
+    // forget 后设备会断开重连：清理残留体感态，避免拦截重连后的主键录音。
+    {
+        const bool was_active = air_mouse_active_devices_.erase(device_id) > 0;
+        air_mouse_states_.erase(device_id);
+        if (was_active) {
+            ble_->SendAirMouseEnabled(false, device_id);
+            LogCoordinatorLine("air mouse disabled on VS-" + device_id + " (forget)");
+            if (on_air_mouse_active_changed) on_air_mouse_active_changed(!air_mouse_states_.empty());
+        }
+    }
     if (active_device_id_.has_value() && *active_device_id_ == device_id) {
         // The active recording cycle was tied to the device we just forgot;
         // reset transient session state so a stale frame can't run the rest
@@ -535,6 +545,12 @@ void VoiceStickCoordinator::AirMouseTick() {
         const bool stale = omega_age > stale_age_sec;
         const auto result = AirMouseStep(state.kin, state.last_omega_x, state.last_omega_y,
                                         dt, stale, params);
+        static int tick_log_counter = 0;
+        if (++tick_log_counter % 30 == 0) {
+            LogCoordinatorLine("tick VS-" + device_id + " theta_x=" + std::to_string(state.kin.theta_x) +
+                               " vx=" + std::to_string(state.kin.vx) + " dx=" + std::to_string(result.dx) +
+                               " stale=" + (stale ? "1" : "0") + " omx=" + std::to_string(state.last_omega_x));
+        }
         if (result.dx != 0 || result.dy != 0) {
             input_injector_->MoveMouse(result.dx, result.dy);
         }
@@ -549,6 +565,7 @@ void VoiceStickCoordinator::HandleMotionEvent(const MotionEvent& event, const st
     state.last_omega_x = event.dx;
     state.last_omega_y = event.dy;
     state.last_omega_t = std::chrono::steady_clock::now();
+    LogCoordinatorLine("motion VS-" + device_id + " dx=" + std::to_string(event.dx) + " dy=" + std::to_string(event.dy));
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
@@ -1340,6 +1357,19 @@ void VoiceStickCoordinator::CancelRecognitionInProgress() {
 
 void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
     if (is_shutdown_) return;
+    // 断连设备的体感态必须清理，否则残留激活会拦截重连后的主键录音。
+    for (auto it = air_mouse_active_devices_.begin(); it != air_mouse_active_devices_.end();) {
+        if (!ble_->IsConnected(*it)) {
+            const std::string disconnected_id = *it;
+            it = air_mouse_active_devices_.erase(it);
+            air_mouse_states_.erase(disconnected_id);
+            ble_->SendAirMouseEnabled(false, disconnected_id);
+            LogCoordinatorLine("air mouse disabled on VS-" + disconnected_id + " (disconnected)");
+            if (on_air_mouse_active_changed) on_air_mouse_active_changed(!air_mouse_states_.empty());
+        } else {
+            ++it;
+        }
+    }
     for (auto it = subtitle_cycles_.begin(); it != subtitle_cycles_.end();) {
         const auto& device_id = it->first.first;
         if (!ble_->IsConnected(device_id)) {
