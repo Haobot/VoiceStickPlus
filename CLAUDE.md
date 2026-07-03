@@ -19,7 +19,7 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 - `desktop/windows/`：C++20 / Win32 / C++/WinRT 托盘应用，目标 Windows 10 1903+；2019 年 Windows 10 构建会走地址直连的 BLE 兼容路径。
 - `desktop/linux/`：Linux 桌面端占位目录。
 - `website/`：Vue 3 + Vite 站点，包含 Web Serial 固件烧录工具、`vue-i18n` 中英文落地页和 appcast 发布页面。
-- `Doc/`：BLE 协议、火山引擎 ASR 帧格式、发布流程等参考文档（`Doc/Ref/`），以及实施方案 RFC（`Doc/Plan/`）。注意仓库里大写 `Doc/` 与小写 `docs/` 同时存在：前者是本项目文档，后者是 superpowers 工具的工作目录（`docs/superpowers/plans/`、`docs/superpowers/specs/`），二者无关，修改文档时认准大写 `Doc/`。
+- `Doc/`：参考文档（`Doc/Ref/`，含 BLE 协议、火山引擎/腾讯云 ASR 帧格式、发布流程、低功耗配置）、实施方案 RFC（`Doc/Plan/`）、火山引擎 ASR 服务端接入指南（`Doc/Guide/`）以及实验与反思记录（`Doc/Expe/`）。注意仓库里大写 `Doc/` 与小写 `docs/` 同时存在：前者是本项目文档，后者是 superpowers 工具的工作目录（`docs/superpowers/plans/`、`docs/superpowers/specs/`），二者无关，修改文档时认准大写 `Doc/`。
 
 仓库关键文件树：
 
@@ -42,12 +42,14 @@ desktop/windows/
   CMakeLists.txt                   拆为 voicestick_core + VoiceStickApp + voicestick_windows_tests
   src/voice_stick_coordinator.cc   交互状态机（核心）
   src/ble_central_win.cc           BLE 平台层
-  src/asr_client_win.cc            ASR WebSocket 客户端
+  src/ble_protocol.cc              BLE 协议与 OTA 命令编解码
+  src/asr_client_win.cc            ASR WebSocket 客户端（火山 / VoiceStick Cloud）
+  src/asr_client_tencent.cc        腾讯云 ASR 客户端
   src/input_injector_win.cc        SendInput / 剪贴板注入
-  src/llm_chat_client.cc           LLM 精修
+  src/llm_chat_client.cc           LLM Chat 基类（OpenAI 兼容网络层）
+  src/llm_refinement_client.cc     LLM 精修
   src/llm_translation_client.cc    LLM 翻译
   src/ogg_opus_muxer.cc            Opus → Ogg Opus 封装
-  src/ota_command.cc               OTA 命令编解码
   tests/core_tests.cc              核心库单元测试
 website/
   src/App.vue                      主页面与 Web Serial 烧录
@@ -176,6 +178,8 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `audio_tx`（通知，`0x5101`）：Opus 音频帧，设备 → 主机。
 - `state_tx`（通知，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
 - `control_rx`（无响应写，`0x5103`）：`ui_state`、`interaction_mode`、`prompt_tone`、`show_imu_debug`、`imu_wake_sensitivity`、`tap_enabled`、`tap_sensitivity`、`air_mouse_enabled`、`ota_commit` 等，主机 → 设备。注意 `control_rx` 写入受 BLE MTU 限制，JSON 需控制长度避免溢出。
+- `ota_rx`（写 / 无响应写，`0x5104`）：BLE OTA 控制与数据帧，主机 → 设备。
+- `ota_tx`（通知，`0x5105`）：BLE OTA 状态帧，设备 → 主机。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 

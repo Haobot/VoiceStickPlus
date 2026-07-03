@@ -93,8 +93,8 @@ website/                        Vue 3 + Vite 站点
   public/appcast.xml            Sparkle / WinSparkle 更新源
 
 scripts/                        构建脚本、精灵图处理、LVGL ARGB 转换、ASR 探测、appcast 更新
-Doc/                            BLE 协议（Doc/Ref/protocol.md）、发布流程（Doc/Ref/release.md）、
-                                ASR 接口、实施方案 RFC（Doc/Plan/）
+Doc/                            参考文档 Doc/Ref（BLE 协议、发布流程、火山引擎/腾讯 ASR、低功耗配置）、
+                                实施方案 RFC Doc/Plan、ASR 接入指南 Doc/Guide、实验记录 Doc/Expe
 VERSION                         单一版本来源（纯文本，不含换行）
 ArduFlux.json                   ArduFlux IDE 配置文件（非版本控制重点）
 ```
@@ -265,7 +265,8 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `audio_tx`（notify，`0x5101`）：Opus 音频帧，设备 → 主机。
 - `state_tx`（notify，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
 - `control_rx`（write without response，`0x5103`）：`ui_state`、`interaction_mode`、`prompt_tone`、`show_imu_debug`、`imu_wake_sensitivity`、`tap_enabled`、`tap_sensitivity`、`air_mouse_enabled`、`ota_commit` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
-- `ota_rx` / `ota_tx`：BLE OTA 数据通道。
+- `ota_rx`（write / write without response，`0x5104`）：BLE OTA 控制与数据帧，主机 → 设备。
+- `ota_tx`（notify，`0x5105`）：BLE OTA 状态帧，设备 → 主机。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
 
