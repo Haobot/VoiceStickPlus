@@ -60,9 +60,11 @@ void bmi270_set_tap_enabled(bool enable);
 void bmi270_set_tap_sensitivity(int level);
 
 // ===== 体感鼠标（air mouse）=====
-// 进入体感态：重置零偏校准，接下来若干帧采样静止基线作为陀螺仪零偏。
+// 进入体感态：优先加载 NVS 持久化零偏（命中则立即响应，无需校准等待）；
+// 未命中（首次/损坏）则 settling 后采样静止基线定标。进入后 settling 期
+// (AIR_MOUSE_SETTLE_MS) 冻结 EMA，防按键余震污染零偏。
 void bmi270_air_mouse_start(void);
-// 退出体感态：停止上报。
+// 退出体感态：停止上报；若运行期 EMA 改过零偏则存盘，供下次进入复用。
 void bmi270_air_mouse_stop(void);
 // 体感鼠标轮询：约 20ms 调用一次，读陀螺仪、减零偏、过死区、映射为整型光标位移。
 // 返回 true 且写出 *dx/*dy 表示本次有有效位移；校准中或死区内返回 false。

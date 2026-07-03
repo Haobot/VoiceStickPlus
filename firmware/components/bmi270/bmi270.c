@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 #include "stick_s3_board.h"
 #include "bmi270_config_file.h"
+#include "nvs.h"
 
 static const char *TAG = "bmi270";
 
@@ -170,6 +171,10 @@ static float s_air_mouse_calib_sum[3] = {0.0f, 0.0f, 0.0f};
 // 上一帧原始角速度（dps），用于帧间抖动（jerk）判静止——与零偏无关，可自愈初始校准误差。
 static float s_air_mouse_prev_raw[3] = {0.0f, 0.0f, 0.0f};
 static bool s_air_mouse_has_prev = false;
+// settling 截止时刻（us）：进入体感后此时间内冻结 EMA，防按键余震污染零偏。
+static int64_t s_air_mouse_settle_until_us = 0;
+// 零偏是否被运行期 EMA 修改过，决定退出时是否存盘。
+static bool s_air_mouse_bias_dirty = false;
 // 零偏校准采样帧数（20ms/帧，约 200ms）。
 #define AIR_MOUSE_CALIB_FRAMES 10
 // 死区（dps）：静止时陀螺仪残余噪声，低于此值视为不动，消除漂移。
@@ -185,6 +190,11 @@ static bool s_air_mouse_has_prev = false;
 #define AIR_MOUSE_SCALE 0.6f
 // int16 位移饱和上限，避免单帧跳变过大。
 #define AIR_MOUSE_MAX_DELTA 127
+// 进入体感后的 settling 时长（毫秒）：此期间冻结 EMA 更新，防按键余震污染持久化零偏。
+#define AIR_MOUSE_SETTLE_MS 150
+// NVS 持久化零偏：复用 "voicestick" namespace，key am_bias_x/y/z，i32 存 round(bias*100)。
+#define AIR_MOUSE_BIAS_NVS_NAMESPACE "voicestick"
+#define AIR_MOUSE_BIAS_SCALE 100.0f
 
 static esp_err_t bmi270_read_reg(uint8_t reg, uint8_t *value)
 {
@@ -692,22 +702,89 @@ static int16_t air_mouse_clamp_delta(float v)
     return (int16_t)lroundf(v);
 }
 
+// 从 NVS 加载持久化陀螺仪零偏。三轴 key 全部读到才算命中；任一缺失/失败返回 false
+// （首次使用或 NVS 损坏），由调用方退化为实时校准。bias_dps 为 3 元素出参。
+static bool air_mouse_load_bias(float bias_dps[3])
+{
+    nvs_handle_t handle;
+    if (nvs_open(AIR_MOUSE_BIAS_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+    int32_t bx = 0, by = 0, bz = 0;
+    const bool ok = nvs_get_i32(handle, "am_bias_x", &bx) == ESP_OK &&
+                    nvs_get_i32(handle, "am_bias_y", &by) == ESP_OK &&
+                    nvs_get_i32(handle, "am_bias_z", &bz) == ESP_OK;
+    nvs_close(handle);
+    if (!ok) {
+        return false;
+    }
+    bias_dps[0] = (float)bx / AIR_MOUSE_BIAS_SCALE;
+    bias_dps[1] = (float)by / AIR_MOUSE_BIAS_SCALE;
+    bias_dps[2] = (float)bz / AIR_MOUSE_BIAS_SCALE;
+    return true;
+}
+
+// 把当前零偏存入 NVS。首次定标与退出体感（dirty）时调用。
+static void air_mouse_save_bias(const float bias_dps[3])
+{
+    nvs_handle_t handle;
+    if (nvs_open(AIR_MOUSE_BIAS_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        ESP_LOGW(TAG, "air mouse bias save: nvs_open failed");
+        return;
+    }
+    const int32_t bx = (int32_t)lroundf(bias_dps[0] * AIR_MOUSE_BIAS_SCALE);
+    const int32_t by = (int32_t)lroundf(bias_dps[1] * AIR_MOUSE_BIAS_SCALE);
+    const int32_t bz = (int32_t)lroundf(bias_dps[2] * AIR_MOUSE_BIAS_SCALE);
+    const esp_err_t ex = nvs_set_i32(handle, "am_bias_x", bx);
+    const esp_err_t ey = nvs_set_i32(handle, "am_bias_y", by);
+    const esp_err_t ez = nvs_set_i32(handle, "am_bias_z", bz);
+    const esp_err_t ec = nvs_commit(handle);
+    nvs_close(handle);
+    if (ex != ESP_OK || ey != ESP_OK || ez != ESP_OK || ec != ESP_OK) {
+        ESP_LOGW(TAG, "air mouse bias save failed: x=%s y=%s z=%s c=%s",
+                 esp_err_to_name(ex), esp_err_to_name(ey), esp_err_to_name(ez), esp_err_to_name(ec));
+    } else {
+        ESP_LOGI(TAG, "air mouse bias saved=%.2f,%.2f,%.2f dps",
+                 bias_dps[0], bias_dps[1], bias_dps[2]);
+    }
+}
+
 void bmi270_air_mouse_start(void)
 {
-    // 进入体感态：清零偏、重置校准累加，下一批帧重新采样静止基线。
+    // 进入体感态：优先加载 NVS 持久化零偏，命中则立即进入运行期（进入即响应）；
+    // 未命中（首次/损坏）退化为实时校准。设 settling 期冻结 EMA 防按键余震污染。
     s_air_mouse_enabled = true;
-    s_air_mouse_has_bias = false;
-    s_air_mouse_calib_count = 0;
-    s_air_mouse_calib_sum[0] = 0.0f;
-    s_air_mouse_calib_sum[1] = 0.0f;
-    s_air_mouse_calib_sum[2] = 0.0f;
+    s_air_mouse_settle_until_us = esp_timer_get_time() + (AIR_MOUSE_SETTLE_MS * 1000LL);
+    s_air_mouse_bias_dirty = false;
     s_air_mouse_has_prev = false;  // 重置 jerk 判静止的历史帧
-    ESP_LOGI(TAG, "air mouse started (calibrating zero-bias)");
+
+    float loaded[3] = {0.0f, 0.0f, 0.0f};
+    if (air_mouse_load_bias(loaded)) {
+        s_air_mouse_bias_dps[0] = loaded[0];
+        s_air_mouse_bias_dps[1] = loaded[1];
+        s_air_mouse_bias_dps[2] = loaded[2];
+        s_air_mouse_has_bias = true;
+        ESP_LOGI(TAG, "air mouse started (bias loaded=%.2f,%.2f,%.2f dps, immediate)",
+                 loaded[0], loaded[1], loaded[2]);
+    } else {
+        // 首次使用：清校准累加，settling 后开始采样静止基线定标。
+        s_air_mouse_has_bias = false;
+        s_air_mouse_calib_count = 0;
+        s_air_mouse_calib_sum[0] = 0.0f;
+        s_air_mouse_calib_sum[1] = 0.0f;
+        s_air_mouse_calib_sum[2] = 0.0f;
+        ESP_LOGI(TAG, "air mouse started (no persisted bias, calibrating)");
+    }
 }
 
 void bmi270_air_mouse_stop(void)
 {
     s_air_mouse_enabled = false;
+    // 运行期 EMA 改过零偏则存盘，下次进入即可立即响应。
+    if (s_air_mouse_bias_dirty) {
+        air_mouse_save_bias(s_air_mouse_bias_dps);
+        s_air_mouse_bias_dirty = false;
+    }
     ESP_LOGI(TAG, "air mouse stopped");
 }
 
@@ -726,6 +803,10 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
     // 直到攒够 AIR_MOUSE_CALIB_FRAMES 帧连续静止才定标。避免进入体感瞬间手还在动
     // （刚按完侧键）把运动误当零偏（曾观测到 -20dps 污染，导致静止时持续漂移）。
     if (!s_air_mouse_has_bias) {
+        // settling 期（按键余震）跳过校准采样，等手稳后再判静止定标，避免余震反复清零。
+        if (esp_timer_get_time() < s_air_mouse_settle_until_us) {
+            return false;
+        }
         bool calib_still = false;
         if (s_air_mouse_has_prev) {
             calib_still = fabsf(x_dps - s_air_mouse_prev_raw[0]) < AIR_MOUSE_STILL_JERK_DPS &&
@@ -754,7 +835,9 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
             s_air_mouse_bias_dps[1] = s_air_mouse_calib_sum[1] / s_air_mouse_calib_count;
             s_air_mouse_bias_dps[2] = s_air_mouse_calib_sum[2] / s_air_mouse_calib_count;
             s_air_mouse_has_bias = true;
-            ESP_LOGI(TAG, "air mouse bias=%.2f,%.2f,%.2f dps",
+            s_air_mouse_bias_dirty = false;  // 刚定标即持久化，无需退出再存
+            air_mouse_save_bias(s_air_mouse_bias_dps);  // 首次定标立即存盘
+            ESP_LOGI(TAG, "air mouse bias=%.2f,%.2f,%.2f dps (calibrated+saved)",
                      s_air_mouse_bias_dps[0], s_air_mouse_bias_dps[1], s_air_mouse_bias_dps[2]);
         }
         return false;
@@ -781,10 +864,14 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
     s_air_mouse_has_prev = true;
 
     if (still) {
-        // EMA 让零偏收敛到当前原始角速度（静止时原始值≈真实零偏）。
-        s_air_mouse_bias_dps[0] += (x_dps - s_air_mouse_bias_dps[0]) * AIR_MOUSE_BIAS_ALPHA;
-        s_air_mouse_bias_dps[1] += (y_dps - s_air_mouse_bias_dps[1]) * AIR_MOUSE_BIAS_ALPHA;
-        s_air_mouse_bias_dps[2] += (z_dps - s_air_mouse_bias_dps[2]) * AIR_MOUSE_BIAS_ALPHA;
+        // settling 期内冻结 EMA：按键余震可能被误判静止，此时不更新零偏防污染持久化值。
+        // settling 后 EMA 收敛零偏到真实值（静止时原始值≈真实零偏），自愈温漂与初始误差。
+        if (esp_timer_get_time() >= s_air_mouse_settle_until_us) {
+            s_air_mouse_bias_dps[0] += (x_dps - s_air_mouse_bias_dps[0]) * AIR_MOUSE_BIAS_ALPHA;
+            s_air_mouse_bias_dps[1] += (y_dps - s_air_mouse_bias_dps[1]) * AIR_MOUSE_BIAS_ALPHA;
+            s_air_mouse_bias_dps[2] += (z_dps - s_air_mouse_bias_dps[2]) * AIR_MOUSE_BIAS_ALPHA;
+            s_air_mouse_bias_dirty = true;
+        }
         // 静止帧不产生位移，避免残余噪声漏过死区累积成漂移。
         return false;
     }
