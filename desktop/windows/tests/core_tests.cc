@@ -1737,6 +1737,55 @@ void TestCoordinatorAirMouseResetOnForget() {
     assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
 }
 
+// 10 级灵敏度下，真机典型手腕转动(omega≈24)在 0.8s 内应产生足够光标位移(≥400px)。
+// 约束 gain 映射系数：防止最高档仍移动缓慢（用户反馈 10 级光标很慢）。
+void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.air_mouse_sensitivity_x = 10;  // 最高档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    for (int i = 0; i < 50; ++i) {  // 0.8s @60Hz
+        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});  // 真机典型手腕角速度（日志实测 dx≈15~24）
+        coordinator.AirMouseTick();
+    }
+    assert(input.total_dx >= 400);  // 平均速度 ≥500px/s，最高档应明显快
+}
+
+// 10 级灵敏度下，持续转动 5s 的平均光标速度应受 decay_tau 限制(≤3000px/s)，
+// 防止 θ 长期累积导致光标爆走。约束 decay_tau 不可过大。
+void TestCoordinatorAirMouseSustainedRunBounded() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.air_mouse_sensitivity_x = 10;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    for (int i = 0; i < 312; ++i) {  // 5s @60Hz
+        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        coordinator.AirMouseTick();
+    }
+    const double avg_speed = static_cast<double>(input.total_dx) / 5.0;
+    assert(avg_speed <= 3000.0);  // 长转不爆走
+}
+
 // 侧键双击恢复上次输入确认（与单击进体感分离）。
 void TestCoordinatorSecondaryDoubleClickRestoresLastInput() {
     auto ble = std::make_unique<FakeBleCentral>();
@@ -2334,6 +2383,8 @@ int main() {
     TestCoordinatorAirMouseGatesRecordingAndTap();
     TestCoordinatorAirMouseResetOnDisconnect();
     TestCoordinatorAirMouseResetOnForget();
+    TestCoordinatorAirMouseHighSensitivityRealisticSpeed();
+    TestCoordinatorAirMouseSustainedRunBounded();
     TestCoordinatorSecondaryDoubleClickRestoresLastInput();
     TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();

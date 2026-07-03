@@ -526,10 +526,15 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
 
 AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
-    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 2.0;
-    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 2.0;
+    // gain 映射：每档 ×8.0。10 级=80，真机典型手腕转动(omega≈24)0.8s 可达 ~540px。
+    // 旧 ×2.0（10 级=20）实测稳态仅 ~176px/s，用户反馈最高档仍很慢。
+    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 8.0;
+    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 8.0;
     p.tau = config_.air_mouse_tau;
     p.invert_y = config_.air_mouse_invert_y;
+    // decay_tau=2.0：θ 慢衰减防漂移，同时限制持续转动 θ 稳态(=omega×D)，
+    // 防止高 gain 下长转光标爆走。旧 8.0 时 θ 稳态过大，长转会飞屏。
+    p.decay_tau = 2.0;
     return p;
 }
 
