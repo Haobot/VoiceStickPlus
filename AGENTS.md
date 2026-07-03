@@ -264,7 +264,7 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - `audio_tx`（notify，`0x5101`）：Opus 音频帧，设备 → 主机。
 - `state_tx`（notify，`0x5102`）：按键事件、电量、固件版本等，设备 → 主机。
-- `control_rx`（write without response，`0x5103`）：`ui_state`、`interaction_mode`、`prompt_tone`、`show_imu_debug`、`imu_wake_sensitivity`、`ota_commit` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
+- `control_rx`（write without response，`0x5103`）：`ui_state`、`interaction_mode`、`prompt_tone`、`show_imu_debug`、`imu_wake_sensitivity`、`tap_enabled`、`tap_sensitivity`、`air_mouse_enabled`、`ota_commit` 等，主机 → 设备（受 BLE MTU 限制，JSON 需控制长度）。
 - `ota_rx` / `ota_tx`：BLE OTA 数据通道。
 
 完整帧格式见 `Doc/Ref/protocol.md`。修改 BLE 消息时，需要同步考虑固件、macOS、Windows 和文档。
@@ -316,7 +316,11 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `resource_id`：火山引擎 resource ID，支持 `volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
 - `tencent_secret_id` / `tencent_secret_key` / `tencent_appid` / `tencent_engine_model_type` / `tencent_hotword_id`：腾讯云 ASR 配置（仅 `asr_provider = "tencent"` 时有效）。
 - `device_theme_colors` / `device_overlay_positions`：按设备覆盖悬浮窗颜色和位置。
-- `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `off` / `low` / `medium` / `high`。
+- `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `low` / `medium` / `high`。
+- `tap_to_arrow`：Windows 端是否把固件检测到的双击敲击事件注入为方向键 Down，默认 `false`。
+- `tap_sensitivity`：双击敲击灵敏度，整数 `1..10`，数值越大越灵敏，默认 `5`。
+- `air_mouse_gain`：体感鼠标光标灵敏度倍率（浮点，默认 `1.0`），作用于固件上报的整型位移，仅 Windows 端使用。
+- `air_mouse_invert_y`：体感鼠标是否反转 Y 轴，默认 `false`。
 
 Windows 调试音频缓存目录：
 - 标准安装：`%LOCALAPPDATA%\VoiceStick\DebugAudio`

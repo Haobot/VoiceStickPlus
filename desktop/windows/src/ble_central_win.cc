@@ -445,6 +445,29 @@ void BleCentralWin::SendTapEnabled(bool enabled,
     }
 }
 
+void BleCentralWin::SendAirMouseEnabled(bool enabled,
+                                        const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::AirMouseEnabledPayload(enabled);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+        }
+    }
+
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
 void BleCentralWin::SendImuWakeSensitivity(int threshold_lsb,
                                            const std::optional<std::string>& device_id) {
     auto payload = BleProtocol::ImuWakeSensitivityPayload(threshold_lsb);
@@ -1313,6 +1336,17 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         session->state_value_changed_token = session->state_characteristic.ValueChanged(
             [this, device_id](const GattCharacteristic&, const auto& args) {
                 auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                // 先按帧类型分流：0x11 为体感鼠标 motion 二进制帧，高频且不写日志避免刷屏。
+                if (bytes.size() >= 2 && bytes[0] == 1 &&
+                    bytes[1] == BleProtocol::state_type_motion) {
+                    auto motion = BleProtocol::ParseMotionFrame(bytes);
+                    if (motion.has_value()) {
+                        DispatchToUiThread([this, device_id, m = *motion]() {
+                            if (on_motion_event) on_motion_event(device_id, m);
+                        });
+                    }
+                    return;
+                }
                 LogBleLine("state notify VS-" + device_id +
                            " len=" + std::to_string(bytes.size()) +
                            " preview=" + PreviewBytes(bytes));

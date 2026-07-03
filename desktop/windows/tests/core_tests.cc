@@ -85,6 +85,10 @@ public:
                             const std::optional<std::string>& device_id) override {
         sent_tap_sensitivities.push_back(SentTapSensitivity{level, device_id});
     }
+    void SendAirMouseEnabled(bool enabled,
+                             const std::optional<std::string>& device_id) override {
+        sent_air_mouse_enabled.push_back(std::pair{enabled, device_id});
+    }
     void SendImuWakeSensitivity(int threshold_lsb,
                                 const std::optional<std::string>& device_id) override {
         sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
@@ -119,6 +123,7 @@ public:
     std::vector<SentImuWakeSensitivity> sent_imu_wake_sensitivities;
     std::vector<std::pair<bool, std::optional<std::string>>> sent_tap_enabled;
     std::vector<SentTapSensitivity> sent_tap_sensitivities;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_air_mouse_enabled;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -264,11 +269,21 @@ public:
     }
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
+    void MoveMouse(int dx, int dy) override {
+        ++move_mouse_count;
+        total_dx += dx;
+        total_dy += dy;
+    }
+    void ClickLeftButton() override { ++left_click_count; }
 
     std::string pasted_text;
     bool pasted_enter = false;
     bool send_enter_called = false;
     int arrow_down_count = 0;
+    int move_mouse_count = 0;
+    int total_dx = 0;
+    int total_dy = 0;
+    int left_click_count = 0;
 };
 
 StateEvent ButtonEvent(const std::string& event,
@@ -443,6 +458,41 @@ void TestBleControlPayloads() {
     assert(std::string(tap_sens.begin(), tap_sens.end()) == "{\"event\":\"tap_sensitivity\",\"level\":5}");
     auto tap_sens_high = BleProtocol::TapSensitivityPayload(10);
     assert(std::string(tap_sens_high.begin(), tap_sens_high.end()) == "{\"event\":\"tap_sensitivity\",\"level\":10}");
+
+    // 体感鼠标开关下发。
+    auto air_on = BleProtocol::AirMouseEnabledPayload(true);
+    assert(std::string(air_on.begin(), air_on.end()) == "{\"event\":\"air_mouse_enabled\",\"enabled\":true}");
+    auto air_off = BleProtocol::AirMouseEnabledPayload(false);
+    assert(std::string(air_off.begin(), air_off.end()) == "{\"event\":\"air_mouse_enabled\",\"enabled\":false}");
+}
+
+void TestMotionFrameParsing() {
+    // 合法 6 字节帧：version=1, type=0x11, dx=+100, dy=-50（小端）。
+    ByteVector frame = {1, 0x11};
+    AppendLe16(frame, static_cast<std::uint16_t>(static_cast<std::int16_t>(100)));
+    AppendLe16(frame, static_cast<std::uint16_t>(static_cast<std::int16_t>(-50)));
+    auto motion = BleProtocol::ParseMotionFrame(frame);
+    assert(motion.has_value());
+    assert(motion->dx == 100);
+    assert(motion->dy == -50);
+
+    // version 错。
+    ByteVector bad_version = frame;
+    bad_version[0] = 2;
+    assert(!BleProtocol::ParseMotionFrame(bad_version).has_value());
+
+    // type 错（0x10 是 JSON 状态帧，不是 motion）。
+    ByteVector bad_type = frame;
+    bad_type[1] = 0x10;
+    assert(!BleProtocol::ParseMotionFrame(bad_type).has_value());
+
+    // 长度不足。
+    ByteVector too_short = {1, 0x11, 0x00};
+    assert(!BleProtocol::ParseMotionFrame(too_short).has_value());
+
+    // JSON 状态帧不应被误解析为 motion。
+    ByteVector state_frame = {1, 0x10, 0x02, 0x00, '{', '}'};
+    assert(!BleProtocol::ParseMotionFrame(state_frame).has_value());
 }
 
 void TestStateParsing() {
@@ -1424,6 +1474,104 @@ void TestTapThrottleRecoversAfter500ms() {
     assert(input.arrow_down_count == 2);
 }
 
+// 侧键单击在空闲态进入体感鼠标模式，再次单击退出（体感优先决策）。
+void TestCoordinatorAirMouseToggleViaSecondary() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->sent_air_mouse_enabled.clear();
+
+    // 空闲态侧键单击 → 进入体感，下发 air_mouse_enabled:true。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    assert(!ble_ptr->sent_air_mouse_enabled.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
+
+    // 再次侧键单击 → 退出体感，下发 air_mouse_enabled:false。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
+}
+
+// 体感态下主键单击映射为鼠标左键，不启动录音。
+void TestCoordinatorAirMousePrimaryClickIsLeftButton() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+
+    // 主键单击 → 左键点击，不启动 ASR/录音。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 5));
+    assert(input.left_click_count == 1);
+    assert(!asr_ptr->started);
+    assert(ui.show_listening_count == 0);
+}
+
+// 体感态下 motion 帧驱动光标移动；非体感态忽略。
+void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 未进入体感态时 motion 应被忽略。
+    ble_ptr->on_motion_event("5A74", MotionEvent{10, -5});
+    assert(input.move_mouse_count == 0);
+
+    // 进入体感态后 motion 驱动光标移动。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+    ble_ptr->on_motion_event("5A74", MotionEvent{10, -5});
+    assert(input.move_mouse_count == 1);
+}
+
+// 体感态下主键长按（button_down）不启动录音，tap 事件被忽略。
+void TestCoordinatorAirMouseGatesRecordingAndTap() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+
+    // 主键按下不启动录音。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+    assert(ui.show_listening_count == 0);
+    assert(!asr_ptr->started);
+
+    // tap 被忽略。
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+    assert(input.arrow_down_count == 0);
+}
+
 void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -1797,6 +1945,7 @@ int main() {
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();
+    TestMotionFrameParsing();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();
@@ -1826,6 +1975,10 @@ int main() {
     TestTapIgnoredDuringRecording();
     TestTapThrottledWithin500ms();
     TestTapThrottleRecoversAfter500ms();
+    TestCoordinatorAirMouseToggleViaSecondary();
+    TestCoordinatorAirMousePrimaryClickIsLeftButton();
+    TestCoordinatorMotionMovesCursorOnlyWhenActive();
+    TestCoordinatorAirMouseGatesRecordingAndTap();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
     TestSseParser();
     TestStreamPayload();

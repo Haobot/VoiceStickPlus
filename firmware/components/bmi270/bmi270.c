@@ -159,6 +159,23 @@ static int64_t s_tap_debounce_until_us = 0;
 // 上一帧主轴 delta（g），用于脉冲瞬时性判据（敲击是上升沿，持续偏移不是）。
 static float s_tap_last_delta_dom = 0.0f;
 
+// ===== 体感鼠标（air mouse）状态 =====
+// 进入体感态时采样静止基线作为陀螺仪零偏，之后每帧减零偏、过死区、映射为整型位移。
+static bool s_air_mouse_enabled = false;
+static float s_air_mouse_bias_dps[3] = {0.0f, 0.0f, 0.0f};
+static bool s_air_mouse_has_bias = false;
+// 校准累加：进入后前若干帧用于估计零偏，不产生位移。
+static int s_air_mouse_calib_count = 0;
+static float s_air_mouse_calib_sum[3] = {0.0f, 0.0f, 0.0f};
+// 零偏校准采样帧数（20ms/帧，约 200ms）。
+#define AIR_MOUSE_CALIB_FRAMES 10
+// 死区（dps）：静止时陀螺仪残余噪声，低于此值视为不动，消除漂移。
+#define AIR_MOUSE_DEADZONE_DPS 2.0f
+// 映射系数：角速度(dps) → 整型光标位移。真机标定初值，保守偏小。
+#define AIR_MOUSE_SCALE 0.6f
+// int16 位移饱和上限，避免单帧跳变过大。
+#define AIR_MOUSE_MAX_DELTA 127
+
 static esp_err_t bmi270_read_reg(uint8_t reg, uint8_t *value)
 {
     return i2c_master_transmit_receive(s_dev, &reg, 1, value, 1, 100);
@@ -655,6 +672,87 @@ void bmi270_set_tap_sensitivity(int level)
     }
     s_tap_sensitivity = (tap_sensitivity_t)(level - 1);
     ESP_LOGI(TAG, "tap sensitivity set to %d", level);
+}
+
+// 将浮点位移量饱和裁剪到 int16 且限幅 ±AIR_MOUSE_MAX_DELTA。
+static int16_t air_mouse_clamp_delta(float v)
+{
+    if (v > AIR_MOUSE_MAX_DELTA) return AIR_MOUSE_MAX_DELTA;
+    if (v < -AIR_MOUSE_MAX_DELTA) return -AIR_MOUSE_MAX_DELTA;
+    return (int16_t)lroundf(v);
+}
+
+void bmi270_air_mouse_start(void)
+{
+    // 进入体感态：清零偏、重置校准累加，下一批帧重新采样静止基线。
+    s_air_mouse_enabled = true;
+    s_air_mouse_has_bias = false;
+    s_air_mouse_calib_count = 0;
+    s_air_mouse_calib_sum[0] = 0.0f;
+    s_air_mouse_calib_sum[1] = 0.0f;
+    s_air_mouse_calib_sum[2] = 0.0f;
+    ESP_LOGI(TAG, "air mouse started (calibrating zero-bias)");
+}
+
+void bmi270_air_mouse_stop(void)
+{
+    s_air_mouse_enabled = false;
+    ESP_LOGI(TAG, "air mouse stopped");
+}
+
+bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
+{
+    if (!s_air_mouse_enabled || s_imu_type != IMU_BMI270) {
+        return false;
+    }
+
+    float x_dps = 0.0f, y_dps = 0.0f, z_dps = 0.0f;
+    if (bmi270_read_gyr_dps(&x_dps, &y_dps, &z_dps) != ESP_OK) {
+        return false;
+    }
+
+    // 零偏校准阶段：累加前若干帧求均值，期间不产生位移。
+    if (!s_air_mouse_has_bias) {
+        s_air_mouse_calib_sum[0] += x_dps;
+        s_air_mouse_calib_sum[1] += y_dps;
+        s_air_mouse_calib_sum[2] += z_dps;
+        if (++s_air_mouse_calib_count >= AIR_MOUSE_CALIB_FRAMES) {
+            s_air_mouse_bias_dps[0] = s_air_mouse_calib_sum[0] / s_air_mouse_calib_count;
+            s_air_mouse_bias_dps[1] = s_air_mouse_calib_sum[1] / s_air_mouse_calib_count;
+            s_air_mouse_bias_dps[2] = s_air_mouse_calib_sum[2] / s_air_mouse_calib_count;
+            s_air_mouse_has_bias = true;
+            ESP_LOGI(TAG, "air mouse bias=%.2f,%.2f,%.2f dps",
+                     s_air_mouse_bias_dps[0], s_air_mouse_bias_dps[1], s_air_mouse_bias_dps[2]);
+        }
+        return false;
+    }
+
+    // 减零偏。
+    float gx = x_dps - s_air_mouse_bias_dps[0];
+    float gy = y_dps - s_air_mouse_bias_dps[1];
+    float gz = z_dps - s_air_mouse_bias_dps[2];
+
+    // 轴向映射（设备竖握）：yaw(绕 Z 轴 = gz) → 水平 dx；pitch(绕 X 轴 = gx) → 垂直 dy。
+    // 符号与轴选择为真机标定初值，联调阶段确认（见 imu-air-mouse 方案第 9 节）。
+    float mv_x = gz;
+    float mv_y = gx;
+
+    // 死区：静止残余噪声归零，消除漂移。
+    if (fabsf(mv_x) < AIR_MOUSE_DEADZONE_DPS) mv_x = 0.0f;
+    if (fabsf(mv_y) < AIR_MOUSE_DEADZONE_DPS) mv_y = 0.0f;
+    if (mv_x == 0.0f && mv_y == 0.0f) {
+        return false;
+    }
+
+    const int16_t out_dx = air_mouse_clamp_delta(mv_x * AIR_MOUSE_SCALE);
+    const int16_t out_dy = air_mouse_clamp_delta(mv_y * AIR_MOUSE_SCALE);
+    if (out_dx == 0 && out_dy == 0) {
+        return false;
+    }
+
+    if (dx) *dx = out_dx;
+    if (dy) *dy = out_dy;
+    return true;
 }
 
 bool bmi270_pickup_detected(void)

@@ -132,6 +132,10 @@ struct AppConfig {
     bool tap_to_arrow = false;
     // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
     int tap_sensitivity = 5;
+    // 体感鼠标：光标灵敏度倍率，作用于固件上报的整型位移。默认 1.0，真机标定后调整。
+    double air_mouse_gain = 1.0;
+    // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。
+    bool air_mouse_invert_y = false;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -196,5 +200,6 @@ std::string ImuWakeSensitivityDisplayName(ImuWakeSensitivity sensitivity);
 int ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity sensitivity);
 // 将敲击灵敏度钳位到 1..10，越界或非法值返回默认档 5。
 int TapSensitivityClamp(int level);
+double AirMouseGainClamp(double gain);
 
 } // namespace voicestick

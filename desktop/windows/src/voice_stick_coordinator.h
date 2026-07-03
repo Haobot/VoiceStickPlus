@@ -68,6 +68,9 @@ public:
                                 const std::optional<std::string>& device_id) = 0;
     virtual void SendTapSensitivity(int level,
                                     const std::optional<std::string>& device_id) = 0;
+    // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
+    virtual void SendAirMouseEnabled(bool enabled,
+                                     const std::optional<std::string>& device_id) = 0;
     virtual void SendImuWakeSensitivity(int threshold_lsb,
                                         const std::optional<std::string>& device_id) = 0;
     virtual void RequestBatteryStatus(const std::optional<std::string>& device_id) = 0;
@@ -89,6 +92,8 @@ public:
     std::function<void(std::string)> on_scan_error;
     std::function<void(std::string, StateEvent)> on_state_event;
     std::function<void(std::string, AudioFrame)> on_audio_frame;
+    // 体感鼠标运动帧回调：(device_id, MotionEvent)。
+    std::function<void(std::string, MotionEvent)> on_motion_event;
 };
 
 class AsrClient {
@@ -154,6 +159,10 @@ public:
     virtual void SendEnter() = 0;
     // 注入一次下方向键，用于敲击手势在候选/选项间向下切换。
     virtual void SendArrowDown() = 0;
+    // 体感鼠标：相对移动光标 (dx 右为正, dy 下为正)。
+    virtual void MoveMouse(int dx, int dy) = 0;
+    // 体感鼠标：模拟鼠标左键单击（按下+抬起）。
+    virtual void ClickLeftButton() = 0;
 };
 
 class VoiceStickCoordinator {
@@ -238,6 +247,10 @@ private:
     void HandleButtonClick(const StateEvent& event, const std::string& device_id);
     void HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id);
     void HandleTapEvent(const StateEvent& event, const std::string& device_id);
+    void HandleMotionEvent(const MotionEvent& event, const std::string& device_id);
+    // 体感鼠标模式是否对该设备开启。返回切换后的状态（true=进入，false=退出）。
+    bool ToggleAirMouse(const std::string& device_id);
+    bool IsAirMouseActive(const std::string& device_id) const;
     void HandleSecondaryButtonClick(const std::string& device_id);
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);
@@ -333,6 +346,8 @@ private:
     std::chrono::steady_clock::time_point active_session_started_at_;
     // 敲击注入方向键的节流时间戳：两次注入最短间隔 500ms，避免连击导致光标连续下移。
     std::chrono::steady_clock::time_point last_tap_inject_at_{};
+    // 体感鼠标当前处于激活态的设备集合（按 device_id）。空表示无设备在体感态。
+    std::set<std::string> air_mouse_active_devices_;
     int received_audio_frames_ = 0;
     std::optional<std::uint32_t> last_audio_seq_;
     std::vector<ByteVector> buffered_ogg_chunks_;

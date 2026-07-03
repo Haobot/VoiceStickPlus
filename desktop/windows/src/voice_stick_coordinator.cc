@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <tuple>
 #include <utility>
@@ -94,6 +95,10 @@ void VoiceStickCoordinator::Start() {
         if (is_shutdown_) return;
         HandleAudioFrame(frame, device_id);
     };
+    ble_->on_motion_event = [this](std::string device_id, MotionEvent event) {
+        if (is_shutdown_) return;
+        HandleMotionEvent(event, device_id);
+    };
     ConfigureAsrCallbacks();
     ble_->Start();
     CheckFirmwareUpdatesIfNeeded(false, false);
@@ -114,6 +119,7 @@ void VoiceStickCoordinator::Shutdown() {
     ble_->on_scan_error = nullptr;
     ble_->on_state_event = nullptr;
     ble_->on_audio_frame = nullptr;
+    ble_->on_motion_event = nullptr;
     asr_->Cancel();
     for (auto& [_, cycle] : subtitle_cycles_) {
         if (cycle->asr) cycle->asr->Cancel();
@@ -366,6 +372,12 @@ void VoiceStickCoordinator::HandleButtonUp(const StateEvent& event, const std::s
 
 void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std::string& device_id) {
     if (event.button == "primary") {
+        // 体感态：主键单击映射为鼠标左键，不走录音/字幕逻辑。
+        if (IsAirMouseActive(device_id)) {
+            LogCoordinatorLine("air mouse primary click on VS-" + device_id + ", left button");
+            input_injector_->ClickLeftButton();
+            return;
+        }
         if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
             if (config_.interaction_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
@@ -396,6 +408,11 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
 }
 
 void VoiceStickCoordinator::HandleSecondaryButtonClick(const std::string& device_id) {
+    // 体感态已开：侧键单击退出体感（优先于其它语义）。
+    if (IsAirMouseActive(device_id)) {
+        ToggleAirMouse(device_id);
+        return;
+    }
     if (HasActiveSubtitleSession(device_id)) {
         CancelSubtitleCycle(device_id, "secondary_cancel");
         return;
@@ -405,7 +422,15 @@ void VoiceStickCoordinator::HandleSecondaryButtonClick(const std::string& device
         CancelSubtitleCyclesForDevice(device_id, "secondary_cancel");
         return;
     }
-    CancelPendingPaste(device_id);
+    // 有活跃录音/识别/待粘贴：保留侧键原取消/恢复语义，不被体感抢占。
+    if (active_session_id_.has_value() || IsWaitingForFinalText() ||
+        !pending_paste_state_.IsIdle()) {
+        CancelPendingPaste(device_id);
+        return;
+    }
+    // 真正空闲：侧键单击进入体感鼠标模式（体感优先决策，见 air-mouse-secondary-conflict 记忆）。
+    // 注意：这会让空闲态侧键不再触发"恢复上次输入"，该取舍待用户最终确认。
+    ToggleAirMouse(device_id);
 }
 
 void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id) {
@@ -436,6 +461,8 @@ void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::s
     (void)event;
     // 总开关关闭则忽略。
     if (!config_.tap_to_arrow) return;
+    // 体感态忽略敲击，避免与体感移动/点击冲突。
+    if (IsAirMouseActive(device_id)) return;
     // 录音中或识别中忽略敲击，避免震动干扰当前语音周期。
     // 与双击主键不同：tap 不取消录音/识别，仅在不冲突时注入方向键。
     if (session_state_ == SessionState::kRecording ||
@@ -454,8 +481,43 @@ void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::s
     ble_->SendUiState("ready", "", device_id);
 }
 
+bool VoiceStickCoordinator::IsAirMouseActive(const std::string& device_id) const {
+    return air_mouse_active_devices_.contains(device_id);
+}
+
+bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
+    if (IsAirMouseActive(device_id)) {
+        // 退出体感：清位、通知固件停表、恢复设备就绪显示。
+        air_mouse_active_devices_.erase(device_id);
+        ble_->SendAirMouseEnabled(false, device_id);
+        ble_->SendUiState("ready", "", device_id);
+        LogCoordinatorLine("air mouse disabled on VS-" + device_id);
+        return false;
+    }
+    // 进入体感：置位、通知固件校准并上报 motion。
+    air_mouse_active_devices_.insert(device_id);
+    ble_->SendAirMouseEnabled(true, device_id);
+    LogCoordinatorLine("air mouse enabled on VS-" + device_id);
+    return true;
+}
+
+void VoiceStickCoordinator::HandleMotionEvent(const MotionEvent& event, const std::string& device_id) {
+    // 仅在该设备处于体感态时驱动光标；否则丢弃（固件在退出后应已停发）。
+    if (!IsAirMouseActive(device_id)) return;
+    const double gain = config_.air_mouse_gain;
+    const int dx = static_cast<int>(std::lround(event.dx * gain));
+    int dy = static_cast<int>(std::lround(event.dy * gain));
+    if (config_.air_mouse_invert_y) dy = -dy;
+    if (dx == 0 && dy == 0) return;
+    input_injector_->MoveMouse(dx, dy);
+}
+
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
                                                        const std::string& device_id) {
+    // 体感态：主键长按/按下不启动录音（点击由 button_click 映射为左键）。
+    if (IsAirMouseActive(device_id)) {
+        return;
+    }
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
         HandleSubtitlePrimaryButtonDown(session_id, device_id);
         return;

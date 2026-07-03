@@ -1079,6 +1079,34 @@ esp_err_t voice_ble_send_tap(const char *kind)
     return send_state_json(json);
 }
 
+esp_err_t voice_ble_send_motion(int16_t dx, int16_t dy)
+{
+    if (!s_connected || !s_state_subscribed || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // 6 字节二进制 motion 帧：version(1) + type(0x11) + int16 dx + int16 dy（小端）。
+    uint8_t frame[6] = {
+        1,
+        0x11,
+        (uint8_t)(dx & 0xff),
+        (uint8_t)((dx >> 8) & 0xff),
+        (uint8_t)(dy & 0xff),
+        (uint8_t)((dy >> 8) & 0xff),
+    };
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(frame, sizeof(frame));
+    if (!om) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    int rc = ble_gatts_notify_custom(s_conn_handle, s_state_attr_handle, om);
+    if (rc != 0) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
 esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered)
 {
     char json[128];

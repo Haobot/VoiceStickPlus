@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 // BMI270 拿起检测驱动。
@@ -57,6 +58,16 @@ void bmi270_set_tap_enabled(bool enable);
 // 设置敲击灵敏度：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
 // 越界（<1 或 >10）时 fallback 到默认档 5。
 void bmi270_set_tap_sensitivity(int level);
+
+// ===== 体感鼠标（air mouse）=====
+// 进入体感态：重置零偏校准，接下来若干帧采样静止基线作为陀螺仪零偏。
+void bmi270_air_mouse_start(void);
+// 退出体感态：停止上报。
+void bmi270_air_mouse_stop(void);
+// 体感鼠标轮询：约 20ms 调用一次，读陀螺仪、减零偏、过死区、映射为整型光标位移。
+// 返回 true 且写出 *dx/*dy 表示本次有有效位移；校准中或死区内返回 false。
+// 未使能或非 BMI270 时恒返回 false。
+bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy);
 
 // [阶段 3 关机态用] 加载 8KB config file，配置 any-motion feature 与 INT1 输出，
 // 使 IMU 在 M5PM1 关机后继续低功耗检测，翻转经 PYG4 唤醒 M5PM1。

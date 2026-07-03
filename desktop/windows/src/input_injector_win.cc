@@ -67,4 +67,23 @@ void InputInjectorWin::SendArrowDown() {
     SendKey(VK_DOWN, false);
 }
 
+void InputInjectorWin::MoveMouse(int dx, int dy) {
+    if (dx == 0 && dy == 0) return;
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = dx;
+    input.mi.dy = dy;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;  // 相对移动
+    SendInput(1, &input, sizeof(INPUT));
+}
+
+void InputInjectorWin::ClickLeftButton() {
+    INPUT inputs[2]{};
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
 } // namespace voicestick

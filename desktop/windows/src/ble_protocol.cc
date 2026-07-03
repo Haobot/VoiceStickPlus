@@ -145,7 +145,7 @@ std::optional<AudioFrame> BleProtocol::ParseAudioFrame(std::span<const std::uint
 }
 
 std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint8_t> data) {
-    if (data.size() < 4 || data[0] != 1 || data[1] != 0x10) return std::nullopt;
+    if (data.size() < 4 || data[0] != 1 || data[1] != state_type_json) return std::nullopt;
     const auto payload_len = ReadLe16(data.subspan(2, 2));
     if (data.size() < 4u + payload_len) return std::nullopt;
     const auto json = Utf8FromBytes(data.subspan(4, payload_len));
@@ -161,6 +161,15 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.battery_charging = JsonBoolValue(json, "charging");
     event.battery_usb_powered = JsonBoolValue(json, "usb_powered");
 
+    return event;
+}
+
+std::optional<MotionEvent> BleProtocol::ParseMotionFrame(std::span<const std::uint8_t> data) {
+    // 固定 6 字节：version(1) + type(0x11) + int16 dx + int16 dy，小端。
+    if (data.size() < 6 || data[0] != 1 || data[1] != state_type_motion) return std::nullopt;
+    MotionEvent event;
+    event.dx = static_cast<std::int16_t>(ReadLe16(data.subspan(2, 2)));
+    event.dy = static_cast<std::int16_t>(ReadLe16(data.subspan(4, 2)));
     return event;
 }
 
@@ -213,6 +222,12 @@ ByteVector BleProtocol::TapEnabledPayload(bool enabled) {
 ByteVector BleProtocol::TapSensitivityPayload(int level) {
     const auto json = std::string("{\"event\":\"tap_sensitivity\",\"level\":") +
                       std::to_string(level) + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::AirMouseEnabledPayload(bool enabled) {
+    const auto json = std::string("{\"event\":\"air_mouse_enabled\",\"enabled\":") +
+                      (enabled ? "true" : "false") + "}";
     return ByteVector(json.begin(), json.end());
 }
 
