@@ -320,9 +320,9 @@ BLE GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `imu_wake_sensitivity`：IMU 拿起/晃动亮屏灵敏度，取值 `low` / `medium` / `high`。
 - `tap_to_arrow`：Windows 端是否把固件检测到的双击敲击事件注入为方向键 Down，默认 `false`。
 - `tap_sensitivity`：双击敲击灵敏度，整数 `1..10`，数值越大越灵敏，默认 `5`。
-- `air_mouse_sensitivity_x`：体感鼠标左右（yaw）灵敏度档位（整数 `1..10`，默认 `5`），映射 `gain_x = sensitivity_x × 2.0`。设置界面滑杆调节。
-- `air_mouse_sensitivity_y`：体感鼠标上下（pitch）灵敏度档位（整数 `1..10`，默认 `5`），映射 `gain_y = sensitivity_y × 2.0`。
-- `air_mouse_tau`：体感鼠标速度环时间常数（秒，默认 `0.10`），越大惯性/缓停越长。
+- `air_mouse_sensitivity_x`：体感鼠标左右（yaw）灵敏度档位（整数 `1..10`，默认 `5`），映射 `gain_x = sensitivity_x × 16`。设置界面滑杆调节。
+- `air_mouse_sensitivity_y`：体感鼠标上下（pitch）灵敏度档位（整数 `1..10`，默认 `5`），映射 `gain_y = sensitivity_y × 16`。
+- `air_mouse_tau`：体感鼠标速度环时间常数（秒，默认 `0.05`），手停滑行 ≈ 3×tau，越大缓停越长。
 - `air_mouse_invert_y`：体感鼠标是否反转 Y 轴，默认 `false`。
 
 Windows 调试音频缓存目录：

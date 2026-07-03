@@ -526,15 +526,13 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
 
 AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
-    // gain 映射：每档 ×8.0。10 级=80，真机典型手腕转动(omega≈24)0.8s 可达 ~540px。
-    // 旧 ×2.0（10 级=20）实测稳态仅 ~176px/s，用户反馈最高档仍很慢。
-    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 8.0;
-    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 8.0;
+    // gain 映射：每档 ×16。速度控制模型无 decay_tau 放大（旧角度模型 theta_ss=omega×decay_tau
+    // 提供 ×2 放大），需提高系数补偿。10 级=160，omega≈24 → v≈3840px/s，即时达速。
+    // 旧 ×8.0（角度模型）实测最高档仍慢且手停滑行 2-4s；速度模型即时达速 + 手停即停。
+    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 16.0;
+    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 16.0;
     p.tau = config_.air_mouse_tau;
     p.invert_y = config_.air_mouse_invert_y;
-    // decay_tau=2.0：θ 慢衰减防漂移，同时限制持续转动 θ 稳态(=omega×D)，
-    // 防止高 gain 下长转光标爆走。旧 8.0 时 θ 稳态过大，长转会飞屏。
-    p.decay_tau = 2.0;
     return p;
 }
 
@@ -552,8 +550,8 @@ void VoiceStickCoordinator::AirMouseTick() {
                                         dt, stale, params);
         static int tick_log_counter = 0;
         if (++tick_log_counter % 30 == 0) {
-            LogCoordinatorLine("tick VS-" + device_id + " theta_x=" + std::to_string(state.kin.theta_x) +
-                               " vx=" + std::to_string(state.kin.vx) + " dx=" + std::to_string(result.dx) +
+            LogCoordinatorLine("tick VS-" + device_id + " vx=" + std::to_string(state.kin.vx) +
+                               " dx=" + std::to_string(result.dx) +
                                " stale=" + (stale ? "1" : "0") + " omx=" + std::to_string(state.last_omega_x));
         }
         if (result.dx != 0 || result.dy != 0) {
