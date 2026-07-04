@@ -6,8 +6,8 @@ namespace voicestick {
 
 // 三段线性增益因子：微调段压低、中段线性过渡、甩动段放大（慢稳快猛）。
 // 拐点 low_thresh/high_thresh 处两侧 factor 连续，无跳变。curve 运行期可变（热调参）。
-double AirMouseGainFactor(double omega_abs, const AirMouseCurveParams& curve) {
-    const double a = std::fabs(omega_abs);
+double AirMouseGainFactor(double x_abs, const AirMouseCurveParams& curve) {
+    const double a = std::fabs(x_abs);
     if (a < curve.low_thresh) {
         return curve.low_factor;
     }
@@ -37,22 +37,21 @@ AirMouseCurveParams AirMouseCurveClamp(AirMouseCurveParams curve) {
 }
 
 AirMouseStepResult AirMouseStep(AirMouseKinState& state,
-                                std::int16_t omega_x,
-                                std::int16_t omega_y,
+                                const AirMouseInput& input,
                                 double dt_seconds,
-                                bool omega_is_stale,
+                                bool input_is_stale,
                                 const AirMouseParams& params) {
-    // stale 时 omega 视为 0：手停后 v_target=0，v 经 tau 快速归零（手停即停）。
-    const double ox = omega_is_stale ? 0.0 : static_cast<double>(omega_x);
-    double oy = omega_is_stale ? 0.0 : static_cast<double>(omega_y);
-    if (params.invert_y) oy = -oy;
+    // stale 时输入视为 0：手停后 v_target=0，v 经 tau 快速归零（手停即停）。
+    const double ix = input_is_stale ? 0.0 : static_cast<double>(input.value_x);
+    double iy = input_is_stale ? 0.0 : static_cast<double>(input.value_y);
+    if (params.invert_y) iy = -iy;
 
-    // 速度控制：目标速度 = omega × gain × factor(|omega|)（三段线性增益曲线，慢稳快猛）。
-    // omega=0 即 v_target=0（手停即停）。
-    const double v_target_x = ox * params.gain_x * AirMouseGainFactor(ox, params.curve);
-    const double v_target_y = oy * params.gain_y * AirMouseGainFactor(oy, params.curve);
+    // 速度控制：目标速度 = value × gain × factor(|value|)（三段线性增益曲线，慢稳快猛）。
+    // 输入为 0 即 v_target=0（手停即停）。
+    const double v_target_x = ix * params.gain_x * AirMouseGainFactor(ix, params.curve);
+    const double v_target_y = iy * params.gain_y * AirMouseGainFactor(iy, params.curve);
 
-    // 速度环（一阶低通）：平滑陀螺仪噪声，手停后 v 经 tau 衰减归零（滑行 ≈ 3×tau）。
+    // 速度环（一阶低通）：平滑噪声，手停后 v 经 tau 衰减归零（滑行 ≈ 3×tau）。
     const double alpha = 1.0 - std::exp(-dt_seconds / params.tau);
     state.vx += (v_target_x - state.vx) * alpha;
     state.vy += (v_target_y - state.vy) * alpha;

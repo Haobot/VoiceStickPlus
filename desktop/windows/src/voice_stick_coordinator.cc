@@ -520,7 +520,9 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
     }
     // 进入体感：置位、初始化运动学状态、通知固件校准并上报 motion。
     air_mouse_active_devices_.insert(device_id);
-    air_mouse_states_[device_id] = AirMouseDeviceState{};
+    AirMouseDeviceState state{};
+    state.last_omega_t = std::chrono::steady_clock::now();  // 防止首次积分 dt 爆炸
+    air_mouse_states_[device_id] = state;
     ble_->SendAirMouseEnabled(true, device_id);
     LogCoordinatorLine("air mouse enabled on VS-" + device_id);
     if (on_air_mouse_active_changed) on_air_mouse_active_changed(!air_mouse_states_.empty());
@@ -529,11 +531,11 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
 
 AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
-    // gain 映射：每档 ×16。速度控制模型无 decay_tau 放大（旧角度模型 theta_ss=omega×decay_tau
-    // 提供 ×2 放大），需提高系数补偿。10 级=160，omega≈24 → v≈3840px/s，即时达速。
-    // 旧 ×8.0（角度模型）实测最高档仍慢且手停滑行 2-4s；速度模型即时达速 + 手停即停。
-    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 16.0;
-    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 16.0;
+    // 角度控制模型：theta = 积分 omega × dt。theta 稳态值约等于 omega × 保持时间（秒），
+    // 典型保持 0.2~1s 时 theta 与单帧 omega 同数量级；为保持相近光标速度，gain 提高 20 倍。
+    // 初值 sensitivity × 320 待真机标定（可能范围 160~640）。
+    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 320.0;
+    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 320.0;
     p.tau = config_.air_mouse_tau;
     p.invert_y = config_.air_mouse_invert_y;
     // 曲线参数从配置组装，经 AirMouseCurveClamp 钳位（防配置越界致曲线退化或除零）。
@@ -561,13 +563,31 @@ void VoiceStickCoordinator::AirMouseTick() {
     for (auto& [device_id, state] : air_mouse_states_) {
         const double omega_age = std::chrono::duration<double>(now - state.last_omega_t).count();
         const bool stale = omega_age > stale_age_sec;
-        const auto result = AirMouseStep(state.kin, state.last_omega_x, state.last_omega_y,
-                                        dt, stale, params);
+
+        // 角度控制：回到中立区（theta/omega 都很小）或 stale 时归零，实现"回正即停"。
+        // 保持较大角度时 theta 保留，光标持续移动。
+        if (stale ||
+            (std::fabs(state.theta_x) < kAirMouseAngleDeadzone &&
+             std::fabs(state.theta_y) < kAirMouseAngleDeadzone &&
+             std::fabs(state.last_omega_x) < kAirMouseOmegaDeadzone &&
+             std::fabs(state.last_omega_y) < kAirMouseOmegaDeadzone)) {
+            state.theta_x = 0.0;
+            state.theta_y = 0.0;
+        }
+
+        AirMouseInput input;
+        input.value_x = static_cast<int>(state.theta_x);
+        input.value_y = static_cast<int>(state.theta_y);
+        input.is_angle = true;
+
+        const auto result = AirMouseStep(state.kin, input, dt, stale, params);
         static int tick_log_counter = 0;
         if (++tick_log_counter % 30 == 0) {
             LogCoordinatorLine("tick VS-" + device_id + " vx=" + std::to_string(state.kin.vx) +
                                " dx=" + std::to_string(result.dx) +
-                               " stale=" + (stale ? "1" : "0") + " omx=" + std::to_string(state.last_omega_x));
+                               " stale=" + (stale ? "1" : "0") +
+                               " theta=" + std::to_string(state.theta_x) +
+                               " omx=" + std::to_string(state.last_omega_x));
         }
         if (result.dx != 0 || result.dy != 0) {
             input_injector_->MoveMouse(result.dx, result.dy);
@@ -576,14 +596,26 @@ void VoiceStickCoordinator::AirMouseTick() {
 }
 
 void VoiceStickCoordinator::HandleMotionEvent(const MotionEvent& event, const std::string& device_id) {
-    // 仅在该设备处于体感态时更新 omega；光标位移由 AirMouseTick 统一驱动，避免 50Hz 输入
-    // 抖动直注，且让静止时定时器能继续衰减 v 实现缓停。
+    // 仅在该设备处于体感态时更新 omega 并积分 theta；光标位移由 AirMouseTick 统一驱动。
     if (!IsAirMouseActive(device_id)) return;
     auto& state = air_mouse_states_[device_id];
+
+    // 角度控制模型：对 omega 积分得到相对中立姿态的偏转角 theta。
+    // 用 tick 周期作为 dt 估计，避免 BLE 帧率抖动和测试连续调用导致 dt≈0；固件 50Hz 与桌面 60Hz 接近。
+    const double dt = std::chrono::duration<double>(kAirMouseTickInterval).count();
+
+    // 保持某角度时 omega≈0，theta 不变，光标持续移动；回正到中立区后 AirMouseTick 归零。
+    state.theta_x += event.dx * dt;
+    state.theta_y += event.dy * dt;
+    state.theta_x = std::clamp(state.theta_x, -kAirMouseMaxTheta, kAirMouseMaxTheta);
+    state.theta_y = std::clamp(state.theta_y, -kAirMouseMaxTheta, kAirMouseMaxTheta);
+
     state.last_omega_x = event.dx;
     state.last_omega_y = event.dy;
     state.last_omega_t = std::chrono::steady_clock::now();
-    LogCoordinatorLine("motion VS-" + device_id + " dx=" + std::to_string(event.dx) + " dy=" + std::to_string(event.dy));
+    LogCoordinatorLine("motion VS-" + device_id + " dx=" + std::to_string(event.dx) +
+                       " dy=" + std::to_string(event.dy) +
+                       " theta=" + std::to_string(state.theta_x));
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id,
