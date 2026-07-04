@@ -17,6 +17,7 @@ struct AirMouseTuningState {
     double tau = 0.05;
     bool invert_y = false;
     AirMouseCurveParams curve;
+    double neutral_deadzone = 3.0;  // 方向锁中立区死区，范围 1.0~10.0
 
     AirMouseParams ToParams() const {
         AirMouseParams p;
@@ -25,6 +26,7 @@ struct AirMouseTuningState {
         p.tau = tau;
         p.invert_y = invert_y;
         p.curve = AirMouseCurveClamp(curve);
+        p.neutral_deadzone = neutral_deadzone;
         return p;
     }
     static AirMouseTuningState FromParams(const AirMouseParams& p) {
@@ -34,6 +36,7 @@ struct AirMouseTuningState {
         s.tau = p.tau;
         s.invert_y = p.invert_y;
         s.curve = p.curve;
+        s.neutral_deadzone = p.neutral_deadzone;
         return s;
     }
 };
@@ -47,6 +50,7 @@ public:
     AirMouseTuningWindow(HINSTANCE instance, HWND parent, const AirMouseParams& initial_params);
     ~AirMouseTuningWindow();
     void Show();
+    bool IsOpen() const { return hwnd_ != nullptr; }
     // 即时热调参（每滑块/复选改动触发）。
     std::function<void(const AirMouseTuningState&)> on_params_changed;
     // 保存到配置（持久化）。
@@ -71,11 +75,13 @@ private:
     HWND gain_x_track_ = nullptr, gain_y_track_ = nullptr, tau_track_ = nullptr;
     HWND low_thresh_track_ = nullptr, high_thresh_track_ = nullptr;
     HWND low_factor_track_ = nullptr, high_factor_track_ = nullptr;
+    HWND neutral_deadzone_track_ = nullptr;
     HWND invert_y_check_ = nullptr;
     HWND save_btn_ = nullptr, reset_btn_ = nullptr;
     HWND gain_x_label_ = nullptr, gain_y_label_ = nullptr, tau_label_ = nullptr;
     HWND low_thresh_label_ = nullptr, high_thresh_label_ = nullptr;
     HWND low_factor_label_ = nullptr, high_factor_label_ = nullptr;
+    HWND neutral_deadzone_label_ = nullptr;
 };
 
 } // namespace voicestick

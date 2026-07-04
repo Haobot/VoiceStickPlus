@@ -4,12 +4,22 @@
 
 namespace voicestick {
 
+// 方向锁：防止手腕经过中立区时直接切换到反向光标。
+// 每个轴独立维护，只有 |theta| 越过中立区死区才能锁定该方向，回到死区内才释放。
+enum class AirMouseDirectionLock {
+    kNone,      // 未锁定，光标停
+    kNegative,  // 锁定负方向
+    kPositive,  // 锁定正方向
+};
+
 // 体感鼠标运动学状态（速度环：目标速度由输入决定，输入为 0 即停）。
 struct AirMouseKinState {
-    double vx = 0.0;       // 光标速度（像素/秒）
+    double vx = 0.0;                    // 光标速度（像素/秒）
     double vy = 0.0;
-    double fx = 0.0;       // 亚像素位移累积
+    double fx = 0.0;                    // 亚像素位移累积
     double fy = 0.0;
+    AirMouseDirectionLock lock_x = AirMouseDirectionLock::kNone;
+    AirMouseDirectionLock lock_y = AirMouseDirectionLock::kNone;
 };
 
 // 三段线性增益曲线参数（运行期可变，支持热调参；默认值=真机标定值）。
@@ -27,11 +37,12 @@ struct AirMouseCurveParams {
 
 // 体感鼠标速度控制参数（由配置项填充，真机标定）。
 struct AirMouseParams {
-    double tau = 0.05;         // 速度环时间常数（秒），手停滑行 ≈ 3×tau
-    double gain_x = 16.0;      // 左右（yaw）输入→速度增益
-    double gain_y = 16.0;      // 上下（pitch）输入→速度增益
-    bool invert_y = false;     // 是否反转 Y 轴
-    AirMouseCurveParams curve; // 三段线性增益曲线（运行期可变，支持热调参）
+    double tau = 0.05;             // 速度环时间常数（秒），手停滑行 ≈ 3×tau
+    double gain_x = 16.0;          // 左右（yaw）输入→速度增益
+    double gain_y = 16.0;          // 上下（pitch）输入→速度增益
+    bool invert_y = false;         // 是否反转 Y 轴
+    AirMouseCurveParams curve;     // 三段线性增益曲线（运行期可变，支持热调参）
+    double neutral_deadzone = 3.0; // 方向锁中立区死区（角度），|theta| 小于此值时光标停并释放方向锁
 };
 
 // 单次 step 的输入：可为角速度（速度控制模型）或相对角度（角度控制模型）。
@@ -49,6 +60,12 @@ double AirMouseGainFactor(double x_abs, const AirMouseCurveParams& curve);
 // 钳位曲线参数到合法范围（low_thresh<high_thresh、factor 界限、阈值界限）。纯函数。
 // 配置解析与热调参 UI 均复用，防越界致曲线退化（如 low_thresh≥high_thresh 除零）。
 AirMouseCurveParams AirMouseCurveClamp(AirMouseCurveParams curve);
+
+// 方向锁：根据当前 theta 和已有锁状态，决定有效 theta。
+// 若 |theta| <= deadzone 则释放锁并返回 0；
+// 若未锁定则按 theta 符号锁定方向；
+// 若锁定方向与 theta 符号冲突（异常过冲）则释放锁并返回 0。
+double AirMouseApplyDirectionLock(double theta, AirMouseDirectionLock& lock, double deadzone);
 
 struct AirMouseStepResult {
     int dx = 0;

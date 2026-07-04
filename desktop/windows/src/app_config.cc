@@ -357,6 +357,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "air_mouse_curve_high_thresh") config.air_mouse_curve_high_thresh = DoubleValue(value, config.air_mouse_curve_high_thresh);
     if (key == "air_mouse_curve_low_factor") config.air_mouse_curve_low_factor = DoubleValue(value, config.air_mouse_curve_low_factor);
     if (key == "air_mouse_curve_high_factor") config.air_mouse_curve_high_factor = DoubleValue(value, config.air_mouse_curve_high_factor);
+    if (key == "air_mouse_neutral_deadzone") config.air_mouse_neutral_deadzone = AirMouseNeutralDeadzoneClamp(DoubleValue(value, config.air_mouse_neutral_deadzone));
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
@@ -482,6 +483,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlDouble(table, "air_mouse_curve_high_thresh")) config.air_mouse_curve_high_thresh = *value;
         if (auto value = TomlDouble(table, "air_mouse_curve_low_factor")) config.air_mouse_curve_low_factor = *value;
         if (auto value = TomlDouble(table, "air_mouse_curve_high_factor")) config.air_mouse_curve_high_factor = *value;
+        if (auto value = TomlDouble(table, "air_mouse_neutral_deadzone")) config.air_mouse_neutral_deadzone = AirMouseNeutralDeadzoneClamp(*value);
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
@@ -561,6 +563,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "air_mouse_curve_high_thresh = " << air_mouse_curve_high_thresh << "\n";
     output << "air_mouse_curve_low_factor = " << air_mouse_curve_low_factor << "\n";
     output << "air_mouse_curve_high_factor = " << air_mouse_curve_high_factor << "\n";
+    output << "air_mouse_neutral_deadzone = " << air_mouse_neutral_deadzone << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
@@ -934,6 +937,12 @@ double AirMouseTauClamp(double tau) {
     // 速度环时间常数约束在 [0.02, 0.5]，越界回落默认 0.05（手停即停）。
     if (!(tau > 0.0) || tau > 0.5 || tau < 0.02) return 0.05;
     return tau;
+}
+
+double AirMouseNeutralDeadzoneClamp(double deadzone) {
+    // 方向锁中立区死区约束在 [1.0, 10.0]，越界回落默认 3.0。
+    if (!(deadzone > 0.0) || deadzone < 1.0 || deadzone > 10.0) return 3.0;
+    return deadzone;
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {

@@ -147,6 +147,8 @@ struct AppConfig {
     double air_mouse_curve_high_thresh = 50.0;
     double air_mouse_curve_low_factor = 0.15;
     double air_mouse_curve_high_factor = 4.0;
+    // 体感鼠标：方向锁中立区死区（角度），|theta| 小于此值时光标停并释放方向锁。默认 3.0，范围 1.0~10.0。
+    double air_mouse_neutral_deadzone = 3.0;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -213,5 +215,6 @@ int ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity sensitivity);
 int TapSensitivityClamp(int level);
 int AirMouseSensitivityClamp(int level);
 double AirMouseTauClamp(double tau);
+double AirMouseNeutralDeadzoneClamp(double deadzone);
 
 } // namespace voicestick
