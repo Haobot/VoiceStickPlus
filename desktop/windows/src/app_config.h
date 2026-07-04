@@ -1,5 +1,7 @@
 #pragma once
 
+#include "air_mouse_kin.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -147,8 +149,17 @@ struct AppConfig {
     double air_mouse_curve_high_thresh = 50.0;
     double air_mouse_curve_low_factor = 0.15;
     double air_mouse_curve_high_factor = 4.0;
+    // 体感鼠标：控制模式。"angle" = 角度控制（theta 直接映射速度，回中即停）；
+    // "rate" = 飞行摇杆/变化率控制（theta 映射加速度，回中后速度保持）。默认 "rate"。
+    std::string air_mouse_control_mode = "rate";
     // 体感鼠标：方向锁中立区死区（角度），|theta| 小于此值时光标停并释放方向锁。默认 3.0，范围 1.0~10.0。
     double air_mouse_neutral_deadzone = 3.0;
+    // 飞行摇杆模式参数：theta → 加速度增益。默认 80.0，范围 10.0~500.0。
+    double air_mouse_rate_gain = 80.0;
+    // 飞行摇杆模式参数：速度摩擦系数（1/s）。默认 0.05，范围 0.0~0.5。
+    double air_mouse_rate_friction = 0.05;
+    // 飞行摇杆模式参数：速度上限（像素/秒）。默认 4000.0，范围 500.0~8000.0。
+    double air_mouse_rate_max_speed = 4000.0;
     bool launch_at_login = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
@@ -216,5 +227,9 @@ int TapSensitivityClamp(int level);
 int AirMouseSensitivityClamp(int level);
 double AirMouseTauClamp(double tau);
 double AirMouseNeutralDeadzoneClamp(double deadzone);
+// 飞行摇杆/变化率控制参数钳位。
+double AirMouseRateGainClamp(double gain);
+double AirMouseRateFrictionClamp(double friction);
+double AirMouseRateMaxSpeedClamp(double max_speed);
 
 } // namespace voicestick

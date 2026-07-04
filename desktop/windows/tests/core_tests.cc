@@ -1747,6 +1747,7 @@ void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.air_mouse_sensitivity_x = 10;  // 最高档
+    config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -1772,6 +1773,7 @@ void TestCoordinatorAirMouseSustainedRunBounded() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -1803,6 +1805,7 @@ void TestCoordinatorAirMouseStopsWhenThetaZero() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -1845,6 +1848,7 @@ void TestCoordinatorAngleIntegratesToSustainedMovement() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -2522,6 +2526,7 @@ void TestAirMouseStepSubPixelAccumulation() {
 void TestAirMouseStepAngleModeFollowsTheta() {
     AirMouseKinState s;
     AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kAngle;
     p.gain_x = 320.0;  // 角度模型典型增益
     const std::int16_t theta = 10;
     for (int i = 0; i < 200; ++i) {
@@ -2536,6 +2541,7 @@ void TestAirMouseStepAngleModeFollowsTheta() {
 void TestAirMouseStepAngleModeStopsOnZeroTheta() {
     AirMouseKinState s;
     AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kAngle;
     p.gain_x = 320.0;
     // 先给非零 theta 让 v 起来
     for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
@@ -2615,6 +2621,104 @@ void TestAirMouseStepDirectionLockRequiresReturnToNeutralBeforeReverse() {
     assert(s.vx < 0.0);
 }
 
+// ===== 飞行摇杆/变化率控制测试 =====
+// theta 控制光标速度变化率（加速度），回中后速度保持。
+
+// 固定 theta，kRate 模式下速度持续增加。
+void TestAirMouseStepRateModeAccelerates() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kRate;
+    p.rate_gain = 100.0;
+    p.rate_friction = 0.0;  // 关闭摩擦，便于观察纯加速
+    for (int i = 0; i < 50; ++i) {
+        AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    }
+    assert(s.vx > 0.0);
+    const double v_mid = s.vx;
+    for (int i = 0; i < 50; ++i) {
+        AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    }
+    assert(s.vx > v_mid);  // 继续加速
+}
+
+// theta 回 0 后，kRate 模式下速度保持（摩擦为 0 时）。
+void TestAirMouseStepRateModeCoastsAtZeroTheta() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kRate;
+    p.rate_gain = 100.0;
+    p.rate_friction = 0.0;
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    assert(s.vx > 100.0);
+    const double v_before = s.vx;
+    // theta=0，摩擦=0，速度应保持
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{0, 0, true}, 0.016, false, p);
+    assert(std::fabs(s.vx - v_before) < 1.0);
+}
+
+// theta=0 且摩擦 >0 时，速度逐渐衰减。
+void TestAirMouseStepRateModeFrictionSlowsDown() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kRate;
+    p.rate_gain = 100.0;
+    p.rate_friction = 0.1;
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    assert(s.vx > 100.0);
+    const double v_before = s.vx;
+    for (int i = 0; i < 100; ++i) AirMouseStep(s, AirMouseInput{0, 0, true}, 0.016, false, p);
+    assert(s.vx < v_before);
+    assert(s.vx > 0.0);  // 未完全停
+}
+
+// 反向 theta 使速度减速、停止并反向。
+void TestAirMouseStepRateModeReversesByOpposingTheta() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kRate;
+    p.rate_gain = 100.0;
+    p.rate_friction = 0.0;
+    // 先正向加速
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    assert(s.vx > 100.0);
+    // 反向 theta 减速
+    int steps_to_reverse = 0;
+    for (int i = 0; i < 200 && s.vx >= 0.0; ++i) {
+        AirMouseStep(s, AirMouseInput{-10, 0, true}, 0.016, false, p);
+        ++steps_to_reverse;
+    }
+    assert(steps_to_reverse < 200);  // 应在有限步内反向
+    assert(s.vx < 0.0);
+}
+
+// 速度上限生效。
+void TestAirMouseStepRateModeMaxSpeedCap() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kRate;
+    p.rate_gain = 500.0;
+    p.rate_friction = 0.0;
+    p.rate_max_speed = 1000.0;
+    for (int i = 0; i < 500; ++i) {
+        AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    }
+    assert(std::fabs(s.vx) <= p.rate_max_speed + 1.0);
+}
+
+// 切换回 kAngle 模式，原有角度控制行为不变。
+void TestAirMouseStepAngleModeStillWorks() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.control_mode = AirMouseControlMode::kAngle;
+    p.gain_x = 320.0;
+    for (int i = 0; i < 200; ++i) {
+        AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    }
+    const double v_target = 10.0 * p.gain_x * AirMouseGainFactor(10.0, p.curve);
+    assert(std::fabs(s.vx - v_target) < std::fabs(v_target) * 0.05);
+}
+
 // 体感鼠标配置项 Save/Load 往返 + Clamp 边界。
 void TestAppConfigAirMouseRoundTrip() {
     AppConfig config;
@@ -2627,6 +2731,10 @@ void TestAppConfigAirMouseRoundTrip() {
     config.air_mouse_curve_low_factor = 0.2;
     config.air_mouse_curve_high_factor = 3.5;
     config.air_mouse_neutral_deadzone = 6.0;
+    config.air_mouse_control_mode = "angle";
+    config.air_mouse_rate_gain = 120.0;
+    config.air_mouse_rate_friction = 0.08;
+    config.air_mouse_rate_max_speed = 2500.0;
     const auto path = std::filesystem::temp_directory_path() / "voicestick_air_mouse_test.toml";
     config.Save(path);
     const auto loaded = AppConfig::Load(path);
@@ -2640,6 +2748,10 @@ void TestAppConfigAirMouseRoundTrip() {
     assert(std::fabs(loaded.air_mouse_curve_low_factor - 0.2) < 1e-9);
     assert(std::fabs(loaded.air_mouse_curve_high_factor - 3.5) < 1e-9);
     assert(std::fabs(loaded.air_mouse_neutral_deadzone - 6.0) < 1e-9);
+    assert(loaded.air_mouse_control_mode == "angle");
+    assert(std::fabs(loaded.air_mouse_rate_gain - 120.0) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_rate_friction - 0.08) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_rate_max_speed - 2500.0) < 1e-9);
 
     // Clamp 边界：越界回落默认值。
     assert(AirMouseSensitivityClamp(0) == 5);
@@ -2648,6 +2760,17 @@ void TestAppConfigAirMouseRoundTrip() {
     assert(AirMouseTauClamp(1.0) == 0.05);
     assert(std::fabs(AirMouseNeutralDeadzoneClamp(0.5) - 3.0) < 1e-9);
     assert(std::fabs(AirMouseNeutralDeadzoneClamp(12.0) - 3.0) < 1e-9);
+    assert(AirMouseControlModeFromName("angle") == AirMouseControlMode::kAngle);
+    assert(AirMouseControlModeFromName("rate") == AirMouseControlMode::kRate);
+    assert(AirMouseControlModeFromName("invalid") == AirMouseControlMode::kRate);
+    assert(AirMouseControlModeName(AirMouseControlMode::kAngle) == "angle");
+    assert(AirMouseControlModeName(AirMouseControlMode::kRate) == "rate");
+    assert(std::fabs(AirMouseRateGainClamp(5.0) - 80.0) < 1e-9);
+    assert(std::fabs(AirMouseRateGainClamp(600.0) - 80.0) < 1e-9);
+    assert(std::fabs(AirMouseRateFrictionClamp(-0.1) - 0.05) < 1e-9);
+    assert(std::fabs(AirMouseRateFrictionClamp(0.8) - 0.05) < 1e-9);
+    assert(std::fabs(AirMouseRateMaxSpeedClamp(200.0) - 4000.0) < 1e-9);
+    assert(std::fabs(AirMouseRateMaxSpeedClamp(9000.0) - 4000.0) < 1e-9);
 }
 
 int main() {
@@ -2680,6 +2803,12 @@ int main() {
     TestAirMouseStepDirectionLockEngagesAfterCrossingDeadzone();
     TestAirMouseStepDirectionLockStopsWhenReturningToNeutral();
     TestAirMouseStepDirectionLockRequiresReturnToNeutralBeforeReverse();
+    TestAirMouseStepRateModeAccelerates();
+    TestAirMouseStepRateModeCoastsAtZeroTheta();
+    TestAirMouseStepRateModeFrictionSlowsDown();
+    TestAirMouseStepRateModeReversesByOpposingTheta();
+    TestAirMouseStepRateModeMaxSpeedCap();
+    TestAirMouseStepAngleModeStillWorks();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();

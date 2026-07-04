@@ -1557,6 +1557,10 @@ void Win32App::ShowAirMouseTuning() {
             config_.air_mouse_curve_low_factor = state.curve.low_factor;
             config_.air_mouse_curve_high_factor = state.curve.high_factor;
             config_.air_mouse_neutral_deadzone = state.neutral_deadzone;
+            config_.air_mouse_control_mode = AirMouseControlModeName(state.control_mode);
+            config_.air_mouse_rate_gain = state.rate_gain;
+            config_.air_mouse_rate_friction = state.rate_friction;
+            config_.air_mouse_rate_max_speed = state.rate_max_speed;
             config_.Save();
             if (coordinator_) coordinator_->UpdateConfig(config_);
             LogLine("Air mouse tuning saved");
