@@ -1,5 +1,7 @@
 #include "air_mouse_tuning_window.h"
 
+#include "log.h"
+
 #include <commctrl.h>
 #include <string>
 
@@ -12,7 +14,7 @@ namespace {
 constexpr const wchar_t* kWindowTitle = L"体感鼠标调参（热调参，即时生效）";
 constexpr const wchar_t* kWindowClass = L"VoiceStickAirMouseTuning";
 constexpr int kWindowWidth = 500;
-constexpr int kWindowHeight = 360;
+constexpr int kWindowHeight = 394;  // 原 360 + 一行滑杆 34
 constexpr int kLabelW = 130;
 constexpr int kTrackW = 250;
 constexpr int kValueW = 60;
@@ -43,6 +45,9 @@ AirMouseTuningWindow::AirMouseTuningWindow(HINSTANCE instance, HWND parent, cons
     hwnd_ = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW,
                             CW_USEDEFAULT, CW_USEDEFAULT, kWindowWidth, kWindowHeight,
                             parent, nullptr, instance, this);
+    if (!hwnd_) {
+        LogApp("AirMouseTuningWindow CreateWindowEx failed: " + std::to_string(GetLastError()));
+    }
     // WM_CREATE 已设 GWLP_USERDATA，无需再设
 }
 
@@ -70,7 +75,7 @@ LRESULT CALLBACK AirMouseTuningWindow::WndProc(HWND hwnd, UINT msg, WPARAM w_par
     }
     if (self) {
         switch (msg) {
-        case WM_CREATE: self->OnCreate(); return 0;
+        case WM_CREATE: self->hwnd_ = hwnd; self->OnCreate(); return 0;
         case WM_HSCROLL: self->OnHScroll(); return 0;
         case WM_COMMAND: self->OnCommand(w_param); return 0;
         case WM_CLOSE: DestroyWindow(hwnd); self->hwnd_ = nullptr; return 0;
@@ -81,6 +86,12 @@ LRESULT CALLBACK AirMouseTuningWindow::WndProc(HWND hwnd, UINT msg, WPARAM w_par
 }
 
 void AirMouseTuningWindow::OnCreate() {
+    // 注册 trackbar (滑块) 控件类；不调用则 msctls_trackbar32 未注册，所有滑块创建失败。
+    INITCOMMONCONTROLSEX icc{};
+    icc.dwSize = sizeof(icc);
+    icc.dwICC = ICC_BAR_CLASSES;
+    InitCommonControlsEx(&icc);
+
     int y = kMargin;
     auto make_row = [&](const wchar_t* text, HWND& track, HWND& label) {
         CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE,
@@ -98,6 +109,7 @@ void AirMouseTuningWindow::OnCreate() {
     make_row(L"甩动段阈值", high_thresh_track_, high_thresh_label_);
     make_row(L"微调段增益", low_factor_track_, low_factor_label_);
     make_row(L"甩动段增益", high_factor_track_, high_factor_label_);
+    make_row(L"中立区死区", neutral_deadzone_track_, neutral_deadzone_label_);
 
     invert_y_check_ = CreateWindowExW(0, L"BUTTON", L"反转 Y 轴", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                       kMargin, y, 200, 22, hwnd_, nullptr, instance_, nullptr);
@@ -123,6 +135,8 @@ void AirMouseTuningWindow::OnCreate() {
     SendMessageW(low_factor_track_, TBM_SETRANGEMAX, TRUE, 50);   // 0.50
     SendMessageW(high_factor_track_, TBM_SETRANGEMIN, FALSE, 20); // 2.0 (×10)
     SendMessageW(high_factor_track_, TBM_SETRANGEMAX, TRUE, 60);  // 6.0
+    SendMessageW(neutral_deadzone_track_, TBM_SETRANGEMIN, FALSE, 10);  // 1.0 (×10)
+    SendMessageW(neutral_deadzone_track_, TBM_SETRANGEMAX, TRUE, 100);  // 10.0
 
     SyncControlsFromState();
 }
@@ -136,6 +150,7 @@ AirMouseTuningState AirMouseTuningWindow::StateFromControls() const {
     s.curve.high_thresh = static_cast<double>(SendMessageW(high_thresh_track_, TBM_GETPOS, 0, 0));
     s.curve.low_factor = SendMessageW(low_factor_track_, TBM_GETPOS, 0, 0) / 100.0;
     s.curve.high_factor = SendMessageW(high_factor_track_, TBM_GETPOS, 0, 0) / 10.0;
+    s.neutral_deadzone = SendMessageW(neutral_deadzone_track_, TBM_GETPOS, 0, 0) / 10.0;
     s.invert_y = (SendMessageW(invert_y_check_, BM_GETCHECK, 0, 0) == BST_CHECKED);
     return s;
 }
@@ -148,6 +163,7 @@ void AirMouseTuningWindow::SyncControlsFromState() {
     SendMessageW(high_thresh_track_, TBM_SETPOS, TRUE, static_cast<int>(state_.curve.high_thresh));
     SendMessageW(low_factor_track_, TBM_SETPOS, TRUE, static_cast<int>(state_.curve.low_factor * 100));
     SendMessageW(high_factor_track_, TBM_SETPOS, TRUE, static_cast<int>(state_.curve.high_factor * 10));
+    SendMessageW(neutral_deadzone_track_, TBM_SETPOS, TRUE, static_cast<int>(state_.neutral_deadzone * 10));
     SendMessageW(invert_y_check_, BM_SETCHECK, state_.invert_y ? BST_CHECKED : BST_UNCHECKED, 0);
     UpdateLabels();
 }
@@ -160,6 +176,7 @@ void AirMouseTuningWindow::UpdateLabels() {
     SetWindowTextW(high_thresh_label_, WFromDouble(state_.curve.high_thresh, 0).c_str());
     SetWindowTextW(low_factor_label_, WFromDouble(state_.curve.low_factor, 2).c_str());
     SetWindowTextW(high_factor_label_, WFromDouble(state_.curve.high_factor, 1).c_str());
+    SetWindowTextW(neutral_deadzone_label_, WFromDouble(state_.neutral_deadzone, 1).c_str());
 }
 
 void AirMouseTuningWindow::OnHScroll() {

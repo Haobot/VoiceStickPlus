@@ -544,6 +544,8 @@ AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     p.curve.low_factor = config_.air_mouse_curve_low_factor;
     p.curve.high_factor = config_.air_mouse_curve_high_factor;
     p.curve = AirMouseCurveClamp(p.curve);
+    // 方向锁中立区死区：|theta| 小于此值时光标停并释放方向锁。
+    p.neutral_deadzone = AirMouseNeutralDeadzoneClamp(config_.air_mouse_neutral_deadzone);
     return p;
 }
 

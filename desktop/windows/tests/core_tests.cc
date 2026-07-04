@@ -2504,6 +2504,7 @@ void TestAirMouseStepSubPixelAccumulation() {
     AirMouseKinState s;
     AirMouseParams p;
     p.gain_x = 1.0;  // 小 gain → 小 v
+    p.neutral_deadzone = 0.0;  // 关闭方向锁，避免死区吃掉小输入
     int total_dx = 0;
     for (int i = 0; i < 200; ++i) {
         const auto r = AirMouseStep(s, AirMouseInput{3, 0, false}, 0.016, false, p);
@@ -2544,6 +2545,76 @@ void TestAirMouseStepAngleModeStopsOnZeroTheta() {
     assert(std::fabs(s.vx) < 1.0);
 }
 
+// ===== 方向锁测试 =====
+// 中立区死区内不移动，方向锁释放。
+void TestAirMouseStepDirectionLockNeutralStops() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.gain_x = 320.0;
+    p.neutral_deadzone = 3.0;
+    for (int i = 0; i < 50; ++i) {
+        const auto r = AirMouseStep(s, AirMouseInput{2, 0, true}, 0.016, false, p);
+        assert(r.dx == 0);
+    }
+    assert(s.lock_x == AirMouseDirectionLock::kNone);
+}
+
+// 越过死区后锁定方向并持续移动。
+void TestAirMouseStepDirectionLockEngagesAfterCrossingDeadzone() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.gain_x = 320.0;
+    p.neutral_deadzone = 3.0;
+    for (int i = 0; i < 100; ++i) {
+        AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    }
+    assert(s.lock_x == AirMouseDirectionLock::kPositive);
+    assert(s.vx > 0.0);
+}
+
+// 锁定正向后回到中立区死区内，光标应停下、方向锁释放。
+void TestAirMouseStepDirectionLockStopsWhenReturningToNeutral() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.gain_x = 320.0;
+    p.neutral_deadzone = 3.0;
+    // 先锁定正向
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    assert(s.lock_x == AirMouseDirectionLock::kPositive);
+    // 回到死区内
+    for (int i = 0; i < 100; ++i) AirMouseStep(s, AirMouseInput{1, 0, true}, 0.016, false, p);
+    assert(s.lock_x == AirMouseDirectionLock::kNone);
+    assert(std::fabs(s.vx) < 1.0);
+}
+
+// 从正向连续回到中立区再出发到反向：死区内光标停，只有重新越过死区才锁定反向。
+void TestAirMouseStepDirectionLockRequiresReturnToNeutralBeforeReverse() {
+    AirMouseKinState s;
+    AirMouseParams p;
+    p.gain_x = 320.0;
+    p.neutral_deadzone = 3.0;
+    // 锁定正向并建立速度
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{10, 0, true}, 0.016, false, p);
+    assert(s.lock_x == AirMouseDirectionLock::kPositive);
+
+    // 连续回中：10 → 5 → 2（死区内）
+    AirMouseStep(s, AirMouseInput{5, 0, true}, 0.016, false, p);
+    assert(s.lock_x == AirMouseDirectionLock::kPositive);  // 5 仍大于死区，保持锁定
+    int dx_while_returning = 0;
+    for (int i = 0; i < 20; ++i) {
+        dx_while_returning += AirMouseStep(s, AirMouseInput{2, 0, true}, 0.016, false, p).dx;
+    }
+    assert(s.lock_x == AirMouseDirectionLock::kNone);      // 死区内释放
+    assert(dx_while_returning >= 0);                       // 不回退
+
+    // 经过死区到反向：-2（死区内） → -5
+    for (int i = 0; i < 5; ++i) AirMouseStep(s, AirMouseInput{-2, 0, true}, 0.016, false, p);
+    assert(s.lock_x == AirMouseDirectionLock::kNone);      // 仍在死区，不锁定
+    for (int i = 0; i < 50; ++i) AirMouseStep(s, AirMouseInput{-5, 0, true}, 0.016, false, p);
+    assert(s.lock_x == AirMouseDirectionLock::kNegative);  // 重新锁定反向
+    assert(s.vx < 0.0);
+}
+
 // 体感鼠标配置项 Save/Load 往返 + Clamp 边界。
 void TestAppConfigAirMouseRoundTrip() {
     AppConfig config;
@@ -2555,6 +2626,7 @@ void TestAppConfigAirMouseRoundTrip() {
     config.air_mouse_curve_high_thresh = 45.0;
     config.air_mouse_curve_low_factor = 0.2;
     config.air_mouse_curve_high_factor = 3.5;
+    config.air_mouse_neutral_deadzone = 6.0;
     const auto path = std::filesystem::temp_directory_path() / "voicestick_air_mouse_test.toml";
     config.Save(path);
     const auto loaded = AppConfig::Load(path);
@@ -2567,12 +2639,15 @@ void TestAppConfigAirMouseRoundTrip() {
     assert(std::fabs(loaded.air_mouse_curve_high_thresh - 45.0) < 1e-9);
     assert(std::fabs(loaded.air_mouse_curve_low_factor - 0.2) < 1e-9);
     assert(std::fabs(loaded.air_mouse_curve_high_factor - 3.5) < 1e-9);
+    assert(std::fabs(loaded.air_mouse_neutral_deadzone - 6.0) < 1e-9);
 
     // Clamp 边界：越界回落默认值。
     assert(AirMouseSensitivityClamp(0) == 5);
     assert(AirMouseSensitivityClamp(11) == 5);
     assert(AirMouseTauClamp(0.005) == 0.05);
     assert(AirMouseTauClamp(1.0) == 0.05);
+    assert(std::fabs(AirMouseNeutralDeadzoneClamp(0.5) - 3.0) < 1e-9);
+    assert(std::fabs(AirMouseNeutralDeadzoneClamp(12.0) - 3.0) < 1e-9);
 }
 
 int main() {
@@ -2601,6 +2676,10 @@ int main() {
     TestAirMouseStepSubPixelAccumulation();
     TestAirMouseStepAngleModeFollowsTheta();
     TestAirMouseStepAngleModeStopsOnZeroTheta();
+    TestAirMouseStepDirectionLockNeutralStops();
+    TestAirMouseStepDirectionLockEngagesAfterCrossingDeadzone();
+    TestAirMouseStepDirectionLockStopsWhenReturningToNeutral();
+    TestAirMouseStepDirectionLockRequiresReturnToNeutralBeforeReverse();
     TestOggMuxer();
     TestAsrProtocol();
     TestAppConfig();

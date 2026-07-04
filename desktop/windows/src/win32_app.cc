@@ -1540,7 +1540,7 @@ void Win32App::ShowSettings() {
 }
 
 void Win32App::ShowAirMouseTuning() {
-    if (!air_mouse_tuning_window_) {
+    if (!air_mouse_tuning_window_ || !air_mouse_tuning_window_->IsOpen()) {
         air_mouse_tuning_window_ = std::make_unique<AirMouseTuningWindow>(
             instance_, hwnd_,
             coordinator_ ? coordinator_->GetAirMouseParamsForTuning() : AirMouseParams{});
@@ -1556,6 +1556,7 @@ void Win32App::ShowAirMouseTuning() {
             config_.air_mouse_curve_high_thresh = state.curve.high_thresh;
             config_.air_mouse_curve_low_factor = state.curve.low_factor;
             config_.air_mouse_curve_high_factor = state.curve.high_factor;
+            config_.air_mouse_neutral_deadzone = state.neutral_deadzone;
             config_.Save();
             if (coordinator_) coordinator_->UpdateConfig(config_);
             LogLine("Air mouse tuning saved");

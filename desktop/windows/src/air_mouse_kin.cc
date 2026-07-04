@@ -36,14 +36,41 @@ AirMouseCurveParams AirMouseCurveClamp(AirMouseCurveParams curve) {
     return curve;
 }
 
+// 方向锁：中立区死区内光标停并释放方向锁；
+// 未锁定时越过死区才锁定方向；异常过冲时释放锁而非直接反向。
+double AirMouseApplyDirectionLock(double theta, AirMouseDirectionLock& lock, double deadzone) {
+    if (std::fabs(theta) <= deadzone) {
+        lock = AirMouseDirectionLock::kNone;
+        return 0.0;
+    }
+    if (lock == AirMouseDirectionLock::kNone) {
+        lock = theta > 0.0 ? AirMouseDirectionLock::kPositive : AirMouseDirectionLock::kNegative;
+        return theta;
+    }
+    const bool positive = theta > 0.0;
+    const bool locked_positive = lock == AirMouseDirectionLock::kPositive;
+    if (positive != locked_positive) {
+        // 已锁定方向与当前 theta 符号冲突（未经过死区就过冲到反向），释放锁并暂停，
+        // 下一 tick 如果仍在反向死区外会重新锁定反向。
+        lock = AirMouseDirectionLock::kNone;
+        return 0.0;
+    }
+    return theta;
+}
+
 AirMouseStepResult AirMouseStep(AirMouseKinState& state,
                                 const AirMouseInput& input,
                                 double dt_seconds,
                                 bool input_is_stale,
                                 const AirMouseParams& params) {
     // stale 时输入视为 0：手停后 v_target=0，v 经 tau 快速归零（手停即停）。
-    const double ix = input_is_stale ? 0.0 : static_cast<double>(input.value_x);
+    double ix = input_is_stale ? 0.0 : static_cast<double>(input.value_x);
     double iy = input_is_stale ? 0.0 : static_cast<double>(input.value_y);
+
+    // 方向锁：必须先回到中立区死区，才能切换到反向；避免回转经过水平时误触发反向移动。
+    ix = AirMouseApplyDirectionLock(ix, state.lock_x, params.neutral_deadzone);
+    iy = AirMouseApplyDirectionLock(iy, state.lock_y, params.neutral_deadzone);
+
     if (params.invert_y) iy = -iy;
 
     // 速度控制：目标速度 = value × gain × factor(|value|)（三段线性增益曲线，慢稳快猛）。
