@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 namespace voicestick {
 
@@ -35,14 +37,29 @@ struct AirMouseCurveParams {
     double high_factor = 4.0;
 };
 
+// 体感鼠标控制模式。
+// kAngle：角度控制，theta 直接映射为光标速度（回中即停）。
+// kRate：飞行摇杆/变化率控制，theta 映射为光标速度的变化率（加速度），回中后速度保持。
+enum class AirMouseControlMode {
+    kAngle,
+    kRate,
+};
+
 // 体感鼠标速度控制参数（由配置项填充，真机标定）。
+// 默认构造保持 kAngle，以便现有单元测试不依赖配置即可验证角度控制行为；
+// 运行期由 AirMouseParamsFromConfig 根据配置设置为 kRate。
 struct AirMouseParams {
-    double tau = 0.05;             // 速度环时间常数（秒），手停滑行 ≈ 3×tau
+    AirMouseControlMode control_mode = AirMouseControlMode::kAngle;
+    double tau = 0.05;             // 速度环时间常数（秒），手停滑行 ≈ 3×tau（kAngle 模式有效）
     double gain_x = 16.0;          // 左右（yaw）输入→速度增益
     double gain_y = 16.0;          // 上下（pitch）输入→速度增益
     bool invert_y = false;         // 是否反转 Y 轴
     AirMouseCurveParams curve;     // 三段线性增益曲线（运行期可变，支持热调参）
     double neutral_deadzone = 3.0; // 方向锁中立区死区（角度），|theta| 小于此值时光标停并释放方向锁
+    // 飞行摇杆模式（kRate）参数：theta 控制光标速度变化率。
+    double rate_gain = 80.0;       // theta → 加速度增益
+    double rate_friction = 0.05;   // 速度摩擦系数（1/s），omega=0 时速度衰减
+    double rate_max_speed = 4000.0; // 速度上限（像素/秒）
 };
 
 // 单次 step 的输入：可为角速度（速度控制模型）或相对角度（角度控制模型）。
@@ -66,6 +83,10 @@ AirMouseCurveParams AirMouseCurveClamp(AirMouseCurveParams curve);
 // 若未锁定则按 theta 符号锁定方向；
 // 若锁定方向与 theta 符号冲突（异常过冲）则释放锁并返回 0。
 double AirMouseApplyDirectionLock(double theta, AirMouseDirectionLock& lock, double deadzone);
+
+// 控制模式名称转换（配置持久化用）。
+std::string AirMouseControlModeName(AirMouseControlMode mode);
+AirMouseControlMode AirMouseControlModeFromName(std::string_view name);
 
 struct AirMouseStepResult {
     int dx = 0;

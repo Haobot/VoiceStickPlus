@@ -358,6 +358,10 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "air_mouse_curve_low_factor") config.air_mouse_curve_low_factor = DoubleValue(value, config.air_mouse_curve_low_factor);
     if (key == "air_mouse_curve_high_factor") config.air_mouse_curve_high_factor = DoubleValue(value, config.air_mouse_curve_high_factor);
     if (key == "air_mouse_neutral_deadzone") config.air_mouse_neutral_deadzone = AirMouseNeutralDeadzoneClamp(DoubleValue(value, config.air_mouse_neutral_deadzone));
+    if (key == "air_mouse_control_mode") config.air_mouse_control_mode = AirMouseControlModeName(AirMouseControlModeFromName(value));
+    if (key == "air_mouse_rate_gain") config.air_mouse_rate_gain = AirMouseRateGainClamp(DoubleValue(value, config.air_mouse_rate_gain));
+    if (key == "air_mouse_rate_friction") config.air_mouse_rate_friction = AirMouseRateFrictionClamp(DoubleValue(value, config.air_mouse_rate_friction));
+    if (key == "air_mouse_rate_max_speed") config.air_mouse_rate_max_speed = AirMouseRateMaxSpeedClamp(DoubleValue(value, config.air_mouse_rate_max_speed));
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
@@ -484,6 +488,10 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlDouble(table, "air_mouse_curve_low_factor")) config.air_mouse_curve_low_factor = *value;
         if (auto value = TomlDouble(table, "air_mouse_curve_high_factor")) config.air_mouse_curve_high_factor = *value;
         if (auto value = TomlDouble(table, "air_mouse_neutral_deadzone")) config.air_mouse_neutral_deadzone = AirMouseNeutralDeadzoneClamp(*value);
+        if (auto value = TomlString(table, "air_mouse_control_mode")) config.air_mouse_control_mode = AirMouseControlModeName(AirMouseControlModeFromName(*value));
+        if (auto value = TomlDouble(table, "air_mouse_rate_gain")) config.air_mouse_rate_gain = AirMouseRateGainClamp(*value);
+        if (auto value = TomlDouble(table, "air_mouse_rate_friction")) config.air_mouse_rate_friction = AirMouseRateFrictionClamp(*value);
+        if (auto value = TomlDouble(table, "air_mouse_rate_max_speed")) config.air_mouse_rate_max_speed = AirMouseRateMaxSpeedClamp(*value);
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
@@ -564,6 +572,10 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "air_mouse_curve_low_factor = " << air_mouse_curve_low_factor << "\n";
     output << "air_mouse_curve_high_factor = " << air_mouse_curve_high_factor << "\n";
     output << "air_mouse_neutral_deadzone = " << air_mouse_neutral_deadzone << "\n";
+    output << "air_mouse_control_mode = \"" << AirMouseControlModeName(AirMouseControlModeFromName(air_mouse_control_mode)) << "\"\n";
+    output << "air_mouse_rate_gain = " << air_mouse_rate_gain << "\n";
+    output << "air_mouse_rate_friction = " << air_mouse_rate_friction << "\n";
+    output << "air_mouse_rate_max_speed = " << air_mouse_rate_max_speed << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
@@ -943,6 +955,21 @@ double AirMouseNeutralDeadzoneClamp(double deadzone) {
     // 方向锁中立区死区约束在 [1.0, 10.0]，越界回落默认 3.0。
     if (!(deadzone > 0.0) || deadzone < 1.0 || deadzone > 10.0) return 3.0;
     return deadzone;
+}
+
+double AirMouseRateGainClamp(double gain) {
+    if (!(gain > 0.0) || gain < 10.0 || gain > 500.0) return 80.0;
+    return gain;
+}
+
+double AirMouseRateFrictionClamp(double friction) {
+    if (!(friction >= 0.0) || friction < 0.0 || friction > 0.5) return 0.05;
+    return friction;
+}
+
+double AirMouseRateMaxSpeedClamp(double max_speed) {
+    if (!(max_speed > 0.0) || max_speed < 500.0 || max_speed > 8000.0) return 4000.0;
+    return max_speed;
 }
 
 std::vector<std::string> ParseDeviceIdList(std::string_view text) {

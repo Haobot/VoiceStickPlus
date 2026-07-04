@@ -58,12 +58,68 @@ double AirMouseApplyDirectionLock(double theta, AirMouseDirectionLock& lock, dou
     return theta;
 }
 
+namespace {
+
+// 一阶低通速度环（kAngle 模式）。
+void AirMouseStepAngleMode(AirMouseKinState& state,
+                           double ix, double iy,
+                           double dt_seconds,
+                           const AirMouseParams& params) {
+    // 速度控制：目标速度 = value × gain × factor(|value|)（三段线性增益曲线，慢稳快猛）。
+    const double v_target_x = ix * params.gain_x * AirMouseGainFactor(ix, params.curve);
+    const double v_target_y = iy * params.gain_y * AirMouseGainFactor(iy, params.curve);
+
+    // 速度环（一阶低通）：平滑噪声，手停后 v 经 tau 衰减归零（滑行 ≈ 3×tau）。
+    const double alpha = 1.0 - std::exp(-dt_seconds / params.tau);
+    state.vx += (v_target_x - state.vx) * alpha;
+    state.vy += (v_target_y - state.vy) * alpha;
+}
+
+// 飞行摇杆/变化率控制（kRate 模式）：theta 控制光标速度变化率，回中后速度保持。
+void AirMouseStepRateMode(AirMouseKinState& state,
+                          double ix, double iy,
+                          double dt_seconds,
+                          const AirMouseParams& params) {
+    // 三段线性增益曲线也作用于加速度，保留微调段/甩动段的非线性手感。
+    const double ax = ix * params.rate_gain * AirMouseGainFactor(ix, params.curve);
+    const double ay = iy * params.rate_gain * AirMouseGainFactor(iy, params.curve);
+
+    state.vx += ax * dt_seconds;
+    state.vy += ay * dt_seconds;
+
+    // 摩擦衰减：手腕回中后速度不会永远保持，按指数衰减自然停下。
+    const double friction_decay = std::exp(-params.rate_friction * dt_seconds);
+    state.vx *= friction_decay;
+    state.vy *= friction_decay;
+
+    // 速度上限，防止长期偏转导致光标速度无限增长。
+    if (state.vx > params.rate_max_speed) state.vx = params.rate_max_speed;
+    if (state.vx < -params.rate_max_speed) state.vx = -params.rate_max_speed;
+    if (state.vy > params.rate_max_speed) state.vy = params.rate_max_speed;
+    if (state.vy < -params.rate_max_speed) state.vy = -params.rate_max_speed;
+}
+
+} // namespace
+
+std::string AirMouseControlModeName(AirMouseControlMode mode) {
+    switch (mode) {
+    case AirMouseControlMode::kAngle: return "angle";
+    case AirMouseControlMode::kRate:  return "rate";
+    }
+    return "rate";
+}
+
+AirMouseControlMode AirMouseControlModeFromName(std::string_view name) {
+    if (name == "angle") return AirMouseControlMode::kAngle;
+    return AirMouseControlMode::kRate;
+}
+
 AirMouseStepResult AirMouseStep(AirMouseKinState& state,
                                 const AirMouseInput& input,
                                 double dt_seconds,
                                 bool input_is_stale,
                                 const AirMouseParams& params) {
-    // stale 时输入视为 0：手停后 v_target=0，v 经 tau 快速归零（手停即停）。
+    // stale 时输入视为 0。
     double ix = input_is_stale ? 0.0 : static_cast<double>(input.value_x);
     double iy = input_is_stale ? 0.0 : static_cast<double>(input.value_y);
 
@@ -73,15 +129,11 @@ AirMouseStepResult AirMouseStep(AirMouseKinState& state,
 
     if (params.invert_y) iy = -iy;
 
-    // 速度控制：目标速度 = value × gain × factor(|value|)（三段线性增益曲线，慢稳快猛）。
-    // 输入为 0 即 v_target=0（手停即停）。
-    const double v_target_x = ix * params.gain_x * AirMouseGainFactor(ix, params.curve);
-    const double v_target_y = iy * params.gain_y * AirMouseGainFactor(iy, params.curve);
-
-    // 速度环（一阶低通）：平滑噪声，手停后 v 经 tau 衰减归零（滑行 ≈ 3×tau）。
-    const double alpha = 1.0 - std::exp(-dt_seconds / params.tau);
-    state.vx += (v_target_x - state.vx) * alpha;
-    state.vy += (v_target_y - state.vy) * alpha;
+    if (params.control_mode == AirMouseControlMode::kAngle) {
+        AirMouseStepAngleMode(state, ix, iy, dt_seconds, params);
+    } else {
+        AirMouseStepRateMode(state, ix, iy, dt_seconds, params);
+    }
 
     // 亚像素累积：小 v 时保留小数，够 1px 才输出，避免 round 丢失精细移动。
     state.fx += state.vx * dt_seconds;
