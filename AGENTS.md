@@ -30,6 +30,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 | `desktop/macos/Package.swift` | SwiftPM 定义，依赖 Sparkle、TOMLKit、CZlib |
 | `desktop/windows/CMakeLists.txt` | Windows 端构建，拆为 `voicestick_core` + `VoiceStickApp` |
 | `desktop/windows/src/version.h.in` | Windows 版本资源模板，由 CMake 从 `VERSION` 填充 |
+| `desktop/linux/` | Linux 桌面占位目录，目前无活跃实现 |
 | `website/package.json` | Node 项目配置 |
 | `website/public/appcast.xml` | Sparkle/WinSparkle 更新源 |
 | `.github/workflows/release.yml` | 推送 `v*` 标签触发构建与发布 |
@@ -70,7 +71,7 @@ Windows 上不便直接用 `idf.py` 时：
 python scripts/idf_cli.py -cus -p COM17
 ```
 
-`idf_cli.py` 常用参数：`-c` 编译、`-u` 上传、`-s` 串口监控、`-cus` 编译+上传+监控、`-p COMxx` 指定串口。
+`idf_cli.py` 常用参数：`-c` 编译、`-u` 上传、`-s` 串口监控、`-cus` 编译+上传+监控、`-p COMxx` 指定串口。固件没有自动化单元测试，验证方式为 `idf.py build` 编译通过和真机运行时测试。
 
 ### macOS 桌面端（SwiftPM）
 
@@ -87,7 +88,7 @@ SPARKLE_PUBLIC_ED_KEY="..." scripts/build-macos.sh --release
 scripts/make-dmg.sh
 ```
 
-macOS 端目前没有专用测试目标。
+macOS 端目前没有专用测试目标，无法运行单个测试；验证方式主要是 `swift build` 编译通过和运行时手动测试。
 
 ### Windows 桌面端（CMake + Ninja + MSVC 2022 x64）
 
@@ -97,7 +98,7 @@ macOS 端目前没有专用测试目标。
 build_win.bat
 ```
 
-该脚本会自动查找 VS 2022、结束残留进程、删除并重建 `desktop\windows\build-x64`，只构建不运行 CTest。
+该脚本会自动查找 VS 2022、结束残留进程、删除并重建 `desktop\windows\build-x64`，只构建不运行 CTest。注意：`build_win.bat` 历史上曾出现链接失败仍报成功的情况，构建后应核对 `desktop\windows\build-x64\VoiceStick.exe` 的时间戳与体积。
 
 手动构建（需先进入 VS 2022 x64 开发者环境）：
 
@@ -139,12 +140,12 @@ scripts\build-msi.bat
 ```sh
 cd website
 npm install
-npm run dev
-npm run build
-npm run preview
+npm run dev      # 本地开发服务器
+npm run build    # 最小验证
+npm run preview  # 预览生产构建
 ```
 
-`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。修改网站后用 `npm run build` 作为最小验证。
+`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。修改网站后用 `npm run build` 作为最小验证。修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
 
 ## 架构边界
 
@@ -159,7 +160,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 | 特征 | UUID | 方向 | 属性 | 用途 |
 |---|---|---|---|---|
 | `audio_tx` | `…5101` | 设备 → 主机 | notify | Opus 音频帧 |
-| `state_tx` | `…5102` | 设备 → 主机 | notify | 按键事件、电量、固件版本 |
+| `state_tx` | `…5102` | 设备 → 主机 | notify | 按键事件、电量、固件版本、体感鼠标运动帧 |
 | `control_rx` | `…5103` | 主机 → 设备 | write without response | `ui_state`、交互/敲击/体感鼠标设置、`ota_commit` 等；JSON 需控制长度避免 BLE MTU 溢出 |
 | `ota_rx` | `…5104` | 主机 → 设备 | write / write without response | BLE OTA 控制与数据帧 |
 | `ota_tx` | `…5105` | 设备 → 主机 | notify | BLE OTA 状态帧 |
@@ -252,3 +253,4 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，�
 - 修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
 - 修改 `VERSION` 时，必须同步更新 `firmware/version.txt`。
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
+- 设计方案文档统一放在 `Doc/Plan/`（大写 P），不再使用 `Doc/Rfc/`。
