@@ -357,18 +357,24 @@ private:
     std::chrono::steady_clock::time_point last_tap_inject_at_{};
     // 体感鼠标当前处于激活态的设备集合（按 device_id）。空表示无设备在体感态。
     std::set<std::string> air_mouse_active_devices_;
-    // 体感鼠标每设备运动学状态（速度 v + 最近 omega 采样与时间戳）。
+    // 体感鼠标每设备运动学状态（速度 v + 相对角度 theta + 最近 omega 采样与时间戳）。
     struct AirMouseDeviceState {
         AirMouseKinState kin;
         std::int16_t last_omega_x = 0;
         std::int16_t last_omega_y = 0;
         std::chrono::steady_clock::time_point last_omega_t;
+        double theta_x = 0.0;  // 相对中立姿态的偏转角（角速度积分）
+        double theta_y = 0.0;
     };
     std::map<std::string, AirMouseDeviceState> air_mouse_states_;
     AirMouseParams live_air_mouse_params_;  // 运行期参数（AirMouseTick 用，热调参面板经 UpdateAirMouseParams 即时改）
     AirMouseParams AirMouseParamsFromConfig() const;
     static constexpr std::chrono::milliseconds kAirMouseTickInterval{16};   // ~60Hz
     static constexpr std::chrono::milliseconds kAirMouseOmegaStaleAge{30}; // omega 超 30ms 视为静止
+    // 角度控制模型常量：相对角度限幅与中立死区。
+    static constexpr double kAirMouseMaxTheta = 100.0;      // theta 上限，防积分异常累积
+    static constexpr double kAirMouseAngleDeadzone = 0.5;   // |theta| 与 |omega| 均小于此值时归零
+    static constexpr double kAirMouseOmegaDeadzone = 0.5;   // omega 死区（固件 SCALE 后单位）
     int received_audio_frames_ = 0;
     std::optional<std::uint32_t> last_audio_seq_;
     std::vector<ByteVector> buffered_ogg_chunks_;
