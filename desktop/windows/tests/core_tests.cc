@@ -1,7 +1,10 @@
 #include "air_mouse_kin.h"
 #include "asr_client_tencent.h"
 #include "asr_protocol.h"
+#include "audio_opus_decoder.h"
 #include "ble_protocol.h"
+
+#include <opus.h>
 #include "byte_utils.h"
 #include "cJSON.h"
 #include "firmware_manifest.h"
@@ -2031,6 +2034,88 @@ void TestStreamPayload() {
     assert(default_payload.find("\"stream\"") == std::string::npos);
 }
 
+// 构造一个 16 kHz、40 ms（640 样本）的单声道正弦波 PCM 帧。
+std::vector<int16_t> MakeSinePcm(int frequency_hz, int sample_rate = 16000) {
+    constexpr double kPi = 3.14159265358979323846;
+    const int kFrameSize = sample_rate * 40 / 1000;  // 40 ms
+    std::vector<int16_t> pcm(kFrameSize);
+    for (int i = 0; i < kFrameSize; ++i) {
+        const double t = static_cast<double>(i) / sample_rate;
+        pcm[i] = static_cast<int16_t>(std::sin(2.0 * kPi * frequency_hz * t) * 30000.0);
+    }
+    return pcm;
+}
+
+// 使用 opus_encoder 将 PCM 编码为 Opus packet，用于解码器测试。
+std::vector<uint8_t> EncodeOpusPacket(const std::vector<int16_t>& pcm,
+                                      int sample_rate = 16000) {
+    int error = 0;
+    OpusEncoder* encoder = opus_encoder_create(sample_rate, 1, OPUS_APPLICATION_VOIP, &error);
+    assert(encoder != nullptr);
+    assert(error == OPUS_OK);
+
+    std::vector<uint8_t> packet(1275);  // Opus 单帧最大长度。
+    const int encoded_bytes = opus_encode(encoder, pcm.data(), static_cast<int>(pcm.size()),
+                                          packet.data(), static_cast<int>(packet.size()));
+    assert(encoded_bytes > 0);
+    packet.resize(encoded_bytes);
+
+    opus_encoder_destroy(encoder);
+    return packet;
+}
+
+void TestAudioOpusDecoderRoundTrip() {
+    const auto pcm_in = MakeSinePcm(440);
+    const auto packet = EncodeOpusPacket(pcm_in);
+
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(pcm_in.size(), 0);
+    auto result = decoder.Decode(packet.data(), packet.size(), pcm_out.data(), pcm_out.size());
+
+    assert(result.opus_error == 0);
+    assert(result.decoded_samples == static_cast<int>(pcm_in.size()));
+
+    // 验证解码输出不是静音，且能量与原始信号处于同一数量级。
+    double input_rms = 0.0;
+    double output_rms = 0.0;
+    for (std::size_t i = 0; i < pcm_in.size(); ++i) {
+        input_rms += static_cast<double>(pcm_in[i]) * pcm_in[i];
+        output_rms += static_cast<double>(pcm_out[i]) * pcm_out[i];
+    }
+    input_rms = std::sqrt(input_rms / pcm_in.size());
+    output_rms = std::sqrt(output_rms / pcm_out.size());
+    assert(output_rms > 1000.0);  // 明显不是静音。
+    assert(output_rms > input_rms * 0.3 && output_rms < input_rms * 3.0);  // 能量在同一数量级。
+}
+
+void TestAudioOpusDecoderNullData() {
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(640, 0);
+    auto result = decoder.Decode(nullptr, 10, pcm_out.data(), pcm_out.size());
+    assert(result.opus_error != 0);
+    assert(result.decoded_samples == 0);
+}
+
+void TestAudioOpusDecoderInvalidData() {
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<uint8_t> garbage = {0xFF, 0xFF, 0xFF, 0xFF};
+    std::vector<int16_t> pcm_out(640, 0);
+    auto result = decoder.Decode(garbage.data(), garbage.size(), pcm_out.data(), pcm_out.size());
+    assert(result.opus_error != 0);
+    assert(result.decoded_samples == 0);
+}
+
+void TestAudioOpusDecoderSmallBuffer() {
+    const auto pcm_in = MakeSinePcm(440);
+    const auto packet = EncodeOpusPacket(pcm_in);
+
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(10, 0);  // 远小于 640 样本。
+    auto result = decoder.Decode(packet.data(), packet.size(), pcm_out.data(), pcm_out.size());
+    assert(result.opus_error != 0);
+    assert(result.decoded_samples == 0);
+}
+
 } // namespace
 
 void TestTencentProviderSelection() {
@@ -2919,5 +3004,9 @@ int main() {
     TestTencentEndMessage();
     TestTencentOpusEncapsulation();
     TestTencentVoiceIdGeneration();
+    TestAudioOpusDecoderRoundTrip();
+    TestAudioOpusDecoderNullData();
+    TestAudioOpusDecoderInvalidData();
+    TestAudioOpusDecoderSmallBuffer();
     return 0;
 }
