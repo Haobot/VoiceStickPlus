@@ -69,7 +69,9 @@ add_library(voicestick_core
     src/ogg_crc.cc
     src/ogg_opus_muxer.cc
     src/pair_device_helper.cc
+    src/pcm_ring_buffer.cc
     src/voice_stick_coordinator.cc
+    src/wasapi_virtual_mic_renderer.cc
 )
 
 target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus)
@@ -77,6 +79,7 @@ target_compile_definitions(voicestick_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
 target_link_libraries(voicestick_core PUBLIC opus)
+target_link_libraries(voicestick_core PUBLIC mmdevapi ole32 uuid)
 
 add_executable(VoiceStickApp WIN32
     src/main.cc
