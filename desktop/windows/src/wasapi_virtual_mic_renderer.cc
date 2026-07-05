@@ -2,6 +2,7 @@
 
 #include "wasapi_virtual_mic_renderer.h"
 
+#include "log.h"
 #include "pcm_ring_buffer.h"
 
 #include <windows.h>
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <cwctype>
 #include <thread>
@@ -60,6 +62,21 @@ std::wstring GetDeviceFriendlyName(IMMDevice* device) {
   std::wstring name(value.pwszVal);
   PropVariantClear(&value);
   return name;
+}
+
+std::string HrToHex(HRESULT hr) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
+  return buf;
+}
+
+std::string Narrow(std::wstring_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (wchar_t c : s) {
+    out.push_back(static_cast<char>(c));
+  }
+  return out;
 }
 
 }  // namespace
@@ -123,6 +140,7 @@ class WasapiVirtualMicRenderer::Impl {
     HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
                                   CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
     if (FAILED(hr)) {
+      LogApp("WASAPI OpenDevice: CoCreateInstance failed " + HrToHex(hr));
       return false;
     }
 
@@ -132,6 +150,8 @@ class WasapiVirtualMicRenderer::Impl {
                                                   device_.GetAddressOf());
       if (SUCCEEDED(hr) && device_ != nullptr) {
         active_device_name_ = GetDeviceFriendlyName(device_.Get());
+      } else {
+        LogApp("WASAPI OpenDevice: GetDefaultAudioEndpoint failed " + HrToHex(hr));
       }
       return SUCCEEDED(hr) && device_ != nullptr;
     }
@@ -140,11 +160,14 @@ class WasapiVirtualMicRenderer::Impl {
     hr = enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE,
                                           devices.GetAddressOf());
     if (FAILED(hr)) {
+      LogApp("WASAPI OpenDevice: EnumAudioEndpoints failed " + HrToHex(hr));
       return false;
     }
 
     UINT count = 0;
     devices->GetCount(&count);
+    std::string enumerated = "WASAPI OpenDevice: eRender/ACTIVE count="
+                             + std::to_string(count);
     for (UINT i = 0; i < count; ++i) {
       ComPtr<IMMDevice> device;
       if (FAILED(devices->Item(i, device.GetAddressOf()))) {
@@ -152,13 +175,19 @@ class WasapiVirtualMicRenderer::Impl {
       }
 
       std::wstring name = GetDeviceFriendlyName(device.Get());
+      enumerated += " [";
+      enumerated += Narrow(name);
+      enumerated += "]";
       if (ContainsCaseInsensitive(name, options_.device_name_substring)) {
         device_ = std::move(device);
         active_device_name_ = name;
+        LogApp("WASAPI OpenDevice: matched \"" + Narrow(name) + "\"");
         return true;
       }
     }
-
+    LogApp(enumerated);
+    LogApp("WASAPI OpenDevice: no match for substring \""
+           + Narrow(options_.device_name_substring) + "\"");
     return false;
   }
 
@@ -169,6 +198,7 @@ class WasapiVirtualMicRenderer::Impl {
                      ->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                                 reinterpret_cast<void**>(audio_client_.GetAddressOf()));
     if (FAILED(hr)) {
+      LogApp("WASAPI InitializeStream: Activate failed " + HrToHex(hr));
       return false;
     }
 
@@ -185,30 +215,42 @@ class WasapiVirtualMicRenderer::Impl {
 
     const REFERENCE_TIME buffer_duration =
         static_cast<REFERENCE_TIME>(options_.buffer_duration_ms) * 10000i64;
+    // AUTOCONVERTPCM + SRC_DEFAULT_QUALITY：shared mode 下让 WASAPI 自动把
+    // 调用方 PCM 重采样到设备 mix format，避免 16kHz 在 48kHz 设备上被拒。
+    const DWORD stream_flags = AUDCLNT_STREAMFLAGS_NOPERSIST
+                               | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                               | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
     hr = audio_client_
              ->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                          AUDCLNT_STREAMFLAGS_NOPERSIST,
+                          stream_flags,
                           buffer_duration,
                           0,
                           &format,
                           nullptr);
     if (FAILED(hr)) {
+      LogApp("WASAPI InitializeStream: Initialize failed " + HrToHex(hr) +
+             " (format=" + std::to_string(options_.sample_rate) + "Hz/" +
+             std::to_string(options_.channels) + "ch/" +
+             std::to_string(options_.bits_per_sample) + "bit)");
       return false;
     }
 
     hr = audio_client_->GetBufferSize(&buffer_frame_count_);
     if (FAILED(hr)) {
+      LogApp("WASAPI InitializeStream: GetBufferSize failed " + HrToHex(hr));
       return false;
     }
 
     hr = audio_client_->GetService(
         IID_PPV_ARGS(render_client_.GetAddressOf()));
     if (FAILED(hr)) {
+      LogApp("WASAPI InitializeStream: GetService failed " + HrToHex(hr));
       return false;
     }
 
     hr = audio_client_->Start();
     if (FAILED(hr)) {
+      LogApp("WASAPI InitializeStream: Start failed " + HrToHex(hr));
       return false;
     }
 
