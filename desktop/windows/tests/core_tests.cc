@@ -15,6 +15,7 @@
 #include "pcm_ring_buffer.h"
 #include "voice_stick_coordinator.h"
 #include "wasapi_virtual_mic_renderer.h"
+#include "wechat_input_method_hotkey.h"
 
 #include <algorithm>
 #include <cassert>
@@ -2234,6 +2235,38 @@ void TestWechatInputMethodConfigRoundTrip() {
     std::filesystem::remove(temp);
 }
 
+void TestWechatInputMethodHotkeyParsing() {
+    assert(WechatInputMethodHotkey("").KeyCount() == 0);
+    assert(WechatInputMethodHotkey("ctrl+win").KeyCount() == 2);
+    assert(WechatInputMethodHotkey("Ctrl+Win").KeyCount() == 2);
+    assert(WechatInputMethodHotkey("ctrl+shift+w").KeyCount() == 3);
+    assert(WechatInputMethodHotkey("alt+f4").KeyCount() == 2);
+    assert(WechatInputMethodHotkey("command+1").KeyCount() == 2);
+    assert(WechatInputMethodHotkey("unknown+key").KeyCount() == 0);
+}
+
+void TestCoordinatorWechatInputMethodButtonDownSendsHotkey() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.virtual_mic_playback_name = "DefinitelyNotARealDeviceXYZ";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 100));
+
+    // 虚拟麦克风不存在，应触发错误 UI。
+    assert(!ui.errors.empty());
+    assert(ui.errors.back().find("Virtual microphone") != std::string::npos);
+    // 会话被清理后，后续状态应为 ready。
+    assert(!asr_ptr->started);
+}
+
 void TestTencentProviderSelection() {
     assert(AsrProviderFromName("voicestick_cloud") == AsrProvider::kVoiceStickCloud);
     assert(AsrProviderFromName("volcengine") == AsrProvider::kVolcengine);
@@ -3132,5 +3165,7 @@ int main() {
     TestWasapiRendererFailsOnMissingDevice();
     TestOutputTargetWechatInputMethod();
     TestWechatInputMethodConfigRoundTrip();
+    TestWechatInputMethodHotkeyParsing();
+    TestCoordinatorWechatInputMethodButtonDownSendsHotkey();
     return 0;
 }
