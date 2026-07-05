@@ -12,7 +12,9 @@
 #include "localization.h"
 #include "ogg_opus_muxer.h"
 #include "pair_device_helper.h"
+#include "pcm_ring_buffer.h"
 #include "voice_stick_coordinator.h"
+#include "wasapi_virtual_mic_renderer.h"
 
 #include <algorithm>
 #include <cassert>
@@ -2116,6 +2118,90 @@ void TestAudioOpusDecoderSmallBuffer() {
     assert(result.decoded_samples == 0);
 }
 
+void TestPcmRingBufferWriteRead() {
+    PcmRingBuffer buffer(1024);
+    std::vector<int16_t> in(100);
+    for (std::size_t i = 0; i < in.size(); ++i) in[i] = static_cast<int16_t>(i);
+
+    assert(buffer.Write(in.data(), in.size()) == in.size());
+    assert(buffer.Available() == in.size());
+
+    std::vector<int16_t> out(100, 0);
+    assert(buffer.Read(out.data(), out.size()) == in.size());
+    assert(in == out);
+    assert(buffer.Available() == 0);
+}
+
+void TestPcmRingBufferOverwrite() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> first(16, 1);
+    std::vector<int16_t> second(16, 2);
+
+    assert(buffer.Write(first.data(), first.size()) == first.size());
+    assert(buffer.Write(second.data(), second.size()) == second.size());
+    assert(buffer.Available() == 16);
+
+    std::vector<int16_t> out(16, 0);
+    assert(buffer.Read(out.data(), out.size()) == 16);
+    assert(std::all_of(out.begin(), out.end(), [](int16_t v) { return v == 2; }));
+}
+
+void TestPcmRingBufferUnderrunSilence() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> in(4, 42);
+    buffer.Write(in.data(), in.size());
+
+    std::vector<int16_t> out(8, 0);
+    assert(buffer.Read(out.data(), out.size(), /*silence_value=*/-1) == 4);
+    assert(std::equal(out.begin(), out.begin() + 4, in.begin()));
+    assert(std::all_of(out.begin() + 4, out.end(), [](int16_t v) { return v == -1; }));
+}
+
+void TestPcmRingBufferClear() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> in(8, 7);
+    buffer.Write(in.data(), in.size());
+    buffer.Clear();
+    assert(buffer.Available() == 0);
+
+    std::vector<int16_t> out(8, 0);
+    assert(buffer.Read(out.data(), out.size(), /*silence_value=*/0) == 0);
+    assert(std::all_of(out.begin(), out.end(), [](int16_t v) { return v == 0; }));
+}
+
+void TestPcmRingBufferWrapAround() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> in(12);
+    for (std::size_t i = 0; i < in.size(); ++i) in[i] = static_cast<int16_t>(i);
+
+    // 先写 12 个再读 12 个，把 read_pos_ 推到 12。
+    buffer.Write(in.data(), in.size());
+    std::vector<int16_t> tmp(12, 0);
+    buffer.Read(tmp.data(), tmp.size());
+
+    // 再写 12 个，跨越尾部与头部。
+    std::vector<int16_t> in2(12);
+    for (std::size_t i = 0; i < in2.size(); ++i) in2[i] = static_cast<int16_t>(100 + i);
+    buffer.Write(in2.data(), in2.size());
+
+    std::vector<int16_t> out(12, 0);
+    assert(buffer.Read(out.data(), out.size()) == 12);
+    assert(in2 == out);
+}
+
+void TestWasapiRendererFailsOnMissingDevice() {
+    WasapiVirtualMicRenderer::Options options;
+    options.device_name_substring = L"DefinitelyNotARealDeviceNameXYZ123";
+    WasapiVirtualMicRenderer renderer(options);
+    PcmRingBuffer buffer(1024);
+
+    assert(!renderer.IsRunning());
+    assert(renderer.ActiveDeviceName().empty());
+    assert(!renderer.Start(&buffer));
+    assert(!renderer.IsRunning());
+    assert(renderer.ActiveDeviceName().empty());
+}
+
 } // namespace
 
 void TestTencentProviderSelection() {
@@ -3008,5 +3094,11 @@ int main() {
     TestAudioOpusDecoderNullData();
     TestAudioOpusDecoderInvalidData();
     TestAudioOpusDecoderSmallBuffer();
+    TestPcmRingBufferWriteRead();
+    TestPcmRingBufferOverwrite();
+    TestPcmRingBufferUnderrunSilence();
+    TestPcmRingBufferClear();
+    TestPcmRingBufferWrapAround();
+    TestWasapiRendererFailsOnMissingDevice();
     return 0;
 }
