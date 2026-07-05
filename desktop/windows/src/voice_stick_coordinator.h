@@ -3,12 +3,16 @@
 #include "air_mouse_kin.h"
 #include "app_config.h"
 #include "asr_protocol.h"
+#include "audio_opus_decoder.h"
 #include "ble_protocol.h"
 #include "debug_audio_recorder.h"
 #include "firmware_manifest.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
 #include "ogg_opus_muxer.h"
+#include "pcm_ring_buffer.h"
+#include "wasapi_virtual_mic_renderer.h"
+#include "wechat_input_method_hotkey.h"
 
 #include <atomic>
 #include <chrono>
@@ -264,6 +268,14 @@ private:
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);
     void HandleAudioFrame(const AudioFrame& frame, const std::string& device_id);
+    void HandleWechatInputMethodPrimaryButtonDown(std::optional<std::uint32_t> session_id,
+                                                   const std::string& device_id);
+    void HandleWechatInputMethodPrimaryButtonUp(const std::string& device_id);
+    void HandleWechatInputMethodAudioFrame(const AudioFrame& frame, const std::string& device_id);
+    void StartWechatInputMethodSession(std::optional<std::uint32_t> session_id,
+                                       const std::string& device_id);
+    void StopWechatInputMethodSession();
+    bool IsWechatInputMethodActive() const;
     void HandleSubtitlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandleSubtitlePrimaryButtonUp(const std::string& device_id);
     void HandleSubtitleAudioFrame(const AudioFrame& frame, const std::string& device_id);
@@ -406,6 +418,12 @@ private:
     bool is_shutdown_ = false;
     std::map<std::pair<std::string, std::uint32_t>, std::unique_ptr<SubtitleCycle>> subtitle_cycles_;
     std::map<std::string, std::uint32_t> active_subtitle_sessions_;
+    // wechat_input_method 模式下的当前会话资源。
+    std::unique_ptr<AudioOpusDecoder> wechat_decoder_;
+    std::unique_ptr<PcmRingBuffer> wechat_ring_buffer_;
+    std::unique_ptr<WasapiVirtualMicRenderer> wechat_renderer_;
+    std::unique_ptr<WechatInputMethodHotkey> wechat_hotkey_;
+    bool wechat_input_method_active_ = false;
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
     static constexpr std::chrono::milliseconds kAudioEndTimeout{1000};
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};

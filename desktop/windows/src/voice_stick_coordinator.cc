@@ -383,6 +383,129 @@ void VoiceStickCoordinator::HandleButtonUp(const StateEvent& event, const std::s
     }
 }
 
+void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
+    std::optional<std::uint32_t> session_id, const std::string& device_id) {
+    if (IsWechatInputMethodActive()) {
+        RefreshDeviceUiState(device_id);
+        return;
+    }
+    if (!session_id.has_value() || *session_id == 0) {
+        ble_->SendUiState("ready", "", device_id);
+        return;
+    }
+    if (HandleFrontButtonDuringPendingPaste(device_id)) return;
+
+    StartWechatInputMethodSession(session_id, device_id);
+    ui_->ShowListening(active_device_id_);
+    SendUiStateForActiveDevice("recording");
+}
+
+void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonUp(
+    const std::string& device_id) {
+    if (!IsWechatInputMethodActive() || active_device_id_ != device_id) {
+        return;
+    }
+    StopWechatInputMethodSession();
+    EnterReady("wechat_button_up");
+}
+
+void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
+    const AudioFrame& frame, const std::string& device_id) {
+    std::lock_guard lock(audio_mutex_);
+    if (!active_session_id_.has_value() || frame.session_id != *active_session_id_ ||
+        active_device_id_ != device_id) {
+        return;
+    }
+    if (frame.payload.empty()) return;
+
+    constexpr std::size_t kPcmCapacity = 1920;  // 120 ms @ 16 kHz mono。
+    int16_t pcm[kPcmCapacity];
+    const auto result = wechat_decoder_->Decode(frame.payload.data(), frame.payload.size(), pcm,
+                                                kPcmCapacity);
+    if (result.opus_error != 0 || result.decoded_samples <= 0) {
+        LogCoordinatorLine("wechat decode failed dev=VS-" + device_id +
+                           " error=" + std::to_string(result.opus_error));
+        return;
+    }
+
+    wechat_ring_buffer_->Write(pcm, result.decoded_samples);
+
+    if (frame.IsEnd()) {
+        active_session_id_.reset();
+    }
+}
+
+void VoiceStickCoordinator::StartWechatInputMethodSession(
+    std::optional<std::uint32_t> session_id, const std::string& device_id) {
+    if (!wechat_decoder_) {
+        wechat_decoder_ = std::make_unique<AudioOpusDecoder>(16000, 1);
+    }
+    if (!wechat_ring_buffer_) {
+        wechat_ring_buffer_ = std::make_unique<PcmRingBuffer>(8192);
+    }
+    if (!wechat_renderer_) {
+        WasapiVirtualMicRenderer::Options options;
+        options.sample_rate = 16000;
+        options.channels = 1;
+        options.bits_per_sample = 16;
+        options.device_name_substring =
+            std::wstring(config_.wechat_input_method.virtual_mic_playback_name.begin(),
+                         config_.wechat_input_method.virtual_mic_playback_name.end());
+        wechat_renderer_ = std::make_unique<WasapiVirtualMicRenderer>(options);
+    }
+
+    wechat_ring_buffer_->Clear();
+    wechat_decoder_->Reset();
+    wechat_hotkey_ = std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.hotkey);
+
+    if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
+        ui_->ShowError("Virtual microphone not found: " +
+                           config_.wechat_input_method.virtual_mic_playback_name,
+                       device_id, {});
+        StopWechatInputMethodSession();
+        return;
+    }
+
+    if (!wechat_hotkey_->IsValid() || !wechat_hotkey_->SendDown()) {
+        ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
+        StopWechatInputMethodSession();
+        return;
+    }
+
+    {
+        std::lock_guard lock(audio_mutex_);
+        active_session_id_ = session_id;
+        active_device_id_ = device_id;
+        active_session_started_at_ = std::chrono::steady_clock::now();
+        wechat_input_method_active_ = true;
+        SetSessionState(SessionState::kRecording, "wechat_primary_down");
+    }
+}
+
+void VoiceStickCoordinator::StopWechatInputMethodSession() {
+    if (wechat_hotkey_ && wechat_hotkey_->IsValid()) {
+        wechat_hotkey_->SendUp();
+    }
+    if (wechat_renderer_) {
+        wechat_renderer_->Stop();
+    }
+    if (wechat_ring_buffer_) {
+        wechat_ring_buffer_->Clear();
+    }
+    if (wechat_decoder_) {
+        wechat_decoder_->Reset();
+    }
+
+    std::lock_guard lock(audio_mutex_);
+    active_session_id_.reset();
+    active_device_id_.reset();
+    wechat_input_method_active_ = false;
+}
+
+bool VoiceStickCoordinator::IsWechatInputMethodActive() const {
+    return wechat_input_method_active_;
+}
+
 void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std::string& device_id) {
     if (event.button == "primary") {
         // 体感态：主键单击映射为鼠标左键，不走录音/字幕逻辑。
@@ -400,6 +523,18 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
                 HandleSubtitlePrimaryButtonUp(device_id);
             } else {
                 HandleSubtitlePrimaryButtonDown(event.session_id, device_id);
+            }
+            return;
+        }
+        if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+            if (config_.interaction_mode != InteractionMode::kClickToTalk) {
+                ble_->SendUiState("ready", "", device_id);
+                return;
+            }
+            if (IsWechatInputMethodActive() && active_device_id_ == device_id) {
+                HandleWechatInputMethodPrimaryButtonUp(device_id);
+            } else {
+                HandleWechatInputMethodPrimaryButtonDown(event.session_id, device_id);
             }
             return;
         }
@@ -452,11 +587,25 @@ void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, con
     if (event.button == "secondary") {
         // 体感态下忽略侧键双击的恢复语义，避免与体感操作冲突。
         if (IsAirMouseActive(device_id)) return;
+        // wechat_input_method 模式下侧键双击同样执行恢复，但如果当前有录音则先取消。
+        if (IsWechatInputMethodActive()) {
+            StopWechatInputMethodSession();
+        }
         LogCoordinatorLine("secondary double-click on VS-" + device_id + ", restoring last input");
         RestoreLastInputConfirmation(device_id);
         return;
     }
     if (event.button != "primary") return;
+
+    // 主键双击：wechat_input_method 模式下取消当前录音。
+    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+        if (IsWechatInputMethodActive()) {
+            StopWechatInputMethodSession();
+            EnterReady("double_click_cancel_wechat");
+        }
+        return;
+    }
+
     LogCoordinatorLine("double-click detected on VS-" + device_id + ", sending Enter");
     // 如果当前有活跃录音，取消它。
     {
@@ -630,6 +779,10 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
     if (IsAirMouseActive(device_id)) {
         return;
     }
+    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+        HandleWechatInputMethodPrimaryButtonDown(session_id, device_id);
+        return;
+    }
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
         HandleSubtitlePrimaryButtonDown(session_id, device_id);
         return;
@@ -666,6 +819,10 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
 }
 
 void VoiceStickCoordinator::HandlePrimaryButtonUp(const std::string& device_id) {
+    if (IsWechatInputMethodActive()) {
+        HandleWechatInputMethodPrimaryButtonUp(device_id);
+        return;
+    }
     if (HasActiveSubtitleSession(device_id)) {
         HandleSubtitlePrimaryButtonUp(device_id);
         return;
@@ -682,6 +839,10 @@ void VoiceStickCoordinator::HandlePrimaryButtonUp(const std::string& device_id) 
 
 void VoiceStickCoordinator::HandleAudioFrame(const AudioFrame& frame, const std::string& device_id) {
     const auto t0 = std::chrono::steady_clock::now();
+    if (IsWechatInputMethodActive()) {
+        HandleWechatInputMethodAudioFrame(frame, device_id);
+        return;
+    }
     if (FindSubtitleCycle(device_id, frame.session_id)) {
         HandleSubtitleAudioFrame(frame, device_id);
         return;
@@ -1401,6 +1562,11 @@ void VoiceStickCoordinator::CancelPendingPaste(const std::string& device_id) {
 }
 
 void VoiceStickCoordinator::CancelRecognitionInProgress() {
+    if (IsWechatInputMethodActive()) {
+        StopWechatInputMethodSession();
+        EnterReady("cancel_recognition_wechat");
+        return;
+    }
     active_session_id_.reset();
     active_session_started_at_ = {};
     CancelAudioEndTimeout();
