@@ -1531,6 +1531,7 @@ void Win32App::ShowSettings() {
         settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
         settings_dialog_->on_config_changed = [this](AppConfig new_config) {
             config_ = std::move(new_config);
+            // SaveInputOptions 内部已调用 coordinator_->UpdateConfig(config_) 完成同步。
             SaveInputOptions();
             RebuildTooltip();
             LogLine("Settings saved");

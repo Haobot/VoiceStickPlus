@@ -272,7 +272,7 @@ private:
                                                    const std::string& device_id);
     void HandleWechatInputMethodPrimaryButtonUp(const std::string& device_id);
     void HandleWechatInputMethodAudioFrame(const AudioFrame& frame, const std::string& device_id);
-    void StartWechatInputMethodSession(std::optional<std::uint32_t> session_id,
+    bool StartWechatInputMethodSession(std::optional<std::uint32_t> session_id,
                                        const std::string& device_id);
     void StopWechatInputMethodSession();
     bool IsWechatInputMethodActive() const;
