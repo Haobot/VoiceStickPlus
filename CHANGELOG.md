@@ -1,5 +1,15 @@
 # CHANGELOG.md
 
+## 2026-07-05 v1.8.2
+
+- 版本号从 `v1.8.0` 更新到 `v1.8.2`。
+- fix(windows): 修复腾讯 ASR 配置字段映射错误导致的 4002 "密钥不存在"。
+  - 根因：`settings_dialog.cc` / `onboarding_dialog.cc` 中 ASR 提供商下拉框切换时只区分了 VoiceStick Cloud 与其他，切换到 Tencent 时错误地从 `volcengine_api_key` 加载密钥，用户保存后可能把正确的 Tencent SecretId 写入错误字段。
+  - 修复：用显式 switch 把三个提供商各自映射到正确的配置字段。
+  - `desktop/windows/src/app_config.cc`：加载配置时自动迁移——若当前提供商为 Tencent，且 `volcengine_api_key` 是 `AKID...` 形式的 Tencent SecretId，而 `tencent_secret_id` 为空或不以 `AKID` 开头，则自动回迁并落盘。
+  - `desktop/windows/src/app_config.cc`：TOML 解析时对 `tencent_secret_id`、`tencent_secret_key`、`tencent_appid`、`volcengine_api_key`、`voicestick_api_key`、`llm_api_key` 等凭据字段自动 Trim，避免前后空格导致鉴权失败。
+  - `desktop/windows/tests/core_tests.cc`：新增 `TestTencentSecretIdRecoveryFromVolcengineField()` 与 `TestTencentCredentialsTrimmedOnLoad()`。
+
 ## 2026-07-01 v1.8.0
 
 - **breaking**: 移除 Wi-Fi STA 配网与局域网 HTTP(S) OTA pull 全链路，固件升级改走 BLE OTA（与 USB COM 口烧录，后者未来实现）。
