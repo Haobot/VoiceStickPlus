@@ -139,6 +139,11 @@ std::optional<std::string> TomlString(const toml::table& table, std::string_view
     return table[key].value<std::string>();
 }
 
+std::optional<std::string> TomlTrimmedString(const toml::table& table, std::string_view key) {
+    if (auto value = TomlString(table, key)) return Trim(*value);
+    return std::nullopt;
+}
+
 std::optional<bool> TomlBool(const toml::table& table, std::string_view key) {
     return table[key].value<bool>();
 }
@@ -400,6 +405,25 @@ OutputProfile ParseOutputProfile(const toml::table& table, const OutputProfile& 
     return profile;
 }
 
+// 修复早期设置/引导对话框在 ASR 提供商切换时的字段映射 bug：Tencent SecretId
+// 被误写入 volcengine_api_key。触发回迁的条件：
+// - 当前提供商为 Tencent
+// - volcengine_api_key 看起来像 Tencent SecretId（以 AKID 开头）
+// - tencent_secret_id 为空或不以 AKID 开头
+// 满足时把 volcengine_api_key 移回 tencent_secret_id，避免 4002 密钥不存在。
+bool MaybeRecoverTencentSecretId(AppConfig& config) {
+    if (config.asr_provider != AsrProvider::kTencent) return false;
+    if (config.volcengine_api_key.empty()) return false;
+    if (!config.volcengine_api_key.starts_with("AKID")) return false;
+    if (!config.tencent_secret_id.empty() &&
+        config.tencent_secret_id.starts_with("AKID")) {
+        return false;
+    }
+    config.tencent_secret_id = config.volcengine_api_key;
+    config.volcengine_api_key.clear();
+    return true;
+}
+
 } // namespace
 
 AppConfig AppConfig::Load() {
@@ -417,17 +441,17 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         auto table = toml::parse(input, path.native());
 
         if (auto value = TomlString(table, "asr_provider")) config.asr_provider = AsrProviderFromName(*value);
-        if (auto value = TomlString(table, "voicestick_api_key")) config.voicestick_api_key = *value;
+        if (auto value = TomlTrimmedString(table, "voicestick_api_key")) config.voicestick_api_key = *value;
         if (auto value = TomlString(table, "voicestick_cloud_url")) config.voicestick_cloud_url = *value;
-        if (auto value = TomlString(table, "volcengine_api_key")) config.volcengine_api_key = *value;
-        if (auto value = TomlString(table, "api_key")) config.volcengine_api_key = *value;
-        if (auto value = TomlString(table, "tencent_secret_id")) config.tencent_secret_id = *value;
-        if (auto value = TomlString(table, "tencent_secret_key")) config.tencent_secret_key = *value;
-        if (auto value = TomlString(table, "tencent_appid")) config.tencent_appid = *value;
+        if (auto value = TomlTrimmedString(table, "volcengine_api_key")) config.volcengine_api_key = *value;
+        if (auto value = TomlTrimmedString(table, "api_key")) config.volcengine_api_key = *value;
+        if (auto value = TomlTrimmedString(table, "tencent_secret_id")) config.tencent_secret_id = *value;
+        if (auto value = TomlTrimmedString(table, "tencent_secret_key")) config.tencent_secret_key = *value;
+        if (auto value = TomlTrimmedString(table, "tencent_appid")) config.tencent_appid = *value;
         if (auto value = TomlString(table, "tencent_engine_model_type")) config.tencent_engine_model_type = *value;
-        if (auto value = TomlString(table, "tencent_hotword_id")) config.tencent_hotword_id = *value;
-        if (auto value = TomlString(table, "llm_base_url")) config.llm_base_url = *value;
-        if (auto value = TomlString(table, "llm_api_key")) config.llm_api_key = *value;
+        if (auto value = TomlTrimmedString(table, "tencent_hotword_id")) config.tencent_hotword_id = *value;
+        if (auto value = TomlTrimmedString(table, "llm_base_url")) config.llm_base_url = *value;
+        if (auto value = TomlTrimmedString(table, "llm_api_key")) config.llm_api_key = *value;
         if (auto value = TomlString(table, "llm_model")) config.llm_model = *value;
         if (auto value = TomlBool(table, "refine_enabled")) config.refine_enabled = *value;
         if (auto value = TomlString(table, "refine_prompt")) config.refine_prompt = *value;
@@ -501,11 +525,18 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
             auto entry = ParsePairedDeviceEntry(value);
             if (!entry.device_id.empty()) config.paired_devices.push_back(entry);
         }
+        if (MaybeRecoverTencentSecretId(config)) {
+            config.Save(path);
+        }
         return config;
     } catch (const toml::parse_error&) {
         input.clear();
         input.seekg(0);
-        return LoadLegacyConfig(input);
+        AppConfig legacy_config = LoadLegacyConfig(input);
+        if (MaybeRecoverTencentSecretId(legacy_config)) {
+            legacy_config.Save(path);
+        }
+        return legacy_config;
     }
     return config;
 }

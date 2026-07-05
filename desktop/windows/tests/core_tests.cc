@@ -15,6 +15,8 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
@@ -2073,6 +2075,54 @@ void TestTencentConfigRoundTrip() {
     assert(defaults.tencent_engine_model_type == "16k_zh_en");
 }
 
+void TestTencentCredentialsTrimmedOnLoad() {
+    // 凭据前后带空格是 Tencent 返回 4002 "密钥不存在" 的常见原因。
+    // 验证 TOML 加载时自动去除首尾空格。
+    auto temp = std::filesystem::temp_directory_path() /
+                "voicestick_tencent_trim_test.toml";
+    std::filesystem::remove(temp);
+
+    {
+        std::ofstream out(temp);
+        out << "asr_provider = \"tencent\"\n";
+        out << "tencent_secret_id = \"  AKID-test-id  \"\n";
+        out << "tencent_secret_key = \"  test-secret-key  \"\n";
+        out << "tencent_appid = \"  1234567890  \"\n";
+        out << "tencent_hotword_id = \"  vocab-abc  \"\n";
+    }
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.tencent_secret_id == "AKID-test-id");
+    assert(loaded.tencent_secret_key == "test-secret-key");
+    assert(loaded.tencent_appid == "1234567890");
+    assert(loaded.tencent_hotword_id == "vocab-abc");
+
+    std::filesystem::remove(temp);
+}
+
+void TestTencentSecretIdRecoveryFromVolcengineField() {
+    // 历史版本设置对话框在 ASR 提供商切换时，可能把 Tencent SecretId
+    // 误写入 volcengine_api_key 字段。验证加载配置时自动回迁。
+    auto temp = std::filesystem::temp_directory_path() /
+                "voicestick_tencent_recovery_test.toml";
+    std::filesystem::remove(temp);
+
+    {
+        std::ofstream out(temp);
+        out << "asr_provider = \"tencent\"\n";
+        out << "volcengine_api_key = \"AKIDCIDwShqnaDgz86tWzGNPJ5h8MH6lFalw\"\n";
+        out << "tencent_secret_id = \"a31355ab-old-wrong\"\n";
+        out << "tencent_secret_key = \"secret-key\"\n";
+        out << "tencent_appid = \"1259040144\"\n";
+    }
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.tencent_secret_id == "AKIDCIDwShqnaDgz86tWzGNPJ5h8MH6lFalw");
+    assert(loaded.volcengine_api_key.empty());
+
+    std::filesystem::remove(temp);
+}
+
 void TestTencentSignatureGeneration() {
     // 验证 HMAC-SHA1（使用已知测试向量）
     auto result = AsrClientTencent::HmacSha1("key", "The quick brown fox jumps over the lazy dog");
@@ -2859,6 +2909,8 @@ int main() {
     TestStreamPayload();
     TestTencentProviderSelection();
     TestTencentConfigRoundTrip();
+    TestTencentCredentialsTrimmedOnLoad();
+    TestTencentSecretIdRecoveryFromVolcengineField();
     TestTencentSignatureGeneration();
     TestTencentUrlConstruction();
     TestTencentResultParsing();

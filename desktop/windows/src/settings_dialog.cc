@@ -200,7 +200,13 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdProviderCombo:
             if (HIWORD(w_param) == CBN_SELCHANGE) {
                 int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-                const auto& key = idx == 0 ? config_.voicestick_api_key : config_.volcengine_api_key;
+                const std::string& key = [&]() -> const std::string& {
+                    switch (idx) {
+                        case 0: return config_.voicestick_api_key;
+                        case 2: return config_.tencent_secret_id;
+                        default: return config_.volcengine_api_key;
+                    }
+                }();
                 SetWindowTextW(api_key_edit_, Utf16(key).c_str());
                 UpdateProviderVisibility();
             }
