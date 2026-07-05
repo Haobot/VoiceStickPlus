@@ -217,6 +217,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdRefineText:
             if (HIWORD(w_param) == BN_CLICKED) UpdateRefinePromptVisibility();
             return TRUE;
+        case kIdOutputTarget:
+            if (HIWORD(w_param) == CBN_SELCHANGE) UpdateOutputTargetVisibility();
+            return TRUE;
         }
         break;
     case WM_HSCROLL:
@@ -273,6 +276,11 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         tap_to_arrow_check_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
+        output_target_combo_ = nullptr;
+        wechat_hotkey_edit_ = nullptr;
+        wechat_hotkey_label_ = nullptr;
+        wechat_virtual_mic_edit_ = nullptr;
+        wechat_virtual_mic_label_ = nullptr;
         all_controls_.clear();
         label_controls_.clear();
         return TRUE;
@@ -347,6 +355,11 @@ void SettingsDialog::DestroyControls() {
     air_mouse_sensitivity_y_value_label_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
+    output_target_combo_ = nullptr;
+    wechat_hotkey_edit_ = nullptr;
+    wechat_hotkey_label_ = nullptr;
+    wechat_virtual_mic_edit_ = nullptr;
+    wechat_virtual_mic_label_ = nullptr;
     if (ui_font_) {
         DeleteObject(ui_font_);
         ui_font_ = nullptr;
@@ -554,6 +567,35 @@ void SettingsDialog::BuildControls() {
                                                                      Dp(20), instance_));
     y += row_h + Dp(10);
 
+    // 输出目标：当前应用 / 字幕 / 微信输入法。
+    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsOutputTarget).c_str(), Dp(10), y + Dp(3), label_w,
+                               Dp(20), instance_));
+    output_target_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(200),
+                                                 kIdOutputTarget, instance_));
+    SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetFocusedApp, language).c_str()));
+    SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetSubtitle, language).c_str()));
+    SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetWechatInputMethod, language).c_str()));
+    y += row_h + Dp(10);
+
+    // 微信输入法：语音热键（与微信输入法设置中保持一致，如 ctrl+win）。
+    wechat_hotkey_label_ = remember_label(CreateLabel(hwnd_,
+        label_text(StringId::kSettingsWechatHotkey).c_str(),
+        Dp(10), y + Dp(3), label_w, Dp(20), instance_));
+    wechat_hotkey_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
+                                              kIdWechatHotkey, instance_));
+    y += row_h + Dp(10);
+
+    // 微信输入法：虚拟麦克风播放端名称（如 CABLE Input）。
+    wechat_virtual_mic_label_ = remember_label(CreateLabel(hwnd_,
+        label_text(StringId::kSettingsWechatVirtualMic).c_str(),
+        Dp(10), y + Dp(3), label_w, Dp(20), instance_));
+    wechat_virtual_mic_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
+                                                   kIdWechatVirtualMic, instance_));
+    y += row_h + Dp(10);
+
     remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
     debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
@@ -631,6 +673,14 @@ void SettingsDialog::LoadConfigIntoControls() {
     UpdateAirMouseSensitivityYLabel();
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
+
+    int output_target_idx = 0;
+    if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
+    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
+    SendMessageW(output_target_combo_, CB_SETCURSEL, output_target_idx, 0);
+    SetWindowTextW(wechat_hotkey_edit_, Utf16(config_.wechat_input_method.hotkey).c_str());
+    SetWindowTextW(wechat_virtual_mic_edit_, Utf16(config_.wechat_input_method.virtual_mic_playback_name).c_str());
+    UpdateOutputTargetVisibility();
 
     UpdateProviderVisibility();
 }
@@ -712,9 +762,32 @@ void SettingsDialog::SaveSettings() {
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
 
+    int output_target_idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
+    if (output_target_idx == 1) {
+        config_.default_output_profile.target = OutputTarget::kSubtitle;
+    } else if (output_target_idx == 2) {
+        config_.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    } else {
+        config_.default_output_profile.target = OutputTarget::kFocusedApp;
+    }
+    config_.wechat_input_method.hotkey = Utf8(GetWindowText(wechat_hotkey_edit_));
+    config_.wechat_input_method.virtual_mic_playback_name =
+        Utf8(GetWindowText(wechat_virtual_mic_edit_));
+
     config_.Save();
     EndDialog(hwnd_, IDOK);
     if (on_config_changed) on_config_changed(config_);
+}
+
+void SettingsDialog::UpdateOutputTargetVisibility() {
+    if (!output_target_combo_) return;
+    int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
+    const bool is_wechat = (idx == 2);
+    const int cmd = is_wechat ? SW_SHOW : SW_HIDE;
+    ShowWindow(wechat_hotkey_label_, cmd);
+    ShowWindow(wechat_hotkey_edit_, cmd);
+    ShowWindow(wechat_virtual_mic_label_, cmd);
+    ShowWindow(wechat_virtual_mic_edit_, cmd);
 }
 
 void SettingsDialog::UpdateProviderVisibility() {
