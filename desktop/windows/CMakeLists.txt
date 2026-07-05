@@ -16,6 +16,11 @@ endif()
 
 include(FetchContent)
 
+# libopus：桌面端新增 Opus 解码能力，用于 wechat_input_method 输出模式。
+# 使用 vendored 的 xiph/opus v1.5.2 源码，通过标准 CMake 构建为静态库。
+add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
+set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # 默认从 github 拉 WinSparkle；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
 #   用户环境变量 VOICESTICK_WINSPARKLE_URL=C:/path/to/WinSparkle-0.9.2.zip
 # 或 cmake -DVOICESTICK_WINSPARKLE_URL=C:/path/... -S desktop\windows -B ...
@@ -67,6 +72,7 @@ target_include_directories(voicestick_core PUBLIC src third_party/cjson third_pa
 target_compile_definitions(voicestick_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
+target_link_libraries(voicestick_core PUBLIC opus)
 
 add_executable(VoiceStickApp WIN32
     src/main.cc
