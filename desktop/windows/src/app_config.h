@@ -64,6 +64,7 @@ enum class OverlayThemeSize {
 enum class OutputTarget {
     kFocusedApp,
     kSubtitle,
+    kWechatInputMethod,
 };
 
 enum class TextTransform {
@@ -92,6 +93,17 @@ struct OutputProfile {
     std::string translation_target = "en";
 
     bool operator==(const OutputProfile& other) const = default;
+};
+
+struct WechatInputMethodConfig {
+    // 触发微信输入法语音输入的快捷键字符串，例如 "ctrl+win"。
+    std::string hotkey = "ctrl+win";
+    // 虚拟麦克风播放端名称子串，例如 "CABLE Input (VB-Audio Virtual Cable)"。
+    std::string virtual_mic_playback_name = "CABLE Input";
+    // 是否在录音期间自动将默认录音设备切换为虚拟麦克风。
+    bool auto_switch_default_recording_device = false;
+
+    bool operator==(const WechatInputMethodConfig& other) const = default;
 };
 
 struct AppConfig {
@@ -123,6 +135,7 @@ struct AppConfig {
     std::map<std::string, OverlayThemeSize> device_theme_sizes;
     std::map<std::string, OverlayPosition> device_overlay_positions;
     OutputProfile default_output_profile;
+    WechatInputMethodConfig wechat_input_method;
     std::map<std::string, OutputProfile> device_output_profiles;
     bool auto_enter = true;
     bool global_hotkey_enabled = true;
