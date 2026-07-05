@@ -28,6 +28,7 @@ private:
     void BuildControls();
     void LoadConfigIntoControls();
     void SaveSettings();
+    void UpdateOutputTargetVisibility();
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
     void UpdateTapSensitivityLabel();
@@ -68,6 +69,11 @@ private:
     HWND air_mouse_sensitivity_x_value_label_ = nullptr;
     HWND air_mouse_sensitivity_y_trackbar_ = nullptr;
     HWND air_mouse_sensitivity_y_value_label_ = nullptr;
+    HWND output_target_combo_ = nullptr;
+    HWND wechat_hotkey_edit_ = nullptr;
+    HWND wechat_hotkey_label_ = nullptr;
+    HWND wechat_virtual_mic_edit_ = nullptr;
+    HWND wechat_virtual_mic_label_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -76,7 +82,7 @@ private:
     std::vector<HWND> label_controls_;
 
     static constexpr int kClientWidth = 640;
-    static constexpr int kClientHeight = 1040;
+    static constexpr int kClientHeight = 1160;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -101,6 +107,9 @@ private:
     static constexpr UINT kIdTapSensitivity = 2023;
     static constexpr UINT kIdAirMouseSensitivityX = 2024;
     static constexpr UINT kIdAirMouseSensitivityY = 2025;
+    static constexpr UINT kIdOutputTarget = 2026;
+    static constexpr UINT kIdWechatHotkey = 2027;
+    static constexpr UINT kIdWechatVirtualMic = 2028;
 };
 
 } // namespace voicestick
