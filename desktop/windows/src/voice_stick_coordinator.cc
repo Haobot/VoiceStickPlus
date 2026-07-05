@@ -395,8 +395,14 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
     }
     if (HandleFrontButtonDuringPendingPaste(device_id)) return;
 
-    StartWechatInputMethodSession(session_id, device_id);
-    ui_->ShowListening(active_device_id_);
+    if (!StartWechatInputMethodSession(session_id, device_id)) {
+        // 启动失败（虚拟麦克风未找到/热键发送失败）：ShowError 已在内部提示，
+        // 不弹录音悬浮窗、不发 recording 状态，避免松开时浮窗残留。
+        ble_->SendUiState("ready", "", device_id);
+        return;
+    }
+    // wechat 模式不弹 VoiceStick 录音悬浮窗：微信输入法自带语音面板，
+    // 弹出 VoiceStick 浮窗会遮挡且造成"松开不消失"的混乱，仅通过设备屏幕 recording 提供反馈。
     SendUiStateForActiveDevice("recording");
 }
 
@@ -435,7 +441,7 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
     }
 }
 
-void VoiceStickCoordinator::StartWechatInputMethodSession(
+bool VoiceStickCoordinator::StartWechatInputMethodSession(
     std::optional<std::uint32_t> session_id, const std::string& device_id) {
     if (!wechat_decoder_) {
         wechat_decoder_ = std::make_unique<AudioOpusDecoder>(16000, 1);
@@ -463,13 +469,13 @@ void VoiceStickCoordinator::StartWechatInputMethodSession(
                            config_.wechat_input_method.virtual_mic_playback_name,
                        device_id, {});
         StopWechatInputMethodSession();
-        return;
+        return false;
     }
 
     if (!wechat_hotkey_->IsValid() || !wechat_hotkey_->SendDown()) {
         ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
         StopWechatInputMethodSession();
-        return;
+        return false;
     }
 
     {
@@ -480,6 +486,7 @@ void VoiceStickCoordinator::StartWechatInputMethodSession(
         wechat_input_method_active_ = true;
         SetSessionState(SessionState::kRecording, "wechat_primary_down");
     }
+    return true;
 }
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {

@@ -2263,6 +2263,9 @@ void TestCoordinatorWechatInputMethodButtonDownSendsHotkey() {
     // 虚拟麦克风不存在，应触发错误 UI。
     assert(!ui.errors.empty());
     assert(ui.errors.back().find("Virtual microphone") != std::string::npos);
+    // wechat 模式不应弹出 VoiceStick 录音悬浮窗（微信输入法自带语音面板），
+    // 启动失败时只显示错误，不弹录音浮窗，避免松开时浮窗残留。
+    assert(ui.show_listening_count == 0);
     // 会话被清理后，后续状态应为 ready。
     assert(!asr_ptr->started);
 }
