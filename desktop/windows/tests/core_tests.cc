@@ -2204,6 +2204,36 @@ void TestWasapiRendererFailsOnMissingDevice() {
 
 } // namespace
 
+void TestOutputTargetWechatInputMethod() {
+    assert(OutputTargetFromName("wechat_input_method") == OutputTarget::kWechatInputMethod);
+    assert(OutputTargetFromName("subtitle") == OutputTarget::kSubtitle);
+    assert(OutputTargetFromName("focused_app") == OutputTarget::kFocusedApp);
+    assert(OutputTargetFromName("unknown") == OutputTarget::kFocusedApp);
+    assert(OutputTargetName(OutputTarget::kWechatInputMethod) == "wechat_input_method");
+    assert(OutputTargetName(OutputTarget::kSubtitle) == "subtitle");
+    assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
+}
+
+void TestWechatInputMethodConfigRoundTrip() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_wechat_input_method_test.toml";
+    std::filesystem::remove(temp);
+
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.hotkey = "ctrl+shift+w";
+    config.wechat_input_method.virtual_mic_playback_name = "CABLE Input";
+    config.wechat_input_method.auto_switch_default_recording_device = true;
+    config.Save(temp);
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.default_output_profile.target == OutputTarget::kWechatInputMethod);
+    assert(loaded.wechat_input_method.hotkey == "ctrl+shift+w");
+    assert(loaded.wechat_input_method.virtual_mic_playback_name == "CABLE Input");
+    assert(loaded.wechat_input_method.auto_switch_default_recording_device);
+
+    std::filesystem::remove(temp);
+}
+
 void TestTencentProviderSelection() {
     assert(AsrProviderFromName("voicestick_cloud") == AsrProvider::kVoiceStickCloud);
     assert(AsrProviderFromName("volcengine") == AsrProvider::kVolcengine);
@@ -3100,5 +3130,7 @@ int main() {
     TestPcmRingBufferClear();
     TestPcmRingBufferWrapAround();
     TestWasapiRendererFailsOnMissingDevice();
+    TestOutputTargetWechatInputMethod();
+    TestWechatInputMethodConfigRoundTrip();
     return 0;
 }

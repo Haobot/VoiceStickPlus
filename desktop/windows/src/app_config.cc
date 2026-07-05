@@ -346,6 +346,11 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "output_target") config.default_output_profile.target = OutputTargetFromName(value);
     if (key == "text_transform") config.default_output_profile.transform = TextTransformFromName(value);
     if (key == "translation_target" && !value.empty()) config.default_output_profile.translation_target = value;
+    if (key == "wechat_input_method_hotkey") config.wechat_input_method.hotkey = value;
+    if (key == "wechat_input_method_virtual_mic") config.wechat_input_method.virtual_mic_playback_name = value;
+    if (key == "wechat_input_method_auto_switch") {
+        config.wechat_input_method.auto_switch_default_recording_device = BoolValue(value, false);
+    }
     if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
     if (key == "global_hotkey_enabled") config.global_hotkey_enabled = BoolValue(value, config.global_hotkey_enabled);
     if (key == "global_hotkey") config.global_hotkey = value;
@@ -481,6 +486,17 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (const auto* output = table["output"].as_table()) {
             config.default_output_profile = ParseOutputProfile(
                 *output, config.default_output_profile, true);
+        }
+        if (const auto* wechat = table["wechat_input_method"].as_table()) {
+            if (auto value = TomlString(*wechat, "hotkey")) {
+                config.wechat_input_method.hotkey = *value;
+            }
+            if (auto value = TomlString(*wechat, "virtual_mic_playback_name")) {
+                config.wechat_input_method.virtual_mic_playback_name = *value;
+            }
+            if (auto value = TomlBool(*wechat, "auto_switch_default_recording_device")) {
+                config.wechat_input_method.auto_switch_default_recording_device = *value;
+            }
         }
         if (const auto* devices = table["device"].as_table()) {
             for (const auto& [key, node] : *devices) {
@@ -621,6 +637,11 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "target = \"" << OutputTargetName(default_output_profile.target) << "\"\n";
     output << "transform = \"" << TextTransformName(default_output_profile.transform) << "\"\n";
     output << "translation_target = \"" << TomlEscape(default_output_profile.translation_target) << "\"\n";
+    output << "\n[wechat_input_method]\n";
+    output << "hotkey = \"" << TomlEscape(wechat_input_method.hotkey) << "\"\n";
+    output << "virtual_mic_playback_name = \"" << TomlEscape(wechat_input_method.virtual_mic_playback_name) << "\"\n";
+    output << "auto_switch_default_recording_device = "
+           << (wechat_input_method.auto_switch_default_recording_device ? "true" : "false") << "\n";
     for (const auto& [device_id, profile] : device_output_profiles) {
         if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
             continue;
@@ -906,15 +927,27 @@ std::string OverlayPositionDisplayName(OverlayPosition position) {
 }
 
 std::string OutputTargetName(OutputTarget target) {
-    return target == OutputTarget::kSubtitle ? "subtitle" : "focused_app";
+    switch (target) {
+        case OutputTarget::kSubtitle: return "subtitle";
+        case OutputTarget::kWechatInputMethod: return "wechat_input_method";
+        case OutputTarget::kFocusedApp: return "focused_app";
+    }
+    return "focused_app";
 }
 
 OutputTarget OutputTargetFromName(std::string_view name) {
-    return name == "subtitle" ? OutputTarget::kSubtitle : OutputTarget::kFocusedApp;
+    if (name == "subtitle") return OutputTarget::kSubtitle;
+    if (name == "wechat_input_method") return OutputTarget::kWechatInputMethod;
+    return OutputTarget::kFocusedApp;
 }
 
 std::string OutputTargetDisplayName(OutputTarget target) {
-    return target == OutputTarget::kSubtitle ? "Subtitle" : "Focused App";
+    switch (target) {
+        case OutputTarget::kSubtitle: return "Subtitle";
+        case OutputTarget::kWechatInputMethod: return "WeChat Input Method";
+        case OutputTarget::kFocusedApp: return "Focused App";
+    }
+    return "Focused App";
 }
 
 std::string TextTransformName(TextTransform transform) {
