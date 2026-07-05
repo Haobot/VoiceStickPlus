@@ -18,6 +18,9 @@ include(FetchContent)
 
 # libopus：桌面端新增 Opus 解码能力，用于 wechat_input_method 输出模式。
 # 使用 vendored 的 xiph/opus v1.5.2 源码，通过标准 CMake 构建为静态库。
+set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
 set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -53,6 +56,7 @@ add_library(voicestick_core
     src/air_mouse_kin.cc
     src/app_config.cc
     src/asr_protocol.cc
+    src/audio_opus_decoder.cc
     src/ble_protocol.cc
     src/debug_audio_recorder.cc
     src/firmware_manifest.cc
