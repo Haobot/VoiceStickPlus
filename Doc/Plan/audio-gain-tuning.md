@@ -56,10 +56,32 @@
 
 启用 ES8311 硬件 ADC ALC（自动电平控制），自适应不同距离。
 
-- 直接写 reg 0x18（alc enable + winsize）、0x19（alc maxlevel）、0x1A/0x1B（alc automute + hpf）。
-- `esp_codec_dev` 未封装，需在 `init_codec` 后通过 `es8311` codec if 的 `set_reg` 或直接 I2C 写寄存器。
-- 参数（target level、attack/release time、winsize）需查 ES8311 datasheet 调参，调不当会引入呼吸感（pumping）或底噪放大。
-- 触发条件：方案一在近场或远场任一距离识别效果仍不理想。
+### 参数（已与用户确认）
+
+- **ALC target level**：低目标（约 -18dBFS），防削波优先，输出偏柔，呼吸感最轻。
+- **PGA 基础增益**：保持方案一的 24 dB，ALC 在此基础上动态压/拉。
+
+### 寄存器配置（基于 ES8311 datasheet 位域）
+
+| 寄存器 | 位域 | 写入值 | 说明 |
+|---|---|---|---|
+| REG18 (0x18) | bit[7:4]=winsize, bit[3]=ALC enable, bit[2:0]=reserved | 0x23 | winsize=2（短响应），enable=1 |
+| REG19 (0x19) | bit[7:4]=maxlevel(target), bit[3:0]=minlevel | 0x30 | target=3（约 -18dBFS），minlevel=0 |
+| REG1A (0x1A) | bit[7:4]=automute ctrl, bit[3:0]=hold time | 0x00 | 不启用 automute，避免误判停顿为静音 |
+| REG1B (0x1B) | bit[7:4]=automute noise gate, bit[3:0]=ADC HPF s1 | 不覆盖 | 保持 es8311_open 默认 0x0A（HPF） |
+
+### 实现方式
+
+`esp_codec_dev` 已暴露公开 API `esp_codec_dev_write_reg(codec, reg, val)`（调用 es8311 的 set_reg → I2C 写）。
+在 `init_codec` 的 `esp_codec_dev_open` + `esp_codec_dev_set_in_gain` 之后追加 ALC 寄存器写入，无需手写 I2C。
+
+### 验证
+
+`idf.py build` 编译通过 + 真机运行。真机验证清单：
+1. 近场（5cm）大声说话不削波，ASR 字错率应优于方案一。
+2. 中场（15cm）保持方案一效果。
+3. 远场（30cm+）小声说话应被 ALC 拉起，识别改善。
+4. 持续说话无呼吸感（pumping）、无底噪异常放大。若出现，回调 target level 或 winsize。
 
 ## 不改动的部分
 

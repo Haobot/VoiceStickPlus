@@ -189,10 +189,20 @@ static esp_err_t init_codec(void)
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_codec, &sample_cfg) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "open codec");
     /* PGA 增益：原 36 dB 是 ES8311 最大档，近场声压叠加后致 ADC 硬削波、ASR 变差。
-     * 降到 24 dB 留 12 dB headroom，近场不再削波，中场（15-30cm）信号仍够用。
-     * 若近场或远场仍不理想，下一步启用 ES8311 硬件 ALC（见 Doc/Plan/audio-gain-tuning.md 方案二）。 */
+     * 降到 24 dB 留 12 dB headroom，作为 ALC 的前端固定增益。 */
     ESP_RETURN_ON_FALSE(esp_codec_dev_set_in_gain(s_codec, 24.0) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "set mic gain");
+    /* 启用 ES8311 硬件 ADC ALC（自动电平控制），在 24 dB PGA 基础上动态压/拉增益，
+     * 自适应不同说话距离：近场大声自动压防削波，远场小声自动拉起。
+     * target level 设低（约 -18dBFS）防削波优先，winsize=2 短响应，不开 automute。
+     * REG1B 保持 es8311_open 默认 0x0A（ADC HPF），不整字节覆盖以免破坏 HPF 设置。
+     * 参数与位域见 Doc/Plan/audio-gain-tuning.md 方案二。 */
+    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x18, 0x23) == ESP_CODEC_DEV_OK,
+                        ESP_FAIL, TAG, "set alc enable+winsize");
+    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x19, 0x30) == ESP_CODEC_DEV_OK,
+                        ESP_FAIL, TAG, "set alc target level");
+    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x1A, 0x00) == ESP_CODEC_DEV_OK,
+                        ESP_FAIL, TAG, "set alc automute off");
     return ESP_OK;
 }
 
