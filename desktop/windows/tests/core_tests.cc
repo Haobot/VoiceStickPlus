@@ -296,6 +296,46 @@ public:
     int left_click_count = 0;
 };
 
+// 测试用虚拟麦渲染器：解耦真实 WASAPI，Start 返回可配置结果。
+class FakeVirtualMicRenderer : public IVirtualMicRenderer {
+public:
+    explicit FakeVirtualMicRenderer(bool start_result) : start_result_(start_result) {}
+    bool Start(PcmRingBuffer*) override {
+        ++start_count;
+        running_ = start_result_;
+        return start_result_;
+    }
+    void Stop() override {
+        ++stop_count;
+        running_ = false;
+    }
+    bool IsRunning() const override { return running_; }
+    std::wstring ActiveDeviceName() const override { return L"FakeDevice"; }
+
+    int start_count = 0;
+    int stop_count = 0;
+    bool running_ = false;
+    bool start_result_;
+};
+
+// 测试用微信输入法热键：解耦 SendInput，SendDown/SendUp 恒成功。
+class FakeWechatInputMethodHotkey : public IWechatInputMethodHotkey {
+public:
+    explicit FakeWechatInputMethodHotkey(const std::string& = {}) {}
+    bool IsValid() const override { return true; }
+    bool SendDown() const override {
+        ++send_down_count;
+        return true;
+    }
+    bool SendUp() const override {
+        ++send_up_count;
+        return true;
+    }
+
+    mutable int send_down_count = 0;
+    mutable int send_up_count = 0;
+};
+
 StateEvent ButtonEvent(const std::string& event,
                        const std::string& button,
                        std::optional<std::uint32_t> session_id = std::nullopt) {
@@ -2270,6 +2310,141 @@ void TestCoordinatorWechatInputMethodButtonDownSendsHotkey() {
     assert(!asr_ptr->started);
 }
 
+void TestCoordinatorWechatInputMethodWritesDebugAudio() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.debug_audio_cache = true;
+    const auto debug_dir =
+        std::filesystem::temp_directory_path() / "voicestick_wechat_debug_audio_test";
+    std::filesystem::remove_all(debug_dir);
+    std::filesystem::create_directories(debug_dir);
+    config.debug_audio_directory = debug_dir;
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 2, true));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+
+    // 勾选调试音频后，wechat 模式录音结束应在目录下落盘非空 .ogg 文件。
+    bool found = false;
+    for (const auto& entry : std::filesystem::directory_iterator(debug_dir)) {
+        if (entry.path().extension() == ".ogg" && std::filesystem::file_size(entry) > 0) {
+            found = true;
+            break;
+        }
+    }
+    assert(found);
+
+    std::filesystem::remove_all(debug_dir);
+}
+
+void TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    assert(fake_renderer != nullptr);
+    assert(fake_renderer->start_count == 1);
+
+    // 模拟 BLE 闪断：设备断连后，wechat 会话必须被完整停止（renderer 停、状态清），
+    // 否则重连后 button_up 条件不匹配、button_down 被残留 active 忽略，卡在 Recording。
+    ble_ptr->connected_device_ids.erase("5A74");
+    ble_ptr->on_connection_change({});
+    assert(fake_renderer->stop_count >= 1);
+
+    // 重连后应能重新开始录音（wechat 状态已清理）。
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 8));
+    assert(fake_renderer->start_count == 2);
+}
+
+void TestCoordinatorWechatInputMethodHandlesEmptyEndFrame() {
+    // 空 payload + IsEnd 的结束帧（固件常用此表示音频流结束），wechat 路径应识别为
+    // audio_end 并收尾，与主路径一致；button_up 后应落盘调试音频并回到 ready。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.debug_audio_cache = true;
+    const auto debug_dir =
+        std::filesystem::temp_directory_path() / "voicestick_wechat_empty_end_test";
+    std::filesystem::remove_all(debug_dir);
+    std::filesystem::create_directories(debug_dir);
+    config.debug_audio_directory = debug_dir;
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(7, 2));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+
+    bool found = false;
+    for (const auto& entry : std::filesystem::directory_iterator(debug_dir)) {
+        if (entry.path().extension() == ".ogg" && std::filesystem::file_size(entry) > 0) {
+            found = true;
+            break;
+        }
+    }
+    assert(found);
+    // button_up 后应回到 ready（EnterReady 广播 ready，device_id 为空）。
+    assert(!ble_ptr->sent_ui_states.empty());
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+
+    std::filesystem::remove_all(debug_dir);
+}
+
 void TestTencentProviderSelection() {
     assert(AsrProviderFromName("voicestick_cloud") == AsrProvider::kVoiceStickCloud);
     assert(AsrProviderFromName("volcengine") == AsrProvider::kVolcengine);
@@ -3170,5 +3345,8 @@ int main() {
     TestWechatInputMethodConfigRoundTrip();
     TestWechatInputMethodHotkeyParsing();
     TestCoordinatorWechatInputMethodButtonDownSendsHotkey();
+    TestCoordinatorWechatInputMethodWritesDebugAudio();
+    TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect();
+    TestCoordinatorWechatInputMethodHandlesEmptyEndFrame();
     return 0;
 }
