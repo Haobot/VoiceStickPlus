@@ -29,7 +29,7 @@ static const char *TAG = "audio_pipeline";
 #define AUDIO_FRAME_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)
 #define TONE_CHUNK_SAMPLES 256
 #define TONE_CHANNELS 2
-#define OPUS_BITRATE 20000
+#define OPUS_BITRATE 32000
 #define OPUS_MAX_PACKET_SIZE 220
 #define OPUS_COMPLEXITY 1
 
@@ -188,7 +188,10 @@ static esp_err_t init_codec(void)
     };
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_codec, &sample_cfg) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "open codec");
-    ESP_RETURN_ON_FALSE(esp_codec_dev_set_in_gain(s_codec, 36.0) == ESP_CODEC_DEV_OK,
+    /* PGA 增益：原 36 dB 是 ES8311 最大档，近场声压叠加后致 ADC 硬削波、ASR 变差。
+     * 降到 24 dB 留 12 dB headroom，近场不再削波，中场（15-30cm）信号仍够用。
+     * 若近场或远场仍不理想，下一步启用 ES8311 硬件 ALC（见 Doc/Plan/audio-gain-tuning.md 方案二）。 */
+    ESP_RETURN_ON_FALSE(esp_codec_dev_set_in_gain(s_codec, 24.0) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "set mic gain");
     return ESP_OK;
 }
