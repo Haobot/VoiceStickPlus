@@ -1,5 +1,19 @@
 # CHANGELOG.md
 
+## 2026-07-06 v1.9.0
+
+- **feat(wechat_input_method)**: 新增微信输入法语音输出模式——将识别语音经 Opus 解码为 PCM 后渲染到系统虚拟麦克风（如 VB-CABLE Output），供微信输入法等应用作为音频输入源。
+  - Windows 端新增 Opus 解码器（vendored xiph/opus v1.5.2）、PCM 环形缓冲、WASAPI 虚拟麦克风渲染器（shared mode + AUTOCONVERTPCM）。
+  - 配置模型、协调器状态机、设置对话框 UI 扩展支持 `wechat_input_method` 输出模式。
+  - 修复虚拟麦 16kHz 格式被 WASAPI 拒绝导致渲染启动失败（需 AUTOCONVERTPCM）。
+  - 接入调试音频缓存并修复 BLE 闪断后录音卡死（漏接 `CancelActiveCycleIfDeviceDisconnected` 断连清理分支）。
+- **fix(audio)**: 改善近场 ASR 识别效果。
+  - 根因：ES8311 PGA 固定 36 dB（最大档，63 倍）致近场 ADC 硬削波，谐波失真破坏语音频谱。固定增益不改变 SNR，问题是增益超出 ADC 线性区导致削波。
+  - 方案一：PGA 36→24 dB + Opus 码率 20→32 kbps。
+  - 方案二：启用 ES8311 硬件 ADC ALC（target -18dBFS + winsize=2 + automute off）自适应不同说话距离。
+- **fix(windows)**: 去除管理员启动要求回退为 asInvoker，不再弹 UAC；开机自启从任务计划程序改回 `HKCU\...\Run`。
+  - 权衡：`focused_app` 粘贴注入模式无法再向微信 4.0 等高完整性窗口发送 SendInput（UIPI）；微信输入法模式走虚拟麦克风渲染，不受影响。
+
 ## 2026-07-05 v1.8.2
 
 - 版本号从 `v1.8.0` 更新到 `v1.8.2`。
