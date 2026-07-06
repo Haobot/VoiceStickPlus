@@ -11,6 +11,7 @@
 #include "llm_refinement_client.h"
 #include "ogg_opus_muxer.h"
 #include "pcm_ring_buffer.h"
+#include "virtual_mic_renderer.h"
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
 
@@ -177,7 +178,9 @@ public:
                           std::unique_ptr<AsrClient> asr,
                           VoiceStickUi* ui,
                           InputInjector* input_injector,
-                          std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory = {});
+                          std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory = {},
+                          std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory = {},
+                          std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory = {});
     ~VoiceStickCoordinator();
 
     void Start();
@@ -275,6 +278,8 @@ private:
     bool StartWechatInputMethodSession(std::optional<std::uint32_t> session_id,
                                        const std::string& device_id);
     void StopWechatInputMethodSession();
+    // 兜底落盘本次 wechat 会话的调试音频：未收到 audio_end 则补 EOS 页再 Finish。
+    void FinishWechatInputMethodRecording();
     bool IsWechatInputMethodActive() const;
     void HandleSubtitlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandleSubtitlePrimaryButtonUp(const std::string& device_id);
@@ -421,9 +426,14 @@ private:
     // wechat_input_method 模式下的当前会话资源。
     std::unique_ptr<AudioOpusDecoder> wechat_decoder_;
     std::unique_ptr<PcmRingBuffer> wechat_ring_buffer_;
-    std::unique_ptr<WasapiVirtualMicRenderer> wechat_renderer_;
-    std::unique_ptr<WechatInputMethodHotkey> wechat_hotkey_;
+    std::unique_ptr<IVirtualMicRenderer> wechat_renderer_;
+    std::unique_ptr<IWechatInputMethodHotkey> wechat_hotkey_;
     bool wechat_input_method_active_ = false;
+    // 是否已收到本次 wechat 会话的 audio_end 帧；用于 Stop 时判断是否需补 EOS 页。
+    bool wechat_audio_end_received_ = false;
+    // 工厂注入（测试用 fake 解耦真实 WASAPI/SendInput）；默认空→make_unique 真实实现。
+    std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory_;
+    std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory_;
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
     static constexpr std::chrono::milliseconds kAudioEndTimeout{1000};
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};

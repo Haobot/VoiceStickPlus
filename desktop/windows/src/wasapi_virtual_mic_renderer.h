@@ -9,6 +9,8 @@
 #include <memory>
 #include <string>
 
+#include "virtual_mic_renderer.h"
+
 namespace voicestick {
 
 class PcmRingBuffer;
@@ -16,37 +18,26 @@ class PcmRingBuffer;
 // WASAPI 渲染器：将 PcmRingBuffer 中的 16-bit PCM 持续写入指定的播放设备。
 // 典型使用场景：写入 VB-CABLE / Virtual Audio Cable 的 Playback 端，
 // 使其 Recording 端作为系统麦克风被微信输入法取音。
-class WasapiVirtualMicRenderer {
+class WasapiVirtualMicRenderer : public IVirtualMicRenderer {
  public:
-  struct Options {
-    int sample_rate = 16000;
-    int channels = 1;
-    int bits_per_sample = 16;
-    // 用于匹配播放设备名称的子串（大小写不敏感）。
-    std::wstring device_name_substring;
-    // WASAPI 缓冲区长度（毫秒）。
-    int buffer_duration_ms = 100;
-    // 每次从 ring buffer 读取的帧长（毫秒）。
-    int render_period_ms = 10;
-  };
-
+  // Options 复用基类 IVirtualMicRenderer::Options。
   explicit WasapiVirtualMicRenderer(const Options& options);
-  ~WasapiVirtualMicRenderer();
+  ~WasapiVirtualMicRenderer() override;
 
   WasapiVirtualMicRenderer(const WasapiVirtualMicRenderer&) = delete;
   WasapiVirtualMicRenderer& operator=(const WasapiVirtualMicRenderer&) = delete;
 
   // 启动渲染线程。source 必须在 Stop() 之前保持有效。
   // 返回 false 表示找不到匹配设备或 WASAPI 初始化失败。
-  bool Start(PcmRingBuffer* source);
+  bool Start(PcmRingBuffer* source) override;
 
   // 停止渲染线程并释放 WASAPI 资源。
-  void Stop();
+  void Stop() override;
 
-  bool IsRunning() const;
+  bool IsRunning() const override;
 
   // 返回实际打开的设备名称；未启动时为空。
-  std::wstring ActiveDeviceName() const;
+  std::wstring ActiveDeviceName() const override;
 
  private:
   class Impl;

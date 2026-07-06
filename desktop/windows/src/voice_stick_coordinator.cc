@@ -32,7 +32,9 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
                                              std::unique_ptr<AsrClient> asr,
                                              VoiceStickUi* ui,
                                              InputInjector* input_injector,
-                                             std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory)
+                                             std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory,
+                                             std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory,
+                                             std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory)
     : config_(std::move(config)),
       ble_(std::move(ble)),
       asr_(std::move(asr)),
@@ -42,7 +44,9 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
       ui_(ui),
       input_injector_(input_injector),
       debug_audio_recorder_(config_.debug_audio_cache, config_.debug_audio_directory),
-      paired_device_ids_(config_.paired_device_ids) {
+      paired_device_ids_(config_.paired_device_ids),
+      wechat_renderer_factory_(std::move(wechat_renderer_factory)),
+      wechat_hotkey_factory_(std::move(wechat_hotkey_factory)) {
     for (const auto& entry : config_.paired_devices) {
         if (entry.device_id.empty()) continue;
         auto& info = firmware_info_by_device_id_[entry.device_id];
@@ -422,7 +426,19 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
         active_device_id_ != device_id) {
         return;
     }
+    if (frame.IsEnd() && frame.payload.empty()) {
+        // 空 payload + IsEnd：固件用此表示音频流结束（与主路径一致），
+        // 需收尾调试音频并结束会话，不能由下面的空 payload 早退跳过。
+        wechat_audio_end_received_ = true;
+        debug_audio_recorder_.Finish();
+        active_session_id_.reset();
+        return;
+    }
     if (frame.payload.empty()) return;
+
+    // 先封装 Ogg Opus 并写入调试音频缓存（不依赖解码器，确保解码失败也落盘）。
+    auto ogg_chunk = ogg_muxer_.Append(frame.payload, frame.IsEnd());
+    debug_audio_recorder_.Append(ogg_chunk);
 
     constexpr std::size_t kPcmCapacity = 1920;  // 120 ms @ 16 kHz mono。
     int16_t pcm[kPcmCapacity];
@@ -431,12 +447,19 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
     if (result.opus_error != 0 || result.decoded_samples <= 0) {
         LogCoordinatorLine("wechat decode failed dev=VS-" + device_id +
                            " error=" + std::to_string(result.opus_error));
+        if (frame.IsEnd()) {
+            wechat_audio_end_received_ = true;
+            debug_audio_recorder_.Finish();
+            active_session_id_.reset();
+        }
         return;
     }
 
     wechat_ring_buffer_->Write(pcm, result.decoded_samples);
 
     if (frame.IsEnd()) {
+        wechat_audio_end_received_ = true;
+        debug_audio_recorder_.Finish();
         active_session_id_.reset();
     }
 }
@@ -450,19 +473,23 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         wechat_ring_buffer_ = std::make_unique<PcmRingBuffer>(8192);
     }
     if (!wechat_renderer_) {
-        WasapiVirtualMicRenderer::Options options;
+        IVirtualMicRenderer::Options options;
         options.sample_rate = 16000;
         options.channels = 1;
         options.bits_per_sample = 16;
         options.device_name_substring =
             std::wstring(config_.wechat_input_method.virtual_mic_playback_name.begin(),
                          config_.wechat_input_method.virtual_mic_playback_name.end());
-        wechat_renderer_ = std::make_unique<WasapiVirtualMicRenderer>(options);
+        wechat_renderer_ = wechat_renderer_factory_
+                               ? wechat_renderer_factory_(options)
+                               : std::make_unique<WasapiVirtualMicRenderer>(options);
     }
 
     wechat_ring_buffer_->Clear();
     wechat_decoder_->Reset();
-    wechat_hotkey_ = std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.hotkey);
+    wechat_hotkey_ = wechat_hotkey_factory_
+                         ? wechat_hotkey_factory_(config_.wechat_input_method.hotkey)
+                         : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.hotkey);
 
     if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
         ui_->ShowError("Virtual microphone not found: " +
@@ -480,6 +507,9 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
 
     {
         std::lock_guard lock(audio_mutex_);
+        ogg_muxer_.Reset();
+        debug_audio_recorder_.Start(device_id, session_id);
+        wechat_audio_end_received_ = false;
         active_session_id_ = session_id;
         active_device_id_ = device_id;
         active_session_started_at_ = std::chrono::steady_clock::now();
@@ -504,9 +534,22 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     }
 
     std::lock_guard lock(audio_mutex_);
+    FinishWechatInputMethodRecording();
     active_session_id_.reset();
     active_device_id_.reset();
     wechat_input_method_active_ = false;
+}
+
+void VoiceStickCoordinator::FinishWechatInputMethodRecording() {
+    // Start 失败路径（未真正进入录音）：不落盘。
+    if (!wechat_input_method_active_) return;
+    // 未收到 audio_end 帧（如提前松开按键）：补一个 EOS 页再 Finish，保证 ogg 文件完整。
+    if (!wechat_audio_end_received_) {
+        auto final_chunk = ogg_muxer_.Finish();
+        debug_audio_recorder_.Append(final_chunk);
+        wechat_audio_end_received_ = true;
+    }
+    debug_audio_recorder_.Finish();
 }
 
 bool VoiceStickCoordinator::IsWechatInputMethodActive() const {
@@ -1612,6 +1655,13 @@ void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
         }
     }
     if (active_device_id_.has_value() && !ble_->IsConnected(*active_device_id_)) {
+        if (IsWechatInputMethodActive()) {
+            // wechat 模式断连必须走专用停止路径，否则 renderer/热键/wechat_active 残留，
+            // 重连后 button_up 条件不匹配、button_down 被残留 active 忽略，卡在 Recording。
+            StopWechatInputMethodSession();
+            EnterReady("wechat_device_disconnected");
+            return;
+        }
         if (waiting_for_audio_end_.load()) {
             SendFinalOggChunkIfNeeded(CurrentRecordingDurationSeconds());
             return;
