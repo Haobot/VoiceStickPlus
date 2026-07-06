@@ -1,5 +1,21 @@
 # 修复微信 4.0 等高完整性窗口文本注入失败（UIPI / UIAccess 方案）
 
+> **状态更新（2026-07-06）：本方案已撤销。** VoiceStick.exe 清单回退为 `asInvoker`，不再以
+> 管理员启动，也不弹 UAC；开机自启从任务计划程序改回标准 `HKCU\...\Run`。
+>
+> 原因：微信输入法语音模式（走虚拟麦克风渲染，不依赖窗口注入）成为主要输入路径，
+> UIPI 注入不再必需，管理员启动带来的 UAC 与任务计划程序复杂度不再划算。
+>
+> 权衡：`focused_app` 粘贴注入模式无法再向微信 4.0 等高完整性窗口发送 `SendInput`（向浏览器等
+> 同级 Medium IL 窗口仍正常）；微信输入法模式不受影响。未来若需恢复高完整性窗口注入，应走
+> UIAccess（uiAccess=true）+ 权威 CA 签名证书路径（本机无法验证，需签名机处理）。
+>
+> 迁移细节：`SyncLaunchAtLogin` 内以 `std::call_once` 调用 `schtasks.exe /Delete /TN
+> VoiceStickAutoStart /F`，清理历史 requireAdministrator 方案遗留的任务计划程序任务，避免它仍
+> 以 RunLevel=Highest 权限拉起本 asInvoker exe（否则去管理员后仍会弹 UAC）。
+>
+> 下方原始记录保留作为决策背景与权衡依据。
+
 ## 背景
 
 用户反馈：语音识别完成的文字可以注入浏览器在线文档，但**无法注入微信 4.0 输入框**。
