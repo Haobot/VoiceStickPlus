@@ -38,7 +38,6 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLlmModel)] = "Model";
     table[Index(StringId::kSettingsRefineText)] = "Refine text (remove pause spaces, fix punctuation, drop fillers)";
     table[Index(StringId::kSettingsRefinePrompt)] = "Refine Prompt";
-    table[Index(StringId::kSettingsPromptTone)] = "Play prompt tone on device";
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Start VoiceStick when Windows starts";
     table[Index(StringId::kSettingsDebugAudio)] = "Save debug audio files";
     table[Index(StringId::kSettingsShowImuDebug)] = "Show accelerometer debug values";
@@ -230,7 +229,6 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLlmModel)] = "模型";
     table[Index(StringId::kSettingsRefineText)] = "精修文本（去除停顿空格、修正标点、清理口头语）";
     table[Index(StringId::kSettingsRefinePrompt)] = "精修提示词";
-    table[Index(StringId::kSettingsPromptTone)] = "在设备上播放提示音";
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Windows 启动时自动运行 VoiceStick";
     table[Index(StringId::kSettingsDebugAudio)] = "保存调试音频文件";
     table[Index(StringId::kSettingsShowImuDebug)] = "显示加速度调试数值";

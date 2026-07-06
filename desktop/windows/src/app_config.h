@@ -20,6 +20,10 @@ enum class AsrProvider {
 
 enum class InteractionMode {
     kHoldToTalk,
+    // wechat 模式运行期派生：按下即录音跳过 300ms 阈值。不暴露到配置文件/UI，
+    // InteractionModeFromName 不解析（保持回退 hold_to_talk），仅 coordinator 在
+    // wechat 模式 + hold_to_talk 时构造并下发给固件。
+    kHoldToTalkInstant,
     kClickToTalk,
 };
 
@@ -140,7 +144,6 @@ struct AppConfig {
     bool auto_enter = true;
     bool global_hotkey_enabled = true;
     std::string global_hotkey = "Alt+X";
-    bool prompt_tone_enabled = true;
     bool show_imu_debug = false;
     ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
     // 敲击手势：双击设备外壳时注入下方向键，用于在候选/选项间向下切换。

@@ -146,6 +146,7 @@ Current desktop events:
 {"event":"ui_state","state":"pending_confirmation","text":"final text"}
 {"event":"ui_state","state":"error","text":"ASR timeout"}
 {"event":"interaction_mode","mode":"hold_to_talk"}
+{"event":"interaction_mode","mode":"hold_to_talk_instant"}
 {"event":"interaction_mode","mode":"click_to_talk"}
 {"event":"show_imu_debug","enabled":true}
 {"event":"imu_wake_sensitivity","threshold":500}
@@ -173,8 +174,11 @@ Chinese glyphs; `text` is used only to choose fixed English hints.
 
 `interaction_mode` controls the front-button behavior and idle screen hint.
 `hold_to_talk` starts audio on primary down and stops on primary up.
-`click_to_talk` starts audio on the first primary click and stops on the next
-primary click.
+`hold_to_talk_instant` behaves like `hold_to_talk` but skips the 300ms hold
+threshold — audio starts immediately on press, minimizing press-to-popup latency
+in `wechat_input_method` mode. `click_to_talk` starts audio on the first primary
+click and stops on the next primary click. Older firmware ignores unknown mode
+values and keeps the previous mode.
 
 Deprecated app-to-firmware events:
 

@@ -37,8 +37,6 @@ public:
                        const std::optional<std::string>& device_id) override;
     void SendInteractionMode(InteractionMode mode,
                              const std::optional<std::string>& device_id) override;
-    void SendPromptToneEnabled(bool enabled,
-                               const std::optional<std::string>& device_id) override;
     void SendShowImuDebug(bool enabled,
                           const std::optional<std::string>& device_id) override;
     void SendTapEnabled(bool enabled,

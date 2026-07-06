@@ -84,7 +84,6 @@ static bool s_ota_pm_locked;
 static bool s_battery_charging;
 static bool s_usb_powered;
 static int s_battery_level = 0;
-static bool s_prompt_tone_enabled = true;
 static bool s_show_imu_debug = false;
 static bool s_tap_enabled = true;
 // 按键事件后的敲击检测抑制截止时间戳（us）。在此之前 tap_poll_timer_cb 直接 return。
@@ -159,6 +158,7 @@ static app_ui_state_t s_app_ui_state = APP_UI_STATE_READY;
 
 typedef enum {
     INTERACTION_MODE_HOLD_TO_TALK,
+    INTERACTION_MODE_HOLD_TO_TALK_INSTANT,  // wechat 模式：按下即录音，跳过 300ms hold 阈值
     INTERACTION_MODE_CLICK_TO_TALK,
 } interaction_mode_t;
 
@@ -240,17 +240,6 @@ static bool poweroff_allowed_now(void)
 {
     return !s_recording && !s_ota_updating && !voice_ble_ota_is_active() &&
            !is_external_powered();
-}
-
-static void play_prompt_tone(uint32_t frequency_hz)
-{
-    if (!s_prompt_tone_enabled) {
-        return;
-    }
-    esp_err_t err = audio_pipeline_play_tone(frequency_hz, 80, 50);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "prompt tone failed: %s", esp_err_to_name(err));
-    }
 }
 
 static esp_err_t init_power_management(void)
@@ -527,7 +516,6 @@ static uint32_t start_recording(void)
     // 识别到输入卡顿。这里在提示音与 audio 初始化期间并行启动 conn update，
     // 等真正产帧时 interval 多半已切到 7.5ms。
     voice_ble_request_fast_interval();
-    play_prompt_tone(880);
     esp_err_t err = acquire_recording_pm_locks();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "acquire recording pm locks failed: %s", esp_err_to_name(err));
@@ -561,7 +549,6 @@ static uint32_t stop_recording(void)
     }
 
     const uint32_t session_id = audio_pipeline_session_id();
-    play_prompt_tone(440);
     s_recording = false;
     audio_pipeline_stop();
     release_recording_pm_locks();
@@ -718,13 +705,11 @@ static void ble_control_cb(const char *json)
             apply_interaction_mode(INTERACTION_MODE_CLICK_TO_TALK);
         } else if (strcmp(mode->valuestring, "hold_to_talk") == 0) {
             apply_interaction_mode(INTERACTION_MODE_HOLD_TO_TALK);
+        } else if (strcmp(mode->valuestring, "hold_to_talk_instant") == 0) {
+            apply_interaction_mode(INTERACTION_MODE_HOLD_TO_TALK_INSTANT);
         } else {
             ESP_LOGW(TAG, "unknown interaction_mode %s", mode->valuestring);
         }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "prompt_tone") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_prompt_tone_enabled = cJSON_IsTrue(enabled);
-        ESP_LOGI(TAG, "prompt tone %s", s_prompt_tone_enabled ? "enabled" : "disabled");
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "show_imu_debug") == 0 &&
                cJSON_IsBool(enabled)) {
         s_show_imu_debug = cJSON_IsTrue(enabled);
@@ -936,12 +921,38 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             return;
         }
 
-        // hold_to_talk：立即播放提示音提供反馈，但不启动录音也不发送 BLE 事件。
-        // 启动 300ms 按住阈值定时器，超时后确认为长按 → 启动录音 + 发送 button_down。
-        // 若在阈值内释放 → 进入双击检测窗口（不产生任何桌面端浮窗）。
+        // hold_to_talk_instant（wechat 模式）：按下即启动录音 + 发送 button_down，跳过 300ms
+        // hold 阈值，最小化按下到桌面端弹框的延迟。button_up 短按仍进双击窗口（双击发 Enter
+        // 保留），与 hold_to_talk 一致（见 handle_primary_up 的短按双击判定）。
+        if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK_INSTANT &&
+            source == APP_INPUT_SOURCE_PHYSICAL) {
+            // 提前请求 fast conn interval：conn update 异步耗时可达数百毫秒，按下即请求，
+            // 让 button_down notify 在 fast interval(7.5ms) 下发出，避免 slow interval 传输延迟。
+            voice_ble_request_fast_interval();
+            s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+            s_primary_session_id = start_recording();
+            if (s_primary_session_id == 0) {
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                return;
+            }
+            esp_err_t primary_down_err = voice_ble_send_button_down("primary", s_primary_session_id);
+            if (primary_down_err != ESP_OK) {
+                (void)stop_recording();
+                s_primary_session_id = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                apply_app_ui_state("ready", "");
+            }
+            return;
+        }
+
+        // hold_to_talk：启动 300ms 按住阈值定时器，超时后确认为长按 → 启动录音 + 发送
+        // button_down。若在阈值内释放 → 进入双击检测窗口（不产生任何桌面端浮窗）。
+        // 提前请求 fast conn interval：conn update 异步耗时可达数百毫秒，在阈值等待期间
+        // 并行启动，到 button_down 发出时多半已切到 7.5ms，避免 slow interval 传输延迟。
         if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK &&
             source == APP_INPUT_SOURCE_PHYSICAL) {
-            play_prompt_tone(880);
+            voice_ble_request_fast_interval();
             s_hold_threshold_pending = true;
             s_primary_owner = PRIMARY_OWNER_PHYSICAL;
             s_primary_down_us = esp_timer_get_time();
@@ -1109,12 +1120,20 @@ static void apply_app_ui_state(const char *state, const char *text)
 static void apply_interaction_mode(interaction_mode_t mode)
 {
     s_interaction_mode = mode;
-    ui_status_set_idle_hint(mode == INTERACTION_MODE_CLICK_TO_TALK ? "Click to Talk" : "Hold to Talk");
+    const char *hint = "Hold to Talk";
+    const char *name = "hold_to_talk";
+    if (mode == INTERACTION_MODE_CLICK_TO_TALK) {
+        hint = "Click to Talk";
+        name = "click_to_talk";
+    } else if (mode == INTERACTION_MODE_HOLD_TO_TALK_INSTANT) {
+        hint = "Hold to Talk";
+        name = "hold_to_talk_instant";
+    }
+    ui_status_set_idle_hint(hint);
     if (s_app_ui_state == APP_UI_STATE_READY && !s_recording) {
         ui_status_set_idle();
     }
-    ESP_LOGI(TAG, "interaction mode %s",
-             mode == INTERACTION_MODE_CLICK_TO_TALK ? "click_to_talk" : "hold_to_talk");
+    ESP_LOGI(TAG, "interaction mode %s", name);
 }
 
 static void ble_ota_cb(voice_ble_ota_event_t event, uint32_t written, uint32_t size)

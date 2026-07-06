@@ -66,8 +66,6 @@ public:
                                const std::optional<std::string>& device_id) = 0;
     virtual void SendInteractionMode(InteractionMode mode,
                                      const std::optional<std::string>& device_id) = 0;
-    virtual void SendPromptToneEnabled(bool enabled,
-                                       const std::optional<std::string>& device_id) = 0;
     virtual void SendShowImuDebug(bool enabled,
                                   const std::optional<std::string>& device_id) = 0;
     virtual void SendTapEnabled(bool enabled,
@@ -350,6 +348,9 @@ private:
     void RefreshDeviceUiState(const std::string& device_id);
     void SendUiStateForActiveDevice(const std::string& state, const std::string& text = "");
     OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
+    // 返回要下发给固件的交互模式：wechat 模式 + hold_to_talk 时派生为 kHoldToTalkInstant
+    // （按下即录音，跳过 300ms 阈值，降低按下到弹框延迟），其余按用户配置原样下发。
+    InteractionMode InteractionModeToSend() const;
     OverlayThemeColor ThemeColorForDevice(const std::string& device_id) const;
     bool ShouldUseDefiniteSegments(const OutputProfile& profile) const;
     double CurrentRecordingDurationSeconds() const;
