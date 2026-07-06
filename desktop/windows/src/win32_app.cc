@@ -10,8 +10,6 @@
 #include <Shellapi.h>
 #include <winsparkle.h>
 #include <winrt/base.h>
-#include <taskschd.h>
-#include <comdef.h>
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +18,7 @@
 #include <exception>
 #include <initializer_list>
 #include <iterator>
+#include <mutex>
 #include <optional>
 #include <fstream>
 #include <stdexcept>
@@ -1188,82 +1187,67 @@ void Win32App::SyncLaunchAtLogin() {
         LogLine("Portable mode — skipping launch-at-login sync");
         return;
     }
-    // exe 清单要求 requireAdministrator，HKCU\...\Run 启动提权程序会被 UAC 阻挡，
-    // 因此自启改用任务计划程序：登录触发 + RunLevel=Highest（等价管理员），由系统拉起。
-    constexpr wchar_t kTaskName[] = L"VoiceStickAutoStart";
-    try {
-        using namespace winrt;
-        // 主线程已在 main.cc 以 STA 初始化 COM，这里必须用同模型；
-        // 无参 init_apartment() 默认 MTA，与已存在的 STA 冲突会抛 RPC_E_CHANGED_MODE，
-        // 导致任务注册整体失败、登录后不自启。同模型重复 init 只返回 S_FALSE。
-        init_apartment(apartment_type::single_threaded);
-        // 用 COM 任务计划程序 API（taskschd.h）注册/删除任务。
-        com_ptr<ITaskService> service;
-        check_hresult(CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER,
-                                       IID_PPV_ARGS(service.put())));
-        check_hresult(service->Connect(_variant_t(), _variant_t(), _variant_t(), _variant_t()));
-
-        com_ptr<ITaskFolder> root_folder;
-        check_hresult(service->GetFolder(_bstr_t(L"\\"), root_folder.put()));
-
-        if (!config_.launch_at_login) {
-            const HRESULT hr = root_folder->DeleteTask(_bstr_t(kTaskName), 0);
-            if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
-                check_hresult(hr);
-            }
-            LogLine("Launch at login disabled (task deleted)");
-            return;
+    // 清单为 asInvoker 不提权，开机自启用标准 HKCU\...\Run 注册表项即可，无需任务计划程序。
+    // 一次性迁移：删除历史 requireAdministrator 方案遗留的"VoiceStickAutoStart"任务计划程序
+    // 任务，避免它仍以 Highest 权限拉起本 asInvoker exe（导致去管理员后仍弹 UAC）。best-effort，
+    // 失败忽略（任务从未注册过时 schtasks 退出码非 0，属正常情况）。
+    static std::once_flag legacy_task_cleaned;
+    std::call_once(legacy_task_cleaned, [] {
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        std::wstring cmd =
+            L"C:\\Windows\\System32\\schtasks.exe /Delete /TN VoiceStickAutoStart /F";
+        if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 3000);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            LogLine("Legacy autostart scheduled task cleanup attempted");
+        } else {
+            LogLine("Legacy autostart cleanup skipped (schtasks launch failed)");
         }
+    });
+    constexpr const wchar_t* kRunKeyPath =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    constexpr const wchar_t* kRunValueName = L"VoiceStick";
 
-        const auto command = CurrentExecutableCommand();
-        if (command.empty()) {
-            throw std::runtime_error("failed to resolve executable path");
-        }
-
-        com_ptr<ITaskDefinition> definition;
-        check_hresult(service->NewTask(0, definition.put()));
-
-        com_ptr<ITriggerCollection> triggers;
-        check_hresult(definition->get_Triggers(triggers.put()));
-        com_ptr<ITrigger> trigger;
-        check_hresult(triggers->Create(TASK_TRIGGER_LOGON, trigger.put()));
-        com_ptr<ILogonTrigger> logon_trigger;
-        check_hresult(trigger->QueryInterface(IID_PPV_ARGS(logon_trigger.put())));
-
-        com_ptr<IActionCollection> actions;
-        check_hresult(definition->get_Actions(actions.put()));
-        com_ptr<IAction> action;
-        check_hresult(actions->Create(TASK_ACTION_EXEC, action.put()));
-        com_ptr<IExecAction> exec_action;
-        check_hresult(action->QueryInterface(IID_PPV_ARGS(exec_action.put())));
-        // CurrentExecutableCommand 返回带引号的路径，ExecAction 的 Path 不接受引号，
-        // 取去掉外层引号后的纯路径作为可执行文件路径。
-        std::wstring exe_path = command;
-        if (exe_path.size() >= 2 && exe_path.front() == L'"' && exe_path.back() == L'"') {
-            exe_path = exe_path.substr(1, exe_path.size() - 2);
-        }
-        check_hresult(exec_action->put_Path(_bstr_t(exe_path.c_str())));
-
-        com_ptr<ITaskSettings> settings;
-        check_hresult(definition->get_Settings(settings.put()));
-        check_hresult(settings->put_StartWhenAvailable(VARIANT_TRUE));
-
-        com_ptr<IRegistrationInfo> reg_info;
-        check_hresult(definition->get_RegistrationInfo(reg_info.put()));
-        check_hresult(reg_info->put_Author(_bstr_t(L"VoiceStick")));
-
-        com_ptr<IRegisteredTask> registered;
-        check_hresult(root_folder->RegisterTaskDefinition(
-            _bstr_t(kTaskName), definition.get(), TASK_CREATE_OR_UPDATE,
-            _variant_t(), _variant_t(),
-            TASK_LOGON_INTERACTIVE_TOKEN, _variant_t(), registered.put()));
-        LogLine("Launch at login enabled (scheduled task registered)");
-    } catch (const winrt::hresult_error& error) {
-        LogLine("Launch at login sync failed: hr=" +
-                std::to_string(static_cast<std::int32_t>(error.code())) +
-                " msg=" + winrt::to_string(error.message()));
-        throw std::runtime_error("failed to sync launch-at-login scheduled task");
+    const std::wstring command = CurrentExecutableCommand();
+    if (command.empty()) {
+        LogLine("Launch at login sync failed: failed to resolve executable path");
+        throw std::runtime_error("failed to resolve executable path for launch-at-login");
     }
+
+    HKEY key = nullptr;
+    LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, kRunKeyPath, 0,
+                                   KEY_SET_VALUE, &key);
+    if (status != ERROR_SUCCESS) {
+        LogLine("Launch at login sync failed: RegOpenKeyExW hr=" + std::to_string(status));
+        throw std::runtime_error("failed to open HKCU Run key for launch-at-login");
+    }
+
+    if (!config_.launch_at_login) {
+        status = RegDeleteValueW(key, kRunValueName);
+        RegCloseKey(key);
+        if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
+            LogLine("Launch at login sync failed: RegDeleteValueW hr=" + std::to_string(status));
+            throw std::runtime_error("failed to delete launch-at-login run value");
+        }
+        LogLine("Launch at login disabled (run value deleted)");
+        return;
+    }
+
+    status = RegSetValueExW(key, kRunValueName, 0, REG_SZ,
+                            reinterpret_cast<const BYTE*>(command.c_str()),
+                            static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+    if (status != ERROR_SUCCESS) {
+        LogLine("Launch at login sync failed: RegSetValueExW hr=" + std::to_string(status));
+        throw std::runtime_error("failed to set launch-at-login run value");
+    }
+    LogLine("Launch at login enabled (HKCU Run value set)");
 }
 
 void Win32App::SaveInputOptions() {
