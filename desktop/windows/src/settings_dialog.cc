@@ -266,7 +266,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         llm_base_url_edit_ = nullptr;
         llm_api_key_edit_ = nullptr;
         llm_model_edit_ = nullptr;
-        prompt_tone_check_ = nullptr;
         launch_at_login_check_ = nullptr;
         refine_prompt_label_ = nullptr;
         refine_prompt_edit_ = nullptr;
@@ -340,7 +339,6 @@ void SettingsDialog::DestroyControls() {
     llm_base_url_edit_ = nullptr;
     llm_api_key_edit_ = nullptr;
     llm_model_edit_ = nullptr;
-    prompt_tone_check_ = nullptr;
     refine_prompt_label_ = nullptr;
     refine_prompt_edit_ = nullptr;
     debug_audio_check_ = nullptr;
@@ -482,9 +480,6 @@ void SettingsDialog::BuildControls() {
 
     remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
                                Dp(20), instance_));
-    prompt_tone_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsPromptTone, language).c_str(), ctrl_x, y,
-                                               ctrl_w, Dp(22), kIdPromptTone, instance_,
-                                               BS_AUTOCHECKBOX));
     y += row_h + Dp(10);
 
     remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
@@ -656,7 +651,6 @@ void SettingsDialog::LoadConfigIntoControls() {
     }
     UpdateRefinePromptVisibility();
 
-    SendMessageW(prompt_tone_check_, BM_SETCHECK, config_.prompt_tone_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(launch_at_login_check_, BM_SETCHECK, config_.launch_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(show_imu_debug_check_, BM_SETCHECK, config_.show_imu_debug ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -739,7 +733,6 @@ void SettingsDialog::SaveSettings() {
         config_.resource_id = Utf8(resource_buf);
     }
 
-    config_.prompt_tone_enabled = SendMessageW(prompt_tone_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.launch_at_login = SendMessageW(launch_at_login_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.show_imu_debug = SendMessageW(show_imu_debug_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;

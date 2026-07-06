@@ -354,7 +354,6 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
     if (key == "global_hotkey_enabled") config.global_hotkey_enabled = BoolValue(value, config.global_hotkey_enabled);
     if (key == "global_hotkey") config.global_hotkey = value;
-    if (key == "prompt_tone_enabled") config.prompt_tone_enabled = BoolValue(value, config.prompt_tone_enabled);
     if (key == "show_imu_debug") config.show_imu_debug = BoolValue(value, config.show_imu_debug);
     if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
@@ -514,7 +513,6 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
         if (auto value = TomlBool(table, "global_hotkey_enabled")) config.global_hotkey_enabled = *value;
         if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
-        if (auto value = TomlBool(table, "prompt_tone_enabled")) config.prompt_tone_enabled = *value;
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
@@ -605,7 +603,6 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "auto_enter = " << (auto_enter ? "true" : "false") << "\n";
     output << "global_hotkey_enabled = " << (global_hotkey_enabled ? "true" : "false") << "\n";
     output << "global_hotkey = \"" << TomlEscape(global_hotkey) << "\"\n";
-    output << "prompt_tone_enabled = " << (prompt_tone_enabled ? "true" : "false") << "\n";
     output << "show_imu_debug = " << (show_imu_debug ? "true" : "false") << "\n";
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
@@ -759,10 +756,19 @@ AsrProvider AsrProviderFromName(std::string_view name) {
 }
 
 std::string InteractionModeName(InteractionMode mode) {
-    return mode == InteractionMode::kClickToTalk ? "click_to_talk" : "hold_to_talk";
+    switch (mode) {
+    case InteractionMode::kClickToTalk:
+        return "click_to_talk";
+    case InteractionMode::kHoldToTalkInstant:
+        return "hold_to_talk_instant";
+    case InteractionMode::kHoldToTalk:
+    default:
+        return "hold_to_talk";
+    }
 }
 
 InteractionMode InteractionModeFromName(std::string_view name) {
+    // 不解析 hold_to_talk_instant：该值仅运行期派生，配置文件只存用户可见的两值。
     return name == "click_to_talk" ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 }
 

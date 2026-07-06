@@ -69,7 +69,6 @@ public:
     static std::optional<FirmwareOtaStateEvent> ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data);
     static ByteVector UiStatePayload(std::string_view state, std::string_view text);
     static ByteVector InteractionModePayload(std::string_view mode);
-    static ByteVector PromptTonePayload(bool enabled);
     static ByteVector ShowImuDebugPayload(bool enabled);
     static ByteVector ImuWakeSensitivityPayload(int threshold_lsb);
     static ByteVector TapEnabledPayload(bool enabled);

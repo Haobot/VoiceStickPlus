@@ -78,10 +78,6 @@ public:
                              const std::optional<std::string>& device_id) override {
         sent_interaction_modes.push_back(std::pair{mode, device_id});
     }
-    void SendPromptToneEnabled(bool enabled,
-                               const std::optional<std::string>& device_id) override {
-        sent_prompt_tones.push_back(std::pair{enabled, device_id});
-    }
     void SendShowImuDebug(bool enabled,
                           const std::optional<std::string>& device_id) override {
         (void)enabled;
@@ -127,7 +123,6 @@ public:
     std::set<std::string> connected_device_ids;
     std::vector<SentUiState> sent_ui_states;
     std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
-    std::vector<std::pair<bool, std::optional<std::string>>> sent_prompt_tones;
     std::vector<std::optional<std::string>> battery_status_requests;
     std::vector<SentRemoteButton> sent_remote_buttons;
     std::vector<SentImuWakeSensitivity> sent_imu_wake_sensitivities;
@@ -504,11 +499,7 @@ void TestAudioFrameParsing() {
 }
 
 void TestBleControlPayloads() {
-    auto enabled = BleProtocol::PromptTonePayload(true);
-    auto disabled = BleProtocol::PromptTonePayload(false);
     auto battery_request = BleProtocol::BatteryStatusRequestPayload();
-    assert(std::string(enabled.begin(), enabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":true}");
-    assert(std::string(disabled.begin(), disabled.end()) == "{\"event\":\"prompt_tone\",\"enabled\":false}");
     assert(std::string(battery_request.begin(), battery_request.end()) == "{\"event\":\"battery_status_request\"}");
 
     // 敲击灵敏度 1~10 档，桌面端下发数值 level。
@@ -874,32 +865,6 @@ void TestFirmwareManifestParsingAndVersionCompare() {
     assert(IsFirmwareHardwareCompatible("sticks3", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
-}
-
-void TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate() {
-    auto ble = std::make_unique<FakeBleCentral>();
-    auto* ble_ptr = ble.get();
-    auto asr = std::make_unique<FakeAsrClient>();
-    FakeUi ui;
-    FakeInputInjector input;
-    AppConfig config = AppConfig::Defaults();
-    config.prompt_tone_enabled = false;
-    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
-    coordinator.Start();
-
-    ble_ptr->connected_device_ids.insert("5A74");
-    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-
-    assert(!ble_ptr->sent_prompt_tones.empty());
-    assert(ble_ptr->sent_prompt_tones.back().first == false);
-    assert(!ble_ptr->sent_prompt_tones.back().second.has_value());
-
-    AppConfig updated = config;
-    updated.prompt_tone_enabled = true;
-    coordinator.UpdateConfig(updated);
-
-    assert(ble_ptr->sent_prompt_tones.back().first == true);
-    assert(!ble_ptr->sent_prompt_tones.back().second.has_value());
 }
 
 void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
@@ -2546,6 +2511,80 @@ void TestCoordinatorWechatInputMethodRecoversFromStaleActive() {
     assert(fake_renderer->stop_count >= 1);
 }
 
+// wechat 模式 + hold_to_talk 时下发给固件 hold_to_talk_instant（按下即录音跳过 300ms 阈值，
+// 降低按下到弹框延迟）；非 wechat 模式仍下发用户配置的 hold_to_talk。
+void TestCoordinatorWechatModeSendsInstantInteractionMode() {
+    auto ble1 = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr1 = ble1.get();
+    auto asr1 = std::make_unique<FakeAsrClient>();
+    FakeUi ui1;
+    FakeInputInjector input1;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    VoiceStickCoordinator coordinator1(config, std::move(ble1), std::move(asr1), &ui1, &input1);
+    coordinator1.Start();
+    ble_ptr1->connected_device_ids.insert("5A74");
+    ble_ptr1->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    assert(!ble_ptr1->sent_interaction_modes.empty());
+    assert(ble_ptr1->sent_interaction_modes.back().first == InteractionMode::kHoldToTalkInstant);
+
+    // 非 wechat 模式（focused_app）应下发用户配置的 hold_to_talk。
+    auto ble2 = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr2 = ble2.get();
+    auto asr2 = std::make_unique<FakeAsrClient>();
+    FakeUi ui2;
+    FakeInputInjector input2;
+    AppConfig config2 = AppConfig::Defaults();
+    config2.default_output_profile.target = OutputTarget::kFocusedApp;
+    VoiceStickCoordinator coordinator2(config2, std::move(ble2), std::move(asr2), &ui2, &input2);
+    coordinator2.Start();
+    ble_ptr2->connected_device_ids.insert("5A74");
+    ble_ptr2->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    assert(!ble_ptr2->sent_interaction_modes.empty());
+    assert(ble_ptr2->sent_interaction_modes.back().first == InteractionMode::kHoldToTalk);
+}
+
+// StartWechatInputMethodSession 必须先 SendDown 触发微信弹框，再 renderer.Start；
+// renderer.Start 失败时必须补 SendUp，避免热键卡住（系统认为 Ctrl+Win 仍按着）。
+void TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFailure() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(false);  // Start 失败
+            fake_renderer = p.get();
+            return p;
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+
+    // SendDown 已触发（弹框先于 WASAPI Start）；renderer.Start 返回 false 后补 SendUp 回滚。
+    assert(fake_hotkey != nullptr);
+    assert(fake_hotkey->send_down_count == 1);
+    assert(fake_hotkey->send_up_count == 1);
+    assert(fake_renderer != nullptr);
+    assert(fake_renderer->start_count == 1);
+    // 启动失败不应进入录音态（未调 ShowListening）。
+    assert(ui.show_listening_count == 0);
+}
+
 void TestTencentProviderSelection() {
     assert(AsrProviderFromName("voicestick_cloud") == AsrProvider::kVoiceStickCloud);
     assert(AsrProviderFromName("volcengine") == AsrProvider::kVolcengine);
@@ -3379,7 +3418,6 @@ int main() {
     TestAppConfigAirMouseRoundTrip();
     TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();
-    TestCoordinatorSyncsPromptToneOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
@@ -3452,5 +3490,7 @@ int main() {
     TestCoordinatorWechatInputMethodDoubleClickSendsEnter();
     TestCoordinatorWechatInputMethodAudioEndStopsSessionWithoutButtonUp();
     TestCoordinatorWechatInputMethodRecoversFromStaleActive();
+    TestCoordinatorWechatModeSendsInstantInteractionMode();
+    TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFailure();
     return 0;
 }

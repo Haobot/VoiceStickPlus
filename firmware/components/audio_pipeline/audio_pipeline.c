@@ -1,7 +1,6 @@
 #include "audio_pipeline.h"
 
 #include <inttypes.h>
-#include <math.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -27,8 +26,6 @@ static const char *TAG = "audio_pipeline";
 #define AUDIO_CHANNELS 1
 #define AUDIO_FRAME_MS 40
 #define AUDIO_FRAME_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)
-#define TONE_CHUNK_SAMPLES 256
-#define TONE_CHANNELS 2
 #define OPUS_BITRATE 32000
 #define OPUS_MAX_PACKET_SIZE 220
 #define OPUS_COMPLEXITY 1
@@ -553,48 +550,6 @@ esp_err_t audio_pipeline_stop(void)
         .len = 0,
     };
     xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
-    return ESP_OK;
-}
-
-esp_err_t audio_pipeline_play_tone(uint32_t frequency_hz, uint32_t duration_ms, uint8_t volume_percent)
-{
-    ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
-    const bool use_existing_session = atomic_load(&s_running) && s_codec != NULL;
-    if (!use_existing_session) {
-        ESP_RETURN_ON_ERROR(wait_for_tasks_to_exit(pdMS_TO_TICKS(TASK_EXIT_WAIT_MS)),
-                            TAG, "wait previous session exit before tone");
-        ESP_RETURN_ON_ERROR(init_i2s(), TAG, "tone i2s init");
-        esp_err_t err = init_codec();
-        if (err != ESP_OK) {
-            deinit_i2s();
-            return err;
-        }
-    }
-
-    esp_codec_dev_set_out_vol(s_codec, volume_percent);
-    const uint32_t total_samples = (AUDIO_SAMPLE_RATE * duration_ms) / 1000;
-    int16_t samples[TONE_CHUNK_SAMPLES * TONE_CHANNELS];
-    uint32_t generated = 0;
-    while (generated < total_samples) {
-        uint32_t chunk = total_samples - generated;
-        if (chunk > TONE_CHUNK_SAMPLES) chunk = TONE_CHUNK_SAMPLES;
-        for (uint32_t i = 0; i < chunk; ++i) {
-            const float phase = 2.0f * 3.14159265358979323846f *
-                                (float)frequency_hz * (float)(generated + i) /
-                                (float)AUDIO_SAMPLE_RATE;
-            const int16_t sample = (int16_t)(sinf(phase) * 12000.0f);
-            samples[i * 2] = sample;
-            samples[i * 2 + 1] = sample;
-        }
-        esp_err_t err = esp_codec_dev_write(s_codec, samples, chunk * TONE_CHANNELS * sizeof(samples[0]));
-        if (err != ESP_OK) {
-            if (!use_existing_session) deinit_session_resources();
-            return err;
-        }
-        generated += chunk;
-    }
-
-    if (!use_existing_session) deinit_session_resources();
     return ESP_OK;
 }
 

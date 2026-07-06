@@ -76,8 +76,7 @@ void VoiceStickCoordinator::Start() {
         CancelActiveCycleIfDeviceDisconnected();
         RefreshFirmwareAvailability();
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
-        ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
-        ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
+        ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
         ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
         ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
         ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
@@ -167,8 +166,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     live_air_mouse_params_ = AirMouseParamsFromConfig();  // config_ 变化，运行期 live 参数跟随
     translator_ = LLMTranslationClient(config_);
     refiner_ = LLMRefinementClient(config_);
-    ble_->SendInteractionMode(config_.interaction_mode, std::nullopt);
-    ble_->SendPromptToneEnabled(config_.prompt_tone_enabled, std::nullopt);
+    ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
     ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
     ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
     ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
@@ -508,17 +506,20 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
                          ? wechat_hotkey_factory_(config_.wechat_input_method.hotkey)
                          : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.hotkey);
 
-    if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
-        ui_->ShowError("Virtual microphone not found: " +
-                           config_.wechat_input_method.virtual_mic_playback_name,
-                       device_id, {});
-        StopWechatInputMethodSession();
+    // 先发热键触发微信输入法弹框，再启动 WASAPI 渲染：WASAPI Start 同步耗时几十毫秒
+    // （CoInitializeEx + 设备枚举 + InitializeStream + 起线程），若在 SendDown 之前执行会把
+    // 弹框时刻推迟几十毫秒。音频晚几十毫秒到达虚拟麦不影响识别（微信面板有缓冲）。
+    if (!wechat_hotkey_->IsValid() || !wechat_hotkey_->SendDown()) {
+        ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
         return false;
     }
 
-    if (!wechat_hotkey_->IsValid() || !wechat_hotkey_->SendDown()) {
-        ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
-        StopWechatInputMethodSession();
+    if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
+        // 渲染启动失败必须补 SendUp，否则热键卡住（系统认为 Ctrl+Win 仍按着）。
+        wechat_hotkey_->SendUp();
+        ui_->ShowError("Virtual microphone not found: " +
+                           config_.wechat_input_method.virtual_mic_playback_name,
+                       device_id, {});
         return false;
     }
 
@@ -1938,6 +1939,17 @@ void VoiceStickCoordinator::SendUiStateForActiveDevice(const std::string& state,
 
 OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<std::string>& device_id) const {
     return config_.OutputProfileForDevice(device_id);
+}
+
+InteractionMode VoiceStickCoordinator::InteractionModeToSend() const {
+    // wechat 模式 + hold_to_talk：下发给固件 hold_to_talk_instant，按下即录音跳过 300ms 阈值，
+    // 降低按下到微信弹框的延迟。桌面端 config_.interaction_mode 仍是 kHoldToTalk，
+    // 所有 == kHoldToTalk / == kClickToTalk 判断不受影响。
+    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod &&
+        config_.interaction_mode == InteractionMode::kHoldToTalk) {
+        return InteractionMode::kHoldToTalkInstant;
+    }
+    return config_.interaction_mode;
 }
 
 OverlayThemeColor VoiceStickCoordinator::ThemeColorForDevice(const std::string& device_id) const {
