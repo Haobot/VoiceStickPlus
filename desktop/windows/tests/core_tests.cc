@@ -2445,6 +2445,107 @@ void TestCoordinatorWechatInputMethodHandlesEmptyEndFrame() {
     std::filesystem::remove_all(debug_dir);
 }
 
+// wechat 模式主键双击必须注入 Enter（与 focused_app 一致），不能被 wechat 分支吞掉。
+void TestCoordinatorWechatInputMethodDoubleClickSendsEnter() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 长按录音后松开（正常结束），微信文字已进输入框。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+    // 双击应注入 Enter 发送。
+    ble_ptr->on_state_event("5A74", DoubleClickEvent("primary"));
+    assert(input.send_enter_called);
+}
+
+// button_up 走 BLE notify 无 ACK，闪断会丢；audio_end 帧到达时必须自愈结束整个会话，
+// 否则 wechat_active 残留、renderer 不停、热键不松，下次长按被吞（"完全无反应"）。
+void TestCoordinatorWechatInputMethodAudioEndStopsSessionWithoutButtonUp() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1));
+    // 只发 audio_end，不发 button_up（模拟 button_up 丢失）。
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(7, 2));
+    assert(fake_renderer->stop_count >= 1);
+    assert(!ble_ptr->sent_ui_states.empty());
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+}
+
+// 上次会话 button_up/audio_end 都丢致 wechat_active 残留时，新 button_down 必须先 Stop
+// 旧会话再 Start 新的，否则被 392 行 return 吞掉，用户长按完全无反应。
+// 安全前提：固件 hold_to_talk 录音中再按主键不发新 button_down，故收到 button_down 时
+// wechat_active=true 必为残留。
+void TestCoordinatorWechatInputMethodRecoversFromStaleActive() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    assert(fake_renderer->start_count == 1);
+    // 模拟残留：直接发第二个 button_down（新 session 8），无 button_up。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 8));
+    assert(fake_renderer->start_count == 2);
+    assert(fake_renderer->stop_count >= 1);
+}
+
 void TestTencentProviderSelection() {
     assert(AsrProviderFromName("voicestick_cloud") == AsrProvider::kVoiceStickCloud);
     assert(AsrProviderFromName("volcengine") == AsrProvider::kVolcengine);
@@ -3348,5 +3449,8 @@ int main() {
     TestCoordinatorWechatInputMethodWritesDebugAudio();
     TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect();
     TestCoordinatorWechatInputMethodHandlesEmptyEndFrame();
+    TestCoordinatorWechatInputMethodDoubleClickSendsEnter();
+    TestCoordinatorWechatInputMethodAudioEndStopsSessionWithoutButtonUp();
+    TestCoordinatorWechatInputMethodRecoversFromStaleActive();
     return 0;
 }

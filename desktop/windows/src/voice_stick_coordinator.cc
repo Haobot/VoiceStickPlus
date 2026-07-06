@@ -389,9 +389,12 @@ void VoiceStickCoordinator::HandleButtonUp(const StateEvent& event, const std::s
 
 void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
     std::optional<std::uint32_t> session_id, const std::string& device_id) {
+    // wechat_active 残留（上次 button_up/audio_end 都丢）时先停旧会话再 Start 新的，
+    // 否则用户长按完全无反应。安全前提：固件 hold_to_talk 录音中再按主键走 hold_threshold
+    // 分支 return（不发新 button_down），click_to_talk 录音中再按发的是 button_click，
+    // 故收到 button_down 时若 wechat_active=true 必为残留，可安全 Stop + 重启。
     if (IsWechatInputMethodActive()) {
-        RefreshDeviceUiState(device_id);
-        return;
+        StopWechatInputMethodSession();
     }
     if (!session_id.has_value() || *session_id == 0) {
         ble_->SendUiState("ready", "", device_id);
@@ -421,46 +424,60 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonUp(
 
 void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
     const AudioFrame& frame, const std::string& device_id) {
-    std::lock_guard lock(audio_mutex_);
-    if (!active_session_id_.has_value() || frame.session_id != *active_session_id_ ||
-        active_device_id_ != device_id) {
-        return;
-    }
-    if (frame.IsEnd() && frame.payload.empty()) {
-        // 空 payload + IsEnd：固件用此表示音频流结束（与主路径一致），
-        // 需收尾调试音频并结束会话，不能由下面的空 payload 早退跳过。
-        wechat_audio_end_received_ = true;
-        debug_audio_recorder_.Finish();
-        active_session_id_.reset();
-        return;
-    }
-    if (frame.payload.empty()) return;
-
-    // 先封装 Ogg Opus 并写入调试音频缓存（不依赖解码器，确保解码失败也落盘）。
-    auto ogg_chunk = ogg_muxer_.Append(frame.payload, frame.IsEnd());
-    debug_audio_recorder_.Append(ogg_chunk);
-
-    constexpr std::size_t kPcmCapacity = 1920;  // 120 ms @ 16 kHz mono。
-    int16_t pcm[kPcmCapacity];
-    const auto result = wechat_decoder_->Decode(frame.payload.data(), frame.payload.size(), pcm,
-                                                kPcmCapacity);
-    if (result.opus_error != 0 || result.decoded_samples <= 0) {
-        LogCoordinatorLine("wechat decode failed dev=VS-" + device_id +
-                           " error=" + std::to_string(result.opus_error));
-        if (frame.IsEnd()) {
+    // audio_end 到达即结束整个会话（停 renderer、松热键、清 wechat_active），覆盖 button_up
+    // 走 BLE notify 无 ACK 在闪断时丢失、状态残留致下次长按被吞。锁内只做最小收尾并标记，
+    // 释放锁后调 StopWechatInputMethodSession（它内部也获取 audio_mutex_，故必须先释放）。
+    bool end_of_stream = false;
+    {
+        std::lock_guard lock(audio_mutex_);
+        if (!active_session_id_.has_value() || frame.session_id != *active_session_id_ ||
+            active_device_id_ != device_id) {
+            return;
+        }
+        if (frame.IsEnd() && frame.payload.empty()) {
+            // 空 payload + IsEnd：固件用此表示音频流结束（与主路径一致），
+            // 需收尾调试音频并结束会话，不能由下面的空 payload 早退跳过。
             wechat_audio_end_received_ = true;
             debug_audio_recorder_.Finish();
             active_session_id_.reset();
+            end_of_stream = true;
+        } else if (!frame.payload.empty()) {
+            // 先封装 Ogg Opus 并写入调试音频缓存（不依赖解码器，确保解码失败也落盘）。
+            auto ogg_chunk = ogg_muxer_.Append(frame.payload, frame.IsEnd());
+            debug_audio_recorder_.Append(ogg_chunk);
+
+            constexpr std::size_t kPcmCapacity = 1920;  // 120 ms @ 16 kHz mono。
+            int16_t pcm[kPcmCapacity];
+            const auto result = wechat_decoder_->Decode(frame.payload.data(), frame.payload.size(), pcm,
+                                                        kPcmCapacity);
+            if (result.opus_error != 0 || result.decoded_samples <= 0) {
+                LogCoordinatorLine("wechat decode failed dev=VS-" + device_id +
+                                   " error=" + std::to_string(result.opus_error));
+                if (frame.IsEnd()) {
+                    wechat_audio_end_received_ = true;
+                    debug_audio_recorder_.Finish();
+                    active_session_id_.reset();
+                    end_of_stream = true;
+                }
+            } else {
+                wechat_ring_buffer_->Write(pcm, result.decoded_samples);
+
+                if (frame.IsEnd()) {
+                    wechat_audio_end_received_ = true;
+                    debug_audio_recorder_.Finish();
+                    active_session_id_.reset();
+                    end_of_stream = true;
+                }
+            }
         }
-        return;
     }
 
-    wechat_ring_buffer_->Write(pcm, result.decoded_samples);
-
-    if (frame.IsEnd()) {
-        wechat_audio_end_received_ = true;
-        debug_audio_recorder_.Finish();
-        active_session_id_.reset();
+    if (end_of_stream) {
+        // button_up 先到则 wechat_active 已 false，StopWechatInputMethodSession 的收尾幂等无害；
+        // audio_end 先到则此处 Stop 后 button_up 再到时 IsWechatInputMethodActive()=false 早退，
+        // 不重复 Stop / 不重复 SendUp。
+        StopWechatInputMethodSession();
+        EnterReady("wechat_audio_end");
     }
 }
 
@@ -647,18 +664,12 @@ void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, con
     }
     if (event.button != "primary") return;
 
-    // 主键双击：wechat_input_method 模式下取消当前录音。
-    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
-        if (IsWechatInputMethodActive()) {
-            StopWechatInputMethodSession();
-            EnterReady("double_click_cancel_wechat");
-        }
-        return;
-    }
-
     LogCoordinatorLine("double-click detected on VS-" + device_id + ", sending Enter");
-    // 如果当前有活跃录音，取消它。
-    {
+    // 如果当前有活跃录音，取消它。wechat 模式走专用停止路径（发 hotkey.SendUp，让微信输入法
+    // 把已识别文字送入输入框），主路径走 ASR 取消。随后统一注入 Enter 发送输入框文字。
+    if (IsWechatInputMethodActive()) {
+        StopWechatInputMethodSession();
+    } else {
         std::lock_guard lock(audio_mutex_);
         if (active_session_id_.has_value() && active_device_id_ == device_id) {
             CancelAudioEndTimeout();
