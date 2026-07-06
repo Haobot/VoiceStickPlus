@@ -335,6 +335,37 @@ static void audio_task(void *arg)
         }
     }
 
+    /* Drain：松开按键时 I2S DMA 缓冲区（4 描述符×120 帧 ≈ 60ms）里仍有残留尾音 PCM，
+     * 若不读出编码发出，用户说完话立即松开会丢最后 1-2 字（instant 模式下尤为明显）。
+     * 这里固定读 2 帧（80ms，覆盖 60ms 残留+余量）编码入队，让 tx_task 的 drain 一并发完。 */
+    for (int drain = 0; drain < 2; ++drain) {
+        esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "drain codec read failed: %s", esp_err_to_name(err));
+            break;
+        }
+        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
+            mono[i] = stereo[i * 2];
+        }
+        opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
+                                         opus_buf, sizeof(opus_buf));
+        if (encoded < 0) {
+            ESP_LOGE(TAG, "drain opus encode failed: %d", (int)encoded);
+            break;
+        }
+        audio_packet_t pkt = {
+            .session_id = s_session_id,
+            .seq = s_seq,
+            .flags = 0x00,
+            .len = (uint16_t)encoded,
+        };
+        memcpy(pkt.data, opus_buf, encoded);
+        if (xQueueSend(s_tx_queue, &pkt, 0) == pdTRUE) {
+            s_seq++;
+            enqueued++;
+        }
+    }
+
     ESP_LOGI(TAG, "audio task exit: enqueued=%" PRIu32 " overflow_drops=%" PRIu32
              " stack_hwm=%u",
              enqueued, dropped, (unsigned)uxTaskGetStackHighWaterMark(NULL));
@@ -550,6 +581,13 @@ esp_err_t audio_pipeline_stop(void)
         .len = 0,
     };
     xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
+
+    /* 同步等 audio_task + tx_task 退出：audio_task 先 drain I2S DMA 残留尾音编码入队，
+     * tx_task 再把队列排空（含 drain 帧）发往 BLE 并发 audio_end，最后 deinit codec/i2s。
+     * 必须等两者退出后再返回，否则 stop_recording 后续发送的 button_up 会先于 drain 帧/
+     * audio_end 到达桌面端，桌面端收到 button_up 即停止虚拟麦克风渲染，尾音被丢弃
+     * （用户说完立即松开会丢最后 1-2 字）。超时兜底 TASK_EXIT_WAIT_MS，避免极端积压卡死。 */
+    (void)wait_for_tasks_to_exit(pdMS_TO_TICKS(TASK_EXIT_WAIT_MS));
     return ESP_OK;
 }
 
