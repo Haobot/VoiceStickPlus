@@ -251,6 +251,7 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，�
 - Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。
 - 搜索仓库时请排除 `website/node_modules/` 和 `firmware/build/` 以免噪声过多。
 - 修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
+- 修改根目录 `README.md` 时，必须同步更新 `README.zh-CN.md`。
 - 修改 `VERSION` 时，必须同步更新 `firmware/version.txt`。
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
 - 设计方案文档统一放在 `Doc/Plan/`（大写 P），不再使用 `Doc/Rfc/`。
