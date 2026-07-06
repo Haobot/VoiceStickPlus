@@ -8,12 +8,35 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "virtual_mic_renderer.h"
+#include "wasapi_render_sink.h"
 
 namespace voicestick {
 
 class PcmRingBuffer;
+
+// 可单测的渲染迭代逻辑，不含线程/COM 生命周期。持有 sink + ring buffer 引用，
+// PumpOnce 执行一次"读 padding→算可提交→GetBuffer→ring 读不足补静音→ReleaseBuffer"。
+// WasapiVirtualMicRenderer 渲染线程事件唤醒后调用，从而把提交速率与 WASAPI 实际
+// 消费解耦 sleep 周期，消除稳态 underrun。
+class RenderPump {
+ public:
+  RenderPump(WasapiRenderSink* sink, PcmRingBuffer* source, int channels);
+  ~RenderPump();
+  RenderPump(const RenderPump&) = delete;
+  RenderPump& operator=(const RenderPump&) = delete;
+
+  // 执行一次渲染迭代。返回本次提交到 WASAPI 的帧数；0 表示 buffer 已满或读取失败。
+  UINT32 PumpOnce();
+
+ private:
+  WasapiRenderSink* sink_;
+  PcmRingBuffer* source_;
+  int samples_per_frame_;
+  std::vector<int16_t> read_buffer_;
+};
 
 // WASAPI 渲染器：将 PcmRingBuffer 中的 16-bit PCM 持续写入指定的播放设备。
 // 典型使用场景：写入 VB-CABLE / Virtual Audio Cable 的 Playback 端，
@@ -22,6 +45,9 @@ class WasapiVirtualMicRenderer : public IVirtualMicRenderer {
  public:
   // Options 复用基类 IVirtualMicRenderer::Options。
   explicit WasapiVirtualMicRenderer(const Options& options);
+  // 测试注入：用自定义 sink（如 FakeWasapiRenderSink）替换真实 COM 实现。
+  WasapiVirtualMicRenderer(const Options& options,
+                           std::unique_ptr<WasapiRenderSink> sink);
   ~WasapiVirtualMicRenderer() override;
 
   WasapiVirtualMicRenderer(const WasapiVirtualMicRenderer&) = delete;
