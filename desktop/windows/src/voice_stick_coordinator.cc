@@ -492,6 +492,9 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         options.sample_rate = 16000;
         options.channels = 1;
         options.bits_per_sample = 16;
+        // 事件驱动渲染下 WASAPI buffer 即端到端音频缓冲。50ms 兼顾抗抖动与低延迟；
+        // 过大会增加按下到虚拟麦出声的延迟，过小在设备消费瞬时停顿时会触发 underrun。
+        options.buffer_duration_ms = 50;
         options.device_name_substring =
             std::wstring(config_.wechat_input_method.virtual_mic_playback_name.begin(),
                          config_.wechat_input_method.virtual_mic_playback_name.end());

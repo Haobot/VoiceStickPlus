@@ -14,6 +14,7 @@
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
 #include "voice_stick_coordinator.h"
+#include "wasapi_render_sink.h"
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
 
@@ -311,6 +312,48 @@ public:
     int stop_count = 0;
     bool running_ = false;
     bool start_result_;
+};
+
+// 测试用 WASAPI 渲染端：解耦真实 COM，记录提交量与样本供断言。
+// NotifyEvent 返回真实 auto-reset event，使 Stop 唤醒测试可验证。
+class FakeWasapiRenderSink : public WasapiRenderSink {
+public:
+    explicit FakeWasapiRenderSink(UINT32 buffer_frames = 800, int channels = 1)
+        : buffer_frames_(buffer_frames), samples_per_frame_(channels) {
+        event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
+    ~FakeWasapiRenderSink() override {
+        if (event_) CloseHandle(event_);
+    }
+
+    bool OpenAndInitialize(const IVirtualMicRenderer::Options&) override { ++open_call_count; return open_result_; }
+    UINT32 BufferFrameCount() const override { return buffer_frames_; }
+    bool CurrentPadding(UINT32* out) override { *out = padding_; return true; }
+    bool GetBuffer(UINT32 frames, BYTE** out) override {
+        scratch_.assign(static_cast<std::size_t>(frames) * samples_per_frame_, 0);
+        *out = reinterpret_cast<BYTE*>(scratch_.data());
+        return true;
+    }
+    void ReleaseBuffer(UINT32 frames) override {
+        submitted_frame_counts.push_back(frames);
+        submitted_samples.emplace_back(scratch_);
+    }
+    void Start() override {}
+    void Stop() override {}
+    HANDLE NotifyEvent() override { return event_; }
+
+    // 测试可读写状态。
+    UINT32 padding_ = 0;
+    bool open_result_ = true;
+    int open_call_count = 0;
+    std::vector<UINT32> submitted_frame_counts;
+    std::vector<std::vector<int16_t>> submitted_samples;
+
+private:
+    UINT32 buffer_frames_;
+    int samples_per_frame_;
+    HANDLE event_ = nullptr;
+    std::vector<int16_t> scratch_;
 };
 
 // 测试用微信输入法热键：解耦 SendInput，SendDown/SendUp 恒成功。
@@ -2208,6 +2251,96 @@ void TestWasapiRendererFailsOnMissingDevice() {
     assert(renderer.ActiveDeviceName().empty());
 }
 
+void TestRenderPumpSubmitsFullAvailableNoCap() {
+    // padding=0 → available=buffer_frame_count。事件驱动渲染去掉 frames_per_period 上限，
+    // 应一次性提交全部可用空间（旧实现被 10ms=160 帧上限锁死，提交速率 < 消费速率致
+    // WASAPI 稳态 underrun，输出被静音切断 → 微信输入法识别卡顿）。
+    FakeWasapiRenderSink sink(/*buffer_frames=*/800, /*channels=*/1);
+    PcmRingBuffer ring(2048);
+    std::vector<int16_t> samples(800);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = static_cast<int16_t>(100 + i);
+    }
+    ring.Write(samples.data(), samples.size());
+
+    RenderPump pump(&sink, &ring, /*channels=*/1);
+    const UINT32 submitted = pump.PumpOnce();
+
+    assert(submitted == 800);
+    assert(sink.submitted_frame_counts.size() == 1);
+    assert(sink.submitted_frame_counts[0] == 800);
+    assert(sink.submitted_samples[0] == samples);
+}
+
+void TestRenderPumpFillsSilenceWhenRingEmpty() {
+    // ring buffer 数据不足时用静音填满提交量，避免 WASAPI 播放残留旧数据或 pop 噪声。
+    FakeWasapiRenderSink sink(800, 1);
+    PcmRingBuffer ring(2048);  // 默认空。
+    RenderPump pump(&sink, &ring, 1);
+
+    const UINT32 submitted = pump.PumpOnce();
+
+    assert(submitted == 800);
+    assert(sink.submitted_samples.size() == 1);
+    assert(sink.submitted_samples[0].size() == 800);
+    for (int16_t s : sink.submitted_samples[0]) {
+        assert(s == 0);
+    }
+}
+
+void TestRenderPumpZeroWhenBufferFull() {
+    // buffer 已满（padding == buffer_frame_count）→ 无可提交空间 → 返回 0 且不调 GetBuffer。
+    FakeWasapiRenderSink sink(800, 1);
+    sink.padding_ = 800;
+    PcmRingBuffer ring(2048);
+    std::vector<int16_t> samples(800, 1234);
+    ring.Write(samples.data(), samples.size());
+    RenderPump pump(&sink, &ring, 1);
+
+    const UINT32 submitted = pump.PumpOnce();
+
+    assert(submitted == 0);
+    assert(sink.submitted_frame_counts.empty());
+}
+
+void TestWasapiRendererStopsCleanlyWakingBlockedThread() {
+    // 事件驱动渲染线程阻塞于 WaitForSingleObject(NotifyEvent, INFINITE)。Stop 必须
+    // SetEvent 唤醒并 join，否则死等。注入 FakeWasapiRenderSink（事件真实但不会自动
+    // 触发），渲染线程将一直阻塞，验证 Stop 能唤醒线程退出（若未唤醒则 ctest
+    // --timeout 会杀掉本测试判失败）。
+    auto sink_owner = std::make_unique<FakeWasapiRenderSink>(800, 1);
+    PcmRingBuffer ring(2048);
+    WasapiVirtualMicRenderer renderer({}, std::move(sink_owner));
+
+    assert(renderer.Start(&ring));
+    assert(renderer.IsRunning());
+    // 让渲染线程进入 WaitForSingleObject 阻塞。
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    renderer.Stop();
+    assert(!renderer.IsRunning());
+}
+
+void TestWasapiRendererRestartsAfterStop() {
+    // coordinator 的 wechat_renderer_ 在 session 间复用：Start→Stop→Start 必须可用。
+    // 旧实现 Stop 里 sink_.reset() 销毁 sink，第二次 Start 调 sink_->OpenAndInitialize
+    // 解引用 nullptr → 0xc0000005 访问违例（真机 session 2 崩溃，WER 02:02:55）。
+    auto sink_owner = std::make_unique<FakeWasapiRenderSink>(800, 1);
+    auto* sink = sink_owner.get();
+    PcmRingBuffer ring(2048);
+    WasapiVirtualMicRenderer renderer({}, std::move(sink_owner));
+
+    assert(renderer.Start(&ring));
+    assert(sink->open_call_count == 1);
+    renderer.Stop();
+
+    // 第二次 Start：sink 必须仍可用（Stop 不应销毁 sink）。
+    assert(renderer.Start(&ring));
+    assert(renderer.IsRunning());
+    assert(sink->open_call_count == 2);
+    renderer.Stop();
+}
+
 } // namespace
 
 void TestOutputTargetWechatInputMethod() {
@@ -3480,6 +3613,11 @@ int main() {
     TestPcmRingBufferClear();
     TestPcmRingBufferWrapAround();
     TestWasapiRendererFailsOnMissingDevice();
+    TestRenderPumpSubmitsFullAvailableNoCap();
+    TestRenderPumpFillsSilenceWhenRingEmpty();
+    TestRenderPumpZeroWhenBufferFull();
+    TestWasapiRendererStopsCleanlyWakingBlockedThread();
+    TestWasapiRendererRestartsAfterStop();
     TestOutputTargetWechatInputMethod();
     TestWechatInputMethodConfigRoundTrip();
     TestWechatInputMethodHotkeyParsing();
