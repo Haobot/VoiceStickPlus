@@ -1,0 +1,91 @@
+# VoiceStick 配置模板（占位脱敏）。
+#
+# 本文件随 MSI 安装到 Program Files\VoiceStick\，仅作结构参考与构建占位。
+# 程序首次启动时，若 %APPDATA%\VoiceStick\config.toml 不存在，会复制本文件过去；
+# 已存在则不覆盖，保护用户改动。
+#
+# 实际分发含密钥的配置时，不要直接改本文件提交。构建 MSI 前设置环境变量：
+#   set VOICESTICK_CONFIG_TEMPLATE=%APPDATA%\VoiceStick\config.toml
+#   scripts\build-msi.bat
+# build-msi.bat 会用该环境变量指向的真实配置覆盖本模板，密钥不进仓库。
+
+# ---- ASR 服务商：voicestick_cloud | volcengine | tencent ----
+asr_provider = "voicestick_cloud"
+
+# VoiceStick Cloud（默认 ASR + 可选 LLM 精修）
+voicestick_api_key = ""
+voicestick_cloud_url = ""
+
+# 火山引擎 ASR（volcengine 模式）
+volcengine_api_key = ""
+
+# 腾讯云 ASR（tencent 模式）
+tencent_secret_id = ""
+tencent_secret_key = ""
+tencent_appid = ""
+tencent_engine_model_type = "16k_zh"
+tencent_hotword_id = ""
+
+# ---- LLM 翻译/精修（OpenAI 兼容）----
+llm_base_url = ""
+llm_api_key = ""
+llm_model = ""
+refine_enabled = true
+refine_prompt = ""
+
+# ---- 交互与界面 ----
+# 交互模式：hold_to_talk | click_to_talk
+interaction_mode = "hold_to_talk"
+# UI 语言：system | en | zh-Hans
+ui_language = "system"
+resource_id = ""
+# 热词列表（逗号分隔）
+asr_hotwords = ""
+# 已配对设备 ID 列表（逗号分隔，如 5A74,3F21）
+paired_device_ids = ""
+
+# ---- 文本输出 ----
+# 输出目标：focused_app | subtitle | wechat_input_method
+output_target = "focused_app"
+# 文本变换：original | translate
+text_transform = "original"
+# 翻译目标语言（如 en、ja），留空不翻译
+translation_target = ""
+
+# 全局热键
+global_hotkey_enabled = true
+global_hotkey = "ctrl+win"
+# 识别完成后自动回车
+auto_enter = true
+# 开机自启
+launch_at_login = false
+
+# ---- IMU / 体感鼠标 ----
+show_imu_debug = false
+# 唤醒灵敏度：low | medium | high
+imu_wake_sensitivity = "medium"
+tap_to_arrow = false
+# 敲击灵敏度 1~10
+tap_sensitivity = 5
+air_mouse_sensitivity_x = 50
+air_mouse_sensitivity_y = 50
+air_mouse_invert_y = false
+# 体感鼠标控制模式：rate | angle
+air_mouse_control_mode = "rate"
+air_mouse_neutral_deadzone = 3.0
+air_mouse_rate_gain = 80.0
+air_mouse_rate_friction = 0.05
+air_mouse_rate_max_speed = 4000.0
+
+# ---- 调试 ----
+debug_audio_cache = false
+debug_audio_dir = ""
+
+# ---- 微信输入法模式（output_target = wechat_input_method 时生效）----
+[wechat_input_method]
+# 触发微信输入法语音的快捷键
+hotkey = "ctrl+win"
+# 虚拟麦克风渲染端名称（如 CABLE Input）
+virtual_mic_playback_name = ""
+# 自动切换默认录音设备到虚拟麦克风
+auto_switch_default_recording_device = false

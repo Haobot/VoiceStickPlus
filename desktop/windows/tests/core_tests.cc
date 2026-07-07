@@ -1,4 +1,5 @@
 #include "air_mouse_kin.h"
+#include "app_config.h"
 #include "asr_client_tencent.h"
 #include "asr_protocol.h"
 #include "audio_opus_decoder.h"
@@ -3508,6 +3509,67 @@ void TestAppConfigAirMouseRoundTrip() {
     assert(std::fabs(AirMouseRateMaxSpeedClamp(9000.0) - 4000.0) < 1e-9);
 }
 
+void TestConfigTemplateSeeding() {
+    const auto base = std::filesystem::temp_directory_path() / "voicestick_template_seed_test";
+    std::filesystem::remove_all(base);
+    std::filesystem::create_directories(base);
+
+    auto write_file = [](const std::filesystem::path& path, const std::string& content) {
+        std::ofstream out(path, std::ios::binary);
+        out << content;
+    };
+    auto read_file = [](const std::filesystem::path& path) -> std::string {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+
+    // 场景1：目标不存在 + 模板存在 → 复制，返回 true，内容一致。
+    {
+        const auto tmpl = base / "template1.toml";
+        const auto target = base / "dir1" / "config.toml";
+        write_file(tmpl, "asr_provider = \"voicestick_cloud\"\n");
+        assert(!std::filesystem::exists(target));
+        const bool copied = AppConfig::SeedConfigFromTemplate(tmpl, target);
+        assert(copied == true);
+        assert(std::filesystem::exists(target));
+        assert(read_file(target) == "asr_provider = \"voicestick_cloud\"\n");
+    }
+
+    // 场景2：目标已存在 → 不覆盖，返回 false，原内容保留。
+    {
+        const auto tmpl = base / "template2.toml";
+        const auto target = base / "dir2" / "config.toml";
+        std::filesystem::create_directories(target.parent_path());
+        write_file(target, "existing\n");
+        write_file(tmpl, "new\n");
+        const bool copied = AppConfig::SeedConfigFromTemplate(tmpl, target);
+        assert(copied == false);
+        assert(read_file(target) == "existing\n");
+    }
+
+    // 场景3：模板不存在 → 跳过，返回 false，不创建目标。
+    {
+        const auto tmpl = base / "missing_template.toml";
+        const auto target = base / "dir3" / "config.toml";
+        const bool copied = AppConfig::SeedConfigFromTemplate(tmpl, target);
+        assert(copied == false);
+        assert(!std::filesystem::exists(target));
+    }
+
+    // 场景4：目标父目录多层不存在 → 自动创建后复制，返回 true。
+    {
+        const auto tmpl = base / "template4.toml";
+        const auto target = base / "deep" / "nested" / "config.toml";
+        write_file(tmpl, "llm_model = \"gpt\"\n");
+        const bool copied = AppConfig::SeedConfigFromTemplate(tmpl, target);
+        assert(copied == true);
+        assert(std::filesystem::exists(target));
+        assert(read_file(target) == "llm_model = \"gpt\"\n");
+    }
+
+    std::filesystem::remove_all(base);
+}
+
 int main() {
     TestDeviceIds();
     TestPairDeviceHelpers();
@@ -3549,6 +3611,7 @@ int main() {
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();
     TestAppConfigAirMouseRoundTrip();
+    TestConfigTemplateSeeding();
     TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();

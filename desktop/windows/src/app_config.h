@@ -189,6 +189,10 @@ struct AppConfig {
     static bool IsPortableMode();
     static std::filesystem::path ConfigDirectory();
     static std::filesystem::path ConfigPath();
+    // 首启种子配置：若 target 不存在且 template 存在，则复制 template 到 target。
+    // 返回是否执行了复制。target 已存在不覆盖；template 不存在或复制失败均返回 false，不抛异常。
+    static bool SeedConfigFromTemplate(const std::filesystem::path& template_path,
+                                       const std::filesystem::path& target_path);
     static std::filesystem::path DefaultDebugAudioDirectory();
     static AppConfig Defaults();
     static AppConfig Load();
