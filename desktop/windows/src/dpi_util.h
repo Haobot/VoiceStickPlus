@@ -82,4 +82,21 @@ inline HFONT CreateUiFont(UINT dpi) {
     return reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 }
 
+// 与 CreateUiFont 同源，仅把字重置为 FW_BOLD，用于分组标题等强调文本。
+inline HFONT CreateUiFontBold(UINT dpi) {
+    NONCLIENTMETRICSW metrics{};
+    metrics.cbSize = sizeof(metrics);
+    if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi)) {
+        LOGFONTW lf = metrics.lfMessageFont;
+        lf.lfWeight = FW_BOLD;
+        return CreateFontIndirectW(&lf);
+    }
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0)) {
+        LOGFONTW lf = metrics.lfMessageFont;
+        lf.lfWeight = FW_BOLD;
+        return CreateFontIndirectW(&lf);
+    }
+    return reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+}
+
 } // namespace voicestick

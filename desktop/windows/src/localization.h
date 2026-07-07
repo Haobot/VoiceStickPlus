@@ -59,6 +59,12 @@ enum class StringId {
     kSettingsTrialFailedMessage,
     kSettingsSaved,
     kSettingsSaveFailed,
+    kSettingsSectionGeneral,
+    kSettingsSectionAsr,
+    kSettingsSectionRefine,
+    kSettingsSectionOutput,
+    kSettingsSectionDevice,
+    kSettingsSectionSystem,
 
     // 托盘菜单
     kMenuPairDevice,

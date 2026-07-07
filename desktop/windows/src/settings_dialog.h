@@ -38,6 +38,29 @@ private:
     void ChooseDebugDirectory();
     bool IsLabelControl(HWND control) const;
     int Dp(int px) const;
+    // 按声明式布局表重新定位所有控件并按可见行数动态调整窗口高度。
+    void Relayout();
+    // 按客户区高度调整窗口尺寸（顶部固定，底部伸缩）。
+    void ResizeWindow(int client_h);
+    // 行内条件：apply_trial_button 显隐 + api_key_edit 宽度，在 Relayout 末尾调用。
+    void ApplyApiKeyLayout();
+
+    // 布局模型：把每行/块抽象为可独立显隐的条目，Relayout 统一应用定位。
+    struct LayoutPart {
+        HWND control;
+        int x;
+        int y_off;  // 相对行基线 y 的偏移
+        int w;
+        int h;
+        // true=仅参与定位，显隐交给外部（如 apply_trial_button 行内条件按钮），
+        // 避免 Relayout 在可见行上 ShowWindow(SW_SHOW) 覆盖外部隐藏。
+        bool defer_visibility = false;
+    };
+    struct LayoutEntry {
+        int advance;                         // 该项可见时推进的 y（Dp 换算后）
+        std::vector<LayoutPart> parts;       // 该项的控件
+        std::function<bool()> visible;       // 空 = 始终可见
+    };
 
     HINSTANCE instance_;
     HWND parent_;
@@ -75,13 +98,19 @@ private:
     HWND wechat_virtual_mic_label_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
+    HWND save_button_ = nullptr;
+    HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
+    HFONT title_font_ = nullptr;
+    int scroll_pos_ = 0;  // 垂直滚动位置（像素，Dp 换算后）
     std::vector<BYTE> dialog_template_;
     std::vector<HWND> all_controls_;
     std::vector<HWND> label_controls_;
+    std::vector<HWND> title_controls_;
+    std::vector<LayoutEntry> layout_;
 
     static constexpr int kClientWidth = 640;
-    static constexpr int kClientHeight = 1160;
+    static constexpr int kClientHeight = 1240;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
