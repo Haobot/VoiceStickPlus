@@ -61,6 +61,11 @@ public:
     void CancelPendingConnect(const std::string& device_id) override;
     void Shutdown() override;
 
+    // 系统休眠/恢复或蓝牙无线电状态变化后调用：BluetoothLEAdvertisementWatcher
+    // 会静默失效（仍报告 Started 却不再投递广告包），必须彻底重建扫描与所有
+    // 会话才能恢复。
+    void RestartForResume();
+
 private:
     struct DeviceSession {
         std::uint64_t bluetooth_address = 0;

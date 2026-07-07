@@ -820,6 +820,26 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             coordinator_->AirMouseTick();
             return 0;
         }
+        if (w_param == kResumeRestartTimerId) {
+            KillTimer(hwnd_, kResumeRestartTimerId);
+            LogLine("resume timer fired: restarting BLE after power resume");
+            if (ble_central_) ble_central_->RestartForResume();
+            return 0;
+        }
+        break;
+    case WM_POWERBROADCAST:
+        // 休眠/睡眠恢复后 BluetoothLEAdvertisementWatcher 会静默失效：仍报告
+        // Started 却不再投递广告包。延迟 1.5s 等蓝牙无线电就绪后彻底重启扫描
+        // 与会话。SetTimer 对同一 id 重复设置会重置计时器，自动去抖连续事件；
+        // 非 resume 类电源事件放行给 DefWindowProcW。
+        if (w_param == PBT_APMRESUMEAUTOMATIC ||
+            w_param == PBT_APMRESUMESUSPEND ||
+            w_param == PBT_APMRESUMECRITICAL) {
+            LogLine(std::string("power broadcast: resume event=") +
+                    std::to_string(w_param) + "; scheduling BLE restart");
+            SetTimer(hwnd_, kResumeRestartTimerId, kResumeRestartDelayMs, nullptr);
+            return TRUE;
+        }
         break;
     case WM_DESTROY:
         pair_device_dialog_.reset();
