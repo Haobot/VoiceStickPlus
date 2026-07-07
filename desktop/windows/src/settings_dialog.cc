@@ -131,6 +131,18 @@ HWND CreateTrackbar(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE 
                            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
 }
 
+// 分组标题：左对齐静态文本，由调用方记入 title_controls_ 套用加粗字体。
+HWND CreateSectionTitle(HWND parent, const wchar_t* text, int x, int y, int w, int h, HINSTANCE inst) {
+    return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
+                           x, y, w, h, parent, nullptr, inst, nullptr);
+}
+
+// 组间水平分隔线：SS_ETCHEDHORZ 自绘背景，不应被 WM_CTLCOLORSTATIC 设为透明。
+HWND CreateSeparator(HWND parent, int x, int y, int w, int h, HINSTANCE inst) {
+    return CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
+                           x, y, w, h, parent, nullptr, inst, nullptr);
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config)
@@ -141,6 +153,10 @@ SettingsDialog::~SettingsDialog() {
     if (ui_font_) {
         DeleteObject(ui_font_);
         ui_font_ = nullptr;
+    }
+    if (title_font_) {
+        DeleteObject(title_font_);
+        title_font_ = nullptr;
     }
 }
 
@@ -232,6 +248,52 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             UpdateAirMouseSensitivityYLabel();
         }
         return TRUE;
+    case WM_VSCROLL: {
+        // 垂直滚动条/滚轮：更新 scroll_pos 后重定位所有控件。
+        SCROLLINFO si{};
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_ALL;
+        GetScrollInfo(hwnd_, SB_VERT, &si);
+        const int prev = si.nPos;
+        switch (LOWORD(w_param)) {
+            case SB_LINEUP:         si.nPos -= Dp(20); break;
+            case SB_LINEDOWN:       si.nPos += Dp(20); break;
+            case SB_PAGEUP:         si.nPos -= static_cast<int>(si.nPage); break;
+            case SB_PAGEDOWN:       si.nPos += static_cast<int>(si.nPage); break;
+            case SB_THUMBTRACK:
+            case SB_THUMBPOSITION:  si.nPos = si.nTrackPos; break;
+            case SB_TOP:            si.nPos = si.nMin; break;
+            case SB_BOTTOM:         si.nPos = si.nMax; break;
+        }
+        si.fMask = SIF_POS;
+        SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
+        GetScrollInfo(hwnd_, SB_VERT, &si);
+        if (si.nPos != prev) {
+            scroll_pos_ = si.nPos;
+            Relayout();
+        }
+        return TRUE;
+    }
+    case WM_MOUSEWHEEL: {
+        // 滚轮：delta 转像素，正值=向前滚=内容上移=scroll_pos 减少。
+        const int delta = GET_WHEEL_DELTA_WPARAM(w_param);
+        UINT wheel_lines = 3;
+        SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheel_lines, 0);
+        const int dy = (delta * static_cast<int>(wheel_lines) * Dp(38)) / WHEEL_DELTA;
+        SCROLLINFO si{};
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_POS;
+        GetScrollInfo(hwnd_, SB_VERT, &si);
+        const int prev = si.nPos;
+        si.nPos -= dy;
+        SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
+        GetScrollInfo(hwnd_, SB_VERT, &si);
+        if (si.nPos != prev) {
+            scroll_pos_ = si.nPos;
+            Relayout();
+        }
+        return TRUE;
+    }
     case WM_CLOSE:
         EndDialog(hwnd_, IDCANCEL);
         return TRUE;
@@ -282,6 +344,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         wechat_virtual_mic_label_ = nullptr;
         all_controls_.clear();
         label_controls_.clear();
+        title_controls_.clear();
+        layout_.clear();
         return TRUE;
     default:
         break;
@@ -294,7 +358,7 @@ LPCDLGTEMPLATE SettingsDialog::BuildDialogTemplate() {
     AlignDialogData(&dialog_template_, 4);
 
     DLGTEMPLATE dialog_template{};
-    dialog_template.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT;
+    dialog_template.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT | WS_VSCROLL;
     dialog_template.dwExtendedStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
     dialog_template.cdit = 0;
     dialog_template.x = 0;
@@ -313,6 +377,8 @@ LPCDLGTEMPLATE SettingsDialog::BuildDialogTemplate() {
 
 void SettingsDialog::RebuildUi() {
     DestroyControls();
+    // 重新创建控件时滚动位置归零，从顶部开始。
+    scroll_pos_ = 0;
 
     const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_STYLE));
     const DWORD ex_style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_EXSTYLE));
@@ -331,6 +397,8 @@ void SettingsDialog::DestroyControls() {
     }
     all_controls_.clear();
     label_controls_.clear();
+    title_controls_.clear();
+    layout_.clear();
     provider_combo_ = nullptr;
     api_key_edit_ = nullptr;
     apply_trial_button_ = nullptr;
@@ -358,9 +426,15 @@ void SettingsDialog::DestroyControls() {
     wechat_hotkey_label_ = nullptr;
     wechat_virtual_mic_edit_ = nullptr;
     wechat_virtual_mic_label_ = nullptr;
+    save_button_ = nullptr;
+    cancel_button_ = nullptr;
     if (ui_font_) {
         DeleteObject(ui_font_);
         ui_font_ = nullptr;
+    }
+    if (title_font_) {
+        DeleteObject(title_font_);
+        title_font_ = nullptr;
     }
 }
 
@@ -372,7 +446,9 @@ void SettingsDialog::BuildControls() {
     InitCommonControlsEx(&icc);
 
     ui_font_ = CreateUiFont(dpi_);
+    title_font_ = CreateUiFontBold(dpi_);
     const HFONT font = ui_font_;
+    const HFONT title_font = title_font_;
 
     auto remember = [&](HWND control) {
         if (control) all_controls_.push_back(control);
@@ -382,12 +458,18 @@ void SettingsDialog::BuildControls() {
         if (control) label_controls_.push_back(control);
         return remember(control);
     };
+    // 分组标题同时记入 title_controls_，在字体应用阶段套用加粗字体。
+    auto remember_title = [&](HWND control) {
+        if (control) title_controls_.push_back(control);
+        return remember_label(control);
+    };
 
     const int label_w = Dp(110);
     const int ctrl_x = Dp(130);
     const int ctrl_w = Dp(kClientWidth - 170);
     const int row_h = Dp(28);
-    int y = Dp(20);
+    const int title_h = Dp(20);
+    const int sep_h = Dp(2);
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
     SetWindowTextW(hwnd_, TrW(StringId::kSettingsTitle, language).c_str());
 
@@ -395,220 +477,463 @@ void SettingsDialog::BuildControls() {
         return TrW(id, language) + L":";
     };
 
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLanguage).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    language_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(140),
-                                           kIdLanguageCombo, instance_));
-    SendMessageW(language_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageSystem, language).c_str()));
-    SendMessageW(language_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageEnglish, language).c_str()));
-    SendMessageW(language_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageChineseSimplified, language).c_str()));
-    y += row_h + Dp(10);
+    // 注册一个布局条目（一行或一个多行块），含可见性谓词（空=始终可见）。
+    auto add = [&](int advance, std::vector<LayoutPart> parts,
+                   std::function<bool()> vis = std::function<bool()>()) {
+        layout_.push_back({advance, std::move(parts), std::move(vis)});
+    };
+    // 分组标题：左对齐加粗文本，宽度与“标签+控件”区域对齐。
+    auto section_title = [&](StringId id) {
+        HWND t = remember_title(CreateSectionTitle(hwnd_, TrW(id, language).c_str(),
+                                                    0, 0, ctrl_x + ctrl_w - Dp(10), title_h, instance_));
+        add(title_h + Dp(4), {{t, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), title_h}});
+    };
+    // 组间分隔线：宽度同标题，推进为线高 + 下方间距。
+    auto separator = [&]() {
+        HWND s = remember(CreateSeparator(hwnd_, 0, 0, ctrl_x + ctrl_w - Dp(10), sep_h, instance_));
+        add(sep_h + Dp(12), {{s, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), sep_h}});
+    };
 
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsProvider).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    provider_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(200),
-                                           kIdProviderCombo, instance_));
-    SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
-    SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
-    SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
-    y += row_h + Dp(10);
-
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    const int apply_btn_w = Dp(102);
-    api_key_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - apply_btn_w - Dp(8), Dp(24),
-                                        kIdApiKeyEdit, instance_, ES_PASSWORD));
-    apply_trial_button_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsApplyTrial, language).c_str(),
-                                                ctrl_x + ctrl_w - apply_btn_w, y,
-                                                apply_btn_w, Dp(24),
-                                                kIdApplyTrialApiKey, instance_));
-    y += row_h + Dp(10);
-
-    resource_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsResourceId).c_str(), Dp(10),
-                                                 y + Dp(3), label_w, Dp(20), instance_));
-    resource_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(200),
-                                           kIdResourceCombo, instance_));
-    for (const auto& id : AppConfig::SupportedResourceIds()) {
-        SendMessageW(resource_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(Utf16(id).c_str()));
+    // ===== 通用 =====
+    section_title(StringId::kSettingsSectionGeneral);
+    {
+        HWND lang_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLanguage).c_str(),
+                                                     0, 0, label_w, Dp(20), instance_));
+        language_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(140),
+                                                kIdLanguageCombo, instance_));
+        SendMessageW(language_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageSystem, language).c_str()));
+        SendMessageW(language_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageEnglish, language).c_str()));
+        SendMessageW(language_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsLanguageChineseSimplified, language).c_str()));
+        add(row_h + Dp(10), {
+            {lang_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {language_combo_, ctrl_x, 0, ctrl_w, Dp(140)},
+        });
     }
-    y += row_h + Dp(16);
+    separator();
 
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsHotwords).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    hotwords_edit_ = remember(CreateMultilineEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(74),
-                                                  kIdHotwordsEdit, instance_));
-    y += Dp(80);
-    remember_label(CreateLeftLabel(hwnd_, TrW(StringId::kSettingsHotwordsHint, language).c_str(),
-                                   ctrl_x, y, ctrl_w, Dp(16), instance_));
-    y += Dp(26);
+    // ===== 语音识别 =====
+    section_title(StringId::kSettingsSectionAsr);
+    {
+        HWND prov_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsProvider).c_str(),
+                                                     0, 0, label_w, Dp(20), instance_));
+        provider_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
+                                               kIdProviderCombo, instance_));
+        SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
+        SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
+        SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
+        add(row_h + Dp(10), {
+            {prov_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {provider_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
+        });
+    }
+    {
+        HWND api_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(),
+                                                    0, 0, label_w, Dp(20), instance_));
+        const int apply_btn_w = Dp(102);
+        // api_key_edit 宽度先按占满注册，实际宽度由 ApplyApiKeyLayout 在 Relayout 末尾按
+        // apply_trial_button 显隐动态调整。
+        api_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                            kIdApiKeyEdit, instance_, ES_PASSWORD));
+        apply_trial_button_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsApplyTrial, language).c_str(),
+                                                    0, 0, apply_btn_w, Dp(24),
+                                                    kIdApplyTrialApiKey, instance_));
+        add(row_h + Dp(10), {
+            {api_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+            // apply_trial_button 行内条件：defer_visibility 让显隐交给 ApplyApiKeyLayout。
+            {apply_trial_button_, ctrl_x + ctrl_w - apply_btn_w, 0, apply_btn_w, Dp(24), true},
+        });
+    }
+    {
+        // 资源 ID 行：仅 Volcengine 显示，隐藏时不占位。
+        resource_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsResourceId).c_str(),
+                                                     0, 0, label_w, Dp(20), instance_));
+        resource_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
+                                               kIdResourceCombo, instance_));
+        for (const auto& id : AppConfig::SupportedResourceIds()) {
+            SendMessageW(resource_combo_, CB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(Utf16(id).c_str()));
+        }
+        add(row_h + Dp(10), {
+            {resource_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {resource_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
+        }, [this]() {
+            int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
+            return idx == 1;  // Volcengine
+        });
+    }
+    {
+        // 热词块：label + 多行 edit + 提示行，作为一个整体推进。
+        HWND hot_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsHotwords).c_str(),
+                                                    0, 0, label_w, Dp(20), instance_));
+        hotwords_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(74),
+                                                      kIdHotwordsEdit, instance_));
+        HWND hot_hint = remember_label(CreateLeftLabel(hwnd_, TrW(StringId::kSettingsHotwordsHint, language).c_str(),
+                                                       0, 0, ctrl_w, Dp(16), instance_));
+        add(Dp(80) + Dp(26), {
+            {hot_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {hotwords_edit_, ctrl_x, 0, ctrl_w, Dp(74)},
+            {hot_hint, ctrl_x, Dp(80), ctrl_w, Dp(16)},
+        });
+    }
+    separator();
 
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmBaseUrl).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    llm_base_url_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
-                                             kIdLlmBaseUrlEdit, instance_));
-    y += row_h + Dp(10);
-
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmApiKey).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    llm_api_key_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
-                                            kIdLlmApiKeyEdit, instance_, ES_PASSWORD));
-    y += row_h + Dp(10);
-
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmModel).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    llm_model_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
-                                          kIdLlmModelEdit, instance_));
-    y += row_h + Dp(10);
-
-    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    refine_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsRefineText, language).c_str(), ctrl_x, y,
-                                          ctrl_w, Dp(22), kIdRefineText, instance_,
-                                          BS_AUTOCHECKBOX));
-    y += row_h + Dp(16);
-
-    refine_prompt_label_ = remember_label(CreateLabel(hwnd_,
-        label_text(StringId::kSettingsRefinePrompt).c_str(),
-        Dp(10), y + Dp(3), label_w, Dp(20), instance_));
-    refine_prompt_edit_ = remember(CreateMultilineEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(64),
-                                                        kIdRefinePromptEdit, instance_));
-    y += Dp(70);
-
-    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    y += row_h + Dp(10);
-
-    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    launch_at_login_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsLaunchAtLogin, language).c_str(), ctrl_x, y,
-                                                   ctrl_w, Dp(22), kIdLaunchAtLogin, instance_,
-                                                   BS_AUTOCHECKBOX));
-    y += row_h + Dp(10);
-
-    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(), ctrl_x, y,
-                                               ctrl_w, Dp(22), kIdDebugAudio, instance_,
+    // ===== 文本精修 =====
+    section_title(StringId::kSettingsSectionRefine);
+    {
+        HWND bu_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmBaseUrl).c_str(),
+                                                   0, 0, label_w, Dp(20), instance_));
+        llm_base_url_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                                 kIdLlmBaseUrlEdit, instance_));
+        add(row_h + Dp(10), {
+            {bu_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {llm_base_url_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        });
+    }
+    {
+        HWND lak_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmApiKey).c_str(),
+                                                    0, 0, label_w, Dp(20), instance_));
+        llm_api_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                                kIdLlmApiKeyEdit, instance_, ES_PASSWORD));
+        add(row_h + Dp(10), {
+            {lak_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {llm_api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        });
+    }
+    {
+        HWND lm_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmModel).c_str(),
+                                                   0, 0, label_w, Dp(20), instance_));
+        llm_model_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                              kIdLlmModelEdit, instance_));
+        add(row_h + Dp(10), {
+            {lm_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {llm_model_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        });
+    }
+    {
+        HWND refine_lbl = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        refine_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsRefineText, language).c_str(),
+                                               0, 0, ctrl_w, Dp(22), kIdRefineText, instance_,
                                                BS_AUTOCHECKBOX));
-    y += row_h + Dp(10);
+        add(row_h + Dp(10), {
+            {refine_lbl, Dp(10), Dp(3), label_w, Dp(20)},
+            {refine_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        // 精修提示词块：仅 refine_check 勾选时显示，隐藏时不占位。
+        refine_prompt_label_ = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsRefinePrompt).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        refine_prompt_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(64),
+                                                           kIdRefinePromptEdit, instance_));
+        add(Dp(70), {
+            {refine_prompt_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {refine_prompt_edit_, ctrl_x, 0, ctrl_w, Dp(64)},
+        }, [this]() {
+            return SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        });
+    }
+    separator();
 
-    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    show_imu_debug_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsShowImuDebug, language).c_str(), ctrl_x, y,
-                                                  ctrl_w, Dp(22), kIdShowImuDebug, instance_,
-                                                  BS_AUTOCHECKBOX));
-    y += row_h + Dp(10);
+    // ===== 输出 =====
+    section_title(StringId::kSettingsSectionOutput);
+    {
+        // 输出目标：当前应用 / 字幕 / 微信输入法。
+        HWND ot_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsOutputTarget).c_str(),
+                                                   0, 0, label_w, Dp(20), instance_));
+        output_target_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
+                                                    kIdOutputTarget, instance_));
+        SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetFocusedApp, language).c_str()));
+        SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetSubtitle, language).c_str()));
+        SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetWechatInputMethod, language).c_str()));
+        add(row_h + Dp(10), {
+            {ot_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {output_target_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
+        });
+    }
+    {
+        // 微信输入法：语音热键（与微信输入法设置中保持一致，如 ctrl+win）。
+        // 仅输出目标=微信输入法时显示，隐藏时不占位。
+        wechat_hotkey_label_ = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsWechatHotkey).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        wechat_hotkey_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                                  kIdWechatHotkey, instance_));
+        add(row_h + Dp(10), {
+            {wechat_hotkey_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {wechat_hotkey_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        }, [this]() {
+            int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
+            return idx == 2;  // 微信输入法
+        });
+    }
+    {
+        // 微信输入法：虚拟麦克风播放端名称（如 CABLE Input）。
+        wechat_virtual_mic_label_ = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsWechatVirtualMic).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        wechat_virtual_mic_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                                       kIdWechatVirtualMic, instance_));
+        add(row_h + Dp(10), {
+            {wechat_virtual_mic_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {wechat_virtual_mic_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        }, [this]() {
+            int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
+            return idx == 2;  // 微信输入法
+        });
+    }
+    separator();
 
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsImuWakeSensitivity).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    imu_wake_sensitivity_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(120),
-                                                       kIdImuWakeSensitivity, instance_));
-    SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityLow, language).c_str()));
-    SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityMedium, language).c_str()));
-    SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityHigh, language).c_str()));
-    y += row_h + Dp(10);
+    // ===== 设备交互 =====
+    section_title(StringId::kSettingsSectionDevice);
+    {
+        HWND iw_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsImuWakeSensitivity).c_str(),
+                                                   0, 0, label_w, Dp(20), instance_));
+        imu_wake_sensitivity_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(120),
+                                                           kIdImuWakeSensitivity, instance_));
+        SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityLow, language).c_str()));
+        SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityMedium, language).c_str()));
+        SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityHigh, language).c_str()));
+        add(row_h + Dp(10), {
+            {iw_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {imu_wake_sensitivity_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
+        });
+    }
+    {
+        HWND tta_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        tap_to_arrow_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsTapToArrow, language).c_str(),
+                                                     0, 0, ctrl_w, Dp(22), kIdTapToArrow, instance_,
+                                                     BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {tta_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {tap_to_arrow_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        // 敲击灵敏度 1~10 档滑块：1=最不灵敏（需大力敲），10=最灵敏（轻触即发）。
+        HWND ts_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsTapSensitivity).c_str(),
+                                                    0, 0, label_w, Dp(20), instance_));
+        tap_sensitivity_trackbar_ = remember(CreateTrackbar(hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28),
+                                                            kIdTapSensitivity, instance_));
+        SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
+        SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
+        SendMessageW(tap_sensitivity_trackbar_, TBM_SETTICFREQ, 1, 0);
+        SendMessageW(tap_sensitivity_trackbar_, TBM_SETPAGESIZE, 0, 1);
+        // 右侧静态文本实时显示当前档位数值。
+        tap_sensitivity_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
+        add(row_h + Dp(10), {
+            {ts_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {tap_sensitivity_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
+            {tap_sensitivity_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
+        });
+    }
+    {
+        // 体感鼠标左右灵敏度 1~10 档滑块（yaw）。
+        HWND ax_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsAirMouseSensitivityX).c_str(),
+                                                   0, 0, label_w, Dp(20), instance_));
+        air_mouse_sensitivity_x_trackbar_ = remember(CreateTrackbar(hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28),
+                                                                    kIdAirMouseSensitivityX, instance_));
+        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
+        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
+        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETTICFREQ, 1, 0);
+        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETPAGESIZE, 0, 1);
+        air_mouse_sensitivity_x_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
+        add(row_h + Dp(10), {
+            {ax_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {air_mouse_sensitivity_x_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
+            {air_mouse_sensitivity_x_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
+        });
+    }
+    {
+        // 体感鼠标上下灵敏度 1~10 档滑块（pitch）。
+        HWND ay_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsAirMouseSensitivityY).c_str(),
+                                                   0, 0, label_w, Dp(20), instance_));
+        air_mouse_sensitivity_y_trackbar_ = remember(CreateTrackbar(hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28),
+                                                                    kIdAirMouseSensitivityY, instance_));
+        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
+        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
+        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETTICFREQ, 1, 0);
+        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETPAGESIZE, 0, 1);
+        air_mouse_sensitivity_y_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
+        add(row_h + Dp(10), {
+            {ay_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {air_mouse_sensitivity_y_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
+            {air_mouse_sensitivity_y_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
+        });
+    }
+    separator();
 
-    remember_label(CreateLabel(hwnd_, L"", Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    tap_to_arrow_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsTapToArrow, language).c_str(), ctrl_x, y,
-                                                  ctrl_w, Dp(22), kIdTapToArrow, instance_,
-                                                  BS_AUTOCHECKBOX));
-    y += row_h + Dp(10);
-
-    // 敲击灵敏度 1~10 档滑块：1=最不灵敏（需大力敲），10=最灵敏（轻触即发）。
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsTapSensitivity).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    tap_sensitivity_trackbar_ = remember(CreateTrackbar(hwnd_, ctrl_x, y, ctrl_w - Dp(50), Dp(28),
-                                                        kIdTapSensitivity, instance_));
-    SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
-    SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
-    SendMessageW(tap_sensitivity_trackbar_, TBM_SETTICFREQ, 1, 0);
-    SendMessageW(tap_sensitivity_trackbar_, TBM_SETPAGESIZE, 0, 1);
-    // 右侧静态文本实时显示当前档位数值。
-    tap_sensitivity_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", ctrl_x + ctrl_w - Dp(40), y + Dp(5), Dp(30),
-                                                            Dp(20), instance_));
-    y += row_h + Dp(10);
-
-    // 体感鼠标左右灵敏度 1~10 档滑块（yaw）。
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsAirMouseSensitivityX).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    air_mouse_sensitivity_x_trackbar_ = remember(CreateTrackbar(hwnd_, ctrl_x, y, ctrl_w - Dp(50), Dp(28),
-                                                                  kIdAirMouseSensitivityX, instance_));
-    SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
-    SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
-    SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETTICFREQ, 1, 0);
-    SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETPAGESIZE, 0, 1);
-    air_mouse_sensitivity_x_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", ctrl_x + ctrl_w - Dp(40), y + Dp(5), Dp(30),
-                                                                     Dp(20), instance_));
-    y += row_h + Dp(10);
-
-    // 体感鼠标上下灵敏度 1~10 档滑块（pitch）。
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsAirMouseSensitivityY).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    air_mouse_sensitivity_y_trackbar_ = remember(CreateTrackbar(hwnd_, ctrl_x, y, ctrl_w - Dp(50), Dp(28),
-                                                                  kIdAirMouseSensitivityY, instance_));
-    SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
-    SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
-    SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETTICFREQ, 1, 0);
-    SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETPAGESIZE, 0, 1);
-    air_mouse_sensitivity_y_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", ctrl_x + ctrl_w - Dp(40), y + Dp(5), Dp(30),
-                                                                     Dp(20), instance_));
-    y += row_h + Dp(10);
-
-    // 输出目标：当前应用 / 字幕 / 微信输入法。
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsOutputTarget).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    output_target_combo_ = remember(CreateCombo(hwnd_, ctrl_x, y, ctrl_w, Dp(200),
-                                                 kIdOutputTarget, instance_));
-    SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetFocusedApp, language).c_str()));
-    SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetSubtitle, language).c_str()));
-    SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetWechatInputMethod, language).c_str()));
-    y += row_h + Dp(10);
-
-    // 微信输入法：语音热键（与微信输入法设置中保持一致，如 ctrl+win）。
-    wechat_hotkey_label_ = remember_label(CreateLabel(hwnd_,
-        label_text(StringId::kSettingsWechatHotkey).c_str(),
-        Dp(10), y + Dp(3), label_w, Dp(20), instance_));
-    wechat_hotkey_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
-                                              kIdWechatHotkey, instance_));
-    y += row_h + Dp(10);
-
-    // 微信输入法：虚拟麦克风播放端名称（如 CABLE Input）。
-    wechat_virtual_mic_label_ = remember_label(CreateLabel(hwnd_,
-        label_text(StringId::kSettingsWechatVirtualMic).c_str(),
-        Dp(10), y + Dp(3), label_w, Dp(20), instance_));
-    wechat_virtual_mic_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w, Dp(24),
-                                                   kIdWechatVirtualMic, instance_));
-    y += row_h + Dp(10);
-
-    remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(), Dp(10), y + Dp(3), label_w,
-                               Dp(20), instance_));
-    debug_dir_edit_ = remember(CreateEdit(hwnd_, ctrl_x, y, ctrl_w - Dp(80),
-                                          Dp(24), kIdDebugDirEdit, instance_, ES_READONLY));
-    remember(CreateButton(hwnd_, TrW(StringId::kSettingsChooseDir, language).c_str(), ctrl_x + ctrl_w - Dp(75), y,
-                          Dp(75), Dp(24), kIdChooseDir, instance_));
-    y += row_h + Dp(20);
+    // ===== 系统 =====
+    section_title(StringId::kSettingsSectionSystem);
+    {
+        HWND lal_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        launch_at_login_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsLaunchAtLogin, language).c_str(),
+                                                       0, 0, ctrl_w, Dp(22), kIdLaunchAtLogin, instance_,
+                                                       BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {lal_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {launch_at_login_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        HWND da_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(),
+                                                   0, 0, ctrl_w, Dp(22), kIdDebugAudio, instance_,
+                                                   BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {da_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {debug_audio_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        HWND sid_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        show_imu_debug_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsShowImuDebug, language).c_str(),
+                                                      0, 0, ctrl_w, Dp(22), kIdShowImuDebug, instance_,
+                                                      BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {sid_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {show_imu_debug_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        HWND dd_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(),
+                                                    0, 0, label_w, Dp(20), instance_));
+        debug_dir_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w - Dp(80),
+                                             Dp(24), kIdDebugDirEdit, instance_, ES_READONLY));
+        HWND choose_btn = remember(CreateButton(hwnd_, TrW(StringId::kSettingsChooseDir, language).c_str(),
+                                                0, 0, Dp(75), Dp(24), kIdChooseDir, instance_));
+        add(row_h + Dp(20), {
+            {dd_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {debug_dir_edit_, ctrl_x, 0, ctrl_w - Dp(80), Dp(24)},
+            {choose_btn, ctrl_x + ctrl_w - Dp(75), 0, Dp(75), Dp(24)},
+        });
+    }
 
     const int btn_w = Dp(80);
     const int btn_h = Dp(30);
-    remember(CreateButton(hwnd_, TrW(StringId::kSave, language).c_str(), Dp(kClientWidth - 200), y, btn_w, btn_h,
-                          kIdSave, instance_));
-    remember(CreateButton(hwnd_, TrW(StringId::kCancel, language).c_str(), Dp(kClientWidth - 105), y, btn_w, btn_h,
-                          kIdCancel, instance_));
+    save_button_ = remember(CreateButton(hwnd_, TrW(StringId::kSave, language).c_str(),
+                                         0, 0, btn_w, btn_h, kIdSave, instance_));
+    cancel_button_ = remember(CreateButton(hwnd_, TrW(StringId::kCancel, language).c_str(),
+                                           0, 0, btn_w, btn_h, kIdCancel, instance_));
 
     for (HWND control : all_controls_) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
+    // 分组标题套用加粗字体，覆盖上面的普通字体设置。
+    for (HWND control : title_controls_) {
+        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(title_font), TRUE);
+    }
+    // 按声明式布局表应用定位并按可见行数动态调整窗口高度。
+    Relayout();
+}
+
+void SettingsDialog::Relayout() {
+    if (!hwnd_) return;
+
+    // 1. 累加可见条目得到逻辑内容高度（不含按钮区）。
+    int content_h = Dp(20);  // 顶部起始
+    for (const auto& entry : layout_) {
+        if (!entry.visible || entry.visible()) content_h += entry.advance;
+    }
+
+    // 2. 按钮区高度（顶部间距 + 按钮 + 底部间距）。
+    const int btn_h = Dp(30);
+    const int btn_area = Dp(20) + btn_h + Dp(20);  // Dp(70)
+
+    // 3. 窗口高度上限 = 屏幕工作区高度 - 边距；自然高度 = 内容 + 按钮区。
+    RECT work = GetWorkAreaForWindow(hwnd_);
+    const int max_visible = (work.bottom - work.top) - Dp(40);
+    const int natural_h = content_h + btn_area;
+    const int client_h = std::min(natural_h, max_visible);
+
+    // 4. 内容可视高度 = 客户区 - 按钮区；滚动范围。
+    const int content_area_h = client_h - btn_area;
+    const int scroll_range = std::max(0, content_h - content_area_h);
+    scroll_pos_ = std::clamp(scroll_pos_, 0, scroll_range);
+
+    // 5. 设置滚动条：nPage>=nMax+1 时滚动条自动禁用，SIF_DISABLENOSCROLL 保持占位。
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+    si.nMin = 0;
+    si.nMax = content_h - 1;
+    si.nPage = static_cast<UINT>(content_area_h);
+    si.nPos = scroll_pos_;
+    SetScrollInfo(hwnd_, SB_VERT, &si, TRUE);
+
+    // 6. 窗口高度。
+    ResizeWindow(client_h);
+
+    // 7. 内容控件按滚动偏移定位。
+    int y = Dp(20) - scroll_pos_;
+    for (const auto& entry : layout_) {
+        const bool vis = !entry.visible || entry.visible();
+        for (const auto& p : entry.parts) {
+            if (!p.control) continue;
+            if (vis) {
+                SetWindowPos(p.control, nullptr, p.x, y + p.y_off, p.w, p.h,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+                if (!p.defer_visibility) ShowWindow(p.control, SW_SHOW);
+            } else if (!p.defer_visibility) {
+                ShowWindow(p.control, SW_HIDE);
+            }
+        }
+        if (vis) y += entry.advance;
+    }
+
+    // 8. 按钮钉底：y = client_h - btn_h - Dp(20)。
+    //    不超高时 client_h=natural_h，代入得 y=content_h+Dp(20)（紧跟内容下方）；
+    //    超高时钉在窗口底部。两种情况统一。
+    const int btn_w = Dp(80);
+    const int btn_y = client_h - btn_h - Dp(20);
+    if (save_button_) {
+        SetWindowPos(save_button_, nullptr, Dp(kClientWidth - 200), btn_y, btn_w, btn_h,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        ShowWindow(save_button_, SW_SHOW);
+    }
+    if (cancel_button_) {
+        SetWindowPos(cancel_button_, nullptr, Dp(kClientWidth - 105), btn_y, btn_w, btn_h,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        ShowWindow(cancel_button_, SW_SHOW);
+    }
+    // 行内条件：apply_trial_button 显隐 + api_key_edit 宽度，需在 Relayout 定位后修正。
+    ApplyApiKeyLayout();
+}
+
+void SettingsDialog::ResizeWindow(int client_h) {
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_STYLE));
+    const DWORD ex_style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_EXSTYLE));
+    RECT desired{0, 0, Dp(kClientWidth), client_h};
+    AdjustWindowRectExForDpi(&desired, style, FALSE, ex_style, dpi_);
+    SetWindowPos(hwnd_, nullptr, 0, 0, desired.right - desired.left, desired.bottom - desired.top,
+                 SWP_NOMOVE | SWP_NOZORDER);
+}
+
+void SettingsDialog::ApplyApiKeyLayout() {
+    if (!api_key_edit_ || !apply_trial_button_ || !provider_combo_) return;
+    int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
+    const bool is_cloud = (idx == 0);
+    const bool is_tencent = (idx == 2);
+    const bool api_key_empty = GetWindowText(api_key_edit_).empty();
+    // VoiceStick Cloud 且 API Key 为空时显示试用按钮；腾讯云不需要试用按钮。
+    bool show_trial = is_cloud && api_key_empty;
+    if (is_tencent) show_trial = false;
+    ShowWindow(apply_trial_button_, show_trial ? SW_SHOW : SW_HIDE);
+    const int ctrl_w = Dp(kClientWidth - 170);
+    const int apply_btn_w = Dp(102);
+    const int api_key_w = show_trial ? ctrl_w - apply_btn_w - Dp(8) : ctrl_w;
+    SetWindowPos(api_key_edit_, nullptr, 0, 0, api_key_w, Dp(24),
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void SettingsDialog::LoadConfigIntoControls() {
@@ -773,37 +1098,13 @@ void SettingsDialog::SaveSettings() {
 }
 
 void SettingsDialog::UpdateOutputTargetVisibility() {
-    if (!output_target_combo_) return;
-    int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
-    const bool is_wechat = (idx == 2);
-    const int cmd = is_wechat ? SW_SHOW : SW_HIDE;
-    ShowWindow(wechat_hotkey_label_, cmd);
-    ShowWindow(wechat_hotkey_edit_, cmd);
-    ShowWindow(wechat_virtual_mic_label_, cmd);
-    ShowWindow(wechat_virtual_mic_edit_, cmd);
+    // 微信两行的显隐与定位交由 Relayout 统一处理。
+    Relayout();
 }
 
 void SettingsDialog::UpdateProviderVisibility() {
-    int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    bool is_volcengine = (idx == 1);
-    ShowWindow(resource_combo_, is_volcengine ? SW_SHOW : SW_HIDE);
-    ShowWindow(resource_label_, is_volcengine ? SW_SHOW : SW_HIDE);
-    const bool is_cloud = (idx == 0);
-    const bool is_tencent = (idx == 2);
-    const bool api_key_empty = GetWindowText(api_key_edit_).empty();
-    const bool show_trial_button = is_cloud && api_key_empty;
-    ShowWindow(apply_trial_button_, show_trial_button ? SW_SHOW : SW_HIDE);
-    if (api_key_edit_) {
-        const int ctrl_w = Dp(kClientWidth - 170);
-        const int apply_btn_w = Dp(102);
-        const int api_key_w = show_trial_button ? ctrl_w - apply_btn_w - Dp(8) : ctrl_w;
-        SetWindowPos(api_key_edit_, nullptr, 0, 0, api_key_w, Dp(24),
-                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    }
-    // 腾讯云不需要试用按钮
-    if (is_tencent && apply_trial_button_) {
-        ShowWindow(apply_trial_button_, SW_HIDE);
-    }
+    // 资源 ID 行显隐、apply_trial_button 显隐与 api_key_edit 宽度均由 Relayout 统一处理。
+    Relayout();
 }
 
 void SettingsDialog::ApplyTrialApiKey() {
@@ -886,10 +1187,8 @@ bool SettingsDialog::IsLabelControl(HWND control) const {
 }
 
 void SettingsDialog::UpdateRefinePromptVisibility() {
-    const bool show = SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    const int cmd = show ? SW_SHOW : SW_HIDE;
-    ShowWindow(refine_prompt_label_, cmd);
-    ShowWindow(refine_prompt_edit_, cmd);
+    // 精修提示词块的显隐与定位交由 Relayout 统一处理。
+    Relayout();
 }
 
 void SettingsDialog::UpdateTapSensitivityLabel() {

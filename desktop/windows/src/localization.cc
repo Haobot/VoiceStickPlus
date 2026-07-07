@@ -66,6 +66,12 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsTrialFailedMessage)] = "Please try again later.";
     table[Index(StringId::kSettingsSaved)] = "Settings saved.";
     table[Index(StringId::kSettingsSaveFailed)] = "Could not save settings.";
+    table[Index(StringId::kSettingsSectionGeneral)] = "General";
+    table[Index(StringId::kSettingsSectionAsr)] = "Speech Recognition";
+    table[Index(StringId::kSettingsSectionRefine)] = "Text Refinement";
+    table[Index(StringId::kSettingsSectionOutput)] = "Output";
+    table[Index(StringId::kSettingsSectionDevice)] = "Device Interaction";
+    table[Index(StringId::kSettingsSectionSystem)] = "System";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -257,6 +263,12 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsTrialFailedMessage)] = "请稍后重试。";
     table[Index(StringId::kSettingsSaved)] = "设置已保存。";
     table[Index(StringId::kSettingsSaveFailed)] = "无法保存设置。";
+    table[Index(StringId::kSettingsSectionGeneral)] = "通用";
+    table[Index(StringId::kSettingsSectionAsr)] = "语音识别";
+    table[Index(StringId::kSettingsSectionRefine)] = "文本精修";
+    table[Index(StringId::kSettingsSectionOutput)] = "输出";
+    table[Index(StringId::kSettingsSectionDevice)] = "设备交互";
+    table[Index(StringId::kSettingsSectionSystem)] = "系统";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";
