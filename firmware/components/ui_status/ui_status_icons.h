@@ -10,6 +10,7 @@ typedef enum {
     UI_STATUS_ICON_RECORDING,
     UI_STATUS_ICON_TRANSCRIBING,
     UI_STATUS_ICON_ERROR,
+    UI_STATUS_ICON_AIR_MOUSE,
 } ui_status_icon_scene_t;
 
 typedef struct {

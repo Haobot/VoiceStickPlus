@@ -96,6 +96,8 @@ static const lv_image_dsc_t *get_scene_image(ui_status_icon_scene_t scene)
         return &s_cat_thinking;
     case UI_STATUS_ICON_ERROR:
         return &s_cat_error;
+    case UI_STATUS_ICON_AIR_MOUSE:
+        return &s_cat_resting;
     }
     return &s_cat_ready;
 }

@@ -101,6 +101,7 @@ enum class StringId {
     kStatusConnected,
     kStatusDisconnected,
     kStatusReady,
+    kStatusAirMouseActive,
 
     // 配对窗口
     kPairTitle,

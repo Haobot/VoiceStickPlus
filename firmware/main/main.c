@@ -152,6 +152,7 @@ typedef enum {
     APP_UI_STATE_THINKING,
     APP_UI_STATE_PENDING_CONFIRMATION,
     APP_UI_STATE_ERROR,
+    APP_UI_STATE_AIR_MOUSE,
 } app_ui_state_t;
 
 static app_ui_state_t s_app_ui_state = APP_UI_STATE_READY;
@@ -177,6 +178,8 @@ static const char *app_ui_state_name(app_ui_state_t state)
         return "pending_confirmation";
     case APP_UI_STATE_ERROR:
         return "error";
+    case APP_UI_STATE_AIR_MOUSE:
+        return "air_mouse";
     }
     return "unknown";
 }
@@ -1109,6 +1112,9 @@ static void apply_app_ui_state(const char *state, const char *text)
     } else if (strcmp(state, "error") == 0) {
         s_app_ui_state = APP_UI_STATE_ERROR;
         ui_status_set_error(text && text[0] ? text : "Unknown error");
+    } else if (strcmp(state, "air_mouse") == 0) {
+        s_app_ui_state = APP_UI_STATE_AIR_MOUSE;
+        ui_status_set_air_mouse();
     } else {
         ESP_LOGW(TAG, "unknown ui_state %s", state);
     }
