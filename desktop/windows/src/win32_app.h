@@ -127,6 +127,10 @@ private:
     bool is_shutting_down_ = false;
     static constexpr UINT_PTR kAirMouseTimerId = 100;
     static constexpr UINT kAirMouseTickIntervalMs = 16;  // ~60Hz
+    // 休眠恢复后延迟重启 BLE 的定时器：SetTimer 对同一 id 重复设置会重置计时器，
+    // 天然对 PBT_APMRESUMEAUTOMATIC 与紧随其后的 PBT_APMRESUMESUSPEND 去抖。
+    static constexpr UINT_PTR kResumeRestartTimerId = 101;
+    static constexpr UINT kResumeRestartDelayMs = 1500;
     bool air_mouse_timer_active_ = false;
     std::chrono::steady_clock::time_point last_battery_status_request_{};
 };

@@ -282,6 +282,26 @@ void BleCentralWin::Shutdown() {
     PublishConnections();
 }
 
+void BleCentralWin::RestartForResume() {
+    // 系统休眠/恢复或蓝牙无线电状态变化后，BluetoothLEAdvertisementWatcher
+    // 会静默失效：仍报告 Started 却不再投递任何广告包。休眠期间链路也已断开，
+    // 残留的 DeviceSession 实为假连接。这里彻底停掉扫描、清理所有连接态与
+    // 退避/取消标记、关闭残留会话，再重新 StartScan，让 watcher 与链路都从
+    // 干净状态重建——否则设备持续广播而主机永远收不到，表现为「正在扫描」却
+    // 连不上、设备端卡在 Pairing。
+    LogBleLine("restart-for-resume: power state changed; tearing down scan and sessions");
+    StopScan();
+    {
+        std::lock_guard lock(mutex_);
+        connecting_addresses_.clear();
+        cancelled_device_ids_.clear();
+        connect_cooldown_until_.clear();
+    }
+    CloseSessions();
+    PublishConnections();
+    StartScan();
+}
+
 void BleCentralWin::UpdatePairedDeviceIds(const std::vector<std::string>& ids) {
     {
         std::lock_guard lock(mutex_);
