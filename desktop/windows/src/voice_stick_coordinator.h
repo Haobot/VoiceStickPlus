@@ -212,6 +212,8 @@ public:
     void AirMouseTick();
     // 体感鼠标激活态变化通知（true=有设备进入体感，false=全部退出）。平台层据此启停定时器。
     std::function<void(bool)> on_air_mouse_active_changed;
+    // 查询某设备是否处于体感鼠标模式（供托盘菜单提示，避免用户不知情下主键变鼠标左键）。
+    bool IsAirMouseActive(const std::string& device_id) const;
 
 private:
     enum class PendingPasteKind {
@@ -264,7 +266,6 @@ private:
     void HandleMotionEvent(const MotionEvent& event, const std::string& device_id);
     // 体感鼠标模式是否对该设备开启。返回切换后的状态（true=进入，false=退出）。
     bool ToggleAirMouse(const std::string& device_id);
-    bool IsAirMouseActive(const std::string& device_id) const;
     void HandleSecondaryButtonClick(const std::string& device_id);
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);

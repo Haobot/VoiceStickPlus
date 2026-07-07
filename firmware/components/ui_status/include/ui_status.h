@@ -23,3 +23,4 @@ void ui_status_set_orientation(bool upside_down);
 void ui_status_set_ota_progress(uint32_t written, uint32_t size);
 void ui_status_set_ota_rebooting(void);
 void ui_status_set_error(const char *message);
+void ui_status_set_air_mouse(void);

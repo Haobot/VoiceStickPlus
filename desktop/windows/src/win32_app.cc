@@ -946,6 +946,18 @@ void Win32App::ShowTrayMenu() {
     AppendMenuW(menu, MF_STRING, kMenuPairScan, TrW(StringId::kMenuPairDevice, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
+    // 体感鼠标模式激活时在顶部提示，避免用户不知情下主键变鼠标左键误判"按下没反应"。
+    if (coordinator_) {
+        bool any_air_mouse = false;
+        for (const auto& dev : connected_devices_) {
+            if (coordinator_->IsAirMouseActive(dev.id)) { any_air_mouse = true; break; }
+        }
+        if (any_air_mouse) {
+            AppendMenuW(menu, MF_STRING | MF_DISABLED, 0,
+                        TrW(StringId::kStatusAirMouseActive, language).c_str());
+        }
+    }
+
     if (paired_device_ids_.empty() && connected_devices_.empty()) {
         AppendMenuW(menu, MF_STRING | MF_DISABLED, 0,
                     TrW(StringId::kStatusNoPairedDevices, language).c_str());

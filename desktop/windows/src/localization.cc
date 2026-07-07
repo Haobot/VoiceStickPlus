@@ -104,6 +104,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kStatusConnected)] = "Connected";
     table[Index(StringId::kStatusDisconnected)] = "Disconnected";
     table[Index(StringId::kStatusReady)] = "Ready";
+    table[Index(StringId::kStatusAirMouseActive)] = "Air Mouse active (side key to exit)";
     table[Index(StringId::kPairTitle)] = "Pair VoiceStick";
     table[Index(StringId::kPairScanning)] = "Scanning for VoiceStick devices...";
     table[Index(StringId::kPairNoDevices)] = "No VoiceStick devices found.";
@@ -301,6 +302,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kStatusConnected)] = "已连接";
     table[Index(StringId::kStatusDisconnected)] = "未连接";
     table[Index(StringId::kStatusReady)] = "就绪";
+    table[Index(StringId::kStatusAirMouseActive)] = "体感鼠标已开启（侧键退出）";
     table[Index(StringId::kPairTitle)] = "配对 VoiceStick";
     table[Index(StringId::kPairScanning)] = "正在扫描 VoiceStick 设备...";
     table[Index(StringId::kPairNoDevices)] = "未找到 VoiceStick 设备。";

@@ -452,6 +452,12 @@ void ui_status_set_idle(void)
     set_scene(UI_STATUS_ICON_IDLE, "Ready", s_idle_hint_text);
 }
 
+void ui_status_set_air_mouse(void)
+{
+    ESP_LOGD(TAG, "air mouse");
+    set_scene(UI_STATUS_ICON_AIR_MOUSE, "Air Mouse", "Side key to exit");
+}
+
 void ui_status_set_idle_dimmed(bool dimmed)
 {
     ESP_LOGD(TAG, "idle dimmed=%d", dimmed);

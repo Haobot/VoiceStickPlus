@@ -1555,14 +1555,19 @@ void TestCoordinatorAirMouseToggleViaSecondary() {
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->sent_air_mouse_enabled.clear();
 
-    // 空闲态侧键单击 → 进入体感，下发 air_mouse_enabled:true。
+    // 空闲态侧键单击 → 进入体感，下发 air_mouse_enabled:true + ui_state:air_mouse。
+    // ui_state=air_mouse 让设备显示体感态提示，避免用户不知情下主键变鼠标左键。
+    ble_ptr->sent_ui_states.clear();
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     assert(!ble_ptr->sent_air_mouse_enabled.empty());
     assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
+    assert(HasUiState(*ble_ptr, "air_mouse", "5A74"));
 
-    // 再次侧键单击 → 退出体感，下发 air_mouse_enabled:false。
+    // 再次侧键单击 → 退出体感，下发 air_mouse_enabled:false + ui_state:ready。
+    ble_ptr->sent_ui_states.clear();
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
 }
 
 // 体感态下主键单击映射为鼠标左键，不启动录音。

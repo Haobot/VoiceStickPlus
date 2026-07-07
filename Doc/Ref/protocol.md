@@ -72,7 +72,7 @@ business actions such as "cancel" or "confirm"; the app owns that interpretation
 Currently emitted state events:
 
 ```json
-{"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"interaction_modes":["hold_to_talk","click_to_talk"],"ui_states":["ready","recording","thinking","pending_confirmation","error"]}
+{"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"interaction_modes":["hold_to_talk","click_to_talk"],"ui_states":["ready","recording","thinking","pending_confirmation","error","air_mouse"]}
 {"event":"button_down","button":"primary","session_id":1234}
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
 {"event":"button_down","button":"secondary"}
@@ -145,6 +145,7 @@ Current desktop events:
 {"event":"ui_state","state":"thinking","text":"partial text"}
 {"event":"ui_state","state":"pending_confirmation","text":"final text"}
 {"event":"ui_state","state":"error","text":"ASR timeout"}
+{"event":"ui_state","state":"air_mouse","text":""}
 {"event":"interaction_mode","mode":"hold_to_talk"}
 {"event":"interaction_mode","mode":"hold_to_talk_instant"}
 {"event":"interaction_mode","mode":"click_to_talk"}
@@ -163,7 +164,7 @@ Current desktop events:
 | `imu_wake_sensitivity` | `threshold`: integer (LSB) | Windows -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
 | `tap_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables the double-tap on-device gesture detection. Default false. |
 | `tap_sensitivity` | `level`: integer (1..10) | Windows -> StickS3 | Sets the double-tap detection sensitivity. 1=least sensitive (hardest tap), 10=most sensitive (lightest tap). Default 5. |
-| `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. Default false. |
+| `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. The desktop pairs this with a `ui_state:air_mouse` so the device shows an air-mouse indicator — in this state the primary button acts as the left mouse button, not recording. Default false. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as

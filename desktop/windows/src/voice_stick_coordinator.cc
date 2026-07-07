@@ -738,6 +738,9 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
     state.last_omega_t = std::chrono::steady_clock::now();  // 防止首次积分 dt 爆炸
     air_mouse_states_[device_id] = state;
     ble_->SendAirMouseEnabled(true, device_id);
+    // 下发 ui_state=air_mouse 让设备显示体感态提示，避免用户不知情下主键变鼠标左键
+    // 误判"按下没反应"（关闭路径已下发 ready，此处对称补齐）。
+    ble_->SendUiState("air_mouse", "", device_id);
     LogCoordinatorLine("air mouse enabled on VS-" + device_id);
     if (on_air_mouse_active_changed) on_air_mouse_active_changed(!air_mouse_states_.empty());
     return true;
