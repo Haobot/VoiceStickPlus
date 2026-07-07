@@ -64,6 +64,22 @@ if not exist "%BUILD_DIR%\WinSparkle.dll" (
 
 echo.
 echo [2/2] Building MSI with WiX (unsigned)...
+:: Optional: inject a real config (with secrets) via VOICESTICK_CONFIG_TEMPLATE to override the placeholder.
+:: Used to distribute a pre-configured MSI to testers; secrets are injected only at local build time, never committed.
+:: See Doc/Plan/windows-msi-config-template-seed.md for details.
+if defined VOICESTICK_CONFIG_TEMPLATE (
+    if exist "%VOICESTICK_CONFIG_TEMPLATE%" (
+        echo Injecting config template from: %VOICESTICK_CONFIG_TEMPLATE%
+        copy /Y "%VOICESTICK_CONFIG_TEMPLATE%" "%BUILD_DIR%\config.template.toml" >nul
+        if errorlevel 1 (
+            echo ERROR: Failed to copy VOICESTICK_CONFIG_TEMPLATE to build dir.
+            exit /b 1
+        )
+    ) else (
+        echo WARNING: VOICESTICK_CONFIG_TEMPLATE set but not found: %VOICESTICK_CONFIG_TEMPLATE%
+        echo          Falling back to placeholder template from resources\config.template.toml
+    )
+)
 if not defined WIX_PATH (
     if exist "%USERPROFILE%\.dotnet\tools\wix.exe" (
         set "WIX_PATH=%USERPROFILE%\.dotnet\tools\wix.exe"

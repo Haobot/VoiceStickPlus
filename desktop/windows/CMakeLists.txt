@@ -148,6 +148,14 @@ add_custom_command(TARGET VoiceStickApp POST_BUILD
         "$<TARGET_FILE_DIR:VoiceStickApp>"
 )
 
+# 复制配置模板到构建目录，供 WiX 打包进 MSI。程序首启从 exe 同级复制到 %APPDATA%。
+# 详见 Doc/Plan/windows-msi-config-template-seed.md。
+add_custom_command(TARGET VoiceStickApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/config.template.toml"
+        "$<TARGET_FILE_DIR:VoiceStickApp>/config.template.toml"
+)
+
 add_executable(voicestick_windows_tests
     tests/core_tests.cc
     src/asr_client_tencent.cc

@@ -260,6 +260,20 @@ std::filesystem::path AppConfig::ConfigPath() {
     return ConfigDirectory() / L"config.toml";
 }
 
+bool AppConfig::SeedConfigFromTemplate(const std::filesystem::path& template_path,
+                                       const std::filesystem::path& target_path) {
+    std::error_code ec;
+    // 目标已存在 → 不覆盖，保护用户已有配置（含升级场景）。
+    if (std::filesystem::exists(target_path, ec)) return false;
+    // 模板不存在（如未随安装分发）→ 静默跳过，回退 Defaults。
+    if (!std::filesystem::exists(template_path, ec)) return false;
+    if (target_path.has_parent_path()) {
+        std::filesystem::create_directories(target_path.parent_path(), ec);
+    }
+    std::filesystem::copy_file(template_path, target_path, ec);
+    return !ec;
+}
+
 std::filesystem::path AppConfig::DefaultDebugAudioDirectory() {
     if (IsPortableMode()) {
         return PortableBaseDirectory() / L"DebugAudio";
@@ -431,6 +445,11 @@ bool MaybeRecoverTencentSecretId(AppConfig& config) {
 } // namespace
 
 AppConfig AppConfig::Load() {
+    // 非便携模式下，首次启动从 exe 同级模板种子一份配置到 %APPDATA%，方便 MSI 分发预设配置。
+    // 已有配置不覆盖；便携模式直接读 exe 目录，无需种子。
+    if (!IsPortableMode()) {
+        SeedConfigFromTemplate(PortableBaseDirectory() / L"config.template.toml", ConfigPath());
+    }
     AppConfig config = Load(ConfigPath());
     config.portable_mode = IsPortableMode();
     return config;
