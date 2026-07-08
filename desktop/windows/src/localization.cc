@@ -55,6 +55,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsOutputTargetWechatInputMethod)] = "WeChat Input Method";
     table[Index(StringId::kSettingsWechatHotkey)] = "WeChat Voice Hotkey";
     table[Index(StringId::kSettingsWechatVirtualMic)] = "Virtual Microphone Playback Name";
+    table[Index(StringId::kSettingsWechatAutoSwitch)] = "Auto-switch default recording device during recording";
+    table[Index(StringId::kSettingsWechatVirtualMicCapture)] = "Virtual Microphone Capture Name";
     table[Index(StringId::kSettingsDebugDir)] = "Audio Folder";
     table[Index(StringId::kSettingsChooseDir)] = "Choose...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "Open Config Folder";
@@ -253,6 +255,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsOutputTargetWechatInputMethod)] = "微信输入法";
     table[Index(StringId::kSettingsWechatHotkey)] = "微信语音热键";
     table[Index(StringId::kSettingsWechatVirtualMic)] = "虚拟麦克风播放端名称";
+    table[Index(StringId::kSettingsWechatAutoSwitch)] = "录音时自动切换默认录音设备";
+    table[Index(StringId::kSettingsWechatVirtualMicCapture)] = "虚拟麦克风录音端名称";
     table[Index(StringId::kSettingsDebugDir)] = "音频文件夹";
     table[Index(StringId::kSettingsChooseDir)] = "选择...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "打开配置文件夹";

@@ -48,6 +48,8 @@ enum class StringId {
     kSettingsOutputTargetWechatInputMethod,
     kSettingsWechatHotkey,
     kSettingsWechatVirtualMic,
+    kSettingsWechatAutoSwitch,
+    kSettingsWechatVirtualMicCapture,
     kSettingsDebugDir,
     kSettingsChooseDir,
     kSettingsOpenConfigFolder,
