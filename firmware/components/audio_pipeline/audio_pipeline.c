@@ -1,6 +1,7 @@
 #include "audio_pipeline.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -36,6 +37,31 @@ static const char *TAG = "audio_pipeline";
 #define TX_MAX_RETRIES 30
 #define TX_DRAIN_TIMEOUT_MS 500
 #define TASK_EXIT_WAIT_MS 800
+
+/* 二阶 Butterworth 高通滤波器（transposed direct form II），截止 fc≈90Hz @ 16kHz，
+ * 抑制近距离说话时呼吸气流冲击麦克风的低频爆破音（plosive，能量集中在 20-100Hz）。
+ * 硬件 ES8311 ADC HPF 截止太低（去 DC 级）无法去爆破音，故在 PCM 进入 Opus 前软件再过一道。
+ * 系数（Q=0.707 Butterworth，fc=90Hz，fs=16000Hz）离线计算并验证频响：
+ * 90Hz -3.0dB / 50Hz -10.6dB / 30Hz -19.1dB / 150Hz -0.5dB / 300Hz+ ~0dB（语音中高频无损）。
+ * 截止频率若需调整，重算系数即可（scripts/ 下可复现）。状态每会话开始时清零。 */
+static const double kHpfB0 = 0.975318;
+static const double kHpfB1 = -1.950637;
+static const double kHpfB2 = 0.975318;
+static const double kHpfA1 = -1.950028;
+static const double kHpfA2 = 0.951246;
+static double s_hpf_z1 = 0.0;
+static double s_hpf_z2 = 0.0;
+
+static inline int16_t hpf_process(int16_t x) {
+    double in = (double)x;
+    double y = kHpfB0 * in + s_hpf_z1;
+    s_hpf_z1 = kHpfB1 * in - kHpfA1 * y + s_hpf_z2;
+    s_hpf_z2 = kHpfB2 * in - kHpfA2 * y;
+    /* 软限幅防数值漂移越界（biquad 稳定但极端输入下保险）。 */
+    if (y > 32767.0) y = 32767.0;
+    else if (y < -32768.0) y = -32768.0;
+    return (int16_t)lround(y);
+}
 
 typedef struct {
     uint32_t session_id;
@@ -312,6 +338,9 @@ static void audio_task(void *arg)
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = stereo[i * 2];
         }
+        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
+            mono[i] = hpf_process(mono[i]);
+        }
 
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
@@ -362,6 +391,9 @@ static void audio_task(void *arg)
         }
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = stereo[i * 2];
+        }
+        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
+            mono[i] = hpf_process(mono[i]);
         }
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
@@ -539,6 +571,8 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     s_session_id = session_id;
     s_seq = 0;
     opus_encoder_ctl(s_opus_encoder, OPUS_RESET_STATE);
+    s_hpf_z1 = 0.0;
+    s_hpf_z2 = 0.0;
     atomic_store(&s_running, true);
 
     s_last_error_step = "tx_task";
