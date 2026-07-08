@@ -179,6 +179,18 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `components/bmi270/`：BMI270 IMU 驱动。
 - `components/stick_s3_board/`：板级初始化，引脚定义在 `include/stick_s3_board.h`。
 
+板级硬件映射：
+
+| 硬件 | 引脚/接口 | 说明 |
+|---|---|---|
+| 主键（正面） | GPIO11 | 协议 `primary`，push-to-talk 与深度睡眠唤醒 |
+| 侧键 | GPIO12 | 协议 `secondary`，取消或恢复上一次输入确认 |
+| PMIC IRQ | GPIO13 | 电源管理芯片中断 |
+| LCD 背光 | GPIO38 | PWM 调光 |
+| IMU | BMI270 | I2C，体感鼠标与敲击检测 |
+| 音频 codec | ES8311 | I2S，16 kHz / 16 bit / mono |
+| 显示屏 | ST7789 | 135 × 240 竖屏，SPI |
+
 ### 桌面端职责
 
 桌面端是状态唯一可信源，负责 BLE 配对和多设备连接、交互状态机、Opus→Ogg Opus 封装、ASR WebSocket、LLM 翻译与精修、悬浮窗/字幕、文本注入、配置管理和自动更新。
@@ -206,6 +218,25 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 | 手动确认中 | 确认粘贴 | 取消待粘贴文本 |
 
 支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式。文本输出支持 `focused_app`（默认粘贴到当前焦点，默认自动按 Return）和 `subtitle`（仅显示字幕）。识别结果可通过 OpenAI-compatible LLM 做翻译，也可按设备单独覆盖输出设置。
+
+## 配置
+
+桌面端运行时配置文件位置：
+
+- macOS：`~/Library/Application Support/VoiceStick/config.toml`
+- Windows：`%APPDATA%\VoiceStick\config.toml`
+
+关键配置项（完整字段见 `README.md`）：
+
+- `asr_provider`：ASR 提供商，可选 `volcengine`、`voicestick_cloud` 或 `tencent`（腾讯为 v1.8.2 新增）。
+- `volcengine_api_key` / `voicestick_api_key` / `voicestick_cloud_url`：火山直连密钥，或 VoiceStick Cloud 中转密钥与 WebSocket URL。
+- `tencent_secret_id` / `tencent_secret_key` / `tencent_appid`：腾讯云 ASR 凭据（加载时自动 Trim 去前后空格）。
+- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `true`。
+- `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`。
+- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
+- `[output].target`：`focused_app`（默认）或 `subtitle`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
+
+Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，首启复制到 `%APPDATA%`（升级不覆盖）。示例见 `desktop/macos/Config/config.example.toml`。凭据字段不要提交。
 
 ## 代码风格
 
@@ -235,6 +266,8 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，然后上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流以收录 MSI 条目。完整步骤见 `Doc/Ref/release.md`。
 
+Windows 便携版（免安装 zip）用 `scripts\package-portable.bat` 打包；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。注意 `package-portable.bat` 的中文 `echo` 块在 cmd 代码页下会解析错位，脚本内部已改用 PowerShell + .NET 完成打包，模板中用占位符而非真实 Sparkle 公钥。
+
 ## 项目 Skills
 
 本仓库在 `.agents/skills/` 下维护项目级 Skill，相关场景会自动加载：
@@ -255,4 +288,5 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，�
 - 修改根目录 `README.md` 时，必须同步更新 `README.zh-CN.md`。
 - 修改 `VERSION` 时，必须同步更新 `firmware/version.txt`。
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
-- 设计方案文档统一放在 `Doc/Plan/`（大写 P），不再使用 `Doc/Rfc/`。
+- `Doc/` 下分四个子目录：`Ref/`（协议、发布流程、ASR 帧格式、低功耗等参考）、`Plan/`（设计方案，大写 P，不再用 `Doc/Rfc/`）、`Guide/`（火山/腾讯 ASR WebSocket 接入、API 概览、air-mouse 调参等第三方服务接入指南）、`Expe/`（经验教训记录）。
+- `scripts/` 下除各平台构建脚本外，还有 `probe_asr_websocket_ping.py`（ASR 连通性探测）、`update-appcast.py`（生成 `appcast.xml`）、`idf_cli.py`（Windows 上包装 `idf.py`）等辅助脚本。
