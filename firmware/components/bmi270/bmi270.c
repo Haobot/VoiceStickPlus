@@ -182,9 +182,11 @@ static bool s_air_mouse_bias_dirty = false;
 // 零偏校准采样帧数（20ms/帧，约 200ms）。
 #define AIR_MOUSE_CALIB_FRAMES 10
 // 死区（dps）：静止时陀螺仪残余噪声，低于此值视为不动，消除漂移。
-// 3 dps 配合 jerk 静止判据（STILL_JERK_DPS）+ 静止帧归零 + 零偏 EMA 自愈兜底防漂移；
-// 下调自 4 dps 是为了让增益曲线微调段（|omega|<5，对应 ≈8.3dps）能收到信号，否则微调段饿死。
-#define AIR_MOUSE_DEADZONE_DPS 3.0f
+// P2 由 3.0 下调到 1.5：依赖已有的 jerk 静止判据（STILL_JERK_DPS）+ 静止帧归零 +
+// 零偏 EMA 自愈三重兜底防漂移（已在 air-mouse-still-tuning.md 论证可行），
+// 换取更顺滑的低端精细对位。桌面端 low_factor 同步由 0.15 升到 0.25 补偿死区下调，
+// 避免"想微动却完全不动"（见 air_mouse_kin.h AirMouseCurveParams）。
+#define AIR_MOUSE_DEADZONE_DPS 1.5f
 // 静止判据（dps）：相邻帧原始角速度变化（jerk）都低于此值时视为静止。
 // 用帧间抖动而非"去偏后幅值"判静止：与零偏大小无关，即使初始校准偏差很大也能判定静止
 // 并继续 EMA 收敛零偏，可自愈初始校准误差（否则去偏残差自锁导致零偏永不更新、光标持续漂）。

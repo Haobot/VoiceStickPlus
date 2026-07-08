@@ -24,17 +24,18 @@ struct AirMouseKinState {
     AirMouseDirectionLock lock_y = AirMouseDirectionLock::kNone;
 };
 
-// 三段线性增益曲线参数（运行期可变，支持热调参；默认值=真机标定值）。
-//   微调段 |x| < low_thresh   → factor = low_factor  （压低，精准对位）
-//   中段  low_thresh ≤ |x| < high_thresh → 线性插值 low_factor→high_factor
-//   甩动段 |x| ≥ high_thresh  → factor = high_factor （放大，跨屏）
+// 平滑（sigmoid）增益曲线参数（运行期可变，支持热调参；默认值=真机标定值）。
+//   factor 为 |x| 的 sigmoid：|x|→0 趋近 low_factor（压低，精准对位），
+//   |x|→∞ 趋近 high_factor（放大，跨屏），全程连续可微、无折角感（P2 由三段线性升级而来）。
+//   low_thresh/high_thresh 推出 sigmoid 的中点 mid 与半宽 width，作为特征点而非硬分段边界。
 // x 为固件上报的缩放角速率（dps × AIR_MOUSE_REPORT_GAIN=4，见 bmi270.c），故阈值以同单位表达。
-// 默认 100/333 对应物理拐点约 25/83 dps（与旧 15/50 @ SCALE=0.6 同一物理角速率，P1 去双重缩放后重标定），
-// factor 0.15/4.0 不变。详见 Doc/Plan/air-mouse-gain-curve.md 与 air-mouse-still-tuning.md。热调参面板可实时改。
+// 默认 100/333 对应物理特征点约 25/83 dps（P1 去双重缩放后重标定）；
+// low_factor 0.15→0.25（P2）补偿固件死区 3.0→1.5dps 下调，避免微调段饿死。
+// 详见 Doc/Plan/air-mouse-gain-curve.md 与 air-mouse-still-tuning.md。热调参面板可实时改。
 struct AirMouseCurveParams {
     double low_thresh  = 100.0;
     double high_thresh = 333.0;
-    double low_factor  = 0.15;
+    double low_factor  = 0.25;
     double high_factor = 4.0;
 };
 
@@ -75,7 +76,8 @@ struct AirMouseInput {
     bool is_angle = false;
 };
 
-// 三段线性增益因子（输入 |x| 与曲线参数，输出相对增益倍率）。纯函数，可单测拐点连续性与 curve 注入。
+// 平滑 sigmoid 增益因子（输入 |x| 与曲线参数，输出相对增益倍率）。纯函数，全程 C∞ 可微，
+// 可单测单调性、有界性与 curve 注入。详见 AirMouseCurveParams。
 double AirMouseGainFactor(double x_abs, const AirMouseCurveParams& curve);
 
 // 钳位曲线参数到合法范围（low_thresh<high_thresh、factor 界限、阈值界限）。纯函数。
