@@ -203,6 +203,11 @@ static bool s_air_mouse_bias_dirty = false;
 #define AIR_MOUSE_OMEGA_EXIT_DPS  2.0f   // ACTIVE→STILL 阈值，低于死区，确实静止才停
 // 静止时零偏 EMA 跟随系数：缓慢吸收陀螺仪温漂与初始校准误差，抵消长期漂移。
 #define AIR_MOUSE_BIAS_ALPHA 0.05f
+// 超慢漂移跟踪系数：长会话持续移动时温漂不被快速 EMA 补偿（快速 EMA 仅 STILL 时收敛）。
+// 此超慢 EMA 每帧（含 ACTIVE）以极低增益跟踪原始角速率的 DC 分量，仅吸收 <0.1dps/s
+// 的缓慢温漂，运动 AC 分量在长时间平均中趋近零。α=0.0005 → τ≈40s（50Hz），约 200s 收敛。
+// 与快速 EMA 互补：快速 EMA 静止时秒级收敛初始误差与余震后漂移，超慢 EMA 全程跟踪温漂。
+#define AIR_MOUSE_DRIFT_ALPHA 0.0005f
 // 映射系数：去零偏后的角速率(dps) → 整型上报量。固件只做线性缩放与限幅，
 // 桌面端独占增益曲线（见 air_mouse_kin.cc），故此处仅负责把 dps 放大到足够分辨率。
 // 选 4.0：1dps → 4 单位（0.25dps/步），较旧 0.6（1.67dps/步）分辨率提升约 6.7×，
@@ -911,6 +916,19 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
         s_air_mouse_bias_dps[0] += (x_dps - s_air_mouse_bias_dps[0]) * AIR_MOUSE_BIAS_ALPHA;
         s_air_mouse_bias_dps[1] += (y_dps - s_air_mouse_bias_dps[1]) * AIR_MOUSE_BIAS_ALPHA;
         s_air_mouse_bias_dps[2] += (z_dps - s_air_mouse_bias_dps[2]) * AIR_MOUSE_BIAS_ALPHA;
+        s_air_mouse_bias_dirty = true;
+    }
+
+    // 超慢漂移跟踪：每帧（含 ACTIVE 运动态）以极低增益跟踪原始角速率的 DC 分量，
+    // 仅吸收缓慢温漂（<0.1dps/s）。运动 AC 分量在长时间平均中趋近零（用户使用中
+    // 正反转交替，期望值为零）。α=0.0005 → τ≈40s（50Hz），约 200s 收敛至稳态。
+    // 互补设计：快速 EMA（α=0.05）静止时秒级收敛初始误差/余震后漂移；
+    //           超慢 EMA（α=0.0005）全程跟踪温度漂移，不被运动分量显著扰动。
+    // settling 期内冻结：按键余震可能含大幅角速率（>100dps），即使 α 极小也不该吸收。
+    if (esp_timer_get_time() >= s_air_mouse_settle_until_us) {
+        s_air_mouse_bias_dps[0] += (x_dps - s_air_mouse_bias_dps[0]) * AIR_MOUSE_DRIFT_ALPHA;
+        s_air_mouse_bias_dps[1] += (y_dps - s_air_mouse_bias_dps[1]) * AIR_MOUSE_DRIFT_ALPHA;
+        s_air_mouse_bias_dps[2] += (z_dps - s_air_mouse_bias_dps[2]) * AIR_MOUSE_DRIFT_ALPHA;
         s_air_mouse_bias_dirty = true;
     }
 
