@@ -443,6 +443,7 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
     // 走 BLE notify 无 ACK 在闪断时丢失、状态残留致下次长按被吞。锁内只做最小收尾并标记，
     // 释放锁后调 StopWechatInputMethodSession（它内部也获取 audio_mutex_，故必须先释放）。
     bool end_of_stream = false;
+    bool hotkey_send_failed = false;
     {
         std::lock_guard lock(audio_mutex_);
         if (!active_session_id_.has_value() || frame.session_id != *active_session_id_ ||
@@ -477,6 +478,16 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
             } else {
                 wechat_ring_buffer_->Write(pcm, result.decoded_samples);
 
+                // 首帧解码成功入 ring_buffer：持锁 SendDown 弹框，弹框前 CABLE Output 已有 PCM，
+                // 微信弹框即取到有效音频（避免弹框早于音频就绪的首字卡顿）。持锁避免与 Stop race。
+                if (!wechat_hotkey_sent_down_) {
+                    if (wechat_hotkey_->IsValid() && wechat_hotkey_->SendDown()) {
+                        wechat_hotkey_sent_down_ = true;
+                    } else {
+                        hotkey_send_failed = true;
+                    }
+                }
+
                 if (frame.IsEnd()) {
                     wechat_audio_end_received_ = true;
                     debug_audio_recorder_.Finish();
@@ -487,6 +498,13 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
         }
     }
 
+    if (hotkey_send_failed) {
+        // SendDown 失败（SendInput 异常）：停会话报错回 ready。未 SendDown 故 Stop 不 SendUp。
+        StopWechatInputMethodSession();
+        ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
+        EnterReady("wechat_hotkey_send_failed");
+        return;
+    }
     if (end_of_stream) {
         // button_up 先到则 wechat_active 已 false，StopWechatInputMethodSession 的收尾幂等无害；
         // audio_end 先到则此处 Stop 后 button_up 再到时 IsWechatInputMethodActive()=false 早退，
@@ -557,17 +575,10 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         }
     }
 
-    // 先发热键触发微信输入法弹框，再启动 WASAPI 渲染：WASAPI Start 同步耗时几十毫秒
-    // （CoInitializeEx + 设备枚举 + InitializeStream + 起线程），若在 SendDown 之前执行会把
-    // 弹框时刻推迟几十毫秒。音频晚几十毫秒到达虚拟麦不影响识别（微信面板有缓冲）。
-    if (!wechat_hotkey_->IsValid() || !wechat_hotkey_->SendDown()) {
-        ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
-        return false;
-    }
-
+    // 先 renderer.Start（WASAPI 通路就绪），SendDown 推迟到首帧 Opus 解码成功后（见
+    // HandleWechatInputMethodAudioFrame）：避免微信弹框即取音却读到静音致首字卡顿。
+    // Start 失败直接返回：未 SendDown 故无需补 SendUp 回滚热键。
     if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
-        // 渲染启动失败必须补 SendUp，否则热键卡住（系统认为 Ctrl+Win 仍按着）。
-        wechat_hotkey_->SendUp();
         ui_->ShowError("Virtual microphone not found: " +
                            config_.wechat_input_method.virtual_mic_playback_name,
                        device_id, {});
@@ -579,6 +590,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         ogg_muxer_.Reset();
         debug_audio_recorder_.Start(device_id, session_id);
         wechat_audio_end_received_ = false;
+        wechat_hotkey_sent_down_ = false;
         active_session_id_ = session_id;
         active_device_id_ = device_id;
         active_session_started_at_ = std::chrono::steady_clock::now();
@@ -590,7 +602,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {
     CancelRecordingHardTimeout();
-    if (wechat_hotkey_ && wechat_hotkey_->IsValid()) {
+    // 仅当已 SendDown 才配对 SendUp；未弹框（首帧前 button_up/断连/空 end）多发 SendUp 多余。
+    if (wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_) {
         wechat_hotkey_->SendUp();
     }
     if (wechat_renderer_) {
@@ -616,6 +629,7 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     active_session_id_.reset();
     active_device_id_.reset();
     wechat_input_method_active_ = false;
+    wechat_hotkey_sent_down_ = false;
 }
 
 void VoiceStickCoordinator::FinishWechatInputMethodRecording() {

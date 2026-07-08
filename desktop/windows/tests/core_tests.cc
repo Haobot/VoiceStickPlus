@@ -2915,9 +2915,9 @@ void TestCoordinatorRecoveringButtonDownStopsStaleRecording() {
     assert(HasUiState(*ble_ptr, "recording", "5A74"));
 }
 
-// StartWechatInputMethodSession 必须先 SendDown 触发微信弹框，再 renderer.Start；
-// renderer.Start 失败时必须补 SendUp，避免热键卡住（系统认为 Ctrl+Win 仍按着）。
-void TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFailure() {
+// StartWechatInputMethodSession 先 renderer.Start（提前到 SendDown 之前），Start 失败直接返回，
+// 不 SendDown/SendUp（首帧才弹框，未弹框则无需回滚热键），避免热键卡住。
+void TestCoordinatorWechatSessionRendererStartFailureSkipsHotkey() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -2946,14 +2946,206 @@ void TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFai
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
 
-    // SendDown 已触发（弹框先于 WASAPI Start）；renderer.Start 返回 false 后补 SendUp 回滚。
+    // renderer.Start 失败：未 SendDown（等首帧才弹框），故无需补 SendUp。
     assert(fake_hotkey != nullptr);
-    assert(fake_hotkey->send_down_count == 1);
-    assert(fake_hotkey->send_up_count == 1);
+    assert(fake_hotkey->send_down_count == 0);
+    assert(fake_hotkey->send_up_count == 0);
     assert(fake_renderer != nullptr);
     assert(fake_renderer->start_count == 1);
     // 启动失败不应进入录音态（未调 ShowListening）。
     assert(ui.show_listening_count == 0);
+}
+
+// wechat 模式：button_down 后不立即 SendDown（等首帧音频就绪再弹框，避免微信弹框即取音却
+// 读到静音致首字卡顿）。WASAPI renderer.Start 在 SendDown 之前完成；收到首帧 Opus 解码成功
+// 入 ring_buffer 后才 SendDown 触发微信弹框。
+void TestCoordinatorWechatHotkeyDeferredUntilFirstAudioFrame() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+
+    // button_down 后 WASAPI Start 已完成，但 SendDown 尚未触发（等首帧）。
+    assert(fake_renderer != nullptr);
+    assert(fake_renderer->start_count == 1);
+    assert(fake_hotkey != nullptr);
+    assert(fake_hotkey->send_down_count == 0);
+
+    // 注入有效 Opus 首帧（解码成功入 ring_buffer）后才 SendDown 弹框。
+    AudioFrame first;
+    first.session_id = 7;
+    first.seq = 1;
+    first.payload = EncodeOpusPacket(MakeSinePcm(440));
+    ble_ptr->on_audio_frame("5A74", first);
+    assert(fake_hotkey->send_down_count == 1);
+}
+
+// 首帧到达前用户已松开（快速点按）：未 SendDown 故 Stop 时不补 SendUp，会话正常收尾回 ready。
+void TestCoordinatorWechatHotkeySkippedBeforeFirstFrameButtonUp() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 首帧前即松开：未 SendDown，Stop 不补 SendUp。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+
+    assert(fake_hotkey != nullptr);
+    assert(fake_hotkey->send_down_count == 0);
+    assert(fake_hotkey->send_up_count == 0);
+    assert(!ble_ptr->sent_ui_states.empty());
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+}
+
+// 首帧 SendDown 后 button_up：Stop 必须配对 SendUp，否则 Ctrl+Win 卡住。
+void TestCoordinatorWechatHotkeySendUpPairedAfterFirstFrame() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    AudioFrame first;
+    first.session_id = 7;
+    first.seq = 1;
+    first.payload = EncodeOpusPacket(MakeSinePcm(440));
+    ble_ptr->on_audio_frame("5A74", first);
+    assert(fake_hotkey->send_down_count == 1);
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+    assert(fake_hotkey->send_up_count == 1);
+}
+
+// 首帧解码失败（无效 Opus payload）时不 SendDown，等下一帧解码成功才弹框。
+void TestCoordinatorWechatHotkeySkippedOnDecodeFailure() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 无效 Opus payload（{1,2,3,4}）解码失败，不 SendDown。
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1));
+    assert(fake_hotkey->send_down_count == 0);
+    // 下一帧有效 Opus，解码成功 -> SendDown。
+    AudioFrame valid;
+    valid.session_id = 7;
+    valid.seq = 2;
+    valid.payload = EncodeOpusPacket(MakeSinePcm(440));
+    ble_ptr->on_audio_frame("5A74", valid);
+    assert(fake_hotkey->send_down_count == 1);
+}
+
+// 首帧即 audio_end（空 payload，极端短按）时不 SendDown，正常收尾回 ready。
+void TestCoordinatorWechatHotkeySkippedOnEmptyEndFirstFrame() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(7, 1));
+
+    assert(fake_hotkey->send_down_count == 0);
+    assert(fake_hotkey->send_up_count == 0);
+    assert(!ble_ptr->sent_ui_states.empty());
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
 }
 
 void TestTencentProviderSelection() {
@@ -4070,6 +4262,12 @@ void TestWechatNoWarnWhenForegroundNormal() {
     coordinator.Start();
 
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 新时序：首帧 Opus 解码成功才 SendDown，注入有效首帧触发弹框。
+    AudioFrame first;
+    first.session_id = 7;
+    first.seq = 1;
+    first.payload = EncodeOpusPacket(MakeSinePcm(440));
+    ble_ptr->on_audio_frame("5A74", first);
     ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
 
     assert(ui.notifications.empty());
@@ -4100,6 +4298,12 @@ void TestWechatNoProbeNoWarn() {
     coordinator.Start();
 
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 新时序：首帧 Opus 解码成功才 SendDown，注入有效首帧触发弹框。
+    AudioFrame first;
+    first.session_id = 7;
+    first.seq = 1;
+    first.payload = EncodeOpusPacket(MakeSinePcm(440));
+    ble_ptr->on_audio_frame("5A74", first);
     ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
 
     assert(ui.notifications.empty());
@@ -4278,7 +4482,12 @@ int main() {
     TestCoordinatorWechatInputMethodRecoversFromStaleActive();
     TestCoordinatorWechatRecordingHardTimeoutRecoversFromLostButtonUp();
     TestCoordinatorWechatModeSendsInstantInteractionMode();
-    TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFailure();
+    TestCoordinatorWechatSessionRendererStartFailureSkipsHotkey();
+    TestCoordinatorWechatHotkeyDeferredUntilFirstAudioFrame();
+    TestCoordinatorWechatHotkeySkippedBeforeFirstFrameButtonUp();
+    TestCoordinatorWechatHotkeySendUpPairedAfterFirstFrame();
+    TestCoordinatorWechatHotkeySkippedOnDecodeFailure();
+    TestCoordinatorWechatHotkeySkippedOnEmptyEndFirstFrame();
     TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice();
     TestCoordinatorWechatInputMethodNoSwitchWhenDisabled();
     TestWechatWarnsWhenForegroundElevated();
