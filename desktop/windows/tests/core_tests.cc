@@ -18,6 +18,7 @@
 #include "wasapi_render_sink.h"
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
+#include "default_audio_device_controller.h"
 
 #include <algorithm>
 #include <cassert>
@@ -373,6 +374,64 @@ public:
 
     mutable int send_down_count = 0;
     mutable int send_up_count = 0;
+};
+
+// 宽字符串大小写不敏感子串匹配（Fake 设备枚举用，仅 ASCII 足够匹配 "CABLE Output"）。
+bool ContainsWide(std::wstring_view haystack, std::wstring_view needle) {
+    if (needle.empty()) return true;
+    if (needle.size() > haystack.size()) return false;
+    auto lower = [](wchar_t c) {
+        return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c | 0x20) : c;
+    };
+    for (std::size_t i = 0; i <= haystack.size() - needle.size(); ++i) {
+        bool match = true;
+        for (std::size_t j = 0; j < needle.size(); ++j) {
+            if (lower(haystack[i + j]) != lower(needle[j])) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+// 测试用默认录音设备切换器：解耦真实 IPolicyConfig COM，记录调用供断言。
+class FakeDefaultAudioDeviceController : public IDefaultAudioDeviceController {
+public:
+    struct SetCall {
+        std::wstring device_id;
+        std::vector<DeviceRole> roles;
+    };
+
+    // 预设状态：当前默认设备与设备枚举列表。
+    std::optional<AudioDeviceInfo> default_capture;
+    std::vector<AudioDeviceInfo> capture_devices;
+    bool set_result = true;
+
+    std::optional<AudioDeviceInfo> GetDefaultCapture(DeviceRole) override {
+        ++get_call_count;
+        return default_capture;
+    }
+    std::optional<AudioDeviceInfo> FindCaptureByName(std::wstring_view sub) override {
+        ++find_call_count;
+        for (const auto& d : capture_devices) {
+            if (ContainsWide(d.friendly_name, sub)) return d;
+        }
+        return std::nullopt;
+    }
+    bool SetDefaultCapture(const std::wstring& id, std::vector<DeviceRole> roles) override {
+        ++set_call_count;
+        set_calls.push_back({id, roles});
+        if (set_result) {
+            for (const auto& d : capture_devices) {
+                if (d.id == id) { default_capture = d; break; }
+            }
+        }
+        return set_result;
+    }
+
+    int get_call_count = 0;
+    int find_call_count = 0;
+    int set_call_count = 0;
+    std::vector<SetCall> set_calls;
 };
 
 StateEvent ButtonEvent(const std::string& event,
@@ -3648,6 +3707,90 @@ void TestConfigTemplateSeeding() {
     std::filesystem::remove_all(base);
 }
 
+// auto_switch=true 时 Start 把默认录音设备(eConsole)切到 CABLE Output，Stop 切回原设备。
+// 角色分离：SetDefaultCapture 的 roles 恒为 {kConsole}，不碰 eCommunications。
+void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.auto_switch_default_recording_device = true;
+    config.wechat_input_method.virtual_mic_capture_name = "CABLE Output";
+
+    auto fake_switcher = std::make_unique<FakeDefaultAudioDeviceController>();
+    fake_switcher->default_capture = AudioDeviceInfo{L"{real-mic}", L"Realtek Mic"};
+    fake_switcher->capture_devices = {
+        AudioDeviceInfo{L"{real-mic}", L"Realtek Mic"},
+        AudioDeviceInfo{L"{cable-out}", L"CABLE Output (VB-Audio Virtual Cable)"},
+    };
+    FakeDefaultAudioDeviceController* switcher_ptr = fake_switcher.get();
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        },
+        [&]() { return std::move(fake_switcher); });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+
+    // Start：切到 CABLE Output，角色恒 eConsole。
+    assert(switcher_ptr->set_call_count >= 1);
+    assert(switcher_ptr->set_calls.back().device_id == L"{cable-out}");
+    assert(switcher_ptr->set_calls.back().roles ==
+           std::vector<DeviceRole>{DeviceRole::kConsole});
+
+    // 松开：切回原设备，角色仍 eConsole。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+    assert(switcher_ptr->set_call_count >= 2);
+    assert(switcher_ptr->set_calls.back().device_id == L"{real-mic}");
+    assert(switcher_ptr->set_calls.back().roles ==
+           std::vector<DeviceRole>{DeviceRole::kConsole});
+}
+
+// auto_switch=false 时不触碰默认录音设备。
+void TestCoordinatorWechatInputMethodNoSwitchWhenDisabled() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    // auto_switch 默认 false。
+
+    auto fake_switcher = std::make_unique<FakeDefaultAudioDeviceController>();
+    FakeDefaultAudioDeviceController* switcher_ptr = fake_switcher.get();
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        },
+        [&]() { return std::move(fake_switcher); });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+
+    assert(switcher_ptr->set_call_count == 0);
+    assert(switcher_ptr->get_call_count == 0);
+}
+
 int main() {
     TestDeviceIds();
     TestPairDeviceHelpers();
@@ -3772,5 +3915,7 @@ int main() {
     TestCoordinatorWechatInputMethodRecoversFromStaleActive();
     TestCoordinatorWechatModeSendsInstantInteractionMode();
     TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFailure();
+    TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice();
+    TestCoordinatorWechatInputMethodNoSwitchWhenDisabled();
     return 0;
 }

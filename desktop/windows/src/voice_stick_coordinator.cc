@@ -34,7 +34,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
                                              InputInjector* input_injector,
                                              std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory,
                                              std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory,
-                                             std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory)
+                                             std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory,
+                                             std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory)
     : config_(std::move(config)),
       ble_(std::move(ble)),
       asr_(std::move(asr)),
@@ -46,7 +47,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
       debug_audio_recorder_(config_.debug_audio_cache, config_.debug_audio_directory),
       paired_device_ids_(config_.paired_device_ids),
       wechat_renderer_factory_(std::move(wechat_renderer_factory)),
-      wechat_hotkey_factory_(std::move(wechat_hotkey_factory)) {
+      wechat_hotkey_factory_(std::move(wechat_hotkey_factory)),
+      wechat_device_switcher_factory_(std::move(wechat_device_switcher_factory)) {
     for (const auto& entry : config_.paired_devices) {
         if (entry.device_id.empty()) continue;
         auto& info = firmware_info_by_device_id_[entry.device_id];
@@ -509,6 +511,34 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
                          ? wechat_hotkey_factory_(config_.wechat_input_method.hotkey)
                          : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.hotkey);
 
+    // auto_switch：录音期把默认录音设备(eConsole)切到虚拟麦克风(CABLE Output)，松开切回。
+    // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。
+    // 必须在 SendDown 之前完成：微信弹框即从默认设备取音，未切好会取到真实麦。
+    if (config_.wechat_input_method.auto_switch_default_recording_device) {
+        if (!wechat_device_switcher_) {
+            wechat_device_switcher_ = wechat_device_switcher_factory_
+                ? wechat_device_switcher_factory_()
+                : nullptr;  // 生产 COM 实现后续接入（DefaultAudioDeviceController）。
+        }
+        if (wechat_device_switcher_) {
+            auto saved = wechat_device_switcher_->GetDefaultCapture(DeviceRole::kConsole);
+            std::wstring cable_name_w(
+                config_.wechat_input_method.virtual_mic_capture_name.begin(),
+                config_.wechat_input_method.virtual_mic_capture_name.end());
+            auto cable = wechat_device_switcher_->FindCaptureByName(cable_name_w);
+            if (saved && cable &&
+                wechat_device_switcher_->SetDefaultCapture(cable->id, {DeviceRole::kConsole})) {
+                saved_default_capture_id_ = saved->id;
+            } else {
+                LogCoordinatorLine("auto_switch: failed to switch default capture to " +
+                                   config_.wechat_input_method.virtual_mic_capture_name);
+                // 不阻断会话：renderer.Start 会自行报错或正常，保持现有错误路径。
+            }
+        } else {
+            LogCoordinatorLine("auto_switch: enabled but no device switcher available");
+        }
+    }
+
     // 先发热键触发微信输入法弹框，再启动 WASAPI 渲染：WASAPI Start 同步耗时几十毫秒
     // （CoInitializeEx + 设备枚举 + InitializeStream + 起线程），若在 SendDown 之前执行会把
     // 弹框时刻推迟几十毫秒。音频晚几十毫秒到达虚拟麦不影响识别（微信面板有缓冲）。
@@ -546,6 +576,13 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     }
     if (wechat_renderer_) {
         wechat_renderer_->Stop();
+    }
+    // 切回原默认录音设备(eConsole)。须在 renderer->Stop(drain 完成)之后：drain 期间
+    // renderer 仍往 CABLE Input 写，提前切回会让微信取音源错乱、丢尾音。
+    if (saved_default_capture_id_.has_value() && wechat_device_switcher_) {
+        wechat_device_switcher_->SetDefaultCapture(*saved_default_capture_id_,
+                                                   {DeviceRole::kConsole});
+        saved_default_capture_id_.reset();
     }
     if (wechat_ring_buffer_) {
         wechat_ring_buffer_->Clear();

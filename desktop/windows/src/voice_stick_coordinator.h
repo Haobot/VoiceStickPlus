@@ -5,6 +5,7 @@
 #include "asr_protocol.h"
 #include "audio_opus_decoder.h"
 #include "ble_protocol.h"
+#include "default_audio_device_controller.h"
 #include "debug_audio_recorder.h"
 #include "firmware_manifest.h"
 #include "llm_translation_client.h"
@@ -178,7 +179,8 @@ public:
                           InputInjector* input_injector,
                           std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory = {},
                           std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory = {},
-                          std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory = {});
+                          std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory = {},
+                          std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory = {});
     ~VoiceStickCoordinator();
 
     void Start();
@@ -438,6 +440,12 @@ private:
     // 工厂注入（测试用 fake 解耦真实 WASAPI/SendInput）；默认空→make_unique 真实实现。
     std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory_;
     std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory_;
+    // 自动切换默认录音设备：录音期切 eConsole 到 CABLE Output，松开切回。角色分离只切 eConsole，
+    // eCommunications 保持真实麦不动。factory 为空时生产 COM 实现后续接入（暂 nullptr 降级）。
+    std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory_;
+    std::unique_ptr<IDefaultAudioDeviceController> wechat_device_switcher_;
+    // Start 时记录的原 eConsole 默认设备 ID（有值=当前已切到 CABLE，Stop 切回此 ID）。
+    std::optional<std::wstring> saved_default_capture_id_;
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
     static constexpr std::chrono::milliseconds kAudioEndTimeout{1000};
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
