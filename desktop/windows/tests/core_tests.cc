@@ -19,6 +19,7 @@
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
 #include "default_audio_device_controller.h"
+#include "device_switch_state.h"
 
 #include <algorithm>
 #include <cassert>
@@ -3719,6 +3720,8 @@ void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
     config.wechat_input_method.auto_switch_default_recording_device = true;
     config.wechat_input_method.virtual_mic_capture_name = "CABLE Output";
+    auto state_path = std::filesystem::temp_directory_path() / "voicestick_auto_switch_state.json";
+    std::filesystem::remove(state_path);
 
     auto fake_switcher = std::make_unique<FakeDefaultAudioDeviceController>();
     fake_switcher->default_capture = AudioDeviceInfo{L"{real-mic}", L"Realtek Mic"};
@@ -3736,7 +3739,8 @@ void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
         [](const std::string&) {
             return std::make_unique<FakeWechatInputMethodHotkey>();
         },
-        [&]() { return std::move(fake_switcher); });
+        [&]() { return std::move(fake_switcher); },
+        state_path);
     coordinator.Start();
 
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3744,6 +3748,7 @@ void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
 
     // Start：切到 CABLE Output，角色恒 eConsole。
+    assert(std::filesystem::exists(state_path));
     assert(switcher_ptr->set_call_count >= 1);
     assert(switcher_ptr->set_calls.back().device_id == L"{cable-out}");
     assert(switcher_ptr->set_calls.back().roles ==
@@ -3755,6 +3760,53 @@ void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
     assert(switcher_ptr->set_calls.back().device_id == L"{real-mic}");
     assert(switcher_ptr->set_calls.back().roles ==
            std::vector<DeviceRole>{DeviceRole::kConsole});
+    // Stop 后状态文件清除。
+    assert(!std::filesystem::exists(state_path));
+    std::filesystem::remove(state_path);
+}
+
+// 残留自愈：上次崩溃未切回（状态文件 switched=true），Start 检测并 Restore + 清文件。
+void TestCoordinatorAutoSwitchRecoversStaleState() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.auto_switch_default_recording_device = true;
+
+    auto state_path = std::filesystem::temp_directory_path() / "voicestick_auto_switch_recover.json";
+    std::filesystem::remove(state_path);
+    DeviceSwitchState stale{true, "{real-mic}", "Realtek Mic"};
+    assert(SaveDeviceSwitchState(state_path, stale));
+
+    auto fake_switcher = std::make_unique<FakeDefaultAudioDeviceController>();
+    fake_switcher->capture_devices = {
+        AudioDeviceInfo{L"{real-mic}", L"Realtek Mic"},
+        AudioDeviceInfo{L"{cable-out}", L"CABLE Output"},
+    };
+    FakeDefaultAudioDeviceController* switcher_ptr = fake_switcher.get();
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        },
+        [&]() { return std::move(fake_switcher); },
+        state_path);
+    coordinator.Start();
+
+    // Start 检测残留 -> Restore {real-mic} (eConsole) + 清状态文件。
+    assert(switcher_ptr->set_call_count >= 1);
+    assert(switcher_ptr->set_calls.back().device_id == L"{real-mic}");
+    assert(switcher_ptr->set_calls.back().roles ==
+           std::vector<DeviceRole>{DeviceRole::kConsole});
+    assert(!std::filesystem::exists(state_path));
+
+    std::filesystem::remove(state_path);
 }
 
 // auto_switch=false 时不触碰默认录音设备。
@@ -3789,6 +3841,54 @@ void TestCoordinatorWechatInputMethodNoSwitchWhenDisabled() {
 
     assert(switcher_ptr->set_call_count == 0);
     assert(switcher_ptr->get_call_count == 0);
+}
+
+// 状态文件往返：Save -> Load 一致，含中文 UTF-8 friendly name。
+void TestDeviceSwitchStateRoundTrip() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_device_switch_state_rt.json";
+    std::filesystem::remove(temp);
+    DeviceSwitchState state{true, "{0.0.1.00000000}.{abc}", "麦克风(Realtek)"};
+    assert(SaveDeviceSwitchState(temp, state));
+    DeviceSwitchState loaded{};
+    assert(LoadDeviceSwitchState(temp, loaded));
+    assert(loaded.switched == true);
+    assert(loaded.saved_default_capture_id == "{0.0.1.00000000}.{abc}");
+    assert(loaded.saved_default_capture_name == "麦克风(Realtek)");
+    std::filesystem::remove(temp);
+}
+
+// Clear 删除文件，文件不存在亦成功。
+void TestDeviceSwitchStateClear() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_device_switch_state_clear.json";
+    std::filesystem::remove(temp);
+    DeviceSwitchState state{true, "id", "name"};
+    assert(SaveDeviceSwitchState(temp, state));
+    assert(std::filesystem::exists(temp));
+    assert(ClearDeviceSwitchState(temp));
+    assert(!std::filesystem::exists(temp));
+    assert(ClearDeviceSwitchState(temp));  // 再次 Clear（文件不存在）成功。
+}
+
+// Load 文件不存在：返回未切换空状态（switched=false），非错误。
+void TestDeviceSwitchStateLoadMissingFile() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_device_switch_state_missing.json";
+    std::filesystem::remove(temp);
+    DeviceSwitchState loaded{true, "stale", "stale"};
+    assert(LoadDeviceSwitchState(temp, loaded));
+    assert(loaded.switched == false);
+    assert(loaded.saved_default_capture_id.empty());
+    assert(loaded.saved_default_capture_name.empty());
+}
+
+// wstring ↔ UTF-8 转换往返（含中文与 ASCII）。
+void TestWStringUtf8Conversion() {
+    assert(WStringToUtf8(L"") == "");
+    assert(Utf8ToWString("") == L"");
+    assert(WStringToUtf8(L"ASCII") == "ASCII");
+    assert(Utf8ToWString("ASCII") == L"ASCII");
+    const std::wstring zh = L"麦克风(Realtek)";
+    const std::string u8 = WStringToUtf8(zh);
+    assert(Utf8ToWString(u8) == zh);
 }
 
 int main() {
@@ -3917,5 +4017,10 @@ int main() {
     TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFailure();
     TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice();
     TestCoordinatorWechatInputMethodNoSwitchWhenDisabled();
+    TestCoordinatorAutoSwitchRecoversStaleState();
+    TestDeviceSwitchStateRoundTrip();
+    TestDeviceSwitchStateClear();
+    TestDeviceSwitchStateLoadMissingFile();
+    TestWStringUtf8Conversion();
     return 0;
 }

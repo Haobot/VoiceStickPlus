@@ -35,7 +35,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
                                              std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory,
                                              std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory,
                                              std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory,
-                                             std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory)
+                                             std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory,
+                                             std::filesystem::path device_switch_state_path)
     : config_(std::move(config)),
       ble_(std::move(ble)),
       asr_(std::move(asr)),
@@ -48,7 +49,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
       paired_device_ids_(config_.paired_device_ids),
       wechat_renderer_factory_(std::move(wechat_renderer_factory)),
       wechat_hotkey_factory_(std::move(wechat_hotkey_factory)),
-      wechat_device_switcher_factory_(std::move(wechat_device_switcher_factory)) {
+      wechat_device_switcher_factory_(std::move(wechat_device_switcher_factory)),
+      device_switch_state_path_(std::move(device_switch_state_path)) {
     for (const auto& entry : config_.paired_devices) {
         if (entry.device_id.empty()) continue;
         auto& info = firmware_info_by_device_id_[entry.device_id];
@@ -68,6 +70,7 @@ VoiceStickCoordinator::~VoiceStickCoordinator() {
 }
 
 void VoiceStickCoordinator::Start() {
+    RecoverDeviceSwitchStateIfNeeded();
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
         if (is_shutdown_) return;
         connected_device_ids_.clear();
@@ -529,6 +532,9 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
             if (saved && cable &&
                 wechat_device_switcher_->SetDefaultCapture(cable->id, {DeviceRole::kConsole})) {
                 saved_default_capture_id_ = saved->id;
+                DeviceSwitchState state{true, WStringToUtf8(saved->id),
+                                        WStringToUtf8(saved->friendly_name)};
+                SaveDeviceSwitchState(DeviceSwitchStatePath(), state);
             } else {
                 LogCoordinatorLine("auto_switch: failed to switch default capture to " +
                                    config_.wechat_input_method.virtual_mic_capture_name);
@@ -583,6 +589,7 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
         wechat_device_switcher_->SetDefaultCapture(*saved_default_capture_id_,
                                                    {DeviceRole::kConsole});
         saved_default_capture_id_.reset();
+        ClearDeviceSwitchState(DeviceSwitchStatePath());
     }
     if (wechat_ring_buffer_) {
         wechat_ring_buffer_->Clear();
@@ -612,6 +619,31 @@ void VoiceStickCoordinator::FinishWechatInputMethodRecording() {
 
 bool VoiceStickCoordinator::IsWechatInputMethodActive() const {
     return wechat_input_method_active_;
+}
+
+std::filesystem::path VoiceStickCoordinator::DeviceSwitchStatePath() const {
+    if (!device_switch_state_path_.empty()) return device_switch_state_path_;
+    return config_.ConfigPath().parent_path() / "default_device_switch_state.json";
+}
+
+void VoiceStickCoordinator::RecoverDeviceSwitchStateIfNeeded() {
+    DeviceSwitchState state;
+    if (!LoadDeviceSwitchState(DeviceSwitchStatePath(), state) || !state.switched) return;
+    if (state.saved_default_capture_id.empty()) {
+        ClearDeviceSwitchState(DeviceSwitchStatePath());
+        return;
+    }
+    if (!wechat_device_switcher_ && wechat_device_switcher_factory_) {
+        wechat_device_switcher_ = wechat_device_switcher_factory_();
+    }
+    if (wechat_device_switcher_) {
+        wechat_device_switcher_->SetDefaultCapture(
+            Utf8ToWString(state.saved_default_capture_id), {DeviceRole::kConsole});
+        LogCoordinatorLine("auto_switch: recovered stale default capture device");
+    } else {
+        LogCoordinatorLine("auto_switch: stale state found but no device switcher to restore");
+    }
+    ClearDeviceSwitchState(DeviceSwitchStatePath());
 }
 
 void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std::string& device_id) {

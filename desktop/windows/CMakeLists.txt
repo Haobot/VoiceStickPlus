@@ -73,6 +73,7 @@ add_library(voicestick_core
     src/voice_stick_coordinator.cc
     src/wasapi_virtual_mic_renderer.cc
     src/wechat_input_method_hotkey.cc
+    src/device_switch_state.cc
 )
 
 target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus)
