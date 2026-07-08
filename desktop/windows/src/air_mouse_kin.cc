@@ -21,11 +21,13 @@ double AirMouseGainFactor(double x_abs, const AirMouseCurveParams& curve) {
 
 // 钳位曲线参数到合法范围，保证 low_thresh < high_thresh（防中段除零与曲线退化）。
 // 配置解析与热调参 UI 均复用：越界值夹紧到标定上下限，low≥high 时退 low=high-1。
+// 阈值单位为固件缩放角速率（dps × REPORT_GAIN=4），故默认 100/333 仍落在范围内，
+// 上限放宽到 200/800 以容纳 P1 去双重缩放后的更大数值与用户自定义标定。
 AirMouseCurveParams AirMouseCurveClamp(AirMouseCurveParams curve) {
     if (curve.low_thresh < 1.0) curve.low_thresh = 1.0;
-    if (curve.low_thresh > 30.0) curve.low_thresh = 30.0;
-    if (curve.high_thresh < 30.0) curve.high_thresh = 30.0;
-    if (curve.high_thresh > 80.0) curve.high_thresh = 80.0;
+    if (curve.low_thresh > 200.0) curve.low_thresh = 200.0;
+    if (curve.high_thresh < 50.0) curve.high_thresh = 50.0;
+    if (curve.high_thresh > 800.0) curve.high_thresh = 800.0;
     if (curve.low_thresh >= curve.high_thresh) {
         curve.low_thresh = curve.high_thresh - 1.0;
     }

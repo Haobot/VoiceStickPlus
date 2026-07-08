@@ -749,10 +749,12 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
 AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
     // 角度控制模型（kAngle，默认）：速度命令用瞬时角速率 omega（见 AirMouseTick），
-    // v_target = omega × gain × factor(|omega|)。omega 即固件下发并减零偏后的角速率量，
-    // 与单帧 magnitude 同量级。gain 初值 sensitivity × 320 待真机标定（可能范围 160~640）。
-    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 320.0;
-    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 320.0;
+    // v_target = omega × gain × factor(|omega|)。omega 即固件上报的缩放角速率（dps × REPORT_GAIN=4）。
+    // 增益守恒重标定（P1 去双重缩放）：去掉固件 0.6 后改由本增益统一承担，
+    // gain = sensitivity × 48 使默认物理手感与前代 sensitivity × 320 @ SCALE=0.6 一致。
+    // 真机标定范围约 24~96（对应旧 160~640）。
+    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 48.0;
+    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 48.0;
     p.tau = config_.air_mouse_tau;
     p.invert_y = config_.air_mouse_invert_y;
     // 曲线参数从配置组装，经 AirMouseCurveClamp 钳位（防配置越界致曲线退化或除零）。
@@ -787,7 +789,15 @@ void VoiceStickCoordinator::AirMouseTick() {
         const double omega_age = std::chrono::duration<double>(now - state.last_omega_t).count();
         const bool stale = omega_age > stale_age_sec;
 
-        // 回到中立区（theta/omega 都很小）或 stale 时归零，实现"回正即停"。
+        // 断帧/超龄（stale）：固件约 50Hz 持续上报，停手时下发 omega=0 帧使 last_omega 自然归零；
+        // 但若连接抖动/丢帧导致长期无新帧，kAngle 模式若保留旧 last_omega 会继续驱动光标，
+        // 故此处把 last_omega 归零，使速度环经 tau 滑行停止（修复 P0 引入的"断帧仍持续移动"）。
+        if (stale) {
+            state.last_omega_x = 0.0;
+            state.last_omega_y = 0.0;
+        }
+
+        // 回到中立区（theta/omega 都很小）或 stale 时归零 theta，实现"回正即停"。
         // 对 kRate 模式 theta 仍驱动加速度，归零可重置飞行摇杆状态。
         if (stale ||
             (std::fabs(state.theta_x) < kAirMouseAngleDeadzone &&
