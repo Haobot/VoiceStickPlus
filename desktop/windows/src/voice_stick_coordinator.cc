@@ -748,9 +748,9 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
 
 AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
-    // 角度控制模型：theta = 积分 omega × dt。theta 稳态值约等于 omega × 保持时间（秒），
-    // 典型保持 0.2~1s 时 theta 与单帧 omega 同数量级；为保持相近光标速度，gain 提高 20 倍。
-    // 初值 sensitivity × 320 待真机标定（可能范围 160~640）。
+    // 角度控制模型（kAngle，默认）：速度命令用瞬时角速率 omega（见 AirMouseTick），
+    // v_target = omega × gain × factor(|omega|)。omega 即固件下发并减零偏后的角速率量，
+    // 与单帧 magnitude 同量级。gain 初值 sensitivity × 320 待真机标定（可能范围 160~640）。
     p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 320.0;
     p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 320.0;
     p.tau = config_.air_mouse_tau;
@@ -787,8 +787,8 @@ void VoiceStickCoordinator::AirMouseTick() {
         const double omega_age = std::chrono::duration<double>(now - state.last_omega_t).count();
         const bool stale = omega_age > stale_age_sec;
 
-        // 角度控制：回到中立区（theta/omega 都很小）或 stale 时归零，实现"回正即停"。
-        // 保持较大角度时 theta 保留，光标持续移动。
+        // 回到中立区（theta/omega 都很小）或 stale 时归零，实现"回正即停"。
+        // 对 kRate 模式 theta 仍驱动加速度，归零可重置飞行摇杆状态。
         if (stale ||
             (std::fabs(state.theta_x) < kAirMouseAngleDeadzone &&
              std::fabs(state.theta_y) < kAirMouseAngleDeadzone &&
@@ -799,9 +799,20 @@ void VoiceStickCoordinator::AirMouseTick() {
         }
 
         AirMouseInput input;
-        input.value_x = static_cast<int>(state.theta_x);
-        input.value_y = static_cast<int>(state.theta_y);
-        input.is_angle = true;
+        if (params.control_mode == AirMouseControlMode::kAngle) {
+            // P0 修复：角度控制的速度命令用瞬时角速率 omega（last_omega），而非积分转角 theta。
+            // theta 随持续旋转无限增长，套用增益曲线会正反馈失控（匀速转 3s 光标速度从万级飙到
+            // 数十万 px/s）。改用 omega 后：匀速转=匀速移、停转即停，增益曲线阈值重新对应物理角速率。
+            // kRate 飞行摇杆模式仍用 theta（积分量）驱动加速度，保持原逻辑（见下）。
+            input.value_x = state.last_omega_x;
+            input.value_y = state.last_omega_y;
+            input.is_angle = false;
+        } else {
+            // kRate：theta 控制光标速度变化率，回中后速度保持并摩擦衰减。
+            input.value_x = static_cast<int>(state.theta_x);
+            input.value_y = static_cast<int>(state.theta_y);
+            input.is_angle = true;
+        }
 
         const auto result = AirMouseStep(state.kin, input, dt, stale, params);
         static int tick_log_counter = 0;
@@ -809,8 +820,9 @@ void VoiceStickCoordinator::AirMouseTick() {
             LogCoordinatorLine("tick VS-" + device_id + " vx=" + std::to_string(state.kin.vx) +
                                " dx=" + std::to_string(result.dx) +
                                " stale=" + (stale ? "1" : "0") +
-                               " theta=" + std::to_string(state.theta_x) +
-                               " omx=" + std::to_string(state.last_omega_x));
+                               " mode=" + (params.control_mode == AirMouseControlMode::kAngle ? "angle" : "rate") +
+                               " omx=" + std::to_string(state.last_omega_x) +
+                               " theta=" + std::to_string(state.theta_x));
         }
         if (result.dx != 0 || result.dy != 0) {
             input_injector_->MoveMouse(result.dx, result.dy);
@@ -823,7 +835,8 @@ void VoiceStickCoordinator::HandleMotionEvent(const MotionEvent& event, const st
     if (!IsAirMouseActive(device_id)) return;
     auto& state = air_mouse_states_[device_id];
 
-    // 角度控制模型：对 omega 积分得到相对中立姿态的偏转角 theta。
+    // theta 集成：对 omega 积分得到相对中立姿态的偏转角，供 kRate 飞行摇杆模式（theta→加速度）使用。
+    // kAngle 模式已改为直接用瞬时 omega 驱动速度，不再依赖 theta。
     // 用 tick 周期作为 dt 估计，避免 BLE 帧率抖动和测试连续调用导致 dt≈0；固件 50Hz 与桌面 60Hz 接近。
     const double dt = std::chrono::duration<double>(kAirMouseTickInterval).count();
 

@@ -1799,8 +1799,9 @@ void TestCoordinatorAirMouseResetOnForget() {
     assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
 }
 
-// 10 级灵敏度下，真机典型手腕转动(omega≈24)在 0.8s 内应产生足够光标位移。
-// 角度控制模型 gain×20 后，同 omega 下 theta 累积使位移比速度模型更大。
+// 10 级灵敏度下，真机典型手腕角速率(omega=24)在 0.8s 内应产生足够光标位移。
+// kAngle 模式现直接用瞬时 omega 驱动速度：v = omega×gain×factor(|omega|)，
+// 转动期间即达到稳态速度，位移充足。
 void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -1824,9 +1825,8 @@ void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
     assert(input.total_dx >= 4000);  // 角度模型 theta 累积，0.8s 应产生足够位移
 }
 
-// 10 级灵敏度下，转动到固定角度后保持，平均光标速度受增益曲线限制。
-// 角度模型持续转动会使 theta 累积、速度上升；本测试模拟"转到位后保持"的真实手势，
-// 约束保持阶段的稳态速度不过快。
+// P0 回归：kAngle 模式持续匀速转动时，光标速度应恒定（不随转动时长增长），即无失控。
+// 旧实现把积分转角 theta 套入增益曲线，匀速转 3s 速度从万级飙到数十万 px/s。
 void TestCoordinatorAirMouseSustainedRunBounded() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -1843,23 +1843,31 @@ void TestCoordinatorAirMouseSustainedRunBounded() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
-    // 阶段 1：转动 0.5s，theta 累积到约 12。
+    // 阶段 1：匀速转动 0.5s（omega=24 恒定），光标达到稳态速度。
     for (int i = 0; i < 30; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
         coordinator.AirMouseTick();
     }
-    // 阶段 2：保持 omega=0 4.5s，theta 稳定在约 12，光标以稳态速度持续移动。
+    const int dx_first = input.total_dx;
+    // 阶段 2：继续匀速转动 4.5s（omega=24 恒定）。速度应保持不变（无失控）。
     for (int i = 0; i < 270; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
         coordinator.AirMouseTick();
     }
+    const int dx_second = input.total_dx - dx_first;
+    const double v1 = static_cast<double>(dx_first) / 0.5;
+    const double v2 = static_cast<double>(dx_second) / 4.5;
+    // 两段时长不同(0.5s vs 4.5s)，但都是匀速转动：稳态速度应一致，v2 不应因转动更久而变大。
+    // 允许速度环收敛/帧边界差异，但绝不应指数增长（旧 bug 下 v2 会是 v1 的数十倍）。
+    assert(v2 <= v1 * 2.0);
+    // 整体有界：5s 总位移不应离谱（旧 bug 会到数百万 px）。
     const double avg_speed = static_cast<double>(input.total_dx) / 5.0;
-    assert(avg_speed <= 50000.0);  // 固定角度保持阶段平均速度有界
+    assert(avg_speed <= 200000.0);
 }
 
-// 角度控制：转动后回正到中立姿态，theta 归零，光标停止。
-// 旧速度模型 omega=0 即停；新角度模型需回正才停，本测试约束"回正即停"。
-void TestCoordinatorAirMouseStopsWhenThetaZero() {
+// 角度控制（kAngle）：停手（omega=0）后光标应在 tau 惯性滑行（≈0.15s）后彻底停止，
+// 而非持续移动。等价于旧的"回正即停"。
+void TestCoordinatorAirMouseStopsWhenOmegaZero() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -1876,7 +1884,7 @@ void TestCoordinatorAirMouseStopsWhenThetaZero() {
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
 
-    // 转动 0.5s：theta 从 0 累积到约 12（24×0.5）。
+    // 转动 0.5s：光标移动。
     for (int i = 0; i < 30; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
         coordinator.AirMouseTick();
@@ -1884,25 +1892,24 @@ void TestCoordinatorAirMouseStopsWhenThetaZero() {
     const int dx_during = input.total_dx;
     assert(dx_during > 0);
 
-    // 回正：反向 omega 让 theta 回到 0（约 0.5s）。
-    for (int i = 0; i < 30; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{-24, 0});
+    // 停手：omega=0 持续 1.0s，光标应在惯性滑行后停止。
+    for (int i = 0; i < 60; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
         coordinator.AirMouseTick();
     }
-
-    // 中立区：theta/omega 均接近 0，归零后光标停止。
-    const int count_before = input.move_mouse_count;
+    // 关键：再额外 0.5s 中立应几乎不动（确认已停，而非持续移动）。
+    const int count_before_extra = input.total_dx;
     for (int i = 0; i < 30; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
         coordinator.AirMouseTick();
     }
-    // 角度模型下回正过程本身会产生位移；回正完成 + 中立区归零后，额外滑行应有限。
-    const int dx_after = input.total_dx - dx_during;
-    assert(dx_after < 2000);
+    const int dx_extra = input.total_dx - count_before_extra;
+    assert(dx_extra < 500);  // 已停，额外位移极小
 }
 
-// 角度控制：转动后保持 omega=0，theta 保留，光标持续移动（核心需求）。
-void TestCoordinatorAngleIntegratesToSustainedMovement() {
+// kAngle 模式：光标仅在手腕转动（omega≠0）时移动；停转（omega=0）后应在惯性滑行后停止，
+// 不再持续移动。这是 P0 修复的核心行为——旧实现"保持 theta 即持续移动"，会导致持续旋转失控。
+void TestCoordinatorAngleMovesOnlyWhileRotating() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -1919,23 +1926,74 @@ void TestCoordinatorAngleIntegratesToSustainedMovement() {
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
 
-    // 阶段 1：转动 0.5s 累积 theta。
+    // 阶段 1：转动 0.5s。
     for (int i = 0; i < 30; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
         coordinator.AirMouseTick();
     }
     const int dx_while_moving = input.total_dx;
+    assert(dx_while_moving > 0);
 
-    // 阶段 2：omega=0 保持 0.5s，theta 应保持非零，光标继续同向移动。
+    // 阶段 2：omega=0 保持 0.5s，光标仅余 tau 惯性滑行（≈0.15s）后停止，不应持续移动。
     for (int i = 0; i < 30; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
         coordinator.AirMouseTick();
     }
     const int dx_while_holding = input.total_dx - dx_while_moving;
+    // 保持阶段位移应远小于"等同时长持续转动"的贡献（即不是 sustained，仅是惯性滑行）。
+    assert(dx_while_holding < dx_while_moving * 0.2);
 
-    // 保持阶段必须有明显同向位移（旧速度模型下 omega=0 后几乎不移动）。
-    assert(dx_while_holding > 1000);
-    assert(input.total_dx > dx_while_moving * 1.5);  // 保持阶段贡献显著
+    // 阶段 3：再 0.5s 中立，应基本不动（已停）。
+    const int before_extra = input.total_dx;
+    for (int i = 0; i < 30; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_extra = input.total_dx - before_extra;
+    assert(dx_extra < 500);
+}
+
+// P0 显式回归：匀速转动下，任意等长时段的位移应近似相等（速度恒定），
+// 证明增益曲线不再对"累计转角"作用而正反馈失控。
+void TestCoordinatorAirMouseSustainedRotationConstantSpeed() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+
+    // 预热 0.3s 让速度环收敛到稳态。
+    for (int i = 0; i < 18; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        coordinator.AirMouseTick();
+    }
+    const int base = input.total_dx;
+    // 窗口 A：匀速转动 1.0s（omega=24 恒定）。
+    for (int i = 0; i < 60; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_a = input.total_dx - base;
+    // 窗口 B：继续匀速转动 1.0s（同样 omega=24）。
+    for (int i = 0; i < 60; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_b = input.total_dx - base - dx_a;
+    // 匀速转动时两窗口位移应近似相等（速度恒定，无增长/失控）。
+    assert(dx_b > 0);
+    assert(std::fabs(static_cast<double>(dx_b) - static_cast<double>(dx_a)) <=
+           std::fabs(static_cast<double>(dx_a)) * 0.2);
 }
 
 // 侧键双击恢复上次输入确认（与单击进体感分离）。
@@ -3652,8 +3710,9 @@ int main() {
     TestCoordinatorAirMouseResetOnForget();
     TestCoordinatorAirMouseHighSensitivityRealisticSpeed();
     TestCoordinatorAirMouseSustainedRunBounded();
-    TestCoordinatorAirMouseStopsWhenThetaZero();
-    TestCoordinatorAngleIntegratesToSustainedMovement();
+    TestCoordinatorAirMouseSustainedRotationConstantSpeed();
+    TestCoordinatorAirMouseStopsWhenOmegaZero();
+    TestCoordinatorAngleMovesOnlyWhileRotating();
     TestCoordinatorSecondaryDoubleClickRestoresLastInput();
     TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse();
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();

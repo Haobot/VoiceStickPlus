@@ -38,8 +38,11 @@ struct AirMouseCurveParams {
 };
 
 // 体感鼠标控制模式。
-// kAngle：角度控制，theta 直接映射为光标速度（回中即停）。
-// kRate：飞行摇杆/变化率控制，theta 映射为光标速度的变化率（加速度），回中后速度保持。
+// kAngle：角度控制，速度命令由瞬时角速率 omega 直接映射为光标速度
+//   （匀速转=匀速移，停转即停），增益曲线作用于 omega。由协调器在 AirMouseTick
+//   把固件上报的 omega 作为 input.value 传入，避免积分转角 theta 无限增长导致失控。
+// kRate：飞行摇杆/变化率控制，input.value 为积分转角 theta，映射为光标速度的变化率
+//   （加速度），回中后速度保持并由摩擦衰减。
 enum class AirMouseControlMode {
     kAngle,
     kRate,
