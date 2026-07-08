@@ -159,12 +159,13 @@ struct AppConfig {
     // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。
     bool air_mouse_invert_y = false;
     // 体感鼠标：三段线性增益曲线参数（运行期可变，热调参面板可调）。
-    // 默认 100/333/0.15/4.0（P1 去双重缩放后重标定：阈值单位为固件缩放角速率 dps×REPORT_GAIN=4，
-    // 对应物理拐点约 25/83 dps，与旧 15/50 @ SCALE=0.6 同手感），详见 air_mouse_kin.h AirMouseCurveParams。
-    // 运行期组装时经 AirMouseCurveClamp 钳位（low<high 不变式、界限 [1,200]/[50,800]），配置文件可存原值。
+    // 默认 100/333/0.25/4.0（P2：low_factor 由 0.15→0.25 补偿固件死区 3.0→1.5dps 下调；
+    // 阈值单位为固件缩放角速率 dps×REPORT_GAIN=4，对应物理特征点约 25/83 dps），
+    // 详见 air_mouse_kin.h AirMouseCurveParams。曲线为平滑 sigmoid（无折角）。
+    // 运行期组装时经 AirMouseCurveClamp 钳位（low<high 不变式、界限 [1,200]/[50,800]/factor[0.05,0.5]/[2,6]），配置文件可存原值。
     double air_mouse_curve_low_thresh = 100.0;
     double air_mouse_curve_high_thresh = 333.0;
-    double air_mouse_curve_low_factor = 0.15;
+    double air_mouse_curve_low_factor = 0.25;
     double air_mouse_curve_high_factor = 4.0;
     // 体感鼠标：控制模式。"angle" = 角度控制（theta 直接映射速度，回中即停）；
     // "rate" = 飞行摇杆/变化率控制（theta 映射加速度，回中后速度保持）。默认 "rate"。

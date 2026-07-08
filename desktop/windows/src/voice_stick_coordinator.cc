@@ -750,9 +750,9 @@ AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     AirMouseParams p;
     // 角度控制模型（kAngle，默认）：速度命令用瞬时角速率 omega（见 AirMouseTick），
     // v_target = omega × gain × factor(|omega|)。omega 即固件上报的缩放角速率（dps × REPORT_GAIN=4）。
-    // 增益守恒重标定（P1 去双重缩放）：去掉固件 0.6 后改由本增益统一承担，
-    // gain = sensitivity × 48 使默认物理手感与前代 sensitivity × 320 @ SCALE=0.6 一致。
-    // 真机标定范围约 24~96（对应旧 160~640）。
+    // 增益守恒重标定（P1 去双重缩放）：gain = sensitivity × 48，甩动段（high_factor）速度与前代一致。
+    // P2 曲线改为平滑 sigmoid、low_factor 0.15→0.25：低端精细段响应更跟手（10dps 处约 2.8× 更灵敏），
+    // 40dps 处约 +12%，甩动段基本不变；gain 维持 48 无需重标。真机标定范围约 24~96。
     p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 48.0;
     p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 48.0;
     p.tau = config_.air_mouse_tau;

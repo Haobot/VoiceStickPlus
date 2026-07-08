@@ -4,19 +4,20 @@
 
 namespace voicestick {
 
-// 三段线性增益因子：微调段压低、中段线性过渡、甩动段放大（慢稳快猛）。
-// 拐点 low_thresh/high_thresh 处两侧 factor 连续，无跳变。curve 运行期可变（热调参）。
+// 平滑 sigmoid 增益因子：微调段压低、甩动段放大（慢稳快猛），全程连续可微、无折角感（P2）。
+//   mid   = (low_thresh + high_thresh) / 2   曲线对称中心
+//   width = (high_thresh - low_thresh) / 2   过渡半宽，特征点落在 ±1 个 width 处
+//   factor = low + (high - low) * 0.5 * (1 + tanh((|x| - mid) / width))
+//   |x|→0   → 趋近 low_factor；|x|→∞ → 趋近 high_factor；|x|=mid → (low+high)/2。
+// 任何 |x| 处都平滑，拐点 low/high_thresh 不再是硬折角；curve 运行期可变（热调参）。
 double AirMouseGainFactor(double x_abs, const AirMouseCurveParams& curve) {
     const double a = std::fabs(x_abs);
-    if (a < curve.low_thresh) {
-        return curve.low_factor;
-    }
-    if (a < curve.high_thresh) {
-        // 中段线性插值 low_factor → high_factor。
-        return curve.low_factor + (curve.high_factor - curve.low_factor) *
-               (a - curve.low_thresh) / (curve.high_thresh - curve.low_thresh);
-    }
-    return curve.high_factor;
+    const double mid = 0.5 * (curve.low_thresh + curve.high_thresh);
+    double half = 0.5 * (curve.high_thresh - curve.low_thresh);
+    if (half < 1e-6) half = 1.0;  // low≈high 退化保护（正常由 clamp 保证 low<high）
+    const double width = half;
+    return curve.low_factor +
+           (curve.high_factor - curve.low_factor) * 0.5 * (1.0 + std::tanh((a - mid) / width));
 }
 
 // 钳位曲线参数到合法范围，保证 low_thresh < high_thresh（防中段除零与曲线退化）。
