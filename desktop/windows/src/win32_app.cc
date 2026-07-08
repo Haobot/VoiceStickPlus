@@ -8,6 +8,7 @@
 #include "resource.h"
 
 #include <Shellapi.h>
+#include <tlhelp32.h>
 #include <winsparkle.h>
 #include <winrt/base.h>
 
@@ -40,6 +41,7 @@ constexpr UINT kMenuHoldToTalk = 1009;
 constexpr UINT kMenuClickToTalk = 1010;
 constexpr UINT kMenuAutoEnter = 1011;
 constexpr UINT kMenuLaunchAtLogin = 1014;
+constexpr UINT kMenuRelaunchElevated = 1015;
 constexpr UINT kMenuOutputFocusedApp = 1012;
 constexpr UINT kMenuOutputSubtitle = 1013;
 constexpr UINT kMenuForgetBase = 2100;
@@ -91,6 +93,48 @@ std::wstring CurrentExecutableCommand() {
     path.resize(length);
     return L"\"" + path + L"\"";
 }
+
+// 探测前台窗口所属进程是否高于本进程完整性：asInvoker（Medium）对 High 进程
+// OpenProcess(PROCESS_QUERY_INFORMATION) 返回 ERROR_ACCESS_DENIED，借此判断 UIPI 隔离。
+// 进程名用 Toolhelp32 快照获取（不依赖对目标进程二次 OpenProcess，免受其 DACL 影响）。
+class Win32ForegroundProcessProbe : public IForegroundProcessProbe {
+public:
+    bool IsForegroundHigherIntegrity(std::wstring& process_name) override {
+        const HWND foreground = GetForegroundWindow();
+        if (!foreground) return false;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(foreground, &pid);
+        if (pid == 0) return false;
+        // QUERY_INFORMATION(0x0400) 对同会话同级进程默认放行；失败且 ACCESS_DENIED 提示对方更高 IL。
+        const HANDLE handle = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+        if (handle) {
+            CloseHandle(handle);
+            return false;
+        }
+        if (GetLastError() != ERROR_ACCESS_DENIED) return false;
+        process_name = ProcessExeNameByPid(pid);
+        return true;
+    }
+
+private:
+    static std::wstring ProcessExeNameByPid(DWORD pid) {
+        const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return L"(unknown)";
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        std::wstring name = L"(unknown)";
+        if (Process32FirstW(snap, &entry)) {
+            do {
+                if (entry.th32ProcessID == pid) {
+                    name = entry.szExeFile;
+                    break;
+                }
+            } while (Process32NextW(snap, &entry));
+        }
+        CloseHandle(snap);
+        return name;
+    }
+};
 
 std::wstring Utf16FromUtf8(std::string_view text) {
     if (text.empty()) return {};
@@ -356,6 +400,8 @@ int Win32App::Run() {
                 air_mouse_timer_active_ = false;
             }
         };
+        // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
+        coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
         coordinator_->Start();
         LogLine("Coordinator started");
 
@@ -723,6 +769,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         case kMenuQuit:
             ShutdownAndQuit();
             return 0;
+        case kMenuRelaunchElevated:
+            RelaunchElevatedAndQuit();
+            return 0;
         case kMenuHotkeyEnabled:
             config_.global_hotkey_enabled = !config_.global_hotkey_enabled;
             SaveInputOptions();
@@ -862,6 +911,32 @@ void Win32App::ShutdownAndQuit() {
     pair_device_dialog_.reset();
     if (coordinator_) coordinator_->Shutdown();
     DestroyWindow(hwnd_);
+}
+
+void Win32App::RelaunchElevatedAndQuit() {
+    // 取自身 exe 纯路径（不带引号，ShellExecuteW lpFile 需纯路径）。
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) {
+        LogLine("RelaunchElevatedAndQuit: GetModuleFileNameW failed err=" + std::to_string(GetLastError()));
+        ShowNotification("提权重启失败", "无法获取程序路径，请手动右键 VoiceStick.exe 以管理员身份运行。");
+        return;
+    }
+    path.resize(length);
+    // runas 触发 UAC 提权；--relaunch 参数让新实例跳过单例立即退出、改为等待旧实例释放
+    // 单例 Mutex 后再接管（否则旧实例尚未退出、新实例拿到 ALREADY_EXISTS 被赶走，新旧都没了）。
+    const HINSTANCE inst = ShellExecuteW(hwnd_, L"runas", path.c_str(), L"--relaunch", nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(inst) <= 32) {
+        LogLine("RelaunchElevatedAndQuit: ShellExecuteW runas failed code=" +
+                std::to_string(static_cast<int>(reinterpret_cast<INT_PTR>(inst))));
+        ShowNotification("提权重启失败", "UAC 未确认或失败，请手动右键 VoiceStick.exe 以管理员身份运行。");
+        return;
+    }
+    ShutdownAndQuit();
 }
 
 void Win32App::DispatchToUi(std::function<void()> action) {
@@ -1206,6 +1281,7 @@ void Win32App::ShowTrayMenu() {
                     TrW(StringId::kMenuCheckAppUpdates, language).c_str());
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuRelaunchElevated, L"以管理员身份重启");
     AppendMenuW(menu, MF_STRING, kMenuQuit, TrW(StringId::kMenuQuit, language).c_str());
     POINT point{};
     GetCursorPos(&point);
