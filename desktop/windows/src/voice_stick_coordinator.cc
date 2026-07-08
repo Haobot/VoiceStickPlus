@@ -459,10 +459,15 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
             // 空 payload + IsEnd：固件用此表示音频流结束（与主路径一致），
             // 需收尾调试音频并结束会话，不能由下面的空 payload 早退跳过。
             wechat_audio_end_received_ = true;
-            debug_audio_recorder_.Finish();
+            if (ShouldDiscardWechatRecording()) {
+                debug_audio_recorder_.Discard();
+            } else {
+                debug_audio_recorder_.Finish();
+            }
             active_session_id_.reset();
             end_of_stream = true;
         } else if (!frame.payload.empty()) {
+            ++received_audio_frames_;
             // 先封装 Ogg Opus 并写入调试音频缓存（不依赖解码器，确保解码失败也落盘）。
             auto ogg_chunk = ogg_muxer_.Append(frame.payload, frame.IsEnd());
             debug_audio_recorder_.Append(ogg_chunk);
@@ -476,7 +481,11 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
                                    " error=" + std::to_string(result.opus_error));
                 if (frame.IsEnd()) {
                     wechat_audio_end_received_ = true;
-                    debug_audio_recorder_.Finish();
+                    if (ShouldDiscardWechatRecording()) {
+                        debug_audio_recorder_.Discard();
+                    } else {
+                        debug_audio_recorder_.Finish();
+                    }
                     active_session_id_.reset();
                     end_of_stream = true;
                 }
@@ -497,7 +506,11 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
 
                 if (frame.IsEnd()) {
                     wechat_audio_end_received_ = true;
-                    debug_audio_recorder_.Finish();
+                    if (ShouldDiscardWechatRecording()) {
+                        debug_audio_recorder_.Discard();
+                    } else {
+                        debug_audio_recorder_.Finish();
+                    }
                     active_session_id_.reset();
                     end_of_stream = true;
                 }
@@ -603,6 +616,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         debug_audio_recorder_.Start(device_id, session_id);
         wechat_audio_end_received_ = false;
         wechat_hotkey_sent_down_ = false;
+        received_audio_frames_ = 0;
         active_session_id_ = session_id;
         active_device_id_ = device_id;
         active_session_started_at_ = std::chrono::steady_clock::now();
@@ -648,6 +662,12 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
 void VoiceStickCoordinator::FinishWechatInputMethodRecording() {
     // Start 失败路径（未真正进入录音）：不落盘。
     if (!wechat_input_method_active_) return;
+    // 零帧或短于最小录音时长的会话丢弃，不落盘调试音频：hold_to_talk_instant 按下即开
+    // 录音，无意点按 / button_up 抢跑早于音频帧时会产生仅含 ogg 头的极小文件。
+    if (ShouldDiscardWechatRecording()) {
+        debug_audio_recorder_.Discard();
+        return;
+    }
     // 未收到 audio_end 帧（如提前松开按键）：补一个 EOS 页再 Finish，保证 ogg 文件完整。
     if (!wechat_audio_end_received_) {
         auto final_chunk = ogg_muxer_.Finish();
@@ -2192,6 +2212,13 @@ bool VoiceStickCoordinator::ShouldUseDefiniteSegments(const OutputProfile& profi
 
 double VoiceStickCoordinator::CurrentRecordingDurationSeconds() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - active_session_started_at_).count();
+}
+
+bool VoiceStickCoordinator::ShouldDiscardWechatRecording() const {
+    // 与 focused_app/subtitle 路径对齐：零帧或短于最小录音时长的会话不落盘调试音频，
+    // 避免 hold_to_talk_instant 模式下无意点按 / button_up 抢跑产生仅含 ogg 头的极小文件。
+    if (received_audio_frames_ == 0) return true;
+    return CurrentRecordingDurationSeconds() < kMinimumRecordingDurationSeconds;
 }
 
 std::optional<std::string> VoiceStickCoordinator::ResolveHotkeyTargetDevice() const {

@@ -380,6 +380,9 @@ private:
     OverlayThemeColor ThemeColorForDevice(const std::string& device_id) const;
     bool ShouldUseDefiniteSegments(const OutputProfile& profile) const;
     double CurrentRecordingDurationSeconds() const;
+    // wechat 路径是否应丢弃本次调试录音：零帧或时长 < kMinimumRecordingDurationSeconds。
+    // 与 focused_app/subtitle 路径对齐，避免无意点按 / button_up 抢跑产生极小 ogg 文件。
+    bool ShouldDiscardWechatRecording() const;
     std::optional<std::string> ResolveHotkeyTargetDevice() const;
 
     AppConfig config_;

@@ -2584,6 +2584,9 @@ void TestCoordinatorWechatInputMethodWritesDebugAudio() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 跨过 0.5s 最小录音时长阈值，避免被短录音过滤丢弃（与 focused_app 路径测试一致）。
+    // sleep 须在音频帧之前：audio_end 帧到达即触发落盘判断，此时 duration 须已过阈值。
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
     ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1));
     ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 2, true));
     ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
@@ -2672,6 +2675,9 @@ void TestCoordinatorWechatInputMethodHandlesEmptyEndFrame() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 跨过 0.5s 最小录音时长阈值，避免被短录音过滤丢弃。
+    // sleep 须在音频帧之前：audio_end 帧到达即触发落盘判断，此时 duration 须已过阈值。
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
     ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1));
     ble_ptr->on_audio_frame("5A74", EmptyEndFrame(7, 2));
     ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
@@ -2687,6 +2693,97 @@ void TestCoordinatorWechatInputMethodHandlesEmptyEndFrame() {
     // button_up 后应回到 ready（EnterReady 广播 ready，device_id 为空）。
     assert(!ble_ptr->sent_ui_states.empty());
     assert(ble_ptr->sent_ui_states.back().state == "ready");
+
+    std::filesystem::remove_all(debug_dir);
+}
+
+// wechat 模式 button_down 后零音频帧即 button_up（hold_to_talk_instant 按下即开录音，
+// 无意点按或 button_up 抢跑早于所有音频帧到达），调试音频应 Discard 不落盘，
+// 避免产生仅含 ogg 头+EOS 的 128 字节空文件。与 focused_app/subtitle 路径行为对齐。
+void TestCoordinatorWechatInputMethodDiscardsZeroFrameRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.debug_audio_cache = true;
+    const auto debug_dir =
+        std::filesystem::temp_directory_path() / "voicestick_wechat_discard_zero_test";
+    std::filesystem::remove_all(debug_dir);
+    std::filesystem::create_directories(debug_dir);
+    config.debug_audio_directory = debug_dir;
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 零音频帧即松开。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+
+    bool found = false;
+    for (const auto& entry : std::filesystem::directory_iterator(debug_dir)) {
+        if (entry.path().extension() == ".ogg" && std::filesystem::file_size(entry) > 0) {
+            found = true;
+            break;
+        }
+    }
+    assert(!found);
+
+    std::filesystem::remove_all(debug_dir);
+}
+
+// wechat 模式仅收到 1 个 40ms 音频帧即 audio_end（短于 0.5s 最小录音时长），调试音频应
+// Discard 不落盘，避免产生仅含 ogg 头+1 帧的 289 字节极小文件。
+void TestCoordinatorWechatInputMethodDiscardsShortSingleFrameRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.debug_audio_cache = true;
+    const auto debug_dir =
+        std::filesystem::temp_directory_path() / "voicestick_wechat_discard_short_test";
+    std::filesystem::remove_all(debug_dir);
+    std::filesystem::create_directories(debug_dir);
+    config.debug_audio_directory = debug_dir;
+
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 仅 1 个 40ms 音频帧即 IsEnd（测试同步执行，duration 远小于 0.5s）。
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1, true));
+
+    bool found = false;
+    for (const auto& entry : std::filesystem::directory_iterator(debug_dir)) {
+        if (entry.path().extension() == ".ogg" && std::filesystem::file_size(entry) > 0) {
+            found = true;
+            break;
+        }
+    }
+    assert(!found);
 
     std::filesystem::remove_all(debug_dir);
 }
@@ -4477,6 +4574,8 @@ int main() {
     TestCoordinatorWechatInputMethodWritesDebugAudio();
     TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect();
     TestCoordinatorWechatInputMethodHandlesEmptyEndFrame();
+    TestCoordinatorWechatInputMethodDiscardsZeroFrameRecording();
+    TestCoordinatorWechatInputMethodDiscardsShortSingleFrameRecording();
     TestCoordinatorWechatInputMethodDoubleClickSendsEnter();
     TestCoordinatorWechatInputMethodAudioEndStopsSessionWithoutButtonUp();
     TestCoordinatorWechatInputMethodRecoversFromStaleActive();
