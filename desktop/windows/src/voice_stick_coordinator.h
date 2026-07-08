@@ -7,6 +7,7 @@
 #include "ble_protocol.h"
 #include "default_audio_device_controller.h"
 #include "debug_audio_recorder.h"
+#include "device_switch_state.h"
 #include "firmware_manifest.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
@@ -180,7 +181,8 @@ public:
                           std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory = {},
                           std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory = {},
                           std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory = {},
-                          std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory = {});
+                          std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory = {},
+                          std::filesystem::path device_switch_state_path = {});
     ~VoiceStickCoordinator();
 
     void Start();
@@ -446,6 +448,11 @@ private:
     std::unique_ptr<IDefaultAudioDeviceController> wechat_device_switcher_;
     // Start 时记录的原 eConsole 默认设备 ID（有值=当前已切到 CABLE，Stop 切回此 ID）。
     std::optional<std::wstring> saved_default_capture_id_;
+    // 持久化切换状态供崩溃自愈；空时用 config 目录推导。Start 检测残留 Restore，
+    // 切换成功后 Save，切回后 Clear。
+    std::filesystem::path device_switch_state_path_;
+    std::filesystem::path DeviceSwitchStatePath() const;
+    void RecoverDeviceSwitchStateIfNeeded();
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
     static constexpr std::chrono::milliseconds kAudioEndTimeout{1000};
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
