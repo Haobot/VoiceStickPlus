@@ -186,17 +186,24 @@ static esp_err_t init_codec(void)
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_codec, &sample_cfg) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "open codec");
     /* PGA 增益：原 36 dB 是 ES8311 最大档，近场声压叠加后致 ADC 硬削波、ASR 变差。
-     * 降到 24 dB 留 12 dB headroom，作为 ALC 的前端固定增益。 */
-    ESP_RETURN_ON_FALSE(esp_codec_dev_set_in_gain(s_codec, 24.0) == ESP_CODEC_DEV_OK,
+     * 经多轮下调：24dB -> 18dB。18dB 留足 headroom 防近场削波，远场由 ALC 拉起补偿，
+     * PGA 不再承担远场增益职责。 */
+    ESP_RETURN_ON_FALSE(esp_codec_dev_set_in_gain(s_codec, 18.0) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "set mic gain");
-    /* 启用 ES8311 硬件 ADC ALC（自动电平控制），在 24 dB PGA 基础上动态压/拉增益，
+    /* 启用 ES8311 硬件 ADC ALC（自动电平控制），在 18 dB PGA 基础上动态压/拉增益，
      * 自适应不同说话距离：近场大声自动压防削波，远场小声自动拉起。
-     * target level 设低（约 -18dBFS）防削波优先，winsize=2 短响应，不开 automute。
-     * REG1B 保持 es8311_open 默认 0x0A（ADC HPF），不整字节覆盖以免破坏 HPF 设置。
-     * 参数与位域见 Doc/Plan/audio-gain-tuning.md 方案二。 */
-    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x18, 0x23) == ESP_CODEC_DEV_OK,
+     *
+     * 位域以 Linux 主线 sound/soc/codecs/es8311.h 为权威源（曾因按 es8311_reg.h 注释
+     * "bit[7:4]=winsize, bit[3]=ALC enable" 理解而写反，致 ALC 长期未使能）：
+     *   REG18(0x18): bit[7]=ALC_EN, bit[6]=AUTOMUTE_EN, bit[3:0]=ALC_WINSIZE
+     *   REG19(0x19): bit[7:4]=ALC_MAXLEVEL(目标电平上限), bit[3:0]=ALC_MINLEVEL(拉起下限)
+     * 参数：winsize=3（短响应），maxlevel=8（约 -11dBFS，饱满但仍在安全区），
+     * minlevel=0（-30dBFS，远场拉到最低），不开 automute（避免误判停顿为静音）。
+     * REG1B/REG1C 不写，保留 es8311_open 默认（0x1B=0x0A/0x1C=0x6A，含 ADC HPF）。
+     * 参数与位域推导见 Doc/Plan/es8311-alc-bitfield-fix.md。 */
+    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x18, 0x83) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "set alc enable+winsize");
-    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x19, 0x30) == ESP_CODEC_DEV_OK,
+    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x19, 0x80) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "set alc target level");
     ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x1A, 0x00) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "set alc automute off");

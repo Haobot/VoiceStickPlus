@@ -52,23 +52,28 @@
 2. 中场（15cm）效果应保持或略升（原甜点，增益下调后仍够用）。
 3. 远场（30cm+）若明显变差，记录现象，触发方案二。
 
-## 方案二（方案一效果不足时启用）
+## 方案二（已实施，位域经权威源纠正）
 
 启用 ES8311 硬件 ADC ALC（自动电平控制），自适应不同距离。
 
-### 参数（已与用户确认）
+> ⚠️ 位域纠正见 `Doc/Plan/es8311-alc-bitfield-fix.md`。本节原写的"bit[7:4]=winsize, bit[3]=ALC enable"
+> 是**错误**的，源于 `es8311_reg.h` 注释。权威源 Linux 主线 `sound/soc/codecs/es8311.h` 表明
+> REG18 是 `bit[7]=ALC_EN, bit[6]=AUTOMUTE_EN, bit[3:0]=ALC_WINSIZE`（winsize 在低位，enable 在高位）。
+> 原写入 `0x23` 致 ALC 从未使能，已修正为 `0x83`。当前最新参数以 `es8311-alc-bitfield-fix.md` 为准。
 
-- **ALC target level**：低目标（约 -18dBFS），防削波优先，输出偏柔，呼吸感最轻。
-- **PGA 基础增益**：保持方案一的 24 dB，ALC 在此基础上动态压/拉。
+### 当前生效参数（与代码同步）
 
-### 寄存器配置（基于 ES8311 datasheet 位域）
+- **PGA 基础增益**：18 dB（再降 6dB headroom，远场由 ALC 拉起补偿）。
+- **ALC**：已使能，maxlevel=8（约 -11dBFS），minlevel=0（-30dBFS），winsize=3，不开 automute。
+
+### 寄存器配置（权威位域，已纠正）
 
 | 寄存器 | 位域 | 写入值 | 说明 |
 |---|---|---|---|
-| REG18 (0x18) | bit[7:4]=winsize, bit[3]=ALC enable, bit[2:0]=reserved | 0x23 | winsize=2（短响应），enable=1 |
-| REG19 (0x19) | bit[7:4]=maxlevel(target), bit[3:0]=minlevel | 0x30 | target=3（约 -18dBFS），minlevel=0 |
-| REG1A (0x1A) | bit[7:4]=automute ctrl, bit[3:0]=hold time | 0x00 | 不启用 automute，避免误判停顿为静音 |
-| REG1B (0x1B) | bit[7:4]=automute noise gate, bit[3:0]=ADC HPF s1 | 不覆盖 | 保持 es8311_open 默认 0x0A（HPF） |
+| REG18 (0x18) | bit[7]=ALC_EN, bit[6]=AUTOMUTE_EN, bit[3:0]=ALC_WINSIZE | 0x83 | ALC 使能，winsize=3（短响应） |
+| REG19 (0x19) | bit[7:4]=MAXLEVEL, bit[3:0]=MINLEVEL | 0x80 | maxlevel=8（约 -11dBFS），minlevel=0 |
+| REG1A (0x1A) | bit[7:4]=automute ws, bit[3:0]=automute ng | 0x00 | 不启用 automute |
+| REG1B (0x1B) | bit[5]=HPF 等 | 不写 | 保留 es8311_open 默认 0x0A（HPF），不覆盖 |
 
 ### 实现方式
 
