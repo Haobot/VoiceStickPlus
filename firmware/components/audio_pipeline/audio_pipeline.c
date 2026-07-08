@@ -7,6 +7,7 @@
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "esp_log.h"
@@ -51,6 +52,8 @@ static uint32_t s_seq;
 static TaskHandle_t s_audio_task;
 static TaskHandle_t s_tx_task;
 static QueueHandle_t s_tx_queue;
+// 首字延迟诊断：audio_pipeline_start 入口时刻，audio_task 首帧入队时打印相对值量化固件侧延迟。
+static int64_t s_pipeline_start_us = 0;
 
 /* Per-session resources: created on start, destroyed on stop */
 static i2s_chan_handle_t s_rx_handle;
@@ -328,6 +331,12 @@ static void audio_task(void *arg)
         if (xQueueSend(s_tx_queue, &pkt, 0) == pdTRUE) {
             s_seq++;
             enqueued++;
+            if (enqueued == 1) {
+                // 首帧入队时刻：量化从 pipeline start 到首帧就绪的固件侧延迟
+                //（含 codec read 20ms PCM + opus encode + 入队），桌面端日志对照可分离 BLE 传输延迟。
+                ESP_LOGI(TAG, "latency: first frame enqueued %lldus after pipeline start",
+                         esp_timer_get_time() - s_pipeline_start_us);
+            }
         } else {
             /* Queue full: drop oldest packet to make room */
             audio_packet_t discard;
@@ -494,15 +503,20 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         ESP_LOGE(TAG, "wait previous session exit: %s", esp_err_to_name(err));
         return err;
     }
+    s_pipeline_start_us = esp_timer_get_time();
 
     s_last_error_step = "i2s";
     err = init_i2s();
+    int64_t t_after_i2s = esp_timer_get_time();
+    ESP_LOGI(TAG, "latency: init_i2s %lldus", t_after_i2s - s_pipeline_start_us);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s init: %s", esp_err_to_name(err));
         return err;
     }
     s_last_error_step = "codec";
     err = init_codec();
+    int64_t t_after_codec = esp_timer_get_time();
+    ESP_LOGI(TAG, "latency: init_codec %lldus", t_after_codec - t_after_i2s);
     if (err != ESP_OK) {
         deinit_i2s();
         ESP_LOGE(TAG, "codec init: %s", esp_err_to_name(err));
@@ -510,6 +524,8 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     }
     s_last_error_step = "opus";
     err = init_opus();
+    int64_t t_after_opus = esp_timer_get_time();
+    ESP_LOGI(TAG, "latency: init_opus %lldus", t_after_opus - t_after_codec);
     if (err != ESP_OK) {
         deinit_codec();
         deinit_i2s();
@@ -563,7 +579,8 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         return ESP_ERR_NO_MEM;
     }
     s_last_error_step = "none";
-    ESP_LOGI(TAG, "start session %" PRIu32, session_id);
+    ESP_LOGI(TAG, "start session %" PRIu32 " (pipeline init %lldus)",
+             session_id, t_after_opus - s_pipeline_start_us);
     return ESP_OK;
 }
 
