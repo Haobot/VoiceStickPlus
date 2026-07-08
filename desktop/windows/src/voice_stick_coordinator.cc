@@ -405,6 +405,13 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
     }
     if (HandleFrontButtonDuringPendingPaste(device_id)) return;
 
+    // 前台为高权限程序时 SendInput 注入必被 UIPI 丢弃，启动会话无意义且留空转残留。
+    // 检测到则气泡提醒用户提权运行并跳过启动；按进程名去重，同一高权限程序本次运行只提醒一次。
+    if (MaybeWarnForegroundElevated(device_id)) {
+        ble_->SendUiState("ready", "", device_id);
+        return;
+    }
+
     if (!StartWechatInputMethodSession(session_id, device_id)) {
         // 启动失败（虚拟麦克风未找到/热键发送失败）：ShowError 已在内部提示，
         // 不弹录音悬浮窗、不发 recording 状态，避免松开时浮窗残留。
@@ -619,6 +626,29 @@ void VoiceStickCoordinator::FinishWechatInputMethodRecording() {
 
 bool VoiceStickCoordinator::IsWechatInputMethodActive() const {
     return wechat_input_method_active_;
+}
+
+void VoiceStickCoordinator::SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe) {
+    foreground_probe_ = std::move(probe);
+}
+
+bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& device_id) {
+    if (!foreground_probe_) return false;
+    std::wstring process_name;
+    if (!foreground_probe_->IsForegroundHigherIntegrity(process_name)) return false;
+    // 前台为高权限程序：SendInput 注入必被 UIPI 丢弃，跳过会话启动。
+    // 按进程名去重，同一高权限程序本次运行只弹一次气泡。
+    if (!elevation_warned_process_.has_value() || *elevation_warned_process_ != process_name) {
+        ui_->ShowNotification("需提权运行 VoiceStick",
+                              "检测到 " + WStringToUtf8(process_name) +
+                                  " 以高权限运行，语音输入被系统拦截。"
+                                  "右键托盘 -> 以管理员身份重启后重试。");
+        elevation_warned_process_ = process_name;
+    }
+    LogCoordinatorLine("foreground elevated dev=VS-" + device_id +
+                       " proc=" + WStringToUtf8(process_name) +
+                       ", skipping wechat session start (UIPI)");
+    return true;
 }
 
 std::filesystem::path VoiceStickCoordinator::DeviceSwitchStatePath() const {

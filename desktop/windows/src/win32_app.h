@@ -100,6 +100,8 @@ private:
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
     void ShutdownAndQuit();
+    // 以管理员身份重启自身：ShellExecuteW runas 触发 UAC，新 High 实例启动后旧实例清理退出。
+    void RelaunchElevatedAndQuit();
 
     HINSTANCE instance_;
     HWND hwnd_ = nullptr;

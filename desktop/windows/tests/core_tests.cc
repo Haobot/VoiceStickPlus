@@ -377,6 +377,28 @@ public:
     mutable int send_up_count = 0;
 };
 
+// 探测前台进程是否高权限的 fake：可控返回值与进程名，支持序列（换进程名再提醒测试用）。
+class FakeForegroundProcessProbe : public IForegroundProcessProbe {
+public:
+    // 单值模式：每次探测返回 elevated 与 process_name。
+    FakeForegroundProcessProbe(bool elevated, std::wstring process_name = L"")
+        : elevated_(elevated), names_{std::move(process_name)} {}
+    // 序列模式：第 N 次探测返回 names_[N]（超出取最后一个），elevated 为 !names_.empty()。
+    explicit FakeForegroundProcessProbe(std::vector<std::wstring> names)
+        : elevated_(!names.empty()), names_(std::move(names)) {}
+    bool IsForegroundHigherIntegrity(std::wstring& process_name) override {
+        if (!elevated_) return false;
+        const auto idx = static_cast<std::size_t>(
+            std::min(call_count_, static_cast<int>(names_.size()) - 1));
+        process_name = names_[idx];
+        ++call_count_;
+        return true;
+    }
+    bool elevated_ = false;
+    std::vector<std::wstring> names_;
+    int call_count_ = 0;
+};
+
 // 宽字符串大小写不敏感子串匹配（Fake 设备枚举用，仅 ASCII 足够匹配 "CABLE Output"）。
 bool ContainsWide(std::wstring_view haystack, std::wstring_view needle) {
     if (needle.empty()) return true;
@@ -3843,6 +3865,157 @@ void TestCoordinatorWechatInputMethodNoSwitchWhenDisabled() {
     assert(switcher_ptr->get_call_count == 0);
 }
 
+// 前台为高权限程序时，按下设备键应气泡提醒提权、不启动会话（不发快捷键）、设备置 ready。
+void TestWechatWarnsWhenForegroundElevated() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.SetForegroundProbe(std::make_unique<FakeForegroundProcessProbe>(true, L"Weixin.exe"));
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+
+    assert(!ui.notifications.empty());
+    assert(ui.notifications.back().find("Weixin") != std::string::npos);
+    // MaybeWalk 跳过 StartWechatInputMethodSession，wechat_hotkey_factory 未被调用，fake_hotkey 仍为 nullptr。
+    assert(fake_hotkey == nullptr);
+    assert(!ble_ptr->sent_ui_states.empty());
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+}
+
+// 同一高权限程序本次运行只提醒一次（按进程名去重）。
+void TestWechatNoDuplicateElevationWarnForSameProcess() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.SetForegroundProbe(std::make_unique<FakeForegroundProcessProbe>(true, L"Weixin.exe"));
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+    const auto count_after_first = ui.notifications.size();
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 8));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 8));
+
+    assert(ui.notifications.size() == count_after_first);
+}
+
+// 换一个高权限程序再次提醒。
+void TestWechatWarnsAgainForDifferentElevatedProcess() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.SetForegroundProbe(std::make_unique<FakeForegroundProcessProbe>(
+        std::vector<std::wstring>{L"Weixin.exe", L"WorkGrid.exe"}));
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+    assert(ui.notifications.size() == 1);
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 8));
+
+    assert(ui.notifications.size() == 2);
+}
+
+// 前台为同级 Medium 程序时不提醒、正常启动会话。
+void TestWechatNoWarnWhenForegroundNormal() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.SetForegroundProbe(std::make_unique<FakeForegroundProcessProbe>(false));
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+
+    assert(ui.notifications.empty());
+    assert(fake_hotkey->send_down_count == 1);
+}
+
+// 未注入 probe（nullptr）时不检测、正常启动会话。
+void TestWechatNoProbeNoWarn() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    // 不注入 probe（nullptr）：保持旧行为，不检测 UIPI。
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+
+    assert(ui.notifications.empty());
+    assert(fake_hotkey->send_down_count == 1);
+}
+
 // 状态文件往返：Save -> Load 一致，含中文 UTF-8 friendly name。
 void TestDeviceSwitchStateRoundTrip() {
     auto temp = std::filesystem::temp_directory_path() / "voicestick_device_switch_state_rt.json";
@@ -4017,6 +4190,11 @@ int main() {
     TestCoordinatorWechatSessionSendsHotkeyBeforeRendererAndRollsBackOnStartFailure();
     TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice();
     TestCoordinatorWechatInputMethodNoSwitchWhenDisabled();
+    TestWechatWarnsWhenForegroundElevated();
+    TestWechatNoDuplicateElevationWarnForSameProcess();
+    TestWechatWarnsAgainForDifferentElevatedProcess();
+    TestWechatNoWarnWhenForegroundNormal();
+    TestWechatNoProbeNoWarn();
     TestCoordinatorAutoSwitchRecoversStaleState();
     TestDeviceSwitchStateRoundTrip();
     TestDeviceSwitchStateClear();

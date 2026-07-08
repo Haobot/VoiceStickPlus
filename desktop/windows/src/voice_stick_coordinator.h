@@ -171,6 +171,15 @@ public:
     virtual void ClickLeftButton() = 0;
 };
 
+// 探测前台窗口所属进程是否高于本进程完整性。高权限前台时 SendInput 注入会被 UIPI 静默丢弃，
+// 协调器据此提醒用户提权运行。接口在 core，平台实现（Win32 OpenProcess）由外壳注入。
+class IForegroundProcessProbe {
+public:
+    virtual ~IForegroundProcessProbe() = default;
+    // 前台进程高于本进程完整性时返回 true，并填入其可执行文件名（如 "Weixin.exe"）供提醒文案。
+    virtual bool IsForegroundHigherIntegrity(std::wstring& process_name) = 0;
+};
+
 class VoiceStickCoordinator {
 public:
     VoiceStickCoordinator(AppConfig config,
@@ -187,6 +196,8 @@ public:
 
     void Start();
     void Shutdown();
+    // 注入前台进程完整性探测实现。未注入（nullptr）时跳过 UIPI 提权提醒。须在 Start 前调用。
+    void SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe);
     void UpdateConfig(AppConfig config);
     // 热调参：仅更新运行期 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
     void UpdateAirMouseParams(const AirMouseParams& params);
@@ -281,6 +292,9 @@ private:
     bool StartWechatInputMethodSession(std::optional<std::uint32_t> session_id,
                                        const std::string& device_id);
     void StopWechatInputMethodSession();
+    // 检测前台是否高权限进程，若是则气泡提醒（按进程名去重防打扰）。返回 true 表示已检测到高权限
+    // 前台、调用方应跳过本次会话启动（SendInput 必被 UIPI 丢弃，启动无意义且会留空转残留）。
+    bool MaybeWarnForegroundElevated(const std::string& device_id);
     // 兜底落盘本次 wechat 会话的调试音频：未收到 audio_end 则补 EOS 页再 Finish。
     void FinishWechatInputMethodRecording();
     bool IsWechatInputMethodActive() const;
@@ -436,6 +450,10 @@ private:
     std::unique_ptr<PcmRingBuffer> wechat_ring_buffer_;
     std::unique_ptr<IVirtualMicRenderer> wechat_renderer_;
     std::unique_ptr<IWechatInputMethodHotkey> wechat_hotkey_;
+    // 前台进程完整性探测（外壳注入；nullptr 时跳过 UIPI 提权提醒）。
+    std::unique_ptr<IForegroundProcessProbe> foreground_probe_;
+    // 已提醒过提权的前台进程名（按进程名去重，避免同一高权限程序重复弹气泡）。
+    std::optional<std::wstring> elevation_warned_process_;
     bool wechat_input_method_active_ = false;
     // 是否已收到本次 wechat 会话的 audio_end 帧；用于 Stop 时判断是否需补 EOS 页。
     bool wechat_audio_end_received_ = false;
