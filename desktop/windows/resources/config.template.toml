@@ -87,5 +87,7 @@ debug_audio_dir = ""
 hotkey = "ctrl+win"
 # 虚拟麦克风渲染端名称（如 CABLE Input）
 virtual_mic_playback_name = ""
+# 自动切换默认录音设备时，切换目标的录音端名称（如 CABLE Output）
+virtual_mic_capture_name = ""
 # 自动切换默认录音设备到虚拟麦克风
 auto_switch_default_recording_device = false

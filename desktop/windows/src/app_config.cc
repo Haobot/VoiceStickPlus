@@ -362,6 +362,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "translation_target" && !value.empty()) config.default_output_profile.translation_target = value;
     if (key == "wechat_input_method_hotkey") config.wechat_input_method.hotkey = value;
     if (key == "wechat_input_method_virtual_mic") config.wechat_input_method.virtual_mic_playback_name = value;
+    if (key == "wechat_input_method_virtual_mic_capture_name") config.wechat_input_method.virtual_mic_capture_name = value;
     if (key == "wechat_input_method_auto_switch") {
         config.wechat_input_method.auto_switch_default_recording_device = BoolValue(value, false);
     }
@@ -512,6 +513,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
             if (auto value = TomlString(*wechat, "virtual_mic_playback_name")) {
                 config.wechat_input_method.virtual_mic_playback_name = *value;
             }
+            if (auto value = TomlString(*wechat, "virtual_mic_capture_name")) {
+                config.wechat_input_method.virtual_mic_capture_name = *value;
+            }
             if (auto value = TomlBool(*wechat, "auto_switch_default_recording_device")) {
                 config.wechat_input_method.auto_switch_default_recording_device = *value;
             }
@@ -656,6 +660,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "\n[wechat_input_method]\n";
     output << "hotkey = \"" << TomlEscape(wechat_input_method.hotkey) << "\"\n";
     output << "virtual_mic_playback_name = \"" << TomlEscape(wechat_input_method.virtual_mic_playback_name) << "\"\n";
+    output << "virtual_mic_capture_name = \"" << TomlEscape(wechat_input_method.virtual_mic_capture_name) << "\"\n";
     output << "auto_switch_default_recording_device = "
            << (wechat_input_method.auto_switch_default_recording_device ? "true" : "false") << "\n";
     for (const auto& [device_id, profile] : device_output_profiles) {
