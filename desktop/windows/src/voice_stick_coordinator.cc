@@ -521,7 +521,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         if (!wechat_device_switcher_) {
             wechat_device_switcher_ = wechat_device_switcher_factory_
                 ? wechat_device_switcher_factory_()
-                : nullptr;  // 生产 COM 实现后续接入（DefaultAudioDeviceController）。
+                : std::make_unique<DefaultAudioDeviceController>();
         }
         if (wechat_device_switcher_) {
             auto saved = wechat_device_switcher_->GetDefaultCapture(DeviceRole::kConsole);
@@ -633,8 +633,10 @@ void VoiceStickCoordinator::RecoverDeviceSwitchStateIfNeeded() {
         ClearDeviceSwitchState(DeviceSwitchStatePath());
         return;
     }
-    if (!wechat_device_switcher_ && wechat_device_switcher_factory_) {
-        wechat_device_switcher_ = wechat_device_switcher_factory_();
+    if (!wechat_device_switcher_) {
+        wechat_device_switcher_ = wechat_device_switcher_factory_
+            ? wechat_device_switcher_factory_()
+            : std::make_unique<DefaultAudioDeviceController>();
     }
     if (wechat_device_switcher_) {
         wechat_device_switcher_->SetDefaultCapture(

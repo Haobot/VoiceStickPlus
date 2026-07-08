@@ -43,6 +43,28 @@ class IDefaultAudioDeviceController {
                                   std::vector<DeviceRole> roles) = 0;
 };
 
+// 真实 COM 实现：读取/枚举用 IMMDeviceEnumerator（公开 API），设置用 IPolicyConfig
+// （未公开 COM 接口，按 SoundSwitch dev 分支源码移植）。CoCreateInstance 失败降级返回空/false。
+class DefaultAudioDeviceController : public IDefaultAudioDeviceController {
+ public:
+    DefaultAudioDeviceController();
+    ~DefaultAudioDeviceController() override;
+
+    DefaultAudioDeviceController(const DefaultAudioDeviceController&) = delete;
+    DefaultAudioDeviceController& operator=(const DefaultAudioDeviceController&) = delete;
+
+    std::optional<AudioDeviceInfo> GetDefaultCapture(DeviceRole role) override;
+    std::optional<AudioDeviceInfo> FindCaptureByName(std::wstring_view name_substring) override;
+    bool SetDefaultCapture(const std::wstring& device_id,
+                          std::vector<DeviceRole> roles) override;
+
+ private:
+    // 构造时 CoInitializeEx 配对析构 CoUninitialize（协调器线程复用同一实例）。
+    // RPC_E_CHANGED_MODE（线程已用其他模式初始化 COM）时为 false，不重复 CoUninitialize，
+    // COM 仍可用。
+    bool com_initialized_ = false;
+};
+
 }  // namespace voicestick
 
 #endif  // VOICESTICK_DEFAULT_AUDIO_DEVICE_CONTROLLER_H_
