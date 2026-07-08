@@ -201,10 +201,14 @@ static bool s_air_mouse_bias_dirty = false;
 #define AIR_MOUSE_OMEGA_EXIT_DPS  2.0f   // ACTIVE→STILL 阈值，低于死区，确实静止才停
 // 静止时零偏 EMA 跟随系数：缓慢吸收陀螺仪温漂与初始校准误差，抵消长期漂移。
 #define AIR_MOUSE_BIAS_ALPHA 0.05f
-// 映射系数：角速度(dps) → 整型光标位移。真机标定初值。
-#define AIR_MOUSE_SCALE 0.6f
-// int16 位移饱和上限，避免单帧跳变过大。
-#define AIR_MOUSE_MAX_DELTA 127
+// 映射系数：去零偏后的角速率(dps) → 整型上报量。固件只做线性缩放与限幅，
+// 桌面端独占增益曲线（见 air_mouse_kin.cc），故此处仅负责把 dps 放大到足够分辨率。
+// 选 4.0：1dps → 4 单位（0.25dps/步），较旧 0.6（1.67dps/步）分辨率提升约 6.7×，
+// 低端精细微调更顺；配合下方放宽 MAX_DELTA 后快速甩动不再削平。
+#define AIR_MOUSE_REPORT_GAIN 4.0f
+// int16 上报量饱和上限。协议 dx/dy 为 int16（±32767），此处留足余量：
+// 8000 对应 2000dps 甩动仍不饱和，避免单帧跳变过大同时放开快速甩动。
+#define AIR_MOUSE_MAX_DELTA 8000
 // 进入体感后的 settling 时长（毫秒）：此期间冻结 EMA 更新，防按键余震污染持久化零偏。
 #define AIR_MOUSE_SETTLE_MS 150
 // NVS 持久化零偏：复用 "voicestick" namespace，key am_bias_x/y/z，i32 存 round(bias*100)。
@@ -709,7 +713,7 @@ void bmi270_set_tap_sensitivity(int level)
     ESP_LOGI(TAG, "tap sensitivity set to %d", level);
 }
 
-// 将浮点位移量饱和裁剪到 int16 且限幅 ±AIR_MOUSE_MAX_DELTA。
+// 将浮点上报量饱和裁剪到 int16 且限幅 ±AIR_MOUSE_MAX_DELTA。
 static int16_t air_mouse_clamp_delta(float v)
 {
     if (v > AIR_MOUSE_MAX_DELTA) return AIR_MOUSE_MAX_DELTA;
@@ -932,8 +936,8 @@ bool bmi270_air_mouse_poll(int16_t *dx, int16_t *dy)
         return false;
     }
 
-    const int16_t out_dx = air_mouse_clamp_delta(mv_x * AIR_MOUSE_SCALE);
-    const int16_t out_dy = air_mouse_clamp_delta(mv_y * AIR_MOUSE_SCALE);
+    const int16_t out_dx = air_mouse_clamp_delta(mv_x * AIR_MOUSE_REPORT_GAIN);
+    const int16_t out_dy = air_mouse_clamp_delta(mv_y * AIR_MOUSE_REPORT_GAIN);
     if (out_dx == 0 && out_dy == 0) {
         return false;
     }

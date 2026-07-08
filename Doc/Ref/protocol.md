@@ -114,14 +114,18 @@ All multibyte fields are little-endian.
 struct MotionBleFrame {
   uint8_t  version;   // 1
   uint8_t  type;      // 0x11 motion
-  int16_t  dx;        // horizontal cursor delta, right positive
-  int16_t  dy;        // vertical cursor delta, down positive
+  int16_t  dx;        // horizontal angular-rate, right positive (scaled dps)
+  int16_t  dy;        // vertical angular-rate, down positive (scaled dps)
 }
 ```
 
-`dx`/`dy` are already gyro-bias-corrected, dead-zoned, and scaled to integer cursor
-deltas by the firmware; the desktop applies only an acceleration/gain curve and
-accumulates them. Motion frames are emitted only while air-mouse mode is enabled
+`dx`/`dy` are gyro-bias-corrected, dead-zoned angular-rate samples (dps) scaled by
+`AIR_MOUSE_REPORT_GAIN` (=4.0, so 1 dps → 4 units, 0.25 dps resolution per integer
+step) and clamped to ±`AIR_MOUSE_MAX_DELTA` (=8000, i.e. up to ~2000 dps before
+saturation). They are **scaled angular rates, NOT cursor deltas**: the desktop owns
+the gain/acceleration curve and integrates them into cursor motion. The int16 range
+(±32767) is intentionally under-used to leave headroom for fast flicks.
+Motion frames are emitted only while air-mouse mode is enabled
 (see `air_mouse_enabled` control event). See `Doc/Plan/imu-air-mouse.md`.
 
 Deprecated firmware-to-app events:

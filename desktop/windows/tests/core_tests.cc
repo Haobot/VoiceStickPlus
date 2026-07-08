@@ -1799,7 +1799,7 @@ void TestCoordinatorAirMouseResetOnForget() {
     assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
 }
 
-// 10 级灵敏度下，真机典型手腕角速率(omega=24)在 0.8s 内应产生足够光标位移。
+// 10 级灵敏度下，真机典型手腕角速率(omega=40dps，firmware dx=160 @ REPORT_GAIN=4)在 0.8s 内应产生足够光标位移。
 // kAngle 模式现直接用瞬时 omega 驱动速度：v = omega×gain×factor(|omega|)，
 // 转动期间即达到稳态速度，位移充足。
 void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
@@ -1819,7 +1819,7 @@ void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     for (int i = 0; i < 50; ++i) {  // 0.8s @60Hz
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});  // 真机典型手腕角速度
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});  // 真机典型手腕转动（40dps @ REPORT_GAIN=4）
         coordinator.AirMouseTick();
     }
     assert(input.total_dx >= 4000);  // 角度模型 theta 累积，0.8s 应产生足够位移
@@ -1843,15 +1843,15 @@ void TestCoordinatorAirMouseSustainedRunBounded() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
-    // 阶段 1：匀速转动 0.5s（omega=24 恒定），光标达到稳态速度。
+    // 阶段 1：匀速转动 0.5s（omega=40dps 恒定），光标达到稳态速度。
     for (int i = 0; i < 30; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
         coordinator.AirMouseTick();
     }
     const int dx_first = input.total_dx;
-    // 阶段 2：继续匀速转动 4.5s（omega=24 恒定）。速度应保持不变（无失控）。
+    // 阶段 2：继续匀速转动 4.5s（omega=40dps 恒定）。速度应保持不变（无失控）。
     for (int i = 0; i < 270; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
         coordinator.AirMouseTick();
     }
     const int dx_second = input.total_dx - dx_first;
@@ -1886,7 +1886,7 @@ void TestCoordinatorAirMouseStopsWhenOmegaZero() {
 
     // 转动 0.5s：光标移动。
     for (int i = 0; i < 30; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
         coordinator.AirMouseTick();
     }
     const int dx_during = input.total_dx;
@@ -1928,7 +1928,7 @@ void TestCoordinatorAngleMovesOnlyWhileRotating() {
 
     // 阶段 1：转动 0.5s。
     for (int i = 0; i < 30; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
         coordinator.AirMouseTick();
     }
     const int dx_while_moving = input.total_dx;
@@ -1974,19 +1974,19 @@ void TestCoordinatorAirMouseSustainedRotationConstantSpeed() {
 
     // 预热 0.3s 让速度环收敛到稳态。
     for (int i = 0; i < 18; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
         coordinator.AirMouseTick();
     }
     const int base = input.total_dx;
-    // 窗口 A：匀速转动 1.0s（omega=24 恒定）。
+    // 窗口 A：匀速转动 1.0s（omega=40dps 恒定）。
     for (int i = 0; i < 60; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
         coordinator.AirMouseTick();
     }
     const int dx_a = input.total_dx - base;
-    // 窗口 B：继续匀速转动 1.0s（同样 omega=24）。
+    // 窗口 B：继续匀速转动 1.0s（同样 omega=40dps）。
     for (int i = 0; i < 60; ++i) {
-        ble_ptr->on_motion_event("5A74", MotionEvent{24, 0});
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
         coordinator.AirMouseTick();
     }
     const int dx_b = input.total_dx - base - dx_a;
@@ -3133,7 +3133,7 @@ void TestAirMouseStepStopsWhenStale() {
 // 微调段：omega=low_thresh/2，稳态 vx ≈ omega×gain×low_factor。
 void TestAirMouseStepGainCurveLowRange() {
     AirMouseKinState s;
-    AirMouseParams p;  // 默认 gain_x=16, tau=0.05, curve={15,50,0.15,4.0}
+    AirMouseParams p;  // 默认 gain_x=16, tau=0.05, curve={100,333,0.15,4.0}
     const int omega = static_cast<int>(p.curve.low_thresh / 2.0);  // 微调段内
     for (int i = 0; i < 200; ++i) AirMouseStep(s, AirMouseInput{omega, 0, false}, 0.016, false, p);
     const double v_target = omega * p.gain_x * p.curve.low_factor;
@@ -3213,21 +3213,21 @@ void TestAirMouseGainFactorAcceptsCurveParams() {
     c.low_factor = 0.2;
     c.high_factor = 5.0;
     // omega=20 落自定义中段（10..30）：factor=0.2+(5.0-0.2)*(20-10)/(30-10)=2.6
-    // omega=20 落默认中段（15..50）：factor=0.15+(4.0-0.15)*(20-15)/(50-15)≈0.70
+    // omega=20 落默认微调段（<100）：factor=low_factor=0.15
     const double f_custom = AirMouseGainFactor(20.0, c);
     const double f_default = AirMouseGainFactor(20.0, AirMouseCurveParams{});
     assert(std::fabs(f_custom - 2.6) < 0.02);
-    assert(std::fabs(f_default - 0.70) < 0.02);
+    assert(std::fabs(f_default - 0.15) < 0.02);
     assert(std::fabs(f_custom - f_default) > 1.0);  // curve 注入确实改变 factor
 }
 
 // 默认 curve 与历史 constexpr 值一致（回归保护）。
 void TestAirMouseGainFactorDefaultCurveMatchesLegacy() {
-    AirMouseCurveParams c;  // 默认 {15, 50, 0.15, 4.0}
-    assert(std::fabs(AirMouseGainFactor(5.0, c) - 0.15) < 1e-9);    // 微调段
-    assert(std::fabs(AirMouseGainFactor(100.0, c) - 4.0) < 1e-9);   // 甩动段
-    // 中段中点 factor=0.15+(4.0-0.15)*0.5=2.075
-    assert(std::fabs(AirMouseGainFactor(32.5, c) - 2.075) < 1e-9);
+    AirMouseCurveParams c;  // 默认 {100, 333, 0.15, 4.0}（阈值单位=固件缩放角速率 dps×4）
+    assert(std::fabs(AirMouseGainFactor(5.0, c) - 0.15) < 1e-9);     // 微调段（<100）
+    assert(std::fabs(AirMouseGainFactor(1000.0, c) - 4.0) < 1e-9);  // 甩动段（≥333）
+    // 中段中点 (100+333)/2=216.5：factor=0.15+(4.0-0.15)*0.5=2.075
+    assert(std::fabs(AirMouseGainFactor(216.5, c) - 2.075) < 1e-9);
 }
 
 // step 用 params.curve：同 omega、不同 curve → 不同稳态 vx。
@@ -3249,12 +3249,12 @@ void TestAirMouseStepUsesCurveParams() {
 void TestAirMouseCurveClamp() {
     AirMouseCurveParams c;
     c.low_thresh = 0.0;       // 低于下限 1.0
-    c.high_thresh = 1000.0;   // 高于上限 80.0
+    c.high_thresh = 1000.0;   // 高于上限 800.0
     c.low_factor = -1.0;      // 低于下限 0.05
     c.high_factor = 100.0;    // 高于上限 6.0
     const auto clamped = AirMouseCurveClamp(c);
     assert(clamped.low_thresh >= 1.0);
-    assert(clamped.high_thresh <= 80.0);
+    assert(clamped.high_thresh <= 800.0);
     assert(clamped.low_factor >= 0.05);
     assert(clamped.high_factor <= 6.0);
     assert(clamped.low_thresh < clamped.high_thresh);  // 不变式

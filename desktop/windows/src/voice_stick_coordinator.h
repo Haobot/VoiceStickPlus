@@ -389,11 +389,13 @@ private:
     AirMouseParams live_air_mouse_params_;  // 运行期参数（AirMouseTick 用，热调参面板经 UpdateAirMouseParams 即时改）
     AirMouseParams AirMouseParamsFromConfig() const;
     static constexpr std::chrono::milliseconds kAirMouseTickInterval{16};   // ~60Hz
-    static constexpr std::chrono::milliseconds kAirMouseOmegaStaleAge{30}; // omega 超 30ms 视为静止
+    // omega 超龄视为静止。固件约 50Hz（20ms/帧），桌面 60Hz（16.7ms）；
+    // 取 ≥3× 帧周期（60ms）以容忍 50/60Hz 抖动与偶发丢帧，绝不误触发归零（P1 时间基准统一）。
+    static constexpr std::chrono::milliseconds kAirMouseOmegaStaleAge{80};
     // 角度控制模型常量：相对角度限幅与中立死区。
     static constexpr double kAirMouseMaxTheta = 100.0;      // theta 上限，防积分异常累积
     static constexpr double kAirMouseAngleDeadzone = 0.5;   // |theta| 与 |omega| 均小于此值时归零
-    static constexpr double kAirMouseOmegaDeadzone = 0.5;   // omega 死区（固件 SCALE 后单位）
+    static constexpr double kAirMouseOmegaDeadzone = 2.0;   // omega 死区（固件 REPORT_GAIN=4 单位，≈0.5dps）
     int received_audio_frames_ = 0;
     std::optional<std::uint32_t> last_audio_seq_;
     std::vector<ByteVector> buffered_ogg_chunks_;

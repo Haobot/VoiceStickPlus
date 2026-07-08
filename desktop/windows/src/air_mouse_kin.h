@@ -28,11 +28,12 @@ struct AirMouseKinState {
 //   微调段 |x| < low_thresh   → factor = low_factor  （压低，精准对位）
 //   中段  low_thresh ≤ |x| < high_thresh → 线性插值 low_factor→high_factor
 //   甩动段 |x| ≥ high_thresh  → factor = high_factor （放大，跨屏）
-// 默认值（15/50/0.15/4.0）为 2026-07-04 真机标定迭代值（拓宽微调段+降 factor 修复"慢转难精准对位"），
-// 详见 Doc/Plan/air-mouse-gain-curve.md 与 air-mouse-still-tuning.md。热调参面板可实时改。
+// x 为固件上报的缩放角速率（dps × AIR_MOUSE_REPORT_GAIN=4，见 bmi270.c），故阈值以同单位表达。
+// 默认 100/333 对应物理拐点约 25/83 dps（与旧 15/50 @ SCALE=0.6 同一物理角速率，P1 去双重缩放后重标定），
+// factor 0.15/4.0 不变。详见 Doc/Plan/air-mouse-gain-curve.md 与 air-mouse-still-tuning.md。热调参面板可实时改。
 struct AirMouseCurveParams {
-    double low_thresh  = 15.0;
-    double high_thresh = 50.0;
+    double low_thresh  = 100.0;
+    double high_thresh = 333.0;
     double low_factor  = 0.15;
     double high_factor = 4.0;
 };
