@@ -414,6 +414,11 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
         return;
     }
 
+    // 首字延迟诊断锚点：button_down 到达桌面端时刻。各环节打印相对此点的累计毫秒，
+    // 用于量化设备切换/WASAPI Start/固件首帧 BLE 延迟的真实耗时，定位优化目标。
+    wechat_latency_anchor_ = std::chrono::steady_clock::now();
+    LogCoordinatorLine("wechat latency: button_down arrived dev=VS-" + device_id);
+
     if (!StartWechatInputMethodSession(session_id, device_id)) {
         // 启动失败（虚拟麦克风未找到/热键发送失败）：ShowError 已在内部提示，
         // 不弹录音悬浮窗、不发 recording 状态，避免松开时浮窗残留。
@@ -481,8 +486,10 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
                 // 首帧解码成功入 ring_buffer：持锁 SendDown 弹框，弹框前 CABLE Output 已有 PCM，
                 // 微信弹框即取到有效音频（避免弹框早于音频就绪的首字卡顿）。持锁避免与 Stop race。
                 if (!wechat_hotkey_sent_down_) {
+                    LogWechatLatency("first frame decoded, SendDown begin");
                     if (wechat_hotkey_->IsValid() && wechat_hotkey_->SendDown()) {
                         wechat_hotkey_sent_down_ = true;
+                        LogWechatLatency("SendDown end (popup triggered)");
                     } else {
                         hotkey_send_failed = true;
                     }
@@ -548,6 +555,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。
     // 必须在 SendDown 之前完成：微信弹框即从默认设备取音，未切好会取到真实麦。
     if (config_.wechat_input_method.auto_switch_default_recording_device) {
+        LogWechatLatency("auto_switch begin");
         if (!wechat_device_switcher_) {
             wechat_device_switcher_ = wechat_device_switcher_factory_
                 ? wechat_device_switcher_factory_()
@@ -573,17 +581,21 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         } else {
             LogCoordinatorLine("auto_switch: enabled but no device switcher available");
         }
+        LogWechatLatency("auto_switch end");
     }
 
     // 先 renderer.Start（WASAPI 通路就绪），SendDown 推迟到首帧 Opus 解码成功后（见
     // HandleWechatInputMethodAudioFrame）：避免微信弹框即取音却读到静音致首字卡顿。
     // Start 失败直接返回：未 SendDown 故无需补 SendUp 回滚热键。
+    LogWechatLatency("renderer.Start begin");
     if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
+        LogWechatLatency("renderer.Start failed");
         ui_->ShowError("Virtual microphone not found: " +
                            config_.wechat_input_method.virtual_mic_playback_name,
                        device_id, {});
         return false;
     }
+    LogWechatLatency("renderer.Start end");
 
     {
         std::lock_guard lock(audio_mutex_);
@@ -630,6 +642,7 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     active_device_id_.reset();
     wechat_input_method_active_ = false;
     wechat_hotkey_sent_down_ = false;
+    wechat_latency_anchor_.reset();
 }
 
 void VoiceStickCoordinator::FinishWechatInputMethodRecording() {
@@ -1748,6 +1761,16 @@ void VoiceStickCoordinator::ScheduleRecordingHardTimeout() {
 
 void VoiceStickCoordinator::CancelRecordingHardTimeout() {
     recording_hard_timeout_generation_.fetch_add(1);
+}
+
+void VoiceStickCoordinator::LogWechatLatency(std::string_view stage) {
+    if (!wechat_latency_anchor_.has_value()) {
+        return;
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - *wechat_latency_anchor_).count();
+    LogCoordinatorLine("wechat latency: " + std::string(stage) + " +" +
+                       std::to_string(elapsed) + "ms");
 }
 
 void VoiceStickCoordinator::FinishWithAsrError(const std::string& message) {
