@@ -36,7 +36,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
                                              std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory,
                                              std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory,
                                              std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory,
-                                             std::filesystem::path device_switch_state_path)
+                                             std::filesystem::path device_switch_state_path,
+                                             std::chrono::milliseconds recording_hard_timeout)
     : config_(std::move(config)),
       ble_(std::move(ble)),
       asr_(std::move(asr)),
@@ -51,6 +52,7 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
       wechat_hotkey_factory_(std::move(wechat_hotkey_factory)),
       wechat_device_switcher_factory_(std::move(wechat_device_switcher_factory)),
       device_switch_state_path_(std::move(device_switch_state_path)) {
+    recording_hard_timeout_ = recording_hard_timeout;
     for (const auto& entry : config_.paired_devices) {
         if (entry.device_id.empty()) continue;
         auto& info = firmware_info_by_device_id_[entry.device_id];
@@ -418,6 +420,9 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
         ble_->SendUiState("ready", "", device_id);
         return;
     }
+    // wechat 模式同样需要 recording 硬超时兜底：button_up/audio_end 都丢（固件 drain 超时
+    // 丢 audio_end + BLE 抖动 button_up 丢）时回 ready，避免永久卡 listening。
+    ScheduleRecordingHardTimeout();
     // wechat 模式不弹 VoiceStick 录音悬浮窗：微信输入法自带语音面板，
     // 弹出 VoiceStick 浮窗会遮挡且造成"松开不消失"的混乱，仅通过设备屏幕 recording 提供反馈。
     SendUiStateForActiveDevice("recording");
@@ -584,6 +589,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
 }
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {
+    CancelRecordingHardTimeout();
     if (wechat_hotkey_ && wechat_hotkey_->IsValid()) {
         wechat_hotkey_->SendUp();
     }
@@ -980,7 +986,15 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         return;
     }
     if (HandleFrontButtonDuringPendingPaste(device_id)) return;
-    if (session_state_ != SessionState::kReady || active_device_id_.has_value()) {
+    // 残留自愈：同一设备卡在 recording（button_up/audio_end 都丢）时再来 button_down，先停旧
+    // 会话再 Start 新的，否则被吞掉致用户怎么按都没反应。安全前提：固件 hold_to_talk 录音中
+    // 再按主键不发新 button_down，故收到 button_down 时若仍在 recording 必为残留。finalizing /
+    // pending 等状态保留原 RefreshDeviceUiState（不打断正常等 audio_end 或确认流程）。
+    if (session_state_ == SessionState::kRecording && active_device_id_.has_value() &&
+        *active_device_id_ == device_id) {
+        std::lock_guard lock(audio_mutex_);
+        CancelShortRecording();
+    } else if (session_state_ != SessionState::kReady || active_device_id_.has_value()) {
         RefreshDeviceUiState(device_id);
         return;
     }
@@ -1005,6 +1019,7 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         ogg_muxer_.Reset();
         debug_audio_recorder_.Start(device_id, session_id);
         SetSessionState(SessionState::kRecording, "primary_down");
+        ScheduleRecordingHardTimeout();
     }
     ui_->ShowListening(active_device_id_);
     SendUiStateForActiveDevice("recording");
@@ -1682,6 +1697,45 @@ void VoiceStickCoordinator::CancelAudioEndTimeout() {
     audio_end_wait_generation_.fetch_add(1);
 }
 
+// recording 硬超时兜底：button_down 进 recording 时调度，button_up/audio_end/取消/断连
+// 经 EnterReady/EnterFinalizing 取消。超时未收到结束信号则按当前输出模式走停止路径，
+// 覆盖 button_up 与 audio_end 同时丢失致永久卡 listening。锁内仅校验 generation 并读取
+// 停止路径所需状态，释放锁后调 Stop（StopWechatInputMethodSession 内部获取 audio_mutex_，
+// 持锁调用会死锁）。
+void VoiceStickCoordinator::ScheduleRecordingHardTimeout() {
+    const auto generation = recording_hard_timeout_generation_.fetch_add(1) + 1;
+    std::thread([this, alive = alive_, generation]() {
+        std::this_thread::sleep_for(recording_hard_timeout_);
+        if (!alive->load()) return;
+        bool stale = false;
+        bool wechat_active = false;
+        {
+            std::lock_guard lock(audio_mutex_);
+            if (recording_hard_timeout_generation_.load() != generation) {
+                return;
+            }
+            // 仍在录音且 generation 未变 = button_up/audio_end 都没到 = 卡死。
+            stale = active_session_id_.has_value();
+            if (stale) {
+                wechat_active = wechat_input_method_active_;
+            }
+        }
+        if (!stale) return;
+        LogCoordinatorLine("recording hard timeout; canceling stuck session");
+        if (wechat_active) {
+            // wechat 模式：走专用停止路径（停 renderer/松热键/切回设备/清 wechat_active）+ EnterReady。
+            StopWechatInputMethodSession();
+            EnterReady("wechat_hard_timeout");
+        } else {
+            CancelShortRecording();
+        }
+    }).detach();
+}
+
+void VoiceStickCoordinator::CancelRecordingHardTimeout() {
+    recording_hard_timeout_generation_.fetch_add(1);
+}
+
 void VoiceStickCoordinator::FinishWithAsrError(const std::string& message) {
     CancelAudioEndTimeout();
     asr_->Cancel();
@@ -2006,6 +2060,7 @@ void VoiceStickCoordinator::SetSessionState(SessionState state, std::string_view
 }
 
 void VoiceStickCoordinator::EnterReady(std::string_view reason, bool hide_overlay) {
+    CancelRecordingHardTimeout();
     SetSessionState(SessionState::kReady, reason);
     ui_->SetStatus("Ready");
     SendUiStateForActiveDevice("ready");
@@ -2014,6 +2069,7 @@ void VoiceStickCoordinator::EnterReady(std::string_view reason, bool hide_overla
 }
 
 void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {
+    CancelRecordingHardTimeout();
     SetSessionState(SessionState::kFinalizing, reason);
     ui_->SetStatus("Processing");
     SendUiStateForActiveDevice("thinking");

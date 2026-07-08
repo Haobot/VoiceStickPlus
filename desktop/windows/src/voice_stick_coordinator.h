@@ -191,7 +191,8 @@ public:
                           std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory = {},
                           std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory = {},
                           std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory = {},
-                          std::filesystem::path device_switch_state_path = {});
+                          std::filesystem::path device_switch_state_path = {},
+                          std::chrono::milliseconds recording_hard_timeout = kRecordingHardTimeout);
     ~VoiceStickCoordinator();
 
     void Start();
@@ -335,6 +336,10 @@ private:
     void ScheduleAudioEndTimeout(std::optional<std::uint32_t> session_id,
                                  std::optional<std::string> device_id);
     void CancelAudioEndTimeout();
+    // recording 硬超时兜底：button_down 进 recording 时启动，button_up/audio_end/断连/取消时取消。
+    // 超时未收到结束信号则 CancelShortRecording 回 ready，覆盖 button_up 与 audio_end 同时丢失的卡死。
+    void ScheduleRecordingHardTimeout();
+    void CancelRecordingHardTimeout();
     void SendFinalOggChunkIfNeeded(double recording_duration_seconds);
     void SendOrBufferOggChunk(const ByteVector& chunk, bool is_last, bool can_start_asr);
     bool StartAsrAndFlushBufferedChunks(bool last_chunk_is_final);
@@ -422,6 +427,9 @@ private:
     bool pasted_final_text_ = false;
     std::atomic_bool waiting_for_audio_end_{false};
     std::atomic_uint64_t audio_end_wait_generation_{0};
+    // recording 硬超时兜底（可经构造注入，测试用短值；默认 kRecordingHardTimeout）。
+    std::chrono::milliseconds recording_hard_timeout_{kRecordingHardTimeout};
+    std::atomic_uint64_t recording_hard_timeout_generation_{0};
     PendingPasteState pending_paste_state_;
     std::optional<std::string> last_recoverable_text_;
     std::optional<std::string> last_recoverable_device_id_;
@@ -473,6 +481,8 @@ private:
     void RecoverDeviceSwitchStateIfNeeded();
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
     static constexpr std::chrono::milliseconds kAudioEndTimeout{1000};
+    // recording 硬上限：button_up 与 audio_end 都丢失时的兜底，避免永久卡 listening。
+    static constexpr std::chrono::seconds kRecordingHardTimeout{120};
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
 };
 
