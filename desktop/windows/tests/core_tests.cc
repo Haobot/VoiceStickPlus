@@ -2425,6 +2425,7 @@ void TestWechatInputMethodConfigRoundTrip() {
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
     config.wechat_input_method.hotkey = "ctrl+shift+w";
     config.wechat_input_method.virtual_mic_playback_name = "CABLE Input";
+    config.wechat_input_method.virtual_mic_capture_name = "CABLE Output Test";
     config.wechat_input_method.auto_switch_default_recording_device = true;
     config.Save(temp);
 
@@ -2432,6 +2433,7 @@ void TestWechatInputMethodConfigRoundTrip() {
     assert(loaded.default_output_profile.target == OutputTarget::kWechatInputMethod);
     assert(loaded.wechat_input_method.hotkey == "ctrl+shift+w");
     assert(loaded.wechat_input_method.virtual_mic_playback_name == "CABLE Input");
+    assert(loaded.wechat_input_method.virtual_mic_capture_name == "CABLE Output Test");
     assert(loaded.wechat_input_method.auto_switch_default_recording_device);
 
     std::filesystem::remove(temp);

@@ -104,6 +104,10 @@ struct WechatInputMethodConfig {
     std::string hotkey = "ctrl+win";
     // 虚拟麦克风播放端名称子串，例如 "CABLE Input (VB-Audio Virtual Cable)"。
     std::string virtual_mic_playback_name = "CABLE Input";
+    // 虚拟麦克风录音端名称子串，例如 "CABLE Output (VB-Audio Virtual Cable)"。
+    // 与播放端是不同设备：播放端是 VoiceStick 写入的 eRender 设备（CABLE Input），
+    // 录音端是系统录音设备（CABLE Output），auto_switch 切默认录音设备指向此端。
+    std::string virtual_mic_capture_name = "CABLE Output";
     // 是否在录音期间自动将默认录音设备切换为虚拟麦克风。
     bool auto_switch_default_recording_device = false;
 
