@@ -340,6 +340,8 @@ private:
     // 超时未收到结束信号则 CancelShortRecording 回 ready，覆盖 button_up 与 audio_end 同时丢失的卡死。
     void ScheduleRecordingHardTimeout();
     void CancelRecordingHardTimeout();
+    // 首字延迟诊断：打印 stage 相对 wechat_latency_anchor_ 的累计毫秒。无活跃会话时跳过。
+    void LogWechatLatency(std::string_view stage);
     void SendFinalOggChunkIfNeeded(double recording_duration_seconds);
     void SendOrBufferOggChunk(const ByteVector& chunk, bool is_last, bool can_start_asr);
     bool StartAsrAndFlushBufferedChunks(bool last_chunk_is_final);
@@ -467,6 +469,9 @@ private:
     bool wechat_audio_end_received_ = false;
     // 是否已对本次会话发送 SendDown（首帧 Opus 解码成功才发送）；决定 Stop 是否配对 SendUp。
     bool wechat_hotkey_sent_down_ = false;
+    // 首字延迟诊断锚点：HandleWechatInputMethodPrimaryButtonDown 入口记 now，各环节打印相对毫秒。
+    // 纯观测用，不影响行为；用 optional 区分“无活跃会话”与“刚启动尚未到首帧”。
+    std::optional<std::chrono::steady_clock::time_point> wechat_latency_anchor_;
     // 工厂注入（测试用 fake 解耦真实 WASAPI/SendInput）；默认空→make_unique 真实实现。
     std::function<std::unique_ptr<IVirtualMicRenderer>(const IVirtualMicRenderer::Options&)> wechat_renderer_factory_;
     std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory_;
