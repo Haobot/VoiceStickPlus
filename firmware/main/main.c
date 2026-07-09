@@ -30,12 +30,12 @@
 static const char *TAG = "voice_stick";
 
 #define BATTERY_REFRESH_FALLBACK_MS (10 * 1000)
-#define DISPLAY_DIM_TIMEOUT_MS (30 * 1000)
-#define DISPLAY_OFF_TIMEOUT_MS (60 * 1000)      // T_off：S1 Resting → S2 ScreenOff
-#define POWEROFF_TIMEOUT_MS (10 * 60 * 1000)    // T_pwr：S2 ScreenOff → S3 PowerOff（连接态）
+#define DISPLAY_DIM_TIMEOUT_MS (10 * 1000)
+#define DISPLAY_OFF_TIMEOUT_MS (20 * 1000)      // T_off：S1 Resting → S2 ScreenOff
+#define POWEROFF_TIMEOUT_MS (5 * 60 * 1000)    // T_pwr：S2 ScreenOff → S3 PowerOff（连接态）
 #define DISC_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)  // T_disc：BLE 断连 → S3 PowerOff
-#define DISPLAY_ACTIVE_BRIGHTNESS 32
-#define DISPLAY_DIM_BRIGHTNESS 8
+#define DISPLAY_ACTIVE_BRIGHTNESS 20
+#define DISPLAY_DIM_BRIGHTNESS 4
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
 #define DISPLAY_OFF_TIMEOUT_US (DISPLAY_OFF_TIMEOUT_MS * 1000ULL)
 #define POWEROFF_TIMEOUT_US (POWEROFF_TIMEOUT_MS * 1000ULL)
