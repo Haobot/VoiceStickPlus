@@ -46,9 +46,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "Medium";
     table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "High";
     table[Index(StringId::kSettingsTapToArrow)] = "Double-tap device to press Down arrow";
-    table[Index(StringId::kSettingsTapSensitivity)] = "Tap Sensitivity (1=hard, 10=light)";
-    table[Index(StringId::kSettingsAirMouseSensitivityX)] = "Air Mouse Sensitivity Left/Right (1=slow, 10=fast)";
-    table[Index(StringId::kSettingsAirMouseSensitivityY)] = "Air Mouse Sensitivity Up/Down (1=slow, 10=fast)";
+    table[Index(StringId::kSettingsTapSensitivity)] = "Tap Sensitivity";
+    table[Index(StringId::kSettingsAirMouseSensitivityX)] = "Left/Right Sensitivity";
+    table[Index(StringId::kSettingsAirMouseSensitivityY)] = "Up/Down Sensitivity";
     table[Index(StringId::kSettingsOutputTarget)] = "Output Target";
     table[Index(StringId::kSettingsOutputTargetFocusedApp)] = "Focused App";
     table[Index(StringId::kSettingsOutputTargetSubtitle)] = "Subtitle";
@@ -247,9 +247,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsImuWakeSensitivityMedium)] = "中";
     table[Index(StringId::kSettingsImuWakeSensitivityHigh)] = "高";
     table[Index(StringId::kSettingsTapToArrow)] = "双击设备按下方向键↓";
-    table[Index(StringId::kSettingsTapSensitivity)] = "敲击灵敏度（1=重，10=轻）";
-    table[Index(StringId::kSettingsAirMouseSensitivityX)] = "体感鼠标左右灵敏度（1=慢，10=快）";
-    table[Index(StringId::kSettingsAirMouseSensitivityY)] = "体感鼠标上下灵敏度（1=慢，10=快）";
+    table[Index(StringId::kSettingsTapSensitivity)] = "敲击灵敏度";
+    table[Index(StringId::kSettingsAirMouseSensitivityX)] = "左右灵敏度";
+    table[Index(StringId::kSettingsAirMouseSensitivityY)] = "上下灵敏度";
     table[Index(StringId::kSettingsOutputTarget)] = "输出目标";
     table[Index(StringId::kSettingsOutputTargetFocusedApp)] = "当前应用";
     table[Index(StringId::kSettingsOutputTargetSubtitle)] = "字幕";
