@@ -284,7 +284,7 @@ StickS3:
 boot -> advertising -> connected -> idle -> recording -> idle
 ```
 
-The firmware also dims the display after 30 seconds of idle time. On battery power it enters deep sleep after 5 minutes; while charging or USB powered it stays at the dimmed-screen stage. The front button wakes the device from deep sleep.
+The firmware dims the display after 10 seconds of idle time, turns the screen off after 20 seconds, and enters deep sleep after 5 minutes on battery power; while charging or USB powered it stays at the screen-off stage. The front button wakes the device from deep sleep. Picking up the device (detected via BMI270) wakes the display from the dimmed/screen-off states back to active.
 
 macOS:
 
