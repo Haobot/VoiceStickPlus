@@ -69,6 +69,7 @@ add_library(voicestick_core
     src/log.cc
     src/ogg_crc.cc
     src/ogg_opus_muxer.cc
+    src/ogg_opus_demuxer.cc
     src/pair_device_helper.cc
     src/pcm_ring_buffer.cc
     src/voice_stick_coordinator.cc
