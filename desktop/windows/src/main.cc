@@ -37,9 +37,11 @@ private:
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     // 命令行 --ota <path> [--device <id>]：解析请求，优先转发给已运行实例。
     std::optional<voicestick::OtaCliRequest> ota_request;
-    if (command_line) {
+    // 用 GetCommandLineW 而非 wWinMain 的 command_line 参数：后者不含程序名，
+    // CommandLineToArgvW 会把首个参数当作 argv[0]，导致 ParseOtaCliArgs 跳过程序名的约定失效。
+    if (PWSTR raw = GetCommandLineW()) {
         int argc = 0;
-        wchar_t** argv = CommandLineToArgvW(command_line, &argc);
+        wchar_t** argv = CommandLineToArgvW(raw, &argc);
         if (argv) {
             ota_request = voicestick::ParseOtaCliArgs(argc, argv);
             LocalFree(argv);
