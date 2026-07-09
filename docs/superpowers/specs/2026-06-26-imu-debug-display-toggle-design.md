@@ -77,7 +77,7 @@ ui_status_set_imu_text(buf);
   - 继续读取 BMI270 并调用 `update_display_orientation(x_g)`，保证方向自动旋转不受影响。
   - 仅在 `s_show_imu_debug` 为真时格式化 XYZ 并调用 `ui_status_set_imu_text(buf)`。
   - 为假时调用 `ui_status_set_imu_text("")`，清空顶部调试行。
-  - 串口日志仍继续输出加速度值，便于没有屏幕时通过日志调试。
+  - 串口日志同样跟随 `s_show_imu_debug` 开关：未开启时保持安静，避免每 200ms 刷屏淹没其他日志；开启时串口与屏幕同步输出，便于调试。
 
 ### 3. Windows 桌面端
 
