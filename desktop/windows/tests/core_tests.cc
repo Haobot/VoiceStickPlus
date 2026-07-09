@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -365,6 +366,59 @@ public:
 private:
     UINT32 buffer_frames_;
     int samples_per_frame_;
+    HANDLE event_ = nullptr;
+    std::vector<int16_t> scratch_;
+};
+
+// 计时版 WASAPI sink：模拟设备按实时速率消费 buffer（padding 随时间递减），
+// 用于量化 ring->WASAPI 管道滞留延迟与 device underrun。不启动真实线程，测试
+// 手动驱动 AdvanceTimeUs + RenderPump::PumpOnce 模拟事件驱动消费节奏。
+class TimedFakeSink : public WasapiRenderSink {
+ public:
+    TimedFakeSink(int sample_rate, int buffer_duration_ms, int channels = 1)
+        : sample_rate_(sample_rate),
+          buffer_frames_(static_cast<UINT32>(sample_rate * buffer_duration_ms / 1000)),
+          samples_per_frame_(channels) {
+        event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
+    ~TimedFakeSink() override { if (event_) CloseHandle(event_); }
+
+    bool OpenAndInitialize(const IVirtualMicRenderer::Options&) override { return true; }
+    UINT32 BufferFrameCount() const override { return buffer_frames_; }
+    bool CurrentPadding(UINT32* out) override { *out = padding_; return true; }
+    bool GetBuffer(UINT32 frames, BYTE** out) override {
+        scratch_.assign(static_cast<std::size_t>(frames) * samples_per_frame_, 0);
+        *out = reinterpret_cast<BYTE*>(scratch_.data());
+        return true;
+    }
+    void ReleaseBuffer(UINT32 frames) override {
+        padding_ += frames;
+        ++submit_count_;
+    }
+    void Start() override {}
+    void Stop() override {}
+    HANDLE NotifyEvent() override { return event_; }
+
+    // 模拟设备消费 us 微秒音频：padding 递减。消费量超过 padding 即 device underrun
+    //（设备取音时 buffer 空，输出静音/破音），是 buffer_duration_ms 过小的直接风险信号。
+    void AdvanceTimeUs(long long us) {
+        const long long consume = static_cast<long long>(sample_rate_) * us / 1000000;
+        if (consume > static_cast<long long>(padding_)) {
+            ++device_underrun_count_;
+            padding_ = 0;
+        } else {
+            padding_ -= static_cast<UINT32>(consume);
+        }
+    }
+
+    int sample_rate_ = 16000;
+    UINT32 buffer_frames_ = 0;
+    UINT32 padding_ = 0;
+    int samples_per_frame_ = 1;
+    int submit_count_ = 0;
+    int device_underrun_count_ = 0;
+
+ private:
     HANDLE event_ = nullptr;
     std::vector<int16_t> scratch_;
 };
@@ -2667,6 +2721,89 @@ void TestOggOpusDemuxerRejectsTruncatedStream() {
     assert(stream.packets.empty());
 }
 
+void TestWechatPipelineSteadyStateLatency() {
+    // 稳态：每 20ms 写一帧 PCM（320 样本 @16kHz），设备消费 20ms，PumpOnce 填 buffer。
+    // 管道滞留（ring+padding）稳态 ≈ buffer_frames，端到端延迟 ≈ buffer_duration_ms。
+    // 量化 WASAPI buffer 对首字延迟的贡献（真机 buffer_duration_ms=50 -> 约 50ms）。
+    const int sr = 16000;
+    const int frame_ms = 20;
+    const int frame_samples = sr * frame_ms / 1000;  // 320
+    const int buffer_ms = 50;
+    TimedFakeSink sink(sr, buffer_ms);
+    PcmRingBuffer ring(8192);
+    RenderPump pump(&sink, &ring, 1);
+
+    std::vector<int16_t> pcm(frame_samples, 1);
+    int ring_underrun = 0;
+    UINT32 max_backlog = 0;
+    for (int i = 0; i < 100; ++i) {
+        ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+        const UINT32 before = static_cast<UINT32>(ring.Available());
+        const UINT32 submitted = pump.PumpOnce();
+        const UINT32 after = static_cast<UINT32>(ring.Available());
+        if (before - after < submitted) ++ring_underrun;  // ring 不足补静音
+        const UINT32 backlog = static_cast<UINT32>(ring.Available()) + sink.padding_;
+        if (backlog > max_backlog) max_backlog = backlog;
+        sink.AdvanceTimeUs(frame_ms * 1000);  // 设备消费在填之后，匹配事件驱动
+    }
+    const double max_latency_ms = static_cast<double>(max_backlog) / sr * 1000.0;
+    // buffer 50ms 在 20ms 帧节奏下余量充足，device 不应饿。
+    assert(sink.device_underrun_count_ == 0);
+    // 首帧 ring 仅 320 < buffer 800，必有一次 ring underrun（补静音填满 buffer）。
+    assert(ring_underrun >= 1);
+    // 稳态滞留 ≈ buffer（WASAPI buffer 是管道延迟主因），允许首帧 + 一帧波动。
+    assert(max_backlog >= sink.buffer_frames_);
+    assert(max_backlog <= sink.buffer_frames_ + static_cast<UINT32>(frame_samples));
+    assert(max_latency_ms >= buffer_ms - 1.0);
+    assert(max_latency_ms <= buffer_ms + frame_ms + 1.0);
+}
+
+void TestWechatPipelineBufferDurationPareto() {
+    // 帕累托：buffer_duration_ms 越小管道延迟越低，但 < 帧节奏时 device underrun。
+    // 量化各档延迟与 underrun，为阶段6 调优 50->20ms 提供数据支撑。
+    const int sr = 16000;
+    const int frame_ms = 20;
+    const int frame_samples = sr * frame_ms / 1000;
+    std::vector<int16_t> pcm(frame_samples, 1);
+    double prev_latency = -1.0;
+    for (const int buffer_ms : {20, 50, 100}) {
+        TimedFakeSink sink(sr, buffer_ms);
+        PcmRingBuffer ring(8192);
+        RenderPump pump(&sink, &ring, 1);
+        UINT32 max_backlog = 0;
+        for (int i = 0; i < 200; ++i) {
+            ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+            pump.PumpOnce();
+            const UINT32 backlog = static_cast<UINT32>(ring.Available()) + sink.padding_;
+            if (backlog > max_backlog) max_backlog = backlog;
+            sink.AdvanceTimeUs(frame_ms * 1000);
+        }
+        const double latency_ms = static_cast<double>(max_backlog) / sr * 1000.0;
+        std::printf("[wechat-pareto] buffer_ms=%-3d max_latency=%6.1fms device_underrun=%d\n",
+                    buffer_ms, latency_ms, sink.device_underrun_count_);
+        // buffer >= 帧节奏(20ms) 时 device 不饿，延迟随 buffer_ms 递增。
+        assert(sink.device_underrun_count_ == 0);
+        assert(latency_ms >= prev_latency - 1.0);
+        prev_latency = latency_ms;
+    }
+}
+
+void TestWechatPipelineSmallBufferDeviceUnderrun() {
+    // buffer_duration_ms < 帧节奏（20ms）时，设备单周期消费 > buffer 容量，device underrun。
+    // 佐证 buffer_duration_ms 不可小于帧间隔，阶段6 调优下限为 20ms。
+    const int sr = 16000;
+    TimedFakeSink sink(sr, /*buffer_duration_ms=*/5);
+    PcmRingBuffer ring(8192);
+    RenderPump pump(&sink, &ring, 1);
+    std::vector<int16_t> pcm(sr * 20 / 1000, 1);
+    for (int i = 0; i < 50; ++i) {
+        ring.Write(pcm.data(), pcm.size());
+        pump.PumpOnce();
+        sink.AdvanceTimeUs(20 * 1000);
+    }
+    assert(sink.device_underrun_count_ > 0);
+}
+
 } // namespace
 
 void TestOutputTargetWechatInputMethod() {
@@ -4788,5 +4925,8 @@ int main() {
     TestOggOpusDemuxerRoundTripWithFinish();
     TestOggOpusDemuxerRejectsBadMagic();
     TestOggOpusDemuxerRejectsTruncatedStream();
+    TestWechatPipelineSteadyStateLatency();
+    TestWechatPipelineBufferDurationPareto();
+    TestWechatPipelineSmallBufferDeviceUnderrun();
     return 0;
 }
