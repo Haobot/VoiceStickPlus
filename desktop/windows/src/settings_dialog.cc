@@ -344,11 +344,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         output_target_combo_ = nullptr;
         wechat_hotkey_edit_ = nullptr;
         wechat_hotkey_label_ = nullptr;
-        wechat_virtual_mic_edit_ = nullptr;
-        wechat_virtual_mic_label_ = nullptr;
-        wechat_auto_switch_check_ = nullptr;
-        wechat_virtual_mic_capture_edit_ = nullptr;
-        wechat_virtual_mic_capture_label_ = nullptr;
         all_controls_.clear();
         label_controls_.clear();
         title_controls_.clear();
@@ -433,11 +428,6 @@ void SettingsDialog::DestroyControls() {
     output_target_combo_ = nullptr;
     wechat_hotkey_edit_ = nullptr;
     wechat_hotkey_label_ = nullptr;
-    wechat_virtual_mic_edit_ = nullptr;
-    wechat_virtual_mic_label_ = nullptr;
-    wechat_auto_switch_check_ = nullptr;
-    wechat_virtual_mic_capture_edit_ = nullptr;
-    wechat_virtual_mic_capture_label_ = nullptr;
     save_button_ = nullptr;
     cancel_button_ = nullptr;
     if (ui_font_) {
@@ -476,12 +466,12 @@ void SettingsDialog::BuildControls() {
         return remember_label(control);
     };
 
-    // 标签列加宽到 290 Dp 以容纳最长中文标签（体感鼠标~229）与英文标签（~276）。
-    // 控件右边界保持 x=600（与分组标题/分隔线对齐）：标签 x=10 + 290 + 间隙 10 -> ctrl_x=310，
-    // ctrl_w=640-350=290 -> 控件 x∈[310,600]。
-    const int label_w = Dp(290);
-    const int ctrl_x = Dp(310);
-    const int ctrl_w = Dp(kClientWidth - 350);
+    // 标签列缩窄到 180 Dp：删去体感鼠标/灵敏度描述后最长标签（微信语音热键 / WeChat Voice
+    // Hotkey）约 142 Dp，180 留余量。控件左移到 ctrl_x=200、ctrl_w 加宽到 kClientWidth-230=350，
+    // 减少复选框行左侧空白；内容右边界 x=550（右边距 30）。
+    const int label_w = Dp(180);
+    const int ctrl_x = Dp(200);
+    const int ctrl_w = Dp(kClientWidth - 230);
     const int row_h = Dp(28);
     const int title_h = Dp(20);
     const int sep_h = Dp(2);
@@ -684,48 +674,6 @@ void SettingsDialog::BuildControls() {
         add(row_h + Dp(10), {
             {wechat_hotkey_label_, Dp(10), Dp(3), label_w, Dp(20)},
             {wechat_hotkey_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        }, [this]() {
-            int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
-            return idx == 2;  // 微信输入法
-        });
-    }
-    {
-        // 微信输入法：虚拟麦克风播放端名称（如 CABLE Input）。
-        wechat_virtual_mic_label_ = remember_label(CreateLabel(hwnd_,
-            label_text(StringId::kSettingsWechatVirtualMic).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        wechat_virtual_mic_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
-                                                       kIdWechatVirtualMic, instance_));
-        add(row_h + Dp(10), {
-            {wechat_virtual_mic_label_, Dp(10), Dp(3), label_w, Dp(20)},
-            {wechat_virtual_mic_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        }, [this]() {
-            int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
-            return idx == 2;  // 微信输入法
-        });
-    }
-    {
-        // 微信输入法：录音时自动切换默认录音设备到虚拟麦克风（角色分离只切 eConsole）。
-        wechat_auto_switch_check_ = remember(CreateButton(hwnd_,
-            TrW(StringId::kSettingsWechatAutoSwitch, language).c_str(),
-            0, 0, ctrl_w, Dp(22), kIdWechatAutoSwitch, instance_, BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
-            {wechat_auto_switch_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        }, [this]() {
-            int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
-            return idx == 2;  // 微信输入法
-        });
-    }
-    {
-        // 微信输入法：自动切换目标的录音端名称（如 CABLE Output）。
-        wechat_virtual_mic_capture_label_ = remember_label(CreateLabel(hwnd_,
-            label_text(StringId::kSettingsWechatVirtualMicCapture).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        wechat_virtual_mic_capture_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
-                                                               kIdWechatVirtualMicCapture, instance_));
-        add(row_h + Dp(10), {
-            {wechat_virtual_mic_capture_label_, Dp(10), Dp(3), label_w, Dp(20)},
-            {wechat_virtual_mic_capture_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         }, [this]() {
             int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
             return idx == 2;  // 微信输入法
@@ -981,7 +929,7 @@ void SettingsDialog::ApplyApiKeyLayout() {
     bool show_trial = is_cloud && api_key_empty;
     if (is_tencent) show_trial = false;
     ShowWindow(apply_trial_button_, show_trial ? SW_SHOW : SW_HIDE);
-    const int ctrl_w = Dp(kClientWidth - 350);
+    const int ctrl_w = Dp(kClientWidth - 230);
     const int apply_btn_w = Dp(102);
     const int api_key_w = show_trial ? ctrl_w - apply_btn_w - Dp(8) : ctrl_w;
     SetWindowPos(api_key_edit_, nullptr, 0, 0, api_key_w, Dp(24),
@@ -1050,10 +998,6 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
     SendMessageW(output_target_combo_, CB_SETCURSEL, output_target_idx, 0);
     SetWindowTextW(wechat_hotkey_edit_, Utf16(config_.wechat_input_method.hotkey).c_str());
-    SetWindowTextW(wechat_virtual_mic_edit_, Utf16(config_.wechat_input_method.virtual_mic_playback_name).c_str());
-    SendMessageW(wechat_auto_switch_check_, BM_SETCHECK,
-                 config_.wechat_input_method.auto_switch_default_recording_device ? BST_CHECKED : BST_UNCHECKED, 0);
-    SetWindowTextW(wechat_virtual_mic_capture_edit_, Utf16(config_.wechat_input_method.virtual_mic_capture_name).c_str());
     UpdateOutputTargetVisibility();
 
     UpdateProviderVisibility();
@@ -1144,12 +1088,6 @@ void SettingsDialog::SaveSettings() {
         config_.default_output_profile.target = OutputTarget::kFocusedApp;
     }
     config_.wechat_input_method.hotkey = Utf8(GetWindowText(wechat_hotkey_edit_));
-    config_.wechat_input_method.virtual_mic_playback_name =
-        Utf8(GetWindowText(wechat_virtual_mic_edit_));
-    config_.wechat_input_method.auto_switch_default_recording_device =
-        SendMessageW(wechat_auto_switch_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    config_.wechat_input_method.virtual_mic_capture_name =
-        Utf8(GetWindowText(wechat_virtual_mic_capture_edit_));
 
     config_.Save();
     EndDialog(hwnd_, IDOK);
