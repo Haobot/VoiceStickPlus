@@ -112,7 +112,7 @@ private:
     std::vector<HWND> title_controls_;
     std::vector<LayoutEntry> layout_;
 
-    static constexpr int kClientWidth = 640;
+    static constexpr int kClientWidth = 580;
     static constexpr int kClientHeight = 1240;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
