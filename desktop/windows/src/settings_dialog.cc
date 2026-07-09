@@ -313,7 +313,11 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         const auto control = reinterpret_cast<HWND>(l_param);
         if (IsLabelControl(control)) {
             auto dc = reinterpret_cast<HDC>(w_param);
-            SetBkMode(dc, TRANSPARENT);
+            // 不透明 BTNFACE 背景：标签自擦除旧位置，滚动 SetWindowPos 重定位时
+            // 无透明 STATIC 文本残留，无需全量 RedrawWindow。
+            SetBkMode(dc, OPAQUE);
+            SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
             return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
         }
         break;
@@ -361,7 +365,9 @@ LPCDLGTEMPLATE SettingsDialog::BuildDialogTemplate() {
     AlignDialogData(&dialog_template_, 4);
 
     DLGTEMPLATE dialog_template{};
-    dialog_template.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT | WS_VSCROLL;
+    // WS_CLIPCHILDREN：父窗口重绘时排除子窗口区域，避免擦除背景覆盖按钮等子控件
+    // （DWM 合成下缺该项时滚动会令按钮区域被对话框背景覆盖且按钮不重绘，表现为按钮消失）。
+    dialog_template.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT | WS_VSCROLL | WS_CLIPCHILDREN;
     dialog_template.dwExtendedStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
     dialog_template.cdit = 0;
     dialog_template.x = 0;
@@ -470,9 +476,12 @@ void SettingsDialog::BuildControls() {
         return remember_label(control);
     };
 
-    const int label_w = Dp(110);
-    const int ctrl_x = Dp(130);
-    const int ctrl_w = Dp(kClientWidth - 170);
+    // 标签列加宽到 290 Dp 以容纳最长中文标签（体感鼠标~229）与英文标签（~276）。
+    // 控件右边界保持 x=600（与分组标题/分隔线对齐）：标签 x=10 + 290 + 间隙 10 -> ctrl_x=310，
+    // ctrl_w=640-350=290 -> 控件 x∈[310,600]。
+    const int label_w = Dp(290);
+    const int ctrl_x = Dp(310);
+    const int ctrl_w = Dp(kClientWidth - 350);
     const int row_h = Dp(28);
     const int title_h = Dp(20);
     const int sep_h = Dp(2);
@@ -701,7 +710,7 @@ void SettingsDialog::BuildControls() {
             TrW(StringId::kSettingsWechatAutoSwitch, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdWechatAutoSwitch, instance_, BS_AUTOCHECKBOX));
         add(row_h + Dp(10), {
-            {wechat_auto_switch_check_, Dp(10), 0, ctrl_w, Dp(22)},
+            {wechat_auto_switch_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         }, [this]() {
             int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
             return idx == 2;  // 微信输入法
@@ -907,13 +916,15 @@ void SettingsDialog::Relayout() {
     // 6. 窗口高度。
     ResizeWindow(client_h);
 
-    // 7. 内容控件按滚动偏移定位。
+    // 7. 内容控件按滚动偏移定位。起始 y >= content_area_h（按钮区）的条目整体隐藏，
+    //    避免内容溢出按钮区与保存/取消重叠（替代不透明背景遮挡，更稳健）。
     int y = Dp(20) - scroll_pos_;
     for (const auto& entry : layout_) {
         const bool vis = !entry.visible || entry.visible();
+        const bool in_view = vis && (y + entry.advance > Dp(0)) && (y < content_area_h);
         for (const auto& p : entry.parts) {
             if (!p.control) continue;
-            if (vis) {
+            if (in_view) {
                 SetWindowPos(p.control, nullptr, p.x, y + p.y_off, p.w, p.h,
                              SWP_NOZORDER | SWP_NOACTIVATE);
                 if (!p.defer_visibility) ShowWindow(p.control, SW_SHOW);
@@ -927,6 +938,8 @@ void SettingsDialog::Relayout() {
     // 8. 按钮钉底：y = client_h - btn_h - Dp(20)。
     //    不超高时 client_h=natural_h，代入得 y=content_h+Dp(20)（紧跟内容下方）；
     //    超高时钉在窗口底部。两种情况统一。
+    //    用 SWP_NOZORDER 保持创建顺序的 z 序（取消在保存之上），避免反复 HWND_TOP
+    //    在 DWM 下间歇触发按钮合成异常。
     const int btn_w = Dp(80);
     const int btn_y = client_h - btn_h - Dp(20);
     if (save_button_) {
@@ -941,6 +954,12 @@ void SettingsDialog::Relayout() {
     }
     // 行内条件：apply_trial_button 显隐 + api_key_edit 宽度，需在 Relayout 定位后修正。
     ApplyApiKeyLayout();
+
+    // 全量 invalidate + 擦除背景 + 重绘所有子窗口：WS_CLIPCHILDREN 下父窗口擦除排除
+    // 子窗口区域，按钮等子控件不被擦除覆盖；重绘让按钮保持可见。标签已用不透明 BTNFACE
+    // 背景自擦除，滚动无残留。
+    RedrawWindow(hwnd_, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
 void SettingsDialog::ResizeWindow(int client_h) {
@@ -962,7 +981,7 @@ void SettingsDialog::ApplyApiKeyLayout() {
     bool show_trial = is_cloud && api_key_empty;
     if (is_tencent) show_trial = false;
     ShowWindow(apply_trial_button_, show_trial ? SW_SHOW : SW_HIDE);
-    const int ctrl_w = Dp(kClientWidth - 170);
+    const int ctrl_w = Dp(kClientWidth - 350);
     const int apply_btn_w = Dp(102);
     const int api_key_w = show_trial ? ctrl_w - apply_btn_w - Dp(8) : ctrl_w;
     SetWindowPos(api_key_edit_, nullptr, 0, 0, api_key_w, Dp(24),
