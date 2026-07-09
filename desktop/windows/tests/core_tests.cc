@@ -2804,6 +2804,53 @@ void TestWechatPipelineSmallBufferDeviceUnderrun() {
     assert(sink.device_underrun_count_ > 0);
 }
 
+void TestRingBurstBacklogAmplifiesLatency() {
+    // 固件冷启动后可能突发发送 init_codec 期间缓冲的音频，一次到达多帧。
+    // ring 接住积压，稳态消费 1:1 不 drain（生产=消费），积压持续，音频延迟
+    // N ms 到达微信，放大首字与全程延迟。
+    const int sr = 16000;
+    const int frame_ms = 20;
+    const int frame_samples = sr * frame_ms / 1000;  // 320
+    TimedFakeSink sink(sr, 50);
+    PcmRingBuffer ring(8192);
+    RenderPump pump(&sink, &ring, 1);
+    std::vector<int16_t> pcm(frame_samples, 1);
+
+    // 突发 25 帧（500ms）。
+    for (int i = 0; i < 25; ++i) {
+        ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+    }
+    pump.PumpOnce();  // 填 buffer 800，ring 减 800
+    // 积压 7200 samples = 450ms，稳态不 drain（生产=消费）。
+    const double backlog_ms = static_cast<double>(ring.Available()) / sr * 1000.0;
+    assert(backlog_ms >= 440.0 && backlog_ms <= 460.0);
+
+    // 稳态 20 周期：每周期写 320 消费 320，积压不变。
+    for (int i = 0; i < 20; ++i) {
+        ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+        pump.PumpOnce();
+        sink.AdvanceTimeUs(frame_ms * 1000);
+    }
+    const double backlog_after = static_cast<double>(ring.Available()) / sr * 1000.0;
+    // 稳态生产=消费，积压不 drain，延迟持续放大 N ms。
+    assert(backlog_after > 400.0);
+    // 结论：真机日志首帧后稳态无积压，故 ring 积压非真机观测主因；
+    // 但冷启动突发是理论风险，ring capacity 是延迟放大上限。
+}
+
+void TestRingBacklogUpperBoundByCapacity() {
+    // ring capacity 8192 samples = 512ms @16kHz。突发超过 capacity 时 drop-oldest，
+    // 积压上限 512ms。结合 WASAPI buffer 50ms，管道最大滞留约 562ms，
+    // 仍不足 1-2 秒，佐证 1-2 秒主因在下游（VB-CABLE/微信 ASR）。
+    const int sr = 16000;
+    PcmRingBuffer ring(8192);
+    std::vector<int16_t> pcm(20000, 1);  // 远超 capacity
+    ring.Write(pcm.data(), pcm.size());
+    assert(ring.Available() == 8192);
+    const double max_backlog_ms = static_cast<double>(ring.Available()) / sr * 1000.0;
+    assert(max_backlog_ms >= 511.0 && max_backlog_ms <= 513.0);
+}
+
 } // namespace
 
 void TestOutputTargetWechatInputMethod() {
@@ -4928,5 +4975,7 @@ int main() {
     TestWechatPipelineSteadyStateLatency();
     TestWechatPipelineBufferDurationPareto();
     TestWechatPipelineSmallBufferDeviceUnderrun();
+    TestRingBurstBacklogAmplifiesLatency();
+    TestRingBacklogUpperBoundByCapacity();
     return 0;
 }
