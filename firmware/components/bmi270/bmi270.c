@@ -64,6 +64,10 @@ static const char *TAG = "bmi270";
 #define BMI270_DPS_PER_LSB_500DPS (1.0f / 65.5f)
 #define BMI270_GYR_LSB_PER_DPS 65.5f
 
+// 敲击检测诊断心跳开关：1=每 100 拍打印一次 tap poll 状态用于真机调参，0=静默。
+// 仅控制 tap poll 周期性心跳；tap impulse/baseline/detection 等事件型日志不受影响。
+#define BMI270_TAP_DEBUG_LOG 0
+
 // IMU 类型枚举
 typedef enum {
     IMU_NONE,
@@ -620,6 +624,7 @@ static bool detect_tap_impulse(const tap_params_t *params, int64_t now_us)
     s_tap_baseline_g[1] = s_tap_baseline_g[1] * (1.0f - baseline_alpha) + acc_g[1] * baseline_alpha;
     s_tap_baseline_g[2] = s_tap_baseline_g[2] * (1.0f - baseline_alpha) + acc_g[2] * baseline_alpha;
 
+#if BMI270_TAP_DEBUG_LOG
     // 每 100 次打印一次状态，确认状态机在跑。
     static int dbg_cnt = 0;
     if (++dbg_cnt >= 100) {
@@ -629,6 +634,7 @@ static bool detect_tap_impulse(const tap_params_t *params, int64_t now_us)
                  delta_dom, s_tap_last_delta_dom, concentration, gyr_mag,
                  params->acc_thr_g, params->gyr_calm_thr_dps, params->axis_concentration_ratio);
     }
+#endif
 
     const bool impulse = delta_dom >= params->acc_thr_g &&
                          gyr_mag <= params->gyr_calm_thr_dps;
