@@ -58,6 +58,7 @@ add_library(voicestick_core
     src/asr_protocol.cc
     src/audio_opus_decoder.cc
     src/ble_protocol.cc
+    src/cmd_line.cc
     src/debug_audio_recorder.cc
     src/firmware_manifest.cc
     src/llm_chat_client.cc

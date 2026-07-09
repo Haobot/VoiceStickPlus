@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_config.h"
+#include "cmd_line.h"
 #include "firmware_update_dialog.h"
 #include "global_hotkey_win.h"
 #include "hotkey_settings_dialog.h"
@@ -20,6 +21,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+
+namespace voicestick {
+
+// WM_COPYDATA.dwData 标识：命令行 --ota 实例转发给已运行实例的 OTA 请求。'VSOT'。
+constexpr ULONG_PTR kOtaCopyDataId = 0x56534F54;
+
+} // namespace voicestick
 #include <vector>
 
 namespace voicestick {
@@ -68,6 +76,9 @@ public:
                       OverlayThemeColor color) override;
     void HideSubtitles() override;
     void ShowNotification(const std::string& title, const std::string& body) override;
+    // 无运行实例时由命令行入口(--ota)注入的待处理 OTA 请求，连上设备后自动触发。
+    void SetPendingOtaRequest(std::string file_path,
+                              std::optional<std::string> device_id);
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -94,6 +105,9 @@ private:
     void ApplyOverlayStyle(const std::optional<std::string>& device_id);
     void StartFirmwareUpdate(const std::string& device_id);
     void StartFirmwareUpdateFromFile(const std::string& device_id);
+    // 用给定本地 bin 路径发起 BLE OTA：自动选已连接设备（device_id 为空时取第一个）。
+    void StartOtaFromFile(const std::string& file_path,
+                          const std::optional<std::string>& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);
     void PairDeviceByManualId(const std::string& device_id);
@@ -126,6 +140,7 @@ private:
     std::map<std::string, DeviceBattery> device_battery_map_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
+    std::optional<OtaCliRequest> pending_ota_request_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;
     static constexpr UINT_PTR kAirMouseTimerId = 100;
