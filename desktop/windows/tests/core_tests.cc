@@ -13,6 +13,7 @@
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
+#include "ogg_opus_demuxer.h"
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
 #include "voice_stick_coordinator.h"
@@ -2600,6 +2601,72 @@ void TestWasapiRendererRestartsAfterStop() {
     renderer.Stop();
 }
 
+void TestOggOpusDemuxerParsesOpusHead() {
+    // muxer 产出单帧流，demuxer 解析后验证 OpusHead 字段与 packet 完整性。
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector opus_frame = {0xAB, 0xCD, 0x12, 0x34, 0x56};
+    const ByteVector ogg = muxer.Append(opus_frame, /*is_last=*/true);
+
+    OggOpusStream stream;
+    assert(ParseOggOpus(ogg, stream));
+    assert(stream.sample_rate == 16000);
+    assert(stream.channels == 1);
+    assert(stream.preskip == 312);
+    assert(stream.packets.size() == 1);
+    assert(stream.packets[0] == opus_frame);
+}
+
+void TestOggOpusDemuxerMultiplePackets() {
+    // 多帧按写入顺序解析，packet 逐字节一致。
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector a = {0x11, 0x11}, b = {0x22, 0x22, 0x22}, c = {0x33};
+    ByteVector ogg;
+    auto add = [&](const ByteVector& p, bool last) {
+        const ByteVector chunk = muxer.Append(p, last);
+        ogg.insert(ogg.end(), chunk.begin(), chunk.end());
+    };
+    add(a, false);
+    add(b, false);
+    add(c, true);
+
+    OggOpusStream stream;
+    assert(ParseOggOpus(ogg, stream));
+    assert(stream.packets.size() == 3);
+    assert(stream.packets[0] == a);
+    assert(stream.packets[1] == b);
+    assert(stream.packets[2] == c);
+}
+
+void TestOggOpusDemuxerRoundTripWithFinish() {
+    // muxer.Finish 产生的 EOS 空页不影响已收 packet 的解析。
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector a = {0x77, 0x88};
+    ByteVector ogg = muxer.Append(a, false);
+    const ByteVector eos = muxer.Finish();
+    ogg.insert(ogg.end(), eos.begin(), eos.end());
+
+    OggOpusStream stream;
+    assert(ParseOggOpus(ogg, stream));
+    assert(stream.packets.size() == 1);
+    assert(stream.packets[0] == a);
+}
+
+void TestOggOpusDemuxerRejectsBadMagic() {
+    const ByteVector bad(100, 0);  // 无 OggS magic。
+    OggOpusStream stream;
+    assert(!ParseOggOpus(bad, stream));
+}
+
+void TestOggOpusDemuxerRejectsTruncatedStream() {
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector payload = {0xAB, 0xCD};
+    const ByteVector ogg_full = muxer.Append(payload, true);
+    ByteVector ogg(ogg_full.begin(), ogg_full.begin() + 10);  // 页头都未完整。
+    OggOpusStream stream;
+    assert(!ParseOggOpus(ogg, stream));
+    assert(stream.packets.empty());
+}
+
 } // namespace
 
 void TestOutputTargetWechatInputMethod() {
@@ -4716,5 +4783,10 @@ int main() {
     TestWStringUtf8Conversion();
     TestCoordinatorRecordingHardTimeoutRecoversFromLostButtonUp();
     TestCoordinatorRecoveringButtonDownStopsStaleRecording();
+    TestOggOpusDemuxerParsesOpusHead();
+    TestOggOpusDemuxerMultiplePackets();
+    TestOggOpusDemuxerRoundTripWithFinish();
+    TestOggOpusDemuxerRejectsBadMagic();
+    TestOggOpusDemuxerRejectsTruncatedStream();
     return 0;
 }
