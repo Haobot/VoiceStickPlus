@@ -90,6 +90,7 @@ enum class StringId {
     kMenuOverlayPosition,
     kMenuForgetDevice,
     kMenuUpdateFirmware,
+    kMenuUpdateFirmwareFromFile,
     kMenuFirmwareUpToDate,
     kMenuHotkey,
     kMenuHotkeyEnabled,

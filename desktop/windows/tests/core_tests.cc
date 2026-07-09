@@ -112,11 +112,17 @@ public:
                           std::uint32_t request_id) override {
         sent_remote_buttons.push_back(SentRemoteButton{action, button, device_id, request_id});
     }
-    void UpdateFirmware(ByteVector,
-                        const std::string&,
-                        std::function<void(FirmwareUpdateProgress)>,
+    void UpdateFirmware(ByteVector image,
+                        const std::string& device_id,
+                        std::function<void(FirmwareUpdateProgress)> progress,
                         std::function<void(bool, std::string)> completion) override {
-        completion(false, "not implemented");
+        captured_firmware_image = std::move(image);
+        captured_firmware_device_id = device_id;
+        if (progress) {
+            progress(FirmwareUpdateProgress{
+                0, static_cast<int>(captured_firmware_image.size()), true});
+        }
+        if (completion) completion(true, "");
     }
     void CancelFirmwareUpdate() override {}
     bool IsConnected(const std::string& device_id) const override {
@@ -125,6 +131,8 @@ public:
 
     std::vector<std::string> paired_device_ids;
     std::set<std::string> connected_device_ids;
+    ByteVector captured_firmware_image;
+    std::string captured_firmware_device_id;
     std::vector<SentUiState> sent_ui_states;
     std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
     std::vector<std::optional<std::string>> battery_status_requests;
@@ -1017,6 +1025,54 @@ void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
 
     assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 500);
     assert(!ble_ptr->sent_imu_wake_sensitivities.back().device_id.has_value());
+}
+
+void TestCoordinatorUpdateFirmwareFromFile() {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "vs_local_fw_test.bin";
+    const ByteVector data{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02};
+    {
+        std::ofstream f(path, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(data.data()),
+                static_cast<std::streamsize>(data.size()));
+    }
+
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 正常路径：读到的字节原样喂底层，device_id 透传。
+    bool ok = false;
+    coordinator.UpdateFirmwareFromFile(path.string(), "5A74", {},
+        [&](bool s, std::string) { ok = s; });
+    assert(ok);
+    assert(ble_ptr->captured_firmware_image == data);
+    assert(ble_ptr->captured_firmware_device_id == "5A74");
+
+    // 不存在文件：completion(false)，不触达底层（captured 维持上次成功值）。
+    bool ok2 = true;
+    coordinator.UpdateFirmwareFromFile("nonexistent_vs_fw.bin", "5A74", {},
+        [&](bool s, std::string) { ok2 = s; });
+    assert(!ok2);
+    assert(ble_ptr->captured_firmware_device_id == "5A74");
+
+    // 空文件：completion(false)，不触达底层。
+    const std::filesystem::path empty_path =
+        std::filesystem::temp_directory_path() / "vs_local_fw_empty.bin";
+    { std::ofstream f(empty_path, std::ios::binary); }
+    bool ok3 = true;
+    coordinator.UpdateFirmwareFromFile(empty_path.string(), "5A74", {},
+        [&](bool s, std::string) { ok3 = s; });
+    assert(!ok3);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(empty_path, ec);
 }
 
 void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
@@ -4501,6 +4557,7 @@ int main() {
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
+    TestCoordinatorUpdateFirmwareFromFile();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();

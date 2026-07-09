@@ -95,6 +95,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuOverlayPosition)] = "Overlay Position";
     table[Index(StringId::kMenuForgetDevice)] = "Forget Device";
     table[Index(StringId::kMenuUpdateFirmware)] = "Update Firmware...";
+    table[Index(StringId::kMenuUpdateFirmwareFromFile)] = "Update Firmware from File...";
     table[Index(StringId::kMenuFirmwareUpToDate)] = "Firmware Up to Date";
     table[Index(StringId::kMenuHotkey)] = "Hotkey";
     table[Index(StringId::kMenuHotkeyEnabled)] = "Enable Hotkey";
@@ -295,6 +296,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuOverlayPosition)] = "悬浮窗位置";
     table[Index(StringId::kMenuForgetDevice)] = "忘记设备";
     table[Index(StringId::kMenuUpdateFirmware)] = "更新固件...";
+    table[Index(StringId::kMenuUpdateFirmwareFromFile)] = "从本地文件更新固件...";
     table[Index(StringId::kMenuFirmwareUpToDate)] = "固件已是最新";
     table[Index(StringId::kMenuHotkey)] = "热键";
     table[Index(StringId::kMenuHotkeyEnabled)] = "启用热键";

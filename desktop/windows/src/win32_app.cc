@@ -8,6 +8,7 @@
 #include "resource.h"
 
 #include <Shellapi.h>
+#include <commdlg.h>
 #include <tlhelp32.h>
 #include <winsparkle.h>
 #include <winrt/base.h>
@@ -56,6 +57,8 @@ constexpr UINT kMenuOverlayPositionBase = 3400;
 constexpr UINT kMenuOverlayPositionEnd = 3999;
 constexpr UINT kMenuTranslationBase = 4000;
 constexpr UINT kMenuTranslationEnd = 5799;
+constexpr UINT kMenuUpdateFirmwareFromFileBase = 5900;
+constexpr UINT kMenuUpdateFirmwareFromFileEnd = 5999;
 constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
@@ -818,6 +821,12 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size()) {
                     StartFirmwareUpdate(paired_device_ids_[index]);
                 }
+            } else if (cmd >= kMenuUpdateFirmwareFromFileBase &&
+                       cmd <= kMenuUpdateFirmwareFromFileEnd) {
+                std::size_t index = cmd - kMenuUpdateFirmwareFromFileBase;
+                if (index < paired_device_ids_.size()) {
+                    StartFirmwareUpdateFromFile(paired_device_ids_[index]);
+                }
             } else if (cmd >= kMenuThemeColorBase && cmd <= kMenuThemeColorEnd) {
                 const std::size_t offset = cmd - kMenuThemeColorBase;
                 const std::size_t index = offset / kMenuOptionsPerDevice;
@@ -1184,6 +1193,11 @@ void Win32App::ShowTrayMenu() {
             }
         }
 
+        if (connected) {
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuUpdateFirmwareFromFileBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuUpdateFirmwareFromFile, language).c_str());
+        }
         AppendMenuW(submenu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(submenu, MF_STRING, kMenuForgetBase + static_cast<UINT>(i),
                     TrW(StringId::kMenuForgetDevice, language).c_str());
@@ -1676,6 +1690,47 @@ void Win32App::StartFirmwareUpdate(const std::string& device_id) {
     firmware_update_dialog_->Show();
     coordinator_->UpdateFirmwareFromLatest(
         device_id,
+        [this](FirmwareUpdateProgress progress) {
+            DispatchToUi([this, progress] {
+                if (firmware_update_dialog_) firmware_update_dialog_->UpdateProgress(progress);
+            });
+        },
+        [this](bool success, std::string message) {
+            DispatchToUi([this, success, message] {
+                if (firmware_update_dialog_) firmware_update_dialog_->Finish(success, message);
+                if (success) {
+                    const auto language = EffectiveUiLanguage(config_.ui_language);
+                    ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
+                                     Tr(StringId::kNotificationFirmwareUpdatedBody, language));
+                }
+            });
+        });
+}
+
+void Win32App::StartFirmwareUpdateFromFile(const std::string& device_id) {
+    if (!coordinator_) return;
+    wchar_t path[MAX_PATH] = {};
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    const auto title = TrW(StringId::kMenuUpdateFirmwareFromFile, language);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"Firmware binary (*.bin)\0*.bin\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrTitle = title.c_str();
+    if (!GetOpenFileNameW(&ofn)) return;  // 用户取消或打开失败
+
+    const std::string file_path = Utf8FromUtf16(path);
+    firmware_update_dialog_ = std::make_unique<FirmwareUpdateDialog>(
+        instance_, hwnd_, language, "local file");
+    firmware_update_dialog_->on_cancel = [this] {
+        if (coordinator_) coordinator_->CancelFirmwareUpdate();
+    };
+    firmware_update_dialog_->Show();
+    coordinator_->UpdateFirmwareFromFile(
+        file_path, device_id,
         [this](FirmwareUpdateProgress progress) {
             DispatchToUi([this, progress] {
                 if (firmware_update_dialog_) firmware_update_dialog_->UpdateProgress(progress);

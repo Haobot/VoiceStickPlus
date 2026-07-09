@@ -93,6 +93,7 @@ private:
     void SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile);
     void ApplyOverlayStyle(const std::optional<std::string>& device_id);
     void StartFirmwareUpdate(const std::string& device_id);
+    void StartFirmwareUpdateFromFile(const std::string& device_id);
     void PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                     BluetoothAddressKind address_kind, const std::string& name);
     void PairDeviceByManualId(const std::string& device_id);
