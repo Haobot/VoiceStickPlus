@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <tuple>
 #include <utility>
 
@@ -298,6 +300,30 @@ void VoiceStickCoordinator::UpdateFirmwareFromLatest(
         }
         ble_->UpdateFirmware(std::move(*image), device_id, std::move(progress), std::move(completion));
     }).detach();
+}
+
+void VoiceStickCoordinator::UpdateFirmwareFromFile(
+    const std::string& file_path, const std::string& device_id,
+    std::function<void(FirmwareUpdateProgress)> progress,
+    std::function<void(bool, std::string)> completion) {
+    std::ifstream f(file_path, std::ios::binary);
+    if (!f) {
+        completion(false, "Cannot open firmware file.");
+        return;
+    }
+    ByteVector image((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (image.empty()) {
+        completion(false, "Firmware file is empty.");
+        return;
+    }
+    // 与底层 UpdateFirmware 的 OTA 分区上限一致（3MB），提前给友好错误。
+    if (image.size() > 3 * 1024 * 1024) {
+        completion(false, "Firmware file is larger than the OTA partition.");
+        return;
+    }
+    ble_->UpdateFirmware(std::move(image), device_id,
+                         std::move(progress), std::move(completion));
 }
 
 void VoiceStickCoordinator::CancelFirmwareUpdate() {

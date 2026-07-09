@@ -218,6 +218,11 @@ public:
     void UpdateFirmwareFromLatest(const std::string& device_id,
                                   std::function<void(FirmwareUpdateProgress)> progress,
                                   std::function<void(bool, std::string)> completion);
+    // 从本地 bin 文件更新固件：读文件为字节流直接喂底层 BLE OTA，跳过远程 manifest 下载。
+    void UpdateFirmwareFromFile(const std::string& file_path,
+                               const std::string& device_id,
+                               std::function<void(FirmwareUpdateProgress)> progress,
+                               std::function<void(bool, std::string)> completion);
     void CancelFirmwareUpdate();
 
     static OverlayThemeColor ThemeColorForConfig(const AppConfig& config, const std::string& device_id);
