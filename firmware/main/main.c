@@ -1781,12 +1781,13 @@ static void imu_poll_timer_cb(void *arg)
 
     update_display_orientation(x_g);
 
-    ESP_LOGI(TAG, "IMU acc X=%+.2f Y=%+.2f Z=%+.2f g", x_g, y_g, z_g);
-
+    // 串口日志跟随 show_imu_debug 开关：未开启调试时不刷屏，避免每 200ms 淹没其他日志。
     if (!s_show_imu_debug) {
         ui_status_set_imu_text("");
         return;
     }
+
+    ESP_LOGI(TAG, "IMU acc X=%+.2f Y=%+.2f Z=%+.2f g", x_g, y_g, z_g);
 
     float x_dps = 0.0f, y_dps = 0.0f, z_dps = 0.0f;
     (void)bmi270_read_gyr_dps(&x_dps, &y_dps, &z_dps);
