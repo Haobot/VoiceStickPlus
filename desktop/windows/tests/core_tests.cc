@@ -4,6 +4,7 @@
 #include "asr_protocol.h"
 #include "audio_opus_decoder.h"
 #include "ble_protocol.h"
+#include "cmd_line.h"
 
 #include <opus.h>
 #include "byte_utils.h"
@@ -1073,6 +1074,62 @@ void TestCoordinatorUpdateFirmwareFromFile() {
     std::error_code ec;
     std::filesystem::remove(path, ec);
     std::filesystem::remove(empty_path, ec);
+}
+
+void TestParseOtaCliArgs() {
+    using namespace voicestick;
+    // 无 --ota。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe"};
+        assert(!ParseOtaCliArgs(1, argv).has_value());
+    }
+    // --ota 带路径，无 --device。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin"};
+        auto r = ParseOtaCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(!r->device_id.has_value());
+    }
+    // --ota + --device。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin",
+                                 L"--device", L"5A74"};
+        auto r = ParseOtaCliArgs(5, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(r->device_id.has_value());
+        assert(*r->device_id == "5A74");
+    }
+    // --device 在前，顺序无关。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--device", L"5A74",
+                                 L"--ota", L"C:/fw.bin"};
+        auto r = ParseOtaCliArgs(5, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(*r->device_id == "5A74");
+    }
+    // --ota 缺路径 -> nullopt。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota"};
+        assert(!ParseOtaCliArgs(2, argv).has_value());
+    }
+    // 中文路径转 UTF-8。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/固件.bin"};
+        auto r = ParseOtaCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/固件.bin");
+    }
+    // --device 缺值但 --ota 正常 -> 忽略 --device。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin", L"--device"};
+        auto r = ParseOtaCliArgs(4, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(!r->device_id.has_value());
+    }
 }
 
 void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
@@ -4558,6 +4615,7 @@ int main() {
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorUpdateFirmwareFromFile();
+    TestParseOtaCliArgs();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();

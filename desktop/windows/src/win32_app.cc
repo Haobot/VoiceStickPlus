@@ -483,6 +483,12 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
         UpdateTrayIcon();
+        // 命令行 --ota 自启动场景：连上设备后触发 pending 请求。
+        if (pending_ota_request_ && !connected_devices_.empty()) {
+            auto req = std::move(*pending_ota_request_);
+            pending_ota_request_.reset();
+            StartOtaFromFile(req.file_path, req.device_id);
+        }
     });
 }
 
@@ -703,6 +709,31 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
     }
     if (message == BleCentralWin::WM_BLE_DISPATCH) {
         if (ble_central_) ble_central_->ProcessDispatchedCallbacks();
+        return 0;
+    }
+    if (message == WM_COPYDATA) {
+        const auto* cds = reinterpret_cast<COPYDATASTRUCT*>(l_param);
+        if (cds && cds->dwData == kOtaCopyDataId && cds->lpData && cds->cbData > 0) {
+            // payload 格式："<path>\n<device_id>"，device_id 可缺。
+            std::string payload(static_cast<const char*>(cds->lpData), cds->cbData);
+            // 去末尾 \0（SendMessage 跨进程 cbData 含终止符）。
+            const auto nul = payload.find('\0');
+            if (nul != std::string::npos) payload.resize(nul);
+            std::string path;
+            std::optional<std::string> device_id;
+            const auto nl = payload.find('\n');
+            if (nl == std::string::npos) {
+                path = payload;
+            } else {
+                path = payload.substr(0, nl);
+                device_id = payload.substr(nl + 1);
+            }
+            if (!path.empty()) {
+                DispatchToUi([this, path, device_id] {
+                    StartOtaFromFile(path, device_id);
+                });
+            }
+        }
         return 0;
     }
     if (global_hotkey_ && global_hotkey_->HandleMessage(message, w_param, l_param)) {
@@ -1721,8 +1752,35 @@ void Win32App::StartFirmwareUpdateFromFile(const std::string& device_id) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle = title.c_str();
     if (!GetOpenFileNameW(&ofn)) return;  // 用户取消或打开失败
+    StartOtaFromFile(Utf8FromUtf16(path), device_id);
+}
 
-    const std::string file_path = Utf8FromUtf16(path);
+void Win32App::StartOtaFromFile(const std::string& file_path,
+                                const std::optional<std::string>& device_id) {
+    if (!coordinator_) return;
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+
+    // 自动选设备：指定且已连接用之；未指定取第一个；均无则提示。
+    std::string target_device;
+    if (device_id.has_value()) {
+        bool connected = false;
+        for (const auto& dev : connected_devices_) {
+            if (dev.id == *device_id) { connected = true; break; }
+        }
+        if (!connected) {
+            ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
+                            "设备 VS-" + *device_id + " 未连接，无法更新固件");
+            return;
+        }
+        target_device = *device_id;
+    } else if (!connected_devices_.empty()) {
+        target_device = connected_devices_.front().id;
+    } else {
+        ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
+                        "无已连接设备，无法更新固件");
+        return;
+    }
+
     firmware_update_dialog_ = std::make_unique<FirmwareUpdateDialog>(
         instance_, hwnd_, language, "local file");
     firmware_update_dialog_->on_cancel = [this] {
@@ -1730,7 +1788,7 @@ void Win32App::StartFirmwareUpdateFromFile(const std::string& device_id) {
     };
     firmware_update_dialog_->Show();
     coordinator_->UpdateFirmwareFromFile(
-        file_path, device_id,
+        file_path, target_device,
         [this](FirmwareUpdateProgress progress) {
             DispatchToUi([this, progress] {
                 if (firmware_update_dialog_) firmware_update_dialog_->UpdateProgress(progress);
@@ -1746,6 +1804,11 @@ void Win32App::StartFirmwareUpdateFromFile(const std::string& device_id) {
                 }
             });
         });
+}
+
+void Win32App::SetPendingOtaRequest(std::string file_path,
+                                     std::optional<std::string> device_id) {
+    pending_ota_request_ = OtaCliRequest{std::move(file_path), std::move(device_id)};
 }
 
 void Win32App::PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
