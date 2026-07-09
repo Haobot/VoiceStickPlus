@@ -126,3 +126,39 @@ TDD 测试：
 按阶段顺序推进，每阶段 TDD（红->绿->重构）+ `build_win.bat` 构建 + `ctest` 验证。每阶段测试通过后按记忆 `feedback-windows-test-msi-commit` 提交（`git add -f desktop/windows`）。
 
 阶段5 需真机 VB-CABLE，标记为半自动，最后执行。
+
+## 八、实施成果与诊断结论
+
+### 已完成（诊断 + 阶段1/2/3/5/6）
+
+| 阶段 | 提交 | 成果 |
+|---|---|---|
+| 诊断 | - | 真机日志证桌面端 button_down->SendDown 仅 74-296ms，非 1-2 秒主因 |
+| 1 | `8f6641a` | OggOpusDemuxer + 5 单测（重放基础设施） |
+| 2 | `36800a8` | TimedFakeSink + 管道延迟/帕累托：buffer_ms == 延迟ms，20/50/100ms 无 underrun |
+| 3 | `1150378` | ring 积压诊断：上限 512ms，管道最大滞留 ~562ms，不足 1-2 秒 |
+| 5 | `Doc/Guide/vbcable-latency-measurement.md` | VB-CABLE 延迟测量指南（控制面板/Audacity/LogWechatLatency 对照） |
+| 6 | `e6bd975` | buffer 50->20ms 优化（省 30ms 管道延迟），生产 exe 已构建 |
+
+### 诊断结论（基于真机日志硬证据）
+
+1. **桌面端可控链路非 1-2 秒主因**：`button_down -> SendDown` 74-296ms，细分 auto_switch 12-18ms / renderer.Start 22-37ms / 首帧到达 3-249ms（固件 init_codec 冷热双峰）/ SendDown 34-49ms。
+2. **管道滞留上限 ~562ms**（WASAPI buffer 20ms + ring 512ms），不足 1-2 秒。
+3. **1-2 秒主因在 SendDown 之后**：VB-CABLE 虚拟声卡缓冲 + 微信输入法 ASR 黑盒缓冲。微信 ASR 黑盒大概率主导（按下后需积累音频+VAD+ASR 才出首字，松开后仍在处理已收音频，解释"松开后还在识别"）。
+4. **桌面端优化已尽**：buffer 50->20 省 30ms（已做）；auto_switch 并行省 12-18ms（跳过，重构风险不值得）；首帧冷启动 249ms 是固件 init_codec（已决策不改）。
+
+### 诚实预期
+
+- 桌面端+VB-CABLE 优化空间合计约几百 ms，1-2 秒主因大概率在微信 ASR 黑盒（不可控）。
+- "松开后还在识别"主因是微信 ASR 缓冲（黑盒），`ring.Clear()` 已清空 ring 不残留。
+- 后续若 VB-CABLE 测量（指南）显示缓冲大，调配置可省；否则接受微信 ASR 延迟。
+
+### 阶段4（ASR 延迟基线）跳过
+
+测腾讯 ASR（focused_app 路径）与用户痛点（微信 ASR 黑盒）关联弱，价值低，跳过。
+
+### 自动化测试覆盖
+
+- `core_tests.cc` 新增 10 个单元测试：OggOpusDemuxer（5）+ 管道延迟/帕累托/underrun（3）+ ring 积压（2）。
+- 回归保护：buffer/underrun/ring 行为变更可被测试捕获。
+- 真机诊断：`LogWechatLatency` 日志（`%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`）量化各阶段延迟。
