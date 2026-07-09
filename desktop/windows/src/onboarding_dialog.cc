@@ -418,9 +418,11 @@ void OnboardingDialog::SaveControlsIntoConfig() {
 void OnboardingDialog::UpdateProviderVisibility() {
     const int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
     const bool is_cloud = provider_idx == 0;
+    const bool is_volcengine = provider_idx == 1;
     const bool api_key_empty = GetText(api_key_edit_).empty();
-    ShowWindow(resource_label_, is_cloud ? SW_HIDE : SW_SHOW);
-    ShowWindow(resource_combo_, is_cloud ? SW_HIDE : SW_SHOW);
+    // 资源 ID 仅火山引擎使用（与设置页一致）；VoiceStick Cloud 与腾讯云均不显示。
+    ShowWindow(resource_label_, is_volcengine ? SW_SHOW : SW_HIDE);
+    ShowWindow(resource_combo_, is_volcengine ? SW_SHOW : SW_HIDE);
     ShowWindow(apply_trial_button_, is_cloud && api_key_empty ? SW_SHOW : SW_HIDE);
     const int full_w = Dp(430 - 104);
     const int api_w = is_cloud && api_key_empty ? full_w - Dp(116) : full_w;
