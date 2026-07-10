@@ -1,0 +1,34 @@
+# === Target chip (idf.py build picks target from this, no set-target needed) ===
+CONFIG_IDF_TARGET="esp32s3"
+
+# === PSRAM (ESP32-S3-WROOM-1, 8MB octal PSRAM) ===
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y                # octal PSRAM, double bandwidth, ease Opus access latency
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y              # large allocs fall to PSRAM (opus encoder instance follows)
+# reserve internal RAM for DMA descriptors / BLE / Wi-Fi, avoid cache stall on hot path
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# === BLE: NimBLE (symbols verified against firmware/sdkconfig.defaults) ===
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y         # peripheral role required for BLE slave
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_MAX_BONDS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247     # ATT MTU 247, single Opus frame per notify
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=200     # mbuf pool, critical for audio stream throughput
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=0
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_SIZE=320
+CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY=y    # LL 2M PHY (request 2M on connect)
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+
+# === Partition table (single app, no OTA) ===
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# === Flash: WROOM-1 common 8MB; adjust per actual module ===
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
