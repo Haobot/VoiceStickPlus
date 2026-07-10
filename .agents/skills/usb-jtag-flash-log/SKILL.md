@@ -33,15 +33,23 @@ grep "ESP_CONSOLE_USB_SERIAL_JTAG=" sdkconfig   # 应 =y
 
 ## 烧录流程
 
-### 1. 进 Boot 模式
+### 1. 进 Boot 模式（进 Boot 可自动，出 Boot 必须手动）
 
-⚠️ **必须先让用户长按前面板按钮进 Boot/下载模式**，esptool 才能稳定识别芯片。
+USB JTAG 烧录区分两个方向，可靠性不同：
 
-```
-烧录前提示：「请长按前面板按钮进入 Boot 模式」，等用户确认后再执行 -u。
-```
+| 方向 | esptool 自动 | 说明 |
+|---|---|---|
+| **进 Boot（烧录前，--before）** | ✅ 可自动 | USB JTAG 下 esptool `default_reset` 能软复位进下载模式，**不需手动长按**（设备正常运行时） |
+| **出 Boot（烧录后，--after）** | ❌ 必须手动 | `hard_reset` 在本板无效（reset 线被按钮电路接管），**必须短按重启** |
 
-**认知纠偏**：不进 Boot 有时也能烧录成功（USB JTAG 可软复位进下载模式），但不可靠。手动进 Boot 是稳妥做法。esptool 报"成功"不代表自动复位生效。
+**进 Boot 可跳过长按的前提**：设备处于 USB JTAG 可达的正常运行状态（在跑 app / 正常连接广播）。以下情况仍需手动长按进 Boot：
+- 设备在 deep sleep（USB JTAG 不可达，需先唤醒或长按）
+- 设备卡死 / USB 断连
+- 首次烧录新板 / 分区表变更（长按更稳）
+
+日常快速迭代（设备刚跑着）可直接 `-u` 跳过长按；设备状态不明或关键烧录仍长按进 Boot。
+
+⚠️ esptool 报"成功"不代表出 Boot 自动复位生效，烧录后仍需短按重启。
 
 ### 2. 烧录命令
 
@@ -142,7 +150,7 @@ s = serial.Serial('COM17', 115200, timeout=0.5)
 | 烧录后 USB 串口读不到任何日志 | 缺 USB JTAG 控制台配置 | 补 `ESP_CONSOLE_USB_SERIAL_JTAG=y`+`UART_NUM=-1` |
 | 烧录报成功但设备无响应 | esptool 自动复位无效，设备留在下载模式 | 短按前面板按钮重启 |
 | 串口 0 字节、`waiting for download` | 没短按重启 | 短按前面板按钮 |
-| esptool 识别不到芯片 | 没长按进 Boot 模式 | 长按前面板按钮进 Boot |
+| esptool 识别不到芯片 | 设备不可达（深睡/卡死/USB断连）或首次烧录 | 长按前面板按钮进 Boot；日常设备跑着时可跳过 |
 | 改了 sdkconfig.defaults 不生效 | ESP-IDF 不覆盖已有 sdkconfig | 删 sdkconfig 重新生成 |
 | `UnicodeDecodeError: 'gbk'` | defaults 含中文/非 ASCII | 改英文，配置行内不留注释 |
 | 运行时日志读 0 字节但设备能工作 | Core1/PSRAM 任务日志不稳定 | 用 DTR 复位抓 / NVS 上报 / Windows 日志 |
