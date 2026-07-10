@@ -22,6 +22,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "stick_s3_board.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -40,6 +41,7 @@ static ptt_stop_fn        cb_stop;
 static ptt_double_click_fn cb_dbl;
 static ptt_button_fn      cb_btn;
 static uint32_t s_session_id = 1;
+static int64_t s_down_us = 0;        // 按下时刻，松开算 duration 上报 button_up
 
 // ISR：任一边沿中断，按电平判 DOWN/UP（低电平=按下）
 static void IRAM_ATTR ptt_isr(void *arg) {
@@ -69,6 +71,7 @@ static void ptt_task(void *arg) {
 
         switch (e) {
         case EVT_DOWN:
+            s_down_us = now;
             // 启动 hold 判定计时：300ms 后若仍按下则确认为长按录音
             esp_timer_start_once(s_hold_timer, PTT_HOLD_THRESHOLD_MS * 1000);
             break;
@@ -77,7 +80,7 @@ static void ptt_task(void *arg) {
             if (!recording) {
                 recording = true;
                 if (cb_start) cb_start(s_session_id);
-                if (cb_btn)   cb_btn(true, s_session_id);
+                if (cb_btn)   cb_btn(true, s_session_id, 0);
             }
             break;
 
@@ -85,10 +88,12 @@ static void ptt_task(void *arg) {
             esp_timer_stop(s_hold_timer);
             if (recording) {
                 // 长按录音中松开：结束（audio_pipeline_stop 含同步 drain，保尾音）
-                if (cb_stop) cb_stop();
-                if (cb_btn)   cb_btn(false, s_session_id);
+                uint32_t duration_ms = s_down_us ? (uint32_t)((now - s_down_us) / 1000) : 0;
+                if (cb_stop) cb_stop(duration_ms);
+                if (cb_btn)   cb_btn(false, s_session_id, duration_ms);
                 s_session_id++;
                 recording = false;
+                s_down_us = 0;
             } else {
                 // 短按（<300ms 松开）：双击窗口判定（评估第5点）
                 if (now - last_short_up < PTT_DOUBLE_WINDOW_MS * 1000) {
@@ -146,15 +151,45 @@ esp_err_t ptt_init(ptt_start_fn start, ptt_stop_fn stop,
 }
 
 void ptt_enter_deep_sleep(void) {
-    ESP_LOGI(TAG, "entering deep sleep (PTT RTC wakeup)");
+    ESP_LOGI(TAG, "entering power off (deep sleep path B, ext1 wake on PTT GPIO%d)", PTT_PIN);
     atomic_store(&s_running, false);
     gpio_isr_handler_remove(PTT_PIN);
     gpio_uninstall_isr_service();
     rtc_gpio_deinit(PTT_PIN);
 
-    // ext0 唤醒：PTT 按下(低电平)唤醒。需 PTT 是 RTC_GPIO（GPIO4=RTC_GPIO4）。
+    // 路径 B（移植自 firmware/main.c:453-495）：脚手架不带 IMU，不走 M5PM1 真关机路径 A。
+    stick_s3_board_prepare_deep_sleep();
+
+    // 清残留唤醒源位（light sleep/esp_pm 配置可能遗留，否则会立即误唤醒）。
+    (void)esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+    // RTC 外设保持供电，内部 pull-up 在深睡期间有效；配合下方显式 rtc pull-up
+    // 防 PTT_PIN 浮空低自唤醒。
+    (void)esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+    (void)rtc_gpio_pulldown_dis(PTT_PIN);
+    (void)rtc_gpio_pullup_en(PTT_PIN);
+
+    // ext1 唤醒（非 ext0）：任意配置引脚低电平唤醒。PTT 按下=低电平唤醒。
     // 唤醒后 = reset，重新走 app_main 重新初始化全链路（按需启停，不常驻 I2S）。
-    esp_sleep_enable_ext0_wakeup(PTT_PIN, 0);
+    esp_err_t err = esp_sleep_enable_ext1_wakeup_io(1ULL << PTT_PIN,
+                                                     ESP_EXT1_WAKEUP_ANY_LOW);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "enable deep sleep wake failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    // 等唤醒 pin settle high：松开抖动/寄生电容。若仍低会立即唤醒，abort 重试。
+    int wait_ms = 0;
+    while (gpio_get_level(PTT_PIN) == 0 && wait_ms < 200) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ms += 10;
+    }
+    if (gpio_get_level(PTT_PIN) == 0) {
+        ESP_LOGW(TAG, "wake pin still low, abort deep sleep");
+        return;
+    }
+
+    ESP_LOGI(TAG, "power off go (wait_ms=%d level=%d)", wait_ms, gpio_get_level(PTT_PIN));
     esp_deep_sleep_start();
     // 不会返回
 }
