@@ -10,9 +10,7 @@
 #define AP_FRAME_SAMPLES  ((AP_SAMPLE_RATE * AP_FRAME_MS) / 1000)   // 640 samples/帧
 
 // === ICS-41351 引脚（按实际板改；必须可作 I2S 的 GPIO）===
-#define AP_PIN_BCLK  4
-#define AP_PIN_WS    5
-#define AP_PIN_DIN   6
+// ES8311 引脚取自 stick_s3_board.h（StickS3 板级定义），本头文件不再单独定义
 
 // 仅创建发送队列；session 资源（I2S/Opus）按需创建、停止时释放。
 esp_err_t audio_pipeline_init(void);

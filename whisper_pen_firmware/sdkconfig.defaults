@@ -1,29 +1,47 @@
 # === Target chip (idf.py build picks target from this, no set-target needed) ===
 CONFIG_IDF_TARGET="esp32s3"
 
+# === Console: USB JTAG serial (StickS3 has no exposed UART; logs go via USB JTAG serial) ===
+# Align with firmware, otherwise USB serial reads no boot logs (default UART0 unexposed on StickS3).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_CONSOLE_UART_NUM=-1
+
 # === PSRAM (ESP32-S3-WROOM-1, 8MB octal PSRAM) ===
 CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y                # octal PSRAM, double bandwidth, ease Opus access latency
+CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_USE_MALLOC=y              # large allocs fall to PSRAM (opus encoder instance follows)
+CONFIG_SPIRAM_USE_MALLOC=y
 # reserve internal RAM for DMA descriptors / BLE / Wi-Fi, avoid cache stall on hot path
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 
 # === BLE: NimBLE (symbols verified against firmware/sdkconfig.defaults) ===
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y         # peripheral role required for BLE slave
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_MAX_BONDS=1
-CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247     # ATT MTU 247, single Opus frame per notify
-CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=200     # mbuf pool, critical for audio stream throughput
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=200
 CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
 CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=0
 CONFIG_BT_NIMBLE_MSYS_2_BLOCK_SIZE=320
-CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY=y    # LL 2M PHY (request 2M on connect)
+CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY=y
 CONFIG_BT_CTRL_MODEM_SLEEP=y
 CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+
+# === PM / BT stability (align with firmware; missing PM_ENABLE makes MAIN_XTAL_PU no-op) ===
+# Root cause of sporadic disconnect reason=8 (connection supervision timeout):
+# MODEM_SLEEP on without PM_ENABLE => abnormal main xtal handling during modem
+# sleep => BT clock drift. Add PM_ENABLE + tickless + 240MHz + MAIN_XTAL_PU so
+# the main xtal stays on during light sleep, keeping BT link timing stable.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=3
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+CONFIG_BT_NIMBLE_MAX_BONDS=3
 
 # === Partition table (single app, no OTA) ===
 CONFIG_PARTITION_TABLE_CUSTOM=y
@@ -32,3 +50,20 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # === Flash: WROOM-1 common 8MB; adjust per actual module ===
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# === LVGL (for ui_status / ST7789 LCD, aligned with firmware/sdkconfig) ===
+CONFIG_LV_CONF_SKIP=y
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_COLOR_DEPTH=16
+CONFIG_LV_DEF_REFR_PERIOD=33
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
+CONFIG_LV_OS_NONE=y
+CONFIG_LV_USE_DRAW_SW=y
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
+CONFIG_LV_USE_DRAW_SW_SUPPORT_ARGB8888=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+CONFIG_LV_USE_THEME_DEFAULT=y
+CONFIG_LV_USE_LABEL=y
+CONFIG_LV_USE_IMAGE=y
