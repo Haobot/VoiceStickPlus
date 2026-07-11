@@ -22,6 +22,7 @@
 #include "wechat_input_method_hotkey.h"
 #include "default_audio_device_controller.h"
 #include "device_switch_state.h"
+#include "debug_audio_recorder.h"
 
 #include <algorithm>
 #include <cassert>
@@ -2968,6 +2969,30 @@ void TestCoordinatorWechatInputMethodWritesDebugAudio() {
     std::filesystem::remove_all(debug_dir);
 }
 
+void TestDebugAudioRecorderInvalidDirectoryDoesNotCrash() {
+    // 复现闪退：debug_audio_dir 指向无法创建的目录（父级是文件而非目录）时，
+    // 旧实现 create_directories(directory_) 抛 filesystem_error 未捕获 -> std::terminate。
+    // 调试音频是可选功能，目录无效应降级放弃落盘，不拖垮录音会话。
+    const auto blocker =
+        std::filesystem::temp_directory_path() / "vs_debug_audio_blocker.txt";
+    {
+        std::ofstream f(blocker, std::ios::binary);
+        f << "x";
+    }
+    assert(std::filesystem::exists(blocker));
+    // blocker 是文件，在其下创建 subdir 必失败。
+    const auto bad_dir = blocker / "subdir";
+
+    DebugAudioRecorder rec(true, bad_dir);
+    rec.Start("VS-TEST", 42);
+    const std::uint8_t data[] = {0x01, 0x02, 0x03};
+    rec.Append(data);
+    rec.Finish();  // 修复前：抛异常 -> 进程 abort。修复后：降级返回。
+
+    std::error_code ec;
+    std::filesystem::remove(blocker, ec);
+}
+
 void TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -4977,5 +5002,6 @@ int main() {
     TestWechatPipelineSmallBufferDeviceUnderrun();
     TestRingBurstBacklogAmplifiesLatency();
     TestRingBacklogUpperBoundByCapacity();
+    TestDebugAudioRecorderInvalidDirectoryDoesNotCrash();
     return 0;
 }

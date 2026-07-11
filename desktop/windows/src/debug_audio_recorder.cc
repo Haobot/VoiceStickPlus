@@ -28,9 +28,19 @@ void DebugAudioRecorder::Finish() {
         Reset();
         return;
     }
-    std::filesystem::create_directories(directory_);
+    // 目录无效/不可创建时降级放弃落盘：调试音频是可选功能，不应拖垮录音会话。
+    // 用 error_code 版本，避免路径无效时 create_directories 抛 filesystem_error 致闪退。
+    std::error_code ec;
+    std::filesystem::create_directories(directory_, ec);
+    if (ec) {
+        Reset();
+        return;
+    }
     std::ofstream output(FilePath(), std::ios::binary | std::ios::trunc);
-    output.write(reinterpret_cast<const char*>(current_audio_.data()), static_cast<std::streamsize>(current_audio_.size()));
+    if (output.is_open()) {
+        output.write(reinterpret_cast<const char*>(current_audio_.data()),
+                     static_cast<std::streamsize>(current_audio_.size()));
+    }
     Reset();
 }
 
