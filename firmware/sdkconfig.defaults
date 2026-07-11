@@ -31,14 +31,15 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
-# OTA 双槽 rollback：新固件首次启动会被标记 PENDING_VERIFY，由 main.c 在 boot 时
-# 无条件调 esp_ota_mark_app_valid_cancel_rollback 签到；5 分钟没签到则 bootloader
-# 自动回滚到上一槽。BLE OTA 与 COM 口烧录的 OTA 都依赖此机制。
+# Dual-slot OTA rollback: a new firmware boots as PENDING_VERIFY; main.c
+# unconditionally calls esp_ota_mark_app_valid_cancel_rollback at boot to
+# confirm. If not confirmed within 5 minutes, bootloader rolls back to the
+# previous slot. Both BLE OTA and COM-port flashing rely on this.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_APP_ROLLBACK_ENABLE=y
 
 CONFIG_BT_CTRL_MODEM_SLEEP=y
 CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
 
-# CPU 240MHz：BLE 音频传输与 UI 渲染需要较高主频
+# CPU 240MHz: BLE audio streaming and UI rendering need higher clock
 CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
