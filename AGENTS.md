@@ -266,7 +266,7 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 
 Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，然后上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流以收录 MSI 条目。完整步骤见 `Doc/Ref/release.md`。
 
-Windows 便携版（免安装 zip）用 `scripts\package-portable.bat` 打包；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。注意 `package-portable.bat` 的中文 `echo` 块在 cmd 代码页下会解析错位，脚本内部已改用 PowerShell + .NET 完成打包，模板中用占位符而非真实 Sparkle 公钥。
+Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（PowerShell 脚本，用 .NET 写 UTF-8 文件规避 cmd 中文 `echo` 块在 GBK 代码页下的解析错位；脚本须存为 UTF-8 with BOM）；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。便携包模板中用占位符而非真实 Sparkle 公钥。
 
 ## 项目 Skills
 
