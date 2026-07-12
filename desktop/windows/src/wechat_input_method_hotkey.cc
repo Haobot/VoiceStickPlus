@@ -41,6 +41,10 @@ int VkCodeFromName(std::string_view name) {
   const std::string lower = Lowercase(name);
   if (lower == "ctrl" || lower == "control") return VK_CONTROL;
   if (lower == "alt") return VK_MENU;
+  // 左右 ALT 分别命名：alt 复用兼容旧配置（解析为通用 VK_MENU），
+  // ralt/lalt 映射到 VK_RMENU/VK_LMENU，Typeless 等点按式输入法靠右ALT触发。
+  if (lower == "ralt") return VK_RMENU;
+  if (lower == "lalt") return VK_LMENU;
   if (lower == "shift") return VK_SHIFT;
   if (lower == "win" || lower == "windows" || lower == "command") return VK_LWIN;
   if (lower == "enter" || lower == "return") return VK_RETURN;
@@ -83,7 +87,14 @@ bool SendInputForKeys(const std::vector<int>& vk_codes, bool key_up) {
     INPUT input = {};
     input.type = INPUT_KEYBOARD;
     input.ki.wVk = static_cast<WORD>(vk);
-    input.ki.dwFlags = key_up ? KEYEVENTF_KEYUP : 0;
+    DWORD flags = 0;
+    // 右ALT(VK_RMENU)/右Ctrl(VK_RCONTROL) 是扩展键，必须加 KEYEVENTF_EXTENDEDKEY，
+    // 否则系统会把它当成左ALT/左Ctrl，监听右ALT的第三方输入法（如 Typeless）不会触发。
+    if (vk == VK_RMENU || vk == VK_RCONTROL) {
+      flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    if (key_up) flags |= KEYEVENTF_KEYUP;
+    input.ki.dwFlags = flags;
     inputs.push_back(input);
   }
 

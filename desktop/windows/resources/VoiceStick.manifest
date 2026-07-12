@@ -3,7 +3,7 @@
   <!--
     应用清单：asInvoker，以普通用户完整性运行，不弹 UAC。
     代价：focused_app 粘贴注入模式受 UIPI 限制，无法向微信 4.0 等高完整性窗口发送 SendInput；
-    微信输入法模式走虚拟麦克风渲染，不依赖窗口注入，不受影响。
+    第三方输入法模式走虚拟麦克风渲染，不依赖窗口注入，不受影响。
     自启用标准 HKCU\...\Run 即可（无需任务计划程序）。
     历史决策与回退详见 Doc/Plan/windows-uipi-elevated-injection.md。
   -->

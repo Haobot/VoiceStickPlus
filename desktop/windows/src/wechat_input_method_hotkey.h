@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Voice Stick contributors. All rights reserved.
 //
 // 将字符串形式的热键（如 "ctrl+win"）解析为虚拟键码序列，并通过 SendInput 注入。
-// 用于 wechat_input_method 模式触发微信输入法语音输入快捷键。
+// 用于 wechat_input_method 模式触发第三方输入法语音输入快捷键。
 
 #ifndef VOICESTICK_WECHAT_INPUT_METHOD_HOTKEY_H_
 #define VOICESTICK_WECHAT_INPUT_METHOD_HOTKEY_H_

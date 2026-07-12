@@ -40,7 +40,7 @@ class RenderPump {
 
 // WASAPI 渲染器：将 PcmRingBuffer 中的 16-bit PCM 持续写入指定的播放设备。
 // 典型使用场景：写入 VB-CABLE / Virtual Audio Cable 的 Playback 端，
-// 使其 Recording 端作为系统麦克风被微信输入法取音。
+// 使其 Recording 端作为系统麦克风被第三方输入法取音。
 class WasapiVirtualMicRenderer : public IVirtualMicRenderer {
  public:
   // Options 复用基类 IVirtualMicRenderer::Options。

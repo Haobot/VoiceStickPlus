@@ -81,9 +81,9 @@ air_mouse_rate_max_speed = 4000.0
 debug_audio_cache = false
 debug_audio_dir = ""
 
-# ---- 微信输入法模式（output_target = wechat_input_method 时生效）----
+# ---- 第三方输入法模式（output_target = wechat_input_method 时生效）----
 [wechat_input_method]
-# 触发微信输入法语音的快捷键
+# 触发第三方输入法语音的快捷键
 hotkey = "ctrl+win"
 # 虚拟麦克风渲染端名称（如 CABLE Input）
 virtual_mic_playback_name = ""
