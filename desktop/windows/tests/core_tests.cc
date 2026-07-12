@@ -424,7 +424,7 @@ class TimedFakeSink : public WasapiRenderSink {
     std::vector<int16_t> scratch_;
 };
 
-// 测试用微信输入法热键：解耦 SendInput，SendDown/SendUp 恒成功。
+// 测试用第三方输入法热键：解耦 SendInput，SendDown/SendUp 恒成功。
 class FakeWechatInputMethodHotkey : public IWechatInputMethodHotkey {
 public:
     explicit FakeWechatInputMethodHotkey(const std::string& = {}) {}
@@ -2569,7 +2569,7 @@ void TestWasapiRendererFailsOnMissingDevice() {
 void TestRenderPumpSubmitsFullAvailableNoCap() {
     // padding=0 → available=buffer_frame_count。事件驱动渲染去掉 frames_per_period 上限，
     // 应一次性提交全部可用空间（旧实现被 10ms=160 帧上限锁死，提交速率 < 消费速率致
-    // WASAPI 稳态 underrun，输出被静音切断 → 微信输入法识别卡顿）。
+    // WASAPI 稳态 underrun，输出被静音切断 → 第三方输入法识别卡顿）。
     FakeWasapiRenderSink sink(/*buffer_frames=*/800, /*channels=*/1);
     PcmRingBuffer ring(2048);
     std::vector<int16_t> samples(800);
@@ -2893,6 +2893,11 @@ void TestWechatInputMethodHotkeyParsing() {
     assert(WechatInputMethodHotkey("ctrl+shift+w").KeyCount() == 3);
     assert(WechatInputMethodHotkey("alt+f4").KeyCount() == 2);
     assert(WechatInputMethodHotkey("command+1").KeyCount() == 2);
+    // 右ALT 单键：Typeless 等点按式第三方输入法靠右ALT触发。
+    // 右ALT 是扩展键（VK_RMENU），需单独解析名 ralt，不能复用 alt(VK_MENU)。
+    assert(WechatInputMethodHotkey("ralt").KeyCount() == 1);
+    assert(WechatInputMethodHotkey("lalt").KeyCount() == 1);
+    assert(WechatInputMethodHotkey("ralt+r").KeyCount() == 2);
     assert(WechatInputMethodHotkey("unknown+key").KeyCount() == 0);
 }
 
@@ -2914,7 +2919,7 @@ void TestCoordinatorWechatInputMethodButtonDownSendsHotkey() {
     // 虚拟麦克风不存在，应触发错误 UI。
     assert(!ui.errors.empty());
     assert(ui.errors.back().find("Virtual microphone") != std::string::npos);
-    // wechat 模式不应弹出 VoiceStick 录音悬浮窗（微信输入法自带语音面板），
+    // wechat 模式不应弹出 VoiceStick 录音悬浮窗（第三方输入法自带语音面板），
     // 启动失败时只显示错误，不弹录音浮窗，避免松开时浮窗残留。
     assert(ui.show_listening_count == 0);
     // 会话被清理后，后续状态应为 ready。

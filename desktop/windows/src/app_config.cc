@@ -974,7 +974,7 @@ OutputTarget OutputTargetFromName(std::string_view name) {
 std::string OutputTargetDisplayName(OutputTarget target) {
     switch (target) {
         case OutputTarget::kSubtitle: return "Subtitle";
-        case OutputTarget::kWechatInputMethod: return "WeChat Input Method";
+        case OutputTarget::kWechatInputMethod: return "Third-party Input Method";
         case OutputTarget::kFocusedApp: return "Focused App";
     }
     return "Focused App";

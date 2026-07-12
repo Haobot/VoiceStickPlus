@@ -2,7 +2,7 @@
 //
 // 虚拟麦克风渲染器抽象接口。
 // 用于 wechat_input_method 输出模式：将 PCM 渲染到指定播放设备（如 VB-CABLE），
-// 使其 Recording 端作为系统麦克风被微信输入法取音。
+// 使其 Recording 端作为系统麦克风被第三方输入法取音。
 //
 // 生产实现为 WasapiVirtualMicRenderer；测试可注入 fake 以解耦真实 WASAPI 设备，
 // 使 wechat 模式的录音/落盘流程可在无虚拟麦环境下单元测试。

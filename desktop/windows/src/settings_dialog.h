@@ -94,6 +94,9 @@ private:
     HWND output_target_combo_ = nullptr;
     HWND wechat_hotkey_edit_ = nullptr;
     HWND wechat_hotkey_label_ = nullptr;
+    HWND trigger_mode_label_ = nullptr;
+    HWND trigger_mode_hold_radio_ = nullptr;
+    HWND trigger_mode_click_radio_ = nullptr;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HWND save_button_ = nullptr;
@@ -137,6 +140,8 @@ private:
     static constexpr UINT kIdWechatVirtualMic = 2028;
     static constexpr UINT kIdWechatAutoSwitch = 2029;
     static constexpr UINT kIdWechatVirtualMicCapture = 2030;
+    static constexpr UINT kIdTriggerModeHold = 2031;
+    static constexpr UINT kIdTriggerModeClick = 2032;
 };
 
 } // namespace voicestick

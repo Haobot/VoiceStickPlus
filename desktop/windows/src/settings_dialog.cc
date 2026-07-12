@@ -344,6 +344,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         output_target_combo_ = nullptr;
         wechat_hotkey_edit_ = nullptr;
         wechat_hotkey_label_ = nullptr;
+        trigger_mode_label_ = nullptr;
+        trigger_mode_hold_radio_ = nullptr;
+        trigger_mode_click_radio_ = nullptr;
         all_controls_.clear();
         label_controls_.clear();
         title_controls_.clear();
@@ -428,6 +431,9 @@ void SettingsDialog::DestroyControls() {
     output_target_combo_ = nullptr;
     wechat_hotkey_edit_ = nullptr;
     wechat_hotkey_label_ = nullptr;
+    trigger_mode_label_ = nullptr;
+    trigger_mode_hold_radio_ = nullptr;
+    trigger_mode_click_radio_ = nullptr;
     save_button_ = nullptr;
     cancel_button_ = nullptr;
     if (ui_font_) {
@@ -466,7 +472,7 @@ void SettingsDialog::BuildControls() {
         return remember_label(control);
     };
 
-    // 标签列缩窄到 180 Dp：删去体感鼠标/灵敏度描述后最长标签（微信语音热键 / WeChat Voice
+    // 标签列缩窄到 180 Dp：删去体感鼠标/灵敏度描述后最长标签（语音热键 / Voice
     // Hotkey）约 142 Dp，180 留余量。控件左移到 ctrl_x=200、ctrl_w 加宽到 kClientWidth-230=350，
     // 减少复选框行左侧空白；内容右边界 x=550（右边距 30）。
     const int label_w = Dp(180);
@@ -647,7 +653,7 @@ void SettingsDialog::BuildControls() {
     // ===== 输出 =====
     section_title(StringId::kSettingsSectionOutput);
     {
-        // 输出目标：当前应用 / 字幕 / 微信输入法。
+        // 输出目标：当前应用 / 字幕 / 第三方输入法。
         HWND ot_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsOutputTarget).c_str(),
                                                    0, 0, label_w, Dp(20), instance_));
         output_target_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
@@ -664,8 +670,8 @@ void SettingsDialog::BuildControls() {
         });
     }
     {
-        // 微信输入法：语音热键（与微信输入法设置中保持一致，如 ctrl+win）。
-        // 仅输出目标=微信输入法时显示，隐藏时不占位。
+        // 第三方输入法：语音热键（与第三方输入法设置中保持一致，如 ctrl+win）。
+        // 仅输出目标=第三方输入法时显示，隐藏时不占位。
         wechat_hotkey_label_ = remember_label(CreateLabel(hwnd_,
             label_text(StringId::kSettingsWechatHotkey).c_str(),
             0, 0, label_w, Dp(20), instance_));
@@ -676,7 +682,32 @@ void SettingsDialog::BuildControls() {
             {wechat_hotkey_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         }, [this]() {
             int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
-            return idx == 2;  // 微信输入法
+            return idx == 2;  // 第三方输入法
+        });
+    }
+    {
+        // 触发方式：长按式=hold_to_talk，点按式联动全局 interaction_mode=click_to_talk。
+        // Typeless 等点按式输入法靠右ALT(ralt)单键 toggle 录音开关，仅第三方输入法模式显示。
+        trigger_mode_label_ = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsTriggerMode).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        const int hold_w = Dp(180);
+        const int click_w = Dp(160);
+        trigger_mode_hold_radio_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsTriggerModeHold, language).c_str(),
+            0, 0, hold_w, Dp(20), kIdTriggerModeHold, instance_,
+            BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP));
+        trigger_mode_click_radio_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsTriggerModeClick, language).c_str(),
+            0, 0, click_w, Dp(20), kIdTriggerModeClick, instance_,
+            BS_AUTORADIOBUTTON));
+        add(row_h + Dp(10), {
+            {trigger_mode_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {trigger_mode_hold_radio_, ctrl_x, 0, hold_w, Dp(20)},
+            {trigger_mode_click_radio_, ctrl_x + hold_w + Dp(10), 0, click_w, Dp(20)},
+        }, [this]() {
+            int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
+            return idx == 2;  // 第三方输入法
         });
     }
     separator();
@@ -998,6 +1029,12 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
     SendMessageW(output_target_combo_, CB_SETCURSEL, output_target_idx, 0);
     SetWindowTextW(wechat_hotkey_edit_, Utf16(config_.wechat_input_method.hotkey).c_str());
+    // 触发方式：点按式联动全局 interaction_mode = click_to_talk，否则长按式。
+    const bool click_trigger = config_.interaction_mode == InteractionMode::kClickToTalk;
+    SendMessageW(trigger_mode_hold_radio_, BM_SETCHECK,
+                 click_trigger ? BST_UNCHECKED : BST_CHECKED, 0);
+    SendMessageW(trigger_mode_click_radio_, BM_SETCHECK,
+                 click_trigger ? BST_CHECKED : BST_UNCHECKED, 0);
     UpdateOutputTargetVisibility();
 
     UpdateProviderVisibility();
@@ -1088,6 +1125,11 @@ void SettingsDialog::SaveSettings() {
         config_.default_output_profile.target = OutputTarget::kFocusedApp;
     }
     config_.wechat_input_method.hotkey = Utf8(GetWindowText(wechat_hotkey_edit_));
+    // 触发方式联动全局 interaction_mode：点按式->click_to_talk，长按式->hold_to_talk。
+    const bool click_trigger =
+        SendMessageW(trigger_mode_click_radio_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.interaction_mode =
+        click_trigger ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 
     config_.Save();
     EndDialog(hwnd_, IDOK);

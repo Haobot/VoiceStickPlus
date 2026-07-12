@@ -454,7 +454,7 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
     // wechat 模式同样需要 recording 硬超时兜底：button_up/audio_end 都丢（固件 drain 超时
     // 丢 audio_end + BLE 抖动 button_up 丢）时回 ready，避免永久卡 listening。
     ScheduleRecordingHardTimeout();
-    // wechat 模式不弹 VoiceStick 录音悬浮窗：微信输入法自带语音面板，
+    // wechat 模式不弹 VoiceStick 录音悬浮窗：第三方输入法自带语音面板，
     // 弹出 VoiceStick 浮窗会遮挡且造成"松开不消失"的混乱，仅通过设备屏幕 recording 提供反馈。
     SendUiStateForActiveDevice("recording");
 }
@@ -850,7 +850,7 @@ void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, con
     if (event.button != "primary") return;
 
     LogCoordinatorLine("double-click detected on VS-" + device_id + ", sending Enter");
-    // 如果当前有活跃录音，取消它。wechat 模式走专用停止路径（发 hotkey.SendUp，让微信输入法
+    // 如果当前有活跃录音，取消它。wechat 模式走专用停止路径（发 hotkey.SendUp，让第三方输入法
     // 把已识别文字送入输入框），主路径走 ASR 取消。随后统一注入 Enter 发送输入框文字。
     if (IsWechatInputMethodActive()) {
         StopWechatInputMethodSession();
