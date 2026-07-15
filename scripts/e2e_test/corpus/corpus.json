@@ -1,0 +1,14 @@
+[
+  { "id": "short_01", "text": "今天天气不错。", "category": "short" },
+  { "id": "short_02", "text": "帮我打开浏览器。", "category": "short" },
+  { "id": "short_03", "text": "现在几点了？", "category": "short" },
+  { "id": "long_01", "text": "请帮我把这段会议记录整理成要点，并发送给所有参会人员。", "category": "long" },
+  { "id": "long_02", "text": "这个项目的目标是构建一个端到端的语音输入测试系统，覆盖软硬件全链路。", "category": "long" },
+  { "id": "num_01", "text": "我的手机号是一三八零零一三八零零零。", "category": "number" },
+  { "id": "num_02", "text": "今天是二零二六年七月十五日。", "category": "number" },
+  { "id": "mix_01", "text": "用 python 写一个 hello world 程序。", "category": "mix" },
+  { "id": "mix_02", "text": "把 cpu 使用率报警阈值设为百分之八十。", "category": "mix" },
+  { "id": "punct_01", "text": "好的，没问题，马上处理。", "category": "punct" },
+  { "id": "command_01", "text": "新建一个文件夹并命名为测试。", "category": "command" },
+  { "id": "command_02", "text": "把这段文字翻译成英文。", "category": "command" }
+]
