@@ -3,11 +3,13 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
@@ -91,6 +93,98 @@ static const audio_codec_gpio_if_t *s_gpio_if;
 static const audio_codec_if_t *s_codec_if;
 static OpusEncoder *s_opus_encoder;
 static const char *s_last_error_step = "none";
+
+/* 测试回放状态（L3）：s_playback_active=true 时 audio_task 从 s_playback_fp 读 PCM 替代采集。
+ * 默认 false，正常录音走 ES8311 采集分支，零行为变化。仅 test_playback 控制命令激活。 */
+static bool s_playback_active = false;
+/* 预读 PCM 到 PSRAM 缓冲：audio_task 栈在 PSRAM（见 audio_pipeline_start），不能直接 fread
+ * SPIFFS——flash 操作 cache 禁用期间 PSRAM 栈不可访问，会触发 esp_task_stack_is_sane_cache_disabled
+ * 断言崩溃。故在 set_playback_file（main 任务，内部 RAM 栈）一次性 fread 到 PSRAM buffer，
+ * audio_task 仅 memcpy，不触 flash 操作。 */
+static uint8_t *s_playback_buffer = NULL;
+static size_t s_playback_size = 0;
+static size_t s_playback_pos = 0;
+static bool s_spiffs_mounted = false;
+
+/* 懒挂载 storage SPIFFS 分区到 /spiffs。仅在首次启用回放时调用，正常录音不触发。 */
+static esp_err_t ensure_spiffs_mounted(void)
+{
+    if (s_spiffs_mounted) {
+        return ESP_OK;
+    }
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",
+        .partition_label = "storage",
+        .max_files = 2,
+        .format_if_mount_failed = false,
+    };
+    esp_err_t err = esp_vfs_spiffs_register(&conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "spiffs mount failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    s_spiffs_mounted = true;
+    ESP_LOGI(TAG, "spiffs mounted (storage)");
+    return ESP_OK;
+}
+
+esp_err_t audio_pipeline_set_playback_file(const char *filename)
+{
+    if (filename == NULL || filename[0] == '\0') {
+        s_playback_active = false;
+        if (s_playback_buffer != NULL) {
+            heap_caps_free(s_playback_buffer);
+            s_playback_buffer = NULL;
+        }
+        s_playback_size = 0;
+        s_playback_pos = 0;
+        ESP_LOGI(TAG, "playback disabled (restore ES8311 capture)");
+        return ESP_OK;
+    }
+    esp_err_t err = ensure_spiffs_mounted();
+    if (err != ESP_OK) {
+        return err;
+    }
+    char path[80];
+    snprintf(path, sizeof(path), "/spiffs/%s", filename);
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL) {
+        ESP_LOGE(TAG, "playback open %s failed", path);
+        return ESP_ERR_NOT_FOUND;
+    }
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (sz <= 0) {
+        fclose(fp);
+        ESP_LOGE(TAG, "playback %s empty or size failed", path);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    /* 一次性读入 PSRAM buffer：本函数在 main 任务（内部 RAM 栈）调用，flash 读安全。
+     * audio_task（PSRAM 栈）后续仅 memcpy 此 buffer，不触 flash 操作。 */
+    uint8_t *buf = (uint8_t *)heap_caps_malloc((size_t)sz, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        fclose(fp);
+        ESP_LOGE(TAG, "playback alloc %ld bytes spiram failed", sz);
+        return ESP_ERR_NO_MEM;
+    }
+    size_t got = fread(buf, 1, (size_t)sz, fp);
+    fclose(fp);
+    if ((long)got != sz) {
+        heap_caps_free(buf);
+        ESP_LOGE(TAG, "playback read %s short: %zu/%ld", path, got, sz);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (s_playback_buffer != NULL) {
+        heap_caps_free(s_playback_buffer);
+    }
+    s_playback_buffer = buf;
+    s_playback_size = (size_t)sz;
+    s_playback_pos = 0;
+    s_playback_active = true;
+    ESP_LOGI(TAG, "playback loaded: %s size=%zu", path, s_playback_size);
+    return ESP_OK;
+}
 
 static bool tasks_exited(void)
 {
@@ -330,13 +424,30 @@ static void audio_task(void *arg)
     uint32_t dropped = 0;
 
     while (atomic_load(&s_running)) {
-        esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "codec read failed: %s", esp_err_to_name(err));
-            continue;
-        }
-        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
-            mono[i] = stereo[i * 2];
+        if (s_playback_active && s_playback_buffer != NULL) {
+            /* 回放模式：从 PSRAM 预读缓冲取 mono 样本替代 ES8311 采集。
+             * 仅 memcpy（不触 flash）：audio_task 栈在 PSRAM，cache 禁用期不可 fread。 */
+            const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
+            if (s_playback_pos + need <= s_playback_size) {
+                memcpy(mono, s_playback_buffer + s_playback_pos, need);
+                s_playback_pos += need;
+            } else {
+                const size_t remain = s_playback_size - s_playback_pos;
+                if (remain > 0) memcpy(mono, s_playback_buffer + s_playback_pos, remain);
+                if (remain < need) memset((uint8_t *)mono + remain, 0, need - remain);
+                s_playback_pos = s_playback_size;
+            }
+            /* 回放无 I2S 阻塞，按帧时长节流模拟实时采集节奏；否则全速循环会把 PCM 压缩成加速音频，ASR 无法识别。 */
+            vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
+        } else {
+            esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "codec read failed: %s", esp_err_to_name(err));
+                continue;
+            }
+            for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
+                mono[i] = stereo[i * 2];
+            }
         }
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = hpf_process(mono[i]);
@@ -384,13 +495,26 @@ static void audio_task(void *arg)
      * 若不读出编码发出，用户说完话立即松开会丢最后 1-2 字（instant 模式下尤为明显）。
      * 这里固定读 2 帧（80ms，覆盖 60ms 残留+余量）编码入队，让 tx_task 的 drain 一并发完。 */
     for (int drain = 0; drain < 2; ++drain) {
-        esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "drain codec read failed: %s", esp_err_to_name(err));
-            break;
-        }
-        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
-            mono[i] = stereo[i * 2];
+        if (s_playback_active && s_playback_buffer != NULL) {
+            const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
+            if (s_playback_pos + need <= s_playback_size) {
+                memcpy(mono, s_playback_buffer + s_playback_pos, need);
+                s_playback_pos += need;
+            } else {
+                const size_t remain = s_playback_size - s_playback_pos;
+                if (remain > 0) memcpy(mono, s_playback_buffer + s_playback_pos, remain);
+                if (remain < need) memset((uint8_t *)mono + remain, 0, need - remain);
+                s_playback_pos = s_playback_size;
+            }
+        } else {
+            esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "drain codec read failed: %s", esp_err_to_name(err));
+                break;
+            }
+            for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
+                mono[i] = stereo[i * 2];
+            }
         }
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = hpf_process(mono[i]);
@@ -573,6 +697,10 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     opus_encoder_ctl(s_opus_encoder, OPUS_RESET_STATE);
     s_hpf_z1 = 0.0;
     s_hpf_z2 = 0.0;
+    /* 回放模式：每次录音从缓冲开头重放，保证可重复。 */
+    if (s_playback_active && s_playback_buffer != NULL) {
+        s_playback_pos = 0;
+    }
     atomic_store(&s_running, true);
 
     s_last_error_step = "tx_task";
