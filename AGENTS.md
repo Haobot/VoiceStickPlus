@@ -201,6 +201,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 
 - `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修、调试音频缓存、固件清单解析、日志、本地化和协调器状态机。
 - `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
+- `voicestick_windows_tests`：基于 `assert` 的测试可执行文件，源码在 `desktop/windows/tests/core_tests.cc`，由 CTest 注册为同名测试，不支持按测试函数名过滤。
 
 新增核心行为优先放入 `voicestick_core`，并在 `desktop/windows/tests/core_tests.cc` 覆盖。
 
@@ -217,7 +218,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 | 确认倒计时中 | 暂停自动粘贴，进入手动确认 | 取消待粘贴文本 |
 | 手动确认中 | 确认粘贴 | 取消待粘贴文本 |
 
-支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式。文本输出支持 `focused_app`（默认粘贴到当前焦点，默认自动按 Return）和 `subtitle`（仅显示字幕）。识别结果可通过 OpenAI-compatible LLM 做翻译，也可按设备单独覆盖输出设置。
+支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式。文本输出支持三种目标：`focused_app`（默认粘贴到当前焦点，默认自动按 Return）、`subtitle`（仅显示字幕）和 `wechat_input_method`（把 Opus 解码为 PCM 渲染到系统虚拟麦克风，供微信输入法等应用作为音频输入源，不经 ASR 文本注入）。识别结果可通过 OpenAI-compatible LLM 做翻译，也可按设备单独覆盖输出设置。
 
 ## 配置
 
@@ -234,7 +235,9 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成三个目标：
 - `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `true`。
 - `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`。
 - `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
-- `[output].target`：`focused_app`（默认）或 `subtitle`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
+- `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
+- `[wechat_input_method]`：微信输入法模式专属配置，含 `hotkey`（触发热键，默认 `ctrl+win`，匹配 `hold_to_talk`）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回）。
+- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等），完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
 
 Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，首启复制到 `%APPDATA%`（升级不覆盖）。示例见 `desktop/macos/Config/config.example.toml`。凭据字段不要提交。
 
@@ -276,6 +279,7 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - `sticks3-flash-ota`：M5Stack StickS3 固件烧录与升级流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
 - `build-windows`：Windows 桌面端构建与 CTest 流程；改完 `desktop/windows/` 后验证编译和测试。
 - `build-firmware`：固件 ESP-IDF 构建流程；改完 `firmware/` 后验证编译。
+- `usb-jtag-flash-log`：ESP32-S3 USB JTAG 烧录与运行时串口日志采集；烧录后读不到日志、DTR 软复位、串口监控等场景使用，是 `sticks3-flash-ota` 路径 B 的深化补充。
 
 新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
 
