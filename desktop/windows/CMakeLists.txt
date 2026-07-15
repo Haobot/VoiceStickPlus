@@ -170,3 +170,15 @@ target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp b
 
 enable_testing()
 add_test(NAME voicestick_windows_tests COMMAND voicestick_windows_tests)
+
+# L1 ASR 集成测试：真实火山 AsrClientWin + FakeBleCentral 注入语料 ogg，断言 CER。
+# 需 %APPDATA%\VoiceStick\config.toml 配 volcengine_api_key；无 key 时 skip（return 77）。
+# asr_client_win.cc 不在 voicestick_core（属外壳层），此处单独编入。
+add_executable(voicestick_integration_tests
+    tests/integration_tests.cc
+    src/asr_client_win.cc
+)
+target_link_libraries(voicestick_integration_tests PRIVATE voicestick_core winhttp bcrypt)
+add_test(NAME voicestick_integration_tests COMMAND voicestick_integration_tests
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+set_tests_properties(voicestick_integration_tests PROPERTIES SKIP_RETURN_CODE 77)
