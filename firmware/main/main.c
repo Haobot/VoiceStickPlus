@@ -784,6 +784,18 @@ static void ble_control_cb(const char *json)
         // 体感鼠标开关：由桌面端状态机权威控制。开启时校准零偏并启动 20ms 轮询上报 motion。
         set_air_mouse_enabled(cJSON_IsTrue(enabled));
         ESP_LOGI(TAG, "air_mouse_enabled %s", cJSON_IsTrue(enabled) ? "true" : "false");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "test_playback") == 0) {
+        // 测试回放（L3 端到端测试）：设置预存 PCM 文件名，audio_task 从该文件读 PCM 替代采集。
+        // file 为空或缺失则关闭回放恢复 ES8311 采集。仅端到端测试用，正常使用不触发。
+        const cJSON *file_item = cJSON_GetObjectItemCaseSensitive(root, "file");
+        if (cJSON_IsString(file_item) && file_item->valuestring[0] != '\0') {
+            esp_err_t pb_err = audio_pipeline_set_playback_file(file_item->valuestring);
+            ESP_LOGI(TAG, "test_playback file=%s -> %s", file_item->valuestring,
+                     esp_err_to_name(pb_err));
+        } else {
+            audio_pipeline_set_playback_file(NULL);
+            ESP_LOGI(TAG, "test_playback cleared (restore capture)");
+        }
     }
     cJSON_Delete(root);
 }
