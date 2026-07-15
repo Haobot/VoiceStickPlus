@@ -36,3 +36,8 @@ dist/
 scripts/.idf_cli_state.json
 .claude/settings.local.json
 Record/
+
+# L1/L3 端到端测试临时产物（可由脚本重新生成）
+scripts/e2e_test/spiffs_image.bin
+scripts/e2e_test/l3_captured_opus.bin
+/serial_log*.txt
