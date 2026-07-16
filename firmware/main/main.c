@@ -50,6 +50,9 @@ static const char *TAG = "voice_stick";
 // 可能为双击的第一击。释放后在 WINDOW 时间内再次按下，确认双击并发送 Enter。
 #define DOUBLE_CLICK_MAX_PRESS_MS 300
 #define DOUBLE_CLICK_WINDOW_MS 500
+// click_to_talk 首击后等双击窗口确认启动（双击回车语义 c）。窗口内第二次 click 发
+// button_double_click（不启动录音，桌面端直接回车）；超时确认启动。代价：单击启动延迟此时长。
+#define CLICK_TO_TALK_START_DELAY_MS 300
 
 // hold_to_talk 在 BLE 连接就绪过渡期被拒时的录音启动重试参数。
 // 设备重连后 Windows 需重新做服务发现 + 特征值订阅才能让 ble_ready 置位（约 1.5–2s），
@@ -117,6 +120,7 @@ static int64_t s_recording_retry_deadline_us;  // 录音启动重试放弃时刻
 static esp_timer_handle_t s_double_click_timer;
 static uint32_t s_pending_button_up_duration_ms; // 暂存第一次短按的时长（窗口超时后补发 button_up）
 static int64_t s_click_to_talk_first_click_us;  // click_to_talk 模式首次点击时刻（用于双击检测）
+static bool s_click_to_talk_pending_start;      // click_to_talk 首击后等双击窗口确认启动
 // 侧键双击检测：与主键独立。单击延迟到双击窗口超时后确认为 button_click；窗口内第二击发
 // button_double_click。用于桌面端把侧键单击/双击映射到不同语义（进体感 vs 恢复上次输入）。
 static bool s_side_click_pending;                // 侧键等待第二击（双击窗口内）
@@ -976,6 +980,34 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             return;
         }
 
+        // click_to_talk 物理首击延迟双击窗口确认启动（双击回车语义 c）：
+        // 窗口内第二次 click 发 button_double_click（不启动录音，桌面端 wechat_active=false
+        // 走 else 直接 SendEnter 干净回车）；超时确认启动 start_recording + button_click(start)。
+        // 代价：单击启动延迟 CLICK_TO_TALK_START_DELAY_MS。远程热键不走双击，立即启动。
+        if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK &&
+            source == APP_INPUT_SOURCE_PHYSICAL) {
+            if (s_click_to_talk_pending_start) {
+                s_click_to_talk_pending_start = false;
+                (void)esp_timer_stop(s_double_click_timer);
+                ESP_LOGI(TAG, "click_to_talk double-click (send button_double_click, no recording)");
+                (void)voice_ble_send_button_double_click("primary");
+                s_primary_down_us = 0;
+                s_primary_session_id = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                s_click_to_talk_first_click_us = 0;
+                return;
+            }
+            s_click_to_talk_pending_start = true;
+            s_click_to_talk_first_click_us = esp_timer_get_time();
+            s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+            s_primary_down_us = esp_timer_get_time();
+            (void)esp_timer_start_once(s_double_click_timer,
+                                       CLICK_TO_TALK_START_DELAY_MS * 1000ULL);
+            ESP_LOGI(TAG, "click_to_talk first click, pending start (window %dms)",
+                     CLICK_TO_TALK_START_DELAY_MS);
+            return;
+        }
+
         s_primary_session_id = start_recording();
         if (s_primary_session_id == 0) {
             s_primary_down_us = 0;
@@ -1221,6 +1253,7 @@ static void app_event_task(void *arg)
             s_hold_threshold_pending = false;
             s_recording_retry_pending = false;
             s_click_to_talk_first_click_us = 0;
+            s_click_to_talk_pending_start = false;
             (void)esp_timer_stop(s_double_click_timer);
             stop_host_response_timer();
             audio_pipeline_stop();
@@ -1419,6 +1452,26 @@ static void host_response_timer_cb(void *arg)
 static void double_click_timer_cb(void *arg)
 {
     (void)arg;
+
+    // click_to_talk 首击延迟确认：双击窗口超时无第二次 click -> 确认启动录音。
+    if (s_click_to_talk_pending_start) {
+        s_click_to_talk_pending_start = false;
+        ESP_LOGI(TAG, "click_to_talk pending start timeout, confirming recording");
+        s_primary_session_id = start_recording();
+        if (s_primary_session_id != 0) {
+            esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id);
+            if (err != ESP_OK) {
+                (void)stop_recording();
+                s_primary_session_id = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                apply_app_ui_state("ready", "");
+            }
+        } else {
+            s_primary_down_us = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+        }
+        return;
+    }
 
     if (s_recording_retry_pending) {
         // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
