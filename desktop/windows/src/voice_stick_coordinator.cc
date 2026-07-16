@@ -821,7 +821,12 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
                 ble_->SendUiState("ready", "", device_id);
                 return;
             }
-            if (IsWechatInputMethodActive() && active_device_id_ == device_id) {
+            // 停止判定须校验 session_id：残留 active（停止 click + audio_end 都丢）时，
+            // 新启动 click（新 session_id）不得被误当停止，否则新会话音频被丢弃、与第三方
+            // 输入法状态错位且不自愈。button_double_click 不带 session_id（nullopt）视作匹配。
+            if (IsWechatInputMethodActive() && active_device_id_ == device_id &&
+                (!event.session_id.has_value() || !active_session_id_.has_value() ||
+                 *event.session_id == *active_session_id_)) {
                 HandleWechatInputMethodPrimaryButtonUp(device_id);
             } else if (IsStaleWechatStopClick(event.session_id)) {
                 // 点按式停止时 audio_end 帧可能抢跑 button_click：audio_end 先停会话，

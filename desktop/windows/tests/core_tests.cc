@@ -3643,6 +3643,46 @@ void TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick() {
     assert(fake_renderer->start_count == 1);  // 未启动新会话
 }
 
+// 点动式残留 active（停止 click + audio_end 都丢）时，新启动 click（新 session_id）
+// 不得被误当停止：应先停旧会话再启新会话，否则新会话音频被丢弃、状态错位不自愈。
+// 与 hold 模式 TestCoordinatorWechatInputMethodRecoversFromStaleActive 对称，验证 click_to_talk
+// 残留自愈（HandleWechatInputMethodPrimaryButtonDown 先 Stop 旧再 Start 新）。
+void TestCoordinatorWechatClickToTalkStaleActiveNewClickStartsNew() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.interaction_mode = InteractionMode::kClickToTalk;
+
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 会话 41 启动（残留 active 前提：停止 click + audio_end 都丢，不发任何结束信号）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 41));
+    assert(fake_renderer->start_count == 1);
+
+    // 新启动 click(42)（新 session_id）：不得当停止，应先停旧再启新。
+    // bug 下（:824 不校验 session_id）被误当停止，start_count 仍为 1。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 42));
+    assert(fake_renderer->start_count == 2);  // 新会话已 Start
+    assert(fake_renderer->stop_count >= 1);   // 旧会话已 Stop
+}
+
 void TestCoordinatorWechatHotkeyDeferredUntilFirstAudioFrame() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -5177,6 +5217,7 @@ int main() {
     TestCoordinatorWechatClickToTalkSendsClickOnStart();
     TestCoordinatorWechatClickToTalkSendsClickOnStop();
     TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick();
+    TestCoordinatorWechatClickToTalkStaleActiveNewClickStartsNew();
     TestCoordinatorWechatHotkeyDeferredUntilFirstAudioFrame();
     TestCoordinatorWechatHotkeySkippedBeforeFirstFrameButtonUp();
     TestCoordinatorWechatHotkeySendUpPairedAfterFirstFrame();
