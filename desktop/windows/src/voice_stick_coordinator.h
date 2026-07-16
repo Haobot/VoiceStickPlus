@@ -304,6 +304,9 @@ private:
     // 兜底落盘本次 wechat 会话的调试音频：未收到 audio_end 则补 EOS 页再 Finish。
     void FinishWechatInputMethodRecording();
     bool IsWechatInputMethodActive() const;
+    // 点按式停止时 audio_end 帧可能抢跑 button_click：audio_end 先停会话后，迟到的
+    // 停止 button_click（同 session_id、窗口内）应忽略，不启动新会话。
+    bool IsStaleWechatStopClick(std::optional<std::uint32_t> session_id) const;
     void HandleSubtitlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandleSubtitlePrimaryButtonUp(const std::string& device_id);
     void HandleSubtitleAudioFrame(const AudioFrame& frame, const std::string& device_id);
@@ -477,6 +480,10 @@ private:
     bool wechat_audio_end_received_ = false;
     // 是否已对本次会话发送 SendDown（首帧 Opus 解码成功才发送）；决定 Stop 是否配对 SendUp。
     bool wechat_hotkey_sent_down_ = false;
+    // 最近一次停止的 wechat 会话 session_id 与时刻：点按式 audio_end 抢跑 button_click
+    // 时，用于识别并忽略迟到的停止 click，避免误启动新会话。
+    std::optional<std::uint32_t> last_stopped_wechat_session_id_;
+    std::optional<std::chrono::steady_clock::time_point> last_stopped_wechat_at_;
     // 首字延迟诊断锚点：HandleWechatInputMethodPrimaryButtonDown 入口记 now，各环节打印相对毫秒。
     // 纯观测用，不影响行为；用 optional 区分“无活跃会话”与“刚启动尚未到首帧”。
     std::optional<std::chrono::steady_clock::time_point> wechat_latency_anchor_;
