@@ -603,8 +603,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     wechat_ring_buffer_->Clear();
     wechat_decoder_->Reset();
     wechat_hotkey_ = wechat_hotkey_factory_
-                         ? wechat_hotkey_factory_(config_.wechat_input_method.hotkey)
-                         : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.hotkey);
+                         ? wechat_hotkey_factory_(config_.wechat_input_method.ActiveHotkey(config_.interaction_mode))
+                         : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.ActiveHotkey(config_.interaction_mode));
 
     // auto_switch：录音期把默认录音设备(eConsole)切到虚拟麦克风(CABLE Output)，松开切回。
     // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。

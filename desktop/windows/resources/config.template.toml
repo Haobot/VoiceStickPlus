@@ -83,8 +83,10 @@ debug_audio_dir = ""
 
 # ---- 第三方输入法模式（output_target = wechat_input_method 时生效）----
 [wechat_input_method]
-# 触发第三方输入法语音的快捷键
-hotkey = "ctrl+win"
+# 长按式（hold_to_talk）触发热键，如微信输入法的 ctrl+win
+hotkey_hold = "ctrl+win"
+# 点按式（click_to_talk）触发热键，如 Typeless 的 ralt（右ALT）
+hotkey_click = "ralt"
 # 虚拟麦克风渲染端名称（如 CABLE Input）
 virtual_mic_playback_name = ""
 # 自动切换默认录音设备时，切换目标的录音端名称（如 CABLE Output）
