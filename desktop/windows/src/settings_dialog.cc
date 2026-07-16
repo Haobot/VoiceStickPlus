@@ -236,6 +236,10 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdOutputTarget:
             if (HIWORD(w_param) == CBN_SELCHANGE) UpdateOutputTargetVisibility();
             return TRUE;
+        case kIdTriggerModeHold:
+        case kIdTriggerModeClick:
+            if (HIWORD(w_param) == BN_CLICKED) OnTriggerModeChanged();
+            return TRUE;
         }
         break;
     case WM_HSCROLL:
@@ -1028,7 +1032,10 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
     SendMessageW(output_target_combo_, CB_SETCURSEL, output_target_idx, 0);
-    SetWindowTextW(wechat_hotkey_edit_, Utf16(config_.wechat_input_method.hotkey).c_str());
+    // 热键编辑框显示当前触发模式对应的热键（长按式/点按式各自记忆）。
+    loaded_hotkey_mode_ = config_.interaction_mode;
+    SetWindowTextW(wechat_hotkey_edit_,
+                   Utf16(config_.wechat_input_method.ActiveHotkey(loaded_hotkey_mode_)).c_str());
     // 触发方式：点按式联动全局 interaction_mode = click_to_talk，否则长按式。
     const bool click_trigger = config_.interaction_mode == InteractionMode::kClickToTalk;
     SendMessageW(trigger_mode_hold_radio_, BM_SETCHECK,
@@ -1124,7 +1131,13 @@ void SettingsDialog::SaveSettings() {
     } else {
         config_.default_output_profile.target = OutputTarget::kFocusedApp;
     }
-    config_.wechat_input_method.hotkey = Utf8(GetWindowText(wechat_hotkey_edit_));
+    // 热键编辑框值存回当前显示模式对应的字段（长按式/点按式各自记忆）。
+    const std::string edited_hotkey = Utf8(GetWindowText(wechat_hotkey_edit_));
+    if (loaded_hotkey_mode_ == InteractionMode::kClickToTalk) {
+        config_.wechat_input_method.hotkey_click = edited_hotkey;
+    } else {
+        config_.wechat_input_method.hotkey_hold = edited_hotkey;
+    }
     // 触发方式联动全局 interaction_mode：点按式->click_to_talk，长按式->hold_to_talk。
     const bool click_trigger =
         SendMessageW(trigger_mode_click_radio_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -1139,6 +1152,24 @@ void SettingsDialog::SaveSettings() {
 void SettingsDialog::UpdateOutputTargetVisibility() {
     // 微信两行的显隐与定位交由 Relayout 统一处理。
     Relayout();
+}
+
+void SettingsDialog::OnTriggerModeChanged() {
+    // 切换触发方式时，把编辑框当前值存回旧模式字段，再填入新模式对应的热键。
+    const InteractionMode new_mode =
+        (SendMessageW(trigger_mode_click_radio_, BM_GETCHECK, 0, 0) == BST_CHECKED)
+            ? InteractionMode::kClickToTalk
+            : InteractionMode::kHoldToTalk;
+    if (new_mode == loaded_hotkey_mode_) return;
+    const std::string edited = Utf8(GetWindowText(wechat_hotkey_edit_));
+    if (loaded_hotkey_mode_ == InteractionMode::kClickToTalk) {
+        config_.wechat_input_method.hotkey_click = edited;
+    } else {
+        config_.wechat_input_method.hotkey_hold = edited;
+    }
+    loaded_hotkey_mode_ = new_mode;
+    SetWindowTextW(wechat_hotkey_edit_,
+                   Utf16(config_.wechat_input_method.ActiveHotkey(new_mode)).c_str());
 }
 
 void SettingsDialog::UpdateProviderVisibility() {

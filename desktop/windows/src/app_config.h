@@ -100,8 +100,13 @@ struct OutputProfile {
 };
 
 struct WechatInputMethodConfig {
-    // 触发第三方输入法语音输入的快捷键字符串，例如 "ctrl+win"。
+    // 触发第三方输入法语音输入的快捷键字符串（legacy 字段，仅向后兼容加载旧配置；
+    // 运行时按触发模式取 hotkey_hold/hotkey_click，不再使用此字段）。
     std::string hotkey = "ctrl+win";
+    // 长按式（hold_to_talk）触发热键，例如微信输入法的 "ctrl+win"。
+    std::string hotkey_hold = "ctrl+win";
+    // 点按式（click_to_talk）触发热键，例如 Typeless 的 "ralt"。
+    std::string hotkey_click = "ralt";
     // 虚拟麦克风播放端名称子串，例如 "CABLE Input (VB-Audio Virtual Cable)"。
     std::string virtual_mic_playback_name = "CABLE Input";
     // 虚拟麦克风录音端名称子串，例如 "CABLE Output (VB-Audio Virtual Cable)"。
@@ -110,6 +115,11 @@ struct WechatInputMethodConfig {
     std::string virtual_mic_capture_name = "CABLE Output";
     // 是否在录音期间自动将默认录音设备切换为虚拟麦克风。
     bool auto_switch_default_recording_device = false;
+
+    // 按当前交互模式返回应使用的热键。kHoldToTalkInstant 归入长按式。
+    std::string ActiveHotkey(InteractionMode mode) const {
+        return mode == InteractionMode::kClickToTalk ? hotkey_click : hotkey_hold;
+    }
 
     bool operator==(const WechatInputMethodConfig& other) const = default;
 };

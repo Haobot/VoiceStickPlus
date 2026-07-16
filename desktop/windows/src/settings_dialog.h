@@ -29,6 +29,7 @@ private:
     void LoadConfigIntoControls();
     void SaveSettings();
     void UpdateOutputTargetVisibility();
+    void OnTriggerModeChanged();
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
     void UpdateTapSensitivityLabel();
@@ -97,6 +98,8 @@ private:
     HWND trigger_mode_label_ = nullptr;
     HWND trigger_mode_hold_radio_ = nullptr;
     HWND trigger_mode_click_radio_ = nullptr;
+    // 编辑框当前显示的热键所属触发模式（切换 radio 时据此存回对应模式字段）。
+    InteractionMode loaded_hotkey_mode_ = InteractionMode::kHoldToTalk;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
     HWND save_button_ = nullptr;

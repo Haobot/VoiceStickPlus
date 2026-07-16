@@ -2875,7 +2875,8 @@ void TestWechatInputMethodConfigRoundTrip() {
 
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
-    config.wechat_input_method.hotkey = "ctrl+shift+w";
+    config.wechat_input_method.hotkey_hold = "ctrl+shift+w";
+    config.wechat_input_method.hotkey_click = "ralt";
     config.wechat_input_method.virtual_mic_playback_name = "CABLE Input";
     config.wechat_input_method.virtual_mic_capture_name = "CABLE Output Test";
     config.wechat_input_method.auto_switch_default_recording_device = true;
@@ -2883,12 +2884,62 @@ void TestWechatInputMethodConfigRoundTrip() {
 
     AppConfig loaded = AppConfig::Load(temp);
     assert(loaded.default_output_profile.target == OutputTarget::kWechatInputMethod);
-    assert(loaded.wechat_input_method.hotkey == "ctrl+shift+w");
+    assert(loaded.wechat_input_method.hotkey_hold == "ctrl+shift+w");
+    assert(loaded.wechat_input_method.hotkey_click == "ralt");
     assert(loaded.wechat_input_method.virtual_mic_playback_name == "CABLE Input");
     assert(loaded.wechat_input_method.virtual_mic_capture_name == "CABLE Output Test");
     assert(loaded.wechat_input_method.auto_switch_default_recording_device);
 
     std::filesystem::remove(temp);
+}
+
+void TestWechatInputMethodPerModeHotkeyRoundTrip() {
+    // 两套热键独立保存：改 hold 不影响 click，反之亦然。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_per_mode_hotkey_test.toml";
+    std::filesystem::remove(temp);
+
+    AppConfig config = AppConfig::Defaults();
+    config.wechat_input_method.hotkey_hold = "ctrl+win";
+    config.wechat_input_method.hotkey_click = "ralt";
+    config.Save(temp);
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.wechat_input_method.hotkey_hold == "ctrl+win");
+    assert(loaded.wechat_input_method.hotkey_click == "ralt");
+
+    // 改 hold 再往返，click 应保持不变。
+    loaded.wechat_input_method.hotkey_hold = "ctrl+shift+w";
+    loaded.Save(temp);
+    AppConfig loaded2 = AppConfig::Load(temp);
+    assert(loaded2.wechat_input_method.hotkey_hold == "ctrl+shift+w");
+    assert(loaded2.wechat_input_method.hotkey_click == "ralt");
+
+    std::filesystem::remove(temp);
+}
+
+void TestWechatInputMethodLegacyHotkeyFallback() {
+    // 旧配置只有 hotkey 字段：加载后 hotkey_hold/hotkey_click 都回退为该值，不丢用户配置。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_legacy_hotkey_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "[wechat_input_method]\nhotkey = \"ctrl+shift+w\"\n";
+    }
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.wechat_input_method.hotkey_hold == "ctrl+shift+w");
+    assert(loaded.wechat_input_method.hotkey_click == "ctrl+shift+w");
+
+    std::filesystem::remove(temp);
+}
+
+void TestWechatInputMethodActiveHotkeyByMode() {
+    WechatInputMethodConfig c;
+    c.hotkey_hold = "ctrl+win";
+    c.hotkey_click = "ralt";
+    assert(c.ActiveHotkey(InteractionMode::kHoldToTalk) == "ctrl+win");
+    assert(c.ActiveHotkey(InteractionMode::kHoldToTalkInstant) == "ctrl+win");
+    assert(c.ActiveHotkey(InteractionMode::kClickToTalk) == "ralt");
 }
 
 void TestWechatInputMethodHotkeyParsing() {
@@ -5107,6 +5158,9 @@ int main() {
     TestWasapiRendererRestartsAfterStop();
     TestOutputTargetWechatInputMethod();
     TestWechatInputMethodConfigRoundTrip();
+    TestWechatInputMethodPerModeHotkeyRoundTrip();
+    TestWechatInputMethodLegacyHotkeyFallback();
+    TestWechatInputMethodActiveHotkeyByMode();
     TestWechatInputMethodHotkeyParsing();
     TestCoordinatorWechatInputMethodButtonDownSendsHotkey();
     TestCoordinatorWechatInputMethodWritesDebugAudio();

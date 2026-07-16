@@ -361,6 +361,8 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "text_transform") config.default_output_profile.transform = TextTransformFromName(value);
     if (key == "translation_target" && !value.empty()) config.default_output_profile.translation_target = value;
     if (key == "wechat_input_method_hotkey") config.wechat_input_method.hotkey = value;
+    if (key == "wechat_input_method_hotkey_hold") config.wechat_input_method.hotkey_hold = value;
+    if (key == "wechat_input_method_hotkey_click") config.wechat_input_method.hotkey_click = value;
     if (key == "wechat_input_method_virtual_mic") config.wechat_input_method.virtual_mic_playback_name = value;
     if (key == "wechat_input_method_virtual_mic_capture_name") config.wechat_input_method.virtual_mic_capture_name = value;
     if (key == "wechat_input_method_auto_switch") {
@@ -507,8 +509,20 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 *output, config.default_output_profile, true);
         }
         if (const auto* wechat = table["wechat_input_method"].as_table()) {
-            if (auto value = TomlString(*wechat, "hotkey")) {
-                config.wechat_input_method.hotkey = *value;
+            // legacy hotkey 字段：旧配置只有它，回退到 hotkey_hold/hotkey_click，不丢用户自定义。
+            const std::optional<std::string> legacy_hotkey = TomlString(*wechat, "hotkey");
+            if (legacy_hotkey) {
+                config.wechat_input_method.hotkey = *legacy_hotkey;
+            }
+            if (auto value = TomlString(*wechat, "hotkey_hold")) {
+                config.wechat_input_method.hotkey_hold = *value;
+            } else if (legacy_hotkey) {
+                config.wechat_input_method.hotkey_hold = *legacy_hotkey;
+            }
+            if (auto value = TomlString(*wechat, "hotkey_click")) {
+                config.wechat_input_method.hotkey_click = *value;
+            } else if (legacy_hotkey) {
+                config.wechat_input_method.hotkey_click = *legacy_hotkey;
             }
             if (auto value = TomlString(*wechat, "virtual_mic_playback_name")) {
                 config.wechat_input_method.virtual_mic_playback_name = *value;
@@ -658,7 +672,8 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "transform = \"" << TextTransformName(default_output_profile.transform) << "\"\n";
     output << "translation_target = \"" << TomlEscape(default_output_profile.translation_target) << "\"\n";
     output << "\n[wechat_input_method]\n";
-    output << "hotkey = \"" << TomlEscape(wechat_input_method.hotkey) << "\"\n";
+    output << "hotkey_hold = \"" << TomlEscape(wechat_input_method.hotkey_hold) << "\"\n";
+    output << "hotkey_click = \"" << TomlEscape(wechat_input_method.hotkey_click) << "\"\n";
     output << "virtual_mic_playback_name = \"" << TomlEscape(wechat_input_method.virtual_mic_playback_name) << "\"\n";
     output << "virtual_mic_capture_name = \"" << TomlEscape(wechat_input_method.virtual_mic_capture_name) << "\"\n";
     output << "auto_switch_default_recording_device = "
