@@ -21,6 +21,9 @@ class IWechatInputMethodHotkey {
   virtual bool IsValid() const = 0;
   virtual bool SendDown() const = 0;
   virtual bool SendUp() const = 0;
+  // 发送完整按下+释放（一次物理点击）。点按式第三方输入法（Typeless 等）靠完整
+  // click 触发语音面板，仅按下不释放不会触发。hold_to_talk 仍用 SendDown/SendUp。
+  virtual bool SendClick() const = 0;
 };
 
 class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
@@ -34,6 +37,8 @@ class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
   bool SendDown() const override;
   // 发送所有按键的释放序列（与按下顺序相反）。
   bool SendUp() const override;
+  // 发送所有按键的按下+释放序列（一次 SendInput），模拟完整物理点击。
+  bool SendClick() const override;
 
   // 返回解析到的虚拟键码数量。
   std::size_t KeyCount() const { return vk_codes_.size(); }

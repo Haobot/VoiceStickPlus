@@ -522,9 +522,17 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
                 // 微信弹框即取到有效音频（避免弹框早于音频就绪的首字卡顿）。持锁避免与 Stop race。
                 if (!wechat_hotkey_sent_down_) {
                     LogWechatLatency("first frame decoded, SendDown begin");
-                    if (wechat_hotkey_->IsValid() && wechat_hotkey_->SendDown()) {
+                    // 点按式发完整点击（down+up），hold 模式发按下：Typeless 等点按式输入法
+                    // 靠完整 click 触发，仅按下不释放不弹框。
+                    const bool click_mode =
+                        (config_.interaction_mode == InteractionMode::kClickToTalk);
+                    const bool ok = wechat_hotkey_->IsValid() &&
+                        (click_mode ? wechat_hotkey_->SendClick()
+                                    : wechat_hotkey_->SendDown());
+                    if (ok) {
                         wechat_hotkey_sent_down_ = true;
-                        LogWechatLatency("SendDown end (popup triggered)");
+                        LogWechatLatency(click_mode ? "SendClick end (popup triggered)"
+                                                    : "SendDown end (popup triggered)");
                     } else {
                         hotkey_send_failed = true;
                     }
@@ -541,6 +549,13 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
                     end_of_stream = true;
                 }
             }
+        }
+        // 锁内 end_of_stream 已设：记 last_stopped 供点按式忽略迟到停止 click。
+        // frame.session_id 此时等于原 active_session_id_（上方早退守卫保证），audio_end
+        // 分支已 reset active_session_id_，故在此用 frame.session_id 而非 active_session_id_。
+        if (end_of_stream) {
+            last_stopped_wechat_session_id_ = frame.session_id;
+            last_stopped_wechat_at_ = std::chrono::steady_clock::now();
         }
     }
 
@@ -655,9 +670,14 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {
     CancelRecordingHardTimeout();
-    // 仅当已 SendDown 才配对 SendUp；未弹框（首帧前 button_up/断连/空 end）多发 SendUp 多余。
+    // 仅当已 SendDown/SendClick 才配对停止热键；未弹框（首帧前 button_up/断连/空 end）不发。
+    // 点按式发完整点击停止（与启动对称），hold 模式发释放。
     if (wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_) {
-        wechat_hotkey_->SendUp();
+        if (config_.interaction_mode == InteractionMode::kClickToTalk) {
+            wechat_hotkey_->SendClick();
+        } else {
+            wechat_hotkey_->SendUp();
+        }
     }
     if (wechat_renderer_) {
         wechat_renderer_->Stop();
@@ -679,6 +699,11 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
 
     std::lock_guard lock(audio_mutex_);
     FinishWechatInputMethodRecording();
+    // 记最近停止的会话：点按式 audio_end 抢跑 button_click 时，据此忽略迟到的停止 click。
+    if (active_session_id_.has_value()) {
+        last_stopped_wechat_session_id_ = active_session_id_;
+        last_stopped_wechat_at_ = std::chrono::steady_clock::now();
+    }
     active_session_id_.reset();
     active_device_id_.reset();
     wechat_input_method_active_ = false;
@@ -706,6 +731,19 @@ void VoiceStickCoordinator::FinishWechatInputMethodRecording() {
 
 bool VoiceStickCoordinator::IsWechatInputMethodActive() const {
     return wechat_input_method_active_;
+}
+
+bool VoiceStickCoordinator::IsStaleWechatStopClick(
+    std::optional<std::uint32_t> session_id) const {
+    if (!session_id.has_value() || !last_stopped_wechat_session_id_.has_value() ||
+        !last_stopped_wechat_at_.has_value()) {
+        return false;
+    }
+    if (*session_id != *last_stopped_wechat_session_id_) return false;
+    // 窗口内视为迟到的停止 click：固件 session_id 递增不复用，2 秒覆盖 audio_end 与
+    // button_click 的 BLE 传输抖动，又避免跨会话误判。
+    constexpr auto kStaleWindow = std::chrono::seconds(2);
+    return (std::chrono::steady_clock::now() - *last_stopped_wechat_at_) <= kStaleWindow;
 }
 
 void VoiceStickCoordinator::SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe) {
@@ -785,6 +823,11 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             }
             if (IsWechatInputMethodActive() && active_device_id_ == device_id) {
                 HandleWechatInputMethodPrimaryButtonUp(device_id);
+            } else if (IsStaleWechatStopClick(event.session_id)) {
+                // 点按式停止时 audio_end 帧可能抢跑 button_click：audio_end 先停会话，
+                // 迟到的停止 button_click（同 session_id）不得误判为启动新会话。
+                LogCoordinatorLine("wechat click_to_talk stale stop click ignored dev=VS-" +
+                                   device_id);
             } else {
                 HandleWechatInputMethodPrimaryButtonDown(event.session_id, device_id);
             }

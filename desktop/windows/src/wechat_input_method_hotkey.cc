@@ -78,29 +78,40 @@ int VkCodeFromName(std::string_view name) {
   return 0;
 }
 
+INPUT BuildKeyboardInput(int vk, bool key_up) {
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  input.ki.wVk = static_cast<WORD>(vk);
+  // 设 scan code：物理按键总带 scan code，某些输入法/应用靠低级键盘钩子的 scan code
+  // （KBDLLHOOKSTRUCT.scanCode）识别按键，仅发 wVk（scan=0）可能不被识别。
+  input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+  DWORD flags = 0;
+  // 右ALT(VK_RMENU)/右Ctrl(VK_RCONTROL) 是扩展键，必须加 KEYEVENTF_EXTENDEDKEY，
+  // 否则系统会把它当成左ALT/左Ctrl，监听右ALT的第三方输入法（如 Typeless）不会触发。
+  if (vk == VK_RMENU || vk == VK_RCONTROL) {
+    flags |= KEYEVENTF_EXTENDEDKEY;
+  }
+  if (key_up) flags |= KEYEVENTF_KEYUP;
+  input.ki.dwFlags = flags;
+  return input;
+}
+
+bool SendInputs(std::vector<INPUT>& inputs) {
+  if (inputs.empty()) return false;
+  const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(),
+                              sizeof(INPUT));
+  return sent == inputs.size();
+}
+
 bool SendInputForKeys(const std::vector<int>& vk_codes, bool key_up) {
   if (vk_codes.empty()) return false;
 
   std::vector<INPUT> inputs;
   inputs.reserve(vk_codes.size());
   for (int vk : vk_codes) {
-    INPUT input = {};
-    input.type = INPUT_KEYBOARD;
-    input.ki.wVk = static_cast<WORD>(vk);
-    DWORD flags = 0;
-    // 右ALT(VK_RMENU)/右Ctrl(VK_RCONTROL) 是扩展键，必须加 KEYEVENTF_EXTENDEDKEY，
-    // 否则系统会把它当成左ALT/左Ctrl，监听右ALT的第三方输入法（如 Typeless）不会触发。
-    if (vk == VK_RMENU || vk == VK_RCONTROL) {
-      flags |= KEYEVENTF_EXTENDEDKEY;
-    }
-    if (key_up) flags |= KEYEVENTF_KEYUP;
-    input.ki.dwFlags = flags;
-    inputs.push_back(input);
+    inputs.push_back(BuildKeyboardInput(vk, key_up));
   }
-
-  const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(),
-                              sizeof(INPUT));
-  return sent == inputs.size();
+  return SendInputs(inputs);
 }
 
 }  // namespace
@@ -121,6 +132,19 @@ bool WechatInputMethodHotkey::SendDown() const {
 
 bool WechatInputMethodHotkey::SendUp() const {
   return SendInputForKeys(vk_codes_, true);
+}
+
+bool WechatInputMethodHotkey::SendClick() const {
+  // 按下+释放序列（修饰符在前），一次 SendInput 发出，模拟完整物理点击。
+  // 点按式第三方输入法靠完整 click 触发语音面板，仅按下不释放不会弹框。
+  if (vk_codes_.empty()) return false;
+  std::vector<INPUT> inputs;
+  inputs.reserve(vk_codes_.size() * 2);
+  for (int vk : vk_codes_) {
+    inputs.push_back(BuildKeyboardInput(vk, false));
+    inputs.push_back(BuildKeyboardInput(vk, true));
+  }
+  return SendInputs(inputs);
 }
 
 }  // namespace voicestick
