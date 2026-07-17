@@ -2942,6 +2942,34 @@ void TestWechatInputMethodActiveHotkeyByMode() {
     assert(c.ActiveHotkey(InteractionMode::kClickToTalk) == "ralt");
 }
 
+// 旧配置迁移：[wechat_input_method] 缺 trigger_mode 字段时，从顶层 interaction_mode 继承
+//（保留用户为 wechat 选的点按式），顶层 interaction_mode 重置为 kHoldToTalk（focused_app/
+// 字幕不再继承 wechat 点按式，修复切输出目标后长按失效）。
+void TestWechatTriggerModeMigratedFromLegacyInteractionMode() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_wechat_trigger_migrate_test.toml";
+    {
+        std::ofstream out(temp);
+        out << "interaction_mode = \"click_to_talk\"\n";
+        out << "\n[wechat_input_method]\nhotkey_hold = \"ctrl+win\"\nhotkey_click = \"ralt\"\n";
+    }
+    auto loaded = AppConfig::Load(temp);
+    assert(loaded.interaction_mode == InteractionMode::kHoldToTalk);
+    assert(loaded.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk);
+    std::filesystem::remove(temp);
+}
+
+// trigger_mode 序列化往返：Save 写入 [wechat_input_method].trigger_mode，Load 读回。
+void TestWechatTriggerModeRoundTrip() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_wechat_trigger_roundtrip_test.toml";
+    AppConfig config;
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+    config.Save(temp);
+    auto loaded = AppConfig::Load(temp);
+    assert(loaded.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk);
+    std::filesystem::remove(temp);
+}
+
 void TestWechatInputMethodHotkeyParsing() {
     assert(WechatInputMethodHotkey("").KeyCount() == 0);
     assert(WechatInputMethodHotkey("ctrl+win").KeyCount() == 2);
@@ -3411,6 +3439,36 @@ void TestCoordinatorWechatModeSendsInstantInteractionMode() {
     assert(ble_ptr2->sent_interaction_modes.back().first == InteractionMode::kHoldToTalk);
 }
 
+// wechat 选点按式（trigger_mode=kClickToTalk）但全局 interaction_mode=hold 时，切到
+// focused_app 后下发给固件的应是 hold_to_talk（不被 wechat 点按式污染），否则固件
+// click_to_talk 下长按主键不发 button_down，focused_app 长按无法录音。
+void TestWechatClickTriggerDoesNotLeakToFocusedApp() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+    config.interaction_mode = InteractionMode::kHoldToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // wechat 点按式：下发 click_to_talk。
+    assert(ble_ptr->sent_interaction_modes.back().first == InteractionMode::kClickToTalk);
+
+    // 切到 focused_app：全局 interaction_mode=hold，下发 hold_to_talk（不被 wechat 点按式污染）。
+    config.default_output_profile.target = OutputTarget::kFocusedApp;
+    coordinator.UpdateConfig(config);
+    assert(ble_ptr->sent_interaction_modes.back().first == InteractionMode::kHoldToTalk);
+
+    // focused_app 长按主键应进录音态（固件 hold 模式下发 button_down -> HandlePrimaryButtonDown）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 1));
+    assert(ui.show_listening_count >= 1);
+}
+
 // button_down 进 recording 后，若 button_up 与 audio_end 都丢失，recording 硬超时兜底
 // 必须回 ready，避免永久卡 listening（focused_app 模式无 wechat 的残留自愈）。
 void TestCoordinatorRecordingHardTimeoutRecoversFromLostButtonUp() {
@@ -3516,7 +3574,7 @@ void TestCoordinatorWechatClickToTalkSendsClickOnStart() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
-    config.interaction_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
 
     FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
     VoiceStickCoordinator coordinator(
@@ -3559,7 +3617,7 @@ void TestCoordinatorWechatClickToTalkSendsClickOnStop() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
-    config.interaction_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
 
     FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
     VoiceStickCoordinator coordinator(
@@ -3603,7 +3661,7 @@ void TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
-    config.interaction_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
 
     FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
     FakeVirtualMicRenderer* fake_renderer = nullptr;
@@ -3655,7 +3713,7 @@ void TestCoordinatorWechatClickToTalkStaleActiveNewClickStartsNew() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
-    config.interaction_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
 
     FakeVirtualMicRenderer* fake_renderer = nullptr;
     VoiceStickCoordinator coordinator(
@@ -5201,6 +5259,8 @@ int main() {
     TestWechatInputMethodPerModeHotkeyRoundTrip();
     TestWechatInputMethodLegacyHotkeyFallback();
     TestWechatInputMethodActiveHotkeyByMode();
+    TestWechatTriggerModeMigratedFromLegacyInteractionMode();
+    TestWechatTriggerModeRoundTrip();
     TestWechatInputMethodHotkeyParsing();
     TestCoordinatorWechatInputMethodButtonDownSendsHotkey();
     TestCoordinatorWechatInputMethodWritesDebugAudio();
@@ -5213,6 +5273,7 @@ int main() {
     TestCoordinatorWechatInputMethodRecoversFromStaleActive();
     TestCoordinatorWechatRecordingHardTimeoutRecoversFromLostButtonUp();
     TestCoordinatorWechatModeSendsInstantInteractionMode();
+    TestWechatClickTriggerDoesNotLeakToFocusedApp();
     TestCoordinatorWechatSessionRendererStartFailureSkipsHotkey();
     TestCoordinatorWechatClickToTalkSendsClickOnStart();
     TestCoordinatorWechatClickToTalkSendsClickOnStop();

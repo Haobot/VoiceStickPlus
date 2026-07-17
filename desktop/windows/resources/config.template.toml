@@ -87,6 +87,9 @@ debug_audio_dir = ""
 hotkey_hold = "ctrl+win"
 # 点按式（click_to_talk）触发热键，如 Typeless 的 ralt（右ALT）
 hotkey_click = "ralt"
+# 第三方输入法专属触发方式：hold_to_talk（长按式，默认）或 click_to_talk（点按式）。
+# 与全局 interaction_mode 解耦：只影响 wechat 模式，切到 focused_app/字幕不受影响。
+trigger_mode = "hold_to_talk"
 # 虚拟麦克风渲染端名称（如 CABLE Input）
 virtual_mic_playback_name = ""
 # 自动切换默认录音设备时，切换目标的录音端名称（如 CABLE Output）

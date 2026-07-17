@@ -465,6 +465,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
 
     try {
         auto table = toml::parse(input, path.native());
+        bool needs_wechat_trigger_migration_save = false;
 
         if (auto value = TomlString(table, "asr_provider")) config.asr_provider = AsrProviderFromName(*value);
         if (auto value = TomlTrimmedString(table, "voicestick_api_key")) config.voicestick_api_key = *value;
@@ -533,6 +534,16 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
             if (auto value = TomlBool(*wechat, "auto_switch_default_recording_device")) {
                 config.wechat_input_method.auto_switch_default_recording_device = *value;
             }
+            if (auto value = TomlString(*wechat, "trigger_mode")) {
+                config.wechat_input_method.trigger_mode = InteractionModeFromName(*value);
+            } else {
+                // 旧配置迁移：trigger_mode 字段缺失，从顶层 interaction_mode 继承（保留用户
+                // 之前为 wechat 选的点按式），并把顶层 interaction_mode 重置为 kHoldToTalk
+                //（focused_app/字幕不再继承 wechat 的点按式，修复切输出目标后长按失效）。
+                config.wechat_input_method.trigger_mode = config.interaction_mode;
+                config.interaction_mode = InteractionMode::kHoldToTalk;
+                needs_wechat_trigger_migration_save = true;
+            }
         }
         if (const auto* devices = table["device"].as_table()) {
             for (const auto& [key, node] : *devices) {
@@ -578,12 +589,17 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         }
         if (MaybeRecoverTencentSecretId(config)) {
             config.Save(path);
+        } else if (needs_wechat_trigger_migration_save) {
+            config.Save(path);
         }
         return config;
     } catch (const toml::parse_error&) {
         input.clear();
         input.seekg(0);
         AppConfig legacy_config = LoadLegacyConfig(input);
+        // legacy 扁平格式无 trigger_mode 字段：从顶层 interaction_mode 继承并重置为 hold。
+        legacy_config.wechat_input_method.trigger_mode = legacy_config.interaction_mode;
+        legacy_config.interaction_mode = InteractionMode::kHoldToTalk;
         if (MaybeRecoverTencentSecretId(legacy_config)) {
             legacy_config.Save(path);
         }
@@ -674,6 +690,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "\n[wechat_input_method]\n";
     output << "hotkey_hold = \"" << TomlEscape(wechat_input_method.hotkey_hold) << "\"\n";
     output << "hotkey_click = \"" << TomlEscape(wechat_input_method.hotkey_click) << "\"\n";
+    output << "trigger_mode = \"" << InteractionModeName(wechat_input_method.trigger_mode) << "\"\n";
     output << "virtual_mic_playback_name = \"" << TomlEscape(wechat_input_method.virtual_mic_playback_name) << "\"\n";
     output << "virtual_mic_capture_name = \"" << TomlEscape(wechat_input_method.virtual_mic_capture_name) << "\"\n";
     output << "auto_switch_default_recording_device = "
