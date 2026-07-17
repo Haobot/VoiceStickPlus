@@ -107,6 +107,11 @@ struct WechatInputMethodConfig {
     std::string hotkey_hold = "ctrl+win";
     // 点按式（click_to_talk）触发热键，例如 Typeless 的 "ralt"。
     std::string hotkey_click = "ralt";
+    // 第三方输入法专属触发模式：长按式（hold_to_talk）或点按式（click_to_talk）。
+    // 与全局 interaction_mode 解耦：wechat 的触发方式只影响 wechat 模式，
+    // 不污染 focused_app/字幕的全局 interaction_mode（切输出目标时不再互相影响）。
+    // 旧配置迁移：加载时若缺此字段，从顶层 interaction_mode 继承并把顶层重置为 kHoldToTalk。
+    InteractionMode trigger_mode = InteractionMode::kHoldToTalk;
     // 虚拟麦克风播放端名称子串，例如 "CABLE Input (VB-Audio Virtual Cable)"。
     std::string virtual_mic_playback_name = "CABLE Input";
     // 虚拟麦克风录音端名称子串，例如 "CABLE Output (VB-Audio Virtual Cable)"。

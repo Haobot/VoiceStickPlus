@@ -525,7 +525,7 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
                     // 点按式发完整点击（down+up），hold 模式发按下：Typeless 等点按式输入法
                     // 靠完整 click 触发，仅按下不释放不弹框。
                     const bool click_mode =
-                        (config_.interaction_mode == InteractionMode::kClickToTalk);
+                        (config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk);
                     const bool ok = wechat_hotkey_->IsValid() &&
                         (click_mode ? wechat_hotkey_->SendClick()
                                     : wechat_hotkey_->SendDown());
@@ -603,8 +603,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     wechat_ring_buffer_->Clear();
     wechat_decoder_->Reset();
     wechat_hotkey_ = wechat_hotkey_factory_
-                         ? wechat_hotkey_factory_(config_.wechat_input_method.ActiveHotkey(config_.interaction_mode))
-                         : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.ActiveHotkey(config_.interaction_mode));
+                         ? wechat_hotkey_factory_(config_.wechat_input_method.ActiveHotkey(config_.wechat_input_method.trigger_mode))
+                         : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.ActiveHotkey(config_.wechat_input_method.trigger_mode));
 
     // auto_switch：录音期把默认录音设备(eConsole)切到虚拟麦克风(CABLE Output)，松开切回。
     // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。
@@ -673,7 +673,7 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     // 仅当已 SendDown/SendClick 才配对停止热键；未弹框（首帧前 button_up/断连/空 end）不发。
     // 点按式发完整点击停止（与启动对称），hold 模式发释放。
     if (wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_) {
-        if (config_.interaction_mode == InteractionMode::kClickToTalk) {
+        if (config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk) {
             wechat_hotkey_->SendClick();
         } else {
             wechat_hotkey_->SendUp();
@@ -817,7 +817,7 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             return;
         }
         if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
-            if (config_.interaction_mode != InteractionMode::kClickToTalk) {
+            if (config_.wechat_input_method.trigger_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
             }
@@ -2260,12 +2260,15 @@ OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<
 }
 
 InteractionMode VoiceStickCoordinator::InteractionModeToSend() const {
-    // wechat 模式 + hold_to_talk：下发给固件 hold_to_talk_instant，按下即录音跳过 300ms 阈值，
-    // 降低按下到微信弹框的延迟。桌面端 config_.interaction_mode 仍是 kHoldToTalk，
-    // 所有 == kHoldToTalk / == kClickToTalk 判断不受影响。
-    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod &&
-        config_.interaction_mode == InteractionMode::kHoldToTalk) {
-        return InteractionMode::kHoldToTalkInstant;
+    // wechat 模式按其专属触发模式（trigger_mode，与全局 interaction_mode 解耦）决定下发：
+    //   hold -> hold_to_talk_instant（按下即录音跳过 300ms 阈值，降低弹框延迟）
+    //   click -> click_to_talk
+    // 非 wechat 模式（focused_app/字幕）仍下发全局 interaction_mode（托盘菜单控制），
+    // 不被 wechat 的点按式选择污染。
+    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+        return config_.wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
+                   ? InteractionMode::kHoldToTalkInstant
+                   : InteractionMode::kClickToTalk;
     }
     return config_.interaction_mode;
 }

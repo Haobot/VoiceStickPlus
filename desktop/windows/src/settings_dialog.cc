@@ -1033,11 +1033,11 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
     SendMessageW(output_target_combo_, CB_SETCURSEL, output_target_idx, 0);
     // 热键编辑框显示当前触发模式对应的热键（长按式/点按式各自记忆）。
-    loaded_hotkey_mode_ = config_.interaction_mode;
+    loaded_hotkey_mode_ = config_.wechat_input_method.trigger_mode;
     SetWindowTextW(wechat_hotkey_edit_,
                    Utf16(config_.wechat_input_method.ActiveHotkey(loaded_hotkey_mode_)).c_str());
-    // 触发方式：点按式联动全局 interaction_mode = click_to_talk，否则长按式。
-    const bool click_trigger = config_.interaction_mode == InteractionMode::kClickToTalk;
+    // 触发方式读写 wechat 专属 trigger_mode（与全局 interaction_mode 解耦，不污染 focused_app/字幕）。
+    const bool click_trigger = config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk;
     SendMessageW(trigger_mode_hold_radio_, BM_SETCHECK,
                  click_trigger ? BST_UNCHECKED : BST_CHECKED, 0);
     SendMessageW(trigger_mode_click_radio_, BM_SETCHECK,
@@ -1138,10 +1138,11 @@ void SettingsDialog::SaveSettings() {
     } else {
         config_.wechat_input_method.hotkey_hold = edited_hotkey;
     }
-    // 触发方式联动全局 interaction_mode：点按式->click_to_talk，长按式->hold_to_talk。
+    // 触发方式写入 wechat 专属 trigger_mode（不影响全局 interaction_mode，focused_app/字幕
+    // 的触发方式由托盘菜单的全局 interaction_mode 控制）。
     const bool click_trigger =
         SendMessageW(trigger_mode_click_radio_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    config_.interaction_mode =
+    config_.wechat_input_method.trigger_mode =
         click_trigger ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 
     config_.Save();

@@ -137,7 +137,7 @@ Create it from the example at `desktop/macos/Config/config.example.toml`.
 | `voicestick_api_key` / `voicestick_cloud_url` | VoiceStick Cloud relay key and WebSocket URL |
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM for translation and refinement |
 | `refine_enabled` / `refine_prompt` | Refine ASR text with an LLM (trim filler spaces, fix punctuation, drop fillers); default `true`. Empty prompt uses the built-in default |
-| `interaction_mode` | `hold_to_talk` or `click_to_talk` |
+| `interaction_mode` | `hold_to_talk` or `click_to_talk` (trigger mode for focused_app/subtitle; wechat uses `[wechat_input_method].trigger_mode`) |
 | `resource_id` | Volcengine resource ID |
 | `asr_hotwords` | Comma-separated ASR hotwords; also passed to the LLM as terminology hints |
 | `paired_device_ids` | Comma-separated 4-digit hex IDs, e.g. `C3D8,09AF` |
