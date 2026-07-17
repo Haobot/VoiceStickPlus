@@ -293,6 +293,18 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 
 新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
 
+## 经验教训记忆
+
+`Doc/Expe/claude-memory-distilled.md` 是从本仓库 Claude Code 约 80 条项目记忆蒸馏的长期参考（2026-07-17），按域分 9 章：固件/音频链路、烧录与串口日志、Windows 桌面端、微信输入法模式、交互/体感、测试方法论、排查方法论、遗留待办（第 8 章，含体感标定/深睡验证/VB-CABLE 授权/E2E next-steps 等待真机项）、过时条目。排查问题或改动相关模块前先按章节查阅；其中寄存器值、阈值、文件:行号均为记录时点结论，引用前以当前源码为准。
+
+高频速查：
+
+- 桌面端日志在 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`（非 Roaming 的 `%APPDATA%`）。
+- 任何「按住开始/松开结束」的音频会话，固件 `*_stop` 必须同步等 drain 完成再返回，否则 button_up 抢跑丢尾音。
+- SendInput 注入第三方输入法热键必须带 scan code（`MapVirtualKey`），仅 wVk 时输入法不响应。
+- BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。
+- ES8311 ALC 寄存器位域以 Linux 主线 `es8311.h` 为准，不信 `es8311_reg.h` 注释。
+
 ## 给 Agent 的提示
 
 - `.gitignore` 整体忽略了 `desktop/windows/`，提交 Windows 端源码改动时必须用 `git add -f`，否则会被静默漏提交。
