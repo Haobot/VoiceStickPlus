@@ -39,6 +39,10 @@ const char *voice_ble_device_id(void);
 const char *voice_ble_device_name(void);
 bool voice_ble_is_connected(void);
 bool voice_ble_is_ready(void);
+// 优雅断开当前 BLE 连接（LL_TERMINATE），并同步等待 DISCONNECT 事件返回，
+// 让对端立刻感知断连。用于 deep sleep 关机前调用，避免对端留存僵尸连接。
+// 未连接时立即返回 ESP_OK；超时仍未断开返回 ESP_ERR_TIMEOUT。
+esp_err_t voice_ble_disconnect(uint32_t timeout_ms);
 bool voice_ble_ota_is_active(void);
 esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
                                const uint8_t *opus_payload, size_t len);

@@ -457,6 +457,16 @@ static void enter_power_off(void)
     // 路径 B：ESP32 deep sleep，前键 ext1 唤醒。
     ESP_LOGI(TAG, "entering power off (deep sleep path B), wake on front button GPIO%d",
              wake_gpio);
+
+    /* 关机前优雅断开 BLE：直接 deep sleep 会让链路无声消失，对端只能靠
+       supervision timeout 发现（WinRT 对静默消失的空闲连接甚至可能不投递
+       断连事件，主机侧留存"已连接"僵尸会话，设备唤醒重播后无法回连，
+       卡 pairing 屏）。先 terminate 让主机立刻收到断连事件再睡。超时也
+       继续睡，不阻塞关机。 */
+    if (voice_ble_is_connected()) {
+        (void)voice_ble_disconnect(1000);
+    }
+
     ui_status_prepare_deep_sleep();
     stick_s3_board_prepare_deep_sleep();
 

@@ -728,23 +728,43 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             // one-argument FromBluetoothAddressAsync path.
         }
     }
+    // 占用该地址的连接权：已在连接中或处于失败退避期时返回 false。
+    // 调用者必须持有 mutex_。
+    auto try_claim_connect = [this, bluetooth_address]() {
+        if (connecting_addresses_.contains(bluetooth_address)) return false;
+        auto it = connect_cooldown_until_.find(bluetooth_address);
+        if (it != connect_cooldown_until_.end()) {
+            if (std::chrono::steady_clock::now() < it->second) {
+                return false; // 仍在退避期内
+            }
+            connect_cooldown_until_.erase(it);
+        }
+        connecting_addresses_.insert(bluetooth_address);
+        return true;
+    };
+
+    bool claimed = false;
+    bool stale_session = false;
     {
         std::lock_guard lock(mutex_);
         if (!paired_device_ids_.contains(*device_id)) return;
-        if (sessions_by_device_id_.contains(*device_id)) return;
-        if (connecting_addresses_.contains(bluetooth_address)) return;
-        // 退避检查：上一次连接失败后 5 秒内跳过同一设备的广告
-        {
-            auto it = connect_cooldown_until_.find(bluetooth_address);
-            if (it != connect_cooldown_until_.end()) {
-                if (std::chrono::steady_clock::now() < it->second) {
-                    return; // 仍在退避期内
-                }
-                connect_cooldown_until_.erase(it);
-            }
-        }
-        connecting_addresses_.insert(bluetooth_address);
+        stale_session = sessions_by_device_id_.contains(*device_id);
+        if (!stale_session) claimed = try_claim_connect();
     }
+    if (stale_session) {
+        // 固件只在未连接时广播（连接成功即停广播，断连后才恢复广播），
+        // 因此"已配对设备带着本地已就绪会话重新广播"本身就是旧链路已死的
+        // 铁证。典型场景：设备 deep sleep 唤醒重启，而 WinRT 没有对静默
+        // 消失的对端投递 ConnectionStatusChanged 断连事件。若不在这里拆
+        // 掉陈旧会话，旧会话会一直否决后续广告，重连永远不发生（设备停在
+        // pairing 屏，主机却显示已连接）。
+        LogBleLine("advertisement from paired VS-" + *device_id +
+                   " while session still registered; dropping stale session and reconnecting");
+        HandleDeviceDisconnected(*device_id, nullptr);
+        std::lock_guard lock(mutex_);
+        claimed = try_claim_connect();
+    }
+    if (!claimed) return;
 
     LogBleLine("advertisement matched VS-" + *device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
