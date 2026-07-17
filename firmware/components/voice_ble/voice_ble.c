@@ -825,6 +825,33 @@ bool voice_ble_is_ready(void)
     return s_connected && s_audio_subscribed && s_state_subscribed;
 }
 
+esp_err_t voice_ble_disconnect(uint32_t timeout_ms)
+{
+    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "terminating connection handle=%u", s_conn_handle);
+    int rc = ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_terminate failed rc=%d", rc);
+        return ESP_FAIL;
+    }
+    /* DISCONNECT 事件由 NimBLE host 任务回调并清 s_connected，这里同步等
+       它完成再返回，保证对端收到 LL_TERMINATE 之后调用方才继续（如进
+       deep sleep）。轮询间隔 10ms，超时上限由调用方给。 */
+    uint32_t waited_ms = 0;
+    while (s_connected && waited_ms < timeout_ms) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        waited_ms += 10;
+    }
+    if (s_connected) {
+        ESP_LOGW(TAG, "disconnect wait timed out after %" PRIu32 " ms", waited_ms);
+        return ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGI(TAG, "connection terminated in %" PRIu32 " ms", waited_ms);
+    return ESP_OK;
+}
+
 bool voice_ble_ota_is_active(void)
 {
     return s_ota.active;
