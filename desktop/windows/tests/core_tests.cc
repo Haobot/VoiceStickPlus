@@ -3082,6 +3082,23 @@ void TestDebugAudioRecorderInvalidDirectoryDoesNotCrash() {
     std::filesystem::remove(blocker, ec);
 }
 
+void TestAppConfigDebugAudioDirUtf8RoundTrip() {
+    // 复现导入 config 含非 ASCII 路径：旧实现 path(utf8_string) 按 ACP(GBK) 解析致乱码，
+    // path.string() 按 ACP 输出时若含 ACP 无法表示字符抛 system_error -> config.Save 抛
+    // -> SaveSettings 无 try-catch -> std::terminate 闪退。修复后 Save 用 Utf8FromUtf16(wstring)、
+    // Load 用 path(Utf16FromUtf8(value))，非 ASCII 路径 roundtrip 应保持一致且不抛。
+    AppConfig config = AppConfig::Defaults();
+    // "调试音频" 用 \u 转义避免源码编码依赖。
+    const auto dir = std::filesystem::temp_directory_path() /
+        std::filesystem::path(std::wstring(L"voicestick_调试音频"));
+    config.debug_audio_directory = dir;
+    const auto path = std::filesystem::temp_directory_path() / "voicestick_debug_dir_utf8_test.toml";
+    config.Save(path);
+    const auto loaded = AppConfig::Load(path);
+    std::filesystem::remove(path);
+    assert(loaded.debug_audio_directory == dir);
+}
+
 void TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -5181,6 +5198,7 @@ int main() {
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();
     TestAppConfigAirMouseRoundTrip();
+    TestAppConfigDebugAudioDirUtf8RoundTrip();
     TestConfigTemplateSeeding();
     TestLlmRefinePromptAndPayload();
     TestFirmwareManifestParsingAndVersionCompare();

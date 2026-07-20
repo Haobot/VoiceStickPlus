@@ -1,6 +1,7 @@
 #include "app_config.h"
 
 #include "ble_protocol.h"
+#include "log.h"
 #include "toml.hpp"
 
 #include <Windows.h>
@@ -23,6 +24,30 @@ namespace voicestick {
 namespace {
 
 constexpr const char* kVolcengineUrl = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
+
+// UTF-8 <-> UTF-16 转换：std::filesystem::path 在 Windows 按 ACP(GBK) 解析 std::string，
+// 而 TOML 字符串是 UTF-8。直接 path(utf8_string) 会让含非 ASCII 的路径乱码；
+// path.string() 按 ACP 输出时，含 ACP 无法表示字符会抛 system_error。用这两个 helper
+// 在 path 与 UTF-8 字符串间显式转换，绕开 ACP。
+std::wstring Utf16FromUtf8(std::string_view text) {
+    if (text.empty()) return {};
+    const int len = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (len <= 0) return {};
+    std::wstring wide(static_cast<std::size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), len);
+    return wide;
+}
+
+std::string Utf8FromUtf16(std::wstring_view text) {
+    if (text.empty()) return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                                        nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string out(static_cast<std::size_t>(len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        out.data(), len, nullptr, nullptr);
+    return out;
+}
 
 std::filesystem::path KnownFolder(REFKNOWNFOLDERID folder_id, const wchar_t* fallback_env) {
     PWSTR path = nullptr;
@@ -390,7 +415,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "air_mouse_rate_max_speed") config.air_mouse_rate_max_speed = AirMouseRateMaxSpeedClamp(DoubleValue(value, config.air_mouse_rate_max_speed));
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
-    if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(value);
+    if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(Utf16FromUtf8(value));
     if (key == "paired_device") {
         auto entry = ParsePairedDeviceEntry(value);
         if (!entry.device_id.empty()) config.paired_devices.push_back(entry);
@@ -581,7 +606,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
-            config.debug_audio_directory = std::filesystem::path(*value);
+            config.debug_audio_directory = std::filesystem::path(Utf16FromUtf8(*value));
         }
         for (const auto& value : TomlStringArray(table, "paired_device")) {
             auto entry = ParsePairedDeviceEntry(value);
@@ -613,7 +638,10 @@ void AppConfig::Save() const {
 }
 
 void AppConfig::Save(const std::filesystem::path& path) const {
-    std::filesystem::create_directories(path.parent_path());
+    // create_directories 用 error_code 版本：目录已存在或创建失败都不抛，
+    // 避免路径无效时抛 filesystem_error（ofstream 后续会兜底报错）。
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
     std::ofstream output(path, std::ios::trunc);
     if (!output) {
         throw std::runtime_error("failed to open config for writing");
@@ -675,7 +703,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "air_mouse_rate_max_speed = " << air_mouse_rate_max_speed << "\n";
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
-    output << "debug_audio_dir = \"" << TomlEscape(debug_audio_directory.string()) << "\"\n";
+    output << "debug_audio_dir = \"" << TomlEscape(Utf8FromUtf16(debug_audio_directory.wstring())) << "\"\n";
     if (!paired_devices.empty()) {
         output << "paired_device = [\n";
         for (const auto& entry : paired_devices) {

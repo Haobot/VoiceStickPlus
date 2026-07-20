@@ -1145,7 +1145,18 @@ void SettingsDialog::SaveSettings() {
     config_.wechat_input_method.trigger_mode =
         click_trigger ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 
-    config_.Save();
+    // config_.Save() 可能在 config.toml 被其他进程占用（如 OneDrive 同步/杀毒扫描）
+    // 时抛 runtime_error，或路径含 ACP 无法表示字符时抛 system_error。此处无 try-catch
+    // 会直接 std::terminate 闪退。捕获后提示用户，保留对话框不关闭，便于重试。
+    try {
+        config_.Save();
+    } catch (const std::exception& e) {
+        LogApp(std::string("SaveSettings: config_.Save failed: ") + e.what());
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsSaveFailed, language).c_str(),
+                    TrW(StringId::kSettingsTitle, language).c_str(), MB_OK | MB_ICONWARNING);
+        return;
+    }
     EndDialog(hwnd_, IDOK);
     if (on_config_changed) on_config_changed(config_);
 }
