@@ -39,4 +39,4 @@
 
 - **固件 bonding 不持久**:`voice_ble.c` 设了 `sm_bonding=1` 但全仓库没调 `ble_store_config_init()`,bond 信息每次 deep sleep 重启即丢。Just Works 下通常可静默重配对,与本 Bug 无因果,但若将来启用加密校验需补上。
 - **拿起不亮屏是预期行为**:deep sleep 唯一唤醒源是前键 GPIO11;IMU 拿起唤醒(路径 A)在 `main.c` 被 `#if 0` 有意禁用,注释注明待串口日志恢复后单独调试启用。
-- Windows 侧可选加固(未做):订阅 `GattSession.SessionStatusChanged`、`WriteControlPayloadAsync` 检查 `GattCommunicationStatus`、配对设备周期心跳探活。
+- Windows 侧可选加固（已于 2026-07-17 实施，`desktop/windows/src/ble_central_win.cc`）：① 订阅 `GattSession.SessionStatusChanged`，会话转 Closed 即按断连走 `HandleDeviceDisconnected` 拆除路径；② `WriteControlPayloadAsync` 检查 `GattCommunicationStatus` 与异常——`Unreachable`/写入抛 hr 异常时立即拆除会话走扫描重连，`ProtocolError`/`AccessDenied` 只记日志（链路仍活着，是 ATT 层拒绝）；③ 周期心跳探活：30s 向每个已连接会话写 `battery_status_request`（固件收到必回 `battery_status`，且不重启其待机断电计时器），90s 无任何入站 GATT 流量（`last_rx_ms`）或 `ConnectionStatus` 属性已翻 Disconnected 即判定僵尸会话拆除重连。
