@@ -12,12 +12,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <set>
+#include <thread>
 
 namespace voicestick {
 
@@ -83,10 +85,14 @@ private:
         winrt::event_token ota_state_value_changed_token{};
         winrt::event_token connection_status_token{};
         winrt::event_token gatt_services_changed_token{};
+        winrt::event_token session_status_token{};
         bool audio_subscribed = false;
         bool state_subscribed = false;
         bool ota_state_subscribed = false;
         bool ready = false;
+        // 心跳探活：任意入站 GATT 流量（audio/state/ota_state notify）刷新的时间戳
+        //（steady_clock epoch 毫秒）。心跳线程据此判定对端静默消失的僵尸会话。
+        std::atomic<std::int64_t> last_rx_ms{0};
     };
 
     struct FirmwareUpdateSession {
@@ -120,6 +126,13 @@ private:
     void HandleDeviceDisconnected(const std::string& device_id, std::shared_ptr<DeviceSession> session);
     void CloseSession(std::shared_ptr<DeviceSession> session);
     void CloseSessions();
+    // 周期心跳：向每个已连接会话写 battery_status_request 强制链路层收发，
+    // 并用入站流量时间戳判定僵尸会话（对端静默消失、WinRT 断连事件未投递时
+    // 的兜底通道）。
+    void StartHeartbeat();
+    void StopHeartbeat();
+    void HeartbeatLoop();
+    void ProbeSessions();
     static ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer);
     void PublishConnections();
 
@@ -140,6 +153,10 @@ private:
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
     std::chrono::steady_clock::time_point scan_started_at_{};
+    std::thread heartbeat_thread_;
+    std::mutex heartbeat_mutex_;
+    std::condition_variable heartbeat_cv_;
+    bool heartbeat_stop_ = false;
 
 public:
     static constexpr UINT WM_BLE_DISPATCH = WM_APP + 100;
