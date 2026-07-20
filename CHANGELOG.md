@@ -1,5 +1,15 @@
 # CHANGELOG.md
 
+## 2026-07-21 v2.1.1
+
+- **fix(windows)**: 设置保存闪退根治--`SaveSettings` 的 `config.Save()` 增加异常安全（try-catch），并修复路径含非 ASCII 字符时按 ACP(GBK) 解析抛 `system_error` 致 `std::terminate` 闪退（改用 UTF-8/UTF-16 显式转换）。
+- **fix(windows)**: BLE 僵尸会话心跳探活与拆除重连，修复 deep sleep 唤醒后卡 pairing 死锁、无法回连录音。
+- **feat(firmware)**: 点动模式主键双击直接注入回车，不触发录音。
+- **feat(desktop/windows)**: 第三方输入法按触发模式（长按/点按）分别记忆触发热键。
+- **fix(desktop/windows)**: 第三方输入法触发方式与全局 `interaction_mode` 解耦，修复切回 focused_app 长按失效。
+- **fix(desktop/windows)**: 点动模式快速点动错位修复（`session_id` 校验）。
+- 文档：新增 MSI 代码签名证书配置指南、蒸馏项目记忆为长期经验参考、CLAUDE.md/AGENTS.md 增量同步。
+
 ## 2026-07-06 v1.9.0
 
 - **feat(wechat_input_method)**: 新增微信输入法语音输出模式——将识别语音经 Opus 解码为 PCM 后渲染到系统虚拟麦克风（如 VB-CABLE Output），供微信输入法等应用作为音频输入源。
