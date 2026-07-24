@@ -43,3 +43,6 @@ scripts/e2e_test/l3_captured_opus.bin
 /serial_log*.txt
 /l4_cable.wav
 /l4_test.wav
+
+# 本地调试用 Python venv（ASR 回放工具依赖）
+.venv-replay/
