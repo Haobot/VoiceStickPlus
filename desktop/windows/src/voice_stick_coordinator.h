@@ -192,7 +192,9 @@ public:
                           std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory = {},
                           std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory = {},
                           std::filesystem::path device_switch_state_path = {},
-                          std::chrono::milliseconds recording_hard_timeout = kRecordingHardTimeout);
+                          std::chrono::milliseconds recording_hard_timeout = kRecordingHardTimeout,
+                          std::chrono::milliseconds finalizing_timeout = kFinalizingWatchdogTimeout,
+                          std::chrono::milliseconds audio_stall_timeout = kAudioStallTimeout);
     ~VoiceStickCoordinator();
 
     void Start();
@@ -348,6 +350,18 @@ private:
     // 超时未收到结束信号则 CancelShortRecording 回 ready，覆盖 button_up 与 audio_end 同时丢失的卡死。
     void ScheduleRecordingHardTimeout();
     void CancelRecordingHardTimeout();
+    // 录音音频流停滞 watchdog：focused_app 进 kRecording 时启动，每帧音频刷新时间戳。
+    // 正常录音固件 25fps 持续发帧，超过 audio_stall_timeout_ 无任何帧说明 button_up 与
+    // audio_end 双丢（或链路卡死），按 audio_stall 走 audio_end 等待路径收尾，
+    // 不再干等 120s 硬超时。仅 focused_app 主会话使用（wechat/字幕走各自路径）。
+    void ScheduleRecordingStallWatchdog();
+    // finalizing 闲置 watchdog：进入 kFinalizing（等 ASR final / LLM 翻译或精修）时启动，
+    // ASR partial/segment 与精修 token 到达时经 TouchFinalizingWatchdog 刷新活动时间；
+    // 超过 finalizing_timeout_ 无任何进展则兜底退出——已拿到 ASR 原文则回退粘贴原文，
+    // 否则报错进 error 态。覆盖 ASR 服务端不回 SessionFinished 或 LLM 无响应导致的
+    // 永久卡 Processing（asr_client_win 对 receive 超时静默重等，链路层无兜底）。
+    void ScheduleFinalizingWatchdog();
+    void TouchFinalizingWatchdog();
     // 首字延迟诊断：打印 stage 相对 wechat_latency_anchor_ 的累计毫秒。无活跃会话时跳过。
     void LogWechatLatency(std::string_view stage);
     void SendFinalOggChunkIfNeeded(double recording_duration_seconds);
@@ -443,6 +457,19 @@ private:
     // recording 硬超时兜底（可经构造注入，测试用短值；默认 kRecordingHardTimeout）。
     std::chrono::milliseconds recording_hard_timeout_{kRecordingHardTimeout};
     std::atomic_uint64_t recording_hard_timeout_generation_{0};
+    // 录音音频流停滞 watchdog（可经构造注入，测试用短值；默认 kAudioStallTimeout）。
+    std::chrono::milliseconds audio_stall_timeout_{kAudioStallTimeout};
+    std::atomic_uint64_t recording_stall_generation_{0};
+    // 最后一帧音频（含 END 帧）到达时间戳，steady_clock ms；停滞 watchdog 据此判活。
+    std::atomic_int64_t last_audio_frame_ms_{0};
+    // finalizing 闲置 watchdog（可经构造注入，测试用短值；默认 kFinalizingWatchdogTimeout）。
+    std::chrono::milliseconds finalizing_timeout_{kFinalizingWatchdogTimeout};
+    std::atomic_uint64_t finalizing_watchdog_generation_{0};
+    // finalizing 阶段最后一次有进展（ASR partial/segment、精修 token）的时间戳，steady_clock ms。
+    std::atomic_int64_t finalizing_last_activity_ms_{0};
+    // ASR final 原文（进入 translate/refine 异步阶段前保存）：watchdog 超时时回退粘贴原文，
+    // 保证 LLM 无响应也不丢本次输入。FinishRecognitionCycle 时清空。
+    std::string finalizing_fallback_text_;
     PendingPasteState pending_paste_state_;
     std::optional<std::string> last_recoverable_text_;
     std::optional<std::string> last_recoverable_device_id_;
@@ -502,9 +529,15 @@ private:
     std::filesystem::path DeviceSwitchStatePath() const;
     void RecoverDeviceSwitchStateIfNeeded();
     static constexpr double kMinimumRecordingDurationSeconds = 0.5;
-    static constexpr std::chrono::milliseconds kAudioEndTimeout{1000};
+    // button_up 后等 audio_end 的上限：固件 drain 完才发 END 再发 button_up，正常 END 先到；
+    // 该窗口只覆盖 END notify 丢失或固件 stop 等待超时后尾帧仍在途的边角，给足 2s 余量。
+    static constexpr std::chrono::milliseconds kAudioEndTimeout{2000};
     // recording 硬上限：button_up 与 audio_end 都丢失时的兜底，避免永久卡 listening。
     static constexpr std::chrono::seconds kRecordingHardTimeout{120};
+    // 录音中音频帧停滞上限：正常 25fps 持续有帧，超过即判定链路卡死（button_up/audio_end 双丢）。
+    static constexpr std::chrono::seconds kAudioStallTimeout{5};
+    // finalizing 闲置上限：等 ASR final / LLM 精修期间无任何进展超过该时长则兜底退出。
+    static constexpr std::chrono::seconds kFinalizingWatchdogTimeout{15};
     static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
 };
 
