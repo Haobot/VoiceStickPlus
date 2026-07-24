@@ -3514,6 +3514,128 @@ void TestCoordinatorRecordingHardTimeoutRecoversFromLostButtonUp() {
     assert(ble_ptr->sent_ui_states.back().state == "ready");
 }
 
+// finalizing 闲置兜底：audio_end 后 ASR 服务端始终不回 final（on_final 不触发）时，
+// finalizing watchdog 超时必须报错退出 finalizing，用户确认后回 ready，不永久卡 Processing。
+void TestCoordinatorFinalizingWatchdogTimesOutWithoutAsrFinal() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 排除异步精修干扰
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input,
+        {}, {}, {}, {}, {},
+        std::chrono::milliseconds(5000),  // recording_hard_timeout 放大，排除干扰
+        std::chrono::milliseconds(400));  // finalizing_timeout
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(30, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 30));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(30, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+
+    // 不发 on_final（模拟服务端不回 SessionFinished），等 watchdog 触发报错。
+    bool saw_timeout_error = false;
+    for (int i = 0; i < 50 && !saw_timeout_error; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        for (const auto& e : ui.errors) {
+            if (e.find("ASR response timeout") != std::string::npos) saw_timeout_error = true;
+        }
+    }
+    assert(saw_timeout_error);
+    assert(asr_ptr->cancelled);
+    assert(input.pasted_text.empty());
+
+    // 用户确认错误后回 ready，不再卡 Processing。
+    assert(ui.error_completion);
+    ui.error_completion();
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+// finalizing watchdog 按「无进展时长」判活：finalizing 期间持续有 partial 到达时不得误触发，
+// 活动停止前的 final 仍正常粘贴。
+void TestCoordinatorFinalizingWatchdogResetByPartialActivity() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input,
+        {}, {}, {}, {}, {},
+        std::chrono::milliseconds(5000),
+        std::chrono::milliseconds(400));  // finalizing_timeout
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 32));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(32, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 32));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(32, 2));
+    assert(asr_ptr->started);
+
+    // 持续 1s 每 100ms 一个 partial（超过 400ms 闲置阈值但有活动），watchdog 不应触发。
+    for (int i = 0; i < 10; ++i) {
+        asr_ptr->on_partial("partial " + std::to_string(i));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    assert(ui.errors.empty());
+    assert(!asr_ptr->cancelled);
+
+    asr_ptr->on_final("final text");
+    assert(input.pasted_text == "final text");
+    assert(ui.errors.empty());
+}
+
+// 音频流停滞兜底：录音中帧流中断（button_up 与 audio_end 双丢）时，stall watchdog 超时
+// 进入等 audio_end 路径收尾，迟到的 END 帧仍被接受并 finalize，不等 120s 硬超时。
+void TestCoordinatorAudioStallFinalizesWithoutButtonUp() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input,
+        {}, {}, {}, {}, {},
+        std::chrono::milliseconds(5000),  // recording_hard_timeout 放大，排除干扰
+        std::chrono::milliseconds(5000),  // finalizing_timeout 放大，排除干扰
+        std::chrono::milliseconds(400));  // audio_stall_timeout
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 31));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(31, 1));
+
+    // 之后帧流中断。轮询等 stall watchdog 触发进入 finalizing（Processing），
+    // 同时保证录音时长超过 0.5s（否则按短录音取消，ASR 不启动）。
+    bool entered_finalizing = false;
+    for (int i = 0; i < 50 && !entered_finalizing; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        for (const auto& s : ui.statuses) {
+            if (s == "Processing") entered_finalizing = true;
+        }
+    }
+    assert(entered_finalizing);
+    assert(!asr_ptr->started);  // 等 audio_end 期间 ASR 尚未启动
+
+    // 迟到的 END 帧仍被接受：finalize 并启动 ASR 发 final chunk。
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(31, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+}
+
 // focused_app 模式卡在 recording 后再来 button_down（模拟残留）必须先停旧会话再 Start 新的，
 // 否则被第 983 行 return 吞掉，用户怎么按都没反应。安全前提同 wechat：固件 hold_to_talk
 // 录音中再按主键不发新 button_down，故收到 button_down 时非 kReady 必为残留。
@@ -5315,6 +5437,9 @@ int main() {
     TestDeviceSwitchStateLoadMissingFile();
     TestWStringUtf8Conversion();
     TestCoordinatorRecordingHardTimeoutRecoversFromLostButtonUp();
+    TestCoordinatorFinalizingWatchdogTimesOutWithoutAsrFinal();
+    TestCoordinatorFinalizingWatchdogResetByPartialActivity();
+    TestCoordinatorAudioStallFinalizesWithoutButtonUp();
     TestCoordinatorRecoveringButtonDownStopsStaleRecording();
     TestOggOpusDemuxerParsesOpusHead();
     TestOggOpusDemuxerMultiplePackets();

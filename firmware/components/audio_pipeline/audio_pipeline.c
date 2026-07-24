@@ -37,8 +37,13 @@ static const char *TAG = "audio_pipeline";
 #define TX_QUEUE_DEPTH 50
 #define TX_RETRY_DELAY_MS 10
 #define TX_MAX_RETRIES 30
-#define TX_DRAIN_TIMEOUT_MS 500
-#define TASK_EXIT_WAIT_MS 800
+/* drain 超时：松开按键后 tx_task 排空队列尾部帧的预算。BLE 拥堵时 500ms 经常不够，
+ * 超时直接 xQueueReset 丢弃剩余尾帧导致识别丢最后几个字；放宽到 2000ms 后只有在
+ * 持续 2s 完全发不出去的极端情况下才丢尾帧。配合 TASK_EXIT_WAIT_MS 同步放宽。 */
+#define TX_DRAIN_TIMEOUT_MS 2000
+/* stop 同步等待 audio_task+tx_task 退出的上限：必须大于 TX_DRAIN_TIMEOUT_MS 加
+ * audio_task 残留 drain（~80ms）与余量，否则 drain 未完成就返回、button_up 抢跑丢尾音。 */
+#define TASK_EXIT_WAIT_MS 3000
 
 /* 二阶 Butterworth 高通滤波器（transposed direct form II），截止 fc≈90Hz @ 16kHz，
  * 抑制近距离说话时呼吸气流冲击麦克风的低频爆破音（plosive，能量集中在 20-100Hz）。

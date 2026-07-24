@@ -2132,6 +2132,16 @@ void app_main(void)
 
     ESP_ERROR_CHECK(init_power_management());
     ESP_ERROR_CHECK(stick_s3_board_init());
+    // BLE 初始化（含 NimBLE host 任务启动）提前到屏幕初始化之前：on_sync 回调里
+    // 开始广播是异步的，提前调用让「NimBLE 同步→开始广播」与耗时的 ui_status_init
+    // （ST7789/LVGL）并行，缩短深睡唤醒后到设备可被发现的启动时间。
+    // voice_ble_init 内部自初始化 NVS，不依赖 ui_status。
+    // 回调注册也随之前移：广播/连接可能在 ui_status_init 期间就发生，
+    // 必须在此之前挂好 connection/control/OTA 回调。
+    voice_ble_set_connection_callback(ble_connection_cb);
+    voice_ble_set_control_callback(ble_control_cb);
+    voice_ble_set_ota_callback(ble_ota_cb);
+    esp_err_t err = voice_ble_init();
     ESP_ERROR_CHECK(ui_status_init());
     ESP_ERROR_CHECK(init_display_dim_timer());
     ESP_ERROR_CHECK(init_display_off_timer());
@@ -2157,12 +2167,9 @@ void app_main(void)
     ESP_ERROR_CHECK(init_imu_poll_timer());
     ESP_ERROR_CHECK(esp_timer_start_periodic(s_imu_poll_timer, IMU_POLL_INTERVAL_US));
     note_activity();
-    voice_ble_set_connection_callback(ble_connection_cb);
-    voice_ble_set_control_callback(ble_control_cb);
-    voice_ble_set_ota_callback(ble_ota_cb);
     ESP_ERROR_CHECK(init_buttons());
 
-    esp_err_t err = voice_ble_init();
+    // voice_ble_init 已提前到 ui_status_init 之前执行（见上方注释），此处仅处理其结果。
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "BLE init failed: %s", esp_err_to_name(err));
         ui_status_set_error("BLE init failed");

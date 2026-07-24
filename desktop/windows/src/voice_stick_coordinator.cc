@@ -27,6 +27,12 @@ std::string AsrStartFailureMessage(const AsrClient& asr) {
     return message.empty() ? "Failed to start ASR" : message;
 }
 
+// steady_clock 毫秒时间戳（watchdog 活动时间用，进程内自洽即可，不需要绝对 epoch）。
+std::int64_t SteadyNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 } // namespace
 
 VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
@@ -39,7 +45,9 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
                                              std::function<std::unique_ptr<IWechatInputMethodHotkey>(const std::string&)> wechat_hotkey_factory,
                                              std::function<std::unique_ptr<IDefaultAudioDeviceController>()> wechat_device_switcher_factory,
                                              std::filesystem::path device_switch_state_path,
-                                             std::chrono::milliseconds recording_hard_timeout)
+                                             std::chrono::milliseconds recording_hard_timeout,
+                                             std::chrono::milliseconds finalizing_timeout,
+                                             std::chrono::milliseconds audio_stall_timeout)
     : config_(std::move(config)),
       ble_(std::move(ble)),
       asr_(std::move(asr)),
@@ -55,6 +63,8 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
       wechat_device_switcher_factory_(std::move(wechat_device_switcher_factory)),
       device_switch_state_path_(std::move(device_switch_state_path)) {
     recording_hard_timeout_ = recording_hard_timeout;
+    finalizing_timeout_ = finalizing_timeout;
+    audio_stall_timeout_ = audio_stall_timeout;
     for (const auto& entry : config_.paired_devices) {
         if (entry.device_id.empty()) continue;
         auto& info = firmware_info_by_device_id_[entry.device_id];
@@ -332,12 +342,14 @@ void VoiceStickCoordinator::CancelFirmwareUpdate() {
 
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     asr_->on_partial = [this](std::string text) {
+        TouchFinalizingWatchdog();
         ui_->ShowPartial(text, active_device_id_);
         if (ShouldSendPartialToDevice()) {
             SendUiStateForActiveDevice("thinking", text);
         }
     };
     asr_->on_segment = [this](AsrSegment segment) {
+        TouchFinalizingWatchdog();
         HandleDefiniteSegment(segment);
     };
     asr_->on_final = [this](std::string text) {
@@ -1142,6 +1154,7 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         debug_audio_recorder_.Start(device_id, session_id);
         SetSessionState(SessionState::kRecording, "primary_down");
         ScheduleRecordingHardTimeout();
+        ScheduleRecordingStallWatchdog();
     }
     ui_->ShowListening(active_device_id_);
     SendUiStateForActiveDevice("recording");
@@ -1180,6 +1193,7 @@ void VoiceStickCoordinator::HandleAudioFrame(const AudioFrame& frame, const std:
     if (!active_session_id_.has_value() || frame.session_id != *active_session_id_ || active_device_id_ != device_id) {
         return;
     }
+    last_audio_frame_ms_.store(SteadyNowMs());
     if (frame.IsEnd() && frame.payload.empty()) {
         CancelAudioEndTimeout();
         SendFinalOggChunkIfNeeded(CurrentRecordingDurationSeconds());
@@ -1498,6 +1512,9 @@ void VoiceStickCoordinator::CancelShortRecording() {
 void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
     if (pasted_final_text_) return;
     pasted_final_text_ = true;
+    // 保存 ASR 原文作为 finalizing watchdog 的回退文本：后续 translate/refine 任一环节
+    // 无响应时可直接粘贴原文，保证不丢本次输入。
+    finalizing_fallback_text_ = text;
     const auto profile = OutputProfileForDevice(active_device_id_);
     if (profile.target == OutputTarget::kSubtitle) {
         if (!text.empty() && active_device_id_.has_value()) {
@@ -1754,6 +1771,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
             // on_token（后台线程）：节流式追加更新悬浮窗
             [this, alive, cancel, device_id, throttle](std::string token) {
                 if (!alive->load() || (cancel && cancel->load())) return;
+                TouchFinalizingWatchdog();
                 std::string current;
                 bool should_update = false;
                 {
@@ -1856,6 +1874,83 @@ void VoiceStickCoordinator::ScheduleRecordingHardTimeout() {
 
 void VoiceStickCoordinator::CancelRecordingHardTimeout() {
     recording_hard_timeout_generation_.fetch_add(1);
+}
+
+// 音频流停滞兜底：focused_app 录音中固件 25fps 持续发帧，超过 audio_stall_timeout_ 一帧未收
+// 说明 button_up 与 audio_end 双丢或链路卡死。此时走 audio_end 等待路径收尾（给迟到的 END 帧
+// kAudioEndTimeout 机会后按已有缓冲 finalize），不再干等 120s 硬超时。每 500ms 检查一次；
+// 状态离开 kRecording 或 generation 变化即退出。
+void VoiceStickCoordinator::ScheduleRecordingStallWatchdog() {
+    last_audio_frame_ms_.store(SteadyNowMs());
+    const auto generation = recording_stall_generation_.fetch_add(1) + 1;
+    // 捕获调度时的会话 id：wechat 会话同样置 kRecording（"wechat_primary_down"）但不走
+    // 该 watchdog，若上一个 focused 会话的残留线程在 wechat 录音期间醒来，凭会话 id
+    // 不匹配 + wechat 激活态双重校验退出，避免误触发 BeginWaitingForAudioEnd 污染 wechat 会话。
+    const auto session_id = active_session_id_;
+    std::thread([this, alive = alive_, generation, session_id]() {
+        while (alive->load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (!alive->load()) return;
+            {
+                std::lock_guard lock(audio_mutex_);
+                if (recording_stall_generation_.load() != generation ||
+                    session_state_ != SessionState::kRecording ||
+                    active_session_id_ != session_id ||
+                    wechat_input_method_active_) {
+                    return;
+                }
+                if (SteadyNowMs() - last_audio_frame_ms_.load() < audio_stall_timeout_.count()) {
+                    continue;
+                }
+            }
+            LogCoordinatorLine("audio stall timeout; finalizing buffered audio");
+            BeginWaitingForAudioEnd("audio_stall");
+            return;
+        }
+    }).detach();
+}
+
+// finalizing 闲置兜底：等 ASR final / LLM 翻译或精修期间，链路层对 receive 超时静默重等
+// （asr_client_win ReceiveOneReusable），服务端不回 SessionFinished 时会永久卡 Processing。
+// 这里按「无进展时长」判活：ASR partial/segment 与精修 token 都会刷新活动时间，连续
+// finalizing_timeout_ 无任何进展才兜底——有 ASR 原文回退粘贴原文，否则报错进 error 态。
+// 每 200ms 检查一次；离开 kFinalizing 或 generation 变化即退出，无需显式 cancel。
+void VoiceStickCoordinator::ScheduleFinalizingWatchdog() {
+    finalizing_last_activity_ms_.store(SteadyNowMs());
+    const auto generation = finalizing_watchdog_generation_.fetch_add(1) + 1;
+    std::thread([this, alive = alive_, generation]() {
+        while (alive->load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (!alive->load()) return;
+            std::string fallback_text;
+            {
+                std::lock_guard lock(audio_mutex_);
+                if (finalizing_watchdog_generation_.load() != generation ||
+                    session_state_ != SessionState::kFinalizing) {
+                    return;
+                }
+                if (SteadyNowMs() - finalizing_last_activity_ms_.load() <
+                    finalizing_timeout_.count()) {
+                    continue;
+                }
+                fallback_text = finalizing_fallback_text_;
+            }
+            if (!fallback_text.empty()) {
+                // LLM 翻译/精修无响应：回退粘贴 ASR 原文，不丢本次输入。
+                LogCoordinatorLine("finalizing watchdog timeout; pasting unrefined final text");
+                EnterPendingConfirmation(fallback_text, "finalizing_watchdog");
+            } else {
+                // ASR 服务端始终未回 final：报错退出（用户确认后回 ready），不永久卡住。
+                LogCoordinatorLine("finalizing watchdog timeout; no final text, aborting");
+                FinishWithAsrError("ASR response timeout");
+            }
+            return;
+        }
+    }).detach();
+}
+
+void VoiceStickCoordinator::TouchFinalizingWatchdog() {
+    finalizing_last_activity_ms_.store(SteadyNowMs());
 }
 
 void VoiceStickCoordinator::LogWechatLatency(std::string_view stage) {
@@ -2016,6 +2111,7 @@ void VoiceStickCoordinator::FinishRecognitionCycle() {
     asr_started_ = false;
     sent_final_audio_chunk_ = false;
     pasted_final_text_ = false;
+    finalizing_fallback_text_.clear();
     buffered_ogg_chunks_.clear();
 }
 
@@ -2203,12 +2299,18 @@ void VoiceStickCoordinator::EnterReady(std::string_view reason, bool hide_overla
 void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {
     CancelRecordingHardTimeout();
     SetSessionState(SessionState::kFinalizing, reason);
+    ScheduleFinalizingWatchdog();
     ui_->SetStatus("Processing");
     SendUiStateForActiveDevice("thinking");
 }
 
 void VoiceStickCoordinator::EnterPendingConfirmation(const std::string& text, std::string_view reason) {
-    (void)reason;
+    // 只在 kFinalizing 下接受粘贴完成：watchdog 兜底或用户取消已离开 finalizing 后，
+    // 迟到的 translate/refine 完成回调不得二次粘贴。
+    if (session_state_ != SessionState::kFinalizing) {
+        LogCoordinatorLine("ignore stale pending confirmation reason=" + std::string(reason));
+        return;
+    }
     CompletePendingPaste(text);
 }
 
