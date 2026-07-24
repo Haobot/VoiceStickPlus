@@ -1134,7 +1134,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 log_stage("service_discovery_begin", "attempt=" + std::to_string(attempt) +
                                                      " mode=" + std::string(cache_mode == BluetoothCacheMode::Uncached ? "uncached" : "cached"));
                 auto async_op = session->ble_device.GetGattServicesAsync(cache_mode);
-                constexpr int kPollMs = 500;
+                // 轮询粒度 100ms：cached 发现常在几十毫秒内完成，500ms 粒度每次连接
+                // 会白等近半秒（实测 dt=513/1027ms 均为轮询量化）。
+                constexpr int kPollMs = 100;
                 const int max_polls = static_cast<int>(kServiceDiscoveryTimeout.count()) / kPollMs;
                 for (int p = 0; p < max_polls; ++p) {
                     co_await WaitMs(std::chrono::milliseconds(kPollMs));
@@ -1365,9 +1367,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         using GattCharsResult = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicsResult;
 
         auto discover_characteristic = [&](const winrt::guid& uuid,
-                                           const char* label) -> GattCharsResult {
+                                           const char* label,
+                                           BluetoothCacheMode cache_mode) -> GattCharsResult {
             log_stage("characteristic_discovery_begin", "label=" + std::string(label));
-            auto op = session->service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode::Uncached);
+            auto op = session->service.GetCharacteristicsForUuidAsync(uuid, cache_mode);
             if (op.wait_for(kCharacteristicDiscoveryTimeout) == AsyncStatus::Started) {
                 op.Cancel();
                 LogBleLine(std::string(label) + " characteristic discovery timed out VS-" + device_id);
@@ -1381,9 +1384,22 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             return result;
         };
 
-        auto audio_result = discover_characteristic(winrt::guid{BleProtocol::audio_uuid}, "audio_tx");
-        auto state_result = discover_characteristic(winrt::guid{BleProtocol::state_uuid}, "state_tx");
-        auto control_result = discover_characteristic(winrt::guid{BleProtocol::control_uuid}, "control_rx");
+        // 特征发现先走 Cached：GATT 表跨版本稳定，重连时跳过 3 次空口往返（慢链路况
+        // 下实测可省 ~1.7s）。任一失败/为空则三个全部改 Uncached 重试，兜底固件表变更
+        // 或系统缓存失效的场景。
+        auto audio_result = discover_characteristic(winrt::guid{BleProtocol::audio_uuid}, "audio_tx", BluetoothCacheMode::Cached);
+        auto state_result = discover_characteristic(winrt::guid{BleProtocol::state_uuid}, "state_tx", BluetoothCacheMode::Cached);
+        auto control_result = discover_characteristic(winrt::guid{BleProtocol::control_uuid}, "control_rx", BluetoothCacheMode::Cached);
+        const auto char_ok = [](const GattCharsResult& r) {
+            return r && r.Status() == GattCommunicationStatus::Success && r.Characteristics().Size() > 0;
+        };
+        if (!char_ok(audio_result) || !char_ok(state_result) || !char_ok(control_result)) {
+            LogBleLine("cached characteristic discovery incomplete VS-" + device_id +
+                       "; retrying uncached");
+            audio_result = discover_characteristic(winrt::guid{BleProtocol::audio_uuid}, "audio_tx", BluetoothCacheMode::Uncached);
+            state_result = discover_characteristic(winrt::guid{BleProtocol::state_uuid}, "state_tx", BluetoothCacheMode::Uncached);
+            control_result = discover_characteristic(winrt::guid{BleProtocol::control_uuid}, "control_rx", BluetoothCacheMode::Uncached);
+        }
         if (!audio_result || audio_result.Status() != GattCommunicationStatus::Success || audio_result.Characteristics().Size() == 0) {
             fail("audio_tx discovery failed: " + (audio_result ? GattStatusName(audio_result.Status()) : std::string("timeout")));
             co_return;
