@@ -1,5 +1,18 @@
 # CHANGELOG.md
 
+## 2026-07-25 v2.1.2
+
+性能修复与录音稳定性。
+
+- **perf(desktop/windows)**: 快速重启回连两轮提速（~10.8s → 中位 5.4s，7 样本全部一次成功）。
+  - 一轮：僵尸链路安定窗（4.5s），根因定性为 Windows 僵尸链路（OS 持有已消失对端的旧链路，首次连接空挂 ~3.5-4s + 5s 退避）。
+  - 二轮：安定窗缩至 1.5s（判出僵尸时已主动 Close，栈立即发 LL_TERMINATE，无需等被动监督超时）+ state 订阅 2.5s 应用层超时（撞未死僵尸提前取消，不再空挂 3.5-4s）+ zombie_suspect 免退避重试（15s 窗内最多 3 次，覆盖连按重启产生的多重僵尸）。
+- **perf(desktop/windows)**: 深睡唤醒回连提速（连接编排 1.4s + boot 到广播 0.9s）。
+- **fix(desktop/windows)**: 录音稳定性——finalizing/停滞 watchdog 兜底与 drain 尾帧保留，修复松开按钮后偶发卡 listening 与尾字丢失。
+- **feat(firmware)**: 软件 AGC 电平归一与按键音抑制——HPF 后、Opus 前自研 AGC（target -6dBFS、max +20dB、噪声门、0.8FS 瞬时限幅），关闭硬件 ALC；开头 60ms 静音+淡入、drain 尾帧淡出消除按键音。轻声均值电平 -31~-39dB → -17~-25dB。
+- **feat(scripts)**: 腾讯 ASR 回放工具与调试音频频谱分析页（`scripts/e2e_test/spectrogram_server.py`）。
+- 文档：回连压缩设计与实测记录、BLE 僵尸链路经验、项目记忆蒸馏增补。
+
 ## 2026-07-21 v2.1.1
 
 - **fix(windows)**: 设置保存闪退根治--`SaveSettings` 的 `config.Save()` 增加异常安全（try-catch），并修复路径含非 ASCII 字符时按 ACP(GBK) 解析抛 `system_error` 致 `std::terminate` 闪退（改用 UTF-8/UTF-16 显式转换）。
