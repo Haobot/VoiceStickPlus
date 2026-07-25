@@ -150,6 +150,9 @@ private:
     // 连接失败后的退避期：key=蓝牙地址，value=可以重新尝试连接的最早时间点。
     // 避免 tight-loop（失败→扫描→立即重试→再失败）。
     std::map<std::uint64_t, std::chrono::steady_clock::time_point> connect_cooldown_until_;
+    // 僵尸链路安定窗：key=蓝牙地址，value=可以重新尝试连接的最早时间点。
+    // 快速重启场景下等 Windows 拆除旧链路（详见 ble_central_win.cc kReconnectSettleDelay）。
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> reconnect_settle_until_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
     std::chrono::steady_clock::time_point scan_started_at_{};
