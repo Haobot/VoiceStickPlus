@@ -765,14 +765,14 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
     // 调用者必须持有 mutex_。
     auto try_claim_connect = [this, bluetooth_address]() {
         if (connecting_addresses_.contains(bluetooth_address)) return false;
+        bool settle_passed = false;
         auto settle = reconnect_settle_until_.find(bluetooth_address);
         if (settle != reconnect_settle_until_.end()) {
             if (std::chrono::steady_clock::now() < settle->second) {
                 return false; // 僵尸链路安定窗内，等 OS 拆除旧链路
             }
             reconnect_settle_until_.erase(settle);
-            // 经安定窗放行的连接：失败时免退避快速重试（见 fail lambda）。
-            zombie_suspect_addresses_.insert(bluetooth_address);
+            settle_passed = true;
         }
         auto it = connect_cooldown_until_.find(bluetooth_address);
         if (it != connect_cooldown_until_.end()) {
@@ -781,6 +781,9 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             }
             connect_cooldown_until_.erase(it);
         }
+        // 经安定窗放行且未被退避拦截的连接：失败时免退避快速重试（见 fail lambda）。
+        // 打标必须在 cooldown 检查之后，否则拦截返回 false 会残留标记。
+        if (settle_passed) zombie_suspect_addresses_.insert(bluetooth_address);
         connecting_addresses_.insert(bluetooth_address);
         return true;
     };
