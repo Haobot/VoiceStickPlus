@@ -43,3 +43,49 @@
   有轮询 = 真实建链。
 - 排查此类问题先看 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log` 的
   connect stage 全链路时间戳，不要猜。
+
+## 二轮优化（2026-07-25，安定窗 1.5s + 订阅超时 + 免退避重试）
+
+设计：`Doc/Plan/fast-reboot-reconnect-latency.md`；
+计划：`Doc/Plan/fast-reboot-reconnect-latency-impl.md`。
+提交：`54d10c6`（安定窗 4.5s→1.5s + 免退避）、`e0d9e8d`（打标移到 cooldown
+检查之后）、`7c06db6`（state 订阅 2.5s 超时）、`e1cc940`（免退避扩为
+15s 窗内最多 3 次）。
+
+核心认知修正：4.5s 安定窗的依据是"被动等 OS 宣告僵尸死亡需 3.5-4s"，但
+`HandleAdvertisement` 判出僵尸时已主动 `Close()` gatt_session/ble_device，
+栈会立即发 LL_TERMINATE，僵尸死亡远快于被动等待——安定窗可缩到 1.5s。
+配套两道保险：`kSubscribeTimeout{2500}` 给链上首个 ATT 操作（state 订阅）
+加应用层超时（撞未死僵尸提前取消，不再空挂 3.5-4s）；安定窗放行的连接打
+zombie_suspect 标记，失败时 15s 窗内最多 3 次免 5s 退避立即重试。
+
+真机验证（2026-07-25，7 个正常节奏样本，间隔 ≥30s）：
+
+- 全部一次成功（polls≥1 真实链路，无订阅超时）；广告→已连接 4.6-6.1s，
+  中位 5.4s（一轮优化前 ~6.7s，最初 ~10.8s）。
+- 时长构成（硬成本，继续压缩空间有限）：固件 boot→广播 ~1s（日志反推，
+  串口实测因 USB 重枚举丢数据未成功，但估计可信）+ 安定窗 1.5s +
+  扫描/认领 ~0.5s + Windows 建链与服务发现 ~2s（`GattServicesChanged` 每次
+  连接都会使缓存失效，cached 发现实际要走空口 ~760ms）。
+
+连按风暴（秒级连续重启）压测：
+
+- 每次首试撞僵尸（polls=0）→ 2.5s 超时 + `[zombie-suspect: no cooldown,
+  immediate retry #N]` → 免退避重试 → 第 2（偶尔第 3）次成功，~6.5-7.5s 自愈。
+- 加固前（单次免退避）出现过一个双僵尸病理案例：第 2 次重试也撞垂死链路，
+  标记已消费落回 5s 退避，一轮 23s——这正是 15s/3 次加固的动机。
+- 注意：`polls=0` 不是僵尸的唯一形态，观察到过 polls=1（OS 报告 Connected）
+  但 ATT 仍挂起的"垂死链路"，订阅超时对两种形态都兜底。
+
+经验：
+
+- `when_any` 竞速超时：cppwinrt 的 `when_any` 用 static_assert 强制所有分支
+  同类型，`IAsyncOperation<T>` 与 `IAsyncAction` 混搭编不过，需把操作包一层
+  返回 `IAsyncAction` 的 IILE（内部 `try { co_await op; } catch (...) {}`
+  吞异常——必须吞，`when_any` 以 fire_and_forget 等输家分支，异常逃逸会
+  `std::terminate`）；结果判定仍以原 op 的 `Status()/GetResults()` 为准。
+- 免退避必须**有界**（次数+时间双上限）：无限免退避会让持续失败的设备
+  tight-loop；打标时间不能在重试间刷新，否则计数约束失效。
+- 设备快速重启的串口日志采集不可靠：EN 复位导致 USB JTAG 重枚举，
+  重枚举间隙（~1-2s）内打印的 boot 日志丢失；pyserial 句柄在重枚举后
+  读 0 字节需重开。boot→adv 耗时可从主机日志反推（断连事件→重新广播）。
