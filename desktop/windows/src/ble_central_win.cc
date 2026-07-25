@@ -70,6 +70,11 @@ constexpr std::chrono::milliseconds kHeartbeatTimeout{90000};
 constexpr std::chrono::milliseconds kReconnectSettleDelay{1500};
 constexpr std::int64_t kZombieFreshThresholdMs{45000};
 
+// 链上首个 ATT 操作（state 订阅）的应用层超时。正常几十 ms 完成；撞上未死
+// 僵尸链路时 OS 要 ~3.5-4s 才宣告断连，这里 2.5s 提前取消并走失败路径，
+// 配合 zombie_suspect 免退避把最坏回连压在 ~5.5s 而不是 ~10s。
+constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
+
 // HRESULT_FROM_WIN32(ERROR_BAD_COMMAND): Windows surfaces this for our
 // scenario when the OS thinks the device is already paired/bonded but the
 // remote refuses or rolled its keys. We special-case it to suggest unpairing.
@@ -1537,9 +1542,25 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         // state second has been observed to push device_info out by ~1s.
         LogBleLine("subscribing state notifications VS-" + device_id);
         log_stage("state_subscribe_begin");
-        auto state_subscribe = co_await session->state_characteristic
+        auto state_op = session->state_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
+        // winrt::when_any 要求各分支同类型（cppwinrt 无 IAsyncOperation/IAsyncAction
+        // 混合重载），把订阅操作包一层 IAsyncAction 再与定时器竞速。包装里吞掉
+        // 取消/失败时 co_await 抛出的异常，结果仍以 state_op.Status()/GetResults()
+        // 为准——否则超时取消后 when_any 内部的 fire_and_forget 分支会 terminate。
+        auto state_wait = [](decltype(state_op) op)
+            -> winrt::Windows::Foundation::IAsyncAction {
+            try { co_await op; } catch (...) {}
+        }(state_op);
+        co_await winrt::when_any(state_wait, WaitMs(kSubscribeTimeout));
+        if (state_op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+            try { state_op.Cancel(); } catch (...) {}
+            fail("state subscribe timeout after " +
+                 std::to_string(kSubscribeTimeout.count()) + "ms");
+            co_return;
+        }
+        const auto state_subscribe = state_op.GetResults();
         LogBleLine("state subscribe VS-" + device_id +
                    " status=" + GattStatusName(state_subscribe));
         log_stage("state_subscribe_done", "status=" + GattStatusName(state_subscribe));
