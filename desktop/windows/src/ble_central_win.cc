@@ -75,6 +75,12 @@ constexpr std::int64_t kZombieFreshThresholdMs{45000};
 // 配合 zombie_suspect 免退避把最坏回连压在 ~5.5s 而不是 ~10s。
 constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
 
+// zombie_suspect 免退避重试的窗口与上限：连按重启会产生多重僵尸，
+// 单次免退避不够；但无限免退避会让持续失败的设备 tight-loop，
+// 故限 15s 窗内最多 3 次，超出回落正常 5s 退避。
+constexpr std::chrono::milliseconds kZombieSuspectWindow{15000};
+constexpr int kZombieSuspectMaxFreeRetries = 3;
+
 // HRESULT_FROM_WIN32(ERROR_BAD_COMMAND): Windows surfaces this for our
 // scenario when the OS thinks the device is already paired/bonded but the
 // remote refuses or rolled its keys. We special-case it to suggest unpairing.
@@ -333,7 +339,7 @@ void BleCentralWin::RestartForResume() {
         cancelled_device_ids_.clear();
         connect_cooldown_until_.clear();
         reconnect_settle_until_.clear();
-        zombie_suspect_addresses_.clear();
+        zombie_suspect_marks_.clear();
     }
     CloseSessions();
     PublishConnections();
@@ -787,8 +793,11 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             connect_cooldown_until_.erase(it);
         }
         // 经安定窗放行且未被退避拦截的连接：失败时免退避快速重试（见 fail lambda）。
-        // 打标必须在 cooldown 检查之后，否则拦截返回 false 会残留标记。
-        if (settle_passed) zombie_suspect_addresses_.insert(bluetooth_address);
+        if (settle_passed) {
+            // 打标必须在 cooldown 检查之后，否则拦截返回 false 会残留标记。
+            zombie_suspect_marks_[bluetooth_address] =
+                {std::chrono::steady_clock::now(), 0};
+        }
         connecting_addresses_.insert(bluetooth_address);
         return true;
     };
@@ -991,15 +1000,23 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
     auto fail = [this, bluetooth_address, device_id, session, detach_device_handlers,
                  detach_session_status_handler](const std::string& message) {
-        bool zombie_suspect = false;
+        int zombie_free_retry = 0;
         {
             std::lock_guard lock(mutex_);
-            zombie_suspect = zombie_suspect_addresses_.erase(bluetooth_address) > 0;
-            // 连接失败后设置 5 秒退避期，防止扫描→立即重试→再失败的 tight-loop。
-            // 5 秒足以让 Windows BLE 栈从异常状态中恢复，同时用户感知的延迟可接受。
-            // 例外：经安定窗放行的 zombie_suspect 连接失败多为僵尸链路未拆完，
-            // 此时退避只会拖延回连，下一条广播（20-30ms 一条）立即重试即可。
-            if (!zombie_suspect) {
+            auto mark = zombie_suspect_marks_.find(bluetooth_address);
+            if (mark != zombie_suspect_marks_.end() &&
+                std::chrono::steady_clock::now() - mark->second.first <
+                    kZombieSuspectWindow &&
+                mark->second.second < kZombieSuspectMaxFreeRetries) {
+                // 窗口期内前几次失败免退避：僵尸未拆完时退避只会拖延回连，
+                // 下一条广播（20-30ms 一条）立即重试即可。
+                zombie_free_retry = ++mark->second.second;
+            } else {
+                if (mark != zombie_suspect_marks_.end()) {
+                    zombie_suspect_marks_.erase(mark);
+                }
+                // 连接失败后设置 5 秒退避期，防止扫描→立即重试→再失败的
+                // tight-loop。5 秒足以让 Windows BLE 栈从异常状态中恢复。
                 connect_cooldown_until_[bluetooth_address] =
                     std::chrono::steady_clock::now() + std::chrono::seconds(5);
             }
@@ -1025,8 +1042,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         }
         LogBleLine("connect failed VS-" + device_id + " address=" +
                    FormatBluetoothAddress(bluetooth_address) + " reason=" + message +
-                   (zombie_suspect ? " [zombie-suspect: no cooldown, immediate retry]"
-                                   : ""));
+                   (zombie_free_retry > 0
+                        ? " [zombie-suspect: no cooldown, immediate retry #" +
+                              std::to_string(zombie_free_retry) + "]"
+                        : ""));
         if (on_connection_error) on_connection_error(device_id, message);
     };
 
@@ -1594,7 +1613,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             std::lock_guard lock(mutex_);
             sessions_by_device_id_[device_id] = session;
             connecting_addresses_.erase(bluetooth_address);
-            zombie_suspect_addresses_.erase(bluetooth_address);
+            zombie_suspect_marks_.erase(bluetooth_address);
         }
         PublishConnections();
         LogBleLine("connected VS-" + device_id);
