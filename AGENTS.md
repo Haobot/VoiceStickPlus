@@ -322,6 +322,8 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - SendInput 注入第三方输入法热键必须带 scan code（`MapVirtualKey`），仅 wVk 时输入法不响应。
 - BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。
 - ES8311 ALC 寄存器位域以 Linux 主线 `es8311.h` 为准，不信 `es8311_reg.h` 注释。
+- 设备 EN 复位后 USB JTAG 重枚举，间隙内 boot 日志直接丢失，循环重开 pyserial 也盖不住；boot→广播耗时从主机日志反推（断连事件→`advertisement matched` 时间差），不要试图串口抓 boot。
+- 排查 BLE 回连/僵尸链路先看 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`；`link-layer connected` 的 `polls=0` 是典型僵尸，`polls=1` 也可能是垂死链路（ATT 挂起），勿凭 polls 单一判据下结论。
 
 ## 给 Agent 的提示
 
