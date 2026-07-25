@@ -62,10 +62,12 @@ constexpr std::chrono::milliseconds kHeartbeatTimeout{90000};
 // 直到旧链路监督超时（实测重启后 ~3.5-4.0s）OS 宣告断连，订阅被取消，再叠加
 // 5s 失败退避，全程 ~11s（两次真机复现，见 Doc/Expe/ble-zombie-link-reboot-reconnect.md）。
 // 拆旧会话时若设备"刚刚还活跃"（last_rx 在 kZombieFreshThreshold 内），说明这是
-// 快速重启场景，延迟 kReconnectSettleDelay 等 OS 埋掉僵尸链路再连，实测可省 ~4s。
+// 快速重启场景，延迟 kReconnectSettleDelay 等 OS 埋掉僵尸链路再连。
+// 判出僵尸时已主动 Close gatt_session/ble_device（栈立即发 LL_TERMINATE），
+// 不需要等被动监督超时的 3.5-4s；撞未死僵尸由 kSubscribeTimeout 兜底（见订阅处）。
 // 深睡唤醒的会话安静了数分钟（last_rx 远超阈值），僵尸链路早已死亡，不进窗口，
 // 保持快速回连路径。
-constexpr std::chrono::milliseconds kReconnectSettleDelay{4500};
+constexpr std::chrono::milliseconds kReconnectSettleDelay{1500};
 constexpr std::int64_t kZombieFreshThresholdMs{45000};
 
 // HRESULT_FROM_WIN32(ERROR_BAD_COMMAND): Windows surfaces this for our
@@ -326,6 +328,7 @@ void BleCentralWin::RestartForResume() {
         cancelled_device_ids_.clear();
         connect_cooldown_until_.clear();
         reconnect_settle_until_.clear();
+        zombie_suspect_addresses_.clear();
     }
     CloseSessions();
     PublishConnections();
@@ -768,6 +771,8 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
                 return false; // 僵尸链路安定窗内，等 OS 拆除旧链路
             }
             reconnect_settle_until_.erase(settle);
+            // 经安定窗放行的连接：失败时免退避快速重试（见 fail lambda）。
+            zombie_suspect_addresses_.insert(bluetooth_address);
         }
         auto it = connect_cooldown_until_.find(bluetooth_address);
         if (it != connect_cooldown_until_.end()) {
@@ -978,12 +983,18 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
     auto fail = [this, bluetooth_address, device_id, session, detach_device_handlers,
                  detach_session_status_handler](const std::string& message) {
+        bool zombie_suspect = false;
         {
             std::lock_guard lock(mutex_);
+            zombie_suspect = zombie_suspect_addresses_.erase(bluetooth_address) > 0;
             // 连接失败后设置 5 秒退避期，防止扫描→立即重试→再失败的 tight-loop。
             // 5 秒足以让 Windows BLE 栈从异常状态中恢复，同时用户感知的延迟可接受。
-            connect_cooldown_until_[bluetooth_address] =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            // 例外：经安定窗放行的 zombie_suspect 连接失败多为僵尸链路未拆完，
+            // 此时退避只会拖延回连，下一条广播（20-30ms 一条）立即重试即可。
+            if (!zombie_suspect) {
+                connect_cooldown_until_[bluetooth_address] =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            }
             connecting_addresses_.erase(bluetooth_address);
             cancelled_device_ids_.erase(device_id);
         }
@@ -1005,7 +1016,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             session->ble_device = nullptr;
         }
         LogBleLine("connect failed VS-" + device_id + " address=" +
-                   FormatBluetoothAddress(bluetooth_address) + " reason=" + message);
+                   FormatBluetoothAddress(bluetooth_address) + " reason=" + message +
+                   (zombie_suspect ? " [zombie-suspect: no cooldown, immediate retry]"
+                                   : ""));
         if (on_connection_error) on_connection_error(device_id, message);
     };
 
@@ -1557,6 +1570,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             std::lock_guard lock(mutex_);
             sessions_by_device_id_[device_id] = session;
             connecting_addresses_.erase(bluetooth_address);
+            zombie_suspect_addresses_.erase(bluetooth_address);
         }
         PublishConnections();
         LogBleLine("connected VS-" + device_id);
