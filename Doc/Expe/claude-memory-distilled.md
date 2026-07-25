@@ -2,6 +2,7 @@
 
 - 来源：Claude Code 在本仓库（`C--Dev-FFE-George-voicestick`）约 80 条项目记忆的蒸馏，时间跨度 2026-06 至 2026-07-17。
 - 蒸馏日期：2026-07-17。
+- 增补：2026-07-25（Kimi Code 会话）——§3.10 BLE 僵尸链路与快速重启回连、§2.4 串口采集增补、§8 新增回连观察项。
 - 用法：按需查阅，不必全读。排查问题先按章节定位相关条目；条目中的寄存器值、阈值、毫秒数、文件:行号、命令行均为当时的实测结论，改动前先核对代码是否已漂移。
 - 约定：仓库内文档引用均为相对路径（如 `Doc/Plan/xxx.md`）；桌面端日志指 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`（**不是** Roaming 的 `%APPDATA%`）。
 
@@ -115,6 +116,7 @@ ESP32-S3 USB JTAG 控制台（VID 303A:1001）的运行时日志抓取不可靠�
 
 - Python `open('/tmp/x.log')` 在 Windows 写到 `C:\tmp\x.log`（git bash 的 /tmp 映射只对 shell 生效），显式用 `C:/tmp/x.log`。
 - 烧录/重启瞬间 USB 重新枚举，pyserial 旧句柄 read 静默失效采到 0 行——**必须等设备重启完成再开采集**；采集任务 exit 0 不代表采到数据，要 `wc -l`/`grep -c` 核实，勿凭"用户说正常+Monitor 没报"下结论。
+- **EN 复位抓 boot 日志基本不可行**：重枚举间隙（~1-2s）内打印的 boot 日志直接丢失（USB JTAG 无主机缓冲），重开句柄只能抓到之后的；循环重开采集（4s 读+0.2s 间隔）也盖不住。**替代：boot→广播耗时从主机日志反推**（断连事件→`advertisement matched` 的时间差，实测 ~1s），不必执着串口。
 - SPIFFS 测试镜像：`build_spiffs_image.py` 调 spiffsgen.py 打包，esptool write_flash 到 storage 分区（0x610000, 0x1f0000）。
 
 ---
@@ -184,6 +186,17 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 
 - **腾讯云 slice_type=2 是单句稳态（VAD 切句），不是整段结束**；整段结束看顶层 `final=1`（服务端随后断连）。曾误用 slice_type=2 立即 on_final 致说话停顿提前截断（`ba22232` 修复：单句累积到 `accumulated_final_text_`，final=1 才 `EmitFinalText()`，close frame 兜底补发）。`needvad` 代码强制 1 保留分句。腾讯 VAD 的另一面：长句停顿切句后不续识别（切火山 ASR 同固件长句正常，证明非固件问题）。协议见 `Doc/Guide/实时语音识别（WebSocket）.md`。
 - **腾讯 4002 "密钥不存在"勿轻信表面提示**：曾实为设置对话框 provider 切换把 `tencent_secret_id` 错映射到 `volcengine_api_key` 字段。先定位数据流（代码读哪个字段、值是什么，日志 `TencentAsr::Start called secret_id=...`），再定位数据内容；provider 切换必须显式 switch/case 映射，不能 `idx==0?A:B`；加载时加安全迁移（`volcengine_api_key` 形似 `AKID...` 且 tencent 字段空则回迁落盘）。
+
+### 3.10 BLE 僵尸链路与快速重启回连（2026-07-25 定稿）
+
+设备快速重启（EN 复位）后 Windows 持有僵尸链路（对端静默消失，WinRT 不投递断连事件）。两轮修复后回连 ~10.8s → 中位 5.4s（广告→已连接 4.6-6.1s，7 样本全一次成功）。机制都在 `ble_central_win.cc`，细节见 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`：
+
+- **四机制闭环**：`HandleAdvertisement` 判出"陈旧会话+45s 内活跃"→ 设 `kReconnectSettleDelay{1500}` 安定窗（拆会话时已主动 `Close()`，栈立即 LL_TERMINATE，僵尸死亡远快于被动监督超时的 3.5-4s，这是 4.5s 窗能缩到 1.5s 的依据）；安定窗放行的连接打 `zombie_suspect_marks_` 标记（打标必须在 cooldown 检查之后，否则拦截时残留）；链上首个 ATT 操作（state 订阅）加 `kSubscribeTimeout{2500}` 应用层超时；标记连接失败时 **15s 窗内最多 3 次**免 5s 退避立即重试（`kZombieSuspectWindow`/`kZombieSuspectMaxFreeRetries`）。
+- **僵尸判据**：`link-layer connected after 0ms polls=0` 是典型僵尸；但 **polls=1 也可能是垂死链路**（OS 报 Connected 但 ATT 挂起），订阅超时对两种形态都兜底。日志 tag `[zombie-suspect: no cooldown, immediate retry #N]` 可 grep。
+- **cppwinrt `when_any` 竞速超时坑**：static_assert 强制所有分支同类型，`IAsyncOperation<T>` 与 `IAsyncAction` 混搭编不过——把操作包一层返回 `IAsyncAction` 的 IILE（`try { co_await op; } catch (...) {}` 吞异常，**必须吞**：when_any 以 fire_and_forget 等输家分支，异常逃逸 `std::terminate`），结果判定仍以原 op 的 `Status()/GetResults()` 为准。
+- **免退避必须有界**（次数+时间双上限），打标时间不能在重试间刷新（settle 条目放行即擦除，重试不会重新打标——保持这点，否则计数约束失效）。
+- **回连时长硬成本**（继续压缩空间有限）：固件 boot→广播 ~1s + 安定窗 1.5s + 扫描/认领 ~0.5s + Windows 建链/发现 ~2s（`GattServicesChanged` 每次连接都使 GATT 缓存失效，cached 发现实际走空口 ~760ms）。
+- **遗留观察项**：`Status()==Error` 的快速真实失败会被误标为 "timeout" 日志（行为正确，只损诊断精度，两次审查裁定可接受）；若日常日志频繁出现 `retry #2/#3`，说明 1.5s 安定窗偏短需上调。
 
 ---
 
@@ -373,6 +386,9 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **macOS 流式精修**：仅 Windows 端已实施，macOS 端（LLMRefinementClient、SSE 流式、精修接入）待推进；当前 macOS 连非流式精修都没有。
 - **firmware 偶发断连 reason=8 排查**：whisper_pen 已定位为 slow interval(latency=4)+supervision timeout（PM 配置补全根治）；firmware 是否也有此偶发断连待验证（差别点 MAX_BONDS=1 vs 3）。
 - **Qt 迁移**：暂缓，留作后续 UI 美化方向。
+- **回连二轮观察项**（2026-07-25 增补）：安定窗 1.5s 若日常日志频繁出现 `retry #2/#3` 需上调；`Status()==Error` 误标 timeout 的诊断精度可留待需要时细分；连按风暴双僵尸已由 15s/3 次免退避覆盖，长期体感待观察。
+- **BLE OTA 停滞根因未查**（2026-07-25 增补）：07:45 曾现 65656 字节处卡 5 分钟（旧固件+新 app），当时走串口绕过；用户再提 OTA 失败时从桌面端 OTA 发送节奏/流控与 `voice_ble.c` 的 ota_write_data 查起。
+- **文本精修效果不理想**（2026-07-25 增补）：用户最初目标之一，尚未动；本机配置 `refine_enabled=false`。再做时先确认期望行为（准确理解意图+快速完成），参考 §3.8 流式精修与微信输入法的对标。
 
 ---
 
