@@ -70,6 +70,120 @@ static inline int16_t hpf_process(int16_t x) {
     return (int16_t)lround(y);
 }
 
+/* 软件 AGC：替代 ES8311 硬件 ALC（已在 init_codec 关闭）。硬件 ALC 实测两头守不住
+ * （大声近场削波到 0dB、轻声拉不到 -11dBFS 目标），且增益不可观测；电平归一收回软件。
+ * 设计依据与实测数据见 Doc/Plan/software-agc.md。
+ * 包络：|x| 一阶峰值跟随，快攻 5ms / 慢释 300ms。
+ * 增益：desired = target/env，target=-6dBFS，上限 +20dB；上升慢 500ms（防 pumping）、
+ * 下降快 2ms（兼软限幅，突发大声 2ms 内压到不削波）。
+ * 噪声门：env < -45dBFS 时不再加增益，增益以 ~1s 时间常数缓回 0dB，
+ * 既不抬静音段底噪，也避免句间停顿后增益骤降导致下一句起音偏轻。
+ * 瞬时限幅：逐样本保证 |x|*gain <= 0.8FS（无记忆，不改增益状态），
+ * 压住「增益挂在高位时突发起音」头几毫秒的过冲，避免硬削波（实测真机会撞到 0dB）。
+ * 上限取 0.8FS 而非贴近满幅：Opus 解码有 +1.5~2dB 过冲，需预留余量（实测见下）。
+ * 状态每会话开始时复位（见 audio_pipeline_start）。 */
+#define AGC_TARGET 16384.0f        /* -6 dBFS */
+#define AGC_MAX_GAIN 10.0f         /* +20 dB */
+#define AGC_MIN_GAIN 0.1f          /* -20 dB */
+#define AGC_NOISE_FLOOR 184.0f     /* -45 dBFS */
+#define AGC_ENV_ATTACK 0.98758f    /* exp(-1/(16000*0.005)) */
+#define AGC_ENV_RELEASE 0.99979f   /* exp(-1/(16000*0.300)) */
+#define AGC_GAIN_UP 0.99988f       /* exp(-1/(16000*0.500)) */
+#define AGC_GAIN_DOWN 0.73162f     /* exp(-1/(16000*0.002)) */
+#define AGC_GAIN_GATE 0.9999961f   /* exp(-1/(16000*1.0)) */
+static float s_agc_env = 0.0f;
+static float s_agc_gain = 1.0f;
+static uint32_t s_agc_log_frames = 0;
+
+static inline int16_t agc_process(int16_t x)
+{
+    float ax = fabsf((float)x);
+    float ec = (ax > s_agc_env) ? AGC_ENV_ATTACK : AGC_ENV_RELEASE;
+    s_agc_env = ec * s_agc_env + (1.0f - ec) * ax;
+    bool gated = s_agc_env < AGC_NOISE_FLOOR;
+    float desired;
+    if (gated) {
+        desired = 1.0f;
+    } else {
+        desired = AGC_TARGET / s_agc_env;
+        if (desired > AGC_MAX_GAIN) desired = AGC_MAX_GAIN;
+        else if (desired < AGC_MIN_GAIN) desired = AGC_MIN_GAIN;
+    }
+    float gc;
+    if (gated) {
+        gc = AGC_GAIN_GATE;
+    } else {
+        gc = (desired < s_agc_gain) ? AGC_GAIN_DOWN : AGC_GAIN_UP;
+    }
+    s_agc_gain = gc * s_agc_gain + (1.0f - gc) * desired;
+    /* 瞬时峰值限幅：无记忆，不回写 s_agc_gain。增益平滑下降需 2ms，
+     * 突发起音（尤其增益挂在 +20dB 高位时）靠它兜底防削波。
+     * 上限取 0.8FS（-1.9dB）而非贴近满幅：Opus 编解码有约 +1.5~2dB 的过冲
+     * （真机实测 0.95FS 上限时解码后峰值 +1.2dB 越界），预留过冲余量。 */
+    float g = s_agc_gain;
+    if (ax > 1.0f) {
+        float ceil_gain = 26214.0f / ax;
+        if (g > ceil_gain) g = ceil_gain;
+    }
+    float y = (float)x * g;
+    if (y > 32767.0f) y = 32767.0f;
+    else if (y < -32768.0f) y = -32768.0f;
+    return (int16_t)lroundf(y);
+}
+
+static void agc_process_frame(int16_t *pcm, int n)
+{
+    for (int i = 0; i < n; ++i) {
+        pcm[i] = agc_process(pcm[i]);
+    }
+    /* 每秒节流打印 AGC 状态（40ms/帧 -> 25 帧），串口日志即可观测增益工作点。 */
+    if (++s_agc_log_frames >= 25) {
+        s_agc_log_frames = 0;
+        float env_db = 20.0f * log10f(s_agc_env / 32768.0f + 1e-9f);
+        float gain_db = 20.0f * log10f(s_agc_gain + 1e-9f);
+        ESP_LOGI(TAG, "agc env=%.1f dBFS gain=%+.1f dB", env_db, gain_db);
+    }
+}
+
+/* 按键音抑制：按下/松开主键的机械咔哒声经外壳结构传导到麦克风，恰好落在录音窗口
+ * 两端——按下音在开头 0~50ms，松开音在 drain 尾帧。AGC 高增益档（轻声时 +20dB）会把它
+ * 拉得很响，污染首字与尾部识别。HPF 滤不掉这种宽带瞬态。
+ * 处理：开头 60ms 静音 + 60ms 线性淡入（语音起音通常在按键 150ms 后，不影响首字）；
+ * drain 两帧线性淡出（松开咔哒在 drain 靠后段被压掉；语音尾音是 DMA 里松开前的残留，
+ * 主要在前 40ms，受影响小）。设计见 Doc/Plan/button-click-suppression.md。 */
+#define CLICK_GUARD_MUTE_SAMPLES (60 * AUDIO_SAMPLE_RATE / 1000)
+#define CLICK_GUARD_FADE_SAMPLES (60 * AUDIO_SAMPLE_RATE / 1000)
+#define AUDIO_DRAIN_FRAMES 2
+static uint32_t s_session_samples = 0;
+
+static void click_guard_fade_in(int16_t *pcm, int n)
+{
+    for (int i = 0; i < n; ++i) {
+        uint32_t idx = s_session_samples++;
+        if (idx >= CLICK_GUARD_MUTE_SAMPLES + CLICK_GUARD_FADE_SAMPLES) {
+            return;  /* 斜坡结束，后续样本直通 */
+        }
+        float g;
+        if (idx < CLICK_GUARD_MUTE_SAMPLES) {
+            g = 0.0f;
+        } else {
+            g = (float)(idx - CLICK_GUARD_MUTE_SAMPLES) / CLICK_GUARD_FADE_SAMPLES;
+        }
+        pcm[i] = (int16_t)lroundf((float)pcm[i] * g);
+    }
+}
+
+static void click_guard_fade_out(int16_t *pcm, int n, int drain_idx)
+{
+    const int total = AUDIO_DRAIN_FRAMES * AUDIO_FRAME_SAMPLES;
+    const int base = drain_idx * AUDIO_FRAME_SAMPLES;
+    for (int i = 0; i < n; ++i) {
+        float g = 1.0f - (float)(base + i) / total;
+        if (g < 0.0f) g = 0.0f;
+        pcm[i] = (int16_t)lroundf((float)pcm[i] * g);
+    }
+}
+
 typedef struct {
     uint32_t session_id;
     uint32_t seq;
@@ -314,27 +428,16 @@ static esp_err_t init_codec(void)
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_codec, &sample_cfg) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "open codec");
     /* PGA 增益：原 36 dB 是 ES8311 最大档，近场声压叠加后致 ADC 硬削波、ASR 变差。
-     * 经多轮下调：24dB -> 18dB。18dB 留足 headroom 防近场削波，远场由 ALC 拉起补偿，
-     * PGA 不再承担远场增益职责。 */
+     * 经多轮下调：24dB -> 18dB。18dB 留足模拟 headroom 防近场削波（软件 AGC 无法
+     * 修复 ADC 硬削波），轻声/远场电平归一由软件 AGC 负责（见 agc_process）。 */
     ESP_RETURN_ON_FALSE(esp_codec_dev_set_in_gain(s_codec, 18.0) == ESP_CODEC_DEV_OK,
                         ESP_FAIL, TAG, "set mic gain");
-    /* 启用 ES8311 硬件 ADC ALC（自动电平控制），在 18 dB PGA 基础上动态压/拉增益，
-     * 自适应不同说话距离：近场大声自动压防削波，远场小声自动拉起。
-     *
-     * 位域以 Linux 主线 sound/soc/codecs/es8311.h 为权威源（曾因按 es8311_reg.h 注释
-     * "bit[7:4]=winsize, bit[3]=ALC enable" 理解而写反，致 ALC 长期未使能）：
-     *   REG18(0x18): bit[7]=ALC_EN, bit[6]=AUTOMUTE_EN, bit[3:0]=ALC_WINSIZE
-     *   REG19(0x19): bit[7:4]=ALC_MAXLEVEL(目标电平上限), bit[3:0]=ALC_MINLEVEL(拉起下限)
-     * 参数：winsize=3（短响应），maxlevel=8（约 -11dBFS，饱满但仍在安全区），
-     * minlevel=0（-30dBFS，远场拉到最低），不开 automute（避免误判停顿为静音）。
-     * REG1B/REG1C 不写，保留 es8311_open 默认（0x1B=0x0A/0x1C=0x6A，含 ADC HPF）。
-     * 参数与位域推导见 Doc/Plan/es8311-alc-bitfield-fix.md。 */
-    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x18, 0x83) == ESP_CODEC_DEV_OK,
-                        ESP_FAIL, TAG, "set alc enable+winsize");
-    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x19, 0x80) == ESP_CODEC_DEV_OK,
-                        ESP_FAIL, TAG, "set alc target level");
-    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x1A, 0x00) == ESP_CODEC_DEV_OK,
-                        ESP_FAIL, TAG, "set alc automute off");
+    /* 电平控制已移交软件 AGC（见 agc_process，设计见 Doc/Plan/software-agc.md），
+     * 关闭 ES8311 硬件 ADC ALC：实测其大声近场防不住削波、轻声拉不到目标电平，
+     * 且增益不可观测。REG18(0x18) bit[7]=ALC_EN 写 0；REG19/REG1A（ALC 电平/automute）
+     * 不再写入。PGA 18dB 保留作模拟防削波余量（软件 AGC 无法修复 ADC 硬削波）。 */
+    ESP_RETURN_ON_FALSE(esp_codec_dev_write_reg(s_codec, 0x18, 0x03) == ESP_CODEC_DEV_OK,
+                        ESP_FAIL, TAG, "disable alc");
     return ESP_OK;
 }
 
@@ -457,6 +560,8 @@ static void audio_task(void *arg)
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = hpf_process(mono[i]);
         }
+        agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
+        click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
 
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
@@ -498,8 +603,9 @@ static void audio_task(void *arg)
 
     /* Drain：松开按键时 I2S DMA 缓冲区（4 描述符×120 帧 ≈ 60ms）里仍有残留尾音 PCM，
      * 若不读出编码发出，用户说完话立即松开会丢最后 1-2 字（instant 模式下尤为明显）。
-     * 这里固定读 2 帧（80ms，覆盖 60ms 残留+余量）编码入队，让 tx_task 的 drain 一并发完。 */
-    for (int drain = 0; drain < 2; ++drain) {
+     * 这里固定读 AUDIO_DRAIN_FRAMES 帧（80ms，覆盖 60ms 残留+余量）编码入队，
+     * 让 tx_task 的 drain 一并发完。 */
+    for (int drain = 0; drain < AUDIO_DRAIN_FRAMES; ++drain) {
         if (s_playback_active && s_playback_buffer != NULL) {
             const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
             if (s_playback_pos + need <= s_playback_size) {
@@ -524,6 +630,9 @@ static void audio_task(void *arg)
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = hpf_process(mono[i]);
         }
+        agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
+        click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
+        click_guard_fade_out(mono, AUDIO_FRAME_SAMPLES, drain);
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
         if (encoded < 0) {
@@ -702,6 +811,10 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
     opus_encoder_ctl(s_opus_encoder, OPUS_RESET_STATE);
     s_hpf_z1 = 0.0;
     s_hpf_z2 = 0.0;
+    s_agc_env = 0.0f;
+    s_agc_gain = 1.0f;
+    s_agc_log_frames = 0;
+    s_session_samples = 0;
     /* 回放模式：每次录音从缓冲开头重放，保证可重复。 */
     if (s_playback_active && s_playback_buffer != NULL) {
         s_playback_pos = 0;
