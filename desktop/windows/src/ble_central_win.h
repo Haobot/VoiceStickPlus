@@ -153,6 +153,9 @@ private:
     // 僵尸链路安定窗：key=蓝牙地址，value=可以重新尝试连接的最早时间点。
     // 快速重启场景下等 Windows 拆除旧链路（详见 ble_central_win.cc kReconnectSettleDelay）。
     std::map<std::uint64_t, std::chrono::steady_clock::time_point> reconnect_settle_until_;
+    // 经安定窗路径放行的地址：其连接失败多为僵尸链路尚未拆完，
+    // fail 时免 5s 退避，让下一条广播立即触发重试。
+    std::set<std::uint64_t> zombie_suspect_addresses_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
     std::chrono::steady_clock::time_point scan_started_at_{};
