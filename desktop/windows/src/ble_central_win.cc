@@ -56,6 +56,18 @@ constexpr std::chrono::milliseconds kDeviceInfoSettleDelay{100};
 constexpr std::chrono::seconds kHeartbeatInterval{30};
 constexpr std::chrono::milliseconds kHeartbeatTimeout{90000};
 
+// 僵尸链路安定窗：设备快速重启（手动复位/OTA/崩溃）后，Windows 仍持有旧链路
+// （对端静默消失时断连事件不投递）。此时立即重连会挂在僵尸链路上——OS 认为
+// "已连接"（link-layer connected after 0ms polls=0），首个空口 ATT 操作挂起，
+// 直到旧链路监督超时（实测重启后 ~3.5-4.0s）OS 宣告断连，订阅被取消，再叠加
+// 5s 失败退避，全程 ~11s（两次真机复现，见 Doc/Expe/ble-zombie-link-reboot-reconnect.md）。
+// 拆旧会话时若设备"刚刚还活跃"（last_rx 在 kZombieFreshThreshold 内），说明这是
+// 快速重启场景，延迟 kReconnectSettleDelay 等 OS 埋掉僵尸链路再连，实测可省 ~4s。
+// 深睡唤醒的会话安静了数分钟（last_rx 远超阈值），僵尸链路早已死亡，不进窗口，
+// 保持快速回连路径。
+constexpr std::chrono::milliseconds kReconnectSettleDelay{4500};
+constexpr std::int64_t kZombieFreshThresholdMs{45000};
+
 // HRESULT_FROM_WIN32(ERROR_BAD_COMMAND): Windows surfaces this for our
 // scenario when the OS thinks the device is already paired/bonded but the
 // remote refuses or rolled its keys. We special-case it to suggest unpairing.
@@ -313,6 +325,7 @@ void BleCentralWin::RestartForResume() {
         connecting_addresses_.clear();
         cancelled_device_ids_.clear();
         connect_cooldown_until_.clear();
+        reconnect_settle_until_.clear();
     }
     CloseSessions();
     PublishConnections();
@@ -745,10 +758,17 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             // one-argument FromBluetoothAddressAsync path.
         }
     }
-    // 占用该地址的连接权：已在连接中或处于失败退避期时返回 false。
+    // 占用该地址的连接权：已在连接中、僵尸链路安定窗内或失败退避期时返回 false。
     // 调用者必须持有 mutex_。
     auto try_claim_connect = [this, bluetooth_address]() {
         if (connecting_addresses_.contains(bluetooth_address)) return false;
+        auto settle = reconnect_settle_until_.find(bluetooth_address);
+        if (settle != reconnect_settle_until_.end()) {
+            if (std::chrono::steady_clock::now() < settle->second) {
+                return false; // 僵尸链路安定窗内，等 OS 拆除旧链路
+            }
+            reconnect_settle_until_.erase(settle);
+        }
         auto it = connect_cooldown_until_.find(bluetooth_address);
         if (it != connect_cooldown_until_.end()) {
             if (std::chrono::steady_clock::now() < it->second) {
@@ -762,10 +782,17 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
 
     bool claimed = false;
     bool stale_session = false;
+    bool stale_recently_alive = false;
     {
         std::lock_guard lock(mutex_);
         if (!paired_device_ids_.contains(*device_id)) return;
-        stale_session = sessions_by_device_id_.contains(*device_id);
+        auto session_it = sessions_by_device_id_.find(*device_id);
+        stale_session = session_it != sessions_by_device_id_.end();
+        if (stale_session && session_it->second) {
+            const auto last_rx = session_it->second->last_rx_ms.load(std::memory_order_relaxed);
+            stale_recently_alive =
+                last_rx > 0 && (NowSteadyMs() - last_rx) < kZombieFreshThresholdMs;
+        }
         if (!stale_session) claimed = try_claim_connect();
     }
     if (stale_session) {
@@ -778,6 +805,18 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
         LogBleLine("advertisement from paired VS-" + *device_id +
                    " while session still registered; dropping stale session and reconnecting");
         HandleDeviceDisconnected(*device_id, nullptr);
+        if (stale_recently_alive) {
+            // 快速重启场景：设备秒级前还在收发，Windows 侧的僵尸链路尚未被
+            // 宣告死亡（需 ~3.5-4s）。立即连接会挂在僵尸链路上空耗 ~8s
+            // （订阅挂起 3.5s + 5s 退避），不如等 OS 拆完旧链路再连。
+            std::lock_guard lock(mutex_);
+            reconnect_settle_until_[bluetooth_address] =
+                std::chrono::steady_clock::now() + kReconnectSettleDelay;
+            LogBleLine("reconnect settle VS-" + *device_id + ": delaying " +
+                       std::to_string(kReconnectSettleDelay.count()) +
+                       "ms for OS to tear down the zombie link");
+            return;
+        }
         std::lock_guard lock(mutex_);
         claimed = try_claim_connect();
     }
