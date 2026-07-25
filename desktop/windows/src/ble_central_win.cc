@@ -829,8 +829,9 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
         HandleDeviceDisconnected(*device_id, nullptr);
         if (stale_recently_alive) {
             // 快速重启场景：设备秒级前还在收发，Windows 侧的僵尸链路尚未被
-            // 宣告死亡（需 ~3.5-4s）。立即连接会挂在僵尸链路上空耗 ~8s
-            // （订阅挂起 3.5s + 5s 退避），不如等 OS 拆完旧链路再连。
+            // 宣告死亡。立即连接会挂在僵尸链路上，由 kSubscribeTimeout 截断并
+            // 走 zombie_suspect 免退避重试（最坏 ~2.5s+重试）；但安定窗等 OS
+            // 拆完旧链路再连通常一次成功，比重试路径更快更稳。
             std::lock_guard lock(mutex_);
             reconnect_settle_until_[bluetooth_address] =
                 std::chrono::steady_clock::now() + kReconnectSettleDelay;
