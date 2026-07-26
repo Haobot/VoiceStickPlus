@@ -21,10 +21,12 @@ namespace {
 
 using winrt::Windows::Devices::Bluetooth::BluetoothAddressType;
 using winrt::Windows::Devices::Bluetooth::BluetoothConnectionStatus;
+using winrt::Windows::Devices::Bluetooth::BluetoothError;
 using winrt::Windows::Devices::Bluetooth::BluetoothLEDevice;
 using winrt::Windows::Devices::Bluetooth::BluetoothCacheMode;
 using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs;
 using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher;
+using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcherStoppedEventArgs;
 using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode;
 using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic;
 using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicProperties;
@@ -80,6 +82,23 @@ constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
 // 故限 15s 窗内最多 3 次，超出回落正常 5s 退避。
 constexpr std::chrono::milliseconds kZombieSuspectWindow{15000};
 constexpr int kZombieSuspectMaxFreeRetries = 3;
+
+// 扫描健康看门狗：BluetoothLEAdvertisementWatcher 会在蓝牙无线电状态变化
+// （包括应用自己触发的 radio reset）或驱动异常后静默失效——仍报告 Started
+// 却不再投递任何广告包，设备持续广播而主机永远收不到，只能重启进程恢复
+// （见 Doc/Expe/ble-watcher-silent-death-pairing-stuck.md）。无线电开关切换
+// 由 StateChanged 事件秒级覆盖（见 InitRadioWatcherAsync），本看门狗是其余
+// 失效场景的兜底：心跳线程按 kScanSilenceTimeout 检测并重建 watcher；
+// kScanWatchdogMinRestartInterval 节流，避免 RF 静默环境（设备深睡且周围
+// 无其他 BLE 设备）下空转刷日志。
+constexpr std::chrono::seconds kScanSilenceTimeout{60};
+constexpr std::chrono::seconds kScanWatchdogMinRestartInterval{120};
+
+// 在途连接 claim 的滞留上限：ConnectDeviceAsync 若在任一无超时的 WinRT
+// co_await 上永久挂起（既不 fail 也不 ready），claim 永不释放，该地址的
+// 后续广播全被 try_claim_connect 否决，形成重连自我封锁。最坏正常连接
+// 耗时实测 ~65s（6 次服务发现重试 + radio reset），120s 留出充足余量。
+constexpr std::chrono::seconds kConnectClaimTimeout{120};
 
 // HRESULT_FROM_WIN32(ERROR_BAD_COMMAND): Windows surfaces this for our
 // scenario when the OS thinks the device is already paired/bonded but the
@@ -303,12 +322,21 @@ BleCentralWin::~BleCentralWin() {
 
 void BleCentralWin::Start() {
     StartHeartbeat();
+    InitRadioWatcherAsync();
     StartScan();
 }
 
 void BleCentralWin::Shutdown() {
     StopHeartbeat();
     StopScan();
+    if (bluetooth_radio_) {
+        try {
+            bluetooth_radio_.StateChanged(radio_state_token_);
+        } catch (...) {
+        }
+        radio_state_token_ = {};
+        bluetooth_radio_ = nullptr;
+    }
 
     std::vector<std::shared_ptr<DeviceSession>> sessions;
     {
@@ -346,6 +374,46 @@ void BleCentralWin::RestartForResume() {
     StartScan();
 }
 
+winrt::fire_and_forget BleCentralWin::InitRadioWatcherAsync() {
+    using winrt::Windows::Devices::Radios::Radio;
+    using winrt::Windows::Devices::Radios::RadioKind;
+    using winrt::Windows::Devices::Radios::RadioState;
+    try {
+        auto radios = co_await Radio::GetRadiosAsync();
+        for (const auto& radio : radios) {
+            if (radio.Kind() != RadioKind::Bluetooth) continue;
+            bluetooth_radio_ = radio;
+            radio_state_token_ = bluetooth_radio_.StateChanged(
+                [this](const Radio& sender, const winrt::Windows::Foundation::IInspectable&) {
+                    RadioState state = RadioState::Unknown;
+                    try {
+                        state = sender.State();
+                    } catch (...) {
+                    }
+                    LogBleLine("bluetooth radio state = " +
+                               std::to_string(static_cast<int>(state)));
+                    if (state != RadioState::On) return;
+                    if (self_radio_reset_.load(std::memory_order_relaxed)) {
+                        // 应用自己的 radio reset（陈旧 bond 恢复）已在其路径上
+                        // 显式 StartScan，这里跳过，避免拆掉在途连接的 claim 与会话。
+                        return;
+                    }
+                    // 系统蓝牙开关切换会杀死 watcher 与全部链路：无线电恢复时
+                    // 立即整体重建，秒级回连，不等扫描静默看门狗超时。
+                    LogBleLine("bluetooth radio back on; rebuilding scan and sessions");
+                    DispatchToUiThread([this] { RestartForResume(); });
+                });
+            LogBleLine("bluetooth radio watcher subscribed");
+            co_return;
+        }
+        LogBleLine("bluetooth radio watcher: no Bluetooth radio found");
+    } catch (const winrt::hresult_error& error) {
+        LogBleLine("bluetooth radio watcher subscribe failed: hr=" + FormatHresult(error.code()));
+    } catch (...) {
+        LogBleLine("bluetooth radio watcher subscribe failed: unknown error");
+    }
+}
+
 void BleCentralWin::UpdatePairedDeviceIds(const std::vector<std::string>& ids) {
     {
         std::lock_guard lock(mutex_);
@@ -374,7 +442,7 @@ void BleCentralWin::ConnectPairedDevice(const std::string& device_id,
                        " is already connecting");
             return;
         }
-        connecting_addresses_.insert(bluetooth_address);
+        connecting_addresses_.emplace(bluetooth_address, std::chrono::steady_clock::now());
     }
     LogBleLine("direct connect requested VS-" + device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
@@ -701,17 +769,38 @@ void BleCentralWin::StartScan() {
     // and WinRT's per-PDU filter would drop the scan response so we'd never
     // see the device id. Filter on device_id in HandleAdvertisement instead.
     received_token_ = watcher_.Received({this, &BleCentralWin::HandleAdvertisement});
+    // watcher 被系统停止（无线电关开、驱动异常等）时会收到 Stopped；非正常
+    // 停止直接重建扫描，否则设备持续广播而无人接收，永远卡在 Pairing 屏
+    // （见 Doc/Expe/ble-watcher-silent-death-pairing-stuck.md）。
+    stopped_token_ = watcher_.Stopped(
+        [this](const BluetoothLEAdvertisementWatcher&,
+               const BluetoothLEAdvertisementWatcherStoppedEventArgs& args) {
+            const auto error = args.Error();
+            LogBleLine("watcher stopped error=" + std::to_string(static_cast<int>(error)));
+            if (error == BluetoothError::Success) return;
+            DispatchToUiThread([this] {
+                {
+                    std::lock_guard lock(mutex_);
+                    if (paired_device_ids_.empty()) return;
+                }
+                LogBleLine("watcher stopped unexpectedly; restarting scan");
+                StartScan();
+            });
+        });
     try {
         watcher_.Start();
         scan_started_at_ = std::chrono::steady_clock::now();
+        last_adv_received_ms_.store(NowSteadyMs(), std::memory_order_relaxed);
         LogBleLine("scan started");
     } catch (const winrt::hresult_error& error) {
         const auto message = ScanStartFailureMessage(error);
         LogBleLine("scan start failed: " + message);
         try {
             watcher_.Received(received_token_);
+            watcher_.Stopped(stopped_token_);
         } catch (...) {
         }
+        stopped_token_ = {};
         watcher_ = nullptr;
         PublishConnections();
         if (on_scan_error) on_scan_error(message);
@@ -720,8 +809,10 @@ void BleCentralWin::StartScan() {
         LogBleLine("scan start failed: unknown error");
         try {
             watcher_.Received(received_token_);
+            watcher_.Stopped(stopped_token_);
         } catch (...) {
         }
+        stopped_token_ = {};
         watcher_ = nullptr;
         PublishConnections();
         if (on_scan_error) on_scan_error(message);
@@ -732,12 +823,14 @@ void BleCentralWin::StopScan() {
     if (watcher_) {
         try {
             watcher_.Received(received_token_);
+            watcher_.Stopped(stopped_token_);
             watcher_.Stop();
         } catch (const winrt::hresult_error& error) {
             LogBleLine("scan stop failed: hr=" + FormatHresult(error.code()));
         } catch (...) {
             LogBleLine("scan stop failed: unknown error");
         }
+        stopped_token_ = {};
         watcher_ = nullptr;
         scan_started_at_ = {};
         LogBleLine("scan stopped");
@@ -746,6 +839,9 @@ void BleCentralWin::StopScan() {
 
 void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
                                         const BluetoothLEAdvertisementReceivedEventArgs& args) {
+    // 任意广告包（不限配对设备）都是 watcher 存活证明，供 CheckScanHealth()
+    // 检测 watcher 静默失效。
+    last_adv_received_ms_.store(NowSteadyMs(), std::memory_order_relaxed);
     const auto identity = AdvertisementIdentityFrom(args.Advertisement());
     const auto bluetooth_address = args.BluetoothAddress();
     auto device_id = BleProtocol::DeviceIdFromName(identity.local_name);
@@ -798,7 +894,7 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             zombie_suspect_marks_[bluetooth_address] =
                 {std::chrono::steady_clock::now(), 0};
         }
-        connecting_addresses_.insert(bluetooth_address);
+        connecting_addresses_.emplace(bluetooth_address, std::chrono::steady_clock::now());
         return true;
     };
 
@@ -843,7 +939,26 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
         std::lock_guard lock(mutex_);
         claimed = try_claim_connect();
     }
-    if (!claimed) return;
+    if (!claimed) {
+        // claim 被拒（已在连接中/安定窗/退避期）：广告风暴期每秒发生数十次，
+        // 属正常路径，只限流记录，消除「广播到了却无声无息」的诊断盲区。
+        const auto now_ms = NowSteadyMs();
+        bool should_log = false;
+        {
+            std::lock_guard lock(mutex_);
+            auto& last_log = claim_denied_log_ms_[bluetooth_address];
+            if (now_ms - last_log > 60000) {
+                last_log = now_ms;
+                should_log = true;
+            }
+        }
+        if (should_log) {
+            LogBleLine("connect claim denied VS-" + *device_id + " address=" +
+                       FormatBluetoothAddress(bluetooth_address) +
+                       " (already connecting, settle window, or cooldown)");
+        }
+        return;
+    }
 
     LogBleLine("advertisement matched VS-" + *device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
@@ -1271,12 +1386,21 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     try { session->ble_device.Close(); } catch (...) {}
                     session->ble_device = nullptr;
 
+                    // 标记自建重置，StateChanged(On) 处理器据此跳过重建
+                    //（本路径末尾已显式 StartScan）。
+                    self_radio_reset_.store(true, std::memory_order_relaxed);
                     if (co_await TryResetBluetoothRadioAsync()) {
                         LogBleLine("stale bond: radio reset succeeded, reopening device");
                     } else {
                         LogBleLine("stale bond: radio reset skipped/failed, reopening after delay");
                         co_await WaitMs(kDeviceReopenDelay);
                     }
+                    co_await WaitMs(std::chrono::milliseconds(500));
+                    self_radio_reset_.store(false, std::memory_order_relaxed);
+                    // 无线电关开会杀死广告 watcher（静默失效，见 ble_central_win.h
+                    // RestartForResume 注释）：无论本次重连成败都必须重建扫描，
+                    // 否则失败后设备的广播将无人接收，卡 Pairing 只能重启进程。
+                    DispatchToUiThread([this] { StartScan(); });
 
                     session->ble_device = co_await open_device(address_type);
                     if (!session->ble_device) {
@@ -1389,12 +1513,21 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 try { session->ble_device.Close(); } catch (...) {}
                 session->ble_device = nullptr;
 
+                // 标记自建重置，StateChanged(On) 处理器据此跳过重建
+                //（本路径末尾已显式 StartScan）。
+                self_radio_reset_.store(true, std::memory_order_relaxed);
                 if (co_await TryResetBluetoothRadioAsync()) {
                     LogBleLine("Unreachable: radio reset succeeded, reopening device");
                 } else {
                     LogBleLine("Unreachable: radio reset skipped/failed, recycling anyway");
                     co_await WaitMs(kDeviceReopenDelay);
                 }
+                co_await WaitMs(std::chrono::milliseconds(500));
+                self_radio_reset_.store(false, std::memory_order_relaxed);
+                // 无线电关开会杀死广告 watcher（静默失效，见 ble_central_win.h
+                // RestartForResume 注释）：无论本次重连成败都必须重建扫描，
+                // 否则失败后设备的广播将无人接收，卡 Pairing 只能重启进程。
+                DispatchToUiThread([this] { StartScan(); });
 
                 session->ble_device = co_await open_device(address_type);
                 if (!session->ble_device) {
@@ -1592,9 +1725,23 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
         LogBleLine("subscribing audio notifications VS-" + device_id);
         log_stage("audio_subscribe_begin");
-        auto audio_subscribe = co_await session->audio_characteristic
+        auto audio_op = session->audio_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
+        // 与 state 订阅同款超时（见 kSubscribeTimeout 注释）：链路若恰好死在
+        // 两次订阅之间，裸 co_await 会永久挂起，claim 永不释放、重连自我封锁。
+        auto audio_wait = [](decltype(audio_op) op)
+            -> winrt::Windows::Foundation::IAsyncAction {
+            try { co_await op; } catch (...) {}
+        }(audio_op);
+        co_await winrt::when_any(audio_wait, WaitMs(kSubscribeTimeout));
+        if (audio_op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+            try { audio_op.Cancel(); } catch (...) {}
+            fail("audio subscribe timeout after " +
+                 std::to_string(kSubscribeTimeout.count()) + "ms");
+            co_return;
+        }
+        const auto audio_subscribe = audio_op.GetResults();
         LogBleLine("audio subscribe VS-" + device_id +
                    " status=" + GattStatusName(audio_subscribe));
         log_stage("audio_subscribe_done", "status=" + GattStatusName(audio_subscribe));
@@ -2031,9 +2178,61 @@ void BleCentralWin::HeartbeatLoop() {
     while (!heartbeat_stop_) {
         if (heartbeat_cv_.wait_for(lock, kHeartbeatInterval, [this] { return heartbeat_stop_; })) break;
         lock.unlock();
+        CheckScanHealth();
         ProbeSessions();
         lock.lock();
     }
+}
+
+void BleCentralWin::CheckScanHealth() {
+    // Claim 滞留清理：ConnectDeviceAsync 若在任一无超时的 WinRT co_await 上
+    // 永久挂起（既不 fail 也不 ready），claim 永不释放，该地址的后续广播全被
+    // try_claim_connect 否决，重连自我封锁（设备卡 Pairing，重启设备无用，
+    // 只有重启进程能恢复）。最坏正常连接实测 ~65s，超时强制释放兜底。
+    std::vector<std::uint64_t> expired_claims;
+    {
+        std::lock_guard lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& [address, claimed_at] : connecting_addresses_) {
+            if (now - claimed_at > kConnectClaimTimeout) expired_claims.push_back(address);
+        }
+        for (const auto address : expired_claims) connecting_addresses_.erase(address);
+    }
+    for (const auto address : expired_claims) {
+        LogBleLine("connect claim expired after " +
+                   std::to_string(kConnectClaimTimeout.count()) +
+                   "s (hung connect coroutine?); releasing address=" +
+                   FormatBluetoothAddress(address));
+    }
+
+    // watcher 静默失效检测：有配对设备待发现、扫描在跑、却长时间收不到任何
+    // 广告包（任意设备的广告都算存活证明）→ 判定 watcher 假活并重建。
+    {
+        std::lock_guard lock(mutex_);
+        bool needs_discovery = false;
+        for (const auto& id : paired_device_ids_) {
+            auto it = sessions_by_device_id_.find(id);
+            if (it == sessions_by_device_id_.end() || !it->second->ready) {
+                needs_discovery = true;
+                break;
+            }
+        }
+        if (!needs_discovery || watcher_ == nullptr) return;
+    }
+    const auto silent_ms =
+        NowSteadyMs() - last_adv_received_ms_.load(std::memory_order_relaxed);
+    if (silent_ms < std::chrono::duration_cast<std::chrono::milliseconds>(
+                        kScanSilenceTimeout).count()) return;
+    {
+        std::lock_guard lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_scan_watchdog_restart_at_ < kScanWatchdogMinRestartInterval) return;
+        last_scan_watchdog_restart_at_ = now;
+    }
+    LogBleLine("scan watchdog: no advertisements for " +
+               std::to_string(silent_ms / 1000) +
+               "s with paired device undiscovered; restarting watcher");
+    DispatchToUiThread([this] { StartScan(); });
 }
 
 void BleCentralWin::ProbeSessions() {
