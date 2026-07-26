@@ -1,0 +1,11 @@
+﻿Building...
+[1/2] Building CXX object CMakeFiles\VoiceStickApp.dir\src\selection_hotword_manager.cc.obj
+FAILED: [code=2] CMakeFiles/VoiceStickApp.dir/src/selection_hotword_manager.cc.obj 
+"D:\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe"  /nologo /TP -DNOMINMAX -DVOICESTICK_APPCAST_URL=\"https://78.github.io/voicestick/appcast.xml\" -DWIN32_LEAN_AND_MEAN -IE:\coding\voicestick\desktop\windows\resources -IE:\coding\voicestick\desktop\windows\build-x64 -IE:\coding\voicestick\desktop\windows\src -IE:\coding\voicestick\desktop\windows\third_party\cjson -IE:\coding\voicestick\desktop\windows\third_party\tomlplusplus -IE:\coding\voicestick\desktop\windows\third_party\opus\include -external:IE:\coding\voicestick\desktop\windows\third_party\winsparkle\WinSparkle-0.9.2\include -external:W0 /DWIN32 /D_WINDOWS /EHsc /Zi /Ob0 /Od /RTC1 -std:c++20 -MTd /utf-8 /showIncludes /FoCMakeFiles\VoiceStickApp.dir\src\selection_hotword_manager.cc.obj /FdCMakeFiles\VoiceStickApp.dir\ /FS -c E:\coding\voicestick\desktop\windows\src\selection_hotword_manager.cc
+E:\coding\voicestick\desktop\windows\src\selection_hotword_manager.cc(360): error C2039: "GetSelections": 不是 "IUIAutomationTextPattern" 的成员
+D:\Windows Kits\10\include\10.0.26100.0\um\UIAutomationClient.h(8100): note: 参见“IUIAutomationTextPattern”的声明
+E:\coding\voicestick\desktop\windows\src\selection_hotword_manager.cc(368): error C2660: “IUIAutomationTextRange::GetText”: 函数不接受 1 个参数
+D:\Windows Kits\10\include\10.0.26100.0\um\UIAutomationClient.h(7215): note: 参见“IUIAutomationTextRange::GetText”的声明
+E:\coding\voicestick\desktop\windows\src\selection_hotword_manager.cc(368): note: 尝试匹配参数列表“(BSTR *)”时
+ninja: build stopped: subcommand failed.
+Exit code: 2

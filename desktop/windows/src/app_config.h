@@ -198,6 +198,9 @@ struct AppConfig {
     // 飞行摇杆模式参数：速度上限（像素/秒）。默认 4000.0，范围 500.0~8000.0。
     double air_mouse_rate_max_speed = 4000.0;
     bool launch_at_login = false;
+    // 划词添加热词：启用全局鼠标钩子，划选文本后在选区附近弹出"添加到热词"按钮。
+    // 默认关闭以避免常驻低级鼠标钩子。
+    bool selection_hotword_enabled = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
     // 便携模式：当 exe 同级目录存在 config.toml 时自动激活，

@@ -43,6 +43,7 @@ constexpr UINT kMenuClickToTalk = 1010;
 constexpr UINT kMenuAutoEnter = 1011;
 constexpr UINT kMenuLaunchAtLogin = 1014;
 constexpr UINT kMenuRelaunchElevated = 1015;
+constexpr UINT kMenuSelectionHotword = 1016;
 constexpr UINT kMenuOutputFocusedApp = 1012;
 constexpr UINT kMenuOutputSubtitle = 1013;
 constexpr UINT kMenuForgetBase = 2100;
@@ -355,6 +356,8 @@ int Win32App::Run() {
         } else {
             LogLine("Portable mode — skipping launch-at-login registration");
         }
+        // 根据配置启用划词监测（默认关闭）。
+        SyncSelectionHotword();
 
         if (!config_.portable_mode) {
             LogLine("Initializing WinSparkle");
@@ -786,6 +789,10 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             config_.launch_at_login = !config_.launch_at_login;
             SaveInputOptions();
             return 0;
+        case kMenuSelectionHotword:
+            config_.selection_hotword_enabled = !config_.selection_hotword_enabled;
+            SaveInputOptions();
+            return 0;
         case kMenuOutputFocusedApp:
             config_.default_output_profile.target = OutputTarget::kFocusedApp;
             SaveInputOptions();
@@ -1012,6 +1019,40 @@ bool Win32App::CreateWindowInternal() {
     overlay_ = std::make_unique<OverlayWindow>(instance_, hwnd_);
     LogLine("Creating subtitle window object");
     subtitles_ = std::make_unique<SubtitleWindow>(instance_, hwnd_);
+    LogLine("Creating selection hotword manager");
+    selection_hotword_manager_ = std::make_unique<SelectionHotwordManager>(instance_, hwnd_);
+    if (selection_hotword_manager_) {
+        selection_hotword_manager_->SetLanguage(
+            EffectiveUiLanguage(config_.ui_language));
+        // on_add_hotword 回调：规范化后写入 config_.asr_hotwords，去重后保存并通知。
+        selection_hotword_manager_->on_add_hotword =
+            [this](const std::string& text) {
+                if (text.empty()) {
+                    const auto lang = EffectiveUiLanguage(config_.ui_language);
+                    ShowNotification(Tr(StringId::kSelectionHotwordEmptyTitle, lang),
+                                     Tr(StringId::kSelectionHotwordEmptyBody, lang));
+                    return;
+                }
+                const auto lang = EffectiveUiLanguage(config_.ui_language);
+                auto& hotwords = config_.asr_hotwords;
+                if (std::find(hotwords.begin(), hotwords.end(), text) != hotwords.end()) {
+                    ShowNotification(
+                        Tr(StringId::kSelectionHotwordDuplicateTitle, lang),
+                        Tr(StringId::kSelectionHotwordDuplicateBody, lang) + text);
+                    return;
+                }
+                hotwords.push_back(text);
+                try {
+                    config_.Save();
+                } catch (const std::exception& e) {
+                    LogLine(std::string("Save config on hotword add failed: ") + e.what());
+                }
+                if (coordinator_) coordinator_->UpdateConfig(config_);
+                ShowNotification(
+                    Tr(StringId::kSelectionHotwordAddedTitle, lang),
+                    Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
+            };
+    }
     return true;
 }
 
@@ -1318,6 +1359,10 @@ void Win32App::ShowTrayMenu() {
                     kMenuLaunchAtLogin,
                     TrW(StringId::kMenuLaunchAtLogin, language).c_str());
     }
+    AppendMenuW(menu,
+                MF_STRING | (config_.selection_hotword_enabled ? MF_CHECKED : 0),
+                kMenuSelectionHotword,
+                TrW(StringId::kMenuSelectionHotword, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, TrW(StringId::kMenuSettings, language).c_str());
     AppendMenuW(menu, MF_STRING, kMenuAirMouseTuning, L"体感鼠标调参（热调参）");
@@ -1407,6 +1452,7 @@ void Win32App::SaveInputOptions() {
     try {
         config_.Save();
         SyncLaunchAtLogin();
+        SyncSelectionHotword();
         if (coordinator_) coordinator_->UpdateConfig(config_);
         if (global_hotkey_) {
             global_hotkey_->Unregister();
@@ -1433,6 +1479,12 @@ void Win32App::SaveInputOptions() {
         LogLine(std::string("Input options save failed: ") + error.what());
         SetStatus("Input save failed");
     }
+}
+
+void Win32App::SyncSelectionHotword() {
+    if (!selection_hotword_manager_) return;
+    selection_hotword_manager_->SetLanguage(EffectiveUiLanguage(config_.ui_language));
+    selection_hotword_manager_->SetEnabled(config_.selection_hotword_enabled);
 }
 
 void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color) {

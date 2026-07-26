@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kNotificationHotkeyConflictBody) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionHotwordTooLongBody) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -39,6 +39,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsRefineText)] = "Refine text (remove pause spaces, fix punctuation, drop fillers)";
     table[Index(StringId::kSettingsRefinePrompt)] = "Refine Prompt";
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Start VoiceStick when Windows starts";
+    table[Index(StringId::kSettingsSelectionHotword)] = "Show 'Add to Hotwords' button when selecting text";
+    table[Index(StringId::kSettingsSelectionHotwordHint)] = "Select text in any app to quickly add it as a hotword.";
     table[Index(StringId::kSettingsDebugAudio)] = "Save debug audio files";
     table[Index(StringId::kSettingsShowImuDebug)] = "Show accelerometer debug values";
     table[Index(StringId::kSettingsImuWakeSensitivity)] = "Wake Sensitivity";
@@ -88,6 +90,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuClickToTalk)] = "Click to Talk";
     table[Index(StringId::kMenuAutoEnter)] = "Press Return After Paste";
     table[Index(StringId::kMenuLaunchAtLogin)] = "Start at Login";
+    table[Index(StringId::kMenuSelectionHotword)] = "Selection Hotword";
     table[Index(StringId::kMenuOutput)] = "Output";
     table[Index(StringId::kMenuOutputFocusedApp)] = "Focused App";
     table[Index(StringId::kMenuOutputSubtitle)] = "Subtitle";
@@ -218,6 +221,17 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kOverlayNoSpeech)] = "No speech detected";
     table[Index(StringId::kNotificationHotkeyConflictTitle)] = "Hotkey registration failed";
     table[Index(StringId::kNotificationHotkeyConflictBody)] = "The selected hotkey is already in use. Choose another hotkey from the menu.";
+
+    // 划词添加热词
+    table[Index(StringId::kSelectionHotwordButton)] = "Add to Hotwords";
+    table[Index(StringId::kSelectionHotwordAddedTitle)] = "Hotword Added";
+    table[Index(StringId::kSelectionHotwordAddedBody)] = "Added to hotwords: ";
+    table[Index(StringId::kSelectionHotwordDuplicateTitle)] = "Already a Hotword";
+    table[Index(StringId::kSelectionHotwordDuplicateBody)] = "Already in hotwords: ";
+    table[Index(StringId::kSelectionHotwordEmptyTitle)] = "No Text Selected";
+    table[Index(StringId::kSelectionHotwordEmptyBody)] = "No selectable text was found.";
+    table[Index(StringId::kSelectionHotwordTooLongTitle)] = "Selection Too Long";
+    table[Index(StringId::kSelectionHotwordTooLongBody)] = "Selection is too long to be a hotword and was ignored.";
     return table;
 }
 
@@ -243,6 +257,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsRefineText)] = "精修文本（去除停顿空格、修正标点、清理口头语）";
     table[Index(StringId::kSettingsRefinePrompt)] = "精修提示词";
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Windows 启动时自动运行 VoiceStick";
+    table[Index(StringId::kSettingsSelectionHotword)] = "划选文本时显示\"添加到热词\"按钮";
+    table[Index(StringId::kSettingsSelectionHotwordHint)] = "在任意应用中划选文本即可快速添加为热词。";
     table[Index(StringId::kSettingsDebugAudio)] = "保存调试音频文件";
     table[Index(StringId::kSettingsShowImuDebug)] = "显示加速度调试数值";
     table[Index(StringId::kSettingsImuWakeSensitivity)] = "拿起灵敏度";
@@ -292,6 +308,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuClickToTalk)] = "点击说话";
     table[Index(StringId::kMenuAutoEnter)] = "粘贴后按回车";
     table[Index(StringId::kMenuLaunchAtLogin)] = "开机自启动";
+    table[Index(StringId::kMenuSelectionHotword)] = "划词添加热词";
     table[Index(StringId::kMenuOutput)] = "输出";
     table[Index(StringId::kMenuOutputFocusedApp)] = "当前应用";
     table[Index(StringId::kMenuOutputSubtitle)] = "字幕";
@@ -422,6 +439,17 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kOverlayNoSpeech)] = "未检测到语音";
     table[Index(StringId::kNotificationHotkeyConflictTitle)] = "热键注册失败";
     table[Index(StringId::kNotificationHotkeyConflictBody)] = "所选热键已被其他程序占用，请在菜单中更换其他热键。";
+
+    // 划词添加热词
+    table[Index(StringId::kSelectionHotwordButton)] = "添加到热词";
+    table[Index(StringId::kSelectionHotwordAddedTitle)] = "已添加热词";
+    table[Index(StringId::kSelectionHotwordAddedBody)] = "已添加到热词：";
+    table[Index(StringId::kSelectionHotwordDuplicateTitle)] = "热词已存在";
+    table[Index(StringId::kSelectionHotwordDuplicateBody)] = "已在热词库中：";
+    table[Index(StringId::kSelectionHotwordEmptyTitle)] = "未选中文本";
+    table[Index(StringId::kSelectionHotwordEmptyBody)] = "未找到可划选的文本。";
+    table[Index(StringId::kSelectionHotwordTooLongTitle)] = "选区过长";
+    table[Index(StringId::kSelectionHotwordTooLongBody)] = "选区过长不适合作为热词，已忽略。";
     return table;
 }
 
