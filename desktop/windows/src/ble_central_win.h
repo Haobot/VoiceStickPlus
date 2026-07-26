@@ -7,6 +7,7 @@
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
 #include <winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>
 #include <winrt/Windows.Devices.Enumeration.h>
+#include <winrt/Windows.Devices.Radios.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 
@@ -107,6 +108,10 @@ private:
 
     void StartScan();
     void StopScan();
+    // 订阅蓝牙无线电 StateChanged：系统蓝牙开关切换（设置/操作中心）会杀死
+    // 广告 watcher 与全部链路，无线电恢复（On）时立即 RestartForResume()
+    // 重建扫描与会话，不等扫描静默看门狗的秒级~分钟级超时。
+    winrt::fire_and_forget InitRadioWatcherAsync();
     void HandleAdvertisement(const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher& watcher,
                               const winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs& args);
     winrt::fire_and_forget ConnectDeviceAsync(std::uint64_t bluetooth_address,
@@ -133,6 +138,9 @@ private:
     void StopHeartbeat();
     void HeartbeatLoop();
     void ProbeSessions();
+    // 扫描健康看门狗（心跳线程周期调用）：清理滞留超时的在途连接 claim，
+    // 并检测广告 watcher 静默失效（有配对设备待发现却长时间零广告）后重建扫描。
+    void CheckScanHealth();
     static ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer);
     void PublishConnections();
 
@@ -145,7 +153,10 @@ private:
     std::set<std::string> paired_device_ids_;
     std::map<std::string, std::shared_ptr<DeviceSession>> sessions_by_device_id_;
     std::shared_ptr<FirmwareUpdateSession> firmware_update_session_;
-    std::set<std::uint64_t> connecting_addresses_;
+    // 在途连接占用：key=蓝牙地址，value=claim 时间戳。ConnectDeviceAsync 若在
+    // 无超时的 WinRT co_await 上永久挂起，claim 永不释放、后续广播全被否决；
+    // CheckScanHealth() 据此时间戳强制释放滞留超时的 claim。
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> connecting_addresses_;
     std::set<std::string> cancelled_device_ids_;
     // 连接失败后的退避期：key=蓝牙地址，value=可以重新尝试连接的最早时间点。
     // 避免 tight-loop（失败→扫描→立即重试→再失败）。
@@ -160,7 +171,23 @@ private:
         zombie_suspect_marks_;
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
+    winrt::event_token stopped_token_{};
+    // 蓝牙无线电状态监视（见 InitRadioWatcherAsync）。
+    winrt::Windows::Devices::Radios::Radio bluetooth_radio_{nullptr};
+    winrt::event_token radio_state_token_{};
+    // 应用自己执行 radio reset（陈旧 bond 恢复）期间置位：StateChanged 处理器
+    // 据此跳过自建重置引发的重建（该路径已显式 StartScan，避免与在途连接争抢）。
+    std::atomic<bool> self_radio_reset_{false};
     std::chrono::steady_clock::time_point scan_started_at_{};
+    // watcher 存活证明：HandleAdvertisement 收到任意广告包即刷新（steady_clock
+    // epoch 毫秒）。CheckScanHealth() 用它检测 watcher 静默失效；StartScan()
+    // 成功时写入当前时间作为基线。
+    std::atomic<std::int64_t> last_adv_received_ms_{0};
+    // 看门狗触发扫描重建的节流：上次由 CheckScanHealth() 重建的时间点。
+    std::chrono::steady_clock::time_point last_scan_watchdog_restart_at_{};
+    // claim 被拒日志的限流（key=蓝牙地址，value=上次记录的 steady_clock epoch
+    // 毫秒）：正常重连中广告风暴期每秒数十次拒绝，逐条记录会刷屏。
+    std::map<std::uint64_t, std::int64_t> claim_denied_log_ms_;
     std::thread heartbeat_thread_;
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;
