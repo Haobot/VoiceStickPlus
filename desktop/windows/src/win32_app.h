@@ -9,6 +9,7 @@
 #include "onboarding_dialog.h"
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
+#include "selection_hotword_manager.h"
 #include "settings_dialog.h"
 #include "air_mouse_tuning_window.h"
 #include "subtitle_window.h"
@@ -98,6 +99,8 @@ private:
     void ShowAirMouseTuning();
     void SaveInputOptions();
     void SyncLaunchAtLogin();
+    // 根据 config_.selection_hotword_enabled 同步划词监测器启用状态与语言。
+    void SyncSelectionHotword();
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
     void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
@@ -132,6 +135,7 @@ private:
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;
     std::unique_ptr<SubtitleWindow> subtitles_;
+    std::unique_ptr<SelectionHotwordManager> selection_hotword_manager_;
     class BleCentralWin* ble_central_ = nullptr;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;

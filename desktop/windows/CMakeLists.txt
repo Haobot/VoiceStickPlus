@@ -105,6 +105,7 @@ add_executable(VoiceStickApp WIN32
     src/settings_dialog.cc
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
+    src/selection_hotword_manager.cc
     resources/VoiceStick.rc
 )
 
@@ -144,6 +145,7 @@ target_link_libraries(VoiceStickApp PRIVATE
     comctl32
     ole32
     advapi32
+    uiautomationcore
 )
 
 add_custom_command(TARGET VoiceStickApp POST_BUILD

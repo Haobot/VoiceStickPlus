@@ -59,6 +59,8 @@ global_hotkey = "ctrl+win"
 auto_enter = true
 # 开机自启
 launch_at_login = false
+# 划词添加热词：启用后划选任意文本会在选区附近弹出"添加到热词"按钮
+selection_hotword_enabled = false
 
 # ---- IMU / 体感鼠标 ----
 show_imu_debug = false

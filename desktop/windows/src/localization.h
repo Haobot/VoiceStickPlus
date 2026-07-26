@@ -32,6 +32,8 @@ enum class StringId {
     kSettingsRefineText,
     kSettingsRefinePrompt,
     kSettingsLaunchAtLogin,
+    kSettingsSelectionHotword,
+    kSettingsSelectionHotwordHint,
     kSettingsDebugAudio,
     kSettingsShowImuDebug,
     kSettingsImuWakeSensitivity,
@@ -83,6 +85,7 @@ enum class StringId {
     kMenuClickToTalk,
     kMenuAutoEnter,
     kMenuLaunchAtLogin,
+    kMenuSelectionHotword,
     kMenuOutput,
     kMenuOutputFocusedApp,
     kMenuOutputSubtitle,
@@ -231,6 +234,17 @@ enum class StringId {
     // 通知
     kNotificationHotkeyConflictTitle,
     kNotificationHotkeyConflictBody,
+
+    // 划词添加热词
+    kSelectionHotwordButton,
+    kSelectionHotwordAddedTitle,
+    kSelectionHotwordAddedBody,
+    kSelectionHotwordDuplicateTitle,
+    kSelectionHotwordDuplicateBody,
+    kSelectionHotwordEmptyTitle,
+    kSelectionHotwordEmptyBody,
+    kSelectionHotwordTooLongTitle,
+    kSelectionHotwordTooLongBody,
 };
 
 // 返回 UTF-8 本地化文本
