@@ -82,6 +82,7 @@ private:
     HWND refine_prompt_label_ = nullptr;
     HWND refine_prompt_edit_ = nullptr;
     HWND launch_at_login_check_ = nullptr;
+    HWND selection_hotword_check_ = nullptr;
     HWND debug_audio_check_ = nullptr;
     HWND show_imu_debug_check_ = nullptr;
     HWND imu_wake_sensitivity_combo_ = nullptr;
@@ -145,6 +146,7 @@ private:
     static constexpr UINT kIdWechatVirtualMicCapture = 2030;
     static constexpr UINT kIdTriggerModeHold = 2031;
     static constexpr UINT kIdTriggerModeClick = 2032;
+    static constexpr UINT kIdSelectionHotword = 2033;
 };
 
 } // namespace voicestick

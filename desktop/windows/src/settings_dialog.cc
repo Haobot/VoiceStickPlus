@@ -337,6 +337,7 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         llm_api_key_edit_ = nullptr;
         llm_model_edit_ = nullptr;
         launch_at_login_check_ = nullptr;
+        selection_hotword_check_ = nullptr;
         refine_prompt_label_ = nullptr;
         refine_prompt_edit_ = nullptr;
         debug_audio_check_ = nullptr;
@@ -421,6 +422,7 @@ void SettingsDialog::DestroyControls() {
     refine_prompt_label_ = nullptr;
     refine_prompt_edit_ = nullptr;
     debug_audio_check_ = nullptr;
+    selection_hotword_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     imu_wake_sensitivity_combo_ = nullptr;
     tap_to_arrow_check_ = nullptr;
@@ -811,6 +813,21 @@ void SettingsDialog::BuildControls() {
         });
     }
     {
+        HWND sh_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        selection_hotword_check_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsSelectionHotword, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdSelectionHotword, instance_, BS_AUTOCHECKBOX));
+        // 提示行：解释划词行为，避免用户误以为全局鼠标钩子是隐私风险。
+        HWND sh_hint = remember_label(CreateLeftLabel(
+            hwnd_, TrW(StringId::kSettingsSelectionHotwordHint, language).c_str(),
+            0, 0, ctrl_w, Dp(16), instance_));
+        add(row_h + Dp(26), {
+            {sh_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {selection_hotword_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+            {sh_hint, ctrl_x, Dp(26), ctrl_w, Dp(16)},
+        });
+    }
+    {
         HWND da_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(),
                                                    0, 0, ctrl_w, Dp(22), kIdDebugAudio, instance_,
@@ -1012,6 +1029,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     UpdateRefinePromptVisibility();
 
     SendMessageW(launch_at_login_check_, BM_SETCHECK, config_.launch_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(selection_hotword_check_, BM_SETCHECK, config_.selection_hotword_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(show_imu_debug_check_, BM_SETCHECK, config_.show_imu_debug ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(tap_to_arrow_check_, BM_SETCHECK, config_.tap_to_arrow ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1102,6 +1120,7 @@ void SettingsDialog::SaveSettings() {
     }
 
     config_.launch_at_login = SendMessageW(launch_at_login_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.selection_hotword_enabled = SendMessageW(selection_hotword_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.show_imu_debug = SendMessageW(show_imu_debug_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.tap_to_arrow = SendMessageW(tap_to_arrow_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
