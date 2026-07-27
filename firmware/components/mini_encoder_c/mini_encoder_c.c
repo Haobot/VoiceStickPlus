@@ -19,7 +19,7 @@ static const char *TAG = "mini_encoder_c";
 // 寄存器（M5Stack MiniEncoderC STM32 固件）：
 //   0x00 旋转计数器（int32 LE，累计值）
 //   0x10 旋转增量（int32 LE，读后清零——真机验证）
-//   0x20 按钮状态（1 字节，0x01=按下）
+//   0x20 按钮状态（1 字节，0x00=按下，0x01=释放——真机验证，低有效）
 //   0x30 SK6812 LED 颜色（写 3 字节 R,G,B）
 #define MINI_ENCODER_C_REG_COUNTER 0x00
 #define MINI_ENCODER_C_REG_DELTA   0x10
@@ -149,7 +149,7 @@ esp_err_t mini_encoder_c_read_button(bool *pressed)
     esp_err_t err = read_regs(MINI_ENCODER_C_REG_BUTTON, &value, 1);
     note_i2c_result(err, "read button");
     if (err == ESP_OK) {
-        *pressed = (value == 0x01);
+        *pressed = (value == 0x00);
     }
     return err;
 }
