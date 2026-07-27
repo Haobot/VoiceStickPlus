@@ -134,6 +134,7 @@ Create it from the example at `desktop/macos/Config/config.example.toml`.
 | --- | --- |
 | `asr_provider` | `volcengine`, `voicestick_cloud`, or `tencent` |
 | `volcengine_api_key` | Direct Volcengine API key (`X-Api-Key`) |
+| `volcengine_boosting_table_id` / `volcengine_correct_table_id` | Volcengine self-learning platform hotword/replacement table IDs (created in console); sent as `corpus.boosting_table_id` / `corpus.correct_table_id` |
 | `voicestick_api_key` / `voicestick_cloud_url` | VoiceStick Cloud relay key and WebSocket URL |
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM for translation and refinement |
 | `refine_enabled` / `refine_prompt` | Refine ASR text with an LLM (trim filler spaces, fix punctuation, drop fillers); default `true`. Empty prompt uses the built-in default |
