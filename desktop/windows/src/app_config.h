@@ -136,6 +136,11 @@ struct AppConfig {
     std::string voicestick_api_key;
     std::string voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/";
     std::string volcengine_api_key;
+    // 火山自学习平台热词表 / 替换词表 ID（控制台创建）。corpus 热词直传只在流式
+    // 第一遍生效，二遍（enable_nonstream）最终文本不吃直传；词表走服务端账户绑定，
+    // 是官方备用机制。为空不发送。
+    std::string volcengine_boosting_table_id;
+    std::string volcengine_correct_table_id;
     std::string tencent_secret_id;
     std::string tencent_secret_key;
     std::string tencent_appid;

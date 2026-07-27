@@ -1,9 +1,11 @@
 #include "asr_protocol.h"
 
 #include "cJSON.h"
+#include "log.h"
 
 #include <algorithm>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -61,19 +63,51 @@ std::vector<std::string> EffectiveHotwords(const AppConfig& config, const AsrSes
     return options.hotwords.empty() ? config.asr_hotwords : options.hotwords;
 }
 
-std::string HotwordsCorpusJson(const AppConfig& config, const AsrSessionOptions& options) {
+// 组装 request.corpus：自学习平台词表 ID（boosting/correct）+ 热词直传 context。
+// 官方语义：热词直传优先级高于词表（第一遍流式）；词表与直传可同时携带。
+std::string CorpusJson(const AppConfig& config, const AsrSessionOptions& options) {
+    std::string fields;
+    auto append_field = [&fields](std::string_view key, const std::string& value) {
+        if (value.empty()) return;
+        if (!fields.empty()) fields += ",";
+        fields += "\"" + std::string(key) + "\":\"" + JsonEscape(value) + "\"";
+    };
+    append_field("boosting_table_id", config.volcengine_boosting_table_id);
+    append_field("correct_table_id", config.volcengine_correct_table_id);
+
     const auto hotwords = EffectiveHotwords(config, options);
-    if (hotwords.empty()) return {};
-
-    std::ostringstream context;
-    context << "{\"hotwords\":[";
-    for (std::size_t i = 0; i < hotwords.size(); ++i) {
-        if (i != 0) context << ",";
-        context << "{\"word\":\"" << JsonEscape(hotwords[i]) << "\"}";
+    const auto fitted = AsrProtocol::FitHotwordsToCorpusBudget(hotwords);
+    if (fitted.size() < hotwords.size()) {
+        std::multiset<std::string> kept(fitted.begin(), fitted.end());
+        std::ostringstream dropped;
+        for (const auto& word : hotwords) {
+            auto it = kept.find(word);
+            if (it != kept.end()) {
+                kept.erase(it);
+                continue;
+            }
+            if (dropped.tellp() > 0) dropped << ", ";
+            dropped << word;
+        }
+        Log("ASR", "hotwords trimmed to corpus token budget " +
+            std::to_string(AsrProtocol::kHotwordCorpusTokenBudget) + ": kept " +
+            std::to_string(fitted.size()) + "/" + std::to_string(hotwords.size()) +
+            ", dropped: " + dropped.str());
     }
-    context << "]}";
+    if (!fitted.empty()) {
+        std::ostringstream context;
+        context << "{\"hotwords\":[";
+        for (std::size_t i = 0; i < fitted.size(); ++i) {
+            if (i != 0) context << ",";
+            context << "{\"word\":\"" << JsonEscape(fitted[i]) << "\"}";
+        }
+        context << "]}";
+        if (!fields.empty()) fields += ",";
+        fields += "\"context\":\"" + JsonEscape(context.str()) + "\"";
+    }
 
-    return ",\"corpus\":{\"context\":\"" + JsonEscape(context.str()) + "\"}";
+    if (fields.empty()) return {};
+    return ",\"corpus\":{" + fields + "}";
 }
 
 void AppendUtteranceSegments(cJSON* utterances, std::vector<AsrSegment>* segments) {
@@ -284,6 +318,41 @@ std::string AsrProtocol::SegmentKey(const AsrSegment& segment) {
            std::to_string(segment.end_time.value_or(-1)) + ":" + segment.text;
 }
 
+int AsrProtocol::EstimateHotwordTokens(std::string_view word) {
+    int cjk_chars = 0;
+    int ascii_chars = 0;
+    for (std::size_t i = 0; i < word.size();) {
+        const auto lead = static_cast<std::uint8_t>(word[i]);
+        if (lead < 0x80) {
+            ++ascii_chars;
+            ++i;
+        } else {
+            std::size_t seq_len = 1;
+            if ((lead & 0xe0) == 0xc0) seq_len = 2;
+            else if ((lead & 0xf0) == 0xe0) seq_len = 3;
+            else if ((lead & 0xf8) == 0xf0) seq_len = 4;
+            ++cjk_chars;
+            i += seq_len;
+        }
+    }
+    const int tokens = cjk_chars + (ascii_chars + 2) / 3;
+    return std::max(tokens, word.empty() ? 0 : 1);
+}
+
+std::vector<std::string> AsrProtocol::FitHotwordsToCorpusBudget(
+    const std::vector<std::string>& hotwords) {
+    std::vector<std::string> fitted;
+    int used_tokens = 0;
+    for (const auto& word : hotwords) {
+        const int tokens = EstimateHotwordTokens(word);
+        if (tokens > kHotwordMaxWordTokens) continue;
+        if (used_tokens + tokens > kHotwordCorpusTokenBudget) continue;
+        fitted.push_back(word);
+        used_tokens += tokens;
+    }
+    return fitted;
+}
+
 std::string AsrProtocol::SessionPayload(const AppConfig& config, const AsrSessionOptions& options) {
     return "{\"user\":{\"uid\":\"voice-stick-local\"},"
            "\"audio\":{\"format\":\"ogg\",\"codec\":\"opus\",\"rate\":16000,\"bits\":16,\"channel\":1},"
@@ -294,7 +363,7 @@ std::string AsrProtocol::SessionPayload(const AppConfig& config, const AsrSessio
            AsrResultTypeName(options.result_type) +
            "\",\"enable_ddc\":true,"
            "\"resource_id\":\"" +
-           JsonEscape(config.resource_id) + "\"" + HotwordsCorpusJson(config, options) + "}}";
+           JsonEscape(config.resource_id) + "\"" + CorpusJson(config, options) + "}}";
 }
 
 std::string AsrProtocol::ConnectionPayload(const AppConfig& config, const AsrSessionOptions& options) {

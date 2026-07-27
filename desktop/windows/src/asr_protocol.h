@@ -87,6 +87,17 @@ public:
         std::set<std::string>* emitted_segment_keys);
     static std::string SegmentKey(const AsrSegment& segment);
 
+    // 火山双向流式（bigmodel_async）热词直传上限约 100 tokens，超限会被服务端静默
+    // 截断或忽略导致热词整体失效；客户端按估算预留余量后再发送。
+    static constexpr int kHotwordCorpusTokenBudget = 80;
+    // 单个热词估算超过该 token 数视为无效（火山热词表规则：每词少于 10 个字）。
+    static constexpr int kHotwordMaxWordTokens = 10;
+    // 粗略估算：CJK 每字 1 token，ASCII 每 3 字符 1 token（camelCase 会偏低估，预算已留余量）。
+    static int EstimateHotwordTokens(std::string_view word);
+    // 按预算裁剪热词列表：逐个装入，单词超限或累计超预算的丢弃，保持原有优先级顺序。
+    static std::vector<std::string> FitHotwordsToCorpusBudget(
+        const std::vector<std::string>& hotwords);
+
 private:
     static std::string SessionPayload(const AppConfig& config, const AsrSessionOptions& options);
     static std::string ConnectionPayload(const AppConfig& config, const AsrSessionOptions& options);
