@@ -139,6 +139,7 @@ Create it from the example at `desktop/macos/Config/config.example.toml`.
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM for translation and refinement |
 | `refine_enabled` / `refine_prompt` | Refine ASR text with an LLM (trim filler spaces, fix punctuation, drop fillers); default `true`. Empty prompt uses the built-in default |
 | `hotword_process_enabled` | Use the LLM to refine hotwords when adding from text selection (Windows); default `false`, reuses the `llm_*` settings |
+| `hotword_mining_enabled` | After each session, asynchronously ask the LLM to extract candidate hotwords from the final text (Windows); candidates reaching the threshold (3) are offered via tray notification and Settings → Hotwords for manual confirmation; default `false` (one extra LLM call per session), reuses the `llm_*` settings |
 | `hotword_process_prompt` | Override prompt for hotword refinement; empty uses the built-in default |
 | `interaction_mode` | `hold_to_talk` or `click_to_talk` (trigger mode for focused_app/subtitle; wechat uses `[wechat_input_method].trigger_mode`) |
 | `resource_id` | Volcengine resource ID |

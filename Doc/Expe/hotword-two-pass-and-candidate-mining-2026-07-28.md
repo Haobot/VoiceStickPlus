@@ -69,3 +69,59 @@
 - 不建议切纯 nostream：丢实时 partial 上屏（核心交互），且热词仍救不全（agents dmd
   未被纠回），工程改动大。二遍 = 流式快 + nostream 准的组合已是最优。
 - macOS Swift 端三项 parity 未做：热词裁剪、精修热词注入+守卫、词表 ID 与候选挖掘。
+
+## diff 挖掘的盲区（同日追加，"Stack Chain" 实测）
+
+用户测试说「Stack Chain」多次不见托盘通知。回放调试录音（session-39）实证：火山二遍
+final 已正确输出「Stack Chain」（流式 partial 是 "Stack chain"，二遍自动改大写）。
+即 ASR 本来就识别对 → 精修无 diff → `MineRefinementCandidates` 返回空 → 不计数。
+**纠错对挖掘只覆盖三种场景之一**：
+
+| 场景 | diff 挖掘 |
+|---|---|
+| ASR 识别错 + LLM 认识该词能纠回（deepseek→DeepSeek） | 能挖到 |
+| ASR 识别错 + LLM 不认识的全新词 | 挖不到 |
+| ASR 本来就识别对（Stack Chain） | 挖不到 |
+
+同期 `cloud.md:1` 那条计数恰好是假阳性通道实例：LLM 某次把 CLAUDE.md 错修成
+cloud.md 被挖了一次——再次印证必须人工确认入表。
+
+**修复**：新增 `hotword_mining_enabled`（默认关闭）+ `ExtractHotwordCandidates`
+异步提炼通道——会话粘贴完成后后台多调一次 LLM，从最终文本提炼「可能是专有名词且
+不在热词表」的候选（JSON 数组输出），解析侧防臆造（候选必须在原文实际出现，忽略
+大小写）、限长 2..40 字符、至多 3 词、热词去重。两通道共用
+`RecordAndNotifyHotwordCandidates`（已加互斥锁，两个后台回调都会碰存储）。
+教训：**「从纠错 diff 中学习」预设了纠错一定发生；对识别本来正确的文本，diff 恒空，
+统计信号必须另开通道**。
+
+## 待修复：LLM 提炼链路 candidates=0（2026-07-28 记录，下次继续）
+
+**现象**：`hotword_mining_enabled=true` 下反复说「Stack Chain」，无托盘通知、候选不入表。
+
+**已加观测**（`MaybeExtractHotwordCandidates` 三条日志：skipped 原因 / started /
+finished ok+candidates 数，不记内容）：带日志版本（exe 07:04）实测证据——
+
+1. 提炼**确实触发且 LLM 调用成功**：`07:07:15 started → finished ok=1 candidates=0`、
+   `07:08:59 同样 ok=1 candidates=0`。即 DeepSeek（deepseek-v4-flash）返回了响应但解析后
+   0 候选：可能模型直接回 `[]`（不认为 Stack Chain 是专名）、或回了散文格式被容错解析
+   丢弃、或候选被防臆造过滤（必须在原文出现/限长/≤3 词/热词去重）。**当前看不到原始
+   响应**（隐私考虑不记文本），无法区分这三种。
+2. 第三次调用 `07:09:27 started` 后**再无 finished**：`ChatSync`（WinHTTP 同步调用）
+   疑似无超时设置，线程挂死泄漏；不影响主流程（后续会话照常 paste_complete）。
+3. **未解之谜**：07:11–07:14 连续 7 次 paste_complete 会话**完全没有** extraction
+   日志行（连 started 都没有）。假设：a) 这些会话走了 translate 路径（
+   `TransformText` 提前 return，设计上不挖掘）；b) 流式精修 on_complete 因 cancel
+   令牌提前 return（但那样不会 paste_complete，矛盾）；c) 配置被运行时改写。下次先查
+   这些会话的 `[output].transform` 与 refine 流式取消时序。
+
+**下次修复入口**：
+
+- 离线复现：用调试 ogg 回放拿到 final 文本，以 `BuildHotwordExtractionPrompt` +
+  同一模型手动调一次 DeepSeek 看原始响应，定位是 prompt 问题还是解析问题；
+  必要时给提炼加「调试模式记原始响应」开关或只记候选被拒原因计数。
+- 给 `LLMChatClient::ChatSync` 的 WinHTTP 句柄加超时（
+  `WinHttpSetTimeouts`），杜绝挂死线程。
+- 排查 07:11–07:14 无日志会话：确认 output.transform / refine 取消路径。
+- 代码位置：提炼入口 `voice_stick_coordinator.cc` `MaybeExtractHotwordCandidates`、
+  解析 `llm_refinement_client.cc` `ParseHotwordExtractionResponse`（15 组单测已过）、
+  存储 `hotword_candidates.json`。
