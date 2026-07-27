@@ -36,6 +36,7 @@ esp_err_t stick_s3_board_init(void);
 i2c_master_bus_handle_t stick_s3_board_i2c_bus(void);
 // 返回内部总线（ES8311/BMI270/M5PM1）实际生效的 I2C 端口号。
 // init_i2c 有 NUM_1→NUM_0 探测回退，第二路总线（如 MiniEncoderC）据此选用另一个端口。
+// 仅在 stick_s3_board_init() 的 I2C 探测成功后有效；探测失败时返回缺省 I2C_NUM_1。
 i2c_port_t stick_s3_board_i2c_port(void);
 esp_err_t stick_s3_board_battery_voltage_mv(int *voltage_mv);
 esp_err_t stick_s3_board_vbus_voltage_mv(int *voltage_mv);
