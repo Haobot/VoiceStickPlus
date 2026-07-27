@@ -160,6 +160,8 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.battery_level = JsonIntValue(json, "level");
     event.battery_charging = JsonBoolValue(json, "charging");
     event.battery_usb_powered = JsonBoolValue(json, "usb_powered");
+    event.direction = JsonStringValue(json, "direction");
+    event.steps = JsonU32Value(json, "steps");
 
     return event;
 }

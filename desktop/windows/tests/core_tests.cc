@@ -752,6 +752,30 @@ void TestStateParsing() {
     assert(event->session_id == 42);
 }
 
+void TestEncoderRotateStateParsing() {
+    const std::string json = "{\"event\":\"encoder_rotate\",\"direction\":\"ccw\",\"steps\":3}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "encoder_rotate");
+    assert(event->direction == "ccw");
+    assert(event->steps.has_value());
+    assert(event->steps.value() == 3);
+
+    // 缺字段容错：direction 为空串、steps 为 nullopt，不影响整体解析。
+    const std::string sparse = "{\"event\":\"encoder_rotate\"}";
+    ByteVector sparse_frame = {1, 0x10};
+    AppendLe16(sparse_frame, static_cast<std::uint16_t>(sparse.size()));
+    sparse_frame.insert(sparse_frame.end(), sparse.begin(), sparse.end());
+    auto sparse_event = BleProtocol::ParseStateEvent(sparse_frame);
+    assert(sparse_event.has_value());
+    assert(sparse_event->event == "encoder_rotate");
+    assert(sparse_event->direction.empty());
+    assert(!sparse_event->steps.has_value());
+}
+
 void TestOggMuxer() {
     OggOpusMuxer muxer(16000, 1);
     ByteVector opus = {1, 2, 3, 4};
@@ -5303,6 +5327,7 @@ int main() {
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();
+    TestEncoderRotateStateParsing();
     TestMotionFrameParsing();
     TestAirMouseStepVelocityFollowsOmega();
     TestAirMouseStepStopsWhenStale();
