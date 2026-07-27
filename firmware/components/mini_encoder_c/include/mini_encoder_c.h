@@ -22,7 +22,7 @@ esp_err_t mini_encoder_c_init(void);
 // 编码器是否在线（init 探测成功且未因连续 I2C 失败降级）。
 bool mini_encoder_c_present(void);
 
-// 读按钮状态：寄存器 0x20，1 字节，0x01=按下。
+// 读按钮状态：寄存器 0x20，1 字节，低有效（0x00=按下，0x01=释放，真机验证）。
 esp_err_t mini_encoder_c_read_button(bool *pressed);
 
 // 读旋转增量：寄存器 0x10，int32 LE，读后清零语义（真机验证；
