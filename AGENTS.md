@@ -17,7 +17,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存都使用同一份 Ogg Opus 流。微信输入法模式是例外：桌面端把 Opus 解码为 PCM 后渲染到系统虚拟麦克风（如 VB-CABLE），供微信输入法等应用作为音频输入源。
 
-当前版本：`2.1.1`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致（当前两者均为 `2.1.1`）。
+当前版本：`2.1.2`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致（当前两者均为 `2.1.2`）。
 
 ## 关键配置文件
 
@@ -177,7 +177,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 固件只负责硬件 I/O、音频编码、BLE 通信、电源管理和显示主机下发的 UI 状态，不持有桌面交互状态机。关键组件（`firmware/components/` 下共 5 个）：
 
 - `firmware/main/main.c`：主循环，编排按键、BLE、录音会话、UI 状态、电源管理和 OTA 事件。
-- `components/audio_pipeline/`：从 ES8311 读取 16 kHz 单声道 PCM，编码为 Opus 后交给 BLE 层。
+- `components/audio_pipeline/`：从 ES8311 读取 16 kHz 单声道 PCM，经 HPF 与软件 AGC（v2.1.2 起：target -6 dBFS、max +20 dB、噪声门、0.8FS 瞬时限幅，硬件 ALC 已关闭）后编码为 Opus 交给 BLE 层；开头 60ms 静音+淡入、drain 尾帧淡出以消除按键音。
 - `components/voice_ble/`：GATT 服务、通知、控制写入、BLE OTA。
 - `components/ui_status/`：ST7789/LVGL 渲染、亮度、休眠、OTA 进度。
 - `components/bmi270/`：BMI270 IMU 驱动。
@@ -272,7 +272,7 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
   - L0 语料：`gen_corpus.py` / `verify_corpus.py` / `build_spiffs_image.py` 生成测试 PCM 语料并打包成 SPIFFS 镜像刷入固件。
   - L3 固件回放：`run_l3_firmware.py` 用独立 bleak BLE 连接（VoiceStickApp 必须先断开，StickS3 BLE 独占单连接），下发 `test_playback` 回放 PCM 驱动录音，订阅 `audio_tx` 收 Opus 帧统计首帧延迟与帧数，配合串口日志 `playback set` 确认回放生效。
   - L4 微信输入法：`run_l4_wechat.py` + `loopback_capture.py` 用 WASAPI 抓取 CABLE Output PCM，验证 Opus 解码->渲染->CABLE->微信识别链路（半自动，需人工按设备键说话并确认结果）。
-  - 辅助：`scan_ble.py`（BLE 扫描）、`read_serial.py`（串口日志读取）。
+  - 辅助：`scan_ble.py`（BLE 扫描）、`read_serial.py`（串口日志读取）、`replay_tencent_asr.py`（腾讯 ASR 回放）、`spectrogram_server.py`（调试音频频谱分析页，v2.1.2 新增）。
   - 依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`。
   - 设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。
 
@@ -297,7 +297,7 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，�
 
 Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（PowerShell 脚本，用 .NET 写 UTF-8 文件规避 cmd 中文 `echo` 块在 GBK 代码页下的解析错位；脚本须存为 UTF-8 with BOM）；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。打包产物放在 `dist/`（已被视为本地产物目录）。
 
-`CHANGELOG.md` 是版本变更记录（最新条目在文件顶部）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（当前 `VERSION` 为 `2.1.1`，中间版本 v2.0.0/v2.1.0 条目缺失），以 `VERSION` 为准。
+`CHANGELOG.md` 是版本变更记录（最新条目在文件顶部，当前最新为 v2.1.2）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失，条目从 v1.9.0 直接跳到 v2.1.1），以 `VERSION`（当前 `2.1.2`）为准。
 
 ## 项目 Skills
 
