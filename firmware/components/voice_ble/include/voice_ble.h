@@ -57,6 +57,9 @@ esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
 esp_err_t voice_ble_send_button_double_click(const char *button);
 // 发送敲击事件（如 double-tap）。kind 建议为 "double"，空时默认 double。
 esp_err_t voice_ble_send_tap(const char *kind);
+// 发送编码器旋转事件。direction 为 "cw"/"ccw"（原始物理方向，固件不做语义映射），
+// steps 为该轮询窗口内同向累计格数（>=1）。
+esp_err_t voice_ble_send_encoder_rotate(const char *direction, uint8_t steps);
 // 发送体感鼠标运动帧（state_tx 通道，type=0x11 二进制帧，6 字节）。
 esp_err_t voice_ble_send_motion(int16_t dx, int16_t dy);
 esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered);

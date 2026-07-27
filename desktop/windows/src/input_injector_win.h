@@ -13,6 +13,7 @@ public:
     void Paste(const std::string& text, bool press_enter) override;
     void SendEnter() override;
     void SendArrowDown() override;
+    void SendArrowUp() override;
     void MoveMouse(int dx, int dy) override;
     void ClickLeftButton() override;
 

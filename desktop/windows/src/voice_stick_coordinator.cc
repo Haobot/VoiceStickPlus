@@ -414,6 +414,8 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
         HandleButtonDoubleClick(event, device_id);
     } else if (event.event == "tap") {
         HandleTapEvent(event, device_id);
+    } else if (event.event == "encoder_rotate") {
+        HandleEncoderRotate(event, device_id);
     }
 }
 
@@ -957,6 +959,39 @@ void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::s
     LogCoordinatorLine("tap detected on VS-" + device_id + ", sending ArrowDown");
     input_injector_->SendArrowDown();
     ble_->SendUiState("ready", "", device_id);
+}
+
+void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const std::string& device_id) {
+    // steps 上限钳制：固件侧已截断到 uint8（255），桌面端再钳到物理合理值，
+    // 防伪造/异常 BLE 帧让注入循环放大挂死线程。真实 10ms 窗口内旋转 1~3 步。
+    constexpr std::uint32_t kMaxEncoderRotateSteps = 64;
+    // 总开关关闭则忽略。
+    if (!config_.encoder_to_arrow) return;
+    // 体感态忽略旋转，避免与体感移动/点击冲突（固件侧也有体感门控，双保险）。
+    if (IsAirMouseActive(device_id)) return;
+    // 录音中或识别中忽略旋转，避免干扰当前语音周期（门控与 HandleTapEvent 一致）。
+    if (session_state_ == SessionState::kRecording ||
+        session_state_ == SessionState::kFinalizing) {
+        return;
+    }
+    const std::uint32_t raw_steps = event.steps.value_or(0);
+    if (raw_steps == 0) return;
+    const std::uint32_t steps = std::min(raw_steps, kMaxEncoderRotateSteps);
+    // 方向映射：默认 cw→Down / ccw→Up；encoder_rotation_invert=true 时翻转。
+    // direction 非 "ccw"（含空串/未知值）按 cw 处理，与固件只发 cw|ccw 的约定一致。
+    const bool send_up = (event.direction == "ccw") != config_.encoder_rotation_invert;
+    // 与 tap 不同，旋转不回写 ui_state（无屏幕状态变化）。
+    LogCoordinatorLine("encoder rotate on VS-" + device_id + " direction=" + event.direction +
+                       " steps=" + std::to_string(steps) +
+                       (raw_steps > steps ? " (clamped from " + std::to_string(raw_steps) + ")" : "") +
+                       (send_up ? " -> ArrowUp" : " -> ArrowDown"));
+    for (std::uint32_t i = 0; i < steps; ++i) {
+        if (send_up) {
+            input_injector_->SendArrowUp();
+        } else {
+            input_injector_->SendArrowDown();
+        }
+    }
 }
 
 bool VoiceStickCoordinator::IsAirMouseActive(const std::string& device_id) const {

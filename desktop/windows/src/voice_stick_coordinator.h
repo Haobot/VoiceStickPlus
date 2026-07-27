@@ -166,6 +166,8 @@ public:
     virtual void SendEnter() = 0;
     // 注入一次下方向键，用于敲击手势在候选/选项间向下切换。
     virtual void SendArrowDown() = 0;
+    // 注入一次上方向键，用于编码器逆时针旋转在候选/选项间向上切换。
+    virtual void SendArrowUp() = 0;
     // 体感鼠标：相对移动光标 (dx 右为正, dy 下为正)。
     virtual void MoveMouse(int dx, int dy) = 0;
     // 体感鼠标：模拟鼠标左键单击（按下+抬起）。
@@ -290,6 +292,7 @@ private:
     void HandleButtonClick(const StateEvent& event, const std::string& device_id);
     void HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id);
     void HandleTapEvent(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderRotate(const StateEvent& event, const std::string& device_id);
     void HandleMotionEvent(const MotionEvent& event, const std::string& device_id);
     // 体感鼠标模式是否对该设备开启。返回切换后的状态（true=进入，false=退出）。
     bool ToggleAirMouse(const std::string& device_id);

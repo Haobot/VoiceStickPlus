@@ -8,6 +8,7 @@
 
 static const char *TAG = "stick_s3_board";
 static i2c_master_bus_handle_t s_i2c_bus;
+static i2c_port_t s_i2c_port = I2C_NUM_1;
 static i2c_master_dev_handle_t s_pmic_dev;
 
 #define STICK_S3_I2C_FREQ_HZ 100000
@@ -159,6 +160,7 @@ static esp_err_t init_i2c(void)
         uint8_t device_id = 0;
         last_err = pmic_read_reg(M5PM1_REG_DEVICE_ID, &device_id);
         if (last_err == ESP_OK) {
+            s_i2c_port = candidates[i].port;
             ESP_LOGI(TAG, "I2C probe port %d sda=%d scl=%d -> ok id=0x%02x",
                      candidates[i].port, candidates[i].sda, candidates[i].scl, device_id);
             return ESP_OK;
@@ -255,6 +257,11 @@ bool stick_s3_front_button_pressed(void)
 i2c_master_bus_handle_t stick_s3_board_i2c_bus(void)
 {
     return s_i2c_bus;
+}
+
+i2c_port_t stick_s3_board_i2c_port(void)
+{
+    return s_i2c_port;
 }
 
 esp_err_t stick_s3_board_battery_voltage_mv(int *voltage_mv)

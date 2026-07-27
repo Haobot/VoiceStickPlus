@@ -14,8 +14,8 @@
 
 约束与前提：
 
-- MiniEncoderC 与 StickS3 的 HAT 口结构不兼容（官方说明），用户自行接线，I2C 走 G9/G10。
-- **Grove 口 5V 保持不启用**，固件不动 PMIC 的 BOOST_EN；编码器供电由用户接线负责。
+- MiniEncoderC 插在 StickS3 顶部 8pin Hat 排针（真机验证修正：早期假设的 Grove G9/G10 接线未采用），按接线图 I2C 走 SDA=G8 / SCL=G0。
+- **Grove 口 5V 保持不启用**，固件不动 PMIC 的 BOOST_EN；编码器由 Hat 排针供电。
 - 编码器是 I2C 外设，**不能作为深睡唤醒源**；主键仍是唯一唤醒键。
 - 桌面端本次只改 Windows；macOS 不改代码，仅协议文档同步。
 - 旋转箭头仅空闲态生效（仿 `tap_to_arrow` 门控）：录音中、识别中、体感鼠标态下不注入。
@@ -23,7 +23,7 @@
 ## 2. 总体架构
 
 ```text
-MiniEncoderC (I2C @0x42, G9/G10)
+MiniEncoderC (I2C @0x42, Hat 排针 SDA=G8/SCL=G0)
    │  10ms 轮询（esp_timer，由 main.c 持有）
    ▼
 mini_encoder_c 组件：读按钮(0x20) / 读增量(0x10) / 写 LED(0x30)
@@ -150,9 +150,9 @@ state_tx 新增 JSON 事件：
 
 - `Doc/Ref/protocol.md`：`encoder_rotate` 事件定义。
 - `AGENTS.md` 与 `CLAUDE.md` 同步更新：
-  - 板级硬件映射表加 MiniEncoderC 行（I2C @0x42，G9/G10，自行接线）。
+  - 板级硬件映射表加 MiniEncoderC 行（I2C @0x42，顶部 Hat 排针 SDA=G8/SCL=G0）。
   - 配置节加 `encoder_to_arrow` / `encoder_rotation_invert`。
-  - 注意事项加两条：编码器键不能作为深睡唤醒源；Grove 5V 保持不启用、编码器供电由外部接线负责。
+  - 注意事项加两条：编码器键不能作为深睡唤醒源；Grove 5V 保持不启用、编码器由 Hat 排针供电。
   - `firmware/components/` 组件清单从 5 个更新为 6 个。
 
 ## 9. 验证计划
