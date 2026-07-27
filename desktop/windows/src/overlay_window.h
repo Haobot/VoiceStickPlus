@@ -34,6 +34,10 @@ public:
     void ShowFinalCountdown(const std::string& text, std::function<void()> on_complete);
     void ShowPausedFinal(const std::string& text);
     void ShowError(const std::string& text, std::function<void()> on_complete);
+    // 显示一条临时消息，duration_ms 后自动隐藏（复用 kAutoHideTimerId）。
+    // 用于热词处理结果/错误反馈等一次性提示。
+    void ShowTimedMessage(const std::string& text, int duration_ms,
+                          std::function<void()> on_complete = {});
     void Hide(std::function<void()> on_hidden = {});
     void SetThemeColor(OverlayThemeColor color);
     void SetThemeSize(OverlayThemeSize size);
@@ -45,7 +49,7 @@ public:
     void OnDpiChanged(UINT new_dpi, const RECT* suggested_rect);
 
 private:
-    enum class Mode { kListening, kCountdown, kPaused, kError, kHidden, kRefining };
+    enum class Mode { kListening, kCountdown, kPaused, kError, kHidden, kRefining, kInfo };
 
     void Show(Mode mode, const std::string& text, const std::string& hint = "",
               bool skip_text_transition = false);
