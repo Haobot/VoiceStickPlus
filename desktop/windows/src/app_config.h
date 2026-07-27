@@ -156,6 +156,9 @@ struct AppConfig {
     // 热词处理：划词加词时用 LLM 从选中长文中提炼热词，只把提炼结果写入热词表。
     // 复用 llm_base_url/llm_api_key/llm_model。默认关闭。
     bool hotword_process_enabled = false;
+    // 热词候选挖掘：每次识别会话完成后异步让 LLM 从最终文本提炼候选热词，
+    // 同一词达阈值后经托盘通知+设置-热词区人工确认入表。默认关闭（多一次 LLM 调用）。
+    bool hotword_mining_enabled = false;
     // 热词提炼 system prompt 覆盖；为空时使用内置默认 prompt。
     std::string hotword_process_prompt;
     InteractionMode interaction_mode = InteractionMode::kHoldToTalk;

@@ -1,7 +1,11 @@
 #include "llm_refinement_client.h"
 
+#include "cJSON.h"
+
 #include <algorithm>
 #include <cctype>
+#include <memory>
+#include <set>
 #include <utility>
 
 namespace voicestick {
@@ -13,6 +17,26 @@ std::string Trim(std::string value) {
     value.erase(value.begin(), std::find_if_not(value.begin(), value.end(), is_space));
     value.erase(std::find_if_not(value.rbegin(), value.rend(), is_space).base(), value.end());
     return value;
+}
+
+// ASCII 忽略大小写比较（热词/候选均为 ASCII 为主，足够用）。
+bool EqualsCaseInsensitive(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ContainsCaseInsensitive(const std::string& text, const std::string& needle) {
+    if (needle.empty() || needle.size() > text.size()) return false;
+    for (std::size_t i = 0; i + needle.size() <= text.size(); ++i) {
+        if (EqualsCaseInsensitive(text.substr(i, needle.size()), needle)) return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -92,6 +116,88 @@ bool LLMRefinementClient::RefineResultKeepsHotwords(const std::string& original,
         if (refined.find(hotword) == std::string::npos) return false;
     }
     return true;
+}
+
+void LLMRefinementClient::ExtractHotwordCandidates(
+    std::string text,
+    std::vector<std::string> hotwords,
+    std::function<void(bool, std::vector<std::string>)> completion) const {
+    ChatAsync(BuildHotwordExtractionPrompt(hotwords), text,
+              [text = std::move(text), hotwords = std::move(hotwords),
+               completion = std::move(completion)](bool ok, std::string response) mutable {
+                  if (!ok) {
+                      completion(false, {});
+                      return;
+                  }
+                  completion(true, ParseHotwordExtractionResponse(response, text, hotwords));
+              });
+}
+
+std::string LLMRefinementClient::BuildHotwordExtractionPrompt(
+    const std::vector<std::string>& hotwords) {
+    std::string prompt =
+        "你是热词候选提取器。从语音识别结果文本中提取可能是专有名词的词或短语："
+        "产品名、项目名、公司名、技术术语、文件名、代号等。\n"
+        "规则：\n"
+        "• 只提取文本中实际出现的内容，严格保留原始拼写与大小写，不臆造、不翻译、不纠错。\n"
+        "• 普通词汇、常见英文单词、人称代词与完整句子不要提取。\n"
+        "• 已知热词表中的条目不要重复提取。\n"
+        "• 最多输出 5 个。\n"
+        "• 只输出 JSON 数组（如 [\"DeepSeek\", \"Stack Chain\"]），没有候选时输出 []；"
+        "不要输出解释或其他任何内容。";
+    if (hotwords.empty()) return prompt;
+    prompt += "\n已知热词表：";
+    for (std::size_t i = 0; i < hotwords.size(); ++i) {
+        if (i != 0) prompt += ", ";
+        prompt += hotwords[i];
+    }
+    prompt += "。";
+    return prompt;
+}
+
+std::vector<std::string> LLMRefinementClient::ParseHotwordExtractionResponse(
+    const std::string& response,
+    const std::string& source_text,
+    const std::vector<std::string>& hotwords) {
+    // 容错：LLM 可能在 JSON 数组前后包裹解释文字，截取首个 [...] 片段解析。
+    const auto start = response.find('[');
+    const auto end = response.rfind(']');
+    if (start == std::string::npos || end == std::string::npos || end <= start) return {};
+    auto* root = cJSON_Parse(response.substr(start, end - start + 1).c_str());
+    if (!root) return {};
+    auto cleanup = std::unique_ptr<cJSON, decltype(&cJSON_Delete)>(root, cJSON_Delete);
+    if (!cJSON_IsArray(root)) return {};
+
+    std::vector<std::string> candidates;
+    std::set<std::string> seen_lower;
+    cJSON* item = nullptr;
+    cJSON_ArrayForEach(item, root) {
+        if (!cJSON_IsString(item) || item->valuestring == nullptr) continue;
+        const std::string word = Trim(item->valuestring);
+        if (word.size() < 2 || word.size() > 40) continue;
+        // 至多 3 个词，避免整句被当成候选。
+        int word_count = 1;
+        for (char ch : word) {
+            if (ch == ' ') ++word_count;
+        }
+        if (word_count > 3) continue;
+        // 防臆造：候选必须在原文中实际出现（忽略大小写）。
+        if (!ContainsCaseInsensitive(source_text, word)) continue;
+        bool is_hotword = false;
+        for (const auto& hotword : hotwords) {
+            if (EqualsCaseInsensitive(hotword, word)) {
+                is_hotword = true;
+                break;
+            }
+        }
+        if (is_hotword) continue;
+        std::string lower = word;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (!seen_lower.insert(lower).second) continue;
+        candidates.push_back(word);
+    }
+    return candidates;
 }
 
 } // namespace voicestick

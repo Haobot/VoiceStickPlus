@@ -1271,6 +1271,67 @@ void TestHotwordCandidateMiner() {
     assert(LoadHotwordCandidates(temp).counts.empty());
 }
 
+void TestHotwordExtractionPromptAndParse() {
+    // prompt 附已知热词表（"已知热词表："列表行）；空表时不附加（注意基础规则文本里
+    // 含「已知热词表中的条目」字样，断言要匹配带冒号的列表行）。
+    const auto prompt = LLMRefinementClient::BuildHotwordExtractionPrompt({"AGENTS.md", "DeepSeek"});
+    assert(prompt.find("AGENTS.md") != std::string::npos);
+    assert(prompt.find("JSON") != std::string::npos);
+    assert(prompt.find("已知热词表：") != std::string::npos);
+    assert(LLMRefinementClient::BuildHotwordExtractionPrompt({}).find("已知热词表：") == std::string::npos);
+
+    const std::string source = "我们研究一下 Stack Chain 是怎么使用的，顺便问问 DeepSeek。";
+    const std::vector<std::string> hotwords = {"DeepSeek"};
+
+    // 正常 JSON 数组：过滤已在热词表的 DeepSeek，保留 Stack Chain。
+    auto words = LLMRefinementClient::ParseHotwordExtractionResponse(
+        "[\"Stack Chain\", \"DeepSeek\"]", source, hotwords);
+    assert((words == std::vector<std::string>{"Stack Chain"}));
+
+    // 前后裹解释文字也能容错解析。
+    words = LLMRefinementClient::ParseHotwordExtractionResponse(
+        "候选如下：[\"Stack Chain\"] 以上。", source, hotwords);
+    assert((words == std::vector<std::string>{"Stack Chain"}));
+
+    // 无候选 / 垃圾输出 / 非字符串元素 → 空。
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[]", source, hotwords).empty());
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("没有候选", source, hotwords).empty());
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[1, true, null]", source, hotwords).empty());
+
+    // 防臆造：不在原文出现的词被丢弃。
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[\"OpenAI\"]", source, {}).empty());
+
+    // 忽略大小写：原文中的 "Stack Chain" 能匹配候选 "stack chain"；
+    // 与热词仅大小写不同也算重复（"deepseek" 命中热词 "DeepSeek"）。
+    words = LLMRefinementClient::ParseHotwordExtractionResponse("[\"stack chain\"]", source, hotwords);
+    assert((words == std::vector<std::string>{"stack chain"}));
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[\"deepseek\"]", source, hotwords).empty());
+
+    // 过短 / 超长 / 超 3 词被过滤；同词大小写去重只留第一个。
+    const std::string words_source = "alpha beta gamma delta";
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[\"x\"]", words_source, {}).empty());
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse(
+               "[\"alpha beta gamma delta\"]", words_source, {}).empty());
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse("[\"alpha beta\"]", words_source, {})
+            == std::vector<std::string>{"alpha beta"}));
+    const std::string long_source = "abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz";
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse(
+               "[\"abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz\"]", long_source, {}).empty());
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse(
+                "[\"Stack Chain\", \"stack chain\"]", source, hotwords)
+            == std::vector<std::string>{"Stack Chain"}));
+
+    // hotword_mining_enabled 配置往返，默认关闭。
+    assert(!AppConfig::Defaults().hotword_mining_enabled);
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_mining_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.hotword_mining_enabled = true;
+    config.Save(temp);
+    assert(AppConfig::Load(temp).hotword_mining_enabled);
+    std::filesystem::remove(temp);
+}
+
 void TestFirmwareManifestParsingAndVersionCompare() {
     const std::string json =
         "{\"hardware\":\"sticks3\",\"version\":\"0.2.3\",\"ota_url\":\"https://example.test/ota.bin\","
@@ -5554,6 +5615,7 @@ int main() {
     TestHotwordProcessConfig();
     TestHotwordExtractorPromptAndParse();
     TestHotwordCandidateMiner();
+    TestHotwordExtractionPromptAndParse();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();

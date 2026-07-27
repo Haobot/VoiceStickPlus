@@ -42,6 +42,24 @@ public:
     static bool RefineResultKeepsHotwords(const std::string& original,
                                           const std::string& refined,
                                           const std::vector<std::string>& hotwords);
+
+    // 热词候选提炼（异步 best-effort）：从最终文本中提炼可能是专有名词且不在热词表
+    // 中的候选词，completion(true, words)；失败回调 (false, {})。覆盖 diff 挖掘够不到
+    // 的场景（ASR 本来就识别对、或 LLM 不认识的全新词无法被纠错引入）。
+    void ExtractHotwordCandidates(std::string text,
+                                  std::vector<std::string> hotwords,
+                                  std::function<void(bool, std::vector<std::string>)> completion) const;
+
+    // 提炼 prompt（纯函数可单测）：要求只输出 JSON 数组、保留原始大小写、附已知热词表。
+    static std::string BuildHotwordExtractionPrompt(const std::vector<std::string>& hotwords);
+
+    // 提炼结果解析（纯函数可单测）：容错截取首个 JSON 数组，逐条过滤——
+    // 长度 2..40、至多 3 个词、必须在原文中实际出现（防臆造）、不与已有热词重复
+    // （比较均忽略大小写）。
+    static std::vector<std::string> ParseHotwordExtractionResponse(
+        const std::string& response,
+        const std::string& source_text,
+        const std::vector<std::string>& hotwords);
 };
 
 } // namespace voicestick

@@ -371,6 +371,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "refine_enabled") config.refine_enabled = BoolValue(value, config.refine_enabled);
     if (key == "refine_prompt") config.refine_prompt = value;
     if (key == "hotword_process_enabled") config.hotword_process_enabled = BoolValue(value, config.hotword_process_enabled);
+    if (key == "hotword_mining_enabled") config.hotword_mining_enabled = BoolValue(value, config.hotword_mining_enabled);
     if (key == "hotword_process_prompt") config.hotword_process_prompt = value;
     if (key == "interaction_mode") config.interaction_mode = InteractionModeFromName(value);
     if (key == "ui_language") config.ui_language = UiLanguageFromName(value);
@@ -515,6 +516,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "refine_enabled")) config.refine_enabled = *value;
         if (auto value = TomlString(table, "refine_prompt")) config.refine_prompt = *value;
         if (auto value = TomlBool(table, "hotword_process_enabled")) config.hotword_process_enabled = *value;
+        if (auto value = TomlBool(table, "hotword_mining_enabled")) config.hotword_mining_enabled = *value;
         if (auto value = TomlString(table, "hotword_process_prompt")) config.hotword_process_prompt = *value;
         if (auto value = TomlString(table, "interaction_mode")) config.interaction_mode = InteractionModeFromName(*value);
         if (auto value = TomlString(table, "ui_language")) config.ui_language = UiLanguageFromName(*value);
@@ -678,6 +680,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "refine_enabled = " << (refine_enabled ? "true" : "false") << "\n";
     output << "refine_prompt = \"" << TomlEscape(refine_prompt) << "\"\n";
     output << "hotword_process_enabled = " << (hotword_process_enabled ? "true" : "false") << "\n";
+    output << "hotword_mining_enabled = " << (hotword_mining_enabled ? "true" : "false") << "\n";
     output << "hotword_process_prompt = \"" << TomlEscape(hotword_process_prompt) << "\"\n";
     output << "interaction_mode = \"" << InteractionModeName(interaction_mode) << "\"\n";
     output << "ui_language = \"" << UiLanguageName(ui_language) << "\"\n";

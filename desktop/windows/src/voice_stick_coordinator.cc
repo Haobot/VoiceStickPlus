@@ -1810,37 +1810,66 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                 }
                 CancelStreamingRefinement();
                 completion(true, final_text);
+                MaybeExtractHotwordCandidates(final_text);
             },
             cancel);
         return;
     }
     completion(true, text);
+    MaybeExtractHotwordCandidates(text);
 }
 
 void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::string& original,
                                                                 const std::string& refined) {
     const auto mined = MineRefinementCandidates(original, refined, config_.asr_hotwords);
-    if (mined.empty()) return;
+    if (!mined.empty()) RecordAndNotifyHotwordCandidates(mined);
+}
 
-    const auto path = config_.ConfigPath().parent_path() / "hotword_candidates.json";
-    if (!hotword_candidates_loaded_) {
-        hotword_candidates_ = LoadHotwordCandidates(path);
-        hotword_candidates_loaded_ = true;
+void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& final_text) {
+    if (!config_.hotword_mining_enabled || config_.llm_api_key.empty() || final_text.empty()) {
+        LogCoordinatorLine(std::string("hotword extraction skipped: ") +
+                           (!config_.hotword_mining_enabled
+                                ? "mining_disabled"
+                                : (config_.llm_api_key.empty() ? "no_llm_key" : "empty_text")));
+        return;
     }
-    const auto suggestions = RecordHotwordCandidates(hotword_candidates_, mined);
-    for (const auto& word : suggestions) hotword_candidates_.notified.insert(word);
-    SaveHotwordCandidates(path, hotword_candidates_);
+    LogCoordinatorLine("hotword extraction started");
+    auto alive = alive_;
+    refiner_.ExtractHotwordCandidates(
+        final_text, config_.asr_hotwords,
+        [this, alive](bool ok, std::vector<std::string> words) {
+            if (!alive->load()) return;
+            LogCoordinatorLine("hotword extraction finished ok=" + std::string(ok ? "1" : "0") +
+                               " candidates=" + std::to_string(words.size()));
+            if (!ok || words.empty()) return;
+            RecordAndNotifyHotwordCandidates(words);
+        });
+}
+
+void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words) {
+    const auto path = config_.ConfigPath().parent_path() / "hotword_candidates.json";
+    std::vector<std::string> suggestions;
+    {
+        std::lock_guard lock(hotword_candidates_mutex_);
+        if (!hotword_candidates_loaded_) {
+            hotword_candidates_ = LoadHotwordCandidates(path);
+            hotword_candidates_loaded_ = true;
+        }
+        suggestions = RecordHotwordCandidates(hotword_candidates_, words);
+        for (const auto& word : suggestions) hotword_candidates_.notified.insert(word);
+        SaveHotwordCandidates(path, hotword_candidates_);
+    }
 
     if (!suggestions.empty()) {
         const auto language = EffectiveUiLanguage(config_.ui_language);
-        std::string words;
+        std::string joined;
         for (std::size_t i = 0; i < suggestions.size(); ++i) {
-            if (i != 0) words += ", ";
-            words += suggestions[i];
+            if (i != 0) joined += ", ";
+            joined += suggestions[i];
         }
-        LogCoordinatorLine("hotword candidates suggested: " + words);
+        LogCoordinatorLine("hotword candidates suggested: " + joined);
         ui_->ShowNotification(Tr(StringId::kHotwordCandidateNotifyTitle, language),
-                              words + Tr(StringId::kHotwordCandidateNotifyBodySuffix, language));
+                              joined + Tr(StringId::kHotwordCandidateNotifyBodySuffix, language));
     }
 }
 
