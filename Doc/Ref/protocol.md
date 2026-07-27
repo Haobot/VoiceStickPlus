@@ -79,6 +79,7 @@ Currently emitted state events:
 {"event":"button_up","button":"secondary","duration_ms":90}
 {"event":"button_double_click","button":"primary"}
 {"event":"tap","button":"double"}
+{"event":"encoder_rotate","direction":"cw","steps":2}
 ```
 
 Buttons are named by role instead of physical placement. On StickS3, the front
@@ -101,6 +102,17 @@ last input confirmation. See `Doc/Plan/imu-air-mouse.md`.
 (via the BMI270 accelerometer + gyroscope software state machine). The `button`
 field carries the tap kind (`"double"`). The desktop responds by injecting a Down
 arrow key event when `tap_to_arrow` is enabled. See `Doc/Plan/imu-tap-detection.md`.
+
+`encoder_rotate` is emitted when the firmware's MiniEncoderC rotary encoder
+(I2C @0x42, wired to G9/G10) accumulates rotation within one 10 ms poll window.
+`direction` carries the raw physical direction (`"cw"` | `"ccw"`) and `steps`
+the accumulated detents in that direction (>= 1). The firmware performs no
+semantic mapping; the desktop maps rotation to arrow keys (default cw → Down,
+ccw → Up, one key press per step, flippable via `encoder_rotation_invert`) and
+only injects when idle — gated off while recording, recognizing, or in
+air-mouse mode, mirroring the `tap_to_arrow` gating. The master switch is
+`encoder_to_arrow`. The desktop additionally clamps `steps` to 64 per frame
+as a defensive bound against malformed frames.
 
 ### Motion Frame
 
