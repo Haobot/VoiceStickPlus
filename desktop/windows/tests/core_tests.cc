@@ -10,6 +10,7 @@
 #include "byte_utils.h"
 #include "cJSON.h"
 #include "firmware_manifest.h"
+#include "hotword_extractor.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
@@ -1061,6 +1062,40 @@ void TestHotwordProcessConfig() {
     assert(loaded.hotword_process_enabled == true);
     assert(loaded.hotword_process_prompt == config.hotword_process_prompt);
     std::filesystem::remove(temp);
+}
+
+void TestHotwordExtractorPromptAndParse() {
+    // 内置默认提示词含提取语义关键词；覆盖值 Trim 后原样返回。
+    const auto prompt = HotwordExtractor::BuildExtractPrompt("");
+    assert(prompt.find("热词") != std::string::npos);
+    assert(prompt.find("专有名词") != std::string::npos);
+    const auto custom = HotwordExtractor::BuildExtractPrompt("  my extract prompt  ");
+    assert(custom == "my extract prompt");
+
+    // 解析：换行/逗号切分、Trim、去重（复用 ParseHotwordList 语义）。
+    const auto words = HotwordExtractor::ParseExtractResult("小智\nVoiceStick\r\n小智\n豆包,AGI");
+    assert((words == std::vector<std::string>{"小智", "VoiceStick", "豆包", "AGI"}));
+
+    // 空输入 / 纯空白 → 空结果。
+    assert(HotwordExtractor::ParseExtractResult("").empty());
+    assert(HotwordExtractor::ParseExtractResult("  \n \n").empty());
+
+    // 单词超过 64 字符被过滤。
+    const std::string long_word(65, 'x');
+    assert(HotwordExtractor::ParseExtractResult(long_word).empty());
+
+    // 总量截断到 20 个。
+    std::string many;
+    for (int i = 0; i < 25; ++i) {
+        many += "w" + std::to_string(i);
+        many += "\n";
+    }
+    assert(HotwordExtractor::ParseExtractResult(many).size() == 20);
+
+    // DiffNewHotwords：保序、剔除已存在词、自身去重。
+    const auto diff = HotwordExtractor::DiffNewHotwords({"a", "b", "c", "a"}, {"b"});
+    assert((diff == std::vector<std::string>{"a", "c"}));
+    assert(HotwordExtractor::DiffNewHotwords({"b"}, {"b"}).empty());
 }
 
 void TestFirmwareManifestParsingAndVersionCompare() {
@@ -5342,6 +5377,7 @@ int main() {
     TestConfigTemplateSeeding();
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();
+    TestHotwordExtractorPromptAndParse();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
