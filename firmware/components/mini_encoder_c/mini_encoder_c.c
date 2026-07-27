@@ -99,14 +99,14 @@ static esp_err_t probe(void)
 
 esp_err_t mini_encoder_c_init(void)
 {
-    // 用户自行接线，SDA/SCL 线序可能接反：先按宏定义线序探测 0x42，
-    // 失败则交换线序重试一次，仍失败标记 absent（优雅降级，行为与无编码器一致）。
+    // MiniEncoderC Hat 插顶部 8pin 排针，按接线图 SDA=G8/SCL=G0；交换线序探测一次
+    // 作为容错，仍失败标记 absent（优雅降级，行为与无编码器一致）。
     const struct {
         gpio_num_t sda;
         gpio_num_t scl;
     } candidates[] = {
-        {STICK_S3_PIN_GROVE_SDA, STICK_S3_PIN_GROVE_SCL},
-        {STICK_S3_PIN_GROVE_SCL, STICK_S3_PIN_GROVE_SDA},
+        {STICK_S3_PIN_HAT_SDA, STICK_S3_PIN_HAT_SCL},
+        {STICK_S3_PIN_HAT_SCL, STICK_S3_PIN_HAT_SDA},
     };
     esp_err_t last_err = ESP_FAIL;
 

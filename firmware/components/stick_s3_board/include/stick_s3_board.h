@@ -11,10 +11,15 @@
 #define STICK_S3_PIN_I2C_SCL 48
 #define STICK_S3_PIN_I2C_SDA 47
 
-// Grove 口第二路 I2C（MiniEncoderC 等外设，用户自行接线）。与内部 G47/G48 总线
+// Grove 口第二路 I2C 引脚（备用，当前未接外设）。与内部 G47/G48 总线
 // 分属不同 I2C 端口。Grove 口 5V 保持不启用（不动 PMIC BOOST_EN），外设供电由外部接线负责。
 #define STICK_S3_PIN_GROVE_SDA 9
 #define STICK_S3_PIN_GROVE_SCL 10
+
+// 顶部 8pin Hat 排针第二路 I2C（MiniEncoderC Hat）。按 MiniEncoderC Hat 接线图：
+// SDA=G8，SCL=G0。G0 是 strapping 引脚，Hat 板载上拉使其 boot 时为高，不影响正常启动。
+#define STICK_S3_PIN_HAT_SDA 8
+#define STICK_S3_PIN_HAT_SCL 0
 
 #define STICK_S3_PIN_ES8311_MCLK 18
 // Pin names follow the codec's perspective:
