@@ -179,7 +179,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `components/voice_ble/`：GATT 服务、通知、控制写入、BLE OTA。
 - `components/ui_status/`：ST7789/LVGL 渲染、亮度、休眠、OTA 进度。
 - `components/bmi270/`：BMI270 IMU 驱动。
-- `components/mini_encoder_c/`：MiniEncoderC 编码器驱动（I2C @0x42，G9/G10 第二路总线，按钮/旋转增量/SK6812 LED，轮询式；探测失败优雅降级）。
+- `components/mini_encoder_c/`：MiniEncoderC 编码器驱动（I2C @0x42，顶部 Hat 排针 SDA=G8/SCL=G0 第二路总线，按钮/旋转增量/SK6812 LED，轮询式；探测失败优雅降级）。
 - `components/stick_s3_board/`：板级初始化，引脚定义在 `include/stick_s3_board.h`。
 
 板级硬件映射：
@@ -191,7 +191,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 | PMIC IRQ | GPIO13 | 电源管理芯片中断 |
 | LCD 背光 | GPIO38 | PWM 调光 |
 | IMU | BMI270 | I2C，体感鼠标与敲击检测 |
-| MiniEncoderC 编码器 | I2C @0x42，SDA=G9 / SCL=G10（自行接线，第二路 I2C 总线） | 按钮等价主键，旋转映射方向键，录音时亮红灯；不能作为深睡唤醒源 |
+| MiniEncoderC 编码器 | I2C @0x42，顶部 Hat 排针 SDA=G8 / SCL=G0（第二路 I2C 总线） | 按钮等价主键，旋转映射方向键，录音时亮红灯；不能作为深睡唤醒源 |
 | 音频 codec | ES8311 | I2S，16 kHz / 16 bit / mono |
 | 显示屏 | ST7789 | 135 × 240 竖屏，SPI |
 
@@ -338,5 +338,5 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - `Doc/` 下分四个子目录：`Ref/`（协议、发布流程、ASR 帧格式、低功耗等参考，另有 `OpenViking.md`）、`Plan/`（设计方案，大写 P，不再用 `Doc/Rfc/`）、`Guide/`（火山/腾讯 ASR WebSocket 接入、API 概览、air-mouse 调参等第三方服务接入指南）、`Expe/`（经验教训记录）。
 - `scripts/` 下除各平台构建脚本外，还有 `probe_asr_websocket_ping.py`（ASR 连通性探测）、`update-appcast.py`（生成 `appcast.xml`）、`idf_cli.py`（Windows 上包装 `idf.py`）、`png_to_lvgl_argb_bin.py` / `slice_cat_sprites.py` / `tune_cat_sprites.py`（LVGL 图片资源处理）、`scripts/e2e_test/`（L0–L4 真机验证，见上节测试策略）等辅助脚本。
 - MiniEncoderC 编码器键是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）仍是唯一唤醒键。
-- Grove 口 5V 保持不启用（固件不动 PMIC BOOST_EN），MiniEncoderC 供电由外部接线负责。
+- Grove 口 5V 保持不启用（固件不动 PMIC BOOST_EN），MiniEncoderC 由顶部 Hat 排针供电。
 - 仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。

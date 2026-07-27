@@ -104,7 +104,7 @@ field carries the tap kind (`"double"`). The desktop responds by injecting a Dow
 arrow key event when `tap_to_arrow` is enabled. See `Doc/Plan/imu-tap-detection.md`.
 
 `encoder_rotate` is emitted when the firmware's MiniEncoderC rotary encoder
-(I2C @0x42, wired to G9/G10) accumulates rotation within one 10 ms poll window.
+(I2C @0x42, on the top Hat header, SDA=G8 / SCL=G0) accumulates rotation within one 10 ms poll window.
 `direction` carries the raw physical direction (`"cw"` | `"ccw"`) and `steps`
 the accumulated detents in that direction (>= 1). The firmware performs no
 semantic mapping; the desktop maps rotation to arrow keys (default cw → Down,
