@@ -351,6 +351,12 @@ private:
     // 由用户在设置-热词区确认后才真正入表。
     void MineHotwordCandidatesFromRefinement(const std::string& original,
                                              const std::string& refined);
+    // LLM 主动提炼挖掘（hotword_mining_enabled）：识别会话完成后异步让 LLM 从
+    // 最终文本提炼候选热词，覆盖 diff 挖掘够不到的场景（ASR 本来就识别对、或
+    // LLM 不认识的全新词无法被纠错引入）。不阻塞粘贴。
+    void MaybeExtractHotwordCandidates(const std::string& final_text);
+    // 两个挖掘通道共用的记录+通知：懒加载存储、计数、达阈值弹托盘通知。
+    void RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words);
     void BeginWaitingForAudioEnd(std::string_view reason);
     void ScheduleAudioEndTimeout(std::optional<std::uint32_t> session_id,
                                  std::optional<std::string> device_id);
@@ -497,9 +503,11 @@ private:
     std::mutex firmware_mutex_;
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};
     std::shared_ptr<std::atomic_bool> refinement_cancel_token_;
-    // 热词候选挖掘存储（懒加载，见 MineHotwordCandidatesFromRefinement）。
+    // 热词候选挖掘存储（懒加载，见 RecordAndNotifyHotwordCandidates）。
+    // 精修回调与 LLM 提炼回调都可能落在后台线程，用互斥锁串行化。
     HotwordCandidateStore hotword_candidates_;
     bool hotword_candidates_loaded_ = false;
+    std::mutex hotword_candidates_mutex_;
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;
