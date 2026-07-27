@@ -595,6 +595,10 @@ static uint32_t start_recording(void)
     }
 
     s_recording = true;
+    // 录音期间编码器 LED 亮红灯；LED 写失败静默忽略，不影响录音主链路。
+    if (mini_encoder_c_present()) {
+        (void)mini_encoder_c_set_led(255, 0, 0);
+    }
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
     restart_poweroff_timer();
@@ -611,6 +615,10 @@ static uint32_t stop_recording(void)
     const uint32_t session_id = audio_pipeline_session_id();
     s_recording = false;
     audio_pipeline_stop();
+    // audio_pipeline_stop 同步等 drain 完成才返回，此处即录音会话真正结束点，灭灯。
+    if (mini_encoder_c_present()) {
+        (void)mini_encoder_c_set_led(0, 0, 0);
+    }
     release_recording_pm_locks();
     restart_display_dim_timer();
     restart_poweroff_timer();
@@ -1345,6 +1353,10 @@ static void app_event_task(void *arg)
             (void)esp_timer_stop(s_double_click_timer);
             stop_host_response_timer();
             audio_pipeline_stop();
+            // 断连直接停 pipeline（不走 stop_recording），同样灭编码器 LED。
+            if (mini_encoder_c_present()) {
+                (void)mini_encoder_c_set_led(0, 0, 0);
+            }
             release_recording_pm_locks();
             release_ota_pm_locks();
             ui_status_set_pairing(voice_ble_device_name());
