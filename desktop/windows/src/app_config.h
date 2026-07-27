@@ -172,6 +172,10 @@ struct AppConfig {
     ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
     // 敲击手势：双击设备外壳时注入下方向键，用于在候选/选项间向下切换。
     bool tap_to_arrow = false;
+    // MiniEncoderC 编码器：旋转注入方向键开关（顺时针→Down、逆时针→Up，每格一次）。默认开启。
+    bool encoder_to_arrow = true;
+    // 编码器旋转方向翻转：true 时顺时针→Up、逆时针→Down。默认关闭。
+    bool encoder_rotation_invert = false;
     // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
     int tap_sensitivity = 5;
     // 体感鼠标：左右（yaw）灵敏度档位 1~10，映射 gain_x=sensitivity_x×16。默认 5。
