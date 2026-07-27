@@ -27,6 +27,7 @@ esp_err_t mini_encoder_c_read_button(bool *pressed);
 
 // 读旋转增量：寄存器 0x10，int32 LE，读后清零语义（真机验证；
 // 若不行则改读 0x00 计数器做软件差分，见 .c 中注释）。正值=顺时针（cw）。
+// 注意单位是正交计数：真机实测每格（detent）= 2 计数，格数折算在 main.c 轮询层完成。
 esp_err_t mini_encoder_c_read_delta(int32_t *delta);
 
 // 写 SK6812 LED 颜色：寄存器 0x30，写 3 字节 R,G,B。写失败静默忽略（不影响录音主链路）。

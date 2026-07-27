@@ -110,6 +110,9 @@ static esp_timer_handle_t s_tap_poll_timer;
 static esp_timer_handle_t s_air_mouse_poll_timer;
 static esp_timer_handle_t s_encoder_poll_timer;
 static bool s_encoder_button_pressed;
+// MiniEncoderC 每格（detent）产生 2 个正交计数（真机验证）：跨轮询窗口累计计数，
+// 每满 2 个同向计数上报 1 步；方向反转时丢弃反向余数。取值为 [-1,1] 的余数。
+static int32_t s_encoder_count_rem;
 static bool s_air_mouse_enabled = false;
 static uint32_t s_session_id = 1;
 static QueueHandle_t s_app_event_queue;
@@ -682,8 +685,8 @@ static void queue_primary_up_event(app_input_source_t source, uint32_t request_i
     }
 }
 
-// 旋转增量入队：10ms 轮询窗口内同向增量已由增量寄存器（读后清零）天然合帧，
-// 一次非零读数即一帧。方向在窗口内反转的极端情况按净值方向处理（真机罕见，可接受）。
+// 旋转步数入队：入参已按 2 计数=1 格折算为格数（见 encoder_poll_timer_cb）。
+// 方向在窗口内反转的极端情况按净值方向处理（真机罕见，可接受）。
 // steps 截断到 uint8_t 上限 255。
 static void queue_encoder_rotate_event(int32_t delta)
 {
@@ -1894,7 +1897,16 @@ static void encoder_poll_timer_cb(void *arg)
 
     int32_t delta = 0;
     if (mini_encoder_c_read_delta(&delta) == ESP_OK && delta != 0) {
-        queue_encoder_rotate_event(delta);
+        // 2 计数 = 1 格：跨窗口累计，满 2 个同向计数上报 1 步；方向反转丢弃余数。
+        if ((s_encoder_count_rem > 0) != (delta > 0)) {
+            s_encoder_count_rem = 0;
+        }
+        s_encoder_count_rem += delta;
+        const int32_t steps = s_encoder_count_rem / 2;  // 向零取整，保留符号
+        if (steps != 0) {
+            s_encoder_count_rem -= steps * 2;
+            queue_encoder_rotate_event(steps);
+        }
     }
 }
 
