@@ -54,6 +54,8 @@ LLM 连接参数复用文本精修的 `llm_base_url` / `llm_api_key` / `llm_mode
 
 线程模型：LLM 回调在后台线程完成，回到 UI 线程更新 overlay 与配置（沿用精修的回切模式）。
 
+**会话冲突处理（实现期补充）**：协调器会话活跃（录音/识别/确认倒计时等，`VoiceStickCoordinator::HasActiveSession()`）期间，浮窗被状态机占用，热词处理的全部反馈（含无 key、失败、空结果、全重复、成功）改走托盘气泡（标题「热词处理」），且提炼期间不显示"热词提炼中…"浮窗指示；会话不活跃时维持浮窗 3 秒反馈。
+
 ## 设置对话框
 
 `desktop/windows/src/settings_dialog.cc` 在「文本精修」区块之后新增「热词处理」区块，形态复刻精修区：
