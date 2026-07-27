@@ -288,6 +288,7 @@ private:
     void HandleButtonClick(const StateEvent& event, const std::string& device_id);
     void HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id);
     void HandleTapEvent(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderRotate(const StateEvent& event, const std::string& device_id);
     void HandleMotionEvent(const MotionEvent& event, const std::string& device_id);
     // 体感鼠标模式是否对该设备开启。返回切换后的状态（true=进入，false=退出）。
     bool ToggleAirMouse(const std::string& device_id);

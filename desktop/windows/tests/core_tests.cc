@@ -555,6 +555,15 @@ StateEvent TapEvent(const std::string& kind = "double") {
     return state_event;
 }
 
+// 构造编码器旋转事件（固件上报的 {"event":"encoder_rotate","direction":"cw","steps":2}）。
+StateEvent EncoderRotateEvent(const std::string& direction, std::uint32_t steps) {
+    StateEvent state_event;
+    state_event.event = "encoder_rotate";
+    state_event.direction = direction;
+    state_event.steps = steps;
+    return state_event;
+}
+
 AudioFrame AudioDataFrame(std::uint32_t session_id, std::uint32_t seq, bool is_end = false) {
     AudioFrame frame;
     frame.session_id = session_id;
@@ -1847,6 +1856,127 @@ void TestInputInjectorArrowUpFakeWiring() {
     input.SendArrowUp();
     assert(input.arrow_up_count == 1);
     assert(input.arrow_down_count == 0);
+}
+
+void TestAppConfigEncoderRoundTrip() {
+    // 默认值：旋转注入开、不翻转。
+    assert(AppConfig::Defaults().encoder_to_arrow == true);
+    assert(AppConfig::Defaults().encoder_rotation_invert == false);
+
+    // TOML 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_config_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_to_arrow = false;
+    config.encoder_rotation_invert = true;
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.encoder_to_arrow == false);
+    assert(loaded.encoder_rotation_invert == true);
+    std::filesystem::remove(temp);
+}
+
+void TestEncoderRotateMapsDirectionToArrows() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 默认映射：cw→Down、ccw→Up，每个 step 注入一次。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+
+    assert(input.arrow_down_count == 2);
+    assert(input.arrow_up_count == 1);
+}
+
+void TestEncoderRotateInvertFlipsDirection() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotation_invert = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 翻转后：cw→Up、ccw→Down。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+
+    assert(input.arrow_up_count == 2);
+    assert(input.arrow_down_count == 1);
+}
+
+void TestEncoderRotateDisabledWhenConfigOff() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_to_arrow = false;  // 总开关关闭
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+
+    assert(input.arrow_down_count == 0);
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateIgnoredDuringRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入录音态（hold_to_talk 默认，主键按下即录音）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+
+    // 录音中旋转应被忽略，不注入方向键，也不取消当前录音。
+    assert(input.arrow_down_count == 0);
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateUnknownDirectionTreatedAsCw() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 未知 direction（固件拼写错误/未来新值）兜底按 cw 处理。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("up", 2));
+
+    assert(input.arrow_down_count == 2);
+    assert(input.arrow_up_count == 0);
 }
 
 // 侧键单击在空闲态进入体感鼠标模式，再次单击退出（体感优先决策）。
@@ -5403,6 +5533,12 @@ int main() {
     TestTapThrottledWithin500ms();
     TestTapThrottleRecoversAfter500ms();
     TestInputInjectorArrowUpFakeWiring();
+    TestAppConfigEncoderRoundTrip();
+    TestEncoderRotateMapsDirectionToArrows();
+    TestEncoderRotateInvertFlipsDirection();
+    TestEncoderRotateDisabledWhenConfigOff();
+    TestEncoderRotateIgnoredDuringRecording();
+    TestEncoderRotateUnknownDirectionTreatedAsCw();
     TestCoordinatorAirMouseToggleViaSecondary();
     TestCoordinatorAirMousePrimaryClickIsLeftButton();
     TestCoordinatorMotionMovesCursorOnlyWhenActive();

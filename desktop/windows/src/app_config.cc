@@ -401,6 +401,8 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "show_imu_debug") config.show_imu_debug = BoolValue(value, config.show_imu_debug);
     if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
+    if (key == "encoder_to_arrow") config.encoder_to_arrow = BoolValue(value, config.encoder_to_arrow);
+    if (key == "encoder_rotation_invert") config.encoder_rotation_invert = BoolValue(value, config.encoder_rotation_invert);
     if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
     if (key == "air_mouse_sensitivity_x") config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_x));
     if (key == "air_mouse_sensitivity_y") config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_y));
@@ -594,6 +596,8 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
+        if (auto value = TomlBool(table, "encoder_to_arrow")) config.encoder_to_arrow = *value;
+        if (auto value = TomlBool(table, "encoder_rotation_invert")) config.encoder_rotation_invert = *value;
         if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
         if (auto value = TomlInt(table, "air_mouse_sensitivity_x")) config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(*value);
         if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
@@ -695,6 +699,8 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "show_imu_debug = " << (show_imu_debug ? "true" : "false") << "\n";
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
+    output << "encoder_to_arrow = " << (encoder_to_arrow ? "true" : "false") << "\n";
+    output << "encoder_rotation_invert = " << (encoder_rotation_invert ? "true" : "false") << "\n";
     output << "tap_sensitivity = " << tap_sensitivity << "\n";
     output << "air_mouse_sensitivity_x = " << air_mouse_sensitivity_x << "\n";
     output << "air_mouse_sensitivity_y = " << air_mouse_sensitivity_y << "\n";
