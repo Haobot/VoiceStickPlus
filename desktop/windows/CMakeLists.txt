@@ -65,6 +65,7 @@ add_library(voicestick_core
     src/llm_translation_client.cc
     src/llm_refinement_client.cc
     src/hotword_extractor.cc
+    src/hotword_candidate_miner.cc
     src/localization.cc
     third_party/cjson/cJSON.c
     src/log.cc

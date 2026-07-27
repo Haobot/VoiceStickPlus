@@ -235,6 +235,13 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "No selectable text was found.";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "Selection Too Long";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "Selection is too long to be a hotword and was ignored.";
+    table[Index(StringId::kHotwordCandidateNotifyTitle)] = "Hotword Suggestion";
+    table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
+        " was corrected repeatedly. Review it in Settings - Hotwords.";
+    table[Index(StringId::kSettingsHotwordCandidatesLabel)] =
+        "Suggested hotwords (auto-mined from corrections, added only on your confirmation):";
+    table[Index(StringId::kSettingsHotwordCandidateAddButton)] = "Add";
+    table[Index(StringId::kSettingsHotwordCandidateDismissButton)] = "Dismiss";
 
     // 热词处理（LLM 提炼）
     table[Index(StringId::kHotwordProcessExtracting)] = "Extracting hotwords...";
@@ -464,6 +471,13 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "未找到可划选的文本。";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "选区过长";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "选区过长不适合作为热词，已忽略。";
+    table[Index(StringId::kHotwordCandidateNotifyTitle)] = "热词候选建议";
+    table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
+        " 反复被精修纠正，可在设置-热词中确认加入。";
+    table[Index(StringId::kSettingsHotwordCandidatesLabel)] =
+        "候选热词（从精修纠错中自动挖掘，确认后才会加入）：";
+    table[Index(StringId::kSettingsHotwordCandidateAddButton)] = "加入";
+    table[Index(StringId::kSettingsHotwordCandidateDismissButton)] = "忽略";
 
     // 热词处理（LLM 提炼）
     table[Index(StringId::kHotwordProcessExtracting)] = "热词提炼中…";

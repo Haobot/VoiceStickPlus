@@ -1,5 +1,6 @@
 #include "settings_dialog.h"
 #include "dpi_util.h"
+#include "hotword_candidate_miner.h"
 #include "hotword_extractor.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
@@ -107,6 +108,14 @@ HWND CreateMultilineEdit(HWND parent, int x, int y, int w, int h, UINT id, HINST
     return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
                                ES_AUTOVSCROLL | ES_WANTRETURN,
+                           x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
+                           inst, nullptr);
+}
+
+// 候选热词列表：LISTBOX，LBS_NOTIFY 使选区变化以 WM_COMMAND 上报父窗口。
+HWND CreateListBox(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE inst) {
+    return CreateWindowExW(0, L"LISTBOX", L"",
+                           WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
                            x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
                            inst, nullptr);
 }
@@ -244,6 +253,21 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdTriggerModeClick:
             if (HIWORD(w_param) == BN_CLICKED) OnTriggerModeChanged();
             return TRUE;
+        case kIdHotwordCandidateList:
+            // 选区变化：无选中时禁用加入/忽略按钮。
+            if (HIWORD(w_param) == LBN_SELCHANGE) {
+                const bool has_sel =
+                    SendMessageW(candidates_list_, LB_GETCURSEL, 0, 0) != LB_ERR;
+                EnableWindow(candidate_add_button_, has_sel ? TRUE : FALSE);
+                EnableWindow(candidate_dismiss_button_, has_sel ? TRUE : FALSE);
+            }
+            return TRUE;
+        case kIdHotwordCandidateAdd:
+            OnHotwordCandidateAdd();
+            return TRUE;
+        case kIdHotwordCandidateDismiss:
+            OnHotwordCandidateDismiss();
+            return TRUE;
         }
         break;
     case WM_HSCROLL:
@@ -337,6 +361,10 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         apply_trial_button_ = nullptr;
         resource_combo_ = nullptr;
         hotwords_edit_ = nullptr;
+        candidates_label_ = nullptr;
+        candidates_list_ = nullptr;
+        candidate_add_button_ = nullptr;
+        candidate_dismiss_button_ = nullptr;
         llm_base_url_edit_ = nullptr;
         llm_api_key_edit_ = nullptr;
         llm_model_edit_ = nullptr;
@@ -405,6 +433,7 @@ void SettingsDialog::RebuildUi() {
 
     BuildControls();
     LoadConfigIntoControls();
+    RefreshHotwordCandidates();
 }
 
 void SettingsDialog::DestroyControls() {
@@ -420,6 +449,10 @@ void SettingsDialog::DestroyControls() {
     apply_trial_button_ = nullptr;
     resource_combo_ = nullptr;
     hotwords_edit_ = nullptr;
+    candidates_label_ = nullptr;
+    candidates_list_ = nullptr;
+    candidate_add_button_ = nullptr;
+    candidate_dismiss_button_ = nullptr;
     llm_base_url_edit_ = nullptr;
     llm_api_key_edit_ = nullptr;
     llm_model_edit_ = nullptr;
@@ -598,6 +631,29 @@ void SettingsDialog::BuildControls() {
             {hot_label, Dp(10), Dp(3), label_w, Dp(20)},
             {hotwords_edit_, ctrl_x, 0, ctrl_w, Dp(74)},
             {hot_hint, ctrl_x, Dp(80), ctrl_w, Dp(16)},
+        });
+    }
+    {
+        // 候选热词块：说明行 + 列表 + 加入/忽略按钮，仅存在待确认候选时显示，隐藏时不占位。
+        candidates_label_ = remember_label(CreateLeftLabel(hwnd_,
+            TrW(StringId::kSettingsHotwordCandidatesLabel, language).c_str(),
+            0, 0, ctrl_w, Dp(16), instance_));
+        candidates_list_ = remember(CreateListBox(hwnd_, 0, 0, ctrl_w, Dp(56),
+                                                  kIdHotwordCandidateList, instance_));
+        const int cand_btn_w = Dp(75);
+        candidate_add_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordCandidateAddButton, language).c_str(),
+            0, 0, cand_btn_w, Dp(24), kIdHotwordCandidateAdd, instance_));
+        candidate_dismiss_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordCandidateDismissButton, language).c_str(),
+            0, 0, cand_btn_w, Dp(24), kIdHotwordCandidateDismiss, instance_));
+        add(Dp(110), {
+            {candidates_label_, ctrl_x, 0, ctrl_w, Dp(16)},
+            {candidates_list_, ctrl_x, Dp(20), ctrl_w, Dp(56)},
+            {candidate_add_button_, ctrl_x, Dp(80), cand_btn_w, Dp(24)},
+            {candidate_dismiss_button_, ctrl_x + cand_btn_w + Dp(10), Dp(80), cand_btn_w, Dp(24)},
+        }, [this]() {
+            return !candidate_words_.empty();
         });
     }
     separator();
@@ -1105,6 +1161,8 @@ void SettingsDialog::LoadConfigIntoControls() {
     UpdateOutputTargetVisibility();
 
     UpdateProviderVisibility();
+
+    RefreshHotwordCandidates();
 }
 
 void SettingsDialog::SaveSettings() {
@@ -1357,6 +1415,58 @@ void SettingsDialog::UpdateRefinePromptVisibility() {
 void SettingsDialog::UpdateHotwordProcessPromptVisibility() {
     // 提炼提示词块的显隐与定位交由 Relayout 统一处理。
     Relayout();
+}
+
+void SettingsDialog::RefreshHotwordCandidates() {
+    if (!candidates_list_) return;
+    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
+    const auto store = LoadHotwordCandidates(path);
+    candidate_words_ = PendingHotwordSuggestions(store);
+    SendMessageW(candidates_list_, LB_RESETCONTENT, 0, 0);
+    for (const auto& word : candidate_words_) {
+        const auto wide = Utf16(word);
+        SendMessageW(candidates_list_, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(wide.c_str()));
+    }
+    // 重填后无选中，禁用加入/忽略按钮；整块显隐由布局 lambda 按 candidate_words_ 判定。
+    EnableWindow(candidate_add_button_, FALSE);
+    EnableWindow(candidate_dismiss_button_, FALSE);
+    Relayout();
+}
+
+void SettingsDialog::OnHotwordCandidateAdd() {
+    if (!candidates_list_ || !hotwords_edit_) return;
+    const int sel = static_cast<int>(SendMessageW(candidates_list_, LB_GETCURSEL, 0, 0));
+    if (sel < 0 || sel >= static_cast<int>(candidate_words_.size())) return;
+    const std::string word = candidate_words_[static_cast<std::size_t>(sel)];
+    // 追加到热词编辑框：已有内容则 `,词` 接上（ParseHotwordList 按逗号/换行切分），空则直接写入。
+    // 热词表本身只在用户点「保存」时经 SaveSettings() 持久化，此处不改 config_。
+    const std::wstring current = GetWindowText(hotwords_edit_);
+    const std::wstring wide_word = Utf16(word);
+    SetWindowTextW(hotwords_edit_,
+                   current.empty() ? wide_word.c_str() : (current + L"," + wide_word).c_str());
+    // 候选已入表，从存储中移除（notified 一并清掉，避免残留状态）。
+    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
+    auto store = LoadHotwordCandidates(path);
+    store.counts.erase(word);
+    store.notified.erase(word);
+    SaveHotwordCandidates(path, store);
+    RefreshHotwordCandidates();
+}
+
+void SettingsDialog::OnHotwordCandidateDismiss() {
+    if (!candidates_list_) return;
+    const int sel = static_cast<int>(SendMessageW(candidates_list_, LB_GETCURSEL, 0, 0));
+    if (sel < 0 || sel >= static_cast<int>(candidate_words_.size())) return;
+    const std::string word = candidate_words_[static_cast<std::size_t>(sel)];
+    // 忽略：记入 dismissed（永不建议），并从 counts/notified 移除。
+    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
+    auto store = LoadHotwordCandidates(path);
+    store.dismissed.insert(word);
+    store.counts.erase(word);
+    store.notified.erase(word);
+    SaveHotwordCandidates(path, store);
+    RefreshHotwordCandidates();
 }
 
 void SettingsDialog::UpdateTapSensitivityLabel() {

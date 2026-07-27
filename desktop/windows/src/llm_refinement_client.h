@@ -31,7 +31,17 @@ public:
                       std::shared_ptr<std::atomic_bool> cancel = nullptr) const;
 
     // 可单测纯函数：override 非空（去空白后）返回 override，否则返回内置默认精修 prompt。
-    static std::string BuildRefinePrompt(const std::string& prompt_override);
+    // hotwords 非空时在末尾追加热词替换指引：火山二遍 ASR 不吃 corpus 热词直传
+    // （流式第一遍生效、nostream 第二遍覆盖后丢失），由 LLM 精修按热词表兜底纠正。
+    static std::string BuildRefinePrompt(const std::string& prompt_override,
+                                         const std::vector<std::string>& hotwords = {});
+
+    // 精修结果守卫（纯函数可单测）：凡是在 ASR 原文中已正确出现的热词，精修后必须
+    // 仍然存在；有任何一个被改丢则返回 false，调用方应回退原文。用于兜底小模型
+    // 精修的不稳定（偶发把已正确的热词改坏，如 AGENTS.md -> CLDE.md）。
+    static bool RefineResultKeepsHotwords(const std::string& original,
+                                          const std::string& refined,
+                                          const std::vector<std::string>& hotwords);
 };
 
 } // namespace voicestick

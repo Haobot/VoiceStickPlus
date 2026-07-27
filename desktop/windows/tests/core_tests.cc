@@ -11,6 +11,7 @@
 #include "cJSON.h"
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
+#include "hotword_candidate_miner.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
@@ -854,6 +855,95 @@ void TestAsrProtocol() {
     assert(AsrProtocol::ExtractNewDefiniteSegments(segment_json, &emitted).empty());
 }
 
+void TestAsrHotwordCorpusBudget() {
+    // token 估算：CJK 每字 1，ASCII 每 3 字符 1。
+    assert(AsrProtocol::EstimateHotwordTokens("") == 0);
+    assert(AsrProtocol::EstimateHotwordTokens("小智") == 2);
+    assert(AsrProtocol::EstimateHotwordTokens("AGENTS.md") == 3);
+    assert(AsrProtocol::EstimateHotwordTokens("VoiceStick") == 4);
+    assert(AsrProtocol::EstimateHotwordTokens("Expe 记忆") == 4);
+    assert(AsrProtocol::EstimateHotwordTokens("a") == 1);
+
+    // 单词超 kHotwordMaxWordTokens 的被丢弃，其余保持顺序。
+    const std::string too_long(40, 'x');  // ceil(40/3)=14 tokens
+    auto fitted = AsrProtocol::FitHotwordsToCorpusBudget({"小智", too_long, "VoiceStick"});
+    assert((fitted == std::vector<std::string>{"小智", "VoiceStick"}));
+
+    // 累计超预算的词被丢弃，预算内的保留且顺序不变。
+    std::vector<std::string> many;
+    for (int i = 0; i < 30; ++i) many.push_back("热词编号" + std::to_string(i));  // 每个 4+1~2 tokens
+    auto trimmed = AsrProtocol::FitHotwordsToCorpusBudget(many);
+    assert(trimmed.size() < many.size());
+    int used = 0;
+    for (const auto& word : trimmed) used += AsrProtocol::EstimateHotwordTokens(word);
+    assert(used <= AsrProtocol::kHotwordCorpusTokenBudget);
+    for (std::size_t i = 0; i < trimmed.size(); ++i) assert(trimmed[i] == many[i]);
+
+    // payload 集成：超预算的词不进入 corpus，预算内的保留。
+    AppConfig config = AppConfig::Defaults();
+    config.asr_hotwords = {"AGENTS.md", too_long, "CLAUDE.md"};
+    const std::string session_id = "budget-session";
+    auto frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const std::size_t payload_size_offset = 12 + session_id.size();
+    const auto payload_size = ReadBe32(std::span(frame.data() + payload_size_offset, 4));
+    const std::string payload(reinterpret_cast<const char*>(frame.data() + payload_size_offset + 4),
+                              payload_size);
+    assert(payload.find("\\\"word\\\":\\\"AGENTS.md\\\"") != std::string::npos);
+    assert(payload.find("\\\"word\\\":\\\"CLAUDE.md\\\"") != std::string::npos);
+    assert(payload.find(too_long) == std::string::npos);
+
+    // 全部超预算时不产出 corpus 字段。
+    config.asr_hotwords = {too_long};
+    auto empty_frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const auto empty_size = ReadBe32(std::span(empty_frame.data() + payload_size_offset, 4));
+    const std::string empty_payload(
+        reinterpret_cast<const char*>(empty_frame.data() + payload_size_offset + 4), empty_size);
+    assert(empty_payload.find("\"corpus\"") == std::string::npos);
+
+    // 自学习平台词表 ID 进入 corpus，与热词 context 共存。
+    config.volcengine_boosting_table_id = "boost-123";
+    config.volcengine_correct_table_id = "correct-456";
+    config.asr_hotwords = {"AGENTS.md"};
+    auto table_frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const auto table_size = ReadBe32(std::span(table_frame.data() + payload_size_offset, 4));
+    const std::string table_payload(
+        reinterpret_cast<const char*>(table_frame.data() + payload_size_offset + 4), table_size);
+    assert(table_payload.find("\"boosting_table_id\":\"boost-123\"") != std::string::npos);
+    assert(table_payload.find("\"correct_table_id\":\"correct-456\"") != std::string::npos);
+    assert(table_payload.find("\\\"word\\\":\\\"AGENTS.md\\\"") != std::string::npos);
+
+    // 仅词表无热词时也有 corpus，且无 context 字段；ID 为空则不出现字段。
+    config.asr_hotwords = {};
+    config.volcengine_correct_table_id = "";
+    auto table_only_frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const auto table_only_size = ReadBe32(std::span(table_only_frame.data() + payload_size_offset, 4));
+    const std::string table_only_payload(
+        reinterpret_cast<const char*>(table_only_frame.data() + payload_size_offset + 4),
+        table_only_size);
+    assert(table_only_payload.find("\"boosting_table_id\":\"boost-123\"") != std::string::npos);
+    assert(table_only_payload.find("\"correct_table_id\"") == std::string::npos);
+    assert(table_only_payload.find("\"context\"") == std::string::npos);
+}
+
+void TestVolcengineTableIdConfigRoundTrip() {
+    assert(AppConfig::Defaults().volcengine_boosting_table_id.empty());
+    assert(AppConfig::Defaults().volcengine_correct_table_id.empty());
+
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_volc_table_id_test.toml";
+    std::filesystem::remove(temp);
+
+    AppConfig config = AppConfig::Defaults();
+    config.volcengine_boosting_table_id = "  boost-123  ";
+    config.volcengine_correct_table_id = "correct-456";
+    config.Save(temp);
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.volcengine_boosting_table_id == "boost-123");
+    assert(loaded.volcengine_correct_table_id == "correct-456");
+
+    std::filesystem::remove(temp);
+}
+
 
 void TestAppConfig() {
     AppConfig cloud = AppConfig::Defaults();
@@ -972,6 +1062,35 @@ void TestLlmRefinePromptAndPayload() {
     // 非空 override 去空白后原样返回。
     const auto custom = LLMRefinementClient::BuildRefinePrompt("  my custom prompt  ");
     assert(custom == "my custom prompt");
+
+    // 热词非空时追加热词替换指引（二遍 ASR 不吃 corpus 热词，由 LLM 精修兜底）；
+    // 默认 prompt 与用户 override 都追加；空热词不追加。
+    const auto refine_with_hotwords =
+        LLMRefinementClient::BuildRefinePrompt("", {"AGENTS.md", "CLAUDE.md"});
+    assert(refine_with_hotwords.find("热词表") != std::string::npos);
+    assert(refine_with_hotwords.find("AGENTS.md") != std::string::npos);
+    assert(refine_with_hotwords.find("CLAUDE.md") != std::string::npos);
+    assert(refine_with_hotwords.find("语音停顿") != std::string::npos);
+    const auto custom_with_hotwords =
+        LLMRefinementClient::BuildRefinePrompt("my custom prompt", {"AGENTS.md"});
+    assert(custom_with_hotwords.starts_with("my custom prompt"));
+    assert(custom_with_hotwords.find("AGENTS.md") != std::string::npos);
+    assert(LLMRefinementClient::BuildRefinePrompt("my custom prompt", {}) == "my custom prompt");
+
+    // few-shot 示例与「原文已正确的热词不得改写」约束在热词段中。
+    assert(refine_with_hotwords.find("示例") != std::string::npos);
+    assert(refine_with_hotwords.find("原样保留") != std::string::npos);
+
+    // 精修守卫：原文已出现的热词在精修结果中必须保留。
+    assert(LLMRefinementClient::RefineResultKeepsHotwords(
+        "编辑 AGENTS.md 文件", "编辑 AGENTS.md 这个文件。", {"AGENTS.md"}));
+    assert(!LLMRefinementClient::RefineResultKeepsHotwords(
+        "编辑 AGENTS.md 文件", "编辑 CLDE.md 这个文件。", {"AGENTS.md"}));
+    // 原文中没有的热词不受约束（精修纠错场景）；空热词表恒真。
+    assert(LLMRefinementClient::RefineResultKeepsHotwords(
+        "编辑 agentsdmd 文件", "编辑 AGENTS.md 文件。", {"AGENTS.md"}));
+    assert(LLMRefinementClient::RefineResultKeepsHotwords("a", "b", {}));
+    assert(LLMRefinementClient::RefineResultKeepsHotwords("a", "b", {""}));
 
     // 翻译 prompt 已融合精修要求，且保留翻译语义与热词。
     const auto translation_prompt = LLMTranslationClient::SystemPrompt("en", {});
@@ -1096,6 +1215,60 @@ void TestHotwordExtractorPromptAndParse() {
     const auto diff = HotwordExtractor::DiffNewHotwords({"a", "b", "c", "a"}, {"b"});
     assert((diff == std::vector<std::string>{"a", "c"}));
     assert(HotwordExtractor::DiffNewHotwords({"b"}, {"b"}).empty());
+}
+
+void TestHotwordCandidateMiner() {
+    // 标识符提取：字母开头 + 含大写/数字/._-；普通小写词、版本号、CJK 不算；
+    // 尾部标点剥离。
+    const auto tokens = ExtractIdentifierTokens(
+        "编辑 AGENTS.md 和 hello world 文件，version 2.0 发布了 RamDisk、build_win.bat。");
+    assert((tokens == std::vector<std::string>{"AGENTS.md", "RamDisk", "build_win.bat"}));
+    assert(ExtractIdentifierTokens("plain english words only").empty());
+    assert((ExtractIdentifierTokens("kAutoHideTimerId.") == std::vector<std::string>{"kAutoHideTimerId"}));
+
+    // 挖掘：refined 新增且不在热词表的标识符。
+    const auto mined = MineRefinementCandidates(
+        "测试 agentsdmd 和 cloud dmd 文件", "测试 AGENTS.md 和 CLAUDE.md 文件。", {});
+    assert((mined == std::vector<std::string>{"AGENTS.md", "CLAUDE.md"}));
+    assert(MineRefinementCandidates("测试 agentsdmd 文件", "测试 AGENTS.md 文件。",
+                                    {"AGENTS.md"}).empty());
+    // 原文已有的词不重复挖掘。
+    assert(MineRefinementCandidates("测试 RamDisk 文件", "测试 RamDisk 文件。", {}).empty());
+
+    // 计数到阈值才建议；忽略词不建议；已通知词不重复建议。
+    HotwordCandidateStore store;
+    assert(RecordHotwordCandidates(store, {"AGENTS.md"}).empty());
+    assert(RecordHotwordCandidates(store, {"AGENTS.md"}).empty());
+    auto suggested = RecordHotwordCandidates(store, {"AGENTS.md", "CLAUDE.md"});
+    assert((suggested == std::vector<std::string>{"AGENTS.md"}));
+    assert(store.counts["AGENTS.md"] == 3);
+    assert(store.counts["CLAUDE.md"] == 1);
+    store.notified.insert("AGENTS.md");
+    assert(RecordHotwordCandidates(store, {"AGENTS.md"}).empty());
+    store.dismissed.insert("CLAUDE.md");
+    assert(RecordHotwordCandidates(store, {"CLAUDE.md", "CLAUDE.md"}).empty());
+
+    // 待确认列表：达阈值且未忽略。
+    assert((PendingHotwordSuggestions(store) == std::vector<std::string>{"AGENTS.md"}));
+    store.dismissed.insert("AGENTS.md");
+    assert(PendingHotwordSuggestions(store).empty());
+
+    // JSON 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_candidates_test.json";
+    std::filesystem::remove(temp);
+    HotwordCandidateStore round_trip;
+    round_trip.counts["AGENTS.md"] = 5;
+    round_trip.dismissed.insert("cloud dmd");
+    round_trip.notified.insert("VoiceStick");
+    SaveHotwordCandidates(temp, round_trip);
+    const auto loaded = LoadHotwordCandidates(temp);
+    assert(loaded.counts.at("AGENTS.md") == 5);
+    assert(loaded.dismissed.contains("cloud dmd"));
+    assert(loaded.notified.contains("VoiceStick"));
+    std::filesystem::remove(temp);
+
+    // 缺失文件返回空 store。
+    assert(LoadHotwordCandidates(temp).counts.empty());
 }
 
 void TestFirmwareManifestParsingAndVersionCompare() {
@@ -5370,6 +5543,8 @@ int main() {
     TestAirMouseStepAngleModeStillWorks();
     TestOggMuxer();
     TestAsrProtocol();
+    TestAsrHotwordCorpusBudget();
+    TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();
     TestAppConfigAirMouseRoundTrip();
@@ -5378,6 +5553,7 @@ int main() {
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();
     TestHotwordExtractorPromptAndParse();
+    TestHotwordCandidateMiner();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();

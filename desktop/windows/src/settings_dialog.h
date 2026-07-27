@@ -33,6 +33,10 @@ private:
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
     void UpdateHotwordProcessPromptVisibility();
+    // 候选热词：从存储文件刷新待确认列表，并重填候选列表控件。
+    void RefreshHotwordCandidates();
+    void OnHotwordCandidateAdd();
+    void OnHotwordCandidateDismiss();
     void UpdateTapSensitivityLabel();
     void UpdateAirMouseSensitivityXLabel();
     void UpdateAirMouseSensitivityYLabel();
@@ -76,6 +80,12 @@ private:
     HWND apply_trial_button_ = nullptr;
     HWND resource_combo_ = nullptr;
     HWND hotwords_edit_ = nullptr;
+    HWND candidates_label_ = nullptr;
+    HWND candidates_list_ = nullptr;
+    HWND candidate_add_button_ = nullptr;
+    HWND candidate_dismiss_button_ = nullptr;
+    // 当前待确认的候选热词（与 candidates_list_ 行序一一对应）。
+    std::vector<std::string> candidate_words_;
     HWND llm_base_url_edit_ = nullptr;
     HWND llm_api_key_edit_ = nullptr;
     HWND llm_model_edit_ = nullptr;
@@ -153,6 +163,9 @@ private:
     static constexpr UINT kIdSelectionHotword = 2033;
     static constexpr UINT kIdHotwordProcessEnable = 2034;
     static constexpr UINT kIdHotwordProcessPromptEdit = 2035;
+    static constexpr UINT kIdHotwordCandidateList = 2036;
+    static constexpr UINT kIdHotwordCandidateAdd = 2037;
+    static constexpr UINT kIdHotwordCandidateDismiss = 2038;
 };
 
 } // namespace voicestick

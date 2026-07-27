@@ -1,5 +1,6 @@
 #include "voice_stick_coordinator.h"
 
+#include "localization.h"
 #include "log.h"
 
 #include <algorithm>
@@ -1792,17 +1793,55 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
             [this, alive, cancel, text, device_id, throttle,
              completion = std::move(completion)](bool ok, std::string result) mutable {
                 if (!alive->load() || (cancel && cancel->load())) return;
-                // 用最终的累积文本做最后一次 UI 刷新
+                std::string final_text = text;
                 if (ok && !result.empty()) {
-                    ui_->ShowPartial(result, device_id);
+                    // 热词守卫：精修把 ASR 原文中已正确的热词改坏时回退原文
+                    // （小模型精修不稳定的本地兜底）。
+                    if (LLMRefinementClient::RefineResultKeepsHotwords(text, result,
+                                                                       config_.asr_hotwords)) {
+                        final_text = result;
+                        // 用最终的累积文本做最后一次 UI 刷新
+                        ui_->ShowPartial(result, device_id);
+                        MineHotwordCandidatesFromRefinement(text, result);
+                    } else {
+                        LogCoordinatorLine("refine corrupted a hotword present in ASR text; "
+                                           "falling back to original");
+                    }
                 }
                 CancelStreamingRefinement();
-                completion(true, ok ? result : text);
+                completion(true, final_text);
             },
             cancel);
         return;
     }
     completion(true, text);
+}
+
+void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::string& original,
+                                                                const std::string& refined) {
+    const auto mined = MineRefinementCandidates(original, refined, config_.asr_hotwords);
+    if (mined.empty()) return;
+
+    const auto path = config_.ConfigPath().parent_path() / "hotword_candidates.json";
+    if (!hotword_candidates_loaded_) {
+        hotword_candidates_ = LoadHotwordCandidates(path);
+        hotword_candidates_loaded_ = true;
+    }
+    const auto suggestions = RecordHotwordCandidates(hotword_candidates_, mined);
+    for (const auto& word : suggestions) hotword_candidates_.notified.insert(word);
+    SaveHotwordCandidates(path, hotword_candidates_);
+
+    if (!suggestions.empty()) {
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        std::string words;
+        for (std::size_t i = 0; i < suggestions.size(); ++i) {
+            if (i != 0) words += ", ";
+            words += suggestions[i];
+        }
+        LogCoordinatorLine("hotword candidates suggested: " + words);
+        ui_->ShowNotification(Tr(StringId::kHotwordCandidateNotifyTitle, language),
+                              words + Tr(StringId::kHotwordCandidateNotifyBodySuffix, language));
+    }
 }
 
 void VoiceStickCoordinator::BeginWaitingForAudioEnd(std::string_view reason) {
