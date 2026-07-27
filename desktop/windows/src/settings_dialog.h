@@ -32,6 +32,7 @@ private:
     void OnTriggerModeChanged();
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
+    void UpdateHotwordProcessPromptVisibility();
     void UpdateTapSensitivityLabel();
     void UpdateAirMouseSensitivityXLabel();
     void UpdateAirMouseSensitivityYLabel();
@@ -81,6 +82,9 @@ private:
     HWND refine_check_ = nullptr;
     HWND refine_prompt_label_ = nullptr;
     HWND refine_prompt_edit_ = nullptr;
+    HWND hotword_process_check_ = nullptr;
+    HWND hotword_process_prompt_label_ = nullptr;
+    HWND hotword_process_prompt_edit_ = nullptr;
     HWND launch_at_login_check_ = nullptr;
     HWND selection_hotword_check_ = nullptr;
     HWND debug_audio_check_ = nullptr;
@@ -147,6 +151,8 @@ private:
     static constexpr UINT kIdTriggerModeHold = 2031;
     static constexpr UINT kIdTriggerModeClick = 2032;
     static constexpr UINT kIdSelectionHotword = 2033;
+    static constexpr UINT kIdHotwordProcessEnable = 2034;
+    static constexpr UINT kIdHotwordProcessPromptEdit = 2035;
 };
 
 } // namespace voicestick

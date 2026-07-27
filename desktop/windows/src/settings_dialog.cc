@@ -1,5 +1,6 @@
 #include "settings_dialog.h"
 #include "dpi_util.h"
+#include "hotword_extractor.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "log.h"
@@ -232,6 +233,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         case kIdRefineText:
             if (HIWORD(w_param) == BN_CLICKED) UpdateRefinePromptVisibility();
+            return TRUE;
+        case kIdHotwordProcessEnable:
+            if (HIWORD(w_param) == BN_CLICKED) UpdateHotwordProcessPromptVisibility();
             return TRUE;
         case kIdOutputTarget:
             if (HIWORD(w_param) == CBN_SELCHANGE) UpdateOutputTargetVisibility();
@@ -654,6 +658,34 @@ void SettingsDialog::BuildControls() {
             return SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         });
     }
+
+    // ===== 热词处理 =====
+    section_title(StringId::kSettingsSectionHotwordProcess);
+    {
+        HWND hp_lbl = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        hotword_process_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordProcessEnable, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdHotwordProcessEnable, instance_,
+            BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {hp_lbl, Dp(10), Dp(3), label_w, Dp(20)},
+            {hotword_process_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        // 提炼提示词块：仅 hotword_process_check 勾选时显示，隐藏时不占位。
+        hotword_process_prompt_label_ = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsHotwordProcessPrompt).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        hotword_process_prompt_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(64),
+                                                                    kIdHotwordProcessPromptEdit, instance_));
+        add(Dp(70), {
+            {hotword_process_prompt_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {hotword_process_prompt_edit_, ctrl_x, 0, ctrl_w, Dp(64)},
+        }, [this]() {
+            return SendMessageW(hotword_process_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        });
+    }
     separator();
 
     // ===== 输出 =====
@@ -1028,6 +1060,16 @@ void SettingsDialog::LoadConfigIntoControls() {
     }
     UpdateRefinePromptVisibility();
 
+    SendMessageW(hotword_process_check_, BM_SETCHECK,
+                 config_.hotword_process_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    {
+        std::string src = config_.hotword_process_prompt.empty()
+            ? HotwordExtractor::BuildExtractPrompt("")
+            : config_.hotword_process_prompt;
+        SetWindowTextW(hotword_process_prompt_edit_, Utf16(src).c_str());
+    }
+    UpdateHotwordProcessPromptVisibility();
+
     SendMessageW(launch_at_login_check_, BM_SETCHECK, config_.launch_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(selection_hotword_check_, BM_SETCHECK, config_.selection_hotword_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1108,6 +1150,26 @@ void SettingsDialog::SaveSettings() {
         }
         auto default_prompt = LLMRefinementClient::BuildRefinePrompt("");
         config_.refine_prompt = (normalized == default_prompt) ? std::string() : normalized;
+    }
+    config_.hotword_process_enabled =
+        SendMessageW(hotword_process_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    {
+        auto prompt = Utf8(GetWindowText(hotword_process_prompt_edit_));
+        // 归一化 \r\n → \n（编辑控件返回 CRLF，LLM 用 LF）。
+        std::string normalized;
+        normalized.reserve(prompt.size());
+        for (std::size_t i = 0; i < prompt.size(); ++i) {
+            if (prompt[i] == '\r' && i + 1 < prompt.size() && prompt[i + 1] == '\n') {
+                normalized.push_back('\n');
+                ++i;
+            } else if (prompt[i] == '\r') {
+                normalized.push_back('\n');
+            } else {
+                normalized.push_back(prompt[i]);
+            }
+        }
+        auto default_prompt = HotwordExtractor::BuildExtractPrompt("");
+        config_.hotword_process_prompt = (normalized == default_prompt) ? std::string() : normalized;
     }
     config_.asr_hotwords = ParseHotwordList(Utf8(GetWindowText(hotwords_edit_)));
 
@@ -1289,6 +1351,11 @@ bool SettingsDialog::IsLabelControl(HWND control) const {
 
 void SettingsDialog::UpdateRefinePromptVisibility() {
     // 精修提示词块的显隐与定位交由 Relayout 统一处理。
+    Relayout();
+}
+
+void SettingsDialog::UpdateHotwordProcessPromptVisibility() {
+    // 提炼提示词块的显隐与定位交由 Relayout 统一处理。
     Relayout();
 }
 
