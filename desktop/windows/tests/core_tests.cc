@@ -1979,6 +1979,25 @@ void TestEncoderRotateUnknownDirectionTreatedAsCw() {
     assert(input.arrow_up_count == 0);
 }
 
+void TestEncoderRotateStepsClamped() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 异常大步数应被钳到 kMaxEncoderRotateSteps=64，防伪造帧放大注入循环。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 300));
+
+    assert(input.arrow_down_count == 64);
+    assert(input.arrow_up_count == 0);
+}
+
 // 侧键单击在空闲态进入体感鼠标模式，再次单击退出（体感优先决策）。
 void TestCoordinatorAirMouseToggleViaSecondary() {
     auto ble = std::make_unique<FakeBleCentral>();
@@ -5539,6 +5558,7 @@ int main() {
     TestEncoderRotateDisabledWhenConfigOff();
     TestEncoderRotateIgnoredDuringRecording();
     TestEncoderRotateUnknownDirectionTreatedAsCw();
+    TestEncoderRotateStepsClamped();
     TestCoordinatorAirMouseToggleViaSecondary();
     TestCoordinatorAirMousePrimaryClickIsLeftButton();
     TestCoordinatorMotionMovesCursorOnlyWhenActive();
