@@ -139,6 +139,7 @@ npm run build    # 最小验证
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM，用于翻译与精修 |
 | `refine_enabled` / `refine_prompt` | 用 LLM 精修 ASR 原文（去停顿空格、修标点、去口头语），默认 `true`；prompt 留空用内置默认 |
 | `hotword_process_enabled` | 划词加词时用 LLM 提炼热词（Windows），默认 `false`，复用 `llm_*` 配置 |
+| `hotword_mining_enabled` | 每次识别会话后异步让 LLM 从最终文本提炼候选热词（Windows），同一词达阈值（3 次）经托盘通知与设置-热词区人工确认入表；默认 `false`（每会话多一次 LLM 调用），复用 `llm_*` 配置 |
 | `hotword_process_prompt` | 提炼提示词覆盖，留空使用内置默认 |
 | `interaction_mode` | `hold_to_talk` 或 `click_to_talk`（focused_app/字幕的触发方式；wechat 模式用 `[wechat_input_method].trigger_mode`） |
 | `resource_id` | 火山引擎 resource ID |
