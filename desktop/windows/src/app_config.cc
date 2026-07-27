@@ -358,6 +358,8 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "voicestick_api_key") config.voicestick_api_key = value;
     if (key == "voicestick_cloud_url") config.voicestick_cloud_url = value;
     if (key == "volcengine_api_key" || key == "api_key") config.volcengine_api_key = value;
+    if (key == "volcengine_boosting_table_id") config.volcengine_boosting_table_id = value;
+    if (key == "volcengine_correct_table_id") config.volcengine_correct_table_id = value;
     if (key == "tencent_secret_id") config.tencent_secret_id = value;
     if (key == "tencent_secret_key") config.tencent_secret_key = value;
     if (key == "tencent_appid") config.tencent_appid = value;
@@ -500,6 +502,8 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "voicestick_cloud_url")) config.voicestick_cloud_url = *value;
         if (auto value = TomlTrimmedString(table, "volcengine_api_key")) config.volcengine_api_key = *value;
         if (auto value = TomlTrimmedString(table, "api_key")) config.volcengine_api_key = *value;
+        if (auto value = TomlTrimmedString(table, "volcengine_boosting_table_id")) config.volcengine_boosting_table_id = *value;
+        if (auto value = TomlTrimmedString(table, "volcengine_correct_table_id")) config.volcengine_correct_table_id = *value;
         if (auto value = TomlTrimmedString(table, "tencent_secret_id")) config.tencent_secret_id = *value;
         if (auto value = TomlTrimmedString(table, "tencent_secret_key")) config.tencent_secret_key = *value;
         if (auto value = TomlTrimmedString(table, "tencent_appid")) config.tencent_appid = *value;
@@ -661,6 +665,8 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "voicestick_api_key = \"" << TomlEscape(voicestick_api_key) << "\"\n";
     output << "voicestick_cloud_url = \"" << TomlEscape(voicestick_cloud_url) << "\"\n";
     output << "volcengine_api_key = \"" << TomlEscape(volcengine_api_key) << "\"\n";
+    output << "volcengine_boosting_table_id = \"" << TomlEscape(volcengine_boosting_table_id) << "\"\n";
+    output << "volcengine_correct_table_id = \"" << TomlEscape(volcengine_correct_table_id) << "\"\n";
     output << "tencent_secret_id = \"" << TomlEscape(tencent_secret_id) << "\"\n";
     output << "tencent_secret_key = \"" << TomlEscape(tencent_secret_key) << "\"\n";
     output << "tencent_appid = \"" << TomlEscape(tencent_appid) << "\"\n";
