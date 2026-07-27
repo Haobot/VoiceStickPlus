@@ -21,6 +21,7 @@
 
 #include "audio_pipeline.h"
 #include "bmi270.h"
+#include "mini_encoder_c.h"
 #include "stick_s3_board.h"
 #include "ui_status.h"
 #include "voice_ble.h"
@@ -68,6 +69,9 @@ static const char *TAG = "voice_stick";
 #define TAP_POLL_INTERVAL_US (10 * 1000ULL)
 // 体感鼠标轮询周期。20ms=50Hz，光标移动足够流畅且 BLE/I²C 负载低。仅体感态运行。
 #define AIR_MOUSE_POLL_INTERVAL_US (20 * 1000ULL)
+// 编码器轮询周期。10ms=100Hz，与敲击轮询一致；按钮边沿与旋转增量都经此轮询采集。
+// 仅 MiniEncoderC 在线时运行；连续 I2C 失败后组件标记 absent，回调内停表。
+#define ENCODER_POLL_INTERVAL_US (10 * 1000ULL)
 // 按键事件后抑制敲击检测的窗口：覆盖"按下→录音启动"（hold_to_talk 300ms hold + 80ms 提示音
 // + codec 初始化）及松开后手指余震。该窗口内 tap 轮询直接 return，避免按语音键的手指动作
 // 被 IMU 误判为双击。仅作用于非录音态（录音态本就门控关闭 tap）。
@@ -104,6 +108,8 @@ static esp_timer_handle_t s_pickup_poll_timer;
 static esp_timer_handle_t s_imu_poll_timer;
 static esp_timer_handle_t s_tap_poll_timer;
 static esp_timer_handle_t s_air_mouse_poll_timer;
+static esp_timer_handle_t s_encoder_poll_timer;
+static bool s_encoder_button_pressed;
 static bool s_air_mouse_enabled = false;
 static uint32_t s_session_id = 1;
 static QueueHandle_t s_app_event_queue;
@@ -138,6 +144,9 @@ static int s_orientation_confirm_count = 0;
 typedef enum {
     APP_INPUT_SOURCE_PHYSICAL,
     APP_INPUT_SOURCE_REMOTE,
+    // MiniEncoderC 编码器按钮：交互语义与 PHYSICAL 完全相同（双击、hold 阈值、
+    // click_to_talk、体感映射、owner 仲裁），仅日志里用 source 值区分来源。
+    APP_INPUT_SOURCE_ENCODER,
 } app_input_source_t;
 
 static void apply_app_ui_state(const char *state, const char *text);
@@ -247,6 +256,22 @@ static bool poweroff_allowed_now(void)
 {
     return !s_recording && !s_ota_updating && !voice_ble_ota_is_active() &&
            !is_external_powered();
+}
+
+// 主键当前是否处于按住态：正面物理键（GPIO 低电平）或编码器按钮任一按下即视为按住。
+// 双击/hold 阈值定时器与关机前按住检查共用此判定；编码器 absent 时退化为纯 GPIO 判定。
+static bool primary_button_held(void)
+{
+    if (gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0) {
+        return true;
+    }
+    if (mini_encoder_c_present()) {
+        bool pressed = false;
+        if (mini_encoder_c_read_button(&pressed) == ESP_OK && pressed) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static esp_err_t init_power_management(void)
@@ -494,11 +519,11 @@ static void enter_power_off(void)
        capacitance, etc.). If it stays low we would just wake up immediately
        after esp_deep_sleep_start(), so abort and retry later. */
     int wait_ms = 0;
-    while (gpio_get_level(wake_gpio) == 0 && wait_ms < 200) {
+    while (primary_button_held() && wait_ms < 200) {
         vTaskDelay(pdMS_TO_TICKS(10));
         wait_ms += 10;
     }
-    if (gpio_get_level(wake_gpio) == 0) {
+    if (primary_button_held()) {
         ESP_LOGW(TAG, "front button still low after %d ms, abort power off", wait_ms);
         restart_poweroff_timer();
         return;
@@ -826,6 +851,13 @@ static uint32_t elapsed_button_ms(int64_t down_us)
     return (uint32_t)(elapsed_us / 1000);
 }
 
+// 编码器按钮与正面物理键在交互语义上完全等价：双击检测、hold 阈值、click_to_talk、
+// 体感鼠标映射与 owner 仲裁对两者一视同仁（见 app_input_source_t 注释）。
+static bool is_local_primary_source(app_input_source_t source)
+{
+    return source == APP_INPUT_SOURCE_PHYSICAL || source == APP_INPUT_SOURCE_ENCODER;
+}
+
 // 侧键双击窗口超时：确认为单次点击，补发 button_click secondary（原单击语义）。
 static void side_double_click_timer_cb(void *arg)
 {
@@ -882,14 +914,14 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     // 体感鼠标态：主键不启动本地录音（否则设备录音、屏幕卡 Recording，而桌面端在体感态
     // 会无视 button_down 不起 ASR，两端状态分裂）。仅记录按下时刻，松开时上报 button_click
     // 供桌面端映射为鼠标左键。
-    if (s_air_mouse_enabled && source == APP_INPUT_SOURCE_PHYSICAL) {
+    if (s_air_mouse_enabled && is_local_primary_source(source)) {
         s_primary_down_us = esp_timer_get_time();
         s_primary_owner = PRIMARY_OWNER_PHYSICAL;
         return;
     }
 
     // 远程按键（热键）不走双击检测，直接走原有逻辑。
-    if (source == APP_INPUT_SOURCE_PHYSICAL) {
+    if (is_local_primary_source(source)) {
         // 双击窗口内第二次按下：确认双击，发送 button_double_click。
         if (s_double_click_pending) {
             ESP_LOGI(TAG, "button front down as double-click second press");
@@ -922,7 +954,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     }
 
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
-        const primary_owner_t owner_from_source = (source == APP_INPUT_SOURCE_PHYSICAL)
+        const primary_owner_t owner_from_source = (is_local_primary_source(source))
             ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
         if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
             ESP_LOGI(TAG, "ignore primary down from source=%d, owner is %d", source, s_primary_owner);
@@ -954,7 +986,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         // hold 阈值，最小化按下到桌面端弹框的延迟。button_up 短按仍进双击窗口（双击发 Enter
         // 保留），与 hold_to_talk 一致（见 handle_primary_up 的短按双击判定）。
         if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK_INSTANT &&
-            source == APP_INPUT_SOURCE_PHYSICAL) {
+            is_local_primary_source(source)) {
             // 提前请求 fast conn interval：conn update 异步耗时可达数百毫秒，按下即请求，
             // 让 button_down notify 在 fast interval(7.5ms) 下发出，避免 slow interval 传输延迟。
             voice_ble_request_fast_interval();
@@ -980,7 +1012,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         // 提前请求 fast conn interval：conn update 异步耗时可达数百毫秒，在阈值等待期间
         // 并行启动，到 button_down 发出时多半已切到 7.5ms，避免 slow interval 传输延迟。
         if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK &&
-            source == APP_INPUT_SOURCE_PHYSICAL) {
+            is_local_primary_source(source)) {
             voice_ble_request_fast_interval();
             s_hold_threshold_pending = true;
             s_primary_owner = PRIMARY_OWNER_PHYSICAL;
@@ -995,7 +1027,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         // 走 else 直接 SendEnter 干净回车）；超时确认启动 start_recording + button_click(start)。
         // 代价：单击启动延迟 CLICK_TO_TALK_START_DELAY_MS。远程热键不走双击，立即启动。
         if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK &&
-            source == APP_INPUT_SOURCE_PHYSICAL) {
+            is_local_primary_source(source)) {
             if (s_click_to_talk_pending_start) {
                 s_click_to_talk_pending_start = false;
                 (void)esp_timer_stop(s_double_click_timer);
@@ -1025,10 +1057,10 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         }
         // click_to_talk 模式记录首次点击时刻，用于后续双击检测。
         if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK &&
-            source == APP_INPUT_SOURCE_PHYSICAL) {
+            is_local_primary_source(source)) {
             s_click_to_talk_first_click_us = esp_timer_get_time();
         }
-        s_primary_owner = (source == APP_INPUT_SOURCE_PHYSICAL)
+        s_primary_owner = (is_local_primary_source(source))
             ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
         esp_err_t primary_down_err = s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK
             ? voice_ble_send_button_click("primary", 0, s_primary_session_id)
@@ -1051,7 +1083,7 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
 
     // 体感鼠标态：主键松开上报 button_click，桌面端映射为鼠标左键单击。不涉及录音。
-    if (s_air_mouse_enabled && source == APP_INPUT_SOURCE_PHYSICAL) {
+    if (s_air_mouse_enabled && is_local_primary_source(source)) {
         const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
         (void)voice_ble_send_button_click("primary", duration_ms, 0);
         s_primary_down_us = 0;
@@ -1097,7 +1129,7 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         return;
     }
 
-    const primary_owner_t owner_from_source = (source == APP_INPUT_SOURCE_PHYSICAL)
+    const primary_owner_t owner_from_source = (is_local_primary_source(source))
         ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
     if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
         ESP_LOGI(TAG, "ignore primary up from source=%d, owner is %d", source, s_primary_owner);
@@ -1114,7 +1146,7 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
 
     // 双击检测：短按（< 300ms）可能为双击的第一击，暂缓发送 button_up。
     // 若 500ms 内无第二次按下则补发（桌面端因 < 0.5s 自动丢弃录音）。
-    if (source == APP_INPUT_SOURCE_PHYSICAL &&
+    if (is_local_primary_source(source) &&
         primary_duration_ms > 0 &&
         primary_duration_ms < DOUBLE_CLICK_MAX_PRESS_MS) {
         ESP_LOGI(TAG, "button front up short press, entering double-click window");
@@ -1487,7 +1519,7 @@ static void double_click_timer_cb(void *arg)
         // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
         s_recording_retry_pending = false;
         // 用户已松开 → 干净放弃（未发过 button_down，无需补 button_up）。
-        if (gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) != 0) {
+        if (!primary_button_held()) {
             ESP_LOGI(TAG, "recording start retry aborted: button released");
             s_primary_down_us = 0;
             s_primary_owner = PRIMARY_OWNER_NONE;
@@ -1528,7 +1560,7 @@ static void double_click_timer_cb(void *arg)
     if (s_hold_threshold_pending) {
         // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
         s_hold_threshold_pending = false;
-        if (gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0) {
+        if (primary_button_held()) {
             ESP_LOGI(TAG, "hold threshold reached, starting recording");
             s_primary_session_id = start_recording();
             if (s_primary_session_id != 0) {
@@ -1754,6 +1786,39 @@ static void set_tap_polling_enabled(bool enabled)
     } else {
         (void)esp_timer_stop(s_tap_poll_timer);
     }
+}
+
+// 编码器轮询：按钮边沿 → 主键 down/up 事件（APP_INPUT_SOURCE_ENCODER，语义等价物理键）。
+// 在 timer 任务上下文做 I2C 读，与 air_mouse_poll_timer_cb 同一先例（负载轻）。
+// 组件连续 I2C 失败标记 absent 后停表，避免空转与日志刷屏。
+static void encoder_poll_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!mini_encoder_c_present()) {
+        (void)esp_timer_stop(s_encoder_poll_timer);
+        return;
+    }
+
+    bool pressed = false;
+    if (mini_encoder_c_read_button(&pressed) == ESP_OK &&
+        pressed != s_encoder_button_pressed) {
+        s_encoder_button_pressed = pressed;
+        if (pressed) {
+            queue_primary_down_event(APP_INPUT_SOURCE_ENCODER, 0);
+        } else {
+            queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
+        }
+    }
+}
+
+static esp_err_t init_encoder_poll_timer(void)
+{
+    const esp_timer_create_args_t timer_args = {
+        .callback = encoder_poll_timer_cb,
+        .name = "encoder_poll",
+        .skip_unhandled_events = true,
+    };
+    return esp_timer_create(&timer_args, &s_encoder_poll_timer);
 }
 
 // 体感鼠标轮询：读陀螺仪→整型位移→直接发 motion 帧。参照 imu_poll_timer_cb 在 timer
@@ -2167,7 +2232,15 @@ void app_main(void)
     ESP_ERROR_CHECK(init_imu_poll_timer());
     ESP_ERROR_CHECK(esp_timer_start_periodic(s_imu_poll_timer, IMU_POLL_INTERVAL_US));
     note_activity();
+    // MiniEncoderC 编码器：探测失败优雅降级（absent），不影响主流程。
+    (void)mini_encoder_c_init();
+    ESP_ERROR_CHECK(init_encoder_poll_timer());
     ESP_ERROR_CHECK(init_buttons());
+    // 仅在线时启动 10ms 轮询；必须在 init_buttons 之后（事件队列已创建）。
+    if (mini_encoder_c_present()) {
+        ESP_ERROR_CHECK(esp_timer_start_periodic(s_encoder_poll_timer,
+                                                 ENCODER_POLL_INTERVAL_US));
+    }
 
     // voice_ble_init 已提前到 ui_status_init 之前执行（见上方注释），此处仅处理其结果。
     if (err != ESP_OK) {
