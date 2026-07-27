@@ -1498,11 +1498,22 @@ void Win32App::SyncSelectionHotword() {
 
 void Win32App::ProcessHotwordWithLlm(const std::string& text) {
     const auto lang = EffectiveUiLanguage(config_.ui_language);
-    if (config_.llm_api_key.empty()) {
-        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessNoKey, lang), 3000);
+    // Trim 语义判空：纯空白 key 视为未配置。
+    if (config_.llm_api_key.find_first_not_of(" \t\r\n") == std::string::npos) {
+        const bool session_active = coordinator_ && coordinator_->HasActiveSession();
+        if (session_active || !overlay_) {
+            ShowNotification(Tr(StringId::kSettingsSectionHotwordProcess, lang),
+                             Tr(StringId::kHotwordProcessNoKey, lang));
+        } else {
+            overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessNoKey, lang), 3000);
+        }
         return;
     }
-    if (overlay_) overlay_->ShowRefining(Tr(StringId::kHotwordProcessExtracting, lang));
+    // 会话活跃时浮窗被状态机占用（如确认倒计时），静默提炼，最终反馈走托盘气泡。
+    const bool session_active = coordinator_ && coordinator_->HasActiveSession();
+    if (!session_active && overlay_) {
+        overlay_->ShowRefining(Tr(StringId::kHotwordProcessExtracting, lang));
+    }
     // ChatAsync 内部拷贝配置并 detached 线程执行，栈上临时对象安全。
     HotwordExtractor(config_).Extract(text, config_.hotword_process_prompt,
         [this](bool ok, std::string result) {
@@ -1514,19 +1525,30 @@ void Win32App::ProcessHotwordWithLlm(const std::string& text) {
 
 void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
     const auto lang = EffectiveUiLanguage(config_.ui_language);
+    // 会话活跃时不碰 overlay（避免踩掉确认倒计时等状态机浮窗），反馈统一走托盘气泡。
+    const bool session_active = coordinator_ && coordinator_->HasActiveSession();
+    const auto feedback = [&](const std::string& message) {
+        if (session_active || !overlay_) {
+            ShowNotification(Tr(StringId::kSettingsSectionHotwordProcess, lang), message);
+        } else {
+            overlay_->ShowTimedMessage(message, 3000);
+        }
+    };
     if (!ok) {
         LogLine("Hotword extraction failed: " + result);
-        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessFailed, lang), 3000);
+        feedback(Tr(StringId::kHotwordProcessFailed, lang));
         return;
     }
     const auto extracted = HotwordExtractor::ParseExtractResult(result);
     if (extracted.empty()) {
-        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessEmptyResult, lang), 3000);
+        LogLine("Hotword extraction: no words parsed");
+        feedback(Tr(StringId::kHotwordProcessEmptyResult, lang));
         return;
     }
     const auto new_words = HotwordExtractor::DiffNewHotwords(extracted, config_.asr_hotwords);
     if (new_words.empty()) {
-        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessAllDuplicate, lang), 3000);
+        LogLine("Hotword extraction: all duplicates");
+        feedback(Tr(StringId::kHotwordProcessAllDuplicate, lang));
         return;
     }
     auto& hotwords = config_.asr_hotwords;
@@ -1543,9 +1565,7 @@ void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
         if (i != 0) joined += "、";
         joined += new_words[i];
     }
-    if (overlay_) {
-        overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessAdded, lang) + joined, 3000);
-    }
+    feedback(Tr(StringId::kHotwordProcessAdded, lang) + joined);
     LogLine("Hotwords extracted and added: " + joined);
 }
 
