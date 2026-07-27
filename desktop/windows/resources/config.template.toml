@@ -32,6 +32,8 @@ llm_api_key = ""
 llm_model = ""
 refine_enabled = true
 refine_prompt = ""
+hotword_process_enabled = false
+# hotword_process_prompt = ""  # 留空使用内置默认热词提炼 prompt（Windows-only）
 
 # ---- 交互与界面 ----
 # 交互模式：hold_to_talk | click_to_talk

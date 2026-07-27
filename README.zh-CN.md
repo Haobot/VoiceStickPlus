@@ -137,6 +137,8 @@ npm run build    # 最小验证
 | `voicestick_api_key` / `voicestick_cloud_url` | VoiceStick Cloud 中继 key 与 WebSocket URL |
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM，用于翻译与精修 |
 | `refine_enabled` / `refine_prompt` | 用 LLM 精修 ASR 原文（去停顿空格、修标点、去口头语），默认 `true`；prompt 留空用内置默认 |
+| `hotword_process_enabled` | 划词加词时用 LLM 提炼热词（Windows），默认 `false`，复用 `llm_*` 配置 |
+| `hotword_process_prompt` | 提炼提示词覆盖，留空使用内置默认 |
 | `interaction_mode` | `hold_to_talk` 或 `click_to_talk`（focused_app/字幕的触发方式；wechat 模式用 `[wechat_input_method].trigger_mode`） |
 | `resource_id` | 火山引擎 resource ID |
 | `asr_hotwords` | 逗号分隔的 ASR 热词，同时作为术语提示传给 LLM |
