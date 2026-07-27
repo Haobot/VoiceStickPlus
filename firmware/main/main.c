@@ -219,6 +219,7 @@ typedef enum {
     APP_EVENT_HOST_RESPONSE_TIMEOUT,
     APP_EVENT_PICKUP,
     APP_EVENT_TAP,
+    APP_EVENT_ENCODER_ROTATE,
     APP_EVENT_ENTER_POWER_OFF,
 } app_event_type_t;
 
@@ -228,6 +229,10 @@ typedef struct {
     uint32_t request_id;
     uint32_t written;
     uint32_t size;
+    // 编码器旋转事件 payload：direction 0=cw / 1=ccw（原始物理方向）；
+    // steps 为该轮询窗口内同向累计格数（>=1）。仅 APP_EVENT_ENCODER_ROTATE 使用。
+    uint8_t encoder_direction;
+    uint8_t encoder_steps;
     char state[32];
     char text[96];
 } app_event_t;
@@ -240,6 +245,7 @@ static void queue_ui_state_event(const char *state, const char *text);
 static void apply_interaction_mode(interaction_mode_t mode);
 static void queue_primary_down_event(app_input_source_t source, uint32_t request_id);
 static void queue_primary_up_event(app_input_source_t source, uint32_t request_id);
+static void queue_encoder_rotate_event(int32_t delta);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
 static void load_pickup_threshold_from_nvs(void);
@@ -663,6 +669,24 @@ static void queue_primary_up_event(app_input_source_t source, uint32_t request_i
             .type = APP_EVENT_FRONT_UP,
             .source = source,
             .request_id = request_id,
+        };
+        (void)xQueueSend(s_app_event_queue, &event, 0);
+    }
+}
+
+// 旋转增量入队：10ms 轮询窗口内同向增量已由增量寄存器（读后清零）天然合帧，
+// 一次非零读数即一帧。方向在窗口内反转的极端情况按净值方向处理（真机罕见，可接受）。
+// steps 截断到 uint8_t 上限 255。
+static void queue_encoder_rotate_event(int32_t delta)
+{
+    if (s_app_event_queue && delta != 0) {
+        app_event_t event = {
+            .type = APP_EVENT_ENCODER_ROTATE,
+            .source = APP_INPUT_SOURCE_ENCODER,
+            .encoder_direction = (delta > 0) ? 0 : 1,
+            .encoder_steps = (delta > 0)
+                ? (delta > 255 ? 255 : (uint8_t)delta)
+                : (delta < -255 ? 255 : (uint8_t)(-delta)),
         };
         (void)xQueueSend(s_app_event_queue, &event, 0);
     }
@@ -1393,6 +1417,20 @@ static void app_event_task(void *arg)
                 note_activity();
             }
             break;
+        case APP_EVENT_ENCODER_ROTATE:
+            // 编码器旋转：发送门控与 APP_EVENT_TAP 一致，仅空闲态上报，避免干扰语音周期
+            // （体感鼠标态 ui_state 为 air_mouse，已被 READY/PENDING 门控天然排除）。
+            // 方向映射在桌面端完成，固件只报原始物理事实。
+            if (voice_ble_is_connected() && !s_recording && !s_ota_updating &&
+                (s_app_ui_state == APP_UI_STATE_READY ||
+                 s_app_ui_state == APP_UI_STATE_PENDING_CONFIRMATION)) {
+                const char *direction = (event.encoder_direction == 0) ? "cw" : "ccw";
+                ESP_LOGI(TAG, "encoder rotate %s steps=%u, sending to host",
+                         direction, (unsigned)event.encoder_steps);
+                voice_ble_send_encoder_rotate(direction, event.encoder_steps);
+                note_activity();
+            }
+            break;
         }
     }
 }
@@ -1807,7 +1845,8 @@ static void set_tap_polling_enabled(bool enabled)
     }
 }
 
-// 编码器轮询：按钮边沿 → 主键 down/up 事件（APP_INPUT_SOURCE_ENCODER，语义等价物理键）。
+// 编码器轮询：按钮边沿 → 主键 down/up 事件（APP_INPUT_SOURCE_ENCODER，语义等价物理键）；
+// 旋转增量 → APP_EVENT_ENCODER_ROTATE（非零读数即入队，发送门控在 app_event_task）。
 // 在 timer 任务上下文做 I2C 读，与 air_mouse_poll_timer_cb 同一先例（负载轻）。
 // I2C 失败 streak 期间每次轮询最坏占 30ms（3 倍轮询周期），与双击 500ms/hold 300ms
 // 窗口相比可忽略；累计 10 次失败即停表降级。
@@ -1834,6 +1873,11 @@ static void encoder_poll_timer_cb(void *arg)
         } else {
             queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
         }
+    }
+
+    int32_t delta = 0;
+    if (mini_encoder_c_read_delta(&delta) == ESP_OK && delta != 0) {
+        queue_encoder_rotate_event(delta);
     }
 }
 
