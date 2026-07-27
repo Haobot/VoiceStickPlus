@@ -33,7 +33,7 @@ static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
 // 会被 esp_timer 回调上下文（read_*）与 app_event_task 上下文（set_led）同时访问。
 static _Atomic bool s_present;
-static int s_fail_streak;
+static _Atomic int s_fail_streak;
 
 static void note_i2c_result(esp_err_t err, const char *what)
 {

@@ -145,7 +145,8 @@ typedef enum {
     APP_INPUT_SOURCE_PHYSICAL,
     APP_INPUT_SOURCE_REMOTE,
     // MiniEncoderC 编码器按钮：交互语义与 PHYSICAL 完全相同（双击、hold 阈值、
-    // click_to_talk、体感映射、owner 仲裁），仅日志里用 source 值区分来源。
+    // click_to_talk、体感映射），仅日志里用 source 值区分来源；owner 仲裁独立
+    // （PRIMARY_OWNER_ENCODER），避免与物理键互相截断录音。
     APP_INPUT_SOURCE_ENCODER,
 } app_input_source_t;
 
@@ -155,6 +156,9 @@ typedef enum {
     PRIMARY_OWNER_NONE,
     PRIMARY_OWNER_PHYSICAL,
     PRIMARY_OWNER_REMOTE,
+    // 编码器按钮：手势语义同 PHYSICAL（见 is_local_primary_source），
+    // 但 owner 仲裁独立，避免两个本地源互相截断对方的录音。
+    PRIMARY_OWNER_ENCODER,
 } primary_owner_t;
 
 static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
@@ -259,7 +263,8 @@ static bool poweroff_allowed_now(void)
 }
 
 // 主键当前是否处于按住态：正面物理键（GPIO 低电平）或编码器按钮任一按下即视为按住。
-// 双击/hold 阈值定时器与关机前按住检查共用此判定；编码器 absent 时退化为纯 GPIO 判定。
+// app 任务上下文（如关机前按住检查）用此活读判定；编码器 absent 时退化为纯 GPIO 判定。
+// esp_timer 上下文（双击/hold 阈值定时器）改用 primary_button_held_from_timer()。
 static bool primary_button_held(void)
 {
     if (gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0) {
@@ -272,6 +277,13 @@ static bool primary_button_held(void)
         }
     }
     return false;
+}
+
+// esp_timer 上下文专用：编码器按钮态复用轮询缓存（同一任务，无竞态），
+// 避免再做一次带超时的 I2C 活读——瞬时 I2C 失败会误判"已松开"。
+static bool primary_button_held_from_timer(void)
+{
+    return gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0 || s_encoder_button_pressed;
 }
 
 static esp_err_t init_power_management(void)
@@ -852,10 +864,20 @@ static uint32_t elapsed_button_ms(int64_t down_us)
 }
 
 // 编码器按钮与正面物理键在交互语义上完全等价：双击检测、hold 阈值、click_to_talk、
-// 体感鼠标映射与 owner 仲裁对两者一视同仁（见 app_input_source_t 注释）。
+// 体感鼠标映射对两者一视同仁（见 app_input_source_t 注释）；owner 仲裁按来源独立
+// （见 primary_owner_from_source），避免两个本地源互相截断录音。
 static bool is_local_primary_source(app_input_source_t source)
 {
     return source == APP_INPUT_SOURCE_PHYSICAL || source == APP_INPUT_SOURCE_ENCODER;
+}
+
+// 输入源 → owner 映射：三个来源各自独立仲裁，本地两源（物理/编码器）手势语义相同
+// 但 owner 不同，互相按住时不截断对方录音（与本地 vs 远程同一互斥行为）。
+static primary_owner_t primary_owner_from_source(app_input_source_t source)
+{
+    return source == APP_INPUT_SOURCE_PHYSICAL ? PRIMARY_OWNER_PHYSICAL :
+           source == APP_INPUT_SOURCE_ENCODER  ? PRIMARY_OWNER_ENCODER :
+                                                 PRIMARY_OWNER_REMOTE;
 }
 
 // 侧键双击窗口超时：确认为单次点击，补发 button_click secondary（原单击语义）。
@@ -916,7 +938,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     // 供桌面端映射为鼠标左键。
     if (s_air_mouse_enabled && is_local_primary_source(source)) {
         s_primary_down_us = esp_timer_get_time();
-        s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+        s_primary_owner = primary_owner_from_source(source);
         return;
     }
 
@@ -954,8 +976,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     }
 
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
-        const primary_owner_t owner_from_source = (is_local_primary_source(source))
-            ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
+        const primary_owner_t owner_from_source = primary_owner_from_source(source);
         if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
             ESP_LOGI(TAG, "ignore primary down from source=%d, owner is %d", source, s_primary_owner);
             return;
@@ -990,7 +1011,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             // 提前请求 fast conn interval：conn update 异步耗时可达数百毫秒，按下即请求，
             // 让 button_down notify 在 fast interval(7.5ms) 下发出，避免 slow interval 传输延迟。
             voice_ble_request_fast_interval();
-            s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+            s_primary_owner = primary_owner_from_source(source);
             s_primary_session_id = start_recording();
             if (s_primary_session_id == 0) {
                 s_primary_down_us = 0;
@@ -1015,7 +1036,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             is_local_primary_source(source)) {
             voice_ble_request_fast_interval();
             s_hold_threshold_pending = true;
-            s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+            s_primary_owner = primary_owner_from_source(source);
             s_primary_down_us = esp_timer_get_time();
             (void)esp_timer_start_once(s_double_click_timer,
                                        DOUBLE_CLICK_MAX_PRESS_MS * 1000ULL);
@@ -1041,7 +1062,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             }
             s_click_to_talk_pending_start = true;
             s_click_to_talk_first_click_us = esp_timer_get_time();
-            s_primary_owner = PRIMARY_OWNER_PHYSICAL;
+            s_primary_owner = primary_owner_from_source(source);
             s_primary_down_us = esp_timer_get_time();
             (void)esp_timer_start_once(s_double_click_timer,
                                        CLICK_TO_TALK_START_DELAY_MS * 1000ULL);
@@ -1060,8 +1081,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             is_local_primary_source(source)) {
             s_click_to_talk_first_click_us = esp_timer_get_time();
         }
-        s_primary_owner = (is_local_primary_source(source))
-            ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
+        s_primary_owner = primary_owner_from_source(source);
         esp_err_t primary_down_err = s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK
             ? voice_ble_send_button_click("primary", 0, s_primary_session_id)
             : voice_ble_send_button_down("primary", s_primary_session_id);
@@ -1129,8 +1149,7 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         return;
     }
 
-    const primary_owner_t owner_from_source = (is_local_primary_source(source))
-        ? PRIMARY_OWNER_PHYSICAL : PRIMARY_OWNER_REMOTE;
+    const primary_owner_t owner_from_source = primary_owner_from_source(source);
     if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
         ESP_LOGI(TAG, "ignore primary up from source=%d, owner is %d", source, s_primary_owner);
         return;
@@ -1519,7 +1538,7 @@ static void double_click_timer_cb(void *arg)
         // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
         s_recording_retry_pending = false;
         // 用户已松开 → 干净放弃（未发过 button_down，无需补 button_up）。
-        if (!primary_button_held()) {
+        if (!primary_button_held_from_timer()) {
             ESP_LOGI(TAG, "recording start retry aborted: button released");
             s_primary_down_us = 0;
             s_primary_owner = PRIMARY_OWNER_NONE;
@@ -1560,7 +1579,7 @@ static void double_click_timer_cb(void *arg)
     if (s_hold_threshold_pending) {
         // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
         s_hold_threshold_pending = false;
-        if (primary_button_held()) {
+        if (primary_button_held_from_timer()) {
             ESP_LOGI(TAG, "hold threshold reached, starting recording");
             s_primary_session_id = start_recording();
             if (s_primary_session_id != 0) {
@@ -1790,11 +1809,18 @@ static void set_tap_polling_enabled(bool enabled)
 
 // 编码器轮询：按钮边沿 → 主键 down/up 事件（APP_INPUT_SOURCE_ENCODER，语义等价物理键）。
 // 在 timer 任务上下文做 I2C 读，与 air_mouse_poll_timer_cb 同一先例（负载轻）。
+// I2C 失败 streak 期间每次轮询最坏占 30ms（3 倍轮询周期），与双击 500ms/hold 300ms
+// 窗口相比可忽略；累计 10 次失败即停表降级。
 // 组件连续 I2C 失败标记 absent 后停表，避免空转与日志刷屏。
 static void encoder_poll_timer_cb(void *arg)
 {
     (void)arg;
     if (!mini_encoder_c_present()) {
+        // 按住期间掉线（拔线/松线）：补发 up 事件释放悬挂按下态，否则录音无法结束。
+        if (s_encoder_button_pressed) {
+            s_encoder_button_pressed = false;
+            queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
+        }
         (void)esp_timer_stop(s_encoder_poll_timer);
         return;
     }
