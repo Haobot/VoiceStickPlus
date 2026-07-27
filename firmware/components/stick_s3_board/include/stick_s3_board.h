@@ -11,6 +11,11 @@
 #define STICK_S3_PIN_I2C_SCL 48
 #define STICK_S3_PIN_I2C_SDA 47
 
+// Grove 口第二路 I2C（MiniEncoderC 等外设，用户自行接线）。与内部 G47/G48 总线
+// 分属不同 I2C 端口。Grove 口 5V 保持不启用（不动 PMIC BOOST_EN），外设供电由外部接线负责。
+#define STICK_S3_PIN_GROVE_SDA 9
+#define STICK_S3_PIN_GROVE_SCL 10
+
 #define STICK_S3_PIN_ES8311_MCLK 18
 // Pin names follow the codec's perspective:
 //   ES8311_DIN  = codec serial data input  (DSDIN, MCU -> codec, speaker path) = GPIO14
@@ -29,6 +34,9 @@
 
 esp_err_t stick_s3_board_init(void);
 i2c_master_bus_handle_t stick_s3_board_i2c_bus(void);
+// 返回内部总线（ES8311/BMI270/M5PM1）实际生效的 I2C 端口号。
+// init_i2c 有 NUM_1→NUM_0 探测回退，第二路总线（如 MiniEncoderC）据此选用另一个端口。
+i2c_port_t stick_s3_board_i2c_port(void);
 esp_err_t stick_s3_board_battery_voltage_mv(int *voltage_mv);
 esp_err_t stick_s3_board_vbus_voltage_mv(int *voltage_mv);
 esp_err_t stick_s3_board_battery_level(int *level_percent);
