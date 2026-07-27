@@ -349,6 +349,13 @@ void OverlayWindow::ShowError(const std::string& text, std::function<void()> on_
     SetTimer(hwnd_, kAutoHideTimerId, 2000, nullptr);
 }
 
+void OverlayWindow::ShowTimedMessage(const std::string& text, int duration_ms,
+                                     std::function<void()> on_complete) {
+    Show(Mode::kInfo, text);
+    pending_callback_ = std::move(on_complete);
+    SetTimer(hwnd_, kAutoHideTimerId, duration_ms, nullptr);
+}
+
 void OverlayWindow::SetThemeColor(OverlayThemeColor color) {
     if (theme_color_ == color) return;
     theme_color_ = color;
@@ -1148,6 +1155,11 @@ void OverlayWindow::PaintIndicator(Gdiplus::Graphics& graphics, int x, int y, in
                           x + size - x_inset, y + size - x_inset);
         graphics.DrawLine(&ring_pen, x + size - x_inset, y + x_inset,
                           x + x_inset, y + size - x_inset);
+    } else if (mode_ == Mode::kInfo) {
+        // 中性信息指示：实心圆点。
+        Gdiplus::SolidBrush dot_brush(Gdiplus::Color(kIndicatorAlpha, ink_rgb, ink_rgb, ink_rgb));
+        const int inset = size / 4;
+        graphics.FillEllipse(&dot_brush, x + inset, y + inset, size - inset * 2, size - inset * 2);
     }
 }
 
