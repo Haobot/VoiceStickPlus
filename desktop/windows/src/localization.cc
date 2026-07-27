@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionHotwordTooLongBody) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordProcessNoKey) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -41,6 +41,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Start VoiceStick when Windows starts";
     table[Index(StringId::kSettingsSelectionHotword)] = "Show 'Add to Hotwords' button when selecting text";
     table[Index(StringId::kSettingsSelectionHotwordHint)] = "Select text in any app to quickly add it as a hotword.";
+    table[Index(StringId::kSettingsSectionHotwordProcess)] = "Hotword Processing";
+    table[Index(StringId::kSettingsHotwordProcessEnable)] = "Extract hotwords from selected text with LLM";
+    table[Index(StringId::kSettingsHotwordProcessPrompt)] = "Extraction prompt";
     table[Index(StringId::kSettingsDebugAudio)] = "Save debug audio files";
     table[Index(StringId::kSettingsShowImuDebug)] = "Show accelerometer debug values";
     table[Index(StringId::kSettingsImuWakeSensitivity)] = "Wake Sensitivity";
@@ -232,6 +235,14 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "No selectable text was found.";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "Selection Too Long";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "Selection is too long to be a hotword and was ignored.";
+
+    // 热词处理（LLM 提炼）
+    table[Index(StringId::kHotwordProcessExtracting)] = "Extracting hotwords...";
+    table[Index(StringId::kHotwordProcessAdded)] = "Hotwords added: ";
+    table[Index(StringId::kHotwordProcessAllDuplicate)] = "No new hotwords (all already exist)";
+    table[Index(StringId::kHotwordProcessEmptyResult)] = "No hotwords extracted";
+    table[Index(StringId::kHotwordProcessFailed)] = "Hotword extraction failed";
+    table[Index(StringId::kHotwordProcessNoKey)] = "LLM API key not configured";
     return table;
 }
 
@@ -259,6 +270,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLaunchAtLogin)] = "Windows 启动时自动运行 VoiceStick";
     table[Index(StringId::kSettingsSelectionHotword)] = "划选文本时显示\"添加到热词\"按钮";
     table[Index(StringId::kSettingsSelectionHotwordHint)] = "在任意应用中划选文本即可快速添加为热词。";
+    table[Index(StringId::kSettingsSectionHotwordProcess)] = "热词处理";
+    table[Index(StringId::kSettingsHotwordProcessEnable)] = "划词后用 LLM 提炼热词";
+    table[Index(StringId::kSettingsHotwordProcessPrompt)] = "提炼提示词";
     table[Index(StringId::kSettingsDebugAudio)] = "保存调试音频文件";
     table[Index(StringId::kSettingsShowImuDebug)] = "显示加速度调试数值";
     table[Index(StringId::kSettingsImuWakeSensitivity)] = "拿起灵敏度";
@@ -450,6 +464,14 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "未找到可划选的文本。";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "选区过长";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "选区过长不适合作为热词，已忽略。";
+
+    // 热词处理（LLM 提炼）
+    table[Index(StringId::kHotwordProcessExtracting)] = "热词提炼中…";
+    table[Index(StringId::kHotwordProcessAdded)] = "已添加热词：";
+    table[Index(StringId::kHotwordProcessAllDuplicate)] = "没有新热词（提炼结果均已存在）";
+    table[Index(StringId::kHotwordProcessEmptyResult)] = "未提炼出热词";
+    table[Index(StringId::kHotwordProcessFailed)] = "热词提炼失败";
+    table[Index(StringId::kHotwordProcessNoKey)] = "未配置 LLM API Key，无法提炼热词";
     return table;
 }
 

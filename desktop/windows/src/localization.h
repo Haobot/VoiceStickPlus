@@ -34,6 +34,9 @@ enum class StringId {
     kSettingsLaunchAtLogin,
     kSettingsSelectionHotword,
     kSettingsSelectionHotwordHint,
+    kSettingsSectionHotwordProcess,
+    kSettingsHotwordProcessEnable,
+    kSettingsHotwordProcessPrompt,
     kSettingsDebugAudio,
     kSettingsShowImuDebug,
     kSettingsImuWakeSensitivity,
@@ -245,6 +248,14 @@ enum class StringId {
     kSelectionHotwordEmptyBody,
     kSelectionHotwordTooLongTitle,
     kSelectionHotwordTooLongBody,
+
+    // 热词处理（LLM 提炼）
+    kHotwordProcessExtracting,
+    kHotwordProcessAdded,
+    kHotwordProcessAllDuplicate,
+    kHotwordProcessEmptyResult,
+    kHotwordProcessFailed,
+    kHotwordProcessNoKey,
 };
 
 // 返回 UTF-8 本地化文本
