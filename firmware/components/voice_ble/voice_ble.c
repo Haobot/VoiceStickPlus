@@ -1106,6 +1106,20 @@ esp_err_t voice_ble_send_tap(const char *kind)
     return send_state_json(json);
 }
 
+esp_err_t voice_ble_send_encoder_rotate(const char *direction, uint8_t steps)
+{
+    if (steps == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char json[96];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"encoder_rotate\",\"direction\":\"%s\",\"steps\":%u}",
+             direction ? direction : "cw", (unsigned)steps);
+    ESP_LOGI(TAG, "encoder rotate direction=%s steps=%u",
+             direction ? direction : "cw", (unsigned)steps);
+    return send_state_json(json);
+}
+
 esp_err_t voice_ble_send_motion(int16_t dx, int16_t dy)
 {
     if (!s_connected || !s_state_subscribed || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
