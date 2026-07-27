@@ -9,6 +9,7 @@
 #include "debug_audio_recorder.h"
 #include "device_switch_state.h"
 #include "firmware_manifest.h"
+#include "hotword_candidate_miner.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
 #include "ogg_opus_muxer.h"
@@ -345,6 +346,11 @@ private:
                           std::function<void(bool)> completion = {});
     void TransformText(const std::string& text, const OutputProfile& profile,
                        std::function<void(bool, std::string)> completion);
+    // 精修完成后的纠错对挖掘：把 refined 中新出现的标识符样式词记入候选存储
+    // （%APPDATA%\VoiceStick\hotword_candidates.json），累计达到阈值时弹托盘通知，
+    // 由用户在设置-热词区确认后才真正入表。
+    void MineHotwordCandidatesFromRefinement(const std::string& original,
+                                             const std::string& refined);
     void BeginWaitingForAudioEnd(std::string_view reason);
     void ScheduleAudioEndTimeout(std::optional<std::uint32_t> session_id,
                                  std::optional<std::string> device_id);
@@ -491,6 +497,9 @@ private:
     std::mutex firmware_mutex_;
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};
     std::shared_ptr<std::atomic_bool> refinement_cancel_token_;
+    // 热词候选挖掘存储（懒加载，见 MineHotwordCandidatesFromRefinement）。
+    HotwordCandidateStore hotword_candidates_;
+    bool hotword_candidates_loaded_ = false;
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;

@@ -248,6 +248,11 @@ enum class StringId {
     kSelectionHotwordEmptyBody,
     kSelectionHotwordTooLongTitle,
     kSelectionHotwordTooLongBody,
+    kHotwordCandidateNotifyTitle,
+    kHotwordCandidateNotifyBodySuffix,
+    kSettingsHotwordCandidatesLabel,
+    kSettingsHotwordCandidateAddButton,
+    kSettingsHotwordCandidateDismissButton,
 
     // 热词处理（LLM 提炼）
     kHotwordProcessExtracting,
