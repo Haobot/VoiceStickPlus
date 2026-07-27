@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "llm_chat_client.h"
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
@@ -33,7 +34,7 @@ public:
     static std::vector<std::string> DiffNewHotwords(const std::vector<std::string>& extracted,
                                                     const std::vector<std::string>& existing);
 
-    static constexpr std::size_t kMaxWordLen = 64;    // 单词限长（字符）
+    static constexpr std::size_t kMaxWordLen = 64;    // 单词限长（UTF-8 字节；中文约 21 字）
     static constexpr std::size_t kMaxWordCount = 20;  // 单次提炼限量
 };
 
