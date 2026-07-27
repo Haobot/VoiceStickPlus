@@ -17,6 +17,8 @@ llm_model = "gpt-5.5"
 # ASR 文本精修：用 LLM 对识别原文去停顿空格 / 修标点 / 去口头语（best-effort，失败回退原文）。
 refine_enabled = true
 # refine_prompt = ""  # 留空使用内置默认精修 prompt
+hotword_process_enabled = false
+# hotword_process_prompt = ""  # 留空使用内置默认热词提炼 prompt（Windows-only）
 interaction_mode = "hold_to_talk"
 resource_id = "volc.seedasr.sauc.duration"
 asr_hotwords = "小智,VoiceStick"
