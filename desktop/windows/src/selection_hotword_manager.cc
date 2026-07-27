@@ -283,7 +283,7 @@ void SelectionHotwordManager::OnQueryTimer() {
     std::string raw = GetSelectedTextViaUia();
     std::string text = NormalizeHotword(std::move(raw));
     if (text.empty()) return;          // 无选区或纯空白：静默
-    if (text.size() > kMaxHotwordLen) return;  // 选区过长：静默忽略
+    if (text.size() > static_cast<std::size_t>(max_length_)) return;  // 选区过长：静默忽略
     ShowPopup(text, pending_cursor_);
 }
 

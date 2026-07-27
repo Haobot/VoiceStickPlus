@@ -34,9 +34,15 @@ public:
     // 同步 UI 语言，影响弹窗按钮文案。配置变更时由上层调用。
     void SetLanguage(UiLanguage language) { language_ = language; }
 
+    // 设置划词长度上限（UTF-8 字节）。热词处理启用时上层放宽到 kMaxProcessLen。
+    void SetMaxLength(int max_length) { max_length_ = max_length; }
+
     // 用户点击"添加到热词"按钮时回调，参数为规范化后的选中文本。
     // 调用方负责把它加入热词库、持久化配置并给出反馈（通知/字幕等）。
     std::function<void(const std::string& text)> on_add_hotword;
+
+    static constexpr int kMaxHotwordLen = 64;      // 未启用热词处理：超长选区忽略
+    static constexpr int kMaxProcessLen = 2000;    // 启用热词处理：长文送 LLM 提炼
 
 private:
     // 隐藏辅助窗口的回调（消息泵分发）。
@@ -81,13 +87,13 @@ private:
     UINT_PTR auto_hide_timer_id_ = 0;
     bool popup_visible_ = false;
     std::string pending_text_;       // 弹窗当前对应的选中文本（已规范化）
+    int max_length_ = kMaxHotwordLen;  // 当前生效的划词长度上限
 
     // 静态回调路由：从 HWND 反查 this 指针。窗口创建时存入 GWLP_USERDATA。
     static constexpr UINT_PTR kQueryTimerId = 5101;
     static constexpr UINT_PTR kAutoHideTimerId = 5102;
     static constexpr int kQueryDelayMs = 80;       // 等 UIA 选区稳定
     static constexpr int kAutoHideMs = 4000;       // 弹窗 4 秒自动隐藏
-    static constexpr int kMaxHotwordLen = 64;      // 超长选区忽略，避免误把整段当热词
     static constexpr int kPopupOffsetX = 8;        // 弹窗相对光标的偏移
     static constexpr int kPopupOffsetY = 18;
     static constexpr int kPopupWidthDp = 132;      // 弹窗宽度（DIP）

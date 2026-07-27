@@ -1484,6 +1484,9 @@ void Win32App::SaveInputOptions() {
 void Win32App::SyncSelectionHotword() {
     if (!selection_hotword_manager_) return;
     selection_hotword_manager_->SetLanguage(EffectiveUiLanguage(config_.ui_language));
+    selection_hotword_manager_->SetMaxLength(config_.hotword_process_enabled
+                                                 ? SelectionHotwordManager::kMaxProcessLen
+                                                 : SelectionHotwordManager::kMaxHotwordLen);
     selection_hotword_manager_->SetEnabled(config_.selection_hotword_enabled);
 }
 
