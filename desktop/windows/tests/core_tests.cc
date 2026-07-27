@@ -1045,6 +1045,24 @@ void TestLlmRefinePromptAndPayload() {
     }
 }
 
+void TestHotwordProcessConfig() {
+    // 默认关闭、prompt 默认空（空 = 使用内置默认提示词）。
+    assert(AppConfig::Defaults().hotword_process_enabled == false);
+    assert(AppConfig::Defaults().hotword_process_prompt.empty());
+
+    // TOML 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_process_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.hotword_process_enabled = true;
+    config.hotword_process_prompt = "自定义提炼提示词\n第二行";
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.hotword_process_enabled == true);
+    assert(loaded.hotword_process_prompt == config.hotword_process_prompt);
+    std::filesystem::remove(temp);
+}
+
 void TestFirmwareManifestParsingAndVersionCompare() {
     const std::string json =
         "{\"hardware\":\"sticks3\",\"version\":\"0.2.3\",\"ota_url\":\"https://example.test/ota.bin\","
@@ -5323,6 +5341,7 @@ int main() {
     TestAppConfigDebugAudioDirUtf8RoundTrip();
     TestConfigTemplateSeeding();
     TestLlmRefinePromptAndPayload();
+    TestHotwordProcessConfig();
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
