@@ -290,6 +290,7 @@ public:
     }
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
+    void SendArrowUp() override { ++arrow_up_count; }
     void MoveMouse(int dx, int dy) override {
         ++move_mouse_count;
         total_dx += dx;
@@ -301,6 +302,7 @@ public:
     bool pasted_enter = false;
     bool send_enter_called = false;
     int arrow_down_count = 0;
+    int arrow_up_count = 0;
     int move_mouse_count = 0;
     int total_dx = 0;
     int total_dy = 0;
@@ -1837,6 +1839,14 @@ void TestTapThrottleRecoversAfter500ms() {
     ble_ptr->on_state_event("5A74", TapEvent("double"));
 
     assert(input.arrow_down_count == 2);
+}
+
+void TestInputInjectorArrowUpFakeWiring() {
+    // Fake 直连验证 SendArrowUp 接线：协调器映射测试（Task 8）依赖此计数。
+    FakeInputInjector input;
+    input.SendArrowUp();
+    assert(input.arrow_up_count == 1);
+    assert(input.arrow_down_count == 0);
 }
 
 // 侧键单击在空闲态进入体感鼠标模式，再次单击退出（体感优先决策）。
@@ -5392,6 +5402,7 @@ int main() {
     TestTapIgnoredDuringRecording();
     TestTapThrottledWithin500ms();
     TestTapThrottleRecoversAfter500ms();
+    TestInputInjectorArrowUpFakeWiring();
     TestCoordinatorAirMouseToggleViaSecondary();
     TestCoordinatorAirMousePrimaryClickIsLeftButton();
     TestCoordinatorMotionMovesCursorOnlyWhenActive();

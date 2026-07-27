@@ -165,6 +165,8 @@ public:
     virtual void SendEnter() = 0;
     // 注入一次下方向键，用于敲击手势在候选/选项间向下切换。
     virtual void SendArrowDown() = 0;
+    // 注入一次上方向键，用于编码器逆时针旋转在候选/选项间向上切换。
+    virtual void SendArrowUp() = 0;
     // 体感鼠标：相对移动光标 (dx 右为正, dy 下为正)。
     virtual void MoveMouse(int dx, int dy) = 0;
     // 体感鼠标：模拟鼠标左键单击（按下+抬起）。
