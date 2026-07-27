@@ -71,6 +71,10 @@ imu_wake_sensitivity = "medium"
 tap_to_arrow = false
 # 敲击灵敏度 1~10
 tap_sensitivity = 5
+# MiniEncoderC 编码器：旋转注入方向键（顺时针→Down、逆时针→Up，每格一次）
+encoder_to_arrow = true
+# 旋转方向翻转（true 时顺时针→Up）
+encoder_rotation_invert = false
 air_mouse_sensitivity_x = 50
 air_mouse_sensitivity_y = 50
 air_mouse_invert_y = false

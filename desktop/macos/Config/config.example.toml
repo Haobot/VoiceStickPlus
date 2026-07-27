@@ -35,6 +35,10 @@ air_mouse_sensitivity_y = 5  # 上下灵敏度 1~10，映射 gain_y=sensitivity_
 air_mouse_tau = 0.10         # 速度环时间常数（秒），越大惯性/缓停越长
 air_mouse_invert_y = false   # 反转 Y 轴（适配用户习惯）
 
+# MiniEncoderC 编码器旋转映射（仅 Windows 端消费，macOS 暂不支持）：
+# encoder_to_arrow = true          # 旋转注入方向键开关（顺时针→Down、逆时针→Up）
+# encoder_rotation_invert = false  # 旋转方向翻转（true 时顺时针→Up）
+
 [output]
 target = "focused_app"
 transform = "original"

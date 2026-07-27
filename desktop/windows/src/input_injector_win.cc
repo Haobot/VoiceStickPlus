@@ -67,6 +67,11 @@ void InputInjectorWin::SendArrowDown() {
     SendKey(VK_DOWN, false);
 }
 
+void InputInjectorWin::SendArrowUp() {
+    SendKey(VK_UP, true);
+    SendKey(VK_UP, false);
+}
+
 void InputInjectorWin::MoveMouse(int dx, int dy) {
     if (dx == 0 && dy == 0) return;
     INPUT input{};

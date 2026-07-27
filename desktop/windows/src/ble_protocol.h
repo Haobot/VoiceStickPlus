@@ -35,6 +35,10 @@ struct StateEvent {
     std::optional<int> battery_level;
     std::optional<bool> battery_charging;
     std::optional<bool> battery_usb_powered;
+    // 编码器旋转事件字段：direction 为 "cw"/"ccw"（固件上报的原始物理方向，
+    // 语义映射在桌面端完成）；steps 为该帧内同向累计格数（>=1）。非旋转事件为空。
+    std::string direction;
+    std::optional<std::uint32_t> steps;
 };
 
 struct FirmwareOtaStateEvent {
