@@ -134,6 +134,7 @@ npm run build    # 最小验证
 | --- | --- |
 | `asr_provider` | `volcengine`、`voicestick_cloud` 或 `tencent` |
 | `volcengine_api_key` | 火山引擎直连 API key（`X-Api-Key`） |
+| `volcengine_boosting_table_id` / `volcengine_correct_table_id` | 火山自学习平台热词表 / 替换词表 ID（控制台创建），作为 `corpus.boosting_table_id` / `corpus.correct_table_id` 发送 |
 | `voicestick_api_key` / `voicestick_cloud_url` | VoiceStick Cloud 中继 key 与 WebSocket URL |
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM，用于翻译与精修 |
 | `refine_enabled` / `refine_prompt` | 用 LLM 精修 ASR 原文（去停顿空格、修标点、去口头语），默认 `true`；prompt 留空用内置默认 |

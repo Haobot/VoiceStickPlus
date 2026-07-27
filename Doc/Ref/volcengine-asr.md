@@ -126,6 +126,45 @@ in the thinking state after the push-to-talk session ends. Final text enters a
 then confirm that paste; the secondary button cancels in-progress recognition or
 pending text.
 
+## Hotwords And Corpus
+
+The `request.corpus` field carries hotwords and self-learning platform tables:
+
+```json
+"corpus": {
+    "boosting_table_id": "控制台创建的热词表 id",
+    "correct_table_id": "控制台创建的替换词表 id",
+    "context": "{\"hotwords\":[{\"word\":\"热词1号\"}, {\"word\":\"热词2号\"}]}"
+}
+```
+
+### What actually works (verified 2026-07-28 by replaying captured DebugAudio ogg)
+
+- **Inline hotwords (`corpus.context`) only affect the streaming first pass.** With
+  `enable_nonstream = true` (what Voice Stick uses), the final text comes from the
+  nostream two-pass re-recognition, which ignores inline hotwords and overwrites the
+  boosted streaming result. Reproduced on both `volc.bigasr.sauc.duration` (1.0) and
+  `volc.seedasr.sauc.duration` (2.0): with two-pass on, no hotwords / 3 words / 26
+  words / `dialog_ctx` context all produced the same wrong final; with two-pass off,
+  `cloud` was correctly boosted to `Claude`.
+- Inline hotwords on bidirectional streaming are documented as ~100 tokens total
+  (nostream APIs allow 5000 words — do not confuse the two). The Windows client
+  trims to `kHotwordCorpusTokenBudget = 80` estimated tokens before sending
+  (`AsrProtocol::FitHotwordsToCorpusBudget`) to protect the first-pass boost.
+- **Working mitigation A (shipped)**: the LLM refinement step appends the hotword
+  list to its system prompt (`LLMRefinementClient::BuildRefinePrompt`), so the LLM
+  corrects near-homophone output back to the exact hotword spelling
+  (`agentsdmd` → `AGENTS.md`, verified with DeepSeek). Requires `refine_enabled`.
+- **Mitigation B (config-ready, needs console setup)**: `volcengine_boosting_table_id`
+  / `volcengine_correct_table_id` in `config.toml` are sent as
+  `corpus.boosting_table_id` / `corpus.correct_table_id`. Tables are created in the
+  Volcengine console (自学习平台 → 热词/替换词管理, see
+  https://www.volcengine.com/docs/6561/155739). Whether the two-pass final honors
+  table-based hotwords is not yet verified — test with
+  `scripts/e2e_test/replay_volcengine_asr.py --boosting-table-id ...`.
+- The macOS client currently sends the hotword list untrimmed and has neither
+  mitigation (parity TODO).
+
 ## Common Errors
 
 | Code | Meaning |
