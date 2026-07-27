@@ -174,13 +174,14 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 ### 固件职责
 
-固件只负责硬件 I/O、音频编码、BLE 通信、电源管理和显示主机下发的 UI 状态，不持有桌面交互状态机。关键组件（`firmware/components/` 下共 5 个）：
+固件只负责硬件 I/O、音频编码、BLE 通信、电源管理和显示主机下发的 UI 状态，不持有桌面交互状态机。关键组件（`firmware/components/` 下共 6 个）：
 
 - `firmware/main/main.c`：主循环，编排按键、BLE、录音会话、UI 状态、电源管理和 OTA 事件。
 - `components/audio_pipeline/`：从 ES8311 读取 16 kHz 单声道 PCM，经 HPF 与软件 AGC（v2.1.2 起：target -6 dBFS、max +20 dB、噪声门、0.8FS 瞬时限幅，硬件 ALC 已关闭）后编码为 Opus 交给 BLE 层；开头 60ms 静音+淡入、drain 尾帧淡出以消除按键音。
 - `components/voice_ble/`：GATT 服务、通知、控制写入、BLE OTA。
 - `components/ui_status/`：ST7789/LVGL 渲染、亮度、休眠、OTA 进度。
 - `components/bmi270/`：BMI270 IMU 驱动。
+- `components/mini_encoder_c/`：MiniEncoderC 编码器驱动（I2C @0x42，G9/G10 第二路总线，按钮/旋转增量/SK6812 LED，轮询式；探测失败优雅降级）。
 - `components/stick_s3_board/`：板级初始化，引脚定义在 `include/stick_s3_board.h`。
 
 板级硬件映射：
@@ -192,6 +193,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 | PMIC IRQ | GPIO13 | 电源管理芯片中断 |
 | LCD 背光 | GPIO38 | PWM 调光 |
 | IMU | BMI270 | I2C，体感鼠标与敲击检测 |
+| MiniEncoderC 编码器 | I2C @0x42，SDA=G9 / SCL=G10（自行接线，第二路 I2C 总线） | 按钮等价主键，旋转映射方向键，录音时亮红灯；不能作为深睡唤醒源 |
 | 音频 codec | ES8311 | I2S，16 kHz / 16 bit / mono |
 | 显示屏 | ST7789 | 135 × 240 竖屏，SPI |
 
@@ -249,6 +251,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成四个源码目标（�
 - `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
 - `[wechat_input_method]`：微信输入法模式专属配置，含 `trigger_mode`（wechat 专属触发方式，`hold_to_talk` 默认或 `click_to_talk`，与全局 `interaction_mode` 解耦）、`hotkey_hold` / `hotkey_click`（长按式/点按式各自记忆的触发热键，默认 `ctrl+win` / `ralt`）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回）。
 - `tap_to_arrow`：IMU 敲击映射方向键开关。
+- `encoder_to_arrow` / `encoder_rotation_invert`：MiniEncoderC 编码器旋转映射方向键开关（默认 `true`）与方向翻转（默认 `false`，true 时顺时针→Up）；仅 Windows 端消费。
 - `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等），完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
 
 Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，首启复制到 `%APPDATA%`（升级不覆盖）。示例见 `desktop/macos/Config/config.example.toml`。
@@ -337,3 +340,5 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
 - `Doc/` 下分四个子目录：`Ref/`（协议、发布流程、ASR 帧格式、低功耗等参考，另有 `OpenViking.md`）、`Plan/`（设计方案，大写 P，不再用 `Doc/Rfc/`）、`Guide/`（火山/腾讯 ASR WebSocket 接入、API 概览、air-mouse 调参等第三方服务接入指南）、`Expe/`（经验教训记录）。
 - `scripts/` 下除各平台构建脚本外，还有 `probe_asr_websocket_ping.py`（ASR 连通性探测）、`update-appcast.py`（生成 `appcast.xml`）、`idf_cli.py`（Windows 上包装 `idf.py`）、`png_to_lvgl_argb_bin.py` / `slice_cat_sprites.py` / `tune_cat_sprites.py`（LVGL 图片资源处理）、`scripts/e2e_test/`（L0–L4 真机验证，见上节测试策略）等辅助脚本。
+- MiniEncoderC 编码器键是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）仍是唯一唤醒键。
+- Grove 口 5V 保持不启用（固件不动 PMIC BOOST_EN），MiniEncoderC 供电由外部接线负责。
