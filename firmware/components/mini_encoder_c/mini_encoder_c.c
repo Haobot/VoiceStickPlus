@@ -117,6 +117,8 @@ esp_err_t mini_encoder_c_init(void)
         }
         if (last_err == ESP_OK) {
             s_present = true;
+            // 兜底清灯：固件在录音中崩溃/看门狗复位后，编码器独立 MCU 的 LED 会残留红色。
+            (void)mini_encoder_c_set_led(0, 0, 0);
             ESP_LOGI(TAG, "MiniEncoderC found at 0x%02x (sda=%d scl=%d)",
                      MINI_ENCODER_C_ADDR, candidates[i].sda, candidates[i].scl);
             return ESP_OK;
