@@ -1,5 +1,6 @@
 #include "mini_encoder_c.h"
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -11,7 +12,9 @@ static const char *TAG = "mini_encoder_c";
 
 #define MINI_ENCODER_C_ADDR 0x42
 #define MINI_ENCODER_C_I2C_FREQ_HZ 100000
-#define MINI_ENCODER_C_I2C_TIMEOUT_MS 100
+// 100 kHz 下 4 字节交易不足 1ms；轮询发生在 esp_timer 共享任务上下文，
+// 超时取 30ms 避免阻塞拖累双击检测等其他定时器。
+#define MINI_ENCODER_C_I2C_TIMEOUT_MS 30
 
 // 寄存器（M5Stack MiniEncoderC STM32 固件）：
 //   0x00 旋转计数器（int32 LE，累计值）
@@ -28,7 +31,8 @@ static const char *TAG = "mini_encoder_c";
 
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
-static bool s_present;
+// 会被 esp_timer 回调上下文（read_*）与 app_event_task 上下文（set_led）同时访问。
+static _Atomic bool s_present;
 static int s_fail_streak;
 
 static void note_i2c_result(esp_err_t err, const char *what)
@@ -57,10 +61,13 @@ static esp_err_t read_regs(uint8_t reg, uint8_t *data, size_t len)
 // 第二路 I2C 总线用内部总线之外的另一个端口（ESP32-S3 只有 NUM_0/NUM_1 两个）。
 static esp_err_t init_bus_on(gpio_num_t sda, gpio_num_t scl)
 {
+    if (s_dev) {
+        (void)i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+    }
     if (s_bus) {
         (void)i2c_del_master_bus(s_bus);
         s_bus = NULL;
-        s_dev = NULL;
     }
 
     const i2c_master_bus_config_t bus_config = {
@@ -178,9 +185,7 @@ esp_err_t mini_encoder_c_set_led(uint8_t r, uint8_t g, uint8_t b)
     const uint8_t data[] = {MINI_ENCODER_C_REG_LED, r, g, b};
     esp_err_t err = i2c_master_transmit(s_dev, data, sizeof(data),
                                         MINI_ENCODER_C_I2C_TIMEOUT_MS);
-    // LED 写失败静默忽略（不影响录音主链路），但仍计入连续失败统计以便降级。
-    if (err != ESP_OK) {
-        note_i2c_result(err, "set led");
-    }
+    // LED 写失败静默忽略（不影响录音主链路），但成败都计入统计以便降级（与读路径对称）。
+    note_i2c_result(err, "set led");
     return err;
 }
