@@ -688,7 +688,10 @@ static void queue_encoder_rotate_event(int32_t delta)
                 ? (delta > 255 ? 255 : (uint8_t)delta)
                 : (delta < -255 ? 255 : (uint8_t)(-delta)),
         };
-        (void)xQueueSend(s_app_event_queue, &event, 0);
+        // 低频异常路径观测：队列满时告警（正常路径保持静默，见 case 处说明）。
+        if (xQueueSend(s_app_event_queue, &event, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "encoder rotate event dropped, queue full");
+        }
     }
 }
 
@@ -1418,14 +1421,16 @@ static void app_event_task(void *arg)
             }
             break;
         case APP_EVENT_ENCODER_ROTATE:
-            // 编码器旋转：发送门控与 APP_EVENT_TAP 一致，仅空闲态上报，避免干扰语音周期
-            // （体感鼠标态 ui_state 为 air_mouse，已被 READY/PENDING 门控天然排除）。
-            // 方向映射在桌面端完成，固件只报原始物理事实。
+            // 编码器旋转：发送门控仿 APP_EVENT_TAP，仅空闲态上报，避免干扰语音周期。
+            // 体感开关与 ui_state 下发是两条独立消息，存在 ui_state 仍为 READY 但体感
+            // 已开的窗口，故显式检查 s_air_mouse_enabled。方向映射在桌面端完成，
+            // 固件只报原始物理事实。连转时可达 100 帧/秒，成功路径用 LOGD 保持默认静默。
             if (voice_ble_is_connected() && !s_recording && !s_ota_updating &&
+                !s_air_mouse_enabled &&
                 (s_app_ui_state == APP_UI_STATE_READY ||
                  s_app_ui_state == APP_UI_STATE_PENDING_CONFIRMATION)) {
                 const char *direction = (event.encoder_direction == 0) ? "cw" : "ccw";
-                ESP_LOGI(TAG, "encoder rotate %s steps=%u, sending to host",
+                ESP_LOGD(TAG, "encoder rotate %s steps=%u, sending to host",
                          direction, (unsigned)event.encoder_steps);
                 voice_ble_send_encoder_rotate(direction, event.encoder_steps);
                 note_activity();
@@ -1848,8 +1853,8 @@ static void set_tap_polling_enabled(bool enabled)
 // 编码器轮询：按钮边沿 → 主键 down/up 事件（APP_INPUT_SOURCE_ENCODER，语义等价物理键）；
 // 旋转增量 → APP_EVENT_ENCODER_ROTATE（非零读数即入队，发送门控在 app_event_task）。
 // 在 timer 任务上下文做 I2C 读，与 air_mouse_poll_timer_cb 同一先例（负载轻）。
-// I2C 失败 streak 期间每次轮询最坏占 30ms（3 倍轮询周期），与双击 500ms/hold 300ms
-// 窗口相比可忽略；累计 10 次失败即停表降级。
+// I2C 失败 streak 期间每次轮询最坏占 60ms（6 倍轮询周期，按钮+增量两次 I2C 交易），
+// 与双击 500ms/hold 300ms 窗口相比可忽略；累计 10 次失败即停表降级。
 // 组件连续 I2C 失败标记 absent 后停表，避免空转与日志刷屏。
 static void encoder_poll_timer_cb(void *arg)
 {

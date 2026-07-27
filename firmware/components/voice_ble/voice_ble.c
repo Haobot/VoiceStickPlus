@@ -1115,8 +1115,7 @@ esp_err_t voice_ble_send_encoder_rotate(const char *direction, uint8_t steps)
     snprintf(json, sizeof(json),
              "{\"event\":\"encoder_rotate\",\"direction\":\"%s\",\"steps\":%u}",
              direction ? direction : "cw", (unsigned)steps);
-    ESP_LOGI(TAG, "encoder rotate direction=%s steps=%u",
-             direction ? direction : "cw", (unsigned)steps);
+    // 与 send_motion 静默先例一致：旋转帧可能 100 帧/秒，成功路径不打日志。
     return send_state_json(json);
 }
 
