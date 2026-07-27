@@ -3,6 +3,7 @@
 #include "asr_client_win.h"
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
+#include "hotword_extractor.h"
 #include "localization.h"
 #include "log.h"
 #include "resource.h"
@@ -1033,6 +1034,11 @@ bool Win32App::CreateWindowInternal() {
                                      Tr(StringId::kSelectionHotwordEmptyBody, lang));
                     return;
                 }
+                // 热词处理：长文送 LLM 提炼，只把提炼结果写入热词表。
+                if (config_.hotword_process_enabled) {
+                    ProcessHotwordWithLlm(text);
+                    return;
+                }
                 const auto lang = EffectiveUiLanguage(config_.ui_language);
                 auto& hotwords = config_.asr_hotwords;
                 if (std::find(hotwords.begin(), hotwords.end(), text) != hotwords.end()) {
@@ -1488,6 +1494,59 @@ void Win32App::SyncSelectionHotword() {
                                                  ? SelectionHotwordManager::kMaxProcessLen
                                                  : SelectionHotwordManager::kMaxHotwordLen);
     selection_hotword_manager_->SetEnabled(config_.selection_hotword_enabled);
+}
+
+void Win32App::ProcessHotwordWithLlm(const std::string& text) {
+    const auto lang = EffectiveUiLanguage(config_.ui_language);
+    if (config_.llm_api_key.empty()) {
+        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessNoKey, lang), 3000);
+        return;
+    }
+    if (overlay_) overlay_->ShowRefining(Tr(StringId::kHotwordProcessExtracting, lang));
+    // ChatAsync 内部拷贝配置并 detached 线程执行，栈上临时对象安全。
+    HotwordExtractor(config_).Extract(text, config_.hotword_process_prompt,
+        [this](bool ok, std::string result) {
+            DispatchToUi([this, ok, result = std::move(result)]() mutable {
+                OnHotwordExtracted(ok, result);
+            });
+        });
+}
+
+void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
+    const auto lang = EffectiveUiLanguage(config_.ui_language);
+    if (!ok) {
+        LogLine("Hotword extraction failed: " + result);
+        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessFailed, lang), 3000);
+        return;
+    }
+    const auto extracted = HotwordExtractor::ParseExtractResult(result);
+    if (extracted.empty()) {
+        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessEmptyResult, lang), 3000);
+        return;
+    }
+    const auto new_words = HotwordExtractor::DiffNewHotwords(extracted, config_.asr_hotwords);
+    if (new_words.empty()) {
+        if (overlay_) overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessAllDuplicate, lang), 3000);
+        return;
+    }
+    auto& hotwords = config_.asr_hotwords;
+    hotwords.insert(hotwords.end(), new_words.begin(), new_words.end());
+    try {
+        config_.Save();
+    } catch (const std::exception& e) {
+        LogLine(std::string("Save config on hotword extract failed: ") + e.what());
+    }
+    if (coordinator_) coordinator_->UpdateConfig(config_);
+    // 顿号拼接新词列表用于浮窗展示（重复词不展示）。
+    std::string joined;
+    for (std::size_t i = 0; i < new_words.size(); ++i) {
+        if (i != 0) joined += "、";
+        joined += new_words[i];
+    }
+    if (overlay_) {
+        overlay_->ShowTimedMessage(Tr(StringId::kHotwordProcessAdded, lang) + joined, 3000);
+    }
+    LogLine("Hotwords extracted and added: " + joined);
 }
 
 void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color) {

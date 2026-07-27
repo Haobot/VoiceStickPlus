@@ -351,6 +351,7 @@ void OverlayWindow::ShowError(const std::string& text, std::function<void()> on_
 
 void OverlayWindow::ShowTimedMessage(const std::string& text, int duration_ms,
                                      std::function<void()> on_complete) {
+    duration_ms = std::max(duration_ms, 1);
     Show(Mode::kInfo, text);
     pending_callback_ = std::move(on_complete);
     SetTimer(hwnd_, kAutoHideTimerId, duration_ms, nullptr);
