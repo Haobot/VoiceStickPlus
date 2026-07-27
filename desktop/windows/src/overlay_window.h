@@ -36,6 +36,7 @@ public:
     void ShowError(const std::string& text, std::function<void()> on_complete);
     // 显示一条临时消息，duration_ms 后自动隐藏（复用 kAutoHideTimerId）。
     // 用于热词处理结果/错误反馈等一次性提示。
+    // 注意：新消息会取消前一条消息，其 on_complete 回调被覆盖不再触发。
     void ShowTimedMessage(const std::string& text, int duration_ms,
                           std::function<void()> on_complete = {});
     void Hide(std::function<void()> on_hidden = {});

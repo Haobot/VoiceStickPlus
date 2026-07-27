@@ -101,6 +101,10 @@ private:
     void SyncLaunchAtLogin();
     // 根据 config_.selection_hotword_enabled 同步划词监测器启用状态与语言。
     void SyncSelectionHotword();
+    // 热词处理：LLM 异步提炼选中文本中的热词，回调经 DispatchToUi 回 UI 线程处理。
+    void ProcessHotwordWithLlm(const std::string& text);
+    // 提炼完成（UI 线程）：解析、去重、写表、浮窗反馈 3 秒。
+    void OnHotwordExtracted(bool ok, const std::string& result);
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
     void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
