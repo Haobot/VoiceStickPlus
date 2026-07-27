@@ -326,6 +326,8 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - 设备 EN 复位后 USB JTAG 重枚举，间隙内 boot 日志直接丢失，循环重开 pyserial 也盖不住；boot→广播耗时从主机日志反推（断连事件→`advertisement matched` 时间差），不要试图串口抓 boot。
 - 排查 BLE 回连/僵尸链路先看 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`；`link-layer connected` 的 `polls=0` 是典型僵尸，`polls=1` 也可能是垂死链路（ATT 挂起），勿凭 polls 单一判据下结论。
 - 设备卡 Pairing 且重启 stick 无效、重启 Windows 端立愈 = 广告 watcher 静默失效，判据是日志长时间零 `advertisement matched`，见 `Doc/Expe/ble-watcher-silent-death-pairing-stuck.md`；应用自己的 radio reset 也会杀死 watcher，之后必须重建扫描。
+- 旁路（非协调器状态机）要碰 overlay 先查 `coordinator_->HasActiveSession()`：会话活跃时反馈必须走托盘气泡，否则 `kAutoHideTimerId`/`pending_callback_` 共享资源被覆盖会踩掉确认倒计时的自动粘贴，见 `Doc/Expe/hotword-processing-implementation-2026-07-28.md`。
+- 提升权限运行的 VoiceStick.exe 会锁定链接产物且 `build_win.bat` 杀不掉仍报成功，判据是 exe 时间戳；`ctest` 不在裸 cmd PATH，用 VS BuildTools 全路径。
 
 ## 给 Agent 的提示
 
