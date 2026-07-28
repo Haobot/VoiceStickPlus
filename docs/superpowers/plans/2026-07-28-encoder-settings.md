@@ -68,7 +68,7 @@ esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id,
     }
     if (session_id > 0) {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_down\",\"button\":\"%s\",\"session_id\":%" PRIu32 "}%s}",
+                 "{\"event\":\"button_down\",\"button\":\"%s\",\"session_id\":%" PRIu32 "%s}",
                  button, session_id, source_field);
     } else {
         snprintf(json, sizeof(json),
@@ -88,11 +88,11 @@ esp_err_t voice_ble_send_button_up(const char *button, uint32_t duration_ms,
     if (session_id > 0) {
         snprintf(json, sizeof(json),
                  "{\"event\":\"button_up\",\"button\":\"%s\","
-                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "}%s}",
+                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "%s}",
                  button, duration_ms, session_id, source_field);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_up\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "}%s}",
+                 "{\"event\":\"button_up\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "%s}",
                  button, duration_ms, source_field);
     }
     return send_state_json(json);
@@ -109,11 +109,11 @@ esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
     if (session_id > 0) {
         snprintf(json, sizeof(json),
                  "{\"event\":\"button_click\",\"button\":\"%s\","
-                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "}%s}",
+                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "%s}",
                  button, duration_ms, session_id, source_field);
     } else if (duration_ms > 0) {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_click\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "}%s}",
+                 "{\"event\":\"button_click\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "%s}",
                  button, duration_ms, source_field);
     } else {
         snprintf(json, sizeof(json),
