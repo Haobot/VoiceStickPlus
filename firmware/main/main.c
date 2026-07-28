@@ -174,6 +174,9 @@ static app_input_source_t s_primary_press_source = APP_INPUT_SOURCE_PHYSICAL;
 // 编码器录音灯颜色（0xRRGGBB，0=off）：桌面端经 control_rx 下发颜色名，NVS 持久化。
 static uint32_t s_encoder_led_rgb = 0xFF0000u;  // 默认红
 
+// 编码器录音门控：false 时编码器按下只发按键事件不启动录音（桌面端单击=自定义按键）。
+static bool s_encoder_recording_gate = true;
+
 typedef enum {
     APP_UI_STATE_READY,
     APP_UI_STATE_RECORDING,
@@ -884,8 +887,16 @@ static void ble_control_cb(const char *json)
             ESP_LOGI(TAG, "encoder_led_color %s -> 0x%06" PRIX32,
                      color_item->valuestring, s_encoder_led_rgb);
         } else {
-            ESP_LOGW(TAG, "unknown encoder_led_color ignored");
+            ESP_LOGW(TAG, "unknown encoder_led_color ignored: %s",
+                     cJSON_IsString(color_item) ? color_item->valuestring : "<missing>");
         }
+    } else if (cJSON_IsString(event) &&
+               strcmp(event->valuestring, "encoder_recording_gate") == 0 &&
+               cJSON_IsBool(enabled)) {
+        s_encoder_recording_gate = cJSON_IsTrue(enabled);
+        save_encoder_settings_to_nvs();
+        ESP_LOGI(TAG, "encoder_recording_gate %s",
+                 s_encoder_recording_gate ? "enabled" : "disabled");
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0) {
         // 灵敏度 1..10（用户面向）：1=最不灵敏，10=最灵敏，默认 5。
         // 兼容 legacy 字符串 low/medium/high -> 2/5/9。
@@ -1062,6 +1073,15 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         }
     }
 
+    // 编码器录音门控关闭：按下只走按键事件链路（双击检测已在上方完成；
+    // 松开时由 handle_primary_up 的门控分支进双击窗口补发 button_click），
+    // 不启动任何音频会话。物理主键不受影响。
+    // !s_recording 条件：门控运行中从开切关时若录音已在进行，放行正常停录路径。
+    if (source == APP_INPUT_SOURCE_ENCODER && !s_encoder_recording_gate && !s_recording) {
+        s_primary_down_us = esp_timer_get_time();
+        return;
+    }
+
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
         const primary_owner_t owner_from_source = primary_owner_from_source(source);
         if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
@@ -1206,6 +1226,22 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         ESP_LOGI(TAG, "button front up ignored (second press of double-click)");
         s_double_click_second_press = false;
         s_primary_down_us = 0;
+        return;
+    }
+
+    // 门控关闭时的编码器释放：统一按短按处理进双击窗口（窗口超时补发 button_click，
+    // 窗口内再按发 button_double_click），不产生 button_up，不涉及录音。
+    if (source == APP_INPUT_SOURCE_ENCODER && !s_encoder_recording_gate && !s_recording) {
+        if (s_primary_down_us == 0) {
+            return;  // 无配对按下（如门控运行中切换），忽略
+        }
+        const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
+        ESP_LOGI(TAG, "encoder button up (recording gate off), double-click window (%" PRIu32 " ms)",
+                 duration_ms);
+        s_double_click_pending = true;
+        s_pending_button_up_duration_ms = duration_ms;
+        (void)esp_timer_start_once(s_double_click_timer,
+                                   DOUBLE_CLICK_WINDOW_MS * 1000ULL);
         return;
     }
 
@@ -2309,23 +2345,30 @@ static void load_tap_settings_from_nvs(void)
     }
 }
 
-// 编码器设置：enc_led（i32，0xRRGGBB，默认红）。后续 Task 3 会在此函数扩展 enc_rec_gate。
+// 编码器设置：enc_led（i32，0xRRGGBB，默认红）、enc_rec_gate（i32，1=录音语义，默认开）。
 static void load_encoder_settings_from_nvs(void)
 {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
     int32_t led = (int32_t)0xFF0000;
+    int32_t gate = 1;  // 默认开（录音语义）
     if (err == ESP_OK) {
         esp_err_t e = nvs_get_i32(handle, "enc_led", &led);
         if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "load encoder led failed: %s", esp_err_to_name(e));
+        }
+        e = nvs_get_i32(handle, "enc_rec_gate", &gate);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "load encoder recording gate failed: %s", esp_err_to_name(e));
         }
         nvs_close(handle);
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
     }
     s_encoder_led_rgb = ((uint32_t)led) & 0xFFFFFFu;
-    ESP_LOGI(TAG, "encoder settings loaded from nvs: led=0x%06" PRIX32, s_encoder_led_rgb);
+    s_encoder_recording_gate = (gate != 0);
+    ESP_LOGI(TAG, "encoder settings loaded from nvs: led=0x%06" PRIX32 " gate=%d",
+             s_encoder_led_rgb, s_encoder_recording_gate ? 1 : 0);
 }
 
 static void save_encoder_settings_to_nvs(void)
@@ -2339,12 +2382,21 @@ static void save_encoder_settings_to_nvs(void)
     err = nvs_set_i32(handle, "enc_led", (int32_t)s_encoder_led_rgb);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "save encoder led failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return;
+    }
+    err = nvs_set_i32(handle, "enc_rec_gate", s_encoder_recording_gate ? 1 : 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "save encoder recording gate failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return;
     }
     err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "commit encoder settings failed: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "encoder settings saved to nvs: led=0x%06" PRIX32, s_encoder_led_rgb);
+        ESP_LOGI(TAG, "encoder settings saved to nvs: led=0x%06" PRIX32 " gate=%d",
+                 s_encoder_led_rgb, s_encoder_recording_gate ? 1 : 0);
     }
     nvs_close(handle);
 }
