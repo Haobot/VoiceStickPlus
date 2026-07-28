@@ -168,6 +168,7 @@ static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
 
 // 最近一次主键按下（任意来源）的输入源：button_up/click/double_click 发送时据此
 // 补 source 标签（编码器事件带 "encoder"，其它来源省略）。
+// timer（double_click_timer_cb）/app_event 双任务访问，与 s_primary_owner 同模式可接受。
 static app_input_source_t s_primary_press_source = APP_INPUT_SOURCE_PHYSICAL;
 
 typedef enum {
@@ -977,6 +978,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
 {
     (void)request_id;
     ESP_LOGI(TAG, "button front down source=%d", source);
+    const app_input_source_t prev_press_source = s_primary_press_source;
     s_primary_press_source = source;
     note_activity();
     // 按键按下抑制敲击检测，避免手指动作被 IMU 误判为双击（见 TAP_SUPPRESS_AFTER_BUTTON_MS）。
@@ -1027,6 +1029,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
         const primary_owner_t owner_from_source = primary_owner_from_source(source);
         if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
+            // 被拒按下不覆盖进行中按压的来源标签。
+            s_primary_press_source = prev_press_source;
             ESP_LOGI(TAG, "ignore primary down from source=%d, owner is %d", source, s_primary_owner);
             return;
         }
