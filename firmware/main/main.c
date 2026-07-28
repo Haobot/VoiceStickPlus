@@ -171,6 +171,9 @@ static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
 // timer（double_click_timer_cb）/app_event 双任务访问，与 s_primary_owner 同模式可接受。
 static app_input_source_t s_primary_press_source = APP_INPUT_SOURCE_PHYSICAL;
 
+// 编码器录音灯颜色（0xRRGGBB，0=off）：桌面端经 control_rx 下发颜色名，NVS 持久化。
+static uint32_t s_encoder_led_rgb = 0xFF0000u;  // 默认红
+
 typedef enum {
     APP_UI_STATE_READY,
     APP_UI_STATE_RECORDING,
@@ -260,6 +263,8 @@ static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
 static void load_tap_settings_from_nvs(void);
 static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity);
+static void load_encoder_settings_from_nvs(void);
+static void save_encoder_settings_to_nvs(void);
 static void set_tap_polling_enabled(bool enabled);
 static void set_air_mouse_enabled(bool enabled);
 
@@ -603,9 +608,11 @@ static uint32_t start_recording(void)
     }
 
     s_recording = true;
-    // 录音期间编码器 LED 亮红灯；LED 写失败静默忽略，不影响录音主链路。
-    if (mini_encoder_c_present()) {
-        (void)mini_encoder_c_set_led(255, 0, 0);
+    // 录音期间编码器 LED 亮灯（颜色 NVS 可配，0=off 不亮）；LED 写失败静默忽略。
+    if (mini_encoder_c_present() && s_encoder_led_rgb != 0) {
+        (void)mini_encoder_c_set_led((s_encoder_led_rgb >> 16) & 0xFF,
+                                     (s_encoder_led_rgb >> 8) & 0xFF,
+                                     s_encoder_led_rgb & 0xFF);
     }
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
@@ -773,6 +780,23 @@ static void ble_connection_cb(bool connected)
     queue_app_event(connected ? APP_EVENT_BLE_CONNECTED : APP_EVENT_BLE_DISCONNECTED);
 }
 
+// 颜色名 → 0xRRGGBB 预设表。未知名返回 false（调用方忽略并保持当前值）。
+static bool encoder_led_rgb_from_name(const char *name, uint32_t *rgb_out)
+{
+    struct { const char *name; uint32_t rgb; } presets[] = {
+        {"red", 0xFF0000u}, {"green", 0x00FF00u}, {"blue", 0x0000FFu},
+        {"yellow", 0xFFFF00u}, {"purple", 0xFF00FFu}, {"cyan", 0x00FFFFu},
+        {"white", 0xFFFFFFu}, {"off", 0x000000u},
+    };
+    for (size_t i = 0; i < sizeof(presets) / sizeof(presets[0]); ++i) {
+        if (strcmp(name, presets[i].name) == 0) {
+            *rgb_out = presets[i].rgb;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void ble_control_cb(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
@@ -850,6 +874,18 @@ static void ble_control_cb(const char *json)
         set_tap_polling_enabled(s_tap_enabled);
         save_tap_settings_to_nvs(s_tap_enabled, (int32_t)-1);
         ESP_LOGI(TAG, "tap_enabled %s", s_tap_enabled ? "true" : "false");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "encoder_led_color") == 0) {
+        const cJSON *color_item = cJSON_GetObjectItemCaseSensitive(root, "color");
+        uint32_t rgb = 0;
+        if (cJSON_IsString(color_item) &&
+            encoder_led_rgb_from_name(color_item->valuestring, &rgb)) {
+            s_encoder_led_rgb = rgb;
+            save_encoder_settings_to_nvs();
+            ESP_LOGI(TAG, "encoder_led_color %s -> 0x%06" PRIX32,
+                     color_item->valuestring, s_encoder_led_rgb);
+        } else {
+            ESP_LOGW(TAG, "unknown encoder_led_color ignored");
+        }
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0) {
         // 灵敏度 1..10（用户面向）：1=最不灵敏，10=最灵敏，默认 5。
         // 兼容 legacy 字符串 low/medium/high -> 2/5/9。
@@ -2273,6 +2309,46 @@ static void load_tap_settings_from_nvs(void)
     }
 }
 
+// 编码器设置：enc_led（i32，0xRRGGBB，默认红）。后续 Task 3 会在此函数扩展 enc_rec_gate。
+static void load_encoder_settings_from_nvs(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
+    int32_t led = (int32_t)0xFF0000;
+    if (err == ESP_OK) {
+        esp_err_t e = nvs_get_i32(handle, "enc_led", &led);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "load encoder led failed: %s", esp_err_to_name(e));
+        }
+        nvs_close(handle);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+    }
+    s_encoder_led_rgb = ((uint32_t)led) & 0xFFFFFFu;
+    ESP_LOGI(TAG, "encoder settings loaded from nvs: led=0x%06" PRIX32, s_encoder_led_rgb);
+}
+
+static void save_encoder_settings_to_nvs(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_i32(handle, "enc_led", (int32_t)s_encoder_led_rgb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "save encoder led failed: %s", esp_err_to_name(err));
+    }
+    err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit encoder settings failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "encoder settings saved to nvs: led=0x%06" PRIX32, s_encoder_led_rgb);
+    }
+    nvs_close(handle);
+}
+
 static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity)
 {
     nvs_handle_t handle;
@@ -2370,6 +2446,7 @@ void app_main(void)
     // 从 NVS 恢复拿起检测阈值与敲击手势设置；voice_ble_init 已初始化 NVS flash。
     load_pickup_threshold_from_nvs();
     load_tap_settings_from_nvs();
+    load_encoder_settings_from_nvs();
     set_tap_polling_enabled(s_tap_enabled);
 
     esp_err_t audio_err = audio_pipeline_init();
