@@ -49,12 +49,14 @@ esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
 esp_err_t voice_ble_request_fast_interval(void);
 esp_err_t voice_ble_request_slow_interval(void);
 esp_err_t voice_ble_send_device_info(void);
-esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id);
+// source 为事件来源标签（如 "encoder"），NULL 时省略该字段（物理键/远程键行为不变）。
+esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id,
+                                     const char *source);
 esp_err_t voice_ble_send_button_up(const char *button, uint32_t duration_ms,
-                                   uint32_t session_id);
+                                   uint32_t session_id, const char *source);
 esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
-                                      uint32_t session_id);
-esp_err_t voice_ble_send_button_double_click(const char *button);
+                                      uint32_t session_id, const char *source);
+esp_err_t voice_ble_send_button_double_click(const char *button, const char *source);
 // 发送敲击事件（如 double-tap）。kind 建议为 "double"，空时默认 double。
 esp_err_t voice_ble_send_tap(const char *kind);
 // 发送编码器旋转事件。direction 为 "cw"/"ccw"（原始物理方向，固件不做语义映射），

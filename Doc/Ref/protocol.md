@@ -78,6 +78,7 @@ Currently emitted state events:
 {"event":"button_down","button":"secondary"}
 {"event":"button_up","button":"secondary","duration_ms":90}
 {"event":"button_double_click","button":"primary"}
+{"event":"button_click","button":"primary","duration_ms":131,"source":"encoder"}
 {"event":"tap","button":"double"}
 {"event":"encoder_rotate","direction":"cw","steps":2}
 ```
@@ -85,6 +86,12 @@ Currently emitted state events:
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is
 included when a `primary` press starts or stops a local audio recording.
+
+The button events (`button_down` / `button_up` / `button_click` /
+`button_double_click`) carry an optional `source` field identifying the input
+origin. Events from the MiniEncoderC encoder button (on the top Hat header)
+include `"source":"encoder"`; physical-button and remote (hotkey) events omit
+the field. Older desktops ignore the unknown field, so no migration is needed.
 
 `button_double_click` is emitted when the firmware detects two consecutive short
 presses of the primary button within 500 ms (each press < 300 ms). The desktop

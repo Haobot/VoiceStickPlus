@@ -166,6 +166,10 @@ typedef enum {
 
 static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
 
+// 最近一次主键按下（任意来源）的输入源：button_up/click/double_click 发送时据此
+// 补 source 标签（编码器事件带 "encoder"，其它来源省略）。
+static app_input_source_t s_primary_press_source = APP_INPUT_SOURCE_PHYSICAL;
+
 typedef enum {
     APP_UI_STATE_READY,
     APP_UI_STATE_RECORDING,
@@ -918,6 +922,12 @@ static primary_owner_t primary_owner_from_source(app_input_source_t source)
                                                  PRIMARY_OWNER_REMOTE;
 }
 
+// 主键事件的 source 标签：编码器返回 "encoder"，其它来源返回 NULL（省略字段）。
+static const char *primary_button_source_tag(void)
+{
+    return s_primary_press_source == APP_INPUT_SOURCE_ENCODER ? "encoder" : NULL;
+}
+
 // 侧键双击窗口超时：确认为单次点击，补发 button_click secondary（原单击语义）。
 static void side_double_click_timer_cb(void *arg)
 {
@@ -927,7 +937,7 @@ static void side_double_click_timer_cb(void *arg)
     }
     s_side_click_pending = false;
     ESP_LOGI(TAG, "button side single-click (double-click window timeout)");
-    (void)voice_ble_send_button_click("secondary", s_side_pending_duration_ms, 0);
+    (void)voice_ble_send_button_click("secondary", s_side_pending_duration_ms, 0, NULL);
 }
 
 // 侧键释放：单击延迟到双击窗口超时后确认；窗口内第二击直接发 button_double_click。
@@ -942,7 +952,7 @@ static void handle_side_up(void)
         s_side_click_pending = false;
         (void)esp_timer_stop(s_side_double_click_timer);
         ESP_LOGI(TAG, "button side double-click");
-        (void)voice_ble_send_button_double_click("secondary");
+        (void)voice_ble_send_button_double_click("secondary", NULL);
         return;
     }
 
@@ -967,6 +977,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
 {
     (void)request_id;
     ESP_LOGI(TAG, "button front down source=%d", source);
+    s_primary_press_source = source;
     note_activity();
     // 按键按下抑制敲击检测，避免手指动作被 IMU 误判为双击（见 TAP_SUPPRESS_AFTER_BUTTON_MS）。
     s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
@@ -987,7 +998,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             ESP_LOGI(TAG, "button front down as double-click second press");
             s_double_click_pending = false;
             (void)esp_timer_stop(s_double_click_timer);
-            (void)voice_ble_send_button_double_click("primary");
+            (void)voice_ble_send_button_double_click("primary", primary_button_source_tag());
             // 标记第二次按下，忽略其后续释放事件。
             s_double_click_second_press = true;
             s_primary_down_us = esp_timer_get_time();
@@ -1001,7 +1012,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             if (elapsed_us < DOUBLE_CLICK_WINDOW_MS * 1000LL) {
                 ESP_LOGI(TAG, "button front down as double-click in click_to_talk mode");
                 (void)stop_recording();
-                (void)voice_ble_send_button_double_click("primary");
+                (void)voice_ble_send_button_double_click("primary", primary_button_source_tag());
                 s_click_to_talk_first_click_us = 0;
                 s_primary_down_us = 0;
                 s_primary_session_id = 0;
@@ -1025,7 +1036,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
         s_primary_session_id = stop_recording();
         esp_err_t primary_up_err = voice_ble_send_button_click("primary", primary_duration_ms,
-                                                               s_primary_session_id);
+                                                               s_primary_session_id,
+                                                               primary_button_source_tag());
         if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
             apply_app_ui_state("ready", "");
         }
@@ -1037,7 +1049,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         if (s_app_ui_state == APP_UI_STATE_PENDING_CONFIRMATION) {
             ESP_LOGI(TAG, "button front down as pending confirmation control");
             s_primary_session_id = 0;
-            (void)voice_ble_send_button_click("primary", 0, 0);
+            (void)voice_ble_send_button_click("primary", 0, 0, primary_button_source_tag());
             return;
         }
 
@@ -1056,7 +1068,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
                 s_primary_owner = PRIMARY_OWNER_NONE;
                 return;
             }
-            esp_err_t primary_down_err = voice_ble_send_button_down("primary", s_primary_session_id);
+            esp_err_t primary_down_err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
             if (primary_down_err != ESP_OK) {
                 (void)stop_recording();
                 s_primary_session_id = 0;
@@ -1091,7 +1103,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
                 s_click_to_talk_pending_start = false;
                 (void)esp_timer_stop(s_double_click_timer);
                 ESP_LOGI(TAG, "click_to_talk double-click (send button_double_click, no recording)");
-                (void)voice_ble_send_button_double_click("primary");
+                (void)voice_ble_send_button_double_click("primary", primary_button_source_tag());
                 s_primary_down_us = 0;
                 s_primary_session_id = 0;
                 s_primary_owner = PRIMARY_OWNER_NONE;
@@ -1121,8 +1133,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         }
         s_primary_owner = primary_owner_from_source(source);
         esp_err_t primary_down_err = s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK
-            ? voice_ble_send_button_click("primary", 0, s_primary_session_id)
-            : voice_ble_send_button_down("primary", s_primary_session_id);
+            ? voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag())
+            : voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
         if (s_primary_session_id != 0 && primary_down_err != ESP_OK) {
             (void)stop_recording();
             s_primary_session_id = 0;
@@ -1143,7 +1155,7 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     // 体感鼠标态：主键松开上报 button_click，桌面端映射为鼠标左键单击。不涉及录音。
     if (s_air_mouse_enabled && is_local_primary_source(source)) {
         const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
-        (void)voice_ble_send_button_click("primary", duration_ms, 0);
+        (void)voice_ble_send_button_click("primary", duration_ms, 0, primary_button_source_tag());
         s_primary_down_us = 0;
         s_primary_owner = PRIMARY_OWNER_NONE;
         return;
@@ -1215,7 +1227,8 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     }
 
     esp_err_t primary_up_err = voice_ble_send_button_up("primary", primary_duration_ms,
-                                                        s_primary_session_id);
+                                                        s_primary_session_id,
+                                                        primary_button_source_tag());
     if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
         apply_app_ui_state("ready", "");
     }
@@ -1386,7 +1399,7 @@ static void app_event_task(void *arg)
             if (s_recording) {
                 const uint32_t session_id = stop_recording();
                 voice_ble_send_button_up("primary", elapsed_button_ms(s_primary_down_us),
-                                         session_id);
+                                         session_id, primary_button_source_tag());
             }
             esp_err_t ota_pm_err = acquire_ota_pm_locks();
             if (ota_pm_err != ESP_OK) {
@@ -1578,7 +1591,7 @@ static void double_click_timer_cb(void *arg)
         ESP_LOGI(TAG, "click_to_talk pending start timeout, confirming recording");
         s_primary_session_id = start_recording();
         if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id);
+            esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag());
             if (err != ESP_OK) {
                 (void)stop_recording();
                 s_primary_session_id = 0;
@@ -1619,7 +1632,7 @@ static void double_click_timer_cb(void *arg)
         ESP_LOGI(TAG, "recording start retry: ble ready, starting");
         s_primary_session_id = start_recording();
         if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id);
+            esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
             if (err != ESP_OK) {
                 (void)stop_recording();
                 s_primary_session_id = 0;
@@ -1641,7 +1654,7 @@ static void double_click_timer_cb(void *arg)
             ESP_LOGI(TAG, "hold threshold reached, starting recording");
             s_primary_session_id = start_recording();
             if (s_primary_session_id != 0) {
-                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id);
+                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
                 if (err != ESP_OK) {
                     (void)stop_recording();
                     s_primary_session_id = 0;
@@ -1669,7 +1682,8 @@ static void double_click_timer_cb(void *arg)
         // 双击窗口超时：单次短击。
         s_double_click_pending = false;
         ESP_LOGI(TAG, "double-click window expired, sending button_click");
-        voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0);
+        voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0,
+                                    primary_button_source_tag());
         s_primary_down_us = 0;
         s_primary_session_id = 0;
         s_primary_owner = PRIMARY_OWNER_NONE;
