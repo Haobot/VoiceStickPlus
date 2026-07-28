@@ -47,13 +47,13 @@ encoder_led_color = "red"            # 新增：red/green/blue/yellow/purple/cya
 # 按键手势（桌面端消费）
 encoder_press_action = "recording"        # 新增：单击动作 recording|key
 encoder_press_key = ""                    # 新增：单击自定义按键（action=key 时生效）
-encoder_double_click_action = "key"       # 新增：双击动作 key|recording
+encoder_double_click_action = "key"       # 新增：双击动作 key|recording（recording=双击开始/停止录音，等价 click_to_talk 点按起停语义）
 encoder_double_click_key = "enter"        # 新增：双击自定义按键（默认 enter=现行为）
 ```
 
 - 按键值语法复用现有热键格式：单键（`up`/`down`/`left`/`right`/`enter`/`tab`/`esc`/`pageup`/`pagedown`/`volumeup`/`volumedown`/`f1`-`f12`/单字符）或修饰键组合（`ctrl+z`、`ctrl+shift+v`；修饰键 ctrl/alt/shift/win）。
 - 单击 `recording` = 现有录音语义（hold_to_talk/click_to_talk 不变）；`key` = 单击注入自定义键、不录音。
-- 双击 `key`（默认 enter）保持现行为；`recording` = 双击走主键双击现有处理（对称选项，按需求保留）。
+- 双击 `key`（默认 enter）保持现行为；`recording` = 双击开始/停止录音（等价 click_to_talk 的点按起停语义；物理主键双击注入 Enter 的行为不受影响）。
 - `off` 灯色 = 录音也不亮，覆盖「关闭灯光」；不做亮度调节（YAGNI）。
 - 默认值全部等价当前硬编码行为，旧配置文件不新增任何键也能无缝升级。
 
