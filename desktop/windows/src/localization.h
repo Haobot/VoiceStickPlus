@@ -261,6 +261,27 @@ enum class StringId {
     kHotwordProcessEmptyResult,
     kHotwordProcessFailed,
     kHotwordProcessNoKey,
+
+    // 编码器设置节
+    kSettingsSectionEncoder,
+    kSettingsEncoderToArrow,
+    kSettingsEncoderRotationInvert,
+    kSettingsEncoderRotateCwKey,
+    kSettingsEncoderRotateCcwKey,
+    kSettingsEncoderLedColor,
+    kSettingsEncoderPressAction,
+    kSettingsEncoderDoubleClickAction,
+    kSettingsEncoderActionRecording,
+    kSettingsEncoderActionKey,
+    kSettingsEncoderLedRed,
+    kSettingsEncoderLedGreen,
+    kSettingsEncoderLedBlue,
+    kSettingsEncoderLedYellow,
+    kSettingsEncoderLedPurple,
+    kSettingsEncoderLedCyan,
+    kSettingsEncoderLedWhite,
+    kSettingsEncoderLedOff,
+    kSettingsEncoderInvalidKey,
 };
 
 // 返回 UTF-8 本地化文本

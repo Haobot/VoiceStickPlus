@@ -40,6 +40,8 @@ private:
     void UpdateTapSensitivityLabel();
     void UpdateAirMouseSensitivityXLabel();
     void UpdateAirMouseSensitivityYLabel();
+    // 单击/双击动作组合框切换时启用/禁用对应按键编辑框。
+    void UpdateEncoderKeyEditStates();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     bool IsLabelControl(HWND control) const;
@@ -103,6 +105,15 @@ private:
     HWND tap_to_arrow_check_ = nullptr;
     HWND tap_sensitivity_trackbar_ = nullptr;
     HWND tap_sensitivity_value_label_ = nullptr;
+    HWND encoder_to_arrow_check_ = nullptr;
+    HWND encoder_rotation_invert_check_ = nullptr;
+    HWND encoder_rotate_cw_key_edit_ = nullptr;
+    HWND encoder_rotate_ccw_key_edit_ = nullptr;
+    HWND encoder_led_color_combo_ = nullptr;
+    HWND encoder_press_action_combo_ = nullptr;
+    HWND encoder_press_key_edit_ = nullptr;
+    HWND encoder_double_click_action_combo_ = nullptr;
+    HWND encoder_double_click_key_edit_ = nullptr;
     HWND air_mouse_sensitivity_x_trackbar_ = nullptr;
     HWND air_mouse_sensitivity_x_value_label_ = nullptr;
     HWND air_mouse_sensitivity_y_trackbar_ = nullptr;
@@ -129,7 +140,7 @@ private:
     std::vector<LayoutEntry> layout_;
 
     static constexpr int kClientWidth = 580;
-    static constexpr int kClientHeight = 1240;
+    static constexpr int kClientHeight = 1510;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -166,6 +177,15 @@ private:
     static constexpr UINT kIdHotwordCandidateList = 2036;
     static constexpr UINT kIdHotwordCandidateAdd = 2037;
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
+    static constexpr UINT kIdEncoderToArrow = 2039;
+    static constexpr UINT kIdEncoderRotationInvert = 2040;
+    static constexpr UINT kIdEncoderRotateCwKey = 2041;
+    static constexpr UINT kIdEncoderRotateCcwKey = 2042;
+    static constexpr UINT kIdEncoderLedColor = 2043;
+    static constexpr UINT kIdEncoderPressAction = 2044;
+    static constexpr UINT kIdEncoderPressKey = 2045;
+    static constexpr UINT kIdEncoderDoubleClickAction = 2046;
+    static constexpr UINT kIdEncoderDoubleClickKey = 2047;
 };
 
 } // namespace voicestick
