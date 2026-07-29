@@ -191,7 +191,7 @@ Current desktop events:
 | `tap_sensitivity` | `level`: integer (1..10) | Windows -> StickS3 | Sets the double-tap detection sensitivity. 1=least sensitive (hardest tap), 10=most sensitive (lightest tap). Default 5. |
 | `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. The desktop pairs this with a `ui_state:air_mouse` so the device shows an air-mouse indicator — in this state the primary button acts as the left mouse button, not recording. Default false. |
 | `encoder_led_color` | `color`: string | Windows -> StickS3 | Sets the MiniEncoderC LED color shown while recording. Presets: `red`, `green`, `blue`, `yellow`, `purple`, `cyan`, `white`, `off` (`off` keeps the LED dark even while recording). Unknown color names are ignored. Persisted in firmware NVS. Default `red`. |
-| `encoder_recording_gate` | `enabled`: boolean | Windows -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses only emit `button_*` events (with `source:"encoder"`, still going through firmware double-click detection) and never start audio; the physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
+| `encoder_recording_gate` | `enabled`: boolean | Windows -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses never emit `button_down`/`button_up` and never start audio; they only feed the firmware double-click window, which emits `button_click`/`button_double_click` with `source:"encoder"`. The physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as
@@ -216,9 +216,11 @@ in firmware NVS (`save_encoder_settings_to_nvs`), so they survive reboots.
 even while recording. `encoder_recording_gate` derives from the desktop's
 `encoder_press_action`: when the action is `key`, the desktop sends
 `enabled:false` and the firmware treats an encoder press purely as a button
-event source — it emits `button_down`/`button_up`/`button_click`/
-`button_double_click` with `source:"encoder"` but never starts an audio
-session (a long knob hold therefore only produces key events). The gate
+event source — it never emits `button_down`/`button_up` and never starts an
+audio session; presses only feed the firmware double-click window, which
+emits `button_click` on window expiry or `button_double_click` on a second
+press within the window, both with `source:"encoder"` (a long knob hold
+therefore produces no events until release). The gate
 applies only to `APP_INPUT_SOURCE_ENCODER`: the physical primary button and
 `remote_button_*` control events keep their recording semantics regardless,
 which is how the desktop's double-click-recording toggle (sent as
