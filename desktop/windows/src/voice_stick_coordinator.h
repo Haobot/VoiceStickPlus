@@ -302,6 +302,13 @@ private:
     void HandleButtonUp(const StateEvent& event, const std::string& device_id);
     void HandleButtonClick(const StateEvent& event, const std::string& device_id);
     void HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonDown(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonUp(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonClick(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonDoubleClick(const StateEvent& event, const std::string& device_id);
+    // 双击取消结构：取消活跃录音（wechat/主路径）与字幕会话，供物理主键双击与
+    // 编码器双击 key 动作共用。
+    void CancelActiveSessionsForDoubleClick(const std::string& device_id);
     void HandleTapEvent(const StateEvent& event, const std::string& device_id);
     void HandleEncoderRotate(const StateEvent& event, const std::string& device_id);
     void HandleMotionEvent(const MotionEvent& event, const std::string& device_id);
