@@ -989,9 +989,11 @@ void VoiceStickCoordinator::HandleEncoderButtonClick(const StateEvent& event,
     const auto spec = ParseKeySpec(config_.encoder_press_key);
     if (!spec.has_value()) {
         LogCoordinatorLine("encoder press key invalid: \"" + config_.encoder_press_key +
-                           "\", click ignored");
+                           "\" on VS-" + device_id + ", click ignored");
         return;
     }
+    // 编码器单击在录音/识别中仍注入是有意设计：该键是用户显式配置的快捷键（如撤销），
+    // 与会话状态正交；不同于 rotate 的录音中抑制。
     LogCoordinatorLine("encoder click on VS-" + device_id + ", injecting " + spec->display_text);
     input_injector_->SendKeyCombo(*spec);
 }
@@ -1001,7 +1003,9 @@ void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& eve
     (void)event;
     if (config_.encoder_double_click_action == "recording") {
         // 切换录音起停：复用固件 remote_button 通道（固件侧等价一次远程按下/松开，
-        // 音频链路真实完整，等同 click_to_talk 点按起停）。
+        // 音频链路真实完整，等同 click_to_talk 点按起停）。remote_button 走
+        // APP_INPUT_SOURCE_REMOTE，不受 encoder_recording_gate 门控约束——
+        // press_action=key（门控关）时双击起停录音仍可用，属有意设计。
         const bool has_active = HasActiveSession() || IsWechatInputMethodActive() ||
                                 HasActiveSubtitleSession(device_id);
         LogCoordinatorLine("encoder double-click on VS-" + device_id +
@@ -1019,7 +1023,8 @@ void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& eve
         input_injector_->SendKeyCombo(*spec);
     } else {
         LogCoordinatorLine("encoder double-click key invalid: \"" +
-                           config_.encoder_double_click_key + "\", fallback to Enter");
+                           config_.encoder_double_click_key + "\" on VS-" + device_id +
+                           ", fallback to Enter");
         input_injector_->SendEnter();
     }
     ble_->SendUiState("ready", "", device_id);
@@ -1076,7 +1081,7 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     if (!spec.has_value()) {
         // 非法配置（绕过加载校验直改内存/未来新键名）回退方向键，保持可用。
         LogCoordinatorLine("encoder rotate key invalid: \"" + key_text +
-                           "\", fallback to arrows");
+                           "\" on VS-" + device_id + ", fallback to arrows");
         for (std::uint32_t i = 0; i < steps; ++i) {
             if (effective_ccw) {
                 input_injector_->SendArrowUp();

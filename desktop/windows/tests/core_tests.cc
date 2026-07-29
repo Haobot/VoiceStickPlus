@@ -2691,6 +2691,91 @@ void TestPhysicalPrimaryUnaffectedByEncoderConfig() {
     assert(input.sent_key_combos.empty());
 }
 
+void TestEncoderPressRecordingButtonUpStopsSession() {
+    // press_action=recording（默认）：编码器 button_up 与物理主键 up 同一收尾路径。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 40));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(40, 1));  // 首帧音频触发 ASR 懒启动
+    assert(asr_ptr->started);
+    assert(!asr_ptr->last_chunk_was_final);
+
+    // 编码器 button_up → 走主键 up 路径进入等 audio_end（ui_state=thinking）。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_up"));
+    assert(HasUiState(*ble_ptr, "thinking", "5A74"));
+
+    // audio_end 到达后正常收尾：最终帧标记 is_last。
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(40, 2));
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+void TestEncoderSourceSecondaryFallsBackToPhysicalPath() {
+    // source=encoder 只分流 primary；button=secondary 即使带 encoder 标签也走物理侧键路径。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->sent_air_mouse_enabled.clear();
+
+    StateEvent event;
+    event.event = "button_click";
+    event.button = "secondary";
+    event.source = "encoder";
+    ble_ptr->sent_ui_states.clear();
+    ble_ptr->on_state_event("5A74", event);
+
+    // 与物理侧键单击一致：空闲态进入体感鼠标（断言方式对齐 TestCoordinatorAirMouseToggleViaSecondary）。
+    assert(!ble_ptr->sent_air_mouse_enabled.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
+    assert(HasUiState(*ble_ptr, "air_mouse", "5A74"));
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderConfigUpdateTakesEffectImmediately() {
+    // UpdateConfig 改 press_action 后无需重启协调器，编码器单击行为立即切换。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 初始 press_action=recording：编码器 down 开播确认。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(50, 1));
+    assert(asr_ptr->started);
+
+    // 热更新为 key 动作（UpdateConfig 会取消活跃会话，属既有语义）。
+    AppConfig updated = AppConfig::Defaults();
+    updated.encoder_press_action = "key";
+    updated.encoder_press_key = "ctrl+z";
+    coordinator.UpdateConfig(updated);
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Z");
+}
+
 // 侧键单击在空闲态进入体感鼠标模式，再次单击退出（体感优先决策）。
 void TestCoordinatorAirMouseToggleViaSecondary() {
     auto ble = std::make_unique<FakeBleCentral>();
@@ -6273,6 +6358,9 @@ int main() {
     TestEncoderRotateCustomKeys();
     TestEncoderRotateInvalidKeyFallsBackToArrows();
     TestPhysicalPrimaryUnaffectedByEncoderConfig();
+    TestEncoderPressRecordingButtonUpStopsSession();
+    TestEncoderSourceSecondaryFallsBackToPhysicalPath();
+    TestEncoderConfigUpdateTakesEffectImmediately();
     TestCoordinatorAirMouseToggleViaSecondary();
     TestCoordinatorAirMousePrimaryClickIsLeftButton();
     TestCoordinatorMotionMovesCursorOnlyWhenActive();
