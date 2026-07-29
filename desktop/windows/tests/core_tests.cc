@@ -1601,21 +1601,27 @@ void TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate() {
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
-    // 连接时全量重发：LED 颜色 + 门控（从 press_action 派生）。
+    // 连接时全量重发：LED 颜色 + 门控（从 press_action 派生），均为 std::nullopt 广播。
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    assert(!ble_ptr->sent_encoder_led_colors.empty());
+    assert(ble_ptr->sent_encoder_led_colors.size() == 1);
     assert(ble_ptr->sent_encoder_led_colors.back().first == "purple");
-    assert(!ble_ptr->sent_encoder_recording_gates.empty());
+    assert(!ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 1);
     assert(ble_ptr->sent_encoder_recording_gates.back().first == false);
+    assert(!ble_ptr->sent_encoder_recording_gates.back().second.has_value());
 
     // UpdateConfig 同样重发；press_action=recording 派生门控打开。
     AppConfig updated = AppConfig::Defaults();
     updated.encoder_led_color = "green";
     updated.encoder_press_action = "recording";
     coordinator.UpdateConfig(updated);
+    assert(ble_ptr->sent_encoder_led_colors.size() == 2);
     assert(ble_ptr->sent_encoder_led_colors.back().first == "green");
+    assert(!ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 2);
     assert(ble_ptr->sent_encoder_recording_gates.back().first == true);
+    assert(!ble_ptr->sent_encoder_recording_gates.back().second.has_value());
 }
 
 void TestAppConfigTapSensitivityRoundTrip() {
