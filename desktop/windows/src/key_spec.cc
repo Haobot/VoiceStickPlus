@@ -16,14 +16,16 @@ std::string Trim(const std::string& s) {
 
 std::string Lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
-                   [](char c) { return static_cast<char>(std::tolower(c)); });
+                   [](char c) {
+                       return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                   });
     return s;
 }
 
 // 主键名 → VK。未知名返回 nullopt。
 std::optional<UINT> MainKeyVkey(const std::string& lower) {
     if (lower.size() == 1) {
-        const char ch = static_cast<char>(std::toupper(lower[0]));
+        const char ch = static_cast<char>(std::toupper(static_cast<unsigned char>(lower[0])));
         if (ch >= 'A' && ch <= 'Z') return static_cast<UINT>(ch);
         if (ch >= '0' && ch <= '9') return static_cast<UINT>(ch);
         return std::nullopt;
@@ -51,6 +53,7 @@ std::optional<UINT> MainKeyVkey(const std::string& lower) {
         for (size_t i = 1; i < lower.size(); ++i) {
             if (lower[i] < '0' || lower[i] > '9') return std::nullopt;
             num = num * 10 + (lower[i] - '0');
+            if (num > 24) return std::nullopt;  // 防 int 溢出
         }
         if (num >= 1 && num <= 24) return VK_F1 + (num - 1);
     }

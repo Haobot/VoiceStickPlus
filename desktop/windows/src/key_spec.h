@@ -17,9 +17,10 @@ struct KeySpec {
     std::string display_text;
 };
 
-// 解析热键语法：单键（up/down/left/right/enter/esc/tab/space/backspace/delete/
-// pageup/pagedown/home/end/insert/volumeup/volumedown/volumemute/f1-f24/单字符 A-Z0-9）
-// 或修饰键组合（ctrl/alt/shift/win + 单键，"+" 分隔，大小写与前后空白不敏感）。
+// 解析热键语法：单键（up/down/left/right/enter|return/esc|escape/tab/space/
+// backspace/delete/insert/pageup/pagedown/home/end/volumeup/volumedown/volumemute/
+// f1-f24/单字符 A-Z0-9）或修饰键组合（ctrl|control/alt/shift/win|windows|meta
+// + 单键，"+" 分隔，大小写与前后空白不敏感）。
 // 仅修饰键、未知键名、多个主键均返回 nullopt。
 std::optional<KeySpec> ParseKeySpec(const std::string& text);
 
