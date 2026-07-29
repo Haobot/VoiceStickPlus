@@ -1078,8 +1078,12 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     // 不启动任何音频会话。物理主键不受影响。
     // !s_recording 条件：门控运行中从开切关时若录音已在进行，放行正常停录路径。
     if (source == APP_INPUT_SOURCE_ENCODER && !s_encoder_recording_gate && !s_recording) {
-        s_primary_down_us = esp_timer_get_time();
-        return;
+        // 物理键/远程源活跃期间（owner 非 NONE）不记录按下时刻，避免覆盖其
+        // s_primary_down_us；本次编码器点击被丢弃（up 分支同样会忽略，不成对不产事件）。
+        if (s_primary_owner == PRIMARY_OWNER_NONE) {
+            s_primary_down_us = esp_timer_get_time();
+        }
+        return;  // 无论是否记录都不走录音路径
     }
 
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
@@ -1232,8 +1236,10 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     // 门控关闭时的编码器释放：统一按短按处理进双击窗口（窗口超时补发 button_click，
     // 窗口内再按发 button_double_click），不产生 button_up，不涉及录音。
     if (source == APP_INPUT_SOURCE_ENCODER && !s_encoder_recording_gate && !s_recording) {
-        if (s_primary_down_us == 0) {
-            return;  // 无配对按下（如门控运行中切换），忽略
+        // 无配对按下（s_primary_down_us==0），或物理键/远程源活跃期间（owner 非 NONE，
+        // 对应 down 分支未记录的丢弃点击），忽略；避免污染共享双击窗口/定时器状态。
+        if (s_primary_down_us == 0 || s_primary_owner != PRIMARY_OWNER_NONE) {
+            return;
         }
         const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
         ESP_LOGI(TAG, "encoder button up (recording gate off), double-click window (%" PRIu32 " ms)",
