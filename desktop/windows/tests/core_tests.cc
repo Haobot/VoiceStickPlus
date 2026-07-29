@@ -294,6 +294,9 @@ public:
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
     void SendArrowUp() override { ++arrow_up_count; }
+    void SendKeyCombo(const KeySpec& spec) override {
+        sent_key_combos.push_back(spec.display_text);
+    }
     void MoveMouse(int dx, int dy) override {
         ++move_mouse_count;
         total_dx += dx;
@@ -306,6 +309,7 @@ public:
     bool send_enter_called = false;
     int arrow_down_count = 0;
     int arrow_up_count = 0;
+    std::vector<std::string> sent_key_combos;
     int move_mouse_count = 0;
     int total_dx = 0;
     int total_dy = 0;
@@ -2126,6 +2130,16 @@ void TestInputInjectorArrowUpFakeWiring() {
     input.SendArrowUp();
     assert(input.arrow_up_count == 1);
     assert(input.arrow_down_count == 0);
+}
+
+void TestInputInjectorKeyComboFakeWiring() {
+    // Fake 直连验证 SendKeyCombo 接线：协调器路由测试（Task 9）依赖此记录。
+    FakeInputInjector input;
+    const auto spec = ParseKeySpec("ctrl+shift+v");
+    assert(spec.has_value());
+    input.SendKeyCombo(*spec);
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Shift+V");
 }
 
 void TestKeySpecParse() {
@@ -5887,6 +5901,7 @@ int main() {
     TestTapThrottledWithin500ms();
     TestTapThrottleRecoversAfter500ms();
     TestInputInjectorArrowUpFakeWiring();
+    TestInputInjectorKeyComboFakeWiring();
     TestKeySpecParse();
     TestAppConfigEncoderRoundTrip();
     TestEncoderRotateMapsDirectionToArrows();

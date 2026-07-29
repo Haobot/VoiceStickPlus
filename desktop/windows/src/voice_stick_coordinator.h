@@ -10,6 +10,7 @@
 #include "device_switch_state.h"
 #include "firmware_manifest.h"
 #include "hotword_candidate_miner.h"
+#include "key_spec.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
 #include "ogg_opus_muxer.h"
@@ -168,6 +169,9 @@ public:
     virtual void SendArrowDown() = 0;
     // 注入一次上方向键，用于编码器逆时针旋转在候选/选项间向上切换。
     virtual void SendArrowUp() = 0;
+    // 注入一次按键组合：修饰键按下 → 主键（带 scan code）→ 逆序全释放。
+    // 单键（无修饰键）退化为一次按键。供编码器自定义按键动作使用。
+    virtual void SendKeyCombo(const KeySpec& spec) = 0;
     // 体感鼠标：相对移动光标 (dx 右为正, dy 下为正)。
     virtual void MoveMouse(int dx, int dy) = 0;
     // 体感鼠标：模拟鼠标左键单击（按下+抬起）。
