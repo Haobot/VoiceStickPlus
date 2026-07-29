@@ -162,6 +162,7 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.battery_usb_powered = JsonBoolValue(json, "usb_powered");
     event.direction = JsonStringValue(json, "direction");
     event.steps = JsonU32Value(json, "steps");
+    event.source = JsonStringValue(json, "source");
 
     return event;
 }
@@ -211,6 +212,18 @@ ByteVector BleProtocol::ShowImuDebugPayload(bool enabled) {
 
 ByteVector BleProtocol::TapEnabledPayload(bool enabled) {
     const auto json = std::string("{\"event\":\"tap_enabled\",\"enabled\":") +
+                      (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::EncoderLedColorPayload(std::string_view color) {
+    const auto json = std::string("{\"event\":\"encoder_led_color\",\"color\":\"") +
+                      JsonEscape(color) + "\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::EncoderRecordingGatePayload(bool enabled) {
+    const auto json = std::string("{\"event\":\"encoder_recording_gate\",\"enabled\":") +
                       (enabled ? "true" : "false") + "}";
     return ByteVector(json.begin(), json.end());
 }

@@ -78,6 +78,7 @@ Currently emitted state events:
 {"event":"button_down","button":"secondary"}
 {"event":"button_up","button":"secondary","duration_ms":90}
 {"event":"button_double_click","button":"primary"}
+{"event":"button_click","button":"primary","duration_ms":131,"source":"encoder"}
 {"event":"tap","button":"double"}
 {"event":"encoder_rotate","direction":"cw","steps":2}
 ```
@@ -85,6 +86,12 @@ Currently emitted state events:
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is
 included when a `primary` press starts or stops a local audio recording.
+
+The button events (`button_down` / `button_up` / `button_click` /
+`button_double_click`) carry an optional `source` field identifying the input
+origin. Events from the MiniEncoderC encoder button (on the top Hat header)
+include `"source":"encoder"`; physical-button and remote (hotkey) events omit
+the field. Older desktops ignore the unknown field, so no migration is needed.
 
 `button_double_click` is emitted when the firmware detects two consecutive short
 presses of the primary button within 500 ms (each press < 300 ms). The desktop
@@ -170,6 +177,8 @@ Current desktop events:
 {"event":"tap_enabled","enabled":true}
 {"event":"tap_sensitivity","level":5}
 {"event":"air_mouse_enabled","enabled":true}
+{"event":"encoder_led_color","color":"red"}
+{"event":"encoder_recording_gate","enabled":true}
 ```
 
 | Event | Field | Direction | Meaning |
@@ -181,6 +190,8 @@ Current desktop events:
 | `tap_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables the double-tap on-device gesture detection. Default false. |
 | `tap_sensitivity` | `level`: integer (1..10) | Windows -> StickS3 | Sets the double-tap detection sensitivity. 1=least sensitive (hardest tap), 10=most sensitive (lightest tap). Default 5. |
 | `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. The desktop pairs this with a `ui_state:air_mouse` so the device shows an air-mouse indicator — in this state the primary button acts as the left mouse button, not recording. Default false. |
+| `encoder_led_color` | `color`: string | Windows -> StickS3 | Sets the MiniEncoderC LED color shown while recording. Presets: `red`, `green`, `blue`, `yellow`, `purple`, `cyan`, `white`, `off` (`off` keeps the LED dark even while recording). Unknown color names are ignored. Persisted in firmware NVS. Default `red`. |
+| `encoder_recording_gate` | `enabled`: boolean | Windows -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses never emit `button_down`/`button_up` and never start audio; they only feed the firmware double-click window, which emits `button_click`/`button_double_click` with `source:"encoder"`. The physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as
@@ -196,6 +207,26 @@ threshold — audio starts immediately on press, minimizing press-to-popup laten
 in `wechat_input_method` mode. `click_to_talk` starts audio on the first primary
 click and stops on the next primary click. Older firmware ignores unknown mode
 values and keeps the previous mode.
+
+`encoder_led_color` and `encoder_recording_gate` configure the MiniEncoderC
+rotary encoder. Both are written by the Windows settings dialog and persisted
+in firmware NVS (`save_encoder_settings_to_nvs`), so they survive reboots.
+`encoder_led_color` accepts the presets `red`, `green`, `blue`, `yellow`,
+`purple`, `cyan`, `white` and `off` — `off` means the encoder LED stays dark
+even while recording. `encoder_recording_gate` derives from the desktop's
+`encoder_press_action`: when the action is `key`, the desktop sends
+`enabled:false` and the firmware treats an encoder press purely as a button
+event source — it never emits `button_down`/`button_up` and never starts an
+audio session; presses only feed the firmware double-click window, which
+emits `button_click` on window expiry or `button_double_click` on a second
+press within the window, both with `source:"encoder"` (a long knob hold
+therefore produces no events until release). The gate
+applies only to `APP_INPUT_SOURCE_ENCODER`: the physical primary button and
+`remote_button_*` control events keep their recording semantics regardless,
+which is how the desktop's double-click-recording toggle (sent as
+`remote_button_down`/`remote_button_up`) still works when the gate is closed.
+If the gate is flipped from on to off while an encoder-started recording is
+already in progress, the release path is still allowed to stop it normally.
 
 Deprecated app-to-firmware events:
 

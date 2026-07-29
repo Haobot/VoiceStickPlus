@@ -12,6 +12,7 @@
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
 #include "hotword_candidate_miner.h"
+#include "key_spec.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
@@ -109,6 +110,14 @@ public:
                                 const std::optional<std::string>& device_id) override {
         sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
     }
+    void SendEncoderLedColor(const std::string& color,
+                             const std::optional<std::string>& device_id) override {
+        sent_encoder_led_colors.push_back(std::pair{color, device_id});
+    }
+    void SendEncoderRecordingGate(bool enabled,
+                                  const std::optional<std::string>& device_id) override {
+        sent_encoder_recording_gates.push_back(std::pair{enabled, device_id});
+    }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -147,6 +156,8 @@ public:
     std::vector<std::pair<bool, std::optional<std::string>>> sent_tap_enabled;
     std::vector<SentTapSensitivity> sent_tap_sensitivities;
     std::vector<std::pair<bool, std::optional<std::string>>> sent_air_mouse_enabled;
+    std::vector<std::pair<std::string, std::optional<std::string>>> sent_encoder_led_colors;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_encoder_recording_gates;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -297,6 +308,9 @@ public:
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
     void SendArrowUp() override { ++arrow_up_count; }
+    void SendKeyCombo(const KeySpec& spec) override {
+        sent_key_combos.push_back(spec.display_text);
+    }
     void MoveMouse(int dx, int dy) override {
         ++move_mouse_count;
         total_dx += dx;
@@ -309,6 +323,7 @@ public:
     bool send_enter_called = false;
     int arrow_down_count = 0;
     int arrow_up_count = 0;
+    std::vector<std::string> sent_key_combos;
     int move_mouse_count = 0;
     int total_dx = 0;
     int total_dy = 0;
@@ -570,6 +585,17 @@ StateEvent EncoderRotateEvent(const std::string& direction, std::uint32_t steps)
     return state_event;
 }
 
+// 构造编码器按键事件（固件上报带 "source":"encoder"）。
+StateEvent EncoderButtonEvent(const std::string& event,
+                              std::optional<std::uint32_t> session_id = std::nullopt) {
+    StateEvent state_event;
+    state_event.event = event;
+    state_event.button = "primary";
+    state_event.session_id = session_id;
+    state_event.source = "encoder";
+    return state_event;
+}
+
 AudioFrame AudioDataFrame(std::uint32_t session_id, std::uint32_t seq, bool is_end = false) {
     AudioFrame frame;
     frame.session_id = session_id;
@@ -791,6 +817,27 @@ void TestEncoderRotateStateParsing() {
     assert(sparse_event->event == "encoder_rotate");
     assert(sparse_event->direction.empty());
     assert(!sparse_event->steps.has_value());
+}
+
+void TestStateEventSourceParsing() {
+    // 编码器按键事件带 source 字段。
+    const std::string json = "{\"event\":\"button_click\",\"button\":\"primary\",\"duration_ms\":131,\"source\":\"encoder\"}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "button_click");
+    assert(event->source == "encoder");
+
+    // 物理键事件不带 source：解析为空串（缺省=物理键）。
+    const std::string plain = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
+    ByteVector plain_frame = {1, 0x10};
+    AppendLe16(plain_frame, static_cast<std::uint16_t>(plain.size()));
+    plain_frame.insert(plain_frame.end(), plain.begin(), plain.end());
+    auto plain_event = BleProtocol::ParseStateEvent(plain_frame);
+    assert(plain_event.has_value());
+    assert(plain_event->source.empty());
 }
 
 void TestOggMuxer() {
@@ -1573,6 +1620,53 @@ void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
     assert(!ble_ptr->sent_tap_sensitivities.back().device_id.has_value());
 }
 
+void TestBleEncoderPayloads() {
+    auto led = BleProtocol::EncoderLedColorPayload("cyan");
+    assert(std::string(led.begin(), led.end()) == "{\"event\":\"encoder_led_color\",\"color\":\"cyan\"}");
+    auto led_off = BleProtocol::EncoderLedColorPayload("off");
+    assert(std::string(led_off.begin(), led_off.end()) == "{\"event\":\"encoder_led_color\",\"color\":\"off\"}");
+
+    auto gate_off = BleProtocol::EncoderRecordingGatePayload(false);
+    assert(std::string(gate_off.begin(), gate_off.end()) == "{\"event\":\"encoder_recording_gate\",\"enabled\":false}");
+    auto gate_on = BleProtocol::EncoderRecordingGatePayload(true);
+    assert(std::string(gate_on.begin(), gate_on.end()) == "{\"event\":\"encoder_recording_gate\",\"enabled\":true}");
+}
+
+void TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_led_color = "purple";
+    config.encoder_press_action = "key";  // 派生门控关闭
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 连接时全量重发：LED 颜色 + 门控（从 press_action 派生），均为 std::nullopt 广播。
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    assert(ble_ptr->sent_encoder_led_colors.size() == 1);
+    assert(ble_ptr->sent_encoder_led_colors.back().first == "purple");
+    assert(!ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 1);
+    assert(ble_ptr->sent_encoder_recording_gates.back().first == false);
+    assert(!ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+
+    // UpdateConfig 同样重发；press_action=recording 派生门控打开。
+    AppConfig updated = AppConfig::Defaults();
+    updated.encoder_led_color = "green";
+    updated.encoder_press_action = "recording";
+    coordinator.UpdateConfig(updated);
+    assert(ble_ptr->sent_encoder_led_colors.size() == 2);
+    assert(ble_ptr->sent_encoder_led_colors.back().first == "green");
+    assert(!ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 2);
+    assert(ble_ptr->sent_encoder_recording_gates.back().first == true);
+    assert(!ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+}
+
 void TestAppConfigTapSensitivityRoundTrip() {
     // 默认档 5。
     assert(AppConfig::Defaults().tap_sensitivity == 5);
@@ -2213,6 +2307,76 @@ void TestInputInjectorArrowUpFakeWiring() {
     assert(input.arrow_down_count == 0);
 }
 
+void TestInputInjectorKeyComboFakeWiring() {
+    // Fake 直连验证 SendKeyCombo 接线：协调器路由测试（Task 9）依赖此记录。
+    FakeInputInjector input;
+    const auto spec = ParseKeySpec("ctrl+shift+v");
+    assert(spec.has_value());
+    input.SendKeyCombo(*spec);
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Shift+V");
+}
+
+void TestKeySpecParse() {
+    // 单键：方向键/enter/单字符/f 键/音量键。
+    auto down = ParseKeySpec("down");
+    assert(down.has_value());
+    assert(down->modifiers.empty());
+    assert(down->vk == VK_DOWN);
+    assert(down->display_text == "Down");
+
+    auto up = ParseKeySpec("UP");  // 大小写不敏感
+    assert(up.has_value() && up->vk == VK_UP);
+
+    auto enter = ParseKeySpec(" enter ");  // 前后空白容忍
+    assert(enter.has_value() && enter->vk == VK_RETURN && enter->display_text == "Enter");
+
+    auto v = ParseKeySpec("v");
+    assert(v.has_value() && v->vk == 'V' && v->display_text == "V");
+
+    auto f5 = ParseKeySpec("f5");
+    assert(f5.has_value() && f5->vk == VK_F5 && f5->display_text == "F5");
+
+    auto vol = ParseKeySpec("volumeup");
+    assert(vol.has_value() && vol->vk == VK_VOLUME_UP);
+
+    auto pgdn = ParseKeySpec("pagedown");
+    assert(pgdn.has_value() && pgdn->vk == VK_NEXT);
+
+    // 修饰键组合：display_text 修饰键固定 Ctrl/Alt/Shift/Win 序。
+    auto combo = ParseKeySpec("win+shift+ctrl+v");
+    assert(combo.has_value());
+    assert(combo->vk == 'V');
+    assert(combo->modifiers.size() == 3);
+    assert(combo->modifiers[0] == VK_CONTROL);
+    assert(combo->modifiers[1] == VK_SHIFT);
+    assert(combo->modifiers[2] == VK_LWIN);
+    assert(combo->display_text == "Ctrl+Shift+Win+V");
+
+    auto alt_f4 = ParseKeySpec("alt+f4");
+    assert(alt_f4.has_value() && alt_f4->vk == VK_F4 && alt_f4->display_text == "Alt+F4");
+
+    // 非法：未知键名、仅修饰键、空串、重复主键。
+    assert(!ParseKeySpec("bogus").has_value());
+    assert(!ParseKeySpec("ctrl").has_value());
+    assert(!ParseKeySpec("").has_value());
+    assert(!ParseKeySpec("ctrl+").has_value());
+    assert(!ParseKeySpec("a+b").has_value());
+
+    // 分支覆盖：重复修饰键、空中间 part、f 键边界、大写修饰键、纯数字主键、非 ASCII。
+    assert(!ParseKeySpec("ctrl+ctrl+v").has_value());
+    assert(!ParseKeySpec("ctrl++v").has_value());
+    assert(!ParseKeySpec("f0").has_value());
+    assert(!ParseKeySpec("f25").has_value());
+    auto f24 = ParseKeySpec("f24");
+    assert(f24.has_value() && f24->vk == VK_F24);
+    auto ctrl_v = ParseKeySpec("CTRL+V");
+    assert(ctrl_v.has_value() && ctrl_v->display_text == "Ctrl+V");
+    auto digit5 = ParseKeySpec("5");
+    assert(digit5.has_value() && digit5->vk == '5');
+    assert(!ParseKeySpec("上").has_value());  // UTF-8 非 ASCII 输入不崩且拒绝
+}
+
 void TestAppConfigEncoderRoundTrip() {
     // 默认值：旋转注入开、不翻转。
     assert(AppConfig::Defaults().encoder_to_arrow == true);
@@ -2231,6 +2395,63 @@ void TestAppConfigEncoderRoundTrip() {
     std::filesystem::remove(temp);
 }
 
+void TestAppConfigEncoderSettingsRoundTrip() {
+    // 默认值等价当前硬编码行为。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.encoder_rotate_cw_key == "down");
+    assert(defaults.encoder_rotate_ccw_key == "up");
+    assert(defaults.encoder_led_color == "red");
+    assert(defaults.encoder_press_action == "recording");
+    assert(defaults.encoder_press_key.empty());
+    assert(defaults.encoder_double_click_action == "key");
+    assert(defaults.encoder_double_click_key == "enter");
+
+    // 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_settings_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_cw_key = "pageup";
+    config.encoder_rotate_ccw_key = "pagedown";
+    config.encoder_led_color = "cyan";
+    config.encoder_press_action = "key";
+    config.encoder_press_key = "ctrl+z";
+    config.encoder_double_click_action = "recording";
+    config.encoder_double_click_key = "ctrl+enter";
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.encoder_rotate_cw_key == "pageup");
+    assert(loaded.encoder_rotate_ccw_key == "pagedown");
+    assert(loaded.encoder_led_color == "cyan");
+    assert(loaded.encoder_press_action == "key");
+    assert(loaded.encoder_press_key == "ctrl+z");
+    assert(loaded.encoder_double_click_action == "recording");
+    assert(loaded.encoder_double_click_key == "ctrl+enter");
+    std::filesystem::remove(temp);
+}
+
+void TestAppConfigEncoderSettingsInvalidFallback() {
+    // 非法值回退默认：未知 action/颜色/按键语法。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_invalid_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "encoder_rotate_cw_key = \"bogus\"\n";
+        out << "encoder_led_color = \"pink\"\n";
+        out << "encoder_press_action = \"fly\"\n";
+        out << "encoder_press_key = \"ctrl+\"\n";
+        out << "encoder_double_click_action = \"fly\"\n";
+        out << "encoder_double_click_key = \"a+b\"\n";
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.encoder_rotate_cw_key == "down");
+    assert(loaded.encoder_led_color == "red");
+    assert(loaded.encoder_press_action == "recording");
+    assert(loaded.encoder_press_key.empty());
+    assert(loaded.encoder_double_click_action == "key");
+    assert(loaded.encoder_double_click_key == "enter");
+    std::filesystem::remove(temp);
+}
+
 void TestEncoderRotateMapsDirectionToArrows() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -2243,12 +2464,15 @@ void TestEncoderRotateMapsDirectionToArrows() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
 
-    // 默认映射：cw→Down、ccw→Up，每个 step 注入一次。
+    // 默认映射：cw→Down、ccw→Up，每个 step 注入一次。默认配置 down/up 合法，
+    // 走 SendKeyCombo 通道（与 SendArrowDown/Up 等价：同一 VK_DOWN/VK_UP 键事件）。
     ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
     ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
 
-    assert(input.arrow_down_count == 2);
-    assert(input.arrow_up_count == 1);
+    assert(input.sent_key_combos.size() == 3);
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
+    assert(input.sent_key_combos[2] == "Up");
 }
 
 void TestEncoderRotateInvertFlipsDirection() {
@@ -2265,12 +2489,14 @@ void TestEncoderRotateInvertFlipsDirection() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
 
-    // 翻转后：cw→Up、ccw→Down。
+    // 翻转后：cw→Up、ccw→Down（同样走 SendKeyCombo 通道）。
     ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
     ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
 
-    assert(input.arrow_up_count == 2);
-    assert(input.arrow_down_count == 1);
+    assert(input.sent_key_combos.size() == 3);
+    assert(input.sent_key_combos[0] == "Up");
+    assert(input.sent_key_combos[1] == "Up");
+    assert(input.sent_key_combos[2] == "Down");
 }
 
 void TestEncoderRotateDisabledWhenConfigOff() {
@@ -2327,11 +2553,12 @@ void TestEncoderRotateUnknownDirectionTreatedAsCw() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
 
-    // 未知 direction（固件拼写错误/未来新值）兜底按 cw 处理。
+    // 未知 direction（固件拼写错误/未来新值）兜底按 cw 处理（SendKeyCombo 通道）。
     ble_ptr->on_state_event("5A74", EncoderRotateEvent("up", 2));
 
-    assert(input.arrow_down_count == 2);
-    assert(input.arrow_up_count == 0);
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
 }
 
 void TestEncoderRotateStepsClamped() {
@@ -2346,11 +2573,293 @@ void TestEncoderRotateStepsClamped() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
 
-    // 异常大步数应被钳到 kMaxEncoderRotateSteps=64，防伪造帧放大注入循环。
+    // 异常大步数应被钳到 kMaxEncoderRotateSteps=64，防伪造帧放大注入循环（SendKeyCombo 通道）。
     ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 300));
 
-    assert(input.arrow_down_count == 64);
-    assert(input.arrow_up_count == 0);
+    assert(input.sent_key_combos.size() == 64);
+    assert(std::all_of(input.sent_key_combos.begin(), input.sent_key_combos.end(),
+                       [](const std::string& s) { return s == "Down"; }));
+}
+
+void TestEncoderPressRecordingStartsSession() {
+    // 默认 press_action=recording：编码器 button_down 走主键路径启动录音会话。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 30));
+    // 与物理主键 down 同一行为：进入录音态；ASR 与物理路径一致在首帧音频且
+    // 录音时长过阈值后懒启动。
+    assert(HasUiState(*ble_ptr, "recording", "5A74"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(30, 1));
+    assert(asr_ptr->started);
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderPressKeyInjectsComboWithoutRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_press_action = "key";
+    config.encoder_press_key = "ctrl+z";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Z");
+    assert(!asr_ptr->started);  // 不录音
+}
+
+void TestEncoderPressKeyInvalidIgnored() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_press_action = "key";
+    config.encoder_press_key = "bogus";  // 运行期非法（绕过配置校验直造）
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));
+    assert(input.sent_key_combos.empty());  // 记日志忽略，不注入
+}
+
+void TestEncoderDoubleClickDefaultEnterCancelsSession() {
+    // 双击默认 enter：取消活跃录音 + 注入 Enter（等价物理主键双击现行为）。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));  // 物理键开播
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(30, 1));  // 首帧音频触发 ASR 懒启动
+    assert(asr_ptr->started);
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    // 合法配置键经 SendKeyCombo 注入（默认 enter 与 SendEnter 同为 VK_RETURN 按下/松开，
+    // 物理行为等价），不再走 SendEnter 专用通道。
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Enter");
+    assert(asr_ptr->cancelled);
+}
+
+void TestEncoderDoubleClickCustomKey() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_double_click_action = "key";
+    config.encoder_double_click_key = "ctrl+enter";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Enter");
+    assert(!input.send_enter_called);  // 不再走 SendEnter
+}
+
+void TestEncoderDoubleClickRecordingTogglesRemoteButton() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_double_click_action = "recording";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 空闲双击 → remote down 开播。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    assert(!ble_ptr->sent_remote_buttons.empty());
+    assert(ble_ptr->sent_remote_buttons.back().action == RemoteButtonAction::kDown);
+
+    // 录音中双击 → remote up 停播。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(30, 1));  // 首帧音频触发 ASR 懒启动
+    assert(asr_ptr->started);
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    assert(ble_ptr->sent_remote_buttons.back().action == RemoteButtonAction::kUp);
+}
+
+void TestEncoderRotateCustomKeys() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_cw_key = "pagedown";
+    config.encoder_rotate_ccw_key = "pageup";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.size() == 3);
+    assert(input.sent_key_combos[0] == "PageDown");
+    assert(input.sent_key_combos[1] == "PageDown");
+    assert(input.sent_key_combos[2] == "PageUp");
+    assert(input.arrow_down_count == 0);  // 不再走硬编码方向键
+}
+
+void TestEncoderRotateInvalidKeyFallsBackToArrows() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_cw_key = "bogus";  // 运行期非法
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    assert(input.arrow_down_count == 2);  // 回退方向键
+    assert(input.sent_key_combos.empty());
+}
+
+void TestPhysicalPrimaryUnaffectedByEncoderConfig() {
+    // press_action=key 只影响 source=encoder 的事件；物理主键单击行为不变。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_press_action = "key";
+    config.encoder_press_key = "ctrl+z";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 物理主键单击（无 source）：hold_to_talk 默认下走现有 ready 回写，不注入组合键。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary"));
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderPressRecordingButtonUpStopsSession() {
+    // press_action=recording（默认）：编码器 button_up 与物理主键 up 同一收尾路径。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 40));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(40, 1));  // 首帧音频触发 ASR 懒启动
+    assert(asr_ptr->started);
+    assert(!asr_ptr->last_chunk_was_final);
+
+    // 编码器 button_up → 走主键 up 路径进入等 audio_end（ui_state=thinking）。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_up"));
+    assert(HasUiState(*ble_ptr, "thinking", "5A74"));
+
+    // audio_end 到达后正常收尾：最终帧标记 is_last。
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(40, 2));
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+void TestEncoderSourceSecondaryFallsBackToPhysicalPath() {
+    // source=encoder 只分流 primary；button=secondary 即使带 encoder 标签也走物理侧键路径。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->sent_air_mouse_enabled.clear();
+
+    StateEvent event;
+    event.event = "button_click";
+    event.button = "secondary";
+    event.source = "encoder";
+    ble_ptr->sent_ui_states.clear();
+    ble_ptr->on_state_event("5A74", event);
+
+    // 与物理侧键单击一致：空闲态进入体感鼠标（断言方式对齐 TestCoordinatorAirMouseToggleViaSecondary）。
+    assert(!ble_ptr->sent_air_mouse_enabled.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
+    assert(HasUiState(*ble_ptr, "air_mouse", "5A74"));
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderConfigUpdateTakesEffectImmediately() {
+    // UpdateConfig 改 press_action 后无需重启协调器，编码器单击行为立即切换。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 初始 press_action=recording：编码器 down 开播确认。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(50, 1));
+    assert(asr_ptr->started);
+
+    // 热更新为 key 动作（UpdateConfig 会取消活跃会话，属既有语义）。
+    AppConfig updated = AppConfig::Defaults();
+    updated.encoder_press_action = "key";
+    updated.encoder_press_key = "ctrl+z";
+    coordinator.UpdateConfig(updated);
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Z");
 }
 
 // 侧键单击在空闲态进入体感鼠标模式，再次单击退出（体感优先决策）。
@@ -5842,6 +6351,7 @@ int main() {
     TestBleControlPayloads();
     TestStateParsing();
     TestEncoderRotateStateParsing();
+    TestStateEventSourceParsing();
     TestMotionFrameParsing();
     TestAirMouseStepVelocityFollowsOmega();
     TestAirMouseStepStopsWhenStale();
@@ -5889,6 +6399,8 @@ int main() {
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
+    TestBleEncoderPayloads();
+    TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate();
     TestCoordinatorUpdateFirmwareFromFile();
     TestParseOtaCliArgs();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
@@ -5914,13 +6426,29 @@ int main() {
     TestTapThrottledWithin500ms();
     TestTapThrottleRecoversAfter500ms();
     TestInputInjectorArrowUpFakeWiring();
+    TestInputInjectorKeyComboFakeWiring();
+    TestKeySpecParse();
     TestAppConfigEncoderRoundTrip();
+    TestAppConfigEncoderSettingsRoundTrip();
+    TestAppConfigEncoderSettingsInvalidFallback();
     TestEncoderRotateMapsDirectionToArrows();
     TestEncoderRotateInvertFlipsDirection();
     TestEncoderRotateDisabledWhenConfigOff();
     TestEncoderRotateIgnoredDuringRecording();
     TestEncoderRotateUnknownDirectionTreatedAsCw();
     TestEncoderRotateStepsClamped();
+    TestEncoderPressRecordingStartsSession();
+    TestEncoderPressKeyInjectsComboWithoutRecording();
+    TestEncoderPressKeyInvalidIgnored();
+    TestEncoderDoubleClickDefaultEnterCancelsSession();
+    TestEncoderDoubleClickCustomKey();
+    TestEncoderDoubleClickRecordingTogglesRemoteButton();
+    TestEncoderRotateCustomKeys();
+    TestEncoderRotateInvalidKeyFallsBackToArrows();
+    TestPhysicalPrimaryUnaffectedByEncoderConfig();
+    TestEncoderPressRecordingButtonUpStopsSession();
+    TestEncoderSourceSecondaryFallsBackToPhysicalPath();
+    TestEncoderConfigUpdateTakesEffectImmediately();
     TestCoordinatorAirMouseToggleViaSecondary();
     TestCoordinatorAirMousePrimaryClickIsLeftButton();
     TestCoordinatorMotionMovesCursorOnlyWhenActive();

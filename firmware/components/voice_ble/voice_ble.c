@@ -1035,65 +1035,82 @@ esp_err_t voice_ble_send_device_info(void)
     return send_state_json(json);
 }
 
-esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id)
+esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id,
+                                     const char *source)
 {
-    char json[96];
+    char json[128];
+    char source_field[40] = "";
+    if (source) {
+        snprintf(source_field, sizeof(source_field), ",\"source\":\"%s\"", source);
+    }
     if (session_id > 0) {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_down\",\"button\":\"%s\",\"session_id\":%" PRIu32 "}",
-                 button, session_id);
+                 "{\"event\":\"button_down\",\"button\":\"%s\",\"session_id\":%" PRIu32 "%s}",
+                 button, session_id, source_field);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_down\",\"button\":\"%s\"}", button);
+                 "{\"event\":\"button_down\",\"button\":\"%s\"%s}", button, source_field);
     }
     return send_state_json(json);
 }
 
 esp_err_t voice_ble_send_button_up(const char *button, uint32_t duration_ms,
-                                   uint32_t session_id)
+                                   uint32_t session_id, const char *source)
 {
-    char json[128];
+    char json[160];
+    char source_field[40] = "";
+    if (source) {
+        snprintf(source_field, sizeof(source_field), ",\"source\":\"%s\"", source);
+    }
     if (session_id > 0) {
         snprintf(json, sizeof(json),
                  "{\"event\":\"button_up\",\"button\":\"%s\","
-                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "}",
-                 button, duration_ms, session_id);
+                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "%s}",
+                 button, duration_ms, session_id, source_field);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_up\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "}",
-                 button, duration_ms);
+                 "{\"event\":\"button_up\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "%s}",
+                 button, duration_ms, source_field);
     }
     return send_state_json(json);
 }
 
 esp_err_t voice_ble_send_button_click(const char *button, uint32_t duration_ms,
-                                      uint32_t session_id)
+                                      uint32_t session_id, const char *source)
 {
-    char json[128];
+    char json[160];
+    char source_field[40] = "";
+    if (source) {
+        snprintf(source_field, sizeof(source_field), ",\"source\":\"%s\"", source);
+    }
     if (session_id > 0) {
         snprintf(json, sizeof(json),
                  "{\"event\":\"button_click\",\"button\":\"%s\","
-                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "}",
-                 button, duration_ms, session_id);
+                 "\"duration_ms\":%" PRIu32 ",\"session_id\":%" PRIu32 "%s}",
+                 button, duration_ms, session_id, source_field);
     } else if (duration_ms > 0) {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_click\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "}",
-                 button, duration_ms);
+                 "{\"event\":\"button_click\",\"button\":\"%s\",\"duration_ms\":%" PRIu32 "%s}",
+                 button, duration_ms, source_field);
     } else {
         snprintf(json, sizeof(json),
-                 "{\"event\":\"button_click\",\"button\":\"%s\"}", button);
+                 "{\"event\":\"button_click\",\"button\":\"%s\"%s}", button, source_field);
     }
-    ESP_LOGI(TAG, "button click button=%s session=%" PRIu32 " duration_ms=%" PRIu32,
-             button, session_id, duration_ms);
+    ESP_LOGI(TAG, "button click button=%s session=%" PRIu32 " duration_ms=%" PRIu32 " source=%s",
+             button, session_id, duration_ms, source ? source : "-");
     return send_state_json(json);
 }
 
-esp_err_t voice_ble_send_button_double_click(const char *button)
+esp_err_t voice_ble_send_button_double_click(const char *button, const char *source)
 {
-    char json[64];
+    char json[96];
+    char source_field[40] = "";
+    if (source) {
+        snprintf(source_field, sizeof(source_field), ",\"source\":\"%s\"", source);
+    }
     snprintf(json, sizeof(json),
-             "{\"event\":\"button_double_click\",\"button\":\"%s\"}", button);
-    ESP_LOGI(TAG, "button double_click button=%s", button);
+             "{\"event\":\"button_double_click\",\"button\":\"%s\"%s}", button, source_field);
+    ESP_LOGI(TAG, "button double_click button=%s source=%s", button, source ? source : "-");
     return send_state_json(json);
 }
 

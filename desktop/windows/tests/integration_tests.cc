@@ -87,6 +87,8 @@ public:
                                 const std::optional<std::string>& device_id) override {
         sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
     }
+    void SendEncoderLedColor(const std::string&, const std::optional<std::string>&) override {}
+    void SendEncoderRecordingGate(bool, const std::optional<std::string>&) override {}
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -243,6 +245,7 @@ public:
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
     void SendArrowUp() override {}
+    void SendKeyCombo(const KeySpec&) override {}
     void MoveMouse(int dx, int dy) override {
         ++move_mouse_count;
         total_dx += dx;

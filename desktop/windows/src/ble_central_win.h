@@ -46,6 +46,10 @@ public:
                         const std::optional<std::string>& device_id) override;
     void SendTapSensitivity(int level,
                             const std::optional<std::string>& device_id) override;
+    void SendEncoderLedColor(const std::string& color,
+                             const std::optional<std::string>& device_id) override;
+    void SendEncoderRecordingGate(bool enabled,
+                                  const std::optional<std::string>& device_id) override;
     void SendAirMouseEnabled(bool enabled,
                              const std::optional<std::string>& device_id) override;
     void SendImuWakeSensitivity(int threshold_lsb,

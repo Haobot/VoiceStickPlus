@@ -3,6 +3,13 @@
 ## Unreleased
 
 - 新增热词处理（Windows）：划词加词可选 LLM 提炼，长选文自动提取热词去重入表，浮窗展示结果 3 秒；设置对话框新增「热词处理」配置栏（启用开关 + 提示词，复用文本精修 LLM 配置）。
+- 新增编码器设置项（Windows + 固件）：MiniEncoderC 旋转/单击/双击动作可配置。
+  - 旋转 cw/ccw 自定义按键注入（key_spec 热键语法：方向键/enter/tab/pageup/pagedown/f1-f24/单字符/ctrl/alt/shift/win 组合），非法配置回退方向键。
+  - 单击动作可选 recording（同主键录音语义，默认）或 key（注入自定义按键）；配 key 时桌面端派生下发固件录音门控关闭（编码器按压只发 click/double_click 按键事件）。
+  - 双击动作可选 key（默认 enter，沿用取消当前会话结构）或 recording（经 remote_button 通道切换录音起停）。
+  - 编码器录音灯颜色 8 预设（red/.../off）经 BLE 下发固件并 NVS 持久化，重启保持。
+  - 固件按键事件新增 `source:"encoder"` 标签，桌面端按 source 路由编码器事件，物理键路径行为不变。
+  - 设置对话框新增「编码器」一节（9 个控件，按键字段保存前 ParseKeySpec 校验）。
 
 ## 2026-07-25 v2.1.2
 

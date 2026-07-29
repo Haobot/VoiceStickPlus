@@ -184,6 +184,19 @@ struct AppConfig {
     bool encoder_to_arrow = true;
     // 编码器旋转方向翻转：true 时顺时针→Up、逆时针→Down。默认关闭。
     bool encoder_rotation_invert = false;
+    // 编码器旋转顺时针/逆时针注入的按键（key_spec 语法，如 "down"/"ctrl+pageup"）。
+    std::string encoder_rotate_cw_key = "down";
+    std::string encoder_rotate_ccw_key = "up";
+    // 编码器录音灯颜色：red/green/blue/yellow/purple/cyan/white/off。下发固件 NVS 持久化。
+    std::string encoder_led_color = "red";
+    // 编码器单击动作："recording"（同主键录音语义）或 "key"（注入 encoder_press_key）。
+    std::string encoder_press_action = "recording";
+    // 编码器单击自定义按键（action=key 时生效；空 = 未配置）。
+    std::string encoder_press_key;
+    // 编码器双击动作："key"（注入 encoder_double_click_key，默认 enter=现行为）
+    // 或 "recording"（双击开始/停止录音，经 remote_button 通道）。
+    std::string encoder_double_click_action = "key";
+    std::string encoder_double_click_key = "enter";
     // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
     int tap_sensitivity = 5;
     // 体感鼠标：左右（yaw）灵敏度档位 1~10，映射 gain_x=sensitivity_x×16。默认 5。
