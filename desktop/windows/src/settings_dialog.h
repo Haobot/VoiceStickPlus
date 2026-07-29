@@ -40,6 +40,7 @@ private:
     void UpdateTapSensitivityLabel();
     void UpdateAirMouseSensitivityXLabel();
     void UpdateAirMouseSensitivityYLabel();
+    void UpdateEncoderFastThresholdLabel();
     // 单击/双击动作组合框切换时启用/禁用对应按键编辑框。
     void UpdateEncoderKeyEditStates();
     void ApplyTrialApiKey();
@@ -109,7 +110,8 @@ private:
     HWND encoder_rotation_invert_check_ = nullptr;
     HWND encoder_rotate_cw_key_edit_ = nullptr;
     HWND encoder_rotate_ccw_key_edit_ = nullptr;
-    HWND encoder_rotate_fast_threshold_edit_ = nullptr;
+    HWND encoder_rotate_fast_threshold_trackbar_ = nullptr;
+    HWND encoder_rotate_fast_threshold_value_label_ = nullptr;
     HWND encoder_rotate_cw_fast_key_edit_ = nullptr;
     HWND encoder_rotate_ccw_fast_key_edit_ = nullptr;
     HWND encoder_led_color_combo_ = nullptr;

@@ -187,11 +187,14 @@ struct AppConfig {
     // 编码器旋转顺时针/逆时针注入的按键（key_spec 语法，如 "down"/"ctrl+pageup"）。
     std::string encoder_rotate_cw_key = "down";
     std::string encoder_rotate_ccw_key = "up";
-    // 编码器旋转快慢分档阈值（格/秒）：窗口格速 = steps * 100，>= 阈值判快速档。默认 400。
-    int encoder_rotate_fast_threshold = 400;
+    // 编码器旋转快慢分档阈值（格/秒）：窗口格速 = steps * 100，>= 阈值判快速档。默认 200。
+    int encoder_rotate_fast_threshold = 200;
     // 快速档顺时针/逆时针注入的按键（key_spec 语法），默认翻页键。
     std::string encoder_rotate_cw_fast_key = "pagedown";
     std::string encoder_rotate_ccw_fast_key = "pageup";
+    // 慢速注入延迟判定窗（ms）：慢速事件先挂起，窗内判快则整段丢弃（快甩加速段），
+    // 到期无快速事件才按累计格数补注。0 = 关闭延迟判定（立即注入，旧行为）。默认 80。
+    int encoder_rotate_decide_window_ms = 80;
     // 编码器录音灯颜色：red/green/blue/yellow/purple/cyan/white/off。下发固件 NVS 持久化。
     std::string encoder_led_color = "red";
     // 编码器单击动作："recording"（同主键录音语义）或 "key"（注入 encoder_press_key）。

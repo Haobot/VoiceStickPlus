@@ -407,6 +407,16 @@ int Win32App::Run() {
                 air_mouse_timer_active_ = false;
             }
         };
+        coordinator_->on_encoder_rotate_pending_changed = [this](bool pending) {
+            // 慢速注入挂起时启动 30ms 定时器驱动 EncoderRotateTick 到期冲刷；清空后停止。
+            if (pending && !encoder_rotate_pending_timer_active_) {
+                SetTimer(hwnd_, kEncoderRotatePendingTimerId, kEncoderRotatePendingTickMs, nullptr);
+                encoder_rotate_pending_timer_active_ = true;
+            } else if (!pending && encoder_rotate_pending_timer_active_) {
+                KillTimer(hwnd_, kEncoderRotatePendingTimerId);
+                encoder_rotate_pending_timer_active_ = false;
+            }
+        };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
         coordinator_->Start();
@@ -915,6 +925,10 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
     case WM_TIMER:
         if (w_param == kAirMouseTimerId && coordinator_) {
             coordinator_->AirMouseTick();
+            return 0;
+        }
+        if (w_param == kEncoderRotatePendingTimerId && coordinator_) {
+            coordinator_->EncoderRotateTick();
             return 0;
         }
         if (w_param == kResumeRestartTimerId) {
