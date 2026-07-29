@@ -1082,6 +1082,10 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         // s_primary_down_us；本次编码器点击被丢弃（up 分支同样会忽略，不成对不产事件）。
         if (s_primary_owner == PRIMARY_OWNER_NONE) {
             s_primary_down_us = esp_timer_get_time();
+        } else {
+            // 混源按下被丢弃时恢复来源标签（同下方仲裁拒绝分支），避免物理键
+            // hold 阈值到期后发出的 button_down 被误标 "encoder"。
+            s_primary_press_source = prev_press_source;
         }
         return;  // 无论是否记录都不走录音路径
     }
