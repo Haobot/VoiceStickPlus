@@ -39,6 +39,22 @@ air_mouse_invert_y = false   # 反转 Y 轴（适配用户习惯）
 # encoder_to_arrow = true          # 旋转注入方向键开关（顺时针→Down、逆时针→Up）
 # encoder_rotation_invert = false  # 旋转方向翻转（true 时顺时针→Up）
 
+# 以下编码器设置项同样仅 Windows 端消费（macOS 暂不支持）：
+# 编码器旋转顺时针/逆时针注入的按键（热键语法：单键 up/down/left/right/enter/tab/
+# pageup/pagedown/volumeup/volumedown/f1-f24/单字符，或 ctrl/alt/shift/win 组合）
+# encoder_rotate_cw_key = "down"
+# encoder_rotate_ccw_key = "up"
+# 编码器录音灯颜色：red/green/blue/yellow/purple/cyan/white/off（off=录音也不亮）。
+# 保存设置时经 BLE 下发固件并 NVS 持久化。
+# encoder_led_color = "red"
+# 编码器单击动作：recording（同主键录音语义）或 key（注入 encoder_press_key）。
+# 配 key 时桌面端会下发门控关闭固件侧录音（长按旋钮只发按键事件）。
+# encoder_press_action = "recording"
+# encoder_press_key = ""
+# 编码器双击动作：key（注入 encoder_double_click_key）或 recording（双击开始/停止录音）。
+# encoder_double_click_action = "key"
+# encoder_double_click_key = "enter"
+
 [output]
 target = "focused_app"
 transform = "original"

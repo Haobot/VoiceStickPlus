@@ -102,6 +102,8 @@ void VoiceStickCoordinator::Start() {
         ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
         ble_->SendImuWakeSensitivity(
             ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
+        ble_->SendEncoderLedColor(config_.encoder_led_color, std::nullopt);
+        ble_->SendEncoderRecordingGate(config_.encoder_press_action == "recording", std::nullopt);
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -192,6 +194,8 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
     ble_->SendImuWakeSensitivity(
         ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
+    ble_->SendEncoderLedColor(config_.encoder_led_color, std::nullopt);
+    ble_->SendEncoderRecordingGate(config_.encoder_press_action == "recording", std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
         asr_ = asr_factory_(config_);
@@ -405,13 +409,29 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
                                    event.battery_usb_powered.value_or(false));
         }
     } else if (event.event == "button_down") {
-        HandleButtonDown(event, device_id);
+        if (event.button == "primary" && event.source == "encoder") {
+            HandleEncoderButtonDown(event, device_id);
+        } else {
+            HandleButtonDown(event, device_id);
+        }
     } else if (event.event == "button_up") {
-        HandleButtonUp(event, device_id);
+        if (event.button == "primary" && event.source == "encoder") {
+            HandleEncoderButtonUp(event, device_id);
+        } else {
+            HandleButtonUp(event, device_id);
+        }
     } else if (event.event == "button_click") {
-        HandleButtonClick(event, device_id);
+        if (event.button == "primary" && event.source == "encoder") {
+            HandleEncoderButtonClick(event, device_id);
+        } else {
+            HandleButtonClick(event, device_id);
+        }
     } else if (event.event == "button_double_click") {
-        HandleButtonDoubleClick(event, device_id);
+        if (event.button == "primary" && event.source == "encoder") {
+            HandleEncoderButtonDoubleClick(event, device_id);
+        } else {
+            HandleButtonDoubleClick(event, device_id);
+        }
     } else if (event.event == "tap") {
         HandleTapEvent(event, device_id);
     } else if (event.event == "encoder_rotate") {
@@ -897,6 +917,25 @@ void VoiceStickCoordinator::HandleSecondaryButtonClick(const std::string& device
     ToggleAirMouse(device_id);
 }
 
+void VoiceStickCoordinator::CancelActiveSessionsForDoubleClick(const std::string& device_id) {
+    // wechat 模式走专用停止路径（发 hotkey.SendUp，让第三方输入法把已识别文字送入
+    // 输入框），主路径走 ASR 取消。字幕会话一并取消。
+    if (IsWechatInputMethodActive()) {
+        StopWechatInputMethodSession();
+    } else {
+        std::lock_guard lock(audio_mutex_);
+        if (active_session_id_.has_value() && active_device_id_ == device_id) {
+            CancelAudioEndTimeout();
+            asr_->Cancel();
+            pending_paste_state_ = {};
+            active_session_id_.reset();
+            debug_audio_recorder_.Discard();
+            FinishRecognitionCycle();
+        }
+    }
+    CancelSubtitleCyclesForDevice(device_id, "double_click");
+}
+
 void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id) {
     // 侧键双击：恢复上次输入确认（与侧键单击=进/退体感分离）。
     if (event.button == "secondary") {
@@ -913,28 +952,83 @@ void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, con
     if (event.button != "primary") return;
 
     LogCoordinatorLine("double-click detected on VS-" + device_id + ", sending Enter");
-    // 如果当前有活跃录音，取消它。wechat 模式走专用停止路径（发 hotkey.SendUp，让第三方输入法
-    // 把已识别文字送入输入框），主路径走 ASR 取消。随后统一注入 Enter 发送输入框文字。
-    if (IsWechatInputMethodActive()) {
-        StopWechatInputMethodSession();
-    } else {
-        std::lock_guard lock(audio_mutex_);
-        if (active_session_id_.has_value() && active_device_id_ == device_id) {
-            CancelAudioEndTimeout();
-            asr_->Cancel();
-            pending_paste_state_ = {};
-            active_session_id_.reset();
-            debug_audio_recorder_.Discard();
-            FinishRecognitionCycle();
-        }
-    }
-    // Subtitle 模式下的活跃字幕会话也一并取消。
-    CancelSubtitleCyclesForDevice(device_id, "double_click");
+    // 如果当前有活跃录音，取消它。随后统一注入 Enter 发送输入框文字。
+    CancelActiveSessionsForDoubleClick(device_id);
     // 注入 Enter 按键。
     input_injector_->SendEnter();
     // 回到就绪状态。
     ble_->SendUiState("ready", "", device_id);
     EnterReady("double_click_enter");
+}
+
+void VoiceStickCoordinator::HandleEncoderButtonDown(const StateEvent& event,
+                                                    const std::string& device_id) {
+    if (config_.encoder_press_action == "recording") {
+        HandleButtonDown(event, device_id);
+        return;
+    }
+    // key 动作：down/up 不注入（在 click 成对确认时注入一次），仅记日志。
+    LogCoordinatorLine("encoder button down on VS-" + device_id + " (press_action=key, ignored)");
+}
+
+void VoiceStickCoordinator::HandleEncoderButtonUp(const StateEvent& event,
+                                                  const std::string& device_id) {
+    if (config_.encoder_press_action == "recording") {
+        HandleButtonUp(event, device_id);
+        return;
+    }
+    LogCoordinatorLine("encoder button up on VS-" + device_id + " (press_action=key, ignored)");
+}
+
+void VoiceStickCoordinator::HandleEncoderButtonClick(const StateEvent& event,
+                                                     const std::string& device_id) {
+    if (config_.encoder_press_action == "recording") {
+        HandleButtonClick(event, device_id);
+        return;
+    }
+    const auto spec = ParseKeySpec(config_.encoder_press_key);
+    if (!spec.has_value()) {
+        LogCoordinatorLine("encoder press key invalid: \"" + config_.encoder_press_key +
+                           "\" on VS-" + device_id + ", click ignored");
+        return;
+    }
+    // 编码器单击在录音/识别中仍注入是有意设计：该键是用户显式配置的快捷键（如撤销），
+    // 与会话状态正交；不同于 rotate 的录音中抑制。
+    LogCoordinatorLine("encoder click on VS-" + device_id + ", injecting " + spec->display_text);
+    input_injector_->SendKeyCombo(*spec);
+}
+
+void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& event,
+                                                           const std::string& device_id) {
+    (void)event;
+    if (config_.encoder_double_click_action == "recording") {
+        // 切换录音起停：复用固件 remote_button 通道（固件侧等价一次远程按下/松开，
+        // 音频链路真实完整，等同 click_to_talk 点按起停）。remote_button 走
+        // APP_INPUT_SOURCE_REMOTE，不受 encoder_recording_gate 门控约束——
+        // press_action=key（门控关）时双击起停录音仍可用，属有意设计。
+        const bool has_active = HasActiveSession() || IsWechatInputMethodActive() ||
+                                HasActiveSubtitleSession(device_id);
+        LogCoordinatorLine("encoder double-click on VS-" + device_id +
+                           (has_active ? ", remote stop recording" : ", remote start recording"));
+        ble_->SendRemoteButton(has_active ? RemoteButtonAction::kUp : RemoteButtonAction::kDown,
+                               "primary", device_id, next_hotkey_request_id_++);
+        return;
+    }
+    // key 动作：沿用物理主键双击的取消结构，注入配置的按键（默认 enter=现行为）。
+    CancelActiveSessionsForDoubleClick(device_id);
+    const auto spec = ParseKeySpec(config_.encoder_double_click_key);
+    if (spec.has_value()) {
+        LogCoordinatorLine("encoder double-click on VS-" + device_id + ", injecting " +
+                           spec->display_text);
+        input_injector_->SendKeyCombo(*spec);
+    } else {
+        LogCoordinatorLine("encoder double-click key invalid: \"" +
+                           config_.encoder_double_click_key + "\" on VS-" + device_id +
+                           ", fallback to Enter");
+        input_injector_->SendEnter();
+    }
+    ble_->SendUiState("ready", "", device_id);
+    EnterReady("encoder_double_click_key");
 }
 
 void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::string& device_id) {
@@ -977,20 +1071,33 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     const std::uint32_t raw_steps = event.steps.value_or(0);
     if (raw_steps == 0) return;
     const std::uint32_t steps = std::min(raw_steps, kMaxEncoderRotateSteps);
-    // 方向映射：默认 cw→Down / ccw→Up；encoder_rotation_invert=true 时翻转。
-    // direction 非 "ccw"（含空串/未知值）按 cw 处理，与固件只发 cw|ccw 的约定一致。
-    const bool send_up = (event.direction == "ccw") != config_.encoder_rotation_invert;
+    // 方向映射：默认 cw→encoder_rotate_cw_key / ccw→encoder_rotate_ccw_key；
+    // encoder_rotation_invert=true 时翻转。direction 非 "ccw"（含空串/未知值）按 cw 处理，
+    // 与固件只发 cw|ccw 的约定一致。
+    const bool effective_ccw = (event.direction == "ccw") != config_.encoder_rotation_invert;
+    const std::string& key_text = effective_ccw ? config_.encoder_rotate_ccw_key
+                                                : config_.encoder_rotate_cw_key;
+    const auto spec = ParseKeySpec(key_text);
+    if (!spec.has_value()) {
+        // 非法配置（绕过加载校验直改内存/未来新键名）回退方向键，保持可用。
+        LogCoordinatorLine("encoder rotate key invalid: \"" + key_text +
+                           "\" on VS-" + device_id + ", fallback to arrows");
+        for (std::uint32_t i = 0; i < steps; ++i) {
+            if (effective_ccw) {
+                input_injector_->SendArrowUp();
+            } else {
+                input_injector_->SendArrowDown();
+            }
+        }
+        return;
+    }
     // 与 tap 不同，旋转不回写 ui_state（无屏幕状态变化）。
     LogCoordinatorLine("encoder rotate on VS-" + device_id + " direction=" + event.direction +
                        " steps=" + std::to_string(steps) +
                        (raw_steps > steps ? " (clamped from " + std::to_string(raw_steps) + ")" : "") +
-                       (send_up ? " -> ArrowUp" : " -> ArrowDown"));
+                       " -> " + spec->display_text);
     for (std::uint32_t i = 0; i < steps; ++i) {
-        if (send_up) {
-            input_injector_->SendArrowUp();
-        } else {
-            input_injector_->SendArrowDown();
-        }
+        input_injector_->SendKeyCombo(*spec);
     }
 }
 

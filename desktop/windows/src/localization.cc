@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordProcessNoKey) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsEncoderInvalidKey) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -250,6 +250,27 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotwordProcessEmptyResult)] = "No hotwords extracted";
     table[Index(StringId::kHotwordProcessFailed)] = "Hotword extraction failed";
     table[Index(StringId::kHotwordProcessNoKey)] = "LLM API key not configured";
+
+    // 编码器设置节
+    table[Index(StringId::kSettingsSectionEncoder)] = "Encoder";
+    table[Index(StringId::kSettingsEncoderToArrow)] = "Inject keys on rotate";
+    table[Index(StringId::kSettingsEncoderRotationInvert)] = "Invert rotation direction";
+    table[Index(StringId::kSettingsEncoderRotateCwKey)] = "Clockwise key";
+    table[Index(StringId::kSettingsEncoderRotateCcwKey)] = "Counter-clockwise key";
+    table[Index(StringId::kSettingsEncoderLedColor)] = "Recording LED color";
+    table[Index(StringId::kSettingsEncoderPressAction)] = "Press action";
+    table[Index(StringId::kSettingsEncoderDoubleClickAction)] = "Double-click action";
+    table[Index(StringId::kSettingsEncoderActionRecording)] = "Recording";
+    table[Index(StringId::kSettingsEncoderActionKey)] = "Custom key";
+    table[Index(StringId::kSettingsEncoderLedRed)] = "Red";
+    table[Index(StringId::kSettingsEncoderLedGreen)] = "Green";
+    table[Index(StringId::kSettingsEncoderLedBlue)] = "Blue";
+    table[Index(StringId::kSettingsEncoderLedYellow)] = "Yellow";
+    table[Index(StringId::kSettingsEncoderLedPurple)] = "Purple";
+    table[Index(StringId::kSettingsEncoderLedCyan)] = "Cyan";
+    table[Index(StringId::kSettingsEncoderLedWhite)] = "White";
+    table[Index(StringId::kSettingsEncoderLedOff)] = "Off";
+    table[Index(StringId::kSettingsEncoderInvalidKey)] = "Invalid encoder key syntax (e.g. \"down\", \"ctrl+z\"); the field was not saved.";
     return table;
 }
 
@@ -486,6 +507,27 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotwordProcessEmptyResult)] = "未提炼出热词";
     table[Index(StringId::kHotwordProcessFailed)] = "热词提炼失败";
     table[Index(StringId::kHotwordProcessNoKey)] = "未配置 LLM API Key，无法提炼热词";
+
+    // 编码器设置节
+    table[Index(StringId::kSettingsSectionEncoder)] = "编码器";
+    table[Index(StringId::kSettingsEncoderToArrow)] = "旋转时注入按键";
+    table[Index(StringId::kSettingsEncoderRotationInvert)] = "旋转方向翻转";
+    table[Index(StringId::kSettingsEncoderRotateCwKey)] = "顺时针按键";
+    table[Index(StringId::kSettingsEncoderRotateCcwKey)] = "逆时针按键";
+    table[Index(StringId::kSettingsEncoderLedColor)] = "录音灯颜色";
+    table[Index(StringId::kSettingsEncoderPressAction)] = "单击动作";
+    table[Index(StringId::kSettingsEncoderDoubleClickAction)] = "双击动作";
+    table[Index(StringId::kSettingsEncoderActionRecording)] = "录音";
+    table[Index(StringId::kSettingsEncoderActionKey)] = "自定义按键";
+    table[Index(StringId::kSettingsEncoderLedRed)] = "红";
+    table[Index(StringId::kSettingsEncoderLedGreen)] = "绿";
+    table[Index(StringId::kSettingsEncoderLedBlue)] = "蓝";
+    table[Index(StringId::kSettingsEncoderLedYellow)] = "黄";
+    table[Index(StringId::kSettingsEncoderLedPurple)] = "紫";
+    table[Index(StringId::kSettingsEncoderLedCyan)] = "青";
+    table[Index(StringId::kSettingsEncoderLedWhite)] = "白";
+    table[Index(StringId::kSettingsEncoderLedOff)] = "关";
+    table[Index(StringId::kSettingsEncoderInvalidKey)] = "编码器按键语法无效（示例：down、ctrl+z），该字段未保存。";
     return table;
 }
 

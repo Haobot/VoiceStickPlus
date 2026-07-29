@@ -10,6 +10,7 @@
 #include "device_switch_state.h"
 #include "firmware_manifest.h"
 #include "hotword_candidate_miner.h"
+#include "key_spec.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
 #include "ogg_opus_muxer.h"
@@ -75,6 +76,13 @@ public:
                                 const std::optional<std::string>& device_id) = 0;
     virtual void SendTapSensitivity(int level,
                                     const std::optional<std::string>& device_id) = 0;
+    // 编码器录音灯颜色（预设名 red/green/.../off）：固件侧 NVS 持久化，录音亮灯时使用。
+    virtual void SendEncoderLedColor(const std::string& color,
+                                     const std::optional<std::string>& device_id) = 0;
+    // 编码器录音门控：enabled=false 时固件对编码器按下只发按键事件不启动录音
+    // （桌面端把单击配为自定义按键时下发 false，从 encoder_press_action 派生）。
+    virtual void SendEncoderRecordingGate(bool enabled,
+                                          const std::optional<std::string>& device_id) = 0;
     // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
     virtual void SendAirMouseEnabled(bool enabled,
                                      const std::optional<std::string>& device_id) = 0;
@@ -172,6 +180,9 @@ public:
     virtual void SendArrowDown() = 0;
     // 注入一次上方向键，用于编码器逆时针旋转在候选/选项间向上切换。
     virtual void SendArrowUp() = 0;
+    // 注入一次按键组合：修饰键按下 → 主键（带 scan code）→ 逆序全释放。
+    // 单键（无修饰键）退化为一次按键。供编码器自定义按键动作使用。
+    virtual void SendKeyCombo(const KeySpec& spec) = 0;
     // 体感鼠标：相对移动光标 (dx 右为正, dy 下为正)。
     virtual void MoveMouse(int dx, int dy) = 0;
     // 体感鼠标：模拟鼠标左键单击（按下+抬起）。
@@ -295,6 +306,13 @@ private:
     void HandleButtonUp(const StateEvent& event, const std::string& device_id);
     void HandleButtonClick(const StateEvent& event, const std::string& device_id);
     void HandleButtonDoubleClick(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonDown(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonUp(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonClick(const StateEvent& event, const std::string& device_id);
+    void HandleEncoderButtonDoubleClick(const StateEvent& event, const std::string& device_id);
+    // 双击取消结构：取消活跃录音（wechat/主路径）与字幕会话，供物理主键双击与
+    // 编码器双击 key 动作共用。
+    void CancelActiveSessionsForDoubleClick(const std::string& device_id);
     void HandleTapEvent(const StateEvent& event, const std::string& device_id);
     void HandleEncoderRotate(const StateEvent& event, const std::string& device_id);
     void HandleMotionEvent(const MotionEvent& event, const std::string& device_id);

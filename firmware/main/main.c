@@ -166,6 +166,17 @@ typedef enum {
 
 static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
 
+// 最近一次主键按下（任意来源）的输入源：button_up/click/double_click 发送时据此
+// 补 source 标签（编码器事件带 "encoder"，其它来源省略）。
+// timer（double_click_timer_cb）/app_event 双任务访问，与 s_primary_owner 同模式可接受。
+static app_input_source_t s_primary_press_source = APP_INPUT_SOURCE_PHYSICAL;
+
+// 编码器录音灯颜色（0xRRGGBB，0=off）：桌面端经 control_rx 下发颜色名，NVS 持久化。
+static uint32_t s_encoder_led_rgb = 0xFF0000u;  // 默认红
+
+// 编码器录音门控：false 时编码器按下只发按键事件不启动录音（桌面端单击=自定义按键）。
+static bool s_encoder_recording_gate = true;
+
 typedef enum {
     APP_UI_STATE_READY,
     APP_UI_STATE_RECORDING,
@@ -255,6 +266,8 @@ static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
 static void load_tap_settings_from_nvs(void);
 static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity);
+static void load_encoder_settings_from_nvs(void);
+static void save_encoder_settings_to_nvs(void);
 static void set_tap_polling_enabled(bool enabled);
 static void set_air_mouse_enabled(bool enabled);
 
@@ -598,9 +611,11 @@ static uint32_t start_recording(void)
     }
 
     s_recording = true;
-    // 录音期间编码器 LED 亮红灯；LED 写失败静默忽略，不影响录音主链路。
-    if (mini_encoder_c_present()) {
-        (void)mini_encoder_c_set_led(255, 0, 0);
+    // 录音期间编码器 LED 亮灯（颜色 NVS 可配，0=off 不亮）；LED 写失败静默忽略。
+    if (mini_encoder_c_present() && s_encoder_led_rgb != 0) {
+        (void)mini_encoder_c_set_led((s_encoder_led_rgb >> 16) & 0xFF,
+                                     (s_encoder_led_rgb >> 8) & 0xFF,
+                                     s_encoder_led_rgb & 0xFF);
     }
     s_app_ui_state = APP_UI_STATE_RECORDING;
     restart_display_dim_timer();
@@ -768,6 +783,23 @@ static void ble_connection_cb(bool connected)
     queue_app_event(connected ? APP_EVENT_BLE_CONNECTED : APP_EVENT_BLE_DISCONNECTED);
 }
 
+// 颜色名 → 0xRRGGBB 预设表。未知名返回 false（调用方忽略并保持当前值）。
+static bool encoder_led_rgb_from_name(const char *name, uint32_t *rgb_out)
+{
+    struct { const char *name; uint32_t rgb; } presets[] = {
+        {"red", 0xFF0000u}, {"green", 0x00FF00u}, {"blue", 0x0000FFu},
+        {"yellow", 0xFFFF00u}, {"purple", 0xFF00FFu}, {"cyan", 0x00FFFFu},
+        {"white", 0xFFFFFFu}, {"off", 0x000000u},
+    };
+    for (size_t i = 0; i < sizeof(presets) / sizeof(presets[0]); ++i) {
+        if (strcmp(name, presets[i].name) == 0) {
+            *rgb_out = presets[i].rgb;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void ble_control_cb(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
@@ -845,6 +877,26 @@ static void ble_control_cb(const char *json)
         set_tap_polling_enabled(s_tap_enabled);
         save_tap_settings_to_nvs(s_tap_enabled, (int32_t)-1);
         ESP_LOGI(TAG, "tap_enabled %s", s_tap_enabled ? "true" : "false");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "encoder_led_color") == 0) {
+        const cJSON *color_item = cJSON_GetObjectItemCaseSensitive(root, "color");
+        uint32_t rgb = 0;
+        if (cJSON_IsString(color_item) &&
+            encoder_led_rgb_from_name(color_item->valuestring, &rgb)) {
+            s_encoder_led_rgb = rgb;
+            save_encoder_settings_to_nvs();
+            ESP_LOGI(TAG, "encoder_led_color %s -> 0x%06" PRIX32,
+                     color_item->valuestring, s_encoder_led_rgb);
+        } else {
+            ESP_LOGW(TAG, "unknown encoder_led_color ignored: %s",
+                     cJSON_IsString(color_item) ? color_item->valuestring : "<missing>");
+        }
+    } else if (cJSON_IsString(event) &&
+               strcmp(event->valuestring, "encoder_recording_gate") == 0 &&
+               cJSON_IsBool(enabled)) {
+        s_encoder_recording_gate = cJSON_IsTrue(enabled);
+        save_encoder_settings_to_nvs();
+        ESP_LOGI(TAG, "encoder_recording_gate %s",
+                 s_encoder_recording_gate ? "enabled" : "disabled");
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0) {
         // 灵敏度 1..10（用户面向）：1=最不灵敏，10=最灵敏，默认 5。
         // 兼容 legacy 字符串 low/medium/high -> 2/5/9。
@@ -918,6 +970,12 @@ static primary_owner_t primary_owner_from_source(app_input_source_t source)
                                                  PRIMARY_OWNER_REMOTE;
 }
 
+// 主键事件的 source 标签：编码器返回 "encoder"，其它来源返回 NULL（省略字段）。
+static const char *primary_button_source_tag(void)
+{
+    return s_primary_press_source == APP_INPUT_SOURCE_ENCODER ? "encoder" : NULL;
+}
+
 // 侧键双击窗口超时：确认为单次点击，补发 button_click secondary（原单击语义）。
 static void side_double_click_timer_cb(void *arg)
 {
@@ -927,7 +985,7 @@ static void side_double_click_timer_cb(void *arg)
     }
     s_side_click_pending = false;
     ESP_LOGI(TAG, "button side single-click (double-click window timeout)");
-    (void)voice_ble_send_button_click("secondary", s_side_pending_duration_ms, 0);
+    (void)voice_ble_send_button_click("secondary", s_side_pending_duration_ms, 0, NULL);
 }
 
 // 侧键释放：单击延迟到双击窗口超时后确认；窗口内第二击直接发 button_double_click。
@@ -942,7 +1000,7 @@ static void handle_side_up(void)
         s_side_click_pending = false;
         (void)esp_timer_stop(s_side_double_click_timer);
         ESP_LOGI(TAG, "button side double-click");
-        (void)voice_ble_send_button_double_click("secondary");
+        (void)voice_ble_send_button_double_click("secondary", NULL);
         return;
     }
 
@@ -967,6 +1025,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
 {
     (void)request_id;
     ESP_LOGI(TAG, "button front down source=%d", source);
+    const app_input_source_t prev_press_source = s_primary_press_source;
+    s_primary_press_source = source;
     note_activity();
     // 按键按下抑制敲击检测，避免手指动作被 IMU 误判为双击（见 TAP_SUPPRESS_AFTER_BUTTON_MS）。
     s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
@@ -987,7 +1047,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             ESP_LOGI(TAG, "button front down as double-click second press");
             s_double_click_pending = false;
             (void)esp_timer_stop(s_double_click_timer);
-            (void)voice_ble_send_button_double_click("primary");
+            (void)voice_ble_send_button_double_click("primary", primary_button_source_tag());
             // 标记第二次按下，忽略其后续释放事件。
             s_double_click_second_press = true;
             s_primary_down_us = esp_timer_get_time();
@@ -1001,7 +1061,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
             if (elapsed_us < DOUBLE_CLICK_WINDOW_MS * 1000LL) {
                 ESP_LOGI(TAG, "button front down as double-click in click_to_talk mode");
                 (void)stop_recording();
-                (void)voice_ble_send_button_double_click("primary");
+                (void)voice_ble_send_button_double_click("primary", primary_button_source_tag());
                 s_click_to_talk_first_click_us = 0;
                 s_primary_down_us = 0;
                 s_primary_session_id = 0;
@@ -1013,9 +1073,28 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         }
     }
 
+    // 编码器录音门控关闭：按下只走按键事件链路（双击检测已在上方完成；
+    // 松开时由 handle_primary_up 的门控分支进双击窗口补发 button_click），
+    // 不启动任何音频会话。物理主键不受影响。
+    // !s_recording 条件：门控运行中从开切关时若录音已在进行，放行正常停录路径。
+    if (source == APP_INPUT_SOURCE_ENCODER && !s_encoder_recording_gate && !s_recording) {
+        // 物理键/远程源活跃期间（owner 非 NONE）不记录按下时刻，避免覆盖其
+        // s_primary_down_us；本次编码器点击被丢弃（up 分支同样会忽略，不成对不产事件）。
+        if (s_primary_owner == PRIMARY_OWNER_NONE) {
+            s_primary_down_us = esp_timer_get_time();
+        } else {
+            // 混源按下被丢弃时恢复来源标签（同下方仲裁拒绝分支），避免物理键
+            // hold 阈值到期后发出的 button_down 被误标 "encoder"。
+            s_primary_press_source = prev_press_source;
+        }
+        return;  // 无论是否记录都不走录音路径
+    }
+
     if (s_interaction_mode == INTERACTION_MODE_HOLD_TO_TALK && s_recording) {
         const primary_owner_t owner_from_source = primary_owner_from_source(source);
         if (s_primary_owner != PRIMARY_OWNER_NONE && s_primary_owner != owner_from_source) {
+            // 被拒按下不覆盖进行中按压的来源标签。
+            s_primary_press_source = prev_press_source;
             ESP_LOGI(TAG, "ignore primary down from source=%d, owner is %d", source, s_primary_owner);
             return;
         }
@@ -1025,7 +1104,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
         s_primary_session_id = stop_recording();
         esp_err_t primary_up_err = voice_ble_send_button_click("primary", primary_duration_ms,
-                                                               s_primary_session_id);
+                                                               s_primary_session_id,
+                                                               primary_button_source_tag());
         if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
             apply_app_ui_state("ready", "");
         }
@@ -1037,7 +1117,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         if (s_app_ui_state == APP_UI_STATE_PENDING_CONFIRMATION) {
             ESP_LOGI(TAG, "button front down as pending confirmation control");
             s_primary_session_id = 0;
-            (void)voice_ble_send_button_click("primary", 0, 0);
+            (void)voice_ble_send_button_click("primary", 0, 0, primary_button_source_tag());
             return;
         }
 
@@ -1056,7 +1136,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
                 s_primary_owner = PRIMARY_OWNER_NONE;
                 return;
             }
-            esp_err_t primary_down_err = voice_ble_send_button_down("primary", s_primary_session_id);
+            esp_err_t primary_down_err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
             if (primary_down_err != ESP_OK) {
                 (void)stop_recording();
                 s_primary_session_id = 0;
@@ -1091,7 +1171,7 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
                 s_click_to_talk_pending_start = false;
                 (void)esp_timer_stop(s_double_click_timer);
                 ESP_LOGI(TAG, "click_to_talk double-click (send button_double_click, no recording)");
-                (void)voice_ble_send_button_double_click("primary");
+                (void)voice_ble_send_button_double_click("primary", primary_button_source_tag());
                 s_primary_down_us = 0;
                 s_primary_session_id = 0;
                 s_primary_owner = PRIMARY_OWNER_NONE;
@@ -1121,8 +1201,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
         }
         s_primary_owner = primary_owner_from_source(source);
         esp_err_t primary_down_err = s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK
-            ? voice_ble_send_button_click("primary", 0, s_primary_session_id)
-            : voice_ble_send_button_down("primary", s_primary_session_id);
+            ? voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag())
+            : voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
         if (s_primary_session_id != 0 && primary_down_err != ESP_OK) {
             (void)stop_recording();
             s_primary_session_id = 0;
@@ -1143,7 +1223,7 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     // 体感鼠标态：主键松开上报 button_click，桌面端映射为鼠标左键单击。不涉及录音。
     if (s_air_mouse_enabled && is_local_primary_source(source)) {
         const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
-        (void)voice_ble_send_button_click("primary", duration_ms, 0);
+        (void)voice_ble_send_button_click("primary", duration_ms, 0, primary_button_source_tag());
         s_primary_down_us = 0;
         s_primary_owner = PRIMARY_OWNER_NONE;
         return;
@@ -1154,6 +1234,24 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         ESP_LOGI(TAG, "button front up ignored (second press of double-click)");
         s_double_click_second_press = false;
         s_primary_down_us = 0;
+        return;
+    }
+
+    // 门控关闭时的编码器释放：统一按短按处理进双击窗口（窗口超时补发 button_click，
+    // 窗口内再按发 button_double_click），不产生 button_up，不涉及录音。
+    if (source == APP_INPUT_SOURCE_ENCODER && !s_encoder_recording_gate && !s_recording) {
+        // 无配对按下（s_primary_down_us==0），或物理键/远程源活跃期间（owner 非 NONE，
+        // 对应 down 分支未记录的丢弃点击），忽略；避免污染共享双击窗口/定时器状态。
+        if (s_primary_down_us == 0 || s_primary_owner != PRIMARY_OWNER_NONE) {
+            return;
+        }
+        const uint32_t duration_ms = elapsed_button_ms(s_primary_down_us);
+        ESP_LOGI(TAG, "encoder button up (recording gate off), double-click window (%" PRIu32 " ms)",
+                 duration_ms);
+        s_double_click_pending = true;
+        s_pending_button_up_duration_ms = duration_ms;
+        (void)esp_timer_start_once(s_double_click_timer,
+                                   DOUBLE_CLICK_WINDOW_MS * 1000ULL);
         return;
     }
 
@@ -1215,7 +1313,8 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     }
 
     esp_err_t primary_up_err = voice_ble_send_button_up("primary", primary_duration_ms,
-                                                        s_primary_session_id);
+                                                        s_primary_session_id,
+                                                        primary_button_source_tag());
     if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
         apply_app_ui_state("ready", "");
     }
@@ -1386,7 +1485,7 @@ static void app_event_task(void *arg)
             if (s_recording) {
                 const uint32_t session_id = stop_recording();
                 voice_ble_send_button_up("primary", elapsed_button_ms(s_primary_down_us),
-                                         session_id);
+                                         session_id, primary_button_source_tag());
             }
             esp_err_t ota_pm_err = acquire_ota_pm_locks();
             if (ota_pm_err != ESP_OK) {
@@ -1578,7 +1677,7 @@ static void double_click_timer_cb(void *arg)
         ESP_LOGI(TAG, "click_to_talk pending start timeout, confirming recording");
         s_primary_session_id = start_recording();
         if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id);
+            esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag());
             if (err != ESP_OK) {
                 (void)stop_recording();
                 s_primary_session_id = 0;
@@ -1619,7 +1718,7 @@ static void double_click_timer_cb(void *arg)
         ESP_LOGI(TAG, "recording start retry: ble ready, starting");
         s_primary_session_id = start_recording();
         if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id);
+            esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
             if (err != ESP_OK) {
                 (void)stop_recording();
                 s_primary_session_id = 0;
@@ -1641,7 +1740,7 @@ static void double_click_timer_cb(void *arg)
             ESP_LOGI(TAG, "hold threshold reached, starting recording");
             s_primary_session_id = start_recording();
             if (s_primary_session_id != 0) {
-                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id);
+                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
                 if (err != ESP_OK) {
                     (void)stop_recording();
                     s_primary_session_id = 0;
@@ -1669,7 +1768,8 @@ static void double_click_timer_cb(void *arg)
         // 双击窗口超时：单次短击。
         s_double_click_pending = false;
         ESP_LOGI(TAG, "double-click window expired, sending button_click");
-        voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0);
+        voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0,
+                                    primary_button_source_tag());
         s_primary_down_us = 0;
         s_primary_session_id = 0;
         s_primary_owner = PRIMARY_OWNER_NONE;
@@ -2255,6 +2355,62 @@ static void load_tap_settings_from_nvs(void)
     }
 }
 
+// 编码器设置：enc_led（i32，0xRRGGBB，默认红）、enc_rec_gate（i32，1=录音语义，默认开）。
+static void load_encoder_settings_from_nvs(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
+    int32_t led = (int32_t)0xFF0000;
+    int32_t gate = 1;  // 默认开（录音语义）
+    if (err == ESP_OK) {
+        esp_err_t e = nvs_get_i32(handle, "enc_led", &led);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "load encoder led failed: %s", esp_err_to_name(e));
+        }
+        e = nvs_get_i32(handle, "enc_rec_gate", &gate);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "load encoder recording gate failed: %s", esp_err_to_name(e));
+        }
+        nvs_close(handle);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+    }
+    s_encoder_led_rgb = ((uint32_t)led) & 0xFFFFFFu;
+    s_encoder_recording_gate = (gate != 0);
+    ESP_LOGI(TAG, "encoder settings loaded from nvs: led=0x%06" PRIX32 " gate=%d",
+             s_encoder_led_rgb, s_encoder_recording_gate ? 1 : 0);
+}
+
+static void save_encoder_settings_to_nvs(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_i32(handle, "enc_led", (int32_t)s_encoder_led_rgb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "save encoder led failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return;
+    }
+    err = nvs_set_i32(handle, "enc_rec_gate", s_encoder_recording_gate ? 1 : 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "save encoder recording gate failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return;
+    }
+    err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit encoder settings failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "encoder settings saved to nvs: led=0x%06" PRIX32 " gate=%d",
+                 s_encoder_led_rgb, s_encoder_recording_gate ? 1 : 0);
+    }
+    nvs_close(handle);
+}
+
 static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity)
 {
     nvs_handle_t handle;
@@ -2352,6 +2508,7 @@ void app_main(void)
     // 从 NVS 恢复拿起检测阈值与敲击手势设置；voice_ble_init 已初始化 NVS flash。
     load_pickup_threshold_from_nvs();
     load_tap_settings_from_nvs();
+    load_encoder_settings_from_nvs();
     set_tap_polling_enabled(s_tap_enabled);
 
     esp_err_t audio_err = audio_pipeline_init();
