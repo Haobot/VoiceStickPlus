@@ -2173,6 +2173,19 @@ void TestKeySpecParse() {
     assert(!ParseKeySpec("").has_value());
     assert(!ParseKeySpec("ctrl+").has_value());
     assert(!ParseKeySpec("a+b").has_value());
+
+    // 分支覆盖：重复修饰键、空中间 part、f 键边界、大写修饰键、纯数字主键、非 ASCII。
+    assert(!ParseKeySpec("ctrl+ctrl+v").has_value());
+    assert(!ParseKeySpec("ctrl++v").has_value());
+    assert(!ParseKeySpec("f0").has_value());
+    assert(!ParseKeySpec("f25").has_value());
+    auto f24 = ParseKeySpec("f24");
+    assert(f24.has_value() && f24->vk == VK_F24);
+    auto ctrl_v = ParseKeySpec("CTRL+V");
+    assert(ctrl_v.has_value() && ctrl_v->display_text == "Ctrl+V");
+    auto digit5 = ParseKeySpec("5");
+    assert(digit5.has_value() && digit5->vk == '5');
+    assert(!ParseKeySpec("上").has_value());  // UTF-8 非 ASCII 输入不崩且拒绝
 }
 
 void TestAppConfigEncoderRoundTrip() {
