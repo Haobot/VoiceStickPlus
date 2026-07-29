@@ -1983,6 +1983,18 @@ void Win32App::ShowNotification(const std::string& title, const std::string& bod
     Shell_NotifyIconW(NIM_MODIFY, &data);
 }
 
+void Win32App::ShowTimedMessage(const std::string& message, int duration_ms) {
+    // 可能被后台线程调用（如 LLM 提炼回调），封送到 UI 线程再碰 overlay。
+    DispatchToUi([this, message, duration_ms]() {
+        // 会话活跃时浮窗被状态机占用（确认倒计时等），回退托盘气泡。
+        if ((coordinator_ && coordinator_->HasActiveSession()) || !overlay_) {
+            ShowNotification({}, message);
+            return;
+        }
+        overlay_->ShowTimedMessage(message, duration_ms);
+    });
+}
+
 std::wstring Win32App::Utf16(const std::string& text) const {
     return Utf16FromUtf8(text);
 }
