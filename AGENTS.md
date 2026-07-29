@@ -303,7 +303,7 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，�
 
 Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（PowerShell 脚本，用 .NET 写 UTF-8 文件规避 cmd 中文 `echo` 块在 GBK 代码页下的解析错位；脚本须存为 UTF-8 with BOM）；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。打包产物放在 `dist/`（已被视为本地产物目录）。
 
-`CHANGELOG.md` 是版本变更记录（最新条目在文件顶部，当前最新为 v2.1.2）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失，条目从 v1.9.0 直接跳到 v2.1.1），以 `VERSION`（当前 `2.1.2`）为准。
+`CHANGELOG.md` 是版本变更记录（最新发布条目为 v2.1.2，顶部另有 Unreleased 段）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失，条目从 v1.9.0 直接跳到 v2.1.1），以 `VERSION`（当前 `2.1.2`）为准。
 
 ## 项目 Skills
 
