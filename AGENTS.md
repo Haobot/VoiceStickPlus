@@ -255,6 +255,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成四个源码目标（�
 - `[wechat_input_method]`：微信输入法模式专属配置，含 `trigger_mode`（wechat 专属触发方式，`hold_to_talk` 默认或 `click_to_talk`，与全局 `interaction_mode` 解耦）、`hotkey_hold` / `hotkey_click`（长按式/点按式各自记忆的触发热键，默认 `ctrl+win` / `ralt`）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回）。
 - `tap_to_arrow`：IMU 敲击映射方向键开关。
 - `encoder_to_arrow` / `encoder_rotation_invert` / `encoder_rotate_cw_key` / `encoder_rotate_ccw_key`：MiniEncoderC 编码器旋转注入开关（默认 `true`）、方向翻转（默认 `false`，true 时顺时针→Up）与 cw/ccw 自定义按键（热键语法）。
+- `encoder_rotate_fast_threshold` / `encoder_rotate_cw_fast_key` / `encoder_rotate_ccw_fast_key`：旋转快慢分档——窗口格速 = steps × 100（格/秒，固件 10ms 窗口计数，不受 BLE 抖动影响），≥ 阈值（默认 400，即单窗口 ≥4 格）判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，锁定期间屏蔽所有旋转输出（含减速段慢速事件与换向事件），直到静默 >250ms 判定停稳才恢复识别；快速档按键非法时回退普通按键。
 - `encoder_led_color`：编码器录音灯颜色（red/green/blue/yellow/purple/cyan/white/off），BLE 下发固件 NVS 持久化。
 - `encoder_press_action` / `encoder_press_key` / `encoder_double_click_action` / `encoder_double_click_key`：编码器单击/双击动作（recording|key）与自定义按键；`press_action=key` 派生固件录音门控关闭，双击 recording 走 remote_button 切换起停。
 以上编码器设置项仅 Windows 端消费。
@@ -338,6 +339,8 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - 提升权限运行的 VoiceStick.exe 会锁定链接产物且 `build_win.bat` 杀不掉仍报成功，判据是 exe 时间戳；`ctest` 不在裸 cmd PATH，用 VS BuildTools 全路径。
 
 ## 给 Agent 的提示
+
+- Windows 桌面端修改完成并构建通过后，自动重启 VoiceStick.exe 让改动生效（先结束运行中的进程避免锁定链接产物，启动后检查 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log` 确认正常），无需用户另行指示。
 
 - `.gitignore` 整体忽略了 `desktop/windows/`，提交 Windows 端源码改动时必须用 `git add -f`，否则会被静默漏提交。
 - Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。

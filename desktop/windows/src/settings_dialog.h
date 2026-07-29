@@ -109,6 +109,9 @@ private:
     HWND encoder_rotation_invert_check_ = nullptr;
     HWND encoder_rotate_cw_key_edit_ = nullptr;
     HWND encoder_rotate_ccw_key_edit_ = nullptr;
+    HWND encoder_rotate_fast_threshold_edit_ = nullptr;
+    HWND encoder_rotate_cw_fast_key_edit_ = nullptr;
+    HWND encoder_rotate_ccw_fast_key_edit_ = nullptr;
     HWND encoder_led_color_combo_ = nullptr;
     HWND encoder_press_action_combo_ = nullptr;
     HWND encoder_press_key_edit_ = nullptr;
@@ -181,6 +184,9 @@ private:
     static constexpr UINT kIdEncoderRotationInvert = 2040;
     static constexpr UINT kIdEncoderRotateCwKey = 2041;
     static constexpr UINT kIdEncoderRotateCcwKey = 2042;
+    static constexpr UINT kIdEncoderRotateFastThreshold = 2048;
+    static constexpr UINT kIdEncoderRotateCwFastKey = 2049;
+    static constexpr UINT kIdEncoderRotateCcwFastKey = 2050;
     static constexpr UINT kIdEncoderLedColor = 2043;
     static constexpr UINT kIdEncoderPressAction = 2044;
     static constexpr UINT kIdEncoderPressKey = 2045;

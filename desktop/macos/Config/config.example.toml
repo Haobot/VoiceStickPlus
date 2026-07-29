@@ -44,6 +44,10 @@ air_mouse_invert_y = false   # 反转 Y 轴（适配用户习惯）
 # pageup/pagedown/volumeup/volumedown/f1-f24/单字符，或 ctrl/alt/shift/win 组合）
 # encoder_rotate_cw_key = "down"
 # encoder_rotate_ccw_key = "up"
+# 旋转快慢分档：窗口格速 = steps * 100（格/秒，固件 10ms 窗口计数），>= 阈值走快速档按键。
+# encoder_rotate_fast_threshold = 400
+# encoder_rotate_cw_fast_key = "pagedown"
+# encoder_rotate_ccw_fast_key = "pageup"
 # 编码器录音灯颜色：red/green/blue/yellow/purple/cyan/white/off（off=录音也不亮）。
 # 保存设置时经 BLE 下发固件并 NVS 持久化。
 # encoder_led_color = "red"

@@ -938,6 +938,39 @@ void SettingsDialog::BuildControls() {
         });
     }
     {
+        HWND threshold_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsEncoderRotateFastThreshold).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        encoder_rotate_fast_threshold_edit_ = remember(CreateEdit(
+            hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateFastThreshold, instance_));
+        add(row_h + Dp(10), {
+            {threshold_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {encoder_rotate_fast_threshold_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        });
+    }
+    {
+        HWND cw_fast_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsEncoderRotateCwFastKey).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        encoder_rotate_cw_fast_key_edit_ = remember(CreateEdit(
+            hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCwFastKey, instance_));
+        add(row_h + Dp(10), {
+            {cw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {encoder_rotate_cw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        });
+    }
+    {
+        HWND ccw_fast_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsEncoderRotateCcwFastKey).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        encoder_rotate_ccw_fast_key_edit_ = remember(CreateEdit(
+            hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCcwFastKey, instance_));
+        add(row_h + Dp(10), {
+            {ccw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {encoder_rotate_ccw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        });
+    }
+    {
         HWND led_label = remember_label(CreateLabel(
             hwnd_, label_text(StringId::kSettingsEncoderLedColor).c_str(),
             0, 0, label_w, Dp(20), instance_));
@@ -1249,6 +1282,10 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(encoder_rotation_invert_check_, BM_SETCHECK, config_.encoder_rotation_invert ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(encoder_rotate_cw_key_edit_, Utf16(config_.encoder_rotate_cw_key).c_str());
     SetWindowTextW(encoder_rotate_ccw_key_edit_, Utf16(config_.encoder_rotate_ccw_key).c_str());
+    SetWindowTextW(encoder_rotate_fast_threshold_edit_,
+                   Utf16(std::to_string(config_.encoder_rotate_fast_threshold)).c_str());
+    SetWindowTextW(encoder_rotate_cw_fast_key_edit_, Utf16(config_.encoder_rotate_cw_fast_key).c_str());
+    SetWindowTextW(encoder_rotate_ccw_fast_key_edit_, Utf16(config_.encoder_rotate_ccw_fast_key).c_str());
     {
         static const char* kLedColors[] = {"red", "green", "blue", "yellow",
                                            "purple", "cyan", "white", "off"};
@@ -1391,6 +1428,30 @@ void SettingsDialog::SaveSettings() {
     const std::string ccw_key = Utf8(GetWindowText(encoder_rotate_ccw_key_edit_));
     if (ParseKeySpec(ccw_key).has_value()) {
         config_.encoder_rotate_ccw_key = ccw_key;
+    } else {
+        encoder_key_invalid = true;
+    }
+    // 快慢阈值：正整数才写回，非法保留旧值并提示。
+    const std::string threshold_text = Utf8(GetWindowText(encoder_rotate_fast_threshold_edit_));
+    try {
+        const int threshold = std::stoi(threshold_text);
+        if (threshold > 0) {
+            config_.encoder_rotate_fast_threshold = threshold;
+        } else {
+            encoder_key_invalid = true;
+        }
+    } catch (...) {
+        encoder_key_invalid = true;
+    }
+    const std::string cw_fast_key = Utf8(GetWindowText(encoder_rotate_cw_fast_key_edit_));
+    if (ParseKeySpec(cw_fast_key).has_value()) {
+        config_.encoder_rotate_cw_fast_key = cw_fast_key;
+    } else {
+        encoder_key_invalid = true;
+    }
+    const std::string ccw_fast_key = Utf8(GetWindowText(encoder_rotate_ccw_fast_key_edit_));
+    if (ParseKeySpec(ccw_fast_key).has_value()) {
+        config_.encoder_rotate_ccw_fast_key = ccw_fast_key;
     } else {
         encoder_key_invalid = true;
     }

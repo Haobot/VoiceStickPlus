@@ -119,7 +119,17 @@ ccw → Up, one key press per step, flippable via `encoder_rotation_invert`) and
 only injects when idle — gated off while recording, recognizing, or in
 air-mouse mode, mirroring the `tap_to_arrow` gating. The master switch is
 `encoder_to_arrow`. The desktop additionally clamps `steps` to 64 per frame
-as a defensive bound against malformed frames.
+as a defensive bound against malformed frames. Since `steps` is counted by
+the firmware against its fixed 10 ms poll window, the desktop derives a
+per-window detent speed (`steps * 100` detents/s, immune to BLE jitter) and
+switches to fast-tier keys (`encoder_rotate_cw_fast_key` /
+`encoder_rotate_ccw_fast_key`, default PageDown/PageUp) when the speed
+reaches `encoder_rotate_fast_threshold` (default 400 detents/s). A fast
+flick is treated as a single gesture: it injects the fast key once and
+enters a spin-down lockout that suppresses all rotation output (including
+deceleration-phase slow events and direction changes) until the encoder
+comes to a stop — detected as a >250 ms silence with no rotation events —
+after which slow/fast recognition resumes.
 
 ### Motion Frame
 

@@ -418,6 +418,12 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "encoder_rotation_invert") config.encoder_rotation_invert = BoolValue(value, config.encoder_rotation_invert);
     if (key == "encoder_rotate_cw_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_cw_key = value;
     if (key == "encoder_rotate_ccw_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_ccw_key = value;
+    if (key == "encoder_rotate_fast_threshold") {
+        const int parsed = IntValue(value, config.encoder_rotate_fast_threshold);
+        if (parsed > 0) config.encoder_rotate_fast_threshold = parsed;
+    }
+    if (key == "encoder_rotate_cw_fast_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_cw_fast_key = value;
+    if (key == "encoder_rotate_ccw_fast_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_ccw_fast_key = value;
     if (key == "encoder_led_color" && IsValidEncoderLedColor(value)) config.encoder_led_color = value;
     if (key == "encoder_press_action" && IsValidEncoderButtonAction(value)) config.encoder_press_action = value;
     if (key == "encoder_press_key" && (value.empty() || ParseKeySpec(value).has_value())) config.encoder_press_key = value;
@@ -623,6 +629,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "encoder_rotation_invert")) config.encoder_rotation_invert = *value;
         if (auto value = TomlString(table, "encoder_rotate_cw_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_cw_key = *value;
         if (auto value = TomlString(table, "encoder_rotate_ccw_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_ccw_key = *value;
+        if (auto value = TomlInt(table, "encoder_rotate_fast_threshold"); value && *value > 0) config.encoder_rotate_fast_threshold = *value;
+        if (auto value = TomlString(table, "encoder_rotate_cw_fast_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_cw_fast_key = *value;
+        if (auto value = TomlString(table, "encoder_rotate_ccw_fast_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_ccw_fast_key = *value;
         if (auto value = TomlString(table, "encoder_led_color"); value && IsValidEncoderLedColor(*value)) config.encoder_led_color = *value;
         if (auto value = TomlString(table, "encoder_press_action"); value && IsValidEncoderButtonAction(*value)) config.encoder_press_action = *value;
         if (auto value = TomlString(table, "encoder_press_key"); value && (value->empty() || ParseKeySpec(*value).has_value())) config.encoder_press_key = *value;
@@ -736,6 +745,9 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "encoder_rotation_invert = " << (encoder_rotation_invert ? "true" : "false") << "\n";
     output << "encoder_rotate_cw_key = \"" << TomlEscape(encoder_rotate_cw_key) << "\"\n";
     output << "encoder_rotate_ccw_key = \"" << TomlEscape(encoder_rotate_ccw_key) << "\"\n";
+    output << "encoder_rotate_fast_threshold = " << encoder_rotate_fast_threshold << "\n";
+    output << "encoder_rotate_cw_fast_key = \"" << TomlEscape(encoder_rotate_cw_fast_key) << "\"\n";
+    output << "encoder_rotate_ccw_fast_key = \"" << TomlEscape(encoder_rotate_ccw_fast_key) << "\"\n";
     output << "encoder_led_color = \"" << TomlEscape(encoder_led_color) << "\"\n";
     output << "encoder_press_action = \"" << TomlEscape(encoder_press_action) << "\"\n";
     output << "encoder_press_key = \"" << TomlEscape(encoder_press_key) << "\"\n";
