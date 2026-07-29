@@ -46,20 +46,48 @@ public:
     // 热词候选提炼（异步 best-effort）：从最终文本中提炼可能是专有名词且不在热词表
     // 中的候选词，completion(true, words)；失败回调 (false, {})。覆盖 diff 挖掘够不到
     // 的场景（ASR 本来就识别对、或 LLM 不认识的全新词无法被纠错引入）。
-    void ExtractHotwordCandidates(std::string text,
-                                  std::vector<std::string> hotwords,
-                                  std::function<void(bool, std::vector<std::string>)> completion) const;
+    // log 为可选观测回调（后台线程触发），输出 LLM 错误码与解析统计（只计数不记文本）。
+    // 模型 temp 0 并非完全确定（同一输入实测偶发返回 []），模型成功但 0 候选且文本
+    // 含大写字母（目标候选典型形态）时自动重试一次；网络错误与纯中文文本不重试。
+    void ExtractHotwordCandidates(
+        std::string text,
+        std::vector<std::string> hotwords,
+        std::function<void(bool, std::vector<std::string>)> completion,
+        std::function<void(const std::string&)> log = nullptr) const;
 
     // 提炼 prompt（纯函数可单测）：要求只输出 JSON 数组、保留原始大小写、附已知热词表。
     static std::string BuildHotwordExtractionPrompt(const std::vector<std::string>& hotwords);
 
+    // 提炼解析统计（只计数不记文本，用于生产环境定位 candidates=0 的原因）。
+    struct HotwordExtractionStats {
+        bool bracket_found = false;  // 响应中找到了 [...] 片段
+        bool json_ok = false;        // 该片段解析为 JSON 数组
+        int items = 0;               // 数组中字符串条目数
+        int rejected_len = 0;        // 长度超出 2..40
+        int rejected_words = 0;      // 超过 3 个词
+        int rejected_not_in_text = 0;  // 未在原文出现（防臆造）
+        int rejected_hotword = 0;    // 已在热词表
+        int rejected_dup = 0;        // 重复候选
+    };
+
     // 提炼结果解析（纯函数可单测）：容错截取首个 JSON 数组，逐条过滤——
-    // 长度 2..40、至多 3 个词、必须在原文中实际出现（防臆造）、不与已有热词重复
-    // （比较均忽略大小写）。
+    // 长度 2..40、至多 3 个词、必须在原文中实际出现（防臆造；ASR 英文空格形态
+    // 不稳定，比较时容忍空白差异：折叠连续空白并对全去空白形式再比一次）、
+    // 不与已有热词重复（比较均忽略大小写）。stats 非空时回填拒绝计数。
     static std::vector<std::string> ParseHotwordExtractionResponse(
         const std::string& response,
         const std::string& source_text,
-        const std::vector<std::string>& hotwords);
+        const std::vector<std::string>& hotwords,
+        HotwordExtractionStats* stats = nullptr);
+
+private:
+    // 单次提炼尝试（ExtractHotwordCandidates 的内部实现，attempt 用于重试标记与日志）。
+    void ExtractHotwordCandidatesAttempt(
+        std::string text,
+        std::vector<std::string> hotwords,
+        int attempt,
+        std::function<void(bool, std::vector<std::string>)> completion,
+        std::function<void(const std::string&)> log) const;
 };
 
 } // namespace voicestick

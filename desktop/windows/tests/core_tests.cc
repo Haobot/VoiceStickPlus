@@ -260,6 +260,9 @@ public:
     void ShowNotification(const std::string& title, const std::string& body) override {
         notifications.push_back(title + ":" + body);
     }
+    void ShowTimedMessage(const std::string& message, int duration_ms) override {
+        timed_messages.push_back(message + ":" + std::to_string(duration_ms));
+    }
 
     std::vector<std::string> statuses;
     std::vector<ConnectedDevice> connected_devices;
@@ -276,6 +279,7 @@ public:
     std::vector<std::string> errors;
     std::vector<std::string> subtitles;
     std::vector<std::string> notifications;
+    std::vector<std::string> timed_messages;
     std::function<void()> final_countdown_completion;
     std::function<void()> error_completion;
     bool has_recoverable_input_set = false;
@@ -1356,6 +1360,34 @@ void TestHotwordExtractionPromptAndParse() {
                 "[\"Stack Chain\", \"stack chain\"]", source, hotwords)
             == std::vector<std::string>{"Stack Chain"}));
 
+    // 空白容忍：ASR 英文空格形态不稳定（双空格 / 连写），LLM 规范化输出不应被
+    // 防臆造误杀（生产环境 candidates=0 的已证实根因之一）。
+    const std::string double_space_source = "我刚才讲了 Stack  Chain 这个新词";
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse(
+                "[\"Stack Chain\"]", double_space_source, hotwords)
+            == std::vector<std::string>{"Stack Chain"}));
+    const std::string concat_source = "我刚才讲了 StackChain 这个新词";
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse(
+                "[\"Stack Chain\"]", concat_source, hotwords)
+            == std::vector<std::string>{"Stack Chain"}));
+
+    // 统计回填：bracket/json/items/各拒绝原因计数（只计数不记文本）。
+    LLMRefinementClient::HotwordExtractionStats stats;
+    words = LLMRefinementClient::ParseHotwordExtractionResponse(
+        "[\"Stack Chain\", \"DeepSeek\", \"OpenAI\", \"x\"]", source, hotwords, &stats);
+    assert((words == std::vector<std::string>{"Stack Chain"}));
+    assert(stats.bracket_found && stats.json_ok && stats.items == 4);
+    assert(stats.rejected_hotword == 1 && stats.rejected_not_in_text == 1 &&
+           stats.rejected_len == 1);
+    stats = {};
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("没有候选", source, hotwords, &stats)
+               .empty());
+    assert(!stats.bracket_found && !stats.json_ok);
+    stats = {};
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[not json]", source, hotwords, &stats)
+               .empty());
+    assert(stats.bracket_found && !stats.json_ok);
+
     // hotword_mining_enabled 配置往返，默认关闭。
     assert(!AppConfig::Defaults().hotword_mining_enabled);
     auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_mining_test.toml";
@@ -1719,6 +1751,60 @@ void TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd() {
     assert(asr_ptr->started);
     assert(asr_ptr->sent_chunks >= 3);
     assert(asr_ptr->last_chunk_was_final);
+}
+
+// BLE 断连（僵尸链路）发生在 final 音频块已发出、ASR final 尚在网络侧在途时：
+// 不得取消 ASR——final 到达后应照常粘贴。修复「流式已上屏但断连导致不粘贴」。
+void TestCoordinatorDisconnectAwaitingAsrFinalKeepsSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 关异步精修，聚焦断连与 ASR final 的交互
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(21, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(21, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+
+    ble_ptr->connected_device_ids.erase("5A74");
+    ble_ptr->on_connection_change({});
+    assert(!asr_ptr->cancelled);
+
+    // ASR final 在断连后到达（走网络与 BLE 无关）：必须照常粘贴。
+    asr_ptr->on_final("hello");
+    assert(input.pasted_text == "hello");
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+// 对照：仍在录音（final 块未发出）时断连，维持原有取消语义。
+void TestCoordinatorDisconnectDuringRecordingCancelsSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 22));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(22, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+
+    ble_ptr->connected_device_ids.erase("5A74");
+    ble_ptr->on_connection_change({});
+    assert(asr_ptr->cancelled);
 }
 
 void TestCoordinatorMainFinalPastesWithoutConfirmation() {
@@ -5811,6 +5897,8 @@ int main() {
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();
     TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd();
+    TestCoordinatorDisconnectAwaitingAsrFinalKeepsSession();
+    TestCoordinatorDisconnectDuringRecordingCancelsSession();
     TestCoordinatorMainFinalPastesWithoutConfirmation();
     TestCoordinatorRefineShowsOriginalTextImmediately();
     TestCoordinatorOtherDeviceDuringRecordingGetsReady();

@@ -77,6 +77,7 @@ public:
                       OverlayThemeColor color) override;
     void HideSubtitles() override;
     void ShowNotification(const std::string& title, const std::string& body) override;
+    void ShowTimedMessage(const std::string& message, int duration_ms) override;
     // 无运行实例时由命令行入口(--ota)注入的待处理 OTA 请求，连上设备后自动触发。
     void SetPendingOtaRequest(std::string file_path,
                               std::optional<std::string> device_id);

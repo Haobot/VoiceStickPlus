@@ -58,7 +58,9 @@ std::string LLMChatClient::ChatSync(const std::string& system_prompt,
         *error = "Failed to start LLM network session: " + LastErrorText();
         return {};
     }
-    WinHttpSetTimeouts(session, 5000, 5000, 5000, 10000);
+    // 非流式一次性请求：DeepSeek 等推理模型 TTFT 偶发超过 10s，
+    // receive 超时给 30s 避免慢响应被误杀（提炼/精修回退都走这条路）。
+    WinHttpSetTimeouts(session, 5000, 5000, 10000, 30000);
 
     HINTERNET connect = WinHttpConnect(session, host.c_str(), port, 0);
     if (!connect) {
@@ -77,7 +79,7 @@ std::string LLMChatClient::ChatSync(const std::string& system_prompt,
         *error = "Failed to create LLM request: " + LastErrorText();
         return {};
     }
-    WinHttpSetTimeouts(request, 5000, 5000, 5000, 10000);
+    WinHttpSetTimeouts(request, 5000, 5000, 10000, 30000);
     AddHeader(request, "Authorization: Bearer " + api_key);
     AddHeader(request, "Content-Type: application/json");
 

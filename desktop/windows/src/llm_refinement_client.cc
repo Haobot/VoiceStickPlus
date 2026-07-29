@@ -39,6 +39,24 @@ bool ContainsCaseInsensitive(const std::string& text, const std::string& needle)
     return false;
 }
 
+std::string StripSpaces(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char ch : text) {
+        if (ch != ' ') out.push_back(ch);
+    }
+    return out;
+}
+
+// 防臆造匹配：候选必须在原文中实际出现。ASR 英文空格形态不稳定
+// （"Stack Chain" / "Stack  Chain" / "StackChain" 都可能是同一口述），
+// 除精确子串外，再对全去空白形式比较一次；均忽略大小写。
+bool AppearsInSourceText(const std::string& source_text, const std::string& word) {
+    if (ContainsCaseInsensitive(source_text, word)) return true;
+    if (word.find(' ') == std::string::npos) return false;
+    return ContainsCaseInsensitive(StripSpaces(source_text), StripSpaces(word));
+}
+
 } // namespace
 
 void LLMRefinementClient::Refine(std::string text,
@@ -121,15 +139,63 @@ bool LLMRefinementClient::RefineResultKeepsHotwords(const std::string& original,
 void LLMRefinementClient::ExtractHotwordCandidates(
     std::string text,
     std::vector<std::string> hotwords,
-    std::function<void(bool, std::vector<std::string>)> completion) const {
+    std::function<void(bool, std::vector<std::string>)> completion,
+    std::function<void(const std::string&)> log) const {
+    ExtractHotwordCandidatesAttempt(std::move(text), std::move(hotwords), 1,
+                                    std::move(completion), std::move(log));
+}
+
+void LLMRefinementClient::ExtractHotwordCandidatesAttempt(
+    std::string text,
+    std::vector<std::string> hotwords,
+    int attempt,
+    std::function<void(bool, std::vector<std::string>)> completion,
+    std::function<void(const std::string&)> log) const {
     ChatAsync(BuildHotwordExtractionPrompt(hotwords), text,
-              [text = std::move(text), hotwords = std::move(hotwords),
-               completion = std::move(completion)](bool ok, std::string response) mutable {
+              [this, text = std::move(text), hotwords = std::move(hotwords), attempt,
+               completion = std::move(completion),
+               log = std::move(log)](bool ok, std::string response) mutable {
                   if (!ok) {
+                      // response 此时是 WinHTTP 错误码文本，不含用户内容。
+                      if (log) log("hotword extraction llm_error: " + response);
                       completion(false, {});
                       return;
                   }
-                  completion(true, ParseHotwordExtractionResponse(response, text, hotwords));
+                  HotwordExtractionStats stats;
+                  auto words = ParseHotwordExtractionResponse(response, text, hotwords, &stats);
+                  if (log) {
+                      // 响应只含模型给出的候选词（与托盘通知/「suggested」日志同级，
+                      // 不含用户原文）；压掉换行、截断到 160 字符保证单行。
+                      std::string raw = response;
+                      std::replace(raw.begin(), raw.end(), '\n', ' ');
+                      std::replace(raw.begin(), raw.end(), '\r', ' ');
+                      if (raw.size() > 160) raw = raw.substr(0, 160) + "...";
+                      log("hotword extraction detail: attempt=" + std::to_string(attempt) +
+                          " resp_len=" + std::to_string(response.size()) +
+                          " bracket=" + std::to_string(stats.bracket_found) +
+                          " json=" + std::to_string(stats.json_ok) +
+                          " items=" + std::to_string(stats.items) +
+                          " kept=" + std::to_string(words.size()) +
+                          " rej_len=" + std::to_string(stats.rejected_len) +
+                          " rej_words=" + std::to_string(stats.rejected_words) +
+                          " rej_not_in_text=" + std::to_string(stats.rejected_not_in_text) +
+                          " rej_hotword=" + std::to_string(stats.rejected_hotword) +
+                          " rej_dup=" + std::to_string(stats.rejected_dup) +
+                          " raw=" + raw);
+                  }
+                  // 模型 temp 0 非完全确定：同一输入偶发返回 []（实测同一句离线 6/6 中、
+                  // 线上 2/2 空）。成功但 0 候选且文本含大写字母（目标候选的典型形态）时
+                  // 重试一次；纯中文等无候选文本不重试，避免每次会话白调一次 LLM。
+                  const bool has_capital = std::any_of(text.begin(), text.end(), [](char ch) {
+                      return ch >= 'A' && ch <= 'Z';
+                  });
+                  if (words.empty() && attempt == 1 && has_capital) {
+                      if (log) log("hotword extraction retry: attempt 1 returned no candidates");
+                      ExtractHotwordCandidatesAttempt(std::move(text), std::move(hotwords), 2,
+                                                      std::move(completion), std::move(log));
+                      return;
+                  }
+                  completion(true, std::move(words));
               });
 }
 
@@ -141,10 +207,13 @@ std::string LLMRefinementClient::BuildHotwordExtractionPrompt(
         "规则：\n"
         "• 只提取文本中实际出现的内容，严格保留原始拼写与大小写，不臆造、不翻译、不纠错。\n"
         "• 普通词汇、常见英文单词、人称代词与完整句子不要提取。\n"
+        "• 文本中非句首的首字母大写词或词组，即使看起来像普通英文单词的组合，也应作为候选输出。\n"
         "• 已知热词表中的条目不要重复提取。\n"
         "• 最多输出 5 个。\n"
         "• 只输出 JSON 数组（如 [\"DeepSeek\", \"Stack Chain\"]），没有候选时输出 []；"
-        "不要输出解释或其他任何内容。";
+        "不要输出解释或其他任何内容。\n"
+        "示例：输入「我刚才讲了 Stack Chain 这个新词」→ 输出 [\"Stack Chain\"]；"
+        "输入「今天天气不错，我们出去走走吧」→ 输出 []。";
     if (hotwords.empty()) return prompt;
     prompt += "\n已知热词表：";
     for (std::size_t i = 0; i < hotwords.size(); ++i) {
@@ -158,31 +227,44 @@ std::string LLMRefinementClient::BuildHotwordExtractionPrompt(
 std::vector<std::string> LLMRefinementClient::ParseHotwordExtractionResponse(
     const std::string& response,
     const std::string& source_text,
-    const std::vector<std::string>& hotwords) {
+    const std::vector<std::string>& hotwords,
+    HotwordExtractionStats* stats) {
     // 容错：LLM 可能在 JSON 数组前后包裹解释文字，截取首个 [...] 片段解析。
     const auto start = response.find('[');
     const auto end = response.rfind(']');
     if (start == std::string::npos || end == std::string::npos || end <= start) return {};
+    if (stats) stats->bracket_found = true;
     auto* root = cJSON_Parse(response.substr(start, end - start + 1).c_str());
     if (!root) return {};
     auto cleanup = std::unique_ptr<cJSON, decltype(&cJSON_Delete)>(root, cJSON_Delete);
     if (!cJSON_IsArray(root)) return {};
+    if (stats) stats->json_ok = true;
 
     std::vector<std::string> candidates;
     std::set<std::string> seen_lower;
     cJSON* item = nullptr;
     cJSON_ArrayForEach(item, root) {
         if (!cJSON_IsString(item) || item->valuestring == nullptr) continue;
+        if (stats) ++stats->items;
         const std::string word = Trim(item->valuestring);
-        if (word.size() < 2 || word.size() > 40) continue;
+        if (word.size() < 2 || word.size() > 40) {
+            if (stats) ++stats->rejected_len;
+            continue;
+        }
         // 至多 3 个词，避免整句被当成候选。
         int word_count = 1;
         for (char ch : word) {
             if (ch == ' ') ++word_count;
         }
-        if (word_count > 3) continue;
-        // 防臆造：候选必须在原文中实际出现（忽略大小写）。
-        if (!ContainsCaseInsensitive(source_text, word)) continue;
+        if (word_count > 3) {
+            if (stats) ++stats->rejected_words;
+            continue;
+        }
+        // 防臆造：候选必须在原文中实际出现（忽略大小写与空白差异）。
+        if (!AppearsInSourceText(source_text, word)) {
+            if (stats) ++stats->rejected_not_in_text;
+            continue;
+        }
         bool is_hotword = false;
         for (const auto& hotword : hotwords) {
             if (EqualsCaseInsensitive(hotword, word)) {
@@ -190,11 +272,17 @@ std::vector<std::string> LLMRefinementClient::ParseHotwordExtractionResponse(
                 break;
             }
         }
-        if (is_hotword) continue;
+        if (is_hotword) {
+            if (stats) ++stats->rejected_hotword;
+            continue;
+        }
         std::string lower = word;
         std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (!seen_lower.insert(lower).second) continue;
+        if (!seen_lower.insert(lower).second) {
+            if (stats) ++stats->rejected_dup;
+            continue;
+        }
         candidates.push_back(word);
     }
     return candidates;

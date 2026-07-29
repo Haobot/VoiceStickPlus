@@ -157,6 +157,10 @@ public:
                               OverlayThemeColor color) = 0;
     virtual void HideSubtitles() = 0;
     virtual void ShowNotification(const std::string& title, const std::string& body) = 0;
+    // 悬浮窗临时消息（duration_ms 后自动隐藏）：托盘气球可能被系统勿扰/通知设置
+    // 静默拦截且无返回值可查，需要用户必现的提示（如热词候选建议）走这条。
+    // 实现方负责：会话活跃（浮窗被状态机占用）时回退托盘气泡、UI 线程封送。
+    virtual void ShowTimedMessage(const std::string& message, int duration_ms) = 0;
 };
 
 class InputInjector {

@@ -189,6 +189,9 @@ public:
     void ShowNotification(const std::string& title, const std::string& body) override {
         notifications.push_back(title + ":" + body);
     }
+    void ShowTimedMessage(const std::string& message, int duration_ms) override {
+        timed_messages.push_back(message + ":" + std::to_string(duration_ms));
+    }
 
     // 测试线程安全的查询。
     bool HasAsrResult() const {
@@ -220,6 +223,7 @@ public:
     std::vector<std::string> errors;
     std::vector<std::string> subtitles;
     std::vector<std::string> notifications;
+    std::vector<std::string> timed_messages;
     std::function<void()> final_countdown_completion;
     std::function<void()> error_completion;
     bool has_recoverable_input_set = false;

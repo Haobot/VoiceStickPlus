@@ -1868,7 +1868,10 @@ void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& fin
                                 : (config_.llm_api_key.empty() ? "no_llm_key" : "empty_text")));
         return;
     }
-    LogCoordinatorLine("hotword extraction started");
+    LogCoordinatorLine("hotword extraction started: text_len=" +
+                       std::to_string(final_text.size()) +
+                       " model=" + config_.llm_model +
+                       " hotwords=" + std::to_string(config_.asr_hotwords.size()));
     auto alive = alive_;
     refiner_.ExtractHotwordCandidates(
         final_text, config_.asr_hotwords,
@@ -1878,7 +1881,8 @@ void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& fin
                                " candidates=" + std::to_string(words.size()));
             if (!ok || words.empty()) return;
             RecordAndNotifyHotwordCandidates(words);
-        });
+        },
+        [](const std::string& line) { LogCoordinatorLine(line); });
 }
 
 void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words) {
@@ -1903,8 +1907,11 @@ void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<s
             joined += suggestions[i];
         }
         LogCoordinatorLine("hotword candidates suggested: " + joined);
-        ui_->ShowNotification(Tr(StringId::kHotwordCandidateNotifyTitle, language),
-                              joined + Tr(StringId::kHotwordCandidateNotifyBodySuffix, language));
+        const auto message = joined + Tr(StringId::kHotwordCandidateNotifyBodySuffix, language);
+        ui_->ShowNotification(Tr(StringId::kHotwordCandidateNotifyTitle, language), message);
+        // 托盘气球可能被系统勿扰/通知设置静默拦截（实测 Win+N 通知中心无记录），
+        // 悬浮窗临时消息保证用户必现；会话活跃时实现侧自动回退托盘。
+        ui_->ShowTimedMessage(message, 3000);
     }
 }
 
@@ -2190,6 +2197,15 @@ void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
         }
         if (waiting_for_audio_end_.load()) {
             SendFinalOggChunkIfNeeded(CurrentRecordingDurationSeconds());
+            return;
+        }
+        // final 音频块已发出后，剩余链路（ASR nostream final、翻译/精修）全在网络侧，
+        // 与 BLE 链路无关：断连不取消 ASR，让 final 到达后正常粘贴；若 final 始终不到，
+        // finalizing watchdog 按既有逻辑回退粘贴原文或报错。修复「流式已上屏文字，
+        // 但 BLE 僵尸链路断连把在途 ASR final 取消掉导致不粘贴」的数据丢失。
+        if (sent_final_audio_chunk_ && session_state_ == SessionState::kFinalizing) {
+            LogCoordinatorLine("device disconnected while awaiting ASR final; "
+                               "keeping network-side finalization alive");
             return;
         }
         asr_->Cancel();
