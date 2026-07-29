@@ -78,6 +78,8 @@ public:
     static ByteVector ShowImuDebugPayload(bool enabled);
     static ByteVector ImuWakeSensitivityPayload(int threshold_lsb);
     static ByteVector TapEnabledPayload(bool enabled);
+    static ByteVector EncoderLedColorPayload(std::string_view color);
+    static ByteVector EncoderRecordingGatePayload(bool enabled);
     static ByteVector TapSensitivityPayload(int level);
     static ByteVector AirMouseEnabledPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();

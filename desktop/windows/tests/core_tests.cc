@@ -110,6 +110,14 @@ public:
                                 const std::optional<std::string>& device_id) override {
         sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
     }
+    void SendEncoderLedColor(const std::string& color,
+                             const std::optional<std::string>& device_id) override {
+        sent_encoder_led_colors.push_back(std::pair{color, device_id});
+    }
+    void SendEncoderRecordingGate(bool enabled,
+                                  const std::optional<std::string>& device_id) override {
+        sent_encoder_recording_gates.push_back(std::pair{enabled, device_id});
+    }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -148,6 +156,8 @@ public:
     std::vector<std::pair<bool, std::optional<std::string>>> sent_tap_enabled;
     std::vector<SentTapSensitivity> sent_tap_sensitivities;
     std::vector<std::pair<bool, std::optional<std::string>>> sent_air_mouse_enabled;
+    std::vector<std::pair<std::string, std::optional<std::string>>> sent_encoder_led_colors;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_encoder_recording_gates;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -1565,6 +1575,47 @@ void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
 
     assert(ble_ptr->sent_tap_sensitivities.back().level == 3);
     assert(!ble_ptr->sent_tap_sensitivities.back().device_id.has_value());
+}
+
+void TestBleEncoderPayloads() {
+    auto led = BleProtocol::EncoderLedColorPayload("cyan");
+    assert(std::string(led.begin(), led.end()) == "{\"event\":\"encoder_led_color\",\"color\":\"cyan\"}");
+    auto led_off = BleProtocol::EncoderLedColorPayload("off");
+    assert(std::string(led_off.begin(), led_off.end()) == "{\"event\":\"encoder_led_color\",\"color\":\"off\"}");
+
+    auto gate_off = BleProtocol::EncoderRecordingGatePayload(false);
+    assert(std::string(gate_off.begin(), gate_off.end()) == "{\"event\":\"encoder_recording_gate\",\"enabled\":false}");
+    auto gate_on = BleProtocol::EncoderRecordingGatePayload(true);
+    assert(std::string(gate_on.begin(), gate_on.end()) == "{\"event\":\"encoder_recording_gate\",\"enabled\":true}");
+}
+
+void TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_led_color = "purple";
+    config.encoder_press_action = "key";  // 派生门控关闭
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 连接时全量重发：LED 颜色 + 门控（从 press_action 派生）。
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    assert(!ble_ptr->sent_encoder_led_colors.empty());
+    assert(ble_ptr->sent_encoder_led_colors.back().first == "purple");
+    assert(!ble_ptr->sent_encoder_recording_gates.empty());
+    assert(ble_ptr->sent_encoder_recording_gates.back().first == false);
+
+    // UpdateConfig 同样重发；press_action=recording 派生门控打开。
+    AppConfig updated = AppConfig::Defaults();
+    updated.encoder_led_color = "green";
+    updated.encoder_press_action = "recording";
+    coordinator.UpdateConfig(updated);
+    assert(ble_ptr->sent_encoder_led_colors.back().first == "green");
+    assert(ble_ptr->sent_encoder_recording_gates.back().first == true);
 }
 
 void TestAppConfigTapSensitivityRoundTrip() {
@@ -5957,6 +6008,8 @@ int main() {
     TestFirmwareManifestParsingAndVersionCompare();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
+    TestBleEncoderPayloads();
+    TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate();
     TestCoordinatorUpdateFirmwareFromFile();
     TestParseOtaCliArgs();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
