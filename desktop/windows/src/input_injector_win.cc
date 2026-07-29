@@ -72,6 +72,27 @@ void InputInjectorWin::SendArrowUp() {
     SendKey(VK_UP, false);
 }
 
+void InputInjectorWin::SendKeyCombo(const KeySpec& spec) {
+    if (spec.vk == 0) return;
+    // 修饰键按下。
+    for (UINT mod : spec.modifiers) {
+        SendKey(static_cast<WORD>(mod), true);
+    }
+    // 主键带 scan code：仅 wVk 时第三方输入法不响应（见 wechat_input_method_hotkey.cc）。
+    const WORD scan = static_cast<WORD>(MapVirtualKeyW(spec.vk, MAPVK_VK_TO_VSC));
+    INPUT input{};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = static_cast<WORD>(spec.vk);
+    input.ki.wScan = scan;
+    SendInput(1, &input, sizeof(INPUT));
+    input.ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, &input, sizeof(INPUT));
+    // 修饰键逆序释放。
+    for (auto it = spec.modifiers.rbegin(); it != spec.modifiers.rend(); ++it) {
+        SendKey(static_cast<WORD>(*it), false);
+    }
+}
+
 void InputInjectorWin::MoveMouse(int dx, int dy) {
     if (dx == 0 && dy == 0) return;
     INPUT input{};

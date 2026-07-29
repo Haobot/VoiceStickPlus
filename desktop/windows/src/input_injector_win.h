@@ -1,5 +1,6 @@
 #pragma once
 
+#include "key_spec.h"
 #include "voice_stick_coordinator.h"
 
 #include <Windows.h>
@@ -14,6 +15,7 @@ public:
     void SendEnter() override;
     void SendArrowDown() override;
     void SendArrowUp() override;
+    void SendKeyCombo(const KeySpec& spec) override;
     void MoveMouse(int dx, int dy) override;
     void ClickLeftButton() override;
 

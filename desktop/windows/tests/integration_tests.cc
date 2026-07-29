@@ -239,6 +239,7 @@ public:
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
     void SendArrowUp() override {}
+    void SendKeyCombo(const KeySpec&) override {}
     void MoveMouse(int dx, int dy) override {
         ++move_mouse_count;
         total_dx += dx;
