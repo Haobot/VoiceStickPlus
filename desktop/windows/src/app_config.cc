@@ -1,6 +1,7 @@
 #include "app_config.h"
 
 #include "ble_protocol.h"
+#include "key_spec.h"
 #include "log.h"
 #include "toml.hpp"
 
@@ -131,6 +132,15 @@ double DoubleValue(const std::string& value, double fallback) {
     } catch (...) {
         return fallback;
     }
+}
+
+bool IsValidEncoderButtonAction(const std::string& value) {
+    return value == "recording" || value == "key";
+}
+
+bool IsValidEncoderLedColor(const std::string& value) {
+    return value == "red" || value == "green" || value == "blue" || value == "yellow" ||
+           value == "purple" || value == "cyan" || value == "white" || value == "off";
 }
 
 std::string TomlEscape(std::string_view value) {
@@ -406,6 +416,13 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
     if (key == "encoder_to_arrow") config.encoder_to_arrow = BoolValue(value, config.encoder_to_arrow);
     if (key == "encoder_rotation_invert") config.encoder_rotation_invert = BoolValue(value, config.encoder_rotation_invert);
+    if (key == "encoder_rotate_cw_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_cw_key = value;
+    if (key == "encoder_rotate_ccw_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_ccw_key = value;
+    if (key == "encoder_led_color" && IsValidEncoderLedColor(value)) config.encoder_led_color = value;
+    if (key == "encoder_press_action" && IsValidEncoderButtonAction(value)) config.encoder_press_action = value;
+    if (key == "encoder_press_key" && (value.empty() || ParseKeySpec(value).has_value())) config.encoder_press_key = value;
+    if (key == "encoder_double_click_action" && IsValidEncoderButtonAction(value)) config.encoder_double_click_action = value;
+    if (key == "encoder_double_click_key" && ParseKeySpec(value).has_value()) config.encoder_double_click_key = value;
     if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
     if (key == "air_mouse_sensitivity_x") config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_x));
     if (key == "air_mouse_sensitivity_y") config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_y));
@@ -604,6 +621,13 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
         if (auto value = TomlBool(table, "encoder_to_arrow")) config.encoder_to_arrow = *value;
         if (auto value = TomlBool(table, "encoder_rotation_invert")) config.encoder_rotation_invert = *value;
+        if (auto value = TomlString(table, "encoder_rotate_cw_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_cw_key = *value;
+        if (auto value = TomlString(table, "encoder_rotate_ccw_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_ccw_key = *value;
+        if (auto value = TomlString(table, "encoder_led_color"); value && IsValidEncoderLedColor(*value)) config.encoder_led_color = *value;
+        if (auto value = TomlString(table, "encoder_press_action"); value && IsValidEncoderButtonAction(*value)) config.encoder_press_action = *value;
+        if (auto value = TomlString(table, "encoder_press_key"); value && (value->empty() || ParseKeySpec(*value).has_value())) config.encoder_press_key = *value;
+        if (auto value = TomlString(table, "encoder_double_click_action"); value && IsValidEncoderButtonAction(*value)) config.encoder_double_click_action = *value;
+        if (auto value = TomlString(table, "encoder_double_click_key"); value && ParseKeySpec(*value).has_value()) config.encoder_double_click_key = *value;
         if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
         if (auto value = TomlInt(table, "air_mouse_sensitivity_x")) config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(*value);
         if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
@@ -710,6 +734,13 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
     output << "encoder_to_arrow = " << (encoder_to_arrow ? "true" : "false") << "\n";
     output << "encoder_rotation_invert = " << (encoder_rotation_invert ? "true" : "false") << "\n";
+    output << "encoder_rotate_cw_key = \"" << TomlEscape(encoder_rotate_cw_key) << "\"\n";
+    output << "encoder_rotate_ccw_key = \"" << TomlEscape(encoder_rotate_ccw_key) << "\"\n";
+    output << "encoder_led_color = \"" << TomlEscape(encoder_led_color) << "\"\n";
+    output << "encoder_press_action = \"" << TomlEscape(encoder_press_action) << "\"\n";
+    output << "encoder_press_key = \"" << TomlEscape(encoder_press_key) << "\"\n";
+    output << "encoder_double_click_action = \"" << TomlEscape(encoder_double_click_action) << "\"\n";
+    output << "encoder_double_click_key = \"" << TomlEscape(encoder_double_click_key) << "\"\n";
     output << "tap_sensitivity = " << tap_sensitivity << "\n";
     output << "air_mouse_sensitivity_x = " << air_mouse_sensitivity_x << "\n";
     output << "air_mouse_sensitivity_y = " << air_mouse_sensitivity_y << "\n";
