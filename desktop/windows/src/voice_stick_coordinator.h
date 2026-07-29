@@ -76,6 +76,13 @@ public:
                                 const std::optional<std::string>& device_id) = 0;
     virtual void SendTapSensitivity(int level,
                                     const std::optional<std::string>& device_id) = 0;
+    // 编码器录音灯颜色（预设名 red/green/.../off）：固件侧 NVS 持久化，录音亮灯时使用。
+    virtual void SendEncoderLedColor(const std::string& color,
+                                     const std::optional<std::string>& device_id) = 0;
+    // 编码器录音门控：enabled=false 时固件对编码器按下只发按键事件不启动录音
+    // （桌面端把单击配为自定义按键时下发 false，从 encoder_press_action 派生）。
+    virtual void SendEncoderRecordingGate(bool enabled,
+                                          const std::optional<std::string>& device_id) = 0;
     // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
     virtual void SendAirMouseEnabled(bool enabled,
                                      const std::optional<std::string>& device_id) = 0;

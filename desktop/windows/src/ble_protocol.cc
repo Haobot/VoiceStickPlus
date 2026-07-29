@@ -216,6 +216,18 @@ ByteVector BleProtocol::TapEnabledPayload(bool enabled) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::EncoderLedColorPayload(std::string_view color) {
+    const auto json = std::string("{\"event\":\"encoder_led_color\",\"color\":\"") +
+                      JsonEscape(color) + "\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::EncoderRecordingGatePayload(bool enabled) {
+    const auto json = std::string("{\"event\":\"encoder_recording_gate\",\"enabled\":") +
+                      (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::TapSensitivityPayload(int level) {
     const auto json = std::string("{\"event\":\"tap_sensitivity\",\"level\":") +
                       std::to_string(level) + "}";

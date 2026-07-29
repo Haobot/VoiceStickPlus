@@ -102,6 +102,8 @@ void VoiceStickCoordinator::Start() {
         ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
         ble_->SendImuWakeSensitivity(
             ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
+        ble_->SendEncoderLedColor(config_.encoder_led_color, std::nullopt);
+        ble_->SendEncoderRecordingGate(config_.encoder_press_action == "recording", std::nullopt);
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -192,6 +194,8 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
     ble_->SendImuWakeSensitivity(
         ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
+    ble_->SendEncoderLedColor(config_.encoder_led_color, std::nullopt);
+    ble_->SendEncoderRecordingGate(config_.encoder_press_action == "recording", std::nullopt);
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
         asr_ = asr_factory_(config_);
