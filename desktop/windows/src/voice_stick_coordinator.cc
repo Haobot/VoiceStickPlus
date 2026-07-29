@@ -1105,6 +1105,13 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
         // 快速甩动视为一次手势：注入一次快速键后进入停转锁定，直到停稳才恢复识别。
         encoder_rotate_lockout_ = true;
         last_encoder_rotate_event_at_ = now;
+        if (encoder_pending_active_) {
+            // 加速段识别：挂起的慢速事件是本次快甩的起步，整段丢弃不注入。
+            encoder_pending_active_ = false;
+            encoder_pending_steps_ = 0;
+            if (on_encoder_rotate_pending_changed) on_encoder_rotate_pending_changed(false);
+            LogCoordinatorLine("encoder rotate pending discarded (acceleration) on VS-" + device_id);
+        }
         // 选键：快速档 → 普通档 → 方向键兜底；一次手势只注入一次。
         auto fast_spec = ParseKeySpec(fast_key);
         if (!fast_spec.has_value()) {
@@ -1132,14 +1139,44 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
         input_injector_->SendKeyCombo(*fast_spec);
         return;
     }
-    // 慢速路径：逐格注入普通按键。
-    const auto spec = ParseKeySpec(normal_key);
+    // 慢速路径：延迟判定——先挂起累计，判定窗内判快则整段丢弃（见 fast 分支），
+    // 到期由 EncoderRotateTick 或此处新事件检查冲刷。window<=0 时立即注入（旧行为）。
+    if (config_.encoder_rotate_decide_window_ms <= 0) {
+        InjectEncoderRotateSteps(effective_ccw, steps, normal_key, device_id);
+        return;
+    }
+    if (encoder_pending_active_) {
+        const bool expired =
+            now - encoder_pending_started_at_ >=
+            std::chrono::milliseconds(config_.encoder_rotate_decide_window_ms);
+        if (expired || encoder_pending_ccw_ != effective_ccw) {
+            // 旧 pending 到期或换向：不是本次快甩的加速段，立即冲刷。
+            FlushEncoderRotatePending(device_id);
+        }
+    }
+    if (!encoder_pending_active_) {
+        encoder_pending_active_ = true;
+        encoder_pending_ccw_ = effective_ccw;
+        encoder_pending_steps_ = 0;
+        encoder_pending_started_at_ = now;
+        if (on_encoder_rotate_pending_changed) on_encoder_rotate_pending_changed(true);
+    }
+    encoder_pending_steps_ = std::min(encoder_pending_steps_ + steps, kMaxEncoderRotateSteps);
+    LogCoordinatorLine("encoder rotate pending on VS-" + device_id + " direction=" + event.direction +
+                       " steps=" + std::to_string(steps) +
+                       " total=" + std::to_string(encoder_pending_steps_));
+}
+
+void VoiceStickCoordinator::InjectEncoderRotateSteps(bool ccw, std::uint32_t steps,
+                                                     const std::string& key_text,
+                                                     const std::string& device_id) {
+    const auto spec = ParseKeySpec(key_text);
     if (!spec.has_value()) {
         // 非法配置（绕过加载校验直改内存/未来新键名）回退方向键，保持可用。
-        LogCoordinatorLine("encoder rotate key invalid: \"" + normal_key +
+        LogCoordinatorLine("encoder rotate key invalid: \"" + key_text +
                            "\" on VS-" + device_id + ", fallback to arrows");
         for (std::uint32_t i = 0; i < steps; ++i) {
-            if (effective_ccw) {
+            if (ccw) {
                 input_injector_->SendArrowUp();
             } else {
                 input_injector_->SendArrowDown();
@@ -1148,12 +1185,33 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
         return;
     }
     // 与 tap 不同，旋转不回写 ui_state（无屏幕状态变化）。
-    LogCoordinatorLine("encoder rotate on VS-" + device_id + " direction=" + event.direction +
+    LogCoordinatorLine("encoder rotate inject on VS-" + device_id +
                        " steps=" + std::to_string(steps) +
-                       (raw_steps > steps ? " (clamped from " + std::to_string(raw_steps) + ")" : "") +
                        " -> " + spec->display_text);
     for (std::uint32_t i = 0; i < steps; ++i) {
         input_injector_->SendKeyCombo(*spec);
+    }
+}
+
+void VoiceStickCoordinator::FlushEncoderRotatePending(const std::string& device_id) {
+    if (!encoder_pending_active_) return;
+    const bool ccw = encoder_pending_ccw_;
+    const std::uint32_t steps = encoder_pending_steps_;
+    encoder_pending_active_ = false;
+    encoder_pending_steps_ = 0;
+    if (on_encoder_rotate_pending_changed) on_encoder_rotate_pending_changed(false);
+    const std::string& key = ccw ? config_.encoder_rotate_ccw_key
+                                 : config_.encoder_rotate_cw_key;
+    InjectEncoderRotateSteps(ccw, steps, key, device_id);
+}
+
+void VoiceStickCoordinator::EncoderRotateTick() {
+    if (!encoder_pending_active_) return;
+    if (config_.encoder_rotate_decide_window_ms <= 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - encoder_pending_started_at_ >=
+        std::chrono::milliseconds(config_.encoder_rotate_decide_window_ms)) {
+        FlushEncoderRotatePending("");
     }
 }
 

@@ -158,7 +158,11 @@ private:
     // 天然对 PBT_APMRESUMEAUTOMATIC 与紧随其后的 PBT_APMRESUMESUSPEND 去抖。
     static constexpr UINT_PTR kResumeRestartTimerId = 101;
     static constexpr UINT kResumeRestartDelayMs = 1500;
+    // 编码器慢速注入延迟判定的冲刷定时器：pending 挂起时启动，清空后停止。
+    static constexpr UINT_PTR kEncoderRotatePendingTimerId = 102;
+    static constexpr UINT kEncoderRotatePendingTickMs = 30;
     bool air_mouse_timer_active_ = false;
+    bool encoder_rotate_pending_timer_active_ = false;
     std::chrono::steady_clock::time_point last_battery_status_request_{};
 };
 

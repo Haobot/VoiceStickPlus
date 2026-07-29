@@ -283,6 +283,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             UpdateAirMouseSensitivityXLabel();
         } else if (reinterpret_cast<HWND>(l_param) == air_mouse_sensitivity_y_trackbar_) {
             UpdateAirMouseSensitivityYLabel();
+        } else if (reinterpret_cast<HWND>(l_param) == encoder_rotate_fast_threshold_trackbar_) {
+            UpdateEncoderFastThresholdLabel();
         }
         return TRUE;
     case WM_VSCROLL: {
@@ -938,14 +940,22 @@ void SettingsDialog::BuildControls() {
         });
     }
     {
+        // 快慢阈值滑杆 100~300 格/秒：右侧面板实时显示当前数值。
         HWND threshold_label = remember_label(CreateLabel(
             hwnd_, label_text(StringId::kSettingsEncoderRotateFastThreshold).c_str(),
             0, 0, label_w, Dp(20), instance_));
-        encoder_rotate_fast_threshold_edit_ = remember(CreateEdit(
-            hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateFastThreshold, instance_));
+        encoder_rotate_fast_threshold_trackbar_ = remember(CreateTrackbar(
+            hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28), kIdEncoderRotateFastThreshold, instance_));
+        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETRANGEMIN, FALSE, 100);
+        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETRANGEMAX, TRUE, 300);
+        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETTICFREQ, 20, 0);
+        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETPAGESIZE, 0, 20);
+        encoder_rotate_fast_threshold_value_label_ = remember(CreateLeftLabel(
+            hwnd_, L"200", 0, 0, Dp(30), Dp(20), instance_));
         add(row_h + Dp(10), {
             {threshold_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_rotate_fast_threshold_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+            {encoder_rotate_fast_threshold_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
+            {encoder_rotate_fast_threshold_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
         });
     }
     {
@@ -1282,8 +1292,10 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(encoder_rotation_invert_check_, BM_SETCHECK, config_.encoder_rotation_invert ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(encoder_rotate_cw_key_edit_, Utf16(config_.encoder_rotate_cw_key).c_str());
     SetWindowTextW(encoder_rotate_ccw_key_edit_, Utf16(config_.encoder_rotate_ccw_key).c_str());
-    SetWindowTextW(encoder_rotate_fast_threshold_edit_,
-                   Utf16(std::to_string(config_.encoder_rotate_fast_threshold)).c_str());
+    // 配置值可能超出滑杆范围（手改 config.toml），显示层钳到 100~300。
+    const int threshold_pos = std::clamp(config_.encoder_rotate_fast_threshold, 100, 300);
+    SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETPOS, TRUE, threshold_pos);
+    UpdateEncoderFastThresholdLabel();
     SetWindowTextW(encoder_rotate_cw_fast_key_edit_, Utf16(config_.encoder_rotate_cw_fast_key).c_str());
     SetWindowTextW(encoder_rotate_ccw_fast_key_edit_, Utf16(config_.encoder_rotate_ccw_fast_key).c_str());
     {
@@ -1431,18 +1443,9 @@ void SettingsDialog::SaveSettings() {
     } else {
         encoder_key_invalid = true;
     }
-    // 快慢阈值：正整数才写回，非法保留旧值并提示。
-    const std::string threshold_text = Utf8(GetWindowText(encoder_rotate_fast_threshold_edit_));
-    try {
-        const int threshold = std::stoi(threshold_text);
-        if (threshold > 0) {
-            config_.encoder_rotate_fast_threshold = threshold;
-        } else {
-            encoder_key_invalid = true;
-        }
-    } catch (...) {
-        encoder_key_invalid = true;
-    }
+    // 快慢阈值滑杆：位置即合法值（100~300），直接写回。
+    config_.encoder_rotate_fast_threshold =
+        static_cast<int>(SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_GETPOS, 0, 0));
     const std::string cw_fast_key = Utf8(GetWindowText(encoder_rotate_cw_fast_key_edit_));
     if (ParseKeySpec(cw_fast_key).has_value()) {
         config_.encoder_rotate_cw_fast_key = cw_fast_key;
@@ -1721,6 +1724,12 @@ void SettingsDialog::UpdateTapSensitivityLabel() {
     if (!tap_sensitivity_trackbar_ || !tap_sensitivity_value_label_) return;
     const int level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
     SetWindowTextW(tap_sensitivity_value_label_, std::to_wstring(level).c_str());
+}
+
+void SettingsDialog::UpdateEncoderFastThresholdLabel() {
+    if (!encoder_rotate_fast_threshold_trackbar_ || !encoder_rotate_fast_threshold_value_label_) return;
+    const int value = static_cast<int>(SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_GETPOS, 0, 0));
+    SetWindowTextW(encoder_rotate_fast_threshold_value_label_, std::to_wstring(value).c_str());
 }
 
 void SettingsDialog::UpdateAirMouseSensitivityXLabel() {

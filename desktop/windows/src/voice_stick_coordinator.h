@@ -251,6 +251,11 @@ public:
     void HandleGlobalHotkeyReleased();
     // 体感鼠标 60Hz tick：由平台层定时器驱动，对每个激活设备做速度环 step 并注入光标位移。
     void AirMouseTick();
+    // 编码器慢速注入延迟判定 tick：由平台层定时器驱动，判定窗到期且无快速事件时
+    // 冲刷挂起的慢速 pending（按累计格数补注普通按键）。新旋转事件到达时也会内部检查。
+    void EncoderRotateTick();
+    // 编码器慢速 pending 有无变化通知（true=有挂起，false=已清空）。平台层据此启停定时器。
+    std::function<void(bool)> on_encoder_rotate_pending_changed;
     // 体感鼠标激活态变化通知（true=有设备进入体感，false=全部退出）。平台层据此启停定时器。
     std::function<void(bool)> on_air_mouse_active_changed;
     // 查询某设备是否处于体感鼠标模式（供托盘菜单提示，避免用户不知情下主键变鼠标左键）。
@@ -469,6 +474,17 @@ private:
     // 才恢复慢/快识别。
     bool encoder_rotate_lockout_ = false;
     std::optional<std::chrono::steady_clock::time_point> last_encoder_rotate_event_at_;
+    // 编码器慢速注入延迟判定的挂起缓冲：慢速事件先累计在此，判定窗内判快则整段
+    // 丢弃（快甩加速段），到期由 EncoderRotateTick 或新事件检查冲刷。
+    bool encoder_pending_active_ = false;
+    bool encoder_pending_ccw_ = false;
+    std::uint32_t encoder_pending_steps_ = 0;
+    std::chrono::steady_clock::time_point encoder_pending_started_at_{};
+    // 冲刷慢速 pending：按累计格数逐格注入普通按键（非法回退方向键），并通知平台层。
+    void FlushEncoderRotatePending(const std::string& device_id);
+    // 按格数注入按键组合（key_spec 非法时回退方向键）。慢速立即路径与 pending 冲刷共用。
+    void InjectEncoderRotateSteps(bool ccw, std::uint32_t steps,
+                                  const std::string& key_text, const std::string& device_id);
     // 体感鼠标当前处于激活态的设备集合（按 device_id）。空表示无设备在体感态。
     std::set<std::string> air_mouse_active_devices_;
     // 体感鼠标每设备运动学状态（速度 v + 相对角度 theta + 最近 omega 采样与时间戳）。

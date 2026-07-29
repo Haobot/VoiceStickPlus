@@ -124,12 +124,17 @@ the firmware against its fixed 10 ms poll window, the desktop derives a
 per-window detent speed (`steps * 100` detents/s, immune to BLE jitter) and
 switches to fast-tier keys (`encoder_rotate_cw_fast_key` /
 `encoder_rotate_ccw_fast_key`, default PageDown/PageUp) when the speed
-reaches `encoder_rotate_fast_threshold` (default 400 detents/s). A fast
+reaches `encoder_rotate_fast_threshold` (default 200 detents/s, slider
+range 100–300 in the settings dialog). A fast
 flick is treated as a single gesture: it injects the fast key once and
 enters a spin-down lockout that suppresses all rotation output (including
 deceleration-phase slow events and direction changes) until the encoder
 comes to a stop — detected as a >250 ms silence with no rotation events —
-after which slow/fast recognition resumes.
+after which slow/fast recognition resumes. To avoid mis-injecting the
+acceleration phase of a fast flick as slow rotation, slow events are
+deferred by a short decision window (`encoder_rotate_decide_window_ms`,
+default 80 ms, 0 disables): pending slow steps are discarded if a fast
+event arrives within the window, otherwise flushed (batched) on expiry.
 
 ### Motion Frame
 

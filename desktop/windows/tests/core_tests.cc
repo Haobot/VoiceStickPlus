@@ -2459,7 +2459,10 @@ void TestEncoderRotateMapsDirectionToArrows() {
     auto asr = std::make_unique<FakeAsrClient>();
     FakeUi ui;
     FakeInputInjector input;
-    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证方向映射
+    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2484,6 +2487,8 @@ void TestEncoderRotateInvertFlipsDirection() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.encoder_rotation_invert = true;
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2548,7 +2553,10 @@ void TestEncoderRotateUnknownDirectionTreatedAsCw() {
     auto asr = std::make_unique<FakeAsrClient>();
     FakeUi ui;
     FakeInputInjector input;
-    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2571,6 +2579,7 @@ void TestEncoderRotateStepsClamped() {
     AppConfig config = AppConfig::Defaults();
     // 抬高快慢分档阈值，隔离快慢分档对注入按键的影响，专注验证 steps 钳制。
     config.encoder_rotate_fast_threshold = 100000;
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2729,6 +2738,8 @@ void TestEncoderRotateCustomKeys() {
     AppConfig config = AppConfig::Defaults();
     config.encoder_rotate_cw_key = "pagedown";
     config.encoder_rotate_ccw_key = "pageup";
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2751,6 +2762,8 @@ void TestEncoderRotateInvalidKeyFallsBackToArrows() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.encoder_rotate_cw_key = "bogus";  // 运行期非法
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2883,25 +2896,48 @@ void TestEncoderRotateSlowResumesAfterStop() {
     auto asr = std::make_unique<FakeAsrClient>();
     FakeUi ui;
     FakeInputInjector input;
-    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证停转锁定/恢复
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
 
     ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));  // 快：PageDown ×1，进入锁定
-    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 减速段：屏蔽
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 减速段：屏蔽
     assert(input.sent_key_combos.size() == 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));   // 停稳
-    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 慢转恢复：Down ×2
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 慢转恢复：Down ×1
 
-    assert(input.sent_key_combos.size() == 3);
+    assert(input.sent_key_combos.size() == 2);
     assert(input.sent_key_combos[0] == "PageDown");
     assert(input.sent_key_combos[1] == "Down");
-    assert(input.sent_key_combos[2] == "Down");
 }
 
 void TestEncoderRotateSlowStillUsesNormalKey() {
     // 慢速事件不受快速档配置影响：steps=2 → 200 格/秒 < 400，走普通按键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档，专注验证普通键路径
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
+}
+
+void TestEncoderRotateAccelerationDiscardedByFast() {
+    // 延迟判定（默认 80ms 窗）：加速段慢速事件先挂起，窗内判快后整段丢弃，
+    // 一次快甩只输出快速键，不夹带加速段的慢速注入。
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -2912,10 +2948,81 @@ void TestEncoderRotateSlowStillUsesNormalKey() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
 
-    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
-    assert(input.sent_key_combos.size() == 2);
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 加速段：挂起，不注入
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 加速段：挂起，不注入
+    assert(input.sent_key_combos.empty());
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));  // 判快：丢弃 pending，注入快速键
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");
+}
+
+void TestEncoderRotateSlowFlushesAfterDecisionWindow() {
+    // 真慢转：判定窗（80ms）内无快速事件，到期由 tick 冲刷，按累计格数注入。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.empty());  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 1);
     assert(input.sent_key_combos[0] == "Down");
-    assert(input.sent_key_combos[1] == "Down");
+}
+
+void TestEncoderRotateSlowContinuousBatches() {
+    // 连续慢转：pending 跨事件累计，到期一次性补注全部格数（总量不变）。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 3);
+    assert(std::all_of(input.sent_key_combos.begin(), input.sent_key_combos.end(),
+                       [](const std::string& s) { return s == "Up"; }));
+}
+
+void TestEncoderRotatePendingDirectionChangeFlushesOld() {
+    // pending 期间换向：旧方向 pending 立即冲刷（不是加速段），新方向重新挂起。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));   // cw pending 1 格
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));  // 换向：冲刷 cw，ccw 挂起
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Down");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "Up");
 }
 
 void TestEncoderRotateFastInvalidKeyFallsBackToNormalKey() {
@@ -2941,9 +3048,10 @@ void TestEncoderRotateFastInvalidKeyFallsBackToNormalKey() {
 void TestAppConfigEncoderFastSettingsRoundTrip() {
     // 默认值等价当前硬编码行为。
     const AppConfig defaults = AppConfig::Defaults();
-    assert(defaults.encoder_rotate_fast_threshold == 400);
+    assert(defaults.encoder_rotate_fast_threshold == 200);
     assert(defaults.encoder_rotate_cw_fast_key == "pagedown");
     assert(defaults.encoder_rotate_ccw_fast_key == "pageup");
+    assert(defaults.encoder_rotate_decide_window_ms == 80);
 
     // 保存/加载往返。
     auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_fast_test.toml";
@@ -2952,11 +3060,13 @@ void TestAppConfigEncoderFastSettingsRoundTrip() {
     config.encoder_rotate_fast_threshold = 250;
     config.encoder_rotate_cw_fast_key = "ctrl+pagedown";
     config.encoder_rotate_ccw_fast_key = "ctrl+pageup";
+    config.encoder_rotate_decide_window_ms = 120;
     config.Save(temp);
     AppConfig loaded = AppConfig::Load(temp);
     assert(loaded.encoder_rotate_fast_threshold == 250);
     assert(loaded.encoder_rotate_cw_fast_key == "ctrl+pagedown");
     assert(loaded.encoder_rotate_ccw_fast_key == "ctrl+pageup");
+    assert(loaded.encoder_rotate_decide_window_ms == 120);
     std::filesystem::remove(temp);
 }
 
@@ -2969,11 +3079,13 @@ void TestAppConfigEncoderFastSettingsInvalidFallback() {
         out << "encoder_rotate_fast_threshold = -5\n";
         out << "encoder_rotate_cw_fast_key = \"bogus\"\n";
         out << "encoder_rotate_ccw_fast_key = \"ctrl+\"\n";
+        out << "encoder_rotate_decide_window_ms = -10\n";
     }
     AppConfig loaded = AppConfig::Load(temp);
-    assert(loaded.encoder_rotate_fast_threshold == 400);
+    assert(loaded.encoder_rotate_fast_threshold == 200);
     assert(loaded.encoder_rotate_cw_fast_key == "pagedown");
     assert(loaded.encoder_rotate_ccw_fast_key == "pageup");
+    assert(loaded.encoder_rotate_decide_window_ms == 80);
     std::filesystem::remove(temp);
 }
 
@@ -6673,6 +6785,10 @@ int main() {
     TestEncoderRotateLockoutSuppressesDeceleration();
     TestEncoderRotateSlowResumesAfterStop();
     TestEncoderRotateSlowStillUsesNormalKey();
+    TestEncoderRotateAccelerationDiscardedByFast();
+    TestEncoderRotateSlowFlushesAfterDecisionWindow();
+    TestEncoderRotateSlowContinuousBatches();
+    TestEncoderRotatePendingDirectionChangeFlushesOld();
     TestEncoderRotateFastInvalidKeyFallsBackToNormalKey();
     TestAppConfigEncoderFastSettingsRoundTrip();
     TestAppConfigEncoderFastSettingsInvalidFallback();
