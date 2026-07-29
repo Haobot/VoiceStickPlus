@@ -39,6 +39,8 @@ struct StateEvent {
     // 语义映射在桌面端完成）；steps 为该帧内同向累计格数（>=1）。非旋转事件为空。
     std::string direction;
     std::optional<std::uint32_t> steps;
+    // 事件来源标签：编码器按钮事件为 "encoder"；物理键/远程键省略该字段（空串）。
+    std::string source;
 };
 
 struct FirmwareOtaStateEvent {

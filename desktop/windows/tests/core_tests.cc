@@ -794,6 +794,27 @@ void TestEncoderRotateStateParsing() {
     assert(!sparse_event->steps.has_value());
 }
 
+void TestStateEventSourceParsing() {
+    // 编码器按键事件带 source 字段。
+    const std::string json = "{\"event\":\"button_click\",\"button\":\"primary\",\"duration_ms\":131,\"source\":\"encoder\"}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "button_click");
+    assert(event->source == "encoder");
+
+    // 物理键事件不带 source：解析为空串（缺省=物理键）。
+    const std::string plain = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
+    ByteVector plain_frame = {1, 0x10};
+    AppendLe16(plain_frame, static_cast<std::uint16_t>(plain.size()));
+    plain_frame.insert(plain_frame.end(), plain.begin(), plain.end());
+    auto plain_event = BleProtocol::ParseStateEvent(plain_frame);
+    assert(plain_event.has_value());
+    assert(plain_event->source.empty());
+}
+
 void TestOggMuxer() {
     OggOpusMuxer muxer(16000, 1);
     ByteVector opus = {1, 2, 3, 4};
@@ -5888,6 +5909,7 @@ int main() {
     TestBleControlPayloads();
     TestStateParsing();
     TestEncoderRotateStateParsing();
+    TestStateEventSourceParsing();
     TestMotionFrameParsing();
     TestAirMouseStepVelocityFollowsOmega();
     TestAirMouseStepStopsWhenStale();
