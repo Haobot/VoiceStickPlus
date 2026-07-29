@@ -54,6 +54,7 @@ configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 
 add_library(voicestick_core
     src/air_mouse_kin.cc
+    src/key_spec.cc
     src/app_config.cc
     src/asr_protocol.cc
     src/audio_opus_decoder.cc

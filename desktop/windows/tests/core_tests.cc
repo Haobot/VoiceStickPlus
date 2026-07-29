@@ -12,6 +12,7 @@
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
 #include "hotword_candidate_miner.h"
+#include "key_spec.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
@@ -2125,6 +2126,53 @@ void TestInputInjectorArrowUpFakeWiring() {
     input.SendArrowUp();
     assert(input.arrow_up_count == 1);
     assert(input.arrow_down_count == 0);
+}
+
+void TestKeySpecParse() {
+    // 单键：方向键/enter/单字符/f 键/音量键。
+    auto down = ParseKeySpec("down");
+    assert(down.has_value());
+    assert(down->modifiers.empty());
+    assert(down->vk == VK_DOWN);
+    assert(down->display_text == "Down");
+
+    auto up = ParseKeySpec("UP");  // 大小写不敏感
+    assert(up.has_value() && up->vk == VK_UP);
+
+    auto enter = ParseKeySpec(" enter ");  // 前后空白容忍
+    assert(enter.has_value() && enter->vk == VK_RETURN && enter->display_text == "Enter");
+
+    auto v = ParseKeySpec("v");
+    assert(v.has_value() && v->vk == 'V' && v->display_text == "V");
+
+    auto f5 = ParseKeySpec("f5");
+    assert(f5.has_value() && f5->vk == VK_F5 && f5->display_text == "F5");
+
+    auto vol = ParseKeySpec("volumeup");
+    assert(vol.has_value() && vol->vk == VK_VOLUME_UP);
+
+    auto pgdn = ParseKeySpec("pagedown");
+    assert(pgdn.has_value() && pgdn->vk == VK_NEXT);
+
+    // 修饰键组合：display_text 修饰键固定 Ctrl/Alt/Shift/Win 序。
+    auto combo = ParseKeySpec("win+shift+ctrl+v");
+    assert(combo.has_value());
+    assert(combo->vk == 'V');
+    assert(combo->modifiers.size() == 3);
+    assert(combo->modifiers[0] == VK_CONTROL);
+    assert(combo->modifiers[1] == VK_SHIFT);
+    assert(combo->modifiers[2] == VK_LWIN);
+    assert(combo->display_text == "Ctrl+Shift+Win+V");
+
+    auto alt_f4 = ParseKeySpec("alt+f4");
+    assert(alt_f4.has_value() && alt_f4->vk == VK_F4 && alt_f4->display_text == "Alt+F4");
+
+    // 非法：未知键名、仅修饰键、空串、重复主键。
+    assert(!ParseKeySpec("bogus").has_value());
+    assert(!ParseKeySpec("ctrl").has_value());
+    assert(!ParseKeySpec("").has_value());
+    assert(!ParseKeySpec("ctrl+").has_value());
+    assert(!ParseKeySpec("a+b").has_value());
 }
 
 void TestAppConfigEncoderRoundTrip() {
@@ -5826,6 +5874,7 @@ int main() {
     TestTapThrottledWithin500ms();
     TestTapThrottleRecoversAfter500ms();
     TestInputInjectorArrowUpFakeWiring();
+    TestKeySpecParse();
     TestAppConfigEncoderRoundTrip();
     TestEncoderRotateMapsDirectionToArrows();
     TestEncoderRotateInvertFlipsDirection();
