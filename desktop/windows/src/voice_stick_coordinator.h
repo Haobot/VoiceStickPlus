@@ -464,6 +464,11 @@ private:
     std::chrono::steady_clock::time_point active_session_started_at_;
     // 敲击注入方向键的节流时间戳：两次注入最短间隔 500ms，避免连击导致光标连续下移。
     std::chrono::steady_clock::time_point last_tap_inject_at_{};
+    // 编码器快速手势后的停转锁定：快甩注入一次快速键后进入锁定，屏蔽所有旋转输出
+    // （含减速段慢速事件与换向事件），直到无旋转事件静默超过停转窗口判定停稳，
+    // 才恢复慢/快识别。
+    bool encoder_rotate_lockout_ = false;
+    std::optional<std::chrono::steady_clock::time_point> last_encoder_rotate_event_at_;
     // 体感鼠标当前处于激活态的设备集合（按 device_id）。空表示无设备在体感态。
     std::set<std::string> air_mouse_active_devices_;
     // 体感鼠标每设备运动学状态（速度 v + 相对角度 theta + 最近 omega 采样与时间戳）。

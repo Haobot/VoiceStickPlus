@@ -257,6 +257,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsEncoderRotationInvert)] = "Invert rotation direction";
     table[Index(StringId::kSettingsEncoderRotateCwKey)] = "Clockwise key";
     table[Index(StringId::kSettingsEncoderRotateCcwKey)] = "Counter-clockwise key";
+    table[Index(StringId::kSettingsEncoderRotateFastThreshold)] = "Fast threshold (detents/s)";
+    table[Index(StringId::kSettingsEncoderRotateCwFastKey)] = "Fast clockwise key";
+    table[Index(StringId::kSettingsEncoderRotateCcwFastKey)] = "Fast counter-clockwise key";
     table[Index(StringId::kSettingsEncoderLedColor)] = "Recording LED color";
     table[Index(StringId::kSettingsEncoderPressAction)] = "Press action";
     table[Index(StringId::kSettingsEncoderDoubleClickAction)] = "Double-click action";
@@ -514,6 +517,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsEncoderRotationInvert)] = "旋转方向翻转";
     table[Index(StringId::kSettingsEncoderRotateCwKey)] = "顺时针按键";
     table[Index(StringId::kSettingsEncoderRotateCcwKey)] = "逆时针按键";
+    table[Index(StringId::kSettingsEncoderRotateFastThreshold)] = "快慢阈值（格/秒）";
+    table[Index(StringId::kSettingsEncoderRotateCwFastKey)] = "快速顺时针按键";
+    table[Index(StringId::kSettingsEncoderRotateCcwFastKey)] = "快速逆时针按键";
     table[Index(StringId::kSettingsEncoderLedColor)] = "录音灯颜色";
     table[Index(StringId::kSettingsEncoderPressAction)] = "单击动作";
     table[Index(StringId::kSettingsEncoderDoubleClickAction)] = "双击动作";

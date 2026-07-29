@@ -1,5 +1,6 @@
 #include "voice_stick_coordinator.h"
 
+#include "encoder_speed.h"
 #include "localization.h"
 #include "log.h"
 
@@ -1075,12 +1076,67 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     // encoder_rotation_invert=true 时翻转。direction 非 "ccw"（含空串/未知值）按 cw 处理，
     // 与固件只发 cw|ccw 的约定一致。
     const bool effective_ccw = (event.direction == "ccw") != config_.encoder_rotation_invert;
-    const std::string& key_text = effective_ccw ? config_.encoder_rotate_ccw_key
-                                                : config_.encoder_rotate_cw_key;
-    const auto spec = ParseKeySpec(key_text);
+    // 快慢分档：窗口格速 = steps * 100（格/秒，固件 10ms 窗口计数，不受 BLE 抖动影响），
+    // >= encoder_rotate_fast_threshold 走快速档按键，否则走普通按键。
+    const bool fast = EncoderRotateIsFast(steps, config_.encoder_rotate_fast_threshold);
+    const std::string& normal_key = effective_ccw ? config_.encoder_rotate_ccw_key
+                                                  : config_.encoder_rotate_cw_key;
+    const std::string& fast_key = effective_ccw ? config_.encoder_rotate_ccw_fast_key
+                                                : config_.encoder_rotate_cw_fast_key;
+    // 停转窗口：连续旋转时事件间隔 <=10ms（加 BLE 抖动亦远小于此值），静默超过
+    // 250ms 无旋转事件即可靠判定停稳。
+    constexpr auto kEncoderRotateStopGap = std::chrono::milliseconds(250);
+    const auto now = std::chrono::steady_clock::now();
+    if (encoder_rotate_lockout_) {
+        const bool stopped = !last_encoder_rotate_event_at_.has_value() ||
+                             now - *last_encoder_rotate_event_at_ > kEncoderRotateStopGap;
+        if (!stopped) {
+            // 锁定中：屏蔽一切旋转输出（含快甩减速段的慢速事件与换向事件）。
+            last_encoder_rotate_event_at_ = now;
+            LogCoordinatorLine("encoder rotate suppressed (lockout) on VS-" + device_id +
+                               " direction=" + event.direction +
+                               " steps=" + std::to_string(steps));
+            return;
+        }
+        // 已停稳：退出锁定，本事件走正常识别。
+        encoder_rotate_lockout_ = false;
+    }
+    if (fast) {
+        // 快速甩动视为一次手势：注入一次快速键后进入停转锁定，直到停稳才恢复识别。
+        encoder_rotate_lockout_ = true;
+        last_encoder_rotate_event_at_ = now;
+        // 选键：快速档 → 普通档 → 方向键兜底；一次手势只注入一次。
+        auto fast_spec = ParseKeySpec(fast_key);
+        if (!fast_spec.has_value()) {
+            // 快速档按键非法（绕过加载校验直改内存/未来新键名）回退普通按键。
+            LogCoordinatorLine("encoder rotate fast key invalid: \"" + fast_key +
+                               "\" on VS-" + device_id + ", fallback to normal key");
+            fast_spec = ParseKeySpec(normal_key);
+        }
+        if (!fast_spec.has_value()) {
+            // 非法配置（绕过加载校验直改内存/未来新键名）回退方向键，保持可用。
+            LogCoordinatorLine("encoder rotate key invalid: \"" + normal_key +
+                               "\" on VS-" + device_id + ", fallback to arrows");
+            if (effective_ccw) {
+                input_injector_->SendArrowUp();
+            } else {
+                input_injector_->SendArrowDown();
+            }
+            return;
+        }
+        // 与 tap 不同，旋转不回写 ui_state（无屏幕状态变化）。
+        LogCoordinatorLine("encoder rotate on VS-" + device_id + " direction=" + event.direction +
+                           " steps=" + std::to_string(steps) +
+                           (raw_steps > steps ? " (clamped from " + std::to_string(raw_steps) + ")" : "") +
+                           " [fast] -> " + fast_spec->display_text);
+        input_injector_->SendKeyCombo(*fast_spec);
+        return;
+    }
+    // 慢速路径：逐格注入普通按键。
+    const auto spec = ParseKeySpec(normal_key);
     if (!spec.has_value()) {
         // 非法配置（绕过加载校验直改内存/未来新键名）回退方向键，保持可用。
-        LogCoordinatorLine("encoder rotate key invalid: \"" + key_text +
+        LogCoordinatorLine("encoder rotate key invalid: \"" + normal_key +
                            "\" on VS-" + device_id + ", fallback to arrows");
         for (std::uint32_t i = 0; i < steps; ++i) {
             if (effective_ccw) {
