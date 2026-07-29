@@ -2220,6 +2220,63 @@ void TestAppConfigEncoderRoundTrip() {
     std::filesystem::remove(temp);
 }
 
+void TestAppConfigEncoderSettingsRoundTrip() {
+    // 默认值等价当前硬编码行为。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.encoder_rotate_cw_key == "down");
+    assert(defaults.encoder_rotate_ccw_key == "up");
+    assert(defaults.encoder_led_color == "red");
+    assert(defaults.encoder_press_action == "recording");
+    assert(defaults.encoder_press_key.empty());
+    assert(defaults.encoder_double_click_action == "key");
+    assert(defaults.encoder_double_click_key == "enter");
+
+    // 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_settings_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_cw_key = "pageup";
+    config.encoder_rotate_ccw_key = "pagedown";
+    config.encoder_led_color = "cyan";
+    config.encoder_press_action = "key";
+    config.encoder_press_key = "ctrl+z";
+    config.encoder_double_click_action = "recording";
+    config.encoder_double_click_key = "ctrl+enter";
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.encoder_rotate_cw_key == "pageup");
+    assert(loaded.encoder_rotate_ccw_key == "pagedown");
+    assert(loaded.encoder_led_color == "cyan");
+    assert(loaded.encoder_press_action == "key");
+    assert(loaded.encoder_press_key == "ctrl+z");
+    assert(loaded.encoder_double_click_action == "recording");
+    assert(loaded.encoder_double_click_key == "ctrl+enter");
+    std::filesystem::remove(temp);
+}
+
+void TestAppConfigEncoderSettingsInvalidFallback() {
+    // 非法值回退默认：未知 action/颜色/按键语法。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_invalid_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "encoder_rotate_cw_key = \"bogus\"\n";
+        out << "encoder_led_color = \"pink\"\n";
+        out << "encoder_press_action = \"fly\"\n";
+        out << "encoder_press_key = \"ctrl+\"\n";
+        out << "encoder_double_click_action = \"fly\"\n";
+        out << "encoder_double_click_key = \"a+b\"\n";
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.encoder_rotate_cw_key == "down");
+    assert(loaded.encoder_led_color == "red");
+    assert(loaded.encoder_press_action == "recording");
+    assert(loaded.encoder_press_key.empty());
+    assert(loaded.encoder_double_click_action == "key");
+    assert(loaded.encoder_double_click_key == "enter");
+    std::filesystem::remove(temp);
+}
+
 void TestEncoderRotateMapsDirectionToArrows() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -5904,6 +5961,8 @@ int main() {
     TestInputInjectorKeyComboFakeWiring();
     TestKeySpecParse();
     TestAppConfigEncoderRoundTrip();
+    TestAppConfigEncoderSettingsRoundTrip();
+    TestAppConfigEncoderSettingsInvalidFallback();
     TestEncoderRotateMapsDirectionToArrows();
     TestEncoderRotateInvertFlipsDirection();
     TestEncoderRotateDisabledWhenConfigOff();
