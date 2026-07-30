@@ -122,9 +122,16 @@ air-mouse mode, mirroring the `tap_to_arrow` gating. The master switch is
 as a defensive bound against malformed frames. Since `steps` is counted by
 the firmware against its fixed 10 ms poll window, the desktop derives a
 per-window detent speed (`steps * 100` detents/s, immune to BLE jitter) and
-switches to fast-tier keys (`encoder_rotate_cw_fast_key` /
-`encoder_rotate_ccw_fast_key`, default PageDown/PageUp) when the speed
-reaches `encoder_rotate_fast_threshold` (default 200 detents/s, slider
+feeds it into an EWMA speed estimator (`EncoderRotateSpeedEstimator`,
+alpha = 0.5 per event, cold-started from zero on each new gesture after a
+>250 ms silence; see `desktop/windows/src/encoder_speed.h`). The smoothing
+is required because a single 10 ms window quantizes speed to multiples of
+100 detents/s — with a raw per-window compare, every threshold between
+100 and 200 behaves identically and an occasional 2-step window during
+normal rotation falsely triggers the fast tier. The desktop switches to
+fast-tier keys (`encoder_rotate_cw_fast_key` /
+`encoder_rotate_ccw_fast_key`, default PageDown/PageUp) when the smoothed
+speed reaches `encoder_rotate_fast_threshold` (default 200 detents/s, slider
 range 100–300 in the settings dialog). A fast
 flick is treated as a single gesture: it injects the fast key once and
 enters a spin-down lockout that suppresses all rotation output (including
