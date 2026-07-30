@@ -8,6 +8,7 @@
 #include "default_audio_device_controller.h"
 #include "debug_audio_recorder.h"
 #include "device_switch_state.h"
+#include "encoder_speed.h"
 #include "firmware_manifest.h"
 #include "hotword_candidate_miner.h"
 #include "key_spec.h"
@@ -474,6 +475,9 @@ private:
     // 才恢复慢/快识别。
     bool encoder_rotate_lockout_ = false;
     std::optional<std::chrono::steady_clock::time_point> last_encoder_rotate_event_at_;
+    // 编码器旋转测速估计器（EWMA 平滑单窗口格速，见 encoder_speed.h）：消除单窗口
+    // 100 格/秒量化导致的阈值附近非线性跳变。锁定屏蔽期间不喂样本，新手势自动冷启动。
+    EncoderRotateSpeedEstimator encoder_speed_estimator_;
     // 编码器慢速注入延迟判定的挂起缓冲：慢速事件先累计在此，判定窗内判快则整段
     // 丢弃（快甩加速段），到期由 EncoderRotateTick 或新事件检查冲刷。
     bool encoder_pending_active_ = false;

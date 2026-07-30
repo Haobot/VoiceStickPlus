@@ -1076,13 +1076,6 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     // encoder_rotation_invert=true 时翻转。direction 非 "ccw"（含空串/未知值）按 cw 处理，
     // 与固件只发 cw|ccw 的约定一致。
     const bool effective_ccw = (event.direction == "ccw") != config_.encoder_rotation_invert;
-    // 快慢分档：窗口格速 = steps * 100（格/秒，固件 10ms 窗口计数，不受 BLE 抖动影响），
-    // >= encoder_rotate_fast_threshold 走快速档按键，否则走普通按键。
-    const bool fast = EncoderRotateIsFast(steps, config_.encoder_rotate_fast_threshold);
-    const std::string& normal_key = effective_ccw ? config_.encoder_rotate_ccw_key
-                                                  : config_.encoder_rotate_cw_key;
-    const std::string& fast_key = effective_ccw ? config_.encoder_rotate_ccw_fast_key
-                                                : config_.encoder_rotate_cw_fast_key;
     // 停转窗口：连续旋转时事件间隔 <=10ms（加 BLE 抖动亦远小于此值），静默超过
     // 250ms 无旋转事件即可靠判定停稳。
     constexpr auto kEncoderRotateStopGap = std::chrono::milliseconds(250);
@@ -1092,6 +1085,7 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
                              now - *last_encoder_rotate_event_at_ > kEncoderRotateStopGap;
         if (!stopped) {
             // 锁定中：屏蔽一切旋转输出（含快甩减速段的慢速事件与换向事件）。
+            // 不喂测速估计器：减速段样本与新手势无关，静默 250ms 后估计器自动冷启动。
             last_encoder_rotate_event_at_ = now;
             LogCoordinatorLine("encoder rotate suppressed (lockout) on VS-" + device_id +
                                " direction=" + event.direction +
@@ -1101,6 +1095,15 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
         // 已停稳：退出锁定，本事件走正常识别。
         encoder_rotate_lockout_ = false;
     }
+    // 快慢分档：单窗口 steps*100 量化到 100 格/秒（阈值 100~200 间判定无差别、偶发
+    // 2 步窗即误判快），故用 EWMA 平滑估计测速（见 encoder_speed.h）；估计值
+    // >= encoder_rotate_fast_threshold 走快速档按键，否则走普通按键。
+    const double speed_sps = encoder_speed_estimator_.AddSample(now, steps);
+    const bool fast = EncoderRotateIsFast(speed_sps, config_.encoder_rotate_fast_threshold);
+    const std::string& normal_key = effective_ccw ? config_.encoder_rotate_ccw_key
+                                                  : config_.encoder_rotate_cw_key;
+    const std::string& fast_key = effective_ccw ? config_.encoder_rotate_ccw_fast_key
+                                                : config_.encoder_rotate_cw_fast_key;
     if (fast) {
         // 快速甩动视为一次手势：注入一次快速键后进入停转锁定，直到停稳才恢复识别。
         encoder_rotate_lockout_ = true;
@@ -1135,6 +1138,7 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
         LogCoordinatorLine("encoder rotate on VS-" + device_id + " direction=" + event.direction +
                            " steps=" + std::to_string(steps) +
                            (raw_steps > steps ? " (clamped from " + std::to_string(raw_steps) + ")" : "") +
+                           " speed=" + std::to_string(static_cast<int>(speed_sps)) + "sps" +
                            " [fast] -> " + fast_spec->display_text);
         input_injector_->SendKeyCombo(*fast_spec);
         return;

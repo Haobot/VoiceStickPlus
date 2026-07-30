@@ -2775,13 +2775,53 @@ void TestEncoderRotateInvalidKeyFallsBackToArrows() {
 }
 
 void TestEncoderRotateSpeedThreshold() {
-    // 判速纯函数：固件 10ms 窗口聚合，steps*100 即窗口格速（格/秒）。
-    assert(!EncoderRotateIsFast(1, 400));   // 100 格/秒，慢
-    assert(!EncoderRotateIsFast(3, 400));   // 300 格/秒，慢
-    assert(EncoderRotateIsFast(4, 400));    // 400 格/秒，边界判快
-    assert(EncoderRotateIsFast(8, 400));    // 快甩
-    assert(EncoderRotateIsFast(2, 200));    // 自定义低阈值边界
-    assert(!EncoderRotateIsFast(8, 0));     // 阈值 <=0 视为关闭，永不判快
+    // 判快纯函数：对 EWMA 平滑估计值比较阈值；threshold<=0 视为关闭，永不判快。
+    assert(!EncoderRotateIsFast(99.9, 100));
+    assert(EncoderRotateIsFast(100.0, 100));   // 边界判快
+    assert(EncoderRotateIsFast(350.0, 300));
+    assert(!EncoderRotateIsFast(299.9, 300));
+    assert(!EncoderRotateIsFast(800.0, 0));    // 阈值 <=0 永不判快
+    assert(!EncoderRotateIsFast(800.0, -1));
+}
+
+void TestEncoderRotateSpeedEstimatorEwma() {
+    // EWMA 平滑测速：单窗口格速 steps*100 按 α=0.5 指数平均，冷启动从零。
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    EncoderRotateSpeedEstimator est;
+    // 持续 1 步/窗（100 格/秒）：估计渐近 100，永不达到。
+    assert(est.AddSample(t0, 1) == 50.0);
+    assert(est.AddSample(t0 + std::chrono::milliseconds(10), 1) == 75.0);
+    double v = 0.0;
+    for (int i = 0; i < 20; ++i) {
+        v = est.AddSample(t0 + std::chrono::milliseconds(10 * (i + 2)), 1);
+    }
+    assert(v > 99.0 && v < 100.0);
+    // 偶发 2 步窗口只把估计抬到 ~100，不会瞬间翻倍（阈值 110 不再误判）。
+    EncoderRotateSpeedEstimator est2;
+    assert(est2.AddSample(t0, 2) == 100.0);  // 孤立 2 步窗：冷启动减半
+    // 持续 2 步/窗（真实 200 格/秒）：估计 2~3 窗后越过 150 区间。
+    assert(est2.AddSample(t0 + std::chrono::milliseconds(10), 2) == 150.0);
+    assert(est2.AddSample(t0 + std::chrono::milliseconds(20), 2) == 175.0);
+    // 快甩首窗 8 步：估计 400，默认阈值 200 下立即判快。
+    EncoderRotateSpeedEstimator est3;
+    assert(est3.AddSample(t0, 8) == 400.0);
+    assert(EncoderRotateIsFast(est3.AddSample(t0 + std::chrono::milliseconds(10), 8), 200));
+}
+
+void TestEncoderRotateSpeedEstimatorGestureGapResets() {
+    // 静默超过停转窗口（250ms）视为新手势：估计值清零冷启动，旧手势高速不残留。
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    EncoderRotateSpeedEstimator est;
+    est.AddSample(t0, 8);
+    est.AddSample(t0 + std::chrono::milliseconds(10), 8);
+    // 300ms 静默后 1 步：若未清零估计会远超 50。
+    assert(est.AddSample(t0 + std::chrono::milliseconds(310), 1) == 50.0);
+    // Reset 同样清零。
+    est.AddSample(t0 + std::chrono::milliseconds(320), 8);
+    est.Reset();
+    assert(est.AddSample(t0 + std::chrono::milliseconds(330), 1) == 50.0);
 }
 
 void TestEncoderRotateFastBurstUsesFastKey() {
@@ -2976,6 +3016,56 @@ void TestEncoderRotateSlowFlushesAfterDecisionWindow() {
 
     assert(input.sent_key_combos.size() == 1);
     assert(input.sent_key_combos[0] == "Down");
+}
+
+void TestEncoderRotateIsolatedTwoStepNudgeStaysSlow() {
+    // 低阈值（110 格/秒）下的孤立 2 步轻拨：EWMA 冷启动把单窗 200 格/秒减半到 100，
+    // 不误判快速档；判定窗到期按普通按键补注 2 格。修复单窗口量化导致的
+    // 「阈值 100~200 间手感相同、稍微快一点就触发快速档」的非线性。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_fast_threshold = 110;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 估计 100 < 110：挂起
+    assert(input.sent_key_combos.empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);  // 普通按键补注 2 格，无 PageDown
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
+}
+
+void TestEncoderRotateSustainedTwoStepRotationGoesFast() {
+    // 同样阈值 110：持续 2 步/窗（真实 200 格/秒）第二窗估计即达 150 ≥ 110，
+    // 判快并丢弃起步 pending——阈值在 100~300 全程获得近线性单调手感。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.encoder_rotate_fast_threshold = 110;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 估计 100 < 110：挂起
+    assert(input.sent_key_combos.empty());
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 估计 150 ≥ 110：判快
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 锁定中：屏蔽
+    assert(input.sent_key_combos.size() == 1);
 }
 
 void TestEncoderRotateSlowContinuousBatches() {
@@ -6778,6 +6868,8 @@ int main() {
     TestEncoderRotateCustomKeys();
     TestEncoderRotateInvalidKeyFallsBackToArrows();
     TestEncoderRotateSpeedThreshold();
+    TestEncoderRotateSpeedEstimatorEwma();
+    TestEncoderRotateSpeedEstimatorGestureGapResets();
     TestEncoderRotateFastBurstUsesFastKey();
     TestEncoderRotateDirectionChangeAfterStopStartsNewGesture();
     TestEncoderRotateFastBurstInjectsOncePerGesture();
@@ -6786,6 +6878,8 @@ int main() {
     TestEncoderRotateSlowResumesAfterStop();
     TestEncoderRotateSlowStillUsesNormalKey();
     TestEncoderRotateAccelerationDiscardedByFast();
+    TestEncoderRotateIsolatedTwoStepNudgeStaysSlow();
+    TestEncoderRotateSustainedTwoStepRotationGoesFast();
     TestEncoderRotateSlowFlushesAfterDecisionWindow();
     TestEncoderRotateSlowContinuousBatches();
     TestEncoderRotatePendingDirectionChangeFlushesOld();
