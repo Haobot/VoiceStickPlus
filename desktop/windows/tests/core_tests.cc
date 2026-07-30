@@ -3247,10 +3247,9 @@ void TestEncoderSourceSecondaryFallsBackToPhysicalPath() {
     ble_ptr->sent_ui_states.clear();
     ble_ptr->on_state_event("5A74", event);
 
-    // 与物理侧键单击一致：空闲态进入体感鼠标（断言方式对齐 TestCoordinatorAirMouseToggleViaSecondary）。
-    assert(!ble_ptr->sent_air_mouse_enabled.empty());
-    assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
-    assert(HasUiState(*ble_ptr, "air_mouse", "5A74"));
+    // 与物理侧键单击一致：空闲态不再进入体感鼠标（断言方式对齐 TestCoordinatorAirMouseToggleViaSecondary）。
+    assert(ble_ptr->sent_air_mouse_enabled.empty());
+    assert(!HasUiState(*ble_ptr, "air_mouse", "5A74"));
     assert(input.sent_key_combos.empty());
 }
 
@@ -3284,7 +3283,7 @@ void TestEncoderConfigUpdateTakesEffectImmediately() {
     assert(input.sent_key_combos[0] == "Ctrl+Z");
 }
 
-// 侧键单击在空闲态进入体感鼠标模式，再次单击退出（体感优先决策）。
+// 空闲态侧键单击不再进入体感鼠标；体感态下侧键单击退出（体感优先决策）。
 void TestCoordinatorAirMouseToggleViaSecondary() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -3298,15 +3297,21 @@ void TestCoordinatorAirMouseToggleViaSecondary() {
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     ble_ptr->sent_air_mouse_enabled.clear();
 
-    // 空闲态侧键单击 → 进入体感，下发 air_mouse_enabled:true + ui_state:air_mouse。
-    // ui_state=air_mouse 让设备显示体感态提示，避免用户不知情下主键变鼠标左键。
+    // 空闲态侧键单击 → 无操作：不进入体感，无 air_mouse_enabled 下发、无 air_mouse ui_state。
     ble_ptr->sent_ui_states.clear();
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(ble_ptr->sent_air_mouse_enabled.empty());
+    assert(!HasUiState(*ble_ptr, "air_mouse", "5A74"));
+
+    // 直接切换进入体感，下发 air_mouse_enabled:true + ui_state:air_mouse。
+    // ui_state=air_mouse 让设备显示体感态提示，避免用户不知情下主键变鼠标左键。
+    ble_ptr->sent_ui_states.clear();
+    coordinator.ToggleAirMouse("5A74");
     assert(!ble_ptr->sent_air_mouse_enabled.empty());
     assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
     assert(HasUiState(*ble_ptr, "air_mouse", "5A74"));
 
-    // 再次侧键单击 → 退出体感，下发 air_mouse_enabled:false + ui_state:ready。
+    // 体感态下侧键单击 → 退出体感，下发 air_mouse_enabled:false + ui_state:ready。
     ble_ptr->sent_ui_states.clear();
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
@@ -3327,7 +3332,7 @@ void TestCoordinatorAirMousePrimaryClickIsLeftButton() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入体感态。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
 
     // 主键单击 → 左键点击，不启动 ASR/录音。
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 5));
@@ -3357,7 +3362,7 @@ void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
     assert(input.move_mouse_count == 0);
 
     // 进入体感态后 motion 不直接注入（由 AirMouseTick 驱动）。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
     assert(input.move_mouse_count == 0);
 
@@ -3384,7 +3389,7 @@ void TestCoordinatorAirMouseTickMovesCursor() {
 
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     for (int i = 0; i < 20; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
         coordinator.AirMouseTick();
@@ -3409,7 +3414,7 @@ void TestCoordinatorAirMouseStateResetOnToggle() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入并累积角度。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     for (int i = 0; i < 20; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
         coordinator.AirMouseTick();
@@ -3418,7 +3423,7 @@ void TestCoordinatorAirMouseStateResetOnToggle() {
 
     // 退出再进入：状态应复位。
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     const int count_before = input.move_mouse_count;
     // 无 motion，立即 tick：v=0、omega=0，应产生零位移（不调 MoveMouse）。
     coordinator.AirMouseTick();
@@ -3444,11 +3449,11 @@ void TestCoordinatorAirMouseActiveChangedCallback() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入体感 → 回调 true。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     assert(callback_called);
     assert(last_active);
 
-    // 退出 → 回调 false。
+    // 退出 → 回调 false（体感态下侧键单击退出）。
     callback_called = false;
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
     assert(callback_called);
@@ -3471,7 +3476,7 @@ void TestCoordinatorAirMouseGatesRecordingAndTap() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入体感态。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
 
     // 主键按下不启动录音。
     ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
@@ -3498,7 +3503,7 @@ void TestCoordinatorAirMouseResetOnDisconnect() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入体感态 → 回调 true。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     assert(last_active);
 
     // 断连 → 体感态必须清理（回调 false），否则残留激活会吞掉后续主键录音。
@@ -3532,7 +3537,7 @@ void TestCoordinatorAirMouseResetOnForget() {
 
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     assert(last_active);
 
     // forget → 体感态必须清理（回调 false + 下发 false 通知固件停表）。
@@ -3560,7 +3565,7 @@ void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
 
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     for (int i = 0; i < 50; ++i) {  // 0.8s @60Hz
         ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});  // 真机典型手腕转动（40dps @ REPORT_GAIN=4）
         coordinator.AirMouseTick();
@@ -3585,7 +3590,7 @@ void TestCoordinatorAirMouseSustainedRunBounded() {
 
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
     // 阶段 1：匀速转动 0.5s（omega=40dps 恒定），光标达到稳态速度。
     for (int i = 0; i < 30; ++i) {
         ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
@@ -3625,7 +3630,7 @@ void TestCoordinatorAirMouseStopsWhenOmegaZero() {
 
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
 
     // 转动 0.5s：光标移动。
     for (int i = 0; i < 30; ++i) {
@@ -3667,7 +3672,7 @@ void TestCoordinatorAngleMovesOnlyWhileRotating() {
 
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
 
     // 阶段 1：转动 0.5s。
     for (int i = 0; i < 30; ++i) {
@@ -3713,7 +3718,7 @@ void TestCoordinatorAirMouseSustainedRotationConstantSpeed() {
 
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
 
     // 预热 0.3s 让速度环收敛到稳态。
     for (int i = 0; i < 18; ++i) {
@@ -3785,7 +3790,7 @@ void TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse() {
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     // 进入体感态。
-    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
 
     // 体感态下双击被忽略：无恢复、体感仍开启。
     ble_ptr->on_state_event("5A74", DoubleClickEvent("secondary"));

@@ -261,6 +261,8 @@ public:
     std::function<void(bool)> on_air_mouse_active_changed;
     // 查询某设备是否处于体感鼠标模式（供托盘菜单提示，避免用户不知情下主键变鼠标左键）。
     bool IsAirMouseActive(const std::string& device_id) const;
+    // 切换某设备的体感鼠标模式。返回切换后的状态（true=进入，false=退出）。
+    bool ToggleAirMouse(const std::string& device_id);
     // 是否有活跃会话（录音/识别/确认中等）。会话期间浮窗被状态机占用，
     // 热词处理等旁路反馈应改走托盘气泡，避免踩掉确认倒计时。
     bool HasActiveSession() const { return session_state_ != SessionState::kReady; }
@@ -322,8 +324,6 @@ private:
     void HandleTapEvent(const StateEvent& event, const std::string& device_id);
     void HandleEncoderRotate(const StateEvent& event, const std::string& device_id);
     void HandleMotionEvent(const MotionEvent& event, const std::string& device_id);
-    // 体感鼠标模式是否对该设备开启。返回切换后的状态（true=进入，false=退出）。
-    bool ToggleAirMouse(const std::string& device_id);
     void HandleSecondaryButtonClick(const std::string& device_id);
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);

@@ -543,6 +543,11 @@ void SettingsDialog::BuildControls() {
                    std::function<bool()> vis = std::function<bool()>()) {
         layout_.push_back({advance, std::move(parts), std::move(vis)});
     };
+
+    // 高级/调试设置总开关：false 时热词处理、输出目标、体感灵敏度、编码器、
+    // 调试音频、IMU 调试等区块不加入布局表（控件仍创建，保存时按加载值回写，
+    // config.toml 手改依然生效）。
+    constexpr bool kShowAdvancedSettings = false;
     // 分组标题：左对齐加粗文本，宽度与“标签+控件”区域对齐。
     auto section_title = [&](StringId id) {
         HWND t = remember_title(CreateSectionTitle(hwnd_, TrW(id, language).c_str(),
@@ -723,14 +728,14 @@ void SettingsDialog::BuildControls() {
     }
 
     // ===== 热词处理 =====
-    section_title(StringId::kSettingsSectionHotwordProcess);
+    if (kShowAdvancedSettings) section_title(StringId::kSettingsSectionHotwordProcess);
     {
         HWND hp_lbl = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         hotword_process_check_ = remember(CreateButton(hwnd_,
             TrW(StringId::kSettingsHotwordProcessEnable, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdHotwordProcessEnable, instance_,
             BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {hp_lbl, Dp(10), Dp(3), label_w, Dp(20)},
             {hotword_process_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -742,14 +747,14 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         hotword_process_prompt_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(64),
                                                                     kIdHotwordProcessPromptEdit, instance_));
-        add(Dp(70), {
+        if (kShowAdvancedSettings) add(Dp(70), {
             {hotword_process_prompt_label_, Dp(10), Dp(3), label_w, Dp(20)},
             {hotword_process_prompt_edit_, ctrl_x, 0, ctrl_w, Dp(64)},
         }, [this]() {
             return SendMessageW(hotword_process_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         });
     }
-    separator();
+    if (kShowAdvancedSettings) separator();
 
     // ===== 输出 =====
     section_title(StringId::kSettingsSectionOutput);
@@ -765,7 +770,7 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetSubtitle, language).c_str()));
         SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetWechatInputMethod, language).c_str()));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {ot_label, Dp(10), Dp(3), label_w, Dp(20)},
             {output_target_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
         });
@@ -870,7 +875,7 @@ void SettingsDialog::BuildControls() {
         SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETTICFREQ, 1, 0);
         SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETPAGESIZE, 0, 1);
         air_mouse_sensitivity_x_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {ax_label, Dp(10), Dp(3), label_w, Dp(20)},
             {air_mouse_sensitivity_x_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
             {air_mouse_sensitivity_x_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
@@ -887,7 +892,7 @@ void SettingsDialog::BuildControls() {
         SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETTICFREQ, 1, 0);
         SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETPAGESIZE, 0, 1);
         air_mouse_sensitivity_y_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {ay_label, Dp(10), Dp(3), label_w, Dp(20)},
             {air_mouse_sensitivity_y_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
             {air_mouse_sensitivity_y_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
@@ -896,13 +901,13 @@ void SettingsDialog::BuildControls() {
     separator();
 
     // ===== 编码器 =====
-    section_title(StringId::kSettingsSectionEncoder);
+    if (kShowAdvancedSettings) section_title(StringId::kSettingsSectionEncoder);
     {
         HWND eta_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         encoder_to_arrow_check_ = remember(CreateButton(
             hwnd_, TrW(StringId::kSettingsEncoderToArrow, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdEncoderToArrow, instance_, BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {eta_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_to_arrow_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -912,7 +917,7 @@ void SettingsDialog::BuildControls() {
         encoder_rotation_invert_check_ = remember(CreateButton(
             hwnd_, TrW(StringId::kSettingsEncoderRotationInvert, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdEncoderRotationInvert, instance_, BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {eri_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotation_invert_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -923,7 +928,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_cw_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                           kIdEncoderRotateCwKey, instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {cw_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_cw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
@@ -934,7 +939,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_ccw_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                            kIdEncoderRotateCcwKey, instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {ccw_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_ccw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
@@ -952,7 +957,7 @@ void SettingsDialog::BuildControls() {
         SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETPAGESIZE, 0, 20);
         encoder_rotate_fast_threshold_value_label_ = remember(CreateLeftLabel(
             hwnd_, L"200", 0, 0, Dp(30), Dp(20), instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {threshold_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_fast_threshold_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
             {encoder_rotate_fast_threshold_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
@@ -964,7 +969,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_cw_fast_key_edit_ = remember(CreateEdit(
             hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCwFastKey, instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {cw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_cw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
@@ -975,7 +980,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_ccw_fast_key_edit_ = remember(CreateEdit(
             hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCcwFastKey, instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {ccw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_ccw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
@@ -996,7 +1001,7 @@ void SettingsDialog::BuildControls() {
             SendMessageW(encoder_led_color_combo_, CB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(TrW(id, language).c_str()));
         }
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {led_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_led_color_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
         });
@@ -1012,13 +1017,13 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionRecording, language).c_str()));
         SendMessageW(encoder_press_action_combo_, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionKey, language).c_str()));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {pa_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_press_action_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
         });
         encoder_press_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                       kIdEncoderPressKey, instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {encoder_press_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
     }
@@ -1033,17 +1038,17 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionKey, language).c_str()));
         SendMessageW(encoder_double_click_action_combo_, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionRecording, language).c_str()));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {da_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_double_click_action_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
         });
         encoder_double_click_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                              kIdEncoderDoubleClickKey, instance_));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {encoder_double_click_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
     }
-    separator();
+    if (kShowAdvancedSettings) separator();
 
     // ===== 系统 =====
     section_title(StringId::kSettingsSectionSystem);
@@ -1062,14 +1067,9 @@ void SettingsDialog::BuildControls() {
         selection_hotword_check_ = remember(CreateButton(
             hwnd_, TrW(StringId::kSettingsSelectionHotword, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdSelectionHotword, instance_, BS_AUTOCHECKBOX));
-        // 提示行：解释划词行为，避免用户误以为全局鼠标钩子是隐私风险。
-        HWND sh_hint = remember_label(CreateLeftLabel(
-            hwnd_, TrW(StringId::kSettingsSelectionHotwordHint, language).c_str(),
-            0, 0, ctrl_w, Dp(16), instance_));
-        add(row_h + Dp(26), {
+        add(row_h + Dp(10), {
             {sh_label, Dp(10), Dp(3), label_w, Dp(20)},
             {selection_hotword_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-            {sh_hint, ctrl_x, Dp(26), ctrl_w, Dp(16)},
         });
     }
     {
@@ -1077,7 +1077,7 @@ void SettingsDialog::BuildControls() {
         debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(),
                                                    0, 0, ctrl_w, Dp(22), kIdDebugAudio, instance_,
                                                    BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {da_label, Dp(10), Dp(3), label_w, Dp(20)},
             {debug_audio_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -1087,7 +1087,7 @@ void SettingsDialog::BuildControls() {
         show_imu_debug_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsShowImuDebug, language).c_str(),
                                                       0, 0, ctrl_w, Dp(22), kIdShowImuDebug, instance_,
                                                       BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
+        if (kShowAdvancedSettings) add(row_h + Dp(10), {
             {sid_label, Dp(10), Dp(3), label_w, Dp(20)},
             {show_imu_debug_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -1099,11 +1099,26 @@ void SettingsDialog::BuildControls() {
                                              Dp(24), kIdDebugDirEdit, instance_, ES_READONLY));
         HWND choose_btn = remember(CreateButton(hwnd_, TrW(StringId::kSettingsChooseDir, language).c_str(),
                                                 0, 0, Dp(75), Dp(24), kIdChooseDir, instance_));
-        add(row_h + Dp(20), {
+        if (kShowAdvancedSettings) add(row_h + Dp(20), {
             {dd_label, Dp(10), Dp(3), label_w, Dp(20)},
             {debug_dir_edit_, ctrl_x, 0, ctrl_w - Dp(80), Dp(24)},
             {choose_btn, ctrl_x + ctrl_w - Dp(75), 0, Dp(75), Dp(24)},
         });
+    }
+
+    // 未加入布局表的控件（kShowAdvancedSettings 关闭的区块）创建时仍带 WS_VISIBLE，
+    // Relayout 只处理表内条目、不会隐藏它们，这里统一隐藏避免残留显示在 (0,0)。
+    // 保存/取消按钮在此之后才创建，不在本循环范围内。
+    {
+        std::vector<HWND> laid_out;
+        for (const auto& entry : layout_) {
+            for (const auto& part : entry.parts) laid_out.push_back(part.control);
+        }
+        for (HWND control : all_controls_) {
+            if (std::find(laid_out.begin(), laid_out.end(), control) == laid_out.end()) {
+                ShowWindow(control, SW_HIDE);
+            }
+        }
     }
 
     const int btn_w = Dp(80);
