@@ -283,7 +283,8 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
   - L0 语料：`gen_corpus.py` / `verify_corpus.py` / `build_spiffs_image.py` 生成测试 PCM 语料并打包成 SPIFFS 镜像刷入固件。
   - L3 固件回放：`run_l3_firmware.py` 用独立 bleak BLE 连接（VoiceStickApp 必须先断开，StickS3 BLE 独占单连接），下发 `test_playback` 回放 PCM 驱动录音，订阅 `audio_tx` 收 Opus 帧统计首帧延迟与帧数，配合串口日志 `playback set` 确认回放生效。
   - L4 微信输入法：`run_l4_wechat.py` + `loopback_capture.py` 用 WASAPI 抓取 CABLE Output PCM，验证 Opus 解码->渲染->CABLE->微信识别链路（半自动，需人工按设备键说话并确认结果）。
-  - 辅助：`scan_ble.py`（BLE 扫描）、`read_serial.py`（串口日志读取）、`replay_tencent_asr.py`（腾讯 ASR 回放）、`spectrogram_server.py`（调试音频频谱分析页，v2.1.2 新增）。
+  - 辅助：`scan_ble.py`（BLE 扫描）、`read_serial.py`（串口日志读取）、`replay_tencent_asr.py`（腾讯 ASR 回放，仅适用桌面端一页一帧调试 ogg，ffmpeg 语料会报 4007）、`spectrogram_server.py`（调试音频频谱分析页，v2.1.2 新增）。
+  - ASR 离线评测基准：`run_asr_bench.py --provider all` 对 corpus 全部语料（31 条 7 类别）实时节奏回放腾讯+火山 ASR（默认 3 轮压力测试），采集 CER/首 partial 延迟/尾延迟/跨轮抖动，产出 `bench_results/*.json|.md` 对比报告；协议实现库在 `asr_bench/`（纯 stdlib，凭据只读 config.toml）。基线结论见 `Doc/Expe/asr-bench-baseline-2026-08-01.md`。
   - 依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`。
   - 设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。
 

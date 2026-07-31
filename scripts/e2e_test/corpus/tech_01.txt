@@ -1,0 +1,1 @@
+这个 API 的 SDK 需要支持 WebSocket 长连接。
