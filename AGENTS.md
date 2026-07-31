@@ -351,6 +351,6 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - 修改 `VERSION` 时，必须同步更新 `firmware/version.txt`。
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
 - `Doc/` 下分四个子目录：`Ref/`（协议、发布流程、ASR 帧格式、低功耗等参考，另有 `OpenViking.md`）、`Plan/`（设计方案，大写 P，不再用 `Doc/Rfc/`）、`Guide/`（火山/腾讯 ASR WebSocket 接入、API 概览、air-mouse 调参等第三方服务接入指南）、`Expe/`（经验教训记录）。
-- `scripts/` 下除各平台构建脚本外，还有 `probe_asr_websocket_ping.py`（ASR 连通性探测）、`update-appcast.py`（生成 `appcast.xml`）、`idf_cli.py`（Windows 上包装 `idf.py`）、`png_to_lvgl_argb_bin.py` / `slice_cat_sprites.py` / `tune_cat_sprites.py`（LVGL 图片资源处理）、`scripts/e2e_test/`（L0–L4 真机验证，见上节测试策略）等辅助脚本。
+- `scripts/` 下除各平台构建脚本外，还有 `probe_asr_websocket_ping.py`（ASR 连通性探测）、`probe_hotword_extraction.py`（离线探测 LLM 热词提炼链路，打印原始响应与候选过滤原因）、`update-appcast.py`（生成 `appcast.xml`）、`idf_cli.py`（Windows 上包装 `idf.py`）、`png_to_lvgl_argb_bin.py` / `slice_cat_sprites.py` / `tune_cat_sprites.py`（LVGL 图片资源处理）、`scripts/e2e_test/`（L0–L4 真机验证，见上节测试策略）等辅助脚本。
 - MiniEncoderC 编码器键是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）仍是唯一唤醒键。
 - Grove 口 5V 保持不启用（固件不动 PMIC BOOST_EN），MiniEncoderC 由顶部 Hat 排针供电。
