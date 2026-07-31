@@ -12,7 +12,9 @@ import hashlib
 import hmac
 import json
 import random
+import select
 import socket
+import ssl
 import time
 import urllib.parse
 import uuid
@@ -80,15 +82,10 @@ def run_clip(ogg_path: Path, *, secret_id: str, secret_key: str, appid: str,
         for pkt in frames:
             send_ws_frame(sock, 0x2, wrap_frame(pkt))
             t_audio_end = time.monotonic()
-            # 非阻塞读已到的结果
-            sock.settimeout(0.001)
-            while True:
-                try:
-                    opcode, payload = recv_ws_frame(sock)
-                except Exception:  # noqa: BLE001 - 无数据可读
-                    break
-                _handle_message(res, opcode, payload, final_text, t_start)
-            sock.settimeout(timeout)
+            # 只收已到达的结果：select 零超时轮询，不做带超时的阻塞 recv。
+            # （旧实现每帧 settimeout(1ms) 后 recv，Windows 定时器粒度使每帧
+            # 多花约 10-15ms，长音频总发送时间被拉长 50% 以上。）
+            _drain_available(sock, res, final_text, t_start)
             time.sleep(pace_s)
 
         send_ws_frame(sock, 0x1, '{"type":"end"}')
@@ -121,6 +118,30 @@ def run_clip(ogg_path: Path, *, secret_id: str, secret_key: str, appid: str,
             except OSError:
                 pass
     return res
+
+
+def _sock_readable(sock: socket.socket) -> bool:
+    """零超时检查是否有数据可读（含 SSL 层已解密缓冲）。"""
+    try:
+        if isinstance(sock, ssl.SSLSocket) and sock.pending() > 0:
+            return True
+        r, _, _ = select.select([sock], [], [], 0)
+        return bool(r)
+    except (OSError, ValueError):
+        return False
+
+
+def _drain_available(sock: socket.socket, res: ClipResult,
+                     final_text: list[str], t_start: float) -> None:
+    """收干已到达的服务端消息；无数据时立即返回，不阻塞等待新数据。"""
+    while _sock_readable(sock):
+        # 帧已开始到达，给有限时间收完整帧（正常整帧随 TCP 一起到，不会等满）
+        sock.settimeout(2.0)
+        try:
+            opcode, payload = recv_ws_frame(sock)
+        except Exception:  # noqa: BLE001 - 半帧超时/连接异常，停止收
+            return
+        _handle_message(res, opcode, payload, final_text, t_start)
 
 
 def _handle_message(res: ClipResult, opcode: int, payload: bytes,

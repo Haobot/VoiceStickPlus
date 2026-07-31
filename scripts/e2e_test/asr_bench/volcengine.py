@@ -25,13 +25,14 @@ EVENT_FINISH_SESSION = 102
 EVENT_TASK_REQUEST = 200
 
 
-def session_payload(resource_id: str) -> bytes:
+def session_payload(resource_id: str, *, result_type: str = "full",
+                    enable_nonstream: bool = True, enable_ddc: bool = True) -> bytes:
     request = {
         "model_name": "bigmodel",
-        "enable_nonstream": True,
+        "enable_nonstream": enable_nonstream,
         "show_utterances": False,
-        "result_type": "full",
-        "enable_ddc": True,
+        "result_type": result_type,
+        "enable_ddc": enable_ddc,
         "resource_id": resource_id,
     }
     payload = {
@@ -42,8 +43,10 @@ def session_payload(resource_id: str) -> bytes:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def connection_payload(resource_id: str) -> bytes:
-    inner = session_payload(resource_id)
+def connection_payload(resource_id: str, *, result_type: str = "full",
+                       enable_nonstream: bool = True, enable_ddc: bool = True) -> bytes:
+    inner = session_payload(resource_id, result_type=result_type,
+                            enable_nonstream=enable_nonstream, enable_ddc=enable_ddc)
     return b'{"namespace":"BidirectionalASR","event":0,"req_params":' + inner + b"}"
 
 
@@ -93,8 +96,14 @@ def parse_event_frame(payload: bytes) -> tuple[int, str] | None:
 def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURCE_ID,
              url: str = VOLCENGINE_URL, timeout: float = 30.0,
              duration_s: float = 0.0, clip_id: str = "", round_no: int = 0,
-             category: str = "", reference: str = "") -> ClipResult:
-    """回放单条 ogg 到火山 ASR，返回结构化结果。异常不外抛，记入 error。"""
+             category: str = "", reference: str = "",
+             result_type: str = "full", enable_nonstream: bool = True,
+             enable_ddc: bool = True) -> ClipResult:
+    """回放单条 ogg 到火山 ASR，返回结构化结果。异常不外抛，记入 error。
+
+    result_type / enable_nonstream / enable_ddc 默认与桌面端一致，
+    消融实验（run_volc_ablation.py）通过覆盖这三个参数对比配置。
+    """
     res = ClipResult(clip_id=clip_id, provider="volcengine", round=round_no,
                      category=category, reference=reference, duration_s=duration_s)
     ogg = ogg_path.read_bytes()
@@ -114,11 +123,13 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
         finals: list[str] = []
         partials: list[str] = []
 
+        payload_kw = dict(result_type=result_type, enable_nonstream=enable_nonstream,
+                          enable_ddc=enable_ddc)
         send_ws_frame(sock, 0x2, make_event_frame(0x01, EVENT_START_CONNECTION, "", 0x01,
-                                                  connection_payload(resource_id)))
+                                                  connection_payload(resource_id, **payload_kw)))
         time.sleep(0.2)
         send_ws_frame(sock, 0x2, make_event_frame(0x01, EVENT_START_SESSION, session_id, 0x01,
-                                                  session_payload(resource_id)))
+                                                  session_payload(resource_id, **payload_kw)))
         time.sleep(0.3)
 
         # 按真实时长实时节奏分包发送（200ms 一档）。
@@ -138,7 +149,7 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
             time.sleep(pace_s)
 
         send_ws_frame(sock, 0x2, make_event_frame(0x01, EVENT_FINISH_SESSION, session_id, 0x01,
-                                                  connection_payload(resource_id)))
+                                                  connection_payload(resource_id, **payload_kw)))
 
         deadline = time.monotonic() + timeout
         session_finished = False
@@ -187,7 +198,7 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
 
         try:
             send_ws_frame(sock, 0x2, make_event_frame(0x01, EVENT_FINISH_CONNECTION, "", 0x01,
-                                                      connection_payload(resource_id)))
+                                                      connection_payload(resource_id, **payload_kw)))
         except OSError:
             pass
 
