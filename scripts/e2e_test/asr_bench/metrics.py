@@ -1,6 +1,7 @@
 """评测指标：CER（字准）、延迟分位数、跨轮稳定性统计。"""
 from __future__ import annotations
 
+import re
 import unicodedata
 from statistics import median
 
@@ -12,9 +13,63 @@ _ZH_DIGITS = {
     "五": "5", "六": "6", "七": "7", "八": "8", "九": "9",
 }
 
+# 中文数字短语解析（十/百/千/万 与「百分之X」）：八十->80、一百二十三->123、
+# 百分之八十->80。在单字映射之前做，消除「百分之八十」vs「80%」这类表示形式
+# 差异造成的假错误；解析失败或纯逐字数字（如「二零二六」年份/手机号）时保留
+# 原文，交给单字映射兜底。
+_ZH_NUM_VAL = {ch: int(d) for ch, d in _ZH_DIGITS.items()}
+_ZH_NUM_UNITS = {"十": 10, "百": 100, "千": 1000}
+_ZH_NUM_RUN_RE = re.compile(r"百分之[零一二两三四五六七八九十百千万]+|[零一二两三四五六七八九十百千万]+")
+
+
+def _parse_zh_section(text: str) -> int | None:
+    """解析不带「万」的中文数字段（如 一百二十三 -> 123）；无法解析返回 None。"""
+    total = 0
+    num = 0
+    for ch in text:
+        if ch in _ZH_NUM_VAL:
+            num = _ZH_NUM_VAL[ch]
+        elif ch in _ZH_NUM_UNITS:
+            if num == 0:
+                num = 1  # 「十五」中「十」前省略的「一」
+            total += num * _ZH_NUM_UNITS[ch]
+            num = 0
+        else:
+            return None
+    return total + num
+
+
+def _parse_zh_number(text: str) -> int | None:
+    """解析中文数字短语（支持到万）；无法解析返回 None。"""
+    parts = text.split("万")
+    if len(parts) > 2 or not parts[0]:
+        return None
+    if len(parts) == 2:
+        high = _parse_zh_section(parts[0])
+        low = _parse_zh_section(parts[1]) if parts[1] else 0
+        if high is None or low is None:
+            return None
+        return high * 10000 + low
+    return _parse_zh_section(text)
+
+
+def _zh_num_phrase_repl(match: re.Match) -> str:
+    s = match.group(0)
+    if s.startswith("百分之"):
+        value = _parse_zh_number(s[3:])
+        return str(value) if value is not None else s
+    if not any(ch in _ZH_NUM_UNITS for ch in s):
+        return s  # 纯逐字数字（如「二零二六」年份、手机号），交给单字映射兜底
+    if not any(ch in _ZH_NUM_VAL for ch in s):
+        return s  # 纯单位字（如「百货」的「百」），不是数字
+    value = _parse_zh_number(s)
+    return str(value) if value is not None else s
+
 
 def normalize_text(text: str, zh_digits: bool = True) -> str:
     """归一化用于 CER 比较：去标点/空白/大小写/全半角，可选中文数字转阿拉伯。"""
+    if zh_digits:
+        text = _ZH_NUM_RUN_RE.sub(_zh_num_phrase_repl, text)
     out = []
     for ch in text:
         ch = unicodedata.normalize("NFKC", ch)
@@ -140,5 +195,6 @@ def per_clip_detail(results: list[ClipResult]) -> list[dict]:
             "final_text": r.final_text,
             "first_partial_latency_ms": r.first_partial_latency_ms,
             "tail_latency_ms": r.tail_latency_ms,
+            "total_latency_ms": r.total_latency_ms,
         })
     return detail

@@ -284,7 +284,7 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
   - L3 固件回放：`run_l3_firmware.py` 用独立 bleak BLE 连接（VoiceStickApp 必须先断开，StickS3 BLE 独占单连接），下发 `test_playback` 回放 PCM 驱动录音，订阅 `audio_tx` 收 Opus 帧统计首帧延迟与帧数，配合串口日志 `playback set` 确认回放生效。
   - L4 微信输入法：`run_l4_wechat.py` + `loopback_capture.py` 用 WASAPI 抓取 CABLE Output PCM，验证 Opus 解码->渲染->CABLE->微信识别链路（半自动，需人工按设备键说话并确认结果）。
   - 辅助：`scan_ble.py`（BLE 扫描）、`read_serial.py`（串口日志读取）、`replay_tencent_asr.py`（腾讯 ASR 回放，仅适用桌面端一页一帧调试 ogg，ffmpeg 语料会报 4007）、`spectrogram_server.py`（调试音频频谱分析页，v2.1.2 新增）。
-  - ASR 离线评测基准：`run_asr_bench.py --provider all` 对 corpus 全部语料（31 条 7 类别）实时节奏回放腾讯+火山 ASR（默认 3 轮压力测试），采集 CER/首 partial 延迟/尾延迟/跨轮抖动，产出 `bench_results/*.json|.md` 对比报告；协议实现库在 `asr_bench/`（纯 stdlib，凭据只读 config.toml）。基线结论见 `Doc/Expe/asr-bench-baseline-2026-08-01.md`。
+  - ASR 离线评测基准：`run_asr_bench.py --provider all` 对 corpus 全部语料（31 条 7 类别）实时节奏回放腾讯+火山 ASR（默认 3 轮压力测试），采集 CER/首 partial 延迟/尾延迟/跨轮抖动，产出 `bench_results/*.json|.md` 对比报告；协议实现库在 `asr_bench/`（纯 stdlib，凭据只读 config.toml）。另有 `run_volc_ablation.py`（火山 result_type/nonstream/ddc 配置消融）。关键结论：火山首 partial 延迟≈音频全长且与请求配置无关；nonstream 二遍会把第一遍正确的术语改错（如 Opus→Auk），内联热词与 boosting_table_id 对二遍均无效，只能靠 LLM 精修兜底。详见 `Doc/Expe/asr-bench-baseline-2026-08-01.md`、`volc-config-ablation-2026-08-01.md`、`volc-hotword-ablation-2026-08-01.md`。
   - 依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`。
   - 设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。
 
@@ -339,6 +339,9 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - 设备卡 Pairing 且重启 stick 无效、重启 Windows 端立愈 = 广告 watcher 静默失效，判据是日志长时间零 `advertisement matched`，见 `Doc/Expe/ble-watcher-silent-death-pairing-stuck.md`；应用自己的 radio reset 也会杀死 watcher，之后必须重建扫描。
 - 旁路（非协调器状态机）要碰 overlay 先查 `coordinator_->HasActiveSession()`：会话活跃时反馈必须走托盘气泡，否则 `kAutoHideTimerId`/`pending_callback_` 共享资源被覆盖会踩掉确认倒计时的自动粘贴，见 `Doc/Expe/hotword-processing-implementation-2026-07-28.md`。
 - 提升权限运行的 VoiceStick.exe 会锁定链接产物且 `build_win.bat` 杀不掉仍报成功，判据是 exe 时间戳；`ctest` 不在裸 cmd PATH，用 VS BuildTools 全路径。
+- ASR 离线评测/回放 ffmpeg 语料：Ogg 抽帧必须按段表（lacing），「一页一帧」会让腾讯报 4007 断连（表现为 SSL EOF 易误判为网络问题）；用 `asr_bench/wsproto.py::demux_ogg_packets`。评测入口 `run_asr_bench.py --provider all`，结论见 `Doc/Expe/asr-bench-lessons-2026-08-01.md`。
+- 火山 nonstream 二遍会把第一遍正确的术语改错（Opus→Auk 稳定复现）；内联热词与 `boosting_table_id` 对二遍最终文本均无效（真实表 ID 实测），唯一兜底是 LLM 精修。评估热词效果必须分清看的是第一遍 partial 还是二遍 final。
+- 火山首 partial 延迟 ≈ 音频全长，与 result_type/enable_nonstream/enable_ddc 无关（5 组消融完全相同），不要再消融这三个参数；腾讯发包节奏测量用 select 零超时（1ms 超时 recv 在 Windows 实际 10–15ms/帧，会严重污染总延迟）。
 
 ## 给 Agent 的提示
 

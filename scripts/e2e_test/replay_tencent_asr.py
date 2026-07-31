@@ -3,7 +3,8 @@
 用法：python replay_tencent_asr.py <file.ogg> [--realtime]
 
 复刻 desktop/windows/src/asr_client_tencent.cc 的行为：
-- 每个 Ogg 页取单个 Opus 包（跳过 OpusHead/OpusTags），封装为
+- 按 Ogg 段表（lacing）拆出单个 Opus 包（跳过 OpusHead/OpusTags），
+  对 ffmpeg 生成的「一页多包」Ogg 也适用（复用 asr_bench.wsproto 的实现），封装为
   "opus"（4 字节）+ 长度（2 字节，小端，与桌面端 ExtractTencentOpusFrame 一致）+ Opus 帧；
 - 签名 URL：HMAC-SHA1(secret_key, sign_str) -> base64 -> urlencode；
 - 发送二进制帧后收 JSON；最后发 {"type":"end"}，等 final=1。
@@ -21,29 +22,14 @@ import uuid
 
 import websocket
 
+# 复用 asr_bench 的按段表（lacing）拆包实现；保证脚本目录在 sys.path 中
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from asr_bench.wsproto import demux_ogg_packets  # noqa: E402
+
 SECRET_ID = "AKID_REDACTED_PLACEHOLDER"
 SECRET_KEY = "SECRET_KEY_REDACTED_PLACEHOLDER"
 APPID = "1259040144"
 ENGINE = "16k_zh_en"
-
-
-def demux_ogg_packets(path):
-    """按桌面端 ExtractTencentOpusFrame 同款逻辑抽帧：每页 27B 头 + 段表后剩余即一帧。"""
-    data = open(path, "rb").read()
-    frames = []
-    pos = 0
-    while pos + 27 <= len(data):
-        if data[pos:pos + 4] != b"OggS":
-            break
-        nseg = data[pos + 26]
-        header_size = 27 + nseg
-        raw = data[pos + header_size:]
-        page_size = header_size + sum(data[pos + 27:pos + 27 + nseg])
-        payload = data[pos + header_size:pos + page_size]
-        if payload and not payload.startswith(b"Opus"):  # 跳过 OpusHead/OpusTags 与空 EOS 页
-            frames.append(payload)
-        pos += page_size
-    return frames
 
 
 def build_signed_url(voice_id, needvad="1", voice_format="10", engine=ENGINE):
