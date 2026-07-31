@@ -10,5 +10,25 @@
   { "id": "mix_02", "text": "把 cpu 使用率报警阈值设为百分之八十。", "category": "mix" },
   { "id": "punct_01", "text": "好的，没问题，马上处理。", "category": "punct" },
   { "id": "command_01", "text": "新建一个文件夹并命名为测试。", "category": "command" },
-  { "id": "command_02", "text": "把这段文字翻译成英文。", "category": "command" }
+  { "id": "command_02", "text": "把这段文字翻译成英文。", "category": "command" },
+
+  { "id": "fast_01", "text": "语音识别系统需要在保证准确率的同时尽可能降低延迟。", "category": "fast", "rate": "+40%" },
+  { "id": "fast_02", "text": "明天上午十点的会议改到下午两点，请大家提前准备好材料。", "category": "fast", "rate": "+40%" },
+  { "id": "fast_03", "text": "这个功能的实现需要考虑网络不稳定情况下的重试机制和数据一致性。", "category": "fast", "rate": "+40%" },
+  { "id": "slow_01", "text": "请把这份文件打印三份。", "category": "slow", "rate": "-20%" },
+  { "id": "slow_02", "text": "下周三之前要完成代码审查。", "category": "slow", "rate": "-20%" },
+  { "id": "noise_01", "text": "在嘈杂环境下语音识别的准确率会明显下降。", "category": "noise", "noise_snr_db": 20 },
+  { "id": "noise_02", "text": "请帮我查一下明天从北京到上海的高铁票。", "category": "noise", "noise_snr_db": 15 },
+  { "id": "noise_03", "text": "蓝牙连接不稳定会导致音频数据丢失。", "category": "noise", "noise_snr_db": 10 },
+  { "id": "english_01", "text": "The quick brown fox jumps over the lazy dog.", "category": "english" },
+  { "id": "english_02", "text": "Please schedule a meeting with the engineering team tomorrow.", "category": "english" },
+  { "id": "tech_01", "text": "这个 API 的 SDK 需要支持 WebSocket 长连接。", "category": "tech" },
+  { "id": "tech_02", "text": "把 ASR 的 Opus 音频流封装成 Ogg 格式再发送。", "category": "tech" },
+  { "id": "tech_03", "text": "ESP32 通过 BLE 把音频数据发送到桌面端。", "category": "tech" },
+  { "id": "tech_04", "text": "在 GitHub 上创建一个 pull request 并请求代码审查。", "category": "tech" },
+  { "id": "verylong_01", "text": "我们计划在下个季度完成语音识别系统的全面升级，包括引入新的声学模型、优化音频前处理流水线、增加对多方言的支持，并且要把端到端的识别延迟降低百分之三十以上。", "category": "verylong" },
+  { "id": "verylong_02", "text": "语音输入设备的核心价值在于让用户能够在双手被占用的场景下高效地完成文字录入，因此我们必须在准确率、响应速度和稳定性三个维度上同时达到可用的水平，任何一个维度的短板都会严重影响用户体验。", "category": "verylong" },
+  { "id": "verylong_03", "text": "经过三个月的测试我们发现，设备在安静办公室环境下的识别准确率可以达到百分之九十五以上，但是在地铁、商场等嘈杂环境中准确率会下降到百分之八十左右，这说明我们的降噪算法还有很大的改进空间。", "category": "verylong" },
+  { "id": "voice_01", "text": "男声音色下的识别效果也需要单独验证。", "category": "voice", "voice": "zh-CN-YunxiNeural" },
+  { "id": "voice_02", "text": "不同说话人的发音习惯会影响识别结果。", "category": "voice", "voice": "zh-CN-YunxiNeural" }
 ]
