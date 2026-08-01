@@ -69,6 +69,14 @@ struct StateBleFrame {
 State events report device facts from the firmware to the app. They do not carry
 business actions such as "cancel" or "confirm"; the app owns that interpretation.
 
+Frame size budget: a state notification must fit the negotiated ATT MTU —
+`4 (header) + payload_len ≤ att_mtu − 3`. On Windows links the MTU is typically
+247, so the JSON budget is 240 bytes. Oversized frames get truncated on the air
+and the peer drops them on the `payload_len` check (`device_info` once exceeded
+this and was slimmed; new capabilities should use separate small frames such as
+`encoder_status`). The firmware logs a warning when a state frame exceeds the
+budget.
+
 Currently emitted state events:
 
 ```json

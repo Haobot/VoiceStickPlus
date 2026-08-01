@@ -1236,6 +1236,14 @@ static esp_err_t send_state_json(const char *json)
     }
 
     const uint16_t json_len = strlen(json);
+    // 通知可用负载 = ATT MTU - 3，再减去 4 字节帧头才是 JSON 预算；超限的帧会被
+    // 截断，对端按帧头长度校验 parse failed（device_info 曾因此超限，已精简修复）。
+    // 不拦截发送（避免行为变化），但必须告警让后续扩字段第一时间暴露。
+    const uint16_t att_mtu = ble_att_mtu(s_conn_handle);
+    if ((uint32_t)json_len + 4 + 3 > att_mtu) {
+        ESP_LOGW(TAG, "state json %uB + 4B header exceeds notify budget (att_mtu=%u), peer will truncate",
+                 json_len, att_mtu);
+    }
     uint8_t header[4] = {
         1,
         0x10,
@@ -1282,6 +1290,9 @@ esp_err_t voice_ble_send_encoder_status(void)
 
 esp_err_t voice_ble_send_device_info(void)
 {
+    // 注意：本帧长度已逼近 BLE 通知预算（ATT MTU-3-4B 帧头，MTU 247 时仅 240B），
+    // 曾因超长被截断致桌面端 parse failed；新增能力请走独立小帧（如 encoder_status），
+    // 不要向本 JSON 加字段。send_state_json 内有超预算告警。
     const esp_app_desc_t *app_desc = esp_app_get_description();
     const char *version = app_desc ? app_desc->version : "unknown";
     char json[320];
@@ -1289,7 +1300,7 @@ esp_err_t voice_ble_send_device_info(void)
              "{\"event\":\"device_info\",\"hardware\":\"stick_s3\","
              "\"firmware_version\":\"%s\","
              "\"buttons\":[\"primary\",\"secondary\"],"
-             "\"interaction_modes\":[\"hold_to_talk\",\"hold_to_talk_instant\",\"click_to_talk\"],"
+             "\"interaction_modes\":[\"hold_to_talk\",\"click_to_talk\"],"
              "\"ui_states\":[\"ready\",\"recording\",\"thinking\","
              "\"pending_confirmation\",\"error\"]}",
              version);
