@@ -140,13 +140,17 @@ The `request.corpus` field carries hotwords and self-learning platform tables:
 
 ### What actually works (verified 2026-07-28 by replaying captured DebugAudio ogg)
 
-- **Inline hotwords (`corpus.context`) only affect the streaming first pass.** With
-  `enable_nonstream = true` (what Voice Stick uses), the final text comes from the
-  nostream two-pass re-recognition, which ignores inline hotwords and overwrites the
-  boosted streaming result. Reproduced on both `volc.bigasr.sauc.duration` (1.0) and
-  `volc.seedasr.sauc.duration` (2.0): with two-pass on, no hotwords / 3 words / 26
-  words / `dialog_ctx` context all produced the same wrong final; with two-pass off,
-  `cloud` was correctly boosted to `Claude`.
+- **Inline hotwords (`corpus.context`) and the two-pass final: word-type dependent.**
+  English/mixed tokens (e.g. `Claude`, `CLAUDE.md`) boosted in the streaming first
+  pass are overwritten by the nonstream two-pass re-recognition — reproduced on both
+  `volc.bigasr.sauc.duration` (1.0) and `volc.seedasr.sauc.duration` (2.0), and again
+  in the 2026-08-01 hotword bench (`CLAUDE.md`: 0/1 in every two-pass config, 1/1 only
+  with two-pass off). **Chinese hotwords, however, do survive into the two-pass
+  final**: the 2026-08-01 bench (`run_hotword_bench.py`, `hotword_hotword-full.json`)
+  shows 覃海洋 0/2→2/2 and 逐玉 0/1→1/1 with two-pass ON plus a small inline list,
+  while an alphabetically-crammed 31-word list gave zero gain — selection matters.
+  Do NOT disable two-pass for hotwords: it lowers overall accuracy (68.2% vs 86.4%
+  hotword recall in the same bench). See `Doc/Expe/hotword-bench-2026-08-01.md`.
 - Inline hotwords on bidirectional streaming are documented as ~100 tokens total
   (nostream APIs allow 5000 words — do not confuse the two). The Windows client
   trims to `kHotwordCorpusTokenBudget = 80` estimated tokens before sending

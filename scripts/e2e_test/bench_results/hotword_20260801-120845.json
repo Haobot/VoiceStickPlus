@@ -1,0 +1,398 @@
+{
+  "stamp": "20260801-120845",
+  "rounds": 1,
+  "library_size": 500,
+  "target_words": [
+    "BLE",
+    "ESP32",
+    "Opus"
+  ],
+  "hotword_clips": 2,
+  "control_clips": 0,
+  "configs": {
+    "baseline": {
+      "volcengine": {
+        "params": {},
+        "summary": {
+          "runs": 2,
+          "success": 2,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "cer_mean": 0.0,
+          "cer_median": 0.0,
+          "cer_max": 0.0,
+          "cer_by_category": {
+            "hotword": 0.0
+          },
+          "first_partial_latency_ms": {
+            "p50": 4421.999999998661,
+            "p95": 4734.000000004016
+          },
+          "tail_latency_ms": {
+            "p50": 953.0000000013388,
+            "p95": 5188.000000001921
+          },
+          "total_latency_ms": {
+            "p50": 4828.000000001339,
+            "p95": 9391.00000000326
+          },
+          "jitter_mean": null,
+          "jitter_max": null,
+          "error_kinds": {}
+        },
+        "hotwords": {
+          "overall": {
+            "hit": 3,
+            "total": 3,
+            "recall": 1.0
+          },
+          "per_word": {
+            "BLE": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            },
+            "ESP32": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            },
+            "Opus": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            }
+          },
+          "false_trigger": {
+            "control_runs": 0,
+            "clips_with_false": 0,
+            "rate": null,
+            "words": {}
+          }
+        },
+        "detail": [
+          {
+            "clip_id": "hw_01",
+            "provider": "volcengine",
+            "round": 1,
+            "category": "hotword",
+            "reference": "我们用 Opus 编码器压缩麦克风采集的音频。",
+            "duration_s": 4.416,
+            "success": true,
+            "error": "",
+            "final_text": "我们用 Opus 编码器压缩麦克风采集的音频。",
+            "first_partial_latency_ms": 4421.999999998661,
+            "tail_latency_ms": 953.0000000013388,
+            "total_latency_ms": 4828.000000001339,
+            "partial_count": 5,
+            "server_errors": []
+          },
+          {
+            "clip_id": "hw_04",
+            "provider": "volcengine",
+            "round": 1,
+            "category": "hotword",
+            "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+            "duration_s": 4.728,
+            "success": true,
+            "error": "",
+            "final_text": "ESP32通过 BLE 把音频数据发送到桌面端。",
+            "first_partial_latency_ms": 4734.000000004016,
+            "tail_latency_ms": 5188.000000001921,
+            "total_latency_ms": 9391.00000000326,
+            "partial_count": 6,
+            "server_errors": []
+          }
+        ]
+      },
+      "tencent": {
+        "params": {},
+        "summary": {
+          "runs": 2,
+          "success": 2,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "cer_mean": 0.0476,
+          "cer_median": 0.0476,
+          "cer_max": 0.0952,
+          "cer_by_category": {
+            "hotword": 0.0476
+          },
+          "first_partial_latency_ms": {
+            "p50": 672.0000000059372,
+            "p95": 719.0000000045984
+          },
+          "tail_latency_ms": {
+            "p50": 140.99999999598367,
+            "p95": 171.00000000209548
+          },
+          "total_latency_ms": {
+            "p50": 4687.000000005355,
+            "p95": 5000.0
+          },
+          "jitter_mean": null,
+          "jitter_max": null,
+          "error_kinds": {}
+        },
+        "hotwords": {
+          "overall": {
+            "hit": 2,
+            "total": 3,
+            "recall": 0.6667
+          },
+          "per_word": {
+            "BLE": {
+              "hit": 0,
+              "total": 1,
+              "recall": 0.0
+            },
+            "ESP32": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            },
+            "Opus": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            }
+          },
+          "false_trigger": {
+            "control_runs": 0,
+            "clips_with_false": 0,
+            "rate": null,
+            "words": {}
+          }
+        },
+        "detail": [
+          {
+            "clip_id": "hw_01",
+            "provider": "tencent",
+            "round": 1,
+            "category": "hotword",
+            "reference": "我们用 Opus 编码器压缩麦克风采集的音频。",
+            "duration_s": 4.416,
+            "success": true,
+            "error": "",
+            "final_text": "我们用opus编码器压缩麦克风采集的音频。",
+            "first_partial_latency_ms": 719.0000000045984,
+            "tail_latency_ms": 171.00000000209548,
+            "total_latency_ms": 4687.000000005355,
+            "partial_count": 9,
+            "server_errors": []
+          },
+          {
+            "clip_id": "hw_04",
+            "provider": "tencent",
+            "round": 1,
+            "category": "hotword",
+            "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+            "duration_s": 4.728,
+            "success": true,
+            "error": "",
+            "final_text": "ESP 32通过blip把音频数据发送到桌面端。",
+            "first_partial_latency_ms": 672.0000000059372,
+            "tail_latency_ms": 140.99999999598367,
+            "total_latency_ms": 5000.0,
+            "partial_count": 9,
+            "server_errors": []
+          }
+        ]
+      }
+    },
+    "direct_small": {
+      "volcengine": {
+        "params": {
+          "hotwords": "<3 词>"
+        },
+        "summary": {
+          "runs": 2,
+          "success": 2,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "cer_mean": 0.0,
+          "cer_median": 0.0,
+          "cer_max": 0.0,
+          "cer_by_category": {
+            "hotword": 0.0
+          },
+          "first_partial_latency_ms": {
+            "p50": 4421.999999998661,
+            "p95": 4734.000000004016
+          },
+          "tail_latency_ms": {
+            "p50": 968.9999999973224,
+            "p95": 1031.0000000026776
+          },
+          "total_latency_ms": {
+            "p50": 4828.9999999979045,
+            "p95": 5234.000000004016
+          },
+          "jitter_mean": null,
+          "jitter_max": null,
+          "error_kinds": {}
+        },
+        "hotwords": {
+          "overall": {
+            "hit": 3,
+            "total": 3,
+            "recall": 1.0
+          },
+          "per_word": {
+            "BLE": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            },
+            "ESP32": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            },
+            "Opus": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            }
+          },
+          "false_trigger": {
+            "control_runs": 0,
+            "clips_with_false": 0,
+            "rate": null,
+            "words": {}
+          }
+        },
+        "detail": [
+          {
+            "clip_id": "hw_01",
+            "provider": "volcengine",
+            "round": 1,
+            "category": "hotword",
+            "reference": "我们用 Opus 编码器压缩麦克风采集的音频。",
+            "duration_s": 4.416,
+            "success": true,
+            "error": "",
+            "final_text": "我们用 OPUS 编码器压缩麦克风采集的音频。",
+            "first_partial_latency_ms": 4421.999999998661,
+            "tail_latency_ms": 968.9999999973224,
+            "total_latency_ms": 4828.9999999979045,
+            "partial_count": 5,
+            "server_errors": []
+          },
+          {
+            "clip_id": "hw_04",
+            "provider": "volcengine",
+            "round": 1,
+            "category": "hotword",
+            "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+            "duration_s": 4.728,
+            "success": true,
+            "error": "",
+            "final_text": "ESP32通过 BLE 把音频数据发送到桌面端。",
+            "first_partial_latency_ms": 4734.000000004016,
+            "tail_latency_ms": 1031.0000000026776,
+            "total_latency_ms": 5234.000000004016,
+            "partial_count": 5,
+            "server_errors": []
+          }
+        ]
+      },
+      "tencent": {
+        "params": {
+          "hotword_list": "BLE|10,ESP32|10,Opus|10"
+        },
+        "summary": {
+          "runs": 2,
+          "success": 2,
+          "failed": 0,
+          "failure_rate": 0.0,
+          "cer_mean": 0.0,
+          "cer_median": 0.0,
+          "cer_max": 0.0,
+          "cer_by_category": {
+            "hotword": 0.0
+          },
+          "first_partial_latency_ms": {
+            "p50": 656.0000000026776,
+            "p95": 703.0000000013388
+          },
+          "tail_latency_ms": {
+            "p50": 140.99999999598367,
+            "p95": 218.0000000007567
+          },
+          "total_latency_ms": {
+            "p50": 4734.000000004016,
+            "p95": 4983.99999999674
+          },
+          "jitter_mean": null,
+          "jitter_max": null,
+          "error_kinds": {}
+        },
+        "hotwords": {
+          "overall": {
+            "hit": 3,
+            "total": 3,
+            "recall": 1.0
+          },
+          "per_word": {
+            "BLE": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            },
+            "ESP32": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            },
+            "Opus": {
+              "hit": 1,
+              "total": 1,
+              "recall": 1.0
+            }
+          },
+          "false_trigger": {
+            "control_runs": 0,
+            "clips_with_false": 0,
+            "rate": null,
+            "words": {}
+          }
+        },
+        "detail": [
+          {
+            "clip_id": "hw_01",
+            "provider": "tencent",
+            "round": 1,
+            "category": "hotword",
+            "reference": "我们用 Opus 编码器压缩麦克风采集的音频。",
+            "duration_s": 4.416,
+            "success": true,
+            "error": "",
+            "final_text": "我们用opus编码器压缩麦克风采集的音频。",
+            "first_partial_latency_ms": 703.0000000013388,
+            "tail_latency_ms": 218.0000000007567,
+            "total_latency_ms": 4734.000000004016,
+            "partial_count": 9,
+            "server_errors": []
+          },
+          {
+            "clip_id": "hw_04",
+            "provider": "tencent",
+            "round": 1,
+            "category": "hotword",
+            "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+            "duration_s": 4.728,
+            "success": true,
+            "error": "",
+            "final_text": "ESP 32通过ble把音频数据发送到桌面端。",
+            "first_partial_latency_ms": 656.0000000026776,
+            "tail_latency_ms": 140.99999999598367,
+            "total_latency_ms": 4983.99999999674,
+            "partial_count": 9,
+            "server_errors": []
+          }
+        ]
+      }
+    }
+  }
+}
