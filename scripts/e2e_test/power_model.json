@@ -1,0 +1,39 @@
+{
+  "_comment": "每模式电流为【待标定经验估计值】（非实测）：按 ESP32-S3 + ES8311 + ST7789 背光 + BLE 连接的典型量级估算，仅用于分模式耗电占比的初始参考（绝对值 ±20% 量级，见设计文档第 9 节）。标定方法见 Doc/Plan/power-mode-energy-profiling.md 第 8 节：无仪器路径——满电后逐模式驻留 ≥30min，用本报告第 3 节的 VBAT 线性回归电流回填；有仪器路径——INA219/PPK2/Joulescope 串电池正极实测。bench 标定后更新本文件并在 Doc/Expe/ 记录结论。占比分析只依赖时长与相对电流比，电池老化后仍有效。",
+  "battery": {
+    "capacity_mah": 200,
+    "vbat_full_mv": 4200,
+    "vbat_empty_mv": 3300,
+    "_comment": "StickS3 电池约 200mAh 级，请按实际批次填写；vbat_full/empty 定义 VBAT-SOC 线性近似区间，用于把回归斜率 dV/dt 换算为电流：I(mA) = -dV/dt(mV/h) / (full-empty)(mV) × capacity_mah"
+  },
+  "modes": {
+    "S0_ACTIVE": {
+      "current_ma": 90,
+      "note": "亮屏交互（背光 32），BLE 连接空闲；经验估计待标定"
+    },
+    "S1_RESTING": {
+      "current_ma": 70,
+      "note": "暗屏待机（背光 8），BLE 连接；经验估计待标定"
+    },
+    "S2_SCREEN_OFF": {
+      "current_ma": 45,
+      "note": "熄屏保连；经验估计待标定"
+    },
+    "S3_POWER_OFF": {
+      "current_ma": 0.5,
+      "note": "M5PM1 真关机，近零功耗；经验估计待标定"
+    },
+    "RECORDING": {
+      "current_ma": 130,
+      "note": "录音会话（ES8311 + Opus 编码 + BLE 音频流）；经验估计待标定"
+    },
+    "ADVERTISING": {
+      "current_ma": 60,
+      "note": "断连广播中；经验估计待标定"
+    },
+    "OTA": {
+      "current_ma": 120,
+      "note": "BLE OTA（罕见，单列便于剔除）；经验估计待标定"
+    }
+  }
+}

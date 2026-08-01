@@ -410,3 +410,23 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 | windows-only-no-macos-streaming | 当时约束，已转为 §8 待办（macOS 精修待推进）。 |
 
 > 另注：记忆中提及的 commit 短哈希、文件行号（如 voice_stick_coordinator.cc:467、main.c:347）均为记录时点的定位，代码演进后可能漂移，引用前以当前源码为准。
+
+---
+
+## 10. 高频速查（2026-08-02 自 AGENTS.md/CLAUDE.md 迁入）
+
+以下来自根指南「经验教训记忆」章节的高频速查清单，含蒸馏日之后（2026-07-17 至 2026-08-01）的新增条目：
+
+- 桌面端日志在 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`（非 Roaming 的 `%APPDATA%`）。
+- 任何「按住开始/松开结束」的音频会话，固件 `*_stop` 必须同步等 drain 完成再返回，否则 button_up 抢跑丢尾音。
+- SendInput 注入第三方输入法热键必须带 scan code（`MapVirtualKey`），仅 wVk 时输入法不响应。
+- BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。
+- ES8311 ALC 寄存器位域以 Linux 主线 `es8311.h` 为准，不信 `es8311_reg.h` 注释。
+- 设备 EN 复位后 USB JTAG 重枚举，间隙内 boot 日志直接丢失，循环重开 pyserial 也盖不住；boot→广播耗时从主机日志反推（断连事件→`advertisement matched` 时间差），不要试图串口抓 boot。
+- 排查 BLE 回连/僵尸链路先看 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`；`link-layer connected` 的 `polls=0` 是典型僵尸，`polls=1` 也可能是垂死链路（ATT 挂起），勿凭 polls 单一判据下结论。
+- 设备卡 Pairing 且重启 stick 无效、重启 Windows 端立愈 = 广告 watcher 静默失效，判据是日志长时间零 `advertisement matched`，见 `Doc/Expe/ble-watcher-silent-death-pairing-stuck.md`；应用自己的 radio reset 也会杀死 watcher，之后必须重建扫描。
+- 旁路（非协调器状态机）要碰 overlay 先查 `coordinator_->HasActiveSession()`：会话活跃时反馈必须走托盘气泡，否则 `kAutoHideTimerId`/`pending_callback_` 共享资源被覆盖会踩掉确认倒计时的自动粘贴，见 `Doc/Expe/hotword-processing-implementation-2026-07-28.md`。
+- 提升权限运行的 VoiceStick.exe 会锁定链接产物且 `build_win.bat` 杀不掉仍报成功，判据是 exe 时间戳；`ctest` 不在裸 cmd PATH，用 VS BuildTools 全路径。
+- ASR 离线评测/回放 ffmpeg 语料：Ogg 抽帧必须按段表（lacing），「一页一帧」会让腾讯报 4007 断连（表现为 SSL EOF 易误判为网络问题）；用 `asr_bench/wsproto.py::demux_ogg_packets`。评测入口 `run_asr_bench.py --provider all`，结论见 `Doc/Expe/asr-bench-lessons-2026-08-01.md`。
+- 火山 nonstream 二遍会把第一遍正确的术语改错（Opus→Auk 稳定复现）；内联热词与 `boosting_table_id` 对二遍最终文本均无效（真实表 ID 实测），唯一兜底是 LLM 精修。评估热词效果必须分清看的是第一遍 partial 还是二遍 final。
+- 火山首 partial 延迟 ≈ 音频全长，与 result_type/enable_nonstream/enable_ddc 无关（5 组消融完全相同），不要再消融这三个参数；腾讯发包节奏测量用 select 零超时（1ms 超时 recv 在 Windows 实际 10–15ms/帧，会严重污染总延迟）。

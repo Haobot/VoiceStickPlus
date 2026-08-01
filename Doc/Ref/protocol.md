@@ -261,6 +261,68 @@ Deprecated app-to-firmware events:
 | `paste_cancelled` | `ui_state:ready` | Once cancelled, the device returns to ready. |
 | `error` | `ui_state:error` with `text` | Errors are another UI state. |
 
+## Power Log Export
+
+The firmware's `power_log` component records power-mode residency and battery
+voltage on-device (mode-switch events plus a 60 s periodic VBAT sample). The
+log is exported over the existing `control_rx` / `state_tx` JSON channel; no
+new GATT characteristic is added. The component is a pure observer: it never
+changes power state-machine behavior. See `Doc/Plan/power-mode-energy-profiling.md`
+for the design.
+
+Requests (host -> StickS3, `control_rx`):
+
+```json
+{"power_log":{"cmd":"dump","offset":0,"max":160}}
+{"power_log":{"cmd":"clear"}}
+{"power_log":{"cmd":"time_anchor","epoch":1754042700}}
+```
+
+| Command | Fields | Meaning |
+| --- | --- | --- |
+| `dump` | `offset`: byte offset into the logical log stream to start from; `max`: per-fragment raw byte cap (clamped by the ATT MTU, ≤160) | Starts a one-shot streaming session: the device automatically sends `state_tx` fragments at a fixed interval from `offset` until EOF. A new `dump`, `clear`, or disconnect aborts the current session. |
+| `clear` | — | Clears the log and bumps the header wrap counter. |
+| `time_anchor` | `epoch`: uint32 epoch seconds | Records a time-anchor entry so analysis tooling can map relative uptime to wall clock. |
+
+Responses (StickS3 -> host, `state_tx` JSON state frames, fragmented):
+
+```json
+{"power_log":{"seq":0,"offset":0,"total":1234,"eof":0,"data":"<base64>"}}
+```
+
+`data` is the base64 encoding of at most 160 raw bytes of the logical stream
+(kept small to control BLE MTU pressure). `offset` is the stream position of
+this fragment, `total` is the current total log size in bytes, `seq` increments
+per fragment within one dump, and `eof:1` marks the final fragment.
+
+The concatenated `data` payloads form the logical log stream, in chronological
+order. All multibyte fields are little-endian.
+
+```text
+Header (16 bytes):
+  uint8_t  magic[4];      // 'P','W','R','L'
+  uint8_t  version;       // 1
+  uint8_t  entry_size;    // 12
+  uint8_t  reserved[2];   // 0
+  uint32_t entry_count;   // valid entries following the header
+  uint32_t wrap_count;    // incremented on clear and on ring wrap
+
+Entry (12 bytes, packed; entry_count of them):
+  uint32_t uptime_s;      // esp_timer uptime in seconds (relative time)
+  uint16_t vbat_mv;       // battery voltage at record time
+  uint8_t  mode;          // power_mode_t; 0xFF for time-anchor entries
+  uint8_t  flags;         // see below
+  uint8_t  reserved[4];   // time-anchor entries store uint32 epoch seconds here
+```
+
+`mode` values: `0` = S0 active (bright screen), `1` = S1 resting (dimmed),
+`2` = S2 screen off, `3` = S3 power off, `4` = recording, `5` = advertising,
+`6` = OTA, `0xFF` = time anchor.
+
+`flags` bits: bit0 = charging, bit1 = USB powered, bit2 = periodic sample (not
+a mode-switch event), bit3 = power-off segment recovery record, bit4 = time
+anchor (with `mode` = `0xFF` and the epoch seconds in `reserved[0..3]`).
+
 ## BLE OTA
 
 The firmware uses a custom OTA channel over the same Voice Stick service. The macOS app writes OTA `begin` and `end` frames with BLE write-with-response, and streams OTA `data` frames with write-without-response using CoreBluetooth flow control.

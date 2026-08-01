@@ -174,7 +174,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 ### 固件职责
 
-固件只负责硬件 I/O、音频编码、BLE 通信、电源管理和显示主机下发的 UI 状态，不持有桌面交互状态机。关键组件（`firmware/components/` 下共 6 个）：
+固件只负责硬件 I/O、音频编码、BLE 通信、电源管理和显示主机下发的 UI 状态，不持有桌面交互状态机。关键组件（`firmware/components/` 下共 7 个）：
 
 - `firmware/main/main.c`：主循环，编排按键、BLE、录音会话、UI 状态、电源管理和 OTA 事件。
 - `components/audio_pipeline/`：从 ES8311 读取 16 kHz 单声道 PCM，经 HPF 与软件 AGC（v2.1.2 起：target -6 dBFS、max +20 dB、噪声门、0.8FS 瞬时限幅，硬件 ALC 已关闭）后编码为 Opus 交给 BLE 层；开头 60ms 静音+淡入、drain 尾帧淡出以消除按键音。
@@ -183,6 +183,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `components/bmi270/`：BMI270 IMU 驱动。
 - `components/mini_encoder_c/`：MiniEncoderC 编码器驱动（I2C @0x42，顶部 Hat 排针 SDA=G8/SCL=G0 第二路总线，按钮/旋转增量/SK6812 LED，轮询式；探测失败优雅降级）。
 - `components/stick_s3_board/`：板级初始化，引脚定义在 `include/stick_s3_board.h`。
+- `components/power_log/`：分模式功耗记账——纯观察组件，不改动电源状态机行为；记录模式切换事件与 60s VBAT 周期采样（RAM 环形缓冲 + SPIFFS `/storage/power_log.bin` 环形文件，M5PM1 RTC RAM 存跨 S3 关机锚点），经 `control_rx`/`state_tx` 的 `power_log` 命令导出，协议见 `Doc/Ref/protocol.md`，设计见 `Doc/Plan/power-mode-energy-profiling.md`。
 
 板级硬件映射：
 
@@ -240,29 +241,18 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成四个源码目标（�
 - macOS：`~/Library/Application Support/VoiceStick/config.toml`
 - Windows：`%APPDATA%\VoiceStick\config.toml`
 
-关键配置项（完整字段见 `README.md`）：
+关键配置项（完整字段说明见 `Doc/Ref/desktop-config.md`，示例见 `desktop/macos/Config/config.example.toml`）：
 
-- `asr_provider`：ASR 提供商，可选 `volcengine`、`voicestick_cloud` 或 `tencent`（腾讯为 v1.8.2 新增）。
-- `volcengine_api_key` / `voicestick_api_key` / `voicestick_cloud_url`：火山直连密钥，或 VoiceStick Cloud 中转密钥与 WebSocket URL。
-- `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山自学习平台热词表/替换词表 ID（控制台创建），作为 `corpus.boosting_table_id` / `corpus.correct_table_id` 发送；背景见 `Doc/Ref/volcengine-asr.md`（corpus 热词直传只在流式第一遍生效，二遍最终文本不吃直传，精修 prompt 会附加热词表由 LLM 兜底纠正）。
-- `tencent_secret_id` / `tencent_secret_key` / `tencent_appid`：腾讯云 ASR 凭据（加载时自动 Trim 去前后空格）。
+- `asr_provider`：`volcengine`、`voicestick_cloud` 或 `tencent`；对应凭据分别为 `volcengine_api_key`、`voicestick_api_key` + `voicestick_cloud_url`、`tencent_secret_id` + `tencent_secret_key` + `tencent_appid`。
+- `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山热词表/替换词表 ID；热词直传只在流式第一遍生效，二遍靠 LLM 精修兜底（背景见 `Doc/Ref/volcengine-asr.md`）。
 - `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `true`。
-- `hotword_process_enabled` / `hotword_process_prompt`：热词处理（Windows），划词加词时用 LLM 提炼热词，复用 `llm_*` 连接配置；默认关闭。
-- `hotword_mining_enabled`：热词候选挖掘（Windows，默认关闭）。两条挖掘通道共用计数存储：①精修 diff 挖掘（精修纠回不在表标识符时计数，无开关）；②LLM 主动提炼（本开关打开时，每会话完成后异步让 LLM 从最终文本提炼候选）。同一词达 3 次（`kHotwordCandidateThreshold`）弹托盘通知并在设置-热词区给出「加入/忽略」候选；计数存 `%APPDATA%\VoiceStick\hotword_candidates.json`。明确不做全自动入表，原因见 `Doc/Expe/hotword-two-pass-and-candidate-mining-2026-07-28.md`。
-- `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`，控制 focused_app/字幕模式的触发方式（托盘菜单可切）。wechat 模式的触发方式由 `[wechat_input_method].trigger_mode` 独立控制，不联动全局 `interaction_mode`。
-- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
+- `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`；wechat 模式触发方式由 `[wechat_input_method].trigger_mode` 独立控制，不联动全局。
 - `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
-- `[wechat_input_method]`：微信输入法模式专属配置，含 `trigger_mode`（wechat 专属触发方式，`hold_to_talk` 默认或 `click_to_talk`，与全局 `interaction_mode` 解耦）、`hotkey_hold` / `hotkey_click`（长按式/点按式各自记忆的触发热键，默认 `ctrl+win` / `ralt`）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回）。
-- `tap_to_arrow`：IMU 敲击映射方向键开关。
-- `encoder_to_arrow` / `encoder_rotation_invert` / `encoder_rotate_cw_key` / `encoder_rotate_ccw_key`：MiniEncoderC 编码器旋转注入开关（默认 `true`）、方向翻转（默认 `false`，true 时顺时针→Up）与 cw/ccw 自定义按键（热键语法）。
-- `encoder_rotate_fast_threshold` / `encoder_rotate_cw_fast_key` / `encoder_rotate_ccw_fast_key`：旋转快慢分档——固件 10ms 窗口计数的单窗口格速（steps × 100 格/秒）量化到 100 格/秒，直接比较会让 100~200 间阈值失效且偶发 2 步窗误判快，故桌面端对单窗口格速做 EWMA 平滑（α=0.5 按事件更新，与墙钟无关，新手势静默 >250ms 后从零冷启动，见 `desktop/windows/src/encoder_speed.h`），平滑估计 ≥ 阈值（默认 200）判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，锁定期间屏蔽所有旋转输出（含减速段慢速事件与换向事件），直到静默 >250ms 判定停稳才恢复识别；快速档按键非法时回退普通按键。设置对话框中阈值为滑杆控件（范围 100–300，超出范围的配置值显示时钳制）。
-- `encoder_rotate_decide_window_ms`：慢速注入延迟判定窗（默认 80ms，0 = 关闭延迟判定即立即注入）。慢速事件先挂起累计，窗内判快则整段丢弃（消除快甩加速段的误注入），到期由 30ms 定时器驱动的 `EncoderRotateTick()` 冲刷补注；慢转因此有 ≤80ms 注入延迟，连续慢转按窗成批注入、总量不变。仅 config.toml 高级项，不进设置对话框。
-- `encoder_led_color`：编码器录音灯颜色（red/green/blue/yellow/purple/cyan/white/off），BLE 下发固件 NVS 持久化。
-- `encoder_press_action` / `encoder_press_key` / `encoder_double_click_action` / `encoder_double_click_key`：编码器单击/双击动作（recording|key）与自定义按键；`press_action=key` 派生固件录音门控关闭，双击 recording 走 remote_button 切换起停。
-以上编码器设置项仅 Windows 端消费。
-- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等），完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
+- `hotword_process_enabled` / `hotword_mining_enabled`：热词处理与候选挖掘（Windows，默认关闭，两条挖掘通道与阈值细节见 `Doc/Ref/desktop-config.md`）。
+- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
+- `tap_to_arrow`、`encoder_*`（编码器旋转/快慢分档/按键/LED，仅 Windows 端消费）、`air_mouse_*`（体感鼠标）、`[wechat_input_method]`（虚拟麦克风链路）：字段多且细节长，完整说明见 `Doc/Ref/desktop-config.md`。
 
-Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，首启复制到 `%APPDATA%`（升级不覆盖）。示例见 `desktop/macos/Config/config.example.toml`。
+Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，首启复制到 `%APPDATA%`（升级不覆盖）。
 
 ## 代码风格
 
@@ -279,15 +269,7 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 - **macOS**：目前没有专用测试目标。验证方式主要是 `swift build` 编译通过和运行时手动测试。
 - **固件**：没有自动化单元测试。验证方式是 `idf.py build` 编译通过和真机运行时测试。
 - **网站**：没有自动化测试。验证方式是 `npm run build` 构建通过。
-- **Python E2E 真机验证**：`scripts/e2e_test/` 是跨固件+Windows 端到端的半自动验证工具链（L0–L4），用真实 BLE 连接与真实 ASR/音频链路，不伪造结果。
-  - L0 语料：`gen_corpus.py` / `verify_corpus.py` / `build_spiffs_image.py` 生成测试 PCM 语料并打包成 SPIFFS 镜像刷入固件。
-  - L3 固件回放：`run_l3_firmware.py` 用独立 bleak BLE 连接（VoiceStickApp 必须先断开，StickS3 BLE 独占单连接），下发 `test_playback` 回放 PCM 驱动录音，订阅 `audio_tx` 收 Opus 帧统计首帧延迟与帧数，配合串口日志 `playback set` 确认回放生效。
-  - L4 微信输入法：`run_l4_wechat.py` + `loopback_capture.py` 用 WASAPI 抓取 CABLE Output PCM，验证 Opus 解码->渲染->CABLE->微信识别链路（半自动，需人工按设备键说话并确认结果）。
-  - 辅助：`scan_ble.py`（BLE 扫描）、`read_serial.py`（串口日志读取）、`replay_tencent_asr.py`（腾讯 ASR 回放，仅适用桌面端一页一帧调试 ogg，ffmpeg 语料会报 4007）、`spectrogram_server.py`（调试音频频谱分析页，v2.1.2 新增）。
-  - ASR 离线评测基准：`run_asr_bench.py --provider all` 对 corpus 全部语料（31 条 7 类别）实时节奏回放腾讯+火山 ASR（默认 3 轮压力测试），采集 CER/首 partial 延迟/尾延迟/跨轮抖动，产出 `bench_results/*.json|.md` 对比报告；协议实现库在 `asr_bench/`（纯 stdlib，凭据只读 config.toml）。另有 `run_volc_ablation.py`（火山 result_type/nonstream/ddc 配置消融）。关键结论：火山首 partial 延迟≈音频全长且与请求配置无关；nonstream 二遍会把第一遍正确的术语改错（如 Opus→Auk），内联热词与 boosting_table_id 对二遍均无效，只能靠 LLM 精修兜底。详见 `Doc/Expe/asr-bench-baseline-2026-08-01.md`、`volc-config-ablation-2026-08-01.md`、`volc-hotword-ablation-2026-08-01.md`。
-  - 热词专项评测：`run_hotword_bench.py` 对热词语料（`corpus/hotword_corpus.json`，每条标注目标热词，`gen_corpus.py --manifest` 生成音频）按配置矩阵（baseline/直传小库/塞满对照/频率分层/表通道/火山关二遍）回放，量化热词命中率、CER、误触发率；`asr_bench/hotword_select.py` 是高频热词评分（频率×新近度×手动加权）与平台预算裁剪模块（火山 80 tokens / 腾讯 128 词），`asr_bench/tencent_vocab.py` 是腾讯热词表管理 API（TC3 签名纯 stdlib，`--create-tables` 自动同步评测词表）。注意腾讯热词拒绝含 `.` 的词（如 CLAUDE.md 只能走 LLM 精修兜底），桌面端 `SyncHotwords` 已加 `IsValidHotwordChars` 过滤（含单测）。设计见 `Doc/Plan/hotword-eval-and-prioritization.md`，首轮全矩阵结果见 `Doc/Expe/hotword-bench-2026-08-01.md`（精选小库：腾讯 +22.8pt、火山 +13.6pt；字典序塞满增益基本消失，频率分层在相同预算内追平理想小库；腾讯 500 词表通道与精选直传持平；火山关二遍反而全场最低，中文热词二遍下可生效、英文混排词仍被二遍覆盖）。
-  - 依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`。
-  - 设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。
+- **Python E2E 真机验证**：`scripts/e2e_test/` 是跨固件+Windows 端到端的半自动验证工具链（L0 语料、L3 固件回放、L4 微信输入法、ASR/热词离线评测、功耗记账导出），用真实 BLE 连接与真实 ASR/音频链路，不伪造结果。各工具用法与评测结论索引见 `Doc/Ref/e2e-test-toolchain.md`；依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`；设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。
 
 ## 安全注意事项
 
@@ -326,23 +308,7 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 
 ## 经验教训记忆
 
-`Doc/Expe/claude-memory-distilled.md` 是从本仓库 Claude Code 约 80 条项目记忆蒸馏的长期参考（2026-07-17），按域分 9 章：固件/音频链路、烧录与串口日志、Windows 桌面端、微信输入法模式、交互/体感、测试方法论、排查方法论、遗留待办（第 8 章，含体感标定/深睡验证/VB-CABLE 授权/E2E next-steps 等待真机项）、过时条目。排查问题或改动相关模块前先按章节查阅；其中寄存器值、阈值、文件:行号均为记录时点结论，引用前以当前源码为准。
-
-高频速查：
-
-- 桌面端日志在 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`（非 Roaming 的 `%APPDATA%`）。
-- 任何「按住开始/松开结束」的音频会话，固件 `*_stop` 必须同步等 drain 完成再返回，否则 button_up 抢跑丢尾音。
-- SendInput 注入第三方输入法热键必须带 scan code（`MapVirtualKey`），仅 wVk 时输入法不响应。
-- BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。
-- ES8311 ALC 寄存器位域以 Linux 主线 `es8311.h` 为准，不信 `es8311_reg.h` 注释。
-- 设备 EN 复位后 USB JTAG 重枚举，间隙内 boot 日志直接丢失，循环重开 pyserial 也盖不住；boot→广播耗时从主机日志反推（断连事件→`advertisement matched` 时间差），不要试图串口抓 boot。
-- 排查 BLE 回连/僵尸链路先看 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`；`link-layer connected` 的 `polls=0` 是典型僵尸，`polls=1` 也可能是垂死链路（ATT 挂起），勿凭 polls 单一判据下结论。
-- 设备卡 Pairing 且重启 stick 无效、重启 Windows 端立愈 = 广告 watcher 静默失效，判据是日志长时间零 `advertisement matched`，见 `Doc/Expe/ble-watcher-silent-death-pairing-stuck.md`；应用自己的 radio reset 也会杀死 watcher，之后必须重建扫描。
-- 旁路（非协调器状态机）要碰 overlay 先查 `coordinator_->HasActiveSession()`：会话活跃时反馈必须走托盘气泡，否则 `kAutoHideTimerId`/`pending_callback_` 共享资源被覆盖会踩掉确认倒计时的自动粘贴，见 `Doc/Expe/hotword-processing-implementation-2026-07-28.md`。
-- 提升权限运行的 VoiceStick.exe 会锁定链接产物且 `build_win.bat` 杀不掉仍报成功，判据是 exe 时间戳；`ctest` 不在裸 cmd PATH，用 VS BuildTools 全路径。
-- ASR 离线评测/回放 ffmpeg 语料：Ogg 抽帧必须按段表（lacing），「一页一帧」会让腾讯报 4007 断连（表现为 SSL EOF 易误判为网络问题）；用 `asr_bench/wsproto.py::demux_ogg_packets`。评测入口 `run_asr_bench.py --provider all`，结论见 `Doc/Expe/asr-bench-lessons-2026-08-01.md`。
-- 火山 nonstream 二遍会把第一遍正确的术语改错（Opus→Auk 稳定复现）；内联热词与 `boosting_table_id` 对二遍最终文本均无效（真实表 ID 实测），唯一兜底是 LLM 精修。评估热词效果必须分清看的是第一遍 partial 还是二遍 final。
-- 火山首 partial 延迟 ≈ 音频全长，与 result_type/enable_nonstream/enable_ddc 无关（5 组消融完全相同），不要再消融这三个参数；腾讯发包节奏测量用 select 零超时（1ms 超时 recv 在 Windows 实际 10–15ms/帧，会严重污染总延迟）。
+排查问题或改动相关模块前先查阅 `Doc/Expe/`：`claude-memory-distilled.md` 是约 80 条项目记忆的蒸馏（按域 9 章 + 高频速查清单，含 BLE 僵尸链路、watcher 静默失效、热词处理、ASR/热词评测结论等，专题另有独立文档）。其中寄存器值、阈值、文件:行号均为记录时点结论，引用前以当前源码为准。
 
 ## 给 Agent 的提示
 

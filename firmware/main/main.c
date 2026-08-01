@@ -22,6 +22,7 @@
 #include "audio_pipeline.h"
 #include "bmi270.h"
 #include "mini_encoder_c.h"
+#include "power_log.h"
 #include "stick_s3_board.h"
 #include "ui_status.h"
 #include "voice_ble.h"
@@ -135,6 +136,13 @@ static bool s_click_to_talk_pending_start;      // click_to_talk 首击后等双
 static bool s_side_click_pending;                // 侧键等待第二击（双击窗口内）
 static uint32_t s_side_pending_duration_ms;      // 暂存第一次侧键短按时长（窗口超时后补发 button_click）
 static esp_timer_handle_t s_side_double_click_timer;
+
+// power_log 模式钩子状态：叠加优先级 录音/OTA > 广播 > 屏幕态（S0/S1/S2）。
+// s_power_screen_mode 单独跟踪屏幕态，录音/广播/OTA 结束后据此恢复上报模式；
+// s_power_reported_mode 记录已上报模式用于去重，避免 note_activity 等高频路径
+// 对同一模式重复落日志。POWER_MODE_COUNT 表示尚未上报，首次刷新必产生一条记录。
+static power_mode_t s_power_screen_mode = POWER_MODE_S0_ACTIVE;
+static power_mode_t s_power_reported_mode = POWER_MODE_COUNT;
 
 typedef enum {
     DISPLAY_ORIENTATION_NORMAL = 0,
@@ -274,6 +282,26 @@ static void set_air_mouse_enabled(bool enabled);
 static bool is_external_powered(void)
 {
     return s_battery_charging || s_usb_powered;
+}
+
+// 由当前状态推导上报模式并去重记录。各转移点只更新 s_power_screen_mode 或
+// 直接调用本函数；模式未变化时不产生日志条目。
+static void power_log_refresh_mode(void)
+{
+    power_mode_t mode;
+    if (s_ota_updating || voice_ble_ota_is_active()) {
+        mode = POWER_MODE_OTA;
+    } else if (s_recording) {
+        mode = POWER_MODE_RECORDING;
+    } else if (!voice_ble_is_connected()) {
+        mode = POWER_MODE_ADVERTISING;
+    } else {
+        mode = s_power_screen_mode;
+    }
+    if (mode != s_power_reported_mode) {
+        s_power_reported_mode = mode;
+        power_log_note_mode(mode);
+    }
 }
 
 // S3 关机准入：允许 BLE 连接态关机（关机即断连），但录音/OTA/USB 供电时禁止。
@@ -449,6 +477,9 @@ static void note_activity(void)
     restart_display_dim_timer();
     restart_display_off_timer();
     restart_poweroff_timer();
+    // 任何活动均回到 S0 屏幕态；录音/OTA/广播期间 refresh 仍会上报叠加态。
+    s_power_screen_mode = POWER_MODE_S0_ACTIVE;
+    power_log_refresh_mode();
 }
 
 static void stop_host_response_timer(void)
@@ -565,6 +596,10 @@ static void enter_power_off(void)
 
     ESP_LOGI(TAG, "power off go (wait_ms=%d level=%d)", wait_ms,
              gpio_get_level(wake_gpio));
+    // 进 S3 前记录关机段起点；RTC RAM 锚点与 flush 由 power_log 组件内部处理。
+    // 放在所有中止检查之后，确保只在真正 commit 深睡时落一条 S3 记录。
+    s_power_reported_mode = POWER_MODE_S3_POWER_OFF;
+    power_log_note_mode(POWER_MODE_S3_POWER_OFF);
     esp_deep_sleep_start();
 }
 
@@ -611,6 +646,8 @@ static uint32_t start_recording(void)
     }
 
     s_recording = true;
+    // 录音为最高优先级叠加态；停止时由 refresh 按 s_power_screen_mode 恢复屏幕态。
+    power_log_refresh_mode();
     // 录音期间编码器 LED 亮灯（颜色 NVS 可配，0=off 不亮）；LED 写失败静默忽略。
     if (mini_encoder_c_present() && s_encoder_led_rgb != 0) {
         (void)mini_encoder_c_set_led((s_encoder_led_rgb >> 16) & 0xFF,
@@ -633,6 +670,8 @@ static uint32_t stop_recording(void)
     const uint32_t session_id = audio_pipeline_session_id();
     s_recording = false;
     audio_pipeline_stop();
+    // 录音会话真正结束点：恢复到录音前的屏幕态/广播态（由 refresh 推导）。
+    power_log_refresh_mode();
     // audio_pipeline_stop 同步等 drain 完成才返回，此处即录音会话真正结束点，灭灯。
     if (mini_encoder_c_present()) {
         (void)mini_encoder_c_set_led(0, 0, 0);
@@ -1466,6 +1505,8 @@ static void app_event_task(void *arg)
             (void)esp_timer_stop(s_poweroff_timer);
             restart_display_dim_timer();
             start_disc_poweroff_timer();
+            // 断连进入广播态（录音/OTA 已在上方清除）；重连时由 note_activity 恢复屏幕态。
+            power_log_refresh_mode();
             break;
         case APP_EVENT_POWER_IRQ:
             gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
@@ -1482,6 +1523,8 @@ static void app_event_task(void *arg)
             break;
         case APP_EVENT_OTA_BEGIN:
             s_ota_updating = true;
+            // OTA 为最高优先级叠加态；OTA_END 路径经 note_activity 恢复屏幕态。
+            power_log_refresh_mode();
             if (s_recording) {
                 const uint32_t session_id = stop_recording();
                 voice_ble_send_button_up("primary", elapsed_button_ms(s_primary_down_us),
@@ -1621,6 +1664,8 @@ static void display_dim_timer_cb(void *arg)
             set_pickup_polling_enabled(true);
             restart_display_off_timer();
             restart_poweroff_timer();
+            s_power_screen_mode = POWER_MODE_S1_RESTING;
+            power_log_refresh_mode();
             ESP_LOGI(TAG, "display dimmed after inactivity (S1)");
         } else {
             ESP_LOGW(TAG, "dim display failed: %s", esp_err_to_name(err));
@@ -1654,6 +1699,8 @@ static void display_off_timer_cb(void *arg)
     if (s_display_dimmed && !s_screen_off && !s_recording && !s_ota_updating) {
         (void)ui_status_set_brightness(0);
         s_screen_off = true;
+        s_power_screen_mode = POWER_MODE_S2_SCREEN_OFF;
+        power_log_refresh_mode();
         ESP_LOGI(TAG, "display off after inactivity (S2), BLE & panel kept");
     }
 }
@@ -2452,6 +2499,12 @@ void app_main(void)
 
     ESP_ERROR_CHECK(init_power_management());
     ESP_ERROR_CHECK(stick_s3_board_init());
+    // 功耗记账尽早初始化（SPIFFS 挂载、RTC RAM 关机段恢复、60s VBAT 采样）。
+    // 失败时优雅降级为仅 RAM 记录，不影响主流程。
+    esp_err_t power_log_err = power_log_init();
+    if (power_log_err != ESP_OK) {
+        ESP_LOGW(TAG, "power log init failed: %s", esp_err_to_name(power_log_err));
+    }
     // BLE 初始化（含 NimBLE host 任务启动）提前到屏幕初始化之前：on_sync 回调里
     // 开始广播是异步的，提前调用让「NimBLE 同步→开始广播」与耗时的 ui_status_init
     // （ST7789/LVGL）并行，缩短深睡唤醒后到设备可被发现的启动时间。

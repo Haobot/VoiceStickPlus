@@ -238,6 +238,11 @@ static esp_err_t ensure_spiffs_mounted(void)
         .format_if_mount_failed = false,
     };
     esp_err_t err = esp_vfs_spiffs_register(&conf);
+    if (err == ESP_ERR_INVALID_STATE) {
+        // storage 分区已被挂载（power_log 组件启动时挂载同一分区），直接复用。
+        s_spiffs_mounted = true;
+        return ESP_OK;
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "spiffs mount failed: %s", esp_err_to_name(err));
         return err;
