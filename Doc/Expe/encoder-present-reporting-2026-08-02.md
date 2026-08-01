@@ -14,7 +14,7 @@
 
 ## 关键教训
 
-1. **`device_info` 已处于 BLE 通知 MTU 临界点，严禁再加字段**。实测（MTU 247 链路）旧固件 258 字节的 device_info JSON 被截断到 244 字节，桌面端 parse failed——这是既存 bug（该链路上固件版本号、配对对话框信息都会丢）。给 state 帧加新字段前必须先算字节数：通知可用负载 = ATT MTU − 3，还要减去 4 字节帧头。新增状态一律走独立小帧。
+1. **`device_info` 曾处于 BLE 通知 MTU 临界点（已于 2026-08-02 修复）**。实测（MTU 247 链路）旧固件 258 字节的 device_info JSON 被截断到 244 字节，桌面端 parse failed。修复：精简 `interaction_modes` 数组（移除 `hold_to_talk_instant`，plan 文档注明该广告位可选且桌面端从不解析）→ 235B；并在 `send_state_json` 加超预算告警（`4B 帧头 + JSON > att_mtu − 3` 时 WARN，不拦截发送）。教训仍成立：给 state 帧加新字段前必须先算字节数，新增状态一律走独立小帧。
 2. **固件加字段容易，发现 MTU 截断靠真机日志**。本次是在重启应用后例行检查 `VoiceStickApp.log` 时撞到 `state notify ... parse failed` 才发现的。构建通过 ≠ 链路可用，改 BLE 协议后必须看一次真机连接日志。
 3. **向后兼容方向要想清楚**：新字段/新事件缺失时默认什么？这里默认「在线」（显示设置），因为误隐藏比误显示更伤用户——老固件用户升级桌面端后设置凭空消失会被当 bug。
 4. **VoiceStickUi 接口有三处实现**：`Win32App`、`core_tests.cc` 的 FakeUi、`integration_tests.cc` 的 FakeUi。加纯虚函数必须三处同改，否则链接/编译错。
