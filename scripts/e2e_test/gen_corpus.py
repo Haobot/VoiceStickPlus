@@ -17,6 +17,7 @@ corpus.json 每条字段：
 
 用法：
   python gen_corpus.py [--voice zh-CN-XiaoxiaoNeural] [--ffmpeg PATH] [--force]
+  python gen_corpus.py --manifest corpus/hotword_corpus.json   # 生成热词专项语料
 
 退出码 0 = 全部生成成功，1 = 有失败。
 """
@@ -64,7 +65,7 @@ def mix_noise(ffmpeg: str, src: Path, dst: Path, snr_db: float) -> None:
 
 
 async def gen_one(item: dict, default_voice: str, ffmpeg: str, tmpdir: Path,
-                  force: bool) -> str:
+                  force: bool, corpus_dir: Path = CORPUS_DIR) -> str:
     """生成单条语料的三件套产物。返回 'ok' 或 'skip'。失败抛异常。"""
     cid = item["id"]
     text = item["text"]
@@ -72,9 +73,9 @@ async def gen_one(item: dict, default_voice: str, ffmpeg: str, tmpdir: Path,
     rate = item.get("rate")
     snr_db = item.get("noise_snr_db")
 
-    pcm = CORPUS_DIR / f"{cid}.pcm"
-    ogg = CORPUS_DIR / f"{cid}.ogg"
-    txt = CORPUS_DIR / f"{cid}.txt"
+    pcm = corpus_dir / f"{cid}.pcm"
+    ogg = corpus_dir / f"{cid}.ogg"
+    txt = corpus_dir / f"{cid}.txt"
     if not force and pcm.exists() and ogg.exists() and txt.exists():
         return "skip"
 
@@ -124,20 +125,22 @@ async def main_async(args: argparse.Namespace) -> int:
         print("FAIL: ffmpeg not found. Use --ffmpeg PATH or add to PATH.", file=sys.stderr)
         return 1
 
-    manifest_path = CORPUS_DIR / "corpus.json"
+    manifest_path = Path(args.manifest) if args.manifest else CORPUS_DIR / "corpus.json"
     if not manifest_path.exists():
         print(f"FAIL: corpus manifest not found {manifest_path}", file=sys.stderr)
         return 1
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    out_dir = manifest_path.resolve().parent
 
-    CORPUS_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     ok = skip = 0
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as td:
         tmpdir = Path(td)
         for item in manifest:
             try:
-                result = await gen_one(item, args.voice, ffmpeg, tmpdir, args.force)
+                result = await gen_one(item, args.voice, ffmpeg, tmpdir, args.force,
+                                       out_dir)
                 if result == "skip":
                     print(f"  SKIP {item['id']} (exists)")
                     skip += 1
@@ -161,6 +164,8 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
     ap = argparse.ArgumentParser(description="Generate Voice Stick test corpus.")
+    ap.add_argument("--manifest", default=None,
+                    help="语料清单路径（默认 corpus/corpus.json），产物写到清单同目录")
     ap.add_argument("--voice", default=DEFAULT_VOICE, help=f"edge-tts voice (default {DEFAULT_VOICE})")
     ap.add_argument("--ffmpeg", default=None, help="path to ffmpeg.exe (default: search PATH)")
     ap.add_argument("--force", action="store_true", help="重新生成已有语料")

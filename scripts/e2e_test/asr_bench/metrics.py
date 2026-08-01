@@ -198,3 +198,69 @@ def per_clip_detail(results: list[ClipResult]) -> list[dict]:
             "total_latency_ms": r.total_latency_ms,
         })
     return detail
+
+
+def hotword_hit(final_text: str, word: str) -> bool:
+    """归一化后子串匹配：识别文本是否包含目标热词（大小写/标点/全半角不敏感）。"""
+    norm_word = normalize_text(word)
+    if not norm_word:
+        return False
+    return norm_word in normalize_text(final_text)
+
+
+def hotword_report(results: list[ClipResult],
+                   clip_hotwords: dict[str, list[str]],
+                   library: list[str] | None = None) -> dict:
+    """热词专项指标。
+
+    - clip_hotwords：{clip_id: [该句目标热词]}，目标热词是命中率 ground truth。
+    - library：参与本次评测的完整热词库（默认取 clip_hotwords 并集），用于
+      统计对照语料（无目标热词的 clip）的误触发——输出中出现了库内词。
+
+    返回 overall（命中/总数/命中率）、per_word（逐词 hit/total/recall）、
+    false_trigger（对照语料的误触发 clip 数与逐词明细）。
+    """
+    if library is None:
+        library = sorted({w for words in clip_hotwords.values() for w in words})
+    ok = [r for r in results if r.success]
+
+    per_word: dict[str, dict[str, int]] = {}
+    total = hit = 0
+    for r in ok:
+        targets = clip_hotwords.get(r.clip_id) or []
+        for word in targets:
+            stat = per_word.setdefault(word, {"hit": 0, "total": 0})
+            stat["total"] += 1
+            total += 1
+            if hotword_hit(r.final_text, word):
+                stat["hit"] += 1
+                hit += 1
+
+    # 对照语料误触发：库内词出现在不该出现的句子里
+    false_words: dict[str, int] = {}
+    false_clips = 0
+    control = [r for r in ok if not clip_hotwords.get(r.clip_id)]
+    for r in control:
+        triggered = [w for w in library if hotword_hit(r.final_text, w)]
+        if triggered:
+            false_clips += 1
+            for w in triggered:
+                false_words[w] = false_words.get(w, 0) + 1
+
+    return {
+        "overall": {
+            "hit": hit,
+            "total": total,
+            "recall": round(hit / total, 4) if total else None,
+        },
+        "per_word": {
+            w: {**s, "recall": round(s["hit"] / s["total"], 4) if s["total"] else None}
+            for w, s in sorted(per_word.items())
+        },
+        "false_trigger": {
+            "control_runs": len(control),
+            "clips_with_false": false_clips,
+            "rate": round(false_clips / len(control), 4) if control else None,
+            "words": dict(sorted(false_words.items(), key=lambda kv: -kv[1])),
+        },
+    }

@@ -29,7 +29,12 @@ DEFAULT_ENGINE = "16k_zh_en"
 
 def build_signed_url(secret_id: str, secret_key: str, appid: str,
                      voice_id: str, engine: str = DEFAULT_ENGINE,
-                     needvad: str = "1", voice_format: str = "10") -> str:
+                     needvad: str = "1", voice_format: str = "10",
+                     hotword_id: str = "", hotword_list: str = "") -> str:
+    """hotword_id=控制台热词表 ID；hotword_list=临时热词表（"词|权重" 逗号分隔，
+    最多 128 词）。两者同传时服务端只有 hotword_list 生效。
+    参数值与桌面端 asr_client_tencent.cc 一致原样进签名原文与 URL，
+    不做 URL encode（中文/竖线原样进 query，实测服务端接受）。"""
     params = {
         "secretid": secret_id,
         "timestamp": str(int(time.time())),
@@ -40,12 +45,21 @@ def build_signed_url(secret_id: str, secret_key: str, appid: str,
         "needvad": needvad,
         "voice_id": voice_id,
     }
+    if hotword_id:
+        params["hotword_id"] = hotword_id
+    if hotword_list:
+        params["hotword_list"] = hotword_list
     query = "&".join(f"{k}={params[k]}" for k in sorted(params))
     sign_str = f"{TENCENT_HOST}/asr/v2/{appid}?{query}"
     sig = base64.b64encode(
         hmac.new(secret_key.encode(), sign_str.encode(), hashlib.sha1).digest()
     ).decode()
-    return f"wss://{sign_str}&signature={urllib.parse.quote(sig, safe='')}"
+    # 签名原文用原值；最终 URL 逐值 percent-encode（hotword_list 含中文/竖线时
+    # 必须编码，否则 HTTP 请求行无法以 ASCII 发送）。unreserved 字符不受影响。
+    encoded_query = "&".join(f"{k}={urllib.parse.quote(params[k], safe='')}"
+                             for k in sorted(params))
+    return (f"wss://{TENCENT_HOST}/asr/v2/{appid}?{encoded_query}"
+            f"&signature={urllib.parse.quote(sig, safe='')}")
 
 
 def wrap_frame(packet: bytes) -> bytes:
@@ -56,7 +70,8 @@ def wrap_frame(packet: bytes) -> bytes:
 def run_clip(ogg_path: Path, *, secret_id: str, secret_key: str, appid: str,
              engine: str = DEFAULT_ENGINE, timeout: float = 20.0,
              duration_s: float = 0.0, clip_id: str = "", round_no: int = 0,
-             category: str = "", reference: str = "") -> ClipResult:
+             category: str = "", reference: str = "",
+             hotword_id: str = "", hotword_list: str = "") -> ClipResult:
     """回放单条 ogg 到腾讯 ASR，返回结构化结果。异常不外抛，记入 error。"""
     res = ClipResult(clip_id=clip_id, provider="tencent", round=round_no,
                      category=category, reference=reference, duration_s=duration_s)
@@ -67,7 +82,8 @@ def run_clip(ogg_path: Path, *, secret_id: str, secret_key: str, appid: str,
 
     sock = None
     try:
-        url = build_signed_url(secret_id, secret_key, appid, str(uuid.uuid4()), engine)
+        url = build_signed_url(secret_id, secret_key, appid, str(uuid.uuid4()), engine,
+                               hotword_id=hotword_id, hotword_list=hotword_list)
         sock = websocket_handshake(url, timeout)
         sock.settimeout(timeout)
 

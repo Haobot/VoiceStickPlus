@@ -1,0 +1,22 @@
+[
+  {"id": "hw_01", "text": "我们用 Opus 编码器压缩麦克风采集的音频。", "category": "hotword", "hotwords": ["Opus"]},
+  {"id": "hw_02", "text": "Opus 在低码率下的音质比 AAC 更适合语音通话。", "category": "hotword", "hotwords": ["Opus"]},
+  {"id": "hw_03", "text": "最终把音频封装成 Ogg 容器格式再上传。", "category": "hotword", "hotwords": ["Ogg"]},
+  {"id": "hw_04", "text": "ESP32 通过 BLE 把音频数据发送到桌面端。", "category": "hotword", "hotwords": ["ESP32", "BLE"]},
+  {"id": "hw_05", "text": "固件升级只走 BLE OTA 通道，不再用 WiFi。", "category": "hotword", "hotwords": ["BLE", "OTA"]},
+  {"id": "hw_06", "text": "这块开发板搭载的是 ESP32-S3 芯片。", "category": "hotword", "hotwords": ["ESP32-S3"]},
+  {"id": "hw_07", "text": "桌面端通过 WebSocket 把音频流推给识别服务。", "category": "hotword", "hotwords": ["WebSocket"]},
+  {"id": "hw_08", "text": "WebSocket 连接断开后客户端会自动重连。", "category": "hotword", "hotwords": ["WebSocket"]},
+  {"id": "hw_09", "text": "VoiceStick 支持按住说话和点按说话两种模式。", "category": "hotword", "hotwords": ["VoiceStick"]},
+  {"id": "hw_10", "text": "这个仓库的开发规范写在 CLAUDE.md 里面。", "category": "hotword", "hotwords": ["CLAUDE.md"]},
+  {"id": "hw_11", "text": "修改协议后要同步更新 AGENTS.md 文档。", "category": "hotword", "hotwords": ["AGENTS.md"]},
+  {"id": "hw_12", "text": "固件基于 ESP-IDF 五点五版本开发。", "category": "hotword", "hotwords": ["ESP-IDF"]},
+  {"id": "hw_13", "text": "Windows 端用 WinSparkle 实现自动更新。", "category": "hotword", "hotwords": ["WinSparkle"]},
+  {"id": "hw_14", "text": "虚拟声卡 VB-CABLE 把音频路由给微信输入法。", "category": "hotword", "hotwords": ["VB-CABLE"]},
+  {"id": "hw_15", "text": "蛙泳冠军覃海洋在巴黎奥运会夺得金牌。", "category": "hotword", "hotwords": ["覃海洋"]},
+  {"id": "hw_16", "text": "覃海洋的成绩刷新了亚洲纪录。", "category": "hotword", "hotwords": ["覃海洋"]},
+  {"id": "hw_17", "text": "这家店的蜜制叉烧比秘制酱料更受欢迎。", "category": "hotword", "hotwords": ["蜜制"]},
+  {"id": "hw_18", "text": "疯狂星期四被网友们简称为疯四。", "category": "hotword", "hotwords": ["疯四"]},
+  {"id": "hw_19", "text": "德基的疯四活动每周四都有优惠。", "category": "hotword", "hotwords": ["疯四"]},
+  {"id": "hw_20", "text": "这部小说的女主角名叫逐玉。", "category": "hotword", "hotwords": ["逐玉"]}
+]

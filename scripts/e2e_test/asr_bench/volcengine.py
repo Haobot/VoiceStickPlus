@@ -26,7 +26,9 @@ EVENT_TASK_REQUEST = 200
 
 
 def session_payload(resource_id: str, *, result_type: str = "full",
-                    enable_nonstream: bool = True, enable_ddc: bool = True) -> bytes:
+                    enable_nonstream: bool = True, enable_ddc: bool = True,
+                    hotwords: list[str] | None = None,
+                    boosting_table_id: str = "", correct_table_id: str = "") -> bytes:
     request = {
         "model_name": "bigmodel",
         "enable_nonstream": enable_nonstream,
@@ -35,6 +37,16 @@ def session_payload(resource_id: str, *, result_type: str = "full",
         "enable_ddc": enable_ddc,
         "resource_id": resource_id,
     }
+    corpus: dict[str, str] = {}
+    if boosting_table_id:
+        corpus["boosting_table_id"] = boosting_table_id
+    if correct_table_id:
+        corpus["correct_table_id"] = correct_table_id
+    if hotwords:
+        corpus["context"] = json.dumps({"hotwords": [{"word": w} for w in hotwords]},
+                                       ensure_ascii=False, separators=(",", ":"))
+    if corpus:
+        request["corpus"] = corpus
     payload = {
         "user": {"uid": "voice-stick-asr-bench"},
         "audio": {"format": "ogg", "codec": "opus", "rate": 16000, "bits": 16, "channel": 1},
@@ -44,9 +56,13 @@ def session_payload(resource_id: str, *, result_type: str = "full",
 
 
 def connection_payload(resource_id: str, *, result_type: str = "full",
-                       enable_nonstream: bool = True, enable_ddc: bool = True) -> bytes:
+                       enable_nonstream: bool = True, enable_ddc: bool = True,
+                       hotwords: list[str] | None = None,
+                       boosting_table_id: str = "", correct_table_id: str = "") -> bytes:
     inner = session_payload(resource_id, result_type=result_type,
-                            enable_nonstream=enable_nonstream, enable_ddc=enable_ddc)
+                            enable_nonstream=enable_nonstream, enable_ddc=enable_ddc,
+                            hotwords=hotwords, boosting_table_id=boosting_table_id,
+                            correct_table_id=correct_table_id)
     return b'{"namespace":"BidirectionalASR","event":0,"req_params":' + inner + b"}"
 
 
@@ -98,11 +114,14 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
              duration_s: float = 0.0, clip_id: str = "", round_no: int = 0,
              category: str = "", reference: str = "",
              result_type: str = "full", enable_nonstream: bool = True,
-             enable_ddc: bool = True) -> ClipResult:
+             enable_ddc: bool = True, hotwords: list[str] | None = None,
+             boosting_table_id: str = "", correct_table_id: str = "") -> ClipResult:
     """回放单条 ogg 到火山 ASR，返回结构化结果。异常不外抛，记入 error。
 
     result_type / enable_nonstream / enable_ddc 默认与桌面端一致，
     消融实验（run_volc_ablation.py）通过覆盖这三个参数对比配置。
+    hotwords=corpus.context 直传热词；boosting_table_id / correct_table_id
+    为自学习平台热词表/替换词表 ID。
     """
     res = ClipResult(clip_id=clip_id, provider="volcengine", round=round_no,
                      category=category, reference=reference, duration_s=duration_s)
@@ -124,7 +143,9 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
         partials: list[str] = []
 
         payload_kw = dict(result_type=result_type, enable_nonstream=enable_nonstream,
-                          enable_ddc=enable_ddc)
+                          enable_ddc=enable_ddc, hotwords=hotwords,
+                          boosting_table_id=boosting_table_id,
+                          correct_table_id=correct_table_id)
         send_ws_frame(sock, 0x2, make_event_frame(0x01, EVENT_START_CONNECTION, "", 0x01,
                                                   connection_payload(resource_id, **payload_kw)))
         time.sleep(0.2)
