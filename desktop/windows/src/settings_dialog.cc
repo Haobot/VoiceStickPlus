@@ -156,8 +156,10 @@ HWND CreateSeparator(HWND parent, int x, int y, int w, int h, HINSTANCE inst) {
 
 } // namespace
 
-SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config)
-    : instance_(instance), parent_(parent), config_(std::move(config)) {}
+SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
+                               bool show_encoder_settings)
+    : instance_(instance), parent_(parent), config_(std::move(config)),
+      show_encoder_settings_(show_encoder_settings) {}
 
 SettingsDialog::~SettingsDialog() {
     if (hwnd_) DestroyWindow(hwnd_);
@@ -552,8 +554,6 @@ void SettingsDialog::BuildControls() {
     // 调试音频、IMU 调试等区块不加入布局表（控件仍创建，保存时按加载值回写，
     // config.toml 手改依然生效）。
     constexpr bool kShowAdvancedSettings = false;
-    // 编码器区块独立于高级开关单独放开，始终可见。
-    constexpr bool kShowEncoderSettings = true;
     // 热词处理（整段提炼关键词）区块同样单独放开，始终可见。
     constexpr bool kShowHotwordProcessSettings = true;
     // 分组标题：左对齐加粗文本，宽度与“标签+控件”区域对齐。
@@ -897,16 +897,17 @@ void SettingsDialog::BuildControls() {
             {air_mouse_sensitivity_y_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
         });
     }
-    separator();
+    // 编码器区块整体隐藏时，其前置分隔线一并隐藏，避免末尾残留孤立分隔线。
+    separator([this]() { return show_encoder_settings_; });
 
     // ===== 编码器 =====
-    if (kShowEncoderSettings) section_title(StringId::kSettingsSectionEncoder);
+    if (show_encoder_settings_) section_title(StringId::kSettingsSectionEncoder);
     {
         HWND eta_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         encoder_to_arrow_check_ = remember(CreateButton(
             hwnd_, TrW(StringId::kSettingsEncoderToArrow, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdEncoderToArrow, instance_, BS_AUTOCHECKBOX));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {eta_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_to_arrow_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -921,7 +922,7 @@ void SettingsDialog::BuildControls() {
         encoder_rotation_invert_check_ = remember(CreateButton(
             hwnd_, TrW(StringId::kSettingsEncoderRotationInvert, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdEncoderRotationInvert, instance_, BS_AUTOCHECKBOX));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {eri_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotation_invert_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         }, encoder_rotate_rows_visible);
@@ -932,7 +933,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_cw_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                           kIdEncoderRotateCwKey, instance_));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {cw_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_cw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         }, encoder_rotate_rows_visible);
@@ -943,7 +944,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_ccw_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                            kIdEncoderRotateCcwKey, instance_));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {ccw_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_ccw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         }, encoder_rotate_rows_visible);
@@ -961,7 +962,7 @@ void SettingsDialog::BuildControls() {
         SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETPAGESIZE, 0, 20);
         encoder_rotate_fast_threshold_value_label_ = remember(CreateLeftLabel(
             hwnd_, L"200", 0, 0, Dp(30), Dp(20), instance_));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {threshold_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_fast_threshold_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
             {encoder_rotate_fast_threshold_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
@@ -973,7 +974,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_cw_fast_key_edit_ = remember(CreateEdit(
             hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCwFastKey, instance_));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {cw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_cw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         }, encoder_rotate_rows_visible);
@@ -984,7 +985,7 @@ void SettingsDialog::BuildControls() {
             0, 0, label_w, Dp(20), instance_));
         encoder_rotate_ccw_fast_key_edit_ = remember(CreateEdit(
             hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCcwFastKey, instance_));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {ccw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_ccw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         }, encoder_rotate_rows_visible);
@@ -1005,7 +1006,7 @@ void SettingsDialog::BuildControls() {
             SendMessageW(encoder_led_color_combo_, CB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(TrW(id, language).c_str()));
         }
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {led_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_led_color_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
         });
@@ -1021,13 +1022,13 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionRecording, language).c_str()));
         SendMessageW(encoder_press_action_combo_, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionKey, language).c_str()));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {pa_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_press_action_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
         });
         encoder_press_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                       kIdEncoderPressKey, instance_));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {encoder_press_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
     }
@@ -1042,20 +1043,20 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionKey, language).c_str()));
         SendMessageW(encoder_double_click_action_combo_, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionRecording, language).c_str()));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {da_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_double_click_action_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
         });
         encoder_double_click_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                              kIdEncoderDoubleClickKey, instance_));
-        if (kShowEncoderSettings) add(row_h + Dp(10), {
+        if (show_encoder_settings_) add(row_h + Dp(10), {
             {encoder_double_click_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
     }
     // 系统区：开机自启与划词热词两项与托盘右键菜单重复，已从设置页隐藏；其余行
     // 均属高级开关（kShowAdvancedSettings=false），整区暂不显示。
     constexpr bool kShowSystemSection = false;
-    if (kShowEncoderSettings && kShowSystemSection) separator();
+    if (show_encoder_settings_ && kShowSystemSection) separator();
 
     // ===== 系统 =====
     if (kShowSystemSection) section_title(StringId::kSettingsSectionSystem);

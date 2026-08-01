@@ -403,6 +403,10 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
     if (event.event == "device_info") {
         ui_->SetDeviceInfo(DeviceInfo{device_id, event.hardware, event.firmware_version});
         UpdateDeviceFirmwareInfo(event, device_id);
+    } else if (event.event == "encoder_status") {
+        if (event.encoder_present.has_value()) {
+            ui_->SetDeviceEncoderPresent(device_id, event.encoder_present.value());
+        }
     } else if (event.event == "battery_status") {
         if (event.battery_level.has_value()) {
             ui_->SetDeviceBattery(device_id, event.battery_level.value(),

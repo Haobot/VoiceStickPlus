@@ -49,6 +49,9 @@ struct DeviceInfo {
     std::string device_id;
     std::string hardware;
     std::string firmware_version;
+    // MiniEncoderC 编码器是否在线（来自 encoder_status 事件）。
+    // 默认 true：老固件/尚未收到 encoder_status 时保持编码器设置可见，避免误隐藏。
+    bool encoder_present = true;
 };
 
 struct FirmwareUpdateProgress {
@@ -133,6 +136,8 @@ public:
     virtual void SetStatus(const std::string& status) = 0;
     virtual void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) = 0;
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
+    // 编码器在线状态（encoder_status 事件）：驱动设置对话框编码器区块显隐。
+    virtual void SetDeviceEncoderPresent(const std::string& device_id, bool present) = 0;
     virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
                                    bool charging, bool usb_powered) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;

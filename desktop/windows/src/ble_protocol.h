@@ -32,6 +32,9 @@ struct StateEvent {
     std::optional<std::uint32_t> duration_ms;
     std::string hardware;
     std::string firmware_version;
+    // MiniEncoderC 编码器在线标志：仅 encoder_status 事件携带；老固件不发送该事件，
+    // 消费端按「在线」处理以保持编码器设置可见（向后兼容）。
+    std::optional<bool> encoder_present;
     std::optional<int> battery_level;
     std::optional<bool> battery_charging;
     std::optional<bool> battery_usb_powered;

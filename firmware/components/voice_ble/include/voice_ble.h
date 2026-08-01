@@ -49,6 +49,12 @@ esp_err_t voice_ble_send_audio(uint32_t session_id, uint32_t seq, uint8_t flags,
 esp_err_t voice_ble_request_fast_interval(void);
 esp_err_t voice_ble_request_slow_interval(void);
 esp_err_t voice_ble_send_device_info(void);
+// 上报 MiniEncoderC 编码器在线状态（独立小帧：device_info 已接近 BLE 通知 MTU 上限，
+// 不宜再扩字段）。在 state_tx 订阅后随 device_info 一起发送；运行期降级时也发送。
+esp_err_t voice_ble_send_encoder_status(void);
+// 设置 MiniEncoderC 编码器在线标志。在 mini_encoder_c_init() 之后由 main 设置一次；
+// 运行期降级为 absent 时更新为 false 并触发一次 encoder_status 上报。
+void voice_ble_set_encoder_present(bool present);
 // source 为事件来源标签（如 "encoder"），NULL 时省略该字段（物理键/远程键行为不变）。
 esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id,
                                      const char *source);

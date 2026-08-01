@@ -157,6 +157,12 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.duration_ms = JsonU32Value(json, "duration_ms");
     event.hardware = JsonStringValue(json, "hardware");
     event.firmware_version = JsonStringValue(json, "firmware_version");
+    // encoder_status 事件：{"event":"encoder_status","present":true/false}。
+    // 独立小帧上报（device_info 已接近 BLE 通知 MTU 上限，不宜再扩字段）；
+    // 老固件不发送此事件，消费端按「在线」处理保持编码器设置可见（向后兼容）。
+    if (event.event == "encoder_status") {
+        event.encoder_present = JsonBoolValue(json, "present");
+    }
     event.battery_level = JsonIntValue(json, "level");
     event.battery_charging = JsonBoolValue(json, "charging");
     event.battery_usb_powered = JsonBoolValue(json, "usb_powered");

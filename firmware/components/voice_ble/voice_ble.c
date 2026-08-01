@@ -816,6 +816,10 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (rc != ESP_OK) {
                     ESP_LOGW(TAG, "device_info send failed err=0x%x", rc);
                 }
+                rc = voice_ble_send_encoder_status();
+                if (rc != ESP_OK) {
+                    ESP_LOGW(TAG, "encoder_status send failed err=0x%x", rc);
+                }
             }
         }
         return 0;
@@ -1257,6 +1261,23 @@ static esp_err_t send_state_json(const char *json)
 
     ESP_LOGD(TAG, "state %s", json);
     return ESP_OK;
+}
+
+// MiniEncoderC 编码器在线标志：由 main 在编码器探测后设置，经 encoder_status 帧上报。
+static bool s_encoder_present;
+
+void voice_ble_set_encoder_present(bool present)
+{
+    s_encoder_present = present;
+}
+
+esp_err_t voice_ble_send_encoder_status(void)
+{
+    char json[64];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"encoder_status\",\"present\":%s}",
+             s_encoder_present ? "true" : "false");
+    return send_state_json(json);
 }
 
 esp_err_t voice_ble_send_device_info(void)
