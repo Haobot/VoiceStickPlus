@@ -1,0 +1,9 @@
+relative_s,wall_time,mode_name,vbat_mv,charging,usb_powered,is_periodic,is_poweroff_segment,is_time_anchor
+0,,ADVERTISING,3562,0,0,0,0,0
+1,,S0_ACTIVE,3570,0,0,0,0,0
+12,,S1_RESTING,3570,0,0,0,0,0
+32,,S2_SCREEN_OFF,3572,0,0,0,0,0
+60,,S2_SCREEN_OFF,3572,0,0,1,0,0
+83,,ADVERTISING,3568,0,0,0,0,0
+105,,S0_ACTIVE,3572,0,0,0,0,0
+106,2026-08-02T00:47:12,TIME_ANCHOR,3564,0,0,0,0,1
