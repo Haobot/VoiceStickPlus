@@ -696,6 +696,31 @@ class EspIdfAutomation:
         self.logger.error("烧录失败，终止流程")
         sys.exit(12)
 
+    # ---------- 桌面端进程检测 ----------
+    def is_voicestick_running(self):
+        """检测 VoiceStick 桌面端是否在运行。
+
+        监控前若设备已和桌面端 BLE 连接，DTR/RTS 复位会强制断开链路，
+        可能触发 Windows BLE 广告 watcher 静默失效（见
+        Doc/Expe/ble-watcher-silent-death-pairing-stuck.md），需重启蓝牙
+        服务才能恢复。检测到桌面端在运行时跳过自动复位以避免此问题。
+        """
+        try:
+            if self.os_type == "Windows":
+                result = subprocess.run(
+                    ['tasklist', '/FI', 'IMAGENAME eq VoiceStick.exe', '/NH'],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
+                return 'VoiceStick.exe' in result.stdout
+            else:
+                result = subprocess.run(
+                    ['pgrep', '-x', 'VoiceStickApp'],
+                    capture_output=True, timeout=5)
+                return result.returncode == 0
+        except Exception as e:
+            self.logger.debug(f"检测 VoiceStick 进程失败: {e}")
+            return False
+
     # ---------- 自动复位 ----------
     def dtr_rts_reset(self):
         try:
@@ -745,9 +770,19 @@ class EspIdfAutomation:
             self.logger.error("未指定监控端口或自动匹配失败")
             sys.exit(13)
         if self.reset_before_monitor:
-            self.logger.info(f"复位设备以捕获 boot 日志: {self.port}")
-            self.dtr_rts_reset()
-            time.sleep(0.3)
+            force = getattr(self.args, 'force_reset', False)
+            if not force and self.is_voicestick_running():
+                self.logger.warning(
+                    "检测到 VoiceStick 桌面端正在运行，跳过自动复位"
+                    "（复位会断开已建立的 BLE 连接并可能触发 watcher 静默失效）。"
+                    "如需捕获 boot 日志，请先关闭 VoiceStick 桌面端，"
+                    "或使用 --force-reset 强制复位。"
+                )
+            else:
+                label = "--force-reset" if force else "复位设备"
+                self.logger.info(f"{label}以捕获 boot 日志: {self.port}")
+                self.dtr_rts_reset()
+                time.sleep(0.3)
 
         self.logger.info(f"打开串口监控: {self.port} @ {self.monitor_baud}")
         self.logger.info("按 ESC 或 Ctrl+C 退出监控")
@@ -836,6 +871,8 @@ def main():
     parser.add_argument('--list-ports', dest='list_ports', action='store_true', help='列出检测到的串口')
     parser.add_argument('--no-progress', dest='no_progress', action='store_true', help='关闭进度条，逐行输出')
     parser.add_argument('-v', '--verbose', action='store_true', help='DEBUG 日志，显示完整命令输出')
+    parser.add_argument('--force-reset', dest='force_reset', action='store_true',
+                        help='强制在监控前复位设备（即使 VoiceStick 桌面端正在运行）')
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
