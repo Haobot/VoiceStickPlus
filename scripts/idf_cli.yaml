@@ -10,7 +10,7 @@ default:
   port: ""                  # 串口：留空=自动检测；COMx / /dev/ttyUSBx
   baudrate: 921600          # 烧录波特率（esptool）
   monitor_baudrate: 115200  # 串口监控波特率（ESP-IDF 日志默认 115200）
-  flash_baud_before_monitor: true  # monitor 前自动复位设备以捕获 boot 日志
+  flash_baud_before_monitor: true  # monitor 前自动复位设备以捕获 boot 日志；检测到 VoiceStick 桌面端在运行时自动跳过（避免断开 BLE 连接触发 watcher 静默失效），用 --force-reset 强制复位
 
 # 串口自动检测评分规则（参考 arduino-cli.py，适配 ESP32-S3）
 serial_detection:
