@@ -23,6 +23,13 @@ public:
     /// 调用方应在后台线程中调用此方法以避免阻塞 UI。
     std::string SyncHotwords(const std::vector<std::string>& hotwords);
 
+    /// 腾讯热词词表 API 只接受中英文/数字/连字符/下划线；含 '.' 等字符的词会
+    /// 让整个请求被拒之门外（InvalidParameterValue.InvalidWordWeight，2026-08-01
+    /// 热词评测实测）。同步前必须逐词过滤，否则一个非法词会让整表同步失败。
+    /// 判定宽松放行的字节：ASCII 字母数字与 '_' '-'，以及所有 >= 0x80 的
+    /// UTF-8 多字节序列（CJK 等）。
+    static bool IsValidHotwordChars(std::string_view word);
+
 private:
     struct HotWordEntry {
         std::string word;
