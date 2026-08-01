@@ -1385,7 +1385,8 @@ void Win32App::ShowTrayMenu() {
                 TrW(StringId::kMenuSelectionHotword, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuSettings, TrW(StringId::kMenuSettings, language).c_str());
-    AppendMenuW(menu, MF_STRING, kMenuAirMouseTuning, L"体感鼠标调参（热调参）");
+    // 体感鼠标调参入口已从托盘菜单隐藏；kMenuAirMouseTuning 命令处理与
+    // air_mouse_tuning_window 保留，需要时可恢复菜单项重新启用。
     if (!config_.portable_mode) {
         AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
                     TrW(StringId::kMenuCheckAppUpdates, language).c_str());

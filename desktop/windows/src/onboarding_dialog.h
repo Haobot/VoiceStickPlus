@@ -38,6 +38,9 @@ private:
     void LoadConfigIntoControls();
     void SaveControlsIntoConfig();
     void UpdateProviderVisibility();
+    // 服务商下拉框索引 ↔ AsrProvider 映射；provider_combo_has_cloud_ 时 0 号位为 Cloud。
+    AsrProvider ProviderAtComboIndex(int idx) const;
+    int ComboIndexForProvider(AsrProvider provider) const;
     void ApplyTrialApiKey();
     void GoBack();
     void GoNext();
@@ -63,6 +66,8 @@ private:
     std::vector<HWND> controls_;
     HWND status_label_ = nullptr;
     HWND provider_combo_ = nullptr;
+    // 当前配置为 voicestick_cloud 时，下拉框 0 号位临时插入 "VoiceStick Cloud"（老配置兼容）。
+    bool provider_combo_has_cloud_ = false;
     HWND api_key_edit_ = nullptr;
     HWND apply_trial_button_ = nullptr;
     HWND resource_label_ = nullptr;

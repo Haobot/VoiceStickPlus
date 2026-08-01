@@ -228,9 +228,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             if (HIWORD(w_param) == CBN_SELCHANGE) {
                 int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
                 const std::string& key = [&]() -> const std::string& {
-                    switch (idx) {
-                        case 0: return config_.voicestick_api_key;
-                        case 2: return config_.tencent_secret_id;
+                    switch (ProviderAtComboIndex(idx)) {
+                        case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
+                        case AsrProvider::kTencent: return config_.tencent_secret_id;
                         default: return config_.volcengine_api_key;
                     }
                 }();
@@ -246,6 +246,10 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         case kIdHotwordProcessEnable:
             if (HIWORD(w_param) == BN_CLICKED) UpdateHotwordProcessPromptVisibility();
+            return TRUE;
+        case kIdEncoderToArrow:
+            // 勾选/取消「旋转时注入」：旋转相关行的显隐与定位交由 Relayout 统一处理。
+            if (HIWORD(w_param) == BN_CLICKED) UpdateEncoderRotateRowsVisibility();
             return TRUE;
         case kIdOutputTarget:
             if (HIWORD(w_param) == CBN_SELCHANGE) UpdateOutputTargetVisibility();
@@ -558,10 +562,10 @@ void SettingsDialog::BuildControls() {
                                                     0, 0, ctrl_x + ctrl_w - Dp(10), title_h, instance_));
         add(title_h + Dp(4), {{t, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), title_h}});
     };
-    // 组间分隔线：宽度同标题，推进为线高 + 下方间距。
-    auto separator = [&]() {
+    // 组间分隔线：宽度同标题，推进为线高 + 下方间距；可带可见性谓词（空=始终可见）。
+    auto separator = [&](std::function<bool()> vis = std::function<bool()>()) {
         HWND s = remember(CreateSeparator(hwnd_, 0, 0, ctrl_x + ctrl_w - Dp(10), sep_h, instance_));
-        add(sep_h + Dp(12), {{s, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), sep_h}});
+        add(sep_h + Dp(12), {{s, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), sep_h}}, std::move(vis));
     };
 
     // ===== 通用 =====
@@ -591,7 +595,11 @@ void SettingsDialog::BuildControls() {
                                                      0, 0, label_w, Dp(20), instance_));
         provider_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
                                                kIdProviderCombo, instance_));
-        SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
+        // VoiceStick Cloud 已从下拉框下线；仅老配置仍为 cloud 时临时插入该项（0 号位）。
+        provider_combo_has_cloud_ = (config_.asr_provider == AsrProvider::kVoiceStickCloud);
+        if (provider_combo_has_cloud_) {
+            SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
+        }
         SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
         SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
         add(row_h + Dp(10), {
@@ -600,25 +608,20 @@ void SettingsDialog::BuildControls() {
         });
     }
     {
+        // API Key 行已从界面隐藏（凭据只走 config.toml）；控件仍创建并参与 config 读写，
+        // 未加入布局表的控件会被 BuildControls 统一隐藏。
         HWND api_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(),
                                                     0, 0, label_w, Dp(20), instance_));
         const int apply_btn_w = Dp(102);
-        // api_key_edit 宽度先按占满注册，实际宽度由 ApplyApiKeyLayout 在 Relayout 末尾按
-        // apply_trial_button 显隐动态调整。
         api_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                             kIdApiKeyEdit, instance_, ES_PASSWORD));
         apply_trial_button_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsApplyTrial, language).c_str(),
                                                     0, 0, apply_btn_w, Dp(24),
                                                     kIdApplyTrialApiKey, instance_));
-        add(row_h + Dp(10), {
-            {api_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-            // apply_trial_button 行内条件：defer_visibility 让显隐交给 ApplyApiKeyLayout。
-            {apply_trial_button_, ctrl_x + ctrl_w - apply_btn_w, 0, apply_btn_w, Dp(24), true},
-        });
+        (void)api_label;
     }
     {
-        // 资源 ID 行：仅 Volcengine 显示，隐藏时不占位。
+        // 资源 ID 行同样从界面隐藏，保留控件与 config 读写。
         resource_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsResourceId).c_str(),
                                                      0, 0, label_w, Dp(20), instance_));
         resource_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
@@ -627,13 +630,6 @@ void SettingsDialog::BuildControls() {
             SendMessageW(resource_combo_, CB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(Utf16(id).c_str()));
         }
-        add(row_h + Dp(10), {
-            {resource_label_, Dp(10), Dp(3), label_w, Dp(20)},
-            {resource_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
-        }, [this]() {
-            int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-            return idx == 1;  // Volcengine
-        });
     }
     {
         // 热词块：label + 多行 edit + 提示行，作为一个整体推进。
@@ -677,34 +673,27 @@ void SettingsDialog::BuildControls() {
     // ===== 文本精修 =====
     section_title(StringId::kSettingsSectionRefine);
     {
+        // LLM Base URL / API Key / 模型三行已从界面隐藏（只走 config.toml）；
+        // 控件仍创建并参与 config 读写，未加入布局表的控件会被统一隐藏。
         HWND bu_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmBaseUrl).c_str(),
                                                    0, 0, label_w, Dp(20), instance_));
         llm_base_url_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                  kIdLlmBaseUrlEdit, instance_));
-        add(row_h + Dp(10), {
-            {bu_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {llm_base_url_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
+        (void)bu_label;
     }
     {
         HWND lak_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmApiKey).c_str(),
                                                     0, 0, label_w, Dp(20), instance_));
         llm_api_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                 kIdLlmApiKeyEdit, instance_, ES_PASSWORD));
-        add(row_h + Dp(10), {
-            {lak_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {llm_api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
+        (void)lak_label;
     }
     {
         HWND lm_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmModel).c_str(),
                                                    0, 0, label_w, Dp(20), instance_));
         llm_model_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                               kIdLlmModelEdit, instance_));
-        add(row_h + Dp(10), {
-            {lm_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {llm_model_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
+        (void)lm_label;
     }
     {
         HWND refine_lbl = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
@@ -761,7 +750,8 @@ void SettingsDialog::BuildControls() {
     if (kShowHotwordProcessSettings) separator();
 
     // ===== 输出 =====
-    section_title(StringId::kSettingsSectionOutput);
+    // 分区标题已移除：输出目标行被 kShowAdvancedSettings 隐藏后标题下内容为空；
+    // wechat 热键/触发方式行仍按输出目标=第三方输入法条件显示，仅不再有标题。
     {
         // 输出目标：当前应用 / 字幕 / 第三方输入法。
         HWND ot_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsOutputTarget).c_str(),
@@ -820,7 +810,12 @@ void SettingsDialog::BuildControls() {
             return idx == 2;  // 第三方输入法
         });
     }
-    separator();
+    // 分隔线与上面 wechat 两行同显隐：非 wechat 模式本分区块内容全隐藏，
+    // 始终可见会与热词处理区块的尾部分隔线连成双分隔线。
+    separator([this]() {
+        int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
+        return idx == 2;  // 第三方输入法
+    });
 
     // ===== 设备交互 =====
     section_title(StringId::kSettingsSectionDevice);
@@ -916,6 +911,11 @@ void SettingsDialog::BuildControls() {
             {encoder_to_arrow_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
     }
+    // 以下旋转相关行（方向翻转/顺逆时针按键/快慢阈值/快速档按键）仅「旋转时注入」
+    // 勾选时显示，隐藏时不占位；控件仍创建，隐藏时保存按加载值回写。
+    auto encoder_rotate_rows_visible = [this]() {
+        return SendMessageW(encoder_to_arrow_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    };
     {
         HWND eri_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         encoder_rotation_invert_check_ = remember(CreateButton(
@@ -924,7 +924,7 @@ void SettingsDialog::BuildControls() {
         if (kShowEncoderSettings) add(row_h + Dp(10), {
             {eri_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotation_invert_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        });
+        }, encoder_rotate_rows_visible);
     }
     {
         HWND cw_label = remember_label(CreateLabel(
@@ -935,7 +935,7 @@ void SettingsDialog::BuildControls() {
         if (kShowEncoderSettings) add(row_h + Dp(10), {
             {cw_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_cw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
+        }, encoder_rotate_rows_visible);
     }
     {
         HWND ccw_label = remember_label(CreateLabel(
@@ -946,7 +946,7 @@ void SettingsDialog::BuildControls() {
         if (kShowEncoderSettings) add(row_h + Dp(10), {
             {ccw_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_ccw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
+        }, encoder_rotate_rows_visible);
     }
     {
         // 快慢阈值滑杆 100~300 格/秒：右侧面板实时显示当前数值。
@@ -965,7 +965,7 @@ void SettingsDialog::BuildControls() {
             {threshold_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_fast_threshold_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
             {encoder_rotate_fast_threshold_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
-        });
+        }, encoder_rotate_rows_visible);
     }
     {
         HWND cw_fast_label = remember_label(CreateLabel(
@@ -976,7 +976,7 @@ void SettingsDialog::BuildControls() {
         if (kShowEncoderSettings) add(row_h + Dp(10), {
             {cw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_cw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
+        }, encoder_rotate_rows_visible);
     }
     {
         HWND ccw_fast_label = remember_label(CreateLabel(
@@ -987,7 +987,7 @@ void SettingsDialog::BuildControls() {
         if (kShowEncoderSettings) add(row_h + Dp(10), {
             {ccw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
             {encoder_rotate_ccw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
+        }, encoder_rotate_rows_visible);
     }
     {
         HWND led_label = remember_label(CreateLabel(
@@ -1052,16 +1052,19 @@ void SettingsDialog::BuildControls() {
             {encoder_double_click_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
         });
     }
-    if (kShowEncoderSettings) separator();
+    // 系统区：开机自启与划词热词两项与托盘右键菜单重复，已从设置页隐藏；其余行
+    // 均属高级开关（kShowAdvancedSettings=false），整区暂不显示。
+    constexpr bool kShowSystemSection = false;
+    if (kShowEncoderSettings && kShowSystemSection) separator();
 
     // ===== 系统 =====
-    section_title(StringId::kSettingsSectionSystem);
+    if (kShowSystemSection) section_title(StringId::kSettingsSectionSystem);
     {
         HWND lal_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         launch_at_login_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsLaunchAtLogin, language).c_str(),
                                                        0, 0, ctrl_w, Dp(22), kIdLaunchAtLogin, instance_,
                                                        BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
+        if (kShowSystemSection) add(row_h + Dp(10), {
             {lal_label, Dp(10), Dp(3), label_w, Dp(20)},
             {launch_at_login_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -1071,7 +1074,7 @@ void SettingsDialog::BuildControls() {
         selection_hotword_check_ = remember(CreateButton(
             hwnd_, TrW(StringId::kSettingsSelectionHotword, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdSelectionHotword, instance_, BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
+        if (kShowSystemSection) add(row_h + Dp(10), {
             {sh_label, Dp(10), Dp(3), label_w, Dp(20)},
             {selection_hotword_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         });
@@ -1235,15 +1238,27 @@ void SettingsDialog::ResizeWindow(int client_h) {
                  SWP_NOMOVE | SWP_NOZORDER);
 }
 
+AsrProvider SettingsDialog::ProviderAtComboIndex(int idx) const {
+    if (provider_combo_has_cloud_) {
+        if (idx == 0) return AsrProvider::kVoiceStickCloud;
+        --idx;
+    }
+    return idx == 1 ? AsrProvider::kTencent : AsrProvider::kVolcengine;
+}
+
+int SettingsDialog::ComboIndexForProvider(AsrProvider provider) const {
+    if (provider == AsrProvider::kVoiceStickCloud) return 0;  // 仅 has_cloud 时存在
+    const int idx = (provider == AsrProvider::kTencent) ? 1 : 0;
+    return provider_combo_has_cloud_ ? idx + 1 : idx;
+}
+
 void SettingsDialog::ApplyApiKeyLayout() {
     if (!api_key_edit_ || !apply_trial_button_ || !provider_combo_) return;
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    const bool is_cloud = (idx == 0);
-    const bool is_tencent = (idx == 2);
+    const bool is_cloud = (ProviderAtComboIndex(idx) == AsrProvider::kVoiceStickCloud);
     const bool api_key_empty = GetWindowText(api_key_edit_).empty();
-    // VoiceStick Cloud 且 API Key 为空时显示试用按钮；腾讯云不需要试用按钮。
-    bool show_trial = is_cloud && api_key_empty;
-    if (is_tencent) show_trial = false;
+    // VoiceStick Cloud 且 API Key 为空时显示试用按钮（API Key 行已隐藏，按钮实际不出现）。
+    const bool show_trial = is_cloud && api_key_empty;
     ShowWindow(apply_trial_button_, show_trial ? SW_SHOW : SW_HIDE);
     const int ctrl_w = Dp(kClientWidth - 230);
     const int apply_btn_w = Dp(102);
@@ -1258,9 +1273,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.ui_language == UiLanguage::kSimplifiedChinese) language_index = 2;
     SendMessageW(language_combo_, CB_SETCURSEL, language_index, 0);
 
-    int provider_idx = 0;
-    if (config_.asr_provider == AsrProvider::kVolcengine) provider_idx = 1;
-    if (config_.asr_provider == AsrProvider::kTencent) provider_idx = 2;
+    int provider_idx = ComboIndexForProvider(config_.asr_provider);
     SendMessageW(provider_combo_, CB_SETCURSEL, provider_idx, 0);
 
     const auto& key = [&]() -> const std::string& {
@@ -1378,9 +1391,7 @@ void SettingsDialog::SaveSettings() {
     }
 
     int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    AsrProvider new_provider = AsrProvider::kVoiceStickCloud;
-    if (provider_idx == 1) new_provider = AsrProvider::kVolcengine;
-    if (provider_idx == 2) new_provider = AsrProvider::kTencent;
+    AsrProvider new_provider = ProviderAtComboIndex(provider_idx);
 
     auto api_key = Utf8(GetWindowText(api_key_edit_));
     switch (new_provider) {
@@ -1600,7 +1611,7 @@ void SettingsDialog::UpdateProviderVisibility() {
 
 void SettingsDialog::ApplyTrialApiKey() {
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    if (idx != 0) return;
+    if (ProviderAtComboIndex(idx) != AsrProvider::kVoiceStickCloud) return;
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
 
     EnableWindow(apply_trial_button_, FALSE);
@@ -1684,6 +1695,11 @@ void SettingsDialog::UpdateRefinePromptVisibility() {
 
 void SettingsDialog::UpdateHotwordProcessPromptVisibility() {
     // 提炼提示词块的显隐与定位交由 Relayout 统一处理。
+    Relayout();
+}
+
+void SettingsDialog::UpdateEncoderRotateRowsVisibility() {
+    // 旋转相关行的显隐与定位交由 Relayout 统一处理。
     Relayout();
 }
 
