@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/param.h>
 
+#include "cJSON.h"
 #include "esp_check.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
@@ -15,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "power_log.h"
 
 #include "host/ble_att.h"
 #include "host/ble_gap.h"
@@ -89,6 +91,7 @@ static const ble_uuid128_t s_ota_state_uuid =
 static void start_advertising(void);
 static void start_advertising_with_mode(bool fast);
 static void stop_advertising(void);
+static esp_err_t send_state_json(const char *json);
 static struct ble_npl_callout s_adv_retry_callout;
 static struct ble_npl_callout s_adv_slow_callout;
 #define ADV_RETRY_DELAY_MS 1000
@@ -399,6 +402,235 @@ static int ota_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return rc;
 }
 
+// ---------------------------------------------------------------------------
+// power_log 导出命令族（control_rx -> state_tx 分片，协议见 Doc/Ref/protocol.md）
+//
+// 请求：{"power_log":{"cmd":"dump","offset":N,"max":M}} /
+//       {"power_log":{"cmd":"clear"}} /
+//       {"power_log":{"cmd":"time_anchor","epoch":S}}
+// 响应（state_tx 分片）：{"power_log":{"seq":n,"offset":o,"total":T,
+//       "eof":0|1,"data":"<base64>"}}，单片原始数据 <=160 字节。
+//
+// dump 是一次性流式会话：从 offset 开始按固定间隔逐片自动上报到 EOF，
+// total 为会话开始时 power_log_size() 快照。断连/clear/新 dump 命令都会
+// 终止当前会话。全部状态只在 NimBLE host 任务上下文访问（control 回调与
+// callout 都跑在默认事件队列），无需加锁。
+// ---------------------------------------------------------------------------
+
+#define POWER_LOG_CHUNK_RAW_MAX 160      // 单片原始数据上限（协议约束）
+#define POWER_LOG_DUMP_INTERVAL_MS 30    // 片间固定间隔（流控）
+#define POWER_LOG_DUMP_FAIL_STREAK_MAX 100  // 连续发送失败 ~3s 后放弃会话
+
+typedef struct {
+    bool active;
+    uint32_t offset;       // 下一片起始偏移
+    uint32_t total;        // 会话开始时 power_log_size() 快照
+    uint32_t seq;
+    uint16_t chunk_raw;    // 每片原始字节数（<=160，按 ATT MTU 钳制）
+    uint32_t fail_streak;
+} power_log_dump_state_t;
+
+static power_log_dump_state_t s_plog_dump;
+static struct ble_npl_callout s_plog_dump_callout;
+
+static const char s_b64_alphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+// 标准 base64 编码。返回编码后长度（不含 NUL），输出缓冲不足时返回 0。
+static size_t base64_encode(const uint8_t *in, size_t in_len, char *out, size_t out_size)
+{
+    const size_t needed = ((in_len + 2) / 3) * 4;
+    if (out_size < needed + 1) {
+        return 0;
+    }
+    size_t o = 0;
+    for (size_t i = 0; i < in_len; i += 3) {
+        const size_t remain = in_len - i;
+        uint32_t v = (uint32_t)in[i] << 16;
+        if (remain > 1) {
+            v |= (uint32_t)in[i + 1] << 8;
+        }
+        if (remain > 2) {
+            v |= in[i + 2];
+        }
+        out[o++] = s_b64_alphabet[(v >> 18) & 0x3f];
+        out[o++] = s_b64_alphabet[(v >> 12) & 0x3f];
+        out[o++] = remain > 1 ? s_b64_alphabet[(v >> 6) & 0x3f] : '=';
+        out[o++] = remain > 2 ? s_b64_alphabet[v & 0x3f] : '=';
+    }
+    out[o] = '\0';
+    return o;
+}
+
+static void power_log_dump_abort(const char *reason)
+{
+    if (!s_plog_dump.active) {
+        return;
+    }
+    s_plog_dump.active = false;
+    ble_npl_callout_stop(&s_plog_dump_callout);
+    ESP_LOGW(TAG, "power_log dump aborted: %s (sent=%" PRIu32 "/%" PRIu32 ")",
+             reason, s_plog_dump.offset, s_plog_dump.total);
+    if (s_connected && !s_ota.active) {
+        (void)voice_ble_request_slow_interval();
+    }
+}
+
+static void power_log_dump_send_next(void)
+{
+    if (!s_plog_dump.active) {
+        return;
+    }
+    if (!s_connected || !s_state_subscribed ||
+        s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        power_log_dump_abort("link down");
+        return;
+    }
+
+    uint8_t raw[POWER_LOG_CHUNK_RAW_MAX];
+    const size_t remaining = s_plog_dump.total - s_plog_dump.offset;  // offset<=total 不变式
+    const size_t want = MIN(remaining, (size_t)s_plog_dump.chunk_raw);
+    size_t got = want > 0 ? power_log_read(s_plog_dump.offset, raw, want) : 0;
+    if (got > want) {
+        got = want;  // 防御性截断
+    }
+    // 读到比请求少说明日志在会话期间被收缩（如并发 clear），按 EOF 收尾，
+    // 避免 got==0 时空片死循环。
+    const int eof = (got < want ||
+                     s_plog_dump.offset + got >= s_plog_dump.total) ? 1 : 0;
+
+    char b64[((POWER_LOG_CHUNK_RAW_MAX + 2) / 3) * 4 + 1];
+    (void)base64_encode(raw, got, b64, sizeof(b64));
+
+    char json[384];
+    snprintf(json, sizeof(json),
+             "{\"power_log\":{\"seq\":%" PRIu32 ",\"offset\":%" PRIu32
+             ",\"total\":%" PRIu32 ",\"eof\":%d,\"data\":\"%s\"}}",
+             s_plog_dump.seq, s_plog_dump.offset, s_plog_dump.total, eof, b64);
+
+    esp_err_t err = send_state_json(json);
+    if (err != ESP_OK) {
+        // mbuf 瞬时耗尽等失败：保持 offset/seq，下一 tick 重发本片。
+        s_plog_dump.fail_streak++;
+        if (s_plog_dump.fail_streak > POWER_LOG_DUMP_FAIL_STREAK_MAX) {
+            power_log_dump_abort("tx stalled");
+            return;
+        }
+    } else {
+        if (s_plog_dump.fail_streak > 0) {
+            ESP_LOGI(TAG, "power_log dump tx recovered after %" PRIu32 " failures",
+                     s_plog_dump.fail_streak);
+            s_plog_dump.fail_streak = 0;
+        }
+        s_plog_dump.seq++;
+        s_plog_dump.offset += (uint32_t)got;
+        if (eof) {
+            s_plog_dump.active = false;
+            ESP_LOGI(TAG, "power_log dump done total=%" PRIu32, s_plog_dump.total);
+            if (!s_ota.active) {
+                (void)voice_ble_request_slow_interval();
+            }
+            return;
+        }
+    }
+    ble_npl_callout_reset(&s_plog_dump_callout, pdMS_TO_TICKS(POWER_LOG_DUMP_INTERVAL_MS));
+}
+
+static void power_log_dump_callout_cb(struct ble_npl_event *ev)
+{
+    (void)ev;
+    power_log_dump_send_next();
+}
+
+static void power_log_dump_start(uint32_t offset, uint32_t max_bytes)
+{
+    if (!s_connected || !s_state_subscribed ||
+        s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, "power_log dump rejected: connected=%d state_sub=%d",
+                 s_connected, s_state_subscribed);
+        return;
+    }
+    power_log_dump_abort("restarted by new dump request");
+
+    const uint32_t total = (uint32_t)power_log_size();
+    if (offset > total) {
+        offset = total;  // 越界 offset：直接回单片 eof 空 data
+    }
+    size_t chunk = max_bytes > 0 ? MIN((size_t)max_bytes, (size_t)POWER_LOG_CHUNK_RAW_MAX)
+                                 : (size_t)POWER_LOG_CHUNK_RAW_MAX;
+    // 按当前 ATT MTU 钳制片长：JSON 固定开销 ~100B + 4B state 帧头 + 3B ATT 头 + 余量，
+    // 避免 MTU 较小的 central 下整片被 BLE_HS_EMSGSIZE 静默丢弃。
+    const uint16_t mtu = ble_att_mtu(s_conn_handle);
+    int b64_budget = (int)mtu - 3 - 4 - 100 - 16;
+    if (b64_budget < 16) {
+        b64_budget = 16;
+    }
+    size_t raw_cap = ((size_t)b64_budget / 4) * 3;
+    if (raw_cap < 12) {
+        raw_cap = 12;
+    }
+    chunk = MIN(chunk, raw_cap);
+
+    s_plog_dump.active = true;
+    s_plog_dump.offset = offset;
+    s_plog_dump.total = total;
+    s_plog_dump.seq = 0;
+    s_plog_dump.chunk_raw = (uint16_t)chunk;
+    s_plog_dump.fail_streak = 0;
+
+    // 与 OTA 相同惯例：批量传输期间请求快连接间隔，结束后恢复。
+    (void)voice_ble_request_fast_interval();
+    ESP_LOGI(TAG, "power_log dump start offset=%" PRIu32 " total=%" PRIu32
+             " chunk=%u mtu=%u", offset, total, (unsigned)chunk, (unsigned)mtu);
+    ble_npl_callout_reset(&s_plog_dump_callout, pdMS_TO_TICKS(1));
+}
+
+static void handle_power_log_control(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (!root) {
+        ESP_LOGW(TAG, "power_log control json parse failed");
+        return;
+    }
+    const cJSON *plog = cJSON_GetObjectItemCaseSensitive(root, "power_log");
+    const cJSON *cmd = plog ? cJSON_GetObjectItemCaseSensitive(plog, "cmd") : NULL;
+    if (!cJSON_IsString(cmd)) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (strcmp(cmd->valuestring, "dump") == 0) {
+        uint32_t offset = 0;
+        uint32_t max_bytes = 0;
+        const cJSON *offset_item = cJSON_GetObjectItemCaseSensitive(plog, "offset");
+        const cJSON *max_item = cJSON_GetObjectItemCaseSensitive(plog, "max");
+        if (cJSON_IsNumber(offset_item) && offset_item->valuedouble > 0) {
+            offset = (uint32_t)offset_item->valuedouble;
+        }
+        if (cJSON_IsNumber(max_item) && max_item->valuedouble > 0) {
+            max_bytes = (uint32_t)max_item->valuedouble;
+        }
+        power_log_dump_start(offset, max_bytes);
+    } else if (strcmp(cmd->valuestring, "clear") == 0) {
+        power_log_dump_abort("cleared");
+        power_log_clear();
+        ESP_LOGI(TAG, "power_log cleared");
+        (void)send_state_json("{\"power_log\":{\"cmd\":\"clear\",\"ok\":true}}");
+    } else if (strcmp(cmd->valuestring, "time_anchor") == 0) {
+        const cJSON *epoch_item = cJSON_GetObjectItemCaseSensitive(plog, "epoch");
+        if (cJSON_IsNumber(epoch_item) && epoch_item->valuedouble > 0) {
+            power_log_set_time_anchor((uint32_t)epoch_item->valuedouble);
+            ESP_LOGI(TAG, "power_log time anchor epoch=%" PRIu32,
+                     (uint32_t)epoch_item->valuedouble);
+        } else {
+            ESP_LOGW(TAG, "power_log time_anchor missing epoch field");
+        }
+    } else {
+        ESP_LOGW(TAG, "unknown power_log cmd: %s", cmd->valuestring);
+    }
+    cJSON_Delete(root);
+}
+
 static int control_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -419,6 +651,11 @@ static int control_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     }
 
     ESP_LOGD(TAG, "control %s", buffer);
+    // power_log 命令族由 voice_ble 内部处理（日志导出不经过应用层状态机）；
+    // 之后仍按原路径转发给应用层，main 的控制解析不含 "power_log" 键会忽略它。
+    if (strstr(buffer, "\"power_log\"") != NULL) {
+        handle_power_log_control(buffer);
+    }
     if (s_control_cb) {
         s_control_cb(buffer);
     }
@@ -552,6 +789,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s_itvl_target = CONN_ITVL_NONE;
         s_itvl_update_pending = false;
+        power_log_dump_abort("disconnect");
         start_advertising();
         if (s_connection_cb) {
             s_connection_cb(false);
@@ -784,6 +1022,8 @@ esp_err_t voice_ble_init(void)
                          adv_retry_callout_cb, NULL);
     ble_npl_callout_init(&s_adv_slow_callout, nimble_port_get_dflt_eventq(),
                          adv_slow_callout_cb, NULL);
+    ble_npl_callout_init(&s_plog_dump_callout, nimble_port_get_dflt_eventq(),
+                         power_log_dump_callout_cb, NULL);
 
     nimble_port_freertos_init(nimble_host_task);
     ESP_LOGI(TAG, "BLE initialized as %s", s_device_name);

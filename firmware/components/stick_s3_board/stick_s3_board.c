@@ -376,6 +376,40 @@ esp_err_t stick_s3_board_clear_power_irqs(uint8_t *sys_status)
     return ESP_OK;
 }
 
+// M5PM1 RTC RAM：0xA0-0xBF 共 32 字节，关机/睡眠期间由 RTC 域保持。
+#define M5PM1_REG_RTC_RAM_BASE 0xA0
+#define M5PM1_RTC_RAM_SIZE 32
+
+esp_err_t stick_s3_board_pmic_rtc_ram_read(uint8_t offset, uint8_t *buf, size_t len)
+{
+    if (!buf || (size_t)offset + len > M5PM1_RTC_RAM_SIZE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_pmic_dev) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return pmic_read_regs(M5PM1_REG_RTC_RAM_BASE + offset, buf, len);
+}
+
+esp_err_t stick_s3_board_pmic_rtc_ram_write(uint8_t offset, const uint8_t *data, size_t len)
+{
+    if (!data || (size_t)offset + len > M5PM1_RTC_RAM_SIZE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_pmic_dev) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    for (size_t i = 0; i < len; ++i) {
+        esp_err_t err = pmic_write_reg(M5PM1_REG_RTC_RAM_BASE + offset + i, data[i]);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    return ESP_OK;
+}
+
 void stick_s3_board_prepare_deep_sleep(void)
 {
     if (!s_pmic_dev) {

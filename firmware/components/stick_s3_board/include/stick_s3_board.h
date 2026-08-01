@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include "esp_err.h"
 #include "driver/i2c_master.h"
 
@@ -49,6 +50,10 @@ esp_err_t stick_s3_board_battery_level(int *level_percent);
 esp_err_t stick_s3_board_battery_charging(bool *charging);
 esp_err_t stick_s3_board_usb_powered(bool *usb_powered);
 esp_err_t stick_s3_board_clear_power_irqs(uint8_t *sys_status);
+// M5PM1 RTC RAM（0xA0-0xBF，共 32 字节，睡眠/关机期间保持）读写接口。
+// offset 为区域内偏移（0-31），offset+len 不得越过 32 字节；供 power_log 跨 S3 关机保存记账锚点。
+esp_err_t stick_s3_board_pmic_rtc_ram_read(uint8_t offset, uint8_t *buf, size_t len);
+esp_err_t stick_s3_board_pmic_rtc_ram_write(uint8_t offset, const uint8_t *data, size_t len);
 void stick_s3_board_prepare_deep_sleep(void);
 // 独立控制 L3B 层（LCD 背光/MIC/SPK）供电，用于 S2 熄屏保连态：关 L3B 降功耗但不进 deep sleep。
 // enable=true 打开 L3B（恢复亮屏），false 关闭 L3B（熄屏）。不触碰其它电源层。
