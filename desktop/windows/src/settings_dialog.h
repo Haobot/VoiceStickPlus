@@ -33,6 +33,7 @@ private:
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
     void UpdateHotwordProcessPromptVisibility();
+    void UpdateEncoderRotateRowsVisibility();
     // 候选热词：从存储文件刷新待确认列表，并重填候选列表控件。
     void RefreshHotwordCandidates();
     void OnHotwordCandidateAdd();
@@ -53,6 +54,9 @@ private:
     void ResizeWindow(int client_h);
     // 行内条件：apply_trial_button 显隐 + api_key_edit 宽度，在 Relayout 末尾调用。
     void ApplyApiKeyLayout();
+    // 服务商下拉框索引 ↔ AsrProvider 映射；provider_combo_has_cloud_ 时 0 号位为 Cloud。
+    AsrProvider ProviderAtComboIndex(int idx) const;
+    int ComboIndexForProvider(AsrProvider provider) const;
 
     // 布局模型：把每行/块抽象为可独立显隐的条目，Relayout 统一应用定位。
     struct LayoutPart {
@@ -79,6 +83,8 @@ private:
 
     HWND language_combo_ = nullptr;
     HWND provider_combo_ = nullptr;
+    // 当前配置为 voicestick_cloud 时，下拉框 0 号位临时插入 "VoiceStick Cloud"（老配置兼容）。
+    bool provider_combo_has_cloud_ = false;
     HWND api_key_edit_ = nullptr;
     HWND apply_trial_button_ = nullptr;
     HWND resource_combo_ = nullptr;

@@ -9,10 +9,10 @@
 #   scripts\build-msi.bat
 # build-msi.bat 会用该环境变量指向的真实配置覆盖本模板，密钥不进仓库。
 
-# ---- ASR 服务商：voicestick_cloud | volcengine | tencent ----
-asr_provider = "voicestick_cloud"
+# ---- ASR 服务商：volcengine | tencent | voicestick_cloud（已从界面下线，仅供老配置兼容）----
+asr_provider = "volcengine"
 
-# VoiceStick Cloud（默认 ASR + 可选 LLM 精修）
+# VoiceStick Cloud（老配置兼容）
 voicestick_api_key = ""
 voicestick_cloud_url = ""
 

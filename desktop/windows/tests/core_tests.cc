@@ -1048,7 +1048,7 @@ void TestVolcengineTableIdConfigRoundTrip() {
 
 void TestAppConfig() {
     AppConfig cloud = AppConfig::Defaults();
-    assert(cloud.asr_provider == AsrProvider::kVoiceStickCloud);
+    assert(cloud.asr_provider == AsrProvider::kVolcengine);
     cloud.asr_provider = AsrProvider::kVoiceStickCloud;
     cloud.voicestick_cloud_url = "";
     assert(cloud.ActiveWebsocketUrl() == "wss://api.xiaozhi.me/voicestick/asr/");

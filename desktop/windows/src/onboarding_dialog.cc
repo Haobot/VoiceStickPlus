@@ -149,9 +149,9 @@ INT_PTR OnboardingDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM) {
             if (HIWORD(w_param) == CBN_SELCHANGE) {
                 int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
                 const std::string& key = [&]() -> const std::string& {
-                    switch (idx) {
-                        case 0: return config_.voicestick_api_key;
-                        case 2: return config_.tencent_secret_id;
+                    switch (ProviderAtComboIndex(idx)) {
+                        case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
+                        case AsrProvider::kTencent: return config_.tencent_secret_id;
                         default: return config_.volcengine_api_key;
                     }
                 }();
@@ -323,7 +323,11 @@ void OnboardingDialog::BuildAsrStep(int x, int y, int w) {
     provider_combo_ = CreateCombo(hwnd_, x + Dp(104), y + Dp(44), w - Dp(104),
                                   Dp(200), kIdProviderCombo, instance_);
     controls_.push_back(provider_combo_);
-    SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
+    // VoiceStick Cloud 已从下拉框下线；仅老配置仍为 cloud 时临时插入该项（0 号位）。
+    provider_combo_has_cloud_ = (config_.asr_provider == AsrProvider::kVoiceStickCloud);
+    if (provider_combo_has_cloud_) {
+        SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
+    }
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
     SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
 
@@ -373,10 +377,7 @@ void OnboardingDialog::BuildReadyStep(int x, int y, int w) {
 
 void OnboardingDialog::LoadConfigIntoControls() {
     if (!provider_combo_) return;
-    int provider_idx = 0;
-    if (config_.asr_provider == AsrProvider::kVolcengine) provider_idx = 1;
-    if (config_.asr_provider == AsrProvider::kTencent) provider_idx = 2;
-    SendMessageW(provider_combo_, CB_SETCURSEL, provider_idx, 0);
+    SendMessageW(provider_combo_, CB_SETCURSEL, ComboIndexForProvider(config_.asr_provider), 0);
     const auto& key = [&]() -> const std::string& {
         switch (config_.asr_provider) {
             case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
@@ -396,9 +397,7 @@ void OnboardingDialog::LoadConfigIntoControls() {
 void OnboardingDialog::SaveControlsIntoConfig() {
     if (!provider_combo_) return;
     const int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    AsrProvider new_provider = AsrProvider::kVoiceStickCloud;
-    if (provider_idx == 1) new_provider = AsrProvider::kVolcengine;
-    if (provider_idx == 2) new_provider = AsrProvider::kTencent;
+    AsrProvider new_provider = ProviderAtComboIndex(provider_idx);
     config_.asr_provider = new_provider;
     const auto api_key = Utf8(GetText(api_key_edit_));
     switch (new_provider) {
@@ -415,12 +414,27 @@ void OnboardingDialog::SaveControlsIntoConfig() {
     }
 }
 
+AsrProvider OnboardingDialog::ProviderAtComboIndex(int idx) const {
+    if (provider_combo_has_cloud_) {
+        if (idx == 0) return AsrProvider::kVoiceStickCloud;
+        --idx;
+    }
+    return idx == 1 ? AsrProvider::kTencent : AsrProvider::kVolcengine;
+}
+
+int OnboardingDialog::ComboIndexForProvider(AsrProvider provider) const {
+    if (provider == AsrProvider::kVoiceStickCloud) return 0;  // 仅 has_cloud 时存在
+    const int idx = (provider == AsrProvider::kTencent) ? 1 : 0;
+    return provider_combo_has_cloud_ ? idx + 1 : idx;
+}
+
 void OnboardingDialog::UpdateProviderVisibility() {
     const int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    const bool is_cloud = provider_idx == 0;
-    const bool is_volcengine = provider_idx == 1;
+    const AsrProvider provider = ProviderAtComboIndex(provider_idx);
+    const bool is_cloud = provider == AsrProvider::kVoiceStickCloud;
+    const bool is_volcengine = provider == AsrProvider::kVolcengine;
     const bool api_key_empty = GetText(api_key_edit_).empty();
-    // 资源 ID 仅火山引擎使用（与设置页一致）；VoiceStick Cloud 与腾讯云均不显示。
+    // 资源 ID 仅火山引擎使用；VoiceStick Cloud 与腾讯云均不显示。
     ShowWindow(resource_label_, is_volcengine ? SW_SHOW : SW_HIDE);
     ShowWindow(resource_combo_, is_volcengine ? SW_SHOW : SW_HIDE);
     ShowWindow(apply_trial_button_, is_cloud && api_key_empty ? SW_SHOW : SW_HIDE);
