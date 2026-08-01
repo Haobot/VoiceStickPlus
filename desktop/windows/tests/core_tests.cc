@@ -200,6 +200,9 @@ public:
     void SetDeviceInfo(const DeviceInfo& info) override {
         device_infos.push_back(info);
     }
+    void SetDeviceEncoderPresent(const std::string& device_id, bool present) override {
+        encoder_present_by_device_id[device_id] = present;
+    }
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override {
         (void)device_id;
@@ -280,6 +283,7 @@ public:
     std::vector<std::string> statuses;
     std::vector<ConnectedDevice> connected_devices;
     std::vector<DeviceInfo> device_infos;
+    std::map<std::string, bool> encoder_present_by_device_id;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
     std::vector<std::string> pairing_errors;
     std::vector<std::string> firmware_update_prompts;
@@ -819,6 +823,52 @@ void TestEncoderRotateStateParsing() {
     assert(sparse_event->event == "encoder_rotate");
     assert(sparse_event->direction.empty());
     assert(!sparse_event->steps.has_value());
+}
+
+void TestEncoderStatusParsing() {
+    // encoder_status 独立小帧：{"event":"encoder_status","present":true}。
+    const std::string json = "{\"event\":\"encoder_status\",\"present\":true}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "encoder_status");
+    assert(event->encoder_present.has_value());
+    assert(event->encoder_present.value() == true);
+
+    // present=false（未装编码器）。
+    const std::string absent = "{\"event\":\"encoder_status\",\"present\":false}";
+    ByteVector absent_frame = {1, 0x10};
+    AppendLe16(absent_frame, static_cast<std::uint16_t>(absent.size()));
+    absent_frame.insert(absent_frame.end(), absent.begin(), absent.end());
+    auto absent_event = BleProtocol::ParseStateEvent(absent_frame);
+    assert(absent_event.has_value());
+    assert(absent_event->encoder_present.has_value());
+    assert(absent_event->encoder_present.value() == false);
+
+    // 缺 present 字段容错：解析为 nullopt，不影响整体解析。
+    const std::string sparse = "{\"event\":\"encoder_status\"}";
+    ByteVector sparse_frame = {1, 0x10};
+    AppendLe16(sparse_frame, static_cast<std::uint16_t>(sparse.size()));
+    sparse_frame.insert(sparse_frame.end(), sparse.begin(), sparse.end());
+    auto sparse_event = BleProtocol::ParseStateEvent(sparse_frame);
+    assert(sparse_event.has_value());
+    assert(!sparse_event->encoder_present.has_value());
+
+    // 其它事件不携带该字段（老固件无 encoder_status 事件，消费端按「在线」处理）。
+    const std::string legacy =
+        "{\"event\":\"device_info\",\"hardware\":\"stick_s3\",\"firmware_version\":\"2.2.0\"}";
+    ByteVector legacy_frame = {1, 0x10};
+    AppendLe16(legacy_frame, static_cast<std::uint16_t>(legacy.size()));
+    legacy_frame.insert(legacy_frame.end(), legacy.begin(), legacy.end());
+    auto legacy_event = BleProtocol::ParseStateEvent(legacy_frame);
+    assert(legacy_event.has_value());
+    assert(!legacy_event->encoder_present.has_value());
+
+    // DeviceInfo 默认 encoder_present=true（未收到 encoder_status 时保持设置可见）。
+    DeviceInfo default_info;
+    assert(default_info.encoder_present);
 }
 
 void TestStateEventSourceParsing() {
@@ -6793,6 +6843,7 @@ int main() {
     TestStateParsing();
     TestEncoderRotateStateParsing();
     TestStateEventSourceParsing();
+    TestEncoderStatusParsing();
     TestMotionFrameParsing();
     TestAirMouseStepVelocityFollowsOmega();
     TestAirMouseStepStopsWhenStale();

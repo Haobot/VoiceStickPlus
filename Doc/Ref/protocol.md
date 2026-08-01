@@ -73,6 +73,7 @@ Currently emitted state events:
 
 ```json
 {"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"interaction_modes":["hold_to_talk","click_to_talk"],"ui_states":["ready","recording","thinking","pending_confirmation","error","air_mouse"]}
+{"event":"encoder_status","present":true}
 {"event":"button_down","button":"primary","session_id":1234}
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
 {"event":"button_down","button":"secondary"}
@@ -82,6 +83,18 @@ Currently emitted state events:
 {"event":"tap","button":"double"}
 {"event":"encoder_rotate","direction":"cw","steps":2}
 ```
+
+`encoder_status` (added after v2.2.0) reports whether the firmware detected
+the MiniEncoderC rotary encoder (I2C @0x42) at boot. It is a separate small
+frame sent right after `device_info` on state subscription — `device_info`
+itself is already near the BLE notification MTU limit and must not grow. The
+firmware also pushes `encoder_status` when the encoder later degrades offline
+(consecutive I2C failures); if the link is down at that moment the flag is
+cached and the next connection reports the current state. Older firmware
+never sends this event — desktops must treat its absence as "present" so the
+encoder settings stay visible for old firmware. The Windows desktop uses it
+to show/hide the encoder section in the settings dialog (any known device
+reporting present keeps the section visible).
 
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is

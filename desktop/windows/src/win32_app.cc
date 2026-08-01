@@ -518,6 +518,17 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
     });
 }
 
+void Win32App::SetDeviceEncoderPresent(const std::string& device_id, bool present) {
+    DispatchToUi([this, device_id, present] {
+        LogLine("SetDeviceEncoderPresent VS-" + device_id +
+                " encoder_present=" + (present ? "true" : "false"));
+        // device_info 可能因 MTU 截断解析失败而缺条目，这里按 device_id 兜底建条目。
+        auto& info = device_info_map_[device_id];
+        if (info.device_id.empty()) info.device_id = device_id;
+        info.encoder_present = present;
+    });
+}
+
 void Win32App::SetDeviceBattery(const std::string& device_id, int level_percent,
                                  bool charging, bool usb_powered) {
     DispatchToUi([this, device_id, level_percent, charging, usb_powered] {
@@ -1813,8 +1824,28 @@ void Win32App::ShowPairDeviceDialog() {
 }
 
 void Win32App::ShowSettings() {
+    // 编码器区块显隐：任一已知设备报告 encoder_present 即显示；
+    // 尚无 device_info（未连接过/老固件）时默认显示，避免误隐藏。
+    bool show_encoder_settings = true;
+    if (!device_info_map_.empty()) {
+        show_encoder_settings = false;
+        for (const auto& [id, info] : device_info_map_) {
+            if (info.encoder_present) {
+                show_encoder_settings = true;
+                break;
+            }
+        }
+    }
+    // 对话框已创建但显隐标志变化（如换连了无编码器的设备）时重建，使布局生效。
+    if (settings_dialog_ && settings_show_encoder_ != show_encoder_settings) {
+        settings_dialog_.reset();
+    }
     if (!settings_dialog_) {
-        settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
+        settings_show_encoder_ = show_encoder_settings;
+        LogLine(std::string("Settings: encoder section ") +
+                (show_encoder_settings ? "visible" : "hidden (no encoder reported)"));
+        settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_,
+                                                            show_encoder_settings);
         settings_dialog_->on_config_changed = [this](AppConfig new_config) {
             config_ = std::move(new_config);
             // SaveInputOptions 内部已调用 coordinator_->UpdateConfig(config_) 完成同步。

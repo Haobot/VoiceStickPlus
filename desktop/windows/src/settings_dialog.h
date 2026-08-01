@@ -12,7 +12,8 @@ namespace voicestick {
 
 class SettingsDialog {
 public:
-    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config);
+    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
+                   bool show_encoder_settings = true);
     ~SettingsDialog();
 
     void Show();
@@ -80,6 +81,9 @@ private:
     HWND hwnd_ = nullptr;
     AppConfig config_;
     UINT dpi_ = 96;
+    // 编码器区块显隐（由设备 device_info 的 encoder_present 驱动）；false 时编码器
+    // 控件不加入布局表（仍创建并参与 config 读写，保存时按加载值回写不丢配置）。
+    bool show_encoder_settings_ = true;
 
     HWND language_combo_ = nullptr;
     HWND provider_combo_ = nullptr;

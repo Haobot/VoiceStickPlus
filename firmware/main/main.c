@@ -2027,6 +2027,9 @@ static void encoder_poll_timer_cb(void *arg)
             s_encoder_button_pressed = false;
             queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
         }
+        // 同步离线标志并上报 encoder_status（未连接时发送静默失败，下次连接补报）。
+        voice_ble_set_encoder_present(false);
+        (void)voice_ble_send_encoder_status();
         (void)esp_timer_stop(s_encoder_poll_timer);
         return;
     }
@@ -2542,6 +2545,9 @@ void app_main(void)
     note_activity();
     // MiniEncoderC 编码器：探测失败优雅降级（absent），不影响主流程。
     (void)mini_encoder_c_init();
+    // 在线标志同步给 BLE 层，连接后随 device_info 经 encoder_status 帧上报主机
+    //（桌面端据此显隐编码器设置）。
+    voice_ble_set_encoder_present(mini_encoder_c_present());
     ESP_ERROR_CHECK(init_encoder_poll_timer());
     ESP_ERROR_CHECK(init_buttons());
     // 仅在线时启动 10ms 轮询；必须在 init_buttons 之后（事件队列已创建）。

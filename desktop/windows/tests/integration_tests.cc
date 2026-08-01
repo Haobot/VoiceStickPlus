@@ -135,6 +135,7 @@ public:
         connected_devices = devices;
     }
     void SetDeviceInfo(const DeviceInfo& info) override { device_infos.push_back(info); }
+    void SetDeviceEncoderPresent(const std::string&, bool) override {}
     void SetDeviceBattery(const std::string&, int, bool, bool) override {}
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info) override {
         firmware_info_by_device_id = info;

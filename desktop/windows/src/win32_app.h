@@ -47,6 +47,7 @@ public:
     void SetStatus(const std::string& status) override;
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) override;
     void SetDeviceInfo(const DeviceInfo& info) override;
+    void SetDeviceEncoderPresent(const std::string& device_id, bool present) override;
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
@@ -136,6 +137,8 @@ private:
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
+    // 设置对话框创建时的编码器区块显隐标志；后续打开时若与重新计算值不一致则重建对话框。
+    bool settings_show_encoder_ = true;
     std::unique_ptr<AirMouseTuningWindow> air_mouse_tuning_window_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;
