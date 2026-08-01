@@ -12,6 +12,7 @@
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
 #include "hotword_candidate_miner.h"
+#include "tencent_asr_vocab_client.h"
 #include "key_spec.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
@@ -1010,6 +1011,19 @@ void TestAsrHotwordCorpusBudget() {
     assert(table_only_payload.find("\"boosting_table_id\":\"boost-123\"") != std::string::npos);
     assert(table_only_payload.find("\"correct_table_id\"") == std::string::npos);
     assert(table_only_payload.find("\"context\"") == std::string::npos);
+}
+
+void TestTencentHotwordCharFilter() {
+    // 腾讯词表 API 拒绝含 '.' 等字符的词（InvalidWordWeight），同步前必须过滤。
+    assert(TencentAsrVocabClient::IsValidHotwordChars("Opus"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("覃海洋"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("ESP32-S3"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("VB-CABLE"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("win_sparkle"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars("CLAUDE.md"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars("AGENTS.md"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars("带空格 的词"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars(""));
 }
 
 void TestVolcengineTableIdConfigRoundTrip() {
@@ -6812,6 +6826,7 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
+    TestTencentHotwordCharFilter();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();
