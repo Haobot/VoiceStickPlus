@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsEncoderInvalidKey) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kEncoderSettingsRestoreDefaults) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -274,6 +274,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsEncoderLedWhite)] = "White";
     table[Index(StringId::kSettingsEncoderLedOff)] = "Off";
     table[Index(StringId::kSettingsEncoderInvalidKey)] = "Invalid encoder key syntax (e.g. \"down\", \"ctrl+z\"); the field was not saved.";
+    table[Index(StringId::kMenuEncoderSettings)] = "Encoder settings...";
+    table[Index(StringId::kEncoderSettingsTitle)] = "Encoder settings - VS-{0}";
+    table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "Restore defaults";
     return table;
 }
 
@@ -534,6 +537,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsEncoderLedWhite)] = "白";
     table[Index(StringId::kSettingsEncoderLedOff)] = "关";
     table[Index(StringId::kSettingsEncoderInvalidKey)] = "编码器按键语法无效（示例：down、ctrl+z），该字段未保存。";
+    table[Index(StringId::kMenuEncoderSettings)] = "编码器设置…";
+    table[Index(StringId::kEncoderSettingsTitle)] = "编码器设置 - VS-{0}";
+    table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "恢复默认";
     return table;
 }
 

@@ -1704,32 +1704,81 @@ void TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_led_color = "purple";
-    config.encoder_press_action = "key";  // 派生门控关闭
+    config.default_encoder_settings.led_color = "purple";
+    config.default_encoder_settings.press_action = "key";  // 派生门控关闭
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
-    // 连接时全量重发：LED 颜色 + 门控（从 press_action 派生），均为 std::nullopt 广播。
+    // 连接时按设备单播有效配置：无覆盖设备收到全局默认值。
     ble_ptr->connected_device_ids.insert("5A74");
     ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
     assert(ble_ptr->sent_encoder_led_colors.size() == 1);
     assert(ble_ptr->sent_encoder_led_colors.back().first == "purple");
-    assert(!ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_led_colors.back().second == "5A74");
     assert(ble_ptr->sent_encoder_recording_gates.size() == 1);
     assert(ble_ptr->sent_encoder_recording_gates.back().first == false);
-    assert(!ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+    assert(ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_recording_gates.back().second == "5A74");
 
-    // UpdateConfig 同样重发；press_action=recording 派生门控打开。
+    // UpdateConfig 对已连接设备逐台单播；press_action=recording 派生门控打开。
     AppConfig updated = AppConfig::Defaults();
-    updated.encoder_led_color = "green";
-    updated.encoder_press_action = "recording";
+    updated.default_encoder_settings.led_color = "green";
+    updated.default_encoder_settings.press_action = "recording";
     coordinator.UpdateConfig(updated);
     assert(ble_ptr->sent_encoder_led_colors.size() == 2);
     assert(ble_ptr->sent_encoder_led_colors.back().first == "green");
-    assert(!ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_led_colors.back().second == "5A74");
     assert(ble_ptr->sent_encoder_recording_gates.size() == 2);
     assert(ble_ptr->sent_encoder_recording_gates.back().first == true);
-    assert(!ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+    assert(ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_recording_gates.back().second == "5A74");
+}
+
+void TestCoordinatorSyncsEncoderSettingsPerDeviceOverride() {
+    // 按设备覆盖：连接后每台设备收到各自的 led_color / recording_gate。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.led_color = "red";
+    config.default_encoder_settings.press_action = "recording";
+    config.paired_device_ids = {"5A74", "9BC1"};
+    EncoderSettings override_settings;
+    override_settings.led_color = "blue";
+    override_settings.press_action = "key";
+    config.device_encoder_settings["9BC1"] = override_settings;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->connected_device_ids.insert("9BC1");
+    ble_ptr->on_connection_change(
+        {ConnectedDevice{"5A74", "VS-5A74"}, ConnectedDevice{"9BC1", "VS-9BC1"}});
+    assert(ble_ptr->sent_encoder_led_colors.size() == 2);
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 2);
+    // 5A74 无覆盖 → 全局默认 red + 门控开；9BC1 覆盖 → blue + 门控关。
+    for (const auto& [color, target] : ble_ptr->sent_encoder_led_colors) {
+        assert(target.has_value());
+        if (*target == "5A74") {
+            assert(color == "red");
+        } else {
+            assert(*target == "9BC1");
+            assert(color == "blue");
+        }
+    }
+    for (const auto& [gate, target] : ble_ptr->sent_encoder_recording_gates) {
+        assert(target.has_value());
+        if (*target == "5A74") {
+            assert(gate == true);
+        } else {
+            assert(*target == "9BC1");
+            assert(gate == false);
+        }
+    }
 }
 
 void TestAppConfigTapSensitivityRoundTrip() {
@@ -2444,53 +2493,53 @@ void TestKeySpecParse() {
 
 void TestAppConfigEncoderRoundTrip() {
     // 默认值：旋转注入开、不翻转。
-    assert(AppConfig::Defaults().encoder_to_arrow == true);
-    assert(AppConfig::Defaults().encoder_rotation_invert == false);
+    assert(AppConfig::Defaults().default_encoder_settings.to_arrow == true);
+    assert(AppConfig::Defaults().default_encoder_settings.rotation_invert == false);
 
     // TOML 保存/加载往返。
     auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_config_test.toml";
     std::filesystem::remove(temp);
     AppConfig config = AppConfig::Defaults();
-    config.encoder_to_arrow = false;
-    config.encoder_rotation_invert = true;
+    config.default_encoder_settings.to_arrow = false;
+    config.default_encoder_settings.rotation_invert = true;
     config.Save(temp);
     AppConfig loaded = AppConfig::Load(temp);
-    assert(loaded.encoder_to_arrow == false);
-    assert(loaded.encoder_rotation_invert == true);
+    assert(loaded.default_encoder_settings.to_arrow == false);
+    assert(loaded.default_encoder_settings.rotation_invert == true);
     std::filesystem::remove(temp);
 }
 
 void TestAppConfigEncoderSettingsRoundTrip() {
     // 默认值等价当前硬编码行为。
     const AppConfig defaults = AppConfig::Defaults();
-    assert(defaults.encoder_rotate_cw_key == "down");
-    assert(defaults.encoder_rotate_ccw_key == "up");
-    assert(defaults.encoder_led_color == "red");
-    assert(defaults.encoder_press_action == "recording");
-    assert(defaults.encoder_press_key.empty());
-    assert(defaults.encoder_double_click_action == "key");
-    assert(defaults.encoder_double_click_key == "enter");
+    assert(defaults.default_encoder_settings.rotate_cw_key == "down");
+    assert(defaults.default_encoder_settings.rotate_ccw_key == "up");
+    assert(defaults.default_encoder_settings.led_color == "red");
+    assert(defaults.default_encoder_settings.press_action == "recording");
+    assert(defaults.default_encoder_settings.press_key.empty());
+    assert(defaults.default_encoder_settings.double_click_action == "key");
+    assert(defaults.default_encoder_settings.double_click_key == "enter");
 
     // 保存/加载往返。
     auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_settings_test.toml";
     std::filesystem::remove(temp);
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_cw_key = "pageup";
-    config.encoder_rotate_ccw_key = "pagedown";
-    config.encoder_led_color = "cyan";
-    config.encoder_press_action = "key";
-    config.encoder_press_key = "ctrl+z";
-    config.encoder_double_click_action = "recording";
-    config.encoder_double_click_key = "ctrl+enter";
+    config.default_encoder_settings.rotate_cw_key = "pageup";
+    config.default_encoder_settings.rotate_ccw_key = "pagedown";
+    config.default_encoder_settings.led_color = "cyan";
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "ctrl+z";
+    config.default_encoder_settings.double_click_action = "recording";
+    config.default_encoder_settings.double_click_key = "ctrl+enter";
     config.Save(temp);
     AppConfig loaded = AppConfig::Load(temp);
-    assert(loaded.encoder_rotate_cw_key == "pageup");
-    assert(loaded.encoder_rotate_ccw_key == "pagedown");
-    assert(loaded.encoder_led_color == "cyan");
-    assert(loaded.encoder_press_action == "key");
-    assert(loaded.encoder_press_key == "ctrl+z");
-    assert(loaded.encoder_double_click_action == "recording");
-    assert(loaded.encoder_double_click_key == "ctrl+enter");
+    assert(loaded.default_encoder_settings.rotate_cw_key == "pageup");
+    assert(loaded.default_encoder_settings.rotate_ccw_key == "pagedown");
+    assert(loaded.default_encoder_settings.led_color == "cyan");
+    assert(loaded.default_encoder_settings.press_action == "key");
+    assert(loaded.default_encoder_settings.press_key == "ctrl+z");
+    assert(loaded.default_encoder_settings.double_click_action == "recording");
+    assert(loaded.default_encoder_settings.double_click_key == "ctrl+enter");
     std::filesystem::remove(temp);
 }
 
@@ -2508,12 +2557,12 @@ void TestAppConfigEncoderSettingsInvalidFallback() {
         out << "encoder_double_click_key = \"a+b\"\n";
     }
     AppConfig loaded = AppConfig::Load(temp);
-    assert(loaded.encoder_rotate_cw_key == "down");
-    assert(loaded.encoder_led_color == "red");
-    assert(loaded.encoder_press_action == "recording");
-    assert(loaded.encoder_press_key.empty());
-    assert(loaded.encoder_double_click_action == "key");
-    assert(loaded.encoder_double_click_key == "enter");
+    assert(loaded.default_encoder_settings.rotate_cw_key == "down");
+    assert(loaded.default_encoder_settings.led_color == "red");
+    assert(loaded.default_encoder_settings.press_action == "recording");
+    assert(loaded.default_encoder_settings.press_key.empty());
+    assert(loaded.default_encoder_settings.double_click_action == "key");
+    assert(loaded.default_encoder_settings.double_click_key == "enter");
     std::filesystem::remove(temp);
 }
 
@@ -2524,8 +2573,8 @@ void TestEncoderRotateMapsDirectionToArrows() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证方向映射
-    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证方向映射
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2550,9 +2599,9 @@ void TestEncoderRotateInvertFlipsDirection() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotation_invert = true;
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
-    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
+    config.default_encoder_settings.rotation_invert = true;
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2576,7 +2625,7 @@ void TestEncoderRotateDisabledWhenConfigOff() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_to_arrow = false;  // 总开关关闭
+    config.default_encoder_settings.to_arrow = false;  // 总开关关闭
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2618,8 +2667,8 @@ void TestEncoderRotateUnknownDirectionTreatedAsCw() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
-    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2642,8 +2691,8 @@ void TestEncoderRotateStepsClamped() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     // 抬高快慢分档阈值，隔离快慢分档对注入按键的影响，专注验证 steps 钳制。
-    config.encoder_rotate_fast_threshold = 100000;
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2689,8 +2738,8 @@ void TestEncoderPressKeyInjectsComboWithoutRecording() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_press_action = "key";
-    config.encoder_press_key = "ctrl+z";
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "ctrl+z";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2709,8 +2758,8 @@ void TestEncoderPressKeyInvalidIgnored() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_press_action = "key";
-    config.encoder_press_key = "bogus";  // 运行期非法（绕过配置校验直造）
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "bogus";  // 运行期非法（绕过配置校验直造）
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2752,8 +2801,8 @@ void TestEncoderDoubleClickCustomKey() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_double_click_action = "key";
-    config.encoder_double_click_key = "ctrl+enter";
+    config.default_encoder_settings.double_click_action = "key";
+    config.default_encoder_settings.double_click_key = "ctrl+enter";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2773,7 +2822,7 @@ void TestEncoderDoubleClickRecordingTogglesRemoteButton() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_double_click_action = "recording";
+    config.default_encoder_settings.double_click_action = "recording";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2800,10 +2849,10 @@ void TestEncoderRotateCustomKeys() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_cw_key = "pagedown";
-    config.encoder_rotate_ccw_key = "pageup";
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
-    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
+    config.default_encoder_settings.rotate_cw_key = "pagedown";
+    config.default_encoder_settings.rotate_ccw_key = "pageup";
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -2825,9 +2874,9 @@ void TestEncoderRotateInvalidKeyFallsBackToArrows() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_cw_key = "bogus";  // 运行期非法
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
-    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档
+    config.default_encoder_settings.rotate_cw_key = "bogus";  // 运行期非法
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3001,7 +3050,7 @@ void TestEncoderRotateSlowResumesAfterStop() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证停转锁定/恢复
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证停转锁定/恢复
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3026,8 +3075,8 @@ void TestEncoderRotateSlowStillUsesNormalKey() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_decide_window_ms = 0;  // 关闭延迟判定
-    config.encoder_rotate_fast_threshold = 100000;  // 隔离快慢分档，专注验证普通键路径
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档，专注验证普通键路径
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3092,7 +3141,7 @@ void TestEncoderRotateIsolatedTwoStepNudgeStaysSlow() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_fast_threshold = 110;
+    config.default_encoder_settings.rotate_fast_threshold = 110;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3117,7 +3166,7 @@ void TestEncoderRotateSustainedTwoStepRotationGoesFast() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_fast_threshold = 110;
+    config.default_encoder_settings.rotate_fast_threshold = 110;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3187,7 +3236,7 @@ void TestEncoderRotateFastInvalidKeyFallsBackToNormalKey() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_cw_fast_key = "bogus";  // 运行期非法
+    config.default_encoder_settings.rotate_cw_fast_key = "bogus";  // 运行期非法
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3202,25 +3251,25 @@ void TestEncoderRotateFastInvalidKeyFallsBackToNormalKey() {
 void TestAppConfigEncoderFastSettingsRoundTrip() {
     // 默认值等价当前硬编码行为。
     const AppConfig defaults = AppConfig::Defaults();
-    assert(defaults.encoder_rotate_fast_threshold == 200);
-    assert(defaults.encoder_rotate_cw_fast_key == "pagedown");
-    assert(defaults.encoder_rotate_ccw_fast_key == "pageup");
-    assert(defaults.encoder_rotate_decide_window_ms == 80);
+    assert(defaults.default_encoder_settings.rotate_fast_threshold == 200);
+    assert(defaults.default_encoder_settings.rotate_cw_fast_key == "pagedown");
+    assert(defaults.default_encoder_settings.rotate_ccw_fast_key == "pageup");
+    assert(defaults.default_encoder_settings.rotate_decide_window_ms == 80);
 
     // 保存/加载往返。
     auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_fast_test.toml";
     std::filesystem::remove(temp);
     AppConfig config = AppConfig::Defaults();
-    config.encoder_rotate_fast_threshold = 250;
-    config.encoder_rotate_cw_fast_key = "ctrl+pagedown";
-    config.encoder_rotate_ccw_fast_key = "ctrl+pageup";
-    config.encoder_rotate_decide_window_ms = 120;
+    config.default_encoder_settings.rotate_fast_threshold = 250;
+    config.default_encoder_settings.rotate_cw_fast_key = "ctrl+pagedown";
+    config.default_encoder_settings.rotate_ccw_fast_key = "ctrl+pageup";
+    config.default_encoder_settings.rotate_decide_window_ms = 120;
     config.Save(temp);
     AppConfig loaded = AppConfig::Load(temp);
-    assert(loaded.encoder_rotate_fast_threshold == 250);
-    assert(loaded.encoder_rotate_cw_fast_key == "ctrl+pagedown");
-    assert(loaded.encoder_rotate_ccw_fast_key == "ctrl+pageup");
-    assert(loaded.encoder_rotate_decide_window_ms == 120);
+    assert(loaded.default_encoder_settings.rotate_fast_threshold == 250);
+    assert(loaded.default_encoder_settings.rotate_cw_fast_key == "ctrl+pagedown");
+    assert(loaded.default_encoder_settings.rotate_ccw_fast_key == "ctrl+pageup");
+    assert(loaded.default_encoder_settings.rotate_decide_window_ms == 120);
     std::filesystem::remove(temp);
 }
 
@@ -3236,10 +3285,10 @@ void TestAppConfigEncoderFastSettingsInvalidFallback() {
         out << "encoder_rotate_decide_window_ms = -10\n";
     }
     AppConfig loaded = AppConfig::Load(temp);
-    assert(loaded.encoder_rotate_fast_threshold == 200);
-    assert(loaded.encoder_rotate_cw_fast_key == "pagedown");
-    assert(loaded.encoder_rotate_ccw_fast_key == "pageup");
-    assert(loaded.encoder_rotate_decide_window_ms == 80);
+    assert(loaded.default_encoder_settings.rotate_fast_threshold == 200);
+    assert(loaded.default_encoder_settings.rotate_cw_fast_key == "pagedown");
+    assert(loaded.default_encoder_settings.rotate_ccw_fast_key == "pageup");
+    assert(loaded.default_encoder_settings.rotate_decide_window_ms == 80);
     std::filesystem::remove(temp);
 }
 
@@ -3251,8 +3300,8 @@ void TestPhysicalPrimaryUnaffectedByEncoderConfig() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.encoder_press_action = "key";
-    config.encoder_press_key = "ctrl+z";
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "ctrl+z";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
     ble_ptr->connected_device_ids.insert("5A74");
@@ -3338,8 +3387,8 @@ void TestEncoderConfigUpdateTakesEffectImmediately() {
 
     // 热更新为 key 动作（UpdateConfig 会取消活跃会话，属既有语义）。
     AppConfig updated = AppConfig::Defaults();
-    updated.encoder_press_action = "key";
-    updated.encoder_press_key = "ctrl+z";
+    updated.default_encoder_settings.press_action = "key";
+    updated.default_encoder_settings.press_key = "ctrl+z";
     coordinator.UpdateConfig(updated);
 
     ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));

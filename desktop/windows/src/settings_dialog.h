@@ -12,8 +12,7 @@ namespace voicestick {
 
 class SettingsDialog {
 public:
-    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
-                   bool show_encoder_settings = true);
+    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config);
     ~SettingsDialog();
 
     void Show();
@@ -34,7 +33,6 @@ private:
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
     void UpdateHotwordProcessPromptVisibility();
-    void UpdateEncoderRotateRowsVisibility();
     // 候选热词：从存储文件刷新待确认列表，并重填候选列表控件。
     void RefreshHotwordCandidates();
     void OnHotwordCandidateAdd();
@@ -42,9 +40,6 @@ private:
     void UpdateTapSensitivityLabel();
     void UpdateAirMouseSensitivityXLabel();
     void UpdateAirMouseSensitivityYLabel();
-    void UpdateEncoderFastThresholdLabel();
-    // 单击/双击动作组合框切换时启用/禁用对应按键编辑框。
-    void UpdateEncoderKeyEditStates();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     bool IsLabelControl(HWND control) const;
@@ -81,9 +76,6 @@ private:
     HWND hwnd_ = nullptr;
     AppConfig config_;
     UINT dpi_ = 96;
-    // 编码器区块显隐（由设备 device_info 的 encoder_present 驱动）；false 时编码器
-    // 控件不加入布局表（仍创建并参与 config 读写，保存时按加载值回写不丢配置）。
-    bool show_encoder_settings_ = true;
 
     HWND language_combo_ = nullptr;
     HWND provider_combo_ = nullptr;
@@ -116,19 +108,6 @@ private:
     HWND tap_to_arrow_check_ = nullptr;
     HWND tap_sensitivity_trackbar_ = nullptr;
     HWND tap_sensitivity_value_label_ = nullptr;
-    HWND encoder_to_arrow_check_ = nullptr;
-    HWND encoder_rotation_invert_check_ = nullptr;
-    HWND encoder_rotate_cw_key_edit_ = nullptr;
-    HWND encoder_rotate_ccw_key_edit_ = nullptr;
-    HWND encoder_rotate_fast_threshold_trackbar_ = nullptr;
-    HWND encoder_rotate_fast_threshold_value_label_ = nullptr;
-    HWND encoder_rotate_cw_fast_key_edit_ = nullptr;
-    HWND encoder_rotate_ccw_fast_key_edit_ = nullptr;
-    HWND encoder_led_color_combo_ = nullptr;
-    HWND encoder_press_action_combo_ = nullptr;
-    HWND encoder_press_key_edit_ = nullptr;
-    HWND encoder_double_click_action_combo_ = nullptr;
-    HWND encoder_double_click_key_edit_ = nullptr;
     HWND air_mouse_sensitivity_x_trackbar_ = nullptr;
     HWND air_mouse_sensitivity_x_value_label_ = nullptr;
     HWND air_mouse_sensitivity_y_trackbar_ = nullptr;
@@ -155,7 +134,8 @@ private:
     std::vector<LayoutEntry> layout_;
 
     static constexpr int kClientWidth = 580;
-    static constexpr int kClientHeight = 1510;
+    // 编码器区块已迁出到设备级 EncoderSettingsDialog（移除 13 行 × 38px ≈ 500px）。
+    static constexpr int kClientHeight = 1010;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -192,18 +172,6 @@ private:
     static constexpr UINT kIdHotwordCandidateList = 2036;
     static constexpr UINT kIdHotwordCandidateAdd = 2037;
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
-    static constexpr UINT kIdEncoderToArrow = 2039;
-    static constexpr UINT kIdEncoderRotationInvert = 2040;
-    static constexpr UINT kIdEncoderRotateCwKey = 2041;
-    static constexpr UINT kIdEncoderRotateCcwKey = 2042;
-    static constexpr UINT kIdEncoderRotateFastThreshold = 2048;
-    static constexpr UINT kIdEncoderRotateCwFastKey = 2049;
-    static constexpr UINT kIdEncoderRotateCcwFastKey = 2050;
-    static constexpr UINT kIdEncoderLedColor = 2043;
-    static constexpr UINT kIdEncoderPressAction = 2044;
-    static constexpr UINT kIdEncoderPressKey = 2045;
-    static constexpr UINT kIdEncoderDoubleClickAction = 2046;
-    static constexpr UINT kIdEncoderDoubleClickKey = 2047;
 };
 
 } // namespace voicestick

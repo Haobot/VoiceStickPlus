@@ -99,6 +99,38 @@ struct OutputProfile {
     bool operator==(const OutputProfile& other) const = default;
 };
 
+// MiniEncoderC 编码器设置。全局默认值存于 AppConfig::default_encoder_settings
+//（TOML 顶层 encoder_* 键），[device.<id>.encoder] 表按设备整体覆盖。
+struct EncoderSettings {
+    // 旋转注入方向键开关（顺时针→Down、逆时针→Up，每格一次）。默认开启。
+    bool to_arrow = true;
+    // 旋转方向翻转：true 时顺时针→Up、逆时针→Down。默认关闭。
+    bool rotation_invert = false;
+    // 旋转顺时针/逆时针注入的按键（key_spec 语法，如 "down"/"ctrl+pageup"）。
+    std::string rotate_cw_key = "down";
+    std::string rotate_ccw_key = "up";
+    // 旋转快慢分档阈值（格/秒）：窗口格速 = steps * 100，>= 阈值判快速档。默认 200。
+    int rotate_fast_threshold = 200;
+    // 快速档顺时针/逆时针注入的按键（key_spec 语法），默认翻页键。
+    std::string rotate_cw_fast_key = "pagedown";
+    std::string rotate_ccw_fast_key = "pageup";
+    // 慢速注入延迟判定窗（ms）：慢速事件先挂起，窗内判快则整段丢弃（快甩加速段），
+    // 到期无快速事件才按累计格数补注。0 = 关闭延迟判定（立即注入，旧行为）。默认 80。
+    int rotate_decide_window_ms = 80;
+    // 录音灯颜色：red/green/blue/yellow/purple/cyan/white/off。下发固件 NVS 持久化。
+    std::string led_color = "red";
+    // 单击动作："recording"（同主键录音语义）或 "key"（注入 press_key）。
+    std::string press_action = "recording";
+    // 单击自定义按键（action=key 时生效；空 = 未配置）。
+    std::string press_key;
+    // 双击动作："key"（注入 double_click_key，默认 enter=现行为）
+    // 或 "recording"（双击开始/停止录音，经 remote_button 通道）。
+    std::string double_click_action = "key";
+    std::string double_click_key = "enter";
+
+    bool operator==(const EncoderSettings& other) const = default;
+};
+
 struct WechatInputMethodConfig {
     // 触发第三方输入法语音输入的快捷键字符串（legacy 字段，仅向后兼容加载旧配置；
     // 运行时按触发模式取 hotkey_hold/hotkey_click，不再使用此字段）。
@@ -180,31 +212,11 @@ struct AppConfig {
     ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
     // 敲击手势：双击设备外壳时注入下方向键，用于在候选/选项间向下切换。
     bool tap_to_arrow = false;
-    // MiniEncoderC 编码器：旋转注入方向键开关（顺时针→Down、逆时针→Up，每格一次）。默认开启。
-    bool encoder_to_arrow = true;
-    // 编码器旋转方向翻转：true 时顺时针→Up、逆时针→Down。默认关闭。
-    bool encoder_rotation_invert = false;
-    // 编码器旋转顺时针/逆时针注入的按键（key_spec 语法，如 "down"/"ctrl+pageup"）。
-    std::string encoder_rotate_cw_key = "down";
-    std::string encoder_rotate_ccw_key = "up";
-    // 编码器旋转快慢分档阈值（格/秒）：窗口格速 = steps * 100，>= 阈值判快速档。默认 200。
-    int encoder_rotate_fast_threshold = 200;
-    // 快速档顺时针/逆时针注入的按键（key_spec 语法），默认翻页键。
-    std::string encoder_rotate_cw_fast_key = "pagedown";
-    std::string encoder_rotate_ccw_fast_key = "pageup";
-    // 慢速注入延迟判定窗（ms）：慢速事件先挂起，窗内判快则整段丢弃（快甩加速段），
-    // 到期无快速事件才按累计格数补注。0 = 关闭延迟判定（立即注入，旧行为）。默认 80。
-    int encoder_rotate_decide_window_ms = 80;
-    // 编码器录音灯颜色：red/green/blue/yellow/purple/cyan/white/off。下发固件 NVS 持久化。
-    std::string encoder_led_color = "red";
-    // 编码器单击动作："recording"（同主键录音语义）或 "key"（注入 encoder_press_key）。
-    std::string encoder_press_action = "recording";
-    // 编码器单击自定义按键（action=key 时生效；空 = 未配置）。
-    std::string encoder_press_key;
-    // 编码器双击动作："key"（注入 encoder_double_click_key，默认 enter=现行为）
-    // 或 "recording"（双击开始/停止录音，经 remote_button 通道）。
-    std::string encoder_double_click_action = "key";
-    std::string encoder_double_click_key = "enter";
+    // MiniEncoderC 编码器设置：default_encoder_settings 为全局默认（TOML 顶层
+    // encoder_* 键，向后兼容旧配置），device_encoder_settings 为 [device.<id>.encoder]
+    // 按设备覆盖；消费点统一走 EncoderSettingsForDevice()。
+    EncoderSettings default_encoder_settings;
+    std::map<std::string, EncoderSettings> device_encoder_settings;
     // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
     int tap_sensitivity = 5;
     // 体感鼠标：左右（yaw）灵敏度档位 1~10，映射 gain_x=sensitivity_x×16。默认 5。
@@ -271,6 +283,9 @@ struct AppConfig {
     std::string ActiveApiKey() const;
     std::string ActiveWebsocketUrl() const;
     OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
+    // 返回设备有效编码器设置：有 [device.<id>.encoder] 覆盖时返回覆盖（加载时已用
+    // 全局默认填平所有字段），否则返回全局默认。const 引用返回，旋转热路径零拷贝。
+    const EncoderSettings& EncoderSettingsForDevice(const std::optional<std::string>& device_id) const;
 };
 
 std::string AsrProviderName(AsrProvider provider);
