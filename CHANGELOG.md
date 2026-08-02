@@ -4,6 +4,12 @@
 
 - 编码器旋转快慢分档（Windows）：窗口格速 = steps × 100（格/秒）≥ `encoder_rotate_fast_threshold`（默认 200）判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，屏蔽减速段慢速输出与换向事件，静默 >250ms 判定停稳后恢复识别；快速档按键非法回退普通按键；设置对话框「编码器」一节新增快速档按键控件与阈值滑杆（范围 100–300）。
 - 编码器慢速注入延迟判定（Windows）：慢速事件先挂起 `encoder_rotate_decide_window_ms`（默认 80ms，0 关闭），窗内判快整段丢弃（消除快甩加速段的误逐行注入），到期成批补注（总量不变，慢转延迟 ≤80ms 无感）。
+- 编码器设置迁移为设备级按设备覆盖（Windows）：从全局「设置」对话框移出，改为托盘设备子菜单「编码器设置…」打开设备级对话框（仅 `encoder_present` 设备显示），可针对每台设备单独配置 MiniEncoderC。
+  - 配置结构：`app_config` 新增 `EncoderSettings` 结构体 + 全局 `default_encoder_settings` + `device_encoder_settings` 映射；`EncoderSettingsForDevice(device_id)` 按设备回落默认。旧顶层 `encoder_*` 扁平键仍兼容加载；按设备覆盖写入 `[device.<id>.encoder]` 表（键名去 `encoder_` 前缀，结构镜像 `[device.<id>.output]`），与全局默认相同的覆盖不落盘。
+  - 设置对话框移除「编码器」整节（13 控件）；新增 `EncoderSettingsDialog`（13 项 + 恢复默认，恢复默认即清除该设备覆盖回落全局）；托盘设备子菜单新增入口（菜单 6000-6199）。
+  - 协调器：连接/配置更新/各编码器事件均按 `device_id` 取 `EncoderSettingsForDevice` 单播下发 `led_color` 与录音门控；修复 R1（pending flush 丢失设备上下文，新增 `encoder_pending_device_id_`）与 R2（跨设备共享速度估计，新增 `last_encoder_rotate_device_id_` 在设备切换时复位）。
+  - 单测：`TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate` 改为断言按设备单播；新增 `TestCoordinatorSyncsEncoderSettingsPerDeviceOverride`；`core_tests` 全量迁移到 `default_encoder_settings.*`。
+  - 文档：`Doc/Ref/desktop-config.md` 编码器章重写为「全局默认 + 按设备覆盖」并附 TOML 示例；`CLAUDE.md`/`AGENTS.md`/`CODEBUDDY.md` 配置节同步。
 
 ## 2026-07-29 v2.2.0
 
