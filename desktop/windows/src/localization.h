@@ -291,6 +291,10 @@ enum class StringId {
     // {0} = 设备 ID（如 5A74）
     kEncoderSettingsTitle,
     kEncoderSettingsRestoreDefaults,
+    // 设备级交互设置（托盘设备子菜单入口 + 独立对话框）
+    kMenuInteractionSettings,
+    // {0} = 设备 ID（如 5A74）
+    kInteractionSettingsTitle,
 };
 
 // 返回 UTF-8 本地化文本

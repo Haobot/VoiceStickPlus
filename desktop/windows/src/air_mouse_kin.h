@@ -52,7 +52,7 @@ enum class AirMouseControlMode {
 
 // 体感鼠标速度控制参数（由配置项填充，真机标定）。
 // 默认构造保持 kAngle，以便现有单元测试不依赖配置即可验证角度控制行为；
-// 运行期由 AirMouseParamsFromConfig 根据配置设置为 kRate。
+// 运行期由 VoiceStickCoordinator::AirMouseParamsForDevice 根据配置（含设备级覆盖）设置为 kRate。
 struct AirMouseParams {
     AirMouseControlMode control_mode = AirMouseControlMode::kAngle;
     double tau = 0.05;             // 速度环时间常数（秒），手停滑行 ≈ 3×tau（kAngle 模式有效）

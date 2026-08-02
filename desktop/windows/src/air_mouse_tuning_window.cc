@@ -32,10 +32,24 @@ std::wstring WFromDouble(double v, int precision) {
     return buf;
 }
 
+std::wstring Utf16(std::string_view text) {
+    if (text.empty()) return {};
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                            static_cast<int>(text.size()), nullptr, 0);
+    if (needed <= 0) return {};
+    std::wstring out(static_cast<std::size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        out.data(), needed);
+    return out;
+}
+
 } // namespace
 
-AirMouseTuningWindow::AirMouseTuningWindow(HINSTANCE instance, HWND parent, const AirMouseParams& initial_params)
-    : instance_(instance), parent_(parent), state_(AirMouseTuningState::FromParams(initial_params)) {
+AirMouseTuningWindow::AirMouseTuningWindow(HINSTANCE instance, HWND parent,
+                                           const std::string& device_id,
+                                           const AirMouseParams& initial_params)
+    : instance_(instance), parent_(parent), device_id_(device_id),
+      state_(AirMouseTuningState::FromParams(initial_params)) {
     WNDCLASSW wc = {};
     wc.lpfnWndProc = &AirMouseTuningWindow::WndProc;
     wc.hInstance = instance;
@@ -43,7 +57,9 @@ AirMouseTuningWindow::AirMouseTuningWindow(HINSTANCE instance, HWND parent, cons
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&wc);  // 已注册时返回 0，忽略
-    hwnd_ = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW,
+    // 标题带设备 ID，多设备时区分调参目标。
+    std::wstring title = kWindowTitle + std::wstring(L" - VS-") + Utf16(device_id);
+    hwnd_ = CreateWindowExW(0, kWindowClass, title.c_str(), WS_OVERLAPPEDWINDOW,
                             CW_USEDEFAULT, CW_USEDEFAULT, kWindowWidth, kWindowHeight,
                             parent, nullptr, instance, this);
     if (!hwnd_) {

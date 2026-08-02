@@ -271,16 +271,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         }
         break;
-    case WM_HSCROLL:
-        // 滑块拖动时实时刷新右侧档位数值。
-        if (reinterpret_cast<HWND>(l_param) == tap_sensitivity_trackbar_) {
-            UpdateTapSensitivityLabel();
-        } else if (reinterpret_cast<HWND>(l_param) == air_mouse_sensitivity_x_trackbar_) {
-            UpdateAirMouseSensitivityXLabel();
-        } else if (reinterpret_cast<HWND>(l_param) == air_mouse_sensitivity_y_trackbar_) {
-            UpdateAirMouseSensitivityYLabel();
-        }
-        return TRUE;
     case WM_VSCROLL: {
         // 垂直滚动条/滚轮：更新 scroll_pos 后重定位所有控件。
         SCROLLINFO si{};
@@ -375,8 +365,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         refine_prompt_edit_ = nullptr;
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
-        imu_wake_sensitivity_combo_ = nullptr;
-        tap_to_arrow_check_ = nullptr;
         debug_dir_edit_ = nullptr;
         resource_label_ = nullptr;
         output_target_combo_ = nullptr;
@@ -462,14 +450,6 @@ void SettingsDialog::DestroyControls() {
     debug_audio_check_ = nullptr;
     selection_hotword_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
-    imu_wake_sensitivity_combo_ = nullptr;
-    tap_to_arrow_check_ = nullptr;
-    tap_sensitivity_trackbar_ = nullptr;
-    tap_sensitivity_value_label_ = nullptr;
-    air_mouse_sensitivity_x_trackbar_ = nullptr;
-    air_mouse_sensitivity_x_value_label_ = nullptr;
-    air_mouse_sensitivity_y_trackbar_ = nullptr;
-    air_mouse_sensitivity_y_value_label_ = nullptr;
     debug_dir_edit_ = nullptr;
     resource_label_ = nullptr;
     output_target_combo_ = nullptr;
@@ -805,86 +785,9 @@ void SettingsDialog::BuildControls() {
         return idx == 2;  // 第三方输入法
     });
 
-    // ===== 设备交互 =====
-    section_title(StringId::kSettingsSectionDevice);
-    {
-        HWND iw_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsImuWakeSensitivity).c_str(),
-                                                   0, 0, label_w, Dp(20), instance_));
-        imu_wake_sensitivity_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(120),
-                                                           kIdImuWakeSensitivity, instance_));
-        SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityLow, language).c_str()));
-        SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityMedium, language).c_str()));
-        SendMessageW(imu_wake_sensitivity_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsImuWakeSensitivityHigh, language).c_str()));
-        add(row_h + Dp(10), {
-            {iw_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {imu_wake_sensitivity_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
-        });
-    }
-    {
-        HWND tta_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
-        tap_to_arrow_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsTapToArrow, language).c_str(),
-                                                     0, 0, ctrl_w, Dp(22), kIdTapToArrow, instance_,
-                                                     BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
-            {tta_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {tap_to_arrow_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        });
-    }
-    {
-        // 敲击灵敏度 1~10 档滑块：1=最不灵敏（需大力敲），10=最灵敏（轻触即发）。
-        HWND ts_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsTapSensitivity).c_str(),
-                                                    0, 0, label_w, Dp(20), instance_));
-        tap_sensitivity_trackbar_ = remember(CreateTrackbar(hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28),
-                                                            kIdTapSensitivity, instance_));
-        SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
-        SendMessageW(tap_sensitivity_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
-        SendMessageW(tap_sensitivity_trackbar_, TBM_SETTICFREQ, 1, 0);
-        SendMessageW(tap_sensitivity_trackbar_, TBM_SETPAGESIZE, 0, 1);
-        // 右侧静态文本实时显示当前档位数值。
-        tap_sensitivity_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
-        add(row_h + Dp(10), {
-            {ts_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {tap_sensitivity_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
-            {tap_sensitivity_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
-        });
-    }
-    {
-        // 体感鼠标左右灵敏度 1~10 档滑块（yaw）。
-        HWND ax_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsAirMouseSensitivityX).c_str(),
-                                                   0, 0, label_w, Dp(20), instance_));
-        air_mouse_sensitivity_x_trackbar_ = remember(CreateTrackbar(hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28),
-                                                                    kIdAirMouseSensitivityX, instance_));
-        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
-        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
-        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETTICFREQ, 1, 0);
-        SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETPAGESIZE, 0, 1);
-        air_mouse_sensitivity_x_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
-        if (kShowAdvancedSettings) add(row_h + Dp(10), {
-            {ax_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {air_mouse_sensitivity_x_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
-            {air_mouse_sensitivity_x_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
-        });
-    }
-    {
-        // 体感鼠标上下灵敏度 1~10 档滑块（pitch）。
-        HWND ay_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsAirMouseSensitivityY).c_str(),
-                                                   0, 0, label_w, Dp(20), instance_));
-        air_mouse_sensitivity_y_trackbar_ = remember(CreateTrackbar(hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28),
-                                                                    kIdAirMouseSensitivityY, instance_));
-        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETRANGEMIN, FALSE, 1);
-        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETRANGEMAX, TRUE, 10);
-        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETTICFREQ, 1, 0);
-        SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETPAGESIZE, 0, 1);
-        air_mouse_sensitivity_y_value_label_ = remember(CreateLeftLabel(hwnd_, L"5", 0, 0, Dp(30), Dp(20), instance_));
-        if (kShowAdvancedSettings) add(row_h + Dp(10), {
-            {ay_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {air_mouse_sensitivity_y_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
-            {air_mouse_sensitivity_y_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
-        });
-    }
+    // 设备交互设置已迁出：全局设置对话框不再含设备交互区块（IMU 唤醒灵敏度、敲击映射
+    // 方向键、敲击灵敏度、体感鼠标 X/Y 灵敏度），改为托盘设备子菜单「设备交互设置…」
+    // 打开 InteractionSettingsDialog（见 win32_app.cc），按设备单独配置。
     // 编码器设置已迁出：全局设置对话框不再含编码器区块，设备级编码器设置由
     // 托盘设备子菜单「编码器设置…」打开 EncoderSettingsDialog（见 win32_app.cc）。
     // 系统区：开机自启与划词热词两项与托盘右键菜单重复，已从设置页隐藏；其余行
@@ -1154,17 +1057,8 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(selection_hotword_check_, BM_SETCHECK, config_.selection_hotword_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(show_imu_debug_check_, BM_SETCHECK, config_.show_imu_debug ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageW(tap_to_arrow_check_, BM_SETCHECK, config_.tap_to_arrow ? BST_CHECKED : BST_UNCHECKED, 0);
-    int sensitivity_index = 0;
-    if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kMedium) sensitivity_index = 1;
-    if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kHigh) sensitivity_index = 2;
-    SendMessageW(imu_wake_sensitivity_combo_, CB_SETCURSEL, sensitivity_index, 0);
-    SendMessageW(tap_sensitivity_trackbar_, TBM_SETPOS, TRUE, config_.tap_sensitivity);
-    UpdateTapSensitivityLabel();
-    SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_SETPOS, TRUE, config_.air_mouse_sensitivity_x);
-    UpdateAirMouseSensitivityXLabel();
-    SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_SETPOS, TRUE, config_.air_mouse_sensitivity_y);
-    UpdateAirMouseSensitivityYLabel();
+    // 设备交互设置（IMU 唤醒灵敏度/敲击映射/敲击灵敏度/体感鼠标 X-Y 灵敏度）已迁出到设备级
+    // InteractionSettingsDialog，设置对话框不再加载/保存这些字段。
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
@@ -1265,21 +1159,8 @@ void SettingsDialog::SaveSettings() {
     config_.selection_hotword_enabled = SendMessageW(selection_hotword_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.show_imu_debug = SendMessageW(show_imu_debug_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    config_.tap_to_arrow = SendMessageW(tap_to_arrow_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    int sensitivity_idx = static_cast<int>(SendMessageW(imu_wake_sensitivity_combo_, CB_GETCURSEL, 0, 0));
-    if (sensitivity_idx == 1) {
-        config_.imu_wake_sensitivity = ImuWakeSensitivity::kMedium;
-    } else if (sensitivity_idx == 2) {
-        config_.imu_wake_sensitivity = ImuWakeSensitivity::kHigh;
-    } else {
-        config_.imu_wake_sensitivity = ImuWakeSensitivity::kLow;
-    }
-    int tap_level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
-    config_.tap_sensitivity = TapSensitivityClamp(tap_level);
-    int air_x_level = static_cast<int>(SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_GETPOS, 0, 0));
-    config_.air_mouse_sensitivity_x = AirMouseSensitivityClamp(air_x_level);
-    int air_y_level = static_cast<int>(SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_GETPOS, 0, 0));
-    config_.air_mouse_sensitivity_y = AirMouseSensitivityClamp(air_y_level);
+    // 设备交互设置（IMU 唤醒灵敏度/敲击映射/敲击灵敏度/体感鼠标 X-Y 灵敏度）已迁出到设备级
+    // InteractionSettingsDialog，设置对话框保存时不再写入这些字段（避免覆盖按设备配置）。
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
@@ -1489,24 +1370,6 @@ void SettingsDialog::OnHotwordCandidateDismiss() {
     store.notified.erase(word);
     SaveHotwordCandidates(path, store);
     RefreshHotwordCandidates();
-}
-
-void SettingsDialog::UpdateTapSensitivityLabel() {
-    if (!tap_sensitivity_trackbar_ || !tap_sensitivity_value_label_) return;
-    const int level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
-    SetWindowTextW(tap_sensitivity_value_label_, std::to_wstring(level).c_str());
-}
-
-void SettingsDialog::UpdateAirMouseSensitivityXLabel() {
-    if (!air_mouse_sensitivity_x_trackbar_ || !air_mouse_sensitivity_x_value_label_) return;
-    const int level = static_cast<int>(SendMessageW(air_mouse_sensitivity_x_trackbar_, TBM_GETPOS, 0, 0));
-    SetWindowTextW(air_mouse_sensitivity_x_value_label_, std::to_wstring(level).c_str());
-}
-
-void SettingsDialog::UpdateAirMouseSensitivityYLabel() {
-    if (!air_mouse_sensitivity_y_trackbar_ || !air_mouse_sensitivity_y_value_label_) return;
-    const int level = static_cast<int>(SendMessageW(air_mouse_sensitivity_y_trackbar_, TBM_GETPOS, 0, 0));
-    SetWindowTextW(air_mouse_sensitivity_y_value_label_, std::to_wstring(level).c_str());
 }
 
 int SettingsDialog::Dp(int px) const {

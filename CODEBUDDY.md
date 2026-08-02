@@ -166,6 +166,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `interaction_mode`：`hold_to_talk`（默认）/ `click_to_talk`；wechat 模式触发方式由 `[wechat_input_method].trigger_mode` 独立控制。
 - `[output].target`：`focused_app`（默认）/ `subtitle` / `wechat_input_method`；可用 `[device.<id>.output]` 按设备覆盖。
 - 编码器配置（仅 Windows）：全局默认 `encoder_*`（旋转/快慢分档/按键/LED）+ 按设备覆盖 `[device.<id>.encoder]`（键名去前缀，结构镜像 `[device.<id>.output]`）；设置 UI 已从「设置」对话框移至托盘设备子菜单「编码器设置…」（仅 `encoder_present` 设备显示）。完整字段见 `Doc/Ref/desktop-config.md`。
+- 设备交互配置（仅 Windows）：IMU 唤醒灵敏度 / 敲击映射方向键 / 敲击灵敏度 / 体感鼠标左右·上下灵敏度，全局默认顶层键（`imu_wake_sensitivity`/`tap_to_arrow`/`tap_sensitivity`/`air_mouse_sensitivity_x/y`，v1.8.x 旧配置仍可读）+ 按设备覆盖 `[device.<id>.interaction]`（键名一致）；设置 UI 已从「设置」对话框移至托盘设备子菜单「设备交互设置…」（所有设备显示）。其中体感鼠标灵敏度按设备覆盖，其余进阶 `air_mouse_*` 参数仍为全局。完整字段见 `Doc/Ref/desktop-config.md`。
 - `paired_device_ids`：已配对设备 4 位十六进制 ID 列表。
 - Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`，首启复制到 `%APPDATA%`（升级不覆盖）。
 

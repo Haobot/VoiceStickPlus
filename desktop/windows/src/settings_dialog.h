@@ -37,9 +37,6 @@ private:
     void RefreshHotwordCandidates();
     void OnHotwordCandidateAdd();
     void OnHotwordCandidateDismiss();
-    void UpdateTapSensitivityLabel();
-    void UpdateAirMouseSensitivityXLabel();
-    void UpdateAirMouseSensitivityYLabel();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     bool IsLabelControl(HWND control) const;
@@ -104,14 +101,6 @@ private:
     HWND selection_hotword_check_ = nullptr;
     HWND debug_audio_check_ = nullptr;
     HWND show_imu_debug_check_ = nullptr;
-    HWND imu_wake_sensitivity_combo_ = nullptr;
-    HWND tap_to_arrow_check_ = nullptr;
-    HWND tap_sensitivity_trackbar_ = nullptr;
-    HWND tap_sensitivity_value_label_ = nullptr;
-    HWND air_mouse_sensitivity_x_trackbar_ = nullptr;
-    HWND air_mouse_sensitivity_x_value_label_ = nullptr;
-    HWND air_mouse_sensitivity_y_trackbar_ = nullptr;
-    HWND air_mouse_sensitivity_y_value_label_ = nullptr;
     HWND output_target_combo_ = nullptr;
     HWND wechat_hotkey_edit_ = nullptr;
     HWND wechat_hotkey_label_ = nullptr;
@@ -134,8 +123,8 @@ private:
     std::vector<LayoutEntry> layout_;
 
     static constexpr int kClientWidth = 580;
-    // 编码器区块已迁出到设备级 EncoderSettingsDialog（移除 13 行 × 38px ≈ 500px）。
-    static constexpr int kClientHeight = 1010;
+    // 编码器区块与设备交互区块已迁出到设备级对话框（编码器 13 行 + 设备交互 6 行）。
+    static constexpr int kClientHeight = 780;
     static constexpr UINT kIdLanguageCombo = 2000;
     static constexpr UINT kIdProviderCombo = 2001;
     static constexpr UINT kIdApiKeyEdit = 2002;
@@ -148,17 +137,12 @@ private:
     static constexpr UINT kIdLaunchAtLogin = 2009;
     static constexpr UINT kIdDebugAudio = 2010;
     static constexpr UINT kIdShowImuDebug = 2017;
-    static constexpr UINT kIdImuWakeSensitivity = 2018;
-    static constexpr UINT kIdTapToArrow = 2019;
     static constexpr UINT kIdDebugDirEdit = 2011;
     static constexpr UINT kIdChooseDir = 2012;
     static constexpr UINT kIdSave = 2013;
     static constexpr UINT kIdCancel = 2014;
     static constexpr UINT kIdApplyTrialApiKey = 2015;
     static constexpr UINT kIdRefinePromptEdit = 2022;
-    static constexpr UINT kIdTapSensitivity = 2023;
-    static constexpr UINT kIdAirMouseSensitivityX = 2024;
-    static constexpr UINT kIdAirMouseSensitivityY = 2025;
     static constexpr UINT kIdOutputTarget = 2026;
     static constexpr UINT kIdWechatHotkey = 2027;
     static constexpr UINT kIdWechatVirtualMic = 2028;

@@ -412,8 +412,8 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "global_hotkey_enabled") config.global_hotkey_enabled = BoolValue(value, config.global_hotkey_enabled);
     if (key == "global_hotkey") config.global_hotkey = value;
     if (key == "show_imu_debug") config.show_imu_debug = BoolValue(value, config.show_imu_debug);
-    if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
-    if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
+    if (key == "imu_wake_sensitivity") config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
+    if (key == "tap_to_arrow") config.default_interaction_settings.tap_to_arrow = BoolValue(value, config.default_interaction_settings.tap_to_arrow);
     if (key == "encoder_to_arrow") config.default_encoder_settings.to_arrow = BoolValue(value, config.default_encoder_settings.to_arrow);
     if (key == "encoder_rotation_invert") config.default_encoder_settings.rotation_invert = BoolValue(value, config.default_encoder_settings.rotation_invert);
     if (key == "encoder_rotate_cw_key" && ParseKeySpec(value).has_value()) config.default_encoder_settings.rotate_cw_key = value;
@@ -433,9 +433,9 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "encoder_press_key" && (value.empty() || ParseKeySpec(value).has_value())) config.default_encoder_settings.press_key = value;
     if (key == "encoder_double_click_action" && IsValidEncoderButtonAction(value)) config.default_encoder_settings.double_click_action = value;
     if (key == "encoder_double_click_key" && ParseKeySpec(value).has_value()) config.default_encoder_settings.double_click_key = value;
-    if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
-    if (key == "air_mouse_sensitivity_x") config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_x));
-    if (key == "air_mouse_sensitivity_y") config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_y));
+    if (key == "tap_sensitivity") config.default_interaction_settings.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.default_interaction_settings.tap_sensitivity));
+    if (key == "air_mouse_sensitivity_x") config.default_interaction_settings.air_mouse_sensitivity_x = AirMouseSensitivityClamp(IntValue(value, config.default_interaction_settings.air_mouse_sensitivity_x));
+    if (key == "air_mouse_sensitivity_y") config.default_interaction_settings.air_mouse_sensitivity_y = AirMouseSensitivityClamp(IntValue(value, config.default_interaction_settings.air_mouse_sensitivity_y));
     if (key == "air_mouse_tau") config.air_mouse_tau = AirMouseTauClamp(DoubleValue(value, config.air_mouse_tau));
     if (key == "air_mouse_invert_y") config.air_mouse_invert_y = BoolValue(value, config.air_mouse_invert_y);
     if (key == "air_mouse_curve_low_thresh") config.air_mouse_curve_low_thresh = DoubleValue(value, config.air_mouse_curve_low_thresh);
@@ -503,6 +503,18 @@ EncoderSettings ParseEncoderSettings(const toml::table& table, const EncoderSett
     if (auto value = TomlString(table, "press_key"); value && (value->empty() || ParseKeySpec(*value).has_value())) settings.press_key = *value;
     if (auto value = TomlString(table, "double_click_action"); value && IsValidEncoderButtonAction(*value)) settings.double_click_action = *value;
     if (auto value = TomlString(table, "double_click_key"); value && ParseKeySpec(*value).has_value()) settings.double_click_key = *value;
+    return settings;
+}
+
+// 解析 [device.<id>.interaction] 覆盖表：以全局默认填平所有字段，出现的键逐项覆盖；
+// 非法值（越界灵敏度）保留 fallback，与顶层解析语义一致。
+InteractionSettings ParseInteractionSettings(const toml::table& table, const InteractionSettings& fallback) {
+    InteractionSettings settings = fallback;
+    if (auto value = TomlString(table, "imu_wake_sensitivity")) settings.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
+    if (auto value = TomlBool(table, "tap_to_arrow")) settings.tap_to_arrow = *value;
+    if (auto value = TomlInt(table, "tap_sensitivity")) settings.tap_sensitivity = TapSensitivityClamp(*value);
+    if (auto value = TomlInt(table, "air_mouse_sensitivity_x")) settings.air_mouse_sensitivity_x = AirMouseSensitivityClamp(*value);
+    if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) settings.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
     return settings;
 }
 
@@ -645,14 +657,18 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                     config.device_encoder_settings[device_id] = ParseEncoderSettings(
                         *encoder, config.default_encoder_settings);
                 }
+                if (const auto* interaction = (*device_table)["interaction"].as_table()) {
+                    config.device_interaction_settings[device_id] = ParseInteractionSettings(
+                        *interaction, config.default_interaction_settings);
+                }
             }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
         if (auto value = TomlBool(table, "global_hotkey_enabled")) config.global_hotkey_enabled = *value;
         if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
-        if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
-        if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
+        if (auto value = TomlString(table, "imu_wake_sensitivity")) config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
+        if (auto value = TomlBool(table, "tap_to_arrow")) config.default_interaction_settings.tap_to_arrow = *value;
         if (auto value = TomlBool(table, "encoder_to_arrow")) config.default_encoder_settings.to_arrow = *value;
         if (auto value = TomlBool(table, "encoder_rotation_invert")) config.default_encoder_settings.rotation_invert = *value;
         if (auto value = TomlString(table, "encoder_rotate_cw_key"); value && ParseKeySpec(*value).has_value()) config.default_encoder_settings.rotate_cw_key = *value;
@@ -666,9 +682,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "encoder_press_key"); value && (value->empty() || ParseKeySpec(*value).has_value())) config.default_encoder_settings.press_key = *value;
         if (auto value = TomlString(table, "encoder_double_click_action"); value && IsValidEncoderButtonAction(*value)) config.default_encoder_settings.double_click_action = *value;
         if (auto value = TomlString(table, "encoder_double_click_key"); value && ParseKeySpec(*value).has_value()) config.default_encoder_settings.double_click_key = *value;
-        if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
-        if (auto value = TomlInt(table, "air_mouse_sensitivity_x")) config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(*value);
-        if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
+        if (auto value = TomlInt(table, "tap_sensitivity")) config.default_interaction_settings.tap_sensitivity = TapSensitivityClamp(*value);
+        if (auto value = TomlInt(table, "air_mouse_sensitivity_x")) config.default_interaction_settings.air_mouse_sensitivity_x = AirMouseSensitivityClamp(*value);
+        if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) config.default_interaction_settings.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
         if (auto value = TomlDouble(table, "air_mouse_tau")) config.air_mouse_tau = AirMouseTauClamp(*value);
         if (auto value = TomlBool(table, "air_mouse_invert_y")) config.air_mouse_invert_y = *value;
         if (auto value = TomlDouble(table, "air_mouse_curve_low_thresh")) config.air_mouse_curve_low_thresh = *value;
@@ -768,8 +784,8 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "global_hotkey_enabled = " << (global_hotkey_enabled ? "true" : "false") << "\n";
     output << "global_hotkey = \"" << TomlEscape(global_hotkey) << "\"\n";
     output << "show_imu_debug = " << (show_imu_debug ? "true" : "false") << "\n";
-    output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
-    output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
+    output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(default_interaction_settings.imu_wake_sensitivity) << "\"\n";
+    output << "tap_to_arrow = " << (default_interaction_settings.tap_to_arrow ? "true" : "false") << "\n";
     output << "encoder_to_arrow = " << (default_encoder_settings.to_arrow ? "true" : "false") << "\n";
     output << "encoder_rotation_invert = " << (default_encoder_settings.rotation_invert ? "true" : "false") << "\n";
     output << "encoder_rotate_cw_key = \"" << TomlEscape(default_encoder_settings.rotate_cw_key) << "\"\n";
@@ -783,9 +799,9 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "encoder_press_key = \"" << TomlEscape(default_encoder_settings.press_key) << "\"\n";
     output << "encoder_double_click_action = \"" << TomlEscape(default_encoder_settings.double_click_action) << "\"\n";
     output << "encoder_double_click_key = \"" << TomlEscape(default_encoder_settings.double_click_key) << "\"\n";
-    output << "tap_sensitivity = " << tap_sensitivity << "\n";
-    output << "air_mouse_sensitivity_x = " << air_mouse_sensitivity_x << "\n";
-    output << "air_mouse_sensitivity_y = " << air_mouse_sensitivity_y << "\n";
+    output << "tap_sensitivity = " << default_interaction_settings.tap_sensitivity << "\n";
+    output << "air_mouse_sensitivity_x = " << default_interaction_settings.air_mouse_sensitivity_x << "\n";
+    output << "air_mouse_sensitivity_y = " << default_interaction_settings.air_mouse_sensitivity_y << "\n";
     output << "air_mouse_tau = " << air_mouse_tau << "\n";
     output << "air_mouse_invert_y = " << (air_mouse_invert_y ? "true" : "false") << "\n";
     output << "air_mouse_curve_low_thresh = " << air_mouse_curve_low_thresh << "\n";
@@ -853,6 +869,20 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         output << "press_key = \"" << TomlEscape(settings.press_key) << "\"\n";
         output << "double_click_action = \"" << TomlEscape(settings.double_click_action) << "\"\n";
         output << "double_click_key = \"" << TomlEscape(settings.double_click_key) << "\"\n";
+    }
+    for (const auto& [device_id, settings] : device_interaction_settings) {
+        if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
+            continue;
+        }
+        // 与全局默认相同则跳过，不落盘冗余覆盖。
+        if (settings == default_interaction_settings) continue;
+        // 覆盖表全量写出 5 个字段（键名去前缀），保证表自含、加载顺序无关。
+        output << "\n[device." << device_id << ".interaction]\n";
+        output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(settings.imu_wake_sensitivity) << "\"\n";
+        output << "tap_to_arrow = " << (settings.tap_to_arrow ? "true" : "false") << "\n";
+        output << "tap_sensitivity = " << settings.tap_sensitivity << "\n";
+        output << "air_mouse_sensitivity_x = " << settings.air_mouse_sensitivity_x << "\n";
+        output << "air_mouse_sensitivity_y = " << settings.air_mouse_sensitivity_y << "\n";
     }
 }
 
@@ -931,6 +961,7 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
     device_overlay_positions.erase(device_id);
     device_output_profiles.erase(device_id);
     device_encoder_settings.erase(device_id);
+    device_interaction_settings.erase(device_id);
     Save();
 }
 
@@ -950,6 +981,16 @@ const EncoderSettings& AppConfig::EncoderSettingsForDevice(
     const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
     auto it = device_encoder_settings.find(normalized);
     if (it == device_encoder_settings.end()) return default_encoder_settings;
+    // 覆盖表加载时已用全局默认填平所有字段，整表返回即可。
+    return it->second;
+}
+
+const InteractionSettings& AppConfig::InteractionSettingsForDevice(
+    const std::optional<std::string>& device_id) const {
+    if (!device_id.has_value()) return default_interaction_settings;
+    const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
+    auto it = device_interaction_settings.find(normalized);
+    if (it == device_interaction_settings.end()) return default_interaction_settings;
     // 覆盖表加载时已用全局默认填平所有字段，整表返回即可。
     return it->second;
 }

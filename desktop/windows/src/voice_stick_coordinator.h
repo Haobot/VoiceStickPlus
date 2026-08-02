@@ -226,10 +226,10 @@ public:
     // 注入前台进程完整性探测实现。未注入（nullptr）时跳过 UIPI 提权提醒。须在 Start 前调用。
     void SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe);
     void UpdateConfig(AppConfig config);
-    // 热调参：仅更新运行期 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
-    void UpdateAirMouseParams(const AirMouseParams& params);
-    // 取当前运行期 air_mouse 参数（调参窗口初始值）。
-    AirMouseParams GetAirMouseParamsForTuning() const { return live_air_mouse_params_; }
+    // 热调参：仅更新运行期某设备的 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
+    void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);
+    // 取某设备当前运行期 air_mouse 参数（调参窗口初始值）。无运行期覆盖时回退配置派生值。
+    AirMouseParams GetAirMouseParamsForTuning(const std::string& device_id) const;
     void ReconnectPairedDevices();
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
@@ -512,8 +512,10 @@ private:
         double theta_y = 0.0;
     };
     std::map<std::string, AirMouseDeviceState> air_mouse_states_;
-    AirMouseParams live_air_mouse_params_;  // 运行期参数（AirMouseTick 用，热调参面板经 UpdateAirMouseParams 即时改）
-    AirMouseParams AirMouseParamsFromConfig() const;
+    // 运行期 air_mouse 参数表（AirMouseTick 用，热调参面板经 UpdateAirMouseParams 按设备即时改）。
+    // 同一时刻可有多个设备在体感态，故需按 device_id 分别保存；未命中时回退 AirMouseParamsForDevice。
+    std::map<std::string, AirMouseParams> live_air_mouse_params_;
+    AirMouseParams AirMouseParamsForDevice(const std::string& device_id) const;
     static constexpr std::chrono::milliseconds kAirMouseTickInterval{16};   // ~60Hz
     // omega 超龄视为静止。固件约 50Hz（20ms/帧），桌面 60Hz（16.7ms）；
     // 取 ≥3× 帧周期（60ms）以容忍 50/60Hz 抖动与偶发丢帧，绝不误触发归零（P1 时间基准统一）。
