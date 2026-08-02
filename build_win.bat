@@ -73,6 +73,41 @@ if errorlevel 1 (
 )
 
 echo.
+REM ---------------------------------------------------------------------------
+REM [3.5/4] Ensure the C++/WinRT projection headers (winrt/base.h + Windows.*.h)
+REM exist. The Windows SDK's Include\10.0.26100.0\winrt folder only ships the
+REM legacy WRL-style headers and lacks winrt/base.h, so a plain vcvars64 build
+REM fails with C1083 on winrt/base.h. We generate the full projection from the
+REM SDK union metadata via the SDK's cppwinrt.exe. Generation runs once and is
+REM cached under desktop\windows\generated_winrt (gitignored, and survives the
+REM rd /s /q build-x64 clean below). The dir is prepended to INCLUDE so that
+REM <winrt/...> resolves here ahead of the partial SDK winrt folder.
+REM ---------------------------------------------------------------------------
+echo [3.5/4] Ensuring C++/WinRT projection headers are available...
+>> "%LOG_FILE%" echo === C++/WinRT header generation ===
+set "GEN_WINRT_DIR=%SOURCE_DIR%\generated_winrt"
+if not exist "%GEN_WINRT_DIR%\winrt\base.h" (
+    echo   - Generating C++/WinRT headers (winrt/base.h missing from SDK include)...
+    set "CPPWINRT_EXE=%ProgramFiles(x86)%\Windows Kits\10\bin\10.0.26100.0\x64\cppwinrt.exe"
+    if not exist "%CPPWINRT_EXE%" (
+        echo ERROR: cppwinrt.exe not found at %CPPWINRT_EXE%
+        >> "%LOG_FILE%" echo ERROR: cppwinrt.exe not found
+        exit /b 1
+    )
+    "%CPPWINRT_EXE%" -in "%ProgramFiles(x86)%\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd" -ref "%ProgramFiles(x86)%\Windows Kits\10\References\10.0.26100.0" -out "%GEN_WINRT_DIR%" >> "%SETUP_LOG%" 2>&1
+    if errorlevel 1 (
+        echo ERROR: C++/WinRT header generation failed
+        echo See build_setup.log for details
+        exit /b 1
+    )
+    echo   - C++/WinRT headers generated at %GEN_WINRT_DIR%
+) else (
+    echo   - C++/WinRT headers already present, skipping generation
+)
+>> "%LOG_FILE%" echo Prepending %GEN_WINRT_DIR% to INCLUDE
+set "INCLUDE=%GEN_WINRT_DIR%;%INCLUDE%"
+
+echo.
 echo [4/4] Running CMake build...
 >> "%CONFIGURE_LOG%" echo.
 >> "%CONFIGURE_LOG%" echo === Running CMake configuration ===
