@@ -325,3 +325,4 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - `scripts/` 下除各平台构建脚本外，还有 `probe_asr_websocket_ping.py`（ASR 连通性探测）、`probe_hotword_extraction.py`（离线探测 LLM 热词提炼链路，打印原始响应与候选过滤原因）、`update-appcast.py`（生成 `appcast.xml`）、`idf_cli.py`（Windows 上包装 `idf.py`）、`png_to_lvgl_argb_bin.py` / `slice_cat_sprites.py` / `tune_cat_sprites.py`（LVGL 图片资源处理）、`scripts/e2e_test/`（L0–L4 真机验证，见上节测试策略）等辅助脚本。
 - MiniEncoderC 编码器键是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）仍是唯一唤醒键。
 - Grove 口 5V 保持不启用（固件不动 PMIC BOOST_EN），MiniEncoderC 由顶部 Hat 排针供电。
+- Windows 桌面端构建若报 `C1083: winrt/base.h`（或 `winrt/Windows.Devices.Bluetooth.h`）找不到，是本机 Windows SDK 的 `Include/<ver>/winrt/` 仅含旧版 WRL 风格头文件、缺 C++/WinRT 投影头所致；`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 从 union metadata 一次性生成完整投影头到 `desktop/windows/generated_winrt/`（gitignored，且不受 `rd /s /q build-x64` 清理影响）并 prepend 到 `INCLUDE`。手动用 vcvars64 构建时须同样把该目录加入 `INCLUDE`。
