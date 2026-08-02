@@ -61,6 +61,9 @@ constexpr UINT kMenuTranslationBase = 4000;
 constexpr UINT kMenuTranslationEnd = 5799;
 constexpr UINT kMenuUpdateFirmwareFromFileBase = 5900;
 constexpr UINT kMenuUpdateFirmwareFromFileEnd = 5999;
+// 设备级编码器设置入口：每设备一项（kMenuEncoderSettingsBase + 设备索引）。
+constexpr UINT kMenuEncoderSettingsBase = 6000;
+constexpr UINT kMenuEncoderSettingsEnd = 6199;
 constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
@@ -928,6 +931,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                     }
                     SaveDeviceOutputProfile(paired_device_ids_[index], profile);
                 }
+            } else if (cmd >= kMenuEncoderSettingsBase && cmd <= kMenuEncoderSettingsEnd) {
+                std::size_t index = cmd - kMenuEncoderSettingsBase;
+                if (index < paired_device_ids_.size()) {
+                    ShowEncoderSettingsDialog(paired_device_ids_[index]);
+                }
             }
             return 0;
         }
@@ -1261,6 +1269,16 @@ void Win32App::ShowTrayMenu() {
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu),
                     TrW(StringId::kMenuTranslation, language).c_str());
+
+        // 编码器设置入口：仅当该设备编码器在线（encoder_present）时显示；
+        // 未知（老固件/未上报）默认显示，避免误隐藏。
+        const bool encoder_present =
+            info_it == device_info_map_.end() || info_it->second.encoder_present;
+        if (encoder_present) {
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuEncoderSettingsBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuEncoderSettings, language).c_str());
+        }
 
         if (firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
@@ -1824,28 +1842,8 @@ void Win32App::ShowPairDeviceDialog() {
 }
 
 void Win32App::ShowSettings() {
-    // 编码器区块显隐：任一已知设备报告 encoder_present 即显示；
-    // 尚无 device_info（未连接过/老固件）时默认显示，避免误隐藏。
-    bool show_encoder_settings = true;
-    if (!device_info_map_.empty()) {
-        show_encoder_settings = false;
-        for (const auto& [id, info] : device_info_map_) {
-            if (info.encoder_present) {
-                show_encoder_settings = true;
-                break;
-            }
-        }
-    }
-    // 对话框已创建但显隐标志变化（如换连了无编码器的设备）时重建，使布局生效。
-    if (settings_dialog_ && settings_show_encoder_ != show_encoder_settings) {
-        settings_dialog_.reset();
-    }
     if (!settings_dialog_) {
-        settings_show_encoder_ = show_encoder_settings;
-        LogLine(std::string("Settings: encoder section ") +
-                (show_encoder_settings ? "visible" : "hidden (no encoder reported)"));
-        settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_,
-                                                            show_encoder_settings);
+        settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
         settings_dialog_->on_config_changed = [this](AppConfig new_config) {
             config_ = std::move(new_config);
             // SaveInputOptions 内部已调用 coordinator_->UpdateConfig(config_) 完成同步。
@@ -1855,6 +1853,34 @@ void Win32App::ShowSettings() {
         };
     }
     settings_dialog_->Show();
+}
+
+void Win32App::ShowEncoderSettingsDialog(const std::string& device_id) {
+    // 单实例策略：模态对话框同时只开一个，重新进入时重建（Show 内同步阻塞至关闭）。
+    encoder_settings_dialog_ = std::make_unique<EncoderSettingsDialog>(
+        instance_, hwnd_, device_id,
+        config_.EncoderSettingsForDevice(device_id),
+        config_.default_encoder_settings,
+        config_.ui_language);
+    encoder_settings_dialog_->on_settings_changed =
+        [this](const std::string& id, std::optional<EncoderSettings> override) {
+            if (override.has_value()) {
+                config_.device_encoder_settings[id] = *override;
+            } else {
+                // 与全局默认一致：清除覆盖，回落默认。
+                config_.device_encoder_settings.erase(id);
+            }
+            // Save() 可能因 config.toml 被占用抛异常，与 SaveDeviceOutputProfile 同模式捕获。
+            try {
+                config_.Save();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Encoder settings: config_.Save failed: ") + e.what());
+                return;
+            }
+            if (coordinator_) coordinator_->UpdateConfig(config_);
+            LogLine("Encoder settings saved for VS-" + id);
+        };
+    encoder_settings_dialog_->Show();
 }
 
 void Win32App::ShowAirMouseTuning() {

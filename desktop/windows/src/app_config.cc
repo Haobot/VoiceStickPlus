@@ -414,25 +414,25 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "show_imu_debug") config.show_imu_debug = BoolValue(value, config.show_imu_debug);
     if (key == "imu_wake_sensitivity") config.imu_wake_sensitivity = ImuWakeSensitivityFromName(value);
     if (key == "tap_to_arrow") config.tap_to_arrow = BoolValue(value, config.tap_to_arrow);
-    if (key == "encoder_to_arrow") config.encoder_to_arrow = BoolValue(value, config.encoder_to_arrow);
-    if (key == "encoder_rotation_invert") config.encoder_rotation_invert = BoolValue(value, config.encoder_rotation_invert);
-    if (key == "encoder_rotate_cw_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_cw_key = value;
-    if (key == "encoder_rotate_ccw_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_ccw_key = value;
+    if (key == "encoder_to_arrow") config.default_encoder_settings.to_arrow = BoolValue(value, config.default_encoder_settings.to_arrow);
+    if (key == "encoder_rotation_invert") config.default_encoder_settings.rotation_invert = BoolValue(value, config.default_encoder_settings.rotation_invert);
+    if (key == "encoder_rotate_cw_key" && ParseKeySpec(value).has_value()) config.default_encoder_settings.rotate_cw_key = value;
+    if (key == "encoder_rotate_ccw_key" && ParseKeySpec(value).has_value()) config.default_encoder_settings.rotate_ccw_key = value;
     if (key == "encoder_rotate_fast_threshold") {
-        const int parsed = IntValue(value, config.encoder_rotate_fast_threshold);
-        if (parsed > 0) config.encoder_rotate_fast_threshold = parsed;
+        const int parsed = IntValue(value, config.default_encoder_settings.rotate_fast_threshold);
+        if (parsed > 0) config.default_encoder_settings.rotate_fast_threshold = parsed;
     }
-    if (key == "encoder_rotate_cw_fast_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_cw_fast_key = value;
-    if (key == "encoder_rotate_ccw_fast_key" && ParseKeySpec(value).has_value()) config.encoder_rotate_ccw_fast_key = value;
+    if (key == "encoder_rotate_cw_fast_key" && ParseKeySpec(value).has_value()) config.default_encoder_settings.rotate_cw_fast_key = value;
+    if (key == "encoder_rotate_ccw_fast_key" && ParseKeySpec(value).has_value()) config.default_encoder_settings.rotate_ccw_fast_key = value;
     if (key == "encoder_rotate_decide_window_ms") {
-        const int parsed = IntValue(value, config.encoder_rotate_decide_window_ms);
-        if (parsed >= 0) config.encoder_rotate_decide_window_ms = parsed;
+        const int parsed = IntValue(value, config.default_encoder_settings.rotate_decide_window_ms);
+        if (parsed >= 0) config.default_encoder_settings.rotate_decide_window_ms = parsed;
     }
-    if (key == "encoder_led_color" && IsValidEncoderLedColor(value)) config.encoder_led_color = value;
-    if (key == "encoder_press_action" && IsValidEncoderButtonAction(value)) config.encoder_press_action = value;
-    if (key == "encoder_press_key" && (value.empty() || ParseKeySpec(value).has_value())) config.encoder_press_key = value;
-    if (key == "encoder_double_click_action" && IsValidEncoderButtonAction(value)) config.encoder_double_click_action = value;
-    if (key == "encoder_double_click_key" && ParseKeySpec(value).has_value()) config.encoder_double_click_key = value;
+    if (key == "encoder_led_color" && IsValidEncoderLedColor(value)) config.default_encoder_settings.led_color = value;
+    if (key == "encoder_press_action" && IsValidEncoderButtonAction(value)) config.default_encoder_settings.press_action = value;
+    if (key == "encoder_press_key" && (value.empty() || ParseKeySpec(value).has_value())) config.default_encoder_settings.press_key = value;
+    if (key == "encoder_double_click_action" && IsValidEncoderButtonAction(value)) config.default_encoder_settings.double_click_action = value;
+    if (key == "encoder_double_click_key" && ParseKeySpec(value).has_value()) config.default_encoder_settings.double_click_key = value;
     if (key == "tap_sensitivity") config.tap_sensitivity = TapSensitivityClamp(IntValue(value, config.tap_sensitivity));
     if (key == "air_mouse_sensitivity_x") config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_x));
     if (key == "air_mouse_sensitivity_y") config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(IntValue(value, config.air_mouse_sensitivity_y));
@@ -484,6 +484,26 @@ OutputProfile ParseOutputProfile(const toml::table& table, const OutputProfile& 
         if (profile.translation_target.empty()) profile.translation_target = fallback.translation_target;
     }
     return profile;
+}
+
+// 解析 [device.<id>.encoder] 覆盖表：以全局默认填平所有字段，出现的键逐项覆盖；
+// 非法值（非法 key_spec/action/led_color、非正阈值）保留 fallback，与顶层解析语义一致。
+EncoderSettings ParseEncoderSettings(const toml::table& table, const EncoderSettings& fallback) {
+    EncoderSettings settings = fallback;
+    if (auto value = TomlBool(table, "to_arrow")) settings.to_arrow = *value;
+    if (auto value = TomlBool(table, "rotation_invert")) settings.rotation_invert = *value;
+    if (auto value = TomlString(table, "rotate_cw_key"); value && ParseKeySpec(*value).has_value()) settings.rotate_cw_key = *value;
+    if (auto value = TomlString(table, "rotate_ccw_key"); value && ParseKeySpec(*value).has_value()) settings.rotate_ccw_key = *value;
+    if (auto value = TomlInt(table, "rotate_fast_threshold"); value && *value > 0) settings.rotate_fast_threshold = static_cast<int>(*value);
+    if (auto value = TomlString(table, "rotate_cw_fast_key"); value && ParseKeySpec(*value).has_value()) settings.rotate_cw_fast_key = *value;
+    if (auto value = TomlString(table, "rotate_ccw_fast_key"); value && ParseKeySpec(*value).has_value()) settings.rotate_ccw_fast_key = *value;
+    if (auto value = TomlInt(table, "rotate_decide_window_ms"); value && *value >= 0) settings.rotate_decide_window_ms = static_cast<int>(*value);
+    if (auto value = TomlString(table, "led_color"); value && IsValidEncoderLedColor(*value)) settings.led_color = *value;
+    if (auto value = TomlString(table, "press_action"); value && IsValidEncoderButtonAction(*value)) settings.press_action = *value;
+    if (auto value = TomlString(table, "press_key"); value && (value->empty() || ParseKeySpec(*value).has_value())) settings.press_key = *value;
+    if (auto value = TomlString(table, "double_click_action"); value && IsValidEncoderButtonAction(*value)) settings.double_click_action = *value;
+    if (auto value = TomlString(table, "double_click_key"); value && ParseKeySpec(*value).has_value()) settings.double_click_key = *value;
+    return settings;
 }
 
 // 修复早期设置/引导对话框在 ASR 提供商切换时的字段映射 bug：Tencent SecretId
@@ -621,6 +641,10 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                         *output, config.default_output_profile, false);
                     config.device_output_profiles[device_id].target = config.default_output_profile.target;
                 }
+                if (const auto* encoder = (*device_table)["encoder"].as_table()) {
+                    config.device_encoder_settings[device_id] = ParseEncoderSettings(
+                        *encoder, config.default_encoder_settings);
+                }
             }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
@@ -629,19 +653,19 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.tap_to_arrow = *value;
-        if (auto value = TomlBool(table, "encoder_to_arrow")) config.encoder_to_arrow = *value;
-        if (auto value = TomlBool(table, "encoder_rotation_invert")) config.encoder_rotation_invert = *value;
-        if (auto value = TomlString(table, "encoder_rotate_cw_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_cw_key = *value;
-        if (auto value = TomlString(table, "encoder_rotate_ccw_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_ccw_key = *value;
-        if (auto value = TomlInt(table, "encoder_rotate_fast_threshold"); value && *value > 0) config.encoder_rotate_fast_threshold = *value;
-        if (auto value = TomlString(table, "encoder_rotate_cw_fast_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_cw_fast_key = *value;
-        if (auto value = TomlString(table, "encoder_rotate_ccw_fast_key"); value && ParseKeySpec(*value).has_value()) config.encoder_rotate_ccw_fast_key = *value;
-        if (auto value = TomlInt(table, "encoder_rotate_decide_window_ms"); value && *value >= 0) config.encoder_rotate_decide_window_ms = *value;
-        if (auto value = TomlString(table, "encoder_led_color"); value && IsValidEncoderLedColor(*value)) config.encoder_led_color = *value;
-        if (auto value = TomlString(table, "encoder_press_action"); value && IsValidEncoderButtonAction(*value)) config.encoder_press_action = *value;
-        if (auto value = TomlString(table, "encoder_press_key"); value && (value->empty() || ParseKeySpec(*value).has_value())) config.encoder_press_key = *value;
-        if (auto value = TomlString(table, "encoder_double_click_action"); value && IsValidEncoderButtonAction(*value)) config.encoder_double_click_action = *value;
-        if (auto value = TomlString(table, "encoder_double_click_key"); value && ParseKeySpec(*value).has_value()) config.encoder_double_click_key = *value;
+        if (auto value = TomlBool(table, "encoder_to_arrow")) config.default_encoder_settings.to_arrow = *value;
+        if (auto value = TomlBool(table, "encoder_rotation_invert")) config.default_encoder_settings.rotation_invert = *value;
+        if (auto value = TomlString(table, "encoder_rotate_cw_key"); value && ParseKeySpec(*value).has_value()) config.default_encoder_settings.rotate_cw_key = *value;
+        if (auto value = TomlString(table, "encoder_rotate_ccw_key"); value && ParseKeySpec(*value).has_value()) config.default_encoder_settings.rotate_ccw_key = *value;
+        if (auto value = TomlInt(table, "encoder_rotate_fast_threshold"); value && *value > 0) config.default_encoder_settings.rotate_fast_threshold = static_cast<int>(*value);
+        if (auto value = TomlString(table, "encoder_rotate_cw_fast_key"); value && ParseKeySpec(*value).has_value()) config.default_encoder_settings.rotate_cw_fast_key = *value;
+        if (auto value = TomlString(table, "encoder_rotate_ccw_fast_key"); value && ParseKeySpec(*value).has_value()) config.default_encoder_settings.rotate_ccw_fast_key = *value;
+        if (auto value = TomlInt(table, "encoder_rotate_decide_window_ms"); value && *value >= 0) config.default_encoder_settings.rotate_decide_window_ms = static_cast<int>(*value);
+        if (auto value = TomlString(table, "encoder_led_color"); value && IsValidEncoderLedColor(*value)) config.default_encoder_settings.led_color = *value;
+        if (auto value = TomlString(table, "encoder_press_action"); value && IsValidEncoderButtonAction(*value)) config.default_encoder_settings.press_action = *value;
+        if (auto value = TomlString(table, "encoder_press_key"); value && (value->empty() || ParseKeySpec(*value).has_value())) config.default_encoder_settings.press_key = *value;
+        if (auto value = TomlString(table, "encoder_double_click_action"); value && IsValidEncoderButtonAction(*value)) config.default_encoder_settings.double_click_action = *value;
+        if (auto value = TomlString(table, "encoder_double_click_key"); value && ParseKeySpec(*value).has_value()) config.default_encoder_settings.double_click_key = *value;
         if (auto value = TomlInt(table, "tap_sensitivity")) config.tap_sensitivity = TapSensitivityClamp(*value);
         if (auto value = TomlInt(table, "air_mouse_sensitivity_x")) config.air_mouse_sensitivity_x = AirMouseSensitivityClamp(*value);
         if (auto value = TomlInt(table, "air_mouse_sensitivity_y")) config.air_mouse_sensitivity_y = AirMouseSensitivityClamp(*value);
@@ -746,19 +770,19 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "show_imu_debug = " << (show_imu_debug ? "true" : "false") << "\n";
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(imu_wake_sensitivity) << "\"\n";
     output << "tap_to_arrow = " << (tap_to_arrow ? "true" : "false") << "\n";
-    output << "encoder_to_arrow = " << (encoder_to_arrow ? "true" : "false") << "\n";
-    output << "encoder_rotation_invert = " << (encoder_rotation_invert ? "true" : "false") << "\n";
-    output << "encoder_rotate_cw_key = \"" << TomlEscape(encoder_rotate_cw_key) << "\"\n";
-    output << "encoder_rotate_ccw_key = \"" << TomlEscape(encoder_rotate_ccw_key) << "\"\n";
-    output << "encoder_rotate_fast_threshold = " << encoder_rotate_fast_threshold << "\n";
-    output << "encoder_rotate_cw_fast_key = \"" << TomlEscape(encoder_rotate_cw_fast_key) << "\"\n";
-    output << "encoder_rotate_ccw_fast_key = \"" << TomlEscape(encoder_rotate_ccw_fast_key) << "\"\n";
-    output << "encoder_rotate_decide_window_ms = " << encoder_rotate_decide_window_ms << "\n";
-    output << "encoder_led_color = \"" << TomlEscape(encoder_led_color) << "\"\n";
-    output << "encoder_press_action = \"" << TomlEscape(encoder_press_action) << "\"\n";
-    output << "encoder_press_key = \"" << TomlEscape(encoder_press_key) << "\"\n";
-    output << "encoder_double_click_action = \"" << TomlEscape(encoder_double_click_action) << "\"\n";
-    output << "encoder_double_click_key = \"" << TomlEscape(encoder_double_click_key) << "\"\n";
+    output << "encoder_to_arrow = " << (default_encoder_settings.to_arrow ? "true" : "false") << "\n";
+    output << "encoder_rotation_invert = " << (default_encoder_settings.rotation_invert ? "true" : "false") << "\n";
+    output << "encoder_rotate_cw_key = \"" << TomlEscape(default_encoder_settings.rotate_cw_key) << "\"\n";
+    output << "encoder_rotate_ccw_key = \"" << TomlEscape(default_encoder_settings.rotate_ccw_key) << "\"\n";
+    output << "encoder_rotate_fast_threshold = " << default_encoder_settings.rotate_fast_threshold << "\n";
+    output << "encoder_rotate_cw_fast_key = \"" << TomlEscape(default_encoder_settings.rotate_cw_fast_key) << "\"\n";
+    output << "encoder_rotate_ccw_fast_key = \"" << TomlEscape(default_encoder_settings.rotate_ccw_fast_key) << "\"\n";
+    output << "encoder_rotate_decide_window_ms = " << default_encoder_settings.rotate_decide_window_ms << "\n";
+    output << "encoder_led_color = \"" << TomlEscape(default_encoder_settings.led_color) << "\"\n";
+    output << "encoder_press_action = \"" << TomlEscape(default_encoder_settings.press_action) << "\"\n";
+    output << "encoder_press_key = \"" << TomlEscape(default_encoder_settings.press_key) << "\"\n";
+    output << "encoder_double_click_action = \"" << TomlEscape(default_encoder_settings.double_click_action) << "\"\n";
+    output << "encoder_double_click_key = \"" << TomlEscape(default_encoder_settings.double_click_key) << "\"\n";
     output << "tap_sensitivity = " << tap_sensitivity << "\n";
     output << "air_mouse_sensitivity_x = " << air_mouse_sensitivity_x << "\n";
     output << "air_mouse_sensitivity_y = " << air_mouse_sensitivity_y << "\n";
@@ -807,6 +831,28 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         output << "\n[device." << device_id << ".output]\n";
         output << "transform = \"" << TextTransformName(profile.transform) << "\"\n";
         output << "translation_target = \"" << TomlEscape(profile.translation_target) << "\"\n";
+    }
+    for (const auto& [device_id, settings] : device_encoder_settings) {
+        if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
+            continue;
+        }
+        // 与全局默认相同则跳过，不落盘冗余覆盖。
+        if (settings == default_encoder_settings) continue;
+        // 覆盖表全量写出 13 个字段（键名去 encoder_ 前缀），保证表自含、加载顺序无关。
+        output << "\n[device." << device_id << ".encoder]\n";
+        output << "to_arrow = " << (settings.to_arrow ? "true" : "false") << "\n";
+        output << "rotation_invert = " << (settings.rotation_invert ? "true" : "false") << "\n";
+        output << "rotate_cw_key = \"" << TomlEscape(settings.rotate_cw_key) << "\"\n";
+        output << "rotate_ccw_key = \"" << TomlEscape(settings.rotate_ccw_key) << "\"\n";
+        output << "rotate_fast_threshold = " << settings.rotate_fast_threshold << "\n";
+        output << "rotate_cw_fast_key = \"" << TomlEscape(settings.rotate_cw_fast_key) << "\"\n";
+        output << "rotate_ccw_fast_key = \"" << TomlEscape(settings.rotate_ccw_fast_key) << "\"\n";
+        output << "rotate_decide_window_ms = " << settings.rotate_decide_window_ms << "\n";
+        output << "led_color = \"" << TomlEscape(settings.led_color) << "\"\n";
+        output << "press_action = \"" << TomlEscape(settings.press_action) << "\"\n";
+        output << "press_key = \"" << TomlEscape(settings.press_key) << "\"\n";
+        output << "double_click_action = \"" << TomlEscape(settings.double_click_action) << "\"\n";
+        output << "double_click_key = \"" << TomlEscape(settings.double_click_key) << "\"\n";
     }
 }
 
@@ -884,6 +930,7 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
     device_theme_sizes.erase(device_id);
     device_overlay_positions.erase(device_id);
     device_output_profiles.erase(device_id);
+    device_encoder_settings.erase(device_id);
     Save();
 }
 
@@ -895,6 +942,16 @@ OutputProfile AppConfig::OutputProfileForDevice(const std::optional<std::string>
     OutputProfile profile = it->second;
     profile.target = default_output_profile.target;
     return profile;
+}
+
+const EncoderSettings& AppConfig::EncoderSettingsForDevice(
+    const std::optional<std::string>& device_id) const {
+    if (!device_id.has_value()) return default_encoder_settings;
+    const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
+    auto it = device_encoder_settings.find(normalized);
+    if (it == device_encoder_settings.end()) return default_encoder_settings;
+    // 覆盖表加载时已用全局默认填平所有字段，整表返回即可。
+    return it->second;
 }
 
 std::string AsrProviderName(AsrProvider provider) {

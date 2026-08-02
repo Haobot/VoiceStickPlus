@@ -103,8 +103,13 @@ void VoiceStickCoordinator::Start() {
         ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
         ble_->SendImuWakeSensitivity(
             ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
-        ble_->SendEncoderLedColor(config_.encoder_led_color, std::nullopt);
-        ble_->SendEncoderRecordingGate(config_.encoder_press_action == "recording", std::nullopt);
+        // 编码器设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
+        // 与旧广播行为等价）。
+        for (const auto& dev : devices) {
+            const EncoderSettings& enc = config_.EncoderSettingsForDevice(dev.id);
+            ble_->SendEncoderLedColor(enc.led_color, dev.id);
+            ble_->SendEncoderRecordingGate(enc.press_action == "recording", dev.id);
+        }
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -195,8 +200,12 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
     ble_->SendImuWakeSensitivity(
         ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
-    ble_->SendEncoderLedColor(config_.encoder_led_color, std::nullopt);
-    ble_->SendEncoderRecordingGate(config_.encoder_press_action == "recording", std::nullopt);
+    // 编码器设置按设备覆盖：对已连接设备逐个取其有效配置单播。
+    for (const auto& device_id : connected_device_ids_) {
+        const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+        ble_->SendEncoderLedColor(enc.led_color, device_id);
+        ble_->SendEncoderRecordingGate(enc.press_action == "recording", device_id);
+    }
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
         asr_ = asr_factory_(config_);
@@ -966,7 +975,8 @@ void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, con
 
 void VoiceStickCoordinator::HandleEncoderButtonDown(const StateEvent& event,
                                                     const std::string& device_id) {
-    if (config_.encoder_press_action == "recording") {
+    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    if (enc.press_action == "recording") {
         HandleButtonDown(event, device_id);
         return;
     }
@@ -976,7 +986,8 @@ void VoiceStickCoordinator::HandleEncoderButtonDown(const StateEvent& event,
 
 void VoiceStickCoordinator::HandleEncoderButtonUp(const StateEvent& event,
                                                   const std::string& device_id) {
-    if (config_.encoder_press_action == "recording") {
+    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    if (enc.press_action == "recording") {
         HandleButtonUp(event, device_id);
         return;
     }
@@ -985,13 +996,14 @@ void VoiceStickCoordinator::HandleEncoderButtonUp(const StateEvent& event,
 
 void VoiceStickCoordinator::HandleEncoderButtonClick(const StateEvent& event,
                                                      const std::string& device_id) {
-    if (config_.encoder_press_action == "recording") {
+    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    if (enc.press_action == "recording") {
         HandleButtonClick(event, device_id);
         return;
     }
-    const auto spec = ParseKeySpec(config_.encoder_press_key);
+    const auto spec = ParseKeySpec(enc.press_key);
     if (!spec.has_value()) {
-        LogCoordinatorLine("encoder press key invalid: \"" + config_.encoder_press_key +
+        LogCoordinatorLine("encoder press key invalid: \"" + enc.press_key +
                            "\" on VS-" + device_id + ", click ignored");
         return;
     }
@@ -1004,7 +1016,8 @@ void VoiceStickCoordinator::HandleEncoderButtonClick(const StateEvent& event,
 void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& event,
                                                            const std::string& device_id) {
     (void)event;
-    if (config_.encoder_double_click_action == "recording") {
+    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    if (enc.double_click_action == "recording") {
         // 切换录音起停：复用固件 remote_button 通道（固件侧等价一次远程按下/松开，
         // 音频链路真实完整，等同 click_to_talk 点按起停）。remote_button 走
         // APP_INPUT_SOURCE_REMOTE，不受 encoder_recording_gate 门控约束——
@@ -1019,14 +1032,14 @@ void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& eve
     }
     // key 动作：沿用物理主键双击的取消结构，注入配置的按键（默认 enter=现行为）。
     CancelActiveSessionsForDoubleClick(device_id);
-    const auto spec = ParseKeySpec(config_.encoder_double_click_key);
+    const auto spec = ParseKeySpec(enc.double_click_key);
     if (spec.has_value()) {
         LogCoordinatorLine("encoder double-click on VS-" + device_id + ", injecting " +
                            spec->display_text);
         input_injector_->SendKeyCombo(*spec);
     } else {
         LogCoordinatorLine("encoder double-click key invalid: \"" +
-                           config_.encoder_double_click_key + "\" on VS-" + device_id +
+                           enc.double_click_key + "\" on VS-" + device_id +
                            ", fallback to Enter");
         input_injector_->SendEnter();
     }
@@ -1062,8 +1075,9 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     // steps 上限钳制：固件侧已截断到 uint8（255），桌面端再钳到物理合理值，
     // 防伪造/异常 BLE 帧让注入循环放大挂死线程。真实 10ms 窗口内旋转 1~3 步。
     constexpr std::uint32_t kMaxEncoderRotateSteps = 64;
+    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
     // 总开关关闭则忽略。
-    if (!config_.encoder_to_arrow) return;
+    if (!enc.to_arrow) return;
     // 体感态忽略旋转，避免与体感移动/点击冲突（固件侧也有体感门控，双保险）。
     if (IsAirMouseActive(device_id)) return;
     // 录音中或识别中忽略旋转，避免干扰当前语音周期（门控与 HandleTapEvent 一致）。
@@ -1074,10 +1088,16 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     const std::uint32_t raw_steps = event.steps.value_or(0);
     if (raw_steps == 0) return;
     const std::uint32_t steps = std::min(raw_steps, kMaxEncoderRotateSteps);
-    // 方向映射：默认 cw→encoder_rotate_cw_key / ccw→encoder_rotate_ccw_key；
-    // encoder_rotation_invert=true 时翻转。direction 非 "ccw"（含空串/未知值）按 cw 处理，
+    // 多设备交替旋转：测速估计器是全局单例，换设备时重置冷启动，避免跨设备手势
+    // 互相污染 EWMA 估计（阈值/方向可能按设备不同）。
+    if (device_id != last_encoder_rotate_device_id_) {
+        encoder_speed_estimator_.Reset();
+        last_encoder_rotate_device_id_ = device_id;
+    }
+    // 方向映射：默认 cw→rotate_cw_key / ccw→rotate_ccw_key；
+    // rotation_invert=true 时翻转。direction 非 "ccw"（含空串/未知值）按 cw 处理，
     // 与固件只发 cw|ccw 的约定一致。
-    const bool effective_ccw = (event.direction == "ccw") != config_.encoder_rotation_invert;
+    const bool effective_ccw = (event.direction == "ccw") != enc.rotation_invert;
     // 停转窗口：连续旋转时事件间隔 <=10ms（加 BLE 抖动亦远小于此值），静默超过
     // 250ms 无旋转事件即可靠判定停稳。
     constexpr auto kEncoderRotateStopGap = std::chrono::milliseconds(250);
@@ -1101,11 +1121,11 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     // 2 步窗即误判快），故用 EWMA 平滑估计测速（见 encoder_speed.h）；估计值
     // >= encoder_rotate_fast_threshold 走快速档按键，否则走普通按键。
     const double speed_sps = encoder_speed_estimator_.AddSample(now, steps);
-    const bool fast = EncoderRotateIsFast(speed_sps, config_.encoder_rotate_fast_threshold);
-    const std::string& normal_key = effective_ccw ? config_.encoder_rotate_ccw_key
-                                                  : config_.encoder_rotate_cw_key;
-    const std::string& fast_key = effective_ccw ? config_.encoder_rotate_ccw_fast_key
-                                                : config_.encoder_rotate_cw_fast_key;
+    const bool fast = EncoderRotateIsFast(speed_sps, enc.rotate_fast_threshold);
+    const std::string& normal_key = effective_ccw ? enc.rotate_ccw_key
+                                                  : enc.rotate_cw_key;
+    const std::string& fast_key = effective_ccw ? enc.rotate_ccw_fast_key
+                                                : enc.rotate_cw_fast_key;
     if (fast) {
         // 快速甩动视为一次手势：注入一次快速键后进入停转锁定，直到停稳才恢复识别。
         encoder_rotate_lockout_ = true;
@@ -1147,14 +1167,14 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     }
     // 慢速路径：延迟判定——先挂起累计，判定窗内判快则整段丢弃（见 fast 分支），
     // 到期由 EncoderRotateTick 或此处新事件检查冲刷。window<=0 时立即注入（旧行为）。
-    if (config_.encoder_rotate_decide_window_ms <= 0) {
+    if (enc.rotate_decide_window_ms <= 0) {
         InjectEncoderRotateSteps(effective_ccw, steps, normal_key, device_id);
         return;
     }
     if (encoder_pending_active_) {
         const bool expired =
             now - encoder_pending_started_at_ >=
-            std::chrono::milliseconds(config_.encoder_rotate_decide_window_ms);
+            std::chrono::milliseconds(enc.rotate_decide_window_ms);
         if (expired || encoder_pending_ccw_ != effective_ccw) {
             // 旧 pending 到期或换向：不是本次快甩的加速段，立即冲刷。
             FlushEncoderRotatePending(device_id);
@@ -1165,6 +1185,7 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
         encoder_pending_ccw_ = effective_ccw;
         encoder_pending_steps_ = 0;
         encoder_pending_started_at_ = now;
+        encoder_pending_device_id_ = device_id;
         if (on_encoder_rotate_pending_changed) on_encoder_rotate_pending_changed(true);
     }
     encoder_pending_steps_ = std::min(encoder_pending_steps_ + steps, kMaxEncoderRotateSteps);
@@ -1205,19 +1226,23 @@ void VoiceStickCoordinator::FlushEncoderRotatePending(const std::string& device_
     const std::uint32_t steps = encoder_pending_steps_;
     encoder_pending_active_ = false;
     encoder_pending_steps_ = 0;
+    encoder_pending_device_id_.clear();
     if (on_encoder_rotate_pending_changed) on_encoder_rotate_pending_changed(false);
-    const std::string& key = ccw ? config_.encoder_rotate_ccw_key
-                                 : config_.encoder_rotate_cw_key;
+    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    const std::string& key = ccw ? enc.rotate_ccw_key
+                                 : enc.rotate_cw_key;
     InjectEncoderRotateSteps(ccw, steps, key, device_id);
 }
 
 void VoiceStickCoordinator::EncoderRotateTick() {
     if (!encoder_pending_active_) return;
-    if (config_.encoder_rotate_decide_window_ms <= 0) return;
+    // 到期判定用挂起 pending 来源设备的覆盖配置（ decide_window_ms 可按设备不同）。
+    const EncoderSettings& enc = config_.EncoderSettingsForDevice(encoder_pending_device_id_);
+    if (enc.rotate_decide_window_ms <= 0) return;
     const auto now = std::chrono::steady_clock::now();
     if (now - encoder_pending_started_at_ >=
-        std::chrono::milliseconds(config_.encoder_rotate_decide_window_ms)) {
-        FlushEncoderRotatePending("");
+        std::chrono::milliseconds(enc.rotate_decide_window_ms)) {
+        FlushEncoderRotatePending(encoder_pending_device_id_);
     }
 }
 

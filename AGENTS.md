@@ -250,7 +250,7 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成四个源码目标（�
 - `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
 - `hotword_process_enabled` / `hotword_mining_enabled`：热词处理与候选挖掘（Windows，默认关闭，两条挖掘通道与阈值细节见 `Doc/Ref/desktop-config.md`）。
 - `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
-- `tap_to_arrow`、`encoder_*`（编码器旋转/快慢分档/按键/LED，仅 Windows 端消费）、`air_mouse_*`（体感鼠标）、`[wechat_input_method]`（虚拟麦克风链路）：字段多且细节长，完整说明见 `Doc/Ref/desktop-config.md`。
+- `tap_to_arrow`、`encoder_*`（编码器旋转/快慢分档/按键/LED，仅 Windows 端消费）、`air_mouse_*`（体感鼠标）、`[wechat_input_method]`（虚拟麦克风链路）：字段多且细节长，完整说明见 `Doc/Ref/desktop-config.md`。编码器配置为**全局默认（`encoder_*`）+ 按设备覆盖 `[device.<id>.encoder]`**（键名去 `encoder_` 前缀，结构镜像 `[device.<id>.output]`），设置 UI 已从「设置」对话框移至托盘设备子菜单的「编码器设置…」（仅 `encoder_present` 设备显示）。
 
 Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，首启复制到 `%APPDATA%`（升级不覆盖）。
 

@@ -285,6 +285,12 @@ enum class StringId {
     kSettingsEncoderLedWhite,
     kSettingsEncoderLedOff,
     kSettingsEncoderInvalidKey,
+
+    // 设备级编码器设置（托盘设备子菜单入口 + 独立对话框）
+    kMenuEncoderSettings,
+    // {0} = 设备 ID（如 5A74）
+    kEncoderSettingsTitle,
+    kEncoderSettingsRestoreDefaults,
 };
 
 // 返回 UTF-8 本地化文本

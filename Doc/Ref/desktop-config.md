@@ -23,11 +23,31 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 - `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
 - `[wechat_input_method]`：微信输入法模式专属配置，含 `trigger_mode`（wechat 专属触发方式，`hold_to_talk` 默认或 `click_to_talk`，与全局 `interaction_mode` 解耦）、`hotkey_hold` / `hotkey_click`（长按式/点按式各自记忆的触发热键，默认 `ctrl+win` / `ralt`）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回）。
 - `tap_to_arrow`：IMU 敲击映射方向键开关。
-- `encoder_to_arrow` / `encoder_rotation_invert` / `encoder_rotate_cw_key` / `encoder_rotate_ccw_key`：MiniEncoderC 编码器旋转注入开关（默认 `true`）、方向翻转（默认 `false`，true 时顺时针→Up）与 cw/ccw 自定义按键（热键语法）。
-- `encoder_rotate_fast_threshold` / `encoder_rotate_cw_fast_key` / `encoder_rotate_ccw_fast_key`：旋转快慢分档——固件 10ms 窗口计数的单窗口格速（steps × 100 格/秒）量化到 100 格/秒，直接比较会让 100~200 间阈值失效且偶发 2 步窗误判快，故桌面端对单窗口格速做 EWMA 平滑（α=0.5 按事件更新，与墙钟无关，新手势静默 >250ms 后从零冷启动，见 `desktop/windows/src/encoder_speed.h`），平滑估计 ≥ 阈值（默认 200）判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，锁定期间屏蔽所有旋转输出（含减速段慢速事件与换向事件），直到静默 >250ms 判定停稳才恢复识别；快速档按键非法时回退普通按键。设置对话框中阈值为滑杆控件（范围 100–300，超出范围的配置值显示时钳制）。
-- `encoder_rotate_decide_window_ms`：慢速注入延迟判定窗（默认 80ms，0 = 关闭延迟判定即立即注入）。慢速事件先挂起累计，窗内判快则整段丢弃（消除快甩加速段的误注入），到期由 30ms 定时器驱动的 `EncoderRotateTick()` 冲刷补注；慢转因此有 ≤80ms 注入延迟，连续慢转按窗成批注入、总量不变。仅 config.toml 高级项，不进设置对话框。
-- `encoder_led_color`：编码器录音灯颜色（red/green/blue/yellow/purple/cyan/white/off），BLE 下发固件 NVS 持久化。
-- `encoder_press_action` / `encoder_press_key` / `encoder_double_click_action` / `encoder_double_click_key`：编码器单击/双击动作（recording|key）与自定义按键；`press_action=key` 派生固件录音门控关闭，双击 recording 走 remote_button 切换起停。
+
+### 编码器配置（仅 Windows 消费）
+
+MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像 `[device.<id>.output]`：
+
+- **全局默认**：顶层 `encoder_*` 扁平键（v1.8.x 旧配置仍可加载）。字段与默认值：
+  - `encoder_to_arrow`（true）：旋转是否注入按键；关闭后旋转行（方向翻转/cw/ccw 按键/快慢阈值/快速档按键）在设备级对话框中隐藏。
+  - `encoder_rotation_invert`（false）：方向翻转，true 时顺时针→Up。
+  - `encoder_rotate_cw_key` / `encoder_rotate_ccw_key`：顺时针/逆时针自定义按键（热键语法，如 `down`/`up`）。
+  - `encoder_rotate_fast_threshold`（200）：旋转快慢分档阈值（格/秒）。固件 10ms 窗口计数的单窗口格速（steps × 100 格/秒）量化到 100 格/秒，直接比较会让 100~200 间阈值失效且偶发 2 步窗误判快，故桌面端对单窗口格速做 EWMA 平滑（α=0.5 按事件更新，与墙钟无关，新手势静默 >250ms 后从零冷启动，见 `desktop/windows/src/encoder_speed.h`），平滑估计 ≥ 阈值判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，锁定期间屏蔽所有旋转输出（含减速段慢速事件与换向事件），直到静默 >250ms 判定停稳才恢复识别；快速档按键非法时回退普通按键。设备级对话框中阈值为滑杆（范围 100–300，超出范围的配置值显示时钳制）。
+  - `encoder_rotate_decide_window_ms`（80）：慢速注入延迟判定窗（0 = 立即注入）。慢速事件先挂起累计，窗内判快则整段丢弃（消除快甩加速段误注入），到期由 30ms 定时器驱动的 `EncoderRotateTick()` 冲刷补注；慢转因此有 ≤80ms 注入延迟、连续慢转按窗成批注入、总量不变。仅 config.toml 高级项，不进对话框。
+  - `encoder_rotate_cw_fast_key` / `encoder_rotate_ccw_fast_key`：快速档 cw/ccw 按键（默认 `pagedown`/`pageup`）。
+  - `encoder_led_color`：编码器录音灯颜色（red/green/blue/yellow/purple/cyan/white/off），BLE 下发固件 NVS 持久化。
+  - `encoder_press_action` / `encoder_press_key`：单击动作（recording|key，默认 `recording`）与自定义按键；`press_action=key` 派生固件录音门控关闭。
+  - `encoder_double_click_action` / `encoder_double_click_key`：双击动作（key|recording，默认 `key`，按键 `enter`）与自定义按键；双击 `recording` 走 remote_button 切换起停。
+- **按设备覆盖**：`[device.<id>.encoder]` 表，键名去 `encoder_` 前缀（如 `to_arrow`、`rotate_cw_key`、`led_color`、`press_action`、`double_click_key`），未写的字段回落全局默认。仅写入与全局默认不同的覆盖（相等则不落盘）。示例：
+
+  ```toml
+  [device.9BC1.encoder]
+  led_color = "blue"
+  press_action = "key"
+  press_key = "ctrl+f"
+  ```
+
+- **UI 入口**：编码器设置已从「设置」对话框移除，改为从托盘设备子菜单的「编码器设置…」（Encoder settings...）打开**设备级对话框**，仅当设备 `encoder_present`（固件上报 MiniEncoderC 探测成功）时显示该菜单项。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。
 
 以上编码器设置项仅 Windows 端消费。
 

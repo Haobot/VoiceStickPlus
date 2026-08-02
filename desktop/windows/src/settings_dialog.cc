@@ -156,10 +156,8 @@ HWND CreateSeparator(HWND parent, int x, int y, int w, int h, HINSTANCE inst) {
 
 } // namespace
 
-SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
-                               bool show_encoder_settings)
-    : instance_(instance), parent_(parent), config_(std::move(config)),
-      show_encoder_settings_(show_encoder_settings) {}
+SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config)
+    : instance_(instance), parent_(parent), config_(std::move(config)) {}
 
 SettingsDialog::~SettingsDialog() {
     if (hwnd_) DestroyWindow(hwnd_);
@@ -249,16 +247,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdHotwordProcessEnable:
             if (HIWORD(w_param) == BN_CLICKED) UpdateHotwordProcessPromptVisibility();
             return TRUE;
-        case kIdEncoderToArrow:
-            // 勾选/取消「旋转时注入」：旋转相关行的显隐与定位交由 Relayout 统一处理。
-            if (HIWORD(w_param) == BN_CLICKED) UpdateEncoderRotateRowsVisibility();
-            return TRUE;
         case kIdOutputTarget:
             if (HIWORD(w_param) == CBN_SELCHANGE) UpdateOutputTargetVisibility();
-            return TRUE;
-        case kIdEncoderPressAction:
-        case kIdEncoderDoubleClickAction:
-            if (HIWORD(w_param) == CBN_SELCHANGE) UpdateEncoderKeyEditStates();
             return TRUE;
         case kIdTriggerModeHold:
         case kIdTriggerModeClick:
@@ -289,8 +279,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             UpdateAirMouseSensitivityXLabel();
         } else if (reinterpret_cast<HWND>(l_param) == air_mouse_sensitivity_y_trackbar_) {
             UpdateAirMouseSensitivityYLabel();
-        } else if (reinterpret_cast<HWND>(l_param) == encoder_rotate_fast_threshold_trackbar_) {
-            UpdateEncoderFastThresholdLabel();
         }
         return TRUE;
     case WM_VSCROLL: {
@@ -897,166 +885,12 @@ void SettingsDialog::BuildControls() {
             {air_mouse_sensitivity_y_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
         });
     }
-    // 编码器区块整体隐藏时，其前置分隔线一并隐藏，避免末尾残留孤立分隔线。
-    separator([this]() { return show_encoder_settings_; });
-
-    // ===== 编码器 =====
-    if (show_encoder_settings_) section_title(StringId::kSettingsSectionEncoder);
-    {
-        HWND eta_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
-        encoder_to_arrow_check_ = remember(CreateButton(
-            hwnd_, TrW(StringId::kSettingsEncoderToArrow, language).c_str(),
-            0, 0, ctrl_w, Dp(22), kIdEncoderToArrow, instance_, BS_AUTOCHECKBOX));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {eta_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_to_arrow_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        });
-    }
-    // 以下旋转相关行（方向翻转/顺逆时针按键/快慢阈值/快速档按键）仅「旋转时注入」
-    // 勾选时显示，隐藏时不占位；控件仍创建，隐藏时保存按加载值回写。
-    auto encoder_rotate_rows_visible = [this]() {
-        return SendMessageW(encoder_to_arrow_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    };
-    {
-        HWND eri_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
-        encoder_rotation_invert_check_ = remember(CreateButton(
-            hwnd_, TrW(StringId::kSettingsEncoderRotationInvert, language).c_str(),
-            0, 0, ctrl_w, Dp(22), kIdEncoderRotationInvert, instance_, BS_AUTOCHECKBOX));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {eri_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_rotation_invert_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        }, encoder_rotate_rows_visible);
-    }
-    {
-        HWND cw_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderRotateCwKey).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_rotate_cw_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
-                                                          kIdEncoderRotateCwKey, instance_));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {cw_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_rotate_cw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        }, encoder_rotate_rows_visible);
-    }
-    {
-        HWND ccw_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderRotateCcwKey).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_rotate_ccw_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
-                                                           kIdEncoderRotateCcwKey, instance_));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {ccw_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_rotate_ccw_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        }, encoder_rotate_rows_visible);
-    }
-    {
-        // 快慢阈值滑杆 100~300 格/秒：右侧面板实时显示当前数值。
-        HWND threshold_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderRotateFastThreshold).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_rotate_fast_threshold_trackbar_ = remember(CreateTrackbar(
-            hwnd_, 0, 0, ctrl_w - Dp(50), Dp(28), kIdEncoderRotateFastThreshold, instance_));
-        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETRANGEMIN, FALSE, 100);
-        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETRANGEMAX, TRUE, 300);
-        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETTICFREQ, 20, 0);
-        SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETPAGESIZE, 0, 20);
-        encoder_rotate_fast_threshold_value_label_ = remember(CreateLeftLabel(
-            hwnd_, L"200", 0, 0, Dp(30), Dp(20), instance_));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {threshold_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_rotate_fast_threshold_trackbar_, ctrl_x, 0, ctrl_w - Dp(50), Dp(28)},
-            {encoder_rotate_fast_threshold_value_label_, ctrl_x + ctrl_w - Dp(40), Dp(5), Dp(30), Dp(20)},
-        }, encoder_rotate_rows_visible);
-    }
-    {
-        HWND cw_fast_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderRotateCwFastKey).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_rotate_cw_fast_key_edit_ = remember(CreateEdit(
-            hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCwFastKey, instance_));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {cw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_rotate_cw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        }, encoder_rotate_rows_visible);
-    }
-    {
-        HWND ccw_fast_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderRotateCcwFastKey).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_rotate_ccw_fast_key_edit_ = remember(CreateEdit(
-            hwnd_, 0, 0, ctrl_w, Dp(24), kIdEncoderRotateCcwFastKey, instance_));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {ccw_fast_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_rotate_ccw_fast_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        }, encoder_rotate_rows_visible);
-    }
-    {
-        HWND led_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderLedColor).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_led_color_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
-                                                        kIdEncoderLedColor, instance_));
-        const StringId led_names[] = {
-            StringId::kSettingsEncoderLedRed, StringId::kSettingsEncoderLedGreen,
-            StringId::kSettingsEncoderLedBlue, StringId::kSettingsEncoderLedYellow,
-            StringId::kSettingsEncoderLedPurple, StringId::kSettingsEncoderLedCyan,
-            StringId::kSettingsEncoderLedWhite, StringId::kSettingsEncoderLedOff,
-        };
-        for (const auto id : led_names) {
-            SendMessageW(encoder_led_color_combo_, CB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(TrW(id, language).c_str()));
-        }
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {led_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_led_color_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
-        });
-    }
-    {
-        // 单击动作 + 单击按键：动作选「自定义按键」时按键框启用。
-        HWND pa_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderPressAction).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_press_action_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(120),
-                                                           kIdEncoderPressAction, instance_));
-        SendMessageW(encoder_press_action_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionRecording, language).c_str()));
-        SendMessageW(encoder_press_action_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionKey, language).c_str()));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {pa_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_press_action_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
-        });
-        encoder_press_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
-                                                      kIdEncoderPressKey, instance_));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {encoder_press_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
-    }
-    {
-        // 双击动作（自定义按键/录音，默认自定义=enter）+ 双击按键。
-        HWND da_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsEncoderDoubleClickAction).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        encoder_double_click_action_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(120),
-                                                                  kIdEncoderDoubleClickAction, instance_));
-        SendMessageW(encoder_double_click_action_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionKey, language).c_str()));
-        SendMessageW(encoder_double_click_action_combo_, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsEncoderActionRecording, language).c_str()));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {da_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {encoder_double_click_action_combo_, ctrl_x, 0, ctrl_w, Dp(120)},
-        });
-        encoder_double_click_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
-                                                             kIdEncoderDoubleClickKey, instance_));
-        if (show_encoder_settings_) add(row_h + Dp(10), {
-            {encoder_double_click_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
-        });
-    }
+    // 编码器设置已迁出：全局设置对话框不再含编码器区块，设备级编码器设置由
+    // 托盘设备子菜单「编码器设置…」打开 EncoderSettingsDialog（见 win32_app.cc）。
     // 系统区：开机自启与划词热词两项与托盘右键菜单重复，已从设置页隐藏；其余行
     // 均属高级开关（kShowAdvancedSettings=false），整区暂不显示。
     constexpr bool kShowSystemSection = false;
-    if (show_encoder_settings_ && kShowSystemSection) separator();
+    if (kShowSystemSection) separator();
 
     // ===== 系统 =====
     if (kShowSystemSection) section_title(StringId::kSettingsSectionSystem);
@@ -1321,32 +1155,6 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(debug_audio_check_, BM_SETCHECK, config_.debug_audio_cache ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(show_imu_debug_check_, BM_SETCHECK, config_.show_imu_debug ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(tap_to_arrow_check_, BM_SETCHECK, config_.tap_to_arrow ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageW(encoder_to_arrow_check_, BM_SETCHECK, config_.encoder_to_arrow ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageW(encoder_rotation_invert_check_, BM_SETCHECK, config_.encoder_rotation_invert ? BST_CHECKED : BST_UNCHECKED, 0);
-    SetWindowTextW(encoder_rotate_cw_key_edit_, Utf16(config_.encoder_rotate_cw_key).c_str());
-    SetWindowTextW(encoder_rotate_ccw_key_edit_, Utf16(config_.encoder_rotate_ccw_key).c_str());
-    // 配置值可能超出滑杆范围（手改 config.toml），显示层钳到 100~300。
-    const int threshold_pos = std::clamp(config_.encoder_rotate_fast_threshold, 100, 300);
-    SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_SETPOS, TRUE, threshold_pos);
-    UpdateEncoderFastThresholdLabel();
-    SetWindowTextW(encoder_rotate_cw_fast_key_edit_, Utf16(config_.encoder_rotate_cw_fast_key).c_str());
-    SetWindowTextW(encoder_rotate_ccw_fast_key_edit_, Utf16(config_.encoder_rotate_ccw_fast_key).c_str());
-    {
-        static const char* kLedColors[] = {"red", "green", "blue", "yellow",
-                                           "purple", "cyan", "white", "off"};
-        int led_idx = 0;
-        for (int i = 0; i < 8; ++i) {
-            if (config_.encoder_led_color == kLedColors[i]) led_idx = i;
-        }
-        SendMessageW(encoder_led_color_combo_, CB_SETCURSEL, led_idx, 0);
-    }
-    SendMessageW(encoder_press_action_combo_, CB_SETCURSEL,
-                 config_.encoder_press_action == "key" ? 1 : 0, 0);
-    SetWindowTextW(encoder_press_key_edit_, Utf16(config_.encoder_press_key).c_str());
-    SendMessageW(encoder_double_click_action_combo_, CB_SETCURSEL,
-                 config_.encoder_double_click_action == "recording" ? 1 : 0, 0);
-    SetWindowTextW(encoder_double_click_key_edit_, Utf16(config_.encoder_double_click_key).c_str());
-    UpdateEncoderKeyEditStates();
     int sensitivity_index = 0;
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kMedium) sensitivity_index = 1;
     if (config_.imu_wake_sensitivity == ImuWakeSensitivity::kHigh) sensitivity_index = 2;
@@ -1458,66 +1266,6 @@ void SettingsDialog::SaveSettings() {
     config_.debug_audio_cache = SendMessageW(debug_audio_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.show_imu_debug = SendMessageW(show_imu_debug_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.tap_to_arrow = SendMessageW(tap_to_arrow_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    config_.encoder_to_arrow = SendMessageW(encoder_to_arrow_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    config_.encoder_rotation_invert = SendMessageW(encoder_rotation_invert_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    // 按键字段保存前过 ParseKeySpec；非法值提示且不写回（保留旧值）。
-    bool encoder_key_invalid = false;
-    const std::string cw_key = Utf8(GetWindowText(encoder_rotate_cw_key_edit_));
-    if (ParseKeySpec(cw_key).has_value()) {
-        config_.encoder_rotate_cw_key = cw_key;
-    } else {
-        encoder_key_invalid = true;
-    }
-    const std::string ccw_key = Utf8(GetWindowText(encoder_rotate_ccw_key_edit_));
-    if (ParseKeySpec(ccw_key).has_value()) {
-        config_.encoder_rotate_ccw_key = ccw_key;
-    } else {
-        encoder_key_invalid = true;
-    }
-    // 快慢阈值滑杆：位置即合法值（100~300），直接写回。
-    config_.encoder_rotate_fast_threshold =
-        static_cast<int>(SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_GETPOS, 0, 0));
-    const std::string cw_fast_key = Utf8(GetWindowText(encoder_rotate_cw_fast_key_edit_));
-    if (ParseKeySpec(cw_fast_key).has_value()) {
-        config_.encoder_rotate_cw_fast_key = cw_fast_key;
-    } else {
-        encoder_key_invalid = true;
-    }
-    const std::string ccw_fast_key = Utf8(GetWindowText(encoder_rotate_ccw_fast_key_edit_));
-    if (ParseKeySpec(ccw_fast_key).has_value()) {
-        config_.encoder_rotate_ccw_fast_key = ccw_fast_key;
-    } else {
-        encoder_key_invalid = true;
-    }
-    {
-        static const char* kLedColors[] = {"red", "green", "blue", "yellow",
-                                           "purple", "cyan", "white", "off"};
-        const int led_idx = static_cast<int>(SendMessageW(encoder_led_color_combo_, CB_GETCURSEL, 0, 0));
-        if (led_idx >= 0 && led_idx < 8) {
-            config_.encoder_led_color = kLedColors[led_idx];
-        }
-    }
-    const int press_idx = static_cast<int>(SendMessageW(encoder_press_action_combo_, CB_GETCURSEL, 0, 0));
-    config_.encoder_press_action = (press_idx == 1) ? "key" : "recording";
-    const std::string press_key = Utf8(GetWindowText(encoder_press_key_edit_));
-    if (press_key.empty() || ParseKeySpec(press_key).has_value()) {
-        config_.encoder_press_key = press_key;
-    } else {
-        encoder_key_invalid = true;
-    }
-    const int double_idx = static_cast<int>(SendMessageW(encoder_double_click_action_combo_, CB_GETCURSEL, 0, 0));
-    config_.encoder_double_click_action = (double_idx == 1) ? "recording" : "key";
-    const std::string double_key = Utf8(GetWindowText(encoder_double_click_key_edit_));
-    if (ParseKeySpec(double_key).has_value()) {
-        config_.encoder_double_click_key = double_key;
-    } else {
-        encoder_key_invalid = true;
-    }
-    if (encoder_key_invalid) {
-        const auto msg_language = EffectiveUiLanguage(config_.ui_language);
-        MessageBoxW(hwnd_, TrW(StringId::kSettingsEncoderInvalidKey, msg_language).c_str(),
-                    TrW(StringId::kSettingsTitle, msg_language).c_str(), MB_OK | MB_ICONWARNING);
-    }
     int sensitivity_idx = static_cast<int>(SendMessageW(imu_wake_sensitivity_combo_, CB_GETCURSEL, 0, 0));
     if (sensitivity_idx == 1) {
         config_.imu_wake_sensitivity = ImuWakeSensitivity::kMedium;
@@ -1577,14 +1325,6 @@ void SettingsDialog::SaveSettings() {
 void SettingsDialog::UpdateOutputTargetVisibility() {
     // 微信两行的显隐与定位交由 Relayout 统一处理。
     Relayout();
-}
-
-void SettingsDialog::UpdateEncoderKeyEditStates() {
-    // 单击动作 idx 1=自定义按键 时启用单击按键框；双击动作 idx 0=自定义按键 时启用双击按键框。
-    const int press_idx = static_cast<int>(SendMessageW(encoder_press_action_combo_, CB_GETCURSEL, 0, 0));
-    EnableWindow(encoder_press_key_edit_, press_idx == 1 ? TRUE : FALSE);
-    const int double_idx = static_cast<int>(SendMessageW(encoder_double_click_action_combo_, CB_GETCURSEL, 0, 0));
-    EnableWindow(encoder_double_click_key_edit_, double_idx == 0 ? TRUE : FALSE);
 }
 
 void SettingsDialog::OnTriggerModeChanged() {
@@ -1699,11 +1439,6 @@ void SettingsDialog::UpdateHotwordProcessPromptVisibility() {
     Relayout();
 }
 
-void SettingsDialog::UpdateEncoderRotateRowsVisibility() {
-    // 旋转相关行的显隐与定位交由 Relayout 统一处理。
-    Relayout();
-}
-
 void SettingsDialog::RefreshHotwordCandidates() {
     if (!candidates_list_) return;
     const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
@@ -1760,12 +1495,6 @@ void SettingsDialog::UpdateTapSensitivityLabel() {
     if (!tap_sensitivity_trackbar_ || !tap_sensitivity_value_label_) return;
     const int level = static_cast<int>(SendMessageW(tap_sensitivity_trackbar_, TBM_GETPOS, 0, 0));
     SetWindowTextW(tap_sensitivity_value_label_, std::to_wstring(level).c_str());
-}
-
-void SettingsDialog::UpdateEncoderFastThresholdLabel() {
-    if (!encoder_rotate_fast_threshold_trackbar_ || !encoder_rotate_fast_threshold_value_label_) return;
-    const int value = static_cast<int>(SendMessageW(encoder_rotate_fast_threshold_trackbar_, TBM_GETPOS, 0, 0));
-    SetWindowTextW(encoder_rotate_fast_threshold_value_label_, std::to_wstring(value).c_str());
 }
 
 void SettingsDialog::UpdateAirMouseSensitivityXLabel() {

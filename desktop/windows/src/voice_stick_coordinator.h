@@ -489,6 +489,12 @@ private:
     bool encoder_pending_ccw_ = false;
     std::uint32_t encoder_pending_steps_ = 0;
     std::chrono::steady_clock::time_point encoder_pending_started_at_{};
+    // 挂起 pending 的来源设备：EncoderRotateTick 到期冲刷时据此取该设备的覆盖配置
+    // （decide_window_ms 与旋转键），避免误用全局默认。
+    std::string encoder_pending_device_id_;
+    // 最近一次旋转事件的来源设备：多设备交替旋转时测速估计器（全局单例）重置冷启动，
+    // 避免跨设备手势互相污染 EWMA 估计。
+    std::string last_encoder_rotate_device_id_;
     // 冲刷慢速 pending：按累计格数逐格注入普通按键（非法回退方向键），并通知平台层。
     void FlushEncoderRotatePending(const std::string& device_id);
     // 按格数注入按键组合（key_spec 非法时回退方向键）。慢速立即路径与 pending 冲刷共用。
