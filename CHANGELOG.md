@@ -11,6 +11,13 @@
   - 单测：`TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate` 改为断言按设备单播；新增 `TestCoordinatorSyncsEncoderSettingsPerDeviceOverride`；`core_tests` 全量迁移到 `default_encoder_settings.*`。
   - 文档：`Doc/Ref/desktop-config.md` 编码器章重写为「全局默认 + 按设备覆盖」并附 TOML 示例；`CLAUDE.md`/`AGENTS.md`/`CODEBUDDY.md` 配置节同步。
 
+- 设备交互设置迁移为设备级按设备覆盖（Windows）：IMU 唤醒灵敏度 / 敲击映射方向键 / 敲击灵敏度 / 体感鼠标左右·上下灵敏度，从全局「设置」对话框移出，改为托盘设备子菜单「设备交互设置…」打开设备级对话框（所有设备显示）；体感鼠标灵敏度按设备覆盖，其余进阶 `air_mouse_*` 参数（tau/invert_y/curve/control_mode/rate/neutral_deadzone）保持全局唯一。
+  - 配置结构：`app_config` 新增 `InteractionSettings` 结构体 + 全局 `default_interaction_settings` + `device_interaction_settings` 映射；`InteractionSettingsForDevice(device_id)` 按设备回落默认。旧顶层 `imu_wake_sensitivity`/`tap_to_arrow`/`tap_sensitivity`/`air_mouse_sensitivity_x/y` 扁平键仍兼容加载；按设备覆盖写入 `[device.<id>.interaction]` 表（键名一致），与全局默认相同的覆盖不落盘。
+  - 设置对话框移除「设备交互」整节（5 控件）；新增 `InteractionSettingsDialog`（5 项 + 恢复默认，恢复默认即清除该设备覆盖回落全局）；托盘设备子菜单新增入口（菜单 6200-6399）。
+  - 协调器：连接/配置更新/敲击事件均按 `device_id` 取 `InteractionSettingsForDevice` 单播下发 `tap_enabled`/`tap_sensitivity`/`imu_wake_sensitivity`；`AirMouseParamsForDevice(device_id)` 按设备取灵敏度（gain = 灵敏度 × 48，与 `air_mouse_tuning_window` 增益倍率对齐修正 ×16 旧偏差），多设备体感态下运行期参数改为 `std::map<device_id, AirMouseParams>` 分别保存；体感鼠标热调参窗口标题带设备 ID、按激活设备调参，灵敏度写入该设备 `InteractionSettings`、其余进阶参数写全局。
+  - 单测：`TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate` / `TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate` 改为断言按设备单播；新增 `TestCoordinatorSyncsInteractionSettingsPerDeviceOverride`；涉及旧字段的测试全量迁移到 `default_interaction_settings.*`。
+  - 文档：`Doc/Ref/desktop-config.md` 新增「设备交互配置」章（全局默认 + `[device.<id>.interaction]` + TOML 示例 + 托盘入口 + 体感热调参说明）；`CLAUDE.md`/`AGENTS.md`/`CODEBUDDY.md` 配置节同步。
+
 ## 2026-07-29 v2.2.0
 
 编码器设置与热词处理。

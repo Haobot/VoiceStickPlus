@@ -4,6 +4,7 @@
 #include "cmd_line.h"
 #include "encoder_settings_dialog.h"
 #include "firmware_update_dialog.h"
+#include "interaction_settings_dialog.h"
 #include "global_hotkey_win.h"
 #include "hotkey_settings_dialog.h"
 #include "input_injector_win.h"
@@ -101,6 +102,8 @@ private:
     void ShowSettings();
     // 打开指定设备的编码器设置对话框（托盘设备子菜单「编码器设置…」）。
     void ShowEncoderSettingsDialog(const std::string& device_id);
+    // 打开指定设备的交互设置对话框（托盘设备子菜单「设备交互设置…」）。
+    void ShowInteractionSettingsDialog(const std::string& device_id);
     void ShowAirMouseTuning();
     void SaveInputOptions();
     void SyncLaunchAtLogin();
@@ -141,6 +144,7 @@ private:
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
     std::unique_ptr<EncoderSettingsDialog> encoder_settings_dialog_;
+    std::unique_ptr<InteractionSettingsDialog> interaction_settings_dialog_;
     std::unique_ptr<AirMouseTuningWindow> air_mouse_tuning_window_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;

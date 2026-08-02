@@ -10,7 +10,8 @@
 namespace voicestick {
 
 // 热调参状态：档位 + 曲线参数 + 飞行摇杆参数（调参窗口操作，可派生 AirMouseParams）。
-// 档位与 config_.air_mouse_sensitivity_x/y 对应（kAngle 模式下 gain = 档位 × 16）。
+// 档位（sensitivity_x/y 1~10）与 InteractionSettings 对应，kAngle 模式下
+// gain = 档位 × 48，与 VoiceStickCoordinator::AirMouseParamsForDevice 保持一致。
 struct AirMouseTuningState {
     AirMouseControlMode control_mode = AirMouseControlMode::kRate;
     int sensitivity_x = 5;
@@ -27,8 +28,8 @@ struct AirMouseTuningState {
     AirMouseParams ToParams() const {
         AirMouseParams p;
         p.control_mode = control_mode;
-        p.gain_x = static_cast<double>(sensitivity_x) * 16.0;
-        p.gain_y = static_cast<double>(sensitivity_y) * 16.0;
+        p.gain_x = static_cast<double>(sensitivity_x) * 48.0;
+        p.gain_y = static_cast<double>(sensitivity_y) * 48.0;
         p.tau = tau;
         p.invert_y = invert_y;
         p.curve = AirMouseCurveClamp(curve);
@@ -41,8 +42,8 @@ struct AirMouseTuningState {
     static AirMouseTuningState FromParams(const AirMouseParams& p) {
         AirMouseTuningState s;
         s.control_mode = p.control_mode;
-        s.sensitivity_x = std::clamp(static_cast<int>(std::lround(p.gain_x / 16.0)), 1, 10);
-        s.sensitivity_y = std::clamp(static_cast<int>(std::lround(p.gain_y / 16.0)), 1, 10);
+        s.sensitivity_x = std::clamp(static_cast<int>(std::lround(p.gain_x / 48.0)), 1, 10);
+        s.sensitivity_y = std::clamp(static_cast<int>(std::lround(p.gain_y / 48.0)), 1, 10);
         s.tau = p.tau;
         s.invert_y = p.invert_y;
         s.curve = p.curve;
@@ -55,15 +56,17 @@ struct AirMouseTuningState {
 };
 
 // 体感鼠标热调参窗口（非模态）：滑块即时改参数，AirMouseTick 下个 tick 生效。
-// 即时改 → on_params_changed → coordinator_->UpdateAirMouseParams（轻量路径，不重建 LLM）。
-// 保存 → on_save_requested → win32_app 写 config_ + Save + UpdateConfig（持久化）。
-// 实时曲线显示为后续扩展（当前仅控件热调参）。
+// 即时改 → on_params_changed → coordinator_->UpdateAirMouseParams(device_id, ...)（轻量路径，不重建 LLM）。
+// 保存 → on_save_requested → win32_app 把灵敏度写入该设备 InteractionSettings、其余进阶参数写全局 config_，
+// 再 Save + UpdateConfig（持久化）。实时曲线显示为后续扩展（当前仅控件热调参）。
 class AirMouseTuningWindow {
 public:
-    AirMouseTuningWindow(HINSTANCE instance, HWND parent, const AirMouseParams& initial_params);
+    AirMouseTuningWindow(HINSTANCE instance, HWND parent, const std::string& device_id,
+                         const AirMouseParams& initial_params);
     ~AirMouseTuningWindow();
     void Show();
     bool IsOpen() const { return hwnd_ != nullptr; }
+    const std::string& device_id() const { return device_id_; }
     // 即时热调参（每滑块/复选改动触发）。
     std::function<void(const AirMouseTuningState&)> on_params_changed;
     // 保存到配置（持久化）。
@@ -84,6 +87,7 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     HWND parent_ = nullptr;
+    std::string device_id_;        // 本窗口调参的目标设备（VS-XXXX 4 位 id）
     AirMouseTuningState state_;
     // 控件句柄
     HWND mode_combo_ = nullptr;

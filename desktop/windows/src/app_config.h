@@ -131,6 +131,25 @@ struct EncoderSettings {
     bool operator==(const EncoderSettings& other) const = default;
 };
 
+// 设备交互设置（IMU/体感）。全局默认值存于 AppConfig::default_interaction_settings
+//（TOML 顶层 imu_wake_sensitivity/tap_to_arrow/tap_sensitivity/air_mouse_sensitivity_x/y 键，
+// 向后兼容旧配置），[device.<id>.interaction] 表按设备整体覆盖；消费点统一走
+// InteractionSettingsForDevice()。tau/invert_y/曲线等进阶体感参数仍属全局配置。
+struct InteractionSettings {
+    // IMU 唤醒灵敏度档（低/中/高）：映射固件唤醒阈值，越高越易从深睡被体感唤醒。默认低。
+    ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
+    // 敲击手势映射方向键：双击设备外壳注入下方向键，在候选/选项间向下切换。默认关闭。
+    bool tap_to_arrow = false;
+    // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发）。默认 5。
+    int tap_sensitivity = 5;
+    // 体感鼠标左右（yaw）灵敏度档 1~10，映射 gain_x=sensitivity_x×48。默认 5。
+    int air_mouse_sensitivity_x = 5;
+    // 体感鼠标上下（pitch）灵敏度档 1~10，映射 gain_y=sensitivity_y×48。默认 5。
+    int air_mouse_sensitivity_y = 5;
+
+    bool operator==(const InteractionSettings& other) const = default;
+};
+
 struct WechatInputMethodConfig {
     // 触发第三方输入法语音输入的快捷键字符串（legacy 字段，仅向后兼容加载旧配置；
     // 运行时按触发模式取 hotkey_hold/hotkey_click，不再使用此字段）。
@@ -209,20 +228,17 @@ struct AppConfig {
     bool global_hotkey_enabled = true;
     std::string global_hotkey = "Alt+X";
     bool show_imu_debug = false;
-    ImuWakeSensitivity imu_wake_sensitivity = ImuWakeSensitivity::kLow;
-    // 敲击手势：双击设备外壳时注入下方向键，用于在候选/选项间向下切换。
-    bool tap_to_arrow = false;
+    // 设备交互设置：default_interaction_settings 为全局默认（TOML 顶层 imu_wake_sensitivity/
+    // tap_to_arrow/tap_sensitivity/air_mouse_sensitivity_x/y 键，向后兼容旧配置），
+    // device_interaction_settings 为 [device.<id>.interaction] 按设备覆盖；消费点统一走
+    // InteractionSettingsForDevice()。
+    InteractionSettings default_interaction_settings;
+    std::map<std::string, InteractionSettings> device_interaction_settings;
     // MiniEncoderC 编码器设置：default_encoder_settings 为全局默认（TOML 顶层
     // encoder_* 键，向后兼容旧配置），device_encoder_settings 为 [device.<id>.encoder]
     // 按设备覆盖；消费点统一走 EncoderSettingsForDevice()。
     EncoderSettings default_encoder_settings;
     std::map<std::string, EncoderSettings> device_encoder_settings;
-    // 敲击灵敏度 1~10 档：1=最不灵敏（需大力敲），10=最灵敏（轻触即发），默认 5。
-    int tap_sensitivity = 5;
-    // 体感鼠标：左右（yaw）灵敏度档位 1~10，映射 gain_x=sensitivity_x×16。默认 5。
-    int air_mouse_sensitivity_x = 5;
-    // 体感鼠标：上下（pitch）灵敏度档位 1~10，映射 gain_y=sensitivity_y×16。默认 5。
-    int air_mouse_sensitivity_y = 5;
     // 体感鼠标：速度环时间常数（秒），手停滑行 ≈ 3×tau，越大缓停越长。默认 0.05。
     double air_mouse_tau = 0.05;
     // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。
@@ -286,6 +302,9 @@ struct AppConfig {
     // 返回设备有效编码器设置：有 [device.<id>.encoder] 覆盖时返回覆盖（加载时已用
     // 全局默认填平所有字段），否则返回全局默认。const 引用返回，旋转热路径零拷贝。
     const EncoderSettings& EncoderSettingsForDevice(const std::optional<std::string>& device_id) const;
+    // 返回设备有效交互设置：有 [device.<id>.interaction] 覆盖时返回覆盖（加载时已用
+    // 全局默认填平所有字段），否则返回全局默认。const 引用返回，体感热路径零拷贝。
+    const InteractionSettings& InteractionSettingsForDevice(const std::optional<std::string>& device_id) const;
 };
 
 std::string AsrProviderName(AsrProvider provider);

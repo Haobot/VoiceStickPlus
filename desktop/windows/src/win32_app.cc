@@ -64,6 +64,9 @@ constexpr UINT kMenuUpdateFirmwareFromFileEnd = 5999;
 // 设备级编码器设置入口：每设备一项（kMenuEncoderSettingsBase + 设备索引）。
 constexpr UINT kMenuEncoderSettingsBase = 6000;
 constexpr UINT kMenuEncoderSettingsEnd = 6199;
+// 设备级交互设置入口：每设备一项（kMenuInteractionSettingsBase + 设备索引）。
+constexpr UINT kMenuInteractionSettingsBase = 6200;
+constexpr UINT kMenuInteractionSettingsEnd = 6399;
 constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
@@ -936,6 +939,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size()) {
                     ShowEncoderSettingsDialog(paired_device_ids_[index]);
                 }
+            } else if (cmd >= kMenuInteractionSettingsBase && cmd <= kMenuInteractionSettingsEnd) {
+                std::size_t index = cmd - kMenuInteractionSettingsBase;
+                if (index < paired_device_ids_.size()) {
+                    ShowInteractionSettingsDialog(paired_device_ids_[index]);
+                }
             }
             return 0;
         }
@@ -1279,6 +1287,11 @@ void Win32App::ShowTrayMenu() {
                         kMenuEncoderSettingsBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuEncoderSettings, language).c_str());
         }
+
+        // 设备交互设置入口：所有设备均显示（IMU 唤醒灵敏度/敲击方向键/体感灵敏度等按设备覆盖）。
+        AppendMenuW(submenu, MF_STRING,
+                    kMenuInteractionSettingsBase + static_cast<UINT>(i),
+                    TrW(StringId::kMenuInteractionSettings, language).c_str());
 
         if (firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
@@ -1884,16 +1897,41 @@ void Win32App::ShowEncoderSettingsDialog(const std::string& device_id) {
 }
 
 void Win32App::ShowAirMouseTuning() {
-    if (!air_mouse_tuning_window_ || !air_mouse_tuning_window_->IsOpen()) {
+    // 体感鼠标调参按"激活设备"：多个设备进入体感时取第一个激活设备；
+    // 无激活设备时取第一个已连接设备（允许用户进入体感前预调）。
+    std::string target_device;
+    if (coordinator_) {
+        for (const auto& dev : connected_devices_) {
+            if (coordinator_->IsAirMouseActive(dev.id)) { target_device = dev.id; break; }
+        }
+    }
+    if (target_device.empty()) {
+        for (const auto& dev : connected_devices_) { target_device = dev.id; break; }
+    }
+    if (target_device.empty()) {
+        LogLine("ShowAirMouseTuning: no connected device, skip");
+        return;
+    }
+    const std::string device_id = target_device;
+    if (!air_mouse_tuning_window_ || !air_mouse_tuning_window_->IsOpen() ||
+        air_mouse_tuning_window_->device_id() != device_id) {
         air_mouse_tuning_window_ = std::make_unique<AirMouseTuningWindow>(
-            instance_, hwnd_,
-            coordinator_ ? coordinator_->GetAirMouseParamsForTuning() : AirMouseParams{});
-        air_mouse_tuning_window_->on_params_changed = [this](const AirMouseTuningState& state) {
-            if (coordinator_) coordinator_->UpdateAirMouseParams(state.ToParams());
+            instance_, hwnd_, device_id,
+            coordinator_ ? coordinator_->GetAirMouseParamsForTuning(device_id) : AirMouseParams{});
+        air_mouse_tuning_window_->on_params_changed = [this, device_id](const AirMouseTuningState& state) {
+            if (coordinator_) coordinator_->UpdateAirMouseParams(device_id, state.ToParams());
         };
-        air_mouse_tuning_window_->on_save_requested = [this](const AirMouseTuningState& state) {
-            config_.air_mouse_sensitivity_x = state.sensitivity_x;
-            config_.air_mouse_sensitivity_y = state.sensitivity_y;
+        air_mouse_tuning_window_->on_save_requested = [this, device_id](const AirMouseTuningState& state) {
+            // 灵敏度按设备覆盖写入 InteractionSettings（其余进阶参数仍走全局 config_）。
+            InteractionSettings settings = config_.InteractionSettingsForDevice(device_id);
+            settings.air_mouse_sensitivity_x = state.sensitivity_x;
+            settings.air_mouse_sensitivity_y = state.sensitivity_y;
+            if (settings == config_.default_interaction_settings) {
+                config_.device_interaction_settings.erase(device_id);
+            } else {
+                config_.device_interaction_settings[device_id] = settings;
+            }
+            // 进阶 air_mouse 参数（tau/invert_y/curve/rate/neutral_deadzone/control_mode）保持全局。
             config_.air_mouse_tau = state.tau;
             config_.air_mouse_invert_y = state.invert_y;
             config_.air_mouse_curve_low_thresh = state.curve.low_thresh;
@@ -1905,12 +1943,44 @@ void Win32App::ShowAirMouseTuning() {
             config_.air_mouse_rate_gain = state.rate_gain;
             config_.air_mouse_rate_friction = state.rate_friction;
             config_.air_mouse_rate_max_speed = state.rate_max_speed;
-            config_.Save();
+            try {
+                config_.Save();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Air mouse tuning: config_.Save failed: ") + e.what());
+                return;
+            }
             if (coordinator_) coordinator_->UpdateConfig(config_);
-            LogLine("Air mouse tuning saved");
+            LogLine("Air mouse tuning saved for VS-" + device_id);
         };
     }
     air_mouse_tuning_window_->Show();
+}
+
+void Win32App::ShowInteractionSettingsDialog(const std::string& device_id) {
+    // 单实例策略：模态对话框重入时若目标设备不同则重建。
+    interaction_settings_dialog_ = std::make_unique<InteractionSettingsDialog>(
+        instance_, hwnd_, device_id,
+        config_.InteractionSettingsForDevice(device_id),
+        config_.default_interaction_settings,
+        config_.ui_language);
+    interaction_settings_dialog_->on_settings_changed =
+        [this](const std::string& id, std::optional<InteractionSettings> override) {
+            if (override.has_value()) {
+                config_.device_interaction_settings[id] = *override;
+            } else {
+                // 与全局默认一致：清除覆盖，回落默认。
+                config_.device_interaction_settings.erase(id);
+            }
+            try {
+                config_.Save();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Interaction settings: config_.Save failed: ") + e.what());
+                return;
+            }
+            if (coordinator_) coordinator_->UpdateConfig(config_);
+            LogLine("Interaction settings saved for VS-" + id);
+        };
+    interaction_settings_dialog_->Show();
 }
 
 void Win32App::StartFirmwareUpdate(const std::string& device_id) {

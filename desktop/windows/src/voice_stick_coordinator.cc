@@ -73,8 +73,9 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
         info.hardware = entry.hardware;
         info.current_version = entry.firmware_version;
     }
-    // 运行期 air_mouse 参数初值从配置加载（AirMouseTick 用，热调参面板经 UpdateAirMouseParams 改）。
-    live_air_mouse_params_ = AirMouseParamsFromConfig();
+    // 运行期 air_mouse 参数初值留空：AirMouseTick / GetAirMouseParamsForTuning 会按设备
+    // 回退到 AirMouseParamsForDevice(device_id)；热调参面板经 UpdateAirMouseParams 按设备即时覆盖。
+    live_air_mouse_params_.clear();
 }
 
 VoiceStickCoordinator::~VoiceStickCoordinator() {
@@ -99,10 +100,15 @@ void VoiceStickCoordinator::Start() {
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
         ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
-        ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
-        ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
-        ble_->SendImuWakeSensitivity(
-            ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
+        // 设备交互设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
+        // 与旧广播行为等价）。
+        for (const auto& dev : devices) {
+            const InteractionSettings& inter = config_.InteractionSettingsForDevice(dev.id);
+            ble_->SendTapEnabled(inter.tap_to_arrow, dev.id);
+            ble_->SendTapSensitivity(inter.tap_sensitivity, dev.id);
+            ble_->SendImuWakeSensitivity(
+                ImuWakeSensitivityThresholdLsb(inter.imu_wake_sensitivity), dev.id);
+        }
         // 编码器设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
         // 与旧广播行为等价）。
         for (const auto& dev : devices) {
@@ -191,20 +197,22 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     }
 
     config_ = std::move(config);
-    live_air_mouse_params_ = AirMouseParamsFromConfig();  // config_ 变化，运行期 live 参数跟随
+    live_air_mouse_params_.clear();  // config_ 变化，运行期 live 参数跟随回退到 AirMouseParamsForDevice
     translator_ = LLMTranslationClient(config_);
     refiner_ = LLMRefinementClient(config_);
     ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
     ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
-    ble_->SendTapEnabled(config_.tap_to_arrow, std::nullopt);
-    ble_->SendTapSensitivity(config_.tap_sensitivity, std::nullopt);
-    ble_->SendImuWakeSensitivity(
-        ImuWakeSensitivityThresholdLsb(config_.imu_wake_sensitivity), std::nullopt);
-    // 编码器设置按设备覆盖：对已连接设备逐个取其有效配置单播。
+    // 编码器/体感交互设置按设备覆盖：对已连接设备逐个取其有效配置单播
+    // （InteractionSettingsForDevice 含 default 回退，故每个设备都已覆盖全局默认）。
     for (const auto& device_id : connected_device_ids_) {
         const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
         ble_->SendEncoderLedColor(enc.led_color, device_id);
         ble_->SendEncoderRecordingGate(enc.press_action == "recording", device_id);
+        const InteractionSettings& inter = config_.InteractionSettingsForDevice(device_id);
+        ble_->SendTapEnabled(inter.tap_to_arrow, device_id);
+        ble_->SendTapSensitivity(inter.tap_sensitivity, device_id);
+        ble_->SendImuWakeSensitivity(
+            ImuWakeSensitivityThresholdLsb(inter.imu_wake_sensitivity), device_id);
     }
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
@@ -1049,8 +1057,8 @@ void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& eve
 
 void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::string& device_id) {
     (void)event;
-    // 总开关关闭则忽略。
-    if (!config_.tap_to_arrow) return;
+    // 总开关关闭则忽略（按设备取有效配置）。
+    if (!config_.InteractionSettingsForDevice(device_id).tap_to_arrow) return;
     // 体感态忽略敲击，避免与体感移动/点击冲突。
     if (IsAirMouseActive(device_id)) return;
     // 录音中或识别中忽略敲击，避免震动干扰当前语音周期。
@@ -1275,15 +1283,17 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
     return true;
 }
 
-AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
+AirMouseParams VoiceStickCoordinator::AirMouseParamsForDevice(const std::string& device_id) const {
     AirMouseParams p;
     // 角度控制模型（kAngle，默认）：速度命令用瞬时角速率 omega（见 AirMouseTick），
     // v_target = omega × gain × factor(|omega|)。omega 即固件上报的缩放角速率（dps × REPORT_GAIN=4）。
     // 增益守恒重标定（P1 去双重缩放）：gain = sensitivity × 48，甩动段（high_factor）速度与前代一致。
     // P2 曲线改为平滑 sigmoid、low_factor 0.15→0.25：低端精细段响应更跟手（10dps 处约 2.8× 更灵敏），
     // 40dps 处约 +12%，甩动段基本不变；gain 维持 48 无需重标。真机标定范围约 24~96。
-    p.gain_x = static_cast<double>(config_.air_mouse_sensitivity_x) * 48.0;
-    p.gain_y = static_cast<double>(config_.air_mouse_sensitivity_y) * 48.0;
+    // 灵敏度按设备取（InteractionSettingsForDevice），其余进阶参数仍走全局配置。
+    const InteractionSettings& inter = config_.InteractionSettingsForDevice(device_id);
+    p.gain_x = static_cast<double>(inter.air_mouse_sensitivity_x) * 48.0;
+    p.gain_y = static_cast<double>(inter.air_mouse_sensitivity_y) * 48.0;
     p.tau = config_.air_mouse_tau;
     p.invert_y = config_.air_mouse_invert_y;
     // 曲线参数从配置组装，经 AirMouseCurveClamp 钳位（防配置越界致曲线退化或除零）。
@@ -1301,20 +1311,31 @@ AirMouseParams VoiceStickCoordinator::AirMouseParamsFromConfig() const {
     return p;
 }
 
-void VoiceStickCoordinator::UpdateAirMouseParams(const AirMouseParams& params) {
-    // 热调参轻量路径：仅更新运行期参数，不存盘、不重建 LLM 客户端。
-    // AirMouseTick 用 live_air_mouse_params_，下个 tick 即时生效。保存由调用方写 config_ + Save。
-    live_air_mouse_params_ = params;
+void VoiceStickCoordinator::UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params) {
+    // 热调参轻量路径：仅更新指定设备的运行期参数，不存盘、不重建 LLM 客户端。
+    // AirMouseTick 用 live_air_mouse_params_[device_id]，下个 tick 即时生效。保存由调用方写 config_ + Save。
+    live_air_mouse_params_[device_id] = params;
+}
+
+AirMouseParams VoiceStickCoordinator::GetAirMouseParamsForTuning(const std::string& device_id) const {
+    auto it = live_air_mouse_params_.find(device_id);
+    if (it != live_air_mouse_params_.end()) return it->second;
+    return AirMouseParamsForDevice(device_id);
 }
 
 void VoiceStickCoordinator::AirMouseTick() {
     if (air_mouse_states_.empty()) return;
     const auto now = std::chrono::steady_clock::now();
-    const auto params = live_air_mouse_params_;  // 运行期 live 参数（热调参即时生效，不走 UpdateConfig）
     const double stale_age_sec = std::chrono::duration<double>(kAirMouseOmegaStaleAge).count();
     // 固定 dt = tick 周期（WM_TIMER 60Hz 稳定）；stale 判断用 last_omega_t。
     const double dt = std::chrono::duration<double>(kAirMouseTickInterval).count();
     for (auto& [device_id, state] : air_mouse_states_) {
+        // 运行期 live 参数（热调参即时生效，不走 UpdateConfig）；无覆盖则用该设备按配置计算。
+        const AirMouseParams params = [&]() {
+            auto it = live_air_mouse_params_.find(device_id);
+            if (it != live_air_mouse_params_.end()) return it->second;
+            return AirMouseParamsForDevice(device_id);
+        }();
         const double omega_age = std::chrono::duration<double>(now - state.last_omega_t).count();
         const bool stale = omega_age > stale_age_sec;
 

@@ -107,6 +107,7 @@ add_executable(VoiceStickApp WIN32
     src/onboarding_dialog.cc
     src/settings_dialog.cc
     src/encoder_settings_dialog.cc
+    src/interaction_settings_dialog.cc
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
     src/selection_hotword_manager.cc

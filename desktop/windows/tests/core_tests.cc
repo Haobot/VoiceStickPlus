@@ -1536,7 +1536,7 @@ void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.imu_wake_sensitivity = ImuWakeSensitivity::kHigh;
+    config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivity::kHigh;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -1545,14 +1545,15 @@ void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
 
     assert(!ble_ptr->sent_imu_wake_sensitivities.empty());
     assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 250);
-    assert(!ble_ptr->sent_imu_wake_sensitivities.back().device_id.has_value());
+    // 设备交互设置按设备单播（IMU 唤醒灵敏度现属于设备级 InteractionSettings）。
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().device_id == "5A74");
 
     AppConfig updated = config;
-    updated.imu_wake_sensitivity = ImuWakeSensitivity::kMedium;
+    updated.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivity::kMedium;
     coordinator.UpdateConfig(updated);
 
     assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 500);
-    assert(!ble_ptr->sent_imu_wake_sensitivities.back().device_id.has_value());
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().device_id == "5A74");
 }
 
 void TestCoordinatorUpdateFirmwareFromFile() {
@@ -1666,7 +1667,7 @@ void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.tap_sensitivity = 7;
+    config.default_interaction_settings.tap_sensitivity = 7;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -1675,14 +1676,15 @@ void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
 
     assert(!ble_ptr->sent_tap_sensitivities.empty());
     assert(ble_ptr->sent_tap_sensitivities.back().level == 7);
-    assert(!ble_ptr->sent_tap_sensitivities.back().device_id.has_value());
+    // 设备交互设置按设备单播（敲击灵敏度现属于设备级 InteractionSettings）。
+    assert(ble_ptr->sent_tap_sensitivities.back().device_id == "5A74");
 
     AppConfig updated = config;
-    updated.tap_sensitivity = 3;
+    updated.default_interaction_settings.tap_sensitivity = 3;
     coordinator.UpdateConfig(updated);
 
     assert(ble_ptr->sent_tap_sensitivities.back().level == 3);
-    assert(!ble_ptr->sent_tap_sensitivities.back().device_id.has_value());
+    assert(ble_ptr->sent_tap_sensitivities.back().device_id == "5A74");
 }
 
 void TestBleEncoderPayloads() {
@@ -1781,9 +1783,71 @@ void TestCoordinatorSyncsEncoderSettingsPerDeviceOverride() {
     }
 }
 
+void TestCoordinatorSyncsInteractionSettingsPerDeviceOverride() {
+    // 设备交互设置按设备覆盖：连接后每台设备收到各自的有效配置（tap_to_arrow / 灵敏度 / IMU 唤醒）。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = true;
+    config.default_interaction_settings.tap_sensitivity = 7;
+    config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivity::kHigh;
+    config.paired_device_ids = {"5A74", "9BC1"};
+    InteractionSettings override;
+    override.tap_to_arrow = false;
+    override.tap_sensitivity = 3;
+    override.imu_wake_sensitivity = ImuWakeSensitivity::kLow;
+    config.device_interaction_settings["9BC1"] = override;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->connected_device_ids.insert("9BC1");
+    ble_ptr->on_connection_change(
+        {ConnectedDevice{"5A74", "VS-5A74"}, ConnectedDevice{"9BC1", "VS-9BC1"}});
+
+    // tap_to_arrow：5A74 默认 true，9BC1 覆盖 false，均按设备单播。
+    assert(ble_ptr->sent_tap_enabled.size() == 2);
+    for (const auto& [enabled, target] : ble_ptr->sent_tap_enabled) {
+        assert(target.has_value());
+        if (*target == "5A74") {
+            assert(enabled == true);
+        } else {
+            assert(*target == "9BC1");
+            assert(enabled == false);
+        }
+    }
+
+    // tap_sensitivity：5A74=7，9BC1=3。
+    assert(ble_ptr->sent_tap_sensitivities.size() == 2);
+    for (const auto& sent : ble_ptr->sent_tap_sensitivities) {
+        assert(sent.device_id.has_value());
+        if (*sent.device_id == "5A74") {
+            assert(sent.level == 7);
+        } else {
+            assert(*sent.device_id == "9BC1");
+            assert(sent.level == 3);
+        }
+    }
+
+    // imu_wake_sensitivity：5A74=kHigh(250)，9BC1 覆盖 kLow(800)。
+    assert(ble_ptr->sent_imu_wake_sensitivities.size() == 2);
+    for (const auto& sent : ble_ptr->sent_imu_wake_sensitivities) {
+        assert(sent.device_id.has_value());
+        if (*sent.device_id == "5A74") {
+            assert(sent.threshold_lsb == 250);
+        } else {
+            assert(*sent.device_id == "9BC1");
+            assert(sent.threshold_lsb == 800);
+        }
+    }
+}
+
 void TestAppConfigTapSensitivityRoundTrip() {
     // 默认档 5。
-    assert(AppConfig::Defaults().tap_sensitivity == 5);
+    assert(AppConfig::Defaults().default_interaction_settings.tap_sensitivity == 5);
 
     // 钳位：越界值回退默认档 5，合法值透传。
     assert(TapSensitivityClamp(0) == 5);
@@ -1799,11 +1863,11 @@ void TestAppConfigTapSensitivityRoundTrip() {
         std::filesystem::remove(temp);
 
         AppConfig config = AppConfig::Defaults();
-        config.tap_sensitivity = 8;
+        config.default_interaction_settings.tap_sensitivity = 8;
         config.Save(temp);
 
         AppConfig loaded = AppConfig::Load(temp);
-        assert(loaded.tap_sensitivity == 8);
+        assert(loaded.default_interaction_settings.tap_sensitivity == 8);
 
         std::filesystem::remove(temp);
     }
@@ -1814,11 +1878,11 @@ void TestAppConfigTapSensitivityRoundTrip() {
         std::filesystem::remove(temp);
 
         AppConfig config = AppConfig::Defaults();
-        config.tap_sensitivity = 99;
+        config.default_interaction_settings.tap_sensitivity = 99;
         config.Save(temp);
 
         AppConfig loaded = AppConfig::Load(temp);
-        assert(loaded.tap_sensitivity == 5);
+        assert(loaded.default_interaction_settings.tap_sensitivity == 5);
 
         std::filesystem::remove(temp);
     }
@@ -2314,7 +2378,7 @@ void TestTapEventInjectsArrowDown() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.tap_to_arrow = true;
+    config.default_interaction_settings.tap_to_arrow = true;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2335,7 +2399,7 @@ void TestTapDisabledWhenConfigOff() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.tap_to_arrow = false;  // 总开关关闭
+    config.default_interaction_settings.tap_to_arrow = false;  // 总开关关闭
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2354,7 +2418,7 @@ void TestTapIgnoredDuringRecording() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.tap_to_arrow = true;
+    config.default_interaction_settings.tap_to_arrow = true;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2376,7 +2440,7 @@ void TestTapThrottledWithin500ms() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.tap_to_arrow = true;
+    config.default_interaction_settings.tap_to_arrow = true;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2397,7 +2461,7 @@ void TestTapThrottleRecoversAfter500ms() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.tap_to_arrow = true;
+    config.default_interaction_settings.tap_to_arrow = true;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -3462,7 +3526,7 @@ void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 5;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 5;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -3495,7 +3559,7 @@ void TestCoordinatorAirMouseTickMovesCursor() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 5;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 5;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -3519,7 +3583,7 @@ void TestCoordinatorAirMouseStateResetOnToggle() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 5;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 5;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
     coordinator.Start();
@@ -3582,7 +3646,7 @@ void TestCoordinatorAirMouseGatesRecordingAndTap() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.tap_to_arrow = true;
+    config.default_interaction_settings.tap_to_arrow = true;
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -3670,7 +3734,7 @@ void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 10;  // 最高档
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;  // 最高档
     config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
@@ -3695,7 +3759,7 @@ void TestCoordinatorAirMouseSustainedRunBounded() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 10;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
     config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
@@ -3735,7 +3799,7 @@ void TestCoordinatorAirMouseStopsWhenOmegaZero() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 10;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
     config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
@@ -3777,7 +3841,7 @@ void TestCoordinatorAngleMovesOnlyWhileRotating() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 10;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
     config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
@@ -3823,7 +3887,7 @@ void TestCoordinatorAirMouseSustainedRotationConstantSpeed() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    config.air_mouse_sensitivity_x = 10;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
     config.air_mouse_control_mode = "angle";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.on_air_mouse_active_changed = [](bool) {};
@@ -6426,8 +6490,8 @@ void TestAirMouseStepAngleModeStillWorks() {
 // 体感鼠标配置项 Save/Load 往返 + Clamp 边界。
 void TestAppConfigAirMouseRoundTrip() {
     AppConfig config;
-    config.air_mouse_sensitivity_x = 7;
-    config.air_mouse_sensitivity_y = 6;
+    config.default_interaction_settings.air_mouse_sensitivity_x = 7;
+    config.default_interaction_settings.air_mouse_sensitivity_y = 6;
     config.air_mouse_tau = 0.15;
     config.air_mouse_invert_y = true;
     config.air_mouse_curve_low_thresh = 12.0;
@@ -6443,8 +6507,8 @@ void TestAppConfigAirMouseRoundTrip() {
     config.Save(path);
     const auto loaded = AppConfig::Load(path);
     std::filesystem::remove(path);
-    assert(loaded.air_mouse_sensitivity_x == 7);
-    assert(loaded.air_mouse_sensitivity_y == 6);
+    assert(loaded.default_interaction_settings.air_mouse_sensitivity_x == 7);
+    assert(loaded.default_interaction_settings.air_mouse_sensitivity_y == 6);
     assert(std::fabs(loaded.air_mouse_tau - 0.15) < 1e-9);
     assert(loaded.air_mouse_invert_y == true);
     assert(std::fabs(loaded.air_mouse_curve_low_thresh - 12.0) < 1e-9);
@@ -6943,6 +7007,7 @@ int main() {
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
     TestBleEncoderPayloads();
     TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate();
+    TestCoordinatorSyncsInteractionSettingsPerDeviceOverride();
     TestCoordinatorUpdateFirmwareFromFile();
     TestParseOtaCliArgs();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();

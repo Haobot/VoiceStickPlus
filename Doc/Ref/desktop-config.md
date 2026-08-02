@@ -22,7 +22,7 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 - `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
 - `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
 - `[wechat_input_method]`：微信输入法模式专属配置，含 `trigger_mode`（wechat 专属触发方式，`hold_to_talk` 默认或 `click_to_talk`，与全局 `interaction_mode` 解耦）、`hotkey_hold` / `hotkey_click`（长按式/点按式各自记忆的触发热键，默认 `ctrl+win` / `ralt`）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回）。
-- `tap_to_arrow`：IMU 敲击映射方向键开关。
+- `tap_to_arrow`：IMU 敲击映射方向键开关（顶层键为全局默认；v1.8.x 旧配置仍可加载，见下方「设备交互配置」按设备覆盖）。
 
 ### 编码器配置（仅 Windows 消费）
 
@@ -51,4 +51,23 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 
 以上编码器设置项仅 Windows 端消费。
 
-- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等），完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
+- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等）。其中 `air_mouse_sensitivity_x/y`（左右/上下灵敏度档 1~10）为**设备级覆盖**字段，详见下方「设备交互配置」；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍为全局唯一值，完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
+
+### 设备交互配置（仅 Windows 消费）
+
+设备交互设置（IMU 唤醒灵敏度、敲击映射方向键、敲击灵敏度、体感鼠标左右/上下灵敏度）为**全局默认 + 按设备覆盖**，结构镜像 `[device.<id>.output]` 与 `[device.<id>.encoder]`：
+
+- **全局默认**：顶层扁平键 `imu_wake_sensitivity`（`low`/`medium`/`high`，默认 `low`）、`tap_to_arrow`（bool，默认 `false`）、`tap_sensitivity`（1~10，默认 5）、`air_mouse_sensitivity_x/y`（1~10，默认 5）。v1.8.x 旧配置（这些键写在顶层）仍可加载，回落为全局默认。
+- **按设备覆盖**：`[device.<id>.interaction]` 表，键名与全局默认一致（`imu_wake_sensitivity`/`tap_to_arrow`/`tap_sensitivity`/`air_mouse_sensitivity_x`/`air_mouse_sensitivity_y`）。未写的字段回落全局默认；仅写入与全局默认不同的覆盖（相等则不落盘，等价于清除覆盖）。示例：
+
+  ```toml
+  [device.9BC1.interaction]
+  imu_wake_sensitivity = "high"
+  tap_to_arrow = true
+  tap_sensitivity = 3
+  air_mouse_sensitivity_x = 8
+  air_mouse_sensitivity_y = 6
+  ```
+
+- **UI 入口**：设备交互设置已从「设置」对话框移除，改为从托盘设备子菜单的「设备交互设置…」（Device interaction settings...）打开**设备级对话框**（所有设备都显示该菜单项）。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。连接时与配置更新时，协调器对所有已连接设备逐台单播其有效交互设置（无覆盖设备收到全局默认）。
+- **体感鼠标热调参**：托盘「体感鼠标调参」打开非模态窗口，标题带设备 ID，按**当前激活设备**调参。其中的左右/上下灵敏度滑杆写入该设备的 `[device.<id>.interaction]` 覆盖；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍写全局 `config.toml`。

@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kEncoderSettingsRestoreDefaults) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kInteractionSettingsTitle) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -277,6 +277,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuEncoderSettings)] = "Encoder settings...";
     table[Index(StringId::kEncoderSettingsTitle)] = "Encoder settings - VS-{0}";
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "Restore defaults";
+    table[Index(StringId::kMenuInteractionSettings)] = "Device interaction settings...";
+    table[Index(StringId::kInteractionSettingsTitle)] = "Device interaction - VS-{0}";
     return table;
 }
 
@@ -540,6 +542,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuEncoderSettings)] = "编码器设置…";
     table[Index(StringId::kEncoderSettingsTitle)] = "编码器设置 - VS-{0}";
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "恢复默认";
+    table[Index(StringId::kMenuInteractionSettings)] = "设备交互设置…";
+    table[Index(StringId::kInteractionSettingsTitle)] = "设备交互 - VS-{0}";
     return table;
 }
 
