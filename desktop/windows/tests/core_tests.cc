@@ -18,6 +18,7 @@
 #include "localization.h"
 #include "ogg_opus_muxer.h"
 #include "ogg_opus_demuxer.h"
+#include "onboarding_dialog.h"
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
 #include "voice_stick_coordinator.h"
@@ -6602,6 +6603,82 @@ void TestConfigTemplateSeeding() {
     std::filesystem::remove_all(base);
 }
 
+// 内置 key 时向导应跳过 kAsr 步：NeedsAsrStep 依据 ActiveApiKey 判断。
+void TestNeedsAsrStep() {
+    // 有 ActiveApiKey（火山）-> 不需要 kAsr 步（内置 key 跳过）
+    {
+        AppConfig config;
+        config.asr_provider = AsrProvider::kVolcengine;
+        config.volcengine_api_key = "test_key";
+        assert(!NeedsAsrStep(config));
+    }
+    // 无 ActiveApiKey -> 需要 kAsr 步（让用户填）
+    {
+        AppConfig config;
+        config.asr_provider = AsrProvider::kVolcengine;
+        config.volcengine_api_key = "";
+        assert(NeedsAsrStep(config));
+    }
+    // 腾讯用 tencent_secret_id 作 ActiveApiKey
+    {
+        AppConfig config;
+        config.asr_provider = AsrProvider::kTencent;
+        config.tencent_secret_id = "secret_id_value";
+        assert(!NeedsAsrStep(config));
+    }
+}
+
+// 运行时 Save 不得用内存过期凭据覆盖磁盘真实凭据（路径 A 根因修复）。
+void TestSavePreservingDiskCredentials() {
+    const auto base = std::filesystem::temp_directory_path() / "voicestick_preserve_cred_test";
+    std::filesystem::remove_all(base);
+    std::filesystem::create_directories(base);
+    const auto path = base / "config.toml";
+
+    auto read_file = [](const std::filesystem::path& p) -> std::string {
+        std::ifstream in(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+
+    // 磁盘先写入含真实凭据的 config（模拟用户手动替换的 config.toml）
+    {
+        AppConfig disk;
+        disk.asr_provider = AsrProvider::kVolcengine;
+        disk.volcengine_api_key = "REAL_VOLCENGINE_KEY";
+        disk.tencent_secret_id = "REAL_TENCENT_ID";
+        disk.tencent_secret_key = "REAL_TENCENT_KEY";
+        disk.tencent_appid = "REAL_APPID";
+        disk.llm_base_url = "https://api.deepseek.com/v1";
+        disk.llm_api_key = "REAL_DEEPSEEK_KEY";
+        disk.llm_model = "deepseek-chat";
+        disk.auto_enter = false;
+        disk.Save(path);
+    }
+    assert(read_file(path).find("REAL_VOLCENGINE_KEY") != std::string::npos);
+
+    // 内存 config：凭据过期（空，模拟启动时无 key 的旧快照），但改了非凭据字段 auto_enter
+    {
+        AppConfig mem = AppConfig::Load(path);
+        mem.volcengine_api_key = "";   // 模拟内存过期
+        mem.llm_api_key = "";
+        mem.auto_enter = true;         // UI 改动（非凭据字段）
+        mem.SavePreservingDiskCredentials(path);
+    }
+
+    // 重读验证：凭据字段保留磁盘值，非凭据字段用内存值
+    AppConfig after = AppConfig::Load(path);
+    assert(after.volcengine_api_key == "REAL_VOLCENGINE_KEY");
+    assert(after.llm_api_key == "REAL_DEEPSEEK_KEY");
+    assert(after.tencent_secret_id == "REAL_TENCENT_ID");
+    assert(after.tencent_secret_key == "REAL_TENCENT_KEY");
+    assert(after.tencent_appid == "REAL_APPID");
+    assert(after.llm_base_url == "https://api.deepseek.com/v1");
+    assert(after.llm_model == "deepseek-chat");
+    assert(after.auto_enter == true);
+
+    std::filesystem::remove_all(base);
+}
+
 // auto_switch=true 时 Start 把默认录音设备(eConsole)切到 CABLE Output，Stop 切回原设备。
 // 角色分离：SetDefaultCapture 的 roles 恒为 {kConsole}，不碰 eCommunications。
 void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
@@ -6997,6 +7074,8 @@ int main() {
     TestAppConfigAirMouseRoundTrip();
     TestAppConfigDebugAudioDirUtf8RoundTrip();
     TestConfigTemplateSeeding();
+    TestNeedsAsrStep();
+    TestSavePreservingDiskCredentials();
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();
     TestHotwordExtractorPromptAndParse();
