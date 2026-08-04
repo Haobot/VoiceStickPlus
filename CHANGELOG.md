@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2026-08-04 v2.3.0
+
 - 编码器旋转快慢分档（Windows）：窗口格速 = steps × 100（格/秒）≥ `encoder_rotate_fast_threshold`（默认 200）判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，屏蔽减速段慢速输出与换向事件，静默 >250ms 判定停稳后恢复识别；快速档按键非法回退普通按键；设置对话框「编码器」一节新增快速档按键控件与阈值滑杆（范围 100–300）。
 - 编码器慢速注入延迟判定（Windows）：慢速事件先挂起 `encoder_rotate_decide_window_ms`（默认 80ms，0 关闭），窗内判快整段丢弃（消除快甩加速段的误逐行注入），到期成批补注（总量不变，慢转延迟 ≤80ms 无感）。
 - 编码器设置迁移为设备级按设备覆盖（Windows）：从全局「设置」对话框移出，改为托盘设备子菜单「编码器设置…」打开设备级对话框（仅 `encoder_present` 设备显示），可针对每台设备单独配置 MiniEncoderC。
@@ -17,6 +19,8 @@
   - 协调器：连接/配置更新/敲击事件均按 `device_id` 取 `InteractionSettingsForDevice` 单播下发 `tap_enabled`/`tap_sensitivity`/`imu_wake_sensitivity`；`AirMouseParamsForDevice(device_id)` 按设备取灵敏度（gain = 灵敏度 × 48，与 `air_mouse_tuning_window` 增益倍率对齐修正 ×16 旧偏差），多设备体感态下运行期参数改为 `std::map<device_id, AirMouseParams>` 分别保存；体感鼠标热调参窗口标题带设备 ID、按激活设备调参，灵敏度写入该设备 `InteractionSettings`、其余进阶参数写全局。
   - 单测：`TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate` / `TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate` 改为断言按设备单播；新增 `TestCoordinatorSyncsInteractionSettingsPerDeviceOverride`；涉及旧字段的测试全量迁移到 `default_interaction_settings.*`。
   - 文档：`Doc/Ref/desktop-config.md` 新增「设备交互配置」章（全局默认 + `[device.<id>.interaction]` + TOML 示例 + 托盘入口 + 体感热调参说明）；`CLAUDE.md`/`AGENTS.md`/`CODEBUDDY.md` 配置节同步。
+
+- MSI 内置 key 内测分发（Windows）：`OnboardingDialog` 配对设备后按 `NeedsAsrStep`（下沉 `voicestick_core`）判断，内置 key（`ActiveApiKey` 非空）跳过 `kAsr` 步直达 `kReady`，公开版仍走三步。新增 `SavePreservingDiskCredentials`：运行时 Save 先重读磁盘凭据再写回，避免内存过期 key 覆盖用户手改或内置 key，修复"替换 config 后 ASR 不工作"。`build-msi.bat` 经 `VOICESTICK_CONFIG_TEMPLATE` 注入真实密钥到 `config.template.toml`（首启复制到 `%APPDATA%`，不覆盖已有）。`build_win.bat` 修复 C++/WinRT 步骤 if 块内 `%ProgramFiles(x86)%` 括号解析错误（延迟扩展 + `PF_X86` 中转）。`build-msi.bat` 签名时间戳服务器 DigiCert 不可达换 Sectigo。
 
 ## 2026-07-29 v2.2.0
 
