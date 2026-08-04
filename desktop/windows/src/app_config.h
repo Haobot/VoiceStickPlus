@@ -291,6 +291,10 @@ struct AppConfig {
 
     void Save() const;
     void Save(const std::filesystem::path& path) const;
+    // 运行时 Save：先重读磁盘最新凭据覆盖到副本再写回，避免内存过期凭据覆盖用户手改的 key。
+    // onboarding/设置对话框保存仍用普通 Save()（需写入用户刚输入的 key）。
+    void SavePreservingDiskCredentials() const;
+    void SavePreservingDiskCredentials(const std::filesystem::path& path) const;
     void SavePairedDevice(const PairedDeviceEntry& entry);
     void SavePairedDeviceInfo(const std::string& device_id,
                               const std::string& hardware,
@@ -306,6 +310,9 @@ struct AppConfig {
     // 全局默认填平所有字段），否则返回全局默认。const 引用返回，体感热路径零拷贝。
     const InteractionSettings& InteractionSettingsForDevice(const std::optional<std::string>& device_id) const;
 };
+
+// 内置 key（ActiveApiKey 非空）时向导跳过 kAsr 步；公开版无 key 仍需用户填写。
+bool NeedsAsrStep(const AppConfig& config);
 
 std::string AsrProviderName(AsrProvider provider);
 AsrProvider AsrProviderFromName(std::string_view name);

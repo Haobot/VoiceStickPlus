@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
 set "ROOT_DIR=%cd%"
@@ -86,15 +86,16 @@ REM ---------------------------------------------------------------------------
 echo [3.5/4] Ensuring C++/WinRT projection headers are available...
 >> "%LOG_FILE%" echo === C++/WinRT header generation ===
 set "GEN_WINRT_DIR=%SOURCE_DIR%\generated_winrt"
+set "PF_X86=%ProgramFiles(x86)%"
 if not exist "%GEN_WINRT_DIR%\winrt\base.h" (
-    echo   - Generating C++/WinRT headers (winrt/base.h missing from SDK include)...
-    set "CPPWINRT_EXE=%ProgramFiles(x86)%\Windows Kits\10\bin\10.0.26100.0\x64\cppwinrt.exe"
-    if not exist "%CPPWINRT_EXE%" (
-        echo ERROR: cppwinrt.exe not found at %CPPWINRT_EXE%
+    echo   - Generating C++/WinRT headers - winrt/base.h missing from SDK include...
+    set "CPPWINRT_EXE=!PF_X86!\Windows Kits\10\bin\10.0.26100.0\x64\cppwinrt.exe"
+    if not exist "!CPPWINRT_EXE!" (
+        echo ERROR: cppwinrt.exe not found at !CPPWINRT_EXE!
         >> "%LOG_FILE%" echo ERROR: cppwinrt.exe not found
         exit /b 1
     )
-    "%CPPWINRT_EXE%" -in "%ProgramFiles(x86)%\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd" -ref "%ProgramFiles(x86)%\Windows Kits\10\References\10.0.26100.0" -out "%GEN_WINRT_DIR%" >> "%SETUP_LOG%" 2>&1
+    "!CPPWINRT_EXE!" -in "!PF_X86!\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd" -ref "!PF_X86!\Windows Kits\10\References\10.0.26100.0" -out "!GEN_WINRT_DIR!" >> "%SETUP_LOG%" 2>&1
     if errorlevel 1 (
         echo ERROR: C++/WinRT header generation failed
         echo See build_setup.log for details

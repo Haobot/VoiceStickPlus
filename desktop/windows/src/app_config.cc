@@ -731,6 +731,39 @@ void AppConfig::Save() const {
     Save(ConfigPath());
 }
 
+void AppConfig::SavePreservingDiskCredentials() const {
+    SavePreservingDiskCredentials(ConfigPath());
+}
+
+void AppConfig::SavePreservingDiskCredentials(const std::filesystem::path& path) const {
+    // 磁盘不存在则无凭据可保留，直接落盘。
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        Save(path);
+        return;
+    }
+    // 重读磁盘最新凭据，拷贝到副本，再全量写回。副本凭据=磁盘值，非凭据=this 内存值。
+    // 修复路径 A：程序运行时不重读 config.toml，运行时 Save 若用内存过期凭据会覆盖用户手改的 key。
+    AppConfig disk = Load(path);
+    AppConfig merged = *this;
+    merged.voicestick_api_key = disk.voicestick_api_key;
+    merged.voicestick_cloud_url = disk.voicestick_cloud_url;
+    merged.volcengine_api_key = disk.volcengine_api_key;
+    merged.volcengine_boosting_table_id = disk.volcengine_boosting_table_id;
+    merged.volcengine_correct_table_id = disk.volcengine_correct_table_id;
+    merged.tencent_secret_id = disk.tencent_secret_id;
+    merged.tencent_secret_key = disk.tencent_secret_key;
+    merged.tencent_appid = disk.tencent_appid;
+    merged.tencent_engine_model_type = disk.tencent_engine_model_type;
+    merged.tencent_hotword_id = disk.tencent_hotword_id;
+    merged.llm_base_url = disk.llm_base_url;
+    merged.llm_api_key = disk.llm_api_key;
+    merged.llm_model = disk.llm_model;
+    merged.refine_prompt = disk.refine_prompt;
+    merged.hotword_process_prompt = disk.hotword_process_prompt;
+    merged.Save(path);
+}
+
 void AppConfig::Save(const std::filesystem::path& path) const {
     // create_directories 用 error_code 版本：目录已存在或创建失败都不抛，
     // 避免路径无效时抛 filesystem_error（ofstream 后续会兜底报错）。
@@ -893,6 +926,11 @@ std::string AppConfig::ActiveApiKey() const {
         case AsrProvider::kTencent: return tencent_secret_id;
     }
     return {};
+}
+
+bool NeedsAsrStep(const AppConfig& config) {
+    // 内置 key（ActiveApiKey 非空）时向导跳过 kAsr 步；公开版无 key 仍需用户填写。
+    return config.ActiveApiKey().empty();
 }
 
 std::string AppConfig::ActiveWebsocketUrl() const {

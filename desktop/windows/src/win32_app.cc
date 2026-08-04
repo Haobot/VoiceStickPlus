@@ -1090,7 +1090,7 @@ bool Win32App::CreateWindowInternal() {
                 }
                 hotwords.push_back(text);
                 try {
-                    config_.Save();
+                    config_.SavePreservingDiskCredentials();
                 } catch (const std::exception& e) {
                     LogLine(std::string("Save config on hotword add failed: ") + e.what());
                 }
@@ -1513,7 +1513,7 @@ void Win32App::SyncLaunchAtLogin() {
 
 void Win32App::SaveInputOptions() {
     try {
-        config_.Save();
+        config_.SavePreservingDiskCredentials();
         SyncLaunchAtLogin();
         SyncSelectionHotword();
         if (coordinator_) coordinator_->UpdateConfig(config_);
@@ -1611,7 +1611,7 @@ void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
     auto& hotwords = config_.asr_hotwords;
     hotwords.insert(hotwords.end(), new_words.begin(), new_words.end());
     try {
-        config_.Save();
+        config_.SavePreservingDiskCredentials();
     } catch (const std::exception& e) {
         LogLine(std::string("Save config on hotword extract failed: ") + e.what());
     }
@@ -1633,7 +1633,7 @@ void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeCo
         } else {
             config_.device_theme_colors[device_id] = color;
         }
-        config_.Save();
+        config_.SavePreservingDiskCredentials();
         ApplyOverlayStyle(device_id);
         LogLine("Theme color saved VS-" + device_id + "=" + OverlayThemeColorName(color));
     } catch (const std::exception& error) {
@@ -1649,7 +1649,7 @@ void Win32App::SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSiz
         } else {
             config_.device_theme_sizes[device_id] = size;
         }
-        config_.Save();
+        config_.SavePreservingDiskCredentials();
         ApplyOverlayStyle(device_id);
         LogLine("Theme size saved VS-" + device_id + "=" + OverlayThemeSizeName(size));
     } catch (const std::exception& error) {
@@ -1665,7 +1665,7 @@ void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPo
         } else {
             config_.device_overlay_positions[device_id] = position;
         }
-        config_.Save();
+        config_.SavePreservingDiskCredentials();
         ApplyOverlayStyle(device_id);
         LogLine("Overlay position saved VS-" + device_id + "=" + OverlayPositionName(position));
     } catch (const std::exception& error) {
@@ -1685,7 +1685,7 @@ void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfi
         } else {
             config_.device_output_profiles[device_id] = profile;
         }
-        config_.Save();
+        config_.SavePreservingDiskCredentials();
         if (coordinator_) coordinator_->UpdateConfig(config_);
         LogLine("Output profile saved VS-" + device_id + "=" +
                 TextTransformName(profile.transform) + ":" + profile.translation_target);
@@ -1885,7 +1885,7 @@ void Win32App::ShowEncoderSettingsDialog(const std::string& device_id) {
             }
             // Save() 可能因 config.toml 被占用抛异常，与 SaveDeviceOutputProfile 同模式捕获。
             try {
-                config_.Save();
+                config_.SavePreservingDiskCredentials();
             } catch (const std::exception& e) {
                 LogLine(std::string("Encoder settings: config_.Save failed: ") + e.what());
                 return;
@@ -1944,7 +1944,7 @@ void Win32App::ShowAirMouseTuning() {
             config_.air_mouse_rate_friction = state.rate_friction;
             config_.air_mouse_rate_max_speed = state.rate_max_speed;
             try {
-                config_.Save();
+                config_.SavePreservingDiskCredentials();
             } catch (const std::exception& e) {
                 LogLine(std::string("Air mouse tuning: config_.Save failed: ") + e.what());
                 return;
@@ -1972,7 +1972,7 @@ void Win32App::ShowInteractionSettingsDialog(const std::string& device_id) {
                 config_.device_interaction_settings.erase(id);
             }
             try {
-                config_.Save();
+                config_.SavePreservingDiskCredentials();
             } catch (const std::exception& e) {
                 LogLine(std::string("Interaction settings: config_.Save failed: ") + e.what());
                 return;

@@ -492,7 +492,8 @@ void OnboardingDialog::GoNext() {
             SetStatus(TrW(StringId::kOnboardingPairDeviceFirst, language_));
             return;
         }
-        step_ = Step::kAsr;
+        // 内置 key（ActiveApiKey 非空）时跳过 kAsr 步直接进入完成步；公开版仍走 kAsr。
+        step_ = NeedsAsrStep(config_) ? Step::kAsr : Step::kReady;
         RebuildUi();
         return;
     }
