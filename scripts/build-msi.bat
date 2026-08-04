@@ -99,9 +99,9 @@ if not exist "%SIGNTOOL%" (
 echo.
 echo [2/4] Signing binaries...
 if defined SIGNING_SHA1 (
-    set SIGN_ARGS=/v /fd sha256 /sha1 %SIGNING_SHA1% /tr http://timestamp.digicert.com /td sha256
+    set SIGN_ARGS=/v /fd sha256 /sha1 %SIGNING_SHA1% /tr http://timestamp.sectigo.com /td sha256
 ) else (
-    set SIGN_ARGS=/v /fd sha256 /a /uw /tr http://timestamp.digicert.com /td sha256
+    set SIGN_ARGS=/v /fd sha256 /a /uw /tr http://timestamp.sectigo.com /td sha256
 )
 "%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStick.exe"
 if errorlevel 1 (
