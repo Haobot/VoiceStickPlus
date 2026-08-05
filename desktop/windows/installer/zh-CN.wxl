@@ -2,4 +2,8 @@
 <WixLocalization xmlns="http://wixtoolset.org/schemas/v4/wxl" Culture="zh-CN">
   <String Id="DowngradeError" Value="已安装更新版本的 VoiceStick，无法降级安装。" />
   <String Id="LaunchCheckbox" Value="启动 VoiceStick" />
+  <String Id="RemoveUserDataTitle" Value="删除用户数据" />
+  <String Id="RemoveUserDataDescription" Value="正在卸载 VoiceStick。是否一并删除您的本地用户数据？" />
+  <String Id="RemoveUserDataCheckbox" Value="删除所有本地用户数据（配置、配对设备、日志、调试音频）" />
+  <String Id="RemoveUserDataItems" Value="将删除：&#13;&#10;· 配置文件与配对设备信息（%APPDATA%\VoiceStick\）&#13;&#10;· 日志与调试音频（%LOCALAPPDATA%\VoiceStick\）&#13;&#10;· 开机自启注册表项&#13;&#10;API 密钥等凭据随配置一并删除，不可恢复。" />
 </WixLocalization>
