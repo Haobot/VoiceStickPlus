@@ -155,3 +155,55 @@ cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDeb
 2. `build_win.bat` 构建通过（exe 时间戳/体积核对）。
 3. `build-msi.bat` 构建签名 MSI，日志出现 `Injecting built-in ASR API key`（本机 config 有 key 时）。
 4. 真机：全新机器装 MSI，首启 onboarding 仅弹设备步，配对后 `GoNext` 跳过 kAsr 直达 kReady，ASR 可用。
+
+## 扩展：腾讯云 ASR + DeepSeek LLM 内置凭据 + 精修默认关闭
+
+v2.3.1 起在内置 key 机制基础上扩展，覆盖腾讯云 ASR 与 DeepSeek LLM 凭据，并将精修默认关闭。
+
+### 动机
+
+1. 内置 key 原仅 volcengine 一项，tencent 模式无内置回退，tencent 用户首启仍被要求填写。
+2. LLM（翻译/精修/热词提炼）原无内置凭据，新用户开箱无法用 DeepSeek。
+3. 精修默认开启会触发额外 LLM 调用且对识别文本改动较大，新用户预期不一，改为默认关闭（用户可手动开）。
+
+### 内置凭据扩展
+
+`builtin_secrets.h.in` 新增 6 个编译期常量：
+
+- `kBuiltinTencentSecretId` / `kBuiltinTencentSecretKey` / `kBuiltinTencentAppid`（腾讯云 ASR）
+- `kBuiltinLlmApiKey` / `kBuiltinLlmBaseUrl` / `kBuiltinLlmModel`（DeepSeek LLM）
+
+CMakeLists.txt 新增对应 6 个 `VOICESTICK_BUILTIN_*` cache 变量，与 volcengine 同样的 `"` / `\` 正则校验（foreach 循环）。
+
+### 回退访问器
+
+`AppConfig` 新增 6 个 `Active*()` const 成员，复用通用纯函数 `ResolveActiveString(config_value, builtin_value)`（配置值优先，空则回退内置）：
+
+- `ActiveTencentSecretId/SecretKey/Appid()`
+- `ActiveLlmApiKey/BaseUrl/Model()`
+
+`ResolveActiveApiKey` 签名扩展加 `builtin_tencent_id` 参数，tencent 分支也回退内置 `tencent_secret_id`（让 onboarding `NeedsAsrStep` 在 tencent 模式也跳过 kAsr）。
+
+`asr_client_tencent.cc`（Start 空检查 + BuildSignedUrl 签名）与 `llm_chat_client.cc`（api_key/model/base_url 读取点）改用 `Active*()` 访问器，确保内置回退在 ASR/LLM 调用链路生效。
+
+### 精修默认关闭
+
+- `app_config.h` 的 `AppConfig::refine_enabled` 默认 `true` -> `false`。
+- `resources/config.template.toml` 的 `refine_enabled = true` -> `false`。
+
+### 提取与注入
+
+`scripts/extract_builtin_key.ps1` 改为输出 7 行 `VOICESTICK_BUILTIN_<NAME>=<value>`（volcengine + tencent 3 + DeepSeek 3）。`build-msi.bat` 用 `for /f ... tokens=1,* delims==` 循环 set 每行为环境变量，cmake configure 带 7 个 `-D`。
+
+### 安全（同内置 key）
+
+- 凭据编译进 exe，可逆向提取，仅内测分发。
+- `Active*()` 仅内存回退，不写回 `%APPDATA%`（不落盘）。
+- dev/公开构建内置全空，回退不生效，正常读用户配置。
+
+### 测试
+
+- `TestActiveApiKeyBuiltinFallback` 扩展：`ResolveActiveApiKey` 加 `builtin_tencent_id` 参数，tencent 分支断言回退（空 id 回退内置 / 配置 id 优先）。
+- 新增 `TestResolveActiveString`：覆盖通用回退纯函数（配置优先 / 空回退 / 都空 / 配置非空+内置空）。
+- `AppConfig::Defaults().refine_enabled == false` 断言更新。
+

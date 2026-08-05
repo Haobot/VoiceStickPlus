@@ -200,7 +200,7 @@ struct AppConfig {
     std::string llm_base_url = "https://api.openai.com/v1";
     std::string llm_api_key;
     std::string llm_model = "gpt-5.5";
-    // ASR 文本精修：用 LLM 对识别文本去停顿空格 / 修标点 / 去口头语。默认开启，best-effort。
+    // ASR 文本精修：用 LLM 对识别文本去停顿空格 / 修标点 / 去口头语。默认关闭，best-effort。
     bool refine_enabled = false;
     // 精修 system prompt 覆盖；为空时使用内置默认 prompt。
     std::string refine_prompt;
