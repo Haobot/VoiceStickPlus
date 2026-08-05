@@ -22,9 +22,55 @@
                  After="CostFinalize" Sequence="ui" />
     <CustomAction Id="LaunchApplication" DllEntry="WixShellExec" Impersonate="yes"
                   BinaryRef="Wix4UtilCA_X86" />
+
+    <!-- 卸载时清理用户本地数据：deferred + Impersonate 模拟原用户，才能访问其 %APPDATA%/HKCU -->
+    <Property Id="REMOVE_USER_DATA" Value="1" />
+    <CustomAction Id="RemoveUserDataExec"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+    <!-- immediate SetProperty：Value 作为 CustomActionData 传给上面的 deferred CA；
+         [AppDataFolder]/[LocalAppDataFolder]/[System64Folder] 由 MSI 在执行前格式化替换 -->
+    <CustomAction Id="RemoveUserDataExec.SetCmd"
+                  Property="RemoveUserDataExec"
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;Remove-Item -LiteralPath '[AppDataFolder]VoiceStick','[LocalAppDataFolder]VoiceStick' -Recurse -Force -ErrorAction SilentlyContinue; Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name VoiceStick -ErrorAction SilentlyContinue; Remove-Item 'HKCU:\Software\TenClass\VoiceStick' -Recurse -ErrorAction SilentlyContinue; exit 0&quot;" />
+    <InstallExecuteSequence>
+      <Custom Action="RemoveUserDataExec.SetCmd"
+              Condition='REMOVE_USER_DATA=1 AND Installed AND REMOVE~="ALL"'
+              After="InstallValidate" />
+      <!-- deferred CA 必须在 InstallInitialize(1500) 与 InstallFinalize(6600) 之间才会执行；
+           放在 RemoveFiles 之后，先卸载程序文件再清理用户数据 -->
+      <Custom Action="RemoveUserDataExec"
+              Condition='REMOVE_USER_DATA=1 AND Installed AND REMOVE~="ALL"'
+              After="RemoveFiles" />
+    </InstallExecuteSequence>
     <UI>
       <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication"
                Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
+
+      <!-- 卸载确认对话框：勾选是否删除本地用户数据（默认勾选） -->
+      <Dialog Id="RemoveUserDataDlg" Width="370" Height="270" Title="!(loc.RemoveUserDataTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="24" Transparent="yes" NoPrefix="yes" Text="!(loc.RemoveUserDataTitle)" />
+        <Control Id="Description" Type="Text" X="25" Y="40" Width="320" Height="40" Transparent="yes" NoPrefix="yes" Text="!(loc.RemoveUserDataDescription)" />
+        <Control Id="RemoveUserDataCheckbox" Type="CheckBox" X="25" Y="95" Width="320" Height="20" Property="REMOVE_USER_DATA" CheckBoxValue="1" Text="!(loc.RemoveUserDataCheckbox)" />
+        <Control Id="ItemsList" Type="Text" X="35" Y="125" Width="310" Height="90" Transparent="yes" NoPrefix="yes" Text="!(loc.RemoveUserDataItems)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="MaintenanceTypeDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+      <!-- 覆盖内置 RemoveButton -> VerifyReadyDlg，改为先进入 RemoveUserDataDlg（Order=99 覆盖内置） -->
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="RemoveUserDataDlg" Condition="1" Order="99" />
+      <!-- 卸载路径下 VerifyReadyDlg.Back 返回 RemoveUserDataDlg -->
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="RemoveUserDataDlg" Condition='WixUI_InstallMode="Remove"' Order="99" />
     </UI>
 
     <Icon Id="VoiceStickIcon" SourceFile="$(var.ProjectDir)\desktop\windows\resources\app.ico" />
