@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2026-08-05 v2.3.2
+
+- 内置腾讯云 ASR 与 DeepSeek LLM 凭据（Windows）：在 v2.3.1 内置火山 key 基础上扩展，`builtin_secrets.h.in` 新增腾讯云 `SecretId`/`SecretKey`/`AppId` 与 DeepSeek `llm_api_key`/`llm_base_url`/`llm_model` 六个编译期常量；`AppConfig` 新增 `ActiveTencentSecretId/SecretKey/Appid` 与 `ActiveLlmApiKey/BaseUrl/Model` 六个回退访问器，复用通用纯函数 `ResolveActiveString`（配置值优先，空则回退内置，不落盘）；`ResolveActiveApiKey` 签名扩展 `builtin_tencent_id` 参数，tencent 模式也回退内置 `secret_id`，onboarding 在 tencent 模式同样跳过 kAsr。`asr_client_tencent.cc`（Start 空检查 + BuildSignedUrl 签名）与 `llm_chat_client.cc`（api_key/model/base_url 读取点）改用 `Active*()` 访问器，确保内置回退在 ASR/LLM 调用链路生效。
+- build-msi 注入全套内置凭据（Windows）：`extract_builtin_key.ps1` 改为输出 7 行 `VOICESTICK_BUILTIN_<NAME>=<value>`（火山 + 腾讯云 3 + DeepSeek 3）；`build-msi.bat` 用 `for /f` 循环 set 每行为环境变量，cmake configure 带 7 个 `-D`，使 MSI 内置全套凭据，新用户首启 tencent/DeepSeek 模式开箱即用。
+- 精修默认关闭（Windows）：`AppConfig::refine_enabled` 默认 `true`->`false`，`resources/config.template.toml` 同步；精修改为用户手动开启，避免新用户首启即触发额外 LLM 调用。
+
 ## 2026-08-04 v2.3.0
 
 - 编码器旋转快慢分档（Windows）：窗口格速 = steps × 100（格/秒）≥ `encoder_rotate_fast_threshold`（默认 200）判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，屏蔽减速段慢速输出与换向事件，静默 >250ms 判定停稳后恢复识别；快速档按键非法回退普通按键；设置对话框「编码器」一节新增快速档按键控件与阈值滑杆（范围 100–300）。
