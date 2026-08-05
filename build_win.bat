@@ -112,7 +112,23 @@ echo.
 echo [4/4] Running CMake build...
 >> "%CONFIGURE_LOG%" echo.
 >> "%CONFIGURE_LOG%" echo === Running CMake configuration ===
-cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" -G Ninja >> "%CONFIGURE_LOG%" 2>&1
+
+REM Extract built-in credentials from local config.toml (same as build-msi.bat).
+REM Baked into VoiceStick.exe so the dev build also skips ASR onboarding.
+for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\extract_builtin_key.ps1"`) do set "%%a=%%b"
+if not defined VOICESTICK_BUILTIN_API_KEY (
+    echo WARNING: volcengine_api_key not found in config.toml; dev exe will have no built-in ASR key.
+) else (
+    echo Injecting built-in credentials into VoiceStick.exe
+)
+cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" -G Ninja ^
+    -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%" ^
+    -DVOICESTICK_BUILTIN_TENCENT_SECRET_ID="%VOICESTICK_BUILTIN_TENCENT_SECRET_ID%" ^
+    -DVOICESTICK_BUILTIN_TENCENT_SECRET_KEY="%VOICESTICK_BUILTIN_TENCENT_SECRET_KEY%" ^
+    -DVOICESTICK_BUILTIN_TENCENT_APPID="%VOICESTICK_BUILTIN_TENCENT_APPID%" ^
+    -DVOICESTICK_BUILTIN_LLM_API_KEY="%VOICESTICK_BUILTIN_LLM_API_KEY%" ^
+    -DVOICESTICK_BUILTIN_LLM_BASE_URL="%VOICESTICK_BUILTIN_LLM_BASE_URL%" ^
+    -DVOICESTICK_BUILTIN_LLM_MODEL="%VOICESTICK_BUILTIN_LLM_MODEL%" >> "%CONFIGURE_LOG%" 2>&1
 if errorlevel 1 (
     echo ERROR: CMake configuration failed
     echo.

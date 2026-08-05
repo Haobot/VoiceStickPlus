@@ -6,11 +6,17 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 
 namespace voicestick {
 
 namespace {
+
+// 日志写入互斥锁：Log 被多线程并发调用（主线程、ASR 回调线程、精修/热词后台线程、
+// BLE 线程等），ofstream 无锁并发写同一文件是未定义行为，曾致集成测试 SegFault。
+// 进程内一把锁即可，日志量小不成为瓶颈。
+std::mutex g_log_mutex;
 
 std::string CurrentTimestamp() {
     const auto now = std::chrono::system_clock::now();
@@ -33,6 +39,7 @@ std::filesystem::path LogFilePath() {
 } // namespace
 
 void Log(std::string_view category, std::string_view message) {
+    std::lock_guard lock(g_log_mutex);
     try {
         const auto path = LogFilePath();
         std::filesystem::create_directories(path.parent_path());

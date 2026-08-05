@@ -47,6 +47,7 @@ static voice_ble_connection_cb_t s_connection_cb;
 static voice_ble_control_cb_t s_control_cb;
 static voice_ble_ota_cb_t s_ota_cb;
 static uint32_t s_adv_started_ms;
+static uint32_t s_connected_ms;   // 连接建立时间戳，断连时算连接时长（辅助判 supervision timeout）
 
 typedef enum {
     CONN_ITVL_NONE,
@@ -723,6 +724,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_state_subscribed = false;
             s_conn_handle = event->connect.conn_handle;
             uint32_t connected_ms = esp_log_timestamp();
+            s_connected_ms = connected_ms;
             ESP_LOGI(TAG, "connected handle=%u ts=%" PRIu32 " since_adv=%" PRIu32 "ms",
                      s_conn_handle, connected_ms, connected_ms - s_adv_started_ms);
             stop_advertising();
@@ -773,7 +775,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected reason=%d", event->disconnect.reason);
+        ESP_LOGI(TAG, "disconnected reason=%d conn_dur=%" PRIu32 "ms",
+                 event->disconnect.reason, esp_log_timestamp() - s_connected_ms);
         if (s_ota.active) {
             (void)esp_ota_abort(s_ota.handle);
             ota_clear_state();

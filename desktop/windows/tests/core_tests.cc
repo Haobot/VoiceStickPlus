@@ -2108,7 +2108,7 @@ void TestCoordinatorMainFinalPastesWithoutConfirmation() {
 }
 
 // 开启精修时，ASR final 到达后应立即把原文刷上悬浮窗（ShowRefining），
-// 而非冻结在旧 partial 上等待 LLM 首 token。空 llm_api_key 使精修快速失败回退到原文。
+// 而非冻结在旧 partial 上等待 LLM 首 token。不可达 base_url 使精修快速失败回退到原文。
 void TestCoordinatorRefineShowsOriginalTextImmediately() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -2117,11 +2117,13 @@ void TestCoordinatorRefineShowsOriginalTextImmediately() {
     FakeUi ui;
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
-    // refine_enabled 默认 true；llm_api_key 默认空 → RefineStream 同步 on_error →
-    // ChatAsync 后台快速失败 → on_complete(false, 原文) 回退。
+    // refine_enabled 默认 true；用不可达 base_url 强制 LLM 快速失败回退。
+    // 不依赖 llm_api_key 空：开发/MSI 构建内置 key 非空时 ActiveLlmApiKey 仍非空，
+    // 改用无效 base_url 让 WinHttpConnect 连 127.0.0.1:1 被拒绝，触发 on_error →
+    // Refine → ChatSync 同样失败 → on_complete(false, 原文)。
     config.refine_enabled = true;  // 默认已改为 false，本用例显式开启以验证精修回退路径
     assert(config.refine_enabled);
-    assert(config.llm_api_key.empty());
+    config.llm_base_url = "http://127.0.0.1:1";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -6614,11 +6616,13 @@ void TestNeedsAsrStep() {
         assert(!NeedsAsrStep(config));
     }
     // 无 ActiveApiKey -> 需要 kAsr 步（让用户填）
+    // volcengine 模式 config key 空时 ActiveApiKey 回退编译期内置 key：
+    // 公开构建（内置空）-> 需要 kAsr；开发/MSI 构建（内置非空）-> 不需要。
     {
         AppConfig config;
         config.asr_provider = AsrProvider::kVolcengine;
         config.volcengine_api_key = "";
-        assert(NeedsAsrStep(config));
+        assert(NeedsAsrStep(config) == BuiltinApiKey().empty());
     }
     // 腾讯用 tencent_secret_id 作 ActiveApiKey
     {

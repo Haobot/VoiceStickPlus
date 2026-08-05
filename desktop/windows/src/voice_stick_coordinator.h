@@ -413,6 +413,10 @@ private:
     // 永久卡 Processing（asr_client_win 对 receive 超时静默重等，链路层无兜底）。
     void ScheduleFinalizingWatchdog();
     void TouchFinalizingWatchdog();
+    // focused_app 时序探针汇总：打印 button_up -> ready 各阶段耗时，定位松开后
+    // Thinking 状态延迟消除的根因（audio_end 等待 / ASR final 返回 / 其他）。各探针
+    // 时间戳由 button_down 重置、关键点填充，CompletePendingPaste 调本方法收尾。
+    void LogLatencyProbeBreakdown(std::string_view tag);
     // 首字延迟诊断：打印 stage 相对 wechat_latency_anchor_ 的累计毫秒。无活跃会话时跳过。
     void LogWechatLatency(std::string_view stage);
     void SendFinalOggChunkIfNeeded(double recording_duration_seconds);
@@ -545,6 +549,14 @@ private:
     std::atomic_uint64_t finalizing_watchdog_generation_{0};
     // finalizing 阶段最后一次有进展（ASR partial/segment、精修 token）的时间戳，steady_clock ms。
     std::atomic_int64_t finalizing_last_activity_ms_{0};
+    // 时序探针：focused_app 模式下 button_up -> ready 各阶段时间戳，steady_clock ms。
+    // button_down 重置为 0，各关键点填 SteadyNowMs，EnterReady(paste_complete) 经
+    // LogLatencyProbeBreakdown 汇总打印。0 表示该阶段未触发。
+    std::atomic_int64_t probe_button_up_ms_{0};
+    std::atomic_int64_t probe_audio_end_done_ms_{0};   // audio_end 帧到达或 kAudioEndTimeout 超时
+    std::atomic_int64_t probe_final_chunk_ms_{0};       // 最后 ogg chunk 发给 ASR
+    std::atomic_int64_t probe_first_partial_ms_{0};     // 首个 ASR partial
+    std::atomic_int64_t probe_asr_final_ms_{0};         // ASR final 到达
     // ASR final 原文（进入 translate/refine 异步阶段前保存）：watchdog 超时时回退粘贴原文，
     // 保证 LLM 无响应也不丢本次输入。FinishRecognitionCycle 时清空。
     std::string finalizing_fallback_text_;

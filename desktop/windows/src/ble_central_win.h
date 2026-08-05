@@ -147,6 +147,9 @@ private:
     void CheckScanHealth();
     static ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer);
     void PublishConnections();
+    // 多设备连接快照诊断：打印每个已配对设备的会话状态（ready/session但未就绪/无会话），
+    // 辅助定位多设备场景下偶发 Pairing 的根因（哪台断了、哪台还连着、watcher 重建时机）。
+    void LogConnectionSnapshot(std::string_view reason);
 
     void DispatchToUiThread(std::function<void()> callback);
 

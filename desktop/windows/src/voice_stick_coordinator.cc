@@ -366,6 +366,11 @@ void VoiceStickCoordinator::CancelFirmwareUpdate() {
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     asr_->on_partial = [this](std::string text) {
         TouchFinalizingWatchdog();
+        // 时序探针：首个 ASR partial 到达（识别结果开始上屏）。
+        if (probe_first_partial_ms_.load() == 0) {
+            probe_first_partial_ms_.store(SteadyNowMs());
+            LogCoordinatorLine("tseq first_partial ts=" + std::to_string(probe_first_partial_ms_.load()));
+        }
         ui_->ShowPartial(text, active_device_id_);
         if (ShouldSendPartialToDevice()) {
             SendUiStateForActiveDevice("thinking", text);
@@ -376,6 +381,9 @@ void VoiceStickCoordinator::ConfigureAsrCallbacks() {
         HandleDefiniteSegment(segment);
     };
     asr_->on_final = [this](std::string text) {
+        // 时序探针：ASR final 到达，此后 FinishWithFinalText 立即进粘贴（无精修时几乎无延迟）。
+        probe_asr_final_ms_.store(SteadyNowMs());
+        LogCoordinatorLine("tseq asr_final ts=" + std::to_string(probe_asr_final_ms_.load()));
         FinishWithFinalText(text);
     };
     asr_->on_error = [this](std::string message) {
@@ -1461,6 +1469,12 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         is_showing_asr_error_ = false;
         ogg_muxer_.Reset();
         debug_audio_recorder_.Start(device_id, session_id);
+        // 时序探针重置：新会话开始，清空上一轮各阶段时间戳。
+        probe_button_up_ms_.store(0);
+        probe_audio_end_done_ms_.store(0);
+        probe_final_chunk_ms_.store(0);
+        probe_first_partial_ms_.store(0);
+        probe_asr_final_ms_.store(0);
         SetSessionState(SessionState::kRecording, "primary_down");
         ScheduleRecordingHardTimeout();
         ScheduleRecordingStallWatchdog();
@@ -1481,6 +1495,12 @@ void VoiceStickCoordinator::HandlePrimaryButtonUp(const std::string& device_id) 
     std::lock_guard lock(audio_mutex_);
     if (!active_session_id_.has_value() || active_device_id_ != device_id) return;
     const double duration = CurrentRecordingDurationSeconds();
+    // 时序探针：button_up 时刻，作为 Thinking 延迟诊断的计时起点。
+    probe_button_up_ms_.store(SteadyNowMs());
+    LogCoordinatorLine("tseq button_up ts=" + std::to_string(probe_button_up_ms_.load()) +
+                       " dev=VS-" + device_id +
+                       " session=" + std::to_string(*active_session_id_) +
+                       " duration=" + std::to_string(duration));
     if (duration < kMinimumRecordingDurationSeconds) {
         CancelShortRecording();
     } else {
@@ -1503,6 +1523,11 @@ void VoiceStickCoordinator::HandleAudioFrame(const AudioFrame& frame, const std:
         return;
     }
     last_audio_frame_ms_.store(SteadyNowMs());
+    // 时序探针：audio_end 帧到达（含空 END 与带 payload END 两条路径）。
+    if (frame.IsEnd() && probe_audio_end_done_ms_.load() == 0) {
+        probe_audio_end_done_ms_.store(SteadyNowMs());
+        LogCoordinatorLine("tseq audio_end_recv ts=" + std::to_string(probe_audio_end_done_ms_.load()));
+    }
     if (frame.IsEnd() && frame.payload.empty()) {
         CancelAudioEndTimeout();
         SendFinalOggChunkIfNeeded(CurrentRecordingDurationSeconds());
@@ -1776,6 +1801,11 @@ void VoiceStickCoordinator::SendFinalOggChunkIfNeeded(double recording_duration_
 }
 
 void VoiceStickCoordinator::SendOrBufferOggChunk(const ByteVector& chunk, bool is_last, bool can_start_asr) {
+    // 时序探针：最后 ogg chunk 发给 ASR（无论直接发送还是入队后 flush），==0 守卫只记首次。
+    if (is_last && probe_final_chunk_ms_.load() == 0) {
+        probe_final_chunk_ms_.store(SteadyNowMs());
+        LogCoordinatorLine("tseq final_chunk_sent ts=" + std::to_string(probe_final_chunk_ms_.load()));
+    }
     if (asr_started_) {
         asr_->SendOggOpusChunk(chunk, is_last);
         return;
@@ -2211,6 +2241,11 @@ void VoiceStickCoordinator::ScheduleAudioEndTimeout(std::optional<std::uint32_t>
             return;
         }
         LogCoordinatorLine("audio END timeout; finalizing buffered audio");
+        // 时序探针：audio_end 超时（固件 drain 尾帧丢失/迟到），用 ==0 守卫避免覆盖 recv 路径。
+        if (probe_audio_end_done_ms_.load() == 0) {
+            probe_audio_end_done_ms_.store(SteadyNowMs());
+            LogCoordinatorLine("tseq audio_end_timeout ts=" + std::to_string(probe_audio_end_done_ms_.load()));
+        }
         SendFinalOggChunkIfNeeded(CurrentRecordingDurationSeconds());
     }).detach();
 }
@@ -2336,6 +2371,34 @@ void VoiceStickCoordinator::TouchFinalizingWatchdog() {
     finalizing_last_activity_ms_.store(SteadyNowMs());
 }
 
+void VoiceStickCoordinator::LogLatencyProbeBreakdown(std::string_view tag) {
+    const auto bu = probe_button_up_ms_.load();
+    // 非 button_up 起始的会话（如全局热键触发）不汇总，避免噪声。
+    if (bu == 0) return;
+    const auto ae = probe_audio_end_done_ms_.load();
+    const auto fc = probe_final_chunk_ms_.load();
+    const auto fp = probe_first_partial_ms_.load();
+    const auto af = probe_asr_final_ms_.load();
+    const auto now = SteadyNowMs();
+    auto delta = [](std::int64_t a, std::int64_t b) -> std::int64_t {
+        return (a != 0 && b >= a) ? (b - a) : 0;
+    };
+    // wait_ae: button_up -> audio_end 到达/超时（等固件 drain 尾帧，超时即 2000ms）；
+    // chunk_to_first_partial: final chunk -> 首个 partial（ASR 建连 + 首字）；
+    // asr_proc: final chunk -> final（ASR 总处理）；total: button_up -> ready（Thinking 总延迟）。
+    LogCoordinatorLine("tseq ready tag=" + std::string(tag) +
+                       " ts=" + std::to_string(now) +
+                       " button_up=" + std::to_string(bu) +
+                       " audio_end=" + std::to_string(ae) +
+                       " final_chunk=" + std::to_string(fc) +
+                       " first_partial=" + std::to_string(fp) +
+                       " asr_final=" + std::to_string(af) +
+                       " wait_ae_ms=" + std::to_string(delta(bu, ae)) +
+                       " chunk_to_first_partial_ms=" + std::to_string(delta(fc, fp)) +
+                       " asr_proc_ms=" + std::to_string(delta(fc, af)) +
+                       " total_ms=" + std::to_string(now - bu));
+}
+
 void VoiceStickCoordinator::LogWechatLatency(std::string_view stage) {
     if (!wechat_latency_anchor_.has_value()) {
         return;
@@ -2370,6 +2433,8 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& text) {
     const bool should_press_enter = config_.auto_enter;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
+    // 时序探针汇总：button_up -> ready 各阶段耗时，定位 Thinking 延迟根因。
+    LogLatencyProbeBreakdown("paste_complete");
     EnterReady("paste_complete");
     input_injector_->Paste(text, should_press_enter);
 }

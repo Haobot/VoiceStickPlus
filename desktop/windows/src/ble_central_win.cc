@@ -1811,6 +1811,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         }
         PublishConnections();
         LogBleLine("connected VS-" + device_id);
+        LogConnectionSnapshot("connected");
         log_stage("ready");
         SendUiState("ready", "", device_id);
     } catch (const winrt::hresult_error& error) {
@@ -2141,6 +2142,7 @@ void BleCentralWin::HandleDeviceDisconnected(const std::string& device_id,
     }
     if (removed) CloseSession(std::move(removed));
     LogBleLine("device disconnected VS-" + device_id + "; restarting scan for reconnection");
+    LogConnectionSnapshot("disconnected");
     DispatchToUiThread([this] {
         PublishConnections();
         StartScan();
@@ -2278,6 +2280,7 @@ void BleCentralWin::CheckScanHealth() {
     LogBleLine("scan watchdog: no advertisements for " +
                std::to_string(silent_ms / 1000) +
                "s with paired device undiscovered; restarting watcher");
+    LogConnectionSnapshot("scan_watchdog_rebuild");
     DispatchToUiThread([this] { StartScan(); });
 }
 
@@ -2342,6 +2345,27 @@ void BleCentralWin::PublishConnections() {
         return lhs.id < rhs.id;
     });
     on_connection_change(devices);
+}
+
+void BleCentralWin::LogConnectionSnapshot(std::string_view reason) {
+    std::lock_guard lock(mutex_);
+    std::string line = "conn_snapshot reason=";
+    line += std::string(reason);
+    line += " paired=[";
+    bool first = true;
+    for (const auto& id : paired_device_ids_) {
+        if (!first) line += " ";
+        first = false;
+        line += "VS-" + id;
+        auto it = sessions_by_device_id_.find(id);
+        if (it != sessions_by_device_id_.end() && it->second) {
+            line += it->second->ready ? "(ready)" : "(session,!ready)";
+        } else {
+            line += "(no_session)";
+        }
+    }
+    line += "]";
+    LogBleLine(line);
 }
 
 } // namespace voicestick
