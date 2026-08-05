@@ -1269,8 +1269,8 @@ void TestLlmRefinePromptAndPayload() {
     assert(cJSON_IsString(user_content) && std::string(user_content->valuestring) == "hello world");
     cJSON_Delete(root);
 
-    // 精修默认开启、prompt 默认空。
-    assert(AppConfig::Defaults().refine_enabled == true);
+    // 精修默认关闭、prompt 默认空。
+    assert(AppConfig::Defaults().refine_enabled == false);
     assert(AppConfig::Defaults().refine_prompt.empty());
 
     // refine_prompt 多行字符串 TOML 保存/加载往返测试：
@@ -2119,6 +2119,7 @@ void TestCoordinatorRefineShowsOriginalTextImmediately() {
     AppConfig config = AppConfig::Defaults();
     // refine_enabled 默认 true；llm_api_key 默认空 → RefineStream 同步 on_error →
     // ChatAsync 后台快速失败 → on_complete(false, 原文) 回退。
+    config.refine_enabled = true;  // 默认已改为 false，本用例显式开启以验证精修回退路径
     assert(config.refine_enabled);
     assert(config.llm_api_key.empty());
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
@@ -6632,15 +6633,25 @@ void TestNeedsAsrStep() {
 // 配置 key 非空时优先用配置 key。tencent/cloud 不回退（内置 key 是 volcengine 的）。
 void TestActiveApiKeyBuiltinFallback() {
     // volcengine + 空 key + 内置非空 -> 回退内置 key
-    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "", "", "BUILTIN_KEY") == "BUILTIN_KEY");
+    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "", "", "BUILTIN_KEY", "BUILTIN_TENCENT") == "BUILTIN_KEY");
     // volcengine + 配置 key 非空 -> 配置 key 优先（不回退）
-    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "USER_KEY", "", "BUILTIN_KEY") == "USER_KEY");
+    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "USER_KEY", "", "BUILTIN_KEY", "BUILTIN_TENCENT") == "USER_KEY");
     // volcengine + 空 key + 空内置 -> 空（公开构建无内置 key）
-    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "", "", "") == "");
+    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "", "", "", "") == "");
     // tencent -> 返回 tencent_secret_id（不回退内置 key）
-    assert(ResolveActiveApiKey(AsrProvider::kTencent, "", "", "TENCENT_ID", "BUILTIN_KEY") == "TENCENT_ID");
+    assert(ResolveActiveApiKey(AsrProvider::kTencent, "", "", "", "BUILTIN_KEY", "BUILTIN_TENCENT") == "BUILTIN_TENCENT");
+    assert(ResolveActiveApiKey(AsrProvider::kTencent, "", "", "USER_TENCENT", "BUILTIN_KEY", "BUILTIN_TENCENT") == "USER_TENCENT");
     // cloud -> 返回 voicestick_api_key（不回退内置 key）
-    assert(ResolveActiveApiKey(AsrProvider::kVoiceStickCloud, "CLOUD_KEY", "", "", "BUILTIN_KEY") == "CLOUD_KEY");
+    assert(ResolveActiveApiKey(AsrProvider::kVoiceStickCloud, "CLOUD_KEY", "", "", "BUILTIN_KEY", "BUILTIN_TENCENT") == "CLOUD_KEY");
+}
+
+// 通用回退纯函数：配置值优先，空则回退内置值。供腾讯云 SecretKey/AppId 与 LLM
+// base_url/api_key/model 字段复用（这些字段不参与 ActiveApiKey 的 provider 分发）。
+void TestResolveActiveString() {
+    assert(ResolveActiveString("USER_VAL", "BUILTIN_VAL") == "USER_VAL");
+    assert(ResolveActiveString("", "BUILTIN_VAL") == "BUILTIN_VAL");
+    assert(ResolveActiveString("", "") == "");
+    assert(ResolveActiveString("USER_VAL", "") == "USER_VAL");
 }
 
 // 运行时 Save 不得用内存过期凭据覆盖磁盘真实凭据（路径 A 根因修复）。
@@ -7091,6 +7102,7 @@ int main() {
     TestConfigTemplateSeeding();
     TestNeedsAsrStep();
     TestActiveApiKeyBuiltinFallback();
+    TestResolveActiveString();
     TestSavePreservingDiskCredentials();
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();

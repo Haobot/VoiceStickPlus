@@ -37,7 +37,7 @@ void AddHeader(HINTERNET request, const std::string& header) {
 std::string LLMChatClient::ChatSync(const std::string& system_prompt,
                                     const std::string& user_text,
                                     std::string* error) const {
-    const auto api_key = Trim(config_.llm_api_key);
+    const auto api_key = config_.ActiveLlmApiKey();
     if (api_key.empty()) {
         *error = "Missing LLM API key";
         return {};
@@ -83,7 +83,7 @@ std::string LLMChatClient::ChatSync(const std::string& system_prompt,
     AddHeader(request, "Authorization: Bearer " + api_key);
     AddHeader(request, "Content-Type: application/json");
 
-    const auto payload = BuildChatPayload(config_.llm_model, system_prompt, user_text);
+    const auto payload = BuildChatPayload(config_.ActiveLlmModel(), system_prompt, user_text);
 
     const BOOL sent = WinHttpSendRequest(
         request,
@@ -154,7 +154,7 @@ void LLMChatClient::ChatStream(std::string system_prompt,
                                std::string user_text,
                                StreamCallbacks callbacks,
                                std::shared_ptr<std::atomic_bool> cancel) const {
-    const auto api_key = Trim(config_.llm_api_key);
+    const auto api_key = config_.ActiveLlmApiKey();
     if (api_key.empty()) {
         if (callbacks.on_error) callbacks.on_error("Missing LLM API key");
         return;
@@ -205,9 +205,9 @@ void LLMChatClient::ChatStream(std::string system_prompt,
     AddHeader(request, "Authorization: Bearer " + api_key);
     AddHeader(request, "Content-Type: application/json");
 
-    const auto payload = BuildChatPayload(config_.llm_model, system_prompt, user_text, /*stream=*/true);
+    const auto payload = BuildChatPayload(config_.ActiveLlmModel(), system_prompt, user_text, /*stream=*/true);
 
-    OutputDebugStringA(("[ChatStream] sending stream request, model=" + config_.llm_model + ", payload=" + std::to_string(payload.size()) + " bytes").c_str());
+    OutputDebugStringA(("[ChatStream] sending stream request, model=" + config_.ActiveLlmModel() + ", payload=" + std::to_string(payload.size()) + " bytes").c_str());
 
     const BOOL sent = WinHttpSendRequest(
         request,
@@ -327,7 +327,7 @@ std::string LLMChatClient::ChatCompletionsPathAndQuery(std::wstring* host,
                                                        INTERNET_PORT* port,
                                                        bool* secure,
                                                        std::string* error) const {
-    auto base = Trim(config_.llm_base_url);
+    auto base = config_.ActiveLlmBaseUrl();
     while (!base.empty() && base.back() == '/') base.pop_back();
     if (base.empty()) {
         *error = "Invalid LLM base URL";

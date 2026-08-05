@@ -922,29 +922,63 @@ void AppConfig::Save(const std::filesystem::path& path) const {
 }
 
 std::string BuiltinApiKey() {
-    // 编译期常量来自 builtin_secrets.h（CMake VOICESTICK_BUILTIN_API_KEY 注入）。
-    // 公开构建为空字符串，回退不生效，正常读用户配置的 key。
+    // 编译期常量来自 builtin_secrets.h（CMake VOICESTICK_BUILTIN_* 注入）。
+    // 公开构建为空字符串，回退不生效，正常读用户配置。
     return kBuiltinAsrApiKey;
+}
+
+std::string BuiltinTencentSecretId() { return kBuiltinTencentSecretId; }
+std::string BuiltinTencentSecretKey() { return kBuiltinTencentSecretKey; }
+std::string BuiltinTencentAppid() { return kBuiltinTencentAppid; }
+std::string BuiltinLlmApiKey() { return kBuiltinLlmApiKey; }
+std::string BuiltinLlmBaseUrl() { return kBuiltinLlmBaseUrl; }
+std::string BuiltinLlmModel() { return kBuiltinLlmModel; }
+
+// 通用回退：配置值优先，空则回退内置值。供腾讯云 SecretKey/AppId 与 LLM 字段复用。
+std::string ResolveActiveString(std::string_view config_value, std::string_view builtin_value) {
+    return !config_value.empty() ? std::string(config_value) : std::string(builtin_value);
 }
 
 std::string ResolveActiveApiKey(AsrProvider provider,
                                 std::string_view voicestick_key,
                                 std::string_view volcengine_key,
                                 std::string_view tencent_id,
-                                std::string_view builtin_key) {
+                                std::string_view builtin_volcengine_key,
+                                std::string_view builtin_tencent_id) {
     switch (provider) {
         case AsrProvider::kVoiceStickCloud: return std::string(voicestick_key);
         case AsrProvider::kVolcengine:
             // 配置文件 key 优先；空则回退编译期内置 key（预配置 MSI 分发场景）。
-            return !volcengine_key.empty() ? std::string(volcengine_key) : std::string(builtin_key);
-        case AsrProvider::kTencent: return std::string(tencent_id);
+            return !volcengine_key.empty() ? std::string(volcengine_key) : std::string(builtin_volcengine_key);
+        case AsrProvider::kTencent:
+            // 配置文件 secret_id 优先；空则回退编译期内置 tencent_secret_id。
+            return !tencent_id.empty() ? std::string(tencent_id) : std::string(builtin_tencent_id);
     }
     return {};
 }
 
 std::string AppConfig::ActiveApiKey() const {
     return ResolveActiveApiKey(asr_provider, voicestick_api_key, volcengine_api_key,
-                               tencent_secret_id, BuiltinApiKey());
+                               tencent_secret_id, BuiltinApiKey(), BuiltinTencentSecretId());
+}
+
+std::string AppConfig::ActiveTencentSecretId() const {
+    return ResolveActiveString(tencent_secret_id, BuiltinTencentSecretId());
+}
+std::string AppConfig::ActiveTencentSecretKey() const {
+    return ResolveActiveString(tencent_secret_key, BuiltinTencentSecretKey());
+}
+std::string AppConfig::ActiveTencentAppid() const {
+    return ResolveActiveString(tencent_appid, BuiltinTencentAppid());
+}
+std::string AppConfig::ActiveLlmApiKey() const {
+    return ResolveActiveString(llm_api_key, BuiltinLlmApiKey());
+}
+std::string AppConfig::ActiveLlmBaseUrl() const {
+    return ResolveActiveString(llm_base_url, BuiltinLlmBaseUrl());
+}
+std::string AppConfig::ActiveLlmModel() const {
+    return ResolveActiveString(llm_model, BuiltinLlmModel());
 }
 
 bool NeedsAsrStep(const AppConfig& config) {
