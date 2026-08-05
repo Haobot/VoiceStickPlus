@@ -314,6 +314,19 @@ struct AppConfig {
 // 内置 key（ActiveApiKey 非空）时向导跳过 kAsr 步；公开版无 key 仍需用户填写。
 bool NeedsAsrStep(const AppConfig& config);
 
+// 返回编译期内置 ASR API Key（预配置 MSI 分发用；公开构建为空）。
+// 来源：CMake VOICESTICK_BUILTIN_API_KEY cache 变量 -> builtin_secrets.h 编译期常量。
+std::string BuiltinApiKey();
+
+// 解析当前生效的 API Key：配置文件 key 优先；volcengine 模式空则回退内置 key。
+// 抽成纯函数便于单元测试（不依赖编译期常量 kBuiltinAsrApiKey）。
+// tencent/cloud 模式不回退内置 key（内置 key 是 volcengine 的，不能跨 provider 用）。
+std::string ResolveActiveApiKey(AsrProvider provider,
+                                std::string_view voicestick_key,
+                                std::string_view volcengine_key,
+                                std::string_view tencent_id,
+                                std::string_view builtin_key);
+
 std::string AsrProviderName(AsrProvider provider);
 AsrProvider AsrProviderFromName(std::string_view name);
 std::string InteractionModeName(InteractionMode mode);

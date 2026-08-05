@@ -1,5 +1,7 @@
 #include "app_config.h"
 
+#include "builtin_secrets.h"
+
 #include "ble_protocol.h"
 #include "key_spec.h"
 #include "log.h"
@@ -919,13 +921,30 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     }
 }
 
-std::string AppConfig::ActiveApiKey() const {
-    switch (asr_provider) {
-        case AsrProvider::kVoiceStickCloud: return voicestick_api_key;
-        case AsrProvider::kVolcengine: return volcengine_api_key;
-        case AsrProvider::kTencent: return tencent_secret_id;
+std::string BuiltinApiKey() {
+    // 编译期常量来自 builtin_secrets.h（CMake VOICESTICK_BUILTIN_API_KEY 注入）。
+    // 公开构建为空字符串，回退不生效，正常读用户配置的 key。
+    return kBuiltinAsrApiKey;
+}
+
+std::string ResolveActiveApiKey(AsrProvider provider,
+                                std::string_view voicestick_key,
+                                std::string_view volcengine_key,
+                                std::string_view tencent_id,
+                                std::string_view builtin_key) {
+    switch (provider) {
+        case AsrProvider::kVoiceStickCloud: return std::string(voicestick_key);
+        case AsrProvider::kVolcengine:
+            // 配置文件 key 优先；空则回退编译期内置 key（预配置 MSI 分发场景）。
+            return !volcengine_key.empty() ? std::string(volcengine_key) : std::string(builtin_key);
+        case AsrProvider::kTencent: return std::string(tencent_id);
     }
     return {};
+}
+
+std::string AppConfig::ActiveApiKey() const {
+    return ResolveActiveApiKey(asr_provider, voicestick_api_key, volcengine_api_key,
+                               tencent_secret_id, BuiltinApiKey());
 }
 
 bool NeedsAsrStep(const AppConfig& config) {

@@ -33,7 +33,21 @@ call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul 2>&1
 :: Step 1: CMake configure + build (RelWithDebInfo)
 echo.
 echo [1/4] CMake RelWithDebInfo build...
-cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+:: Built-in ASR API key: prefer env var VOICESTICK_BUILTIN_API_KEY; otherwise extract
+:: volcengine_api_key from the local config.toml via a helper ps1 (avoids bat/PowerShell
+:: quote-escaping pitfalls). Baked into VoiceStick.exe at compile time; ActiveApiKey()
+:: falls back to it on first launch, skipping the ASR onboarding step for new users.
+:: See Doc/Plan/windows-builtin-api-key.md.
+if not defined VOICESTICK_BUILTIN_API_KEY (
+    for /f "usebackq delims=" %%k in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "VOICESTICK_BUILTIN_API_KEY=%%k"
+)
+if not defined VOICESTICK_BUILTIN_API_KEY (
+    echo WARNING: volcengine_api_key not found; exe will have no built-in key, new users must fill it in onboarding.
+) else (
+    echo Injecting built-in ASR API key into VoiceStick.exe
+)
+cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%"
 if errorlevel 1 (
     echo ERROR: CMake configure failed.
     exit /b 1
