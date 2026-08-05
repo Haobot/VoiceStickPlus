@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 2026-08-05 v2.3.3
+
+- 修复首启 volcengine ASR 缺 resource_id 致需切换供应商才可用（Windows）：`config.template.toml` 的 `resource_id=""` 覆盖成员默认值 `volc.seedasr.sauc.duration`，内置 key 跳过 kAsr 的 onboarding 不填 `resource_id`，致 `AsrClientWin` 发空 `X-Api-Resource-Id`、volcengine ASR 失败；进设置切换一次供应商保存时 `resource_combo_` 默认选第一项填入有效值才修复。新增 `AppConfig::ActiveResourceId()`：`resource_id` 空时回退 `SupportedResourceIds().front()`（`volc.seedasr.sauc.duration`）；`asr_client_win.cc`（`X-Api-Resource-Id` 请求头）与 `asr_protocol.cc`（`MakeStartSessionFrame` JSON）改用 `ActiveResourceId()`；`config.template.toml` 填默认值 `volc.seedasr.sauc.duration`；加 `TestActiveResourceId` 单测。
+
 ## 2026-08-05 v2.3.2
 
 - 内置腾讯云 ASR 与 DeepSeek LLM 凭据（Windows）：在 v2.3.1 内置火山 key 基础上扩展，`builtin_secrets.h.in` 新增腾讯云 `SecretId`/`SecretKey`/`AppId` 与 DeepSeek `llm_api_key`/`llm_base_url`/`llm_model` 六个编译期常量；`AppConfig` 新增 `ActiveTencentSecretId/SecretKey/Appid` 与 `ActiveLlmApiKey/BaseUrl/Model` 六个回退访问器，复用通用纯函数 `ResolveActiveString`（配置值优先，空则回退内置，不落盘）；`ResolveActiveApiKey` 签名扩展 `builtin_tencent_id` 参数，tencent 模式也回退内置 `secret_id`，onboarding 在 tencent 模式同样跳过 kAsr。`asr_client_tencent.cc`（Start 空检查 + BuildSignedUrl 签名）与 `llm_chat_client.cc`（api_key/model/base_url 读取点）改用 `Active*()` 访问器，确保内置回退在 ASR/LLM 调用链路生效。
