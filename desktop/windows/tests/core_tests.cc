@@ -6628,6 +6628,21 @@ void TestNeedsAsrStep() {
     }
 }
 
+// ActiveApiKey 在 volcengine 模式下配置 key 为空时回退编译期内置 key；
+// 配置 key 非空时优先用配置 key。tencent/cloud 不回退（内置 key 是 volcengine 的）。
+void TestActiveApiKeyBuiltinFallback() {
+    // volcengine + 空 key + 内置非空 -> 回退内置 key
+    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "", "", "BUILTIN_KEY") == "BUILTIN_KEY");
+    // volcengine + 配置 key 非空 -> 配置 key 优先（不回退）
+    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "USER_KEY", "", "BUILTIN_KEY") == "USER_KEY");
+    // volcengine + 空 key + 空内置 -> 空（公开构建无内置 key）
+    assert(ResolveActiveApiKey(AsrProvider::kVolcengine, "", "", "", "") == "");
+    // tencent -> 返回 tencent_secret_id（不回退内置 key）
+    assert(ResolveActiveApiKey(AsrProvider::kTencent, "", "", "TENCENT_ID", "BUILTIN_KEY") == "TENCENT_ID");
+    // cloud -> 返回 voicestick_api_key（不回退内置 key）
+    assert(ResolveActiveApiKey(AsrProvider::kVoiceStickCloud, "CLOUD_KEY", "", "", "BUILTIN_KEY") == "CLOUD_KEY");
+}
+
 // 运行时 Save 不得用内存过期凭据覆盖磁盘真实凭据（路径 A 根因修复）。
 void TestSavePreservingDiskCredentials() {
     const auto base = std::filesystem::temp_directory_path() / "voicestick_preserve_cred_test";
@@ -7075,6 +7090,7 @@ int main() {
     TestAppConfigDebugAudioDirUtf8RoundTrip();
     TestConfigTemplateSeeding();
     TestNeedsAsrStep();
+    TestActiveApiKeyBuiltinFallback();
     TestSavePreservingDiskCredentials();
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();

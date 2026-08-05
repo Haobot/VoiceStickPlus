@@ -52,6 +52,16 @@ set_target_properties(winsparkle_lib PROPERTIES
 
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 
+# 内置 ASR API Key（编译期注入 exe，预配置 MSI 分发用；公开构建留空）。
+# build-msi.bat 从本机 %APPDATA%\VoiceStick\config.toml 提取 volcengine_api_key 注入。
+# 详见 Doc/Plan/windows-builtin-api-key.md。
+set(VOICESTICK_BUILTIN_API_KEY "" CACHE STRING "Built-in ASR API key for pre-configured MSI builds")
+# key 含 " 或 \ 会破坏生成的头文件字符串字面量，直接报错（火山 key 通常 UUID 风格，不会触发）。
+if(VOICESTICK_BUILTIN_API_KEY MATCHES "[\"\\\\]")
+    message(FATAL_ERROR "VOICESTICK_BUILTIN_API_KEY 含非法字符（\" 或 \\），会破坏 builtin_secrets.h 字符串字面量。")
+endif()
+configure_file(src/builtin_secrets.h.in ${CMAKE_CURRENT_BINARY_DIR}/builtin_secrets.h @ONLY)
+
 add_library(voicestick_core
     src/air_mouse_kin.cc
     src/key_spec.cc
@@ -82,7 +92,7 @@ add_library(voicestick_core
     src/default_audio_device_controller.cc
 )
 
-target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus)
+target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(voicestick_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
