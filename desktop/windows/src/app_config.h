@@ -201,7 +201,7 @@ struct AppConfig {
     std::string llm_api_key;
     std::string llm_model = "gpt-5.5";
     // ASR 文本精修：用 LLM 对识别文本去停顿空格 / 修标点 / 去口头语。默认开启，best-effort。
-    bool refine_enabled = true;
+    bool refine_enabled = false;
     // 精修 system prompt 覆盖；为空时使用内置默认 prompt。
     std::string refine_prompt;
     // 热词处理：划词加词时用 LLM 从选中长文中提炼热词，只把提炼结果写入热词表。
@@ -301,6 +301,14 @@ struct AppConfig {
                               const std::string& firmware_version);
     void RemovePairedDevice(const std::string& device_id);
     std::string ActiveApiKey() const;
+    // 腾讯云 ASR 凭据：配置空则回退编译期内置值（预配置 MSI 分发用；不落盘）。
+    std::string ActiveTencentSecretId() const;
+    std::string ActiveTencentSecretKey() const;
+    std::string ActiveTencentAppid() const;
+    // DeepSeek LLM 凭据：配置空则回退编译期内置值（翻译/精修/热词提炼复用；不落盘）。
+    std::string ActiveLlmApiKey() const;
+    std::string ActiveLlmBaseUrl() const;
+    std::string ActiveLlmModel() const;
     std::string ActiveWebsocketUrl() const;
     OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
     // 返回设备有效编码器设置：有 [device.<id>.encoder] 覆盖时返回覆盖（加载时已用
@@ -314,18 +322,29 @@ struct AppConfig {
 // 内置 key（ActiveApiKey 非空）时向导跳过 kAsr 步；公开版无 key 仍需用户填写。
 bool NeedsAsrStep(const AppConfig& config);
 
-// 返回编译期内置 ASR API Key（预配置 MSI 分发用；公开构建为空）。
-// 来源：CMake VOICESTICK_BUILTIN_API_KEY cache 变量 -> builtin_secrets.h 编译期常量。
+// 返回编译期内置凭据（预配置 MSI 分发用；公开构建为空）。
+// 来源：CMake VOICESTICK_BUILTIN_* cache 变量 -> builtin_secrets.h 编译期常量。
 std::string BuiltinApiKey();
+std::string BuiltinTencentSecretId();
+std::string BuiltinTencentSecretKey();
+std::string BuiltinTencentAppid();
+std::string BuiltinLlmApiKey();
+std::string BuiltinLlmBaseUrl();
+std::string BuiltinLlmModel();
 
-// 解析当前生效的 API Key：配置文件 key 优先；volcengine 模式空则回退内置 key。
-// 抽成纯函数便于单元测试（不依赖编译期常量 kBuiltinAsrApiKey）。
-// tencent/cloud 模式不回退内置 key（内置 key 是 volcengine 的，不能跨 provider 用）。
+// 通用回退纯函数：配置值优先，空则回退内置值。供腾讯云 SecretKey/AppId 与 LLM
+// base_url/api_key/model 字段复用（这些字段不参与 ActiveApiKey 的 provider 分发）。
+std::string ResolveActiveString(std::string_view config_value, std::string_view builtin_value);
+
+// 解析当前生效的 ASR API Key：配置值优先；volcengine/tencent 模式空则回退内置 key。
+// 抽成纯函数便于单元测试（不依赖编译期常量）。
+// cloud 模式不回退内置 key（voicestick_api_key 无内置回退）。
 std::string ResolveActiveApiKey(AsrProvider provider,
                                 std::string_view voicestick_key,
                                 std::string_view volcengine_key,
                                 std::string_view tencent_id,
-                                std::string_view builtin_key);
+                                std::string_view builtin_volcengine_key,
+                                std::string_view builtin_tencent_id);
 
 std::string AsrProviderName(AsrProvider provider);
 AsrProvider AsrProviderFromName(std::string_view name);

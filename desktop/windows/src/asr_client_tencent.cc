@@ -153,13 +153,13 @@ AsrClientTencent::~AsrClientTencent() {
 // ============================================================
 
 bool AsrClientTencent::Start(AsrSessionOptions options) {
-    LogApp("TencentAsr::Start called appid=" + config_.tencent_appid + " secret_id=" + config_.tencent_secret_id.substr(0, 8) + "...");
+    LogApp("TencentAsr::Start called appid=" + config_.ActiveTencentAppid() + " secret_id=" + config_.ActiveTencentSecretId().substr(0, 8) + "...");
     SetLastStartError({});
-    if (config_.tencent_secret_id.empty() || config_.tencent_secret_key.empty()) {
+    if (config_.ActiveTencentSecretId().empty() || config_.ActiveTencentSecretKey().empty()) {
         SetLastStartError("缺少腾讯云 SecretId/SecretKey");
         return false;
     }
-    if (config_.tencent_appid.empty()) {
+    if (config_.ActiveTencentAppid().empty()) {
         SetLastStartError("缺少腾讯云 AppId");
         return false;
     }
@@ -332,7 +332,7 @@ std::string AsrClientTencent::BuildSignedUrl(const AppConfig& config,
         now.time_since_epoch()).count();
     auto expired = timestamp + 86400; // 24 小时后过期
 
-    params.push_back({"secretid", config.tencent_secret_id});
+    params.push_back({"secretid", config.ActiveTencentSecretId()});
     params.push_back({"timestamp", std::to_string(timestamp)});
     params.push_back({"expired", std::to_string(expired)});
 
@@ -363,14 +363,14 @@ std::string AsrClientTencent::BuildSignedUrl(const AppConfig& config,
     // 拼接签名原文：asr.cloud.tencent.com/asr/v2/<appid>?<sorted_query_params>
     // 注意：不包含 wss:// 协议头。
     std::ostringstream sign_str;
-    sign_str << "asr.cloud.tencent.com/asr/v2/" << config.tencent_appid << "?";
+    sign_str << "asr.cloud.tencent.com/asr/v2/" << config.ActiveTencentAppid() << "?";
     for (std::size_t i = 0; i < params.size(); ++i) {
         if (i != 0) sign_str << "&";
         sign_str << params[i].key << "=" << params[i].value;
     }
 
     // HMAC-SHA1 → Base64 → URL Encode
-    auto hmac_result = HmacSha1(config.tencent_secret_key, sign_str.str());
+    auto hmac_result = HmacSha1(config.ActiveTencentSecretKey(), sign_str.str());
     auto hmac_bytes = std::span(reinterpret_cast<const std::uint8_t*>(hmac_result.data()),
                                  hmac_result.size());
     auto signature = UrlEncode(Base64Encode(hmac_bytes));
@@ -380,7 +380,7 @@ std::string AsrClientTencent::BuildSignedUrl(const AppConfig& config,
 
     // 构建完整 URL
     std::ostringstream url;
-    url << "wss://asr.cloud.tencent.com/asr/v2/" << config.tencent_appid << "?";
+    url << "wss://asr.cloud.tencent.com/asr/v2/" << config.ActiveTencentAppid() << "?";
     for (std::size_t i = 0; i < params.size(); ++i) {
         if (i != 0) url << "&";
         url << params[i].key << "=" << params[i].value;

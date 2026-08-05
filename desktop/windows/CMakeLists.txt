@@ -52,14 +52,29 @@ set_target_properties(winsparkle_lib PROPERTIES
 
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 
-# 内置 ASR API Key（编译期注入 exe，预配置 MSI 分发用；公开构建留空）。
-# build-msi.bat 从本机 %APPDATA%\VoiceStick\config.toml 提取 volcengine_api_key 注入。
+# 内置凭据（编译期注入 exe，预配置 MSI 分发用；公开构建留空）。
+# build-msi.bat 从本机 %APPDATA%\VoiceStick\config.toml 提取凭据注入。
 # 详见 Doc/Plan/windows-builtin-api-key.md。
-set(VOICESTICK_BUILTIN_API_KEY "" CACHE STRING "Built-in ASR API key for pre-configured MSI builds")
-# key 含 " 或 \ 会破坏生成的头文件字符串字面量，直接报错（火山 key 通常 UUID 风格，不会触发）。
-if(VOICESTICK_BUILTIN_API_KEY MATCHES "[\"\\\\]")
-    message(FATAL_ERROR "VOICESTICK_BUILTIN_API_KEY 含非法字符（\" 或 \\），会破坏 builtin_secrets.h 字符串字面量。")
-endif()
+set(VOICESTICK_BUILTIN_API_KEY "" CACHE STRING "Built-in volcengine ASR API key")
+set(VOICESTICK_BUILTIN_TENCENT_SECRET_ID "" CACHE STRING "Built-in Tencent ASR secret id")
+set(VOICESTICK_BUILTIN_TENCENT_SECRET_KEY "" CACHE STRING "Built-in Tencent ASR secret key")
+set(VOICESTICK_BUILTIN_TENCENT_APPID "" CACHE STRING "Built-in Tencent ASR app id")
+set(VOICESTICK_BUILTIN_LLM_API_KEY "" CACHE STRING "Built-in LLM API key (DeepSeek)")
+set(VOICESTICK_BUILTIN_LLM_BASE_URL "" CACHE STRING "Built-in LLM base URL (DeepSeek)")
+set(VOICESTICK_BUILTIN_LLM_MODEL "" CACHE STRING "Built-in LLM model name (DeepSeek)")
+# 凭据含 " 或 \ 会破坏生成的头文件字符串字面量，直接报错。
+foreach(var
+    VOICESTICK_BUILTIN_API_KEY
+    VOICESTICK_BUILTIN_TENCENT_SECRET_ID
+    VOICESTICK_BUILTIN_TENCENT_SECRET_KEY
+    VOICESTICK_BUILTIN_TENCENT_APPID
+    VOICESTICK_BUILTIN_LLM_API_KEY
+    VOICESTICK_BUILTIN_LLM_BASE_URL
+    VOICESTICK_BUILTIN_LLM_MODEL)
+    if(${var} MATCHES "[\"\\\\]")
+        message(FATAL_ERROR "${var} 含非法字符（\" 或 \\），会破坏 builtin_secrets.h 字符串字面量。")
+    endif()
+endforeach()
 configure_file(src/builtin_secrets.h.in ${CMAKE_CURRENT_BINARY_DIR}/builtin_secrets.h @ONLY)
 
 add_library(voicestick_core
