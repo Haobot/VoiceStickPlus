@@ -2119,11 +2119,11 @@ void TestCoordinatorRefineShowsOriginalTextImmediately() {
     AppConfig config = AppConfig::Defaults();
     // refine_enabled 默认 true；用不可达 base_url 强制 LLM 快速失败回退。
     // 不依赖 llm_api_key 空：开发/MSI 构建内置 key 非空时 ActiveLlmApiKey 仍非空，
-    // 改用无效 base_url 让 WinHttpConnect 连 127.0.0.1:1 被拒绝，触发 on_error →
+    // 改用无效 base_url 让 WinHttpCrackUrl 同步失败，触发 on_error →
     // Refine → ChatSync 同样失败 → on_complete(false, 原文)。
     config.refine_enabled = true;  // 默认已改为 false，本用例显式开启以验证精修回退路径
     assert(config.refine_enabled);
-    config.llm_base_url = "http://127.0.0.1:1";
+    config.llm_base_url = "http://[";
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
