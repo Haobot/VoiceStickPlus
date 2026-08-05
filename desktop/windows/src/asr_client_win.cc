@@ -245,7 +245,7 @@ void AsrClientWin::RunReusableWebSocket() {
             AddHeader(request, "X-Device-Id", config_.paired_device_ids.front());
         }
     } else {
-        AddHeader(request, "X-Api-Resource-Id", config_.resource_id);
+        AddHeader(request, "X-Api-Resource-Id", config_.ActiveResourceId());
     }
 
     if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {

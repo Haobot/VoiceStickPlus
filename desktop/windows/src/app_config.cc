@@ -996,6 +996,14 @@ std::string AppConfig::ActiveWebsocketUrl() const {
     return url.empty() ? AppConfig{}.voicestick_cloud_url : url;
 }
 
+std::string AppConfig::ActiveResourceId() const {
+    // resource_id 为空时回退 SupportedResourceIds().front()（volc.seedasr.sauc.duration）。
+    // 修复首启 config.template.toml resource_id="" 覆盖成员默认值，致 volcengine ASR
+    // 缺 X-Api-Resource-Id 失败、需进设置切换一次供应商才可用的问题。
+    const auto& ids = SupportedResourceIds();
+    return ResolveActiveString(resource_id, ids.empty() ? std::string{} : ids.front());
+}
+
 void AppConfig::SavePairedDevice(const PairedDeviceEntry& entry) {
     bool found = false;
     for (auto& existing : paired_devices) {

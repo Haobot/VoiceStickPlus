@@ -6654,6 +6654,18 @@ void TestResolveActiveString() {
     assert(ResolveActiveString("USER_VAL", "") == "USER_VAL");
 }
 
+// ActiveResourceId 在 resource_id 为空时回退 SupportedResourceIds().front()
+// （volc.seedasr.sauc.duration），非空时优先用配置值。修复首启 config.template.toml
+// resource_id="" 覆盖成员默认值，致 volcengine ASR 缺 X-Api-Resource-Id 失败、
+// 需进设置切换一次供应商才可用的问题。
+void TestActiveResourceId() {
+    AppConfig config;
+    config.resource_id = "";
+    assert(config.ActiveResourceId() == "volc.seedasr.sauc.duration");
+    config.resource_id = "volc.bigasr.sauc.duration";
+    assert(config.ActiveResourceId() == "volc.bigasr.sauc.duration");
+}
+
 // 运行时 Save 不得用内存过期凭据覆盖磁盘真实凭据（路径 A 根因修复）。
 void TestSavePreservingDiskCredentials() {
     const auto base = std::filesystem::temp_directory_path() / "voicestick_preserve_cred_test";
@@ -7103,6 +7115,7 @@ int main() {
     TestNeedsAsrStep();
     TestActiveApiKeyBuiltinFallback();
     TestResolveActiveString();
+    TestActiveResourceId();
     TestSavePreservingDiskCredentials();
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();
