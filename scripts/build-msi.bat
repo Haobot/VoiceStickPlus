@@ -34,20 +34,26 @@ call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul 2>&1
 echo.
 echo [1/4] CMake RelWithDebInfo build...
 
-:: Built-in ASR API key: prefer env var VOICESTICK_BUILTIN_API_KEY; otherwise extract
-:: volcengine_api_key from the local config.toml via a helper ps1 (avoids bat/PowerShell
-:: quote-escaping pitfalls). Baked into VoiceStick.exe at compile time; ActiveApiKey()
-:: falls back to it on first launch, skipping the ASR onboarding step for new users.
+:: Built-in credentials: extract volcengine + tencent + DeepSeek LLM credentials from
+:: the local config.toml via a helper ps1 (avoids bat/PowerShell quote-escaping pitfalls).
+:: ps1 emits "VOICESTICK_BUILTIN_<NAME>=<value>" lines; loop sets each as an env var.
+:: Baked into VoiceStick.exe at compile time; Active*() accessors fall back to them on
+:: first launch, skipping the ASR onboarding step for new users.
 :: See Doc/Plan/windows-builtin-api-key.md.
+for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "%%a=%%b"
 if not defined VOICESTICK_BUILTIN_API_KEY (
-    for /f "usebackq delims=" %%k in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "VOICESTICK_BUILTIN_API_KEY=%%k"
-)
-if not defined VOICESTICK_BUILTIN_API_KEY (
-    echo WARNING: volcengine_api_key not found; exe will have no built-in key, new users must fill it in onboarding.
+    echo WARNING: volcengine_api_key not found; exe will have no built-in ASR key, new users must fill it in onboarding.
 ) else (
-    echo Injecting built-in ASR API key into VoiceStick.exe
+    echo Injecting built-in credentials into VoiceStick.exe
 )
-cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%"
+cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+    -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%" ^
+    -DVOICESTICK_BUILTIN_TENCENT_SECRET_ID="%VOICESTICK_BUILTIN_TENCENT_SECRET_ID%" ^
+    -DVOICESTICK_BUILTIN_TENCENT_SECRET_KEY="%VOICESTICK_BUILTIN_TENCENT_SECRET_KEY%" ^
+    -DVOICESTICK_BUILTIN_TENCENT_APPID="%VOICESTICK_BUILTIN_TENCENT_APPID%" ^
+    -DVOICESTICK_BUILTIN_LLM_API_KEY="%VOICESTICK_BUILTIN_LLM_API_KEY%" ^
+    -DVOICESTICK_BUILTIN_LLM_BASE_URL="%VOICESTICK_BUILTIN_LLM_BASE_URL%" ^
+    -DVOICESTICK_BUILTIN_LLM_MODEL="%VOICESTICK_BUILTIN_LLM_MODEL%"
 if errorlevel 1 (
     echo ERROR: CMake configure failed.
     exit /b 1
