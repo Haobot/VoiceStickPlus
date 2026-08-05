@@ -40,7 +40,7 @@ hotword_process_enabled = false
 interaction_mode = "hold_to_talk"
 # UI 语言：system | en | zh-Hans
 ui_language = "system"
-resource_id = ""
+resource_id = "volc.seedasr.sauc.duration"
 # 热词列表（逗号分隔）
 asr_hotwords = ""
 # 已配对设备 ID 列表（逗号分隔，如 5A74,3F21）

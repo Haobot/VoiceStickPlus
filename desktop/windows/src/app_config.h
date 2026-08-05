@@ -310,6 +310,10 @@ struct AppConfig {
     std::string ActiveLlmBaseUrl() const;
     std::string ActiveLlmModel() const;
     std::string ActiveWebsocketUrl() const;
+    // Volcengine ASR resource_id：配置空则回退 SupportedResourceIds().front()
+    // （volc.seedasr.sauc.duration）。修复首启 template resource_id="" 致 volcengine ASR
+    // 缺 X-Api-Resource-Id 失败、需进设置切换一次供应商才可用的问题。
+    std::string ActiveResourceId() const;
     OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
     // 返回设备有效编码器设置：有 [device.<id>.encoder] 覆盖时返回覆盖（加载时已用
     // 全局默认填平所有字段），否则返回全局默认。const 引用返回，旋转热路径零拷贝。

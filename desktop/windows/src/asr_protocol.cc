@@ -363,7 +363,7 @@ std::string AsrProtocol::SessionPayload(const AppConfig& config, const AsrSessio
            AsrResultTypeName(options.result_type) +
            "\",\"enable_ddc\":true,"
            "\"resource_id\":\"" +
-           JsonEscape(config.resource_id) + "\"" + CorpusJson(config, options) + "}}";
+           JsonEscape(config.ActiveResourceId()) + "\"" + CorpusJson(config, options) + "}}";
 }
 
 std::string AsrProtocol::ConnectionPayload(const AppConfig& config, const AsrSessionOptions& options) {
