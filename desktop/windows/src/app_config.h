@@ -195,7 +195,7 @@ struct AppConfig {
     std::string tencent_secret_id;
     std::string tencent_secret_key;
     std::string tencent_appid;
-    std::string tencent_engine_model_type = "16k_zh_en";
+    std::string tencent_engine_model_type = "16k_zh";
     std::string tencent_hotword_id;
     std::string llm_base_url = "https://api.openai.com/v1";
     std::string llm_api_key;
@@ -224,7 +224,8 @@ struct AppConfig {
     OutputProfile default_output_profile;
     WechatInputMethodConfig wechat_input_method;
     std::map<std::string, OutputProfile> device_output_profiles;
-    bool auto_enter = true;
+    // 粘贴文本后是否自动按回车确认。默认关闭（用户手动回车，避免误提交）。
+    bool auto_enter = false;
     bool global_hotkey_enabled = true;
     std::string global_hotkey = "Alt+X";
     bool show_imu_debug = false;
@@ -263,7 +264,8 @@ struct AppConfig {
     double air_mouse_rate_friction = 0.05;
     // 飞行摇杆模式参数：速度上限（像素/秒）。默认 4000.0，范围 500.0~8000.0。
     double air_mouse_rate_max_speed = 4000.0;
-    bool launch_at_login = false;
+    // 开机自启动：默认开启（随系统登录启动，进入托盘）。
+    bool launch_at_login = true;
     // 划词添加热词：启用全局鼠标钩子，划选文本后在选区附近弹出"添加到热词"按钮。
     // 默认关闭以避免常驻低级鼠标钩子。
     bool selection_hotword_enabled = false;

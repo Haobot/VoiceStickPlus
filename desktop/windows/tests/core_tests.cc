@@ -1161,7 +1161,7 @@ void TestAppConfig() {
     assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
     assert(TextTransformFromName("translate") == TextTransform::kTranslate);
     assert(AppConfig::Defaults().ui_language == UiLanguage::kSystem);
-    assert(!AppConfig::Defaults().launch_at_login);
+    assert(AppConfig::Defaults().launch_at_login);
     assert(UiLanguageFromName("system") == UiLanguage::kSystem);
     assert(UiLanguageFromName("en") == UiLanguage::kEnglish);
     assert(UiLanguageFromName("zh-Hans") == UiLanguage::kSimplifiedChinese);
@@ -5781,7 +5781,7 @@ void TestTencentConfigRoundTrip() {
 
     // 默认引擎模型
     AppConfig defaults = AppConfig::Defaults();
-    assert(defaults.tencent_engine_model_type == "16k_zh_en");
+    assert(defaults.tencent_engine_model_type == "16k_zh");
 }
 
 void TestTencentCredentialsTrimmedOnLoad() {

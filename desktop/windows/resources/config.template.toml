@@ -10,7 +10,7 @@
 # build-msi.bat 会用该环境变量指向的真实配置覆盖本模板，密钥不进仓库。
 
 # ---- ASR 服务商：volcengine | tencent | voicestick_cloud（已从界面下线，仅供老配置兼容）----
-asr_provider = "volcengine"
+asr_provider = "tencent"
 
 # VoiceStick Cloud（老配置兼容）
 voicestick_api_key = ""
@@ -56,11 +56,11 @@ translation_target = ""
 
 # 全局热键
 global_hotkey_enabled = true
-global_hotkey = "ctrl+win"
+global_hotkey = "Alt+X"
 # 识别完成后自动回车
-auto_enter = true
+auto_enter = false
 # 开机自启
-launch_at_login = false
+launch_at_login = true
 # 划词添加热词：启用后划选任意文本会在选区附近弹出"添加到热词"按钮
 selection_hotword_enabled = false
 
