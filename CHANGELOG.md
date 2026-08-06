@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修复 BLE 配对失败（Windows）：固件广播名与 MAC 低位推断的设备 ID 不一致时（如广播名 D63C / MAC 低位 D63E），同一物理地址会同时产生命名候选与临时候选，后者可能覆盖前者，配对对话框点到临时候选命中 "waiting for name" 不发起连接，设备停在 pairing 屏。修复 `MergePairingCandidate`：同地址合并时命名候选优先，后到的临时包不覆盖；`PairSelectedDevice` 改用与列表显示一致的 `VisiblePairingCandidates` 过滤后候选取数，消除索引错位；新增直接连接与临时候选点击诊断日志；补回归测试。
+
 ## 2026-08-05 v2.3.3
 
 - 修复首启 volcengine ASR 缺 resource_id 致需切换供应商才可用（Windows）：`config.template.toml` 的 `resource_id=""` 覆盖成员默认值 `volc.seedasr.sauc.duration`，内置 key 跳过 kAsr 的 onboarding 不填 `resource_id`，致 `AsrClientWin` 发空 `X-Api-Resource-Id`、volcengine ASR 失败；进设置切换一次供应商保存时 `resource_combo_` 默认选第一项填入有效值才修复。新增 `AppConfig::ActiveResourceId()`：`resource_id` 空时回退 `SupportedResourceIds().front()`（`volc.seedasr.sauc.duration`）；`asr_client_win.cc`（`X-Api-Resource-Id` 请求头）与 `asr_protocol.cc`（`MakeStartSessionFrame` JSON）改用 `ActiveResourceId()`；`config.template.toml` 填默认值 `volc.seedasr.sauc.duration`；加 `TestActiveResourceId` 单测。
