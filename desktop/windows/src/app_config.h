@@ -297,6 +297,11 @@ struct AppConfig {
     // onboarding/设置对话框保存仍用普通 Save()（需写入用户刚输入的 key）。
     void SavePreservingDiskCredentials() const;
     void SavePreservingDiskCredentials(const std::filesystem::path& path) const;
+    // 设置/Onboarding 对话框专用 Save：合并磁盘凭据时，优先保留本对象内存中"用户刚输入"
+    // 的非空值，磁盘值仅兜底空字段。等价于"普通 Save + 把内存里已过期的空凭据用磁盘值补回"。
+    // 修复路径 B：切 provider 时普通 Save() 用内存空/旧凭据覆盖磁盘 key（如腾讯密钥丢失）。
+    void SaveSettingsDialog() const;
+    void SaveSettingsDialog(const std::filesystem::path& path) const;
     void SavePairedDevice(const PairedDeviceEntry& entry);
     void SavePairedDeviceInfo(const std::string& device_id,
                               const std::string& hardware,

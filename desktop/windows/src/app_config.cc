@@ -766,6 +766,51 @@ void AppConfig::SavePreservingDiskCredentials(const std::filesystem::path& path)
     merged.Save(path);
 }
 
+void AppConfig::SaveSettingsDialog() const {
+    SaveSettingsDialog(ConfigPath());
+}
+
+// 设置/Onboarding 对话框专用保存：本对象内存中非空的凭据优先（用户刚输入），
+// 磁盘值仅兜底内存中的空字段。区别于 SavePreservingDiskCredentials（无条件用磁盘
+// 值覆盖全部凭据，会丢掉用户新输入的 key），也区别于普通 Save（用内存空/旧凭据
+// 覆盖磁盘 key）。
+void AppConfig::SaveSettingsDialog(const std::filesystem::path& path) const {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        Save(path);
+        return;
+    }
+    AppConfig disk = Load(path);
+    AppConfig merged = *this;
+    // 内存值（用户刚输入的）优先；空字段用磁盘值兜底，避免内存过期空值覆盖磁盘 key。
+    auto keep_memory_if_nonempty = [](const std::string& memory_value,
+                                      const std::string& disk_value) {
+        return memory_value.empty() ? disk_value : memory_value;
+    };
+    merged.voicestick_api_key = keep_memory_if_nonempty(voicestick_api_key, disk.voicestick_api_key);
+    merged.voicestick_cloud_url =
+        keep_memory_if_nonempty(voicestick_cloud_url, disk.voicestick_cloud_url);
+    merged.volcengine_api_key = keep_memory_if_nonempty(volcengine_api_key, disk.volcengine_api_key);
+    merged.volcengine_boosting_table_id =
+        keep_memory_if_nonempty(volcengine_boosting_table_id, disk.volcengine_boosting_table_id);
+    merged.volcengine_correct_table_id =
+        keep_memory_if_nonempty(volcengine_correct_table_id, disk.volcengine_correct_table_id);
+    merged.tencent_secret_id = keep_memory_if_nonempty(tencent_secret_id, disk.tencent_secret_id);
+    merged.tencent_secret_key = keep_memory_if_nonempty(tencent_secret_key, disk.tencent_secret_key);
+    merged.tencent_appid = keep_memory_if_nonempty(tencent_appid, disk.tencent_appid);
+    merged.tencent_engine_model_type =
+        keep_memory_if_nonempty(tencent_engine_model_type, disk.tencent_engine_model_type);
+    merged.tencent_hotword_id =
+        keep_memory_if_nonempty(tencent_hotword_id, disk.tencent_hotword_id);
+    merged.llm_base_url = keep_memory_if_nonempty(llm_base_url, disk.llm_base_url);
+    merged.llm_api_key = keep_memory_if_nonempty(llm_api_key, disk.llm_api_key);
+    merged.llm_model = keep_memory_if_nonempty(llm_model, disk.llm_model);
+    merged.refine_prompt = keep_memory_if_nonempty(refine_prompt, disk.refine_prompt);
+    merged.hotword_process_prompt =
+        keep_memory_if_nonempty(hotword_process_prompt, disk.hotword_process_prompt);
+    merged.Save(path);
+}
+
 void AppConfig::Save(const std::filesystem::path& path) const {
     // create_directories 用 error_code 版本：目录已存在或创建失败都不抛，
     // 避免路径无效时抛 filesystem_error（ofstream 后续会兜底报错）。

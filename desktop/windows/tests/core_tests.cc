@@ -2089,6 +2089,7 @@ void TestCoordinatorMainFinalPastesWithoutConfirmation() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.refine_enabled = false;  // 本用例验证同步粘贴流程，关闭异步精修以免触发真实 LLM 调用
+    config.auto_enter = true;       // 默认已改为 false，本用例显式开启以验证粘贴后回车
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -2124,6 +2125,7 @@ void TestCoordinatorRefineShowsOriginalTextImmediately() {
     config.refine_enabled = true;  // 默认已改为 false，本用例显式开启以验证精修回退路径
     assert(config.refine_enabled);
     config.llm_base_url = "http://[";
+    config.auto_enter = true;      // 默认已改为 false，本用例显式开启以验证粘贴后回车
     VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
     coordinator.Start();
 
@@ -6721,7 +6723,75 @@ void TestSavePreservingDiskCredentials() {
     std::filesystem::remove_all(base);
 }
 
-// auto_switch=true 时 Start 把默认录音设备(eConsole)切到 CABLE Output，Stop 切回原设备。
+// 设置/Onboarding 对话框专用保存：用户刚输入的非空凭据优先，空字段用磁盘值兜底。
+// 修复路径 B：切 provider 时普通 Save() 会用内存空/旧凭据覆盖磁盘 key（如腾讯密钥丢失）。
+void TestSaveSettingsDialog() {
+    const auto base = std::filesystem::temp_directory_path() / "voicestick_settings_dialog_save_test";
+    std::filesystem::remove_all(base);
+    std::filesystem::create_directories(base);
+    const auto path = base / "config.toml";
+
+    auto read_file = [](const std::filesystem::path& p) -> std::string {
+        std::ifstream in(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+
+    // 磁盘先写入含真实凭据的 config（模拟用户手动替换的 config.toml）
+    {
+        AppConfig disk;
+        disk.asr_provider = AsrProvider::kTencent;
+        disk.volcengine_api_key = "REAL_VOLCENGINE_KEY";
+        disk.tencent_secret_id = "REAL_TENCENT_ID";
+        disk.tencent_secret_key = "REAL_TENCENT_SECRET_KEY";
+        disk.tencent_appid = "REAL_APPID";
+        disk.tencent_engine_model_type = "16k_zh";
+        disk.llm_base_url = "https://api.deepseek.com/v1";
+        disk.llm_api_key = "REAL_DEEPSEEK_KEY";
+        disk.llm_model = "deepseek-chat";
+        disk.auto_enter = false;
+        disk.Save(path);
+    }
+
+    // 内存 config：模拟用户在设置对话框切到 volcengine 并输入新 key，内存中其余凭据
+    // 为启动时的过期快照（空）。SaveSettingsDialog 应写入新 key、保留磁盘其他凭据。
+    {
+        AppConfig mem = AppConfig::Load(path);
+        mem.asr_provider = AsrProvider::kVolcengine;  // 用户切换 provider
+        mem.volcengine_api_key = "NEW_VOLCENGINE_KEY";  // 用户新输入
+        mem.llm_base_url = "https://api.openai.com/v1";  // 用户新输入
+        mem.tencent_secret_id = "";  // 内存过期（空），应保留磁盘值
+        mem.tencent_secret_key = "";  // 同上
+        mem.tencent_appid = "";
+        mem.llm_api_key = "";
+        mem.llm_model = "";
+        mem.auto_enter = true;  // 非凭据字段用内存值
+        mem.SaveSettingsDialog(path);
+    }
+
+    // 重读验证：用户新输入 + 非凭据字段用内存值；内存空字段保留磁盘值
+    AppConfig after = AppConfig::Load(path);
+    assert(after.asr_provider == AsrProvider::kVolcengine);
+    assert(after.volcengine_api_key == "NEW_VOLCENGINE_KEY");
+    assert(after.llm_base_url == "https://api.openai.com/v1");
+    assert(after.auto_enter == true);
+    assert(after.tencent_secret_id == "REAL_TENCENT_ID");
+    assert(after.tencent_secret_key == "REAL_TENCENT_SECRET_KEY");
+    assert(after.tencent_appid == "REAL_APPID");
+    assert(after.tencent_engine_model_type == "16k_zh");
+    assert(after.llm_api_key == "REAL_DEEPSEEK_KEY");
+    assert(after.llm_model == "deepseek-chat");
+
+    // 无磁盘 config 时退化为普通 Save（不崩溃）
+    const auto fresh_path = base / "fresh" / "config.toml";
+    AppConfig fresh;
+    fresh.volcengine_api_key = "FRESH_KEY";
+    fresh.SaveSettingsDialog(fresh_path);
+    AppConfig fresh_after = AppConfig::Load(fresh_path);
+    assert(fresh_after.volcengine_api_key == "FRESH_KEY");
+
+    std::filesystem::remove_all(base);
+}
+
 // 角色分离：SetDefaultCapture 的 roles 恒为 {kConsole}，不碰 eCommunications。
 void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
     auto ble = std::make_unique<FakeBleCentral>();
@@ -7121,6 +7191,7 @@ int main() {
     TestResolveActiveString();
     TestActiveResourceId();
     TestSavePreservingDiskCredentials();
+    TestSaveSettingsDialog();
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();
     TestHotwordExtractorPromptAndParse();

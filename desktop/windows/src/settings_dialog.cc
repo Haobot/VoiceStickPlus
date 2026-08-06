@@ -1187,11 +1187,13 @@ void SettingsDialog::SaveSettings() {
     config_.wechat_input_method.trigger_mode =
         click_trigger ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 
-    // config_.Save() 可能在 config.toml 被其他进程占用（如 OneDrive 同步/杀毒扫描）
+    // config_.SaveSettingsDialog() 可能在 config.toml 被其他进程占用（如 OneDrive 同步/杀毒扫描）
     // 时抛 runtime_error，或路径含 ACP 无法表示字符时抛 system_error。此处无 try-catch
     // 会直接 std::terminate 闪退。捕获后提示用户，保留对话框不关闭，便于重试。
+    // SaveSettingsDialog 会保留磁盘上本对话框未编辑的凭据（非当前 provider 的 key、
+    // 腾讯 secret_key/appid、LLM 三件套等），避免内存过期/空值覆盖（路径 B 根因修复）。
     try {
-        config_.Save();
+        config_.SaveSettingsDialog();
     } catch (const std::exception& e) {
         LogApp(std::string("SaveSettings: config_.Save failed: ") + e.what());
         const auto language = EffectiveUiLanguage(config_.ui_language);

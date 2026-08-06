@@ -512,7 +512,8 @@ void OnboardingDialog::GoNext() {
 
 void OnboardingDialog::Finish() {
     SaveControlsIntoConfig();
-    config_.Save();
+    // 与设置对话框一致：内存中非空值优先、空字段用磁盘值兜底，避免覆盖磁盘既有凭据。
+    config_.SaveSettingsDialog();
     if (on_config_completed) on_config_completed(config_);
     EndDialog(hwnd_, IDOK);
 }
