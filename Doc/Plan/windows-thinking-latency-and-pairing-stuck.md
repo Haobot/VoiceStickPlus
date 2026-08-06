@@ -119,3 +119,48 @@ ASR 服务端处理：on_partial 不断刷新悬浮窗文字（用户看到的"�
 ### Log 无锁并发 SegFault 修复（预存缺陷，被探针触发）
 集成测试带探针版第二个用例 SegFault（原 coordinator 12 用例全通过，基线确认）。根因：`log.cc` 的 `Log` 函数**无锁**，探针在 ASR 回调线程新加 `LogCoordinatorLine` 调用，与 hotword extraction 后台线程、主线程并发写同一日志文件，`ofstream` 无锁并发写是未定义行为致 SegFault。修复：`log.cc` 加 `std::mutex g_log_mutex`，`Log` 加 `lock_guard`。ctest 确认通过（2026-08-06）：`voicestick_windows_tests` 19.87s 通过，`voicestick_integration_tests` 108.88s（12 语料）通过，SegFault 已消除。该修复属预存缺陷修复，与本次两个问题的根因无关，但为探针安全采日志扫清障碍。
 
+## 阶段2 问题2 根因定位（2026-08-06，基于桌面端日志）
+
+探针版运行日志（`%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`）揭示问题2 真实表现：
+
+### 现场序列（VS-580C，07:08:42-07:08:47）
+1. `07:08:42.808` 最后一次 state event（battery_status，链路正常）
+2. `07:08:47.586` 收到 VS-580C 广告（`advertisement ... while session still registered`）-- **4.8s 后**
+3. `07:08:47.592` 才报 `device disconnected`（WinRT 未投递 disconnect 事件，靠广告检测发现）
+4. `07:08:47.596` `reconnect settle 1500ms`（等 OS 拆僵尸链路）
+5. 重连成功
+
+4.8s ≈ slow interval `supervision_timeout=500`(5s)：链路抖动 >5s 触发 supervision timeout 断连。
+
+### 关键差异：VS-580C vs VS-D63C
+- VS-580C：~60s 周期断连，20 次/小时
+- VS-D63C：1 次/小时（稳定）
+- 两台固件相同（supervision_timeout=5s）
+
+**结论**：5s supervision_timeout 偏短是必要条件，但 VS-580C 频繁断连的诱因是其链路质量（信号/干扰/距离等物理因素）-- 链路每~60s 抖动 >5s 触发断连；VS-D63C 链路稳定不触发。延长 supervision_timeout 是**预防性缓解**（扩大抖动容忍窗），非根因修复；VS-580C 物理因素需另行排查。
+
+### WinRT 僵尸会话（印证固件注释 voice_ble.c:551-554）
+断连后 WinRT 不投递 `ConnectionStatusChanged` 事件，桌面端靠广告检测 + 1500ms settle 重连（~5-6s 窗口）。heartbeat 90s 来不及兜底（断连~60s < 90s），但广告检测~5s 已是主兜底。窗口内用户按下无反应 + 设备 Pairing UI。
+
+## 阶段3 问题2 预防性优化（2026-08-06）
+
+用户决定跳过固件串口采集（VS-580C 未连 USB JTAG，VS-D63C 几乎不断连采集效率低），基于桌面端证据做预防性优化。
+
+### 改动：延长 slow interval supervision_timeout
+`firmware/components/voice_ble/voice_ble.c` `voice_ble_request_slow_interval`：
+- `supervision_timeout` 500(5s) -> 1000(10s)
+- BLE 规范安全性：`(1+latency)*2*itvl_max = (1+4)*2*0.4s = 4s`，5s 余量仅 1s，10s 余量 6s
+- fast interval（录音时 2s）不动：录音时链路活跃，2s 足够检测真断连
+
+**预期效果**：VS-580C 链路抖动 5-10s 不再触发断连，减少误断连频率；真断连（设备关机/超出范围）检测延迟 5s->10s，靠桌面端广告检测+心跳兜底。
+
+### 放弃的方案（基于证据否决）
+- **1547 unpair 守卫**（原计划）：现场全程无 unpair/Unreachable，基于错误假设，放弃。
+- **桌面端 heartbeat 缩短**：广告检测~5s 已是主兜底，heartbeat 90s 是静默死亡兜底（无广告场景），缩短增加流量收益有限。
+- **桌面端 settle 1500ms 缩短**：会致撞僵尸链路重试（更慢），不动。
+
+### 验证
+- `idf.py build` 编译通过（100.20s，9 文件）
+- 真机烧录 VS-580C + VS-D63C 长时间使用确认 VS-580C 断连频率下降：待用户配合（sticks3-flash-ota）
+
+

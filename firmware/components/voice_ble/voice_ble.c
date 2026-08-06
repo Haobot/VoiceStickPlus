@@ -1211,7 +1211,7 @@ esp_err_t voice_ble_request_slow_interval(void)
         .itvl_min = 80,   // 100ms
         .itvl_max = 320,  // 400ms
         .latency = 4,
-        .supervision_timeout = 500,  // 5s
+        .supervision_timeout = 1000, // 10s（原 5s 偏短，链路抖动>5s 即触发断连；延长到 10s 扩大容忍窗，真断连靠桌面端广告检测+心跳兜底）
         .min_ce_len = 0,
         .max_ce_len = 0,
     };
