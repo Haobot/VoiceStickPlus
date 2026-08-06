@@ -667,7 +667,21 @@ void PairDeviceDialog::PairSelectedDevice() {
     std::vector<PairingDevice> devices;
     {
         std::lock_guard lock(mutex_);
-        devices = devices_;
+        std::vector<PairingCandidate> candidates;
+        candidates.reserve(devices_.size());
+        for (const auto& device : devices_) {
+            candidates.push_back(device.candidate);
+        }
+        // 与 RebuildList 用同一份可见候选列表取数：列表显示的是
+        // VisiblePairingCandidates 过滤后的视图（临时候选隐藏、命名候选保留），
+        // 若这里直接用 devices_ 原始列表，索引错位会取到临时候选，配对对话框
+        // 命中 "waiting for name" 分支不发起连接（设备卡 Pairing）。
+        for (const auto& candidate : VisiblePairingCandidates(candidates,
+                                                              retained_named_candidates_,
+                                                              NowMs(),
+                                                              kNamedCandidateRetainWindowMs)) {
+            devices.push_back(PairingDevice{candidate});
+        }
     }
     if (selected < 0 || selected >= static_cast<int>(devices.size())) {
         PairManualDeviceId();
@@ -679,6 +693,10 @@ void PairDeviceDialog::PairSelectedDevice() {
         return;
     }
     if (device.candidate.is_temporary_candidate) {
+        LogBleLine("pair click hit temporary candidate id=VS-" + device.candidate.device_id +
+                   " address=" + FormatBluetoothAddress(device.candidate.bluetooth_address) +
+                   " rssi=" + std::to_string(device.candidate.rssi) +
+                   " (waiting for name)");
         SetWindowTextW(status_label_, TrW(StringId::kPairWaitingForName, language_).c_str());
         return;
     }

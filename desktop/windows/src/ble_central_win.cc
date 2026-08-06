@@ -430,6 +430,7 @@ void BleCentralWin::ConnectPairedDevice(const std::string& device_id,
                                         std::uint64_t bluetooth_address,
                                         BluetoothAddressKind address_kind,
                                         const std::string& name) {
+    LogBleLine("direct connect enter VS-" + device_id + " (pre-lock)");
     {
         std::lock_guard lock(mutex_);
         paired_device_ids_.insert(device_id);

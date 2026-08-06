@@ -35,7 +35,14 @@ void MergePairingCandidate(std::vector<PairingCandidate>* candidates, const Pair
         return existing.bluetooth_address == candidate.bluetooth_address;
     });
     if (address_it != candidates->end()) {
-        *address_it = candidate;
+        // 同一物理地址的候选可能交替到达：固件把名称放 SCAN_RSP、ADV 只带
+        // service UUID（见 voice_ble.c），Windows 部分广告包收不到名称，会为
+        // 同一地址生成临时候选（按 MAC 低位推断 ID）。命名候选（广播名）优先，
+        // 后到的临时包不得覆盖——否则用户看到列表显示 VS-XXXX、点配对取到的
+        // 却是临时候选，配对对话框命中 "waiting for name" 不发起连接。
+        if (address_it->is_temporary_candidate && !candidate.is_temporary_candidate) {
+            *address_it = candidate;
+        }
         return;
     }
 

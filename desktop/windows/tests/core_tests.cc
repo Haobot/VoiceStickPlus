@@ -723,6 +723,43 @@ void TestPairDeviceHelpers() {
     assert(retained_visible.size() == 1);
     assert(retained_visible.front().display_name == "VS-EEFF");
     assert(VisiblePairingCandidates(temporary_only, retained, 5001, 3000).empty());
+
+    // 回归用例：固件名称在 SCAN_RSP、ADV 只带 service UUID（见 voice_ble.c），
+    // 同一物理地址会交替出现命名候选（广播名 VS-D63C）与临时候选（MAC 低位
+    // VS-D63E）。同地址合并时命名候选必须优先，后到的临时包不得覆盖已确认的
+    // 命名候选——否则用户看到列表是 D63C、点配对取到的却是临时候选 D63E，
+    // 配对对话框命中 "waiting for name" 分支不发起连接，设备卡 Pairing。
+    {
+        std::vector<PairingCandidate> merged;
+        PairingCandidate named;
+        named.bluetooth_address = 0x70041DD5D63E;
+        named.device_id = "D63C";
+        named.display_name = "VS-D63C";
+        named.id_source = PairingCandidateIdSource::kName;
+        named.rssi = -68;
+        MergePairingCandidate(&merged, named);
+
+        PairingCandidate later_temporary = named;
+        later_temporary.device_id = "D63E";
+        later_temporary.display_name.clear();
+        later_temporary.id_source = PairingCandidateIdSource::kAddressFallback;
+        later_temporary.is_temporary_candidate = true;
+        later_temporary.rssi = -66;
+        MergePairingCandidate(&merged, later_temporary);
+
+        assert(merged.size() == 1);
+        assert(!merged.front().is_temporary_candidate);
+        assert(merged.front().device_id == "D63C");
+        assert(merged.front().display_name == "VS-D63C");
+
+        // 反向到达顺序：先临时后命名，命名应正常替换临时。
+        std::vector<PairingCandidate> merged_reverse;
+        MergePairingCandidate(&merged_reverse, later_temporary);
+        MergePairingCandidate(&merged_reverse, named);
+        assert(merged_reverse.size() == 1);
+        assert(!merged_reverse.front().is_temporary_candidate);
+        assert(merged_reverse.front().device_id == "D63C");
+    }
 }
 
 void TestAudioFrameParsing() {
