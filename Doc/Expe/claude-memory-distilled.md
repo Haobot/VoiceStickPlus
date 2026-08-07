@@ -198,6 +198,17 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 - **回连时长硬成本**（继续压缩空间有限）：固件 boot→广播 ~1s + 安定窗 1.5s + 扫描/认领 ~0.5s + Windows 建链/发现 ~2s（`GattServicesChanged` 每次连接都使 GATT 缓存失效，cached 发现实际走空口 ~760ms）。
 - **遗留观察项**：`Status()==Error` 的快速真实失败会被误标为 "timeout" 日志（行为正确，只损诊断精度，两次审查裁定可接受）；若日常日志频繁出现 `retry #2/#3`，说明 1.5s 安定窗偏短需上调。
 
+### 3.11 COM 口烧录工具（VoiceStickFlash）与串口枚举（2026-08-07）
+
+细节见 `Doc/Expe/windows-com-flash-tool-2026-08-07.md`；要点：
+
+- **`SetupDiGetClassDevsW` 传设备接口类 GUID 必须带 `DIGCF_DEVICEINTERFACE`**，只传 `DIGCF_PRESENT` 时 `GUID_DEVINTERFACE_COMPORT` 被当安装类匹配、枚举恒为空——症状"刷新永远没串口"。系统枚举单测覆盖不到，用 probe 程序（cl 链 `voicestick_core.lib`，需 `/utf-8 /MTd` + `setupapi.lib advapi32.lib`）或真机验证。
+- **Edit/Write 工具写含中文 .ps1 会丢 UTF-8 BOM**，编辑 `prepare_flash_payload.ps1` 后必须 `sed -i '1s/^/\xef\xbb\xbf/'` 补回。
+- **Git Bash 调 cmd**：未加引号的 `\\` 被吞；`cmd //c start` 拉 GUI 报"拒绝访问"（GBK 乱码）改用 `powershell Start-Process`；杀进程用 `Stop-Process -Force` 替代 taskkill。
+- **增量构建**：cmake/ctest 在 `BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`（不在 PATH），vcvars64 同树，`INCLUDE` prepend `generated_winrt`，`--test-dir` 用正斜杠；链接前 `Stop-Process VoiceStick` 防 LNK1104。
+- **wix v4 无 `<Files>` 元素**（v5 才有）：payload 2008 文件由脚本扫描生成 `flash_payload.wxs` 片段（Component ID=相对路径 SHA1 前 32），主 wxs `ComponentGroupRef` 引用；pip 装 esptool 走官方 PyPI（清华镜像没有），`VOICESTICK_PIP_INDEX_URL` 可覆盖。
+- **阻塞式引导不能锁死修复入口**：onboarding 取消即退出应用 + 设备步硬性要求配对 = 无固件设备永远无法到达烧录入口（死锁）。已放行：未配对时点下一步弹确认框可跳过（`kOnboardingSkipDeviceConfirm`）。原则：引导的硬性前置必须留"前置不可达"时的逃生通道。
+
 ---
 
 ## 4. 微信输入法模式（wechat_input_method）
