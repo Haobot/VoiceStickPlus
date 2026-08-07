@@ -85,7 +85,11 @@ add_library(voicestick_core
     src/audio_opus_decoder.cc
     src/ble_protocol.cc
     src/cmd_line.cc
+    src/com_port_selector.cc
     src/debug_audio_recorder.cc
+    src/esptool_flash_command.cc
+    src/esptool_progress.cc
+    src/voice_stick_flash_tool.cc
     src/firmware_manifest.cc
     src/llm_chat_client.cc
     src/llm_translation_client.cc
@@ -113,6 +117,7 @@ target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
 target_link_libraries(voicestick_core PUBLIC opus)
 target_link_libraries(voicestick_core PUBLIC mmdevapi ole32 uuid)
+target_link_libraries(voicestick_core PUBLIC setupapi)  # com_port_selector 串口枚举
 
 add_executable(VoiceStickApp WIN32
     src/main.cc
@@ -190,6 +195,37 @@ add_custom_command(TARGET VoiceStickApp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/config.template.toml"
         "$<TARGET_FILE_DIR:VoiceStickApp>/config.template.toml"
+)
+
+# VoiceStickFlash：独立 COM 口固件烧录小工具（BLE OTA 之外的用户级兜底链路）。
+# 外壳只做 UI + 子进程，可测试逻辑在 voicestick_core（com_port_selector /
+# esptool_flash_command / esptool_progress / voice_stick_flash_tool）。
+# 详见 Doc/Plan/windows-com-flash-tool.md。
+add_executable(VoiceStickFlash WIN32
+    src/flash_tool_main.cc
+    src/flash_tool_dialog.cc
+    src/flash_tool.rc
+)
+
+target_include_directories(VoiceStickFlash PRIVATE resources ${CMAKE_CURRENT_BINARY_DIR})
+
+set_target_properties(VoiceStickFlash PROPERTIES OUTPUT_NAME VoiceStickFlash)
+
+# 与 VoiceStickApp 同款清单嵌入（asInvoker + DPI 感知）：mt.exe POST_BUILD 覆盖默认清单。
+if(MSVC)
+    add_custom_command(TARGET VoiceStickFlash POST_BUILD
+        COMMAND "${CMAKE_MT}" -nologo
+                -manifest "${CMAKE_CURRENT_SOURCE_DIR}/resources/flash_tool.manifest"
+                "-outputresource:$<TARGET_FILE:VoiceStickFlash>;#1"
+        COMMENT "Embedding application manifest into VoiceStickFlash.exe")
+endif()
+
+target_link_libraries(VoiceStickFlash PRIVATE
+    voicestick_core
+    shell32
+    user32
+    gdi32
+    comctl32
 )
 
 add_executable(voicestick_windows_tests

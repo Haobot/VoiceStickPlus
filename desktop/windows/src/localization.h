@@ -82,6 +82,7 @@ enum class StringId {
     kMenuQuit,
     kMenuWebsite,
     kMenuCheckAppUpdates,
+    kMenuFlashTool,
     kMenuRestoreLastInput,
     kMenuInteraction,
     kMenuHoldToTalk,
@@ -202,6 +203,7 @@ enum class StringId {
     kFirmwareUpdatePromptTitleRequired,
     kFirmwareUpdatePromptTitleAvailable,
     kFirmwareUpdatePromptBody,
+    kFirmwareUpdateAdvancedComFlash,
 
     // 热键设置
     kHotkeyTitle,

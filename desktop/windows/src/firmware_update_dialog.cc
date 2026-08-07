@@ -17,6 +17,7 @@ namespace {
 
 constexpr UINT kCancelId = 101;
 constexpr UINT kCloseId = 102;
+constexpr UINT kAdvancedId = 103;
 
 std::wstring Utf16(std::string_view text) {
     if (text.empty()) return {};
@@ -148,6 +149,10 @@ INT_PTR FirmwareUpdateDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
             hwnd_ = nullptr;
             return TRUE;
         }
+        if (LOWORD(w_param) == kAdvancedId) {
+            if (on_advanced) on_advanced();
+            return TRUE;
+        }
         break;
     case WM_CLOSE:
         if (!close_button_ || IsWindowEnabled(close_button_)) {
@@ -230,6 +235,11 @@ void FirmwareUpdateDialog::BuildUi() {
     percent_label_ = remember(CreateWindowExW(0, L"STATIC", L"0%",
                                               WS_CHILD | WS_VISIBLE | SS_RIGHT, Dp(350), Dp(100), Dp(55), Dp(20),
                                               hwnd_, nullptr, instance_, nullptr));
+    advanced_button_ = remember(CreateWindowExW(0, L"BUTTON", TrW(StringId::kFirmwareUpdateAdvancedComFlash, language_).c_str(),
+                                                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                                Dp(24), Dp(145), Dp(150), Dp(28),
+                                                hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAdvancedId)),
+                                                instance_, nullptr));
     cancel_button_ = remember(CreateWindowExW(0, L"BUTTON", TrW(StringId::kCancel, language_).c_str(),
                                               WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                               Dp(235), Dp(145), Dp(80), Dp(28),
@@ -254,6 +264,7 @@ void FirmwareUpdateDialog::DestroyControls() {
     percent_label_ = nullptr;
     cancel_button_ = nullptr;
     close_button_ = nullptr;
+    advanced_button_ = nullptr;
     if (ui_font_) {
         DeleteObject(ui_font_);
         ui_font_ = nullptr;

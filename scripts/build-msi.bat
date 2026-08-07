@@ -79,6 +79,10 @@ if not exist "%BUILD_DIR%\WinSparkle.dll" (
     echo ERROR: WinSparkle.dll not found in build directory.
     exit /b 1
 )
+if not exist "%BUILD_DIR%\VoiceStickFlash.exe" (
+    echo ERROR: VoiceStickFlash.exe not found in build directory.
+    exit /b 1
+)
 
 :: Step 2: Sign exe files (signtool from Windows SDK, PATH, or local signing folder)
 :: Certificate thumbprint: set env SIGNING_SHA1, or create scripts\.signing_sha1
@@ -143,10 +147,27 @@ if errorlevel 1 (
     echo ERROR: WinSparkle.dll is not signed.
     exit /b 1
 )
+"%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStickFlash.exe"
+if errorlevel 1 (
+    echo ERROR: Signing VoiceStickFlash.exe failed.
+    exit /b 1
+)
+powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\VoiceStickFlash.exe'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
+if errorlevel 1 (
+    echo ERROR: VoiceStickFlash.exe is not signed.
+    exit /b 1
+)
 
 :: Step 3: Build MSI with WiX
 echo.
 echo [3/4] Building MSI with WiX...
+:: 准备 VoiceStickFlash 自包含 esptool 运行时（python-embed + esptool，幂等），
+:: 打进 MSI 的 FlashTool\ 目录。详见 Doc/Plan/windows-com-flash-tool.md。
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare_flash_payload.ps1" -OutputDir "%BUILD_DIR%\flash_payload"
+if errorlevel 1 (
+    echo ERROR: prepare_flash_payload failed.
+    exit /b 1
+)
 :: Generate MSI config.template.toml with real test keys so installed users get
 :: Volcengine/Tencent/LLM working out of the box. Default source: the local
 :: %APPDATA%\VoiceStick\config.toml (same file extract_builtin_key.ps1 reads for
@@ -198,6 +219,7 @@ if not exist "%WIX_PATH%" (
     exit /b 1
 )
 "%WIX_PATH%" build "%WINDOWS_DIR%\installer\VoiceStick.wxs" ^
+    "%BUILD_DIR%\flash_payload.wxs" ^
     "%WINDOWS_DIR%\installer\zh-CN.wxl" ^
     -arch x64 ^
     -culture zh-CN ^
@@ -205,6 +227,7 @@ if not exist "%WIX_PATH%" (
     -ext WixToolset.Util.wixext ^
     -d ProductVersion=%VERSION% ^
     -d BuildDir=%BUILD_DIR% ^
+    -d FlashPayloadDir=%BUILD_DIR%\flash_payload ^
     -d ProjectDir=%PROJECT_DIR% ^
     -o "%BUILD_DIR%\VoiceStick_%VERSION%.msi"
 if errorlevel 1 (

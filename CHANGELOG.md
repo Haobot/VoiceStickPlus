@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 新增 COM 口固件烧录工具 VoiceStickFlash（Windows）：独立 Win32 GUI 小工具，随 MSI 安装（`INSTALLFOLDER\VoiceStickFlash.exe` + `FlashTool\` 自包含 python-embed + esptool 运行时，免系统 Python），作为 BLE OTA 之外的用户级兜底链路（救砖 / 分区表变更 / bootloader 更新 / 恢复出厂）。支持三种模式：整包烧录（merged bin @ 0x0）、仅应用分区（@ 0x10000）、先完全擦除再整包；COM 口自动枚举 + 评分选中（ESP32-S3 原生 USB VID 303A 优先，规则与 `scripts/idf_cli.yaml` 一致）；子进程方式跑 `python -m esptool`（`--after no_reset`，烧完提示手动短按电源键重启），stdout 解析阶段/进度/错误；开始前检测 VoiceStickApp 运行并警告。入口：托盘菜单「固件烧录工具…」+ 固件更新对话框「高级… COM 口烧录」按钮。可测试逻辑下沉 `voicestick_core`（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`，4 组新单测）；`scripts/prepare_flash_payload.ps1` 幂等准备 payload（`VOICESTICK_PYTHON_EMBED_URL` 可覆盖下载源），`build-msi.bat` / `build-msi-unsigned.bat` 自动调用并打进 MSI。设计见 `Doc/Plan/windows-com-flash-tool.md`。
+
+## v2.3.5
+
+- MSI 打包密钥来源对齐本机配置（Windows）：`build-msi.bat` 的 `VOICESTICK_MSI_CONFIG_SOURCE` 默认值从 `dist/VoiceStick_Portable_v2.0.0/config.toml` 改为 `%APPDATA%\VoiceStick\config.toml`，与 `extract_builtin_key.ps1`（exe 内置凭据）同源，本机更新密钥后打包即生效；`build-msi-unsigned.bat` 补上相同的 `generate_msi_config.ps1` 生成步骤（此前未签名构建只支持 `VOICESTICK_CONFIG_TEMPLATE` 手动覆盖，默认打占位符模板）。
+
+## v2.3.4
+
 - MSI 安装时写入含测试密钥的 config.toml（Windows）：新增 `scripts/generate_msi_config.ps1` 从 `dist/VoiceStick_Portable_v2.0.0/config.toml` 提取火山/腾讯/LLM 七项密钥，注入 `config.template.toml` 生成含 key 的构建产物（gitignored，密钥不进仓库）；`build-msi.bat` Step 3 前默认调用（`VOICESTICK_MSI_CONFIG_SOURCE` 可覆盖来源，保留 `VOICESTICK_CONFIG_TEMPLATE` 手动回退）；`VoiceStick.wxs` 新增 `SeedMsiConfigExec` 安装时自定义动作，把 `INSTALLFOLDER\config.template.toml` 整份复制覆盖到 `%APPDATA%\VoiceStick\config.toml`（deferred + Impersonate + `NOT Installed` 条件，覆盖已有配置）。运行时 `Active*()` 本就优先读 config.toml，config 有 key 即读它，开箱即用不再提示缺 key。真机验证：安装后 `%APPDATA%` config 被覆盖为含 7 项测试 key，启动日志 `make_asr: provider=tencent appid=…` 确认读到 key，Onboarding 自动完成。
 
 - 修复 BLE 配对失败（Windows）：固件广播名与 MAC 低位推断的设备 ID 不一致时（如广播名 D63C / MAC 低位 D63E），同一物理地址会同时产生命名候选与临时候选，后者可能覆盖前者，配对对话框点到临时候选命中 "waiting for name" 不发起连接，设备停在 pairing 屏。修复 `MergePairingCandidate`：同地址合并时命名候选优先，后到的临时包不覆盖；`PairSelectedDevice` 改用与列表显示一致的 `VisiblePairingCandidates` 过滤后候选取数，消除索引错位；新增直接连接与临时候选点击诊断日志；补回归测试。

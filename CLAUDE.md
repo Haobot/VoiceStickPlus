@@ -17,7 +17,7 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 
 ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存都使用同一份 Ogg Opus 流。微信输入法模式是例外：桌面端把 Opus 解码为 PCM 后渲染到系统虚拟麦克风（如 VB-CABLE），供微信输入法等应用作为音频输入源。
 
-当前版本：`2.3.4`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致（当前两者均为 `2.3.4`）。
+当前版本：`2.3.5`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致（当前两者均为 `2.3.5`）。
 
 ## 关键配置文件
 
@@ -38,6 +38,7 @@ ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存都使用同一�
 | `.github/workflows/release.yml` | 推送 `v*` 标签触发构建与发布 |
 | `.github/workflows/deploy-website.yml` | 网站部署与 appcast 更新 |
 | `scripts/idf_cli.yaml` | `idf_cli.py` 的配置文件 |
+| `scripts/prepare_flash_payload.ps1` | 准备 VoiceStickFlash 自包含 esptool 运行时（python-embed + esptool，幂等；`VOICESTICK_PYTHON_EMBED_URL` 覆盖下载源、`VOICESTICK_PIP_INDEX_URL` 覆盖 pip 索引） |
 | `requirements.txt` | Python 脚本依赖（`pyyaml` / `pyserial` / `Pillow`），不含 E2E 工具链依赖 |
 | `ArduFlux.json` | 本机 ArduFlux 工具的 ESP32-S3 板卡/串口配置（辅助烧录，非构建必需） |
 
@@ -138,6 +139,8 @@ desktop\windows\build-x64\VoiceStick.exe
 scripts\build-msi.bat
 ```
 
+该脚本在 WiX 构建前自动调用 `scripts\prepare_flash_payload.ps1` 准备 VoiceStickFlash 的自包含 esptool payload（`build-msi-x64\flash_payload\`，gitignored 构建产物），并随 MSI 安装到 `INSTALLFOLDER\FlashTool\`。
+
 注意：`build_native.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。
 
 ### 网站（Vue 3 + Vite，Node 22）
@@ -204,10 +207,11 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 macOS 代码集中在 `desktop/macos/Sources/VoiceStickApp/`：`VoiceStickCoordinator`（状态机）、`BleCentral` / `BleProtocol`（CoreBluetooth 与协议）、`OggOpusMuxer` / `ASRWebSocketClient`（音频封装与 ASR）、`InputInjector`（粘贴与 Return 注入）、`OverlayController` / `SubtitleController` / `StatusController`（悬浮窗/字幕/状态）、`FirmwareManifest` / `FirmwareUpdateWindowController`（固件更新）。
 
-Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成四个源码目标（另有 `winsparkle_lib` 导入库）：
+Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成五个源码目标（另有 `winsparkle_lib` 导入库）：
 
-- `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修（含热词 few-shot 与改坏回退守卫）、热词候选挖掘（`hotword_candidate_miner`）、调试音频缓存、固件清单解析、日志、本地化和协调器状态机。
+- `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修（含热词 few-shot 与改坏回退守卫）、热词候选挖掘（`hotword_candidate_miner`）、调试音频缓存、固件清单解析、日志、本地化和协调器状态机；VoiceStickFlash 的烧录逻辑（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`）也在此。
 - `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
+- `VoiceStickFlash`：独立 COM 口固件烧录小工具（BLE OTA 之外的用户级兜底链路），Win32 GUI 外壳只做 UI + esptool 子进程；设计见 `Doc/Plan/windows-com-flash-tool.md`。
 - `voicestick_windows_tests`：基于 `assert` 的单元测试，源码在 `desktop/windows/tests/core_tests.cc`，用自定义 Fake/Mock 不联网验证核心库；由 CTest 注册为同名测试，不支持按测试函数名过滤。
 - `voicestick_integration_tests`：L1 ASR 链路集成测试，源码在 `desktop/windows/tests/integration_tests.cc`，用真实 `AsrClientWin` 连火山 ASR（需 `%APPDATA%\VoiceStick\config.toml` 配 `volcengine_api_key` 且联网），无 key 时返回 77 被 CTest 标记为 SKIP，不伪造结果。
 
@@ -292,7 +296,7 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，�
 
 Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（PowerShell 脚本，用 .NET 写 UTF-8 文件规避 cmd 中文 `echo` 块在 GBK 代码页下的解析错位；脚本须存为 UTF-8 with BOM）；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。打包产物放在 `dist/`（已被视为本地产物目录）。
 
-`CHANGELOG.md` 是版本变更记录（最新发布条目为 v2.3.3）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失，条目从 v1.9.0 直接跳到 v2.1.1），以 `VERSION`（当前 `2.3.4`）为准。
+`CHANGELOG.md` 是版本变更记录（最新条目为 v2.3.5）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失），以 `VERSION`（当前 `2.3.5`）为准。
 
 ## 项目 Skills
 
@@ -326,3 +330,4 @@ Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（
 - MiniEncoderC 编码器键是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）仍是唯一唤醒键。
 - Grove 口 5V 保持不启用（固件不动 PMIC BOOST_EN），MiniEncoderC 由顶部 Hat 排针供电。
 - Windows 桌面端构建若报 `C1083: winrt/base.h`（或 `winrt/Windows.Devices.Bluetooth.h`）找不到，是本机 Windows SDK 的 `Include/<ver>/winrt/` 仅含旧版 WRL 风格头文件、缺 C++/WinRT 投影头所致；`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 从 union metadata 一次性生成完整投影头到 `desktop/windows/generated_winrt/`（gitignored，且不受 `rd /s /q build-x64` 清理影响）并 prepend 到 `INCLUDE`。手动用 vcvars64 构建时须同样把该目录加入 `INCLUDE`。
+- VoiceStickFlash（COM 口烧录工具）相关改动：除常规构建/CTest 外，用 `powershell -ExecutionPolicy Bypass -File scripts\prepare_flash_payload.ps1` 冒烟 payload（`python.exe -m esptool version`；含中文注释，脚本须保持 UTF-8 with BOM）；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。

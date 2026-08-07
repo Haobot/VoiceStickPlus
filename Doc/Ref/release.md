@@ -80,6 +80,8 @@ The output is:
 desktop\windows\build-msi-x64\VoiceStick_<version>.msi
 ```
 
+The MSI also installs the COM flash tool `VoiceStickFlash.exe` (BLE OTA fallback path) and its self-contained esptool runtime under `INSTALLFOLDER\FlashTool\` (embedded Python + esptool, prepared by `scripts/prepare_flash_payload.ps1`, which `build-msi.bat` invokes automatically; override the embeddable-Python download with `VOICESTICK_PYTHON_EMBED_URL`). See `Doc/Plan/windows-com-flash-tool.md`.
+
 3. Confirm `firmware/version.txt` also matches the new version.
 4. Commit, push `main`, and push the matching `v<version>` tag.
 5. Wait for the release workflow to finish successfully.

@@ -5,10 +5,13 @@
 #include "audio_opus_decoder.h"
 #include "ble_protocol.h"
 #include "cmd_line.h"
+#include "com_port_selector.h"
 
 #include <opus.h>
 #include "byte_utils.h"
 #include "cJSON.h"
+#include "esptool_flash_command.h"
+#include "esptool_progress.h"
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
 #include "hotword_candidate_miner.h"
@@ -22,6 +25,7 @@
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
 #include "voice_stick_coordinator.h"
+#include "voice_stick_flash_tool.h"
 #include "wasapi_render_sink.h"
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
@@ -7174,6 +7178,287 @@ void TestWStringUtf8Conversion() {
     assert(Utf8ToWString(u8) == zh);
 }
 
+// ===== VoiceStickFlash：COM 口烧录工具（Doc/Plan/windows-com-flash-tool.md §7.1）=====
+
+void TestComPortScoring() {
+    ComPortInfo esp32s3{L"COM5", L"USB JTAG/serial debug unit (COM5)",
+                        L"Espressif Systems", L"USB\\VID_303A&PID_1001\\ABC123"};
+    ComPortInfo ch340{L"COM3", L"USB-SERIAL CH340 (COM3)", L"wch.cn",
+                      L"USB\\VID_1A86&PID_7523\\XYZ"};
+    ComPortInfo unrelated{L"COM7", L"Some Random Modem", L"ACME Corp",
+                          L"USB\\VID_9999&PID_9999\\1"};
+
+    // 单项评分：desc 关键字累加、mfr、hwid、preferred。
+    const int esp32_score = ScoreComPort(esp32s3);
+    assert(esp32_score == 30 + 20 + 40);  // jtag + espressif + 303a:
+    const int ch340_score = ScoreComPort(ch340);
+    assert(ch340_score == 30 + 30 + 20 + 40);  // usb-serial + ch340 + wch + 1a86:
+    assert(ScoreComPort(unrelated) == 0);
+
+    // preferred_vid_pid +160：303A 原生 USB 反超 CH340。
+    const auto& preferred = DefaultPreferredVidPid();
+    assert(ScoreComPort(esp32s3, preferred) == esp32_score + 160);
+
+    std::vector<ComPortInfo> ports{ch340, esp32s3, unrelated};
+    // 无 preferred 时 CH340（120）高于 ESP32-S3（90）。
+    assert(SelectBestComPort(ports)->device == L"COM3");
+    // 有 preferred 时 ESP32-S3（250）胜出。
+    assert(SelectBestComPort(ports, preferred)->device == L"COM5");
+    // 全部 0 分返回 nullptr（调用方兜底）。
+    std::vector<ComPortInfo> only_unrelated{unrelated};
+    assert(SelectBestComPort(only_unrelated, preferred) == nullptr);
+
+    // 同分取 COM 编号最小。
+    ComPortInfo esp32s3_high = esp32s3;
+    esp32s3_high.device = L"COM12";
+    std::vector<ComPortInfo> tie{esp32s3_high, esp32s3};
+    assert(SelectBestComPort(tie, preferred)->device == L"COM5");
+
+    // ComPortNumber：非 COM 名/无编号排最后。
+    assert(ComPortNumber(L"COM5") == 5);
+    assert(ComPortNumber(L"COM12") == 12);
+    assert(ComPortNumber(L"/dev/ttyUSB0") == 0x7fffffff);
+}
+
+namespace {
+
+bool ArgvContains(const std::vector<std::wstring>& argv, const std::wstring& needle) {
+    return std::find(argv.begin(), argv.end(), needle) != argv.end();
+}
+
+} // namespace
+
+void TestEsptoolCommandBuilder() {
+    FlashOptions options;
+    options.serial_port = L"COM5";
+    options.firmware_path = L"D:\\固件 目录\\voice stick merged.bin";  // 中文 + 空格
+    options.baud = 460800;
+
+    const std::filesystem::path python_exe(L"C:\\payload\\python\\python.exe");
+
+    // 整包：单条命令，write_flash @ 0x0，复位策略与全局选项齐全。
+    options.mode = FlashMode::kFullMerged;
+    auto full = BuildEsptoolCommandSequence(options, python_exe);
+    assert(full.size() == 1);
+    const auto& argv = full[0];
+    assert(argv[0] == python_exe.wstring());
+    assert(argv[1] == L"-m" && argv[2] == L"esptool");
+    assert(ArgvContains(argv, L"--chip") && ArgvContains(argv, L"esp32s3"));
+    assert(ArgvContains(argv, L"--port") && ArgvContains(argv, L"COM5"));
+    assert(ArgvContains(argv, L"--baud") && ArgvContains(argv, L"460800"));
+    assert(ArgvContains(argv, L"--before") && ArgvContains(argv, L"default_reset"));
+    // 关键：本板 hard_reset 无效，必须 no_reset（烧完手动重启）。
+    assert(ArgvContains(argv, L"--after") && ArgvContains(argv, L"no_reset"));
+    assert(ArgvContains(argv, L"write_flash") && ArgvContains(argv, L"0x0"));
+    // 中文路径参数不被截断（宽字符原样传递）。
+    assert(ArgvContains(argv, options.firmware_path));
+    assert(!ArgvContains(argv, L"erase_flash"));
+
+    // 仅应用分区：write_flash @ 0x10000。
+    options.mode = FlashMode::kAppOnly;
+    auto app = BuildEsptoolCommandSequence(options, python_exe);
+    assert(app.size() == 1);
+    assert(ArgvContains(app[0], L"write_flash") && ArgvContains(app[0], L"0x10000"));
+    assert(!ArgvContains(app[0], L"0x0"));
+
+    // 先擦除再整包：两条命令，erase_flash 在前，整包写在后。
+    options.mode = FlashMode::kEraseThenFull;
+    auto erase_full = BuildEsptoolCommandSequence(options, python_exe);
+    assert(erase_full.size() == 2);
+    assert(ArgvContains(erase_full[0], L"erase_flash"));
+    assert(!ArgvContains(erase_full[0], L"write_flash"));
+    assert(ArgvContains(erase_full[1], L"write_flash") && ArgvContains(erase_full[1], L"0x0"));
+
+    // JoinCommandLine：含空格/中文参数加引号，无空格参数不引。
+    const std::wstring cmd = JoinCommandLine(erase_full[1]);
+    assert(cmd.find(L"\"D:\\固件 目录\\voice stick merged.bin\"") != std::wstring::npos);
+    assert(cmd.find(L"\"--chip\"") == std::wstring::npos);
+}
+
+void TestEsptoolProgressParser() {
+    std::vector<FlashEvent> events;
+    EsptoolProgressParser parser([&](const FlashEvent& e) { events.push_back(e); });
+
+    parser.FeedLine("esptool.py v5.2.0");
+    assert(events.size() == 1 && events[0].kind == FlashEvent::kLogLine);
+
+    // 阶段：连接中 → 检测芯片（Chip ID 行不重复发同名阶段）。
+    parser.FeedLine("Stub running...");
+    parser.FeedLine("Detected chip type: ESP32-S3");
+    parser.FeedLine("Chip ID: 9");
+    std::size_t stage_count = 0;
+    for (const auto& e : events) if (e.kind == FlashEvent::kStage) ++stage_count;
+    assert(stage_count == 2);
+    assert(events[1].kind == FlashEvent::kStage && events[1].text == L"连接中");
+    assert(events[2].kind == FlashEvent::kStage && events[2].text == L"检测芯片");
+
+    // 写入进度：只认 "(X %)" 形式。
+    events.clear();
+    parser.FeedLine("Writing at 0x00000000... (10 %)");
+    parser.FeedLine("Writing at 0x00040000... (50 %)");
+    assert(events.size() == 3);
+    assert(events[0].kind == FlashEvent::kStage && events[0].text == L"写入");
+    assert(events[1].kind == FlashEvent::kProgress && events[1].percent == 10);
+    assert(events[2].kind == FlashEvent::kProgress && events[2].percent == 50);
+
+    // 黑名单行不产进度事件（擦除/校验/Hash/Connecting）。
+    events.clear();
+    parser.FeedLine("Erasing flash (this may take a while)...");
+    parser.FeedLine("Hash of data verified.");
+    parser.FeedLine("Connecting...");
+    for (const auto& e : events) assert(e.kind != FlashEvent::kProgress);
+    assert(events[0].kind == FlashEvent::kStage && events[0].text == L"擦除");
+    assert(events[1].kind == FlashEvent::kStage && events[1].text == L"校验");
+
+    // 错误：发 kError 且该行不重复发 LogLine。
+    events.clear();
+    parser.FeedLine("A fatal error occurred: Failed to connect to ESP32-S3: No serial data received.");
+    assert(events.size() == 1 && events[0].kind == FlashEvent::kError);
+    assert(events[0].text.find(L"Failed to connect") != std::wstring::npos);
+}
+
+namespace {
+
+// 可编程假运行器：按 exit_codes 队列返回退出码，记录全部调用。
+class FakeFlashRunner : public IFlashProcessRunner {
+public:
+    std::vector<std::vector<std::wstring>> calls;
+    std::vector<int> exit_codes;
+
+    int Run(const std::vector<std::wstring>& argv,
+            const std::function<void(const std::string& line)>& on_line) override {
+        calls.push_back(argv);
+        const int code = calls.size() <= exit_codes.size()
+                             ? exit_codes[calls.size() - 1]
+                             : 0;
+        if (on_line) on_line("Writing at 0x00000000... (100 %)");
+        return code;
+    }
+    void Cancel() override { cancel_called = true; }
+
+    bool cancel_called = false;
+};
+
+struct FlashTestPaths {
+    std::filesystem::path dir;
+    std::filesystem::path firmware;
+    std::filesystem::path python;
+
+    FlashTestPaths() {
+        dir = std::filesystem::temp_directory_path() /
+              L"voicestick_flash_core_tests";
+        std::filesystem::create_directories(dir);
+        firmware = dir / L"测试固件.bin";
+        python = dir / L"python.exe";
+        { std::ofstream(firmware, std::ios::binary) << "fake-firmware"; }
+        { std::ofstream(python, std::ios::binary) << "fake-python"; }
+    }
+    ~FlashTestPaths() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+FlashOptions MakeFlashOptions(const FlashTestPaths& paths) {
+    FlashOptions options;
+    options.serial_port = L"COM5";
+    options.firmware_path = paths.firmware.wstring();
+    return options;
+}
+
+} // namespace
+
+void TestFlashToolFlow() {
+    const FlashTestPaths paths;
+
+    // 成功：退出码 0 → Finished(success)。
+    {
+        FakeFlashRunner runner;
+        std::vector<FlashEvent> events;
+        FlashTool tool(MakeFlashOptions(paths), paths.python, &runner,
+                       [&](const FlashEvent& e) { events.push_back(e); });
+        assert(tool.Run());
+        assert(runner.calls.size() == 1);
+        const FlashEvent& last = events.back();
+        assert(last.kind == FlashEvent::kFinished && last.success && !last.cancelled);
+    }
+
+    // 失败：退出码非 0 → Finished(failure) 且有错误事件。
+    {
+        FakeFlashRunner runner;
+        runner.exit_codes = {1};
+        std::vector<FlashEvent> events;
+        FlashTool tool(MakeFlashOptions(paths), paths.python, &runner,
+                       [&](const FlashEvent& e) { events.push_back(e); });
+        assert(!tool.Run());
+        const FlashEvent& last = events.back();
+        assert(last.kind == FlashEvent::kFinished && !last.success && !last.cancelled);
+        bool saw_error = false;
+        for (const auto& e : events) if (e.kind == FlashEvent::kError) saw_error = true;
+        assert(saw_error);
+    }
+
+    // EraseThenFull：先 erase_flash 后 write_flash 的顺序断言；erase 失败不进入写。
+    {
+        FakeFlashRunner runner;
+        FlashOptions options = MakeFlashOptions(paths);
+        options.mode = FlashMode::kEraseThenFull;
+        FlashTool tool(options, paths.python, &runner,
+                       [](const FlashEvent&) {});
+        assert(tool.Run());
+        assert(runner.calls.size() == 2);
+        assert(ArgvContains(runner.calls[0], L"erase_flash"));
+        assert(ArgvContains(runner.calls[1], L"write_flash"));
+    }
+    {
+        FakeFlashRunner runner;
+        runner.exit_codes = {1, 0};  // erase 失败
+        FlashOptions options = MakeFlashOptions(paths);
+        options.mode = FlashMode::kEraseThenFull;
+        FlashTool tool(options, paths.python, &runner,
+                       [](const FlashEvent&) {});
+        assert(!tool.Run());
+        assert(runner.calls.size() == 1);  // 不进入第二步
+    }
+
+    // 取消：runner 返回 kFlashCancelledExitCode → Finished(cancelled)。
+    {
+        FakeFlashRunner runner;
+        runner.exit_codes = {kFlashCancelledExitCode};
+        std::vector<FlashEvent> events;
+        FlashTool tool(MakeFlashOptions(paths), paths.python, &runner,
+                       [&](const FlashEvent& e) { events.push_back(e); });
+        assert(!tool.Run());
+        const FlashEvent& last = events.back();
+        assert(last.kind == FlashEvent::kFinished && !last.success && last.cancelled);
+    }
+
+    // 校验失败：未选串口 → 不拉起子进程，直接 Finished(failure)。
+    {
+        FakeFlashRunner runner;
+        FlashOptions options = MakeFlashOptions(paths);
+        options.serial_port.clear();
+        std::vector<FlashEvent> events;
+        FlashTool tool(options, paths.python, &runner,
+                       [&](const FlashEvent& e) { events.push_back(e); });
+        assert(!tool.Run());
+        assert(runner.calls.empty());
+        const FlashEvent& last = events.back();
+        assert(last.kind == FlashEvent::kFinished && !last.success);
+    }
+
+    // 校验失败：非 .bin 后缀。
+    {
+        FakeFlashRunner runner;
+        FlashOptions options = MakeFlashOptions(paths);
+        options.firmware_path = paths.python.wstring();  // .exe 后缀
+        FlashTool tool(options, paths.python, &runner,
+                       [](const FlashEvent&) {});
+        assert(!tool.Run());
+        assert(runner.calls.empty());
+    }
+}
+
 int main() {
     TestDeviceIds();
     TestPairDeviceHelpers();
@@ -7411,5 +7696,9 @@ int main() {
     TestRingBurstBacklogAmplifiesLatency();
     TestRingBacklogUpperBoundByCapacity();
     TestDebugAudioRecorderInvalidDirectoryDoesNotCrash();
+    TestComPortScoring();
+    TestEsptoolCommandBuilder();
+    TestEsptoolProgressParser();
+    TestFlashToolFlow();
     return 0;
 }

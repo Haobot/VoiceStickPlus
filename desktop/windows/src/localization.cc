@@ -87,6 +87,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuQuit)] = "Quit";
     table[Index(StringId::kMenuWebsite)] = "Website";
     table[Index(StringId::kMenuCheckAppUpdates)] = "Check for App Updates...";
+    table[Index(StringId::kMenuFlashTool)] = "Firmware Flash Tool...";
     table[Index(StringId::kMenuRestoreLastInput)] = "Restore Last Input";
     table[Index(StringId::kMenuInteraction)] = "Interaction";
     table[Index(StringId::kMenuHoldToTalk)] = "Hold to Talk";
@@ -199,6 +200,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kFirmwareUpdatePromptTitleRequired)] = "Firmware update recommended";
     table[Index(StringId::kFirmwareUpdatePromptTitleAvailable)] = "Firmware update available";
     table[Index(StringId::kFirmwareUpdatePromptBody)] = "VS-%s is running firmware %s.\n\nThe latest firmware is %s.";
+    table[Index(StringId::kFirmwareUpdateAdvancedComFlash)] = "Advanced: COM Flash...";
     table[Index(StringId::kHotkeyTitle)] = "Hotkey Settings";
     table[Index(StringId::kHotkeyEnabled)] = "Enable global hotkey";
     table[Index(StringId::kHotkeyPreset)] = "Preset";
@@ -352,6 +354,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuQuit)] = "退出";
     table[Index(StringId::kMenuWebsite)] = "官网";
     table[Index(StringId::kMenuCheckAppUpdates)] = "检查应用更新...";
+    table[Index(StringId::kMenuFlashTool)] = "固件烧录工具…";
     table[Index(StringId::kMenuRestoreLastInput)] = "恢复上次输入";
     table[Index(StringId::kMenuInteraction)] = "交互方式";
     table[Index(StringId::kMenuHoldToTalk)] = "按住说话";
@@ -464,6 +467,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kFirmwareUpdatePromptTitleRequired)] = "建议更新固件";
     table[Index(StringId::kFirmwareUpdatePromptTitleAvailable)] = "有可用固件更新";
     table[Index(StringId::kFirmwareUpdatePromptBody)] = "VS-%s 当前运行固件 %s。\n\n最新固件为 %s。";
+    table[Index(StringId::kFirmwareUpdateAdvancedComFlash)] = "高级… COM 口烧录";
     table[Index(StringId::kHotkeyTitle)] = "热键设置";
     table[Index(StringId::kHotkeyEnabled)] = "启用全局热键";
     table[Index(StringId::kHotkeyPreset)] = "预设";

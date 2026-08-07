@@ -21,6 +21,8 @@ public:
     void Finish(bool success, const std::string& message);
 
     std::function<void()> on_cancel;
+    // “高级… COM 口烧录”按钮：由 win32_app 注入（拉起 VoiceStickFlash.exe）。
+    std::function<void()> on_advanced;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -41,6 +43,7 @@ private:
     HWND percent_label_ = nullptr;
     HWND cancel_button_ = nullptr;
     HWND close_button_ = nullptr;
+    HWND advanced_button_ = nullptr;
     HFONT ui_font_ = nullptr;
     UiLanguage language_ = UiLanguage::kEnglish;
     std::string version_;

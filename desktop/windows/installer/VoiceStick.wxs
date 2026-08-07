@@ -111,6 +111,13 @@
         <Component Id="ConfigTemplate" Guid="*" Bitness="always64">
           <File Id="ConfigTemplateFile" Source="$(var.BuildDir)\config.template.toml" KeyPath="yes" />
         </Component>
+        <!-- VoiceStickFlash：COM 口固件烧录小工具（BLE OTA 兜底链路） -->
+        <Component Id="VoiceStickFlashExe" Guid="*" Bitness="always64">
+          <File Id="VoiceStickFlashExeFile" Source="$(var.BuildDir)\VoiceStickFlash.exe" KeyPath="yes" />
+        </Component>
+        <!-- 自包含 esptool 运行时（python-embed + esptool）安装目录；
+             内容由生成的 flash_payload.wxs 片段（FlashPayloadGroup）填充 -->
+        <Directory Id="FlashToolDir" Name="FlashTool" />
       </Directory>
     </StandardDirectory>
 
@@ -120,6 +127,11 @@
           <Shortcut Id="VoiceStickStartMenuShortcut"
                     Name="VoiceStick"
                     Target="[INSTALLFOLDER]VoiceStick.exe"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="VoiceStickIcon" />
+          <Shortcut Id="VoiceStickFlashStartMenuShortcut"
+                    Name="VoiceStick 固件烧录工具"
+                    Target="[INSTALLFOLDER]VoiceStickFlash.exe"
                     WorkingDirectory="INSTALLFOLDER"
                     Icon="VoiceStickIcon" />
           <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
@@ -147,8 +159,12 @@
       <ComponentRef Id="VoiceStickExe" />
       <ComponentRef Id="WinSparkleDll" />
       <ComponentRef Id="ConfigTemplate" />
+      <ComponentRef Id="VoiceStickFlashExe" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="DesktopShortcut" />
+      <!-- flash_payload 全目录组件（本机 wix v4 无 Files 收割，由 prepare_flash_payload.ps1
+           生成 flash_payload.wxs 片段，逐文件 Component/File） -->
+      <ComponentGroupRef Id="FlashPayloadGroup" />
     </Feature>
   </Package>
 </Wix>

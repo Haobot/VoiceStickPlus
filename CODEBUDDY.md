@@ -82,7 +82,7 @@ ctest --test-dir desktop\windows\build-x64 --output-on-failure -R voicestick_int
 
 注意：`build_native.bat`、`do_build.bat`、`desktop\windows\build.bat` 含本机绝对路径或固定版本号，复用前先检查内容；根目录 `test.bat` 只是占位脚本，不运行 CTest；根目录散落的 `*.log` 是本地构建残留，不是源码。Windows 构建目录统一用 `desktop/windows/build-x64`，旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存。
 
-发布打包：`scripts\build-msi.bat`（签名 MSI）；便携版 zip 用 `scripts\package-portable.ps1`（脚本须存为 UTF-8 with BOM）；无签名证书时用 `scripts\build-msi-unsigned.bat` 验证安装流程。产物放 `dist/`。
+发布打包：`scripts\build-msi.bat`（签名 MSI，内部先用 `scripts\prepare_flash_payload.ps1` 准备 VoiceStickFlash 的 esptool payload 并生成 `flash_payload.wxs` 片段）；便携版 zip 用 `scripts\package-portable.ps1`（脚本须存为 UTF-8 with BOM）；无签名证书时用 `scripts\build-msi-unsigned.bat` 验证安装流程。产物放 `dist/`。
 
 ### 网站（Vue 3 + Vite）
 
@@ -136,9 +136,10 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 桌面端负责 BLE 配对与多设备连接、交互状态机、Opus→Ogg Opus 封装、ASR WebSocket、LLM 翻译与精修、悬浮窗/字幕、文本注入、体感鼠标、配置管理、自动更新。
 
 - **macOS**（`desktop/macos/Sources/VoiceStickApp/`）：`VoiceStickCoordinator`（状态机）、`BleCentral`/`BleProtocol`（CoreBluetooth 与协议）、`OggOpusMuxer`/`ASRWebSocketClient`（音频封装与 ASR）、`InputInjector`（粘贴与 Return 注入）、`OverlayController`/`SubtitleController`/`StatusController`、`FirmwareManifest`/`FirmwareUpdateWindowController`。
-- **Windows**（`desktop/windows/CMakeLists.txt` 四个源码目标）：
-  - `voicestick_core`：可测试核心库（配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修、热词候选挖掘、调试音频缓存、固件清单、日志、本地化、协调器状态机）。**新增核心行为优先放这里并在 `core_tests.cc` 覆盖。**
+- **Windows**（`desktop/windows/CMakeLists.txt` 五个源码目标）：
+  - `voicestick_core`：可测试核心库（配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修、热词候选挖掘、调试音频缓存、固件清单、日志、本地化、协调器状态机、VoiceStickFlash 烧录逻辑）。**新增核心行为优先放这里并在 `core_tests.cc` 覆盖。**
   - `VoiceStickApp`：Win32 外壳（托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、对话框）。
+  - `VoiceStickFlash`：独立 COM 口固件烧录小工具（BLE OTA 兜底链路），Win32 GUI 外壳只做 UI + esptool 子进程；设计见 `Doc/Plan/windows-com-flash-tool.md`。
   - `voicestick_windows_tests`：基于 `assert` 的单元测试，自定义 Fake/Mock 不联网。
   - `voicestick_integration_tests`：L1 ASR 链路集成测试，连真实火山 ASR（需 `%APPDATA%\VoiceStick\config.toml` 配 `volcengine_api_key`）。
 
@@ -215,3 +216,4 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建签名后手�
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
 - MiniEncoderC 编码器键是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）仍是唯一唤醒键。
 - Windows 桌面端构建若报 `C1083: winrt/base.h`（或 `winrt/Windows.Devices.Bluetooth.h`）找不到，是本机 Windows SDK 的 `Include/<ver>/winrt/` 仅含旧版 WRL 风格头文件、缺 C++/WinRT 投影头所致；`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 从 union metadata 一次性生成完整投影头到 `desktop/windows/generated_winrt/`（gitignored，且不受 `rd /s /q build-x64` 清理影响）并 prepend 到 `INCLUDE`。手动用 vcvars64 构建时须同样把该目录加入 `INCLUDE`。
+- VoiceStickFlash（COM 口烧录工具）相关改动：除常规构建/CTest 外，用 `powershell -ExecutionPolicy Bypass -File scripts\prepare_flash_payload.ps1` 冒烟 payload（`python.exe -m esptool version`；含中文注释，脚本须保持 UTF-8 with BOM）；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。

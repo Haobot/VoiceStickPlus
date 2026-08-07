@@ -23,6 +23,7 @@
 #include <iterator>
 #include <mutex>
 #include <optional>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
@@ -73,6 +74,8 @@ constexpr UINT kMenuHotkeyEnabled = 5801;
 constexpr UINT kMenuHotkeyCustom = 5802;
 constexpr UINT kMenuHotkeyBase = 5810;
 constexpr UINT kMenuHotkeyEnd = 5899;
+// COM 口固件烧录工具入口（VoiceStickFlash.exe），菜单 ID 新段 7000 起。
+constexpr UINT kMenuFlashTool = 7000;
 
 struct HotkeyPreset {
     const char* name;
@@ -315,6 +318,29 @@ std::wstring LocalizedTranslationTargetName(const TranslationTarget& target, UiL
     if (code == "vi") return L"越南文";
     if (code == "th") return L"泰文";
     return target.name;
+}
+
+// 拉起 VoiceStickFlash.exe（COM 口固件烧录工具）：与 VoiceStick.exe 同级目录，
+// 开发构建在 build-x64，MSI 安装在 INSTALLFOLDER。未安装时给出明确提示。
+void LaunchFlashToolExe(HWND owner) {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) return;
+    path.resize(length);
+    const auto flash_exe = std::filesystem::path(path).parent_path() / L"VoiceStickFlash.exe";
+    std::error_code ec;
+    if (!std::filesystem::exists(flash_exe, ec)) {
+        MessageBoxW(owner,
+                    L"未找到 VoiceStickFlash.exe（应与 VoiceStick.exe 同目录）。\n"
+                    L"MSI 安装版自带该工具；便携版暂不包含。",
+                    L"VoiceStick", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    ShellExecuteW(owner, L"open", flash_exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 } // namespace
@@ -800,6 +826,9 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             if (!config_.portable_mode) {
                 win_sparkle_check_update_with_ui();
             }
+            return 0;
+        case kMenuFlashTool:
+            LaunchFlashToolExe(hwnd_);
             return 0;
         case kMenuHoldToTalk:
             config_.interaction_mode = InteractionMode::kHoldToTalk;
@@ -1433,6 +1462,8 @@ void Win32App::ShowTrayMenu() {
         AppendMenuW(menu, MF_STRING, kMenuCheckAppUpdates,
                     TrW(StringId::kMenuCheckAppUpdates, language).c_str());
     }
+    AppendMenuW(menu, MF_STRING, kMenuFlashTool,
+                TrW(StringId::kMenuFlashTool, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuRelaunchElevated, L"以管理员身份重启");
     AppendMenuW(menu, MF_STRING, kMenuQuit, TrW(StringId::kMenuQuit, language).c_str());
@@ -1994,6 +2025,7 @@ void Win32App::StartFirmwareUpdate(const std::string& device_id) {
     firmware_update_dialog_->on_cancel = [this] {
         if (coordinator_) coordinator_->CancelFirmwareUpdate();
     };
+    firmware_update_dialog_->on_advanced = [this] { LaunchFlashToolExe(hwnd_); };
     firmware_update_dialog_->Show();
     coordinator_->UpdateFirmwareFromLatest(
         device_id,
@@ -2062,6 +2094,7 @@ void Win32App::StartOtaFromFile(const std::string& file_path,
     firmware_update_dialog_->on_cancel = [this] {
         if (coordinator_) coordinator_->CancelFirmwareUpdate();
     };
+    firmware_update_dialog_->on_advanced = [this] { LaunchFlashToolExe(hwnd_); };
     firmware_update_dialog_->Show();
     coordinator_->UpdateFirmwareFromFile(
         file_path, target_device,

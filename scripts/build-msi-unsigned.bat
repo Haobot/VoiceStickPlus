@@ -61,6 +61,18 @@ if not exist "%BUILD_DIR%\WinSparkle.dll" (
     echo ERROR: WinSparkle.dll not found in build directory.
     exit /b 1
 )
+if not exist "%BUILD_DIR%\VoiceStickFlash.exe" (
+    echo ERROR: VoiceStickFlash.exe not found in build directory.
+    exit /b 1
+)
+
+echo.
+echo Preparing VoiceStickFlash payload (embedded python + esptool)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare_flash_payload.ps1" -OutputDir "%BUILD_DIR%\flash_payload"
+if errorlevel 1 (
+    echo ERROR: prepare_flash_payload failed.
+    exit /b 1
+)
 
 echo.
 echo [2/2] Building MSI with WiX (unsigned)...
@@ -113,6 +125,7 @@ if not exist "%WIX_PATH%" (
     exit /b 1
 )
 "%WIX_PATH%" build "%WINDOWS_DIR%\installer\VoiceStick.wxs" ^
+    "%BUILD_DIR%\flash_payload.wxs" ^
     "%WINDOWS_DIR%\installer\zh-CN.wxl" ^
     -arch x64 ^
     -culture zh-CN ^
@@ -120,6 +133,7 @@ if not exist "%WIX_PATH%" (
     -ext WixToolset.Util.wixext ^
     -d ProductVersion=%VERSION% ^
     -d BuildDir=%BUILD_DIR% ^
+    -d FlashPayloadDir=%BUILD_DIR%\flash_payload ^
     -d ProjectDir=%PROJECT_DIR% ^
     -o "%BUILD_DIR%\VoiceStick_%VERSION%.msi"
 if errorlevel 1 (
