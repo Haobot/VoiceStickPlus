@@ -147,13 +147,34 @@ if errorlevel 1 (
 :: Step 3: Build MSI with WiX
 echo.
 echo [3/4] Building MSI with WiX...
+:: Generate MSI config.template.toml with real test keys so installed users get
+:: Volcengine/Tencent/LLM working out of the box. Default source: the v2.0.0 portable
+:: config (has current test keys). Override with VOICESTICK_MSI_CONFIG_SOURCE.
+:: Secrets live in the generated build-dir copy only, never committed.
+if not defined VOICESTICK_MSI_CONFIG_SOURCE (
+    set "VOICESTICK_MSI_CONFIG_SOURCE=%PROJECT_DIR%\dist\VoiceStick_Portable_v2.0.0\config.toml"
+)
+if not exist "%VOICESTICK_MSI_CONFIG_SOURCE%" (
+    echo WARNING: MSI config source not found: %VOICESTICK_MSI_CONFIG_SOURCE%
+    echo          Falling back to placeholder template from resources\config.template.toml
+) else (
+    echo Generating MSI config with test keys from: %VOICESTICK_MSI_CONFIG_SOURCE%
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0generate_msi_config.ps1" ^
+        -SourceConfig "%VOICESTICK_MSI_CONFIG_SOURCE%" ^
+        -TemplateConfig "%PROJECT_DIR%\desktop\windows\resources\config.template.toml" ^
+        -OutputConfig "%BUILD_DIR%\config.template.toml"
+    if errorlevel 1 (
+        echo ERROR: Failed to generate MSI config from test keys.
+        exit /b 1
+    )
+)
 :: Optional: inject a real config (with secrets) via VOICESTICK_CONFIG_TEMPLATE to override the placeholder.
 :: Used to distribute a pre-configured MSI to testers; secrets are injected only at local build time, never committed.
 :: On first launch the exe-adjacent config.template.toml is copied to %APPDATA%\VoiceStick\config.toml if absent.
 :: See Doc/Plan/windows-msi-config-template-seed.md for details.
 if defined VOICESTICK_CONFIG_TEMPLATE (
     if exist "%VOICESTICK_CONFIG_TEMPLATE%" (
-        echo Injecting config template from: %VOICESTICK_CONFIG_TEMPLATE%
+        echo Overriding MSI config template from: %VOICESTICK_CONFIG_TEMPLATE%
         copy /Y "%VOICESTICK_CONFIG_TEMPLATE%" "%BUILD_DIR%\config.template.toml" >nul
         if errorlevel 1 (
             echo ERROR: Failed to copy VOICESTICK_CONFIG_TEMPLATE to build dir.

@@ -36,6 +36,21 @@
     <CustomAction Id="RemoveUserDataExec.SetCmd"
                   Property="RemoveUserDataExec"
                   Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;Remove-Item -LiteralPath '[AppDataFolder]VoiceStick','[LocalAppDataFolder]VoiceStick' -Recurse -Force -ErrorAction SilentlyContinue; Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name VoiceStick -ErrorAction SilentlyContinue; Remove-Item 'HKCU:\Software\TenClass\VoiceStick' -Recurse -ErrorAction SilentlyContinue; exit 0&quot;" />
+    <!-- 安装时把含测试 key 的 config.template.toml 复制覆盖到 %APPDATA%\VoiceStick\config.toml，
+         使火山/腾讯/LLM 开箱即用（Active*() 优先读 config.toml）。deferred + Impersonate 模拟
+         原用户身份才能写其 %APPDATA%；已有 config.toml 整份覆盖（需求明确"默认覆盖"）。
+         注意：不得把 config.toml 装到 INSTALLFOLDER（exe 同级）——会误触发便携模式。 -->
+    <CustomAction Id="SeedMsiConfigExec"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+    <!-- immediate SetProperty：Value 作为 CustomActionData 传给 deferred CA；
+         [AppDataFolder]/[INSTALLFOLDER] 由 MSI 在执行前格式化替换 -->
+    <CustomAction Id="SeedMsiConfigExec.SetCmd"
+                  Property="SeedMsiConfigExec"
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;New-Item -ItemType Directory -Force -Path '[AppDataFolder]VoiceStick' | Out-Null; Copy-Item -LiteralPath '[INSTALLFOLDER]config.template.toml' -Destination '[AppDataFolder]VoiceStick\config.toml' -Force; exit 0&quot;" />
     <InstallExecuteSequence>
       <Custom Action="RemoveUserDataExec.SetCmd"
               Condition='REMOVE_USER_DATA=1 AND Installed AND REMOVE~="ALL"'
@@ -45,6 +60,15 @@
       <Custom Action="RemoveUserDataExec"
               Condition='REMOVE_USER_DATA=1 AND Installed AND REMOVE~="ALL"'
               After="RemoveFiles" />
+      <!-- 安装路径：SeedMsiConfigExec.SetCmd 先准备命令（InstallValidate 后），
+           deferred CA 在 InstallFiles 后执行——此时 INSTALLFOLDER 里的
+           config.template.toml 已就位，可复制到 %APPDATA% 覆盖已有配置 -->
+      <Custom Action="SeedMsiConfigExec.SetCmd"
+              Condition="NOT Installed"
+              After="InstallValidate" />
+      <Custom Action="SeedMsiConfigExec"
+              Condition="NOT Installed"
+              After="InstallFiles" />
     </InstallExecuteSequence>
     <UI>
       <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- MSI 安装时写入含测试密钥的 config.toml（Windows）：新增 `scripts/generate_msi_config.ps1` 从 `dist/VoiceStick_Portable_v2.0.0/config.toml` 提取火山/腾讯/LLM 七项密钥，注入 `config.template.toml` 生成含 key 的构建产物（gitignored，密钥不进仓库）；`build-msi.bat` Step 3 前默认调用（`VOICESTICK_MSI_CONFIG_SOURCE` 可覆盖来源，保留 `VOICESTICK_CONFIG_TEMPLATE` 手动回退）；`VoiceStick.wxs` 新增 `SeedMsiConfigExec` 安装时自定义动作，把 `INSTALLFOLDER\config.template.toml` 整份复制覆盖到 `%APPDATA%\VoiceStick\config.toml`（deferred + Impersonate + `NOT Installed` 条件，覆盖已有配置）。运行时 `Active*()` 本就优先读 config.toml，config 有 key 即读它，开箱即用不再提示缺 key。真机验证：安装后 `%APPDATA%` config 被覆盖为含 7 项测试 key，启动日志 `make_asr: provider=tencent appid=…` 确认读到 key，Onboarding 自动完成。
+
 - 修复 BLE 配对失败（Windows）：固件广播名与 MAC 低位推断的设备 ID 不一致时（如广播名 D63C / MAC 低位 D63E），同一物理地址会同时产生命名候选与临时候选，后者可能覆盖前者，配对对话框点到临时候选命中 "waiting for name" 不发起连接，设备停在 pairing 屏。修复 `MergePairingCandidate`：同地址合并时命名候选优先，后到的临时包不覆盖；`PairSelectedDevice` 改用与列表显示一致的 `VisiblePairingCandidates` 过滤后候选取数，消除索引错位；新增直接连接与临时候选点击诊断日志；补回归测试。
 
 ## 2026-08-05 v2.3.3
