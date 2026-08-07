@@ -64,6 +64,27 @@ if not exist "%BUILD_DIR%\WinSparkle.dll" (
 
 echo.
 echo [2/2] Building MSI with WiX (unsigned)...
+:: Generate MSI config.template.toml with real test keys so installed users get
+:: Volcengine/Tencent/LLM working out of the box. Default source: the local
+:: %APPDATA%\VoiceStick\config.toml. Override with VOICESTICK_MSI_CONFIG_SOURCE.
+:: Secrets live in the generated build-dir copy only, never committed.
+if not defined VOICESTICK_MSI_CONFIG_SOURCE (
+    set "VOICESTICK_MSI_CONFIG_SOURCE=%APPDATA%\VoiceStick\config.toml"
+)
+if not exist "%VOICESTICK_MSI_CONFIG_SOURCE%" (
+    echo WARNING: MSI config source not found: %VOICESTICK_MSI_CONFIG_SOURCE%
+    echo          Falling back to placeholder template from resources\config.template.toml
+) else (
+    echo Generating MSI config with test keys from: %VOICESTICK_MSI_CONFIG_SOURCE%
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0generate_msi_config.ps1" ^
+        -SourceConfig "%VOICESTICK_MSI_CONFIG_SOURCE%" ^
+        -TemplateConfig "%PROJECT_DIR%\desktop\windows\resources\config.template.toml" ^
+        -OutputConfig "%BUILD_DIR%\config.template.toml"
+    if errorlevel 1 (
+        echo ERROR: Failed to generate MSI config from test keys.
+        exit /b 1
+    )
+)
 :: Optional: inject a real config (with secrets) via VOICESTICK_CONFIG_TEMPLATE to override the placeholder.
 :: Used to distribute a pre-configured MSI to testers; secrets are injected only at local build time, never committed.
 :: See Doc/Plan/windows-msi-config-template-seed.md for details.

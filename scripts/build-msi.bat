@@ -148,11 +148,12 @@ if errorlevel 1 (
 echo.
 echo [3/4] Building MSI with WiX...
 :: Generate MSI config.template.toml with real test keys so installed users get
-:: Volcengine/Tencent/LLM working out of the box. Default source: the v2.0.0 portable
-:: config (has current test keys). Override with VOICESTICK_MSI_CONFIG_SOURCE.
+:: Volcengine/Tencent/LLM working out of the box. Default source: the local
+:: %APPDATA%\VoiceStick\config.toml (same file extract_builtin_key.ps1 reads for
+:: exe-baked credentials). Override with VOICESTICK_MSI_CONFIG_SOURCE.
 :: Secrets live in the generated build-dir copy only, never committed.
 if not defined VOICESTICK_MSI_CONFIG_SOURCE (
-    set "VOICESTICK_MSI_CONFIG_SOURCE=%PROJECT_DIR%\dist\VoiceStick_Portable_v2.0.0\config.toml"
+    set "VOICESTICK_MSI_CONFIG_SOURCE=%APPDATA%\VoiceStick\config.toml"
 )
 if not exist "%VOICESTICK_MSI_CONFIG_SOURCE%" (
     echo WARNING: MSI config source not found: %VOICESTICK_MSI_CONFIG_SOURCE%
