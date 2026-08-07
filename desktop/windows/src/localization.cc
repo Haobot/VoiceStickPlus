@@ -173,6 +173,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kOnboardingTrialPageOpened)] = "Opened trial application page.";
     table[Index(StringId::kOnboardingTrialApplyFailed)] = "Could not apply a trial API key.";
     table[Index(StringId::kOnboardingPairDeviceFirst)] = "Pair a VoiceStick device first.";
+    table[Index(StringId::kOnboardingSkipDeviceConfirm)] =
+        "No device paired yet. You can finish setup now, flash firmware later via the tray menu "
+        "\"Firmware Flash Tool...\", then pair the device.\n\nContinue without pairing a device?";
     table[Index(StringId::kOnboardingEnterApiKey)] = "Enter an API key or apply a trial key.";
     table[Index(StringId::kOnboardingDeviceNotPaired)] = "Device: Not paired";
     table[Index(StringId::kOnboardingDeviceSummary)] = "Device: VS-%s";
@@ -440,6 +443,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kOnboardingTrialPageOpened)] = "已打开试用申请页面。";
     table[Index(StringId::kOnboardingTrialApplyFailed)] = "无法申请试用 API Key。";
     table[Index(StringId::kOnboardingPairDeviceFirst)] = "请先配对 VoiceStick 设备。";
+    table[Index(StringId::kOnboardingSkipDeviceConfirm)] =
+        "尚未配对设备。可以先完成设置，之后通过托盘菜单的「固件烧录工具…」烧写固件，"
+        "再回来配对设备。\n\n是否暂不配对、继续下一步？";
     table[Index(StringId::kOnboardingEnterApiKey)] = "请输入 API Key 或申请试用 Key。";
     table[Index(StringId::kOnboardingDeviceNotPaired)] = "设备：未配对";
     table[Index(StringId::kOnboardingDeviceSummary)] = "设备：VS-%s";

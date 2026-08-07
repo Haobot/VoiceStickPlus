@@ -489,8 +489,13 @@ void OnboardingDialog::GoNext() {
     if (step_ == Step::kDevice) {
         config_ = AppConfig::Load();
         if (!HasDevice()) {
-            SetStatus(TrW(StringId::kOnboardingPairDeviceFirst, language_));
-            return;
+            // 允许跳过配对：设备无固件或固件过旧时无法 BLE 配对，需要先进入应用，
+            // 经托盘「固件烧录工具…」走 COM 口烧录后再回来配对（见 kMenuFlashTool）。
+            const int answer = MessageBoxW(
+                hwnd_, TrW(StringId::kOnboardingSkipDeviceConfirm, language_).c_str(),
+                TrW(StringId::kOnboardingTitle, language_).c_str(),
+                MB_YESNO | MB_ICONQUESTION);
+            if (answer != IDYES) return;
         }
         // 内置 key（ActiveApiKey 非空）时跳过 kAsr 步直接进入完成步；公开版仍走 kAsr。
         step_ = NeedsAsrStep(config_) ? Step::kAsr : Step::kReady;

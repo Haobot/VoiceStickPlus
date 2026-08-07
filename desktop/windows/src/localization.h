@@ -174,6 +174,7 @@ enum class StringId {
     kOnboardingTrialPageOpened,
     kOnboardingTrialApplyFailed,
     kOnboardingPairDeviceFirst,
+    kOnboardingSkipDeviceConfirm,
     kOnboardingEnterApiKey,
     kOnboardingDeviceNotPaired,
     kOnboardingDeviceSummary,
