@@ -169,7 +169,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - 编码器配置（仅 Windows）：全局默认 `encoder_*`（旋转/快慢分档/按键/LED）+ 按设备覆盖 `[device.<id>.encoder]`（键名去前缀，结构镜像 `[device.<id>.output]`）；设置 UI 已从「设置」对话框移至托盘设备子菜单「编码器设置…」（仅 `encoder_present` 设备显示）。完整字段见 `Doc/Ref/desktop-config.md`。
 - 设备交互配置（仅 Windows）：IMU 唤醒灵敏度 / 敲击映射方向键 / 敲击灵敏度 / 体感鼠标左右·上下灵敏度，全局默认顶层键（`imu_wake_sensitivity`/`tap_to_arrow`/`tap_sensitivity`/`air_mouse_sensitivity_x/y`，v1.8.x 旧配置仍可读）+ 按设备覆盖 `[device.<id>.interaction]`（键名一致）；设置 UI 已从「设置」对话框移至托盘设备子菜单「设备交互设置…」（所有设备显示）。其中体感鼠标灵敏度按设备覆盖，其余进阶 `air_mouse_*` 参数仍为全局。完整字段见 `Doc/Ref/desktop-config.md`。
 - `paired_device_ids`：已配对设备 4 位十六进制 ID 列表。
-- Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`，首启复制到 `%APPDATA%`（升级不覆盖）。
+- Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，并由 `SeedMsiConfigExec` 自定义动作在**安装时**整份复制覆盖到 `%APPDATA%\VoiceStick\config.toml`（仅全新安装，升级不覆盖）。打包时 `generate_msi_config.ps1` 从本机 `%APPDATA%\VoiceStick\config.toml`（默认，`VOICESTICK_MSI_CONFIG_SOURCE` 可覆盖）提取密钥生成含 key 的构建产物（gitignored，密钥不进仓库）；`extract_builtin_key.ps1` 输出内置凭据供 cmake 注入 `builtin_secrets.h.in`。运行时 `Active*()` 优先读 config.toml，空则回退内置凭据，首启开箱即用。
 
 ## 代码风格
 
@@ -203,7 +203,7 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建签名后手�
 
 ## 项目 Skills 与经验文档
 
-- `.agents/skills/` 下维护项目级 Skill（`byted-web-search`、`sticks3-flash-ota`、`build-windows`、`build-firmware`、`usb-jtag-flash-log`），相关场景自动加载；根目录 `skills/` 是另一份拷贝，以 `.agents/skills/` 为准。
+- `.agents/skills/` 下维护项目级 Skill（`sticks3-flash-ota`、`build-windows`、`build-firmware`、`usb-jtag-flash-log`），相关场景自动加载。
 - 排查问题或改动相关模块前先查 `Doc/Expe/`：`claude-memory-distilled.md` 是约 80 条项目记忆的蒸馏（BLE 僵尸链路、watcher 静默失效、热词处理、ASR/热词评测结论等）。其中寄存器值、阈值、文件:行号均为记录时点结论，**引用前以当前源码为准**。
 - `Doc/` 子目录：`Ref/`（协议、发布流程等参考）、`Plan/`（设计方案，大写 P）、`Guide/`（第三方服务接入指南）、`Expe/`（经验教训）。
 

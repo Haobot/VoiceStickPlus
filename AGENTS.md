@@ -29,9 +29,11 @@ ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存都使用同一�
 | `firmware/main/CMakeLists.txt` | 主组件注册与依赖声明 |
 | `firmware/partitions_ota.csv` | 8 MB 分区表：两个 3 MB OTA app slot + 约 1984 KB `storage`（SPIFFS） |
 | `desktop/macos/Package.swift` | SwiftPM 定义（swift-tools 5.9），依赖 Sparkle 2.6+、TOMLKit 0.6+、CZlib |
-| `desktop/windows/CMakeLists.txt` | Windows 端构建，拆为 `voicestick_core` + `VoiceStickApp` + 两个测试目标 |
+| `desktop/windows/CMakeLists.txt` | Windows 端构建，拆为 `voicestick_core` + `VoiceStickApp` + `VoiceStickFlash` + 两个测试目标 |
 | `desktop/windows/src/version.h.in` | Windows 版本资源模板，由 CMake 从 `VERSION` 填充 |
-| `desktop/windows/installer/VoiceStick.wxs` | WiX MSI 安装包定义 |
+| `desktop/windows/src/builtin_secrets.h.in` | Windows 内置凭据模板，由 CMake 从 `-D VOICESTICK_BUILTIN_*` 变量填充（见「安全注意事项」） |
+| `desktop/windows/resources/config.template.toml` | Windows 运行时配置模板，构建时复制到 exe 旁并随 MSI 安装 |
+| `desktop/windows/installer/VoiceStick.wxs` | WiX MSI 安装包定义（含 `SeedMsiConfigExec` 配置种子自定义动作） |
 | `desktop/linux/` | Linux 桌面占位目录，目前无活跃实现 |
 | `website/package.json` | Node 项目配置（仅 `dev`/`build`/`preview` 脚本，无 lint/test） |
 | `website/public/appcast.xml` | Sparkle/WinSparkle 更新源 |
@@ -39,6 +41,7 @@ ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存都使用同一�
 | `.github/workflows/deploy-website.yml` | 网站部署与 appcast 更新 |
 | `scripts/idf_cli.yaml` | `idf_cli.py` 的配置文件 |
 | `scripts/prepare_flash_payload.ps1` | 准备 VoiceStickFlash 自包含 esptool 运行时（python-embed + esptool，幂等；`VOICESTICK_PYTHON_EMBED_URL` 覆盖下载源、`VOICESTICK_PIP_INDEX_URL` 覆盖 pip 索引） |
+| `scripts/extract_builtin_key.ps1` / `scripts/generate_msi_config.ps1` | MSI 打包密钥注入：前者从本机 exe/配置提取 7 项内置凭据供 cmake `-D` 注入；后者从本机 `%APPDATA%\VoiceStick\config.toml`（默认，`VOICESTICK_MSI_CONFIG_SOURCE` 可覆盖）提取密钥生成含 key 的 MSI config 产物（gitignored） |
 | `requirements.txt` | Python 脚本依赖（`pyyaml` / `pyserial` / `Pillow`），不含 E2E 工具链依赖 |
 | `ArduFlux.json` | 本机 ArduFlux 工具的 ESP32-S3 板卡/串口配置（辅助烧录，非构建必需） |
 
@@ -113,6 +116,8 @@ cmake -S desktop\windows -B desktop\windows\build-x64 -G Ninja
 cmake --build desktop\windows\build-x64
 ```
 
+可选：configure 时传 `-D VOICESTICK_BUILTIN_API_KEY=...` 等 7 个 `VOICESTICK_BUILTIN_*` 变量把凭据编译进 exe（生成 `builtin_secrets.h`，见「安全注意事项」）。
+
 运行全部 Windows 测试：
 
 ```powershell
@@ -139,7 +144,7 @@ desktop\windows\build-x64\VoiceStick.exe
 scripts\build-msi.bat
 ```
 
-该脚本在 WiX 构建前自动调用 `scripts\prepare_flash_payload.ps1` 准备 VoiceStickFlash 的自包含 esptool payload（`build-msi-x64\flash_payload\`，gitignored 构建产物），并随 MSI 安装到 `INSTALLFOLDER\FlashTool\`。
+该脚本在 WiX 构建前自动调用 `scripts\prepare_flash_payload.ps1` 准备 VoiceStickFlash 的自包含 esptool payload（`build-msi-x64\flash_payload\`，gitignored 构建产物），并随 MSI 安装到 `INSTALLFOLDER\FlashTool\`（exe 本体装到 `INSTALLFOLDER\VoiceStickFlash.exe`）。脚本还会用 `extract_builtin_key.ps1` 输出 7 项内置凭据环境变量供 cmake 注入，并调用 `generate_msi_config.ps1` 生成含 key 的 MSI config 产物。
 
 注意：`build_native.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。
 
@@ -209,7 +214,7 @@ macOS 代码集中在 `desktop/macos/Sources/VoiceStickApp/`：`VoiceStickCoordi
 
 Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成五个源码目标（另有 `winsparkle_lib` 导入库）：
 
-- `voicestick_core`：可测试核心库，包含配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修（含热词 few-shot 与改坏回退守卫）、热词候选挖掘（`hotword_candidate_miner`）、调试音频缓存、固件清单解析、日志、本地化和协调器状态机；VoiceStickFlash 的烧录逻辑（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`）也在此。
+- `voicestick_core`：可测试核心库，包含配置解析（含 `Active*()` 内置凭据回退访问器）、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修（含热词 few-shot 与改坏回退守卫）、热词候选挖掘（`hotword_candidate_miner`）、调试音频缓存、固件清单解析、日志、本地化和协调器状态机；VoiceStickFlash 的烧录逻辑（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`）也在此。
 - `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
 - `VoiceStickFlash`：独立 COM 口固件烧录小工具（BLE OTA 之外的用户级兜底链路），Win32 GUI 外壳只做 UI + esptool 子进程；设计见 `Doc/Plan/windows-com-flash-tool.md`。
 - `voicestick_windows_tests`：基于 `assert` 的单元测试，源码在 `desktop/windows/tests/core_tests.cc`，用自定义 Fake/Mock 不联网验证核心库；由 CTest 注册为同名测试，不支持按测试函数名过滤。
@@ -249,14 +254,14 @@ Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成五个源码目标（�
 
 - `asr_provider`：`volcengine`、`voicestick_cloud` 或 `tencent`；对应凭据分别为 `volcengine_api_key`、`voicestick_api_key` + `voicestick_cloud_url`、`tencent_secret_id` + `tencent_secret_key` + `tencent_appid`。
 - `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山热词表/替换词表 ID；热词直传只在流式第一遍生效，二遍靠 LLM 精修兜底（背景见 `Doc/Ref/volcengine-asr.md`）。
-- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `true`。
+- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `false`（v2.3.2 起，精修需用户手动开启）。
 - `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`；wechat 模式触发方式由 `[wechat_input_method].trigger_mode` 独立控制，不联动全局。
 - `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
 - `hotword_process_enabled` / `hotword_mining_enabled`：热词处理与候选挖掘（Windows，默认关闭，两条挖掘通道与阈值细节见 `Doc/Ref/desktop-config.md`）。
 - `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
 - `tap_to_arrow`、`encoder_*`（编码器旋转/快慢分档/按键/LED，仅 Windows 端消费）、`air_mouse_*`（体感鼠标）、`[wechat_input_method]`（虚拟麦克风链路）：字段多且细节长，完整说明见 `Doc/Ref/desktop-config.md`。编码器配置为**全局默认（`encoder_*`）+ 按设备覆盖 `[device.<id>.encoder]`**（键名去 `encoder_` 前缀，结构镜像 `[device.<id>.output]`），设置 UI 已从「设置」对话框移至托盘设备子菜单的「编码器设置…」（仅 `encoder_present` 设备显示）。
 
-Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，首启复制到 `%APPDATA%`（升级不覆盖）。
+Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，并由 `SeedMsiConfigExec` 自定义动作在安装时整份复制覆盖到 `%APPDATA%\VoiceStick\config.toml`（deferred + Impersonate + `NOT Installed` 条件，仅全新安装，升级不覆盖）。打包时 `generate_msi_config.ps1` 会从本机配置提取密钥注入模板生成含 key 的构建产物（gitignored，密钥不进仓库），使首启开箱即用。
 
 ## 代码风格
 
@@ -278,6 +283,8 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 ## 安全注意事项
 
 - API 密钥等凭据字段（`volcengine_api_key`、`tencent_secret_*`、`llm_api_key` 等）只存在于本机 `config.toml`，不要提交进仓库；示例配置使用占位符。
+- Windows 支持把凭据编译进 exe：cmake configure 传 7 个 `-D VOICESTICK_BUILTIN_*` 变量生成 `builtin_secrets.h`（`src/builtin_secrets.h.in` 模板），运行时 `AppConfig::Active*()` 访问器按「配置值优先，空则回退内置，不落盘」解析。这些值是发布构建注入的测试凭据，源文件模板不含真实密钥。
+- MSI 打包链路（`extract_builtin_key.ps1` / `generate_msi_config.ps1` / `build-msi.bat`）在本机提取密钥生成含 key 的构建产物，产物均 gitignored；不要把生成的含 key config 提交进仓库。
 - Windows 便携包模板中使用占位符而非真实 Sparkle 公钥；真实签名证书与 Sparkle 私钥只存在于签名机。
 - 集成测试与 E2E 工具链坚持「不伪造结果」原则：无凭据/无设备时 SKIP 或报错，不要为了让测试变绿而 mock 掉真实链路。
 - 固件 OTA 与桌面端自动更新走官方渠道（GitHub Release + 阿里云 OSS + appcast），不要绕过签名校验逻辑。
@@ -292,23 +299,22 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 4. 上传固件到阿里云 OSS 的版本目录和 `latest/` 目录。
 5. 触发 `deploy-website.yml` 更新 `website/public/appcast.xml`。
 
-Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名，然后上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流以收录 MSI 条目。完整步骤见 `Doc/Ref/release.md`。
+Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名（脚本自动完成内置凭据注入、MSI config 生成与 flash payload 准备），然后上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流以收录 MSI 条目。完整步骤见 `Doc/Ref/release.md`。
 
 Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（PowerShell 脚本，用 .NET 写 UTF-8 文件规避 cmd 中文 `echo` 块在 GBK 代码页下的解析错位；脚本须存为 UTF-8 with BOM）；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。打包产物放在 `dist/`（已被视为本地产物目录）。
 
-`CHANGELOG.md` 是版本变更记录（最新条目为 v2.3.5）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失），以 `VERSION`（当前 `2.3.5`）为准。
+`CHANGELOG.md` 是版本变更记录（最新已发布条目为 v2.3.5，其上有 `Unreleased` 段落记录未发布的 VoiceStickFlash 工具）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失），以 `VERSION`（当前 `2.3.5`）为准。
 
 ## 项目 Skills
 
 本仓库在 `.agents/skills/` 下维护项目级 Skill，相关场景会自动加载：
 
-- `byted-web-search`：火山引擎豆包搜索，联网事实核查与信息检索场景优先使用。
 - `sticks3-flash-ota`：M5Stack StickS3 固件烧录与升级流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
 - `build-windows`：Windows 桌面端构建与 CTest 流程；改完 `desktop/windows/` 后验证编译和测试。
 - `build-firmware`：固件 ESP-IDF 构建流程；改完 `firmware/` 后验证编译。
 - `usb-jtag-flash-log`：ESP32-S3 USB JTAG 烧录与运行时串口日志采集；烧录后读不到日志、DTR 软复位、串口监控等场景使用，是 `sticks3-flash-ota` 路径 B 的深化补充。
 
-仓库根目录另有一个 `skills/` 目录，存放 `byted-web-search` 与 `sticks3-flash-ota` 两个 Skill 的另一份拷贝（`skills-lock.json` 只记录 `byted-web-search` 的来源与哈希）；以 `.agents/skills/` 为准。新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
+项目级 Skill 以 `.agents/skills/` 为准（原根目录 `skills/` 拷贝目录与 `skills-lock.json` 已随 `byted-web-search` 的移除一并清理；`.claude/skills/` 下另有 Claude Code 专用的历史拷贝，不再维护）。新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
 
 ## 经验教训记忆
 
