@@ -44,7 +44,7 @@ function Get-KeyValue {
     return ''
 }
 
-$sourceContent = Get-Content -Raw $SourceConfig
+$sourceContent = Get-Content -Raw -Encoding UTF8 $SourceConfig
 
 # Credential fields to inject (same 7 as extract_builtin_key.ps1).
 $keyFields = @(
@@ -57,7 +57,7 @@ $keyFields = @(
     'llm_model'
 )
 
-$templateContent = Get-Content -Raw $TemplateConfig
+$templateContent = Get-Content -Raw -Encoding UTF8 $TemplateConfig
 $injected = 0
 
 foreach ($key in $keyFields) {
@@ -83,7 +83,10 @@ if ($outDir -and -not (Test-Path $outDir)) {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 }
 
-$templateContent | Set-Content -Path $OutputConfig -Encoding UTF8
+# 显式以 UTF-8（无 BOM）写出，与源模板编码一致：PS 5.1 的 Set-Content -Encoding UTF8
+# 会写带 BOM 的 UTF-8，且 Get-Content 默认按系统 ANSI 代码页读文件，会把 UTF-8 中文注释
+# 双重编码成乱码（GBK 解码 UTF-8 再写回）。见 Doc/Expe/ 相关记录。
+[System.IO.File]::WriteAllText($OutputConfig, $templateContent, [System.Text.UTF8Encoding]::new($false))
 
 Write-Output "Generated MSI config with $injected of $($keyFields.Count) keys injected: $OutputConfig"
 if ($injected -eq 0) {
