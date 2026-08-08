@@ -85,6 +85,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
+    table[Index(StringId::kMenuRelaunchElevated)] = "Restart as Administrator";
     table[Index(StringId::kMenuWebsite)] = "Website";
     table[Index(StringId::kMenuCheckAppUpdates)] = "Check for App Updates...";
     table[Index(StringId::kMenuFlashTool)] = "Firmware Flash Tool...";
@@ -217,6 +218,18 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotkeyConflictMessage)] = "This hotkey is already used by another app. Choose another combination.";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud needs attention";
     table[Index(StringId::kCloudOpenPageQuestion)] = "Open the VoiceStick Cloud page?";
+
+    // Restart as administrator
+    table[Index(StringId::kRelaunchFailedTitle)] = "Could Not Restart as Administrator";
+    table[Index(StringId::kRelaunchFailedPath)] =
+        "Could not get the program path. Right-click VoiceStick.exe and choose \"Run as administrator\".";
+    table[Index(StringId::kRelaunchFailedUac)] =
+        "UAC was not confirmed or failed. Right-click VoiceStick.exe and choose \"Run as administrator\".";
+    table[Index(StringId::kElevationNeededTitle)] = "VoiceStick Needs Administrator Rights";
+    table[Index(StringId::kElevationNeededBody)] =
+        "%s is running with elevated privileges, so voice input is blocked by the system. "
+        "Right-click the tray icon -> Restart as Administrator, then retry.";
+
     table[Index(StringId::kNotificationPairedTitle)] = "VoiceStick paired";
     table[Index(StringId::kNotificationManualPairSavedTitle)] = "VoiceStick pairing saved";
     table[Index(StringId::kNotificationManualPairSavedBody)] = "Waiting for VS-%s to advertise.";
@@ -355,6 +368,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";
+    table[Index(StringId::kMenuRelaunchElevated)] = "以管理员身份重启";
     table[Index(StringId::kMenuWebsite)] = "官网";
     table[Index(StringId::kMenuCheckAppUpdates)] = "检查应用更新...";
     table[Index(StringId::kMenuFlashTool)] = "固件烧录工具…";
@@ -487,6 +501,15 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotkeyConflictMessage)] = "该快捷键已被其他程序占用，请选择其他组合。";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud 需要处理";
     table[Index(StringId::kCloudOpenPageQuestion)] = "是否打开 VoiceStick Cloud 页面？";
+
+    // 提权重启
+    table[Index(StringId::kRelaunchFailedTitle)] = "提权重启失败";
+    table[Index(StringId::kRelaunchFailedPath)] = "无法获取程序路径，请手动右键 VoiceStick.exe 以管理员身份运行。";
+    table[Index(StringId::kRelaunchFailedUac)] = "UAC 未确认或失败，请手动右键 VoiceStick.exe 以管理员身份运行。";
+    table[Index(StringId::kElevationNeededTitle)] = "需提权运行 VoiceStick";
+    table[Index(StringId::kElevationNeededBody)] =
+        "%s 以高权限运行，语音输入被系统拦截。右键托盘 -> 以管理员身份重启后重试。";
+
     table[Index(StringId::kNotificationPairedTitle)] = "VoiceStick 已配对";
     table[Index(StringId::kNotificationManualPairSavedTitle)] = "VoiceStick 配对已保存";
     table[Index(StringId::kNotificationManualPairSavedBody)] = "正在等待 VS-%s 广播。";

@@ -822,10 +822,13 @@ bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& devic
     // 前台为高权限程序：SendInput 注入必被 UIPI 丢弃，跳过会话启动。
     // 按进程名去重，同一高权限程序本次运行只弹一次气泡。
     if (!elevation_warned_process_.has_value() || *elevation_warned_process_ != process_name) {
-        ui_->ShowNotification("需提权运行 VoiceStick",
-                              "检测到 " + WStringToUtf8(process_name) +
-                                  " 以高权限运行，语音输入被系统拦截。"
-                                  "右键托盘 -> 以管理员身份重启后重试。");
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        std::string body = Tr(StringId::kElevationNeededBody, language);
+        const auto marker = body.find("%s");
+        if (marker != std::string::npos) {
+            body.replace(marker, 2, WStringToUtf8(process_name));
+        }
+        ui_->ShowNotification(Tr(StringId::kElevationNeededTitle, language), body);
         elevation_warned_process_ = process_name;
     }
     LogCoordinatorLine("foreground elevated dev=VS-" + device_id +

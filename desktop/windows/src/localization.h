@@ -80,6 +80,7 @@ enum class StringId {
     kMenuPairDevice,
     kMenuSettings,
     kMenuQuit,
+    kMenuRelaunchElevated,
     kMenuWebsite,
     kMenuCheckAppUpdates,
     kMenuFlashTool,
@@ -222,6 +223,13 @@ enum class StringId {
     // 云服务提示
     kCloudNeedsAttentionTitle,
     kCloudOpenPageQuestion,
+
+    // 提权重启
+    kRelaunchFailedTitle,
+    kRelaunchFailedPath,
+    kRelaunchFailedUac,
+    kElevationNeededTitle,
+    kElevationNeededBody,
 
     // 通知
     kNotificationPairedTitle,

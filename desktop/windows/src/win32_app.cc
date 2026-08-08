@@ -1041,7 +1041,9 @@ void Win32App::RelaunchElevatedAndQuit() {
     }
     if (length == 0) {
         LogLine("RelaunchElevatedAndQuit: GetModuleFileNameW failed err=" + std::to_string(GetLastError()));
-        ShowNotification("提权重启失败", "无法获取程序路径，请手动右键 VoiceStick.exe 以管理员身份运行。");
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        ShowNotification(Tr(StringId::kRelaunchFailedTitle, language),
+                         Tr(StringId::kRelaunchFailedPath, language));
         return;
     }
     path.resize(length);
@@ -1051,7 +1053,9 @@ void Win32App::RelaunchElevatedAndQuit() {
     if (reinterpret_cast<INT_PTR>(inst) <= 32) {
         LogLine("RelaunchElevatedAndQuit: ShellExecuteW runas failed code=" +
                 std::to_string(static_cast<int>(reinterpret_cast<INT_PTR>(inst))));
-        ShowNotification("提权重启失败", "UAC 未确认或失败，请手动右键 VoiceStick.exe 以管理员身份运行。");
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        ShowNotification(Tr(StringId::kRelaunchFailedTitle, language),
+                         Tr(StringId::kRelaunchFailedUac, language));
         return;
     }
     ShutdownAndQuit();
@@ -1465,7 +1469,8 @@ void Win32App::ShowTrayMenu() {
     AppendMenuW(menu, MF_STRING, kMenuFlashTool,
                 TrW(StringId::kMenuFlashTool, language).c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kMenuRelaunchElevated, L"以管理员身份重启");
+    AppendMenuW(menu, MF_STRING, kMenuRelaunchElevated,
+                TrW(StringId::kMenuRelaunchElevated, language).c_str());
     AppendMenuW(menu, MF_STRING, kMenuQuit, TrW(StringId::kMenuQuit, language).c_str());
     POINT point{};
     GetCursorPos(&point);
