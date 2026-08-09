@@ -6,15 +6,29 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 
 按住 StickS3 正面按键开始录音，释放后桌面端把音频送到 ASR，显示识别文本，并在短暂确认倒计时后把最终结果粘贴到当前焦点输入框。识别文本可在输出前由 LLM 做精修或翻译。桌面端提供 macOS 与 Windows 客户端；浏览器烧录工具与更新源托管在网站上。
 
+## 主要功能
+
+- 两种触发方式：按住说话（`hold_to_talk`，默认）与点按说话（`click_to_talk`）。
+- 双击手势（固件端检测）：主键双击取消当前会话并直接注入 Enter；侧键双击恢复上一次输入确认。
+- 三种输出目标：粘贴到焦点应用（默认）、仅字幕显示、微信输入法模式——把 Opus 解码为 PCM 渲染到系统虚拟麦克风（如 VB-CABLE），供微信输入法等应用作为音频输入源（Windows）。
+- LLM 翻译与精修；火山热词表/替换词表、划词加词与候选热词挖掘（Windows）。
+- 体感鼠标：BMI270 IMU 驱动光标控制，体感态下主键映射为鼠标左键，侧键单击退出（Windows）。
+- 敲击映射：IMU 敲击检测映射为方向键（`tap_to_arrow`，Windows）。
+- MiniEncoderC 编码器：按钮等价主键，旋转映射方向键（慢速逐行/快速翻页分档），按键与旋转动作可按设备自定义（Windows）。
+- 按设备覆盖：输出、设备交互（IMU 唤醒/敲击/体感灵敏度）与编码器设置均可按设备单独配置（托盘设备子菜单，Windows）。
+- 多设备配对与连接，悬浮窗/字幕实时显示识别进度。
+- 固件升级：BLE OTA 免线升级；Windows 另附 VoiceStickFlash COM 口烧录工具作为救砖兜底。
+
 ## 架构
 
 设备负责采集按键与音频并通过 BLE 上报。桌面端是状态唯一可信源：持有交互状态机、ASR、文本显示与文本注入。网站负责落地页、浏览器端 USB 固件烧录和 Sparkle/WinSparkle 更新源。
 
 ```text
 StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> paste/subtitle
+                                                              \-> Opus decode -> PCM -> 虚拟麦克风（微信输入法模式）
 ```
 
-主机端不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。
+ASR 路径不把 Opus 解码回 PCM；ASR 与调试音频缓存都使用同一份 Ogg Opus 流。例外是微信输入法模式：桌面端把 Opus 解码为 PCM 后渲染到系统虚拟麦克风，不经 ASR 文本注入。
 
 ## 目录结构
 
@@ -33,7 +47,8 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 - 正面按键：GPIO11，协议 `primary`，按住说话与深睡唤醒
 - 侧面按键：GPIO12，协议 `secondary`，取消或恢复上一次输入确认
 - PMIC 中断：GPIO13
-- IMU：BMI270
+- IMU：BMI270（体感鼠标与敲击检测）
+- MiniEncoderC 编码器（可选）：I2C @0x42，顶部 Hat 排针 SDA=G8 / SCL=G0 第二路 I2C 总线；按钮等价主键，旋转映射方向键，录音时亮红灯；不能作为深睡唤醒源
 - 音频编解码：ES8311 经 I2S，16 kHz / 16 bit / 单声道
 - 显示屏：135 x 240 ST7789 竖屏
 - LCD 背光：GPIO38 PWM
@@ -47,13 +62,15 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 | 状态 | 主键（正面） | 侧键 |
 | --- | --- | --- |
 | 未配对/未连接 | 不录音，屏幕显示 `VS-XXXX` | 无有效动作 |
-| 连接空闲 | 按住开始录音 | 恢复上一次输入确认 |
-| 录音中 | 释放结束录音 | 不取消当前录音 |
-| 识别中 | 忽略新录音 | 取消正在进行的识别 |
-| 确认倒计时中 | 暂停自动粘贴，进入手动确认 | 取消待粘贴文本 |
-| 手动确认中 | 确认粘贴 | 取消待粘贴文本 |
+| 连接空闲 | 按住开始录音（双击直接注入 Enter，不录音） | 双击恢复上一次输入确认；单击无操作 |
+| 录音中 | 释放结束录音 | 单击不取消当前录音 |
+| 识别中 | 忽略新录音 | 单击取消正在进行的识别 |
+| 确认倒计时中 | 暂停自动粘贴，进入手动确认 | 单击取消待粘贴文本 |
+| 手动确认中 | 确认粘贴 | 单击取消待粘贴文本 |
 
-支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式。文本输出支持 `focused_app`（默认粘贴到当前焦点，默认自动按 Return）和 `subtitle`（仅显示字幕）。识别结果可通过 OpenAI-compatible LLM 精修或翻译，也可按设备单独覆盖输出设置。
+双击检测在固件端完成，桌面端统一处理 `button_double_click`：主键双击先取消当前活跃录音/字幕再注入 Enter；侧键双击执行「恢复上一次输入确认」（体感鼠标态下忽略）。侧键单击的取消语义仅在有活跃录音/识别/待粘贴时生效；体感鼠标态下单击退出体感；真正空闲时单击无操作。
+
+支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式（微信输入法模式的触发方式由 `[wechat_input_method].trigger_mode` 独立控制）。文本输出支持 `focused_app`（默认粘贴到当前焦点，默认自动按 Return）、`subtitle`（仅显示字幕）和 `wechat_input_method`（虚拟麦克风，不经 ASR 文本注入）。识别结果可通过 OpenAI-compatible LLM 精修或翻译，也可按设备单独覆盖输出设置。
 
 ## BLE 协议
 
@@ -62,7 +79,7 @@ GATT 服务 UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 | 名称 | UUID | 方向 | 属性 | 载荷 |
 | --- | --- | --- | --- | --- |
 | `audio_tx` | `…5101` | 设备 → 主机 | notify | Opus 音频帧 |
-| `state_tx` | `…5102` | 设备 → 主机 | notify | 按键事件、电量、固件版本 |
+| `state_tx` | `…5102` | 设备 → 主机 | notify | 按键事件（含 `button_double_click`）、电量、固件版本、体感鼠标运动帧 |
 | `control_rx` | `…5103` | 主机 → 设备 | write without response | `ui_state`、交互/敲击/体感鼠标设置、`ota_commit` |
 | `ota_rx` | `…5104` | 主机 → 设备 | write / write without response | BLE OTA 控制与数据帧 |
 | `ota_tx` | `…5105` | 设备 → 主机 | notify | BLE OTA 状态帧 |
@@ -137,21 +154,24 @@ npm run build    # 最小验证
 | `volcengine_boosting_table_id` / `volcengine_correct_table_id` | 火山自学习平台热词表 / 替换词表 ID（控制台创建），作为 `corpus.boosting_table_id` / `corpus.correct_table_id` 发送 |
 | `voicestick_api_key` / `voicestick_cloud_url` | VoiceStick Cloud 中继 key 与 WebSocket URL |
 | `llm_base_url` / `llm_api_key` / `llm_model` | OpenAI-compatible LLM，用于翻译与精修 |
-| `refine_enabled` / `refine_prompt` | 用 LLM 精修 ASR 原文（去停顿空格、修标点、去口头语），默认 `true`；prompt 留空用内置默认 |
+| `refine_enabled` / `refine_prompt` | 用 LLM 精修 ASR 原文（去停顿空格、修标点、去口头语），默认 `false`（需手动开启）；prompt 留空用内置默认 |
 | `hotword_process_enabled` | 划词加词时用 LLM 提炼热词（Windows），默认 `false`，复用 `llm_*` 配置 |
 | `hotword_mining_enabled` | 每次识别会话后异步让 LLM 从最终文本提炼候选热词（Windows），同一词达阈值（3 次）经托盘通知与设置-热词区人工确认入表；默认 `false`（每会话多一次 LLM 调用），复用 `llm_*` 配置 |
 | `hotword_process_prompt` | 提炼提示词覆盖，留空使用内置默认 |
 | `interaction_mode` | `hold_to_talk` 或 `click_to_talk`（focused_app/字幕的触发方式；wechat 模式用 `[wechat_input_method].trigger_mode`） |
+| `tap_to_arrow` / `tap_sensitivity` | IMU 敲击映射方向键及灵敏度（Windows），体感鼠标态下忽略 |
+| `[wechat_input_method]` | 微信输入法模式：`trigger_mode`（独立触发方式）、虚拟麦克风端名、全局热键等（Windows），详见 `Doc/Ref/desktop-config.md` |
 | `resource_id` | 火山引擎 resource ID |
 | `asr_hotwords` | 逗号分隔的 ASR 热词，同时作为术语提示传给 LLM |
 | `paired_device_ids` | 逗号分隔的 4 位十六进制 ID，如 `C3D8,09AF` |
 | `device_theme_colors` / `device_overlay_positions` | 可选的按设备悬浮窗颜色与位置 |
 | `auto_enter` | 粘贴后是否自动按 Return |
 | `debug_audio_cache` / `debug_audio_dir` | 是否保存调试 Ogg Opus 及保存目录（Windows 默认 `%LOCALAPPDATA%\VoiceStick\DebugAudio`） |
-| `[output].target` | `focused_app` 或 `subtitle` |
+| `[output].target` | `focused_app`、`subtitle` 或 `wechat_input_method`（虚拟麦克风，Windows） |
 | `[output].transform` | `original` 或 `translate` |
 | `[output].translation_target` | 目标语言代码，如 `en` 或 `zh-Hans` |
 | `[device.<id>.output]` | 按设备覆盖 transform 与翻译目标 |
+| `[device.<id>.interaction]` / `[device.<id>.encoder]` | 按设备覆盖交互设置（IMU 唤醒/敲击/体感灵敏度）与编码器设置（Windows，托盘设备子菜单「设备交互设置…」/「编码器设置…」） |
 
 火山引擎支持的 `resource_id`：`volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
 
@@ -169,6 +189,7 @@ npm run build    # 最小验证
 ## 固件更新
 
 - **BLE OTA**：桌面端在启动、设备连接/重连和手动刷新时检查按哈希签名的 manifest，校验大小与 SHA-256 后按已连接设备经 BLE 推送 OTA 镜像。
+- **VoiceStickFlash（Windows）**：独立的 COM 口固件烧录小工具，随 MSI 与便携版分发（自包含 esptool 运行时，免系统 Python）。支持整包烧录（merged bin @ 0x0）、仅应用分区（@ 0x10000）、先完全擦除再整包三种模式，作为 BLE OTA 之外的救砖/回退链路。入口：托盘菜单「固件烧录工具…」或固件更新对话框「高级… COM 口烧录」。
 - **USB 串口烧录**：浏览器烧录器（或 `idf.py flash`）在偏移 `0x0` 经 USB 写入 merged 镜像。
 
 完整发布流程见 `Doc/Ref/release.md`。
