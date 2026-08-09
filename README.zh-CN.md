@@ -4,6 +4,8 @@
 
 Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。
 
+项目介绍页：[Hackster.io — VoiceStick Plus](https://www.hackster.io/haobot2018/voicestick-plus-d56e05)
+
 按住 StickS3 正面按键开始录音，释放后桌面端把音频送到 ASR，显示识别文本，并在短暂确认倒计时后把最终结果粘贴到当前焦点输入框。识别文本可在输出前由 LLM 做精修或翻译。桌面端提供 macOS 与 Windows 客户端；浏览器烧录工具与更新源托管在网站上。
 
 ## 主要功能

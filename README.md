@@ -4,6 +4,8 @@ English | [简体中文](README.zh-CN.md)
 
 Voice Stick turns an M5Stack StickS3 (ESP32-S3) into a desktop Bluetooth push-to-talk voice input device.
 
+Project write-up: [Hackster.io — VoiceStick Plus](https://www.hackster.io/haobot2018/voicestick-plus-d56e05)
+
 Hold the front button on the StickS3 to record. When you release it, the desktop app sends the audio to ASR, shows the recognized text, and pastes the final result into the currently focused input field after a short confirmation countdown. The recognized text can optionally be refined or translated by an LLM before output. macOS and Windows desktop clients are available; a browser-based flasher and update feeds live on the website.
 
 ## Features
