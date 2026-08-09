@@ -2,6 +2,9 @@
 # 替代 package-portable.bat：用 .NET 写 UTF-8 文件，规避 cmd 中文 echo 在 GBK 代码页下的解析错位。
 # 用法：在仓库根目录执行  powershell -ExecutionPolicy Bypass -File scripts\package-portable.ps1
 # 默认只做收集+配置+打包；如需重新构建，传 -Build 开关。
+# 自 v2.3.6 起，便携版同时包含固件烧录工具 VoiceStickFlash.exe + FlashTool\（自包含
+# python-embed + esptool 运行时，由 scripts\prepare_flash_payload.ps1 生成），与 MSI 布局一致，
+# 使便携版同样具备 COM 口固件烧录能力（救砖 / 分区表变更 / bootloader 更新）。
 
 [CmdletBinding()]
 param(
@@ -37,6 +40,21 @@ New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 Write-Host "[1/4] 收集产物..." -ForegroundColor Yellow
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStick.exe') $OutDir -Force
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\WinSparkle.dll') $OutDir -Force
+Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStickFlash.exe') $OutDir -Force
+
+# 烧录工具运行时：FlashTool\python\python.exe + site-packages（esptool）。
+# 优先复用 MSI 打包已生成的 build-msi-x64\flash_payload（幂等，避免重复下载），
+# 不存在时再现场调用 prepare_flash_payload.ps1 生成到便携版目录。
+# 布局与 LocatePythonExe()（flash_tool_dialog.cc）候选 1 一致：<exe_dir>\FlashTool\python\python.exe。
+$FlashPayloadDir = Join-Path $Root 'desktop\windows\build-msi-x64\flash_payload'
+if (Test-Path (Join-Path $FlashPayloadDir 'python\python.exe')) {
+  Write-Host "[1/4] 复用 MSI flash_payload: $FlashPayloadDir" -ForegroundColor Green
+  Copy-Item $FlashPayloadDir (Join-Path $OutDir 'FlashTool') -Recurse -Force
+} else {
+  Write-Host "[1/4] 未找到 MSI flash_payload，现场生成 FlashTool\..." -ForegroundColor Yellow
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\prepare_flash_payload.ps1') -OutputDir (Join-Path $OutDir 'FlashTool')
+  if ($LASTEXITCODE -ne 0) { Write-Host "生成 FlashTool 运行时失败！" -ForegroundColor Red; exit 1 }
+}
 
 Write-Host "[2/4] 生成便携配置 config.toml..." -ForegroundColor Yellow
 $Config = @'
@@ -80,6 +98,11 @@ VoiceStick 绿色便携版 v$Version
 1. 编辑 config.toml，填入 API Key 等配置（至少需要 ASR 的 API Key）
 2. 双击 VoiceStick.exe 启动
 3. 在系统托盘中右键图标进行配对等操作
+
+固件烧录工具（VoiceStickFlash）：
+- 双击 VoiceStickFlash.exe 打开 COM 口固件烧录工具
+- 需要 FlashTool\ 目录（自包含 python-embed + esptool 运行时），已随本包提供
+- 支持整包 / 仅应用分区 / 先擦除再整包三种烧录模式
 
 便携模式说明：
 - 本目录存在 config.toml 时自动激活便携模式

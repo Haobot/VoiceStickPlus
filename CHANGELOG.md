@@ -3,6 +3,7 @@
 ## v2.3.6
 
 - 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。
+- 便携版包含固件烧录工具（Windows）：`scripts/package-portable.ps1` 新增收集 `VoiceStickFlash.exe` 与 `FlashTool\` 自包含 esptool 运行时（优先复用 `build-msi-x64\flash_payload`，否则现场调用 `prepare_flash_payload.ps1` 生成；布局与 `LocatePythonExe()` 候选 1 一致），使便携版同样具备 COM 口固件烧录能力，与 MSI 布局一致。
 
 ## Unreleased
 
