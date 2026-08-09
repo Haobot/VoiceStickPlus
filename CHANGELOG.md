@@ -1,5 +1,9 @@
 # CHANGELOG.md
 
+## v2.3.6
+
+- 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。
+
 ## Unreleased
 
 - 新增 COM 口固件烧录工具 VoiceStickFlash（Windows）：独立 Win32 GUI 小工具，随 MSI 安装（`INSTALLFOLDER\VoiceStickFlash.exe` + `FlashTool\` 自包含 python-embed + esptool 运行时，免系统 Python），作为 BLE OTA 之外的用户级兜底链路（救砖 / 分区表变更 / bootloader 更新 / 恢复出厂）。支持三种模式：整包烧录（merged bin @ 0x0）、仅应用分区（@ 0x10000）、先完全擦除再整包；COM 口自动枚举 + 评分选中（ESP32-S3 原生 USB VID 303A 优先，规则与 `scripts/idf_cli.yaml` 一致）；子进程方式跑 `python -m esptool`（`--after no_reset`，烧完提示手动短按电源键重启），stdout 解析阶段/进度/错误；开始前检测 VoiceStickApp 运行并警告。入口：托盘菜单「固件烧录工具…」+ 固件更新对话框「高级… COM 口烧录」按钮。可测试逻辑下沉 `voicestick_core`（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`，4 组新单测）；`scripts/prepare_flash_payload.ps1` 幂等准备 payload（`VOICESTICK_PYTHON_EMBED_URL` 可覆盖下载源），`build-msi.bat` / `build-msi-unsigned.bat` 自动调用并打进 MSI。设计见 `Doc/Plan/windows-com-flash-tool.md`。

@@ -877,6 +877,21 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
                 ble_->SendUiState("ready", "", device_id);
                 return;
             }
+            // 带 duration_ms 的 click 以此消歧启动/停止（同下方 focused_app 分支说明）。
+            if (event.duration_ms.has_value() && *event.duration_ms > 0) {
+                if (event.session_id.has_value() &&
+                    IsActiveSubtitleCycle(device_id, *event.session_id)) {
+                    HandleSubtitlePrimaryButtonUp(device_id);
+                } else {
+                    LogCoordinatorLine("subtitle click_to_talk stale stop click ignored dev=VS-" +
+                                       device_id);
+                }
+                return;
+            }
+            if (event.duration_ms.has_value()) {
+                HandleSubtitlePrimaryButtonDown(event.session_id, device_id);
+                return;
+            }
             if (HasActiveSubtitleSession(device_id)) {
                 HandleSubtitlePrimaryButtonUp(device_id);
             } else {
@@ -909,6 +924,32 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
         if (HandleFrontButtonDuringPendingPaste(device_id)) return;
         if (config_.interaction_mode != InteractionMode::kClickToTalk) {
             ble_->SendUiState("ready", "", device_id);
+            return;
+        }
+        // 固件 click_to_talk 的启动 click 发 duration_ms=0、停止 click 发 >0（均带
+        // session_id）。仅靠桌面状态消歧会在失步后（典型：识别中启动 click 被忽略、
+        // 固件仍在录音）把停止 click 误判为启动，产生永远收不到音频的幽灵会话，最终
+        // 报 "No audio frames from device"。带 duration_ms 的 click 以此消歧；
+        // 缺失时（旧固件）回退原状态判定。
+        if (event.duration_ms.has_value() && *event.duration_ms > 0) {
+            // 停止 click：仅在匹配活跃会话时生效，否则为失步残留，忽略。
+            if (session_state_ == SessionState::kRecording && active_device_id_ == device_id &&
+                event.session_id.has_value() && active_session_id_ == event.session_id) {
+                HandlePrimaryButtonUp(device_id);
+            } else {
+                LogCoordinatorLine("click_to_talk stale stop click ignored dev=VS-" +
+                                   device_id);
+            }
+            return;
+        }
+        if (event.duration_ms.has_value()) {
+            // 启动 click（duration_ms==0）：finalizing 期间维持原忽略行为；
+            // 其余交 HandlePrimaryButtonDown（含 recording 残留自愈：先停旧会话再开新的）。
+            if (session_state_ == SessionState::kFinalizing && active_device_id_ == device_id) {
+                ble_->SendUiState("thinking", "", device_id);
+                return;
+            }
+            HandlePrimaryButtonDown(event.session_id, device_id);
             return;
         }
         if (session_state_ == SessionState::kRecording && active_device_id_ == device_id) {

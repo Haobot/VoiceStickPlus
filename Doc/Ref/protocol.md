@@ -108,6 +108,14 @@ Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is
 included when a `primary` press starts or stops a local audio recording.
 
+In `click_to_talk` mode both recording start and stop are reported as
+`button_click` with a `session_id`; they are disambiguated by `duration_ms`:
+the start click carries `duration_ms: 0`, the stop click carries the elapsed
+session duration (`> 0`). Desktops should use `duration_ms` (together with
+`session_id`) rather than their local session state alone to tell the two
+apart, so a stop click that arrives after state desync (e.g. a start click
+ignored while the desktop was finalizing) is not mistaken for a new start.
+
 The button events (`button_down` / `button_up` / `button_click` /
 `button_double_click`) carry an optional `source` field identifying the input
 origin. Events from the MiniEncoderC encoder button (on the top Hat header)

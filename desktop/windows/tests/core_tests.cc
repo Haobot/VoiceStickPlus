@@ -563,11 +563,13 @@ public:
 
 StateEvent ButtonEvent(const std::string& event,
                        const std::string& button,
-                       std::optional<std::uint32_t> session_id = std::nullopt) {
+                       std::optional<std::uint32_t> session_id = std::nullopt,
+                       std::optional<std::uint32_t> duration_ms = std::nullopt) {
     StateEvent state_event;
     state_event.event = event;
     state_event.button = button;
     state_event.session_id = session_id;
+    state_event.duration_ms = duration_ms;
     return state_event;
 }
 
@@ -2365,6 +2367,121 @@ void TestCoordinatorClickToTalkPrimaryClickTogglesRecording() {
     assert(ble_ptr->sent_ui_states.back().state == "thinking");
 
     ble_ptr->on_audio_frame("5A74", EmptyEndFrame(21, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+// click_to_talk 消歧回归：固件启动 click 发 duration_ms=0、停止 click 发 >0（均带
+// session_id）。无活跃会话时收到停止 click 属于失步残留（典型：识别中启动 click 被忽略、
+// 固件仍在录音，桌面回 ready 后停止 click 才到），必须忽略；否则启动永远收不到音频的
+// 幽灵会话，数秒后经停滞看门狗以 "No audio frames from device" 报错。
+void TestCoordinatorClickToTalkIgnoresStrayStopClick() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 99, 3000));
+    assert(ui.show_listening_count == 0);
+    assert(!HasUiState(*ble_ptr, "recording", "5A74"));
+}
+
+// 完整失步链路：识别中（finalizing）点击启动被桌面忽略但固件已在录音 → ASR final 后桌面
+// 回 ready → 停止 click 到达。该 click 不得误判为启动新会话。
+void TestCoordinatorClickToTalkStaleStopClickAfterFinalizingIgnored() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 会话 50：正常启动、说话、停止 → 等 audio_end（finalizing）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 50, 0));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(50, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 50, 3000));
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+    assert(ui.show_listening_count == 1);
+
+    // finalizing 期间点击启动会话 51：桌面忽略（设备屏 thinking），固件实际在录音。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 51, 0));
+    assert(ui.show_listening_count == 1);
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+
+    // 会话 50 收尾：audio_end → ASR final → 粘贴回 ready。
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(50, 2));
+    assert(asr_ptr->started);
+    asr_ptr->on_final("hello");
+    assert(input.pasted_text == "hello");
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+
+    // 会话 51 的停止 click 迟到：不得启动幽灵会话。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 51, 4200));
+    assert(ui.show_listening_count == 1);
+}
+
+// 停止 click 的 session_id 与活跃会话不匹配时不得停止当前会话：固件录音中只对本次会话
+// 发停止 click，不匹配说明该 click 属于另一个已结束会话（失步残留）。
+void TestCoordinatorClickToTalkStopClickSessionMismatchIgnored() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 70, 0));
+    assert(ui.show_listening_count == 1);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+
+    // 不匹配的停止 click：当前会话 70 保持录音，不被误停。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 71, 3000));
+    assert(ui.hide_overlay_count == 0);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+}
+
+// 录音中收到新启动 click（旧会话停止 click 丢失的失步自愈）：先取消残留旧会话，
+// 再以新 session_id 启动新会话，与 button_down 路径的残留自愈一致。
+void TestCoordinatorClickToTalkStartClickDuringRecordingStartsNew() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 80, 0));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(80, 1));
+    assert(ui.show_listening_count == 1);
+
+    // 固件已结束 80 并开启 81（其停止 click 丢失）：启动 click(81) 自愈切换到新会话。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 81, 0));
+    assert(ui.show_listening_count == 2);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+
+    // 新会话正常工作：音频帧被接受，匹配停止 click 正常结束。
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(81, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 81, 3000));
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(81, 2));
     assert(asr_ptr->started);
     assert(asr_ptr->last_chunk_was_final);
 }
@@ -7559,6 +7676,10 @@ int main() {
     TestCoordinatorSubtitleFinalDoesNotBlockNextSession();
     TestCoordinatorShortSubtitleEndReturnsReady();
     TestCoordinatorClickToTalkPrimaryClickTogglesRecording();
+    TestCoordinatorClickToTalkIgnoresStrayStopClick();
+    TestCoordinatorClickToTalkStaleStopClickAfterFinalizingIgnored();
+    TestCoordinatorClickToTalkStopClickSessionMismatchIgnored();
+    TestCoordinatorClickToTalkStartClickDuringRecordingStartsNew();
     TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio();
     TestCoordinatorShowsDetailedAsrStartError();
     TestTapEventInjectsArrowDown();
