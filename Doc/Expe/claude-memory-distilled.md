@@ -443,3 +443,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - 火山首 partial 延迟 ≈ 音频全长，与 result_type/enable_nonstream/enable_ddc 无关（5 组消融完全相同），不要再消融这三个参数；腾讯发包节奏测量用 select 零超时（1ms 超时 recv 在 Windows 实际 10–15ms/帧，会严重污染总延迟）。
 - `device_info` 曾超 BLE 通知 MTU 预算被截断（258B JSON，MTU 247 链路截到 244B、桌面 parse failed）——已修复：精简到 235B + `send_state_json` 超预算告警（4B 帧头 + JSON ≤ ATT MTU−3，预算 240B@MTU247）。state 帧仍严禁盲目加字段，新增状态走独立小帧（先例 `encoder_status`）。改 BLE 协议后必须看一次真机连接日志。见 `Doc/Expe/encoder-present-reporting-2026-08-02.md`。
 - `VoiceStickUi` 接口有三处实现（`Win32App`、`core_tests.cc` 与 `integration_tests.cc` 的 FakeUi），加纯虚函数必须三处同改；设置对话框控件一律创建、未入 `layout_` 表的由 BuildControls 隐藏但 Load/Save 照常读写（整段隐藏不丢配置），区块前置 `separator()` 要挂同一可见性谓词。
+- 首次 GitHub Release / fork 迁移发布全流程（坑：`gh release view` 无 Release 即炸、MSI 上传与网站部署竞态、`gh` 不在 Bash PATH、PowerShell 读 octet-stream 给字节数组、CI 固件与本地固件体积不同），见 `Doc/Expe/release-v236-first-github-release-2026-08-10.md`。
