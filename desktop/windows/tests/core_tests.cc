@@ -7292,7 +7292,7 @@ void TestEsptoolProgressParser() {
     assert(events[1].kind == FlashEvent::kStage && events[1].text == L"连接中");
     assert(events[2].kind == FlashEvent::kStage && events[2].text == L"检测芯片");
 
-    // 写入进度：只认 "(X %)" 形式。
+    // 写入进度：兼容 esptool 4.x "(X %)" 形式。
     events.clear();
     parser.FeedLine("Writing at 0x00000000... (10 %)");
     parser.FeedLine("Writing at 0x00040000... (50 %)");
@@ -7300,6 +7300,23 @@ void TestEsptoolProgressParser() {
     assert(events[0].kind == FlashEvent::kStage && events[0].text == L"写入");
     assert(events[1].kind == FlashEvent::kProgress && events[1].percent == 10);
     assert(events[2].kind == FlashEvent::kProgress && events[2].percent == 50);
+
+    // esptool 5.x 进度条格式（管道非 TTY 时实际产出，烧录工具内嵌 esptool 5.2.0）。
+    {
+        std::vector<FlashEvent> ev52;
+        EsptoolProgressParser p52([&](const FlashEvent& e) { ev52.push_back(e); });
+        p52.FeedLine("Stub flasher running.");
+        p52.FeedLine("Detecting chip type... ESP32-S3");
+        assert(ev52.size() == 2);
+        assert(ev52[0].kind == FlashEvent::kStage && ev52[0].text == L"连接中");
+        assert(ev52[1].kind == FlashEvent::kStage && ev52[1].text == L"检测芯片");
+
+        ev52.clear();
+        p52.FeedLine("Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ");
+        assert(ev52.size() == 2);
+        assert(ev52[0].kind == FlashEvent::kStage && ev52[0].text == L"写入");
+        assert(ev52[1].kind == FlashEvent::kProgress && ev52[1].percent == 46);
+    }
 
     // 黑名单行不产进度事件（擦除/校验/Hash/Connecting）。
     events.clear();
