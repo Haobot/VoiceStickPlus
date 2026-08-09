@@ -2,7 +2,9 @@
 
 本文记录把 VoiceStick 的桌面端自更新（Sparkle/WinSparkle + appcast）与发布流水线从原仓库 `78/voicestick` 迁移到自己 GitHub 账号的完整步骤。适用于 fork 后独立发布的场景。
 
-假设你的账号为 `<你的用户名>`，仓库名保持 `voicestick`，则 Pages 地址为 `https://<你的用户名>.github.io/voicestick/`，appcast 地址为 `https://<你的用户名>.github.io/voicestick/appcast.xml`。
+> **当前状态（2026-08，v2.3.6 首次正式发布）**：本仓库已完成迁移——发布主仓库为 `Haobot/VoiceStickPlus`（origin），Pages 路径用 `/VoiceStickPlus/`（`https://haobot.github.io/VoiceStickPlus/`，需在仓库 Settings → Pages → Source 选 GitHub Actions 后生效）。固件分发已弃阿里云 OSS，改走 GitHub Release 资产（manifest 由 `release.yml` 生成并上传到 Release，客户端默认读 `releases/latest/download/manifest.json`）；`release.yml` 已删除 OSS 上传步骤与 `build-macos:` job（本次发布仅出 Windows + 固件，macOS 恢复时需回填该 job 及其 Secrets）。下文以通用步骤为纲，括号内注明本仓库实际落地值。
+
+假设你的账号为 `<你的用户名>`，仓库名保持 `voicestick`，则 Pages 地址为 `https://<你的用户名>.github.io/voicestick/`，appcast 地址为 `https://<你的用户名>.github.io/voicestick/appcast.xml`。（本仓库实际：账号 `Haobot`、仓库 `VoiceStickPlus`、base 为 `/VoiceStickPlus/`。）
 
 ## 一、仓库准备
 

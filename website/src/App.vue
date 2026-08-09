@@ -4,16 +4,18 @@ import { useI18n } from 'vue-i18n'
 import { ESPLoader, Transport } from 'esptool-js'
 import { setLocale } from './i18n'
 import productPhoto from './assets/sticks3.png'
-import packageInfo from '../package.json'
+// 版本号以仓库根目录 VERSION 文件为准（单一版本来源），避免与 package.json 脱节
+import appVersion from '../../VERSION?raw'
 
 const { locale, t } = useI18n()
-const releaseUrl = 'https://github.com/78/voicestick/releases/latest'
-const githubUrl = 'https://github.com/78/voicestick'
-const releaseDownloadBase = `https://github.com/78/voicestick/releases/download/v${packageInfo.version}`
-const macDownloadUrl = `${releaseDownloadBase}/VoiceStick-${packageInfo.version}.dmg`
-const windowsDownloadUrl = `${releaseDownloadBase}/VoiceStick_${packageInfo.version}.msi`
-const defaultFirmwareUrl = `https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/voicestick-firmware-sticks3-merged-${packageInfo.version}.bin`
-const firmwareManifestUrl = import.meta.env.VITE_FIRMWARE_MANIFEST_URL || 'https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/manifest.json'
+const version = appVersion.trim()
+const releaseUrl = 'https://github.com/Haobot/VoiceStickPlus/releases/latest'
+const githubUrl = 'https://github.com/Haobot/VoiceStickPlus'
+const releaseDownloadBase = `https://github.com/Haobot/VoiceStickPlus/releases/download/v${version}`
+const macDownloadUrl = `${releaseDownloadBase}/VoiceStick-${version}.dmg`
+const windowsDownloadUrl = `${releaseDownloadBase}/VoiceStick_${version}.msi`
+const defaultFirmwareUrl = `https://github.com/Haobot/VoiceStickPlus/releases/download/v${version}/voicestick-firmware-sticks3-merged-${version}.bin`
+const firmwareManifestUrl = import.meta.env.VITE_FIRMWARE_MANIFEST_URL || 'https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json'
 const firmwareUrl = ref(import.meta.env.VITE_FIRMWARE_URL || defaultFirmwareUrl)
 const appResetSequence = 'D0|R1|W100|R0|W500|D0'
 

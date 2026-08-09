@@ -39,30 +39,40 @@ jobs:
       - name: Update appcast from latest release
         run: |
           set -euo pipefail
-          curl -fsSL "https://78.github.io/voicestick/appcast.xml" \
+          curl -fsSL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml" \
             -o website/public/appcast.xml || true
           tag="$(gh release view --json tagName -q .tagName)"
           version="${tag#v}"
+          appcast_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml"
           zip_asset="VoiceStick-${version}.zip"
           sig_asset="VoiceStick-${version}.signature"
           zip_length="$(gh release view "$tag" --json assets \
-            -q ".assets[] | select(.name == \"${zip_asset}\") | .size")"
+            -q ".assets[] | select(.name == \"${zip_asset}\") | .size" || true)"
           msi_asset="VoiceStick_${version}.msi"
           msi_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${msi_asset}\") | .size" || true)"
-          gh release download "$tag" --pattern "$sig_asset" --dir "$RUNNER_TEMP"
-          signature="$(cat "$RUNNER_TEMP/$sig_asset" | tr -d '\n')"
+          if [ -n "${zip_length:-}" ]; then
+            gh release download "$tag" --pattern "$sig_asset" --dir "$RUNNER_TEMP"
+            signature="$(cat "$RUNNER_TEMP/$sig_asset" | tr -d '\n')"
+          else
+            signature=""
+          fi
           notes="$(gh release view "$tag" --json body -q .body)"
           args=(
             --version "$version" \
-            --zip-url "https://github.com/78/voicestick/releases/download/${tag}/${zip_asset}" \
-            --signature "$signature" \
-            --length "$zip_length" \
+            --appcast-url "$appcast_url" \
             --release-notes "$notes"
           )
+          if [ -n "${zip_length:-}" ]; then
+            args+=(
+              --zip-url "https://github.com/${{ github.repository }}/releases/download/${tag}/${zip_asset}" \
+              --signature "$signature" \
+              --length "$zip_length"
+            )
+          fi
           if [ -n "${msi_length:-}" ]; then
             args+=(
-              --msi-url "https://github.com/78/voicestick/releases/download/${tag}/${msi_asset}" \
+              --msi-url "https://github.com/${{ github.repository }}/releases/download/${tag}/${msi_asset}" \
               --msi-length "$msi_length" \
             )
           fi
@@ -74,7 +84,7 @@ jobs:
         run: npm run build
         working-directory: website
         env:
-          VITE_FIRMWARE_MANIFEST_URL: https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/manifest.json
+          VITE_FIRMWARE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/manifest.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

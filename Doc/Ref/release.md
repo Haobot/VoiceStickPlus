@@ -2,8 +2,8 @@
 
 VoiceStick releases have three moving parts:
 
-- macOS app: built, signed, notarized, and uploaded by GitHub Actions.
-- StickS3 firmware: built by GitHub Actions and uploaded to Aliyun OSS and GitHub Releases.
+- macOS app: built, signed, notarized, and uploaded by GitHub Actions. (The macOS job is currently disabled in the CI pipeline; only the Windows package and firmware are published for v2.3.6.)
+- StickS3 firmware: built by GitHub Actions and uploaded to GitHub Releases (as release assets; the firmware manifest is served from `releases/latest/download/manifest.json`).
 - Windows app: built and signed manually on the Windows signing machine, then uploaded to the matching GitHub Release.
 
 The Windows package is the special case because the signing certificate is local hardware or local machine state. The release process supports either order:
@@ -24,10 +24,10 @@ firmware/version.txt
 
 `VERSION` is used by the desktop packaging scripts and the GitHub release workflow. `firmware/version.txt` is the firmware version reported by the device, so it must match the release version for OTA update detection to work correctly.
 
-For release `0.2.4`, the tag must be:
+For release `2.3.6`, the tag must be:
 
 ```text
-v0.2.4
+v2.3.6
 ```
 
 The GitHub Actions release workflow validates that `v<VERSION>` matches the pushed tag.
@@ -40,26 +40,18 @@ The GitHub Actions release workflow validates that `v<VERSION>` matches the push
 4. Push the release tag:
 
 ```sh
-git tag -a v0.2.4 -m "VoiceStick 0.2.4"
+git tag -a v2.3.6 -m "VoiceStick 2.3.6"
 git push origin main
-git push origin v0.2.4
+git push origin v2.3.6
 ```
 
 Pushing the tag runs `.github/workflows/release.yml`. That workflow builds:
 
-- `VoiceStick-<version>.dmg`
-- `VoiceStick-<version>.zip`
-- `VoiceStick-<version>.signature`
 - `voicestick-firmware-sticks3-ota-<version>.bin`
 - `voicestick-firmware-sticks3-merged-<version>.bin`
 - firmware checksums and `manifest.json`
 
-It also uploads the firmware to Aliyun OSS under both:
-
-```text
-voicestick/firmwares/<version>/
-voicestick/firmwares/latest/
-```
+The firmware assets and `manifest.json` are uploaded to the GitHub Release (no Aliyun OSS upload; the CI no longer carries OSS credentials).
 
 After publishing the GitHub Release, the workflow requests a website deploy so the appcast is refreshed.
 
@@ -88,13 +80,13 @@ The MSI also installs the COM flash tool `VoiceStickFlash.exe` (BLE OTA fallback
 6. Upload the signed MSI to the same GitHub Release:
 
 ```sh
-gh release upload v0.2.4 desktop/windows/build-msi-x64/VoiceStick_0.2.4.msi --repo 78/voicestick
+gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6.msi --repo Haobot/VoiceStickPlus
 ```
 
 7. Re-run the website deploy workflow so the appcast includes the Windows MSI:
 
 ```sh
-gh workflow run deploy-website.yml --repo 78/voicestick --ref main
+gh workflow run deploy-website.yml --repo Haobot/VoiceStickPlus --ref main
 ```
 
 ## macOS and Firmware First
@@ -113,13 +105,13 @@ scripts\build-msi.bat
 5. Upload the signed MSI to the already published GitHub Release:
 
 ```sh
-gh release upload v0.2.4 desktop/windows/build-msi-x64/VoiceStick_0.2.4.msi --repo 78/voicestick
+gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6.msi --repo Haobot/VoiceStickPlus
 ```
 
 6. Re-run the website deploy workflow:
 
 ```sh
-gh workflow run deploy-website.yml --repo 78/voicestick --ref main
+gh workflow run deploy-website.yml --repo Haobot/VoiceStickPlus --ref main
 ```
 
 Until the MSI is uploaded and the website deploy has run, Windows clients will not see the new Windows update in the appcast.
@@ -131,34 +123,34 @@ After every release, verify the appcast, firmware manifest, and actual package U
 Stable update endpoints:
 
 ```text
-https://78.github.io/voicestick/appcast.xml
-https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/manifest.json
+https://haobot.github.io/VoiceStickPlus/appcast.xml
+https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json
 ```
 
-For version `0.2.4`, the appcast should contain:
+For version `2.3.6`, the appcast should contain:
 
 ```text
-https://github.com/78/voicestick/releases/download/v0.2.4/VoiceStick_0.2.4.msi
-https://github.com/78/voicestick/releases/download/v0.2.4/VoiceStick-0.2.4.zip
+https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick_2.3.6.msi
+https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick-2.3.6.zip
 ```
 
-The firmware manifest should contain:
+The firmware manifest should contain (firmware assets are hosted on the GitHub Release, not OSS):
 
 ```text
-https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/0.2.4/voicestick-firmware-sticks3-ota-0.2.4.bin
-https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/0.2.4/voicestick-firmware-sticks3-merged-0.2.4.bin
+https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-ota-2.3.6.bin
+https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-merged-2.3.6.bin
 ```
 
 Use `HEAD` requests or a browser to confirm every URL returns `200`.
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing https://78.github.io/voicestick/appcast.xml
-Invoke-WebRequest -UseBasicParsing https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/manifest.json
+Invoke-WebRequest -UseBasicParsing https://haobot.github.io/VoiceStickPlus/appcast.xml
+Invoke-WebRequest -UseBasicParsing https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json
 
-Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/78/voicestick/releases/download/v0.2.4/VoiceStick_0.2.4.msi
-Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/78/voicestick/releases/download/v0.2.4/VoiceStick-0.2.4.zip
-Invoke-WebRequest -UseBasicParsing -Method Head https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/0.2.4/voicestick-firmware-sticks3-ota-0.2.4.bin
-Invoke-WebRequest -UseBasicParsing -Method Head https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/0.2.4/voicestick-firmware-sticks3-merged-0.2.4.bin
+Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick_2.3.6.msi
+Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick-2.3.6.zip
+Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-ota-2.3.6.bin
+Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-merged-2.3.6.bin
 ```
 
 Also confirm these workflow runs are successful:

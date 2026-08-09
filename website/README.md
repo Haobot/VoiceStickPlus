@@ -7,13 +7,13 @@ when the browser language starts with `zh`.
 Suggested GitHub Pages URL for this repository:
 
 ```text
-https://78.github.io/voicestick/
+https://haobot.github.io/VoiceStickPlus/
 ```
 
 The macOS and Windows apps check the generated root-level appcast:
 
 ```text
-https://78.github.io/voicestick/appcast.xml
+https://haobot.github.io/VoiceStickPlus/appcast.xml
 ```
 
 ## Release Flow
@@ -52,7 +52,7 @@ https://78.github.io/voicestick/appcast.xml
    - `sparkle:edSignature`: content from `build/VoiceStick-<version>.signature`
    - `length`: byte size from `wc -c build/VoiceStick-<version>.zip`
 
-The homepage download section links directly to the current versioned macOS DMG and Windows MSI. Keep `website/package.json` in sync with the latest public release so those direct links and the firmware fallback URL point at the right version. The browser flasher reads the firmware manifest from `VITE_FIRMWARE_MANIFEST_URL` and uses `merged_url`; if the manifest cannot be loaded, it falls back to the versioned merged firmware URL derived from `website/package.json`.
+The homepage download section links directly to the current versioned macOS DMG and Windows MSI. The version number is read at build time from the repository root `VERSION` file (single source of truth), not `website/package.json`. The browser flasher reads the firmware manifest from `VITE_FIRMWARE_MANIFEST_URL` and uses `merged_url`; if the manifest cannot be loaded, it falls back to the versioned merged firmware URL derived from the same `VERSION` file.
 
 ## Develop
 
@@ -69,11 +69,11 @@ cd website
 npm run build
 ```
 
-The generated `dist/` directory is deployed to GitHub Pages. `public/appcast.xml` is copied to `dist/appcast.xml`. The firmware manifest itself is hosted on OSS, not GitHub Pages.
+The generated `dist/` directory is deployed to GitHub Pages. `public/appcast.xml` is copied to `dist/appcast.xml`. The firmware manifest itself is hosted on the GitHub Release (`releases/latest/download/manifest.json`), not GitHub Pages or OSS.
 
 ## GitHub Actions
 
-- `.github/workflows/release.yml` runs on `v*` tags or manual dispatch. It builds the macOS app, signs and notarizes the DMG, uploads DMG/ZIP/signature assets to the matching GitHub Release, builds versioned OTA and merged firmware images, publishes the firmware manifest to OSS, rewrites `public/appcast.xml`, builds the Vue site, and deploys `website/dist` to GitHub Pages.
+- `.github/workflows/release.yml` runs on `v*` tags or manual dispatch. It builds versioned OTA and merged firmware images, uploads the firmware assets and `manifest.json` to the matching GitHub Release, then triggers `deploy-website.yml`. (macOS is not built in the current CI pipeline; the macOS job is disabled for the v2.3.6 release.)
 - `scripts/build-msi.bat` runs on the local Windows signing machine with the USB signing key inserted. Upload the generated `VoiceStick_<version>.msi` to the matching GitHub Release.
 - `.github/workflows/deploy-website.yml` runs when `website/**` changes on `main` or when manually dispatched after uploading a Windows MSI. Before deploying, it reads the current live appcast and latest GitHub Release, then regenerates `public/appcast.xml` from the latest ZIP/signature and optional MSI assets. If the latest Release has no Windows MSI yet, the previous Windows item is preserved.
 

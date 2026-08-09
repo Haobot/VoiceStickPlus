@@ -166,9 +166,9 @@ struct AppConfig {
 
     static let defaultVoiceStickCloudURL = "wss://api.xiaozhi.me/voicestick/asr/"
     static let volcengineWebSocketURL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
-    static let websiteURL = URL(string: "https://78.github.io/voicestick/")!
+    static let websiteURL = URL(string: "https://haobot.github.io/VoiceStickPlus/")!
     static let firmwareManifestURL = URL(
-        string: "https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/manifest.json"
+        string: "https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json"
     )!
     static let minimumCompatibleFirmwareVersion = "0.3.0"
 

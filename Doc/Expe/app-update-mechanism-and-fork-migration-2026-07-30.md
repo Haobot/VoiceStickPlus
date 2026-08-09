@@ -1,5 +1,7 @@
 # 桌面端自更新机制与 fork 迁移要点（2026-07-30）
 
+> **状态注记（2026-08，v2.3.6 首次正式发布）**：本文所记迁移已于 v2.3.6 落地。发布主仓库改为 `Haobot/VoiceStickPlus`（origin），所有 `78/voicestick` / `78.github.io` 硬编码地址与固件 OSS manifest 已替换为 Haobot 地址 + GitHub Release 资产（见 `Doc/Guide/fork-publish-to-own-github.md` 顶部「当前状态」）。下列「记录时点」的结论引用前以当前源码为准。
+
 起因：用户问「检查应用更新」的原理，以及如何把整个发布/自更新体系搭建到自己的 GitHub。本文为排查结论沉淀，迁移操作手册见 `Doc/Guide/fork-publish-to-own-github.md`。
 
 ## 机制结论（记录时点，引用前以源码为准）

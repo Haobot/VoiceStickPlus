@@ -64,11 +64,8 @@ jobs:
           set -euo pipefail
           sudo chown -R "$(id -u):$(id -g)" dist
           version="${{ steps.ver.outputs.version }}"
-          public_base="${ALIYUN_OSS_PUBLIC_BASE_URL:-https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com}"
-          prefix="${ALIYUN_OSS_PREFIX:-voicestick/firmwares}"
-          public_base="${public_base%/}"
-          prefix="${prefix#/}"
-          prefix="${prefix%/}"
+          tag="${{ steps.ver.outputs.tag }}"
+          download_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
           ota="voicestick-firmware-sticks3-ota-${version}.bin"
           merged="voicestick-firmware-sticks3-merged-${version}.bin"
           cd dist
@@ -83,10 +80,10 @@ jobs:
           manifest = {
               "hardware": "stick_s3",
               "version": "${version}",
-              "ota_url": "${public_base}/${prefix}/${version}/${ota}",
+              "ota_url": "${download_base}/${ota}",
               "ota_sha256": "${ota_sha}",
               "ota_size": int("${ota_size}"),
-              "merged_url": "${public_base}/${prefix}/${version}/${merged}",
+              "merged_url": "${download_base}/${merged}",
               "merged_sha256": "${merged_sha}",
               "merged_size": int("${merged_size}"),
           }
@@ -94,44 +91,6 @@ jobs:
               json.dump(manifest, f, indent=2)
               f.write("\n")
           PY
-        env:
-          ALIYUN_OSS_PUBLIC_BASE_URL: ${{ vars.ALIYUN_OSS_PUBLIC_BASE_URL }}
-          ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX }}
-
-      - name: Upload firmware to Aliyun OSS
-        env:
-          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
-          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
-          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
-          ALIYUN_OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
-          ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX }}
-        run: |
-          set -euo pipefail
-          test -n "${ALIYUN_OSS_ACCESS_KEY_ID:-}" || (echo "::error ::Missing ALIYUN_OSS_ACCESS_KEY_ID" && exit 1)
-          test -n "${ALIYUN_OSS_ACCESS_KEY_SECRET:-}" || (echo "::error ::Missing ALIYUN_OSS_ACCESS_KEY_SECRET" && exit 1)
-          test -n "${ALIYUN_OSS_ENDPOINT:-}" || (echo "::error ::Missing ALIYUN_OSS_ENDPOINT" && exit 1)
-          test -n "${ALIYUN_OSS_BUCKET:-}" || (echo "::error ::Missing ALIYUN_OSS_BUCKET" && exit 1)
-
-          sudo -v
-          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
-
-          prefix="${ALIYUN_OSS_PREFIX:-voicestick/firmwares}"
-          prefix="${prefix#/}"
-          prefix="${prefix%/}"
-          version="${{ steps.ver.outputs.version }}"
-          ota="voicestick-firmware-sticks3-ota-${version}.bin"
-          merged="voicestick-firmware-sticks3-merged-${version}.bin"
-
-          ossutil config \
-            -e "$ALIYUN_OSS_ENDPOINT" \
-            -i "$ALIYUN_OSS_ACCESS_KEY_ID" \
-            -k "$ALIYUN_OSS_ACCESS_KEY_SECRET" \
-            -L EN
-
-          for file in "${ota}" "${ota}.sha256" "${merged}" "${merged}.sha256" "manifest.json"; do
-            ossutil cp -f "dist/${file}" "oss://${ALIYUN_OSS_BUCKET}/${prefix}/${version}/${file}"
-            ossutil cp -f "dist/${file}" "oss://${ALIYUN_OSS_BUCKET}/${prefix}/latest/${file}"
-          done
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
@@ -139,111 +98,9 @@ jobs:
           name: voicestick-firmware-${{ steps.ver.outputs.version }}
           path: dist/*
 
-  build-macos:
-    name: Build macOS Release
-    runs-on: macos-14
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-
-      - name: Resolve tag and validate VERSION
-        id: ver
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              tag="${{ inputs.tag }}"
-          else
-              tag="${GITHUB_REF_NAME}"
-          fi
-          version="$(cat VERSION | head -n1 | tr -d '[:space:]')"
-          if [ "v${version}" != "${tag}" ]; then
-              echo "::error ::tag ${tag} does not match VERSION (${version})."
-              exit 1
-          fi
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate required release secrets
-        run: |
-          set -euo pipefail
-          test -n "${SPARKLE_PUBLIC_ED_KEY:-}" || (echo "::error ::Missing SPARKLE_PUBLIC_ED_KEY" && exit 1)
-          test -n "${SPARKLE_PRIVATE_ED_KEY:-}" || (echo "::error ::Missing SPARKLE_PRIVATE_ED_KEY" && exit 1)
-          test -n "${MACOS_CERTIFICATE_P12:-}" || (echo "::error ::Missing MACOS_CERTIFICATE_P12" && exit 1)
-          test -n "${MACOS_CERTIFICATE_PASSWORD:-}" || (echo "::error ::Missing MACOS_CERTIFICATE_PASSWORD" && exit 1)
-          test -n "${APPLE_ID:-}" || (echo "::error ::Missing APPLE_ID" && exit 1)
-          test -n "${APPLE_TEAM_ID:-}" || (echo "::error ::Missing APPLE_TEAM_ID" && exit 1)
-          test -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" || (echo "::error ::Missing APPLE_APP_SPECIFIC_PASSWORD" && exit 1)
-        env:
-          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
-          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
-          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-
-      - name: Import Developer ID certificate
-        env:
-          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$CERT_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-      - name: Configure notarization profile
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: |
-          xcrun notarytool store-credentials AC_PASSWORD \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD"
-
-      - name: Build app and Sparkle ZIP
-        env:
-          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
-          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
-        run: scripts/build-macos.sh --release
-
-      - name: Build notarized DMG
-        run: scripts/make-dmg.sh
-
-      - name: Stage artifacts
-        id: artifact
-        run: |
-          set -euo pipefail
-          version="${{ steps.ver.outputs.version }}"
-          mkdir -p dist
-          cp "build/VoiceStick-${version}.dmg" dist/
-          cp "build/VoiceStick-${version}.zip" dist/
-          cp "build/VoiceStick-${version}.signature" dist/
-          ( cd dist && shasum -a 256 "VoiceStick-${version}.dmg" > "VoiceStick-${version}.dmg.sha256" )
-          ( cd dist && shasum -a 256 "VoiceStick-${version}.zip" > "VoiceStick-${version}.zip.sha256" )
-          echo "zip_length=$(wc -c < "dist/VoiceStick-${version}.zip" | tr -d ' ')" >> "$GITHUB_OUTPUT"
-          echo "sparkle_signature=$(cat "dist/VoiceStick-${version}.signature" | tr -d '\n')" >> "$GITHUB_OUTPUT"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: voicestick-macos-${{ steps.ver.outputs.version }}
-          path: dist/*
-
   publish-release:
     name: Publish GitHub Release
-    needs: [build-firmware, build-macos]
+    needs: [build-firmware]
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
@@ -279,11 +136,6 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            dist/VoiceStick-${{ steps.ver.outputs.version }}.dmg
-            dist/VoiceStick-${{ steps.ver.outputs.version }}.dmg.sha256
-            dist/VoiceStick-${{ steps.ver.outputs.version }}.zip
-            dist/VoiceStick-${{ steps.ver.outputs.version }}.zip.sha256
-            dist/VoiceStick-${{ steps.ver.outputs.version }}.signature
             dist/voicestick-firmware-sticks3-ota-${{ steps.ver.outputs.version }}.bin
             dist/voicestick-firmware-sticks3-ota-${{ steps.ver.outputs.version }}.bin.sha256
             dist/voicestick-firmware-sticks3-merged-${{ steps.ver.outputs.version }}.bin
@@ -292,12 +144,12 @@ jobs:
 
   request-website-deploy:
     name: Request Website Deploy
-    needs: [build-macos, publish-release]
+    needs: [publish-release]
     runs-on: ubuntu-latest
     steps:
       - name: Trigger website deploy on main
         run: |
           set -euo pipefail
-          gh workflow run deploy-website.yml --repo 78/voicestick --ref main
+          gh workflow run deploy-website.yml --repo ${{ github.repository }} --ref main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -89,7 +89,7 @@ constexpr HotkeyPreset kHotkeyPresets[] = {
 };
 
 #ifndef VOICESTICK_APPCAST_URL
-#define VOICESTICK_APPCAST_URL "https://78.github.io/voicestick/appcast.xml"
+#define VOICESTICK_APPCAST_URL "https://haobot.github.io/VoiceStickPlus/appcast.xml"
 #endif
 
 void LogLine(std::string_view message) {

@@ -7,7 +7,7 @@
 #   build/VoiceStick-<version>.signature  (when Sparkle sign_update is available)
 #
 # Optional environment:
-#   VOICESTICK_APPCAST_URL=https://78.github.io/voicestick/appcast.xml
+#   VOICESTICK_APPCAST_URL=https://haobot.github.io/VoiceStickPlus/appcast.xml
 #   SPARKLE_PUBLIC_ED_KEY=<public key from Sparkle generate_keys>
 #   SPARKLE_PRIVATE_ED_KEY=<private key exported by Sparkle generate_keys -x>
 #   SPARKLE_KEY_ACCOUNT=voicestick

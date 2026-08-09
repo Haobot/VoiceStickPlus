@@ -206,7 +206,7 @@ FirmwareManifestClient::FirmwareManifestClient(std::string manifest_url)
     : manifest_url_(std::move(manifest_url)) {}
 
 std::string FirmwareManifestClient::DefaultManifestUrl() {
-    return "https://xiaozhi-voice-assistant.oss-cn-shenzhen.aliyuncs.com/voicestick/firmwares/latest/manifest.json";
+    return "https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json";
 }
 
 void FirmwareManifestClient::FetchManifest(ManifestCallback callback) const {

@@ -146,7 +146,7 @@ add_executable(VoiceStickApp WIN32
 
 target_include_directories(VoiceStickApp PRIVATE resources ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(VoiceStickApp PRIVATE
-    VOICESTICK_APPCAST_URL="https://78.github.io/voicestick/appcast.xml"
+    VOICESTICK_APPCAST_URL="https://haobot.github.io/VoiceStickPlus/appcast.xml"
 )
 
 set_target_properties(VoiceStickApp PROPERTIES OUTPUT_NAME VoiceStick)
