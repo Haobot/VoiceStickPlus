@@ -106,6 +106,8 @@ jobs:
               json.dump(manifest, f, indent=2)
               f.write("\n")
           PY
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build website
         run: npm run build

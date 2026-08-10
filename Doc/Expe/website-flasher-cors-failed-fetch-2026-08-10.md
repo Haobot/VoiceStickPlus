@@ -40,3 +40,13 @@ GitHub 对 `releases/latest/download/*` 返回 302，最终由 `release-assets.g
 3. **GitHub Release 资产（`release-assets.githubusercontent.com`）不提供 CORS**，任何浏览器直连 fetch 都会被拦。要跨域取固件必须同源托管或自建代理。
 4. 依赖第三方中转（esptool-js 官方代理）端点可能消失，方案前先验证存活。
 5. 迁移后未在浏览器真机验证全链路（曾用 curl 验证 URL 200 即当成功），这次暴露了「curl 通过 ≠ 浏览器可用」。烧录链路验证须在浏览器开发工具里看 fetch 的 Network/CORS 报错，或 `curl -H "Origin: ..."` 逐跳核对响应头。
+
+## 五、上线后 CI 暴露的第二个坑：新步骤缺 GH_TOKEN
+
+改动推到 main 后 `deploy-website.yml` 自动触发但 **failure**：新加的「Sync firmware to Pages origin」步骤在 Actions runner 里报 `gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable`，退出码 4。
+
+**原因**：原「Update appcast from latest release」步骤自带 `env: GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`，但新步骤没带。Actions runner 里 `gh` CLI **不会自动继承 token**，必须每个用到 `gh` 的步骤显式声明。本地 Bash 验证时 `gh` 已登录（凭据缓存在用户目录），所以没暴露；这正是本地验证覆盖不到的 CI 特有机制。
+
+**修复**：给新步骤补 `env: GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`（与既有步骤一致）。
+
+**教训**：凡是在 workflow 里用 `gh` CLI，**每个步骤都要显式写 `GH_TOKEN`**；本地 Bash 验证通过 ≠ Actions 能跑通。参考同类历史坑（`Doc/Expe/release-v236-first-github-release-2026-08-10.md` 坑 4：`gh` 不在 Bash PATH），Actions 环境与本地环境的差异要逐一核对。
