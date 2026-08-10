@@ -1004,6 +1004,13 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             w_param == PBT_APMRESUMECRITICAL) {
             LogLine(std::string("power broadcast: resume event=") +
                     std::to_string(w_param) + "; scheduling BLE restart");
+            // 休眠期间 ASR 保活 WebSocket 底层 TCP 已断，但 AsrClientWin 状态机仍认为
+            // kReady，唤醒后首次录音会复用死连接致握手失败。立即标记失效，下次录音
+            // 强制重新握手（与 BLE 重启不同，ASR 不依赖无线电就绪，无需延迟）。
+            if (coordinator_) {
+                LogLine("power resume: invalidating ASR connection");
+                coordinator_->InvalidateAsrConnection();
+            }
             SetTimer(hwnd_, kResumeRestartTimerId, kResumeRestartDelayMs, nullptr);
             return TRUE;
         }

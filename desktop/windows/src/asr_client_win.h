@@ -26,6 +26,7 @@ public:
     void SendOggOpusChunk(std::span<const std::uint8_t> data, bool is_last) override;
     void Cancel() override;
     std::string LastStartError() const override;
+    void InvalidateConnection() override;
 
 private:
     enum class ConnectionState {

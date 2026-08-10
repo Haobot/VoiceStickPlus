@@ -184,6 +184,9 @@ public:
     std::string LastStartError() const override {
         return start_error;
     }
+    void InvalidateConnection() override {
+        ++invalidate_call_count;
+    }
 
     bool start_result = true;
     std::string start_error;
@@ -191,6 +194,7 @@ public:
     bool cancelled = false;
     int sent_chunks = 0;
     bool last_chunk_was_final = false;
+    int invalidate_call_count = 0;
     AsrSessionOptions last_options;
 };
 
@@ -2533,6 +2537,23 @@ void TestCoordinatorShowsDetailedAsrStartError() {
     assert(!ui.errors.empty());
     assert(ui.errors.back() == "Missing ASR API key");
     assert(HasUiStateText(*ble_ptr, "error", "Missing ASR API key", "5A74"));
+}
+
+// 系统休眠/恢复后 ASR 保活 WebSocket 底层 TCP 已断，但 AsrClientWin 状态机仍认为
+// kReady。平台层在 WM_POWERBROADCAST resume 时调 InvalidateAsrConnection() 通知
+// 协调器丢弃保活连接，下次 Start 强制重新握手。本测试验证协调器正确转发给 asr_。
+void TestCoordinatorInvalidateAsrConnectionForwardsToClient() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    assert(asr_ptr->invalidate_call_count == 0);
+    coordinator.InvalidateAsrConnection();
+    assert(asr_ptr->invalidate_call_count == 1);
 }
 
 void TestTapEventInjectsArrowDown() {
@@ -7682,6 +7703,7 @@ int main() {
     TestCoordinatorClickToTalkStartClickDuringRecordingStartsNew();
     TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio();
     TestCoordinatorShowsDetailedAsrStartError();
+    TestCoordinatorInvalidateAsrConnectionForwardsToClient();
     TestTapEventInjectsArrowDown();
     TestTapDisabledWhenConfigOff();
     TestTapIgnoredDuringRecording();

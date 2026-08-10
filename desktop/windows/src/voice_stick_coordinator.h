@@ -122,6 +122,9 @@ public:
     virtual void SendOggOpusChunk(std::span<const std::uint8_t> data, bool is_last) = 0;
     virtual void Cancel() = 0;
     virtual std::string LastStartError() const { return {}; }
+    // 系统休眠/恢复后调用：标记底层 WebSocket 已失效，下次 Start 强制重新握手。
+    // 默认空实现--仅保活长连接的子类（AsrClientWin）需覆盖。
+    virtual void InvalidateConnection() {}
 
     std::function<void(std::string)> on_partial;
     std::function<void(AsrSegment)> on_segment;
@@ -230,6 +233,8 @@ public:
     void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);
     // 取某设备当前运行期 air_mouse 参数（调参窗口初始值）。无运行期覆盖时回退配置派生值。
     AirMouseParams GetAirMouseParamsForTuning(const std::string& device_id) const;
+    // 系统休眠/恢复后由平台层调用：丢弃 ASR 保活连接，下次录音重新握手。
+    void InvalidateAsrConnection();
     void ReconnectPairedDevices();
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,

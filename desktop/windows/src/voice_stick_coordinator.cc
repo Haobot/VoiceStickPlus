@@ -231,6 +231,10 @@ void VoiceStickCoordinator::ReconnectPairedDevices() {
     ble_->UpdatePairedDeviceIds(paired_device_ids_);
 }
 
+void VoiceStickCoordinator::InvalidateAsrConnection() {
+    if (asr_) asr_->InvalidateConnection();
+}
+
 void VoiceStickCoordinator::ConnectPairedDevice(const std::string& device_id,
                                                 std::uint64_t bluetooth_address,
                                                 BluetoothAddressKind address_kind,

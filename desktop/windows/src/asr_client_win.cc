@@ -140,6 +140,12 @@ std::string AsrClientWin::LastStartError() const {
     return last_start_error_;
 }
 
+void AsrClientWin::InvalidateConnection() {
+    // 休眠/恢复后底层 TCP 已断但状态机仍认为 kReady：复用 ShutdownReusableConnection
+    // 关闭并清空 websocket_、置 connection_state_=kDisconnected，下次 Start 走重新握手。
+    ShutdownReusableConnection();
+}
+
 void AsrClientWin::CancelReusableSession() {
     std::lock_guard lock(mutex_);
     queued_audio_chunks_.clear();
