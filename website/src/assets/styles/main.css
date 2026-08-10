@@ -114,8 +114,8 @@ main {
 
 h1 {
   margin: 0;
-  font-size: clamp(56px, 9vw, 124px);
-  line-height: 0.92;
+  font-size: clamp(44px, 6vw, 72px);
+  line-height: 0.95;
   letter-spacing: 0;
 }
 
