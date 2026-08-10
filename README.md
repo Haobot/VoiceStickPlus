@@ -1,5 +1,7 @@
 # Voice Stick
 
+> **Derived project**: This repository is a fork of [78/voicestick](https://github.com/78/voicestick), the original Voice Stick project by [Xiaoxia](https://github.com/78).
+
 English | [简体中文](README.zh-CN.md)
 
 Voice Stick turns an M5Stack StickS3 (ESP32-S3) into a desktop Bluetooth push-to-talk voice input device.
@@ -202,4 +204,4 @@ Set `debug_audio_cache = true` to save each valid recognition session as a playa
 
 ## License
 
-See [LICENSE](LICENSE).
+This project is derived from [78/voicestick](https://github.com/78/voicestick) (the original Voice Stick by Xiaoxia). See [LICENSE](LICENSE) for the full license text.

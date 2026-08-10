@@ -1,5 +1,7 @@
 # Voice Stick
 
+> **派生项目**：本仓库派生自 [78/voicestick](https://github.com/78/voicestick)，原版 Voice Stick 项目由 [Xiaoxia](https://github.com/78) 原创。
+
 [English](README.md) | 简体中文
 
 Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。
@@ -202,4 +204,4 @@ npm run build    # 最小验证
 
 ## 许可证
 
-见 [LICENSE](LICENSE)。
+本项目派生自 [78/voicestick](https://github.com/78/voicestick)（原版 Voice Stick，作者 Xiaoxia）。完整许可证文本见 [LICENSE](LICENSE)。
