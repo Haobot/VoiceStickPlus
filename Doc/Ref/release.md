@@ -66,24 +66,28 @@ Use this flow when the Windows package has already been built and signed before 
 scripts\build-msi.bat
 ```
 
-The output is:
+The output is (two language versions; WiX 4.0 builds one culture per pass, so the script loops over `zh-CN` and `en-US`):
 
 ```text
-desktop\windows\build-msi-x64\VoiceStick_<version>.msi
+desktop\windows\build-msi-x64\VoiceStick_<version>_zh-CN.msi
+desktop\windows\build-msi-x64\VoiceStick_<version>_en-US.msi
 ```
 
 The MSI also installs the COM flash tool `VoiceStickFlash.exe` (BLE OTA fallback path) and its self-contained esptool runtime under `INSTALLFOLDER\FlashTool\` (embedded Python + esptool, prepared by `scripts/prepare_flash_payload.ps1`, which `build-msi.bat` invokes automatically; override the embeddable-Python download with `VOICESTICK_PYTHON_EMBED_URL`). See `Doc/Plan/windows-com-flash-tool.md`.
 
+Installer localization lives in `desktop/windows/installer/` (`zh-CN.wxl` / `en-US.wxl` plus `license-zh-CN.rtf` / `license-en.rtf`). The install-time UI (wizard dialogs, uninstall confirm, start-menu shortcut name for the flash tool) follows the MSI's culture. **WinSparkle 0.9.2 does not support per-language enclosure selection** (`sparkle:language` is not implemented), so the appcast only lists the `en-US` MSI; the `zh-CN` MSI is for manual download only.
+
 3. Confirm `firmware/version.txt` also matches the new version.
 4. Commit, push `main`, and push the matching `v<version>` tag.
 5. Wait for the release workflow to finish successfully.
-6. Upload the signed MSI to the same GitHub Release:
+6. Upload both signed MSIs to the same GitHub Release:
 
 ```sh
-gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6.msi --repo Haobot/VoiceStickPlus
+gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6_zh-CN.msi --repo Haobot/VoiceStickPlus
+gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6_en-US.msi --repo Haobot/VoiceStickPlus
 ```
 
-7. Re-run the website deploy workflow so the appcast includes the Windows MSI:
+7. Re-run the website deploy workflow so the appcast includes the Windows MSI (`en-US` only):
 
 ```sh
 gh workflow run deploy-website.yml --repo Haobot/VoiceStickPlus --ref main
@@ -102,10 +106,11 @@ Use this flow when macOS and firmware should be published before the Windows pac
 scripts\build-msi.bat
 ```
 
-5. Upload the signed MSI to the already published GitHub Release:
+5. Upload both signed MSIs to the already published GitHub Release:
 
 ```sh
-gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6.msi --repo Haobot/VoiceStickPlus
+gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6_zh-CN.msi --repo Haobot/VoiceStickPlus
+gh release upload v2.3.6 desktop/windows/build-msi-x64/VoiceStick_2.3.6_en-US.msi --repo Haobot/VoiceStickPlus
 ```
 
 6. Re-run the website deploy workflow:
@@ -127,12 +132,14 @@ https://haobot.github.io/VoiceStickPlus/appcast.xml
 https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json
 ```
 
-For version `2.3.6`, the appcast should contain:
+For version `2.3.6`, the appcast should contain (Windows enclosure points to the `en-US` MSI only):
 
 ```text
-https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick_2.3.6.msi
+https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick_2.3.6_en-US.msi
 https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick-2.3.6.zip
 ```
+
+The `zh-CN` MSI (`VoiceStick_2.3.6_zh-CN.msi`) is uploaded to the Release for manual download but is not in the appcast.
 
 The firmware manifest should contain (firmware assets are hosted on the GitHub Release, not OSS):
 
@@ -147,7 +154,7 @@ Use `HEAD` requests or a browser to confirm every URL returns `200`.
 Invoke-WebRequest -UseBasicParsing https://haobot.github.io/VoiceStickPlus/appcast.xml
 Invoke-WebRequest -UseBasicParsing https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json
 
-Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick_2.3.6.msi
+Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick_2.3.6_en-US.msi
 Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick-2.3.6.zip
 Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-ota-2.3.6.bin
 Invoke-WebRequest -UseBasicParsing -Method Head https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-merged-2.3.6.bin

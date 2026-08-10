@@ -13,7 +13,10 @@ const releaseUrl = 'https://github.com/Haobot/VoiceStickPlus/releases/latest'
 const githubUrl = 'https://github.com/Haobot/VoiceStickPlus'
 const releaseDownloadBase = `https://github.com/Haobot/VoiceStickPlus/releases/download/v${version}`
 const macDownloadUrl = `${releaseDownloadBase}/VoiceStick-${version}.dmg`
-const windowsDownloadUrl = `${releaseDownloadBase}/VoiceStick_${version}.msi`
+// Windows 安装包按站点当前语言选 culture：zh-CN / en-US 两个 MSI（WiX 4 逐 culture 产出）
+const windowsDownloadUrl = computed(
+  () => `${releaseDownloadBase}/VoiceStick_${version}_${locale.value === 'zh-CN' ? 'zh-CN' : 'en-US'}.msi`,
+)
 // 固件同源托管于 GitHub Pages（CI 部署时从最新 Release 同步到 /firmware/），
 // 避免 GitHub release-assets 域无 CORS 头导致浏览器 fetch 跨域失败（Failed to fetch）。
 const firmwareBaseUrl = `${import.meta.env.BASE_URL}firmware/`

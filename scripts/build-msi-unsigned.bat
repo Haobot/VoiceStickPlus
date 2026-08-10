@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
 
 :: Unsigned MSI build script. Based on build-msi.bat, with all signtool
@@ -124,22 +124,29 @@ if not exist "%WIX_PATH%" (
     echo ERROR: WiX not found at %WIX_PATH%
     exit /b 1
 )
-"%WIX_PATH%" build "%WINDOWS_DIR%\installer\VoiceStick.wxs" ^
-    "%BUILD_DIR%\flash_payload.wxs" ^
-    "%WINDOWS_DIR%\installer\zh-CN.wxl" ^
-    -arch x64 ^
-    -culture zh-CN ^
-    -ext WixToolset.UI.wixext ^
-    -ext WixToolset.Util.wixext ^
-    -d ProductVersion=%VERSION% ^
-    -d BuildDir=%BUILD_DIR% ^
-    -d FlashPayloadDir=%BUILD_DIR%\flash_payload ^
-    -d ProjectDir=%PROJECT_DIR% ^
-    -o "%BUILD_DIR%\VoiceStick_%VERSION%.msi"
-if errorlevel 1 (
-    echo ERROR: WiX build failed.
-    exit /b 1
+:: WiX 4.0 一次构建只产一个 culture（-culture 为单值过滤，多语言 MSI 支持尚未落地），
+:: 因此分别产出 zh-CN 与 en-US 两个 MSI，各自语言码（2052 / 1033）正确。
+for %%C in (zh-CN en-US) do (
+    echo Building %%C MSI...
+    "%WIX_PATH%" build "%WINDOWS_DIR%\installer\VoiceStick.wxs" ^
+        "%BUILD_DIR%\flash_payload.wxs" ^
+        "%WINDOWS_DIR%\installer\%%C.wxl" ^
+        -arch x64 ^
+        -culture %%C ^
+        -ext WixToolset.UI.wixext ^
+        -ext WixToolset.Util.wixext ^
+        -d ProductVersion=%VERSION% ^
+        -d BuildDir=%BUILD_DIR% ^
+        -d FlashPayloadDir=%BUILD_DIR%\flash_payload ^
+        -d ProjectDir=%PROJECT_DIR% ^
+        -o "%BUILD_DIR%\VoiceStick_%VERSION%_%%C.msi"
+    if errorlevel 1 (
+        echo ERROR: WiX build failed for %%C.
+        exit /b 1
+    )
 )
 
 echo.
-echo Success (unsigned): %BUILD_DIR%\VoiceStick_%VERSION%.msi
+echo Success (unsigned):
+echo   %BUILD_DIR%\VoiceStick_%VERSION%_zh-CN.msi
+echo   %BUILD_DIR%\VoiceStick_%VERSION%_en-US.msi

@@ -299,7 +299,7 @@ Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` �
 4. 上传固件到阿里云 OSS 的版本目录和 `latest/` 目录。
 5. 触发 `deploy-website.yml` 更新 `website/public/appcast.xml`。
 
-Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名（脚本自动完成内置凭据注入、MSI config 生成与 flash payload 准备），然后上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流以收录 MSI 条目。完整步骤见 `Doc/Ref/release.md`。
+Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名（脚本自动完成内置凭据注入、MSI config 生成与 flash payload 准备），一次产出 `VoiceStick_<版本>_zh-CN.msi` 与 `VoiceStick_<版本>_en-US.msi` 两个语言版（WiX 4 一次构建只产一个 culture，多语言 MSI 支持尚未落地，故逐 culture 构建；安装程序本地化文件在 `desktop/windows/installer/` 下的 `zh-CN.wxl`/`en-US.wxl` 与 `license-zh-CN.rtf`/`license-en.rtf`）。两个 MSI 都上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流收录 MSI 条目——**appcast 只收录 en-US 版**（WinSparkle 0.9.2 不支持按语言选 enclosure，`sparkle:language` 未实现；zh-CN 版仅供中文用户手动下载安装）。完整步骤见 `Doc/Ref/release.md`。
 
 Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（PowerShell 脚本，用 .NET 写 UTF-8 文件规避 cmd 中文 `echo` 块在 GBK 代码页下的解析错位；脚本须存为 UTF-8 with BOM）；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。打包产物放在 `dist/`（已被视为本地产物目录）。
 

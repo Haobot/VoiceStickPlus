@@ -197,7 +197,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 推送与 `VERSION` 匹配的 `v<版本号>` 标签触发 `.github/workflows/release.yml`：构建固件（OTA bin、merged bin、manifest.json）→ 构建签名 macOS 产物 → 创建 GitHub Release → 上传固件到阿里云 OSS → 触发 `deploy-website.yml` 更新 `website/public/appcast.xml`。
 
-Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建签名后手动上传 Release，再手动运行 `Deploy Website to GitHub Pages` 工作流收录 MSI 条目。完整步骤见 `Doc/Ref/release.md`。
+Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建签名后手动上传 Release——一次产出 `VoiceStick_<版本>_zh-CN.msi` 与 `VoiceStick_<版本>_en-US.msi` 两个语言版（WiX 4 一次构建只产一个 culture；本地化文件在 `desktop/windows/installer/` 的 `zh-CN.wxl`/`en-US.wxl` 与对应 license），再手动运行 `Deploy Website to GitHub Pages` 工作流收录 MSI 条目——**appcast 只收录 en-US 版**（WinSparkle 0.9.2 不支持按语言选 enclosure；zh-CN 版仅供手动下载）。完整步骤见 `Doc/Ref/release.md`。
 
 `CHANGELOG.md` 可能滞后于 `VERSION`（中间版本条目可能缺失），**以 `VERSION` 为准**；发布时同步追加条目。
 

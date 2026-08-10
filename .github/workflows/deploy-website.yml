@@ -48,7 +48,7 @@ jobs:
           sig_asset="VoiceStick-${version}.signature"
           zip_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${zip_asset}\") | .size" || true)"
-          msi_asset="VoiceStick_${version}.msi"
+          msi_asset="VoiceStick_${version}_en-US.msi"
           msi_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${msi_asset}\") | .size" || true)"
           if [ -n "${zip_length:-}" ]; then

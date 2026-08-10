@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization xmlns="http://wixtoolset.org/schemas/v4/wxl" Culture="en-US">
+  <String Id="DowngradeError" Value="A newer version of VoiceStick is already installed. Downgrade is not supported." />
+  <String Id="LaunchCheckbox" Value="Launch VoiceStick" />
+  <String Id="FlashToolName" Value="VoiceStick Flash Tool" />
+  <String Id="LicensePath" Value="$(var.ProjectDir)\desktop\windows\installer\license-en.rtf" />
+  <String Id="RemoveUserDataTitle" Value="Remove User Data" />
+  <String Id="RemoveUserDataDescription" Value="VoiceStick is being uninstalled. Would you also like to remove your local user data?" />
+  <String Id="RemoveUserDataCheckbox" Value="Remove all local user data (configuration, paired devices, logs, debug audio)" />
+  <String Id="RemoveUserDataItems" Value="This will remove:&#13;&#10;· Configuration and paired device information (%APPDATA%\VoiceStick\)&#13;&#10;· Logs and debug audio (%LOCALAPPDATA%\VoiceStick\)&#13;&#10;· Auto-start registry entry&#13;&#10;API keys and other credentials are deleted along with the configuration and cannot be recovered." />
+</WixLocalization>

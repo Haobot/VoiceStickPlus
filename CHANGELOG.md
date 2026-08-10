@@ -7,6 +7,7 @@
 
 ## Unreleased
 
+- 安装程序支持英文（Windows）：`desktop/windows/installer/` 新增 `en-US.wxl` 与 `license-en.rtf`（`zh-CN.wxl` 补 `FlashToolName`、`LicensePath`，license 拆分为 `license-zh-CN.rtf` / `license-en.rtf` 两版）；`VoiceStick.wxs` 的 license 与开始菜单「固件烧录工具」快捷方式名改为按 culture 本地化（`!(loc.LicensePath)` / `!(loc.FlashToolName)`）。WiX 4.0 一次构建只产一个 culture（多语言 MSI 支持尚未落地，`-culture` 为单值过滤），故 `build-msi.bat` / `build-msi-unsigned.bat` 改为循环产出 `VoiceStick_<版本>_zh-CN.msi`（语言码 2052）与 `VoiceStick_<版本>_en-US.msi`（语言码 1033）两个安装包，各自签名。`deploy-website.yml` 的 appcast 只收录 en-US 版（WinSparkle 0.9.2 不支持按语言选 enclosure，`sparkle:language` 未实现）；zh-CN 版仅供中文用户手动下载。已实测：两个 MSI 语言码、license、快捷方式名均按 culture 正确嵌入。
 - 新增 COM 口固件烧录工具 VoiceStickFlash（Windows）：独立 Win32 GUI 小工具，随 MSI 安装（`INSTALLFOLDER\VoiceStickFlash.exe` + `FlashTool\` 自包含 python-embed + esptool 运行时，免系统 Python），作为 BLE OTA 之外的用户级兜底链路（救砖 / 分区表变更 / bootloader 更新 / 恢复出厂）。支持三种模式：整包烧录（merged bin @ 0x0）、仅应用分区（@ 0x10000）、先完全擦除再整包；COM 口自动枚举 + 评分选中（ESP32-S3 原生 USB VID 303A 优先，规则与 `scripts/idf_cli.yaml` 一致）；子进程方式跑 `python -m esptool`（`--after no_reset`，烧完提示手动短按电源键重启），stdout 解析阶段/进度/错误；开始前检测 VoiceStickApp 运行并警告。入口：托盘菜单「固件烧录工具…」+ 固件更新对话框「高级… COM 口烧录」按钮。可测试逻辑下沉 `voicestick_core`（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`，4 组新单测）；`scripts/prepare_flash_payload.ps1` 幂等准备 payload（`VOICESTICK_PYTHON_EMBED_URL` 可覆盖下载源），`build-msi.bat` / `build-msi-unsigned.bat` 自动调用并打进 MSI。设计见 `Doc/Plan/windows-com-flash-tool.md`。
 
 ## v2.3.5

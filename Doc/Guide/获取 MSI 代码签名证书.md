@@ -1,6 +1,6 @@
 # 获取 MSI 代码签名证书（Windows 公开发行）
 
-本文面向需要把 VoiceStick Windows 安装包（`VoiceStick_<版本>.msi`）从“内测自签”推进到“公开可分发”的签名机操作者。读完可独立完成：选型 → 购买 → 安装 → 接入现有 `build-msi.bat` → 验证 → 建立 SmartScreen 信誉。
+本文面向需要把 VoiceStick Windows 安装包（`VoiceStick_<版本>_<culture>.msi`，即 zh-CN / en-US 两个语言版）从“内测自签”推进到“公开可分发”的签名机操作者。读完可独立完成：选型 → 购买 → 安装 → 接入现有 `build-msi.bat` → 验证 → 建立 SmartScreen 信誉。
 
 ## 1. 背景：为什么需要这张证书
 
@@ -162,10 +162,11 @@ http://rfc3161timestamp.globalsign.com/advanced
 scripts\build-msi.bat
 ```
 
-输出：
+输出（WiX 4.0 逐 culture 构建，产两个语言版）：
 
 ```text
-desktop\windows\build-msi-x64\VoiceStick_<版本>.msi
+desktop\windows\build-msi-x64\VoiceStick_<版本>_zh-CN.msi
+desktop\windows\build-msi-x64\VoiceStick_<版本>_en-US.msi
 ```
 
 ### 8.2 验证签名
@@ -176,7 +177,8 @@ desktop\windows\build-msi-x64\VoiceStick_<版本>.msi
 $files = @(
     'desktop\windows\build-msi-x64\VoiceStick.exe',
     'desktop\windows\build-msi-x64\WinSparkle.dll',
-    'desktop\windows\build-msi-x64\VoiceStick_<版本>.msi'
+    'desktop\windows\build-msi-x64\VoiceStick_<版本>_zh-CN.msi',
+    'desktop\windows\build-msi-x64\VoiceStick_<版本>_en-US.msi'
 )
 foreach ($f in $files) {
     $s = Get-AuthenticodeSignature -FilePath $f
@@ -189,7 +191,7 @@ foreach ($f in $files) {
 也可用 signtool 验签（更严格，走系统信任链）：
 
 ```powershell
-signtool verify /pa /v "desktop\windows\build-msi-x64\VoiceStick_<版本>.msi"
+signtool verify /pa /v "desktop\windows\build-msi-x64\VoiceStick_<版本>_zh-CN.msi"
 ```
 
 ### 8.3 UAC 发布者核对

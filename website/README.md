@@ -74,7 +74,7 @@ The generated `dist/` directory is deployed to GitHub Pages. `public/appcast.xml
 ## GitHub Actions
 
 - `.github/workflows/release.yml` runs on `v*` tags or manual dispatch. It builds versioned OTA and merged firmware images, uploads the firmware assets and `manifest.json` to the matching GitHub Release, then triggers `deploy-website.yml`. (macOS is not built in the current CI pipeline; the macOS job is disabled for the v2.3.6 release.)
-- `scripts/build-msi.bat` runs on the local Windows signing machine with the USB signing key inserted. Upload the generated `VoiceStick_<version>.msi` to the matching GitHub Release.
+- `scripts/build-msi.bat` runs on the local Windows signing machine with the USB signing key inserted. It emits two language versions — `VoiceStick_<version>_zh-CN.msi` and `VoiceStick_<version>_en-US.msi` (WiX 4 builds one culture per pass). Upload both to the matching GitHub Release; the appcast only lists the `en-US` one (WinSparkle has no per-language enclosure selection).
 - `.github/workflows/deploy-website.yml` runs when `website/**` changes on `main` or when manually dispatched after uploading a Windows MSI. Before deploying, it reads the current live appcast and latest GitHub Release, then regenerates `public/appcast.xml` from the latest ZIP/signature and optional MSI assets. If the latest Release has no Windows MSI yet, the previous Windows item is preserved.
 
 Required repository secrets for release builds:

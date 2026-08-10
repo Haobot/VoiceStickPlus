@@ -14,7 +14,8 @@
     <MediaTemplate EmbedCab="yes" />
 
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
-    <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)\desktop\windows\installer\license.rtf" />
+    <!-- license 按 culture 提供：zh-CN / en-US 各一个 .rtf，经 !(loc.LicensePath) 选择 -->
+    <WixVariable Id="WixUILicenseRtf" Value="!(loc.LicensePath)" />
 
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchCheckbox)" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
@@ -130,7 +131,7 @@
                     WorkingDirectory="INSTALLFOLDER"
                     Icon="VoiceStickIcon" />
           <Shortcut Id="VoiceStickFlashStartMenuShortcut"
-                    Name="VoiceStick 固件烧录工具"
+                    Name="!(loc.FlashToolName)"
                     Target="[INSTALLFOLDER]VoiceStickFlash.exe"
                     WorkingDirectory="INSTALLFOLDER"
                     Icon="VoiceStickIcon" />
