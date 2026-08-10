@@ -6,13 +6,13 @@
   },
   "hero": {
     "eyebrow": "Portable BLE voice input",
-    "title": "VoiceStick",
+    "title": "VoiceStickPlus",
     "lead": "A compact voice stick based on M5Stack StickS3. It connects to macOS or Windows over BLE, uses the Doubao speech foundation model for recognition, and turns real-time feedback into text at your cursor.",
     "downloadMac": "Download macOS",
     "downloadWindows": "Download Windows",
     "flash": "Flash firmware online",
     "source": "View source",
-    "imageAlt": "VoiceStick portable voice input device based on M5Stack StickS3"
+    "imageAlt": "VoiceStickPlus portable voice input device based on M5Stack StickS3"
   },
   "features": {
     "label": "Features",
@@ -22,7 +22,7 @@
     },
     "model": {
       "title": "Doubao speech foundation model",
-      "body": "VoiceStick uses the Doubao speech foundation model for recognition, making spoken Chinese, longer sentences, and everyday phrasing feel fast to turn into editable text."
+      "body": "VoiceStickPlus uses the Doubao speech foundation model for recognition, making spoken Chinese, longer sentences, and everyday phrasing feel fast to turn into editable text."
     },
     "feedback": {
       "title": "Live text feedback",
@@ -32,7 +32,7 @@
   "story": {
     "eyebrow": "Small, portable, always nearby",
     "title": "Pick it up to speak. Put it down to keep writing.",
-    "body": "VoiceStick turns M5Stack StickS3 into a dedicated voice input button. Keep it near your keyboard, slip it into a pocket, or carry it with your laptop. Hold to talk, and the recognized text comes back to your cursor."
+    "body": "VoiceStickPlus turns M5Stack StickS3 into a dedicated voice input button. Keep it near your keyboard, slip it into a pocket, or carry it with your laptop. Hold to talk, and the recognized text comes back to your cursor."
   },
   "flasher": {
     "eyebrow": "Direct browser connection",
@@ -62,7 +62,7 @@
       "target": "ESP32-S3 / StickS3"
     },
     "firmware": {
-      "latest": "VoiceStick StickS3 firmware will be fetched from the latest GitHub Release.",
+      "latest": "VoiceStickPlus StickS3 firmware will be fetched from the latest GitHub Release.",
       "ready": "Firmware loaded: {size}"
     },
     "unsupported": "This browser does not support Web Serial. Open this page in desktop Chrome or Edge.",
