@@ -138,7 +138,7 @@ npm run dev      # local dev server
 npm run build    # minimal verification
 ```
 
-The browser flasher uses Web Serial to write the merged firmware image from the manifest at `VITE_FIRMWARE_MANIFEST_URL`.
+The browser flasher uses Web Serial to write the merged firmware image from the same-origin manifest under `BASE_URL + 'firmware/'` (synced from the latest GitHub Release by `deploy-website.yml`).
 
 ## Configuration
 

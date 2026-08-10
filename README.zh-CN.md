@@ -138,7 +138,7 @@ npm run dev      # 本地开发服务器
 npm run build    # 最小验证
 ```
 
-浏览器烧录器用 Web Serial 写入固件 manifest（`VITE_FIRMWARE_MANIFEST_URL`）中的 merged 镜像。
+浏览器烧录器用 Web Serial 写入固件 manifest（同源于 `BASE_URL + 'firmware/'`，由 `deploy-website.yml` 从最新 GitHub Release 同步）中的 merged 镜像。
 
 ## 配置
 

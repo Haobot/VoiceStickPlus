@@ -14,9 +14,12 @@ const githubUrl = 'https://github.com/Haobot/VoiceStickPlus'
 const releaseDownloadBase = `https://github.com/Haobot/VoiceStickPlus/releases/download/v${version}`
 const macDownloadUrl = `${releaseDownloadBase}/VoiceStick-${version}.dmg`
 const windowsDownloadUrl = `${releaseDownloadBase}/VoiceStick_${version}.msi`
-const defaultFirmwareUrl = `https://github.com/Haobot/VoiceStickPlus/releases/download/v${version}/voicestick-firmware-sticks3-merged-${version}.bin`
-const firmwareManifestUrl = import.meta.env.VITE_FIRMWARE_MANIFEST_URL || 'https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json'
-const firmwareUrl = ref(import.meta.env.VITE_FIRMWARE_URL || defaultFirmwareUrl)
+// 固件同源托管于 GitHub Pages（CI 部署时从最新 Release 同步到 /firmware/），
+// 避免 GitHub release-assets 域无 CORS 头导致浏览器 fetch 跨域失败（Failed to fetch）。
+const firmwareBaseUrl = `${import.meta.env.BASE_URL}firmware/`
+const defaultFirmwareUrl = `${firmwareBaseUrl}voicestick-firmware-sticks3-merged-${version}.bin`
+const firmwareManifestUrl = `${firmwareBaseUrl}manifest.json`
+const firmwareUrl = ref(defaultFirmwareUrl)
 const appResetSequence = 'D0|R1|W100|R0|W500|D0'
 
 const languageLabel = computed(() => (locale.value === 'zh-CN' ? t('language.en') : t('language.zh')))
@@ -180,9 +183,9 @@ async function flashFirmware() {
 <template>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="./" aria-label="VoiceStick">
+      <a class="brand" href="./" aria-label="VoiceStickPlus">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>VoiceStick</span>
+        <span>VoiceStickPlus</span>
       </a>
       <nav>
         <a href="#flash">{{ t('nav.flash') }}</a>
@@ -294,7 +297,7 @@ async function flashFirmware() {
 
   <footer>
     <div class="section-inner footer-inner">
-      <span>VoiceStick</span>
+      <span>VoiceStickPlus</span>
       <a href="./appcast.xml">{{ t('footer.appcast') }}</a>
     </div>
   </footer>

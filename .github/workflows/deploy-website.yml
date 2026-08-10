@@ -80,11 +80,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Sync firmware to Pages origin
+        # 浏览器烧录器从 /firmware/ 同源 fetch 固件（GitHub release-assets 域无 CORS 头，
+        # 直接 fetch Release 资产会被浏览器跨域拦截，见 Doc/Expe/ 相关记录）。
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --json tagName -q .tagName)"
+          version="${tag#v}"
+          mkdir -p website/public/firmware
+          gh release download "$tag" \
+            --pattern "voicestick-firmware-sticks3-merged-*.bin" \
+            --pattern "manifest.json" \
+            --dir website/public/firmware
+          # 把 manifest 内的 merged_url 重写为 Pages 同源地址，避免浏览器再去 fetch GitHub 域
+          python3 - "${{ github.repository_owner }}" "${{ github.event.repository.name }}" <<'PY'
+          import json, os, sys
+          repo_owner, repo_name = sys.argv[1], sys.argv[2]
+          base = f"https://{repo_owner}.github.io/{repo_name}/firmware/"
+          path = "website/public/firmware/manifest.json"
+          with open(path, encoding="utf-8") as f:
+              manifest = json.load(f)
+          merged = os.path.basename(manifest["merged_url"])
+          manifest["merged_url"] = base + merged
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PY
+
       - name: Build website
         run: npm run build
         working-directory: website
-        env:
-          VITE_FIRMWARE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/manifest.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

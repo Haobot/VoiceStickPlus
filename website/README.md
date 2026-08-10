@@ -52,7 +52,7 @@ https://haobot.github.io/VoiceStickPlus/appcast.xml
    - `sparkle:edSignature`: content from `build/VoiceStick-<version>.signature`
    - `length`: byte size from `wc -c build/VoiceStick-<version>.zip`
 
-The homepage download section links directly to the current versioned macOS DMG and Windows MSI. The version number is read at build time from the repository root `VERSION` file (single source of truth), not `website/package.json`. The browser flasher reads the firmware manifest from `VITE_FIRMWARE_MANIFEST_URL` and uses `merged_url`; if the manifest cannot be loaded, it falls back to the versioned merged firmware URL derived from the same `VERSION` file.
+The homepage download section links directly to the current versioned macOS DMG and Windows MSI. The version number is read at build time from the repository root `VERSION` file (single source of truth), not `website/package.json`. The browser flasher reads the firmware manifest from `BASE_URL + 'firmware/manifest.json'` (same-origin) and uses `merged_url`; if the manifest cannot be loaded, it falls back to the versioned merged firmware URL under `BASE_URL + 'firmware/'`. The firmware files are synced to `website/public/firmware/` by `deploy-website.yml` from the latest GitHub Release, so the page never fetches the GitHub release-assets domain (which sends no CORS headers).
 
 ## Develop
 
@@ -69,7 +69,7 @@ cd website
 npm run build
 ```
 
-The generated `dist/` directory is deployed to GitHub Pages. `public/appcast.xml` is copied to `dist/appcast.xml`. The firmware manifest itself is hosted on the GitHub Release (`releases/latest/download/manifest.json`), not GitHub Pages or OSS.
+The generated `dist/` directory is deployed to GitHub Pages. `public/appcast.xml` is copied to `dist/appcast.xml`. The firmware `manifest.json` and merged binary are synced to `public/firmware/` by `deploy-website.yml` and served same-origin from GitHub Pages (the GitHub release-assets domain sends no CORS headers, so the browser flasher cannot fetch it directly).
 
 ## GitHub Actions
 
