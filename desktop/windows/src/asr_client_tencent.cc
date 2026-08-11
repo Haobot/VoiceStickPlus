@@ -745,32 +745,51 @@ void AsrClientTencent::RunWebSocket() {
     }
     if (path_and_query.empty()) path_and_query = L"/";
 
-    HINTERNET request = WinHttpOpenRequest(connect, L"GET", path_and_query.c_str(), nullptr,
-                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    // WebSocket 握手：偶发网络抖动或休眠唤醒后 WinHTTP 栈未就绪时，WinHttpSendRequest 可能
+    // 瞬时失败（GetLastError()=0，已观测到第二次尝试成功）。session/connect 句柄复用，
+    // 仅重建 request 重试，避免用户感知到"握手失败"。
+    constexpr int kHandshakeMaxAttempts = 3;
+    constexpr int kHandshakeRetryDelayMs = 500;
+    HINTERNET request = nullptr;
+    DWORD last_err = 0;
+    for (int attempt = 1; attempt <= kHandshakeMaxAttempts; ++attempt) {
+        request = WinHttpOpenRequest(connect, L"GET", path_and_query.c_str(), nullptr,
+                                     WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+        if (!request) {
+            last_err = GetLastError();
+            CloseHandles(session, connect, nullptr, nullptr);
+            FailSession("腾讯云 ASR 请求创建失败: " + std::to_string(last_err));
+            return;
+        }
+        SetWinHttpTimeouts(request);
+        if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
+            last_err = GetLastError();
+            WinHttpCloseHandle(request);
+            CloseHandles(session, connect, nullptr, nullptr);
+            FailSession("腾讯云 ASR WebSocket 升级准备失败: " + std::to_string(last_err));
+            return;
+        }
+        Log("TASR", "sending WebSocket handshake request (attempt " +
+                     std::to_string(attempt) + "/" + std::to_string(kHandshakeMaxAttempts) + ")");
+        if (WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(request, nullptr)) {
+            break;  // 握手成功
+        }
+        // 失败：在 CloseHandle 前取错误码（CloseHandle 会覆盖 GetLastError），重建 request 重试
+        last_err = GetLastError();
+        WinHttpCloseHandle(request);
+        request = nullptr;
+        if (attempt < kHandshakeMaxAttempts) {
+            Log("TASR", "WebSocket handshake attempt " + std::to_string(attempt) +
+                         " failed (err=" + std::to_string(last_err) + "); retrying in " +
+                         std::to_string(kHandshakeRetryDelayMs) + "ms");
+            Sleep(kHandshakeRetryDelayMs);
+        }
+    }
     if (!request) {
         CloseHandles(session, connect, nullptr, nullptr);
-        FailSession("腾讯云 ASR 请求创建失败: " + LastErrorText());
-        return;
-    }
-    SetWinHttpTimeouts(request);
-
-    if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
-        CloseHandles(session, connect, request, nullptr);
-        FailSession("腾讯云 ASR WebSocket 升级准备失败");
-        return;
-    }
-
-    Log("TASR", "sending WebSocket handshake request");
-    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-        CloseHandles(session, connect, request, nullptr);
-        FailSession("腾讯云 ASR WebSocket 握手请求发送失败: " + LastErrorText());
-        return;
-    }
-    Log("TASR", "waiting for WebSocket handshake response");
-    if (!WinHttpReceiveResponse(request, nullptr)) {
-        CloseHandles(session, connect, request, nullptr);
-        FailSession("腾讯云 ASR WebSocket 握手响应接收失败: " + LastErrorText());
+        FailSession("腾讯云 ASR WebSocket 握手失败: " + std::to_string(last_err));
         return;
     }
     const auto handshake_status = QueryStatusCode(request);

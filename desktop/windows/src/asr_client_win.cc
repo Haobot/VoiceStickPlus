@@ -1,6 +1,7 @@
 #include "asr_client_win.h"
 
 #include "asr_protocol.h"
+#include "log.h"
 
 #include <bcrypt.h>
 
@@ -234,36 +235,60 @@ void AsrClientWin::RunReusableWebSocket() {
         path_and_query.append(components.lpszExtraInfo, components.dwExtraInfoLength);
     }
     if (path_and_query.empty()) path_and_query = L"/";
-    HINTERNET request = WinHttpOpenRequest(connect, L"GET", path_and_query.c_str(), nullptr,
-                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!request) {
-        CloseHandles(session, connect, request, nullptr);
-        FailReusableSession("Failed to create ASR request: " + LastErrorText());
-        return;
-    }
-    SetAsrWinHttpTimeouts(request);
-
-    AddHeader(request, "X-Api-Key", config_.ActiveApiKey());
-    AddHeader(request, "X-Api-Request-Id", GenerateSessionId());
-    AddHeader(request, "X-Api-Sequence", "-1");
-    if (config_.asr_provider == AsrProvider::kVoiceStickCloud) {
-        if (!config_.paired_device_ids.empty()) {
-            AddHeader(request, "X-Device-Id", config_.paired_device_ids.front());
+    // WebSocket 握手重试：与腾讯客户端对称，覆盖偶发网络抖动与休眠唤醒后栈未就绪。
+    // AddHeader 在每次重建 request 后重新设置；X-Api-Request-Id 重新生成避免服务端去重误判。
+    constexpr int kHandshakeMaxAttempts = 3;
+    constexpr int kHandshakeRetryDelayMs = 500;
+    HINTERNET request = nullptr;
+    DWORD last_err = 0;
+    for (int attempt = 1; attempt <= kHandshakeMaxAttempts; ++attempt) {
+        request = WinHttpOpenRequest(connect, L"GET", path_and_query.c_str(), nullptr,
+                                     WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+        if (!request) {
+            last_err = GetLastError();
+            CloseHandles(session, connect, nullptr, nullptr);
+            FailReusableSession("Failed to create ASR request: " + std::to_string(last_err));
+            return;
         }
-    } else {
-        AddHeader(request, "X-Api-Resource-Id", config_.ActiveResourceId());
+        SetAsrWinHttpTimeouts(request);
+        AddHeader(request, "X-Api-Key", config_.ActiveApiKey());
+        AddHeader(request, "X-Api-Request-Id", GenerateSessionId());
+        AddHeader(request, "X-Api-Sequence", "-1");
+        if (config_.asr_provider == AsrProvider::kVoiceStickCloud) {
+            if (!config_.paired_device_ids.empty()) {
+                AddHeader(request, "X-Device-Id", config_.paired_device_ids.front());
+            }
+        } else {
+            AddHeader(request, "X-Api-Resource-Id", config_.ActiveResourceId());
+        }
+        if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
+            last_err = GetLastError();
+            WinHttpCloseHandle(request);
+            CloseHandles(session, connect, nullptr, nullptr);
+            FailReusableSession("Failed to prepare ASR WebSocket upgrade: " + std::to_string(last_err));
+            return;
+        }
+        Log("VASR", "sending WebSocket handshake request (attempt " +
+                     std::to_string(attempt) + "/" + std::to_string(kHandshakeMaxAttempts) + ")");
+        if (WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(request, nullptr)) {
+            break;  // 握手成功
+        }
+        // 失败：在 CloseHandle 前取错误码（CloseHandle 会覆盖 GetLastError），重建 request 重试
+        last_err = GetLastError();
+        WinHttpCloseHandle(request);
+        request = nullptr;
+        if (attempt < kHandshakeMaxAttempts) {
+            Log("VASR", "WebSocket handshake attempt " + std::to_string(attempt) +
+                         " failed (err=" + std::to_string(last_err) + "); retrying in " +
+                         std::to_string(kHandshakeRetryDelayMs) + "ms");
+            Sleep(kHandshakeRetryDelayMs);
+        }
     }
-
-    if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
-        CloseHandles(session, connect, request, nullptr);
-        FailReusableSession("Failed to prepare ASR WebSocket upgrade");
-        return;
-    }
-    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(request, nullptr)) {
-        CloseHandles(session, connect, request, nullptr);
-        FailReusableSession("ASR WebSocket handshake failed");
+    if (!request) {
+        CloseHandles(session, connect, nullptr, nullptr);
+        FailReusableSession("ASR WebSocket handshake failed (err=" + std::to_string(last_err) + ")");
         return;
     }
 
