@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 新增热词识别自动化验收测试工具（`scripts/e2e_test/run_hotword_acceptance.py`）：按桌面端同款发送逻辑（腾讯=词表通道 / 火山=评分裁剪直传）回放真实 ASR，报告每个热词的命中率与识别原文，并诊断「不可入表词（含空格/'.'，只能靠 LLM 精修）」；音频可自动生成（edge-tts 造句）或经 `--manifest` 标注清单使用已有录音。
+
 - 热词高频优先裁剪（Windows）：热词库超出单次会话直传预算（火山 80 tokens）时，按「频率 × 新近度 × 手动加权」评分优先保留（`hotword_selector`，与 `scripts/e2e_test/asr_bench/hotword_select.py` 同一评分模型），替代原按插入顺序贪心截断——新加的词排在列表尾部、旧逻辑最先被裁。使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本）存 `%APPDATA%\VoiceStick\hotword_usage.json`；超预算时每次运行提示一次（浮窗/托盘，明细见日志）。精修/翻译 LLM prompt 的热词段改为评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。新增 `TestHotwordSelector` 单测（镜像 hotword_select.py 自测断言）。
 
 ## v2.3.6
