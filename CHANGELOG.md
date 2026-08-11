@@ -5,10 +5,11 @@
 - 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。
 - 便携版包含固件烧录工具（Windows）：`scripts/package-portable.ps1` 新增收集 `VoiceStickFlash.exe` 与 `FlashTool\` 自包含 esptool 运行时（优先复用 `build-msi-x64\flash_payload`，否则现场调用 `prepare_flash_payload.ps1` 生成；布局与 `LocatePythonExe()` 候选 1 一致），使便携版同样具备 COM 口固件烧录能力，与 MSI 布局一致。
 
-## Unreleased
+## v2.3.7
 
 - 安装程序支持英文（Windows）：`desktop/windows/installer/` 新增 `en-US.wxl` 与 `license-en.rtf`（`zh-CN.wxl` 补 `FlashToolName`、`LicensePath`，license 拆分为 `license-zh-CN.rtf` / `license-en.rtf` 两版）；`VoiceStick.wxs` 的 license 与开始菜单「固件烧录工具」快捷方式名改为按 culture 本地化（`!(loc.LicensePath)` / `!(loc.FlashToolName)`）。WiX 4.0 一次构建只产一个 culture（多语言 MSI 支持尚未落地，`-culture` 为单值过滤），故 `build-msi.bat` / `build-msi-unsigned.bat` 改为循环产出 `VoiceStick_<版本>_zh-CN.msi`（语言码 2052）与 `VoiceStick_<版本>_en-US.msi`（语言码 1033）两个安装包，各自签名。`deploy-website.yml` 的 appcast 只收录 en-US 版（WinSparkle 0.9.2 不支持按语言选 enclosure，`sparkle:language` 未实现）；zh-CN 版仅供中文用户手动下载。已实测：两个 MSI 语言码、license、快捷方式名均按 culture 正确嵌入。
 - 新增 COM 口固件烧录工具 VoiceStickFlash（Windows）：独立 Win32 GUI 小工具，随 MSI 安装（`INSTALLFOLDER\VoiceStickFlash.exe` + `FlashTool\` 自包含 python-embed + esptool 运行时，免系统 Python），作为 BLE OTA 之外的用户级兜底链路（救砖 / 分区表变更 / bootloader 更新 / 恢复出厂）。支持三种模式：整包烧录（merged bin @ 0x0）、仅应用分区（@ 0x10000）、先完全擦除再整包；COM 口自动枚举 + 评分选中（ESP32-S3 原生 USB VID 303A 优先，规则与 `scripts/idf_cli.yaml` 一致）；子进程方式跑 `python -m esptool`（`--after no_reset`，烧完提示手动短按电源键重启），stdout 解析阶段/进度/错误；开始前检测 VoiceStickApp 运行并警告。入口：托盘菜单「固件烧录工具…」+ 固件更新对话框「高级… COM 口烧录」按钮。可测试逻辑下沉 `voicestick_core`（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`，4 组新单测）；`scripts/prepare_flash_payload.ps1` 幂等准备 payload（`VOICESTICK_PYTHON_EMBED_URL` 可覆盖下载源），`build-msi.bat` / `build-msi-unsigned.bat` 自动调用并打进 MSI。设计见 `Doc/Plan/windows-com-flash-tool.md`。
+- 修复编码器慢速旋转配置失效（Windows）：设备级编码器设置（`[device.<id>.encoder]` 的 `rotate_cw_key`/`rotate_ccw_key`）对慢速旋转无效，输出锁死全局默认 Up/Down，快速档正常。根因：`FlushEncoderRotatePending` 参数为 `const std::string&`，`EncoderRotateTick()` 传入的正是成员 `encoder_pending_device_id_` 本身，函数体 `clear()` 清空该成员使参数引用的对象变为空串，`EncoderSettingsForDevice("")` 查不到设备覆盖、回落全局默认（v2.3.0 引入 `encoder_pending_device_id_` 时遗留的引用别名问题）。修复：参数改按值传递消除引用别名；新增回归测试 `TestEncoderRotateCustomKeysPendingPathDeviceOverride`（设备覆盖 + pending → Tick 冲刷路径，此前测试全用全局默认键掩盖了回落路径）。
 
 ## v2.3.5
 
