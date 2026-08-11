@@ -505,7 +505,7 @@ private:
     // 避免跨设备手势互相污染 EWMA 估计。
     std::string last_encoder_rotate_device_id_;
     // 冲刷慢速 pending：按累计格数逐格注入普通按键（非法回退方向键），并通知平台层。
-    void FlushEncoderRotatePending(const std::string& device_id);
+    void FlushEncoderRotatePending(std::string device_id);
     // 按格数注入按键组合（key_spec 非法时回退方向键）。慢速立即路径与 pending 冲刷共用。
     void InjectEncoderRotateSteps(bool ccw, std::uint32_t steps,
                                   const std::string& key_text, const std::string& device_id);

@@ -1898,16 +1898,17 @@ void Win32App::ShowPairDeviceDialog() {
 }
 
 void Win32App::ShowSettings() {
-    if (!settings_dialog_) {
-        settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
-        settings_dialog_->on_config_changed = [this](AppConfig new_config) {
-            config_ = std::move(new_config);
-            // SaveInputOptions 内部已调用 coordinator_->UpdateConfig(config_) 完成同步。
-            SaveInputOptions();
-            RebuildTooltip();
-            LogLine("Settings saved");
-        };
-    }
+    // 每次重新进入时重建（与 ShowEncoderSettingsDialog 同模式）：SettingsDialog 内部
+    // 持有 config_ 的快照，复用旧实例会用过期快照覆盖当前 config_，丢失其他对话框
+    // （如编码器设置）在两次打开之间所做的按设备覆盖修改。
+    settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
+    settings_dialog_->on_config_changed = [this](AppConfig new_config) {
+        config_ = std::move(new_config);
+        // SaveInputOptions 内部已调用 coordinator_->UpdateConfig(config_) 完成同步。
+        SaveInputOptions();
+        RebuildTooltip();
+        LogLine("Settings saved");
+    };
     settings_dialog_->Show();
 }
 

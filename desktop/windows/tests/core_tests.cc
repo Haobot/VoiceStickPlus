@@ -3116,6 +3116,123 @@ void TestEncoderRotateCustomKeys() {
     assert(input.arrow_down_count == 0);  // 不再走硬编码方向键
 }
 
+void TestEncoderRotateCustomKeysPendingPath() {
+    // 与 TestEncoderRotateCustomKeys 的区别：不关闭延迟判定（rotate_decide_window_ms
+    // 保持默认 80），走 pending -> EncoderRotateTick -> FlushEncoderRotatePending 路径，
+    // 验证 FlushEncoderRotatePending 重新读取 config 时能拿到自定义按键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_cw_key = "pagedown";
+    config.default_encoder_settings.rotate_ccw_key = "pageup";
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    // rotate_decide_window_ms 保持默认 80（pending 路径）
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.empty());  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");  // 自定义按键，非默认 Down
+    assert(input.arrow_down_count == 0);
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.size() == 1);  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "PageUp");  // 自定义按键，非默认 Up
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateCustomKeysPendingPathDeviceOverride() {
+    // 设备覆盖场景的 pending -> EncoderRotateTick -> FlushEncoderRotatePending 回归测试：
+    // 冲刷必须使用该设备的 [device.<id>.encoder] 覆盖键而非全局默认。
+    // 历史 bug：FlushEncoderRotatePending 参数以 const 引用绑定成员 encoder_pending_device_id_，
+    // 函数体内 clear() 成员把参数引用的对象清空成空串，EncoderSettingsForDevice("") 查不到
+    // 设备覆盖，回落全局默认 Down/Up——慢速旋转输出锁死在方向键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    EncoderSettings override_settings;
+    override_settings.rotate_cw_key = "pagedown";
+    override_settings.rotate_ccw_key = "pageup";
+    override_settings.rotate_fast_threshold = 100000;
+    config.device_encoder_settings["5A74"] = override_settings;
+    // rotate_decide_window_ms 保持默认 80（pending 路径）
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.empty());  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");  // 设备覆盖键，非全局默认 Down
+    assert(input.arrow_down_count == 0);
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.size() == 1);  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "PageUp");  // 设备覆盖键，非全局默认 Up
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateCustomKeysAfterUpdateConfig() {
+    // 模拟生产场景：协调器以默认配置启动，用户通过对话框 UpdateConfig 改旋转键，
+    // 随后旋转编码器。验证 UpdateConfig 后 pending 路径使用新按键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 先用默认配置旋转一次，确认默认键 Down
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Down");
+
+    // UpdateConfig 改旋转键（模拟对话框保存）
+    AppConfig updated = AppConfig::Defaults();
+    updated.default_encoder_settings.rotate_cw_key = "pagedown";
+    updated.default_encoder_settings.rotate_ccw_key = "pageup";
+    updated.default_encoder_settings.rotate_fast_threshold = 100000;
+    coordinator.UpdateConfig(updated);
+
+    // 旋转后应注入自定义键 PageDown
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.size() == 1);  // pending 未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "PageDown");
+}
+
 void TestEncoderRotateInvalidKeyFallsBackToArrows() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -7728,6 +7845,9 @@ int main() {
     TestEncoderDoubleClickCustomKey();
     TestEncoderDoubleClickRecordingTogglesRemoteButton();
     TestEncoderRotateCustomKeys();
+    TestEncoderRotateCustomKeysPendingPath();
+    TestEncoderRotateCustomKeysPendingPathDeviceOverride();
+    TestEncoderRotateCustomKeysAfterUpdateConfig();
     TestEncoderRotateInvalidKeyFallsBackToArrows();
     TestEncoderRotateSpeedThreshold();
     TestEncoderRotateSpeedEstimatorEwma();

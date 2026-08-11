@@ -209,6 +209,14 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 - **wix v4 无 `<Files>` 元素**（v5 才有）：payload 2008 文件由脚本扫描生成 `flash_payload.wxs` 片段（Component ID=相对路径 SHA1 前 32），主 wxs `ComponentGroupRef` 引用；pip 装 esptool 走官方 PyPI（清华镜像没有），`VOICESTICK_PIP_INDEX_URL` 可覆盖。
 - **阻塞式引导不能锁死修复入口**：onboarding 取消即退出应用 + 设备步硬性要求配对 = 无固件设备永远无法到达烧录入口（死锁）。已放行：未配对时点下一步弹确认框可跳过（`kOnboardingSkipDeviceConfirm`）。原则：引导的硬性前置必须留"前置不可达"时的逃生通道。
 
+### 3.12 编码器慢速旋转配置失效：const 引用别名清空成员（2026-08-11）
+
+症状：设备级编码器设置（`[device.<id>.encoder]` 的 `rotate_cw_key`/`rotate_ccw_key`）对慢速旋转无效，输出锁死全局默认 Up/Down；**快速档却正常**（日志 `encoder rotate ... [fast] -> <覆盖键>` 用的是覆盖键）。
+
+根因：`FlushEncoderRotatePending(const std::string& device_id)` 参数为 const 引用，`EncoderRotateTick()`（30ms 定时器冲刷慢速挂起）调用时传入的正是成员 `encoder_pending_device_id_`；函数体 `encoder_pending_device_id_.clear()` 把参数引用的对象清成空串，后续 `EncoderSettingsForDevice("")` 查不到设备覆盖、回落全局默认。**判据特征（日志）**：慢速注入 `encoder rotate inject on VS-`（设备 ID 为空）+ 默认键，而换向冲刷（传局部参数，非成员）显示 `VS-<id>` 且键正确——同一日志里两种注入并存即可定位。
+
+修复：参数改按值传递 `std::string device_id`，消除引用别名；回归测试 `TestEncoderRotateCustomKeysPendingPathDeviceOverride`（设备覆盖 + pending → Tick 冲刷）。**教训**：const 引用参数若可能指向会被函数体修改的成员，必须先复制或按值传参；单测要覆盖"设备覆盖 ≠ 全局默认"场景（此前 pending 路径测试全用全局默认键，查回默认也断言通过，掩盖了回落路径）。
+
 ---
 
 ## 4. 微信输入法模式（wechat_input_method）
@@ -435,6 +443,7 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - ES8311 ALC 寄存器位域以 Linux 主线 `es8311.h` 为准，不信 `es8311_reg.h` 注释。
 - 设备 EN 复位后 USB JTAG 重枚举，间隙内 boot 日志直接丢失，循环重开 pyserial 也盖不住；boot→广播耗时从主机日志反推（断连事件→`advertisement matched` 时间差），不要试图串口抓 boot。
 - 排查 BLE 回连/僵尸链路先看 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`；`link-layer connected` 的 `polls=0` 是典型僵尸，`polls=1` 也可能是垂死链路（ATT 挂起），勿凭 polls 单一判据下结论。
+- 编码器慢速旋转配置无效（输出锁死 Up/Down）判据是注入日志 `VS-` 空设备 ID + 默认键（快速档正常）——const 引用参数绑定成员、函数体 clear 成员清空了参数引用的对象，已改按值传参修复，详见 §3.12。
 - 设备卡 Pairing 且重启 stick 无效、重启 Windows 端立愈 = 广告 watcher 静默失效，判据是日志长时间零 `advertisement matched`，见 `Doc/Expe/ble-watcher-silent-death-pairing-stuck.md`；应用自己的 radio reset 也会杀死 watcher，之后必须重建扫描。
 - 旁路（非协调器状态机）要碰 overlay 先查 `coordinator_->HasActiveSession()`：会话活跃时反馈必须走托盘气泡，否则 `kAutoHideTimerId`/`pending_callback_` 共享资源被覆盖会踩掉确认倒计时的自动粘贴，见 `Doc/Expe/hotword-processing-implementation-2026-07-28.md`。
 - 提升权限运行的 VoiceStick.exe 会锁定链接产物且 `build_win.bat` 杀不掉仍报成功，判据是 exe 时间戳；`ctest` 不在裸 cmd PATH，用 VS BuildTools 全路径。

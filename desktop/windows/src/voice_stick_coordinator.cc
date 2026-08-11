@@ -1284,12 +1284,16 @@ void VoiceStickCoordinator::InjectEncoderRotateSteps(bool ccw, std::uint32_t ste
     }
 }
 
-void VoiceStickCoordinator::FlushEncoderRotatePending(const std::string& device_id) {
+void VoiceStickCoordinator::FlushEncoderRotatePending(std::string device_id) {
     if (!encoder_pending_active_) return;
     const bool ccw = encoder_pending_ccw_;
     const std::uint32_t steps = encoder_pending_steps_;
     encoder_pending_active_ = false;
     encoder_pending_steps_ = 0;
+    // 注意：device_id 按值传入。历史上此处为 const 引用且调用方传入成员
+    // encoder_pending_device_id_，下面这行 clear() 会把参数引用的对象清空成空串，
+    // 导致 EncoderSettingsForDevice(device_id) 查不到设备覆盖、回落全局默认键
+    // （慢速旋转输出锁死在方向键）。按值传递后 clear 只清成员，不影响参数副本。
     encoder_pending_device_id_.clear();
     if (on_encoder_rotate_pending_changed) on_encoder_rotate_pending_changed(false);
     const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
