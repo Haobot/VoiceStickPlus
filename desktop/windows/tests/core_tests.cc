@@ -15,6 +15,7 @@
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
 #include "hotword_candidate_miner.h"
+#include "hotword_selector.h"
 #include "tencent_asr_vocab_client.h"
 #include "key_spec.h"
 #include "llm_refinement_client.h"
@@ -1468,6 +1469,130 @@ void TestHotwordCandidateMiner() {
 
     // 缺失文件返回空 store。
     assert(LoadHotwordCandidates(temp).counts.empty());
+}
+
+void TestHotwordSelector() {
+    const std::int64_t now = 1760000000;  // 固定 now，保证确定性
+
+    // 评分：同 count 下手动词（source=manual）胜过挖掘词。
+    HotwordUsage manual{};
+    manual.count = 3;
+    manual.last_used_ts = now;
+    manual.source = "manual";
+    HotwordUsage mined{};
+    mined.count = 3;
+    mined.last_used_ts = now;
+    assert(HotwordScore(manual, now) > HotwordScore(mined, now));
+    // 高频词（count=30）能胜过低计数手动词——频率优先的设计意图。
+    HotwordUsage high{};
+    high.count = 30;
+    high.last_used_ts = now;
+    HotwordUsage low_manual{};
+    low_manual.count = 0;
+    low_manual.last_used_ts = now;
+    low_manual.source = "manual";
+    assert(HotwordScore(high, now) > HotwordScore(low_manual, now));
+    // 未知时间戳（0）新近度记 0：只剩 count 与 manual 项。
+    HotwordUsage unknown_ts{};
+    unknown_ts.count = 0;
+    unknown_ts.source = "manual";
+    assert(HotwordScore(unknown_ts, now) == kHotwordWManual);
+
+    // 合法性过滤：含空白 / 超长词被过滤。
+    assert(IsValidHotword("Opus"));
+    assert(IsValidHotword("覃海洋"));
+    assert(IsValidHotword("ESP32-S3"));
+    assert(!IsValidHotword(""));
+    assert(!IsValidHotword("带空格 的词"));
+    assert(!IsValidHotword(std::string(11, '热')));  // 11 个汉字超限
+    assert(!IsValidHotword(std::string(31, 'a')));   // 31 个 ASCII 超限
+
+    // 排序：评分降序；同分按字典序；库外词按 manual 处理。
+    HotwordUsageStore store;
+    HotwordUsage opus{};
+    opus.count = 3;
+    opus.last_used_ts = now;
+    store["Opus"] = opus;
+    HotwordUsage vs{};
+    vs.count = 3;
+    vs.last_used_ts = now;
+    vs.source = "manual";
+    store["VoiceStick"] = vs;
+    const auto ranked = RankHotwords(store, {"Opus", "VoiceStick", "带空格 的词"}, now);
+    assert((ranked == std::vector<std::string>{"VoiceStick", "Opus"}));
+    // 库外词（CLAUDE.md）按 manual（score=2.0），高于同 count 的 mined 词。
+    HotwordUsage mined3{};
+    mined3.count = 3;
+    mined3.last_used_ts = now;
+    store["BLE"] = mined3;
+    const auto ranked2 = RankHotwords(store, {"BLE", "CLAUDE.md"}, now);
+    assert((ranked2 == std::vector<std::string>{"CLAUDE.md", "BLE"}));
+    // 同分（count/时间戳/source 全同）按字典序稳定。
+    HotwordUsageStore equal_store;
+    HotwordUsage same{};
+    same.count = 1;
+    same.last_used_ts = now;
+    equal_store["zeta"] = same;
+    equal_store["alpha"] = same;
+    const auto ranked3 = RankHotwords(equal_store, {"zeta", "alpha"}, now);
+    assert((ranked3 == std::vector<std::string>{"alpha", "zeta"}));
+
+    // 预算裁剪：按评分序装入，高分词在前且累计不超预算。
+    std::vector<std::string> many;
+    HotwordUsageStore big_store;
+    for (int i = 0; i < 100; ++i) {
+        const std::string word = "术语" + std::to_string(i);  // 每词 2 tokens
+        many.push_back(word);
+        HotwordUsage u{};
+        u.count = 100 - i;  // 编号小的词频更高
+        u.last_used_ts = now;
+        big_store[word] = u;
+    }
+    const auto ranked_many = RankHotwords(big_store, many, now);
+    const auto fitted = AsrProtocol::FitHotwordsToCorpusBudget(ranked_many);
+    int used = 0;
+    for (const auto& word : fitted) used += AsrProtocol::EstimateHotwordTokens(word);
+    assert(used <= AsrProtocol::kHotwordCorpusTokenBudget);
+    assert(fitted.size() < ranked_many.size());
+    assert(ranked_many.front() == "术语0");
+    assert(fitted.front() == "术语0");
+
+    // prompt 段上限：top-N 且保持评分序。
+    const auto prompt_words = TrimHotwordsForPrompt(big_store, many, kHotwordPromptMaxWords, now);
+    assert(static_cast<int>(prompt_words.size()) == kHotwordPromptMaxWords);
+    assert(prompt_words.front() == "术语0");
+
+    // 使用统计记录：命中热词计数+刷新时间戳；未命中的不产生条目。
+    HotwordUsageStore usage_store;
+    RecordHotwordUsageInText(usage_store, "编辑 AGENTS.md 和 CLAUDE.md 文件", {"AGENTS.md", "BLE"}, now);
+    assert(usage_store.at("AGENTS.md").count == 1);
+    assert(usage_store.at("AGENTS.md").last_used_ts == now);
+    assert(usage_store.at("AGENTS.md").source == "manual");
+    assert(!usage_store.contains("BLE"));
+    // 大小写不敏感。
+    RecordHotwordUsageInText(usage_store, "编辑 agents.md 文件", {"AGENTS.md"}, now + 10);
+    assert(usage_store.at("AGENTS.md").count == 2);
+    assert(usage_store.at("AGENTS.md").last_used_ts == now + 10);
+
+    // JSON 往返（与 hotword_select.py load_stats_json 列表形态兼容）。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_usage_test.json";
+    std::filesystem::remove(temp);
+    SaveHotwordUsage(temp, usage_store);
+    const auto loaded = LoadHotwordUsage(temp);
+    assert(loaded.at("AGENTS.md").count == 2);
+    assert(loaded.at("AGENTS.md").last_used_ts == now + 10);
+    assert(loaded.at("AGENTS.md").source == "manual");
+    std::filesystem::remove(temp);
+    // 缺失/损坏文件返回空 store。
+    assert(LoadHotwordUsage(temp).empty());
+    auto bad_temp = std::filesystem::temp_directory_path() / "voicestick_hotword_usage_bad.json";
+    std::filesystem::remove(bad_temp);
+    {
+        std::ofstream f(bad_temp, std::ios::binary);
+        f << "{not-json";
+    }
+    assert(LoadHotwordUsage(bad_temp).empty());
+    std::filesystem::remove(bad_temp);
 }
 
 void TestHotwordExtractionPromptAndParse() {
@@ -7773,6 +7898,7 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
+    TestHotwordSelector();
     TestTencentHotwordCharFilter();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();

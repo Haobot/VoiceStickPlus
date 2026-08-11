@@ -131,7 +131,7 @@ score = w_count × log(1 + count) + w_recency × exp(-Δt / τ) + w_manual × is
 5. `gen_hotword_corpus.py`：从热词库造句 → edge-tts 合成音频（复用 `gen_corpus.py` 函数）。
 6. `run_hotword_bench.py`：配置矩阵驱动、结果落盘、报告生成（复用 `report.py` 模式）。
 7. 跑实验 → `Doc/Expe/hotword-bench-<date>.md` 报告，更新 `Doc/Ref/volcengine-asr.md` 与 AGENTS.md 结论。
-8. （后续，视实验结果）桌面端接入：C++ `hotword_select` 移植 + `asr_hotwords` 自动裁剪；腾讯 `hotword_list` 权重按频率映射。
+8. （桌面端接入）C++ `hotword_select` 移植 + `asr_hotwords` 自动裁剪：**已实现**（2026-08-11，`desktop/windows/src/hotword_selector.cc`，评分模型与 Python 侧一致；使用统计存 `hotword_usage.json`，ASR 直传与精修/翻译 prompt 热词段均按评分裁剪）；腾讯 `hotword_list` 权重按频率映射：未做（表通道现状已覆盖，见 `Doc/Expe/hotword-bench-2026-08-01.md` 结论 3/5）。
 
 ## 五、约束与风险
 

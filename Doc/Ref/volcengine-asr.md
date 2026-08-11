@@ -155,6 +155,11 @@ The `request.corpus` field carries hotwords and self-learning platform tables:
   (nostream APIs allow 5000 words — do not confuse the two). The Windows client
   trims to `kHotwordCorpusTokenBudget = 80` estimated tokens before sending
   (`AsrProtocol::FitHotwordsToCorpusBudget`) to protect the first-pass boost.
+  Trimming is score-based (unreleased): hotwords are ranked by
+  frequency × recency × manual weight (`hotword_selector.cc`, same model as
+  `scripts/e2e_test/asr_bench/hotword_select.py`), so over-budget libraries keep
+  the most-used terms instead of the oldest entries in insertion order; usage
+  stats live in `%APPDATA%\VoiceStick\hotword_usage.json`.
 - **Working mitigation A (shipped)**: the LLM refinement step appends the hotword
   list to its system prompt (`LLMRefinementClient::BuildRefinePrompt`), so the LLM
   corrects near-homophone output back to the exact hotword spelling

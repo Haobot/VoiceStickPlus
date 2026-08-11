@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <ctime>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <tuple>
 #include <utility>
 
@@ -1807,7 +1809,7 @@ bool VoiceStickCoordinator::StartSubtitleAsrAndFlushBufferedChunks(SubtitleCycle
     if (!cycle || !cycle->asr) return false;
     if (cycle->asr_started) return true;
     AsrSessionOptions options;
-    options.hotwords = config_.asr_hotwords;
+    options.hotwords = RankedHotwordsForAsr();
     const bool use_definite_segments = ShouldUseDefiniteSegments(OutputProfileForDevice(cycle->device_id));
     options.show_utterances = use_definite_segments;
     options.result_type = use_definite_segments ? AsrResultType::kSingle : AsrResultType::kFull;
@@ -1871,7 +1873,7 @@ void VoiceStickCoordinator::SendOrBufferOggChunk(const ByteVector& chunk, bool i
 bool VoiceStickCoordinator::StartAsrAndFlushBufferedChunks(bool last_chunk_is_final) {
     if (asr_started_) return true;
     AsrSessionOptions options;
-    options.hotwords = config_.asr_hotwords;
+    options.hotwords = RankedHotwordsForAsr();
     const auto profile = OutputProfileForDevice(active_device_id_);
     const bool use_definite_segments = ShouldUseDefiniteSegments(profile);
     options.show_utterances = use_definite_segments;
@@ -2132,8 +2134,16 @@ void VoiceStickCoordinator::ShowSubtitleText(const std::string& text,
 void VoiceStickCoordinator::TransformText(const std::string& text,
                                           const OutputProfile& profile,
                                           std::function<void(bool, std::string)> completion) {
+    // 最终文本产出时记录热词使用统计（计数+最近使用时间），供高频优先裁剪评分；
+    // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。
+    auto wrapped = [this, completion = std::move(completion)](bool ok, std::string result) mutable {
+        if (ok) RecordHotwordUsageFromText(result);
+        completion(ok, std::move(result));
+    };
     if (profile.transform == TextTransform::kTranslate) {
-        translator_.Translate(text, profile.translation_target, config_.asr_hotwords, std::move(completion));
+        // 翻译 prompt 热词段同样按高频评分取 top-N，防大库稀释小模型注意力。
+        translator_.Translate(text, profile.translation_target, HotwordsForLlmPrompts(),
+                              std::move(wrapped));
         return;
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
@@ -2181,7 +2191,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
             },
             // on_complete（后台线程）：最终文本已就绪
             [this, alive, cancel, text, device_id, throttle,
-             completion = std::move(completion)](bool ok, std::string result) mutable {
+             wrapped = std::move(wrapped)](bool ok, std::string result) mutable {
                 if (!alive->load() || (cancel && cancel->load())) return;
                 std::string final_text = text;
                 if (ok && !result.empty()) {
@@ -2199,13 +2209,13 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                     }
                 }
                 CancelStreamingRefinement();
-                completion(true, final_text);
+                wrapped(true, final_text);
                 MaybeExtractHotwordCandidates(final_text);
             },
-            cancel);
+            cancel, HotwordsForLlmPrompts());
         return;
     }
-    completion(true, text);
+    wrapped(true, text);
     MaybeExtractHotwordCandidates(text);
 }
 
@@ -2268,6 +2278,71 @@ void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<s
         // 悬浮窗临时消息保证用户必现；会话活跃时实现侧自动回退托盘。
         ui_->ShowTimedMessage(message, 3000);
     }
+}
+
+std::vector<std::string> VoiceStickCoordinator::RankedHotwordsForAsr() {
+    std::vector<std::string> ranked;
+    {
+        std::lock_guard lock(hotword_usage_mutex_);
+        if (!hotword_usage_loaded_) {
+            hotword_usage_ = LoadHotwordUsage(
+                config_.ConfigPath().parent_path() / "hotword_usage.json");
+            hotword_usage_loaded_ = true;
+        }
+        ranked = RankHotwords(hotword_usage_, config_.asr_hotwords, std::time(nullptr));
+    }
+    const auto fitted = AsrProtocol::FitHotwordsToCorpusBudget(ranked);
+    if (fitted.size() < ranked.size() && !hotword_trim_notified_.exchange(true)) {
+        // 每次运行只提示一次：热词库超出直传预算，按使用频率优先保留，其余本次不参与。
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const std::string body =
+            Tr(StringId::kHotwordTrimBodyPrefix, language) +
+            std::to_string(fitted.size()) + "/" + std::to_string(ranked.size()) +
+            Tr(StringId::kHotwordTrimBodySuffix, language);
+        std::multiset<std::string> kept(fitted.begin(), fitted.end());
+        std::ostringstream dropped;
+        for (const auto& word : ranked) {
+            auto it = kept.find(word);
+            if (it != kept.end()) {
+                kept.erase(it);
+                continue;
+            }
+            if (dropped.tellp() > 0) dropped << ", ";
+            dropped << word;
+        }
+        LogCoordinatorLine("hotword trimmed to corpus budget " +
+                           std::to_string(AsrProtocol::kHotwordCorpusTokenBudget) +
+                           ": kept " + std::to_string(fitted.size()) + "/" +
+                           std::to_string(ranked.size()) + ", dropped: " + dropped.str());
+        ui_->ShowNotification(Tr(StringId::kHotwordTrimTitle, language), body);
+        // 托盘气球可能被系统勿扰/通知设置静默拦截，悬浮窗临时消息保证必现；
+        // 会话活跃时实现侧自动回退托盘（同 RecordAndNotifyHotwordCandidates 模式）。
+        ui_->ShowTimedMessage(body, 3000);
+    }
+    return fitted;
+}
+
+std::vector<std::string> VoiceStickCoordinator::HotwordsForLlmPrompts() {
+    std::lock_guard lock(hotword_usage_mutex_);
+    if (!hotword_usage_loaded_) {
+        hotword_usage_ = LoadHotwordUsage(
+            config_.ConfigPath().parent_path() / "hotword_usage.json");
+        hotword_usage_loaded_ = true;
+    }
+    return TrimHotwordsForPrompt(hotword_usage_, config_.asr_hotwords,
+                                 kHotwordPromptMaxWords, std::time(nullptr));
+}
+
+void VoiceStickCoordinator::RecordHotwordUsageFromText(const std::string& text) {
+    if (text.empty() || config_.asr_hotwords.empty()) return;
+    std::lock_guard lock(hotword_usage_mutex_);
+    if (!hotword_usage_loaded_) {
+        hotword_usage_ = LoadHotwordUsage(
+            config_.ConfigPath().parent_path() / "hotword_usage.json");
+        hotword_usage_loaded_ = true;
+    }
+    RecordHotwordUsageInText(hotword_usage_, text, config_.asr_hotwords, std::time(nullptr));
+    SaveHotwordUsage(config_.ConfigPath().parent_path() / "hotword_usage.json", hotword_usage_);
 }
 
 void VoiceStickCoordinator::BeginWaitingForAudioEnd(std::string_view reason) {

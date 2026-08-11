@@ -1,5 +1,9 @@
 # CHANGELOG.md
 
+## Unreleased
+
+- 热词高频优先裁剪（Windows）：热词库超出单次会话直传预算（火山 80 tokens）时，按「频率 × 新近度 × 手动加权」评分优先保留（`hotword_selector`，与 `scripts/e2e_test/asr_bench/hotword_select.py` 同一评分模型），替代原按插入顺序贪心截断——新加的词排在列表尾部、旧逻辑最先被裁。使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本）存 `%APPDATA%\VoiceStick\hotword_usage.json`；超预算时每次运行提示一次（浮窗/托盘，明细见日志）。精修/翻译 LLM prompt 的热词段改为评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。新增 `TestHotwordSelector` 单测（镜像 hotword_select.py 自测断言）。
+
 ## v2.3.6
 
 - 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。

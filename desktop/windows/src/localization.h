@@ -306,6 +306,11 @@ enum class StringId {
     kMenuInteractionSettings,
     // {0} = 设备 ID（如 5A74）
     kInteractionSettingsTitle,
+
+    // 热词预算裁剪提示（前缀 + 「保留数/总数」 + 后缀拼接）
+    kHotwordTrimTitle,
+    kHotwordTrimBodyPrefix,
+    kHotwordTrimBodySuffix,
 };
 
 // 返回 UTF-8 本地化文本

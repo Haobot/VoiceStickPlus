@@ -61,28 +61,35 @@ bool AppearsInSourceText(const std::string& source_text, const std::string& word
 
 void LLMRefinementClient::Refine(std::string text,
                                  std::string prompt_override,
-                                 std::function<void(bool, std::string)> completion) const {
-    ChatAsync(BuildRefinePrompt(prompt_override, config().asr_hotwords), std::move(text),
-              std::move(completion));
+                                 std::function<void(bool, std::string)> completion,
+                                 std::vector<std::string> hotwords) const {
+    ChatAsync(BuildRefinePrompt(prompt_override,
+                                hotwords.empty() ? config().asr_hotwords : hotwords),
+              std::move(text), std::move(completion));
 }
 
 void LLMRefinementClient::RefineStream(std::string text,
                                        std::string prompt_override,
                                        std::function<void(std::string token)> on_token,
                                        std::function<void(bool ok, std::string full_text)> on_complete,
-                                       std::shared_ptr<std::atomic_bool> cancel) const {
-    const auto system_prompt = BuildRefinePrompt(prompt_override, config().asr_hotwords);
+                                       std::shared_ptr<std::atomic_bool> cancel,
+                                       std::vector<std::string> hotwords) const {
+    const auto effective_hotwords =
+        hotwords.empty() ? config().asr_hotwords : hotwords;
+    const auto system_prompt = BuildRefinePrompt(prompt_override, effective_hotwords);
     StreamCallbacks cbs;
     cbs.on_token = std::move(on_token);
     cbs.on_done = [on_complete](std::string full_text) {
         if (on_complete) on_complete(true, std::move(full_text));
     };
     cbs.on_error = [this, text, prompt = std::move(prompt_override),
+                    hotwords = std::move(effective_hotwords),
                     on_complete](std::string error) mutable {
         // SSE 流式失败（服务端不支持 stream:true 或网络超时等）：
         // 回退到非流式 ChatAsync → ChatSync 精修，不丢精修能力。
         (void)error;
-        Refine(std::move(text), std::move(prompt), std::move(on_complete));
+        Refine(std::move(text), std::move(prompt), std::move(on_complete),
+               std::move(hotwords));
     };
     ChatStream(system_prompt, text, std::move(cbs), std::move(cancel));
 }

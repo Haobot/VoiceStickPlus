@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kInteractionSettingsTitle) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordTrimBodySuffix) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -297,6 +297,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "Restore defaults";
     table[Index(StringId::kMenuInteractionSettings)] = "Device interaction settings...";
     table[Index(StringId::kInteractionSettingsTitle)] = "Device interaction - VS-{0}";
+    table[Index(StringId::kHotwordTrimTitle)] = "Hotword Budget Trimmed";
+    table[Index(StringId::kHotwordTrimBodyPrefix)] =
+        "Hotwords exceed the per-session budget; kept by usage frequency: ";
+    table[Index(StringId::kHotwordTrimBodySuffix)] =
+        ". The rest are skipped this session (see log for details).";
     return table;
 }
 
@@ -577,6 +582,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "恢复默认";
     table[Index(StringId::kMenuInteractionSettings)] = "设备交互设置…";
     table[Index(StringId::kInteractionSettingsTitle)] = "设备交互 - VS-{0}";
+    table[Index(StringId::kHotwordTrimTitle)] = "热词预算裁剪";
+    table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
+    table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";
     return table;
 }
 

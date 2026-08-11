@@ -11,6 +11,7 @@
 #include "encoder_speed.h"
 #include "firmware_manifest.h"
 #include "hotword_candidate_miner.h"
+#include "hotword_selector.h"
 #include "key_spec.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
@@ -398,6 +399,13 @@ private:
     void MaybeExtractHotwordCandidates(const std::string& final_text);
     // 两个挖掘通道共用的记录+通知：懒加载存储、计数、达阈值弹托盘通知。
     void RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words);
+    // 高频优先热词（评分裁剪后）：ASR 直传用。懒加载 hotword_usage.json 统计，
+    // 按频率×新近度×手动加权排序后装入 kHotwordCorpusTokenBudget；超裁时首次提示。
+    std::vector<std::string> RankedHotwordsForAsr();
+    // 精修/翻译 prompt 热词段（评分 top-kHotwordPromptMaxWords，防大库稀释 LLM）。
+    std::vector<std::string> HotwordsForLlmPrompts();
+    // 记录最终文本中出现的热词使用统计（计数+刷新最近使用时间），落盘 best-effort。
+    void RecordHotwordUsageFromText(const std::string& text);
     void BeginWaitingForAudioEnd(std::string_view reason);
     void ScheduleAudioEndTimeout(std::optional<std::uint32_t> session_id,
                                  std::optional<std::string> device_id);
@@ -588,6 +596,13 @@ private:
     HotwordCandidateStore hotword_candidates_;
     bool hotword_candidates_loaded_ = false;
     std::mutex hotword_candidates_mutex_;
+    // 热词使用统计存储（懒加载，见 RankedHotwordsForAsr/RecordHotwordUsageFromText）。
+    // TransformText 完成回调可能落在 LLM 后台线程，用互斥锁串行化。
+    HotwordUsageStore hotword_usage_;
+    bool hotword_usage_loaded_ = false;
+    std::mutex hotword_usage_mutex_;
+    // 热词超预算裁剪提示：每次运行只提示一次，避免每次会话刷屏。
+    std::atomic_bool hotword_trim_notified_{false};
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;
