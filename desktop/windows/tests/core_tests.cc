@@ -1317,9 +1317,23 @@ void TestLlmRefinePromptAndPayload() {
     assert(cJSON_IsString(user_content) && std::string(user_content->valuestring) == "hello world");
     cJSON_Delete(root);
 
-    // 精修默认关闭、prompt 默认空。
+    // disable_thinking=true 时注入两种风格的关思考参数，且 payload 仍为合法 JSON。
+    const auto no_think_payload =
+        LLMChatClient::BuildChatPayload("gpt-x", "sys-prompt", "hello world",
+                                         /*stream=*/false, /*disable_thinking=*/true);
+    assert(no_think_payload.find("\"enable_thinking\":false") != std::string::npos);
+    assert(no_think_payload.find("\"chat_template_kwargs\":{\"enable_thinking\":false}") !=
+           std::string::npos);
+    auto* no_think_root = cJSON_Parse(no_think_payload.c_str());
+    assert(no_think_root != nullptr);
+    auto* enable_thinking = cJSON_GetObjectItemCaseSensitive(no_think_root, "enable_thinking");
+    assert(cJSON_IsBool(enable_thinking) && !cJSON_IsTrue(enable_thinking));
+    cJSON_Delete(no_think_root);
+
+    // 精修默认关闭、prompt 默认空。llm_disable_thinking 默认开启（关闭模型深度思考）。
     assert(AppConfig::Defaults().refine_enabled == false);
     assert(AppConfig::Defaults().refine_prompt.empty());
+    assert(AppConfig::Defaults().llm_disable_thinking == true);
 
     // refine_prompt 多行字符串 TOML 保存/加载往返测试：
     // 验证换行等控制字符被正确转义为 \n 等 TOML 转义序列，确保回读一致。
@@ -4499,6 +4513,13 @@ void TestStreamPayload() {
     // 默认无 stream 参数（向后兼容）
     const auto default_payload = LLMChatClient::BuildChatPayload("gpt-x", "sys", "user text");
     assert(default_payload.find("\"stream\"") == std::string::npos);
+
+    // 默认不注入关思考参数；显式开启时流式 payload 也带（disable_thinking 与 stream 正交）。
+    assert(default_payload.find("enable_thinking") == std::string::npos);
+    const auto no_think_stream = LLMChatClient::BuildChatPayload(
+        "gpt-x", "sys", "user text", /*stream=*/true, /*disable_thinking=*/true);
+    assert(no_think_stream.find("\"stream\":true") != std::string::npos);
+    assert(no_think_stream.find("\"enable_thinking\":false") != std::string::npos);
 }
 
 // 构造一个 16 kHz、40 ms（640 样本）的单声道正弦波 PCM 帧。

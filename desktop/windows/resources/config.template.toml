@@ -30,6 +30,9 @@ tencent_hotword_id = ""
 llm_base_url = ""
 llm_api_key = ""
 llm_model = ""
+# 关闭推理型 LLM 的深度思考模式（enable_thinking=false），加快精修/翻译输出。
+# 使用严格校验未知字段的 OpenAI 官方 API 时如报 400，可改为 false。
+llm_disable_thinking = true
 refine_enabled = false
 refine_prompt = ""
 hotword_process_enabled = false

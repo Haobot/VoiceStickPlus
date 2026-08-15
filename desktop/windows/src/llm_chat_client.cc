@@ -83,7 +83,8 @@ std::string LLMChatClient::ChatSync(const std::string& system_prompt,
     AddHeader(request, "Authorization: Bearer " + api_key);
     AddHeader(request, "Content-Type: application/json");
 
-    const auto payload = BuildChatPayload(config_.ActiveLlmModel(), system_prompt, user_text);
+    const auto payload = BuildChatPayload(config_.ActiveLlmModel(), system_prompt, user_text,
+                                          /*stream=*/false, config_.llm_disable_thinking);
 
     const BOOL sent = WinHttpSendRequest(
         request,
@@ -205,7 +206,8 @@ void LLMChatClient::ChatStream(std::string system_prompt,
     AddHeader(request, "Authorization: Bearer " + api_key);
     AddHeader(request, "Content-Type: application/json");
 
-    const auto payload = BuildChatPayload(config_.ActiveLlmModel(), system_prompt, user_text, /*stream=*/true);
+    const auto payload = BuildChatPayload(config_.ActiveLlmModel(), system_prompt, user_text,
+                                          /*stream=*/true, config_.llm_disable_thinking);
 
     OutputDebugStringA(("[ChatStream] sending stream request, model=" + config_.ActiveLlmModel() + ", payload=" + std::to_string(payload.size()) + " bytes").c_str());
 
@@ -365,9 +367,16 @@ std::string LLMChatClient::ChatCompletionsPathAndQuery(std::wstring* host,
 std::string LLMChatClient::BuildChatPayload(const std::string& model,
                                             const std::string& system_prompt,
                                             const std::string& user_text,
-                                            bool stream) {
+                                            bool stream,
+                                            bool disable_thinking) {
     std::string payload = "{\"model\":\"" + JsonEscape(model) + "\","
                           "\"temperature\":0";
+    if (disable_thinking) {
+        // 两种风格都发：顶层 enable_thinking（DashScope/Qwen 兼容模式）+
+        // chat_template_kwargs.enable_thinking（vLLM/SGLang 自建端点），关闭深度思考以快速输出。
+        payload += ",\"enable_thinking\":false,"
+                   "\"chat_template_kwargs\":{\"enable_thinking\":false}";
+    }
     if (stream) {
         payload += ",\"stream\":true";
     }

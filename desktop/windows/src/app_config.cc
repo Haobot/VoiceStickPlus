@@ -380,6 +380,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "llm_base_url") config.llm_base_url = value;
     if (key == "llm_api_key") config.llm_api_key = value;
     if (key == "llm_model") config.llm_model = value;
+    if (key == "llm_disable_thinking") config.llm_disable_thinking = BoolValue(value, config.llm_disable_thinking);
     if (key == "refine_enabled") config.refine_enabled = BoolValue(value, config.refine_enabled);
     if (key == "refine_prompt") config.refine_prompt = value;
     if (key == "hotword_process_enabled") config.hotword_process_enabled = BoolValue(value, config.hotword_process_enabled);
@@ -576,6 +577,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlTrimmedString(table, "llm_base_url")) config.llm_base_url = *value;
         if (auto value = TomlTrimmedString(table, "llm_api_key")) config.llm_api_key = *value;
         if (auto value = TomlString(table, "llm_model")) config.llm_model = *value;
+        if (auto value = TomlBool(table, "llm_disable_thinking")) config.llm_disable_thinking = *value;
         if (auto value = TomlBool(table, "refine_enabled")) config.refine_enabled = *value;
         if (auto value = TomlString(table, "refine_prompt")) config.refine_prompt = *value;
         if (auto value = TomlBool(table, "hotword_process_enabled")) config.hotword_process_enabled = *value;
@@ -761,6 +763,7 @@ void AppConfig::SavePreservingDiskCredentials(const std::filesystem::path& path)
     merged.llm_base_url = disk.llm_base_url;
     merged.llm_api_key = disk.llm_api_key;
     merged.llm_model = disk.llm_model;
+    merged.llm_disable_thinking = disk.llm_disable_thinking;
     merged.refine_prompt = disk.refine_prompt;
     merged.hotword_process_prompt = disk.hotword_process_prompt;
     merged.Save(path);
@@ -805,6 +808,7 @@ void AppConfig::SaveSettingsDialog(const std::filesystem::path& path) const {
     merged.llm_base_url = keep_memory_if_nonempty(llm_base_url, disk.llm_base_url);
     merged.llm_api_key = keep_memory_if_nonempty(llm_api_key, disk.llm_api_key);
     merged.llm_model = keep_memory_if_nonempty(llm_model, disk.llm_model);
+    merged.llm_disable_thinking = llm_disable_thinking;
     merged.refine_prompt = keep_memory_if_nonempty(refine_prompt, disk.refine_prompt);
     merged.hotword_process_prompt =
         keep_memory_if_nonempty(hotword_process_prompt, disk.hotword_process_prompt);
@@ -839,6 +843,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "llm_base_url = \"" << TomlEscape(llm_base_url) << "\"\n";
     output << "llm_api_key = \"" << TomlEscape(llm_api_key) << "\"\n";
     output << "llm_model = \"" << TomlEscape(llm_model) << "\"\n";
+    output << "llm_disable_thinking = " << (llm_disable_thinking ? "true" : "false") << "\n";
     output << "refine_enabled = " << (refine_enabled ? "true" : "false") << "\n";
     output << "refine_prompt = \"" << TomlEscape(refine_prompt) << "\"\n";
     output << "hotword_process_enabled = " << (hotword_process_enabled ? "true" : "false") << "\n";

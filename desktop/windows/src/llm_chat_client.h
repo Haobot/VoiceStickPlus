@@ -19,10 +19,13 @@ public:
     static std::string Utf8FromUtf16(std::wstring_view text);
     // 构造 OpenAI Chat Completions 请求体 JSON（temperature:0，system+user 两条消息）。
     // stream 为 true 时附加 "stream":true，用于 SSE 流式响应。
+    // disable_thinking 为 true 时附加 enable_thinking:false（DashScope/Qwen 兼容）与
+    // chat_template_kwargs.enable_thinking:false（vLLM/SGLang），关闭推理模型深度思考。
     static std::string BuildChatPayload(const std::string& model,
                                         const std::string& system_prompt,
                                         const std::string& user_text,
-                                        bool stream = false);
+                                        bool stream = false,
+                                        bool disable_thinking = false);
 
     // SSE 流式回调：token 逐片到达；done 时 on_done(full_text)；出错时 on_error(msg)。
     struct StreamCallbacks {
