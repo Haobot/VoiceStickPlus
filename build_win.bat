@@ -49,22 +49,38 @@ echo.
 echo [3/4] Setting up MSVC build environment...
 >> "%LOG_FILE%" echo === Setting up MSVC environment ===
 
-for %%V in (Community BuildTools Professional Enterprise) do (
-    if not defined VS_INSTALL_PATH if exist "C:\Program Files\Microsoft Visual Studio\2022\%%V\VC\Auxiliary\Build\vcvars64.bat" (
-        set "VS_INSTALL_PATH=C:\Program Files\Microsoft Visual Studio\2022\%%V"
-    )
-    if not defined VS_INSTALL_PATH if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\%%V\VC\Auxiliary\Build\vcvars64.bat" (
-        set "VS_INSTALL_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\%%V"
+REM 搜索 VS 2022（17.x）与 VS 18（预览版）的 Community/BuildTools/Professional/Enterprise
+REM 编辑；同时支持常见安装根目录（C:\Program Files、C:\Program Files (x86)、D:\Microsoft Visual Studio）。
+for %%P in (
+    "C:\Program Files\Microsoft Visual Studio\2022\Community"
+    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools"
+    "C:\Program Files\Microsoft Visual Studio\2022\Professional"
+    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\Community"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\Professional"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise"
+    "D:\Microsoft Visual Studio\18\Community"
+    "D:\Microsoft Visual Studio\18\BuildTools"
+    "D:\Microsoft Visual Studio\18\Professional"
+    "D:\Microsoft Visual Studio\18\Enterprise"
+    "D:\Microsoft Visual Studio\2022\Community"
+    "D:\Microsoft Visual Studio\2022\BuildTools"
+    "D:\Microsoft Visual Studio\2022\Professional"
+    "D:\Microsoft Visual Studio\2022\Enterprise"
+) do (
+    if not defined VS_INSTALL_PATH if exist "%%~P\VC\Auxiliary\Build\vcvars64.bat" (
+        set "VS_INSTALL_PATH=%%~P"
     )
 )
 
 if not defined VS_INSTALL_PATH (
-    echo ERROR: Visual Studio 2022 not found
-    >> "%LOG_FILE%" echo ERROR: Visual Studio 2022 not found
+    echo ERROR: Visual Studio 2022/18 not found
+    >> "%LOG_FILE%" echo ERROR: Visual Studio 2022/18 not found
     exit /b 1
 )
 
-echo   - Using Visual Studio 2022 from: %VS_INSTALL_PATH%
+echo   - Using Visual Studio from: %VS_INSTALL_PATH%
 call "%VS_INSTALL_PATH%\VC\Auxiliary\Build\vcvars64.bat" >> "%SETUP_LOG%" 2>&1
 if errorlevel 1 (
     echo ERROR: Failed to setup MSVC environment

@@ -75,6 +75,7 @@ enum class StringId {
     kSettingsSectionOutput,
     kSettingsSectionDevice,
     kSettingsSectionSystem,
+    kSettingsDeveloperMode,
 
     // 托盘菜单
     kMenuPairDevice,

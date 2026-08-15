@@ -33,6 +33,8 @@ private:
     void UpdateProviderVisibility();
     void UpdateRefinePromptVisibility();
     void UpdateHotwordProcessPromptVisibility();
+    // 开发者模式复选框切换：更新 developer_mode_ 并重新布局显隐高级功能。
+    void OnDeveloperModeToggled();
     // 候选热词：从存储文件刷新待确认列表，并重填候选列表控件。
     void RefreshHotwordCandidates();
     void OnHotwordCandidateAdd();
@@ -73,8 +75,12 @@ private:
     HWND hwnd_ = nullptr;
     AppConfig config_;
     UINT dpi_ = 96;
+    // 开发者模式：true 时设置页放出全部高级功能。从 config_.developer_mode 加载，
+    // 切换复选框时实时更新并 Relayout，无需重建控件。
+    bool developer_mode_ = false;
 
     HWND language_combo_ = nullptr;
+    HWND developer_mode_check_ = nullptr;
     HWND provider_combo_ = nullptr;
     // 当前配置为 voicestick_cloud 时，下拉框 0 号位临时插入 "VoiceStick Cloud"（老配置兼容）。
     bool provider_combo_has_cloud_ = false;
@@ -156,6 +162,7 @@ private:
     static constexpr UINT kIdHotwordCandidateList = 2036;
     static constexpr UINT kIdHotwordCandidateAdd = 2037;
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
+    static constexpr UINT kIdDeveloperMode = 2039;
 };
 
 } // namespace voicestick

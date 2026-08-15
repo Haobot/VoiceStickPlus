@@ -33,6 +33,19 @@ if not exist "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" (
 )
 call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul 2>&1
 
+:: Prepend the C++/WinRT projection headers (desktop\windows\generated_winrt) to INCLUDE.
+:: Same reason as build_win.bat: the Windows SDK's Include\<ver>\winrt folder only ships
+:: legacy WRL-style headers and lacks winrt/base.h. The headers are generated once by
+:: build_win.bat and cached under generated_winrt (gitignored, survives clean).
+:: If missing, build would fail with C1083 on winrt/base.h.
+set "GEN_WINRT_DIR=%WINDOWS_DIR%\generated_winrt"
+if not exist "%GEN_WINRT_DIR%\winrt\base.h" (
+    echo WARNING: %GEN_WINRT_DIR%\winrt\base.h not found.
+    echo          Run build_win.bat first to generate C++/WinRT projection headers,
+    echo          or this build will fail with C1083 on winrt/base.h.
+)
+set "INCLUDE=%GEN_WINRT_DIR%;%INCLUDE%"
+
 echo.
 echo [1/2] CMake RelWithDebInfo build...
 cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo

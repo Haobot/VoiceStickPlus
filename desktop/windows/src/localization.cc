@@ -82,6 +82,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsSectionOutput)] = "Output";
     table[Index(StringId::kSettingsSectionDevice)] = "Device Interaction";
     table[Index(StringId::kSettingsSectionSystem)] = "System";
+    table[Index(StringId::kSettingsDeveloperMode)] = "Developer Mode (show all advanced settings)";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -347,6 +348,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsSectionOutput)] = "输出";
     table[Index(StringId::kSettingsSectionDevice)] = "设备交互";
     table[Index(StringId::kSettingsSectionSystem)] = "系统";
+    table[Index(StringId::kSettingsDeveloperMode)] = "开发者模式（显示全部高级设置）";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";
