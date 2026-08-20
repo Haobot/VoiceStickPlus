@@ -6,7 +6,7 @@
 
 - 新增开发者模式（Windows）：设置对话框新增「开发者模式」开关，启用后显示高级设置区域与系统分区。移植自 VoiceStick，替换原硬编码的 `kShowAdvancedSettings=false` / `kShowSystemSection=false` 为运行时可见性谓词，支持中英双语（`localization` 新增 `kSettingsDeveloperMode`）。
 
-- DeepSeek 模型禁用思维链（Windows）：`llm_chat_client` 检测模型名含 "deepseek" 时自动注入 `thinking:{type:disabled}`，避免 DeepSeek-R1 等推理模型在语音交互场景中产生不必要的长思维链。与已有的 `llm_disable_thinking` 配置（Qwen 风格 `enable_thinking:false`）互补，两者可同时生效。新增 `TestDeepSeekThinkingDisabled` 单测。
+- DeepSeek 模型禁用思维链（Windows）：`llm_chat_client` 大小写不敏感检测模型名含 "deepseek" 时自动注入 `thinking:{type:disabled}`，避免 DeepSeek-R1 等推理模型在语音交互场景中产生不必要的长思维链。与已有的 `llm_disable_thinking` 配置（Qwen 风格 `enable_thinking:false`）互补，两者可同时生效。新增 `TestDeepSeekThinkingDisabled` 单测（含大小写变体）。
 
 - 补全烧录工具源文件（Windows）：v2.3.7 的 `CMakeLists.txt` 引用了 `com_port_selector`、`esptool_flash_command`、`esptool_progress`、`voice_stick_flash_tool`、`flash_tool_dialog`、`flash_tool_main`、`encoder_settings_dialog` 等源文件，但因 `desktop/windows/` 在 `.gitignore` 中而从未提交。本次用 `git add -f` 补全全部源文件并修复编译错误（类名/成员名/接口对齐），`FlashProcessRunner` 实现使用 `CreateProcessW` + 匿名管道捕获 stdout/stderr。
 

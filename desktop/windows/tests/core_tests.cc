@@ -4545,6 +4545,10 @@ void TestDeepSeekThinkingDisabled() {
         "deepseek-v4-flash", "sys", "user", /*stream=*/true, /*disable_thinking=*/true);
     assert(ds_stream.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
     assert(ds_stream.find("\"stream\":true") != std::string::npos);
+    // 大小写不敏感匹配：用户可能配置 "DeepSeek-V4-Flash" 等大写写法。
+    const auto caps_payload = LLMChatClient::BuildChatPayload(
+        "DeepSeek-V4-Flash", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(caps_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
     // 整体仍是合法 JSON。
     auto* root = cJSON_Parse(ds_payload.c_str());
     assert(root != nullptr);
