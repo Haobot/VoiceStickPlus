@@ -85,6 +85,8 @@ jobs:
         # 直接 fetch Release 资产会被浏览器跨域拦截，见 Doc/Expe/ 相关记录）。
         run: |
           set -euo pipefail
+          curl -fsSL "https://78.github.io/voicestick/appcast.xml" \
+            -o website/public/appcast.xml || true
           tag="$(gh release view --json tagName -q .tagName)"
           version="${tag#v}"
           mkdir -p website/public/firmware
