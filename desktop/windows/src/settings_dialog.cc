@@ -269,6 +269,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdHotwordCandidateDismiss:
             OnHotwordCandidateDismiss();
             return TRUE;
+        case kIdDeveloperMode:
+            if (HIWORD(w_param) == BN_CLICKED) OnDeveloperModeToggled();
+            return TRUE;
         }
         break;
     case WM_VSCROLL: {
@@ -347,6 +350,7 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
     }
     case WM_DESTROY:
         hwnd_ = nullptr;
+        developer_mode_check_ = nullptr;
         provider_combo_ = nullptr;
         api_key_edit_ = nullptr;
         apply_trial_button_ = nullptr;
@@ -433,6 +437,7 @@ void SettingsDialog::DestroyControls() {
     label_controls_.clear();
     title_controls_.clear();
     layout_.clear();
+    developer_mode_check_ = nullptr;
     provider_combo_ = nullptr;
     api_key_edit_ = nullptr;
     apply_trial_button_ = nullptr;
@@ -476,6 +481,8 @@ void SettingsDialog::BuildControls() {
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
+    // 从已加载的 config_ 同步开发者模式，使本函数末尾的 Relayout 首次即用正确值布局。
+    developer_mode_ = config_.developer_mode;
 
     ui_font_ = CreateUiFont(dpi_);
     title_font_ = CreateUiFontBold(dpi_);
@@ -518,17 +525,16 @@ void SettingsDialog::BuildControls() {
         layout_.push_back({advance, std::move(parts), std::move(vis)});
     };
 
-    // 高级/调试设置总开关：false 时热词处理、输出目标、体感灵敏度、编码器、
-    // 调试音频、IMU 调试等区块不加入布局表（控件仍创建，保存时按加载值回写，
-    // config.toml 手改依然生效）。
-    constexpr bool kShowAdvancedSettings = false;
-    // 热词处理（整段提炼关键词）区块同样单独放开，始终可见。
+    // 高级/调试设置总开关：developer_mode_=false（普通模式）时 API Key/资源 ID/LLM
+    // 凭据/输出目标/系统区/调试开关等不显示（控件仍创建，保存时按加载值回写，
+    // config.toml 手改依然生效）；true（开发者模式）放出全部功能。复选框切换时 Relayout。
+    // 热词处理（整段提炼关键词）区块始终可见。
     constexpr bool kShowHotwordProcessSettings = true;
     // 分组标题：左对齐加粗文本，宽度与“标签+控件”区域对齐。
-    auto section_title = [&](StringId id) {
+    auto section_title = [&](StringId id, std::function<bool()> vis = std::function<bool()>()) {
         HWND t = remember_title(CreateSectionTitle(hwnd_, TrW(id, language).c_str(),
                                                     0, 0, ctrl_x + ctrl_w - Dp(10), title_h, instance_));
-        add(title_h + Dp(4), {{t, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), title_h}});
+        add(title_h + Dp(4), {{t, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), title_h}}, std::move(vis));
     };
     // 组间分隔线：宽度同标题，推进为线高 + 下方间距；可带可见性谓词（空=始终可见）。
     auto separator = [&](std::function<bool()> vis = std::function<bool()>()) {
@@ -538,6 +544,19 @@ void SettingsDialog::BuildControls() {
 
     // ===== 通用 =====
     section_title(StringId::kSettingsSectionGeneral);
+    {
+        // 开发者模式：勾选后放出全部高级功能（API Key/资源 ID/LLM 凭据/输出目标/
+        // 系统区/调试开关），实时 Relayout；取消勾选回到普通模式（仅必要功能）。
+        // 始终可见，状态持久化到 config_.developer_mode。
+        HWND dm_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        developer_mode_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsDeveloperMode, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdDeveloperMode, instance_, BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {dm_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {developer_mode_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
     {
         HWND lang_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLanguage).c_str(),
                                                      0, 0, label_w, Dp(20), instance_));
@@ -576,8 +595,8 @@ void SettingsDialog::BuildControls() {
         });
     }
     {
-        // API Key 行已从界面隐藏（凭据只走 config.toml）；控件仍创建并参与 config 读写，
-        // 未加入布局表的控件会被 BuildControls 统一隐藏。
+        // API Key 行：普通模式隐藏，开发者模式显示。apply_trial_button 显隐由
+        // ApplyApiKeyLayout 行内条件控制（defer_visibility=true），不被 Relayout 强制 show。
         HWND api_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(),
                                                     0, 0, label_w, Dp(20), instance_));
         const int apply_btn_w = Dp(102);
@@ -586,10 +605,14 @@ void SettingsDialog::BuildControls() {
         apply_trial_button_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsApplyTrial, language).c_str(),
                                                     0, 0, apply_btn_w, Dp(24),
                                                     kIdApplyTrialApiKey, instance_));
-        (void)api_label;
+        add(row_h + Dp(10), {
+            {api_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+            {apply_trial_button_, ctrl_x + ctrl_w - apply_btn_w, 0, apply_btn_w, Dp(24), true},
+        }, [this]() { return developer_mode_; });
     }
     {
-        // 资源 ID 行同样从界面隐藏，保留控件与 config 读写。
+        // 资源 ID 行：普通模式隐藏，开发者模式显示。
         resource_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsResourceId).c_str(),
                                                      0, 0, label_w, Dp(20), instance_));
         resource_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
@@ -598,6 +621,10 @@ void SettingsDialog::BuildControls() {
             SendMessageW(resource_combo_, CB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(Utf16(id).c_str()));
         }
+        add(row_h + Dp(10), {
+            {resource_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {resource_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
+        }, [this]() { return developer_mode_; });
     }
     {
         // 热词块：label + 多行 edit + 提示行，作为一个整体推进。
@@ -641,27 +668,37 @@ void SettingsDialog::BuildControls() {
     // ===== 文本精修 =====
     section_title(StringId::kSettingsSectionRefine);
     {
-        // LLM Base URL / API Key / 模型三行已从界面隐藏（只走 config.toml）；
-        // 控件仍创建并参与 config 读写，未加入布局表的控件会被统一隐藏。
+        // LLM Base URL 行：普通模式隐藏，开发者模式显示。
         HWND bu_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmBaseUrl).c_str(),
                                                    0, 0, label_w, Dp(20), instance_));
         llm_base_url_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                  kIdLlmBaseUrlEdit, instance_));
-        (void)bu_label;
+        add(row_h + Dp(10), {
+            {bu_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {llm_base_url_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        }, [this]() { return developer_mode_; });
     }
     {
+        // LLM API Key 行：普通模式隐藏，开发者模式显示。
         HWND lak_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmApiKey).c_str(),
                                                     0, 0, label_w, Dp(20), instance_));
         llm_api_key_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                                 kIdLlmApiKeyEdit, instance_, ES_PASSWORD));
-        (void)lak_label;
+        add(row_h + Dp(10), {
+            {lak_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {llm_api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        }, [this]() { return developer_mode_; });
     }
     {
+        // LLM 模型行：普通模式隐藏，开发者模式显示。
         HWND lm_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsLlmModel).c_str(),
                                                    0, 0, label_w, Dp(20), instance_));
         llm_model_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
                                               kIdLlmModelEdit, instance_));
-        (void)lm_label;
+        add(row_h + Dp(10), {
+            {lm_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {llm_model_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        }, [this]() { return developer_mode_; });
     }
     {
         HWND refine_lbl = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
@@ -718,8 +755,8 @@ void SettingsDialog::BuildControls() {
     if (kShowHotwordProcessSettings) separator();
 
     // ===== 输出 =====
-    // 分区标题已移除：输出目标行被 kShowAdvancedSettings 隐藏后标题下内容为空；
-    // wechat 热键/触发方式行仍按输出目标=第三方输入法条件显示，仅不再有标题。
+    // 无分区标题：普通模式下输出目标行隐藏（developer_mode_ 控），wechat 热键/触发
+    // 方式行按 output_target==第三方输入法条件显示；开发者模式下输出目标行可见。
     {
         // 输出目标：当前应用 / 字幕 / 第三方输入法。
         HWND ot_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsOutputTarget).c_str(),
@@ -732,10 +769,10 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetSubtitle, language).c_str()));
         SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetWechatInputMethod, language).c_str()));
-        if (kShowAdvancedSettings) add(row_h + Dp(10), {
+        add(row_h + Dp(10), {
             {ot_label, Dp(10), Dp(3), label_w, Dp(20)},
             {output_target_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
-        });
+        }, [this]() { return developer_mode_; });
     }
     {
         // 第三方输入法：语音热键（与第三方输入法设置中保持一致，如 ctrl+win）。
@@ -790,52 +827,51 @@ void SettingsDialog::BuildControls() {
     // 打开 InteractionSettingsDialog（见 win32_app.cc），按设备单独配置。
     // 编码器设置已迁出：全局设置对话框不再含编码器区块，设备级编码器设置由
     // 托盘设备子菜单「编码器设置…」打开 EncoderSettingsDialog（见 win32_app.cc）。
-    // 系统区：开机自启与划词热词两项与托盘右键菜单重复，已从设置页隐藏；其余行
-    // 均属高级开关（kShowAdvancedSettings=false），整区暂不显示。
-    constexpr bool kShowSystemSection = false;
-    if (kShowSystemSection) separator();
+    // 系统区：开机自启/划词热词与托盘右键菜单重复，调试开关属高级功能；普通模式
+    // 整区隐藏，开发者模式整区显示（vis 谓词统一 developer_mode_）。
+    separator([this]() { return developer_mode_; });
 
     // ===== 系统 =====
-    if (kShowSystemSection) section_title(StringId::kSettingsSectionSystem);
+    section_title(StringId::kSettingsSectionSystem, [this]() { return developer_mode_; });
     {
         HWND lal_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         launch_at_login_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsLaunchAtLogin, language).c_str(),
                                                        0, 0, ctrl_w, Dp(22), kIdLaunchAtLogin, instance_,
                                                        BS_AUTOCHECKBOX));
-        if (kShowSystemSection) add(row_h + Dp(10), {
+        add(row_h + Dp(10), {
             {lal_label, Dp(10), Dp(3), label_w, Dp(20)},
             {launch_at_login_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        });
+        }, [this]() { return developer_mode_; });
     }
     {
         HWND sh_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         selection_hotword_check_ = remember(CreateButton(
             hwnd_, TrW(StringId::kSettingsSelectionHotword, language).c_str(),
             0, 0, ctrl_w, Dp(22), kIdSelectionHotword, instance_, BS_AUTOCHECKBOX));
-        if (kShowSystemSection) add(row_h + Dp(10), {
+        add(row_h + Dp(10), {
             {sh_label, Dp(10), Dp(3), label_w, Dp(20)},
             {selection_hotword_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        });
+        }, [this]() { return developer_mode_; });
     }
     {
         HWND da_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(),
                                                    0, 0, ctrl_w, Dp(22), kIdDebugAudio, instance_,
                                                    BS_AUTOCHECKBOX));
-        if (kShowAdvancedSettings) add(row_h + Dp(10), {
+        add(row_h + Dp(10), {
             {da_label, Dp(10), Dp(3), label_w, Dp(20)},
             {debug_audio_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        });
+        }, [this]() { return developer_mode_; });
     }
     {
         HWND sid_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         show_imu_debug_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsShowImuDebug, language).c_str(),
                                                       0, 0, ctrl_w, Dp(22), kIdShowImuDebug, instance_,
                                                       BS_AUTOCHECKBOX));
-        if (kShowAdvancedSettings) add(row_h + Dp(10), {
+        add(row_h + Dp(10), {
             {sid_label, Dp(10), Dp(3), label_w, Dp(20)},
             {show_imu_debug_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        });
+        }, [this]() { return developer_mode_; });
     }
     {
         HWND dd_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsDebugDir).c_str(),
@@ -844,15 +880,15 @@ void SettingsDialog::BuildControls() {
                                              Dp(24), kIdDebugDirEdit, instance_, ES_READONLY));
         HWND choose_btn = remember(CreateButton(hwnd_, TrW(StringId::kSettingsChooseDir, language).c_str(),
                                                 0, 0, Dp(75), Dp(24), kIdChooseDir, instance_));
-        if (kShowAdvancedSettings) add(row_h + Dp(20), {
+        add(row_h + Dp(20), {
             {dd_label, Dp(10), Dp(3), label_w, Dp(20)},
             {debug_dir_edit_, ctrl_x, 0, ctrl_w - Dp(80), Dp(24)},
             {choose_btn, ctrl_x + ctrl_w - Dp(75), 0, Dp(75), Dp(24)},
-        });
+        }, [this]() { return developer_mode_; });
     }
 
-    // 未加入布局表的控件（kShowAdvancedSettings 关闭的区块）创建时仍带 WS_VISIBLE，
-    // Relayout 只处理表内条目、不会隐藏它们，这里统一隐藏避免残留显示在 (0,0)。
+    // 所有控件均已加入布局表（高级区块带 developer_mode_ vis 谓词），Relayout 统一
+    // 处理显隐。此处保留安全网：万一有控件未注册，统一隐藏避免残留显示在 (0,0)。
     // 保存/取消按钮在此之后才创建，不在本循环范围内。
     {
         std::vector<HWND> laid_out;
@@ -992,10 +1028,15 @@ int SettingsDialog::ComboIndexForProvider(AsrProvider provider) const {
 
 void SettingsDialog::ApplyApiKeyLayout() {
     if (!api_key_edit_ || !apply_trial_button_ || !provider_combo_) return;
+    // 普通模式下 API Key 行整体隐藏（developer_mode_=false），试用按钮必须随之隐藏，
+    // 否则会因未被 Relayout 定位而残留显示在 (0,0)。
+    if (!developer_mode_) {
+        ShowWindow(apply_trial_button_, SW_HIDE);
+        return;
+    }
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
     const bool is_cloud = (ProviderAtComboIndex(idx) == AsrProvider::kVoiceStickCloud);
     const bool api_key_empty = GetWindowText(api_key_edit_).empty();
-    // VoiceStick Cloud 且 API Key 为空时显示试用按钮（API Key 行已隐藏，按钮实际不出现）。
     const bool show_trial = is_cloud && api_key_empty;
     ShowWindow(apply_trial_button_, show_trial ? SW_SHOW : SW_HIDE);
     const int ctrl_w = Dp(kClientWidth - 230);
@@ -1006,6 +1047,10 @@ void SettingsDialog::ApplyApiKeyLayout() {
 }
 
 void SettingsDialog::LoadConfigIntoControls() {
+    developer_mode_ = config_.developer_mode;
+    SendMessageW(developer_mode_check_, BM_SETCHECK,
+                 developer_mode_ ? BST_CHECKED : BST_UNCHECKED, 0);
+
     int language_index = 0;
     if (config_.ui_language == UiLanguage::kEnglish) language_index = 1;
     if (config_.ui_language == UiLanguage::kSimplifiedChinese) language_index = 2;
@@ -1084,6 +1129,8 @@ void SettingsDialog::LoadConfigIntoControls() {
 }
 
 void SettingsDialog::SaveSettings() {
+    config_.developer_mode = SendMessageW(developer_mode_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
     int language_idx = static_cast<int>(SendMessageW(language_combo_, CB_GETCURSEL, 0, 0));
     if (language_idx == 1) {
         config_.ui_language = UiLanguage::kEnglish;
@@ -1230,6 +1277,13 @@ void SettingsDialog::OnTriggerModeChanged() {
 
 void SettingsDialog::UpdateProviderVisibility() {
     // 资源 ID 行显隐、apply_trial_button 显隐与 api_key_edit 宽度均由 Relayout 统一处理。
+    Relayout();
+}
+
+void SettingsDialog::OnDeveloperModeToggled() {
+    // 复选框切换：更新 developer_mode_ 并重新布局。所有高级区块的 vis 谓词读取此字段，
+    // Relayout 自动显隐对应行、重算窗口高度并 clamp 滚动位置，无需重建控件。
+    developer_mode_ = SendMessageW(developer_mode_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     Relayout();
 }
 

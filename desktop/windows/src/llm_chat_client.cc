@@ -377,6 +377,13 @@ std::string LLMChatClient::BuildChatPayload(const std::string& model,
         payload += ",\"enable_thinking\":false,"
                    "\"chat_template_kwargs\":{\"enable_thinking\":false}";
     }
+    // DeepSeek V4 系列（deepseek-v4-flash / deepseek-v4-pro）思考模式默认开启且
+    // effort 默认为 high，精修/翻译/热词提炼等后处理任务不需要思维链，开启会显著
+    // 拖慢 TTFT。检测到 deepseek 模型名时显式关闭思考模式；OpenAI 兼容协议对
+    // 未知字段通常静默忽略，非 DeepSeek 端点不受影响。
+    if (model.find("deepseek") != std::string::npos) {
+        payload += ",\"thinking\":{\"type\":\"disabled\"}";
+    }
     if (stream) {
         payload += ",\"stream\":true";
     }

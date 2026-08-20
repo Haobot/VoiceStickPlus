@@ -4522,6 +4522,39 @@ void TestStreamPayload() {
     assert(no_think_stream.find("\"enable_thinking\":false") != std::string::npos);
 }
 
+void TestDeepSeekThinkingDisabled() {
+    // DeepSeek V4 系列思考模式默认开启且 effort=high，会显著拖慢精修/翻译 TTFT。
+    // disable_thinking=true 时 BuildChatPayload 检测到模型名含 "deepseek" 应额外
+    // 注入 thinking:{type:disabled} 关闭思考模式。
+    const auto ds_payload = LLMChatClient::BuildChatPayload(
+        "deepseek-v4-flash", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(ds_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    // 同样适用于 deepseek-v4-pro 与 deepseek-chat 别名。
+    const auto pro_payload = LLMChatClient::BuildChatPayload(
+        "deepseek-v4-pro", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(pro_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    const auto chat_payload = LLMChatClient::BuildChatPayload(
+        "deepseek-chat", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(chat_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    // 非 DeepSeek 模型不应添加 thinking 字段，避免对其他 OpenAI 兼容端点造成干扰。
+    const auto gpt_payload = LLMChatClient::BuildChatPayload(
+        "gpt-5.5", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(gpt_payload.find("\"thinking\"") == std::string::npos);
+    // 流式 + DeepSeek 也应关闭思考模式。
+    const auto ds_stream = LLMChatClient::BuildChatPayload(
+        "deepseek-v4-flash", "sys", "user", /*stream=*/true, /*disable_thinking=*/true);
+    assert(ds_stream.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    assert(ds_stream.find("\"stream\":true") != std::string::npos);
+    // 整体仍是合法 JSON。
+    auto* root = cJSON_Parse(ds_payload.c_str());
+    assert(root != nullptr);
+    auto* thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
+    assert(cJSON_IsObject(thinking));
+    auto* type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
+    assert(cJSON_IsString(type) && std::string(type->valuestring) == "disabled");
+    cJSON_Delete(root);
+}
+
 // 构造一个 16 kHz、40 ms（640 样本）的单声道正弦波 PCM 帧。
 std::vector<int16_t> MakeSinePcm(int frequency_hz, int sample_rate = 16000) {
     constexpr double kPi = 3.14159265358979323846;
@@ -8038,6 +8071,7 @@ int main() {
     TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
     TestSseParser();
     TestStreamPayload();
+    TestDeepSeekThinkingDisabled();
     TestTencentProviderSelection();
     TestTencentConfigRoundTrip();
     TestTencentCredentialsTrimmedOnLoad();

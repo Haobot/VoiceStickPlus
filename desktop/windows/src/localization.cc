@@ -82,6 +82,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsSectionOutput)] = "Output";
     table[Index(StringId::kSettingsSectionDevice)] = "Device Interaction";
     table[Index(StringId::kSettingsSectionSystem)] = "System";
+    table[Index(StringId::kSettingsDeveloperMode)] = "Developer Mode (show all advanced settings)";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -292,6 +293,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsEncoderLedWhite)] = "White";
     table[Index(StringId::kSettingsEncoderLedOff)] = "Off";
     table[Index(StringId::kSettingsEncoderInvalidKey)] = "Invalid encoder key syntax (e.g. \"down\", \"ctrl+z\"); the field was not saved.";
+    table[Index(StringId::kSettingsEncoderRotateDecideWindow)] = "Decide window (ms)";
+    table[Index(StringId::kSettingsEncoderPressKey)] = "Press key";
+    table[Index(StringId::kSettingsEncoderDoubleClickKey)] = "Double-click key";
     table[Index(StringId::kMenuEncoderSettings)] = "Encoder settings...";
     table[Index(StringId::kEncoderSettingsTitle)] = "Encoder settings - VS-{0}";
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "Restore defaults";
@@ -370,6 +374,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsSectionOutput)] = "输出";
     table[Index(StringId::kSettingsSectionDevice)] = "设备交互";
     table[Index(StringId::kSettingsSectionSystem)] = "系统";
+    table[Index(StringId::kSettingsDeveloperMode)] = "开发者模式（显示全部高级设置）";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";
@@ -577,6 +582,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsEncoderLedWhite)] = "白";
     table[Index(StringId::kSettingsEncoderLedOff)] = "关";
     table[Index(StringId::kSettingsEncoderInvalidKey)] = "编码器按键语法无效（示例：down、ctrl+z），该字段未保存。";
+    table[Index(StringId::kSettingsEncoderRotateDecideWindow)] = "判定窗口（毫秒）";
+    table[Index(StringId::kSettingsEncoderPressKey)] = "单击按键";
+    table[Index(StringId::kSettingsEncoderDoubleClickKey)] = "双击按键";
     table[Index(StringId::kMenuEncoderSettings)] = "编码器设置…";
     table[Index(StringId::kEncoderSettingsTitle)] = "编码器设置 - VS-{0}";
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "恢复默认";

@@ -27,7 +27,7 @@ set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # 默认从 github 拉 WinSparkle；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
 #   用户环境变量 VOICESTICK_WINSPARKLE_URL=C:/path/to/WinSparkle-0.9.2.zip
 # 或 cmake -DVOICESTICK_WINSPARKLE_URL=C:/path/... -S desktop\windows -B ...
-set(_winsparkle_default_url "https://github.com/vslavik/winsparkle/releases/download/v0.9.2/WinSparkle-0.9.2.zip")
+set(_winsparkle_default_url "https://github.com/vslavnik/winsparkle/releases/download/v0.9.2/WinSparkle-0.9.2.zip")
 if(DEFINED ENV{VOICESTICK_WINSPARKLE_URL})
     set(_winsparkle_url "$ENV{VOICESTICK_WINSPARKLE_URL}")
 elseif(DEFINED VOICESTICK_WINSPARKLE_URL)
@@ -36,6 +36,9 @@ else()
     set(_winsparkle_url "${_winsparkle_default_url}")
 endif()
 message(STATUS "WinSparkle source: ${_winsparkle_url}")
+# Allow pre-extracted source dir to bypass download (for offline/dev builds):
+#   cmake -DFETCHCONTENT_SOURCE_DIR_WINSPARKLE=C:/path/to/winsparkle ...
+set(FETCHCONTENT_SOURCE_DIR_WINSPARKLE "" CACHE PATH "WinSparkle pre-extracted source dir (optional, for offline builds)")
 FetchContent_Declare(
     winsparkle
     URL ${_winsparkle_url}
@@ -205,7 +208,7 @@ add_custom_command(TARGET VoiceStickApp POST_BUILD
 add_executable(VoiceStickFlash WIN32
     src/flash_tool_main.cc
     src/flash_tool_dialog.cc
-    src/flash_tool.rc
+    resources/flash_tool.rc
 )
 
 target_include_directories(VoiceStickFlash PRIVATE resources ${CMAKE_CURRENT_BINARY_DIR})

@@ -278,6 +278,10 @@ struct AppConfig {
     // 便携模式：当 exe 同级目录存在 config.toml 时自动激活，
     // 所有数据（配置/日志/调试音频）存储在 exe 目录而非 %APPDATA%。
     bool portable_mode = false;
+    // 开发者模式：true 时设置对话框放出全部高级功能（API Key/资源 ID/LLM 凭据/
+    // 输出目标/系统区/调试开关等）；false（默认，普通模式）只保留必要功能。
+    // config.toml 手改依然生效，仅影响设置页可见性。
+    bool developer_mode = false;
 
     // 返回 exe 所在目录，便携模式下所有数据的根目录。
     static std::filesystem::path PortableBaseDirectory();

@@ -90,6 +90,7 @@ air_mouse_rate_max_speed = 4000.0
 
 # ---- 调试 ----
 debug_audio_cache = false
+developer_mode = false
 debug_audio_dir = ""
 
 # ---- 第三方输入法模式（output_target = wechat_input_method 时生效）----

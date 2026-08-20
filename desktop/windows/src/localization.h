@@ -75,6 +75,7 @@ enum class StringId {
     kSettingsSectionOutput,
     kSettingsSectionDevice,
     kSettingsSectionSystem,
+    kSettingsDeveloperMode,
 
     // 托盘菜单
     kMenuPairDevice,
@@ -296,6 +297,9 @@ enum class StringId {
     kSettingsEncoderLedWhite,
     kSettingsEncoderLedOff,
     kSettingsEncoderInvalidKey,
+    kSettingsEncoderRotateDecideWindow,
+    kSettingsEncoderPressKey,
+    kSettingsEncoderDoubleClickKey,
 
     // 设备级编码器设置（托盘设备子菜单入口 + 独立对话框）
     kMenuEncoderSettings,

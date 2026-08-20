@@ -453,6 +453,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "selection_hotword_enabled") config.selection_hotword_enabled = BoolValue(value, config.selection_hotword_enabled);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
+    if (key == "developer_mode") config.developer_mode = BoolValue(value, config.developer_mode);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(Utf16FromUtf8(value));
     if (key == "paired_device") {
         auto entry = ParsePairedDeviceEntry(value);
@@ -703,6 +704,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "selection_hotword_enabled")) config.selection_hotword_enabled = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
+        if (auto value = TomlBool(table, "developer_mode")) config.developer_mode = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
             config.debug_audio_directory = std::filesystem::path(Utf16FromUtf8(*value));
         }
@@ -901,6 +903,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "selection_hotword_enabled = " << (selection_hotword_enabled ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
+    output << "developer_mode = " << (developer_mode ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(Utf8FromUtf16(debug_audio_directory.wstring())) << "\"\n";
     if (!paired_devices.empty()) {
         output << "paired_device = [\n";

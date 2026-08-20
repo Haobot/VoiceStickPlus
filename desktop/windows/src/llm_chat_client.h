@@ -21,6 +21,8 @@ public:
     // stream 为 true 时附加 "stream":true，用于 SSE 流式响应。
     // disable_thinking 为 true 时附加 enable_thinking:false（DashScope/Qwen 兼容）与
     // chat_template_kwargs.enable_thinking:false（vLLM/SGLang），关闭推理模型深度思考。
+    // 模型名含 "deepseek" 时附加 thinking:{type:disabled}（DeepSeek V4 系列思考模式
+    // 默认开启，需显式关闭）。
     static std::string BuildChatPayload(const std::string& model,
                                         const std::string& system_prompt,
                                         const std::string& user_text,
