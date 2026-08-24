@@ -25,6 +25,7 @@
 #include "onboarding_dialog.h"
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
+#include "power_log_monitor.h"
 #include "voice_stick_coordinator.h"
 #include "voice_stick_flash_tool.h"
 #include "wasapi_render_sink.h"
@@ -7914,9 +7915,183 @@ void TestFlashToolFlow() {
     }
 }
 
+// ---- 电池电压监测：power_log 解析与增量累积 ----
+
+std::vector<std::uint8_t> BuildPowerLogEntry(std::uint32_t uptime_s, std::uint16_t vbat_mv,
+                                             std::uint8_t mode, std::uint8_t flags,
+                                             std::uint32_t reserved = 0) {
+    return {
+        static_cast<std::uint8_t>(uptime_s & 0xFF),
+        static_cast<std::uint8_t>((uptime_s >> 8) & 0xFF),
+        static_cast<std::uint8_t>((uptime_s >> 16) & 0xFF),
+        static_cast<std::uint8_t>((uptime_s >> 24) & 0xFF),
+        static_cast<std::uint8_t>(vbat_mv & 0xFF),
+        static_cast<std::uint8_t>((vbat_mv >> 8) & 0xFF),
+        mode,
+        flags,
+        static_cast<std::uint8_t>(reserved & 0xFF),
+        static_cast<std::uint8_t>((reserved >> 8) & 0xFF),
+        static_cast<std::uint8_t>((reserved >> 16) & 0xFF),
+        static_cast<std::uint8_t>((reserved >> 24) & 0xFF),
+    };
+}
+
+std::string Base64EncodeForTest(const std::vector<std::uint8_t>& data) {
+    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < data.size(); i += 3) {
+        const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16) |
+                                (i + 1 < data.size() ? static_cast<std::uint32_t>(data[i + 1]) << 8 : 0) |
+                                (i + 2 < data.size() ? static_cast<std::uint32_t>(data[i + 2]) : 0);
+        out.push_back(kTable[(n >> 18) & 0x3F]);
+        out.push_back(kTable[(n >> 12) & 0x3F]);
+        out.push_back(i + 1 < data.size() ? kTable[(n >> 6) & 0x3F] : '=');
+        out.push_back(i + 2 < data.size() ? kTable[n & 0x3F] : '=');
+    }
+    return out;
+}
+
+std::vector<std::uint8_t> BuildStateJsonFrame(const std::string& json) {
+    std::vector<std::uint8_t> frame{0x01, 0x10,
+                                    static_cast<std::uint8_t>(json.size() & 0xFF),
+                                    static_cast<std::uint8_t>((json.size() >> 8) & 0xFF)};
+    frame.insert(frame.end(), json.begin(), json.end());
+    return frame;
+}
+
+void TestPowerLogMonitor() {
+    // 1) 条目解析。
+    const auto anchor_entry = BuildPowerLogEntry(1000, 0, 0xFF, kPowerLogFlagTimeAnchor, 1755800000u);
+    PowerLogEntryData parsed{};
+    assert(ParsePowerLogEntry(anchor_entry.data(), anchor_entry.size(), &parsed));
+    assert(parsed.uptime_s == 1000);
+    assert(parsed.is_time_anchor);
+    assert(parsed.anchor_epoch == 1755800000u);
+
+    // 2) 分片帧解析：ParseStateEvent 对 power_log 帧应返回 nullopt（无 event 字段）。
+    std::vector<std::uint8_t> blob;
+    const auto periodic1 = BuildPowerLogEntry(1060, 4100, 0, kPowerLogFlagPeriodic);
+    blob.insert(blob.end(), periodic1.begin(), periodic1.end());
+    const auto json = std::string("{\"power_log\":{\"seq\":0,\"offset\":16,\"total\":40,") +
+                      "\"eof\":0,\"data\":\"" + Base64EncodeForTest(blob) + "\"}}";
+    const auto frame = BuildStateJsonFrame(json);
+    assert(!BleProtocol::ParseStateEvent(frame).has_value());
+    const auto fragment = BleProtocol::ParsePowerLogFragment(frame);
+    assert(fragment.has_value());
+    assert(fragment->seq == 0);
+    assert(fragment->offset == 16);
+    assert(fragment->total == 40);
+    assert(!fragment->eof);
+    assert(fragment->data == blob);
+
+    // eof 空数据分片（探测响应）。
+    const auto eof_frame = BuildStateJsonFrame(
+        "{\"power_log\":{\"seq\":0,\"offset\":1000000000,\"total\":40,\"eof\":1,\"data\":\"\"}}");
+    const auto eof_fragment = BleProtocol::ParsePowerLogFragment(eof_frame);
+    assert(eof_fragment.has_value());
+    assert(eof_fragment->eof);
+    assert(eof_fragment->total == 40);
+    assert(eof_fragment->data.empty());
+
+    // 3) 命令 payload。
+    const auto dump_payload = BleProtocol::PowerLogDumpPayload(1000000000u, 160);
+    const std::string dump_json(dump_payload.begin(), dump_payload.end());
+    assert(dump_json.find("\"power_log\"") != std::string::npos);
+    assert(dump_json.find("\"cmd\":\"dump\"") != std::string::npos);
+    assert(dump_json.find("\"offset\":1000000000") != std::string::npos);
+    assert(dump_json.find("\"max\":160") != std::string::npos);
+    const auto anchor_payload = BleProtocol::PowerLogTimeAnchorPayload(1755800000u);
+    const std::string anchor_json(anchor_payload.begin(), anchor_payload.end());
+    assert(anchor_json.find("\"cmd\":\"time_anchor\"") != std::string::npos);
+    assert(anchor_json.find("\"epoch\":1755800000") != std::string::npos);
+
+    // 4) 累积器：锚点 + 周期采样 + 非周期事件过滤 + epoch 对齐。
+    PowerLogAccumulator accumulator;
+    std::vector<std::uint8_t> blob1;
+    blob1.insert(blob1.end(), anchor_entry.begin(), anchor_entry.end());
+    // 非周期模式切换事件（无 PERIODIC 位）：不应产生采样。
+    const auto mode_entry = BuildPowerLogEntry(1010, 0, 1, 0);
+    blob1.insert(blob1.end(), mode_entry.begin(), mode_entry.end());
+    // 两个周期采样（一个充电、一个放电）。
+    const auto sample1 = BuildPowerLogEntry(1060, 4100, 0,
+                                            kPowerLogFlagPeriodic | kPowerLogFlagUsbPowered |
+                                                kPowerLogFlagCharging);
+    blob1.insert(blob1.end(), sample1.begin(), sample1.end());
+    const auto sample2 = BuildPowerLogEntry(1120, 4090, 0, kPowerLogFlagPeriodic);
+    blob1.insert(blob1.end(), sample2.begin(), sample2.end());
+
+    std::vector<PowerLogSample> new_samples;
+    assert(accumulator.ConsumeIncrementalBlob(blob1.data(), blob1.size(), &new_samples));
+    assert(new_samples.size() == 2);
+    assert(accumulator.samples().size() == 2);
+    // epoch 对齐：anchor(epoch=1755800000, uptime=1000) → uptime 1060 → +60s。
+    assert(accumulator.samples()[0].epoch_s == 1755800060);
+    assert(accumulator.samples()[1].epoch_s == 1755800120);
+    assert(accumulator.samples()[0].vbat_mv == 4100);
+    assert(accumulator.samples()[0].charging);
+    assert(accumulator.samples()[0].usb_powered);
+    assert(!accumulator.samples()[1].charging);
+    assert(accumulator.last_uptime_s() == 1120);
+
+    // 5) 增量第二段：仅新周期采样。
+    std::vector<std::uint8_t> blob2;
+    const auto sample3 = BuildPowerLogEntry(1180, 4080, 0, kPowerLogFlagPeriodic);
+    blob2.insert(blob2.end(), sample3.begin(), sample3.end());
+    new_samples.clear();
+    assert(accumulator.ConsumeIncrementalBlob(blob2.data(), blob2.size(), &new_samples));
+    assert(new_samples.size() == 1);
+    assert(accumulator.samples().size() == 3);
+    assert(accumulator.samples()[2].epoch_s == 1755800180);
+
+    // 6) 重启检测：uptime 回退返回 false 且状态不变。
+    std::vector<std::uint8_t> blob_restart;
+    const auto stale = BuildPowerLogEntry(50, 4000, 0, kPowerLogFlagPeriodic);
+    blob_restart.insert(blob_restart.end(), stale.begin(), stale.end());
+    new_samples.clear();
+    assert(!accumulator.ConsumeIncrementalBlob(blob_restart.data(), blob_restart.size(),
+                                               &new_samples));
+    assert(new_samples.empty());
+    assert(accumulator.samples().size() == 3);
+
+    // 7) 长度非 12 倍数视为流损坏。
+    const std::vector<std::uint8_t> bad_blob(13, 0);
+    assert(!accumulator.ConsumeIncrementalBlob(bad_blob.data(), bad_blob.size(), nullptr));
+
+    // 8) CSV：表头 + 每采样一行 + 无效读数标记。
+    const std::string csv = accumulator.FormatCsv();
+    assert(csv.find("seq,timestamp_iso,epoch_s,uptime_s,vbat_mv,vbat_v") == 0);
+    assert(csv.find("1755800060") != std::string::npos);
+    assert(csv.find("4.100") != std::string::npos);
+    assert(csv.find("S0_ACTIVE") != std::string::npos);
+
+    // 9) 无锚点场景：epoch 未对齐（-1）但仍收集采样。
+    PowerLogAccumulator bare;
+    std::vector<std::uint8_t> blob_no_anchor;
+    const auto orphan = BuildPowerLogEntry(60, 4050, 0, kPowerLogFlagPeriodic);
+    blob_no_anchor.insert(blob_no_anchor.end(), orphan.begin(), orphan.end());
+    assert(bare.ConsumeIncrementalBlob(blob_no_anchor.data(), blob_no_anchor.size(), nullptr));
+    assert(bare.samples().size() == 1);
+    assert(bare.samples()[0].epoch_s == -1);
+
+    // 10) 锚点之后的更新锚点生效（取 uptime 最大者）。
+    PowerLogAccumulator re_anchor;
+    std::vector<std::uint8_t> blob_re_anchor;
+    blob_re_anchor.insert(blob_re_anchor.end(), anchor_entry.begin(), anchor_entry.end());
+    const auto anchor2 = BuildPowerLogEntry(2000, 0, 0xFF, kPowerLogFlagTimeAnchor, 1755810000u);
+    blob_re_anchor.insert(blob_re_anchor.end(), anchor2.begin(), anchor2.end());
+    const auto sample_after = BuildPowerLogEntry(2060, 4070, 0, kPowerLogFlagPeriodic);
+    blob_re_anchor.insert(blob_re_anchor.end(), sample_after.begin(), sample_after.end());
+    assert(re_anchor.ConsumeIncrementalBlob(blob_re_anchor.data(), blob_re_anchor.size(), nullptr));
+    assert(re_anchor.samples().size() == 1);
+    assert(re_anchor.samples()[0].epoch_s == 1755810060);
+
+    printf("TestPowerLogMonitor passed\n");
+}
+
 int main() {
     TestDeviceIds();
     TestPairDeviceHelpers();
+    TestPowerLogMonitor();
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();

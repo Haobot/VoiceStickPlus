@@ -140,6 +140,10 @@ void VoiceStickCoordinator::Start() {
         if (is_shutdown_) return;
         HandleMotionEvent(event, device_id);
     };
+    ble_->on_power_log_fragment = [this](std::string device_id, PowerLogFragment fragment) {
+        if (is_shutdown_) return;
+        if (on_power_log_fragment) on_power_log_fragment(device_id, std::move(fragment));
+    };
     ConfigureAsrCallbacks();
     ble_->Start();
     CheckFirmwareUpdatesIfNeeded(false, false);
@@ -161,6 +165,7 @@ void VoiceStickCoordinator::Shutdown() {
     ble_->on_state_event = nullptr;
     ble_->on_audio_frame = nullptr;
     ble_->on_motion_event = nullptr;
+    ble_->on_power_log_fragment = nullptr;
     asr_->Cancel();
     for (auto& [_, cycle] : subtitle_cycles_) {
         if (cycle->asr) cycle->asr->Cancel();
@@ -1344,6 +1349,11 @@ bool VoiceStickCoordinator::ToggleAirMouse(const std::string& device_id) {
     if (on_air_mouse_active_changed) on_air_mouse_active_changed(!air_mouse_states_.empty());
     return true;
 }
+
+void VoiceStickCoordinator::SendPowerLogCommand(const std::string& device_id, ByteVector payload) {
+    ble_->SendPowerLogCommand(device_id, std::move(payload));
+}
+
 
 AirMouseParams VoiceStickCoordinator::AirMouseParamsForDevice(const std::string& device_id) const {
     AirMouseParams p;

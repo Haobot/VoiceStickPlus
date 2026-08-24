@@ -94,6 +94,9 @@ public:
     virtual void SendImuWakeSensitivity(int threshold_lsb,
                                         const std::optional<std::string>& device_id) = 0;
     virtual void RequestBatteryStatus(const std::optional<std::string>& device_id) = 0;
+    // 电池电压监测：向指定设备转发 power_log 控制命令（BleProtocol::PowerLog*Payload
+    // 产物，dump/time_anchor）。默认空实现，测试 Fake 无需覆盖。
+    virtual void SendPowerLogCommand(const std::string& device_id, ByteVector payload) {}
     virtual void SendRemoteButton(RemoteButtonAction action,
                                   const std::string& button,
                                   const std::optional<std::string>& device_id,
@@ -114,6 +117,8 @@ public:
     std::function<void(std::string, AudioFrame)> on_audio_frame;
     // 体感鼠标运动帧回调：(device_id, MotionEvent)。
     std::function<void(std::string, MotionEvent)> on_motion_event;
+    // power_log 导出分片回调：(device_id, fragment)。UI 线程派发，电池电压监测窗口消费。
+    std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
 };
 
 class AsrClient {
@@ -274,6 +279,10 @@ public:
     bool IsAirMouseActive(const std::string& device_id) const;
     // 切换某设备的体感鼠标模式。返回切换后的状态（true=进入，false=退出）。
     bool ToggleAirMouse(const std::string& device_id);
+    // 电池电压监测：转发 power_log 命令到指定设备。
+    void SendPowerLogCommand(const std::string& device_id, ByteVector payload);
+    // power_log 导出分片透传（ble 回调 → 电池电压监测窗口）。
+    std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
     // 是否有活跃会话（录音/识别/确认中等）。会话期间浮窗被状态机占用，
     // 热词处理等旁路反馈应改走托盘气泡，避免踩掉确认倒计时。
     bool HasActiveSession() const { return session_state_ != SessionState::kReady; }

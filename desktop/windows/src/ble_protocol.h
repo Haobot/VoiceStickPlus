@@ -55,6 +55,16 @@ struct FirmwareOtaStateEvent {
     std::optional<std::uint32_t> reboot_ms;
 };
 
+// power_log 导出分片（state_tx JSON 帧 {"power_log":{...}}，协议见
+// Doc/Ref/protocol.md「Power Log Export」）。data 为 base64 解码后的原始字节。
+struct PowerLogFragment {
+    std::uint32_t seq = 0;
+    std::uint32_t offset = 0;
+    std::uint32_t total = 0;
+    bool eof = false;
+    ByteVector data;
+};
+
 class BleProtocol {
 public:
     static constexpr const wchar_t* service_uuid = L"8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100";
@@ -75,6 +85,9 @@ public:
     static std::optional<AudioFrame> ParseAudioFrame(std::span<const std::uint8_t> data);
     static std::optional<StateEvent> ParseStateEvent(std::span<const std::uint8_t> data);
     static std::optional<MotionEvent> ParseMotionFrame(std::span<const std::uint8_t> data);
+    // power_log 分片帧（type==0x10，payload 含 "power_log" 键；ParseStateEvent 对
+    // 其返回 nullopt，因无 "event" 字段）。
+    static std::optional<PowerLogFragment> ParsePowerLogFragment(std::span<const std::uint8_t> data);
     static std::optional<FirmwareOtaStateEvent> ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data);
     static ByteVector UiStatePayload(std::string_view state, std::string_view text);
     static ByteVector InteractionModePayload(std::string_view mode);
@@ -86,6 +99,11 @@ public:
     static ByteVector TapSensitivityPayload(int level);
     static ByteVector AirMouseEnabledPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();
+    // power_log 命令族（电池电压监测，见 Doc/Ref/protocol.md）：
+    // dump 从 offset 起启动一次性流式导出（max 为单片原始字节上限，≤160）；
+    // time_anchor 写入墙钟锚点条目。
+    static ByteVector PowerLogDumpPayload(std::uint32_t offset, std::uint32_t max);
+    static ByteVector PowerLogTimeAnchorPayload(std::uint32_t epoch);
     static ByteVector RemoteButtonPayload(std::string_view action,
                                           std::string_view button,
                                           std::string_view source,

@@ -40,6 +40,7 @@ Record/
 # L1/L3/L4 端到端测试临时产物（可由脚本重新生成）
 scripts/e2e_test/spiffs_image.bin
 scripts/e2e_test/l3_captured_opus.bin
+scripts/e2e_test/battery_logs/
 /serial_log*.txt
 /l4_cable.wav
 /l4_test.wav

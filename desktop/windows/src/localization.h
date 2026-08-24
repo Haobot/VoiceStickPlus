@@ -311,6 +311,36 @@ enum class StringId {
     // {0} = 设备 ID（如 5A74）
     kInteractionSettingsTitle,
 
+    // 电池电压监测（托盘设备子菜单入口 + 独立监测窗口，仅连接设备显示）
+    kMenuBatteryMonitor,
+    // {0} = 设备 ID
+    kBatteryMonitorTitle,
+    kBatteryMonitorStart,
+    kBatteryMonitorStop,
+    kBatteryMonitorExportCsv,
+    kBatteryMonitorExportPng,
+    kBatteryMonitorClose,
+    kBatteryMonitorStatusIdle,
+    kBatteryMonitorStatusAnchoring,
+    kBatteryMonitorStatusProbing,
+    // {0}=周期序号 {1}=样本数 {2}=下次采集倒计时
+    kBatteryMonitorStatusMonitoring,
+    // {0}=样本数
+    kBatteryMonitorStatusFinished,
+    // {0}=原因
+    kBatteryMonitorStatusError,
+    kBatteryMonitorWarnUsbPower,
+    kBatteryMonitorErrProbeTimeout,
+    kBatteryMonitorErrDumpTimeout,
+    kBatteryMonitorErrRestart,
+    kBatteryMonitorErrDisconnected,
+    kBatteryMonitorErrCleared,
+    kBatteryMonitorErrSaveFailed,
+    kBatteryMonitorSavedTo,
+    kBatteryMonitorAxisTime,
+    kBatteryMonitorAxisVoltage,
+    kBatteryMonitorChartTitle,
+
     // 热词预算裁剪提示（前缀 + 「保留数/总数」 + 后缀拼接）
     kHotwordTrimTitle,
     kHotwordTrimBodyPrefix,

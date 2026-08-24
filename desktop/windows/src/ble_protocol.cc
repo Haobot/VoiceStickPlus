@@ -182,6 +182,57 @@ std::optional<MotionEvent> BleProtocol::ParseMotionFrame(std::span<const std::ui
     return event;
 }
 
+int Base64DigitValue(char ch) {
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '+') return 62;
+    if (ch == '/') return 63;
+    return -1;
+}
+
+bool Base64Decode(std::string_view text, ByteVector* out) {
+    out->clear();
+    if (text.size() % 4 != 0 || text.empty()) return false;
+    out->reserve(text.size() / 4 * 3);
+    for (std::size_t i = 0; i < text.size(); i += 4) {
+        const int d0 = Base64DigitValue(text[i]);
+        const int d1 = Base64DigitValue(text[i + 1]);
+        if (d0 < 0 || d1 < 0) return false;
+        const bool pad2 = text[i + 2] == '=';
+        const bool pad3 = text[i + 3] == '=';
+        const int d2 = pad2 ? 0 : Base64DigitValue(text[i + 2]);
+        const int d3 = pad3 ? 0 : Base64DigitValue(text[i + 3]);
+        if (d2 < 0 || d3 < 0) return false;
+        if (pad3 && !pad2) return false;  // 非法 padding
+        const std::uint32_t n = (static_cast<std::uint32_t>(d0) << 18) |
+                                (static_cast<std::uint32_t>(d1) << 12) |
+                                (static_cast<std::uint32_t>(d2) << 6) |
+                                static_cast<std::uint32_t>(d3);
+        out->push_back(static_cast<std::uint8_t>((n >> 16) & 0xFF));
+        if (!pad2) out->push_back(static_cast<std::uint8_t>((n >> 8) & 0xFF));
+        if (!pad3) out->push_back(static_cast<std::uint8_t>(n & 0xFF));
+    }
+    return true;
+}
+
+std::optional<PowerLogFragment> BleProtocol::ParsePowerLogFragment(std::span<const std::uint8_t> data) {
+    if (data.size() < 4 || data[0] != 1 || data[1] != state_type_json) return std::nullopt;
+    const auto payload_len = ReadLe16(data.subspan(2, 2));
+    if (data.size() < 4u + payload_len) return std::nullopt;
+    const auto json = Utf8FromBytes(data.subspan(4, payload_len));
+    // 分片帧形如 {"power_log":{"seq":0,"offset":16,"total":1234,"eof":0,"data":"<base64>"}}。
+    if (json.find("\"power_log\"") == std::string::npos) return std::nullopt;
+    PowerLogFragment fragment;
+    fragment.seq = JsonU32Value(json, "seq").value_or(0);
+    fragment.offset = JsonU32Value(json, "offset").value_or(0);
+    fragment.total = JsonU32Value(json, "total").value_or(0);
+    fragment.eof = JsonIntValue(json, "eof").value_or(0) != 0;
+    const auto b64 = JsonStringValue(json, "data");
+    if (!b64.empty() && !Base64Decode(b64, &fragment.data)) return std::nullopt;
+    return fragment;
+}
+
 std::optional<FirmwareOtaStateEvent> BleProtocol::ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data) {
     if (data.size() < 4 || data[0] != 1 || data[1] != ota_type_state) return std::nullopt;
     const auto payload_len = ReadLe16(data.subspan(2, 2));
@@ -254,6 +305,19 @@ ByteVector BleProtocol::ImuWakeSensitivityPayload(int threshold_lsb) {
 
 ByteVector BleProtocol::BatteryStatusRequestPayload() {
     const std::string json = "{\"event\":\"battery_status_request\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::PowerLogDumpPayload(std::uint32_t offset, std::uint32_t max) {
+    const std::string json = "{\"power_log\":{\"cmd\":\"dump\",\"offset\":" +
+                              std::to_string(offset) + ",\"max\":" +
+                              std::to_string(max) + "}}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::PowerLogTimeAnchorPayload(std::uint32_t epoch) {
+    const std::string json = "{\"power_log\":{\"cmd\":\"time_anchor\",\"epoch\":" +
+                              std::to_string(epoch) + "}}";
     return ByteVector(json.begin(), json.end());
 }
 

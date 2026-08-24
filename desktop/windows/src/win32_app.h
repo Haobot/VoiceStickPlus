@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_config.h"
+#include "battery_monitor_dialog.h"
 #include "cmd_line.h"
 #include "encoder_settings_dialog.h"
 #include "firmware_update_dialog.h"
@@ -104,6 +105,8 @@ private:
     void ShowEncoderSettingsDialog(const std::string& device_id);
     // 打开指定设备的交互设置对话框（托盘设备子菜单「设备交互设置…」）。
     void ShowInteractionSettingsDialog(const std::string& device_id);
+    // 打开指定设备的电池电压监测窗口（托盘设备子菜单「电池电压监测…」，仅连接设备）。
+    void ShowBatteryMonitorDialog(const std::string& device_id);
     void ShowAirMouseTuning();
     void SaveInputOptions();
     void SyncLaunchAtLogin();
@@ -145,6 +148,7 @@ private:
     std::unique_ptr<SettingsDialog> settings_dialog_;
     std::unique_ptr<EncoderSettingsDialog> encoder_settings_dialog_;
     std::unique_ptr<InteractionSettingsDialog> interaction_settings_dialog_;
+    std::unique_ptr<BatteryMonitorDialog> battery_monitor_dialog_;
     std::unique_ptr<AirMouseTuningWindow> air_mouse_tuning_window_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;

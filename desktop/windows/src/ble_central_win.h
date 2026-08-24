@@ -55,6 +55,7 @@ public:
     void SendImuWakeSensitivity(int threshold_lsb,
                                 const std::optional<std::string>& device_id) override;
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override;
+    void SendPowerLogCommand(const std::string& device_id, ByteVector payload) override;
     void SendRemoteButton(RemoteButtonAction action,
                           const std::string& button,
                           const std::optional<std::string>& device_id,

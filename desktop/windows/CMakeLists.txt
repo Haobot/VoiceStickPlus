@@ -108,6 +108,7 @@ add_library(voicestick_core
     src/ogg_opus_demuxer.cc
     src/pair_device_helper.cc
     src/pcm_ring_buffer.cc
+    src/power_log_monitor.cc
     src/voice_stick_coordinator.cc
     src/wasapi_virtual_mic_renderer.cc
     src/wechat_input_method_hotkey.cc
@@ -142,6 +143,7 @@ add_executable(VoiceStickApp WIN32
     src/settings_dialog.cc
     src/encoder_settings_dialog.cc
     src/interaction_settings_dialog.cc
+    src/battery_monitor_dialog.cc
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
     src/selection_hotword_manager.cc
@@ -180,6 +182,7 @@ target_link_libraries(VoiceStickApp PRIVATE
     dwmapi
     gdi32
     gdiplus
+    comdlg32
     windowscodecs
     comctl32
     ole32

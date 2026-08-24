@@ -65,6 +65,9 @@ constexpr UINT kMenuUpdateFirmwareFromFileEnd = 5999;
 // 设备级编码器设置入口：每设备一项（kMenuEncoderSettingsBase + 设备索引）。
 constexpr UINT kMenuEncoderSettingsBase = 6000;
 constexpr UINT kMenuEncoderSettingsEnd = 6199;
+// 设备级电池电压监测入口：每设备一项（kMenuBatteryMonitorBase + 设备索引，仅连接设备显示）。
+constexpr UINT kMenuBatteryMonitorBase = 6400;
+constexpr UINT kMenuBatteryMonitorEnd = 6599;
 // 设备级交互设置入口：每设备一项（kMenuInteractionSettingsBase + 设备索引）。
 constexpr UINT kMenuInteractionSettingsBase = 6200;
 constexpr UINT kMenuInteractionSettingsEnd = 6399;
@@ -449,6 +452,13 @@ int Win32App::Run() {
                 encoder_rotate_pending_timer_active_ = false;
             }
         };
+        // power_log 分片路由到电池电压监测窗口（UI 线程回调，窗口未开时丢弃）。
+        coordinator_->on_power_log_fragment = [this](std::string device_id,
+                                                     PowerLogFragment fragment) {
+            if (battery_monitor_dialog_) {
+                battery_monitor_dialog_->OnPowerLogFragment(device_id, fragment);
+            }
+        };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
         coordinator_->Start();
@@ -529,6 +539,13 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
         UpdateTrayIcon();
+        // 电池电压监测窗口：监测中设备断连立即中止（避免干等导出超时）。
+        if (battery_monitor_dialog_) {
+            for (const auto& dev : devices) {
+                if (battery_monitor_dialog_->IsSameDevice(dev.id)) return;
+            }
+            battery_monitor_dialog_->NotifyAllDisconnected();
+        }
         // 命令行 --ota 自启动场景：连上设备后触发 pending 请求。
         if (pending_ota_request_ && !connected_devices_.empty()) {
             auto req = std::move(*pending_ota_request_);
@@ -968,6 +985,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size()) {
                     ShowEncoderSettingsDialog(paired_device_ids_[index]);
                 }
+            } else if (cmd >= kMenuBatteryMonitorBase && cmd <= kMenuBatteryMonitorEnd) {
+                std::size_t index = cmd - kMenuBatteryMonitorBase;
+                if (index < paired_device_ids_.size()) {
+                    ShowBatteryMonitorDialog(paired_device_ids_[index]);
+                }
             } else if (cmd >= kMenuInteractionSettingsBase && cmd <= kMenuInteractionSettingsEnd) {
                 std::size_t index = cmd - kMenuInteractionSettingsBase;
                 if (index < paired_device_ids_.size()) {
@@ -1332,6 +1354,13 @@ void Win32App::ShowTrayMenu() {
         AppendMenuW(submenu, MF_STRING,
                     kMenuInteractionSettingsBase + static_cast<UINT>(i),
                     TrW(StringId::kMenuInteractionSettings, language).c_str());
+
+        // 电池电压监测入口：仅连接设备显示（power_log 导出需要活跃 BLE 连接）。
+        if (connected) {
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuBatteryMonitorBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuBatteryMonitor, language).c_str());
+        }
 
         if (firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
@@ -2025,6 +2054,26 @@ void Win32App::ShowInteractionSettingsDialog(const std::string& device_id) {
             LogLine("Interaction settings saved for VS-" + id);
         };
     interaction_settings_dialog_->Show();
+}
+
+void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {
+    // 单实例非模态窗口：重入（同设备）置前即可，换目标设备则重建（旧监测会话丢弃）。
+    if (battery_monitor_dialog_ && battery_monitor_dialog_->IsSameDevice(device_id)) {
+        battery_monitor_dialog_->Show();
+        return;
+    }
+    battery_monitor_dialog_ = std::make_unique<BatteryMonitorDialog>(
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), device_id);
+    battery_monitor_dialog_->on_send_command =
+        [this](const std::string& id, ByteVector payload) {
+            if (coordinator_) coordinator_->SendPowerLogCommand(id, std::move(payload));
+        };
+    battery_monitor_dialog_->on_closed = [this] {
+        // 窗口销毁后释放对象（分片路由指针随之失效）。
+        battery_monitor_dialog_.reset();
+    };
+    battery_monitor_dialog_->Show();
+    LogLine("Battery monitor opened for VS-" + device_id);
 }
 
 void Win32App::StartFirmwareUpdate(const std::string& device_id) {

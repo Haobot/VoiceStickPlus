@@ -301,6 +301,36 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "Restore defaults";
     table[Index(StringId::kMenuInteractionSettings)] = "Device interaction settings...";
     table[Index(StringId::kInteractionSettingsTitle)] = "Device interaction - VS-{0}";
+    table[Index(StringId::kMenuBatteryMonitor)] = "Battery voltage monitor...";
+    table[Index(StringId::kBatteryMonitorTitle)] = "Battery Voltage Monitor - VS-{0}";
+    table[Index(StringId::kBatteryMonitorStart)] = "Start";
+    table[Index(StringId::kBatteryMonitorStop)] = "Stop";
+    table[Index(StringId::kBatteryMonitorExportCsv)] = "Export CSV...";
+    table[Index(StringId::kBatteryMonitorExportPng)] = "Export PNG...";
+    table[Index(StringId::kBatteryMonitorClose)] = "Close";
+    table[Index(StringId::kBatteryMonitorStatusIdle)] =
+        "Idle. Click Start to run a 60-minute monitoring session (one sample per minute).";
+    table[Index(StringId::kBatteryMonitorStatusAnchoring)] = "Synchronizing time anchor...";
+    table[Index(StringId::kBatteryMonitorStatusProbing)] = "Probing log baseline...";
+    table[Index(StringId::kBatteryMonitorStatusMonitoring)] =
+        "Monitoring: cycle {0}/60, {1} points, next sample in {2}";
+    table[Index(StringId::kBatteryMonitorStatusFinished)] =
+        "Finished: {0} points collected.";
+    table[Index(StringId::kBatteryMonitorStatusError)] = "Aborted: {0}";
+    table[Index(StringId::kBatteryMonitorWarnUsbPower)] =
+        "Tip: keep the device on USB power while monitoring; on battery it powers off "
+        "after about 10 minutes idle.";
+    table[Index(StringId::kBatteryMonitorErrProbeTimeout)] = "log probe timed out (device not responding)";
+    table[Index(StringId::kBatteryMonitorErrDumpTimeout)] = "voltage log export timed out repeatedly";
+    table[Index(StringId::kBatteryMonitorErrRestart)] = "device restarted (uptime went backwards)";
+    table[Index(StringId::kBatteryMonitorErrDisconnected)] = "device disconnected";
+    table[Index(StringId::kBatteryMonitorErrCleared)] = "device log was cleared (total shrank)";
+    table[Index(StringId::kBatteryMonitorErrSaveFailed)] = "save failed: {0}";
+    table[Index(StringId::kBatteryMonitorSavedTo)] = "Saved: ";
+    table[Index(StringId::kBatteryMonitorAxisTime)] = "Time (min)";
+    table[Index(StringId::kBatteryMonitorAxisVoltage)] = "Voltage (mV)";
+    // {0}=设备ID {1}=点数
+    table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} battery voltage ({1} points)";
     table[Index(StringId::kHotwordTrimTitle)] = "Hotword Budget Trimmed";
     table[Index(StringId::kHotwordTrimBodyPrefix)] =
         "Hotwords exceed the per-session budget; kept by usage frequency: ";
@@ -590,6 +620,35 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "恢复默认";
     table[Index(StringId::kMenuInteractionSettings)] = "设备交互设置…";
     table[Index(StringId::kInteractionSettingsTitle)] = "设备交互 - VS-{0}";
+    table[Index(StringId::kMenuBatteryMonitor)] = "电池电压监测…";
+    table[Index(StringId::kBatteryMonitorTitle)] = "电池电压监测 - VS-{0}";
+    table[Index(StringId::kBatteryMonitorStart)] = "开始监测";
+    table[Index(StringId::kBatteryMonitorStop)] = "停止";
+    table[Index(StringId::kBatteryMonitorExportCsv)] = "导出 CSV…";
+    table[Index(StringId::kBatteryMonitorExportPng)] = "导出 PNG…";
+    table[Index(StringId::kBatteryMonitorClose)] = "关闭";
+    table[Index(StringId::kBatteryMonitorStatusIdle)] =
+        "空闲。点击「开始监测」启动 60 分钟监测（每分钟 1 个采样点）。";
+    table[Index(StringId::kBatteryMonitorStatusAnchoring)] = "正在同步时间锚点…";
+    table[Index(StringId::kBatteryMonitorStatusProbing)] = "正在探测日志基线…";
+    table[Index(StringId::kBatteryMonitorStatusMonitoring)] =
+        "监测中：第 {0}/60 周期，{1} 个数据点，下次采集 {2}";
+    table[Index(StringId::kBatteryMonitorStatusFinished)] =
+        "监测完成：共 {0} 个数据点。";
+    table[Index(StringId::kBatteryMonitorStatusError)] = "已中止：{0}";
+    table[Index(StringId::kBatteryMonitorWarnUsbPower)] =
+        "提示：建议监测期间保持设备 USB 供电；电池供电下设备空闲约 10 分钟会自动关机。";
+    table[Index(StringId::kBatteryMonitorErrProbeTimeout)] = "日志基线探测超时（设备无响应）";
+    table[Index(StringId::kBatteryMonitorErrDumpTimeout)] = "电压日志导出反复超时";
+    table[Index(StringId::kBatteryMonitorErrRestart)] = "设备已重启（uptime 回退）";
+    table[Index(StringId::kBatteryMonitorErrDisconnected)] = "设备连接已断开";
+    table[Index(StringId::kBatteryMonitorErrCleared)] = "设备端日志被清空（总长度回退）";
+    table[Index(StringId::kBatteryMonitorErrSaveFailed)] = "保存失败：{0}";
+    table[Index(StringId::kBatteryMonitorSavedTo)] = "已保存：";
+    table[Index(StringId::kBatteryMonitorAxisTime)] = "时间（分钟）";
+    table[Index(StringId::kBatteryMonitorAxisVoltage)] = "电压（mV）";
+    // {0}=设备ID {1}=点数
+    table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} 电池电压监测（{1} 点）";
     table[Index(StringId::kHotwordTrimTitle)] = "热词预算裁剪";
     table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
     table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";

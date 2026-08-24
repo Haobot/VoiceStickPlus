@@ -693,6 +693,24 @@ void BleCentralWin::RequestBatteryStatus(const std::optional<std::string>& devic
     }
 }
 
+void BleCentralWin::SendPowerLogCommand(const std::string& device_id, ByteVector payload) {
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        auto it = sessions_by_device_id_.find(device_id);
+        if (it != sessions_by_device_id_.end() && it->second->ready) {
+            targets.push_back(it->second);
+        }
+    }
+    if (targets.empty()) {
+        LogBleLine("power_log command skipped (not connected) dev=VS-" + device_id);
+        return;
+    }
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), std::move(payload));
+    }
+}
+
 void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
                                      const std::string& button,
                                      const std::optional<std::string>& device_id,
@@ -1719,6 +1737,15 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                            " preview=" + PreviewBytes(bytes));
                 auto event = BleProtocol::ParseStateEvent(bytes);
                 if (!event.has_value()) {
+                    // power_log 分片帧无 "event" 字段，ParseStateEvent 返回 nullopt；
+                    // 先按分片解析，成功则走 on_power_log_fragment 分发。
+                    auto fragment = BleProtocol::ParsePowerLogFragment(bytes);
+                    if (fragment.has_value()) {
+                        DispatchToUiThread([this, device_id, f = std::move(*fragment)]() {
+                            if (on_power_log_fragment) on_power_log_fragment(device_id, f);
+                        });
+                        return;
+                    }
                     LogBleLine("state notify VS-" + device_id + " parse failed hex=" + HexDump(bytes));
                     return;
                 }
