@@ -1291,6 +1291,15 @@ esp_err_t voice_ble_send_encoder_status(void)
     return send_state_json(json);
 }
 
+esp_err_t voice_ble_send_power_mgmt_status(bool usb_auto_off)
+{
+    char json[64];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"power_mgmt\",\"usb_auto_off\":%s}",
+             usb_auto_off ? "true" : "false");
+    return send_state_json(json);
+}
+
 esp_err_t voice_ble_send_device_info(void)
 {
     // 注意：本帧长度已逼近 BLE 通知预算（ATT MTU-3-4B 帧头，MTU 247 时仅 240B），

@@ -149,6 +149,8 @@ private:
     std::unique_ptr<EncoderSettingsDialog> encoder_settings_dialog_;
     std::unique_ptr<InteractionSettingsDialog> interaction_settings_dialog_;
     std::unique_ptr<BatteryMonitorDialog> battery_monitor_dialog_;
+    // 设备最新上报的供电态（USB）自动关机开关状态（device_id -> enabled）。
+    std::map<std::string, bool> usb_auto_off_state_;
     std::unique_ptr<AirMouseTuningWindow> air_mouse_tuning_window_;
     std::unique_ptr<FirmwareUpdateDialog> firmware_update_dialog_;
     std::unique_ptr<OverlayWindow> overlay_;

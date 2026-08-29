@@ -459,6 +459,13 @@ int Win32App::Run() {
                 battery_monitor_dialog_->OnPowerLogFragment(device_id, fragment);
             }
         };
+        // 供电态（USB）自动关机开关状态：缓存最新值 + 路由到监测窗口勾选框。
+        coordinator_->on_power_mgmt_state = [this](std::string device_id, bool usb_auto_off) {
+            usb_auto_off_state_[device_id] = usb_auto_off;
+            if (battery_monitor_dialog_) {
+                battery_monitor_dialog_->OnPowerMgmtState(device_id, usb_auto_off);
+            }
+        };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
         coordinator_->Start();
@@ -2073,6 +2080,11 @@ void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {
         battery_monitor_dialog_.reset();
     };
     battery_monitor_dialog_->Show();
+    // 若已缓存设备上报的开关状态（连接时固件会推送），立即同步勾选框。
+    const auto state_it = usb_auto_off_state_.find(device_id);
+    if (state_it != usb_auto_off_state_.end()) {
+        battery_monitor_dialog_->OnPowerMgmtState(device_id, state_it->second);
+    }
     LogLine("Battery monitor opened for VS-" + device_id);
 }
 

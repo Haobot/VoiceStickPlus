@@ -8005,6 +8005,32 @@ void TestPowerLogMonitor() {
     assert(anchor_json.find("\"cmd\":\"time_anchor\"") != std::string::npos);
     assert(anchor_json.find("\"epoch\":1755800000") != std::string::npos);
 
+    // 3b) 供电态（USB）自动关机：power_mgmt 事件解析 + 命令 payload。
+    // ParseStateEvent 对 power_mgmt 帧返回 nullopt（由 ParsePowerMgmtEvent 消费）。
+    const auto pm_on_frame = BuildStateJsonFrame(
+        "{\"event\":\"power_mgmt\",\"usb_auto_off\":true}");
+    assert(!BleProtocol::ParseStateEvent(pm_on_frame).has_value());
+    const auto pm_on = BleProtocol::ParsePowerMgmtEvent(pm_on_frame);
+    assert(pm_on.has_value() && *pm_on);
+    const auto pm_off = BleProtocol::ParsePowerMgmtEvent(BuildStateJsonFrame(
+        "{\"event\":\"power_mgmt\",\"usb_auto_off\":false}"));
+    assert(pm_off.has_value() && !*pm_off);
+    // 缺字段或非 power_mgmt 帧 → nullopt。
+    assert(!BleProtocol::ParsePowerMgmtEvent(
+        BuildStateJsonFrame("{\"event\":\"power_mgmt\"}")).has_value());
+    assert(!BleProtocol::ParsePowerMgmtEvent(frame).has_value());  // power_log 分片帧
+    // 命令 payload：set 带布尔 enabled，get 为查询命令。
+    const auto set_on_payload = BleProtocol::UsbAutoOffPayload(true);
+    const std::string set_on_json(set_on_payload.begin(), set_on_payload.end());
+    assert(set_on_json.find("\"event\":\"usb_auto_off\"") != std::string::npos);
+    assert(set_on_json.find("\"enabled\":true") != std::string::npos);
+    const auto set_off_payload = BleProtocol::UsbAutoOffPayload(false);
+    const std::string set_off_json(set_off_payload.begin(), set_off_payload.end());
+    assert(set_off_json.find("\"enabled\":false") != std::string::npos);
+    const auto get_payload = BleProtocol::UsbAutoOffGetPayload();
+    const std::string get_json(get_payload.begin(), get_payload.end());
+    assert(get_json.find("\"event\":\"usb_auto_off_get\"") != std::string::npos);
+
     // 4) 累积器：锚点 + 周期采样 + 非周期事件过滤 + epoch 对齐。
     PowerLogAccumulator accumulator;
     std::vector<std::uint8_t> blob1;

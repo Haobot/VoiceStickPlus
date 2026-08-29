@@ -71,3 +71,6 @@ esp_err_t voice_ble_send_encoder_rotate(const char *direction, uint8_t steps);
 // 发送体感鼠标运动帧（state_tx 通道，type=0x11 二进制帧，6 字节）。
 esp_err_t voice_ble_send_motion(int16_t dx, int16_t dy);
 esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered);
+// 上报供电态（USB）自动关机开关状态（独立小帧 {"event":"power_mgmt","usb_auto_off":...}）。
+// BLE 连接建立与开关变更时发送，供桌面端电池监测窗口的勾选框同步。
+esp_err_t voice_ble_send_power_mgmt_status(bool usb_auto_off);

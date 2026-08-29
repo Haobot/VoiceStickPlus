@@ -119,6 +119,8 @@ public:
     std::function<void(std::string, MotionEvent)> on_motion_event;
     // power_log 导出分片回调：(device_id, fragment)。UI 线程派发，电池电压监测窗口消费。
     std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
+    // 供电态（USB）自动关机开关状态回调：(device_id, usb_auto_off)。UI 线程派发。
+    std::function<void(std::string, bool)> on_power_mgmt_state;
 };
 
 class AsrClient {
@@ -283,6 +285,8 @@ public:
     void SendPowerLogCommand(const std::string& device_id, ByteVector payload);
     // power_log 导出分片透传（ble 回调 → 电池电压监测窗口）。
     std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
+    // 供电态（USB）自动关机开关状态透传（ble 回调 → 电池监测窗口勾选框）。
+    std::function<void(std::string, bool)> on_power_mgmt_state;
     // 是否有活跃会话（录音/识别/确认中等）。会话期间浮窗被状态机占用，
     // 热词处理等旁路反馈应改走托盘气泡，避免踩掉确认倒计时。
     bool HasActiveSession() const { return session_state_ != SessionState::kReady; }

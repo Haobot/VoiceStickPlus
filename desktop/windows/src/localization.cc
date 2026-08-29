@@ -331,6 +331,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kBatteryMonitorAxisVoltage)] = "Voltage (mV)";
     // {0}=设备ID {1}=点数
     table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} battery voltage ({1} points)";
+    table[Index(StringId::kBatteryMonitorUsbAutoOff)] = "Auto power-off on USB (10 min)";
     table[Index(StringId::kHotwordTrimTitle)] = "Hotword Budget Trimmed";
     table[Index(StringId::kHotwordTrimBodyPrefix)] =
         "Hotwords exceed the per-session budget; kept by usage frequency: ";
@@ -649,6 +650,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kBatteryMonitorAxisVoltage)] = "电压（mV）";
     // {0}=设备ID {1}=点数
     table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} 电池电压监测（{1} 点）";
+    table[Index(StringId::kBatteryMonitorUsbAutoOff)] = "供电时10分钟自动关机";
     table[Index(StringId::kHotwordTrimTitle)] = "热词预算裁剪";
     table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
     table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";

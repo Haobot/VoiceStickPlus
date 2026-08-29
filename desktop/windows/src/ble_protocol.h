@@ -88,6 +88,9 @@ public:
     // power_log 分片帧（type==0x10，payload 含 "power_log" 键；ParseStateEvent 对
     // 其返回 nullopt，因无 "event" 字段）。
     static std::optional<PowerLogFragment> ParsePowerLogFragment(std::span<const std::uint8_t> data);
+    // 供电态（USB）自动关机状态事件帧（{"event":"power_mgmt","usb_auto_off":bool}）。
+    // 非 power_mgmt 帧返回 nullopt；缺 usb_auto_off 字段也返回 nullopt。
+    static std::optional<bool> ParsePowerMgmtEvent(std::span<const std::uint8_t> data);
     static std::optional<FirmwareOtaStateEvent> ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data);
     static ByteVector UiStatePayload(std::string_view state, std::string_view text);
     static ByteVector InteractionModePayload(std::string_view mode);
@@ -104,6 +107,9 @@ public:
     // time_anchor 写入墙钟锚点条目。
     static ByteVector PowerLogDumpPayload(std::uint32_t offset, std::uint32_t max);
     static ByteVector PowerLogTimeAnchorPayload(std::uint32_t epoch);
+    // 供电态（USB）自动关机开关命令（control_rx）：set 写入并持久化，get 查询当前状态。
+    static ByteVector UsbAutoOffPayload(bool enabled);
+    static ByteVector UsbAutoOffGetPayload();
     static ByteVector RemoteButtonPayload(std::string_view action,
                                           std::string_view button,
                                           std::string_view source,

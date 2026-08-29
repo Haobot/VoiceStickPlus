@@ -144,6 +144,10 @@ void VoiceStickCoordinator::Start() {
         if (is_shutdown_) return;
         if (on_power_log_fragment) on_power_log_fragment(device_id, std::move(fragment));
     };
+    ble_->on_power_mgmt_state = [this](std::string device_id, bool usb_auto_off) {
+        if (is_shutdown_) return;
+        if (on_power_mgmt_state) on_power_mgmt_state(device_id, usb_auto_off);
+    };
     ConfigureAsrCallbacks();
     ble_->Start();
     CheckFirmwareUpdatesIfNeeded(false, false);
@@ -166,6 +170,7 @@ void VoiceStickCoordinator::Shutdown() {
     ble_->on_audio_frame = nullptr;
     ble_->on_motion_event = nullptr;
     ble_->on_power_log_fragment = nullptr;
+    ble_->on_power_mgmt_state = nullptr;
     asr_->Cancel();
     for (auto& [_, cycle] : subtitle_cycles_) {
         if (cycle->asr) cycle->asr->Cancel();

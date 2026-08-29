@@ -151,7 +151,9 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     const auto json = Utf8FromBytes(data.subspan(4, payload_len));
     StateEvent event;
     event.event = JsonStringValue(json, "event");
-    if (event.event.empty()) return std::nullopt;
+    // power_mgmt（供电态自动关机开关）由 ParsePowerMgmtEvent 消费，此处跳过，
+    // 否则会以通用 StateEvent 返回并截走分发链（ble_central 的 fallback 顺序）。
+    if (event.event.empty() || event.event == "power_mgmt") return std::nullopt;
     event.button = JsonStringValue(json, "button");
     event.session_id = JsonU32Value(json, "session_id");
     event.duration_ms = JsonU32Value(json, "duration_ms");
@@ -231,6 +233,15 @@ std::optional<PowerLogFragment> BleProtocol::ParsePowerLogFragment(std::span<con
     const auto b64 = JsonStringValue(json, "data");
     if (!b64.empty() && !Base64Decode(b64, &fragment.data)) return std::nullopt;
     return fragment;
+}
+
+std::optional<bool> BleProtocol::ParsePowerMgmtEvent(std::span<const std::uint8_t> data) {
+    if (data.size() < 4 || data[0] != 1 || data[1] != state_type_json) return std::nullopt;
+    const auto payload_len = ReadLe16(data.subspan(2, 2));
+    if (data.size() < 4u + payload_len) return std::nullopt;
+    const auto json = Utf8FromBytes(data.subspan(4, payload_len));
+    if (json.find("\"power_mgmt\"") == std::string::npos) return std::nullopt;
+    return JsonBoolValue(json, "usb_auto_off");
 }
 
 std::optional<FirmwareOtaStateEvent> BleProtocol::ParseFirmwareOtaStateEvent(std::span<const std::uint8_t> data) {
@@ -318,6 +329,17 @@ ByteVector BleProtocol::PowerLogDumpPayload(std::uint32_t offset, std::uint32_t 
 ByteVector BleProtocol::PowerLogTimeAnchorPayload(std::uint32_t epoch) {
     const std::string json = "{\"power_log\":{\"cmd\":\"time_anchor\",\"epoch\":" +
                               std::to_string(epoch) + "}}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::UsbAutoOffPayload(bool enabled) {
+    const std::string json = std::string("{\"event\":\"usb_auto_off\",\"enabled\":") +
+                              (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::UsbAutoOffGetPayload() {
+    const std::string json = "{\"event\":\"usb_auto_off_get\"}";
     return ByteVector(json.begin(), json.end());
 }
 

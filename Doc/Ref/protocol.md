@@ -230,6 +230,8 @@ Current desktop events:
 {"event":"air_mouse_enabled","enabled":true}
 {"event":"encoder_led_color","color":"red"}
 {"event":"encoder_recording_gate","enabled":true}
+{"event":"usb_auto_off","enabled":true}
+{"event":"usb_auto_off_get"}
 ```
 
 | Event | Field | Direction | Meaning |
@@ -243,6 +245,8 @@ Current desktop events:
 | `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. The desktop pairs this with a `ui_state:air_mouse` so the device shows an air-mouse indicator — in this state the primary button acts as the left mouse button, not recording. Default false. |
 | `encoder_led_color` | `color`: string | Windows -> StickS3 | Sets the MiniEncoderC LED color shown while recording. Presets: `red`, `green`, `blue`, `yellow`, `purple`, `cyan`, `white`, `off` (`off` keeps the LED dark even while recording). Unknown color names are ignored. Persisted in firmware NVS. Default `red`. |
 | `encoder_recording_gate` | `enabled`: boolean | Windows -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses never emit `button_down`/`button_up` and never start audio; they only feed the firmware double-click window, which emits `button_click`/`button_double_click` with `source:"encoder"`. The physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
+| `usb_auto_off` | `enabled`: boolean | Windows -> StickS3 | Enables/disables auto power-off while USB powered. When enabled, the device powers off after 10 idle minutes even on external power (recording/OTA still block it; the BLE-disconnect timer also applies). Persisted in firmware NVS. Default false. |
+| `usb_auto_off_get` | — | Windows -> StickS3 | Queries the current `usb_auto_off` state; the firmware replies with a `power_mgmt` state event on `state_tx`. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as
@@ -278,6 +282,22 @@ which is how the desktop's double-click-recording toggle (sent as
 `remote_button_down`/`remote_button_up`) still works when the gate is closed.
 If the gate is flipped from on to off while an encoder-started recording is
 already in progress, the release path is still allowed to stop it normally.
+
+`usb_auto_off` and `usb_auto_off_get` back the USB-powered auto power-off
+toggle in the Windows battery-monitor dialog. The firmware acknowledges a set
+(and answers a get) with a `power_mgmt` state event on `state_tx`:
+
+```json
+{"event":"power_mgmt","usb_auto_off":true}
+```
+
+It also pushes `power_mgmt` once after each BLE connection so the desktop can
+initialize the checkbox. When the switch is enabled, the connected-idle power
+off timer runs with a 10-minute timeout on external power (5 minutes on
+battery, unchanged), and the BLE-disconnect timer also runs while USB powered.
+`ParseStateEvent` on the desktop skips `power_mgmt` frames so a dedicated
+parser can route them to the battery-monitor dialog; macOS currently ignores
+the event and the feature is Windows-only.
 
 Deprecated app-to-firmware events:
 

@@ -36,12 +36,14 @@ static const char *TAG = "voice_stick";
 #define DISPLAY_OFF_TIMEOUT_MS (20 * 1000)      // T_off：S1 Resting → S2 ScreenOff
 #define POWEROFF_TIMEOUT_MS (5 * 60 * 1000)    // T_pwr：S2 ScreenOff → S3 PowerOff（连接态）
 #define DISC_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)  // T_disc：BLE 断连 → S3 PowerOff
+#define USB_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)   // T_usb：usb_auto_off 开启时的供电态关机时长
 #define DISPLAY_ACTIVE_BRIGHTNESS 20
 #define DISPLAY_DIM_BRIGHTNESS 4
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
 #define DISPLAY_OFF_TIMEOUT_US (DISPLAY_OFF_TIMEOUT_MS * 1000ULL)
 #define POWEROFF_TIMEOUT_US (POWEROFF_TIMEOUT_MS * 1000ULL)
 #define DISC_POWEROFF_TIMEOUT_US (DISC_POWEROFF_TIMEOUT_MS * 1000ULL)
+#define USB_POWEROFF_TIMEOUT_US (USB_POWEROFF_TIMEOUT_MS * 1000ULL)
 #define BATTERY_REFRESH_FALLBACK_US (BATTERY_REFRESH_FALLBACK_MS * 1000ULL)
 // BMI270 拿起轮询周期。仅在 S1(Resting)/S2(ScreenOff) 态启用：用户放下设备后拿起即亮屏回 S0。
 // 周期过长会丢快速拿起动作，过短增加功耗；500ms 兼顾两者。BMI270 不在线时轮询空转无开销。
@@ -94,6 +96,9 @@ static bool s_usb_powered;
 static int s_battery_level = 0;
 static bool s_show_imu_debug = false;
 static bool s_tap_enabled = true;
+// 供电态（USB）自动关机开关：默认关闭（保持 USB 充电常亮行为）。开启后外部供电时
+// 关机准入放行，空闲 T_usb=10min 关机。NVS 持久化，由电池监测窗口的勾选开关控制。
+static bool s_usb_auto_off = false;
 // 按键事件后的敲击检测抑制截止时间戳（us）。在此之前 tap_poll_timer_cb 直接 return。
 // 仅在 handle_primary_down/up（app_event 任务）与 tap_poll_timer_cb（timer 任务）读写，
 // 均为任务上下文非 ISR，单 64 位读写在 ESP32-S3 上可接受，无需锁。
@@ -272,6 +277,8 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
 static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
+static void load_usb_auto_off_from_nvs(void);
+static void save_usb_auto_off_to_nvs(bool enabled);
 static void load_tap_settings_from_nvs(void);
 static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity);
 static void load_encoder_settings_from_nvs(void);
@@ -304,12 +311,18 @@ static void power_log_refresh_mode(void)
     }
 }
 
-// S3 关机准入：允许 BLE 连接态关机（关机即断连），但录音/OTA/USB 供电时禁止。
+// S3 关机准入：允许 BLE 连接态关机（关机即断连），但录音/OTA 时禁止。
+// USB 供电默认禁止；s_usb_auto_off 开启时放行（空闲 T_usb 后关机）。
 // 阶段 2 走 deep sleep 路径 B，阶段 3 升级为 M5PM1 真关机（路径 A）。
 static bool poweroff_allowed_now(void)
 {
-    return !s_recording && !s_ota_updating && !voice_ble_ota_is_active() &&
-           !is_external_powered();
+    if (s_recording || s_ota_updating || voice_ble_ota_is_active()) {
+        return false;
+    }
+    if (is_external_powered()) {
+        return s_usb_auto_off;
+    }
+    return true;
 }
 
 // 主键当前是否处于按住态：正面物理键（GPIO 低电平）或编码器按钮任一按下即视为按住。
@@ -433,8 +446,8 @@ static void restart_display_off_timer(void)
     }
 }
 
-// S2→S3 关机计时器（原 deep_sleep_timer 改造，T_pwr=10min）。
-// 允许 BLE 连接态关机；USB 供电/录音/OTA 时暂停。
+// S2→S3 关机计时器（原 deep_sleep_timer 改造，T_pwr=5min；USB 供电且开关开启时 T_usb=10min）。
+// 允许 BLE 连接态关机；录音/OTA 时暂停；USB 供电仅在 usb_auto_off 开启时计时。
 static void restart_poweroff_timer(void)
 {
     if (!s_poweroff_timer) {
@@ -442,7 +455,9 @@ static void restart_poweroff_timer(void)
     }
     (void)esp_timer_stop(s_poweroff_timer);
     if (poweroff_allowed_now()) {
-        esp_err_t err = esp_timer_start_once(s_poweroff_timer, POWEROFF_TIMEOUT_US);
+        const uint64_t timeout_us = is_external_powered() ? USB_POWEROFF_TIMEOUT_US
+                                                          : POWEROFF_TIMEOUT_US;
+        esp_err_t err = esp_timer_start_once(s_poweroff_timer, timeout_us);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "start poweroff timer failed: %s", esp_err_to_name(err));
         }
@@ -879,6 +894,16 @@ static void ble_control_cb(const char *json)
         ESP_LOGI(TAG, "show_imu_debug %s", s_show_imu_debug ? "enabled" : "disabled");
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "battery_status_request") == 0) {
         queue_app_event(APP_EVENT_BATTERY_STATUS_REQUEST);
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "usb_auto_off") == 0 &&
+               cJSON_IsBool(enabled)) {
+        // 供电态（USB）10min 自动关机开关：电池监测窗口勾选框控制，NVS 持久化。
+        s_usb_auto_off = cJSON_IsTrue(enabled);
+        save_usb_auto_off_to_nvs(s_usb_auto_off);
+        restart_poweroff_timer();
+        (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
+        ESP_LOGI(TAG, "usb_auto_off %s", s_usb_auto_off ? "enabled" : "disabled");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "usb_auto_off_get") == 0) {
+        (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
                cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
         ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, request_id);
@@ -1477,6 +1502,8 @@ static void app_event_task(void *arg)
             cancel_disc_poweroff_timer();
             note_activity();
             send_current_battery_status();
+            // 连接即上报供电态关机开关状态（与 battery_status 同批，供监测窗口初始化勾选框）。
+            (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
             break;
         case APP_EVENT_BLE_DISCONNECTED:
             s_recording = false;
@@ -1841,12 +1868,12 @@ static esp_err_t init_poweroff_timer(void)
     return esp_timer_create(&timer_args, &s_poweroff_timer);
 }
 
-// BLE 断连关机：断连后 T_disc 内若未重连则关机。USB 供电时不启动。
+// BLE 断连关机：断连后 T_disc 内若未重连则关机。USB 供电且 usb_auto_off 关闭时不启动。
 static void disc_poweroff_timer_cb(void *arg)
 {
     (void)arg;
-    // 二次确认：重连后取消，或 USB 供电则放弃。
-    if (voice_ble_is_connected() || is_external_powered()) {
+    // 二次确认：重连后取消，或 USB 供电且未开启供电态关机则放弃。
+    if (voice_ble_is_connected() || (is_external_powered() && !s_usb_auto_off)) {
         return;
     }
     queue_app_event(APP_EVENT_ENTER_POWER_OFF);
@@ -1861,14 +1888,14 @@ static esp_err_t init_disc_poweroff_timer(void)
     return esp_timer_create(&timer_args, &s_disc_poweroff_timer);
 }
 
-// BLE 断连时启动 T_disc 倒计时（USB 供电时不启动，避免充电中关机）。
+// BLE 断连时启动 T_disc 倒计时（USB 供电仅在 usb_auto_off 开启时也计时，充电常亮默认关闭）。
 static void start_disc_poweroff_timer(void)
 {
     if (!s_disc_poweroff_timer) {
         return;
     }
     (void)esp_timer_stop(s_disc_poweroff_timer);
-    if (!is_external_powered()) {
+    if (!is_external_powered() || s_usb_auto_off) {
         esp_err_t err = esp_timer_start_once(s_disc_poweroff_timer, DISC_POWEROFF_TIMEOUT_US);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "start disc poweroff timer failed: %s", esp_err_to_name(err));
@@ -2349,6 +2376,49 @@ static void save_pickup_threshold_to_nvs(int32_t threshold)
     nvs_close(handle);
 }
 
+// 供电态（USB）自动关机开关的 NVS 持久化：key "usb_auto_off"，缺省 0（关闭，充电常亮）。
+static void load_usb_auto_off_from_nvs(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        if (err != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+        }
+        return;
+    }
+    int32_t enabled = 0;
+    err = nvs_get_i32(handle, "usb_auto_off", &enabled);
+    if (err == ESP_OK) {
+        s_usb_auto_off = enabled != 0;
+        ESP_LOGI(TAG, "usb_auto_off loaded from nvs: %d", s_usb_auto_off);
+    }
+    nvs_close(handle);
+}
+
+static void save_usb_auto_off_to_nvs(bool enabled)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("voicestick", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open nvs namespace failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_i32(handle, "usb_auto_off", enabled ? 1 : 0);
+    if (err != ESP_OK) {
+        nvs_close(handle);
+        ESP_LOGW(TAG, "set usb_auto_off failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit usb_auto_off failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "usb_auto_off saved to nvs: %d", enabled);
+    }
+    nvs_close(handle);
+}
+
 static void load_tap_settings_from_nvs(void)
 {
     nvs_handle_t handle;
@@ -2566,6 +2636,7 @@ void app_main(void)
 
     // 从 NVS 恢复拿起检测阈值与敲击手势设置；voice_ble_init 已初始化 NVS flash。
     load_pickup_threshold_from_nvs();
+    load_usb_auto_off_from_nvs();
     load_tap_settings_from_nvs();
     load_encoder_settings_from_nvs();
     set_tap_polling_enabled(s_tap_enabled);

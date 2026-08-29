@@ -340,6 +340,8 @@ enum class StringId {
     kBatteryMonitorAxisTime,
     kBatteryMonitorAxisVoltage,
     kBatteryMonitorChartTitle,
+    // 供电态（USB）10min 自动关机开关（监测窗口右上角勾选框）
+    kBatteryMonitorUsbAutoOff,
 
     // 热词预算裁剪提示（前缀 + 「保留数/总数」 + 后缀拼接）
     kHotwordTrimTitle,

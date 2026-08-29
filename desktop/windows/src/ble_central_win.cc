@@ -1746,6 +1746,14 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                         });
                         return;
                     }
+                    // power_mgmt 状态帧（供电态自动关机开关）走独立分发。
+                    auto usb_auto_off = BleProtocol::ParsePowerMgmtEvent(bytes);
+                    if (usb_auto_off.has_value()) {
+                        DispatchToUiThread([this, device_id, v = *usb_auto_off]() {
+                            if (on_power_mgmt_state) on_power_mgmt_state(device_id, v);
+                        });
+                        return;
+                    }
                     LogBleLine("state notify VS-" + device_id + " parse failed hex=" + HexDump(bytes));
                     return;
                 }
