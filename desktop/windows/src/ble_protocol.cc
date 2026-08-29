@@ -332,6 +332,11 @@ ByteVector BleProtocol::PowerLogTimeAnchorPayload(std::uint32_t epoch) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::PowerLogClearPayload() {
+    const std::string json = "{\"power_log\":{\"cmd\":\"clear\"}}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::UsbAutoOffPayload(bool enabled) {
     const std::string json = std::string("{\"event\":\"usb_auto_off\",\"enabled\":") +
                               (enabled ? "true" : "false") + "}";

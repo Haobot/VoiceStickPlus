@@ -107,6 +107,9 @@ public:
     // time_anchor 写入墙钟锚点条目。
     static ByteVector PowerLogDumpPayload(std::uint32_t offset, std::uint32_t max);
     static ByteVector PowerLogTimeAnchorPayload(std::uint32_t epoch);
+    // 清空设备端 power_log 环形区（监测会话开始前调用：旧固件环形区写满后
+    // 对 offset==total 的增量 dump 不回包，清空可绕过，见 StartMonitoring 注释）。
+    static ByteVector PowerLogClearPayload();
     // 供电态（USB）自动关机开关命令（control_rx）：set 写入并持久化，get 查询当前状态。
     static ByteVector UsbAutoOffPayload(bool enabled);
     static ByteVector UsbAutoOffGetPayload();
