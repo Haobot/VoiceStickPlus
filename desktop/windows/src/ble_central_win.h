@@ -112,6 +112,8 @@ private:
     };
 
     void StartScan();
+    // 退避延迟后重启扫描（独立线程睡眠，epoch 校验防止 Shutdown 后踩空）。
+    void ScheduleDelayedScanRestart(int delay_ms);
     void StopScan();
     // 订阅蓝牙无线电 StateChanged：系统蓝牙开关切换（设置/操作中心）会杀死
     // 广告 watcher 与全部链路，无线电恢复（On）时立即 RestartForResume()
@@ -193,6 +195,12 @@ private:
     std::atomic<std::int64_t> last_adv_received_ms_{0};
     // 看门狗触发扫描重建的节流：上次由 CheckScanHealth() 重建的时间点。
     std::chrono::steady_clock::time_point last_scan_watchdog_restart_at_{};
+    // watcher 异常停止后的退避重启状态：radio 坏状态下无退避会形成每秒数百次
+    // 的扫描热循环，挤掉活跃 BLE 连接（2026-08-22 真机事故，见 StartScan 注释）。
+    std::atomic<int> scan_restart_streak_{0};
+    std::atomic<std::int64_t> last_scan_stop_steady_ms_{0};
+    // 扫描代数：每次 StartScan/Shutdown 递增，使在途的延迟重启线程失效。
+    std::atomic<std::uint64_t> scan_epoch_{0};
     // claim 被拒日志的限流（key=蓝牙地址，value=上次记录的 steady_clock epoch
     // 毫秒）：正常重连中广告风暴期每秒数十次拒绝，逐条记录会刷屏。
     std::map<std::uint64_t, std::int64_t> claim_denied_log_ms_;

@@ -83,6 +83,11 @@ constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
 constexpr std::chrono::milliseconds kZombieSuspectWindow{15000};
 constexpr int kZombieSuspectMaxFreeRetries = 3;
 
+// watcher 异常停止的退避重启：3s 内再次异常停止视为连续失败，指数退避
+// 1s→2s→4s→…→30s 封顶。radio 坏状态下无退避会形成每秒数百次扫描热循环。
+constexpr std::int64_t kScanRestartStreakWindowMs{3000};
+constexpr int kScanRestartMaxBackoffMs{30000};
+
 // 扫描健康看门狗：BluetoothLEAdvertisementWatcher 会在蓝牙无线电状态变化
 // （包括应用自己触发的 radio reset）或驱动异常后静默失效——仍报告 Started
 // 却不再投递任何广告包，设备持续广播而主机永远收不到，只能重启进程恢复
@@ -327,6 +332,8 @@ void BleCentralWin::Start() {
 }
 
 void BleCentralWin::Shutdown() {
+    // 使在途的延迟扫描重启线程失效（防止 Shutdown 后 StartScan 踩空）。
+    scan_epoch_.fetch_add(1, std::memory_order_release);
     StopHeartbeat();
     StopScan();
     if (bluetooth_radio_) {
@@ -816,6 +823,8 @@ void BleCentralWin::CancelPendingConnect(const std::string& device_id) {
 }
 
 void BleCentralWin::StartScan() {
+    // 任何新的扫描启动都使在途的延迟重启失效，防止双重扫描。
+    scan_epoch_.fetch_add(1, std::memory_order_release);
     StopScan();
     bool has_paired_devices = false;
     {
@@ -848,8 +857,24 @@ void BleCentralWin::StartScan() {
                     std::lock_guard lock(mutex_);
                     if (paired_device_ids_.empty()) return;
                 }
-                LogBleLine("watcher stopped unexpectedly; restarting scan");
-                StartScan();
+                // 指数退避重启：radio 坏状态下（error=9）无条件立即重启会形成
+                // 每秒数百次的扫描热循环，持续轰炸 radio 并挤掉活跃 BLE 连接
+                //（2026-08-22 真机事故：单日 438 万条 error=9 日志，连接每
+                // ~60s 被远端终止，reason=0x13）。首退避 1s，封顶 30s。
+                const std::int64_t now = NowSteadyMs();
+                const int streak =
+                    (now - last_scan_stop_steady_ms_.load(std::memory_order_relaxed) <
+                     kScanRestartStreakWindowMs)
+                        ? scan_restart_streak_.load(std::memory_order_relaxed) + 1
+                        : 1;
+                scan_restart_streak_.store(streak, std::memory_order_relaxed);
+                last_scan_stop_steady_ms_.store(now, std::memory_order_relaxed);
+                const int delay_ms = std::min(
+                    kScanRestartMaxBackoffMs, 1000 << std::min(streak - 1, 5));
+                LogBleLine("watcher stopped unexpectedly; restart in " +
+                           std::to_string(delay_ms) + "ms (streak=" +
+                           std::to_string(streak) + ")");
+                ScheduleDelayedScanRestart(delay_ms);
             });
         });
     try {
@@ -882,6 +907,20 @@ void BleCentralWin::StartScan() {
         PublishConnections();
         if (on_scan_error) on_scan_error(message);
     }
+}
+
+void BleCentralWin::ScheduleDelayedScanRestart(int delay_ms) {
+    const auto epoch = scan_epoch_.load(std::memory_order_relaxed);
+    std::thread([this, epoch, delay_ms] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        // Shutdown 或期间任何 StartScan 都会推进代数，使本线程失效。
+        if (scan_epoch_.load(std::memory_order_acquire) != epoch) return;
+        DispatchToUiThread([this, epoch] {
+            if (scan_epoch_.load(std::memory_order_acquire) != epoch) return;
+            LogBleLine("scan restart after backoff");
+            StartScan();
+        });
+    }).detach();
 }
 
 void BleCentralWin::StopScan() {

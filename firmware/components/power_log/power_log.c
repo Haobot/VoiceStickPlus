@@ -354,7 +354,10 @@ esp_err_t power_log_init(void)
         .base_path = POWER_LOG_BASE_PATH,
         .partition_label = "storage",
         .max_files = 4,
-        .format_if_mount_failed = false,
+        // 挂载失败（如分区内容非 SPIFFS：SPIFFS_ERR_NOT_A_FS）时自动格式化
+        // 重挂：功耗遥测可自愈，避免永久退化为 64 条 RAM 环形区导致导出
+        // 数据 10 分钟写满。true。
+        .format_if_mount_failed = true,
     };
     esp_err_t err = esp_vfs_spiffs_register(&conf);
     if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
