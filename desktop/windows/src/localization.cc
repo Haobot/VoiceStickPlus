@@ -324,6 +324,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kBatteryMonitorErrDumpTimeout)] = "voltage log export timed out repeatedly";
     table[Index(StringId::kBatteryMonitorErrRestart)] = "device restarted (uptime went backwards)";
     table[Index(StringId::kBatteryMonitorErrDisconnected)] = "device disconnected";
+    table[Index(StringId::kBatteryMonitorStatusWaitingReconnect)] =
+        "Disconnected; waiting for reconnection to resume (device keeps logging)";
     table[Index(StringId::kBatteryMonitorErrCleared)] = "device log was cleared (total shrank)";
     table[Index(StringId::kBatteryMonitorErrSaveFailed)] = "save failed: {0}";
     table[Index(StringId::kBatteryMonitorSavedTo)] = "Saved: ";
@@ -643,6 +645,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kBatteryMonitorErrDumpTimeout)] = "电压日志导出反复超时";
     table[Index(StringId::kBatteryMonitorErrRestart)] = "设备已重启（uptime 回退）";
     table[Index(StringId::kBatteryMonitorErrDisconnected)] = "设备连接已断开";
+    table[Index(StringId::kBatteryMonitorStatusWaitingReconnect)] =
+        "设备已断开，等待回连后自动继续（设备端持续记录数据）";
     table[Index(StringId::kBatteryMonitorErrCleared)] = "设备端日志被清空（总长度回退）";
     table[Index(StringId::kBatteryMonitorErrSaveFailed)] = "保存失败：{0}";
     table[Index(StringId::kBatteryMonitorSavedTo)] = "已保存：";

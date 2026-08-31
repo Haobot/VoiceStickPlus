@@ -334,6 +334,7 @@ enum class StringId {
     kBatteryMonitorErrDumpTimeout,
     kBatteryMonitorErrRestart,
     kBatteryMonitorErrDisconnected,
+    kBatteryMonitorStatusWaitingReconnect,
     kBatteryMonitorErrCleared,
     kBatteryMonitorErrSaveFailed,
     kBatteryMonitorSavedTo,
