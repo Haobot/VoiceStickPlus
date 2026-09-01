@@ -98,7 +98,7 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 
 1. **不引入大抽象接口**。`DeviceSession` 加 `device_class` 字段，仅在服务匹配、特征发现、值分发、`Send*` 门控四处分支；ATVV 会话逻辑封装为 core 纯逻辑类 `XiaomiAtvvSession`（不碰 WinRT，可单测）
 2. **音频归一化在进协调器之前完成**：ADPCM→PCM→Opus（core 新增 `AudioOpusEncoder`，libopus 已是 core 链接依赖），产出标准 `AudioFrame`，下游 Ogg mux/ASR/字幕/wechat/调试缓存零改动
-3. **按键归一化**：ATVV Control `0x08`/`0x00` → `button_down`/`button_up` × `primary`；双击由适配层时序检测合成 `button_double_click`（阈值对齐固件双击参数）
+3. **按键归一化**：ATVV Control `0x08`/`0x00` → `button_down`/`button_up` × `primary`；双击由适配层时序检测合成 `button_double_click`（语义镜像固件双击参数，默认窗 350ms 有意小于固件 500ms，勿对齐）
 4. **设备 ID**：StickS3 保持 `VS-XXXX`；小米遥控器用 `RC-XXXX`（蓝牙地址低 16 位，沿用现有兜底逻辑）。`NormalizeDeviceId`/`DeviceIdFromName` 扩展双前缀，向后兼容旧配置
 5. **能力标志**：`PairedDeviceEntry.hardware`（`"stick_s3"`/`"xiaomi_remote_2_pro"`）派生能力集（has_screen/has_ota/has_encoder/has_imu/has_battery），驱动 `Send*` 跳过与托盘菜单显隐（复用 `encoder_present` 范式）
 
@@ -111,7 +111,7 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 | `src/xiaomi_atvv_protocol.h/.cc` | UUID 常量、GET_CAPS/MIC_OPEN_ACK/MIC_CLOSE 构造、CAPS 解析（含旧版布局兼容）、Control opcode 常量 |
 | `src/ima_adpcm_decoder.h/.cc` | IMA/DVI ADPCM 解码器（高半字节优先，predictor/step 钳位 [-32768,32767]/[0,88]）；标准 IMA 步长/索引表 |
 | `src/pcm_postprocessor.h/.cc` | 三点平滑 + 增益限幅（±24dB）；`FrameAccumulator`（按帧长跨包切帧） |
-| `src/xiaomi_atvv_session.h/.cc` | 会话状态机 Idle→CapsRequested→Ready→MicOpenAcked→Streaming→Draining→Idle；输入 Control opcode/Audio 字节/时钟，输出动作列表（写 TX 命令 / 合成 StateEvent / 合成 AudioFrame）；含 RC003 硬重置、150ms 尾包宽限、300ms 重开拒绝窗、双击时序检测 |
+| `src/xiaomi_atvv_session.h/.cc` | 会话状态机 Idle→CapsRequested→Ready→TapPending→Streaming→Draining→WaitSecondTap（另含 Error 终态）；输入 Control opcode/Audio 字节/时钟，输出动作列表（写 TX 命令 / 合成 StateEvent / 合成 AudioFrame）；含 RC003 硬重置、150ms 尾包宽限、300ms 重开拒绝窗、双击时序检测 |
 | `src/audio_opus_encoder.h/.cc` | libopus 编码器封装：16kHz/mono/40ms（640 采样/帧，与固件 `AUDIO_FRAME_MS=40` 一致），参数对齐 `firmware/components/audio_pipeline` 实际配置 |
 
 修改：
@@ -141,6 +141,8 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 
 ### 5.4 macOS（第二阶段）
 
+> **暂缓实施（2026-09，用户决策），待后续版本。** 本节描述的 macOS 端方案本轮未实施，保留作后续移植依据；当前仅 Windows 端支持小米遥控器。
+
 - `BleCentral.swift`：扫描双 service UUID；按设备类分支特征发现/订阅/值路由；`deviceID(from:)` 与 `AppConfig.normalizedDeviceID` 扩展 `RC-` 前缀
 - 新增 `XiaomiAtvvProtocol.swift`/`XiaomiAtvvSession.swift`（按 §3 规范重新实现）
 - Opus 编码：先试 AudioToolbox `kAudioFormatOpus`（macOS 12+）；不可行则 vendored libopus 以 SwiftPM C target 接入（参考 `CZlib` shim 模式）
@@ -160,7 +162,7 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 xiaomi_suppress_f5 = true        # 语音键附带 F5 的抑制开关（Windows）
 
 # 按设备（镜像 [device.<id>.encoder] 结构）
-[device.RC-3A7F.xiaomi]
+[device.3A7F.xiaomi]
 gain_db = 12.0                   # ADPCM 解码后增益，±24 限幅
 double_click_ms = 350            # 语音键双击时序阈值
 ```

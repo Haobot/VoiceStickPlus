@@ -5,7 +5,7 @@
   "frame_len": 120,
   "gain_db": 12.0,
   "adpcm_bytes": 15552,
-  "decoded_bytes": 15552,
+  "consumed_adpcm_bytes": 15552,
   "samples": 31104,
   "duration_s": 1.944,
   "first_audio_latency_ms": null,

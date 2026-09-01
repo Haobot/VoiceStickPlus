@@ -8,6 +8,8 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备负责采集按键、音频与 IMU 并通过 BLE 上报；**桌面端是状态唯一可信源**，负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录（esptool-js）和 Sparkle/WinSparkle 更新源。
 
+输入设备现有两类并存：自研 StickS3（`VS-XXXX`，配固件）与小米蓝牙遥控器 2 Pro（`RC-XXXX`，仅 Windows 端，固件零改动，ATVV 协议接入全部在桌面端；设计见 `Doc/Plan/xiaomi-remote-2-pro-support.md`，macOS 端暂缓待后续版本）。
+
 核心音频数据流：
 
 ```text
@@ -16,6 +18,8 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
 ```
 
 ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存共用同一份 Ogg Opus 流。微信输入法模式是例外：桌面端把 Opus 解码为 PCM 渲染到系统虚拟麦克风（如 VB-CABLE），不经 ASR 文本注入。
+
+小米遥控器的音频在进协调器前归一化：ATVV BLE 裸 IMA ADPCM → 桌面端解码 PCM（平滑 + 增益限幅）→ 桌面端 Opus 编码，产出与 StickS3 相同的标准音频帧，下游零改动。
 
 当前版本见根目录 `VERSION`（纯文本，无换行）；发布前必须确保 `firmware/version.txt` 与之一致。
 
@@ -98,7 +102,7 @@ npm run preview
 
 ### 状态机归属
 
-交互状态机在**桌面端**，不在固件。修改交互流程优先改桌面协调器（macOS `VoiceStickCoordinator` / Windows `voice_stick_coordinator.cc`）。固件通常只在新增/调整 `ui_state` 展示、硬件 I/O、BLE 协议或 OTA 行为时修改。例外：**双击手势的时序检测在固件端完成**，桌面端只响应 `button_double_click` 事件（见 `Doc/Plan/primary-button-double-click.md`）。
+交互状态机在**桌面端**，不在固件。修改交互流程优先改桌面协调器（macOS `VoiceStickCoordinator` / Windows `voice_stick_coordinator.cc`）。固件通常只在新增/调整 `ui_state` 展示、硬件 I/O、BLE 协议或 OTA 行为时修改。例外：**双击手势的时序检测在固件端完成**，桌面端只响应 `button_double_click` 事件（见 `Doc/Plan/primary-button-double-click.md`；小米遥控器再例外：语音键双击时序检测在桌面端适配层完成，合成同样的 `button_double_click`）。
 
 修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `Doc/Ref/`、macOS、Windows、网站和发布脚本。
 
@@ -115,6 +119,8 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 | `ota_tx` | `…5105` | 设备→主机 notify | BLE OTA 状态帧 |
 
 完整帧格式见 `Doc/Ref/protocol.md`。v1.8.0 起 Wi-Fi 配网与局域网 OTA 已移除，固件升级只走 BLE OTA（串口烧录为回退）。
+
+小米蓝牙遥控器 2 Pro 不走本 service：讲 Google ATVV profile（`AB5E0001-5A21-4F05-BC7D-AF01F617B664`）+ 标准 HID/Battery（`0x1812`/`0x180F`），桌面端按 `RC-XXXX` 建档连接，固件不实现该协议；协议事实见 `Doc/Ref/protocol.md` ATVV 设备档案章节。
 
 ### 固件职责（`firmware/components/` 共 7 个组件）
 
@@ -137,7 +143,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - **macOS**（`desktop/macos/Sources/VoiceStickApp/`）：`VoiceStickCoordinator`（状态机）、`BleCentral`/`BleProtocol`（CoreBluetooth 与协议）、`OggOpusMuxer`/`ASRWebSocketClient`（音频封装与 ASR）、`InputInjector`（粘贴与 Return 注入）、`OverlayController`/`SubtitleController`/`StatusController`、`FirmwareManifest`/`FirmwareUpdateWindowController`。
 - **Windows**（`desktop/windows/CMakeLists.txt` 五个源码目标）：
-  - `voicestick_core`：可测试核心库（配置解析、BLE 协议、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修、热词候选挖掘、调试音频缓存、固件清单、日志、本地化、协调器状态机、VoiceStickFlash 烧录逻辑）。**新增核心行为优先放这里并在 `core_tests.cc` 覆盖。**
+  - `voicestick_core`：可测试核心库（配置解析、BLE 协议含 `DeviceClass` 设备类与 `VS-`/`RC-` 双前缀、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修、热词候选挖掘、调试音频缓存、固件清单、日志、本地化、协调器状态机、VoiceStickFlash 烧录逻辑、小米遥控器接入 `xiaomi_atvv_protocol`/`xiaomi_atvv_session`/`ima_adpcm_decoder`/`pcm_postprocessor`/`audio_opus_encoder`——ATVV 会话/ADPCM 解码/PCM 后处理/Opus 归一化均为纯逻辑；`PairedDeviceEntry.hardware` 派生能力集驱动 `Send*` 跳过与托盘菜单显隐）。**新增核心行为优先放这里并在 `core_tests.cc` 覆盖。**
   - `VoiceStickApp`：Win32 外壳（托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、对话框）。
   - `VoiceStickFlash`：独立 COM 口固件烧录小工具（BLE OTA 兜底链路），Win32 GUI 外壳只做 UI + esptool 子进程；设计见 `Doc/Plan/windows-com-flash-tool.md`。
   - `voicestick_windows_tests`：基于 `assert` 的单元测试，自定义 Fake/Mock 不联网。
@@ -168,7 +174,8 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 - `[output].target`：`focused_app`（默认）/ `subtitle` / `wechat_input_method`；可用 `[device.<id>.output]` 按设备覆盖。
 - 编码器配置（仅 Windows）：全局默认 `encoder_*`（旋转/快慢分档/按键/LED）+ 按设备覆盖 `[device.<id>.encoder]`（键名去前缀，结构镜像 `[device.<id>.output]`）；设置 UI 已从「设置」对话框移至托盘设备子菜单「编码器设置…」（仅 `encoder_present` 设备显示）。完整字段见 `Doc/Ref/desktop-config.md`。
 - 设备交互配置（仅 Windows）：IMU 唤醒灵敏度 / 敲击映射方向键 / 敲击灵敏度 / 体感鼠标左右·上下灵敏度，全局默认顶层键（`imu_wake_sensitivity`/`tap_to_arrow`/`tap_sensitivity`/`air_mouse_sensitivity_x/y`，v1.8.x 旧配置仍可读）+ 按设备覆盖 `[device.<id>.interaction]`（键名一致）；设置 UI 已从「设置」对话框移至托盘设备子菜单「设备交互设置…」（所有设备显示）。其中体感鼠标灵敏度按设备覆盖，其余进阶 `air_mouse_*` 参数仍为全局。完整字段见 `Doc/Ref/desktop-config.md`。
-- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表。
+- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，`VS-XXXX` 与 `RC-XXXX` 可混合。
+- 小米遥控器配置（仅 Windows）：全局 `xiaomi_suppress_f5`（语音键附带 F5 抑制，默认开）+ 按设备覆盖 `[device.<id>.xiaomi]`（`gain_db`/`double_click_ms`，结构镜像 `[device.<id>.output]`，托盘设备子菜单「遥控器设置…」）。完整字段见 `Doc/Ref/desktop-config.md`。
 - Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，并由 `SeedMsiConfigExec` 自定义动作在**安装时**整份复制覆盖到 `%APPDATA%\VoiceStick\config.toml`（仅全新安装，升级不覆盖）。打包时 `generate_msi_config.ps1` 从本机 `%APPDATA%\VoiceStick\config.toml`（默认，`VOICESTICK_MSI_CONFIG_SOURCE` 可覆盖）提取密钥生成含 key 的构建产物（gitignored，密钥不进仓库）；`extract_builtin_key.ps1` 输出内置凭据供 cmake 注入 `builtin_secrets.h.in`。运行时 `Active*()` 优先读 config.toml，空则回退内置凭据，首启开箱即用。
 
 ## 代码风格
@@ -184,7 +191,7 @@ GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
 
 - Windows：`core_tests.cc` 用自定义 Fake/Mock 单测 `voicestick_core`（不联网）；`integration_tests.cc` 连真实火山 ASR，无 key 返回 77 被 SKIP。
 - macOS / 固件 / 网站：无自动化测试，验证方式为各自构建命令通过 + 手动运行时测试。
-- Python E2E 真机验证：`scripts/e2e_test/`（L0 语料、L3 固件回放、L4 微信输入法、ASR/热词离线评测、功耗导出），用真实 BLE 与真实 ASR/音频链路，**不伪造结果**。索引见 `Doc/Ref/e2e-test-toolchain.md`；依赖 `bleak`/`numpy`/`sounddevice`（**未列入**根目录 `requirements.txt`，需另行 `pip install`）。
+- Python E2E 真机验证：`scripts/e2e_test/`（L0 语料、L3 固件回放、L4 微信输入法、ASR/热词离线评测、功耗导出），用真实 BLE 与真实 ASR/音频链路，**不伪造结果**。索引见 `Doc/Ref/e2e-test-toolchain.md`；依赖 `bleak`/`numpy`/`sounddevice`（**未列入**根目录 `requirements.txt`，需另行 `pip install`）。小米遥控器 ATVV 工具组：`atvv_capture.py`（真机 golden 采集）/`atvv_bench.py`（golden 会话离线 ASR 评测）/`atvv_probe.py`（延迟与静置探针）；golden fixtures 接 C++ 单测与集成测试回放，`fixtures/xiaomi/demo_synthetic/` 入库冒烟、真机采集目录 gitignore。
 
 ## 安全注意事项
 
@@ -210,7 +217,7 @@ Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建签名后手�
 ## 给 Agent 的提示（易踩坑）
 
 - Windows 桌面端修改并构建通过后，自动重启 VoiceStick.exe 让改动生效（先结束运行中的进程避免锁定链接产物，启动后检查 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`）。
-- `.gitignore` **整体忽略了 `desktop/windows/`**，提交 Windows 端源码必须用 `git add -f`，否则会被静默漏提交。
+- `.gitignore` **整体忽略了 `desktop/windows/`**，提交 Windows 端源码必须用 `git add -f`，否则会被静默漏提交。教训：f75af4f5 曾漏提交新增的 `power_log_monitor.*`/`battery_monitor_dialog.*` 致全新克隆无法构建（CMakeLists.txt 引用缺失文件，被忽略的新文件在 `git status` 中不提示）；新增 Windows 源文件后必须 `git add -f` 并用 `git ls-files <path>` 验证确已跟踪（排查漏网：`git ls-files --others --ignored --exclude-standard desktop/windows/src/`）。
 - 搜索仓库时排除 `website/node_modules/` 和 `firmware/build/`。
 - 修改网站 UI 文案必须同步更新 `website/src/i18n/zh-CN.json` 和 `en-US.json`；修改根目录 `README.md` 必须同步 `README.zh-CN.md`；修改 `VERSION` 必须同步 `firmware/version.txt`。
 - 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。

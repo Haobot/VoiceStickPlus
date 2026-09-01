@@ -20,6 +20,7 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 - 敲击映射：IMU 敲击检测映射为方向键（`tap_to_arrow`，Windows）。
 - MiniEncoderC 编码器：按钮等价主键，旋转映射方向键（慢速逐行/快速翻页分档），按键与旋转动作可按设备自定义（Windows）。
 - 按设备覆盖：输出、设备交互（IMU 唤醒/敲击/体感灵敏度）与编码器设置均可按设备单独配置（托盘设备子菜单，Windows）。
+- 第二种输入设备（Windows）：小米蓝牙遥控器 2 Pro（设备 ID `RC-XXXX`）与 StickS3 并存——按住语音键说话、双击注入 Enter，支持电量显示、按设备输出覆盖与语音键附带 F5 抑制（固件零改动，ATVV 协议全部在桌面端实现）。
 - 多设备配对与连接，悬浮窗/字幕实时显示识别进度。
 - 固件升级：BLE OTA 免线升级；Windows 另附 VoiceStickFlash COM 口烧录工具作为救砖兜底。
 

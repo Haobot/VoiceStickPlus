@@ -320,7 +320,7 @@ def emit_demo_fixture(args: argparse.Namespace) -> int:
         "frame_len": 120,
         "gain_db": args.gain_db,
         "adpcm_bytes": len(encoded),
-        "decoded_bytes": len(encoded),
+        "consumed_adpcm_bytes": len(encoded),
         "samples": len(decoded),
         "duration_s": round(len(decoded) / 16000.0, 3),
         "first_audio_latency_ms": None,

@@ -405,7 +405,9 @@ class AtvvCapture:
             "frame_len": self.accum.frame_len,
             "gain_db": self.args.gain_db,
             "adpcm_bytes": len(raw),
-            "decoded_bytes": sum(s["bytes"] for s in self._segments),
+            # consumed_adpcm_bytes 是已消费的 ADPCM 输入字节数（= 各段 bytes 之和），
+            # 不是解码产出的 PCM 字节数；PCM 样本数见 samples。
+            "consumed_adpcm_bytes": sum(s["bytes"] for s in self._segments),
             "samples": len(self.pcm_samples),
             "duration_s": round(duration_s, 3),
             "first_audio_latency_ms": latency_ms,
@@ -833,7 +835,7 @@ def self_test() -> int:
             # 段 1 从丢弃残余后的偏移 200 开始，reset(0,0)
             assert (segs[1]["offset"], segs[1]["bytes"]) == (200, 200)
             assert (segs[1]["predictor"], segs[1]["step_index"]) == (0, 0)
-            assert sidecar["decoded_bytes"] == 320
+            assert sidecar["consumed_adpcm_bytes"] == 320
             assert sidecar["adpcm_bytes"] == 400
             # 按 sidecar 段落从 .adpcm 复现解码，逐样本等于 raw.wav
             raw = (out / "session_1.adpcm").read_bytes()

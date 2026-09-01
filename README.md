@@ -20,6 +20,7 @@ Hold the front button on the StickS3 to record. When you release it, the desktop
 - Tap-to-arrow: IMU tap detection mapped to arrow keys (`tap_to_arrow`, Windows).
 - MiniEncoderC encoder: its button mirrors the front button, rotation maps to arrow keys with slow (line-by-line) / fast (page) tiers, and button/rotation actions are customizable per device (Windows).
 - Per-device overrides: output, device interaction (IMU wake / tap / air-mouse sensitivity), and encoder settings can be configured per device (tray device submenu, Windows).
+- Second input device (Windows): the Xiaomi Bluetooth Remote 2 Pro (device ID `RC-XXXX`) works alongside the StickS3 — hold its voice key to talk, double-click to inject Enter, with battery level display, per-device output overrides, and suppression of the voice key's side-band F5 keystroke (firmware untouched; the ATVV protocol is implemented entirely on the desktop).
 - Multi-device pairing with a floating overlay/subtitles showing recognition progress.
 - Firmware updates: cable-free BLE OTA, plus the VoiceStickFlash COM-port flashing tool on Windows as an unbrick fallback.
 

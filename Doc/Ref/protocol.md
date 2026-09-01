@@ -1,6 +1,6 @@
 # Voice Stick Protocol
 
-This document describes the protocol implemented by the current firmware and macOS desktop app.
+This document describes the protocol implemented by the current firmware and macOS desktop app. It also documents, in a dedicated section, the desktop-side protocol profile of the Xiaomi Bluetooth Remote 2 Pro — a second input device whose ATVV stack lives entirely in the desktop app and is not implemented by the firmware.
 
 ## Goals
 
@@ -451,6 +451,77 @@ On the device display, OTA switches the normal idle/recording UI into an update 
 
 While OTA is active, the device ignores push-to-talk input and pauses display dimming/deep sleep timers. After a successful transfer, the firmware waits about 500 ms after sending the `done` event and then calls `esp_restart()`.
 The desktop updater can cancel an in-progress transfer by sending `OtaAbortFrame`; the device aborts the OTA handle and keeps booting the current firmware.
+
+## Xiaomi Bluetooth Remote 2 Pro (ATVV Device Profile)
+
+This section documents a second, **desktop-side-only** protocol profile. The
+Xiaomi Bluetooth Remote 2 Pro (VID `0x2717`/PID `0x32B8`) speaks Google's ATVV
+profile plus standard HID over GATT. **The StickS3 firmware is unchanged and
+does not implement this protocol** — the entire ATVV stack (session state
+machine, ADPCM decoding, PCM post-processing, Opus re-encoding) lives in the
+Windows desktop app; macOS support is deferred to a later release. Only
+protocol facts are recorded here; design rationale and implementation detail
+live in `Doc/Plan/xiaomi-remote-2-pro-support.md`, which remains the
+authoritative source.
+
+Device ID: `RC-XXXX`, allocated on Windows from the low 16 bits of the
+Bluetooth address, coexisting with the StickS3 `VS-XXXX` IDs in
+`paired_device_ids`. Pairing requires an OS-level Bond (no pairing code or
+account token); without it the ATVV service is not discoverable.
+
+### Key channel: standard HID over GATT
+
+All keys except the voice key travel over the standard HID service `0x1812`
+(Report ID 1, up to three 16-bit little-endian HID usages per report) and are
+consumed natively by the OS as keyboard/consumer keys — the desktop app does
+not intercept them. The voice key is **not** an ordinary HID key: pressing it
+makes the remote start an ATVV session (below), and the remote additionally
+emits an F5 keystroke to the OS, which the Windows desktop suppresses while a
+session is starting (config `xiaomi_suppress_f5`).
+
+### Audio channel: ATVV GATT service
+
+| Characteristic | UUID | Direction / Properties |
+| --- | --- | --- |
+| Service | `AB5E0001-5A21-4F05-BC7D-AF01F617B664` | — |
+| TX (commands) | `AB5E0002-5A21-4F05-BC7D-AF01F617B664` | Host → remote, write without response |
+| Audio | `AB5E0003-5A21-4F05-BC7D-AF01F617B664` | Remote → host, notify |
+| Control | `AB5E0004-5A21-4F05-BC7D-AF01F617B664` | Remote → host, notify |
+
+Session flow (remote-driven, the host answers):
+
+1. After connecting, the host subscribes to Audio/Control notifications and
+   writes GET_CAPS (`0A 01 00 00 03 03`, v1.0) to TX.
+2. Control delivers `0x0B` (CAPS): protocol version, codec bitmask
+   (`0x02` = 16 kHz, `0x01` = 8 kHz — only 16 kHz is accepted), and the
+   negotiated frame length (BE16, 0 means the 120-byte default).
+3. Voice-key press: Control delivers `0x08` (MIC_OPEN); the host answers with
+   TX `0x0C 0x00` (ACK).
+4. Control delivers `0x04` (STREAM_START); Audio notifications start flowing.
+5. Control `0x0A` (AUDIO_SYNC) carries the ADPCM predictor/step and resets the
+   decoder. RC003 units restart the encoder at session start without sending
+   SYNC, so the desktop also hard-resets the decoder on `0x04`.
+6. Voice-key release: Control delivers `0x00` (STOP). Because Audio and
+   Control are two separate characteristics, trailing audio packets can arrive
+   after STOP — the desktop allows a 150 ms tail grace window, and refuses to
+   reopen a session within 300 ms of STOP.
+7. On disconnect/exit the host writes TX `0x0D <session_id>` (MIC_CLOSE).
+
+Audio format: IMA/DVI ADPCM, 4 bits per sample, high nibble first, 16 kHz
+mono. Audio notifications carry a headerless, sequence-number-free ADPCM byte
+stream; the desktop accumulates bytes across notifications and cuts frames at
+the CAPS-negotiated frame length (default 120 bytes = 240 samples), decodes to
+int16 PCM, then re-encodes to Opus so the downstream Ogg/ASR pipeline is
+identical to the StickS3 path. With no sequence numbers, a lost packet drifts
+the decoder until the next sync.
+
+Key mapping: ATVV Control `0x08`/`0x00` are normalized to `primary`
+`button_down`/`button_up`. Unlike the StickS3 (where the firmware detects it),
+the voice key's double-click timing detection runs on the desktop and
+synthesizes `button_double_click` with `button:"primary"`.
+
+Battery: standard Battery Service `0x180F` / `0x2A19` (read + notify),
+reported to the coordinator as a `battery_status` state event.
 
 ## Runtime State Machine
 

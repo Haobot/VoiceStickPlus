@@ -489,6 +489,12 @@ void BleCentralWin::SendUiState(const std::string& state,
             if (it != sessions_by_device_id_.end() && it->second->ready &&
                 it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
+            } else if (it != sessions_by_device_id_.end() &&
+                       it->second->device_class != DeviceClass::kStickS3) {
+                // 类别门控跳过（RC 遥控器无屏幕）：与未连接/未就绪区分，避免排障误读。
+                LogBleLine("send ui_state skipped: device class not applicable state=" +
+                           state + " dev=RC-" + *device_id +
+                           " text_len=" + std::to_string(text.size()));
             } else {
                 LogBleLine("send ui_state skipped state=" + state +
                            " dev=VS-" + *device_id +
@@ -740,16 +746,24 @@ void BleCentralWin::RequestBatteryStatus(const std::optional<std::string>& devic
 
 void BleCentralWin::SendPowerLogCommand(const std::string& device_id, ByteVector payload) {
     std::vector<std::shared_ptr<DeviceSession>> targets;
+    bool class_not_applicable = false;
     {
         std::lock_guard lock(mutex_);
         auto it = sessions_by_device_id_.find(device_id);
         if (it != sessions_by_device_id_.end() && it->second->ready &&
             it->second->device_class == DeviceClass::kStickS3) {
             targets.push_back(it->second);
+        } else if (it != sessions_by_device_id_.end() &&
+                   it->second->device_class != DeviceClass::kStickS3) {
+            // RC 遥控器无功耗记账：类别门控跳过，与未连接区分，避免排障误读。
+            class_not_applicable = true;
         }
     }
     if (targets.empty()) {
-        LogBleLine("power_log command skipped (not connected) dev=VS-" + device_id);
+        LogBleLine(class_not_applicable
+                       ? "power_log command skipped (device class not applicable) dev=RC-" +
+                             device_id
+                       : "power_log command skipped (not connected) dev=VS-" + device_id);
         return;
     }
     for (auto& session : targets) {
@@ -771,6 +785,11 @@ void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
             if (it != sessions_by_device_id_.end() && it->second->ready &&
                 it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
+            } else if (it != sessions_by_device_id_.end() &&
+                       it->second->device_class != DeviceClass::kStickS3) {
+                // 类别门控跳过（RC 遥控器无按键回注）：与未连接/未就绪区分。
+                LogBleLine("send remote_button_" + std::string(action_name) +
+                           " skipped: device class not applicable dev=RC-" + *device_id);
             } else {
                 LogBleLine("send remote_button_" + std::string(action_name) +
                            " skipped dev=VS-" + *device_id);

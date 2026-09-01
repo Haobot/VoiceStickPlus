@@ -518,6 +518,10 @@ int Win32App::Run() {
             LogLine("Global hotkey disabled by config");
         }
 
+        // 手动输 ID 配对的 RC 设备（PairDeviceByManualId 存的 entry hardware 为空）在
+        // 重启后首轮会按 StickS3 连接序列直连并失败（对端无 VoiceStick GATT 服务）；
+        // 随后广告包在 HandleAdvertisement 按名称/ATVV UUID 重新分类，以正确类别重连
+        // 并把 hardware 落盘自愈。属可自愈的边缘场景，仅注释说明，不做启动期特殊处理。
         for (const auto& entry : config_.paired_devices) {
             if (entry.bluetooth_address != 0) {
                 const bool is_xiaomi = entry.hardware == kHardwareXiaomiRemote2Pro;

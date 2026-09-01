@@ -18,6 +18,12 @@
 
 - 热词高频优先裁剪（Windows）：热词库超出单次会话直传预算（火山 80 tokens）时，按「频率 × 新近度 × 手动加权」评分优先保留（`hotword_selector`，与 `scripts/e2e_test/asr_bench/hotword_select.py` 同一评分模型），替代原按插入顺序贪心截断——新加的词排在列表尾部、旧逻辑最先被裁。使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本）存 `%APPDATA%\VoiceStick\hotword_usage.json`；超预算时每次运行提示一次（浮窗/托盘，明细见日志）。精修/翻译 LLM prompt 的热词段改为评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。新增 `TestHotwordSelector` 单测（镜像 hotword_select.py 自测断言）。
 
+- 新增小米蓝牙遥控器 2 Pro 作为第二种输入设备（Windows）：配对（双模扫描 VS-* + 小米白名单，WinRT 应用内配对优先、失败引导系统蓝牙设置，需 OS Bond）、语音键按住说话/双击注入 Enter、标准 Battery Service（0x180F/0x2A19）电量显示、与 StickS3 同时连接按台切换（主录音会话全局单例，交互即切换）、按设备输出覆盖复用 `[device.<id>.*]` 框架、「遥控器设置…」对话框（`gain_db`/`double_click_ms`，热更对已连接会话不生效，重连后生效）、语音键附带 F5 抑制（`xiaomi_suppress_f5`，WH_KEYBOARD_LL 低级键盘钩子，默认开，按有无已配对 RC 设备门控装载）。固件零改动：ATVV 协议接入全部在桌面端——`voicestick_core` 新增 `xiaomi_atvv_protocol`/`xiaomi_atvv_session`/`ima_adpcm_decoder`/`pcm_postprocessor`/`audio_opus_encoder` 五个纯逻辑模块（含 RC003 无 SYNC 硬重置、150ms 尾包宽限、300ms 重开拒绝、双击时序检测），归一化为标准 StateEvent/AudioFrame 复用现有协调器，下游 ASR/字幕/wechat 零改动；`ble_protocol` 新增 `DeviceClass` 设备类与 `RC-XXXX` 设备 ID（蓝牙地址低 16 位），`PairedDeviceEntry.hardware` 派生能力集驱动 `Send*` 跳过与托盘菜单显隐。设计见 `Doc/Plan/xiaomi-remote-2-pro-support.md`。macOS 端支持待后续版本。
+
+- 新增小米遥控器 ATVV E2E 工具链（`scripts/e2e_test/`）：`atvv_capture.py`（bleak 真机 golden 采集，落盘 events.jsonl + 每会话 adpcm/sidecar/双 WAV 四件套，供 C++ golden 对拍）、`atvv_bench.py`（按 sidecar 复现解码 + 桌面端同参数后处理，裸 PCM 直送真实 ASR 离线评测，`--gain-db`/`--no-smooth` 调参闭环）、`atvv_probe.py`（会话建立/首帧延迟、STOP 尾包时延分布、长连接静置稳定性探针）。golden fixtures 回归接入单测（`TestImaAdpcmDecoderGoldenFixtures`）与集成测试（重放经 XiaomiAtvvSession → 真实火山 ASR）：`fixtures/xiaomi/demo_synthetic/` 入库作冒烟资产，真机采集目录 gitignore。用法见 `Doc/Ref/e2e-test-toolchain.md`。
+
+- 修复：补回 f75af4f5 漏提交的 `power_log_monitor.*`/`battery_monitor_dialog.*` 源文件（`desktop/windows/` 整体被 .gitignore 忽略，新增文件须 `git add -f`），此前全新克隆因 CMakeLists 引用缺失文件无法构建。
+
 ## v2.3.6
 
 - 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。
