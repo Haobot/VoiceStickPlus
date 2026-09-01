@@ -63,3 +63,4 @@ scripts/e2e_test/fixtures/xiaomi/*/
 desktop/windows/generated_winrt/
 dist/
 desktop/windows/winsparkle-local/
+_realtest_shots/

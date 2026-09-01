@@ -116,6 +116,8 @@ private:
         // CloseSession 置空后晚到的分发自然跳过）。
         std::mutex xiaomi_mutex;
         std::unique_ptr<XiaomiAtvvSession> xiaomi_atvv_session;
+        // ATVV 音频帧到达计数（诊断日志节流用；GATT 回调线程递增，仅作计数不并发敏感）。
+        std::atomic<std::uint64_t> xiaomi_audio_rx_count{0};
         winrt::event_token audio_value_changed_token{};
         winrt::event_token state_value_changed_token{};
         winrt::event_token ota_state_value_changed_token{};

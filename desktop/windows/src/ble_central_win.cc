@@ -1852,6 +1852,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                         if (!s) return;
                         s->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
                         auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                        LogBleLine("atvv control rx RC-" + device_id + " len=" +
+                                   std::to_string(bytes.size()) +
+                                   (bytes.empty() ? std::string() : " hex=" + HexDump(bytes)));
                         // 语音键按下（MIC_OPEN）：遥控器固件会同步向 OS 多发一个 F5，
                         // 记录时刻供 VoiceF5Suppressor 在 80ms 窗内吞掉该按键。
                         if (!bytes.empty() && bytes[0] == XiaomiAtvvProtocol::control_mic_open &&
@@ -1870,12 +1873,19 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     });
             session->xiaomi_audio_value_changed_token =
                 session->xiaomi_audio_characteristic.ValueChanged(
-                    [this, weak_session = std::weak_ptr<DeviceSession>(session)](
+                    [this, device_id, weak_session = std::weak_ptr<DeviceSession>(session)](
                         const GattCharacteristic&, const auto& args) {
                         auto s = weak_session.lock();
                         if (!s) return;
                         s->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
                         auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                        const auto audio_rx_n =
+                            s->xiaomi_audio_rx_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (audio_rx_n <= 3 || audio_rx_n % 50 == 0) {
+                            LogBleLine("atvv audio rx RC-" + device_id + " n=" +
+                                       std::to_string(audio_rx_n) + " len=" +
+                                       std::to_string(bytes.size()));
+                        }
                         DispatchToUiThread([this, weak_session, bytes = std::move(bytes)]() {
                             auto s2 = weak_session.lock();
                             if (!s2) return;
@@ -1981,6 +1991,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     try {
                         std::lock_guard lock(s->xiaomi_mutex);
                         s->xiaomi_atvv_session = std::make_unique<XiaomiAtvvSession>(options);
+                        LogBleLine("xiaomi session created RC-" + device_id);
                     } catch (const std::exception& error) {
                         LogBleLine("xiaomi session create failed RC-" + device_id + ": " +
                                    error.what());
@@ -2259,6 +2270,7 @@ void BleCentralWin::DispatchXiaomiActions(const std::shared_ptr<DeviceSession>& 
                 if constexpr (std::is_same_v<T, XiaomiAtvvWriteTx>) {
                     WriteXiaomiTxAsync(session, std::move(a.bytes));
                 } else if constexpr (std::is_same_v<T, XiaomiAtvvStateEvent>) {
+                    LogBleLine("atvv event RC-" + device_id + " type=" + a.event.event);
                     if (on_state_event) on_state_event(device_id, a.event);
                 } else if constexpr (std::is_same_v<T, XiaomiAtvvAudioFrame>) {
                     if (on_audio_frame) on_audio_frame(device_id, a.frame);
@@ -2286,6 +2298,8 @@ winrt::fire_and_forget BleCentralWin::WriteXiaomiTxAsync(std::shared_ptr<DeviceS
     const auto tx = session ? session->xiaomi_tx_characteristic : nullptr;
     if (!tx) co_return;
     const std::string device_id = session->device.id;
+    LogBleLine("atvv tx write RC-" + device_id + " len=" + std::to_string(payload.size()) +
+               " hex=" + HexDump(payload));
     GattCommunicationStatus status = GattCommunicationStatus::Unreachable;
     try {
         DataWriter writer;

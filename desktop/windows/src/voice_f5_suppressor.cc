@@ -32,6 +32,8 @@ void VoiceF5Suppressor::Start(const std::atomic<std::int64_t>* mic_open_sink) {
         active_instance_ = nullptr;
         LogApp("VoiceF5Suppressor: SetWindowsHookEx WH_KEYBOARD_LL failed err=" +
                std::to_string(GetLastError()));
+    } else {
+        LogApp("VoiceF5Suppressor: WH_KEYBOARD_LL hook installed");
     }
 }
 
@@ -49,9 +51,14 @@ LRESULT CALLBACK VoiceF5Suppressor::LowLevelKeyboardProc(int code, WPARAM w_para
         active_instance_ && active_instance_->mic_open_sink_) {
         const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(l_param);
         if (info->vkCode == VK_F5) {
+            const auto now = NowSteadyMs();
             const auto last =
                 active_instance_->mic_open_sink_->load(std::memory_order_relaxed);
-            if (ShouldSuppressF5(NowSteadyMs(), last, true)) {
+            const bool suppress = ShouldSuppressF5(now, last, true);
+            LogApp(std::string("f5 keydown mic_open_age_ms=") +
+                   (last > 0 ? std::to_string(now - last) : std::string("never")) +
+                   (suppress ? " -> suppress" : " -> pass"));
+            if (suppress) {
                 return 1; // 吞掉：小米语音键附带的 F5
             }
         }
