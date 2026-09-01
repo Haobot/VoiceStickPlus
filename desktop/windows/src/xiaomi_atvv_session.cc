@@ -84,58 +84,35 @@ std::vector<XiaomiAtvvAction> XiaomiAtvvSession::HandleControlCommand(
             break;
         }
         case XiaomiAtvvProtocol::control_mic_open: {
-            if (state_ == XiaomiAtvvSessionState::kWaitSecondTap) {
-                if (now_ms <= double_click_deadline_) {
-                    // 窗内第二次按下：合成 button_double_click（桌面端注入 Enter），
-                    // 本次按下被消费：仍按协议应答，但不录音、不发 down/up。
-                    actions.push_back(XiaomiAtvvStateEvent{
-                        MakePrimaryButtonEvent("button_double_click", std::nullopt)});
-                    BeginPress(actions, now_ms, /*suppressed=*/true);
-                } else {
-                    // Tick 未跑窗口已过。hold_to_talk 的短击尚未发过任何事件，补发
-                    // button_click 表达本次单击；click_to_talk 的第一次点击已由
-                    // down/up 完整表达并开录，补发会让协调器空闲态启动幽灵会话。
-                    if (options_.interaction_mode == InteractionMode::kHoldToTalk) {
-                        actions.push_back(XiaomiAtvvStateEvent{
-                            MakePrimaryButtonEvent("button_click", std::nullopt)});
-                    }
-                    state_ = XiaomiAtvvSessionState::kReady;
-                    BeginPress(actions, now_ms, /*suppressed=*/false);
-                }
-                break;
-            }
-            // STOP 后 300ms 重开拒绝窗（kDraining 与窗内已回 kReady 均生效）：
-            // 不回 0x0C ACK、不开新会话。双击路径走 kWaitSecondTap 分支，不受影响。
-            if ((state_ == XiaomiAtvvSessionState::kDraining ||
-                 state_ == XiaomiAtvvSessionState::kReady) &&
-                now_ms < reject_reopen_until_) {
-                break;
-            }
-            if (state_ == XiaomiAtvvSessionState::kDraining) {
-                // 拒绝窗外重开：先收尾当前会话再开新按下。
-                FinalizeStream(actions);
-                BeginPress(actions, now_ms, /*suppressed=*/false);
-                break;
-            }
-            if (state_ != XiaomiAtvvSessionState::kReady) break;
-            BeginPress(actions, now_ms, /*suppressed=*/false);
+            HandlePressFrame(actions, now_ms, /*send_ack=*/true);
             break;
         }
         case XiaomiAtvvProtocol::control_stream_start: {
-            if (state_ != XiaomiAtvvSessionState::kTapPending &&
-                state_ != XiaomiAtvvSessionState::kStreaming &&
-                state_ != XiaomiAtvvSessionState::kDraining) {
+            if (state_ == XiaomiAtvvSessionState::kTapPending ||
+                state_ == XiaomiAtvvSessionState::kStreaming) {
+                // RC003 会话内的流开始/重启标记：硬重置（编码器从 0/0 重启但可能
+                // 不发 SYNC），否则第二次按键 DC 饱和。
+                HardResetStream();
+                if (data.size() >= 4) remote_session_id_ = data[3];
                 break;
             }
-            // RC003 坑：遥控器每次会话编码器从 0/0 重启但可能不发 SYNC，
-            // 收到 0x04 一律硬重置，否则第二次按键 DC 饱和。
-            decoder_.Reset(0, 0);
-            accumulator_.Reset();
-            slicer_.Reset();
-            pending_payloads_.clear();
-            stream_active_ = true;
-            if (data.size() >= 4) remote_session_id_ = data[3];
-            break;
+            if (state_ == XiaomiAtvvSessionState::kDraining ||
+                state_ == XiaomiAtvvSessionState::kReady ||
+                state_ == XiaomiAtvvSessionState::kWaitSecondTap) {
+                // 2 Pro：0x04 即「按下+开流」一体帧（无 0x08、无需 0x0C ACK）。
+                // byte2=codec 存在时必须为 16kHz（对齐 MiVibe 对 8kHz 的拒绝）。
+                if (data.size() >= 3 &&
+                    data[2] != XiaomiAtvvProtocol::codec_mask_16khz) {
+                    actions.push_back(XiaomiAtvvError{"unsupported_codec"});
+                    break;
+                }
+                if (HandlePressFrame(actions, now_ms, /*send_ack=*/false)) {
+                    HardResetStream();
+                    if (data.size() >= 4) remote_session_id_ = data[3];
+                }
+                break;
+            }
+            break;  // kIdle/kCapsRequested：握手未完成，忽略
         }
         case XiaomiAtvvProtocol::control_audio_sync: {
             if (data.size() < 7) break;
@@ -246,9 +223,59 @@ std::vector<XiaomiAtvvAction> XiaomiAtvvSession::Tick(std::int64_t now_ms) {
     return actions;
 }
 
+bool XiaomiAtvvSession::HandlePressFrame(std::vector<XiaomiAtvvAction>& actions,
+                                         std::int64_t now_ms, bool send_ack) {
+    if (state_ == XiaomiAtvvSessionState::kWaitSecondTap) {
+        if (now_ms <= double_click_deadline_) {
+            // 窗内第二次按下：合成 button_double_click（桌面端注入 Enter），
+            // 本次按下被消费：仍按协议应答，但不录音、不发 down/up。
+            actions.push_back(XiaomiAtvvStateEvent{
+                MakePrimaryButtonEvent("button_double_click", std::nullopt)});
+            BeginPress(actions, now_ms, /*suppressed=*/true, send_ack);
+        } else {
+            // Tick 未跑窗口已过。hold_to_talk 的短击尚未发过任何事件，补发
+            // button_click 表达本次单击；click_to_talk 的第一次点击已由
+            // down/up 完整表达并开录，补发会让协调器空闲态启动幽灵会话。
+            if (options_.interaction_mode == InteractionMode::kHoldToTalk) {
+                actions.push_back(XiaomiAtvvStateEvent{
+                    MakePrimaryButtonEvent("button_click", std::nullopt)});
+            }
+            state_ = XiaomiAtvvSessionState::kReady;
+            BeginPress(actions, now_ms, /*suppressed=*/false, send_ack);
+        }
+        return true;
+    }
+    // STOP 后 300ms 重开拒绝窗（kDraining 与窗内已回 kReady 均生效）：
+    // 不回 0x0C ACK、不开新会话。双击路径走 kWaitSecondTap 分支，不受影响。
+    if ((state_ == XiaomiAtvvSessionState::kDraining ||
+         state_ == XiaomiAtvvSessionState::kReady) &&
+        now_ms < reject_reopen_until_) {
+        return false;
+    }
+    if (state_ == XiaomiAtvvSessionState::kDraining) {
+        // 拒绝窗外重开：先收尾当前会话再开新按下。
+        FinalizeStream(actions);
+        BeginPress(actions, now_ms, /*suppressed=*/false, send_ack);
+        return true;
+    }
+    if (state_ != XiaomiAtvvSessionState::kReady) return false;
+    BeginPress(actions, now_ms, /*suppressed=*/false, send_ack);
+    return true;
+}
+
+void XiaomiAtvvSession::HardResetStream() {
+    decoder_.Reset(0, 0);
+    accumulator_.Reset();
+    slicer_.Reset();
+    pending_payloads_.clear();
+    stream_active_ = true;
+}
+
 void XiaomiAtvvSession::BeginPress(std::vector<XiaomiAtvvAction>& actions,
-                                   std::int64_t now_ms, bool suppressed) {
-    actions.push_back(XiaomiAtvvWriteTx{XiaomiAtvvProtocol::MicOpenAckCommand(legacy_layout_)});
+                                   std::int64_t now_ms, bool suppressed, bool send_ack) {
+    if (send_ack) {
+        actions.push_back(XiaomiAtvvWriteTx{XiaomiAtvvProtocol::MicOpenAckCommand(legacy_layout_)});
+    }
     mic_open_remote_ = true;
     stream_active_ = false;
     press_started_at_ = now_ms;

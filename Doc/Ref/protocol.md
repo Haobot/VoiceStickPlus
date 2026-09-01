@@ -495,17 +495,26 @@ Session flow (remote-driven, the host answers):
 2. Control delivers `0x0B` (CAPS): protocol version, codec bitmask
    (`0x02` = 16 kHz, `0x01` = 8 kHz — only 16 kHz is accepted), and the
    negotiated frame length (BE16, 0 means the 120-byte default).
-3. Voice-key press: Control delivers `0x08` (MIC_OPEN); the host answers with
-   TX `0x0C 0x00` (ACK).
-4. Control delivers `0x04` (STREAM_START); Audio notifications start flowing.
-5. Control `0x0A` (AUDIO_SYNC) carries the ADPCM predictor/step and resets the
+3. Voice-key press has two variants depending on the remote model:
+   - **2 Pro (verified on real hardware):** Control delivers `0x04`
+     (STREAM_START) directly — press and stream-open in one frame, with
+     `bytes[1]` = interaction (`0x03`), `bytes[2]` = codec (`0x02` = 16 kHz,
+     anything else is rejected), `bytes[3]` = a session counter. No `0x08`
+     is sent and the host must NOT answer with the `0x0C` ACK; Audio
+     notifications (~66 fps at the 120-byte frame length) start flowing
+     immediately after `0x04`.
+   - **RC003 (legacy):** Control delivers `0x08` (MIC_OPEN); the host answers
+     with TX `0x0C 0x00` (ACK) and the remote follows with `0x04`
+     (STREAM_START) once the stream actually starts.
+4. Control `0x0A` (AUDIO_SYNC) carries the ADPCM predictor/step and resets the
    decoder. RC003 units restart the encoder at session start without sending
    SYNC, so the desktop also hard-resets the decoder on `0x04`.
-6. Voice-key release: Control delivers `0x00` (STOP). Because Audio and
-   Control are two separate characteristics, trailing audio packets can arrive
-   after STOP — the desktop allows a 150 ms tail grace window, and refuses to
-   reopen a session within 300 ms of STOP.
-7. On disconnect/exit the host writes TX `0x0D <session_id>` (MIC_CLOSE).
+5. Voice-key release: Control delivers `0x00` (STOP; trailing bytes such as
+   `00 02` are tolerated). Because Audio and Control are two separate
+   characteristics, trailing audio packets can arrive after STOP — the desktop
+   allows a 150 ms tail grace window, and refuses to reopen a session within
+   300 ms of STOP.
+6. On disconnect/exit the host writes TX `0x0D <session_id>` (MIC_CLOSE).
 
 Audio format: IMA/DVI ADPCM, 4 bits per sample, high nibble first, 16 kHz
 mono. Audio notifications carry a headerless, sequence-number-free ADPCM byte
@@ -515,10 +524,11 @@ int16 PCM, then re-encodes to Opus so the downstream Ogg/ASR pipeline is
 identical to the StickS3 path. With no sequence numbers, a lost packet drifts
 the decoder until the next sync.
 
-Key mapping: ATVV Control `0x08`/`0x00` are normalized to `primary`
-`button_down`/`button_up`. Unlike the StickS3 (where the firmware detects it),
-the voice key's double-click timing detection runs on the desktop and
-synthesizes `button_double_click` with `button:"primary"`.
+Key mapping: ATVV voice-key press (`0x08` MIC_OPEN on RC003, `0x04`
+STREAM_START on the 2 Pro) and release (`0x00` STOP) are normalized to
+`primary` `button_down`/`button_up`. Unlike the StickS3 (where the firmware
+detects it), the voice key's double-click timing detection runs on the desktop
+and synthesizes `button_double_click` with `button:"primary"`.
 
 Battery: standard Battery Service `0x180F` / `0x2A19` (read + notify),
 reported to the coordinator as a `battery_status` state event.

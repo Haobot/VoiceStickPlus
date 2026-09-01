@@ -1855,9 +1855,13 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                         LogBleLine("atvv control rx RC-" + device_id + " len=" +
                                    std::to_string(bytes.size()) +
                                    (bytes.empty() ? std::string() : " hex=" + HexDump(bytes)));
-                        // 语音键按下（MIC_OPEN）：遥控器固件会同步向 OS 多发一个 F5，
-                        // 记录时刻供 VoiceF5Suppressor 在 80ms 窗内吞掉该按键。
-                        if (!bytes.empty() && bytes[0] == XiaomiAtvvProtocol::control_mic_open &&
+                        // 语音键按下：遥控器固件会同步向 OS 多发一个 F5（且按住期间
+                        // ~30ms 自动重复），记录时刻供 VoiceF5Suppressor 在 80ms 窗内
+                        // 吞掉该按键。2 Pro 的按下帧是 STREAM_START(0x04) 而非
+                        // MIC_OPEN(0x08)，两者都要更新锚点。
+                        if (!bytes.empty() &&
+                            (bytes[0] == XiaomiAtvvProtocol::control_mic_open ||
+                             bytes[0] == XiaomiAtvvProtocol::control_stream_start) &&
                             xiaomi_mic_open_sink_) {
                             xiaomi_mic_open_sink_->store(NowSteadyMs(),
                                                          std::memory_order_relaxed);
@@ -1878,6 +1882,12 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                         auto s = weak_session.lock();
                         if (!s) return;
                         s->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+                        // 音频在流即麦克风开着：每帧刷新 F5 抑制锚点，吞掉按住期间
+                        // 持续的 F5 自动重复风暴；松开后音频停，80ms 窗自然到期。
+                        if (xiaomi_mic_open_sink_) {
+                            xiaomi_mic_open_sink_->store(NowSteadyMs(),
+                                                         std::memory_order_relaxed);
+                        }
                         auto bytes = BytesFromBuffer(args.CharacteristicValue());
                         const auto audio_rx_n =
                             s->xiaomi_audio_rx_count.fetch_add(1, std::memory_order_relaxed) + 1;

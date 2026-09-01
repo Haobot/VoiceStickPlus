@@ -31,8 +31,9 @@ struct XiaomiAtvvError {
 using XiaomiAtvvAction = std::variant<XiaomiAtvvWriteTx, XiaomiAtvvStateEvent,
                                       XiaomiAtvvAudioFrame, XiaomiAtvvError>;
 
-// F5 抑制判定（Windows voice_f5_suppressor 消费）：小米语音键按下（ATVV MIC_OPEN）
-// 时遥控器固件会向 OS 多发一个 F5 键；仅「最近 80ms 内有 MIC_OPEN」时吞掉 F5。
+// F5 抑制判定（Windows voice_f5_suppressor 消费）：小米语音键按下（ATVV MIC_OPEN，
+// 或 2 Pro 的 STREAM_START/音频流）时遥控器固件会向 OS 多发一个 F5 键；仅「最近
+// 80ms 内有开麦迹象」时吞掉 F5。
 // 纯谓词放 core 供单测；时间戳为 steady_clock epoch 毫秒（0 = 从未开麦，不吞）。
 inline constexpr std::int64_t kF5SuppressWindowMs = 80;
 inline bool ShouldSuppressF5(std::int64_t now_ms, std::int64_t last_mic_open_ms, bool enabled) {
@@ -53,8 +54,10 @@ enum class XiaomiAtvvSessionState {
 };
 
 // 小米遥控器 ATVV 会话纯状态机（不碰 WinRT）：输入 Control opcode / Audio 字节 /
-// 注入时钟 now_ms，输出动作列表。按键语义镜像固件双击设计
-//（Doc/Plan/primary-button-double-click.md）：
+// 注入时钟 now_ms，输出动作列表。两种开麦入径：RC003 发 MIC_OPEN(0x08) 等主机
+// 回 0x0C ACK 后再发 STREAM_START(0x04)；2 Pro 按下直接发 0x04（按下+开流一体帧，
+// 无 0x08、无需 ACK，byte1=interaction、byte2=codec、byte3=会话计数）。按键语义
+// 镜像固件双击设计（Doc/Plan/primary-button-double-click.md）：
 // - hold_to_talk：MIC_OPEN 先缓冲音频不发事件；按住 ≥300ms 确认长按发 button_down
 //   （缓冲音频不丢）；<300ms 松开为短击，丢弃缓冲，进入双击窗；窗内第二次按下合成
 //   button_double_click（不录音）；窗超时补发 button_click（协调器侧为无害 no-op）。
@@ -107,8 +110,17 @@ public:
     std::vector<XiaomiAtvvAction> Tick(std::int64_t now_ms);
 
 private:
-    // 开麦应答 + 按键按下登记（Ready/WaitSecondTap/Draining 三条入口共用）。
-    void BeginPress(std::vector<XiaomiAtvvAction>& actions, std::int64_t now_ms, bool suppressed);
+    // MIC_OPEN(0x08)/STREAM_START(0x04) 合一的「按下」入口：双击窗判定、STOP 后
+    // 重开拒绝窗、Draining 收尾后开新按下。返回 true 表示已接受按下（调 BeginPress）。
+    bool HandlePressFrame(std::vector<XiaomiAtvvAction>& actions, std::int64_t now_ms,
+                          bool send_ack);
+    // 开麦应答 + 按键按下登记（HandlePressFrame 各分支共用）。send_ack=false
+    //（2 Pro 的 0x04 直开，协议无 0x0C ACK）时跳过写 TX。
+    void BeginPress(std::vector<XiaomiAtvvAction>& actions, std::int64_t now_ms,
+                    bool suppressed, bool send_ack = true);
+    // 0x04 到达时的流硬重置：RC003 每次会话编码器从 0/0 重启但可能不发 SYNC，
+    // 一律重置，否则第二次按键 DC 饱和。
+    void HardResetStream();
     // 640 采样 PCM 帧 → 后处理 → Opus → AudioFrame 动作（TapPending 中改为暂存）。
     void EmitPcmFrame(std::vector<XiaomiAtvvAction>& actions, std::span<const std::int16_t> pcm);
     // 长按确认：发 button_down 并放出暂存帧，进入 Streaming。

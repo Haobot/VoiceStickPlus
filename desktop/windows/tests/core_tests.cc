@@ -5596,6 +5596,97 @@ void TestXiaomiAtvvSessionReopenRejectWindow() {
     assert(restart.state() == XiaomiAtvvSessionState::kTapPending);
 }
 
+void TestXiaomiAtvvStreamStartOpensSession() {
+    // 2 Pro 入径（真机实测）：按下语音键直接发 0x04 <interaction> <codec> <sid>
+    //（按下+开流一体帧，无 0x08、主机不写 0x0C ACK），松开发 0x00（可带尾字节）。
+    // hold_to_talk：0x04 → TapPending（无 ACK、无事件），音频即刻缓冲。
+    XiaomiAtvvSession session;
+    AtvvHandshakeReady(session, 0);
+
+    auto actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x03}, 1000);
+    assert(actions.empty());  // 无 ACK、无事件
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // 流已激活：音频立即缓冲（240B=480 采样 <640 不出帧）；跨阈值确认长按。
+    assert(session.HandleAudioData(ByteVector(240, 0x11), 1010).empty());
+    actions = session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && down->session_id.has_value() && *down->session_id == 1);
+    assert(session.state() == XiaomiAtvvSessionState::kStreaming);
+
+    actions = session.HandleAudioData(ByteVector(240, 0x11), 1310);  // 累计 960 → 出首帧
+    auto frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].session_id == 1 && frames[0].IsStart());
+
+    // STOP 带尾字节（00 02）：button_up + Draining，宽限到期出末帧回 Ready。
+    actions = session.HandleControlCommand(ByteVector{0x00, 0x02}, 2000);
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+    actions = session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].IsEnd());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // codec 非 16kHz（byte2=0x01）：上报错误、不开会话、不回 ACK。
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x01, 0x05}, 3000);
+    assert(HasAtvvError(actions, "unsupported_codec"));
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // STOP 后 300ms 重开拒绝窗对 0x04 同样生效：先跑一轮长按键程武装拒绝窗。
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x06}, 4000);
+    session.Tick(4000 + XiaomiAtvvSession::kHoldThresholdMs);
+    session.HandleControlCommand(ByteVector{0x00, 0x02}, 5000);  // Draining，拒绝窗至 5300
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x07}, 5100);
+    assert(actions.empty());  // 窗内忽略
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 窗外 0x04 重开：Draining 收尾（本轮无音频故无末帧）后直接开新按下。
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x08}, 5400);
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // 短击松开 → 双击窗；窗内第二个 0x04 合成 button_double_click，按下被消费
+    //（无 ACK、音频丢弃、跨阈值不确认、松手无事件）。
+    actions = session.HandleControlCommand(ByteVector{0x00, 0x02}, 5410);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x09}, 5500);
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+    assert(session.HandleAudioData(ByteVector(240, 0x11), 5510).empty());
+    assert(session.Tick(5500 + XiaomiAtvvSession::kHoldThresholdMs).empty());
+    actions = session.HandleControlCommand(ByteVector{0x00, 0x02}, 5700);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // click_to_talk：0x04 直开立即发 button_down，音频即时流出。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession clicker(click_options);
+    AtvvHandshakeReady(clicker, 0);
+    actions = clicker.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 100);
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 1);
+    assert(clicker.state() == XiaomiAtvvSessionState::kStreaming);
+    clicker.HandleAudioData(ByteVector(240, 0x11), 110);
+    actions = clicker.HandleAudioData(ByteVector(240, 0x11), 120);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].IsStart());
+    actions = clicker.HandleControlCommand(ByteVector{0x00, 0x02}, 200);
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+
+    // 0x04 直开路径下断开：MIC_CLOSE 透传 0x04 byte3 的会话计数。
+    XiaomiAtvvSession closing;
+    AtvvHandshakeReady(closing, 0);
+    closing.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x42}, 100);
+    actions = closing.Stop(200);
+    const auto* tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0D, 0x42}));
+}
+
 void TestXiaomiAtvvSessionEncoderResetPerSession() {
     // 上一会话的 Opus 编码器残余状态不得污染下一会话（对齐固件 audio_pipeline.c
     // 每次会话开始 OPUS_RESET_STATE）：复用 session 的第二会话首帧须与全新
@@ -9830,6 +9921,7 @@ int main() {
     TestXiaomiAtvvSessionKeyMapping();
     TestXiaomiAtvvSessionClickTapTimeoutSilent();
     TestXiaomiAtvvSessionReopenRejectWindow();
+    TestXiaomiAtvvStreamStartOpensSession();
     TestXiaomiAtvvSessionEncoderResetPerSession();
     TestXiaomiAtvvServiceUuidAd();
     TestCoordinatorXiaomiHoldToTalkStreamsOggToAsr();

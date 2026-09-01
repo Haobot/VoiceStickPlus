@@ -62,9 +62,10 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 
 1. 连接后发现 service + 3 特征，订阅 Audio/Control notify，写 TX `0A 01 00 00 03 03`（GET_CAPS v1.0）
 2. Control 收 `0x0B`（CAPS 应答）：`[1:3]` 版本 BE16；v≥1.0 时 `[3]`=codec 位掩码、`[4]`=interaction；`[5:7]`=帧长 BE16（0 → 默认 120 字节）。codec 位 `0x02`=16kHz、`0x01`=8kHz；**只接受 16kHz**。存在「报 v1 但用旧版双字节 codec 布局」的兼容分支
-3. 按下语音键：Control 收 `0x08`（MIC_OPEN 请求）→ 主机回写 TX `0x0C 0x00`（v≥1.0；旧版 `0x0C 0x00 <codec>`）
-4. Control 收 `0x04`（流开始，`[1]`=interaction、`[2]`=codec、`[3]`=session id 可选）→ Audio notify 流入
-5. Control 收 `0x0A`（AUDIO_SYNC，`[4:6]`=predictor BE 有符号、`[6]`=step index）→ 重置 ADPCM 解码器并清空帧累积器，同时清空 PCM 组帧器与按键缓冲。**RC003 坑：会话开始编码器从 0/0 重启但不发 SYNC，必须在收到 `0x04` 时硬重置 `reset(0,0)`，否则第二次按键 DC 饱和**
+3. 按下语音键（**两种入径，真机实测订正**）：
+   - **2 Pro（本课题型号，真机验证）**：Control 直接收 `0x04`（`[1]`=interaction=`0x03`、`[2]`=codec=`0x02`、`[3]`=会话计数器）——按下+开流一体帧，**无 `0x08`、主机不写 `0x0C` ACK**，Audio notify 紧随流入（120 字节/帧，~66fps）
+   - **RC003（旧型号）**：Control 收 `0x08`（MIC_OPEN 请求）→ 主机回写 TX `0x0C 0x00`（v≥1.0；旧版 `0x0C 0x00 <codec>`），随后遥控器再发 `0x04`（流开始）→ Audio notify 流入
+4. Control 收 `0x0A`（AUDIO_SYNC，`[4:6]`=predictor BE 有符号、`[6]`=step index）→ 重置 ADPCM 解码器并清空帧累积器，同时清空 PCM 组帧器与按键缓冲。**RC003 坑：会话开始编码器从 0/0 重启但不发 SYNC，必须在收到 `0x04` 时硬重置 `reset(0,0)`，否则第二次按键 DC 饱和**
 6. 松开语音键：Control 收 `0x00`（STOP）。**Audio 与 Control 是两条特征，最后音频尾包可能在 STOP 之后到**——留 150ms 宽限；STOP 后 300ms 内拒绝重开会话
 7. 断开/退出时主机写 TX `0x0D <sessionID>`（MIC_CLOSE）
 
@@ -98,7 +99,7 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 
 1. **不引入大抽象接口**。`DeviceSession` 加 `device_class` 字段，仅在服务匹配、特征发现、值分发、`Send*` 门控四处分支；ATVV 会话逻辑封装为 core 纯逻辑类 `XiaomiAtvvSession`（不碰 WinRT，可单测）
 2. **音频归一化在进协调器之前完成**：ADPCM→PCM→Opus（core 新增 `AudioOpusEncoder`，libopus 已是 core 链接依赖），产出标准 `AudioFrame`，下游 Ogg mux/ASR/字幕/wechat/调试缓存零改动
-3. **按键归一化**：ATVV Control `0x08`/`0x00` → `button_down`/`button_up` × `primary`；双击由适配层时序检测合成 `button_double_click`（语义镜像固件双击参数，默认窗 350ms 有意小于固件 500ms，勿对齐）
+3. **按键归一化**：ATVV Control 按下帧（RC003 的 `0x08` MIC_OPEN / 2 Pro 的 `0x04` STREAM_START 直开）与 `0x00` STOP → `button_down`/`button_up` × `primary`；双击由适配层时序检测合成 `button_double_click`（语义镜像固件双击参数，默认窗 350ms 有意小于固件 500ms，勿对齐）
 4. **设备 ID**：StickS3 保持 `VS-XXXX`；小米遥控器用 `RC-XXXX`（蓝牙地址低 16 位，沿用现有兜底逻辑）。`NormalizeDeviceId`/`DeviceIdFromName` 扩展双前缀，向后兼容旧配置
 5. **能力标志**：`PairedDeviceEntry.hardware`（`"stick_s3"`/`"xiaomi_remote_2_pro"`）派生能力集（has_screen/has_ota/has_encoder/has_imu/has_battery），驱动 `Send*` 跳过与托盘菜单显隐（复用 `encoder_present` 范式）
 
@@ -130,7 +131,7 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
   - 电量 0x2A19 → 合成 `battery_status` StateEvent
   - 心跳差异：小米设备空闲时无入站 notify（不像 StickS3 心跳写有 `battery_status` 回包），为兼容既有 90s 静默拆除机制，BLE 层对小米会话周期读探针特征（电量 0x2A19，缺省时 GAP 0x2A00 设备名兜底）强制链路层收发以刷新 `last_rx_ms` 维持活性；读返回 Unreachable/抛异常按链路已死拆除
   - 断开时先发 MIC_CLOSE；僵尸链路四机制（陈旧判定/安定窗/打标/免退避重试）复用
-- F5 抑制（VoiceStickApp）：`SetWindowsHookEx WH_KEYBOARD_LL`，仅「80ms 窗内有 ATVV MIC_OPEN」时吞 F5，配置开关 `xiaomi_suppress_f5`（默认开），按「有已配对/已连接 RC 设备」门控装载（未配对小米的用户不挂钩子）；装载/卸载由 `SyncF5Suppressor` 按需执行（配对完成、配置热更、连接集变化时重估，无 RC 设备即卸载钩子）。已知边界：F5 经 HID 栈、MIC_OPEN 经 ATT 栈，F5 先于 MIC_OPEN 到达的极端到达序下会漏吞（属罕见竞态，接受）
+- F5 抑制（VoiceStickApp）：`SetWindowsHookEx WH_KEYBOARD_LL`；吞判定三层（对齐 MiVibe `atvv_live_bridge`）：①近窗——「80ms 窗内有开麦迹象」即吞，开麦锚点由 BLE 层在 ATVV 按下帧（RC003 `0x08` / 2 Pro `0x04`）**与每个音频帧**更新（2 Pro 按住期间 F5 以 ~30ms 自动重复，靠音频流持续刷新锚点）；②关联等待——F5 经 HID 栈可先于 ATVV 帧（ATT 栈）到达（真机实测 ~1ms 竞态），首次 keydown 在钩子里等开麦迹象至多 80ms 再判（普通 F5 仅此一次延迟）；③序列闩锁——吞掉 keydown 后整个自动重复序列与 keyup 一并吞掉（无关联则松开阶段 keyup 会因窗过期泄漏）。合成按键（`LLKHF_INJECTED`）不干预。配置开关 `xiaomi_suppress_f5`（默认开），按「有已配对/已连接 RC 设备」门控装载（未配对小米的用户不挂钩子）；装载/卸载由 `SyncF5Suppressor` 按需执行（配对完成、配置热更、连接集变化时重估，无 RC 设备即卸载钩子）
 
 ### 5.3 Windows UI
 
