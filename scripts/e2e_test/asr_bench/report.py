@@ -32,14 +32,29 @@ def _fmt(value, digits=2, suffix="") -> str:
 
 
 def build_markdown(report: dict) -> str:
+    # 音频载体按 report["audio_format"] 渲染；缺字段默认 ogg（既有 run_asr_bench
+    # 产物文案不变）。pcm = atvv_bench 裸 PCM 直送链路。
+    audio_format = report.get("audio_format") or "ogg"
+    audio_desc = {
+        "ogg": "本地 Ogg Opus 语料",
+        "pcm": "本地 16kHz PCM 语料（裸流直送，未经 Ogg/Opus 封装）",
+    }.get(audio_format)
+    if audio_desc is None:
+        audio_desc = f"本地 {audio_format} 语料"
     lines = [
         "# ASR 离线评测基线报告",
         "",
         f"- 生成时间：{report['generated_at']}",
         f"- 语料规模：{report['corpus_size']} 条，每平台 {report['rounds']} 轮全量回放（压力/稳定性测试）",
-        f"- 方法：本地 Ogg Opus 语料按真实时长实时节奏回放进各家 ASR WebSocket，"
+        f"- 方法：{audio_desc}按真实时长实时节奏回放进各家 ASR WebSocket，"
         f"协议与桌面端一致；不带热词/自学习表（客观基线）；CER 按归一化文本"
         f"（去标点/空白、大小写与全半角归一、中文数字转阿拉伯）计算。",
+    ]
+    if report.get("synthetic"):
+        # 输入为合成 fixtures（atvv_bench --emit-demo-fixture）：链路验证数据，
+        # 不构成识别率结论，报告必须显式标记以免误读。
+        lines.append("- ⚠️ 数据为合成 fixtures，不作识别率结论")
+    lines += [
         "",
         "## 总览对比",
         "",

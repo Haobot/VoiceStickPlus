@@ -522,6 +522,15 @@ InteractionSettings ParseInteractionSettings(const toml::table& table, const Int
     return settings;
 }
 
+// 解析 [device.<id>.xiaomi] 覆盖表：以全局默认填平所有字段，出现的键逐项覆盖；
+// 非法值（非正双击窗）保留 fallback。gain_db 的 ±24 限幅在消费侧（后处理）完成。
+XiaomiSettings ParseXiaomiSettings(const toml::table& table, const XiaomiSettings& fallback) {
+    XiaomiSettings settings = fallback;
+    if (auto value = TomlDouble(table, "gain_db")) settings.gain_db = *value;
+    if (auto value = TomlInt(table, "double_click_ms"); value && *value > 0) settings.double_click_ms = static_cast<int>(*value);
+    return settings;
+}
+
 // 修复早期设置/引导对话框在 ASR 提供商切换时的字段映射 bug：Tencent SecretId
 // 被误写入 volcengine_api_key。触发回迁的条件：
 // - 当前提供商为 Tencent
@@ -666,12 +675,17 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                     config.device_interaction_settings[device_id] = ParseInteractionSettings(
                         *interaction, config.default_interaction_settings);
                 }
+                if (const auto* xiaomi = (*device_table)["xiaomi"].as_table()) {
+                    config.device_xiaomi_settings[device_id] = ParseXiaomiSettings(
+                        *xiaomi, config.default_xiaomi_settings);
+                }
             }
         }
         if (auto value = TomlBool(table, "auto_enter")) config.auto_enter = *value;
         if (auto value = TomlBool(table, "global_hotkey_enabled")) config.global_hotkey_enabled = *value;
         if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
+        if (auto value = TomlBool(table, "xiaomi_suppress_f5")) config.xiaomi_suppress_f5 = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.default_interaction_settings.tap_to_arrow = *value;
         if (auto value = TomlBool(table, "encoder_to_arrow")) config.default_encoder_settings.to_arrow = *value;
@@ -871,6 +885,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "global_hotkey_enabled = " << (global_hotkey_enabled ? "true" : "false") << "\n";
     output << "global_hotkey = \"" << TomlEscape(global_hotkey) << "\"\n";
     output << "show_imu_debug = " << (show_imu_debug ? "true" : "false") << "\n";
+    output << "xiaomi_suppress_f5 = " << (xiaomi_suppress_f5 ? "true" : "false") << "\n";
     output << "imu_wake_sensitivity = \"" << ImuWakeSensitivityName(default_interaction_settings.imu_wake_sensitivity) << "\"\n";
     output << "tap_to_arrow = " << (default_interaction_settings.tap_to_arrow ? "true" : "false") << "\n";
     output << "encoder_to_arrow = " << (default_encoder_settings.to_arrow ? "true" : "false") << "\n";
@@ -971,6 +986,17 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         output << "tap_sensitivity = " << settings.tap_sensitivity << "\n";
         output << "air_mouse_sensitivity_x = " << settings.air_mouse_sensitivity_x << "\n";
         output << "air_mouse_sensitivity_y = " << settings.air_mouse_sensitivity_y << "\n";
+    }
+    for (const auto& [device_id, settings] : device_xiaomi_settings) {
+        if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
+            continue;
+        }
+        // 与全局默认相同则跳过，不落盘冗余覆盖。
+        if (settings == default_xiaomi_settings) continue;
+        // 覆盖表全量写出 2 个字段，保证表自含、加载顺序无关。
+        output << "\n[device." << device_id << ".xiaomi]\n";
+        output << "gain_db = " << settings.gain_db << "\n";
+        output << "double_click_ms = " << settings.double_click_ms << "\n";
     }
 }
 
@@ -1114,6 +1140,7 @@ void AppConfig::RemovePairedDevice(const std::string& device_id) {
     device_output_profiles.erase(device_id);
     device_encoder_settings.erase(device_id);
     device_interaction_settings.erase(device_id);
+    device_xiaomi_settings.erase(device_id);
     Save();
 }
 
@@ -1143,6 +1170,16 @@ const InteractionSettings& AppConfig::InteractionSettingsForDevice(
     const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
     auto it = device_interaction_settings.find(normalized);
     if (it == device_interaction_settings.end()) return default_interaction_settings;
+    // 覆盖表加载时已用全局默认填平所有字段，整表返回即可。
+    return it->second;
+}
+
+const XiaomiSettings& AppConfig::XiaomiSettingsForDevice(
+    const std::optional<std::string>& device_id) const {
+    if (!device_id.has_value()) return default_xiaomi_settings;
+    const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
+    auto it = device_xiaomi_settings.find(normalized);
+    if (it == device_xiaomi_settings.end()) return default_xiaomi_settings;
     // 覆盖表加载时已用全局默认填平所有字段，整表返回即可。
     return it->second;
 }

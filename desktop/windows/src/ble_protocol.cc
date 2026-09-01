@@ -29,6 +29,29 @@ bool IsHex4(std::string_view text) {
     });
 }
 
+// 遍历广播 AD 结构，在 128-bit service UUID 列表（type 0x06 incomplete / 0x07
+// complete）中匹配目标 UUID（uuid 为线上小端字节序，16 字节）。
+bool ContainsServiceUuid128(std::span<const std::uint8_t> data,
+                            std::span<const std::uint8_t, 16> uuid) {
+    std::size_t offset = 0;
+    while (offset < data.size()) {
+        const auto length = data[offset];
+        if (length == 0) break;
+        if (offset + 1u + length > data.size()) return false;
+        const auto type = data[offset + 1];
+        if ((type == 0x06 || type == 0x07) && (length - 1) % uuid.size() == 0) {
+            for (std::size_t uuid_offset = offset + 2; uuid_offset + uuid.size() <= offset + 1u + length;
+                 uuid_offset += uuid.size()) {
+                if (std::equal(uuid.begin(), uuid.end(), data.begin() + static_cast<std::ptrdiff_t>(uuid_offset))) {
+                    return true;
+                }
+            }
+        }
+        offset += 1u + length;
+    }
+    return false;
+}
+
 std::string JsonStringValue(std::string_view json, std::string_view key) {
     const std::string needle = "\"" + std::string(key) + "\"";
     auto key_pos = json.find(needle);
@@ -392,8 +415,15 @@ ByteVector BleProtocol::OtaAbortPayload(std::uint32_t transfer_id) {
 
 std::optional<std::string> BleProtocol::DeviceIdFromName(std::string_view name) {
     auto value = Uppercase(TrimCopy(name));
-    if (!value.starts_with("VS-")) return std::nullopt;
-    value = value.substr(3, 4);
+    std::string_view prefix;
+    if (value.starts_with("VS-")) {
+        prefix = "VS-";
+    } else if (value.starts_with("RC-")) {
+        prefix = "RC-";
+    } else {
+        return std::nullopt;
+    }
+    value = value.substr(prefix.size(), 4);
     if (!IsHex4(value)) return std::nullopt;
     return value;
 }
@@ -419,23 +449,16 @@ bool BleProtocol::HasVoiceStickServiceUuid(std::span<const std::uint8_t> data) {
         0x00, 0x51, 0xfc, 0xea, 0x3c, 0x3a, 0xf7, 0x88,
         0x23, 0x4b, 0x6f, 0x6e, 0x84, 0x0b, 0x2f, 0x8f,
     };
-    std::size_t offset = 0;
-    while (offset < data.size()) {
-        const auto length = data[offset];
-        if (length == 0) break;
-        if (offset + 1u + length > data.size()) return false;
-        const auto type = data[offset + 1];
-        if ((type == 0x06 || type == 0x07) && (length - 1) % sizeof(uuid) == 0) {
-            for (std::size_t uuid_offset = offset + 2; uuid_offset + sizeof(uuid) <= offset + 1u + length;
-                 uuid_offset += sizeof(uuid)) {
-                if (std::equal(std::begin(uuid), std::end(uuid), data.begin() + static_cast<std::ptrdiff_t>(uuid_offset))) {
-                    return true;
-                }
-            }
-        }
-        offset += 1u + length;
-    }
-    return false;
+    return ContainsServiceUuid128(data, uuid);
+}
+
+bool BleProtocol::HasXiaomiAtvvServiceUuid(std::span<const std::uint8_t> data) {
+    // AB5E0001-5A21-4F05-BC7D-AF01F617B664 的线上小端字节序（与广播 AD 结构一致）。
+    constexpr std::uint8_t uuid[] = {
+        0x64, 0xb6, 0x17, 0xf6, 0x01, 0xaf, 0x7d, 0xbc,
+        0x05, 0x4f, 0x21, 0x5a, 0x01, 0x00, 0x5e, 0xab,
+    };
+    return ContainsServiceUuid128(data, uuid);
 }
 
 std::string BleProtocol::DeviceIdFromBluetoothAddress(std::uint64_t bluetooth_address) {
@@ -446,9 +469,29 @@ std::string BleProtocol::DeviceIdFromBluetoothAddress(std::uint64_t bluetooth_ad
 
 std::string BleProtocol::NormalizeDeviceId(std::string_view text) {
     auto value = Uppercase(TrimCopy(text));
-    if (value.starts_with("VS-")) value = value.substr(3);
+    if (value.starts_with("VS-") || value.starts_with("RC-")) value = value.substr(3);
     value = value.substr(0, std::min<std::size_t>(4, value.size()));
     return IsHex4(value) ? value : std::string();
+}
+
+bool BleProtocol::IsXiaomiRemoteName(std::string_view name) {
+    auto value = TrimCopy(name);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    // 中文名无大小写，tolower 只影响 ASCII，UTF-8 字节序列保持原样比较。
+    return value == "mi rc" || value == "xiaomi bluetooth remote 2 pro" ||
+           value == "小米蓝牙语音遥控器" || value == "rc001" || value == "rc003";
+}
+
+std::optional<DeviceClass> BleProtocol::DeviceClassFromName(std::string_view name) {
+    if (IsXiaomiRemoteName(name)) return DeviceClass::kXiaomiRemote2Pro;
+    const auto value = Uppercase(TrimCopy(name));
+    if (value.starts_with("RC-") && IsHex4(value.substr(3, 4))) {
+        return DeviceClass::kXiaomiRemote2Pro;
+    }
+    if (value.starts_with("VS-") && IsHex4(value.substr(3, 4))) return DeviceClass::kStickS3;
+    return std::nullopt;
 }
 
 } // namespace voicestick

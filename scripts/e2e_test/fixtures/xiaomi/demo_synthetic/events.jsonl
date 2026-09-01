@@ -1,0 +1,5 @@
+{"t": 0.0, "event": "capture_config", "synthetic": true, "source": "scripts/e2e_test/corpus/short_01.pcm", "gain_db": 12.0}
+{"t": 0.0, "event": "caps", "version": "0x0100", "codecs": 2, "interaction": 3, "frame_len": 120, "legacy": false}
+{"t": 0.0, "event": "stream_start", "interaction": 3, "codec": 2, "session_id": 1}
+{"t": 0.0, "event": "stop"}
+{"t": 0.0, "event": "session_saved", "session": 1, "frames": 129, "adpcm_bytes": 15552, "samples": 31104, "duration_s": 1.944, "sample_rate": 16000, "first_audio_latency_ms": null, "file_adpcm": "session_1.adpcm", "file_wav": "session_1.wav"}

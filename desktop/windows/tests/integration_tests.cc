@@ -11,14 +11,17 @@
 #include "asr_protocol.h"
 #include "ble_protocol.h"
 #include "byte_utils.h"
+#include "cJSON.h"
 #include "ogg_opus_demuxer.h"
 #include "voice_stick_coordinator.h"
+#include "xiaomi_atvv_session.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -64,7 +67,7 @@ public:
         paired_device_ids = ids;
     }
     void ConnectPairedDevice(const std::string&, std::uint64_t, BluetoothAddressKind,
-                             const std::string&) override {}
+                             const std::string&, DeviceClass) override {}
     void SendUiState(const std::string& state, const std::string& text,
                      const std::optional<std::string>& device_id) override {
         sent_ui_states.push_back(SentUiState{state, text, device_id});
@@ -180,7 +183,10 @@ public:
         cloud_upgrades.push_back(message + "|" + url);
     }
     void HideOverlay(std::function<void()> on_hidden = {}) override {
-        ++hide_overlay_count;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            ++hide_overlay_count;
+        }
         if (on_hidden) on_hidden();
     }
     void ShowSubtitle(const std::string& text, const std::string& device_id,
@@ -208,6 +214,12 @@ public:
     std::string LastError() const {
         std::lock_guard<std::mutex> lk(mu);
         return errors.empty() ? std::string{} : errors.back();
+    }
+    // 空 final 路径（协调器 empty_final_done）以 HideOverlay 收尾；synthetic
+    // 会话冒烟用它判定识别轮次结束（HideOverlay 由 ASR 回调线程触发，需加锁）。
+    int HideOverlayCount() const {
+        std::lock_guard<std::mutex> lk(mu);
+        return hide_overlay_count;
     }
 
     mutable std::mutex mu;
@@ -465,6 +477,225 @@ double RunOneCorpus(const CorpusItem& item, const std::filesystem::path& corpus_
     return cer;
 }
 
+// ===== 小米遥控器 ATVV golden 回放 =====
+// 用 core 的 XiaomiAtvvSession 驱动 golden ADPCM（atvv_capture.py 采集 /
+// atvv_bench.py 合成），合成 button_down/up 与 Opus AudioFrame 走与真机一致的
+// 协调器路径送真实火山 ASR。真机采集（非 synthetic）会话断言非空识别文本
+// （内容准确率归 scripts/e2e_test/atvv_bench.py 评测）；synthetic 合成 fixtures
+// 不是语音，只验证链路跑通（识别轮次正常结束 + 无 ASR 错误），不断言文本。
+// 无 fixtures 时打印 SKIP 不算失败。
+
+std::filesystem::path ResolveAtvvFixturesRoot() {
+    if (const char* env = std::getenv("VOICESTICK_ATVV_FIXTURES_DIR");
+        env != nullptr && *env != '\0') {
+        return std::filesystem::path(env);
+    }
+    // CTest 已把本测试 WORKING_DIRECTORY 设为仓库根
+    return std::filesystem::path("scripts") / "e2e_test" / "fixtures" / "xiaomi";
+}
+
+struct AtvvGoldenInfo {
+    std::filesystem::path adpcm_path;
+    std::size_t frame_bytes = XiaomiAtvvProtocol::default_frame_bytes;
+    double duration_s = 0.0;
+    bool synthetic = false;  // sidecar synthetic 标记（合成 fixtures 不作识别率结论）
+};
+
+// 读 sidecar（session_N.json）取帧长/时长/synthetic 标记；缺 sidecar 或字段返回 false。
+bool LoadAtvvGoldenInfo(const std::filesystem::path& adpcm_path, AtvvGoldenInfo* info) {
+    const auto sidecar_path =
+        adpcm_path.parent_path() / (adpcm_path.stem().string() + ".json");
+    std::ifstream in(sidecar_path, std::ios::binary);
+    if (!in) return false;
+    const std::string text((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    cJSON* root = cJSON_Parse(text.c_str());
+    if (root == nullptr) return false;
+    const cJSON* frame_len = cJSON_GetObjectItemCaseSensitive(root, "frame_len");
+    const cJSON* samples = cJSON_GetObjectItemCaseSensitive(root, "samples");
+    const cJSON* sample_rate = cJSON_GetObjectItemCaseSensitive(root, "sample_rate");
+    const cJSON* synthetic = cJSON_GetObjectItemCaseSensitive(root, "synthetic");
+    bool ok = false;
+    if (cJSON_IsNumber(frame_len) && frame_len->valuedouble > 0 &&
+        cJSON_IsNumber(samples) && cJSON_IsNumber(sample_rate) &&
+        sample_rate->valuedouble > 0) {
+        info->frame_bytes = static_cast<std::size_t>(frame_len->valuedouble);
+        info->duration_s = samples->valuedouble / sample_rate->valuedouble;
+        info->synthetic = cJSON_IsTrue(synthetic);
+        ok = true;
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+// 找最新一次采集目录（root 本身直接含 session_*.adpcm 时用 root）。
+std::vector<std::filesystem::path> CollectAtvvGoldenSessions(
+    const std::filesystem::path& root) {
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) return {};
+    auto has_sessions = [&ec](const std::filesystem::path& dir) {
+        for (std::filesystem::directory_iterator it(dir, ec), end; it != end && !ec;
+             it.increment(ec)) {
+            const auto& p = it->path();
+            if (it->is_regular_file(ec) && p.extension() == ".adpcm" &&
+                p.filename().string().rfind("session_", 0) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::filesystem::path dir;
+    if (has_sessions(root)) {
+        dir = root;
+    } else {
+        std::vector<std::filesystem::path> children;
+        for (std::filesystem::directory_iterator it(root, ec), end; it != end && !ec;
+             it.increment(ec)) {
+            if (it->is_directory(ec) && has_sessions(it->path())) {
+                children.push_back(it->path());
+            }
+        }
+        if (children.empty()) return {};
+        std::sort(children.begin(), children.end());
+        dir = children.back();
+    }
+    std::vector<std::filesystem::path> sessions;
+    for (std::filesystem::directory_iterator it(dir, ec), end; it != end && !ec;
+         it.increment(ec)) {
+        const auto& p = it->path();
+        if (it->is_regular_file(ec) && p.extension() == ".adpcm" &&
+            p.filename().string().rfind("session_", 0) == 0) {
+            sessions.push_back(p);
+        }
+    }
+    std::sort(sessions.begin(), sessions.end());
+    return sessions;
+}
+
+// 跑单个 golden 会话：重放 ADPCM → XiaomiAtvvSession → Opus 帧 → 协调器 →
+// 真实火山 ASR，断言非空识别文本。
+bool RunOneXiaomiGolden(const AtvvGoldenInfo& info, const AppConfig& base_config) {
+    const std::string id = info.adpcm_path.stem().string();
+    const ByteVector adpcm = ReadFile(info.adpcm_path);
+    if (adpcm.empty()) {
+        std::printf("  [%s] FAIL: 无法读取 %s\n", id.c_str(),
+                    info.adpcm_path.string().c_str());
+        return false;
+    }
+
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<AsrClientWin>(base_config);
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(base_config, std::move(ble), std::move(asr),
+                                      &ui, &input);
+    coordinator.Start();
+
+    const std::string device_id = "RC-GOLD";
+    XiaomiAtvvSession session;  // 默认 hold_to_talk + 12dB 增益（桌面端默认）
+    auto inject = [&](const std::vector<XiaomiAtvvAction>& actions) {
+        for (const auto& action : actions) {
+            if (const auto* e = std::get_if<XiaomiAtvvStateEvent>(&action)) {
+                ble_ptr->on_state_event(device_id, e->event);
+            } else if (const auto* f = std::get_if<XiaomiAtvvAudioFrame>(&action)) {
+                ble_ptr->on_audio_frame(device_id, f->frame);
+            }
+        }
+    };
+
+    std::int64_t t = 1000;
+    inject(session.Start(t));
+    // CAPS v1.0：16kHz + sidecar 协商帧长
+    const auto frame_bytes = info.frame_bytes;
+    inject(session.HandleControlCommand(
+        ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03,
+                   static_cast<std::uint8_t>((frame_bytes >> 8) & 0xFF),
+                   static_cast<std::uint8_t>(frame_bytes & 0xFF)}, t + 10));
+    t += 10;
+    inject(session.HandleControlCommand(ByteVector{XiaomiAtvvProtocol::control_mic_open},
+                                        t));
+    inject(session.HandleControlCommand(
+        ByteVector{XiaomiAtvvProtocol::control_stream_start, 0x03, 0x02, 0x01}, t + 10));
+    t += 10;
+
+    // 按真实时长节奏逐包喂 ADPCM：n 字节 = 2n 采样 = n/8 ms @16kHz；
+    // 墙钟 pacing 同时满足协调器 0.5s 最短录音时长（golden 会话 ≥1s）。
+    // 简化：不重放会话中段 AUDIO_SYNC——sidecar 里 SYNC 丢弃的残余字节在本回放中
+    // 会被当作普通音频连续解入。若未来采集到含中段 SYNC 的会话，该会话的
+    // 「非空文本」断言输入保真度下降；准确率口径一律以 atvv_bench.py 的
+    // sidecar 段落复现路径为准，本用例只做链路冒烟。
+    std::size_t off = 0;
+    auto feed_chunk = [&]() -> bool {
+        if (off >= adpcm.size()) return false;
+        const std::size_t n = std::min(frame_bytes, adpcm.size() - off);
+        inject(session.HandleAudioData(
+            std::span<const std::uint8_t>(adpcm.data() + off, n), t));
+        off += n;
+        const auto ms = static_cast<int>(n / 8);
+        t += ms;
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        return true;
+    };
+    feed_chunk();  // 首包进入暂存
+    inject(session.Tick(t + XiaomiAtvvSession::kHoldThresholdMs));  // 确认长按
+    t += XiaomiAtvvSession::kHoldThresholdMs;
+    while (feed_chunk()) {
+    }
+    // 松开：STOP（button_up）→ 150ms 尾包宽限到期补末帧
+    // hide0 须在 STOP 前快照：STOP 之后 ASR 才可能返回空 final 触发 HideOverlay。
+    const int hide0 = ui.HideOverlayCount();
+    inject(session.HandleControlCommand(ByteVector{XiaomiAtvvProtocol::control_stop}, t));
+    inject(session.Tick(t + XiaomiAtvvSession::kAudioTailGraceMs));
+
+    // synthetic 合成 fixtures（--emit-demo-fixture 缺省产物为扫频正弦，非语音）：
+    // ASR 可能返回空 final，协调器走 empty_final_done 路径（HideOverlay + 回
+    // ready），不会 Paste。此类会话只验证链路跑通——识别轮次正常结束（Paste /
+    // 最终结果 / HideOverlay 任一）且无 ASR 错误即通过，跳过非空文本断言；
+    // 真机采集（非 synthetic）会话保持非空断言。
+    if (info.synthetic) {
+        auto link_done = [&]() {
+            return input.HasPasted() || ui.HasAsrResult() ||
+                   ui.HideOverlayCount() > hide0;
+        };
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(40);
+        while (!link_done() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (!link_done()) {
+            std::printf("  [%s] FAIL: synthetic 会话 40s 内识别轮次未结束\n",
+                        id.c_str());
+            coordinator.Shutdown();
+            return false;
+        }
+    } else if (!WaitForAsrResult(input, ui, 40000)) {
+        std::printf("  [%s] FAIL: ASR 超时（40s 无 Paste/结果）\n", id.c_str());
+        coordinator.Shutdown();
+        return false;
+    }
+    coordinator.Shutdown();
+    const std::string err = ui.LastError();
+    if (!err.empty()) {
+        std::printf("  [%s] FAIL: ASR 错误: %s\n", id.c_str(), err.c_str());
+        return false;
+    }
+    const std::string hyp = input.GetPastedText();
+    if (info.synthetic) {
+        std::printf("  [%s] synthetic 链路冒烟通过（%.1fs golden，识别=\"%s\"，"
+                    "空文本属预期、不断言）\n",
+                    id.c_str(), info.duration_s, hyp.c_str());
+        return true;
+    }
+    if (hyp.empty()) {
+        std::printf("  [%s] FAIL: 无 Paste 文本\n", id.c_str());
+        return false;
+    }
+    std::printf("  [%s] 识别=\"%s\"（%.1fs golden，仅断言非空）\n",
+                id.c_str(), hyp.c_str(), info.duration_s);
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -516,5 +747,50 @@ int main() {
     }
 
     std::printf("=== L1 结果: %d 通过 / %d 失败 ===\n", pass, fail);
-    return fail == 0 ? 0 : 1;
+
+    // 小米遥控器 golden 回放：无 fixtures 时 SKIP 本段（不影响 L1 语料结论）；
+    // 有 fixtures 时非 synthetic 会话（≥1s）须拿到非空识别文本，synthetic
+    // 合成会话只验证链路跑通（见 RunOneXiaomiGolden 注释）。
+    int xiaomi_pass = 0, xiaomi_fail = 0;
+    const auto atvv_root = ResolveAtvvFixturesRoot();
+    const auto golden_sessions = CollectAtvvGoldenSessions(atvv_root);
+    if (golden_sessions.empty()) {
+        std::printf("SKIP: 无 ATVV golden fixtures（%s），跳过小米 golden 回放\n",
+                    atvv_root.string().c_str());
+    } else {
+        std::printf("=== 小米 ATVV golden 回放（%s，%zu 个会话）===\n",
+                    golden_sessions.front().parent_path().string().c_str(),
+                    golden_sessions.size());
+        for (const auto& adpcm_path : golden_sessions) {
+            AtvvGoldenInfo info{adpcm_path};
+            if (!LoadAtvvGoldenInfo(adpcm_path, &info)) {
+                std::printf("  [%s] FAIL: sidecar 缺失或字段不全\n",
+                            adpcm_path.stem().string().c_str());
+                ++xiaomi_fail;
+                continue;
+            }
+            if (info.synthetic) {
+                std::printf("  [%s] 注意: 回放的是 synthetic 合成 fixtures"
+                            "（仅链路冒烟，不作识别率结论）\n",
+                            adpcm_path.stem().string().c_str());
+            }
+            if (info.duration_s < 1.0) {
+                std::printf("  [%s] SKIP: 会话 %.2fs < 1s（协调器最短录音时长）\n",
+                            adpcm_path.stem().string().c_str(), info.duration_s);
+                continue;
+            }
+            if (RunOneXiaomiGolden(info, config)) {
+                ++xiaomi_pass;
+            } else {
+                ++xiaomi_fail;
+            }
+        }
+        std::printf("=== 小米 golden: %d 通过 / %d 失败 ===\n",
+                    xiaomi_pass, xiaomi_fail);
+    }
+
+    const int total_fail = fail + xiaomi_fail;
+    std::printf("=== 集成测试总计: L1 %d/%d 失败 + 小米 %d 失败 ===\n",
+                fail, pass + fail, xiaomi_fail);
+    return total_fail == 0 ? 0 : 1;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "voice_stick_coordinator.h"
+#include "xiaomi_atvv_session.h"
 
 #include <Windows.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
@@ -34,7 +35,8 @@ public:
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
                              BluetoothAddressKind address_kind,
-                             const std::string& name) override;
+                             const std::string& name,
+                             DeviceClass device_class) override;
     void SendUiState(const std::string& state,
                        const std::string& text,
                        const std::optional<std::string>& device_id) override;
@@ -74,10 +76,24 @@ public:
     // 会话才能恢复。
     void RestartForResume();
 
+    // ---- 小米遥控器 2 Pro（ATVV）接线 ----
+    // MIC_OPEN 时刻写出点（steady_clock epoch ms）：ValueChanged 回调线程直接写、
+    // F5 抑制钩子（voice_f5_suppressor）读。须在 Start 前设置，之后不再变更。
+    void SetXiaomiMicOpenSink(std::atomic<std::int64_t>* sink) { xiaomi_mic_open_sink_ = sink; }
+    // ATVV 会话参数解析器（interaction_mode/gain_db/double_click_ms；按设备）。
+    // 在 UI 线程调用（会话创建时），实现侧读配置无竞态。须在 Start 前设置。
+    void SetXiaomiSessionOptionsResolver(
+        std::function<XiaomiAtvvSession::Options(const std::string& device_id)> resolver) {
+        xiaomi_options_resolver_ = std::move(resolver);
+    }
+    // ATVV 会话 Tick 泵：UI 线程 50ms 定时器驱动（长按阈值/尾包宽限/双击窗/CAPS 超时）。
+    void TickXiaomiSessions();
+
 private:
     struct DeviceSession {
         std::uint64_t bluetooth_address = 0;
         ConnectedDevice device;
+        DeviceClass device_class = DeviceClass::kStickS3;
         winrt::Windows::Devices::Bluetooth::BluetoothLEDevice ble_device{nullptr};
         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession gatt_session{nullptr};
         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattDeviceService service{nullptr};
@@ -86,9 +102,26 @@ private:
         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic control_characteristic{nullptr};
         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic ota_rx_characteristic{nullptr};
         winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic ota_state_characteristic{nullptr};
+        // 小米 ATVV 侧成员（device_class==kXiaomiRemote2Pro 时有效）：TX 主机写命令，
+        // Audio/Control 为遥控器 notify；battery 为标准 Battery Service 0x2A19（可选，
+        // 失败不阻断连接）；probe 为心跳保活读特征（battery 优先，否则 GAP 0x2A00）。
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic xiaomi_tx_characteristic{nullptr};
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic xiaomi_audio_characteristic{nullptr};
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic xiaomi_control_characteristic{nullptr};
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattDeviceService xiaomi_battery_service{nullptr};
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic battery_characteristic{nullptr};
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic probe_characteristic{nullptr};
+        // ATVV 会话状态机（纯逻辑）。公开入口线程契约为单线程串行；集成层除 UI 线程
+        // 分发外还有断连线程的 Stop，统一用 xiaomi_mutex 串行化（访问前判空，
+        // CloseSession 置空后晚到的分发自然跳过）。
+        std::mutex xiaomi_mutex;
+        std::unique_ptr<XiaomiAtvvSession> xiaomi_atvv_session;
         winrt::event_token audio_value_changed_token{};
         winrt::event_token state_value_changed_token{};
         winrt::event_token ota_state_value_changed_token{};
+        winrt::event_token xiaomi_audio_value_changed_token{};
+        winrt::event_token xiaomi_control_value_changed_token{};
+        winrt::event_token battery_value_changed_token{};
         winrt::event_token connection_status_token{};
         winrt::event_token gatt_services_changed_token{};
         winrt::event_token session_status_token{};
@@ -124,8 +157,29 @@ private:
     winrt::fire_and_forget ConnectDeviceAsync(std::uint64_t bluetooth_address,
                                               BluetoothAddressKind address_kind,
                                               std::string local_name,
-                                              std::string device_id);
+                                              std::string device_id,
+                                              DeviceClass device_class);
     winrt::fire_and_forget WriteControlPayloadAsync(std::shared_ptr<DeviceSession> session, ByteVector payload);
+    // ---- 小米 ATVV 会话辅助 ----
+    // 串行驱动 ATVV 会话并分发产出动作：entry 在 xiaomi_mutex 下执行（会话为空跳过），
+    // 动作分发在锁外进行（写 TX 异步发；StateEvent/AudioFrame 走既有回调）。
+    // 时钟语义：now_ms 取 UI dispatch 执行时刻（NowSteadyMs() 现取）而非 GATT notify
+    // 到达时刻；notify→dispatch 的队列延迟使会话内时间轴整体同向平移，长按阈值/
+    // 双击窗/尾包宽限等相对时长判定近似守恒，不为此付出锁内取时钟的额外同步。
+    void DriveXiaomiSession(const std::shared_ptr<DeviceSession>& session,
+                            const std::function<std::vector<XiaomiAtvvAction>(XiaomiAtvvSession&)>& entry);
+    void DispatchXiaomiActions(const std::shared_ptr<DeviceSession>& session,
+                               std::vector<XiaomiAtvvAction> actions);
+    winrt::fire_and_forget WriteXiaomiTxAsync(std::shared_ptr<DeviceSession> session, ByteVector payload);
+    // 可选 Battery Service（0x180F/0x2A19，读+notify）：失败只记日志不阻断连接。
+    // 无电量特征时用 GAP 0x2A00 设备名读作心跳保活特征。
+    winrt::Windows::Foundation::IAsyncAction SetupXiaomiBatteryAsync(std::shared_ptr<DeviceSession> session,
+                                                                     std::string device_id);
+    // 心跳保活：读 probe_characteristic 强制链路层收发；成功刷新 last_rx_ms，
+    // Unreachable/异常按链路已死拆除（与 StickS3 心跳写同一语义）。
+    winrt::fire_and_forget ProbeXiaomiSessionAsync(std::shared_ptr<DeviceSession> session);
+    // 断连/关闭前尽力发 MIC_CLOSE（session Stop 产出的写 TX），随后复位状态机。
+    void StopXiaomiSessionBestEffort(const std::shared_ptr<DeviceSession>& session);
     winrt::Windows::Foundation::IAsyncOperation<bool> EnsureOtaCharacteristicsAsync(
         std::shared_ptr<DeviceSession> session,
         std::string device_id);
@@ -208,6 +262,9 @@ private:
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;
     bool heartbeat_stop_ = false;
+    // 小米 MIC_OPEN 时刻写出点与 ATVV 会话参数解析器（Start 前由 App 层注入）。
+    std::atomic<std::int64_t>* xiaomi_mic_open_sink_ = nullptr;
+    std::function<XiaomiAtvvSession::Options(const std::string& device_id)> xiaomi_options_resolver_;
 
 public:
     static constexpr UINT WM_BLE_DISPATCH = WM_APP + 100;

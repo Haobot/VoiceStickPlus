@@ -71,18 +71,32 @@ def run_clip(ogg_path: Path, *, secret_id: str, secret_key: str, appid: str,
              engine: str = DEFAULT_ENGINE, timeout: float = 20.0,
              duration_s: float = 0.0, clip_id: str = "", round_no: int = 0,
              category: str = "", reference: str = "",
-             hotword_id: str = "", hotword_list: str = "") -> ClipResult:
-    """回放单条 ogg 到腾讯 ASR，返回结构化结果。异常不外抛，记入 error。"""
+             hotword_id: str = "", hotword_list: str = "",
+             audio_format: str = "ogg") -> ClipResult:
+    """回放单条音频到腾讯 ASR，返回结构化结果。异常不外抛，记入 error。
+
+    audio_format="ogg"（默认）：demux Ogg Opus 帧，voice_format=10 发送。
+    audio_format="pcm"：ogg_path 指向裸 s16le 16kHz mono PCM，voice_format=1
+    直接发送原始 PCM 切片（不加 "opus" 帧头）。
+    """
     res = ClipResult(clip_id=clip_id, provider="tencent", round=round_no,
                      category=category, reference=reference, duration_s=duration_s)
-    frames = demux_ogg_packets(ogg_path)
+    voice_format = "10"
+    if audio_format == "pcm":
+        raw = ogg_path.read_bytes()
+        # 100ms 一档切片（16kHz s16le mono = 32000 B/s）
+        frames = [raw[i:i + 3200] for i in range(0, len(raw), 3200)]
+        voice_format = "1"
+    else:
+        frames = [wrap_frame(pkt) for pkt in demux_ogg_packets(ogg_path)]
     if not frames:
-        res.error = "no opus frames demuxed"
+        res.error = "no audio frames"
         return res
 
     sock = None
     try:
         url = build_signed_url(secret_id, secret_key, appid, str(uuid.uuid4()), engine,
+                               voice_format=voice_format,
                                hotword_id=hotword_id, hotword_list=hotword_list)
         sock = websocket_handshake(url, timeout)
         sock.settimeout(timeout)
@@ -96,7 +110,7 @@ def run_clip(ogg_path: Path, *, secret_id: str, secret_key: str, appid: str,
         t_start = time.monotonic()
         t_audio_end = t_start
         for pkt in frames:
-            send_ws_frame(sock, 0x2, wrap_frame(pkt))
+            send_ws_frame(sock, 0x2, pkt)
             t_audio_end = time.monotonic()
             # 只收已到达的结果：select 零超时轮询，不做带超时的阻塞 recv。
             # （旧实现每帧 settimeout(1ms) 后 recv，Windows 定时器粒度使每帧

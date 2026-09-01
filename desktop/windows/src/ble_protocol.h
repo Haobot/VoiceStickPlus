@@ -9,6 +9,17 @@
 
 namespace voicestick {
 
+// 输入设备类别：自研 StickS3 固件 / 小米蓝牙遥控器 2 Pro（ATVV 协议）。
+enum class DeviceClass {
+    kStickS3,
+    kXiaomiRemote2Pro,
+};
+
+// DeviceInfo.hardware / PairedDeviceEntry.hardware 中小米遥控器 2 Pro 的标识。
+// StickS3 固件在 device_info 中自报 "stick_s3"；小米遥控器无固件版本概念，
+// 由桌面端合成 device_info 时填入本常量。
+inline constexpr std::string_view kHardwareXiaomiRemote2Pro = "xiaomi_remote_2_pro";
+
 struct AudioFrame {
     std::uint32_t session_id = 0;
     std::uint32_t seq = 0;
@@ -121,11 +132,24 @@ public:
     static ByteVector OtaDataPayload(std::uint32_t transfer_id, std::uint32_t offset, std::span<const std::uint8_t> chunk);
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);
     static ByteVector OtaAbortPayload(std::uint32_t transfer_id);
+    // 设备 ID 双前缀：StickS3 广播名 VS-XXXX，小米遥控器分配 RC-XXXX；
+    // 两者均归一化为 4 位大写 hex（内部存储形式，向后兼容旧配置）。
     static std::optional<std::string> DeviceIdFromName(std::string_view name);
     static std::optional<std::string> LocalNameFromAdvertisementData(std::span<const std::uint8_t> data);
     static bool HasVoiceStickServiceUuid(std::span<const std::uint8_t> data);
+    // 广播数据 128-bit service UUID 列表中是否含小米 ATVV service
+    //（AB5E0001-5A21-4F05-BC7D-AF01F617B664），P2 发现过滤用。
+    static bool HasXiaomiAtvvServiceUuid(std::span<const std::uint8_t> data);
     static std::string DeviceIdFromBluetoothAddress(std::uint64_t bluetooth_address);
+    // 已知取舍：归一化去前缀后跨类别可能撞 ID（VS-3A7F 与 RC-3A7F 均归一为
+    // 3A7F），概率可忽略（ID 取自 BLE 地址低 16 位）；撞见时按设备的配置覆盖
+    //（[device.<id>.output] 等）会共享。
     static std::string NormalizeDeviceId(std::string_view text);
+    // 小米遥控器名称白名单（trim + ASCII 小写后比较；中文名按 UTF-8 字节比较，
+    // 源文件与广播名同为 UTF-8 编码）。
+    static bool IsXiaomiRemoteName(std::string_view name);
+    // 名称 → 设备类别：白名单或 RC- 前缀 → 小米；VS- 前缀 → StickS3；其余 nullopt。
+    static std::optional<DeviceClass> DeviceClassFromName(std::string_view name);
 };
 
 } // namespace voicestick

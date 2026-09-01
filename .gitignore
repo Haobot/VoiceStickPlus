@@ -47,7 +47,13 @@ scripts/e2e_test/battery_logs/
 
 # 热词验收测试产物（run_hotword_acceptance.py：生成的音频与报告，不入库）
 scripts/e2e_test/corpus/acceptance_*/
-scripts/e2e_test/bench_results/acceptance_*
+
+# ASR 评测产物不入库（bench_results 整目录；历史已跟踪文件不受 gitignore 影响）
+scripts/e2e_test/bench_results/
+
+# 小米 ATVV fixtures：demo_synthetic 入库作冒烟资产（含 refs），真机采集目录不入库
+scripts/e2e_test/fixtures/xiaomi/*/
+!scripts/e2e_test/fixtures/xiaomi/demo_synthetic/
 
 # 本地调试用 Python venv（ASR 回放工具依赖）
 .venv-replay/

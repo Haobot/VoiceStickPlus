@@ -139,14 +139,19 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kPairSelectDeviceWithId)] = "Select a VoiceStick with a device ID";
     table[Index(StringId::kPairSelectDevice)] = "Select a device";
     table[Index(StringId::kPairEnterManualId)] = "Enter the 4-digit ID shown on the Stick screen";
-    table[Index(StringId::kPairSavedManualWaiting)] = "Saved VS-%s; waiting for advertisement...";
-    table[Index(StringId::kPairPairingDevice)] = "Pairing VS-%s...";
-    table[Index(StringId::kPairConnectedFinishing)] = "Connected to VS-%s. Finishing up...";
-    table[Index(StringId::kPairPairedDevice)] = "Paired VS-%s";
-    table[Index(StringId::kPairPairedDeviceFirmware)] = "Paired VS-%s firmware %s";
+    table[Index(StringId::kPairSavedManualWaiting)] = "Saved %s; waiting for advertisement...";
+    table[Index(StringId::kPairPairingDevice)] = "Pairing %s...";
+    table[Index(StringId::kPairConnectedFinishing)] = "Connected to %s. Finishing up...";
+    table[Index(StringId::kPairPairedDevice)] = "Paired %s";
+    table[Index(StringId::kPairPairedDeviceFirmware)] = "Paired %s firmware %s";
     table[Index(StringId::kPairTimedOut)] = "Pairing timed out";
     table[Index(StringId::kPairFoundCount)] = "%s found";
     table[Index(StringId::kPairScanningCount)] = "Scanning (%s advertisements)";
+    table[Index(StringId::kDeviceTypeVoiceStick)] = "Voice Stick";
+    table[Index(StringId::kDeviceTypeXiaomiRemote)] = "Xiaomi Remote";
+    table[Index(StringId::kPairXiaomiOsPairing)] = "Pairing with Windows Bluetooth...";
+    table[Index(StringId::kPairXiaomiBondFailed)] =
+        "Windows pairing failed. Remove the remote in Bluetooth settings, then re-add it and rescan.";
     table[Index(StringId::kOnboardingTitle)] = "Welcome to VoiceStick";
     table[Index(StringId::kOnboardingSubtitle)] = "Pair your device and start voice input from anywhere.";
     table[Index(StringId::kOnboardingGetStarted)] = "Get Started";
@@ -301,6 +306,12 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "Restore defaults";
     table[Index(StringId::kMenuInteractionSettings)] = "Device interaction settings...";
     table[Index(StringId::kInteractionSettingsTitle)] = "Device interaction - VS-{0}";
+    table[Index(StringId::kMenuRemoteSettings)] = "Remote settings...";
+    table[Index(StringId::kRemoteSettingsTitle)] = "Remote settings - RC-{0}";
+    table[Index(StringId::kSettingsRemoteGainDb)] = "Gain (dB, -24 to 24)";
+    table[Index(StringId::kSettingsRemoteDoubleClickMs)] = "Double-click window (ms, 200 to 600)";
+    table[Index(StringId::kRemoteSettingsEffectiveNextConnect)] =
+        "Changes take effect on the next connection.";
     table[Index(StringId::kMenuBatteryMonitor)] = "Battery voltage monitor...";
     table[Index(StringId::kBatteryMonitorTitle)] = "Battery Voltage Monitor - VS-{0}";
     table[Index(StringId::kBatteryMonitorStart)] = "Start";
@@ -464,14 +475,19 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kPairSelectDeviceWithId)] = "请选择带设备 ID 的 VoiceStick";
     table[Index(StringId::kPairSelectDevice)] = "请选择设备";
     table[Index(StringId::kPairEnterManualId)] = "请输入 Stick 屏幕显示的 4 位 ID";
-    table[Index(StringId::kPairSavedManualWaiting)] = "已保存 VS-%s，正在等待设备广播...";
-    table[Index(StringId::kPairPairingDevice)] = "正在配对 VS-%s...";
-    table[Index(StringId::kPairConnectedFinishing)] = "已连接 VS-%s，正在完成配对...";
-    table[Index(StringId::kPairPairedDevice)] = "已配对 VS-%s";
-    table[Index(StringId::kPairPairedDeviceFirmware)] = "已配对 VS-%s，固件版本 %s";
+    table[Index(StringId::kPairSavedManualWaiting)] = "已保存 %s，正在等待设备广播...";
+    table[Index(StringId::kPairPairingDevice)] = "正在配对 %s...";
+    table[Index(StringId::kPairConnectedFinishing)] = "已连接 %s，正在完成配对...";
+    table[Index(StringId::kPairPairedDevice)] = "已配对 %s";
+    table[Index(StringId::kPairPairedDeviceFirmware)] = "已配对 %s，固件版本 %s";
     table[Index(StringId::kPairTimedOut)] = "配对超时";
     table[Index(StringId::kPairFoundCount)] = "找到 %s 个设备";
     table[Index(StringId::kPairScanningCount)] = "正在扫描（已收到 %s 条广播）";
+    table[Index(StringId::kDeviceTypeVoiceStick)] = "语音棒";
+    table[Index(StringId::kDeviceTypeXiaomiRemote)] = "小米遥控器";
+    table[Index(StringId::kPairXiaomiOsPairing)] = "正在通过 Windows 蓝牙配对…";
+    table[Index(StringId::kPairXiaomiBondFailed)] =
+        "系统配对失败。请先在 Windows 蓝牙设置中删除并重新添加遥控器，然后重新扫描。";
     table[Index(StringId::kOnboardingTitle)] = "欢迎使用 VoiceStick";
     table[Index(StringId::kOnboardingSubtitle)] = "配对设备后，即可在任意位置使用语音输入。";
     table[Index(StringId::kOnboardingGetStarted)] = "开始使用";
@@ -623,6 +639,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kEncoderSettingsRestoreDefaults)] = "恢复默认";
     table[Index(StringId::kMenuInteractionSettings)] = "设备交互设置…";
     table[Index(StringId::kInteractionSettingsTitle)] = "设备交互 - VS-{0}";
+    table[Index(StringId::kMenuRemoteSettings)] = "遥控器设置…";
+    table[Index(StringId::kRemoteSettingsTitle)] = "遥控器设置 - RC-{0}";
+    table[Index(StringId::kSettingsRemoteGainDb)] = "增益（dB，-24~24）";
+    table[Index(StringId::kSettingsRemoteDoubleClickMs)] = "双击窗口（ms，200~600）";
+    table[Index(StringId::kRemoteSettingsEffectiveNextConnect)] = "设置将在下次连接时生效。";
     table[Index(StringId::kMenuBatteryMonitor)] = "电池电压监测…";
     table[Index(StringId::kBatteryMonitorTitle)] = "电池电压监测 - VS-{0}";
     table[Index(StringId::kBatteryMonitorStart)] = "开始监测";

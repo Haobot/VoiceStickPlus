@@ -73,3 +73,20 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 
 - **UI 入口**：设备交互设置已从「设置」对话框移除，改为从托盘设备子菜单的「设备交互设置…」（Device interaction settings...）打开**设备级对话框**（所有设备都显示该菜单项）。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。连接时与配置更新时，协调器对所有已连接设备逐台单播其有效交互设置（无覆盖设备收到全局默认）。
 - **体感鼠标热调参**：托盘「体感鼠标调参」打开非模态窗口，标题带设备 ID，按**当前激活设备**调参。其中的左右/上下灵敏度滑杆写入该设备的 `[device.<id>.interaction]` 覆盖；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍写全局 `config.toml`。
+
+### 小米遥控器配置（仅 Windows 消费）
+
+小米蓝牙遥控器 2 Pro（ATVV 协议）相关配置。设备 ID 形如 `RC-XXXX`（4 位大写 hex，与 StickS3 的 `VS-XXXX` 双前缀并存；内部存储与 `[device.<id>.*]` 表键均用去前缀的 4 位 hex，如 `[device.3A7F.xiaomi]`），ID 由 BLE 地址低 16 位分配，名称白名单/`RC-` 前缀识别见 `BleProtocol::DeviceClassFromName`。
+
+- `xiaomi_suppress_f5`（bool，默认 `true`）：全局 F5 抑制开关。遥控器语音键按下时 Windows 会收到附带的 F5 按键（HID 副作用）；开启后桌面端用低级键盘钩子（`WH_KEYBOARD_LL`）在「80ms 窗内有 ATVV MIC_OPEN」时吞掉该 F5。
+- **按设备覆盖**：`[device.<id>.xiaomi]` 表，结构镜像 `[device.<id>.output]`。未写的字段回落 `default_xiaomi_settings` 结构默认值；仅写入与默认不同的覆盖（相等则不落盘）。字段：
+  - `gain_db`（double，默认 `12.0`）：ADPCM 解码后增益（dB），±24 dB 限幅在消费侧（`PcmPostprocessor`）完成。
+  - `double_click_ms`（int >0，默认 `350`）：语音键双击判定窗（毫秒），镜像固件 `DOUBLE_CLICK_WINDOW_MS` 语义；非正值忽略并保留默认值。「遥控器设置…」UI 对话框将其限制在 200~600ms（越界 clamp）；手写配置 >0 均接受。
+
+  示例：
+
+  ```toml
+  [device.3A7F.xiaomi]
+  gain_db = 18.0
+  double_click_ms = 400
+  ```

@@ -103,8 +103,9 @@ void VoiceStickCoordinator::Start() {
         ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
         ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
         // 设备交互设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
-        // 与旧广播行为等价）。
+        // 与旧广播行为等价）。小米遥控器无 IMU/敲击硬件，跳过（BLE 层另有按类门控兜底）。
         for (const auto& dev : devices) {
+            if (IsXiaomiRemoteDevice(dev.id)) continue;
             const InteractionSettings& inter = config_.InteractionSettingsForDevice(dev.id);
             ble_->SendTapEnabled(inter.tap_to_arrow, dev.id);
             ble_->SendTapSensitivity(inter.tap_sensitivity, dev.id);
@@ -112,8 +113,9 @@ void VoiceStickCoordinator::Start() {
                 ImuWakeSensitivityThresholdLsb(inter.imu_wake_sensitivity), dev.id);
         }
         // 编码器设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
-        // 与旧广播行为等价）。
+        // 与旧广播行为等价）。小米遥控器无编码器，跳过。
         for (const auto& dev : devices) {
+            if (IsXiaomiRemoteDevice(dev.id)) continue;
             const EncoderSettings& enc = config_.EncoderSettingsForDevice(dev.id);
             ble_->SendEncoderLedColor(enc.led_color, dev.id);
             ble_->SendEncoderRecordingGate(enc.press_action == "recording", dev.id);
@@ -216,7 +218,9 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
     // 编码器/体感交互设置按设备覆盖：对已连接设备逐个取其有效配置单播
     // （InteractionSettingsForDevice 含 default 回退，故每个设备都已覆盖全局默认）。
+    // 小米遥控器无编码器/IMU 硬件，跳过（BLE 层另有按类门控兜底）。
     for (const auto& device_id : connected_device_ids_) {
+        if (IsXiaomiRemoteDevice(device_id)) continue;
         const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
         ble_->SendEncoderLedColor(enc.led_color, device_id);
         ble_->SendEncoderRecordingGate(enc.press_action == "recording", device_id);
@@ -250,8 +254,9 @@ void VoiceStickCoordinator::InvalidateAsrConnection() {
 void VoiceStickCoordinator::ConnectPairedDevice(const std::string& device_id,
                                                 std::uint64_t bluetooth_address,
                                                 BluetoothAddressKind address_kind,
-                                                const std::string& name) {
-    ble_->ConnectPairedDevice(device_id, bluetooth_address, address_kind, name);
+                                                const std::string& name,
+                                                DeviceClass device_class) {
+    ble_->ConnectPairedDevice(device_id, bluetooth_address, address_kind, name, device_class);
 }
 
 void VoiceStickCoordinator::CancelPendingConnect(const std::string& device_id) {
@@ -315,6 +320,8 @@ void VoiceStickCoordinator::CheckFirmwareUpdatesNow() {
 }
 
 void VoiceStickCoordinator::CheckFirmwareAfterPairing(const std::string& device_id) {
+    // 小米遥控器无固件更新通道（无公开 OTA 协议），跳过配对后的更新检查。
+    if (IsXiaomiRemoteDevice(device_id)) return;
     {
         std::lock_guard lock(firmware_mutex_);
         pending_firmware_update_prompt_device_ids_.insert(device_id);
@@ -327,6 +334,10 @@ void VoiceStickCoordinator::UpdateFirmwareFromLatest(
     const std::string& device_id,
     std::function<void(FirmwareUpdateProgress)> progress,
     std::function<void(bool, std::string)> completion) {
+    if (IsXiaomiRemoteDevice(device_id)) {
+        completion(false, "This device does not support VoiceStick firmware update.");
+        return;
+    }
     std::optional<FirmwareManifest> manifest;
     {
         std::lock_guard lock(firmware_mutex_);
@@ -355,6 +366,10 @@ void VoiceStickCoordinator::UpdateFirmwareFromFile(
     const std::string& file_path, const std::string& device_id,
     std::function<void(FirmwareUpdateProgress)> progress,
     std::function<void(bool, std::string)> completion) {
+    if (IsXiaomiRemoteDevice(device_id)) {
+        completion(false, "This device does not support VoiceStick firmware update.");
+        return;
+    }
     std::ifstream f(file_path, std::ios::binary);
     if (!f) {
         completion(false, "Cannot open firmware file.");
@@ -2714,6 +2729,25 @@ void VoiceStickCoordinator::FinishRecognitionCycle() {
     buffered_ogg_chunks_.clear();
 }
 
+bool VoiceStickCoordinator::IsXiaomiRemoteDevice(const std::string& device_id) {
+    {
+        std::lock_guard lock(firmware_mutex_);
+        const auto it = firmware_info_by_device_id_.find(device_id);
+        if (it != firmware_info_by_device_id_.end() &&
+            it->second.hardware == kHardwareXiaomiRemote2Pro) {
+            return true;
+        }
+    }
+    // 配对配置种子：HandlePairingCompleted 先存 config 再调 CheckFirmwareAfterPairing，
+    // 早于 UpdateDeviceFirmwareInfo 时这里兜底。
+    for (const auto& entry : config_.paired_devices) {
+        if (entry.device_id == device_id && entry.hardware == kHardwareXiaomiRemote2Pro) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void VoiceStickCoordinator::UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id) {
     std::string hardware_to_save;
     std::string version_to_save;
@@ -2795,6 +2829,11 @@ void VoiceStickCoordinator::RefreshFirmwareAvailability() {
         for (auto& [device_id, info] : firmware_info_by_device_id_) {
             info.latest_version.clear();
             info.update_available = false;
+            // 小米遥控器无 OTA 渠道：不参与固件更新检查与提示。
+            if (info.hardware == kHardwareXiaomiRemote2Pro) {
+                snapshot[device_id] = info;
+                continue;
+            }
             if (!latest_firmware_manifest_.has_value() ||
                 info.hardware.empty() ||
                 info.current_version.empty()) {

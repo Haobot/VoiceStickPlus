@@ -3,7 +3,12 @@
 #include "asr_client_tencent.h"
 #include "asr_protocol.h"
 #include "audio_opus_decoder.h"
+#include "audio_opus_encoder.h"
 #include "ble_protocol.h"
+#include "ima_adpcm_decoder.h"
+#include "pcm_postprocessor.h"
+#include "xiaomi_atvv_protocol.h"
+#include "xiaomi_atvv_session.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
 
@@ -39,14 +44,17 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
+#include <crtdbg.h>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -88,7 +96,8 @@ public:
     void ConnectPairedDevice(const std::string&,
                              std::uint64_t,
                              BluetoothAddressKind,
-                             const std::string&) override {}
+                             const std::string&,
+                             DeviceClass) override {}
     void SendUiState(const std::string& state,
                      const std::string& text,
                      const std::optional<std::string>& device_id) override {
@@ -351,8 +360,9 @@ public:
 class FakeVirtualMicRenderer : public IVirtualMicRenderer {
 public:
     explicit FakeVirtualMicRenderer(bool start_result) : start_result_(start_result) {}
-    bool Start(PcmRingBuffer*) override {
+    bool Start(PcmRingBuffer* ring) override {
         ++start_count;
+        last_ring = ring;
         running_ = start_result_;
         return start_result_;
     }
@@ -365,6 +375,7 @@ public:
 
     int start_count = 0;
     int stop_count = 0;
+    PcmRingBuffer* last_ring = nullptr;  // 最近一次 Start 的 PCM 源（协调器持有，测试只读）
     bool running_ = false;
     bool start_result_;
 };
@@ -681,8 +692,15 @@ void TestPairDeviceHelpers() {
     assert(ParseManualPairDeviceId("abcd").value() == "ABCD");
     assert(ParseManualPairDeviceId("VS-abcd").value() == "ABCD");
     assert(ParseManualPairDeviceId(" vs-09af ").value() == "09AF");
+    assert(ParseManualPairDeviceId("RC-3a7f").value() == "3A7F");
     assert(!ParseManualPairDeviceId("VS-123").has_value());
     assert(!ParseManualPairDeviceId("VoiceStick").has_value());
+
+    // 异步配对消息的地址匹配：陈旧消息（上一目标迟到回调）地址不符即丢弃。
+    assert(MatchesPendingPairAddress(0xAABBCCDDEEFF, 0xAABBCCDDEEFF));
+    assert(!MatchesPendingPairAddress(0x112233445566, 0xAABBCCDDEEFF));
+    assert(!MatchesPendingPairAddress(0, 0xAABBCCDDEEFF));
+    assert(!MatchesPendingPairAddress(0xAABBCCDDEEFF, 0));
 
     PairingCandidate ready;
     ready.device_id = "C3D8";
@@ -772,6 +790,71 @@ void TestPairDeviceHelpers() {
         assert(!merged_reverse.front().is_temporary_candidate);
         assert(merged_reverse.front().device_id == "D63C");
     }
+}
+
+void TestPairingAdvertisementClassify() {
+    // 名称命中 VS- 前缀 → StickS3 / kName
+    auto match = ClassifyPairingAdvertisement("VS-C3D8", true, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "C3D8");
+    assert(match->device_class == DeviceClass::kStickS3);
+    assert(match->id_source == PairingCandidateIdSource::kName);
+    assert(!match->is_temporary);
+
+    // 名称命中 RC- 前缀 → 小米遥控器 / kName
+    match = ClassifyPairingAdvertisement("RC-3A7F", false, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "3A7F");
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->id_source == PairingCandidateIdSource::kName);
+    assert(!match->is_temporary);
+
+    // 小米名称白名单（中文名，无内嵌 ID）→ 地址低 16 位 / 非临时
+    match = ClassifyPairingAdvertisement("小米蓝牙语音遥控器", false, false, 0xAABBCCDD3A7F);
+    assert(match.has_value());
+    assert(match->device_id == "3A7F");
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->id_source == PairingCandidateIdSource::kAddressFallback);
+    assert(!match->is_temporary);
+
+    // 小米名称白名单（英文名）
+    match = ClassifyPairingAdvertisement("Xiaomi Bluetooth Remote 2 Pro", false, false,
+                                         0xAABBCCDD3A7F);
+    assert(match.has_value());
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->device_id == "3A7F");
+
+    // 白名单名 "RC001"（非 RC-XXXX 前缀模式）→ 不误中名内 ID，走地址兜底
+    match = ClassifyPairingAdvertisement("RC001", false, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->device_id == "EEFF");
+    assert(match->id_source == PairingCandidateIdSource::kAddressFallback);
+
+    // 仅 ATVV service UUID（无名称）→ 小米地址兜底候选
+    match = ClassifyPairingAdvertisement("", false, true, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "EEFF");
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(!match->is_temporary);
+
+    // 仅 VoiceStick service UUID（无名称）→ StickS3 临时候选
+    match = ClassifyPairingAdvertisement("", true, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "EEFF");
+    assert(match->device_class == DeviceClass::kStickS3);
+    assert(match->id_source == PairingCandidateIdSource::kAddressFallback);
+    assert(match->is_temporary);
+
+    // VS service 与 ATVV 同时存在且无名称：VoiceStick service 优先（固件 SCAN_RSP 拆分场景）
+    match = ClassifyPairingAdvertisement("", true, true, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_class == DeviceClass::kStickS3);
+    assert(match->is_temporary);
+
+    // 无关广告 → 不识别
+    assert(!ClassifyPairingAdvertisement("", false, false, 0xAABBCCDDEEFF).has_value());
+    assert(!ClassifyPairingAdvertisement("Some Headphones", false, false, 0xAABBCCDDEEFF).has_value());
 }
 
 void TestAudioFrameParsing() {
@@ -4642,6 +4725,1443 @@ void TestAudioOpusDecoderSmallBuffer() {
     assert(result.decoded_samples == 0);
 }
 
+// ---- 小米蓝牙遥控器 2 Pro（ATVV）core 纯逻辑层 ----
+// 协议规范见 Doc/Plan/xiaomi-remote-2-pro-support.md §3；按键语义镜像固件双击设计。
+
+// 会话动作列表查找/收集辅助。
+const XiaomiAtvvWriteTx* FindAtvvWriteTx(const std::vector<XiaomiAtvvAction>& actions) {
+    for (const auto& action : actions) {
+        if (const auto* tx = std::get_if<XiaomiAtvvWriteTx>(&action)) return tx;
+    }
+    return nullptr;
+}
+
+const StateEvent* FindAtvvEvent(const std::vector<XiaomiAtvvAction>& actions, std::string_view name) {
+    for (const auto& action : actions) {
+        if (const auto* event = std::get_if<XiaomiAtvvStateEvent>(&action)) {
+            if (event->event.event == name) return &event->event;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<AudioFrame> CollectAtvvFrames(const std::vector<XiaomiAtvvAction>& actions) {
+    std::vector<AudioFrame> frames;
+    for (const auto& action : actions) {
+        if (const auto* frame = std::get_if<XiaomiAtvvAudioFrame>(&action)) {
+            frames.push_back(frame->frame);
+        }
+    }
+    return frames;
+}
+
+bool HasAtvvError(const std::vector<XiaomiAtvvAction>& actions, std::string_view code) {
+    for (const auto& action : actions) {
+        if (const auto* error = std::get_if<XiaomiAtvvError>(&action)) {
+            if (error->code == code) return true;
+        }
+    }
+    return false;
+}
+
+// 快速完成握手进入 Ready（Start + v1.0 CAPS：16kHz、帧长 120）。
+void AtvvHandshakeReady(XiaomiAtvvSession& session, std::int64_t now_ms) {
+    session.Start(now_ms);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, now_ms + 10);
+}
+
+void TestXiaomiAtvvCapsParsing() {
+    // TX 命令构造。
+    assert(XiaomiAtvvProtocol::GetCapsCommand() == (ByteVector{0x0A, 0x01, 0x00, 0x00, 0x03, 0x03}));
+    assert(XiaomiAtvvProtocol::MicOpenAckCommand(false) == (ByteVector{0x0C, 0x00}));
+    assert(XiaomiAtvvProtocol::MicOpenAckCommand(true) == (ByteVector{0x0C, 0x00, 0x02}));
+    assert(XiaomiAtvvProtocol::MicCloseCommand(false, 0x07) == (ByteVector{0x0D, 0x07}));
+    assert(XiaomiAtvvProtocol::MicCloseCommand(true, 0x07) == (ByteVector{0x0D}));
+
+    // v1.0 标准布局：16kHz、interaction=3、协商帧长 120。
+    auto caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78});
+    assert(caps.has_value());
+    assert(caps->IsV1OrLater());
+    assert(caps->codecs == 0x02 && caps->Supports16kHz());
+    assert(caps->interaction == 0x03);
+    assert(caps->frame_bytes == 120);
+
+    // 协商帧长 0 → 默认 120；自定义帧长 256；无帧长字段（len 5）→ 默认 120。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00});
+    assert(caps && caps->frame_bytes == XiaomiAtvvProtocol::default_frame_bytes);
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x01, 0x00});
+    assert(caps && caps->frame_bytes == 256);
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03});
+    assert(caps && caps->frame_bytes == 120);
+
+    // 兼容分支：报 v1 但 codecs==0，旧版双字节 codec 布局（[4]=0x02 且 len≥9）；
+    // 旧版布局未定义帧长字段，[5:7] 的垃圾值（0x0100=256）不得被采用，保持默认 120。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00});
+    assert(caps && caps->codecs == 0x02 && caps->interaction == 0x03 && caps->Supports16kHz());
+    assert(caps->frame_bytes == XiaomiAtvvProtocol::default_frame_bytes);
+
+    // 旧版 v0 布局：len≥9，codecs=[4]，interaction=0，帧长默认。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00});
+    assert(caps && !caps->IsV1OrLater());
+    assert(caps->codecs == 0x02 && caps->interaction == 0x00);
+    assert(caps->frame_bytes == XiaomiAtvvProtocol::default_frame_bytes);
+
+    // 8kHz-only：解析成功但不支持 16kHz（由会话层判 Error）。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x01, 0x03, 0x00, 0x78});
+    assert(caps && !caps->Supports16kHz());
+    // v1 codecs==0 且不满足兼容分支（[4]&0x03==0）→ 无可用 codec。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x00, 0x00, 0x00, 0x78});
+    assert(caps && caps->codecs == 0x00 && !caps->Supports16kHz());
+
+    // 拒绝：空包/短包/错 opcode/v1 缺 interaction 字段/旧版短包。
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0C, 0x01, 0x00, 0x02, 0x03}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x00, 0x01, 0x00, 0x02}).has_value());
+}
+
+// 测试本地 IMA 编码器（公开标准算法的独立实现）：输出编码字节与编码器内部
+// predictor 轨迹（即标准解码的期望输出），用于与解码器逐样本对拍。
+struct ImaGoldenVector {
+    ByteVector encoded;
+    std::vector<std::int16_t> expected_decoded;
+};
+
+ImaGoldenVector ImaEncodeForTest(const std::vector<std::int16_t>& pcm) {
+    static const int kStepTable[89] = {
+        7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+        50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+        253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+        1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+        3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+        11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+        32767,
+    };
+    static const int kIndexTable[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+    ImaGoldenVector out;
+    int predictor = 0;
+    int index = 0;
+    std::optional<std::uint8_t> high_nibble;  // 高半字节优先
+    for (const std::int16_t sample : pcm) {
+        const int step = kStepTable[index];
+        int nibble = 0;
+        int diff = step >> 3;
+        int delta = sample - predictor;
+        if (delta < 0) {
+            nibble = 8;
+            delta = -delta;
+        }
+        if (delta >= step) {
+            nibble |= 4;
+            delta -= step;
+            diff += step;
+        }
+        if (delta >= (step >> 1)) {
+            nibble |= 2;
+            delta -= step >> 1;
+            diff += step >> 1;
+        }
+        if (delta >= (step >> 2)) {
+            nibble |= 1;
+            diff += step >> 2;
+        }
+        predictor = (nibble & 8) ? predictor - diff : predictor + diff;
+        predictor = std::clamp(predictor, -32768, 32767);
+        index = std::clamp(index + kIndexTable[nibble & 7], 0, 88);
+        out.expected_decoded.push_back(static_cast<std::int16_t>(predictor));
+        if (high_nibble.has_value()) {
+            out.encoded.push_back(static_cast<std::uint8_t>((*high_nibble << 4) | nibble));
+            high_nibble.reset();
+        } else {
+            high_nibble = static_cast<std::uint8_t>(nibble);
+        }
+    }
+    // 奇数样本需补低半字节，会多解一个样本；测试只用偶数样本输入，此处不处理。
+    assert(!high_nibble.has_value());
+    return out;
+}
+
+void TestImaAdpcmDecoderGolden() {
+    ImaAdpcmDecoder decoder;
+    // 标准向量：reset(0,0) 后 0x11 → [1,2]。
+    decoder.Reset(0, 0);
+    auto out = decoder.Decode(ByteVector{0x11});
+    assert((out == std::vector<std::int16_t>{1, 2}));
+    // 预计算 golden（独立 Python 实现对拍，高半字节优先）。
+    decoder.Reset(0, 0);
+    out = decoder.Decode(ByteVector{0x11, 0x22, 0x77, 0x88, 0xF0, 0x0F, 0x45, 0x54});
+    assert((out == std::vector<std::int16_t>{1, 2, 5, 8, 19, 49, 45, 42,
+                                             -10, -3, 3, -90, 30, 208, 468, 781}));
+    // 状态连续推进：分段解码与一次性解码逐样本相等。
+    decoder.Reset(0, 0);
+    auto joined = decoder.Decode(ByteVector{0x11, 0x22, 0x77});
+    auto rest = decoder.Decode(ByteVector{0x88, 0xF0, 0x0F, 0x45, 0x54});
+    joined.insert(joined.end(), rest.begin(), rest.end());
+    assert(joined == out);
+
+    // 编码往返：正弦+斜波（480 样本，偶数）经测试编码器后与解码器逐样本对拍。
+    std::vector<std::int16_t> pcm(480);
+    for (int i = 0; i < 480; ++i) {
+        pcm[i] = static_cast<std::int16_t>(std::sin(i * 0.05) * 12000.0 + i * 10);
+    }
+    const auto golden = ImaEncodeForTest(pcm);
+    decoder.Reset(0, 0);
+    out = decoder.Decode(golden.encoded);
+    assert(out == golden.expected_decoded);
+
+    // Reset 钳位边界。
+    decoder.Reset(0, 200);
+    assert(decoder.step_index() == 88);
+    decoder.Reset(0, -5);
+    assert(decoder.step_index() == 0);
+    decoder.Reset(-100, 40);
+    assert(decoder.predictor() == -100 && decoder.step_index() == 40);
+    // 高 step 起步解码正常推进。
+    out = decoder.Decode(ByteVector{0x11, 0x11});
+    assert(out.size() == 4);
+}
+
+// ===== ATVV golden fixtures 对拍 =====
+// 数据源：atvv_capture.py 真机采集（或 atvv_bench.py --emit-demo-fixture 合成），
+// 默认扫描 scripts/e2e_test/fixtures/xiaomi/**（VOICESTICK_REPO_ROOT 编译宏解析，
+// 可用 VOICESTICK_ATVV_FIXTURES_DIR 环境变量覆盖）。每会话四件套：
+// session_N.adpcm（原始流）、session_N.json（sidecar：帧长/增益/逐段 reset 区间）、
+// session_N.raw.wav（纯解码）、session_N.wav（解码+三点平滑+增益）。
+// 本测试按 sidecar 段落复现 C++ 解码路径，与两份 WAV 逐样本对拍。
+// 无 fixtures 时打印 SKIP 直接返回（不算失败，不伪造结果）。
+
+std::filesystem::path ResolveAtvvFixturesRoot() {
+    if (const char* env = std::getenv("VOICESTICK_ATVV_FIXTURES_DIR");
+        env != nullptr && *env != '\0') {
+        return std::filesystem::path(env);
+    }
+#ifdef VOICESTICK_REPO_ROOT
+    return std::filesystem::path(VOICESTICK_REPO_ROOT) /
+           "scripts" / "e2e_test" / "fixtures" / "xiaomi";
+#else
+    return std::filesystem::path("scripts") / "e2e_test" / "fixtures" / "xiaomi";
+#endif
+}
+
+std::string ReadTextFileForTest(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+}
+
+// 读 PCM16 mono WAV（Python wave 模块产物）：walk RIFF chunk 取 fmt/data。
+std::vector<std::int16_t> ReadWavPcm16ForTest(const std::filesystem::path& path) {
+    const std::string bytes = ReadTextFileForTest(path);
+    if (bytes.size() < 12 || bytes.compare(0, 4, "RIFF") != 0 ||
+        bytes.compare(8, 4, "WAVE") != 0) {
+        return {};
+    }
+    auto u16 = [&bytes](std::size_t off) -> std::uint16_t {
+        return static_cast<std::uint16_t>(
+            static_cast<unsigned char>(bytes[off]) |
+            (static_cast<unsigned int>(static_cast<unsigned char>(bytes[off + 1])) << 8));
+    };
+    auto u32 = [&bytes](std::size_t off) -> std::uint32_t {
+        return static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off])) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 1])) << 8) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 2])) << 16) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 3])) << 24);
+    };
+    std::size_t pos = 12;
+    bool fmt_ok = false;
+    while (pos + 8 <= bytes.size()) {
+        const std::string id = bytes.substr(pos, 4);
+        const std::uint32_t size = u32(pos + 4);
+        const std::size_t payload = pos + 8;
+        if (payload + size > bytes.size()) break;
+        if (id == "fmt ") {
+            fmt_ok = size >= 16 && u16(payload) == 1 &&      // PCM
+                     u16(payload + 2) == 1 &&                // mono
+                     u16(payload + 14) == 16;                // 16bit
+        } else if (id == "data" && fmt_ok) {
+            std::vector<std::int16_t> out(size / 2);
+            for (std::size_t i = 0; i < out.size(); ++i) {
+                out[i] = static_cast<std::int16_t>(u16(payload + i * 2));
+            }
+            return out;
+        }
+        pos = payload + size + (size & 1);  // chunk 按偶数字节对齐
+    }
+    return {};
+}
+
+struct AtvvGoldenSegment {
+    std::size_t offset = 0;
+    std::size_t bytes = 0;
+    int predictor = 0;
+    int step_index = 0;
+};
+
+bool ParseAtvvSidecarForTest(const std::string& json_text, double* gain_db,
+                             std::vector<AtvvGoldenSegment>* segments) {
+    cJSON* root = cJSON_Parse(json_text.c_str());
+    if (root == nullptr) return false;
+    const cJSON* gain = cJSON_GetObjectItemCaseSensitive(root, "gain_db");
+    const cJSON* segs = cJSON_GetObjectItemCaseSensitive(root, "segments");
+    bool ok = cJSON_IsNumber(gain) && cJSON_IsArray(segs) &&
+              !cJSON_IsInvalid(segs) && cJSON_GetArraySize(segs) > 0;
+    if (ok) {
+        *gain_db = gain->valuedouble;
+        const cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, segs) {
+            const cJSON* offset = cJSON_GetObjectItemCaseSensitive(item, "offset");
+            const cJSON* nbytes = cJSON_GetObjectItemCaseSensitive(item, "bytes");
+            const cJSON* predictor = cJSON_GetObjectItemCaseSensitive(item, "predictor");
+            const cJSON* step_index = cJSON_GetObjectItemCaseSensitive(item, "step_index");
+            if (!cJSON_IsNumber(offset) || !cJSON_IsNumber(nbytes) ||
+                !cJSON_IsNumber(predictor) || !cJSON_IsNumber(step_index)) {
+                ok = false;
+                break;
+            }
+            // double→size_t 窄化前提：sidecar 是本仓库自生成 fixtures 资产
+            // （atvv_capture.py / atvv_bench.py --emit-demo-fixture 写出），
+            // offset/bytes 为非负小整数；万一出现畸形值，由下方 golden 解码循环的
+            // assert(seg.offset + seg.bytes <= adpcm_size) 兜底，属可接受前提。
+            segments->push_back(AtvvGoldenSegment{
+                static_cast<std::size_t>(offset->valuedouble),
+                static_cast<std::size_t>(nbytes->valuedouble),
+                predictor->valueint, step_index->valueint});
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+void TestImaAdpcmDecoderGoldenFixtures() {
+    const auto root = ResolveAtvvFixturesRoot();
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) {
+        std::printf("SKIP: ATVV golden fixtures 目录不存在: %s\n",
+                    root.string().c_str());
+        return;
+    }
+    std::vector<std::filesystem::path> adpcm_files;
+    for (std::filesystem::recursive_directory_iterator it(root, ec), end;
+         it != end && !ec; it.increment(ec)) {
+        const auto& p = it->path();
+        if (it->is_regular_file(ec) && p.extension() == ".adpcm" &&
+            p.filename().string().rfind("session_", 0) == 0) {
+            adpcm_files.push_back(p);
+        }
+    }
+    std::sort(adpcm_files.begin(), adpcm_files.end());
+    if (adpcm_files.empty()) {
+        std::printf("SKIP: %s 下无 session_*.adpcm\n", root.string().c_str());
+        return;
+    }
+
+    int checked = 0;
+    for (const auto& adpcm_path : adpcm_files) {
+        const std::string stem = adpcm_path.stem().string();  // session_N
+        const auto dir = adpcm_path.parent_path();
+        const auto sidecar_path = dir / (stem + ".json");
+        const auto raw_wav_path = dir / (stem + ".raw.wav");
+        const auto wav_path = dir / (stem + ".wav");
+        // 有 .adpcm 但缺 sidecar/WAV 属于残缺 fixtures，直接失败暴露问题。
+        assert(std::filesystem::exists(sidecar_path, ec));
+        assert(std::filesystem::exists(raw_wav_path, ec));
+        assert(std::filesystem::exists(wav_path, ec));
+
+        double gain_db = 0.0;
+        std::vector<AtvvGoldenSegment> segments;
+        assert(ParseAtvvSidecarForTest(ReadTextFileForTest(sidecar_path),
+                                       &gain_db, &segments));
+
+        const std::string adpcm_text = ReadTextFileForTest(adpcm_path);
+        const auto* adpcm = reinterpret_cast<const std::uint8_t*>(adpcm_text.data());
+        const std::size_t adpcm_size = adpcm_text.size();
+        ImaAdpcmDecoder decoder;
+        std::vector<std::int16_t> pcm;
+        for (const auto& seg : segments) {
+            assert(seg.offset + seg.bytes <= adpcm_size);
+            decoder.Reset(static_cast<std::int16_t>(seg.predictor), seg.step_index);
+            auto part = decoder.Decode(
+                std::span<const std::uint8_t>(adpcm + seg.offset, seg.bytes));
+            pcm.insert(pcm.end(), part.begin(), part.end());
+        }
+
+        // 对拍 1：纯解码 == session_N.raw.wav（逐样本相等）。
+        const auto expected_raw = ReadWavPcm16ForTest(raw_wav_path);
+        if (pcm != expected_raw) {
+            std::size_t diff = 0;
+            while (diff < std::min(pcm.size(), expected_raw.size()) &&
+                   pcm[diff] == expected_raw[diff]) {
+                ++diff;
+            }
+            std::printf("FAIL %s raw.wav 对拍失败: sizes %zu vs %zu, "
+                        "首个差异样本 #%zu\n", stem.c_str(), pcm.size(),
+                        expected_raw.size(), diff);
+        }
+        assert(pcm == expected_raw);
+
+        // 对拍 2：解码 + PcmPostprocessor(sidecar 增益) == session_N.wav。
+        // Python 侧 smooth3+apply_gain 的舍入已对齐 std::lround。
+        const PcmPostprocessor postprocessor(gain_db);
+        const auto processed = postprocessor.Process(pcm);
+        const auto expected_wav = ReadWavPcm16ForTest(wav_path);
+        if (processed != expected_wav) {
+            std::printf("FAIL %s wav 对拍失败（gain_db=%.2f）\n",
+                        stem.c_str(), gain_db);
+        }
+        assert(processed == expected_wav);
+
+        ++checked;
+        std::printf("  golden %s: %zu samples, %zu segment(s) OK\n",
+                    (dir.filename().string() + "/" + stem).c_str(),
+                    pcm.size(), segments.size());
+    }
+    std::printf("ATVV golden fixtures: %d session(s) checked\n", checked);
+}
+
+
+void TestFrameAccumulator() {
+    // 跨包切帧：3 + 5 字节凑出两个 4 字节帧。
+    FrameAccumulator accumulator(4);
+    assert(accumulator.Append(ByteVector{1, 2, 3}).empty());
+    assert(accumulator.pending_bytes() == 3);
+    const auto frames = accumulator.Append(ByteVector{4, 5, 6, 7, 8});
+    assert(frames.size() == 2);
+    assert((frames[0] == ByteVector{1, 2, 3, 4}));
+    assert((frames[1] == ByteVector{5, 6, 7, 8}));
+    assert(accumulator.pending_bytes() == 0);  // 8 字节恰好两帧
+
+    // Reset 清空部分累积。
+    accumulator.Reset();
+    assert(accumulator.pending_bytes() == 0);
+
+    // 自定义协商帧长。
+    accumulator.set_frame_bytes(3);
+    assert(accumulator.frame_bytes() == 3);
+    assert(accumulator.pending_bytes() == 0);  // set_frame_bytes 同时清空
+    const auto custom = accumulator.Append(ByteVector{1, 2, 3, 4});
+    assert(custom.size() == 1 && (custom[0] == ByteVector{1, 2, 3}));
+    assert(accumulator.pending_bytes() == 1);
+}
+
+void TestPcmPostprocessor() {
+    // 三点平滑公式（首尾样本不动），增益 0dB。
+    PcmPostprocessor flat(0.0);
+    const std::vector<std::int16_t> in{0, 100, 200, 300, 400};
+    const auto smoothed = flat.Process(in);
+    // out[1]=(0+200+200)>>2=100, out[2]=(100+400+300)>>2=200, out[3]=(200+600+400)>>2=300
+    assert((smoothed == std::vector<std::int16_t>{0, 100, 200, 300, 400}));
+
+    // 增益 +6.02dB ≈ ×2；-6.02dB ≈ ×0.5（少于 3 样本跳过平滑只作增益）。
+    PcmPostprocessor boost(6.020599913279624);
+    const auto boosted = boost.Process(std::vector<std::int16_t>{1000});
+    assert(boosted.size() == 1 && boosted[0] == 2000);
+    PcmPostprocessor cut(-6.020599913279624);
+    const auto attenuated = cut.Process(std::vector<std::int16_t>{1000});
+    assert(attenuated.size() == 1 && attenuated[0] == 500);
+
+    // 增益钳位 ±24dB。
+    PcmPostprocessor clamped(30.0);
+    assert(clamped.gain_db() == 24.0);
+    clamped.set_gain_db(-30.0);
+    assert(clamped.gain_db() == -24.0);
+    clamped.set_gain_db(24.0);
+    const auto gained = clamped.Process(std::vector<std::int16_t>{1000});
+    assert(gained[0] == 15849);  // 1000 * 10^(24/20)
+
+    // int16 限幅。
+    const auto limited = clamped.Process(std::vector<std::int16_t>{3000});
+    assert(limited[0] == 32767);
+    const auto limited_neg = clamped.Process(std::vector<std::int16_t>{-3000});
+    assert(limited_neg[0] == -32768);
+}
+
+void TestAudioOpusEncoderRoundTrip() {
+    const auto pcm_in = MakeSinePcm(440);  // 640 采样（40ms）
+    AudioOpusEncoder encoder;
+    std::vector<std::uint8_t> packet(1500);
+    const auto result = encoder.Encode(pcm_in.data(), pcm_in.size(), packet.data(), packet.size());
+    assert(result.opus_error == 0);
+    assert(result.encoded_bytes > 0);
+
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(pcm_in.size(), 0);
+    const auto decoded = decoder.Decode(packet.data(), result.encoded_bytes,
+                                        pcm_out.data(), pcm_out.size());
+    assert(decoded.opus_error == 0);
+    assert(decoded.decoded_samples == static_cast<int>(pcm_in.size()));
+
+    // 能量 sanity：不是静音，且与输入同数量级（Opus 有损，容差放宽）。
+    double input_rms = 0.0;
+    double output_rms = 0.0;
+    for (std::size_t i = 0; i < pcm_in.size(); ++i) {
+        input_rms += static_cast<double>(pcm_in[i]) * pcm_in[i];
+        output_rms += static_cast<double>(pcm_out[i]) * pcm_out[i];
+    }
+    input_rms = std::sqrt(input_rms / pcm_in.size());
+    output_rms = std::sqrt(output_rms / pcm_out.size());
+    assert(output_rms > 1000.0);
+    assert(output_rms > input_rms * 0.5 && output_rms < input_rms * 2.0);
+
+    // 非法参数：空指针、非 Opus 合法帧长。
+    auto bad = encoder.Encode(nullptr, 640, packet.data(), packet.size());
+    assert(bad.opus_error != 0 && bad.encoded_bytes == 0);
+    bad = encoder.Encode(pcm_in.data(), 319, packet.data(), packet.size());
+    assert(bad.opus_error != 0 && bad.encoded_bytes == 0);
+
+    // 组帧器：不足 640 采样不吐帧，跨 Append 累积，余量正确。
+    OpusFrameSlicer slicer;
+    std::vector<std::int16_t> chunk(300, 7);
+    assert(slicer.Append(chunk).empty());
+    assert(slicer.remainder().size() == 300);
+    chunk.assign(400, 9);
+    const auto frames = slicer.Append(chunk);
+    assert(frames.size() == 1);
+    assert(frames[0].size() == AudioOpusEncoder::kFrameSamples);
+    assert(frames[0][0] == 7 && frames[0][299] == 7 && frames[0][300] == 9);
+    assert(slicer.remainder().size() == 60);
+    const auto rest_pcm = slicer.TakeRemainder();
+    assert(rest_pcm.size() == 60 && slicer.remainder().empty());
+    slicer.Reset();
+    assert(slicer.remainder().empty());
+}
+
+void TestXiaomiAtvvSessionFlow() {
+    // CAPS 初始化超时 → Error。
+    {
+        XiaomiAtvvSession session;
+        assert(session.Start(0).size() == 1);
+        assert(session.Tick(XiaomiAtvvSession::kCapsTimeoutMs - 1).empty());
+        const auto actions = session.Tick(XiaomiAtvvSession::kCapsTimeoutMs);
+        assert(HasAtvvError(actions, "caps_timeout"));
+        assert(session.state() == XiaomiAtvvSessionState::kError);
+    }
+
+    XiaomiAtvvSession session;
+    // 未握手时 MIC_OPEN 不应答。
+    assert(session.HandleControlCommand(ByteVector{0x08}, 0).empty());
+
+    auto actions = session.Start(0);
+    const auto* tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr);
+    assert(tx->bytes == (ByteVector{0x0A, 0x01, 0x00, 0x00, 0x03, 0x03}));
+    assert(session.state() == XiaomiAtvvSessionState::kCapsRequested);
+
+    actions = session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, 10);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // MIC_OPEN：只回 0C 00，暂不发送 button_down。
+    actions = session.HandleControlCommand(ByteVector{0x08}, 1000);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0C, 0x00}));
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // 0x04 流开始（无 SYNC）：硬重置解码器。
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x09}, 1010);
+    assert(actions.empty());
+    assert(session.decoder().predictor() == 0 && session.decoder().step_index() == 0);
+
+    // 120B ADPCM = 240 采样，不足 640 采样帧，无输出。
+    assert(session.HandleAudioData(ByteVector(120, 0x11), 1020).empty());
+
+    // 300ms 长按阈值前不发 button_down；跨过阈值才发（session_id=1）。
+    assert(session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs - 1).empty());
+    actions = session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && down->button == "primary");
+    assert(down->session_id.has_value() && *down->session_id == 1);
+    assert(session.state() == XiaomiAtvvSessionState::kStreaming);
+
+    // 再喂 240B（480 采样）→ 累计 720 → 出首帧（640 采样，start flag）。
+    actions = session.HandleAudioData(ByteVector(240, 0x11), 1320);
+    auto frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1);
+    assert(frames[0].session_id == 1 && frames[0].seq == 1);
+    assert(frames[0].IsStart() && !frames[0].IsEnd());
+    assert(!frames[0].payload.empty());
+
+    // STOP → button_up + Draining。
+    actions = session.HandleControlCommand(ByteVector{0x00}, 2000);
+    const auto* up = FindAtvvEvent(actions, "button_up");
+    assert(up != nullptr && up->button == "primary");
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 150ms 宽限内尾包收下：再 480B（960 采样）→ 出一帧。
+    actions = session.HandleAudioData(ByteVector(480, 0x11), 2100);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].seq == 2 && !frames[0].IsEnd());
+
+    // 超宽限的尾包丢弃（Tick 尚未收尾，仍处 Draining）。
+    assert(session.HandleAudioData(ByteVector(120, 0x11),
+                                   2000 + XiaomiAtvvSession::kAudioTailGraceMs + 1).empty());
+
+    // 宽限到期：余量补零出末帧（end flag），回 Ready。
+    actions = session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs + 2);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].seq == 3);
+    assert(frames[0].IsEnd() && !frames[0].IsStart());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // STOP 已收到，断开不再发 MIC_CLOSE。
+    assert(session.Stop(3000).empty());
+    assert(session.state() == XiaomiAtvvSessionState::kIdle);
+
+    // Stop 回到 Idle 后需重新握手（模拟断连重连；session id 计数保持递增）。
+    session.Start(3100);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, 3110);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // RC003 坑：第二次会话不发 SYNC，0x04 必须硬重置解码器。
+    // 第一次会话把 predictor 推到饱和（0x77 连发）。
+    session.HandleControlCommand(ByteVector{0x08}, 4000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0A}, 4010);
+    session.Tick(4000 + XiaomiAtvvSession::kHoldThresholdMs);
+    session.HandleAudioData(ByteVector(120, 0x77), 4320);
+    assert(session.decoder().predictor() == 32767);
+    session.HandleControlCommand(ByteVector{0x00}, 5000);
+    session.Tick(5000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 第二次会话 0x04 无 SYNC → predictor/step 归零。
+    session.HandleControlCommand(ByteVector{0x08}, 6000);
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0B}, 6010);
+    assert(session.decoder().predictor() == 0 && session.decoder().step_index() == 0);
+
+    // 0x0A AUDIO_SYNC：按值重置并清空帧累积器。
+    session.HandleAudioData(ByteVector(100, 0x11), 6020);
+    assert(session.accumulator().pending_bytes() == 100);
+    session.HandleControlCommand(ByteVector{0x0A, 0x00, 0x00, 0x00, 0x01, 0x00, 10}, 6030);
+    assert(session.decoder().predictor() == 256 && session.decoder().step_index() == 10);
+    assert(session.accumulator().pending_bytes() == 0);
+    // predictor 为 BE 有符号：0xFF00 = -256。
+    session.HandleControlCommand(ByteVector{0x0A, 0x00, 0x00, 0x00, 0xFF, 0x00, 5}, 6040);
+    assert(session.decoder().predictor() == -256 && session.decoder().step_index() == 5);
+    // SYNC 后确认长按（session_id=3）并收尾。
+    actions = session.Tick(6000 + XiaomiAtvvSession::kHoldThresholdMs);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 3);
+    session.HandleControlCommand(ByteVector{0x00}, 7000);
+    session.Tick(7000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 8kHz-only → Error，后续输入全部忽略。
+    XiaomiAtvvSession unsupported;
+    unsupported.Start(0);
+    actions = unsupported.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x01, 0x03, 0x00, 0x78}, 10);
+    assert(HasAtvvError(actions, "unsupported_codec"));
+    assert(unsupported.state() == XiaomiAtvvSessionState::kError);
+    assert(unsupported.HandleControlCommand(ByteVector{0x08}, 100).empty());
+    assert(unsupported.HandleAudioData(ByteVector(120, 0x11), 100).empty());
+
+    // 旧版布局：MIC_OPEN 应答带 codec 字节；MIC_CLOSE 仅 0x0D。
+    XiaomiAtvvSession legacy;
+    legacy.Start(0);
+    legacy.HandleControlCommand(ByteVector{0x0B, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00}, 10);
+    actions = legacy.HandleControlCommand(ByteVector{0x08}, 100);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0C, 0x00, 0x02}));
+    actions = legacy.Stop(200);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0D}));
+
+    // v1 且 mic 未 STOP 时断开：MIC_CLOSE 透传 0x04 的 session id。
+    XiaomiAtvvSession closing;
+    AtvvHandshakeReady(closing, 0);
+    closing.HandleControlCommand(ByteVector{0x08}, 100);
+    closing.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x09}, 110);
+    actions = closing.Stop(200);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0D, 0x09}));
+}
+
+void TestXiaomiAtvvSessionKeyMapping() {
+    // 默认 hold_to_talk，双击窗 350ms。
+    XiaomiAtvvSession session;
+    AtvvHandshakeReady(session, 0);
+
+    // 长按：MIC_OPEN 只应答不发事件；缓冲音频在确认后流出（不丢前 300ms 语音）。
+    auto actions = session.HandleControlCommand(ByteVector{0x08}, 100);
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 110);
+    assert(session.HandleAudioData(ByteVector(480, 0x11), 150).empty());  // 960 采样暂存
+    assert(session.Tick(399).empty());
+    actions = session.Tick(100 + XiaomiAtvvSession::kHoldThresholdMs);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && down->button == "primary" && *down->session_id == 1);
+    auto frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].session_id == 1 && frames[0].IsStart());
+    session.HandleControlCommand(ByteVector{0x00}, 2000);
+    session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 短击：缓冲音频丢弃，无 button_down/up；窗超时发 button_click。
+    session.HandleControlCommand(ByteVector{0x08}, 3000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x02}, 3010);
+    session.HandleAudioData(ByteVector(240, 0x11), 3020);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 3150);  // 150ms < 300ms
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    assert(session.Tick(3150 + 349).empty());
+    actions = session.Tick(3150 + 350);
+    const auto* click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && click->button == "primary");
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 双击：窗内第二次 MIC_OPEN → button_double_click（仍应答 TX），不录音。
+    session.HandleControlCommand(ByteVector{0x08}, 5000);
+    session.HandleControlCommand(ByteVector{0x00}, 5100);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 5200);  // 5100+350 窗内
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    // 被双击消费的第二次按下：音频丢弃、跨阈值不发事件、松开不再发事件。
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x03}, 5210);
+    assert(session.HandleAudioData(ByteVector(480, 0x11), 5220).empty());
+    assert(session.Tick(5600).empty());
+    actions = session.HandleControlCommand(ByteVector{0x00}, 5700);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+    assert(session.Tick(6100).empty());  // 无滞留双击窗
+
+    // 三击：双击窗只合成一次 double_click，第三次按下正常开录（会话 id 自增）。
+    session.HandleControlCommand(ByteVector{0x08}, 7000);
+    session.HandleControlCommand(ByteVector{0x00}, 7100);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 7200);
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    session.HandleControlCommand(ByteVector{0x00}, 7300);
+    session.HandleControlCommand(ByteVector{0x08}, 8000);
+    actions = session.Tick(8000 + XiaomiAtvvSession::kHoldThresholdMs);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 2);
+    session.HandleControlCommand(ByteVector{0x00}, 9000);
+    session.Tick(9000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // session_id 在 button_down 与 AudioFrame 间一致且逐会话自增。
+    session.HandleControlCommand(ByteVector{0x08}, 10000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x04}, 10010);
+    actions = session.Tick(10000 + XiaomiAtvvSession::kHoldThresholdMs);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 3);
+    actions = session.HandleAudioData(ByteVector(480, 0x11), 10310);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].session_id == 3);
+    session.HandleControlCommand(ByteVector{0x00}, 11000);
+    session.Tick(11000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // click_to_talk：MIC_OPEN 立即发 button_down，STOP 发 button_up；双击仍合成。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession click_session(click_options);
+    AtvvHandshakeReady(click_session, 0);
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 100);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 1);
+    assert(click_session.state() == XiaomiAtvvSessionState::kStreaming);
+    actions = click_session.HandleControlCommand(ByteVector{0x00}, 250);  // 短按 150ms
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    // 尾包宽限收尾后进入双击窗（短按）。
+    click_session.Tick(250 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(click_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 500);  // 250+350 窗内
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    click_session.HandleControlCommand(ByteVector{0x00}, 600);
+    assert(click_session.state() == XiaomiAtvvSessionState::kReady);
+    // 窗后按下：立即开录新会话。
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 5000);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 2);
+}
+
+void TestXiaomiAtvvSessionClickTapTimeoutSilent() {
+    // click_to_talk：短按已由 button_down/up 完整表达并开录，双击窗超时不得再补发
+    // button_click（否则协调器 click 分支把空闲态无 duration_ms 的 click 当启动，
+    // 产生永远收不到音频的幽灵会话，靠硬超时报错收场）。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession session(click_options);
+    AtvvHandshakeReady(session, 0);
+
+    auto actions = session.HandleControlCommand(ByteVector{0x08}, 100);
+    assert(FindAtvvEvent(actions, "button_down") != nullptr);  // 按下即开录
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 110);
+    session.HandleAudioData(ByteVector(240, 0x11), 120);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 200);  // 短按 100ms
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    // 尾包宽限收尾：click 短按武装双击窗。
+    session.Tick(200 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    // 双击窗超时：无任何补发事件，仅回 Ready。
+    actions = session.Tick(200 + 350);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // Tick 未跑、窗已过恰好 MIC_OPEN：同样不补发 button_click，直接开新会话。
+    session.HandleControlCommand(ByteVector{0x08}, 1000);
+    session.HandleControlCommand(ByteVector{0x00}, 1100);
+    session.Tick(1100 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 1100 + 350 + 10);
+    assert(FindAtvvEvent(actions, "button_click") == nullptr);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr);  // 新按下立即开录
+    assert(session.state() == XiaomiAtvvSessionState::kStreaming);
+    session.HandleControlCommand(ByteVector{0x00}, 2000);
+    session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+
+    // 对照：hold_to_talk 窗超时仍补发 button_click（短击未发过任何事件，
+    // 协调器 hold 分支对 click 是无害 no-op）。Tick 未跑窗已过的路径同样补发。
+    XiaomiAtvvSession hold_session;
+    AtvvHandshakeReady(hold_session, 0);
+    hold_session.HandleControlCommand(ByteVector{0x08}, 100);
+    hold_session.HandleControlCommand(ByteVector{0x00}, 200);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = hold_session.Tick(200 + 350);
+    assert(FindAtvvEvent(actions, "button_click") != nullptr);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kReady);
+
+    hold_session.HandleControlCommand(ByteVector{0x08}, 1000);
+    hold_session.HandleControlCommand(ByteVector{0x00}, 1100);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = hold_session.HandleControlCommand(ByteVector{0x08}, 1100 + 350 + 10);
+    assert(FindAtvvEvent(actions, "button_click") != nullptr);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kTapPending);
+    hold_session.HandleControlCommand(ByteVector{0x00}, 2000);
+}
+
+void TestXiaomiAtvvSessionReopenRejectWindow() {
+    // 规格：STOP 后 300ms 内拒绝重开会话（防遥控器抖动/急速重开）。
+    XiaomiAtvvSession session;  // hold_to_talk
+    AtvvHandshakeReady(session, 0);
+
+    // 长按完整键程：MIC_OPEN → STREAM_START → 长按确认 → STOP → Draining。
+    session.HandleControlCommand(ByteVector{0x08}, 1000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 1010);
+    auto actions = session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    assert(FindAtvvEvent(actions, "button_down") != nullptr);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 2000);
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 拒绝窗内（Draining，STOP 后 100ms）MIC_OPEN：忽略，无 ACK、无事件、状态不变。
+    actions = session.HandleControlCommand(ByteVector{0x08}, 2100);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 尾包宽限到期收尾回 Ready，但拒绝窗（300ms）仍未满：MIC_OPEN 依旧忽略。
+    session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 2200);  // STOP 后 200ms
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 窗满（STOP 后 ≥300ms）：正常应答并开新按下。
+    actions = session.HandleControlCommand(ByteVector{0x08}, 2000 + XiaomiAtvvSession::kReopenRejectMs);
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+    session.HandleControlCommand(ByteVector{0x00}, 2400);  // 短击收尾
+    session.Tick(2400 + 350 + 1);  // 双击窗超时回 Ready
+
+    // 双击路径不受拒绝窗影响：click 短按的 STOP 也武装拒绝窗，
+    // 但第二击走 kWaitSecondTap 分支，窗内照常合成 button_double_click。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession click_session(click_options);
+    AtvvHandshakeReady(click_session, 0);
+    click_session.HandleControlCommand(ByteVector{0x08}, 1000);
+    click_session.HandleControlCommand(ByteVector{0x00}, 1100);  // 短按 → Draining + 拒绝窗
+    click_session.Tick(1100 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(click_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 1200);  // STOP 后 100ms，拒绝窗内
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    click_session.HandleControlCommand(ByteVector{0x00}, 1300);
+
+    // Stop 复位清窗：重连握手后立即可开录（不残留拒绝窗）。
+    XiaomiAtvvSession restart;
+    AtvvHandshakeReady(restart, 0);
+    restart.HandleControlCommand(ByteVector{0x08}, 1000);
+    restart.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 1010);
+    restart.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    restart.HandleControlCommand(ByteVector{0x00}, 2000);  // 武装拒绝窗（至 2300）
+    restart.Stop(2050);  // 断连复位
+    AtvvHandshakeReady(restart, 2100);
+    actions = restart.HandleControlCommand(ByteVector{0x08}, 2150);  // 旧窗内时刻
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    assert(restart.state() == XiaomiAtvvSessionState::kTapPending);
+}
+
+void TestXiaomiAtvvSessionEncoderResetPerSession() {
+    // 上一会话的 Opus 编码器残余状态不得污染下一会话（对齐固件 audio_pipeline.c
+    // 每次会话开始 OPUS_RESET_STATE）：复用 session 的第二会话首帧须与全新
+    // session 的首帧逐字节一致；无 Reset 时 SILK/CELT 内部预测器状态会使其不同。
+    const auto kHoldFirstFramePayload = [](XiaomiAtvvSession& session, std::int64_t t) {
+        session.HandleControlCommand(ByteVector{0x08}, t);
+        session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, t + 10);
+        session.HandleAudioData(ByteVector(480, 0x11), t + 20);  // 960 采样 → 暂存 1 帧
+        const auto actions = session.Tick(t + XiaomiAtvvSession::kHoldThresholdMs);
+        const auto frames = CollectAtvvFrames(actions);
+        assert(frames.size() == 1 && frames[0].IsStart());
+        return frames[0].payload;
+    };
+
+    // 全新 session 的首会话首帧（编码器出厂状态）。
+    XiaomiAtvvSession fresh;
+    AtvvHandshakeReady(fresh, 0);
+    const auto fresh_first = kHoldFirstFramePayload(fresh, 1000);
+
+    // 复用 session：会话 1（多编几帧改变内部状态）结束后开会话 2。
+    XiaomiAtvvSession reused;
+    AtvvHandshakeReady(reused, 0);
+    const auto reused_first = kHoldFirstFramePayload(reused, 1000);
+    assert(reused_first == fresh_first);  // sanity：首会话本就该一致
+    reused.HandleAudioData(ByteVector(480, 0x77), 1400);  // 会话 1 多喂两帧
+    reused.HandleControlCommand(ByteVector{0x00}, 2000);
+    reused.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(reused.state() == XiaomiAtvvSessionState::kReady);
+    const auto reused_second = kHoldFirstFramePayload(reused, 10000);  // 远超拒绝窗
+    assert(reused_second == fresh_first);  // 关键：Reset 后与全新逐字节一致
+
+    // click_to_talk 立即路径同样每会话 Reset（BeginPress 非 suppressed 分支覆盖）。
+    const auto kClickFirstFramePayload = [](XiaomiAtvvSession& session, std::int64_t t) {
+        session.HandleControlCommand(ByteVector{0x08}, t);
+        session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, t + 10);
+        const auto actions = session.HandleAudioData(ByteVector(480, 0x11), t + 20);
+        const auto frames = CollectAtvvFrames(actions);
+        assert(frames.size() == 1 && frames[0].IsStart());
+        return frames[0].payload;
+    };
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession click_fresh(click_options);
+    AtvvHandshakeReady(click_fresh, 0);
+    const auto click_fresh_first = kClickFirstFramePayload(click_fresh, 1000);
+
+    XiaomiAtvvSession click_reused(click_options);
+    AtvvHandshakeReady(click_reused, 0);
+    const auto click_reused_first = kClickFirstFramePayload(click_reused, 1000);
+    assert(click_reused_first == click_fresh_first);
+    click_reused.HandleControlCommand(ByteVector{0x00}, 2000);  // 按压 1000ms（长按路径）
+    click_reused.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(click_reused.state() == XiaomiAtvvSessionState::kReady);
+    const auto click_reused_second = kClickFirstFramePayload(click_reused, 10000);
+    assert(click_reused_second == click_fresh_first);
+}
+
+void TestXiaomiAtvvServiceUuidAd() {
+    // ATVV service UUID 线上小端字节：AB5E0001-5A21-4F05-BC7D-AF01F617B664。
+    const ByteVector atvv_ad = {
+        0x02, 0x01, 0x06,  // flags
+        0x11, 0x06,        // incomplete 128-bit service UUID list，16 字节
+        0x64, 0xb6, 0x17, 0xf6, 0x01, 0xaf, 0x7d, 0xbc,
+        0x05, 0x4f, 0x21, 0x5a, 0x01, 0x00, 0x5e, 0xab,
+    };
+    assert(BleProtocol::HasXiaomiAtvvServiceUuid(atvv_ad));
+    assert(!BleProtocol::HasVoiceStickServiceUuid(atvv_ad));
+
+    // complete list（0x07）同样识别。
+    ByteVector complete_ad = atvv_ad;
+    complete_ad[4] = 0x07;
+    assert(BleProtocol::HasXiaomiAtvvServiceUuid(complete_ad));
+
+    // VoiceStick 广播不含 ATVV UUID；空/截断数据不误报。
+    const ByteVector vs_ad = {
+        0x02, 0x01, 0x06,
+        0x11, 0x07,
+        0x00, 0x51, 0xfc, 0xea, 0x3c, 0x3a, 0xf7, 0x88,
+        0x23, 0x4b, 0x6f, 0x6e, 0x84, 0x0b, 0x2f, 0x8f,
+    };
+    assert(BleProtocol::HasVoiceStickServiceUuid(vs_ad));
+    assert(!BleProtocol::HasXiaomiAtvvServiceUuid(vs_ad));
+    assert(!BleProtocol::HasXiaomiAtvvServiceUuid(ByteVector{}));
+    assert(!BleProtocol::HasXiaomiAtvvServiceUuid(ByteVector{0x11, 0x06, 0x64}));
+}
+
+// ---- 协调器 × 小米事件流（规格 §7.1）----
+// 事件由 XiaomiAtvvSession 真实产出后直接注入 FakeBleCentral 回调（不需真 BLE）；
+// 协调器对设备类别无感知，RC-XXXX 与 VS-XXXX 走同一状态机。
+
+// 把 session 产出的动作注入协调器（WriteTx 是回遥控器字节、Error 无协调器语义，均忽略）。
+void InjectAtvvActions(FakeBleCentral& ble, const std::string& device_id,
+                       const std::vector<XiaomiAtvvAction>& actions) {
+    for (const auto& action : actions) {
+        if (const auto* event = std::get_if<XiaomiAtvvStateEvent>(&action)) {
+            ble.on_state_event(device_id, event->event);
+        } else if (const auto* frame = std::get_if<XiaomiAtvvAudioFrame>(&action)) {
+            ble.on_audio_frame(device_id, frame->frame);
+        }
+    }
+}
+
+// 完成 ATVV 握手（Start + v1.0 CAPS：16kHz、ADPCM 帧长 120 字节）。
+void AtvvCoordinatorHandshake(XiaomiAtvvSession& session, std::int64_t& t) {
+    session.Start(t);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, t + 10);
+    t += 10;
+}
+
+// hold_to_talk 按下段：MIC_OPEN → STREAM_START → 音频暂存 → 跨 300ms 阈值确认长按
+// （button_down + 暂存帧注入协调器）。返回后协调器应处于 recording。
+void AtvvBeginHoldRecording(FakeBleCentral& ble, const std::string& device_id,
+                            XiaomiAtvvSession& session, std::int64_t& t) {
+    InjectAtvvActions(ble, device_id, session.HandleControlCommand(ByteVector{0x08}, t));
+    InjectAtvvActions(ble, device_id,
+                      session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, t + 10));
+    InjectAtvvActions(ble, device_id, session.HandleAudioData(ByteVector(480, 0x11), t + 20));
+    InjectAtvvActions(ble, device_id, session.Tick(t + XiaomiAtvvSession::kHoldThresholdMs));
+    t += XiaomiAtvvSession::kHoldThresholdMs;
+}
+
+// 松开段：STOP（button_up 注入）→ 150ms 尾包宽限到期 FinalizeStream（end 帧注入）。
+void AtvvEndRecording(FakeBleCentral& ble, const std::string& device_id,
+                      XiaomiAtvvSession& session, std::int64_t& t) {
+    t += 600;
+    InjectAtvvActions(ble, device_id, session.HandleControlCommand(ByteVector{0x00}, t));
+    InjectAtvvActions(ble, device_id, session.Tick(t + XiaomiAtvvSession::kAudioTailGraceMs));
+    t += XiaomiAtvvSession::kAudioTailGraceMs;
+}
+
+// ①hold_to_talk 正常录音 → ASR 送出 Ogg，final 后粘贴。
+void TestCoordinatorXiaomiHoldToTalkStreamsOggToAsr() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 关闭异步精修，验证同步粘贴流程
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    const std::string kDev = "RC-1A2B";
+    XiaomiAtvvSession session;  // 默认 hold_to_talk
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+    assert(HasUiState(*ble_ptr, "recording", kDev));
+
+    // 跨过协调器 0.5s 最小录音时长（墙钟），期间持续出音频帧。
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+    AtvvEndRecording(*ble_ptr, kDev, session, t);
+
+    // end 帧到达后协调器启动 ASR 并把整段 Ogg 送出，末包 is_last。
+    assert(asr_ptr->started);
+    assert(asr_ptr->sent_chunks > 0);
+    assert(asr_ptr->last_chunk_was_final);
+
+    asr_ptr->on_final("hello xiaomi");
+    assert(input.pasted_text == "hello xiaomi");
+    assert(HasUiState(*ble_ptr, "ready", kDev));
+}
+
+// ②识别中侧键取消 / 录音中主键双击取消语义对 RC 设备 id 不变。
+void TestCoordinatorXiaomiCancelSemantics() {
+    const std::string kDev = "RC-3C4D";
+
+    // 场景 A：识别中（finalizing）secondary 单击取消，不粘贴。
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto* ble_ptr = ble.get();
+        auto asr = std::make_unique<FakeAsrClient>();
+        auto* asr_ptr = asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.refine_enabled = false;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+        coordinator.Start();
+
+        XiaomiAtvvSession session;
+        std::int64_t t = 1000;
+        AtvvCoordinatorHandshake(session, t);
+        AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        AtvvEndRecording(*ble_ptr, kDev, session, t);
+        assert(asr_ptr->started);  // finalizing：ASR 已启动等 final
+
+        ble_ptr->on_state_event(kDev, ButtonEvent("button_up", "secondary"));
+        assert(asr_ptr->cancelled);
+        assert(input.pasted_text.empty());
+        assert(HasUiState(*ble_ptr, "ready", kDev));
+    }
+
+    // 场景 B：录音中主键双击 → 取消录音并注入 Enter，ASR 未启动。
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto* ble_ptr = ble.get();
+        auto asr = std::make_unique<FakeAsrClient>();
+        auto* asr_ptr = asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.refine_enabled = false;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+        coordinator.Start();
+
+        XiaomiAtvvSession session;
+        std::int64_t t = 1000;
+        AtvvCoordinatorHandshake(session, t);
+        AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+        assert(HasUiState(*ble_ptr, "recording", kDev));
+
+        ble_ptr->on_state_event(kDev, DoubleClickEvent("primary"));
+        assert(input.send_enter_called);
+        assert(!asr_ptr->started);
+        assert(input.pasted_text.empty());
+        assert(HasUiState(*ble_ptr, "ready", kDev));
+    }
+}
+
+// ③wechat_input_method 路径：音频经 Opus 解码写入虚拟麦 PCM ring buffer。
+void TestCoordinatorXiaomiWechatInputMethodDecodesToVirtualMic() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    const std::string kDev = "RC-5E6F";
+    ble_ptr->connected_device_ids.insert(kDev);
+    ble_ptr->on_connection_change({ConnectedDevice{kDev, "RC-5E6F"}});
+
+    XiaomiAtvvSession session;
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+    assert(fake_renderer != nullptr);
+    assert(fake_renderer->start_count == 1);
+    PcmRingBuffer* ring = fake_renderer->last_ring;
+    assert(ring != nullptr);
+
+    // button_down 时暂存帧已放出（≥1 个 640 采样 Opus 帧）；继续喂一帧。
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+
+    // 协调器把 Opus 解码为 PCM 写入 ring：至少有 640 采样且非全零（ADPCM 0x11
+    // 解码为缓升信号，Opus 有损但能量保留）。轮询兜底异步解码。
+    std::vector<std::int16_t> pcm(AudioOpusEncoder::kFrameSamples, 0);
+    std::size_t readable = 0;
+    for (int i = 0; i < 50 && readable < pcm.size(); ++i) {
+        readable = ring->Available();
+        if (readable < pcm.size()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(readable >= pcm.size());
+    const auto read_count = ring->Read(pcm.data(), pcm.size());
+    assert(read_count == pcm.size());
+    const bool all_zero = std::all_of(pcm.begin(), pcm.end(),
+                                      [](std::int16_t s) { return s == 0; });
+    assert(!all_zero);
+
+    // 松开后 wechat 会话完整停止。
+    AtvvEndRecording(*ble_ptr, kDev, session, t);
+    assert(fake_renderer->stop_count >= 1);
+    assert(asr_ptr->sent_chunks == 0);  // wechat 路径不经 ASR
+}
+
+// ④字幕路径：subtitle ASR 整句识别，字幕显示、不粘贴。
+void TestCoordinatorXiaomiSubtitlePath() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    FakeAsrClient* subtitle_asr_ptr = nullptr;
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.refine_enabled = false;  // 字幕用例验证同步显示流程，关闭异步精修
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [&](const AppConfig&) {
+            auto asr = std::make_unique<FakeAsrClient>();
+            subtitle_asr_ptr = asr.get();
+            return asr;
+        });
+    coordinator.Start();
+
+    const std::string kDev = "RC-7A8B";
+    XiaomiAtvvSession session;
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+    assert(HasUiState(*ble_ptr, "recording", kDev));
+    // 帧在录音时长不足 0.5s 时注入（can_start_asr=false，保持缓冲）；
+    // 随后 sleep 跨过最小录音时长，模拟真实长录音。
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+
+    // STOP（button_up）：字幕 cycle 已建但 ASR 未启动（等整段音频）。
+    const auto stop_actions_t = t + 600;
+    InjectAtvvActions(*ble_ptr, kDev,
+                      session.HandleControlCommand(ByteVector{0x00}, stop_actions_t));
+    assert(subtitle_asr_ptr != nullptr);
+    assert(!subtitle_asr_ptr->started);
+
+    // end 帧：字幕 ASR 启动并收到整段 Ogg。
+    InjectAtvvActions(*ble_ptr, kDev,
+                      session.Tick(stop_actions_t + XiaomiAtvvSession::kAudioTailGraceMs));
+    assert(subtitle_asr_ptr->started);
+    assert(subtitle_asr_ptr->sent_chunks > 0);
+
+    subtitle_asr_ptr->on_partial("interim xiaomi");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "interim xiaomi");
+    subtitle_asr_ptr->on_final("hello xiaomi subtitle");
+
+    // 字幕显示且不粘贴；设备回 ready。
+    assert(input.pasted_text.empty());
+    assert(!ui.subtitles.empty());
+    assert(ui.subtitles.back().find("hello xiaomi subtitle") != std::string::npos);
+    assert(ui.subtitles.back().find(kDev) != std::string::npos);
+    assert(HasUiState(*ble_ptr, "ready", kDev));
+}
+
+void TestDeviceIdRcPrefix() {
+    // RC- 前缀归一化：大小写不敏感、去前缀后 4 位大写 hex，与 VS- 并存。
+    assert(BleProtocol::NormalizeDeviceId("RC-3A7F") == "3A7F");
+    assert(BleProtocol::NormalizeDeviceId("rc-3a7f") == "3A7F");
+    assert(BleProtocol::NormalizeDeviceId(" vs-c3d8 ") == "C3D8");
+    assert(BleProtocol::NormalizeDeviceId("3a7f") == "3A7F");
+    assert(BleProtocol::NormalizeDeviceId("RC-12").empty());
+    assert(BleProtocol::NormalizeDeviceId("RC-XYZW").empty());
+
+    assert(BleProtocol::DeviceIdFromName("RC-3A7F").value() == "3A7F");
+    assert(BleProtocol::DeviceIdFromName("VS-C3D8").value() == "C3D8");
+    assert(!BleProtocol::DeviceIdFromName("RC-123").has_value());
+    assert(!BleProtocol::DeviceIdFromName("Other").has_value());
+
+    // 小米名称白名单（trim+小写，中文名按 UTF-8 字节比较）。
+    assert(BleProtocol::IsXiaomiRemoteName("MI RC"));
+    assert(BleProtocol::IsXiaomiRemoteName(" mi rc "));
+    assert(BleProtocol::IsXiaomiRemoteName("Xiaomi Bluetooth Remote 2 Pro"));
+    assert(BleProtocol::IsXiaomiRemoteName("小米蓝牙语音遥控器"));
+    assert(BleProtocol::IsXiaomiRemoteName("RC001"));
+    assert(BleProtocol::IsXiaomiRemoteName("rc003"));
+    assert(!BleProtocol::IsXiaomiRemoteName("VS-C3D8"));
+    assert(!BleProtocol::IsXiaomiRemoteName(""));
+    assert(!BleProtocol::IsXiaomiRemoteName("MI RC2"));
+
+    // DeviceClassFromName：白名单 → 小米；VS- 前缀 → StickS3；其余 nullopt。
+    assert(BleProtocol::DeviceClassFromName("MI RC") == DeviceClass::kXiaomiRemote2Pro);
+    assert(BleProtocol::DeviceClassFromName("RC-3A7F") == DeviceClass::kXiaomiRemote2Pro);
+    assert(BleProtocol::DeviceClassFromName("VS-C3D8") == DeviceClass::kStickS3);
+    assert(!BleProtocol::DeviceClassFromName("Random Speaker").has_value());
+}
+
+void TestAppConfigXiaomiTable() {
+    // 默认值。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.xiaomi_suppress_f5);
+    assert(defaults.XiaomiSettingsForDevice(std::nullopt).gain_db == 12.0);
+    assert(defaults.XiaomiSettingsForDevice(std::nullopt).double_click_ms == 350);
+    // 未覆盖设备回落全局默认。
+    assert(defaults.XiaomiSettingsForDevice("RC-3A7F").gain_db == 12.0);
+
+    // TOML 文本加载：[device.RC-3A7F.xiaomi] + 全局开关。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_xiaomi_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "paired_device_ids = \"RC-3A7F\"\n";
+        out << "xiaomi_suppress_f5 = false\n";
+        out << "[device.RC-3A7F.xiaomi]\n";
+        out << "gain_db = 20.5\n";
+        out << "double_click_ms = 450\n";
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(!loaded.xiaomi_suppress_f5);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").gain_db == 20.5);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").double_click_ms == 450);
+    // 访问器内部归一化：带前缀与不带前缀等价。
+    assert(loaded.XiaomiSettingsForDevice("RC-3A7F").gain_db == 20.5);
+    assert(loaded.XiaomiSettingsForDevice("FFFF").gain_db == 12.0);
+    std::filesystem::remove(temp);
+
+    // 保存/加载往返。
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"3A7F"};
+    config.xiaomi_suppress_f5 = false;
+    config.device_xiaomi_settings["3A7F"] = XiaomiSettings{.gain_db = 18.0, .double_click_ms = 400};
+    config.Save(temp);
+    loaded = AppConfig::Load(temp);
+    assert(!loaded.xiaomi_suppress_f5);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").gain_db == 18.0);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").double_click_ms == 400);
+
+    // 与默认相同不落盘。
+    config.device_xiaomi_settings["3A7F"] = XiaomiSettings{};
+    config.Save(temp);
+    {
+        std::ifstream in(temp);
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        assert(buffer.str().find(".xiaomi") == std::string::npos);
+    }
+    std::filesystem::remove(temp);
+}
+
+// F5 抑制谓词：enabled 且 last>0 且 0<=age<=80ms 时吞，其余一律放行。
+void TestXiaomiF5SuppressPredicate() {
+    constexpr std::int64_t kLast = 100000;
+    // 窗内（含 0/80ms 边界）吞。
+    assert(ShouldSuppressF5(kLast, kLast, true));
+    assert(ShouldSuppressF5(kLast + 79, kLast, true));
+    assert(ShouldSuppressF5(kLast + kF5SuppressWindowMs, kLast, true));
+    // 窗外（81ms）放行。
+    assert(!ShouldSuppressF5(kLast + kF5SuppressWindowMs + 1, kLast, true));
+    // 开关关闭放行。
+    assert(!ShouldSuppressF5(kLast, kLast, false));
+    // 从未开麦（last=0）放行。
+    assert(!ShouldSuppressF5(kLast, 0, true));
+    // 未来时间戳（时钟回拨/乱序，age<0）放行。
+    assert(!ShouldSuppressF5(kLast - 1, kLast, true));
+}
+
+// 协调器 × 小米能力门控（规格 §4.4/§5.2）：RC 设备不下发交互/编码器设置、不走
+// VoiceStick 固件更新；对照组 StickS3 设备行为不变。小米身份走 config 种子兜底路径
+//（paired_devices 条目带 hardware，IsXiaomiRemoteDevice 直接命中），不注入
+// device_info 事件，因此完全不触达 SavePairedDeviceInfo 落盘真实 config.toml。
+void TestCoordinatorXiaomiCapabilityGating() {
+    const std::string kRc = "RC-3A7F";
+    const std::string kVs = "VS-5A74";
+    auto make_seeded_config = [&]() {
+        AppConfig config = AppConfig::Defaults();
+        config.paired_device_ids.clear(); // 避免 CheckFirmwareUpdatesIfNeeded 起网络线程
+        PairedDeviceEntry rc_entry;
+        rc_entry.device_id = kRc;
+        rc_entry.hardware = std::string(kHardwareXiaomiRemote2Pro);
+        config.paired_devices.push_back(rc_entry);
+        return config;
+    };
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto* ble_ptr = ble.get();
+        auto asr = std::make_unique<FakeAsrClient>();
+        FakeUi ui;
+        FakeInputInjector input;
+        VoiceStickCoordinator coordinator(make_seeded_config(), std::move(ble), std::move(asr),
+                                          &ui, &input);
+        coordinator.Start();
+
+        auto targets_device = [](const std::optional<std::string>& id, const std::string& dev) {
+            return id.has_value() && *id == dev;
+        };
+        auto assert_no_sends_to = [&](const std::string& dev) {
+            for (const auto& [_, id] : ble_ptr->sent_tap_enabled) {
+                assert(!targets_device(id, dev));
+            }
+            for (const auto& item : ble_ptr->sent_tap_sensitivities) {
+                assert(!targets_device(item.device_id, dev));
+            }
+            for (const auto& item : ble_ptr->sent_imu_wake_sensitivities) {
+                assert(!targets_device(item.device_id, dev));
+            }
+            for (const auto& [_, id] : ble_ptr->sent_encoder_led_colors) {
+                assert(!targets_device(id, dev));
+            }
+            for (const auto& [_, id] : ble_ptr->sent_encoder_recording_gates) {
+                assert(!targets_device(id, dev));
+            }
+        };
+
+        // 小米遥控器连接事件（hardware 由 BLE 层按类填充，镜像真实路径）。
+        ble_ptr->connected_device_ids.insert(kRc);
+        ble_ptr->on_connection_change(
+            {ConnectedDevice{kRc, "RC-3A7F", std::string(kHardwareXiaomiRemote2Pro)}});
+
+        // 连接同步循环：RC 设备不应收到任何交互/编码器单播（广播不在此断言）。
+        assert_no_sends_to(kRc);
+
+        // UpdateConfig 热更循环同样跳过 RC 设备（此时仅 RC 连接，应零新增）。
+        const auto tap_count = ble_ptr->sent_tap_enabled.size();
+        const auto tap_sens_count = ble_ptr->sent_tap_sensitivities.size();
+        const auto imu_wake_count = ble_ptr->sent_imu_wake_sensitivities.size();
+        const auto led_count = ble_ptr->sent_encoder_led_colors.size();
+        const auto gate_count = ble_ptr->sent_encoder_recording_gates.size();
+        coordinator.UpdateConfig(make_seeded_config());
+        assert(ble_ptr->sent_tap_enabled.size() == tap_count);
+        assert(ble_ptr->sent_tap_sensitivities.size() == tap_sens_count);
+        assert(ble_ptr->sent_imu_wake_sensitivities.size() == imu_wake_count);
+        assert(ble_ptr->sent_encoder_led_colors.size() == led_count);
+        assert(ble_ptr->sent_encoder_recording_gates.size() == gate_count);
+
+        // 固件更新门控：本地文件 OTA 直接拒绝，不触达底层 BLE。
+        const auto fw_path =
+            std::filesystem::temp_directory_path() / "voicestick_xiaomi_gating_test.bin";
+        {
+            std::ofstream f(fw_path, std::ios::binary);
+            f << "ota-image";
+        }
+        bool rc_completion_called = false;
+        bool rc_completion_ok = true;
+        coordinator.UpdateFirmwareFromFile(
+            fw_path.string(), kRc, nullptr,
+            [&](bool ok, std::string message) {
+                rc_completion_called = true;
+                rc_completion_ok = ok;
+                assert(message.find("does not support") != std::string::npos);
+            });
+        assert(rc_completion_called);
+        assert(!rc_completion_ok);
+        assert(ble_ptr->captured_firmware_device_id.empty());
+
+        // 对照组：StickS3 设备正常下发、正常触达固件更新底层。
+        ble_ptr->connected_device_ids.insert(kVs);
+        ble_ptr->on_connection_change(
+            {ConnectedDevice{kRc, "RC-3A7F", std::string(kHardwareXiaomiRemote2Pro)},
+             ConnectedDevice{kVs, "VS-5A74"}});
+        bool vs_got_sends = false;
+        for (const auto& [_, id] : ble_ptr->sent_tap_enabled) {
+            if (targets_device(id, kVs)) vs_got_sends = true;
+        }
+        for (const auto& [_, id] : ble_ptr->sent_encoder_led_colors) {
+            if (targets_device(id, kVs)) vs_got_sends = true;
+        }
+        assert(vs_got_sends);
+        assert_no_sends_to(kRc); // RC 依旧零下发
+
+        bool vs_completion_called = false;
+        coordinator.UpdateFirmwareFromFile(fw_path.string(), kVs, nullptr,
+                                           [&](bool ok, std::string) {
+                                               vs_completion_called = true;
+                                               assert(ok);
+                                           });
+        assert(vs_completion_called);
+        assert(ble_ptr->captured_firmware_device_id == kVs);
+
+        std::filesystem::remove(fw_path);
+        coordinator.Shutdown();
+    }
+}
+
 void TestPcmRingBufferWriteRead() {
     PcmRingBuffer buffer(1024);
     std::vector<int16_t> in(100);
@@ -8115,8 +9635,15 @@ void TestPowerLogMonitor() {
 }
 
 int main() {
+#ifdef _DEBUG
+    // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接 abort，
+    // 避免 CRT 默认弹「Microsoft Visual C++ Runtime Library」对话框挂起测试进程。
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
     TestDeviceIds();
     TestPairDeviceHelpers();
+    TestPairingAdvertisementClassify();
     TestPowerLogMonitor();
     TestAudioFrameParsing();
     TestBleControlPayloads();
@@ -8293,6 +9820,26 @@ int main() {
     TestAudioOpusDecoderNullData();
     TestAudioOpusDecoderInvalidData();
     TestAudioOpusDecoderSmallBuffer();
+    TestXiaomiAtvvCapsParsing();
+    TestImaAdpcmDecoderGolden();
+    TestImaAdpcmDecoderGoldenFixtures();
+    TestFrameAccumulator();
+    TestPcmPostprocessor();
+    TestAudioOpusEncoderRoundTrip();
+    TestXiaomiAtvvSessionFlow();
+    TestXiaomiAtvvSessionKeyMapping();
+    TestXiaomiAtvvSessionClickTapTimeoutSilent();
+    TestXiaomiAtvvSessionReopenRejectWindow();
+    TestXiaomiAtvvSessionEncoderResetPerSession();
+    TestXiaomiAtvvServiceUuidAd();
+    TestCoordinatorXiaomiHoldToTalkStreamsOggToAsr();
+    TestCoordinatorXiaomiCancelSemantics();
+    TestCoordinatorXiaomiWechatInputMethodDecodesToVirtualMic();
+    TestCoordinatorXiaomiSubtitlePath();
+    TestDeviceIdRcPrefix();
+    TestAppConfigXiaomiTable();
+    TestXiaomiF5SuppressPredicate();
+    TestCoordinatorXiaomiCapabilityGating();
     TestPcmRingBufferWriteRead();
     TestPcmRingBufferOverwrite();
     TestPcmRingBufferUnderrunSilence();

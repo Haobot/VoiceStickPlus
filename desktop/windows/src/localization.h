@@ -146,6 +146,11 @@ enum class StringId {
     kPairTimedOut,
     kPairFoundCount,
     kPairScanningCount,
+    // 双模扫描候选/设备类型标签与小米遥控器 OS 配对引导
+    kDeviceTypeVoiceStick,
+    kDeviceTypeXiaomiRemote,
+    kPairXiaomiOsPairing,
+    kPairXiaomiBondFailed,
 
     // 引导窗口
     kOnboardingTitle,
@@ -310,6 +315,15 @@ enum class StringId {
     kMenuInteractionSettings,
     // {0} = 设备 ID（如 5A74）
     kInteractionSettingsTitle,
+
+    // 设备级遥控器设置（小米遥控器，托盘设备子菜单入口 + 独立对话框）
+    kMenuRemoteSettings,
+    // {0} = 设备 ID（如 RC-3A7F）
+    kRemoteSettingsTitle,
+    kSettingsRemoteGainDb,
+    kSettingsRemoteDoubleClickMs,
+    // 提示行：设置值在会话创建时消费，热更不重配已连接会话
+    kRemoteSettingsEffectiveNextConnect,
 
     // 电池电压监测（托盘设备子菜单入口 + 独立监测窗口，仅连接设备显示）
     kMenuBatteryMonitor,

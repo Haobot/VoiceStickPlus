@@ -44,6 +44,8 @@ enum class RemoteButtonAction {
 struct ConnectedDevice {
     std::string id;
     std::string name;
+    // 设备类标识（kHardwareXiaomiRemote2Pro 等；StickS3 在拿到 device_info 前为空）。
+    std::string hardware;
 };
 
 struct DeviceInfo {
@@ -69,7 +71,8 @@ public:
     virtual void ConnectPairedDevice(const std::string& device_id,
                                      std::uint64_t bluetooth_address,
                                      BluetoothAddressKind address_kind,
-                                     const std::string& name) = 0;
+                                     const std::string& name,
+                                     DeviceClass device_class) = 0;
     virtual void SendUiState(const std::string& state,
                                const std::string& text,
                                const std::optional<std::string>& device_id) = 0;
@@ -247,7 +250,8 @@ public:
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
                              BluetoothAddressKind address_kind,
-                             const std::string& name);
+                             const std::string& name,
+                             DeviceClass device_class);
     void ConfirmPairedDeviceIds(const std::vector<std::string>& device_ids);
     void RemovePairedDevice(const std::string& device_id);
     void CancelPendingConnect(const std::string& device_id);
@@ -476,6 +480,11 @@ private:
     void EnterError(const std::string& message, std::string_view reason);
     void RefreshDeviceUiState(const std::string& device_id);
     void SendUiStateForActiveDevice(const std::string& state, const std::string& text = "");
+    // 小米遥控器 2 Pro 判定（hardware==kHardwareXiaomiRemote2Pro）：知识来源为
+    // device_info 事件（UpdateDeviceFirmwareInfo）与配对配置种子（ConfirmPairedDeviceIds/
+    // config_.paired_devices）。用于门控不适用小米设备的下发与固件更新路径。
+    // 内部取 firmware_mutex_，调用方不得持有该锁。
+    bool IsXiaomiRemoteDevice(const std::string& device_id);
     OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
     // 返回要下发给固件的交互模式：wechat 模式 + hold_to_talk 时派生为 kHoldToTalkInstant
     // （按下即录音，跳过 300ms 阈值，降低按下到弹框延迟），其余按用户配置原样下发。

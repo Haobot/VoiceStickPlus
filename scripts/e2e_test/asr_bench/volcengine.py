@@ -28,7 +28,8 @@ EVENT_TASK_REQUEST = 200
 def session_payload(resource_id: str, *, result_type: str = "full",
                     enable_nonstream: bool = True, enable_ddc: bool = True,
                     hotwords: list[str] | None = None,
-                    boosting_table_id: str = "", correct_table_id: str = "") -> bytes:
+                    boosting_table_id: str = "", correct_table_id: str = "",
+                    audio_format: str = "ogg") -> bytes:
     request = {
         "model_name": "bigmodel",
         "enable_nonstream": enable_nonstream,
@@ -47,9 +48,16 @@ def session_payload(resource_id: str, *, result_type: str = "full",
                                        ensure_ascii=False, separators=(",", ":"))
     if corpus:
         request["corpus"] = corpus
+    # ogg=Ogg Opus 容器（桌面端口径）；pcm=裸 s16le 16k mono（atvv_bench 直送，
+    # 绕开 Python 侧无 Opus 编码器的限制）。
+    if audio_format == "ogg":
+        audio = {"format": "ogg", "codec": "opus", "rate": 16000, "bits": 16,
+                 "channel": 1}
+    else:
+        audio = {"format": audio_format, "rate": 16000, "bits": 16, "channel": 1}
     payload = {
         "user": {"uid": "voice-stick-asr-bench"},
-        "audio": {"format": "ogg", "codec": "opus", "rate": 16000, "bits": 16, "channel": 1},
+        "audio": audio,
         "request": request,
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -58,11 +66,13 @@ def session_payload(resource_id: str, *, result_type: str = "full",
 def connection_payload(resource_id: str, *, result_type: str = "full",
                        enable_nonstream: bool = True, enable_ddc: bool = True,
                        hotwords: list[str] | None = None,
-                       boosting_table_id: str = "", correct_table_id: str = "") -> bytes:
+                       boosting_table_id: str = "", correct_table_id: str = "",
+                       audio_format: str = "ogg") -> bytes:
     inner = session_payload(resource_id, result_type=result_type,
                             enable_nonstream=enable_nonstream, enable_ddc=enable_ddc,
                             hotwords=hotwords, boosting_table_id=boosting_table_id,
-                            correct_table_id=correct_table_id)
+                            correct_table_id=correct_table_id,
+                            audio_format=audio_format)
     return b'{"namespace":"BidirectionalASR","event":0,"req_params":' + inner + b"}"
 
 
@@ -115,9 +125,13 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
              category: str = "", reference: str = "",
              result_type: str = "full", enable_nonstream: bool = True,
              enable_ddc: bool = True, hotwords: list[str] | None = None,
-             boosting_table_id: str = "", correct_table_id: str = "") -> ClipResult:
-    """回放单条 ogg 到火山 ASR，返回结构化结果。异常不外抛，记入 error。
+             boosting_table_id: str = "", correct_table_id: str = "",
+             audio_format: str = "ogg") -> ClipResult:
+    """回放单条音频到火山 ASR，返回结构化结果。异常不外抛，记入 error。
 
+    audio_format="ogg"（默认）：ogg_path 为 Ogg Opus 文件，桌面端口径。
+    audio_format="pcm"：ogg_path 指向裸 s16le 16kHz mono PCM 文件直接发送
+    （atvv_bench 链路，音频声明 format=pcm）。
     result_type / enable_nonstream / enable_ddc 默认与桌面端一致，
     消融实验（run_volc_ablation.py）通过覆盖这三个参数对比配置。
     hotwords=corpus.context 直传热词；boosting_table_id / correct_table_id
@@ -127,7 +141,7 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
                      category=category, reference=reference, duration_s=duration_s)
     ogg = ogg_path.read_bytes()
     if not ogg:
-        res.error = "empty ogg"
+        res.error = "empty audio"
         return res
 
     sock = None
@@ -145,7 +159,8 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
         payload_kw = dict(result_type=result_type, enable_nonstream=enable_nonstream,
                           enable_ddc=enable_ddc, hotwords=hotwords,
                           boosting_table_id=boosting_table_id,
-                          correct_table_id=correct_table_id)
+                          correct_table_id=correct_table_id,
+                          audio_format=audio_format)
         send_ws_frame(sock, 0x2, make_event_frame(0x01, EVENT_START_CONNECTION, "", 0x01,
                                                   connection_payload(resource_id, **payload_kw)))
         time.sleep(0.2)
@@ -153,8 +168,9 @@ def run_clip(ogg_path: Path, *, api_key: str, resource_id: str = DEFAULT_RESOURC
                                                   session_payload(resource_id, **payload_kw)))
         time.sleep(0.3)
 
-        # 按真实时长实时节奏分包发送（200ms 一档）。
-        chunk_size = 2000
+        # 按真实时长实时节奏分包发送（200ms 一档）。pcm 16kHz s16le mono
+        # 为 32000 B/s，200ms = 6400 字节。
+        chunk_size = 2000 if audio_format == "ogg" else 6400
         n_chunks = max(1, (len(ogg) + chunk_size - 1) // chunk_size)
         pace_s = (duration_s / n_chunks) if duration_s > 0 else 0.2
 

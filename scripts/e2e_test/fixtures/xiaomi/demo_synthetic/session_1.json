@@ -1,0 +1,27 @@
+{
+  "session": 1,
+  "codec": 2,
+  "sample_rate": 16000,
+  "frame_len": 120,
+  "gain_db": 12.0,
+  "adpcm_bytes": 15552,
+  "decoded_bytes": 15552,
+  "samples": 31104,
+  "duration_s": 1.944,
+  "first_audio_latency_ms": null,
+  "segments": [
+    {
+      "offset": 0,
+      "bytes": 15552,
+      "predictor": 0,
+      "step_index": 0
+    }
+  ],
+  "files": {
+    "adpcm": "session_1.adpcm",
+    "wav": "session_1.wav",
+    "raw_wav": "session_1.raw.wav"
+  },
+  "synthetic": true,
+  "source": "scripts/e2e_test/corpus/short_01.pcm"
+}

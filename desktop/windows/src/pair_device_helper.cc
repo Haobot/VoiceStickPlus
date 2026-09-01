@@ -12,13 +12,53 @@ std::optional<std::string> ParseManualPairDeviceId(std::string_view input) {
     return normalized;
 }
 
+std::optional<PairingAdvertisementMatch> ClassifyPairingAdvertisement(
+    std::string_view local_name,
+    bool has_voice_stick_service,
+    bool has_xiaomi_atvv_service,
+    std::uint64_t bluetooth_address) {
+    PairingAdvertisementMatch match;
+    auto device_id = BleProtocol::DeviceIdFromName(local_name);
+    if (device_id.has_value()) {
+        match.device_id = *device_id;
+        match.device_class =
+            BleProtocol::DeviceClassFromName(local_name).value_or(DeviceClass::kStickS3);
+        match.id_source = PairingCandidateIdSource::kName;
+        return match;
+    }
+    if (has_voice_stick_service) {
+        // 固件把名称放 SCAN_RSP：ADV 仅有 service UUID 时为同一地址生成临时候选。
+        match.device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+        match.device_class = DeviceClass::kStickS3;
+        match.id_source = PairingCandidateIdSource::kAddressFallback;
+        match.is_temporary = true;
+        return match;
+    }
+    if (BleProtocol::IsXiaomiRemoteName(local_name) || has_xiaomi_atvv_service) {
+        // 小米遥控器无名称内嵌 ID：统一用蓝牙地址低 16 位（展示为 RC-XXXX）。
+        match.device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+        match.device_class = DeviceClass::kXiaomiRemote2Pro;
+        match.id_source = PairingCandidateIdSource::kAddressFallback;
+        return match;
+    }
+    return std::nullopt;
+}
+
+bool MatchesPendingPairAddress(std::uint64_t message_address, std::uint64_t pending_address) {
+    return pending_address != 0 && message_address == pending_address;
+}
+
 std::string CandidateDisplayTitle(const PairingCandidate& candidate) {
     if (candidate.is_temporary_candidate) {
         return "VoiceStick (waiting for name)";
     }
 
+    // 空名兜底实际不可达（HandleAdvertisement 已按类别合成非空 display_name），
+    // 仅作防御：前缀按 device_class 取，避免对小米候选拼出 "VS-" 的错误假设。
     std::string title = candidate.display_name.empty()
-                            ? "VS-" + candidate.device_id
+                            ? std::string(candidate.device_class == DeviceClass::kXiaomiRemote2Pro
+                                              ? "RC-" : "VS-") +
+                                  candidate.device_id
                             : candidate.display_name;
     if (candidate.is_existing_device) title += " (paired)";
     return title;

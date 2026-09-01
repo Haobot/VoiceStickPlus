@@ -86,6 +86,7 @@ add_library(voicestick_core
     src/app_config.cc
     src/asr_protocol.cc
     src/audio_opus_decoder.cc
+    src/audio_opus_encoder.cc
     src/ble_protocol.cc
     src/cmd_line.cc
     src/com_port_selector.cc
@@ -114,6 +115,10 @@ add_library(voicestick_core
     src/wechat_input_method_hotkey.cc
     src/device_switch_state.cc
     src/default_audio_device_controller.cc
+    src/ima_adpcm_decoder.cc
+    src/pcm_postprocessor.cc
+    src/xiaomi_atvv_protocol.cc
+    src/xiaomi_atvv_session.cc
 )
 
 target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus ${CMAKE_CURRENT_BINARY_DIR})
@@ -143,10 +148,12 @@ add_executable(VoiceStickApp WIN32
     src/settings_dialog.cc
     src/encoder_settings_dialog.cc
     src/interaction_settings_dialog.cc
+    src/remote_settings_dialog.cc
     src/battery_monitor_dialog.cc
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
     src/selection_hotword_manager.cc
+    src/voice_f5_suppressor.cc
     resources/VoiceStick.rc
 )
 
@@ -242,6 +249,9 @@ add_executable(voicestick_windows_tests
 )
 
 target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt)
+# golden fixtures（ATVV 采集）相对仓库根解析，不依赖测试进程工作目录
+target_compile_definitions(voicestick_windows_tests PRIVATE
+    VOICESTICK_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
 
 enable_testing()
 add_test(NAME voicestick_windows_tests COMMAND voicestick_windows_tests)

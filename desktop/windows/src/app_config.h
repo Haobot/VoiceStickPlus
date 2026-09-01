@@ -131,6 +131,18 @@ struct EncoderSettings {
     bool operator==(const EncoderSettings& other) const = default;
 };
 
+// 小米蓝牙遥控器 2 Pro 设置。全局默认值存于 AppConfig::default_xiaomi_settings
+//（无顶层 TOML 键，仅结构默认值），[device.<id>.xiaomi] 表按设备整体覆盖，
+// 结构镜像 [device.<id>.encoder]。
+struct XiaomiSettings {
+    // ADPCM 解码后增益（dB），消费侧 ±24 限幅。默认 12.0。
+    double gain_db = 12.0;
+    // 语音键双击时序窗（ms）：第一次短击释放后等待第二次按下的最大窗口。默认 350。
+    int double_click_ms = 350;
+
+    bool operator==(const XiaomiSettings& other) const = default;
+};
+
 // 设备交互设置（IMU/体感）。全局默认值存于 AppConfig::default_interaction_settings
 //（TOML 顶层 imu_wake_sensitivity/tap_to_arrow/tap_sensitivity/air_mouse_sensitivity_x/y 键，
 // 向后兼容旧配置），[device.<id>.interaction] 表按设备整体覆盖；消费点统一走
@@ -244,6 +256,12 @@ struct AppConfig {
     // 按设备覆盖；消费点统一走 EncoderSettingsForDevice()。
     EncoderSettings default_encoder_settings;
     std::map<std::string, EncoderSettings> device_encoder_settings;
+    // 小米遥控器设置：default_xiaomi_settings 为全局默认（仅结构默认值），
+    // device_xiaomi_settings 为 [device.<id>.xiaomi] 按设备覆盖；消费点统一走
+    // XiaomiSettingsForDevice()。xiaomi_suppress_f5 为全局 F5 抑制开关（Windows）。
+    XiaomiSettings default_xiaomi_settings;
+    std::map<std::string, XiaomiSettings> device_xiaomi_settings;
+    bool xiaomi_suppress_f5 = true;
     // 体感鼠标：速度环时间常数（秒），手停滑行 ≈ 3×tau，越大缓停越长。默认 0.05。
     double air_mouse_tau = 0.05;
     // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。
@@ -336,6 +354,9 @@ struct AppConfig {
     // 返回设备有效交互设置：有 [device.<id>.interaction] 覆盖时返回覆盖（加载时已用
     // 全局默认填平所有字段），否则返回全局默认。const 引用返回，体感热路径零拷贝。
     const InteractionSettings& InteractionSettingsForDevice(const std::optional<std::string>& device_id) const;
+    // 返回设备有效小米遥控器设置：有 [device.<id>.xiaomi] 覆盖时返回覆盖（加载时已用
+    // 全局默认填平所有字段），否则返回全局默认。
+    const XiaomiSettings& XiaomiSettingsForDevice(const std::optional<std::string>& device_id) const;
 };
 
 // 内置 key（ActiveApiKey 非空）时向导跳过 kAsr 步；公开版无 key 仍需用户填写。

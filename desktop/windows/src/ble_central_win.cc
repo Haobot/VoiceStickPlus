@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "ble_protocol.h"
 #include "log.h"
+#include "xiaomi_atvv_protocol.h"
 
 #include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.Metadata.h>
@@ -99,6 +100,17 @@ constexpr int kScanRestartMaxBackoffMs{30000};
 constexpr std::chrono::seconds kScanSilenceTimeout{60};
 constexpr std::chrono::seconds kScanWatchdogMinRestartInterval{120};
 
+// 标准 GATT Battery Service（小米遥控器电量，可选）与 GAP 设备名（心跳保活兜底读）。
+constexpr const wchar_t* kBatteryServiceUuid = L"0000180f-0000-1000-8000-00805f9b34fb";
+constexpr const wchar_t* kBatteryLevelUuid = L"00002a19-0000-1000-8000-00805f9b34fb";
+constexpr const wchar_t* kGapServiceUuid = L"00001800-0000-1000-8000-00805f9b34fb";
+constexpr const wchar_t* kGapDeviceNameUuid = L"00002a00-0000-1000-8000-00805f9b34fb";
+
+// 小米电池/保活 setup 的总超时：内部为裸 WinRT co_await 串（服务发现/特征发现/
+// CCCD/初始读），任一步被楔死都会挂住 ready 前的连接序列；超时即放弃电池特征
+// 继续主连接（心跳保活随之缺失，90s 静默拆除兜底）。
+constexpr std::chrono::milliseconds kXiaomiBatterySetupTimeout{5000};
+
 // 在途连接 claim 的滞留上限：ConnectDeviceAsync 若在任一无超时的 WinRT
 // co_await 上永久挂起（既不 fail 也不 ready），claim 永不释放，该地址的
 // 后续广播全被 try_claim_connect 否决，形成重连自我封锁。最坏正常连接
@@ -160,6 +172,7 @@ ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buff
 struct AdvertisementIdentity {
     std::string local_name;
     bool has_voice_stick_service = false;
+    bool has_xiaomi_atvv_service = false;
 };
 
 AdvertisementIdentity AdvertisementIdentityFrom(
@@ -179,6 +192,7 @@ AdvertisementIdentity AdvertisementIdentityFrom(
         identity.local_name = BleProtocol::LocalNameFromAdvertisementData(ad_data).value_or(std::string());
     }
     identity.has_voice_stick_service = BleProtocol::HasVoiceStickServiceUuid(ad_data);
+    identity.has_xiaomi_atvv_service = BleProtocol::HasXiaomiAtvvServiceUuid(ad_data);
     return identity;
 }
 
@@ -436,13 +450,16 @@ void BleCentralWin::UpdatePairedDeviceIds(const std::vector<std::string>& ids) {
 void BleCentralWin::ConnectPairedDevice(const std::string& device_id,
                                         std::uint64_t bluetooth_address,
                                         BluetoothAddressKind address_kind,
-                                        const std::string& name) {
-    LogBleLine("direct connect enter VS-" + device_id + " (pre-lock)");
+                                        const std::string& name,
+                                        DeviceClass device_class) {
+    const char* id_prefix = device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-";
+    LogBleLine("direct connect enter " + std::string(id_prefix) + device_id + " (pre-lock)");
     {
         std::lock_guard lock(mutex_);
         paired_device_ids_.insert(device_id);
         if (sessions_by_device_id_.contains(device_id)) {
-            LogBleLine("direct connect skipped: VS-" + device_id + " is already connected");
+            LogBleLine("direct connect skipped: " + std::string(id_prefix) + device_id +
+                       " is already connected");
             return;
         }
         if (connecting_addresses_.contains(bluetooth_address)) {
@@ -452,11 +469,12 @@ void BleCentralWin::ConnectPairedDevice(const std::string& device_id,
         }
         connecting_addresses_.emplace(bluetooth_address, std::chrono::steady_clock::now());
     }
-    LogBleLine("direct connect requested VS-" + device_id + " address=" +
+    LogBleLine("direct connect requested " + std::string(id_prefix) + device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
                " kind=" + AddressKindName(address_kind));
     ConnectDeviceAsync(bluetooth_address, address_kind,
-                       name.empty() ? "VS-" + device_id : name, device_id);
+                       name.empty() ? std::string(id_prefix) + device_id : name, device_id,
+                       device_class);
 }
 
 void BleCentralWin::SendUiState(const std::string& state,
@@ -468,7 +486,8 @@ void BleCentralWin::SendUiState(const std::string& state,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             } else {
                 LogBleLine("send ui_state skipped state=" + state +
@@ -477,7 +496,8 @@ void BleCentralWin::SendUiState(const std::string& state,
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
             LogBleLine("send ui_state broadcast state=" + state +
                        " targets=" + std::to_string(targets.size()) +
@@ -501,12 +521,14 @@ void BleCentralWin::SendInteractionMode(InteractionMode mode,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -524,12 +546,14 @@ void BleCentralWin::SendShowImuDebug(bool enabled,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -547,12 +571,14 @@ void BleCentralWin::SendTapEnabled(bool enabled,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -570,12 +596,14 @@ void BleCentralWin::SendEncoderLedColor(const std::string& color,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -593,12 +621,14 @@ void BleCentralWin::SendEncoderRecordingGate(bool enabled,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -616,12 +646,14 @@ void BleCentralWin::SendAirMouseEnabled(bool enabled,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -639,12 +671,14 @@ void BleCentralWin::SendImuWakeSensitivity(int threshold_lsb,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -662,12 +696,14 @@ void BleCentralWin::SendTapSensitivity(int level,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -684,12 +720,14 @@ void BleCentralWin::RequestBatteryStatus(const std::optional<std::string>& devic
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
         }
     }
@@ -705,7 +743,8 @@ void BleCentralWin::SendPowerLogCommand(const std::string& device_id, ByteVector
     {
         std::lock_guard lock(mutex_);
         auto it = sessions_by_device_id_.find(device_id);
-        if (it != sessions_by_device_id_.end() && it->second->ready) {
+        if (it != sessions_by_device_id_.end() && it->second->ready &&
+            it->second->device_class == DeviceClass::kStickS3) {
             targets.push_back(it->second);
         }
     }
@@ -729,7 +768,8 @@ void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
         std::lock_guard lock(mutex_);
         if (device_id.has_value()) {
             auto it = sessions_by_device_id_.find(*device_id);
-            if (it != sessions_by_device_id_.end() && it->second->ready) {
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
                 targets.push_back(it->second);
             } else {
                 LogBleLine("send remote_button_" + std::string(action_name) +
@@ -737,7 +777,8 @@ void BleCentralWin::SendRemoteButton(RemoteButtonAction action,
             }
         } else {
             for (const auto& [_, session] : sessions_by_device_id_) {
-                if (session->ready) targets.push_back(session);
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
             }
             LogBleLine("send remote_button_" + std::string(action_name) +
                        " broadcast target_count=" + std::to_string(targets.size()));
@@ -774,6 +815,10 @@ void BleCentralWin::UpdateFirmware(ByteVector image,
         auto it = sessions_by_device_id_.find(device_id);
         if (it == sessions_by_device_id_.end() || !it->second->ready) {
             completion(false, "No VoiceStick is connected.");
+            return;
+        }
+        if (it->second->device_class != DeviceClass::kStickS3) {
+            completion(false, "This device does not support VoiceStick firmware update.");
             return;
         }
         session = it->second;
@@ -948,11 +993,23 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
     last_adv_received_ms_.store(NowSteadyMs(), std::memory_order_relaxed);
     const auto identity = AdvertisementIdentityFrom(args.Advertisement());
     const auto bluetooth_address = args.BluetoothAddress();
+    // 双通道发现：StickS3（VS- 名称/service UUID）与小米遥控器（名称白名单/ATVV UUID）。
+    // 设备 ID 均归一化为去前缀 4 位大写 hex（paired_device_ids_ 同形存储；VS/RC 撞车
+    // 为已知取舍，见 ble_protocol.h NormalizeDeviceId 注释）。
     auto device_id = BleProtocol::DeviceIdFromName(identity.local_name);
-    if (!device_id.has_value() && identity.has_voice_stick_service) {
+    DeviceClass device_class = DeviceClass::kStickS3;
+    if (device_id.has_value()) {
+        device_class =
+            BleProtocol::DeviceClassFromName(identity.local_name).value_or(DeviceClass::kStickS3);
+    } else if (identity.has_voice_stick_service) {
         device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+    } else if (BleProtocol::IsXiaomiRemoteName(identity.local_name) ||
+               identity.has_xiaomi_atvv_service) {
+        device_id = BleProtocol::DeviceIdFromBluetoothAddress(bluetooth_address);
+        device_class = DeviceClass::kXiaomiRemote2Pro;
     }
     if (!device_id.has_value()) return;
+    const char* id_prefix = device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-";
     BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
     if (CanReadAdvertisementAddressType()) {
         try {
@@ -1024,7 +1081,7 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
         // 消失的对端投递 ConnectionStatusChanged 断连事件。若不在这里拆
         // 掉陈旧会话，旧会话会一直否决后续广告，重连永远不发生（设备停在
         // pairing 屏，主机却显示已连接）。
-        LogBleLine("advertisement from paired VS-" + *device_id +
+        LogBleLine("advertisement from paired " + std::string(id_prefix) + *device_id +
                    " while session still registered; dropping stale session and reconnecting");
         HandleDeviceDisconnected(*device_id, nullptr);
         if (stale_recently_alive) {
@@ -1035,7 +1092,7 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             std::lock_guard lock(mutex_);
             reconnect_settle_until_[bluetooth_address] =
                 std::chrono::steady_clock::now() + kReconnectSettleDelay;
-            LogBleLine("reconnect settle VS-" + *device_id + ": delaying " +
+            LogBleLine("reconnect settle " + std::string(id_prefix) + *device_id + ": delaying " +
                        std::to_string(kReconnectSettleDelay.count()) +
                        "ms for OS to tear down the zombie link");
             return;
@@ -1057,18 +1114,19 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             }
         }
         if (should_log) {
-            LogBleLine("connect claim denied VS-" + *device_id + " address=" +
+            LogBleLine("connect claim denied " + std::string(id_prefix) + *device_id + " address=" +
                        FormatBluetoothAddress(bluetooth_address) +
                        " (already connecting, settle window, or cooldown)");
         }
         return;
     }
 
-    LogBleLine("advertisement matched VS-" + *device_id + " address=" +
+    LogBleLine("advertisement matched " + std::string(id_prefix) + *device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
                " kind=" + AddressKindName(address_kind) +
                " scan_to_adv_ms=" + std::to_string(ElapsedMs(scan_started_at_)));
-    ConnectDeviceAsync(bluetooth_address, address_kind, identity.local_name, *device_id);
+    ConnectDeviceAsync(bluetooth_address, address_kind, identity.local_name, *device_id,
+                       device_class);
 }
 
 namespace {
@@ -1186,10 +1244,17 @@ bool IsLikelyStaleBondError(std::int32_t hresult) {
 winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth_address,
                                                          BluetoothAddressKind address_kind,
                                                          std::string local_name,
-                                                         std::string device_id) {
+                                                         std::string device_id,
+                                                         DeviceClass device_class) {
     auto session = std::make_shared<DeviceSession>();
     session->bluetooth_address = bluetooth_address;
-    session->device = ConnectedDevice{device_id, local_name.empty() ? "VS-" + device_id : local_name};
+    session->device_class = device_class;
+    const bool is_xiaomi = device_class == DeviceClass::kXiaomiRemote2Pro;
+    const char* id_prefix = is_xiaomi ? "RC-" : "VS-";
+    session->device = ConnectedDevice{
+        device_id,
+        local_name.empty() ? std::string(id_prefix) + device_id : local_name,
+        is_xiaomi ? std::string(kHardwareXiaomiRemote2Pro) : std::string()};
 
     auto detach_device_handlers = [device_id](std::shared_ptr<DeviceSession> s) {
         if (!s || !s->ble_device) return;
@@ -1260,7 +1325,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             }
             session->ble_device = nullptr;
         }
-        LogBleLine("connect failed VS-" + device_id + " address=" +
+        LogBleLine(std::string("connect failed ") +
+                   (session->device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-") +
+                   device_id + " address=" +
                    FormatBluetoothAddress(bluetooth_address) + " reason=" + message +
                    (zombie_free_retry > 0
                         ? " [zombie-suspect: no cooldown, immediate retry #" +
@@ -1580,7 +1647,8 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                                                  " count=" + std::to_string(count));
 
             if (status == GattCommunicationStatus::Success && count > 0) {
-                const winrt::guid wanted{BleProtocol::service_uuid};
+                const winrt::guid wanted{is_xiaomi ? XiaomiAtvvProtocol::service_uuid
+                                                   : BleProtocol::service_uuid};
                 for (uint32_t i = 0; i < count; ++i) {
                     auto candidate = services.GetAt(i);
                     if (candidate.Uuid() == wanted) {
@@ -1589,11 +1657,13 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     }
                 }
                 if (session->service) break;
-                LogBleLine("VoiceStick service UUID not present in result for VS-" + device_id);
+                LogBleLine(std::string(is_xiaomi ? "Xiaomi ATVV" : "VoiceStick") +
+                           " service UUID not present in result for " + id_prefix + device_id);
             }
 
             if (attempt == kServiceDiscoveryAttempts) {
-                fail("VoiceStick service discovery failed after retries (status=" +
+                fail(std::string(is_xiaomi ? "Xiaomi ATVV" : "VoiceStick") +
+                     " service discovery failed after retries (status=" +
                      GattStatusName(status) + ", services=" + std::to_string(count) +
                      "). Toggle Bluetooth off and back on, then try pairing again.");
                 co_return;
@@ -1700,6 +1770,216 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                                                         " count=" + std::to_string(result.Characteristics().Size()));
             return result;
         };
+
+        if (is_xiaomi) {
+            // ---- 小米遥控器 2 Pro（ATVV）连接序列 ----
+            // 与 StickS3 的差异：无 ui_state/OTA 通道，主机只写 TX 命令、订阅
+            // Audio/Control 两个 notify；ATVV 会话状态机在 UI 线程驱动
+            //（XiaomiAtvvSession 线程契约），GATT 回调只负责 marshal 字节。
+            const auto atvv_char_ok = [](const GattCharsResult& r) {
+                return r && r.Status() == GattCommunicationStatus::Success &&
+                       r.Characteristics().Size() > 0;
+            };
+            auto tx_result = discover_characteristic(winrt::guid{XiaomiAtvvProtocol::tx_uuid},
+                                                     "atvv_tx", BluetoothCacheMode::Cached);
+            auto atvv_audio_result = discover_characteristic(winrt::guid{XiaomiAtvvProtocol::audio_uuid},
+                                                             "atvv_audio", BluetoothCacheMode::Cached);
+            auto atvv_control_result = discover_characteristic(winrt::guid{XiaomiAtvvProtocol::control_uuid},
+                                                               "atvv_control", BluetoothCacheMode::Cached);
+            if (!atvv_char_ok(tx_result) || !atvv_char_ok(atvv_audio_result) ||
+                !atvv_char_ok(atvv_control_result)) {
+                LogBleLine("cached characteristic discovery incomplete RC-" + device_id +
+                           "; retrying uncached");
+                tx_result = discover_characteristic(winrt::guid{XiaomiAtvvProtocol::tx_uuid},
+                                                    "atvv_tx", BluetoothCacheMode::Uncached);
+                atvv_audio_result = discover_characteristic(winrt::guid{XiaomiAtvvProtocol::audio_uuid},
+                                                            "atvv_audio", BluetoothCacheMode::Uncached);
+                atvv_control_result = discover_characteristic(winrt::guid{XiaomiAtvvProtocol::control_uuid},
+                                                              "atvv_control", BluetoothCacheMode::Uncached);
+            }
+            if (!atvv_char_ok(tx_result)) {
+                fail("atvv_tx discovery failed: " +
+                     (tx_result ? GattStatusName(tx_result.Status()) : std::string("timeout")));
+                co_return;
+            }
+            if (!atvv_char_ok(atvv_audio_result)) {
+                fail("atvv_audio discovery failed: " +
+                     (atvv_audio_result ? GattStatusName(atvv_audio_result.Status())
+                                        : std::string("timeout")));
+                co_return;
+            }
+            if (!atvv_char_ok(atvv_control_result)) {
+                fail("atvv_control discovery failed: " +
+                     (atvv_control_result ? GattStatusName(atvv_control_result.Status())
+                                          : std::string("timeout")));
+                co_return;
+            }
+
+            session->xiaomi_tx_characteristic = tx_result.Characteristics().GetAt(0);
+            session->xiaomi_audio_characteristic = atvv_audio_result.Characteristics().GetAt(0);
+            session->xiaomi_control_characteristic = atvv_control_result.Characteristics().GetAt(0);
+            if (!HasWriteWithoutResponse(session->xiaomi_tx_characteristic) ||
+                !HasNotify(session->xiaomi_audio_characteristic) ||
+                !HasNotify(session->xiaomi_control_characteristic)) {
+                fail("required GATT characteristic properties are missing");
+                co_return;
+            }
+
+            session->xiaomi_control_value_changed_token =
+                session->xiaomi_control_characteristic.ValueChanged(
+                    [this, device_id, weak_session = std::weak_ptr<DeviceSession>(session)](
+                        const GattCharacteristic&, const auto& args) {
+                        auto s = weak_session.lock();
+                        if (!s) return;
+                        s->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+                        auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                        // 语音键按下（MIC_OPEN）：遥控器固件会同步向 OS 多发一个 F5，
+                        // 记录时刻供 VoiceF5Suppressor 在 80ms 窗内吞掉该按键。
+                        if (!bytes.empty() && bytes[0] == XiaomiAtvvProtocol::control_mic_open &&
+                            xiaomi_mic_open_sink_) {
+                            xiaomi_mic_open_sink_->store(NowSteadyMs(),
+                                                         std::memory_order_relaxed);
+                        }
+                        DispatchToUiThread([this, weak_session, bytes = std::move(bytes)]() {
+                            auto s2 = weak_session.lock();
+                            if (!s2) return;
+                            DriveXiaomiSession(s2, [bytes = std::move(bytes),
+                                                    now = NowSteadyMs()](XiaomiAtvvSession& sess) {
+                                return sess.HandleControlCommand(bytes, now);
+                            });
+                        });
+                    });
+            session->xiaomi_audio_value_changed_token =
+                session->xiaomi_audio_characteristic.ValueChanged(
+                    [this, weak_session = std::weak_ptr<DeviceSession>(session)](
+                        const GattCharacteristic&, const auto& args) {
+                        auto s = weak_session.lock();
+                        if (!s) return;
+                        s->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+                        auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                        DispatchToUiThread([this, weak_session, bytes = std::move(bytes)]() {
+                            auto s2 = weak_session.lock();
+                            if (!s2) return;
+                            DriveXiaomiSession(s2, [bytes = std::move(bytes),
+                                                    now = NowSteadyMs()](XiaomiAtvvSession& sess) {
+                                return sess.HandleAudioData(bytes, now);
+                            });
+                        });
+                    });
+            // 与 StickS3 相同：先让 BTHLE 驱动把 ValueChanged 接线就绪再写 CCCD，
+            // 否则首条 notify 可能竞态丢失。
+            co_await WaitMs(kValueChangedHandlerSettleDelay);
+
+            // 先 Control 后 Audio：MIC_OPEN/STOP 控制帧优先级高于音频流。
+            LogBleLine("subscribing atvv control notifications RC-" + device_id);
+            auto atvv_control_op = session->xiaomi_control_characteristic
+                .WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue::Notify);
+            auto atvv_control_wait = [](decltype(atvv_control_op) op)
+                -> winrt::Windows::Foundation::IAsyncAction {
+                try { co_await op; } catch (...) {}
+            }(atvv_control_op);
+            co_await winrt::when_any(atvv_control_wait, WaitMs(kSubscribeTimeout));
+            if (atvv_control_op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+                try { atvv_control_op.Cancel(); } catch (...) {}
+                fail("atvv control subscribe timeout after " +
+                     std::to_string(kSubscribeTimeout.count()) + "ms");
+                co_return;
+            }
+            const auto atvv_control_subscribe = atvv_control_op.GetResults();
+            LogBleLine("atvv control subscribe RC-" + device_id +
+                       " status=" + GattStatusName(atvv_control_subscribe));
+
+            LogBleLine("subscribing atvv audio notifications RC-" + device_id);
+            auto atvv_audio_op = session->xiaomi_audio_characteristic
+                .WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue::Notify);
+            auto atvv_audio_wait = [](decltype(atvv_audio_op) op)
+                -> winrt::Windows::Foundation::IAsyncAction {
+                try { co_await op; } catch (...) {}
+            }(atvv_audio_op);
+            co_await winrt::when_any(atvv_audio_wait, WaitMs(kSubscribeTimeout));
+            if (atvv_audio_op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+                try { atvv_audio_op.Cancel(); } catch (...) {}
+                fail("atvv audio subscribe timeout after " +
+                     std::to_string(kSubscribeTimeout.count()) + "ms");
+                co_return;
+            }
+            const auto atvv_audio_subscribe = atvv_audio_op.GetResults();
+            LogBleLine("atvv audio subscribe RC-" + device_id +
+                       " status=" + GattStatusName(atvv_audio_subscribe));
+
+            if (atvv_control_subscribe != GattCommunicationStatus::Success ||
+                atvv_audio_subscribe != GattCommunicationStatus::Success) {
+                fail("atvv notification subscription failed: control=" +
+                     GattStatusName(atvv_control_subscribe) +
+                     " audio=" + GattStatusName(atvv_audio_subscribe));
+                co_return;
+            }
+
+            // 可选 Battery Service（0x180F/0x2A19）：只记日志不阻断连接。整段包
+            // when_any 总超时（同 ATVV 订阅骨架）：内部裸 co_await 串被 WinRT 楔死时
+            // 放弃电池特征继续主连接，避免连接永久挂起、claim 滞留。
+            auto battery_op = SetupXiaomiBatteryAsync(session, device_id);
+            auto battery_wait = [](winrt::Windows::Foundation::IAsyncAction op)
+                -> winrt::Windows::Foundation::IAsyncAction {
+                try { co_await op; } catch (...) {}
+            }(battery_op);
+            co_await winrt::when_any(battery_wait, WaitMs(kXiaomiBatterySetupTimeout));
+            if (battery_op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+                try { battery_op.Cancel(); } catch (...) {}
+                LogBleLine("xiaomi battery setup timeout RC-" + device_id + " after " +
+                           std::to_string(kXiaomiBatterySetupTimeout.count()) +
+                           "ms; continuing without battery/keepalive probe");
+            }
+
+            session->ready = true;
+            session->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+            {
+                std::lock_guard lock(mutex_);
+                sessions_by_device_id_[device_id] = session;
+                connecting_addresses_.erase(bluetooth_address);
+                zombie_suspect_marks_.erase(bluetooth_address);
+            }
+            PublishConnections();
+            LogBleLine("connected RC-" + device_id);
+            LogConnectionSnapshot("connected");
+            log_stage("ready");
+
+            // 已知竞态：ready 注册（上行 notify 开始流入）先于 UI 线程的会话创建，
+            // 窗口内到达的 MIC_OPEN/音频会被 DriveXiaomiSession 的空会话判空丢弃；
+            // 遥控器等不到 MIC_OPEN ACK 会超时自闭合，用户下次按键即自愈，故不引入
+            // 额外同步等待（那会拖慢 ready 路径）。
+            // ATVV 会话状态机在 UI 线程创建并启动（构造可抛：opus encoder 失败）。
+            DispatchToUiThread(
+                [this, device_id, weak_session = std::weak_ptr<DeviceSession>(session)]() {
+                    auto s = weak_session.lock();
+                    if (!s) return;
+                    XiaomiAtvvSession::Options options;
+                    if (xiaomi_options_resolver_) {
+                        options = xiaomi_options_resolver_(device_id);
+                    }
+                    try {
+                        std::lock_guard lock(s->xiaomi_mutex);
+                        s->xiaomi_atvv_session = std::make_unique<XiaomiAtvvSession>(options);
+                    } catch (const std::exception& error) {
+                        LogBleLine("xiaomi session create failed RC-" + device_id + ": " +
+                                   error.what());
+                        HandleDeviceDisconnected(device_id, s);
+                        return;
+                    }
+                    // 合成 device_info：协调器据此登记 hardware 能力标签（固件版本
+                    // 留空——小米遥控器没有 VoiceStick 固件概念）。
+                    StateEvent info;
+                    info.event = "device_info";
+                    info.hardware = std::string(kHardwareXiaomiRemote2Pro);
+                    if (on_state_event) on_state_event(device_id, info);
+                    DriveXiaomiSession(s, [now = NowSteadyMs()](XiaomiAtvvSession& sess) {
+                        return sess.Start(now);
+                    });
+                });
+            co_return;
+        }
 
         // 特征发现先走 Cached：GATT 表跨版本稳定，重连时跳过 3 次空口往返（慢链路况
         // 下实测可省 ~1.7s）。任一失败/为空则三个全部改 Uncached 重试，兜底固件表变更
@@ -1931,6 +2211,236 @@ winrt::fire_and_forget BleCentralWin::WriteControlPayloadAsync(std::shared_ptr<D
         // 可能永不投递的 WinRT 断连事件。ProtocolError/AccessDenied 只记日志：
         // 链路仍活着，是 ATT 层拒绝，不应误拆。
         HandleDeviceDisconnected(device_id, session);
+    }
+}
+
+// ---- 小米 ATVV 会话辅助实现 ----
+
+void BleCentralWin::DriveXiaomiSession(
+    const std::shared_ptr<DeviceSession>& session,
+    const std::function<std::vector<XiaomiAtvvAction>(XiaomiAtvvSession&)>& entry) {
+    if (!session) return;
+    std::vector<XiaomiAtvvAction> actions;
+    {
+        std::lock_guard lock(session->xiaomi_mutex);
+        if (!session->xiaomi_atvv_session) return;
+        actions = entry(*session->xiaomi_atvv_session);
+    }
+    if (!actions.empty()) DispatchXiaomiActions(session, std::move(actions));
+}
+
+void BleCentralWin::DispatchXiaomiActions(const std::shared_ptr<DeviceSession>& session,
+                                          std::vector<XiaomiAtvvAction> actions) {
+    if (!session) return;
+    const std::string device_id = session->device.id;
+    for (auto& action : actions) {
+        std::visit(
+            [&](auto&& a) {
+                using T = std::decay_t<decltype(a)>;
+                if constexpr (std::is_same_v<T, XiaomiAtvvWriteTx>) {
+                    WriteXiaomiTxAsync(session, std::move(a.bytes));
+                } else if constexpr (std::is_same_v<T, XiaomiAtvvStateEvent>) {
+                    if (on_state_event) on_state_event(device_id, a.event);
+                } else if constexpr (std::is_same_v<T, XiaomiAtvvAudioFrame>) {
+                    if (on_audio_frame) on_audio_frame(device_id, a.frame);
+                } else if constexpr (std::is_same_v<T, XiaomiAtvvError>) {
+                    LogBleLine("xiaomi session error RC-" + device_id + " code=" + a.code);
+                    if (a.code == "caps_timeout") {
+                        // CAPS 应答超时多为半开链路（ATT 通但对端会话栈已乱）：
+                        // 直接拆链走扫描快速重连，而不是只 SetPairingError 后挂着
+                        // 等 90s 心跳超时。注意 DriveXiaomiSession 分发在锁外，
+                        // 此处拆链不会递归持 xiaomi_mutex。
+                        HandleDeviceDisconnected(device_id, session);
+                    } else if (on_connection_error) {
+                        on_connection_error(device_id, "Xiaomi remote error: " + a.code);
+                    }
+                }
+            },
+            std::move(action));
+    }
+}
+
+winrt::fire_and_forget BleCentralWin::WriteXiaomiTxAsync(std::shared_ptr<DeviceSession> session,
+                                                         ByteVector payload) {
+    // 特征句柄先拷局部再 co_await：CloseSession 在别的线程会把成员置空，
+    // 持局部拷贝消除「判空后、挂起点恢复前」的读写竞争窗口。
+    const auto tx = session ? session->xiaomi_tx_characteristic : nullptr;
+    if (!tx) co_return;
+    const std::string device_id = session->device.id;
+    GattCommunicationStatus status = GattCommunicationStatus::Unreachable;
+    try {
+        DataWriter writer;
+        writer.WriteBytes(payload);
+        status = co_await tx.WriteValueAsync(
+            writer.DetachBuffer(), GattWriteOption::WriteWithoutResponse);
+    } catch (const winrt::hresult_error& error) {
+        // 与 control 写同一语义：抛异常说明 GATT 对象已不可用，按链路已死拆除。
+        LogBleLine("atvv tx write threw RC-" + device_id + " hr=" + FormatHresult(error.code()) +
+                   "; tearing down session");
+        HandleDeviceDisconnected(device_id, session);
+        co_return;
+    } catch (...) {
+        LogBleLine("atvv tx write threw RC-" + device_id + " unknown exception");
+        co_return;
+    }
+    if (status == GattCommunicationStatus::Success) co_return;
+    LogBleLine("atvv tx write failed RC-" + device_id + " status=" + GattStatusName(status));
+    if (status == GattCommunicationStatus::Unreachable) {
+        HandleDeviceDisconnected(device_id, session);
+    }
+}
+
+winrt::Windows::Foundation::IAsyncAction BleCentralWin::SetupXiaomiBatteryAsync(
+    std::shared_ptr<DeviceSession> session,
+    std::string device_id) {
+    if (!session || !session->ble_device) co_return;
+    try {
+        auto services_result = co_await session->ble_device.GetGattServicesForUuidAsync(
+            winrt::guid{kBatteryServiceUuid}, BluetoothCacheMode::Cached);
+        if (services_result.Status() == GattCommunicationStatus::Success &&
+            services_result.Services().Size() > 0) {
+            session->xiaomi_battery_service = services_result.Services().GetAt(0);
+            auto chars_result = co_await session->xiaomi_battery_service
+                .GetCharacteristicsForUuidAsync(winrt::guid{kBatteryLevelUuid},
+                                                BluetoothCacheMode::Cached);
+            if (chars_result.Status() == GattCommunicationStatus::Success &&
+                chars_result.Characteristics().Size() > 0) {
+                session->battery_characteristic = chars_result.Characteristics().GetAt(0);
+                session->probe_characteristic = session->battery_characteristic;
+                if (HasNotify(session->battery_characteristic)) {
+                    session->battery_value_changed_token =
+                        session->battery_characteristic.ValueChanged(
+                            [this, device_id,
+                             weak_session = std::weak_ptr<DeviceSession>(session)](
+                                const GattCharacteristic&, const auto& args) {
+                                if (auto s = weak_session.lock()) {
+                                    s->last_rx_ms.store(NowSteadyMs(),
+                                                        std::memory_order_relaxed);
+                                }
+                                auto bytes = BytesFromBuffer(args.CharacteristicValue());
+                                if (bytes.empty()) return;
+                                StateEvent event;
+                                event.event = "battery_status";
+                                event.battery_level = static_cast<int>(bytes[0]);
+                                DispatchToUiThread([this, device_id, e = std::move(event)]() {
+                                    if (on_state_event) on_state_event(device_id, e);
+                                });
+                            });
+                    // 此处有意省略 ATVV 订阅用的 kValueChangedHandlerSettleDelay：
+                    // 电量是低频辅助信息，紧随其后的初始 Uncached 读已兜底拿到一次
+                    // 电量，极端情况下最多丢首条 notify，不值得为它对就绪路径再付
+                    // 一次 settle 延迟。
+                    const auto cccd = co_await session->battery_characteristic
+                        .WriteClientCharacteristicConfigurationDescriptorAsync(
+                            GattClientCharacteristicConfigurationDescriptorValue::Notify);
+                    if (cccd != GattCommunicationStatus::Success) {
+                        LogBleLine("battery notify subscribe RC-" + device_id +
+                                   " status=" + GattStatusName(cccd));
+                    }
+                }
+                // 初始读：立即拿到一次电量（同时刷新 last_rx 作为心跳基线）。
+                const auto read = co_await session->battery_characteristic
+                    .ReadValueAsync(BluetoothCacheMode::Uncached);
+                if (read.Status() == GattCommunicationStatus::Success) {
+                    auto bytes = BytesFromBuffer(read.Value());
+                    if (!bytes.empty()) {
+                        session->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+                        StateEvent event;
+                        event.event = "battery_status";
+                        event.battery_level = static_cast<int>(bytes[0]);
+                        DispatchToUiThread([this, device_id, e = std::move(event)]() {
+                            if (on_state_event) on_state_event(device_id, e);
+                        });
+                    }
+                }
+                co_return;
+            }
+        }
+        LogBleLine("battery service unavailable RC-" + device_id +
+                   "; falling back to GAP device name as keepalive probe");
+    } catch (const winrt::hresult_error& error) {
+        LogBleLine("battery service setup threw RC-" + device_id +
+                   " hr=" + FormatHresult(error.code()));
+    } catch (...) {
+        LogBleLine("battery service setup threw RC-" + device_id + " unknown exception");
+    }
+    // 无电量特征：GAP 设备名读作心跳保活特征（句柄存入 xiaomi_battery_service
+    // 保持服务存活并随 CloseSession 关闭）。
+    if (session->probe_characteristic) co_return;
+    try {
+        auto gap_services = co_await session->ble_device.GetGattServicesForUuidAsync(
+            winrt::guid{kGapServiceUuid}, BluetoothCacheMode::Cached);
+        if (gap_services.Status() == GattCommunicationStatus::Success &&
+            gap_services.Services().Size() > 0) {
+            session->xiaomi_battery_service = gap_services.Services().GetAt(0);
+            auto name_chars = co_await session->xiaomi_battery_service
+                .GetCharacteristicsForUuidAsync(winrt::guid{kGapDeviceNameUuid},
+                                                BluetoothCacheMode::Cached);
+            if (name_chars.Status() == GattCommunicationStatus::Success &&
+                name_chars.Characteristics().Size() > 0) {
+                session->probe_characteristic = name_chars.Characteristics().GetAt(0);
+                LogBleLine("keepalive probe via GAP device name RC-" + device_id);
+            }
+        }
+    } catch (...) {
+        LogBleLine("GAP keepalive probe setup threw RC-" + device_id);
+    }
+}
+
+winrt::fire_and_forget BleCentralWin::ProbeXiaomiSessionAsync(
+    std::shared_ptr<DeviceSession> session) {
+    // 与 WriteXiaomiTxAsync 同理：特征句柄先拷局部，消除与 CloseSession 置空的竞争窗口。
+    const auto probe = session ? session->probe_characteristic : nullptr;
+    if (!probe) co_return;
+    const std::string device_id = session->device.id;
+    GattCommunicationStatus status = GattCommunicationStatus::Unreachable;
+    try {
+        const auto read = co_await probe.ReadValueAsync(
+            BluetoothCacheMode::Uncached);
+        status = read.Status();
+    } catch (const winrt::hresult_error& error) {
+        LogBleLine("keepalive probe threw RC-" + device_id +
+                   " hr=" + FormatHresult(error.code()) + "; tearing down session");
+        HandleDeviceDisconnected(device_id, session);
+        co_return;
+    } catch (...) {
+        LogBleLine("keepalive probe threw RC-" + device_id +
+                   " unknown exception; tearing down session");
+        HandleDeviceDisconnected(device_id, session);
+        co_return;
+    }
+    if (status == GattCommunicationStatus::Success) {
+        session->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+        co_return;
+    }
+    LogBleLine("keepalive probe failed RC-" + device_id + " status=" + GattStatusName(status));
+    if (status == GattCommunicationStatus::Unreachable) {
+        // 与心跳写同一语义：只对 Unreachable 拆链，ProtocolError/AccessDenied 仅记日志。
+        HandleDeviceDisconnected(device_id, session);
+    }
+}
+
+void BleCentralWin::StopXiaomiSessionBestEffort(const std::shared_ptr<DeviceSession>& session) {
+    if (!session) return;
+    DriveXiaomiSession(session, [now = NowSteadyMs()](XiaomiAtvvSession& sess) {
+        return sess.Stop(now);
+    });
+}
+
+void BleCentralWin::TickXiaomiSessions() {
+    std::vector<std::shared_ptr<DeviceSession>> sessions;
+    {
+        std::lock_guard lock(mutex_);
+        for (const auto& [_, session] : sessions_by_device_id_) {
+            if (session->ready && session->device_class == DeviceClass::kXiaomiRemote2Pro) {
+                sessions.push_back(session);
+            }
+        }
+    }
+    for (auto& session : sessions) {
+        DriveXiaomiSession(session, [now = NowSteadyMs()](XiaomiAtvvSession& sess) {
+            return sess.Tick(now);
+        });
     }
 }
 
@@ -2215,8 +2725,19 @@ void BleCentralWin::HandleDeviceDisconnected(const std::string& device_id,
     if (update_session) {
         FinishFirmwareUpdate(update_session, false, "Device disconnected during firmware update.");
     }
+    // 小米会话拆除前尽力发 MIC_CLOSE（遥控器侧 mic 可能仍开着），再复位状态机。
+    // 前缀类感知：removed 缺失（重复拆链/会话已被先摘走的二次调用）时回落到
+    // 调用方持有的 session 引用，仍无法判定才用通用 VS- 前缀。
+    const auto* class_source = removed ? removed.get() : session.get();
+    const char* id_prefix =
+        class_source && class_source->device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-"
+                                                                                     : "VS-";
+    if (removed && removed->device_class == DeviceClass::kXiaomiRemote2Pro) {
+        StopXiaomiSessionBestEffort(removed);
+    }
     if (removed) CloseSession(std::move(removed));
-    LogBleLine("device disconnected VS-" + device_id + "; restarting scan for reconnection");
+    LogBleLine("device disconnected " + std::string(id_prefix) + device_id +
+               "; restarting scan for reconnection");
     LogConnectionSnapshot("disconnected");
     DispatchToUiThread([this] {
         PublishConnections();
@@ -2251,6 +2772,28 @@ void BleCentralWin::CloseSession(std::shared_ptr<DeviceSession> session) {
         } catch (...) {}
         session->gatt_session = nullptr;
     }
+    {
+        std::lock_guard lock(session->xiaomi_mutex);
+        session->xiaomi_atvv_session.reset();
+    }
+    if (session->xiaomi_audio_characteristic &&
+        session->xiaomi_audio_value_changed_token.value != 0) {
+        try { session->xiaomi_audio_characteristic.ValueChanged(session->xiaomi_audio_value_changed_token); } catch (...) {}
+        session->xiaomi_audio_value_changed_token = {};
+    }
+    if (session->xiaomi_control_characteristic &&
+        session->xiaomi_control_value_changed_token.value != 0) {
+        try { session->xiaomi_control_characteristic.ValueChanged(session->xiaomi_control_value_changed_token); } catch (...) {}
+        session->xiaomi_control_value_changed_token = {};
+    }
+    if (session->battery_characteristic && session->battery_value_changed_token.value != 0) {
+        try { session->battery_characteristic.ValueChanged(session->battery_value_changed_token); } catch (...) {}
+        session->battery_value_changed_token = {};
+    }
+    if (session->xiaomi_battery_service) {
+        try { session->xiaomi_battery_service.Close(); } catch (...) {}
+        session->xiaomi_battery_service = nullptr;
+    }
     if (session->service) {
         try { session->service.Close(); } catch (...) {}
         session->service = nullptr;
@@ -2264,6 +2807,11 @@ void BleCentralWin::CloseSession(std::shared_ptr<DeviceSession> session) {
     session->control_characteristic = nullptr;
     session->ota_rx_characteristic = nullptr;
     session->ota_state_characteristic = nullptr;
+    session->xiaomi_tx_characteristic = nullptr;
+    session->xiaomi_audio_characteristic = nullptr;
+    session->xiaomi_control_characteristic = nullptr;
+    session->battery_characteristic = nullptr;
+    session->probe_characteristic = nullptr;
     session->ready = false;
 }
 
@@ -2274,6 +2822,9 @@ void BleCentralWin::CloseSessions() {
         sessions.swap(sessions_by_device_id_);
     }
     for (auto& [_, session] : sessions) {
+        if (session->device_class == DeviceClass::kXiaomiRemote2Pro) {
+            StopXiaomiSessionBestEffort(session);
+        }
         CloseSession(std::move(session));
     }
 }
@@ -2385,10 +2936,18 @@ void BleCentralWin::ProbeSessions() {
         const auto silent_ms = last_rx > 0 ? now_ms - last_rx : -1;
         const bool silent_too_long = silent_ms > timeout_ms;
         if (link_gone || silent_too_long) {
-            LogBleLine("heartbeat teardown VS-" + session->device.id +
+            LogBleLine(std::string("heartbeat teardown ") +
+                       (session->device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-") +
+                       session->device.id +
                        " reason=" + (link_gone ? "connection_status_disconnected" : "no_rx_timeout") +
                        " silent_ms=" + std::to_string(silent_ms));
             HandleDeviceDisconnected(session->device.id, session);
+            continue;
+        }
+        if (session->device_class == DeviceClass::kXiaomiRemote2Pro) {
+            // 小米无 control_rx 心跳写通道：读电量/GAP 特征强制链路层收发，
+            // 成功刷新 last_rx_ms；Unreachable/异常按链路已死拆除。
+            ProbeXiaomiSessionAsync(std::move(session));
             continue;
         }
         // 向 control_rx 写心跳：对端存活时固件必回 battery_status（刷新
@@ -2431,8 +2990,12 @@ void BleCentralWin::LogConnectionSnapshot(std::string_view reason) {
     for (const auto& id : paired_device_ids_) {
         if (!first) line += " ";
         first = false;
-        line += "VS-" + id;
         auto it = sessions_by_device_id_.find(id);
+        // 前缀类感知：有会话按 device_class，无会话（未连接）无法判定用通用 VS-。
+        line += (it != sessions_by_device_id_.end() && it->second &&
+                 it->second->device_class == DeviceClass::kXiaomiRemote2Pro)
+                    ? "RC-" + id
+                    : "VS-" + id;
         if (it != sessions_by_device_id_.end() && it->second) {
             line += it->second->ready ? "(ready)" : "(session,!ready)";
         } else {

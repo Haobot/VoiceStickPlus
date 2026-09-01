@@ -71,6 +71,9 @@ constexpr UINT kMenuBatteryMonitorEnd = 6599;
 // 设备级交互设置入口：每设备一项（kMenuInteractionSettingsBase + 设备索引）。
 constexpr UINT kMenuInteractionSettingsBase = 6200;
 constexpr UINT kMenuInteractionSettingsEnd = 6399;
+// 设备级遥控器设置入口：每设备一项（kMenuRemoteSettingsBase + 设备索引，仅小米遥控器显示）。
+constexpr UINT kMenuRemoteSettingsBase = 6600;
+constexpr UINT kMenuRemoteSettingsEnd = 6699;
 constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
@@ -410,6 +413,22 @@ int Win32App::Run() {
         auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
         ble_central_ = ble.get();
 
+        // 小米遥控器接线：MIC_OPEN 时刻写入原子量供 F5 抑制钩子消费；ATVV 会话
+        // Options 在会话创建时（UI 线程）从 config_ 现取，配置热更对新连接生效。
+        ble->SetXiaomiMicOpenSink(&xiaomi_last_mic_open_ms_);
+        ble->SetXiaomiSessionOptionsResolver([this](const std::string& device_id) {
+            XiaomiAtvvSession::Options options;
+            const auto& xiaomi = config_.XiaomiSettingsForDevice(device_id);
+            options.gain_db = xiaomi.gain_db;
+            options.double_click_window_ms = xiaomi.double_click_ms;
+            options.interaction_mode =
+                config_.OutputProfileForDevice(device_id).target ==
+                        OutputTarget::kWechatInputMethod
+                    ? config_.wechat_input_method.trigger_mode
+                    : config_.interaction_mode;
+            return options;
+        });
+
         // 根据 asr_provider 创建对应的 ASR 客户端
         auto make_asr = [](const AppConfig& cfg) -> std::unique_ptr<AsrClient> {
             LogApp("make_asr: provider=" + AsrProviderName(cfg.asr_provider) +
@@ -471,6 +490,9 @@ int Win32App::Run() {
         coordinator_->Start();
         LogLine("Coordinator started");
 
+        f5_suppressor_ = std::make_unique<VoiceF5Suppressor>();
+        SyncF5Suppressor();
+
         LogLine("Initializing global hotkey");
         global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
         global_hotkey_->on_pressed = [this] {
@@ -498,9 +520,13 @@ int Win32App::Run() {
 
         for (const auto& entry : config_.paired_devices) {
             if (entry.bluetooth_address != 0) {
-                LogLine("Queueing paired device connect VS-" + entry.device_id);
+                const bool is_xiaomi = entry.hardware == kHardwareXiaomiRemote2Pro;
+                LogLine("Queueing paired device connect " +
+                        std::string(is_xiaomi ? "RC-" : "VS-") + entry.device_id);
                 coordinator_->ConnectPairedDevice(entry.device_id, entry.bluetooth_address,
-                                                 entry.address_kind, entry.name);
+                                                 entry.address_kind, entry.name,
+                                                 is_xiaomi ? DeviceClass::kXiaomiRemote2Pro
+                                                           : DeviceClass::kStickS3);
             }
         }
 
@@ -559,6 +585,23 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
             pending_ota_request_.reset();
             StartOtaFromFile(req.file_path, req.device_id);
         }
+        // 小米 ATVV 会话泵：有小米遥控器连接时启动 50ms Tick 定时器，全部断开时停止。
+        bool has_xiaomi = false;
+        for (const auto& dev : devices) {
+            if (dev.hardware == kHardwareXiaomiRemote2Pro) {
+                has_xiaomi = true;
+                break;
+            }
+        }
+        if (has_xiaomi && !xiaomi_tick_timer_active_) {
+            SetTimer(hwnd_, kXiaomiSessionTickTimerId, kXiaomiSessionTickMs, nullptr);
+            xiaomi_tick_timer_active_ = true;
+        } else if (!has_xiaomi && xiaomi_tick_timer_active_) {
+            KillTimer(hwnd_, kXiaomiSessionTickTimerId);
+            xiaomi_tick_timer_active_ = false;
+        }
+        // 连接集变化同步刷新 F5 钩子门控（连接态可见 RC 设备时也视为有小米）。
+        SyncF5Suppressor();
     });
 }
 
@@ -604,13 +647,23 @@ void Win32App::SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& 
 }
 
 void Win32App::HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info) {
-    LogLine("Pairing completed VS-" + device_id +
+    const bool is_xiaomi =
+        (info && info->hardware == kHardwareXiaomiRemote2Pro) ||
+        (pending_pairing_entry_ && pending_pairing_entry_->device_id == device_id &&
+         BleProtocol::DeviceClassFromName(pending_pairing_entry_->name)
+                 .value_or(DeviceClass::kStickS3) == DeviceClass::kXiaomiRemote2Pro);
+    const char* id_prefix = is_xiaomi ? "RC-" : "VS-";
+    LogLine("Pairing completed " + std::string(id_prefix) + device_id +
             (info && !info->firmware_version.empty()
                  ? " firmware=" + info->firmware_version
                  : " firmware=<unknown>"));
     if (pending_pairing_entry_ && pending_pairing_entry_->device_id == device_id) {
         if (info) {
-            pending_pairing_entry_->hardware = info->hardware;
+            // hardware 仅在 device_info 实际携带时覆盖：PairDevice 已按设备类别
+            // 写入兜底值，空 hardware 不得清掉它。
+            if (!info->hardware.empty()) {
+                pending_pairing_entry_->hardware = info->hardware;
+            }
             pending_pairing_entry_->firmware_version = info->firmware_version;
         }
         config_.SavePairedDevice(*pending_pairing_entry_);
@@ -618,9 +671,11 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
         paired_device_ids_ = config_.paired_device_ids;
         if (coordinator_) coordinator_->ConfirmPairedDeviceIds(config_.paired_device_ids);
         if (coordinator_) coordinator_->CheckFirmwareAfterPairing(device_id);
-        LogLine("Confirmed paired device VS-" + device_id);
+        LogLine("Confirmed paired device " + std::string(id_prefix) + device_id);
+        // 配对完成即刻刷新 F5 钩子门控（新配对的小米遥控器无需等下次启动/热更）。
+        SyncF5Suppressor();
     }
-    std::string detail = "VS-" + device_id + " paired";
+    std::string detail = std::string(id_prefix) + device_id + " paired";
     if (info && !info->hardware.empty()) detail += " (" + info->hardware + ")";
     if (info && !info->firmware_version.empty()) {
         detail += ", firmware " + info->firmware_version;
@@ -631,11 +686,16 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
 
 void Win32App::SetPairingError(const std::string& device_id, const std::string& message) {
     DispatchToUi([this, device_id, message] {
+        const bool is_xiaomi =
+            pending_pairing_entry_ && pending_pairing_entry_->device_id == device_id &&
+            BleProtocol::DeviceClassFromName(pending_pairing_entry_->name)
+                    .value_or(DeviceClass::kStickS3) == DeviceClass::kXiaomiRemote2Pro;
         if (pending_pairing_entry_ && pending_pairing_entry_->device_id == device_id) {
             pending_pairing_entry_.reset();
         }
         if (pair_device_dialog_) pair_device_dialog_->SetPairingError(device_id, message);
-        LogLine("Pairing error VS-" + device_id + ": " + message);
+        LogLine("Pairing error " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id +
+                ": " + message);
     });
 }
 
@@ -931,9 +991,17 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 std::size_t index = cmd - kMenuForgetBase;
                 if (index < paired_device_ids_.size() && coordinator_) {
                     auto device_id = paired_device_ids_[index];
+                    // 类别前缀取自 config 持久化的 hardware（删除前判定）。
+                    const auto entry_it =
+                        std::find_if(config_.paired_devices.begin(), config_.paired_devices.end(),
+                                     [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
+                    const bool is_xiaomi = entry_it != config_.paired_devices.end() &&
+                                           entry_it->hardware == kHardwareXiaomiRemote2Pro;
                     coordinator_->RemovePairedDevice(device_id);
                     config_.RemovePairedDevice(device_id);
-                    LogLine("Forgot device VS-" + device_id);
+                    // 忘掉最后一台 RC 设备时卸载 F5 键盘钩子（按需装载的逆操作）。
+                    SyncF5Suppressor();
+                    LogLine("Forgot device " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id);
                 }
             } else if (cmd >= kMenuUpdateFirmwareBase && cmd <= kMenuUpdateFirmwareEnd) {
                 std::size_t index = cmd - kMenuUpdateFirmwareBase;
@@ -1002,6 +1070,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size()) {
                     ShowInteractionSettingsDialog(paired_device_ids_[index]);
                 }
+            } else if (cmd >= kMenuRemoteSettingsBase && cmd <= kMenuRemoteSettingsEnd) {
+                std::size_t index = cmd - kMenuRemoteSettingsBase;
+                if (index < paired_device_ids_.size()) {
+                    ShowRemoteSettingsDialog(paired_device_ids_[index]);
+                }
             }
             return 0;
         }
@@ -1014,6 +1087,10 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         }
         if (w_param == kEncoderRotatePendingTimerId && coordinator_) {
             coordinator_->EncoderRotateTick();
+            return 0;
+        }
+        if (w_param == kXiaomiSessionTickTimerId && ble_central_) {
+            ble_central_->TickXiaomiSessions();
             return 0;
         }
         if (w_param == kResumeRestartTimerId) {
@@ -1110,7 +1187,38 @@ void Win32App::DispatchToUi(std::function<void()> action) {
     }
 }
 
+void Win32App::SyncF5Suppressor() {
+    if (!f5_suppressor_) return;
+    // 按需装载：仅「开关开且有已配对/已连接 RC 设备」时挂全局钩子，从未配对
+    // 小米的用户不承受 WH_KEYBOARD_LL 的常驻开销。刷新时机：启动、配对完成
+    //（HandlePairingCompleted）、配置热更（ApplyUpdatedConfig）、连接集变化
+    //（SetConnectedDevices，覆盖历史配置丢 hardware 字段等边界）。
+    bool has_xiaomi = false;
+    for (const auto& entry : config_.paired_devices) {
+        if (entry.hardware == kHardwareXiaomiRemote2Pro) {
+            has_xiaomi = true;
+            break;
+        }
+    }
+    if (!has_xiaomi) {
+        for (const auto& dev : connected_devices_) {
+            if (dev.hardware == kHardwareXiaomiRemote2Pro) {
+                has_xiaomi = true;
+                break;
+            }
+        }
+    }
+    if (config_.xiaomi_suppress_f5 && has_xiaomi) {
+        f5_suppressor_->Start(&xiaomi_last_mic_open_ms_);
+    } else {
+        f5_suppressor_->Stop();
+    }
+}
 
+void Win32App::ApplyUpdatedConfig() {
+    if (coordinator_) coordinator_->UpdateConfig(config_);
+    SyncF5Suppressor();
+}
 
 bool Win32App::CreateWindowInternal() {
     LogLine("Registering window class");
@@ -1163,7 +1271,7 @@ bool Win32App::CreateWindowInternal() {
                 } catch (const std::exception& e) {
                     LogLine(std::string("Save config on hotword add failed: ") + e.what());
                 }
-                if (coordinator_) coordinator_->UpdateConfig(config_);
+                ApplyUpdatedConfig();
                 ShowNotification(
                     Tr(StringId::kSelectionHotwordAddedTitle, lang),
                     Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
@@ -1242,12 +1350,35 @@ void Win32App::ShowTrayMenu() {
         return nullptr;
     };
 
+    // 小米遥控器判定：连接态 device_info / 固件信息 map 的 hardware 优先，
+    // 未连接时回落 config_.paired_devices 持久化的 hardware（配对时写入）。
+    auto is_xiaomi_device = [&](const std::string& device_id) {
+        const auto info_it = device_info_map_.find(device_id);
+        if (info_it != device_info_map_.end() &&
+            info_it->second.hardware == kHardwareXiaomiRemote2Pro) {
+            return true;
+        }
+        const auto firmware_it = firmware_info_map_.find(device_id);
+        if (firmware_it != firmware_info_map_.end() &&
+            firmware_it->second.hardware == kHardwareXiaomiRemote2Pro) {
+            return true;
+        }
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.device_id == device_id && entry.hardware == kHardwareXiaomiRemote2Pro) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     for (std::size_t i = 0; i < paired_device_ids_.size() && i < 100; ++i) {
         const auto& id = paired_device_ids_[i];
         const auto* connected = find_connected(id);
+        const bool is_xiaomi = is_xiaomi_device(id);
+        const char* id_prefix = is_xiaomi ? "RC-" : "VS-";
         const std::string title = connected
-            ? (connected->name.empty() ? "VS-" + id : connected->name)
-            : "VS-" + id;
+            ? (connected->name.empty() ? std::string(id_prefix) + id : connected->name)
+            : std::string(id_prefix) + id;
 
         HMENU submenu = CreatePopupMenu();
 
@@ -1347,29 +1478,43 @@ void Win32App::ShowTrayMenu() {
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu),
                     TrW(StringId::kMenuTranslation, language).c_str());
 
-        // 编码器设置入口：仅当该设备编码器在线（encoder_present）时显示；
-        // 未知（老固件/未上报）默认显示，避免误隐藏。
+        // 编码器设置入口：仅 StickS3 且编码器在线（encoder_present）时显示；
+        // 未知（老固件/未上报）默认显示，避免误隐藏；小米遥控器无编码器，不显示。
         const bool encoder_present =
             info_it == device_info_map_.end() || info_it->second.encoder_present;
-        if (encoder_present) {
+        if (!is_xiaomi && encoder_present) {
             AppendMenuW(submenu, MF_STRING,
                         kMenuEncoderSettingsBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuEncoderSettings, language).c_str());
         }
 
-        // 设备交互设置入口：所有设备均显示（IMU 唤醒灵敏度/敲击方向键/体感灵敏度等按设备覆盖）。
-        AppendMenuW(submenu, MF_STRING,
-                    kMenuInteractionSettingsBase + static_cast<UINT>(i),
-                    TrW(StringId::kMenuInteractionSettings, language).c_str());
+        // 设备交互设置入口：仅 StickS3 显示（IMU 唤醒灵敏度/敲击方向键/体感灵敏度
+        // 均为 StickS3 能力，小米遥控器无对应实现）。
+        if (!is_xiaomi) {
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuInteractionSettingsBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuInteractionSettings, language).c_str());
+        }
 
-        // 电池电压监测入口：仅连接设备显示（power_log 导出需要活跃 BLE 连接）。
-        if (connected) {
+        // 遥控器设置入口：仅小米遥控器显示（gain_db/double_click_ms 由桌面端
+        // XiaomiAtvvSession::Options 消费，resolver 在会话创建时执行——热更对已连接
+        // 会话不生效，重连后生效）。
+        if (is_xiaomi) {
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuRemoteSettingsBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuRemoteSettings, language).c_str());
+        }
+
+        // 电池电压监测入口：仅 StickS3 连接设备显示（power_log 导出需要活跃 BLE
+        // 连接；小米遥控器电池经标准 Battery Service 显示，无此工具）。
+        if (!is_xiaomi && connected) {
             AppendMenuW(submenu, MF_STRING,
                         kMenuBatteryMonitorBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuBatteryMonitor, language).c_str());
         }
 
-        if (firmware_it != firmware_info_map_.end()) {
+        // 固件更新块：仅 StickS3（小米遥控器无 VoiceStick OTA 链路）。
+        if (!is_xiaomi && firmware_it != firmware_info_map_.end()) {
             const auto& firmware = firmware_it->second;
             if (firmware.is_checking) {
                 AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
@@ -1403,7 +1548,7 @@ void Win32App::ShowTrayMenu() {
             }
         }
 
-        if (connected) {
+        if (!is_xiaomi && connected) {
             AppendMenuW(submenu, MF_STRING,
                         kMenuUpdateFirmwareFromFileBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuUpdateFirmwareFromFile, language).c_str());
@@ -1413,6 +1558,10 @@ void Win32App::ShowTrayMenu() {
                     TrW(StringId::kMenuForgetDevice, language).c_str());
 
         std::wstring menu_title = Utf16(title);
+        // 小米遥控器菜单标题加类型标签，与 StickS3 设备区分（StickS3 标题保持原样）。
+        if (is_xiaomi) {
+            menu_title += L" · " + TrW(StringId::kDeviceTypeXiaomiRemote, language);
+        }
         const auto battery_it = device_battery_map_.find(id);
         if (battery_it != device_battery_map_.end()) {
             const auto& battery = battery_it->second;
@@ -1595,7 +1744,7 @@ void Win32App::SaveInputOptions() {
         config_.SavePreservingDiskCredentials();
         SyncLaunchAtLogin();
         SyncSelectionHotword();
-        if (coordinator_) coordinator_->UpdateConfig(config_);
+        ApplyUpdatedConfig();
         if (global_hotkey_) {
             global_hotkey_->Unregister();
             if (config_.global_hotkey_enabled) {
@@ -1694,7 +1843,7 @@ void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
     } catch (const std::exception& e) {
         LogLine(std::string("Save config on hotword extract failed: ") + e.what());
     }
-    if (coordinator_) coordinator_->UpdateConfig(config_);
+    ApplyUpdatedConfig();
     // 顿号拼接新词列表用于浮窗展示（重复词不展示）。
     std::string joined;
     for (std::size_t i = 0; i < new_words.size(); ++i) {
@@ -1765,7 +1914,7 @@ void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfi
             config_.device_output_profiles[device_id] = profile;
         }
         config_.SavePreservingDiskCredentials();
-        if (coordinator_) coordinator_->UpdateConfig(config_);
+        ApplyUpdatedConfig();
         LogLine("Output profile saved VS-" + device_id + "=" +
                 TextTransformName(profile.transform) + ":" + profile.translation_target);
     } catch (const std::exception& error) {
@@ -1905,7 +2054,7 @@ bool Win32App::ShowOnboarding() {
     dialog.on_config_completed = [this](AppConfig new_config) {
         config_ = std::move(new_config);
         paired_device_ids_ = config_.paired_device_ids;
-        if (coordinator_) coordinator_->UpdateConfig(config_);
+        ApplyUpdatedConfig();
         RebuildTooltip();
         LogLine("Onboarding completed");
     };
@@ -1926,9 +2075,14 @@ void Win32App::ShowPairDeviceDialog() {
         PairDeviceByManualId(device_id);
     });
     pair_device_dialog_->on_pair_timeout = [this](std::string device_id) {
+        // 类别感知日志前缀：与 SetPairingError 同模式，reset 前先判定。
+        const bool is_xiaomi =
+            pending_pairing_entry_ && pending_pairing_entry_->device_id == device_id &&
+            BleProtocol::DeviceClassFromName(pending_pairing_entry_->name)
+                    .value_or(DeviceClass::kStickS3) == DeviceClass::kXiaomiRemote2Pro;
         pending_pairing_entry_.reset();
         if (coordinator_) coordinator_->CancelPendingConnect(device_id);
-        LogLine("Pairing timed out VS-" + device_id);
+        LogLine("Pairing timed out " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id);
     };
     pair_device_dialog_->Show();
 }
@@ -1970,7 +2124,7 @@ void Win32App::ShowEncoderSettingsDialog(const std::string& device_id) {
                 LogLine(std::string("Encoder settings: config_.Save failed: ") + e.what());
                 return;
             }
-            if (coordinator_) coordinator_->UpdateConfig(config_);
+            ApplyUpdatedConfig();
             LogLine("Encoder settings saved for VS-" + id);
         };
     encoder_settings_dialog_->Show();
@@ -2029,7 +2183,7 @@ void Win32App::ShowAirMouseTuning() {
                 LogLine(std::string("Air mouse tuning: config_.Save failed: ") + e.what());
                 return;
             }
-            if (coordinator_) coordinator_->UpdateConfig(config_);
+            ApplyUpdatedConfig();
             LogLine("Air mouse tuning saved for VS-" + device_id);
         };
     }
@@ -2057,10 +2211,38 @@ void Win32App::ShowInteractionSettingsDialog(const std::string& device_id) {
                 LogLine(std::string("Interaction settings: config_.Save failed: ") + e.what());
                 return;
             }
-            if (coordinator_) coordinator_->UpdateConfig(config_);
+            ApplyUpdatedConfig();
             LogLine("Interaction settings saved for VS-" + id);
         };
     interaction_settings_dialog_->Show();
+}
+
+void Win32App::ShowRemoteSettingsDialog(const std::string& device_id) {
+    // 单实例策略：模态对话框同时只开一个，重新进入时重建（Show 内同步阻塞至关闭）。
+    remote_settings_dialog_ = std::make_unique<RemoteSettingsDialog>(
+        instance_, hwnd_, device_id,
+        config_.XiaomiSettingsForDevice(device_id),
+        config_.default_xiaomi_settings,
+        config_.ui_language);
+    remote_settings_dialog_->on_settings_changed =
+        [this](const std::string& id, std::optional<XiaomiSettings> override) {
+            if (override.has_value()) {
+                config_.device_xiaomi_settings[id] = *override;
+            } else {
+                // 与全局默认一致：清除覆盖，回落默认。
+                config_.device_xiaomi_settings.erase(id);
+            }
+            // Save() 可能因 config.toml 被占用抛异常，与 SaveDeviceOutputProfile 同模式捕获。
+            try {
+                config_.SavePreservingDiskCredentials();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Remote settings: config_.Save failed: ") + e.what());
+                return;
+            }
+            ApplyUpdatedConfig();
+            LogLine("Remote settings saved for RC-" + id);
+        };
+    remote_settings_dialog_->Show();
 }
 
 void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {
@@ -2197,13 +2379,28 @@ void Win32App::SetPendingOtaRequest(std::string file_path,
 void Win32App::PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
                           BluetoothAddressKind address_kind, const std::string& name) {
     if (coordinator_) {
+        const auto device_class =
+            BleProtocol::DeviceClassFromName(name).value_or(DeviceClass::kStickS3);
         pending_pairing_entry_ = PairedDeviceEntry{device_id, bluetooth_address, address_kind, name};
-        coordinator_->ConnectPairedDevice(device_id, bluetooth_address, address_kind, name);
-        LogLine("Pairing device VS-" + device_id);
+        // 小米遥控器配对完成时走 finalize 定时器兜底（无 firmware_version 不进
+        // HandlePairingSucceeded），hardware 字段不会被 device_info 覆盖；这里按
+        // 配对时的设备类别先写入，保证重启后 config 里的 hardware 仍是
+        // xiaomi_remote_2_pro，不会回落成 StickS3 直连。
+        if (device_class == DeviceClass::kXiaomiRemote2Pro) {
+            pending_pairing_entry_->hardware = std::string(kHardwareXiaomiRemote2Pro);
+        }
+        coordinator_->ConnectPairedDevice(device_id, bluetooth_address, address_kind, name,
+                                          device_class);
+        LogLine("Pairing device " +
+                std::string(device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-") +
+                device_id);
     }
 }
 
 void Win32App::PairDeviceByManualId(const std::string& device_id) {
+    // 手动输入存 entry 时 hardware 为空（无法从 ID 判断类别）：小米遥控器（RC-XXXX）
+    // 首连前菜单会短暂按 StickS3 显隐（多出交互/编码器等不适用项）。首连时 BLE 层
+    // 按名称/ATVV UUID 识别并合成 device_info，hardware 随之落盘自愈，属可接受取舍。
     config_.SavePairedDeviceInfo(device_id, {}, {});
     pending_pairing_entry_.reset();
     paired_device_ids_ = config_.paired_device_ids;

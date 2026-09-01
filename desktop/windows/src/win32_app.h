@@ -12,14 +12,17 @@
 #include "onboarding_dialog.h"
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
+#include "remote_settings_dialog.h"
 #include "selection_hotword_manager.h"
 #include "settings_dialog.h"
 #include "air_mouse_tuning_window.h"
 #include "subtitle_window.h"
+#include "voice_f5_suppressor.h"
 #include "voice_stick_coordinator.h"
 
 #include <Windows.h>
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -105,6 +108,8 @@ private:
     void ShowEncoderSettingsDialog(const std::string& device_id);
     // 打开指定设备的交互设置对话框（托盘设备子菜单「设备交互设置…」）。
     void ShowInteractionSettingsDialog(const std::string& device_id);
+    // 打开指定设备的遥控器设置对话框（托盘设备子菜单「遥控器设置…」，仅小米遥控器显示）。
+    void ShowRemoteSettingsDialog(const std::string& device_id);
     // 打开指定设备的电池电压监测窗口（托盘设备子菜单「电池电压监测…」，仅连接设备）。
     void ShowBatteryMonitorDialog(const std::string& device_id);
     void ShowAirMouseTuning();
@@ -135,6 +140,10 @@ private:
     void ShutdownAndQuit();
     // 以管理员身份重启自身：ShellExecuteW runas 触发 UAC，新 High 实例启动后旧实例清理退出。
     void RelaunchElevatedAndQuit();
+    // 按 config_.xiaomi_suppress_f5 启停 F5 抑制钩子（配置热更入口，幂等）。
+    void SyncF5Suppressor();
+    // 配置变更统一入口：先同步协调器，再按新配置同步 F5 抑制钩子。
+    void ApplyUpdatedConfig();
 
     HINSTANCE instance_;
     HWND hwnd_ = nullptr;
@@ -148,6 +157,7 @@ private:
     std::unique_ptr<SettingsDialog> settings_dialog_;
     std::unique_ptr<EncoderSettingsDialog> encoder_settings_dialog_;
     std::unique_ptr<InteractionSettingsDialog> interaction_settings_dialog_;
+    std::unique_ptr<RemoteSettingsDialog> remote_settings_dialog_;
     std::unique_ptr<BatteryMonitorDialog> battery_monitor_dialog_;
     // 设备最新上报的供电态（USB）自动关机开关状态（device_id -> enabled）。
     std::map<std::string, bool> usb_auto_off_state_;
@@ -157,6 +167,10 @@ private:
     std::unique_ptr<SubtitleWindow> subtitles_;
     std::unique_ptr<SelectionHotwordManager> selection_hotword_manager_;
     class BleCentralWin* ble_central_ = nullptr;
+    // 小米遥控器 F5 抑制：xiaomi_last_mic_open_ms_ 由 BLE 层在 MIC_OPEN 时写入，
+    // VoiceF5Suppressor 键盘钩子据此在 80ms 窗内吞掉遥控器附带的 F5 按键。
+    std::unique_ptr<VoiceF5Suppressor> f5_suppressor_;
+    std::atomic<std::int64_t> xiaomi_last_mic_open_ms_{0};
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;
     std::vector<std::string> paired_device_ids_;
@@ -176,8 +190,13 @@ private:
     // 编码器慢速注入延迟判定的冲刷定时器：pending 挂起时启动，清空后停止。
     static constexpr UINT_PTR kEncoderRotatePendingTimerId = 102;
     static constexpr UINT kEncoderRotatePendingTickMs = 30;
+    // 小米 ATVV 会话泵：有小米遥控器连接时启动 50ms 定时器驱动 Tick
+    //（长按阈值确认、尾包宽限、双击窗到期、CAPS 超时）。
+    static constexpr UINT_PTR kXiaomiSessionTickTimerId = 103;
+    static constexpr UINT kXiaomiSessionTickMs = 50;
     bool air_mouse_timer_active_ = false;
     bool encoder_rotate_pending_timer_active_ = false;
+    bool xiaomi_tick_timer_active_ = false;
     std::chrono::steady_clock::time_point last_battery_status_request_{};
 };
 

@@ -58,6 +58,10 @@ private:
     void PairSelectedDevice();
     void Close();
     void BeginPairing(const PairingDevice& device);
+    // 小米遥控器：先尝试 WinRT 应用内 Bond 配对（ATVV GATT 需要 OS Bond），成功后
+    // 经 kXiaomiBondedMessage 回到 UI 线程继续 on_pair_ 流程；失败给出系统蓝牙
+    // 设置引导文案。
+    winrt::fire_and_forget AttemptXiaomiOsPairing(PairingDevice device);
     void HandlePairingConnected();
     void HandlePairingSucceeded(const DeviceInfo& info);
     void HandlePairingError(const std::string& message);
@@ -85,13 +89,18 @@ private:
     UINT dpi_ = 96;
     std::vector<BYTE> dialog_template_;
     std::optional<std::string> pairing_device_id_;
+    // 正在配对的设备类别：决定状态文案 ID 前缀（VS-/RC-）与配对完成后的收尾路径。
+    DeviceClass pairing_device_class_ = DeviceClass::kStickS3;
+    // 小米遥控器 OS Bond 进行中的候选设备：kXiaomiBondedMessage 到达后用它继续
+    // on_pair_ 连接流程（fire_and_forget 协程不直接回调 UI 线程外成员）。
+    std::optional<PairingDevice> pending_pair_device_;
     std::vector<std::string> existing_device_ids_;
     std::function<void(std::string, std::uint64_t, BluetoothAddressKind, std::string)> on_pair_;
     std::function<void(std::string, std::optional<DeviceInfo>)> on_pair_completed_;
     std::function<void(std::string)> on_pair_manual_;
     bool pairing_finalized_ = false;
     std::uint64_t received_advertisement_count_ = 0;
-    std::uint64_t voice_stick_candidate_count_ = 0;
+    std::uint64_t candidate_count_ = 0;
     std::uint64_t scan_restart_count_ = 0;
     std::vector<PairingDevice> devices_;
     std::vector<RetainedPairingCandidate> retained_named_candidates_;

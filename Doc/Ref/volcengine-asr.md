@@ -64,6 +64,11 @@ Voice Stick sends Ogg Opus audio, so the first client request should use:
 }
 ```
 
+Besides `ogg`, the project has also proven `format: "pcm"` (16kHz s16le raw
+stream, sent in 6400-byte/200ms chunks at real-time pace) on this endpoint —
+used by `scripts/e2e_test/atvv_bench.py` where no Opus encoder is available;
+see `Doc/Expe/volc-config-ablation-2026-08-01.md`.
+
 `enable_nonstream = true` enables the two-pass mode on the optimized
 bidirectional streaming endpoint. It gives fast partial text first, then uses
 the nostream model to re-recognize completed speech segments for better final
