@@ -234,7 +234,9 @@ class AtvvProbe:
 
         if self.args.address:
             from bleak import BLEDevice
-            return BLEDevice(self.args.address, self.args.name or None, {}, -60)
+            # bleak>=3.0：BLEDevice 仅收 address/name/details（rssi 位置传参 TypeError，
+            # 关键字传参 DeprecationWarning 且无效果）。
+            return BLEDevice(self.args.address, self.args.name or None, {})
         if self.args.name:
             return await BleakScanner.find_device_by_name(
                 self.args.name, timeout=SCAN_TIMEOUT_S)

@@ -15,6 +15,7 @@
 import argparse
 import asyncio
 import array
+import ctypes
 import json
 import math
 import struct
@@ -55,6 +56,119 @@ NAME_WHITELIST = (
     "rc001",
     "rc003",
 )
+
+
+class F5Suppressor:
+    """采集期间用 WH_KEYBOARD_LL 低级键盘钩子吞掉 F5。
+
+    小米遥控器 2 Pro 的语音键会经 OS 级 HID 通道连带发 F5（桌面端的 F5
+    抑制在 VoiceStick.exe 里，而采集时主程序必须退出让出 BLE），故采集
+    进程内做同样抑制，避免按语音键刷新前台浏览器/窗口。非 Windows 或
+    钩子安装失败时降级为 no-op。
+    """
+
+    _WH_KEYBOARD_LL = 13
+    _VK_F5 = 0x74
+    _KEY_MSGS = (0x0100, 0x0101, 0x0104, 0x0105)  # KEYDOWN/KEYUP/SYSKEYDOWN/SYSKEYUP
+    _WM_QUIT = 0x0012
+
+    def __init__(self) -> None:
+        self._hook = None
+        self._thread = None
+        self._tid = None
+        self._ready = None
+        self._proc_ref = None  # 保持回调引用，防 GC 回收后系统回调野指针
+
+    def start(self) -> bool:
+        if sys.platform != "win32":
+            return False
+        import threading
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._hook_thread, daemon=True)
+        self._thread.start()
+        self._ready.wait(timeout=2.0)
+        ok = self._hook is not None
+        print(f"{ts()} F5 suppress: {'on (capture 期间 F5 被吞)' if ok else 'unavailable, ignored'}",
+              flush=True)
+        return ok
+
+    def stop(self) -> None:
+        if self._tid is not None:
+            try:
+                import ctypes
+                ctypes.windll.user32.PostThreadMessageW(self._tid, self._WM_QUIT, 0, 0)
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def _hook_thread(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # 必须显式声明 64 位签名：ctypes 默认 restype=c_int 会把 HMODULE/HHOOK
+        # 截成 32 位，SetWindowsHookExW 随即报 ERROR_MOD_NOT_FOUND(126) 静默
+        # 装不上（探针实测：声明签名后安装成功且回调正常投递）。
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        self._tid = kernel32.GetCurrentThreadId()
+        try:
+            class KBDLLHOOKSTRUCT(ctypes.Structure):
+                _fields_ = [("vkCode", wintypes.DWORD),
+                            ("scanCode", wintypes.DWORD),
+                            ("flags", wintypes.DWORD),
+                            ("time", wintypes.DWORD),
+                            ("dwExtraInfo", ctypes.c_size_t)]
+
+            HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int,
+                                          wintypes.WPARAM, wintypes.LPARAM)
+            user32.SetWindowsHookExW.restype = ctypes.c_void_p
+            user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p,
+                                                 wintypes.HMODULE, wintypes.DWORD]
+            # CallNextHookEx 同样要声明 64 位签名：默认把 LPARAM 当 32 位 int，
+            # 64 位指针值直接 OverflowError（回调内抛异常，按键事件泛滥时刷爆日志）。
+            user32.CallNextHookEx.restype = ctypes.c_ssize_t
+            user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                              wintypes.WPARAM, wintypes.LPARAM]
+
+            def _proc(nCode, wParam, lParam):
+                if nCode == 0 and wParam in self._KEY_MSGS:
+                    vk = ctypes.cast(
+                        lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents.vkCode
+                    if vk == self._VK_F5:
+                        return 1  # 吞掉，不再传给后续钩子与前台应用
+                return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+            self._proc_ref = HOOKPROC(_proc)
+            hook = user32.SetWindowsHookExW(self._WH_KEYBOARD_LL, self._proc_ref,
+                                            kernel32.GetModuleHandleW(None), 0)
+        except Exception:
+            hook = None
+        self._hook = hook
+        self._ready.set()
+        if not hook:
+            return
+        # 低级钩子要求安装线程 pump 消息，否则回调不会被调用
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        user32.UnhookWindowsHookEx(ctypes.c_void_p(hook))
+
+
+def toast(title: str, text: str) -> None:
+    """Win32 信息弹窗（守护线程里弹模态框，不阻塞 BLE 回调）。
+
+    采集器跑在后台无控制台反馈，用弹窗告诉用户采集器状态；非 Windows
+    降级为 print。"""
+    if sys.platform != "win32":
+        print(f"{ts()} [toast] {title}: {text}", flush=True)
+        return
+    import threading
+    threading.Thread(
+        target=lambda: ctypes.windll.user32.MessageBoxW(None, text, title, 0x40),
+        daemon=True).start()
 
 # IMA/DVI ADPCM 公开标准常数（1992 年标准）
 STEP_TABLE = (
@@ -343,6 +457,8 @@ class AtvvCapture:
         self.frame_count = 0
         self.first_audio_ts = None
         self._segments = []
+        self._lvl_acc = 0
+        self._lvl_n = 0
         self._seg_offset = 0
         self._seg_reset = (0, 0)
         self._rx_bytes = 0
@@ -423,6 +539,8 @@ class AtvvCapture:
         print(f"{ts()} session #{n} saved: frames={self.frame_count} "
               f"bytes={len(raw)} dur={duration_s:.2f}s "
               f"latency={latency_ms}ms ({reason})", flush=True)
+        if sys.platform == "win32" and duration_s >= 0.2:
+            toast("ATVV 采集", f"已录制第 {n} 段（{duration_s:.1f} 秒）")
         self.session_state = "idle"
         self.mic_open_ts = None
 
@@ -457,8 +575,19 @@ class AtvvCapture:
         self._rx_bytes += len(data)
         for frame in self.accum.push(data):
             self.frame_count += 1
-            self.pcm_samples.extend(self.decoder.decode(frame))
+            pcm = self.decoder.decode(frame)
+            self.pcm_samples.extend(pcm)
             self._decoded_upto += len(frame)
+            # 实时电平表（采集手法反馈）：每 0.5s 打印一次解码 RMS 柱条，
+            # 说话期间应持续有柱条；柱条消失说明遥控器端送的是静音。
+            self._lvl_acc += sum(s * s for s in pcm)
+            self._lvl_n += len(pcm)
+            if self._lvl_n >= 8000:
+                rms = math.sqrt(self._lvl_acc / self._lvl_n)
+                bars = "#" * min(40, int(rms / 100))
+                print(f"{ts()} lvl {rms:6.0f} {bars}", flush=True)
+                self._lvl_acc = 0
+                self._lvl_n = 0
 
     def on_control(self, _sender, data: bytearray) -> None:
         data = bytes(data)
@@ -573,11 +702,33 @@ class AtvvCapture:
     async def run(self) -> int:
         from bleak import BleakClient  # 延迟 import，self-test 不依赖 bleak
 
+        deadline = time.monotonic() + self.args.duration
+        last_rc = 0
+        while time.monotonic() < deadline:
+            rc = await self._serve_once(BleakClient, deadline)
+            if rc == 0:
+                break  # 正常收官（max_sessions 或 duration 到点）
+            last_rc = rc
+            # 遥控器睡眠断链/人格被占/短暂故障：等待后自动重连，直到时长上限。
+            # 这保证采集器可常驻自服务：用户随时按键都能录，不用对齐窗口。
+            print(f"{ts()} link lost (rc={rc}), reconnect in 2s ...", flush=True)
+            await asyncio.sleep(2.0)
+        self._print_summary()
+        return 0 if self.session_summaries else last_rc
+
+    async def _serve_once(self, BleakClient, deadline: float) -> int:
+        """单次连接+值守。返回 0=正常收官；非 0=链路异常（外层自动重连）。"""
+        self.connected = False
         device = await self._find_device()
         if device is None:
             return 2
         print(f"{ts()} connecting {device.name} [{device.address}] ...", flush=True)
-        self.client = BleakClient(device, disconnected_callback=self.on_disconnect)
+        # Windows 上禁用 GATT 服务缓存：遥控器睡眠/断连后 OS 缓存可能陈旧，
+        # 导致 ATVV service 假性 "not found"（重试也无法自愈）。
+        kwargs = ({"winrt": {"use_cached_services": False}}
+                  if sys.platform == "win32" else {})
+        self.client = BleakClient(device, disconnected_callback=self.on_disconnect,
+                                  **kwargs)
         try:
             await self.client.connect()
         except Exception as exc:
@@ -591,15 +742,19 @@ class AtvvCapture:
 
         service = self.client.services.get_service(ATVV_SERVICE_UUID)
         if service is None:
-            print(f"{ts()} ATVV service {ATVV_SERVICE_UUID} not found.", flush=True)
-            print("提示：请先确认设备已在系统蓝牙设置中配对，且为小米蓝牙遥控器 2 Pro。",
-                  flush=True)
+            avail = [str(s.uuid) for s in self.client.services]
+            print(f"{ts()} ATVV service {ATVV_SERVICE_UUID} not found; "
+                  f"available services: {avail}", flush=True)
+            print("提示：ATVV 语音人格被其他主机（如 VoiceStick.exe）占用，"
+                  "或遥控器处于维护模式。", flush=True)
             await self.client.disconnect()
+            self.connected = False
             return 3
         for uuid in (ATVV_TX_UUID, ATVV_AUDIO_UUID, ATVV_CONTROL_UUID):
             if service.get_characteristic(uuid) is None:
                 print(f"{ts()} characteristic {uuid} missing", flush=True)
                 await self.client.disconnect()
+                self.connected = False
                 return 3
 
         await self.client.start_notify(ATVV_CONTROL_UUID, self.on_control)
@@ -607,28 +762,32 @@ class AtvvCapture:
         await self._tx_async(CMD_GET_CAPS)
         print(f"{ts()} subscribed, GET_CAPS sent; press voice key on remote ...",
               flush=True)
+        toast("ATVV 采集", "已连接遥控器。按住语音键贴嘴说话即可，"
+                           "每录完一段会弹框确认。")
 
-        deadline = time.monotonic() + self.args.duration
+        hit_limit = False
         try:
             while self.connected:
                 await asyncio.sleep(0.1)
                 if time.monotonic() >= deadline:
                     print(f"{ts()} duration limit reached", flush=True)
+                    hit_limit = True
                     break
                 if (self.args.max_sessions > 0
                         and len(self.session_summaries) >= self.args.max_sessions):
                     print(f"{ts()} max_sessions={self.args.max_sessions} reached",
                           flush=True)
+                    hit_limit = True
                     break
         except asyncio.CancelledError:
-            pass
+            hit_limit = True
 
         self._finalize_session("exit")
         await self.send_mic_close()
         if self.connected:
             await self.client.disconnect()
-        self._print_summary()
-        return 0
+        self.connected = False
+        return 0 if hit_limit else 4  # 4 = 对端断链，外层 2s 后自动重连
 
     async def _find_device(self):
         from bleak import BleakScanner
@@ -636,7 +795,9 @@ class AtvvCapture:
         if self.args.address:
             from bleak import BLEDevice
             print(f"{ts()} using --address {self.args.address}", flush=True)
-            return BLEDevice(self.args.address, self.args.name or None, {}, -60)
+            # bleak>=3.0：BLEDevice 仅收 address/name/details（rssi 位置传参 TypeError，
+            # 关键字传参 DeprecationWarning 且无效果）。
+            return BLEDevice(self.args.address, self.args.name or None, {})
         if self.args.name:
             print(f"{ts()} scanning for name '{self.args.name}' ...", flush=True)
             dev = await BleakScanner.find_device_by_name(
@@ -905,12 +1066,15 @@ def main() -> int:
                            / "fixtures" / "xiaomi" / stamp)
 
     cap = AtvvCapture(args)
+    suppressor = F5Suppressor()
+    suppressor.start()
     try:
         return asyncio.run(cap.run())
     except KeyboardInterrupt:
         print(f"{ts()} interrupted", flush=True)
         return 0
     finally:
+        suppressor.stop()
         cap.close()
 
 
