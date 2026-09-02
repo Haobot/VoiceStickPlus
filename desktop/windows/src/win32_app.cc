@@ -1379,10 +1379,15 @@ void Win32App::ShowTrayMenu() {
         const auto& id = paired_device_ids_[i];
         const auto* connected = find_connected(id);
         const bool is_xiaomi = is_xiaomi_device(id);
-        const char* id_prefix = is_xiaomi ? "RC-" : "VS-";
-        const std::string title = connected
-            ? (connected->name.empty() ? std::string(id_prefix) + id : connected->name)
-            : std::string(id_prefix) + id;
+        std::string title;
+        if (is_xiaomi) {
+            // 小米遥控器统一用短名 + MAC 低 4 位（即设备 ID），不用冗长的 BLE local name。
+            title = Tr(StringId::kDeviceTypeXiaomiRemote2Pro, language) + "-" + id;
+        } else {
+            title = connected
+                ? (connected->name.empty() ? "VS-" + id : connected->name)
+                : "VS-" + id;
+        }
 
         HMENU submenu = CreatePopupMenu();
 
@@ -1562,10 +1567,7 @@ void Win32App::ShowTrayMenu() {
                     TrW(StringId::kMenuForgetDevice, language).c_str());
 
         std::wstring menu_title = Utf16(title);
-        // 小米遥控器菜单标题加类型标签，与 StickS3 设备区分（StickS3 标题保持原样）。
-        if (is_xiaomi) {
-            menu_title += L" · " + TrW(StringId::kDeviceTypeXiaomiRemote, language);
-        }
+        // 小米遥控器标题已含「小米遥控器2Pro」短名，无需再追加类型后缀（StickS3 标题保持原样）。
         const auto battery_it = device_battery_map_.find(id);
         if (battery_it != device_battery_map_.end()) {
             const auto& battery = battery_it->second;

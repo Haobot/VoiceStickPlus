@@ -149,6 +149,7 @@ enum class StringId {
     // 双模扫描候选/设备类型标签与小米遥控器 OS 配对引导
     kDeviceTypeVoiceStick,
     kDeviceTypeXiaomiRemote,
+    kDeviceTypeXiaomiRemote2Pro,
     kPairXiaomiOsPairing,
     kPairXiaomiBondFailed,
 

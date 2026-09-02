@@ -149,6 +149,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kPairScanningCount)] = "Scanning (%s advertisements)";
     table[Index(StringId::kDeviceTypeVoiceStick)] = "Voice Stick";
     table[Index(StringId::kDeviceTypeXiaomiRemote)] = "Xiaomi Remote";
+    table[Index(StringId::kDeviceTypeXiaomiRemote2Pro)] = "Xiaomi Remote 2 Pro";
     table[Index(StringId::kPairXiaomiOsPairing)] = "Pairing with Windows Bluetooth...";
     table[Index(StringId::kPairXiaomiBondFailed)] =
         "Windows pairing failed. Remove the remote in Bluetooth settings, then re-add it and rescan.";
@@ -485,6 +486,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kPairScanningCount)] = "正在扫描（已收到 %s 条广播）";
     table[Index(StringId::kDeviceTypeVoiceStick)] = "语音棒";
     table[Index(StringId::kDeviceTypeXiaomiRemote)] = "小米遥控器";
+    table[Index(StringId::kDeviceTypeXiaomiRemote2Pro)] = "小米遥控器2Pro";
     table[Index(StringId::kPairXiaomiOsPairing)] = "正在通过 Windows 蓝牙配对…";
     table[Index(StringId::kPairXiaomiBondFailed)] =
         "系统配对失败。请先在 Windows 蓝牙设置中删除并重新添加遥控器，然后重新扫描。";
