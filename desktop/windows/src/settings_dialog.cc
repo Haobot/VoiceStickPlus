@@ -13,6 +13,7 @@
 #include <Shellapi.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <iterator>
 #include <string>
 #include <utility>
@@ -271,6 +272,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         case kIdDeveloperMode:
             if (HIWORD(w_param) == BN_CLICKED) OnDeveloperModeToggled();
+            return TRUE;
+        case kIdOpenSpectrogram:
+            OpenSpectrogramViewer();
             return TRUE;
         }
         break;
@@ -829,6 +833,7 @@ void SettingsDialog::BuildControls() {
     // 托盘设备子菜单「编码器设置…」打开 EncoderSettingsDialog（见 win32_app.cc）。
     // 系统区：开机自启/划词热词与托盘右键菜单重复，调试开关属高级功能；普通模式
     // 整区隐藏，开发者模式整区显示（vis 谓词统一 developer_mode_）。
+    // 音频相关的调试项（保存调试音频、音频文件夹、频谱查看器）独立为下方「音频文件」区。
     separator([this]() { return developer_mode_; });
 
     // ===== 系统 =====
@@ -854,16 +859,6 @@ void SettingsDialog::BuildControls() {
         }, [this]() { return developer_mode_; });
     }
     {
-        HWND da_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
-        debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(),
-                                                   0, 0, ctrl_w, Dp(22), kIdDebugAudio, instance_,
-                                                   BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
-            {da_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {debug_audio_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        }, [this]() { return developer_mode_; });
-    }
-    {
         HWND sid_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
         show_imu_debug_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsShowImuDebug, language).c_str(),
                                                       0, 0, ctrl_w, Dp(22), kIdShowImuDebug, instance_,
@@ -871,6 +866,20 @@ void SettingsDialog::BuildControls() {
         add(row_h + Dp(10), {
             {sid_label, Dp(10), Dp(3), label_w, Dp(20)},
             {show_imu_debug_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        }, [this]() { return developer_mode_; });
+    }
+
+    // ===== 音频文件 =====
+    separator([this]() { return developer_mode_; });
+    section_title(StringId::kSettingsSectionAudioFiles, [this]() { return developer_mode_; });
+    {
+        HWND da_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        debug_audio_check_ = remember(CreateButton(hwnd_, TrW(StringId::kSettingsDebugAudio, language).c_str(),
+                                                   0, 0, ctrl_w, Dp(22), kIdDebugAudio, instance_,
+                                                   BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {da_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {debug_audio_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         }, [this]() { return developer_mode_; });
     }
     {
@@ -884,6 +893,17 @@ void SettingsDialog::BuildControls() {
             {dd_label, Dp(10), Dp(3), label_w, Dp(20)},
             {debug_dir_edit_, ctrl_x, 0, ctrl_w - Dp(80), Dp(24)},
             {choose_btn, ctrl_x + ctrl_w - Dp(75), 0, Dp(75), Dp(24)},
+        }, [this]() { return developer_mode_; });
+    }
+    {
+        // 频谱查看器入口：启动 scripts/e2e_test/spectrogram_server.py 调试音频会话。
+        HWND sv_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        HWND spectrogram_btn = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsOpenSpectrogram, language).c_str(),
+            0, 0, ctrl_w, Dp(24), kIdOpenSpectrogram, instance_));
+        add(row_h + Dp(10), {
+            {sv_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {spectrogram_btn, ctrl_x, 0, ctrl_w, Dp(24)},
         }, [this]() { return developer_mode_; });
     }
 
@@ -1359,6 +1379,58 @@ void SettingsDialog::ChooseDebugDirectory() {
         }
     }
     dialog->Release();
+}
+
+void SettingsDialog::OpenSpectrogramViewer() {
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    // 脚本路径解析：1) exe 同目录（预留 MSI 打包）；2) 从 exe 目录向上逐级找
+    // scripts/e2e_test/spectrogram_server.py（开发构建 build-x64 向上 3 级即仓库根）。
+    std::wstring exe_path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, exe_path.data(), static_cast<DWORD>(exe_path.size()));
+    while (length == exe_path.size()) {
+        exe_path.resize(exe_path.size() * 2);
+        length = GetModuleFileNameW(nullptr, exe_path.data(), static_cast<DWORD>(exe_path.size()));
+    }
+    std::filesystem::path script;
+    std::error_code ec;
+    if (length != 0) {
+        exe_path.resize(length);
+        const auto exe_dir = std::filesystem::path(exe_path).parent_path();
+        const auto sibling = exe_dir / L"spectrogram_server.py";
+        if (std::filesystem::exists(sibling, ec)) {
+            script = sibling;
+        } else {
+            auto dir = exe_dir;
+            for (int i = 0; i < 6 && dir.has_parent_path(); ++i, dir = dir.parent_path()) {
+                const auto candidate = dir / L"scripts" / L"e2e_test" / L"spectrogram_server.py";
+                if (std::filesystem::exists(candidate, ec)) {
+                    script = candidate;
+                    break;
+                }
+            }
+        }
+    }
+    if (script.empty()) {
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsSpectrogramNotFound, language).c_str(),
+                    TrW(StringId::kSettingsTitle, language).c_str(), MB_ICONWARNING | MB_OK);
+        return;
+    }
+
+    // --dir 传当前编辑框内容：未保存的目录修改也对本次查看生效；为空则由脚本读 config.toml。
+    std::wstring args = L"-3 \"" + script.wstring() + L"\"";
+    const auto dir_text = GetWindowText(debug_dir_edit_);
+    if (!dir_text.empty()) args += L" --dir \"" + dir_text + L"\"";
+
+    auto* result = ShellExecuteW(hwnd_, L"open", L"py.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        // 无 py launcher 时回退 python（参数去掉 -3）。
+        const auto fallback_args = args.substr(3);
+        result = ShellExecuteW(hwnd_, L"open", L"python.exe", fallback_args.c_str(), nullptr, SW_SHOWNORMAL);
+    }
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsSpectrogramNotFound, language).c_str(),
+                    TrW(StringId::kSettingsTitle, language).c_str(), MB_ICONWARNING | MB_OK);
+    }
 }
 
 bool SettingsDialog::IsLabelControl(HWND control) const {

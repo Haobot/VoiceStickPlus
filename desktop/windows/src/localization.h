@@ -75,6 +75,9 @@ enum class StringId {
     kSettingsSectionOutput,
     kSettingsSectionDevice,
     kSettingsSectionSystem,
+    kSettingsSectionAudioFiles,
+    kSettingsOpenSpectrogram,
+    kSettingsSpectrogramNotFound,
     kSettingsDeveloperMode,
 
     // 托盘菜单

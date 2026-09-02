@@ -82,6 +82,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsSectionOutput)] = "Output";
     table[Index(StringId::kSettingsSectionDevice)] = "Device Interaction";
     table[Index(StringId::kSettingsSectionSystem)] = "System";
+    table[Index(StringId::kSettingsSectionAudioFiles)] = "Audio Files";
+    table[Index(StringId::kSettingsOpenSpectrogram)] = "Open Spectrum Viewer";
+    table[Index(StringId::kSettingsSpectrogramNotFound)] =
+        "Could not launch the spectrum viewer. Make sure Python is installed and "
+        "scripts/e2e_test/spectrogram_server.py exists in the repository.";
     table[Index(StringId::kSettingsDeveloperMode)] = "Developer Mode (show all advanced settings)";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
@@ -419,6 +424,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsSectionOutput)] = "输出";
     table[Index(StringId::kSettingsSectionDevice)] = "设备交互";
     table[Index(StringId::kSettingsSectionSystem)] = "系统";
+    table[Index(StringId::kSettingsSectionAudioFiles)] = "音频文件";
+    table[Index(StringId::kSettingsOpenSpectrogram)] = "打开频谱查看器";
+    table[Index(StringId::kSettingsSpectrogramNotFound)] =
+        "无法启动频谱查看器。请确认已安装 Python，且仓库中存在 "
+        "scripts/e2e_test/spectrogram_server.py。";
     table[Index(StringId::kSettingsDeveloperMode)] = "开发者模式（显示全部高级设置）";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";

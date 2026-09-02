@@ -41,6 +41,8 @@ private:
     void OnHotwordCandidateDismiss();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
+    // 启动频谱查看器（scripts/e2e_test/spectrogram_server.py，经 py/python 启动）。
+    void OpenSpectrogramViewer();
     bool IsLabelControl(HWND control) const;
     int Dp(int px) const;
     // 按声明式布局表重新定位所有控件并按可见行数动态调整窗口高度。
@@ -163,6 +165,7 @@ private:
     static constexpr UINT kIdHotwordCandidateAdd = 2037;
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
     static constexpr UINT kIdDeveloperMode = 2039;
+    static constexpr UINT kIdOpenSpectrogram = 2040;
 };
 
 } // namespace voicestick
