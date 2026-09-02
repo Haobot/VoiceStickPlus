@@ -2,13 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-本文件为 Claude Code 在本仓库工作时提供指导，工作语言为简体中文。仓库根目录的 `AGENTS.md` 与 `CODEBUDDY.md` 是本文的同源副本，分别面向通用 AI 编码助手与 CodeBuddy；修改本文涉及的整体性内容时同步更新 `AGENTS.md` 与 `CODEBUDDY.md`，避免三份文档漂移；以本文为权威源。
+本文件是面向 AI 编码助手的**核心枢纽（Hub）**：只保留每次任务都可能用到的核心知识（项目定位、构建速查、架构红线、高频坑），扩展细节按主题分布在 `Doc/` 下各文档中——用到哪个主题，按文末「文档索引」直接去查对应文档。
+
+`AGENTS.md`（通用 AI 编码助手）与 `CODEBUDDY.md`（CodeBuddy）是本文的同源副本，三者内容一致，修改整体性内容时同步更新三份，避免漂移。
 
 ## 项目概览
 
-Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备负责采集按键、音频与 IMU 并通过 BLE 上报；桌面端负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录（esptool-js）和 Sparkle/WinSparkle 更新源。
+Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备采集按键、音频与 IMU 经 BLE 上报；**桌面端是状态唯一可信源**，负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录（esptool-js）和 Sparkle/WinSparkle 更新源。
 
-输入设备现有两类并存：自研 StickS3（设备 ID `VS-XXXX`，配固件）与小米蓝牙遥控器 2 Pro（`RC-XXXX`，仅 Windows 端）。小米遥控器是独立 BLE 外设，**固件完全不改**，ATVV 会话/ADPCM 解码/Opus 归一化全部在桌面端完成（设计见 `Doc/Plan/xiaomi-remote-2-pro-support.md`，协议事实见 `Doc/Ref/protocol.md` ATVV 设备档案章节；macOS 端暂缓实施，待后续版本）。
+输入设备两类并存：自研 StickS3（设备 ID `VS-XXXX`，配固件）与小米蓝牙遥控器 2 Pro（`RC-XXXX`，仅 Windows 端，**固件零改动**，ATVV 接入全部在桌面端）。
 
 核心音频数据流：
 
@@ -17,37 +19,9 @@ StickS3 mic -> ES8311/I2S PCM -> Opus -> BLE -> Desktop -> Ogg Opus -> ASR -> pa
                                                               \-> Opus decode -> PCM -> 虚拟麦克风（微信输入法模式）
 ```
 
-ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存都使用同一份 Ogg Opus 流。微信输入法模式是例外：桌面端把 Opus 解码为 PCM 后渲染到系统虚拟麦克风（如 VB-CABLE），供微信输入法等应用作为音频输入源。
+ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PCM 渲染到系统虚拟麦克风，不经 ASR 文本注入）。小米遥控器音频在进协调器前归一化为与 StickS3 相同的标准 Opus 帧，下游零改动。
 
-小米遥控器的音频路径在进协调器前完成归一化：ATVV BLE 裸 IMA ADPCM 流 → 桌面端解码为 PCM（三点平滑 + 增益限幅）→ 桌面端 Opus 编码，产出与 StickS3 相同的标准音频帧，下游 Ogg mux/ASR/字幕/wechat/调试缓存零改动。
-
-当前版本：`2.3.6`（见仓库根目录 `VERSION`）。发布前需确保 `firmware/version.txt` 与 `VERSION` 一致（当前两者均为 `2.3.6`）。
-
-## 关键配置文件
-
-| 文件 | 用途 |
-|---|---|
-| `VERSION` | 单一版本来源，纯文本，不含换行 |
-| `firmware/version.txt` | 固件向桌面端报告的版本，发布前必须与 `VERSION` 一致 |
-| `firmware/CMakeLists.txt` | ESP-IDF 项目入口（`project(voice_stick)`） |
-| `firmware/main/CMakeLists.txt` | 主组件注册与依赖声明 |
-| `firmware/partitions_ota.csv` | 8 MB 分区表：两个 3 MB OTA app slot + 约 1984 KB `storage`（SPIFFS） |
-| `desktop/macos/Package.swift` | SwiftPM 定义（swift-tools 5.9），依赖 Sparkle 2.6+、TOMLKit 0.6+、CZlib |
-| `desktop/windows/CMakeLists.txt` | Windows 端构建，拆为 `voicestick_core` + `VoiceStickApp` + `VoiceStickFlash` + 两个测试目标 |
-| `desktop/windows/src/version.h.in` | Windows 版本资源模板，由 CMake 从 `VERSION` 填充 |
-| `desktop/windows/src/builtin_secrets.h.in` | Windows 内置凭据模板，由 CMake 从 `-D VOICESTICK_BUILTIN_*` 变量填充（见「安全注意事项」） |
-| `desktop/windows/resources/config.template.toml` | Windows 运行时配置模板，构建时复制到 exe 旁并随 MSI 安装 |
-| `desktop/windows/installer/VoiceStick.wxs` | WiX MSI 安装包定义（含 `SeedMsiConfigExec` 配置种子自定义动作） |
-| `desktop/linux/` | Linux 桌面占位目录，目前无活跃实现 |
-| `website/package.json` | Node 项目配置（仅 `dev`/`build`/`preview` 脚本，无 lint/test） |
-| `website/public/appcast.xml` | Sparkle/WinSparkle 更新源 |
-| `.github/workflows/release.yml` | 推送 `v*` 标签触发构建与发布 |
-| `.github/workflows/deploy-website.yml` | 网站部署与 appcast 更新 |
-| `scripts/idf_cli.yaml` | `idf_cli.py` 的配置文件 |
-| `scripts/prepare_flash_payload.ps1` | 准备 VoiceStickFlash 自包含 esptool 运行时（python-embed + esptool，幂等；`VOICESTICK_PYTHON_EMBED_URL` 覆盖下载源、`VOICESTICK_PIP_INDEX_URL` 覆盖 pip 索引） |
-| `scripts/extract_builtin_key.ps1` / `scripts/generate_msi_config.ps1` | MSI 打包密钥注入：前者从本机 exe/配置提取 7 项内置凭据供 cmake `-D` 注入；后者从本机 `%APPDATA%\VoiceStick\config.toml`（默认，`VOICESTICK_MSI_CONFIG_SOURCE` 可覆盖）提取密钥生成含 key 的 MSI config 产物（gitignored，密钥不进仓库） |
-| `requirements.txt` | Python 脚本依赖（`pyyaml` / `pyserial` / `Pillow`），不含 E2E 工具链依赖 |
-| `ArduFlux.json` | 本机 ArduFlux 工具的 ESP32-S3 板卡/串口配置（辅助烧录，非构建必需） |
+当前版本见根目录 `VERSION`（纯文本，无换行）；发布前必须确保 `firmware/version.txt` 与之一致。
 
 ## 技术栈
 
@@ -58,217 +32,30 @@ ASR 路径不把 Opus 解码回 PCM，ASR 与调试音频缓存都使用同一�
 | Windows 桌面端 | C++20, Win32, C++/WinRT, Direct2D | CMake + Ninja + MSVC 2022 x64 | Windows 10 1903+ |
 | 网站 | Vue 3, Vite, vue-i18n, esptool-js | Vite | 静态站点 (GitHub Pages) |
 
-固件关键外部依赖：`espressif/button` ^4.1.6（main）、`espressif/esp_codec_dev` ^1.3.4 + `78/esp-opus` ^1.0.5（audio_pipeline）、`lvgl/lvgl` 9.2.0（ui_status），由 ESP-IDF component manager 通过各组件自己的 `idf_component.yml` 管理。
+固件关键外部依赖：`espressif/button` ^4.1.6、`espressif/esp_codec_dev` ^1.3.4 + `78/esp-opus` ^1.0.5、`lvgl/lvgl` 9.2.0，由 ESP-IDF component manager 经各组件 `idf_component.yml` 管理。
 
-## 构建与测试命令
+## 构建与测试速查
 
-### 固件（ESP-IDF v5.5.1，目标 `esp32s3`）
-
-```sh
-cd firmware
-. "$HOME/esp/v5.5.1/esp-idf/export.sh"
-idf.py set-target esp32s3
-idf.py build
-idf.py -p /dev/cu.usbmodemXXXX flash monitor
-```
-
-首次从旧单应用分区表升级时，需要擦除后重刷：
-
-```sh
-idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
-```
-
-Windows 上不便直接用 `idf.py` 时：
-
-```bat
-python scripts/idf_cli.py -cus -p COM17
-```
-
-`idf_cli.py` 常用参数：`-c` 编译、`-u` 上传、`-s` 串口监控、`-cus` 编译+上传+监控、`-p COMxx` 指定串口。固件没有自动化单元测试，验证方式为 `idf.py build` 编译通过和真机运行时测试。
-
-### macOS 桌面端（SwiftPM）
-
-```sh
-cd desktop/macos
-swift build
-swift run VoiceStickApp
-```
-
-发布构建（在仓库根目录执行）：
-
-```sh
-SPARKLE_PUBLIC_ED_KEY="..." scripts/build-macos.sh --release
-scripts/make-dmg.sh
-```
-
-macOS 端目前没有专用测试目标，无法运行单个测试；验证方式主要是 `swift build` 编译通过和运行时手动测试。
-
-### Windows 桌面端（CMake + Ninja + MSVC 2022 x64）
-
-推荐从仓库根目录使用：
-
-```bat
-build_win.bat
-```
-
-该脚本会自动查找 VS 2022、结束残留进程、删除并重建 `desktop\windows\build-x64`，只构建不运行 CTest。注意：`build_win.bat` 历史上曾出现链接失败仍报成功的情况，构建后应核对 `desktop\windows\build-x64\VoiceStick.exe` 的时间戳与体积。
-
-手动构建（需先进入 VS 2022 x64 开发者环境）：
-
-```powershell
-cmake -S desktop\windows -B desktop\windows\build-x64 -G Ninja
-cmake --build desktop\windows\build-x64
-```
-
-可选：configure 时传 `-D VOICESTICK_BUILTIN_API_KEY=...` 等 7 个 `VOICESTICK_BUILTIN_*` 变量把凭据编译进 exe（生成 `builtin_secrets.h`，见「安全注意事项」）。
-
-运行全部 Windows 测试：
-
-```powershell
-ctest --test-dir desktop\windows\build-x64 --output-on-failure
-```
-
-按 CTest 名称正则过滤：
-
-```powershell
-ctest --test-dir desktop\windows\build-x64 --output-on-failure -R voicestick_windows_tests
-```
-
-`voicestick_windows_tests` 基于 `assert`，目前不支持按测试函数名过滤；新增核心测试时把 `Test...()` 函数加入 `desktop/windows/tests/core_tests.cc` 的 `main()`。`-R voicestick_integration_tests` 单独跑集成测试，需联网与 `volcengine_api_key`，无 key 时该测试返回 77 被 CTest 标记为 SKIP。
-
-运行应用：
-
-```powershell
-desktop\windows\build-x64\VoiceStick.exe
-```
-
-发布打包（签名 MSI）：
-
-```bat
-scripts\build-msi.bat
-```
-
-该脚本在 WiX 构建前自动调用 `scripts\prepare_flash_payload.ps1` 准备 VoiceStickFlash 的自包含 esptool payload（`build-msi-x64\flash_payload\`，gitignored 构建产物），并随 MSI 安装到 `INSTALLFOLDER\FlashTool\`（exe 本体装到 `INSTALLFOLDER\VoiceStickFlash.exe`）。脚本还会用 `extract_builtin_key.ps1` 输出 7 项内置凭据环境变量供 cmake 注入，并调用 `generate_msi_config.ps1` 生成含 key 的 MSI config 产物。
-
-注意：`build_native.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。
-
-### 网站（Vue 3 + Vite，Node 22）
-
-```sh
-cd website
-npm install
-npm run dev      # 本地开发服务器
-npm run build    # 最小验证
-npm run preview  # 预览生产构建
-```
-
-`website/package.json` 目前只定义了 `dev`、`build`、`preview`，没有 lint/test 脚本。修改网站后用 `npm run build` 作为最小验证。修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
-
-## 架构边界
-
-### 状态机归属
-
-交互状态机在桌面端，不在固件中。修改交互流程时优先改桌面协调器（macOS 的 `VoiceStickCoordinator` / Windows 的 `voice_stick_coordinator.cc`）。固件通常只在新增/调整 `ui_state` 展示、硬件 I/O、BLE 协议或 OTA 行为时修改（例外：双击手势的时序检测在固件端完成，桌面端只响应 `button_double_click` 事件，见 `Doc/Plan/primary-button-double-click.md`；小米遥控器再例外：无固件可改，其语音键双击的时序检测在桌面端适配层完成，合成同样的 `button_double_click`）。修改协议字段、状态枚举、配置项或发布产物格式时，同步检查 `Doc/Ref/`、macOS、Windows、网站和发布脚本。
-
-### BLE 协议边界
-
-GATT service UUID：`8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`
-
-| 特征 | UUID | 方向 | 属性 | 用途 |
-|---|---|---|---|---|
-| `audio_tx` | `…5101` | 设备 → 主机 | notify | Opus 音频帧 |
-| `state_tx` | `…5102` | 设备 → 主机 | notify | 按键事件（含 `button_double_click`）、电量、固件版本、体感鼠标运动帧 |
-| `control_rx` | `…5103` | 主机 → 设备 | write without response | `ui_state`、交互/敲击/体感鼠标设置、`ota_commit` 等；JSON 需控制长度避免 BLE MTU 溢出 |
-| `ota_rx` | `…5104` | 主机 → 设备 | write / write without response | BLE OTA 控制与数据帧 |
-| `ota_tx` | `…5105` | 设备 → 主机 | notify | BLE OTA 状态帧 |
-
-完整帧格式见 `Doc/Ref/protocol.md`。v1.8.0 起 Wi-Fi STA 配网与局域网 OTA 已整体移除，固件升级只走 BLE OTA（串口烧录为回退手段）。
-
-小米蓝牙遥控器 2 Pro 不走本 service：它讲 Google ATVV profile（service `AB5E0001-5A21-4F05-BC7D-AF01F617B664`）加标准 HID/Battery（`0x1812`/`0x180F`），桌面端经名称白名单或 ATVV 广播 UUID 发现后按 `RC-XXXX` 建档连接；固件不实现该协议。协议事实见 `Doc/Ref/protocol.md` 的 ATVV 设备档案章节。
-
-### 固件职责
-
-固件只负责硬件 I/O、音频编码、BLE 通信、电源管理和显示主机下发的 UI 状态，不持有桌面交互状态机。关键组件（`firmware/components/` 下共 7 个）：
-
-- `firmware/main/main.c`：主循环，编排按键、BLE、录音会话、UI 状态、电源管理和 OTA 事件。
-- `components/audio_pipeline/`：从 ES8311 读取 16 kHz 单声道 PCM，经 HPF 与软件 AGC（v2.1.2 起：target -6 dBFS、max +20 dB、噪声门、0.8FS 瞬时限幅，硬件 ALC 已关闭）后编码为 Opus 交给 BLE 层；开头 60ms 静音+淡入、drain 尾帧淡出以消除按键音。
-- `components/voice_ble/`：GATT 服务、通知、控制写入、BLE OTA。
-- `components/ui_status/`：ST7789/LVGL 渲染、亮度、休眠、OTA 进度。
-- `components/bmi270/`：BMI270 IMU 驱动。
-- `components/mini_encoder_c/`：MiniEncoderC 编码器驱动（I2C @0x42，顶部 Hat 排针 SDA=G8/SCL=G0 第二路总线，按钮/旋转增量/SK6812 LED，轮询式；探测失败优雅降级）。
-- `components/stick_s3_board/`：板级初始化，引脚定义在 `include/stick_s3_board.h`。
-- `components/power_log/`：分模式功耗记账——纯观察组件，不改动电源状态机行为；记录模式切换事件与 60s VBAT 周期采样（RAM 环形缓冲 + SPIFFS `/storage/power_log.bin` 环形文件，M5PM1 RTC RAM 存跨 S3 关机锚点），经 `control_rx`/`state_tx` 的 `power_log` 命令导出，协议见 `Doc/Ref/protocol.md`，设计见 `Doc/Plan/power-mode-energy-profiling.md`。
-
-板级硬件映射：
-
-| 硬件 | 引脚/接口 | 说明 |
+| 模块 | 最小验证 | 测试 |
 |---|---|---|
-| 主键（正面） | GPIO11 | 协议 `primary`，push-to-talk 与深度睡眠唤醒 |
-| 侧键 | GPIO12 | 协议 `secondary`，取消/体感鼠标/恢复上一次输入确认 |
-| PMIC IRQ | GPIO13 | 电源管理芯片中断 |
-| LCD 背光 | GPIO38 | PWM 调光 |
-| IMU | BMI270 | I2C，体感鼠标与敲击检测 |
-| MiniEncoderC 编码器 | I2C @0x42，顶部 Hat 排针 SDA=G8 / SCL=G0（第二路 I2C 总线） | 按钮等价主键，旋转映射方向键，录音时亮红灯；不能作为深睡唤醒源 |
-| 音频 codec | ES8311 | I2S，16 kHz / 16 bit / mono |
-| 显示屏 | ST7789 | 135 × 240 竖屏，SPI |
+| 固件 | `cd firmware && idf.py build`（Windows 可用 `python scripts/idf_cli.py -c`） | 无单测，编译通过 + 真机验证 |
+| macOS | `cd desktop/macos && swift build` | 无测试目标，编译通过 + 手动测试 |
+| Windows | 根目录 `build_win.bat` | `ctest --test-dir desktop\windows\build-x64 --output-on-failure` |
+| 网站 | `cd website && npm run build` | 无自动化测试 |
 
-### 桌面端职责
+各平台完整命令、发布构建、MSI 打包、E2E 真机工具链见 `Doc/Agent/build-and-test.md`。
 
-桌面端是状态唯一可信源，负责 BLE 配对和多设备连接、交互状态机、Opus→Ogg Opus 封装、ASR WebSocket、LLM 翻译与精修、悬浮窗/字幕、文本注入、体感鼠标、配置管理和自动更新。
+## 架构边界红线
 
-macOS 代码集中在 `desktop/macos/Sources/VoiceStickApp/`：`VoiceStickCoordinator`（状态机）、`BleCentral` / `BleProtocol`（CoreBluetooth 与协议）、`OggOpusMuxer` / `ASRWebSocketClient`（音频封装与 ASR）、`InputInjector`（粘贴与 Return 注入）、`OverlayController` / `SubtitleController` / `StatusController`（悬浮窗/字幕/状态）、`FirmwareManifest` / `FirmwareUpdateWindowController`（固件更新）。
-
-Windows 端在 `desktop/windows/CMakeLists.txt` 中拆成五个源码目标（另有 `winsparkle_lib` 导入库）：
-
-- `voicestick_core`：可测试核心库，包含配置解析（含 `Active*()` 内置凭据回退访问器）、BLE 协议（含 `DeviceClass` 设备类与 `VS-`/`RC-` 双前缀设备 ID）、Ogg Opus mux、ASR 帧格式、LLM 翻译/精修（含热词 few-shot 与改坏回退守卫）、热词候选挖掘（`hotword_candidate_miner`）、调试音频缓存、固件清单解析、日志、本地化和协调器状态机；VoiceStickFlash 的烧录逻辑（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`）也在此。小米遥控器接入同为 core 纯逻辑模块（全部可单测）：`xiaomi_atvv_protocol`（UUID/opcode 常量、GET_CAPS/ACK/MIC_CLOSE 构造、CAPS 解析含旧版布局兼容）、`xiaomi_atvv_session`（ATVV 会话状态机：RC003 无 SYNC 硬重置、150ms 尾包宽限、300ms 重开拒绝、双击时序检测）、`ima_adpcm_decoder`、`pcm_postprocessor`（三点平滑 + 增益限幅、按协商帧长切帧）、`audio_opus_encoder`（16kHz/mono/40ms，参数对齐固件 audio_pipeline）；`PairedDeviceEntry.hardware` 派生能力集（has_screen/has_ota/has_encoder/has_imu/has_battery）驱动 `Send*` 跳过与托盘菜单显隐。
-- `VoiceStickApp`：Win32 平台外壳，包含托盘、窗口、BLE 中央、剪贴板/`SendInput` 注入、全局热键、WinSparkle、配对/设置/固件更新等对话框。
-- `VoiceStickFlash`：独立 COM 口固件烧录小工具（BLE OTA 之外的用户级兜底链路），Win32 GUI 外壳只做 UI + esptool 子进程；设计见 `Doc/Plan/windows-com-flash-tool.md`。
-- `voicestick_windows_tests`：基于 `assert` 的单元测试，源码在 `desktop/windows/tests/core_tests.cc`，用自定义 Fake/Mock 不联网验证核心库；由 CTest 注册为同名测试，不支持按测试函数名过滤。
-- `voicestick_integration_tests`：L1 ASR 链路集成测试，源码在 `desktop/windows/tests/integration_tests.cc`，用真实 `AsrClientWin` 连火山 ASR（需 `%APPDATA%\VoiceStick\config.toml` 配 `volcengine_api_key` 且联网），无 key 时返回 77 被 CTest 标记为 SKIP，不伪造结果。
-
-新增核心行为优先放入 `voicestick_core`，并在 `desktop/windows/tests/core_tests.cc` 覆盖；跨链路验证可补到 `integration_tests.cc`。
-
-### 核心交互模型
-
-固件上报原始按键事实，桌面端解释为交互行为并回写 `ui_state`：
-
-| 状态 | 主键（正面） | 侧键 |
-|---|---|---|
-| 未配对/未连接 | 不录音，屏幕显示 `VS-XXXX` | 无有效动作 |
-| 连接空闲 | 按住开始录音（双击直接注入 Enter，不录音） | 双击恢复上一次输入确认；单击无操作（体感鼠标入口已移除） |
-| 录音中 | 释放结束录音 | 单击不取消当前录音 |
-| 识别中 | 忽略新录音 | 单击取消正在进行的识别 |
-| 确认倒计时中 | 暂停自动粘贴，进入手动确认 | 单击取消待粘贴文本 |
-| 手动确认中 | 确认粘贴 | 单击取消待粘贴文本 |
-
-补充说明：
-
-- 双击检测在固件端完成（小米遥控器语音键则在桌面端适配层完成，阈值见 `Doc/Plan/primary-button-double-click.md` / `[device.<id>.xiaomi]` 的 `double_click_ms`），桌面端统一处理 `button_double_click`：主键双击取消当前活跃录音/字幕后注入 Enter；侧键双击执行「恢复上一次输入确认」（体感鼠标态下忽略）。小米遥控器无侧键，其余 HID 键由 OS 原生消费。
-- 侧键单击的取消语义仅在有活跃录音/识别/待粘贴时生效；体感鼠标态下单击退出体感；真正空闲时单击无操作（体感入口已移除，`ToggleAirMouse` 不再由侧键触发）。
-- 另有敲击检测（`tap_to_arrow` 配置，IMU 敲击映射为方向键），体感态下忽略。
-
-支持 `hold_to_talk`（默认）和 `click_to_talk` 两种交互模式。文本输出支持三种目标：`focused_app`（默认粘贴到当前焦点，默认自动按 Return）、`subtitle`（仅显示字幕）和 `wechat_input_method`（把 Opus 解码为 PCM 渲染到系统虚拟麦克风，供微信输入法等应用作为音频输入源，不经 ASR 文本注入）。识别结果可通过 OpenAI-compatible LLM 做翻译与精修，也可按设备单独覆盖输出设置。
+- **交互状态机在桌面端，不在固件中**。改交互流程优先改桌面协调器（macOS `VoiceStickCoordinator` / Windows `voice_stick_coordinator.cc`）；固件只管硬件 I/O、音频编码、BLE、电源管理和渲染主机下发的 `ui_state`。例外：双击时序检测在固件端（小米遥控器语音键则在桌面端适配层），桌面端统一响应 `button_double_click`。
+- **修改协议字段、状态枚举、配置项或发布产物格式时**，同步检查 `Doc/Ref/protocol.md`、固件 C、macOS Swift、Windows C++、网站和发布脚本。
+- **小米遥控器固件完全不改**：ATVV 会话/ADPCM 解码/Opus 归一化全部在桌面端完成。
+- BLE GATT service UUID `8f2f0b84-6e6f-4b23-88f7-3a3ceafc5100`（`audio_tx`/`state_tx`/`control_rx`/`ota_rx`/`ota_tx` 五特征）；v1.8.0 起固件升级只走 BLE OTA。特征表与帧格式见 `Doc/Ref/protocol.md`；小米遥控器走 Google ATVV profile（`AB5E0001-…`），同文 ATVV 设备档案章节。
+- 固件组件与板级引脚映射见 `Doc/Agent/firmware-architecture.md`；桌面端模块划分见 `Doc/Agent/desktop-architecture.md`；交互状态表与按键语义见 `Doc/Agent/interaction-model.md`。
 
 ## 配置
 
-桌面端运行时配置文件位置：
-
-- macOS：`~/Library/Application Support/VoiceStick/config.toml`
-- Windows：`%APPDATA%\VoiceStick\config.toml`
-
-关键配置项（完整字段说明见 `Doc/Ref/desktop-config.md`，示例见 `desktop/macos/Config/config.example.toml`）：
-
-- `asr_provider`：`volcengine`、`voicestick_cloud` 或 `tencent`；对应凭据分别为 `volcengine_api_key`、`voicestick_api_key` + `voicestick_cloud_url`、`tencent_secret_id` + `tencent_secret_key` + `tencent_appid`。
-- `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山热词表/替换词表 ID；热词直传只在流式第一遍生效，二遍靠 LLM 精修兜底（背景见 `Doc/Ref/volcengine-asr.md`）。
-- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `false`（v2.3.2 起，精修需用户手动开启）。
-- `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`；wechat 模式触发方式由 `[wechat_input_method].trigger_mode` 独立控制，不联动全局。
-- `[output].target`：`focused_app`（默认）、`subtitle` 或 `wechat_input_method`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖。
-- `hotword_process_enabled` / `hotword_mining_enabled`：热词处理与候选挖掘（Windows，默认关闭，两条挖掘通道与阈值细节见 `Doc/Ref/desktop-config.md`）。
-- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`；`VS-XXXX` 与 `RC-XXXX` 可混合（内部存储与 `[device.<id>.*]` 表键均用去前缀的 4 位 hex）。
-- `xiaomi_suppress_f5`（小米遥控器语音键附带 F5 的抑制开关，Windows，默认开，按有无已配对 RC 设备门控装载键盘钩子）与 `[device.<id>.xiaomi]`（遥控器按设备设置：`gain_db` / `double_click_ms`，结构镜像 `[device.<id>.output]`，UI 为托盘设备子菜单「遥控器设置…」，热更对已连接会话不生效、重连后生效）：完整说明见 `Doc/Ref/desktop-config.md` 小米遥控器配置节。
-- `tap_to_arrow`、`encoder_*`（编码器旋转/快慢分档/按键/LED，仅 Windows 端消费）、`air_mouse_*`（体感鼠标）、`[wechat_input_method]`（虚拟麦克风链路）：字段多且细节长，完整说明见 `Doc/Ref/desktop-config.md`。编码器配置为**全局默认（`encoder_*`）+ 按设备覆盖 `[device.<id>.encoder]`**（键名去 `encoder_` 前缀，结构镜像 `[device.<id>.output]`），设置 UI 已从「设置」对话框移至托盘设备子菜单的「编码器设置…」（仅 `encoder_present` 设备显示）。
-
-Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` 下，并由 `SeedMsiConfigExec` 自定义动作在**安装时**整份复制覆盖到 `%APPDATA%\VoiceStick\config.toml`（deferred + Impersonate + `NOT Installed` 条件，仅全新安装，升级不覆盖）。打包时 `generate_msi_config.ps1` 会从本机配置提取密钥注入模板，生成含 key 的构建产物（gitignored，密钥不进仓库），使首启开箱即用。
+桌面端运行时配置：macOS `~/Library/Application Support/VoiceStick/config.toml`，Windows `%APPDATA%\VoiceStick\config.toml`。完整字段说明见 `Doc/Ref/desktop-config.md`，示例见 `desktop/macos/Config/config.example.toml`。
 
 ## 代码风格
 
@@ -277,70 +64,45 @@ Windows MSI 会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\` �
 - **C（固件）**：ESP-IDF 风格，组件通过 `idf_component_register` 注册，组件间通过 `REQUIRES` 声明依赖。
 - **Vue/JS（网站）**：Vue 3 Composition API 风格。
 
-仓库当前未提交统一 lint/formatter 配置；不要臆造 `npm run lint`、Swift lint 或 C++ lint 命令。修改对应组件后运行该组件已有的构建/测试命令作为验证。
+仓库未提交统一 lint/formatter 配置；不要臆造 lint 命令，用各组件已有的构建/测试命令验证。
 
-## 测试策略
+## 安全红线
 
-- **Windows**：`desktop/windows/tests/core_tests.cc` 使用自定义 Fake/Mock 对 `voicestick_core` 中的状态机、配置解析、协议编解码、Ogg Opus mux 等进行单元测试（不联网）。`desktop/windows/tests/integration_tests.cc` 是 L1 ASR 链路集成测试，连真实火山 ASR，无 key 时返回 77 被 CTest 标记为 SKIP。运行命令：`ctest --test-dir desktop/windows/build-x64 --output-on-failure`。
-- **macOS**：目前没有专用测试目标。验证方式主要是 `swift build` 编译通过和运行时手动测试。
-- **固件**：没有自动化单元测试。验证方式是 `idf.py build` 编译通过和真机运行时测试。
-- **网站**：没有自动化测试。验证方式是 `npm run build` 构建通过。
-- **Python E2E 真机验证**：`scripts/e2e_test/` 是跨固件+Windows 端到端的半自动验证工具链（L0 语料、L3 固件回放、L4 微信输入法、ASR/热词离线评测、功耗记账导出），用真实 BLE 连接与真实 ASR/音频链路，不伪造结果。各工具用法与评测结论索引见 `Doc/Ref/e2e-test-toolchain.md`；依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`；设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。小米遥控器另有 ATVV 工具组：`atvv_capture.py`（真机 golden 采集）、`atvv_bench.py`（golden 会话离线 ASR 评测，裸 PCM 直送）、`atvv_probe.py`（会话延迟/尾包时延/长连接静置探针）；golden fixtures 接入 C++ 单测（`TestImaAdpcmDecoderGoldenFixtures` 扫描 `scripts/e2e_test/fixtures/xiaomi/**` 逐样本对拍，无 fixtures 打印 SKIP 不算失败）与集成测试回放，其中 `fixtures/xiaomi/demo_synthetic/` 入库作冒烟资产、真机采集目录 gitignore（详见 `Doc/Ref/e2e-test-toolchain.md`）。
+- API 密钥等凭据只存在于本机 `config.toml`，不进仓库；示例配置用占位符。
+- 内置凭据（`VOICESTICK_BUILTIN_*`）与 MSI 打包链路生成的含 key 产物均 gitignored，不得提交。
+- 集成测试与 E2E 坚持「不伪造结果」：无凭据/无设备时 SKIP 或报错，不 mock 真实链路。
+- 固件 OTA 与桌面端自动更新走官方渠道（GitHub Release + 阿里云 OSS + appcast），不绕过签名校验。
 
-## 安全注意事项
+细节见 `Doc/Agent/release-and-security.md`；发布权威流程见 `Doc/Ref/release.md`。
 
-- API 密钥等凭据字段（`volcengine_api_key`、`tencent_secret_*`、`llm_api_key` 等）只存在于本机 `config.toml`，不要提交进仓库；示例配置使用占位符。
-- Windows 支持把凭据编译进 exe：cmake configure 传 7 个 `-D VOICESTICK_BUILTIN_*` 变量生成 `builtin_secrets.h`（`src/builtin_secrets.h.in` 模板），运行时 `AppConfig::Active*()` 访问器按「配置值优先，空则回退内置，不落盘」解析。这些值是发布构建注入的测试凭据，源文件模板不含真实密钥。
-- MSI 打包链路（`extract_builtin_key.ps1` / `generate_msi_config.ps1` / `build-msi.bat`）在本机提取密钥生成含 key 的构建产物，产物均 gitignored；不要把生成的含 key config 提交进仓库。
-- Windows 便携包模板中使用占位符而非真实 Sparkle 公钥；真实签名证书与 Sparkle 私钥只存在于签名机。
-- 集成测试与 E2E 工具链坚持「不伪造结果」原则：无凭据/无设备时 SKIP 或报错，不要为了让测试变绿而 mock 掉真实链路。
-- 固件 OTA 与桌面端自动更新走官方渠道（GitHub Release + 阿里云 OSS + appcast），不要绕过签名校验逻辑。
+## 给 Agent 的提示（高频坑）
 
-## 发布流程
+- Windows 桌面端修改构建通过后，自动重启 VoiceStick.exe 让改动生效（先结束运行中进程，启动后查 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`），无需用户另行指示。
+- `.gitignore` 整体忽略 `desktop/windows/`：提交 Windows 源码必须 `git add -f`，并用 `git ls-files <path>` 逐个验证新文件已被跟踪（教训：f75af4f5 曾因漏提交导致全新克隆无法构建）。
+- Windows 构建目录统一用 `desktop/windows/build-x64`；旧 `desktop/windows/build` 可能混入错误 VS/SDK 缓存。
+- 搜索仓库时排除 `website/node_modules/` 和 `firmware/build/`。
+- 同步规则：改网站 UI 文案同步 `website/src/i18n/zh-CN.json` + `en-US.json`；改 `README.md` 同步 `README.zh-CN.md`；改 `VERSION` 同步 `firmware/version.txt`；改协议同步 `Doc/Ref/protocol.md` 与全部实现端。
+- `Doc/` 子目录语义：`Ref/`（协议/配置/流程等事实参考）、`Plan/`（设计方案）、`Guide/`（第三方服务接入指南）、`Expe/`（经验教训）、`Agent/`（面向 AI 助手的工作知识，即本 Hub 的扩展文档）。根目录 `docs/superpowers/`（小写）是历史产物，不再维护，新设计方案放 `Doc/Plan/`。
+- `build_native.bat` / `do_build.bat` / `desktop\windows\build.bat` 含本机绝对路径或固定版本号，复用前先检查内容；根目录 `test.bat` 是占位脚本；根目录散落的 `*.log`、`%BUILD_LOG%` 等是构建残留日志，不是源码。
+- Windows 构建若报 `C1083: winrt/base.h` 找不到：`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 生成投影头到 `desktop/windows/generated_winrt/`（gitignored）并 prepend 到 `INCLUDE`；手动 vcvars64 构建时须同样加入。
+- MiniEncoderC 编码器是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）是唯一唤醒键。Grove 口 5V 不启用，编码器由顶部 Hat 排针供电。
+- VoiceStickFlash 改动除构建/CTest 外，用 `scripts\prepare_flash_payload.ps1` 冒烟 payload；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。
+- `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证）。
 
-推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`：
+## 文档索引
 
-1. 构建固件（ESP-IDF v5.5.1，目标 `esp32s3`），生成 OTA bin、merged bin 与 `manifest.json`。
-2. 构建并签名 macOS 产物（DMG、ZIP、Sparkle 签名）。
-3. 创建 GitHub Release，合并固件与 macOS 产物。
-4. 上传固件到阿里云 OSS 的版本目录和 `latest/` 目录。
-5. 触发 `deploy-website.yml` 更新 `website/public/appcast.xml`。
+用到哪个主题，直接查对应文档：
 
-Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名（脚本自动完成内置凭据注入、MSI config 生成与 flash payload 准备），一次产出 `VoiceStick_<版本>_zh-CN.msi` 与 `VoiceStick_<版本>_en-US.msi` 两个语言版（WiX 4 一次构建只产一个 culture，多语言 MSI 支持尚未落地，故逐 culture 构建；安装程序本地化文件在 `desktop/windows/installer/` 下的 `zh-CN.wxl`/`en-US.wxl` 与 `license-zh-CN.rtf`/`license-en.rtf`）。两个 MSI 都上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流收录 MSI 条目——**appcast 只收录 en-US 版**（WinSparkle 0.9.2 不支持按语言选 enclosure，`sparkle:language` 未实现；zh-CN 版仅供中文用户手动下载安装）。完整步骤见 `Doc/Ref/release.md`。
-
-Windows 便携版（免安装 zip）用 `scripts\package-portable.ps1` 打包（PowerShell 脚本，用 .NET 写 UTF-8 文件规避 cmd 中文 `echo` 块在 GBK 代码页下的解析错位；脚本须存为 UTF-8 with BOM）；本机无签名证书时可用 `scripts\build-msi-unsigned.bat` 构建未签名 MSI 验证安装流程。打包产物放在 `dist/`（已被视为本地产物目录）。
-
-`CHANGELOG.md` 是版本变更记录（最新已发布条目为 v2.3.6，另有 `Unreleased` 段落记录未发布的 VoiceStickFlash 工具）。发布新版本时应同步追加条目；注意该文件可能滞后于 `VERSION`（中间版本 v2.0.0/v2.1.0 条目缺失），以 `VERSION`（当前 `2.3.6`）为准。
-
-## 项目 Skills
-
-本仓库在 `.agents/skills/` 下维护项目级 Skill，相关场景会自动加载：
-
-- `sticks3-flash-ota`：M5Stack StickS3 固件烧录与升级流程；改完 `firmware/` 后需要把固件装到设备上验证时使用。
-- `build-windows`：Windows 桌面端构建与 CTest 流程；改完 `desktop/windows/` 后验证编译和测试。
-- `build-firmware`：固件 ESP-IDF 构建流程；改完 `firmware/` 后验证编译。
-- `usb-jtag-flash-log`：ESP32-S3 USB JTAG 烧录与运行时串口日志采集；烧录后读不到日志、DTR 软复位、串口监控等场景使用，是 `sticks3-flash-ota` 路径 B 的深化补充。
-
-项目级 Skill 以 `.agents/skills/` 为准（原根目录 `skills/` 拷贝目录与 `skills-lock.json` 已随 `byted-web-search` 的移除一并清理；`.claude/skills/` 下另有 Claude Code 专用的历史拷贝，不再维护）。新增或修改 Skill 后，当前会话需要重启才能刷新可用技能列表。
-
-## 经验教训记忆
-
-排查问题或改动相关模块前先查阅 `Doc/Expe/`：`claude-memory-distilled.md` 是约 80 条项目记忆的蒸馏（按域 9 章 + 高频速查清单，含 BLE 僵尸链路、watcher 静默失效、热词处理、ASR/热词评测结论等，专题另有独立文档）。其中寄存器值、阈值、文件:行号均为记录时点结论，引用前以当前源码为准。
-
-## 给 Agent 的提示
-
-- Windows 桌面端修改完成并构建通过后，自动重启 VoiceStick.exe 让改动生效（先结束运行中的进程避免锁定链接产物，启动后检查 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log` 确认正常），无需用户另行指示。
-
-- `.gitignore` 整体忽略了 `desktop/windows/`，提交 Windows 端源码改动时必须用 `git add -f`，否则会被静默漏提交。教训：f75af4f5 曾因漏提交新增的 `power_log_monitor.*`/`battery_monitor_dialog.*` 源文件导致全新克隆无法构建（CMakeLists.txt 引用了不存在的文件，`git status` 对被忽略的新文件完全不提示）。新增 Windows 源文件后必须 `git add -f`，并用 `git ls-files <path>` 逐个验证新文件确已被跟踪；排查漏网可对磁盘文件清单执行 `git ls-files --others --ignored --exclude-standard desktop/windows/src/`。
-- Windows 构建目录统一使用 `desktop/windows/build-x64`；旧的 `desktop/windows/build` 可能混入错误 VS/SDK 缓存，遇到链接异常时删除或忽略。
-- 搜索仓库时请排除 `website/node_modules/` 和 `firmware/build/` 以免噪声过多。
-- 修改网站 UI 文案时，必须同步更新 `website/src/i18n/zh-CN.json` 和 `website/src/i18n/en-US.json`。
-- 修改根目录 `README.md` 时，必须同步更新 `README.zh-CN.md`。
-- 修改 `VERSION` 时，必须同步更新 `firmware/version.txt`。
-- 修改协议或公共数据结构时，必须同时更新 `Doc/Ref/protocol.md` 和所有实现端（固件 C、macOS Swift、Windows C++）。
-- `Doc/` 下分四个子目录：`Ref/`（协议、发布流程、ASR 帧格式、低功耗等参考，另有 `OpenViking.md`）、`Plan/`（设计方案，大写 P，不再用 `Doc/Rfc/`）、`Guide/`（火山/腾讯 ASR WebSocket 接入、API 概览、air-mouse 调参等第三方服务接入指南）、`Expe/`（经验教训记录）。另注意根目录 `docs/superpowers/`（小写，`plans/`+`specs/`）是历史 superpowers 工具产物（2026-06 左右的 IMU/屏幕布局等方案），已不再维护；新设计方案统一放 `Doc/Plan/`，不要写入 `docs/superpowers/`。
-- `scripts/` 下除各平台构建脚本外，还有 `probe_asr_websocket_ping.py`（ASR 连通性探测）、`probe_hotword_extraction.py`（离线探测 LLM 热词提炼链路，打印原始响应与候选过滤原因）、`update-appcast.py`（生成 `appcast.xml`）、`idf_cli.py`（Windows 上包装 `idf.py`）、`png_to_lvgl_argb_bin.py` / `slice_cat_sprites.py` / `tune_cat_sprites.py`（LVGL 图片资源处理）、`scripts/e2e_test/`（L0–L4 真机验证，见上节测试策略）等辅助脚本。
-- MiniEncoderC 编码器键是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）仍是唯一唤醒键。
-- Grove 口 5V 保持不启用（固件不动 PMIC BOOST_EN），MiniEncoderC 由顶部 Hat 排针供电。
-- Windows 桌面端构建若报 `C1083: winrt/base.h`（或 `winrt/Windows.Devices.Bluetooth.h`）找不到，是本机 Windows SDK 的 `Include/<ver>/winrt/` 仅含旧版 WRL 风格头文件、缺 C++/WinRT 投影头所致；`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 从 union metadata 一次性生成完整投影头到 `desktop/windows/generated_winrt/`（gitignored，且不受 `rd /s /q build-x64` 清理影响）并 prepend 到 `INCLUDE`。手动用 vcvars64 构建时须同样把该目录加入 `INCLUDE`。
-- VoiceStickFlash（COM 口烧录工具）相关改动：除常规构建/CTest 外，用 `powershell -ExecutionPolicy Bypass -File scripts\prepare_flash_payload.ps1` 冒烟 payload（`python.exe -m esptool version`；含中文注释，脚本须保持 UTF-8 with BOM）；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。
+| 主题 | 文档 |
+|---|---|
+| 构建命令与测试策略（全平台细节、E2E） | `Doc/Agent/build-and-test.md` |
+| 关键配置文件清单 | `Doc/Agent/config-files.md` |
+| 固件架构（组件、引脚、电源） | `Doc/Agent/firmware-architecture.md` |
+| 桌面端架构（macOS/Windows 模块） | `Doc/Agent/desktop-architecture.md` |
+| 核心交互模型（状态表、按键语义） | `Doc/Agent/interaction-model.md` |
+| 发布流程与安全细节 | `Doc/Agent/release-and-security.md`；权威流程 `Doc/Ref/release.md` |
+| BLE 协议与帧格式（含小米 ATVV 档案） | `Doc/Ref/protocol.md` |
+| 桌面端配置字段 | `Doc/Ref/desktop-config.md` |
+| E2E 真机验证工具链 | `Doc/Ref/e2e-test-toolchain.md` |
+| 经验教训记忆（排查问题前先查） | `Doc/Expe/claude-memory-distilled.md`（寄存器值/阈值/行号为记录时点结论，引用前以当前源码为准） |
+| 项目 Skills（`.agents/skills/`，场景命中自动加载） | `sticks3-flash-ota`（固件烧录/OTA）、`build-windows`、`build-firmware`、`usb-jtag-flash-log`（串口日志采集）、`work-summary-retro`（工作总结/经验沉淀/教训反思的文档管理）；新增/修改 Skill 后需重启会话刷新 |
