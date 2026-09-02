@@ -521,9 +521,12 @@ def make_handler(audio_dir: Path):
         def _handle_sessions(self):
             items = []
             try:
-                for p in audio_dir.glob("*.ogg"):
+                # .ogg 为桌面端调试音频缓存；.wav 为 atvv_capture 的小米遥控器
+                # 采集产物（session_N.wav 后处理版 / session_N.raw.wav 纯解码版）
+                files = sorted(audio_dir.glob("*.ogg")) + sorted(audio_dir.glob("*.wav"))
+                for p in files:
                     st = p.stat()
-                    m = re.search(r"session-(\d+)", p.name)
+                    m = re.search(r"session[-_](\d+)", p.name)
                     items.append({
                         "name": p.name,
                         "size": st.st_size,
@@ -538,8 +541,9 @@ def make_handler(audio_dir: Path):
             self._send_json(items)
 
         def _handle_audio(self, name: str):
-            # 防路径穿越：只允许目录内的 .ogg 文件
-            if not name or "/" in name or "\\" in name or ".." in name or not name.endswith(".ogg"):
+            # 防路径穿越：只允许目录内的 .ogg/.wav 文件
+            if (not name or "/" in name or "\\" in name or ".." in name
+                    or not name.endswith((".ogg", ".wav"))):
                 self.send_error(400)
                 return
             path = audio_dir / name
@@ -547,6 +551,7 @@ def make_handler(audio_dir: Path):
                 self.send_error(404)
                 return
             data = path.read_bytes()
+            ctype = "audio/ogg" if name.endswith(".ogg") else "audio/wav"
             # 支持单段 Range（<audio> 拖动定位会发 Range 请求）
             range_header = self.headers.get("Range")
             if range_header:
@@ -558,7 +563,7 @@ def make_handler(audio_dir: Path):
                     if start <= end:
                         chunk = data[start:end + 1]
                         self.send_response(206)
-                        self.send_header("Content-Type", "audio/ogg")
+                        self.send_header("Content-Type", ctype)
                         self.send_header("Accept-Ranges", "bytes")
                         self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
                         self.send_header("Content-Length", str(len(chunk)))
@@ -566,7 +571,7 @@ def make_handler(audio_dir: Path):
                         self.wfile.write(chunk)
                         return
             self.send_response(200)
-            self.send_header("Content-Type", "audio/ogg")
+            self.send_header("Content-Type", ctype)
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
