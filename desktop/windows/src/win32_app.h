@@ -13,6 +13,7 @@
 #include "overlay_window.h"
 #include "pair_device_dialog.h"
 #include "remote_settings_dialog.h"
+#include "xiaomi_keymap_dialog.h"
 #include "selection_hotword_manager.h"
 #include "settings_dialog.h"
 #include "air_mouse_tuning_window.h"
@@ -110,6 +111,8 @@ private:
     void ShowInteractionSettingsDialog(const std::string& device_id);
     // 打开指定设备的遥控器设置对话框（托盘设备子菜单「遥控器设置…」，仅小米遥控器显示）。
     void ShowRemoteSettingsDialog(const std::string& device_id);
+    // 打开指定设备的按键映射对话框（托盘设备子菜单「按键映射…」，仅小米遥控器显示）。
+    void ShowXiaomiKeymapDialog(const std::string& device_id);
     // 打开指定设备的电池电压监测窗口（托盘设备子菜单「电池电压监测…」，仅连接设备）。
     void ShowBatteryMonitorDialog(const std::string& device_id);
     void ShowAirMouseTuning();
@@ -158,6 +161,7 @@ private:
     std::unique_ptr<EncoderSettingsDialog> encoder_settings_dialog_;
     std::unique_ptr<InteractionSettingsDialog> interaction_settings_dialog_;
     std::unique_ptr<RemoteSettingsDialog> remote_settings_dialog_;
+    std::unique_ptr<XiaomiKeymapDialog> xiaomi_keymap_dialog_;
     std::unique_ptr<BatteryMonitorDialog> battery_monitor_dialog_;
     // 设备最新上报的供电态（USB）自动关机开关状态（device_id -> enabled）。
     std::map<std::string, bool> usb_auto_off_state_;

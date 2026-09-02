@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 
 namespace voicestick {
 namespace {
@@ -85,7 +86,31 @@ std::string VkeyDisplayName(UINT vk) {
         default: break;
     }
     if (vk >= VK_F1 && vk <= VK_F24) return "F" + std::to_string(vk - VK_F1 + 1);
-    return {};
+    // 不可识别的 VK 退化为 "VK0xXX"（大写十六进制），不用空串。
+    char buf[16];
+    snprintf(buf, sizeof(buf), "VK0x%02X", vk);
+    return buf;
+}
+
+// 修饰键固定 Ctrl/Alt/Shift/Win 序拼接规范化显示文本（如 "Ctrl+Shift+V"）。
+std::string BuildDisplayText(const std::vector<UINT>& modifiers, UINT vk) {
+    static const char* kModNames[] = {"Ctrl", "Alt", "Shift", "Win"};
+    std::string text;
+    size_t name_idx = 0;
+    for (UINT mod : modifiers) {
+        if (name_idx > 0) text += "+";
+        switch (mod) {
+            case VK_CONTROL: text += kModNames[0]; break;
+            case VK_MENU: text += kModNames[1]; break;
+            case VK_SHIFT: text += kModNames[2]; break;
+            case VK_LWIN: text += kModNames[3]; break;
+            default: break;
+        }
+        ++name_idx;
+    }
+    if (!text.empty()) text += "+";
+    text += VkeyDisplayName(vk);
+    return text;
 }
 
 } // namespace
@@ -132,21 +157,22 @@ std::optional<KeySpec> ParseKeySpec(const std::string& text) {
     if (alt) spec.modifiers.push_back(VK_MENU);
     if (shift) spec.modifiers.push_back(VK_SHIFT);
     if (win) spec.modifiers.push_back(VK_LWIN);
-    static const char* kModNames[] = {"Ctrl", "Alt", "Shift", "Win"};
-    size_t name_idx = 0;
-    for (UINT mod : spec.modifiers) {
-        if (name_idx > 0) spec.display_text += "+";
-        switch (mod) {
-            case VK_CONTROL: spec.display_text += kModNames[0]; break;
-            case VK_MENU: spec.display_text += kModNames[1]; break;
-            case VK_SHIFT: spec.display_text += kModNames[2]; break;
-            case VK_LWIN: spec.display_text += kModNames[3]; break;
-            default: break;
-        }
-        ++name_idx;
-    }
-    if (!spec.display_text.empty()) spec.display_text += "+";
-    spec.display_text += VkeyDisplayName(spec.vk);
+    spec.display_text = BuildDisplayText(spec.modifiers, spec.vk);
+    return spec;
+}
+
+KeySpec MakeKeySpecFromVk(const std::vector<UINT>& modifiers, UINT vk) {
+    KeySpec spec;
+    // 只接受 VK_CONTROL/VK_MENU/VK_SHIFT/VK_LWIN，固定 Ctrl/Alt/Shift/Win 序。
+    const auto has = [&modifiers](UINT target) {
+        return std::find(modifiers.begin(), modifiers.end(), target) != modifiers.end();
+    };
+    if (has(VK_CONTROL)) spec.modifiers.push_back(VK_CONTROL);
+    if (has(VK_MENU)) spec.modifiers.push_back(VK_MENU);
+    if (has(VK_SHIFT)) spec.modifiers.push_back(VK_SHIFT);
+    if (has(VK_LWIN)) spec.modifiers.push_back(VK_LWIN);
+    spec.vk = vk;
+    spec.display_text = BuildDisplayText(spec.modifiers, spec.vk);
     return spec;
 }
 

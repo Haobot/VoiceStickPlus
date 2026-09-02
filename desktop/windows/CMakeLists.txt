@@ -149,9 +149,11 @@ add_executable(VoiceStickApp WIN32
     src/encoder_settings_dialog.cc
     src/interaction_settings_dialog.cc
     src/remote_settings_dialog.cc
+    src/xiaomi_keymap_dialog.cc
     src/battery_monitor_dialog.cc
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
+    src/shortcut_capture.cc
     src/selection_hotword_manager.cc
     src/voice_f5_suppressor.cc
     resources/VoiceStick.rc
@@ -189,6 +191,7 @@ target_link_libraries(VoiceStickApp PRIVATE
     dwmapi
     gdi32
     gdiplus
+    shlwapi
     comdlg32
     windowscodecs
     comctl32

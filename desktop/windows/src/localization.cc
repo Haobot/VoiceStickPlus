@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordTrimBodySuffix) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kXiaomiButtonTv) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -356,6 +356,35 @@ constexpr StringTable EnglishStrings() {
         "Hotwords exceed the per-session budget; kept by usage frequency: ";
     table[Index(StringId::kHotwordTrimBodySuffix)] =
         ". The rest are skipped this session (see log for details).";
+    table[Index(StringId::kMenuXiaomiKeymap)] = "Key mapping...";
+    table[Index(StringId::kXiaomiKeymapTitle)] = "Key mapping - RC-{0}";
+    table[Index(StringId::kXiaomiKeymapCurrentMapping)] = "Current mapping";
+    table[Index(StringId::kXiaomiKeymapNotMapped)] = "Not mapped (system default behavior)";
+    table[Index(StringId::kXiaomiKeymapCapture)] = "Capture from keyboard";
+    table[Index(StringId::kXiaomiKeymapCapturing)] = "Press a shortcut... (Esc to cancel)";
+    table[Index(StringId::kXiaomiKeymapClear)] = "Clear mapping";
+    table[Index(StringId::kXiaomiKeymapManualHint)] =
+        "Or type a shortcut manually (e.g. ctrl+shift+v):";
+    table[Index(StringId::kXiaomiKeymapApply)] = "Apply";
+    table[Index(StringId::kXiaomiKeymapInvalid)] =
+        "Invalid shortcut syntax (e.g. \"ctrl+shift+v\"); the mapping was not changed.";
+    table[Index(StringId::kXiaomiKeymapMicNote)] =
+        "The voice key is reserved for voice input. To customize the voice trigger hotkey, "
+        "configure it in Settings -> Third-party Input Method.";
+    table[Index(StringId::kXiaomiKeymapClickHint)] = "Click any button in the photo";
+    table[Index(StringId::kXiaomiButtonPower)] = "Power";
+    table[Index(StringId::kXiaomiButtonMic)] = "Microphone";
+    table[Index(StringId::kXiaomiButtonUp)] = "Up";
+    table[Index(StringId::kXiaomiButtonDown)] = "Down";
+    table[Index(StringId::kXiaomiButtonLeft)] = "Left";
+    table[Index(StringId::kXiaomiButtonRight)] = "Right";
+    table[Index(StringId::kXiaomiButtonOk)] = "OK";
+    table[Index(StringId::kXiaomiButtonBack)] = "Back";
+    table[Index(StringId::kXiaomiButtonHome)] = "Home";
+    table[Index(StringId::kXiaomiButtonVolumeUp)] = "Volume Up";
+    table[Index(StringId::kXiaomiButtonVolumeDown)] = "Volume Down";
+    table[Index(StringId::kXiaomiButtonMenu)] = "Menu";
+    table[Index(StringId::kXiaomiButtonTv)] = "TV";
     return table;
 }
 
@@ -691,6 +720,33 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotwordTrimTitle)] = "热词预算裁剪";
     table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
     table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";
+    table[Index(StringId::kMenuXiaomiKeymap)] = "按键映射…";
+    table[Index(StringId::kXiaomiKeymapTitle)] = "按键映射 - RC-{0}";
+    table[Index(StringId::kXiaomiKeymapCurrentMapping)] = "当前映射";
+    table[Index(StringId::kXiaomiKeymapNotMapped)] = "未映射（系统原生行为）";
+    table[Index(StringId::kXiaomiKeymapCapture)] = "按真实键盘录入";
+    table[Index(StringId::kXiaomiKeymapCapturing)] = "请按下快捷键…（Esc 取消）";
+    table[Index(StringId::kXiaomiKeymapClear)] = "清除映射";
+    table[Index(StringId::kXiaomiKeymapManualHint)] = "或手动输入快捷键（如 ctrl+shift+v）：";
+    table[Index(StringId::kXiaomiKeymapApply)] = "应用";
+    table[Index(StringId::kXiaomiKeymapInvalid)] =
+        "无效的快捷键语法（如 \"ctrl+shift+v\"），映射未修改。";
+    table[Index(StringId::kXiaomiKeymapMicNote)] =
+        "语音键为语音输入专用。要自定义语音触发热键，请在 设置 → 微信输入法模式 中配置。";
+    table[Index(StringId::kXiaomiKeymapClickHint)] = "点击照片中的任意按键";
+    table[Index(StringId::kXiaomiButtonPower)] = "电源键";
+    table[Index(StringId::kXiaomiButtonMic)] = "麦克风键";
+    table[Index(StringId::kXiaomiButtonUp)] = "上";
+    table[Index(StringId::kXiaomiButtonDown)] = "下";
+    table[Index(StringId::kXiaomiButtonLeft)] = "左";
+    table[Index(StringId::kXiaomiButtonRight)] = "右";
+    table[Index(StringId::kXiaomiButtonOk)] = "确定";
+    table[Index(StringId::kXiaomiButtonBack)] = "返回";
+    table[Index(StringId::kXiaomiButtonHome)] = "主页";
+    table[Index(StringId::kXiaomiButtonVolumeUp)] = "音量+";
+    table[Index(StringId::kXiaomiButtonVolumeDown)] = "音量-";
+    table[Index(StringId::kXiaomiButtonMenu)] = "菜单键";
+    table[Index(StringId::kXiaomiButtonTv)] = "TV 键";
     return table;
 }
 

@@ -74,6 +74,9 @@ constexpr UINT kMenuInteractionSettingsEnd = 6399;
 // 设备级遥控器设置入口：每设备一项（kMenuRemoteSettingsBase + 设备索引，仅小米遥控器显示）。
 constexpr UINT kMenuRemoteSettingsBase = 6600;
 constexpr UINT kMenuRemoteSettingsEnd = 6699;
+// 设备级按键映射入口：每设备一项（kMenuXiaomiKeymapBase + 设备索引，仅小米遥控器显示）。
+constexpr UINT kMenuXiaomiKeymapBase = 6700;
+constexpr UINT kMenuXiaomiKeymapEnd = 6799;
 constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
@@ -1079,6 +1082,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size()) {
                     ShowRemoteSettingsDialog(paired_device_ids_[index]);
                 }
+            } else if (cmd >= kMenuXiaomiKeymapBase && cmd <= kMenuXiaomiKeymapEnd) {
+                std::size_t index = cmd - kMenuXiaomiKeymapBase;
+                if (index < paired_device_ids_.size()) {
+                    ShowXiaomiKeymapDialog(paired_device_ids_[index]);
+                }
             }
             return 0;
         }
@@ -1512,6 +1520,10 @@ void Win32App::ShowTrayMenu() {
             AppendMenuW(submenu, MF_STRING,
                         kMenuRemoteSettingsBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuRemoteSettings, language).c_str());
+            // 按键映射入口：key_map 由桌面端 XiaomiAtvvSession 按键分发消费。
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuXiaomiKeymapBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuXiaomiKeymap, language).c_str());
         }
 
         // 电池电压监测入口：仅 StickS3 连接设备显示（power_log 导出需要活跃 BLE
@@ -2249,6 +2261,34 @@ void Win32App::ShowRemoteSettingsDialog(const std::string& device_id) {
             LogLine("Remote settings saved for RC-" + id);
         };
     remote_settings_dialog_->Show();
+}
+
+void Win32App::ShowXiaomiKeymapDialog(const std::string& device_id) {
+    // 单实例策略：模态对话框同时只开一个，重新进入时重建（Show 内同步阻塞至关闭）。
+    xiaomi_keymap_dialog_ = std::make_unique<XiaomiKeymapDialog>(
+        instance_, hwnd_, device_id,
+        config_.XiaomiSettingsForDevice(device_id),
+        config_.default_xiaomi_settings,
+        config_.ui_language);
+    xiaomi_keymap_dialog_->on_settings_changed =
+        [this](const std::string& id, std::optional<XiaomiSettings> override) {
+            if (override.has_value()) {
+                config_.device_xiaomi_settings[id] = *override;
+            } else {
+                // 与全局默认一致：清除覆盖，回落默认。
+                config_.device_xiaomi_settings.erase(id);
+            }
+            // Save() 可能因 config.toml 被占用抛异常，与 SaveDeviceOutputProfile 同模式捕获。
+            try {
+                config_.SavePreservingDiskCredentials();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Keymap: config_.Save failed: ") + e.what());
+                return;
+            }
+            ApplyUpdatedConfig();
+            LogLine("Keymap saved for RC-" + id);
+        };
+    xiaomi_keymap_dialog_->Show();
 }
 
 void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {

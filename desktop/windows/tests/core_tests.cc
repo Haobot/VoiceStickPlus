@@ -9,6 +9,7 @@
 #include "pcm_postprocessor.h"
 #include "xiaomi_atvv_protocol.h"
 #include "xiaomi_atvv_session.h"
+#include "xiaomi_buttons.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
 
@@ -2961,6 +2962,33 @@ void TestKeySpecParse() {
     auto digit5 = ParseKeySpec("5");
     assert(digit5.has_value() && digit5->vk == '5');
     assert(!ParseKeySpec("上").has_value());  // UTF-8 非 ASCII 输入不崩且拒绝
+}
+
+void TestKeySpecMakeFromVk() {
+    // 单键无修饰键（按键映射场景）。
+    const auto single = MakeKeySpecFromVk({}, VK_DOWN);
+    assert(single.modifiers.empty());
+    assert(single.vk == VK_DOWN);
+    assert(single.display_text == "Down");
+
+    // 乱序修饰键输入归一化为 Ctrl/Alt/Shift/Win 序；重复项去重（按集合语义）。
+    const auto combo = MakeKeySpecFromVk({VK_LWIN, VK_SHIFT, VK_CONTROL}, 'V');
+    assert(combo.vk == 'V');
+    assert(combo.modifiers.size() == 3);
+    assert(combo.modifiers[0] == VK_CONTROL);
+    assert(combo.modifiers[1] == VK_SHIFT);
+    assert(combo.modifiers[2] == VK_LWIN);
+    assert(combo.display_text == "Ctrl+Shift+Win+V");
+
+    // 不可识别 VK：display_text 退化 "VK0xXX" 大写十六进制，恒成功。
+    const auto unknown = MakeKeySpecFromVk({}, 0x1F);
+    assert(unknown.vk == 0x1F);
+    assert(unknown.display_text == "VK0x1F");
+
+    // 非白名单修饰键不进结果。
+    const auto stray = MakeKeySpecFromVk({VK_CAPITAL, VK_MENU}, VK_F4);
+    assert(stray.modifiers.size() == 1 && stray.modifiers[0] == VK_MENU);
+    assert(stray.display_text == "Alt+F4");
 }
 
 void TestAppConfigEncoderRoundTrip() {
@@ -6116,6 +6144,85 @@ void TestAppConfigXiaomiTable() {
         buffer << in.rdbuf();
         assert(buffer.str().find(".xiaomi") == std::string::npos);
     }
+    std::filesystem::remove(temp);
+}
+
+void TestAppConfigXiaomiKeyMap() {
+    // 默认可映射按键集：12 键；mic（语音键专用）与未知键不在列。
+    assert(kXiaomiMappableButtons.size() == 12);
+    for (std::string_view id : kXiaomiMappableButtons) {
+        assert(IsXiaomiMappableButton(id));
+    }
+    assert(!IsXiaomiMappableButton("mic"));
+    assert(!IsXiaomiMappableButton("bogus"));
+    assert(!IsXiaomiMappableButton(""));
+
+    // 默认 key_map 为空。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.default_xiaomi_settings.key_map.empty());
+    assert(defaults.XiaomiSettingsForDevice("RC-3A7F").key_map.empty());
+
+    // TOML 文本加载：全局 [xiaomi.keys] + [device.RC-3A7F.xiaomi.keys] 覆盖。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_xiaomi_keymap_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "paired_device_ids = \"RC-3A7F\"\n";
+        out << "[xiaomi.keys]\n";
+        out << "back = \"esc\"\n";
+        out << "home = \"ctrl+h\"\n";
+        out << "[device.RC-3A7F.xiaomi.keys]\n";
+        out << "home = \"\"\n";              // 空串显式取消全局映射
+        out << "menu = \"ctrl+shift+m\"\n";   // 设备新增
+        out << "back = \"esc\"\n";            // 与全局相同
+        out << "mic = \"f5\"\n";              // 非法键名忽略
+        out << "tv = \"not a key\"\n";        // 非法 key_spec 忽略
+        out << "power = 123\n";               // 非字符串值忽略
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    // 全局默认。
+    assert(loaded.default_xiaomi_settings.key_map.size() == 2);
+    assert(loaded.default_xiaomi_settings.key_map.at("back") == "esc");
+    assert(loaded.default_xiaomi_settings.key_map.at("home") == "ctrl+h");
+    // 设备填平：未覆盖的键取全局默认，覆盖的键取设备值，空串优先于全局值。
+    const auto& dev = loaded.XiaomiSettingsForDevice("RC-3A7F");
+    assert(dev.key_map.size() == 3);
+    assert(dev.key_map.at("back") == "esc");
+    assert(dev.key_map.at("home").empty());
+    assert(dev.key_map.at("menu") == "ctrl+shift+m");
+    assert(dev.key_map.count("mic") == 0);
+    assert(dev.key_map.count("tv") == 0);
+    assert(dev.key_map.count("power") == 0);
+    // 未覆盖设备回落全局默认。
+    assert(loaded.XiaomiSettingsForDevice("FFFF").key_map ==
+           loaded.default_xiaomi_settings.key_map);
+    std::filesystem::remove(temp);
+
+    // 保存/加载往返：全局默认 + 设备覆盖。
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"3A7F"};
+    config.default_xiaomi_settings.key_map = {{"back", "esc"}, {"home", "ctrl+h"}};
+    XiaomiSettings dev_settings;  // 标量与全局默认相同，仅 key_map 不同
+    dev_settings.key_map = {{"back", "esc"}, {"home", ""}, {"menu", "ctrl+shift+m"}};
+    config.device_xiaomi_settings["3A7F"] = dev_settings;
+    config.Save(temp);
+    {
+        std::ifstream in(temp);
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        const std::string text = buffer.str();
+        assert(text.find("[xiaomi.keys]") != std::string::npos);
+        const auto dev_pos = text.find("[device.3A7F.xiaomi.keys]");
+        assert(dev_pos != std::string::npos);
+        // 与全局默认相同的条目（back=esc）不落盘；空串取消（home=""）要落盘。
+        const std::string dev_section = text.substr(dev_pos);
+        assert(dev_section.find("home = \"\"") != std::string::npos);
+        assert(dev_section.find("menu = \"ctrl+shift+m\"") != std::string::npos);
+        assert(dev_section.find("back") == std::string::npos);
+    }
+    loaded = AppConfig::Load(temp);
+    assert(loaded.default_xiaomi_settings.key_map == config.default_xiaomi_settings.key_map);
+    assert(loaded.XiaomiSettingsForDevice("RC-3A7F") == dev_settings);
     std::filesystem::remove(temp);
 }
 
@@ -9832,6 +9939,7 @@ int main() {
     TestInputInjectorArrowUpFakeWiring();
     TestInputInjectorKeyComboFakeWiring();
     TestKeySpecParse();
+    TestKeySpecMakeFromVk();
     TestAppConfigEncoderRoundTrip();
     TestAppConfigEncoderSettingsRoundTrip();
     TestAppConfigEncoderSettingsInvalidFallback();
@@ -9930,6 +10038,7 @@ int main() {
     TestCoordinatorXiaomiSubtitlePath();
     TestDeviceIdRcPrefix();
     TestAppConfigXiaomiTable();
+    TestAppConfigXiaomiKeyMap();
     TestXiaomiF5SuppressPredicate();
     TestCoordinatorXiaomiCapabilityGating();
     TestPcmRingBufferWriteRead();

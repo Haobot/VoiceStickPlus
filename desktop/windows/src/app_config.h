@@ -132,13 +132,16 @@ struct EncoderSettings {
 };
 
 // 小米蓝牙遥控器 2 Pro 设置。全局默认值存于 AppConfig::default_xiaomi_settings
-//（无顶层 TOML 键，仅结构默认值），[device.<id>.xiaomi] 表按设备整体覆盖，
-// 结构镜像 [device.<id>.encoder]。
+//（标量仅结构默认值；key_map 全局默认在顶层 [xiaomi.keys] 表），
+// [device.<id>.xiaomi]（及 .keys 子表）按设备整体覆盖，结构镜像 [device.<id>.encoder]。
 struct XiaomiSettings {
     // ADPCM 解码后增益（dB），消费侧 ±24 限幅。默认 12.0。
     double gain_db = 12.0;
     // 语音键双击时序窗（ms）：第一次短击释放后等待第二次按下的最大窗口。默认 350。
     int double_click_ms = 350;
+    // 按键映射：button_id（见 xiaomi_buttons.h，mic 除外）→ key_spec 字符串
+    //（空串=显式取消该键映射，覆盖全局默认）。空 map = 全部保持系统原生行为。
+    std::map<std::string, std::string> key_map;
 
     bool operator==(const XiaomiSettings& other) const = default;
 };
@@ -256,8 +259,9 @@ struct AppConfig {
     // 按设备覆盖；消费点统一走 EncoderSettingsForDevice()。
     EncoderSettings default_encoder_settings;
     std::map<std::string, EncoderSettings> device_encoder_settings;
-    // 小米遥控器设置：default_xiaomi_settings 为全局默认（仅结构默认值），
-    // device_xiaomi_settings 为 [device.<id>.xiaomi] 按设备覆盖；消费点统一走
+    // 小米遥控器设置：default_xiaomi_settings 为全局默认（标量仅结构默认值，
+    // key_map 走顶层 [xiaomi.keys] 表），device_xiaomi_settings 为
+    // [device.<id>.xiaomi]（含 .keys 子表）按设备覆盖；消费点统一走
     // XiaomiSettingsForDevice()。xiaomi_suppress_f5 为全局 F5 抑制开关（Windows）。
     XiaomiSettings default_xiaomi_settings;
     std::map<std::string, XiaomiSettings> device_xiaomi_settings;

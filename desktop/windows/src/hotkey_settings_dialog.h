@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include "app_config.h"
+#include "shortcut_capture.h"
 
 #include <functional>
 #include <string>
@@ -44,12 +45,9 @@ private:
     HWND ok_button_ = nullptr;
     HWND cancel_button_ = nullptr;
 
-    static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
-
-    bool is_capturing_ = false;
+    ShortcutCapture capture_;
     UINT captured_modifiers_ = 0;
     UINT captured_vk_ = 0;
-    HHOOK keyboard_hook_ = nullptr;
 
     std::vector<BYTE> dialog_template_;
     std::vector<HWND> all_controls_;

@@ -366,6 +366,37 @@ enum class StringId {
     kHotwordTrimTitle,
     kHotwordTrimBodyPrefix,
     kHotwordTrimBodySuffix,
+
+    // 小米遥控器按键映射（托盘设备子菜单入口 + 独立对话框，仅小米遥控器显示）
+    kMenuXiaomiKeymap,
+    // {0} = 设备 ID（如 RC-3A7F）
+    kXiaomiKeymapTitle,
+    kXiaomiKeymapCurrentMapping,
+    kXiaomiKeymapNotMapped,
+    kXiaomiKeymapCapture,
+    kXiaomiKeymapCapturing,
+    kXiaomiKeymapClear,
+    kXiaomiKeymapManualHint,
+    kXiaomiKeymapApply,
+    kXiaomiKeymapInvalid,
+    // mic 键选中时右侧说明：语音键为语音输入专用
+    kXiaomiKeymapMicNote,
+    // 画布底部提示
+    kXiaomiKeymapClickHint,
+    // 13 个按键名（kXiaomiMappableButtons 12 键 + mic）
+    kXiaomiButtonPower,
+    kXiaomiButtonMic,
+    kXiaomiButtonUp,
+    kXiaomiButtonDown,
+    kXiaomiButtonLeft,
+    kXiaomiButtonRight,
+    kXiaomiButtonOk,
+    kXiaomiButtonBack,
+    kXiaomiButtonHome,
+    kXiaomiButtonVolumeUp,
+    kXiaomiButtonVolumeDown,
+    kXiaomiButtonMenu,
+    kXiaomiButtonTv,
 };
 
 // 返回 UTF-8 本地化文本

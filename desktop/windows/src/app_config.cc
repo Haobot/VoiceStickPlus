@@ -6,6 +6,7 @@
 #include "key_spec.h"
 #include "log.h"
 #include "toml.hpp"
+#include "xiaomi_buttons.h"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -522,12 +523,41 @@ InteractionSettings ParseInteractionSettings(const toml::table& table, const Int
     return settings;
 }
 
+// 解析 [xiaomi.keys] / [device.<id>.xiaomi.keys] 按键映射子表：只接受
+// IsXiaomiMappableButton 的键名；值必须为空串（显式取消该键映射）或合法 key_spec，
+// 非法键名/非法值忽略并警告。从 fallback 拷贝后逐项覆盖（空串条目保留，
+// 以区别"未覆盖"）。
+std::map<std::string, std::string> ParseXiaomiKeyMap(
+    const toml::table& keys, std::map<std::string, std::string> fallback) {
+    for (const auto& [key, node] : keys) {
+        const std::string button_id(key.str());
+        if (!IsXiaomiMappableButton(button_id)) {
+            LogApp("xiaomi keys: 忽略未知按键 id=" + button_id);
+            continue;
+        }
+        const auto value = node.value<std::string>();
+        if (!value) {
+            LogApp("xiaomi keys: 忽略非字符串值 id=" + button_id);
+            continue;
+        }
+        if (!value->empty() && !ParseKeySpec(*value).has_value()) {
+            LogApp("xiaomi keys: 忽略非法 key_spec id=" + button_id + " value=" + *value);
+            continue;
+        }
+        fallback[button_id] = *value;
+    }
+    return fallback;
+}
+
 // 解析 [device.<id>.xiaomi] 覆盖表：以全局默认填平所有字段，出现的键逐项覆盖；
 // 非法值（非正双击窗）保留 fallback。gain_db 的 ±24 限幅在消费侧（后处理）完成。
 XiaomiSettings ParseXiaomiSettings(const toml::table& table, const XiaomiSettings& fallback) {
     XiaomiSettings settings = fallback;
     if (auto value = TomlDouble(table, "gain_db")) settings.gain_db = *value;
     if (auto value = TomlInt(table, "double_click_ms"); value && *value > 0) settings.double_click_ms = static_cast<int>(*value);
+    if (const auto* keys = table["keys"].as_table()) {
+        settings.key_map = ParseXiaomiKeyMap(*keys, settings.key_map);
+    }
     return settings;
 }
 
@@ -654,6 +684,14 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 config.wechat_input_method.trigger_mode = config.interaction_mode;
                 config.interaction_mode = InteractionMode::kHoldToTalk;
                 needs_wechat_trigger_migration_save = true;
+            }
+        }
+        // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
+        // 设备表填平（ParseXiaomiSettings 的 fallback 拷贝）才能带上全局默认。
+        if (const auto* xiaomi = table["xiaomi"].as_table()) {
+            if (const auto* keys = (*xiaomi)["keys"].as_table()) {
+                config.default_xiaomi_settings.key_map =
+                    ParseXiaomiKeyMap(*keys, config.default_xiaomi_settings.key_map);
             }
         }
         if (const auto* devices = table["device"].as_table()) {
@@ -927,6 +965,14 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         }
         output << "]\n";
     }
+    if (!default_xiaomi_settings.key_map.empty()) {
+        // 顶层 [xiaomi.keys] 全局按键映射。TOML 表头会吞后续裸键，故写在
+        // 顶层标量区末尾、[output] 之前。
+        output << "\n[xiaomi.keys]\n";
+        for (const auto& [button_id, spec] : default_xiaomi_settings.key_map) {
+            output << button_id << " = \"" << TomlEscape(spec) << "\"\n";
+        }
+    }
     output << "\n[output]\n";
     output << "target = \"" << OutputTargetName(default_output_profile.target) << "\"\n";
     output << "transform = \"" << TextTransformName(default_output_profile.transform) << "\"\n";
@@ -997,6 +1043,17 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         output << "\n[device." << device_id << ".xiaomi]\n";
         output << "gain_db = " << settings.gain_db << "\n";
         output << "double_click_ms = " << settings.double_click_ms << "\n";
+        // key_map 只写与全局默认不同的条目（设备端空串 = 显式取消全局映射，也算不同）。
+        bool keys_header_written = false;
+        for (const auto& [button_id, spec] : settings.key_map) {
+            const auto it = default_xiaomi_settings.key_map.find(button_id);
+            if (it != default_xiaomi_settings.key_map.end() && it->second == spec) continue;
+            if (!keys_header_written) {
+                output << "\n[device." << device_id << ".xiaomi.keys]\n";
+                keys_header_written = true;
+            }
+            output << button_id << " = \"" << TomlEscape(spec) << "\"\n";
+        }
     }
 }
 

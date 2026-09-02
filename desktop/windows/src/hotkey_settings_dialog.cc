@@ -10,64 +10,6 @@
 namespace voicestick {
 
 namespace {
-HotkeySettingsDialog* g_active_dialog = nullptr;
-}
-
-LRESULT CALLBACK HotkeySettingsDialog::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode >= 0 && g_active_dialog && g_active_dialog->is_capturing_) {
-        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            KBDLLHOOKSTRUCT* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-            const UINT vk = kb->vkCode;
-            switch (vk) {
-                case VK_CONTROL:
-                case VK_LCONTROL:
-                case VK_RCONTROL:
-                    g_active_dialog->captured_modifiers_ |= MOD_CONTROL;
-                    return 1;
-                case VK_MENU:
-                case VK_LMENU:
-                case VK_RMENU:
-                    g_active_dialog->captured_modifiers_ |= MOD_ALT;
-                    return 1;
-                case VK_SHIFT:
-                case VK_LSHIFT:
-                case VK_RSHIFT:
-                    g_active_dialog->captured_modifiers_ |= MOD_SHIFT;
-                    return 1;
-                case VK_LWIN:
-                case VK_RWIN:
-                    g_active_dialog->captured_modifiers_ |= MOD_WIN;
-                    return 1;
-                case VK_ESCAPE: {
-                    g_active_dialog->captured_modifiers_ = 0;
-                    g_active_dialog->captured_vk_ = 0;
-                    break;
-                }
-                default:
-                    if (g_active_dialog->captured_modifiers_ == 0) {
-                        SetWindowTextW(g_active_dialog->hint_label_,
-                                       TrW(StringId::kHotkeyMissingModifier,
-                                           g_active_dialog->language_).c_str());
-                        break;
-                    }
-                    g_active_dialog->captured_vk_ = vk;
-                    break;
-            }
-            g_active_dialog->is_capturing_ = false;
-            if (g_active_dialog->keyboard_hook_) {
-                UnhookWindowsHookEx(g_active_dialog->keyboard_hook_);
-                g_active_dialog->keyboard_hook_ = nullptr;
-            }
-            HotkeySettingsDialog* dlg = g_active_dialog;
-            g_active_dialog = nullptr;
-            dlg->UpdateHotkeyDisplay();
-            return 1;
-        }
-    }
-    return CallNextHookEx(nullptr, nCode, wParam, lParam);
-}
-
-namespace {
 
 void AlignDialogData(std::vector<BYTE>* buffer, std::size_t alignment) {
     while (buffer->size() % alignment != 0) {
@@ -230,7 +172,7 @@ void HotkeySettingsDialog::DestroyControls() {
 
 void HotkeySettingsDialog::UpdateHotkeyDisplay() {
     if (captured_vk_ == 0) {
-        if (is_capturing_) {
+        if (capture_.active()) {
             SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCapturePrompt, language_).c_str());
         } else {
             SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCaptureButton, language_).c_str());
@@ -248,13 +190,36 @@ void HotkeySettingsDialog::UpdateHotkeyDisplay() {
 }
 
 void HotkeySettingsDialog::OnHotkeyCapture() {
-    if (keyboard_hook_) return;
+    if (capture_.active()) return;
     captured_modifiers_ = 0;
     captured_vk_ = 0;
     SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCapturePrompt, language_).c_str());
-    g_active_dialog = this;
-    is_capturing_ = true;
-    keyboard_hook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
+    // ShortcutCapture::Result → GlobalHotkeyWin::Binding 的 MOD_* 标志。
+    capture_.on_captured = [this](const ShortcutCapture::Result& result) {
+        UINT modifiers = 0;
+        for (UINT mod : result.modifiers) {
+            switch (mod) {
+                case VK_CONTROL: modifiers |= MOD_CONTROL; break;
+                case VK_MENU: modifiers |= MOD_ALT; break;
+                case VK_SHIFT: modifiers |= MOD_SHIFT; break;
+                case VK_LWIN: modifiers |= MOD_WIN; break;
+                default: break;
+            }
+        }
+        captured_modifiers_ = modifiers;
+        captured_vk_ = result.vk;
+        UpdateHotkeyDisplay();
+    };
+    capture_.on_rejected_no_modifier = [this](UINT) {
+        SetWindowTextW(hint_label_, TrW(StringId::kHotkeyMissingModifier, language_).c_str());
+        UpdateHotkeyDisplay();
+    };
+    capture_.on_cancelled = [this]() {
+        UpdateHotkeyDisplay();
+    };
+    ShortcutCapture::Options options;
+    options.require_modifier = true;  // 全局热键场景：必须含修饰键
+    capture_.Start(options);
 }
 
 
@@ -307,11 +272,7 @@ INT_PTR HotkeySettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
             UpdateHotkeyDisplay();
             return 0;
         case WM_DESTROY:
-            if (keyboard_hook_) {
-                UnhookWindowsHookEx(keyboard_hook_);
-                keyboard_hook_ = nullptr;
-                g_active_dialog = nullptr;
-            }
+            capture_.Cancel();
             DestroyControls();
             return 0;
         default:

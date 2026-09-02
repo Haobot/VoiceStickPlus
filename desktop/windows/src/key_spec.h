@@ -24,4 +24,8 @@ struct KeySpec {
 // 仅修饰键、未知键名、多个主键均返回 nullopt。
 std::optional<KeySpec> ParseKeySpec(const std::string& text);
 
+// 由捕获结果构造 KeySpec（modifiers 须为 VK_CONTROL/VK_MENU/VK_SHIFT/VK_LWIN 子集，
+// 固定 Ctrl/Alt/Shift/Win 序；vk 不可识别时 display_text 退化为 "VK0xXX"）。恒成功。
+KeySpec MakeKeySpecFromVk(const std::vector<UINT>& modifiers, UINT vk);
+
 } // namespace voicestick

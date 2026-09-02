@@ -14,6 +14,10 @@ IDI_TRAY_BATTERY_75 ICON "icons/tray_battery_75.ico"
 IDI_TRAY_BATTERY_100 ICON "icons/tray_battery_100.ico"
 IDI_TRAY_BATTERY_CHARGING ICON "icons/tray_battery_charging.ico"
 
+// 小米蓝牙遥控器 2 Pro 产品图（按键映射对话框画布用，RCDATA 内嵌 PNG，
+// 运行时 FindResource + SHCreateMemStream + GDI+ 解码）。
+IDR_XIAOMI_REMOTE_PNG RCDATA "xiaomi_remote_2pro.png"
+
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION VOICESTICK_VERSION_RC
 PRODUCTVERSION VOICESTICK_VERSION_RC
