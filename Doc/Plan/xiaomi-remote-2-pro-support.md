@@ -19,7 +19,7 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 ### 做
 
 - Windows 桌面端完整支持（配对/使用/切换/设置/测试闭环）——第一阶段
-- macOS 桌面端移植——第二阶段
+- macOS 桌面端移植——第二阶段（已实施，见 §5.4；真机验收待做）
 - 语音键 → `primary` 角色全语义（按住说话、松开结束、双击注入 Enter）
 - 标准 Battery Service（0x180F/0x2A19）电量上报
 - 语音键附带 F5 系统键的抑制（Windows 低级键盘钩子）
@@ -142,13 +142,17 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 
 ### 5.4 macOS（第二阶段）
 
-> **暂缓实施（2026-09，用户决策），待后续版本。** 本节描述的 macOS 端方案本轮未实施，保留作后续移植依据；当前仅 Windows 端支持小米遥控器。
+> **已实施（2026-09-02，分支 `feat/add-MiRemote`）**：`swift build` 与 `swift run VoiceStickTests`（364 断言，含 golden fixtures 回放与 Opus 回环）全绿。真机验收未做——配对 Bond 流、按住说话、双击 Enter、F5 不泄漏、与 StickS3 同连、断连/睡眠恢复均待真机验证。
 
-- `BleCentral.swift`：扫描双 service UUID；按设备类分支特征发现/订阅/值路由；`deviceID(from:)` 与 `AppConfig.normalizedDeviceID` 扩展 `RC-` 前缀
-- 新增 `XiaomiAtvvProtocol.swift`/`XiaomiAtvvSession.swift`（按 §3 规范重新实现）
-- Opus 编码：先试 AudioToolbox `kAudioFormatOpus`（macOS 12+）；不可行则 vendored libopus 以 SwiftPM C target 接入（参考 `CZlib` shim 模式）
-- 配对窗双模扫描；`StatusController` 菜单能力显隐；F5 抑制用 CGEvent tap
-- ui_state 下发天然降级（缺特征仅 NSLog 跳过），无需额外处理
+- 代码组织：新增 SwiftPM 库 target `VoiceStickCore`（`Sources/VoiceStickCore/`，纯逻辑无 AppKit/CoreBluetooth 依赖：BleProtocol/XiaomiAtvvProtocol/ImaAdpcmDecoder/PcmPostprocessor/AudioOpusEncoder/XiaomiAtvvSession/InteractionMode/XiaomiMicOpenAnchor）+ vendored `COpus` C target（xiph/opus v1.5.2，与 `desktop/windows/third_party/opus` 同源拷贝，附非可变参数 shim）+ 无框架测试 runner `VoiceStickTests`（`Tests/VoiceStickTests/`；本机无 Xcode，XCTest/swift-testing 不可用，故用 executable runner 形态）；main.swift 顶层代码改为 `@main struct VoiceStickMain`（VoiceStickMain.swift）
+- 与 Windows 端的差异决策：
+  1. **RC-XXXX ID 分配**：macOS 拿不到 BLE MAC，配对时以 `CBPeripheral.identifier.uuidString` 的 SHA-256 前 4 hex 派生；UUID 存 `paired_devices` addr 字段（kind="uuid"）持久化，重连按 UUID→ID 映射（`retrievePeripherals`）
+  2. **Opus 编码用 vendored libopus**：AudioToolbox Opus 编码需 macOS 14+，部署目标 12 不可用（原设想的 AudioToolbox 首选路径放弃）
+  3. **F5 抑制**：CGEvent HID tap（需辅助功能权限，无权限仅 NSLog 放弃）；Windows 的「关联等待」层（钩内忙等至多 80ms）改为「临时吞 + ~100ms 延迟回放」（tap 回调不可阻塞）；近窗 80ms 与键程闩锁两层与 Windows 语义一致
+  4. **不移植心跳探针**：macOS 端无 90s 静默拆除机制，依赖 CoreBluetooth 断连回调
+  5. **不做电量读取展示**：macOS 托盘无电量 UI、StateEvent 无 battery 字段
+  6. **无「遥控器设置」对话框**：`gain_db`/`double_click_ms` 走 TOML `[device.<id>.xiaomi]`
+- 配对与 UI：配对窗双模扫描（VS + 小米白名单/ATVV UUID）；RC 配对经 connect→订阅加密特征触发系统 Bond；AppDelegate 对 RC 跳过固件检查；StatusController 对 RC 设备隐藏固件菜单、标题 RC- 前缀；F5 抑制按「`xiaomi_suppress_f5` 且（有配对或已连接 RC 设备）」门控装载
 
 ### 5.5 切换语义
 
@@ -203,6 +207,27 @@ double_click_ms = 350            # 语音键双击时序阈值
 4. 能力：托盘菜单对小米设备隐藏固件更新/编码器/体感项；电量正确显示
 5. wechat 模式：经小米遥控器可用
 6. 稳健：断连/重连/睡眠唤醒自动恢复（含僵尸链路场景）
+
+### 7.5 macOS 真机验收清单（P5，2026-09-02 实施，待验收）
+
+前置：
+
+- 确认 VoiceStickApp 已授予辅助功能权限（F5 tap 需要；无权限仅 NSLog 放弃，功能其余正常）
+- 若遥控器已与其他主机/采集工具连接，先断开（ATVV 语音人格只授给第一个连上的主机）
+- 配置好 ASR（同 StickS3 链路），先确认 StickS3 正常
+
+验收项：
+
+1. 配对：配对窗口发现遥控器（带类型标签）；点 Pair 后系统弹 Bond 配对；成功后托盘菜单出现 `RC-XXXX`；**配对后不重启 app 即自动连接**（覆盖「不广播 ATVV UUID 时 retrievePeripherals 补偿」路径）；重启 app 自动重连
+2. 使用：按住语音键说话 → 识别粘贴；松开即停；双击语音键注入 Enter
+3. F5：按住语音键期间前台应用（如浏览器）不收到 F5；松开后无残留闩锁；随后用真实键盘按一次 F5 确认正常投递（验证「临时吞+100ms 回放」不误伤）；Karabiner/Hammerspoon 等注入的 F5 不被吞（如装有此类工具）
+4. 切换：与 StickS3 同连交替使用，各自会话正确
+5. 菜单：RC 设备无固件更新项、标题 `RC-` 前缀；主题色/overlay 等其余项可用
+6. 稳健：遥控器睡眠后唤醒重连（关注是否出现陈旧 GATT 缓存类「ATVV service 找不到」——Windows 侧教训）；使用过程中断开/恢复；Mac 睡眠唤醒后恢复
+7. 配对窗：配对进行中点红叉关窗，确认无后台扫描残留、无迟到的配对落库；重复配对同一台提示 "Already paired"
+8. 配置：`[device.<id>.xiaomi]` 的 `gain_db`/`double_click_ms` 经 TOML 修改后重连生效；`xiaomi_suppress_f5 = false` 时 F5 恢复透传
+
+已知限制（验收时不对这些提 bug）：macOS 端无电量显示、无「遥控器设置」对话框（仅 TOML）、无心跳探针（依赖 CoreBluetooth 断连回调）。
 
 ## 8. 边界与异常
 

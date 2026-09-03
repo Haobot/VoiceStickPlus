@@ -1,4 +1,5 @@
 import AppKit
+import VoiceStickCore
 
 final class StatusController {
     private enum AppStatus {
@@ -95,6 +96,11 @@ final class StatusController {
     var onSetDefaultOutputProfile: ((OutputProfile) -> Void)?
     var onSetDeviceOutputProfile: ((String, OutputProfile) -> Void)?
     var onCheckForUpdates: (() -> Void)? {
+        didSet { rebuildMenu() }
+    }
+    /// 未连接配对条目的 hardware 查询（AppDelegate 注入，实时读 config）：
+    /// 推导设备类别——RC 设备隐藏固件菜单、fallback 名用 RC- 前缀。
+    var hardwareProvider: ((String) -> String?)? {
         didSet { rebuildMenu() }
     }
     private var needsPairing: Bool
@@ -306,7 +312,10 @@ final class StatusController {
         let connectedByID = Dictionary(uniqueKeysWithValues: connectedDevices.map { ($0.deviceID, $0) })
         for deviceID in pairedDeviceIDs.sorted() {
             let connectedDevice = connectedByID[deviceID]
-            let title = connectedDevice?.name ?? "VS-\(deviceID)"
+            // 设备类别：已连接用连接态类别；未连接的配对条目按 config hardware 推导。
+            let isXiaomi = connectedDevice.map { $0.deviceClass == .xiaomiRemote2Pro }
+                ?? (hardwareProvider?(deviceID) == PairedDeviceEntry.hardwareXiaomiRemote2Pro)
+            let title = connectedDevice?.name ?? (isXiaomi ? "RC-\(deviceID)" : "VS-\(deviceID)")
             let deviceItem = makeMenuItem(
                 title: title,
                 symbolName: connectedDevice == nil ? "link.circle" : "link.circle.fill",
@@ -331,7 +340,10 @@ final class StatusController {
             addDeviceTextItems(to: submenu, deviceID: deviceID)
             submenu.addItem(NSMenuItem.separator())
 
-            addFirmwareItems(to: submenu, deviceID: deviceID, isConnected: connectedDevice != nil)
+            // 小米遥控器没有 VoiceStick 固件概念：隐藏固件/更新区块，其余菜单照常。
+            if !isXiaomi {
+                addFirmwareItems(to: submenu, deviceID: deviceID, isConnected: connectedDevice != nil)
+            }
 
             let forgetItem = makeMenuItem(
                 title: "Forget This Device",

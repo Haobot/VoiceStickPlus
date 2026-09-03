@@ -288,7 +288,10 @@ final class SettingsWindowController: NSWindowController {
             deviceOutputProfiles: config.deviceOutputProfiles,
             autoEnter: config.autoEnter,
             debugAudioCache: debugAudioButton.state == .on,
-            debugAudioDirectory: URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)
+            debugAudioDirectory: URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true),
+            pairedDevices: config.pairedDevices,
+            deviceXiaomiSettings: config.deviceXiaomiSettings,
+            xiaomiSuppressF5: config.xiaomiSuppressF5
         )
 
         do {

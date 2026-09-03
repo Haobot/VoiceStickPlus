@@ -10,7 +10,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备采集按键、音频与 IMU 经 BLE 上报；**桌面端是状态唯一可信源**，负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录（esptool-js）和 Sparkle/WinSparkle 更新源。
 
-输入设备两类并存：自研 StickS3（设备 ID `VS-XXXX`，配固件）与小米蓝牙遥控器 2 Pro（`RC-XXXX`，仅 Windows 端，**固件零改动**，ATVV 接入全部在桌面端）。
+输入设备两类并存：自研 StickS3（设备 ID `VS-XXXX`，配固件）与小米蓝牙遥控器 2 Pro（`RC-XXXX`，Windows + macOS 双端，**固件零改动**，ATVV 接入全部在桌面端）。
 
 核心音频数据流：
 
@@ -34,12 +34,14 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 
 固件关键外部依赖：`espressif/button` ^4.1.6、`espressif/esp_codec_dev` ^1.3.4 + `78/esp-opus` ^1.0.5、`lvgl/lvgl` 9.2.0，由 ESP-IDF component manager 经各组件 `idf_component.yml` 管理。
 
+macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `desktop/windows/third_party/opus` 同源拷贝），供小米遥控器 ATVV 链路把 PCM 归一化为标准 Opus 帧。
+
 ## 构建与测试速查
 
 | 模块 | 最小验证 | 测试 |
 |---|---|---|
 | 固件 | `cd firmware && idf.py build`（Windows 可用 `python scripts/idf_cli.py -c`） | 无单测，编译通过 + 真机验证 |
-| macOS | `cd desktop/macos && swift build` | 无测试目标，编译通过 + 手动测试 |
+| macOS | `cd desktop/macos && swift build` | `swift run VoiceStickTests`（executable 测试 runner，非 XCTest——本机 CLT-only 无 Xcode）+ 手动测试 |
 | Windows | 根目录 `build_win.bat` | `ctest --test-dir desktop\windows\build-x64 --output-on-failure` |
 | 网站 | `cd website && npm run build` | 无自动化测试 |
 
@@ -85,6 +87,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 - `Doc/` 子目录语义：`Ref/`（协议/配置/流程等事实参考）、`Plan/`（设计方案）、`Guide/`（第三方服务接入指南）、`Expe/`（经验教训）、`Agent/`（面向 AI 助手的工作知识，即本 Hub 的扩展文档）。根目录 `docs/superpowers/`（小写）是历史产物，不再维护，新设计方案放 `Doc/Plan/`。
 - `build_native.bat` / `do_build.bat` / `desktop\windows\build.bat` 含本机绝对路径或固定版本号，复用前先检查内容；根目录 `test.bat` 是占位脚本；根目录散落的 `*.log`、`%BUILD_LOG%` 等是构建残留日志，不是源码。
 - Windows 构建若报 `C1083: winrt/base.h` 找不到：`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 生成投影头到 `desktop/windows/generated_winrt/`（gitignored）并 prepend 到 `INCLUDE`；手动 vcvars64 构建时须同样加入。
+- macOS 端拉取 SwiftPM 依赖（Sparkle/TOMLKit 走 GitHub）需走系统代理（github 直连不通）：命令前缀 `https_proxy=http://127.0.0.1:5782`（端口以 `scutil --proxy` 为准）。
 - MiniEncoderC 编码器是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）是唯一唤醒键。Grove 口 5V 不启用，编码器由顶部 Hat 排针供电。
 - 固件里给 FreeRTOS 对象（StreamBuffer/Queue 等）配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 硬编码限死在内部 RAM（`portFREERTOS_HEAP_CAPS`），`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它。详见 `Doc/Expe/claude-memory-distilled.md` §1.6。
 - 小米网关「语音键正常、其他按键没反应」先查 HID 侧：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道会互相掩盖；BLE HID 直通还要求目标机与设备有 **OS 级配对**（Windows 设置里手动配对），详见 `Doc/Expe/claude-memory-distilled.md` §1.10。

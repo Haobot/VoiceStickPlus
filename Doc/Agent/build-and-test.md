@@ -43,7 +43,14 @@ SPARKLE_PUBLIC_ED_KEY="..." scripts/build-macos.sh --release
 scripts/make-dmg.sh
 ```
 
-macOS 端目前没有专用测试目标，无法运行单个测试；验证方式主要是 `swift build` 编译通过和运行时手动测试。
+macOS 端测试用 executable runner（非 XCTest——本机 CLT-only 无 Xcode，`swift test` 不可用）：
+
+```sh
+cd desktop/macos
+swift run VoiceStickTests   # VoiceStickCore 纯逻辑断言（含 ATVV golden fixtures 回放、Opus 回环），全过 exit 0
+```
+
+runner 覆盖 VoiceStickCore（ATVV 协议/ADPCM/后处理/Opus/会话状态机/设备 ID 辅助），不覆盖 AppConfig 与 app 层；app 层仍以 `swift build` 编译通过 + 运行时手动测试为准。
 
 ### Windows 桌面端（CMake + Ninja + MSVC 2022 x64）
 
@@ -111,7 +118,7 @@ npm run preview  # 预览生产构建
 ## 测试策略
 
 - **Windows**：`desktop/windows/tests/core_tests.cc` 使用自定义 Fake/Mock 对 `voicestick_core` 中的状态机、配置解析、协议编解码、Ogg Opus mux 等进行单元测试（不联网）。`desktop/windows/tests/integration_tests.cc` 是 L1 ASR 链路集成测试，连真实火山 ASR，无 key 时返回 77 被 CTest 标记为 SKIP。运行命令：`ctest --test-dir desktop/windows/build-x64 --output-on-failure`。
-- **macOS**：目前没有专用测试目标。验证方式主要是 `swift build` 编译通过和运行时手动测试。
+- **macOS**：`swift run VoiceStickTests`（desktop/macos/Tests/VoiceStickTests/，executable 测试 runner，非 XCTest——本机 CLT-only 无 Xcode）覆盖 VoiceStickCore 纯逻辑（ATVV 协议/ADPCM golden 对拍/Opus 回环/会话状态机），全过 exit 0；app 层无自动化测试，靠 `swift build` + 手动测试。
 - **固件**：没有自动化单元测试。验证方式是 `idf.py build` 编译通过和真机运行时测试。
 - **网站**：没有自动化测试。验证方式是 `npm run build` 构建通过。
 - **Python E2E 真机验证**：`scripts/e2e_test/` 是跨固件+Windows 端到端的半自动验证工具链（L0 语料、L3 固件回放、L4 微信输入法、ASR/热词离线评测、功耗记账导出），用真实 BLE 连接与真实 ASR/音频链路，不伪造结果。各工具用法与评测结论索引见 `Doc/Ref/e2e-test-toolchain.md`；依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`；设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。小米遥控器另有 ATVV 工具组：`atvv_capture.py`（真机 golden 采集）、`atvv_bench.py`（golden 会话离线 ASR 评测，裸 PCM 直送）、`atvv_probe.py`（会话延迟/尾包时延/长连接静置探针）；golden fixtures 接入 C++ 单测（`TestImaAdpcmDecoderGoldenFixtures` 扫描 `scripts/e2e_test/fixtures/xiaomi/**` 逐样本对拍，无 fixtures 打印 SKIP 不算失败）与集成测试回放，其中 `fixtures/xiaomi/demo_synthetic/` 入库作冒烟资产、真机采集目录 gitignore（详见 `Doc/Ref/e2e-test-toolchain.md`）。

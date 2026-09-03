@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import VoiceStickCore
 
 final class VoiceStickCoordinator {
     private enum PendingPasteState {
@@ -170,7 +171,23 @@ final class VoiceStickCoordinator {
             enabled: config.debugAudioCache,
             directory: config.debugAudioDirectory
         )
+        // 小米遥控器接入：paired_device 条目表注入（实时读最新 config，配对/遗忘
+        // 即时生效）；同款注入方式见 BleCentral.pairedDevicesProvider 注释。
+        ble.pairedDevicesProvider = { [weak self] in self?.config.pairedDevices ?? [] }
     }
+
+    /// 透传：按 RC deviceID 解析 ATVV 会话参数（见 BleCentral.xiaomiOptionsResolver）。
+    func setXiaomiOptionsResolver(_ resolver: @escaping (String) -> XiaomiAtvvSession.Options) {
+        ble.xiaomiOptionsResolver = resolver
+    }
+
+    /// 透传：F5 抑制锚点（AppDelegate 事件钩子读取；写入在 BleCentral 回调线程）。
+    var xiaomiMicOpenAnchor: XiaomiMicOpenAnchor {
+        ble.micOpenAnchor
+    }
+
+    /// 透传：BLE 连接集变化（AppDelegate 的 F5 suppressor 门控挂在上面）。
+    var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
 
     func start() {
         ble.onConnectionChange = { [weak self] connectedDevices in
@@ -184,6 +201,7 @@ final class VoiceStickCoordinator {
             } else {
                 self.statusController.setStatus(self.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
             }
+            self.onConnectionChange?(connectedDevices)
         }
 
         ble.onStateEvent = { [weak self] peripheralID, event in
@@ -335,6 +353,10 @@ final class VoiceStickCoordinator {
 
     func updatePairedDeviceIDs(_ deviceIDs: [String]) {
         pairedDeviceIDs = deviceIDs
+        // 配对/遗忘由 AppDelegate 先落盘；此处从磁盘刷新配对条目，
+        // 否则 ble.pairedDevicesProvider 读到的是启动时的旧快照，
+        // RC 设备（靠 paired_device 条目反查 UUID 重连）在重启前永远连不上。
+        config.pairedDevices = AppConfig.load().pairedDevices
         statusController.setPairedDeviceIDs(deviceIDs)
         statusController.setConnectedDevices([])
         statusController.setStatus(deviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
@@ -532,7 +554,8 @@ final class VoiceStickCoordinator {
         pendingPasteState = .idle
         isShowingASRError = false
         oggMuxer.reset()
-        debugAudioRecorder.start(deviceID: deviceID(for: peripheralID), sessionID: sessionID)
+        debugAudioRecorder.start(deviceID: deviceID(for: peripheralID), sessionID: sessionID,
+                                 devicePrefix: deviceNamePrefix(for: peripheralID))
         statusController.showListening(deviceID: deviceID(for: peripheralID))
         sendUIStateForActiveDevice("recording")
     }
@@ -667,7 +690,8 @@ final class VoiceStickCoordinator {
         configureSubtitleASRCallbacks(for: cycle)
         subtitleCycles[SubtitleCycleKey(peripheralID: peripheralID, sessionID: sessionID)] = cycle
         activeSubtitleSessions[peripheralID] = sessionID
-        cycle.debugAudioRecorder.start(deviceID: deviceID, sessionID: sessionID)
+        cycle.debugAudioRecorder.start(deviceID: deviceID, sessionID: sessionID,
+                                       devicePrefix: deviceNamePrefix(for: peripheralID))
         NSLog("Subtitle cycle start dev=VS-\(deviceID ?? "unknown") session=\(sessionID)")
         statusController.showListening(deviceID: deviceID)
         ble.sendUIState("recording", to: peripheralID)
@@ -1535,5 +1559,10 @@ final class VoiceStickCoordinator {
 
     private func deviceID(for peripheralID: UUID) -> String? {
         ble.deviceID(for: peripheralID)
+    }
+
+    /// 调试录音文件名前缀（RC- / VS-，按设备类）。
+    private func deviceNamePrefix(for peripheralID: UUID) -> String {
+        ble.deviceClass(for: peripheralID) == .xiaomiRemote2Pro ? "RC-" : "VS-"
     }
 }

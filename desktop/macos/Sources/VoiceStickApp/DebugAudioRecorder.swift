@@ -4,6 +4,7 @@ final class DebugAudioRecorder {
     private let enabled: Bool
     private let directory: URL
     private var currentDeviceID: String?
+    private var currentDevicePrefix = "VS-"
     private var currentSessionID: UInt32?
     private var currentStartedAt: Date?
     private var currentAudio = Data()
@@ -13,9 +14,11 @@ final class DebugAudioRecorder {
         self.directory = directory
     }
 
-    func start(deviceID: String?, sessionID: UInt32?) {
+    /// devicePrefix 按设备类参数化文件名前缀（StickS3 为 "VS-"，小米遥控器为 "RC-"）。
+    func start(deviceID: String?, sessionID: UInt32?, devicePrefix: String = "VS-") {
         guard enabled else { return }
         currentDeviceID = deviceID
+        currentDevicePrefix = devicePrefix
         currentSessionID = sessionID
         currentStartedAt = Date()
         currentAudio.removeAll(keepingCapacity: true)
@@ -50,6 +53,7 @@ final class DebugAudioRecorder {
 
     private func reset() {
         currentDeviceID = nil
+        currentDevicePrefix = "VS-"
         currentSessionID = nil
         currentStartedAt = nil
         currentAudio.removeAll(keepingCapacity: false)
@@ -61,7 +65,7 @@ final class DebugAudioRecorder {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let timestamp = formatter.string(from: currentStartedAt ?? Date())
 
-        let device = currentDeviceID.map { "VS-\($0)" } ?? "unknown-device"
+        let device = currentDeviceID.map { "\(currentDevicePrefix)\($0)" } ?? "unknown-device"
         let session = currentSessionID.map(String.init) ?? "unknown"
         return "\(timestamp)-\(device)-session-\(session).ogg"
     }

@@ -62,6 +62,17 @@ air_mouse_invert_y = false   # 反转 Y 轴（适配用户习惯）
 # encoder_double_click_action = "key"
 # encoder_double_click_key = "enter"
 
+# 小米蓝牙遥控器 2 Pro（ATVV）：语音键按下时经 HID 连带发 F5，此开关全局抑制
+#（Windows + macOS 均生效；macOS 经 CGEvent tap 实现，需辅助功能权限，无权限仅记日志放弃）。
+# xiaomi_suppress_f5 = true
+
+# 小米遥控器按设备设置（无设置对话框，仅 TOML；结构镜像 [device.<id>.output]）：
+# gain_db：ADPCM 解码后增益（dB），消费侧 ±24 限幅；
+# double_click_ms：语音键双击判定窗（毫秒），非正值忽略并保留默认。
+# [device.3A7F.xiaomi]
+# gain_db = 12.0
+# double_click_ms = 350
+
 [output]
 target = "focused_app"
 transform = "original"
