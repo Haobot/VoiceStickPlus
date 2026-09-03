@@ -179,6 +179,8 @@ final class VoiceStickCoordinator {
     /// decide_window 到期冲刷定时器（pending 激活时 30ms 周期运行）。
     private var encoderRotateTimer: Timer?
     var onFirmwareUpdatePrompt: ((String, String, String, Bool) -> Void)?
+    /// 注入路径发现无辅助功能权限（AppDelegate 接此回调弹引导窗；悬浮窗提示由协调器自带节流）。
+    var onAccessibilityPermissionMissing: (() -> Void)?
     /// power_log 分片 / power_mgmt 事件（deviceID 寻址；AppDelegate 转发到电量监测窗口）。
     var onPowerLogFragment: ((String, PowerLogFragment) -> Void)?
     var onPowerMgmtEvent: ((String, PowerMgmtEvent) -> Void)?
@@ -198,6 +200,10 @@ final class VoiceStickCoordinator {
         // 小米遥控器接入：paired_device 条目表注入（实时读最新 config，配对/遗忘
         // 即时生效）；同款注入方式见 BleCentral.pairedDevicesProvider 注释。
         ble.pairedDevicesProvider = { [weak self] in self?.config.pairedDevices ?? [] }
+        // 注入权限兜底：无辅助功能权限时 CGEvent 被静默丢弃，转悬浮窗提示 + 引导弹窗。
+        inputInjector.onAccessibilityPermissionMissing = { [weak self] in
+            self?.handleAccessibilityPermissionMissing()
+        }
     }
 
     /// 透传：按 RC deviceID 解析 ATVV 会话参数（见 BleCentral.xiaomiOptionsResolver）。
@@ -1659,6 +1665,22 @@ final class VoiceStickCoordinator {
         }
 
         completePendingPaste(text: text)
+    }
+
+    /// 无辅助功能权限时的注入兜底：悬浮窗提示（10s 节流，防编码器旋转等高频路径
+    /// 刷屏）+ 转发 AppDelegate 弹每次启动一次的设置引导窗。
+    private var lastAccessibilityWarningAt: Date?
+
+    private func handleAccessibilityPermissionMissing() {
+        let now = Date()
+        if lastAccessibilityWarningAt == nil
+            || now.timeIntervalSince(lastAccessibilityWarningAt!) > 10 {
+            lastAccessibilityWarningAt = now
+            statusController.showTimedMessage(
+                tr(.accessibilityPasteBlocked), duration: 2.5, deviceID: activeDeviceID
+            )
+        }
+        onAccessibilityPermissionMissing?()
     }
 
     private func completePendingPaste(text: String) {

@@ -23,3 +23,11 @@
 
 - 回答「如何迁移/如何搭建」类问题前，先全仓 grep 硬编码的组织名/域名（`github.com/78`、`78.github.io`），拿真实清单再答，避免凭印象漏项——本次第一轮只想到 appcast 和 Secrets，grep 后才补齐 App.vue、vite base、固件 manifest 等 8 处。
 - 区分「同一文件名 ≠ 同一内容」：仓库里的 appcast.xml 与线上 appcast.xml 语义不同（模板 vs 状态），排查更新问题时应以线上 `curl` 结果为准，勿被仓库内占位模板误导。
+
+## 追加：ad-hoc 本地包不能带 hardened runtime（2026-09-03）
+
+- 症状：`scripts/build-macos.sh` 在本机（无 Developer ID）走 ad-hoc 分支产出的 .app，启动即崩，弹「无法打开…请与开发者联系」。
+- 判据：直接跑 `VoiceStick.app/Contents/MacOS/VoiceStickApp`，dyld 报 `Library not loaded: @rpath/Sparkle.framework/...`，Reason 尾部为 `mapping process and mapped file (non-platform) have different Team IDs`——尽管 `codesign -dv` 显示主程序与 Sparkle.framework 都是 `Signature=adhoc / TeamIdentifier=not set`。
+- 根因：ad-hoc 分支用了 `codesign --deep --force --options runtime --sign -`。hardened runtime 默认开启库校验，ad-hoc 签名（无 Team ID）下主程序与内嵌框架被判定 Team ID 不匹配。
+- 修复：`build-macos.sh` ad-hoc 分支去掉 `--options runtime`（hardened runtime 只为公证服务，Developer ID 正式分支保留）；对已产出的包可不重编，直接 `codesign --force --deep --sign -`（不带 --options）重签即可运行。
+- 注意：ad-hoc 包首次经 `open` 启动若弹崩溃报告窗，是之前崩溃残留，修好签名后不再出现；Sparkle ZIP 签名步骤（sign_update）无私钥时报 `Signing key not found for account voicestick` 属预期，仅影响更新源发布，不影响本地 .app 使用。

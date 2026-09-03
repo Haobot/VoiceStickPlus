@@ -114,6 +114,7 @@ enum L10nKey: String, CaseIterable {
     case applyTrialFailed, saveFailedWithError
     case openedSystemSettings, openAccessibilityManually
     case accessibilityAllowed, accessibilityNotAllowed
+    case accessibilityPasteBlocked, accessibilityAlertTitle, accessibilityAlertBody
     case selectDeviceFirst, enterApiKeyFor, enterValidCloudURL, allowAccessibilityFirst
 
     // 配对窗口
@@ -379,6 +380,9 @@ enum Localization {
         .openAccessibilityManually: "Open System Settings, then go to Privacy & Security > Accessibility.",
         .accessibilityAllowed: "Accessibility permission is allowed.",
         .accessibilityNotAllowed: "Accessibility permission is not allowed yet.",
+        .accessibilityPasteBlocked: "Accessibility permission missing — text not pasted",
+        .accessibilityAlertTitle: "Accessibility Permission Required",
+        .accessibilityAlertBody: "VoiceStick inserts recognized text at the cursor by simulating Cmd+V, which macOS blocks without Accessibility permission. Grant it in System Settings > Privacy & Security > Accessibility, then quit and relaunch VoiceStick — permission changes only take effect after relaunch.",
         .selectDeviceFirst: "Select a VoiceStick device first.",
         .enterApiKeyFor: "Enter the API key for %@.",
         .enterValidCloudURL: "Enter a valid Cloud URL.",
@@ -639,6 +643,9 @@ enum Localization {
         .openAccessibilityManually: "请打开系统设置，进入「隐私与安全性 > 辅助功能」。",
         .accessibilityAllowed: "已获得辅助功能权限。",
         .accessibilityNotAllowed: "尚未获得辅助功能权限。",
+        .accessibilityPasteBlocked: "缺少辅助功能权限，文本未粘贴",
+        .accessibilityAlertTitle: "需要辅助功能权限",
+        .accessibilityAlertBody: "VoiceStick 通过模拟 Cmd+V 在光标处插入识别文本，macOS 需要辅助功能权限才会放行。请在「系统设置 > 隐私与安全性 > 辅助功能」中授权，然后退出并重新打开 VoiceStick——权限变更要在重启应用后才生效。",
         .selectDeviceFirst: "请先配对 VoiceStick 设备。",
         .enterApiKeyFor: "请输入 %@ 的 API Key。",
         .enterValidCloudURL: "请输入有效的 Cloud URL。",

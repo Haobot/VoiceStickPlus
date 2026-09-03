@@ -42,6 +42,10 @@
   - UI 本地化（`Localization.swift`，243 键中英双表逐条对齐 Windows `localization.cc`）：新增 `ui_language` 配置（`system`/`en`/`zh-Hans`，加载兼容 `zh_CN`/`zh-CN`/`zh`，system 按系统首选语言 zh 前缀判定），设置窗「界面语言」下拉，保存后托盘菜单与窗口文案重建；悬浮窗 `Listening...`/`Processing...` 等状态提示与 Windows 一致保持英文。
   - 配置基座：`AppConfig` 新增设备交互/编码器全局默认 + `[device.<id>.interaction]`/`[device.<id>.encoder]` 按设备覆盖（解析、填平、序列化「不等才落盘」语义对齐 Windows `app_config.cc`）、`ui_language`、`show_imu_debug` 等键；`config.example.toml`、`Doc/Ref/desktop-config.md`、`Doc/Ref/protocol.md`、双 README 同步修订平台口径。未覆盖项：体感鼠标、流式精修、热词挖掘/划词加词、微信输入法模式仍为 Windows 独有。
 
+- 修复：macOS 注入类动作（粘贴/回车/组合键）在无辅助功能权限时静默失败。`InputInjector` 新增 `AXIsProcessTrusted` 前置拦截（媒体键除外），未授权时悬浮窗节流提示 + 每次启动一次 NSAlert 引导弹窗（一键打开系统设置辅助功能面板），`Localization` 新增三键中英双表。根因：裸二进制注入寄生终端的 TCC 授权，独立 `.app` 以自身 bundle id（`app.voicestick.mac`）单独授权。
+
+- 修复：`scripts/build-macos.sh` ad-hoc 签名分支误带 `--options runtime`，hardened runtime 库校验拒载 Sparkle.framework（dyld `different Team IDs`）导致打包后启动即崩（「无法打开」弹窗）；ad-hoc 分支已去掉 runtime 选项。
+
 ## v2.3.6
 
 - 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。

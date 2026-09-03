@@ -38,6 +38,8 @@
 - **Edit 的 `old_string` 跨函数边界时小心吞掉下一行**：长 `old_string` 若以函数结尾的 `}` 收尾、实际文本含紧跟的下一行，替换后易丢行。跨边界替换后立刻重读该区域核对。
 - **「文档说某端未实现」要用源码复核**：本次三处文档标注（编码器/交互「仅 Windows 消费」、遥控器「macOS 无对话框」、交互菜单「所有设备都显示」）与代码事实不符。经验：`Doc/Ref/` 承载事实但仍可能滞后，涉及「某端有没有」的断言，grep 两端源码再引用。
 - **macOS 无 GAP 设备名读取的 keepalive 机制**：Windows 电量监测里「GAP 设备名 keepalive fallback」是平台特有机制，移植时明确跳过并记录，不要为对齐而强行造等价物。
+- **注入类功能（CGEvent 粘贴/按键）的验收必须用最终 .app 形态，不能用裸二进制**：裸二进制从终端启动时寄生终端的辅助功能（TCC）授权，注入「看起来正常」；独立 `.app` 以自身 bundle id（`app.voicestick.mac`）单独授权，未授权时 `CGEvent` 被**静默丢弃**——悬浮窗显示、识别正常，唯独粘贴不进去，排查时极具迷惑性。判据：识别文本到了悬浮窗/剪贴板但目标输入框无内容，先查 TCC 库（注意本机 `kTCCServiceAccessibility` 条目在**系统级** `/Library/Application Support/com.apple.TCC/TCC.db`，用户级库没有该 service）。配套教训：签名变动（重打包/ad-hoc 重签，cdhash 变化）会使已有 TCC 授权失效需重新勾选；**辅助功能授权对正在运行的进程不生效**（`AXIsProcessTrusted` 判定绑定进程生命周期），用户勾选后必须退出重开 app——引导弹窗文案已写明此点（`accessibilityAlertBody`）。因此调试期改了 app 层代码不要急着重打包替换正在验收的 .app，否则刚授的权限作废。`InputInjector` 已加 `AXIsProcessTrusted` 前置拦截 + 引导弹窗兜底。
+- **ad-hoc 打包不要带 `--options runtime`**：`scripts/build-macos.sh` 曾给 ad-hoc 签名也加 hardened runtime，其库校验拒载无 Team ID 的 Sparkle.framework（dyld 报 `different Team IDs`），用户侧表现为「App 因为出现问题而无法打开」。判据：双击 .app 弹此窗时先 `codesign -dv --verbose=4 <app>/Contents/MacOS/<bin> | grep flags`，`0x10002`（含 runtime）即中招，纯 ad-hoc 应为 `0x2`。
 
 ## 4. 验证
 

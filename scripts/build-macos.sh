@@ -118,8 +118,11 @@ if [ "$CODESIGN_IDENTITY" != "-" ]; then
     echo "Using: $CODESIGN_IDENTITY"
     codesign --deep --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 else
+    # ad-hoc 本地测试包不能带 --options runtime：hardened runtime 的库校验会拒绝
+    # 内嵌的 Sparkle.framework（dyld 报 "different Team IDs"，app 启动即崩）。
+    # hardened runtime 只为公证（notarization）服务，正式签名分支保留。
     echo "Using ad-hoc signature."
-    codesign --deep --force --options runtime --sign - "$APP_DIR"
+    codesign --deep --force --sign - "$APP_DIR"
 fi
 
 echo "Verifying app signature..."
