@@ -6,7 +6,13 @@
 
 ## macOS
 
-代码集中在 `desktop/macos/Sources/VoiceStickApp/`：`VoiceStickCoordinator`（状态机）、`BleCentral` / `BleProtocol`（CoreBluetooth 与协议）、`OggOpusMuxer` / `ASRWebSocketClient`（音频封装与 ASR）、`InputInjector`（粘贴与 Return 注入）、`OverlayController` / `SubtitleController` / `StatusController`（悬浮窗/字幕/状态）、`FirmwareManifest` / `FirmwareUpdateWindowController`（固件更新）。
+代码分三个 SwiftPM target：
+
+- `Sources/VoiceStickCore/`：平台无关纯逻辑，全部可单测——BLE 协议帧、ATVV 会话状态机（`XiaomiAtvvSession`，自 Windows `xiaomi_atvv_session` 逐行移植）、IMA-ADPCM 解码、PCM 后处理、Opus 重编码封装、Ogg Opus mux、ASR 帧格式、配置解析。新增核心行为优先放这里。
+- `Sources/COpus/`：vendored libopus C target（Windows 侧 Opus 编码在 app 层，macOS 侧收到 COpus 供 Core 调用）。
+- `Sources/VoiceStickApp/`：AppKit/CoreBluetooth 平台外壳——`VoiceStickCoordinator`（状态机）、`BleCentral` / `BleProtocol`（CoreBluetooth 与协议）、`OggOpusMuxer` / `ASRWebSocketClient`（音频封装与 ASR）、`InputInjector`（粘贴与 Return 注入）、`OverlayController` / `SubtitleController` / `StatusController`（悬浮窗/字幕/状态）、`FirmwareManifest` / `FirmwareUpdateWindowController`（固件更新）。
+
+测试在 `Tests/VoiceStickTests/`：CLT-only 环境无 XCTest 可用，用 executable runner（自写断言主程序，375 断言）经 `swift run VoiceStickTests` 执行。
 
 ## Windows
 

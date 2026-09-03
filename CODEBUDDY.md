@@ -98,6 +98,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 - **E2E 别指望第三方 BLE central 驱动设备**：app 退出后 Windows 会用系统级 HOGP 配对自动连走设备并停止广播，`bleak`/`nRF Connect` 既扫不到也连不上；自动化一律走 app（如 `VoiceStick.exe --gateway-target self|clear`）。**测试也绝不能解除系统配对**（会弄死 HOGP 按键直通）。
 - VoiceStickFlash 改动除构建/CTest 外，用 `scripts\prepare_flash_payload.ps1` 冒烟 payload；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。
 - `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证）。
+- macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须先判 `peripheral.state`——对断开外设空发 discoverServices 无任何回调（静默卡死），详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
 
 ## 文档索引
 
