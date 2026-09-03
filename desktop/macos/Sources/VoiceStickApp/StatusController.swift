@@ -52,26 +52,26 @@ final class StatusController {
         var accessibilityDescription: String {
             switch self {
             case .needsPairing:
-                return "Pair VoiceStick"
+                return tr(.statusPairVoiceStick)
             case .listening:
-                return "Listening"
+                return tr(.statusListening)
             case .processing:
-                return "Processing"
+                return tr(.statusProcessing)
             case .ready:
-                return "Ready"
+                return tr(.statusReady)
             case .error:
-                return "Error"
+                return tr(.statusError)
             }
         }
 
         var visibleTitle: String? {
             switch self {
             case .needsPairing:
-                return "Pair"
+                return tr(.statusPair)
             case .processing:
-                return "Processing"
+                return tr(.statusProcessing)
             case .error:
-                return "Error"
+                return tr(.statusError)
             case .listening, .ready:
                 return nil
             }
@@ -88,11 +88,21 @@ final class StatusController {
     var onPairDevice: (() -> Void)?
     var onForgetDevice: ((String) -> Void)?
     var onUpdateFirmwareDevice: ((String) -> Void)?
+    var onOpenInteractionSettings: ((String) -> Void)?
+    var onOpenEncoderSettings: ((String) -> Void)?
+    var onOpenRemoteSettings: ((String) -> Void)?
+    var onOpenBatteryMonitor: ((String) -> Void)?
+    var onUpdateFirmwareFromFile: ((String) -> Void)?
     var onSetDeviceThemeColor: ((String, OverlayThemeColor) -> Void)?
     var onSetDeviceOverlayPosition: ((String, OverlayPosition) -> Void)?
+    var onSetDeviceThemeSize: ((String, OverlayThemeSize) -> Void)?
     var onRestoreLastInput: (() -> Bool)?
     var onSetInteractionMode: ((InteractionMode) -> Void)?
     var onSetAutoEnter: ((Bool) -> Void)?
+    var onSetGlobalHotkeyEnabled: ((Bool) -> Void)?
+    var onSetGlobalHotkey: ((String) -> Void)?
+    var onCustomizeHotkey: (() -> Void)?
+    var onSetLaunchAtLogin: ((Bool) -> Void)?
     var onSetDefaultOutputProfile: ((OutputProfile) -> Void)?
     var onSetDeviceOutputProfile: ((String, OutputProfile) -> Void)?
     var onCheckForUpdates: (() -> Void)? {
@@ -108,27 +118,46 @@ final class StatusController {
     private var pairedDeviceIDs: [String]
     private var deviceThemeColors: [String: OverlayThemeColor]
     private var deviceOverlayPositions: [String: OverlayPosition]
+    private var deviceThemeSizes: [String: OverlayThemeSize]
     private var connectedDevices: [ConnectedVoiceStickDevice] = []
     private var firmwareInfoByDeviceID: [String: DeviceFirmwareInfo] = [:]
+    /// 编码器在位状态（固件 encoder_status 事件驱动；未上报过的设备默认 true，
+    /// 对齐 Windows UiState::SetDeviceEncoderPresent 的默认语义，供菜单 gating）。
+    private(set) var encoderPresentByDeviceID: [String: Bool] = [:]
+    /// 电量状态（固件 battery_status 事件 / 小米 0x2A19 合成事件驱动），供菜单标题后缀。
+    private(set) var batteryByDeviceID: [String: (level: Int, charging: Bool, usbPowered: Bool)] = [:]
     private var interactionMode: InteractionMode
     private var autoEnter: Bool
     private var defaultOutputProfile: OutputProfile
     private var deviceOutputProfiles: [String: OutputProfile]
+    private var globalHotkeyEnabled: Bool
+    private var globalHotkey: String
+    private var launchAtLogin: Bool
+    /// 最近一次状态栏状态（语言切换时按它重建按钮文案）。
+    private var currentStatus: AppStatus = .ready
 
     init(pairedDeviceIDs: [String] = [],
          deviceThemeColors: [String: OverlayThemeColor] = [:],
          deviceOverlayPositions: [String: OverlayPosition] = [:],
+         deviceThemeSizes: [String: OverlayThemeSize] = [:],
          interactionMode: InteractionMode = .holdToTalk,
          autoEnter: Bool = true,
          defaultOutputProfile: OutputProfile = .default,
-         deviceOutputProfiles: [String: OutputProfile] = [:]) {
+         deviceOutputProfiles: [String: OutputProfile] = [:],
+         globalHotkeyEnabled: Bool = true,
+         globalHotkey: String = "Alt+X",
+         launchAtLogin: Bool = true) {
         self.pairedDeviceIDs = pairedDeviceIDs
         self.deviceThemeColors = deviceThemeColors
         self.deviceOverlayPositions = deviceOverlayPositions
+        self.deviceThemeSizes = deviceThemeSizes
         self.interactionMode = interactionMode
         self.autoEnter = autoEnter
         self.defaultOutputProfile = defaultOutputProfile
         self.deviceOutputProfiles = deviceOutputProfiles
+        self.globalHotkeyEnabled = globalHotkeyEnabled
+        self.globalHotkey = globalHotkey
+        self.launchAtLogin = launchAtLogin
         self.needsPairing = pairedDeviceIDs.isEmpty
         updateStatusButton(.ready)
         rebuildMenu()
@@ -138,6 +167,7 @@ final class StatusController {
         pairedDeviceIDs = deviceIDs
         deviceThemeColors = deviceThemeColors.filter { deviceIDs.contains($0.key) }
         deviceOverlayPositions = deviceOverlayPositions.filter { deviceIDs.contains($0.key) }
+        deviceThemeSizes = deviceThemeSizes.filter { deviceIDs.contains($0.key) }
         deviceOutputProfiles = deviceOutputProfiles.filter { deviceIDs.contains($0.key) }
         needsPairing = deviceIDs.isEmpty
         rebuildMenu()
@@ -153,6 +183,11 @@ final class StatusController {
         rebuildMenu()
     }
 
+    func setDeviceThemeSizes(_ sizes: [String: OverlayThemeSize]) {
+        deviceThemeSizes = sizes.filter { pairedDeviceIDs.contains($0.key) }
+        rebuildMenu()
+    }
+
     func setConnectedDevices(_ devices: [ConnectedVoiceStickDevice]) {
         let sortedDevices = devices.sorted { $0.deviceID < $1.deviceID }
         guard connectedDevices.map(\.deviceID) != sortedDevices.map(\.deviceID) ||
@@ -163,6 +198,23 @@ final class StatusController {
 
     func setFirmwareInfo(_ infoByDeviceID: [String: DeviceFirmwareInfo]) {
         firmwareInfoByDeviceID = infoByDeviceID
+        rebuildMenu()
+    }
+
+    /// 编码器在位上报（对齐 Windows UiState::SetDeviceEncoderPresent）。
+    func setDeviceEncoderPresent(_ deviceID: String, present: Bool) {
+        guard encoderPresentByDeviceID[deviceID] != present else { return }
+        encoderPresentByDeviceID[deviceID] = present
+        rebuildMenu()
+    }
+
+    /// 电量上报（对齐 Windows UiState::SetDeviceBattery）。
+    func setDeviceBattery(_ deviceID: String, level: Int, charging: Bool, usbPowered: Bool) {
+        let value = (level: level, charging: charging, usbPowered: usbPowered)
+        let old = batteryByDeviceID[deviceID]
+        guard old?.level != value.level || old?.charging != value.charging ||
+                old?.usbPowered != value.usbPowered else { return }
+        batteryByDeviceID[deviceID] = value
         rebuildMenu()
     }
 
@@ -194,7 +246,7 @@ final class StatusController {
         menu.removeAllItems()
         if hasRecoverableInput {
             menu.addItem(makeMenuItem(
-                title: "Restore Last Input",
+                title: tr(.menuRestoreLastInput),
                 symbolName: "arrow.uturn.backward",
                 action: #selector(restoreLastInput)
             ))
@@ -206,13 +258,13 @@ final class StatusController {
         addInputItems()
 
         menu.addItem(makeMenuItem(
-            title: "Pair Device...",
+            title: tr(.menuPairDevice),
             symbolName: "dot.radiowaves.left.and.right",
             action: #selector(pairDevice)
         ))
 
         menu.addItem(makeMenuItem(
-            title: "Settings...",
+            title: tr(.menuSettings),
             symbolName: "gearshape",
             action: #selector(openSettings),
             keyEquivalent: ","
@@ -221,21 +273,21 @@ final class StatusController {
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(makeMenuItem(
-            title: "Website",
+            title: tr(.menuWebsite),
             symbolName: "safari",
             action: #selector(openWebsite)
         ))
 
         if onCheckForUpdates != nil {
             menu.addItem(makeMenuItem(
-                title: "Check for App Updates...",
+                title: tr(.menuCheckAppUpdates),
                 symbolName: "arrow.triangle.2.circlepath",
                 action: #selector(checkForUpdates)
             ))
         }
 
         menu.addItem(makeMenuItem(
-            title: "Quit",
+            title: tr(.menuQuit),
             symbolName: "power",
             action: #selector(quitApp),
             keyEquivalent: "q"
@@ -248,21 +300,34 @@ final class StatusController {
         addOutputItems()
 
         let afterPasteItem = makeMenuItem(
-            title: "Press Return After Paste",
+            title: tr(.menuPressReturnAfterPaste),
             symbolName: "return",
             action: #selector(toggleAutoEnter)
         )
         afterPasteItem.state = autoEnter ? .on : .off
         menu.addItem(afterPasteItem)
 
+        // 开机自启动（SMAppService 需 macOS 13+；12 隐藏该开关）。
+        if #available(macOS 13.0, *) {
+            let launchItem = makeMenuItem(
+                title: tr(.menuLaunchAtLogin),
+                symbolName: "sunrise",
+                action: #selector(toggleLaunchAtLogin)
+            )
+            launchItem.state = launchAtLogin ? .on : .off
+            menu.addItem(launchItem)
+        }
+
+        addHotkeyItems()
+
         let interactionItem = makeMenuItem(
-            title: "Interaction",
+            title: tr(.menuInteraction),
             symbolName: "hand.tap",
             action: nil
         )
         let interactionSubmenu = NSMenu()
         let holdItem = makeMenuItem(
-            title: InteractionMode.holdToTalk.displayName,
+            title: tr(.menuHoldToTalk),
             symbolName: "hand.tap",
             action: #selector(selectInteractionMode)
         )
@@ -271,7 +336,7 @@ final class StatusController {
         interactionSubmenu.addItem(holdItem)
 
         let clickItem = makeMenuItem(
-            title: InteractionMode.clickToTalk.displayName,
+            title: tr(.menuClickToTalk),
             symbolName: "cursorarrow.click",
             action: #selector(selectInteractionMode)
         )
@@ -284,9 +349,49 @@ final class StatusController {
         menu.addItem(NSMenuItem.separator())
     }
 
+    private func addHotkeyItems() {
+        // 热键子菜单（对齐 Windows 托盘：启用勾选 + 预设 radio + 自定义捕获）。
+        let hotkeyItem = makeMenuItem(title: tr(.menuHotkey), symbolName: "keyboard", action: nil)
+        let hotkeySubmenu = NSMenu()
+        let enableItem = NSMenuItem(
+            title: tr(.menuEnableHotkey),
+            action: #selector(toggleGlobalHotkey),
+            keyEquivalent: ""
+        )
+        enableItem.target = self
+        enableItem.state = globalHotkeyEnabled ? .on : .off
+        hotkeySubmenu.addItem(enableItem)
+        hotkeySubmenu.addItem(NSMenuItem.separator())
+        for preset in GlobalHotkeyManager.presets {
+            let item = NSMenuItem(
+                title: GlobalHotkeyManager.displayName(for: preset),
+                action: #selector(selectGlobalHotkeyPreset),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = preset
+            item.state = globalHotkeyEnabled && globalHotkey == preset ? .on : .off
+            hotkeySubmenu.addItem(item)
+        }
+        let isCustom = !GlobalHotkeyManager.presets.contains(globalHotkey)
+        let customTitle = isCustom
+            ? tr(.menuCustomHotkeyNamed, GlobalHotkeyManager.displayName(for: globalHotkey))
+            : tr(.menuCustomHotkey)
+        let customItem = NSMenuItem(
+            title: customTitle,
+            action: #selector(customizeGlobalHotkey),
+            keyEquivalent: ""
+        )
+        customItem.target = self
+        customItem.state = globalHotkeyEnabled && isCustom ? .on : .off
+        hotkeySubmenu.addItem(customItem)
+        hotkeyItem.submenu = hotkeySubmenu
+        menu.addItem(hotkeyItem)
+    }
+
     private func addOutputItems() {
         let outputItem = makeMenuItem(
-            title: "Output",
+            title: tr(.menuOutput),
             symbolName: "text.bubble",
             action: nil
         )
@@ -315,7 +420,14 @@ final class StatusController {
             // 设备类别：已连接用连接态类别；未连接的配对条目按 config hardware 推导。
             let isXiaomi = connectedDevice.map { $0.deviceClass == .xiaomiRemote2Pro }
                 ?? (hardwareProvider?(deviceID) == PairedDeviceEntry.hardwareXiaomiRemote2Pro)
-            let title = connectedDevice?.name ?? (isXiaomi ? "RC-\(deviceID)" : "VS-\(deviceID)")
+            var title = connectedDevice?.name ?? (isXiaomi ? "RC-\(deviceID)" : "VS-\(deviceID)")
+            // 电量后缀（对齐 Windows DeviceTitleWithBattery/BatteryStatusText）：
+            // " (NN%)" + 充电（优先）/外接电源后缀。仅在有上报时追加。
+            if let battery = batteryByDeviceID[deviceID] {
+                let batteryText = Localization.batteryStatusText(
+                    level: battery.level, charging: battery.charging, usbPowered: battery.usbPowered)
+                title += " (\(batteryText))"
+            }
             let deviceItem = makeMenuItem(
                 title: title,
                 symbolName: connectedDevice == nil ? "link.circle" : "link.circle.fill",
@@ -323,7 +435,7 @@ final class StatusController {
             )
             let submenu = NSMenu()
             let stateItem = NSMenuItem(
-                title: connectedDevice == nil ? "Scanning" : "Connected",
+                title: connectedDevice == nil ? tr(.stateScanning) : tr(.stateConnected),
                 action: nil,
                 keyEquivalent: ""
             )
@@ -336,17 +448,70 @@ final class StatusController {
             submenu.addItem(NSMenuItem.separator())
 
             addThemeColorItems(to: submenu, deviceID: deviceID)
+            addThemeSizeItems(to: submenu, deviceID: deviceID)
             addOverlayPositionItems(to: submenu, deviceID: deviceID)
             addDeviceTextItems(to: submenu, deviceID: deviceID)
             submenu.addItem(NSMenuItem.separator())
 
+            if isXiaomi {
+                // 遥控器设置（仅小米；对齐 Windows kMenuRemoteSettings）。
+                let remoteItem = makeMenuItem(
+                    title: tr(.menuRemoteSettings),
+                    symbolName: "gearshape",
+                    action: #selector(openRemoteSettings)
+                )
+                remoteItem.representedObject = deviceID
+                submenu.addItem(remoteItem)
+            } else {
+                // 设备交互设置（仅 StickS3；对齐 Windows kMenuInteractionSettings）。
+                let interactionItem = makeMenuItem(
+                    title: tr(.menuInteractionSettings),
+                    symbolName: "hand.tap",
+                    action: #selector(openInteractionSettings)
+                )
+                interactionItem.representedObject = deviceID
+                submenu.addItem(interactionItem)
+
+                // 编码器设置（encoderPresent 未上报过默认 true，对齐 Windows gating）。
+                if encoderPresentByDeviceID[deviceID] ?? true {
+                    let encoderItem = makeMenuItem(
+                        title: tr(.menuEncoderSettings),
+                        symbolName: "dial.medium",
+                        action: #selector(openEncoderSettings)
+                    )
+                    encoderItem.representedObject = deviceID
+                    submenu.addItem(encoderItem)
+                }
+
+                // 电池电压监测（仅已连接；对齐 Windows kMenuBatteryMonitor）。
+                if connectedDevice != nil {
+                    let batteryItem = makeMenuItem(
+                        title: tr(.menuBatteryMonitor),
+                        symbolName: "battery.100.bolt",
+                        action: #selector(openBatteryMonitor)
+                    )
+                    batteryItem.representedObject = deviceID
+                    submenu.addItem(batteryItem)
+                }
+            }
+
             // 小米遥控器没有 VoiceStick 固件概念：隐藏固件/更新区块，其余菜单照常。
             if !isXiaomi {
                 addFirmwareItems(to: submenu, deviceID: deviceID, isConnected: connectedDevice != nil)
+                // 本地文件固件更新（仅已连接；对齐 Windows kMenuUpdateFirmwareFromFile）。
+                if connectedDevice != nil {
+                    let fromFileItem = makeMenuItem(
+                        title: tr(.menuUpdateFirmwareFromFile),
+                        symbolName: "doc.zipper",
+                        action: #selector(updateFirmwareFromFile)
+                    )
+                    fromFileItem.representedObject = deviceID
+                    submenu.addItem(fromFileItem)
+                }
             }
 
             let forgetItem = makeMenuItem(
-                title: "Forget This Device",
+                title: tr(.menuForgetDevice),
                 symbolName: "xmark.circle",
                 action: #selector(forgetConnectedDevice)
             )
@@ -360,9 +525,9 @@ final class StatusController {
     }
 
     private func addThemeColorItems(to submenu: NSMenu, deviceID: String) {
-        let currentColor = deviceThemeColors[deviceID] ?? .white
+        let currentColor = deviceThemeColors[deviceID] ?? .auto
         let themeItem = makeMenuItem(
-            title: "Theme Color",
+            title: tr(.menuThemeColor),
             symbolName: "paintpalette",
             action: nil
         )
@@ -382,10 +547,33 @@ final class StatusController {
         submenu.addItem(themeItem)
     }
 
+    private func addThemeSizeItems(to submenu: NSMenu, deviceID: String) {
+        let currentSize = deviceThemeSizes[deviceID] ?? .big
+        let sizeItem = makeMenuItem(
+            title: tr(.menuThemeSize),
+            symbolName: "textformat.size",
+            action: nil
+        )
+        let sizeSubmenu = NSMenu()
+        for size in OverlayThemeSize.allCases {
+            let item = NSMenuItem(
+                title: size.displayName,
+                action: #selector(selectDeviceThemeSize),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = "\(deviceID):\(size.rawValue)"
+            item.state = currentSize == size ? .on : .off
+            sizeSubmenu.addItem(item)
+        }
+        sizeItem.submenu = sizeSubmenu
+        submenu.addItem(sizeItem)
+    }
+
     private func addOverlayPositionItems(to submenu: NSMenu, deviceID: String) {
-        let currentPosition = deviceOverlayPositions[deviceID] ?? .center
+        let currentPosition = deviceOverlayPositions[deviceID] ?? .bottomCenter
         let positionItem = makeMenuItem(
-            title: "Overlay Position",
+            title: tr(.menuOverlayPosition),
             symbolName: "rectangle.inset.filled",
             action: nil
         )
@@ -408,13 +596,13 @@ final class StatusController {
     private func addDeviceTextItems(to submenu: NSMenu, deviceID: String) {
         let profile = outputProfile(for: deviceID)
         let textItem = makeMenuItem(
-            title: "Translation",
+            title: tr(.menuTranslation),
             symbolName: "textformat",
             action: nil
         )
         let textSubmenu = NSMenu()
         let originalItem = NSMenuItem(
-            title: "Original",
+            title: tr(.textOriginal),
             action: #selector(selectDeviceTextMode),
             keyEquivalent: ""
         )
@@ -426,7 +614,8 @@ final class StatusController {
 
         for language in Self.translationTargets {
             let item = NSMenuItem(
-                title: "Translate to \(language.name)",
+                title: tr(.menuTranslateTo, Localization.translationTargetName(
+                    code: language.code, englishName: language.name)),
                 action: #selector(selectDeviceTextMode),
                 keyEquivalent: ""
             )
@@ -441,6 +630,7 @@ final class StatusController {
 
     private func addFirmwareItems(to submenu: NSMenu, deviceID: String, isConnected: Bool) {
         let info = firmwareInfoByDeviceID[deviceID]
+        // 当前固件行保持英文（对齐 Windows FirmwareIdentityText：该信息行不本地化）。
         let currentTitle = info?.currentVersion.map { "Firmware \($0)" } ?? "Firmware Unknown"
         let currentItem = NSMenuItem(title: currentTitle, action: nil, keyEquivalent: "")
         currentItem.isEnabled = false
@@ -448,25 +638,25 @@ final class StatusController {
         submenu.addItem(currentItem)
 
         if info?.isChecking == true {
-            let checkingItem = NSMenuItem(title: "Checking for Updates", action: nil, keyEquivalent: "")
+            let checkingItem = NSMenuItem(title: tr(.firmwareCheckingUpdates), action: nil, keyEquivalent: "")
             checkingItem.isEnabled = false
-            checkingItem.image = Self.symbolImage(named: "arrow.triangle.2.circlepath", accessibilityDescription: "Checking")
+            checkingItem.image = Self.symbolImage(named: "arrow.triangle.2.circlepath", accessibilityDescription: checkingItem.title)
             submenu.addItem(checkingItem)
             return
         }
 
         if let errorMessage = info?.errorMessage {
-            let errorItem = NSMenuItem(title: "Update Check Failed", action: nil, keyEquivalent: "")
+            let errorItem = NSMenuItem(title: tr(.firmwareUpdateCheckFailed), action: nil, keyEquivalent: "")
             errorItem.toolTip = errorMessage
             errorItem.isEnabled = false
-            errorItem.image = Self.symbolImage(named: "exclamationmark.triangle", accessibilityDescription: "Update Check Failed")
+            errorItem.image = Self.symbolImage(named: "exclamationmark.triangle", accessibilityDescription: errorItem.title)
             submenu.addItem(errorItem)
             return
         }
 
         if info?.updateAvailable == true, let latestVersion = info?.latestVersion {
             let updateItem = makeMenuItem(
-                title: "Update to \(latestVersion)...",
+                title: tr(.firmwareUpdateTo, latestVersion),
                 symbolName: "square.and.arrow.down",
                 action: #selector(updateFirmwareForDevice)
             )
@@ -474,9 +664,9 @@ final class StatusController {
             updateItem.isEnabled = isConnected
             submenu.addItem(updateItem)
         } else if info?.latestVersion != nil && info?.currentVersion != nil {
-            let upToDateItem = NSMenuItem(title: "Firmware Up to Date", action: nil, keyEquivalent: "")
+            let upToDateItem = NSMenuItem(title: tr(.menuFirmwareUpToDate), action: nil, keyEquivalent: "")
             upToDateItem.isEnabled = false
-            upToDateItem.image = Self.symbolImage(named: "checkmark.circle", accessibilityDescription: "Firmware Up to Date")
+            upToDateItem.image = Self.symbolImage(named: "checkmark.circle", accessibilityDescription: upToDateItem.title)
             submenu.addItem(upToDateItem)
         }
     }
@@ -500,7 +690,35 @@ final class StatusController {
         let overlay = overlay(for: deviceID)
         markOverlayVisible(for: deviceID)
         applyOverlayStyle(for: deviceID, overlay: overlay)
-        overlay.showListening(text: text)
+        overlay.showPartial(text)
+    }
+
+    /// 进入精修态（三点跳动指示器 + ASR 原文）。
+    func showRefining(_ text: String, deviceID: String? = nil) {
+        let overlay = overlay(for: deviceID)
+        markOverlayVisible(for: deviceID)
+        applyOverlayStyle(for: deviceID, overlay: overlay)
+        overlay.showRefining(text)
+    }
+
+    /// 流式精修追加（无滚动过渡动画）。
+    func appendPartial(_ text: String, deviceID: String? = nil) {
+        let overlay = overlay(for: deviceID)
+        markOverlayVisible(for: deviceID)
+        applyOverlayStyle(for: deviceID, overlay: overlay)
+        overlay.appendPartial(text)
+    }
+
+    /// 中性信息（圆点指示器），自定义时长自动隐藏。
+    func showTimedMessage(_ text: String, duration: TimeInterval, deviceID: String? = nil,
+                          onHidden: (() -> Void)? = nil) {
+        let overlay = overlay(for: deviceID)
+        markOverlayVisible(for: deviceID)
+        applyOverlayStyle(for: deviceID, overlay: overlay)
+        overlay.showTimedMessage(text, duration: duration, onHidden: { [weak self] in
+            self?.markOverlayHidden(for: deviceID)
+            onHidden?()
+        })
     }
 
     func showFinal(_ text: String, deviceID: String? = nil, onHidden: (() -> Void)? = nil) {
@@ -518,7 +736,7 @@ final class StatusController {
         let overlay = overlay(for: deviceID)
         markOverlayVisible(for: deviceID)
         applyOverlayStyle(for: deviceID, overlay: overlay)
-        overlay.showPaused(text: text)
+        overlay.showPausedFinal(text: text)
     }
 
     func showError(_ text: String, deviceID: String? = nil, onHidden: (() -> Void)? = nil) {
@@ -562,6 +780,7 @@ final class StatusController {
     }
 
     private func updateStatusButton(_ status: AppStatus) {
+        currentStatus = status
         guard let button = statusItem.button else { return }
         button.image = Self.symbolImage(
             named: status.symbolName(hasConnectedDevices: !connectedDevices.isEmpty),
@@ -571,6 +790,12 @@ final class StatusController {
         button.imagePosition = status.visibleTitle == nil ? .imageOnly : .imageLeading
         button.toolTip = "VoiceStick: \(status.accessibilityDescription)"
         button.setAccessibilityLabel("VoiceStick: \(status.accessibilityDescription)")
+    }
+
+    /// 界面语言切换后重建菜单与状态栏按钮文案（tr 均在调用时读当前语言，不缓存）。
+    func refreshLocalization() {
+        updateStatusButton(currentStatus)
+        rebuildMenu()
     }
 
     private func makeMenuItem(
@@ -618,13 +843,18 @@ final class StatusController {
     ]
 
     private func themeColor(for deviceID: String?) -> OverlayThemeColor {
-        guard let deviceID else { return .white }
-        return deviceThemeColors[AppConfig.normalizedDeviceID(deviceID)] ?? .white
+        guard let deviceID else { return .auto }
+        return deviceThemeColors[AppConfig.normalizedDeviceID(deviceID)] ?? .auto
     }
 
     private func overlayPosition(for deviceID: String?) -> OverlayPosition {
-        guard let deviceID else { return .center }
-        return deviceOverlayPositions[AppConfig.normalizedDeviceID(deviceID)] ?? .center
+        guard let deviceID else { return .bottomCenter }
+        return deviceOverlayPositions[AppConfig.normalizedDeviceID(deviceID)] ?? .bottomCenter
+    }
+
+    private func themeSize(for deviceID: String?) -> OverlayThemeSize {
+        guard let deviceID else { return .big }
+        return deviceThemeSizes[AppConfig.normalizedDeviceID(deviceID)] ?? .big
     }
 
     private func overlayKey(for deviceID: String?) -> String {
@@ -680,6 +910,7 @@ final class StatusController {
 
     private func applyOverlayStyle(for deviceID: String?, overlay: OverlayController) {
         overlay.setThemeColor(themeColor(for: deviceID))
+        overlay.setThemeSize(themeSize(for: deviceID))
         overlay.setPosition(overlayPosition(for: deviceID))
     }
 
@@ -701,13 +932,38 @@ final class StatusController {
         onUpdateFirmwareDevice?(deviceID)
     }
 
+    @objc private func openInteractionSettings(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onOpenInteractionSettings?(deviceID)
+    }
+
+    @objc private func openEncoderSettings(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onOpenEncoderSettings?(deviceID)
+    }
+
+    @objc private func openRemoteSettings(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onOpenRemoteSettings?(deviceID)
+    }
+
+    @objc private func openBatteryMonitor(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onOpenBatteryMonitor?(deviceID)
+    }
+
+    @objc private func updateFirmwareFromFile(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onUpdateFirmwareFromFile?(deviceID)
+    }
+
     @objc private func selectDeviceThemeColor(_ sender: NSMenuItem) {
         guard let selection = sender.representedObject as? String else { return }
         let parts = selection.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2,
               let color = OverlayThemeColor(rawValue: parts[1]) else { return }
         let deviceID = AppConfig.normalizedDeviceID(parts[0])
-        if color == .white {
+        if color == .auto {
             deviceThemeColors.removeValue(forKey: deviceID)
         } else {
             deviceThemeColors[deviceID] = color
@@ -722,13 +978,28 @@ final class StatusController {
         guard parts.count == 2,
               let position = OverlayPosition(rawValue: parts[1]) else { return }
         let deviceID = AppConfig.normalizedDeviceID(parts[0])
-        if position == .center {
+        if position == .bottomCenter {
             deviceOverlayPositions.removeValue(forKey: deviceID)
         } else {
             deviceOverlayPositions[deviceID] = position
         }
         rebuildMenu()
         onSetDeviceOverlayPosition?(deviceID, position)
+    }
+
+    @objc private func selectDeviceThemeSize(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? String else { return }
+        let parts = selection.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let size = OverlayThemeSize(rawValue: parts[1]) else { return }
+        let deviceID = AppConfig.normalizedDeviceID(parts[0])
+        if size == .big {
+            deviceThemeSizes.removeValue(forKey: deviceID)
+        } else {
+            deviceThemeSizes[deviceID] = size
+        }
+        rebuildMenu()
+        onSetDeviceThemeSize?(deviceID, size)
     }
 
     @objc private func selectDeviceTextMode(_ sender: NSMenuItem) {
@@ -779,6 +1050,39 @@ final class StatusController {
         autoEnter.toggle()
         rebuildMenu()
         onSetAutoEnter?(autoEnter)
+    }
+
+    @objc private func toggleGlobalHotkey() {
+        globalHotkeyEnabled.toggle()
+        rebuildMenu()
+        onSetGlobalHotkeyEnabled?(globalHotkeyEnabled)
+    }
+
+    @objc private func selectGlobalHotkeyPreset(_ sender: NSMenuItem) {
+        guard let preset = sender.representedObject as? String else { return }
+        globalHotkey = preset
+        // 对齐 Windows：选定预设即视为启用。
+        globalHotkeyEnabled = true
+        rebuildMenu()
+        onSetGlobalHotkey?(preset)
+    }
+
+    @objc private func customizeGlobalHotkey() {
+        onCustomizeHotkey?()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        launchAtLogin.toggle()
+        rebuildMenu()
+        onSetLaunchAtLogin?(launchAtLogin)
+    }
+
+    /// 自定义热键捕获完成后由 AppDelegate 回写。
+    func applyCustomHotkey(_ spec: String) {
+        globalHotkey = spec
+        globalHotkeyEnabled = true
+        rebuildMenu()
+        onSetGlobalHotkey?(spec)
     }
 
     @objc private func selectOutputTarget(_ sender: NSMenuItem) {

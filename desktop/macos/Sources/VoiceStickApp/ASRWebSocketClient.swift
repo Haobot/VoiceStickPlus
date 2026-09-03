@@ -138,6 +138,9 @@ final class ASRWebSocketClient: ASRClient {
             return config.voiceStickAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .volcengine:
             return config.volcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .tencent:
+            // 走 TencentASRClient（见 ASRClientFactory），此分支仅为穷举兜底。
+            return config.tencentSecretID
         }
     }
 
@@ -147,6 +150,8 @@ final class ASRWebSocketClient: ASRClient {
             return config.voiceStickCloudURL.trimmingCharacters(in: .whitespacesAndNewlines)
         case .volcengine:
             return AppConfig.volcengineWebSocketURL
+        case .tencent:
+            return ""
         }
     }
 

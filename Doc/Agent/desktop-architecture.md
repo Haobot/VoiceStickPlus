@@ -10,7 +10,7 @@
 
 - `Sources/VoiceStickCore/`：平台无关纯逻辑，全部可单测——BLE 协议帧、ATVV 会话状态机（`XiaomiAtvvSession`，自 Windows `xiaomi_atvv_session` 逐行移植）、IMA-ADPCM 解码、PCM 后处理、Opus 重编码封装、Ogg Opus mux、ASR 帧格式、配置解析。新增核心行为优先放这里。
 - `Sources/COpus/`：vendored libopus C target（Windows 侧 Opus 编码在 app 层，macOS 侧收到 COpus 供 Core 调用）。
-- `Sources/VoiceStickApp/`：AppKit/CoreBluetooth 平台外壳——`VoiceStickCoordinator`（状态机）、`BleCentral` / `BleProtocol`（CoreBluetooth 与协议）、`OggOpusMuxer` / `ASRWebSocketClient`（音频封装与 ASR）、`InputInjector`（粘贴与 Return 注入）、`OverlayController` / `SubtitleController` / `StatusController`（悬浮窗/字幕/状态）、`FirmwareManifest` / `FirmwareUpdateWindowController`（固件更新）。
+- `Sources/VoiceStickApp/`：AppKit/CoreBluetooth 平台外壳——`VoiceStickCoordinator`（状态机，含编码器按键/敲击/旋转事件分发、设备交互与编码器设置逐台下发）、`EncoderRotateSpeedEstimator`（旋转快慢 EWMA 分档，对齐 Windows `encoder_speed.h`）、`BleCentral` / `BleProtocol`（CoreBluetooth 与协议帧，含小米 0x180F/0x2A19 电量读取合成 `battery_status`、power_log/power_mgmt 分发）、`OggOpusMuxer` / `ASRWebSocketClient` / `TencentASRClient`（+`TencentASRVocabClient` 热词表）（音频封装与火山/腾讯双 ASR）、`LLMRefinementClient` / `LLMTranslationClient`（精修/翻译）、`InputInjector` / `KeySpec`（粘贴/回车/热键语法按键注入）、`GlobalHotkeyManager`（全局热键→`remote_button`）、`XiaomiF5Suppressor`（CGEvent tap 抑制遥控器附带 F5）、`OverlayController` / `SubtitleController` / `StatusController`（悬浮窗/字幕/托盘菜单，含按设备子菜单与电量显示）、`FirmwareManifest` / `FirmwareUpdateWindowController`（固件更新，含本地文件 OTA）、`SettingsWindowController` 与配对/设备交互/编码器/遥控器/电池电压监测等窗口控制器。
 
 测试在 `Tests/VoiceStickTests/`：CLT-only 环境无 XCTest 可用，用 executable runner（自写断言主程序，375 断言）经 `swift run VoiceStickTests` 执行。
 

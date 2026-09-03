@@ -101,7 +101,7 @@ final class VoiceStickCoordinator {
             self.deviceID = deviceID
             self.sessionID = sessionID
             self.startedAt = Date()
-            self.asr = ASRWebSocketClient(config: config)
+            self.asr = ASRClientFactory.makeClient(config: config)
             self.debugAudioRecorder = DebugAudioRecorder(
                 enabled: config.debugAudioCache,
                 directory: config.debugAudioDirectory
@@ -127,6 +127,7 @@ final class VoiceStickCoordinator {
     private let ble: BleCentral
     private var asr: any ASRClient
     private var translator: LLMTranslationClient
+    private var refiner: LLMRefinementClient
     private let subtitleController = SubtitleController()
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
     private let inputInjector = InputInjector()
@@ -158,15 +159,38 @@ final class VoiceStickCoordinator {
     private var isShowingASRError = false
     private var subtitleCycles: [SubtitleCycleKey: SubtitleCycle] = [:]
     private var activeSubtitleSessions: [UUID: UInt32] = [:]
+
+    // MARK: 编码器/敲击交互状态（对齐 Windows 协调器同名字段组）
+
+    /// tap 注入节流锚点（两次方向键注入最短间隔 500ms）。
+    private var lastTapInjectAt: Date?
+    /// 编码器旋转快慢分档测速估计器（EWMA，全局单例；换设备时重置冷启动）。
+    private var encoderSpeedEstimator = EncoderRotateSpeedEstimator()
+    private var lastEncoderRotateDeviceID: String?
+    /// 快速甩动注入一次后进入停转锁定，直到静默 250ms 停稳才恢复识别。
+    private var encoderRotateLockout = false
+    private var lastEncoderRotateEventAt: Date?
+    /// 慢速旋转延迟判定挂起段（decide_window 内累计，到期/换向/加速冲刷）。
+    private var encoderPendingActive = false
+    private var encoderPendingCCW = false
+    private var encoderPendingSteps: UInt32 = 0
+    private var encoderPendingStartedAt = Date.distantPast
+    private var encoderPendingPeripheralID: UUID?
+    /// decide_window 到期冲刷定时器（pending 激活时 30ms 周期运行）。
+    private var encoderRotateTimer: Timer?
     var onFirmwareUpdatePrompt: ((String, String, String, Bool) -> Void)?
+    /// power_log 分片 / power_mgmt 事件（deviceID 寻址；AppDelegate 转发到电量监测窗口）。
+    var onPowerLogFragment: ((String, PowerLogFragment) -> Void)?
+    var onPowerMgmtEvent: ((String, PowerMgmtEvent) -> Void)?
 
     init(config: AppConfig, statusController: StatusController) {
         self.config = config
         self.statusController = statusController
         self.pairedDeviceIDs = config.pairedDeviceIDs
         self.ble = BleCentral(pairedDeviceIDs: config.pairedDeviceIDs)
-        self.asr = ASRWebSocketClient(config: config)
+        self.asr = ASRClientFactory.makeClient(config: config)
         self.translator = LLMTranslationClient(config: config)
+        self.refiner = LLMRefinementClient(config: config)
         self.debugAudioRecorder = DebugAudioRecorder(
             enabled: config.debugAudioCache,
             directory: config.debugAudioDirectory
@@ -198,6 +222,13 @@ final class VoiceStickCoordinator {
             if !connectedDevices.isEmpty {
                 self.statusController.setStatus("Ready")
                 self.ble.sendInteractionMode(self.config.interactionMode)
+                self.ble.sendShowIMUDebug(self.config.showIMUDebug)
+                // 设备交互/编码器设置按设备覆盖：逐台取其有效配置单播（无覆盖设备收到
+                // 全局默认值，与旧广播行为等价）。小米遥控器无 IMU/敲击/编码器硬件，跳过
+                // （对齐 Windows 连接回调；BLE 层另有按类门控兜底）。
+                for device in connectedDevices where device.deviceClass == .stickS3 {
+                    self.sendDeviceInteractionSettings(deviceID: device.deviceID)
+                }
             } else {
                 self.statusController.setStatus(self.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
             }
@@ -206,6 +237,17 @@ final class VoiceStickCoordinator {
 
         ble.onStateEvent = { [weak self] peripheralID, event in
             self?.handleStateEvent(event, peripheralID: peripheralID)
+        }
+
+        // power_log 分片与 power_mgmt 事件透传（电量监测窗口经 AppDelegate 消费；
+        // 窗口未开时丢弃，对齐 Windows）。
+        ble.onPowerLogFragment = { [weak self] peripheralID, fragment in
+            guard let self, let deviceID = self.deviceID(for: peripheralID) else { return }
+            self.onPowerLogFragment?(deviceID, fragment)
+        }
+        ble.onPowerMgmtEvent = { [weak self] peripheralID, event in
+            guard let self, let deviceID = self.deviceID(for: peripheralID) else { return }
+            self.onPowerMgmtEvent?(deviceID, event)
         }
 
         ble.onAudioFrame = { [weak self] peripheralID, frame in
@@ -221,6 +263,7 @@ final class VoiceStickCoordinator {
     deinit {
         audioEndTimeoutTimer?.invalidate()
         firmwareManifestRefreshTimer?.invalidate()
+        encoderRotateTimer?.invalidate()
     }
 
     func updateConfig(_ config: AppConfig) {
@@ -249,12 +292,19 @@ final class VoiceStickCoordinator {
 
         self.config = config
         ble.sendInteractionMode(config.interactionMode)
+        ble.sendShowIMUDebug(config.showIMUDebug)
+        // 编码器/交互设置按设备覆盖：对已连接 StickS3 逐台取其有效配置单播
+        // （对齐 Windows UpdateConfig；小米遥控器跳过）。
+        for deviceID in ble.connectedStickDeviceIDs() {
+            sendDeviceInteractionSettings(deviceID: deviceID)
+        }
         debugAudioRecorder = DebugAudioRecorder(
             enabled: config.debugAudioCache,
             directory: config.debugAudioDirectory
         )
-        asr = ASRWebSocketClient(config: config)
+        asr = ASRClientFactory.makeClient(config: config)
         translator = LLMTranslationClient(config: config)
+        refiner = LLMRefinementClient(config: config)
         configureASRCallbacks()
 
         if pairedDeviceIDs != config.pairedDeviceIDs {
@@ -382,6 +432,11 @@ final class VoiceStickCoordinator {
         ble.cancelFirmwareUpdate()
     }
 
+    /// power_log 命令下发（电量监测窗口；对齐 Windows VoiceStickCoordinator::SendPowerLogCommand）。
+    func sendPowerLogCommand(deviceID: String, payload: Data) {
+        ble.sendPowerLogCommand(payload, to: deviceID)
+    }
+
     func checkFirmwareUpdatesNow() {
         checkFirmwareUpdatesIfNeeded(force: true, showErrors: true)
     }
@@ -424,14 +479,47 @@ final class VoiceStickCoordinator {
                 NSLog("Connected VoiceStick hardware=\(hardware) firmware=\(firmwareVersion)")
             }
             updateDeviceFirmwareInfo(event: event, peripheralID: peripheralID)
+        case "encoder_status":
+            if let present = event.encoderPresent, let deviceID = deviceID(for: peripheralID) {
+                statusController.setDeviceEncoderPresent(deviceID, present: present)
+            }
+        case "battery_status":
+            if let level = event.batteryLevel, let deviceID = deviceID(for: peripheralID) {
+                statusController.setDeviceBattery(
+                    deviceID,
+                    level: level,
+                    charging: event.batteryCharging ?? false,
+                    usbPowered: event.batteryUsbPowered ?? false
+                )
+            }
         case "button_down":
-            handleButtonDown(event, peripheralID: peripheralID)
+            if event.button == "primary" && event.source == "encoder" {
+                handleEncoderButtonDown(event, peripheralID: peripheralID)
+            } else {
+                handleButtonDown(event, peripheralID: peripheralID)
+            }
         case "button_up":
-            handleButtonUp(event, peripheralID: peripheralID)
+            if event.button == "primary" && event.source == "encoder" {
+                handleEncoderButtonUp(event, peripheralID: peripheralID)
+            } else {
+                handleButtonUp(event, peripheralID: peripheralID)
+            }
         case "button_click":
-            handleButtonClick(event, peripheralID: peripheralID)
+            if event.button == "primary" && event.source == "encoder" {
+                handleEncoderButtonClick(event, peripheralID: peripheralID)
+            } else {
+                handleButtonClick(event, peripheralID: peripheralID)
+            }
         case "button_double_click":
-            handleButtonDoubleClick(event, peripheralID: peripheralID)
+            if event.button == "primary" && event.source == "encoder" {
+                handleEncoderButtonDoubleClick(event, peripheralID: peripheralID)
+            } else {
+                handleButtonDoubleClick(event, peripheralID: peripheralID)
+            }
+        case "tap":
+            handleTapEvent(event, peripheralID: peripheralID)
+        case "encoder_rotate":
+            handleEncoderRotate(event, peripheralID: peripheralID)
         default:
             break
         }
@@ -441,13 +529,7 @@ final class VoiceStickCoordinator {
         guard event.button == "primary" else { return }
         NSLog("Double-click detected on VS-\(deviceID(for: peripheralID) ?? "unknown"), sending Enter")
 
-        // 取消当前活跃录音（如果有）。
-        if case .recording(_, let recordingPeripheralID, _) = mainInputState,
-           recordingPeripheralID == peripheralID {
-            cancelRecognitionInProgress()
-        }
-        // 取消字幕会话。
-        cancelSubtitleCycles(peripheralID: peripheralID, reason: "double_click")
+        cancelActiveSessionsForDoubleClick(peripheralID: peripheralID)
 
         // 注入 Enter 按键。
         inputInjector.sendEnter()
@@ -456,6 +538,18 @@ final class VoiceStickCoordinator {
         ble.sendUIState("ready", to: peripheralID)
         mainInputState = .ready
         statusController.setStatus("Ready")
+    }
+
+    /// 双击取消结构（对齐 Windows CancelActiveSessionsForDoubleClick）：取消当前活跃
+    /// 录音 + 该设备的字幕会话。物理主键双击与编码器双击（key 动作）共用。
+    private func cancelActiveSessionsForDoubleClick(peripheralID: UUID) {
+        // 取消当前活跃录音（如果有）。
+        if case .recording(_, let recordingPeripheralID, _) = mainInputState,
+           recordingPeripheralID == peripheralID {
+            cancelRecognitionInProgress()
+        }
+        // 取消字幕会话。
+        cancelSubtitleCycles(peripheralID: peripheralID, reason: "double_click")
     }
 
     private func handleButtonDown(_ event: StateEvent, peripheralID: UUID) {
@@ -520,6 +614,304 @@ final class VoiceStickCoordinator {
             return
         }
         cancelPendingPaste(peripheralID: peripheralID)
+    }
+
+    // MARK: - 设备交互/编码器设置下发（对齐 Windows 连接回调与 UpdateConfig 的逐台单播）
+
+    /// 对单台 StickS3 下发交互 + 编码器设置（5 项）。调用方保证 deviceID 为 StickS3；
+    /// BLE 层 sendStickControlPayload 另有按类门控兜底。
+    private func sendDeviceInteractionSettings(deviceID: String) {
+        let inter = config.interactionSettings(for: deviceID)
+        ble.sendStickControlPayload(
+            BleProtocol.tapEnabledPayload(enabled: inter.tapToArrow),
+            label: "tap_enabled", deviceID: deviceID
+        )
+        ble.sendStickControlPayload(
+            BleProtocol.tapSensitivityPayload(level: inter.tapSensitivity),
+            label: "tap_sensitivity", deviceID: deviceID
+        )
+        ble.sendStickControlPayload(
+            BleProtocol.imuWakeSensitivityPayload(thresholdLsb: inter.imuWakeSensitivity.thresholdLsb),
+            label: "imu_wake_sensitivity", deviceID: deviceID
+        )
+        let enc = config.encoderSettings(for: deviceID)
+        ble.sendStickControlPayload(
+            BleProtocol.encoderLedColorPayload(color: enc.ledColor.rawValue),
+            label: "encoder_led_color", deviceID: deviceID
+        )
+        ble.sendStickControlPayload(
+            BleProtocol.encoderRecordingGatePayload(enabled: enc.pressAction == .recording),
+            label: "encoder_recording_gate", deviceID: deviceID
+        )
+    }
+
+    // MARK: - 编码器按键事件（对齐 Windows HandleEncoderButton{Down,Up,Click,DoubleClick}）
+
+    private func handleEncoderButtonDown(_ event: StateEvent, peripheralID: UUID) {
+        let enc = config.encoderSettings(for: deviceID(for: peripheralID))
+        if enc.pressAction == .recording {
+            handleButtonDown(event, peripheralID: peripheralID)
+            return
+        }
+        // key 动作：down/up 不注入（在 click 成对确认时注入一次），仅记日志。
+        NSLog("encoder button down on VS-\(deviceID(for: peripheralID) ?? "unknown") (press_action=key, ignored)")
+    }
+
+    private func handleEncoderButtonUp(_ event: StateEvent, peripheralID: UUID) {
+        let enc = config.encoderSettings(for: deviceID(for: peripheralID))
+        if enc.pressAction == .recording {
+            handleButtonUp(event, peripheralID: peripheralID)
+            return
+        }
+        NSLog("encoder button up on VS-\(deviceID(for: peripheralID) ?? "unknown") (press_action=key, ignored)")
+    }
+
+    private func handleEncoderButtonClick(_ event: StateEvent, peripheralID: UUID) {
+        let enc = config.encoderSettings(for: deviceID(for: peripheralID))
+        if enc.pressAction == .recording {
+            handleButtonClick(event, peripheralID: peripheralID)
+            return
+        }
+        guard let spec = KeySpec.parse(enc.pressKey) else {
+            NSLog("encoder press key invalid: \"\(enc.pressKey)\" on VS-\(deviceID(for: peripheralID) ?? "unknown"), click ignored")
+            return
+        }
+        // 编码器单击在录音/识别中仍注入是有意设计：该键是用户显式配置的快捷键（如撤销），
+        // 与会话状态正交；不同于 rotate 的录音中抑制。
+        NSLog("encoder click on VS-\(deviceID(for: peripheralID) ?? "unknown"), injecting \(spec.displayText)")
+        inputInjector.sendKeyCombo(spec)
+    }
+
+    private func handleEncoderButtonDoubleClick(_ event: StateEvent, peripheralID: UUID) {
+        let enc = config.encoderSettings(for: deviceID(for: peripheralID))
+        let deviceID = deviceID(for: peripheralID) ?? ""
+        if enc.doubleClickAction == .recording {
+            // 切换录音起停：复用固件 remote_button 通道（固件侧等价一次远程按下/松开，
+            // 音频链路真实完整，等同 click_to_talk 点按起停）。remote_button 走
+            // APP_INPUT_SOURCE_REMOTE，不受 encoder_recording_gate 门控约束——
+            // press_action=key（门控关）时双击起停录音仍可用，属有意设计。
+            let hasActive = activeSessionID != nil || activeSubtitleSessions[peripheralID] != nil
+            NSLog("encoder double-click on VS-\(deviceID)\(hasActive ? ", remote stop recording" : ", remote start recording")")
+            let requestID = nextHotkeyRequestID
+            nextHotkeyRequestID &+= 1
+            ble.sendRemoteButton(
+                action: hasActive ? "up" : "down",
+                deviceID: deviceID,
+                requestID: requestID
+            )
+            return
+        }
+        // key 动作：沿用物理主键双击的取消结构，注入配置的按键（默认 enter=现行为）。
+        cancelActiveSessionsForDoubleClick(peripheralID: peripheralID)
+        if let spec = KeySpec.parse(enc.doubleClickKey) {
+            NSLog("encoder double-click on VS-\(deviceID), injecting \(spec.displayText)")
+            inputInjector.sendKeyCombo(spec)
+        } else {
+            NSLog("encoder double-click key invalid: \"\(enc.doubleClickKey)\" on VS-\(deviceID), fallback to Enter")
+            inputInjector.sendEnter()
+        }
+        ble.sendUIState("ready", to: peripheralID)
+        mainInputState = .ready
+        statusController.setStatus("Ready")
+    }
+
+    // MARK: - 敲击事件（对齐 Windows HandleTapEvent）
+
+    private func handleTapEvent(_ event: StateEvent, peripheralID: UUID) {
+        // 总开关关闭则忽略（按设备取有效配置）。
+        guard config.interactionSettings(for: deviceID(for: peripheralID)).tapToArrow else { return }
+        // 录音中或识别中忽略敲击，避免震动干扰当前语音周期（macOS 无体感鼠标，
+        // 无 IsAirMouseActive 分支）。与双击主键不同：tap 不取消录音/识别，仅在不冲突时注入方向键。
+        if mainInputState.isRecording || mainInputState.isFinalizing {
+            return
+        }
+        // 节流：两次方向键注入最短间隔 500ms，防止快速连击导致光标连续下移。
+        let now = Date()
+        if let last = lastTapInjectAt, now.timeIntervalSince(last) < 0.5 {
+            NSLog("tap detected on VS-\(deviceID(for: peripheralID) ?? "unknown"), throttled (<500ms since last)")
+            return
+        }
+        lastTapInjectAt = now
+        NSLog("tap detected on VS-\(deviceID(for: peripheralID) ?? "unknown"), sending ArrowDown")
+        inputInjector.sendArrowDown()
+        ble.sendUIState("ready", to: peripheralID)
+    }
+
+    // MARK: - 编码器旋转事件（对齐 Windows HandleEncoderRotate/InjectEncoderRotateSteps/
+    // FlushEncoderRotatePending/EncoderRotateTick）
+
+    /// steps 上限钳制：固件侧已截断到 uint8（255），桌面端再钳到物理合理值，
+    /// 防伪造/异常 BLE 帧让注入循环放大挂死线程。真实 10ms 窗口内旋转 1~3 步。
+    private static let maxEncoderRotateSteps: UInt32 = 64
+    /// 停转窗口：连续旋转时事件间隔 <=10ms（加 BLE 抖动亦远小于此值），静默超过
+    /// 250ms 无旋转事件即可靠判定停稳。
+    private static let encoderRotateStopGap: TimeInterval = 0.25
+
+    private func handleEncoderRotate(_ event: StateEvent, peripheralID: UUID) {
+        let deviceID = deviceID(for: peripheralID) ?? ""
+        let enc = config.encoderSettings(for: deviceID)
+        // 总开关关闭则忽略。
+        guard enc.toArrow else { return }
+        // 录音中或识别中忽略旋转，避免干扰当前语音周期（门控与 tap 一致；
+        // macOS 无体感鼠标，无 IsAirMouseActive 分支）。
+        if mainInputState.isRecording || mainInputState.isFinalizing {
+            return
+        }
+        let rawSteps = event.steps ?? 0
+        guard rawSteps > 0 else { return }
+        let steps = min(rawSteps, Self.maxEncoderRotateSteps)
+        // 多设备交替旋转：测速估计器是全局单例，换设备时重置冷启动，避免跨设备手势
+        // 互相污染 EWMA 估计（阈值/方向可能按设备不同）。
+        if deviceID != lastEncoderRotateDeviceID {
+            encoderSpeedEstimator.reset()
+            lastEncoderRotateDeviceID = deviceID
+        }
+        // 方向映射：默认 cw→rotate_cw_key / ccw→rotate_ccw_key；
+        // rotation_invert=true 时翻转。direction 非 "ccw"（含空串/未知值）按 cw 处理，
+        // 与固件只发 cw|ccw 的约定一致。
+        let effectiveCCW = (event.direction == "ccw") != enc.rotationInvert
+        let now = Date()
+        if encoderRotateLockout {
+            let stopped = lastEncoderRotateEventAt
+                .map { now.timeIntervalSince($0) > Self.encoderRotateStopGap } ?? true
+            if !stopped {
+                // 锁定中：屏蔽一切旋转输出（含快甩减速段的慢速事件与换向事件）。
+                // 不喂测速估计器：减速段样本与新手势无关，静默 250ms 后估计器自动冷启动。
+                lastEncoderRotateEventAt = now
+                NSLog("encoder rotate suppressed (lockout) on VS-\(deviceID) direction=\(event.direction ?? "") steps=\(steps)")
+                return
+            }
+            // 已停稳：退出锁定，本事件走正常识别。
+            encoderRotateLockout = false
+        }
+        // 快慢分档：EWMA 平滑估计测速（见 EncoderRotateSpeedEstimator）；估计值
+        // >= rotate_fast_threshold 走快速档按键，否则走普通按键。
+        let speedSps = encoderSpeedEstimator.addSample(now: now, steps: steps)
+        let fast = EncoderRotateSpeedEstimator.isFast(
+            smoothedSpeedSps: speedSps, thresholdSps: enc.rotateFastThreshold
+        )
+        let normalKey = effectiveCCW ? enc.rotateCcwKey : enc.rotateCwKey
+        let fastKey = effectiveCCW ? enc.rotateCcwFastKey : enc.rotateCwFastKey
+        if fast {
+            // 快速甩动视为一次手势：注入一次快速键后进入停转锁定，直到停稳才恢复识别。
+            encoderRotateLockout = true
+            lastEncoderRotateEventAt = now
+            if encoderPendingActive {
+                // 加速段识别：挂起的慢速事件是本次快甩的起步，整段丢弃不注入。
+                encoderPendingActive = false
+                encoderPendingSteps = 0
+                encoderPendingPeripheralID = nil
+                stopEncoderRotateTimer()
+                NSLog("encoder rotate pending discarded (acceleration) on VS-\(deviceID)")
+            }
+            // 选键：快速档 → 普通档 → 方向键兜底；一次手势只注入一次。
+            var fastSpec = KeySpec.parse(fastKey)
+            if fastSpec == nil {
+                // 快速档按键非法（绕过加载校验直改内存/未来新键名）回退普通按键。
+                NSLog("encoder rotate fast key invalid: \"\(fastKey)\" on VS-\(deviceID), fallback to normal key")
+                fastSpec = KeySpec.parse(normalKey)
+            }
+            guard let spec = fastSpec else {
+                // 非法配置回退方向键，保持可用。
+                NSLog("encoder rotate key invalid: \"\(normalKey)\" on VS-\(deviceID), fallback to arrows")
+                if effectiveCCW {
+                    inputInjector.sendArrowUp()
+                } else {
+                    inputInjector.sendArrowDown()
+                }
+                return
+            }
+            // 与 tap 不同，旋转不回写 ui_state（无屏幕状态变化）。
+            NSLog("encoder rotate on VS-\(deviceID) direction=\(event.direction ?? "") steps=\(steps)\(rawSteps > steps ? " (clamped from \(rawSteps))" : "") speed=\(Int(speedSps))sps [fast] -> \(spec.displayText)")
+            inputInjector.sendKeyCombo(spec)
+            return
+        }
+        // 慢速路径：延迟判定——先挂起累计，判定窗内判快则整段丢弃（见 fast 分支），
+        // 到期由 encoderRotateTick 或此处新事件检查冲刷。window<=0 时立即注入（旧行为）。
+        if enc.rotateDecideWindowMs <= 0 {
+            injectEncoderRotateSteps(ccw: effectiveCCW, steps: steps, keyText: normalKey, deviceID: deviceID)
+            return
+        }
+        if encoderPendingActive {
+            let expired = now.timeIntervalSince(encoderPendingStartedAt) >=
+                Double(enc.rotateDecideWindowMs) / 1000.0
+            if expired || encoderPendingCCW != effectiveCCW {
+                // 旧 pending 到期或换向：不是本次快甩的加速段，立即冲刷。
+                flushEncoderRotatePending()
+            }
+        }
+        if !encoderPendingActive {
+            encoderPendingActive = true
+            encoderPendingCCW = effectiveCCW
+            encoderPendingSteps = 0
+            encoderPendingStartedAt = now
+            encoderPendingPeripheralID = peripheralID
+            startEncoderRotateTimer()
+        }
+        encoderPendingSteps = min(encoderPendingSteps + steps, Self.maxEncoderRotateSteps)
+        NSLog("encoder rotate pending on VS-\(deviceID) direction=\(event.direction ?? "") steps=\(steps) total=\(encoderPendingSteps)")
+    }
+
+    private func injectEncoderRotateSteps(ccw: Bool, steps: UInt32, keyText: String, deviceID: String) {
+        guard let spec = KeySpec.parse(keyText) else {
+            // 非法配置（绕过加载校验直改内存/未来新键名）回退方向键，保持可用。
+            NSLog("encoder rotate key invalid: \"\(keyText)\" on VS-\(deviceID), fallback to arrows")
+            for _ in 0..<steps {
+                if ccw {
+                    inputInjector.sendArrowUp()
+                } else {
+                    inputInjector.sendArrowDown()
+                }
+            }
+            return
+        }
+        // 与 tap 不同，旋转不回写 ui_state（无屏幕状态变化）。
+        NSLog("encoder rotate inject on VS-\(deviceID) steps=\(steps) -> \(spec.displayText)")
+        for _ in 0..<steps {
+            inputInjector.sendKeyCombo(spec)
+        }
+    }
+
+    private func flushEncoderRotatePending() {
+        guard encoderPendingActive else { return }
+        let ccw = encoderPendingCCW
+        let steps = encoderPendingSteps
+        let peripheralID = encoderPendingPeripheralID
+        encoderPendingActive = false
+        encoderPendingSteps = 0
+        encoderPendingPeripheralID = nil
+        stopEncoderRotateTimer()
+        // 按挂起 pending 来源设备取覆盖配置；设备中途断开则回全局默认（可接受）。
+        let deviceID = peripheralID.flatMap { self.deviceID(for: $0) } ?? ""
+        let enc = config.encoderSettings(for: deviceID)
+        let key = ccw ? enc.rotateCcwKey : enc.rotateCwKey
+        injectEncoderRotateSteps(ccw: ccw, steps: steps, keyText: key, deviceID: deviceID)
+    }
+
+    private func encoderRotateTick() {
+        guard encoderPendingActive, let peripheralID = encoderPendingPeripheralID else { return }
+        // 到期判定用挂起 pending 来源设备的覆盖配置（decide_window_ms 可按设备不同）。
+        let enc = config.encoderSettings(for: deviceID(for: peripheralID))
+        guard enc.rotateDecideWindowMs > 0 else { return }
+        if Date().timeIntervalSince(encoderPendingStartedAt) >=
+            Double(enc.rotateDecideWindowMs) / 1000.0 {
+            flushEncoderRotatePending()
+        }
+    }
+
+    private func startEncoderRotateTimer() {
+        guard encoderRotateTimer == nil else { return }
+        // 30ms 周期检查 pending 到期（对齐 Windows UI 层 30ms 定时器）。
+        let timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+            self?.encoderRotateTick()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        encoderRotateTimer = timer
+    }
+
+    private func stopEncoderRotateTimer() {
+        encoderRotateTimer?.invalidate()
+        encoderRotateTimer = nil
     }
 
     private func handlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID) {
@@ -939,6 +1331,23 @@ final class VoiceStickCoordinator {
     }
 
     private func finishWithFinalText(_ text: String) {
+        guard !pastedFinalText else { return }
+        // LLM 精修（对齐 Windows refine_enabled 语义）：final 原文先经 LLM 改写，
+        // overlay 进 refining 态（三点跳动 + 原文）；失败/热词丢失回退原文。
+        if config.refineEnabled, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            statusController.showRefining(text, deviceID: activeDeviceID)
+            refiner.refine(text, hotwords: config.asrHotwords) { [weak self] refined in
+                DispatchQueue.main.async {
+                    guard let self, !self.pastedFinalText else { return }
+                    self.finishWithRefinedText(refined ?? text)
+                }
+            }
+            return
+        }
+        finishWithRefinedText(text)
+    }
+
+    private func finishWithRefinedText(_ text: String) {
         guard !pastedFinalText else { return }
         let profile = outputProfile(for: activeDeviceID)
         if profile.target == .subtitle {
@@ -1564,5 +1973,52 @@ final class VoiceStickCoordinator {
     /// 调试录音文件名前缀（RC- / VS-，按设备类）。
     private func deviceNamePrefix(for peripheralID: UUID) -> String {
         ble.deviceClass(for: peripheralID) == .xiaomiRemote2Pro ? "RC-" : "VS-"
+    }
+
+    // MARK: - 全局热键（对齐 Windows HandleGlobalHotkeyPressed/Released）
+
+    private var hotkeyIsDown = false
+    private var hotkeyActiveDeviceID: String?
+    private var nextHotkeyRequestID: UInt32 = 1
+
+    /// 热键按下：目标 = 活跃设备（已连接）否则首台已连接 StickS3；
+    /// 按住说话模式记录按下态等松开，点击说话模式固件侧按 down 翻转起停。
+    func handleGlobalHotkeyPressed() {
+        guard !hotkeyIsDown else { return }
+        let connected = ble.connectedStickDeviceIDs()
+        let target: String?
+        if let active = activeDeviceID, connected.contains(active) {
+            target = active
+        } else {
+            target = connected.first
+        }
+        guard let targetDevice = target else {
+            statusController.setStatus(config.pairedDeviceIDs.isEmpty
+                ? "Hotkey: pair a VoiceStick first"
+                : "Hotkey: VoiceStick not connected; press the main button to wake it")
+            return
+        }
+        let requestID = nextHotkeyRequestID
+        nextHotkeyRequestID &+= 1
+        if config.interactionMode == .holdToTalk {
+            hotkeyIsDown = true
+            hotkeyActiveDeviceID = targetDevice
+        }
+        ble.sendRemoteButton(action: "down", deviceID: targetDevice, requestID: requestID)
+        statusController.setStatus("Recording (hotkey) on VS-\(targetDevice)")
+    }
+
+    /// 热键松开：仅按住说话模式补发 remote_button_up。
+    func handleGlobalHotkeyReleased() {
+        guard config.interactionMode == .holdToTalk else { return }
+        guard hotkeyIsDown else { return }
+        let target = hotkeyActiveDeviceID
+        hotkeyIsDown = false
+        hotkeyActiveDeviceID = nil
+        if let target, ble.isConnected(deviceID: target) {
+            let requestID = nextHotkeyRequestID
+            nextHotkeyRequestID &+= 1
+            ble.sendRemoteButton(action: "up", deviceID: target, requestID: requestID)
+        }
     }
 }

@@ -50,7 +50,7 @@ final class LLMTranslationClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let systemPrompt = Self.systemPrompt(targetLanguage: targetLanguage, hotwords: hotwords)
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": config.llmModel,
             "temperature": 0,
             "messages": [
@@ -58,6 +58,11 @@ final class LLMTranslationClient {
                 ["role": "user", "content": text]
             ]
         ]
+        // 关闭推理型模型深度思考（对齐 Windows：所有 LLM 请求统一注入）。
+        if config.llmDisableThinking {
+            payload["enable_thinking"] = false
+            payload["chat_template_kwargs"] = ["enable_thinking": false]
+        }
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)

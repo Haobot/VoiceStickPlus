@@ -69,6 +69,7 @@
 - 不建议切纯 nostream：丢实时 partial 上屏（核心交互），且热词仍救不全（agents dmd
   未被纠回），工程改动大。二遍 = 流式快 + nostream 准的组合已是最优。
 - macOS Swift 端三项 parity 未做：热词裁剪、精修热词注入+守卫、词表 ID 与候选挖掘。
+  （2026-09-03 修正：「精修热词注入+守卫」已随 macOS 大对齐落地——`LLMRefinementClient` 非流式，prompt 与 `RefineResultKeepsHotwords` 守卫逐字对齐 Windows，见 `Doc/Expe/macos-windows-design-parity-port-2026-09-03.md`；热词裁剪、词表 ID（`boosting_table_id`/`correct_table_id`）与候选挖掘仍为 Windows 独有。）
 
 ## diff 挖掘的盲区（同日追加，"Stack Chain" 实测）
 

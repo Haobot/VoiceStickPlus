@@ -70,6 +70,11 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         var txCharacteristic: CBCharacteristic?
         var audioCharacteristic: CBCharacteristic?
         var controlCharacteristic: CBCharacteristic?
+        /// 标准 Battery Service 0x2A19 特征（可选；发现失败只记日志不阻断连接，
+        /// 对齐 Windows SetupXiaomiBatteryAsync 语义）。
+        var batteryCharacteristic: CBCharacteristic?
+        /// 会话建立后发起 Battery Service 发现的一次性标志（防 didDiscoverServices 重复推进）。
+        var batteryDiscoveryStarted = false
         var session: XiaomiAtvvSession?
         /// ATVV 订阅链兜底定时器（发起 Control 订阅时武装，链完成/断开/清理取消）。
         var subscribeTimeoutTimer: Timer?
@@ -91,11 +96,20 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var xiaomiTickTimer: Timer?
     private var firmwareUpdateSession: FirmwareUpdateSession?
     private var interactionMode: InteractionMode = .holdToTalk
+    private var showIMUDebug = false
     private var isWorkspaceSleeping = false
 
     var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
     var onAudioFrame: ((UUID, AudioFrame) -> Void)?
     var onStateEvent: ((UUID, StateEvent) -> Void)?
+    /// power_log 分片帧回调（state_tx 上行，无 "event" 键；电量监测窗口消费）。
+    var onPowerLogFragment: ((UUID, PowerLogFragment) -> Void)?
+    /// power_mgmt 事件回调（固件连接时主动推送 / usb_auto_off set 后回推确认）。
+    var onPowerMgmtEvent: ((UUID, PowerMgmtEvent) -> Void)?
+
+    /// 标准 Battery Service（小米遥控器电量；对齐 Windows kBatteryServiceUuid/kBatteryLevelUuid）。
+    private static let batteryServiceUUID = "180F"
+    private static let batteryLevelUUID = "2A19"
 
     /// 配对设备条目表访问（AppConfig.pairedDevices 注入，同款 pairedDeviceIDs 注入
     /// 方式）：ATVV 通道按 peripheral UUID 反查 RC deviceID、retrievePeripherals
@@ -213,6 +227,22 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
     }
 
+    /// IMU 调试开关下发（对齐 Windows BleCentral::SendShowImuDebug）：记忆当前值，
+    /// 新连接控制特征就绪时随 interaction_mode 一起回放。
+    func sendShowIMUDebug(_ enabled: Bool, to peripheralID: UUID? = nil) {
+        showIMUDebug = enabled
+        let data = BleProtocol.showIMUDebugPayload(enabled: enabled)
+        if let peripheralID {
+            if let characteristic = controlCharacteristics[peripheralID] {
+                peripherals[peripheralID]?.writeValue(data, for: characteristic, type: .withoutResponse)
+            }
+            return
+        }
+
+        for (id, characteristic) in controlCharacteristics {
+            peripherals[id]?.writeValue(data, for: characteristic, type: .withoutResponse)
+        }
+    }
 
     func updateFirmware(image: Data, for deviceID: String,
                         progress: @escaping (FirmwareUpdateProgress) -> Void,
@@ -277,6 +307,55 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     func isConnected(deviceID: String) -> Bool {
         connectedDevices.values.contains { $0.deviceID == deviceID }
+    }
+
+    /// 已连接 StickS3 设备 ID 列表（全局热键 remote_button 目标解析用；
+    /// 小米遥控器无 remote_button 概念，不参与）。
+    func connectedStickDeviceIDs() -> [String] {
+        connectedDevices.values
+            .filter { $0.deviceClass == .stickS3 }
+            .map(\.deviceID)
+            .sorted()
+    }
+
+    /// 发送 power_log 命令帧（对齐 Windows BleCentralWin::SendPowerLogCommand）：
+    /// 仅 StickS3；目标不在线/控制特征未就绪时静默丢弃并记日志。
+    func sendPowerLogCommand(_ data: Data, to deviceID: String) {
+        sendStickControlPayload(data, label: "power_log_cmd", deviceID: deviceID)
+    }
+
+    /// 发送 remote_button 控制帧（对齐 Windows BleCentralWin::SendRemoteButton）。
+    /// action: "down"/"up"；仅当目标设备在线且控制特征就绪时发送。
+    func sendRemoteButton(action: String, deviceID: String, requestID: UInt32) {
+        guard let peripheralID = connectedDevices.first(where: {
+            $0.value.deviceID == deviceID && $0.value.deviceClass == .stickS3
+        })?.key,
+              let characteristic = controlCharacteristics[peripheralID],
+              let peripheral = peripherals[peripheralID] else {
+            NSLog("BLE send remote_button_\(action) skipped dev=VS-\(deviceID) (not connected)")
+            return
+        }
+        let data = BleProtocol.remoteButtonPayload(
+            action: action, button: "primary", source: "global_hotkey", requestID: requestID
+        )
+        NSLog("BLE send remote_button_\(action) dev=VS-\(deviceID) request_id=\(requestID)")
+        peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+    }
+
+    /// 设备交互/编码器设置下发（对齐 Windows BleCentralWin::Send{TapEnabled,TapSensitivity,
+    /// ImuWakeSensitivity,EncoderLedColor,EncoderRecordingGate}）：按 deviceID 寻址单播，
+    /// 仅 StickS3（小米遥控器无 IMU/敲击/编码器硬件，按类门控兜底）。
+    func sendStickControlPayload(_ data: Data, label: String, deviceID: String) {
+        guard let peripheralID = connectedDevices.first(where: {
+            $0.value.deviceID == deviceID && $0.value.deviceClass == .stickS3
+        })?.key,
+              let characteristic = controlCharacteristics[peripheralID],
+              let peripheral = peripherals[peripheralID] else {
+            NSLog("BLE send \(label) skipped dev=VS-\(deviceID) (not connected)")
+            return
+        }
+        NSLog("BLE send \(label) dev=VS-\(deviceID)")
+        peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -361,6 +440,24 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         if deviceClass == .xiaomiRemote2Pro {
             NSLog("atvv didDiscoverServices RC-\(connectedDevices[peripheral.identifier]?.deviceID ?? discoveredDevices[peripheral.identifier]?.deviceID ?? "????") error=\(error?.localizedDescription ?? "nil") services=\((peripheral.services ?? []).map(\.uuid.uuidString))")
             let deviceID = connectedDevices[peripheral.identifier]?.deviceID ?? "????"
+            // Battery Service 发现已启动后：本回调由 180F discover 触发，只推进其
+            // 特征发现，不再重复 ATVV 分支（避免订阅链重跑）。服务不存在（老固件/
+            // 电量特征缺失）只记日志，不阻断连接。
+            if xiaomiContexts[peripheral.identifier]?.batteryDiscoveryStarted == true {
+                guard error == nil,
+                      let batteryService = (peripheral.services ?? []).first(where: {
+                          $0.uuid == CBUUID(string: Self.batteryServiceUUID)
+                      }) else {
+                    NSLog("battery service unavailable RC-\(deviceID); battery level disabled")
+                    return
+                }
+                if batteryService.characteristics == nil {
+                    peripheral.discoverCharacteristics(
+                        [CBUUID(string: Self.batteryLevelUUID)], for: batteryService
+                    )
+                }
+                return
+            }
             let atvvServiceUUID = CBUUID(string: XiaomiAtvvProtocol.serviceUUID)
             guard error == nil,
                   let service = (peripheral.services ?? []).first(where: { $0.uuid == atvvServiceUUID }) else {
@@ -382,6 +479,12 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if (deviceClasses[peripheral.identifier] ?? .stickS3) == .xiaomiRemote2Pro {
+            if service.uuid == CBUUID(string: Self.batteryServiceUUID) {
+                handleXiaomiBatteryCharacteristicsDiscovery(
+                    peripheral: peripheral, service: service, error: error
+                )
+                return
+            }
             handleAtvvCharacteristicsDiscovery(peripheral: peripheral, service: service, error: error)
             return
         }
@@ -395,6 +498,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 controlCharacteristics[peripheral.identifier] = characteristic
                 sendUIState("ready", to: peripheral.identifier)
                 sendInteractionMode(interactionMode, to: peripheral.identifier)
+                sendShowIMUDebug(showIMUDebug, to: peripheral.identifier)
             case BleProtocol.otaRXUUID:
                 otaCharacteristics[peripheral.identifier] = characteristic
             case BleProtocol.otaStateUUID:
@@ -403,6 +507,30 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 break
             }
         }
+    }
+
+    /// 小米遥控器 Battery Level 特征收集（0x180F/0x2A19，读+notify；对齐 Windows
+    /// SetupXiaomiBatteryAsync）：订阅 + 初始读各拿一次电量（读值与 notify 都走
+    /// didUpdateValueFor 的 battery 分支合成 battery_status）。失败只记日志不阻断连接。
+    private func handleXiaomiBatteryCharacteristicsDiscovery(
+        peripheral: CBPeripheral, service: CBService, error: Error?
+    ) {
+        let deviceID = connectedDevices[peripheral.identifier]?.deviceID ?? "????"
+        guard error == nil,
+              let characteristic = (service.characteristics ?? []).first(where: {
+                  $0.uuid == CBUUID(string: Self.batteryLevelUUID)
+              }) else {
+            NSLog("battery level characteristic unavailable RC-\(deviceID): \(error?.localizedDescription ?? "missing"); battery level disabled")
+            return
+        }
+        var context = xiaomiContexts[peripheral.identifier] ?? XiaomiPeripheralContext()
+        context.batteryCharacteristic = characteristic
+        xiaomiContexts[peripheral.identifier] = context
+        if characteristic.properties.contains(.notify) {
+            peripheral.setNotifyValue(true, for: characteristic)
+        }
+        // 初始读：立即拿到一次电量（对齐 Windows 的 Uncached 初始读）。
+        peripheral.readValue(for: characteristic)
     }
 
     /// 小米遥控器（ATVV）特征收集：校验 TX writeWithoutResponse / Audio/Control
@@ -501,6 +629,16 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             } else if characteristic == context.audioCharacteristic {
                 micOpenAnchor.note(now)
                 driveXiaomiSession(peripheral) { $0.handleAudioData(data, nowMs: now) }
+            } else if characteristic == context.batteryCharacteristic {
+                // 标准 Battery Level 0x2A19：首字节即百分比，合成 battery_status 事件
+                // 走 onStateEvent（对齐 Windows SetupXiaomiBatteryAsync 的读/notify 处理）。
+                if let level = data.first {
+                    onStateEvent?(peripheral.identifier, StateEvent(
+                        event: "battery_status", button: nil, sessionID: nil, durationMs: nil,
+                        hardware: nil, firmwareVersion: nil, buttons: nil, uiStates: nil,
+                        batteryLevel: Int(level)
+                    ))
+                }
             }
             return
         }
@@ -510,8 +648,14 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 onAudioFrame?(peripheral.identifier, frame)
             }
         case BleProtocol.stateUUID:
+            // 分发顺序对齐 Windows：StateEvent（power_mgmt 返回 nil）→ power_log
+            // 分片（无 "event" 键）→ power_mgmt 事件。
             if let event = BleProtocol.parseStateEvent(data) {
                 onStateEvent?(peripheral.identifier, event)
+            } else if let fragment = BleProtocol.parsePowerLogFragment(data) {
+                onPowerLogFragment?(peripheral.identifier, fragment)
+            } else if let powerMgmt = BleProtocol.parsePowerMgmtEvent(data) {
+                onPowerMgmtEvent?(peripheral.identifier, powerMgmt)
             }
         case BleProtocol.otaStateUUID:
             if let event = BleProtocol.parseFirmwareOTAStateEvent(data) {
@@ -922,6 +1066,14 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         ))
         driveXiaomiSession(peripheral) { $0.start(nowMs: Self.nowMs()) }
         syncXiaomiTickTimer()
+        // 会话建立后发现可选 Battery Service（0x180F/0x2A19，订阅+初始读）；
+        // 失败只记日志不阻断连接（对齐 Windows SetupXiaomiBatteryAsync）。
+        context = xiaomiContexts[peripheralID] ?? context
+        if !context.batteryDiscoveryStarted {
+            context.batteryDiscoveryStarted = true
+            xiaomiContexts[peripheralID] = context
+            peripheral.discoverServices([CBUUID(string: Self.batteryServiceUUID)])
+        }
     }
 
     /// ATVV 订阅链超时兜底（对齐 Windows kSubscribeTimeout 防御）：订阅推进完全

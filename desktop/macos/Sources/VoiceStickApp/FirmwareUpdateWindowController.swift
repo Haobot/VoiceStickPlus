@@ -1,14 +1,14 @@
 import AppKit
 
 final class FirmwareUpdateWindowController: NSWindowController {
-    private let titleLabel = NSTextField(labelWithString: "Updating Firmware")
-    private let detailLabel = NSTextField(labelWithString: "Preparing update...")
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
     private let progressIndicator = NSProgressIndicator()
     private let percentLabel = NSTextField(labelWithString: "0%")
-    private let speedLabel = NSTextField(labelWithString: "Speed --")
-    private let timeLabel = NSTextField(labelWithString: "Estimating time remaining")
-    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    private let closeButton = NSButton(title: "Close", target: nil, action: nil)
+    private let speedLabel = NSTextField(labelWithString: "")
+    private let timeLabel = NSTextField(labelWithString: "")
+    private let cancelButton = NSButton(title: "", target: nil, action: nil)
+    private let closeButton = NSButton(title: "", target: nil, action: nil)
     private let startedAt = Date()
     private var confirmedBytes = 0
     var onCancel: (() -> Void)?
@@ -20,9 +20,15 @@ final class FirmwareUpdateWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Firmware Update"
+        window.title = tr(.firmwareWindowTitle)
         window.isReleasedWhenClosed = false
         super.init(window: window)
+        titleLabel.stringValue = tr(.firmwareUpdatingTitle)
+        detailLabel.stringValue = tr(.firmwarePreparing)
+        speedLabel.stringValue = tr(.firmwareSpeed, "--")
+        timeLabel.stringValue = tr(.firmwareEstimatingTime)
+        cancelButton.title = tr(.cancel)
+        closeButton.title = tr(.close)
         buildContent(fileName: fileName)
     }
 
@@ -56,14 +62,14 @@ final class FirmwareUpdateWindowController: NSWindowController {
 
         let elapsed = max(0.1, Date().timeIntervalSince(startedAt))
         let bytesPerSecond = Double(max(confirmedBytes, displayedBytes)) / elapsed
-        speedLabel.stringValue = "Speed \(Self.format(bytesPerSecond: bytesPerSecond))"
+        speedLabel.stringValue = tr(.firmwareSpeed, Self.format(bytesPerSecond: bytesPerSecond))
 
         if bytesPerSecond > 1 && displayedBytes < progress.totalBytes {
             let remainingBytes = progress.totalBytes - displayedBytes
             let remaining = Double(max(0, remainingBytes)) / bytesPerSecond
-            timeLabel.stringValue = "\(Self.format(duration: remaining)) remaining"
+            timeLabel.stringValue = tr(.firmwareTimeRemaining, Self.format(duration: remaining))
         } else if displayedBytes >= progress.totalBytes {
-            timeLabel.stringValue = "Finishing on device"
+            timeLabel.stringValue = tr(.firmwareFinishingOnDevice)
         }
     }
 
@@ -72,15 +78,15 @@ final class FirmwareUpdateWindowController: NSWindowController {
         closeButton.isEnabled = true
         switch result {
         case .success:
-            titleLabel.stringValue = "Firmware Updated"
-            detailLabel.stringValue = "The device is rebooting into the new firmware."
+            titleLabel.stringValue = tr(.firmwareUpdatedTitle)
+            detailLabel.stringValue = tr(.firmwareUpdatedDetail)
             progressIndicator.doubleValue = 100
             percentLabel.stringValue = "100%"
-            timeLabel.stringValue = "Done"
+            timeLabel.stringValue = tr(.firmwareDone)
         case .failure(let error):
-            titleLabel.stringValue = "Update Failed"
+            titleLabel.stringValue = tr(.firmwareUpdateFailedTitle)
             detailLabel.stringValue = error.localizedDescription
-            timeLabel.stringValue = "The device kept its current firmware."
+            timeLabel.stringValue = tr(.firmwareKeptCurrent)
         }
     }
 
@@ -163,9 +169,9 @@ final class FirmwareUpdateWindowController: NSWindowController {
 
     @objc private func cancelUpdate() {
         cancelButton.isEnabled = false
-        titleLabel.stringValue = "Cancelling Firmware Update"
-        detailLabel.stringValue = "Stopping transfer and asking the device to abort."
-        timeLabel.stringValue = "Cancelling"
+        titleLabel.stringValue = tr(.firmwareCancellingTitle)
+        detailLabel.stringValue = tr(.firmwareCancellingDetail)
+        timeLabel.stringValue = tr(.firmwareCancelling)
         onCancel?()
     }
 

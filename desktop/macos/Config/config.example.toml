@@ -20,6 +20,9 @@ refine_enabled = true
 hotword_process_enabled = false
 # hotword_process_prompt = ""  # 留空使用内置默认热词提炼 prompt（Windows-only）
 interaction_mode = "hold_to_talk"
+# ui_language：界面语言，system（默认，跟随系统）/ en / zh-Hans
+# ui_language = "system"
+# show_imu_debug = false   # 固件屏上 IMU 加速度调试浮层开关（经 control_rx 下发）
 resource_id = "volc.seedasr.sauc.duration"
 asr_hotwords = "小智,VoiceStick"
 paired_device_ids = ""
@@ -35,11 +38,21 @@ air_mouse_sensitivity_y = 5  # 上下灵敏度 1~10，映射 gain_y=sensitivity_
 air_mouse_tau = 0.10         # 速度环时间常数（秒），越大惯性/缓停越长
 air_mouse_invert_y = false   # 反转 Y 轴（适配用户习惯）
 
-# MiniEncoderC 编码器旋转映射（仅 Windows 端消费，macOS 暂不支持）：
+# 设备交互设置（Windows + macOS 均消费；顶层键为全局默认，
+# 可用 [device.<id>.interaction] 按设备覆盖，键名相同）：
+# imu_wake_sensitivity = "low"   # 拿起/摇晃唤醒灵敏度：low/medium/high（数值越小越灵敏）
+# tap_to_arrow = false           # 双击机身映射 Down 方向键
+# tap_sensitivity = 5            # 敲击检测灵敏度 1~10（1=最难触发，10=最灵敏）
+# 按设备覆盖示例（未写字段回落顶层全局默认）：
+# [device.9BC1.interaction]
+# imu_wake_sensitivity = "high"
+# tap_to_arrow = true
+
+# MiniEncoderC 编码器配置（Windows + macOS 均消费；顶层键为全局默认，
+# 可用 [device.<id>.encoder] 按设备覆盖，键名去 encoder_ 前缀）：
 # encoder_to_arrow = true          # 旋转注入方向键开关（顺时针→Down、逆时针→Up）
 # encoder_rotation_invert = false  # 旋转方向翻转（true 时顺时针→Up）
-
-# 以下编码器设置项同样仅 Windows 端消费（macOS 暂不支持）：
+#
 # 编码器旋转顺时针/逆时针注入的按键（热键语法：单键 up/down/left/right/enter/tab/
 # pageup/pagedown/volumeup/volumedown/f1-f24/单字符，或 ctrl/alt/shift/win 组合）
 # encoder_rotate_cw_key = "down"
@@ -61,12 +74,17 @@ air_mouse_invert_y = false   # 反转 Y 轴（适配用户习惯）
 # 编码器双击动作：key（注入 encoder_double_click_key）或 recording（双击开始/停止录音）。
 # encoder_double_click_action = "key"
 # encoder_double_click_key = "enter"
+# 按设备覆盖示例（未写字段回落顶层全局默认；与全局默认相同的覆盖不落盘）：
+# [device.9BC1.encoder]
+# led_color = "blue"
+# press_action = "key"
+# press_key = "ctrl+f"
 
 # 小米蓝牙遥控器 2 Pro（ATVV）：语音键按下时经 HID 连带发 F5，此开关全局抑制
 #（Windows + macOS 均生效；macOS 经 CGEvent tap 实现，需辅助功能权限，无权限仅记日志放弃）。
 # xiaomi_suppress_f5 = true
 
-# 小米遥控器按设备设置（无设置对话框，仅 TOML；结构镜像 [device.<id>.output]）：
+# 小米遥控器按设备设置（也可从托盘设备子菜单「遥控器设置…」对话框编辑；结构镜像 [device.<id>.output]）：
 # gain_db：ADPCM 解码后增益（dB），消费侧 ±24 限幅；
 # double_click_ms：语音键双击判定窗（毫秒），非正值忽略并保留默认。
 # [device.3A7F.xiaomi]

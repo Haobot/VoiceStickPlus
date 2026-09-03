@@ -15,13 +15,12 @@ Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语�
 - 两种触发方式：按住说话（`hold_to_talk`，默认）与点按说话（`click_to_talk`）。
 - 双击手势（固件端检测）：主键双击取消当前会话并直接注入 Enter；侧键双击恢复上一次输入确认。
 - 三种输出目标：粘贴到焦点应用（默认）、仅字幕显示、微信输入法模式——把 Opus 解码为 PCM 渲染到系统虚拟麦克风（如 VB-CABLE），供微信输入法等应用作为音频输入源（Windows）。
-- LLM 翻译与精修；火山热词表/替换词表、划词加词与候选热词挖掘（Windows）。
-- 本地语音识别（Windows）：内置 SenseVoice int8 离线识别，无需云端密钥；可选本地 Qwen3-1.7B 文本精修（清理口水词）。模型经设置页「下载模型…」向导一次性下载（多源回退、断点续传、SHA-256 校验），之后完全断网可用。
+- LLM 翻译与精修（Windows + macOS）；火山热词表/替换词表、划词加词与候选热词挖掘（Windows）。
 - 体感鼠标：BMI270 IMU 驱动光标控制，体感态下主键映射为鼠标左键，侧键单击退出（Windows）。
-- 敲击映射：IMU 敲击检测映射为方向键（`tap_to_arrow`，Windows）。
-- MiniEncoderC 编码器：按钮等价主键，旋转映射方向键（慢速逐行/快速翻页分档），按键与旋转动作可按设备自定义（Windows）。
-- 按设备覆盖：输出、设备交互（IMU 唤醒/敲击/体感灵敏度）与编码器设置均可按设备单独配置（托盘设备子菜单，Windows）。
-- 第二种输入设备（Windows）：小米蓝牙遥控器 2 Pro（设备 ID `RC-XXXX`）与 StickS3 并存——按住语音键说话、双击注入 Enter，支持电量显示、按设备输出覆盖与语音键附带 F5 抑制（固件零改动，ATVV 协议全部在桌面端实现）。
+- 敲击映射：IMU 敲击检测映射为方向键（`tap_to_arrow`）。
+- MiniEncoderC 编码器：按钮等价主键，旋转映射方向键（慢速逐行/快速翻页分档），按键与旋转动作可按设备自定义。
+- 按设备覆盖：输出、设备交互（IMU 唤醒/敲击/体感灵敏度）与编码器设置均可按设备单独配置（托盘设备子菜单）。
+- 第二种输入设备：小米蓝牙遥控器 2 Pro（设备 ID `RC-XXXX`）与 StickS3 并存——按住语音键说话、双击注入 Enter，支持电量显示、按设备输出覆盖与语音键附带 F5 抑制（固件零改动，ATVV 协议全部在桌面端实现）。
 - 多设备配对与连接，悬浮窗/字幕实时显示识别进度。
 - 固件升级：BLE OTA 免线升级；Windows 另附 VoiceStickFlash COM 口烧录工具作为救砖兜底。
 
@@ -177,7 +176,7 @@ npm run build    # 最小验证
 | `[output].transform` | `original` 或 `translate` |
 | `[output].translation_target` | 目标语言代码，如 `en` 或 `zh-Hans` |
 | `[device.<id>.output]` | 按设备覆盖 transform 与翻译目标 |
-| `[device.<id>.interaction]` / `[device.<id>.encoder]` | 按设备覆盖交互设置（IMU 唤醒/敲击/体感灵敏度）与编码器设置（Windows，托盘设备子菜单「设备交互设置…」/「编码器设置…」） |
+| `[device.<id>.interaction]` / `[device.<id>.encoder]` | 按设备覆盖交互设置（IMU 唤醒/敲击/体感灵敏度）与编码器设置（托盘设备子菜单「设备交互设置…」/「编码器设置…」） |
 
 火山引擎支持的 `resource_id`：`volc.seedasr.sauc.duration`、`volc.seedasr.sauc.concurrent`、`volc.bigasr.sauc.duration`、`volc.bigasr.sauc.concurrent`。
 

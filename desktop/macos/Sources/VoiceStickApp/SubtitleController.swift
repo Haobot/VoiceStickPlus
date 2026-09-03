@@ -1,5 +1,9 @@
 import AppKit
 
+/// 字幕条：每设备一条 lane 纵向堆叠，7 秒无更新自动消除。
+/// 视觉与布局逐值对齐 Windows subtitle_window.h:83-115 / subtitle_window.cc：
+/// 深色毛玻璃 lane + 白色 1px 描边（alpha 32）、左侧主题色条 + 设备标签、
+/// 字号 64→44 自适应至 ≤2 行、整体底部居中（底边距 32）。
 final class SubtitleController {
     private struct Lane {
         var text: String
@@ -7,18 +11,33 @@ final class SubtitleController {
         var generation: Int
     }
 
+    // 布局常量（对齐 Windows subtitle_window.h）。
+    private let windowPadding: CGFloat = 8
+    private let laneGap: CGFloat = 10
+    private let bottomScreenMargin: CGFloat = 32
+    private let textLeftInset: CGFloat = 98
+    private let textRightInset: CGFloat = 26
+    private let textVerticalInset: CGFloat = 18
+    private let colorBarOffset: CGFloat = 12
+    private let colorBarWidth: CGFloat = 6
+    private let colorBarVerticalInset: CGFloat = 14
+    private let colorBarRadius: CGFloat = 3
+    private let laneCornerRadius: CGFloat = 14
+    private let deviceLabelOffset: CGFloat = 30
+    private let deviceLabelWidth: CGFloat = 52
+    private let minLaneWidth: CGFloat = 520
+    private let minLaneHeight: CGFloat = 92
+    private let maxTextFontSize: CGFloat = 64
+    private let minTextFontSize: CGFloat = 44
+    private let deviceFontSize: CGFloat = 14
+    private let maxWindowWidthRatio: CGFloat = 0.86
+    private let maxWindowHeightRatio: CGFloat = 0.36
+    private let holdSeconds: TimeInterval = 7
+
     private let window: NSPanel
     private let stack = NSStackView()
     private var lanes: [String: Lane] = [:]
     private var generation = 0
-    private let holdSeconds: TimeInterval = 7
-    private let textFont = NSFont.systemFont(ofSize: 46, weight: .semibold)
-    private let minLaneWidth: CGFloat = 520
-    private let maxLaneWidth: CGFloat = 1400
-    private let laneChromeWidth: CGFloat = 148
-    private let laneVerticalPadding: CGFloat = 26
-    private let minLaneHeight: CGFloat = 76
-    private let maxWindowHeightRatio: CGFloat = 0.36
 
     init() {
         window = NSPanel(
@@ -39,7 +58,7 @@ final class SubtitleController {
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.distribution = .gravityAreas
-        stack.spacing = 10
+        stack.spacing = laneGap
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let contentView = NSView()
@@ -47,10 +66,10 @@ final class SubtitleController {
         contentView.addSubview(stack)
         window.contentView = contentView
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: windowPadding),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -windowPadding),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: windowPadding),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -windowPadding)
         ])
     }
 
@@ -112,44 +131,54 @@ final class SubtitleController {
     }
 
     private func makeLaneView(deviceID: String, lane: Lane) -> NSView {
-        let container = NSView()
+        let laneWidth = laneWidth(for: lane.text)
+        let textWidth = max(1, laneWidth - textLeftInset - textRightInset)
+        let font = fittedFont(for: lane.text, width: textWidth)
+        let laneHeight = self.laneHeight(for: lane.text, width: laneWidth, font: font)
+
+        // 深色毛玻璃 lane（对齐 Windows 玻璃 + 白色 1px 描边 alpha 32）。
+        let container = NSVisualEffectView()
+        container.material = .popover
+        container.blendingMode = .behindWindow
+        container.state = .active
+        container.appearance = NSAppearance(named: .darkAqua)
         container.wantsLayer = true
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.62).cgColor
-        container.layer?.cornerRadius = 14
+        container.layer?.cornerRadius = laneCornerRadius
         container.layer?.cornerCurve = .continuous
+        container.layer?.masksToBounds = true
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = NSColor.white.withAlphaComponent(32.0 / 255.0).cgColor
+
+        let deviceColor = Self.nsColor(for: lane.color)
 
         let colorBar = NSView()
         colorBar.wantsLayer = true
         colorBar.translatesAutoresizingMaskIntoConstraints = false
-        colorBar.layer?.backgroundColor = Self.nsColor(for: lane.color).cgColor
-        colorBar.layer?.cornerRadius = 3
+        colorBar.layer?.backgroundColor = deviceColor.cgColor
+        colorBar.layer?.cornerRadius = colorBarRadius
 
         let deviceLabel = NSTextField(labelWithString: deviceID)
-        deviceLabel.font = .monospacedSystemFont(ofSize: 14, weight: .semibold)
-        deviceLabel.textColor = Self.nsColor(for: lane.color).withAlphaComponent(0.95)
+        deviceLabel.font = .monospacedSystemFont(ofSize: deviceFontSize, weight: .bold)
+        deviceLabel.textColor = deviceColor
         deviceLabel.alignment = .center
         deviceLabel.translatesAutoresizingMaskIntoConstraints = false
-        deviceLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        let laneWidth = laneWidth(for: lane.text)
-        let textWidth = max(1, laneWidth - laneChromeWidth)
-        let shouldWrap = measuredSingleLineWidth(lane.text) > textWidth
 
         let textLabel = NSTextField(labelWithString: lane.text)
-        textLabel.font = textFont
+        textLabel.font = font
         textLabel.textColor = .white
         textLabel.alignment = .center
-        textLabel.maximumNumberOfLines = shouldWrap ? 0 : 1
-        textLabel.lineBreakMode = shouldWrap ? .byWordWrapping : .byClipping
-        textLabel.usesSingleLineMode = !shouldWrap
+        textLabel.maximumNumberOfLines = 2
+        textLabel.lineBreakMode = .byWordWrapping
+        textLabel.usesSingleLineMode = false
         textLabel.preferredMaxLayoutWidth = textWidth
         textLabel.translatesAutoresizingMaskIntoConstraints = false
+        // 文字阴影：黑色 alpha 88/255、偏移 2（对齐 Windows kTextShadowAlpha 偏移 2dp）。
         textLabel.shadow = {
             let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.8)
-            shadow.shadowBlurRadius = 3
-            shadow.shadowOffset = NSSize(width: 0, height: -1)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(88.0 / 255.0)
+            shadow.shadowBlurRadius = 0
+            shadow.shadowOffset = NSSize(width: 0, height: -2)
             return shadow
         }()
 
@@ -158,21 +187,21 @@ final class SubtitleController {
         container.addSubview(textLabel)
 
         NSLayoutConstraint.activate([
-            colorBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
-            colorBar.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
-            colorBar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
-            colorBar.widthAnchor.constraint(equalToConstant: 6),
+            colorBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: colorBarOffset),
+            colorBar.topAnchor.constraint(equalTo: container.topAnchor, constant: colorBarVerticalInset),
+            colorBar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -colorBarVerticalInset),
+            colorBar.widthAnchor.constraint(equalToConstant: colorBarWidth),
 
-            deviceLabel.leadingAnchor.constraint(equalTo: colorBar.trailingAnchor, constant: 12),
+            deviceLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: deviceLabelOffset),
             deviceLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            deviceLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 42),
+            deviceLabel.widthAnchor.constraint(equalToConstant: deviceLabelWidth),
 
-            textLabel.leadingAnchor.constraint(equalTo: deviceLabel.trailingAnchor, constant: 14),
-            textLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -26),
-            textLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            textLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            textLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: textLeftInset),
+            textLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -textRightInset),
+            textLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+
             container.widthAnchor.constraint(equalToConstant: laneWidth),
-            container.heightAnchor.constraint(equalToConstant: laneHeight(for: lane.text, width: laneWidth))
+            container.heightAnchor.constraint(equalToConstant: laneHeight)
         ])
 
         return container
@@ -183,11 +212,13 @@ final class SubtitleController {
         let visibleFrame = screen.visibleFrame
         let width = currentWindowWidth
         let measuredHeight = lanes.values.reduce(CGFloat(0)) { total, lane in
-            total + laneHeight(for: lane.text, width: width)
-        } + CGFloat(max(0, lanes.count - 1)) * stack.spacing
+            let textWidth = max(1, width - 2 * windowPadding - textLeftInset - textRightInset)
+            let font = fittedFont(for: lane.text, width: textWidth)
+            return total + laneHeight(for: lane.text, width: width - 2 * windowPadding, font: font)
+        } + CGFloat(max(0, lanes.count - 1)) * laneGap + 2 * windowPadding
         let height = min(measuredHeight, visibleFrame.height * maxWindowHeightRatio)
         let x = visibleFrame.midX - width / 2
-        let y = visibleFrame.minY + max(18, visibleFrame.height * 0.035)
+        let y = visibleFrame.minY + bottomScreenMargin
         window.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
     }
 
@@ -201,49 +232,78 @@ final class SubtitleController {
     }
 
     private var currentWindowWidth: CGFloat {
-        max(lanes.values.map { laneWidth(for: $0.text) }.max() ?? minLaneWidth, minLaneWidth)
+        let maxLane = lanes.values.map { laneWidth(for: $0.text) }.max() ?? minLaneWidth
+        return max(maxLane, minLaneWidth) + 2 * windowPadding
     }
 
     private func laneWidth(for text: String) -> CGFloat {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return 960 }
-        let maxWidth = min(maxLaneWidth, screen.visibleFrame.width * 0.86)
-        let measured = measuredSingleLineWidth(text)
-        return min(maxWidth, max(minLaneWidth, measured + laneChromeWidth))
+        let maxWidth = screen.visibleFrame.width * maxWindowWidthRatio - 2 * windowPadding
+        let singleLine = measuredSingleLineWidth(text, font: NSFont.systemFont(ofSize: maxTextFontSize, weight: .semibold))
+        let desired = singleLine + textLeftInset + textRightInset
+        return min(maxWidth, max(minLaneWidth, desired))
     }
 
-    private func laneHeight(for text: String, width: CGFloat) -> CGFloat {
-        let textWidth = max(1, width - laneChromeWidth)
-        let attributed = NSAttributedString(string: text.isEmpty ? " " : text, attributes: [.font: textFont])
+    /// 字号从 64 递减到 44，使文本在给定宽度内 ≤2 行（对齐 Windows FitSubtitleText）。
+    private func fittedFont(for text: String, width: CGFloat) -> NSFont {
+        var size = maxTextFontSize
+        while size > minTextFontSize {
+            let font = NSFont.systemFont(ofSize: size, weight: .semibold)
+            if lineCount(for: text, font: font, width: width) <= 2 {
+                return font
+            }
+            size -= 2
+        }
+        return NSFont.systemFont(ofSize: minTextFontSize, weight: .semibold)
+    }
+
+    private func lineCount(for text: String, font: NSFont, width: CGFloat) -> Int {
+        let height = measuredTextHeight(text, font: font, width: width)
+        let lineHeight = ceil(font.boundingRectForFont.height)
+        guard lineHeight > 0 else { return 1 }
+        return max(1, Int((height / lineHeight).rounded()))
+    }
+
+    private func laneHeight(for text: String, width: CGFloat, font: NSFont) -> CGFloat {
+        let textWidth = max(1, width - textLeftInset - textRightInset)
+        let textHeight = measuredTextHeight(text, font: font, width: textWidth)
+        return max(minLaneHeight, ceil(textHeight) + 2 * textVerticalInset)
+    }
+
+    private func measuredTextHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
+        let attributed = NSAttributedString(string: text.isEmpty ? " " : text, attributes: [.font: font])
         let rect = attributed.boundingRect(
-            with: NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude),
+            with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
-        return max(minLaneHeight, ceil(rect.height) + laneVerticalPadding)
+        return ceil(rect.height)
     }
 
-    private func measuredSingleLineWidth(_ text: String) -> CGFloat {
-        let attributed = NSAttributedString(string: text.isEmpty ? " " : text, attributes: [.font: textFont])
-        let rect = attributed.boundingRect(
-            with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
-        return ceil(rect.width)
+    private func measuredSingleLineWidth(_ text: String, font: NSFont) -> CGFloat {
+        let attributed = NSAttributedString(string: text.isEmpty ? " " : text, attributes: [.font: font])
+        return ceil(attributed.size().width)
     }
 
+    /// 设备主题色（对齐 Windows subtitle_window.cc ColorValue；auto 按系统外观折白/黑）。
     private static func nsColor(for color: OverlayThemeColor) -> NSColor {
         switch color {
+        case .auto:
+            let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return dark ? NSColor.white : NSColor(calibratedRed: 0x10 / 255.0, green: 0x10 / 255.0, blue: 0x10 / 255.0, alpha: 1)
         case .white:
             return NSColor.white
+        case .black:
+            return NSColor(calibratedRed: 0x10 / 255.0, green: 0x10 / 255.0, blue: 0x10 / 255.0, alpha: 1)
         case .pink:
-            return NSColor(calibratedRed: 1.0, green: 0.42, blue: 0.62, alpha: 1)
+            return NSColor(calibratedRed: 0xff / 255.0, green: 0x6b / 255.0, blue: 0x9e / 255.0, alpha: 1)
         case .green:
-            return NSColor(calibratedRed: 0.31, green: 0.84, blue: 0.55, alpha: 1)
+            return NSColor(calibratedRed: 0x4f / 255.0, green: 0xd6 / 255.0, blue: 0x8c / 255.0, alpha: 1)
         case .yellow:
-            return NSColor(calibratedRed: 1.0, green: 0.78, blue: 0.26, alpha: 1)
+            return NSColor(calibratedRed: 0xff / 255.0, green: 0xc7 / 255.0, blue: 0x42 / 255.0, alpha: 1)
         case .blue:
-            return NSColor(calibratedRed: 0.38, green: 0.68, blue: 1.0, alpha: 1)
+            return NSColor(calibratedRed: 0x61 / 255.0, green: 0xad / 255.0, blue: 0xff / 255.0, alpha: 1)
         case .purple:
-            return NSColor(calibratedRed: 0.72, green: 0.55, blue: 1.0, alpha: 1)
+            return NSColor(calibratedRed: 0xb8 / 255.0, green: 0x8c / 255.0, blue: 0xff / 255.0, alpha: 1)
         }
     }
 }

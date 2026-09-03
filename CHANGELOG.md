@@ -30,6 +30,18 @@
 
 - 修复：补回 f75af4f5 漏提交的 `power_log_monitor.*`/`battery_monitor_dialog.*` 源文件（`desktop/windows/` 整体被 .gitignore 忽略，新增文件须 `git add -f`），此前全新克隆因 CMakeLists 引用缺失文件无法构建。
 
+- macOS 端设计全面对齐 Windows（外观与功能同步，一次性补齐多年差距）：
+  - 悬浮窗与字幕：`OverlayController` 重写对齐 Windows D2D 浮窗（贴边显示、主题色/尺寸/位置按设备自定义、主键发送/侧键取消双按钮提示），`SubtitleController` 字幕模式对齐 Windows 字幕窗。
+  - 托盘菜单重构（`StatusController`）：按设备子菜单（主题/尺寸/悬浮窗位置/翻译目标/按设备输出覆盖）、交互模式与输出目标切换、设备电量后缀显示（`battery_status`）、固件更新入口、登录自启（macOS 13+ SMAppService）。
+  - 全局热键（`GlobalHotkeyManager` + `HotkeyCaptureWindowController` + `KeySpec` 热键语法）：按下/松开经 `remote_button_down/up` 下发 StickS3 远程起停录音。
+  - LLM 精修与翻译：`LLMRefinementClient`（非流式，prompt 与热词保留守卫逐字对齐 Windows `llm_refinement_client.cc`）、`LLMTranslationClient`；腾讯云 ASR 全链路（`TencentASRClient` + 热词表 `TencentASRVocabClient`）。
+  - 设置窗扩展（`SettingsWindowController`）对齐 Windows 设置对话框分区与显隐规则（通用/ASR/LLM/热词/系统/音频文件，开发者模式门控）。
+  - 设备级对话框四个：设备交互设置（IMU 唤醒灵敏度/敲击映射/敲击与体感灵敏度）、编码器设置（旋转注入/方向翻转/快慢分档/判定窗/LED 颜色/单双击动作共 13 项）、遥控器设置（`gain_db`/`double_click_ms`，200–600ms clamp 与 Windows 一致）、电池电压监测（power_log 锚定/探测/60 周期监测状态机，CSV/PNG 导出，`usb_auto_off` 勾选经 `power_mgmt` 回推落定）。
+  - 编码器交互全链路：`encoder_rotate` 旋转注入（`EncoderRotateSpeedEstimator` EWMA 快慢分档逐注释对齐 `encoder_speed.h`、慢速 decide_window 延迟判定、快速手势停转锁定）、`tap` 敲击映射方向键（500ms 节流）、编码器单击/双击动作（自定义按键注入 / 录音门控 / 双击 `remote_button` 切换录音）；连接与配置更新时向已连接 StickS3 逐台单播 `tap_enabled`/`tap_sensitivity`/`imu_wake_sensitivity`/`encoder_led_color`/`encoder_recording_gate`。
+  - 小米遥控器补齐：标准 Battery Service（0x180F/0x2A19，ATVV 会话建立后独立发现 pass，初始读 + notify 订阅）合成 `battery_status` 上报协调器，托盘设备子菜单显示电量。
+  - UI 本地化（`Localization.swift`，243 键中英双表逐条对齐 Windows `localization.cc`）：新增 `ui_language` 配置（`system`/`en`/`zh-Hans`，加载兼容 `zh_CN`/`zh-CN`/`zh`，system 按系统首选语言 zh 前缀判定），设置窗「界面语言」下拉，保存后托盘菜单与窗口文案重建；悬浮窗 `Listening...`/`Processing...` 等状态提示与 Windows 一致保持英文。
+  - 配置基座：`AppConfig` 新增设备交互/编码器全局默认 + `[device.<id>.interaction]`/`[device.<id>.encoder]` 按设备覆盖（解析、填平、序列化「不等才落盘」语义对齐 Windows `app_config.cc`）、`ui_language`、`show_imu_debug` 等键；`config.example.toml`、`Doc/Ref/desktop-config.md`、`Doc/Ref/protocol.md`、双 README 同步修订平台口径。未覆盖项：体感鼠标、流式精修、热词挖掘/划词加词、微信输入法模式仍为 Windows 独有。
+
 ## v2.3.6
 
 - 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。

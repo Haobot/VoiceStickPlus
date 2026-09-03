@@ -60,3 +60,7 @@ Windows 端小米遥控器 2 Pro（ATVV）支持完整移植到 macOS 并真机�
 - AppConfig 新逻辑（paired CSV/xiaomi 表/normalizedDeviceID）无 runner 覆盖——runner 只链 VoiceStickCore，app 层靠 build + 人工推演；如需覆盖须再拆库或引入 Xcode。
 - 既有问题（本次未动）：VS 配对不写 `paired_device` 条目；VS 分支配对用开窗时的 config 快照落库（并发设置改动会被覆盖）。
 - macOS 端无电量显示、无「遥控器设置」对话框（仅 TOML）、无心跳探针——均为有意裁剪，见方案文档 §5.4。
+
+## 7. 后续进展（2026-09-03 追加）
+
+§6 末条已被部分推翻：macOS 大对齐（`Doc/Expe/macos-windows-design-parity-port-2026-09-03.md`）补上了**电量显示**（0x180F/0x2A19 读取合成 `battery_status`，托盘设备子菜单标题后缀）与**「遥控器设置」对话框**（`gain_db`/`double_click_ms`，200–600ms clamp 与 Windows 一致）。**心跳探针仍有意不移植**（macOS 依赖 CoreBluetooth 断连回调，无 90s 静默拆除机制）。

@@ -27,9 +27,24 @@ public struct StateEvent: Decodable {
     public let firmwareVersion: String?
     public let buttons: [String]?
     public let uiStates: [String]?
+    /// 按键来源（对齐 Windows StateEvent.source）：主键/侧键无此字段，
+    /// 编码器按键事件带 "encoder"，用于路由到编码器按键处理器。
+    public let source: String?
+    /// encoder_rotate 事件字段（10ms 窗口聚合的格数与方向 "cw"/"ccw"）。
+    public let steps: UInt32?
+    public let direction: String?
+    /// encoder_status 事件字段：编码器是否存在（老固件无此事件，消费侧默认 true）。
+    public let encoderPresent: Bool?
+    /// battery_status 事件字段（百分比由固件计算；小米遥控器由桌面端读 0x2A19 合成）。
+    public let batteryLevel: Int?
+    public let batteryCharging: Bool?
+    public let batteryUsbPowered: Bool?
 
     public init(event: String, button: String?, sessionID: UInt32?, durationMs: UInt32?,
-                hardware: String?, firmwareVersion: String?, buttons: [String]?, uiStates: [String]?) {
+                hardware: String?, firmwareVersion: String?, buttons: [String]?, uiStates: [String]?,
+                source: String? = nil, steps: UInt32? = nil, direction: String? = nil,
+                encoderPresent: Bool? = nil, batteryLevel: Int? = nil,
+                batteryCharging: Bool? = nil, batteryUsbPowered: Bool? = nil) {
         self.event = event
         self.button = button
         self.sessionID = sessionID
@@ -38,6 +53,13 @@ public struct StateEvent: Decodable {
         self.firmwareVersion = firmwareVersion
         self.buttons = buttons
         self.uiStates = uiStates
+        self.source = source
+        self.steps = steps
+        self.direction = direction
+        self.encoderPresent = encoderPresent
+        self.batteryLevel = batteryLevel
+        self.batteryCharging = batteryCharging
+        self.batteryUsbPowered = batteryUsbPowered
     }
 
     enum CodingKeys: String, CodingKey {
@@ -49,6 +71,66 @@ public struct StateEvent: Decodable {
         case firmwareVersion = "firmware_version"
         case buttons
         case uiStates = "ui_states"
+        case source
+        case steps
+        case direction
+        case encoderPresent = "present"
+        case batteryLevel = "level"
+        case batteryCharging = "charging"
+        case batteryUsbPowered = "usb_powered"
+    }
+}
+
+/// power_log 分片帧（state_tx 上行，无 "event" 键）：
+/// `{"power_log":{"seq":N,"offset":N,"total":N,"eof":0|1,"data":"<base64>"}}`。
+public struct PowerLogFragment: Decodable {
+    public let seq: UInt32
+    public let offset: UInt32
+    public let total: UInt32
+    public let eof: Bool
+    public let data: Data
+
+    private struct Container: Decodable {
+        struct Body: Decodable {
+            let seq: UInt32?
+            let offset: UInt32?
+            let total: UInt32?
+            let eof: Int?
+            let data: String?
+        }
+        let power_log: Body?
+    }
+
+    static func decode(jsonPayload: Data) -> PowerLogFragment? {
+        guard let container = try? JSONDecoder().decode(Container.self, from: jsonPayload),
+              let body = container.power_log,
+              let offset = body.offset, let total = body.total,
+              let dataString = body.data,
+              let decoded = Data(base64Encoded: dataString) else {
+            return nil
+        }
+        return PowerLogFragment(
+            seq: body.seq ?? 0,
+            offset: offset,
+            total: total,
+            eof: (body.eof ?? 0) != 0,
+            data: decoded
+        )
+    }
+}
+
+/// 供电管理事件（state_tx 上行）：`{"event":"power_mgmt","usb_auto_off":bool}`。
+/// 固件连接时主动推送，usb_auto_off set 命令后回推确认。
+public struct PowerMgmtEvent {
+    public let usbAutoOff: Bool
+
+    static func decode(jsonPayload: Data) -> PowerMgmtEvent? {
+        guard let object = try? JSONSerialization.jsonObject(with: jsonPayload) as? [String: Any],
+              (object["event"] as? String) == "power_mgmt",
+              let usbAutoOff = object["usb_auto_off"] as? Bool else {
+            return nil
+        }
+        return PowerMgmtEvent(usbAutoOff: usbAutoOff)
     }
 }
 
@@ -129,7 +211,32 @@ public enum BleProtocol {
         let payloadLength = Int(UInt16(littleEndianBytes: data[2..<4]))
         guard data.count >= 4 + payloadLength else { return nil }
         let payload = data.subdata(in: 4..<(4 + payloadLength))
-        return try? JSONDecoder().decode(StateEvent.self, from: payload)
+        guard let event = try? JSONDecoder().decode(StateEvent.self, from: payload) else { return nil }
+        // 对齐 Windows ParseStateEvent：power_mgmt 事件不属于 StateEvent 通道，
+        // 返回 nil 让分发链继续走 ParsePowerMgmtEvent（power_log 分片无 "event" 键，
+        // 天然解码失败落到 ParsePowerLogFragment）。
+        guard event.event != "power_mgmt" else { return nil }
+        return event
+    }
+
+    /// state_tx 负载（4 字节帧头后的 JSON）辅助：剥帧头。
+    private static func statePayload(_ data: Data) -> Data? {
+        guard data.count >= 4, data[0] == 1, data[1] == 0x10 else { return nil }
+        let payloadLength = Int(UInt16(littleEndianBytes: data[2..<4]))
+        guard data.count >= 4 + payloadLength else { return nil }
+        return data.subdata(in: 4..<(4 + payloadLength))
+    }
+
+    /// 解析 power_log 分片帧（对齐 Windows ParsePowerLogFragment）。
+    public static func parsePowerLogFragment(_ data: Data) -> PowerLogFragment? {
+        guard let payload = statePayload(data) else { return nil }
+        return PowerLogFragment.decode(jsonPayload: payload)
+    }
+
+    /// 解析 power_mgmt 事件（对齐 Windows ParsePowerMgmtEvent）。
+    public static func parsePowerMgmtEvent(_ data: Data) -> PowerMgmtEvent? {
+        guard let payload = statePayload(data) else { return nil }
+        return PowerMgmtEvent.decode(jsonPayload: payload)
     }
 
     public static func parseFirmwareOTAStateEvent(_ data: Data) -> FirmwareOTAStateEvent? {
@@ -153,6 +260,113 @@ public enum BleProtocol {
         let payload = [
             "event": "interaction_mode",
             "mode": mode.rawValue
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// IMU 调试开关帧（对齐 Windows BleProtocol::ShowImuDebugPayload）：
+    /// `{"event":"show_imu_debug","enabled":true|false}`，固件在屏幕上显示 IMU 调试信息。
+    public static func showIMUDebugPayload(enabled: Bool) -> Data {
+        let payload: [String: Any] = [
+            "event": "show_imu_debug",
+            "enabled": enabled
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// IMU 唤醒灵敏度帧（对齐 Windows BleProtocol::ImuWakeSensitivityPayload）：
+    /// `{"event":"imu_wake_sensitivity","threshold":<lsb>}`。
+    public static func imuWakeSensitivityPayload(thresholdLsb: Int) -> Data {
+        let payload: [String: Any] = [
+            "event": "imu_wake_sensitivity",
+            "threshold": thresholdLsb
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 敲击开关帧（对齐 Windows TapEnabledPayload）：`{"event":"tap_enabled","enabled":bool}`。
+    public static func tapEnabledPayload(enabled: Bool) -> Data {
+        let payload: [String: Any] = [
+            "event": "tap_enabled",
+            "enabled": enabled
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 敲击灵敏度帧（对齐 Windows TapSensitivityPayload）：
+    /// `{"event":"tap_sensitivity","level":<1-10>}`。
+    public static func tapSensitivityPayload(level: Int) -> Data {
+        let payload: [String: Any] = [
+            "event": "tap_sensitivity",
+            "level": level
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 编码器录音灯颜色帧（对齐 Windows EncoderLedColorPayload）：
+    /// `{"event":"encoder_led_color","color":"<8 色之一>"}`，固件持久化到 NVS。
+    public static func encoderLedColorPayload(color: String) -> Data {
+        let payload: [String: Any] = [
+            "event": "encoder_led_color",
+            "color": color
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 编码器录音门控帧（对齐 Windows EncoderRecordingGatePayload）：
+    /// `{"event":"encoder_recording_gate","enabled":bool}`（press_action=recording → true）。
+    public static func encoderRecordingGatePayload(enabled: Bool) -> Data {
+        let payload: [String: Any] = [
+            "event": "encoder_recording_gate",
+            "enabled": enabled
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 主动请求电量上报（对齐 Windows BatteryStatusRequestPayload）：
+    /// `{"event":"battery_status_request"}`。
+    public static func batteryStatusRequestPayload() -> Data {
+        let payload = ["event": "battery_status_request"]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// USB 供电自动关机开关（对齐 Windows UsbAutoOffPayload）：
+    /// `{"event":"usb_auto_off","enabled":bool}`；固件回推 power_mgmt 事件确认。
+    public static func usbAutoOffPayload(enabled: Bool) -> Data {
+        let payload: [String: Any] = [
+            "event": "usb_auto_off",
+            "enabled": enabled
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// power_log 命令帧（对齐 Windows PowerLog*Payload，经 control_rx 下发）。
+    public static func powerLogClearPayload() -> Data {
+        powerLogCommandPayload(["cmd": "clear"])
+    }
+
+    public static func powerLogTimeAnchorPayload(epoch: UInt32) -> Data {
+        powerLogCommandPayload(["cmd": "time_anchor", "epoch": epoch])
+    }
+
+    public static func powerLogDumpPayload(offset: UInt32, max: UInt32) -> Data {
+        powerLogCommandPayload(["cmd": "dump", "offset": offset, "max": max])
+    }
+
+    private static func powerLogCommandPayload(_ body: [String: Any]) -> Data {
+        let payload: [String: Any] = ["power_log": body]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 远程按键控制帧（对齐 Windows BleProtocol::RemoteButtonPayload）：
+    /// `{"event":"remote_button_<down|up>","button":"primary","source":<src>,"request_id":N}`。
+    /// 固件侧等价一次远程主键按下/松开，音频链路真实完整；不受编码器录音门控约束。
+    public static func remoteButtonPayload(action: String, button: String, source: String, requestID: UInt32) -> Data {
+        let payload: [String: Any] = [
+            "event": "remote_button_\(action)",
+            "button": button,
+            "source": source,
+            "request_id": requestID
         ]
         return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
     }

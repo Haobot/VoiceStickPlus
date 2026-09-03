@@ -19,13 +19,13 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         var title: String {
             switch self {
             case .device:
-                return "Pair Device"
+                return tr(.onboardingStepPairDevice)
             case .provider:
-                return "ASR Key"
+                return tr(.onboardingStepAsrKey)
             case .accessibility:
-                return "Accessibility"
+                return tr(.onboardingStepAccessibility)
             case .finish:
-                return "Ready"
+                return tr(.onboardingStepReady)
             }
         }
     }
@@ -34,18 +34,18 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
     private let contentStack = NSStackView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(wrappingLabelWithString: "")
-    private let backButton = NSButton(title: "Back", target: nil, action: nil)
-    private let nextButton = NSButton(title: "Continue", target: nil, action: nil)
+    private let backButton = NSButton(title: "", target: nil, action: nil)
+    private let nextButton = NSButton(title: "", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
 
     private let tableView = NSTableView()
-    private let scanStatusLabel = NSTextField(labelWithString: "Scanning")
+    private let scanStatusLabel = NSTextField(labelWithString: "")
     private let providerPopup = NSPopUpButton()
-    private let apiKeyField = NSTextField()
-    private let applyTrialAPIKeyButton = NSButton(title: "Apply Trial", target: nil, action: nil)
+    private let apiKeyField = NSSecureTextField()
+    private let applyTrialAPIKeyButton = NSButton(title: "", target: nil, action: nil)
     private let resourcePopup = NSPopUpButton()
     private let accessibilityStatusLabel = NSTextField(labelWithString: "")
-    private let accessibilitySettingsButton = NSButton(title: "Open Accessibility Settings", target: nil, action: nil)
+    private let accessibilitySettingsButton = NSButton(title: "", target: nil, action: nil)
 
     private var central: CBCentralManager?
     private var devices: [OnboardingDevice] = []
@@ -67,10 +67,15 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
             backing: .buffered,
             defer: false
         )
-        window.title = "Set Up VoiceStick"
+        window.title = tr(.onboardingSetupTitle)
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
+        backButton.title = tr(.onboardingBack)
+        nextButton.title = tr(.onboardingContinue)
+        scanStatusLabel.stringValue = tr(.stateScanning)
+        applyTrialAPIKeyButton.title = tr(.settingsApplyTrial)
+        accessibilitySettingsButton.title = tr(.onboardingOpenAccessibilitySettings)
         accessibilitySettingsButton.target = self
         accessibilitySettingsButton.action = #selector(requestAccessibilityPermission)
         applyTrialAPIKeyButton.target = self
@@ -182,9 +187,14 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
     }
 
     private func loadConfigIntoFields() {
+        // 对齐 Windows 引导下拉：VoiceStick Cloud 已下线，仅老配置仍为其时插入该项。
+        providerPopup.removeAllItems()
+        if config.asrProvider == .voiceStickCloud {
+            providerPopup.addItem(withTitle: ASRProvider.voiceStickCloud.displayName)
+        }
         providerPopup.addItems(withTitles: [
-            ASRProvider.voiceStickCloud.displayName,
-            ASRProvider.volcengine.displayName
+            ASRProvider.volcengine.displayName,
+            ASRProvider.tencent.displayName
         ])
         providerPopup.target = self
         providerPopup.action = #selector(providerSelectionChanged)
@@ -204,26 +214,26 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
 
         switch currentStep {
         case .device:
-            titleLabel.stringValue = "Pair your VoiceStick"
-            detailLabel.stringValue = "Choose a nearby VS-XXXX device. VoiceStick needs a paired device before the app can listen."
+            titleLabel.stringValue = tr(.onboardingPairTitle)
+            detailLabel.stringValue = tr(.onboardingPairDetail)
             contentStack.addArrangedSubview(deviceView())
         case .provider:
-            titleLabel.stringValue = "Choose your speech provider"
-            detailLabel.stringValue = "Pick the ASR provider and enter the key or endpoint settings it needs."
+            titleLabel.stringValue = tr(.onboardingProviderTitle)
+            detailLabel.stringValue = tr(.onboardingProviderDetail)
             contentStack.addArrangedSubview(providerView())
         case .accessibility:
-            titleLabel.stringValue = "Allow text insertion"
-            detailLabel.stringValue = "VoiceStick pastes recognized text at your cursor, so macOS Accessibility permission is required."
+            titleLabel.stringValue = tr(.onboardingAccessibilityTitle)
+            detailLabel.stringValue = tr(.onboardingAccessibilityDetail)
             contentStack.addArrangedSubview(accessibilityView())
             updateAccessibilityStatus()
         case .finish:
-            titleLabel.stringValue = "VoiceStick is ready"
-            detailLabel.stringValue = "The device and ASR settings are configured. Finish setup to start scanning and connecting."
+            titleLabel.stringValue = tr(.onboardingReadyTitle)
+            detailLabel.stringValue = tr(.onboardingReadyDetail)
             contentStack.addArrangedSubview(finishView())
         }
 
         backButton.isEnabled = currentStep.rawValue > 0
-        nextButton.title = currentStep == .finish ? "Finish" : "Continue"
+        nextButton.title = currentStep == .finish ? tr(.onboardingFinish) : tr(.onboardingContinue)
         updateNextButton()
     }
 
@@ -253,9 +263,9 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         scrollView.borderType = .bezelBorder
 
         if tableView.tableColumns.isEmpty {
-            tableView.addTableColumn(column(id: "name", title: "Device", width: 210))
-            tableView.addTableColumn(column(id: "id", title: "ID", width: 90))
-            tableView.addTableColumn(column(id: "rssi", title: "RSSI", width: 70))
+            tableView.addTableColumn(column(id: "name", title: tr(.columnDevice), width: 210))
+            tableView.addTableColumn(column(id: "id", title: tr(.columnId), width: 90))
+            tableView.addTableColumn(column(id: "rssi", title: tr(.columnRssi), width: 70))
             tableView.delegate = self
             tableView.dataSource = self
             tableView.target = self
@@ -274,10 +284,10 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
-        stack.addArrangedSubview(row(label: "Provider", control: providerPopup))
-        stack.addArrangedSubview(row(label: "API Key", control: apiKeyControl()))
+        stack.addArrangedSubview(row(label: tr(.settingsProvider), control: providerPopup))
+        stack.addArrangedSubview(row(label: tr(.settingsApiKey), control: apiKeyControl()))
         if selectedProvider() == .volcengine {
-            stack.addArrangedSubview(row(label: "Resource ID", control: resourcePopup))
+            stack.addArrangedSubview(row(label: tr(.settingsResourceId), control: resourcePopup))
         }
         updateApplyTrialButton()
         return stack
@@ -313,9 +323,13 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
-        stack.addArrangedSubview(summaryLine("Device", value: config.pairedDeviceIDs.first.map { "VS-\($0)" } ?? "Not paired"))
-        stack.addArrangedSubview(summaryLine("Provider", value: selectedProvider().displayName))
-        stack.addArrangedSubview(summaryLine("Accessibility", value: AXIsProcessTrusted() ? "Allowed" : "Not allowed yet"))
+        stack.addArrangedSubview(summaryLine(
+            tr(.columnDevice),
+            value: config.pairedDeviceIDs.first.map { "VS-\($0)" } ?? tr(.valueNotPaired)))
+        stack.addArrangedSubview(summaryLine(tr(.settingsProvider), value: selectedProvider().displayName))
+        stack.addArrangedSubview(summaryLine(
+            tr(.onboardingStepAccessibility),
+            value: AXIsProcessTrusted() ? tr(.valueAllowed) : tr(.valueNotAllowedYet)))
         return stack
     }
 
@@ -349,10 +363,10 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard central.state == .poweredOn else {
-            scanStatusLabel.stringValue = "Bluetooth unavailable"
+            scanStatusLabel.stringValue = tr(.bluetoothUnavailable)
             return
         }
-        scanStatusLabel.stringValue = "Scanning"
+        scanStatusLabel.stringValue = tr(.stateScanning)
         central.scanForPeripherals(withServices: nil)
     }
 
@@ -378,7 +392,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         }
         tableView.reloadData()
         restoreSelection(selectedIdentifier)
-        scanStatusLabel.stringValue = devices.isEmpty ? "Scanning" : "\(devices.count) found"
+        scanStatusLabel.stringValue = devices.isEmpty ? tr(.stateScanning) : tr(.foundCount, devices.count)
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -415,13 +429,13 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
     private func selectCurrentDevice() -> Bool {
         let row = tableView.selectedRow
         guard row >= 0, row < devices.count else {
-            scanStatusLabel.stringValue = "Select a device"
+            scanStatusLabel.stringValue = tr(.selectDevice)
             updateNextButton()
             return false
         }
         let deviceID = devices[row].deviceID
         config.pairedDeviceIDs = [deviceID]
-        scanStatusLabel.stringValue = "Selected VS-\(deviceID)"
+        scanStatusLabel.stringValue = tr(.onboardingSelectedDevice, deviceID)
         updateNextButton()
         return true
     }
@@ -443,7 +457,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         guard currentDisplayedProvider == .voiceStickCloud else { return }
 
         applyTrialAPIKeyButton.isEnabled = false
-        statusLabel.stringValue = "Applying trial API key..."
+        statusLabel.stringValue = tr(.settingsApplyingTrial)
         VoiceStickCloudAPI.applyTrialAPIKey(
             cloudURL: config.voiceStickCloudURL,
             deviceID: config.pairedDeviceIDs.first
@@ -455,14 +469,14 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
                 case .success(.apiKey(let apiKey)):
                     self.config.voiceStickAPIKey = apiKey
                     self.apiKeyField.stringValue = apiKey
-                    self.statusLabel.stringValue = "Trial API key applied."
+                    self.statusLabel.stringValue = tr(.settingsTrialApplied)
                     self.updateApplyTrialButton()
                     self.updateNextButton()
                 case .success(.url(let url)):
-                    self.statusLabel.stringValue = "Opened trial application page."
+                    self.statusLabel.stringValue = tr(.settingsTrialPageOpened)
                     NSWorkspace.shared.open(url)
                 case .failure(let error):
-                    self.statusLabel.stringValue = "Apply failed: \(error.localizedDescription)"
+                    self.statusLabel.stringValue = tr(.applyTrialFailed, error.localizedDescription)
                     self.updateApplyTrialButton()
                 }
             }
@@ -490,7 +504,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
             NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
                 DispatchQueue.main.async {
                     if error == nil {
-                        self?.statusLabel.stringValue = "Opened System Settings."
+                        self?.statusLabel.stringValue = tr(.openedSystemSettings)
                         self?.openAccessibilityPaneURL()
                     } else {
                         self?.openAccessibilityPaneURL()
@@ -514,19 +528,19 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
             for text in urls {
                 guard let url = URL(string: text) else { continue }
                 if NSWorkspace.shared.open(url) {
-                    self.statusLabel.stringValue = "Opened System Settings."
+                    self.statusLabel.stringValue = tr(.openedSystemSettings)
                     return
                 }
             }
-            self.statusLabel.stringValue = "Open System Settings, then go to Privacy & Security > Accessibility."
+            self.statusLabel.stringValue = tr(.openAccessibilityManually)
         }
     }
 
     @objc private func updateAccessibilityStatus() {
         let isTrusted = AXIsProcessTrusted()
         accessibilityStatusLabel.stringValue = isTrusted
-            ? "Accessibility permission is allowed."
-            : "Accessibility permission is not allowed yet."
+            ? tr(.accessibilityAllowed)
+            : tr(.accessibilityNotAllowed)
         accessibilitySettingsButton.isHidden = isTrusted
         if isTrusted {
             statusLabel.stringValue = ""
@@ -553,7 +567,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
                 close()
                 onComplete(config)
             } catch {
-                statusLabel.stringValue = "Save failed: \(error.localizedDescription)"
+                statusLabel.stringValue = tr(.saveFailedWithError, error.localizedDescription)
             }
             return
         }
@@ -568,22 +582,22 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         switch currentStep {
         case .device:
             if config.pairedDeviceIDs.isEmpty {
-                statusLabel.stringValue = "Select a VoiceStick device first."
+                statusLabel.stringValue = tr(.selectDeviceFirst)
                 return false
             }
         case .provider:
             if activeAPIKey().isEmpty {
-                statusLabel.stringValue = "Enter the API key for \(selectedProvider().displayName)."
+                statusLabel.stringValue = tr(.enterApiKeyFor, selectedProvider().displayName)
                 return false
             }
             if selectedProvider() == .voiceStickCloud,
                URL(string: config.voiceStickCloudURL.trimmingCharacters(in: .whitespacesAndNewlines)) == nil {
-                statusLabel.stringValue = "Enter a valid Cloud URL."
+                statusLabel.stringValue = tr(.enterValidCloudURL)
                 return false
             }
         case .accessibility:
             if !AXIsProcessTrusted() {
-                statusLabel.stringValue = "Allow Accessibility permission before continuing."
+                statusLabel.stringValue = tr(.allowAccessibilityFirst)
                 updateNextButton()
                 return false
             }
@@ -624,6 +638,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
             return .voiceStickCloud
         case ASRProvider.volcengine.displayName:
             return .volcengine
+        case ASRProvider.tencent.displayName:
+            return .tencent
         default:
             return config.asrProvider
         }
@@ -635,6 +651,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
             return config.voiceStickAPIKey
         case .volcengine:
             return config.volcengineAPIKey
+        case .tencent:
+            return config.tencentSecretID
         }
     }
 
@@ -644,6 +662,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
             return config.voiceStickAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .volcengine:
             return config.volcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .tencent:
+            return config.tencentSecretID.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 
@@ -654,6 +674,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
             config.voiceStickAPIKey = key
         case .volcengine:
             config.volcengineAPIKey = key
+        case .tencent:
+            config.tencentSecretID = key
         }
         config.asrProvider = selectedProvider()
         config.resourceID = resourcePopup.titleOfSelectedItem ?? config.resourceID

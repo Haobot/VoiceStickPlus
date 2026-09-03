@@ -15,13 +15,12 @@ Hold the front button on the StickS3 to record. When you release it, the desktop
 - Two trigger styles: hold-to-talk (default) and click-to-talk.
 - Double-click gestures (detected on the firmware side): double-click the front button to cancel the active session and inject Enter; double-click the side button to restore the last pending input.
 - Three output targets: paste into the focused app (default), subtitle-only display, and a WeChat input-method mode that decodes Opus to PCM and renders it to a system virtual microphone (e.g. VB-CABLE) so apps like the WeChat input method can use it as an audio source (Windows).
-- LLM translation and refinement; Volcengine hotword/replacement tables, selection-based hotword adding, and candidate hotword mining (Windows).
-- Local speech recognition (Windows): on-device SenseVoice int8 ASR with no cloud key required, plus optional local Qwen3-1.7B text refinement (filler-word cleanup). Models are fetched once via the "Download models..." wizard in Settings (multi-source fallback with resume and SHA-256 verification) and work fully offline afterwards.
+- LLM translation and refinement (Windows + macOS); Volcengine hotword/replacement tables, selection-based hotword adding, and candidate hotword mining (Windows).
 - Air mouse: BMI270 IMU-driven cursor control; while active the front button acts as left click and a side-button single click exits (Windows).
-- Tap-to-arrow: IMU tap detection mapped to arrow keys (`tap_to_arrow`, Windows).
-- MiniEncoderC encoder: its button mirrors the front button, rotation maps to arrow keys with slow (line-by-line) / fast (page) tiers, and button/rotation actions are customizable per device (Windows).
-- Per-device overrides: output, device interaction (IMU wake / tap / air-mouse sensitivity), and encoder settings can be configured per device (tray device submenu, Windows).
-- Second input device (Windows): the Xiaomi Bluetooth Remote 2 Pro (device ID `RC-XXXX`) works alongside the StickS3 — hold its voice key to talk, double-click to inject Enter, with battery level display, per-device output overrides, and suppression of the voice key's side-band F5 keystroke (firmware untouched; the ATVV protocol is implemented entirely on the desktop).
+- Tap-to-arrow: IMU tap detection mapped to arrow keys (`tap_to_arrow`).
+- MiniEncoderC encoder: its button mirrors the front button, rotation maps to arrow keys with slow (line-by-line) / fast (page) tiers, and button/rotation actions are customizable per device.
+- Per-device overrides: output, device interaction (IMU wake / tap / air-mouse sensitivity), and encoder settings can be configured per device (tray device submenu).
+- Second input device: the Xiaomi Bluetooth Remote 2 Pro (device ID `RC-XXXX`) works alongside the StickS3 — hold its voice key to talk, double-click to inject Enter, with battery level display, per-device output overrides, and suppression of the voice key's side-band F5 keystroke (firmware untouched; the ATVV protocol is implemented entirely on the desktop).
 - Multi-device pairing with a floating overlay/subtitles showing recognition progress.
 - Firmware updates: cable-free BLE OTA, plus the VoiceStickFlash COM-port flashing tool on Windows as an unbrick fallback.
 
@@ -177,7 +176,7 @@ Create it from the example at `desktop/macos/Config/config.example.toml`.
 | `[output].transform` | `original` or `translate` |
 | `[output].translation_target` | Target language code, e.g. `en` or `zh-Hans` |
 | `[device.<id>.output]` | Per-device override of transform and translation target |
-| `[device.<id>.interaction]` / `[device.<id>.encoder]` | Per-device overrides of interaction settings (IMU wake / tap / air-mouse sensitivity) and encoder settings (Windows, via the tray device submenu "Interaction Settings…" / "Encoder Settings…") |
+| `[device.<id>.interaction]` / `[device.<id>.encoder]` | Per-device overrides of interaction settings (IMU wake / tap / air-mouse sensitivity) and encoder settings (via the tray device submenu "Interaction Settings…" / "Encoder Settings…") |
 
 Supported Volcengine `resource_id` values: `volc.seedasr.sauc.duration`, `volc.seedasr.sauc.concurrent`, `volc.bigasr.sauc.duration`, `volc.bigasr.sauc.concurrent`.
 

@@ -21,7 +21,7 @@ private struct PairingDevice {
 
 final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CBCentralManagerDelegate, CBPeripheralDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let tableView = NSTableView()
-    private let statusLabel = NSTextField(labelWithString: "Scanning")
+    private let statusLabel = NSTextField(labelWithString: "")
     private let existingDeviceIDs: Set<String>
     /// 已配对条目的外设 UUID 大写集合（macOS paired_device addr 段），
     /// 用于 RC「同一物理设备重复配对」拦截。
@@ -50,10 +50,11 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
             backing: .buffered,
             defer: false
         )
-        window.title = "Pair VoiceStick"
+        window.title = tr(.pairTitle)
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
+        statusLabel.stringValue = tr(.stateScanning)
         buildContent()
     }
 
@@ -81,10 +82,10 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         scrollView.hasVerticalScroller = true
         scrollView.documentView = tableView
 
-        tableView.addTableColumn(column(id: "name", title: "Device", width: 160))
-        tableView.addTableColumn(column(id: "id", title: "ID", width: 70))
-        tableView.addTableColumn(column(id: "type", title: "Type", width: 110))
-        tableView.addTableColumn(column(id: "rssi", title: "RSSI", width: 60))
+        tableView.addTableColumn(column(id: "name", title: tr(.columnDevice), width: 160))
+        tableView.addTableColumn(column(id: "id", title: tr(.columnId), width: 70))
+        tableView.addTableColumn(column(id: "type", title: tr(.pairColumnType), width: 110))
+        tableView.addTableColumn(column(id: "rssi", title: tr(.columnRssi), width: 60))
         tableView.delegate = self
         tableView.dataSource = self
         tableView.target = self
@@ -95,8 +96,8 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         buttonRow.alignment = .centerY
         buttonRow.spacing = 8
 
-        let pairButton = NSButton(title: "Pair", target: self, action: #selector(pairSelectedDevice))
-        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        let pairButton = NSButton(title: tr(.pairButton), target: self, action: #selector(pairSelectedDevice))
+        let cancelButton = NSButton(title: tr(.cancel), target: self, action: #selector(cancel))
         buttonRow.addArrangedSubview(statusLabel)
         buttonRow.addArrangedSubview(NSView())
         buttonRow.addArrangedSubview(pairButton)
@@ -124,10 +125,10 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard !isClosed else { return }
         guard central.state == .poweredOn else {
-            statusLabel.stringValue = "Bluetooth unavailable"
+            statusLabel.stringValue = tr(.bluetoothUnavailable)
             return
         }
-        statusLabel.stringValue = "Scanning"
+        statusLabel.stringValue = tr(.stateScanning)
         central.scanForPeripherals(withServices: nil)
     }
 
@@ -161,7 +162,7 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
             }
             device = PairingDevice(
                 identifier: peripheral.identifier,
-                name: name.isEmpty ? "Xiaomi Remote" : name,
+                name: name.isEmpty ? tr(.deviceTypeXiaomiRemote) : name,
                 deviceID: Self.rcDeviceID(name: name, peripheralUUID: peripheral.identifier),
                 deviceClass: .xiaomiRemote2Pro,
                 rssi: RSSI.intValue
@@ -176,7 +177,7 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         }
         tableView.reloadData()
         restoreSelection(selectedIdentifier)
-        statusLabel.stringValue = devices.isEmpty ? "Scanning" : "\(devices.count) found"
+        statusLabel.stringValue = devices.isEmpty ? tr(.stateScanning) : tr(.foundCount, devices.count)
     }
 
     /// RC 候选 ID：RC-XXXX 名从名称取（与 BleCentral 扫描分类同源，否则配对后
@@ -204,15 +205,17 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         let value: String
         switch tableColumn.identifier.rawValue {
         case "name":
-            value = existingDeviceIDs.contains(device.deviceID) ? "\(device.name) (paired)" : device.name
+            value = existingDeviceIDs.contains(device.deviceID)
+                ? tr(.pairNamePaired, device.name)
+                : device.name
         case "id":
             value = device.deviceID
         case "type":
             switch device.deviceClass {
             case .stickS3:
-                value = "Voice Stick"
+                value = tr(.deviceTypeVoiceStick)
             case .xiaomiRemote2Pro:
-                value = "Xiaomi Remote"
+                value = tr(.deviceTypeXiaomiRemote)
             }
         case "rssi":
             value = "\(device.rssi)"
@@ -225,11 +228,11 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
     @objc private func pairSelectedDevice() {
         let row = tableView.selectedRow
         guard row >= 0, row < devices.count else {
-            statusLabel.stringValue = "Select a device"
+            statusLabel.stringValue = tr(.selectDevice)
             return
         }
         guard pairingPeripheral == nil else {
-            statusLabel.stringValue = "Pairing in progress"
+            statusLabel.stringValue = tr(.pairInProgress)
             return
         }
         let device = devices[row]
@@ -239,11 +242,11 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
             // 同 UUID 已在配对集 → 同一物理设备，不重复发起；
             // 派生 ID 已在配对 ID 集合但 UUID 不同 → SHA-256 派生撞车，拒绝配对。
             if existingPeripheralUUIDs.contains(device.identifier.uuidString.uppercased()) {
-                statusLabel.stringValue = "Already paired"
+                statusLabel.stringValue = tr(.pairAlreadyPaired)
                 return
             }
             if existingDeviceIDs.contains(device.deviceID) {
-                statusLabel.stringValue = "ID \(device.deviceID) conflicts with another paired device"
+                statusLabel.stringValue = tr(.pairIdConflict, device.deviceID)
                 return
             }
         }
@@ -267,7 +270,7 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
     /// 订阅成功即视为配对成功，随后回调并断开临时连接。
     private func startXiaomiPairing(device: PairingDevice) {
         guard let peripheral = peripherals[device.identifier] else {
-            statusLabel.stringValue = "Device lost; keep scanning"
+            statusLabel.stringValue = tr(.pairDeviceLost)
             if let central, central.state == .poweredOn {
                 central.scanForPeripherals(withServices: nil)
             }
@@ -275,13 +278,13 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         }
         pairingDevice = device
         pairingPeripheral = peripheral
-        statusLabel.stringValue = "Pairing \(device.name)..."
+        statusLabel.stringValue = tr(.pairPairingDevice, device.name)
         peripheral.delegate = self
         central?.connect(peripheral)
         pairingTimeoutTimer = Timer.scheduledTimer(
             withTimeInterval: Self.pairingTimeout, repeats: false
         ) { [weak self] _ in
-            self?.failXiaomiPairing("Pairing timed out. Pair manually in System Settings > Bluetooth.")
+            self?.failXiaomiPairing(tr(.pairTimeoutManual))
         }
     }
 
@@ -326,12 +329,12 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         guard peripheral == pairingPeripheral else { return }
-        failXiaomiPairing("Connect failed. Pair manually in System Settings > Bluetooth.")
+        failXiaomiPairing(tr(.pairConnectFailedManual))
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         guard peripheral == pairingPeripheral else { return }
-        failXiaomiPairing("Disconnected during pairing. Pair manually in System Settings > Bluetooth.")
+        failXiaomiPairing(tr(.pairDisconnectedManual))
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -339,7 +342,7 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         let atvvServiceUUID = CBUUID(string: XiaomiAtvvProtocol.serviceUUID)
         guard error == nil,
               let service = (peripheral.services ?? []).first(where: { $0.uuid == atvvServiceUUID }) else {
-            failXiaomiPairing("ATVV service not found. Pair manually in System Settings > Bluetooth.")
+            failXiaomiPairing(tr(.pairAtvvServiceMissingManual))
             return
         }
         peripheral.discoverCharacteristics([
@@ -353,7 +356,7 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         let controlUUID = CBUUID(string: XiaomiAtvvProtocol.controlUUID)
         guard error == nil,
               let control = (service.characteristics ?? []).first(where: { $0.uuid == controlUUID }) else {
-            failXiaomiPairing("ATVV characteristics missing. Pair manually in System Settings > Bluetooth.")
+            failXiaomiPairing(tr(.pairAtvvCharacteristicsMissingManual))
             return
         }
         peripheral.setNotifyValue(true, for: control)
@@ -363,7 +366,7 @@ final class PairDeviceWindowController: NSWindowController, NSWindowDelegate, CB
         guard peripheral == pairingPeripheral,
               characteristic.uuid == CBUUID(string: XiaomiAtvvProtocol.controlUUID) else { return }
         guard error == nil, characteristic.isNotifying else {
-            failXiaomiPairing("Subscribe failed. Pair manually in System Settings > Bluetooth.")
+            failXiaomiPairing(tr(.pairSubscribeFailedManual))
             return
         }
         finishXiaomiPairing(peripheral: peripheral)
