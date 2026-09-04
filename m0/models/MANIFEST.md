@@ -37,3 +37,22 @@
   - `tokenizer/merges.txt` (1.7 MB) sha256=`-`
   - `tokenizer/tokenizer_config.json` (0.0 MB) sha256=`-`
   - `tokenizer/vocab.json` (2.8 MB) sha256=`-`
+
+## funasr_seaco — `funasr-seaco-paraformer-zh`
+
+- 许可证: **Model License Agreement (ModelScope)**（阿里达摩院 FunASR SeACo-Paraformer-large（热词定制化非自回归 ASR），上游遵循 ModelScope 模型协议，商用前须通读协议原文）
+- 状态: 已下载
+- 文件:
+  - `.gitattributes` (0.0 MB) sha256=`-`
+  - `am.mvn` (0.0 MB) sha256=`-`
+  - `asr_example_hotword.wav` (0.3 MB) sha256=`-`
+  - `config.yaml` (0.0 MB) sha256=`-`
+  - `configuration.json` (0.0 MB) sha256=`-`
+  - `example/asr_example.wav` (0.1 MB) sha256=`-`
+  - `example/hotword.txt` (0.0 MB) sha256=`-`
+  - `fig/res.png` (0.2 MB) sha256=`-`
+  - `fig/seaco.png` (0.2 MB) sha256=`-`
+  - `model.pt` (989.8 MB) sha256=`-`
+  - `README.md` (0.0 MB) sha256=`-`
+  - `seg_dict` (8.3 MB) sha256=`-`
+  - `tokens.json` (0.1 MB) sha256=`-`

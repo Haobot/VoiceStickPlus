@@ -70,3 +70,27 @@ edge-tts 音频为标准发音、无背景噪声，等价"安静环境朗读"条
 SenseVoice 的 ITN 会把"下午三点"转成"下午3点"。归一化未实现中文数字等价转换，
 该差异按从严口径计入 CER（daily_03 因此 3.1%）。结论不受影响（总体 CER 2.45% < 5%），
 报告口径说明已如实标注。
+
+## 9. funasr 运行时需要独立的 fbank 特征后端
+
+`AutoModel` 加载即报 ImportError：torchaudio 或 kaldi-native-fallback 二选一。
+选了轻量的 `kaldi-native-fbank`（避免 torchaudio 大包）；Windows + Python 3.12 下
+pip 直装即可。
+
+## 10. funasr 1.4.14 的热词文件格式：每行整行就是一个热词
+
+尝试官方文档提到的 "权重 热词" 格式（如 `20 Kubernetes`）时，日志显示热词列表为
+`['20 Kubernetes', ...]`——**权重数字被当作词的一部分**，未被解析。本版本的权重
+调法不可用（或格式已变）；空格分隔字符串与每行一词文件等价。若需权重调强，
+得读 funasr 源码确认当前版本的真实格式，不能只信二手文档。
+
+## 11. postprocess_hotwords（文本级热词纠正）的阈值敏感与英文错配
+
+funasr 1.4.14 内置了解码后文本级热词纠正（pypinyin 拼音 + rapidfuzz 字符模糊匹配）：
+- `threshold=0.6`：灾难性误替换（"项目"→"梓骞"、"的"→"梓骞"，全文花掉）
+- `threshold=0.85`：中文同音词干净修复（子谦→梓骞、PYTORH→PyTorch）
+- **残余副作用**：英文 ASR 乱码片段（cubontius/sosoa/huggfface）会与"最像的
+  错误英文热词"匹配——cuba native 被替换成 Hugging Face、huggfface 被替换成
+  WebSocket，甚至破坏已正确识别的 WebSocket/SOTA 句（净效应 +2 = 修复 5 − 破坏 3）
+- P1 改进方向：英文替换加严阈值或仅允许拼音级替换；对解码器偏置已命中的热词
+  跳过后处理替换

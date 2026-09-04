@@ -139,11 +139,14 @@ def write_manifest() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group()
     group.add_argument("--all", action="store_true", help="下载全部模型")
     group.add_argument("--only", choices=list(MODELS), help="只下载指定模型")
     parser.add_argument("--manifest-only", action="store_true", help="只重写清单不下载")
     args = parser.parse_args()
+
+    if not any([args.all, args.only, args.manifest_only]):
+        parser.error("请指定 --all / --only KEY / --manifest-only 之一")
 
     if args.manifest_only:
         write_manifest()
