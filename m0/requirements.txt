@@ -1,0 +1,12 @@
+# M0 本地 ASR 引擎验证依赖（全部 Apache-2.0 或 MIT，见 docs/licenses.md）
+# 核心
+sherpa-onnx>=1.13.0
+numpy>=1.26
+soundfile>=0.12
+jiwer>=3.0
+# 录音（可选，装不上可降级为仅 wav 输入）
+sounddevice>=0.4.6
+# 测试音频生成（仅生成阶段联网，识别运行时离线）
+edge-tts>=6.1
+# 开发与测试
+pytest>=8.0

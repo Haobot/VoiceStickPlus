@@ -1,0 +1,398 @@
+{
+  "route": "qwen3_asr",
+  "hotwords": [
+    "Hugging Face",
+    "Kubernetes",
+    "PyTorch",
+    "SOTA",
+    "WebSocket",
+    "凌波科技",
+    "星澜资本",
+    "曜变天目",
+    "梓骞",
+    "若曦"
+  ],
+  "qwen3_no_bias": {
+    "details": [
+      {
+        "id": "hw_kubernetes_01",
+        "hotword": "Kubernetes",
+        "text_gt": "我们打算把整个服务迁移到 Kubernetes 集群上，这样扩容会方便很多。",
+        "text_asr": "我们打算把整个服务迁移到 Kubernetes 集群上，这样扩容会方便很多。",
+        "elapsed_seconds": 0.8502,
+        "audio_seconds": 6.528,
+        "hit": true
+      },
+      {
+        "id": "hw_kubernetes_02",
+        "hotword": "Kubernetes",
+        "text_gt": "Kubernetes 的副本控制器可以保证服务在高并发下依然稳定运行。",
+        "text_asr": "Kubernetes的副本控制器可以保证服务在高并发下依然稳定运行。",
+        "elapsed_seconds": 0.674,
+        "audio_seconds": 6.216,
+        "hit": true
+      },
+      {
+        "id": "hw_websocket_01",
+        "hotword": "WebSocket",
+        "text_gt": "实时消息推送这一块，建议用 WebSocket 实现长连接，比轮询高效多了。",
+        "text_asr": "实时消息推送这一块，建议用Web Socket实现长连接，比轮询高效多了。",
+        "elapsed_seconds": 0.7737,
+        "audio_seconds": 7.032,
+        "hit": true
+      },
+      {
+        "id": "hw_websocket_02",
+        "hotword": "WebSocket",
+        "text_gt": "WebSocket 连接经常莫名断开，后来发现是中间代理的超时设置有问题。",
+        "text_asr": "Web socket连接经常莫名断开，后来发现是中间代理的超时设置有问题。",
+        "elapsed_seconds": 0.7431,
+        "audio_seconds": 6.48,
+        "hit": true
+      },
+      {
+        "id": "hw_sota_01",
+        "hotword": "SOTA",
+        "text_gt": "这篇论文在三个基准数据集上都刷新了 SOTA 纪录，提升非常明显。",
+        "text_asr": "这篇论文在三个基准数据集上都刷新了SOTA记录，提升非常明显。",
+        "elapsed_seconds": 0.7315,
+        "audio_seconds": 6.744,
+        "hit": true
+      },
+      {
+        "id": "hw_sota_02",
+        "hotword": "SOTA",
+        "text_gt": "目前的多模态模型里，这个方案仍然保持着 SOTA 性能。",
+        "text_asr": "目前的多模态模型里，这个方案仍然保持着SOTA性能。",
+        "elapsed_seconds": 0.6182,
+        "audio_seconds": 5.328,
+        "hit": true
+      },
+      {
+        "id": "hw_pytorch_01",
+        "hotword": "PyTorch",
+        "text_gt": "模型的训练代码是用 PyTorch 写的，动态图机制调试起来很方便。",
+        "text_asr": "模型的训练代码是用Pytorch写的，动态图机制调试起来很方便。",
+        "elapsed_seconds": 0.7496,
+        "audio_seconds": 6.192,
+        "hit": true
+      },
+      {
+        "id": "hw_pytorch_02",
+        "hotword": "PyTorch",
+        "text_gt": "PyTorch 的分布式训练框架对多卡场景支持得比较好。",
+        "text_asr": "Pytorch 的分布式训练框架对多卡场景支持的比较好。",
+        "elapsed_seconds": 0.6234,
+        "audio_seconds": 4.896,
+        "hit": true
+      },
+      {
+        "id": "hw_huggingface_01",
+        "hotword": "Hugging Face",
+        "text_gt": "预训练模型都可以从 Hugging Face 上下载，社区贡献非常活跃。",
+        "text_asr": "预训练模型都可以从Hugging Face上下载。社区贡献非常活跃。",
+        "elapsed_seconds": 0.6789,
+        "audio_seconds": 5.88,
+        "hit": true
+      },
+      {
+        "id": "hw_huggingface_02",
+        "hotword": "Hugging Face",
+        "text_gt": "Hugging Face 的模型仓库已经超过百万个了，找模型特别方便。",
+        "text_asr": "HoudiniFace的模型仓库已经超过百万个了，找模型特别方便。",
+        "elapsed_seconds": 0.6769,
+        "audio_seconds": 5.4,
+        "hit": false
+      },
+      {
+        "id": "hw_ziqian_01",
+        "hotword": "梓骞",
+        "text_gt": "这次项目的前端开发由梓骞负责，他有五年多的实战经验。",
+        "text_asr": "这次项目的前端开发由子谦负责，他有五年多的实战经验。",
+        "elapsed_seconds": 0.6474,
+        "audio_seconds": 5.712,
+        "hit": false
+      },
+      {
+        "id": "hw_ziqian_02",
+        "hotword": "梓骞",
+        "text_gt": "梓骞昨天把那个困扰已久的布局问题解决了，方案很优雅。",
+        "text_asr": "子谦昨天把那个困扰已久的布局问题解决了，方案很优雅。",
+        "elapsed_seconds": 0.6147,
+        "audio_seconds": 5.424,
+        "hit": false
+      },
+      {
+        "id": "hw_ruoxi_01",
+        "hotword": "若曦",
+        "text_gt": "若曦设计的这套配色方案获得了客户的一致好评。",
+        "text_asr": "若曦设计的这套配色方案获得了客户的一致好评。",
+        "elapsed_seconds": 0.6007,
+        "audio_seconds": 5.016,
+        "hit": true
+      },
+      {
+        "id": "hw_ruoxi_02",
+        "hotword": "若曦",
+        "text_gt": "会议记录整理好了，若曦已经发到群里大家可以查收。",
+        "text_asr": "会议记录整理好了，若曦已经发到群里，大家可以查收。",
+        "elapsed_seconds": 0.6764,
+        "audio_seconds": 5.064,
+        "hit": true
+      },
+      {
+        "id": "hw_lingbo_01",
+        "hotword": "凌波科技",
+        "text_gt": "凌波科技刚完成了新一轮融资，估值翻了一倍多。",
+        "text_asr": "凌波科技刚完成了新一轮融资，估值翻了一倍多。",
+        "elapsed_seconds": 0.5511,
+        "audio_seconds": 4.92,
+        "hit": true
+      },
+      {
+        "id": "hw_lingbo_02",
+        "hotword": "凌波科技",
+        "text_gt": "这次行业峰会由凌波科技主办，地点在浦东的会展中心。",
+        "text_asr": "这次行业峰会由凌波科技主办，地点在浦东的会展中心。",
+        "elapsed_seconds": 0.658,
+        "audio_seconds": 5.928,
+        "hit": true
+      },
+      {
+        "id": "hw_xinglan_01",
+        "hotword": "星澜资本",
+        "text_gt": "星澜资本重点投资硬科技领域，半导体和机器人是他们的主赛道。",
+        "text_asr": "星澜资本重点投资硬科技领域，半导体和机器人是他们的主赛道。",
+        "elapsed_seconds": 0.7002,
+        "audio_seconds": 6.528,
+        "hit": true
+      },
+      {
+        "id": "hw_xinglan_02",
+        "hotword": "星澜资本",
+        "text_gt": "创始人下周要去见星澜资本的投资团队，准备商业计划书。",
+        "text_asr": "创始人下周要去见新蓝资本的投资团队，准备商业计划书。",
+        "elapsed_seconds": 0.6081,
+        "audio_seconds": 5.496,
+        "hit": false
+      },
+      {
+        "id": "hw_yaobian_01",
+        "hotword": "曜变天目",
+        "text_gt": "这只曜变天目盏是宋代的传世孤品，釉面上的蓝色光晕极其罕见。",
+        "text_asr": "这支耀变天幕盏是宋代的传世孤品，釉面上的蓝色光晕极其罕见。",
+        "elapsed_seconds": 0.8809,
+        "audio_seconds": 6.696,
+        "hit": false
+      },
+      {
+        "id": "hw_yaobian_02",
+        "hotword": "曜变天目",
+        "text_gt": "博物馆这次展出的曜变天目吸引了大量陶瓷爱好者前来观赏。",
+        "text_asr": "博物馆这次展出的“耀变天幕”吸引了大量陶瓷爱好者前来观赏。",
+        "elapsed_seconds": 0.7958,
+        "audio_seconds": 5.568,
+        "hit": false
+      }
+    ],
+    "total": 20,
+    "hits": 14,
+    "misses": 6,
+    "error_rate": 0.3,
+    "median_elapsed": 0.6766,
+    "total_audio_seconds": 117.05,
+    "median_rtf": 0.1151
+  },
+  "qwen3_with_bias": {
+    "details": [
+      {
+        "id": "hw_kubernetes_01",
+        "hotword": "Kubernetes",
+        "text_gt": "我们打算把整个服务迁移到 Kubernetes 集群上，这样扩容会方便很多。",
+        "text_asr": "我们打算把整个服务迁移到 Kubernetes 集群上，这样扩容会方便很多。",
+        "elapsed_seconds": 0.8013,
+        "audio_seconds": 6.528,
+        "hit": true
+      },
+      {
+        "id": "hw_kubernetes_02",
+        "hotword": "Kubernetes",
+        "text_gt": "Kubernetes 的副本控制器可以保证服务在高并发下依然稳定运行。",
+        "text_asr": "Kubernetes的副本控制器可以保证服务在高并发下依然稳定运行。",
+        "elapsed_seconds": 0.6988,
+        "audio_seconds": 6.216,
+        "hit": true
+      },
+      {
+        "id": "hw_websocket_01",
+        "hotword": "WebSocket",
+        "text_gt": "实时消息推送这一块，建议用 WebSocket 实现长连接，比轮询高效多了。",
+        "text_asr": "实时消息推送这一块，建议用 Web Socket 实现长连接，比轮询高效多了。",
+        "elapsed_seconds": 0.8063,
+        "audio_seconds": 7.032,
+        "hit": true
+      },
+      {
+        "id": "hw_websocket_02",
+        "hotword": "WebSocket",
+        "text_gt": "WebSocket 连接经常莫名断开，后来发现是中间代理的超时设置有问题。",
+        "text_asr": "Web Socket连接经常莫名断开，后来发现是中间代理的超时设置有问题。",
+        "elapsed_seconds": 0.7368,
+        "audio_seconds": 6.48,
+        "hit": true
+      },
+      {
+        "id": "hw_sota_01",
+        "hotword": "SOTA",
+        "text_gt": "这篇论文在三个基准数据集上都刷新了 SOTA 纪录，提升非常明显。",
+        "text_asr": "这篇论文在三个基准数据集上都刷新了SOTA记录，提升非常明显。",
+        "elapsed_seconds": 0.7471,
+        "audio_seconds": 6.744,
+        "hit": true
+      },
+      {
+        "id": "hw_sota_02",
+        "hotword": "SOTA",
+        "text_gt": "目前的多模态模型里，这个方案仍然保持着 SOTA 性能。",
+        "text_asr": "目前的多模态模型里，这个方案仍然保持着SOTA性能。",
+        "elapsed_seconds": 0.657,
+        "audio_seconds": 5.328,
+        "hit": true
+      },
+      {
+        "id": "hw_pytorch_01",
+        "hotword": "PyTorch",
+        "text_gt": "模型的训练代码是用 PyTorch 写的，动态图机制调试起来很方便。",
+        "text_asr": "模型的训练代码是用 PyTorch 写的，动态图机制调试起来很方便。",
+        "elapsed_seconds": 0.7395,
+        "audio_seconds": 6.192,
+        "hit": true
+      },
+      {
+        "id": "hw_pytorch_02",
+        "hotword": "PyTorch",
+        "text_gt": "PyTorch 的分布式训练框架对多卡场景支持得比较好。",
+        "text_asr": "PyTorch的分布式训练框架对多卡场景支持的比较好。",
+        "elapsed_seconds": 0.615,
+        "audio_seconds": 4.896,
+        "hit": true
+      },
+      {
+        "id": "hw_huggingface_01",
+        "hotword": "Hugging Face",
+        "text_gt": "预训练模型都可以从 Hugging Face 上下载，社区贡献非常活跃。",
+        "text_asr": "预训练模型都可以从 Hugging Face 上下载，社区贡献非常活跃。",
+        "elapsed_seconds": 0.6302,
+        "audio_seconds": 5.88,
+        "hit": true
+      },
+      {
+        "id": "hw_huggingface_02",
+        "hotword": "Hugging Face",
+        "text_gt": "Hugging Face 的模型仓库已经超过百万个了，找模型特别方便。",
+        "text_asr": "Hugging Face的模型仓库已经超过百万个了，找模型特别方便。",
+        "elapsed_seconds": 0.6191,
+        "audio_seconds": 5.4,
+        "hit": true
+      },
+      {
+        "id": "hw_ziqian_01",
+        "hotword": "梓骞",
+        "text_gt": "这次项目的前端开发由梓骞负责，他有五年多的实战经验。",
+        "text_asr": "这次项目的前端开发由子谦负责，他有五年多的实战经验。",
+        "elapsed_seconds": 0.6694,
+        "audio_seconds": 5.712,
+        "hit": false
+      },
+      {
+        "id": "hw_ziqian_02",
+        "hotword": "梓骞",
+        "text_gt": "梓骞昨天把那个困扰已久的布局问题解决了，方案很优雅。",
+        "text_asr": "子谦昨天把那个困扰已久的布局问题解决了，方案很优雅。",
+        "elapsed_seconds": 0.618,
+        "audio_seconds": 5.424,
+        "hit": false
+      },
+      {
+        "id": "hw_ruoxi_01",
+        "hotword": "若曦",
+        "text_gt": "若曦设计的这套配色方案获得了客户的一致好评。",
+        "text_asr": "若曦设计的这套配色方案获得了客户的一致好评。",
+        "elapsed_seconds": 0.587,
+        "audio_seconds": 5.016,
+        "hit": true
+      },
+      {
+        "id": "hw_ruoxi_02",
+        "hotword": "若曦",
+        "text_gt": "会议记录整理好了，若曦已经发到群里大家可以查收。",
+        "text_asr": "会议记录整理好了，若曦已经发到群里，大家可以查收。",
+        "elapsed_seconds": 0.6315,
+        "audio_seconds": 5.064,
+        "hit": true
+      },
+      {
+        "id": "hw_lingbo_01",
+        "hotword": "凌波科技",
+        "text_gt": "凌波科技刚完成了新一轮融资，估值翻了一倍多。",
+        "text_asr": "凌波科技刚完成了新一轮融资，估值翻了一倍多。",
+        "elapsed_seconds": 0.5925,
+        "audio_seconds": 4.92,
+        "hit": true
+      },
+      {
+        "id": "hw_lingbo_02",
+        "hotword": "凌波科技",
+        "text_gt": "这次行业峰会由凌波科技主办，地点在浦东的会展中心。",
+        "text_asr": "这次行业峰会由凌波科技主办，地点在浦东的会展中心。",
+        "elapsed_seconds": 0.6727,
+        "audio_seconds": 5.928,
+        "hit": true
+      },
+      {
+        "id": "hw_xinglan_01",
+        "hotword": "星澜资本",
+        "text_gt": "星澜资本重点投资硬科技领域，半导体和机器人是他们的主赛道。",
+        "text_asr": "星澜资本重点投资硬科技领域，半导体和机器人是他们的主赛道。",
+        "elapsed_seconds": 0.8545,
+        "audio_seconds": 6.528,
+        "hit": true
+      },
+      {
+        "id": "hw_xinglan_02",
+        "hotword": "星澜资本",
+        "text_gt": "创始人下周要去见星澜资本的投资团队，准备商业计划书。",
+        "text_asr": "创始人下周要去建新蓝资本的投资团队，准备商业计划书。",
+        "elapsed_seconds": 0.6999,
+        "audio_seconds": 5.496,
+        "hit": false
+      },
+      {
+        "id": "hw_yaobian_01",
+        "hotword": "曜变天目",
+        "text_gt": "这只曜变天目盏是宋代的传世孤品，釉面上的蓝色光晕极其罕见。",
+        "text_asr": "这支《耀变天目盏》是宋代的传世孤品，釉面上的蓝色光晕极其罕见。",
+        "elapsed_seconds": 0.9522,
+        "audio_seconds": 6.696,
+        "hit": false
+      },
+      {
+        "id": "hw_yaobian_02",
+        "hotword": "曜变天目",
+        "text_gt": "博物馆这次展出的曜变天目吸引了大量陶瓷爱好者前来观赏。",
+        "text_asr": "博物馆这次展出的“耀变天幕”，吸引了大量陶瓷爱好者前来观赏。",
+        "elapsed_seconds": 0.6765,
+        "audio_seconds": 5.568,
+        "hit": false
+      }
+    ],
+    "total": 20,
+    "hits": 15,
+    "misses": 5,
+    "error_rate": 0.25,
+    "median_elapsed": 0.6746,
+    "total_audio_seconds": 117.05,
+    "median_rtf": 0.1183
+  },
+  "hardware_note": "同 benchmark.py 所用机器，见 docs/benchmark_report.md"
+}
