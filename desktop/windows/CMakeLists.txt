@@ -119,6 +119,7 @@ add_library(voicestick_core
     src/pcm_postprocessor.cc
     src/xiaomi_atvv_protocol.cc
     src/xiaomi_atvv_session.cc
+    src/xiaomi_keymap_interceptor.cc
 )
 
 target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus ${CMAKE_CURRENT_BINARY_DIR})
@@ -156,6 +157,7 @@ add_executable(VoiceStickApp WIN32
     src/shortcut_capture.cc
     src/selection_hotword_manager.cc
     src/voice_f5_suppressor.cc
+    src/xiaomi_keymap_hook.cc
     resources/VoiceStick.rc
 )
 

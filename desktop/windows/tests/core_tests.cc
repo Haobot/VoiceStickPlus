@@ -10,6 +10,7 @@
 #include "xiaomi_atvv_protocol.h"
 #include "xiaomi_atvv_session.h"
 #include "xiaomi_buttons.h"
+#include "xiaomi_keymap_interceptor.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
 
@@ -6226,6 +6227,173 @@ void TestAppConfigXiaomiKeyMap() {
     std::filesystem::remove(temp);
 }
 
+// 按键映射消费端（Doc/Plan/xiaomi-keymap-consumer.md）：kbdhid 翻译特征识别、
+// 佐证窗决策（吞+注入/放行）、按住闩锁与 keyup 关联、注入 VK 序列构造。
+void TestXiaomiKeymapInterceptor() {
+    // ---- 特征识别表：遥控器 12 键的 (VK, 扫描码) 特征 → 按钮候选 ----
+    assert(XiaomiButtonFromVkScan(VK_BROWSER_BACK, 0) == "back");
+    assert(XiaomiButtonFromVkScan(VK_BROWSER_HOME, 0) == "home");
+    assert(XiaomiButtonFromVkScan(VK_HOME, 0) == "home");
+    assert(XiaomiButtonFromVkScan(VK_RETURN, 0) == "ok");
+    assert(XiaomiButtonFromVkScan(VK_UP, 0) == "up");
+    assert(XiaomiButtonFromVkScan(VK_DOWN, 0) == "down");
+    assert(XiaomiButtonFromVkScan(VK_LEFT, 0) == "left");
+    assert(XiaomiButtonFromVkScan(VK_RIGHT, 0) == "right");
+    assert(XiaomiButtonFromVkScan(VK_APPS, 0) == "menu");
+    // tv 与键盘 Grave 同 VK，靠扫描码 0x29 特征 + 佐证归属区分。
+    assert(XiaomiButtonFromVkScan(VK_OEM_3, 0x29) == "tv");
+    assert(XiaomiButtonFromVkScan(VK_OEM_3, 0x02) == std::nullopt);
+    // power 三特征：VK_SLEEP / VK 0xFF（kbdhid 未知键）/ 扫描码 0x5E。
+    assert(XiaomiButtonFromVkScan(VK_SLEEP, 0) == "power");
+    assert(XiaomiButtonFromVkScan(0xFF, 0) == "power");
+    assert(XiaomiButtonFromVkScan(0x41, 0x5E) == "power");
+    assert(XiaomiButtonFromVkScan(VK_VOLUME_UP, 0) == "volume_up");
+    assert(XiaomiButtonFromVkScan(VK_VOLUME_DOWN, 0) == "volume_down");
+    // 非遥控器特征：普通字母/数字/功能键/空扫描码 power 特征不算。
+    assert(XiaomiButtonFromVkScan(0x41, 0) == std::nullopt);
+    assert(XiaomiButtonFromVkScan(VK_F5, 0) == std::nullopt);
+    assert(XiaomiButtonFromVkScan(0, 0x5E) == std::nullopt);
+    // 识别出的候选必在可映射集合内（与 xiaomi_buttons.h 一致）。
+    for (UINT vk : {VK_BROWSER_BACK, VK_BROWSER_HOME, VK_HOME, VK_RETURN, VK_UP,
+                    VK_DOWN, VK_LEFT, VK_RIGHT, VK_APPS, VK_OEM_3, VK_SLEEP,
+                    0xFF, 0x41, VK_VOLUME_UP, VK_VOLUME_DOWN}) {
+        for (UINT scan : {UINT{0}, UINT{0x29}, UINT{0x5E}, UINT{0x02}}) {
+            const auto button = XiaomiButtonFromVkScan(vk, scan);
+            if (button.has_value()) assert(IsXiaomiMappableButton(*button));
+        }
+    }
+
+    // ---- 注入序列：down 修饰键序+主键；up 反序 ----
+    const auto backspace = ParseKeySpec("backspace").value();
+    assert((XiaomiKeymapInjectDownVks(backspace) ==
+           std::vector<UINT>{VK_BACK}));
+    assert((XiaomiKeymapInjectUpVks(backspace) == std::vector<UINT>{VK_BACK}));
+    const auto combo = ParseKeySpec("ctrl+shift+v").value();
+    assert((XiaomiKeymapInjectDownVks(combo) ==
+           std::vector<UINT>{VK_CONTROL, VK_SHIFT, 'V'}));
+    assert((XiaomiKeymapInjectUpVks(combo) ==
+           std::vector<UINT>{'V', VK_SHIFT, VK_CONTROL}));
+    const auto winCombo = ParseKeySpec("win+down").value();
+    assert((XiaomiKeymapInjectDownVks(winCombo) ==
+           std::vector<UINT>{VK_LWIN, VK_DOWN}));
+
+    // ---- 决策状态机 ----
+    const std::map<std::string, std::string> key_map = {
+        {"back", "backspace"}, {"home", "ctrl+shift+v"}, {"tv", "win+down"}};
+    constexpr std::int64_t kNow = 500000;
+    XiaomiKeymapInterceptor interceptor;
+
+    // 无映射按键：佐证窗内也不吞不注入（key_map 未覆盖 up/down 等）。
+    {
+        const auto d = interceptor.OnHookEvent("ok", true, kNow, kNow, key_map);
+        assert(!d.swallow && d.inject.empty());
+    }
+    // 空串显式取消：放行。
+    {
+        XiaomiKeymapInterceptor local;
+        const std::map<std::string, std::string> cancelled{{"back", ""}};
+        const auto d = local.OnHookEvent("back", true, kNow, kNow, cancelled);
+        assert(!d.swallow && d.inject.empty());
+    }
+    // 非法 key_spec 串（配置层已过滤，防御）：放行。
+    {
+        XiaomiKeymapInterceptor local;
+        const std::map<std::string, std::string> bogus{{"back", "not a key"}};
+        const auto d = local.OnHookEvent("back", true, kNow, kNow, bogus);
+        assert(!d.swallow && d.inject.empty());
+    }
+    // 佐证窗内 keydown：吞 + 注入 down 序。
+    {
+        const auto d = interceptor.OnHookEvent("back", true, kNow, kNow - 5,
+                                               key_map);
+        assert(d.swallow);
+        assert((d.inject == std::vector<UINT>{VK_BACK}));
+    }
+    // 无佐证（物理键盘同名键）：放行。用 home 避开上面的 back 按住闩锁
+    //（闩锁中的自动重复免佐证，会被吞）。
+    {
+        const auto d = interceptor.OnHookEvent("home", true, kNow, -1, key_map);
+        assert(!d.swallow && d.inject.empty());
+    }
+    // 佐证过期（back 用 15ms 快窗，16ms 过期）：放行。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto d = local.OnHookEvent("back", true, kNow,
+                                         kNow - 16, key_map);
+        assert(!d.swallow && d.inject.empty());
+    }
+    // tv/home/menu/power 用 60ms 长窗：59ms 命中、61ms 过期。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto hit = local.OnHookEvent("tv", true, kNow, kNow - 59, key_map);
+        assert(hit.swallow);
+        assert((hit.inject == std::vector<UINT>{VK_LWIN, VK_DOWN}));
+        XiaomiKeymapInterceptor local2;
+        const auto miss = local2.OnHookEvent("tv", true, kNow, kNow - 61,
+                                             key_map);
+        assert(!miss.swallow && miss.inject.empty());
+    }
+    // 按住闩锁：吞过 down 后，自动重复 keydown 免佐证直接吞 + 注入。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto first = local.OnHookEvent("back", true, kNow, kNow, key_map);
+        assert(first.swallow);
+        const auto repeat = local.OnHookEvent("back", true, kNow + 500, -1,
+                                              key_map);
+        assert(repeat.swallow);
+        assert((repeat.inject == std::vector<UINT>{VK_BACK}));
+        // 佐证窗已过但键仍按住：闩锁优先于快窗判定。
+        const auto repeat2 = local.OnHookEvent("back", true, kNow + 1000, -1,
+                                               key_map);
+        assert(repeat2.swallow);
+    }
+    // keyup 关联：闩锁中的 keyup 吞 + 注入 up 反序；未闩锁的 keyup 放行。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto down = local.OnHookEvent("home", true, kNow, kNow, key_map);
+        assert(down.swallow);
+        const auto up = local.OnHookEvent("home", false, kNow + 900, -1,
+                                          key_map);
+        assert(up.swallow);
+        assert((up.inject == std::vector<UINT>{'V', VK_SHIFT, VK_CONTROL}));
+        // 闩锁已清：再来的 keyup 放行。
+        const auto up2 = local.OnHookEvent("home", false, kNow + 950, -1,
+                                           key_map);
+        assert(!up2.swallow && up2.inject.empty());
+    }
+    // 放行的 down（无佐证）后的 keyup：同样放行（无闩锁可关联）。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto down = local.OnHookEvent("back", true, kNow, -1, key_map);
+        assert(!down.swallow);
+        const auto up = local.OnHookEvent("back", false, kNow + 10, kNow,
+                                          key_map);
+        assert(!up.swallow && up.inject.empty());
+    }
+    // 未佐证 down（放行）不建立闩锁：其后的重复 keydown 无佐证仍放行。
+    {
+        XiaomiKeymapInterceptor local;
+        assert(!local.OnHookEvent("back", true, kNow, -1, key_map).swallow);
+        assert(!local.OnHookEvent("back", true, kNow + 30, -1, key_map).swallow);
+    }
+    // Reset 清闩锁：卸载/重配后旧按住状态不泄漏。
+    {
+        XiaomiKeymapInterceptor local;
+        assert(local.OnHookEvent("back", true, kNow, kNow, key_map).swallow);
+        local.Reset();
+        const auto after = local.OnHookEvent("back", true, kNow + 10, -1,
+                                             key_map);
+        assert(!after.swallow);
+    }
+    // 未来佐证时间戳（时钟乱序，age<0）不算窗内命中。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto d = local.OnHookEvent("back", true, kNow, kNow + 50,
+                                         key_map);
+        assert(!d.swallow && d.inject.empty());
+    }
+}
+
 // F5 抑制谓词：enabled 且 last>0 且 0<=age<=80ms 时吞，其余一律放行。
 void TestXiaomiF5SuppressPredicate() {
     constexpr std::int64_t kLast = 100000;
@@ -10039,6 +10207,7 @@ int main() {
     TestDeviceIdRcPrefix();
     TestAppConfigXiaomiTable();
     TestAppConfigXiaomiKeyMap();
+    TestXiaomiKeymapInterceptor();
     TestXiaomiF5SuppressPredicate();
     TestCoordinatorXiaomiCapabilityGating();
     TestPcmRingBufferWriteRead();

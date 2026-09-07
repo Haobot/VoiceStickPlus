@@ -19,6 +19,7 @@
 #include "air_mouse_tuning_window.h"
 #include "subtitle_window.h"
 #include "voice_f5_suppressor.h"
+#include "xiaomi_keymap_hook.h"
 #include "voice_stick_coordinator.h"
 
 #include <Windows.h>
@@ -145,6 +146,9 @@ private:
     void RelaunchElevatedAndQuit();
     // 按 config_.xiaomi_suppress_f5 启停 F5 抑制钩子（配置热更入口，幂等）。
     void SyncF5Suppressor();
+    // 按键映射消费端启停/热更：门控「有配对/连接 RC 设备 且 有效 key_map 非空」，
+    // 刷新时机对齐 SyncF5Suppressor（幂等）。
+    void SyncXiaomiKeymapHook();
     // 配置变更统一入口：先同步协调器，再按新配置同步 F5 抑制钩子。
     void ApplyUpdatedConfig();
 
@@ -175,6 +179,9 @@ private:
     // VoiceF5Suppressor 键盘钩子据此在 80ms 窗内吞掉遥控器附带的 F5 按键。
     std::unique_ptr<VoiceF5Suppressor> f5_suppressor_;
     std::atomic<std::int64_t> xiaomi_last_mic_open_ms_{0};
+    // 小米遥控器按键映射消费端：LL 钩子拦截 + Raw Input 佐证 + 注入映射键
+    //（Doc/Plan/xiaomi-keymap-consumer.md）。
+    std::unique_ptr<XiaomiKeymapHook> xiaomi_keymap_hook_;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;
     std::vector<std::string> paired_device_ids_;

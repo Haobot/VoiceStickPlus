@@ -90,3 +90,16 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   gain_db = 18.0
   double_click_ms = 400
   ```
+
+- **按键映射**（Windows，2026-09 起）：`[xiaomi.keys]` 全局默认表 + `[device.<id>.xiaomi.keys]` 按设备覆盖表，键为 12 个可映射按钮 ID（`power`/`up`/`left`/`ok`/`right`/`down`/`back`/`volume_up`/`home`/`volume_down`/`menu`/`tv`；语音键 `mic` 不参与映射），值为 key_spec 快捷键语法（同热键语法，如 `backspace`、`ctrl+shift+v`，见 `key_spec.h`）。空串显式取消该键映射。设备覆盖与全局默认相同的条目不落盘。消费端为 Windows 端 LL 钩子拦截 + Raw Input VID/PID 佐证 + SendInput 注入（设计见 `Doc/Plan/xiaomi-keymap-consumer.md`），未映射的键保持系统原生行为。托盘「按键映射…」对话框编辑（仅对已配对小米遥控器显示）。同型号多台遥控器无法按设备区分时，映射取活跃设备的有效值。
+
+  示例：
+
+  ```toml
+  [xiaomi.keys]
+  back = "backspace"        # 返回键 → 退格删除
+
+  [device.3A7F.xiaomi.keys]
+  home = "win+d"            # 该设备主页键 → 显示桌面
+  menu = ""                 # 该设备菜单键显式取消映射
+  ```

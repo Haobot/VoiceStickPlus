@@ -495,6 +495,8 @@ int Win32App::Run() {
 
         f5_suppressor_ = std::make_unique<VoiceF5Suppressor>();
         SyncF5Suppressor();
+        xiaomi_keymap_hook_ = std::make_unique<XiaomiKeymapHook>();
+        SyncXiaomiKeymapHook();
 
         LogLine("Initializing global hotkey");
         global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
@@ -609,6 +611,8 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         }
         // 连接集变化同步刷新 F5 钩子门控（连接态可见 RC 设备时也视为有小米）。
         SyncF5Suppressor();
+        // 活跃 RC 设备可能变化（key_map 按活跃设备取覆盖），同步刷新映射钩子。
+        SyncXiaomiKeymapHook();
     });
 }
 
@@ -681,6 +685,8 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
         LogLine("Confirmed paired device " + std::string(id_prefix) + device_id);
         // 配对完成即刻刷新 F5 钩子门控（新配对的小米遥控器无需等下次启动/热更）。
         SyncF5Suppressor();
+        // 新配对的小米遥控器即刻生效其按键映射。
+        SyncXiaomiKeymapHook();
     }
     std::string detail = std::string(id_prefix) + device_id + " paired";
     if (info && !info->hardware.empty()) detail += " (" + info->hardware + ")";
@@ -1227,9 +1233,48 @@ void Win32App::SyncF5Suppressor() {
     }
 }
 
+void Win32App::SyncXiaomiKeymapHook() {
+    if (!xiaomi_keymap_hook_) return;
+    // 按需装载：仅「有已配对/已连接 RC 设备 且 有效 key_map 非空」时挂钩。
+    // key_map 非空即用户显式配置了映射（空串显式取消留在表内，由决策层放行），
+    // 不再叠加全局开关。刷新时机与 SyncF5Suppressor 一致。
+    std::optional<std::string> active_rc;
+    for (const auto& dev : connected_devices_) {
+        if (dev.hardware == kHardwareXiaomiRemote2Pro) {
+            active_rc = dev.id;
+            break;
+        }
+    }
+    if (!active_rc.has_value()) {
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.hardware == kHardwareXiaomiRemote2Pro) {
+                active_rc = entry.device_id;
+                break;
+            }
+        }
+    }
+    if (!active_rc.has_value()) {
+        xiaomi_keymap_hook_->Stop();
+        return;
+    }
+    // Raw Input 佐证只有 VID/PID 粒度（同型号多台无法区分），key_map 统一取
+    // 活跃 RC 设备的有效映射（设备覆盖填平后回落全局默认）。
+    auto key_map = config_.XiaomiSettingsForDevice(active_rc).key_map;
+    bool has_mapping = false;
+    for (const auto& [button, spec] : key_map) {
+        if (!spec.empty()) { has_mapping = true; break; }
+    }
+    if (has_mapping) {
+        xiaomi_keymap_hook_->Start(std::move(key_map));
+    } else {
+        xiaomi_keymap_hook_->Stop();
+    }
+}
+
 void Win32App::ApplyUpdatedConfig() {
     if (coordinator_) coordinator_->UpdateConfig(config_);
     SyncF5Suppressor();
+    SyncXiaomiKeymapHook();
 }
 
 bool Win32App::CreateWindowInternal() {

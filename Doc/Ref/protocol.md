@@ -473,8 +473,15 @@ account token); without it the ATVV service is not discoverable.
 
 All keys except the voice key travel over the standard HID service `0x1812`
 (Report ID 1, up to three 16-bit little-endian HID usages per report) and are
-consumed natively by the OS as keyboard/consumer keys — the desktop app does
-not intercept them. The voice key is **not** an ordinary HID key: pressing it
+consumed natively by the OS as keyboard/consumer keys. On Windows the desktop
+app can optionally **rebind** them via the per-device/global key map
+(`[xiaomi.keys]` / `[device.<id>.xiaomi.keys]`, config keys are the 12
+mappable button ids from `xiaomi_buttons.h`): a `WH_KEYBOARD_LL` hook
+swallows the original key and `SendInput`s the mapped shortcut, with device
+attribution proven by a Raw Input (RIDEV_INPUTSINK) correlator that matches
+the HID VID `0x2717`/PID `0x32B8`. Keys without a mapping keep their native
+OS behavior. See `Doc/Plan/xiaomi-keymap-consumer.md` for the design. The
+voice key is **not** an ordinary HID key: pressing it
 makes the remote start an ATVV session (below), and the remote additionally
 emits an F5 keystroke to the OS, which the Windows desktop suppresses while a
 session is starting (config `xiaomi_suppress_f5`).
