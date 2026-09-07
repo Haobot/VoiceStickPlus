@@ -25,7 +25,8 @@
 拦截的三个难题与对策:
 
 1. **LL 钩子(WH_KEYBOARD_LL)拿不到按键来源设备**,无法区分「遥控器的 Home」与「物理键盘的 Home」。
-   对策:**Raw Input(RIDEV_INPUTSINK)佐证**——注册 `(0x01,0x06)` 键盘页 + `(0x0C,0x01)` 消费页,`WM_INPUT` 的 `RAWKEYBOARD` 带 `hDevice`,经 `GetRawInputDeviceInfo(RIDI_DEVICEINFO)` 读 VID/PID(小米 2 Pro:`0x2717`/`0x32B8`)精确归属。佐证信号由独立 Raw Input 线程记录「按钮 → 最近佐证时刻」,LL 钩子里在等待窗内查窗。这是对 MiVibe「WUDF/Frida 直读信号」的**零注入替代**(本项目红线:不引入 Frida)。
+   对策:**Raw Input(RIDEV_INPUTSINK)佐证**——注册 `(0x01,0x06)` 键盘页 + `(0x0C,0x01)` 消费页,`WM_INPUT` 的 `RAWKEYBOARD` 带 `hDevice`,经 `GetRawInputDeviceInfo(RIDI_DEVICENAME)` 取接口路径解析 VID/PID(小米 2 Pro:`0x2717`/`0x32B8`)精确归属。佐证信号由独立 Raw Input 线程记录「按钮 → 最近佐证时刻」,LL 钩子里在等待窗内查窗。这是对 MiVibe「WUDF/Frida 直读信号」的**零注入替代**(本项目红线:不引入 Frida)。
+   > ⚠️ 教训(2026-09-07 真机排查定案):**不能用 `RIDI_DEVICEINFO` 读 VID/PID**——BTHLE 遥控器在 Raw Input 中呈现为 `RIM_TYPEKEYBOARD`,该查询只填 keyboard 联合体成员,`hid.dwVendorId` 恒 0,判定永远失败且无任何报错,佐证层静默失效(表现为映射「录入了但不生效」)。且 BTHLE 接口路径的 VID 字段为**六位**十六进制(`_Dev_VID&012717_PID&32b8_`,前两位疑似 Vendor ID Source 前缀),与 USB HID 名的四位(`VID_2717&PID_32B8`)并存,须按低 16 位比对(见 `XiaomiRawInputNameIsRemote`)。另:同轮排查发现 RC003 遥控器的原生 back 键(VK_BACK/0x0E)存在「LL 钩子可见、焦点应用收不到」现象(记事本实测 6 次按键 0 删字)——吞原键+SendInput 注入的映射路径天然免疫此问题,注入键正常送达。
 2. **WM_INPUT 与 LL 钩子的相对时序未定义**:同一物理输入的 raw 分发与系统队列翻译可能乱序。
    对策:候选键首次 keydown 在钩子内限时等待(tv/home/menu/power 60ms,其余 15ms,对齐 MiVibe 真机参数);超时放行(物理键盘同名键不受影响)。
 3. **按键归属确认后须吞掉原始键**(否则 back 的浏览器后退/方向键的焦点移动等原生副作用泄漏)。
