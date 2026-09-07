@@ -9,16 +9,18 @@
 
 小米遥控器 2 Pro 除语音键外的按键走标准 HID over GATT(0x1812),由 Windows HID 栈原生翻译为键盘/消费键:
 
-| 按钮 | kbdhid 翻译特征(真机事实,MiVibe 验证) |
+| 按钮 | kbdhid 翻译特征(真机事实) |
 |---|---|
-| back | `VK_BROWSER_BACK`(0xA6),焦点应用收到浏览器后退副作用 |
+| back | **双特征**：RC003 实测(RC-6459,2026-09-07 LL 探针采集)= `VK_BACK`(0x08)+ 扫描码 0x0E,即原生 Backspace(与物理键盘 Backspace 同特征,归属靠佐证区分);RC001(MiVibe 记录)= `VK_BROWSER_BACK`(0xA6) |
 | home | `VK_BROWSER_HOME`(0xAC)或 `VK_HOME`(0x24) |
-| ok | `VK_RETURN` |
-| up/down/left/right | `VK_UP`/`VK_DOWN`/`VK_LEFT`/`VK_RIGHT` |
+| ok | `VK_RETURN`(RC-6459 实测:scan 0x1C) |
+| up/down/left/right | `VK_UP`/`VK_DOWN`/`VK_LEFT`/`VK_RIGHT`(RC-6459 实测:扩展键 E0,scan 0x48 等) |
 | menu | `VK_APPS` |
 | tv | `VK_OEM_3`(0xC0)+ 扫描码 0x29(与键盘 Grave 同特征) |
 | power | `VK_SLEEP`(0x5F)或 `VK` 0xFF(未知)或扫描码 0x5E |
 | volume_up/down | `VK_VOLUME_UP`/`VK_VOLUME_DOWN` |
+
+> **RC003 实测勘误(2026-09-07)**:本机 RC-6459(REV&00A4,RC003 类固件)的返回键在系统键盘层**完整可见**(VK_BACK/0x0E,长按 30ms 自动重复),并非最初推断的"被 kbdhid 丢弃"——"丢弃 0xF1"是 RC003 裸 HID usage 0xF1 在 HidOverGatt 翻译层的结局,但该固件最终把返回键以标准 Backspace 呈现。BTHLE HID 服务的 GATT 特征对应用层返回 ACCESS_DENIED(默认访问/FromIdAsync 共享/OpenAsync 共享三路实测均拒),BLE 直读报文路线在系统 HID 栈占用下不可行,无需禁用设备或注入。
 
 拦截的三个难题与对策:
 
@@ -53,13 +55,14 @@
 
 | 场景 | 行为 |
 |---|---|
-| 物理键盘按下与遥控器候选同 VK(Home/方向/`) | 无 Raw Input 佐证 → 放行,不误吞 |
+| 物理键盘按下与遥控器候选同 VK(Backspace/Home/方向/`) | 无 Raw Input 佐证 → 放行,不误吞 |
+| 物理键盘同特征键按住(自动重复流) | 放行闩锁:等待失败确认后 120ms 窗内重复零等待,不阻塞键盘管线 |
 | 佐证窗内恰好同名键并发(键盘+遥控器同键 15/60ms 内) | 极小概率误吞一次,松开即恢复 |
-| 佐证信号乱序迟到(蓝牙抖动) | 首次 keydown 等待窗内命中即吞;超时放行(原始键泄漏一次原生行为) |
+| 佐证信号乱序迟到(蓝牙抖动) | 首次 keydown 等待窗内命中即吞;超时放行(RC003 back 泄漏=一次原生 Backspace,与映射目标等效,无害) |
 | 注入键触发全局热键/其他 LL 钩子 | 注入自带 `LLKHF_INJECTED`,自家两钩子均放行;第三方行为属用户配置责任 |
 | 映射键含修饰键时的系统状态泄漏 | 每次注入 down/up 成对完整序列,不持有修饰键状态 |
 
 ## 4. 测试
 
 - 单测(`core_tests.cc` `TestXiaomiKeymapInterceptor`):特征识别表全量、无映射/空串/非法串放行、佐证窗内吞+注入序列、佐证缺失/过期放行、闩锁自动重复与 keyup 关联、60/15ms 双窗边界、注入 down/up 序与反序
-- 真机验收:配置 `back = "backspace"` → 记事本按返回键删除字符;方向键未配置映射时原生行为不变;物理键盘 Home/方向键不受遥控器映射影响;长按返回键连续删除
+- 真机验收:配置 `back = "backspace"` → 记事本输入文字后按返回键删除字符;方向键未配置映射时原生行为不变;物理键盘 Backspace/Home/方向键不受遥控器映射影响(打字删除无可感知延迟);长按返回键连续删除

@@ -33,6 +33,9 @@ struct XiaomiKeymapDecision {
     bool swallow = false;      // 吞原始键（钩子返回 1，不透传给焦点应用）
     std::vector<UINT> inject;  // 注入的 VK 序列（方向随事件，keydown 注 down 序、
                                // keyup 注 up 反序）；空 = 不注入
+    // true = 本次是「首次 keydown 无佐证放行」：按键归属未定，hook 层应在
+    // 关联等待窗内查佐证后重判（命中则吞+注入）；其余路径一律 false（不等待）。
+    bool needs_correlation = false;
 };
 
 // 消费端决策状态机（纯逻辑，时钟与佐证时刻由外部注入，可单测）。归属佐证模型：
@@ -50,15 +53,25 @@ public:
     // 卸载/重配时清按住闩锁，避免旧按住状态泄漏到新会话。
     void Reset();
 
+    // 放行闰锁补记：hook 层关联等待失败（确认非遥控器）后调用。此后
+    // kRepeatPassWindowMs 窗内该按钮的 keydown 直接放行零等待——否则物理
+    // 键盘与遥控器同特征的键（back=VK_BACK/0x0E 即物理 Backspace）按住时，
+    // 每个自动重复都在钩子里白等佐证窗，阻塞系统键盘管线拖慢打字删除。
+    void RecordPass(std::string_view button, std::int64_t now_ms);
+
     // tv/home/menu/power 佐证等待窗（ms）。这四键与物理键盘冲突面更大且 HID 佐证
     // 事件可能晚到（MiVibe 真机参数），用长窗；其余按钮用快窗。
     static constexpr std::int64_t kCorrelateWindowMs = 60;
     static constexpr std::int64_t kFastWindowMs = 15;
+    // 放行闰锁窗（ms）：覆盖物理键盘自动重复周期（最长 ~50ms @30/s）+ 余量。
+    static constexpr std::int64_t kRepeatPassWindowMs = 120;
 
 private:
     bool IsHeldSwallowed(std::string_view button) const;
     // 按住序列已被吞的按钮集（keyup 关联与自动重复免佐证）。
     std::vector<std::string> held_swallowed_;
+    // 放行闰锁（按钮 → 最近确认放行时刻）：窗内同按钮 keydown 免佐证等待。
+    std::vector<std::pair<std::string, std::int64_t>> last_pass_;
 };
 
 } // namespace voicestick

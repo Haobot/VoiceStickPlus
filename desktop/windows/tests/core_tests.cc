@@ -6247,7 +6247,12 @@ void TestAppConfigXiaomiKeyMap() {
 // 佐证窗决策（吞+注入/放行）、按住闩锁与 keyup 关联、注入 VK 序列构造。
 void TestXiaomiKeymapInterceptor() {
     // ---- 特征识别表：遥控器 12 键的 (VK, 扫描码) 特征 → 按钮候选 ----
+    // back 双特征：RC003 真机实测（VK_BACK/0x0E，本机 RC-6459，2026-09-07）+
+    // RC001 消费页翻译（VK_BROWSER_BACK，MiVibe 记录）。VK_BACK 与物理键盘
+    // Backspace 同特征，归属靠 Raw Input 佐证区分（决策层用例覆盖）。
+    assert(XiaomiButtonFromVkScan(VK_BACK, 0x0E) == "back");
     assert(XiaomiButtonFromVkScan(VK_BROWSER_BACK, 0) == "back");
+    assert(XiaomiButtonFromVkScan(VK_BACK, 0) == std::nullopt);
     assert(XiaomiButtonFromVkScan(VK_BROWSER_HOME, 0) == "home");
     assert(XiaomiButtonFromVkScan(VK_HOME, 0) == "home");
     assert(XiaomiButtonFromVkScan(VK_RETURN, 0) == "ok");
@@ -6270,10 +6275,10 @@ void TestXiaomiKeymapInterceptor() {
     assert(XiaomiButtonFromVkScan(VK_F5, 0) == std::nullopt);
     assert(XiaomiButtonFromVkScan(0, 0x5E) == std::nullopt);
     // 识别出的候选必在可映射集合内（与 xiaomi_buttons.h 一致）。
-    for (UINT vk : {VK_BROWSER_BACK, VK_BROWSER_HOME, VK_HOME, VK_RETURN, VK_UP,
-                    VK_DOWN, VK_LEFT, VK_RIGHT, VK_APPS, VK_OEM_3, VK_SLEEP,
-                    0xFF, 0x41, VK_VOLUME_UP, VK_VOLUME_DOWN}) {
-        for (UINT scan : {UINT{0}, UINT{0x29}, UINT{0x5E}, UINT{0x02}}) {
+    for (UINT vk : {VK_BACK, VK_BROWSER_BACK, VK_BROWSER_HOME, VK_HOME, VK_RETURN,
+                    VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_APPS, VK_OEM_3,
+                    VK_SLEEP, 0xFF, 0x41, VK_VOLUME_UP, VK_VOLUME_DOWN}) {
+        for (UINT scan : {UINT{0}, UINT{0x0E}, UINT{0x29}, UINT{0x5E}, UINT{0x02}}) {
             const auto button = XiaomiButtonFromVkScan(vk, scan);
             if (button.has_value()) assert(IsXiaomiMappableButton(*button));
         }
@@ -6407,6 +6412,52 @@ void TestXiaomiKeymapInterceptor() {
         const auto d = local.OnHookEvent("back", true, kNow, kNow + 50,
                                          key_map);
         assert(!d.swallow && d.inject.empty());
+    }
+    // needs_correlation：仅「首次 keydown 无佐证放行」需要关联等待重判；
+    // 吞路径/闰锁重复/keyup/无映射一律 false（hook 层不等待）。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto pass = local.OnHookEvent("back", true, kNow, -1, key_map);
+        assert(!pass.swallow && pass.needs_correlation);
+        const auto hit = local.OnHookEvent("home", true, kNow, kNow, key_map);
+        assert(hit.swallow && !hit.needs_correlation);
+        const auto repeat = local.OnHookEvent("home", true, kNow + 50, -1,
+                                              key_map);
+        assert(repeat.swallow && !repeat.needs_correlation);
+        const auto up = local.OnHookEvent("home", false, kNow + 60, -1,
+                                          key_map);
+        assert(up.swallow && !up.needs_correlation);
+        const auto unmapped = local.OnHookEvent("ok", true, kNow, kNow,
+                                                key_map);
+        assert(!unmapped.swallow && !unmapped.needs_correlation);
+    }
+    // 放行闰锁（物理键盘同特征键保护）：无佐证放行经 RecordPass 补记后，
+    // kRepeatPassWindowMs 窗内的重复 keydown 直接放行（needs_correlation=false，
+    // hook 层零等待——否则物理 Backspace 按住删除时每个自动重复都阻塞键盘
+    // 管线 15ms）；窗外恢复佐证判定。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto first = local.OnHookEvent("back", true, kNow, -1, key_map);
+        assert(!first.swallow && first.needs_correlation);
+        local.RecordPass("back", kNow + 16);  // hook 等待失败后补记
+        const auto repeat = local.OnHookEvent("back", true, kNow + 40, -1,
+                                              key_map);
+        assert(!repeat.swallow && !repeat.needs_correlation);
+        const auto repeatUp = local.OnHookEvent("back", false, kNow + 60, -1,
+                                                key_map);
+        assert(!repeatUp.swallow && !repeatUp.needs_correlation);
+        // 窗外（>kRepeatPassWindowMs）恢复：遥控器佐证命中正常吞。
+        const auto late = local.OnHookEvent(
+            "back", true,
+            kNow + 16 + XiaomiKeymapInterceptor::kRepeatPassWindowMs + 1,
+            kNow + 16 + XiaomiKeymapInterceptor::kRepeatPassWindowMs + 1,
+            key_map);
+        assert(late.swallow);
+        // Reset 清放行闰锁。
+        local.Reset();
+        const auto after = local.OnHookEvent("back", true, kNow + 500, -1,
+                                             key_map);
+        assert(!after.swallow && after.needs_correlation);
     }
 }
 

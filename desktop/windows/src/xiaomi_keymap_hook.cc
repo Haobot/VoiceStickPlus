@@ -160,17 +160,19 @@ LRESULT CALLBACK XiaomiKeymapHook::LowLevelKeyboardProc(int code,
         return CallNextHookEx(nullptr, code, w_param, l_param);
     }
     const std::int64_t now = NowSteadyMs();
-    // 快路径：佐证已先行到达（典型时序），零等待决策；未命中且是 keydown 时
-    // 关联等待兜底（keyup/重复不等待：闩锁由 interceptor 维护）。
+    // 快路径：佐证已先行到达（典型时序），零等待决策；未命中且需要关联
+    //（首次 keydown 无佐证）时限时等待兜底——等待失败确认是物理键盘同特征
+    // 键，补记放行闩锁，重复流不再等待（防阻塞键盘管线拖慢打字）。
     XiaomiKeymapDecision decision = self->interceptor_.OnHookEvent(
         *button, is_down, now, self->LoadSignalMs(*button), *key_map);
-    if (!decision.swallow && is_down) {
-        const bool matched = self->WaitForSignal(
-            *button, now, XiaomiKeymapCorrelateWindowMs(*button));
-        if (matched) {
+    if (!decision.swallow && decision.needs_correlation && is_down) {
+        if (self->WaitForSignal(*button, now,
+                                XiaomiKeymapCorrelateWindowMs(*button))) {
             decision = self->interceptor_.OnHookEvent(
                 *button, is_down, NowSteadyMs(), self->LoadSignalMs(*button),
                 *key_map);
+        } else {
+            self->interceptor_.RecordPass(*button, NowSteadyMs());
         }
     }
     if (!decision.swallow) {

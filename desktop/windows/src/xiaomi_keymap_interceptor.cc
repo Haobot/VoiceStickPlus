@@ -15,6 +15,11 @@ struct VkScanTrait {
 };
 
 constexpr VkScanTrait kTraits[] = {
+    // back 双特征：RC003（RC-6459 真机实测 2026-09-07）kbdhid 原生翻译为标准
+    // Backspace（VK_BACK + 扫描码 0x0E，与物理键盘 Backspace 同特征，归属靠
+    // Raw Input 佐证区分，勿据此吞物理键盘）；RC001 固件走消费页翻译
+    // VK_BROWSER_BACK（MiVibe 记录），两特征都归 back。
+    {VK_BACK, 0x0E, "back"},
     {VK_BROWSER_BACK, 0, "back"},
     {VK_BROWSER_HOME, 0, "home"},
     {VK_HOME, 0, "home"},
@@ -117,12 +122,24 @@ XiaomiKeymapDecision XiaomiKeymapInterceptor::OnHookEvent(
         return decision;
     }
 
+    // 放行闩锁：上次确认放行（物理键盘同特征键）的重复流直接放行零等待，
+    // 窗外恢复正常判定。
+    for (const auto& [passed, at] : last_pass_) {
+        if (passed == button && now_ms - at <= kRepeatPassWindowMs &&
+            at <= now_ms) {
+            return decision;
+        }
+    }
+
     // 首次 keydown：佐证窗内判定归属。signal 在未来（时钟乱序）不算命中。
     const std::int64_t window =
         IsLongWindowButton(button) ? kCorrelateWindowMs : kFastWindowMs;
     const bool correlated =
         signal_ms >= 0 && signal_ms <= now_ms && now_ms - signal_ms <= window;
-    if (!correlated) return decision;  // 物理键盘同名键：放行
+    if (!correlated) {
+        decision.needs_correlation = true;  // hook 层关联等待后重判
+        return decision;
+    }
 
     held_swallowed_.emplace_back(button);
     decision.swallow = true;
@@ -130,6 +147,20 @@ XiaomiKeymapDecision XiaomiKeymapInterceptor::OnHookEvent(
     return decision;
 }
 
-void XiaomiKeymapInterceptor::Reset() { held_swallowed_.clear(); }
+void XiaomiKeymapInterceptor::RecordPass(std::string_view button,
+                                         std::int64_t now_ms) {
+    for (auto& [passed, at] : last_pass_) {
+        if (passed == button) {
+            at = now_ms;
+            return;
+        }
+    }
+    last_pass_.emplace_back(std::string(button), now_ms);
+}
+
+void XiaomiKeymapInterceptor::Reset() {
+    held_swallowed_.clear();
+    last_pass_.clear();
+}
 
 } // namespace voicestick
