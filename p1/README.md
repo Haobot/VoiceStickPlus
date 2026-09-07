@@ -17,9 +17,10 @@
     勾选纠正对保存，错读形式作为读音变体入库（source=correction），下次同发音直接纠正。
 - **AI 改写**：默认规则版（去口癖/叠字折叠/标点规整）；可选腾讯混元（配置凭据后自动启用）。
 - **文本注入**：剪贴板 + Ctrl+V 到当前焦点窗口。
-- **系统托盘**（第三迭代）：纯 ctypes 零新依赖（Shell_NotifyIconW）；右键菜单
-  状态行（热词库条数动态）+ 退出——退出经 Tk after 切回主线程收尾（注销热键、
-  删托盘图标、销毁 Tk），进程树干净退出。
+- **系统托盘**（第三迭代）：纯 ctypes 零新依赖（Shell_NotifyIconW）；右键菜单：
+  状态行（热词库条数动态）、**监听热键开关**（暂停后全局热键不再抢键）、
+  **开机自启开关**（HKCU Run + pythonw 无窗口）、退出——退出经 Tk after 切回
+  主线程收尾（注销热键、删托盘图标、销毁 Tk），进程树干净退出。
 
 ## 快速开始
 
@@ -69,7 +70,7 @@ src/p1/
 ## 测试与验收
 
 ```bash
-# 单元/集成测试（115 个，无凭据/模型时自动 SKIP 相关项）
+# 单元/集成测试（125 个，无凭据/模型时自动 SKIP 相关项）
 ../m0/.venv/Scripts/python.exe -m pytest tests/ -q
 
 # 全真链路自检（真实 wav → 识别 → 纠正 → 改写 → 剪贴板，不粘贴）
@@ -89,6 +90,10 @@ src/p1/
 
 # 仅注入两个入口热键（KEYEVENTF_SCANCODE，组合键 VK 注入不触发 add_hotkey）
 ../m0/.venv/Scripts/python.exe scripts/inject_entries.py add|confirm
+
+# 托盘菜单开关一体化验收（鼠标点菜单项→暂停时 F8 不响应→自启注册表取证；
+# 需主程序运行中，参数 = 持有 VoiceStickP1TrayWnd 窗口的 python 进程 pid）
+../m0/.venv/Scripts/python.exe scripts/accept_tray.py <GUI_PID>
 ```
 
 ## 已知限制

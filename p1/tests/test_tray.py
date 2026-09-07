@@ -45,6 +45,21 @@ def test_未知命令id返回None动作():
     assert menu.action_for(999) is None
 
 
+def test_勾选态菜单项_默认不勾():
+    menu = TrayMenu()
+    item = menu.add("监听热键", action="toggle_listen")
+    assert item.checked is False
+
+
+def test_勾选态项_通过items序列读取():
+    menu = TrayMenu()
+    menu.add("监听热键", action="toggle_listen", checked=True)
+    menu.add("开机自启", action="toggle_autostart", checked=False)
+    items = menu.items()
+    assert items[0].checked is True
+    assert items[1].checked is False
+
+
 def test_热词库条数刷新_重建菜单保持动作绑定():
     """状态行条数动态变化：以同 action 重建，回调绑定不丢。"""
     menu = TrayMenu()

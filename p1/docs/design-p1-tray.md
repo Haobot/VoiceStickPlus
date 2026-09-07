@@ -51,5 +51,21 @@ src/p1/
 ## 5. 明确不做（本迭代）
 
 - 托盘左键双击开设置窗（设置 UI 是 P2）
-- 开机自启、暂停/恢复监听开关（P2）
 - 图标状态变化（录音中变色等，悬浮条已表达状态）
+
+## 6. 第二批增强：菜单开关（同迭代追加）
+
+托盘不只是退出入口，补两个高频开关：
+
+- **暂停/恢复监听**（toggle_listen）：不用语音时热键不再全局抢键（PTT 键如 F8 在
+  其他应用有用途）。实现为 HotkeyListener 标志位短路所有回调——**不重注册钩子**
+  （unhook/rehook 有同键双钩子 KeyError 的历史风险），暂停态写入 tooltip。
+- **开机自启**（toggle_autostart）：HKCU `...\CurrentVersion\Run` 写
+  `VoiceStickP1` 值 = pythonw + main.py 绝对路径（pythonw 无控制台窗口；
+  venv Scripts 下无 pythonw 时回退 python）。main() 开头 os.chdir 到脚本目录
+  ——Run 键启动 cwd 是系统目录，config 相对路径（../m0/models）会解析错。
+- 菜单勾选态：TrayItem.checked → AppendMenuW MF_CHECKED；menu_factory 每次
+  弹出重建，勾选态天然动态。
+
+测试：hotkey pause 短路（白盒直调 handler）；TrayItem.checked 纯单测；
+autostart 真注册表读写后还原。

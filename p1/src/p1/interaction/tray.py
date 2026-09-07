@@ -36,6 +36,7 @@ class TrayItem:
     action: str = ""           # 空 = 无动作（状态行/占位）
     enabled: bool = True
     cmd_id: int = 0            # win32 菜单命令 id（add 时分配）
+    checked: bool = False      # 勾选态（MF_CHECKED，开关项用）
 
 
 class TrayMenu:
@@ -48,9 +49,10 @@ class TrayMenu:
         self._items: list[TrayItem] = []
         self._separators: set[int] = set()   # 分隔线插在哪个项索引之前
 
-    def add(self, label: str, action: str = "", enabled: bool = True) -> TrayItem:
+    def add(self, label: str, action: str = "", enabled: bool = True,
+            checked: bool = False) -> TrayItem:
         item = TrayItem(label=label, action=action, enabled=enabled,
-                        cmd_id=len(self._items) + 1)
+                        cmd_id=len(self._items) + 1, checked=checked)
         self._items.append(item)
         return item
 
@@ -196,6 +198,7 @@ def _setup_prototypes() -> None:
         wt.HMENU, wt.UINT, ctypes.c_int, ctypes.c_int,
         ctypes.c_int, wt.HWND, ctypes.c_void_p)
     user32.TrackPopupMenu.restype = ctypes.c_int
+    user32.GetCursorPos.argtypes = (ctypes.POINTER(wt.POINT),)
     user32.DestroyMenu.argtypes = (wt.HMENU,)
     user32.CreateIcon.argtypes = (wt.HINSTANCE, ctypes.c_int, ctypes.c_int,
                                   wt.UINT, wt.UINT, ctypes.c_void_p,
@@ -237,6 +240,15 @@ class TrayIcon:
 
     def stop(self) -> None:
         self._post_quit()
+
+    def set_tooltip(self, tooltip: str) -> None:
+        """动态更新悬停提示（如暂停态），任意线程可调（NIM_MODIFY 线程安全）。"""
+        self._tooltip = tooltip
+        nid = getattr(self, "_nid", None)
+        if nid is not None:
+            nid.szTip = tooltip
+            ctypes.windll.shell32.Shell_NotifyIconW(
+                1, ctypes.byref(nid))               # NIM_MODIFY
 
     # ---- 内部：全部运行在托盘线程 ----
 
@@ -308,11 +320,15 @@ class TrayIcon:
                 flags = 0x0                                    # MF_STRING
                 if not item.enabled:
                     flags |= 0x1                               # MF_GRAYED
+                if item.checked:
+                    flags |= 0x8                               # MF_CHECKED
                 user32.AppendMenuW(hmenu, flags, item.cmd_id, item.label)
         # 经典坑（KB135788）：不置前台则点击菜单外不消失
         user32.SetForegroundWindow(hwnd)
+        pt = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
         cmd = user32.TrackPopupMenu(
-            hmenu, 0x100, 0, 0, 0, hwnd, None)                 # TPM_RETURNCMD
+            hmenu, 0x100, pt.x, pt.y, 0, hwnd, None)            # TPM_RETURNCMD，光标处弹出
         user32.PostMessageW(hwnd, 0x0001, 0, 0)                # WM_NULL 收尾
         user32.DestroyMenu(hmenu)
         if cmd:
