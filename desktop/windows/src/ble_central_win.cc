@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "ble_protocol.h"
 #include "log.h"
+#include "pair_device_helper.h"
 #include "xiaomi_atvv_protocol.h"
 
 #include <winrt/Windows.Devices.Enumeration.h>
@@ -475,6 +476,62 @@ void BleCentralWin::ConnectPairedDevice(const std::string& device_id,
     ConnectDeviceAsync(bluetooth_address, address_kind,
                        name.empty() ? std::string(id_prefix) + device_id : name, device_id,
                        device_class);
+}
+
+namespace {
+
+// 前置声明：定义于本文件后部，与服务发现 stale bond 恢复路径共用。
+winrt::Windows::Foundation::IAsyncOperation<bool> TryUnpairAsync(winrt::hstring device_id);
+
+} // namespace
+
+winrt::fire_and_forget BleCentralWin::UnpairOsBondAsync(
+    std::string device_id,
+    std::uint64_t bluetooth_address,
+    std::function<void(bool)> completion) {
+    // 「忘记设备」的 OS 侧清理（见 Doc/Plan/device-forget-os-unpair.md）：不依赖
+    // 在连会话（调用前会话已拆），统一按地址枚举系统配对记录，VS/RC 两类通用。
+    if (bluetooth_address == 0 || !completion) co_return;
+    try {
+        constexpr wchar_t kDeviceAddressProp[] = L"System.DeviceInterface.Bluetooth.DeviceAddress";
+        const auto selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true);
+        // FindAllAsync 附加属性参数只收 initializer_list/右值 vector（param::
+        // async_iterable 约束），const 左值 vector 无法匹配重载。
+        const auto infos = co_await DeviceInformation::FindAllAsync(
+            selector, {winrt::hstring{kDeviceAddressProp}});
+        for (const auto& info : infos) {
+            std::optional<std::uint64_t> info_address;
+            try {
+                const auto value = info.Properties().Lookup(kDeviceAddressProp);
+                if (value) {
+                    info_address = ParseBluetoothAddressString(
+                        winrt::to_string(winrt::unbox_value<winrt::hstring>(value)));
+                }
+            } catch (...) {
+                // 该接口无地址属性（非蓝牙设备容器），跳过。
+                continue;
+            }
+            if (!info_address.has_value() || *info_address != bluetooth_address) continue;
+            // 同一物理地址可能枚举出多条接口（GATT/HID/电池各一条），UnpairAsync
+            // 作用于设备容器，仅对首条命中执行。
+            LogBleLine("os unpair: removing Windows pairing of " +
+                       FormatBluetoothAddress(bluetooth_address) + " (device " + device_id + ")");
+            const bool ok = co_await TryUnpairAsync(info.Id());
+            DispatchToUiThread([completion, ok]() { completion(ok); });
+            co_return;
+        }
+        LogBleLine("os unpair: no Windows pairing record of " +
+                   FormatBluetoothAddress(bluetooth_address) + " (device " + device_id +
+                   "); treating as done");
+        DispatchToUiThread([completion]() { completion(true); });
+    } catch (const winrt::hresult_error& error) {
+        LogBleLine("os unpair: enumeration failed hr=" + FormatHresult(error.code()) +
+                   " (device " + device_id + ")");
+        DispatchToUiThread([completion]() { completion(false); });
+    } catch (...) {
+        LogBleLine("os unpair: unknown exception (device " + device_id + ")");
+        DispatchToUiThread([completion]() { completion(false); });
+    }
 }
 
 void BleCentralWin::SendUiState(const std::string& state,

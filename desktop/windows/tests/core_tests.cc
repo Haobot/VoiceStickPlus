@@ -792,6 +792,22 @@ void TestPairDeviceHelpers() {
         assert(!merged_reverse.front().is_temporary_candidate);
         assert(merged_reverse.front().device_id == "D63C");
     }
+
+    // OS bond 清理按地址匹配 DeviceInformation：解析 Windows 地址属性字符串
+    //（格式与 FormatBluetoothAddress 互逆，大小写/首尾空白/横线分隔容错）。
+    assert(ParseBluetoothAddressString("AA:BB:CC:DD:EE:FF").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("aa:bb:cc:dd:ee:ff").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("  AA:BB:CC:DD:EE:FF  ").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("00:00:00:00:00:00").value() == 0ull);
+    assert(ParseBluetoothAddressString("AA-BB-CC-DD-EE-FF").value() == 0xAABBCCDDEEFFull);
+    assert(!ParseBluetoothAddressString("").has_value());
+    assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE").has_value());
+    assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE:FF:00").has_value());
+    assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE:GG").has_value());
+    assert(!ParseBluetoothAddressString("AABBCCDDEEFF").has_value());
+    assert(!ParseBluetoothAddressString("A:BB:CC:DD:EE:FF").has_value());
+    assert(!ParseBluetoothAddressString("AA: BB:CC:DD:EE:FF").has_value());
+    assert(!ParseBluetoothAddressString("AA::CC:DD:EE:FF").has_value());
 }
 
 void TestPairingAdvertisementClassify() {

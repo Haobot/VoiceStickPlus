@@ -1010,11 +1010,29 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                                      [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
                     const bool is_xiaomi = entry_it != config_.paired_devices.end() &&
                                            entry_it->hardware == kHardwareXiaomiRemote2Pro;
+                    // OS bond 清理按地址匹配系统配对记录，删除前先取地址
+                    //（RemovePairedDevice 后迭代器失效）。
+                    const std::uint64_t os_unpair_address =
+                        entry_it != config_.paired_devices.end() ? entry_it->bluetooth_address : 0;
                     coordinator_->RemovePairedDevice(device_id);
                     config_.RemovePairedDevice(device_id);
                     // 忘掉最后一台 RC 设备时卸载 F5 键盘钩子（按需装载的逆操作）。
                     SyncF5Suppressor();
-                    LogLine("Forgot device " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id);
+                    const std::string label = std::string(is_xiaomi ? "RC-" : "VS-") + device_id;
+                    LogLine("Forgot device " + label);
+                    // 同步清除 Windows 系统级配对记录：设备不再残留于系统蓝牙
+                    // 设备列表，用户无需再去系统设置删除（失败时状态栏兜底提示）。
+                    if (ble_central_ && os_unpair_address != 0) {
+                        ble_central_->UnpairOsBondAsync(device_id, os_unpair_address,
+                                                        [this, label](bool ok) {
+                                                            SetStatus(ok ? "Forgot " + label +
+                                                                      " (removed from Windows Bluetooth)"
+                                                                        : "Forgot " + label +
+                                                                      "; remove it in Windows Bluetooth settings");
+                                                        });
+                    } else {
+                        SetStatus("Forgot device " + label);
+                    }
                 }
             } else if (cmd >= kMenuUpdateFirmwareBase && cmd <= kMenuUpdateFirmwareEnd) {
                 std::size_t index = cmd - kMenuUpdateFirmwareBase;
