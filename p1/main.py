@@ -23,6 +23,7 @@ from p1.interaction.hotkey import HotkeyListener  # noqa: E402
 from p1.interaction.injector import ClipboardInjector  # noqa: E402
 from p1.interaction.overlay import OverlayApp  # noqa: E402
 from p1.interaction.selection import SelectionReader  # noqa: E402
+from p1.interaction.tray import TrayIcon, TrayMenu  # noqa: E402
 from p1.orchestration.pipeline import Pipeline  # noqa: E402
 from p1.orchestration.session import RecordingSession  # noqa: E402
 from p1.rewrite.rewriter import build_rewriter  # noqa: E402
@@ -63,13 +64,31 @@ def build_application(cfg) -> tuple[OverlayApp, HotkeyListener]:
              "框选添加[%s] 确认口述[%s]",
              store.count(), cfg.rewrite_provider if rewriter else "关闭",
              cfg.push_to_talk, cfg.add_selection_key, cfg.confirm_recent_key)
-    return overlay, hotkeys
+    return overlay, hotkeys, store
 
 
 def main() -> int:
     cfg = load_config()
-    overlay, hotkeys = build_application(cfg)
+    overlay, hotkeys, store = build_application(cfg)
     hotkeys.start()
+
+    # 托盘退出链路：托盘线程回调 → 经 Tk after 切回主线程收尾
+    # （root.destroy / keyboard.unhook 都必须在主线程）
+    def request_quit() -> None:
+        log.info("托盘菜单退出")
+        overlay.root().after(0, _shutdown)
+
+    def _shutdown() -> None:
+        hotkeys.stop()
+        tray.stop()
+        overlay.root().destroy()
+
+    tray = TrayIcon(
+        menu_factory=lambda: _build_tray_menu(store),
+        on_action=lambda action: action == "quit" and request_quit(),
+        tooltip="VoiceStick P1")
+    tray.start()
+
     log.info("VoiceStick P1 已启动：按住 %s 说话，松手出字", cfg.push_to_talk)
     try:
         overlay.run()  # tkinter mainloop（主线程阻塞）
@@ -77,7 +96,17 @@ def main() -> int:
         log.info("收到退出信号")
     finally:
         hotkeys.stop()
+        tray.stop()
     return 0
+
+
+def _build_tray_menu(store: HotwordStore) -> TrayMenu:
+    menu = TrayMenu()
+    menu.add("VoiceStick P1 运行中", action="", enabled=False)
+    menu.add(f"热词库 {store.count()} 条", action="", enabled=False)
+    menu.add_separator()
+    menu.add("退出", action="quit")
+    return menu
 
 
 if __name__ == "__main__":
