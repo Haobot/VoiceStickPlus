@@ -102,3 +102,50 @@ python -m venv .venv                     # 或指定 Python 3.12
 
 识别链路（transcribe / benchmark / eval / hotword_*）只读取本地权重与本地音频，
 无任何网络请求。唯一联网环节是测试音频生成（edge-tts）与模型下载脚本。
+
+---
+
+## 引擎配置界面与本地/云端闭环评测（扩展任务）
+
+对应需求：本地引擎与云端 ASR（腾讯云一句话识别）切换配置界面 + 同一测试集的
+自动化闭环对比（效率/准确度/综合）+ 评估报告。设计见 `docs/design-engine-switch.md`。
+
+### 引擎一览（Provider 注册表）
+
+| 引擎名 | 类型 | 说明 |
+|---|---|---|
+| `local_sense_voice` | 本地 | SenseVoice-Small int8（sherpa-onnx，主基线） |
+| `local_seaco` | 本地 | SeACo-Paraformer 双层热词管线（模型偏置 + 后处理） |
+| `cloud_tencent` | 云端 | 腾讯云一句话识别 16k_zh（同步 HTTPS，端到端含网络） |
+| `cloud_tencent_hotword` | 云端 | 同上 + HotwordList 临时热词表（与 SeACo 同一份 hotwords.txt） |
+
+凭据三级解析（env `TENCENT_SECRET_ID/KEY/APPID` > `m0/config.toml [cloud.tencent]`
+> `%APPDATA%\VoiceStick\config.toml` 的 `tencent_*` 字段），`m0/config.toml` 已
+gitignore，绝不进仓库。
+
+### 快速开始
+
+```bash
+cd m0
+# 1) 追加安装界面/云端依赖
+.venv/Scripts/python.exe -m pip install fastapi uvicorn python-multipart tencentcloud-sdk-python-asr -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 2) 启动配置界面（仅监听 127.0.0.1）
+.venv/Scripts/python.exe app.py        # 打开 http://127.0.0.1:8765
+
+# 3) 命令行闭环评测（四引擎 × 29 条；云端为真实调用，29 次/引擎）
+.venv/Scripts/python.exe sim_compare.py --engines local_sense_voice,local_seaco,cloud_tencent,cloud_tencent_hotword
+
+# 4) 产出
+#    data/results/sim_compare_<时间戳>.json   逐句明细（gitignored）
+#    docs/cloud_vs_local_report.md            评估报告（进 git）
+```
+
+界面功能：引擎卡片切换（写回 `m0/config.toml`）、测试集试听与单句识别
+（走当前激活引擎，含上传 wav）、一键闭环评测（后台运行 + 进度 + 结果表）。
+
+### 相关测试
+
+`tests/test_platform_config.py`（配置/凭据三级解析）、`tests/test_providers.py`
+（注册表/健康检查/Outcome）、`tests/test_compare_report.py`（延迟统计/聚合/渲染），
+与全部既有测试同跑：`.venv/Scripts/python.exe -m pytest tests/ -q`

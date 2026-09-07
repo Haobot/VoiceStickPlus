@@ -17,3 +17,8 @@ pypinyin>=0.50
 rapidfuzz>=3.0
 # 开发与测试
 pytest>=8.0
+# 引擎配置界面与闭环评测（app.py / sim_compare.py）
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+tencentcloud-sdk-python-asr>=3.0.1300

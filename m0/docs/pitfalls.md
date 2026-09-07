@@ -94,3 +94,21 @@ funasr 1.4.14 内置了解码后文本级热词纠正（pypinyin 拼音 + rapidf
   WebSocket，甚至破坏已正确识别的 WebSocket/SOTA 句（净效应 +2 = 修复 5 − 破坏 3）
 - P1 改进方向：英文替换加严阈值或仅允许拼音级替换；对解码器偏置已命中的热词
   跳过后处理替换
+
+## 12. 腾讯云 SDK 3.1.170 的 SentenceRecognition 字段是 Data/DataLen，不是 AudioData
+
+网上二手文档普遍写 `AudioData`，但本地 SDK 3.1.170 的请求模型字段已变为
+`Data`（base64 语音数据）+ `DataLen`（编码前字节数，SourceType=1 必填）。
+给 req 赋未定义属性不报错——序列化时才炸出诡异的 `UnknownParameter
+未定义参数 UdioData/SableAudio`（字段名被内部映射截断，极难一眼看懂）。
+教训：**SDK 请求字段一律 `inspect.getsource(type(req))` 核对当前版本**，
+不信任二手文档。另：该版本没有 `UsableAudio` 参数。
+
+## 13. FastAPI Form/File 需要 python-multipart，且端口占用会静默打到旧进程
+
+- `Form`/`File` 参数在应用构建时就要求 `python-multipart`，缺失时启动即崩
+  （报错直白，装上即可，已入 requirements.txt）。
+- Git Bash 下 `ps aux | grep app.py` 匹配不到 Windows Python 进程；旧服务进程
+  不杀，新进程 bind 8765 失败（Errno 10048）后退出，curl 仍打到旧代码——
+  表现为"改了代码没生效"。正确姿势：`netstat -ano | grep :8765` 拿 PID，
+  `taskkill //F //PID <pid>`。

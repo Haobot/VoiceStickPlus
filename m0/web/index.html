@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoiceStick M0 · 本地/云端 ASR 引擎平台</title>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2e3d;
+    --text: #e6e8ef; --muted: #8b90a3; --accent: #4f8cff;
+    --ok: #3ecf8e; --bad: #ff6b6b; --local: #b58cff; --cloud: #ffb35c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  h2 { font-size: 15px; margin: 32px 0 12px; color: var(--muted);
+       border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          padding: 14px 16px; cursor: pointer; transition: border-color .15s; }
+  .card:hover { border-color: var(--accent); }
+  .card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .card .row1 { display: flex; justify-content: space-between; align-items: center; }
+  .card .name { font-weight: 600; font-size: 15px; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+  .tag.local { background: rgba(181,140,255,.15); color: var(--local); }
+  .tag.cloud { background: rgba(255,179,92,.15); color: var(--cloud); }
+  .badge { font-size: 12px; }
+  .badge.ok { color: var(--ok); } .badge.bad { color: var(--bad); }
+  .detail { color: var(--muted); font-size: 12px; margin-top: 8px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .radio { width: 16px; height: 16px; accent-color: var(--accent); }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+           padding: 8px 18px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  select, input[type=file] { background: var(--card); color: var(--text);
+         border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  select { max-width: 460px; }
+  .result { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+            padding: 12px 14px; margin-top: 12px; font-size: 14px; line-height: 1.7; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .text { font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .num { font-variant-numeric: tabular-nums; }
+  pre.log { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+            padding: 10px 12px; font-size: 12px; color: var(--muted);
+            overflow-x: auto; white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 10px 0; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  audio { width: 320px; height: 32px; }
+  .err { color: var(--bad); }
+  .ok-text { color: var(--ok); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>VoiceStick M0 · 引擎配置与闭环评测平台</h1>
+  <div class="sub">本地引擎（SenseVoice / SeACo 热词管线）与云端（腾讯云一句话识别）切换 · 同一测试集自动化对比 · 127.0.0.1 本地服务</div>
+
+  <h2>① 引擎切换</h2>
+  <div class="cards" id="engineCards"></div>
+
+  <h2>② 单句试听与识别（走当前激活引擎）</h2>
+  <div class="row">
+    <select id="entrySelect"><option>加载中…</option></select>
+    <audio id="player" controls></audio>
+    <button id="btnTry">识别此句</button>
+    <label class="meta">或上传 wav：<input type="file" id="uploadFile" accept=".wav"></label>
+    <button id="btnUpload" class="ghost">识别上传文件</button>
+  </div>
+  <div class="result" id="tryResult" style="display:none"></div>
+
+  <h2>③ 闭环评测（29 条测试集 × 全部引擎）</h2>
+  <div class="row">
+    <button id="btnEval">运行闭环评测</button>
+    <span class="meta" id="evalMeta">云端引擎会产生真实 API 调用（29 次/轮）</span>
+  </div>
+  <div class="bar" style="display:none" id="evalBarWrap"><div id="evalBar"></div></div>
+  <pre class="log" id="evalLog" style="display:none"></pre>
+  <div id="reportArea"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let ACTIVE = "";
+let ENGINE_COUNT = 1;  // 进度条分母 = 每引擎句数 × 引擎数
+
+function fmtPct(x) { return (x * 100).toFixed(2) + "%"; }
+
+async function loadEngines() {
+  const data = await (await fetch("/api/engines")).json();
+  ACTIVE = data.active;
+  ENGINE_COUNT = data.engines.length;
+  const box = $("engineCards");
+  box.innerHTML = "";
+  for (const e of data.engines) {
+    const card = document.createElement("div");
+    card.className = "card" + (e.name === data.active ? " active" : "");
+    const kindLabel = e.kind === "local" ? "本地" : "云端";
+    card.innerHTML = `
+      <div class="row1">
+        <label class="row" style="gap:8px">
+          <input type="radio" class="radio" name="engine" ${e.name === data.active ? "checked" : ""}>
+          <span class="name">${e.name}</span>
+        </label>
+        <span class="tag ${e.kind}">${kindLabel}</span>
+      </div>
+      <div class="detail">
+        <span class="badge ${e.health_ok ? "ok" : "bad"}">${e.health_ok ? "● 可用" : "● 不可用"}</span>
+        &nbsp;${e.detail}${e.credentials ? " · " + e.credentials : ""}
+      </div>`;
+    card.onclick = async () => {
+      await fetch("/api/engine/active", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name: e.name}),
+      });
+      loadEngines();
+    };
+    box.appendChild(card);
+  }
+}
+
+async function loadAudioList() {
+  const data = await (await fetch("/api/audio/list")).json();
+  const sel = $("entrySelect");
+  sel.innerHTML = "";
+  const groups = {};
+  for (const e of data.entries.filter(x => x.has_wav)) {
+    (groups[e.group] = groups[e.group] || []).push(e);
+  }
+  const groupLabel = {benchmark: "基准测试", hotword: "热词测试"};
+  for (const g of Object.keys(groups)) {
+    const og = document.createElement("optgroup");
+    og.label = groupLabel[g] || g;
+    for (const e of groups[g]) {
+      const opt = document.createElement("option");
+      opt.value = e.id;
+      opt.textContent = `${e.id} — ${e.text.slice(0, 26)}${e.hotword ? " 〔热词:" + e.hotword + "〕" : ""}`;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+  sel.onchange = () => { $("player").src = "/api/audio/file/" + sel.value; };
+  $("player").src = "/api/audio/file/" + sel.value;
+}
+
+function renderTry(r) {
+  const box = $("tryResult");
+  box.style.display = "";
+  if (r.error) {
+    box.innerHTML = `<span class="err">识别失败：${r.error}</span>
+      <div class="meta">引擎 ${r.engine} · 耗时 ${r.elapsed_seconds}s</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="text">${r.text}</div>
+    <div class="meta">引擎 ${r.engine} · 音频 ${r.audio_seconds}s · 端到端 ${r.elapsed_seconds}s · RTF ${r.rtf}
+    ${r.rtf !== null && r.rtf < 0.1 ? '<span class="ok-text"> ✓ 实时线达标</span>' : ""}</div>`;
+}
+
+async function transcribeEntry() {
+  const id = $("entrySelect").value;
+  if (!id) return;
+  $("btnTry").disabled = true;
+  try {
+    const fd = new FormData();
+    fd.append("entry_id", id);
+    renderTry(await (await fetch("/api/transcribe", {method: "POST", body: fd})).json());
+  } finally { $("btnTry").disabled = false; }
+}
+
+async function transcribeUpload() {
+  const f = $("uploadFile").files[0];
+  if (!f) return;
+  $("btnUpload").disabled = true;
+  try {
+    const fd = new FormData();
+    fd.append("file", f);
+    renderTry(await (await fetch("/api/transcribe", {method: "POST", body: fd})).json());
+  } finally { $("btnUpload").disabled = false; }
+}
+
+let evalTimer = null;
+
+async function startEval() {
+  $("btnEval").disabled = true;
+  $("evalBarWrap").style.display = "";
+  $("evalLog").style.display = "";
+  await fetch("/api/eval/run", {method: "POST"});
+  evalTimer = setInterval(pollEval, 1500);
+}
+
+async function pollEval() {
+  const s = await (await fetch("/api/eval/status")).json();
+  const total = 29 * ENGINE_COUNT;  // 每引擎 29 句
+  $("evalBar").style.width = Math.min(100, s.recognized_sentences / total * 100) + "%";
+  $("evalLog").textContent = s.log_tail.join("\n");
+  if (!s.running) {
+    clearInterval(evalTimer);
+    $("btnEval").disabled = false;
+    $("evalMeta").textContent = s.returncode === 0
+      ? "评测完成 ✓（报告已生成）" : "评测异常退出，代码 " + s.returncode;
+    loadReport();
+  }
+}
+
+function metricsTable(metrics) {
+  let rows = "";
+  for (const [name, m] of Object.entries(metrics)) {
+    rows += `<tr><td>${name}</td><td class="num">${m.total}/${m.failures}</td>
+      <td class="num">${fmtPct(m.cer_overall)}</td>
+      <td class="num">${m.hotword_total}</td><td class="num">${m.hotword_misses}</td>
+      <td class="num">${(m.error_rate * 100).toFixed(1)}%</td>
+      <td class="num">${m.latency.median.toFixed(3)}s</td>
+      <td class="num">${m.latency.p95.toFixed(3)}s</td></tr>`;
+  }
+  return `<table><tr><th>引擎</th><th>成功/失败</th><th>CER</th><th>热词句</th>
+    <th>未命中</th><th>未命中率</th><th>中位延迟</th><th>P95</th></tr>${rows}</table>`;
+}
+
+async function loadReport() {
+  const r = await (await fetch("/api/eval/report")).json();
+  const area = $("reportArea");
+  if (!r.available) {
+    area.innerHTML = `<div class="meta">尚无评测结果，点击上方按钮运行。</div>`;
+    return;
+  }
+  area.innerHTML = `<h2>④ 最新评测结果（${r.timestamp}）</h2>` + metricsTable(r.metrics) +
+    `<div class="meta">完整报告: m0/docs/cloud_vs_local_report.md</div>`;
+}
+
+loadEngines();
+loadAudioList();
+loadReport();
+$("btnTry").onclick = transcribeEntry;
+$("btnUpload").onclick = transcribeUpload;
+$("btnEval").onclick = startEval;
+</script>
+</body>
+</html>
