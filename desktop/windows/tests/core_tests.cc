@@ -793,21 +793,29 @@ void TestPairDeviceHelpers() {
         assert(merged_reverse.front().device_id == "D63C");
     }
 
-    // OS bond 清理按地址匹配 DeviceInformation：解析 Windows 地址属性字符串
-    //（格式与 FormatBluetoothAddress 互逆，大小写/首尾空白/横线分隔容错）。
+    // OS bond 清理按地址匹配 DeviceInformation：解析 Windows 地址属性字符串。
+    // 真机事实（2026-09-07 probe）：System.DeviceInterface.Bluetooth.DeviceAddress
+    // 为无分隔符 12 位十六进制（"c05d39c36459"），System.Devices.Aep.DeviceAddress
+    // 为冒号分隔（"c0:5d:39:c3:64:59"），两种格式都必须可解析——首版只认分隔
+    // 格式导致全部记录跳过、忘记设备假成功、系统列表残留。
     assert(ParseBluetoothAddressString("AA:BB:CC:DD:EE:FF").value() == 0xAABBCCDDEEFFull);
     assert(ParseBluetoothAddressString("aa:bb:cc:dd:ee:ff").value() == 0xAABBCCDDEEFFull);
     assert(ParseBluetoothAddressString("  AA:BB:CC:DD:EE:FF  ").value() == 0xAABBCCDDEEFFull);
     assert(ParseBluetoothAddressString("00:00:00:00:00:00").value() == 0ull);
     assert(ParseBluetoothAddressString("AA-BB-CC-DD-EE-FF").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("c05d39c36459").value() == 0xC05D39C36459ull);
+    assert(ParseBluetoothAddressString("C05D39C36459").value() == 0xC05D39C36459ull);
+    assert(ParseBluetoothAddressString(" c05d39c36459 ").value() == 0xC05D39C36459ull);
+    assert(ParseBluetoothAddressString("000000000000").value() == 0ull);
     assert(!ParseBluetoothAddressString("").has_value());
     assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE").has_value());
     assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE:FF:00").has_value());
     assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE:GG").has_value());
-    assert(!ParseBluetoothAddressString("AABBCCDDEEFF").has_value());
     assert(!ParseBluetoothAddressString("A:BB:CC:DD:EE:FF").has_value());
     assert(!ParseBluetoothAddressString("AA: BB:CC:DD:EE:FF").has_value());
     assert(!ParseBluetoothAddressString("AA::CC:DD:EE:FF").has_value());
+    assert(!ParseBluetoothAddressString("c05d39c3645").has_value());
+    assert(!ParseBluetoothAddressString("c05d39c3645g").has_value());
 }
 
 void TestPairingAdvertisementClassify() {

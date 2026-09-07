@@ -47,9 +47,24 @@
 | 多台同型号设备 | 按地址精确匹配，不影响其他设备 |
 | 应用退出瞬间的在途 unpair | DispatchToUiThread 队列随窗口销毁不再分发，回调不执行，无悬垂调用 |
 
+### 4.1 首版真机验收翻车与修复（2026-09-07）
+
+首版验收失败：忘记后系统列表残留。probe 实测根因——
+`System.DeviceInterface.Bluetooth.DeviceAddress` 的真实值是**无分隔符 12 位十六进制**
+（`"c05d39c36459"`），而非想当然的冒号分隔格式；首版解析函数只认 17 字符分隔格式
+→ 枚举记录全部解析失败被跳过 → 走「系统无配对记录」幂等成功分支 → 状态栏报
+「已移除」的假成功，bond 原封不动。
+
+修复：`ParseBluetoothAddressString` 同时接受无分隔符 12 位与分隔 17 位两种格式；
+枚举属性两个都请求（`System.DeviceInterface.Bluetooth.DeviceAddress` +
+`System.Devices.Aep.DeviceAddress`，后者实测为冒号分隔），任一可解析即匹配。
+另：`GetDeviceSelectorFromPairingState` 生成的 AQS 带 `DevObjectType:=5`（AEP），
+实测 `FindAllAsync` 两参数重载（DeviceInterface kind）同样能返回已配对 BLE 设备
+接口记录，无需换三参数 kind 重载。
+
 ## 5. 测试
 
-- 单测（`core_tests.cc`）：`ParseBluetoothAddressString` 正常/大小写/空白/非法输入（段数错、非十六进制、空串）。
+- 单测（`core_tests.cc`）：`ParseBluetoothAddressString` 分隔/无分隔/大小写/空白/非法输入全量覆盖（含真机实测格式 `"c05d39c36459"`）。
 - WinRT 枚举与 unpair 属真实 OS 链路，无设备不 mock（红线）——真机验收：
   1. 配对 RC 设备 → 软件内忘记 → Windows 设置 → 蓝牙设备列表不残留 RC 设备；
   2. 忘记后重新配对 RC 设备 → ATVV 音频 + 按键映射正常（验证无 stale key 干扰）；
