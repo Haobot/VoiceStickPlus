@@ -6248,10 +6248,11 @@ void TestAppConfigXiaomiKeyMap() {
 void TestXiaomiKeymapInterceptor() {
     // ---- 特征识别表：遥控器 12 键的 (VK, 扫描码) 特征 → 按钮候选 ----
     assert(XiaomiButtonFromVkScan(VK_BROWSER_BACK, 0) == "back");
-    // VK_BACK/0x0E 不再识别为 back（2026-09-07 三轮探针定案：RC003 返回键在 PC
-    // 配对模式下固件零上报——HID 报文/私有 BLE 服务/ATVV 全静默，此前日志中的
-    // VK_BACK 事件全部为物理键盘 Backspace 污染。保留该特征会拖慢物理 Backspace
-    // 首按并存在误吞风险，故移除；VK_BROWSER_BACK 为 RC001 固件特征，保留）。
+    // VK_BACK/0x0E 不再识别为 back（2026-09-07 三轮探针 + MiVibe 研读定案：RC003
+    // 固件上报 back usage 0xF1，但被微软 HidOverGatt WUDF 宿主在翻译层丢弃，系统
+    // 输入链路全静默——此前日志中的 VK_BACK 事件全部为物理键盘 Backspace 污染。
+    // 保留该特征会拖慢物理 Backspace 首按并存在误吞风险，故移除；VK_BROWSER_BACK
+    // 为 RC001 固件特征，保留）。
     assert(XiaomiButtonFromVkScan(VK_BACK, 0x0E) == std::nullopt);
     assert(XiaomiButtonFromVkScan(VK_BACK, 0) == std::nullopt);
     assert(XiaomiButtonFromVkScan(VK_BROWSER_HOME, 0) == "home");

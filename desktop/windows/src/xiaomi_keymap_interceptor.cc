@@ -16,9 +16,9 @@ struct VkScanTrait {
 
 constexpr VkScanTrait kTraits[] = {
     // back：仅 RC001 固件特征（消费页 AC Back → VK_BROWSER_BACK，MiVibe 记录）。
-    // 注意 VK_BACK/0x0E 不是遥控器特征（2026-09-07 RC-6459 三轮探针定案：RC003
-    // 返回键在 PC 配对模式下固件零上报——HID 报文、私有 BLE 服务、ATVV 全静默，
-    // 此前日志中的 VK_BACK 事件全部为物理键盘 Backspace 污染），勿再收录。
+    // RC003 的 back usage 0xF1（键盘页非标准）被微软 HidOverGatt WUDF 宿主在
+    // 翻译层内部丢弃（2026-09-07 三轮探针 + MiVibe 研读定案：固件有上报 9 字节
+    // GATT 报文，系统输入链路全静默），VK_BACK/0x0E 事件全部为物理键盘污染，勿收录。
     {VK_BROWSER_BACK, 0, "back"},
     {VK_BROWSER_HOME, 0, "home"},
     {VK_HOME, 0, "home"},

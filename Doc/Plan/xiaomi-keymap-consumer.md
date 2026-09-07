@@ -11,7 +11,7 @@
 
 | 按钮 | kbdhid 翻译特征(真机事实) |
 |---|---|
-| back | **RC003(RC-6459,2026-09-07 三轮探针定案):固件零上报——按下时 HID 报文/私有 BLE 服务/ATVV 三通道全静默,PC 上无任何事件,不可映射消费**;RC001(MiVibe 记录)= `VK_BROWSER_BACK`(0xA6),特征保留 |
+| back | **RC003(RC-6459,2026-09-07 三轮探针 + MiVibe 研读定案):固件**有**上报 usage 0xF1(键盘页非标准),但被微软 HidOverGatt WUDF 宿主在翻译层内部丢弃——系统键盘层(LL/Raw Input/焦点应用)全静默,不可经系统输入链路映射**;RC001(MiVibe 记录)= `VK_BROWSER_BACK`(0xA6),特征保留 |
 | home | `VK_BROWSER_HOME`(0xAC)或 `VK_HOME`(0x24) |
 | ok | `VK_RETURN`(RC-6459 实测:scan 0x1C) |
 | up/down/left/right | `VK_UP`/`VK_DOWN`/`VK_LEFT`/`VK_RIGHT`(RC-6459 实测:扩展键 E0,scan 0x48 等) |
@@ -20,7 +20,7 @@
 | power | `VK_SLEEP`(0x5F)或 `VK` 0xFF(未知)或扫描码 0x5E |
 | volume_up/down | `VK_VOLUME_UP`/`VK_VOLUME_DOWN` |
 
-> **RC003 勘误与定案(2026-09-07,三轮探针)**:本机 RC-6459(REV&00A4,RC003 类固件)的返回键在 PC 配对模式下**固件不向主机发送任何数据**——LL 钩子零事件、Raw Input 页级订阅(0x01/0x0C PAGEONLY)零报文、私有 BLE 服务(8 个可通知特征)零通知、ATVV 会话零事件;同设备的方向/OK/home 键均正常上报(遥控器连接与 HID 通道本身健康)。此前"RC003 返回键=原生 Backspace(VK_BACK/0x0E)"的结论是**物理键盘 Backspace 污染数据的误判**(测试时用户/排查者按了物理 Backspace,LL 层 VK 特征与遥控器假设吻合所致)。方法论教训:**遥控器键的真伪判定必须同时核对 Raw Input 设备归属(hDevice)与按键时刻对照**,仅凭 LL 层 VK 特征不可定案;`hDevice=NULL` 的注入鼠标事件(空鼠类软件)与真实 HID 事件(`hDevice` 非 NULL)也可据此区分。BTHLE HID 服务的 GATT 特征与 CreateFile GENERIC_READ 对应用层均 ACCESS_DENIED(系统 HID 栈独占),0 权限打开可枚举 usage(该设备 TLC=0x01/0x06,输入报文 121 字节,3 个 link collection)但不可读报文流。
+> **RC003 勘误与定案(2026-09-07,三轮探针 + MiVibe-Remote 研读互证)**:本机 RC-6459(REV&00A4,RC003 类固件)的返回键**固件确实上报**——HID Report GATT 特征(0x2A4D)的 9 字节报文 = `01 00 00` 前缀(report ID 1)+ 3×LE16 usage(同报最多 3 键),back = usage 0x00F1,tv = 0x0035;但 0xF1/0x35 是键盘页**非标准 usage**,微软 HidOverGatt WUDF 用户态驱动宿主收到报文后在内部丢弃它们(上游项目原注释:"Windows receives the report but exposes different subsets of it depending on the usage")。本项目的 LL 钩子、Raw Input、GATT 订阅全在 WUDFHost **下游**,三轮探针零事件是必然——**教训:下游全静默 ≠ 上游没发**。私有 BLE 服务(8 个可通知特征)与 ATVV 会话对 back 确实静默(这两通道结论不变);同设备方向/OK/home 键正常上报。此前"RC003 返回键=原生 Backspace(VK_BACK/0x0E)"的结论是**物理键盘(华硕 VID_0B05,实例 7&158463d9)Backspace 污染数据的误判**(LL 层 VK 特征与遥控器假设吻合所致)。方法论教训:**遥控器键的真伪判定必须同时核对 Raw Input 设备归属(hDevice)与按键时刻对照**,仅凭 LL 层 VK 特征不可定案;`hDevice=NULL` 的注入鼠标事件(空鼠类软件)与真实 HID 事件(`hDevice` 非 NULL)也可据此区分。BTHLE HID 服务的 GATT 特征对应用层不可用(FromIdAsync 默认访问/open_async 共享模式均 SharingViolation,get chars 返回 Unreachable;CreateFile GENERIC_READ 亦被系统 HID 栈独占),0 权限打开可枚举 usage(该设备 TLC=0x01/0x06,输入报文 121 字节,3 个 link collection)但不可读报文流。MiVibe-Remote 拿到 0xF1 的方式:Frida Gadget(x64 DLL,SHA256 校验,UAC 特权)注入 WUDFHost(定位:注册表 `BTHLEDevice\{00001812-…}_Dev_VID&012717_PID&32b8_…\…\Device Parameters\WUDFDiagnosticInfo` 的 `HostPid`),hook `ntdll!NtDeviceIoControlFile` 截获 IOCTL 0x80018483(READ_CHARACTERISTIC)成功返回的 9 字节输出,socket 回传 JSON 行;桌面端对 usage 集合做 diff 得 pressed/released 沿,再走与本项目同构的「LL 钩子佐证吞键 + 注入映射」防双触发(60/15ms 窗同源)。
 
 拦截的三个难题与对策:
 
