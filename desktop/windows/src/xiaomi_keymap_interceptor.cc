@@ -15,11 +15,10 @@ struct VkScanTrait {
 };
 
 constexpr VkScanTrait kTraits[] = {
-    // back 双特征：RC003（RC-6459 真机实测 2026-09-07）kbdhid 原生翻译为标准
-    // Backspace（VK_BACK + 扫描码 0x0E，与物理键盘 Backspace 同特征，归属靠
-    // Raw Input 佐证区分，勿据此吞物理键盘）；RC001 固件走消费页翻译
-    // VK_BROWSER_BACK（MiVibe 记录），两特征都归 back。
-    {VK_BACK, 0x0E, "back"},
+    // back：仅 RC001 固件特征（消费页 AC Back → VK_BROWSER_BACK，MiVibe 记录）。
+    // 注意 VK_BACK/0x0E 不是遥控器特征（2026-09-07 RC-6459 三轮探针定案：RC003
+    // 返回键在 PC 配对模式下固件零上报——HID 报文、私有 BLE 服务、ATVV 全静默，
+    // 此前日志中的 VK_BACK 事件全部为物理键盘 Backspace 污染），勿再收录。
     {VK_BROWSER_BACK, 0, "back"},
     {VK_BROWSER_HOME, 0, "home"},
     {VK_HOME, 0, "home"},

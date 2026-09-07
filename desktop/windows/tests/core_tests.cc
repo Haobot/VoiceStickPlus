@@ -6247,11 +6247,12 @@ void TestAppConfigXiaomiKeyMap() {
 // 佐证窗决策（吞+注入/放行）、按住闩锁与 keyup 关联、注入 VK 序列构造。
 void TestXiaomiKeymapInterceptor() {
     // ---- 特征识别表：遥控器 12 键的 (VK, 扫描码) 特征 → 按钮候选 ----
-    // back 双特征：RC003 真机实测（VK_BACK/0x0E，本机 RC-6459，2026-09-07）+
-    // RC001 消费页翻译（VK_BROWSER_BACK，MiVibe 记录）。VK_BACK 与物理键盘
-    // Backspace 同特征，归属靠 Raw Input 佐证区分（决策层用例覆盖）。
-    assert(XiaomiButtonFromVkScan(VK_BACK, 0x0E) == "back");
     assert(XiaomiButtonFromVkScan(VK_BROWSER_BACK, 0) == "back");
+    // VK_BACK/0x0E 不再识别为 back（2026-09-07 三轮探针定案：RC003 返回键在 PC
+    // 配对模式下固件零上报——HID 报文/私有 BLE 服务/ATVV 全静默，此前日志中的
+    // VK_BACK 事件全部为物理键盘 Backspace 污染。保留该特征会拖慢物理 Backspace
+    // 首按并存在误吞风险，故移除；VK_BROWSER_BACK 为 RC001 固件特征，保留）。
+    assert(XiaomiButtonFromVkScan(VK_BACK, 0x0E) == std::nullopt);
     assert(XiaomiButtonFromVkScan(VK_BACK, 0) == std::nullopt);
     assert(XiaomiButtonFromVkScan(VK_BROWSER_HOME, 0) == "home");
     assert(XiaomiButtonFromVkScan(VK_HOME, 0) == "home");
