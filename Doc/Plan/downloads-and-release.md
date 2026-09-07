@@ -156,3 +156,18 @@ WinSparkle 0.9.2 公开 API 已验证支持（本地构建缓存 `winsparkle.h`�
 3. 阶段三（Windows 端）：TDD，测试先行，`ctest` 全绿后提交。
 
 每阶段完成即提交（中文约定式提交），全链路真机验收放在真实发布时做。
+
+## 实施记录（feat/downloads-and-release 分支）
+
+| 阶段 | 提交 | 验证 |
+|---|---|---|
+| 设计文档 | `c5d8eebf` | — |
+| 阶段一：发布链路 | `78b59b89` | 16 个 Python 单测全绿；真实仓库端到端冒烟（latest 2.3.7/双 MSI/固件 sha256）；release.ps1 -DryRun 双模式 exit 0 |
+| 阶段二：网站下载页 | `9a04c7fb` | npm run build；i18n key 对称；浏览器实测（中/英、加载/降级态、macOS 空组隐藏、历史版本展开、hero 按钮跨版本资产查找与语言联动） |
+| 阶段三：Windows 端 | `14a1cfd3` | TDD 红灯确认（min_version/EffectiveMinimum 未定义编译错误）→ build_win.bat 构建 SUCCEEDED → ctest 2/2 全绿 |
+
+### 已知事项
+
+- **真机气泡验证待做**：程序更新气泡（30s 首查→气泡→点击进 WinSparkle 对话框）与固件主动提醒（12h 周期/连接触发）需运行时观察，留待下次真机验证或真实发布时一并验收（开发期间另一会话占用主工作区，未重启运行中的 VoiceStick.exe）。
+- **main 分支当前构建不过**（与本方案无关的既存问题）：`8e051f2b` 提交往 `desktop/windows/CMakeLists.txt` 加了引用，但 `src/xiaomi_keymap_dialog.cc/.h`、`src/shortcut_capture.cc/.h`、`src/xiaomi_buttons.h`、`resources/xiaomi_remote_2pro.png`、`resources/icons/` 未随提交（`desktop/windows/` 整体 gitignore，`git add -f` 漏加，同 f75af4f5 教训）。本分支 worktree 内已从主工作区拷贝解阻（未提交，属 local-asr 会话的未提交工作）。
+- 协调器 `connected_device_ids_` 为 BLE 回调线程写、无锁读——气泡路径沿用现有弱一致读法（与 ResolveActiveDevice 等一致），未加重竞争面。
