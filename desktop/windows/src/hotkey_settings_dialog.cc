@@ -171,6 +171,8 @@ void HotkeySettingsDialog::DestroyControls() {
 }
 
 void HotkeySettingsDialog::UpdateHotkeyDisplay() {
+    // 捕获结束的公共汇合点：停掉超时提示定时器（幂等）。
+    StopCaptureHintTimer();
     if (captured_vk_ == 0) {
         if (capture_.active()) {
             SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCapturePrompt, language_).c_str());
@@ -220,6 +222,17 @@ void HotkeySettingsDialog::OnHotkeyCapture() {
     ShortcutCapture::Options options;
     options.require_modifier = true;  // 全局热键场景：必须含修饰键
     capture_.Start(options);
+    // 录入超时提示：kCaptureHintTimeoutMs 内无任何键盘事件时弹一次 UIPI 引导
+    //（捕获不中断，用户关掉提示后仍可继续按键）。
+    if (hwnd_ && capture_.active()) {
+        SetTimer(hwnd_, kCaptureHintTimerId, kCaptureHintTimeoutMs, nullptr);
+    }
+}
+
+void HotkeySettingsDialog::StopCaptureHintTimer() {
+    if (hwnd_) {
+        KillTimer(hwnd_, kCaptureHintTimerId);
+    }
 }
 
 
@@ -271,7 +284,21 @@ INT_PTR HotkeySettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
             BuildControls();
             UpdateHotkeyDisplay();
             return 0;
+        case WM_TIMER:
+            if (w_param == kCaptureHintTimerId) {
+                // 录入期间长时间无键盘事件：大概率前台是提权窗口（UIPI 隔离钩子事件）。
+                // 只提示一次，不中断捕获。
+                KillTimer(hwnd_, kCaptureHintTimerId);
+                if (capture_.active()) {
+                    MessageBoxW(hwnd_, TrW(StringId::kHotkeyCaptureTimeoutBody, language_).c_str(),
+                                TrW(StringId::kHotkeyCaptureTimeoutTitle, language_).c_str(),
+                                MB_OK | MB_ICONINFORMATION);
+                }
+                return 0;
+            }
+            break;
         case WM_DESTROY:
+            StopCaptureHintTimer();
             capture_.Cancel();
             DestroyControls();
             return 0;
