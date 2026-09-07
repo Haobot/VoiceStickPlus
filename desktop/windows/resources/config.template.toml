@@ -108,3 +108,12 @@ virtual_mic_playback_name = ""
 virtual_mic_capture_name = ""
 # 自动切换默认录音设备到虚拟麦克风
 auto_switch_default_recording_device = false
+
+# ---- 本机麦克风模式（无设备语音输入：本机麦克风 + SenseVoice 本地离线识别）----
+[local_asr]
+# 模式总开关：开启后安装按住说话热键（默认右 Ctrl），松开本地识别并注入文本
+enabled = false
+# SenseVoice 模型目录（须含 model.int8.onnx + tokens.txt）；空 = exe 同级 models/
+models_dir = ""
+# 按住说话热键（right ctrl / left ctrl / right shift / f8 等单键）
+push_to_talk_key = "right ctrl"

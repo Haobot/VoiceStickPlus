@@ -30,6 +30,9 @@
 #include "ogg_opus_muxer.h"
 #include "ogg_opus_demuxer.h"
 #include "local_asr_client_win.h"
+#include "mic_capture.h"
+#include "wasapi_mic_capture.h"
+#include "push_to_talk_key.h"
 #include "onboarding_dialog.h"
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
@@ -582,6 +585,27 @@ public:
     int find_call_count = 0;
     int set_call_count = 0;
     std::vector<SetCall> set_calls;
+};
+
+// 测试用本机麦克风采集器：解耦真实 WASAPI，on_pcm 由测试线程手动触发
+// （等价真实实现的采集线程回调语义）。
+class FakeMicCapture : public IMicCapture {
+public:
+    bool Start() override {
+        ++start_count;
+        return start_result;
+    }
+    void Stop() override {
+        ++stop_count;
+    }
+    std::string LastStartError() const override {
+        return start_error;
+    }
+
+    bool start_result = true;
+    std::string start_error;
+    int start_count = 0;
+    int stop_count = 0;
 };
 
 StateEvent ButtonEvent(const std::string& event,
@@ -10232,6 +10256,205 @@ void TestLocalAsrClientSenseVoiceSmoke() {
     printf("TestLocalAsrClientSenseVoiceSmoke passed: %s\n", final_text.c_str());
 }
 
+// ===== 本机麦克风模式（local-mic，迭代二）=====
+
+void TestPushToTalkKeyParsing() {
+    assert(*ParsePushToTalkKey("right ctrl") == VK_RCONTROL);
+    assert(*ParsePushToTalkKey("Right Ctrl") == VK_RCONTROL);   // 大小写/空白不敏感
+    assert(*ParsePushToTalkKey(" left ctrl ") == VK_LCONTROL);
+    assert(*ParsePushToTalkKey("right shift") == VK_RSHIFT);
+    assert(*ParsePushToTalkKey("left shift") == VK_LSHIFT);
+    assert(*ParsePushToTalkKey("right alt") == VK_RMENU);
+    assert(*ParsePushToTalkKey("left alt") == VK_LMENU);
+    assert(*ParsePushToTalkKey("f8") == VK_F8);
+    assert(*ParsePushToTalkKey("F24") == VK_F24);
+    assert(*ParsePushToTalkKey("capslock") == VK_CAPITAL);
+    assert(!ParsePushToTalkKey("ctrl").has_value());     // 左右歧义，拒绝
+    assert(!ParsePushToTalkKey("ctrl+c").has_value());   // 组合键不支持（按住说话=单键）
+    assert(!ParsePushToTalkKey("foo").has_value());
+    assert(!ParsePushToTalkKey("").has_value());
+}
+
+void TestAppConfigLocalAsrRoundTrip() {
+    assert(!AppConfig::Defaults().local_asr.enabled);
+    assert(AppConfig::Defaults().local_asr.models_dir.empty());
+    assert(AppConfig::Defaults().local_asr.push_to_talk_key == "right ctrl");
+
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_local_asr_test.toml";
+    std::filesystem::remove(temp);
+
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    config.local_asr.models_dir = "C:/models/sensevoice";
+    config.local_asr.push_to_talk_key = "f8";
+    config.Save(temp);
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.local_asr.enabled);
+    assert(loaded.local_asr.models_dir == "C:/models/sensevoice");
+    assert(loaded.local_asr.push_to_talk_key == "f8");
+
+    std::filesystem::remove(temp);
+}
+
+// 按住说话全链路：热键按下建立 local-mic 会话并启动采集；PCM 喂入走 Opus 主会话
+// 管线；释放后尾帧+END 收尾，音频路由到本地 ASR（云端客户端零触碰），final 文本注入。
+void TestCoordinatorLocalMicSessionRoutesToLocalAsr() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto* cloud_asr_ptr = cloud_asr.get();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    auto* local_asr_ptr = local_asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                      &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    assert(capture_ptr->start_count == 1);
+    assert(ui.show_listening_count == 1);
+    assert(HasUiState(*ble_ptr, "recording", "local-mic"));
+
+    // 喂 1 秒 16kHz PCM（模拟采集线程回调），等待会话时长跨过最短录音阈值后
+    // 再喂一段：第二段触发 can_start_asr（时长 >= 0.5s）启动本地 ASR 并冲刷缓冲。
+    const std::vector<std::int16_t> pcm(16000, 1200);
+    capture_ptr->on_pcm(pcm);
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    capture_ptr->on_pcm(pcm);
+
+    coordinator.HandleLocalMicHotkeyReleased();
+    assert(capture_ptr->stop_count == 1);
+    assert(local_asr_ptr->started);
+    assert(local_asr_ptr->sent_chunks >= 1);
+    assert(local_asr_ptr->last_chunk_was_final);
+    // 路由断言：本会话音频只进本地 ASR，云端客户端全程未启动。
+    assert(!cloud_asr_ptr->started);
+
+    local_asr_ptr->on_final("本地识别结果");
+    assert(input.pasted_text == "本地识别结果");
+    assert(ui.hide_overlay_count == 1);
+}
+
+// 短按（<0.5s）：释放后按短按取消路径丢弃会话，不启动 ASR、不注入。
+void TestCoordinatorLocalMicShortPressDiscards() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    auto* local_asr_ptr = local_asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                      &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    capture_ptr->on_pcm(std::vector<std::int16_t>(3200, 100));  // 200ms
+    coordinator.HandleLocalMicHotkeyReleased();
+
+    assert(capture_ptr->stop_count == 1);
+    assert(!local_asr_ptr->started);
+    assert(local_asr_ptr->cancelled);
+    assert(ui.hide_overlay_count == 1);
+    assert(input.pasted_text.empty());
+}
+
+// 配置关闭时热键完全旁路：不建会话、不启动采集；释放也不得有副作用。
+void TestCoordinatorLocalMicDisabledDoesNothing() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble),
+                                      std::move(cloud_asr), &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    assert(capture_ptr->start_count == 0);
+    assert(ui.show_listening_count == 0);
+
+    coordinator.HandleLocalMicHotkeyReleased();
+    assert(capture_ptr->stop_count == 0);
+}
+
+// 采集启动失败（无麦克风/设备被占用）：会话立即按取消路径收尾并给出用户可见提示，
+// 后续 PCM 全部被会话校验丢弃。
+void TestCoordinatorLocalMicCaptureStartFailureCancelsSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    auto* local_asr_ptr = local_asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                      &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    capture_ptr->start_result = false;
+    capture_ptr->start_error = "no microphone";
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    assert(capture_ptr->start_count == 1);
+    assert(ui.show_listening_count == 1);
+    assert(ui.hide_overlay_count == 1);          // 取消路径收起浮窗
+    assert(!ui.timed_messages.empty());          // 用户可见失败提示
+
+    capture_ptr->on_pcm(std::vector<std::int16_t>(640, 100));
+    coordinator.HandleLocalMicHotkeyReleased();
+    assert(!local_asr_ptr->started);
+    assert(input.pasted_text.empty());
+}
+
+// 真实 WASAPI 采集冒烟：默认麦克风采集 2 秒应至少回调一帧 PCM；无麦克风/被占用
+// 时如实报告跳过原因（不伪造通过）。
+void TestWasapiMicCaptureSmoke() {
+    WasapiMicCapture capture;
+    std::mutex mutex;
+    std::condition_variable got_pcm;
+    std::size_t total_samples = 0;
+    int callbacks = 0;
+    capture.on_pcm = [&](std::span<const std::int16_t> pcm) {
+        std::lock_guard<std::mutex> lock(mutex);
+        total_samples += pcm.size();
+        ++callbacks;
+        got_pcm.notify_one();
+    };
+    if (!capture.Start()) {
+        printf("TestWasapiMicCaptureSmoke skipped: %s\n", capture.LastStartError().c_str());
+        return;
+    }
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        const auto received = got_pcm.wait_for(lock, std::chrono::seconds(8),
+                                               [&] { return total_samples >= 16000; });
+        assert(received);
+        assert(total_samples >= 16000);
+    }
+    capture.Stop();
+    capture.Stop();  // 幂等
+    printf("TestWasapiMicCaptureSmoke passed: %d callbacks, %zu samples\n",
+           callbacks, total_samples);
+}
+
 int main() {
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接 abort，
@@ -10245,6 +10468,13 @@ int main() {
     TestPowerLogMonitor();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLocalAsrClientSenseVoiceSmoke();
+    TestPushToTalkKeyParsing();
+    TestAppConfigLocalAsrRoundTrip();
+    TestCoordinatorLocalMicSessionRoutesToLocalAsr();
+    TestCoordinatorLocalMicShortPressDiscards();
+    TestCoordinatorLocalMicDisabledDoesNothing();
+    TestCoordinatorLocalMicCaptureStartFailureCancelsSession();
+    TestWasapiMicCaptureSmoke();
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();

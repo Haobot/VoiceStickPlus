@@ -7,6 +7,7 @@
 #include "firmware_update_dialog.h"
 #include "interaction_settings_dialog.h"
 #include "global_hotkey_win.h"
+#include "mic_mode_hotkey.h"
 #include "hotkey_settings_dialog.h"
 #include "input_injector_win.h"
 #include "onboarding_dialog.h"
@@ -182,6 +183,9 @@ private:
     // 小米遥控器按键映射消费端：LL 钩子拦截 + Raw Input 佐证 + 注入映射键
     //（Doc/Plan/xiaomi-keymap-consumer.md）。
     std::unique_ptr<XiaomiKeymapHook> xiaomi_keymap_hook_;
+    // 本机麦克风模式按住说话热键（LL 钩子观察，Doc/Plan/local-mic-mode.md）：
+    // 按下/释放转发协调器 local-mic 会话；配置 [local_asr] enabled 时安装。
+    std::unique_ptr<MicModeHotkey> mic_mode_hotkey_;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;
     std::vector<std::string> paired_device_ids_;

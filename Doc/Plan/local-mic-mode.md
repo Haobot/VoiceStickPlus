@@ -1,6 +1,6 @@
 # 本机麦克风模式（Local Mic Mode）——P1 核心闭环并入 VoiceStick.exe 设计
 
-状态：设计稿（迭代一实施中）
+状态：迭代一/二已交付（ceb2550a / 本次提交），迭代三（剪贴板完整格式恢复 + 设置 UI）待做
 决策：2026-09-07 用户确认「并入 VoiceStick.exe、核心闭环优先」。
 
 ## 目标
@@ -55,11 +55,30 @@ WASAPI mic PCM(16k) → audio_opus_encoder → Ogg Opus chunk
 - Start() 校验模型文件存在（model.int8.onnx + tokens.txt），失败 LastStartError
   如实报错（不静默降级——与 P1 纪律一致）。
 
-### mic_mode_hotkey（迭代二）
+### mic_mode_hotkey（迭代二，已交付）
 
 复用 xiaomi_keymap_hook 的成熟模式：LL 钩子 + message-only 窗口 + 主线程消息泵；
-默认右 Ctrl 按住说话（P1 实证键位），shortcut_capture 可改键。注入的合成键须
-过滤（LL 钩子 LLKHF_INJECTED 标志），避免与产品自身注入互相触发。
+默认右 Ctrl 按住说话（`[local_asr].push_to_talk_key`，键名解析 `push_to_talk_key.h`）。
+**只观察不拦截**（键仍投递前台应用，原组合键行为不变）；注入的合成键一律过滤
+（LLKHF_INJECTED），避免与产品自身注入互相触发。
+
+实现要点（与设计的差异/沉淀）：
+
+- **ASR 路由钉住制**：会话建立（HandlePrimaryButtonDown）时一次性钉住
+  `session_asr_` 指针（local-mic→LocalAsrClient，其余→云端 asr_）。不能在发送时
+  按会话身份现算——`SendFinalOggChunkIfNeeded` 发最终块**前**已 `active_session_id_.reset()`，
+  现算会把 final 块误路由到云端客户端（真机测试抓出，测试断言云端零触碰拦下）。
+- **采集停止归属热键**：`WasapiMicCapture::Stop()` 只在热键释放/Shutdown 调用
+  （Stop 须 join 采集线程，而 EnterReady 等会话收尾路径持有 audio_mutex_，
+  join 会与喂帧死锁）。会话异常终止时后续帧被会话校验丢弃，松开即彻底停止。
+- **静音包补零**：WASAPI SILENT 包喂零而非跳过，保持帧时间线与 StickS3 设备
+  路径对齐——全程无声的按住会话由 ASR 返回空文本干净收尾，不触发
+  "No audio frames" 错误。
+- **尾帧补零冲刷**：释放时 OpusFrameSlicer 余量补零到 640 采样（40ms）编码，
+  再发空 END 帧复用主会话 audio_end 收尾路径（短按丢弃/最终块/finalizing 全复用）。
+- 采集线程喂帧走 `HandleAudioFrame`（内部自锁+会话校验），无锁早退门控用原子
+  session id；slicer/encoder/seq 仅采集线程与 join 后的释放线程访问。
+- 修改 [local_asr] 需重启应用（boot 期接线；设置 UI 与热更在迭代三）。
 
 ### 剪贴板恢复（迭代三）
 

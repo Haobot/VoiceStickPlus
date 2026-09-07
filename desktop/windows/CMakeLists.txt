@@ -136,6 +136,7 @@ add_library(voicestick_core
     src/hotword_candidate_miner.cc
     src/hotword_selector.cc
     src/localization.cc
+    src/push_to_talk_key.cc
     third_party/cjson/cJSON.c
     src/log.cc
     src/ogg_crc.cc
@@ -151,6 +152,7 @@ add_library(voicestick_core
     src/default_audio_device_controller.cc
     src/ima_adpcm_decoder.cc
     src/pcm_postprocessor.cc
+    src/wasapi_mic_capture.cc
     src/xiaomi_atvv_protocol.cc
     src/xiaomi_atvv_session.cc
     src/xiaomi_keymap_interceptor.cc
@@ -197,6 +199,7 @@ add_executable(VoiceStickApp WIN32
     src/selection_hotword_manager.cc
     src/voice_f5_suppressor.cc
     src/xiaomi_keymap_hook.cc
+    src/mic_mode_hotkey.cc
     resources/VoiceStick.rc
 )
 

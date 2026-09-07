@@ -4,9 +4,13 @@
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
 #include "hotword_extractor.h"
+#include "local_asr_client_win.h"
 #include "localization.h"
 #include "log.h"
+#include "mic_mode_hotkey.h"
+#include "push_to_talk_key.h"
 #include "resource.h"
+#include "wasapi_mic_capture.h"
 
 #include <Shellapi.h>
 #include <commdlg.h>
@@ -115,6 +119,19 @@ std::wstring CurrentExecutableCommand() {
     if (length == 0) return {};
     path.resize(length);
     return L"\"" + path + L"\"";
+}
+
+// exe 所在目录（无引号）：相对资源路径（本机麦克风模型目录等）的解析基准。
+std::wstring CurrentExecutableDir() {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) return {};
+    path.resize(length);
+    return std::filesystem::path(path).parent_path().wstring();
 }
 
 // 探测前台窗口所属进程是否高于本进程完整性：asInvoker（Medium）对 High 进程
@@ -358,6 +375,9 @@ Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig:
     LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
            " portable_mode=" + std::string(config_.portable_mode ? "true" : "false") +
            " provider=" + AsrProviderName(config_.asr_provider));
+    LogApp("local_asr boot: enabled=" + std::string(config_.local_asr.enabled ? "true" : "false") +
+           " models_dir=" + config_.local_asr.models_dir +
+           " ptt=" + config_.local_asr.push_to_talk_key);
     if (config_.asr_provider == AsrProvider::kTencent) {
         LogApp("Tencent config appid=" + config_.tencent_appid +
                " secret_id=" + config_.tencent_secret_id.substr(0, 8) + "..." +
@@ -490,6 +510,41 @@ int Win32App::Run() {
         };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+        // 本机麦克风模式（[local_asr] enabled，Doc/Plan/local-mic-mode.md）：注入
+        // WASAPI 采集器 + 本地 SenseVoice ASR，安装按住说话 LL 热键。模型缺失不在
+        // 启动期报错——首次会话 LocalAsrClient::Start 失败走既有 ASR 错误路径如实提示。
+        if (config_.local_asr.enabled) {
+            std::filesystem::path models_dir = config_.local_asr.models_dir;
+            if (models_dir.empty()) models_dir = "models";
+            if (models_dir.is_relative()) {
+                models_dir = std::filesystem::path(CurrentExecutableDir()) / models_dir;
+            }
+            coordinator_->SetLocalMicRuntime(
+                std::make_unique<WasapiMicCapture>(),
+                std::make_unique<LocalAsrClient>(models_dir.string()));
+            const auto ptt_vk = ParsePushToTalkKey(config_.local_asr.push_to_talk_key);
+            if (ptt_vk) {
+                mic_mode_hotkey_ = std::make_unique<MicModeHotkey>();
+                mic_mode_hotkey_->on_pressed = [this] {
+                    if (coordinator_) coordinator_->HandleLocalMicHotkeyPressed();
+                };
+                mic_mode_hotkey_->on_released = [this] {
+                    if (coordinator_) coordinator_->HandleLocalMicHotkeyReleased();
+                };
+                if (!mic_mode_hotkey_->Start(*ptt_vk)) {
+                    mic_mode_hotkey_.reset();
+                    SetStatus("Local mic hotkey install failed");
+                } else {
+                    LogLine("Local mic mode enabled, push-to-talk: " +
+                            config_.local_asr.push_to_talk_key);
+                }
+            } else {
+                LogLine("local_asr push_to_talk_key invalid: " +
+                        config_.local_asr.push_to_talk_key);
+            }
+        }
+#endif
         coordinator_->Start();
         LogLine("Coordinator started");
 
@@ -1175,6 +1230,9 @@ void Win32App::ShutdownAndQuit() {
     if (global_hotkey_) {
         global_hotkey_->Unregister();
     }
+    // 先拆本机麦克风热键（LL 钩子）再 Shutdown 协调器：避免关停期间按键事件
+    // 继续进入协调器。
+    mic_mode_hotkey_.reset();
     pair_device_dialog_.reset();
     if (coordinator_) coordinator_->Shutdown();
     DestroyWindow(hwnd_);

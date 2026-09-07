@@ -4,6 +4,7 @@
 #include "app_config.h"
 #include "asr_protocol.h"
 #include "audio_opus_decoder.h"
+#include "audio_opus_encoder.h"
 #include "ble_protocol.h"
 #include "default_audio_device_controller.h"
 #include "debug_audio_recorder.h"
@@ -15,6 +16,7 @@
 #include "key_spec.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
+#include "mic_capture.h"
 #include "ogg_opus_muxer.h"
 #include "pcm_ring_buffer.h"
 #include "virtual_mic_renderer.h"
@@ -239,6 +241,16 @@ public:
     void Shutdown();
     // 注入前台进程完整性探测实现。未注入（nullptr）时跳过 UIPI 提权提醒。须在 Start 前调用。
     void SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe);
+    // 注入本机麦克风模式运行件（local-mic 会话，须在 Start 前调用，对齐
+    // SetForegroundProbe 的注入模式）：采集器 + 本地 ASR 客户端。二者缺一或
+    // config [local_asr] enabled=false 时按住说话热键完全旁路。
+    void SetLocalMicRuntime(std::unique_ptr<IMicCapture> capture,
+                            std::unique_ptr<AsrClient> local_asr);
+    // 按住说话热键按下（外壳 LL 钩子转发）：以 kLocalMicDeviceId 建立主会话并
+    // 启动采集。释放：停采（join 采集线程）、尾帧补零冲刷、发空 END 帧复用主会话
+    // audio_end 收尾路径（短按丢弃/最终块发送/finalizing 全部既有逻辑）。
+    void HandleLocalMicHotkeyPressed();
+    void HandleLocalMicHotkeyReleased();
     void UpdateConfig(AppConfig config);
     // 热调参：仅更新运行期某设备的 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
     void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);
@@ -336,6 +348,16 @@ private:
     };
 
     void ConfigureAsrCallbacks();
+    void WireAsrClientCallbacks(AsrClient* client);
+    // 主会话当前应使用的 ASR 客户端：会话建立时钉住（local-mic→local_asr_，其余→
+    // 云端 asr_），EnterReady/UpdateConfig/Shutdown 解除。final 块发送前会话 id 已被
+    // 重置，路由不能按会话身份现算。调用方须持有 audio_mutex_。
+    AsrClient* SessionAsrClient();
+    // 会话级 ASR 路由钉住指针（生命周期见 SessionAsrClient；所有权在外部成员）。
+    AsrClient* session_asr_ = nullptr;
+    // 取消全部主会话 ASR 客户端（云端 + 本地）。会话取消/收尾路径使用，避免在
+    // 会话归属已重置时漏取消。调用方须持有 audio_mutex_。
+    void CancelAsrClients();
     void ConfigureSubtitleAsrCallbacks(SubtitleCycle* cycle);
     void HandleStateEvent(const StateEvent& event, const std::string& device_id);
     void HandleButtonDown(const StateEvent& event, const std::string& device_id);
@@ -356,6 +378,12 @@ private:
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);
     void HandleAudioFrame(const AudioFrame& frame, const std::string& device_id);
+    // 采集线程回调：PCM 切帧编码为 Opus，以 local-mic 会话身份喂 HandleAudioFrame
+    //（复用主会话全部帧处理：seq 校验/stall 刷新/ogg 组包/ASR 发送）。
+    // slicer/encoder/seq 仅采集线程与其后 join 的释放线程访问，无锁。
+    void FeedLocalMicPcm(std::span<const std::int16_t> pcm);
+    // local-mic 会话是否活跃（须持有 audio_mutex_）。
+    bool LocalMicSessionActiveLocked() const;
     void HandleWechatInputMethodPrimaryButtonDown(std::optional<std::uint32_t> session_id,
                                                    const std::string& device_id);
     void HandleWechatInputMethodPrimaryButtonUp(const std::string& device_id);
@@ -628,6 +656,23 @@ private:
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;
+    // ===== 本机麦克风模式（local-mic，Doc/Plan/local-mic-mode.md）=====
+    // 设备 ID：非 BLE 设备，不进 connected 列表；会话走主会话状态机，
+    // 下发 ui_state 由 BleCentral 对未知设备静默跳过。
+    static constexpr std::string_view kLocalMicDeviceId = "local-mic";
+    // 运行件（外壳注入）：采集器 + 本地 ASR。hotkey 回调入口做存在性门控。
+    std::unique_ptr<IMicCapture> local_mic_capture_;
+    std::unique_ptr<AsrClient> local_asr_;
+    // PCM 切帧（640 采样=40ms，对齐固件帧规格）+ Opus 编码器。
+    // 生命周期：会话建立时 Reset；采集线程写；释放线程 Stop join 后读余量。
+    OpusFrameSlicer local_mic_slicer_;
+    AudioOpusEncoder local_mic_encoder_;
+    // 采集线程快速门控：非 0 = local-mic 会话进行中（音频帧路径的实际会话校验
+    // 仍在 HandleAudioFrame 的锁内完成，这里只做无锁早退）。
+    std::atomic_uint32_t local_mic_active_session_id_{0};
+    std::uint32_t local_mic_next_seq_ = 1;
+    std::uint32_t next_local_mic_session_id_ = 1;
+    bool local_mic_hotkey_down_ = false;
     std::map<std::pair<std::string, std::uint32_t>, std::unique_ptr<SubtitleCycle>> subtitle_cycles_;
     std::map<std::string, std::uint32_t> active_subtitle_sessions_;
     // wechat_input_method 模式下的当前会话资源。
