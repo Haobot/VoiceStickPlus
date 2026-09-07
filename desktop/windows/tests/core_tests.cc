@@ -6284,6 +6284,29 @@ void TestXiaomiKeymapInterceptor() {
         }
     }
 
+    // ---- Raw Input 设备接口路径识别：小米遥控器在 Raw Input 中是
+    // RIM_TYPEKEYBOARD，RIDI_DEVICEINFO 只填 keyboard 联合体成员（hid.dwVendorId
+    // 恒 0，2026-09-07 真机排查教训），VID/PID 必须从 RIDI_DEVICENAME 路径解析。
+    // BTHLE 实测名：\\?\HID#{00001812-...}_Dev_VID&012717_PID&32b8_REV&00a4_c05d39...#...#...
+    assert(XiaomiRawInputNameIsRemote(
+        L"\\\\?\\HID#{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&012717_PID&32b8_"
+        L"REV&00a4_c05d39c36459#b&19f8b1bc&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}"));
+    // USB HID 接口名格式同样命中（容错未来有线连接场景）。
+    assert(XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_2717&PID_32B8&MI_00#6&2a3b#0000"));
+    // 大小写不敏感。
+    assert(XiaomiRawInputNameIsRemote(L"hid#vid&2717_pid&32b8#x"));
+    // VID/PID 任一不匹配即非目标设备。
+    assert(!XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_260D&PID_1131&MI_01&Col01#8&1bddaf93"));
+    assert(!XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_2717&PID_9999&MI_00#6&2a3b"));
+    // 无标记 / 仅一个标记 / 标记嵌在单词里（如 devid）不算。
+    assert(!XiaomiRawInputNameIsRemote(L""));
+    assert(!XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_2717&MI_00#6&2a3b"));
+    assert(!XiaomiRawInputNameIsRemote(L"prefix devid&012717 end pid&32b8"));
+    // 前导零等价：VID&012717（BTHLE 6 位格式，前两位为 Source 前缀）与
+    // VID&2717 / VID&002717 按低 16 位数值相同。
+    assert(XiaomiRawInputNameIsRemote(L"x_VID&2717_PID&32b8_y"));
+    assert(XiaomiRawInputNameIsRemote(L"x_VID&002717_PID&32b8_y"));
+
     // ---- 注入序列：down 修饰键序+主键；up 反序 ----
     const auto backspace = ParseKeySpec("backspace").value();
     assert((XiaomiKeymapInjectDownVks(backspace) ==

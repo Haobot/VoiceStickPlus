@@ -13,18 +13,26 @@ XiaomiKeymapHook* XiaomiKeymapHook::active_instance_ = nullptr;
 
 namespace {
 
-// 小米蓝牙遥控器 2 Pro 的 HID VID/PID（Doc/Ref/protocol.md ATVV 设备档案）。
-constexpr USHORT kXiaomiVendorId = 0x2717;
-constexpr USHORT kXiaomiProductId = 0x32B8;
-
 constexpr UINT kRimTypeKeyboard = 1;
-constexpr UINT kRidiDeviceInfo = 0x2000000B;
+constexpr UINT kRidiDeviceName = 0x20000007;
 constexpr UINT kRidevInputSink = 0x00000100;
 
 std::int64_t NowSteadyMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
+}
+
+// 宽字符转 UTF-8（日志用，对齐各 dialog 的同名局部实现）。
+std::string Utf8(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int size = WideCharToMultiByte(
+        CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0,
+        nullptr, nullptr);
+    std::string out(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        out.data(), size, nullptr, nullptr);
+    return out;
 }
 
 int ButtonIndex(std::string_view button) {
@@ -165,14 +173,25 @@ LRESULT CALLBACK XiaomiKeymapHook::LowLevelKeyboardProc(int code,
     // 键，补记放行闩锁，重复流不再等待（防阻塞键盘管线拖慢打字）。
     XiaomiKeymapDecision decision = self->interceptor_.OnHookEvent(
         *button, is_down, now, self->LoadSignalMs(*button), *key_map);
+    LogApp("XiaomiKeymapHook: candidate=" + std::string(*button) +
+           (is_down ? " down" : " up") + " vk=" +
+           std::to_string(static_cast<int>(info->vkCode)) + " scan=" +
+           std::to_string(static_cast<int>(info->scanCode)) +
+           " signal=" + std::to_string(self->LoadSignalMs(*button)) +
+           " now=" + std::to_string(now) + " swallow=" +
+           (decision.swallow ? "1" : "0") + " wait=" +
+           (decision.needs_correlation ? "1" : "0"));
     if (!decision.swallow && decision.needs_correlation && is_down) {
         if (self->WaitForSignal(*button, now,
                                 XiaomiKeymapCorrelateWindowMs(*button))) {
             decision = self->interceptor_.OnHookEvent(
                 *button, is_down, NowSteadyMs(), self->LoadSignalMs(*button),
                 *key_map);
+            LogApp("XiaomiKeymapHook: correlated candidate=" + std::string(*button) +
+                   " swallow=" + (decision.swallow ? "1" : "0"));
         } else {
             self->interceptor_.RecordPass(*button, NowSteadyMs());
+            LogApp("XiaomiKeymapHook: pass-latched candidate=" + std::string(*button));
         }
     }
     if (!decision.swallow) {
@@ -211,21 +230,30 @@ void XiaomiKeymapHook::RawInputThreadMain() {
     }
     LogApp("XiaomiKeymapHook: raw input correlator running");
 
-    // hDevice → 是否小米遥控器 的判定缓存（仅本线程访问）。
+    // hDevice → 是否小米遥控器 的判定缓存（仅本线程访问）。BTHLE 遥控器在
+    // Raw Input 中是 RIM_TYPEKEYBOARD，RIDI_DEVICEINFO 的 hid 联合体成员不填
+    //（dwVendorId 恒 0，2026-09-07 真机排查定案），必须取 RIDI_DEVICENAME
+    // 接口路径解析 VID/PID；未知设备记一次日志，避免再出现静默盲区。
     std::map<HANDLE, bool> xiaomi_device_cache;
     const auto is_xiaomi_device = [&xiaomi_device_cache](HANDLE device) {
         if (!device) return false;
         const auto cached = xiaomi_device_cache.find(device);
         if (cached != xiaomi_device_cache.end()) return cached->second;
         bool matched = false;
-        RID_DEVICE_INFO info{};
-        info.cbSize = sizeof(RID_DEVICE_INFO);
-        UINT size = sizeof(info);
-        if (GetRawInputDeviceInfoW(device, kRidiDeviceInfo, &info, &size) !=
-                UINT(-1) &&
-            info.dwType == kRimTypeKeyboard && info.hid.dwVendorId == kXiaomiVendorId &&
-            info.hid.dwProductId == kXiaomiProductId) {
-            matched = true;
+        std::wstring name;
+        UINT size = 0;
+        if (GetRawInputDeviceInfoW(device, kRidiDeviceName, nullptr, &size) !=
+            UINT(-1)) {
+            std::wstring buf(size + 1, L'\0');
+            if (GetRawInputDeviceInfoW(device, kRidiDeviceName, buf.data(),
+                                       &size) != UINT(-1)) {
+                name = buf.substr(0, size);
+                matched = XiaomiRawInputNameIsRemote(name);
+            }
+        }
+        if (!matched) {
+            LogApp("XiaomiKeymapHook: raw input device not remote: " +
+                   Utf8(name));
         }
         xiaomi_device_cache[device] = matched;
         return matched;
@@ -253,6 +281,12 @@ void XiaomiKeymapHook::RawInputThreadMain() {
             if (keyboard.Flags & RI_KEY_BREAK) continue;
             const auto button = XiaomiButtonFromVkScan(keyboard.VKey,
                                                        keyboard.MakeCode);
+            LogApp("XiaomiKeymapHook: raw vk=" +
+                   std::to_string(static_cast<int>(keyboard.VKey)) + " make=" +
+                   std::to_string(static_cast<int>(keyboard.MakeCode)) +
+                   " button=" +
+                   (button.has_value() ? std::string(*button)
+                                       : std::string("-")));
             if (button.has_value()) RecordSignal(*button);
         }
     }

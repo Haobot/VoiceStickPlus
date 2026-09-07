@@ -23,6 +23,17 @@ std::optional<std::string_view> XiaomiButtonFromVkScan(UINT vk, UINT scan_code);
 // kFastWindowMs。钩子层的关联等待与决策判定窗保持一致（见 XiaomiKeymapHook）。
 std::int64_t XiaomiKeymapCorrelateWindowMs(std::string_view button);
 
+// 小米遥控器 2 Pro 的 HID VID/PID（Doc/Ref/protocol.md ATVV 设备档案）。
+constexpr uint32_t kXiaomiRemoteVendorId = 0x2717;
+constexpr uint32_t kXiaomiRemoteProductId = 0x32B8;
+
+// Raw Input 设备接口路径（RIDI_DEVICENAME）是否为小米遥控器。BTHLE 遥控器在
+// Raw Input 中呈现为 RIM_TYPEKEYBOARD，RIDI_DEVICEINFO 只填 keyboard 联合体
+// 成员（hid.dwVendorId 恒 0，无法据此识别，2026-09-07 真机排查定案），VID/PID
+// 需从接口路径解析：BTHLE 名含 "_Dev_VID&012717_PID&32b8_"，USB HID 名含
+// "VID_2717&PID_32B8"。大小写不敏感。
+bool XiaomiRawInputNameIsRemote(const std::wstring& device_name);
+
 // 注入 VK 序列：down 为修饰键序（Ctrl/Alt/Shift/Win）+ 主键，up 为反序
 //（先松主键再松修饰键，保证不向系统泄漏按住的修饰键状态）。
 std::vector<UINT> XiaomiKeymapInjectDownVks(const KeySpec& spec);

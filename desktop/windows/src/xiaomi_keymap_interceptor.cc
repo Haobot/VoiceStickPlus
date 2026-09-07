@@ -48,7 +48,64 @@ bool IsLongWindowButton(std::string_view button) {
                      button) != std::end(kLongWindowButtons);
 }
 
+// 接口路径 vid/pid 标记解析（ASCII，小写化后处理；VID/PID 值均为十六进制）。
+bool IsLowerWordChar(wchar_t c) {
+    return (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9');
+}
+bool IsLowerHexDigit(wchar_t c) {
+    return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f');
+}
+uint32_t LowerHexValue(wchar_t c) {
+    return c <= L'9' ? static_cast<uint32_t>(c - L'0')
+                     : static_cast<uint32_t>(c - L'a' + 10);
+}
+
+// 取路径中 vid/pid 标记（形如 "vid&012717" / "vid_2717"）的数值。标记前一个
+// 字符必须是字母数字以外的分隔符（防 "devid" 内嵌误命中），标记后须随 '&' 或
+// '_' 再接 1~8 位十六进制；找不到合法标记返回 nullopt。
+std::optional<uint32_t> DeviceIdTokenValue(const std::wstring& device_name,
+                                           const wchar_t* token) {
+    std::wstring lower;
+    lower.reserve(device_name.size());
+    for (wchar_t c : device_name) {
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+        lower.push_back(c);
+    }
+    const std::wstring token_str(token);
+    size_t pos = 0;
+    while ((pos = lower.find(token_str, pos)) != std::wstring::npos) {
+        const size_t value_pos = pos + token_str.size();
+        const bool boundary_before =
+            pos == 0 || !IsLowerWordChar(lower[pos - 1]);
+        const bool boundary_after =
+            value_pos < lower.size() &&
+            (lower[value_pos] == L'&' || lower[value_pos] == L'_');
+        if (boundary_before && boundary_after) {
+            uint32_t value = 0;
+            size_t i = value_pos + 1;
+            for (; i < lower.size() && IsLowerHexDigit(lower[i]); ++i) {
+                value = value * 16 + LowerHexValue(lower[i]);
+                if (i - value_pos > 8) break;  // 超长非标记值，视为不命中
+            }
+            if (i > value_pos + 1 && i - value_pos <= 9) return value;
+        }
+        ++pos;
+    }
+    return std::nullopt;
+}
+
 } // namespace
+
+bool XiaomiRawInputNameIsRemote(const std::wstring& device_name) {
+    const auto vid = DeviceIdTokenValue(device_name, L"vid");
+    const auto pid = DeviceIdTokenValue(device_name, L"pid");
+    if (!vid.has_value() || !pid.has_value()) return false;
+    // BTHLE 容器名的 VID 字段实测为 6 位十六进制（RC-6459 为 "012717"，前两位
+    // 非 VID 内容，疑似 Vendor ID Source 前缀；PID 为 4 位 "32b8"），USB HID 名
+    // 均为 4 位。统一按低 16 位（VID/PID 本征宽度）比对，两种格式都命中。
+    return (*vid & 0xFFFF) == kXiaomiRemoteVendorId &&
+           (*pid & 0xFFFF) == kXiaomiRemoteProductId;
+}
 
 std::int64_t XiaomiKeymapCorrelateWindowMs(std::string_view button) {
     return IsLongWindowButton(button) ? XiaomiKeymapInterceptor::kCorrelateWindowMs
