@@ -33,7 +33,7 @@ RC003 全键 usage 表(MiVibe `hid_report_tap.py` 与本项目 Raw Input 实测�
 | 侵入性 | 高(注入系统进程) | 中(改设备状态,官方 API) | 无 |
 | 杀软误报风险 | 有(注入行为特征) | 低 | 无 |
 | Windows 更新脆弱性 | WUDFHost 内部 IOCTL 号变更即失效 | 低 | 无 |
-| 核心假设验证状态 | MiVibe 已实证可行 | **未验证**(禁用后 GATT 能否订阅待实验) | — |
+| 可行性验证状态 | MiVibe 已实证可行 | **已证伪**(2026-09-07 提权实验,见 §4) | — |
 | 预估工作量 | 4-6 天 | 3-4 天(+实验) | 0 |
 
 ## 3. 方案 A 详细设计:自研注入 WUDFHost 截获 GATT 报文
@@ -100,19 +100,24 @@ RC003 全键 usage 表(MiVibe `hid_report_tap.py` 与本项目 Raw Input 实测�
 - **GPL 合规**:MiVibe-Remote 为 GPL-3.0,仅参考协议事实(IOCTL 号/报文格式/usage 表/注册表路径)与架构思路,**实现全部自写,不复制任何代码**。
 - **红线声明**:本方案不引入 Frida 库;但「注入系统进程」与红线精神(当初为避免 Frida 重依赖而设)存在张力,故列为需用户明示拍板项。
 
-## 4. 方案 B 详细设计:禁用 HID 设备节点 + GATT 自管
+## 4. 方案 B ~~详细设计~~ → **已证伪(2026-09-07 提权实验定案)**
 
-管理员下 SetupAPI(`SetupDiSetClassInstallParams` + `DICS_DISABLE`)禁用遥控器 0x1812 服务的 HID 设备节点 → WUDF 宿主卸载、GATT 占用预期解除 → VoiceStick(复用 `ble_central_win` 的 WinRT BLE 栈)订阅 0x2A4D notify 自解析 usage 报文 → **全部 13 键自管**:系统翻译不复存在,方向/OK/音量等也全部由 VoiceStick 注入。
+原假设:管理员下 SetupAPI/`Disable-PnpDevice` 禁用遥控器 0x1812 HID 设备节点 → WUDF 宿主卸载 → GATT 占用解除 → VoiceStick 订阅 0x2A4D 自管全键。
 
-- 优点:零注入、全官方 API、一次性拿到全部键
-- 致命代价:VoiceStick 不运行时遥控器**所有按键失效**(遥控器沦为 VoiceStick 专属外设);系统音量键从硬件路径变为软件注入;重新配对后节点重建需再次禁用
-- **核心假设未验证**:禁用节点后 SharingViolation 是否解除(需 admin 实验:禁用 → 跑 GATT 订阅探针 → 恢复启用;实验期间遥控器键盘短暂失灵)
-- 若实验失败(占用不解除或报文不来),方案 B 作废,回到 A/C
+**实验结果(三轮迭代,第三轮可信)**:禁用确凿生效(父节点 `CM_PROB_DISABLED`/Status=Error,子 HID 键盘节点 PHANTOM),但:
+
+- `get_gatt_services_async` 正常,0x1812 服务**仍在枚举**(9 服务全在);
+- `open_async(SHARED_READ_AND_WRITE)` 仍返回 **5 = SharingViolation**;
+- `get_characteristics_async` 仍 **3 = Unreachable**——与未禁用时的历史状态完全一致。
+
+**结论:0x2A4D 特征的独占与 HID 设备节点无关,来自 BthLE 蓝牙栈服务层对已配对 GATT 服务的持久保留。** 禁用节点只卸载 HID 客户端驱动栈(HidOverGatt 宿主 + kbdhid),不触碰服务层独占——"禁用设备节点释放 GATT"路线在 Windows BTHLE 架构下不成立,方案 B 出局。理论变体 B'(改配对注册表让 BthLEEnum 不挂载 0x1812 服务)属深水区(改系统配对数据库、成功率低、代价与 B 相同),不推荐。
+
+> 实验方法教训(记入记忆):①`Disable-PnpDevice` 必须 `-ErrorAction Stop -PassThru` + 等待 ≥8 秒后用 `(Get-PnpDevice).Problem == CM_PROB_DISABLED` 确认——前两轮 3-4 秒轮询 + 无错误捕获,禁用未生效/未确认,产生自相矛盾的假观察;②winrt python 包 `str(uuid)` 返回**裸 UUID 不带花括号**,探针常量带花括号会静默匹配失败(本实验第一轮"0x1812 服务消失"即此 bug 假象);③探针必须打印中间层完整列表(服务/特征 UUID),否则提前退出的失败会伪装成"上游消失"。
 
 ## 5. 决策请求
 
 | 问题 | 选项 |
 |---|---|
-| 移植路线 | **A** 自研注入(能力全/侵入高)/ **B** 禁用节点+自管(零注入/接管全键,需先实验)/ **C** 维持现状(home 已可删字) |
+| 移植路线 | **A** 自研注入(能力全/侵入高)/ **C** 维持现状(home 已可删字)。~~B~~ 已证伪(§4) |
 
-推荐 **A**:唯一同时满足「back 可映射」+「遥控器保持正常 Windows 键盘」的路线,MiVibe 已实证机制可行;侵入性代价(一次性 UAC、杀软残余风险)明确且可控。若用户不接受任何注入,**B 先实验再定**;若 back 非刚需,**C** 零成本。
+推荐 **A**:B 出局后,唯一能拿到 back 的路线。MiVibe 已实证机制可行;侵入性代价(一次性 UAC、杀软残余风险)明确且可控。若用户不接受任何注入,**C** 零成本(back 放弃,home 替代)。
