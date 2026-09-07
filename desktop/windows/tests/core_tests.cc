@@ -244,6 +244,13 @@ public:
         firmware_update_prompts.push_back(device_id + ":" + current_version + ":" + latest_version +
                                           (is_below_minimum ? ":minimum" : ":latest"));
     }
+    void ShowFirmwareUpdateBalloon(const std::string& device_id,
+                                   const std::string& current_version,
+                                   const std::string& latest_version,
+                                   bool is_below_minimum) override {
+        firmware_update_balloons.push_back(device_id + ":" + current_version + ":" + latest_version +
+                                           (is_below_minimum ? ":minimum" : ":latest"));
+    }
     void SetPairedDeviceIds(const std::vector<std::string>& ids) override {
         paired_device_ids = ids;
     }
@@ -308,6 +315,7 @@ public:
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
     std::vector<std::string> pairing_errors;
     std::vector<std::string> firmware_update_prompts;
+    std::vector<std::string> firmware_update_balloons;
     std::vector<std::string> paired_device_ids;
     std::vector<std::string> partials;
     std::vector<std::string> refining_texts;
@@ -1799,6 +1807,48 @@ void TestFirmwareManifestParsingAndVersionCompare() {
     assert(IsFirmwareHardwareCompatible("sticks3", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
+}
+
+void TestFirmwareManifestMinimumVersion() {
+    // Arrange：新版 manifest 下发 min_version
+    const std::string json_with_min =
+        "{\"hardware\":\"sticks3\",\"version\":\"2.3.7\","
+        "\"ota_url\":\"https://example.test/ota.bin\",\"ota_sha256\":\"abc\",\"ota_size\":123,"
+        "\"min_version\":\"2.0.0\"}";
+    auto manifest = ParseFirmwareManifest(json_with_min);
+    assert(manifest.has_value());
+    assert(manifest->min_version == "2.0.0");
+    assert(EffectiveMinimumFirmwareVersion(*manifest, "0.3.0") == "2.0.0");
+
+    // 旧 Release manifest 无 min_version → 解析为空，回退本地 fallback
+    const std::string json_without_min =
+        "{\"hardware\":\"sticks3\",\"version\":\"2.3.7\","
+        "\"ota_url\":\"https://example.test/ota.bin\",\"ota_sha256\":\"abc\",\"ota_size\":123}";
+    auto legacy = ParseFirmwareManifest(json_without_min);
+    assert(legacy.has_value());
+    assert(legacy->min_version.empty());
+    assert(EffectiveMinimumFirmwareVersion(*legacy, "0.3.0") == "0.3.0");
+
+    // 强制升级判定：current < min_version → below minimum
+    assert(FirmwareVersion::IsOlderThan("1.9.9", EffectiveMinimumFirmwareVersion(*manifest, "0.3.0")));
+    // 可选升级判定：min_version ≤ current < version → 可更新但不强制
+    assert(!FirmwareVersion::IsOlderThan("2.0.0", EffectiveMinimumFirmwareVersion(*manifest, "0.3.0")));
+    assert(FirmwareVersion::IsOlderThan("2.0.0", manifest->version));
+
+    // 升级紧急度分类：manifest 下发 min_version 时按其判定
+    assert(ClassifyFirmwareUpdateUrgency("1.9.9", *manifest, "0.3.0") ==
+           FirmwareUpdateUrgency::kRequired);
+    assert(ClassifyFirmwareUpdateUrgency("2.0.0", *manifest, "0.3.0") ==
+           FirmwareUpdateUrgency::kOptional);
+    assert(ClassifyFirmwareUpdateUrgency("2.3.6", *manifest, "0.3.0") ==
+           FirmwareUpdateUrgency::kOptional);
+    assert(ClassifyFirmwareUpdateUrgency("2.3.7", *manifest, "0.3.0") ==
+           FirmwareUpdateUrgency::kUpToDate);
+    // manifest 缺 min_version → 回退本地常量判定（0.3.0 以下强制）
+    assert(ClassifyFirmwareUpdateUrgency("0.2.9", *legacy, "0.3.0") ==
+           FirmwareUpdateUrgency::kRequired);
+    assert(ClassifyFirmwareUpdateUrgency("0.3.0", *legacy, "0.3.0") ==
+           FirmwareUpdateUrgency::kOptional);
 }
 
 void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
@@ -9902,6 +9952,7 @@ int main() {
     TestHotwordCandidateMiner();
     TestHotwordExtractionPromptAndParse();
     TestFirmwareManifestParsingAndVersionCompare();
+    TestFirmwareManifestMinimumVersion();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
     TestBleEncoderPayloads();

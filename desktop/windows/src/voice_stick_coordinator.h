@@ -185,6 +185,13 @@ public:
                               OverlayThemeColor color) = 0;
     virtual void HideSubtitles() = 0;
     virtual void ShowNotification(const std::string& title, const std::string& body) = 0;
+    // 固件更新托盘气泡（周期检查/连接后发现已连接设备固件落后时）：
+    // 与 ShowFirmwareUpdatePrompt（配对后模态询问）互补，不打断当前操作。
+    // 默认空实现便于测试与轻量 UI 接入。
+    virtual void ShowFirmwareUpdateBalloon(const std::string& device_id,
+                                           const std::string& current_version,
+                                           const std::string& latest_version,
+                                           bool is_below_minimum) {}
     // 悬浮窗临时消息（duration_ms 后自动隐藏）：托盘气球可能被系统勿扰/通知设置
     // 静默拦截且无返回值可查，需要用户必现的提示（如热词候选建议）走这条。
     // 实现方负责：会话活跃（浮窗被状态机占用）时回退托盘气泡、UI 线程封送。
@@ -257,6 +264,9 @@ public:
     void CancelPendingConnect(const std::string& device_id);
     bool RestoreLastInputConfirmation();
     void CheckFirmwareUpdatesNow();
+    // 周期静默检查（平台层 12h 定时器驱动）：缓存期内复用上次 manifest 不真拉，
+    // 与 Now()（force+显示错误）互补，供已连接设备的固件落后气泡提醒。
+    void CheckFirmwareUpdatesPeriodically() { CheckFirmwareUpdatesIfNeeded(false, false); }
     void CheckFirmwareAfterPairing(const std::string& device_id);
     void UpdateFirmwareFromLatest(const std::string& device_id,
                                   std::function<void(FirmwareUpdateProgress)> progress,
@@ -609,6 +619,9 @@ private:
     bool has_last_firmware_manifest_check_at_ = false;
     bool firmware_manifest_check_in_flight_ = false;
     std::set<std::string> pending_firmware_update_prompt_device_ids_;
+    // 固件更新气泡去重（device_id@latest_version）：同一设备同一目标版本
+    // 每个进程会话只提醒一次，避免周期检查反复打扰。
+    std::set<std::string> firmware_update_balloon_sent_keys_;
     FirmwareManifestClient firmware_manifest_client_;
     std::mutex firmware_mutex_;
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};
@@ -675,7 +688,9 @@ private:
     static constexpr std::chrono::seconds kAudioStallTimeout{5};
     // finalizing 闲置上限：等 ASR final / LLM 精修期间无任何进展超过该时长则兜底退出。
     static constexpr std::chrono::seconds kFinalizingWatchdogTimeout{15};
-    static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
+    // manifest 缓存时长 = 周期检查间隔：桌面端每 12h 静默拉一次 manifest，
+    // 连接/配对触发的检查在缓存期内直接复用，跨过缓存期才会真拉。
+    static constexpr std::chrono::hours kFirmwareManifestCacheDuration{12};
 };
 
 } // namespace voicestick

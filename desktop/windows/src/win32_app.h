@@ -46,9 +46,21 @@ struct DeviceBattery {
     bool usb_powered = false;
 };
 
+// 托盘气泡的点击动作：区分"发现程序新版本"（打开 WinSparkle 对话框）与
+// "固件可升级"（打开对应设备固件升级流程）。
+struct BalloonAction {
+    enum class Kind {
+        kAppUpdate,
+        kFirmwareUpdate,
+    };
+    Kind kind = Kind::kAppUpdate;
+    std::string device_id;  // 仅 kFirmwareUpdate 使用
+};
+
 class Win32App : public VoiceStickUi {
 public:
     explicit Win32App(HINSTANCE instance);
+    ~Win32App() override;
     int Run();
 
     void SetStatus(const std::string& status) override;
@@ -85,6 +97,10 @@ public:
                       OverlayThemeColor color) override;
     void HideSubtitles() override;
     void ShowNotification(const std::string& title, const std::string& body) override;
+    void ShowFirmwareUpdateBalloon(const std::string& device_id,
+                                   const std::string& current_version,
+                                   const std::string& latest_version,
+                                   bool is_below_minimum) override;
     void ShowTimedMessage(const std::string& message, int duration_ms) override;
     // 无运行实例时由命令行入口(--ota)注入的待处理 OTA 请求，连上设备后自动触发。
     void SetPendingOtaRequest(std::string file_path,
@@ -140,6 +156,14 @@ private:
     void HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info);
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
+    // 带点击动作的托盘气泡：ShowNotification 的增强版，用户点气泡（NIN_BALLOONUSERCLICK）
+    // 时触发 action；气泡超时/被新气泡顶替则丢弃。仅 UI 线程调用。
+    void ShowActionableNotification(const std::string& title, const std::string& body,
+                                    BalloonAction action);
+    // WinSparkle did_find_update 回调（工作线程）的 UI 侧处理：每会话只气泡一次。
+    void OnAppUpdateFound();
+    // WinSparkle 静默检查到新版本：气泡 → 用户点击 → check_update_with_ui 标准对话框。
+    static void __cdecl WinSparkleFoundUpdateBridge();
     void ShutdownAndQuit();
     // 以管理员身份重启自身：ShellExecuteW runas 触发 UAC，新 High 实例启动后旧实例清理退出。
     void RelaunchElevatedAndQuit();
@@ -198,10 +222,26 @@ private:
     //（长按阈值确认、尾包宽限、双击窗到期、CAPS 超时）。
     static constexpr UINT_PTR kXiaomiSessionTickTimerId = 103;
     static constexpr UINT kXiaomiSessionTickMs = 50;
+    // 程序更新静默检查：关闭 WinSparkle 自带定时检查后自行驱动。启动 30s 后首查
+    //（避开启动带宽争抢），之后每 24h 静默查一次；发现新版本经气泡提醒（每会话一次）。
+    static constexpr UINT_PTR kAppUpdateSilentCheckTimerId = 104;
+    static constexpr UINT kAppUpdateFirstCheckDelayMs = 30'000;
+    static constexpr UINT kAppUpdateCheckIntervalMs = 24 * 60 * 60'000;
+    // 固件 manifest 周期检查：每 12h 静默拉一次（协调器内同长度缓存配合），
+    // 已连接设备固件落后时发托盘气泡提醒。
+    static constexpr UINT_PTR kFirmwarePeriodicCheckTimerId = 105;
+    static constexpr UINT kFirmwarePeriodicCheckIntervalMs = 12 * 60 * 60'000;
     bool air_mouse_timer_active_ = false;
     bool encoder_rotate_pending_timer_active_ = false;
     bool xiaomi_tick_timer_active_ = false;
     std::chrono::steady_clock::time_point last_battery_status_request_{};
+    // 当前托盘气泡附带的点击动作（空=普通通知气泡）；仅 UI 线程访问。
+    std::optional<BalloonAction> pending_balloon_action_{};
+    // 本会话是否已发过程序更新气泡（避免重启循环里反复打扰；用户可在 WinSparkle
+    // 对话框选"跳过此版本"永久静音该版本）。
+    bool app_update_balloon_shown_ = false;
+    // WinSparkle 无 user_data 的 C 回调 → 实例桥接（进程内单实例）。
+    static Win32App* active_instance_;
 };
 
 } // namespace voicestick

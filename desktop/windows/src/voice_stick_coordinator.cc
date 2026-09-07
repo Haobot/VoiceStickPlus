@@ -2824,6 +2824,9 @@ void VoiceStickCoordinator::CheckFirmwareUpdatesIfNeeded(bool force, bool show_e
 void VoiceStickCoordinator::RefreshFirmwareAvailability() {
     std::map<std::string, DeviceFirmwareInfo> snapshot;
     std::vector<std::tuple<std::string, std::string, std::string, bool>> update_prompts;
+    // 气泡候选（锁内收集全部可升级设备，锁外再按连接态过滤+去重）：connected_device_ids_
+    // 由 BLE 回调线程写、无锁，参照 ResolveActiveDevice 等现有读点在锁外弱一致读。
+    std::vector<std::tuple<std::string, std::string, std::string, bool>> balloon_candidates;
     {
         std::lock_guard lock(firmware_mutex_);
         for (auto& [device_id, info] : firmware_info_by_device_id_) {
@@ -2849,16 +2852,21 @@ void VoiceStickCoordinator::RefreshFirmwareAvailability() {
                                    latest_firmware_manifest_->hardware);
             } else {
                 info.latest_version = latest_firmware_manifest_->version;
-                info.update_available = FirmwareVersion::IsOlderThan(
-                    info.current_version, latest_firmware_manifest_->version);
+                const auto urgency = ClassifyFirmwareUpdateUrgency(
+                    info.current_version, *latest_firmware_manifest_,
+                    AppConfig::minimum_compatible_firmware_version);
+                info.update_available = urgency != FirmwareUpdateUrgency::kUpToDate;
+                const bool is_below_minimum = urgency == FirmwareUpdateUrgency::kRequired;
                 if (ShouldShowFirmwareUpdatePromptAfterPairing(device_id, info)) {
                     update_prompts.emplace_back(
                         device_id,
                         info.current_version,
                         info.latest_version,
-                        FirmwareVersion::IsOlderThan(
-                            info.current_version,
-                            AppConfig::minimum_compatible_firmware_version));
+                        is_below_minimum);
+                }
+                if (info.update_available) {
+                    balloon_candidates.emplace_back(
+                        device_id, info.current_version, info.latest_version, is_below_minimum);
                 }
                 LogCoordinatorLine("firmware availability VS-" + device_id +
                                    " hardware=" + info.hardware +
@@ -2872,6 +2880,21 @@ void VoiceStickCoordinator::RefreshFirmwareAvailability() {
     ui_->SetFirmwareInfo(snapshot);
     for (const auto& [device_id, current_version, latest_version, is_below_minimum] : update_prompts) {
         ui_->ShowFirmwareUpdatePrompt(device_id, current_version, latest_version, is_below_minimum);
+    }
+    // 主动提醒：已连接且版本落后时发一次托盘气泡（同设备同目标版本会话内不重复）；
+    // below_minimum 的模态 prompt 语义保持不变。未连接不消耗去重名额。
+    for (const auto& [device_id, current_version, latest_version, is_below_minimum] : balloon_candidates) {
+        const bool is_connected =
+            std::find(connected_device_ids_.begin(), connected_device_ids_.end(),
+                      device_id) != connected_device_ids_.end();
+        if (!is_connected) continue;
+        const std::string balloon_key = device_id + "@" + latest_version;
+        {
+            std::lock_guard lock(firmware_mutex_);
+            if (firmware_update_balloon_sent_keys_.contains(balloon_key)) continue;
+            firmware_update_balloon_sent_keys_.insert(balloon_key);
+        }
+        ui_->ShowFirmwareUpdateBalloon(device_id, current_version, latest_version, is_below_minimum);
     }
 }
 

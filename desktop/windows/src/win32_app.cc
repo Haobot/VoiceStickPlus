@@ -354,8 +354,10 @@ void LaunchFlashToolExe(HWND owner) {
 
 } // namespace
 
+Win32App* Win32App::active_instance_ = nullptr;
+
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
-    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
+    active_instance_ = this;    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
            " portable_mode=" + std::string(config_.portable_mode ? "true" : "false") +
            " provider=" + AsrProviderName(config_.asr_provider));
     if (config_.asr_provider == AsrProvider::kTencent) {
@@ -374,6 +376,10 @@ Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig:
             };
         }
     }
+}
+
+Win32App::~Win32App() {
+    active_instance_ = nullptr;
 }
 
 int Win32App::Run() {
@@ -404,13 +410,19 @@ int Win32App::Run() {
         if (!config_.portable_mode) {
             LogLine("Initializing WinSparkle");
             win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
-            win_sparkle_set_automatic_check_for_updates(1);
-            win_sparkle_set_update_check_interval(86400);
+            // 自带定时检查改为手动驱动：did_find_update 无 UI 回调链让我们能以托盘
+            // 气泡（可点击）代替 WinSparkle 默认的静默后台下载/弹窗节奏。首查延迟
+            // 30s 避开启动带宽争抢，此后每 24h 静默检查一次（见 WM_TIMER 104）。
+            win_sparkle_set_automatic_check_for_updates(0);
+            win_sparkle_set_did_find_update_callback(&WinSparkleFoundUpdateBridge);
             win_sparkle_init();
+            SetTimer(hwnd_, kAppUpdateSilentCheckTimerId, kAppUpdateFirstCheckDelayMs, nullptr);
             LogLine("WinSparkle initialized");
         } else {
             LogLine("Portable mode — skipping WinSparkle init");
         }
+        // 固件 manifest 周期检查：每 12h 静默拉取；已连接设备落后时协调器发气泡。
+        SetTimer(hwnd_, kFirmwarePeriodicCheckTimerId, kFirmwarePeriodicCheckIntervalMs, nullptr);
 
         LogLine("Creating BLE coordinator");
         auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
@@ -898,6 +910,26 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             RequestConnectedBatteryStatus();
             return 0;
         }
+        if (event == NIN_BALLOONUSERCLICK) {
+            // 只在动作仍挂着时消费：普通气泡（无动作）被点击不触发任何流程。
+            const auto action = std::move(pending_balloon_action_);
+            pending_balloon_action_.reset();
+            if (action.has_value()) {
+                if (action->kind == BalloonAction::Kind::kAppUpdate) {
+                    if (!config_.portable_mode) {
+                        win_sparkle_check_update_with_ui();
+                    }
+                } else if (action->kind == BalloonAction::Kind::kFirmwareUpdate) {
+                    StartFirmwareUpdate(action->device_id);
+                }
+            }
+            return 0;
+        }
+        if (event == NIN_BALLOONTIMEOUT || event == NIN_BALLOONHIDE) {
+            // 气泡未被点击即消失：动作作废，避免下次点击普通气泡误触发。
+            pending_balloon_action_.reset();
+            return 0;
+        }
         if (event == WM_RBUTTONUP || event == WM_LBUTTONUP ||
             event == WM_CONTEXTMENU || event == NIN_SELECT || event == NIN_KEYSELECT) {
             ShowTrayMenu();
@@ -1109,6 +1141,18 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             KillTimer(hwnd_, kResumeRestartTimerId);
             LogLine("resume timer fired: restarting BLE after power resume");
             if (ble_central_) ble_central_->RestartForResume();
+            return 0;
+        }
+        if (w_param == kAppUpdateSilentCheckTimerId) {
+            // 首查后转为 24h 周期；portable 模式不 init WinSparkle 也不会设此 timer。
+            SetTimer(hwnd_, kAppUpdateSilentCheckTimerId, kAppUpdateCheckIntervalMs, nullptr);
+            LogLine("app update silent check triggered");
+            win_sparkle_check_update_without_ui();
+            return 0;
+        }
+        if (w_param == kFirmwarePeriodicCheckTimerId && coordinator_) {
+            // 周期静默拉 manifest；协调器 12h 缓存内直接复用，真拉由后台线程完成。
+            coordinator_->CheckFirmwareUpdatesPeriodically();
             return 0;
         }
         break;
@@ -2462,6 +2506,8 @@ void Win32App::PairDeviceByManualId(const std::string& device_id) {
 }
 
 void Win32App::ShowNotification(const std::string& title, const std::string& body) {
+    // 新气泡顶掉旧气泡：旧气泡未消费的点击动作随之作废，防止点击语义错位。
+    pending_balloon_action_.reset();
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
@@ -2473,6 +2519,55 @@ void Win32App::ShowNotification(const std::string& title, const std::string& bod
     wcsncpy_s(data.szInfo, body_w.c_str(), _TRUNCATE);
     data.dwInfoFlags = NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
+void Win32App::ShowActionableNotification(const std::string& title, const std::string& body,
+                                          BalloonAction action) {
+    pending_balloon_action_ = std::move(action);
+    ShowNotification(title, body);
+}
+
+void Win32App::ShowFirmwareUpdateBalloon(const std::string& device_id,
+                                         const std::string& current_version,
+                                         const std::string& latest_version,
+                                         bool is_below_minimum) {
+    DispatchToUi([this, device_id, current_version, latest_version, is_below_minimum] {
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        BalloonAction action;
+        action.kind = BalloonAction::Kind::kFirmwareUpdate;
+        action.device_id = device_id;
+        ShowActionableNotification(
+            Tr(is_below_minimum ? StringId::kFirmwareUpdatePromptTitleRequired
+                                : StringId::kFirmwareUpdatePromptTitleAvailable,
+               language),
+            FormatUtf8(Tr(StringId::kFirmwareUpdatePromptBody, language),
+                       {device_id, current_version, latest_version}),
+            std::move(action));
+    });
+}
+
+void __cdecl Win32App::WinSparkleFoundUpdateBridge() {
+    if (active_instance_ != nullptr) {
+        active_instance_->OnAppUpdateFound();
+    }
+}
+
+void Win32App::OnAppUpdateFound() {
+    // WinSparkle 工作线程回调：封送 UI 线程。每会话只气泡一次；用户可在标准
+    // 对话框里"跳过此版本"永久静音该版本（WinSparkle 注册表机制）。
+    DispatchToUi([this] {
+        if (app_update_balloon_shown_ || config_.portable_mode) {
+            return;
+        }
+        app_update_balloon_shown_ = true;
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        BalloonAction action;
+        action.kind = BalloonAction::Kind::kAppUpdate;
+        ShowActionableNotification(Tr(StringId::kNotificationAppUpdateTitle, language),
+                                   Tr(StringId::kNotificationAppUpdateBody, language),
+                                   std::move(action));
+        LogLine("app update found: balloon shown");
+    });
 }
 
 void Win32App::ShowTimedMessage(const std::string& message, int duration_ms) {
