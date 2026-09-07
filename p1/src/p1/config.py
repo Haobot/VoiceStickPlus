@@ -21,6 +21,8 @@ class P1Config:
 
     push_to_talk: str = "right ctrl"
     cancel_key: str = "esc"
+    add_selection_key: str = "ctrl+alt+h"
+    confirm_recent_key: str = "ctrl+alt+s"
     engine_adapter: str = "sense_voice"
     models_dir: str = str(DEFAULT_MODELS_DIR)
     rewrite_enabled: bool = True
@@ -53,6 +55,8 @@ def load_config(path: Path | None = None) -> P1Config:
     return P1Config(
         push_to_talk=str(hotkey.get("push_to_talk", "right ctrl")),
         cancel_key=str(hotkey.get("cancel", "esc")),
+        add_selection_key=str(hotkey.get("add_selection", "ctrl+alt+h")),
+        confirm_recent_key=str(hotkey.get("confirm_recent", "ctrl+alt+s")),
         engine_adapter=str(engine.get("adapter", "sense_voice")),
         models_dir=str(resolved),
         rewrite_enabled=bool(rewrite.get("enabled", True)),

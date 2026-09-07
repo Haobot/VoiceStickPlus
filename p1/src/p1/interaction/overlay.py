@@ -5,9 +5,12 @@
 """
 from __future__ import annotations
 
+import logging
 import queue
 import tkinter as tk
 from dataclasses import dataclass
+
+log = logging.getLogger("p1.overlay")
 
 WIDTH, HEIGHT = 680, 72
 BG = "#1e1e2e"
@@ -23,20 +26,23 @@ RESULT_LINGER_MS = 4000  # 结果停留时长
 class OverlayEvent:
     """一次 UI 状态更新（kind 决定渲染分支）。"""
 
-    kind: str  # recording | recognizing | result | error | hide | level
+    kind: str  # recording | recognizing | result | error | hide | level | dialog
     text: str = ""
     detail: str = ""
     level: float = 0.0
     corrections: tuple = ()
     timing: dict | None = None
+    dialog: str = ""        # kind="dialog" 时：add_hotword | confirm_recent
+    payload: dict | None = None  # 弹窗初始数据（主线程取用）
 
 
 class OverlayApp:
     """悬浮条应用；run() 进入 mainloop（主线程），其余线程用 post()。"""
 
-    def __init__(self, position: tuple[int, int] | None = None):
+    def __init__(self, position: tuple[int, int] | None = None, root=None):
         self.events: queue.Queue[OverlayEvent] = queue.Queue()
-        self._root = tk.Tk()
+        self._dialog_host = None  # set_dialog_host 注入（controller 承担）
+        self._root = root if root is not None else tk.Tk()
         self._root.overrideredirect(True)   # 无边框
         self._root.attributes("-topmost", True)
         self._root.attributes("-alpha", 0.96)
@@ -63,6 +69,14 @@ class OverlayApp:
     def post(self, event: OverlayEvent) -> None:
         self.events.put(event)
 
+    def set_dialog_host(self, host) -> None:
+        """注入弹窗宿主（须在 run() 前调用）：open_add_hotword / open_confirm_recent。"""
+        self._dialog_host = host
+
+    def root(self):
+        """悬浮条根窗口（弹窗 Toplevel 的挂载点）。"""
+        return self._root
+
     # ---- 主线程 ----
 
     def run(self) -> None:
@@ -72,7 +86,11 @@ class OverlayApp:
     def _poll(self) -> None:
         try:
             while True:
-                self._render(self.events.get_nowait())
+                event = self.events.get_nowait()
+                try:
+                    self._render(event)
+                except Exception:  # 单事件渲染失败不杀轮询链（曾因 grab 竞态全瘫）
+                    log.exception("渲染事件失败 kind=%s", event.kind)
         except queue.Empty:
             pass
         self._root.after(50, self._poll)
@@ -80,6 +98,13 @@ class OverlayApp:
     def _render(self, event: OverlayEvent) -> None:
         if event.kind == "hide":
             self._root.withdraw()
+            return
+        if event.kind == "dialog":  # 弹窗事件转交宿主（controller）在主线程开 Toplevel
+            if self._dialog_host is not None:
+                if event.dialog == "add_hotword":
+                    self._dialog_host.open_add_hotword(event.payload["text"])
+                elif event.dialog == "confirm_recent":
+                    self._dialog_host.open_confirm_recent(event.payload["result"])
             return
         if event.kind == "level":  # 录音电平刷新（不重排，只改条宽）
             self._root.after_idle(lambda: self._bar.configure(

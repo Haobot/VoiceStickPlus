@@ -22,6 +22,7 @@ from p1.flywheel.hotword_store import HotwordStore  # noqa: E402
 from p1.interaction.hotkey import HotkeyListener  # noqa: E402
 from p1.interaction.injector import ClipboardInjector  # noqa: E402
 from p1.interaction.overlay import OverlayApp  # noqa: E402
+from p1.interaction.selection import SelectionReader  # noqa: E402
 from p1.orchestration.pipeline import Pipeline  # noqa: E402
 from p1.orchestration.session import RecordingSession  # noqa: E402
 from p1.rewrite.rewriter import build_rewriter  # noqa: E402
@@ -47,15 +48,21 @@ def build_application(cfg) -> tuple[OverlayApp, HotkeyListener]:
                         rewriter=rewriter, injector=ClipboardInjector())
     overlay = OverlayApp()
     controller = VoiceController(session=RecordingSession(),
-                                 pipeline=pipeline, overlay=overlay)
+                                 pipeline=pipeline, overlay=overlay,
+                                 hotword_store=store,
+                                 selection_reader=SelectionReader())
+    overlay.set_dialog_host(controller)
     hotkeys = HotkeyListener(
         push_key=cfg.push_to_talk, cancel_key=cfg.cancel_key,
         on_press=controller.start_session,
         on_release=controller.finish_session,
-        on_cancel=controller.cancel_session)
-    log.info("热词库 %d 条 | 改写 %s | 热键 按住[%s]说话 Esc取消",
+        on_cancel=controller.cancel_session,
+        action_keys={cfg.add_selection_key: controller.on_add_selection,
+                     cfg.confirm_recent_key: controller.on_confirm_recent})
+    log.info("热词库 %d 条 | 改写 %s | 热键 按住[%s]说话 Esc取消 | "
+             "框选添加[%s] 确认口述[%s]",
              store.count(), cfg.rewrite_provider if rewriter else "关闭",
-             cfg.push_to_talk)
+             cfg.push_to_talk, cfg.add_selection_key, cfg.confirm_recent_key)
     return overlay, hotkeys
 
 

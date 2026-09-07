@@ -166,3 +166,18 @@ def test_动态热词_当句入库下一句生效(store):
     store.add(surface="Kubernetes", source="manual")
     result2 = pipeline.process(_samples())
     assert "Kubernetes" in result2.final_text  # 立即生效
+
+
+# ---------- PipelineResult 中间文本（改写确认三段对照） ----------
+
+def test_pipeline结果_带纠正后中间文本():
+    from p1.orchestration.pipeline import PipelineResult
+    r = PipelineResult(final_text="最终", raw_text="原文",
+                       corrected_text="纠正后", injected=True)
+    assert r.corrected_text == "纠正后"
+
+
+def test_pipeline结果_中间文本默认空_兼容旧构造():
+    from p1.orchestration.pipeline import PipelineResult
+    r = PipelineResult(final_text="f", raw_text="r", injected=True)
+    assert r.corrected_text == ""

@@ -57,3 +57,24 @@ def test_文件加载_自定义models_dir相对路径基于p1根(tmp_path):
     cfg = load_config(cfg_file)
     assert Path(cfg.models_dir).is_absolute()
     assert cfg.models_dir.endswith(str(Path("assets") / "models"))
+
+
+# ---------- 热词入口键位（第二迭代） ----------
+
+def test_默认配置_热词入口两键为ctrl_alt组合():
+    cfg = load_config(Path("Z:/不存在/config.toml"))
+    assert cfg.add_selection_key == "ctrl+alt+h"
+    assert cfg.confirm_recent_key == "ctrl+alt+s"
+
+
+def test_文件加载_可覆盖热词入口键位(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        "[hotkey]\n"
+        'add_selection = "ctrl+alt+k"\n'
+        'confirm_recent = "ctrl+alt+j"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_file)
+    assert cfg.add_selection_key == "ctrl+alt+k"
+    assert cfg.confirm_recent_key == "ctrl+alt+j"

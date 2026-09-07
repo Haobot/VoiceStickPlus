@@ -10,6 +10,11 @@
 - **本地识别**：SenseVoice-Small int8（sherpa-onnx），完全离线。
 - **热词飞轮**：SQLite + AES-GCM 字段加密热词库；识别后处理纠正（拉丁精确/模糊 + 中文拼音滑窗），
   命中回写权重（+0.05，上限 2.0），下一句立即生效。
+- **热词两个入口**（第二迭代）：
+  - 框选添加——任意应用选中文本 → `Ctrl+Alt+H` → 确认小窗（可编辑词条与读音变体）→ 入库（source=manual）；
+    读取走剪贴板往返（暂存→Ctrl+C→读→还原），复制失败自动重试，重试耗尽提示不误读。
+  - 改写确认——口述后按 `Ctrl+Alt+S` → 最近一句三段对照（识别原文 / 热词纠正后 / 最终注入）→
+    勾选纠正对保存，错读形式作为读音变体入库（source=correction），下次同发音直接纠正。
 - **AI 改写**：默认规则版（去口癖/叠字折叠/标点规整）；可选腾讯混元（配置凭据后自动启用）。
 - **文本注入**：剪贴板 + Ctrl+V 到当前焦点窗口。
 
@@ -36,6 +41,8 @@ cd ../p1 && ../m0/.venv/Scripts/python.exe main.py
 |---|---|---|
 | `hotkey.push_to_talk` | `right ctrl` | 按住说话键（keyboard 库键名） |
 | `hotkey.cancel` | `esc` | 取消本句键 |
+| `hotkey.add_selection` | `ctrl+alt+h` | 框选添加热词键 |
+| `hotkey.confirm_recent` | `ctrl+alt+s` | 改写确认键 |
 | `engine.adapter` | `sense_voice` | 识别引擎（P1 仅此一种） |
 | `engine.models_dir` | `../m0/models` | 模型权重目录（与 M0 共享） |
 | `rewrite.provider` | `rules` | `rules` 或 `hunyuan`（后者需凭据） |
@@ -58,7 +65,7 @@ src/p1/
 ## 测试与验收
 
 ```bash
-# 单元/集成测试（65 个，无凭据/模型时自动 SKIP 相关项）
+# 单元/集成测试（107 个，无凭据/模型时自动 SKIP 相关项）
 ../m0/.venv/Scripts/python.exe -m pytest tests/ -q
 
 # 全真链路自检（真实 wav → 识别 → 纠正 → 改写 → 剪贴板，不粘贴）
@@ -70,6 +77,14 @@ src/p1/
 
 # 真机验收辅助：注入完整/取消会话（需主程序运行中；键位需临时改为 f8）
 ../m0/.venv/Scripts/python.exe scripts/inject_ptt.py hold|cancel
+
+# 框选添加真机一体化验收（记事本全选→热键→弹窗→Enter 入库→剪贴板还原取证；
+# 需主程序运行中，脚本顶部 NOTEPAD_PID/APP_PID 按现场改，APP_PID 取持有 tk 窗口的
+# python 子进程——venv python 经 cmd 启动是 redirector 双层结构）
+../m0/.venv/Scripts/python.exe scripts/accept_add_selection.py
+
+# 仅注入两个入口热键（KEYEVENTF_SCANCODE，组合键 VK 注入不触发 add_hotkey）
+../m0/.venv/Scripts/python.exe scripts/inject_entries.py add|confirm
 ```
 
 ## 已知限制

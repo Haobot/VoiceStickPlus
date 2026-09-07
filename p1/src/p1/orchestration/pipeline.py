@@ -28,6 +28,7 @@ class PipelineResult:
     final_text: str
     raw_text: str
     injected: bool
+    corrected_text: str = ""  # 热词纠正后、改写前的中间文本（三段对照用）
     corrections: list[CorrectionEvent] = field(default_factory=list)
     rewrite_corrections: list[str] = field(default_factory=list)
     rewrite_engine: str = ""
@@ -64,6 +65,7 @@ class Pipeline:
         t0 = time.perf_counter()
         corrector = build_corrector_from_entries(self._store.top_n(self._top_n))
         text, corrections = corrector.correct(raw_text)
+        corrected_text = text
         timing["correct_seconds"] = time.perf_counter() - t0
         for event in corrections:
             self._store.record_hit(event.right)  # 飞轮回写
@@ -91,5 +93,6 @@ class Pipeline:
 
         return PipelineResult(
             final_text=text, raw_text=raw_text, injected=injected,
+            corrected_text=corrected_text,
             corrections=corrections, rewrite_corrections=rewrite_corrections,
             rewrite_engine=rewrite_engine, timing=timing, error=error)
