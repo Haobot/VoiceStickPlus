@@ -511,39 +511,10 @@ int Win32App::Run() {
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
 #ifdef VOICESTICK_LOCAL_ASR_ENABLED
-        // 本机麦克风模式（[local_asr] enabled，Doc/Plan/local-mic-mode.md）：注入
-        // WASAPI 采集器 + 本地 SenseVoice ASR，安装按住说话 LL 热键。模型缺失不在
-        // 启动期报错——首次会话 LocalAsrClient::Start 失败走既有 ASR 错误路径如实提示。
-        if (config_.local_asr.enabled) {
-            std::filesystem::path models_dir = config_.local_asr.models_dir;
-            if (models_dir.empty()) models_dir = "models";
-            if (models_dir.is_relative()) {
-                models_dir = std::filesystem::path(CurrentExecutableDir()) / models_dir;
-            }
-            coordinator_->SetLocalMicRuntime(
-                std::make_unique<WasapiMicCapture>(),
-                std::make_unique<LocalAsrClient>(models_dir.string()));
-            const auto ptt_vk = ParsePushToTalkKey(config_.local_asr.push_to_talk_key);
-            if (ptt_vk) {
-                mic_mode_hotkey_ = std::make_unique<MicModeHotkey>();
-                mic_mode_hotkey_->on_pressed = [this] {
-                    if (coordinator_) coordinator_->HandleLocalMicHotkeyPressed();
-                };
-                mic_mode_hotkey_->on_released = [this] {
-                    if (coordinator_) coordinator_->HandleLocalMicHotkeyReleased();
-                };
-                if (!mic_mode_hotkey_->Start(*ptt_vk)) {
-                    mic_mode_hotkey_.reset();
-                    SetStatus("Local mic hotkey install failed");
-                } else {
-                    LogLine("Local mic mode enabled, push-to-talk: " +
-                            config_.local_asr.push_to_talk_key);
-                }
-            } else {
-                LogLine("local_asr push_to_talk_key invalid: " +
-                        config_.local_asr.push_to_talk_key);
-            }
-        }
+        // 本机麦克风模式（[local_asr]，Doc/Plan/local-mic-mode.md）：安装 WASAPI
+        // 采集器 + 本地 SenseVoice ASR 与按住说话热键。模型缺失不在启动期报错
+        // ——首次会话 LocalAsrClient::Start 失败走既有 ASR 错误路径如实提示。
+        SyncLocalMicRuntime();
 #endif
         coordinator_->Start();
         LogLine("Coordinator started");
@@ -1347,10 +1318,65 @@ void Win32App::SyncXiaomiKeymapHook() {
     }
 }
 
+// 本机麦克风模式运行件与按住说话热键的启停/热更（幂等，设置保存与启动共用）。
+// 模型目录（空→"models"，相对→exe 目录基准，与旧启动逻辑同口径）变化才重建
+// 运行件；热键解析失败如实记日志不装钩子。
+void Win32App::SyncLocalMicRuntime() {
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+    if (coordinator_ == nullptr) return;
+
+    if (config_.local_asr.enabled) {
+        std::filesystem::path models_dir = config_.local_asr.models_dir;
+        if (models_dir.empty()) models_dir = "models";
+        if (models_dir.is_relative()) {
+            models_dir = std::filesystem::path(CurrentExecutableDir()) / models_dir;
+        }
+        if (models_dir.string() != local_mic_models_dir_applied_) {
+            coordinator_->SetLocalMicRuntime(
+                std::make_unique<WasapiMicCapture>(),
+                std::make_unique<LocalAsrClient>(models_dir.string()));
+            local_mic_models_dir_applied_ = models_dir.string();
+            LogLine("Local mic runtime ready, models: " + models_dir.string());
+        }
+    } else if (!local_mic_models_dir_applied_.empty()) {
+        // 关闭：拆运行件与热键（协调器侧负责取消活跃会话，采集器析构即 Stop）。
+        coordinator_->SetLocalMicRuntime(nullptr, nullptr);
+        local_mic_models_dir_applied_.clear();
+        mic_mode_hotkey_.reset();
+        LogLine("Local mic mode disabled");
+        return;
+    }
+
+    const auto ptt_vk = ParsePushToTalkKey(config_.local_asr.push_to_talk_key);
+    if (config_.local_asr.enabled && ptt_vk) {
+        if (!mic_mode_hotkey_) {
+            mic_mode_hotkey_ = std::make_unique<MicModeHotkey>();
+            mic_mode_hotkey_->on_pressed = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyPressed();
+            };
+            mic_mode_hotkey_->on_released = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyReleased();
+            };
+        }
+        if (!mic_mode_hotkey_->Start(*ptt_vk)) {
+            mic_mode_hotkey_.reset();
+            SetStatus("Local mic hotkey install failed");
+        }
+    } else {
+        if (config_.local_asr.enabled) {
+            LogLine("local_asr push_to_talk_key invalid: " +
+                    config_.local_asr.push_to_talk_key);
+        }
+        mic_mode_hotkey_.reset();
+    }
+#endif
+}
+
 void Win32App::ApplyUpdatedConfig() {
     if (coordinator_) coordinator_->UpdateConfig(config_);
     SyncF5Suppressor();
     SyncXiaomiKeymapHook();
+    SyncLocalMicRuntime();
 }
 
 bool Win32App::CreateWindowInternal() {

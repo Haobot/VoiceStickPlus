@@ -119,6 +119,10 @@ private:
     InteractionMode loaded_hotkey_mode_ = InteractionMode::kHoldToTalk;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
+    // 本机麦克风（[local_asr]，Doc/Plan/local-mic-mode.md）：开关/模型目录/热键。
+    HWND local_mic_enable_check_ = nullptr;
+    HWND local_mic_models_dir_edit_ = nullptr;
+    HWND local_mic_hotkey_edit_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -166,6 +170,9 @@ private:
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
     static constexpr UINT kIdDeveloperMode = 2039;
     static constexpr UINT kIdOpenSpectrogram = 2040;
+    static constexpr UINT kIdLocalMicEnable = 2041;
+    static constexpr UINT kIdLocalMicModelsDirEdit = 2042;
+    static constexpr UINT kIdLocalMicHotkeyEdit = 2043;
 };
 
 } // namespace voicestick

@@ -16,6 +16,7 @@
 
 #include <opus.h>
 #include "byte_utils.h"
+#include "clipboard_vault.h"
 #include "cJSON.h"
 #include "esptool_flash_command.h"
 #include "esptool_progress.h"
@@ -62,6 +63,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <atomic>
 #include <set>
 #include <sstream>
 #include <string>
@@ -10460,6 +10462,190 @@ void TestWasapiMicCaptureSmoke() {
            callbacks, total_samples);
 }
 
+// ===== 剪贴板 vault（迭代三：完整格式恢复，移植自 P1 clipboard_vault）=====
+// 真 Win32 剪贴板，非 mock：字节级快照/恢复是本组件的全部契约。测试动本机
+// 剪贴板，开头快照用户当前内容，结尾尽力还原。
+
+namespace {
+
+// 一次打开写入多个 HGLOBAL 格式（布置“用户剪贴板”内容；EmptyClipboard 清场）。
+void VaultSetClipboard(const std::vector<std::pair<UINT, std::vector<BYTE>>>& items) {
+    assert(OpenClipboard(nullptr));
+    EmptyClipboard();
+    for (const auto& item : items) {
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, item.second.size());
+        assert(memory != nullptr);
+        void* ptr = GlobalLock(memory);
+        assert(ptr != nullptr);
+        memcpy(ptr, item.second.data(), item.second.size());
+        GlobalUnlock(memory);
+        assert(SetClipboardData(item.first, memory));
+    }
+    CloseClipboard();
+}
+
+// 读回单个格式的字节（GetClipboardData 须在剪贴板打开态，返回前拷出）。
+std::vector<BYTE> VaultGetBytes(UINT format) {
+    std::vector<BYTE> out;
+    if (OpenClipboard(nullptr)) {
+        if (HANDLE handle = GetClipboardData(format)) {
+            if (const SIZE_T size = GlobalSize(handle)) {
+                if (void* ptr = GlobalLock(handle)) {
+                    out.assign(static_cast<const BYTE*>(ptr),
+                               static_cast<const BYTE*>(ptr) + size);
+                    GlobalUnlock(handle);
+                }
+            }
+        }
+        CloseClipboard();
+    }
+    return out;
+}
+
+std::vector<BYTE> VaultBytesOf(const std::wstring& text) {
+    // 含 NUL 终止符：剪贴板 CF_UNICODETEXT 数据系统按终止符结尾规范化，
+    // 布置与读回的字节口径必须一致（都含终止符）。
+    return std::vector<BYTE>(
+        reinterpret_cast<const BYTE*>(text.c_str()),
+        reinterpret_cast<const BYTE*>(text.c_str()) + (text.size() + 1) * sizeof(wchar_t));
+}
+
+} // namespace
+
+void TestClipboardVaultMultiFormatRoundTrip() {
+    // 快照/恢复用户当前剪贴板，尽力不破坏现场。
+    std::optional<ClipboardSnapshot> user_content;
+    try {
+        user_content = ClipboardVault().Save();
+    } catch (const std::runtime_error&) {
+    }
+
+    const UINT custom_fmt = RegisterClipboardFormatW(L"VoiceStickVaultTestFmt");
+    assert(custom_fmt != 0);
+    const std::vector<BYTE> dib(64, 0xAB);  // 伪 DIB：剪贴板不校验内容
+    const std::vector<BYTE> custom{0x00, 0x01, 0xFF, 0x00, 0x7F};
+    const auto text_bytes = VaultBytesOf(L"原始内容-restore");
+    VaultSetClipboard({{CF_UNICODETEXT, text_bytes}, {CF_DIB, dib}, {custom_fmt, custom}});
+
+    ClipboardVault vault;
+    const ClipboardSnapshot snapshot = vault.Save();
+    const auto* text_entry = snapshot.Find(CF_UNICODETEXT);
+    const auto* dib_entry = snapshot.Find(CF_DIB);
+    const auto* custom_entry = snapshot.Find(custom_fmt);
+    assert(text_entry && text_entry->data == text_bytes);
+    assert(dib_entry && dib_entry->data == dib);
+    assert(custom_entry && custom_entry->data == custom);
+
+    // 快照后剪贴板被异物覆盖，恢复必须还原快照字节（注入借道剪贴板的核心场景）。
+    VaultSetClipboard({{CF_UNICODETEXT, VaultBytesOf(L"覆盖内容")}});
+    assert(vault.Restore(snapshot));
+    assert(VaultGetBytes(CF_UNICODETEXT) == text_bytes);
+    assert(VaultGetBytes(CF_DIB) == dib);
+    assert(VaultGetBytes(custom_fmt) == custom);
+
+    if (user_content) ClipboardVault().Restore(*user_content);
+}
+
+void TestClipboardVaultSkipsHandleFormats() {
+    std::optional<ClipboardSnapshot> user_content;
+    try {
+        user_content = ClipboardVault().Save();
+    } catch (const std::runtime_error&) {
+    }
+
+    // CF_BITMAP 是句柄类格式（非 HGLOBAL，GlobalLock 无意义）：Save 必须跳过；
+    // 恢复后位图丢失为已知限制（位图场景应用几乎都同时提供 CF_DIB 内存版）。
+    assert(OpenClipboard(nullptr));
+    EmptyClipboard();
+    {
+        const wchar_t* text = L"带位图的文本";
+        const SIZE_T bytes = (wcslen(text) + 1) * sizeof(wchar_t);
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        void* ptr = GlobalLock(memory);
+        assert(ptr != nullptr);
+        memcpy(ptr, text, bytes);
+        GlobalUnlock(memory);
+        assert(SetClipboardData(CF_UNICODETEXT, memory));
+    }
+    const HBITMAP bitmap = CreateBitmap(1, 1, 1, 1, nullptr);
+    assert(bitmap != nullptr);
+    assert(SetClipboardData(CF_BITMAP, bitmap));  // 句柄移交剪贴板，不得 DeleteObject
+    CloseClipboard();
+
+    ClipboardVault vault;
+    const ClipboardSnapshot snapshot = vault.Save();
+    assert(snapshot.Find(CF_UNICODETEXT) != nullptr);
+    assert(snapshot.Find(CF_BITMAP) == nullptr);  // 句柄格式不进快照
+    // 布置 CF_BITMAP 时系统枚举会同时给出可从位图合成的 CF_DIB，快照经 CF_DIB
+    // 保住图像字节——恢复后系统可再合成位图，图像内容实际不丢（优于“直接丢弃”）。
+    const auto* dib_entry = snapshot.Find(CF_DIB);
+
+    VaultSetClipboard({{CF_UNICODETEXT, VaultBytesOf(L"覆盖")}});
+    assert(vault.Restore(snapshot));
+    assert(VaultGetBytes(CF_UNICODETEXT) == snapshot.Find(CF_UNICODETEXT)->data);
+    if (dib_entry != nullptr) {
+        assert(VaultGetBytes(CF_DIB) == dib_entry->data);
+        assert(IsClipboardFormatAvailable(CF_BITMAP));  // 从 CF_DIB 可再合成位图
+    }
+
+    if (user_content) ClipboardVault().Restore(*user_content);
+}
+
+void TestClipboardVaultEmptyClipboardSnapshot() {
+    std::optional<ClipboardSnapshot> user_content;
+    try {
+        user_content = ClipboardVault().Save();
+    } catch (const std::runtime_error&) {
+    }
+
+    assert(OpenClipboard(nullptr));
+    EmptyClipboard();
+    CloseClipboard();
+
+    ClipboardVault vault;
+    const ClipboardSnapshot snapshot = vault.Save();
+    assert(snapshot.entries.empty());  // 空快照只代表真空剪贴板
+
+    // 空快照恢复 = 清空剪贴板（区别于“打不开”：那是 Save 抛错的职责，防误清）。
+    VaultSetClipboard({{CF_UNICODETEXT, VaultBytesOf(L"x")}});
+    assert(vault.Restore(snapshot));
+    assert(!IsClipboardFormatAvailable(CF_UNICODETEXT));
+
+    if (user_content) ClipboardVault().Restore(*user_content);
+}
+
+void TestClipboardVaultSaveThrowsWhenBusy() {
+    // 另一线程持有剪贴板：Save 必须抛错而非返回空快照——空快照会让 Restore
+    // 误清用户剪贴板（P1 验证语义）。本线程重试窗口 2×10ms，持有 80ms 必失败。
+    std::atomic<bool> held{false};
+    std::thread holder([&held] {
+        if (OpenClipboard(nullptr)) {
+            held = true;
+            Sleep(80);
+            CloseClipboard();
+        }
+    });
+    bool opened = false;
+    for (int i = 0; i < 500 && !held; ++i) {  // 等持有方拿到锁（最多 500ms）
+        Sleep(1);
+        opened = opened || held;
+    }
+    if (!held) {
+        holder.join();
+        printf("TestClipboardVaultSaveThrowsWhenBusy skipped: holder open failed\n");
+        return;
+    }
+    ClipboardVault vault(/*open_retries=*/2, /*retry_delay_ms=*/10);
+    bool threw = false;
+    try {
+        (void)vault.Save();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    assert(threw);
+    holder.join();
+}
+
 int main() {
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接 abort，
@@ -10480,6 +10666,15 @@ int main() {
     TestCoordinatorLocalMicDisabledDoesNothing();
     TestCoordinatorLocalMicCaptureStartFailureCancelsSession();
     TestWasapiMicCaptureSmoke();
+    printf(">> TestClipboardVaultMultiFormatRoundTrip\n"); fflush(stdout);
+    TestClipboardVaultMultiFormatRoundTrip();
+    printf(">> TestClipboardVaultSkipsHandleFormats\n"); fflush(stdout);
+    TestClipboardVaultSkipsHandleFormats();
+    printf(">> TestClipboardVaultEmptyClipboardSnapshot\n"); fflush(stdout);
+    TestClipboardVaultEmptyClipboardSnapshot();
+    printf(">> TestClipboardVaultSaveThrowsWhenBusy\n"); fflush(stdout);
+    TestClipboardVaultSaveThrowsWhenBusy();
+    printf(">> vault tests all done\n"); fflush(stdout);
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();

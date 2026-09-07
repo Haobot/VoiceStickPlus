@@ -88,6 +88,12 @@ constexpr StringTable EnglishStrings() {
         "Could not launch the spectrum viewer. Make sure Python is installed and "
         "scripts/e2e_test/spectrogram_server.py exists in the repository.";
     table[Index(StringId::kSettingsDeveloperMode)] = "Developer Mode (show all advanced settings)";
+    table[Index(StringId::kSettingsSectionLocalMic)] = "Local Microphone";
+    table[Index(StringId::kSettingsLocalMicEnable)] = "Enable push-to-talk with local ASR (no cloud)";
+    table[Index(StringId::kSettingsLocalMicModelsDir)] = "Models directory";
+    table[Index(StringId::kSettingsLocalMicHotkey)] = "Push-to-talk key";
+    table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
+        "Examples: right ctrl / capslock / f9. Hold to talk, release to insert.";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -464,6 +470,12 @@ constexpr StringTable ChineseStrings() {
         "无法启动频谱查看器。请确认已安装 Python，且仓库中存在 "
         "scripts/e2e_test/spectrogram_server.py。";
     table[Index(StringId::kSettingsDeveloperMode)] = "开发者模式（显示全部高级设置）";
+    table[Index(StringId::kSettingsSectionLocalMic)] = "本机麦克风";
+    table[Index(StringId::kSettingsLocalMicEnable)] = "启用本机麦克风按住说话（本地识别，不经云端）";
+    table[Index(StringId::kSettingsLocalMicModelsDir)] = "模型目录";
+    table[Index(StringId::kSettingsLocalMicHotkey)] = "按住说话热键";
+    table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
+        "示例：right ctrl / capslock / f9。按住说话，松开注入文本。";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";

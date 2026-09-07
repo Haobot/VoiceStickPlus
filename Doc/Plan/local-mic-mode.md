@@ -1,6 +1,6 @@
 # 本机麦克风模式（Local Mic Mode）——P1 核心闭环并入 VoiceStick.exe 设计
 
-状态：迭代一/二已交付（ceb2550a / 本次提交），迭代三（剪贴板完整格式恢复 + 设置 UI）待做
+状态：迭代一/二/三均已交付（ceb2550a / 820bb43c / 本次提交），后续候选见文末
 决策：2026-09-07 用户确认「并入 VoiceStick.exe、核心闭环优先」。
 
 ## 目标
@@ -78,14 +78,45 @@ WASAPI mic PCM(16k) → audio_opus_encoder → Ogg Opus chunk
   再发空 END 帧复用主会话 audio_end 收尾路径（短按丢弃/最终块/finalizing 全复用）。
 - 采集线程喂帧走 `HandleAudioFrame`（内部自锁+会话校验），无锁早退门控用原子
   session id；slicer/encoder/seq 仅采集线程与 join 后的释放线程访问。
-- 修改 [local_asr] 需重启应用（boot 期接线；设置 UI 与热更在迭代三）。
+- 修改 [local_asr] 经设置界面保存即热更（SyncLocalMicRuntime，见下节）；手改
+  config.toml 仍需重启（boot 期 ApplyUpdatedConfig 之外无文件监听）。
 
-### 剪贴板恢复（迭代三）
+### 运行时热更（迭代三，已交付）
 
-InputInjectorWin::Paste 内：EnumClipboardFormats 快照全部格式（跳过句柄类
-CF_BITMAP/CF_METAFILEPICT/CF_PALETTE/CF_ENHMETAFILE 与延迟渲染，P1 已实证
-边界）→ 写入识别文本 → Ctrl+V → 延时 ~150ms → 恢复快照。P1 clipboard_vault.py
-逻辑直接 Win32 移植。
+`Win32App::SyncLocalMicRuntime()`（幂等，对齐 SyncF5Suppressor 模式）在启动与
+`ApplyUpdatedConfig`（设置保存回调）统一调用：
+
+- enabled 且模型目录（空 = exe/models，相对路径锚 exe 目录）与已生效值不同 →
+  重建运行件注入协调器（`SetLocalMicRuntime`）；disabled 且有已生效值 → 拆运行件
+  与热键。
+- 热键：`MicModeHotkey::Start` 幂等（已运行只换键）；键名解析失败（enabled 时）
+  日志告警并卸载热键。
+- **SetLocalMicRuntime 热替换死锁预防**：旧 `WasapiMicCapture` 析构调 `Stop()`
+  join 采集线程，采集回调 `FeedLocalMicPcm` 要抢 `audio_mutex_`——必须先在锁内
+  清会话状态（`local_mic_active_session_id_` 置 0、`session_asr_` 防悬挂）再在
+  锁外替换 unique_ptr，否则热替换瞬间与采集线程互等死锁。
+
+### 剪贴板恢复（迭代三，已交付）
+
+`clipboard_vault.h/.cc`（独立组件，P1 clipboard_vault.py 的 Win32 移植）挂在
+`InputInjectorWin::Paste`：快照→写识别文本→Ctrl+V→延时 150ms→恢复；快照拿不到
+（剪贴板被占用打不开）只记日志跳过恢复，绝不误清用户剪贴板。
+
+实现要点（真机/单测沉淀）：
+
+- **Save 打不开必抛错**：空快照只代表真空剪贴板，混入「打不开」会让 restore
+  误清用户剪贴板。重试 8 次 × 25ms，OpenClipboard 带 message-only owner 窗口
+  （进程级单例；P1 实证 OpenClipboard(NULL) 写入存在释放异常）。
+- **句柄类格式跳过**（CF_BITMAP/CF_METAFILEPICT/CF_PALETTE/CF_ENHMETAFILE），
+  但系统枚举位图时会同时列出可合成的 CF_DIB——vault 快照 CF_DIB 字节，恢复后
+  系统从 DIB 再合成位图，**图像内容实际保留**（优于 P1 预期的直接丢弃）。
+- **CF_UNICODETEXT 终止符口径**：剪贴板按 NUL 结尾规范化文本，测试布置与读回
+  的字节口径必须一致（都含终止符），否则字节级断言差 2 字节必挂。
+- Restore：EmptyClipboard 后逐格式 `GlobalAlloc(GMEM_MOVEABLE)`+memmove+
+  SetClipboardData（单项失败 GlobalFree 继续下一项）；GetClipboardData/
+  GlobalSize/GlobalLock 均须在打开态。
+- Paste 恢复时序沿用 P1 验证值：注入后 Sleep(150) 再恢复（目标应用异步读剪贴板，
+  立即恢复会粘贴出旧内容）；press_enter 分支额外多等。
 
 ## 配置（app_config / config.toml）
 
@@ -111,3 +142,9 @@ push_to_talk_key = "right ctrl"
 - 麦克风权限：Win10 1903+ 桌面应用 WASAPI 采集通常无系统级弹窗（非 UWP），
   真机验证。
 - 模型体积对安装包/更新通道的影响（WinSparkle 增量）——分发策略单列后续迭代。
+
+## 后续候选（首期不做）
+
+- 模型 MSI 分发策略（~900MB 模型进安装包 or 首启下载/用户自备目录）。
+- 热词飞轮 / AI 改写 / 热键方案预设等 P1 剩余能力移植（shortcut_capture 已有
+  键位 UI 可复用做热键方案预设）。

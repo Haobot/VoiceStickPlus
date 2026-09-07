@@ -407,8 +407,18 @@ void VoiceStickCoordinator::CancelFirmwareUpdate() {
 
 // 本机麦克风模式运行件注入：本地 ASR 客户端与云端 asr_ 共用同一套会话回调
 //（同一时刻只有一个会话活跃，回调内部按会话状态自校验，无串扰）。
+// 支持运行期热替换（设置保存热更）：先锁内解除活跃 local 会话（session_asr_
+// 指向旧实例会悬挂），锁外替换——旧采集器析构 Stop() join 采集线程，采集回调
+// FeedLocalMicPcm 抢 audio_mutex_，持锁替换会死锁（同迭代二采集停止归属结论）。
 void VoiceStickCoordinator::SetLocalMicRuntime(std::unique_ptr<IMicCapture> capture,
                                                std::unique_ptr<AsrClient> local_asr) {
+    {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        local_mic_active_session_id_.store(0);
+        if (session_asr_ == local_asr_.get()) {
+            session_asr_ = nullptr;
+        }
+    }
     local_mic_capture_ = std::move(capture);
     local_asr_ = std::move(local_asr);
     if (local_mic_capture_) {

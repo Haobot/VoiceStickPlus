@@ -1,5 +1,9 @@
 #include "input_injector_win.h"
 
+#include "clipboard_vault.h"
+#include "log.h"
+
+#include <optional>
 #include <vector>
 
 namespace voicestick {
@@ -8,6 +12,16 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
     if (text.empty()) return;
     const std::wstring wide = Utf16FromUtf8(text);
     if (wide.empty()) return;
+
+    // 注入借道剪贴板，粘贴后须完整还原用户原内容（文本以外的格式不做恢复会被
+    // 永久覆盖，P1 clipboard_vault 真机验证语义）。快照拿不到就不恢复——不能
+    // 因恢复失败误清用户剪贴板。
+    std::optional<ClipboardSnapshot> clipboard_snapshot;
+    try {
+        clipboard_snapshot = ClipboardVault().Save();
+    } catch (const std::runtime_error& e) {
+        LogApp(std::string("clipboard snapshot failed, skip restore: ") + e.what());
+    }
 
     if (OpenClipboard(nullptr)) {
         EmptyClipboard();
@@ -31,6 +45,12 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
     if (press_enter) {
         Sleep(120);
         SendEnter();
+    }
+
+    if (clipboard_snapshot) {
+        // 目标应用异步读剪贴板，立即恢复会粘贴出旧内容（P1 restore_delay=150ms）。
+        Sleep(150);
+        ClipboardVault().Restore(*clipboard_snapshot);
     }
 }
 

@@ -374,6 +374,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
         debug_dir_edit_ = nullptr;
+        local_mic_enable_check_ = nullptr;
+        local_mic_models_dir_edit_ = nullptr;
+        local_mic_hotkey_edit_ = nullptr;
         resource_label_ = nullptr;
         output_target_combo_ = nullptr;
         wechat_hotkey_edit_ = nullptr;
@@ -460,6 +463,9 @@ void SettingsDialog::DestroyControls() {
     selection_hotword_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     debug_dir_edit_ = nullptr;
+    local_mic_enable_check_ = nullptr;
+    local_mic_models_dir_edit_ = nullptr;
+    local_mic_hotkey_edit_ = nullptr;
     resource_label_ = nullptr;
     output_target_combo_ = nullptr;
     wechat_hotkey_edit_ = nullptr;
@@ -907,6 +913,52 @@ void SettingsDialog::BuildControls() {
         }, [this]() { return developer_mode_; });
     }
 
+    // ===== 本机麦克风 =====
+    // 本地 SenseVoice ASR 按住说话（[local_asr]，Doc/Plan/local-mic-mode.md）：
+    // 需自备模型文件，属开发者/高级功能，普通模式隐藏，保存热更即时生效。
+    separator([this]() { return developer_mode_; });
+    section_title(StringId::kSettingsSectionLocalMic, [this]() { return developer_mode_; });
+    {
+        HWND lm_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        local_mic_enable_check_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicEnable, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdLocalMicEnable, instance_, BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {lm_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_enable_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        }, [this]() { return developer_mode_; });
+    }
+    {
+        HWND md_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsLocalMicModelsDir).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        local_mic_models_dir_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                                         kIdLocalMicModelsDirEdit, instance_));
+        add(row_h + Dp(6), {
+            {md_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_models_dir_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        }, [this]() { return developer_mode_; });
+    }
+    {
+        HWND hk_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsLocalMicHotkey).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        local_mic_hotkey_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w, Dp(24),
+                                                     kIdLocalMicHotkeyEdit, instance_));
+        add(row_h + Dp(6), {
+            {hk_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_hotkey_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
+        }, [this]() { return developer_mode_; });
+    }
+    {
+        HWND hint = remember_label(CreateLabel(
+            hwnd_, TrW(StringId::kSettingsLocalMicHotkeyHint, language).c_str(),
+            0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
+        add(Dp(22), {
+            {hint, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return developer_mode_; });
+    }
+
     // 所有控件均已加入布局表（高级区块带 developer_mode_ vis 谓词），Relayout 统一
     // 处理显隐。此处保留安全网：万一有控件未注册，统一隐藏避免残留显示在 (0,0)。
     // 保存/取消按钮在此之后才创建，不在本循环范围内。
@@ -1127,6 +1179,12 @@ void SettingsDialog::LoadConfigIntoControls() {
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
+    // 本机麦克风：模型目录为空显示默认值提示（留空 = exe 目录下 models/）。
+    SendMessageW(local_mic_enable_check_, BM_SETCHECK,
+                 config_.local_asr.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(local_mic_models_dir_edit_, Utf16(config_.local_asr.models_dir).c_str());
+    SetWindowTextW(local_mic_hotkey_edit_, Utf16(config_.local_asr.push_to_talk_key).c_str());
+
     int output_target_idx = 0;
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
@@ -1231,6 +1289,13 @@ void SettingsDialog::SaveSettings() {
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
+
+    // 本机麦克风（[local_asr]）：保存后经 on_config_changed → ApplyUpdatedConfig
+    // 热更（重建采集器/本地 ASR/热键），无需重启应用。
+    config_.local_asr.enabled =
+        SendMessageW(local_mic_enable_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    config_.local_asr.push_to_talk_key = Utf8(GetWindowText(local_mic_hotkey_edit_));
 
     int output_target_idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
     if (output_target_idx == 1) {
