@@ -39,14 +39,6 @@ constexpr VkScanTrait kTraits[] = {
     {VK_VOLUME_DOWN, 0, "volume_down"},
 };
 
-// 佐证等待窗较大的按钮：HID 佐证事件可能晚于 LL 钩子到达且与物理键盘冲突面大。
-constexpr std::string_view kLongWindowButtons[] = {"tv", "home", "menu", "power"};
-
-bool IsLongWindowButton(std::string_view button) {
-    return std::find(std::begin(kLongWindowButtons), std::end(kLongWindowButtons),
-                     button) != std::end(kLongWindowButtons);
-}
-
 // 接口路径 vid/pid 标记解析（ASCII，小写化后处理；VID/PID 值均为十六进制）。
 bool IsLowerWordChar(wchar_t c) {
     return (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9');
@@ -93,6 +85,15 @@ std::optional<uint32_t> DeviceIdTokenValue(const std::wstring& device_name,
     return std::nullopt;
 }
 
+// 按钮在 key_map 中的映射规格；未配置/空串取消/非法串返回 nullopt（放行语义）。
+std::optional<KeySpec> MappedSpec(
+    std::string_view button,
+    const std::map<std::string, std::string>& key_map) {
+    const auto it = key_map.find(std::string(button));
+    if (it == key_map.end()) return std::nullopt;
+    return ParseKeySpec(it->second);
+}
+
 } // namespace
 
 bool XiaomiRawInputNameIsRemote(const std::wstring& device_name) {
@@ -104,11 +105,6 @@ bool XiaomiRawInputNameIsRemote(const std::wstring& device_name) {
     // 均为 4 位。统一按低 16 位（VID/PID 本征宽度）比对，两种格式都命中。
     return (*vid & 0xFFFF) == kXiaomiRemoteVendorId &&
            (*pid & 0xFFFF) == kXiaomiRemoteProductId;
-}
-
-std::int64_t XiaomiKeymapCorrelateWindowMs(std::string_view button) {
-    return IsLongWindowButton(button) ? XiaomiKeymapInterceptor::kCorrelateWindowMs
-                                      : XiaomiKeymapInterceptor::kFastWindowMs;
 }
 
 std::optional<std::string_view> XiaomiButtonFromVkScan(UINT vk, UINT scan_code) {
@@ -140,83 +136,103 @@ std::vector<UINT> XiaomiKeymapInjectUpVks(const KeySpec& spec) {
     return vks;
 }
 
-bool XiaomiKeymapInterceptor::IsHeldSwallowed(std::string_view button) const {
-    return std::any_of(held_swallowed_.begin(), held_swallowed_.end(),
-                       [button](const std::string& held) {
-                           return held == button;
-                       });
+std::vector<XiaomiKeymapInterceptor::Pending>::iterator
+XiaomiKeymapInterceptor::FindPending(std::string_view button) {
+    return std::find_if(pendings_.begin(), pendings_.end(),
+                        [button](const Pending& pending) {
+                            return pending.button == button;
+                        });
 }
 
-XiaomiKeymapDecision XiaomiKeymapInterceptor::OnHookEvent(
-    std::string_view button, bool is_down, std::int64_t now_ms,
-    std::int64_t signal_ms,
+void XiaomiKeymapInterceptor::ConsumePending(
+    std::vector<Pending>::iterator it) {
+    pendings_.erase(it);
+}
+
+XiaomiKeymapHookAction XiaomiKeymapInterceptor::OnKeyDown(
+    std::string_view button, UINT vk, UINT scan_code, std::int64_t /*now_ms*/,
     const std::map<std::string, std::string>& key_map) {
-    XiaomiKeymapDecision decision;
-    const auto it = key_map.find(std::string(button));
-    if (it == key_map.end()) return decision;  // 未配置映射：原生行为
-    const auto spec = ParseKeySpec(it->second);
-    if (!spec.has_value()) return decision;  // 空串显式取消 / 非法串（防御）
-
-    if (!is_down) {
-        if (!IsHeldSwallowed(button)) return decision;  // down 未被吞，keyup 原样放行
-        held_swallowed_.erase(
-            std::remove_if(held_swallowed_.begin(), held_swallowed_.end(),
-                           [button](const std::string& held) {
-                               return held == button;
-                           }),
-            held_swallowed_.end());
-        decision.swallow = true;
-        decision.inject = XiaomiKeymapInjectUpVks(*spec);
-        return decision;
+    XiaomiKeymapHookAction action;
+    if (!MappedSpec(button, key_map).has_value()) return action;
+    // 按住中的自动重复：持续吞（pending 未消费前不新建）。
+    if (FindPending(button) != pendings_.end()) {
+        action.swallow = true;
+        return action;
     }
+    Pending pending;
+    pending.button = std::string(button);
+    pending.vk = vk;
+    pending.scan = scan_code;
+    pendings_.push_back(std::move(pending));
+    action.swallow = true;
+    return action;
+}
 
-    // keydown：按住闩锁中的自动重复免再佐证（吞过 down 到 keyup 之间持续吞，
-    // 保证按住序列不泄漏原始键）。
-    if (IsHeldSwallowed(button)) {
-        decision.swallow = true;
-        decision.inject = XiaomiKeymapInjectDownVks(*spec);
-        return decision;
+XiaomiKeymapHookAction XiaomiKeymapInterceptor::OnKeyUp(
+    std::string_view button, std::int64_t now_ms,
+    const std::map<std::string, std::string>& /*key_map*/) {
+    XiaomiKeymapHookAction action;  // 默认放行
+    const auto pending = FindPending(button);
+    if (pending == pendings_.end()) return action;
+    // 松开：放行让 BREAK 沿投递（hDevice 设备证据），标记待判定。孤立 up 对
+    // 焦点应用无害；归属判定完成后由注入/补偿补齐完整 down+up 对。
+    pending->released_ms = now_ms;
+    return action;
+}
+
+std::optional<XiaomiKeymapHookAction> XiaomiKeymapInterceptor::OnBreakEvidence(
+    std::string_view button, std::int64_t now_ms, bool from_remote,
+    const std::map<std::string, std::string>& key_map) {
+    const auto pending = FindPending(button);
+    if (pending == pendings_.end()) return std::nullopt;
+    if (pending->released_ms == 0) return std::nullopt;  // 按住中/未放行
+    const UINT vk = pending->vk;
+    ConsumePending(pending);
+    XiaomiKeymapHookAction action;
+    if (from_remote) {
+        const auto spec = MappedSpec(button, key_map);
+        if (!spec.has_value()) return std::nullopt;  // 判定前映射被取消：等效原生
+        action.swallow = true;  // 动作语义：原事件已被吞，此为归属后的映射注入
+        action.inject = XiaomiKeymapInjectDownVks(*spec);
+        action.inject_up = XiaomiKeymapInjectUpVks(*spec);
+        return action;
     }
+    // 物理键盘同名键：补偿注入原键 down+up 对（功能无损，延迟到松手）。
+    action.swallow = true;
+    action.inject.push_back(vk);
+    action.inject_up.push_back(vk);
+    return action;
+}
 
-    // 放行闩锁：上次确认放行（物理键盘同特征键）的重复流直接放行零等待，
-    // 窗外恢复正常判定。
-    for (const auto& [passed, at] : last_pass_) {
-        if (passed == button && now_ms - at <= kRepeatPassWindowMs &&
-            at <= now_ms) {
-            return decision;
+std::optional<XiaomiKeymapHookAction> XiaomiKeymapInterceptor::OnPendingTimeout(
+    std::string_view button, std::int64_t now_ms) {
+    const auto pending = FindPending(button);
+    if (pending == pendings_.end()) return std::nullopt;
+    if (pending->released_ms == 0 ||
+        now_ms <= pending->released_ms + kBreakEvidenceWindowMs) {
+        return std::nullopt;
+    }
+    // BREAK 异常丢失（正常 ~3ms 到达）：按物理键盘保守补偿。
+    const UINT vk = pending->vk;
+    ConsumePending(pending);
+    XiaomiKeymapHookAction action;
+    action.swallow = true;
+    action.inject.push_back(vk);
+    action.inject_up.push_back(vk);
+    return action;
+}
+
+std::vector<std::pair<std::string, std::int64_t>>
+XiaomiKeymapInterceptor::PendingAwaitingBreak() const {
+    std::vector<std::pair<std::string, std::int64_t>> awaiting;
+    for (const auto& pending : pendings_) {
+        if (pending.released_ms != 0) {
+            awaiting.emplace_back(pending.button, pending.released_ms);
         }
     }
-
-    // 首次 keydown：佐证窗内判定归属。signal 在未来（时钟乱序）不算命中。
-    const std::int64_t window =
-        IsLongWindowButton(button) ? kCorrelateWindowMs : kFastWindowMs;
-    const bool correlated =
-        signal_ms >= 0 && signal_ms <= now_ms && now_ms - signal_ms <= window;
-    if (!correlated) {
-        decision.needs_correlation = true;  // hook 层关联等待后重判
-        return decision;
-    }
-
-    held_swallowed_.emplace_back(button);
-    decision.swallow = true;
-    decision.inject = XiaomiKeymapInjectDownVks(*spec);
-    return decision;
+    return awaiting;
 }
 
-void XiaomiKeymapInterceptor::RecordPass(std::string_view button,
-                                         std::int64_t now_ms) {
-    for (auto& [passed, at] : last_pass_) {
-        if (passed == button) {
-            at = now_ms;
-            return;
-        }
-    }
-    last_pass_.emplace_back(std::string(button), now_ms);
-}
-
-void XiaomiKeymapInterceptor::Reset() {
-    held_swallowed_.clear();
-    last_pass_.clear();
-}
+void XiaomiKeymapInterceptor::Reset() { pendings_.clear(); }
 
 } // namespace voicestick

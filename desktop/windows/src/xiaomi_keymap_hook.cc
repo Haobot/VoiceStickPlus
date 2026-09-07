@@ -50,20 +50,36 @@ void XiaomiKeymapHook::Start(std::map<std::string, std::string> key_map) {
     UpdateKeymap(std::move(key_map));
     if (hook_) return;  // 幂等：已运行仅刷新 key_map
     active_instance_ = this;
-    // LL 钩子在调用线程（主线程，有消息泵）安装；回调与安装同线程上下文，
-    // interceptor_ 与 signal 读取无并发（signal 写来自 Raw Input 线程，atomic）。
+    // LL 钩子与异步判定窗口都在主线程（须有消息泵）；interceptor_ 仅主线程
+    // 触达（LL 回调经主线程消息机制执行），无并发。
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = DispatchWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"VoiceStickXiaomiKeymapDispatch";
+    RegisterClassW(&wc);
+    dispatch_hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0,
+                                     HWND_MESSAGE, nullptr, wc.hInstance,
+                                     nullptr);
+    if (!dispatch_hwnd_) {
+        LogApp("XiaomiKeymapHook: dispatch window create failed err=" +
+               std::to_string(GetLastError()));
+        active_instance_ = nullptr;
+        return;
+    }
     hook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
                               GetModuleHandleW(nullptr), 0);
     if (!hook_) {
-        active_instance_ = nullptr;
         LogApp("XiaomiKeymapHook: SetWindowsHookEx WH_KEYBOARD_LL failed err=" +
                std::to_string(GetLastError()));
+        DestroyWindow(dispatch_hwnd_);
+        dispatch_hwnd_ = nullptr;
+        active_instance_ = nullptr;
         return;
     }
-    for (auto& slot : signal_ms_) slot.store(0, std::memory_order_relaxed);
     interceptor_.Reset();
+    pending_timer_on_ = false;
     raw_input_thread_ = std::thread([this] { RawInputThreadMain(); });
-    LogApp("XiaomiKeymapHook: started (LL hook + raw input correlator)");
+    LogApp("XiaomiKeymapHook: started (LL hook + post-keyup correlation)");
 }
 
 void XiaomiKeymapHook::UpdateKeymap(
@@ -79,6 +95,14 @@ void XiaomiKeymapHook::Stop() {
         UnhookWindowsHookEx(hook_);
         hook_ = nullptr;
     }
+    if (dispatch_hwnd_) {
+        if (pending_timer_on_) {
+            KillTimer(dispatch_hwnd_, kPendingTimerId);
+            pending_timer_on_ = false;
+        }
+        DestroyWindow(dispatch_hwnd_);
+        dispatch_hwnd_ = nullptr;
+    }
     if (active_instance_ == this) active_instance_ = nullptr;
     if (raw_input_thread_.joinable()) {
         // 有限重试：线程函数开头才登记 id，Start 后立刻 Stop 时可能尚未就绪。
@@ -92,33 +116,6 @@ void XiaomiKeymapHook::Stop() {
         raw_input_thread_.join();
     }
     interceptor_.Reset();
-}
-
-void XiaomiKeymapHook::RecordSignal(std::string_view button) {
-    const int idx = ButtonIndex(button);
-    if (idx < 0) return;
-    signal_ms_[idx].store(NowSteadyMs(), std::memory_order_relaxed);
-}
-
-std::int64_t XiaomiKeymapHook::LoadSignalMs(std::string_view button) {
-    const int idx = ButtonIndex(button);
-    if (idx < 0) return -1;
-    return signal_ms_[idx].load(std::memory_order_relaxed);
-}
-
-// 竞态收口：WM_INPUT 与 LL 钩子的相对时序未定义（同一 HID 报告的两条分发路径
-// 线程调度竞态），首次 keydown 在等待窗内轮询佐证（对齐 VoiceF5Suppressor 的
-// 关联等待模式；窗 15/60ms 远低于 LowLevelHooksTimeout）。
-bool XiaomiKeymapHook::WaitForSignal(std::string_view button,
-                                     std::int64_t now_ms,
-                                     std::int64_t window_ms) {
-    const std::int64_t deadline = now_ms + window_ms;
-    while (NowSteadyMs() < deadline) {
-        Sleep(2);
-        const std::int64_t signal = LoadSignalMs(button);
-        if (signal >= now_ms - window_ms) return true;  // 等待期间新佐证到达
-    }
-    return false;
 }
 
 void XiaomiKeymapHook::InjectVks(const std::vector<UINT>& vks, bool down) {
@@ -139,6 +136,17 @@ void XiaomiKeymapHook::InjectVks(const std::vector<UINT>& vks, bool down) {
     }
 }
 
+// 统一执行归属判定动作：主注入（down 方向）+ 紧随其后的补对 up 序。
+void XiaomiKeymapHook::ApplyAction(const XiaomiKeymapHookAction& action,
+                                   const char* tag, std::string_view button) {
+    LogApp(std::string("XiaomiKeymapHook: ") + tag + " button=" +
+           std::string(button) + " inject=" +
+           std::to_string(action.inject.size()) + "+" +
+           std::to_string(action.inject_up.size()));
+    InjectVks(action.inject, true);
+    if (!action.inject_up.empty()) InjectVks(action.inject_up, false);
+}
+
 LRESULT CALLBACK XiaomiKeymapHook::LowLevelKeyboardProc(int code,
                                                         WPARAM w_param,
                                                         LPARAM l_param) {
@@ -147,8 +155,8 @@ LRESULT CALLBACK XiaomiKeymapHook::LowLevelKeyboardProc(int code,
         return CallNextHookEx(nullptr, code, w_param, l_param);
     }
     const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(l_param);
-    // 自家与其他工具注入的合成键不干预（注入的映射键自带 LLKHF_INJECTED，
-    // 防递归；对齐 VoiceF5Suppressor）。
+    // 自家与其他工具注入的合成键不干预（注入的映射/补偿键自带
+    // LLKHF_INJECTED，防递归；对齐 VoiceF5Suppressor）。
     if ((info->flags & LLKHF_INJECTED) != 0 ||
         info->dwExtraInfo == kInjectExtraInfo) {
         return CallNextHookEx(nullptr, code, w_param, l_param);
@@ -167,38 +175,87 @@ LRESULT CALLBACK XiaomiKeymapHook::LowLevelKeyboardProc(int code,
     if (!key_map || key_map->empty()) {
         return CallNextHookEx(nullptr, code, w_param, l_param);
     }
-    const std::int64_t now = NowSteadyMs();
-    // 快路径：佐证已先行到达（典型时序），零等待决策；未命中且需要关联
-    //（首次 keydown 无佐证）时限时等待兜底——等待失败确认是物理键盘同特征
-    // 键，补记放行闩锁，重复流不再等待（防阻塞键盘管线拖慢打字）。
-    XiaomiKeymapDecision decision = self->interceptor_.OnHookEvent(
-        *button, is_down, now, self->LoadSignalMs(*button), *key_map);
-    LogApp("XiaomiKeymapHook: candidate=" + std::string(*button) +
-           (is_down ? " down" : " up") + " vk=" +
-           std::to_string(static_cast<int>(info->vkCode)) + " scan=" +
-           std::to_string(static_cast<int>(info->scanCode)) +
-           " signal=" + std::to_string(self->LoadSignalMs(*button)) +
-           " now=" + std::to_string(now) + " swallow=" +
-           (decision.swallow ? "1" : "0") + " wait=" +
-           (decision.needs_correlation ? "1" : "0"));
-    if (!decision.swallow && decision.needs_correlation && is_down) {
-        if (self->WaitForSignal(*button, now,
-                                XiaomiKeymapCorrelateWindowMs(*button))) {
-            decision = self->interceptor_.OnHookEvent(
-                *button, is_down, NowSteadyMs(), self->LoadSignalMs(*button),
-                *key_map);
-            LogApp("XiaomiKeymapHook: correlated candidate=" + std::string(*button) +
-                   " swallow=" + (decision.swallow ? "1" : "0"));
-        } else {
-            self->interceptor_.RecordPass(*button, NowSteadyMs());
-            LogApp("XiaomiKeymapHook: pass-latched candidate=" + std::string(*button));
+    // keyup 后置决策（2026-09-07 三次迭代定案）：keydown/按住重复一律吞（零
+    // 副作用零等待）；keyup 放行让 BREAK 沿投递提供设备证据，归属判定与注入
+    // 移到主线程消息完成（OnBreakMessage/OnPendingTimer）。
+    XiaomiKeymapHookAction action =
+        is_down ? self->interceptor_.OnKeyDown(*button, info->vkCode,
+                                                info->scanCode, NowSteadyMs(),
+                                                *key_map)
+                : self->interceptor_.OnKeyUp(*button, NowSteadyMs(), *key_map);
+    if (!action.swallow) {
+        if (is_down && self->interceptor_.HasPending() &&
+            self->dispatch_hwnd_ && !self->pending_timer_on_) {
+            // 兜底定时器：BREAK 异常丢失时按物理键盘补偿。
+            self->pending_timer_on_ = SetTimer(self->dispatch_hwnd_,
+                                               kPendingTimerId,
+                                               kPendingTimerMs,
+                                               nullptr) != 0;
         }
-    }
-    if (!decision.swallow) {
         return CallNextHookEx(nullptr, code, w_param, l_param);
     }
-    self->InjectVks(decision.inject, is_down);
+    self->ApplyAction(action, is_down ? "swallow-down" : "swallow-up",
+                      *button);
+    if (self->interceptor_.HasPending() && self->dispatch_hwnd_ &&
+        !self->pending_timer_on_) {
+        self->pending_timer_on_ = SetTimer(self->dispatch_hwnd_,
+                                           kPendingTimerId, kPendingTimerMs,
+                                           nullptr) != 0;
+    }
     return 1;
+}
+
+LRESULT CALLBACK XiaomiKeymapHook::DispatchWndProc(HWND hwnd, UINT msg,
+                                                   WPARAM w_param,
+                                                   LPARAM l_param) {
+    auto* self = active_instance_;
+    if (self) {
+        if (msg == kMsgBreakEvidence) {
+            self->OnBreakMessage(static_cast<int>(w_param), l_param != 0);
+            return 0;
+        }
+        if (msg == WM_TIMER && w_param == kPendingTimerId) {
+            self->OnPendingTimer();
+            return 0;
+        }
+    }
+    return DefWindowProcW(hwnd, msg, w_param, l_param);
+}
+
+void XiaomiKeymapHook::OnBreakMessage(int button_index, bool from_remote) {
+    if (button_index < 0 ||
+        button_index >= static_cast<int>(kXiaomiMappableButtons.size())) {
+        return;
+    }
+    const auto key_map = key_map_.load(std::memory_order_acquire);
+    if (!key_map) return;
+    const auto button = kXiaomiMappableButtons[button_index];
+    auto action = interceptor_.OnBreakEvidence(button, NowSteadyMs(),
+                                                from_remote, *key_map);
+    if (!action.has_value()) return;  // 无待判定 pending：残留/按住中/已兜底
+    ApplyAction(*action, from_remote ? "break-remote-inject"
+                                     : "break-physical-compensate",
+                button);
+    if (!interceptor_.HasPending() && pending_timer_on_) {
+        KillTimer(dispatch_hwnd_, kPendingTimerId);
+        pending_timer_on_ = false;
+    }
+}
+
+void XiaomiKeymapHook::OnPendingTimer() {
+    const auto key_map = key_map_.load(std::memory_order_acquire);
+    if (!key_map) return;
+    const std::int64_t now = NowSteadyMs();
+    for (const auto& [button, released] : interceptor_.PendingAwaitingBreak()) {
+        auto action = interceptor_.OnPendingTimeout(button, now);
+        if (action.has_value()) {
+            ApplyAction(*action, "break-timeout-compensate", button);
+        }
+    }
+    if (!interceptor_.HasPending() && pending_timer_on_) {
+        KillTimer(dispatch_hwnd_, kPendingTimerId);
+        pending_timer_on_ = false;
+    }
 }
 
 void XiaomiKeymapHook::RawInputThreadMain() {
@@ -275,19 +332,20 @@ void XiaomiKeymapHook::RawInputThreadMain() {
             const auto* raw =
                 reinterpret_cast<const RAWINPUT*>(buffer.data());
             if (raw->header.dwType != kRimTypeKeyboard) continue;
-            if (!is_xiaomi_device(raw->header.hDevice)) continue;
-            const RAWKEYBOARD& keyboard = raw->data.keyboard;
-            // 仅记按下沿（佐证用于 keydown 判定；keyup 走闩锁关联）。
-            if (keyboard.Flags & RI_KEY_BREAK) continue;
-            const auto button = XiaomiButtonFromVkScan(keyboard.VKey,
-                                                       keyboard.MakeCode);
-            LogApp("XiaomiKeymapHook: raw vk=" +
-                   std::to_string(static_cast<int>(keyboard.VKey)) + " make=" +
-                   std::to_string(static_cast<int>(keyboard.MakeCode)) +
-                   " button=" +
-                   (button.has_value() ? std::string(*button)
-                                       : std::string("-")));
-            if (button.has_value()) RecordSignal(*button);
+            // 松开沿 = 设备归属证据（按下沿被吞的键不投递，松开沿随放行的
+            // keyup 正常到达，带 hDevice）。转主线程完成归属判定注入。
+            if ((raw->data.keyboard.Flags & RI_KEY_BREAK) == 0) continue;
+            const auto button = XiaomiButtonFromVkScan(raw->data.keyboard.VKey,
+                                                       raw->data.keyboard.MakeCode);
+            if (!button.has_value()) continue;
+            const int idx = ButtonIndex(*button);
+            if (idx < 0) continue;
+            const bool from_remote = is_xiaomi_device(raw->header.hDevice);
+            if (dispatch_hwnd_) {
+                PostMessageW(dispatch_hwnd_, kMsgBreakEvidence,
+                             static_cast<WPARAM>(idx),
+                             static_cast<LPARAM>(from_remote ? 1 : 0));
+            }
         }
     }
     if (raw_input_hwnd_) {

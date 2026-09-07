@@ -17,18 +17,16 @@ namespace voicestick {
 // 小米遥控器按键映射消费端（Doc/Plan/xiaomi-keymap-consumer.md）：拦截遥控器
 // HID 按键的 Windows 原生翻译，替换为 key_map 配置的映射键。
 //
-// 归属佐证：LL 钩子拿不到按键来源设备，用 Raw Input（RIDEV_INPUTSINK）线程按
-// hDevice 的 VID/PID（0x2717/0x32B8）识别遥控器，记录「按钮 → 最近佐证时刻」；
-// 钩子候选键的首次 keydown 在等待窗内查佐证（未命中视为物理键盘同名键放行）。
-// 这是 MiVibe「WUDF/Frida 直读信号」的零注入替代。
+// 归属佐证（keyup 后置决策版，2026-09-07）：LL 钩子吞掉的按键不进系统翻译流
+//（MAKE/BREAK raw 均不投递），按键时刻在用户态拿不到设备证据——先验判定必有
+// 物理键误映射率。决策整体后置：keydown 只吞（零副作用零等待）；keyup 放行让
+// BREAK 沿投递（hDevice = 可靠设备证据，Raw Input 线程按 VID/PID 0x2717/0x32B8
+// 识别）；归属判定后由主线程注入映射 down+up 对（遥控器）或补偿原键对（物理
+// 键），BREAK 异常丢失由 WM_TIMER 兜底补偿。按住连删退化为单击多次（已知取舍）。
 //
-// 拦截与注入：佐证命中 → 吞原始键（返回 1）+ SendInput 注入映射 KeySpec
-//（带 dwExtraInfo 标记；自带 LLKHF_INJECTED，自家两个 LL 钩子均放行注入键）。
-// 按住闩锁/keyup 关联由 XiaomiKeymapInterceptor 承担。
-//
-// 进程单例（对齐 VoiceF5Suppressor）：Start/Stop 幂等；LL 钩子在调用线程
-//（主线程，须有消息泵）安装，Raw Input 线程内部泵独立窗口。key_map 快照
-// 原子交换（UpdateKeymap 热更无锁读）。
+// 进程单例（对齐 VoiceF5Suppressor）：Start/Stop 幂等；LL 钩子与异步判定窗口
+// 都在主线程（须有消息泵），interceptor_ 无并发；Raw Input 线程内部泵独立
+// 窗口，仅 PostMessage。key_map 快照原子交换（热更无锁读）。
 class XiaomiKeymapHook {
 public:
     XiaomiKeymapHook() = default;
@@ -46,24 +44,31 @@ public:
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM w_param,
                                                  LPARAM l_param);
+    // 主线程 message-only 窗口：接收 BREAK 佐证消息与兜底定时器。
+    static LRESULT CALLBACK DispatchWndProc(HWND hwnd, UINT msg, WPARAM w_param,
+                                            LPARAM l_param);
     void RawInputThreadMain();
-    // 遥控器按键佐证：Raw Input 线程在 VID/PID 命中设备上报时记录按钮时刻。
-    void RecordSignal(std::string_view button);
-    std::int64_t LoadSignalMs(std::string_view button);
-    bool WaitForSignal(std::string_view button, std::int64_t now_ms,
-                       std::int64_t window_ms);
     void InjectVks(const std::vector<UINT>& vks, bool down);
+    void ApplyAction(const XiaomiKeymapHookAction& action, const char* tag,
+                     std::string_view button);
+    // 主线程：BREAK 佐证到达的归属判定注入（wParam=按钮下标，lParam=1 遥控器）。
+    void OnBreakMessage(int button_index, bool from_remote);
+    // 主线程：BREAK 丢失兜底（物理键盘保守补偿）。
+    void OnPendingTimer();
 
     HHOOK hook_ = nullptr;
     std::thread raw_input_thread_;
     DWORD raw_input_thread_id_ = 0;
     HWND raw_input_hwnd_ = nullptr;
+    // 主线程异步判定窗口（message-only；LL 回调与 WndProc 同线程）。
+    HWND dispatch_hwnd_ = nullptr;
+    bool pending_timer_on_ = false;
     // 注入键的 dwExtraInfo 标记（"XSKM"）：仅作诊断与第三方钩子区分。
     static constexpr ULONG_PTR kInjectExtraInfo = 0x58534B4D;
-    // 按钮佐证时刻表（steady_clock ms；0 = 从未）。索引同
-    // kXiaomiMappableButtons。写 Raw Input 线程、读钩子线程，relaxed 即可
-    //（仅做时间窗关联，无顺序依赖）。
-    std::atomic<std::int64_t> signal_ms_[kXiaomiMappableButtons.size()] = {};
+    // raw 线程 → 主线程的 BREAK 佐证消息。
+    static constexpr UINT kMsgBreakEvidence = WM_APP + 0x4D4B;
+    static constexpr UINT_PTR kPendingTimerId = 0x5144;
+    static constexpr UINT kPendingTimerMs = 25;
     // key_map 快照（原子交换，钩子路径无锁读）。
     std::atomic<std::shared_ptr<const std::map<std::string, std::string>>>
         key_map_{nullptr};

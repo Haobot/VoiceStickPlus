@@ -6331,167 +6331,166 @@ void TestXiaomiKeymapInterceptor() {
     assert((XiaomiKeymapInjectDownVks(winCombo) ==
            std::vector<UINT>{VK_LWIN, VK_DOWN}));
 
-    // ---- 决策状态机 ----
+    // ---- 决策状态机（keyup 后置决策版，2026-09-07 三次修复:LL 钩子吞掉的
+    // 按键既无 MAKE raw 也无 BREAK raw——按键时刻在用户态拿不到任何设备证据,
+    // 先验判定（全局信用热注入）必然存在物理键误映射率。改为:keydown 只吞
+    // 不注入（零副作用）,keyup 放行让 BREAK 沿随投递（hDevice = 可靠证据）,
+    // 归属判定后收尾——遥控器注入映射 down+up 对,物理键盘补偿原键对。 ----
     const std::map<std::string, std::string> key_map = {
         {"back", "backspace"}, {"home", "ctrl+shift+v"}, {"tv", "win+down"}};
     constexpr std::int64_t kNow = 500000;
-    XiaomiKeymapInterceptor interceptor;
 
-    // 无映射按键：佐证窗内也不吞不注入（key_map 未覆盖 up/down 等）。
+    // 无映射按键：不吞不注入（key_map 未覆盖 ok/up/down 等）。
     {
-        const auto d = interceptor.OnHookEvent("ok", true, kNow, kNow, key_map);
-        assert(!d.swallow && d.inject.empty());
+        XiaomiKeymapInterceptor local;
+        const auto a = local.OnKeyDown("ok", VK_RETURN, 0x1C, kNow, key_map);
+        assert(!a.swallow && a.inject.empty() && !local.HasPending());
     }
-    // 空串显式取消：放行。
+    // 空串显式取消 / 非法 key_spec 串（配置层已过滤，防御）：放行。
     {
         XiaomiKeymapInterceptor local;
         const std::map<std::string, std::string> cancelled{{"back", ""}};
-        const auto d = local.OnHookEvent("back", true, kNow, kNow, cancelled);
-        assert(!d.swallow && d.inject.empty());
-    }
-    // 非法 key_spec 串（配置层已过滤，防御）：放行。
-    {
-        XiaomiKeymapInterceptor local;
-        const std::map<std::string, std::string> bogus{{"back", "not a key"}};
-        const auto d = local.OnHookEvent("back", true, kNow, kNow, bogus);
-        assert(!d.swallow && d.inject.empty());
-    }
-    // 佐证窗内 keydown：吞 + 注入 down 序。
-    {
-        const auto d = interceptor.OnHookEvent("back", true, kNow, kNow - 5,
-                                               key_map);
-        assert(d.swallow);
-        assert((d.inject == std::vector<UINT>{VK_BACK}));
-    }
-    // 无佐证（物理键盘同名键）：放行。用 home 避开上面的 back 按住闩锁
-    //（闩锁中的自动重复免佐证，会被吞）。
-    {
-        const auto d = interceptor.OnHookEvent("home", true, kNow, -1, key_map);
-        assert(!d.swallow && d.inject.empty());
-    }
-    // 佐证过期（back 用 15ms 快窗，16ms 过期）：放行。
-    {
-        XiaomiKeymapInterceptor local;
-        const auto d = local.OnHookEvent("back", true, kNow,
-                                         kNow - 16, key_map);
-        assert(!d.swallow && d.inject.empty());
-    }
-    // tv/home/menu/power 用 60ms 长窗：59ms 命中、61ms 过期。
-    {
-        XiaomiKeymapInterceptor local;
-        const auto hit = local.OnHookEvent("tv", true, kNow, kNow - 59, key_map);
-        assert(hit.swallow);
-        assert((hit.inject == std::vector<UINT>{VK_LWIN, VK_DOWN}));
+        const auto a = local.OnKeyDown("back", VK_BROWSER_BACK, 0, kNow, cancelled);
+        assert(!a.swallow && a.inject.empty());
         XiaomiKeymapInterceptor local2;
-        const auto miss = local2.OnHookEvent("tv", true, kNow, kNow - 61,
-                                             key_map);
-        assert(!miss.swallow && miss.inject.empty());
+        const std::map<std::string, std::string> bogus{{"back", "not a key"}};
+        const auto b = local2.OnKeyDown("back", VK_BROWSER_BACK, 0, kNow, bogus);
+        assert(!b.swallow && b.inject.empty());
     }
-    // 按住闩锁：吞过 down 后，自动重复 keydown 免佐证直接吞 + 注入。
+    // keydown 一律吞 + 登记 pending，不注入（副作用留到归属判定后）。
     {
         XiaomiKeymapInterceptor local;
-        const auto first = local.OnHookEvent("back", true, kNow, kNow, key_map);
-        assert(first.swallow);
-        const auto repeat = local.OnHookEvent("back", true, kNow + 500, -1,
-                                              key_map);
-        assert(repeat.swallow);
-        assert((repeat.inject == std::vector<UINT>{VK_BACK}));
-        // 佐证窗已过但键仍按住：闩锁优先于快窗判定。
-        const auto repeat2 = local.OnHookEvent("back", true, kNow + 1000, -1,
-                                               key_map);
-        assert(repeat2.swallow);
+        const auto a = local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        assert(a.swallow && a.inject.empty());
+        assert(local.HasPending());
+        assert(local.PendingAwaitingBreak().empty());      // 尚未松开
     }
-    // keyup 关联：闩锁中的 keyup 吞 + 注入 up 反序；未闩锁的 keyup 放行。
+    // pending 中自动重复 keydown：吞，不注入、不新建 pending。
     {
         XiaomiKeymapInterceptor local;
-        const auto down = local.OnHookEvent("home", true, kNow, kNow, key_map);
-        assert(down.swallow);
-        const auto up = local.OnHookEvent("home", false, kNow + 900, -1,
-                                          key_map);
-        assert(up.swallow);
-        assert((up.inject == std::vector<UINT>{'V', VK_SHIFT, VK_CONTROL}));
-        // 闩锁已清：再来的 keyup 放行。
-        const auto up2 = local.OnHookEvent("home", false, kNow + 950, -1,
-                                           key_map);
-        assert(!up2.swallow && up2.inject.empty());
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        const auto repeat = local.OnKeyDown("home", VK_HOME, 0x71, kNow + 200,
+                                            key_map);
+        assert(repeat.swallow && repeat.inject.empty());
     }
-    // 放行的 down（无佐证）后的 keyup：同样放行（无闩锁可关联）。
+    // keyup：pending 中放行（让 BREAK 沿投递提供设备证据），标记待判定。
     {
         XiaomiKeymapInterceptor local;
-        const auto down = local.OnHookEvent("back", true, kNow, -1, key_map);
-        assert(!down.swallow);
-        const auto up = local.OnHookEvent("back", false, kNow + 10, kNow,
-                                          key_map);
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        const auto up = local.OnKeyUp("home", kNow + 120, key_map);
+        assert(!up.swallow && up.inject.empty());
+        const auto awaiting = local.PendingAwaitingBreak();
+        assert(awaiting.size() == 1 && awaiting[0].first == "home");
+    }
+    // 未归属 keyup（无 pending）：放行。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto up = local.OnKeyUp("back", kNow, key_map);
         assert(!up.swallow && up.inject.empty());
     }
-    // 未佐证 down（放行）不建立闩锁：其后的重复 keydown 无佐证仍放行。
+    // BREAK 佐证=遥控器：注入映射 down+up 对，消费 pending。
     {
         XiaomiKeymapInterceptor local;
-        assert(!local.OnHookEvent("back", true, kNow, -1, key_map).swallow);
-        assert(!local.OnHookEvent("back", true, kNow + 30, -1, key_map).swallow);
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const auto resolve = local.OnBreakEvidence("home", kNow + 123, true,
+                                                   key_map);
+        assert(resolve.has_value());
+        assert((resolve->inject == std::vector<UINT>{VK_CONTROL, VK_SHIFT, 'V'}));
+        assert((resolve->inject_up ==
+                std::vector<UINT>{'V', VK_SHIFT, VK_CONTROL}));
+        assert(!local.HasPending());
     }
-    // Reset 清闩锁：卸载/重配后旧按住状态不泄漏。
+    // BREAK 佐证=物理键盘：补偿注入原键 down+up 对，消费 pending。
     {
         XiaomiKeymapInterceptor local;
-        assert(local.OnHookEvent("back", true, kNow, kNow, key_map).swallow);
-        local.Reset();
-        const auto after = local.OnHookEvent("back", true, kNow + 10, -1,
-                                             key_map);
-        assert(!after.swallow);
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const auto resolve = local.OnBreakEvidence("home", kNow + 123, false,
+                                                   key_map);
+        assert(resolve.has_value());
+        assert((resolve->inject == std::vector<UINT>{VK_HOME}));
+        assert((resolve->inject_up == std::vector<UINT>{VK_HOME}));
+        assert(!local.HasPending());
     }
-    // 未来佐证时间戳（时钟乱序，age<0）不算窗内命中。
+    // BREAK 佐证晚于兜底窗（超时已补偿）：丢弃，不注入（防双击）。
     {
         XiaomiKeymapInterceptor local;
-        const auto d = local.OnHookEvent("back", true, kNow, kNow + 50,
-                                         key_map);
-        assert(!d.swallow && d.inject.empty());
-    }
-    // needs_correlation：仅「首次 keydown 无佐证放行」需要关联等待重判；
-    // 吞路径/闰锁重复/keyup/无映射一律 false（hook 层不等待）。
-    {
-        XiaomiKeymapInterceptor local;
-        const auto pass = local.OnHookEvent("back", true, kNow, -1, key_map);
-        assert(!pass.swallow && pass.needs_correlation);
-        const auto hit = local.OnHookEvent("home", true, kNow, kNow, key_map);
-        assert(hit.swallow && !hit.needs_correlation);
-        const auto repeat = local.OnHookEvent("home", true, kNow + 50, -1,
-                                              key_map);
-        assert(repeat.swallow && !repeat.needs_correlation);
-        const auto up = local.OnHookEvent("home", false, kNow + 60, -1,
-                                          key_map);
-        assert(up.swallow && !up.needs_correlation);
-        const auto unmapped = local.OnHookEvent("ok", true, kNow, kNow,
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const auto bail = local.OnPendingTimeout("home", kNow + 400);
+        assert(bail.has_value());
+        const auto late = local.OnBreakEvidence("home", kNow + 450, true,
                                                 key_map);
-        assert(!unmapped.swallow && !unmapped.needs_correlation);
+        assert(!late.has_value());
     }
-    // 放行闰锁（物理键盘同特征键保护）：无佐证放行经 RecordPass 补记后，
-    // kRepeatPassWindowMs 窗内的重复 keydown 直接放行（needs_correlation=false，
-    // hook 层零等待——否则物理 Backspace 按住删除时每个自动重复都阻塞键盘
-    // 管线 15ms）；窗外恢复佐证判定。
+    // 无 pending / 未松开的 BREAK：忽略（残留或按住中）。
     {
         XiaomiKeymapInterceptor local;
-        const auto first = local.OnHookEvent("back", true, kNow, -1, key_map);
-        assert(!first.swallow && first.needs_correlation);
-        local.RecordPass("back", kNow + 16);  // hook 等待失败后补记
-        const auto repeat = local.OnHookEvent("back", true, kNow + 40, -1,
-                                              key_map);
-        assert(!repeat.swallow && !repeat.needs_correlation);
-        const auto repeatUp = local.OnHookEvent("back", false, kNow + 60, -1,
-                                                key_map);
-        assert(!repeatUp.swallow && !repeatUp.needs_correlation);
-        // 窗外（>kRepeatPassWindowMs）恢复：遥控器佐证命中正常吞。
-        const auto late = local.OnHookEvent(
-            "back", true,
-            kNow + 16 + XiaomiKeymapInterceptor::kRepeatPassWindowMs + 1,
-            kNow + 16 + XiaomiKeymapInterceptor::kRepeatPassWindowMs + 1,
-            key_map);
-        assert(late.swallow);
-        // Reset 清放行闰锁。
-        local.Reset();
-        const auto after = local.OnHookEvent("back", true, kNow + 500, -1,
-                                             key_map);
-        assert(!after.swallow && after.needs_correlation);
+        assert(!local.OnBreakEvidence("tv", kNow, true, key_map).has_value());
+        local.OnKeyDown("back", VK_BROWSER_BACK, 0, kNow, key_map);  // 按住中
+        assert(!local.OnBreakEvidence("back", kNow + 50, true, key_map)
+                    .has_value());
     }
+    // 兜底超时（keyup 放行后 BREAK 迟迟不来，异常丢失保护）：补偿原键对。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        // 窗内（kBreakEvidenceWindowMs）不算超时。
+        assert(!local.OnPendingTimeout(
+                    "home", kNow + 120 + XiaomiKeymapInterceptor::kBreakEvidenceWindowMs)
+                    .has_value());
+        const auto bail = local.OnPendingTimeout(
+            "home", kNow + 120 + XiaomiKeymapInterceptor::kBreakEvidenceWindowMs + 1);
+        assert(bail.has_value());
+        assert((bail->inject == std::vector<UINT>{VK_HOME}));
+        assert((bail->inject_up == std::vector<UINT>{VK_HOME}));
+        assert(!local.HasPending());
+    }
+    // 按住中（keyup 未到）不触发兜底：按键长按是正常状态。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        assert(!local.OnPendingTimeout("home", kNow + 10000).has_value());
+        assert(local.HasPending());
+    }
+    // 多按钮并发 pending（遥控器同报多键：home+tv 齐按）各自独立判定。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyDown("tv", VK_OEM_3, 0x29, kNow + 5, key_map);
+        local.OnKeyUp("home", kNow + 100, key_map);
+        const auto home = local.OnBreakEvidence("home", kNow + 103, true,
+                                                key_map);
+        assert(home.has_value());
+        assert(local.HasPending());                          // tv 仍待判定
+        local.OnKeyUp("tv", kNow + 150, key_map);
+        const auto tv = local.OnBreakEvidence("tv", kNow + 153, false, key_map);
+        assert(tv.has_value());
+        assert(!local.HasPending());
+    }
+    // 映射在判定前被取消（重配竞态）：不注入任何键（原键已放行等效原生）。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const std::map<std::string, std::string> empty_map;
+        assert(!local.OnBreakEvidence("home", kNow + 123, true, empty_map)
+                    .has_value());
+        assert(!local.HasPending());
+    }
+    // Reset 清全部状态：pending 与按住记录。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.Reset();
+        assert(!local.HasPending());
+        const auto after = local.OnKeyDown("home", VK_HOME, 0x71, kNow + 10,
+                                           key_map);
+        assert(after.swallow);                               // 重新走 pending
+    }
+
 }
 
 // F5 抑制谓词：enabled 且 last>0 且 0<=age<=80ms 时吞，其余一律放行。
