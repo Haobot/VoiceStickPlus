@@ -25,12 +25,12 @@
 拦截的三个难题与对策:
 
 1. **LL 钩子(WH_KEYBOARD_LL)拿不到按键来源设备**,无法区分「遥控器的 Home」与「物理键盘的 Home」。
-   对策:**Raw Input(RIDEV_INPUTSINK)佐证**——注册 `(0x01,0x06)` 键盘页 + `(0x0C,0x01)` 消费页,`WM_INPUT` 的 `RAWKEYBOARD` 带 `hDevice`,经 `GetRawInputDeviceInfo(RIDI_DEVICENAME)` 取接口路径解析 VID/PID(小米 2 Pro:`0x2717`/`0x32B8`)精确归属。佐证信号由独立 Raw Input 线程记录「按钮 → 最近佐证时刻」,LL 钩子里在等待窗内查窗。这是对 MiVibe「WUDF/Frida 直读信号」的**零注入替代**(本项目红线:不引入 Frida)。
+   对策:**Raw Input(RIDEV_INPUTSINK)取 BREAK 沿归属**——注册 `(0x01,0x06)` 键盘页 + `(0x0C,0x01)` 消费页,`WM_INPUT` 的 `RAWKEYBOARD` 带 `hDevice`,经 `GetRawInputDeviceInfo(RIDI_DEVICENAME)` 取接口路径解析 VID/PID(小米 2 Pro:`0x2717`/`0x32B8`)精确归属。独立 Raw Input 线程只看松开沿,`PostMessage` 转主线程派发。这是对 MiVibe「WUDF/Frida 直读信号」的**零注入替代**(本项目红线:不引入 Frida)。
    > ⚠️ 教训(2026-09-07 真机排查定案):**不能用 `RIDI_DEVICEINFO` 读 VID/PID**——BTHLE 遥控器在 Raw Input 中呈现为 `RIM_TYPEKEYBOARD`,该查询只填 keyboard 联合体成员,`hid.dwVendorId` 恒 0,判定永远失败且无任何报错,佐证层静默失效(表现为映射「录入了但不生效」)。且 BTHLE 接口路径的 VID 字段为**六位**十六进制(`_Dev_VID&012717_PID&32b8_`,前两位疑似 Vendor ID Source 前缀),与 USB HID 名的四位(`VID_2717&PID_32B8`)并存,须按低 16 位比对(见 `XiaomiRawInputNameIsRemote`)。
-2. **WM_INPUT 与 LL 钩子的相对时序未定义**:同一物理输入的 raw 分发与系统队列翻译可能乱序。
-   对策:候选键首次 keydown 在钩子内限时等待(tv/home/menu/power 60ms,其余 15ms,对齐 MiVibe 真机参数);超时放行(物理键盘同名键不受影响)。
+2. **WM_INPUT 与 LL 钩子的相对时序未定义**,且二者与「吞」操作互斥(2026-09-07 三轮真机迭代定案,详见 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`):LL 钩子是 RIT 同步调用,钩子内等待本次 WM_INPUT 永远等不到(佐证在钩子返回后 ~2-3ms 才到);钩子吞掉的键 MAKE/BREAK 沿双双不投递(「先吞后验」悖论);keydown 时刻决策只能靠先验,物理键盘误删且无法自愈。
+   对策:**keyup 后置决策**——keydown/按住重复一律吞并登记 Pending(零副作用零等待);keyup 放行让 BREAK 沿投递携带 `hDevice`(孤立 up 无系统副作用,是取证动作);主线程收到证据后按归属收尾:遥控器→注入映射 down+up 对,物理→补偿原键 down+up 对;BREAK 异常丢失 200ms WM_TIMER 按物理兜底。
 3. **按键归属确认后须吞掉原始键**(否则 back 的浏览器后退/方向键的焦点移动等原生副作用泄漏)。
-   对策:确认佐证后 LL 钩子返回 1 吞原始键,同时 `SendInput` 注入映射键(`LLKHF_INJECTED` 自带,自家钩子放行注入键,另带 `dwExtraInfo` 标记双保险);按住序列闩锁——吞过 down 后该键的自动重复直接吞、keyup 关联吞(镜像 `VoiceF5Suppressor` 闩锁模式,松开阶段佐证窗可能已过期)。
+   对策:keydown 即吞(返回 1),映射注入与物理补偿统一移到 keyup 后证据到达时由主线程 `SendInput` 完成(`LLKHF_INJECTED` 自带,自家钩子放行注入键,另带 `dwExtraInfo` 标记双保险)。代价:单击反馈延迟到松手瞬间、按住连删退化为单击多次(已知取舍,见经验文档遗留段)。
 
 ## 2. 架构
 

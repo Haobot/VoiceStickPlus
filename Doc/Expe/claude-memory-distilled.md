@@ -217,6 +217,16 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 
 修复：参数改按值传递 `std::string device_id`，消除引用别名；回归测试 `TestEncoderRotateCustomKeysPendingPathDeviceOverride`（设备覆盖 + pending → Tick 冲刷）。**教训**：const 引用参数若可能指向会被函数体修改的成员，必须先复制或按值传参；单测要覆盖"设备覆盖 ≠ 全局默认"场景（此前 pending 路径测试全用全局默认键，查回默认也断言通过，掩盖了回落路径）。
 
+### 3.13 小米遥控器按键映射：LL 钩子吞键与设备证据三重死结（2026-09-07 定案）
+
+症状：`home→Backspace` 映射三轮迭代各有真机故障——钩子内等待佐证版不删字（佐证 2ms 后才到）；先吞后验版不删字（被吞键无 MAKE raw，超时全走物理补偿）；信用制版物理键盘 Home 误删且 30s 窗内无法自愈（纠正信号 BREAK 也被吞）。
+
+根因（结构性，非时序抖动）：WH_KEYBOARD_LL 是 RIT 同步调用，钩子阻塞期间本次 WM_INPUT 不投递；钩子返回 1 吞掉的键 MAKE/BREAK 沿**双双不投递**。任何 keydown 时刻的归属决策都只能靠先验（信用/时序窗），物理键盘同特征键误判后落入无证据死区。
+
+修复（v4 keyup 后置决策）：keydown/按住重复一律吞 + 登记 Pending；keyup **放行**（孤立 up 无系统副作用，是取证动作）让 BREAK 沿带 `hDevice` 投递；主线程收到证据后遥控器→注入映射 down+up 对、物理→补偿原键 down+up 对；BREAK 异常丢失 200ms WM_TIMER 按物理兜底。代价：反馈延迟到松手、按住连删退化为单击多次。详见 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`，设计 `Doc/Plan/xiaomi-keymap-consumer.md`。
+
+附带坑：`RIDI_DEVICEINFO` 对 BTHLE 遥控器（呈现为 RIM_TYPEKEYBOARD）`hid.dwVendorId` 恒 0 静默失效，VID/PID 必须走 `RIDI_DEVICENAME` 接口路径解析，且 BTHLE 容器 VID 字段是六位十六进制（`012717`），须按低 16 位比对；RC003（RC-6459）back 键固件上报 usage 0xF1 被 WUDFHost 翻译层丢弃，PC 端零事件不可消费，勿再按"原生 Backspace"假设排查（早期 VK_BACK 日志是物理键盘污染）。
+
 ---
 
 ## 4. 微信输入法模式（wechat_input_method）
@@ -454,3 +464,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - `device_info` 曾超 BLE 通知 MTU 预算被截断（258B JSON，MTU 247 链路截到 244B、桌面 parse failed）——已修复：精简到 235B + `send_state_json` 超预算告警（4B 帧头 + JSON ≤ ATT MTU−3，预算 240B@MTU247）。state 帧仍严禁盲目加字段，新增状态走独立小帧（先例 `encoder_status`）。改 BLE 协议后必须看一次真机连接日志。见 `Doc/Expe/encoder-present-reporting-2026-08-02.md`。
 - `VoiceStickUi` 接口有三处实现（`Win32App`、`core_tests.cc` 与 `integration_tests.cc` 的 FakeUi），加纯虚函数必须三处同改；设置对话框控件一律创建、未入 `layout_` 表的由 BuildControls 隐藏但 Load/Save 照常读写（整段隐藏不丢配置），区块前置 `separator()` 要挂同一可见性谓词。
 - 首次 GitHub Release / fork 迁移发布全流程（坑：`gh release view` 无 Release 即炸、MSI 上传与网站部署竞态、`gh` 不在 Bash PATH、PowerShell 读 octet-stream 给字节数组、CI 固件与本地固件体积不同），见 `Doc/Expe/release-v236-first-github-release-2026-08-10.md`。
+- LL 键盘钩子吞掉的键在 Raw Input 里 MAKE/BREAK 双双不存在，钩子内也等不到本次 WM_INPUT（RIT 同步）；要设备归属证据只能放行取 BREAK 沿（hDevice），决策后置到 keyup——先吞后验/时序窗/信用制全被证伪，见 §3.13 与 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`。
