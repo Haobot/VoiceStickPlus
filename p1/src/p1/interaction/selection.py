@@ -1,7 +1,7 @@
 """框选文本读取：剪贴板往返法（暂存 → Ctrl+C → 读 → 还原）。
 
-已知取舍（设计文档 §2.1）：pyperclip 仅文本——非文本剪贴板（图片/文件）
-无法还原，会被 Ctrl+C 覆盖；P2 用 win32 完整格式暂存。
+第四迭代起暂存/还原用 ClipboardVault 完整格式快照——图片/HTML 等非文本
+剪贴板往返后复原（pyperclip 只能文本的时代限制解除）。
 """
 from __future__ import annotations
 
@@ -31,7 +31,9 @@ class SelectionReader:
         """
         import pyperclip
 
-        saved = pyperclip.paste()
+        from p1.interaction.clipboard_vault import ClipboardVault
+        vault = ClipboardVault()
+        snapshot = vault.save()
         if send_copy:
             import keyboard
             seq_before = _clipboard_sequence()
@@ -42,11 +44,10 @@ class SelectionReader:
                     break
             else:
                 # 序列号不动 = Ctrl+C 根本没改变剪贴板（复制失败）；
-                # 若不拦下，saved（进入时的剪贴板旧值）会被误当选区文本
+                # 此刻剪贴板未被破坏，无需恢复直接报错
                 raise ValueError("复制选区无响应，请确认目标窗口已选中文字")
         text = (pyperclip.paste() or "").strip()
-        if text != saved:
-            pyperclip.copy(saved)  # 还原进入时的剪贴板
+        vault.restore(snapshot)   # 无条件完整还原（多格式 + 幂等）
         # 多行选择归一：词条是单行概念，换行折叠为空格
         text = " ".join(text.split())
         if not text:

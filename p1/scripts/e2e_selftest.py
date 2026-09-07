@@ -51,7 +51,7 @@ def main() -> int:
             if hotword:
                 store.add(surface=hotword, source="manual")
             t0 = time.perf_counter()
-            result = pipeline.process(samples, sr)
+            result = pipeline.process(samples, sr, inject_send_paste=False)
             wall = time.perf_counter() - t0
             if result is None:
                 print(f"[FAIL] {wav_name}: 管线返回 None")

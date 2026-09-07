@@ -59,7 +59,7 @@ class FakeInjector:
         self.injected_texts = []
         self.fail = fail
 
-    def inject(self, text):
+    def inject(self, text, send_paste=True, restore_clipboard=True):
         if self.fail:
             raise RuntimeError("目标窗口不可用")
         self.injected_texts.append(text)

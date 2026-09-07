@@ -71,6 +71,45 @@ def test_多行选择_归一后超长仍拒绝():
     pyperclip.copy(saved)
 
 
+def test_读取选择_非文本格式同步保留(monkeypatch):
+    """HTML 等非文本格式在剪贴板往返后必须复原（第四迭代核心价值）。"""
+    import ctypes
+    import ctypes.wintypes as wt
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    html_fmt = user32.RegisterClipboardFormatW("HTML Format")
+    html = b"<html><body>keep</body></html>"
+    saved = __import__("pyperclip").paste()
+    try:
+        # 预置 文本 + HTML 双格式
+        user32.OpenClipboard(0)
+        user32.EmptyClipboard()
+        for fmt, data in ((13, "选中词条".encode("utf-16-le") + b"\x00\x00"),
+                          (html_fmt, html)):
+            handle = kernel32.GlobalAlloc(0x0002, len(data))
+            ptr = kernel32.GlobalLock(handle)
+            ctypes.memmove(ptr, data, len(data))
+            kernel32.GlobalUnlock(handle)
+            user32.SetClipboardData(fmt, handle)
+        user32.CloseClipboard()
+
+        reader = SelectionReader(send_delay=0.0)
+        assert reader.read_selection(send_copy=False) == "选中词条"
+
+        # HTML 格式必须还在且字节一致
+        assert user32.IsClipboardFormatAvailable(html_fmt)
+        user32.OpenClipboard(0)
+        handle = user32.GetClipboardData(html_fmt)
+        size = kernel32.GlobalSize(handle)
+        ptr = kernel32.GlobalLock(handle)
+        got = ctypes.string_at(ptr, size)
+        kernel32.GlobalUnlock(handle)
+        user32.CloseClipboard()
+        assert got == html
+    finally:
+        __import__("pyperclip").copy(saved or "")
+
+
 def test_复制无响应_重试耗尽后报ValueError(monkeypatch):
     """Ctrl+C 后剪贴板毫无变化（序列号不动）——真机实况：
     剪贴板被并发占用导致复制失败，必须报错而非把旧剪贴板当选区。"""

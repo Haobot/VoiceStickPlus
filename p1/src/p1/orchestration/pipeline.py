@@ -45,7 +45,8 @@ class Pipeline:
         self._injector = injector
         self._top_n = corrector_top_n
 
-    def process(self, samples: np.ndarray, sample_rate: int = 16000) -> PipelineResult | None:
+    def process(self, samples: np.ndarray, sample_rate: int = 16000,
+                inject_send_paste: bool = True) -> PipelineResult | None:
         timing: dict[str, float] = {}
         started = time.perf_counter()
 
@@ -85,7 +86,8 @@ class Pipeline:
         t0 = time.perf_counter()
         injected, error = True, ""
         try:
-            self._injector.inject(text)
+            self._injector.inject(text, send_paste=inject_send_paste,
+                                  restore_clipboard=inject_send_paste)
         except Exception as exc:
             injected, error = False, f"{type(exc).__name__}: {exc}"
         timing["inject_seconds"] = time.perf_counter() - t0
