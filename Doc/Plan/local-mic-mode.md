@@ -1,6 +1,6 @@
 # 本机麦克风模式（Local Mic Mode）——P1 核心闭环并入 VoiceStick.exe 设计
 
-状态：迭代一/二/三均已交付（ceb2550a / 820bb43c / 本次提交），后续候选见文末
+状态：迭代一/二/三均已交付（ceb2550a / 820bb43c / 0897cbdc），迭代三 UX 补全（录入式热键 + 模型目录浏览/有效性回显）a3deb3fc 已交付，后续候选见文末
 决策：2026-09-07 用户确认「并入 VoiceStick.exe、核心闭环优先」。
 
 ## 目标
@@ -142,6 +142,26 @@ push_to_talk_key = "right ctrl"
 - 麦克风权限：Win10 1903+ 桌面应用 WASAPI 采集通常无系统级弹窗（非 UWP），
   真机验证。
 - 模型体积对安装包/更新通道的影响（WinSparkle 增量）——分发策略单列后续迭代。
+
+### 设置 UI 补全（迭代三收尾，a3deb3fc 已交付）
+
+- **录入式热键**：「按键说话键」行增「录入」按钮，复用 ShortcutCapture
+  （`require_modifier=false` + 新增 `allow_modifier_as_key=true`，单键模式下
+  修饰键直接作主键，右 Ctrl 一键即录）；按键决策抽出纯函数 `ClassifyKey`
+  （kAccumulateModifier/kCapture/kCancel/kRejectNoModifier 四态）；捕获成功经
+  `FormatPushToTalkKey`（键表扩为 name/display/vk 三列，display 列输出规范
+  键名如 "right ctrl"，同义名 esc/escape 取首见主名）回写编辑框，不受支持
+  的键（方向键/Win 键等）弹提示不改值；Esc 取消；3 秒无键盘事件复用热键
+  设置的 UIPI 超时引导（kPttCaptureHintTimerId）。
+- **模型目录浏览与有效性回显**：「模型目录」行增「浏览…」按钮
+  （IFileDialog FOS_PICKFOLDERS 泛化 `ChooseFolderInto`，SetFolder 定位当前
+  值）；目录编辑失焦/浏览返回/打开设置时即时校验，`✓ 模型就绪` /
+  `✗ 缺少 model.int8.onnx…` 状态行回显。
+- **口径统一**：`ValidateSenseVoiceModelsDir`（model.int8.onnx + tokens.txt
+  存在性）与 `ResolveLocalMicModelsDir`（空→exe/models、相对→锚 exe）提为
+  local_asr_client_win 公共函数，`Start` 与设置界面、`SyncLocalMicRuntime`
+  三处同一解析/校验口径；`shortcut_capture.cc` 移入 voicestick_core 供
+  core_tests 链接（ClassifyKey 纯函数单测 + Format 与 Parse 23 键往返一致）。
 
 ## 后续候选（首期不做）
 
