@@ -1326,17 +1326,16 @@ void Win32App::SyncLocalMicRuntime() {
     if (coordinator_ == nullptr) return;
 
     if (config_.local_asr.enabled) {
-        std::filesystem::path models_dir = config_.local_asr.models_dir;
-        if (models_dir.empty()) models_dir = "models";
-        if (models_dir.is_relative()) {
-            models_dir = std::filesystem::path(CurrentExecutableDir()) / models_dir;
-        }
-        if (models_dir.string() != local_mic_models_dir_applied_) {
+        // 空 = exe/models、相对路径锚 exe 目录（口径与设置界面状态检查共用）。
+        const std::string models_dir = ResolveLocalMicModelsDir(
+            config_.local_asr.models_dir,
+            std::filesystem::path(CurrentExecutableDir()).string());
+        if (models_dir != local_mic_models_dir_applied_) {
             coordinator_->SetLocalMicRuntime(
                 std::make_unique<WasapiMicCapture>(),
-                std::make_unique<LocalAsrClient>(models_dir.string()));
-            local_mic_models_dir_applied_ = models_dir.string();
-            LogLine("Local mic runtime ready, models: " + models_dir.string());
+                std::make_unique<LocalAsrClient>(models_dir));
+            local_mic_models_dir_applied_ = models_dir;
+            LogLine("Local mic runtime ready, models: " + models_dir);
         }
     } else if (!local_mic_models_dir_applied_.empty()) {
         // 关闭：拆运行件与热键（协调器侧负责取消活跃会话，采集器析构即 Stop）。

@@ -138,6 +138,7 @@ add_library(voicestick_core
     src/localization.cc
     src/push_to_talk_key.cc
     src/clipboard_vault.cc
+    src/shortcut_capture.cc
     third_party/cjson/cJSON.c
     src/log.cc
     src/ogg_crc.cc
@@ -196,7 +197,6 @@ add_executable(VoiceStickApp WIN32
     src/battery_monitor_dialog.cc
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
-    src/shortcut_capture.cc
     src/selection_hotword_manager.cc
     src/voice_f5_suppressor.cc
     src/xiaomi_keymap_hook.cc

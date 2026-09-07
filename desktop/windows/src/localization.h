@@ -84,6 +84,12 @@ enum class StringId {
     kSettingsLocalMicModelsDir,
     kSettingsLocalMicHotkey,
     kSettingsLocalMicHotkeyHint,
+    kSettingsLocalMicBrowse,
+    kSettingsLocalMicCapture,
+    kSettingsLocalMicCapturing,
+    kSettingsLocalMicHotkeyUnsupported,
+    kSettingsLocalMicModelsOk,
+    kSettingsLocalMicModelsMissing,
 
     // 托盘菜单
     kMenuPairDevice,

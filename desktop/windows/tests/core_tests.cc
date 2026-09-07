@@ -34,6 +34,7 @@
 #include "mic_capture.h"
 #include "wasapi_mic_capture.h"
 #include "push_to_talk_key.h"
+#include "shortcut_capture.h"
 #include "onboarding_dialog.h"
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
@@ -10282,6 +10283,126 @@ void TestPushToTalkKeyParsing() {
     assert(!ParsePushToTalkKey("").has_value());
 }
 
+void TestFormatPushToTalkKey() {
+    // 哨兵：stub 阶段（恒 nullopt）在此干净失败，避免下方解引用空 optional 的 UB。
+    assert(FormatPushToTalkKey(VK_RCONTROL).has_value());
+    // 命名键：主名（同义 escape/return 取首见的 esc/enter）。
+    assert(*FormatPushToTalkKey(VK_RCONTROL) == "right ctrl");
+    assert(*FormatPushToTalkKey(VK_LCONTROL) == "left ctrl");
+    assert(*FormatPushToTalkKey(VK_RSHIFT) == "right shift");
+    assert(*FormatPushToTalkKey(VK_LSHIFT) == "left shift");
+    assert(*FormatPushToTalkKey(VK_RMENU) == "right alt");
+    assert(*FormatPushToTalkKey(VK_LMENU) == "left alt");
+    assert(*FormatPushToTalkKey(VK_CAPITAL) == "capslock");
+    assert(*FormatPushToTalkKey(VK_SCROLL) == "scrolllock");
+    assert(*FormatPushToTalkKey(VK_PAUSE) == "pause");
+    assert(*FormatPushToTalkKey(VK_ESCAPE) == "esc");
+    assert(*FormatPushToTalkKey(VK_SPACE) == "space");
+    assert(*FormatPushToTalkKey(VK_TAB) == "tab");
+    assert(*FormatPushToTalkKey(VK_RETURN) == "enter");
+    assert(*FormatPushToTalkKey(VK_BACK) == "backspace");
+    // 功能键边界与单字符键。
+    assert(*FormatPushToTalkKey(VK_F1) == "f1");
+    assert(*FormatPushToTalkKey(VK_F9) == "f9");
+    assert(*FormatPushToTalkKey(VK_F24) == "f24");
+    assert(*FormatPushToTalkKey('A') == "a");
+    assert(*FormatPushToTalkKey('Z') == "z");
+    assert(*FormatPushToTalkKey('0') == "0");
+    assert(*FormatPushToTalkKey('9') == "9");
+    // Parse 本就不收的键：无键名。
+    assert(!FormatPushToTalkKey(VK_LWIN).has_value());
+    assert(!FormatPushToTalkKey(VK_UP).has_value());
+    assert(!FormatPushToTalkKey(VK_NUMPAD0).has_value());
+    assert(!FormatPushToTalkKey(VK_F24 + 1u).has_value());  // F25 起越界（SDK 无 VK_F25 常量）
+    // 往返一致性：Format 输出可被 Parse 还原为同一 VK（全支持域）。
+    const UINT round_trip_keys[] = {VK_RCONTROL, VK_LCONTROL, VK_RSHIFT, VK_LSHIFT,
+                                    VK_RMENU,    VK_LMENU,    VK_CAPITAL, VK_SCROLL,
+                                    VK_PAUSE,    VK_ESCAPE,   VK_SPACE,   VK_TAB,
+                                    VK_RETURN,   VK_BACK,     VK_F1,      VK_F13,
+                                    VK_F24,      'A',         'M',        'Z',
+                                    '0',         '5',         '9'};
+    for (UINT vk : round_trip_keys) {
+        const auto name = FormatPushToTalkKey(vk);
+        assert(name.has_value());
+        const auto parsed = ParsePushToTalkKey(*name);
+        assert(parsed.has_value());
+        assert(*parsed == vk);
+    }
+}
+
+void TestResolveAndValidateModelsDir() {
+    namespace fs = std::filesystem;
+    // 解析口径：空 = exe_dir/models；相对路径锚 exe 目录；绝对路径原样。
+    // 经 fs::path 比较（path 拼接用反斜杠分隔符，字符串形态不作断言目标）。
+    assert(fs::path(ResolveLocalMicModelsDir("", "C:/app")) == fs::path("C:/app/models"));
+    assert(fs::path(ResolveLocalMicModelsDir("models", "C:/app")) ==
+           fs::path("C:/app/models"));
+    assert(fs::path(ResolveLocalMicModelsDir("rel/models", "C:/app")) ==
+           fs::path("C:/app/rel/models"));
+    assert(fs::path(ResolveLocalMicModelsDir("D:/mymodels", "C:/app")) ==
+           fs::path("D:/mymodels"));
+    // 校验口径：目录缺任一模型文件即报错，齐全才通过（与 Start 同判定）。
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "voicestick_models_validate_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    // 哨兵：stub（恒通过）在此干净失败。
+    assert(ValidateSenseVoiceModelsDir(dir.string()).has_value());
+    { std::ofstream out(dir / "model.int8.onnx", std::ios::binary); }
+    assert(ValidateSenseVoiceModelsDir(dir.string()).has_value());  // 只有一半
+    { std::ofstream out(dir / "tokens.txt", std::ios::binary); }
+    assert(!ValidateSenseVoiceModelsDir(dir.string()).has_value());  // 齐全 → 通过
+    fs::remove_all(dir);
+    // 不存在的目录同样报错。
+    assert(ValidateSenseVoiceModelsDir("Z:/definitely/not/here").has_value());
+}
+
+void TestShortcutCaptureClassifyKey() {
+    // 默认（按键映射场景，require_modifier=false）：修饰键累积、主键直接捕获。
+    ShortcutCapture::Options single;
+    assert(ShortcutCapture::ClassifyKey(VK_RCONTROL, single, false) ==
+           ShortcutCapture::KeyAction::kAccumulateModifier);
+    assert(ShortcutCapture::ClassifyKey(VK_LSHIFT, single, true) ==
+           ShortcutCapture::KeyAction::kAccumulateModifier);
+    assert(ShortcutCapture::ClassifyKey(VK_LWIN, single, false) ==
+           ShortcutCapture::KeyAction::kAccumulateModifier);
+    assert(ShortcutCapture::ClassifyKey('A', single, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_F9, single, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+
+    // 全局热键场景（require_modifier=true）：裸主键拒绝，带修饰键捕获。
+    ShortcutCapture::Options combo;
+    combo.require_modifier = true;
+    assert(ShortcutCapture::ClassifyKey('A', combo, false) ==
+           ShortcutCapture::KeyAction::kRejectNoModifier);
+    assert(ShortcutCapture::ClassifyKey('A', combo, true) ==
+           ShortcutCapture::KeyAction::kCapture);
+
+    // 按住说话场景（allow_modifier_as_key）：修饰键左右变体直接作为主键捕获，
+    // 不再累积等待（right ctrl 即功能键本身）。
+    ShortcutCapture::Options ptt;
+    ptt.allow_modifier_as_key = true;
+    assert(ShortcutCapture::ClassifyKey(VK_RCONTROL, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_LCONTROL, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_LSHIFT, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_LWIN, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_CAPITAL, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+
+    // Esc 恒为取消（任何模式下都不作为主键捕获）。
+    assert(ShortcutCapture::ClassifyKey(VK_ESCAPE, single, false) ==
+           ShortcutCapture::KeyAction::kCancel);
+    assert(ShortcutCapture::ClassifyKey(VK_ESCAPE, combo, true) ==
+           ShortcutCapture::KeyAction::kCancel);
+    assert(ShortcutCapture::ClassifyKey(VK_ESCAPE, ptt, false) ==
+           ShortcutCapture::KeyAction::kCancel);
+}
+
 void TestAppConfigLocalAsrRoundTrip() {
     assert(!AppConfig::Defaults().local_asr.enabled);
     assert(AppConfig::Defaults().local_asr.models_dir.empty());
@@ -10660,6 +10781,9 @@ int main() {
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLocalAsrClientSenseVoiceSmoke();
     TestPushToTalkKeyParsing();
+    TestFormatPushToTalkKey();
+    TestShortcutCaptureClassifyKey();
+    TestResolveAndValidateModelsDir();
     TestAppConfigLocalAsrRoundTrip();
     TestCoordinatorLocalMicSessionRoutesToLocalAsr();
     TestCoordinatorLocalMicShortPressDiscards();

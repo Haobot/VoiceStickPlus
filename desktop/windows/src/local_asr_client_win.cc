@@ -127,20 +127,37 @@ LocalAsrClient::LocalAsrClient(std::string models_dir, int num_threads)
     impl_->client = this;
 }
 
+std::optional<std::string> ValidateSenseVoiceModelsDir(const std::string& models_dir) {
+    namespace fs = std::filesystem;
+    const fs::path model = fs::path(models_dir) / "model.int8.onnx";
+    const fs::path tokens = fs::path(models_dir) / "tokens.txt";
+    if (!fs::exists(model) || !fs::exists(tokens)) {
+        return "本地识别模型未就位: " + models_dir +
+               "（需 SenseVoice model.int8.onnx 与 tokens.txt）";
+    }
+    return std::nullopt;
+}
+
+std::string ResolveLocalMicModelsDir(const std::string& configured,
+                                     const std::string& exe_dir) {
+    namespace fs = std::filesystem;
+    fs::path dir = configured.empty() ? fs::path("models") : fs::path(configured);
+    if (dir.is_relative()) dir = fs::path(exe_dir) / dir;
+    return dir.string();
+}
+
 LocalAsrClient::~LocalAsrClient() = default;
 
 bool LocalAsrClient::Start(AsrSessionOptions /*options*/) {
     namespace fs = std::filesystem;
     impl_->last_start_error.clear();
 
-    fs::path model = fs::path(impl_->models_dir) / "model.int8.onnx";
-    fs::path tokens = fs::path(impl_->models_dir) / "tokens.txt";
-    if (!fs::exists(model) || !fs::exists(tokens)) {
-        impl_->last_start_error =
-            "本地识别模型未就位: " + impl_->models_dir +
-            "（需 SenseVoice model.int8.onnx 与 tokens.txt）";
+    if (auto error = ValidateSenseVoiceModelsDir(impl_->models_dir)) {
+        impl_->last_start_error = *error;
         return false;
     }
+    const fs::path model = fs::path(impl_->models_dir) / "model.int8.onnx";
+    const fs::path tokens = fs::path(impl_->models_dir) / "tokens.txt";
     if (impl_->recognizer) {   // 已构建，跨会话复用
         impl_->cancelled = false;
         return true;

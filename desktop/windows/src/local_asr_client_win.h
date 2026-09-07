@@ -12,6 +12,7 @@
 #define VOICESTICK_LOCAL_ASR_CLIENT_WIN_H_
 
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -19,6 +20,17 @@
 #include "voice_stick_coordinator.h"
 
 namespace voicestick {
+
+// 校验 SenseVoice 模型目录是否含 model.int8.onnx 与 tokens.txt：有效返回
+// nullopt，无效返回中文错误描述（与 LocalAsrClient::Start 同口径，设置界面
+// 即时反馈与启动校验共用，避免两处判定漂移）。
+std::optional<std::string> ValidateSenseVoiceModelsDir(const std::string& models_dir);
+
+// 解析 [local_asr] models_dir 配置值为实际目录：空 = exe_dir/models；相对
+// 路径以 exe 目录为基准锚定；绝对路径原样返回。启动接线与设置界面状态检查
+// 共用同一解析口径。
+std::string ResolveLocalMicModelsDir(const std::string& configured,
+                                     const std::string& exe_dir);
 
 class LocalAsrClient : public AsrClient {
  public:

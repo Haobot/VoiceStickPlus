@@ -94,6 +94,15 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLocalMicHotkey)] = "Push-to-talk key";
     table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
         "Examples: right ctrl / capslock / f9. Hold to talk, release to insert.";
+    table[Index(StringId::kSettingsLocalMicBrowse)] = "Browse...";
+    table[Index(StringId::kSettingsLocalMicCapture)] = "Capture key";
+    table[Index(StringId::kSettingsLocalMicCapturing)] = "Press a key (Esc to cancel)...";
+    table[Index(StringId::kSettingsLocalMicHotkeyUnsupported)] =
+        "That key is not supported for push-to-talk. Try right/left ctrl|shift|alt, "
+        "capslock, f1-f24 or a letter/number key.";
+    table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ Models ready (SenseVoice found)";
+    table[Index(StringId::kSettingsLocalMicModelsMissing)] =
+        "✗ Model files not found (need model.int8.onnx + tokens.txt)";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -476,6 +485,14 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLocalMicHotkey)] = "按住说话热键";
     table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
         "示例：right ctrl / capslock / f9。按住说话，松开注入文本。";
+    table[Index(StringId::kSettingsLocalMicBrowse)] = "浏览…";
+    table[Index(StringId::kSettingsLocalMicCapture)] = "录入";
+    table[Index(StringId::kSettingsLocalMicCapturing)] = "按下想要的键…（Esc 取消）";
+    table[Index(StringId::kSettingsLocalMicHotkeyUnsupported)] =
+        "该键不支持按住说话。可用：right/left ctrl|shift|alt、capslock、f1-f24 或字母/数字键。";
+    table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ 模型就绪（已找到 SenseVoice）";
+    table[Index(StringId::kSettingsLocalMicModelsMissing)] =
+        "✗ 未找到模型文件（需 model.int8.onnx 与 tokens.txt）";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";
