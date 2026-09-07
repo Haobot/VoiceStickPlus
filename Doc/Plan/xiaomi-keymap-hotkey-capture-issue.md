@@ -1,9 +1,35 @@
 # 小米遥控器按键映射：「录入」状态识别不到键盘按键（缺陷调查）
 
-- 状态：**调查中——机制层已证伪，根因待真机证据**
+- 状态：**修复建议 1/2 已落码（未提交），机制层已证伪，根因待真机证据**
 - 报障日期：2026-09-07 晚（用户日志时段 23:09–23:25）
 - 关联模块：`desktop/windows/src/xiaomi_keymap_dialog.cc`、`shortcut_capture.cc`、`xiaomi_keymap_hook.cc`
 - 关联 GitHub Issue：见仓库 Issue 列表「录入状态识别不到键盘按键」
+
+## 0. 修复落地记录（2026-09-08 凌晨，自动会话）
+
+按 §4 建议落地以下改动（**TDD：红灯→绿灯**，UI 字符串断言先行，`core_tests.cc:1374-1378`）：
+
+1. **`ShortcutCapture` 排障日志**（`shortcut_capture.{h,cc}`，未跟踪文件直接改）：
+   `Start` 成功、**首个键盘事件到达**（一次性打点）、`captured`/`cancelled`/`rejected` 回调触发点。
+   下次复现可直接分叉「钩子收不到事件（环境隔离）」vs「收到但链路没走通（代码缺陷）」。
+2. **录入超时提示**（两个捕获对话框同模式）：
+   `xiaomi_keymap_dialog.{h,cc}` + `hotkey_settings_dialog.{h,cc}`——录入启动后 `SetTimer` 3 秒，
+   无任何键盘事件则弹一次 UIPI 引导（`kHotkeyCaptureTimeoutTitle/Body`，中英双语），不中断捕获；
+   捕获结束的公共汇合点（`RestoreCaptureButtonText`/`UpdateHotkeyDisplay`）与 `WM_DESTROY` 停表。
+3. **本地化**：`localization.{h,cc}` 新增两条 StringId 与中英文案（diff 干净，仅本改动）。
+
+**验证状态与中断原因**：
+- 全量构建通过（BUILD_EXIT=0，含双方改动）。
+- **CTest 未全绿即中断**：`TestClipboardVaultMultiFormatRoundTrip`（`core_tests.cc:10533`）失败。
+  归属分析：该失败位于并行会话（local-mic 迭代三「剪贴板恢复」）**进行中的新模块 `clipboard_vault`**
+  （23:56 仍在改 `clipboard_vault.cc`、CMakeLists 注册、`watch_tests.ps1` 监视），且两会话的测试进程
+  曾并发互踩剪贴板（全局资源）。本改动的相关断言（UI strings，1374 行起）位于失败点之前、**全部通过**。
+- **源码未提交**：`core_tests.cc` 的工作区 diff 混有并行会话 ~190 行（剪贴板/local-mic 测试），
+  提交会夹带其半成品。待并行会话收尾（或用户裁决）后，以本节清单为界补提交并补跑全量 CTest。
+- **未重启 VoiceStick.exe 真机冒烟**：避免占用 exe 锁干扰并行会话的后续构建（LNK1104 教训）。
+  冒烟清单：托盘→按键映射→录入→不按键等 3 秒看提示→按键看捕获→查日志四条打点。
+
+## 1. 现象
 
 ## 1. 现象
 
