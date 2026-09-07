@@ -65,14 +65,14 @@ def build_application(cfg) -> tuple[OverlayApp, HotkeyListener]:
              "框选添加[%s] 确认口述[%s]",
              store.count(), cfg.rewrite_provider if rewriter else "关闭",
              cfg.push_to_talk, cfg.add_selection_key, cfg.confirm_recent_key)
-    return overlay, hotkeys, store
+    return overlay, hotkeys, store, controller
 
 
 def main() -> int:
     # Run 键自启的 cwd 是系统目录，config 相对路径（../m0/models）依赖 cwd 正确
     os.chdir(Path(__file__).resolve().parent)
     cfg = load_config()
-    overlay, hotkeys, store = build_application(cfg)
+    overlay, hotkeys, store, controller = build_application(cfg)
     hotkeys.start()
 
     # 托盘动作全部经 Tk after 切回主线程执行（root/键盘钩子操作线程安全）
@@ -84,6 +84,9 @@ def main() -> int:
             overlay.root().after(0, _toggle_listen)
         elif action == "toggle_autostart":
             overlay.root().after(0, _toggle_autostart)
+        elif action.startswith("preset:"):
+            key = action.split(":", 1)[1]
+            overlay.root().after(0, lambda: _apply_preset(key))
 
     def _shutdown() -> None:
         hotkeys.stop()
@@ -109,13 +112,31 @@ def main() -> int:
             autostart.enable()
             log.info("开机自启已开启: %s", autostart._read_value())
 
+    def _apply_preset(key: str) -> None:
+        """托盘切热键方案：重绑全部钩子 + 写回 config（写失败运行时仍生效）。"""
+        from p1.config import DEFAULT_CONFIG, save_preset
+        from p1.interaction.hotkey_presets import PRESETS
+        preset = PRESETS[key]
+        hotkeys.rebind(
+            push_key=preset.push_to_talk, cancel_key=preset.cancel,
+            action_keys={preset.add_selection: controller.on_add_selection,
+                         preset.confirm_recent: controller.on_confirm_recent})
+        try:
+            save_preset(DEFAULT_CONFIG, key)
+        except OSError as exc:
+            log.warning("热键方案已切换但 config 写回失败（下次启动回旧方案）: %s", exc)
+        log.info("热键方案已切换: %s（按住[%s]说话 框选[%s] 确认[%s]）",
+                 preset.display, preset.push_to_talk,
+                 preset.add_selection, preset.confirm_recent)
+
     tray = TrayIcon(
-        menu_factory=lambda: _build_tray_menu(store, hotkeys),
+        menu_factory=lambda: _build_tray_menu(store, hotkeys, cfg.hotkey_preset),
         on_action=dispatch,
         tooltip="VoiceStick P1")
     tray.start()
 
-    log.info("VoiceStick P1 已启动：按住 %s 说话，松手出字", cfg.push_to_talk)
+    log.info("VoiceStick P1 已启动（热键方案 %s）：按住 %s 说话，松手出字",
+             cfg.hotkey_preset, cfg.push_to_talk)
     try:
         overlay.run()  # tkinter mainloop（主线程阻塞）
     except KeyboardInterrupt:
@@ -126,7 +147,9 @@ def main() -> int:
     return 0
 
 
-def _build_tray_menu(store: HotwordStore, hotkeys: HotkeyListener) -> TrayMenu:
+def _build_tray_menu(store: HotwordStore, hotkeys: HotkeyListener,
+                     preset_key: str) -> TrayMenu:
+    from p1.interaction.hotkey_presets import PRESETS
     menu = TrayMenu()
     menu.add("VoiceStick P1 运行中", action="", enabled=False)
     menu.add(f"热词库 {store.count()} 条", action="", enabled=False)
@@ -135,6 +158,13 @@ def _build_tray_menu(store: HotwordStore, hotkeys: HotkeyListener) -> TrayMenu:
              checked=not hotkeys.is_paused())
     menu.add("开机自启", action="toggle_autostart",
              checked=autostart_state())
+    preset_menu = TrayMenu()
+    for preset in PRESETS.values():
+        preset_menu.add(preset.display, action=f"preset:{preset.key}",
+                        checked=preset.key == preset_key)
+    if preset_key == "custom":
+        preset_menu.add("自定义（config 显式键位）", action="", enabled=False)
+    menu.add_popup("热键方案", preset_menu)
     menu.add_separator()
     menu.add("退出", action="quit")
     return menu

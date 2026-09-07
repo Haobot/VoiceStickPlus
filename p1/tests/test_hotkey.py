@@ -90,6 +90,45 @@ def test_暂停期间按住说话_松手也不触发():
     listener.stop()
 
 
+# ---------- rebind 换绑（第五迭代：托盘切热键方案的后端） ----------
+
+def test_rebind后_新键的handler生效():
+    calls = []
+    listener = HotkeyListener(
+        push_key="f9", cancel_key="esc",
+        on_press=lambda: calls.append("press"),
+        on_release=lambda: calls.append("release"),
+        on_cancel=lambda: calls.append("cancel"),
+        action_keys={"ctrl+alt+k": lambda: calls.append("k")})
+    listener.start()
+    listener.rebind(
+        push_key="f8", cancel_key="esc",
+        action_keys={"ctrl+alt+j": lambda: calls.append("j")})
+    # 白盒：rebind 后 handler 面貌应为新键组
+    assert set(listener._action_handlers) == {"ctrl+alt+j"}
+    listener._push_handler(_fake_event("down"))
+    listener._action_handlers["ctrl+alt+j"]()
+    assert calls == ["press", "j"]
+    # 换回的旧键 handler 不应残留
+    assert "ctrl+alt+k" not in listener._action_handlers
+    listener.stop()
+    assert listener._handles == [] and listener._hotkey_handles == []
+
+
+def test_rebind保持暂停态():
+    calls = []
+    listener = _make_listener(calls)
+    listener.start()
+    listener.pause()
+    listener.rebind(push_key="f8", cancel_key="esc",
+                    action_keys={"ctrl+alt+j": lambda: calls.append("j")})
+    assert listener.is_paused()
+    listener._push_handler(_fake_event("down"))
+    listener._action_handlers["ctrl+alt+j"]()
+    assert calls == []            # 暂停态穿越 rebind 仍短路
+    listener.stop()
+
+
 class _fake_event:
     """keyboard 库的 event_type 是字符串常量 KEY_DOWN='down' / KEY_UP='up'。"""
 

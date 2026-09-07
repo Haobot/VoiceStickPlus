@@ -71,6 +71,19 @@ class HotkeyListener:
             keyboard.remove_hotkey(handle)
         self._hotkey_handles.clear()
 
+    def rebind(self, push_key: str, cancel_key: str,
+               action_keys: dict[str, callable] | None = None) -> None:
+        """托盘切热键方案：注销旧钩子换新键重新注册；暂停态保持不变。
+
+        先 stop 清句柄再 start，同键重绑也无双钩子残留风险。
+        """
+        self.stop()
+        self._push_key = push_key
+        self._cancel_key = cancel_key
+        if action_keys is not None:
+            self._action_keys = action_keys
+        self.start()
+
     # ---- 暂停/恢复（托盘开关）：标志位短路，不重注册钩子 ----
     # unhook/rehook 有同键双钩子 KeyError 的历史风险；且组合键 rehook 期间事件可能漏
 

@@ -1,9 +1,9 @@
-"""config 单测：默认值 / 文件加载覆盖 / 坏文件报错 / 路径解析。"""
+"""config 单测：默认值 / 文件加载覆盖 / 坏文件报错 / 路径解析 / preset 持久化。"""
 from pathlib import Path
 
 import pytest
 
-from p1.config import P1Config, load_config
+from p1.config import P1Config, load_config, save_preset
 
 
 # ---------- 默认值 ----------
@@ -78,3 +78,76 @@ def test_文件加载_可覆盖热词入口键位(tmp_path):
     cfg = load_config(cfg_file)
     assert cfg.add_selection_key == "ctrl+alt+k"
     assert cfg.confirm_recent_key == "ctrl+alt+j"
+
+
+# ---------- 热键预设（第五迭代） ----------
+
+def test_加载_preset字段_四键整组取预设(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[hotkey]\npreset = "f_key"\n', encoding="utf-8")
+    cfg = load_config(cfg_file)
+    assert cfg.hotkey_preset == "f_key"
+    assert cfg.push_to_talk == "f8"
+
+
+def test_加载_无preset_标识custom且显式键生效(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[hotkey]\npush_to_talk = "f7"\n', encoding="utf-8")
+    cfg = load_config(cfg_file)
+    assert cfg.hotkey_preset == "custom"
+    assert cfg.push_to_talk == "f7"
+
+
+# ---------- save_preset 行级回写 ----------
+
+def test_保存预设_段内无preset行_段头后插入(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        "# 顶部注释\n[hotkey]\npush_to_talk = \"f7\"\n[rewrite]\nenabled = false\n",
+        encoding="utf-8")
+    save_preset(cfg_file, "f_key")
+    text = cfg_file.read_text(encoding="utf-8")
+    assert '[hotkey]\npreset = "f_key"' in text
+    # 其他行原样保留
+    assert "# 顶部注释" in text
+    assert 'push_to_talk = "f7"' in text
+    assert "[rewrite]" in text
+
+
+def test_保存预设_已有preset行_原位替换且幂等(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        '[hotkey]\npreset = "f_key"\ncancel = "esc"\n', encoding="utf-8")
+    save_preset(cfg_file, "right_ctrl")
+    save_preset(cfg_file, "right_ctrl")   # 幂等：重复写不重复插行
+    text = cfg_file.read_text(encoding="utf-8")
+    assert text.count('preset =') == 1
+    assert 'preset = "right_ctrl"' in text
+    assert 'cancel = "esc"' in text
+
+
+def test_保存预设_无hotkey段_文件尾追加(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("[rewrite]\nenabled = false\n", encoding="utf-8")
+    save_preset(cfg_file, "f_key")
+    cfg = load_config(cfg_file)
+    assert cfg.hotkey_preset == "f_key"
+    assert cfg.rewrite_enabled is False
+
+
+def test_保存预设_文件不存在_新建最小配置(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    save_preset(cfg_file, "f_key")
+    cfg = load_config(cfg_file)
+    assert cfg.hotkey_preset == "f_key"
+    assert cfg.push_to_talk == "f8"
+
+
+def test_保存自定义_preset行整行删除(tmp_path):
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text('[hotkey]\npreset = "f_key"\ncancel = "esc"\n',
+                        encoding="utf-8")
+    save_preset(cfg_file, "custom")
+    text = cfg_file.read_text(encoding="utf-8")
+    assert "preset" not in text
+    assert 'cancel = "esc"' in text

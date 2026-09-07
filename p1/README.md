@@ -24,6 +24,10 @@
   状态行（热词库条数动态）、**监听热键开关**（暂停后全局热键不再抢键）、
   **开机自启开关**（HKCU Run + pythonw 无窗口）、退出——退出经 Tk after 切回
   主线程收尾（注销热键、删托盘图标、销毁 Tk），进程树干净退出。
+- **多方案热键映射**（第五迭代）：内置热键方案预设（右Ctrl 长按 / F8 长按），
+  托盘「热键方案」子菜单即时切换（钩子重绑不重启）+ 写回 `config.toml` 持久化
+  （保留注释与其他配置行）；`preset` 字段整组采用预设，无 `preset` 时显式四键
+  = 自定义方案（兼容旧配置），预设值无效启动即报错不静默降级。
 
 ## 快速开始
 
@@ -73,7 +77,7 @@ src/p1/
 ## 测试与验收
 
 ```bash
-# 单元/集成测试（133 个，无凭据/模型时自动 SKIP 相关项）
+# 单元/集成测试（151 个，无凭据/模型时自动 SKIP 相关项）
 ../m0/.venv/Scripts/python.exe -m pytest tests/ -q
 
 # 全真链路自检（真实 wav → 识别 → 纠正 → 改写 → 剪贴板，不粘贴）
@@ -97,6 +101,11 @@ src/p1/
 # 托盘菜单开关一体化验收（鼠标点菜单项→暂停时 F8 不响应→自启注册表取证；
 # 需主程序运行中，参数 = 持有 VoiceStickP1TrayWnd 窗口的 python 进程 pid）
 ../m0/.venv/Scripts/python.exe scripts/accept_tray.py <GUI_PID>
+
+# 热键方案切换一体化验收（托盘子菜单键盘导航切预设→rebind 新键生效/旧键失效
+# →config 持久化取证→恢复原样；菜单导航用 PostMessage 直发菜单窗口，
+# SendInput 注入对菜单模态不稳定）
+../m0/.venv/Scripts/python.exe scripts/accept_hotkey_presets.py <GUI_PID>
 ```
 
 ## 已知限制

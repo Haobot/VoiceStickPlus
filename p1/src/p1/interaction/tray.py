@@ -37,22 +37,41 @@ class TrayItem:
     enabled: bool = True
     cmd_id: int = 0            # win32 菜单命令 id（add 时分配）
     checked: bool = False      # 勾选态（MF_CHECKED，开关项用）
+    submenu: "TrayMenu | None" = None   # 非空 = 弹出项（MF_POPUP，点了展开非命令）
 
 
 class TrayMenu:
     """纯菜单模型：win32 命令 id ↔ 动作标识 的映射在这里，可全单测。
 
     分隔线不占命令 id（win32 MF_SEPARATOR 无 id），单独记插入位置。
+    子菜单在 add_popup 时整树重编 cmd_id 接续父空间（win32 要求全树唯一，
+    TrackPopupMenu 返回的 cmd 无法区分来源菜单）。
     """
 
     def __init__(self):
         self._items: list[TrayItem] = []
         self._separators: set[int] = set()   # 分隔线插在哪个项索引之前
+        self._next_cmd_id = 1
 
     def add(self, label: str, action: str = "", enabled: bool = True,
             checked: bool = False) -> TrayItem:
         item = TrayItem(label=label, action=action, enabled=enabled,
-                        cmd_id=len(self._items) + 1, checked=checked)
+                        cmd_id=self._next_cmd_id, checked=checked)
+        self._next_cmd_id += 1
+        self._items.append(item)
+        return item
+
+    def add_popup(self, label: str, submenu: "TrayMenu") -> TrayItem:
+        """挂子菜单：子树 cmd_id 重编为父空间之后的连续段。"""
+        def renumber(menu: "TrayMenu") -> None:
+            for item in menu._items:
+                item.cmd_id = self._next_cmd_id
+                self._next_cmd_id += 1
+                if item.submenu is not None:
+                    renumber(item.submenu)
+        renumber(submenu)
+        item = TrayItem(label=label, cmd_id=self._next_cmd_id, submenu=submenu)
+        self._next_cmd_id += 1
         self._items.append(item)
         return item
 
@@ -77,11 +96,28 @@ class TrayMenu:
         for item in self._items:
             if item.action == action:
                 return item
+        for item in self._items:
+            if item.submenu is not None:
+                hit = item.submenu.find(action)
+                if hit is not None:
+                    return hit
+        return None
+
+    def find_popup(self, label: str) -> "TrayMenu | None":
+        for item in self._items:
+            if item.label == label and item.submenu is not None:
+                return item.submenu
         return None
 
     def action_for(self, cmd_id: int) -> str | None:
-        if 1 <= cmd_id <= len(self._items):
-            return self._items[cmd_id - 1].action
+        for item in self._items:
+            if item.cmd_id == cmd_id:
+                return item.action
+        for item in self._items:
+            if item.submenu is not None:
+                action = item.submenu.action_for(cmd_id)
+                if action is not None:
+                    return action
         return None
 
 
@@ -312,17 +348,26 @@ class TrayIcon:
     def _popup_menu(self, hwnd) -> None:
         user32 = self._user32
         menu = self._menu_factory()
-        hmenu = user32.CreatePopupMenu()
-        for item in menu.items():
-            if item.label == "-":
-                user32.AppendMenuW(hmenu, 0x800, 0, None)      # MF_SEPARATOR
-            else:
-                flags = 0x0                                    # MF_STRING
-                if not item.enabled:
-                    flags |= 0x1                               # MF_GRAYED
-                if item.checked:
-                    flags |= 0x8                               # MF_CHECKED
-                user32.AppendMenuW(hmenu, flags, item.cmd_id, item.label)
+
+        def build_hmenu(model: TrayMenu) -> int:
+            hmenu = user32.CreatePopupMenu()
+            for item in model.items():
+                if item.label == "-":
+                    user32.AppendMenuW(hmenu, 0x800, 0, None)  # MF_SEPARATOR
+                elif item.submenu is not None:
+                    sub = build_hmenu(item.submenu)
+                    # MF_POPUP：第三参数是子菜单句柄而非命令 id
+                    user32.AppendMenuW(hmenu, 0x10, sub, item.label)
+                else:
+                    flags = 0x0                                # MF_STRING
+                    if not item.enabled:
+                        flags |= 0x1                           # MF_GRAYED
+                    if item.checked:
+                        flags |= 0x8                           # MF_CHECKED
+                    user32.AppendMenuW(hmenu, flags, item.cmd_id, item.label)
+            return hmenu
+
+        hmenu = build_hmenu(menu)
         # 经典坑（KB135788）：不置前台则点击菜单外不消失
         user32.SetForegroundWindow(hwnd)
         pt = wt.POINT()
