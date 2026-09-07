@@ -11,7 +11,7 @@
 
 | 按钮 | kbdhid 翻译特征(真机事实) |
 |---|---|
-| back | **双特征**：RC003 实测(RC-6459,2026-09-07 LL 探针采集)= `VK_BACK`(0x08)+ 扫描码 0x0E,即原生 Backspace(与物理键盘 Backspace 同特征,归属靠佐证区分);RC001(MiVibe 记录)= `VK_BROWSER_BACK`(0xA6) |
+| back | **RC003(RC-6459,2026-09-07 三轮探针定案):固件零上报——按下时 HID 报文/私有 BLE 服务/ATVV 三通道全静默,PC 上无任何事件,不可映射消费**;RC001(MiVibe 记录)= `VK_BROWSER_BACK`(0xA6),特征保留 |
 | home | `VK_BROWSER_HOME`(0xAC)或 `VK_HOME`(0x24) |
 | ok | `VK_RETURN`(RC-6459 实测:scan 0x1C) |
 | up/down/left/right | `VK_UP`/`VK_DOWN`/`VK_LEFT`/`VK_RIGHT`(RC-6459 实测:扩展键 E0,scan 0x48 等) |
@@ -20,13 +20,13 @@
 | power | `VK_SLEEP`(0x5F)或 `VK` 0xFF(未知)或扫描码 0x5E |
 | volume_up/down | `VK_VOLUME_UP`/`VK_VOLUME_DOWN` |
 
-> **RC003 实测勘误(2026-09-07)**:本机 RC-6459(REV&00A4,RC003 类固件)的返回键在系统键盘层**完整可见**(VK_BACK/0x0E,长按 30ms 自动重复),并非最初推断的"被 kbdhid 丢弃"——"丢弃 0xF1"是 RC003 裸 HID usage 0xF1 在 HidOverGatt 翻译层的结局,但该固件最终把返回键以标准 Backspace 呈现。BTHLE HID 服务的 GATT 特征对应用层返回 ACCESS_DENIED(默认访问/FromIdAsync 共享/OpenAsync 共享三路实测均拒),BLE 直读报文路线在系统 HID 栈占用下不可行,无需禁用设备或注入。
+> **RC003 勘误与定案(2026-09-07,三轮探针)**:本机 RC-6459(REV&00A4,RC003 类固件)的返回键在 PC 配对模式下**固件不向主机发送任何数据**——LL 钩子零事件、Raw Input 页级订阅(0x01/0x0C PAGEONLY)零报文、私有 BLE 服务(8 个可通知特征)零通知、ATVV 会话零事件;同设备的方向/OK/home 键均正常上报(遥控器连接与 HID 通道本身健康)。此前"RC003 返回键=原生 Backspace(VK_BACK/0x0E)"的结论是**物理键盘 Backspace 污染数据的误判**(测试时用户/排查者按了物理 Backspace,LL 层 VK 特征与遥控器假设吻合所致)。方法论教训:**遥控器键的真伪判定必须同时核对 Raw Input 设备归属(hDevice)与按键时刻对照**,仅凭 LL 层 VK 特征不可定案;`hDevice=NULL` 的注入鼠标事件(空鼠类软件)与真实 HID 事件(`hDevice` 非 NULL)也可据此区分。BTHLE HID 服务的 GATT 特征与 CreateFile GENERIC_READ 对应用层均 ACCESS_DENIED(系统 HID 栈独占),0 权限打开可枚举 usage(该设备 TLC=0x01/0x06,输入报文 121 字节,3 个 link collection)但不可读报文流。
 
 拦截的三个难题与对策:
 
 1. **LL 钩子(WH_KEYBOARD_LL)拿不到按键来源设备**,无法区分「遥控器的 Home」与「物理键盘的 Home」。
    对策:**Raw Input(RIDEV_INPUTSINK)佐证**——注册 `(0x01,0x06)` 键盘页 + `(0x0C,0x01)` 消费页,`WM_INPUT` 的 `RAWKEYBOARD` 带 `hDevice`,经 `GetRawInputDeviceInfo(RIDI_DEVICENAME)` 取接口路径解析 VID/PID(小米 2 Pro:`0x2717`/`0x32B8`)精确归属。佐证信号由独立 Raw Input 线程记录「按钮 → 最近佐证时刻」,LL 钩子里在等待窗内查窗。这是对 MiVibe「WUDF/Frida 直读信号」的**零注入替代**(本项目红线:不引入 Frida)。
-   > ⚠️ 教训(2026-09-07 真机排查定案):**不能用 `RIDI_DEVICEINFO` 读 VID/PID**——BTHLE 遥控器在 Raw Input 中呈现为 `RIM_TYPEKEYBOARD`,该查询只填 keyboard 联合体成员,`hid.dwVendorId` 恒 0,判定永远失败且无任何报错,佐证层静默失效(表现为映射「录入了但不生效」)。且 BTHLE 接口路径的 VID 字段为**六位**十六进制(`_Dev_VID&012717_PID&32b8_`,前两位疑似 Vendor ID Source 前缀),与 USB HID 名的四位(`VID_2717&PID_32B8`)并存,须按低 16 位比对(见 `XiaomiRawInputNameIsRemote`)。另:同轮排查发现 RC003 遥控器的原生 back 键(VK_BACK/0x0E)存在「LL 钩子可见、焦点应用收不到」现象(记事本实测 6 次按键 0 删字)——吞原键+SendInput 注入的映射路径天然免疫此问题,注入键正常送达。
+   > ⚠️ 教训(2026-09-07 真机排查定案):**不能用 `RIDI_DEVICEINFO` 读 VID/PID**——BTHLE 遥控器在 Raw Input 中呈现为 `RIM_TYPEKEYBOARD`,该查询只填 keyboard 联合体成员,`hid.dwVendorId` 恒 0,判定永远失败且无任何报错,佐证层静默失效(表现为映射「录入了但不生效」)。且 BTHLE 接口路径的 VID 字段为**六位**十六进制(`_Dev_VID&012717_PID&32b8_`,前两位疑似 Vendor ID Source 前缀),与 USB HID 名的四位(`VID_2717&PID_32B8`)并存,须按低 16 位比对(见 `XiaomiRawInputNameIsRemote`)。
 2. **WM_INPUT 与 LL 钩子的相对时序未定义**:同一物理输入的 raw 分发与系统队列翻译可能乱序。
    对策:候选键首次 keydown 在钩子内限时等待(tv/home/menu/power 60ms,其余 15ms,对齐 MiVibe 真机参数);超时放行(物理键盘同名键不受影响)。
 3. **按键归属确认后须吞掉原始键**(否则 back 的浏览器后退/方向键的焦点移动等原生副作用泄漏)。
