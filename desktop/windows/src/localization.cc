@@ -228,6 +228,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotkeyMissingModifier)] = "Error: at least 1 modifier is required (Ctrl/Alt/Shift/Win)";
     table[Index(StringId::kHotkeyConflictTitle)] = "Hotkey conflict";
     table[Index(StringId::kHotkeyConflictMessage)] = "This hotkey is already used by another app. Choose another combination.";
+    table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "Hotkey capture";
+    table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
+        "No key press was detected within a few seconds. If the foreground window runs as "
+        "administrator (elevated), its keyboard events are isolated by the system and cannot "
+        "be captured. Click this window (or any non-elevated window) and try again.";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud needs attention";
     table[Index(StringId::kCloudOpenPageQuestion)] = "Open the VoiceStick Cloud page?";
 
@@ -599,6 +604,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotkeyMissingModifier)] = "错误：至少需要 1 个修饰键（Ctrl/Alt/Shift/Win）";
     table[Index(StringId::kHotkeyConflictTitle)] = "热键冲突";
     table[Index(StringId::kHotkeyConflictMessage)] = "该快捷键已被其他程序占用，请选择其他组合。";
+    table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "快捷键录入";
+    table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
+        "几秒内未检测到任何按键。若当前前台窗口是以管理员权限（提权）运行的程序"
+        "（如提权终端、任务管理器），键盘事件会被系统隔离而无法识别。"
+        "请点击本窗口或任意普通权限窗口后重试。";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud 需要处理";
     table[Index(StringId::kCloudOpenPageQuestion)] = "是否打开 VoiceStick Cloud 页面？";
 

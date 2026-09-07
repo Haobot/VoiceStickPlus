@@ -1316,6 +1316,11 @@ void TestAppConfig() {
     assert(Tr(StringId::kPairManualIdHint, UiLanguage::kEnglish) == "Can't find it? Enter the 4-digit ID shown on the Stick:");
     assert(Tr(StringId::kPairManualIdHint, UiLanguage::kSimplifiedChinese) == "找不到设备？请输入 Stick 屏幕显示的 4 位 ID：");
     assert(Tr(StringId::kHotkeyCapturePrompt, UiLanguage::kEnglish) == "Press a hotkey combination...");
+    // 快捷键录入超时提示（UIPI 前台提权隔离引导，两个捕获对话框共用）。
+    assert(Tr(StringId::kHotkeyCaptureTimeoutTitle, UiLanguage::kSimplifiedChinese) == "快捷键录入");
+    assert(!Tr(StringId::kHotkeyCaptureTimeoutBody, UiLanguage::kEnglish).empty());
+    assert(Tr(StringId::kHotkeyCaptureTimeoutBody, UiLanguage::kSimplifiedChinese)
+               .find("管理员") != std::string::npos);
     assert(Tr(StringId::kFirmwareUpdateFinalizing, UiLanguage::kSimplifiedChinese) == "正在完成固件更新...");
     assert(BatteryStatusText(83, false, false, UiLanguage::kEnglish) == "83%");
     assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");

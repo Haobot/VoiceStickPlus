@@ -229,6 +229,9 @@ enum class StringId {
     kHotkeyMissingModifier,
     kHotkeyConflictTitle,
     kHotkeyConflictMessage,
+    // 快捷键录入超时提示（前台为提权窗口时键盘事件被 UIPI 隔离的引导）。
+    kHotkeyCaptureTimeoutTitle,
+    kHotkeyCaptureTimeoutBody,
 
     // 云服务提示
     kCloudNeedsAttentionTitle,
