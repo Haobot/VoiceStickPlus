@@ -53,6 +53,40 @@ set_target_properties(winsparkle_lib PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${winsparkle_SOURCE_DIR}/include"
 )
 
+# sherpa-onnx C API（本机麦克风模式迭代一：SenseVoice 本地离线识别，v1.13.7）。
+# 二进制不进 git；来源二选一：
+#   1) m0/.venv wheel 同款文件（与 Python 端同版本同 ABI，推荐开发机）：
+#      m0/.venv/Lib/site-packages/sherpa_onnx/{include,lib}
+#   2) GitHub release v1.13.7 sherpa-onnx-v1.13.7-win-x64.tar.bz2 的 include/lib
+# 放到 third_party/sherpa-onnx/（include/ + lib/），或用 VOICESTICK_SHERPA_ONNX_DIR
+# 指向解压目录。显式 -DVOICESTICK_ENABLE_LOCAL_ASR=OFF 可跳过（不需要本地识别时）。
+option(VOICESTICK_ENABLE_LOCAL_ASR "SenseVoice local offline ASR (local mic mode)" ON)
+set(_sherpa_onnx_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx")
+if(DEFINED ENV{VOICESTICK_SHERPA_ONNX_DIR})
+    set(_sherpa_onnx_dir "$ENV{VOICESTICK_SHERPA_ONNX_DIR}")
+elseif(DEFINED VOICESTICK_SHERPA_ONNX_DIR)
+    set(_sherpa_onnx_dir "${VOICESTICK_SHERPA_ONNX_DIR}")
+endif()
+if(VOICESTICK_ENABLE_LOCAL_ASR)
+    if(NOT EXISTS "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.lib")
+        message(FATAL_ERROR
+            "sherpa-onnx 未就位: ${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.lib 不存在。\n"
+            "获取方式：从 m0/.venv/Lib/site-packages/sherpa_onnx/ 复制 include 与 lib 到 "
+            "third_party/sherpa-onnx/，或设 VOICESTICK_SHERPA_ONNX_DIR 指向解压的 "
+            "GitHub v1.13.7 win-x64 包；不需要本地识别可 -DVOICESTICK_ENABLE_LOCAL_ASR=OFF。")
+    endif()
+    add_library(sherpa_onnx_c_api SHARED IMPORTED GLOBAL)
+    set_target_properties(sherpa_onnx_c_api PROPERTIES
+        IMPORTED_IMPLIB "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.lib"
+        IMPORTED_LOCATION "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${_sherpa_onnx_dir}/include"
+    )
+    # 运行时依赖：sherpa-onnx-c-api.dll + onnxruntime.dll 随构建产物部署。
+    file(COPY "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.dll"
+              "${_sherpa_onnx_dir}/lib/onnxruntime.dll"
+         DESTINATION "${CMAKE_BINARY_DIR}")
+endif()
+
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 
 # 内置凭据（编译期注入 exe，预配置 MSI 分发用；公开构建留空）。
@@ -129,6 +163,11 @@ target_link_libraries(voicestick_core PUBLIC bcrypt)
 target_link_libraries(voicestick_core PUBLIC opus)
 target_link_libraries(voicestick_core PUBLIC mmdevapi ole32 uuid)
 target_link_libraries(voicestick_core PUBLIC setupapi)  # com_port_selector 串口枚举
+if(VOICESTICK_ENABLE_LOCAL_ASR)
+    target_sources(voicestick_core PRIVATE src/local_asr_client_win.cc)
+    target_link_libraries(voicestick_core PUBLIC sherpa_onnx_c_api)
+    target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LOCAL_ASR_ENABLED=1)
+endif()
 
 add_executable(VoiceStickApp WIN32
     src/main.cc

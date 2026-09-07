@@ -29,6 +29,7 @@
 #include "localization.h"
 #include "ogg_opus_muxer.h"
 #include "ogg_opus_demuxer.h"
+#include "local_asr_client_win.h"
 #include "onboarding_dialog.h"
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
@@ -45,8 +46,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <crtdbg.h>
@@ -54,6 +57,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -10099,6 +10103,135 @@ void TestPowerLogMonitor() {
     printf("TestPowerLogMonitor passed\n");
 }
 
+// ---------- LocalAsrClient（本机麦克风模式迭代一：SenseVoice 离线识别） ----------
+
+// 探测 SenseVoice 模型目录：环境变量 VOICESTICK_SENSEVOICE_DIR 优先，
+// 否则按测试 exe 位置（build-x64）回推仓库根下的 m0/models。
+static std::filesystem::path DetectSenseVoiceDir() {
+    if (const char* env = std::getenv("VOICESTICK_SENSEVOICE_DIR"); env && *env) {
+        return std::filesystem::path(env);
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* rel : {"../../../m0/models", "../../../../m0/models"}) {
+        auto dir = fs::weakly_canonical(fs::path(rel) /
+            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17", ec);
+        if (!ec && fs::exists(dir / "model.int8.onnx", ec) &&
+            fs::exists(dir / "tokens.txt", ec)) {
+            return dir;
+        }
+    }
+    return {};
+}
+
+// 读 16 kHz 单声道 PCM16 wav 的 data 段（RIFF 解析，非 PCM16/mono 直接失败）。
+static bool ReadMonoPcm16Wav(const std::filesystem::path& path,
+                             std::vector<std::int16_t>& pcm) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return false;
+    ByteVector bytes((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+    if (bytes.size() < 44 || std::memcmp(bytes.data(), "RIFF", 4) != 0) return false;
+    // 遍历 chunk 找 fmt 与 data。
+    bool pcm16_mono_16k = false;
+    size_t pos = 12;
+    while (pos + 8 <= bytes.size()) {
+        const auto chunk_size = static_cast<size_t>(bytes[pos + 4]) |
+                                (static_cast<size_t>(bytes[pos + 5]) << 8) |
+                                (static_cast<size_t>(bytes[pos + 6]) << 16) |
+                                (static_cast<size_t>(bytes[pos + 7]) << 24);
+        if (std::memcmp(bytes.data() + pos, "fmt ", 4) == 0 && pos + 8 + 16 <= bytes.size()) {
+            const auto channels = static_cast<uint16_t>(bytes[pos + 10] |
+                                                        (bytes[pos + 11] << 8));
+            const auto sample_rate = static_cast<uint32_t>(bytes[pos + 12]) |
+                                     (static_cast<uint32_t>(bytes[pos + 13]) << 8) |
+                                     (static_cast<uint32_t>(bytes[pos + 14]) << 16) |
+                                     (static_cast<uint32_t>(bytes[pos + 15]) << 24);
+            const auto bits = static_cast<uint16_t>(bytes[pos + 22] |
+                                                    (bytes[pos + 23] << 8));
+            pcm16_mono_16k = channels == 1 && sample_rate == 16000 && bits == 16;
+        } else if (std::memcmp(bytes.data() + pos, "data", 4) == 0) {
+            if (!pcm16_mono_16k) return false;
+            const auto sample_bytes = std::min(chunk_size, bytes.size() - pos - 8);
+            pcm.resize(sample_bytes / 2);
+            std::memcpy(pcm.data(), bytes.data() + pos + 8, pcm.size() * 2);
+            return true;
+        }
+        pos += 8 + chunk_size + (chunk_size & 1);
+    }
+    return false;
+}
+
+void TestLocalAsrClientStartFailsWhenModelMissing() {
+    LocalAsrClient client("Z:/voicestick/不存在的模型目录");
+    assert(!client.Start());
+    assert(!client.LastStartError().empty());
+    printf("TestLocalAsrClientStartFailsWhenModelMissing passed\n");
+}
+
+void TestLocalAsrClientSenseVoiceSmoke() {
+    const auto model_dir = DetectSenseVoiceDir();
+    if (model_dir.empty()) {
+        printf("TestLocalAsrClientSenseVoiceSmoke SKIPPED (模型不在位；"
+               "设 VOICESTICK_SENSEVOICE_DIR 指向 SenseVoice 目录后重跑)\n");
+        return;
+    }
+    std::vector<std::int16_t> pcm;
+    assert(ReadMonoPcm16Wav(model_dir / "test_wavs" / "zh.wav", pcm));
+    assert(pcm.size() >= AudioOpusEncoder::kFrameSamples);
+
+    // PCM → Opus packets → Ogg 字节流（复现协调器音频管线）。
+    AudioOpusEncoder encoder;
+    OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
+    ByteVector ogg;
+    std::uint8_t packet[512];
+    bool last = false;
+    for (size_t off = 0; off < pcm.size() && !last;) {
+        const size_t take = std::min<size_t>(AudioOpusEncoder::kFrameSamples,
+                                             pcm.size() - off);
+        std::vector<std::int16_t> frame(pcm.begin() + off, pcm.begin() + off + take);
+        if (frame.size() < AudioOpusEncoder::kFrameSamples) {
+            frame.resize(AudioOpusEncoder::kFrameSamples, 0);  // 尾帧补零
+            last = true;
+        }
+        const auto result = encoder.Encode(frame.data(), frame.size(),
+                                           packet, sizeof(packet));
+        assert(result.encoded_bytes > 0);
+        auto page = muxer.Append({packet, static_cast<size_t>(result.encoded_bytes)},
+                                 false);
+        ogg.insert(ogg.end(), page.begin(), page.end());
+        off += take;
+    }
+    auto tail = muxer.Finish();
+    ogg.insert(ogg.end(), tail.begin(), tail.end());
+
+    LocalAsrClient client(model_dir.string());
+    assert(client.Start());
+
+    std::mutex mutex;
+    std::condition_variable done;
+    std::string final_text, error_text;
+    bool finished = false;
+    client.on_final = [&](std::string text) {
+        std::lock_guard<std::mutex> lock(mutex);
+        final_text = std::move(text);
+        finished = true;
+        done.notify_one();
+    };
+    client.on_error = [&](std::string error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        error_text = std::move(error);
+        finished = true;
+        done.notify_one();
+    };
+    client.SendOggOpusChunk(ogg, true);
+    std::unique_lock<std::mutex> lock(mutex);
+    assert(done.wait_for(lock, std::chrono::seconds(60), [&] { return finished; }));
+    assert(error_text.empty());
+    assert(!final_text.empty());   // 真模型真推理：非空即链路通（不逐字断言）
+    printf("TestLocalAsrClientSenseVoiceSmoke passed: %s\n", final_text.c_str());
+}
+
 int main() {
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接 abort，
@@ -10110,6 +10243,8 @@ int main() {
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();
     TestPowerLogMonitor();
+    TestLocalAsrClientStartFailsWhenModelMissing();
+    TestLocalAsrClientSenseVoiceSmoke();
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();
