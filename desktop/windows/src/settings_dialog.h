@@ -1,7 +1,7 @@
 #pragma once
 
 #include "app_config.h"
-#include "shortcut_capture.h"
+#include "provider_combo.h"
 
 #include <Windows.h>
 
@@ -43,16 +43,11 @@ private:
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     // 通用文件夹选择（IFileDialog FOS_PICKFOLDERS）：选定路径写入目标编辑框，
-    // ChooseDebugDirectory 与本机麦克风模型目录共用。
+    // ChooseDebugDirectory 与本地识别模型目录共用。
     void ChooseFolderInto(HWND target_edit);
-    // 本机麦克风：模型目录浏览 + 即时有效性回显（与启动校验同一口径）。
+    // 本地语音识别：模型目录浏览 + 即时有效性回显（与启动校验同一口径）。
     void ChooseLocalMicModelsDir();
     void UpdateLocalMicModelsStatus();
-    // 本机麦克风按住说话热键：录入式选择（ShortcutCapture 单键模式，修饰键
-    // 本身即可作为热键，如 right ctrl）；Esc 取消，3 秒无事件弹 UIPI 引导。
-    void OnCaptureLocalMicHotkey();
-    void StopPttCaptureTimer();
-    void RestorePttCaptureButtonText();
     // 启动频谱查看器（scripts/e2e_test/spectrogram_server.py，经 py/python 启动）。
     void OpenSpectrogramViewer();
     bool IsLabelControl(HWND control) const;
@@ -63,9 +58,8 @@ private:
     void ResizeWindow(int client_h);
     // 行内条件：apply_trial_button 显隐 + api_key_edit 宽度，在 Relayout 末尾调用。
     void ApplyApiKeyLayout();
-    // 服务商下拉框索引 ↔ AsrProvider 映射；provider_combo_has_cloud_ 时 0 号位为 Cloud。
-    AsrProvider ProviderAtComboIndex(int idx) const;
-    int ComboIndexForProvider(AsrProvider provider) const;
+    // 提供方下拉框当前是否选中「本地语音识别」末位虚拟项（索引映射见 provider_combo.h）。
+    bool ProviderComboLocalSelected() const;
 
     // 布局模型：把每行/块抽象为可独立显隐的条目，Relayout 统一应用定位。
     struct LayoutPart {
@@ -131,17 +125,13 @@ private:
     InteractionMode loaded_hotkey_mode_ = InteractionMode::kHoldToTalk;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
-    // 本机麦克风（[local_asr]，Doc/Plan/local-mic-mode.md）：开关/模型目录/热键。
-    HWND local_mic_enable_check_ = nullptr;
+    // 本地语音识别（原「本机麦克风」区合并进「语音识别」，见
+    // Doc/Plan/asr-settings-local-provider-merge.md）：模型目录 + 有效性回显，
+    // 选中提供方下拉框「本地语音识别」时显示；按住说话热键移托管盘菜单。
     HWND local_mic_models_dir_edit_ = nullptr;
     HWND local_mic_models_dir_browse_button_ = nullptr;
     // 模型目录有效性回显（✓ 就绪 / ✗ 缺文件），与 Resolve+Validate 同口径。
     HWND local_mic_models_status_label_ = nullptr;
-    HWND local_mic_hotkey_edit_ = nullptr;
-    HWND local_mic_hotkey_capture_button_ = nullptr;
-    // 按住说话热键录入（ShortcutCapture 单键模式；成员随对话框生命周期，
-    // 析构自动 Cancel）。
-    ShortcutCapture ptt_capture_;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -189,16 +179,8 @@ private:
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
     static constexpr UINT kIdDeveloperMode = 2039;
     static constexpr UINT kIdOpenSpectrogram = 2040;
-    static constexpr UINT kIdLocalMicEnable = 2041;
     static constexpr UINT kIdLocalMicModelsDirEdit = 2042;
-    static constexpr UINT kIdLocalMicHotkeyEdit = 2043;
     static constexpr UINT kIdLocalMicModelsDirBrowse = 2044;
-    static constexpr UINT kIdLocalMicHotkeyCapture = 2045;
-
-    // 按住说话热键录入超时提示定时器：录入启动后 3 秒无键盘事件（UIPI 前台
-    // 提权隔离等）弹一次引导，不中断进行中的捕获（对齐 hotkey_settings_dialog）。
-    static constexpr UINT_PTR kPttCaptureHintTimerId = 0x5350;
-    static constexpr UINT kPttCaptureHintTimeoutMs = 3000;
 };
 
 } // namespace voicestick

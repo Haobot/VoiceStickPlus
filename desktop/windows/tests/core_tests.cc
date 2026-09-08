@@ -34,6 +34,7 @@
 #include "mic_capture.h"
 #include "wasapi_mic_capture.h"
 #include "push_to_talk_key.h"
+#include "provider_combo.h"
 #include "shortcut_capture.h"
 #include "onboarding_dialog.h"
 #include "pair_device_helper.h"
@@ -10380,6 +10381,35 @@ void TestFormatPushToTalkKey() {
     }
 }
 
+// ===== 语音识别设置合并（本地识别为服务提供方末位虚拟项）=====
+
+void TestProviderComboMapping() {
+    // 无 legacy cloud 项：条目序 [Volcengine=0, Tencent=1, 本地=2]。
+    assert(ProviderComboLocalIndex(false) == 2);
+    assert(ProviderComboCloudAt(0, false) == AsrProvider::kVolcengine);
+    assert(ProviderComboCloudAt(1, false) == AsrProvider::kTencent);
+    assert(ProviderComboIsLocal(2, false));
+    assert(!ProviderComboIsLocal(0, false));
+    assert(!ProviderComboIsLocal(1, false));
+    assert(ProviderComboCloudIndexOf(AsrProvider::kVolcengine, false) == 0);
+    assert(ProviderComboCloudIndexOf(AsrProvider::kTencent, false) == 1);
+    // 带 legacy cloud 项（老配置 asr_provider=voicestick_cloud 时 0 号位临时插入）：
+    // 条目序 [Cloud=0, Volcengine=1, Tencent=2, 本地=3]。
+    assert(ProviderComboLocalIndex(true) == 3);
+    assert(ProviderComboCloudAt(0, true) == AsrProvider::kVoiceStickCloud);
+    assert(ProviderComboCloudAt(1, true) == AsrProvider::kVolcengine);
+    assert(ProviderComboCloudAt(2, true) == AsrProvider::kTencent);
+    assert(ProviderComboIsLocal(3, true));
+    assert(!ProviderComboIsLocal(2, true));
+    assert(ProviderComboCloudIndexOf(AsrProvider::kVoiceStickCloud, true) == 0);
+    assert(ProviderComboCloudIndexOf(AsrProvider::kVolcengine, true) == 1);
+    assert(ProviderComboCloudIndexOf(AsrProvider::kTencent, true) == 2);
+    // 越界防御：CB_ERR(-1) 或超界索引一律判非本地，不误触发模型目录行显隐。
+    assert(!ProviderComboIsLocal(-1, false));
+    assert(!ProviderComboIsLocal(-1, true));
+    assert(!ProviderComboIsLocal(99, false));
+}
+
 void TestResolveAndValidateModelsDir() {
     namespace fs = std::filesystem;
     // 解析口径：空 = exe_dir/models；相对路径锚 exe 目录；绝对路径原样。
@@ -10832,6 +10862,7 @@ int main() {
     TestLocalAsrClientSenseVoiceSmoke();
     TestPushToTalkKeyParsing();
     TestFormatPushToTalkKey();
+    TestProviderComboMapping();
     TestShortcutCaptureClassifyKey();
     TestResolveAndValidateModelsDir();
     TestAppConfigLocalAsrRoundTrip();

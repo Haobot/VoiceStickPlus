@@ -3,6 +3,7 @@
 #include "global_hotkey_win.h"
 #include "localization.h"
 #include "log.h"
+#include "push_to_talk_key.h"
 #include "dpi_util.h"
 
 #include <algorithm>
@@ -58,8 +59,10 @@ std::wstring Utf16FromUtf8(const std::string& utf8) {
 
 } // namespace
 
-HotkeySettingsDialog::HotkeySettingsDialog(HINSTANCE instance, HWND parent, UiLanguage language)
-    : instance_(instance), parent_(parent), language_(language) {}
+HotkeySettingsDialog::HotkeySettingsDialog(HINSTANCE instance, HWND parent, UiLanguage language,
+                                           Mode mode, std::string current_key)
+    : instance_(instance), parent_(parent), language_(language), mode_(mode),
+      current_key_(std::move(current_key)) {}
 
 HotkeySettingsDialog::~HotkeySettingsDialog() {
     DestroyControls();
@@ -102,7 +105,12 @@ LPCDLGTEMPLATE HotkeySettingsDialog::BuildDialogTemplate() {
     AppendDialogData(&dialog_template_, &dialog_template, sizeof(dialog_template));
     AppendDialogWord(&dialog_template_, 0);
     AppendDialogWord(&dialog_template_, 0);
-    AppendDialogWideString(&dialog_template_, TrW(StringId::kHotkeyTitle, language_).c_str());
+    // PTT 模式以「按住说话热键」作标题；全局热键沿用通用标题。
+    AppendDialogWideString(&dialog_template_, TrW(mode_ == Mode::kPushToTalk
+                                                      ? StringId::kSettingsLocalMicHotkey
+                                                      : StringId::kHotkeyTitle,
+                                                  language_)
+                                              .c_str());
     AppendDialogWord(&dialog_template_, 9);
     AppendDialogWideString(&dialog_template_, L"Segoe UI");
     return reinterpret_cast<LPCDLGTEMPLATE>(dialog_template_.data());
@@ -122,19 +130,33 @@ void HotkeySettingsDialog::BuildControls() {
     const int button_height = Dp(32);
     const int capture_height = Dp(48);
 
-    hotkey_label_ = CreateLabel(hwnd_, TrW(StringId::kHotkeyCurrent, language_).c_str(),
-                                margin, margin, Dp(120), Dp(20), instance_);
+    // PTT 模式：标签=按住说话热键、按钮=录入/当前键名、提示=单键示例；全局模式原样。
+    const wchar_t* label_text =
+        TrW(mode_ == Mode::kPushToTalk ? StringId::kSettingsLocalMicHotkey
+                                       : StringId::kHotkeyCurrent,
+            language_)
+            .c_str();
+    hotkey_label_ = CreateLabel(hwnd_, label_text, margin, margin, Dp(180), Dp(20), instance_);
     SendMessageW(hotkey_label_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
     all_controls_.push_back(hotkey_label_);
 
-    hotkey_capture_button_ = CreateButton(hwnd_, TrW(StringId::kHotkeyCaptureButton, language_).c_str(),
+    const std::wstring initial_button_text =
+        (mode_ == Mode::kPushToTalk && !current_key_.empty())
+            ? Utf16FromUtf8(current_key_)
+            : std::wstring(TrW(StringId::kHotkeyCaptureButton, language_));
+    hotkey_capture_button_ = CreateButton(hwnd_, initial_button_text.c_str(),
                                           margin, margin + Dp(32),
                                           client.right - margin * 2, capture_height,
                                           kIdHotkeyCapture, instance_);
     SendMessageW(hotkey_capture_button_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
     all_controls_.push_back(hotkey_capture_button_);
 
-    hint_label_ = CreateLabel(hwnd_, TrW(StringId::kHotkeyHint, language_).c_str(),
+    hint_label_ = CreateLabel(hwnd_,
+                              TrW(mode_ == Mode::kPushToTalk
+                                      ? StringId::kSettingsLocalMicHotkeyHint
+                                      : StringId::kHotkeyHint,
+                                  language_)
+                                  .c_str(),
                               margin, margin + Dp(32) + capture_height + Dp(8),
                               client.right - margin * 2, Dp(20), instance_);
     SendMessageW(hint_label_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
@@ -173,6 +195,23 @@ void HotkeySettingsDialog::DestroyControls() {
 void HotkeySettingsDialog::UpdateHotkeyDisplay() {
     // 捕获结束的公共汇合点：停掉超时提示定时器（幂等）。
     StopCaptureHintTimer();
+    if (mode_ == Mode::kPushToTalk) {
+        if (captured_ptt_key_.empty()) {
+            // 未捕获：录入中显示提示文案，否则回显当前键名（未配置则显示「录入」）。
+            const std::wstring text =
+                capture_.active()
+                    ? TrW(StringId::kSettingsLocalMicCapturing, language_)
+                    : (current_key_.empty()
+                           ? TrW(StringId::kSettingsLocalMicCapture, language_)
+                           : Utf16FromUtf8(current_key_));
+            SetWindowTextW(hotkey_capture_button_, text.c_str());
+            EnableWindow(ok_button_, FALSE);
+        } else {
+            SetWindowTextW(hotkey_capture_button_, Utf16FromUtf8(captured_ptt_key_).c_str());
+            EnableWindow(ok_button_, TRUE);
+        }
+        return;
+    }
     if (captured_vk_ == 0) {
         if (capture_.active()) {
             SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCapturePrompt, language_).c_str());
@@ -195,6 +234,37 @@ void HotkeySettingsDialog::OnHotkeyCapture() {
     if (capture_.active()) return;
     captured_modifiers_ = 0;
     captured_vk_ = 0;
+    captured_ptt_key_.clear();
+    if (mode_ == Mode::kPushToTalk) {
+        // 按住说话：单键捕获（right ctrl 等修饰键本身即可作为热键），
+        // 捕获 VK 经 push_to_talk_key.h 归一为配置键名，不支持键弹提示后可重录。
+        SetWindowTextW(hotkey_capture_button_,
+                       TrW(StringId::kSettingsLocalMicCapturing, language_).c_str());
+        capture_.on_captured = [this](const ShortcutCapture::Result& result) {
+            const auto name = FormatPushToTalkKey(result.vk);
+            if (!name.has_value()) {
+                MessageBoxW(hwnd_,
+                            TrW(StringId::kSettingsLocalMicHotkeyUnsupported, language_).c_str(),
+                            TrW(StringId::kHotkeyCaptureTimeoutTitle, language_).c_str(),
+                            MB_OK | MB_ICONINFORMATION);
+            } else {
+                captured_ptt_key_ = *name;
+            }
+            UpdateHotkeyDisplay();
+        };
+        capture_.on_cancelled = [this]() {
+            UpdateHotkeyDisplay();
+        };
+        ShortcutCapture::Options options;
+        options.require_modifier = false;
+        options.allow_modifier_as_key = true;
+        capture_.Start(options);
+        // 录入超时提示：同全局模式（UIPI 前台提权隔离引导，不中断捕获）。
+        if (hwnd_ && capture_.active()) {
+            SetTimer(hwnd_, kCaptureHintTimerId, kCaptureHintTimeoutMs, nullptr);
+        }
+        return;
+    }
     SetWindowTextW(hotkey_capture_button_, TrW(StringId::kHotkeyCapturePrompt, language_).c_str());
     // ShortcutCapture::Result → GlobalHotkeyWin::Binding 的 MOD_* 标志。
     capture_.on_captured = [this](const ShortcutCapture::Result& result) {
@@ -237,6 +307,16 @@ void HotkeySettingsDialog::StopCaptureHintTimer() {
 
 
 bool HotkeySettingsDialog::ValidateAndSave() {
+    if (mode_ == Mode::kPushToTalk) {
+        // LL 钩子单键热键：不走 RegisterHotkey，无占用检测，直接确认。
+        if (captured_ptt_key_.empty()) {
+            return false;
+        }
+        if (on_hotkey_confirmed) {
+            on_hotkey_confirmed(captured_ptt_key_);
+        }
+        return true;
+    }
     if (captured_modifiers_ == 0 || captured_vk_ == 0) {
         return false;
     }

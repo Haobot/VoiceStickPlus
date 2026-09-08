@@ -29,6 +29,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLanguageEnglish)] = "English";
     table[Index(StringId::kSettingsLanguageChineseSimplified)] = "Simplified Chinese";
     table[Index(StringId::kSettingsProvider)] = "Provider";
+    table[Index(StringId::kSettingsProviderLocal)] = "Local ASR (offline, no cloud key)";
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "Resource ID";
     table[Index(StringId::kSettingsHotwords)] = "Hotwords";
@@ -88,8 +89,6 @@ constexpr StringTable EnglishStrings() {
         "Could not launch the spectrum viewer. Make sure Python is installed and "
         "scripts/e2e_test/spectrogram_server.py exists in the repository.";
     table[Index(StringId::kSettingsDeveloperMode)] = "Developer Mode (show all advanced settings)";
-    table[Index(StringId::kSettingsSectionLocalMic)] = "Local Microphone";
-    table[Index(StringId::kSettingsLocalMicEnable)] = "Enable push-to-talk with local ASR (no cloud)";
     table[Index(StringId::kSettingsLocalMicModelsDir)] = "Models directory";
     table[Index(StringId::kSettingsLocalMicHotkey)] = "Push-to-talk key";
     table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
@@ -132,6 +131,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuHotkey)] = "Hotkey";
     table[Index(StringId::kMenuHotkeyEnabled)] = "Enable Hotkey";
     table[Index(StringId::kMenuHotkeyCustom)] = "Customize Hotkey...";
+    table[Index(StringId::kMenuLocalMicHotkey)] = "Push-to-talk key...";
     table[Index(StringId::kMenuHotkeyConflictTitle)] = "Hotkey registration failed";
     table[Index(StringId::kMenuHotkeyConflictBody)] = "The selected hotkey is already in use. Choose another hotkey from the menu.";
     table[Index(StringId::kStatusNoPairedDevices)] = "No paired VoiceStick devices";
@@ -422,6 +422,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLanguageEnglish)] = "英文";
     table[Index(StringId::kSettingsLanguageChineseSimplified)] = "简体中文";
     table[Index(StringId::kSettingsProvider)] = "服务提供方";
+    table[Index(StringId::kSettingsProviderLocal)] = "本地语音识别（离线，无需云端密钥）";
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "资源 ID";
     table[Index(StringId::kSettingsHotwords)] = "热词";
@@ -481,8 +482,6 @@ constexpr StringTable ChineseStrings() {
         "无法启动频谱查看器。请确认已安装 Python，且仓库中存在 "
         "scripts/e2e_test/spectrogram_server.py。";
     table[Index(StringId::kSettingsDeveloperMode)] = "开发者模式（显示全部高级设置）";
-    table[Index(StringId::kSettingsSectionLocalMic)] = "本机麦克风";
-    table[Index(StringId::kSettingsLocalMicEnable)] = "启用本机麦克风按住说话（本地识别，不经云端）";
     table[Index(StringId::kSettingsLocalMicModelsDir)] = "模型目录";
     table[Index(StringId::kSettingsLocalMicHotkey)] = "按住说话热键";
     table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
@@ -524,6 +523,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuHotkey)] = "热键";
     table[Index(StringId::kMenuHotkeyEnabled)] = "启用热键";
     table[Index(StringId::kMenuHotkeyCustom)] = "自定义热键...";
+    table[Index(StringId::kMenuLocalMicHotkey)] = "按住说话热键...";
     table[Index(StringId::kMenuHotkeyConflictTitle)] = "热键注册失败";
     table[Index(StringId::kMenuHotkeyConflictBody)] = "所选热键已被其他程序占用，请在菜单中更换其他热键。";
     table[Index(StringId::kStatusNoPairedDevices)] = "没有已配对的 VoiceStick 设备";

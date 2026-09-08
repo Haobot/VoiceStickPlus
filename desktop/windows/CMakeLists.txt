@@ -137,6 +137,7 @@ add_library(voicestick_core
     src/hotword_selector.cc
     src/localization.cc
     src/push_to_talk_key.cc
+    src/provider_combo.cc
     src/clipboard_vault.cc
     src/shortcut_capture.cc
     third_party/cjson/cJSON.c

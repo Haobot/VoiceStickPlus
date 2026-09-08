@@ -85,6 +85,8 @@ constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
 constexpr UINT kMenuHotkeyCustom = 5802;
+// 按住说话热键（本地语音识别 [local_asr].push_to_talk_key）设置入口。
+constexpr UINT kMenuLocalMicHotkey = 5803;
 constexpr UINT kMenuHotkeyBase = 5810;
 constexpr UINT kMenuHotkeyEnd = 5899;
 // COM 口固件烧录工具入口（VoiceStickFlash.exe），菜单 ID 新段 7000 起。
@@ -1046,6 +1048,21 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             dialog->Show();
             return 0;
         }
+        case kMenuLocalMicHotkey: {
+            // 按住说话热键录入：单键模式（修饰键本身可作键），确认后经
+            // SaveInputOptions（内含 ApplyUpdatedConfig → SyncLocalMicRuntime）热更重装钩子。
+            auto dialog = std::make_unique<HotkeySettingsDialog>(
+                instance_, hwnd_, EffectiveUiLanguage(config_.ui_language),
+                HotkeySettingsDialog::Mode::kPushToTalk,
+                config_.local_asr.push_to_talk_key);
+            dialog->on_hotkey_confirmed = [this](const std::string& key) {
+                config_.local_asr.push_to_talk_key = key;
+                SaveInputOptions();
+                SetStatus("Local mic push-to-talk key set to: " + key);
+            };
+            dialog->Show();
+            return 0;
+        }
         default: {
             UINT cmd = LOWORD(w_param);
             if (cmd >= kMenuHotkeyBase && cmd <= kMenuHotkeyEnd) {
@@ -1824,6 +1841,13 @@ void Win32App::ShowTrayMenu() {
         }
     }
     AppendMenuW(hotkey_menu, custom_menu_flags, kMenuHotkeyCustom, custom_menu_text.c_str());
+    // 按住说话热键（本地语音识别）：常驻显示当前键名，点击打开录入对话框
+    //（HotkeySettingsDialog PTT 模式，单键语义如 right ctrl）。
+    std::wstring ptt_menu_text = TrW(StringId::kMenuLocalMicHotkey, language);
+    if (!config_.local_asr.push_to_talk_key.empty()) {
+        ptt_menu_text += L" " + Utf16FromUtf8(config_.local_asr.push_to_talk_key);
+    }
+    AppendMenuW(hotkey_menu, MF_STRING, kMenuLocalMicHotkey, ptt_menu_text.c_str());
     if (global_hotkey_ && !global_hotkey_->IsRegistered()) {
         AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0,

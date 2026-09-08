@@ -6,7 +6,6 @@
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "local_asr_client_win.h"
-#include "push_to_talk_key.h"
 #include "log.h"
 #include "voice_stick_cloud_api_win.h"
 
@@ -227,9 +226,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdLocalMicModelsDirBrowse:
             ChooseLocalMicModelsDir();
             return TRUE;
-        case kIdLocalMicHotkeyCapture:
-            OnCaptureLocalMicHotkey();
-            return TRUE;
         case kIdLocalMicModelsDirEdit:
             // 离开编辑框即时重估模型有效性（与浏览/加载共用同一回显口径）。
             if (HIWORD(w_param) == EN_KILLFOCUS) UpdateLocalMicModelsStatus();
@@ -240,14 +236,17 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdProviderCombo:
             if (HIWORD(w_param) == CBN_SELCHANGE) {
                 int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-                const std::string& key = [&]() -> const std::string& {
-                    switch (ProviderAtComboIndex(idx)) {
-                        case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
-                        case AsrProvider::kTencent: return config_.tencent_secret_id;
-                        default: return config_.volcengine_api_key;
-                    }
-                }();
-                SetWindowTextW(api_key_edit_, Utf16(key).c_str());
+                // 本地虚拟项无 API Key 概念；切回云端项时把对应密钥回填编辑框。
+                if (!ProviderComboIsLocal(idx, provider_combo_has_cloud_)) {
+                    const std::string& key = [&]() -> const std::string& {
+                        switch (ProviderComboCloudAt(idx, provider_combo_has_cloud_)) {
+                            case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
+                            case AsrProvider::kTencent: return config_.tencent_secret_id;
+                            default: return config_.volcengine_api_key;
+                        }
+                    }();
+                    SetWindowTextW(api_key_edit_, Utf16(key).c_str());
+                }
                 UpdateProviderVisibility();
             }
             return TRUE;
@@ -287,20 +286,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         case kIdOpenSpectrogram:
             OpenSpectrogramViewer();
-            return TRUE;
-        }
-        break;
-    case WM_TIMER:
-        if (w_param == kPttCaptureHintTimerId) {
-            // 录入期间长时间无键盘事件：大概率前台是提权窗口（UIPI 隔离钩子事件）。
-            // 只提示一次，不中断捕获（对齐 hotkey_settings_dialog 同款模式）。
-            KillTimer(hwnd_, kPttCaptureHintTimerId);
-            if (ptt_capture_.active()) {
-                MessageBoxW(hwnd_,
-                            TrW(StringId::kHotkeyCaptureTimeoutBody, EffectiveUiLanguage(config_.ui_language)).c_str(),
-                            TrW(StringId::kHotkeyCaptureTimeoutTitle, EffectiveUiLanguage(config_.ui_language)).c_str(),
-                            MB_OK | MB_ICONINFORMATION);
-            }
             return TRUE;
         }
         break;
@@ -379,9 +364,6 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         break;
     }
     case WM_DESTROY:
-        // 录入会话与提示定时器随对话框销毁统一收尾（Cancel 仅卸钩子不回调）。
-        StopPttCaptureTimer();
-        ptt_capture_.Cancel();
         hwnd_ = nullptr;
         developer_mode_check_ = nullptr;
         provider_combo_ = nullptr;
@@ -403,12 +385,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
         debug_dir_edit_ = nullptr;
-        local_mic_enable_check_ = nullptr;
         local_mic_models_dir_edit_ = nullptr;
         local_mic_models_dir_browse_button_ = nullptr;
         local_mic_models_status_label_ = nullptr;
-        local_mic_hotkey_edit_ = nullptr;
-        local_mic_hotkey_capture_button_ = nullptr;
         resource_label_ = nullptr;
         output_target_combo_ = nullptr;
         wechat_hotkey_edit_ = nullptr;
@@ -495,12 +474,9 @@ void SettingsDialog::DestroyControls() {
     selection_hotword_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     debug_dir_edit_ = nullptr;
-    local_mic_enable_check_ = nullptr;
     local_mic_models_dir_edit_ = nullptr;
     local_mic_models_dir_browse_button_ = nullptr;
     local_mic_models_status_label_ = nullptr;
-    local_mic_hotkey_edit_ = nullptr;
-    local_mic_hotkey_capture_button_ = nullptr;
     resource_label_ = nullptr;
     output_target_combo_ = nullptr;
     wechat_hotkey_edit_ = nullptr;
@@ -628,20 +604,25 @@ void SettingsDialog::BuildControls() {
         provider_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
                                                kIdProviderCombo, instance_));
         // VoiceStick Cloud 已从下拉框下线；仅老配置仍为 cloud 时临时插入该项（0 号位）。
+        // 末位「本地语音识别」为虚拟项（provider_combo.h）：映射 [local_asr].enabled，
+        // 选中时显示模型目录、隐藏 API Key/资源 ID，asr_provider 保留云端值。
         provider_combo_has_cloud_ = (config_.asr_provider == AsrProvider::kVoiceStickCloud);
         if (provider_combo_has_cloud_) {
             SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
         }
         SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
         SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
+        SendMessageW(provider_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsProviderLocal, language).c_str()));
         add(row_h + Dp(10), {
             {prov_label, Dp(10), Dp(3), label_w, Dp(20)},
             {provider_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
         });
     }
     {
-        // API Key 行：普通模式隐藏，开发者模式显示。apply_trial_button 显隐由
-        // ApplyApiKeyLayout 行内条件控制（defer_visibility=true），不被 Relayout 强制 show。
+        // API Key 行：普通模式或选中本地识别时隐藏，开发者模式 + 云端项才显示。
+        // apply_trial_button 显隐由 ApplyApiKeyLayout 行内条件控制（defer_visibility=true），
+        // 不被 Relayout 强制 show。
         HWND api_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(),
                                                     0, 0, label_w, Dp(20), instance_));
         const int apply_btn_w = Dp(102);
@@ -654,10 +635,10 @@ void SettingsDialog::BuildControls() {
             {api_label, Dp(10), Dp(3), label_w, Dp(20)},
             {api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
             {apply_trial_button_, ctrl_x + ctrl_w - apply_btn_w, 0, apply_btn_w, Dp(24), true},
-        }, [this]() { return developer_mode_; });
+        }, [this]() { return developer_mode_ && !ProviderComboLocalSelected(); });
     }
     {
-        // 资源 ID 行：普通模式隐藏，开发者模式显示。
+        // 资源 ID 行：普通模式或选中本地识别时隐藏，开发者模式 + 云端项才显示。
         resource_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsResourceId).c_str(),
                                                      0, 0, label_w, Dp(20), instance_));
         resource_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
@@ -669,7 +650,31 @@ void SettingsDialog::BuildControls() {
         add(row_h + Dp(10), {
             {resource_label_, Dp(10), Dp(3), label_w, Dp(20)},
             {resource_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
-        }, [this]() { return developer_mode_; });
+        }, [this]() { return developer_mode_ && !ProviderComboLocalSelected(); });
+    }
+    {
+        // 本地语音识别模型目录（原「本机麦克风」区并入）：仅提供方选中本地时显示，
+        // 不再受开发者模式门槛。保存热更即时重建本地识别运行件。
+        HWND md_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsLocalMicModelsDir).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        const int browse_w = Dp(78);
+        local_mic_models_dir_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w - browse_w - Dp(6),
+                                                         Dp(24), kIdLocalMicModelsDirEdit, instance_));
+        local_mic_models_dir_browse_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicBrowse, language).c_str(),
+            0, 0, browse_w, Dp(24), kIdLocalMicModelsDirBrowse, instance_));
+        add(row_h + Dp(6), {
+            {md_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_models_dir_edit_, ctrl_x, 0, ctrl_w - browse_w - Dp(6), Dp(24)},
+            {local_mic_models_dir_browse_button_, ctrl_x + ctrl_w - browse_w, 0, browse_w, Dp(24)},
+        }, [this]() { return ProviderComboLocalSelected(); });
+        // 模型目录有效性回显行（✓/✗ + 说明，Resolve+Validate 与启动校验同口径）。
+        local_mic_models_status_label_ = remember_label(CreateLabel(
+            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
+        add(Dp(20), {
+            {local_mic_models_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return ProviderComboLocalSelected(); });
     }
     {
         // 热词块：label + 多行 edit + 提示行，作为一个整体推进。
@@ -948,68 +953,6 @@ void SettingsDialog::BuildControls() {
         }, [this]() { return developer_mode_; });
     }
 
-    // ===== 本机麦克风 =====
-    // 本地 SenseVoice ASR 按住说话（[local_asr]，Doc/Plan/local-mic-mode.md）：
-    // 需自备模型文件，属开发者/高级功能，普通模式隐藏，保存热更即时生效。
-    separator([this]() { return developer_mode_; });
-    section_title(StringId::kSettingsSectionLocalMic, [this]() { return developer_mode_; });
-    {
-        HWND lm_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
-        local_mic_enable_check_ = remember(CreateButton(
-            hwnd_, TrW(StringId::kSettingsLocalMicEnable, language).c_str(),
-            0, 0, ctrl_w, Dp(22), kIdLocalMicEnable, instance_, BS_AUTOCHECKBOX));
-        add(row_h + Dp(10), {
-            {lm_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {local_mic_enable_check_, ctrl_x, 0, ctrl_w, Dp(22)},
-        }, [this]() { return developer_mode_; });
-    }
-    {
-        HWND md_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsLocalMicModelsDir).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        const int browse_w = Dp(78);
-        local_mic_models_dir_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w - browse_w - Dp(6),
-                                                         Dp(24), kIdLocalMicModelsDirEdit, instance_));
-        local_mic_models_dir_browse_button_ = remember(CreateButton(
-            hwnd_, TrW(StringId::kSettingsLocalMicBrowse, language).c_str(),
-            0, 0, browse_w, Dp(24), kIdLocalMicModelsDirBrowse, instance_));
-        add(row_h + Dp(6), {
-            {md_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {local_mic_models_dir_edit_, ctrl_x, 0, ctrl_w - browse_w - Dp(6), Dp(24)},
-            {local_mic_models_dir_browse_button_, ctrl_x + ctrl_w - browse_w, 0, browse_w, Dp(24)},
-        }, [this]() { return developer_mode_; });
-        // 模型目录有效性回显行（✓/✗ + 说明，Resolve+Validate 与启动校验同口径）。
-        local_mic_models_status_label_ = remember_label(CreateLabel(
-            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
-        add(Dp(20), {
-            {local_mic_models_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
-        }, [this]() { return developer_mode_; });
-    }
-    {
-        HWND hk_label = remember_label(CreateLabel(
-            hwnd_, label_text(StringId::kSettingsLocalMicHotkey).c_str(),
-            0, 0, label_w, Dp(20), instance_));
-        const int capture_w = Dp(78);
-        local_mic_hotkey_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w - capture_w - Dp(6),
-                                                     Dp(24), kIdLocalMicHotkeyEdit, instance_));
-        local_mic_hotkey_capture_button_ = remember(CreateButton(
-            hwnd_, TrW(StringId::kSettingsLocalMicCapture, language).c_str(),
-            0, 0, capture_w, Dp(24), kIdLocalMicHotkeyCapture, instance_));
-        add(row_h + Dp(6), {
-            {hk_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {local_mic_hotkey_edit_, ctrl_x, 0, ctrl_w - capture_w - Dp(6), Dp(24)},
-            {local_mic_hotkey_capture_button_, ctrl_x + ctrl_w - capture_w, 0, capture_w, Dp(24)},
-        }, [this]() { return developer_mode_; });
-    }
-    {
-        HWND hint = remember_label(CreateLabel(
-            hwnd_, TrW(StringId::kSettingsLocalMicHotkeyHint, language).c_str(),
-            0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
-        add(Dp(22), {
-            {hint, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
-        }, [this]() { return developer_mode_; });
-    }
-
     // 所有控件均已加入布局表（高级区块带 developer_mode_ vis 谓词），Relayout 统一
     // 处理显隐。此处保留安全网：万一有控件未注册，统一隐藏避免残留显示在 (0,0)。
     // 保存/取消按钮在此之后才创建，不在本循环范围内。
@@ -1135,30 +1078,23 @@ void SettingsDialog::ResizeWindow(int client_h) {
                  SWP_NOMOVE | SWP_NOZORDER);
 }
 
-AsrProvider SettingsDialog::ProviderAtComboIndex(int idx) const {
-    if (provider_combo_has_cloud_) {
-        if (idx == 0) return AsrProvider::kVoiceStickCloud;
-        --idx;
-    }
-    return idx == 1 ? AsrProvider::kTencent : AsrProvider::kVolcengine;
-}
-
-int SettingsDialog::ComboIndexForProvider(AsrProvider provider) const {
-    if (provider == AsrProvider::kVoiceStickCloud) return 0;  // 仅 has_cloud 时存在
-    const int idx = (provider == AsrProvider::kTencent) ? 1 : 0;
-    return provider_combo_has_cloud_ ? idx + 1 : idx;
+bool SettingsDialog::ProviderComboLocalSelected() const {
+    if (provider_combo_ == nullptr) return false;
+    const int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
+    return ProviderComboIsLocal(idx, provider_combo_has_cloud_);
 }
 
 void SettingsDialog::ApplyApiKeyLayout() {
     if (!api_key_edit_ || !apply_trial_button_ || !provider_combo_) return;
-    // 普通模式下 API Key 行整体隐藏（developer_mode_=false），试用按钮必须随之隐藏，
-    // 否则会因未被 Relayout 定位而残留显示在 (0,0)。
-    if (!developer_mode_) {
+    // 普通模式或选中本地识别时 API Key 行整体隐藏（developer_mode_/ProviderComboLocalSelected
+    // 控），试用按钮必须随之隐藏，否则会因未被 Relayout 定位而残留显示在 (0,0)。
+    if (!developer_mode_ || ProviderComboLocalSelected()) {
         ShowWindow(apply_trial_button_, SW_HIDE);
         return;
     }
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    const bool is_cloud = (ProviderAtComboIndex(idx) == AsrProvider::kVoiceStickCloud);
+    const bool is_cloud =
+        (ProviderComboCloudAt(idx, provider_combo_has_cloud_) == AsrProvider::kVoiceStickCloud);
     const bool api_key_empty = GetWindowText(api_key_edit_).empty();
     const bool show_trial = is_cloud && api_key_empty;
     ShowWindow(apply_trial_button_, show_trial ? SW_SHOW : SW_HIDE);
@@ -1179,7 +1115,12 @@ void SettingsDialog::LoadConfigIntoControls() {
     if (config_.ui_language == UiLanguage::kSimplifiedChinese) language_index = 2;
     SendMessageW(language_combo_, CB_SETCURSEL, language_index, 0);
 
-    int provider_idx = ComboIndexForProvider(config_.asr_provider);
+    // 提供方下拉框：[local_asr].enabled=true → 末位「本地语音识别」虚拟项；
+    // 否则按 asr_provider 定位云端项（索引映射见 provider_combo.h）。
+    const int provider_idx = config_.local_asr.enabled
+                                  ? ProviderComboLocalIndex(provider_combo_has_cloud_)
+                                  : ProviderComboCloudIndexOf(config_.asr_provider,
+                                                              provider_combo_has_cloud_);
     SendMessageW(provider_combo_, CB_SETCURSEL, provider_idx, 0);
 
     const auto& key = [&]() -> const std::string& {
@@ -1230,11 +1171,8 @@ void SettingsDialog::LoadConfigIntoControls() {
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
-    // 本机麦克风：模型目录为空显示默认值提示（留空 = exe 目录下 models/）。
-    SendMessageW(local_mic_enable_check_, BM_SETCHECK,
-                 config_.local_asr.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    // 本地语音识别：模型目录为空显示默认值提示（留空 = exe 目录下 models/）。
     SetWindowTextW(local_mic_models_dir_edit_, Utf16(config_.local_asr.models_dir).c_str());
-    SetWindowTextW(local_mic_hotkey_edit_, Utf16(config_.local_asr.push_to_talk_key).c_str());
     UpdateLocalMicModelsStatus();
 
     int output_target_idx = 0;
@@ -1270,16 +1208,24 @@ void SettingsDialog::SaveSettings() {
         config_.ui_language = UiLanguage::kSystem;
     }
 
+    // 语音识别提供方：选中本地虚拟项 → [local_asr].enabled=true 且 asr_provider
+    // 保留云端值（设备会话继续云端识别）；选中云端项 → 关本地、切 asr_provider。
+    // 保存后经 on_config_changed → ApplyUpdatedConfig 热更（重建采集器/本地 ASR）。
     int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    AsrProvider new_provider = ProviderAtComboIndex(provider_idx);
-
-    auto api_key = Utf8(GetWindowText(api_key_edit_));
-    switch (new_provider) {
-        case AsrProvider::kVoiceStickCloud: config_.voicestick_api_key = api_key; break;
-        case AsrProvider::kVolcengine: config_.volcengine_api_key = api_key; break;
-        case AsrProvider::kTencent: config_.tencent_secret_id = api_key; break;
+    const bool local_selected = ProviderComboIsLocal(provider_idx, provider_combo_has_cloud_);
+    if (!local_selected) {
+        AsrProvider new_provider = ProviderComboCloudAt(provider_idx, provider_combo_has_cloud_);
+        auto api_key = Utf8(GetWindowText(api_key_edit_));
+        switch (new_provider) {
+            case AsrProvider::kVoiceStickCloud: config_.voicestick_api_key = api_key; break;
+            case AsrProvider::kVolcengine: config_.volcengine_api_key = api_key; break;
+            case AsrProvider::kTencent: config_.tencent_secret_id = api_key; break;
+        }
+        config_.asr_provider = new_provider;
     }
-    config_.asr_provider = new_provider;
+    config_.local_asr.enabled = local_selected;
+    // 按住说话热键不再由设置页编辑（移托管盘菜单「热键 → 按住说话热键」），保留原值。
+    config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
     config_.llm_base_url = Utf8(GetWindowText(llm_base_url_edit_));
     config_.llm_api_key = Utf8(GetWindowText(llm_api_key_edit_));
     config_.llm_model = Utf8(GetWindowText(llm_model_edit_));
@@ -1341,13 +1287,6 @@ void SettingsDialog::SaveSettings() {
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
-
-    // 本机麦克风（[local_asr]）：保存后经 on_config_changed → ApplyUpdatedConfig
-    // 热更（重建采集器/本地 ASR/热键），无需重启应用。
-    config_.local_asr.enabled =
-        SendMessageW(local_mic_enable_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
-    config_.local_asr.push_to_talk_key = Utf8(GetWindowText(local_mic_hotkey_edit_));
 
     int output_target_idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
     if (output_target_idx == 1) {
@@ -1426,7 +1365,9 @@ void SettingsDialog::OnDeveloperModeToggled() {
 
 void SettingsDialog::ApplyTrialApiKey() {
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    if (ProviderAtComboIndex(idx) != AsrProvider::kVoiceStickCloud) return;
+    if (ProviderComboCloudAt(idx, provider_combo_has_cloud_) != AsrProvider::kVoiceStickCloud) {
+        return;
+    }
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
 
     EnableWindow(apply_trial_button_, FALSE);
@@ -1535,54 +1476,6 @@ void SettingsDialog::UpdateLocalMicModelsStatus() {
                              : StringId::kSettingsLocalMicModelsMissing,
                        language)
                        .c_str());
-}
-
-void SettingsDialog::OnCaptureLocalMicHotkey() {
-    if (ptt_capture_.active()) return;  // 录入中重复点击忽略
-    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
-
-    ShortcutCapture::Options options;
-    options.require_modifier = false;
-    // 按住说话是单键语义：right ctrl 等修饰键本身即功能键，直接作为主键捕获。
-    options.allow_modifier_as_key = true;
-    ptt_capture_.on_captured = [this, language](const ShortcutCapture::Result& result) {
-        StopPttCaptureTimer();
-        RestorePttCaptureButtonText();
-        const auto name = FormatPushToTalkKey(result.vk);
-        if (name.has_value()) {
-            SetWindowTextW(local_mic_hotkey_edit_, Utf16(*name).c_str());
-        } else {
-            MessageBoxW(hwnd_,
-                        TrW(StringId::kSettingsLocalMicHotkeyUnsupported, language).c_str(),
-                        TrW(StringId::kHotkeyCaptureTimeoutTitle, language).c_str(),
-                        MB_OK | MB_ICONINFORMATION);
-        }
-    };
-    ptt_capture_.on_cancelled = [this] {
-        StopPttCaptureTimer();
-        RestorePttCaptureButtonText();
-    };
-    ptt_capture_.Start(options);
-    if (ptt_capture_.active()) {
-        SetWindowTextW(local_mic_hotkey_capture_button_,
-                       TrW(StringId::kSettingsLocalMicCapturing, language).c_str());
-        SetTimer(hwnd_, kPttCaptureHintTimerId, kPttCaptureHintTimeoutMs, nullptr);
-    }
-}
-
-void SettingsDialog::StopPttCaptureTimer() {
-    if (hwnd_ != nullptr) {
-        KillTimer(hwnd_, kPttCaptureHintTimerId);
-    }
-}
-
-void SettingsDialog::RestorePttCaptureButtonText() {
-    if (local_mic_hotkey_capture_button_ != nullptr) {
-        SetWindowTextW(local_mic_hotkey_capture_button_,
-                       TrW(StringId::kSettingsLocalMicCapture,
-                           EffectiveUiLanguage(config_.ui_language))
-                           .c_str());
-    }
 }
 
 void SettingsDialog::OpenSpectrogramViewer() {

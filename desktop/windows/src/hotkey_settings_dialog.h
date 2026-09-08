@@ -13,7 +13,17 @@ namespace voicestick {
 
 class HotkeySettingsDialog {
 public:
-    HotkeySettingsDialog(HINSTANCE instance, HWND parent, UiLanguage language);
+    // kGlobalHotkey：全局语音热键（组合键，必须含修饰键，RegisterHotkey 可注册）。
+    // kPushToTalk：本机麦克风按住说话热键（单键，修饰键本身可作键，如 right ctrl；
+    // LL 钩子实现，不走 RegisterHotkey，确认时不做占用检测）。
+    enum class Mode {
+        kGlobalHotkey,
+        kPushToTalk,
+    };
+
+    HotkeySettingsDialog(HINSTANCE instance, HWND parent, UiLanguage language,
+                         Mode mode = Mode::kGlobalHotkey,
+                         std::string current_key = std::string());
     ~HotkeySettingsDialog();
 
     void Show();
@@ -40,6 +50,9 @@ private:
     UINT dpi_ = 96;
     HFONT ui_font_ = nullptr;
     UiLanguage language_ = UiLanguage::kEnglish;
+    Mode mode_ = Mode::kGlobalHotkey;
+    // PTT 模式初始展示的当前键名（config [local_asr].push_to_talk_key），空 = 未配置。
+    std::string current_key_;
 
     HWND hotkey_label_ = nullptr;
     HWND hotkey_capture_button_ = nullptr;
@@ -50,6 +63,8 @@ private:
     ShortcutCapture capture_;
     UINT captured_modifiers_ = 0;
     UINT captured_vk_ = 0;
+    // PTT 模式捕获成功后的规范键名（push_to_talk_key.h Format 输出）。
+    std::string captured_ptt_key_;
 
     std::vector<BYTE> dialog_template_;
     std::vector<HWND> all_controls_;
