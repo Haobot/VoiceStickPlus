@@ -252,6 +252,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kNotificationManualPairSavedBody)] = "Waiting for VS-%s to advertise.";
     table[Index(StringId::kNotificationFirmwareUpdatedTitle)] = "VoiceStick firmware updated";
     table[Index(StringId::kNotificationFirmwareUpdatedBody)] = "The device is rebooting into the new firmware.";
+    table[Index(StringId::kNotificationAppUpdateTitle)] = "VoiceStick update available";
+    table[Index(StringId::kNotificationAppUpdateBody)] = "A new version of VoiceStick is available. Click here to learn more.";
     table[Index(StringId::kOverlayListening)] = "Listening...";
     table[Index(StringId::kOverlayThinking)] = "Thinking...";
     table[Index(StringId::kOverlayError)] = "Error";
@@ -625,6 +627,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kNotificationManualPairSavedBody)] = "正在等待 VS-%s 广播。";
     table[Index(StringId::kNotificationFirmwareUpdatedTitle)] = "VoiceStick 固件已更新";
     table[Index(StringId::kNotificationFirmwareUpdatedBody)] = "设备正在重启到新固件。";
+    table[Index(StringId::kNotificationAppUpdateTitle)] = "发现 VoiceStick 新版本";
+    table[Index(StringId::kNotificationAppUpdateBody)] = "点击此处查看更新内容。";
     table[Index(StringId::kOverlayListening)] = "正在聆听...";
     table[Index(StringId::kOverlayThinking)] = "正在思考...";
     table[Index(StringId::kOverlayError)] = "错误";

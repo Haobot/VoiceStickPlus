@@ -250,6 +250,8 @@ enum class StringId {
     kNotificationManualPairSavedBody,
     kNotificationFirmwareUpdatedTitle,
     kNotificationFirmwareUpdatedBody,
+    kNotificationAppUpdateTitle,
+    kNotificationAppUpdateBody,
 
     // 悬浮窗
     kOverlayListening,

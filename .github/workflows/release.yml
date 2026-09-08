@@ -65,6 +65,7 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" dist
           version="${{ steps.ver.outputs.version }}"
           tag="${{ steps.ver.outputs.tag }}"
+          min_version="$(cat FIRMWARE_MIN_VERSION | head -n1 | tr -d '[:space:]')"
           download_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
           ota="voicestick-firmware-sticks3-ota-${version}.bin"
           merged="voicestick-firmware-sticks3-merged-${version}.bin"
@@ -80,6 +81,7 @@ jobs:
           manifest = {
               "hardware": "stick_s3",
               "version": "${version}",
+              "min_version": "${min_version}",
               "ota_url": "${download_base}/${ota}",
               "ota_sha256": "${ota_sha}",
               "ota_size": int("${ota_size}"),
