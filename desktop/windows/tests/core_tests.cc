@@ -10550,6 +10550,53 @@ void TestCoordinatorLocalMicSessionRoutesToLocalAsr() {
     assert(ui.hide_overlay_count == 1);
 }
 
+// 选中本地语音识别（local_asr.enabled）时，设备会话（遥控器语音键/全局热键触发的
+// 设备录音）也必须路由到本地 SenseVoice——断网场景下设备语音可用，云端客户端零启动。
+void TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto* cloud_asr_ptr = cloud_asr.get();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    auto* local_asr_ptr = local_asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.local_asr.enabled = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                      &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    const std::string kDev = "RC-9F0E";
+    XiaomiAtvvSession session;  // 默认 hold_to_talk
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+    assert(HasUiState(*ble_ptr, "recording", kDev));
+
+    // 跨过 0.5s 最小录音时长（墙钟），期间持续出音频帧。
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+    AtvvEndRecording(*ble_ptr, kDev, session, t);
+
+    // 路由断言：设备会话音频只进本地 ASR，云端客户端全程未启动（断网可用）。
+    assert(local_asr_ptr->started);
+    assert(local_asr_ptr->sent_chunks > 0);
+    assert(local_asr_ptr->last_chunk_was_final);
+    assert(!cloud_asr_ptr->started);
+    // 本机麦克风采集器与设备会话无关，不应被启动。
+    assert(capture_ptr->start_count == 0);
+
+    local_asr_ptr->on_final("设备本地识别");
+    assert(input.pasted_text == "设备本地识别");
+    assert(HasUiState(*ble_ptr, "ready", kDev));
+}
+
 // 短按（<0.5s）：释放后按短按取消路径丢弃会话，不启动 ASR、不注入。
 void TestCoordinatorLocalMicShortPressDiscards() {
     auto ble = std::make_unique<FakeBleCentral>();
@@ -10867,6 +10914,7 @@ int main() {
     TestResolveAndValidateModelsDir();
     TestAppConfigLocalAsrRoundTrip();
     TestCoordinatorLocalMicSessionRoutesToLocalAsr();
+    TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled();
     TestCoordinatorLocalMicShortPressDiscards();
     TestCoordinatorLocalMicDisabledDoesNothing();
     TestCoordinatorLocalMicCaptureStartFailureCancelsSession();

@@ -1584,9 +1584,12 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         std::lock_guard lock(audio_mutex_);
         active_session_id_ = session_id;
         active_device_id_ = device_id;
-        // 钉住本会话的 ASR 客户端路由：local-mic → 本地 SenseVoice，其余 → 云端。
+        // 钉住本会话的 ASR 客户端路由：local-mic 或选中本地语音识别（enabled，
+        // 即设置「服务提供方 = 本地」）时一律 → 本地 SenseVoice——设备音频同为
+        // 标准 Ogg Opus 流，断网场景设备语音输入可用；其余 → 云端。
         //（SessionAsrClient 见注释：final 块发送时会话 id 已重置，路由必须提前定死。）
-        session_asr_ = (device_id == kLocalMicDeviceId && local_asr_)
+        session_asr_ = (local_asr_ &&
+                        (device_id == kLocalMicDeviceId || config_.local_asr.enabled))
                            ? local_asr_.get()
                            : asr_.get();
         active_session_started_at_ = std::chrono::steady_clock::now();
