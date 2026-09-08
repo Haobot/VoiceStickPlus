@@ -79,6 +79,17 @@ enum class StringId {
     kSettingsOpenSpectrogram,
     kSettingsSpectrogramNotFound,
     kSettingsDeveloperMode,
+    kSettingsSectionLocalMic,
+    kSettingsLocalMicEnable,
+    kSettingsLocalMicModelsDir,
+    kSettingsLocalMicHotkey,
+    kSettingsLocalMicHotkeyHint,
+    kSettingsLocalMicBrowse,
+    kSettingsLocalMicCapture,
+    kSettingsLocalMicCapturing,
+    kSettingsLocalMicHotkeyUnsupported,
+    kSettingsLocalMicModelsOk,
+    kSettingsLocalMicModelsMissing,
 
     // 托盘菜单
     kMenuPairDevice,
@@ -229,6 +240,9 @@ enum class StringId {
     kHotkeyMissingModifier,
     kHotkeyConflictTitle,
     kHotkeyConflictMessage,
+    // 快捷键录入超时提示（前台为提权窗口时键盘事件被 UIPI 隔离的引导）。
+    kHotkeyCaptureTimeoutTitle,
+    kHotkeyCaptureTimeoutBody,
 
     // 云服务提示
     kCloudNeedsAttentionTitle,
@@ -247,6 +261,8 @@ enum class StringId {
     kNotificationManualPairSavedBody,
     kNotificationFirmwareUpdatedTitle,
     kNotificationFirmwareUpdatedBody,
+    kNotificationAppUpdateTitle,
+    kNotificationAppUpdateBody,
 
     // 悬浮窗
     kOverlayListening,

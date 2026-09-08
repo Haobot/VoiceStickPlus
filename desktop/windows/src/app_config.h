@@ -195,6 +195,20 @@ struct WechatInputMethodConfig {
     bool operator==(const WechatInputMethodConfig& other) const = default;
 };
 
+// 本机麦克风模式配置（[local_asr] 段，Windows 端）：本机麦克风采集 + SenseVoice
+// 本地离线识别 + 按住热键说话，无 BLE 设备也可语音输入（P1 核心闭环并入产品）。
+// 默认关闭：不改变现有设备链路行为。
+struct LocalAsrConfig {
+    // 模式总开关：false 时按住说话热键完全旁路。
+    bool enabled = false;
+    // SenseVoice 模型目录（须含 model.int8.onnx + tokens.txt）。空 = exe 同级 models/。
+    std::string models_dir;
+    // 按住说话热键键名（right ctrl 等，见 push_to_talk_key.h 支持列表）。
+    std::string push_to_talk_key = "right ctrl";
+
+    bool operator==(const LocalAsrConfig& other) const = default;
+};
+
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
 
@@ -242,6 +256,7 @@ struct AppConfig {
     std::map<std::string, OverlayPosition> device_overlay_positions;
     OutputProfile default_output_profile;
     WechatInputMethodConfig wechat_input_method;
+    LocalAsrConfig local_asr;
     std::map<std::string, OutputProfile> device_output_profiles;
     // 粘贴文本后是否自动按回车确认。默认关闭（用户手动回车，避免误提交）。
     bool auto_enter = false;

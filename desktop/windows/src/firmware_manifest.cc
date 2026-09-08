@@ -261,6 +261,7 @@ std::optional<FirmwareManifest> ParseFirmwareManifest(std::string_view json) {
     FirmwareManifest manifest;
     manifest.hardware = JsonStringValue(root, "hardware");
     manifest.version = JsonStringValue(root, "version");
+    manifest.min_version = JsonStringValue(root, "min_version");
     manifest.ota_url = JsonStringValue(root, "ota_url");
     manifest.ota_sha256 = JsonStringValue(root, "ota_sha256");
     manifest.ota_size = JsonU32Value(root, "ota_size");
@@ -283,6 +284,24 @@ bool IsFirmwareHardwareCompatible(std::string_view device_hardware,
         return true;
     }
     return NormalizedHardwareName(device_hardware) == NormalizedHardwareName(manifest_hardware);
+}
+
+std::string EffectiveMinimumFirmwareVersion(const FirmwareManifest& manifest,
+                                            std::string_view fallback) {
+    const auto trimmed = Trim(manifest.min_version);
+    return trimmed.empty() ? std::string(fallback) : trimmed;
+}
+
+FirmwareUpdateUrgency ClassifyFirmwareUpdateUrgency(std::string_view current_version,
+                                                    const FirmwareManifest& manifest,
+                                                    std::string_view fallback_minimum_version) {
+    if (!FirmwareVersion::IsOlderThan(current_version, manifest.version)) {
+        return FirmwareUpdateUrgency::kUpToDate;
+    }
+    const auto minimum = EffectiveMinimumFirmwareVersion(manifest, fallback_minimum_version);
+    return FirmwareVersion::IsOlderThan(current_version, minimum)
+               ? FirmwareUpdateUrgency::kRequired
+               : FirmwareUpdateUrgency::kOptional;
 }
 
 } // namespace voicestick

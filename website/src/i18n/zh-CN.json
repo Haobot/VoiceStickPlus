@@ -82,8 +82,27 @@
   },
   "download": {
     "title": "需要其他文件？",
-    "body": "GitHub Release 里还有校验和、appcast 文件和固件镜像。",
-    "cta": "查看全部发布文件"
+    "body": "下载页里有全部平台的安装包、固件镜像与校验和。",
+    "cta": "打开下载页"
+  },
+  "downloads": {
+    "eyebrow": "程序与固件",
+    "title": "下载",
+    "lead": "获取最新版本的桌面程序与 StickS3 固件，也提供历史版本与校验和。",
+    "loading": "正在加载版本信息...",
+    "loadFailed": "无法加载版本信息，请稍后重试，或直接前往 GitHub Releases 下载。",
+    "viewOnGithub": "在 GitHub 查看全部发布文件",
+    "latest": "最新版本",
+    "prerelease": "预发布",
+    "releasedAt": "发布于 {date}",
+    "minFirmware": "最低兼容固件 {version}",
+    "history": "历史版本",
+    "checksum": "SHA-256",
+    "platform": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "firmware": "固件（StickS3）"
+    }
   },
   "footer": {
     "appcast": "Appcast"

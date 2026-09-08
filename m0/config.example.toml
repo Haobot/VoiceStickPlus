@@ -1,0 +1,22 @@
+# m0/config.toml 示例（复制为 config.toml 后填写；config.toml 已 gitignore）
+
+[engine]
+# 激活引擎（配置界面切换项）: local_sense_voice | local_seaco | cloud_tencent
+active = "local_sense_voice"
+
+[evaluation]
+# 闭环评测（sim_compare.py）默认参评引擎
+# cloud_tencent_hotword = 腾讯云 + 临时热词表（HotwordList，与 SeACo 同一份热词文件）
+engines = ["local_sense_voice", "local_seaco", "cloud_tencent", "cloud_tencent_hotword"]
+
+[cloud.tencent]
+# 可选：腾讯云一句话识别凭据。留空时按三级解析：
+#   1) 环境变量 TENCENT_SECRET_ID / TENCENT_SECRET_KEY / TENCENT_APPID
+#   2) 本文件 [cloud.tencent]
+#   3) 复用 %APPDATA%\VoiceStick\config.toml 的 tencent_* 字段
+# 安全红线：真实密钥绝不提交进仓库
+secret_id = ""
+secret_key = ""
+appid = ""
+engine_model_type = "16k_zh"
+region = "ap-shanghai"

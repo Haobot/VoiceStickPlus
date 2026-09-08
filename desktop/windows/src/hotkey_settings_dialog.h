@@ -29,6 +29,8 @@ private:
     void BuildControls();
     void DestroyControls();
     void OnHotkeyCapture();
+    // 捕获结束/超时收尾：停提示定时器（幂等）。
+    void StopCaptureHintTimer();
     bool ValidateAndSave();
     int Dp(int px) const;
 
@@ -57,6 +59,11 @@ private:
     static constexpr UINT kIdHotkeyCapture = 6001;
     static constexpr UINT kIdOk = 6002;
     static constexpr UINT kIdCancel = 6003;
+
+    // 录入超时提示定时器：录入启动后 kCaptureHintTimeoutMs 内无任何键盘事件到
+    // 达（UIPI 前台提权隔离等）时弹一次引导，不中断进行中的捕获。
+    static constexpr UINT_PTR kCaptureHintTimerId = 0x5343;
+    static constexpr UINT kCaptureHintTimeoutMs = 3000;
 };
 
 } // namespace voicestick

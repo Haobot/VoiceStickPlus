@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_config.h"
+#include "shortcut_capture.h"
 
 #include <Windows.h>
 
@@ -41,6 +42,17 @@ private:
     void OnHotwordCandidateDismiss();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
+    // 通用文件夹选择（IFileDialog FOS_PICKFOLDERS）：选定路径写入目标编辑框，
+    // ChooseDebugDirectory 与本机麦克风模型目录共用。
+    void ChooseFolderInto(HWND target_edit);
+    // 本机麦克风：模型目录浏览 + 即时有效性回显（与启动校验同一口径）。
+    void ChooseLocalMicModelsDir();
+    void UpdateLocalMicModelsStatus();
+    // 本机麦克风按住说话热键：录入式选择（ShortcutCapture 单键模式，修饰键
+    // 本身即可作为热键，如 right ctrl）；Esc 取消，3 秒无事件弹 UIPI 引导。
+    void OnCaptureLocalMicHotkey();
+    void StopPttCaptureTimer();
+    void RestorePttCaptureButtonText();
     // 启动频谱查看器（scripts/e2e_test/spectrogram_server.py，经 py/python 启动）。
     void OpenSpectrogramViewer();
     bool IsLabelControl(HWND control) const;
@@ -119,6 +131,17 @@ private:
     InteractionMode loaded_hotkey_mode_ = InteractionMode::kHoldToTalk;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
+    // 本机麦克风（[local_asr]，Doc/Plan/local-mic-mode.md）：开关/模型目录/热键。
+    HWND local_mic_enable_check_ = nullptr;
+    HWND local_mic_models_dir_edit_ = nullptr;
+    HWND local_mic_models_dir_browse_button_ = nullptr;
+    // 模型目录有效性回显（✓ 就绪 / ✗ 缺文件），与 Resolve+Validate 同口径。
+    HWND local_mic_models_status_label_ = nullptr;
+    HWND local_mic_hotkey_edit_ = nullptr;
+    HWND local_mic_hotkey_capture_button_ = nullptr;
+    // 按住说话热键录入（ShortcutCapture 单键模式；成员随对话框生命周期，
+    // 析构自动 Cancel）。
+    ShortcutCapture ptt_capture_;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -166,6 +189,16 @@ private:
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
     static constexpr UINT kIdDeveloperMode = 2039;
     static constexpr UINT kIdOpenSpectrogram = 2040;
+    static constexpr UINT kIdLocalMicEnable = 2041;
+    static constexpr UINT kIdLocalMicModelsDirEdit = 2042;
+    static constexpr UINT kIdLocalMicHotkeyEdit = 2043;
+    static constexpr UINT kIdLocalMicModelsDirBrowse = 2044;
+    static constexpr UINT kIdLocalMicHotkeyCapture = 2045;
+
+    // 按住说话热键录入超时提示定时器：录入启动后 3 秒无键盘事件（UIPI 前台
+    // 提权隔离等）弹一次引导，不中断进行中的捕获（对齐 hotkey_settings_dialog）。
+    static constexpr UINT_PTR kPttCaptureHintTimerId = 0x5350;
+    static constexpr UINT kPttCaptureHintTimeoutMs = 3000;
 };
 
 } // namespace voicestick

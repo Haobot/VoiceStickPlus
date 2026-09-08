@@ -82,8 +82,27 @@
   },
   "download": {
     "title": "Need another file?",
-    "body": "GitHub Releases also include checksums, appcast assets, and firmware images.",
-    "cta": "View all release assets"
+    "body": "The download page lists every installer, firmware image, and checksum.",
+    "cta": "Open the download page"
+  },
+  "downloads": {
+    "eyebrow": "Apps & firmware",
+    "title": "Downloads",
+    "lead": "Get the latest desktop apps and StickS3 firmware, plus previous releases and checksums.",
+    "loading": "Loading release information...",
+    "loadFailed": "Could not load release information. Try again later, or download from GitHub Releases directly.",
+    "viewOnGithub": "View all release assets on GitHub",
+    "latest": "Latest",
+    "prerelease": "Pre-release",
+    "releasedAt": "Released {date}",
+    "minFirmware": "Minimum firmware {version}",
+    "history": "Previous releases",
+    "checksum": "SHA-256",
+    "platform": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "firmware": "Firmware (StickS3)"
+    }
   },
   "footer": {
     "appcast": "Appcast"

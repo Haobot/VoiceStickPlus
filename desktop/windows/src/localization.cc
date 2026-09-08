@@ -88,6 +88,21 @@ constexpr StringTable EnglishStrings() {
         "Could not launch the spectrum viewer. Make sure Python is installed and "
         "scripts/e2e_test/spectrogram_server.py exists in the repository.";
     table[Index(StringId::kSettingsDeveloperMode)] = "Developer Mode (show all advanced settings)";
+    table[Index(StringId::kSettingsSectionLocalMic)] = "Local Microphone";
+    table[Index(StringId::kSettingsLocalMicEnable)] = "Enable push-to-talk with local ASR (no cloud)";
+    table[Index(StringId::kSettingsLocalMicModelsDir)] = "Models directory";
+    table[Index(StringId::kSettingsLocalMicHotkey)] = "Push-to-talk key";
+    table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
+        "Examples: right ctrl / capslock / f9. Hold to talk, release to insert.";
+    table[Index(StringId::kSettingsLocalMicBrowse)] = "Browse...";
+    table[Index(StringId::kSettingsLocalMicCapture)] = "Capture key";
+    table[Index(StringId::kSettingsLocalMicCapturing)] = "Press a key (Esc to cancel)...";
+    table[Index(StringId::kSettingsLocalMicHotkeyUnsupported)] =
+        "That key is not supported for push-to-talk. Try right/left ctrl|shift|alt, "
+        "capslock, f1-f24 or a letter/number key.";
+    table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ Models ready (SenseVoice found)";
+    table[Index(StringId::kSettingsLocalMicModelsMissing)] =
+        "✗ Model files not found (need model.int8.onnx + tokens.txt)";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -228,6 +243,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotkeyMissingModifier)] = "Error: at least 1 modifier is required (Ctrl/Alt/Shift/Win)";
     table[Index(StringId::kHotkeyConflictTitle)] = "Hotkey conflict";
     table[Index(StringId::kHotkeyConflictMessage)] = "This hotkey is already used by another app. Choose another combination.";
+    table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "Hotkey capture";
+    table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
+        "No key press was detected within a few seconds. If the foreground window runs as "
+        "administrator (elevated), its keyboard events are isolated by the system and cannot "
+        "be captured. Click this window (or any non-elevated window) and try again.";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud needs attention";
     table[Index(StringId::kCloudOpenPageQuestion)] = "Open the VoiceStick Cloud page?";
 
@@ -247,6 +267,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kNotificationManualPairSavedBody)] = "Waiting for VS-%s to advertise.";
     table[Index(StringId::kNotificationFirmwareUpdatedTitle)] = "VoiceStick firmware updated";
     table[Index(StringId::kNotificationFirmwareUpdatedBody)] = "The device is rebooting into the new firmware.";
+    table[Index(StringId::kNotificationAppUpdateTitle)] = "VoiceStick update available";
+    table[Index(StringId::kNotificationAppUpdateBody)] = "A new version of VoiceStick is available. Click here to learn more.";
     table[Index(StringId::kOverlayListening)] = "Listening...";
     table[Index(StringId::kOverlayThinking)] = "Thinking...";
     table[Index(StringId::kOverlayError)] = "Error";
@@ -459,6 +481,20 @@ constexpr StringTable ChineseStrings() {
         "无法启动频谱查看器。请确认已安装 Python，且仓库中存在 "
         "scripts/e2e_test/spectrogram_server.py。";
     table[Index(StringId::kSettingsDeveloperMode)] = "开发者模式（显示全部高级设置）";
+    table[Index(StringId::kSettingsSectionLocalMic)] = "本机麦克风";
+    table[Index(StringId::kSettingsLocalMicEnable)] = "启用本机麦克风按住说话（本地识别，不经云端）";
+    table[Index(StringId::kSettingsLocalMicModelsDir)] = "模型目录";
+    table[Index(StringId::kSettingsLocalMicHotkey)] = "按住说话热键";
+    table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
+        "示例：right ctrl / capslock / f9。按住说话，松开注入文本。";
+    table[Index(StringId::kSettingsLocalMicBrowse)] = "浏览…";
+    table[Index(StringId::kSettingsLocalMicCapture)] = "录入";
+    table[Index(StringId::kSettingsLocalMicCapturing)] = "按下想要的键…（Esc 取消）";
+    table[Index(StringId::kSettingsLocalMicHotkeyUnsupported)] =
+        "该键不支持按住说话。可用：right/left ctrl|shift|alt、capslock、f1-f24 或字母/数字键。";
+    table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ 模型就绪（已找到 SenseVoice）";
+    table[Index(StringId::kSettingsLocalMicModelsMissing)] =
+        "✗ 未找到模型文件（需 model.int8.onnx 与 tokens.txt）";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";
@@ -599,6 +635,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotkeyMissingModifier)] = "错误：至少需要 1 个修饰键（Ctrl/Alt/Shift/Win）";
     table[Index(StringId::kHotkeyConflictTitle)] = "热键冲突";
     table[Index(StringId::kHotkeyConflictMessage)] = "该快捷键已被其他程序占用，请选择其他组合。";
+    table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "快捷键录入";
+    table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
+        "几秒内未检测到任何按键。若当前前台窗口是以管理员权限（提权）运行的程序"
+        "（如提权终端、任务管理器），键盘事件会被系统隔离而无法识别。"
+        "请点击本窗口或任意普通权限窗口后重试。";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud 需要处理";
     table[Index(StringId::kCloudOpenPageQuestion)] = "是否打开 VoiceStick Cloud 页面？";
 
@@ -615,6 +656,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kNotificationManualPairSavedBody)] = "正在等待 VS-%s 广播。";
     table[Index(StringId::kNotificationFirmwareUpdatedTitle)] = "VoiceStick 固件已更新";
     table[Index(StringId::kNotificationFirmwareUpdatedBody)] = "设备正在重启到新固件。";
+    table[Index(StringId::kNotificationAppUpdateTitle)] = "发现 VoiceStick 新版本";
+    table[Index(StringId::kNotificationAppUpdateBody)] = "点击此处查看更新内容。";
     table[Index(StringId::kOverlayListening)] = "正在聆听...";
     table[Index(StringId::kOverlayThinking)] = "正在思考...";
     table[Index(StringId::kOverlayError)] = "错误";

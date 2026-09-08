@@ -65,13 +65,15 @@ $Config = @'
 asr_provider = "volcengine"
 voicestick_api_key = ""
 voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/"
-volcengine_api_key = "your_volcengine_asr_api_key"
-# 腾讯云 ASR（仅在 asr_provider = "tencent" 时需要）
+# 本包 exe 已内置 ASR 凭据，留空即自动生效；填入自己的 key 可覆盖内置值。
+volcengine_api_key = ""
+# 腾讯云 ASR（仅在 asr_provider = "tencent" 时需要；本包同样已内置，留空即可）
 # tencent_secret_id = "AKID..."
 # tencent_secret_key = "..."
 # tencent_appid = "1234567890"
 llm_base_url = "https://api.openai.com/v1"
-llm_api_key = "your_openai_compatible_llm_api_key"
+# 本包 exe 已内置 LLM 凭据（DeepSeek），留空即自动生效；填入自己的 key 可覆盖。
+llm_api_key = ""
 llm_model = "gpt-5.5"
 refine_enabled = true
 interaction_mode = "hold_to_talk"
@@ -95,9 +97,11 @@ VoiceStick 绿色便携版 v$Version
 ================================
 
 使用方法：
-1. 编辑 config.toml，填入 API Key 等配置（至少需要 ASR 的 API Key）
-2. 双击 VoiceStick.exe 启动
-3. 在系统托盘中右键图标进行配对等操作
+1. 双击 VoiceStick.exe 启动（本包已内置 ASR/LLM 凭据，开箱即用，无需填写 API Key）
+2. 在系统托盘中右键图标进行配对等操作
+3. 如需使用自己的 API Key，编辑 config.toml 填入即可覆盖内置凭据
+
+注意：本包内含内置凭据，仅限内测分发，请勿公开发布。
 
 固件烧录工具（VoiceStickFlash）：
 - 双击 VoiceStickFlash.exe 打开 COM 口固件烧录工具

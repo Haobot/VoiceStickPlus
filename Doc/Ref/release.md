@@ -13,6 +13,22 @@ The Windows package is the special case because the signing certificate is local
 
 In both cases, finish by redeploying the website and verifying all update URLs.
 
+## One-Command Release (Windows signing machine)
+
+The whole flow above is scripted for the Windows signing machine:
+
+```bat
+powershell -File scripts\release.ps1 -Version 2.3.9
+```
+
+The script syncs `VERSION` / `firmware/version.txt`, builds and signs the MSI, commits and pushes the `v<version>` tag, waits for the release workflow, uploads both MSIs with `.sha256` checksums, triggers the website deploy, and verifies every update URL (appcast, `manifest.json` incl. `min_version`, `downloads.json`, firmware and MSI assets). Use `-SkipMsi` for firmware/website-only releases and `-DryRun` to print the steps without executing anything. It refuses to run off `main` or with a dirty tree.
+
+`FIRMWARE_MIN_VERSION` (repo root) feeds the manifest `min_version` field: devices below it get a mandatory upgrade prompt. Bump it manually when the desktop protocol drops compatibility with older firmware; it must never exceed `VERSION`.
+
+The deploy workflow also regenerates `website/public/downloads.json` (via `scripts/update-downloads.py`) from the latest GitHub Releases; the website download page reads it at runtime.
+
+The manual flows below remain the reference for each individual step.
+
 ## Version Sources
 
 Update both version files before creating the release tag:
@@ -129,6 +145,7 @@ Stable update endpoints:
 
 ```text
 https://haobot.github.io/VoiceStickPlus/appcast.xml
+https://haobot.github.io/VoiceStickPlus/downloads.json
 https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json
 ```
 

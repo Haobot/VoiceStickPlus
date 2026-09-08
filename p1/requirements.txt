@@ -1,0 +1,8 @@
+# P1 软件 MVP 依赖（运行于 m0/.venv，与 M0 共享环境与模型权重）
+# 核心运行时（sherpa-onnx / numpy / soundfile / sounddevice / pypinyin / rapidfuzz
+# / pytest / tomllib 由 m0/requirements.txt 提供）
+keyboard>=0.13
+pyperclip>=1.8
+cryptography>=42.0
+# AI 改写云端版（无凭据自动降级规则版）
+tencentcloud-sdk-python-hunyuan>=3.0.1300

@@ -217,6 +217,16 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 
 修复：参数改按值传递 `std::string device_id`，消除引用别名；回归测试 `TestEncoderRotateCustomKeysPendingPathDeviceOverride`（设备覆盖 + pending → Tick 冲刷）。**教训**：const 引用参数若可能指向会被函数体修改的成员，必须先复制或按值传参；单测要覆盖"设备覆盖 ≠ 全局默认"场景（此前 pending 路径测试全用全局默认键，查回默认也断言通过，掩盖了回落路径）。
 
+### 3.13 小米遥控器按键映射：LL 钩子吞键与设备证据三重死结（2026-09-07 定案）
+
+症状：`home→Backspace` 映射三轮迭代各有真机故障——钩子内等待佐证版不删字（佐证 2ms 后才到）；先吞后验版不删字（被吞键无 MAKE raw，超时全走物理补偿）；信用制版物理键盘 Home 误删且 30s 窗内无法自愈（纠正信号 BREAK 也被吞）。
+
+根因（结构性，非时序抖动）：WH_KEYBOARD_LL 是 RIT 同步调用，钩子阻塞期间本次 WM_INPUT 不投递；钩子返回 1 吞掉的键 MAKE/BREAK 沿**双双不投递**。任何 keydown 时刻的归属决策都只能靠先验（信用/时序窗），物理键盘同特征键误判后落入无证据死区。
+
+修复（v4 keyup 后置决策）：keydown/按住重复一律吞 + 登记 Pending；keyup **放行**（孤立 up 无系统副作用，是取证动作）让 BREAK 沿带 `hDevice` 投递；主线程收到证据后遥控器→注入映射 down+up 对、物理→补偿原键 down+up 对；BREAK 异常丢失 200ms WM_TIMER 按物理兜底。代价：反馈延迟到松手、按住连删退化为单击多次。详见 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`，设计 `Doc/Plan/xiaomi-keymap-consumer.md`。
+
+附带坑：`RIDI_DEVICEINFO` 对 BTHLE 遥控器（呈现为 RIM_TYPEKEYBOARD）`hid.dwVendorId` 恒 0 静默失效，VID/PID 必须走 `RIDI_DEVICENAME` 接口路径解析，且 BTHLE 容器 VID 字段是六位十六进制（`012717`），须按低 16 位比对；RC003（RC-6459）back 键固件上报 usage 0xF1 被 WUDFHost 翻译层丢弃，PC 端零事件不可消费，勿再按"原生 Backspace"假设排查（早期 VK_BACK 日志是物理键盘污染）。
+
 ---
 
 ## 4. 微信输入法模式（wechat_input_method）
@@ -463,3 +473,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - macOS 注入类功能（CGEvent 粘贴/按键）验收必须用最终 `.app` 形态：裸二进制寄生终端的 TCC 辅助功能授权，注入「看起来正常」；独立 `.app` 以自身 bundle id 单独授权，未授权时 CGEvent 静默丢弃（识别正常唯独粘贴不进，极具迷惑性）。判据：文本到悬浮窗/剪贴板但输入框无内容 → 查 TCC.db 该 bundle id 有无 `kTCCServiceAccessibility`（本机该 service 在**系统级** `/Library/.../TCC.db`，用户级库无此 service）。签名变动（重打包/重签，cdhash 变化）会使已有授权失效需重勾选；**授权对运行中进程不生效，勾选后必须退出重开 app**（引导弹窗 `accessibilityAlertBody` 已写明）；调试期改 app 层代码不要急着重打包替换正在验收的 .app。`InputInjector` 已加 `AXIsProcessTrusted` 前置拦截 + 每次启动一次引导弹窗（Localization 三键中英双表）。详见 `Doc/Expe/macos-windows-design-parity-port-2026-09-03.md` §3。
 - macOS 拦截「键盘/消费控制类」蓝牙 HID 按键做逐键自定义：纯用户态 `IOHIDDeviceOpen`+`kIOHIDOptionsTypeSeizeDevice` 被 `kIOReturnNotPermitted`（0xe00002c1）拒绝（app 内含 matching 回调抢占时机同样被拒，结论已加固），Karabiner 式独占不可行（其真实路线是内核/DriverKit 虚拟 HID 驱动）。spike 探针 `scripts/ref/hid_seize_probe.swift`，详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md`。
 - 小米遥控器 macOS 按键自定义（二期拦截层，2026-09-04 重构定稿）：**IOHID 观察驱动处置 + tap 只吞除原生事件**——处置（inject/suppress）挂 IOHID value 回调（variable 元素 usage 精确 + page==0x07 过滤 vendor 数据流），因 0xF1(back)/0x65(menu) 在 macOS 不产生 keyDown CGEvent，挂 tap 的旧「锚点+时序关联」架构对它们永远静默；音量键原生事件是 systemDefined（subtype=8，data1=(keyCode<<16)|0xa00 down/0xb00 up），非 keyDown。**「按键报告连 IOHID 层都收不到」先重配对**（蓝牙设置忽略设备 + 主页菜单长按重配对即恢复全键报告；判据：连系统音量 OSD 都不变）。TCC 权限结论须以 `open` 启动形态复核（终端直接执行 .app 二进制时 TCC 归终端身份），`log stream` 可见 `kTCCServiceListenEvent auth_value` 判定明细。详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节。
+- LL 键盘钩子吞掉的键在 Raw Input 里 MAKE/BREAK 双双不存在，钩子内也等不到本次 WM_INPUT（RIT 同步）；要设备归属证据只能放行取 BREAK 沿（hDevice），决策后置到 keyup——先吞后验/时序窗/信用制全被证伪，见 §3.13 与 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`。

@@ -1,0 +1,17 @@
+# VoiceStick P1 配置示例（复制为 config.toml 后修改；真实配置 gitignored）
+
+[hotkey]
+push_to_talk = "right ctrl"   # 按住说话键（keyboard 库键名）
+cancel = "esc"                # 取消当前口述
+
+[engine]
+adapter = "sense_voice"       # P1 默认本地 SenseVoice
+models_dir = "../m0/models"   # 复用 M0 下载的模型权重
+
+[rewrite]
+enabled = true
+provider = "rules"            # rules | tencent_hunyuan（无凭据自动降级 rules）
+
+[hotword]
+db_path = ""                  # 空 = %APPDATA%\VoiceStickP1\hotwords.db
+decay_days = 30               # 超期未用的热词按周期衰减权重

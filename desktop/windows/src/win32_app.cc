@@ -4,9 +4,13 @@
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
 #include "hotword_extractor.h"
+#include "local_asr_client_win.h"
 #include "localization.h"
 #include "log.h"
+#include "mic_mode_hotkey.h"
+#include "push_to_talk_key.h"
 #include "resource.h"
+#include "wasapi_mic_capture.h"
 
 #include <Shellapi.h>
 #include <commdlg.h>
@@ -115,6 +119,19 @@ std::wstring CurrentExecutableCommand() {
     if (length == 0) return {};
     path.resize(length);
     return L"\"" + path + L"\"";
+}
+
+// exe 所在目录（无引号）：相对资源路径（本机麦克风模型目录等）的解析基准。
+std::wstring CurrentExecutableDir() {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) return {};
+    path.resize(length);
+    return std::filesystem::path(path).parent_path().wstring();
 }
 
 // 探测前台窗口所属进程是否高于本进程完整性：asInvoker（Medium）对 High 进程
@@ -354,10 +371,15 @@ void LaunchFlashToolExe(HWND owner) {
 
 } // namespace
 
+Win32App* Win32App::active_instance_ = nullptr;
+
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
-    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
+    active_instance_ = this;    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
            " portable_mode=" + std::string(config_.portable_mode ? "true" : "false") +
            " provider=" + AsrProviderName(config_.asr_provider));
+    LogApp("local_asr boot: enabled=" + std::string(config_.local_asr.enabled ? "true" : "false") +
+           " models_dir=" + config_.local_asr.models_dir +
+           " ptt=" + config_.local_asr.push_to_talk_key);
     if (config_.asr_provider == AsrProvider::kTencent) {
         LogApp("Tencent config appid=" + config_.tencent_appid +
                " secret_id=" + config_.tencent_secret_id.substr(0, 8) + "..." +
@@ -374,6 +396,10 @@ Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig:
             };
         }
     }
+}
+
+Win32App::~Win32App() {
+    active_instance_ = nullptr;
 }
 
 int Win32App::Run() {
@@ -404,13 +430,19 @@ int Win32App::Run() {
         if (!config_.portable_mode) {
             LogLine("Initializing WinSparkle");
             win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
-            win_sparkle_set_automatic_check_for_updates(1);
-            win_sparkle_set_update_check_interval(86400);
+            // 自带定时检查改为手动驱动：did_find_update 无 UI 回调链让我们能以托盘
+            // 气泡（可点击）代替 WinSparkle 默认的静默后台下载/弹窗节奏。首查延迟
+            // 30s 避开启动带宽争抢，此后每 24h 静默检查一次（见 WM_TIMER 104）。
+            win_sparkle_set_automatic_check_for_updates(0);
+            win_sparkle_set_did_find_update_callback(&WinSparkleFoundUpdateBridge);
             win_sparkle_init();
+            SetTimer(hwnd_, kAppUpdateSilentCheckTimerId, kAppUpdateFirstCheckDelayMs, nullptr);
             LogLine("WinSparkle initialized");
         } else {
             LogLine("Portable mode — skipping WinSparkle init");
         }
+        // 固件 manifest 周期检查：每 12h 静默拉取；已连接设备落后时协调器发气泡。
+        SetTimer(hwnd_, kFirmwarePeriodicCheckTimerId, kFirmwarePeriodicCheckIntervalMs, nullptr);
 
         LogLine("Creating BLE coordinator");
         auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
@@ -490,11 +522,19 @@ int Win32App::Run() {
         };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+        // 本机麦克风模式（[local_asr]，Doc/Plan/local-mic-mode.md）：安装 WASAPI
+        // 采集器 + 本地 SenseVoice ASR 与按住说话热键。模型缺失不在启动期报错
+        // ——首次会话 LocalAsrClient::Start 失败走既有 ASR 错误路径如实提示。
+        SyncLocalMicRuntime();
+#endif
         coordinator_->Start();
         LogLine("Coordinator started");
 
         f5_suppressor_ = std::make_unique<VoiceF5Suppressor>();
         SyncF5Suppressor();
+        xiaomi_keymap_hook_ = std::make_unique<XiaomiKeymapHook>();
+        SyncXiaomiKeymapHook();
 
         LogLine("Initializing global hotkey");
         global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
@@ -609,6 +649,8 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         }
         // 连接集变化同步刷新 F5 钩子门控（连接态可见 RC 设备时也视为有小米）。
         SyncF5Suppressor();
+        // 活跃 RC 设备可能变化（key_map 按活跃设备取覆盖），同步刷新映射钩子。
+        SyncXiaomiKeymapHook();
     });
 }
 
@@ -681,6 +723,8 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
         LogLine("Confirmed paired device " + std::string(id_prefix) + device_id);
         // 配对完成即刻刷新 F5 钩子门控（新配对的小米遥控器无需等下次启动/热更）。
         SyncF5Suppressor();
+        // 新配对的小米遥控器即刻生效其按键映射。
+        SyncXiaomiKeymapHook();
     }
     std::string detail = std::string(id_prefix) + device_id + " paired";
     if (info && !info->hardware.empty()) detail += " (" + info->hardware + ")";
@@ -898,6 +942,26 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             RequestConnectedBatteryStatus();
             return 0;
         }
+        if (event == NIN_BALLOONUSERCLICK) {
+            // 只在动作仍挂着时消费：普通气泡（无动作）被点击不触发任何流程。
+            const auto action = std::move(pending_balloon_action_);
+            pending_balloon_action_.reset();
+            if (action.has_value()) {
+                if (action->kind == BalloonAction::Kind::kAppUpdate) {
+                    if (!config_.portable_mode) {
+                        win_sparkle_check_update_with_ui();
+                    }
+                } else if (action->kind == BalloonAction::Kind::kFirmwareUpdate) {
+                    StartFirmwareUpdate(action->device_id);
+                }
+            }
+            return 0;
+        }
+        if (event == NIN_BALLOONTIMEOUT || event == NIN_BALLOONHIDE) {
+            // 气泡未被点击即消失：动作作废，避免下次点击普通气泡误触发。
+            pending_balloon_action_.reset();
+            return 0;
+        }
         if (event == WM_RBUTTONUP || event == WM_LBUTTONUP ||
             event == WM_CONTEXTMENU || event == NIN_SELECT || event == NIN_KEYSELECT) {
             ShowTrayMenu();
@@ -1004,11 +1068,29 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                                      [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
                     const bool is_xiaomi = entry_it != config_.paired_devices.end() &&
                                            entry_it->hardware == kHardwareXiaomiRemote2Pro;
+                    // OS bond 清理按地址匹配系统配对记录，删除前先取地址
+                    //（RemovePairedDevice 后迭代器失效）。
+                    const std::uint64_t os_unpair_address =
+                        entry_it != config_.paired_devices.end() ? entry_it->bluetooth_address : 0;
                     coordinator_->RemovePairedDevice(device_id);
                     config_.RemovePairedDevice(device_id);
                     // 忘掉最后一台 RC 设备时卸载 F5 键盘钩子（按需装载的逆操作）。
                     SyncF5Suppressor();
-                    LogLine("Forgot device " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id);
+                    const std::string label = std::string(is_xiaomi ? "RC-" : "VS-") + device_id;
+                    LogLine("Forgot device " + label);
+                    // 同步清除 Windows 系统级配对记录：设备不再残留于系统蓝牙
+                    // 设备列表，用户无需再去系统设置删除（失败时状态栏兜底提示）。
+                    if (ble_central_ && os_unpair_address != 0) {
+                        ble_central_->UnpairOsBondAsync(device_id, os_unpair_address,
+                                                        [this, label](bool ok) {
+                                                            SetStatus(ok ? "Forgot " + label +
+                                                                      " (removed from Windows Bluetooth)"
+                                                                        : "Forgot " + label +
+                                                                      "; remove it in Windows Bluetooth settings");
+                                                        });
+                    } else {
+                        SetStatus("Forgot device " + label);
+                    }
                 }
             } else if (cmd >= kMenuUpdateFirmwareBase && cmd <= kMenuUpdateFirmwareEnd) {
                 std::size_t index = cmd - kMenuUpdateFirmwareBase;
@@ -1111,6 +1193,18 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             if (ble_central_) ble_central_->RestartForResume();
             return 0;
         }
+        if (w_param == kAppUpdateSilentCheckTimerId) {
+            // 首查后转为 24h 周期；portable 模式不 init WinSparkle 也不会设此 timer。
+            SetTimer(hwnd_, kAppUpdateSilentCheckTimerId, kAppUpdateCheckIntervalMs, nullptr);
+            LogLine("app update silent check triggered");
+            win_sparkle_check_update_without_ui();
+            return 0;
+        }
+        if (w_param == kFirmwarePeriodicCheckTimerId && coordinator_) {
+            // 周期静默拉 manifest；协调器 12h 缓存内直接复用，真拉由后台线程完成。
+            coordinator_->CheckFirmwareUpdatesPeriodically();
+            return 0;
+        }
         break;
     case WM_POWERBROADCAST:
         // 休眠/睡眠恢复后 BluetoothLEAdvertisementWatcher 会静默失效：仍报告
@@ -1151,6 +1245,9 @@ void Win32App::ShutdownAndQuit() {
     if (global_hotkey_) {
         global_hotkey_->Unregister();
     }
+    // 先拆本机麦克风热键（LL 钩子）再 Shutdown 协调器：避免关停期间按键事件
+    // 继续进入协调器。
+    mic_mode_hotkey_.reset();
     pair_device_dialog_.reset();
     if (coordinator_) coordinator_->Shutdown();
     DestroyWindow(hwnd_);
@@ -1227,9 +1324,102 @@ void Win32App::SyncF5Suppressor() {
     }
 }
 
+void Win32App::SyncXiaomiKeymapHook() {
+    if (!xiaomi_keymap_hook_) return;
+    // 按需装载：仅「有已配对/已连接 RC 设备 且 有效 key_map 非空」时挂钩。
+    // key_map 非空即用户显式配置了映射（空串显式取消留在表内，由决策层放行），
+    // 不再叠加全局开关。刷新时机与 SyncF5Suppressor 一致。
+    std::optional<std::string> active_rc;
+    for (const auto& dev : connected_devices_) {
+        if (dev.hardware == kHardwareXiaomiRemote2Pro) {
+            active_rc = dev.id;
+            break;
+        }
+    }
+    if (!active_rc.has_value()) {
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.hardware == kHardwareXiaomiRemote2Pro) {
+                active_rc = entry.device_id;
+                break;
+            }
+        }
+    }
+    if (!active_rc.has_value()) {
+        xiaomi_keymap_hook_->Stop();
+        return;
+    }
+    // Raw Input 佐证只有 VID/PID 粒度（同型号多台无法区分），key_map 统一取
+    // 活跃 RC 设备的有效映射（设备覆盖填平后回落全局默认）。
+    auto key_map = config_.XiaomiSettingsForDevice(active_rc).key_map;
+    bool has_mapping = false;
+    for (const auto& [button, spec] : key_map) {
+        if (!spec.empty()) { has_mapping = true; break; }
+    }
+    if (has_mapping) {
+        xiaomi_keymap_hook_->Start(std::move(key_map));
+    } else {
+        xiaomi_keymap_hook_->Stop();
+    }
+}
+
+// 本机麦克风模式运行件与按住说话热键的启停/热更（幂等，设置保存与启动共用）。
+// 模型目录（空→"models"，相对→exe 目录基准，与旧启动逻辑同口径）变化才重建
+// 运行件；热键解析失败如实记日志不装钩子。
+void Win32App::SyncLocalMicRuntime() {
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+    if (coordinator_ == nullptr) return;
+
+    if (config_.local_asr.enabled) {
+        // 空 = exe/models、相对路径锚 exe 目录（口径与设置界面状态检查共用）。
+        const std::string models_dir = ResolveLocalMicModelsDir(
+            config_.local_asr.models_dir,
+            std::filesystem::path(CurrentExecutableDir()).string());
+        if (models_dir != local_mic_models_dir_applied_) {
+            coordinator_->SetLocalMicRuntime(
+                std::make_unique<WasapiMicCapture>(),
+                std::make_unique<LocalAsrClient>(models_dir));
+            local_mic_models_dir_applied_ = models_dir;
+            LogLine("Local mic runtime ready, models: " + models_dir);
+        }
+    } else if (!local_mic_models_dir_applied_.empty()) {
+        // 关闭：拆运行件与热键（协调器侧负责取消活跃会话，采集器析构即 Stop）。
+        coordinator_->SetLocalMicRuntime(nullptr, nullptr);
+        local_mic_models_dir_applied_.clear();
+        mic_mode_hotkey_.reset();
+        LogLine("Local mic mode disabled");
+        return;
+    }
+
+    const auto ptt_vk = ParsePushToTalkKey(config_.local_asr.push_to_talk_key);
+    if (config_.local_asr.enabled && ptt_vk) {
+        if (!mic_mode_hotkey_) {
+            mic_mode_hotkey_ = std::make_unique<MicModeHotkey>();
+            mic_mode_hotkey_->on_pressed = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyPressed();
+            };
+            mic_mode_hotkey_->on_released = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyReleased();
+            };
+        }
+        if (!mic_mode_hotkey_->Start(*ptt_vk)) {
+            mic_mode_hotkey_.reset();
+            SetStatus("Local mic hotkey install failed");
+        }
+    } else {
+        if (config_.local_asr.enabled) {
+            LogLine("local_asr push_to_talk_key invalid: " +
+                    config_.local_asr.push_to_talk_key);
+        }
+        mic_mode_hotkey_.reset();
+    }
+#endif
+}
+
 void Win32App::ApplyUpdatedConfig() {
     if (coordinator_) coordinator_->UpdateConfig(config_);
     SyncF5Suppressor();
+    SyncXiaomiKeymapHook();
+    SyncLocalMicRuntime();
 }
 
 bool Win32App::CreateWindowInternal() {
@@ -2462,6 +2652,8 @@ void Win32App::PairDeviceByManualId(const std::string& device_id) {
 }
 
 void Win32App::ShowNotification(const std::string& title, const std::string& body) {
+    // 新气泡顶掉旧气泡：旧气泡未消费的点击动作随之作废，防止点击语义错位。
+    pending_balloon_action_.reset();
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
@@ -2473,6 +2665,55 @@ void Win32App::ShowNotification(const std::string& title, const std::string& bod
     wcsncpy_s(data.szInfo, body_w.c_str(), _TRUNCATE);
     data.dwInfoFlags = NIIF_INFO;
     Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
+void Win32App::ShowActionableNotification(const std::string& title, const std::string& body,
+                                          BalloonAction action) {
+    pending_balloon_action_ = std::move(action);
+    ShowNotification(title, body);
+}
+
+void Win32App::ShowFirmwareUpdateBalloon(const std::string& device_id,
+                                         const std::string& current_version,
+                                         const std::string& latest_version,
+                                         bool is_below_minimum) {
+    DispatchToUi([this, device_id, current_version, latest_version, is_below_minimum] {
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        BalloonAction action;
+        action.kind = BalloonAction::Kind::kFirmwareUpdate;
+        action.device_id = device_id;
+        ShowActionableNotification(
+            Tr(is_below_minimum ? StringId::kFirmwareUpdatePromptTitleRequired
+                                : StringId::kFirmwareUpdatePromptTitleAvailable,
+               language),
+            FormatUtf8(Tr(StringId::kFirmwareUpdatePromptBody, language),
+                       {device_id, current_version, latest_version}),
+            std::move(action));
+    });
+}
+
+void __cdecl Win32App::WinSparkleFoundUpdateBridge() {
+    if (active_instance_ != nullptr) {
+        active_instance_->OnAppUpdateFound();
+    }
+}
+
+void Win32App::OnAppUpdateFound() {
+    // WinSparkle 工作线程回调：封送 UI 线程。每会话只气泡一次；用户可在标准
+    // 对话框里"跳过此版本"永久静音该版本（WinSparkle 注册表机制）。
+    DispatchToUi([this] {
+        if (app_update_balloon_shown_ || config_.portable_mode) {
+            return;
+        }
+        app_update_balloon_shown_ = true;
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        BalloonAction action;
+        action.kind = BalloonAction::Kind::kAppUpdate;
+        ShowActionableNotification(Tr(StringId::kNotificationAppUpdateTitle, language),
+                                   Tr(StringId::kNotificationAppUpdateBody, language),
+                                   std::move(action));
+        LogLine("app update found: balloon shown");
+    });
 }
 
 void Win32App::ShowTimedMessage(const std::string& message, int duration_ms) {
