@@ -1,0 +1,140 @@
+{
+  "engine": "sense_voice_int8",
+  "runs": 3,
+  "threads": 4,
+  "load_seconds": 1.45,
+  "hardware": {
+    "cpu": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M           ",
+    "logical_cores": 24,
+    "machine": "AMD64 / Windows 11",
+    "python": "3.12.10"
+  },
+  "results": [
+    {
+      "id": "daily_01",
+      "category": "daily_zh",
+      "audio_seconds": 7.8,
+      "elapsed_seconds_runs": [
+        0.1272,
+        0.1463,
+        0.1261
+      ],
+      "median_elapsed": 0.1272,
+      "median_rtf": 0.0163,
+      "text_asr": "今天中午吃什么？要不去楼下那家新开的面馆看看，听说他家的牛肉面挺不错的。",
+      "text_gt": "今天中午吃什么？要不去楼下那家新开的面馆看看，听说他家的牛肉面挺不错的。"
+    },
+    {
+      "id": "daily_02",
+      "category": "daily_zh",
+      "audio_seconds": 7.872,
+      "elapsed_seconds_runs": [
+        0.1351,
+        0.1498,
+        0.1529
+      ],
+      "median_elapsed": 0.1498,
+      "median_rtf": 0.019,
+      "text_asr": "这个周末你有空吗？我想约你一起去爬山。天气预报说是晴天正好出去走走。",
+      "text_gt": "这个周末你有空吗？我想约你一起去爬山，天气预报说是晴天，正好出去走走。"
+    },
+    {
+      "id": "daily_03",
+      "category": "daily_zh",
+      "audio_seconds": 7.392,
+      "elapsed_seconds_runs": [
+        0.1109,
+        0.1151,
+        0.111
+      ],
+      "median_elapsed": 0.111,
+      "median_rtf": 0.015,
+      "text_asr": "对了，明天开会的时间改到下午3点了，你别忘了提前把材料准备好发给大家。",
+      "text_gt": "对了，明天开会的时间改到下午三点了，你别忘了提前把材料准备好发给大家。"
+    },
+    {
+      "id": "mixtech_01",
+      "category": "mix_zh_en",
+      "audio_seconds": 9.504,
+      "elapsed_seconds_runs": [
+        0.1528,
+        0.15,
+        0.1483
+      ],
+      "median_elapsed": 0.15,
+      "median_rtf": 0.0158,
+      "text_asr": "我们这个项目用react做前端，后端是n jS数据库用的postb SQL部署在阿里云上。",
+      "text_gt": "我们这个项目用 React 做前端，后端是 Node.js，数据库用的 PostgreSQL，部署在阿里云上。"
+    },
+    {
+      "id": "mixtech_02",
+      "category": "mix_zh_en",
+      "audio_seconds": 6.816,
+      "elapsed_seconds_runs": [
+        0.1077,
+        0.1028,
+        0.1082
+      ],
+      "median_elapsed": 0.1077,
+      "median_rtf": 0.0158,
+      "text_asr": "这个接口的响应时间太长了，得加一层缓存，可以用readdis把热点数据存起来。",
+      "text_gt": "这个接口的响应时间太长了，得加一层缓存，可以用 Redis 把热点数据存起来。"
+    },
+    {
+      "id": "mixtech_03",
+      "category": "mix_zh_en",
+      "audio_seconds": 7.224,
+      "elapsed_seconds_runs": [
+        0.1317,
+        0.112,
+        0.1063
+      ],
+      "median_elapsed": 0.112,
+      "median_rtf": 0.0155,
+      "text_asr": "先把代码推到github，然后触发CI跑一遍单元测试，通过了再合并到主分支。",
+      "text_gt": "先把代码推到 GitHub，然后触发 CI 跑一遍单元测试，通过了再合并到主分支。"
+    },
+    {
+      "id": "read_01",
+      "category": "reading_zh",
+      "audio_seconds": 8.184,
+      "elapsed_seconds_runs": [
+        0.1206,
+        0.1236,
+        0.124
+      ],
+      "median_elapsed": 0.1236,
+      "median_rtf": 0.0151,
+      "text_asr": "人工智能技术在过去十年里取得了显著的进步，特别是在自然语言处理和计算机视觉领域。",
+      "text_gt": "人工智能技术在过去十年里取得了显著的进步，特别是在自然语言处理和计算机视觉领域。"
+    },
+    {
+      "id": "read_02",
+      "category": "reading_zh",
+      "audio_seconds": 7.608,
+      "elapsed_seconds_runs": [
+        0.1169,
+        0.1154,
+        0.1384
+      ],
+      "median_elapsed": 0.1169,
+      "median_rtf": 0.0154,
+      "text_asr": "这份报告分析了当前市场的竞争格局，并提出了三项关键的改进措施，供管理层参考。",
+      "text_gt": "这份报告分析了当前市场的竞争格局，并提出了三项关键的改进措施供管理层参考。"
+    },
+    {
+      "id": "read_03",
+      "category": "reading_zh",
+      "audio_seconds": 7.92,
+      "elapsed_seconds_runs": [
+        0.1336,
+        0.129,
+        0.1202
+      ],
+      "median_elapsed": 0.129,
+      "median_rtf": 0.0163,
+      "text_asr": "系统架构的设计原则包括高可用性、可扩展性和安全性，三者之间需要仔细权衡。",
+      "text_gt": "系统架构的设计原则包括高可用性、可扩展性和安全性，三者之间需要仔细权衡。"
+    }
+  ]
+}

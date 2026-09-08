@@ -4,9 +4,13 @@
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
 #include "hotword_extractor.h"
+#include "local_asr_client_win.h"
 #include "localization.h"
 #include "log.h"
+#include "mic_mode_hotkey.h"
+#include "push_to_talk_key.h"
 #include "resource.h"
+#include "wasapi_mic_capture.h"
 
 #include <Shellapi.h>
 #include <commdlg.h>
@@ -115,6 +119,19 @@ std::wstring CurrentExecutableCommand() {
     if (length == 0) return {};
     path.resize(length);
     return L"\"" + path + L"\"";
+}
+
+// exe 所在目录（无引号）：相对资源路径（本机麦克风模型目录等）的解析基准。
+std::wstring CurrentExecutableDir() {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) return {};
+    path.resize(length);
+    return std::filesystem::path(path).parent_path().wstring();
 }
 
 // 探测前台窗口所属进程是否高于本进程完整性：asInvoker（Medium）对 High 进程
@@ -360,6 +377,9 @@ Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig:
     active_instance_ = this;    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
            " portable_mode=" + std::string(config_.portable_mode ? "true" : "false") +
            " provider=" + AsrProviderName(config_.asr_provider));
+    LogApp("local_asr boot: enabled=" + std::string(config_.local_asr.enabled ? "true" : "false") +
+           " models_dir=" + config_.local_asr.models_dir +
+           " ptt=" + config_.local_asr.push_to_talk_key);
     if (config_.asr_provider == AsrProvider::kTencent) {
         LogApp("Tencent config appid=" + config_.tencent_appid +
                " secret_id=" + config_.tencent_secret_id.substr(0, 8) + "..." +
@@ -502,11 +522,19 @@ int Win32App::Run() {
         };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+        // 本机麦克风模式（[local_asr]，Doc/Plan/local-mic-mode.md）：安装 WASAPI
+        // 采集器 + 本地 SenseVoice ASR 与按住说话热键。模型缺失不在启动期报错
+        // ——首次会话 LocalAsrClient::Start 失败走既有 ASR 错误路径如实提示。
+        SyncLocalMicRuntime();
+#endif
         coordinator_->Start();
         LogLine("Coordinator started");
 
         f5_suppressor_ = std::make_unique<VoiceF5Suppressor>();
         SyncF5Suppressor();
+        xiaomi_keymap_hook_ = std::make_unique<XiaomiKeymapHook>();
+        SyncXiaomiKeymapHook();
 
         LogLine("Initializing global hotkey");
         global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
@@ -621,6 +649,8 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         }
         // 连接集变化同步刷新 F5 钩子门控（连接态可见 RC 设备时也视为有小米）。
         SyncF5Suppressor();
+        // 活跃 RC 设备可能变化（key_map 按活跃设备取覆盖），同步刷新映射钩子。
+        SyncXiaomiKeymapHook();
     });
 }
 
@@ -693,6 +723,8 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
         LogLine("Confirmed paired device " + std::string(id_prefix) + device_id);
         // 配对完成即刻刷新 F5 钩子门控（新配对的小米遥控器无需等下次启动/热更）。
         SyncF5Suppressor();
+        // 新配对的小米遥控器即刻生效其按键映射。
+        SyncXiaomiKeymapHook();
     }
     std::string detail = std::string(id_prefix) + device_id + " paired";
     if (info && !info->hardware.empty()) detail += " (" + info->hardware + ")";
@@ -1036,11 +1068,29 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                                      [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
                     const bool is_xiaomi = entry_it != config_.paired_devices.end() &&
                                            entry_it->hardware == kHardwareXiaomiRemote2Pro;
+                    // OS bond 清理按地址匹配系统配对记录，删除前先取地址
+                    //（RemovePairedDevice 后迭代器失效）。
+                    const std::uint64_t os_unpair_address =
+                        entry_it != config_.paired_devices.end() ? entry_it->bluetooth_address : 0;
                     coordinator_->RemovePairedDevice(device_id);
                     config_.RemovePairedDevice(device_id);
                     // 忘掉最后一台 RC 设备时卸载 F5 键盘钩子（按需装载的逆操作）。
                     SyncF5Suppressor();
-                    LogLine("Forgot device " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id);
+                    const std::string label = std::string(is_xiaomi ? "RC-" : "VS-") + device_id;
+                    LogLine("Forgot device " + label);
+                    // 同步清除 Windows 系统级配对记录：设备不再残留于系统蓝牙
+                    // 设备列表，用户无需再去系统设置删除（失败时状态栏兜底提示）。
+                    if (ble_central_ && os_unpair_address != 0) {
+                        ble_central_->UnpairOsBondAsync(device_id, os_unpair_address,
+                                                        [this, label](bool ok) {
+                                                            SetStatus(ok ? "Forgot " + label +
+                                                                      " (removed from Windows Bluetooth)"
+                                                                        : "Forgot " + label +
+                                                                      "; remove it in Windows Bluetooth settings");
+                                                        });
+                    } else {
+                        SetStatus("Forgot device " + label);
+                    }
                 }
             } else if (cmd >= kMenuUpdateFirmwareBase && cmd <= kMenuUpdateFirmwareEnd) {
                 std::size_t index = cmd - kMenuUpdateFirmwareBase;
@@ -1195,6 +1245,9 @@ void Win32App::ShutdownAndQuit() {
     if (global_hotkey_) {
         global_hotkey_->Unregister();
     }
+    // 先拆本机麦克风热键（LL 钩子）再 Shutdown 协调器：避免关停期间按键事件
+    // 继续进入协调器。
+    mic_mode_hotkey_.reset();
     pair_device_dialog_.reset();
     if (coordinator_) coordinator_->Shutdown();
     DestroyWindow(hwnd_);
@@ -1271,9 +1324,102 @@ void Win32App::SyncF5Suppressor() {
     }
 }
 
+void Win32App::SyncXiaomiKeymapHook() {
+    if (!xiaomi_keymap_hook_) return;
+    // 按需装载：仅「有已配对/已连接 RC 设备 且 有效 key_map 非空」时挂钩。
+    // key_map 非空即用户显式配置了映射（空串显式取消留在表内，由决策层放行），
+    // 不再叠加全局开关。刷新时机与 SyncF5Suppressor 一致。
+    std::optional<std::string> active_rc;
+    for (const auto& dev : connected_devices_) {
+        if (dev.hardware == kHardwareXiaomiRemote2Pro) {
+            active_rc = dev.id;
+            break;
+        }
+    }
+    if (!active_rc.has_value()) {
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.hardware == kHardwareXiaomiRemote2Pro) {
+                active_rc = entry.device_id;
+                break;
+            }
+        }
+    }
+    if (!active_rc.has_value()) {
+        xiaomi_keymap_hook_->Stop();
+        return;
+    }
+    // Raw Input 佐证只有 VID/PID 粒度（同型号多台无法区分），key_map 统一取
+    // 活跃 RC 设备的有效映射（设备覆盖填平后回落全局默认）。
+    auto key_map = config_.XiaomiSettingsForDevice(active_rc).key_map;
+    bool has_mapping = false;
+    for (const auto& [button, spec] : key_map) {
+        if (!spec.empty()) { has_mapping = true; break; }
+    }
+    if (has_mapping) {
+        xiaomi_keymap_hook_->Start(std::move(key_map));
+    } else {
+        xiaomi_keymap_hook_->Stop();
+    }
+}
+
+// 本机麦克风模式运行件与按住说话热键的启停/热更（幂等，设置保存与启动共用）。
+// 模型目录（空→"models"，相对→exe 目录基准，与旧启动逻辑同口径）变化才重建
+// 运行件；热键解析失败如实记日志不装钩子。
+void Win32App::SyncLocalMicRuntime() {
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+    if (coordinator_ == nullptr) return;
+
+    if (config_.local_asr.enabled) {
+        // 空 = exe/models、相对路径锚 exe 目录（口径与设置界面状态检查共用）。
+        const std::string models_dir = ResolveLocalMicModelsDir(
+            config_.local_asr.models_dir,
+            std::filesystem::path(CurrentExecutableDir()).string());
+        if (models_dir != local_mic_models_dir_applied_) {
+            coordinator_->SetLocalMicRuntime(
+                std::make_unique<WasapiMicCapture>(),
+                std::make_unique<LocalAsrClient>(models_dir));
+            local_mic_models_dir_applied_ = models_dir;
+            LogLine("Local mic runtime ready, models: " + models_dir);
+        }
+    } else if (!local_mic_models_dir_applied_.empty()) {
+        // 关闭：拆运行件与热键（协调器侧负责取消活跃会话，采集器析构即 Stop）。
+        coordinator_->SetLocalMicRuntime(nullptr, nullptr);
+        local_mic_models_dir_applied_.clear();
+        mic_mode_hotkey_.reset();
+        LogLine("Local mic mode disabled");
+        return;
+    }
+
+    const auto ptt_vk = ParsePushToTalkKey(config_.local_asr.push_to_talk_key);
+    if (config_.local_asr.enabled && ptt_vk) {
+        if (!mic_mode_hotkey_) {
+            mic_mode_hotkey_ = std::make_unique<MicModeHotkey>();
+            mic_mode_hotkey_->on_pressed = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyPressed();
+            };
+            mic_mode_hotkey_->on_released = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyReleased();
+            };
+        }
+        if (!mic_mode_hotkey_->Start(*ptt_vk)) {
+            mic_mode_hotkey_.reset();
+            SetStatus("Local mic hotkey install failed");
+        }
+    } else {
+        if (config_.local_asr.enabled) {
+            LogLine("local_asr push_to_talk_key invalid: " +
+                    config_.local_asr.push_to_talk_key);
+        }
+        mic_mode_hotkey_.reset();
+    }
+#endif
+}
+
 void Win32App::ApplyUpdatedConfig() {
     if (coordinator_) coordinator_->UpdateConfig(config_);
     SyncF5Suppressor();
+    SyncXiaomiKeymapHook();
+    SyncLocalMicRuntime();
 }
 
 bool Win32App::CreateWindowInternal() {

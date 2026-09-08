@@ -76,6 +76,14 @@ public:
     // 会话才能恢复。
     void RestartForResume();
 
+    // 「忘记设备」的 OS 侧清理：按蓝牙地址枚举系统已配对 BLE 设备，移除 Windows
+    // 配对记录（bond/LTK），使设备不再残留于系统蓝牙设备列表。与连接状态无关
+    //（未连接也能清，调用方须在拆会话之后调用）。幂等：系统已无该地址配对记录
+    // 时按成功处理。completion 经 UI 线程分发，true=已清除或无需清除。
+    winrt::fire_and_forget UnpairOsBondAsync(std::string device_id,
+                                              std::uint64_t bluetooth_address,
+                                              std::function<void(bool)> completion);
+
     // ---- 小米遥控器 2 Pro（ATVV）接线 ----
     // MIC_OPEN 时刻写出点（steady_clock epoch ms）：ValueChanged 回调线程直接写、
     // F5 抑制钩子（voice_f5_suppressor）读。须在 Start 前设置，之后不再变更。

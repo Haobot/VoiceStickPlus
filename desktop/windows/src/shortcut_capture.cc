@@ -8,6 +8,24 @@ namespace voicestick {
 
 ShortcutCapture* ShortcutCapture::active_instance_ = nullptr;
 
+// keydown 分类：决策与状态操作分离，纯函数可单测（钩子 proc 按返回值操作状态）。
+ShortcutCapture::KeyAction ShortcutCapture::ClassifyKey(UINT vk, const Options& options,
+                                                        bool have_modifier) {
+    if (vk == VK_ESCAPE) return KeyAction::kCancel;
+    const bool is_modifier = (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
+                              vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU ||
+                              vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
+                              vk == VK_LWIN || vk == VK_RWIN);
+    if (is_modifier) {
+        // 单键场景下修饰键本身即功能键（按住说话的 right ctrl）：直接作为主键
+        // 捕获，不再累积等待后续主键。
+        if (options.allow_modifier_as_key) return KeyAction::kCapture;
+        return KeyAction::kAccumulateModifier;
+    }
+    if (options.require_modifier && !have_modifier) return KeyAction::kRejectNoModifier;
+    return KeyAction::kCapture;
+}
+
 ShortcutCapture::~ShortcutCapture() { Cancel(); }
 
 void ShortcutCapture::Start(const Options& options) {
@@ -58,44 +76,42 @@ LRESULT CALLBACK ShortcutCapture::LowLevelKeyboardProc(int code, WPARAM w_param,
     if (code >= 0 && self && (w_param == WM_KEYDOWN || w_param == WM_SYSKEYDOWN)) {
         const auto* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(l_param);
         const UINT vk = kb->vkCode;
-        switch (vk) {
-            case VK_CONTROL:
-            case VK_LCONTROL:
-            case VK_RCONTROL:
-                self->ctrl_ = true;
+        const bool have_modifier =
+            self->ctrl_ || self->alt_ || self->shift_ || self->win_;
+        switch (ClassifyKey(vk, self->options_, have_modifier)) {
+            case KeyAction::kAccumulateModifier:
+                // 修饰键 keydown 累积并吞掉（其 keyup 放行），等待主键。
+                switch (vk) {
+                    case VK_CONTROL:
+                    case VK_LCONTROL:
+                    case VK_RCONTROL: self->ctrl_ = true; break;
+                    case VK_MENU:
+                    case VK_LMENU:
+                    case VK_RMENU: self->alt_ = true; break;
+                    case VK_SHIFT:
+                    case VK_LSHIFT:
+                    case VK_RSHIFT: self->shift_ = true; break;
+                    case VK_LWIN:
+                    case VK_RWIN: self->win_ = true; break;
+                }
                 return 1;
-            case VK_MENU:
-            case VK_LMENU:
-            case VK_RMENU:
-                self->alt_ = true;
-                return 1;
-            case VK_SHIFT:
-            case VK_LSHIFT:
-            case VK_RSHIFT:
-                self->shift_ = true;
-                return 1;
-            case VK_LWIN:
-            case VK_RWIN:
-                self->win_ = true;
-                return 1;
-            case VK_ESCAPE:
+            case KeyAction::kCancel:
                 // Esc 取消：清空已捕获修饰键，走统一收尾。
                 self->ctrl_ = self->alt_ = self->shift_ = self->win_ = false;
                 break;
-            default:
-                if (self->options_.require_modifier &&
-                    !self->ctrl_ && !self->alt_ && !self->shift_ && !self->win_) {
-                    // 无修饰键的主键：拒绝，由调用方显示提示，捕获随之结束。
-                    char vk_text[8];
-                    snprintf(vk_text, sizeof(vk_text), "%02X", vk);
-                    LogApp(std::string("ShortcutCapture: rejected vk=0x") + vk_text +
-                           " (modifier required)");
-                    self->FinishCapture();
-                    // 回调先拷贝到局部：回调内允许重新 Start 或销毁本对象。
-                    const auto on_rejected = self->on_rejected_no_modifier;
-                    if (on_rejected) on_rejected(vk);
-                    return 1;
-                }
+            case KeyAction::kRejectNoModifier: {
+                // 无修饰键的主键：拒绝，由调用方显示提示，捕获随之结束。
+                char vk_text[8];
+                snprintf(vk_text, sizeof(vk_text), "%02X", vk);
+                LogApp(std::string("ShortcutCapture: rejected vk=0x") + vk_text +
+                       " (modifier required)");
+                self->FinishCapture();
+                // 回调先拷贝到局部：回调内允许重新 Start 或销毁本对象。
+                const auto on_rejected = self->on_rejected_no_modifier;
+                if (on_rejected) on_rejected(vk);
+                return 1;
+            }
+            case KeyAction::kCapture:
                 break;
         }
         // 统一收尾：Esc 取消或捕获成功，均结束捕获并吞掉该键。

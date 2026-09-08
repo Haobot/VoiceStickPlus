@@ -5,6 +5,8 @@
 #include "key_spec.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
+#include "local_asr_client_win.h"
+#include "push_to_talk_key.h"
 #include "log.h"
 #include "voice_stick_cloud_api_win.h"
 
@@ -222,6 +224,16 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdChooseDir:
             ChooseDebugDirectory();
             return TRUE;
+        case kIdLocalMicModelsDirBrowse:
+            ChooseLocalMicModelsDir();
+            return TRUE;
+        case kIdLocalMicHotkeyCapture:
+            OnCaptureLocalMicHotkey();
+            return TRUE;
+        case kIdLocalMicModelsDirEdit:
+            // 离开编辑框即时重估模型有效性（与浏览/加载共用同一回显口径）。
+            if (HIWORD(w_param) == EN_KILLFOCUS) UpdateLocalMicModelsStatus();
+            return TRUE;
         case kIdApplyTrialApiKey:
             ApplyTrialApiKey();
             return TRUE;
@@ -275,6 +287,20 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         case kIdOpenSpectrogram:
             OpenSpectrogramViewer();
+            return TRUE;
+        }
+        break;
+    case WM_TIMER:
+        if (w_param == kPttCaptureHintTimerId) {
+            // 录入期间长时间无键盘事件：大概率前台是提权窗口（UIPI 隔离钩子事件）。
+            // 只提示一次，不中断捕获（对齐 hotkey_settings_dialog 同款模式）。
+            KillTimer(hwnd_, kPttCaptureHintTimerId);
+            if (ptt_capture_.active()) {
+                MessageBoxW(hwnd_,
+                            TrW(StringId::kHotkeyCaptureTimeoutBody, EffectiveUiLanguage(config_.ui_language)).c_str(),
+                            TrW(StringId::kHotkeyCaptureTimeoutTitle, EffectiveUiLanguage(config_.ui_language)).c_str(),
+                            MB_OK | MB_ICONINFORMATION);
+            }
             return TRUE;
         }
         break;
@@ -353,6 +379,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         break;
     }
     case WM_DESTROY:
+        // 录入会话与提示定时器随对话框销毁统一收尾（Cancel 仅卸钩子不回调）。
+        StopPttCaptureTimer();
+        ptt_capture_.Cancel();
         hwnd_ = nullptr;
         developer_mode_check_ = nullptr;
         provider_combo_ = nullptr;
@@ -374,6 +403,12 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
         debug_dir_edit_ = nullptr;
+        local_mic_enable_check_ = nullptr;
+        local_mic_models_dir_edit_ = nullptr;
+        local_mic_models_dir_browse_button_ = nullptr;
+        local_mic_models_status_label_ = nullptr;
+        local_mic_hotkey_edit_ = nullptr;
+        local_mic_hotkey_capture_button_ = nullptr;
         resource_label_ = nullptr;
         output_target_combo_ = nullptr;
         wechat_hotkey_edit_ = nullptr;
@@ -460,6 +495,12 @@ void SettingsDialog::DestroyControls() {
     selection_hotword_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     debug_dir_edit_ = nullptr;
+    local_mic_enable_check_ = nullptr;
+    local_mic_models_dir_edit_ = nullptr;
+    local_mic_models_dir_browse_button_ = nullptr;
+    local_mic_models_status_label_ = nullptr;
+    local_mic_hotkey_edit_ = nullptr;
+    local_mic_hotkey_capture_button_ = nullptr;
     resource_label_ = nullptr;
     output_target_combo_ = nullptr;
     wechat_hotkey_edit_ = nullptr;
@@ -907,6 +948,68 @@ void SettingsDialog::BuildControls() {
         }, [this]() { return developer_mode_; });
     }
 
+    // ===== 本机麦克风 =====
+    // 本地 SenseVoice ASR 按住说话（[local_asr]，Doc/Plan/local-mic-mode.md）：
+    // 需自备模型文件，属开发者/高级功能，普通模式隐藏，保存热更即时生效。
+    separator([this]() { return developer_mode_; });
+    section_title(StringId::kSettingsSectionLocalMic, [this]() { return developer_mode_; });
+    {
+        HWND lm_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        local_mic_enable_check_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicEnable, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdLocalMicEnable, instance_, BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {lm_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_enable_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        }, [this]() { return developer_mode_; });
+    }
+    {
+        HWND md_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsLocalMicModelsDir).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        const int browse_w = Dp(78);
+        local_mic_models_dir_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w - browse_w - Dp(6),
+                                                         Dp(24), kIdLocalMicModelsDirEdit, instance_));
+        local_mic_models_dir_browse_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicBrowse, language).c_str(),
+            0, 0, browse_w, Dp(24), kIdLocalMicModelsDirBrowse, instance_));
+        add(row_h + Dp(6), {
+            {md_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_models_dir_edit_, ctrl_x, 0, ctrl_w - browse_w - Dp(6), Dp(24)},
+            {local_mic_models_dir_browse_button_, ctrl_x + ctrl_w - browse_w, 0, browse_w, Dp(24)},
+        }, [this]() { return developer_mode_; });
+        // 模型目录有效性回显行（✓/✗ + 说明，Resolve+Validate 与启动校验同口径）。
+        local_mic_models_status_label_ = remember_label(CreateLabel(
+            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
+        add(Dp(20), {
+            {local_mic_models_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return developer_mode_; });
+    }
+    {
+        HWND hk_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsLocalMicHotkey).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        const int capture_w = Dp(78);
+        local_mic_hotkey_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w - capture_w - Dp(6),
+                                                     Dp(24), kIdLocalMicHotkeyEdit, instance_));
+        local_mic_hotkey_capture_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicCapture, language).c_str(),
+            0, 0, capture_w, Dp(24), kIdLocalMicHotkeyCapture, instance_));
+        add(row_h + Dp(6), {
+            {hk_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_hotkey_edit_, ctrl_x, 0, ctrl_w - capture_w - Dp(6), Dp(24)},
+            {local_mic_hotkey_capture_button_, ctrl_x + ctrl_w - capture_w, 0, capture_w, Dp(24)},
+        }, [this]() { return developer_mode_; });
+    }
+    {
+        HWND hint = remember_label(CreateLabel(
+            hwnd_, TrW(StringId::kSettingsLocalMicHotkeyHint, language).c_str(),
+            0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
+        add(Dp(22), {
+            {hint, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return developer_mode_; });
+    }
+
     // 所有控件均已加入布局表（高级区块带 developer_mode_ vis 谓词），Relayout 统一
     // 处理显隐。此处保留安全网：万一有控件未注册，统一隐藏避免残留显示在 (0,0)。
     // 保存/取消按钮在此之后才创建，不在本循环范围内。
@@ -1127,6 +1230,13 @@ void SettingsDialog::LoadConfigIntoControls() {
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
+    // 本机麦克风：模型目录为空显示默认值提示（留空 = exe 目录下 models/）。
+    SendMessageW(local_mic_enable_check_, BM_SETCHECK,
+                 config_.local_asr.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(local_mic_models_dir_edit_, Utf16(config_.local_asr.models_dir).c_str());
+    SetWindowTextW(local_mic_hotkey_edit_, Utf16(config_.local_asr.push_to_talk_key).c_str());
+    UpdateLocalMicModelsStatus();
+
     int output_target_idx = 0;
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
@@ -1231,6 +1341,13 @@ void SettingsDialog::SaveSettings() {
 
     auto dir = GetWindowText(debug_dir_edit_);
     if (!dir.empty()) config_.debug_audio_directory = dir;
+
+    // 本机麦克风（[local_asr]）：保存后经 on_config_changed → ApplyUpdatedConfig
+    // 热更（重建采集器/本地 ASR/热键），无需重启应用。
+    config_.local_asr.enabled =
+        SendMessageW(local_mic_enable_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    config_.local_asr.push_to_talk_key = Utf8(GetWindowText(local_mic_hotkey_edit_));
 
     int output_target_idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
     if (output_target_idx == 1) {
@@ -1350,6 +1467,11 @@ void SettingsDialog::ApplyTrialApiKey() {
 }
 
 void SettingsDialog::ChooseDebugDirectory() {
+    ChooseFolderInto(debug_dir_edit_);
+}
+
+void SettingsDialog::ChooseFolderInto(HWND target_edit) {
+    if (target_edit == nullptr) return;
     IFileDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
                                 IID_IFileDialog, reinterpret_cast<void**>(&dialog)))) {
@@ -1357,7 +1479,7 @@ void SettingsDialog::ChooseDebugDirectory() {
     }
     dialog->SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
 
-    auto current_dir = GetWindowText(debug_dir_edit_);
+    auto current_dir = GetWindowText(target_edit);
     if (!current_dir.empty()) {
         IShellItem* folder = nullptr;
         if (SUCCEEDED(SHCreateItemFromParsingName(current_dir.c_str(), nullptr,
@@ -1372,13 +1494,95 @@ void SettingsDialog::ChooseDebugDirectory() {
         if (SUCCEEDED(dialog->GetResult(&result))) {
             PWSTR path = nullptr;
             if (SUCCEEDED(result->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-                SetWindowTextW(debug_dir_edit_, path);
+                SetWindowTextW(target_edit, path);
                 CoTaskMemFree(path);
             }
             result->Release();
         }
     }
     dialog->Release();
+}
+
+void SettingsDialog::ChooseLocalMicModelsDir() {
+    ChooseFolderInto(local_mic_models_dir_edit_);
+    UpdateLocalMicModelsStatus();
+}
+
+void SettingsDialog::UpdateLocalMicModelsStatus() {
+    if (local_mic_models_status_label_ == nullptr || local_mic_models_dir_edit_ == nullptr) {
+        return;
+    }
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    // 与启动接线（SyncLocalMicRuntime）同一解析口径：空 = exe/models，相对锚 exe。
+    const std::string configured = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    const std::string exe_dir = [&]() {
+        std::wstring exe_path(MAX_PATH, L'\0');
+        DWORD length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                          static_cast<DWORD>(exe_path.size()));
+        while (length == exe_path.size()) {
+            exe_path.resize(exe_path.size() * 2);
+            length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                        static_cast<DWORD>(exe_path.size()));
+        }
+        if (length == 0) return std::string();
+        exe_path.resize(length);
+        return std::filesystem::path(exe_path).parent_path().string();
+    }();
+    const std::string resolved = ResolveLocalMicModelsDir(configured, exe_dir);
+    const bool ready = !ValidateSenseVoiceModelsDir(resolved).has_value();
+    SetWindowTextW(local_mic_models_status_label_,
+                   TrW(ready ? StringId::kSettingsLocalMicModelsOk
+                             : StringId::kSettingsLocalMicModelsMissing,
+                       language)
+                       .c_str());
+}
+
+void SettingsDialog::OnCaptureLocalMicHotkey() {
+    if (ptt_capture_.active()) return;  // 录入中重复点击忽略
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+
+    ShortcutCapture::Options options;
+    options.require_modifier = false;
+    // 按住说话是单键语义：right ctrl 等修饰键本身即功能键，直接作为主键捕获。
+    options.allow_modifier_as_key = true;
+    ptt_capture_.on_captured = [this, language](const ShortcutCapture::Result& result) {
+        StopPttCaptureTimer();
+        RestorePttCaptureButtonText();
+        const auto name = FormatPushToTalkKey(result.vk);
+        if (name.has_value()) {
+            SetWindowTextW(local_mic_hotkey_edit_, Utf16(*name).c_str());
+        } else {
+            MessageBoxW(hwnd_,
+                        TrW(StringId::kSettingsLocalMicHotkeyUnsupported, language).c_str(),
+                        TrW(StringId::kHotkeyCaptureTimeoutTitle, language).c_str(),
+                        MB_OK | MB_ICONINFORMATION);
+        }
+    };
+    ptt_capture_.on_cancelled = [this] {
+        StopPttCaptureTimer();
+        RestorePttCaptureButtonText();
+    };
+    ptt_capture_.Start(options);
+    if (ptt_capture_.active()) {
+        SetWindowTextW(local_mic_hotkey_capture_button_,
+                       TrW(StringId::kSettingsLocalMicCapturing, language).c_str());
+        SetTimer(hwnd_, kPttCaptureHintTimerId, kPttCaptureHintTimeoutMs, nullptr);
+    }
+}
+
+void SettingsDialog::StopPttCaptureTimer() {
+    if (hwnd_ != nullptr) {
+        KillTimer(hwnd_, kPttCaptureHintTimerId);
+    }
+}
+
+void SettingsDialog::RestorePttCaptureButtonText() {
+    if (local_mic_hotkey_capture_button_ != nullptr) {
+        SetWindowTextW(local_mic_hotkey_capture_button_,
+                       TrW(StringId::kSettingsLocalMicCapture,
+                           EffectiveUiLanguage(config_.ui_language))
+                           .c_str());
+    }
 }
 
 void SettingsDialog::OpenSpectrogramViewer() {

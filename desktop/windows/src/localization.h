@@ -79,6 +79,17 @@ enum class StringId {
     kSettingsOpenSpectrogram,
     kSettingsSpectrogramNotFound,
     kSettingsDeveloperMode,
+    kSettingsSectionLocalMic,
+    kSettingsLocalMicEnable,
+    kSettingsLocalMicModelsDir,
+    kSettingsLocalMicHotkey,
+    kSettingsLocalMicHotkeyHint,
+    kSettingsLocalMicBrowse,
+    kSettingsLocalMicCapture,
+    kSettingsLocalMicCapturing,
+    kSettingsLocalMicHotkeyUnsupported,
+    kSettingsLocalMicModelsOk,
+    kSettingsLocalMicModelsMissing,
 
     // 托盘菜单
     kMenuPairDevice,

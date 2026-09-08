@@ -1,0 +1,119 @@
+# VoiceStick P1 — 桌面语音输入 MVP（Windows 先行）
+
+按住说话 → 松手出字 的本地优先语音输入客户端。路线图 v1.3 §四 P1 第一迭代交付物，
+技术方案见 [docs/design-p1-mvp.md](docs/design-p1-mvp.md)。
+
+## 功能
+
+- **全局热键**：按住 `右 Ctrl` 说话，松手触发识别；`Esc` 取消本句（丢弃音频）。
+- **悬浮条**：屏幕顶部中央状态条（录音中=粉 / 识别中=蓝 / 结果=绿 / 错误=橙），结果停留 4 秒。
+- **本地识别**：SenseVoice-Small int8（sherpa-onnx），完全离线。
+- **热词飞轮**：SQLite + AES-GCM 字段加密热词库；识别后处理纠正（拉丁精确/模糊 + 中文拼音滑窗），
+  命中回写权重（+0.05，上限 2.0），下一句立即生效。
+- **热词两个入口**（第二迭代）：
+  - 框选添加——任意应用选中文本 → `Ctrl+Alt+H` → 确认小窗（可编辑词条与读音变体）→ 入库（source=manual）；
+    读取走剪贴板往返（暂存→Ctrl+C→读→还原），复制失败自动重试，重试耗尽提示不误读。
+  - 改写确认——口述后按 `Ctrl+Alt+S` → 最近一句三段对照（识别原文 / 热词纠正后 / 最终注入）→
+    勾选纠正对保存，错读形式作为读音变体入库（source=correction），下次同发音直接纠正。
+- **AI 改写**：默认规则版（去口癖/叠字折叠/标点规整）；可选腾讯混元（配置凭据后自动启用）。
+- **文本注入**：剪贴板 + Ctrl+V 到当前焦点窗口。
+- **剪贴板内容恢复**（第四迭代）：注入与框选读取前对剪贴板做完整格式快照（EnumClipboardFormats
+  遍历全部格式逐字节保存），完成后原样复原——图片（CF_DIB）、HTML 等非文本格式不再丢失；
+  注入路径 Ctrl+V 后延时 150ms 再恢复（目标应用异步读剪贴板）。
+- **系统托盘**（第三迭代）：纯 ctypes 零新依赖（Shell_NotifyIconW）；右键菜单：
+  状态行（热词库条数动态）、**监听热键开关**（暂停后全局热键不再抢键）、
+  **开机自启开关**（HKCU Run + pythonw 无窗口）、退出——退出经 Tk after 切回
+  主线程收尾（注销热键、删托盘图标、销毁 Tk），进程树干净退出。
+- **多方案热键映射**（第五迭代）：内置热键方案预设（右Ctrl 长按 / F8 长按），
+  托盘「热键方案」子菜单即时切换（钩子重绑不重启）+ 写回 `config.toml` 持久化
+  （保留注释与其他配置行）；`preset` 字段整组采用预设，无 `preset` 时显式四键
+  = 自定义方案（兼容旧配置），预设值无效启动即报错不静默降级。
+
+## 快速开始
+
+依赖 m0/ 的虚拟环境与模型权重（不重复下载 ~3GB）：
+
+```bash
+# 1. 准备（一次性）
+cd ../m0 && .venv/Scripts/pip install -r ../p1/requirements.txt
+.venv/Scripts/python.exe scripts/download_models.py --only sense_voice   # 若模型未就位
+
+# 2. 启动
+cd ../p1 && ../m0/.venv/Scripts/python.exe main.py
+```
+
+按住 `右 Ctrl` 对麦克风说话，松手后文本自动粘贴到焦点窗口。
+退出：托盘右键 → 退出（或前台控制台 `Ctrl+C`）。
+
+## 配置
+
+`p1/config.toml`（gitignored，缺省全部用默认值），字段见 [config.example.toml](config.example.toml)：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `hotkey.push_to_talk` | `right ctrl` | 按住说话键（keyboard 库键名） |
+| `hotkey.cancel` | `esc` | 取消本句键 |
+| `hotkey.add_selection` | `ctrl+alt+h` | 框选添加热词键 |
+| `hotkey.confirm_recent` | `ctrl+alt+s` | 改写确认键 |
+| `engine.adapter` | `sense_voice` | 识别引擎（P1 仅此一种） |
+| `engine.models_dir` | `../m0/models` | 模型权重目录（与 M0 共享） |
+| `rewrite.provider` | `rules` | `rules` 或 `hunyuan`（后者需凭据） |
+| `hotword.db_path` | `%APPDATA%/VoiceStickP1/hotwords.db` | 热词库位置 |
+
+混元凭据走环境变量 `HUNYUAN_SECRET_ID` / `HUNYUAN_SECRET_KEY`（与 m0 一致，不进仓库）。
+
+## 目录结构
+
+```text
+src/p1/
+├── interaction/    # 热键监听、悬浮条 UI、文本注入（OS 边界）
+├── orchestration/  # 录音会话、识别管线编排
+├── flywheel/       # 热词库（加密存储）、后处理纠正器
+├── rewrite/        # 规则改写器、混元改写器
+├── engines/        # 引擎适配器（capabilities 自描述）
+└── controller.py   # 热键→会话→管线→UI 粘合状态机
+```
+
+## 测试与验收
+
+```bash
+# 单元/集成测试（151 个，无凭据/模型时自动 SKIP 相关项）
+../m0/.venv/Scripts/python.exe -m pytest tests/ -q
+
+# 全真链路自检（真实 wav → 识别 → 纠正 → 改写 → 剪贴板，不粘贴）
+../m0/.venv/Scripts/python.exe scripts/e2e_selftest.py
+
+# 悬浮条视觉冒烟（截图三态到 docs/shots/）
+../m0/.venv/Scripts/python.exe scripts/overlay_smoke.py
+../m0/.venv/Scripts/python.exe scripts/verify_overlay_shots.py
+
+# 真机验收辅助：注入完整/取消会话（需主程序运行中；键位需临时改为 f8）
+../m0/.venv/Scripts/python.exe scripts/inject_ptt.py hold|cancel
+
+# 框选添加真机一体化验收（记事本全选→热键→弹窗→Enter 入库→剪贴板还原取证；
+# 需主程序运行中，脚本顶部 NOTEPAD_PID/APP_PID 按现场改，APP_PID 取持有 tk 窗口的
+# python 子进程——venv python 经 cmd 启动是 redirector 双层结构）
+../m0/.venv/Scripts/python.exe scripts/accept_add_selection.py
+
+# 仅注入两个入口热键（KEYEVENTF_SCANCODE，组合键 VK 注入不触发 add_hotkey）
+../m0/.venv/Scripts/python.exe scripts/inject_entries.py add|confirm
+
+# 托盘菜单开关一体化验收（鼠标点菜单项→暂停时 F8 不响应→自启注册表取证；
+# 需主程序运行中，参数 = 持有 VoiceStickP1TrayWnd 窗口的 python 进程 pid）
+../m0/.venv/Scripts/python.exe scripts/accept_tray.py <GUI_PID>
+
+# 热键方案切换一体化验收（托盘子菜单键盘导航切预设→rebind 新键生效/旧键失效
+# →config 持久化取证→恢复原样；菜单导航用 PostMessage 直发菜单窗口，
+# SendInput 注入对菜单模态不稳定）
+../m0/.venv/Scripts/python.exe scripts/accept_hotkey_presets.py <GUI_PID>
+```
+
+## 已知限制
+
+- 剪贴板快照跳过句柄类格式（CF_BITMAP/CF_METAFILEPICT/CF_PALETTE/CF_ENHMETAFILE）——
+  它们持有进程内 GDI 句柄而非字节流，跨进程复原需句柄复制，当前版本这类内容往返后会丢失；
+  延迟渲染格式（SetClipboardData 延迟句柄）同样不在快照范围。
+- MCP/SendKeys 等合成键盘注入不经低级键盘钩子，自动化验收需用 keyboard 库注入
+  （`scripts/inject_ptt.py`）或物理按键。
+- 高 DPI（150%/200%）下 ImageGrab 截图是虚拟化分辨率，悬浮条像素核验需乘缩放系数。
+- 热词库密钥（`hw.key`）丢失即不可恢复——隐私优先的取舍，见设计文档 §热词库。

@@ -1,0 +1,97 @@
+"""全局热键监听（keyboard 库钩子线程回调，不做任何阻塞操作）。
+
+按住说话：push_to_talk 键 down = 开始录音，up = 停止并出字；
+cancel 键按下 = 放弃当前会话；action_keys 为附加组合键（如 ctrl+alt+h）。
+
+实现注意：push 键的 down/up 必须合并为单个 hook_key 钩子——keyboard 库对
+同键注册两个钩子时 _hooks[key] 条目互相覆盖，注销时必然 KeyError 且留残钩。
+组合键 on_press_key 不支持（"ctrl+alt+h is not mapped"），须走 add_hotkey。
+"""
+from __future__ import annotations
+
+
+class HotkeyListener:
+    def __init__(self, push_key: str, cancel_key: str,
+                 on_press, on_release, on_cancel,
+                 action_keys: dict[str, callable] | None = None):
+        self._push_key = push_key
+        self._cancel_key = cancel_key
+        self._on_press = on_press
+        self._on_release = on_release
+        self._on_cancel = on_cancel
+        self._action_keys = action_keys or {}
+        self._handles = []   # hook_key 返回的注销函数
+        self._hotkey_handles = []  # add_hotkey 返回句柄
+        self._paused = False
+
+    def start(self) -> None:
+        import keyboard
+
+        def push_handler(event):
+            if self._paused:
+                return
+            if event.event_type == keyboard.KEY_DOWN:
+                self._on_press()
+            else:
+                self._on_release()
+
+        def cancel_handler(_event):
+            if self._paused:
+                return
+            self._on_cancel()
+
+        # 存实例属性：白盒测试直调验证暂停短路；也是钩子回调的唯一入口
+        self._push_handler = push_handler
+        self._cancel_handler = cancel_handler
+        self._action_handlers = {}
+        for key, callback in self._action_keys.items():
+            def make_handler(cb):
+                def handler():
+                    if self._paused:
+                        return
+                    cb()
+                return handler
+            self._action_handlers[key] = make_handler(callback)
+
+        self._handles.append(keyboard.hook_key(
+            self._push_key, push_handler, suppress=False))
+        self._handles.append(keyboard.on_press_key(
+            self._cancel_key, cancel_handler, suppress=False))
+        for key in self._action_keys:
+            self._hotkey_handles.append(
+                keyboard.add_hotkey(key, self._action_handlers[key]))
+
+    def stop(self) -> None:
+        import keyboard
+
+        for handle in self._handles:
+            keyboard.unhook(handle)
+        self._handles.clear()
+        for handle in self._hotkey_handles:
+            keyboard.remove_hotkey(handle)
+        self._hotkey_handles.clear()
+
+    def rebind(self, push_key: str, cancel_key: str,
+               action_keys: dict[str, callable] | None = None) -> None:
+        """托盘切热键方案：注销旧钩子换新键重新注册；暂停态保持不变。
+
+        先 stop 清句柄再 start，同键重绑也无双钩子残留风险。
+        """
+        self.stop()
+        self._push_key = push_key
+        self._cancel_key = cancel_key
+        if action_keys is not None:
+            self._action_keys = action_keys
+        self.start()
+
+    # ---- 暂停/恢复（托盘开关）：标志位短路，不重注册钩子 ----
+    # unhook/rehook 有同键双钩子 KeyError 的历史风险；且组合键 rehook 期间事件可能漏
+
+    def pause(self) -> None:
+        self._paused = True
+
+    def resume(self) -> None:
+        self._paused = False
+
+    def is_paused(self) -> bool:
+        return self._paused

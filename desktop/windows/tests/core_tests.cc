@@ -10,11 +10,13 @@
 #include "xiaomi_atvv_protocol.h"
 #include "xiaomi_atvv_session.h"
 #include "xiaomi_buttons.h"
+#include "xiaomi_keymap_interceptor.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
 
 #include <opus.h>
 #include "byte_utils.h"
+#include "clipboard_vault.h"
 #include "cJSON.h"
 #include "esptool_flash_command.h"
 #include "esptool_progress.h"
@@ -28,6 +30,11 @@
 #include "localization.h"
 #include "ogg_opus_muxer.h"
 #include "ogg_opus_demuxer.h"
+#include "local_asr_client_win.h"
+#include "mic_capture.h"
+#include "wasapi_mic_capture.h"
+#include "push_to_talk_key.h"
+#include "shortcut_capture.h"
 #include "onboarding_dialog.h"
 #include "pair_device_helper.h"
 #include "pcm_ring_buffer.h"
@@ -44,8 +51,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <crtdbg.h>
@@ -53,7 +62,9 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <atomic>
 #include <set>
 #include <sstream>
 #include <string>
@@ -587,6 +598,27 @@ public:
     std::vector<SetCall> set_calls;
 };
 
+// 测试用本机麦克风采集器：解耦真实 WASAPI，on_pcm 由测试线程手动触发
+// （等价真实实现的采集线程回调语义）。
+class FakeMicCapture : public IMicCapture {
+public:
+    bool Start() override {
+        ++start_count;
+        return start_result;
+    }
+    void Stop() override {
+        ++stop_count;
+    }
+    std::string LastStartError() const override {
+        return start_error;
+    }
+
+    bool start_result = true;
+    std::string start_error;
+    int start_count = 0;
+    int stop_count = 0;
+};
+
 StateEvent ButtonEvent(const std::string& event,
                        const std::string& button,
                        std::optional<std::uint32_t> session_id = std::nullopt,
@@ -799,6 +831,30 @@ void TestPairDeviceHelpers() {
         assert(!merged_reverse.front().is_temporary_candidate);
         assert(merged_reverse.front().device_id == "D63C");
     }
+
+    // OS bond 清理按地址匹配 DeviceInformation：解析 Windows 地址属性字符串。
+    // 真机事实（2026-09-07 probe）：System.DeviceInterface.Bluetooth.DeviceAddress
+    // 为无分隔符 12 位十六进制（"c05d39c36459"），System.Devices.Aep.DeviceAddress
+    // 为冒号分隔（"c0:5d:39:c3:64:59"），两种格式都必须可解析——首版只认分隔
+    // 格式导致全部记录跳过、忘记设备假成功、系统列表残留。
+    assert(ParseBluetoothAddressString("AA:BB:CC:DD:EE:FF").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("aa:bb:cc:dd:ee:ff").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("  AA:BB:CC:DD:EE:FF  ").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("00:00:00:00:00:00").value() == 0ull);
+    assert(ParseBluetoothAddressString("AA-BB-CC-DD-EE-FF").value() == 0xAABBCCDDEEFFull);
+    assert(ParseBluetoothAddressString("c05d39c36459").value() == 0xC05D39C36459ull);
+    assert(ParseBluetoothAddressString("C05D39C36459").value() == 0xC05D39C36459ull);
+    assert(ParseBluetoothAddressString(" c05d39c36459 ").value() == 0xC05D39C36459ull);
+    assert(ParseBluetoothAddressString("000000000000").value() == 0ull);
+    assert(!ParseBluetoothAddressString("").has_value());
+    assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE").has_value());
+    assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE:FF:00").has_value());
+    assert(!ParseBluetoothAddressString("AA:BB:CC:DD:EE:GG").has_value());
+    assert(!ParseBluetoothAddressString("A:BB:CC:DD:EE:FF").has_value());
+    assert(!ParseBluetoothAddressString("AA: BB:CC:DD:EE:FF").has_value());
+    assert(!ParseBluetoothAddressString("AA::CC:DD:EE:FF").has_value());
+    assert(!ParseBluetoothAddressString("c05d39c3645").has_value());
+    assert(!ParseBluetoothAddressString("c05d39c3645g").has_value());
 }
 
 void TestPairingAdvertisementClassify() {
@@ -6281,6 +6337,248 @@ void TestAppConfigXiaomiKeyMap() {
     std::filesystem::remove(temp);
 }
 
+// 按键映射消费端（Doc/Plan/xiaomi-keymap-consumer.md）：kbdhid 翻译特征识别、
+// 佐证窗决策（吞+注入/放行）、按住闩锁与 keyup 关联、注入 VK 序列构造。
+void TestXiaomiKeymapInterceptor() {
+    // ---- 特征识别表：遥控器 12 键的 (VK, 扫描码) 特征 → 按钮候选 ----
+    assert(XiaomiButtonFromVkScan(VK_BROWSER_BACK, 0) == "back");
+    // VK_BACK/0x0E 不再识别为 back（2026-09-07 三轮探针 + MiVibe 研读定案：RC003
+    // 固件上报 back usage 0xF1，但被微软 HidOverGatt WUDF 宿主在翻译层丢弃，系统
+    // 输入链路全静默——此前日志中的 VK_BACK 事件全部为物理键盘 Backspace 污染。
+    // 保留该特征会拖慢物理 Backspace 首按并存在误吞风险，故移除；VK_BROWSER_BACK
+    // 为 RC001 固件特征，保留）。
+    assert(XiaomiButtonFromVkScan(VK_BACK, 0x0E) == std::nullopt);
+    assert(XiaomiButtonFromVkScan(VK_BACK, 0) == std::nullopt);
+    assert(XiaomiButtonFromVkScan(VK_BROWSER_HOME, 0) == "home");
+    assert(XiaomiButtonFromVkScan(VK_HOME, 0) == "home");
+    assert(XiaomiButtonFromVkScan(VK_RETURN, 0) == "ok");
+    assert(XiaomiButtonFromVkScan(VK_UP, 0) == "up");
+    assert(XiaomiButtonFromVkScan(VK_DOWN, 0) == "down");
+    assert(XiaomiButtonFromVkScan(VK_LEFT, 0) == "left");
+    assert(XiaomiButtonFromVkScan(VK_RIGHT, 0) == "right");
+    assert(XiaomiButtonFromVkScan(VK_APPS, 0) == "menu");
+    // tv 与键盘 Grave 同 VK，靠扫描码 0x29 特征 + 佐证归属区分。
+    assert(XiaomiButtonFromVkScan(VK_OEM_3, 0x29) == "tv");
+    assert(XiaomiButtonFromVkScan(VK_OEM_3, 0x02) == std::nullopt);
+    // power 三特征：VK_SLEEP / VK 0xFF（kbdhid 未知键）/ 扫描码 0x5E。
+    assert(XiaomiButtonFromVkScan(VK_SLEEP, 0) == "power");
+    assert(XiaomiButtonFromVkScan(0xFF, 0) == "power");
+    assert(XiaomiButtonFromVkScan(0x41, 0x5E) == "power");
+    assert(XiaomiButtonFromVkScan(VK_VOLUME_UP, 0) == "volume_up");
+    assert(XiaomiButtonFromVkScan(VK_VOLUME_DOWN, 0) == "volume_down");
+    // 非遥控器特征：普通字母/数字/功能键/空扫描码 power 特征不算。
+    assert(XiaomiButtonFromVkScan(0x41, 0) == std::nullopt);
+    assert(XiaomiButtonFromVkScan(VK_F5, 0) == std::nullopt);
+    assert(XiaomiButtonFromVkScan(0, 0x5E) == std::nullopt);
+    // 识别出的候选必在可映射集合内（与 xiaomi_buttons.h 一致）。
+    for (UINT vk : {VK_BACK, VK_BROWSER_BACK, VK_BROWSER_HOME, VK_HOME, VK_RETURN,
+                    VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_APPS, VK_OEM_3,
+                    VK_SLEEP, 0xFF, 0x41, VK_VOLUME_UP, VK_VOLUME_DOWN}) {
+        for (UINT scan : {UINT{0}, UINT{0x0E}, UINT{0x29}, UINT{0x5E}, UINT{0x02}}) {
+            const auto button = XiaomiButtonFromVkScan(vk, scan);
+            if (button.has_value()) assert(IsXiaomiMappableButton(*button));
+        }
+    }
+
+    // ---- Raw Input 设备接口路径识别：小米遥控器在 Raw Input 中是
+    // RIM_TYPEKEYBOARD，RIDI_DEVICEINFO 只填 keyboard 联合体成员（hid.dwVendorId
+    // 恒 0，2026-09-07 真机排查教训），VID/PID 必须从 RIDI_DEVICENAME 路径解析。
+    // BTHLE 实测名：\\?\HID#{00001812-...}_Dev_VID&012717_PID&32b8_REV&00a4_c05d39...#...#...
+    assert(XiaomiRawInputNameIsRemote(
+        L"\\\\?\\HID#{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&012717_PID&32b8_"
+        L"REV&00a4_c05d39c36459#b&19f8b1bc&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}"));
+    // USB HID 接口名格式同样命中（容错未来有线连接场景）。
+    assert(XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_2717&PID_32B8&MI_00#6&2a3b#0000"));
+    // 大小写不敏感。
+    assert(XiaomiRawInputNameIsRemote(L"hid#vid&2717_pid&32b8#x"));
+    // VID/PID 任一不匹配即非目标设备。
+    assert(!XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_260D&PID_1131&MI_01&Col01#8&1bddaf93"));
+    assert(!XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_2717&PID_9999&MI_00#6&2a3b"));
+    // 无标记 / 仅一个标记 / 标记嵌在单词里（如 devid）不算。
+    assert(!XiaomiRawInputNameIsRemote(L""));
+    assert(!XiaomiRawInputNameIsRemote(L"\\\\?\\HID#VID_2717&MI_00#6&2a3b"));
+    assert(!XiaomiRawInputNameIsRemote(L"prefix devid&012717 end pid&32b8"));
+    // 前导零等价：VID&012717（BTHLE 6 位格式，前两位为 Source 前缀）与
+    // VID&2717 / VID&002717 按低 16 位数值相同。
+    assert(XiaomiRawInputNameIsRemote(L"x_VID&2717_PID&32b8_y"));
+    assert(XiaomiRawInputNameIsRemote(L"x_VID&002717_PID&32b8_y"));
+
+    // ---- 注入序列：down 修饰键序+主键；up 反序 ----
+    const auto backspace = ParseKeySpec("backspace").value();
+    assert((XiaomiKeymapInjectDownVks(backspace) ==
+           std::vector<UINT>{VK_BACK}));
+    assert((XiaomiKeymapInjectUpVks(backspace) == std::vector<UINT>{VK_BACK}));
+    const auto combo = ParseKeySpec("ctrl+shift+v").value();
+    assert((XiaomiKeymapInjectDownVks(combo) ==
+           std::vector<UINT>{VK_CONTROL, VK_SHIFT, 'V'}));
+    assert((XiaomiKeymapInjectUpVks(combo) ==
+           std::vector<UINT>{'V', VK_SHIFT, VK_CONTROL}));
+    const auto winCombo = ParseKeySpec("win+down").value();
+    assert((XiaomiKeymapInjectDownVks(winCombo) ==
+           std::vector<UINT>{VK_LWIN, VK_DOWN}));
+
+    // ---- 决策状态机（keyup 后置决策版，2026-09-07 三次修复:LL 钩子吞掉的
+    // 按键既无 MAKE raw 也无 BREAK raw——按键时刻在用户态拿不到任何设备证据,
+    // 先验判定（全局信用热注入）必然存在物理键误映射率。改为:keydown 只吞
+    // 不注入（零副作用）,keyup 放行让 BREAK 沿随投递（hDevice = 可靠证据）,
+    // 归属判定后收尾——遥控器注入映射 down+up 对,物理键盘补偿原键对。 ----
+    const std::map<std::string, std::string> key_map = {
+        {"back", "backspace"}, {"home", "ctrl+shift+v"}, {"tv", "win+down"}};
+    constexpr std::int64_t kNow = 500000;
+
+    // 无映射按键：不吞不注入（key_map 未覆盖 ok/up/down 等）。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto a = local.OnKeyDown("ok", VK_RETURN, 0x1C, kNow, key_map);
+        assert(!a.swallow && a.inject.empty() && !local.HasPending());
+    }
+    // 空串显式取消 / 非法 key_spec 串（配置层已过滤，防御）：放行。
+    {
+        XiaomiKeymapInterceptor local;
+        const std::map<std::string, std::string> cancelled{{"back", ""}};
+        const auto a = local.OnKeyDown("back", VK_BROWSER_BACK, 0, kNow, cancelled);
+        assert(!a.swallow && a.inject.empty());
+        XiaomiKeymapInterceptor local2;
+        const std::map<std::string, std::string> bogus{{"back", "not a key"}};
+        const auto b = local2.OnKeyDown("back", VK_BROWSER_BACK, 0, kNow, bogus);
+        assert(!b.swallow && b.inject.empty());
+    }
+    // keydown 一律吞 + 登记 pending，不注入（副作用留到归属判定后）。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto a = local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        assert(a.swallow && a.inject.empty());
+        assert(local.HasPending());
+        assert(local.PendingAwaitingBreak().empty());      // 尚未松开
+    }
+    // pending 中自动重复 keydown：吞，不注入、不新建 pending。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        const auto repeat = local.OnKeyDown("home", VK_HOME, 0x71, kNow + 200,
+                                            key_map);
+        assert(repeat.swallow && repeat.inject.empty());
+    }
+    // keyup：pending 中放行（让 BREAK 沿投递提供设备证据），标记待判定。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        const auto up = local.OnKeyUp("home", kNow + 120, key_map);
+        assert(!up.swallow && up.inject.empty());
+        const auto awaiting = local.PendingAwaitingBreak();
+        assert(awaiting.size() == 1 && awaiting[0].first == "home");
+    }
+    // 未归属 keyup（无 pending）：放行。
+    {
+        XiaomiKeymapInterceptor local;
+        const auto up = local.OnKeyUp("back", kNow, key_map);
+        assert(!up.swallow && up.inject.empty());
+    }
+    // BREAK 佐证=遥控器：注入映射 down+up 对，消费 pending。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const auto resolve = local.OnBreakEvidence("home", kNow + 123, true,
+                                                   key_map);
+        assert(resolve.has_value());
+        assert((resolve->inject == std::vector<UINT>{VK_CONTROL, VK_SHIFT, 'V'}));
+        assert((resolve->inject_up ==
+                std::vector<UINT>{'V', VK_SHIFT, VK_CONTROL}));
+        assert(!local.HasPending());
+    }
+    // BREAK 佐证=物理键盘：补偿注入原键 down+up 对，消费 pending。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const auto resolve = local.OnBreakEvidence("home", kNow + 123, false,
+                                                   key_map);
+        assert(resolve.has_value());
+        assert((resolve->inject == std::vector<UINT>{VK_HOME}));
+        assert((resolve->inject_up == std::vector<UINT>{VK_HOME}));
+        assert(!local.HasPending());
+    }
+    // BREAK 佐证晚于兜底窗（超时已补偿）：丢弃，不注入（防双击）。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const auto bail = local.OnPendingTimeout("home", kNow + 400);
+        assert(bail.has_value());
+        const auto late = local.OnBreakEvidence("home", kNow + 450, true,
+                                                key_map);
+        assert(!late.has_value());
+    }
+    // 无 pending / 未松开的 BREAK：忽略（残留或按住中）。
+    {
+        XiaomiKeymapInterceptor local;
+        assert(!local.OnBreakEvidence("tv", kNow, true, key_map).has_value());
+        local.OnKeyDown("back", VK_BROWSER_BACK, 0, kNow, key_map);  // 按住中
+        assert(!local.OnBreakEvidence("back", kNow + 50, true, key_map)
+                    .has_value());
+    }
+    // 兜底超时（keyup 放行后 BREAK 迟迟不来，异常丢失保护）：补偿原键对。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        // 窗内（kBreakEvidenceWindowMs）不算超时。
+        assert(!local.OnPendingTimeout(
+                    "home", kNow + 120 + XiaomiKeymapInterceptor::kBreakEvidenceWindowMs)
+                    .has_value());
+        const auto bail = local.OnPendingTimeout(
+            "home", kNow + 120 + XiaomiKeymapInterceptor::kBreakEvidenceWindowMs + 1);
+        assert(bail.has_value());
+        assert((bail->inject == std::vector<UINT>{VK_HOME}));
+        assert((bail->inject_up == std::vector<UINT>{VK_HOME}));
+        assert(!local.HasPending());
+    }
+    // 按住中（keyup 未到）不触发兜底：按键长按是正常状态。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        assert(!local.OnPendingTimeout("home", kNow + 10000).has_value());
+        assert(local.HasPending());
+    }
+    // 多按钮并发 pending（遥控器同报多键：home+tv 齐按）各自独立判定。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyDown("tv", VK_OEM_3, 0x29, kNow + 5, key_map);
+        local.OnKeyUp("home", kNow + 100, key_map);
+        const auto home = local.OnBreakEvidence("home", kNow + 103, true,
+                                                key_map);
+        assert(home.has_value());
+        assert(local.HasPending());                          // tv 仍待判定
+        local.OnKeyUp("tv", kNow + 150, key_map);
+        const auto tv = local.OnBreakEvidence("tv", kNow + 153, false, key_map);
+        assert(tv.has_value());
+        assert(!local.HasPending());
+    }
+    // 映射在判定前被取消（重配竞态）：不注入任何键（原键已放行等效原生）。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.OnKeyUp("home", kNow + 120, key_map);
+        const std::map<std::string, std::string> empty_map;
+        assert(!local.OnBreakEvidence("home", kNow + 123, true, empty_map)
+                    .has_value());
+        assert(!local.HasPending());
+    }
+    // Reset 清全部状态：pending 与按住记录。
+    {
+        XiaomiKeymapInterceptor local;
+        local.OnKeyDown("home", VK_HOME, 0x71, kNow, key_map);
+        local.Reset();
+        assert(!local.HasPending());
+        const auto after = local.OnKeyDown("home", VK_HOME, 0x71, kNow + 10,
+                                           key_map);
+        assert(after.swallow);                               // 重新走 pending
+    }
+
+}
+
 // F5 抑制谓词：enabled 且 last>0 且 0<=age<=80ms 时吞，其余一律放行。
 void TestXiaomiF5SuppressPredicate() {
     constexpr std::int64_t kLast = 100000;
@@ -9887,6 +10185,638 @@ void TestPowerLogMonitor() {
     printf("TestPowerLogMonitor passed\n");
 }
 
+// ---------- LocalAsrClient（本机麦克风模式迭代一：SenseVoice 离线识别） ----------
+
+// 探测 SenseVoice 模型目录：环境变量 VOICESTICK_SENSEVOICE_DIR 优先，
+// 否则按测试 exe 位置（build-x64）回推仓库根下的 m0/models。
+static std::filesystem::path DetectSenseVoiceDir() {
+    if (const char* env = std::getenv("VOICESTICK_SENSEVOICE_DIR"); env && *env) {
+        return std::filesystem::path(env);
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* rel : {"../../../m0/models", "../../../../m0/models"}) {
+        auto dir = fs::weakly_canonical(fs::path(rel) /
+            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17", ec);
+        if (!ec && fs::exists(dir / "model.int8.onnx", ec) &&
+            fs::exists(dir / "tokens.txt", ec)) {
+            return dir;
+        }
+    }
+    return {};
+}
+
+// 读 16 kHz 单声道 PCM16 wav 的 data 段（RIFF 解析，非 PCM16/mono 直接失败）。
+static bool ReadMonoPcm16Wav(const std::filesystem::path& path,
+                             std::vector<std::int16_t>& pcm) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return false;
+    ByteVector bytes((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+    if (bytes.size() < 44 || std::memcmp(bytes.data(), "RIFF", 4) != 0) return false;
+    // 遍历 chunk 找 fmt 与 data。
+    bool pcm16_mono_16k = false;
+    size_t pos = 12;
+    while (pos + 8 <= bytes.size()) {
+        const auto chunk_size = static_cast<size_t>(bytes[pos + 4]) |
+                                (static_cast<size_t>(bytes[pos + 5]) << 8) |
+                                (static_cast<size_t>(bytes[pos + 6]) << 16) |
+                                (static_cast<size_t>(bytes[pos + 7]) << 24);
+        if (std::memcmp(bytes.data() + pos, "fmt ", 4) == 0 && pos + 8 + 16 <= bytes.size()) {
+            const auto channels = static_cast<uint16_t>(bytes[pos + 10] |
+                                                        (bytes[pos + 11] << 8));
+            const auto sample_rate = static_cast<uint32_t>(bytes[pos + 12]) |
+                                     (static_cast<uint32_t>(bytes[pos + 13]) << 8) |
+                                     (static_cast<uint32_t>(bytes[pos + 14]) << 16) |
+                                     (static_cast<uint32_t>(bytes[pos + 15]) << 24);
+            const auto bits = static_cast<uint16_t>(bytes[pos + 22] |
+                                                    (bytes[pos + 23] << 8));
+            pcm16_mono_16k = channels == 1 && sample_rate == 16000 && bits == 16;
+        } else if (std::memcmp(bytes.data() + pos, "data", 4) == 0) {
+            if (!pcm16_mono_16k) return false;
+            const auto sample_bytes = std::min(chunk_size, bytes.size() - pos - 8);
+            pcm.resize(sample_bytes / 2);
+            std::memcpy(pcm.data(), bytes.data() + pos + 8, pcm.size() * 2);
+            return true;
+        }
+        pos += 8 + chunk_size + (chunk_size & 1);
+    }
+    return false;
+}
+
+void TestLocalAsrClientStartFailsWhenModelMissing() {
+    LocalAsrClient client("Z:/voicestick/不存在的模型目录");
+    assert(!client.Start());
+    assert(!client.LastStartError().empty());
+    printf("TestLocalAsrClientStartFailsWhenModelMissing passed\n");
+}
+
+void TestLocalAsrClientSenseVoiceSmoke() {
+    const auto model_dir = DetectSenseVoiceDir();
+    if (model_dir.empty()) {
+        printf("TestLocalAsrClientSenseVoiceSmoke SKIPPED (模型不在位；"
+               "设 VOICESTICK_SENSEVOICE_DIR 指向 SenseVoice 目录后重跑)\n");
+        return;
+    }
+    std::vector<std::int16_t> pcm;
+    assert(ReadMonoPcm16Wav(model_dir / "test_wavs" / "zh.wav", pcm));
+    assert(pcm.size() >= AudioOpusEncoder::kFrameSamples);
+
+    // PCM → Opus packets → Ogg 字节流（复现协调器音频管线）。
+    AudioOpusEncoder encoder;
+    OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
+    ByteVector ogg;
+    std::uint8_t packet[512];
+    bool last = false;
+    for (size_t off = 0; off < pcm.size() && !last;) {
+        const size_t take = std::min<size_t>(AudioOpusEncoder::kFrameSamples,
+                                             pcm.size() - off);
+        std::vector<std::int16_t> frame(pcm.begin() + off, pcm.begin() + off + take);
+        if (frame.size() < AudioOpusEncoder::kFrameSamples) {
+            frame.resize(AudioOpusEncoder::kFrameSamples, 0);  // 尾帧补零
+            last = true;
+        }
+        const auto result = encoder.Encode(frame.data(), frame.size(),
+                                           packet, sizeof(packet));
+        assert(result.encoded_bytes > 0);
+        auto page = muxer.Append({packet, static_cast<size_t>(result.encoded_bytes)},
+                                 false);
+        ogg.insert(ogg.end(), page.begin(), page.end());
+        off += take;
+    }
+    auto tail = muxer.Finish();
+    ogg.insert(ogg.end(), tail.begin(), tail.end());
+
+    LocalAsrClient client(model_dir.string());
+    assert(client.Start());
+
+    std::mutex mutex;
+    std::condition_variable done;
+    std::string final_text, error_text;
+    bool finished = false;
+    client.on_final = [&](std::string text) {
+        std::lock_guard<std::mutex> lock(mutex);
+        final_text = std::move(text);
+        finished = true;
+        done.notify_one();
+    };
+    client.on_error = [&](std::string error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        error_text = std::move(error);
+        finished = true;
+        done.notify_one();
+    };
+    client.SendOggOpusChunk(ogg, true);
+    std::unique_lock<std::mutex> lock(mutex);
+    assert(done.wait_for(lock, std::chrono::seconds(60), [&] { return finished; }));
+    assert(error_text.empty());
+    assert(!final_text.empty());   // 真模型真推理：非空即链路通（不逐字断言）
+    printf("TestLocalAsrClientSenseVoiceSmoke passed: %s\n", final_text.c_str());
+}
+
+// ===== 本机麦克风模式（local-mic，迭代二）=====
+
+void TestPushToTalkKeyParsing() {
+    assert(*ParsePushToTalkKey("right ctrl") == VK_RCONTROL);
+    assert(*ParsePushToTalkKey("Right Ctrl") == VK_RCONTROL);   // 大小写/空白不敏感
+    assert(*ParsePushToTalkKey(" left ctrl ") == VK_LCONTROL);
+    assert(*ParsePushToTalkKey("right shift") == VK_RSHIFT);
+    assert(*ParsePushToTalkKey("left shift") == VK_LSHIFT);
+    assert(*ParsePushToTalkKey("right alt") == VK_RMENU);
+    assert(*ParsePushToTalkKey("left alt") == VK_LMENU);
+    assert(*ParsePushToTalkKey("f8") == VK_F8);
+    assert(*ParsePushToTalkKey("F24") == VK_F24);
+    assert(*ParsePushToTalkKey("capslock") == VK_CAPITAL);
+    assert(!ParsePushToTalkKey("ctrl").has_value());     // 左右歧义，拒绝
+    assert(!ParsePushToTalkKey("ctrl+c").has_value());   // 组合键不支持（按住说话=单键）
+    assert(!ParsePushToTalkKey("foo").has_value());
+    assert(!ParsePushToTalkKey("").has_value());
+}
+
+void TestFormatPushToTalkKey() {
+    // 哨兵：stub 阶段（恒 nullopt）在此干净失败，避免下方解引用空 optional 的 UB。
+    assert(FormatPushToTalkKey(VK_RCONTROL).has_value());
+    // 命名键：主名（同义 escape/return 取首见的 esc/enter）。
+    assert(*FormatPushToTalkKey(VK_RCONTROL) == "right ctrl");
+    assert(*FormatPushToTalkKey(VK_LCONTROL) == "left ctrl");
+    assert(*FormatPushToTalkKey(VK_RSHIFT) == "right shift");
+    assert(*FormatPushToTalkKey(VK_LSHIFT) == "left shift");
+    assert(*FormatPushToTalkKey(VK_RMENU) == "right alt");
+    assert(*FormatPushToTalkKey(VK_LMENU) == "left alt");
+    assert(*FormatPushToTalkKey(VK_CAPITAL) == "capslock");
+    assert(*FormatPushToTalkKey(VK_SCROLL) == "scrolllock");
+    assert(*FormatPushToTalkKey(VK_PAUSE) == "pause");
+    assert(*FormatPushToTalkKey(VK_ESCAPE) == "esc");
+    assert(*FormatPushToTalkKey(VK_SPACE) == "space");
+    assert(*FormatPushToTalkKey(VK_TAB) == "tab");
+    assert(*FormatPushToTalkKey(VK_RETURN) == "enter");
+    assert(*FormatPushToTalkKey(VK_BACK) == "backspace");
+    // 功能键边界与单字符键。
+    assert(*FormatPushToTalkKey(VK_F1) == "f1");
+    assert(*FormatPushToTalkKey(VK_F9) == "f9");
+    assert(*FormatPushToTalkKey(VK_F24) == "f24");
+    assert(*FormatPushToTalkKey('A') == "a");
+    assert(*FormatPushToTalkKey('Z') == "z");
+    assert(*FormatPushToTalkKey('0') == "0");
+    assert(*FormatPushToTalkKey('9') == "9");
+    // Parse 本就不收的键：无键名。
+    assert(!FormatPushToTalkKey(VK_LWIN).has_value());
+    assert(!FormatPushToTalkKey(VK_UP).has_value());
+    assert(!FormatPushToTalkKey(VK_NUMPAD0).has_value());
+    assert(!FormatPushToTalkKey(VK_F24 + 1u).has_value());  // F25 起越界（SDK 无 VK_F25 常量）
+    // 往返一致性：Format 输出可被 Parse 还原为同一 VK（全支持域）。
+    const UINT round_trip_keys[] = {VK_RCONTROL, VK_LCONTROL, VK_RSHIFT, VK_LSHIFT,
+                                    VK_RMENU,    VK_LMENU,    VK_CAPITAL, VK_SCROLL,
+                                    VK_PAUSE,    VK_ESCAPE,   VK_SPACE,   VK_TAB,
+                                    VK_RETURN,   VK_BACK,     VK_F1,      VK_F13,
+                                    VK_F24,      'A',         'M',        'Z',
+                                    '0',         '5',         '9'};
+    for (UINT vk : round_trip_keys) {
+        const auto name = FormatPushToTalkKey(vk);
+        assert(name.has_value());
+        const auto parsed = ParsePushToTalkKey(*name);
+        assert(parsed.has_value());
+        assert(*parsed == vk);
+    }
+}
+
+void TestResolveAndValidateModelsDir() {
+    namespace fs = std::filesystem;
+    // 解析口径：空 = exe_dir/models；相对路径锚 exe 目录；绝对路径原样。
+    // 经 fs::path 比较（path 拼接用反斜杠分隔符，字符串形态不作断言目标）。
+    assert(fs::path(ResolveLocalMicModelsDir("", "C:/app")) == fs::path("C:/app/models"));
+    assert(fs::path(ResolveLocalMicModelsDir("models", "C:/app")) ==
+           fs::path("C:/app/models"));
+    assert(fs::path(ResolveLocalMicModelsDir("rel/models", "C:/app")) ==
+           fs::path("C:/app/rel/models"));
+    assert(fs::path(ResolveLocalMicModelsDir("D:/mymodels", "C:/app")) ==
+           fs::path("D:/mymodels"));
+    // 校验口径：目录缺任一模型文件即报错，齐全才通过（与 Start 同判定）。
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "voicestick_models_validate_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    // 哨兵：stub（恒通过）在此干净失败。
+    assert(ValidateSenseVoiceModelsDir(dir.string()).has_value());
+    { std::ofstream out(dir / "model.int8.onnx", std::ios::binary); }
+    assert(ValidateSenseVoiceModelsDir(dir.string()).has_value());  // 只有一半
+    { std::ofstream out(dir / "tokens.txt", std::ios::binary); }
+    assert(!ValidateSenseVoiceModelsDir(dir.string()).has_value());  // 齐全 → 通过
+    fs::remove_all(dir);
+    // 不存在的目录同样报错。
+    assert(ValidateSenseVoiceModelsDir("Z:/definitely/not/here").has_value());
+}
+
+void TestShortcutCaptureClassifyKey() {
+    // 默认（按键映射场景，require_modifier=false）：修饰键累积、主键直接捕获。
+    ShortcutCapture::Options single;
+    assert(ShortcutCapture::ClassifyKey(VK_RCONTROL, single, false) ==
+           ShortcutCapture::KeyAction::kAccumulateModifier);
+    assert(ShortcutCapture::ClassifyKey(VK_LSHIFT, single, true) ==
+           ShortcutCapture::KeyAction::kAccumulateModifier);
+    assert(ShortcutCapture::ClassifyKey(VK_LWIN, single, false) ==
+           ShortcutCapture::KeyAction::kAccumulateModifier);
+    assert(ShortcutCapture::ClassifyKey('A', single, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_F9, single, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+
+    // 全局热键场景（require_modifier=true）：裸主键拒绝，带修饰键捕获。
+    ShortcutCapture::Options combo;
+    combo.require_modifier = true;
+    assert(ShortcutCapture::ClassifyKey('A', combo, false) ==
+           ShortcutCapture::KeyAction::kRejectNoModifier);
+    assert(ShortcutCapture::ClassifyKey('A', combo, true) ==
+           ShortcutCapture::KeyAction::kCapture);
+
+    // 按住说话场景（allow_modifier_as_key）：修饰键左右变体直接作为主键捕获，
+    // 不再累积等待（right ctrl 即功能键本身）。
+    ShortcutCapture::Options ptt;
+    ptt.allow_modifier_as_key = true;
+    assert(ShortcutCapture::ClassifyKey(VK_RCONTROL, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_LCONTROL, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_LSHIFT, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_LWIN, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+    assert(ShortcutCapture::ClassifyKey(VK_CAPITAL, ptt, false) ==
+           ShortcutCapture::KeyAction::kCapture);
+
+    // Esc 恒为取消（任何模式下都不作为主键捕获）。
+    assert(ShortcutCapture::ClassifyKey(VK_ESCAPE, single, false) ==
+           ShortcutCapture::KeyAction::kCancel);
+    assert(ShortcutCapture::ClassifyKey(VK_ESCAPE, combo, true) ==
+           ShortcutCapture::KeyAction::kCancel);
+    assert(ShortcutCapture::ClassifyKey(VK_ESCAPE, ptt, false) ==
+           ShortcutCapture::KeyAction::kCancel);
+}
+
+void TestAppConfigLocalAsrRoundTrip() {
+    assert(!AppConfig::Defaults().local_asr.enabled);
+    assert(AppConfig::Defaults().local_asr.models_dir.empty());
+    assert(AppConfig::Defaults().local_asr.push_to_talk_key == "right ctrl");
+
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_local_asr_test.toml";
+    std::filesystem::remove(temp);
+
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    config.local_asr.models_dir = "C:/models/sensevoice";
+    config.local_asr.push_to_talk_key = "f8";
+    config.Save(temp);
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.local_asr.enabled);
+    assert(loaded.local_asr.models_dir == "C:/models/sensevoice");
+    assert(loaded.local_asr.push_to_talk_key == "f8");
+
+    std::filesystem::remove(temp);
+}
+
+// 按住说话全链路：热键按下建立 local-mic 会话并启动采集；PCM 喂入走 Opus 主会话
+// 管线；释放后尾帧+END 收尾，音频路由到本地 ASR（云端客户端零触碰），final 文本注入。
+void TestCoordinatorLocalMicSessionRoutesToLocalAsr() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto* cloud_asr_ptr = cloud_asr.get();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    auto* local_asr_ptr = local_asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                      &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    assert(capture_ptr->start_count == 1);
+    assert(ui.show_listening_count == 1);
+    assert(HasUiState(*ble_ptr, "recording", "local-mic"));
+
+    // 喂 1 秒 16kHz PCM（模拟采集线程回调），等待会话时长跨过最短录音阈值后
+    // 再喂一段：第二段触发 can_start_asr（时长 >= 0.5s）启动本地 ASR 并冲刷缓冲。
+    const std::vector<std::int16_t> pcm(16000, 1200);
+    capture_ptr->on_pcm(pcm);
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    capture_ptr->on_pcm(pcm);
+
+    coordinator.HandleLocalMicHotkeyReleased();
+    assert(capture_ptr->stop_count == 1);
+    assert(local_asr_ptr->started);
+    assert(local_asr_ptr->sent_chunks >= 1);
+    assert(local_asr_ptr->last_chunk_was_final);
+    // 路由断言：本会话音频只进本地 ASR，云端客户端全程未启动。
+    assert(!cloud_asr_ptr->started);
+
+    local_asr_ptr->on_final("本地识别结果");
+    assert(input.pasted_text == "本地识别结果");
+    assert(ui.hide_overlay_count == 1);
+}
+
+// 短按（<0.5s）：释放后按短按取消路径丢弃会话，不启动 ASR、不注入。
+void TestCoordinatorLocalMicShortPressDiscards() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    auto* local_asr_ptr = local_asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                      &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    capture_ptr->on_pcm(std::vector<std::int16_t>(3200, 100));  // 200ms
+    coordinator.HandleLocalMicHotkeyReleased();
+
+    assert(capture_ptr->stop_count == 1);
+    assert(!local_asr_ptr->started);
+    assert(local_asr_ptr->cancelled);
+    assert(ui.hide_overlay_count == 1);
+    assert(input.pasted_text.empty());
+}
+
+// 配置关闭时热键完全旁路：不建会话、不启动采集；释放也不得有副作用。
+void TestCoordinatorLocalMicDisabledDoesNothing() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble),
+                                      std::move(cloud_asr), &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    assert(capture_ptr->start_count == 0);
+    assert(ui.show_listening_count == 0);
+
+    coordinator.HandleLocalMicHotkeyReleased();
+    assert(capture_ptr->stop_count == 0);
+}
+
+// 采集启动失败（无麦克风/设备被占用）：会话立即按取消路径收尾并给出用户可见提示，
+// 后续 PCM 全部被会话校验丢弃。
+void TestCoordinatorLocalMicCaptureStartFailureCancelsSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    auto local_asr = std::make_unique<FakeAsrClient>();
+    auto* local_asr_ptr = local_asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.local_asr.enabled = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                      &ui, &input);
+    auto capture = std::make_unique<FakeMicCapture>();
+    auto* capture_ptr = capture.get();
+    capture_ptr->start_result = false;
+    capture_ptr->start_error = "no microphone";
+    coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+    coordinator.Start();
+
+    coordinator.HandleLocalMicHotkeyPressed();
+    assert(capture_ptr->start_count == 1);
+    assert(ui.show_listening_count == 1);
+    assert(ui.hide_overlay_count == 1);          // 取消路径收起浮窗
+    assert(!ui.timed_messages.empty());          // 用户可见失败提示
+
+    capture_ptr->on_pcm(std::vector<std::int16_t>(640, 100));
+    coordinator.HandleLocalMicHotkeyReleased();
+    assert(!local_asr_ptr->started);
+    assert(input.pasted_text.empty());
+}
+
+// 真实 WASAPI 采集冒烟：默认麦克风采集 2 秒应至少回调一帧 PCM；无麦克风/被占用
+// 时如实报告跳过原因（不伪造通过）。
+void TestWasapiMicCaptureSmoke() {
+    WasapiMicCapture capture;
+    std::mutex mutex;
+    std::condition_variable got_pcm;
+    std::size_t total_samples = 0;
+    int callbacks = 0;
+    capture.on_pcm = [&](std::span<const std::int16_t> pcm) {
+        std::lock_guard<std::mutex> lock(mutex);
+        total_samples += pcm.size();
+        ++callbacks;
+        got_pcm.notify_one();
+    };
+    if (!capture.Start()) {
+        printf("TestWasapiMicCaptureSmoke skipped: %s\n", capture.LastStartError().c_str());
+        return;
+    }
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        const auto received = got_pcm.wait_for(lock, std::chrono::seconds(8),
+                                               [&] { return total_samples >= 16000; });
+        assert(received);
+        assert(total_samples >= 16000);
+    }
+    capture.Stop();
+    capture.Stop();  // 幂等
+    printf("TestWasapiMicCaptureSmoke passed: %d callbacks, %zu samples\n",
+           callbacks, total_samples);
+}
+
+// ===== 剪贴板 vault（迭代三：完整格式恢复，移植自 P1 clipboard_vault）=====
+// 真 Win32 剪贴板，非 mock：字节级快照/恢复是本组件的全部契约。测试动本机
+// 剪贴板，开头快照用户当前内容，结尾尽力还原。
+
+namespace {
+
+// 一次打开写入多个 HGLOBAL 格式（布置“用户剪贴板”内容；EmptyClipboard 清场）。
+void VaultSetClipboard(const std::vector<std::pair<UINT, std::vector<BYTE>>>& items) {
+    assert(OpenClipboard(nullptr));
+    EmptyClipboard();
+    for (const auto& item : items) {
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, item.second.size());
+        assert(memory != nullptr);
+        void* ptr = GlobalLock(memory);
+        assert(ptr != nullptr);
+        memcpy(ptr, item.second.data(), item.second.size());
+        GlobalUnlock(memory);
+        assert(SetClipboardData(item.first, memory));
+    }
+    CloseClipboard();
+}
+
+// 读回单个格式的字节（GetClipboardData 须在剪贴板打开态，返回前拷出）。
+std::vector<BYTE> VaultGetBytes(UINT format) {
+    std::vector<BYTE> out;
+    if (OpenClipboard(nullptr)) {
+        if (HANDLE handle = GetClipboardData(format)) {
+            if (const SIZE_T size = GlobalSize(handle)) {
+                if (void* ptr = GlobalLock(handle)) {
+                    out.assign(static_cast<const BYTE*>(ptr),
+                               static_cast<const BYTE*>(ptr) + size);
+                    GlobalUnlock(handle);
+                }
+            }
+        }
+        CloseClipboard();
+    }
+    return out;
+}
+
+std::vector<BYTE> VaultBytesOf(const std::wstring& text) {
+    // 含 NUL 终止符：剪贴板 CF_UNICODETEXT 数据系统按终止符结尾规范化，
+    // 布置与读回的字节口径必须一致（都含终止符）。
+    return std::vector<BYTE>(
+        reinterpret_cast<const BYTE*>(text.c_str()),
+        reinterpret_cast<const BYTE*>(text.c_str()) + (text.size() + 1) * sizeof(wchar_t));
+}
+
+} // namespace
+
+void TestClipboardVaultMultiFormatRoundTrip() {
+    // 快照/恢复用户当前剪贴板，尽力不破坏现场。
+    std::optional<ClipboardSnapshot> user_content;
+    try {
+        user_content = ClipboardVault().Save();
+    } catch (const std::runtime_error&) {
+    }
+
+    const UINT custom_fmt = RegisterClipboardFormatW(L"VoiceStickVaultTestFmt");
+    assert(custom_fmt != 0);
+    const std::vector<BYTE> dib(64, 0xAB);  // 伪 DIB：剪贴板不校验内容
+    const std::vector<BYTE> custom{0x00, 0x01, 0xFF, 0x00, 0x7F};
+    const auto text_bytes = VaultBytesOf(L"原始内容-restore");
+    VaultSetClipboard({{CF_UNICODETEXT, text_bytes}, {CF_DIB, dib}, {custom_fmt, custom}});
+
+    ClipboardVault vault;
+    const ClipboardSnapshot snapshot = vault.Save();
+    const auto* text_entry = snapshot.Find(CF_UNICODETEXT);
+    const auto* dib_entry = snapshot.Find(CF_DIB);
+    const auto* custom_entry = snapshot.Find(custom_fmt);
+    assert(text_entry && text_entry->data == text_bytes);
+    assert(dib_entry && dib_entry->data == dib);
+    assert(custom_entry && custom_entry->data == custom);
+
+    // 快照后剪贴板被异物覆盖，恢复必须还原快照字节（注入借道剪贴板的核心场景）。
+    VaultSetClipboard({{CF_UNICODETEXT, VaultBytesOf(L"覆盖内容")}});
+    assert(vault.Restore(snapshot));
+    assert(VaultGetBytes(CF_UNICODETEXT) == text_bytes);
+    assert(VaultGetBytes(CF_DIB) == dib);
+    assert(VaultGetBytes(custom_fmt) == custom);
+
+    if (user_content) ClipboardVault().Restore(*user_content);
+}
+
+void TestClipboardVaultSkipsHandleFormats() {
+    std::optional<ClipboardSnapshot> user_content;
+    try {
+        user_content = ClipboardVault().Save();
+    } catch (const std::runtime_error&) {
+    }
+
+    // CF_BITMAP 是句柄类格式（非 HGLOBAL，GlobalLock 无意义）：Save 必须跳过；
+    // 恢复后位图丢失为已知限制（位图场景应用几乎都同时提供 CF_DIB 内存版）。
+    assert(OpenClipboard(nullptr));
+    EmptyClipboard();
+    {
+        const wchar_t* text = L"带位图的文本";
+        const SIZE_T bytes = (wcslen(text) + 1) * sizeof(wchar_t);
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        void* ptr = GlobalLock(memory);
+        assert(ptr != nullptr);
+        memcpy(ptr, text, bytes);
+        GlobalUnlock(memory);
+        assert(SetClipboardData(CF_UNICODETEXT, memory));
+    }
+    const HBITMAP bitmap = CreateBitmap(1, 1, 1, 1, nullptr);
+    assert(bitmap != nullptr);
+    assert(SetClipboardData(CF_BITMAP, bitmap));  // 句柄移交剪贴板，不得 DeleteObject
+    CloseClipboard();
+
+    ClipboardVault vault;
+    const ClipboardSnapshot snapshot = vault.Save();
+    assert(snapshot.Find(CF_UNICODETEXT) != nullptr);
+    assert(snapshot.Find(CF_BITMAP) == nullptr);  // 句柄格式不进快照
+    // 布置 CF_BITMAP 时系统枚举会同时给出可从位图合成的 CF_DIB，快照经 CF_DIB
+    // 保住图像字节——恢复后系统可再合成位图，图像内容实际不丢（优于“直接丢弃”）。
+    const auto* dib_entry = snapshot.Find(CF_DIB);
+
+    VaultSetClipboard({{CF_UNICODETEXT, VaultBytesOf(L"覆盖")}});
+    assert(vault.Restore(snapshot));
+    assert(VaultGetBytes(CF_UNICODETEXT) == snapshot.Find(CF_UNICODETEXT)->data);
+    if (dib_entry != nullptr) {
+        assert(VaultGetBytes(CF_DIB) == dib_entry->data);
+        assert(IsClipboardFormatAvailable(CF_BITMAP));  // 从 CF_DIB 可再合成位图
+    }
+
+    if (user_content) ClipboardVault().Restore(*user_content);
+}
+
+void TestClipboardVaultEmptyClipboardSnapshot() {
+    std::optional<ClipboardSnapshot> user_content;
+    try {
+        user_content = ClipboardVault().Save();
+    } catch (const std::runtime_error&) {
+    }
+
+    assert(OpenClipboard(nullptr));
+    EmptyClipboard();
+    CloseClipboard();
+
+    ClipboardVault vault;
+    const ClipboardSnapshot snapshot = vault.Save();
+    assert(snapshot.entries.empty());  // 空快照只代表真空剪贴板
+
+    // 空快照恢复 = 清空剪贴板（区别于“打不开”：那是 Save 抛错的职责，防误清）。
+    VaultSetClipboard({{CF_UNICODETEXT, VaultBytesOf(L"x")}});
+    assert(vault.Restore(snapshot));
+    assert(!IsClipboardFormatAvailable(CF_UNICODETEXT));
+
+    if (user_content) ClipboardVault().Restore(*user_content);
+}
+
+void TestClipboardVaultSaveThrowsWhenBusy() {
+    // 另一线程持有剪贴板：Save 必须抛错而非返回空快照——空快照会让 Restore
+    // 误清用户剪贴板（P1 验证语义）。本线程重试窗口 2×10ms，持有 80ms 必失败。
+    std::atomic<bool> held{false};
+    std::thread holder([&held] {
+        if (OpenClipboard(nullptr)) {
+            held = true;
+            Sleep(80);
+            CloseClipboard();
+        }
+    });
+    bool opened = false;
+    for (int i = 0; i < 500 && !held; ++i) {  // 等持有方拿到锁（最多 500ms）
+        Sleep(1);
+        opened = opened || held;
+    }
+    if (!held) {
+        holder.join();
+        printf("TestClipboardVaultSaveThrowsWhenBusy skipped: holder open failed\n");
+        return;
+    }
+    ClipboardVault vault(/*open_retries=*/2, /*retry_delay_ms=*/10);
+    bool threw = false;
+    try {
+        (void)vault.Save();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    assert(threw);
+    holder.join();
+}
+
 int main() {
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接 abort，
@@ -9898,6 +10828,27 @@ int main() {
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();
     TestPowerLogMonitor();
+    TestLocalAsrClientStartFailsWhenModelMissing();
+    TestLocalAsrClientSenseVoiceSmoke();
+    TestPushToTalkKeyParsing();
+    TestFormatPushToTalkKey();
+    TestShortcutCaptureClassifyKey();
+    TestResolveAndValidateModelsDir();
+    TestAppConfigLocalAsrRoundTrip();
+    TestCoordinatorLocalMicSessionRoutesToLocalAsr();
+    TestCoordinatorLocalMicShortPressDiscards();
+    TestCoordinatorLocalMicDisabledDoesNothing();
+    TestCoordinatorLocalMicCaptureStartFailureCancelsSession();
+    TestWasapiMicCaptureSmoke();
+    printf(">> TestClipboardVaultMultiFormatRoundTrip\n"); fflush(stdout);
+    TestClipboardVaultMultiFormatRoundTrip();
+    printf(">> TestClipboardVaultSkipsHandleFormats\n"); fflush(stdout);
+    TestClipboardVaultSkipsHandleFormats();
+    printf(">> TestClipboardVaultEmptyClipboardSnapshot\n"); fflush(stdout);
+    TestClipboardVaultEmptyClipboardSnapshot();
+    printf(">> TestClipboardVaultSaveThrowsWhenBusy\n"); fflush(stdout);
+    TestClipboardVaultSaveThrowsWhenBusy();
+    printf(">> vault tests all done\n"); fflush(stdout);
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();
@@ -10095,6 +11046,7 @@ int main() {
     TestDeviceIdRcPrefix();
     TestAppConfigXiaomiTable();
     TestAppConfigXiaomiKeyMap();
+    TestXiaomiKeymapInterceptor();
     TestXiaomiF5SuppressPredicate();
     TestCoordinatorXiaomiCapabilityGating();
     TestPcmRingBufferWriteRead();

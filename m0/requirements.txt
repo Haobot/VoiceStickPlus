@@ -1,0 +1,24 @@
+# M0 本地 ASR 引擎验证依赖（许可证见 models/MANIFEST.md 与 docs/pitfalls.md）
+# 核心运行时
+sherpa-onnx>=1.13.0
+numpy>=1.26
+soundfile>=0.12
+jiwer>=3.0
+# 录音（可选，装不上可降级为仅 wav 输入）
+sounddevice>=0.4.6
+# 测试音频生成（仅生成阶段联网，识别运行时离线）
+edge-tts>=6.1
+# 热词路线一：FunASR SeACo-Paraformer（torch 装 PyPI/镜像版即 CPU 版，禁 CUDA）
+funasr>=1.4
+modelscope>=1.20
+torch>=2.0
+kaldi-native-fbank>=1.18
+pypinyin>=0.50
+rapidfuzz>=3.0
+# 开发与测试
+pytest>=8.0
+# 引擎配置界面与闭环评测（app.py / sim_compare.py）
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+tencentcloud-sdk-python-asr>=3.0.1300

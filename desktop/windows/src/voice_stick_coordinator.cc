@@ -173,7 +173,14 @@ void VoiceStickCoordinator::Shutdown() {
     ble_->on_motion_event = nullptr;
     ble_->on_power_log_fragment = nullptr;
     ble_->on_power_mgmt_state = nullptr;
-    asr_->Cancel();
+    CancelAsrClients();
+    // 关停本机麦克风采集（join 采集线程）。Shutdown 持有此锁的调用方不存在：
+    // 外壳在消息循环退出后调用；采集线程可能阻塞在 audio_mutex_，但 Shutdown
+    // 全程不取该锁，join 安全。
+    if (local_mic_capture_) local_mic_capture_->Stop();
+    local_mic_hotkey_down_ = false;
+    local_mic_active_session_id_.store(0);
+    session_asr_ = nullptr;
     for (auto& [_, cycle] : subtitle_cycles_) {
         if (cycle->asr) cycle->asr->Cancel();
         cycle->debug_audio_recorder.Discard();
@@ -195,7 +202,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     const bool was_recognizing = asr_started_ || active_session_id_.has_value() ||
                                  !pending_paste_state_.IsIdle() || !subtitle_cycles_.empty();
     if (was_recognizing) {
-        asr_->Cancel();
+        CancelAsrClients();
         for (auto& [_, cycle] : subtitle_cycles_) {
             if (cycle->asr) cycle->asr->Cancel();
             cycle->debug_audio_recorder.Discard();
@@ -234,6 +241,9 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     if (asr_factory_) {
         asr_ = asr_factory_(config_);
         ConfigureAsrCallbacks();
+        // 云端客户端已被替换：会话级路由指针必须解除，避免悬垂（活跃会话在上方
+        // was_recognizing 分支已经 EnterReady 清空）。
+        session_asr_ = nullptr;
     }
     if (paired_device_ids_ != config_.paired_device_ids) {
         paired_device_ids_ = config_.paired_device_ids;
@@ -249,6 +259,7 @@ void VoiceStickCoordinator::ReconnectPairedDevices() {
 
 void VoiceStickCoordinator::InvalidateAsrConnection() {
     if (asr_) asr_->InvalidateConnection();
+    if (local_asr_) local_asr_->InvalidateConnection();
 }
 
 void VoiceStickCoordinator::ConnectPairedDevice(const std::string& device_id,
@@ -298,7 +309,7 @@ void VoiceStickCoordinator::RemovePairedDevice(const std::string& device_id) {
         // The active recording cycle was tied to the device we just forgot;
         // reset transient session state so a stale frame can't run the rest
         // of the pipeline against a torn-down session.
-        asr_->Cancel();
+        CancelAsrClients();
         debug_audio_recorder_.Discard();
         active_session_id_.reset();
         pending_paste_state_ = {};
@@ -394,8 +405,39 @@ void VoiceStickCoordinator::CancelFirmwareUpdate() {
     ble_->CancelFirmwareUpdate();
 }
 
+// 本机麦克风模式运行件注入：本地 ASR 客户端与云端 asr_ 共用同一套会话回调
+//（同一时刻只有一个会话活跃，回调内部按会话状态自校验，无串扰）。
+// 支持运行期热替换（设置保存热更）：先锁内解除活跃 local 会话（session_asr_
+// 指向旧实例会悬挂），锁外替换——旧采集器析构 Stop() join 采集线程，采集回调
+// FeedLocalMicPcm 抢 audio_mutex_，持锁替换会死锁（同迭代二采集停止归属结论）。
+void VoiceStickCoordinator::SetLocalMicRuntime(std::unique_ptr<IMicCapture> capture,
+                                               std::unique_ptr<AsrClient> local_asr) {
+    {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        local_mic_active_session_id_.store(0);
+        if (session_asr_ == local_asr_.get()) {
+            session_asr_ = nullptr;
+        }
+    }
+    local_mic_capture_ = std::move(capture);
+    local_asr_ = std::move(local_asr);
+    if (local_mic_capture_) {
+        local_mic_capture_->on_pcm = [this](std::span<const std::int16_t> pcm) {
+            FeedLocalMicPcm(pcm);
+        };
+    }
+    if (local_asr_) {
+        WireAsrClientCallbacks(local_asr_.get());
+    }
+}
+
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
-    asr_->on_partial = [this](std::string text) {
+    WireAsrClientCallbacks(asr_.get());
+}
+
+void VoiceStickCoordinator::WireAsrClientCallbacks(AsrClient* client) {
+    if (!client) return;
+    client->on_partial = [this](std::string text) {
         TouchFinalizingWatchdog();
         // 时序探针：首个 ASR partial 到达（识别结果开始上屏）。
         if (probe_first_partial_ms_.load() == 0) {
@@ -407,20 +449,20 @@ void VoiceStickCoordinator::ConfigureAsrCallbacks() {
             SendUiStateForActiveDevice("thinking", text);
         }
     };
-    asr_->on_segment = [this](AsrSegment segment) {
+    client->on_segment = [this](AsrSegment segment) {
         TouchFinalizingWatchdog();
         HandleDefiniteSegment(segment);
     };
-    asr_->on_final = [this](std::string text) {
+    client->on_final = [this](std::string text) {
         // 时序探针：ASR final 到达，此后 FinishWithFinalText 立即进粘贴（无精修时几乎无延迟）。
         probe_asr_final_ms_.store(SteadyNowMs());
         LogCoordinatorLine("tseq asr_final ts=" + std::to_string(probe_asr_final_ms_.load()));
         FinishWithFinalText(text);
     };
-    asr_->on_error = [this](std::string message) {
+    client->on_error = [this](std::string message) {
         FinishWithAsrError(message);
     };
-    asr_->on_upgrade_url = [this](std::string url, std::string message) {
+    client->on_upgrade_url = [this](std::string url, std::string message) {
         const auto device_id = active_device_id_;
         RecoverFromAsrError(false);
         ui_->ShowCloudUpgrade(message, url, device_id);
@@ -1029,7 +1071,7 @@ void VoiceStickCoordinator::CancelActiveSessionsForDoubleClick(const std::string
         std::lock_guard lock(audio_mutex_);
         if (active_session_id_.has_value() && active_device_id_ == device_id) {
             CancelAudioEndTimeout();
-            asr_->Cancel();
+            CancelAsrClients();
             pending_paste_state_ = {};
             active_session_id_.reset();
             debug_audio_recorder_.Discard();
@@ -1542,6 +1584,11 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         std::lock_guard lock(audio_mutex_);
         active_session_id_ = session_id;
         active_device_id_ = device_id;
+        // 钉住本会话的 ASR 客户端路由：local-mic → 本地 SenseVoice，其余 → 云端。
+        //（SessionAsrClient 见注释：final 块发送时会话 id 已重置，路由必须提前定死。）
+        session_asr_ = (device_id == kLocalMicDeviceId && local_asr_)
+                           ? local_asr_.get()
+                           : asr_.get();
         active_session_started_at_ = std::chrono::steady_clock::now();
         received_audio_frames_ = 0;
         last_audio_seq_.reset();
@@ -1891,12 +1938,12 @@ void VoiceStickCoordinator::SendOrBufferOggChunk(const ByteVector& chunk, bool i
         LogCoordinatorLine("tseq final_chunk_sent ts=" + std::to_string(probe_final_chunk_ms_.load()));
     }
     if (asr_started_) {
-        asr_->SendOggOpusChunk(chunk, is_last);
+        SessionAsrClient()->SendOggOpusChunk(chunk, is_last);
         return;
     }
     buffered_ogg_chunks_.push_back(chunk);
     if (can_start_asr && !StartAsrAndFlushBufferedChunks(is_last)) {
-        if (!is_showing_asr_error_) FinishWithAsrError(AsrStartFailureMessage(*asr_));
+        if (!is_showing_asr_error_) FinishWithAsrError(AsrStartFailureMessage(*SessionAsrClient()));
     }
 }
 
@@ -1908,14 +1955,15 @@ bool VoiceStickCoordinator::StartAsrAndFlushBufferedChunks(bool last_chunk_is_fi
     const bool use_definite_segments = ShouldUseDefiniteSegments(profile);
     options.show_utterances = use_definite_segments;
     options.result_type = use_definite_segments ? AsrResultType::kSingle : AsrResultType::kFull;
-    if (!asr_->Start(options)) {
+    AsrClient* session_asr = SessionAsrClient();
+    if (!session_asr->Start(options)) {
         buffered_ogg_chunks_.clear();
         return false;
     }
     asr_started_ = true;
     for (std::size_t i = 0; i < buffered_ogg_chunks_.size(); ++i) {
         const bool is_last = (i + 1 == buffered_ogg_chunks_.size()) && last_chunk_is_final;
-        asr_->SendOggOpusChunk(buffered_ogg_chunks_[i], is_last);
+        session_asr->SendOggOpusChunk(buffered_ogg_chunks_[i], is_last);
     }
     buffered_ogg_chunks_.clear();
     return true;
@@ -1926,7 +1974,7 @@ void VoiceStickCoordinator::CancelShortRecording() {
     active_session_started_at_ = {};
     CancelAudioEndTimeout();
     buffered_ogg_chunks_.clear();
-    asr_->Cancel();
+    CancelAsrClients();
     debug_audio_recorder_.Discard();
     FinishRecognitionCycle();
     EnterReady("short_recording");
@@ -2568,7 +2616,7 @@ void VoiceStickCoordinator::LogWechatLatency(std::string_view stage) {
 
 void VoiceStickCoordinator::FinishWithAsrError(const std::string& message) {
     CancelAudioEndTimeout();
-    asr_->Cancel();
+    CancelAsrClients();
     pending_paste_state_ = {};
     active_session_id_.reset();
     debug_audio_recorder_.Discard();
@@ -2649,7 +2697,7 @@ void VoiceStickCoordinator::CancelRecognitionInProgress() {
     active_session_started_at_ = {};
     CancelAudioEndTimeout();
     CancelStreamingRefinement();
-    asr_->Cancel();
+    CancelAsrClients();
     pending_paste_state_ = {};
     FinishRecognitionCycle();
     EnterReady("cancel_recognition");
@@ -2703,7 +2751,7 @@ void VoiceStickCoordinator::CancelActiveCycleIfDeviceDisconnected() {
                                "keeping network-side finalization alive");
             return;
         }
-        asr_->Cancel();
+        CancelAsrClients();
         pending_paste_state_ = {};
         active_session_id_.reset();
         debug_audio_recorder_.Discard();
@@ -2955,6 +3003,12 @@ void VoiceStickCoordinator::EnterReady(std::string_view reason, bool hide_overla
     SendUiStateForActiveDevice("ready");
     if (hide_overlay) ui_->HideOverlay();
     active_device_id_.reset();
+    // local-mic 会话任意收尾（含 watchdog/取消异常路径）：停喂采集线程。
+    // 采集器本身不在此停（EnterReady 调用方多持有 audio_mutex_，join 采集线程
+    // 会与喂帧路径的死锁）；采集由热键释放/Shutdown 停止，期间帧被会话校验丢弃。
+    local_mic_active_session_id_.store(0);
+    // 会话级 ASR 路由随会话结束解除（后续无音频可发，防御性复位）。
+    session_asr_ = nullptr;
 }
 
 void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {
@@ -3141,6 +3195,122 @@ void VoiceStickCoordinator::HandleGlobalHotkeyReleased() {
         const auto request_id = next_hotkey_request_id_++;
         ble_->SendRemoteButton(RemoteButtonAction::kUp, "primary", target_device, request_id);
         LogApp("hotkey released, stopping recording on VS-" + *target_device);
+    }
+}
+
+
+// ===== 本机麦克风模式（local-mic）=====
+
+bool VoiceStickCoordinator::LocalMicSessionActiveLocked() const {
+    return active_session_id_.has_value() && active_device_id_.has_value() &&
+           *active_device_id_ == kLocalMicDeviceId;
+}
+
+AsrClient* VoiceStickCoordinator::SessionAsrClient() {
+    // 会话建立时钉住（HandlePrimaryButtonDown）：final 块发送前 active_session_id_
+    // 已被 SendFinalOggChunkIfNeeded 重置，不能按会话身份现算路由。
+    return session_asr_ ? session_asr_ : asr_.get();
+}
+
+void VoiceStickCoordinator::CancelAsrClients() {
+    if (asr_) asr_->Cancel();
+    if (local_asr_) local_asr_->Cancel();
+}
+
+void VoiceStickCoordinator::HandleLocalMicHotkeyPressed() {
+    // 门控：运行件齐备 + 配置开启。focused_app 之外的目标（wechat/字幕）是设备流
+    // 设计，本机麦克风首期不接（迭代三后再评估）。
+    if (!local_mic_capture_ || !local_asr_ || !config_.local_asr.enabled) return;
+    if (config_.default_output_profile.target != OutputTarget::kFocusedApp) return;
+    if (local_mic_hotkey_down_) return;  // 按住期间自动重复去抖
+
+    local_mic_hotkey_down_ = true;
+    StateEvent event;
+    event.event = "button_down";
+    event.button = "primary";
+    event.session_id = next_local_mic_session_id_++;
+    HandleStateEvent(event, std::string(kLocalMicDeviceId));
+
+    std::lock_guard lock(audio_mutex_);
+    if (!LocalMicSessionActiveLocked()) {
+        // 会话被既有守卫拒绝（其他设备会话活跃/确认中等）：HandlePrimaryButtonDown
+        // 已按设备语义处理，本机麦克风不启动。
+        return;
+    }
+    local_mic_slicer_.Reset();
+    local_mic_encoder_.Reset();
+    local_mic_next_seq_ = 1;
+    local_mic_active_session_id_.store(*active_session_id_);
+    if (local_mic_capture_->Start()) {
+        LogCoordinatorLine("local mic session started session=" +
+                           std::to_string(*active_session_id_));
+        return;
+    }
+    // 采集启动失败（无麦克风/被占用）：按短按取消收尾并给用户可见提示。
+    const auto error = local_mic_capture_->LastStartError();
+    LogCoordinatorLine("local mic capture start failed: " + error);
+    local_mic_active_session_id_.store(0);
+    CancelShortRecording();
+    ui_->ShowTimedMessage("麦克风启动失败：" + error, 3000);
+}
+
+void VoiceStickCoordinator::HandleLocalMicHotkeyReleased() {
+    if (!local_mic_hotkey_down_) return;
+    local_mic_hotkey_down_ = false;
+    if (!local_mic_capture_) return;
+    // 先停采（join 采集线程）：此后 on_pcm 不再触发，slicer/encoder 余量可安全访问。
+    // 若会话已被 watchdog/取消路径收尾，这里只负责停采即返回。
+    local_mic_capture_->Stop();
+
+    std::optional<std::uint32_t> session_id;
+    {
+        std::lock_guard lock(audio_mutex_);
+        if (LocalMicSessionActiveLocked()) {
+            session_id = active_session_id_;
+        }
+        local_mic_active_session_id_.store(0);
+    }
+    if (!session_id) return;
+
+    // 尾帧补零凑满 40ms 帧编码（P1 同策略，避免尾字丢失），再发空 END 帧走主会话
+    // audio_end 收尾路径：短按丢弃 / 最终块发送 / EnterFinalizing 全部复用既有逻辑。
+    auto remainder = local_mic_slicer_.TakeRemainder();
+    if (!remainder.empty()) {
+        remainder.resize(AudioOpusEncoder::kFrameSamples, 0);
+        std::uint8_t packet[512];
+        const auto result = local_mic_encoder_.Encode(remainder.data(), remainder.size(),
+                                                      packet, sizeof(packet));
+        if (result.encoded_bytes > 0) {
+            AudioFrame frame;
+            frame.session_id = *session_id;
+            frame.seq = local_mic_next_seq_++;
+            frame.payload.assign(packet, packet + result.encoded_bytes);
+            HandleAudioFrame(frame, std::string(kLocalMicDeviceId));
+        }
+    }
+    AudioFrame end_frame;
+    end_frame.session_id = *session_id;
+    end_frame.seq = local_mic_next_seq_++;
+    end_frame.flags = 0x02;  // AudioFrame::IsEnd()；空 payload 触发收尾
+    HandleAudioFrame(end_frame, std::string(kLocalMicDeviceId));
+    LogCoordinatorLine("local mic session stopped session=" + std::to_string(*session_id));
+}
+
+void VoiceStickCoordinator::FeedLocalMicPcm(std::span<const std::int16_t> pcm) {
+    const auto session_id = local_mic_active_session_id_.load();
+    if (session_id == 0) return;  // 会话未建立或已收尾：无锁早退
+    for (const auto& frame : local_mic_slicer_.Append(pcm)) {
+        std::uint8_t packet[512];
+        const auto result = local_mic_encoder_.Encode(frame.data(), frame.size(),
+                                                      packet, sizeof(packet));
+        if (result.encoded_bytes <= 0) continue;
+        AudioFrame audio;
+        audio.session_id = session_id;
+        audio.seq = local_mic_next_seq_++;
+        audio.payload.assign(packet, packet + result.encoded_bytes);
+        // 复用主会话帧处理（内部自锁并校验会话/seq，watchdog 刷新/ogg 组包/ASR
+        // 发送全部同设备路径）；会话被取消时帧被校验丢弃。
+        HandleAudioFrame(audio, std::string(kLocalMicDeviceId));
     }
 }
 

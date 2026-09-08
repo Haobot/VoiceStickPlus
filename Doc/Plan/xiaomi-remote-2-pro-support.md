@@ -27,7 +27,7 @@ Voice Stick 目前唯一输入设备是自研 M5Stack StickS3（ESP32-S3）固�
 ### 不做（一期）
 
 - 固件改动（ESP32-S3 完全不动；小米遥控器是独立 BLE 外设）
-- 其余 HID 键（OK/返回/方向/菜单等）的拦截与 `secondary` 角色映射——一期保持系统原生行为，二期可选（避开 Windows kbdhid 丢弃 0xF1 返回键的坑，不引入 Frida）
+- ~~其余 HID 键（OK/返回/方向/菜单等）的拦截与 `secondary` 角色映射~~——已实施（2026-09，`Doc/Plan/xiaomi-keymap-consumer.md`）：按键映射配置 UI + 拦截/注入消费端，用 Raw Input VID/PID 佐证替代 Frida，不引入 Frida
 - 小米遥控器的 OTA 升级（无公开协议）
 - 体感鼠标/编码器/屏幕状态下发（设备无此硬件能力）
 

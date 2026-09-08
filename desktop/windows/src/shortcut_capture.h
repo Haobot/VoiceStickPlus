@@ -22,12 +22,24 @@ public:
     struct Options {
         // true = 必须含修饰键（全局热键场景）；false = 单键也可（按键映射场景）。
         bool require_modifier = false;
+        // 单键模式下修饰键（VK_LCONTROL/VK_RCONTROL 等左右变体）直接作为主键
+        // 捕获而非累积：按住说话热键（right ctrl/capslock）等「修饰键即功能键」
+        // 场景用。仅 require_modifier=false 时有意义。
+        bool allow_modifier_as_key = false;
     };
     struct Result {
         // VK_CONTROL/VK_MENU/VK_SHIFT/VK_LWIN 子集，固定 Ctrl/Alt/Shift/Win 序。
         std::vector<UINT> modifiers;
         UINT vk = 0;  // 主键
     };
+
+    // keydown 事件的处置决策（纯函数，可单测）：
+    // - kAccumulateModifier：吞掉并累积修饰键状态（keyup 放行）；
+    // - kCapture：作为主键捕获，走统一收尾（吞掉该键）；
+    // - kCancel：Esc 取消；
+    // - kRejectNoModifier：需修饰键但按了裸主键，拒绝并结束捕获。
+    enum class KeyAction { kAccumulateModifier, kCapture, kCancel, kRejectNoModifier };
+    static KeyAction ClassifyKey(UINT vk, const Options& options, bool have_modifier);
 
     ShortcutCapture() = default;
     ~ShortcutCapture();

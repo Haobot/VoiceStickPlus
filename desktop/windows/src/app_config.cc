@@ -686,6 +686,18 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 needs_wechat_trigger_migration_save = true;
             }
         }
+        // [local_asr]：本机麦克风模式（local-mic 会话 + SenseVoice 本地识别）。
+        if (const auto* local_asr = table["local_asr"].as_table()) {
+            if (auto value = TomlBool(*local_asr, "enabled")) {
+                config.local_asr.enabled = *value;
+            }
+            if (auto value = TomlString(*local_asr, "models_dir")) {
+                config.local_asr.models_dir = *value;
+            }
+            if (auto value = TomlString(*local_asr, "push_to_talk_key")) {
+                config.local_asr.push_to_talk_key = Trim(*value);
+            }
+        }
         // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
         // 设备表填平（ParseXiaomiSettings 的 fallback 拷贝）才能带上全局默认。
         if (const auto* xiaomi = table["xiaomi"].as_table()) {
@@ -985,6 +997,10 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "virtual_mic_capture_name = \"" << TomlEscape(wechat_input_method.virtual_mic_capture_name) << "\"\n";
     output << "auto_switch_default_recording_device = "
            << (wechat_input_method.auto_switch_default_recording_device ? "true" : "false") << "\n";
+    output << "\n[local_asr]\n";
+    output << "enabled = " << (local_asr.enabled ? "true" : "false") << "\n";
+    output << "models_dir = \"" << TomlEscape(local_asr.models_dir) << "\"\n";
+    output << "push_to_talk_key = \"" << TomlEscape(local_asr.push_to_talk_key) << "\"\n";
     for (const auto& [device_id, profile] : device_output_profiles) {
         if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
             continue;

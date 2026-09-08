@@ -2,6 +2,8 @@
 
 > 记录时点结论，寄存器值/阈值/文件:行号引用前以当前源码为准。功能设计见
 > `Doc/Plan/xiaomi-remote-2-pro-support.md`，工具用法见 `Doc/Ref/e2e-test-toolchain.md`。
+> 后续消费端按键映射（LL 钩子吞键与设备证据死结）的经验见
+> `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`。
 
 背景：小米蓝牙遥控器 2 Pro（ATVV 协议）接入 Windows 桌面端的真机联调与 golden
 采集过程中，踩了一批 BLE 人格、ctypes 钩子、采集手法的坑。功能本身（配对/双击
