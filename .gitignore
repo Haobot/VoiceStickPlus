@@ -64,3 +64,7 @@ desktop/windows/generated_winrt/
 dist/
 desktop/windows/winsparkle-local/
 _realtest_shots/
+
+# 本地 ASR/验收实验目录，不入库
+/m0/
+/p1/
