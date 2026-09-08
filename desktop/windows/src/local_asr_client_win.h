@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Voice Stick contributors. All rights reserved.
 //
-// 本地离线 ASR 客户端（本机麦克风模式迭代一）：sherpa-onnx SenseVoice-Small int8。
+// 本地离线 ASR 客户端：sherpa-onnx SenseVoice-Small int8。
 // 实现标准 AsrClient 接口——协调器经 asr_factory 切换本地/云端，音频管线零改动。
 //
-// 数据流：SendOggOpusChunk 攒 Ogg 字节流（与 BLE 路径同格式），is_last 时 worker
-// 线程做 ParseOggOpus → Opus 解码 PCM → SenseVoice 离线推理 → on_final 全文。
-// 回调在 worker 线程触发（与 AsrClientWin 的网络线程语义一致，协调器侧
-// on_final 已按异步回调设计）。
+// 数据流：SendOggOpusChunk 攒 Ogg 字节流（与 BLE 路径同格式），worker 线程按
+// 600ms 节流周期对"当前全量音频"增量 Opus 解码 + SenseVoice 滚动重解码，录音
+// 期间持续触发 on_partial（空文本不上报）；is_last 时最终推理触发 on_final——
+// 无新增样本则复用上次推理结果。回调在 worker 线程触发（与 AsrClientWin 的
+// 网络线程语义一致，协调器侧回调已按异步设计）。
 
 #ifndef VOICESTICK_LOCAL_ASR_CLIENT_WIN_H_
 #define VOICESTICK_LOCAL_ASR_CLIENT_WIN_H_
@@ -32,12 +33,24 @@ std::optional<std::string> ValidateSenseVoiceModelsDir(const std::string& models
 std::string ResolveLocalMicModelsDir(const std::string& configured,
                                      const std::string& exe_dir);
 
+// SenseVoice 推理引擎抽象：生产实现包 sherpa-onnx C API；测试注入假引擎，
+// 在无模型环境下驱动流式调度逻辑（TDD）。
+class SenseVoiceEngine {
+ public:
+  virtual ~SenseVoiceEngine() = default;
+  // 对整段 16kHz 单声道 PCM16 做一次离线推理，返回 UTF-8 文本。
+  // 仅在 LocalAsrClient 的 worker 线程调用，实现无需自身加锁。
+  virtual std::string Decode(std::span<const std::int16_t> samples) = 0;
+};
+
 class LocalAsrClient : public AsrClient {
  public:
   // models_dir: SenseVoice 模型目录（含 model.int8.onnx 与 tokens.txt）。
   // Start 时校验文件存在，缺失则失败并在 LastStartError 如实说明（不静默降级）。
   // num_threads: 推理线程数（SenseVoice int8 短句 2 线程足够）。
-  explicit LocalAsrClient(std::string models_dir, int num_threads = 2);
+  // engine_override: 测试注入假引擎；非空时跳过模型目录校验与生产引擎创建。
+  explicit LocalAsrClient(std::string models_dir, int num_threads = 2,
+                          std::unique_ptr<SenseVoiceEngine> engine_override = nullptr);
   ~LocalAsrClient() override;
 
   LocalAsrClient(const LocalAsrClient&) = delete;

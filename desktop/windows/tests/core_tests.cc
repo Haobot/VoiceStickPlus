@@ -10263,10 +10263,37 @@ void TestLocalAsrClientSenseVoiceSmoke() {
     assert(ReadMonoPcm16Wav(model_dir / "test_wavs" / "zh.wav", pcm));
     assert(pcm.size() >= AudioOpusEncoder::kFrameSamples);
 
-    // PCM → Opus packets → Ogg 字节流（复现协调器音频管线）。
+    LocalAsrClient client(model_dir.string());
+    assert(client.Start());
+
+    std::mutex mutex;
+    std::condition_variable done;
+    std::vector<std::string> partial_texts;
+    std::string final_text, error_text;
+    bool finished = false;
+    client.on_partial = [&](std::string text) {
+        std::lock_guard<std::mutex> lock(mutex);
+        partial_texts.push_back(std::move(text));
+    };
+    client.on_final = [&](std::string text) {
+        std::lock_guard<std::mutex> lock(mutex);
+        final_text = std::move(text);
+        finished = true;
+        done.notify_one();
+    };
+    client.on_error = [&](std::string error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        error_text = std::move(error);
+        finished = true;
+        done.notify_one();
+    };
+
+    // PCM → Opus packets → Ogg 字节流，按 ~1s 一块流式发送（块间隔超过节流周期，
+    // 复现"边说边识别"形态）：真模型应在录音期间就产出非空 partial。
     AudioOpusEncoder encoder;
     OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
-    ByteVector ogg;
+    ByteVector block;
+    int frames_in_block = 0;
     std::uint8_t packet[512];
     bool last = false;
     for (size_t off = 0; off < pcm.size() && !last;) {
@@ -10282,37 +10309,249 @@ void TestLocalAsrClientSenseVoiceSmoke() {
         assert(result.encoded_bytes > 0);
         auto page = muxer.Append({packet, static_cast<size_t>(result.encoded_bytes)},
                                  false);
-        ogg.insert(ogg.end(), page.begin(), page.end());
+        block.insert(block.end(), page.begin(), page.end());
         off += take;
+        if (++frames_in_block >= 25) {   // 25 帧 × 40ms = 1s
+            client.SendOggOpusChunk(block, false);
+            block.clear();
+            frames_in_block = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        }
     }
     auto tail = muxer.Finish();
-    ogg.insert(ogg.end(), tail.begin(), tail.end());
+    block.insert(block.end(), tail.begin(), tail.end());
+    client.SendOggOpusChunk(block, true);
 
-    LocalAsrClient client(model_dir.string());
-    assert(client.Start());
-
-    std::mutex mutex;
-    std::condition_variable done;
-    std::string final_text, error_text;
-    bool finished = false;
-    client.on_final = [&](std::string text) {
-        std::lock_guard<std::mutex> lock(mutex);
-        final_text = std::move(text);
-        finished = true;
-        done.notify_one();
-    };
-    client.on_error = [&](std::string error) {
-        std::lock_guard<std::mutex> lock(mutex);
-        error_text = std::move(error);
-        finished = true;
-        done.notify_one();
-    };
-    client.SendOggOpusChunk(ogg, true);
     std::unique_lock<std::mutex> lock(mutex);
     assert(done.wait_for(lock, std::chrono::seconds(60), [&] { return finished; }));
     assert(error_text.empty());
     assert(!final_text.empty());   // 真模型真推理：非空即链路通（不逐字断言）
-    printf("TestLocalAsrClientSenseVoiceSmoke passed: %s\n", final_text.c_str());
+    assert(!partial_texts.empty());   // 流式链路：录音期间至少一次非空 partial
+    printf("TestLocalAsrClientSenseVoiceSmoke passed: partials=%zu final=%s\n",
+           partial_texts.size(), final_text.c_str());
+}
+
+// ===== 本地 ASR 流式 partial（滚动重解码调度，假引擎驱动）=====
+
+// 流式调度假引擎：Decode 返回 "n=<样本数>"（输入规模可直接断言），计数调用次数。
+class FakeSenseVoiceEngine : public SenseVoiceEngine {
+ public:
+  std::string Decode(std::span<const std::int16_t> samples) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++decode_calls;
+    if (return_empty) return "";
+    return "n=" + std::to_string(samples.size());
+  }
+  int DecodeCalls() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return decode_calls;
+  }
+
+  mutable std::mutex mutex;
+  bool return_empty = false;
+
+ private:
+  int decode_calls = 0;
+};
+
+// 追加 frame_count 个 40ms 静音帧并返回新增 Ogg 页字节（编码器/复用器状态跨调用
+// 保留，复现协调器逐帧送流的形态）。
+static ByteVector EncodeSilenceFrames(AudioOpusEncoder& encoder, OggOpusMuxer& muxer,
+                                      int frame_count) {
+    ByteVector out;
+    std::vector<std::int16_t> silence(AudioOpusEncoder::kFrameSamples, 0);
+    std::uint8_t packet[512];
+    for (int i = 0; i < frame_count; ++i) {
+        const auto result = encoder.Encode(silence.data(), silence.size(),
+                                           packet, sizeof(packet));
+        assert(result.encoded_bytes > 0);
+        auto page = muxer.Append({packet, static_cast<size_t>(result.encoded_bytes)},
+                                 false);
+        out.insert(out.end(), page.begin(), page.end());
+    }
+    return out;
+}
+
+// 流式回调测试脚手架：partial 快照 + final/error 完成信号。
+struct LocalAsrCallbacks {
+    std::mutex mutex;
+    std::condition_variable signal;
+    int partial_calls = 0;
+    std::vector<std::string> partial_texts;
+    std::string final_text;
+    std::string error_text;
+    bool finished = false;
+
+    void Install(LocalAsrClient& client) {
+        client.on_partial = [this](std::string text) {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++partial_calls;
+            partial_texts.push_back(std::move(text));
+            signal.notify_all();
+        };
+        client.on_final = [this](std::string text) {
+            std::lock_guard<std::mutex> lock(mutex);
+            final_text = std::move(text);
+            finished = true;
+            signal.notify_all();
+        };
+        client.on_error = [this](std::string error) {
+            std::lock_guard<std::mutex> lock(mutex);
+            error_text = std::move(error);
+            finished = true;
+            signal.notify_all();
+        };
+    }
+
+    template <typename Pred>
+    bool Wait(Pred pred, int timeout_ms) {
+        std::unique_lock<std::mutex> lock(mutex);
+        return signal.wait_for(lock, std::chrono::milliseconds(timeout_ms), pred);
+    }
+};
+
+// 从 "n=<样本数>" 假引擎文本取样本数。
+static size_t SamplesFromFakeText(const std::string& text) {
+    assert(text.size() > 2 && text.substr(0, 2) == "n=");
+    return static_cast<size_t>(std::stoull(text.substr(2)));
+}
+
+void TestLocalAsrClientEmitsPartialWhileStreaming() {
+    auto engine = std::make_unique<FakeSenseVoiceEngine>();
+    auto* fake = engine.get();
+    LocalAsrClient client("Z:/voicestick/无模型目录（假引擎不校验）", 2, std::move(engine));
+    assert(client.Start());
+
+    LocalAsrCallbacks cb;
+    cb.Install(client);
+
+    AudioOpusEncoder encoder;
+    OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
+    // 三块 1s 静音，块间隔 700ms > 600ms 节流周期：录音期间应持续产出 partial。
+    for (int block = 0; block < 3; ++block) {
+        auto chunk = EncodeSilenceFrames(encoder, muxer, 25);
+        client.SendOggOpusChunk(chunk, false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    }
+    assert(cb.Wait([&] { return cb.partial_calls >= 2; }, 5000));
+    size_t prev_samples = 0;
+    for (const auto& text : cb.partial_texts) {
+        const size_t samples = SamplesFromFakeText(text);
+        assert(samples >= prev_samples);   // 输入单调不减（增量解码不丢不重）
+        prev_samples = samples;
+    }
+    // is_last 附带新音频：最终推理覆盖全量 3s（75 帧 × 640 样本）。
+    auto tail = muxer.Finish();
+    client.SendOggOpusChunk(tail, true);
+    assert(cb.Wait([&] { return cb.finished; }, 5000));
+    assert(cb.error_text.empty());
+    assert(cb.final_text == "n=48000");
+    assert(fake->DecodeCalls() >= 3);   // 至少：首块 + 两次周期 + final
+    printf("TestLocalAsrClientEmitsPartialWhileStreaming passed: partials=%d\n",
+           cb.partial_calls);
+}
+
+void TestLocalAsrClientPartialThrottled() {
+    auto engine = std::make_unique<FakeSenseVoiceEngine>();
+    auto* fake = engine.get();
+    LocalAsrClient client("Z:/voicestick/无模型目录（假引擎不校验）", 2, std::move(engine));
+    assert(client.Start());
+
+    LocalAsrCallbacks cb;
+    cb.Install(client);
+
+    AudioOpusEncoder encoder;
+    OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
+    // 五块 0.48s 静音在远小于节流周期的窗口内连发：无节流会逐块解码 5 次。
+    for (int block = 0; block < 5; ++block) {
+        auto chunk = EncodeSilenceFrames(encoder, muxer, 12);
+        client.SendOggOpusChunk(chunk, false);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    const int calls = fake->DecodeCalls();
+    assert(calls >= 1);
+    assert(calls <= 3);   // 无节流 = 5
+    auto tail = muxer.Finish();
+    client.SendOggOpusChunk(tail, true);
+    assert(cb.Wait([&] { return cb.finished; }, 5000));
+    assert(cb.error_text.empty());
+    printf("TestLocalAsrClientPartialThrottled passed: decode_calls=%d\n", calls);
+}
+
+void TestLocalAsrClientFinalReusesDecodeWhenNoNewAudio() {
+    auto engine = std::make_unique<FakeSenseVoiceEngine>();
+    auto* fake = engine.get();
+    LocalAsrClient client("Z:/voicestick/无模型目录（假引擎不校验）", 2, std::move(engine));
+    assert(client.Start());
+
+    LocalAsrCallbacks cb;
+    cb.Install(client);
+
+    AudioOpusEncoder encoder;
+    OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
+    auto chunk = EncodeSilenceFrames(encoder, muxer, 25);
+    client.SendOggOpusChunk(chunk, false);
+    assert(cb.Wait([&] { return cb.partial_calls >= 1; }, 5000));
+    assert(fake->DecodeCalls() == 1);   // 首块立即解码一次
+    // 尾页不含新音频 packet：is_last 应复用上次推理结果，不重复解码（松键秒出 final）。
+    auto tail = muxer.Finish();
+    client.SendOggOpusChunk(tail, true);
+    assert(cb.Wait([&] { return cb.finished; }, 5000));
+    assert(cb.error_text.empty());
+    assert(cb.final_text == cb.partial_texts.back());
+    assert(fake->DecodeCalls() == 1);
+    printf("TestLocalAsrClientFinalReusesDecodeWhenNoNewAudio passed\n");
+}
+
+void TestLocalAsrClientSkipsEmptyPartial() {
+    auto engine = std::make_unique<FakeSenseVoiceEngine>();
+    engine->return_empty = true;
+    LocalAsrClient client("Z:/voicestick/无模型目录（假引擎不校验）", 2, std::move(engine));
+    assert(client.Start());
+
+    LocalAsrCallbacks cb;
+    cb.Install(client);
+
+    AudioOpusEncoder encoder;
+    OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
+    for (int block = 0; block < 2; ++block) {
+        auto chunk = EncodeSilenceFrames(encoder, muxer, 25);
+        client.SendOggOpusChunk(chunk, false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    }
+    auto tail = muxer.Finish();
+    client.SendOggOpusChunk(tail, true);
+    assert(cb.Wait([&] { return cb.finished; }, 5000));
+    assert(cb.partial_calls == 0);   // 空文本 partial 不上报（保持 Listening 显示）
+    assert(cb.error_text.empty());
+    assert(cb.final_text.empty());   // 引擎返回空 → final 照发（沿用现行为）
+    printf("TestLocalAsrClientSkipsEmptyPartial passed\n");
+}
+
+void TestLocalAsrClientCancelStopsPartial() {
+    auto engine = std::make_unique<FakeSenseVoiceEngine>();
+    LocalAsrClient client("Z:/voicestick/无模型目录（假引擎不校验）", 2, std::move(engine));
+    assert(client.Start());
+
+    LocalAsrCallbacks cb;
+    cb.Install(client);
+
+    AudioOpusEncoder encoder;
+    OggOpusMuxer muxer(AudioOpusEncoder::kSampleRate, AudioOpusEncoder::kChannels);
+    auto chunk = EncodeSilenceFrames(encoder, muxer, 25);
+    client.SendOggOpusChunk(chunk, false);
+    assert(cb.Wait([&] { return cb.partial_calls >= 1; }, 5000));
+
+    client.Cancel();
+    const int partials_before = cb.partial_calls;
+    auto more = EncodeSilenceFrames(encoder, muxer, 25);
+    client.SendOggOpusChunk(more, false);
+    auto tail = muxer.Finish();
+    client.SendOggOpusChunk(tail, true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    assert(cb.partial_calls == partials_before);   // 取消后不再产出 partial
+    assert(!cb.finished);                          // 也不再有 final/error
+    printf("TestLocalAsrClientCancelStopsPartial passed\n");
 }
 
 // ===== 本机麦克风模式（local-mic，迭代二）=====
@@ -10896,17 +11135,25 @@ void TestClipboardVaultSaveThrowsWhenBusy() {
 
 int main() {
 #ifdef _DEBUG
-    // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接 abort，
+    // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接终止，
     // 避免 CRT 默认弹「Microsoft Visual C++ Runtime Library」对话框挂起测试进程。
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _CALL_REPORTFAULT);   // Watson 报告同样会弹窗挂死
 #endif
+    // stdout 重定向到文件时默认全缓冲，断言 abort 会丢掉之前的进度输出。
+    setvbuf(stdout, nullptr, _IONBF, 0);
     TestDeviceIds();
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();
     TestPowerLogMonitor();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLocalAsrClientSenseVoiceSmoke();
+    TestLocalAsrClientEmitsPartialWhileStreaming();
+    TestLocalAsrClientPartialThrottled();
+    TestLocalAsrClientFinalReusesDecodeWhenNoNewAudio();
+    TestLocalAsrClientSkipsEmptyPartial();
+    TestLocalAsrClientCancelStopsPartial();
     TestPushToTalkKeyParsing();
     TestFormatPushToTalkKey();
     TestProviderComboMapping();
