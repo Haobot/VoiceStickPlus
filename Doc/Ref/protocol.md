@@ -82,6 +82,7 @@ Currently emitted state events:
 ```json
 {"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"interaction_modes":["hold_to_talk","click_to_talk"],"ui_states":["ready","recording","thinking","pending_confirmation","error","air_mouse"]}
 {"event":"encoder_status","present":true}
+{"event":"battery_status","level":87,"charging":false,"usb_powered":true}
 {"event":"button_down","button":"primary","session_id":1234}
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
 {"event":"button_down","button":"secondary"}
@@ -100,9 +101,18 @@ firmware also pushes `encoder_status` when the encoder later degrades offline
 (consecutive I2C failures); if the link is down at that moment the flag is
 cached and the next connection reports the current state. Older firmware
 never sends this event — desktops must treat its absence as "present" so the
-encoder settings stay visible for old firmware. The Windows desktop uses it
-to show/hide the encoder section in the settings dialog (any known device
-reporting present keeps the section visible).
+encoder settings stay visible for old firmware. Both desktops use it to gate
+the per-device "Encoder settings…" tray menu entry (unknown/absent defaults to
+shown; the Xiaomi remote, which has no encoder hardware, never shows it).
+
+`battery_status` reports the battery percentage (`level`, 0–100), `charging`,
+and `usb_powered`. The firmware sends it once after each BLE connection, on
+charger/USB power transitions, and in reply to a `battery_status_request`
+control event. Both desktops surface it in the tray device submenu title
+(`VS-XXXX (87%)`, with a charging/plugged-in suffix). Windows additionally
+uses `battery_status_request` as a periodic link heartbeat; macOS does not
+send it and relies on CoreBluetooth disconnect callbacks plus the
+connect/transition pushes.
 
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is
@@ -153,7 +163,8 @@ the firmware against its fixed 10 ms poll window, the desktop derives a
 per-window detent speed (`steps * 100` detents/s, immune to BLE jitter) and
 feeds it into an EWMA speed estimator (`EncoderRotateSpeedEstimator`,
 alpha = 0.5 per event, cold-started from zero on each new gesture after a
->250 ms silence; see `desktop/windows/src/encoder_speed.h`). The smoothing
+>250 ms silence; see `desktop/windows/src/encoder_speed.h` and
+`desktop/macos/Sources/VoiceStickApp/EncoderRotateSpeedEstimator.swift`). The smoothing
 is required because a single 10 ms window quantizes speed to multiples of
 100 detents/s — with a raw per-window compare, every threshold between
 100 and 200 behaves identically and an occasional 2-step window during
@@ -232,21 +243,26 @@ Current desktop events:
 {"event":"encoder_recording_gate","enabled":true}
 {"event":"usb_auto_off","enabled":true}
 {"event":"usb_auto_off_get"}
+{"event":"battery_status_request"}
+{"event":"remote_button_down","button":"primary","source":"global_hotkey","request_id":7}
+{"event":"remote_button_up","button":"primary","source":"global_hotkey","request_id":7}
 ```
 
 | Event | Field | Direction | Meaning |
 | --- | --- | --- | --- |
-| `ui_state` | `state`: string, `text`: string | Mac -> StickS3 | Authoritative display state from the app to the firmware display. |
-| `interaction_mode` | `mode`: string | Mac -> StickS3 | Controls the front-button behavior and idle screen hint. |
-| `show_imu_debug` | `enabled`: boolean | Windows -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
-| `imu_wake_sensitivity` | `threshold`: integer (LSB) | Windows -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
-| `tap_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables the double-tap on-device gesture detection. Default false. |
-| `tap_sensitivity` | `level`: integer (1..10) | Windows -> StickS3 | Sets the double-tap detection sensitivity. 1=least sensitive (hardest tap), 10=most sensitive (lightest tap). Default 5. |
-| `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. The desktop pairs this with a `ui_state:air_mouse` so the device shows an air-mouse indicator — in this state the primary button acts as the left mouse button, not recording. Default false. |
-| `encoder_led_color` | `color`: string | Windows -> StickS3 | Sets the MiniEncoderC LED color shown while recording. Presets: `red`, `green`, `blue`, `yellow`, `purple`, `cyan`, `white`, `off` (`off` keeps the LED dark even while recording). Unknown color names are ignored. Persisted in firmware NVS. Default `red`. |
-| `encoder_recording_gate` | `enabled`: boolean | Windows -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses never emit `button_down`/`button_up` and never start audio; they only feed the firmware double-click window, which emits `button_click`/`button_double_click` with `source:"encoder"`. The physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
-| `usb_auto_off` | `enabled`: boolean | Windows -> StickS3 | Enables/disables auto power-off while USB powered. When enabled, the device powers off after 10 idle minutes even on external power (recording/OTA still block it; the BLE-disconnect timer also applies). Persisted in firmware NVS. Default false. |
-| `usb_auto_off_get` | — | Windows -> StickS3 | Queries the current `usb_auto_off` state; the firmware replies with a `power_mgmt` state event on `state_tx`. |
+| `ui_state` | `state`: string, `text`: string | Desktop -> StickS3 | Authoritative display state from the app to the firmware display. |
+| `interaction_mode` | `mode`: string | Desktop -> StickS3 | Controls the front-button behavior and idle screen hint. |
+| `show_imu_debug` | `enabled`: boolean | Desktop -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
+| `imu_wake_sensitivity` | `threshold`: integer (LSB) | Desktop -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
+| `tap_enabled` | `enabled`: boolean | Desktop -> StickS3 | Enables/disables the double-tap on-device gesture detection. Default false. |
+| `tap_sensitivity` | `level`: integer (1..10) | Desktop -> StickS3 | Sets the double-tap detection sensitivity. 1=least sensitive (hardest tap), 10=most sensitive (lightest tap). Default 5. |
+| `air_mouse_enabled` | `enabled`: boolean | Windows -> StickS3 | Enables/disables air-mouse mode. When enabled, the firmware calibrates the gyro zero-bias and starts emitting `motion` frames; when disabled, it stops the motion poll. The desktop pairs this with a `ui_state:air_mouse` so the device shows an air-mouse indicator — in this state the primary button acts as the left mouse button, not recording. Default false. (Windows-only: macOS has no air-mouse mode.) |
+| `encoder_led_color` | `color`: string | Desktop -> StickS3 | Sets the MiniEncoderC LED color shown while recording. Presets: `red`, `green`, `blue`, `yellow`, `purple`, `cyan`, `white`, `off` (`off` keeps the LED dark even while recording). Unknown color names are ignored. Persisted in firmware NVS. Default `red`. |
+| `encoder_recording_gate` | `enabled`: boolean | Desktop -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses never emit `button_down`/`button_up` and never start audio; they only feed the firmware double-click window, which emits `button_click`/`button_double_click` with `source:"encoder"`. The physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
+| `usb_auto_off` | `enabled`: boolean | Desktop -> StickS3 | Enables/disables auto power-off while USB powered. When enabled, the device powers off after 10 idle minutes even on external power (recording/OTA still block it; the BLE-disconnect timer also applies). Persisted in firmware NVS. Default false. |
+| `usb_auto_off_get` | — | Windows -> StickS3 | Queries the current `usb_auto_off` state; the firmware replies with a `power_mgmt` state event on `state_tx`. (macOS does not send it — the firmware pushes `power_mgmt` once after each connection, which is sufficient.) |
+| `battery_status_request` | — | Windows -> StickS3 | Asks the firmware to re-send `battery_status`; the firmware always replies, so the Windows desktop also uses it as a periodic link heartbeat. macOS does not send it. |
+| `remote_button_down` / `remote_button_up` | `button`: `"primary"`, `source`: string, `request_id`: uint32 | Desktop -> StickS3 | Injects a virtual primary-button press/release (`APP_INPUT_SOURCE_REMOTE`), used by the desktop global hotkey and the encoder double-click recording toggle. Not gated by `encoder_recording_gate`. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as
@@ -264,7 +280,8 @@ click and stops on the next primary click. Older firmware ignores unknown mode
 values and keeps the previous mode.
 
 `encoder_led_color` and `encoder_recording_gate` configure the MiniEncoderC
-rotary encoder. Both are written by the Windows settings dialog and persisted
+rotary encoder. Both are written by the desktop device-level encoder settings
+dialogs (Windows and macOS) and persisted
 in firmware NVS (`save_encoder_settings_to_nvs`), so they survive reboots.
 `encoder_led_color` accepts the presets `red`, `green`, `blue`, `yellow`,
 `purple`, `cyan`, `white` and `off` — `off` means the encoder LED stays dark
@@ -284,7 +301,8 @@ If the gate is flipped from on to off while an encoder-started recording is
 already in progress, the release path is still allowed to stop it normally.
 
 `usb_auto_off` and `usb_auto_off_get` back the USB-powered auto power-off
-toggle in the Windows battery-monitor dialog. The firmware acknowledges a set
+toggle in the desktop battery-monitor windows (Windows and macOS). The
+firmware acknowledges a set
 (and answers a get) with a `power_mgmt` state event on `state_tx`:
 
 ```json
@@ -295,9 +313,8 @@ It also pushes `power_mgmt` once after each BLE connection so the desktop can
 initialize the checkbox. When the switch is enabled, the connected-idle power
 off timer runs with a 10-minute timeout on external power (5 minutes on
 battery, unchanged), and the BLE-disconnect timer also runs while USB powered.
-`ParseStateEvent` on the desktop skips `power_mgmt` frames so a dedicated
-parser can route them to the battery-monitor dialog; macOS currently ignores
-the event and the feature is Windows-only.
+`ParseStateEvent` on both desktops skips `power_mgmt` frames so a dedicated
+parser can route them to the battery-monitor window.
 
 Deprecated app-to-firmware events:
 
@@ -469,15 +486,20 @@ Xiaomi Bluetooth Remote 2 Pro (VID `0x2717`/PID `0x32B8`) speaks Google's ATVV
 profile plus standard HID over GATT. **The StickS3 firmware is unchanged and
 does not implement this protocol** — the entire ATVV stack (session state
 machine, ADPCM decoding, PCM post-processing, Opus re-encoding) lives in the
-Windows desktop app; macOS support is deferred to a later release. Only
-protocol facts are recorded here; design rationale and implementation detail
-live in `Doc/Plan/xiaomi-remote-2-pro-support.md`, which remains the
-authoritative source.
+desktop apps (Windows and macOS). Only protocol facts are recorded here;
+design rationale and implementation detail live in
+`Doc/Plan/xiaomi-remote-2-pro-support.md`, which remains the authoritative
+source.
 
-Device ID: `RC-XXXX`, allocated on Windows from the low 16 bits of the
-Bluetooth address, coexisting with the StickS3 `VS-XXXX` IDs in
-`paired_device_ids`. Pairing requires an OS-level Bond (no pairing code or
-account token); without it the ATVV service is not discoverable.
+Device ID: `RC-XXXX`, coexisting with the StickS3 `VS-XXXX` IDs in
+`paired_device_ids`. On Windows the ID is allocated from the low 16 bits of
+the Bluetooth address; on macOS, which cannot read the BLE MAC, it is derived
+from the CoreBluetooth peripheral UUID instead (see "macOS differences"
+below). Pairing requires an OS-level Bond (no pairing code or account token);
+without it the ATVV service is not discoverable. The remote only accepts a new
+Bond while in pairing mode (hold Home + Menu 3–5 s until the LED blinks
+rapidly); while still bonded to another host it refuses new bonds — unpair it
+from the old host (or disable Bluetooth there) first.
 
 ### Key channel: standard HID over GATT
 
@@ -490,11 +512,23 @@ mappable button ids from `xiaomi_buttons.h`): a `WH_KEYBOARD_LL` hook
 swallows the original key and `SendInput`s the mapped shortcut, with device
 attribution proven by a Raw Input (RIDEV_INPUTSINK) correlator that matches
 the HID VID `0x2717`/PID `0x32B8`. Keys without a mapping keep their native
-OS behavior. See `Doc/Plan/xiaomi-keymap-consumer.md` for the design. The
+OS behavior. On macOS the equivalent interception is implemented by
+`XiaomiButtonInterceptManager` instead: a non-exclusive `IOHIDManager`
+observation drives the decision (IOHID value callback → inject KeySpec / mark
+for suppression, variable-element usage matching with page `0x07`), and a
+CGEvent tap only swallows the OS-native keyDown/systemDefined events to avoid
+double-firing — back (`0xF1`) and menu (`0x65`) never produce a keyDown
+CGEvent, and volume keys arrive as systemDefined (subtype 8), so suppression
+must be decided on the IOHID value callback. When a per-device
+`[device.<id>.buttons].intercept` switch is on and a non-voice button carries
+a `key`/`disabled` mapping, the OS-native key is suppressed and optionally
+replaced (Windows design: `Doc/Plan/xiaomi-keymap-consumer.md`; macOS side:
+`Doc/Plan/xiaomi-remote-button-mapping.md` §4.2). The
 voice key is **not** an ordinary HID key: pressing it
 makes the remote start an ATVV session (below), and the remote additionally
-emits an F5 keystroke to the OS, which the Windows desktop suppresses while a
-session is starting (config `xiaomi_suppress_f5`).
+emits an F5 keystroke to the OS, which the desktop suppresses while a session
+is starting (config `xiaomi_suppress_f5`; the mechanism differs per platform,
+see "macOS differences" below).
 
 ### Audio channel: ATVV GATT service
 
@@ -547,8 +581,36 @@ STREAM_START on the 2 Pro) and release (`0x00` STOP) are normalized to
 detects it), the voice key's double-click timing detection runs on the desktop
 and synthesizes `button_double_click` with `button:"primary"`.
 
-Battery: standard Battery Service `0x180F` / `0x2A19` (read + notify),
-reported to the coordinator as a `battery_status` state event.
+Battery: standard Battery Service `0x180F` / `0x2A19` (read + notify). On
+both desktops the level is reported to the coordinator as a `battery_status`
+state event synthesized from the characteristic value (same shape as the
+StickS3 firmware event), surfaced in the tray device submenu title. On macOS
+the discovery runs as a separate pass after the ATVV session is established
+(`discoverServices([0x180F])` followed by an initial read and a notify
+subscription); failures are logged and never block the audio path.
+
+### macOS differences
+
+The macOS port implements the same ATVV profile with these platform-specific
+deviations from the Windows description above:
+
+- **Device ID allocation.** CoreBluetooth does not expose the BLE MAC, so the
+  `RC-XXXX` ID is derived from the SHA-256 of
+  `CBPeripheral.identifier.uuidString` (first 4 hex digits). The peripheral
+  UUID is persisted in the `paired_devices` entry's addr field
+  (`kind="uuid"`), and reconnects resolve the UUID back to the ID via
+  `retrievePeripherals(withIdentifiers:)`.
+- **F5 suppression.** Implemented with a CGEvent HID event tap (requires
+  Accessibility permission; without it the app logs and gives up). The tap
+  callback must not block, so the Windows layer that waits up to 80 ms inside
+  the keyboard hook for mic-open evidence is replaced by tentatively
+  swallowing the first F5 keydown and replaying it after ~100 ms when no
+  mic-open evidence arrived. The 80 ms proximity window and the key-sequence
+  latch are semantically identical to Windows.
+- **No heartbeat probe.** The Windows desktop periodically reads a probe
+  characteristic to feed its 90 s silence teardown; macOS has no such
+  teardown and relies on CoreBluetooth disconnect callbacks instead, so no
+  probe traffic is generated.
 
 ## Runtime State Machine
 

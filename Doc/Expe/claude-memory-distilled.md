@@ -180,7 +180,7 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 - `OnTimer` 在 kListening 每 16ms（kAnimationStepMs）无条件 `InvalidateStaticLayer`，每 16ms 全量重建 D2D CreateTextLayout 致 UI 线程过载 → 卡死。修复：静态文本不重建 static layer，仅重绘动态指示器（音浪条）。
 - 流式 token 每 ~60ms 到达重置 140ms（kTextTransitionMs）滚动动画 → 闪动。修复：`AppendPartial` 跳过文字滚动过渡（`Show` 加 `skip_text_transition`）。
 
-**精修耗时 2.5~12.8s 随文本线性增长，LLM 固有延迟不可压缩，勿再探索压缩总时间**（definite 分段并行：腾讯云无 definite、长句无停顿退化、final_text≠utterances 拼接不同源；倒计时并行：装不进 1.2s 窗口）。优化重心是流式逐字显示。RFC：`Doc/Plan/overlay-render-streaming-refine.md`。流式精修仅 Windows 端实施，macOS 端待推进（macOS 目前连非流式精修都没有）。
+**精修耗时 2.5~12.8s 随文本线性增长，LLM 固有延迟不可压缩，勿再探索压缩总时间**（definite 分段并行：腾讯云无 definite、长句无停顿退化、final_text≠utterances 拼接不同源；倒计时并行：装不进 1.2s 窗口）。优化重心是流式逐字显示。RFC：`Doc/Plan/overlay-render-streaming-refine.md`。流式精修仅 Windows 端实施；macOS 已有非流式精修（2026-09 设计对齐，`LLMRefinementClient`，prompt/热词守卫对齐 Windows），SSE 流式待推进。
 
 ### 3.9 ASR 协议与配置坑
 
@@ -384,7 +384,7 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 
 验证"切换某资源指向"类功能须看被切资源的直接状态：auto_switch 验证时"微信识别到文字"在切换生效与"平时默认本就是 CABLE"两种情况下都成立，无法区分；必须录音期间直接观测默认录音设备实时切换，且先排除环境恰好满足。同理："真机验证生效"必须有直接证据（寄存器读回、电平行为对比），不能只看"识别到文字"。MSI 验证用 SHA256 而非肉眼。
 
-### 7.3 跨工程移植方法论（8 要点）
+### 7.3 跨工程移植方法论（10 要点）
 
 1. **优先整组件复制**：CMake REQUIRES 只系统组件+.c 只 include 系统头即零自定义依赖，直接 cp -r（voice_ble/stick_s3_board/ui_status 均如此），重写等于丢踩坑经验。
 2. **sdkconfig.defaults 全量 diff 对齐**（不只 BT/NimBLE）：漏抄 PM_ENABLE/tickless/240MHz/MAIN_XTAL_PU 致只开 MODEM_SLEEP 无配套、BT 时钟漂移偶发断连（reason=8 supervision timeout）。
@@ -394,6 +394,8 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 6. **独立工程默认无 USB 日志通道**：显式 `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`+`UART_NUM=-1`（见 §2.3）。
 7. **tx_task drain 时序照搬**：sentinel 不 break，goto drain 排空再发 audio_end（见 §1.4）。
 8. **真机验证不只看编译通过**：编译只证语法；栈溢出/断连/drain 丢失都是真机才暴露。
+9. **macOS 移植（Windows C++ → Swift）**：平台差异集中在 OS 边界而非纯逻辑——纯逻辑（协议常量/状态机/ADPCM/PCM 处理）逐行移植可零偏差，但集成层必须单独审查：错误处理策略（Windows 打日志继续 vs Swift 易写出静默 return）、对象生命周期清理（CBPeripheral 委托置空）、状态刷新时机（config 快照陈旧判据：模块持有启动时快照，运行期改配置不生效）。CoreBluetooth 侧：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须先判 `peripheral.state` 再决定 connect 或直接 discoverServices——对断开外设空发 discoverServices 无任何回调（静默卡死）；CGEvent tap 回调不可阻塞（F5 抑制走异步）；CLT-only 无 XCTest，测试用 executable runner。详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
+10. **大规模 UI/配置对齐移植（2026-09-03 大对齐）**：对齐基准是 Windows 源码当前行为而非仓库文档（Ref 文档「某端未实现」类标注可能已过时，先 grep 两端源码复核）；Windows 的 bug/quirk「修而不随」并在注释写明偏离点；配置解析语义（非法值回默认、不等才落盘、设备表默认填平）逐条照抄 `app_config.cc` 不自行设计；本地化用稳定语义 key 双表 + 完备性运行期 assert 防漂移；后台 coder 子代理改代码树期间主代理勿并行 `swift build`（判据 `input file ... was modified during the build`）。详见 `Doc/Expe/macos-windows-design-parity-port-2026-09-03.md`。
 
 ### 7.4 方案文档位置
 
@@ -412,7 +414,8 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **VB-CABLE 授权**：公开发布前必须改走 B2-下载或取得 VB-Audio 商业分发授权（当前随包携带仅内测）。
 - **E2E next-steps**（`Doc/Plan/windows-e2e-next-steps.md`）：L4 多语料抽检 → run_all.py 编排器 → compare_ogg.py 链路保真 → cer.py；L2 跳过；capture_helper/微信自动化/CI 低优先级；全自动 L4 需 app 加 `--test-playback` 命令行。
 - **wechat buffer 20ms 观察项**：若真机抖动致丢字可回退 30/50ms。
-- **macOS 流式精修**：仅 Windows 端已实施，macOS 端（LLMRefinementClient、SSE 流式、精修接入）待推进；当前 macOS 连非流式精修都没有。
+- **macOS 流式精修**：SSE 流式逐字仅 Windows 端已实施；macOS 已有非流式精修（2026-09 设计对齐，`LLMRefinementClient` 已接入协调器），流式显示待推进。
+- **macOS 大对齐真机验收**（2026-09-03）：11 阶段移植仅编译 + Core 单测验证（runner 不覆盖 app 层），待真机过——编码器旋转快慢分档/单双击动作、敲击映射、电池电压监测（导出 CSV/PNG、`usb_auto_off` 回推）、腾讯 ASR 与热词表、全局热键、登录自启、语言切换全点位、字幕模式。清单与未移植项见 `Doc/Expe/macos-windows-design-parity-port-2026-09-03.md` §4/§5。
 - **firmware 偶发断连 reason=8 排查**：whisper_pen 已定位为 slow interval(latency=4)+supervision timeout（PM 配置补全根治）；firmware 是否也有此偶发断连待验证（差别点 MAX_BONDS=1 vs 3）。
 - **Qt 迁移**：暂缓，留作后续 UI 美化方向。
 - **回连二轮观察项**（2026-07-25 增补）：安定窗 1.5s 若日常日志频繁出现 `retry #2/#3` 需上调；`Status()==Error` 误标 timeout 的诊断精度可留待需要时细分；连按风暴双僵尸已由 15s/3 次免退避覆盖，长期体感待观察。
@@ -464,4 +467,10 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - `device_info` 曾超 BLE 通知 MTU 预算被截断（258B JSON，MTU 247 链路截到 244B、桌面 parse failed）——已修复：精简到 235B + `send_state_json` 超预算告警（4B 帧头 + JSON ≤ ATT MTU−3，预算 240B@MTU247）。state 帧仍严禁盲目加字段，新增状态走独立小帧（先例 `encoder_status`）。改 BLE 协议后必须看一次真机连接日志。见 `Doc/Expe/encoder-present-reporting-2026-08-02.md`。
 - `VoiceStickUi` 接口有三处实现（`Win32App`、`core_tests.cc` 与 `integration_tests.cc` 的 FakeUi），加纯虚函数必须三处同改；设置对话框控件一律创建、未入 `layout_` 表的由 BuildControls 隐藏但 Load/Save 照常读写（整段隐藏不丢配置），区块前置 `separator()` 要挂同一可见性谓词。
 - 首次 GitHub Release / fork 迁移发布全流程（坑：`gh release view` 无 Release 即炸、MSI 上传与网站部署竞态、`gh` 不在 Bash PATH、PowerShell 读 octet-stream 给字节数组、CI 固件与本地固件体积不同），见 `Doc/Expe/release-v236-first-github-release-2026-08-10.md`。
+- macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须按 `peripheral.state` 分支 connect——对断开外设空发 discoverServices 无任何回调（静默卡死），判据是「恢复日志后 didDiscoverServices 静默」；另有「闭包注入读到的 config 快照陈旧致配对后 RC 永不连接」（判据：F5 tap installed 但零 `connected RC-` 日志）。CLT-only 机器 `swift test` 不可用（XCTest/swift-testing 均无），测试用 executable runner。详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
+- macOS/Windows 双端功能对齐状态速查（2026-09-03 大对齐后）：仍 Windows 独有 = 体感鼠标、流式精修（SSE）、热词挖掘/划词加词、火山表 ID（`boosting_table_id`/`correct_table_id`）、微信输入法模式、`battery_status_request` 心跳探针；其余（编码器/敲击/按设备覆盖/电量显示与监测/腾讯 ASR/LLM 精修翻译/本地化 `ui_language`）两端一致。引用「某端未实现」类文档标注前先 grep 两端源码复核。详见 `Doc/Expe/macos-windows-design-parity-port-2026-09-03.md`。
+- macOS 本地 ad-hoc 打包：`.app` 启动即崩且 dyld 报 Sparkle.framework `different Team IDs`（尽管两端都是 adhoc）= `build-macos.sh` 曾给 ad-hoc 分支误加 `--options runtime`（hardened runtime 库校验拒绝无 Team ID 组合）；修复后 ad-hoc 分支不带 runtime 选项，已产出包可 `codesign --force --deep --sign -` 重签救回，见 `Doc/Expe/app-update-mechanism-and-fork-migration-2026-07-30.md` 追加节。
+- macOS 注入类功能（CGEvent 粘贴/按键）验收必须用最终 `.app` 形态：裸二进制寄生终端的 TCC 辅助功能授权，注入「看起来正常」；独立 `.app` 以自身 bundle id 单独授权，未授权时 CGEvent 静默丢弃（识别正常唯独粘贴不进，极具迷惑性）。判据：文本到悬浮窗/剪贴板但输入框无内容 → 查 TCC.db 该 bundle id 有无 `kTCCServiceAccessibility`（本机该 service 在**系统级** `/Library/.../TCC.db`，用户级库无此 service）。签名变动（重打包/重签，cdhash 变化）会使已有授权失效需重勾选；**授权对运行中进程不生效，勾选后必须退出重开 app**（引导弹窗 `accessibilityAlertBody` 已写明）；调试期改 app 层代码不要急着重打包替换正在验收的 .app。`InputInjector` 已加 `AXIsProcessTrusted` 前置拦截 + 每次启动一次引导弹窗（Localization 三键中英双表）。详见 `Doc/Expe/macos-windows-design-parity-port-2026-09-03.md` §3。
+- macOS 拦截「键盘/消费控制类」蓝牙 HID 按键做逐键自定义：纯用户态 `IOHIDDeviceOpen`+`kIOHIDOptionsTypeSeizeDevice` 被 `kIOReturnNotPermitted`（0xe00002c1）拒绝（app 内含 matching 回调抢占时机同样被拒，结论已加固），Karabiner 式独占不可行（其真实路线是内核/DriverKit 虚拟 HID 驱动）。spike 探针 `scripts/ref/hid_seize_probe.swift`，详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md`。
+- 小米遥控器 macOS 按键自定义（二期拦截层，2026-09-04 重构定稿）：**IOHID 观察驱动处置 + tap 只吞除原生事件**——处置（inject/suppress）挂 IOHID value 回调（variable 元素 usage 精确 + page==0x07 过滤 vendor 数据流），因 0xF1(back)/0x65(menu) 在 macOS 不产生 keyDown CGEvent，挂 tap 的旧「锚点+时序关联」架构对它们永远静默；音量键原生事件是 systemDefined（subtype=8，data1=(keyCode<<16)|0xa00 down/0xb00 up），非 keyDown。**「按键报告连 IOHID 层都收不到」先重配对**（蓝牙设置忽略设备 + 主页菜单长按重配对即恢复全键报告；判据：连系统音量 OSD 都不变）。TCC 权限结论须以 `open` 启动形态复核（终端直接执行 .app 二进制时 TCC 归终端身份），`log stream` 可见 `kTCCServiceListenEvent auth_value` 判定明细。详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节。
 - LL 键盘钩子吞掉的键在 Raw Input 里 MAKE/BREAK 双双不存在，钩子内也等不到本次 WM_INPUT（RIT 同步）；要设备归属证据只能放行取 BREAK 沿（hDevice），决策后置到 keyup——先吞后验/时序窗/信用制全被证伪，见 §3.13 与 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`。
