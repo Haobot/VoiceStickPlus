@@ -34,6 +34,7 @@
 #include "local_refinement_client.h"
 #include "model_manifest.h"
 #include "model_downloader.h"
+#include "model_download_session.h"
 #ifdef VOICESTICK_LOCAL_REFINE_ENABLED
 #include "llama_cpp_engine.h"
 #endif
@@ -12364,6 +12365,198 @@ void TestModelDownloaderLoopback() {
     AbortIfFailed(failed, "TestModelDownloaderLoopback");
 }
 
+void TestModelDownloadSession() {
+    int failed = 0;
+    const std::string kAsr1(4096, 'a');
+    const std::string kAsr2(2048, 'b');
+    const std::string kRefine(8192, 'c');
+
+    LoopbackHttpServer::Rules rules;
+    rules["/asr1"] = {.status = 200, .body = kAsr1};
+    rules["/asr2"] = {.status = 200, .body = kAsr2};
+    rules["/refine"] = {.status = 200, .body = kRefine};
+    rules["/slow"] = {.status = 200, .body = std::string(8192, 's'),
+                      .chunk_size = 256, .chunk_delay_ms = 50};
+    LoopbackHttpServer server(std::move(rules));
+    ModelDownloader downloader;
+
+    const auto make_item = [&](ModelKind kind, const std::string& url,
+                               const std::string& body,
+                               const std::filesystem::path& dest) {
+        ModelDownloadItem item;
+        item.kind = kind;
+        item.selected = true;
+        item.spec = MakeSpecFromBody(body, {url});
+        item.dest = dest;
+        return item;
+    };
+
+    // 用例 1：全成功——进度聚合终值、三个文件落位、summary 全绿。
+    {
+        const auto dir = MakeTempDir("session_ok");
+        std::vector<ModelDownloadItem> items = {
+            make_item(ModelKind::kAsr, server.Url("/asr1"), kAsr1, dir / "model.int8.onnx"),
+            make_item(ModelKind::kAsr, server.Url("/asr2"), kAsr2, dir / "tokens.txt"),
+            make_item(ModelKind::kRefine, server.Url("/refine"), kRefine,
+                      dir / "Qwen3-1.7B-Q4_K_M" / "Qwen3-1.7B-Q4_K_M.gguf"),
+        };
+        ModelSessionProgress last;
+        ModelDownloadSession session(std::move(items), &downloader,
+                                     [&](const ModelSessionProgress& p) { last = p; });
+        const auto summary = session.Run();
+        const std::uint64_t total = kAsr1.size() + kAsr2.size() + kRefine.size();
+        if (!summary.asr_ok || !summary.refine_ok || summary.refine_skipped ||
+            summary.cancelled || !summary.errors.empty()) {
+            std::printf("FAIL 全成功 summary: asr=%d refine=%d skip=%d cancel=%d errs=%zu\n",
+                        summary.asr_ok ? 1 : 0, summary.refine_ok ? 1 : 0,
+                        summary.refine_skipped ? 1 : 0, summary.cancelled ? 1 : 0,
+                        summary.errors.size());
+            ++failed;
+        }
+        if (last.total != total || last.downloaded != total) {
+            std::printf("FAIL 进度聚合终值: %llu/%llu（期望 %llu）\n",
+                        static_cast<unsigned long long>(last.downloaded),
+                        static_cast<unsigned long long>(last.total),
+                        static_cast<unsigned long long>(total));
+            ++failed;
+        }
+        if (ReadFileBytes(dir / "model.int8.onnx") != kAsr1 ||
+            ReadFileBytes(dir / "tokens.txt") != kAsr2 ||
+            ReadFileBytes(dir / "Qwen3-1.7B-Q4_K_M" / "Qwen3-1.7B-Q4_K_M.gguf") != kRefine) {
+            std::printf("FAIL 三个目标文件内容不符\n");
+            ++failed;
+        }
+    }
+
+    // 用例 2：精修源全 404——ASR 仍成功，精修失败记录一条，不阻塞收尾。
+    {
+        const auto dir = MakeTempDir("session_refine_fail");
+        std::vector<ModelDownloadItem> items = {
+            make_item(ModelKind::kAsr, server.Url("/asr1"), kAsr1, dir / "model.int8.onnx"),
+            make_item(ModelKind::kAsr, server.Url("/asr2"), kAsr2, dir / "tokens.txt"),
+            make_item(ModelKind::kRefine, server.Url("/missing"), kRefine, dir / "refine.gguf"),
+        };
+        ModelDownloadSession session(std::move(items), &downloader);
+        const auto summary = session.Run();
+        if (!summary.asr_ok || summary.refine_ok || summary.refine_skipped ||
+            summary.cancelled || summary.errors.size() != 1) {
+            std::printf("FAIL 精修失败语义: asr=%d refine=%d errs=%zu\n",
+                        summary.asr_ok ? 1 : 0, summary.refine_ok ? 1 : 0,
+                        summary.errors.size());
+            ++failed;
+        }
+    }
+
+    // 用例 3：ASR 首文件 404——整体失败，后续条目（含精修）不再发起。
+    {
+        const auto dir = MakeTempDir("session_asr_fail");
+        std::vector<ModelDownloadItem> items = {
+            make_item(ModelKind::kAsr, server.Url("/missing"), kAsr1, dir / "model.int8.onnx"),
+            make_item(ModelKind::kAsr, server.Url("/asr2"), kAsr2, dir / "tokens.txt"),
+            make_item(ModelKind::kRefine, server.Url("/refine"), kRefine, dir / "refine.gguf"),
+        };
+        ModelDownloadSession session(std::move(items), &downloader);
+        const auto summary = session.Run();
+        if (summary.asr_ok || summary.refine_ok || summary.cancelled ||
+            std::filesystem::exists(dir / "tokens.txt") ||
+            std::filesystem::exists(dir / "refine.gguf")) {
+            std::printf("FAIL ASR 失败应中断: asr=%d 后续文件不应存在\n",
+                        summary.asr_ok ? 1 : 0);
+            ++failed;
+        }
+    }
+
+    // 用例 4：取消——慢速源中途置位，cancelled 且 .part 保留。
+    {
+        const auto dir = MakeTempDir("session_cancel");
+        std::vector<ModelDownloadItem> items = {
+            make_item(ModelKind::kAsr, server.Url("/slow"), std::string(8192, 's'),
+                      dir / "model.int8.onnx"),
+        };
+        auto cancel_flag = std::make_shared<std::atomic<bool>>(false);
+        ModelDownloadSession session(std::move(items), &downloader,
+                                     [&](const ModelSessionProgress& p) {
+                                         if (p.downloaded > 0) cancel_flag->store(true);
+                                     },
+                                     cancel_flag);
+        const auto summary = session.Run();
+        const bool part_kept = std::filesystem::exists(dir / "model.int8.onnx.part") &&
+                               std::filesystem::file_size(dir / "model.int8.onnx.part") < 8192;
+        if (!summary.cancelled || summary.asr_ok || !part_kept) {
+            std::printf("FAIL 取消语义: cancel=%d asr=%d part_kept=%d\n",
+                        summary.cancelled ? 1 : 0, summary.asr_ok ? 1 : 0, part_kept ? 1 : 0);
+            ++failed;
+        }
+    }
+
+    // 用例 5：精修未勾选——不发起该条目，refine_skipped 且无错误。
+    {
+        const auto dir = MakeTempDir("session_skip_refine");
+        auto refine_item = make_item(ModelKind::kRefine, server.Url("/refine"), kRefine,
+                                     dir / "refine.gguf");
+        refine_item.selected = false;
+        std::vector<ModelDownloadItem> items = {
+            make_item(ModelKind::kAsr, server.Url("/asr1"), kAsr1, dir / "model.int8.onnx"),
+            make_item(ModelKind::kAsr, server.Url("/asr2"), kAsr2, dir / "tokens.txt"),
+            std::move(refine_item),
+        };
+        ModelDownloadSession session(std::move(items), &downloader);
+        const auto summary = session.Run();
+        if (!summary.asr_ok || summary.refine_ok || !summary.refine_skipped ||
+            !summary.errors.empty() || std::filesystem::exists(dir / "refine.gguf")) {
+            std::printf("FAIL 跳过精修语义: asr=%d skip=%d errs=%zu\n",
+                        summary.asr_ok ? 1 : 0, summary.refine_skipped ? 1 : 0,
+                        summary.errors.size());
+            ++failed;
+        }
+    }
+
+    // 用例 6：BuildModelDownloadItems——条目数与目标路径（含 GGUF 子目录）。
+    {
+        const auto models_dir = std::filesystem::path("C:/cache/models");
+        const auto with_refine = BuildModelDownloadItems(models_dir, true);
+        if (with_refine.size() != 3 ||
+            with_refine[0].dest != models_dir / "model.int8.onnx" ||
+            with_refine[1].dest != models_dir / "tokens.txt" ||
+            with_refine[2].dest != models_dir / "Qwen3-1.7B-Q4_K_M" / "Qwen3-1.7B-Q4_K_M.gguf" ||
+            with_refine[0].kind != ModelKind::kAsr ||
+            with_refine[2].kind != ModelKind::kRefine || !with_refine[2].selected) {
+            std::printf("FAIL BuildModelDownloadItems(含精修) 条目不符：%zu 条\n",
+                        with_refine.size());
+            ++failed;
+        }
+        const auto without_refine = BuildModelDownloadItems(models_dir, false);
+        if (without_refine.size() != 2 ||
+            without_refine[0].spec.rel_path != "model.int8.onnx" ||
+            without_refine[1].spec.bytes != 315894) {
+            std::printf("FAIL BuildModelDownloadItems(不含精修) 条目不符：%zu 条\n",
+                        without_refine.size());
+            ++failed;
+        }
+        // spec 与内置清单同源（哈希/URL 不漂移）。
+        const auto& bundled = BundledModelEntries();
+        if (with_refine.size() == 3 &&
+            (with_refine[0].spec.sha256 != bundled[0].files[0].sha256 ||
+             with_refine[0].spec.urls != bundled[0].files[0].urls)) {
+            std::printf("FAIL 条目 spec 应与内置清单一致\n");
+            ++failed;
+        }
+    }
+
+    // 用例 7：LocalModelCacheModelsDir——非空且尾部三段目录名固定。
+    {
+        const auto dir = LocalModelCacheModelsDir();
+        if (dir.empty() || dir.filename().wstring() != L"sense-voice-int8-2024-07-17" ||
+            dir.parent_path().filename().wstring() != L"models" ||
+            dir.parent_path().parent_path().filename().wstring() != L"VoiceStick") {
+            std::printf("FAIL LocalModelCacheModelsDir 尾部结构不符\n");
+            ++failed;
+        }
+    }
+
+    AbortIfFailed(failed, "TestModelDownloadSession");
+}
+
 int main() {
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接终止，
@@ -12690,5 +12883,6 @@ int main() {
     TestModelDownloaderPureFunctions();
     TestFinalizePartFile();
     TestModelDownloaderLoopback();
+    TestModelDownloadSession();
     return 0;
 }

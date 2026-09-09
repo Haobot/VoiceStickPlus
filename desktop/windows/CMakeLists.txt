@@ -141,6 +141,7 @@ add_library(voicestick_core STATIC
     src/firmware_manifest.cc
     src/model_manifest.cc
     src/model_downloader.cc
+    src/model_download_session.cc
     src/llm_chat_client.cc
     src/llm_translation_client.cc
     src/llm_refinement_client.cc
@@ -182,6 +183,7 @@ target_link_libraries(voicestick_core PUBLIC bcrypt)
 target_link_libraries(voicestick_core PUBLIC opus)
 target_link_libraries(voicestick_core PUBLIC mmdevapi ole32 uuid)
 target_link_libraries(voicestick_core PUBLIC setupapi)  # com_port_selector 串口枚举
+target_link_libraries(voicestick_core PUBLIC shell32)  # model_download_session SHGetKnownFolderPath
 if(VOICESTICK_ENABLE_LOCAL_ASR)
     target_sources(voicestick_core PRIVATE src/local_asr_client_win.cc)
     target_link_libraries(voicestick_core PUBLIC sherpa_onnx_c_api)
@@ -259,6 +261,7 @@ add_executable(VoiceStickApp WIN32
     src/pair_device_dialog.cc
     src/onboarding_dialog.cc
     src/settings_dialog.cc
+    src/model_download_dialog.cc
     src/encoder_settings_dialog.cc
     src/interaction_settings_dialog.cc
     src/remote_settings_dialog.cc

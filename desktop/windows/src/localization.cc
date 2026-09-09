@@ -102,6 +102,26 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ Models ready (SenseVoice found)";
     table[Index(StringId::kSettingsLocalMicModelsMissing)] =
         "✗ Model files not found (need model.int8.onnx + tokens.txt)";
+    table[Index(StringId::kSettingsLocalMicDownload)] = "Download models...";
+    table[Index(StringId::kModelDownloadTitle)] = "Download Local Models";
+    table[Index(StringId::kModelDownloadIntro)] =
+        "Downloads local recognition & refinement models to your user folder. "
+        "About 240 MB (required) + 1.1 GB (optional).";
+    table[Index(StringId::kModelDownloadAsrItem)] =
+        "Speech recognition model (required, ~240 MB)";
+    table[Index(StringId::kModelDownloadRefineItem)] =
+        "Text refinement model (optional, ~1.1 GB, skip for rules-only)";
+    table[Index(StringId::kModelDownloadDiskSpace)] = "Disk space needed: about %s";
+    table[Index(StringId::kModelDownloadStart)] = "Start download";
+    table[Index(StringId::kModelDownloadRunning)] = "Downloading...";
+    table[Index(StringId::kModelDownloadDone)] =
+        "Download complete. Click \"Save\" to enable local speech recognition.";
+    table[Index(StringId::kModelDownloadDoneRefineMissing)] =
+        "Recognition model ready. Refinement model was not downloaded; "
+        "rule-based refinement will be used.";
+    table[Index(StringId::kModelDownloadFailed)] = "Download failed:";
+    table[Index(StringId::kModelDownloadCancelled)] =
+        "Cancelled. Partial progress is kept and resumes next time.";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -501,6 +521,25 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ 模型就绪（已找到 SenseVoice）";
     table[Index(StringId::kSettingsLocalMicModelsMissing)] =
         "✗ 未找到模型文件（需 model.int8.onnx 与 tokens.txt）";
+    table[Index(StringId::kSettingsLocalMicDownload)] = "下载模型…";
+    table[Index(StringId::kModelDownloadTitle)] = "下载本地模型";
+    table[Index(StringId::kModelDownloadIntro)] =
+        "将本地识别与文本精修模型下载到用户目录：识别约 240 MB（必选）+ "
+        "精修约 1.1 GB（可选）。";
+    table[Index(StringId::kModelDownloadAsrItem)] =
+        "语音识别模型（必选，约 240 MB）";
+    table[Index(StringId::kModelDownloadRefineItem)] =
+        "文本精修模型（可选，约 1.1 GB，跳过则仅规则精修）";
+    table[Index(StringId::kModelDownloadDiskSpace)] = "需要磁盘空间：约 %s";
+    table[Index(StringId::kModelDownloadStart)] = "开始下载";
+    table[Index(StringId::kModelDownloadRunning)] = "正在下载…";
+    table[Index(StringId::kModelDownloadDone)] =
+        "下载完成。回到设置页点击“保存”即可启用本地语音识别。";
+    table[Index(StringId::kModelDownloadDoneRefineMissing)] =
+        "识别模型就绪。精修模型未下载，将使用规则精修（可稍后重新下载）。";
+    table[Index(StringId::kModelDownloadFailed)] = "下载失败：";
+    table[Index(StringId::kModelDownloadCancelled)] =
+        "已取消。已下载部分会保留，下次继续（断点续传）。";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";

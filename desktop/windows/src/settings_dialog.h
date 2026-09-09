@@ -1,15 +1,19 @@
 #pragma once
 
 #include "app_config.h"
+#include "model_download_session.h"
 #include "provider_combo.h"
 
 #include <Windows.h>
 
 #include <functional>
+#include <memory>
 #include <utility>
 #include <vector>
 
 namespace voicestick {
+
+class ModelDownloadDialog;
 
 class SettingsDialog {
 public:
@@ -48,6 +52,8 @@ private:
     // 本地语音识别：模型目录浏览 + 即时有效性回显（与启动校验同一口径）。
     void ChooseLocalMicModelsDir();
     void UpdateLocalMicModelsStatus();
+    // 拉起本地模型下载向导；ASR 成功后回填模型目录编辑框并刷新状态回显。
+    void OpenModelDownloadDialog();
     // 本地文本精修：复选框勾选态与模型在位状态回显（与外壳装配同一解析口径）。
     bool IsLocalRefineChecked() const;
     void UpdateLocalRefineStatus();
@@ -135,6 +141,9 @@ private:
     HWND local_mic_models_dir_browse_button_ = nullptr;
     // 模型目录有效性回显（✓ 就绪 / ✗ 缺文件），与 Resolve+Validate 同口径。
     HWND local_mic_models_status_label_ = nullptr;
+    // 「下载模型…」：拉起 ModelDownloadDialog（本地模型按需下载向导）。
+    HWND local_mic_download_button_ = nullptr;
+    std::unique_ptr<ModelDownloadDialog> model_download_dialog_;
     // 本地文本精修（Doc/Plan/local-text-refinement.md）：复选框 + 精修 GGUF
     // 模型状态回显（✓ Qwen3-1.7B 在位 / ✗ 缺模型仅规则精修）。
     HWND local_refine_check_ = nullptr;
@@ -192,6 +201,7 @@ private:
     static constexpr UINT kIdLocalMicModelsDirBrowse = 2044;
     static constexpr UINT kIdLocalRefineCheck = 2045;
     static constexpr UINT kIdLocalRefinePromptEdit = 2046;
+    static constexpr UINT kIdLocalMicModelsDownload = 2047;
 };
 
 } // namespace voicestick

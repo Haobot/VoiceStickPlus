@@ -11,6 +11,8 @@
 #include <bcrypt.h>
 #include <winhttp.h>
 
+#include "log.h"
+
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -465,6 +467,8 @@ DownloadOutcome ModelDownloader::DownloadFile(
             AttemptSource(url, spec, dest, part, part_bytes, progress, cancelled);
         switch (attempt.status) {
             case AttemptStatus::kFinalized:
+                Log("MDL", "model file verified: " + spec.rel_path +
+                              " (" + std::to_string(spec.bytes) + " bytes) via " + url);
                 outcome.result = DownloadResult::kOk;
                 outcome.url_used = url;
                 return outcome;
@@ -492,6 +496,7 @@ DownloadOutcome ModelDownloader::DownloadFile(
                 break;
         }
         failures.push_back(url + ": " + attempt.error);
+        Log("MDL", "source failed, trying next: " + url + " (" + attempt.error + ")");
     }
 
     outcome.result = saw_hash_mismatch ? DownloadResult::kHashMismatch

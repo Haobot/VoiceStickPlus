@@ -8,6 +8,7 @@
 #include "local_asr_client_win.h"
 #include "local_refinement_client.h"
 #include "log.h"
+#include "model_download_dialog.h"
 #include "voice_stick_cloud_api_win.h"
 
 #include <ShlObj.h>
@@ -244,6 +245,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdLocalMicModelsDirBrowse:
             ChooseLocalMicModelsDir();
             return TRUE;
+        case kIdLocalMicModelsDownload:
+            OpenModelDownloadDialog();
+            return TRUE;
         case kIdLocalMicModelsDirEdit:
             // 离开编辑框即时重估模型有效性（与浏览/加载共用同一回显口径）。
             if (HIWORD(w_param) == EN_KILLFOCUS) UpdateLocalMicModelsStatus();
@@ -410,6 +414,7 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         local_mic_models_dir_edit_ = nullptr;
         local_mic_models_dir_browse_button_ = nullptr;
         local_mic_models_status_label_ = nullptr;
+        local_mic_download_button_ = nullptr;
         local_refine_check_ = nullptr;
         local_refine_status_label_ = nullptr;
         local_refine_prompt_label_ = nullptr;
@@ -503,6 +508,7 @@ void SettingsDialog::DestroyControls() {
     local_mic_models_dir_edit_ = nullptr;
     local_mic_models_dir_browse_button_ = nullptr;
     local_mic_models_status_label_ = nullptr;
+    local_mic_download_button_ = nullptr;
     local_refine_check_ = nullptr;
     local_refine_status_label_ = nullptr;
     local_refine_prompt_label_ = nullptr;
@@ -699,11 +705,18 @@ void SettingsDialog::BuildControls() {
             {local_mic_models_dir_edit_, ctrl_x, 0, ctrl_w - browse_w - Dp(6), Dp(24)},
             {local_mic_models_dir_browse_button_, ctrl_x + ctrl_w - browse_w, 0, browse_w, Dp(24)},
         }, [this]() { return ProviderComboLocalSelected(); });
-        // 模型目录有效性回显行（✓/✗ + 说明，Resolve+Validate 与启动校验同口径）。
+        // 模型目录有效性回显行（✓/✗ + 说明，Resolve+Validate 与启动校验同口径）
+        // 右端挂「下载模型…」入口：本地模型缺失时一键按需下载（迭代二）。
+        const int download_w = Dp(110);
         local_mic_models_status_label_ = remember_label(CreateLabel(
-            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
+            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10) - download_w - Dp(8), Dp(18), instance_));
+        local_mic_download_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicDownload, language).c_str(),
+            0, 0, download_w, Dp(22), kIdLocalMicModelsDownload, instance_));
         add(Dp(20), {
-            {local_mic_models_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+            {local_mic_models_status_label_, Dp(10), 0,
+             ctrl_x + ctrl_w - Dp(10) - download_w - Dp(8), Dp(18)},
+            {local_mic_download_button_, ctrl_x + ctrl_w - download_w, 0, download_w, Dp(22)},
         }, [this]() { return ProviderComboLocalSelected(); });
     }
     {
@@ -1548,6 +1561,25 @@ void SettingsDialog::UpdateLocalMicModelsStatus() {
                        .c_str());
     // 精修模型探测锚同一 models_dir（编辑框当前值）：目录变化联动刷新精修状态。
     UpdateLocalRefineStatus();
+}
+
+void SettingsDialog::OpenModelDownloadDialog() {
+    if (model_download_dialog_) {
+        // 向导已打开：置前即可（重复点击不并发起两个下载）。
+        model_download_dialog_->Show();
+        return;
+    }
+    model_download_dialog_ = std::make_unique<ModelDownloadDialog>(
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language));
+    // ASR 成功即回填缓存目录到编辑框（用户仍可改，点保存才落盘）并刷新回显。
+    model_download_dialog_->on_complete = [this](const ModelDownloadSummary& summary) {
+        if (summary.asr_ok && local_mic_models_dir_edit_) {
+            SetWindowTextW(local_mic_models_dir_edit_,
+                           Utf16(LocalModelCacheModelsDir().string()).c_str());
+            UpdateLocalMicModelsStatus();
+        }
+    };
+    model_download_dialog_->Show();
 }
 
 bool SettingsDialog::IsLocalRefineChecked() const {
