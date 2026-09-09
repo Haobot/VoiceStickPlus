@@ -688,6 +688,10 @@ private:
     std::unique_ptr<AsrClient> local_asr_;
     // 本地文本精修客户端（外壳注入，本地识别会话专用）。
     std::unique_ptr<LocalRefinementClient> local_refiner_;
+    // 跨轮上下文纠错历史（refine_cross_turn 开关，方案 §3.4）：全局单缓冲
+    // 最近 5 轮 + 2 分钟 TTL；Turns() 供引擎续写重放，Add 由精修完成回调
+    // 写入（取消轮不写入）。线程安全（会话线程读/精修后台线程写）。
+    RefineHistory refine_history_;
     // PCM 切帧（640 采样=40ms，对齐固件帧规格）+ Opus 编码器。
     // 生命周期：会话建立时 Reset；采集线程写；释放线程 Stop join 后读余量。
     OpusFrameSlicer local_mic_slicer_;

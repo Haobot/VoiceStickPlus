@@ -429,6 +429,7 @@ enum class StringId {
     kSettingsLocalRefineModelOk,
     kSettingsLocalRefineModelMissing,
     kSettingsLocalRefinePrompt,
+    kSettingsLocalRefineCrossTurn,
 };
 
 // 返回 UTF-8 本地化文本

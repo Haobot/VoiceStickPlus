@@ -217,6 +217,12 @@ struct LocalAsrConfig {
     // 本地精修 system prompt（含 few-shot 示例）。空 = 内置默认
     // （LocalRefinementClient::BuildSystemPrompt）；多行文本，不 Trim。
     std::string refine_prompt;
+    // 跨轮上下文纠错（Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md）：
+    // 开启后本地精修携带最近 5 轮历史走纠正指令管线（模型只出「错词→纠正词」
+    // 指令，拼音守卫代码层执行），纠错模型口径 Qwen3-4B（M0 spike GO 判定；
+    // 4B 缺失时回退 1.7B，纠正能力降级为安全弱档）。默认关：改写能力先以
+    // 设置开关观察（对齐「守卫保底不劣化」原则）。
+    bool refine_cross_turn = false;
 
     bool operator==(const LocalAsrConfig& other) const = default;
 };

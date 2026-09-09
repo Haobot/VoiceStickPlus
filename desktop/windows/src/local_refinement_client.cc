@@ -203,11 +203,11 @@ void LocalRefinementClient::RunRefine(
         return;
     }
 
-    // 跨轮纠正指令管线（context 非空，M0 spike C 组形态）：本轮 user 只含
-    // 当句+处理锚，历史经 ChatSessionTurn 承载（真引擎 KV 续写，FakeEngine
-    // 默认实现拼同构续写块——两种引擎形态行为等价，性能不同）；为空走
-    // 现行 few-shot 生成管线。
-    const bool cross = !context.turns.empty();
+    // 跨轮纠正指令管线（cross_turn 开关信号，M0 spike C 组形态）：本轮 user
+    // 只含当句+处理锚，历史经 ChatSessionTurn 承载（真引擎 KV 续写，
+    // FakeEngine 默认实现拼同构续写块——两种引擎形态行为等价，性能不同）；
+    // 关闭走现行 few-shot 生成管线。
+    const bool cross = context.cross_turn;
     std::vector<std::pair<std::string, std::string>> history;
     std::string context_text;  // 守卫查找域：各轮 refined 拼接
     for (const auto& turn : context.turns) {

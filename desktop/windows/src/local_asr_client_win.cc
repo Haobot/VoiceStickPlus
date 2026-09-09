@@ -300,7 +300,8 @@ std::string ResolveLocalMicModelsDir(const std::string& configured,
 }
 
 std::string ResolveLocalRefineModelPath(const std::string& models_dir,
-                                        const std::string& refine_model) {
+                                        const std::string& refine_model,
+                                        bool cross_turn) {
     namespace fs = std::filesystem;
     if (const char* env_model = std::getenv("VOICESTICK_REFINE_MODEL")) {
         if (*env_model && fs::exists(env_model)) return env_model;
@@ -310,6 +311,13 @@ std::string ResolveLocalRefineModelPath(const std::string& models_dir,
         const fs::path configured(refine_model);
         candidate = configured.is_absolute() ? configured
                                              : fs::path(models_dir) / configured;
+    } else if (cross_turn) {
+        // 跨轮纠错优先 4B（M0 GO 口径）；缺失回退 1.7B 默认档
+        const fs::path four_b = fs::path(models_dir) / "Qwen3-4B-Q4_K_M" /
+                                "Qwen3-4B-Q4_K_M.gguf";
+        if (fs::exists(four_b)) return four_b.string();
+        candidate = fs::path(models_dir) / "Qwen3-1.7B-Q4_K_M" /
+                    "Qwen3-1.7B-Q4_K_M.gguf";
     } else {
         candidate = fs::path(models_dir) / "Qwen3-1.7B-Q4_K_M" /
                     "Qwen3-1.7B-Q4_K_M.gguf";

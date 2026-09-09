@@ -49,13 +49,15 @@ class LocalRefinementClient {
   // 前缀、think 标签），供守卫前清洗与单测复用。
   static std::string StripReplyTemplate(std::string_view reply);
 
-  // 跨轮上下文（M2，方案 §3.2/3.3）：turns 非空时启用纠正指令管线——
-  // system 用 BuildCorrectionSystemPrompt()，本轮 user 只含「输入：{规则级
+  // 跨轮上下文（M2，方案 §3.2/3.3）：cross_turn 由协调器按 refine_cross_turn
+  // 开关置位（与 turns 独立——空历史的首轮也走纠正指令管线，保证管线与
+  // KV 前缀全程一致；模型无上文时输出「无」）。本轮 user 只含「输入：{规则级
   // 文本}」+「处理：」，历史经引擎 ChatSessionTurn 承载（真引擎 KV 续写，
   // 失效自愈重放；默认实现拼同构续写块「输入：…处理：…」）。turns 的
   // refined 同时构成守卫查找域（纠正词必须在上文出现过）；instruction
   // 是引擎历史重放的 assistant 侧（形态自洽，见 RefineTurn 注释）。
   struct RefineContext {
+    bool cross_turn = false;
     std::vector<RefineTurn> turns;  // 各轮 {raw_asr, refined, instruction}
   };
 

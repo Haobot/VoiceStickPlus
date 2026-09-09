@@ -1450,8 +1450,16 @@ void Win32App::SyncLocalRefiner() {
         const std::string models_dir = ResolveLocalMicModelsDir(
             config_.local_asr.models_dir,
             std::filesystem::path(CurrentExecutableDir()).string());
-        model_path = ResolveLocalRefineModelPath(models_dir,
-                                                 config_.local_asr.refine_model);
+        // 跨轮开时优先 4B（解析口径与设置界面回显一致）；4B 缺失回退
+        // 1.7B——纠正能力降级为安全弱档（守卫保底不变），日志明示。
+        model_path = ResolveLocalRefineModelPath(
+            models_dir, config_.local_asr.refine_model,
+            config_.local_asr.refine_cross_turn);
+        if (config_.local_asr.refine_cross_turn && !model_path.empty() &&
+            model_path.find("Qwen3-4B") == std::string::npos) {
+            LogLine("Cross-turn refine prefers Qwen3-4B (missing); "
+                    "falling back with weaker correction: " + model_path);
+        }
     }
     // 幂等键含提示词：自定义 few-shot 变化 → 前缀变 → 必须重建引擎
     //（llama.cpp KV 前缀按首次 Chat 的 system+few-shot 钉住，改提示词

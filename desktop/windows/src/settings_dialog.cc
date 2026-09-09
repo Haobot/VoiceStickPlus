@@ -256,6 +256,10 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             // 勾选态切换即刷新精修模型状态行（可见性回调依赖勾选态）。
             if (HIWORD(w_param) == BN_CLICKED) UpdateLocalRefineStatus();
             return TRUE;
+        case kIdLocalRefineCrossCheck:
+            // 跨轮勾选切换模型探测口径（4B 优先/1.7B），状态行联动刷新。
+            if (HIWORD(w_param) == BN_CLICKED) UpdateLocalRefineStatus();
+            return TRUE;
         case kIdApplyTrialApiKey:
             ApplyTrialApiKey();
             return TRUE;
@@ -734,6 +738,16 @@ void SettingsDialog::BuildControls() {
             hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
         add(Dp(20), {
             {local_refine_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
+        // 跨轮上下文纠错（M3，Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md）：
+        // 勾选后本地精修携带最近 5 轮历史，纠正指令管线 + 拼音守卫；模型档位
+        // 切 Qwen3-4B 优先（状态行探测口径联动）。
+        local_refine_cross_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsLocalRefineCrossTurn, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdLocalRefineCrossCheck, instance_,
+            BS_AUTOCHECKBOX));
+        add(row_h + Dp(6), {
+            {local_refine_cross_check_, ctrl_x, 0, ctrl_w, Dp(22)},
         }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
     }
     {
@@ -1253,6 +1267,9 @@ void SettingsDialog::LoadConfigIntoControls() {
     // 内置 few-shot 默认，让用户看得见、改得动）。
     SendMessageW(local_refine_check_, BM_SETCHECK,
                  config_.local_asr.refine_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(local_refine_cross_check_, BM_SETCHECK,
+                 config_.local_asr.refine_cross_turn ? BST_CHECKED : BST_UNCHECKED,
+                 0);
     UpdateLocalRefineStatus();
     SetWindowTextW(local_refine_prompt_edit_, Utf16(
         config_.local_asr.refine_prompt.empty()
@@ -1312,6 +1329,8 @@ void SettingsDialog::SaveSettings() {
     config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
     config_.local_asr.refine_enabled =
         SendMessageW(local_refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.local_asr.refine_cross_turn =
+        SendMessageW(local_refine_cross_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     {   // 与默认等值归空（空 = 默认），清空编辑框即恢复默认
         const std::string normalized = NormalizeEditNewlines(
             Utf8(GetWindowText(local_refine_prompt_edit_)));
@@ -1587,6 +1606,11 @@ bool SettingsDialog::IsLocalRefineChecked() const {
            SendMessageW(local_refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 }
 
+bool SettingsDialog::IsLocalRefineCrossChecked() const {
+    return local_refine_cross_check_ != nullptr &&
+           SendMessageW(local_refine_cross_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
 void SettingsDialog::UpdateLocalRefineStatus() {
     if (local_refine_status_label_ == nullptr || local_mic_models_dir_edit_ == nullptr) {
         return;
@@ -1609,8 +1633,10 @@ void SettingsDialog::UpdateLocalRefineStatus() {
         return std::filesystem::path(exe_path).parent_path().string();
     }();
     const std::string models_dir = ResolveLocalMicModelsDir(configured, exe_dir);
-    const std::string model =
-        ResolveLocalRefineModelPath(models_dir, config_.local_asr.refine_model);
+    // 与外壳装配（SyncLocalRefiner）同一解析口径：跨轮勾选时优先 4B 探测
+    //（未保存也能即时反馈），refine_model 尚无编辑入口走默认档位探测。
+    const std::string model = ResolveLocalRefineModelPath(
+        models_dir, config_.local_asr.refine_model, IsLocalRefineCrossChecked());
     SetWindowTextW(local_refine_status_label_,
                    TrW(model.empty() ? StringId::kSettingsLocalRefineModelMissing
                                      : StringId::kSettingsLocalRefineModelOk,

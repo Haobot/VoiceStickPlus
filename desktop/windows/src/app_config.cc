@@ -711,6 +711,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
             if (auto value = TomlString(*local_asr, "refine_prompt")) {
                 config.local_asr.refine_prompt = *value;  // 多行不 Trim
             }
+            if (auto value = TomlBool(*local_asr, "refine_cross_turn")) {
+                config.local_asr.refine_cross_turn = *value;
+            }
         }
         // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
         // 设备表填平（ParseXiaomiSettings 的 fallback 拷贝）才能带上全局默认。
@@ -1020,6 +1023,9 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "refine_num_threads = " << local_asr.refine_num_threads << "\n";
     if (!local_asr.refine_prompt.empty()) {  // 空=内置默认，不落盘降噪
         output << "refine_prompt = \"" << TomlEscape(local_asr.refine_prompt) << "\"\n";
+    }
+    if (local_asr.refine_cross_turn) {  // 默认关不落盘降噪
+        output << "refine_cross_turn = true\n";
     }
     for (const auto& [device_id, profile] : device_output_profiles) {
         if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {

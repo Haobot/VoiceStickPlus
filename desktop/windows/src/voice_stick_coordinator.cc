@@ -2263,6 +2263,16 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         CancelStreamingRefinement();
         refinement_cancel_token_ = std::make_shared<std::atomic_bool>(false);
 
+        // 跨轮上下文（方案 §3.4）：开关开时全程走纠正指令管线（空历史首轮
+        // 也走——管线与 KV 前缀全程一致，模型无上文时输出「无」）；TTL 过期
+        // 在 Turns() 内惰性完成，过期后历史为空、引擎会话由下一次 Chat 调用
+        // 自动作废，无需显式重置。
+        LocalRefinementClient::RefineContext context;
+        context.cross_turn = config_.local_asr.refine_cross_turn;
+        if (context.cross_turn) {
+            context.turns = refine_history_.Turns();
+        }
+
         auto alive = alive_;
         auto cancel = refinement_cancel_token_;
         auto device_id = active_device_id_;
@@ -2298,19 +2308,27 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                     ui_->AppendPartial(current, device_id);
                 }
             },
-            // on_complete（后台线程）：ok=守卫放行的 LLM 结果；!ok=取消或规则级
-            // 回退，client 已保证给了可用的最终文本。
+            // on_complete（后台线程）：ok=守卫放行的 LLM 结果；!ok=取消（结果
+            // 作废，不进跨轮历史）。instruction=当轮模型指令输出，存入历史供
+            // 下一轮引擎重放（形态自洽）；守卫拦截/引擎失败回退轮也入历史
+            //（refined=规则级结果，instruction 空→重放为「无」）——方案 §3.4。
             [this, alive, cancel, text, device_id,
-             wrapped = std::move(wrapped)](bool ok, std::string result) mutable {
+             wrapped = std::move(wrapped)](bool ok, std::string result,
+                                           std::string instruction) mutable {
                 if (!alive->load() || (cancel && cancel->load())) return;
                 std::string final_text = (ok && !result.empty()) ? result : text;
                 CancelStreamingRefinement();
                 ui_->ShowPartial(final_text, device_id);
-                if (ok) MineHotwordCandidatesFromRefinement(text, final_text);
+                if (ok) {
+                    if (config_.local_asr.refine_cross_turn) {
+                        refine_history_.Add(text, final_text, instruction);
+                    }
+                    MineHotwordCandidatesFromRefinement(text, final_text);
+                }
                 wrapped(true, final_text);
                 MaybeExtractHotwordCandidates(final_text);
             },
-            cancel, config_.asr_hotwords);
+            cancel, config_.asr_hotwords, std::move(context));
         return;
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。

@@ -35,12 +35,15 @@ std::string ResolveLocalMicModelsDir(const std::string& configured,
 
 // 解析 [local_asr] refine_model 为实际 GGUF 路径（本地文本精修）：env
 // VOICESTICK_REFINE_MODEL 最高优先（真机 smoke 注入用）；refine_model 非空时
-// 绝对路径直用/相对路径锚 models_dir；空时探测默认档位
-// Qwen3-1.7B-Q4_K_M/Qwen3-1.7B-Q4_K_M.gguf（spike 定案）。任何一步不存在
-// 返回空串（调用方注入 nullptr 引擎退化为纯规则精修）。外壳装配与设置界面
-// 状态检查共用同一口径。
+// 绝对路径直用/相对路径锚 models_dir（用户显式配置，含 cross_turn 开时
+// 尊重自管）；空时探测默认档位——cross_turn 优先 Qwen3-4B-Q4_K_M（跨轮
+// 纠错 GO 口径，M0 spike；1.7B 三形态 NO-GO），缺失回退 1.7B（纠正能力
+// 降级为安全弱档）；单句档维持 Qwen3-1.7B-Q4_K_M（spike 定案）。任何一步
+// 不存在返回空串（调用方注入 nullptr 引擎退化为纯规则精修）。外壳装配与
+// 设置界面状态检查共用同一口径。
 std::string ResolveLocalRefineModelPath(const std::string& models_dir,
-                                        const std::string& refine_model);
+                                        const std::string& refine_model,
+                                        bool cross_turn = false);
 
 // SenseVoice 推理引擎抽象：生产实现包 sherpa-onnx C API；测试注入假引擎，
 // 在无模型环境下驱动流式调度逻辑（TDD）。

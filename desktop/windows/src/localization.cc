@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsLocalRefinePrompt) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsLocalRefineCrossTurn) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -434,6 +434,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLocalRefineModelMissing)] =
         "✗ Refine model not found; falls back to rule-based cleanup";
     table[Index(StringId::kSettingsLocalRefinePrompt)] = "Local refine prompt";
+    table[Index(StringId::kSettingsLocalRefineCrossTurn)] =
+        "Cross-turn context correction (Qwen3-4B)";
     return table;
 }
 
@@ -843,6 +845,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLocalRefineModelMissing)] =
         "✗ 未找到精修模型，将退化为规则级清理";
     table[Index(StringId::kSettingsLocalRefinePrompt)] = "本地精修提示词";
+    table[Index(StringId::kSettingsLocalRefineCrossTurn)] =
+        "跨轮上下文纠错（Qwen3-4B）";
     return table;
 }
 

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@ struct RefineTurn {
 // 跨轮精修历史环形缓冲：全局最近 5 轮，2 分钟无新轮即整体过期。
 // 会话取消/失败不调用 Add（由协调器保证，缓冲本身不感知会话状态）。
 // 时钟可注入（测试用）；过期在读取时惰性判定并清空。
+// 线程安全：协调器在会话回调线程读 Turns()、在精修完成的后台线程 Add。
 class RefineHistory {
 public:
     using NowMs = std::function<std::int64_t()>;
@@ -41,11 +43,13 @@ public:
     static std::int64_t DefaultNowMs();
 
 private:
+    // 调用方须持 mutex_（公开方法加锁后转调）
     void ExpireIfStale() const;
 
     std::size_t max_turns_;
     std::int64_t ttl_ms_;
     NowMs now_;
+    mutable std::mutex mutex_;
     mutable std::vector<RefineTurn> turns_;
     mutable std::int64_t last_add_ms_ = 0;
 };

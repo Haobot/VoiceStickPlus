@@ -10730,6 +10730,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "鱼器渍→语气词";
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "我们刚才测了语气词过滤。"});
         auto r = run(std::move(fake), "那些鱼器渍已经被过滤掉了。", std::move(ctx));
         assert(r.ok);
@@ -10752,6 +10753,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "无";
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "帮我把垃圾倒一下。"});
         auto r = run(std::move(fake), "嗯，帮我把垃圾倒一下。", std::move(ctx));
         assert(r.ok);
@@ -10761,6 +10763,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "嗯，\n那个→明天\n办→半";
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "明天下午三点的会议记得提醒我。"});
         auto r = run(std::move(fake), "嗯，那个会议改成三点办了。", std::move(ctx));
         assert(r.ok);
@@ -10770,6 +10773,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "口头鱼→口头语";
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "口水词和语气词都要删掉。"});
         auto r = run(std::move(fake), "口头鱼也算语气词吗？", std::move(ctx));
         assert(r.ok);
@@ -10779,6 +10783,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->fail = true;
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "上文。"});
         auto r = run(std::move(fake), "嗯，帮我打开浏览器。", std::move(ctx));
         assert(r.ok);
@@ -10788,6 +10793,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "超导";
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "上文。"});
         auto r = run(std::move(fake), "超导材料不错。", std::move(ctx),
                      {"超导"});
@@ -10808,6 +10814,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "语音设别→语音识别";
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "这个语音识别项目叫 VoiceStick。"});
         ctx.turns.push_back({"", "语音识别的准确率还可以。"});
         auto r = run(std::move(fake), "这个语音设别模型是哪个？", std::move(ctx));
@@ -10845,6 +10852,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
             auto fake = std::make_unique<FakeEngine>();
             fake->reply = "鱼器渍→语气词\n";
             Ctx ctx;
+            ctx.cross_turn = true;
             ctx.turns.push_back({"", "我们刚才测了语气词过滤。", "无"});
             const auto r = run3(std::move(fake), "那些鱼器渍已经被过滤掉了。",
                                 std::move(ctx));
@@ -10869,6 +10877,7 @@ void TestLocalRefinementCrossTurnOrchestration() {
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "无";
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"那些鱼器渍被过滤了。", "那些语气词被过滤了。",
                              "鱼器渍→语气词"});
         auto r = run(std::move(fake), "帮我把垃圾倒一下。", std::move(ctx));
@@ -10921,6 +10930,7 @@ void TestLocalRefinementCrossTurnDiagnosticsLogs() {
     printf("   logs scenario 1\n"); fflush(stdout);
     {   // 纠正成功归因
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "我们刚才测了语气词过滤。"});
         const auto logs = run("鱼器渍→语气词", "那些鱼器渍已经被过滤掉了。",
                               std::move(ctx));
@@ -10930,6 +10940,7 @@ void TestLocalRefinementCrossTurnDiagnosticsLogs() {
     printf("   logs scenario 2\n"); fflush(stdout);
     {   // 无指令归因
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "帮我把垃圾倒一下。"});
         const auto logs = run("无", "帮我把垃圾倒一下。", std::move(ctx));
         assert(has(logs, "correct none"));
@@ -10937,6 +10948,7 @@ void TestLocalRefinementCrossTurnDiagnosticsLogs() {
     printf("   logs scenario 3\n"); fflush(stdout);
     {   // 部分拒绝归因（含拒绝指令明细）
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "明天下午三点的会议记得提醒我。"});
         const auto logs = run("嗯，\n那个→明天\n办→半",
                               "嗯，那个会议改成三点办了。", std::move(ctx));
@@ -10947,6 +10959,7 @@ void TestLocalRefinementCrossTurnDiagnosticsLogs() {
     printf("   logs scenario 4\n"); fflush(stdout);
     {   // 热词拦截归因
         Ctx ctx;
+        ctx.cross_turn = true;
         ctx.turns.push_back({"", "上文。"});
         const auto logs = run("超导", "超导材料不错。", std::move(ctx), {"超导"});
         assert(has(logs, "hotword blocked"));
@@ -10966,6 +10979,7 @@ void TestLocalRefinementCrossTurnDiagnosticsLogs() {
         std::promise<std::string> pr;
         auto fut = pr.get_future();
         Ctx ctx_fail;
+        ctx_fail.cross_turn = true;
         ctx_fail.turns.push_back({"", "上文。"});
         client.Refine("嗯，帮我打开浏览器。", [](std::string) {},
                       [&pr](bool, std::string s) { pr.set_value(std::move(s)); },
@@ -11234,6 +11248,46 @@ void TestLocalAsrClientStartFailsWhenModelMissing() {
     assert(!client.Start());
     assert(!client.LastStartError().empty());
     printf("TestLocalAsrClientStartFailsWhenModelMissing passed\n");
+}
+
+// 跨轮纠错模型解析（M3）：cross_turn 且未显式配 refine_model 时优先 4B
+//（M0 spike GO 口径），缺失回退 1.7B；显式配置尊重用户；两档全缺返回空
+//（外壳退化为纯规则层）。
+void TestResolveLocalRefineModelPathCrossTurn() {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "vs_refine_path_test";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    const auto m17 = dir / "Qwen3-1.7B-Q4_K_M" / "Qwen3-1.7B-Q4_K_M.gguf";
+    const auto m4 = dir / "Qwen3-4B-Q4_K_M" / "Qwen3-4B-Q4_K_M.gguf";
+    fs::create_directories(m17.parent_path(), ec);
+    std::ofstream(m17, std::ios::binary) << "x";
+
+    // 只有 1.7B：cross_turn 回退 1.7B，单句口径不受影响
+    assert(ResolveLocalRefineModelPath(dir.string(), "", true) == m17.string());
+    assert(ResolveLocalRefineModelPath(dir.string(), "", false) == m17.string());
+
+    // 4B 在位：cross_turn 优先 4B；单句口径仍 1.7B（纯删除档维持轻量）
+    fs::create_directories(m4.parent_path(), ec);
+    std::ofstream(m4, std::ios::binary) << "x";
+    assert(ResolveLocalRefineModelPath(dir.string(), "", true) == m4.string());
+    assert(ResolveLocalRefineModelPath(dir.string(), "", false) == m17.string());
+
+    // 显式配置（含跨轮开）：尊重用户自管，不按档位覆盖（显式值里的「/」
+    // 分隔符被原样保留，用文件系统等价比较而非字符串相等）
+    std::ofstream(dir / "Qwen3-1.7B-Q4_K_M" / "x.gguf", std::ios::binary) << "x";
+    assert(fs::equivalent(
+        fs::path(ResolveLocalRefineModelPath(dir.string(),
+                                             "Qwen3-1.7B-Q4_K_M/x.gguf", true)),
+        dir / "Qwen3-1.7B-Q4_K_M" / "x.gguf"));
+    std::filesystem::remove(dir / "Qwen3-1.7B-Q4_K_M" / "x.gguf");
+
+    // 两档全缺：空（外壳按缺模型退化纯规则）
+    fs::remove(m4, ec);
+    fs::remove(m17, ec);
+    assert(ResolveLocalRefineModelPath(dir.string(), "", true).empty());
+    fs::remove_all(dir, ec);
+    printf("TestResolveLocalRefineModelPathCrossTurn passed\n");
 }
 
 // 4B 真模型 KV 续写 smoke（M2b）：验证 LlamaCppEngine::ChatSessionTurn 的
@@ -11830,6 +11884,8 @@ void TestAppConfigLocalAsrRoundTrip() {
     assert(!AppConfig::Defaults().local_asr.enabled);
     assert(AppConfig::Defaults().local_asr.models_dir.empty());
     assert(AppConfig::Defaults().local_asr.push_to_talk_key == "right ctrl");
+    // 跨轮纠错默认关（M3：改写能力以设置开关观察）
+    assert(!AppConfig::Defaults().local_asr.refine_cross_turn);
 
     auto temp = std::filesystem::temp_directory_path() / "voicestick_local_asr_test.toml";
     std::filesystem::remove(temp);
@@ -11839,6 +11895,7 @@ void TestAppConfigLocalAsrRoundTrip() {
     config.local_asr.models_dir = "C:/models/sensevoice";
     config.local_asr.push_to_talk_key = "f8";
     config.local_asr.refine_prompt = "提示词第一行\n输入：嗯 x\n输出：x";
+    config.local_asr.refine_cross_turn = true;
     config.Save(temp);
 
     AppConfig loaded = AppConfig::Load(temp);
@@ -11847,6 +11904,16 @@ void TestAppConfigLocalAsrRoundTrip() {
     assert(loaded.local_asr.push_to_talk_key == "f8");
     // 多行提示词（含换行与中文）往返保持原样
     assert(loaded.local_asr.refine_prompt == config.local_asr.refine_prompt);
+    assert(loaded.local_asr.refine_cross_turn);
+
+    // 默认关不落盘（Save 降噪路径）：重存关闭态后文件中无该键
+    loaded.local_asr.refine_cross_turn = false;
+    loaded.Save(temp);
+    const std::string saved = [&] {
+        std::ifstream in(temp, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    }();
+    assert(saved.find("refine_cross_turn") == std::string::npos);
 
     std::filesystem::remove(temp);
 }
@@ -12027,6 +12094,116 @@ void TestCoordinatorLocalMicSessionRefinesFinalText() {
         local_asr_ptr->on_final("嗯，没有精修引擎的原文");
         assert(input.pasted_text == "嗯，没有精修引擎的原文");
     }
+}
+
+// 跨轮上下文纠错接线（M3，方案 §3.4/3.5.5）：refine_cross_turn 开关开时，
+// 本地精修 final 轮次进协调器 RefineHistory（raw=ASR 原句，refined=守卫后
+// 文本，instruction=当轮模型指令），下一轮引擎 user 携带续写块（与 KV 重放
+// 同构形态）；开关关（默认）两轮互不可见，维持单句 few-shot 管线。
+void TestCoordinatorLocalMicSessionCrossTurnRefinement() {
+    class ScriptedEngine : public LocalLlmEngine {
+    public:
+        std::vector<std::string> replies;  // 第 k 次 Chat 的回复脚本
+        std::vector<std::string> users;    // 每次 Chat 收到的完整 user
+        std::vector<std::string> systems;
+        int idx = 0;
+        bool Chat(const std::string& system_prompt, const std::string& user_text,
+                  const std::function<bool(const std::string&)>& on_token,
+                  std::string& completion) override {
+            systems.push_back(system_prompt);
+            users.push_back(user_text);
+            const std::string reply =
+                idx < static_cast<int>(replies.size()) ? replies[idx] : "无";
+            ++idx;
+            if (on_token && !on_token(reply)) return false;
+            completion = reply;
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+    struct TwoTurnResult {
+        std::string pasted1;
+        std::string pasted2;
+        std::vector<std::string> users;
+        std::vector<std::string> systems;
+    };
+    // 两轮本机麦克风会话（同一协调器实例）：轮 1 建立词汇，轮 2 复刻
+    // C01 真机错字案例。cross_turn 决定配置开关；replies 为两轮模型脚本。
+    auto run_two_turns = [](bool cross_turn,
+                            std::vector<std::string> replies) {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto cloud_asr = std::make_unique<FakeAsrClient>();
+        auto local_asr = std::make_unique<FakeAsrClient>();
+        auto* local_asr_ptr = local_asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.local_asr.enabled = true;
+        config.local_asr.refine_enabled = true;
+        config.local_asr.refine_cross_turn = cross_turn;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                          &ui, &input);
+        auto engine = std::make_unique<ScriptedEngine>();
+        engine->replies = std::move(replies);
+        ScriptedEngine* engine_ptr = engine.get();
+        coordinator.SetLocalRefiner(
+            std::make_unique<LocalRefinementClient>(std::move(engine)));
+        auto capture = std::make_unique<FakeMicCapture>();
+        auto* capture_ptr = capture.get();
+        coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+        coordinator.Start();
+
+        const auto feed_session = [&](const char* final_text) {
+            input.pasted_text.clear();
+            coordinator.HandleLocalMicHotkeyPressed();
+            const std::vector<std::int16_t> pcm(16000, 1200);
+            capture_ptr->on_pcm(pcm);
+            std::this_thread::sleep_for(std::chrono::milliseconds(520));
+            capture_ptr->on_pcm(pcm);
+            coordinator.HandleLocalMicHotkeyReleased();
+            local_asr_ptr->on_final(final_text);
+            for (int i = 0; i < 250 && input.pasted_text.empty(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        };
+        feed_session("嗯，我们刚才测了语气词过滤。");
+        const std::string pasted1 = input.pasted_text;
+        feed_session("那些鱼器渍已经被过滤掉了。");
+        TwoTurnResult r;
+        r.pasted1 = std::move(pasted1);
+        r.pasted2 = input.pasted_text;
+        r.users = engine_ptr->users;
+        r.systems = engine_ptr->systems;
+        return r;
+    };
+    {   // 场景 A：开关开——轮 2 走纠正指令管线（system 切换 + 续写块携带
+        //     轮 1 的 raw 原句与当轮指令「无」），守卫放行纠正
+        const auto r = run_two_turns(true, {"无", "鱼器渍→语气词"});
+        assert(r.pasted1 == "我们刚才测了语气词过滤。");  // 规则删「嗯，」
+        assert(r.pasted2 == "那些语气词已经被过滤掉了。");
+        assert(r.users.size() == 2);
+        assert(r.systems[1].find("参考上文") != std::string::npos);
+        assert(r.users[1].find(
+                   "输入：嗯，我们刚才测了语气词过滤。\n处理：无\n") !=
+               std::string::npos);
+        assert(r.users[1].find("输入：那些鱼器渍已经被过滤掉了。\n处理：") !=
+               std::string::npos);
+        // 轮 1 无历史：单句续写（cross 管线、空历史也不带续写块）
+        assert(r.systems[0].find("参考上文") != std::string::npos);
+        assert(r.users[0].find("输入：我们刚才测了语气词过滤。\n处理：") !=
+               std::string::npos);
+    }
+    {   // 场景 B：开关关（默认）——两轮独立 few-shot 管线，无续写块
+        const auto r = run_two_turns(
+            false, {"无", "那些鱼器渍已经被过滤掉了。"});
+        assert(r.pasted1 == "我们刚才测了语气词过滤。");
+        assert(r.pasted2 == "那些鱼器渍已经被过滤掉了。");
+        assert(r.users.size() == 2);
+        assert(r.systems[1].find("参考上文") == std::string::npos);
+        assert(r.users[1].find("处理：") == std::string::npos);
+        assert(r.users[1].find("输出：") != std::string::npos);
+    }
+    printf("TestCoordinatorLocalMicSessionCrossTurnRefinement passed\n");
 }
 
 // 选中本地语音识别（local_asr.enabled）时，设备会话（遥控器语音键/全局热键触发的
@@ -13306,6 +13483,8 @@ int main() {
     TestAppConfigLocalAsrRoundTrip();
     TestCoordinatorLocalMicSessionRoutesToLocalAsr();
     TestCoordinatorLocalMicSessionRefinesFinalText();
+    TestCoordinatorLocalMicSessionCrossTurnRefinement();
+    TestResolveLocalRefineModelPathCrossTurn();
     TestLlamaCppEngineRealModelSmoke();
     TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled();
     TestCoordinatorLocalMicShortPressDiscards();

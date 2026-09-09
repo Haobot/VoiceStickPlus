@@ -56,6 +56,7 @@ private:
     void OpenModelDownloadDialog();
     // 本地文本精修：复选框勾选态与模型在位状态回显（与外壳装配同一解析口径）。
     bool IsLocalRefineChecked() const;
+    bool IsLocalRefineCrossChecked() const;
     void UpdateLocalRefineStatus();
     // 启动频谱查看器（scripts/e2e_test/spectrogram_server.py，经 py/python 启动）。
     void OpenSpectrogramViewer();
@@ -150,6 +151,9 @@ private:
     HWND local_refine_status_label_ = nullptr;
     HWND local_refine_prompt_label_ = nullptr;
     HWND local_refine_prompt_edit_ = nullptr;
+    // 跨轮上下文纠错（refine_cross_turn）：勾选后携带最近 5 轮历史走纠正
+    // 指令管线，模型档位切 Qwen3-4B 优先（M3）。
+    HWND local_refine_cross_check_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -202,6 +206,7 @@ private:
     static constexpr UINT kIdLocalRefineCheck = 2045;
     static constexpr UINT kIdLocalRefinePromptEdit = 2046;
     static constexpr UINT kIdLocalMicModelsDownload = 2047;
+    static constexpr UINT kIdLocalRefineCrossCheck = 2048;
 };
 
 } // namespace voicestick
