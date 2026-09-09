@@ -20,8 +20,7 @@ concurrency:
 # 国内 COS 分发面（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）。
 # 凭据在仓库 Secrets：TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY（未配置时 COS 相关步骤失败，不静默）。
 env:
-  # TODO(用户)：bucket 创建后替换真实名（含 APPID 后缀，如 voicestick-dl-1250000000）
-  VOICESTICK_COS_BUCKET: "TODO-fill-after-bucket-created"
+  VOICESTICK_COS_BUCKET: "voicestick-dl-1259040144"
   VOICESTICK_COS_REGION: "ap-shanghai"
   VOICESTICK_DIST_DOMAIN: "https://dl.davenger.cloud"
 

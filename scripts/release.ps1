@@ -219,7 +219,7 @@ $checks = [ordered]@{
 if (-not $SkipMsi) {
     $checks["Windows MSI zh-CN"] = @{ Url = "https://github.com/$Repo/releases/download/$Tag/VoiceStick_${Version}_zh-CN.msi"; Expect = $null; Retry = 1 }
     $checks["Windows MSI en-US"] = @{ Url = "https://github.com/$Repo/releases/download/$Tag/VoiceStick_${Version}_en-US.msi"; Expect = $null; Retry = 1 }
-    $checks["COS Windows MSI en-US（appcast enclosure）"] = @{ Url = "$DistDomain/windows/$Tag/VoiceStick_${Version}_en-US.msi"; Expect = $null; Retry = 6 }
+    $checks["COS Windows MSI en-US（appcast enclosure）"] = @{ Url = "$DistDomain/software/windows/$Tag/VoiceStick_${Version}_en-US.msi"; Expect = $null; Retry = 6 }
 }
 if ($DryRun) {
     $checks.GetEnumerator() | ForEach-Object { Write-Host "    [DRYRUN] 将检查：$($_.Value.Url)" }

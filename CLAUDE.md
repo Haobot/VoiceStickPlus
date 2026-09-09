@@ -103,6 +103,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 | 发布流程与安全细节 | `Doc/Agent/release-and-security.md`；权威流程 `Doc/Ref/release.md` |
 | BLE 协议与帧格式（含小米 ATVV 档案） | `Doc/Ref/protocol.md` |
 | 桌面端配置字段 | `Doc/Ref/desktop-config.md` |
+| 腾讯 COS 分发渠道约定（桶/域名/布局/防盗链/模型清单） | `Doc/Ref/cos-distribution.md` |
 | E2E 真机验证工具链 | `Doc/Ref/e2e-test-toolchain.md` |
 | 经验教训记忆（排查问题前先查） | `Doc/Expe/claude-memory-distilled.md`（寄存器值/阈值/行号为记录时点结论，引用前以当前源码为准） |
 | 项目 Skills（`.agents/skills/`，场景命中自动加载） | `sticks3-flash-ota`（固件烧录/OTA）、`build-windows`、`build-firmware`、`usb-jtag-flash-log`（串口日志采集）、`work-summary-retro`（工作总结/经验沉淀/教训反思的文档管理）；新增/修改 Skill 后需重启会话刷新 |

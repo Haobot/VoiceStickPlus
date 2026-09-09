@@ -79,8 +79,8 @@ class PlanMirrorAssetsTests(unittest.TestCase):
         plan = mirror.plan_mirror_assets(release)
         keys = [key for _, key in plan]
         self.assertEqual(keys, [
-            "windows/v2.3.8/VoiceStick_2.3.8_zh-CN.msi",
-            "windows/v2.3.8/VoiceStick_2.3.8_en-US.msi.sha256",
+            "software/windows/v2.3.8/VoiceStick_2.3.8_zh-CN.msi",
+            "software/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi.sha256",
             "firmware/v2.3.8/voicestick-firmware-sticks3-ota-2.3.8.bin",
             "firmware/v2.3.8/manifest.json",
         ])

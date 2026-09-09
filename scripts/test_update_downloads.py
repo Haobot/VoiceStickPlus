@@ -159,7 +159,7 @@ class MirrorBaseTests(unittest.TestCase):
         assets = {a["name"]: a for a in MIRRORED["latest"]["assets"]}
         self.assertEqual(
             assets["VoiceStick_2.3.8_en-US.msi"]["url"],
-            "https://dl.davenger.cloud/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi")
+            "https://dl.davenger.cloud/software/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi")
         self.assertEqual(
             assets["voicestick-firmware-sticks3-ota-2.3.8.bin"]["url"],
             "https://dl.davenger.cloud/firmware/v2.3.8/"

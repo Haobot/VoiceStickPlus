@@ -25,12 +25,12 @@ MIRROR = "https://dl.davenger.cloud"
 
 class MirrorClassTests(unittest.TestCase):
     def test_windows_assets(self):
-        self.assertEqual(mod.mirror_class("VoiceStick_2.3.8_zh-CN.msi"), "windows")
-        self.assertEqual(mod.mirror_class("VoiceStick_Portable_v2.3.8.zip"), "windows")
+        self.assertEqual(mod.mirror_class("VoiceStick_2.3.8_zh-CN.msi"), "software/windows")
+        self.assertEqual(mod.mirror_class("VoiceStick_Portable_v2.3.8.zip"), "software/windows")
 
     def test_macos_assets(self):
-        self.assertEqual(mod.mirror_class("VoiceStick-2.3.8.zip"), "macos")
-        self.assertEqual(mod.mirror_class("VoiceStick-2.3.8.dmg"), "macos")
+        self.assertEqual(mod.mirror_class("VoiceStick-2.3.8.zip"), "software/macos")
+        self.assertEqual(mod.mirror_class("VoiceStick-2.3.8.dmg"), "software/macos")
 
     def test_firmware_assets(self):
         self.assertEqual(
@@ -38,7 +38,7 @@ class MirrorClassTests(unittest.TestCase):
 
     def test_checksum_follows_primary_asset(self):
         # .sha256 附属文件跟随主资产同目录（去掉 .sha256 后缀再分类）
-        self.assertEqual(mod.mirror_class("VoiceStick_2.3.8_en-US.msi.sha256"), "windows")
+        self.assertEqual(mod.mirror_class("VoiceStick_2.3.8_en-US.msi.sha256"), "software/windows")
         self.assertEqual(
             mod.mirror_class("voicestick-firmware-sticks3-ota-2.3.8.bin.sha256"), "firmware")
 
@@ -56,7 +56,7 @@ class MirrorAssetUrlTests(unittest.TestCase):
             mod.mirror_asset_url(
                 "https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.8/"
                 "VoiceStick_2.3.8_en-US.msi", MIRROR),
-            f"{MIRROR}/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi",
+            f"{MIRROR}/software/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi",
         )
 
     def test_firmware_url_keeps_tag_dir(self):
@@ -72,7 +72,7 @@ class MirrorAssetUrlTests(unittest.TestCase):
             mod.mirror_asset_url(
                 "https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.8/"
                 "VoiceStick-2.3.8.zip", MIRROR),
-            f"{MIRROR}/macos/v2.3.8/VoiceStick-2.3.8.zip",
+            f"{MIRROR}/software/macos/v2.3.8/VoiceStick-2.3.8.zip",
         )
 
     def test_checksum_url_follows_primary(self):
@@ -80,7 +80,7 @@ class MirrorAssetUrlTests(unittest.TestCase):
             mod.mirror_asset_url(
                 "https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.8/"
                 "VoiceStick_2.3.8_en-US.msi.sha256", MIRROR),
-            f"{MIRROR}/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi.sha256",
+            f"{MIRROR}/software/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi.sha256",
         )
 
     def test_non_github_url_returned_unchanged(self):
@@ -98,7 +98,7 @@ class MirrorAssetUrlTests(unittest.TestCase):
             mod.mirror_asset_url(
                 "https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.8/"
                 "VoiceStick_2.3.8_en-US.msi", MIRROR + "/"),
-            f"{MIRROR}/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi",
+            f"{MIRROR}/software/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi",
         )
 
 

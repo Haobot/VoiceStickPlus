@@ -31,10 +31,13 @@ https://<dist-domain>/
 ├── index.html 等            # 整站（website/dist，Vite --base=/ 构建）
 ├── appcast.xml              # 更新 feed（Cache-Control: no-cache）
 ├── downloads.json           # 下载页数据（no-cache）
+├── software/                # 软件产物（2026-09-10 增补：三分前缀之一）
+│   ├── windows/v<版本>/     # 双语言 MSI + 便携包 + .sha256（由 CI 从 GitHub Release 镜像，长缓存）
+│   └── macos/v<版本>/       # Sparkle ZIP / DMG + .signature
 ├── firmware/
 │   ├── latest/manifest.json   # 稳定 manifest，客户端与浏览器烧录器共用（no-cache）
 │   └── v<版本>/               # ota bin / merged bin / .sha256 / manifest.json（长缓存）
-└── windows/v<版本>/           # 双语言 MSI + 便携包 + .sha256（由 CI 从 GitHub Release 镜像，长缓存）
+└── models/                  # 本地模型（桌面端按需下载，键结构与 %LOCALAPPDATA% 一致，长缓存）
 ```
 
 职责划分：

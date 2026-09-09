@@ -6,7 +6,7 @@ VoiceStick releases have three moving parts:
 - StickS3 firmware: built by GitHub Actions and uploaded to GitHub Releases (as release assets; the firmware manifest is served from COS `dl.davenger.cloud/firmware/latest/manifest.json` with the GitHub `releases/latest/download/manifest.json` kept as client fallback).
 - Windows app: built and signed manually on the Windows signing machine, then uploaded to the matching GitHub Release.
 
-Domestic distribution: every release additionally mirrors assets to Tencent COS (`dl.davenger.cloud`) — firmware at `firmware/v<tag>/`, MSIs at `windows/v<tag>/`, plus the whole website at the bucket root. GitHub stays the source of truth; GitHub Pages remains the international/backup site. See `Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md`. COS writes happen only in GitHub Actions with repo secrets `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY`; the signing machine keeps talking to GitHub only.
+Domestic distribution: every release additionally mirrors assets to Tencent COS (`dl.davenger.cloud`) — firmware at `firmware/v<tag>/`, MSIs at `software/windows/v<tag>/`, macOS zips at `software/macos/v<tag>/`, plus the whole website at the bucket root. GitHub stays the source of truth; GitHub Pages remains the international/backup site. See `Doc/Ref/cos-distribution.md` (channel conventions) and `Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md`. COS writes happen only in GitHub Actions with repo secrets `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY`; the signing machine keeps talking to GitHub only.
 
 The Windows package is the special case because the signing certificate is local hardware or local machine state. The release process supports either order:
 
@@ -156,8 +156,8 @@ https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json 
 For version `2.3.10`, the appcast should contain (Windows enclosure points to the `en-US` MSI only; enclosure URLs point to the COS mirror):
 
 ```text
-https://dl.davenger.cloud/windows/v2.3.10/VoiceStick_2.3.10_en-US.msi
-https://dl.davenger.cloud/macos/v2.3.10/VoiceStick-2.3.10.zip
+https://dl.davenger.cloud/software/windows/v2.3.10/VoiceStick_2.3.10_en-US.msi
+https://dl.davenger.cloud/software/macos/v2.3.10/VoiceStick-2.3.10.zip
 ```
 
 The `zh-CN` MSI (`VoiceStick_2.3.10_zh-CN.msi`) is mirrored for manual download but is not in the appcast.

@@ -3,11 +3,11 @@
 
 供 update-appcast.py / update-downloads.py 共用；路径规则必须与
 deploy-website.yml 的「镜像 Release 资产到 COS」步骤保持一致
-（见 Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）：
+（见 Doc/Ref/cos-distribution.md）：
     https://github.com/<repo>/releases/download/<tag>/<name>
-        -> <mirror>/windows/<tag>/<name>   （MSI / 便携包）
-        -> <mirror>/macos/<tag>/<name>     （Sparkle ZIP / DMG）
-        -> <mirror>/firmware/<tag>/<name>  （固件 bin / manifest.json）
+        -> <mirror>/software/windows/<tag>/<name>  （MSI / 便携包）
+        -> <mirror>/software/macos/<tag>/<name>    （Sparkle ZIP / DMG）
+        -> <mirror>/firmware/<tag>/<name>          （固件 bin / manifest.json）
 .sha256 校验和跟随主资产同目录。未知资产与非 GitHub URL 原样返回
 （宁可回源也不指到不存在的镜像路径）。
 """
@@ -24,15 +24,19 @@ _GITHUB_ASSET_RE = re.compile(
 
 
 def mirror_class(asset_name: str):
-    """资产名 -> 镜像目录（windows/macos/firmware）；附属文件跟随主资产。"""
+    """资产名 -> 镜像目录前缀；附属文件跟随主资产。
+
+    三分前缀布局（Doc/Ref/cos-distribution.md）：软件产物在 software/ 下
+    （windows / macos），固件在 firmware/，模型由桌面端直接管理 models/。
+    """
     if asset_name.endswith(".sha256"):
         return mirror_class(asset_name[: -len(".sha256")])
     if asset_name == "manifest.json":
         return "firmware"
     if asset_name.endswith(".msi") or asset_name.startswith(WINDOWS_PORTABLE_PREFIX):
-        return "windows"
+        return "software/windows"
     if asset_name.startswith(MACOS_PREFIX) and asset_name.endswith((".zip", ".dmg")):
-        return "macos"
+        return "software/macos"
     if asset_name.startswith(FIRMWARE_PREFIX):
         return "firmware"
     return None
