@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsLocalRefineCrossTurnDegraded) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionCorrectionManualLabel) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -440,6 +440,16 @@ constexpr StringTable EnglishStrings() {
         "✓ Cross-turn model ready (Qwen3-4B)";
     table[Index(StringId::kSettingsLocalRefineCrossTurnDegraded)] =
         "△ Qwen3-4B not found; cross-turn falls back to 1.7B (weaker)";
+    table[Index(StringId::kSelectionHotwordCorrectButton)] = "✎ Correct";
+    table[Index(StringId::kSelectionCorrectionTitle)] = "Fix Misrecognition";
+    table[Index(StringId::kSelectionCorrectionWrongLabel)] = "Misrecognized:";
+    table[Index(StringId::kSelectionCorrectionCandidatesLabel)] =
+        "Candidates (click to use):";
+    table[Index(StringId::kSelectionCorrectionLoading)] =
+        "Generating candidates...";
+    table[Index(StringId::kSelectionCorrectionNoCandidates)] =
+        "No candidates; type the correct word below";
+    table[Index(StringId::kSelectionCorrectionManualLabel)] = "Correct word:";
     return table;
 }
 
@@ -855,6 +865,14 @@ constexpr StringTable ChineseStrings() {
         "✓ 跨轮纠错模型就绪（Qwen3-4B）";
     table[Index(StringId::kSettingsLocalRefineCrossTurnDegraded)] =
         "△ 未找到 Qwen3-4B，跨轮纠错降级 1.7B（纠正能力弱）";
+    table[Index(StringId::kSelectionHotwordCorrectButton)] = "✎ 纠错";
+    table[Index(StringId::kSelectionCorrectionTitle)] = "纠错";
+    table[Index(StringId::kSelectionCorrectionWrongLabel)] = "识别错误：";
+    table[Index(StringId::kSelectionCorrectionCandidatesLabel)] = "候选（点击选用）：";
+    table[Index(StringId::kSelectionCorrectionLoading)] = "正在生成候选…";
+    table[Index(StringId::kSelectionCorrectionNoCandidates)] =
+        "无候选，请在下方输入正确词";
+    table[Index(StringId::kSelectionCorrectionManualLabel)] = "正确词：";
     return table;
 }
 

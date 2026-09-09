@@ -445,6 +445,21 @@ void VoiceStickCoordinator::SetLocalRefiner(std::unique_ptr<LocalRefinementClien
     }
 }
 
+void VoiceStickCoordinator::GenerateCorrectionCandidates(
+    const std::string& wrong_text, const std::string& context_text,
+    LocalRefinementClient::CandidatesComplete on_done) {
+    if (!local_refiner_) {
+        if (on_done) on_done(false, {});
+        return;
+    }
+    local_refiner_->GenerateCandidates(wrong_text, context_text,
+                                       std::move(on_done));
+}
+
+std::string VoiceStickCoordinator::RecentRefineContextText() const {
+    return refine_history_.ContextText();
+}
+
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     WireAsrClientCallbacks(asr_.get());
 }

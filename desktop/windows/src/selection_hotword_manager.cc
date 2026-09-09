@@ -26,7 +26,8 @@ namespace {
 SelectionHotwordManager* g_active_manager = nullptr;
 
 constexpr UINT kWmMouseLeftUp = WM_APP + 210;     // 钩子→helper：WM_LBUTTONUP 通知
-constexpr UINT kWmPopupClicked = WM_APP + 211;    // popup→helper：按钮被点击
+constexpr UINT kWmPopupClicked = WM_APP + 211;    // popup→helper：加词动作被点击
+constexpr UINT kWmPopupCorrect = WM_APP + 212;    // popup→helper：纠错动作被点击
 
 std::wstring Utf16FromUtf8(std::string_view text) {
     if (text.empty()) return {};
@@ -161,6 +162,17 @@ LRESULT CALLBACK SelectionHotwordManager::HelperWndProc(HWND hwnd, UINT msg,
                 if (self->on_add_hotword) self->on_add_hotword(text);
                 return 0;
             }
+            case kWmPopupCorrect: {
+                self->HidePopup();
+                // 纠错只对词级选区有意义：长文（热词提炼场景）点击无效。
+                if (self->pending_text_.size() >
+                    static_cast<std::size_t>(SelectionHotwordManager::kMaxHotwordLen)) {
+                    return 0;
+                }
+                std::string text = self->pending_text_;
+                if (self->on_correct_hotword) self->on_correct_hotword(text);
+                return 0;
+            }
         }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -173,13 +185,41 @@ LRESULT CALLBACK SelectionHotwordManager::PopupWndProc(HWND hwnd, UINT msg,
     if (self) {
         switch (msg) {
             case WM_LBUTTONUP: {
-                // 点击弹窗任意位置即触发"添加到热词"。投递到 helper 处理，
-                // 避免在弹窗 WndProc 内回调时弹窗仍可见导致重入。
-                PostMessage(self->helper_hwnd_, kWmPopupClicked, 0, 0);
+                // 半区命中测试：左=添加热词（原行为），右=纠错。投递到 helper
+                // 处理，避免在弹窗 WndProc 内回调时弹窗仍可见导致重入。
+                const int x = GET_X_LPARAM(lp);
+                RECT rc{};
+                GetClientRect(hwnd, &rc);
+                const bool right = x >= (rc.right - rc.left) / 2;
+                PostMessage(self->helper_hwnd_,
+                            right ? kWmPopupCorrect : kWmPopupClicked, 0, 0);
                 return 0;
             }
             case WM_MOUSEMOVE: {
-                // 简单 hover 反馈：光标已由窗口类设为 IDC_HAND，无需额外处理。
+                // 半区 hover 高亮：区域切换时重绘（光标已由窗口类设为 IDC_HAND）。
+                const int x = GET_X_LPARAM(lp);
+                RECT rc{};
+                GetClientRect(hwnd, &rc);
+                const int zone = x >= (rc.right - rc.left) / 2 ? 1 : 0;
+                if (zone != self->hover_zone_) {
+                    self->hover_zone_ = zone;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                if (!self->tracking_mouse_) {
+                    TRACKMOUSEEVENT track{};
+                    track.cbSize = sizeof(track);
+                    track.dwFlags = TME_LEAVE;
+                    track.hwndTrack = hwnd;
+                    if (TrackMouseEvent(&track)) self->tracking_mouse_ = true;
+                }
+                break;
+            }
+            case WM_MOUSELEAVE: {
+                self->tracking_mouse_ = false;
+                if (self->hover_zone_ != -1) {
+                    self->hover_zone_ = -1;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
                 break;
             }
             case WM_PAINT: {
@@ -192,26 +232,55 @@ LRESULT CALLBACK SelectionHotwordManager::PopupWndProc(HWND hwnd, UINT msg,
                 HBRUSH bg = CreateSolidBrush(RGB(250, 250, 252));
                 FillRect(ps.hdc, &rc, bg);
                 DeleteObject(bg);
+                // hover 半区高亮（鼠标在窗内时；另一区保持底色）。
+                if (self->hover_zone_ >= 0) {
+                    RECT half = rc;
+                    if (self->hover_zone_ == 1) {
+                        half.left = (rc.right - rc.left) / 2;
+                    } else {
+                        half.right = (rc.right - rc.left) / 2;
+                    }
+                    HBRUSH hover = CreateSolidBrush(RGB(225, 235, 250));
+                    FillRect(ps.hdc, &half, hover);
+                    DeleteObject(hover);
+                }
                 HPEN pen = CreatePen(PS_SOLID, 1, RGB(200, 205, 215));
                 HGDIOBJ old_pen = SelectObject(ps.hdc, pen);
                 HBRUSH null_brush = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
                 HGDIOBJ old_brush = SelectObject(ps.hdc, null_brush);
                 Rectangle(ps.hdc, rc.left, rc.top, rc.right - 1, rc.bottom - 1);
+                // 中缝分隔线。
+                const int mid = (rc.right - rc.left) / 2;
+                MoveToEx(ps.hdc, mid, rc.top + self->Dp(4), nullptr);
+                LineTo(ps.hdc, mid, rc.bottom - self->Dp(4));
                 SelectObject(ps.hdc, old_pen);
                 SelectObject(ps.hdc, old_brush);
                 DeleteObject(pen);
 
-                // 文本：居中。
-                const auto button_text = TrW(StringId::kSelectionHotwordButton,
-                                             self->language_);
+                // 双区文字：左=添加到热词，右=纠错（超长选区置灰示不可用）。
+                const bool correct_disabled =
+                    self->pending_text_.size() >
+                    static_cast<std::size_t>(kMaxHotwordLen);
                 HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
                 HGDIOBJ old_font = SelectObject(ps.hdc, font);
                 SetBkMode(ps.hdc, TRANSPARENT);
+                RECT left_rc = rc;
+                left_rc.left = 0;
+                left_rc.right = mid;
                 SetTextColor(ps.hdc, RGB(40, 45, 55));
-                RECT text_rc = rc;
-                text_rc.left += self->Dp(8);
-                text_rc.right -= self->Dp(8);
-                DrawTextW(ps.hdc, button_text.c_str(), -1, &text_rc,
+                const auto add_text = TrW(StringId::kSelectionHotwordButton,
+                                          self->language_);
+                DrawTextW(ps.hdc, add_text.c_str(), -1, &left_rc,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                RECT right_rc = rc;
+                right_rc.left = mid;
+                right_rc.right = rc.right;
+                // 纠错不可用时灰显（点击在 helper 侧同样被拒）。
+                SetTextColor(ps.hdc, correct_disabled ? RGB(160, 165, 175)
+                                                      : RGB(40, 45, 55));
+                const auto correct_text =
+                    TrW(StringId::kSelectionHotwordCorrectButton, self->language_);
+                DrawTextW(ps.hdc, correct_text.c_str(), -1, &right_rc,
                           DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
                 SelectObject(ps.hdc, old_font);
                 EndPaint(hwnd, &ps);
@@ -302,6 +371,8 @@ bool SelectionHotwordManager::IsPointOnPopup(POINT pt) const {
 void SelectionHotwordManager::ShowPopup(const std::string& text, POINT near_pt) {
     if (!popup_hwnd_) return;
     pending_text_ = text;
+    hover_zone_ = -1;        // 新选区：无 hover
+    tracking_mouse_ = false;
 
     const int w = Dp(kPopupWidthDp);
     const int h = Dp(kPopupHeightDp);

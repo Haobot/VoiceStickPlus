@@ -275,6 +275,7 @@ add_executable(VoiceStickApp WIN32
     src/hotkey_settings_dialog.cc
     src/selection_hotword_manager.cc
     src/selection_correction.cc
+    src/selection_correction_dialog.cc
     src/voice_f5_suppressor.cc
     src/xiaomi_keymap_hook.cc
     src/mic_mode_hotkey.cc

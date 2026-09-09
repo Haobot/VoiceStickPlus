@@ -432,6 +432,15 @@ enum class StringId {
     kSettingsLocalRefineCrossTurn,
     kSettingsLocalRefineCrossTurnOk,
     kSettingsLocalRefineCrossTurnDegraded,
+
+    // 划词纠错（S1）
+    kSelectionHotwordCorrectButton,
+    kSelectionCorrectionTitle,
+    kSelectionCorrectionWrongLabel,
+    kSelectionCorrectionCandidatesLabel,
+    kSelectionCorrectionLoading,
+    kSelectionCorrectionNoCandidates,
+    kSelectionCorrectionManualLabel,
 };
 
 // 返回 UTF-8 本地化文本

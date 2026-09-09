@@ -259,6 +259,13 @@ public:
     // nullptr 允许：本地会话退化为纯规则精修。与 SetLocalMicRuntime 同为外壳
     // 注入件；config [local_asr] refine_enabled=false 时外壳不注入。
     void SetLocalRefiner(std::unique_ptr<LocalRefinementClient> refiner);
+    // 划词纠错候选生成（S1）：委托本地精修客户端（引擎互斥内与精修串行）。
+    // refiner 未注入回调 (false, {})，调用方退化为纯手输。
+    void GenerateCorrectionCandidates(
+        const std::string& wrong_text, const std::string& context_text,
+        LocalRefinementClient::CandidatesComplete on_done);
+    // 最近跨轮精修上文（划词纠错候选生成的上下文源，空串=无上文）。
+    std::string RecentRefineContextText() const;
     // 按住说话热键按下（外壳 LL 钩子转发）：以 kLocalMicDeviceId 建立主会话并
     // 启动采集。释放：停采（join 采集线程）、尾帧补零冲刷、发空 END 帧复用主会话
     // audio_end 收尾路径（短按丢弃/最终块发送/finalizing 全部既有逻辑）。

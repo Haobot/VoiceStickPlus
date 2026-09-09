@@ -1541,27 +1541,80 @@ bool Win32App::CreateWindowInternal() {
                     ProcessHotwordWithLlm(text);
                     return;
                 }
-                const auto lang = EffectiveUiLanguage(config_.ui_language);
-                auto& hotwords = config_.asr_hotwords;
-                if (std::find(hotwords.begin(), hotwords.end(), text) != hotwords.end()) {
-                    ShowNotification(
-                        Tr(StringId::kSelectionHotwordDuplicateTitle, lang),
-                        Tr(StringId::kSelectionHotwordDuplicateBody, lang) + text);
-                    return;
-                }
-                hotwords.push_back(text);
-                try {
-                    config_.SavePreservingDiskCredentials();
-                } catch (const std::exception& e) {
-                    LogLine(std::string("Save config on hotword add failed: ") + e.what());
-                }
-                ApplyUpdatedConfig();
-                ShowNotification(
-                    Tr(StringId::kSelectionHotwordAddedTitle, lang),
-                    Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
+                AddHotwordAndNotify(text);
+            };
+        // 划词纠错（S1）：错词 → 纠错对话框 → 正确词入表（S2 锚点域生效）。
+        selection_hotword_manager_->on_correct_hotword =
+            [this](const std::string& text) {
+                OpenSelectionCorrectionDialog(text);
             };
     }
     return true;
+}
+
+void Win32App::AddHotwordAndNotify(const std::string& text) {
+    const auto lang = EffectiveUiLanguage(config_.ui_language);
+    auto& hotwords = config_.asr_hotwords;
+    if (std::find(hotwords.begin(), hotwords.end(), text) != hotwords.end()) {
+        ShowNotification(Tr(StringId::kSelectionHotwordDuplicateTitle, lang),
+                         Tr(StringId::kSelectionHotwordDuplicateBody, lang) + text);
+        return;
+    }
+    if (text.size() > static_cast<std::size_t>(
+                          SelectionHotwordManager::kMaxHotwordLen)) {
+        ShowNotification(Tr(StringId::kSelectionHotwordTooLongTitle, lang),
+                         Tr(StringId::kSelectionHotwordTooLongBody, lang));
+        return;
+    }
+    hotwords.push_back(text);
+    try {
+        config_.SavePreservingDiskCredentials();
+    } catch (const std::exception& e) {
+        LogLine(std::string("Save config on hotword add failed: ") + e.what());
+    }
+    ApplyUpdatedConfig();
+    ShowNotification(Tr(StringId::kSelectionHotwordAddedTitle, lang),
+                     Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
+}
+
+void Win32App::OpenSelectionCorrectionDialog(const std::string& wrong_text) {
+    if (wrong_text.empty()) return;
+    // 已开着先关（新错词顶替旧会话）。
+    selection_correction_dialog_.reset();
+
+    // 候选提供器：云端 LLM（llm_* 配置齐备）优先，退本地精修引擎，再退纯手输。
+    const std::string context = coordinator_
+                                    ? coordinator_->RecentRefineContextText()
+                                    : std::string();
+    SelectionCorrectionDialog::CandidatesProvider provider =
+        [this, wrong_text, context](
+            std::function<void(bool ok, std::vector<std::string> candidates)>
+                on_done) {
+        if (!config_.llm_api_key.empty() && !config_.llm_model.empty()) {
+            LlmCorrectionCandidatesClient client(config_);
+            client.Request(wrong_text, context, std::move(on_done));
+            return;
+        }
+        if (coordinator_) {
+            coordinator_->GenerateCorrectionCandidates(wrong_text, context,
+                                                       std::move(on_done));
+            return;
+        }
+        on_done(false, {});
+    };
+
+    selection_correction_dialog_ =
+        std::make_unique<SelectionCorrectionDialog>(
+            instance_, hwnd_, wrong_text,
+            EffectiveUiLanguage(config_.ui_language), std::move(provider));
+    selection_correction_dialog_->on_confirm =
+        [this](const std::string& correct_word) {
+            // 纠错确认是词级输入：不走长文 LLM 提炼分支。
+            const std::string normalized = correct_word;
+            if (normalized.empty()) return;
+            AddHotwordAndNotify(normalized);
+        };
+    selection_correction_dialog_->Show();
 }
 
 void Win32App::AddTrayIcon() {

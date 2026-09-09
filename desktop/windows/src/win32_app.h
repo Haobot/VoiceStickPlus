@@ -16,6 +16,7 @@
 #include "remote_settings_dialog.h"
 #include "xiaomi_keymap_dialog.h"
 #include "selection_hotword_manager.h"
+#include "selection_correction_dialog.h"
 #include "settings_dialog.h"
 #include "air_mouse_tuning_window.h"
 #include "subtitle_window.h"
@@ -142,6 +143,10 @@ private:
     void ProcessHotwordWithLlm(const std::string& text);
     // 提炼完成（UI 线程）：解析、去重、写表、浮窗反馈 3 秒。
     void OnHotwordExtracted(bool ok, const std::string& result);
+    // 词级热词入表公共路径（划词加词与纠错确认共用）：去重、保存、通知。
+    void AddHotwordAndNotify(const std::string& text);
+    // 划词纠错入口（S1）：错词 → 候选对话框（云端 LLM 优先，退本地精修引擎）。
+    void OpenSelectionCorrectionDialog(const std::string& wrong_text);
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
     void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
@@ -209,6 +214,7 @@ private:
     std::unique_ptr<OverlayWindow> overlay_;
     std::unique_ptr<SubtitleWindow> subtitles_;
     std::unique_ptr<SelectionHotwordManager> selection_hotword_manager_;
+    std::unique_ptr<SelectionCorrectionDialog> selection_correction_dialog_;
     class BleCentralWin* ble_central_ = nullptr;
     // 小米遥控器 F5 抑制：xiaomi_last_mic_open_ms_ 由 BLE 层在 MIC_OPEN 时写入，
     // VoiceF5Suppressor 键盘钩子据此在 80ms 窗内吞掉遥控器附带的 F5 按键。
