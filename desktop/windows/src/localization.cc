@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsLocalRefineCrossTurn) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsLocalRefineCrossTurnDegraded) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -436,6 +436,10 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLocalRefinePrompt)] = "Local refine prompt";
     table[Index(StringId::kSettingsLocalRefineCrossTurn)] =
         "Cross-turn context correction (Qwen3-4B)";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnOk)] =
+        "✓ Cross-turn model ready (Qwen3-4B)";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnDegraded)] =
+        "△ Qwen3-4B not found; cross-turn falls back to 1.7B (weaker)";
     return table;
 }
 
@@ -847,6 +851,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLocalRefinePrompt)] = "本地精修提示词";
     table[Index(StringId::kSettingsLocalRefineCrossTurn)] =
         "跨轮上下文纠错（Qwen3-4B）";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnOk)] =
+        "✓ 跨轮纠错模型就绪（Qwen3-4B）";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnDegraded)] =
+        "△ 未找到 Qwen3-4B，跨轮纠错降级 1.7B（纠正能力弱）";
     return table;
 }
 

@@ -1635,8 +1635,23 @@ void SettingsDialog::UpdateLocalRefineStatus() {
     const std::string models_dir = ResolveLocalMicModelsDir(configured, exe_dir);
     // 与外壳装配（SyncLocalRefiner）同一解析口径：跨轮勾选时优先 4B 探测
     //（未保存也能即时反馈），refine_model 尚无编辑入口走默认档位探测。
+    const bool cross = IsLocalRefineCrossChecked();
     const std::string model = ResolveLocalRefineModelPath(
-        models_dir, config_.local_asr.refine_model, IsLocalRefineCrossChecked());
+        models_dir, config_.local_asr.refine_model, cross);
+    // 跨轮勾选时明确档位：4B 就绪 / 缺 4B 降级 1.7B（弱档必须可见——曾因
+    // 笼统显示「模型就绪」掩盖降级，用户以为在跑 4B 实为 NO-GO 的 1.7B）。
+    if (cross) {
+        const bool four_b = model.find("Qwen3-4B") != std::string::npos;
+        SetWindowTextW(local_refine_status_label_,
+                       TrW(model.empty()
+                               ? StringId::kSettingsLocalRefineModelMissing
+                               : (four_b
+                                      ? StringId::kSettingsLocalRefineCrossTurnOk
+                                      : StringId::kSettingsLocalRefineCrossTurnDegraded),
+                           language)
+                           .c_str());
+        return;
+    }
     SetWindowTextW(local_refine_status_label_,
                    TrW(model.empty() ? StringId::kSettingsLocalRefineModelMissing
                                      : StringId::kSettingsLocalRefineModelOk,
