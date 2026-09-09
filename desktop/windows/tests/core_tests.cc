@@ -32,6 +32,8 @@
 #include "ogg_opus_demuxer.h"
 #include "local_asr_client_win.h"
 #include "local_refinement_client.h"
+#include "model_manifest.h"
+#include "model_downloader.h"
 #ifdef VOICESTICK_LOCAL_REFINE_ENABLED
 #include "llama_cpp_engine.h"
 #endif
@@ -56,6 +58,10 @@
 #include "encoder_speed.h"
 
 #include <algorithm>
+#include <winsock2.h>
+#include <bcrypt.h>
+#include <thread>
+#include <utility>
 #include <cassert>
 #include <condition_variable>
 #include <cstdio>
@@ -11692,13 +11698,679 @@ void TestClipboardVaultSaveThrowsWhenBusy() {
     holder.join();
 }
 
+// ================== 本地模型分发（Doc/Plan/local-model-distribution.md） ==================
+
+namespace {
+
+// 测试内独立 SHA-256：与被测实现各算各的，避免自证。
+std::string TestSha256Hex(std::string_view data) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+        std::fprintf(stderr, "TestSha256Hex: BCryptOpenAlgorithmProvider failed\n");
+        std::abort();
+    }
+    std::uint8_t digest[32] = {};
+    const NTSTATUS status =
+        BCryptHash(algorithm, nullptr, 0,
+                   reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+                   static_cast<ULONG>(data.size()), digest, sizeof(digest));
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (status != 0) {
+        std::fprintf(stderr, "TestSha256Hex: BCryptHash failed\n");
+        std::abort();
+    }
+    char hex[65] = {};
+    for (std::size_t i = 0; i < sizeof(digest); ++i) {
+        snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    }
+    return hex;
+}
+
+ModelFileSpec MakeSpecFromBody(const std::string& body, std::vector<std::string> urls) {
+    ModelFileSpec spec;
+    spec.rel_path = "test/file.bin";
+    spec.bytes = body.size();
+    spec.sha256 = TestSha256Hex(body);
+    spec.urls = std::move(urls);
+    return spec;
+}
+
+// 回环 HTTP 服务（真 Winsock 真 HTTP 报文）：WinHTTP 走真实回环 TCP 连接，
+// 不 mock 网络栈（不伪造原则）。单请求/连接，Connection: close。
+class LoopbackHttpServer {
+ public:
+    struct Response {
+        int status = 200;
+        std::string body;
+        bool honor_range = true;   // 支持 Range → 206 + Content-Range
+        std::size_t chunk_size = 0;  // 0 = 一次性发送；否则分块
+        int chunk_delay_ms = 0;      // 分块间隔（取消测试用）
+    };
+    // 未注册路径一律 404。range_start 仅当请求带 Range 时有效。
+    using Rules = std::map<std::string, Response>;
+
+    explicit LoopbackHttpServer(Rules rules) : rules_(std::move(rules)) {
+        WSADATA wsa{};
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            std::fprintf(stderr, "LoopbackHttpServer: WSAStartup failed\n");
+            std::abort();
+        }
+        listen_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (listen_ == INVALID_SOCKET) {
+            std::fprintf(stderr, "LoopbackHttpServer: socket failed\n");
+            std::abort();
+        }
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.S_un.S_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;  // 随机端口，避免并行会话互踩
+        if (bind(listen_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+            listen(listen_, 8) != 0) {
+            std::fprintf(stderr, "LoopbackHttpServer: bind/listen failed\n");
+            std::abort();
+        }
+        sockaddr_in bound{};
+        int bound_size = sizeof(bound);
+        if (getsockname(listen_, reinterpret_cast<sockaddr*>(&bound), &bound_size) != 0) {
+            std::fprintf(stderr, "LoopbackHttpServer: getsockname failed\n");
+            std::abort();
+        }
+        port_ = ntohs(bound.sin_port);
+        accept_thread_ = std::thread([this] { AcceptLoop(); });
+    }
+
+    ~LoopbackHttpServer() {
+        stopping_.store(true);
+        closesocket(listen_);  // 唤醒阻塞中的 accept
+        if (accept_thread_.joinable()) accept_thread_.join();
+        WSACleanup();
+    }
+
+    LoopbackHttpServer(const LoopbackHttpServer&) = delete;
+    LoopbackHttpServer& operator=(const LoopbackHttpServer&) = delete;
+
+    std::string Url(const std::string& path) const {
+        return "http://127.0.0.1:" + std::to_string(port_) + path;
+    }
+
+    // 取走已收到的 Range 头原文（含 "Range:" 前缀），供断言真的发了续传请求。
+    std::vector<std::string> TakeRangeHeaders() {
+        std::lock_guard<std::mutex> lock(ranges_mutex_);
+        return std::exchange(range_headers_, {});
+    }
+
+ private:
+    void AcceptLoop() {
+        while (!stopping_.load()) {
+            sockaddr_in peer{};
+            int peer_size = sizeof(peer);
+            SOCKET client = accept(listen_, reinterpret_cast<sockaddr*>(&peer), &peer_size);
+            if (client == INVALID_SOCKET) break;  // closesocket 触发，正常退出
+            std::thread([this, client] { ServeConnection(client); }).detach();
+        }
+    }
+
+    void ServeConnection(SOCKET client) {
+        std::string request;
+        char buffer[1024];
+        for (;;) {
+            const int got = recv(client, buffer, sizeof(buffer), 0);
+            if (got <= 0) break;
+            request.append(buffer, got);
+            if (request.find("\r\n\r\n") != std::string::npos) break;
+        }
+        const auto first_line_end = request.find("\r\n");
+        const std::string first_line = request.substr(0, first_line_end);
+        const auto path_begin = first_line.find(' ');
+        const auto path_end = first_line.rfind(' ');
+        if (path_begin == std::string::npos || path_end == std::string::npos ||
+            path_end <= path_begin) {
+            closesocket(client);
+            return;
+        }
+        const std::string path =
+            first_line.substr(path_begin + 1, path_end - path_begin - 1);
+
+        // 找行首 "range:" 头并解析 "bytes=N-"（大小写不敏感）。
+        bool has_range = false;
+        std::uint64_t range_start = 0;
+        std::string lowered;
+        lowered.reserve(request.size());
+        for (const char ch : request) {
+            lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+        }
+        for (std::size_t pos = lowered.find("range:"); pos != std::string::npos;
+             pos = lowered.find("range:", pos + 6)) {
+            if (pos != 0 && lowered[pos - 1] != '\n') continue;
+            std::size_t value_begin = pos + 6;
+            while (value_begin < request.size() &&
+                   (request[value_begin] == ' ' || request[value_begin] == '\t')) {
+                ++value_begin;
+            }
+            const std::size_t line_end = lowered.find("\r\n", pos);
+            const std::string value =
+                request.substr(value_begin, line_end == std::string::npos
+                                                ? std::string::npos
+                                                : line_end - value_begin);
+            if (value.rfind("bytes=", 0) == 0) {
+                const auto num_end = value.find('-', 6);
+                if (num_end != std::string::npos && num_end > 6) {
+                    range_start = std::stoull(value.substr(6, num_end - 6));
+                    has_range = true;
+                    std::lock_guard<std::mutex> lock(ranges_mutex_);
+                    range_headers_.push_back(value);
+                }
+            }
+            break;
+        }
+
+        Response response;  // 未注册路径 → 404
+        if (const auto rule = rules_.find(path); rule != rules_.end()) {
+            response = rule->second;
+        } else {
+            response.status = 404;
+        }
+        std::string body = response.body;
+        int status = response.status;
+        if (response.status == 200 && response.honor_range && has_range) {
+            status = 206;
+            body = range_start >= body.size() ? std::string() : body.substr(range_start);
+        }
+        std::string headers = "HTTP/1.1 " + std::to_string(status) + "\r\n";
+        if (status == 206) {
+            headers += "Content-Range: bytes " + std::to_string(range_start) + "-" +
+                       std::to_string(response.body.empty() ? 0 : response.body.size() - 1) +
+                       "/" + std::to_string(response.body.size()) + "\r\n";
+        }
+        headers += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+        headers += "Connection: close\r\n\r\n";
+        send(client, headers.data(), static_cast<int>(headers.size()), 0);
+        if (response.chunk_size == 0) {
+            send(client, body.data(), static_cast<int>(body.size()), 0);
+        } else {
+            for (std::size_t offset = 0; offset < body.size() && !stopping_.load();
+                 offset += response.chunk_size) {
+                const std::size_t n = std::min(response.chunk_size, body.size() - offset);
+                send(client, body.data() + offset, static_cast<int>(n), 0);
+                Sleep(response.chunk_delay_ms);
+            }
+        }
+        shutdown(client, SD_BOTH);
+        closesocket(client);
+    }
+
+    Rules rules_;
+    SOCKET listen_ = INVALID_SOCKET;
+    std::uint16_t port_ = 0;
+    std::atomic<bool> stopping_{false};
+    std::thread accept_thread_;
+    std::mutex ranges_mutex_;
+    std::vector<std::string> range_headers_;
+};
+
+std::filesystem::path MakeTempDir(const char* name) {
+    static std::atomic<int> counter{0};
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("voicestick_model_dl_" + std::to_string(counter.fetch_add(1)) + "_" + name);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+std::string ReadFileBytes(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+}
+
+void WriteFileBytes(const std::filesystem::path& path, const std::string& data) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(data.data(), static_cast<std::streamsize>(data.size()));
+}
+
+// 失败即终止：保持「测试失败 = 进程异常终止」语义，exit code 层面可见
+//（NDEBUG 下 assert 结构性失效的教训，见 Doc/Expe 五坑文档坑 1）。
+void AbortIfFailed(int failed, const char* test_name) {
+    if (failed > 0) {
+        std::fprintf(stderr, "FAIL %s: %d assertion(s) failed\n", test_name, failed);
+        std::abort();
+    }
+    std::printf(">> %s OK\n", test_name);
+}
+
+}  // namespace
+
+void TestBundledModelManifestWellFormed() {
+    int failed = 0;
+    const auto& bundled = BundledModelEntries();
+
+    // 内置清单的具体值与 m0/models 权威副本一致（哈希/体积为实测回填）。
+    if (bundled.size() != 2) {
+        std::printf("FAIL manifest 应有 2 个条目，实际 %zu\n", bundled.size());
+        ++failed;
+    }
+    if (!bundled.empty() && bundled[0].kind != ModelKind::kAsr) {
+        std::printf("FAIL 首条目应为 kAsr\n");
+        ++failed;
+    }
+    if (!bundled.empty() && !bundled[0].required) {
+        std::printf("FAIL ASR 条目应为必选\n");
+        ++failed;
+    }
+    if (bundled.size() > 0 && bundled[0].files.size() == 2) {
+        const auto& onnx = bundled[0].files[0];
+        if (onnx.rel_path != "model.int8.onnx" || onnx.bytes != 239233841 ||
+            onnx.sha256.rfind("c71f0ce00bec95b07744e116345e33d8", 0) != 0 ||
+            onnx.urls.size() != 3) {
+            std::printf("FAIL onnx 文件描述与权威副本不符\n");
+            ++failed;
+        }
+        const auto& tokens = bundled[0].files[1];
+        if (tokens.rel_path != "tokens.txt" || tokens.bytes != 315894 ||
+            tokens.urls.size() != 3) {
+            std::printf("FAIL tokens 文件描述与权威副本不符\n");
+            ++failed;
+        }
+    } else if (bundled.size() > 0) {
+        std::printf("FAIL ASR 条目应含 2 个文件\n");
+        ++failed;
+    }
+    if (bundled.size() > 1) {
+        const auto& refine = bundled[1];
+        if (refine.kind != ModelKind::kRefine || refine.required ||
+            refine.files.size() != 1 ||
+            refine.files[0].rel_path != "Qwen3-1.7B-Q4_K_M/Qwen3-1.7B-Q4_K_M.gguf" ||
+            refine.files[0].bytes != 1107409472 ||
+            refine.files[0].sha256.rfind("b139949c5bd74937ad8ed8c8cf3d9ffb", 0) != 0) {
+            std::printf("FAIL 精修条目与权威副本不符\n");
+            ++failed;
+        }
+    }
+    if (!ModelEntriesWellFormed(bundled)) {
+        std::printf("FAIL 内置清单应通过自洽校验\n");
+        ++failed;
+    }
+
+    // 自洽校验的拒绝分支（构造畸形清单逐字段破坏）。
+    const auto valid_entry = [] {
+        ModelEntrySpec entry;
+        entry.kind = ModelKind::kAsr;
+        entry.required = true;
+        ModelFileSpec file;
+        file.rel_path = "a.onnx";
+        file.bytes = 1;
+        file.sha256 = std::string(64, 'a');
+        file.urls = {"https://host/path"};
+        entry.files = {std::move(file)};
+        return entry;
+    };
+    const std::vector<ModelEntrySpec> valid = {valid_entry()};
+    if (!ModelEntriesWellFormed(valid)) {
+        std::printf("FAIL 合法清单不应被拒\n");
+        ++failed;
+    }
+    if (ModelEntriesWellFormed({})) {
+        std::printf("FAIL 空清单应被拒\n");
+        ++failed;
+    }
+    auto reject = [&](const char* why, std::vector<ModelEntrySpec> broken) {
+        if (ModelEntriesWellFormed(broken)) {
+            std::printf("FAIL %s 应被拒\n", why);
+            ++failed;
+        }
+    };
+    auto no_files = valid_entry();
+    no_files.files.clear();
+    reject("空 files", {no_files});
+    auto empty_rel = valid_entry();
+    empty_rel.files[0].rel_path.clear();
+    reject("空 rel_path", {empty_rel});
+    auto backslash_rel = valid_entry();
+    backslash_rel.files[0].rel_path = "a\\b.onnx";
+    reject("反斜杠 rel_path", {backslash_rel});
+    auto zero_bytes = valid_entry();
+    zero_bytes.files[0].bytes = 0;
+    reject("bytes=0", {zero_bytes});
+    auto short_hash = valid_entry();
+    short_hash.files[0].sha256 = "abc";
+    reject("短 sha256", {short_hash});
+    auto upper_hash = valid_entry();
+    upper_hash.files[0].sha256 = std::string(64, 'A');
+    reject("非小写 sha256", {upper_hash});
+    auto no_urls = valid_entry();
+    no_urls.files[0].urls.clear();
+    reject("空 urls", {no_urls});
+    auto ftp_url = valid_entry();
+    ftp_url.files[0].urls = {"ftp://host/path"};
+    reject("非 http(s) url", {ftp_url});
+
+    AbortIfFailed(failed, "TestBundledModelManifestWellFormed");
+}
+
+void TestModelDownloaderPureFunctions() {
+    int failed = 0;
+
+    // ParseModelUrl。
+    ParsedModelUrl parsed;
+    if (!ParseModelUrl("https://modelscope.cn/models/x/resolve/master/a.gguf", parsed) ||
+        parsed.host != "modelscope.cn" || !parsed.secure || parsed.port != 443 ||
+        parsed.path != "/models/x/resolve/master/a.gguf") {
+        std::printf("FAIL https URL 解析不符\n");
+        ++failed;
+    }
+    if (!ParseModelUrl("http://127.0.0.1:8080/p?x=1", parsed) ||
+        parsed.host != "127.0.0.1" || parsed.secure || parsed.port != 8080 ||
+        parsed.path != "/p?x=1") {
+        std::printf("FAIL 带端口 http URL 解析不符\n");
+        ++failed;
+    }
+    if (ParseModelUrl("ftp://host/path", parsed) || ParseModelUrl("", parsed) ||
+        ParseModelUrl("http://", parsed) || ParseModelUrl("not-a-url", parsed)) {
+        std::printf("FAIL 非法 URL 应被拒\n");
+        ++failed;
+    }
+
+    // PlanResume。
+    if (PlanResume(0, 100) != ResumePlan::kFreshStart ||
+        PlanResume(1, 100) != ResumePlan::kResume ||
+        PlanResume(99, 100) != ResumePlan::kResume ||
+        PlanResume(100, 100) != ResumePlan::kCorruptRestart ||
+        PlanResume(101, 100) != ResumePlan::kCorruptRestart) {
+        std::printf("FAIL PlanResume 边界不符\n");
+        ++failed;
+    }
+
+    // InterpretRangeResponse。
+    const auto verdict = [](RangeResponseInfo info) {
+        return InterpretRangeResponse(info);
+    };
+    if (verdict({.status = 200, .has_content_length = true, .content_length = 100,
+                 .range_base = 0, .expected_bytes = 100}) != RangeVerdict::kOverwritePart) {
+        std::printf("FAIL 200 全量应 OverwritePart\n");
+        ++failed;
+    }
+    if (verdict({.status = 200, .has_content_length = true, .content_length = 99,
+                 .range_base = 0, .expected_bytes = 100}) != RangeVerdict::kInvalid) {
+        std::printf("FAIL 200 且 CL 不符应 Invalid\n");
+        ++failed;
+    }
+    if (verdict({.status = 200, .has_content_length = false,
+                 .range_base = 0, .expected_bytes = 100}) != RangeVerdict::kOverwritePart) {
+        std::printf("FAIL 200 无 CL 应 OverwritePart（哈希兜底）\n");
+        ++failed;
+    }
+    if (verdict({.status = 200, .has_content_length = false,
+                 .range_base = 50, .expected_bytes = 100}) != RangeVerdict::kOverwritePart) {
+        std::printf("FAIL 服务器无视 Range 应回 200 重下\n");
+        ++failed;
+    }
+    if (verdict({.status = 206, .has_content_length = true, .content_length = 50,
+                 .range_base = 50, .expected_bytes = 100}) != RangeVerdict::kAppendToPart) {
+        std::printf("FAIL 206 自洽应 AppendToPart\n");
+        ++failed;
+    }
+    if (verdict({.status = 206, .has_content_length = true, .content_length = 51,
+                 .range_base = 50, .expected_bytes = 100}) != RangeVerdict::kInvalid) {
+        std::printf("FAIL 206 CL 与基数不符应 Invalid\n");
+        ++failed;
+    }
+    if (verdict({.status = 206, .has_content_length = true, .content_length = 100,
+                 .range_base = 0, .expected_bytes = 100}) != RangeVerdict::kInvalid) {
+        std::printf("FAIL 未带 Range 却回 206 应 Invalid\n");
+        ++failed;
+    }
+    if (verdict({.status = 206, .has_content_length = false,
+                 .range_base = 50, .expected_bytes = 100}) != RangeVerdict::kAppendToPart) {
+        std::printf("FAIL 206 无 CL 应 AppendToPart（信任连接边界）\n");
+        ++failed;
+    }
+    if (verdict({.status = 404, .has_content_length = false,
+                 .range_base = 0, .expected_bytes = 100}) != RangeVerdict::kInvalid) {
+        std::printf("FAIL 非 200/206 应 Invalid（防御）\n");
+        ++failed;
+    }
+
+    // RequiredDiskBytes。
+    if (RequiredDiskBytes({}) != 0) {
+        std::printf("FAIL 空清单磁盘需求应为 0\n");
+        ++failed;
+    }
+    {
+        std::vector<ModelFileSpec> files;
+        ModelFileSpec a;
+        a.bytes = 100;
+        ModelFileSpec b;
+        b.bytes = 23;
+        files = {a, b};
+        if (RequiredDiskBytes(files) != 123) {
+            std::printf("FAIL 磁盘需求应求和\n");
+            ++failed;
+        }
+    }
+
+    AbortIfFailed(failed, "TestModelDownloaderPureFunctions");
+}
+
+void TestFinalizePartFile() {
+    int failed = 0;
+    const auto dir = MakeTempDir("finalize");
+    const auto dest = dir / "model.bin";
+    const auto part = dir / "model.bin.part";
+
+    // 正常收尾：哈希匹配 → 原子改名。
+    WriteFileBytes(part, "hello world");
+    if (FinalizePartFile(dest, TestSha256Hex("hello world")) != DownloadResult::kOk ||
+        ReadFileBytes(dest) != "hello world" || std::filesystem::exists(part)) {
+        std::printf("FAIL 哈希匹配应改名成功且 .part 消失\n");
+        ++failed;
+    }
+
+    // 哈希不匹配：删除 .part，dest 保持原样。
+    WriteFileBytes(part, "tampered");
+    if (FinalizePartFile(dest, TestSha256Hex("hello world")) != DownloadResult::kHashMismatch ||
+        std::filesystem::exists(part) || ReadFileBytes(dest) != "hello world") {
+        std::printf("FAIL 哈希不匹配应删 .part 且不动 dest\n");
+        ++failed;
+    }
+
+    // .part 不存在（调用方违约）：按不匹配处理。
+    if (FinalizePartFile(dest, TestSha256Hex("hello world")) != DownloadResult::kHashMismatch) {
+        std::printf("FAIL 缺 .part 应按不匹配处理\n");
+        ++failed;
+    }
+
+    // 大写期望哈希：实现侧归一化小写后比较。
+    WriteFileBytes(part, "hello world");
+    std::string upper = TestSha256Hex("hello world");
+    for (auto& ch : upper) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    const auto second = dir / "second.bin";
+    const auto second_part = dir / "second.bin.part";
+    WriteFileBytes(second_part, "hello world");
+    if (FinalizePartFile(second, upper) != DownloadResult::kOk ||
+        ReadFileBytes(second) != "hello world") {
+        std::printf("FAIL 大写期望哈希应归一化比较\n");
+        ++failed;
+    }
+
+    AbortIfFailed(failed, "TestFinalizePartFile");
+}
+
+void TestModelDownloaderLoopback() {
+    int failed = 0;
+    const std::string kBody = "hello world";
+
+    LoopbackHttpServer::Rules rules;
+    rules["/ok"] = {.status = 200, .body = kBody};
+    rules["/bad"] = {.status = 200, .body = "hello worlx"};  // 同长度坏内容
+    rules["/norange"] = {.status = 200, .body = kBody, .honor_range = false};
+    rules["/slow"] = {.status = 200, .body = std::string(8192, 'x'),
+                      .chunk_size = 256, .chunk_delay_ms = 50};
+    LoopbackHttpServer server(std::move(rules));
+    ModelDownloader downloader;
+
+    // 用例 1：全量下载成功，progress 收尾必达 total。
+    {
+        const auto dir = MakeTempDir("full");
+        const auto dest = dir / "file.bin";
+        const auto spec = MakeSpecFromBody(kBody, {server.Url("/ok")});
+        DownloadProgress last;
+        int calls = 0;
+        auto outcome = downloader.DownloadFile(
+            spec, dest, [&](const DownloadProgress& p) { last = p; ++calls; });
+        if (outcome.result != DownloadResult::kOk || !outcome.error.empty() ||
+            ReadFileBytes(dest) != kBody ||
+            last.downloaded != kBody.size() || last.total != kBody.size() || calls < 1) {
+            std::printf("FAIL 全量下载: result=%d url_used=%s\n",
+                        static_cast<int>(outcome.result), outcome.url_used.c_str());
+            ++failed;
+        }
+    }
+
+    // 用例 2：断点续传——预置半截 .part，服务器须收到 "bytes=5-"。
+    {
+        const auto dir = MakeTempDir("resume");
+        const auto dest = dir / "file.bin";
+        const auto part = dir / "file.bin.part";
+        WriteFileBytes(part, kBody.substr(0, 5));
+        const auto spec = MakeSpecFromBody(kBody, {server.Url("/ok")});
+        auto outcome = downloader.DownloadFile(spec, dest);
+        const auto ranges = server.TakeRangeHeaders();
+        bool saw_range = false;
+        for (const auto& range : ranges) {
+            if (range.find("bytes=5-") != std::string::npos) saw_range = true;
+        }
+        if (outcome.result != DownloadResult::kOk || ReadFileBytes(dest) != kBody ||
+            !saw_range) {
+            std::printf("FAIL 续传: result=%d range_seen=%d\n",
+                        static_cast<int>(outcome.result), saw_range ? 1 : 0);
+            ++failed;
+        }
+    }
+
+    // 用例 3：服务器无视 Range 回 200 全量 → 重下成功（OverwritePart 路径）。
+    {
+        const auto dir = MakeTempDir("norange");
+        const auto dest = dir / "file.bin";
+        const auto part = dir / "file.bin.part";
+        WriteFileBytes(part, kBody.substr(0, 5));
+        const auto spec = MakeSpecFromBody(kBody, {server.Url("/norange")});
+        auto outcome = downloader.DownloadFile(spec, dest);
+        if (outcome.result != DownloadResult::kOk || ReadFileBytes(dest) != kBody) {
+            std::printf("FAIL 服务器无视 Range: result=%d\n",
+                        static_cast<int>(outcome.result));
+            ++failed;
+        }
+        server.TakeRangeHeaders();  // 清空本用例记录
+    }
+
+    // 用例 4：首源哈希不匹配 → 回退次源成功。
+    {
+        const auto dir = MakeTempDir("fallback");
+        const auto dest = dir / "file.bin";
+        const auto spec =
+            MakeSpecFromBody(kBody, {server.Url("/bad"), server.Url("/ok")});
+        auto outcome = downloader.DownloadFile(spec, dest);
+        if (outcome.result != DownloadResult::kOk ||
+            outcome.url_used != server.Url("/ok") || ReadFileBytes(dest) != kBody) {
+            std::printf("FAIL 哈希不匹配换源: result=%d url=%s\n",
+                        static_cast<int>(outcome.result), outcome.url_used.c_str());
+            ++failed;
+        }
+    }
+
+    // 用例 5：单源坏内容 → kHashMismatch，.part 已删、dest 不存在。
+    {
+        const auto dir = MakeTempDir("mismatch");
+        const auto dest = dir / "file.bin";
+        const auto part = dir / "file.bin.part";
+        const auto spec = MakeSpecFromBody(kBody, {server.Url("/bad")});
+        auto outcome = downloader.DownloadFile(spec, dest);
+        if (outcome.result != DownloadResult::kHashMismatch ||
+            std::filesystem::exists(part) || std::filesystem::exists(dest)) {
+            std::printf("FAIL 单源哈希不匹配: result=%d\n",
+                        static_cast<int>(outcome.result));
+            ++failed;
+        }
+    }
+
+    // 用例 6：404 → 换源成功；全 404 → kNetworkError 且 error 汇总含状态码。
+    {
+        const auto dir = MakeTempDir("http404");
+        const auto dest = dir / "file.bin";
+        const auto spec =
+            MakeSpecFromBody(kBody, {server.Url("/missing"), server.Url("/ok")});
+        auto outcome = downloader.DownloadFile(spec, dest);
+        if (outcome.result != DownloadResult::kOk) {
+            std::printf("FAIL 404 换源: result=%d\n", static_cast<int>(outcome.result));
+            ++failed;
+        }
+        const auto spec_all_missing = MakeSpecFromBody(kBody, {server.Url("/missing")});
+        auto outcome2 = downloader.DownloadFile(spec_all_missing, dest);
+        if (outcome2.result != DownloadResult::kNetworkError ||
+            outcome2.error.find("404") == std::string::npos) {
+            std::printf("FAIL 全 404: result=%d error=%s\n",
+                        static_cast<int>(outcome2.result), outcome2.error.c_str());
+            ++failed;
+        }
+    }
+
+    // 用例 7：取消——慢速分块下载，收到首批进度后置位，.part 保留。
+    {
+        const auto dir = MakeTempDir("cancel");
+        const auto dest = dir / "file.bin";
+        const auto part = dir / "file.bin.part";
+        const auto spec = MakeSpecFromBody(std::string(8192, 'x'), {server.Url("/slow")});
+        std::atomic<bool> cancel_flag{false};
+        auto outcome = downloader.DownloadFile(
+            spec, dest,
+            [&](const DownloadProgress& p) {
+                if (p.downloaded > 0) cancel_flag.store(true);
+            },
+            [&] { return cancel_flag.load(); });
+        const bool part_kept = std::filesystem::exists(part) &&
+                               std::filesystem::file_size(part) < 8192;
+        if (outcome.result != DownloadResult::kCancelled || !part_kept ||
+            std::filesystem::exists(dest)) {
+            std::printf("FAIL 取消: result=%d part_kept=%d\n",
+                        static_cast<int>(outcome.result), part_kept ? 1 : 0);
+            ++failed;
+        }
+    }
+
+    // 用例 8：无效清单（urls 空）→ kInvalidSpec。
+    {
+        const auto dir = MakeTempDir("invalid");
+        auto outcome = downloader.DownloadFile(MakeSpecFromBody(kBody, {}),
+                                               dir / "file.bin");
+        if (outcome.result != DownloadResult::kInvalidSpec) {
+            std::printf("FAIL 空 urls 应 kInvalidSpec: result=%d\n",
+                        static_cast<int>(outcome.result));
+            ++failed;
+        }
+    }
+
+    // 用例 9：dest 父目录不存在 → kLocalIoError（本地 I/O，与网络无关）。
+    {
+        const auto dir = MakeTempDir("baddir");
+        const auto spec = MakeSpecFromBody(kBody, {server.Url("/ok")});
+        auto outcome = downloader.DownloadFile(spec, dir / "no-such-dir" / "file.bin");
+        if (outcome.result != DownloadResult::kLocalIoError) {
+            std::printf("FAIL 父目录缺失应 kLocalIoError: result=%d\n",
+                        static_cast<int>(outcome.result));
+            ++failed;
+        }
+    }
+
+    AbortIfFailed(failed, "TestModelDownloaderLoopback");
+}
+
 int main() {
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接终止，
     // 避免 CRT 默认弹「Microsoft Visual C++ Runtime Library」对话框挂起测试进程。
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);   // Watson 报告同样会弹窗挂死
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);  // Watson 报告与 abort() 弹窗都会在无人值守时挂死测试进程
 #endif
     // stdout 重定向到文件时默认全缓冲，断言 abort 会丢掉之前的进度输出。
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -12014,5 +12686,9 @@ int main() {
     TestEsptoolCommandBuilder();
     TestEsptoolProgressParser();
     TestFlashToolFlow();
+    TestBundledModelManifestWellFormed();
+    TestModelDownloaderPureFunctions();
+    TestFinalizePartFile();
+    TestModelDownloaderLoopback();
     return 0;
 }

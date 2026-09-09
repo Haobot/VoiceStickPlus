@@ -139,6 +139,8 @@ add_library(voicestick_core STATIC
     src/esptool_progress.cc
     src/voice_stick_flash_tool.cc
     src/firmware_manifest.cc
+    src/model_manifest.cc
+    src/model_downloader.cc
     src/llm_chat_client.cc
     src/llm_translation_client.cc
     src/llm_refinement_client.cc
@@ -363,7 +365,7 @@ add_executable(voicestick_windows_tests
     src/tencent_asr_vocab_client.cc
 )
 
-target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt)
+target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt ws2_32)
 # golden fixtures（ATVV 采集）相对仓库根解析，不依赖测试进程工作目录
 target_compile_definitions(voicestick_windows_tests PRIVATE
     VOICESTICK_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
