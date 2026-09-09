@@ -16,6 +16,7 @@ Hold the front button on the StickS3 to record. When you release it, the desktop
 - Double-click gestures (detected on the firmware side): double-click the front button to cancel the active session and inject Enter; double-click the side button to restore the last pending input.
 - Three output targets: paste into the focused app (default), subtitle-only display, and a WeChat input-method mode that decodes Opus to PCM and renders it to a system virtual microphone (e.g. VB-CABLE) so apps like the WeChat input method can use it as an audio source (Windows).
 - LLM translation and refinement; Volcengine hotword/replacement tables, selection-based hotword adding, and candidate hotword mining (Windows).
+- Local speech recognition (Windows): on-device SenseVoice int8 ASR with no cloud key required, plus optional local Qwen3-1.7B text refinement (filler-word cleanup). Models are fetched once via the "Download models..." wizard in Settings (multi-source fallback with resume and SHA-256 verification) and work fully offline afterwards.
 - Air mouse: BMI270 IMU-driven cursor control; while active the front button acts as left click and a side-button single click exits (Windows).
 - Tap-to-arrow: IMU tap detection mapped to arrow keys (`tap_to_arrow`, Windows).
 - MiniEncoderC encoder: its button mirrors the front button, rotation maps to arrow keys with slow (line-by-line) / fast (page) tiers, and button/rotation actions are customizable per device (Windows).

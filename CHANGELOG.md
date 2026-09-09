@@ -14,6 +14,8 @@
 
 ## Unreleased
 
+- 新增本地模型下载向导（Windows）：本地语音识别（SenseVoice int8 约 240MB）与本地文本精修（Qwen3-1.7B Q4_K_M 约 1.1GB）改为按需下载，安装包保持瘦体。设置页选中「本地语音识别」时出现「下载模型…」入口，向导支持必选识别 + 可选精修勾选、磁盘空间提示、聚合进度、取消（`.part` 保留断点续传）与错误汇总，完成后自动回填模型目录并刷新就绪状态；已在位（字节数相符）的文件自动跳过。下载核心 `model_manifest` 内置清单 + `model_downloader`（WinHTTP 流式、Range 断点续传、BCrypt SHA-256 校验、`.part` 原子改名、磁盘预检），分发源四重回退：腾讯 COS 正式域名直出 → COS myqcloud 直出 → ModelScope 免费分流 → GitHub Release（渠道约定见 `Doc/Ref/cos-distribution.md`），下载链路带 MDL 观测日志（换源/校验/跳过/汇总）。配套 `scripts/pack_local_models.py` 打包全量离线 zip（`voicestick-models-full-v1.zip`，源文件硬校验后 STORED 打包，含 NOTICE/MANIFEST，供内网分发）。真机验证：COS 实下 1.34GB 三文件 SHA-256 与清单一致。设计见 `Doc/Plan/local-model-distribution.md`。
+
 - 新增热词识别自动化验收测试工具（`scripts/e2e_test/run_hotword_acceptance.py`）：按桌面端同款发送逻辑（腾讯=词表通道 / 火山=评分裁剪直传）回放真实 ASR，报告每个热词的命中率与识别原文，并诊断「不可入表词（含空格/'.'，只能靠 LLM 精修）」；音频可自动生成（edge-tts 造句）或经 `--manifest` 标注清单使用已有录音。
 
 - 热词高频优先裁剪（Windows）：热词库超出单次会话直传预算（火山 80 tokens）时，按「频率 × 新近度 × 手动加权」评分优先保留（`hotword_selector`，与 `scripts/e2e_test/asr_bench/hotword_select.py` 同一评分模型），替代原按插入顺序贪心截断——新加的词排在列表尾部、旧逻辑最先被裁。使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本）存 `%APPDATA%\VoiceStick\hotword_usage.json`；超预算时每次运行提示一次（浮窗/托盘，明细见日志）。精修/翻译 LLM prompt 的热词段改为评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。新增 `TestHotwordSelector` 单测（镜像 hotword_select.py 自测断言）。

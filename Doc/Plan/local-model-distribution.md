@@ -1,7 +1,7 @@
 # 本地模型分发（按需下载器）设计与实施方案
 
 - 日期：2026-09-09
-- 状态：迭代一/二已交付（570dbcd4 + 94d34bba，真机下载闭环）；迭代三待做
+- 状态：**三迭代全部交付**（570dbcd4 + 94d34bba + 6e82fc35 + 本轮迭代三）。分发渠道已定案腾讯 COS（见 `Doc/Ref/cos-distribution.md`），四源回退真机验证通过。遗留两小项：GitHub Release `model-pack-v1` asset 随下个发版上传、离线 zip 上传 COS 顶层（`scripts/pack_local_models.py` 本地打包已就绪）。
 - 分支：feat/voice-recognition-option
 - 关联：`Doc/Plan/local-mic-mode.md`（本地识别）、`Doc/Plan/local-text-refinement.md`（本地精修）、`Doc/Plan/asr-settings-local-provider-merge.md`（设置入口）、`Doc/Plan/windows-local-firmware-ota.md`（固件 OTA 清单先例）
 
@@ -138,7 +138,7 @@ DownloadOutcome ModelDownloader::DownloadFile(
 
 1. **迭代一（纯核心，TDD）**：`model_manifest` 常量 + `model_downloader` 纯函数与 WinHTTP 流式实现 + 本地回环集成测试。全绿后提交。
 2. **迭代二（UI 接线，已交付 94d34bba）**：设置页「下载模型…」按钮（本地提供方选中时可见）→ 向导（条目勾选/进度/取消/错误汇总）→ 完成回填 models_dir。真机点验通过：ModelScope 实下 1.34GB 三文件 SHA-256 与清单一致、已在位跳过、取消变关闭、保存后运行时切换缓存目录且精修引擎加载缓存 GGUF；MDL 观测日志（换源/校验/跳过/汇总）。遗留：真机「按住说话出文本」语音端到端待用户日常使用自然验证。
-3. **迭代三（托管收尾）**：算哈希回填清单 → ossutil 上传 OSS + GitHub Release → 核实 ModelScope 哈希一致性（真机下载已间接核实：ModelScope 下载文件哈希 = 本地权威副本哈希）→ 离线 zip + `scripts/` 上传脚本 → 同步 `Doc/Ref/desktop-config.md`、`README` 双语、`CHANGELOG`。
+3. **迭代三（托管收尾，已交付）**：清单 URL 回填四源（COS 正式域名直出 → COS myqcloud 直出 → ModelScope → GitHub Release，正式域名 DNS 就绪前快速失败自动回退、无需改清单）；ModelScope 哈希一致性真机间接核实；`scripts/pack_local_models.py` 离线 zip（源文件硬校验 + STORED 打包 + NOTICE/MANIFEST，解包哈希冒烟通过）；README 双语与 CHANGELOG 已同步。真机验证：删缓存后 COS 实下 1.34GB 三文件，SHA-256 与清单一致，MDL 日志确认每个文件先试正式域名失败回退 myqcloud 成功。
 
 ## 10. 风险与开放问题
 

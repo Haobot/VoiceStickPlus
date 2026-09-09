@@ -12193,13 +12193,13 @@ void TestBundledModelManifestWellFormed() {
         const auto& onnx = bundled[0].files[0];
         if (onnx.rel_path != "model.int8.onnx" || onnx.bytes != 239233841 ||
             onnx.sha256.rfind("c71f0ce00bec95b07744e116345e33d8", 0) != 0 ||
-            onnx.urls.size() != 3) {
+            onnx.urls.size() != 4) {
             std::printf("FAIL onnx 文件描述与权威副本不符\n");
             ++failed;
         }
         const auto& tokens = bundled[0].files[1];
         if (tokens.rel_path != "tokens.txt" || tokens.bytes != 315894 ||
-            tokens.urls.size() != 3) {
+            tokens.urls.size() != 4) {
             std::printf("FAIL tokens 文件描述与权威副本不符\n");
             ++failed;
         }
@@ -12221,6 +12221,41 @@ void TestBundledModelManifestWellFormed() {
     if (!ModelEntriesWellFormed(bundled)) {
         std::printf("FAIL 内置清单应通过自洽校验\n");
         ++failed;
+    }
+
+    // 分发源分布护栏（Doc/Ref/cos-distribution.md）：四源回退——
+    // 正式域名直出首位（DNS 未配时快速失败自动回退，无需改清单）、
+    // myqcloud 直出、ModelScope 免费分流、GitHub Release 海外回退。
+    for (const auto& entry : bundled) {
+        for (const auto& file : entry.files) {
+            if (file.urls.empty() ||
+                file.urls[0].rfind("https://dl.davenger.cloud/models/", 0) != 0) {
+                std::printf("FAIL %s 首位源应为正式域名直出\n",
+                            file.rel_path.c_str());
+                ++failed;
+            }
+            const auto has_host = [&file](const char* needle) {
+                for (const auto& url : file.urls) {
+                    if (url.find(needle) != std::string::npos) return true;
+                }
+                return false;
+            };
+            if (!has_host(".myqcloud.com/")) {
+                std::printf("FAIL %s 应含 myqcloud 直出回退源\n",
+                            file.rel_path.c_str());
+                ++failed;
+            }
+            if (!has_host("modelscope.cn/")) {
+                std::printf("FAIL %s 应含 ModelScope 分流源\n",
+                            file.rel_path.c_str());
+                ++failed;
+            }
+            if (!has_host("github.com/")) {
+                std::printf("FAIL %s 应含 GitHub Release 回退源\n",
+                            file.rel_path.c_str());
+                ++failed;
+            }
+        }
     }
 
     // 自洽校验的拒绝分支（构造畸形清单逐字段破坏）。

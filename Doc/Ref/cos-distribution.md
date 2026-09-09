@@ -53,6 +53,8 @@
 
 三个对象已上传并核验（2026-09-10）：字节数逐对象核对一致，源文件上传前本地 SHA-256 已复核匹配上表。`Cache-Control: max-age=31536000`（版本化不可变内容，长缓存）。
 
+模型侧消费端已接入（2026-09-10）：桌面端 `model_manifest` 清单 URL 回填四源回退——`dl.davenger.cloud` 正式域名直出（DNS 就绪前快速失败自动回退，无需改清单）→ myqcloud 直出 → ModelScope 免费分流 → GitHub Release。真机验证：删缓存全量重下 1.34GB，三文件均经 myqcloud 直出完成，下载器 SHA-256 校验与独立复核均与上表一致；Range 206 断点续传能力已预检。离线分发包由 `scripts/pack_local_models.py` 打包（`voicestick-models-full-v1.zip`，解压到 `%LOCALAPPDATA%\VoiceStick\models\` 即可），zip 上传 COS `models/` 顶层待发布节奏。
+
 上传复用入口：`scripts/cos_uploader.py`（`upload_files`/`collect_dir`），凭据走环境变量 `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY`。
 
 ## CORS 与防盗链策略（硬性约束）
