@@ -210,7 +210,7 @@ struct LocalAsrConfig {
     // 干净文本；模型缺失自动降级纯规则层并在设置界面明示。
     bool refine_enabled = true;
     // 精修 GGUF 模型路径。空 = models_dir（或 exe 旁 models/）下
-    // refine/qwen3-1.7b-q4_k_m.gguf。
+    // Qwen3-1.7B-Q4_K_M/Qwen3-1.7B-Q4_K_M.gguf（下载向导的缓存布局同名）。
     std::string refine_model;
     // 精修 CPU 推理线程数（默认 6：SenseVoice 2 线程 + UI/注入留余量）。
     int refine_num_threads = 6;

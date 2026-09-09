@@ -1,7 +1,7 @@
 # 本地模型分发（按需下载器）设计与实施方案
 
 - 日期：2026-09-09
-- 状态：迭代一已交付（清单 + 下载器核心 + 回环集成测试）；迭代二/三待做
+- 状态：迭代一/二已交付（570dbcd4 + 94d34bba，真机下载闭环）；迭代三待做
 - 分支：feat/voice-recognition-option
 - 关联：`Doc/Plan/local-mic-mode.md`（本地识别）、`Doc/Plan/local-text-refinement.md`（本地精修）、`Doc/Plan/asr-settings-local-provider-merge.md`（设置入口）、`Doc/Plan/windows-local-firmware-ota.md`（固件 OTA 清单先例）
 
@@ -137,12 +137,12 @@ DownloadOutcome ModelDownloader::DownloadFile(
 ## 9. 实施迭代
 
 1. **迭代一（纯核心，TDD）**：`model_manifest` 常量 + `model_downloader` 纯函数与 WinHTTP 流式实现 + 本地回环集成测试。全绿后提交。
-2. **迭代二（UI 接线）**：设置页「下载模型…」按钮（状态 ✗ 且本地提供方选中时可见）→ 模态向导（条目勾选/进度/取消/错误重试）→ 完成回填 models_dir。`localization.cc` 双语新增约 15 条 StringId。真机验证：下载→保存→状态 ✓→按住说话出文本。
-3. **迭代三（托管收尾）**：算哈希回填清单 → ossutil 上传 OSS + GitHub Release → 核实 ModelScope 哈希一致性 → 离线 zip + `scripts/` 上传脚本 → 同步 `Doc/Ref/desktop-config.md`、`README` 双语、`CHANGELOG`。
+2. **迭代二（UI 接线，已交付 94d34bba）**：设置页「下载模型…」按钮（本地提供方选中时可见）→ 向导（条目勾选/进度/取消/错误汇总）→ 完成回填 models_dir。真机点验通过：ModelScope 实下 1.34GB 三文件 SHA-256 与清单一致、已在位跳过、取消变关闭、保存后运行时切换缓存目录且精修引擎加载缓存 GGUF；MDL 观测日志（换源/校验/跳过/汇总）。遗留：真机「按住说话出文本」语音端到端待用户日常使用自然验证。
+3. **迭代三（托管收尾）**：算哈希回填清单 → ossutil 上传 OSS + GitHub Release → 核实 ModelScope 哈希一致性（真机下载已间接核实：ModelScope 下载文件哈希 = 本地权威副本哈希）→ 离线 zip + `scripts/` 上传脚本 → 同步 `Doc/Ref/desktop-config.md`、`README` 双语、`CHANGELOG`。
 
 ## 10. 风险与开放问题
 
 - ModelScope 第三方 repo 文件被删/换版本 → 哈希校验兜底（表现为该源失败回退），不构成安全问题；发布前核实并在清单里按源记哈希可完全规避。
 - OSS bucket/区域选型与费用归属待定（`Doc/Ref/release.md` 记载 CI 已不携带 OSS 凭据，需手动链路）。
-- `app_config.h:212` 注释（`refine/qwen3-1.7b-q4_k_m.gguf`）与实现默认档位（`Qwen3-1.7B-Q4_K_M/`）漂移，迭代二顺手修正注释。
+- `app_config.h` refine_model 注释漂移已在迭代二修正（94d34bba）。
 - 1.34GB 对机械盘/低配机用户仍重：向导明示体积与「仅下载识别模型（240MB）」选项已覆盖最小路径。
