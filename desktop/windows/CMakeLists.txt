@@ -153,6 +153,7 @@ add_library(voicestick_core STATIC
     src/localization.cc
     src/pinyin_guard.cc
     src/pinyin_data.cc
+    src/selection_correction.cc
     src/refine_history.cc
     src/push_to_talk_key.cc
     src/provider_combo.cc
@@ -273,6 +274,7 @@ add_executable(VoiceStickApp WIN32
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
     src/selection_hotword_manager.cc
+    src/selection_correction.cc
     src/voice_f5_suppressor.cc
     src/xiaomi_keymap_hook.cc
     src/mic_mode_hotkey.cc

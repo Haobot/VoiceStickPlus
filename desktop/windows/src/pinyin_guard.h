@@ -21,6 +21,10 @@ namespace voicestick {
 // 该口径下为死分支（韵母有交集时第 3 条已命中），不移植。
 bool PinyinSameOrNear(std::uint32_t a, std::uint32_t b);
 
+// 等长（码点数）文本逐字近音判定：任一位置非近音即 false；码点数不等 false；
+// 两个空串 true。供跨轮守卫与划词纠错候选过滤共用同一口径。
+bool SameOrNearText(std::string_view a, std::string_view b);
+
 struct CorrectionOutcome {
     std::string text;                   // 执行后文本（被拒指令不执行，其余生效）
     std::vector<std::string> rejected;  // 被守卫拒绝的指令行（诊断归因）

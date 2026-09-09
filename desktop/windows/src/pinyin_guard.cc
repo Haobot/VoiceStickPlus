@@ -177,6 +177,17 @@ bool PinyinSameOrNear(std::uint32_t a, std::uint32_t b) {
     return SetsIntersect(ea->initials, eb->initials) && FuzzyFinalHit(ea, eb);
 }
 
+bool SameOrNearText(std::string_view a, std::string_view b) {
+    if (CodepointCount(a) != CodepointCount(b)) return false;
+    std::size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        const auto ca = DecodeCodepoint(a, i);
+        const auto cb = DecodeCodepoint(b, j);
+        if (!PinyinSameOrNear(ca, cb)) return false;
+    }
+    return true;
+}
+
 CorrectionOutcome ApplyPinyinCorrections(
     std::string_view asr, std::string_view instructions, std::string_view context,
     const std::vector<std::string>& hotwords) {

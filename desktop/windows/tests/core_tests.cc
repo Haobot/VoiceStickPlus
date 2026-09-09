@@ -45,6 +45,7 @@
 #include "wasapi_mic_capture.h"
 #include "push_to_talk_key.h"
 #include "provider_combo.h"
+#include "selection_correction.h"
 #include "shortcut_capture.h"
 #include "onboarding_dialog.h"
 #include "pair_device_helper.h"
@@ -11167,6 +11168,52 @@ void TestApplyPinyinCorrections() {
     printf("TestApplyPinyinCorrections passed\n");
 }
 
+// 划词纠错候选链路纯逻辑（S1，Doc/Plan/selection-hotword-correction-and-asr-hotword-spike.md §1.2）：
+// LLM 输出解析 → 近音过滤 → 交给对话框展示。
+void TestSelectionCorrection() {
+    printf(">> TestSelectionCorrection\n"); fflush(stdout);
+    {   // SameOrNearText：等长逐字近音（复用守卫同口径）
+        assert(SameOrNearText("逾期次", "语气词"));
+        assert(SameOrNearText("鱼旗子", "逾期次"));
+        assert(!SameOrNearText("逾期次", "蓝牙"));      // 码点不等长
+        assert(!SameOrNearText("逾期次", "蓝牙耳机"));  // 等长但非近音
+        assert(SameOrNearText("", ""));
+    }
+    {   // ParseCandidateLines：剥序号（1. / 1、/ -）、跳空行、跳「无」类
+        //     直答、跳含标点行（候选是词不该有标点）、保序
+        const auto lines = ParseCandidateLines(
+            "1. 语气词\n"
+            "2、鱼旗子\n"
+            "\n"
+            "无\n"
+            "这行有逗号，跳过\n"
+            "- 预期刺\n"
+            "none\n"
+            "3. 语气词\n");
+        assert(lines.size() == 4);  // 保序不去重（去重在 FilterCandidates）
+        assert(lines[0] == "语气词");
+        assert(lines[1] == "鱼旗子");
+        assert(lines[2] == "预期刺");
+        assert(lines[3] == "语气词");
+    }
+    {   // FilterCandidates：近音过、非近音拒、不等长拒、去重、去与错词相同项
+        const auto r = FilterCandidates(
+            "逾期次", {"语气词", "鱼旗子", "蓝牙", "语气词", "逾期次", "语气词语"});
+        assert(r.size() == 2);
+        assert(r[0] == "语气词");
+        assert(r[1] == "鱼旗子");
+    }
+    {   // BuildCorrectionCandidatesPrompt：含错词与上下文；空上下文不空行残留
+        const auto prompt = BuildCorrectionCandidatesPrompt("逾期次", "我们测了逾期次过滤");
+        assert(prompt.find("逾期次") != std::string::npos);
+        assert(prompt.find("我们测了逾期次过滤") != std::string::npos);
+        const auto bare = BuildCorrectionCandidatesPrompt("逾期次", "");
+        assert(bare.find("逾期次") != std::string::npos);
+        assert(bare.find("上下文") == std::string::npos);
+    }
+    printf("TestSelectionCorrection passed\n");
+}
+
 // 历史缓冲：滑窗 5 轮、2 分钟 TTL 惰性过期、ContextText 拼接、Clear。
 void TestRefineHistory() {
     printf(">> TestRefineHistory\n"); fflush(stdout);
@@ -13509,6 +13556,7 @@ int main() {
     TestLocalRefinementCrossTurnDiagnosticsLogs();
     TestPinyinSameOrNear();
     TestApplyPinyinCorrections();
+    TestSelectionCorrection();
     TestRefineHistory();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLlamaCppEngineSessionTurnSmoke();
