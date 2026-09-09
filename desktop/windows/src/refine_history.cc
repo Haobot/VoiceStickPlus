@@ -12,10 +12,12 @@ std::int64_t RefineHistory::DefaultNowMs() {
 RefineHistory::RefineHistory(std::size_t max_turns, std::int64_t ttl_ms, NowMs now)
     : max_turns_(max_turns), ttl_ms_(ttl_ms), now_(std::move(now)) {}
 
-void RefineHistory::Add(std::string raw_asr, std::string refined) {
+void RefineHistory::Add(std::string raw_asr, std::string refined,
+                        std::string instruction) {
     ExpireIfStale();  // 过期后新轮从零起算，陈旧上下文不得混入
     last_add_ms_ = now_();
-    turns_.push_back({std::move(raw_asr), std::move(refined)});
+    turns_.push_back({std::move(raw_asr), std::move(refined),
+                      std::move(instruction)});
     if (turns_.size() > max_turns_) {
         turns_.erase(turns_.begin());
     }

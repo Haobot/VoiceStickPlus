@@ -2,6 +2,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace voicestick {
 
@@ -20,6 +22,32 @@ class LocalLlmEngine {
                     const std::string& user_text,
                     const std::function<bool(const std::string&)>& on_token,
                     std::string& completion) = 0;
+
+  // 续写会话轮（跨轮纠错，方案 §3.2 KV 续写）：history_turns 为跨轮上文
+  // （各轮 {ASR 原文, 当轮模型指令输出} 对，调用方维护滑窗/TTL），user_text
+  // 为本轮新内容（不含历史）。真实现（LlamaCppEngine）把历史轮的
+  // [user+生成] 留在 KV 续写；会话失效（前缀变化/历史轮数变动/预算
+  // 不足/期间发生过 Chat）时按传入历史全量重建重放——KV 只是缓存，
+  // history_turns 是唯一事实源。
+  // 默认实现退化为无会话单轮：user 拼成与 KV 重放同构的续写块
+  // （逐轮「输入：{原文}\n处理：{指令}」+ 当句），FakeEngine 等实现语义
+  // 正确、只损失 KV 复用性能。
+  virtual bool ChatSessionTurn(
+      const std::string& system_prompt,
+      const std::vector<std::pair<std::string, std::string>>& history_turns,
+      const std::string& user_text,
+      const std::function<bool(const std::string&)>& on_token,
+      std::string& completion) {
+      std::string user;
+      for (const auto& turn : history_turns) {
+          user += "输入：" + turn.first + "\n处理：" + turn.second + "\n";
+      }
+      user += user_text;
+      return Chat(system_prompt, user, on_token, completion);
+  }
+
+  // 会话状态重置（历史过期/管线切换时协调器调用；幂等，无会话时 no-op）。
+  virtual void ResetLlmSession() {}
 
   // 模型是否加载就绪（懒加载实现首次 Chat 前可能为 false）
   virtual bool IsReady() const = 0;

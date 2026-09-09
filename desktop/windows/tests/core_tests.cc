@@ -10670,6 +10670,317 @@ void TestLocalRefinementDiagnosticsLogs() {
     printf("TestLocalRefinementDiagnosticsLogs passed\n");
 }
 
+// 跨轮纠正指令管线（M2a）：context.turns 非空走 BuildCorrectionSystemPrompt +
+// 「上文：/输入：/处理：」prompt + ApplyPinyinCorrections 受限执行；为空走
+// 现行 few-shot 管线（回归保护）。场景锚定 M0 spike C 组案例。
+void TestLocalRefinementCrossTurnOrchestration() {
+    printf(">> TestLocalRefinementCrossTurnOrchestration\n"); fflush(stdout);
+    class FakeEngine : public LocalLlmEngine {
+    public:
+        std::string reply;
+        bool fail = false;
+        int chat_calls = 0;
+        std::string last_user;
+        std::string last_system;
+        bool Chat(const std::string& system_prompt, const std::string& user_text,
+                  const std::function<bool(const std::string&)>& on_token,
+                  std::string& completion) override {
+            ++chat_calls;
+            last_system = system_prompt;
+            last_user = user_text;
+            if (fail) return false;
+            if (on_token && !on_token(reply)) return false;
+            completion = reply;
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+    struct Out {
+        bool ok = false;
+        std::string text;
+        int chat_calls = -1;
+        std::string last_user;
+        std::string last_system;
+    };
+    using Ctx = LocalRefinementClient::RefineContext;
+    auto run = [](std::unique_ptr<FakeEngine> fake, const std::string& text,
+                  Ctx context, std::vector<std::string> hotwords = {}) {
+        std::promise<Out> pr;
+        auto fut = pr.get_future();
+        FakeEngine* observer = fake.get();
+        LocalRefinementClient client(std::move(fake));
+        client.Refine(
+            text, [](std::string) {},
+            [&pr, observer](bool ok, std::string s) {
+                Out out;
+                out.ok = ok;
+                out.text = std::move(s);
+                if (observer) {
+                    out.chat_calls = observer->chat_calls;
+                    out.last_user = observer->last_user;
+                    out.last_system = observer->last_system;
+                }
+                pr.set_value(std::move(out));
+            },
+            nullptr, std::move(hotwords), std::move(context));
+        return fut.get();
+    };
+
+    {   // 1) 纠正指令执行（C01 真机案例）：prompt 形态 + 受限替换放行
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "鱼器渍→语气词";
+        Ctx ctx;
+        ctx.turns.push_back({"", "我们刚才测了语气词过滤。"});
+        auto r = run(std::move(fake), "那些鱼器渍已经被过滤掉了。", std::move(ctx));
+        assert(r.ok);
+        assert(r.text == "那些语气词已经被过滤掉了。");
+        assert(r.chat_calls == 1);
+        // system 是纠正指令模式（区别于 few-shot 生成模式）
+        assert(r.last_system.find("参考上文") != std::string::npos);
+        assert(r.last_system.find("错词→纠正词") != std::string::npos);
+        // user 形态：历史续写块（FakeEngine 默认实现拼「输入：…处理：…」，
+        // instruction 空轮次归一化为「无」——与真引擎 KV 重放形态自洽）
+        // + 当句输入 + 处理锚（spike build_prompt 同款）
+        assert(r.last_user.find("输入：\n处理：无\n") != std::string::npos);
+        assert(r.last_user.find("输入：那些鱼器渍已经被过滤掉了。\n处理：") !=
+               std::string::npos);
+        // user 以「处理：」结尾（生成锚，spike 同款）
+        assert(r.last_user.size() >= 9 &&
+               r.last_user.compare(r.last_user.size() - 9, 9, "处理：") == 0);
+    }
+    {   // 2) 模型输出「无」：结果=规则级文本（无提升无伤害）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "无";
+        Ctx ctx;
+        ctx.turns.push_back({"", "帮我把垃圾倒一下。"});
+        auto r = run(std::move(fake), "嗯，帮我把垃圾倒一下。", std::move(ctx));
+        assert(r.ok);
+        assert(r.text == "帮我把垃圾倒一下。");
+    }
+    {   // 3) 越界指令部分拒绝：合法删除执行，越界替换拒绝（C05 形态）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "嗯，\n那个→明天\n办→半";
+        Ctx ctx;
+        ctx.turns.push_back({"", "明天下午三点的会议记得提醒我。"});
+        auto r = run(std::move(fake), "嗯，那个会议改成三点办了。", std::move(ctx));
+        assert(r.ok);
+        assert(r.text == "那个会议改成三点办了。");  // 「嗯，」删除生效
+    }
+    {   // 4) 纠正词不在上文（C04）：指令拒绝，文本回退（规则级）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "口头鱼→口头语";
+        Ctx ctx;
+        ctx.turns.push_back({"", "口水词和语气词都要删掉。"});
+        auto r = run(std::move(fake), "口头鱼也算语气词吗？", std::move(ctx));
+        assert(r.ok);
+        assert(r.text == "口头鱼也算语气词吗？");
+    }
+    {   // 5) 引擎失败：跨轮模式同样回退规则级
+        auto fake = std::make_unique<FakeEngine>();
+        fake->fail = true;
+        Ctx ctx;
+        ctx.turns.push_back({"", "上文。"});
+        auto r = run(std::move(fake), "嗯，帮我打开浏览器。", std::move(ctx));
+        assert(r.ok);
+        assert(r.text == "帮我打开浏览器。");
+    }
+    {   // 6) 热词保护：指令删除热词回退规则级
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "超导";
+        Ctx ctx;
+        ctx.turns.push_back({"", "上文。"});
+        auto r = run(std::move(fake), "超导材料不错。", std::move(ctx),
+                     {"超导"});
+        assert(r.ok);
+        assert(r.text == "超导材料不错。");
+    }
+    {   // 7) context 为空：走现行 few-shot 管线（system 含生成式教学）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "帮我把这个文件重命名一下。";
+        auto r = run(std::move(fake), "嗯，帮我把这个文件重命名一下。", Ctx{});
+        assert(r.ok);
+        assert(r.text == "帮我把这个文件重命名一下。");
+        assert(r.last_system.find("参考上文") == std::string::npos);
+        assert(r.last_user.find("输出：") != std::string::npos);
+        assert(r.last_user.find("处理：") == std::string::npos);
+    }
+    {   // 8) 多轮上文：逐轮续写块 + 守卫域含全部轮 refined
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "语音设别→语音识别";
+        Ctx ctx;
+        ctx.turns.push_back({"", "这个语音识别项目叫 VoiceStick。"});
+        ctx.turns.push_back({"", "语音识别的准确率还可以。"});
+        auto r = run(std::move(fake), "这个语音设别模型是哪个？", std::move(ctx));
+        assert(r.ok);
+        assert(r.text == "这个语音识别模型是哪个？");
+        assert(r.last_user.find("输入：\n处理：无\n输入：\n处理：无\n") !=
+               std::string::npos);
+    }
+    {   // 9) 3 参完成回调：跨轮成功时第三参=当轮模型指令输出（协调器存
+        //     RefineHistory.instruction 的数据源——KV 重放 assistant 侧需
+        //     形态自洽）；非跨轮管线恒给空串
+        struct Triple {
+            bool ok = false;
+            std::string text;
+            std::string instruction;
+        };
+        auto run3 = [](std::unique_ptr<FakeEngine> fake, const std::string& text,
+                       Ctx context) {
+            std::promise<Triple> pr;
+            auto fut = pr.get_future();
+            LocalRefinementClient client(std::move(fake));
+            client.Refine(
+                text, [](std::string) {},
+                [&pr](bool ok, std::string s, std::string instr) {
+                    Triple t;
+                    t.ok = ok;
+                    t.text = std::move(s);
+                    t.instruction = std::move(instr);
+                    pr.set_value(std::move(t));
+                },
+                nullptr, {}, std::move(context));
+            return fut.get();
+        };
+        {
+            auto fake = std::make_unique<FakeEngine>();
+            fake->reply = "鱼器渍→语气词\n";
+            Ctx ctx;
+            ctx.turns.push_back({"", "我们刚才测了语气词过滤。", "无"});
+            const auto r = run3(std::move(fake), "那些鱼器渍已经被过滤掉了。",
+                                std::move(ctx));
+            assert(r.ok);
+            assert(r.text == "那些语气词已经被过滤掉了。");
+            assert(r.instruction == "鱼器渍→语气词");  // stripped（尾部空白已剥）
+        }
+        {
+            auto fake = std::make_unique<FakeEngine>();
+            fake->reply = "帮我把这个文件重命名一下。";
+            const auto r = run3(std::move(fake),
+                                "嗯，帮我把这个文件重命名一下。", Ctx{});
+            assert(r.ok);
+            assert(r.text == "帮我把这个文件重命名一下。");
+            assert(r.instruction.empty());  // 非跨轮管线无指令语义
+        }
+    }
+    {   // 10) 引擎历史 assistant 侧 = instruction（形态自洽重放，防模型
+        //     漂移为文本输出——重放 refined 实测 3 轮起漂移，smoke 2026-09-10）：
+        //     带 instruction 的历史轮拼出「处理：{instruction}」，绝不出现
+        //     refined 文本（守卫域只在 client 内部使用）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "无";
+        Ctx ctx;
+        ctx.turns.push_back({"那些鱼器渍被过滤了。", "那些语气词被过滤了。",
+                             "鱼器渍→语气词"});
+        auto r = run(std::move(fake), "帮我把垃圾倒一下。", std::move(ctx));
+        assert(r.ok);
+        assert(r.last_user.find("输入：那些鱼器渍被过滤了。\n处理：鱼器渍→语气词\n") !=
+               std::string::npos);
+        assert(r.last_user.find("那些语气词被过滤了。") == std::string::npos);
+    }
+    printf("TestLocalRefinementCrossTurnOrchestration passed\n");
+}
+
+// 跨轮管线诊断日志归因（协调器实测排查通道）：correct ok / correct none /
+// correct partial（含拒绝明细）/ hotword blocked。
+void TestLocalRefinementCrossTurnDiagnosticsLogs() {
+    printf(">> TestLocalRefinementCrossTurnDiagnosticsLogs\n"); fflush(stdout);
+    class FakeEngine : public LocalLlmEngine {
+    public:
+        std::string reply;
+        bool Chat(const std::string&, const std::string&,
+                  const std::function<bool(const std::string&)>& on_token,
+                  std::string& completion) override {
+            if (on_token && !on_token(reply)) return false;
+            completion = reply;
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+    using Ctx = LocalRefinementClient::RefineContext;
+    auto run = [](const std::string& reply, const std::string& text, Ctx ctx,
+                  std::vector<std::string> hotwords = {}) {
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = reply;
+        auto logs = std::make_shared<std::vector<std::string>>();
+        LocalRefinementClient client(
+            std::move(fake), {},
+            [logs](std::string_view line) { logs->emplace_back(line); });
+        std::promise<std::string> pr;
+        auto fut = pr.get_future();
+        client.Refine(text, [](std::string) {},
+                      [&pr](bool, std::string s) { pr.set_value(std::move(s)); },
+                      nullptr, std::move(hotwords), std::move(ctx));
+        fut.get();
+        return std::move(*logs);
+    };
+    auto has = [](const std::vector<std::string>& logs, const std::string& needle) {
+        for (const auto& l : logs)
+            if (l.find(needle) != std::string::npos) return true;
+        return false;
+    };
+    printf("   logs scenario 1\n"); fflush(stdout);
+    {   // 纠正成功归因
+        Ctx ctx;
+        ctx.turns.push_back({"", "我们刚才测了语气词过滤。"});
+        const auto logs = run("鱼器渍→语气词", "那些鱼器渍已经被过滤掉了。",
+                              std::move(ctx));
+        assert(has(logs, "in='那些鱼器渍已经被过滤掉了。'"));
+        assert(has(logs, "correct ok: '那些语气词已经被过滤掉了。'"));
+    }
+    printf("   logs scenario 2\n"); fflush(stdout);
+    {   // 无指令归因
+        Ctx ctx;
+        ctx.turns.push_back({"", "帮我把垃圾倒一下。"});
+        const auto logs = run("无", "帮我把垃圾倒一下。", std::move(ctx));
+        assert(has(logs, "correct none"));
+    }
+    printf("   logs scenario 3\n"); fflush(stdout);
+    {   // 部分拒绝归因（含拒绝指令明细）
+        Ctx ctx;
+        ctx.turns.push_back({"", "明天下午三点的会议记得提醒我。"});
+        const auto logs = run("嗯，\n那个→明天\n办→半",
+                              "嗯，那个会议改成三点办了。", std::move(ctx));
+        assert(has(logs, "correct partial"));
+        assert(has(logs, "那个→明天"));
+        assert(has(logs, "办→半"));
+    }
+    printf("   logs scenario 4\n"); fflush(stdout);
+    {   // 热词拦截归因
+        Ctx ctx;
+        ctx.turns.push_back({"", "上文。"});
+        const auto logs = run("超导", "超导材料不错。", std::move(ctx), {"超导"});
+        assert(has(logs, "hotword blocked"));
+    }
+    printf("   logs scenario 5\n"); fflush(stdout);
+    {   // 引擎失败归因（跨轮同现行）
+        struct FailEngine : LocalLlmEngine {
+            bool Chat(const std::string&, const std::string&,
+                      const std::function<bool(const std::string&)>&,
+                      std::string&) override { return false; }
+            bool IsReady() const override { return true; }
+        };
+        auto logs = std::make_shared<std::vector<std::string>>();
+        LocalRefinementClient client(
+            std::make_unique<FailEngine>(), {},
+            [logs](std::string_view line) { logs->emplace_back(line); });
+        std::promise<std::string> pr;
+        auto fut = pr.get_future();
+        Ctx ctx_fail;
+        ctx_fail.turns.push_back({"", "上文。"});
+        client.Refine("嗯，帮我打开浏览器。", [](std::string) {},
+                      [&pr](bool, std::string s) { pr.set_value(std::move(s)); },
+                      nullptr, {}, std::move(ctx_fail));
+        printf("   scenario 5: refine dispatched\n"); fflush(stdout);
+        const std::string got5 = fut.get();
+        printf("   scenario 5: got='%s'\n", got5.c_str()); fflush(stdout);
+        assert(got5 == "帮我打开浏览器。");
+        assert(has(*logs, "llm fail -> rule"));
+        printf("   scenario 5: assertions done\n"); fflush(stdout);
+    }
+    printf("TestLocalRefinementCrossTurnDiagnosticsLogs passed\n");
+}
+
+
 // ---- 跨轮纠错 M1：拼音守卫 + 历史缓冲（Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md §3.5.1/2）----
 
 // 判定矩阵锚定 M0 spike 对拍结果（m0/refine/run_cross_turn_spike.py same_or_near）：
@@ -10841,6 +11152,18 @@ void TestRefineHistory() {
         assert(real.Turns().size() == 1);
         assert(real.ContextText() == "精修");
     }
+    {   // 三参 Add：instruction 透传读回（KV 续写重放 assistant 侧数据源）；
+        // 二参 Add 兼容旧调用（instruction 默认空 = 无指令轮次）
+        RefineHistory h2(5, 120'000, now);
+        h2.Add("raw1", "refined1", "鱼器渍→语气词");
+        h2.Add("raw2", "refined2");
+        const auto turns = h2.Turns();
+        assert(turns.size() == 2);
+        assert(turns[0].instruction == "鱼器渍→语气词");
+        assert(turns[1].instruction.empty());
+        // ContextText 域不含 instruction（守卫查找域只认 refined）
+        assert(h2.ContextText() == "refined1。refined2");
+    }
     printf("TestRefineHistory passed\n");
 }
 
@@ -10912,6 +11235,126 @@ void TestLocalAsrClientStartFailsWhenModelMissing() {
     assert(!client.LastStartError().empty());
     printf("TestLocalAsrClientStartFailsWhenModelMissing passed\n");
 }
+
+// 4B 真模型 KV 续写 smoke（M2b）：验证 LlamaCppEngine::ChatSessionTurn 的
+// 续例链形态（历史轮重放为 [输入：raw\n处理：][instruction]——形态自洽，
+// assistant 侧=当轮模型真实指令输出）下——M0 spike 验证的是「上文：」行
+// 形态，本测试证明 KV 续写形态效果等价：
+// ①跨轮纠错指令仍产生且 ApplyPinyinCorrections 执行后命中期望（C 组案例
+// 复刻）；②负例不误改；③第 6 轮触发滑窗重建后仍正常；④延迟收敛（观察值
+// 打印）。env VOICESTICK_REFINE_MODEL_4B 或默认 m0/ 路径；不在位 SKIP——
+// 不 mock 真实链路。Release only（GGML Debug 慢 20~40 倍）。
+void TestLlamaCppEngineSessionTurnSmoke() {
+    printf(">> TestLlamaCppEngineSessionTurnSmoke\n"); fflush(stdout);
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+#ifndef NDEBUG
+    printf("TestLlamaCppEngineSessionTurnSmoke SKIP（Debug 构建推理慢，"
+           "Release 专用）\n");
+#else
+    namespace fs = std::filesystem;
+    const char* env = std::getenv("VOICESTICK_REFINE_MODEL_4B");
+    fs::path model = (env && *env) ? fs::path(env)
+                                   : fs::path("m0/models/Qwen3-4B-Q4_K_M")
+                                         / "Qwen3-4B-Q4_K_M.gguf";
+    if (!fs::exists(model)) {
+        printf("TestLlamaCppEngineSessionTurnSmoke SKIP（无 4B 模型；设 "
+               "VOICESTICK_REFINE_MODEL_4B 指向 Qwen3-4B GGUF 启用）\n");
+        return;
+    }
+    printf("  model: %s\n", model.string().c_str()); fflush(stdout);
+    auto engine = LlamaCppEngine::Create(model.string(), 6);
+    if (!engine) {
+        printf("   FAIL 引擎加载失败\n"); fflush(stdout);
+        std::abort();
+    }
+    const std::string sys = LocalRefinementClient::BuildCorrectionSystemPrompt();
+
+    // 会话轮（生产形态：轮 k 历史含前 k-1 轮，滑窗由调用方维护——手动推演）。
+    // 案例复刻 M0 C 组（鱼器渍/蓝崖/设别/负例/章维）。
+    struct Turn {
+        const char* raw;        // 本轮 ASR 原文（指令执行前）
+        const char* refined;    // 本轮期望精修结果（进守卫域）
+        const char* note;
+    };
+    const Turn turns[] = {
+        {"那些鱼器渍已经被过滤掉了。", "那些语气词已经被过滤掉了。", "C01 纠错"},
+        {"这个蓝崖遥控器的按键手感不错。", "这个蓝牙遥控器的按键手感不错。", "C02 纠错"},
+        {"这个语音设别模型是哪个？", "这个语音识别模型是哪个？", "C08 e/i 纠错"},
+        {"帮我把垃圾倒一下。", "帮我把垃圾倒一下。", "负例不误改"},
+        {"章维说他会晚点到。", "张伟说他会晚点到。", "C03 人名纠错"},
+        {"嗯，帮我把这个文件重命名一下。", "帮我把这个文件重命名一下。",
+         "第 6 轮：超 5 轮窗口触发滑窗重建"},
+    };
+    // 引擎历史（重放 assistant=当轮模型真实输出——指令形态自洽，防形态
+    // 漂移为文本输出）与守卫域（各轮 refined 拼接）分开维护。
+    // 建立轮（模拟此前口述）assistant=「无」（干净句的真实输出形态）。
+    std::vector<std::pair<std::string, std::string>> engine_history = {
+        {"我们刚才测了语气词过滤。", "无"},
+    };
+    std::vector<std::string> refined_history = {"我们刚才测了语气词过滤。"};
+    const auto add_seed = [&](const char* text) {
+        engine_history.emplace_back(text, "无");
+        refined_history.emplace_back(text);
+    };
+    int corrected = 0;
+    for (std::size_t k = 0; k < std::size(turns); ++k) {
+        const auto& t = turns[k];
+        if (k == 1) add_seed("帮我用蓝牙遥控器测试一下。");   // C02 建立蓝牙
+        if (k == 2) add_seed("这个语音识别项目叫 VoiceStick。");  // C08 建立识别
+        if (k == 4) add_seed("张伟下午的会议来不了。");        // C03 建立张伟
+        const auto t0 = std::chrono::steady_clock::now();
+        std::string completion;
+        const bool ok = engine->ChatSessionTurn(
+            sys, engine_history, "输入：" + std::string(t.raw) + "\n处理：",
+            nullptr, completion);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        // Release（NDEBUG）下 assert 是 no-op——smoke 断言必须显式检查，
+        // 否则假绿（教训同 TestImaAdpcmDecoderGoldenFixtures）。
+        if (!ok || ms > 20000) {
+            printf("   FAIL 轮%zu ok=%d ms=%lld\n", k + 1, (int)ok,
+                   (long long)ms);
+            fflush(stdout);
+            std::abort();
+        }
+        // 守卫域=各轮 refined 拼接（client 语义同款）
+        std::string context_all;
+        for (const auto& r : refined_history) {
+            if (!context_all.empty()) context_all += "。";
+            context_all += r;
+        }
+        const auto stripped =
+            LocalRefinementClient::StripReplyTemplate(completion);
+        const auto outcome =
+            ApplyPinyinCorrections(t.raw, stripped, context_all);
+        // 轮 6（滑窗重建轮）目的=引擎存活且不误改：删「嗯，」或原样直通
+        // 均算存活（删除指令是否产生不在重建路径验证范围）
+        const bool hit = outcome.text == t.refined ||
+                         (k == 5 && outcome.text == t.raw);
+        printf("  轮%zu %s: %lldms completion=%.40s\n  final=%.30s (%s)\n",
+               k + 1, t.note, static_cast<long long>(ms),
+               completion.c_str(), outcome.text.c_str(), hit ? "HIT" : "MISS");
+        fflush(stdout);
+        if (hit) ++corrected;
+        // 引擎历史推进：assistant=模型真实输出（形态自洽链）
+        engine_history.emplace_back(t.raw, stripped);
+        refined_history.push_back(outcome.text);
+    }
+    // 形态等价门槛：6 轮命中 ≥5（四纠错 + 负例 + 重建轮存活），对齐 M0
+    // spike 4B「上文行」形态水平；负例（轮 4）不误改由期望文本断言覆盖
+    printf("  命中 %d/6（含负例；门槛 5：四纠错 + 负例 + 重建轮存活）\n",
+           corrected);
+    if (corrected < 5) {
+        fflush(stdout);
+        std::abort();
+    }
+    printf("TestLlamaCppEngineSessionTurnSmoke passed\n");
+#endif  // NDEBUG
+#else
+    printf("TestLlamaCppEngineSessionTurnSmoke SKIP（VOICESTICK_ENABLE_LOCAL_REFINE=OFF）\n");
+#endif
+}
+
 
 void TestLocalAsrClientSenseVoiceSmoke() {
     const auto model_dir = DetectSenseVoiceDir();
@@ -12842,10 +13285,13 @@ int main() {
     TestLocalRefinementClientOrchestration();
     TestLocalRefinementCustomPrompt();
     TestLocalRefinementDiagnosticsLogs();
+    TestLocalRefinementCrossTurnOrchestration();
+    TestLocalRefinementCrossTurnDiagnosticsLogs();
     TestPinyinSameOrNear();
     TestApplyPinyinCorrections();
     TestRefineHistory();
     TestLocalAsrClientStartFailsWhenModelMissing();
+    TestLlamaCppEngineSessionTurnSmoke();
     TestLocalAsrClientSenseVoiceSmoke();
     TestLocalAsrClientEmitsPartialWhileStreaming();
     TestLocalAsrClientPartialThrottled();

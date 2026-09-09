@@ -8,8 +8,12 @@
 namespace voicestick {
 
 struct RefineTurn {
-    std::string raw_asr;  // 当轮 ASR 原文（诊断用）
-    std::string refined;  // 当轮精修结果（跨轮上下文以精修版为准，方案 §3.4）
+    std::string raw_asr;    // 当轮 ASR 原文（诊断用）
+    std::string refined;    // 当轮精修结果（跨轮上下文以精修版为准，方案 §3.4）
+    // 当轮模型指令输出（纠正指令管线；空 = 无指令/单句管线轮次）。
+    // KV 续写重放的 assistant 侧用它（形态自洽，防模型漂移为文本输出——
+    // 重放 refined 文本实测 3 轮起漂移，smoke 2026-09-10）。
+    std::string instruction;
 };
 
 // 跨轮精修历史环形缓冲：全局最近 5 轮，2 分钟无新轮即整体过期。
@@ -23,7 +27,8 @@ public:
                            std::int64_t ttl_ms = 120'000,
                            NowMs now = DefaultNowMs);
 
-    void Add(std::string raw_asr, std::string refined);
+    void Add(std::string raw_asr, std::string refined,
+             std::string instruction = {});
 
     // 过期则惰性清空并返回空；否则返回按时间序的最近 <=max_turns 轮。
     std::vector<RefineTurn> Turns() const;

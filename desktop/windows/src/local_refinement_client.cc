@@ -1,5 +1,6 @@
 #include "local_refinement_client.h"
 
+#include "pinyin_guard.h"
 #include "text_refiner.h"
 
 #include <algorithm>
@@ -69,6 +70,40 @@ std::string LocalRefinementClient::BuildSystemPrompt() {
         "输出：帮我在 GitHub 上搜一下 llama.cpp 这个项目。";
 }
 
+std::string LocalRefinementClient::BuildCorrectionSystemPrompt() {
+    // M0 spike C 组定稿（4B GO 口径，m0/refine/run_cross_turn_spike.py
+    // SYSTEM_PROMPT_CORRECT 逐字移植）：受限指令形态——模型只出建议，
+    // 执行全在 ApplyPinyinCorrections 代码层守卫下。教学示例勿与线上
+    // 高频真实案例雷同（spike C05 教学复读污染教训）。
+    return
+        "参考上文，找出语音识别文本中与上文词汇写法不一致的同音错字，"
+        "以及无意义的填充词。只输出处理指令，每行一个：\n"
+        "错词→纠正词（纠正词必须在上文中出现过）；或直接原样摘录要删除的"
+        "片段（含紧邻的逗号）。没有需要处理的内容时只输出：无。\n"
+        "\n"
+        "上文：我们刚才测了语气词过滤。\n"
+        "输入：嗯，那些鱼器渍都被过滤掉了。\n"
+        "处理：\n"
+        "嗯，\n"
+        "鱼器渍→语气词\n"
+        "\n"
+        "上文：帮我用蓝牙遥控器测试一下。\n"
+        "输入：这个蓝崖遥控器手感不错。\n"
+        "处理：\n"
+        "蓝崖→蓝牙\n"
+        "\n"
+        "上文：明天三点开会别忘了。\n"
+        "输入：那个会议改成三点办了。\n"
+        "处理：\n"
+        "那个\n"
+        "办→半\n"
+        "\n"
+        "上文：帮我把垃圾倒一下。\n"
+        "输入：帮我把垃圾倒一下。\n"
+        "处理：\n"
+        "无";
+}
+
 std::string LocalRefinementClient::StripReplyTemplate(std::string_view reply) {
     // std::regex 无 dotall 标志（ECMAScript 方言限制），用 [\s\S] 字符类
     // 等价表达“任意字符含换行”，让 think 块可跨行整体剥除。
@@ -123,58 +158,135 @@ void LocalRefinementClient::Refine(std::string text,
                                    std::function<void(std::string)> on_token,
                                    std::function<void(bool, std::string)> on_complete,
                                    std::shared_ptr<std::atomic_bool> cancel,
-                                   std::vector<std::string> hotwords) {
+                                   std::vector<std::string> hotwords,
+                                   RefineContext context) {
+    // 兼容包装：丢弃当轮指令（单句管线/存量调用方不需要指令语义）
+    Refine(std::move(text), std::move(on_token),
+           [on_complete = std::move(on_complete)](bool ok, std::string s,
+                                                  std::string) mutable {
+               on_complete(ok, std::move(s));
+           },
+           std::move(cancel), std::move(hotwords), std::move(context));
+}
+
+void LocalRefinementClient::Refine(std::string text,
+                                   std::function<void(std::string)> on_token,
+                                   RefineCompleteWithInstruction on_complete,
+                                   std::shared_ptr<std::atomic_bool> cancel,
+                                   std::vector<std::string> hotwords,
+                                   RefineContext context) {
     // 每句一个短命线程（推理数百毫秒级，量级=会话数，进程内可控）；
     // 析构 join 所有线程保证回调不悬垂。
     std::lock_guard lock(threads_mutex_);
     threads_.emplace_back(
         [this, text = std::move(text), on_token = std::move(on_token),
          on_complete = std::move(on_complete), cancel = std::move(cancel),
-         hotwords = std::move(hotwords)]() mutable {
-            RunRefine(text, on_token, on_complete, cancel, hotwords);
+         hotwords = std::move(hotwords), context = std::move(context)]() mutable {
+            RunRefine(text, on_token, on_complete, cancel, hotwords, context);
         });
 }
 
 void LocalRefinementClient::RunRefine(
     const std::string& text,
     const std::function<void(std::string)>& on_token,
-    const std::function<void(bool, std::string)>& on_complete,
+    const RefineCompleteWithInstruction& on_complete,
     const std::shared_ptr<std::atomic_bool>& cancel,
-    const std::vector<std::string>& hotwords) {
+    const std::vector<std::string>& hotwords,
+    const RefineContext& context) {
     // L1 规则层（微秒级，总是执行）
     const std::string rule_refined = RuleRefineText(text);
     if (log_) log_("in='" + rule_refined + "'");
 
     const bool cancelled = cancel && cancel->load();
     if (cancelled || !engine_ || !engine_->IsReady()) {
-        on_complete(!cancelled, rule_refined);
+        on_complete(!cancelled, rule_refined, "");
         return;
     }
 
+    // 跨轮纠正指令管线（context 非空，M0 spike C 组形态）：本轮 user 只含
+    // 当句+处理锚，历史经 ChatSessionTurn 承载（真引擎 KV 续写，FakeEngine
+    // 默认实现拼同构续写块——两种引擎形态行为等价，性能不同）；为空走
+    // 现行 few-shot 生成管线。
+    const bool cross = !context.turns.empty();
+    std::vector<std::pair<std::string, std::string>> history;
+    std::string context_text;  // 守卫查找域：各轮 refined 拼接
+    for (const auto& turn : context.turns) {
+        // 引擎历史 assistant 侧 = 当轮模型指令输出（形态自洽重放：重放
+        // refined 文本实测 3 轮起模型漂移为文本输出，smoke 2026-09-10）。
+        // 空指令轮次归一化为「无」（干净句的真实输出形态）。
+        history.emplace_back(
+            turn.raw_asr, turn.instruction.empty() ? "无" : turn.instruction);
+        if (!context_text.empty()) context_text += "。";
+        context_text += turn.refined;
+    }
+    std::string user_text;
+    if (cross) {
+        user_text = "输入：" + rule_refined + "\n处理：";
+    } else {
+        user_text = "输入：" + rule_refined + "\n输出：";
+    }
+    const std::string& sys_prompt = cross ? BuildCorrectionSystemPrompt()
+                                          : system_prompt_;
+
     std::string raw;
-    const bool ok = engine_->Chat(
-        system_prompt_,
-        "输入：" + rule_refined + "\n输出：",
-        [&on_token, &cancel](std::string piece) {
-            if (cancel && cancel->load()) return false;
-            if (on_token) on_token(std::move(piece));
-            return true;
-        },
-        raw);
+    const auto chat_lambda = [&on_token, &cancel](std::string piece) {
+        if (cancel && cancel->load()) return false;
+        if (on_token) on_token(std::move(piece));
+        return true;
+    };
+    const bool ok = cross
+        ? engine_->ChatSessionTurn(sys_prompt, history, user_text,
+                                   chat_lambda, raw)
+        : engine_->Chat(sys_prompt, user_text, chat_lambda, raw);
     if (cancel && cancel->load()) {
-        on_complete(false, rule_refined);
+        on_complete(false, rule_refined, "");
         return;
     }
     if (!ok) {
         if (log_) log_("llm fail -> rule");
-        on_complete(true, rule_refined);  // 引擎失败：规则级兜底
+        on_complete(true, rule_refined, "");  // 引擎失败：规则级兜底
         return;
     }
 
     const std::string stripped = StripReplyTemplate(raw);
+    if (cross) {
+        const auto outcome =
+            ApplyPinyinCorrections(rule_refined, stripped, context_text);
+        // 热词保护：指令误删原文热词（中文热词可过删除守卫的字母数字闸）→ 回退
+        for (const auto& hotword : hotwords) {
+            if (rule_refined.find(hotword) != std::string::npos &&
+                outcome.text.find(hotword) == std::string::npos) {
+                if (log_) log_("hotword blocked '" + stripped + "' -> rule");
+                on_complete(true, rule_refined, "");
+                return;
+            }
+        }
+        if (log_) {
+            if (outcome.rejected.empty()) {
+                log_(outcome.text == rule_refined
+                         ? "correct none"
+                         : "correct ok: '" + outcome.text + "'");
+            } else {
+                std::string why;
+                for (const auto& rj : outcome.rejected) {
+                    if (!why.empty()) why += "; ";
+                    why += rj;
+                }
+                log_("correct partial (rejected: " + why + "): '" +
+                     outcome.text + "'");
+            }
+        }
+        // 指令语义归一：模型直答「无」与空输出在历史重放中同形（协调器
+        // 原样存入 RefineTurn.instruction，client 读出时统一归一化）
+        const std::string instruction =
+            stripped.empty() ? "无" : stripped;
+        on_complete(true, outcome.text, instruction);
+        return;
+    }
+
     if (!stripped.empty() && RefineResultSafe(rule_refined, stripped, hotwords)) {
         if (log_) log_("llm ok: '" + stripped + "'");
-        on_complete(true, stripped);
+        on_complete(true, stripped, "");
         return;
     }
     // 空输出与守卫拦截都回退规则级，但归因不同（前者引擎/提示词问题，
@@ -183,7 +295,7 @@ void LocalRefinementClient::RunRefine(
         log_(stripped.empty() ? "llm empty -> rule"
                               : "guard blocked '" + stripped + "' -> rule");
     }
-    on_complete(true, rule_refined);
+    on_complete(true, rule_refined, "");
 }
 
 } // namespace voicestick

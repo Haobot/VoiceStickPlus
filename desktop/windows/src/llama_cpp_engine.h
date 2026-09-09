@@ -29,6 +29,20 @@ class LlamaCppEngine : public LocalLlmEngine {
             std::string& completion) override;
   bool IsReady() const override;
 
+  // KV 续写会话轮（方案 §3.2）：历史轮按 {ASR 原文, 精修结果} 对重放进
+  // KV（[输入：raw\n处理：][refined] 续例链），本轮 user_text 只含当句。
+  // 会话失效（前缀变化/历史轮数变动/预算不足/期间发生过 Chat/上轮中止）
+  // 时按传入历史全量重建——KV 是缓存，history_turns 是唯一事实源，
+  // 历史过期或滑窗由调用方（RefineHistory）决定，引擎自愈跟随。
+  // Chat 与本方法共享 KV：Chat 会使会话作废。
+  bool ChatSessionTurn(
+      const std::string& system_prompt,
+      const std::vector<std::pair<std::string, std::string>>& history_turns,
+      const std::string& user_text,
+      const std::function<bool(const std::string&)>& on_token,
+      std::string& completion) override;
+  void ResetLlmSession() override;
+
  private:
   LlamaCppEngine() = default;
   struct Impl;

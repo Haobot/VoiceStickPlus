@@ -84,6 +84,12 @@ struct LlamaCppEngine::Impl {
     std::string cached_prefix;
     std::size_t prefix_len = 0;  // 前缀 token 数（KV 复用切分点）
 
+    // 会话续写状态（仅 ChatSessionTurn 维护；任何 Chat 调用使其作废）。
+    // KV 只是缓存：失效即按调用方传入的 history 全量重建重放。
+    bool session_active = false;
+    std::size_t session_history_count = 0;  // 已编入 KV 的历史轮数
+    llama_pos session_end_pos = 0;          // 会话 KV 末位置（本轮 decode 起点）
+
     ~Impl() {
         if (ctx) llama_free(ctx);
         if (model) llama_model_free(model);
@@ -126,6 +132,8 @@ bool LlamaCppEngine::Chat(const std::string& system_prompt,
                           std::string& completion) {
     if (!impl_ || !impl_->ctx) return false;
     completion.clear();
+    // Chat 是无会话语义：任何续写会话自此作废（重建路径会清全 KV）
+    impl_->session_active = false;
 
     const std::string prefix =
         std::string(kChatmlSystemHeader) + system_prompt + kChatmlUserHeader;
@@ -198,6 +206,130 @@ bool LlamaCppEngine::Chat(const std::string& system_prompt,
     llama_sampler_free(smpl);
     if (cancelled) return false;
     if (on_token && !pending.empty()) on_token(pending);
+    completion = std::move(out);
+    return true;
+}
+
+void LlamaCppEngine::ResetLlmSession() {
+    if (!impl_) return;
+    impl_->session_active = false;
+    impl_->session_history_count = 0;
+    // KV 不动：下一次 ChatSessionTurn 检测 session_active=false 自行重建；
+    // 单轮 Chat 仍可复用 cached_prefix。
+}
+
+bool LlamaCppEngine::ChatSessionTurn(
+    const std::string& system_prompt,
+    const std::vector<std::pair<std::string, std::string>>& history_turns,
+    const std::string& user_text,
+    const std::function<bool(const std::string&)>& on_token,
+    std::string& completion) {
+    if (!impl_ || !impl_->ctx) return false;
+    completion.clear();
+
+    const std::string prefix =
+        std::string(kChatmlSystemHeader) + system_prompt + kChatmlUserHeader;
+    const auto memory = llama_get_memory(impl_->ctx);
+
+    const auto suffix_tokens =
+        Tokenize(impl_->vocab, user_text + kChatmlAssistantHeader);
+    if (suffix_tokens.empty()) return false;
+
+    // 会话可用性：前缀一致 + 历史轮数一致（调用方滑窗/过期/TTL 清空、
+    // 期间 Chat 干扰、上轮中止，都经此判定自愈重建）
+    const bool usable = impl_->session_active &&
+                        impl_->cached_prefix == prefix &&
+                        impl_->session_history_count == history_turns.size();
+    if (!usable) {
+        llama_memory_seq_rm(memory, 0, 0, -1);
+        const auto prefix_tokens = Tokenize(impl_->vocab, prefix);
+        if (prefix_tokens.empty()) return false;
+        if (!DecodeBatch(impl_->ctx, prefix_tokens, 0)) return false;
+        impl_->cached_prefix = prefix;
+        impl_->prefix_len = prefix_tokens.size();
+        llama_pos pos = static_cast<llama_pos>(impl_->prefix_len);
+        // 历史轮重放为「输入：raw\n处理：][refined」续例链：与正常轮
+        // token 形态同构（assistant 侧用精修结果文本——指令执行后的正确
+        // 形态，语义比当时的指令行更规范）；轮间 <|im_end|> 由下一轮
+        // user_header 开头承担，与生成路径一致。
+        for (const auto& turn : history_turns) {
+            const auto replay = Tokenize(
+                impl_->vocab,
+                std::string(kChatmlUserHeader) + "输入：" + turn.first +
+                    "\n处理：" + kChatmlAssistantHeader + turn.second);
+            if (replay.empty() || !DecodeBatch(impl_->ctx, replay, pos)) {
+                impl_->session_active = false;
+                return false;
+            }
+            pos += static_cast<llama_pos>(replay.size());
+        }
+        impl_->session_history_count = history_turns.size();
+        impl_->session_end_pos = pos;
+    }
+
+    if (static_cast<std::size_t>(impl_->session_end_pos) + suffix_tokens.size() +
+            static_cast<std::size_t>(impl_->max_gen_tokens) >
+        kCtxTokens) {
+        // 重放后仍超预算（单轮异常长输入）：作废会话，交调用方回退
+        impl_->session_active = false;
+        return false;
+    }
+    if (!DecodeBatch(impl_->ctx, suffix_tokens, impl_->session_end_pos)) {
+        impl_->session_active = false;
+        return false;
+    }
+
+    auto sparams = llama_sampler_chain_default_params();
+    llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
+    std::string out;
+    std::string pending;  // 流式 UTF-8 边界缓冲
+    bool cancelled = false;
+    const llama_pos gen_pos_base =
+        impl_->session_end_pos + static_cast<llama_pos>(suffix_tokens.size());
+    llama_token token = llama_sampler_sample(smpl, impl_->ctx, -1);
+    int generated = 0;
+    for (int i = 0;
+         i < impl_->max_gen_tokens && !llama_vocab_is_eog(impl_->vocab, token);
+         ++i) {
+        char buf[256];
+        const int n = llama_token_to_piece(impl_->vocab, token, buf,
+                                           static_cast<int32_t>(sizeof(buf)), 0,
+                                           /*special=*/false);
+        if (n > 0) {
+            out.append(buf, static_cast<std::size_t>(n));
+            if (on_token) {
+                pending.append(buf, static_cast<std::size_t>(n));
+                if (EndsOnUtf8Boundary(pending)) {
+                    if (!on_token(pending)) {
+                        cancelled = true;
+                        break;
+                    }
+                    pending.clear();
+                }
+            }
+        }
+        if (!DecodeBatch(impl_->ctx, {token}, gen_pos_base + i)) {
+            llama_sampler_free(smpl);
+            impl_->session_active = false;
+            return false;
+        }
+        ++generated;
+        token = llama_sampler_sample(smpl, impl_->ctx, -1);
+    }
+    llama_sampler_free(smpl);
+    if (cancelled) {
+        // 中止轮次的 token 已进 KV，位置链不再可信：作废会话由下轮重建
+        impl_->session_active = false;
+        return false;
+    }
+    if (on_token && !pending.empty()) on_token(pending);
+
+    // 会话推进：末位置 = 本轮 user 段 + 生成段；EOG 未 decode（下轮
+    // user_header 的 <|im_end|> 补位，与重放路径一致）
+    impl_->session_end_pos = gen_pos_base + static_cast<llama_pos>(generated);
+    impl_->session_active = true;
     completion = std::move(out);
     return true;
 }
