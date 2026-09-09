@@ -1,0 +1,48 @@
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace voicestick {
+
+struct RefineTurn {
+    std::string raw_asr;  // 当轮 ASR 原文（诊断用）
+    std::string refined;  // 当轮精修结果（跨轮上下文以精修版为准，方案 §3.4）
+};
+
+// 跨轮精修历史环形缓冲：全局最近 5 轮，2 分钟无新轮即整体过期。
+// 会话取消/失败不调用 Add（由协调器保证，缓冲本身不感知会话状态）。
+// 时钟可注入（测试用）；过期在读取时惰性判定并清空。
+class RefineHistory {
+public:
+    using NowMs = std::function<std::int64_t()>;
+
+    explicit RefineHistory(std::size_t max_turns = 5,
+                           std::int64_t ttl_ms = 120'000,
+                           NowMs now = DefaultNowMs);
+
+    void Add(std::string raw_asr, std::string refined);
+
+    // 过期则惰性清空并返回空；否则返回按时间序的最近 <=max_turns 轮。
+    std::vector<RefineTurn> Turns() const;
+
+    // 跨轮上文文本：各轮 refined 以「。」拼接（spike/生产 prompt 同款口径）。
+    std::string ContextText() const;
+
+    void Clear();
+
+    static std::int64_t DefaultNowMs();
+
+private:
+    void ExpireIfStale() const;
+
+    std::size_t max_turns_;
+    std::int64_t ttl_ms_;
+    NowMs now_;
+    mutable std::vector<RefineTurn> turns_;
+    mutable std::int64_t last_add_ms_ = 0;
+};
+
+} // namespace voicestick

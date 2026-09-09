@@ -151,6 +151,9 @@ add_library(voicestick_core STATIC
     src/hotword_candidate_miner.cc
     src/hotword_selector.cc
     src/localization.cc
+    src/pinyin_guard.cc
+    src/pinyin_data.cc
+    src/refine_history.cc
     src/push_to_talk_key.cc
     src/provider_combo.cc
     src/clipboard_vault.cc
