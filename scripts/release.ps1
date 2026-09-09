@@ -40,6 +40,8 @@ $Tag = "v$Version"
 $RepoOwner = $Repo.Split('/')[0].ToLower()
 $RepoName = $Repo.Split('/')[1]
 $PagesBase = "https://$RepoOwner.github.io/$RepoName"
+# 国内 COS 分发面域名（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）
+$DistDomain = "https://dl.davenger.cloud"
 $MsiDir = Join-Path $ProjectDir 'desktop\windows\build-msi-x64'
 $MsiNames = @("VoiceStick_${Version}_zh-CN.msi", "VoiceStick_${Version}_en-US.msi")
 $report = New-Object System.Collections.Generic.List[string]
@@ -208,10 +210,16 @@ $checks = [ordered]@{
     "downloads.json（下载页数据）" = @{ Url = "$PagesBase/downloads.json"; Expect = $null; Retry = 6 }
     "固件 OTA bin" = @{ Url = "https://github.com/$Repo/releases/download/$Tag/voicestick-firmware-sticks3-ota-$Version.bin"; Expect = $null; Retry = 1 }
     "固件 merged bin" = @{ Url = "https://github.com/$Repo/releases/download/$Tag/voicestick-firmware-sticks3-merged-$Version.bin"; Expect = $null; Retry = 1 }
+    "COS appcast.xml（国内更新源）" = @{ Url = "$DistDomain/appcast.xml"; Expect = $null; Retry = 3 }
+    "COS manifest.json（国内固件 OTA 源）" = @{ Url = "$DistDomain/firmware/latest/manifest.json"; Expect = 'min_version'; Retry = 3 }
+    "COS downloads.json（国内下载页数据）" = @{ Url = "$DistDomain/downloads.json"; Expect = $null; Retry = 6 }
+    "COS 固件 OTA bin" = @{ Url = "$DistDomain/firmware/$Tag/voicestick-firmware-sticks3-ota-$Version.bin"; Expect = $null; Retry = 3 }
+    "COS 固件 merged bin" = @{ Url = "$DistDomain/firmware/$Tag/voicestick-firmware-sticks3-merged-$Version.bin"; Expect = $null; Retry = 3 }
 }
 if (-not $SkipMsi) {
     $checks["Windows MSI zh-CN"] = @{ Url = "https://github.com/$Repo/releases/download/$Tag/VoiceStick_${Version}_zh-CN.msi"; Expect = $null; Retry = 1 }
     $checks["Windows MSI en-US"] = @{ Url = "https://github.com/$Repo/releases/download/$Tag/VoiceStick_${Version}_en-US.msi"; Expect = $null; Retry = 1 }
+    $checks["COS Windows MSI en-US（appcast enclosure）"] = @{ Url = "$DistDomain/windows/$Tag/VoiceStick_${Version}_en-US.msi"; Expect = $null; Retry = 6 }
 }
 if ($DryRun) {
     $checks.GetEnumerator() | ForEach-Object { Write-Host "    [DRYRUN] 将检查：$($_.Value.Url)" }

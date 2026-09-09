@@ -7,6 +7,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# 兼容 importlib 按路径加载与直接运行两种方式，确保同目录模块可导入
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mirror_urls import mirror_asset_url
+
 
 def existing_item(path: Path, sparkle_os: str) -> str:
     if not path.exists():
@@ -31,8 +35,18 @@ def main() -> None:
     parser.add_argument("--output", default="website/public/appcast.xml")
     parser.add_argument("--appcast-url", required=True,
                         help="Public URL where this appcast will be hosted.")
+    parser.add_argument("--mirror-base", default=None,
+                        help="COS 国内分发面域名（如 https://dl.davenger.cloud）；"
+                             "提供时 enclosure URL 改写为镜像路径，须先完成 Release 资产镜像上传")
     parser.add_argument("--release-notes", default="VoiceStick release.")
     args = parser.parse_args()
+
+    # 长度与签名仍对资产内容本身，URL 指向镜像不影响校验链
+    if args.mirror_base:
+        if args.msi_url:
+            args.msi_url = mirror_asset_url(args.msi_url, args.mirror_base)
+        if args.zip_url:
+            args.zip_url = mirror_asset_url(args.zip_url, args.mirror_base)
 
     has_macos = args.zip_url or args.signature or args.length is not None
     has_windows = args.msi_url or args.msi_length is not None

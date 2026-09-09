@@ -39,6 +39,8 @@
 #include "llama_cpp_engine.h"
 #endif
 #include "text_refiner.h"
+#include "pinyin_guard.h"
+#include "refine_history.h"
 #include "mic_capture.h"
 #include "wasapi_mic_capture.h"
 #include "push_to_talk_key.h"
@@ -1924,6 +1926,60 @@ void TestFirmwareManifestMinimumVersion() {
            FirmwareUpdateUrgency::kRequired);
     assert(ClassifyFirmwareUpdateUrgency("0.3.0", *legacy, "0.3.0") ==
            FirmwareUpdateUrgency::kOptional);
+}
+
+void TestFirmwareManifestFallbackUrls() {
+    // Arrange：COS 分发面新 schema，主 URL 指国内源，*_fallback 指 GitHub Release
+    const std::string json_with_fallback =
+        "{\"hardware\":\"sticks3\",\"version\":\"2.3.10\","
+        "\"ota_url\":\"https://dl.davenger.cloud/firmware/v2.3.10/ota.bin\","
+        "\"ota_url_fallback\":\"https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.10/ota.bin\","
+        "\"ota_sha256\":\"abc\",\"ota_size\":123,"
+        "\"merged_url\":\"https://dl.davenger.cloud/firmware/v2.3.10/merged.bin\","
+        "\"merged_url_fallback\":\"https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.10/merged.bin\","
+        "\"merged_sha256\":\"def\",\"merged_size\":456}";
+    auto manifest = ParseFirmwareManifest(json_with_fallback);
+    assert(manifest.has_value());
+    assert(manifest->ota_url_fallback ==
+           "https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.10/ota.bin");
+    assert(manifest->merged_url_fallback ==
+           "https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.10/merged.bin");
+
+    // OTA 下载序列：主源在前，回退源在后
+    auto urls = OtaDownloadUrls(*manifest);
+    assert(urls.size() == 2);
+    assert(urls[0] == manifest->ota_url);
+    assert(urls[1] == manifest->ota_url_fallback);
+
+    // 旧 Release manifest 无 fallback 字段 → 容错为空，下载序列仅主源
+    const std::string json_without_fallback =
+        "{\"hardware\":\"sticks3\",\"version\":\"2.3.9\","
+        "\"ota_url\":\"https://dl.davenger.cloud/firmware/v2.3.9/ota.bin\","
+        "\"ota_sha256\":\"abc\",\"ota_size\":123}";
+    auto legacy = ParseFirmwareManifest(json_without_fallback);
+    assert(legacy.has_value());
+    assert(legacy->ota_url_fallback.empty());
+    assert(legacy->merged_url_fallback.empty());
+    auto legacy_urls = OtaDownloadUrls(*legacy);
+    assert(legacy_urls.size() == 1);
+    assert(legacy_urls[0] == legacy->ota_url);
+
+    // fallback 字段类型错误（数字而非字符串）→ 按缺失处理
+    const std::string json_bad_fallback =
+        "{\"hardware\":\"sticks3\",\"version\":\"2.3.10\","
+        "\"ota_url\":\"https://dl.davenger.cloud/ota.bin\","
+        "\"ota_url_fallback\":42,"
+        "\"ota_sha256\":\"abc\",\"ota_size\":123}";
+    auto bad = ParseFirmwareManifest(json_bad_fallback);
+    assert(bad.has_value());
+    assert(bad->ota_url_fallback.empty());
+
+    // 默认客户端源：主源为国内 COS 域名，回退为 GitHub Release
+    const auto primary = FirmwareManifestClient::DefaultManifestUrl();
+    assert(primary.find("https://dl.davenger.cloud/firmware/latest/manifest.json") == 0);
+    const auto fallback = FirmwareManifestClient::FallbackManifestUrl();
+    assert(fallback.find("https://github.com/") == 0);
+    assert(fallback.find("/releases/latest/download/manifest.json") != std::string::npos);
 }
 
 void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
@@ -10614,6 +10670,181 @@ void TestLocalRefinementDiagnosticsLogs() {
     printf("TestLocalRefinementDiagnosticsLogs passed\n");
 }
 
+// ---- 跨轮纠错 M1：拼音守卫 + 历史缓冲（Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md §3.5.1/2）----
+
+// 判定矩阵锚定 M0 spike 对拍结果（m0/refine/run_cross_turn_spike.py same_or_near）：
+// 韵母集合有交集即同音（声母不参与——渍zì/词cí、马mǎ/打dǎ 须放行）；
+// 韵母命中模糊对（e/i 卷舌弱化）且声母交集非空 → 近音。
+void TestPinyinSameOrNear() {
+    printf(">> TestPinyinSameOrNear\n"); fflush(stdout);
+    struct Case { std::uint32_t a, b; bool want; const char* note; };
+    const Case cases[] = {
+        {U'鱼', U'语', true,  "鱼/语 韵母v交集（真机案例）"},
+        {U'器', U'气', true,  "器/气 同音qi"},
+        {U'渍', U'词', true,  "渍/词 声母z/c不同但韵母i交集（M0 GO口径）"},
+        {U'马', U'打', true,  "马/打 韵母a交集（宽松口径锚定）"},
+        {U'设', U'识', true,  "设/识 e/i卷舌弱化+sh声母同"},
+        {U'半', U'办', true,  "半/办 同音ban"},
+        {U'女', U'旅', true,  "女/旅 韵母v交集"},
+        {U'鱼', U'鱼', true,  "同字"},
+        {U'A',  U'a',  true,  "ASCII忽略大小写"},
+        {U'5',  U'5',  true,  "非汉字同字符"},
+        {U'那', U'明', false, "那na/明ming 韵母无交集"},
+        {U'塘', U'气', false, "塘tang/气qi 无交集"},
+        {U'a',  U'鱼', false, "非汉字vs汉字"},
+        {U'鱼', U'x',  false, "汉字vs非汉字"},
+        {U'鱼', U'b',  false, "汉字vs字母不等"},
+        {0x20000, 0x20001, false, "表外扩展B区字查不到按不同音"},
+    };
+    for (const auto& c : cases) {
+        const bool got = PinyinSameOrNear(c.a, c.b);
+        if (got != c.want) {
+            printf("   PinyinSameOrNear 失败 [%s] U+%04X/U+%04X got=%d want=%d\n",
+                   c.note, c.a, c.b, got, c.want);
+            fflush(stdout);
+            assert(false);
+        }
+    }
+    printf("TestPinyinSameOrNear passed\n");
+}
+
+// golden = M0 spike C 组全 8 案例（report_cross_turn_4b.md）：
+// 放行 4（C01/C02/C03/C08）、守卫拒绝回退/部分执行 3（C04/C05/C06）、直通 1（C07）。
+void TestApplyPinyinCorrections() {
+    printf(">> TestApplyPinyinCorrections\n"); fflush(stdout);
+    {   // C01 真机案例：替换放行
+        const auto r = ApplyPinyinCorrections(
+            "那些鱼器渍已经被过滤掉了。", "鱼器渍→语气词",
+            "我们刚才测了语气词过滤。");
+        assert(r.text == "那些语气词已经被过滤掉了。");
+        assert(r.rejected.empty());
+    }
+    {   // C02：替换放行
+        const auto r = ApplyPinyinCorrections(
+            "这个蓝崖遥控器的按键手感不错。", "蓝崖→蓝牙",
+            "帮我用蓝牙遥控器测试一下。");
+        assert(r.text == "这个蓝牙遥控器的按键手感不错。");
+        assert(r.rejected.empty());
+    }
+    {   // C03：人名替换放行
+        const auto r = ApplyPinyinCorrections(
+            "章维说他会晚点到。", "章维→张伟",
+            "张伟下午的会议来不了。");
+        assert(r.text == "张伟说他会晚点到。");
+        assert(r.rejected.empty());
+    }
+    {   // C08：e/i 卷舌弱化纠正放行
+        const auto r = ApplyPinyinCorrections(
+            "这个语音设别模型是哪个？", "语音设别→语音识别",
+            "这个语音识别项目叫 VoiceStick。");
+        assert(r.text == "这个语音识别模型是哪个？");
+        assert(r.rejected.empty());
+    }
+    {   // C04：纠正词未在上文出现过 → 拒绝、原文直通
+        const auto r = ApplyPinyinCorrections(
+            "口头鱼也算语气词吗？", "口头鱼→口头语",
+            "口水词和语气词都要删掉。");
+        assert(r.text == "口头鱼也算语气词吗？");
+        assert(r.rejected.size() == 1 && r.rejected[0] == "口头鱼→口头语");
+    }
+    {   // C05：混合指令——合法删除执行，两条越界替换拒绝（那/明韵母无交集、半不在上文）
+        const auto r = ApplyPinyinCorrections(
+            "嗯，那个会议改成三点办了。", "嗯，\n那个→明天\n办→半",
+            "明天下午三点的会议记得提醒我。");
+        assert(r.text == "那个会议改成三点办了。");  // 「嗯，」删除生效
+        assert(r.rejected.size() == 2);
+        assert(r.rejected[0] == "那个→明天");
+        assert(r.rejected[1] == "办→半");
+    }
+    {   // C06：长度不等（2≠3）→ 拒绝
+        const auto r = ApplyPinyinCorrections(
+            "我在鱼塘里养了很多鱼。", "鱼塘→语气词",
+            "那些语气词都被过滤掉了。");
+        assert(r.text == "我在鱼塘里养了很多鱼。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // C07：无指令直通
+        const auto r = ApplyPinyinCorrections("帮我把垃圾倒一下。", "无", "上文无关。");
+        assert(r.text == "帮我把垃圾倒一下。");
+        assert(r.rejected.empty());
+    }
+    {   // 边界：src 不在原文 → 拒绝
+        const auto r = ApplyPinyinCorrections("今天天气不错。", "天气→气候", "气候很好。");
+        assert(r.text == "今天天气不错。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // 边界：删除行含字母数字 → 拒绝（防误删内容词）
+        const auto r = ApplyPinyinCorrections("嗯，打开 debug 开关。", "嗯，\ndebug",
+                                              "无关。");
+        assert(r.text == "打开 debug 开关。");
+        assert(r.rejected.size() == 1 && r.rejected[0] == "debug");
+    }
+    {   // 边界：替换字对拼音不符（那/明）→ 拒绝
+        const auto r = ApplyPinyinCorrections("我们那个走。", "那个→明个", "明个再说。");
+        assert(r.text == "我们那个走。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // 边界：删除幅度 >60% 整体回退（total-ratio）
+        const auto r = ApplyPinyinCorrections("嗯，那个，啊，就这样吧。",
+                                              "嗯，\n那个，\n啊，\n就这样吧。", "无关。");
+        assert(r.text == "嗯，那个，啊，就这样吧。");  // 回退原文
+        bool has_ratio = false;
+        for (const auto& x : r.rejected) has_ratio |= (x == "total-ratio");
+        assert(has_ratio);
+    }
+    {   // 边界：空指令直通
+        const auto r = ApplyPinyinCorrections("原文。", "", "无关。");
+        assert(r.text == "原文。" && r.rejected.empty());
+    }
+    printf("TestApplyPinyinCorrections passed\n");
+}
+
+// 历史缓冲：滑窗 5 轮、2 分钟 TTL 惰性过期、ContextText 拼接、Clear。
+void TestRefineHistory() {
+    printf(">> TestRefineHistory\n"); fflush(stdout);
+    std::int64_t fake_now = 1'000;
+    auto now = [&fake_now] { return fake_now; };
+    RefineHistory h(/*max_turns=*/5, /*ttl_ms=*/120'000, now);
+    {   // 滑窗：7 轮只留最近 5 轮
+        for (int i = 1; i <= 7; ++i) {
+            h.Add("raw" + std::to_string(i), "refined" + std::to_string(i));
+        }
+        const auto turns = h.Turns();
+        assert(turns.size() == 5);
+        assert(turns.front().raw_asr == "raw3");
+        assert(turns.back().refined == "refined7");
+        assert(h.ContextText() == "refined3。refined4。refined5。refined6。refined7");
+    }
+    {   // TTL 内不过期
+        fake_now += 119'999;
+        assert(h.Turns().size() == 5);
+    }
+    {   // 超时整体过期
+        fake_now += 2;
+        assert(h.Turns().empty());
+        assert(h.ContextText().empty());
+    }
+    {   // 过期后重新累积，从新轮起算
+        fake_now += 1'000;
+        h.Add("raw_new", "refined_new");
+        const auto turns = h.Turns();
+        assert(turns.size() == 1 && turns[0].raw_asr == "raw_new");
+        assert(h.ContextText() == "refined_new");
+    }
+    {   // Clear 立即清空
+        h.Clear();
+        assert(h.Turns().empty() && h.ContextText().empty());
+    }
+    {   // 默认时钟构造冒烟（真实 steady_clock，不会立即过期）
+        RefineHistory real;
+        real.Add("原文", "精修");
+        assert(real.Turns().size() == 1);
+        assert(real.ContextText() == "精修");
+    }
+    printf("TestRefineHistory passed\n");
+}
+
+
 // 真模型 smoke：LlamaCppEngine 加载真实 Qwen3-1.7B GGUF 并连发两句（第二句
 // 验证 KV 前缀复用延迟收敛）。模型解析与生产同口径（ResolveLocalRefineModelPath，
 // env VOICESTICK_REFINE_MODEL 注入）；不在位时 SKIP——不 mock 真实链路。
@@ -12576,6 +12807,9 @@ int main() {
     TestLocalRefinementClientOrchestration();
     TestLocalRefinementCustomPrompt();
     TestLocalRefinementDiagnosticsLogs();
+    TestPinyinSameOrNear();
+    TestApplyPinyinCorrections();
+    TestRefineHistory();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLocalAsrClientSenseVoiceSmoke();
     TestLocalAsrClientEmitsPartialWhileStreaming();
@@ -12666,6 +12900,7 @@ int main() {
     TestHotwordExtractionPromptAndParse();
     TestFirmwareManifestParsingAndVersionCompare();
     TestFirmwareManifestMinimumVersion();
+    TestFirmwareManifestFallbackUrls();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
     TestBleEncoderPayloads();

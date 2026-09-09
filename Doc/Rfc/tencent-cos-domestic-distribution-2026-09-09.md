@@ -1,7 +1,7 @@
 # RFC：腾讯 COS 国内分发面
 
 - 日期：2026-09-09
-- 状态：已评审通过（方案一：COS 单 bucket 直连），待实施
+- 状态：已实施（代码与 CI 链路落地，待 COS bucket/域名/Secrets 就绪后联调首次发布；实施将镜像目录 `msi/` 定名为 `windows/` 以涵盖便携版 zip）
 - 范围：Windows 端 + 固件 OTA（核心）、网站整站国内化、macOS 端代码层预留
 
 ## 1. 背景与目标
@@ -34,7 +34,7 @@ https://<dist-domain>/
 ├── firmware/
 │   ├── latest/manifest.json   # 稳定 manifest，客户端与浏览器烧录器共用（no-cache）
 │   └── v<版本>/               # ota bin / merged bin / .sha256 / manifest.json（长缓存）
-└── msi/v<版本>/              # 双语言 MSI + .sha256（由 CI 从 GitHub Release 镜像，长缓存）
+└── windows/v<版本>/           # 双语言 MSI + 便携包 + .sha256（由 CI 从 GitHub Release 镜像，长缓存）
 ```
 
 职责划分：
@@ -79,7 +79,7 @@ manifest schema 变更（向后兼容，新字段 optional）：
 
 ### 4.2 `.github/workflows/deploy-website.yml`
 
-- 新增「镜像 Release 资产到 COS」步骤：`gh release list` 取最近 N 个 release（N 与 `update-downloads.py --limit` 共用同一取值，默认 10，保证 downloads.json 列出的每个资产都已被镜像），逐资产（固件 bin/sha256/manifest、双语言 MSI）`gh release download` 后上传 COS 对应路径（`firmware/v<版本>/`、`msi/v<版本>/`）；幂等覆盖，任一预期内资产下载失败即 fail（保证 downloads.json 的确定性路径映射成立）；
+- 新增「镜像 Release 资产到 COS」步骤：`gh release list` 取最近 N 个 release（N 与 `update-downloads.py --limit` 共用同一取值，默认 10，保证 downloads.json 列出的每个资产都已被镜像），逐资产（固件 bin/sha256/manifest、双语言 MSI）`gh release download` 后上传 COS 对应路径（`firmware/v<版本>/`、`windows/v<版本>/`）；幂等覆盖，任一预期内资产下载失败即 fail（保证 downloads.json 的确定性路径映射成立）；
 - 「Update appcast from latest release」步骤：`update-appcast.py` 新增 `--mirror-base https://<dist-domain>`，MSI/zip 的 enclosure URL 指向 COS 路径（长度与签名字段逻辑不变）；
 - 「Generate downloads.json」步骤：`update-downloads.py` 新增同样的镜像参数，各版本资产与 sha256 链接生成 COS URL；
 - 「Build website」改为双次构建：`npm run build`（base=`/VoiceStickPlus/`，供 Pages artifact）与 `npm run build -- --base=/`（供 COS）；COS 版 `website/dist` 全量上传 bucket 根（appcast.xml/downloads.json 随 dist 天然在根，no-cache 元数据单列设置）；

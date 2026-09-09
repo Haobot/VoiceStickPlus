@@ -51,9 +51,10 @@ const heroWindowsUrl = computed(() => {
     || windowsDownloadUrl.value
   )
 })
-// 固件同源托管于 GitHub Pages（CI 部署时从最新 Release 同步到 /firmware/），
-// 避免 GitHub release-assets 域无 CORS 头导致浏览器 fetch 跨域失败（Failed to fetch）。
-const firmwareBaseUrl = `${import.meta.env.BASE_URL}firmware/`
+// 固件同源托管（Pages 与国内 COS 整站均由 CI 部署时从最新 Release 同步到
+// /firmware/latest/），避免 GitHub release-assets 域无 CORS 头导致浏览器
+// fetch 跨域失败（Failed to fetch）。
+const firmwareBaseUrl = `${import.meta.env.BASE_URL}firmware/latest/`
 const defaultFirmwareUrl = `${firmwareBaseUrl}voicestick-firmware-sticks3-merged-${version}.bin`
 const firmwareManifestUrl = `${firmwareBaseUrl}manifest.json`
 const firmwareUrl = ref(defaultFirmwareUrl)

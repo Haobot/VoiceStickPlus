@@ -9,17 +9,17 @@
 - MSI 打包链路（`extract_builtin_key.ps1` / `generate_msi_config.ps1` / `build-msi.bat`）在本机提取密钥生成含 key 的构建产物，产物均 gitignored；不要把生成的含 key config 提交进仓库。
 - Windows 便携包模板中使用占位符而非真实 Sparkle 公钥；真实签名证书与 Sparkle 私钥只存在于签名机。
 - 集成测试与 E2E 工具链坚持「不伪造结果」原则：无凭据/无设备时 SKIP 或报错，不要为了让测试变绿而 mock 掉真实链路。
-- 固件 OTA 与桌面端自动更新走官方渠道（GitHub Release + 阿里云 OSS + appcast），不要绕过签名校验逻辑。
+- 固件 OTA 与桌面端自动更新走官方渠道（国内 COS 主源 `dl.davenger.cloud` + GitHub Release 回退 + appcast，见 `Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md`），不要绕过签名校验逻辑。
 
 ## 发布流程
 
 推送与 `VERSION` 匹配的 `v<版本号>` 标签会触发 `.github/workflows/release.yml`：
 
-1. 构建固件（ESP-IDF v5.5.1，目标 `esp32s3`），生成 OTA bin、merged bin 与 `manifest.json`。
-2. 构建并签名 macOS 产物（DMG、ZIP、Sparkle 签名）。
+1. 构建固件（ESP-IDF v5.5.1，目标 `esp32s3`），生成 OTA bin、merged bin 与 `manifest.json`（主 URL 指国内 COS `dl.davenger.cloud`，`*_fallback` 字段保留 GitHub Release 回退直链）。
+2. 构建并签名 macOS 产物（DMG、ZIP、Sparkle 签名；该 job 目前禁用）。
 3. 创建 GitHub Release，合并固件与 macOS 产物。
-4. 上传固件到阿里云 OSS 的版本目录和 `latest/` 目录。
-5. 触发 `deploy-website.yml` 更新 `website/public/appcast.xml`。
+4. 上传固件到腾讯 COS 的 `firmware/v<版本>/` 与 `firmware/latest/` 目录（凭据为仓库 Secrets `TENCENT_COS_SECRET_ID`/`TENCENT_COS_SECRET_KEY`，未配置时该步骤失败，不静默）。
+5. 触发 `deploy-website.yml`：镜像最近 10 版 Release 资产到 COS（`scripts/mirror_release_to_cos.py`）、更新 `website/public/appcast.xml`（enclosure 指向 COS 镜像 URL）、重生成 `downloads.json`（资产 URL 指向 COS）、固件同步 Pages `/firmware/latest/`、整站以 `--base=/` 重建后同步 COS bucket 根（GitHub Pages 保留为国际/备胎站点）。
 
 Windows MSI 需在本地签名机用 `scripts\build-msi.bat` 构建并签名（脚本自动完成内置凭据注入、MSI config 生成与 flash payload 准备），一次产出 `VoiceStick_<版本>_zh-CN.msi` 与 `VoiceStick_<版本>_en-US.msi` 两个语言版（WiX 4 一次构建只产一个 culture，多语言 MSI 支持尚未落地，故逐 culture 构建；安装程序本地化文件在 `desktop/windows/installer/` 下的 `zh-CN.wxl`/`en-US.wxl` 与 `license-zh-CN.rtf`/`license-en.rtf`）。两个 MSI 都上传到对应 GitHub Release，再手动运行 `Deploy Website to GitHub Pages` 工作流收录 MSI 条目——**appcast 只收录 en-US 版**（WinSparkle 0.9.2 不支持按语言选 enclosure，`sparkle:language` 未实现；zh-CN 版仅供中文用户手动下载安装）。完整步骤见 `Doc/Ref/release.md`。
 

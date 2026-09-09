@@ -61,6 +61,10 @@ OLDER = make_release(
     published_at="2026-08-01T10:00:00Z",
 )
 DOWNLOADS = mod.build_downloads([LATEST, OLDER], "2.3.0", "2026-09-07T12:00:00Z")
+MIRRORED = mod.build_downloads(
+    [LATEST, OLDER], "2.3.0", "2026-09-07T12:00:00Z",
+    mirror_base="https://dl.davenger.cloud",
+)
 
 
 class ClassifyAssetTests(unittest.TestCase):
@@ -146,6 +150,43 @@ class BuildDownloadsTests(unittest.TestCase):
 
     def test_output_is_json_serializable(self):
         json.dumps(DOWNLOADS)
+
+
+class MirrorBaseTests(unittest.TestCase):
+    """mirror_base（COS 国内分发面）下的 URL 改写。"""
+
+    def test_assets_use_mirror_urls(self):
+        assets = {a["name"]: a for a in MIRRORED["latest"]["assets"]}
+        self.assertEqual(
+            assets["VoiceStick_2.3.8_en-US.msi"]["url"],
+            "https://dl.davenger.cloud/windows/v2.3.8/VoiceStick_2.3.8_en-US.msi")
+        self.assertEqual(
+            assets["voicestick-firmware-sticks3-ota-2.3.8.bin"]["url"],
+            "https://dl.davenger.cloud/firmware/v2.3.8/"
+            "voicestick-firmware-sticks3-ota-2.3.8.bin")
+
+    def test_checksum_links_use_mirror_urls(self):
+        fw = {a["name"]: a for a in MIRRORED["latest"]["assets"]
+              if a["platform"] == "firmware"}
+        self.assertEqual(
+            fw["voicestick-firmware-sticks3-ota-2.3.8.bin"]["sha256"],
+            "https://dl.davenger.cloud/firmware/v2.3.8/"
+            "voicestick-firmware-sticks3-ota-2.3.8.bin.sha256")
+
+    def test_mirror_applies_to_all_releases(self):
+        older = MIRRORED["releases"][1]["assets"][0]
+        self.assertEqual(
+            older["url"],
+            "https://dl.davenger.cloud/firmware/v2.3.7/"
+            "voicestick-firmware-sticks3-ota-2.3.7.bin")
+
+    def test_without_mirror_urls_unchanged(self):
+        # 不传 mirror_base 时行为与现状一致（GitHub 直链）
+        assets = {a["name"]: a for a in DOWNLOADS["latest"]["assets"]}
+        self.assertEqual(
+            assets["VoiceStick_2.3.8_en-US.msi"]["url"],
+            "https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.8/"
+            "VoiceStick_2.3.8_en-US.msi")
 
 
 if __name__ == "__main__":

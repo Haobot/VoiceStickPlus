@@ -19,6 +19,14 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# 国内 COS 分发面（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）。
+# 凭据在仓库 Secrets：TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY（未配置时 COS 上传步骤失败，不静默）。
+env:
+  # TODO(用户)：bucket 创建后替换真实名（含 APPID 后缀，如 voicestick-dl-1250000000）
+  VOICESTICK_COS_BUCKET: "TODO-fill-after-bucket-created"
+  VOICESTICK_COS_REGION: "ap-shanghai"
+  VOICESTICK_DIST_DOMAIN: "https://dl.davenger.cloud"
+
 jobs:
   build-firmware:
     name: Build StickS3 Firmware
@@ -77,15 +85,24 @@ jobs:
           ota_size="$(wc -c < "${ota}" | tr -d ' ')"
           merged_size="$(wc -c < "${merged}" | tr -d ' ')"
           python3 - <<PY
-          import json
+          import json, os
+          dist_domain = os.environ["VOICESTICK_DIST_DOMAIN"].rstrip("/")
+          download_base = "${download_base}"
+          tag = "${tag}"
+          version = "${version}"
+          ota = "${ota}"
+          merged = "${merged}"
+          # 主 URL 指向国内 COS；*_fallback 保留 GitHub Release 直链供客户端回退
           manifest = {
               "hardware": "stick_s3",
-              "version": "${version}",
+              "version": version,
               "min_version": "${min_version}",
-              "ota_url": "${download_base}/${ota}",
+              "ota_url": f"{dist_domain}/firmware/{tag}/{ota}",
+              "ota_url_fallback": f"{download_base}/{ota}",
               "ota_sha256": "${ota_sha}",
               "ota_size": int("${ota_size}"),
-              "merged_url": "${download_base}/${merged}",
+              "merged_url": f"{dist_domain}/firmware/{tag}/{merged}",
+              "merged_url_fallback": f"{download_base}/{merged}",
               "merged_sha256": "${merged_sha}",
               "merged_size": int("${merged_size}"),
           }
@@ -99,6 +116,25 @@ jobs:
         with:
           name: voicestick-firmware-${{ steps.ver.outputs.version }}
           path: dist/*
+
+      - name: Upload firmware to COS
+        run: |
+          set -euo pipefail
+          pip install cos-python-sdk-v5
+          version="${{ steps.ver.outputs.version }}"
+          tag="${{ steps.ver.outputs.tag }}"
+          python scripts/upload_cos.py \
+            --bucket "${VOICESTICK_COS_BUCKET}" \
+            --region "${VOICESTICK_COS_REGION}" \
+            --upload "dist/voicestick-firmware-sticks3-ota-${version}.bin" "firmware/${tag}/voicestick-firmware-sticks3-ota-${version}.bin" \
+            --upload "dist/voicestick-firmware-sticks3-ota-${version}.bin.sha256" "firmware/${tag}/voicestick-firmware-sticks3-ota-${version}.bin.sha256" \
+            --upload "dist/voicestick-firmware-sticks3-merged-${version}.bin" "firmware/${tag}/voicestick-firmware-sticks3-merged-${version}.bin" \
+            --upload "dist/voicestick-firmware-sticks3-merged-${version}.bin.sha256" "firmware/${tag}/voicestick-firmware-sticks3-merged-${version}.bin.sha256" \
+            --upload "dist/manifest.json" "firmware/${tag}/manifest.json" \
+            --upload "dist/manifest.json" "firmware/latest/manifest.json"
+        env:
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
 
   publish-release:
     name: Publish GitHub Release

@@ -3,8 +3,10 @@
 VoiceStick releases have three moving parts:
 
 - macOS app: built, signed, notarized, and uploaded by GitHub Actions. (The macOS job is currently disabled in the CI pipeline; only the Windows package and firmware are published for v2.3.6.)
-- StickS3 firmware: built by GitHub Actions and uploaded to GitHub Releases (as release assets; the firmware manifest is served from `releases/latest/download/manifest.json`).
+- StickS3 firmware: built by GitHub Actions and uploaded to GitHub Releases (as release assets; the firmware manifest is served from COS `dl.davenger.cloud/firmware/latest/manifest.json` with the GitHub `releases/latest/download/manifest.json` kept as client fallback).
 - Windows app: built and signed manually on the Windows signing machine, then uploaded to the matching GitHub Release.
+
+Domestic distribution: every release additionally mirrors assets to Tencent COS (`dl.davenger.cloud`) — firmware at `firmware/v<tag>/`, MSIs at `windows/v<tag>/`, plus the whole website at the bucket root. GitHub stays the source of truth; GitHub Pages remains the international/backup site. See `Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md`. COS writes happen only in GitHub Actions with repo secrets `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY`; the signing machine keeps talking to GitHub only.
 
 The Windows package is the special case because the signing certificate is local hardware or local machine state. The release process supports either order:
 
@@ -21,7 +23,7 @@ The whole flow above is scripted for the Windows signing machine:
 powershell -File scripts\release.ps1 -Version 2.3.9
 ```
 
-The script syncs `VERSION` / `firmware/version.txt`, builds and signs the MSI, commits and pushes the `v<version>` tag, waits for the release workflow, uploads both MSIs with `.sha256` checksums, triggers the website deploy, and verifies every update URL (appcast, `manifest.json` incl. `min_version`, `downloads.json`, firmware and MSI assets). Use `-SkipMsi` for firmware/website-only releases and `-DryRun` to print the steps without executing anything. It refuses to run off `main` or with a dirty tree.
+The script syncs `VERSION` / `firmware/version.txt`, builds and signs the MSI, commits and pushes the `v<version>` tag, waits for the release workflow, uploads both MSIs with `.sha256` checksums, triggers the website deploy, and verifies every update URL — GitHub and COS alike (appcast, `manifest.json` incl. `min_version`, `downloads.json`, firmware and MSI assets on both `dl.davenger.cloud` and GitHub). Use `-SkipMsi` for firmware/website-only releases and `-DryRun` to print the steps without executing anything. It refuses to run off `main` or with a dirty tree.
 
 `FIRMWARE_MIN_VERSION` (repo root) feeds the manifest `min_version` field: devices below it get a mandatory upgrade prompt. Bump it manually when the desktop protocol drops compatibility with older firmware; it must never exceed `VERSION`.
 
@@ -144,25 +146,27 @@ After every release, verify the appcast, firmware manifest, and actual package U
 Stable update endpoints:
 
 ```text
-https://haobot.github.io/VoiceStickPlus/appcast.xml
-https://haobot.github.io/VoiceStickPlus/downloads.json
-https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json
+https://dl.davenger.cloud/appcast.xml
+https://dl.davenger.cloud/downloads.json
+https://dl.davenger.cloud/firmware/latest/manifest.json
+https://haobot.github.io/VoiceStickPlus/appcast.xml            # Pages backup site
+https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json   # client fallback
 ```
 
-For version `2.3.6`, the appcast should contain (Windows enclosure points to the `en-US` MSI only):
+For version `2.3.10`, the appcast should contain (Windows enclosure points to the `en-US` MSI only; enclosure URLs point to the COS mirror):
 
 ```text
-https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick_2.3.6_en-US.msi
-https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/VoiceStick-2.3.6.zip
+https://dl.davenger.cloud/windows/v2.3.10/VoiceStick_2.3.10_en-US.msi
+https://dl.davenger.cloud/macos/v2.3.10/VoiceStick-2.3.10.zip
 ```
 
-The `zh-CN` MSI (`VoiceStick_2.3.6_zh-CN.msi`) is uploaded to the Release for manual download but is not in the appcast.
+The `zh-CN` MSI (`VoiceStick_2.3.10_zh-CN.msi`) is mirrored for manual download but is not in the appcast.
 
-The firmware manifest should contain (firmware assets are hosted on the GitHub Release, not OSS):
+The firmware manifest should contain (primary URLs on COS, `*_fallback` fields on the GitHub Release):
 
 ```text
-https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-ota-2.3.6.bin
-https://github.com/Haobot/VoiceStickPlus/releases/download/v2.3.6/voicestick-firmware-sticks3-merged-2.3.6.bin
+https://dl.davenger.cloud/firmware/v2.3.10/voicestick-firmware-sticks3-ota-2.3.10.bin
+https://dl.davenger.cloud/firmware/v2.3.10/voicestick-firmware-sticks3-merged-2.3.10.bin
 ```
 
 Use `HEAD` requests or a browser to confirm every URL returns `200`.

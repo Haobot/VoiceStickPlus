@@ -69,7 +69,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 - API 密钥等凭据只存在于本机 `config.toml`，不进仓库；示例配置用占位符。
 - 内置凭据（`VOICESTICK_BUILTIN_*`）与 MSI 打包链路生成的含 key 产物均 gitignored，不得提交。
 - 集成测试与 E2E 坚持「不伪造结果」：无凭据/无设备时 SKIP 或报错，不 mock 真实链路。
-- 固件 OTA 与桌面端自动更新走官方渠道（GitHub Release + 阿里云 OSS + appcast），不绕过签名校验。
+- 固件 OTA 与桌面端自动更新走官方渠道（国内 COS 主源 dl.davenger.cloud + GitHub Release 回退 + appcast），不绕过签名校验。
 
 细节见 `Doc/Agent/release-and-security.md`；发布权威流程见 `Doc/Ref/release.md`。
 

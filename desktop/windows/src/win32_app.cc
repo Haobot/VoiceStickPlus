@@ -109,7 +109,9 @@ constexpr HotkeyPreset kHotkeyPresets[] = {
 };
 
 #ifndef VOICESTICK_APPCAST_URL
-#define VOICESTICK_APPCAST_URL "https://haobot.github.io/VoiceStickPlus/appcast.xml"
+// 国内 COS 分发面（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）：
+// WinSparkle 仅支持单一 appcast URL，不做运行时回退；github.io feed 由 deploy workflow 继续更新兜底
+#define VOICESTICK_APPCAST_URL "https://dl.davenger.cloud/appcast.xml"
 #endif
 
 void LogLine(std::string_view message) {

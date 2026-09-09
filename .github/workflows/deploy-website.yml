@@ -17,6 +17,14 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# 国内 COS 分发面（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）。
+# 凭据在仓库 Secrets：TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY（未配置时 COS 相关步骤失败，不静默）。
+env:
+  # TODO(用户)：bucket 创建后替换真实名（含 APPID 后缀，如 voicestick-dl-1250000000）
+  VOICESTICK_COS_BUCKET: "TODO-fill-after-bucket-created"
+  VOICESTICK_COS_REGION: "ap-shanghai"
+  VOICESTICK_DIST_DOMAIN: "https://dl.davenger.cloud"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -36,6 +44,22 @@ jobs:
         run: npm ci
         working-directory: website
 
+      - name: Mirror release assets to COS
+        # GitHub Release 为源站事实，资产镜像到 COS 供 appcast/downloads.json 指向国内源。
+        # 镜像路径规则见 scripts/mirror_urls.py；未知资产跳过。
+        run: |
+          set -euo pipefail
+          pip install cos-python-sdk-v5
+          python scripts/mirror_release_to_cos.py \
+            --repo "${{ github.repository }}" \
+            --bucket "${VOICESTICK_COS_BUCKET}" \
+            --region "${VOICESTICK_COS_REGION}" \
+            --limit 10
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+
       - name: Update appcast from latest release
         run: |
           set -euo pipefail
@@ -43,7 +67,7 @@ jobs:
             -o website/public/appcast.xml || true
           tag="$(gh release view --json tagName -q .tagName)"
           version="${tag#v}"
-          appcast_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml"
+          appcast_url="${VOICESTICK_DIST_DOMAIN}/appcast.xml"
           zip_asset="VoiceStick-${version}.zip"
           sig_asset="VoiceStick-${version}.signature"
           zip_length="$(gh release view "$tag" --json assets \
@@ -59,9 +83,10 @@ jobs:
           fi
           notes="$(gh release view "$tag" --json body -q .body)"
           args=(
-            --version "$version" \
-            --appcast-url "$appcast_url" \
+            --version "$version"
+            --appcast-url "$appcast_url"
             --release-notes "$notes"
+            --mirror-base "${VOICESTICK_DIST_DOMAIN}"
           )
           if [ -n "${zip_length:-}" ]; then
             args+=(
@@ -85,29 +110,30 @@ jobs:
           set -euo pipefail
           python3 scripts/update-downloads.py \
             --repo "${{ github.repository }}" \
-            --output website/public/downloads.json
+            --output website/public/downloads.json \
+            --mirror-base "${VOICESTICK_DIST_DOMAIN}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Sync firmware to Pages origin
-        # 浏览器烧录器从 /firmware/ 同源 fetch 固件（GitHub release-assets 域无 CORS 头，
-        # 直接 fetch Release 资产会被浏览器跨域拦截，见 Doc/Expe/ 相关记录）。
+        # 浏览器烧录器从 /firmware/latest/ 同源 fetch 固件与 manifest（GitHub
+        # release-assets 域无 CORS 头，直接 fetch Release 资产会被浏览器跨域拦截）。
         # appcast.xml 已在上一步更新到 website/public/，此处不再重新下载。
         run: |
           set -euo pipefail
           tag="$(gh release view --json tagName -q .tagName)"
           version="${tag#v}"
-          mkdir -p website/public/firmware
+          mkdir -p website/public/firmware/latest
           gh release download "$tag" \
             --pattern "voicestick-firmware-sticks3-merged-*.bin" \
             --pattern "manifest.json" \
-            --dir website/public/firmware
-          # 把 manifest 内的 merged_url 重写为 Pages 同源地址，避免浏览器再去 fetch GitHub 域
+            --dir website/public/firmware/latest
+          # 把 manifest 内的 merged_url 重写为 Pages 同源地址，避免浏览器再去 fetch 跨域资产
           python3 - "${{ github.repository_owner }}" "${{ github.event.repository.name }}" <<'PY'
           import json, os, sys
           repo_owner, repo_name = sys.argv[1], sys.argv[2]
-          base = f"https://{repo_owner}.github.io/{repo_name}/firmware/"
-          path = "website/public/firmware/manifest.json"
+          base = f"https://{repo_owner}.github.io/{repo_name}/firmware/latest/"
+          path = "website/public/firmware/latest/manifest.json"
           with open(path, encoding="utf-8") as f:
               manifest = json.load(f)
           merged = os.path.basename(manifest["merged_url"])
@@ -119,7 +145,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build website
+      - name: Build website (Pages base)
         run: npm run build
         working-directory: website
 
@@ -127,6 +153,27 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: website/dist
+
+      - name: Rebuild website (COS root base)
+        # COS 自定义域名挂在 bucket 根，整站以 base=/ 重新构建；
+        # GitHub Pages 版本（/VoiceStickPlus/）保留为国际/备胎站点。
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          npm run build -- --base=/
+        working-directory: website
+
+      - name: Sync website to COS
+        run: |
+          set -euo pipefail
+          pip install cos-python-sdk-v5
+          python scripts/upload_cos.py \
+            --bucket "${VOICESTICK_COS_BUCKET}" \
+            --region "${VOICESTICK_COS_REGION}" \
+            --sync-dir website/dist ""
+        env:
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
 
       - name: Deploy to GitHub Pages
         id: deployment

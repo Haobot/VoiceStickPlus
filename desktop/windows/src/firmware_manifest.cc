@@ -202,17 +202,30 @@ std::string Sha256Hex(std::span<const std::uint8_t> data) {
 
 } // namespace
 
+FirmwareManifestClient::FirmwareManifestClient()
+    : manifest_url_(DefaultManifestUrl()), fallback_manifest_url_(FallbackManifestUrl()) {}
+
 FirmwareManifestClient::FirmwareManifestClient(std::string manifest_url)
     : manifest_url_(std::move(manifest_url)) {}
 
+FirmwareManifestClient::FirmwareManifestClient(std::string manifest_url,
+                                               std::string fallback_manifest_url)
+    : manifest_url_(std::move(manifest_url)),
+      fallback_manifest_url_(std::move(fallback_manifest_url)) {}
+
 std::string FirmwareManifestClient::DefaultManifestUrl() {
+    return "https://dl.davenger.cloud/firmware/latest/manifest.json";
+}
+
+std::string FirmwareManifestClient::FallbackManifestUrl() {
     return "https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json";
 }
 
 void FirmwareManifestClient::FetchManifest(ManifestCallback callback) const {
     const auto url = manifest_url_;
-    std::thread([url, callback = std::move(callback)]() mutable {
-        FirmwareManifestClient client(url);
+    const auto fallback_url = fallback_manifest_url_;
+    std::thread([url, fallback_url, callback = std::move(callback)]() mutable {
+        FirmwareManifestClient client(url, fallback_url);
         std::string error;
         auto manifest = client.FetchManifestSync(error);
         callback(std::move(manifest), std::move(error));
@@ -220,30 +233,51 @@ void FirmwareManifestClient::FetchManifest(ManifestCallback callback) const {
 }
 
 std::optional<FirmwareManifest> FirmwareManifestClient::FetchManifestSync(std::string& error) const {
-    auto body = DownloadText(manifest_url_, error);
-    if (!error.empty()) return std::nullopt;
-    auto manifest = ParseFirmwareManifest(body);
-    if (!manifest.has_value()) {
-        error = "Firmware update server returned an invalid manifest.";
-        return std::nullopt;
+    error.clear();
+    // 主源（COS）优先，失败或内容无效时回退 GitHub Release；全部失败保留最后一个错误
+    const std::string urls[] = {manifest_url_, fallback_manifest_url_};
+    for (const auto& url : urls) {
+        if (url.empty()) continue;
+        std::string fetch_error;
+        auto body = DownloadText(url, fetch_error);
+        if (!fetch_error.empty()) {
+            error = std::move(fetch_error);
+            continue;
+        }
+        auto manifest = ParseFirmwareManifest(body);
+        if (!manifest.has_value()) {
+            error = "Firmware update server returned an invalid manifest.";
+            continue;
+        }
+        return manifest;
     }
-    return manifest;
+    return std::nullopt;
 }
 
 std::optional<ByteVector> FirmwareManifestClient::DownloadOtaSync(const FirmwareManifest& manifest,
                                                                   std::string& error) const {
-    auto image = DownloadBytes(manifest.ota_url, error);
-    if (!error.empty()) return std::nullopt;
-    if (image.size() != manifest.ota_size) {
-        error = "Firmware size did not match the manifest.";
-        return std::nullopt;
+    error.clear();
+    // 校验失败同样换源重试：主源内容损坏时从回退源取正确镜像，sha256/size 一视同仁
+    for (const auto& url : OtaDownloadUrls(manifest)) {
+        std::string attempt_error;
+        auto image = DownloadBytes(url, attempt_error);
+        if (attempt_error.empty()) {
+            if (image.size() != manifest.ota_size) {
+                attempt_error = "Firmware size did not match the manifest.";
+            } else {
+                auto digest = Sha256Hex(image);
+                if (digest.empty() || digest != manifest.ota_sha256) {
+                    attempt_error = "Firmware checksum did not match the manifest.";
+                }
+            }
+        }
+        if (!attempt_error.empty()) {
+            error = std::move(attempt_error);
+            continue;
+        }
+        return image;
     }
-    auto digest = Sha256Hex(image);
-    if (digest.empty() || digest != manifest.ota_sha256) {
-        error = "Firmware checksum did not match the manifest.";
-        return std::nullopt;
-    }
-    return image;
+    return std::nullopt;
 }
 
 bool FirmwareVersion::IsOlderThan(std::string_view current, std::string_view latest) {
@@ -263,9 +297,11 @@ std::optional<FirmwareManifest> ParseFirmwareManifest(std::string_view json) {
     manifest.version = JsonStringValue(root, "version");
     manifest.min_version = JsonStringValue(root, "min_version");
     manifest.ota_url = JsonStringValue(root, "ota_url");
+    manifest.ota_url_fallback = JsonStringValue(root, "ota_url_fallback");
     manifest.ota_sha256 = JsonStringValue(root, "ota_sha256");
     manifest.ota_size = JsonU32Value(root, "ota_size");
     manifest.merged_url = JsonStringValue(root, "merged_url");
+    manifest.merged_url_fallback = JsonStringValue(root, "merged_url_fallback");
     manifest.merged_sha256 = JsonStringValue(root, "merged_sha256");
     manifest.merged_size = JsonU32Value(root, "merged_size");
     cJSON_Delete(root);
@@ -275,6 +311,14 @@ std::optional<FirmwareManifest> ParseFirmwareManifest(std::string_view json) {
         return std::nullopt;
     }
     return manifest;
+}
+
+std::vector<std::string> OtaDownloadUrls(const FirmwareManifest& manifest) {
+    std::vector<std::string> urls{manifest.ota_url};
+    if (!manifest.ota_url_fallback.empty()) {
+        urls.push_back(manifest.ota_url_fallback);
+    }
+    return urls;
 }
 
 bool IsFirmwareHardwareCompatible(std::string_view device_hardware,

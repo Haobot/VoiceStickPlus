@@ -10,7 +10,7 @@ Windows MSI 维持签名机手动构建（不进 CI）；下载页数据源用�
 已有自动化基础（复用，不重建）：
 
 - `release.yml`：`v*` tag 触发，固件自动构建上传 GitHub Release（ota/merged bin + .sha256 + `manifest.json`），并触发网站重部署；已支持 `workflow_dispatch`。
-- `deploy-website.yml`：自动重写 `website/public/appcast.xml`（`scripts/update-appcast.py`），同步固件到 Pages `/firmware/`，已支持手动触发。
+- `deploy-website.yml`：自动重写 `website/public/appcast.xml`（`scripts/update-appcast.py`），同步固件到 Pages `/firmware/latest/`（2026-09-09 起路径含 latest 段，与烧录器/客户端统一），已支持手动触发。
 - 桌面更新推送：macOS Sparkle / Windows WinSparkle 均指向 `https://haobot.github.io/VoiceStickPlus/appcast.xml`。
 - 固件 OTA：桌面端拉 `releases/latest/download/manifest.json` 比较版本，BLE OTA 下发。
 

@@ -13,6 +13,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 兼容 importlib 按路径加载（单测）与直接运行两种方式，确保同目录模块可导入
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mirror_urls import mirror_asset_url
+
 WINDOWS_PORTABLE_PREFIX = "VoiceStick_Portable"
 MACOS_PREFIX = "VoiceStick-"
 FIRMWARE_PREFIX = "voicestick-firmware-"
@@ -31,7 +35,7 @@ def classify_asset(name: str):
     return None
 
 
-def build_entry(release: dict) -> dict:
+def build_entry(release: dict, mirror_base: str | None = None) -> dict:
     assets_by_name = {a["name"]: a for a in release["assets"]}
     assets = []
     for asset in release["assets"]:
@@ -39,12 +43,16 @@ def build_entry(release: dict) -> dict:
         if platform is None:
             continue
         checksum = assets_by_name.get(asset["name"] + ".sha256")
+
+        def asset_url(url: str) -> str:
+            return mirror_asset_url(url, mirror_base) if mirror_base else url
+
         assets.append({
             "name": asset["name"],
             "platform": platform,
-            "url": asset["url"],
+            "url": asset_url(asset["url"]),
             "size": asset["size"],
-            "sha256": checksum["url"] if checksum else None,
+            "sha256": asset_url(checksum["url"]) if checksum else None,
         })
     return {
         "version": release["tagName"].lstrip("v"),
@@ -55,9 +63,13 @@ def build_entry(release: dict) -> dict:
     }
 
 
-def build_downloads(releases: list, min_version: str, generated_at: str) -> dict:
-    """纯转换：gh release JSON 列表 -> downloads.json 结构。"""
-    entries = [build_entry(r) for r in releases]
+def build_downloads(releases: list, min_version: str, generated_at: str,
+                    mirror_base: str | None = None) -> dict:
+    """纯转换：gh release JSON 列表 -> downloads.json 结构。
+
+    mirror_base 提供时（COS 国内分发面域名），资产与校验和 URL 改写为镜像路径。
+    """
+    entries = [build_entry(r, mirror_base) for r in releases]
     if not entries:
         sys.exit("Error: no releases returned; refusing to write an empty downloads.json.")
     latest_index = next(
@@ -101,6 +113,9 @@ def main() -> None:
     parser.add_argument("--output", default="website/public/downloads.json")
     parser.add_argument("--min-version-file", default="FIRMWARE_MIN_VERSION",
                         help="最低兼容固件版本文件（单行纯文本）")
+    parser.add_argument("--mirror-base", default=None,
+                        help="COS 国内分发面域名（如 https://dl.davenger.cloud）；"
+                             "提供时资产 URL 改写为镜像路径，须先完成 Release 资产镜像上传")
     args = parser.parse_args()
 
     min_version = Path(args.min_version_file).read_text(encoding="utf-8").strip()
@@ -108,6 +123,7 @@ def main() -> None:
     downloads = build_downloads(
         releases, min_version,
         _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        mirror_base=args.mirror_base,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
