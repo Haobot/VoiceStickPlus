@@ -1479,7 +1479,10 @@ void Win32App::SyncLocalRefiner() {
         return;
     }
     coordinator_->SetLocalRefiner(std::make_unique<LocalRefinementClient>(
-        std::move(engine), config_.local_asr.refine_prompt));
+        std::move(engine), config_.local_asr.refine_prompt,
+        [](std::string_view message) {
+            LogLine("Local refine " + std::string(message));
+        }));
     LogLine("Local refine engine ready: " + model_path);
 }
 #endif  // VOICESTICK_LOCAL_REFINE_ENABLED

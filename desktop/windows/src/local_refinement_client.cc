@@ -14,10 +14,12 @@
 namespace voicestick {
 
 LocalRefinementClient::LocalRefinementClient(std::unique_ptr<LocalLlmEngine> engine,
-                                             std::string system_prompt)
+                                             std::string system_prompt,
+                                             std::function<void(std::string_view)> log)
     : engine_(std::move(engine)),
       system_prompt_(system_prompt.empty() ? BuildSystemPrompt()
-                                           : std::move(system_prompt)) {}
+                                           : std::move(system_prompt)),
+      log_(std::move(log)) {}
 
 LocalRefinementClient::~LocalRefinementClient() {
     std::lock_guard lock(threads_mutex_);
@@ -141,6 +143,7 @@ void LocalRefinementClient::RunRefine(
     const std::vector<std::string>& hotwords) {
     // L1 规则层（微秒级，总是执行）
     const std::string rule_refined = RuleRefineText(text);
+    if (log_) log_("in='" + rule_refined + "'");
 
     const bool cancelled = cancel && cancel->load();
     if (cancelled || !engine_ || !engine_->IsReady()) {
@@ -163,16 +166,24 @@ void LocalRefinementClient::RunRefine(
         return;
     }
     if (!ok) {
+        if (log_) log_("llm fail -> rule");
         on_complete(true, rule_refined);  // 引擎失败：规则级兜底
         return;
     }
 
     const std::string stripped = StripReplyTemplate(raw);
     if (!stripped.empty() && RefineResultSafe(rule_refined, stripped, hotwords)) {
+        if (log_) log_("llm ok: '" + stripped + "'");
         on_complete(true, stripped);
         return;
     }
-    on_complete(true, rule_refined);  // 空/守卫拦截：规则级兜底
+    // 空输出与守卫拦截都回退规则级，但归因不同（前者引擎/提示词问题，
+    // 后者是守卫按设计拦下危险删除）。
+    if (log_) {
+        log_(stripped.empty() ? "llm empty -> rule"
+                              : "guard blocked '" + stripped + "' -> rule");
+    }
+    on_complete(true, rule_refined);
 }
 
 } // namespace voicestick

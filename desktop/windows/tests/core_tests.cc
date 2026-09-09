@@ -10536,6 +10536,77 @@ void TestLocalRefinementCustomPrompt() {
     printf("TestLocalRefinementCustomPrompt passed\n");
 }
 
+// 诊断日志回调：归因精修结果来自哪一层（llm ok / guard blocked / llm fail /
+// llm empty），协调器注入 LogCoordinatorLine 落 VoiceStickApp.log 供实测排查。
+void TestLocalRefinementDiagnosticsLogs() {
+    class FakeEngine : public LocalLlmEngine {
+    public:
+        std::string reply;
+        bool fail = false;
+        bool Chat(const std::string&, const std::string&,
+                  const std::function<bool(const std::string&)>& on_token,
+                  std::string& completion) override {
+            if (fail) return false;
+            if (on_token && !on_token(reply)) return false;
+            completion = reply;
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+    struct Out {
+        std::string text;
+        std::vector<std::string> logs;
+    };
+    // 构造注入 log 采集，跑一次精修同步取回（输入文本进 RunRefine 时已归一
+    // 为规则级文本，日志 in= 即 L1 输出）。
+    auto run = [](std::unique_ptr<FakeEngine> fake, const std::string& input) {
+        std::promise<Out> pr;
+        auto fut = pr.get_future();
+        auto logs = std::make_shared<std::vector<std::string>>();
+        LocalRefinementClient client(
+            std::move(fake), {},
+            [logs](std::string_view m) { logs->emplace_back(m); });
+        client.Refine(input, nullptr,
+                      [&pr, logs](bool, std::string s) {
+                          Out out;
+                          out.text = std::move(s);
+                          out.logs = *logs;
+                          pr.set_value(std::move(out));
+                      });
+        return fut.get();
+    };
+    auto has = [](const std::vector<std::string>& logs, const char* needle) {
+        for (const auto& l : logs) {
+            if (l.find(needle) != std::string::npos) return true;
+        }
+        return false;
+    };
+
+    {   // LLM 成功放行：in= + llm ok 两行
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "帮我把这个文件重命名一下。";
+        auto r = run(std::move(fake), "嗯，帮我把这个文件重命名一下。");
+        assert(r.text == "帮我把这个文件重命名一下。");
+        assert(has(r.logs, "in='帮我把这个文件重命名一下。'"));
+        assert(has(r.logs, "llm ok: '帮我把这个文件重命名一下。'"));
+    }
+    {   // 守卫拦截：guard blocked 行 + 回退规则级
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "帮我我在 GitHub 上搜一下。";  // 加字必被守卫拦
+        auto r = run(std::move(fake), "帮我在 GitHub 上搜一下 llama.cpp 这个项目。");
+        assert(r.text == "帮我在 GitHub 上搜一下 llama.cpp 这个项目。");
+        assert(has(r.logs, "guard blocked"));
+    }
+    {   // 引擎失败：llm fail 行 + 规则级兜底
+        auto fake = std::make_unique<FakeEngine>();
+        fake->fail = true;
+        auto r = run(std::move(fake), "嗯，帮我打开浏览器。");
+        assert(r.text == "帮我打开浏览器。");
+        assert(has(r.logs, "llm fail -> rule"));
+    }
+    printf("TestLocalRefinementDiagnosticsLogs passed\n");
+}
+
 // 真模型 smoke：LlamaCppEngine 加载真实 Qwen3-1.7B GGUF 并连发两句（第二句
 // 验证 KV 前缀复用延迟收敛）。模型解析与生产同口径（ResolveLocalRefineModelPath，
 // env VOICESTICK_REFINE_MODEL 注入）；不在位时 SKIP——不 mock 真实链路。
@@ -11639,6 +11710,7 @@ int main() {
     TestRefineGuardSafety();
     TestLocalRefinementClientOrchestration();
     TestLocalRefinementCustomPrompt();
+    TestLocalRefinementDiagnosticsLogs();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLocalAsrClientSenseVoiceSmoke();
     TestLocalAsrClientEmitsPartialWhileStreaming();

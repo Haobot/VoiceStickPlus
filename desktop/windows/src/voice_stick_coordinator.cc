@@ -1613,6 +1613,12 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         session_uses_local_refine_ =
             session_asr_ == local_asr_.get() && config_.local_asr.refine_enabled &&
             local_refiner_ != nullptr;
+        // 路由钉住留痕：实测排查「口水词没过滤」先看这行——local/cloud 与
+        // 是否带本地精修一目了然（后续归因行见 Local refine: in=/llm ok 等）。
+        LogCoordinatorLine(
+            "session asr route: " +
+            std::string(session_asr_ == local_asr_.get() ? "local" : "cloud") +
+            (session_uses_local_refine_ ? " +local-refine" : "") + " dev=" + device_id);
         active_session_started_at_ = std::chrono::steady_clock::now();
         received_audio_frames_ = 0;
         last_audio_seq_.reset();

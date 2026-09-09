@@ -22,9 +22,12 @@ class LocalRefinementClient {
   // 此时 Refine 退化为纯规则层。system_prompt 为空时用 BuildSystemPrompt()
   // 内置 few-shot 默认（设置页「编辑提示词」语义：空 = 默认，非空 = 用户
   // 自定义 few-shot；改动经 SyncLocalRefiner 幂等键触发引擎重建，KV 前缀
-  // 随新前缀重算）。
+  // 随新前缀重算）。log 可选诊断回调：每句记 in=（规则级输入）与归因行
+  // （llm ok / guard blocked / llm fail / llm empty），协调器注入
+  // LogCoordinatorLine 落 VoiceStickApp.log 供实测排查。
   explicit LocalRefinementClient(std::unique_ptr<LocalLlmEngine> engine,
-                                 std::string system_prompt = {});
+                                 std::string system_prompt = {},
+                                 std::function<void(std::string_view)> log = {});
 
   ~LocalRefinementClient();
 
@@ -61,6 +64,7 @@ class LocalRefinementClient {
 
   std::unique_ptr<LocalLlmEngine> engine_;
   std::string system_prompt_;
+  std::function<void(std::string_view)> log_;
   std::mutex threads_mutex_;
   std::vector<std::thread> threads_;
 };
