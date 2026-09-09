@@ -30,12 +30,14 @@ struct CorrectionOutcome {
 //
 // instructions 是本地 LLM 输出的多行指令，每行二选一：
 //   「错词→纠正词」：等长（码点数）替换。守卫全在代码层——src 须在当前文本、
-//     dst 须在 context（跨轮上文）中出现过、逐字 PinyinSameOrNear；
+//     dst 须在 context（跨轮上文）或 hotwords（热词表整词）中出现过、逐字
+//     PinyinSameOrNear。热词锚点（S2）：ASR 连续误识别某关键词时上文永远
+//     无正确写法，用户划词确认的正确词入热词表即建立锚点，后续变体自愈；
 //   待删片段原样摘录：不得含字母数字、须在当前文本中。
 // 「无」/空指令直通原文。执行后总长低于原文 40% 时整体回退原文
 // （rejected 追加 "total-ratio"）。安全性不依赖模型：任何越界指令均被拒。
-CorrectionOutcome ApplyPinyinCorrections(std::string_view asr,
-                                         std::string_view instructions,
-                                         std::string_view context);
+CorrectionOutcome ApplyPinyinCorrections(
+    std::string_view asr, std::string_view instructions, std::string_view context,
+    const std::vector<std::string>& hotwords = {});
 
 } // namespace voicestick

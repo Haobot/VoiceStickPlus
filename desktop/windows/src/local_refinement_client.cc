@@ -251,7 +251,7 @@ void LocalRefinementClient::RunRefine(
     const std::string stripped = StripReplyTemplate(raw);
     if (cross) {
         const auto outcome =
-            ApplyPinyinCorrections(rule_refined, stripped, context_text);
+            ApplyPinyinCorrections(rule_refined, stripped, context_text, hotwords);
         // 热词保护：指令误删原文热词（中文热词可过删除守卫的字母数字闸）→ 回退
         for (const auto& hotword : hotwords) {
             if (rule_refined.find(hotword) != std::string::npos &&

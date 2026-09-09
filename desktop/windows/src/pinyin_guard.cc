@@ -149,6 +149,15 @@ bool SameOrNearPerCodepoint(std::string_view src, std::string_view dst) {
     return true;
 }
 
+// 锚点域热词整词匹配（S2）：dst 与热词表条目完全相等才算锚点；子串不算
+// （防「语气词」搭「语气词表」的便车意外放行）。
+bool HotwordAnchors(const std::vector<std::string>& hotwords, std::string_view dst) {
+    for (const auto& hotword : hotwords) {
+        if (hotword == dst) return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool PinyinSameOrNear(std::uint32_t a, std::uint32_t b) {
@@ -168,9 +177,9 @@ bool PinyinSameOrNear(std::uint32_t a, std::uint32_t b) {
     return SetsIntersect(ea->initials, eb->initials) && FuzzyFinalHit(ea, eb);
 }
 
-CorrectionOutcome ApplyPinyinCorrections(std::string_view asr,
-                                         std::string_view instructions,
-                                         std::string_view context) {
+CorrectionOutcome ApplyPinyinCorrections(
+    std::string_view asr, std::string_view instructions, std::string_view context,
+    const std::vector<std::string>& hotwords) {
     CorrectionOutcome out;
     const auto instr_trimmed = TrimAscii(instructions);
     if (instr_trimmed.empty() || instr_trimmed == "无" || instr_trimmed == "无。" ||
@@ -196,7 +205,7 @@ CorrectionOutcome ApplyPinyinCorrections(std::string_view asr,
             const auto dst = TrimAscii(line.substr(arrow + 3));  // → 为 3 字节 UTF-8
             if (src.empty() || dst.empty() || !Contains(result, src) ||
                 CodepointCount(src) != CodepointCount(dst) ||
-                !Contains(context, dst) ||
+                !(Contains(context, dst) || HotwordAnchors(hotwords, dst)) ||
                 !SameOrNearPerCodepoint(src, dst)) {
                 out.rejected.emplace_back(line);
                 continue;

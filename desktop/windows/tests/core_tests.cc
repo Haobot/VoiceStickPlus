@@ -10886,6 +10886,19 @@ void TestLocalRefinementCrossTurnOrchestration() {
                std::string::npos);
         assert(r.last_user.find("那些语气词被过滤了。") == std::string::npos);
     }
+    {   // 11) 热词锚点域：上文无正确写法（连续误识别）但热词表有 →
+        //     client 须把 hotwords 下传 ApplyPinyinCorrections 作守卫锚点，
+        //     指令放行（S2，划词纠错建立的词入热词表后即可自愈）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "逾期次→语气词";
+        Ctx ctx;
+        ctx.cross_turn = true;
+        ctx.turns.push_back({"", "我们测了逾期次过滤。"});  // 上文同样误识别
+        auto r = run(std::move(fake), "这些逾期次还没删干净。", std::move(ctx),
+                     {"语气词"});
+        assert(r.ok);
+        assert(r.text == "这些语气词还没删干净。");
+    }
     printf("TestLocalRefinementCrossTurnOrchestration passed\n");
 }
 
@@ -11120,6 +11133,36 @@ void TestApplyPinyinCorrections() {
     {   // 边界：空指令直通
         const auto r = ApplyPinyinCorrections("原文。", "", "无关。");
         assert(r.text == "原文。" && r.rejected.empty());
+    }
+    {   // S2 热词锚点域（划词纠错配套，Doc/Plan/selection-hotword-correction-and-asr-hotword-spike.md）：
+        //     热词表整词命中可替代「上文出现过」作锚点——ASR 连续误识别
+        //     「语气词」时上文永远无正确写法，用户划词确认的正确词入热词表
+        //     后即建立锚点，所有近音变体由逐字近音校验自动容忍。
+        const auto r = ApplyPinyinCorrections(
+            "我们测试了逾期次过滤。", "逾期次→语气词", "",
+            {"语气词"});
+        assert(r.text == "我们测试了语气词过滤。");
+        assert(r.rejected.empty());
+    }
+    {   // 近音校验不因热词锚点放宽：dst 与 src 非近音 → 仍拒
+        const auto r = ApplyPinyinCorrections(
+            "我们测试了逾期次过滤。", "逾期次→蓝牙", "",
+            {"语气词"});
+        assert(r.text == "我们测试了逾期次过滤。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // 热词整词匹配：dst 仅为热词的子串不算锚点（防意外放行窗口）
+        const auto r = ApplyPinyinCorrections(
+            "我们测试了逾期次过滤。", "逾期次→语气词", "",
+            {"语气词表"});
+        assert(r.text == "我们测试了逾期次过滤。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // 回归：无热词无上文仍拒（原锚点语义不变）
+        const auto r = ApplyPinyinCorrections(
+            "我们测试了逾期次过滤。", "逾期次→语气词", "");
+        assert(r.text == "我们测试了逾期次过滤。");
+        assert(r.rejected.size() == 1);
     }
     printf("TestApplyPinyinCorrections passed\n");
 }
