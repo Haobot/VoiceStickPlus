@@ -31,6 +31,11 @@
 #include "ogg_opus_muxer.h"
 #include "ogg_opus_demuxer.h"
 #include "local_asr_client_win.h"
+#include "local_refinement_client.h"
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+#include "llama_cpp_engine.h"
+#endif
+#include "text_refiner.h"
 #include "mic_capture.h"
 #include "wasapi_mic_capture.h"
 #include "push_to_talk_key.h"
@@ -64,6 +69,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <future>
 #include <optional>
 #include <atomic>
 #include <set>
@@ -5199,33 +5205,54 @@ void TestImaAdpcmDecoderGoldenFixtures() {
     }
 
     int checked = 0;
+    int failed = 0;
     for (const auto& adpcm_path : adpcm_files) {
         const std::string stem = adpcm_path.stem().string();  // session_N
         const auto dir = adpcm_path.parent_path();
         const auto sidecar_path = dir / (stem + ".json");
         const auto raw_wav_path = dir / (stem + ".raw.wav");
         const auto wav_path = dir / (stem + ".wav");
+        // 前置校验与数据准备必须用显式检查：写进 assert 会在 NDEBUG 下整式短路，
+        // 曾经导致 Release 全部 session 以空 segments 对拍失败（Debug 却全绿）。
+        bool fixture_ok = std::filesystem::exists(sidecar_path, ec) &&
+                          std::filesystem::exists(raw_wav_path, ec) &&
+                          std::filesystem::exists(wav_path, ec);
         // 有 .adpcm 但缺 sidecar/WAV 属于残缺 fixtures，直接失败暴露问题。
-        assert(std::filesystem::exists(sidecar_path, ec));
-        assert(std::filesystem::exists(raw_wav_path, ec));
-        assert(std::filesystem::exists(wav_path, ec));
+        if (!fixture_ok) {
+            std::printf("FAIL %s fixtures 四件套不完整\n", stem.c_str());
+            ++failed;
+            continue;
+        }
 
         double gain_db = 0.0;
         std::vector<AtvvGoldenSegment> segments;
-        assert(ParseAtvvSidecarForTest(ReadTextFileForTest(sidecar_path),
-                                       &gain_db, &segments));
+        if (!ParseAtvvSidecarForTest(ReadTextFileForTest(sidecar_path),
+                                     &gain_db, &segments)) {
+            std::printf("FAIL %s sidecar 解析失败\n", stem.c_str());
+            ++failed;
+            continue;
+        }
 
         const std::string adpcm_text = ReadTextFileForTest(adpcm_path);
         const auto* adpcm = reinterpret_cast<const std::uint8_t*>(adpcm_text.data());
         const std::size_t adpcm_size = adpcm_text.size();
         ImaAdpcmDecoder decoder;
         std::vector<std::int16_t> pcm;
+        bool bounds_ok = true;
         for (const auto& seg : segments) {
-            assert(seg.offset + seg.bytes <= adpcm_size);
+            if (seg.offset + seg.bytes > adpcm_size) {
+                bounds_ok = false;
+                break;
+            }
             decoder.Reset(static_cast<std::int16_t>(seg.predictor), seg.step_index);
             auto part = decoder.Decode(
                 std::span<const std::uint8_t>(adpcm + seg.offset, seg.bytes));
             pcm.insert(pcm.end(), part.begin(), part.end());
+        }
+        if (!bounds_ok) {
+            std::printf("FAIL %s sidecar 段区间越界 adpcm\n", stem.c_str());
+            ++failed;
+            continue;
         }
 
         // 对拍 1：纯解码 == session_N.raw.wav（逐样本相等）。
@@ -5239,8 +5266,8 @@ void TestImaAdpcmDecoderGoldenFixtures() {
             std::printf("FAIL %s raw.wav 对拍失败: sizes %zu vs %zu, "
                         "首个差异样本 #%zu\n", stem.c_str(), pcm.size(),
                         expected_raw.size(), diff);
+            ++failed;
         }
-        assert(pcm == expected_raw);
 
         // 对拍 2：解码 + PcmPostprocessor(sidecar 增益) == session_N.wav。
         // Python 侧 smooth3+apply_gain 的舍入已对齐 std::lround。
@@ -5250,15 +5277,21 @@ void TestImaAdpcmDecoderGoldenFixtures() {
         if (processed != expected_wav) {
             std::printf("FAIL %s wav 对拍失败（gain_db=%.2f）\n",
                         stem.c_str(), gain_db);
+            ++failed;
         }
-        assert(processed == expected_wav);
 
         ++checked;
-        std::printf("  golden %s: %zu samples, %zu segment(s) OK\n",
+        std::printf("  golden %s: %zu samples, %zu segment(s) %s\n",
                     (dir.filename().string() + "/" + stem).c_str(),
-                    pcm.size(), segments.size());
+                    pcm.size(), segments.size(),
+                    (pcm == expected_raw && processed == expected_wav) ? "OK" : "FAIL");
     }
     std::printf("ATVV golden fixtures: %d session(s) checked\n", checked);
+    if (failed > 0) {
+        std::fprintf(stderr, "TestImaAdpcmDecoderGoldenFixtures: %d 处对拍失败\n",
+                     failed);
+        std::abort();
+    }
 }
 
 
@@ -10245,6 +10278,286 @@ static bool ReadMonoPcm16Wav(const std::filesystem::path& path,
     return false;
 }
 
+void TestTextRefinerRules() {
+    printf(">> TestTextRefinerRules\n"); fflush(stdout);
+    struct Case { const char* in; const char* want; const char* note; };
+    const Case cases[] = {
+        // 句首语气词（嗯/呃 直接删；啊/哦/噢/哎/唉/诶 须后跟标点才删，防误伤实义开头）
+        {"嗯，帮我把这个文件重命名一下。", "帮我把这个文件重命名一下。", "句首嗯+标点"},
+        {"呃我们试试", "我们试试", "句首呃无标点"},
+        {"啊，开会了。", "开会了。", "句首啊+标点"},
+        {"哦，对了，会议改到下午三点了。", "对了，会议改到下午三点了。", "句首哦+标点"},
+        {"哦对了开会", "哦对了开会", "哦后无标点不动（保守）"},
+        {"嗯帮我打开", "帮我打开", "句首嗯无标点"},
+        // CJK 叠字：连续同字 >=3 时，笑声字（哈/嘿/呵/嘻）保留 2 个，其余保留 1 个
+        {"我我我想去吃火锅。", "我想去吃火锅。", "口吃叠字保留1"},
+        {"哈哈哈", "哈哈", "3哈保留2"},
+        {"哈哈哈哈", "哈哈", "4哈保留2"},
+        {"哈哈", "哈哈", "2次不规整"},
+        {"AAAA", "AAAA", "拉丁叠字不规整"},
+        {"555", "555", "数字叠字不规整"},
+        // 中文（CJK）字符之间的停顿空格清除；拉丁/数字周围空格保留
+        {"搜一下 这个 项目", "搜一下这个项目", "CJK间空格清除"},
+        {"搜一下 llama.cpp 这个", "搜一下 llama.cpp 这个", "拉丁周围空格保留"},
+        // 重复标点规整（省略号 …… 为合法双码点，连续超 2 个收敛为 2 个）
+        {"好。。", "好。", "重复句号"},
+        {"真的？？？", "真的？", "重复问号"},
+        {"嗯……我觉得还行", "我觉得还行", "省略号跟随句首嗯"},
+        // 句首孤立标点清理
+        {"，我今天想", "我今天想", "句首孤立标点"},
+        // 边界
+        {"", "", "空文本"},
+        {"嗯。", "", "纯口水词句清空"},
+        {"帮我在 GitHub 上搜一下 llama.cpp 这个项目。",
+         "帮我在 GitHub 上搜一下 llama.cpp 这个项目。", "干净文本不动"},
+    };
+    for (const auto& c : cases) {
+        const std::string got = RuleRefineText(c.in);
+        if (got != c.want) {
+            printf("   RuleRefineText 失败 [%s]\n     in  =%s\n     got =%s\n     want=%s\n",
+                   c.note, c.in, got.c_str(), c.want);
+            fflush(stdout);
+            assert(false);
+        }
+    }
+    printf("TestTextRefinerRules passed\n");
+}
+
+void TestRefineGuardSafety() {
+    printf(">> TestRefineGuardSafety\n"); fflush(stdout);
+    // 放行：纯口水词删减（m0/refine spike 1.7B 实际输出形态）
+    assert(RefineResultSafe("嗯，帮我把这个文件重命名一下。",
+                            "帮我把这个文件重命名一下。"));
+    assert(RefineResultSafe("啊，那个，你等一下，我马上就来。",
+                            "你等一下，我马上就来。"));
+    assert(RefineResultSafe("呃 那个 这个项目 嗯 用的是 BLE 连接。",
+                            "这个项目用的是 BLE 连接。"));
+    assert(RefineResultSafe("I think um we should uh use the model.",
+                            "I think we should use the model."));
+    assert(RefineResultSafe("然后呢，我们接下来就是要做那个测试了。",
+                            "我们接下来就是要做测试了。"));
+    // 放行：叠字删减、标点/空白规整、ASCII 大小写纠正（sense voice -> SenseVoice）
+    assert(RefineResultSafe("我我我想去吃火锅。", "我想去吃火锅。"));
+    assert(RefineResultSafe("我们用的是3.5版本。", "我们用的是 3.5 版本。"));
+    assert(RefineResultSafe("我们还是用那个 sense voice 吧。",
+                            "我们还是用 SenseVoice 吧。"));
+    assert(RefineResultSafe("嗯。", ""));
+    // 拦截（spike 真实失误样本回归）：改写、删实词、删实义片段、换字、删专名
+    assert(!RefineResultSafe("你吃饭了没有啊？", "你吃饭了吗。"));
+    assert(!RefineResultSafe("好的好的，我知道了。", "好的"));
+    assert(!RefineResultSafe("这个函数的名字叫 process_data，注意是下划线。",
+                             "这个函数的名字叫 process_data。"));
+    assert(!RefineResultSafe("就是，我想问一下就是，这个支持 Windows 吗？",
+                             "就是，这个支持 Windows 吗？"));
+    assert(!RefineResultSafe("帮我把这个文件重命名一下。",
+                             "帮我把那个文件重命名一下。"));
+    assert(!RefineResultSafe("帮我在 GitHub 上搜一下 llama.cpp 这个项目。",
+                             "帮我在 GitHub 上搜一下这个项目。"));
+    assert(!RefineResultSafe("嗯，帮我打开浏览器。", ""));
+    // 热词守卫联动：原文已正确出现的热词被改丢（含大小写改坏）必须拦截
+    assert(!RefineResultSafe("编辑 AGENTS.md 这个文件", "编辑这个文件", {"AGENTS.md"}));
+    assert(!RefineResultSafe("编辑 AGENTS.md 这个文件", "编辑 agents.md 这个文件",
+                             {"AGENTS.md"}));
+    assert(RefineResultSafe("编辑 AGENTS.md 这个文件", "编辑 AGENTS.md 这个文件",
+                            {"AGENTS.md"}));
+    printf("TestRefineGuardSafety passed\n");
+}
+
+void TestLocalRefinementClientOrchestration() {
+    printf(">> TestLocalRefinementClientOrchestration\n"); fflush(stdout);
+    // 可编程假引擎：注入式驱动编排层（流式/失败/取消/守卫回退）
+    class FakeEngine : public LocalLlmEngine {
+    public:
+        std::string reply;      // 生成的 assistant 文本
+        bool fail = false;      // Chat 直接失败
+        int chat_calls = 0;
+        std::string last_user;
+        std::string last_system;
+        bool Chat(const std::string& system_prompt, const std::string& user_text,
+                  const std::function<bool(const std::string&)>& on_token,
+                  std::string& completion) override {
+            ++chat_calls;
+            last_system = system_prompt;
+            last_user = user_text;
+            if (fail) return false;
+            if (on_token && !on_token(reply)) return false;
+            completion = reply;
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+
+    struct Out {
+        bool ok = false;
+        std::string text;
+        std::vector<std::string> tokens;
+        // 引擎观察值：on_complete 时 Chat 已返回，在工作线程内采集
+        //（run 返回后 client 连带析构 engine，事后读裸指针是悬垂）。
+        int chat_calls = -1;
+        std::string last_user;
+        std::string last_system;
+    };
+    // 运行一次精修并同步等待完成（client 栈上持有，析构 join 保证线程收尾）
+    auto run = [](std::unique_ptr<FakeEngine> fake, const std::string& text,
+                  std::shared_ptr<std::atomic_bool> cancel = nullptr) {
+        std::promise<Out> pr;
+        auto fut = pr.get_future();
+        auto tokens = std::make_shared<std::vector<std::string>>();
+        FakeEngine* observer = fake.get();
+        LocalRefinementClient client(std::move(fake));
+        client.Refine(
+            text,
+            [tokens](std::string t) { tokens->push_back(std::move(t)); },
+            [&pr, tokens, observer](bool ok, std::string s) {
+                Out out;
+                out.ok = ok;
+                out.text = std::move(s);
+                out.tokens = *tokens;
+                if (observer) {  // 场景 4 传空引擎：无观察值可采
+                    out.chat_calls = observer->chat_calls;
+                    out.last_user = observer->last_user;
+                    out.last_system = observer->last_system;
+                }
+                pr.set_value(std::move(out));
+            },
+            std::move(cancel));
+        return fut.get();
+    };
+
+    {   // 1) 正常精修：L1 规则先行（fake 收到的是规则级文本），守卫放行
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "帮我把这个文件重命名一下。";
+        auto r = run(std::move(fake), "嗯，帮我把这个文件重命名一下。");
+        assert(r.ok);
+        assert(r.text == "帮我把这个文件重命名一下。");
+        assert(r.chat_calls == 1);
+        assert(r.last_user.find("输入：帮我把这个文件重命名一下") !=
+               std::string::npos);
+        assert(r.last_system.find("输入：") != std::string::npos);  // few-shot
+        assert(!r.tokens.empty());
+    }
+    {   // 2) 模型改坏（加字）被守卫拦截：回退规则级结果
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "帮我我在 GitHub 上搜一下。";
+        auto r = run(std::move(fake), "帮我在 GitHub 上搜一下 llama.cpp 这个项目。");
+        assert(r.ok);
+        assert(r.text == "帮我在 GitHub 上搜一下 llama.cpp 这个项目。");
+    }
+    {   // 3) 引擎失败：回退规则级结果（含 L1 规整）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->fail = true;
+        auto r = run(std::move(fake), "嗯，帮我打开浏览器。");
+        assert(r.ok);
+        assert(r.text == "帮我打开浏览器。");
+    }
+    {   // 4) 空引擎：纯规则层降级
+        auto r = run(nullptr, "嗯，好的。");
+        assert(r.ok);
+        assert(r.text == "好的。");
+    }
+    {   // 5) 模板残留剥离（输出：前缀）后守卫放行
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "输出：帮我把这个文件重命名一下。";
+        auto r = run(std::move(fake), "嗯，帮我把这个文件重命名一下。");
+        assert(r.ok);
+        assert(r.text == "帮我把这个文件重命名一下。");
+    }
+    {   // 6) 预置取消：不触发引擎，直接回退
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "帮我把这个文件重命名一下。";
+        auto cancel = std::make_shared<std::atomic_bool>(true);
+        auto r = run(std::move(fake), "嗯，帮我把这个文件重命名一下。", cancel);
+        assert(!r.ok);
+        assert(r.text == "帮我把这个文件重命名一下。");
+        assert(r.chat_calls == 0);
+    }
+    {   // 7) 热词联动：LLM 结果丢热词回退规则级
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "编辑这个文件";   // 丢了 AGENTS.md
+        // hotwords 用例：Refine 带 hotwords —— run 不支持，单独构造
+        std::promise<std::pair<bool, std::string>> pr;
+        auto fut = pr.get_future();
+        LocalRefinementClient client(std::move(fake));
+        client.Refine("编辑 AGENTS.md 这个文件",
+                      [](std::string) {},
+                      [&pr](bool ok, std::string s) {
+                          pr.set_value({ok, std::move(s)});
+                      },
+                      nullptr, {"AGENTS.md"});
+        auto [ok, text] = fut.get();
+        assert(ok);
+        assert(text == "编辑 AGENTS.md 这个文件");
+    }
+    // 8) StripReplyTemplate 纯函数
+    assert(LocalRefinementClient::StripReplyTemplate(
+               "输入：abc\n输出：\n帮我把文件重命名") == "帮我把文件重命名");
+    assert(LocalRefinementClient::StripReplyTemplate(
+               "<think>x</think>好的") == "好的");
+    assert(LocalRefinementClient::StripReplyTemplate("  干净文本  ") == "干净文本");
+    printf("TestLocalRefinementClientOrchestration passed\n");
+}
+
+// 真模型 smoke：LlamaCppEngine 加载真实 Qwen3-1.7B GGUF 并连发两句（第二句
+// 验证 KV 前缀复用延迟收敛）。模型解析与生产同口径（ResolveLocalRefineModelPath，
+// env VOICESTICK_REFINE_MODEL 注入）；不在位时 SKIP——不 mock 真实链路。
+// 仅 Release（NDEBUG）跑：Debug 无优化下 GGML 推理慢 20~40 倍（实测 prefix
+// prefill 700ms/token vs Release ~3ms/token），单句 4 分钟起，全量回归不可接受。
+void TestLlamaCppEngineRealModelSmoke() {
+    printf(">> TestLlamaCppEngineRealModelSmoke\n"); fflush(stdout);
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+#ifndef NDEBUG
+    printf("TestLlamaCppEngineRealModelSmoke SKIP（Debug 构建推理慢 20~40 倍，"
+           "Release 专用）\n");
+#else
+    const std::string models_dir = ResolveLocalMicModelsDir("", ".");
+    const std::string model = ResolveLocalRefineModelPath(models_dir, "");
+    if (model.empty()) {
+        printf("TestLlamaCppEngineRealModelSmoke SKIP（无精修模型；设 "
+               "VOICESTICK_REFINE_MODEL 指向 Qwen3-1.7B GGUF 启用）\n");
+        return;
+    }
+    printf("  model: %s\n", model.c_str()); fflush(stdout);
+    auto t0 = std::chrono::steady_clock::now();
+    auto engine = LlamaCppEngine::Create(model, 6);
+    assert(engine != nullptr);
+    const auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    const std::string system = LocalRefinementClient::BuildSystemPrompt();
+    const auto chat_once = [&](const std::string& text) {
+        const auto start = std::chrono::steady_clock::now();
+        std::string out;
+        std::string partial;
+        const bool ok = engine->Chat(
+            system, "输入：" + text + "\n输出：",
+            [&partial](std::string piece) {
+                partial += piece;
+                return true;
+            },
+            out);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        printf("  chat %lldms ok=%d out=%s\n", static_cast<long long>(ms),
+               static_cast<int>(ok), out.substr(0, 60).c_str());
+        fflush(stdout);
+        return std::make_pair(ok, ms);
+    };
+    const auto [ok1, ms1] = chat_once("嗯，帮我把这个文件重命名一下。");
+    const auto [ok2, ms2] = chat_once("呃，我想问一下今天的会议几点开始。");
+    printf("  load=%lldms first=%lldms second=%lldms\n",
+           static_cast<long long>(load_ms), static_cast<long long>(ms1),
+           static_cast<long long>(ms2));
+    assert(ok1 && ok2);
+    // 预算宽松（构建机负载波动）：单句 ≤15s；KV 前缀复用后第二句不慢于首句。
+    assert(ms1 <= 15000);
+    assert(ms2 <= 15000);
+    assert(ms2 <= ms1 + 500);
+    printf("TestLlamaCppEngineRealModelSmoke passed\n");
+#endif  // NDEBUG
+#else
+    printf("TestLlamaCppEngineRealModelSmoke SKIP（VOICESTICK_ENABLE_LOCAL_REFINE=OFF）\n");
+#endif
+}
+
 void TestLocalAsrClientStartFailsWhenModelMissing() {
     LocalAsrClient client("Z:/voicestick/不存在的模型目录");
     assert(!client.Start());
@@ -10789,6 +11102,139 @@ void TestCoordinatorLocalMicSessionRoutesToLocalAsr() {
     assert(ui.hide_overlay_count == 1);
 }
 
+// 本地识别会话钉住本地精修：final 文本过本地三层（规则 → LLM → 守卫），
+// 注入守卫放行的 LLM 结果；引擎失败回退规则级文本（最差不劣于规则）。
+// 云端 refine 保持关闭：本用例同时验证钉住互斥——本地会话不触发云端精修。
+void TestCoordinatorLocalMicSessionRefinesFinalText() {
+    class FakeEngine : public LocalLlmEngine {
+    public:
+        std::string reply;
+        bool fail = false;
+        int chat_calls = 0;
+        std::string last_user;
+        bool Chat(const std::string&, const std::string& user_text,
+                  const std::function<bool(const std::string&)>& on_token,
+                  std::string& completion) override {
+            ++chat_calls;
+            last_user = user_text;
+            if (fail) return false;
+            if (on_token && !on_token(reply)) return false;
+            completion = reply;
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+    // 子场景 1：LLM 结果过守卫，注入精修后文本
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto cloud_asr = std::make_unique<FakeAsrClient>();
+        auto* cloud_asr_ptr = cloud_asr.get();
+        auto local_asr = std::make_unique<FakeAsrClient>();
+        auto* local_asr_ptr = local_asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.local_asr.enabled = true;
+        config.local_asr.refine_enabled = true;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                          &ui, &input);
+        auto engine = std::make_unique<FakeEngine>();
+        engine->reply = "帮我把这个文件重命名一下。";
+        FakeEngine* engine_ptr = engine.get();
+        coordinator.SetLocalRefiner(
+            std::make_unique<LocalRefinementClient>(std::move(engine)));
+        auto capture = std::make_unique<FakeMicCapture>();
+        auto* capture_ptr = capture.get();
+        coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+        coordinator.Start();
+
+        coordinator.HandleLocalMicHotkeyPressed();
+        const std::vector<std::int16_t> pcm(16000, 1200);
+        capture_ptr->on_pcm(pcm);
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        capture_ptr->on_pcm(pcm);
+        coordinator.HandleLocalMicHotkeyReleased();
+        assert(local_asr_ptr->started);
+        assert(!cloud_asr_ptr->started);
+
+        local_asr_ptr->on_final("嗯，帮我把这个文件重命名一下。");
+        // 本地精修在 client 内部线程异步完成：轮询等待注入（对齐云端精修
+        // 测试的等待模式）。
+        for (int i = 0; i < 250 && input.pasted_text.empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        assert(input.pasted_text == "帮我把这个文件重命名一下。");
+        assert(engine_ptr->chat_calls == 1);
+        // L1 规则先滤句首语气词，喂给 LLM 的已是规则级文本。
+        assert(engine_ptr->last_user.find("输入：帮我把这个文件重命名一下") !=
+               std::string::npos);
+    }
+    // 子场景 2：引擎失败回退规则级文本
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto cloud_asr = std::make_unique<FakeAsrClient>();
+        auto local_asr = std::make_unique<FakeAsrClient>();
+        auto* local_asr_ptr = local_asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.local_asr.enabled = true;
+        config.local_asr.refine_enabled = true;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                          &ui, &input);
+        auto engine = std::make_unique<FakeEngine>();
+        engine->fail = true;
+        coordinator.SetLocalRefiner(
+            std::make_unique<LocalRefinementClient>(std::move(engine)));
+        auto capture = std::make_unique<FakeMicCapture>();
+        auto* capture_ptr = capture.get();
+        coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+        coordinator.Start();
+
+        coordinator.HandleLocalMicHotkeyPressed();
+        const std::vector<std::int16_t> pcm(16000, 1200);
+        capture_ptr->on_pcm(pcm);
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        capture_ptr->on_pcm(pcm);
+        coordinator.HandleLocalMicHotkeyReleased();
+
+        local_asr_ptr->on_final("嗯，帮我打开浏览器。");
+        for (int i = 0; i < 250 && input.pasted_text.empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        assert(input.pasted_text == "帮我打开浏览器。");
+    }
+    // 子场景 3：refine_enabled=true 但未注入 refiner——退化为原文直通
+    //（模型未就绪/未下载时不阻塞本地语音输入）。
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto cloud_asr = std::make_unique<FakeAsrClient>();
+        auto local_asr = std::make_unique<FakeAsrClient>();
+        auto* local_asr_ptr = local_asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.local_asr.enabled = true;
+        config.local_asr.refine_enabled = true;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                          &ui, &input);
+        auto capture = std::make_unique<FakeMicCapture>();
+        auto* capture_ptr = capture.get();
+        coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+        coordinator.Start();
+
+        coordinator.HandleLocalMicHotkeyPressed();
+        const std::vector<std::int16_t> pcm(16000, 1200);
+        capture_ptr->on_pcm(pcm);
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        capture_ptr->on_pcm(pcm);
+        coordinator.HandleLocalMicHotkeyReleased();
+
+        local_asr_ptr->on_final("嗯，没有精修引擎的原文");
+        assert(input.pasted_text == "嗯，没有精修引擎的原文");
+    }
+}
+
 // 选中本地语音识别（local_asr.enabled）时，设备会话（遥控器语音键/全局热键触发的
 // 设备录音）也必须路由到本地 SenseVoice——断网场景下设备语音可用，云端客户端零启动。
 void TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled() {
@@ -11147,6 +11593,9 @@ int main() {
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();
     TestPowerLogMonitor();
+    TestTextRefinerRules();
+    TestRefineGuardSafety();
+    TestLocalRefinementClientOrchestration();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLocalAsrClientSenseVoiceSmoke();
     TestLocalAsrClientEmitsPartialWhileStreaming();
@@ -11161,6 +11610,8 @@ int main() {
     TestResolveAndValidateModelsDir();
     TestAppConfigLocalAsrRoundTrip();
     TestCoordinatorLocalMicSessionRoutesToLocalAsr();
+    TestCoordinatorLocalMicSessionRefinesFinalText();
+    TestLlamaCppEngineRealModelSmoke();
     TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled();
     TestCoordinatorLocalMicShortPressDiscards();
     TestCoordinatorLocalMicDisabledDoesNothing();
