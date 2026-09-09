@@ -74,6 +74,11 @@ bool IsNoneReply(std::string_view line) {
 
 } // namespace
 
+std::string BuildCandidatesSystemPrompt() {
+    return "你是中文语音识别纠错助手，根据错词和上下文推测用户真正想说的词。"
+           "只输出候选词列表，不要解释。";
+}
+
 std::string BuildCorrectionCandidatesPrompt(std::string_view wrong_text,
                                             std::string_view context) {
     std::string prompt = "错词：" + std::string(wrong_text) + "\n";

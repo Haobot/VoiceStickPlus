@@ -10,6 +10,9 @@ namespace voicestick {
 // 用户选中 ASR 错词（如「逾期次」）→ LLM 生成候选 → 近音过滤 → 对话框展示
 // → 用户点选/手输正确词（如「语气词」）→ 入热词表（S2 锚点域即生效）。
 
+// 候选生成的 system 提示（角色定位；全部输出要求在 user 提示里）。
+std::string BuildCandidatesSystemPrompt();
+
 // 候选生成的 user 提示文本。错词 + 可选上下文（跨轮历史最近几轮拼接）。
 // 云端（OpenAI 兼容）与本地精修引擎共用同一 prompt。
 std::string BuildCorrectionCandidatesPrompt(std::string_view wrong_text,

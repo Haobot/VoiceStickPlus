@@ -85,6 +85,17 @@ class LocalRefinementClient {
               std::vector<std::string> hotwords = {},
               RefineContext context = {});
 
+  // 划词纠错候选生成（S1）：错词+上下文 → LLM 候选 → 解析+近音过滤回调。
+  // on_done 恰好一次（后台线程）：ok=false 表示引擎不可用/失败（候选空，
+  // 调用方退化为纯手输）。复用本实例引擎（单例常驻），引擎调用经
+  // engine_mutex_ 与精修串行——llama.cpp 非线程安全；候选 Chat 会作废
+  // 跨轮 KV 会话（下一句精修全量重建，低频显式操作可接受）。
+  using CandidatesComplete =
+      std::function<void(bool ok, std::vector<std::string> candidates)>;
+  void GenerateCandidates(const std::string& wrong_text,
+                          const std::string& context,
+                          CandidatesComplete on_done);
+
   bool IsReady() const { return engine_ && engine_->IsReady(); }
 
  private:
@@ -95,9 +106,14 @@ class LocalRefinementClient {
                  const std::vector<std::string>& hotwords,
                  const RefineContext& context);
 
+  void RunGenerateCandidates(const std::string& wrong_text,
+                             const std::string& context,
+                             const CandidatesComplete& on_done);
+
   std::unique_ptr<LocalLlmEngine> engine_;
   std::string system_prompt_;
   std::function<void(std::string_view)> log_;
+  std::mutex engine_mutex_;   // 引擎调用串行化（Refine 与 GenerateCandidates）
   std::mutex threads_mutex_;
   std::vector<std::thread> threads_;
 };

@@ -11214,6 +11214,90 @@ void TestSelectionCorrection() {
     printf("TestSelectionCorrection passed\n");
 }
 
+// client 候选生成编排（S1）：引擎输出 → 解析+近音过滤回调；失败给 (false,{})。
+// 引擎调用经 engine 互斥与精修串行（同一 llama.cpp 实例非线程安全）。
+void TestLocalRefinementGenerateCandidates() {
+    printf(">> TestLocalRefinementGenerateCandidates\n"); fflush(stdout);
+    class FakeEngine : public LocalLlmEngine {
+    public:
+        std::string reply;
+        bool fail = false;
+        std::string last_user;
+        std::string last_system;
+        bool Chat(const std::string& system_prompt, const std::string& user_text,
+                  const std::function<bool(const std::string&)>& on_token,
+                  std::string& completion) override {
+            last_system = system_prompt;
+            last_user = user_text;
+            if (fail) return false;
+            if (on_token && !on_token(reply)) return false;
+            completion = reply;
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+    struct Out {
+        bool ok = false;
+        std::vector<std::string> candidates;
+    };
+    auto run = [](std::unique_ptr<FakeEngine> fake, const std::string& wrong,
+                  const std::string& context) {
+        std::promise<Out> pr;
+        auto fut = pr.get_future();
+        LocalRefinementClient client(std::move(fake));
+        client.GenerateCandidates(
+            wrong, context,
+            [&pr](bool ok, std::vector<std::string> candidates) {
+                Out out;
+                out.ok = ok;
+                out.candidates = std::move(candidates);
+                pr.set_value(std::move(out));
+            });
+        return fut.get();
+    };
+    {   // 1) 多行候选：序号剥除 + 近音过滤 + 去重去原词
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "1. 语气词\n2、鱼旗子\n3. 蓝牙\n语气词";
+        const auto r = run(std::move(fake), "逾期次", "我们测了逾期次过滤");
+        assert(r.ok);
+        assert(r.candidates.size() == 2);
+        assert(r.candidates[0] == "语气词");
+        assert(r.candidates[1] == "鱼旗子");
+    }
+    {   // 2) 模型直答「无」→ (true, {})
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "无";
+        const auto r = run(std::move(fake), "逾期次", "");
+        assert(r.ok);
+        assert(r.candidates.empty());
+    }
+    {   // 3) 引擎失败 → (false, {})
+        auto fake = std::make_unique<FakeEngine>();
+        fake->fail = true;
+        const auto r = run(std::move(fake), "逾期次", "");
+        assert(!r.ok);
+        assert(r.candidates.empty());
+    }
+    {   // 4) user 形态 = BuildCorrectionCandidatesPrompt(wrong, context)，
+        //     system = 候选生成专用（区别于精修 few-shot/纠正指令两种）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "无";
+        FakeEngine* observer = fake.get();
+        std::promise<void> done;
+        auto fut = done.get_future();
+        LocalRefinementClient client(std::move(fake));
+        client.GenerateCandidates(
+            "逾期次", "我们测了逾期次过滤",
+            [&done](bool, std::vector<std::string>) { done.set_value(); });
+        fut.get();
+        assert(observer->last_user ==
+               BuildCorrectionCandidatesPrompt("逾期次", "我们测了逾期次过滤"));
+        assert(observer->last_system ==
+               BuildCandidatesSystemPrompt());
+    }
+    printf("TestLocalRefinementGenerateCandidates passed\n");
+}
+
 // 历史缓冲：滑窗 5 轮、2 分钟 TTL 惰性过期、ContextText 拼接、Clear。
 void TestRefineHistory() {
     printf(">> TestRefineHistory\n"); fflush(stdout);
@@ -13557,6 +13641,7 @@ int main() {
     TestPinyinSameOrNear();
     TestApplyPinyinCorrections();
     TestSelectionCorrection();
+    TestLocalRefinementGenerateCandidates();
     TestRefineHistory();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLlamaCppEngineSessionTurnSmoke();

@@ -1,6 +1,7 @@
 #include "local_refinement_client.h"
 
 #include "pinyin_guard.h"
+#include "selection_correction.h"
 #include "text_refiner.h"
 
 #include <algorithm>
@@ -234,10 +235,15 @@ void LocalRefinementClient::RunRefine(
         if (on_token) on_token(std::move(piece));
         return true;
     };
-    const bool ok = cross
-        ? engine_->ChatSessionTurn(sys_prompt, history, user_text,
-                                   chat_lambda, raw)
-        : engine_->Chat(sys_prompt, user_text, chat_lambda, raw);
+    bool ok = false;
+    {
+        // 引擎调用串行化（与 GenerateCandidates 共用实例；llama.cpp 非线程
+        // 安全，快速连发语音本就应排队）
+        std::lock_guard engine_lock(engine_mutex_);
+        ok = cross ? engine_->ChatSessionTurn(sys_prompt, history, user_text,
+                                              chat_lambda, raw)
+                   : engine_->Chat(sys_prompt, user_text, chat_lambda, raw);
+    }
     if (cancel && cancel->load()) {
         on_complete(false, rule_refined, "");
         return;
@@ -296,6 +302,42 @@ void LocalRefinementClient::RunRefine(
                               : "guard blocked '" + stripped + "' -> rule");
     }
     on_complete(true, rule_refined, "");
+}
+
+void LocalRefinementClient::GenerateCandidates(const std::string& wrong_text,
+                                               const std::string& context,
+                                               CandidatesComplete on_done) {
+    // 与 Refine 同款短命线程模型；析构 join 保证回调不悬垂。
+    std::lock_guard lock(threads_mutex_);
+    threads_.emplace_back(
+        [this, wrong_text, context, on_done = std::move(on_done)]() mutable {
+            RunGenerateCandidates(wrong_text, context, on_done);
+        });
+}
+
+void LocalRefinementClient::RunGenerateCandidates(
+    const std::string& wrong_text, const std::string& context,
+    const CandidatesComplete& on_done) {
+    if (!engine_ || !engine_->IsReady()) {
+        on_done(false, {});
+        return;
+    }
+    std::string raw;
+    bool ok = false;
+    {
+        std::lock_guard engine_lock(engine_mutex_);
+        ok = engine_->Chat(BuildCandidatesSystemPrompt(),
+                           BuildCorrectionCandidatesPrompt(wrong_text, context),
+                           nullptr, raw);
+    }
+    if (log_) log_("candidates in='" + wrong_text + "' out='" + raw + "'");
+    if (!ok) {
+        on_done(false, {});
+        return;
+    }
+    on_done(true, FilterCandidates(
+                      wrong_text,
+                      ParseCandidateLines(StripReplyTemplate(raw))));
 }
 
 } // namespace voicestick
