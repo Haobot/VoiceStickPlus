@@ -413,6 +413,9 @@ enum class StringId {
     kXiaomiButtonVolumeDown,
     kXiaomiButtonMenu,
     kXiaomiButtonTv,
+    kSettingsLocalRefineEnable,
+    kSettingsLocalRefineModelOk,
+    kSettingsLocalRefineModelMissing,
 };
 
 // 返回 UTF-8 本地化文本

@@ -48,6 +48,9 @@ private:
     // 本地语音识别：模型目录浏览 + 即时有效性回显（与启动校验同一口径）。
     void ChooseLocalMicModelsDir();
     void UpdateLocalMicModelsStatus();
+    // 本地文本精修：复选框勾选态与模型在位状态回显（与外壳装配同一解析口径）。
+    bool IsLocalRefineChecked() const;
+    void UpdateLocalRefineStatus();
     // 启动频谱查看器（scripts/e2e_test/spectrogram_server.py，经 py/python 启动）。
     void OpenSpectrogramViewer();
     bool IsLabelControl(HWND control) const;
@@ -132,6 +135,10 @@ private:
     HWND local_mic_models_dir_browse_button_ = nullptr;
     // 模型目录有效性回显（✓ 就绪 / ✗ 缺文件），与 Resolve+Validate 同口径。
     HWND local_mic_models_status_label_ = nullptr;
+    // 本地文本精修（Doc/Plan/local-text-refinement.md）：复选框 + 精修 GGUF
+    // 模型状态回显（✓ Qwen3-1.7B 在位 / ✗ 缺模型仅规则精修）。
+    HWND local_refine_check_ = nullptr;
+    HWND local_refine_status_label_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -181,6 +188,7 @@ private:
     static constexpr UINT kIdOpenSpectrogram = 2040;
     static constexpr UINT kIdLocalMicModelsDirEdit = 2042;
     static constexpr UINT kIdLocalMicModelsDirBrowse = 2044;
+    static constexpr UINT kIdLocalRefineCheck = 2045;
 };
 
 } // namespace voicestick

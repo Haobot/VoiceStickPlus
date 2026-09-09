@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kXiaomiButtonTv) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSettingsLocalRefineModelMissing) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -407,6 +407,12 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "Volume Down";
     table[Index(StringId::kXiaomiButtonMenu)] = "Menu";
     table[Index(StringId::kXiaomiButtonTv)] = "TV";
+    table[Index(StringId::kSettingsLocalRefineEnable)] =
+        "Local text refinement (filter filler words)";
+    table[Index(StringId::kSettingsLocalRefineModelOk)] =
+        "✓ Refine model ready (Qwen3 GGUF found)";
+    table[Index(StringId::kSettingsLocalRefineModelMissing)] =
+        "✗ Refine model not found; falls back to rule-based cleanup";
     return table;
 }
 
@@ -790,6 +796,12 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "音量-";
     table[Index(StringId::kXiaomiButtonMenu)] = "菜单键";
     table[Index(StringId::kXiaomiButtonTv)] = "TV 键";
+    table[Index(StringId::kSettingsLocalRefineEnable)] =
+        "本地文本精修（过滤口水词）";
+    table[Index(StringId::kSettingsLocalRefineModelOk)] =
+        "✓ 精修模型就绪（已找到 Qwen3 GGUF）";
+    table[Index(StringId::kSettingsLocalRefineModelMissing)] =
+        "✗ 未找到精修模型，将退化为规则级清理";
     return table;
 }
 

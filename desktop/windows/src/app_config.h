@@ -205,6 +205,15 @@ struct LocalAsrConfig {
     std::string models_dir;
     // 按住说话热键键名（right ctrl 等，见 push_to_talk_key.h 支持列表）。
     std::string push_to_talk_key = "right ctrl";
+    // 本地文本精修开关（L1 规则 + 本地 LLM 三层防御，见
+    // Doc/Plan/local-text-refinement.md）。默认开：选本地识别的用户目的就是
+    // 干净文本；模型缺失自动降级纯规则层并在设置界面明示。
+    bool refine_enabled = true;
+    // 精修 GGUF 模型路径。空 = models_dir（或 exe 旁 models/）下
+    // refine/qwen3-1.7b-q4_k_m.gguf。
+    std::string refine_model;
+    // 精修 CPU 推理线程数（默认 6：SenseVoice 2 线程 + UI/注入留余量）。
+    int refine_num_threads = 6;
 
     bool operator==(const LocalAsrConfig& other) const = default;
 };

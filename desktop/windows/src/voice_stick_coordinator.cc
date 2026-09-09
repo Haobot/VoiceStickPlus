@@ -181,6 +181,7 @@ void VoiceStickCoordinator::Shutdown() {
     local_mic_hotkey_down_ = false;
     local_mic_active_session_id_.store(0);
     session_asr_ = nullptr;
+    session_uses_local_refine_ = false;
     for (auto& [_, cycle] : subtitle_cycles_) {
         if (cycle->asr) cycle->asr->Cancel();
         cycle->debug_audio_recorder.Discard();
@@ -244,6 +245,7 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
         // 云端客户端已被替换：会话级路由指针必须解除，避免悬垂（活跃会话在上方
         // was_recognizing 分支已经 EnterReady 清空）。
         session_asr_ = nullptr;
+        session_uses_local_refine_ = false;
     }
     if (paired_device_ids_ != config_.paired_device_ids) {
         paired_device_ids_ = config_.paired_device_ids;
@@ -417,6 +419,7 @@ void VoiceStickCoordinator::SetLocalMicRuntime(std::unique_ptr<IMicCapture> capt
         local_mic_active_session_id_.store(0);
         if (session_asr_ == local_asr_.get()) {
             session_asr_ = nullptr;
+            session_uses_local_refine_ = false;
         }
     }
     local_mic_capture_ = std::move(capture);
@@ -428,6 +431,17 @@ void VoiceStickCoordinator::SetLocalMicRuntime(std::unique_ptr<IMicCapture> capt
     }
     if (local_asr_) {
         WireAsrClientCallbacks(local_asr_.get());
+    }
+}
+
+// 本地精修运行件注入：与 SetLocalMicRuntime 同款"锁内解除钉住+替换、锁外
+// 析构"模式——旧 client 析构 join 其工作线程，线程的 completion 链会走到
+// EnterPendingConfirmation（抢 audio_mutex_），持锁析构会死锁。
+void VoiceStickCoordinator::SetLocalRefiner(std::unique_ptr<LocalRefinementClient> refiner) {
+    {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        session_uses_local_refine_ = false;
+        local_refiner_ = std::move(refiner);
     }
 }
 
@@ -1592,6 +1606,13 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
                         (device_id == kLocalMicDeviceId || config_.local_asr.enabled))
                            ? local_asr_.get()
                            : asr_.get();
+        // 本地精修钉住与 ASR 路由同源：本会话走本地识别且 [local_asr]
+        // refine_enabled 且已注入 refiner 时，final 文本过本地三层精修
+        //（规则 → LLM → 守卫）。未钉住时设备/云端会话维持云端 refine_enabled
+        // 分支，行为不变。
+        session_uses_local_refine_ =
+            session_asr_ == local_asr_.get() && config_.local_asr.refine_enabled &&
+            local_refiner_ != nullptr;
         active_session_started_at_ = std::chrono::steady_clock::now();
         received_audio_frames_ = 0;
         last_audio_seq_.reset();
@@ -2020,11 +2041,12 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
         });
         return;
     }
-    if (config_.refine_enabled) {
+    if (config_.refine_enabled || (session_uses_local_refine_ && local_refiner_)) {
         ui_->SetStatus("Refining");
         // 立即把 ASR 原文刷上悬浮窗并进入精修态（kRefining 指示器 + 末尾闪烁光标），
-        // 让用户在 LLM 首 token 到达前（建连 + TTFT 约 1~2s）就能看到识别结果，
-        // 而非冻结在旧 partial 上造成"卡住"感。精修流式 token 随后经 AppendPartial 覆盖。
+        // 让用户在 LLM 首 token 到达前（建连 + TTFT 约 1~2s；本地引擎首句含
+        // prefill 更久）就能看到识别结果，而非冻结在旧 partial 上造成"卡住"感。
+        // 精修流式 token 随后经 AppendPartial 覆盖。
         if (active_device_id_.has_value()) {
             ui_->ShowRefining(text, *active_device_id_);
         }
@@ -2225,6 +2247,64 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         // 翻译 prompt 热词段同样按高频评分取 top-N，防大库稀释小模型注意力。
         translator_.Translate(text, profile.translation_target, HotwordsForLlmPrompts(),
                               std::move(wrapped));
+        return;
+    }
+    // 本地识别会话（钉住路由）的 final 文本走本地三层精修：规则 → 本地 LLM →
+    // 守卫在 client 内逐层回退，on_complete 的结果已过守卫，这里只节流渐显+
+    // 收口。与云端 refine 互斥：本地钉住优先（断网可用语义），未钉住时落到
+    // 下方云端分支，行为不变。
+    if (session_uses_local_refine_ && local_refiner_ && !text.empty()) {
+        CancelStreamingRefinement();
+        refinement_cancel_token_ = std::make_shared<std::atomic_bool>(false);
+
+        auto alive = alive_;
+        auto cancel = refinement_cancel_token_;
+        auto device_id = active_device_id_;
+
+        // 节流状态：跨 on_token 回调共享，每 ~60ms 最多更新一次 UI（与云端
+        // RefineStream 分支同构）。
+        struct ThrottleState {
+            std::mutex mutex;
+            std::string accumulated;
+            std::chrono::steady_clock::time_point last_update{};
+        };
+        auto throttle = std::make_shared<ThrottleState>();
+
+        local_refiner_->Refine(
+            text,
+            // on_token（后台线程）：节流式追加更新悬浮窗
+            [this, alive, cancel, device_id, throttle](std::string token) {
+                if (!alive->load() || (cancel && cancel->load())) return;
+                TouchFinalizingWatchdog();
+                std::string current;
+                bool should_update = false;
+                {
+                    std::lock_guard lock(throttle->mutex);
+                    throttle->accumulated += token;
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - throttle->last_update >= std::chrono::milliseconds(60)) {
+                        throttle->last_update = now;
+                        current = throttle->accumulated;
+                        should_update = true;
+                    }
+                }
+                if (should_update) {
+                    ui_->AppendPartial(current, device_id);
+                }
+            },
+            // on_complete（后台线程）：ok=守卫放行的 LLM 结果；!ok=取消或规则级
+            // 回退，client 已保证给了可用的最终文本。
+            [this, alive, cancel, text, device_id,
+             wrapped = std::move(wrapped)](bool ok, std::string result) mutable {
+                if (!alive->load() || (cancel && cancel->load())) return;
+                std::string final_text = (ok && !result.empty()) ? result : text;
+                CancelStreamingRefinement();
+                ui_->ShowPartial(final_text, device_id);
+                if (ok) MineHotwordCandidatesFromRefinement(text, final_text);
+                wrapped(true, final_text);
+                MaybeExtractHotwordCandidates(final_text);
+            },
+            cancel, config_.asr_hotwords);
         return;
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
@@ -3012,6 +3092,9 @@ void VoiceStickCoordinator::EnterReady(std::string_view reason, bool hide_overla
     local_mic_active_session_id_.store(0);
     // 会话级 ASR 路由随会话结束解除（后续无音频可发，防御性复位）。
     session_asr_ = nullptr;
+    // 本地精修钉住同源解除：final 文本路径可能在收尾后仍有迟到回调，
+    // 复位后走原文直通，不再依赖可能已被外壳替换的 refiner。
+    session_uses_local_refine_ = false;
 }
 
 void VoiceStickCoordinator::EnterFinalizing(std::string_view reason) {

@@ -16,6 +16,7 @@
 #include "key_spec.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
+#include "local_refinement_client.h"
 #include "mic_capture.h"
 #include "ogg_opus_muxer.h"
 #include "pcm_ring_buffer.h"
@@ -253,6 +254,11 @@ public:
     // config [local_asr] enabled=false 时按住说话热键完全旁路。
     void SetLocalMicRuntime(std::unique_ptr<IMicCapture> capture,
                             std::unique_ptr<AsrClient> local_asr);
+    // 注入本地文本精修客户端（本地识别会话的 final 文本走 L1 规则 → L2 本地
+    // LLM → L3 守卫三层防御，内部逐层回退，Doc/Plan/local-text-refinement.md）。
+    // nullptr 允许：本地会话退化为纯规则精修。与 SetLocalMicRuntime 同为外壳
+    // 注入件；config [local_asr] refine_enabled=false 时外壳不注入。
+    void SetLocalRefiner(std::unique_ptr<LocalRefinementClient> refiner);
     // 按住说话热键按下（外壳 LL 钩子转发）：以 kLocalMicDeviceId 建立主会话并
     // 启动采集。释放：停采（join 采集线程）、尾帧补零冲刷、发空 END 帧复用主会话
     // audio_end 收尾路径（短按丢弃/最终块发送/finalizing 全部既有逻辑）。
@@ -365,6 +371,10 @@ private:
     AsrClient* SessionAsrClient();
     // 会话级 ASR 路由钉住指针（生命周期见 SessionAsrClient；所有权在外部成员）。
     AsrClient* session_asr_ = nullptr;
+    // 会话级精修路由钉住：本会话 final 文本是否走本地精修（本地 ASR 路由 &&
+    // refine_enabled && 已注入 refiner）。与 session_asr_ 同生命周期同复位点；
+    // 翻译 profile（kTranslate）仍优先走云端翻译，不经本地精修。
+    bool session_uses_local_refine_ = false;
     // 取消全部主会话 ASR 客户端（云端 + 本地）。会话取消/收尾路径使用，避免在
     // 会话归属已重置时漏取消。调用方须持有 audio_mutex_。
     void CancelAsrClients();
@@ -676,6 +686,8 @@ private:
     // 运行件（外壳注入）：采集器 + 本地 ASR。hotkey 回调入口做存在性门控。
     std::unique_ptr<IMicCapture> local_mic_capture_;
     std::unique_ptr<AsrClient> local_asr_;
+    // 本地文本精修客户端（外壳注入，本地识别会话专用）。
+    std::unique_ptr<LocalRefinementClient> local_refiner_;
     // PCM 切帧（640 采样=40ms，对齐固件帧规格）+ Opus 编码器。
     // 生命周期：会话建立时 Reset；采集线程写；释放线程 Stop join 后读余量。
     OpusFrameSlicer local_mic_slicer_;

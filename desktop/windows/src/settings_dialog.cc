@@ -230,6 +230,10 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             // 离开编辑框即时重估模型有效性（与浏览/加载共用同一回显口径）。
             if (HIWORD(w_param) == EN_KILLFOCUS) UpdateLocalMicModelsStatus();
             return TRUE;
+        case kIdLocalRefineCheck:
+            // 勾选态切换即刷新精修模型状态行（可见性回调依赖勾选态）。
+            if (HIWORD(w_param) == BN_CLICKED) UpdateLocalRefineStatus();
+            return TRUE;
         case kIdApplyTrialApiKey:
             ApplyTrialApiKey();
             return TRUE;
@@ -675,6 +679,23 @@ void SettingsDialog::BuildControls() {
         add(Dp(20), {
             {local_mic_models_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
         }, [this]() { return ProviderComboLocalSelected(); });
+    }
+    {
+        // 本地文本精修（Doc/Plan/local-text-refinement.md）：final 文本过
+        // 规则 → 本地 LLM → 守卫三层；缺模型自动降级纯规则，勾选项仍可开。
+        local_refine_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsLocalRefineEnable, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdLocalRefineCheck, instance_,
+            BS_AUTOCHECKBOX));
+        add(row_h + Dp(6), {
+            {local_refine_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        }, [this]() { return ProviderComboLocalSelected(); });
+        // 精修模型状态回显（✓ Qwen3-1.7B 在位 / ✗ 仅规则精修），勾选时显示。
+        local_refine_status_label_ = remember_label(CreateLabel(
+            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
+        add(Dp(20), {
+            {local_refine_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
     }
     {
         // 热词块：label + 多行 edit + 提示行，作为一个整体推进。
@@ -1174,6 +1195,10 @@ void SettingsDialog::LoadConfigIntoControls() {
     // 本地语音识别：模型目录为空显示默认值提示（留空 = exe 目录下 models/）。
     SetWindowTextW(local_mic_models_dir_edit_, Utf16(config_.local_asr.models_dir).c_str());
     UpdateLocalMicModelsStatus();
+    // 本地文本精修：勾选态 + 模型在位状态回显。
+    SendMessageW(local_refine_check_, BM_SETCHECK,
+                 config_.local_asr.refine_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    UpdateLocalRefineStatus();
 
     int output_target_idx = 0;
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
@@ -1226,6 +1251,8 @@ void SettingsDialog::SaveSettings() {
     config_.local_asr.enabled = local_selected;
     // 按住说话热键不再由设置页编辑（移托管盘菜单「热键 → 按住说话热键」），保留原值。
     config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    config_.local_asr.refine_enabled =
+        SendMessageW(local_refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.llm_base_url = Utf8(GetWindowText(llm_base_url_edit_));
     config_.llm_api_key = Utf8(GetWindowText(llm_api_key_edit_));
     config_.llm_model = Utf8(GetWindowText(llm_model_edit_));
@@ -1474,6 +1501,44 @@ void SettingsDialog::UpdateLocalMicModelsStatus() {
     SetWindowTextW(local_mic_models_status_label_,
                    TrW(ready ? StringId::kSettingsLocalMicModelsOk
                              : StringId::kSettingsLocalMicModelsMissing,
+                       language)
+                       .c_str());
+    // 精修模型探测锚同一 models_dir（编辑框当前值）：目录变化联动刷新精修状态。
+    UpdateLocalRefineStatus();
+}
+
+bool SettingsDialog::IsLocalRefineChecked() const {
+    return local_refine_check_ != nullptr &&
+           SendMessageW(local_refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+void SettingsDialog::UpdateLocalRefineStatus() {
+    if (local_refine_status_label_ == nullptr || local_mic_models_dir_edit_ == nullptr) {
+        return;
+    }
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    // 与外壳装配（SyncLocalRefiner）同一解析口径：模型目录取编辑框当前值
+    //（未保存也能即时反馈），refine_model 尚无编辑入口走默认档位探测。
+    const std::string configured = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    const std::string exe_dir = []() {
+        std::wstring exe_path(MAX_PATH, L'\0');
+        DWORD length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                          static_cast<DWORD>(exe_path.size()));
+        while (length == exe_path.size()) {
+            exe_path.resize(exe_path.size() * 2);
+            length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                        static_cast<DWORD>(exe_path.size()));
+        }
+        if (length == 0) return std::string();
+        exe_path.resize(length);
+        return std::filesystem::path(exe_path).parent_path().string();
+    }();
+    const std::string models_dir = ResolveLocalMicModelsDir(configured, exe_dir);
+    const std::string model =
+        ResolveLocalRefineModelPath(models_dir, config_.local_asr.refine_model);
+    SetWindowTextW(local_refine_status_label_,
+                   TrW(model.empty() ? StringId::kSettingsLocalRefineModelMissing
+                                     : StringId::kSettingsLocalRefineModelOk,
                        language)
                        .c_str());
 }

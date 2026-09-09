@@ -5,6 +5,10 @@
 #include "ble_central_win.h"
 #include "hotword_extractor.h"
 #include "local_asr_client_win.h"
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+#include "llama_cpp_engine.h"
+#include "local_refinement_client.h"
+#endif
 #include "localization.h"
 #include "log.h"
 #include "mic_mode_hotkey.h"
@@ -22,6 +26,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <initializer_list>
 #include <iterator>
@@ -1429,8 +1434,51 @@ void Win32App::SyncLocalMicRuntime() {
         }
         mic_mode_hotkey_.reset();
     }
+
+    SyncLocalRefiner();
 #endif
 }
+
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+void Win32App::SyncLocalRefiner() {
+    if (coordinator_ == nullptr) return;
+
+    std::string model_path;
+    if (config_.local_asr.enabled && config_.local_asr.refine_enabled) {
+        const std::string models_dir = ResolveLocalMicModelsDir(
+            config_.local_asr.models_dir,
+            std::filesystem::path(CurrentExecutableDir()).string());
+        model_path = ResolveLocalRefineModelPath(models_dir,
+                                                 config_.local_asr.refine_model);
+    }
+    const std::string key =
+        model_path + "#" + std::to_string(config_.local_asr.refine_num_threads);
+    if (key == local_refine_key_applied_) return;  // 幂等：状态未变不重建
+    local_refine_key_applied_ = key;
+
+    if (model_path.empty()) {
+        coordinator_->SetLocalRefiner(nullptr);
+        if (config_.local_asr.enabled && config_.local_asr.refine_enabled) {
+            LogLine("Local refine model missing; local ASR falls back to "
+                    "rule-only passthrough");
+        }
+        return;
+    }
+    auto engine = LlamaCppEngine::Create(model_path,
+                                         config_.local_asr.refine_num_threads);
+    if (!engine) {
+        // 加载失败（损坏/显存与内存不足等）：注入空指针退化直通，并清空幂等键
+        // 让下次 Sync（如设置再保存）重试。
+        LogLine("Local refine engine init failed: " + model_path);
+        coordinator_->SetLocalRefiner(nullptr);
+        local_refine_key_applied_.clear();
+        return;
+    }
+    coordinator_->SetLocalRefiner(
+        std::make_unique<LocalRefinementClient>(std::move(engine)));
+    LogLine("Local refine engine ready: " + model_path);
+}
+#endif  // VOICESTICK_LOCAL_REFINE_ENABLED
 
 void Win32App::ApplyUpdatedConfig() {
     if (coordinator_) coordinator_->UpdateConfig(config_);

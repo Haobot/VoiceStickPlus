@@ -178,6 +178,12 @@ private:
     // （模型目录变化才）重建采集器+本地 ASR，热键变化换键；关闭时拆除运行件
     // 与热键。协调器侧 SetLocalMicRuntime 负责会话安全。
     void SyncLocalMicRuntime();
+    // 本地文本精修引擎的装配/热更（幂等，SyncLocalMicRuntime 尾部调用）：
+    // [local_asr] enabled+refine_enabled 且 GGUF 模型在位才建 LlamaCppEngine；
+    // 缺模型/初始化失败注入 nullptr（协调器钉住条件自动退化为原文直通，
+    // 不阻塞本地语音输入）。模型加载为同步 mmap（1.1GB 约 1s 级，启动/设置
+    // 保存各承担一次）。
+    void SyncLocalRefiner();
     // 配置变更统一入口：先同步协调器，再按新配置同步 F5 抑制钩子。
     void ApplyUpdatedConfig();
 
@@ -217,6 +223,9 @@ private:
     // 已注入协调器的本机麦克风运行件对应的模型目录（绝对路径口径与启动一致）；
     // 与当前配置不同才重建（SetLocalMicRuntime 会换 local_asr_ 实例）。
     std::string local_mic_models_dir_applied_;
+    // 已注入精修引擎的组合键（"模型绝对路径#线程数"）；与当前应装状态不同才
+    // 重建引擎（引擎构造含 1.1GB 模型加载，幂等门控避免重复开销）。
+    std::string local_refine_key_applied_;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;
     std::vector<std::string> paired_device_ids_;

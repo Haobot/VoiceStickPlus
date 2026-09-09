@@ -10,6 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# 全树钉死静态库：llama.cpp/ggml 子项目的 option(BUILD_SHARED_LIBS)（默认 ON）
+# 会写入 CMakeCache，下次 regenerate 时回灌，把本项目所有未指定类型的
+# add_library（opus / voicestick_core）悄悄变成 DLL——符号不导出致下游
+# LNK2019、还引入运行时 DLL 依赖。在任何 add_library/add_subdirectory 之前
+# FORCE 关闭，ggml/llama/opus 全静态链入（无新增运行时 DLL）。
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
 if(MSVC)
     add_compile_options(/utf-8)
 endif()
@@ -114,7 +121,10 @@ foreach(var
 endforeach()
 configure_file(src/builtin_secrets.h.in ${CMAKE_CURRENT_BINARY_DIR}/builtin_secrets.h @ONLY)
 
-add_library(voicestick_core
+# 显式 STATIC：llama.cpp 子项目的 option(BUILD_SHARED_LIBS) 会向 CMakeCache
+# 写入默认 ON，下次 regenerate 时回灌，把未指定类型的本库悄悄变成 DLL
+#（符号不导出、下游链接 LNK2019）。显式类型免疫缓存污染。
+add_library(voicestick_core STATIC
     src/air_mouse_kin.cc
     src/key_spec.cc
     src/app_config.cc
@@ -132,6 +142,8 @@ add_library(voicestick_core
     src/llm_chat_client.cc
     src/llm_translation_client.cc
     src/llm_refinement_client.cc
+    src/text_refiner.cc
+    src/local_refinement_client.cc
     src/hotword_extractor.cc
     src/hotword_candidate_miner.cc
     src/hotword_selector.cc
@@ -172,6 +184,60 @@ if(VOICESTICK_ENABLE_LOCAL_ASR)
     target_sources(voicestick_core PRIVATE src/local_asr_client_win.cc)
     target_link_libraries(voicestick_core PUBLIC sherpa_onnx_c_api)
     target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LOCAL_ASR_ENABLED=1)
+endif()
+
+# llama.cpp（本地文本精修 LLM 推理，Qwen3-1.7B GGUF）：pin b10868（与
+# m0/refine spike 验证版一致，Doc/Plan/local-text-refinement.md）。
+# 源码经 FetchContent 拉取（WinSparkle 同款模式），静态链入 voicestick_core，
+# 无新增 DLL、与 sherpa-onnx 的 onnxruntime 零冲突。默认走镜像加速源；
+# 网络受限时设 VOICESTICK_LLAMA_CPP_URL 指向本地 zip
+# （file:///C:/path/llama-b10868.zip），或 FETCHCONTENT_SOURCE_DIR_LLAMA_CPP
+# 指向已解压源码目录。显式 -DVOICESTICK_ENABLE_LOCAL_REFINE=OFF 可跳过。
+option(VOICESTICK_ENABLE_LOCAL_REFINE "Local LLM text refinement via llama.cpp" ON)
+set(_llama_cpp_default_url "https://ghfast.top/https://github.com/ggml-org/llama.cpp/archive/refs/tags/b10868.zip")
+if(DEFINED ENV{VOICESTICK_LLAMA_CPP_URL})
+    set(_llama_cpp_url "$ENV{VOICESTICK_LLAMA_CPP_URL}")
+elseif(DEFINED VOICESTICK_LLAMA_CPP_URL)
+    set(_llama_cpp_url "${VOICESTICK_LLAMA_CPP_URL}")
+else()
+    set(_llama_cpp_url "${_llama_cpp_default_url}")
+endif()
+if(VOICESTICK_ENABLE_LOCAL_REFINE)
+    message(STATUS "llama.cpp source: ${_llama_cpp_url}")
+    # 子项目开关：只编 ggml(CPU) + llama 核心静态库，裁掉工具/示例/测试/下载
+    set(LLAMA_STANDALONE OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_APP OFF CACHE BOOL "" FORCE)
+    set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+    set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+    set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+    set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+    set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+    set(GGML_RPC OFF CACHE BOOL "" FORCE)
+    # MSVC 下 OpenMP 依赖发现不稳（BuildTools 常缺 LLVM OpenMP），
+    # 单句生成场景线程池已并行，收益小风险大，直接关。
+    set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        llama_cpp
+        URL ${_llama_cpp_url}
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(llama_cpp)
+    # MSVC 默认 __cplusplus 报 199711L（无 /Zc:__cplusplus），b10868 的 LU8 宏
+    # 因此走 C++17 分支产出裸 u8"" 字面量；而 /std:c++20 又启用了 char8_t，
+    # u8"" 成 char8_t[] 无法传 const char* 参数（llama-chat.cpp C2664）。
+    # 关闭 char8_t 特性恢复 C++17 行为，与宏分支自洽，改动面最小。
+    if(MSVC)
+        target_compile_options(llama PRIVATE /Zc:char8_t-)
+    endif()
+    target_sources(voicestick_core PRIVATE src/llama_cpp_engine.cc)
+    target_link_libraries(voicestick_core PRIVATE llama)
+    target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LOCAL_REFINE_ENABLED=1)
 endif()
 
 add_executable(VoiceStickApp WIN32

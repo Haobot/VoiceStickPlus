@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <thread>
@@ -296,6 +297,25 @@ std::string ResolveLocalMicModelsDir(const std::string& configured,
     fs::path dir = configured.empty() ? fs::path("models") : fs::path(configured);
     if (dir.is_relative()) dir = fs::path(exe_dir) / dir;
     return dir.string();
+}
+
+std::string ResolveLocalRefineModelPath(const std::string& models_dir,
+                                        const std::string& refine_model) {
+    namespace fs = std::filesystem;
+    if (const char* env_model = std::getenv("VOICESTICK_REFINE_MODEL")) {
+        if (*env_model && fs::exists(env_model)) return env_model;
+    }
+    fs::path candidate;
+    if (!refine_model.empty()) {
+        const fs::path configured(refine_model);
+        candidate = configured.is_absolute() ? configured
+                                             : fs::path(models_dir) / configured;
+    } else {
+        candidate = fs::path(models_dir) / "Qwen3-1.7B-Q4_K_M" /
+                    "Qwen3-1.7B-Q4_K_M.gguf";
+    }
+    if (fs::exists(candidate)) return candidate.string();
+    return {};
 }
 
 LocalAsrClient::~LocalAsrClient() = default;
