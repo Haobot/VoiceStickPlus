@@ -19,8 +19,12 @@ namespace voicestick {
 class LocalRefinementClient {
  public:
   // engine 可注入（生产 LlamaCppEngine / 测试 FakeEngine）；空指针允许，
-  // 此时 Refine 退化为纯规则层。
-  explicit LocalRefinementClient(std::unique_ptr<LocalLlmEngine> engine);
+  // 此时 Refine 退化为纯规则层。system_prompt 为空时用 BuildSystemPrompt()
+  // 内置 few-shot 默认（设置页「编辑提示词」语义：空 = 默认，非空 = 用户
+  // 自定义 few-shot；改动经 SyncLocalRefiner 幂等键触发引擎重建，KV 前缀
+  // 随新前缀重算）。
+  explicit LocalRefinementClient(std::unique_ptr<LocalLlmEngine> engine,
+                                 std::string system_prompt = {});
 
   ~LocalRefinementClient();
 
@@ -56,6 +60,7 @@ class LocalRefinementClient {
                  const std::vector<std::string>& hotwords);
 
   std::unique_ptr<LocalLlmEngine> engine_;
+  std::string system_prompt_;
   std::mutex threads_mutex_;
   std::vector<std::thread> threads_;
 };

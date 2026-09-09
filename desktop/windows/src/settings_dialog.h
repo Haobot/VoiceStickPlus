@@ -139,6 +139,8 @@ private:
     // 模型状态回显（✓ Qwen3-1.7B 在位 / ✗ 缺模型仅规则精修）。
     HWND local_refine_check_ = nullptr;
     HWND local_refine_status_label_ = nullptr;
+    HWND local_refine_prompt_label_ = nullptr;
+    HWND local_refine_prompt_edit_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -189,6 +191,7 @@ private:
     static constexpr UINT kIdLocalMicModelsDirEdit = 2042;
     static constexpr UINT kIdLocalMicModelsDirBrowse = 2044;
     static constexpr UINT kIdLocalRefineCheck = 2045;
+    static constexpr UINT kIdLocalRefinePromptEdit = 2046;
 };
 
 } // namespace voicestick

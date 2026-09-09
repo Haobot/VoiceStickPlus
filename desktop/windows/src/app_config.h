@@ -214,6 +214,9 @@ struct LocalAsrConfig {
     std::string refine_model;
     // 精修 CPU 推理线程数（默认 6：SenseVoice 2 线程 + UI/注入留余量）。
     int refine_num_threads = 6;
+    // 本地精修 system prompt（含 few-shot 示例）。空 = 内置默认
+    // （LocalRefinementClient::BuildSystemPrompt）；多行文本，不 Trim。
+    std::string refine_prompt;
 
     bool operator==(const LocalAsrConfig& other) const = default;
 };

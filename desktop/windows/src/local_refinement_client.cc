@@ -13,8 +13,11 @@
 
 namespace voicestick {
 
-LocalRefinementClient::LocalRefinementClient(std::unique_ptr<LocalLlmEngine> engine)
-    : engine_(std::move(engine)) {}
+LocalRefinementClient::LocalRefinementClient(std::unique_ptr<LocalLlmEngine> engine,
+                                             std::string system_prompt)
+    : engine_(std::move(engine)),
+      system_prompt_(system_prompt.empty() ? BuildSystemPrompt()
+                                           : std::move(system_prompt)) {}
 
 LocalRefinementClient::~LocalRefinementClient() {
     std::lock_guard lock(threads_mutex_);
@@ -147,7 +150,7 @@ void LocalRefinementClient::RunRefine(
 
     std::string raw;
     const bool ok = engine_->Chat(
-        BuildSystemPrompt(),
+        system_prompt_,
         "输入：" + rule_refined + "\n输出：",
         [&on_token, &cancel](std::string piece) {
             if (cancel && cancel->load()) return false;

@@ -10497,6 +10497,45 @@ void TestLocalRefinementClientOrchestration() {
     printf("TestLocalRefinementClientOrchestration passed\n");
 }
 
+// 自定义精修提示词（设置页可编辑的底层语义）：非空构造注入生效，空串/缺省
+// 回退内置 few-shot 默认——空 = 默认，与云端 refine_prompt 语义一致。
+void TestLocalRefinementCustomPrompt() {
+    class FakeEngine : public LocalLlmEngine {
+    public:
+        std::string last_system;
+        bool Chat(const std::string& system_prompt, const std::string&,
+                  const std::function<bool(const std::string&)>&,
+                  std::string& completion) override {
+            last_system = system_prompt;
+            completion = "帮我把这个文件重命名一下。";
+            return true;
+        }
+        bool IsReady() const override { return true; }
+    };
+
+    // 观察值在 on_complete 内采集（Chat 已返回、engine 仍存活）
+    auto system_of = [](std::unique_ptr<FakeEngine> fake,
+                        const std::string& prompt = {}) {
+        std::promise<std::string> pr;
+        auto fut = pr.get_future();
+        FakeEngine* observer = fake.get();
+        LocalRefinementClient client(std::move(fake), prompt);
+        client.Refine("嗯，帮我把这个文件重命名一下。", nullptr,
+                      [&pr, observer](bool, std::string) {
+                          pr.set_value(observer->last_system);
+                      });
+        return fut.get();
+    };
+
+    const std::string custom = "自定义提示词：删掉所有口水词。\n输入：嗯 x\n输出：x";
+    assert(system_of(std::make_unique<FakeEngine>(), custom) == custom);
+    assert(system_of(std::make_unique<FakeEngine>()) ==
+           LocalRefinementClient::BuildSystemPrompt());
+    assert(system_of(std::make_unique<FakeEngine>(), "") ==
+           LocalRefinementClient::BuildSystemPrompt());
+    printf("TestLocalRefinementCustomPrompt passed\n");
+}
+
 // 真模型 smoke：LlamaCppEngine 加载真实 Qwen3-1.7B GGUF 并连发两句（第二句
 // 验证 KV 前缀复用延迟收敛）。模型解析与生产同口径（ResolveLocalRefineModelPath，
 // env VOICESTICK_REFINE_MODEL 注入）；不在位时 SKIP——不 mock 真实链路。
@@ -11047,12 +11086,15 @@ void TestAppConfigLocalAsrRoundTrip() {
     config.local_asr.enabled = true;
     config.local_asr.models_dir = "C:/models/sensevoice";
     config.local_asr.push_to_talk_key = "f8";
+    config.local_asr.refine_prompt = "提示词第一行\n输入：嗯 x\n输出：x";
     config.Save(temp);
 
     AppConfig loaded = AppConfig::Load(temp);
     assert(loaded.local_asr.enabled);
     assert(loaded.local_asr.models_dir == "C:/models/sensevoice");
     assert(loaded.local_asr.push_to_talk_key == "f8");
+    // 多行提示词（含换行与中文）往返保持原样
+    assert(loaded.local_asr.refine_prompt == config.local_asr.refine_prompt);
 
     std::filesystem::remove(temp);
 }
@@ -11596,6 +11638,7 @@ int main() {
     TestTextRefinerRules();
     TestRefineGuardSafety();
     TestLocalRefinementClientOrchestration();
+    TestLocalRefinementCustomPrompt();
     TestLocalAsrClientStartFailsWhenModelMissing();
     TestLocalAsrClientSenseVoiceSmoke();
     TestLocalAsrClientEmitsPartialWhileStreaming();

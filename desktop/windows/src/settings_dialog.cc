@@ -6,6 +6,7 @@
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "local_asr_client_win.h"
+#include "local_refinement_client.h"
 #include "log.h"
 #include "voice_stick_cloud_api_win.h"
 
@@ -113,6 +114,23 @@ HWND CreateMultilineEdit(HWND parent, int x, int y, int w, int h, UINT id, HINST
                                ES_AUTOVSCROLL | ES_WANTRETURN,
                            x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
                            inst, nullptr);
+}
+
+// 多行编辑控件返回 CRLF，LLM 提示词用 LF：保存前统一归一化。
+std::string NormalizeEditNewlines(std::string_view text) {
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') {
+            normalized.push_back('\n');
+            ++i;
+        } else if (text[i] == '\r') {
+            normalized.push_back('\n');
+        } else {
+            normalized.push_back(text[i]);
+        }
+    }
+    return normalized;
 }
 
 // 候选热词列表：LISTBOX，LBS_NOTIFY 使选区变化以 WM_COMMAND 上报父窗口。
@@ -392,6 +410,10 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         local_mic_models_dir_edit_ = nullptr;
         local_mic_models_dir_browse_button_ = nullptr;
         local_mic_models_status_label_ = nullptr;
+        local_refine_check_ = nullptr;
+        local_refine_status_label_ = nullptr;
+        local_refine_prompt_label_ = nullptr;
+        local_refine_prompt_edit_ = nullptr;
         resource_label_ = nullptr;
         output_target_combo_ = nullptr;
         wechat_hotkey_edit_ = nullptr;
@@ -481,6 +503,10 @@ void SettingsDialog::DestroyControls() {
     local_mic_models_dir_edit_ = nullptr;
     local_mic_models_dir_browse_button_ = nullptr;
     local_mic_models_status_label_ = nullptr;
+    local_refine_check_ = nullptr;
+    local_refine_status_label_ = nullptr;
+    local_refine_prompt_label_ = nullptr;
+    local_refine_prompt_edit_ = nullptr;
     resource_label_ = nullptr;
     output_target_combo_ = nullptr;
     wechat_hotkey_edit_ = nullptr;
@@ -695,6 +721,21 @@ void SettingsDialog::BuildControls() {
             hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
         add(Dp(20), {
             {local_refine_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
+    }
+    {
+        // 本地精修提示词块（对齐云端 refine_prompt 块模式）：编辑框初始显示
+        // 当前生效提示词（空配置填内置 few-shot 默认）；保存时与默认等值归
+        // 空（空 = 默认），清空编辑框即恢复默认。
+        local_refine_prompt_label_ = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsLocalRefinePrompt).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        local_refine_prompt_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(64),
+                                                                 kIdLocalRefinePromptEdit,
+                                                                 instance_));
+        add(Dp(70), {
+            {local_refine_prompt_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_refine_prompt_edit_, ctrl_x, 0, ctrl_w, Dp(64)},
         }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
     }
     {
@@ -1195,10 +1236,15 @@ void SettingsDialog::LoadConfigIntoControls() {
     // 本地语音识别：模型目录为空显示默认值提示（留空 = exe 目录下 models/）。
     SetWindowTextW(local_mic_models_dir_edit_, Utf16(config_.local_asr.models_dir).c_str());
     UpdateLocalMicModelsStatus();
-    // 本地文本精修：勾选态 + 模型在位状态回显。
+    // 本地文本精修：勾选态 + 模型在位状态回显 + 当前生效提示词（空配置填
+    // 内置 few-shot 默认，让用户看得见、改得动）。
     SendMessageW(local_refine_check_, BM_SETCHECK,
                  config_.local_asr.refine_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     UpdateLocalRefineStatus();
+    SetWindowTextW(local_refine_prompt_edit_, Utf16(
+        config_.local_asr.refine_prompt.empty()
+            ? LocalRefinementClient::BuildSystemPrompt()
+            : config_.local_asr.refine_prompt).c_str());
 
     int output_target_idx = 0;
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
@@ -1253,27 +1299,24 @@ void SettingsDialog::SaveSettings() {
     config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
     config_.local_asr.refine_enabled =
         SendMessageW(local_refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    {   // 与默认等值归空（空 = 默认），清空编辑框即恢复默认
+        const std::string normalized = NormalizeEditNewlines(
+            Utf8(GetWindowText(local_refine_prompt_edit_)));
+        config_.local_asr.refine_prompt =
+            (normalized == LocalRefinementClient::BuildSystemPrompt())
+                ? std::string()
+                : normalized;
+    }
     config_.llm_base_url = Utf8(GetWindowText(llm_base_url_edit_));
     config_.llm_api_key = Utf8(GetWindowText(llm_api_key_edit_));
     config_.llm_model = Utf8(GetWindowText(llm_model_edit_));
     config_.refine_enabled = SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     {
         auto prompt = Utf8(GetWindowText(refine_prompt_edit_));
-        // 归一化 \r\n → \n（编辑控件返回 CRLF，LLM 用 LF）。
-        std::string normalized;
-        normalized.reserve(prompt.size());
-        for (std::size_t i = 0; i < prompt.size(); ++i) {
-            if (prompt[i] == '\r' && i + 1 < prompt.size() && prompt[i + 1] == '\n') {
-                normalized.push_back('\n');
-                ++i;
-            } else if (prompt[i] == '\r') {
-                normalized.push_back('\n');
-            } else {
-                normalized.push_back(prompt[i]);
-            }
-        }
         auto default_prompt = LLMRefinementClient::BuildRefinePrompt("");
-        config_.refine_prompt = (normalized == default_prompt) ? std::string() : normalized;
+        config_.refine_prompt =
+            (NormalizeEditNewlines(prompt) == default_prompt) ? std::string()
+                                                              : NormalizeEditNewlines(prompt);
     }
     config_.hotword_process_enabled =
         SendMessageW(hotword_process_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;

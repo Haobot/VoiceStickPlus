@@ -100,6 +100,9 @@ ASR final text
 | `refine_enabled` | `true` | 本地识别会话的本地精修开关（与顶层云端 `refine_enabled` 正交） |
 | `refine_model` | `""` | GGUF 路径；空 = `models_dir`（或 exe 旁 `models/`）下 `refine/qwen3-1.7b-q4_k_m.gguf` |
 | `refine_num_threads` | `6` | CPU 推理线程数 |
+| `refine_prompt` | `""` | 本地精修 system prompt（含 few-shot 示例），多行文本；空 = 内置默认 |
+
+`refine_prompt` 用户可编辑（2026-09-09 增）：设置 → 本地语音识别区块「本地精修提示词」多行框，初始显示当前生效提示词（空配置填内置默认全文）；保存时 CRLF 归一 + 与默认等值归空（清空即恢复默认）。提示词参与 `SyncLocalRefiner` 幂等键：变化即重建引擎重算 KV 前缀（system+few-shot 前缀 ~320 token，重建含 1.1GB 模型加载 ~1s）。语义对齐云端顶层 `refine_prompt`（用户改 few-shot 补充口水词示例即可加强过滤，L3 守卫仍保底不劣化）。
 
 设置对话框"本地语音识别"区块：精修复选框 + 模型状态回显（存在/缺失，仿 SenseVoice 模型校验行）。默认开的理由：选本地识别的用户目的就是干净文本；模型缺失时自动降级 L1 规则并明示（不静默假装精修）。
 

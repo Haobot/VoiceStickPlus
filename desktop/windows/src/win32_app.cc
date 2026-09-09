@@ -1451,8 +1451,12 @@ void Win32App::SyncLocalRefiner() {
         model_path = ResolveLocalRefineModelPath(models_dir,
                                                  config_.local_asr.refine_model);
     }
-    const std::string key =
-        model_path + "#" + std::to_string(config_.local_asr.refine_num_threads);
+    // 幂等键含提示词：自定义 few-shot 变化 → 前缀变 → 必须重建引擎
+    //（llama.cpp KV 前缀按首次 Chat 的 system+few-shot 钉住，改提示词
+    // 不重建会继续用旧前缀解码）。
+    const std::string key = model_path + "#" +
+                            std::to_string(config_.local_asr.refine_num_threads) +
+                            "#" + config_.local_asr.refine_prompt;
     if (key == local_refine_key_applied_) return;  // 幂等：状态未变不重建
     local_refine_key_applied_ = key;
 
@@ -1474,8 +1478,8 @@ void Win32App::SyncLocalRefiner() {
         local_refine_key_applied_.clear();
         return;
     }
-    coordinator_->SetLocalRefiner(
-        std::make_unique<LocalRefinementClient>(std::move(engine)));
+    coordinator_->SetLocalRefiner(std::make_unique<LocalRefinementClient>(
+        std::move(engine), config_.local_asr.refine_prompt));
     LogLine("Local refine engine ready: " + model_path);
 }
 #endif  // VOICESTICK_LOCAL_REFINE_ENABLED

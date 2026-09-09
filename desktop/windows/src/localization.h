@@ -416,6 +416,7 @@ enum class StringId {
     kSettingsLocalRefineEnable,
     kSettingsLocalRefineModelOk,
     kSettingsLocalRefineModelMissing,
+    kSettingsLocalRefinePrompt,
 };
 
 // 返回 UTF-8 本地化文本
