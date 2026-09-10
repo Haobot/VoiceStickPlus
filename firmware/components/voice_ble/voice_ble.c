@@ -1210,7 +1210,13 @@ esp_err_t voice_ble_request_slow_interval(void)
     struct ble_gap_upd_params params = {
         .itvl_min = 80,   // 100ms
         .itvl_max = 320,  // 400ms
-        .latency = 4,
+        // latency 必须为 0：modem sleep（CONFIG_BT_CTRL_MODEM_SLEEP）下 latency>0
+        // 时控制器会漏掉 connection event（设备侧先表现为 notify 发不出去，
+        // ~24s 后 central 判链路失活发 LL_TERMINATE_IND）。实测 slow 参数生效后
+        // 恒定 ~60s 断链（2026-09-05 串口证据 reason=0x13，与 Doc/Expe 蒸馏条目
+        // 「whisper_pen slow interval latency=4 偶发断连」同源）。latency=0 后
+        // 每个 connection event 都唤醒，省电仍靠 100-400ms 大间隔。
+        .latency = 0,
         .supervision_timeout = 1000, // 10s（原 5s 偏短，链路抖动>5s 即触发断连；延长到 10s 扩大容忍窗，真断连靠桌面端广告检测+心跳兜底）
         .min_ce_len = 0,
         .max_ce_len = 0,

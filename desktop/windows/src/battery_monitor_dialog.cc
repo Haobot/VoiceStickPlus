@@ -25,6 +25,13 @@ namespace voicestick {
 
 namespace {
 
+// 图区配色（与导出 PNG 曲线风格一致）。
+constexpr COLORREF kChartGrid = RGB(220, 220, 220);
+constexpr COLORREF kChartAxis = RGB(90, 90, 90);
+constexpr COLORREF kChartText = RGB(50, 50, 50);
+constexpr COLORREF kChartLine = RGB(31, 119, 180);
+constexpr COLORREF kChartCharging = RGB(214, 242, 214);  // 充电段浅绿底带
+
 std::wstring Utf16(std::string_view text) {
     if (text.empty()) return {};
     const int len = MultiByteToWideChar(CP_UTF8, 0, text.data(),
@@ -119,6 +126,14 @@ BatteryMonitorDialog::~BatteryMonitorDialog() {
         DeleteObject(ui_font_);
         ui_font_ = nullptr;
     }
+    if (chart_font_) {
+        DeleteObject(chart_font_);
+        chart_font_ = nullptr;
+    }
+    if (chart_title_font_) {
+        DeleteObject(chart_title_font_);
+        chart_title_font_ = nullptr;
+    }
 }
 
 void BatteryMonitorDialog::Show() {
@@ -154,6 +169,7 @@ void BatteryMonitorDialog::StartMonitoring() {
     dump_active_ = false;
     pending_blob_.clear();
     status_override_.clear();
+    session_start_epoch_s_ = -1;
     state_ = MonitorState::kAnchoring;
     anchor_step_ = 1;
     // 先清空设备端环形区：旧固件在环形区写满后对 offset==total 的增量 dump 不回包，
@@ -162,6 +178,7 @@ void BatteryMonitorDialog::StartMonitoring() {
     SetTimer(hwnd_, kTimerAnchorStep, kAnchorStepMs, nullptr);
     RefreshStatus();
     UpdateButtons();
+    InvalidateChart();
 }
 
 void BatteryMonitorDialog::StopMonitoring() {
@@ -259,6 +276,7 @@ void BatteryMonitorDialog::FinishCycle(std::uint32_t total) {
     ScheduleNextCycle();
     RefreshStatus();
     UpdateButtons();  // 采样数变化后刷新导出按钮可用态
+    InvalidateChart();
 }
 
 void BatteryMonitorDialog::KillSessionTimers() {
@@ -469,6 +487,194 @@ void BatteryMonitorDialog::ShowSaveResult(bool success, const std::wstring& deta
     RefreshStatus();
 }
 
+// ---------------------------------------------------------------- 图区绘制
+
+RECT BatteryMonitorDialog::ChartRect() const {
+    RECT client;
+    GetClientRect(hwnd_, &client);
+    // 上方留开关行，下方留提示/状态/按钮区。
+    RECT rect{Dp(12), Dp(44), client.right - Dp(12), client.bottom - Dp(126)};
+    return rect;
+}
+
+void BatteryMonitorDialog::InvalidateChart() {
+    if (!hwnd_) return;
+    const RECT chart = ChartRect();
+    InvalidateRect(hwnd_, &chart, FALSE);
+}
+
+void BatteryMonitorDialog::DrawChart(HDC hdc, const RECT& rect) {
+    if (chart_font_ == nullptr || chart_title_font_ == nullptr) return;
+    const auto language = EffectiveUiLanguage(language_);
+    HFONT old_font = static_cast<HFONT>(SelectObject(hdc, chart_font_));
+    FillRect(hdc, &rect, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+
+    const auto& samples = accumulator_.samples();
+
+    // 标题：VS-{0} 电池电压监测（{1} 点）。
+    const std::wstring title = FormatText(
+        TrW(StringId::kBatteryMonitorChartTitle, language),
+        {Utf16(device_id_), std::to_wstring(samples.size())});
+    SelectObject(hdc, chart_title_font_);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, kChartText);
+    RECT title_rect{rect.left, rect.top + Dp(6), rect.right, rect.top + Dp(30)};
+    DrawTextW(hdc, title.c_str(), -1, &title_rect, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    // 绘图区（轴标签留白）。
+    const int left = rect.left + Dp(64);
+    const int right = rect.right - Dp(20);
+    const int top = rect.top + Dp(44);
+    const int bottom = rect.bottom - Dp(44);
+    const int plot_w = right - left;
+    const int plot_h = bottom - top;
+    if (plot_w <= 0 || plot_h <= 0) {
+        SelectObject(hdc, old_font);
+        return;
+    }
+
+    // Y 范围（数据自适应，无数据用默认锂电区间）。
+    std::int64_t y_min = 3500;
+    std::int64_t y_max = 4300;
+    if (!samples.empty()) {
+        std::int64_t vmin = INT64_MAX;
+        std::int64_t vmax = 0;
+        for (const auto& s : samples) {
+            if (s.vbat_mv == 0) continue;  // 0 = 设备 ADC 读失败
+            vmin = std::min(vmin, static_cast<std::int64_t>(s.vbat_mv));
+            vmax = std::max(vmax, static_cast<std::int64_t>(s.vbat_mv));
+        }
+        if (vmax > 0 && vmin <= vmax) {
+            const std::int64_t pad = std::max<std::int64_t>(20, (vmax - vmin) / 5);
+            y_min = vmin - pad;
+            y_max = vmax + pad;
+            if (y_max - y_min < 200) {
+                const std::int64_t mid = (y_min + y_max) / 2;
+                y_min = mid - 100;
+                y_max = mid + 100;
+            }
+        }
+    }
+    if (y_min >= y_max) y_max = y_min + 200;
+
+    const double x_span_min = static_cast<double>(kTotalCycles);
+    const auto x_of = [&](double minutes) {
+        return left + static_cast<int>(minutes / x_span_min * plot_w);
+    };
+    const auto y_of = [&](std::int64_t mv) {
+        return bottom - static_cast<int>((mv - y_min) /
+                                         static_cast<double>(y_max - y_min) * plot_h);
+    };
+
+    // 网格 + 刻度：X 每 10 分钟一条；Y 步长取 25/50/100/200 中的合适数值。
+    HPEN grid_pen = CreatePen(PS_SOLID, 1, kChartGrid);
+    auto* old_pen = static_cast<HPEN>(SelectObject(hdc, grid_pen));
+    SelectObject(hdc, chart_font_);
+    SetTextColor(hdc, kChartAxis);
+    wchar_t label[32];
+    for (int minutes = 0; minutes <= kTotalCycles; minutes += 10) {
+        const int x = x_of(minutes);
+        MoveToEx(hdc, x, top, nullptr);
+        LineTo(hdc, x, bottom);
+        swprintf_s(label, L"%d", minutes);
+        RECT label_rect{x - Dp(20), bottom + Dp(4), x + Dp(20), bottom + Dp(22)};
+        DrawTextW(hdc, label, -1, &label_rect, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    const std::int64_t range = y_max - y_min;
+    std::int64_t step = 200;
+    for (std::int64_t candidate : {25, 50, 100, 200}) {
+        if (range / candidate <= 8) {
+            step = candidate;
+            break;
+        }
+    }
+    const std::int64_t y_start = (y_min / step + 1) * step;
+    for (std::int64_t mv = y_start; mv <= y_max; mv += step) {
+        const int y = y_of(mv);
+        MoveToEx(hdc, left, y, nullptr);
+        LineTo(hdc, right, y);
+        swprintf_s(label, L"%lld", mv);
+        RECT label_rect{left - Dp(58), y - Dp(9), left - Dp(6), y + Dp(9)};
+        DrawTextW(hdc, label, -1, &label_rect, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    // 坐标轴框。
+    HPEN axis_pen = CreatePen(PS_SOLID, 1, kChartAxis);
+    SelectObject(hdc, axis_pen);
+    MoveToEx(hdc, left, top, nullptr);
+    LineTo(hdc, left, bottom);
+    LineTo(hdc, right, bottom);
+    DeleteObject(SelectObject(hdc, grid_pen));  // 撤下并删除 axis_pen
+
+    // 轴标题：X 底部居中；Y 沿左侧竖排（世界变换旋转 -90°）。
+    RECT x_title_rect{left, bottom + Dp(22), right, bottom + Dp(40)};
+    DrawTextW(hdc, TrW(StringId::kBatteryMonitorAxisTime, language).c_str(), -1,
+              &x_title_rect, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+    {
+        const std::wstring y_title = TrW(StringId::kBatteryMonitorAxisVoltage, language);
+        SIZE size{};
+        GetTextExtentPoint32W(hdc, y_title.c_str(), static_cast<int>(y_title.size()), &size);
+        SetGraphicsMode(hdc, GM_ADVANCED);
+        XFORM xform{};
+        xform.eM11 = 0.0f;
+        xform.eM12 = -1.0f;
+        xform.eM21 = 1.0f;
+        xform.eM22 = 0.0f;
+        xform.eDx = static_cast<FLOAT>(left - Dp(44));
+        xform.eDy = static_cast<FLOAT>(top + plot_h / 2 + size.cx / 2);
+        SetWorldTransform(hdc, &xform);
+        TextOutW(hdc, 0, 0, y_title.c_str(), static_cast<int>(y_title.size()));
+        ModifyWorldTransform(hdc, nullptr, MWT_IDENTITY);
+        SetGraphicsMode(hdc, GM_COMPATIBLE);
+    }
+
+    if (samples.empty()) {
+        const std::wstring hint =
+            language == UiLanguage::kSimplifiedChinese ? L"暂无数据" : L"No data yet";
+        SetTextColor(hdc, kChartAxis);
+        RECT hint_rect{left, top, right, bottom};
+        DrawTextW(hdc, hint.c_str(), -1, &hint_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DeleteObject(SelectObject(hdc, old_pen));  // 撤下并删除 grid_pen
+        SelectObject(hdc, old_font);
+        return;
+    }
+
+    // 充电段底色：每个充电采样点画 ±30s 的浅绿带。
+    HBRUSH charge_brush = CreateSolidBrush(kChartCharging);
+    for (const auto& s : samples) {
+        if (!s.charging || s.epoch_s < 0 || session_start_epoch_s_ < 0) continue;
+        const double minutes = (s.epoch_s - session_start_epoch_s_) / 60.0;
+        if (minutes < -1 || minutes > x_span_min + 1) continue;
+        const int x1 = std::max(left, x_of(minutes - 0.5));
+        const int x2 = std::min(right, x_of(minutes + 0.5));
+        if (x2 <= x1) continue;
+        RECT band{x1, top, x2, bottom};
+        FillRect(hdc, &band, charge_brush);
+    }
+    DeleteObject(charge_brush);
+
+    // 折线 + 数据点标记（横轴为相对会话起点的分钟）。
+    std::vector<POINT> points;
+    points.reserve(samples.size());
+    for (const auto& s : samples) {
+        if (s.vbat_mv == 0 || s.epoch_s < 0 || session_start_epoch_s_ < 0) continue;
+        double minutes = (s.epoch_s - session_start_epoch_s_) / 60.0;
+        minutes = std::clamp(minutes, 0.0, x_span_min);
+        points.push_back({x_of(minutes), y_of(s.vbat_mv)});
+    }
+    HPEN line_pen = CreatePen(PS_SOLID, Dp(2), kChartLine);
+    SelectObject(hdc, line_pen);
+    if (points.size() >= 2) {
+        Polyline(hdc, points.data(), static_cast<INT>(points.size()));
+    }
+    for (const auto& pt : points) {
+        const int r = Dp(3);
+        Ellipse(hdc, pt.x - r, pt.y - r, pt.x + r, pt.y + r);
+    }
+    DeleteObject(SelectObject(hdc, old_pen));  // 撤下并删除 line_pen
+    DeleteObject(grid_pen);
+    SelectObject(hdc, old_font);
+}
+
 bool BatteryMonitorDialog::SavePng(const std::wstring& path, std::wstring* error) {
     // 有效点：读数有效（vbat>0）且已对齐墙钟；不足 2 个无法画曲线。
     std::vector<const PowerLogSample*> valid;
@@ -668,6 +874,7 @@ INT_PTR BatteryMonitorDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
                     const auto epoch = static_cast<std::uint32_t>(
                         std::chrono::duration_cast<std::chrono::seconds>(
                             now.time_since_epoch()).count());
+                    session_start_epoch_s_ = static_cast<std::int64_t>(epoch);
                     SendCommand(BleProtocol::PowerLogTimeAnchorPayload(epoch));
                     SetTimer(hwnd_, kTimerAnchorStep, kAnchorStepMs, nullptr);
                 } else {
@@ -697,6 +904,27 @@ INT_PTR BatteryMonitorDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
             return TRUE;
         }
         break;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd_, &ps);
+        if (hdc) {
+            const RECT chart = ChartRect();
+            // 双缓冲：整块图区先画到内存 DC 再 BitBlt，避免 1s 级重绘闪烁。
+            HDC mem_dc = CreateCompatibleDC(hdc);
+            HBITMAP mem_bitmap = CreateCompatibleBitmap(hdc, chart.right - chart.left,
+                                                        chart.bottom - chart.top);
+            auto* old_bitmap = static_cast<HBITMAP>(SelectObject(mem_dc, mem_bitmap));
+            OffsetWindowOrgEx(mem_dc, chart.left, chart.top, nullptr);
+            DrawChart(mem_dc, chart);
+            BitBlt(hdc, chart.left, chart.top, chart.right - chart.left,
+                   chart.bottom - chart.top, mem_dc, chart.left, chart.top, SRCCOPY);
+            SelectObject(mem_dc, old_bitmap);
+            DeleteObject(mem_bitmap);
+            DeleteDC(mem_dc);
+            EndPaint(hwnd_, &ps);
+        }
+        return TRUE;
+    }
     case WM_CLOSE:
         DestroyWindow(hwnd_);
         return TRUE;
@@ -711,6 +939,7 @@ INT_PTR BatteryMonitorDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
             BuildUi();
             RefreshStatus();
             UpdateButtons();
+            InvalidateRect(hwnd_, nullptr, TRUE);  // 图区字体/尺寸随 DPI 重建后全量重绘
         }
         return TRUE;
     }
@@ -739,8 +968,8 @@ LPCDLGTEMPLATE BatteryMonitorDialog::BuildDialogTemplate() {
     dialog.cdit = 0;
     dialog.x = 0;
     dialog.y = 0;
-    dialog.cx = 300;
-    dialog.cy = 120;
+    dialog.cx = 340;
+    dialog.cy = 260;
     AppendDialogData(&dialog_template_, &dialog, sizeof(dialog));
     AppendDialogWord(&dialog_template_, 0);
     AppendDialogWord(&dialog_template_, 0);
@@ -765,6 +994,13 @@ void BatteryMonitorDialog::BuildUi() {
                  desired.bottom - desired.top, SWP_NOMOVE | SWP_NOZORDER);
 
     ui_font_ = CreateUiFont(dpi_);
+    chart_font_ = CreateFontW(-Dp(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    chart_title_font_ = CreateFontW(-Dp(14), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                                    L"Segoe UI");
     const auto language = EffectiveUiLanguage(language_);
     auto remember = [&](HWND control) {
         if (control) {
@@ -774,25 +1010,28 @@ void BatteryMonitorDialog::BuildUi() {
         return control;
     };
 
-    // 状态行（多行：状态文案 + 保存结果）。
-    status_label_ = remember(CreateWindowExW(
-        0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        Dp(16), Dp(14), Dp(340), Dp(44), hwnd_, nullptr, instance_, nullptr));
     // 右上角：供电态（USB）10min 自动关机开关。
     usb_auto_off_check_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorUsbAutoOff, language).c_str(),
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-        Dp(366), Dp(16), Dp(218), Dp(22), hwnd_,
+        Dp(kClientWidth - 234), Dp(14), Dp(218), Dp(22), hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdUsbAutoOff)), instance_, nullptr));
     SendMessageW(usb_auto_off_check_, BM_SETCHECK,
                  usb_auto_off_state_ ? BST_CHECKED : BST_UNCHECKED, 0);
+    // 中部大面积图区由 WM_PAINT 自绘（ChartRect），无子控件。
+
+    const int button_y = Dp(kClientHeight - 42);
     // USB 供电提示（初始隐藏，UpdateUsbWarning 控制显隐）。
     warn_label_ = remember(CreateWindowExW(
         0, L"STATIC", TrW(StringId::kBatteryMonitorWarnUsbPower, language).c_str(),
         WS_CHILD | SS_LEFT,
-        Dp(16), Dp(62), Dp(568), Dp(34), hwnd_, nullptr, instance_, nullptr));
-
-    const int button_y = Dp(kClientHeight - 46);
+        Dp(16), Dp(kClientHeight - 118), Dp(kClientWidth - 32), Dp(34), hwnd_, nullptr,
+        instance_, nullptr));
+    // 状态行（多行：状态文案 + 保存结果），位于提示行下方、按钮上方。
+    status_label_ = remember(CreateWindowExW(
+        0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        Dp(16), Dp(kClientHeight - 80), Dp(kClientWidth - 32), Dp(34), hwnd_, nullptr,
+        instance_, nullptr));
     start_button_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorStart, language).c_str(),
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -801,17 +1040,17 @@ void BatteryMonitorDialog::BuildUi() {
     stop_button_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorStop, language).c_str(),
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        Dp(116), button_y, Dp(90), Dp(30), hwnd_,
+        Dp(134), button_y, Dp(90), Dp(30), hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdStop)), instance_, nullptr));
     export_csv_button_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorExportCsv, language).c_str(),
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        Dp(216), button_y, Dp(110), Dp(30), hwnd_,
+        Dp(232), button_y, Dp(120), Dp(30), hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdExportCsv)), instance_, nullptr));
     export_png_button_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorExportPng, language).c_str(),
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        Dp(336), button_y, Dp(110), Dp(30), hwnd_,
+        Dp(360), button_y, Dp(120), Dp(30), hwnd_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdExportPng)), instance_, nullptr));
     close_button_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorClose, language).c_str(),
@@ -836,6 +1075,14 @@ void BatteryMonitorDialog::DestroyControls() {
     if (ui_font_) {
         DeleteObject(ui_font_);
         ui_font_ = nullptr;
+    }
+    if (chart_font_) {
+        DeleteObject(chart_font_);
+        chart_font_ = nullptr;
+    }
+    if (chart_title_font_) {
+        DeleteObject(chart_title_font_);
+        chart_title_font_ = nullptr;
     }
 }
 

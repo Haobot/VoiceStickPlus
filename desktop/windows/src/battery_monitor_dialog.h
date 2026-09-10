@@ -16,7 +16,8 @@ namespace voicestick {
 // 电池电压监测窗口：托盘设备子菜单「电池电压监测…」打开的单设备非模态窗口。
 // 开始监测后经 control_rx 的 power_log 命令族执行：clear → time_anchor →
 // 基线探测（越界 offset 空 dump 拿 total）→ 每 60s 增量 dump，共 60 个周期；
-// 过程可停止，结束后可导出 CSV（PowerLogAccumulator::FormatCsv）与 PNG 曲线。
+// 中部图区实时 GDI 曲线（WM_PAINT 双缓冲自绘），过程可停止，结束后可导出
+// CSV（PowerLogAccumulator::FormatCsv）与 PNG 曲线。
 // 窗口右上角另有供电态（USB）10min 自动关机开关。
 // 全部设备回调（OnPowerLogFragment / OnPowerMgmtState / NotifyAllDisconnected）
 // 由 win32_app 在 UI 线程派发。
@@ -77,6 +78,11 @@ private:
     void UpdateUsbWarning();
     std::wstring FormatCountdownText() const;
 
+    // 图区自绘（GDI，双缓冲）：横轴 0..kTotalCycles 分钟，纵轴数据自适应。
+    RECT ChartRect() const;
+    void InvalidateChart();
+    void DrawChart(HDC hdc, const RECT& rect);
+
     void ExportCsv();
     void ExportPng();
     bool SavePng(const std::wstring& path, std::wstring* error);
@@ -89,6 +95,8 @@ private:
     std::string device_id_;
     UINT dpi_ = 96;
     HFONT ui_font_ = nullptr;
+    HFONT chart_font_ = nullptr;        // 图区刻度/标签字体
+    HFONT chart_title_font_ = nullptr;  // 图区标题字体
     bool closing_ = false;  // 析构路径置位，WM_DESTROY 不再回调 on_closed
 
     HWND status_label_ = nullptr;
@@ -117,9 +125,10 @@ private:
     ULONGLONG next_cycle_tick_ = 0;      // 下次采集的 GetTickCount64 时刻（倒计时显示用）
     bool usb_auto_off_state_ = false;    // 最近一次设备上报的供电态自动关机开关状态
     std::wstring status_override_;       // 保存结果等瞬态文案（非监测态优先于状态文案显示）
+    std::int64_t session_start_epoch_s_ = -1;  // 会话起点（time_anchor 下发的 epoch），图区横轴基准
 
-    static constexpr int kClientWidth = 600;
-    static constexpr int kClientHeight = 160;
+    static constexpr int kClientWidth = 680;
+    static constexpr int kClientHeight = 480;
 
     static constexpr UINT kIdStart = 2110;
     static constexpr UINT kIdStop = 2111;
