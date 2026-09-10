@@ -208,6 +208,9 @@ private:
     void StartHeartbeat();
     void StopHeartbeat();
     void HeartbeatLoop();
+    // 心跳周期检查 pending_proactive_reconnects_ 到期项并按地址发起直连
+    //（DispatchToUiThread 后走 ConnectPairedDevice 的正常 claim 路径）。
+    void RunDueProactiveReconnects();
     void ProbeSessions();
     // 扫描健康看门狗（心跳线程周期调用）：清理滞留超时的在途连接 claim，
     // 并检测广告 watcher 静默失效（有配对设备待发现却长时间零广告）后重建扫描。
@@ -268,6 +271,17 @@ private:
     // claim 被拒日志的限流（key=蓝牙地址，value=上次记录的 steady_clock epoch
     // 毫秒）：正常重连中广告风暴期每秒数十次拒绝，逐条记录会刷屏。
     std::map<std::uint64_t, std::int64_t> claim_denied_log_ms_;
+    // 僵尸链路拆除后的主动重连调度：纯等广播自愈有盲区——遥控器 HID 通道仍被
+    // OS 蓝牙栈维持时它认为「已连接」不再广播，VoiceStick 等广告等不到即永久
+    // 失联（2026-09-11 事故）。拆除时登记（not_before=安定窗之后），心跳到期且
+    // 仍未连接则按地址直连；连接成功/设备移除后自然清理（到期检查时剔除）。
+    struct ProactiveReconnect {
+        std::string device_id;
+        BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
+        DeviceClass device_class = DeviceClass::kStickS3;
+        std::chrono::steady_clock::time_point not_before{};
+    };
+    std::map<std::uint64_t, ProactiveReconnect> pending_proactive_reconnects_;
     std::thread heartbeat_thread_;
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;

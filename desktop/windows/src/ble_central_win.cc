@@ -73,6 +73,8 @@ constexpr std::chrono::milliseconds kHeartbeatTimeout{90000};
 // 保持快速回连路径。
 constexpr std::chrono::milliseconds kReconnectSettleDelay{1500};
 constexpr std::int64_t kZombieFreshThresholdMs{45000};
+// 主动重连单地址重试间隔：一次直连失败后等下一轮心跳再试，避免热循环。
+constexpr std::chrono::seconds kProactiveReconnectRetry{60};
 
 // 链上首个 ATT 操作（state 订阅）的应用层超时。正常几十 ms 完成；撞上未死
 // 僵尸链路时 OS 要 ~3.5-4s 才宣告断连，这里 2.5s 提前取消并走失败路径，
@@ -1172,6 +1174,16 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             std::lock_guard lock(mutex_);
             reconnect_settle_until_[bluetooth_address] =
                 std::chrono::steady_clock::now() + kReconnectSettleDelay;
+            // 纯等广播有盲区：遥控器 HID 通道仍被 OS 维持时它不再广播，上面的
+            // settle 窗等不到下一条广告即永久失联（2026-09-11 事故）。安定窗后
+            // 由心跳主动按地址直连兜底。
+            BleCentralWin::ProactiveReconnect pending;
+            pending.device_id = *device_id;
+            pending.address_kind = address_kind;
+            pending.device_class = device_class;
+            pending.not_before =
+                std::chrono::steady_clock::now() + kReconnectSettleDelay;
+            pending_proactive_reconnects_[bluetooth_address] = std::move(pending);
             LogBleLine("reconnect settle " + std::string(id_prefix) + *device_id + ": delaying " +
                        std::to_string(kReconnectSettleDelay.count()) +
                        "ms for OS to tear down the zombie link");
@@ -2958,7 +2970,46 @@ void BleCentralWin::HeartbeatLoop() {
         lock.unlock();
         CheckScanHealth();
         ProbeSessions();
+        RunDueProactiveReconnects();
         lock.lock();
+    }
+}
+
+void BleCentralWin::RunDueProactiveReconnects() {
+    std::vector<std::pair<std::uint64_t, ProactiveReconnect>> due;
+    {
+        std::lock_guard lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = pending_proactive_reconnects_.begin();
+             it != pending_proactive_reconnects_.end();) {
+            if (now < it->second.not_before) {
+                ++it;
+                continue;
+            }
+            // 已不配对（忘记设备/配置变更）或已连上/连接中：使命完成，清项。
+            if (!paired_device_ids_.contains(it->second.device_id) ||
+                sessions_by_device_id_.contains(it->second.device_id) ||
+                connecting_addresses_.contains(it->first)) {
+                it = pending_proactive_reconnects_.erase(it);
+                continue;
+            }
+            due.emplace_back(it->first, it->second);
+            // 发起后推进到期点：失败（如遥控器仍半开拒绝 ATT）时下一轮心跳重试，
+            // 成功则上面的 sessions 检查在下一跳清项。
+            it->second.not_before = now + kProactiveReconnectRetry;
+            ++it;
+        }
+    }
+    for (const auto& [address, info] : due) {
+        const char* id_prefix =
+            info.device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-";
+        LogBleLine("proactive reconnect " + std::string(id_prefix) + info.device_id +
+                   " address=" + FormatBluetoothAddress(address) +
+                   " (zombie teardown recovery; device not advertising)");
+        DispatchToUiThread([this, address, info] {
+            ConnectPairedDevice(info.device_id, address, info.address_kind,
+                                std::string(), info.device_class);
+        });
     }
 }
 
