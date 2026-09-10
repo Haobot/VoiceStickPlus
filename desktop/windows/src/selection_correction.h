@@ -25,11 +25,13 @@ std::string BuildCorrectionCandidatesPrompt(
 std::vector<std::string> ParseCandidateLines(std::string_view llm_output);
 
 // 近音过滤：候选与错词经 NearVariantText（等长逐字近音，或 ±1 字近音
-// 子序列对齐——错词是热词漏字变体时候选仍保留）才展示；去与错词相同的
-// 项与重复项，保序。安全性不依赖 LLM——不过校验的候选一律不展示，
-// 用户选择/手输是最终裁决。
+// 子序列对齐——错词是热词漏字变体时候选仍保留）才展示；V4 起候选整词
+// 命中热词表时改走 HotwordAligned（等长至少一位近音/同字，ASR 连续错音
+// 「电楼板」→热词「洞洞板」场景）；去与错词相同的项与重复项，保序。
+// 安全性不依赖 LLM——不过校验的候选一律不展示，用户选择/手输是最终裁决。
 std::vector<std::string> FilterCandidates(
     std::string_view wrong_text,
-    const std::vector<std::string>& candidates);
+    const std::vector<std::string>& candidates,
+    const std::vector<std::string>& hotwords);
 
 } // namespace voicestick

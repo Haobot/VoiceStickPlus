@@ -237,6 +237,22 @@ bool NearVariantText(std::string_view a, std::string_view b) {
     return false;
 }
 
+bool HotwordAligned(std::string_view src, std::string_view dst) {
+    const auto vs = DecodeAll(src);
+    const auto vd = DecodeAll(dst);
+    if (vs.size() == vd.size()) {
+        // 等长放宽：至少一位近音/同字。真机口径「电楼板→洞洞板」电/洞、
+        // 楼/洞 韵母均无交集，靠尾字「板」锚定；「今天→洞洞板」无任何
+        // 位置关联 → 拒（热词不等于可以乱替）。
+        for (std::size_t i = 0; i < vs.size(); ++i) {
+            if (PinyinSameOrNear(vs[i], vd[i])) return true;
+        }
+        return false;
+    }
+    if (vd.size() == vs.size() + 1) return AlignsNearSubsequence(vs, vd);
+    return false;
+}
+
 CorrectionOutcome ApplyPinyinCorrections(
     std::string_view asr, std::string_view instructions, std::string_view context,
     const std::vector<std::string>& hotwords) {
@@ -263,9 +279,15 @@ CorrectionOutcome ApplyPinyinCorrections(
         if (arrow != std::string_view::npos) {
             const auto src = TrimAscii(line.substr(0, arrow));
             const auto dst = TrimAscii(line.substr(arrow + 3));  // → 为 3 字节 UTF-8
+            // 对齐按锚点分路径：热词=用户显式确认真值，等长放宽为
+            // HotwordAligned（至少一位近音/同字）；上文锚定维持全近音
+            // （上文出现 ≠ 真值，防幻觉替换）。
+            const bool hotword_anchored = HotwordAnchors(hotwords, dst);
+            const bool aligned = hotword_anchored
+                ? HotwordAligned(src, dst)
+                : ReplacementNearAligned(src, dst);
             if (src.empty() || dst.empty() || !Contains(result, src) ||
-                !(Contains(context, dst) || HotwordAnchors(hotwords, dst)) ||
-                !ReplacementNearAligned(src, dst)) {
+                !(Contains(context, dst) || hotword_anchored) || !aligned) {
                 out.rejected.emplace_back(line);
                 continue;
             }

@@ -11226,6 +11226,44 @@ void TestApplyPinyinCorrections() {
         assert(r.text == "这些口水词还没删干净。");
         assert(r.rejected.size() == 1);
     }
+    {   // V4 热词锚定放宽：等长 dst 命中热词时不再要求逐字全近音，至少一个
+        //     位置近音/同字即放行。真机案例「电楼板→洞洞板」（电 diǎn/洞 dòng
+        //     韵母无交集），靠尾字「板」同字锚定（2026-09-10 用户实测被误杀）。
+        const auto r = ApplyPinyinCorrections(
+            "买电楼板了吗？", "电楼板→洞洞板", "", {"洞洞板"});
+        assert(r.text == "买洞洞板了吗？");
+        assert(r.rejected.empty());
+    }
+    {   // V4 防幻觉闸：dst 命中热词但与 src 无任何位置近音（今天→洞洞板）→ 拒
+        const auto r = ApplyPinyinCorrections(
+            "今天天气不错。", "今天→洞洞板", "", {"洞洞板"});
+        assert(r.text == "今天天气不错。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // V4 长度闸不变：热词路径仍拒长度差 2（水→口水词，防 find 错位拼接）
+        const auto r = ApplyPinyinCorrections(
+            "我在喝水。", "水→口水词", "", {"口水词"});
+        assert(r.text == "我在喝水。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // V4 上文锚定路径不放宽：dst 在上文但非热词、无近音 → 仍拒
+        //     （放宽只给用户显式确认的热词，上文出现≠真值）
+        const auto r = ApplyPinyinCorrections(
+            "电楼板真不错。", "电楼板→洞楼板", "我说的是洞楼板", {});
+        assert(r.text == "电楼板真不错。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // V4 畸形混行容错（4B 真机/冒烟实测输出形态）：同一批指令中
+        //     「长句前缀→洞洞板」被长度闸拒、「动作板→洞洞板」正确放行，
+        //     逐行独立裁决互不影响。
+        const auto r = ApplyPinyinCorrections(
+            "那我要到宜家里面去买一些动作板来看看这个效果怎么样。",
+            "那我要到宜家里面去买一些动作板→洞洞板\n动作板→洞洞板",
+            "", {"洞洞板"});
+        assert(r.text ==
+               "那我要到宜家里面去买一些洞洞板来看看这个效果怎么样。");
+        assert(r.rejected.size() == 1);
+    }
     printf("TestApplyPinyinCorrections passed\n");
 }
 
@@ -11270,16 +11308,26 @@ void TestSelectionCorrection() {
         //     V1 起容忍 ±1 字近音子序列（「语气词语」是「逾期次」的
         //     +1 字变体，保留展示，用户点选是最终裁决）
         const auto r = FilterCandidates(
-            "逾期次", {"语气词", "鱼旗子", "蓝牙", "语气词", "逾期次", "语气词语"});
+            "逾期次", {"语气词", "鱼旗子", "蓝牙", "语气词", "逾期次", "语气词语"}, {});
         assert(r.size() == 3);
         assert(r[0] == "语气词");
         assert(r[1] == "鱼旗子");
         assert(r[2] == "语气词语");
     }
     {   // FilterCandidates（V1 场景）：划「水池」时候选「口水词」保留
-        const auto r = FilterCandidates("水池", {"口水词", "水库", "口水词"});
+        const auto r = FilterCandidates("水池", {"口水词", "水库", "口水词"}, {});
         assert(r.size() == 1);
         assert(r[0] == "口水词");
+    }
+    {   // FilterCandidates（V4 热词同口径）：候选命中热词免逐字全近音，
+        //     与错词至少一位近音/同字即保留（电楼板→洞洞板 靠尾字「板」）
+        const auto r = FilterCandidates("电楼板", {"洞洞板", "电木板"}, {"洞洞板"});
+        assert(r.size() == 1);
+        assert(r[0] == "洞洞板");
+    }
+    {   // FilterCandidates（V4）：无热词时同候选仍按近音拒（放宽仅限热词）
+        const auto r = FilterCandidates("电楼板", {"洞洞板"}, {});
+        assert(r.empty());
     }
     {   // BuildCorrectionCandidatesPrompt：含错词与上下文；空上下文不空行残留；
         //     V3 热词注入——非空加「热词：」行引导从热词出候选，空表不残留

@@ -122,11 +122,21 @@ std::vector<std::string> ParseCandidateLines(std::string_view llm_output) {
 
 std::vector<std::string> FilterCandidates(
     std::string_view wrong_text,
-    const std::vector<std::string>& candidates) {
+    const std::vector<std::string>& candidates,
+    const std::vector<std::string>& hotwords) {
     std::vector<std::string> kept;
     for (const auto& candidate : candidates) {
         if (candidate == wrong_text) continue;
-        if (!NearVariantText(wrong_text, candidate)) continue;
+        // 热词整词候选走 HotwordAligned 放宽口径（与跨轮守卫同口径 V4：
+        // 等长至少一位近音/同字，「电楼板」候选「洞洞板」靠尾字锚定）；
+        // 其余候选维持 NearVariantText 全近音过滤。
+        const bool hotword = std::any_of(
+            hotwords.begin(), hotwords.end(),
+            [&candidate](const std::string& w) { return w == candidate; });
+        if (!(hotword ? HotwordAligned(wrong_text, candidate)
+                      : NearVariantText(wrong_text, candidate))) {
+            continue;
+        }
         if (std::find(kept.begin(), kept.end(), candidate) != kept.end()) {
             continue;
         }

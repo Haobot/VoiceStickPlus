@@ -55,14 +55,15 @@ void LlmCorrectionCandidatesClient::Request(
     std::function<void(bool, std::vector<std::string>)> on_done) const {
     ChatAsync(BuildCandidatesSystemPrompt(),
               BuildCorrectionCandidatesPrompt(wrong_text, context, hotwords),
-              [wrong_text, on_done = std::move(on_done)](bool ok,
-                                                         std::string reply) {
+              [wrong_text, hotwords, on_done = std::move(on_done)](
+                  bool ok, std::string reply) {
                   if (!ok) {
                       on_done(false, {});
                       return;
                   }
                   on_done(true, FilterCandidates(
-                                    wrong_text, ParseCandidateLines(reply)));
+                                    wrong_text, ParseCandidateLines(reply),
+                                    hotwords));
               });
 }
 

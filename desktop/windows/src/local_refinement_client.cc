@@ -80,7 +80,8 @@ std::string LocalRefinementClient::BuildCorrectionSystemPrompt() {
         "参考上文，找出语音识别文本中与上文词汇写法不一致的同音错字，"
         "以及无意义的填充词。只输出处理指令，每行一个：\n"
         "错词→纠正词（纠正词必须在上文或热词中出现过）；或直接原样摘录要删除的"
-        "片段（含紧邻的逗号）。没有需要处理的内容时只输出：无。\n"
+        "片段（含紧邻的逗号）。错词与纠正词都只写最短的词，不要输出整句重写。"
+        "没有需要处理的内容时只输出：无。\n"
         "\n"
         "上文：我们刚才测了语气词过滤。\n"
         "输入：嗯，那些鱼器渍都被过滤掉了。\n"
@@ -358,7 +359,8 @@ void LocalRefinementClient::RunGenerateCandidates(
     }
     on_done(true, FilterCandidates(
                       wrong_text,
-                      ParseCandidateLines(StripReplyTemplate(raw))));
+                      ParseCandidateLines(StripReplyTemplate(raw)),
+                      hotwords));
 }
 
 } // namespace voicestick
