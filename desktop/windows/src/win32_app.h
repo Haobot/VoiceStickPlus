@@ -147,6 +147,11 @@ private:
     void AddHotwordAndNotify(const std::string& text);
     // 划词纠错入口（S1）：错词 → 候选对话框（云端 LLM 优先，退本地精修引擎）。
     void OpenSelectionCorrectionDialog(const std::string& wrong_text);
+    // 纠错确认后的回写（真机反馈 2026-09-10）：把目标应用中选中的错词直接
+    // 替换为正确词（借道剪贴板+Ctrl+V 覆盖选区）——否则用户划词修正完还得
+    // 在输入框里手动再改一遍。目标窗口在打开对话框前记录（弹层
+    // WS_EX_NOACTIVATE 不抢前台，此刻前台即目标应用）。
+    void ReplaceSelectionInTarget(const std::string& replacement);
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
     void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
@@ -215,6 +220,8 @@ private:
     std::unique_ptr<SubtitleWindow> subtitles_;
     std::unique_ptr<SelectionHotwordManager> selection_hotword_manager_;
     std::unique_ptr<SelectionCorrectionDialog> selection_correction_dialog_;
+    // 划词纠错确认的回写目标（打开对话框前的前台窗口），用毕即清。
+    HWND selection_correction_target_hwnd_ = nullptr;
     class BleCentralWin* ble_central_ = nullptr;
     // 小米遥控器 F5 抑制：xiaomi_last_mic_open_ms_ 由 BLE 层在 MIC_OPEN 时写入，
     // VoiceF5Suppressor 键盘钩子据此在 80ms 窗内吞掉遥控器附带的 F5 按键。

@@ -201,11 +201,13 @@ void SelectionCorrectionDialog::HandleCandidates(
 }
 
 void SelectionCorrectionDialog::ConfirmWord(const std::string& word) {
-    if (on_confirm) on_confirm(word);
+    // 先销毁再回调：on_confirm 的回写注入（SetForegroundWindow+Ctrl+V）
+    // 必须在对话框消失后进行，否则按键会打进本对话框。
     if (hwnd_) {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
+    if (on_confirm) on_confirm(word);
 }
 
 LPCDLGTEMPLATE SelectionCorrectionDialog::BuildDialogTemplate() {

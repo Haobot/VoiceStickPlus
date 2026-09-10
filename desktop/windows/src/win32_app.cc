@@ -1581,6 +1581,9 @@ void Win32App::OpenSelectionCorrectionDialog(const std::string& wrong_text) {
     if (wrong_text.empty()) return;
     // 已开着先关（新错词顶替旧会话）。
     selection_correction_dialog_.reset();
+    // 记录回写目标：弹层 WS_EX_NOACTIVATE 不抢前台，此刻前台即划词所在的
+    // 目标应用窗口（纠错确认后把选中的错词替换为正确词）。
+    selection_correction_target_hwnd_ = GetForegroundWindow();
 
     // 候选提供器：云端 LLM（llm_* 配置齐备）优先，退本地精修引擎，再退纯手输。
     // 热词表注入候选 prompt（触类旁通：错词是热词漏字变体时候选仍可出现）。
@@ -1616,8 +1619,22 @@ void Win32App::OpenSelectionCorrectionDialog(const std::string& wrong_text) {
             const std::string normalized = correct_word;
             if (normalized.empty()) return;
             AddHotwordAndNotify(normalized);
+            ReplaceSelectionInTarget(normalized);
         };
     selection_correction_dialog_->Show();
+}
+
+void Win32App::ReplaceSelectionInTarget(const std::string& replacement) {
+    const HWND target = selection_correction_target_hwnd_;
+    selection_correction_target_hwnd_ = nullptr;
+    if (!target || !IsWindow(target) || replacement.empty()) return;
+    // 对话框已在 ConfirmWord 中先销毁（激活权仍在本进程，可切前台）。
+    // SetForegroundWindow 异步生效，短暂等待激活完成再注入，否则 Ctrl+V
+    // 可能仍打进销毁对话框前的旧前台。Paste 内含剪贴板快照与恢复。
+    if (!SetForegroundWindow(target)) return;
+    Sleep(60);
+    input_injector_.Paste(replacement, /*press_enter=*/false);
+    LogLine("selection correction replaced in target window");
 }
 
 void Win32App::AddTrayIcon() {
