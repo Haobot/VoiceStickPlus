@@ -447,12 +447,13 @@ void VoiceStickCoordinator::SetLocalRefiner(std::unique_ptr<LocalRefinementClien
 
 void VoiceStickCoordinator::GenerateCorrectionCandidates(
     const std::string& wrong_text, const std::string& context_text,
+    const std::vector<std::string>& hotwords,
     LocalRefinementClient::CandidatesComplete on_done) {
     if (!local_refiner_) {
         if (on_done) on_done(false, {});
         return;
     }
-    local_refiner_->GenerateCandidates(wrong_text, context_text,
+    local_refiner_->GenerateCandidates(wrong_text, context_text, hotwords,
                                        std::move(on_done));
 }
 

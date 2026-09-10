@@ -10750,6 +10750,29 @@ void TestLocalRefinementCrossTurnOrchestration() {
         assert(r.last_user.size() >= 9 &&
                r.last_user.compare(r.last_user.size() - 9, 9, "处理：") == 0);
     }
+    {   // 1b) V2 热词注入：cross 模式热词非空时 user 含「热词：」行（输入
+        //     行后、处理锚前），系统提示词教学示例提及热词；空表无热词行。
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "无";
+        Ctx ctx;
+        ctx.cross_turn = true;
+        ctx.turns.push_back({"", "我们测了过滤。"});
+        auto r = run(std::move(fake), "这些水池还没删。",
+                     std::move(ctx), {"口水词", "语气词"});
+        assert(r.ok);
+        assert(r.last_user.find("输入：这些水池还没删。\n热词：口水词，语气词\n处理：") !=
+               std::string::npos);
+        assert(r.last_system.find("热词") != std::string::npos);
+        // 空热词表：不残留热词行
+        auto fake2 = std::make_unique<FakeEngine>();
+        fake2->reply = "无";
+        Ctx ctx2;
+        ctx2.cross_turn = true;
+        ctx2.turns.push_back({"", "我们测了过滤。"});
+        auto r2 = run(std::move(fake2), "这些水池还没删。", std::move(ctx2));
+        assert(r2.ok);
+        assert(r2.last_user.find("热词：") == std::string::npos);
+    }
     {   // 2) 模型输出「无」：结果=规则级文本（无提升无伤害）
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "无";
@@ -11165,6 +11188,44 @@ void TestApplyPinyinCorrections() {
         assert(r.text == "我们测试了逾期次过滤。");
         assert(r.rejected.size() == 1);
     }
+    {   // V1 触类旁通：dst 比 src 恰好多 1 字且近音子序列对齐 → 放行。
+        //     场景：热词「口水词」的少字变体「口水」（ASR 漏识别尾字）。
+        const auto r = ApplyPinyinCorrections(
+            "这些口水还没删干净。", "口水→口水词", "", {"口水词"});
+        assert(r.text == "这些口水词还没删干净。");
+        assert(r.rejected.empty());
+    }
+    {   // V1 变体含近音错字：水池→口水词（删「口」后「水词」vs「水池」，
+        //     水=水、池 chí/词 cí 韵母交集同音——与 C01 渍/词同口径）
+        const auto r = ApplyPinyinCorrections(
+            "这些水池还没删干净。", "水池→口水词", "", {"口水词"});
+        assert(r.text == "这些口水词还没删干净。");
+        assert(r.rejected.empty());
+    }
+    {   // V1 +1 字对齐仍受锚点域约束：dst「水池子」可对齐但不在热词/上文 → 拒
+        const auto r = ApplyPinyinCorrections(
+            "这些水池还没删干净。", "水池→水池子", "", {"口水词"});
+        assert(r.text == "这些水池还没删干净。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // V1 语义反转防护：不→很好（差 1 字但无任何近音对齐路径）→ 拒
+        const auto r = ApplyPinyinCorrections(
+            "这样不行的。", "不→很好", "", {"很好"});
+        assert(r.text == "这样不行的。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // V1 长度差 2 仍拒：水→口水词
+        const auto r = ApplyPinyinCorrections(
+            "这些水还没删干净。", "水→口水词", "", {"口水词"});
+        assert(r.text == "这些水还没删干净。");
+        assert(r.rejected.size() == 1);
+    }
+    {   // V1 只放宽「错词漏字」方向：dst 更短（口水词→口水）→ 仍拒
+        const auto r = ApplyPinyinCorrections(
+            "这些口水词还没删干净。", "口水词→口水", "", {"口水"});
+        assert(r.text == "这些口水词还没删干净。");
+        assert(r.rejected.size() == 1);
+    }
     printf("TestApplyPinyinCorrections passed\n");
 }
 
@@ -11172,12 +11233,21 @@ void TestApplyPinyinCorrections() {
 // LLM 输出解析 → 近音过滤 → 交给对话框展示。
 void TestSelectionCorrection() {
     printf(">> TestSelectionCorrection\n"); fflush(stdout);
-    {   // SameOrNearText：等长逐字近音（复用守卫同口径）
+    {   // SameOrNearText：等长逐字近音（守卫基线口径）
         assert(SameOrNearText("逾期次", "语气词"));
         assert(SameOrNearText("鱼旗子", "逾期次"));
         assert(!SameOrNearText("逾期次", "蓝牙"));      // 码点不等长
         assert(!SameOrNearText("逾期次", "蓝牙耳机"));  // 等长但非近音
         assert(SameOrNearText("", ""));
+    }
+    {   // NearVariantText（V1 触类旁通口径）：等长近音 ∨ ±1 字近音子序列
+        //     对齐（热词少字变体）；差 1 字但无近音对齐路径、差 2 字均拒
+        assert(NearVariantText("逾期次", "语气词"));
+        assert(NearVariantText("口水", "口水词"));    // 漏尾字变体
+        assert(NearVariantText("水池", "口水词"));    // 漏首字+近音错字变体
+        assert(!NearVariantText("逾期次", "蓝牙"));   // 差 1 但对不上
+        assert(!NearVariantText("水", "口水词"));     // 差 2
+        assert(NearVariantText("", ""));
     }
     {   // ParseCandidateLines：剥序号（1. / 1、/ -）、跳空行、跳「无」类
         //     直答、跳含标点行（候选是词不该有标点）、保序
@@ -11196,20 +11266,33 @@ void TestSelectionCorrection() {
         assert(lines[2] == "预期刺");
         assert(lines[3] == "语气词");
     }
-    {   // FilterCandidates：近音过、非近音拒、不等长拒、去重、去与错词相同项
+    {   // FilterCandidates：近音过、非近音拒、去重、去与错词相同项；
+        //     V1 起容忍 ±1 字近音子序列（「语气词语」是「逾期次」的
+        //     +1 字变体，保留展示，用户点选是最终裁决）
         const auto r = FilterCandidates(
             "逾期次", {"语气词", "鱼旗子", "蓝牙", "语气词", "逾期次", "语气词语"});
-        assert(r.size() == 2);
+        assert(r.size() == 3);
         assert(r[0] == "语气词");
         assert(r[1] == "鱼旗子");
+        assert(r[2] == "语气词语");
     }
-    {   // BuildCorrectionCandidatesPrompt：含错词与上下文；空上下文不空行残留
+    {   // FilterCandidates（V1 场景）：划「水池」时候选「口水词」保留
+        const auto r = FilterCandidates("水池", {"口水词", "水库", "口水词"});
+        assert(r.size() == 1);
+        assert(r[0] == "口水词");
+    }
+    {   // BuildCorrectionCandidatesPrompt：含错词与上下文；空上下文不空行残留；
+        //     V3 热词注入——非空加「热词：」行引导从热词出候选，空表不残留
         const auto prompt = BuildCorrectionCandidatesPrompt("逾期次", "我们测了逾期次过滤");
         assert(prompt.find("逾期次") != std::string::npos);
         assert(prompt.find("我们测了逾期次过滤") != std::string::npos);
         const auto bare = BuildCorrectionCandidatesPrompt("逾期次", "");
         assert(bare.find("逾期次") != std::string::npos);
         assert(bare.find("上下文") == std::string::npos);
+        assert(bare.find("热词：") == std::string::npos);  // 无热词行（约束句仍提热词）
+        const auto with_hotwords =
+            BuildCorrectionCandidatesPrompt("水池", "", {"口水词", "语气词"});
+        assert(with_hotwords.find("热词：口水词，语气词") != std::string::npos);
     }
     printf("TestSelectionCorrection passed\n");
 }
@@ -11239,18 +11322,22 @@ void TestLocalRefinementGenerateCandidates() {
     struct Out {
         bool ok = false;
         std::vector<std::string> candidates;
+        std::string last_user;
     };
     auto run = [](std::unique_ptr<FakeEngine> fake, const std::string& wrong,
-                  const std::string& context) {
+                  const std::string& context,
+                  std::vector<std::string> hotwords) {
         std::promise<Out> pr;
         auto fut = pr.get_future();
+        FakeEngine* observer = fake.get();
         LocalRefinementClient client(std::move(fake));
         client.GenerateCandidates(
-            wrong, context,
-            [&pr](bool ok, std::vector<std::string> candidates) {
+            wrong, context, std::move(hotwords),
+            [&pr, observer](bool ok, std::vector<std::string> candidates) {
                 Out out;
                 out.ok = ok;
                 out.candidates = std::move(candidates);
+                if (observer) out.last_user = observer->last_user;
                 pr.set_value(std::move(out));
             });
         return fut.get();
@@ -11258,7 +11345,7 @@ void TestLocalRefinementGenerateCandidates() {
     {   // 1) 多行候选：序号剥除 + 近音过滤 + 去重去原词
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "1. 语气词\n2、鱼旗子\n3. 蓝牙\n语气词";
-        const auto r = run(std::move(fake), "逾期次", "我们测了逾期次过滤");
+        const auto r = run(std::move(fake), "逾期次", "我们测了逾期次过滤", {});
         assert(r.ok);
         assert(r.candidates.size() == 2);
         assert(r.candidates[0] == "语气词");
@@ -11267,14 +11354,14 @@ void TestLocalRefinementGenerateCandidates() {
     {   // 2) 模型直答「无」→ (true, {})
         auto fake = std::make_unique<FakeEngine>();
         fake->reply = "无";
-        const auto r = run(std::move(fake), "逾期次", "");
+        const auto r = run(std::move(fake), "逾期次", "", {});
         assert(r.ok);
         assert(r.candidates.empty());
     }
     {   // 3) 引擎失败 → (false, {})
         auto fake = std::make_unique<FakeEngine>();
         fake->fail = true;
-        const auto r = run(std::move(fake), "逾期次", "");
+        const auto r = run(std::move(fake), "逾期次", "", {});
         assert(!r.ok);
         assert(r.candidates.empty());
     }
@@ -11287,13 +11374,23 @@ void TestLocalRefinementGenerateCandidates() {
         auto fut = done.get_future();
         LocalRefinementClient client(std::move(fake));
         client.GenerateCandidates(
-            "逾期次", "我们测了逾期次过滤",
+            "逾期次", "我们测了逾期次过滤", {},
             [&done](bool, std::vector<std::string>) { done.set_value(); });
         fut.get();
         assert(observer->last_user ==
                BuildCorrectionCandidatesPrompt("逾期次", "我们测了逾期次过滤"));
         assert(observer->last_system ==
                BuildCandidatesSystemPrompt());
+    }
+    {   // 5) V3 热词注入：prompt 含「热词：」行；+1 字候选（口水词）经
+        //     NearVariantText 过滤保留（划词「水池」触类旁通到热词）
+        auto fake = std::make_unique<FakeEngine>();
+        fake->reply = "1. 口水词";
+        const auto r = run(std::move(fake), "水池", "", {"口水词"});
+        assert(r.ok);
+        assert(r.last_user.find("热词：口水词") != std::string::npos);
+        assert(r.candidates.size() == 1);
+        assert(r.candidates[0] == "口水词");
     }
     printf("TestLocalRefinementGenerateCandidates passed\n");
 }

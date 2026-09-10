@@ -79,16 +79,26 @@ std::string BuildCandidatesSystemPrompt() {
            "只输出候选词列表，不要解释。";
 }
 
-std::string BuildCorrectionCandidatesPrompt(std::string_view wrong_text,
-                                            std::string_view context) {
+std::string BuildCorrectionCandidatesPrompt(
+    std::string_view wrong_text, std::string_view context,
+    const std::vector<std::string>& hotwords) {
     std::string prompt = "错词：" + std::string(wrong_text) + "\n";
     if (!context.empty()) {
         prompt += "上下文：" + std::string(context) + "\n";
     }
+    if (!hotwords.empty()) {
+        prompt += "热词：";
+        for (std::size_t i = 0; i < hotwords.size(); ++i) {
+            if (i != 0) prompt += "，";
+            prompt += hotwords[i];
+        }
+        prompt += "\n";
+    }
     prompt +=
         "上面是语音识别出错的词。给出最可能的正确词，最多5个，每行一个，"
-        "不要解释。正确词必须与错词字数相同，且每个字与错词对应位置的字同音"
-        "或近音（声母韵母相近）。如果想不到任何符合的词，只输出：无";
+        "不要解释。正确词与错词逐字同音或近音，字数相同或恰好多一个字"
+        "（错词漏了一个字的情况）；如果给出了热词，优先从中选择。"
+        "如果想不到任何符合的词，只输出：无";
     return prompt;
 }
 
@@ -116,7 +126,7 @@ std::vector<std::string> FilterCandidates(
     std::vector<std::string> kept;
     for (const auto& candidate : candidates) {
         if (candidate == wrong_text) continue;
-        if (!SameOrNearText(wrong_text, candidate)) continue;
+        if (!NearVariantText(wrong_text, candidate)) continue;
         if (std::find(kept.begin(), kept.end(), candidate) != kept.end()) {
             continue;
         }

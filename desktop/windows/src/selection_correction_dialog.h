@@ -27,8 +27,10 @@ public:
     explicit LlmCorrectionCandidatesClient(AppConfig config)
         : LLMChatClient(std::move(config)) {}
 
-    // on_done 在后台线程回调：ok=false 网络失败（候选空）。
+    // on_done 在后台线程回调：ok=false 网络失败（候选空）。hotwords 注入
+    // prompt 引导从热词出候选（触类旁通：错词是热词漏字变体的场景）。
     void Request(const std::string& wrong_text, const std::string& context,
+                 const std::vector<std::string>& hotwords,
                  std::function<void(bool, std::vector<std::string>)> on_done) const;
 };
 

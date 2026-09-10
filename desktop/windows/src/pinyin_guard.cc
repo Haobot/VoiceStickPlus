@@ -158,6 +158,46 @@ bool HotwordAnchors(const std::vector<std::string>& hotwords, std::string_view d
     return false;
 }
 
+std::vector<std::uint32_t> DecodeAll(std::string_view s) {
+    std::vector<std::uint32_t> out;
+    for (std::size_t i = 0; i < s.size();) out.push_back(DecodeCodepoint(s, i));
+    return out;
+}
+
+// 近音子序列对齐（触类旁通）：shorter 与 longer 删掉任一字后的连续序列
+// 逐字近音（longer 恰好多 1 码点，调用方保证）。覆盖热词少字变体：
+// 「口水」对齐「口水词」删「词」、「水池」对齐「口水词」删「口」
+// （水=水、池 chí/词 cí 韵母交集同音）。
+bool AlignsNearSubsequence(const std::vector<std::uint32_t>& shorter,
+                           const std::vector<std::uint32_t>& longer) {
+    for (std::size_t skip = 0; skip < longer.size(); ++skip) {
+        bool aligned = true;
+        std::size_t j = 0;
+        for (std::size_t i = 0; i < longer.size(); ++i) {
+            if (i == skip) continue;
+            if (j >= shorter.size() ||
+                !PinyinSameOrNear(shorter[j], longer[i])) {
+                aligned = false;
+                break;
+            }
+            ++j;
+        }
+        if (aligned) return true;
+    }
+    return false;
+}
+
+// 替换对近音校验：等长逐字近音（基线口径），或 dst 恰好多 1 字且 src 与
+// dst 删一字后的序列逐字近音（错词=热词少字变体）。dst 更短或长度差 ≥2
+// 一律拒——只放宽「错词漏字」方向，杜绝指令截短热词的攻击面。
+bool ReplacementNearAligned(std::string_view src, std::string_view dst) {
+    const auto vs = DecodeAll(src);
+    const auto vd = DecodeAll(dst);
+    if (vs.size() == vd.size()) return SameOrNearPerCodepoint(src, dst);
+    if (vd.size() == vs.size() + 1) return AlignsNearSubsequence(vs, vd);
+    return false;
+}
+
 } // namespace
 
 bool PinyinSameOrNear(std::uint32_t a, std::uint32_t b) {
@@ -188,6 +228,15 @@ bool SameOrNearText(std::string_view a, std::string_view b) {
     return true;
 }
 
+bool NearVariantText(std::string_view a, std::string_view b) {
+    const auto va = DecodeAll(a);
+    const auto vb = DecodeAll(b);
+    if (va.size() == vb.size()) return SameOrNearText(a, b);
+    if (va.size() + 1 == vb.size()) return AlignsNearSubsequence(va, vb);
+    if (vb.size() + 1 == va.size()) return AlignsNearSubsequence(vb, va);
+    return false;
+}
+
 CorrectionOutcome ApplyPinyinCorrections(
     std::string_view asr, std::string_view instructions, std::string_view context,
     const std::vector<std::string>& hotwords) {
@@ -215,9 +264,8 @@ CorrectionOutcome ApplyPinyinCorrections(
             const auto src = TrimAscii(line.substr(0, arrow));
             const auto dst = TrimAscii(line.substr(arrow + 3));  // → 为 3 字节 UTF-8
             if (src.empty() || dst.empty() || !Contains(result, src) ||
-                CodepointCount(src) != CodepointCount(dst) ||
                 !(Contains(context, dst) || HotwordAnchors(hotwords, dst)) ||
-                !SameOrNearPerCodepoint(src, dst)) {
+                !ReplacementNearAligned(src, dst)) {
                 out.rejected.emplace_back(line);
                 continue;
             }

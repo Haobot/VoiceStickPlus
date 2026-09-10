@@ -1583,20 +1583,23 @@ void Win32App::OpenSelectionCorrectionDialog(const std::string& wrong_text) {
     selection_correction_dialog_.reset();
 
     // 候选提供器：云端 LLM（llm_* 配置齐备）优先，退本地精修引擎，再退纯手输。
+    // 热词表注入候选 prompt（触类旁通：错词是热词漏字变体时候选仍可出现）。
     const std::string context = coordinator_
                                     ? coordinator_->RecentRefineContextText()
                                     : std::string();
+    const std::vector<std::string> hotwords = config_.asr_hotwords;
     SelectionCorrectionDialog::CandidatesProvider provider =
-        [this, wrong_text, context](
+        [this, wrong_text, context, hotwords](
             std::function<void(bool ok, std::vector<std::string> candidates)>
                 on_done) {
         if (!config_.llm_api_key.empty() && !config_.llm_model.empty()) {
             LlmCorrectionCandidatesClient client(config_);
-            client.Request(wrong_text, context, std::move(on_done));
+            client.Request(wrong_text, context, hotwords, std::move(on_done));
             return;
         }
         if (coordinator_) {
             coordinator_->GenerateCorrectionCandidates(wrong_text, context,
+                                                       hotwords,
                                                        std::move(on_done));
             return;
         }

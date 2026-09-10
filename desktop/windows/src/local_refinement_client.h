@@ -85,15 +85,17 @@ class LocalRefinementClient {
               std::vector<std::string> hotwords = {},
               RefineContext context = {});
 
-  // 划词纠错候选生成（S1）：错词+上下文 → LLM 候选 → 解析+近音过滤回调。
-  // on_done 恰好一次（后台线程）：ok=false 表示引擎不可用/失败（候选空，
-  // 调用方退化为纯手输）。复用本实例引擎（单例常驻），引擎调用经
-  // engine_mutex_ 与精修串行——llama.cpp 非线程安全；候选 Chat 会作废
-  // 跨轮 KV 会话（下一句精修全量重建，低频显式操作可接受）。
+  // 划词纠错候选生成（S1）：错词+上下文+热词表（触类旁通：prompt 注入
+  // 引导从热词出候选，覆盖错词漏字的变体场景）→ LLM 候选 → 解析+近音
+  // 过滤回调。on_done 恰好一次（后台线程）：ok=false 表示引擎不可用/
+  // 失败（候选空，调用方退化为纯手输）。复用本实例引擎（单例常驻），
+  // 引擎调用经 engine_mutex_ 与精修串行——llama.cpp 非线程安全；候选
+  // Chat 会作废跨轮 KV 会话（下一句精修全量重建，低频显式操作可接受）。
   using CandidatesComplete =
       std::function<void(bool ok, std::vector<std::string> candidates)>;
   void GenerateCandidates(const std::string& wrong_text,
                           const std::string& context,
+                          const std::vector<std::string>& hotwords,
                           CandidatesComplete on_done);
 
   bool IsReady() const { return engine_ && engine_->IsReady(); }
@@ -108,6 +110,7 @@ class LocalRefinementClient {
 
   void RunGenerateCandidates(const std::string& wrong_text,
                              const std::string& context,
+                             const std::vector<std::string>& hotwords,
                              const CandidatesComplete& on_done);
 
   std::unique_ptr<LocalLlmEngine> engine_;

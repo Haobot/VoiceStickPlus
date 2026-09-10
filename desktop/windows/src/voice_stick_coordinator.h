@@ -260,9 +260,11 @@ public:
     // 注入件；config [local_asr] refine_enabled=false 时外壳不注入。
     void SetLocalRefiner(std::unique_ptr<LocalRefinementClient> refiner);
     // 划词纠错候选生成（S1）：委托本地精修客户端（引擎互斥内与精修串行）。
-    // refiner 未注入回调 (false, {})，调用方退化为纯手输。
+    // hotwords 注入候选 prompt（触类旁通）。refiner 未注入回调 (false, {})，
+    // 调用方退化为纯手输。
     void GenerateCorrectionCandidates(
         const std::string& wrong_text, const std::string& context_text,
+        const std::vector<std::string>& hotwords,
         LocalRefinementClient::CandidatesComplete on_done);
     // 最近跨轮精修上文（划词纠错候选生成的上下文源，空串=无上文）。
     std::string RecentRefineContextText() const;

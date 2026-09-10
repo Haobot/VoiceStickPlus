@@ -79,7 +79,7 @@ std::string LocalRefinementClient::BuildCorrectionSystemPrompt() {
     return
         "参考上文，找出语音识别文本中与上文词汇写法不一致的同音错字，"
         "以及无意义的填充词。只输出处理指令，每行一个：\n"
-        "错词→纠正词（纠正词必须在上文中出现过）；或直接原样摘录要删除的"
+        "错词→纠正词（纠正词必须在上文或热词中出现过）；或直接原样摘录要删除的"
         "片段（含紧邻的逗号）。没有需要处理的内容时只输出：无。\n"
         "\n"
         "上文：我们刚才测了语气词过滤。\n"
@@ -98,6 +98,12 @@ std::string LocalRefinementClient::BuildCorrectionSystemPrompt() {
         "处理：\n"
         "那个\n"
         "办→半\n"
+        "\n"
+        "上文：优化一下这段流程。\n"
+        "输入：这个算法流要重写。\n"
+        "热词：算法流程\n"
+        "处理：\n"
+        "算法流→算法流程\n"
         "\n"
         "上文：帮我把垃圾倒一下。\n"
         "输入：帮我把垃圾倒一下。\n"
@@ -222,7 +228,18 @@ void LocalRefinementClient::RunRefine(
     }
     std::string user_text;
     if (cross) {
-        user_text = "输入：" + rule_refined + "\n处理：";
+        // 触类旁通（生成侧）：热词表进 4B 视野——跨轮上文从未出现正确
+        // 写法时（ASR 每轮都错成「水池」），模型仍可往热词上出纠正指令；
+        // 执行侧由守卫的近音子序列对齐放行少字变体。
+        user_text = "输入：" + rule_refined;
+        if (!hotwords.empty()) {
+            user_text += "\n热词：";
+            for (std::size_t i = 0; i < hotwords.size(); ++i) {
+                if (i != 0) user_text += "，";
+                user_text += hotwords[i];
+            }
+        }
+        user_text += "\n处理：";
     } else {
         user_text = "输入：" + rule_refined + "\n输出：";
     }
@@ -306,17 +323,20 @@ void LocalRefinementClient::RunRefine(
 
 void LocalRefinementClient::GenerateCandidates(const std::string& wrong_text,
                                                const std::string& context,
+                                               const std::vector<std::string>& hotwords,
                                                CandidatesComplete on_done) {
     // 与 Refine 同款短命线程模型；析构 join 保证回调不悬垂。
     std::lock_guard lock(threads_mutex_);
     threads_.emplace_back(
-        [this, wrong_text, context, on_done = std::move(on_done)]() mutable {
-            RunGenerateCandidates(wrong_text, context, on_done);
+        [this, wrong_text, context, hotwords,
+         on_done = std::move(on_done)]() mutable {
+            RunGenerateCandidates(wrong_text, context, hotwords, on_done);
         });
 }
 
 void LocalRefinementClient::RunGenerateCandidates(
     const std::string& wrong_text, const std::string& context,
+    const std::vector<std::string>& hotwords,
     const CandidatesComplete& on_done) {
     if (!engine_ || !engine_->IsReady()) {
         on_done(false, {});
@@ -327,7 +347,8 @@ void LocalRefinementClient::RunGenerateCandidates(
     {
         std::lock_guard engine_lock(engine_mutex_);
         ok = engine_->Chat(BuildCandidatesSystemPrompt(),
-                           BuildCorrectionCandidatesPrompt(wrong_text, context),
+                           BuildCorrectionCandidatesPrompt(wrong_text, context,
+                                                           hotwords),
                            nullptr, raw);
     }
     if (log_) log_("candidates in='" + wrong_text + "' out='" + raw + "'");

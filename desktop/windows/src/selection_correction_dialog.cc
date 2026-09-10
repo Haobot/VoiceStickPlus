@@ -51,9 +51,10 @@ void AppendDialogWideString(std::vector<BYTE>* buffer, const wchar_t* text) {
 
 void LlmCorrectionCandidatesClient::Request(
     const std::string& wrong_text, const std::string& context,
+    const std::vector<std::string>& hotwords,
     std::function<void(bool, std::vector<std::string>)> on_done) const {
     ChatAsync(BuildCandidatesSystemPrompt(),
-              BuildCorrectionCandidatesPrompt(wrong_text, context),
+              BuildCorrectionCandidatesPrompt(wrong_text, context, hotwords),
               [wrong_text, on_done = std::move(on_done)](bool ok,
                                                          std::string reply) {
                   if (!ok) {
