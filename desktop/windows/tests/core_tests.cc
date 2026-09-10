@@ -6895,6 +6895,20 @@ void TestWasapiRendererFailsOnMissingDevice() {
     assert(renderer.ActiveDeviceName().empty());
 }
 
+// 空设备名不得回退默认播放设备：语音 PCM 会从扬声器实时播出（用户听到自己
+// 声音的回放，2026-09-11 事故——config.toml 两个虚拟麦字段为空时整个
+// wechat 模式渲染到扬声器）。必须显式失败走「未找到虚拟麦克风」提示路径。
+void TestWasapiRendererRejectsEmptyDeviceName() {
+    WasapiVirtualMicRenderer::Options options;
+    options.device_name_substring = L"";
+    WasapiVirtualMicRenderer renderer(options);
+    PcmRingBuffer buffer(1024);
+
+    assert(!renderer.Start(&buffer));
+    assert(!renderer.IsRunning());
+    assert(renderer.ActiveDeviceName().empty());
+}
+
 void TestRenderPumpSubmitsFullAvailableNoCap() {
     // padding=0 → available=buffer_frame_count。事件驱动渲染去掉 frames_per_period 上限，
     // 应一次性提交全部可用空间（旧实现被 10ms=160 帧上限锁死，提交速率 < 消费速率致
@@ -14158,6 +14172,7 @@ int main() {
     TestPcmRingBufferClear();
     TestPcmRingBufferWrapAround();
     TestWasapiRendererFailsOnMissingDevice();
+    TestWasapiRendererRejectsEmptyDeviceName();
     TestRenderPumpSubmitsFullAvailableNoCap();
     TestRenderPumpFillsSilenceWhenRingEmpty();
     TestRenderPumpZeroWhenBufferFull();
