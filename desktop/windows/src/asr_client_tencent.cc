@@ -148,6 +148,18 @@ AsrClientTencent::~AsrClientTencent() {
     ShutdownConnection();
 }
 
+void AsrClientTencent::SetWinHttpTestSeams(WebSocketReceiveFn receive, WebSocketCloseFn ws_close,
+                                           HandleCloseFn close) {
+    websocket_receive_ = receive;
+    websocket_close_ = ws_close;
+    handle_close_ = close;
+}
+
+void AsrClientTencent::SetWebSocketHandleForTest(HINTERNET handle) {
+    std::lock_guard lock(mutex_);
+    websocket_ = handle;
+}
+
 // ============================================================
 // 公开接口
 // ============================================================
@@ -822,15 +834,50 @@ void AsrClientTencent::RunWebSocket() {
     Log("TASR", "WebSocket connected, voice_id=" + voice_id + ", flushing queued audio");
     FlushQueuedAudioChunks();
 
+    ReceiveLoop(websocket);
+
+    // 连接关闭兜底：正常流程服务端先发 final=1 再断开（EmitFinalText 已触发 on_final）。
+    // 若服务端异常只断开未发 final=1，且本会话已发 end（kFinishing）并有累积文本，
+    // 则补触发一次 on_final，避免 button_up 后丢文本。主动取消（cancelled_）不补。
+    if (!cancelled_.load()) {
+        bool need_fallback = false;
+        {
+            std::lock_guard lock(mutex_);
+            need_fallback = !final_emitted_ &&
+                            session_state_ == SessionState::kFinishing &&
+                            !accumulated_final_text_.empty();
+        }
+        if (need_fallback) {
+            Log("TASR", "connection closed without final=1, emitting accumulated text as fallback");
+            EmitFinalText();
+        }
+    }
+
+    // websocket 句柄所有权判断：ShutdownConnection 强制关闭时已把成员置空并
+    // close 过句柄，此处只关闭仍归本 worker 所有的句柄，避免 double close。
+    HINTERNET websocket_to_close = nullptr;
+    {
+        std::lock_guard lock(mutex_);
+        if (websocket_ == websocket) {
+            websocket_to_close = websocket;
+            websocket_ = nullptr;
+        }
+        connection_state_ = ConnectionState::kDisconnected;
+    }
+    if (websocket_to_close) handle_close_(websocket_to_close);
+    CloseHandles(session, connect, request, nullptr);
+}
+
+void AsrClientTencent::ReceiveLoop(HINTERNET websocket) {
     // 接收循环
     int receive_timeouts = 0;
     while (!cancelled_) {
         std::array<std::uint8_t, 64 * 1024> buffer{};
         DWORD bytes_read = 0;
         WINHTTP_WEB_SOCKET_BUFFER_TYPE type{};
-        const DWORD result = WinHttpWebSocketReceive(websocket, buffer.data(),
-                                                     static_cast<DWORD>(buffer.size()),
-                                                     &bytes_read, &type);
+        const DWORD result = websocket_receive_(websocket, buffer.data(),
+                                                static_cast<DWORD>(buffer.size()),
+                                                &bytes_read, &type);
         if (result == ERROR_WINHTTP_TIMEOUT) {
             ++receive_timeouts;
             Log("TASR", "websocket receive timeout #" + std::to_string(receive_timeouts));
@@ -858,47 +905,27 @@ void AsrClientTencent::RunWebSocket() {
             HandleTextResponse(text, websocket);
         }
         // 忽略二进制帧（腾讯云不发送二进制帧）
-    }
 
-    // 连接关闭兜底：正常流程服务端先发 final=1 再断开（EmitFinalText 已触发 on_final）。
-    // 若服务端异常只断开未发 final=1，且本会话已发 end（kFinishing）并有累积文本，
-    // 则补触发一次 on_final，避免 button_up 后丢文本。主动取消（cancelled_）不补。
-    if (!cancelled_.load()) {
-        bool need_fallback = false;
+        // final=1 已触发 on_final，整段识别结束——主动退出接收循环。实测服务端
+        // 在 final=1 后可能保持连接不断开，此时 WinHttpWebSocketReceive 无有效
+        // 超时（WinHttpSetTimeouts 的接收超时对 WebSocket Receive 不生效）会无限
+        // 阻塞，曾致析构时 join 卡死 UI 线程 30s+（2026-09-10 事故）。
         {
             std::lock_guard lock(mutex_);
-            need_fallback = !final_emitted_ &&
-                            session_state_ == SessionState::kFinishing &&
-                            !accumulated_final_text_.empty();
-        }
-        if (need_fallback) {
-            Log("TASR", "connection closed without final=1, emitting accumulated text as fallback");
-            EmitFinalText();
+            if (final_emitted_) break;
         }
     }
-
-    {
-        std::lock_guard lock(mutex_);
-        if (websocket_ == websocket) websocket_ = nullptr;
-        connection_state_ = ConnectionState::kDisconnected;
-    }
-    CloseHandles(session, connect, request, websocket);
 }
 
 void AsrClientTencent::ShutdownConnection() {
     cancelled_ = true;
     const bool has_worker = worker_.joinable();
+    HINTERNET force_close = nullptr;
     {
         std::lock_guard lock(mutex_);
-        if (websocket_) {
-            WinHttpWebSocketClose(websocket_,
-                                  WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,
-                                  nullptr, 0);
-            if (!has_worker) {
-                WinHttpCloseHandle(websocket_);
-                websocket_ = nullptr;
-            }
-        }
+        // 句柄所有权移交本函数：worker 收尾按所有权判断跳过已关闭的句柄，避免 double close。
+        force_close = websocket_;
+        websocket_ = nullptr;
         queued_audio_chunks_.clear();
         current_voice_id_.clear();
         latest_transcript_.clear();
@@ -906,6 +933,12 @@ void AsrClientTencent::ShutdownConnection() {
         session_state_ = SessionState::kIdle;
         connection_state_ = ConnectionState::kDisconnected;
     }
+    // 锁外强制关闭：WinHttpCloseHandle 使该句柄上未完成的 WinHttpWebSocketReceive
+    // 立即返回 OPERATION_CANCELLED（worker 自行收尾退出，join 快速返回）。不能用
+    // WinHttpWebSocketClose——它要与 worker 阻塞中的 Receive 并发操作同一句柄
+    //（WinHTTP 并发限制），且 close 握手需等服务端 ack（服务端不断开时永久等待），
+    // 曾在 UI 线程同步析构路径死锁 30s+（2026-09-10 事故）。
+    if (force_close) handle_close_(force_close);
     if (has_worker) {
         if (worker_.get_id() == std::this_thread::get_id()) {
             worker_.detach();

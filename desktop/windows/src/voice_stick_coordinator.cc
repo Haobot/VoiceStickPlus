@@ -240,12 +240,20 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     }
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
+        // 旧云端客户端移交后台线程析构：AsrClientTencent 析构会 join WebSocket
+        // worker（网络阻塞时可达秒级），在调用线程（UI）同步析构曾把 UI 线程卡死
+        // 30s+，小米 ATVV 事件全部依赖 UI 线程分发而彻底无响应（2026-09-10 事故）。
+        // detached 线程只持有客户端指针、不触碰协调器，生命周期安全。
+        std::unique_ptr<AsrClient> retired_asr = std::move(asr_);
         asr_ = asr_factory_(config_);
         ConfigureAsrCallbacks();
         // 云端客户端已被替换：会话级路由指针必须解除，避免悬垂（活跃会话在上方
         // was_recognizing 分支已经 EnterReady 清空）。
         session_asr_ = nullptr;
         session_uses_local_refine_ = false;
+        if (retired_asr) {
+            std::thread([retired = std::move(retired_asr)]() {}).detach();
+        }
     }
     if (paired_device_ids_ != config_.paired_device_ids) {
         paired_device_ids_ = config_.paired_device_ids;

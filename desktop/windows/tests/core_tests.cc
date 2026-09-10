@@ -8707,6 +8707,133 @@ void TestTencentVoiceIdGeneration() {
     assert(id1[14] == '4');  // UUID v4 版本标识
 }
 
+// ===== 腾讯 ASR 连接关停死锁回归（2026-09-10 UI 线程卡死 30s+ 事故）=====
+// 事故链：服务端 final=1 后未断开 → worker 无限期阻塞在 WinHttpWebSocketReceive
+//（WinHttpSetTimeouts 的接收超时对 WebSocket Receive 不生效）→ 用户保存设置时
+// UI 线程同步析构旧客户端 → ShutdownConnection 持锁跨线程调用 WinHttpWebSocketClose
+//（与 worker 并发操作同一句柄 + 等待对端 close ack）+ join 卡死的 worker → UI 线程
+// 停摆 → 小米 ATVV 事件（全部依赖 UI 线程 DispatchToUiThread 分发）静默丢弃。
+namespace tencent_seam {
+    std::atomic<int> receive_calls = 0;
+    std::atomic<int> websocket_close_calls = 0;
+    std::atomic<int> handle_close_calls = 0;
+
+    void Reset() {
+        receive_calls.store(0);
+        websocket_close_calls.store(0);
+        handle_close_calls.store(0);
+    }
+
+    // 第 1 次返回 final=1 文本帧；其后模拟服务端不断开——Receive 长时间不返回
+    //（线上死锁场景，超时只是防测试进程挂死的保险）。
+    DWORD WINAPI FakeReceive(HINTERNET, PVOID buffer, DWORD, DWORD* bytes_read,
+                             WINHTTP_WEB_SOCKET_BUFFER_TYPE* type) {
+        const int n = receive_calls.fetch_add(1) + 1;
+        if (n == 1) {
+            const char* json =
+                R"({"code":0,"message":"success","voice_id":"t","message_id":"t","final":1})";
+            const std::size_t len = std::strlen(json);
+            std::memcpy(buffer, json, len);
+            *bytes_read = static_cast<DWORD>(len);
+            *type = WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE;
+            return ERROR_SUCCESS;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        return ERROR_WINHTTP_TIMEOUT;
+    }
+
+    DWORD WINAPI FakeWebSocketClose(HINTERNET, USHORT, PVOID, DWORD) {
+        websocket_close_calls.fetch_add(1);
+        return ERROR_SUCCESS;
+    }
+
+    BOOL WINAPI FakeHandleClose(HINTERNET) {
+        handle_close_calls.fetch_add(1);
+        return TRUE;
+    }
+} // namespace tencent_seam
+
+// 方向 1：final=1（on_final 已触发）后接收循环必须主动退出，不得继续阻塞等
+// 服务端断开。旧实现卡在第二次 Receive → loop_done 永不置位 → assert 失败。
+void TestTencentReceiveLoopExitsAfterFinalEmitted() {
+    using namespace tencent_seam;
+    Reset();
+    AsrClientTencent client(AppConfig::Defaults());
+    std::atomic<bool> final_seen{false};
+    client.on_final = [&](std::string) { final_seen = true; };
+    client.SetWinHttpTestSeams(&FakeReceive, &FakeWebSocketClose, &FakeHandleClose);
+
+    std::atomic<bool> loop_done{false};
+    std::thread loop([&] {
+        client.ReceiveLoop(reinterpret_cast<HINTERNET>(1));
+        loop_done = true;
+    });
+    // 修复后毫秒级退出；未修复阻塞在第二次 Receive，2 秒内 loop_done 仍为 false。
+    for (int i = 0; i < 100 && !loop_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    assert(loop_done.load());
+    loop.join();
+    assert(final_seen.load());          // on_final 已随 final=1 触发
+    assert(receive_calls.load() == 1);  // 第二次 Receive 未发生（循环已退出）
+}
+
+// 方向 2：ShutdownConnection 必须用 WinHttpCloseHandle 强制拆除（令阻塞中的
+// Receive 立即返回 OPERATION_CANCELLED），不得调用 WinHttpWebSocketClose
+//（close 握手要等服务端 ack，且与 worker 的 Receive 并发操作同一句柄）。
+void TestTencentShutdownForcesHandleCloseNotWebSocketClose() {
+    using namespace tencent_seam;
+    Reset();
+    AsrClientTencent client(AppConfig::Defaults());
+    client.SetWinHttpTestSeams(&FakeReceive, &FakeWebSocketClose, &FakeHandleClose);
+    client.SetWebSocketHandleForTest(reinterpret_cast<HINTERNET>(42));
+
+    client.ShutdownConnection();
+
+    assert(websocket_close_calls.load() == 0);  // 旧实现恒调 → 红灯
+    assert(handle_close_calls.load() == 1);     // 强制关闭路径执行一次
+}
+
+// 方向 3：UpdateConfig 替换云端客户端时，旧客户端析构（可能 join 卡死的
+// WebSocket worker）必须移出调用线程——曾在 UI 线程同步析构致使其停摆。
+void TestCoordinatorUpdateConfigDestroysOldAsrOffThread() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    FakeUi ui;
+    FakeInputInjector input;
+    // 旧客户端析构慢（模拟 ShutdownConnection join 阻塞的 worker），析构完成置信号。
+    class SlowDestructAsr : public AsrClient {
+    public:
+        bool Start(AsrSessionOptions = {}) override { return true; }
+        void SendOggOpusChunk(std::span<const std::uint8_t>, bool) override {}
+        void Cancel() override {}
+        ~SlowDestructAsr() override {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            destroyed->set_value();
+        }
+        std::shared_ptr<std::promise<void>> destroyed =
+            std::make_shared<std::promise<void>>();
+    };
+    auto old_asr = std::make_unique<SlowDestructAsr>();
+    auto destroyed_future = old_asr->destroyed->get_future().share();
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble),
+                                      std::move(old_asr), &ui, &input,
+                                      [](const AppConfig&) {
+                                          return std::make_unique<FakeAsrClient>();
+                                      });
+    coordinator.Start();
+
+    const auto begin = std::chrono::steady_clock::now();
+    coordinator.UpdateConfig(AppConfig::Defaults());
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - begin)
+                                 .count();
+    // 旧实现：调用线程同步析构旧客户端，至少耗时 300ms → 红灯。
+    assert(elapsed_ms < 150);
+    // 后台析构最终完成（含慢析构），2 秒兜底。
+    assert(destroyed_future.wait_for(std::chrono::seconds(2)) ==
+           std::future_status::ready);
+}
+
 // ===== AirMouseStep 纯函数测试（速度控制）=====
 // 验证 v 跟随 omega×gain + 速度环低通 + 分轴 gain + 亚像素累积的核心运动学。
 
@@ -13995,6 +14122,9 @@ int main() {
     TestTencentEndMessage();
     TestTencentOpusEncapsulation();
     TestTencentVoiceIdGeneration();
+    TestTencentReceiveLoopExitsAfterFinalEmitted();
+    TestTencentShutdownForcesHandleCloseNotWebSocketClose();
+    TestCoordinatorUpdateConfigDestroysOldAsrOffThread();
     TestAudioOpusDecoderRoundTrip();
     TestAudioOpusDecoderNullData();
     TestAudioOpusDecoderInvalidData();

@@ -57,6 +57,22 @@ public:
     /// 把单句稳态结果累积到已确定文本上。空 sentence 不改变累积。
     static std::string AccumulateSentence(std::string_view current, std::string_view sentence);
 
+    // ---- 单元测试缝（公开以便单元测试；生产路径走真实 WinHTTP 默认值）----
+    // WinHTTP 函数指针注入：测试替换为 fake 免真实网络，可复刻「服务端 final=1
+    // 后不断开、Receive 无限期阻塞」等死锁场景。
+    using WebSocketReceiveFn = DWORD (WINAPI*)(HINTERNET, PVOID, DWORD, DWORD*,
+                                               WINHTTP_WEB_SOCKET_BUFFER_TYPE*);
+    using WebSocketCloseFn = DWORD (WINAPI*)(HINTERNET, USHORT, PVOID, DWORD);
+    using HandleCloseFn = BOOL (WINAPI*)(HINTERNET);
+    void SetWinHttpTestSeams(WebSocketReceiveFn receive, WebSocketCloseFn ws_close,
+                             HandleCloseFn close);
+    /// 直接设置 websocket_ 成员（配合 ShutdownConnection 单测，不走真实连接）。
+    void SetWebSocketHandleForTest(HINTERNET handle);
+    /// 接收循环（RunWebSocket 的收帧分发段）：独立成函数便于单测 final=1 退出行为。
+    void ReceiveLoop(HINTERNET websocket);
+    /// 关停连接（公开以便单测断言强制关闭路径）。
+    void ShutdownConnection();
+
 private:
     enum class ConnectionState {
         kDisconnected,
@@ -78,7 +94,6 @@ private:
 
     // ---- WebSocket 生命周期 ----
     void RunWebSocket();
-    void ShutdownConnection();
     void FailSession(const std::string& message);
 
     // ---- 帧发送 ----
@@ -117,6 +132,10 @@ private:
     std::set<std::string> emitted_definite_segment_keys_;
     AsrSessionOptions session_options_;
     HINTERNET websocket_ = nullptr;
+    // 测试缝默认值：生产路径等价直调对应 WinHTTP 函数。
+    WebSocketReceiveFn websocket_receive_ = &WinHttpWebSocketReceive;
+    WebSocketCloseFn websocket_close_ = &WinHttpWebSocketClose;
+    HandleCloseFn handle_close_ = &WinHttpCloseHandle;
     std::string last_start_error_;
     std::string cached_vocab_id_;      // 本次会话自动创建的热词表 ID
     std::string pending_error_message_; // 延迟触发的错误消息（避免跨线程死锁）
