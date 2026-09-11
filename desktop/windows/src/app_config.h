@@ -178,6 +178,19 @@ struct WechatInputMethodConfig {
     // 不污染 focused_app/字幕的全局 interaction_mode（切输出目标时不再互相影响）。
     // 旧配置迁移：加载时若缺此字段，从顶层 interaction_mode 继承并把顶层重置为 kHoldToTalk。
     InteractionMode trigger_mode = InteractionMode::kHoldToTalk;
+    // 第三方输入法会话模型（与 trigger_mode 正交）：hold_to_talk=按住式（WeType：
+    // 启动 SendDown+repeat 维持、停止 SendUp）/ click_to_talk=点按式（Typeless：
+    // 启动/停止 SendClick）。nullopt=未显式配置，运行时按 trigger_mode 推导
+    //（访问时经 EffectiveSessionModel()，设置热切 trigger 后语义同步跟随）。
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）组合 =
+    // trigger_mode=click_to_talk + session_model="hold_to_talk"：用户点按 toggle、
+    // 对输入法维持按住注入（规避物理 F5 流对 WeType 静默期的毒化）。
+    std::optional<InteractionMode> session_model;
+
+    // 本会话生效的输入法会话模型：显式配置优先，否则跟随 trigger_mode。
+    InteractionMode EffectiveSessionModel() const {
+        return session_model.value_or(trigger_mode);
+    }
     // 虚拟麦克风播放端名称子串，例如 "CABLE Input (VB-Audio Virtual Cable)"。
     std::string virtual_mic_playback_name = "CABLE Input";
     // 虚拟麦克风录音端名称子串，例如 "CABLE Output (VB-Audio Virtual Cable)"。

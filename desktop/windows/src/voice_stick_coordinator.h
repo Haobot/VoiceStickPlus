@@ -273,6 +273,11 @@ public:
     // audio_end 收尾路径（短按丢弃/最终块发送/finalizing 全部既有逻辑）。
     void HandleLocalMicHotkeyPressed();
     void HandleLocalMicHotkeyReleased();
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：wechat click
+    // toggle 会话的本机麦供给——判定（小米设备 + click/hold 组合 + 采集器已注入）
+    // 与启动（锁内登记会话 id、锁外 Start、失败完整回滚会话并提示）。
+    bool WechatSessionUsesLocalMic(const std::string& device_id);
+    void StartLocalMicForWechatSession();
     void UpdateConfig(AppConfig config);
     // 热调参：仅更新运行期某设备的 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
     void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);

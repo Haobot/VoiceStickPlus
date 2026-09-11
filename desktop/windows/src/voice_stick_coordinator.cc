@@ -633,6 +633,63 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
     // wechat 模式不弹 VoiceStick 录音悬浮窗：第三方输入法自带语音面板，
     // 弹出 VoiceStick 浮窗会遮挡且造成"松开不消失"的混乱，仅通过设备屏幕 recording 提供反馈。
     SendUiStateForActiveDevice("recording");
+
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：click_to_talk +
+    // hold 型输入法（WeType）——click 在物理键流结束后到达（松开沿合成），静默期
+    // 自松开起算，此刻立即注入按住（repeat 流不毒化静默期，2026-09-11 实验定案），
+    // 不等首帧：小米会话无设备音频帧，StickS3 首帧也远早于 WeType 弹面板（0.5~1.5s）。
+    if (config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+        config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk) {
+        if (!wechat_hotkey_->IsValid() || !wechat_hotkey_->SendDown()) {
+            StopWechatInputMethodSession();
+            ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
+            EnterReady("wechat_hotkey_send_failed");
+            return;
+        }
+        {
+            std::lock_guard lock(audio_mutex_);
+            wechat_hotkey_sent_down_ = true;
+        }
+        LogWechatLatency("SendDown end (click toggle, immediate)");
+        if (WechatSessionUsesLocalMic(device_id)) {
+            StartLocalMicForWechatSession();
+        }
+    }
+}
+
+// 方案 A 的本会话音频供给判定：小米设备（ATVV 音频已弃用、无设备帧）+ click/hold
+// 组合且采集器已注入。StickS3 等设备会话音频来自 BLE 流，返回 false。
+bool VoiceStickCoordinator::WechatSessionUsesLocalMic(const std::string& device_id) {
+    return local_mic_capture_ != nullptr && IsXiaomiRemoteDevice(device_id) &&
+           config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+           config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
+}
+
+// 方案 A 的本机麦启动（wechat 会话专用）：锁内登记会话 id 供 FeedLocalMicPcm
+// 路由，锁外 Start（on_pcm 在采集线程触发，回调自身抢 audio_mutex_，持锁 Start
+// 若与首回调交错会死锁——对齐 SetLocalMicRuntime 的锁序结论）。失败则完整
+// 回滚会话（SendDown 已发，Stop 内 SendUp 配对）并给用户可见提示。
+void VoiceStickCoordinator::StartLocalMicForWechatSession() {
+    {
+        std::lock_guard lock(audio_mutex_);
+        local_mic_slicer_.Reset();
+        local_mic_encoder_.Reset();
+        local_mic_next_seq_ = 1;
+        if (active_session_id_.has_value()) {
+            local_mic_active_session_id_.store(*active_session_id_);
+        }
+    }
+    if (local_mic_capture_->Start()) {
+        LogCoordinatorLine("wechat local mic session started session=" +
+                           std::to_string(local_mic_active_session_id_.load()));
+        return;
+    }
+    const auto error = local_mic_capture_->LastStartError();
+    LogCoordinatorLine("wechat local mic capture start failed: " + error);
+    local_mic_active_session_id_.store(0);
+    StopWechatInputMethodSession();
+    ui_->ShowTimedMessage("麦克风启动失败：" + error, 3000);
+    EnterReady("wechat_local_mic_failed");
 }
 
 void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonUp(
@@ -700,8 +757,8 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
                     LogWechatLatency("first frame decoded, SendDown begin");
                     // 点按式发完整点击（down+up），hold 模式发按下：Typeless 等点按式输入法
                     // 靠完整 click 触发，仅按下不释放不弹框。
-                    const bool click_mode =
-                        (config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk);
+                    const bool click_mode = (config_.wechat_input_method.EffectiveSessionModel() ==
+                                             InteractionMode::kClickToTalk);
                     const bool ok = wechat_hotkey_->IsValid() &&
                         (click_mode ? wechat_hotkey_->SendClick()
                                     : wechat_hotkey_->SendDown());
@@ -846,10 +903,17 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {
     CancelRecordingHardTimeout();
+    // 方案 A 的本机麦收尾：先停采（实现契约保证 Stop 返回后 on_pcm 不再触发），
+    // 须在 audio_mutex_ 外（FeedLocalMicPcm 抢锁，持锁 Stop 会与采集线程死锁）。
+    if (local_mic_capture_) {
+        local_mic_capture_->Stop();
+        local_mic_active_session_id_.store(0);
+    }
     // 仅当已 SendDown/SendClick 才配对停止热键；未弹框（首帧前 button_up/断连/空 end）不发。
-    // 点按式发完整点击停止（与启动对称），hold 模式发释放。
+    // 停止动作由 session_model（输入法会话模型）决定：hold 型（WeType）SendUp 配对
+    // 按住注入；click 型（Typeless）发完整 SendClick（与启动对称）。
     if (wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_) {
-        if (config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk) {
+        if (config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kClickToTalk) {
             wechat_hotkey_->SendClick();
         } else {
             wechat_hotkey_->SendUp();
@@ -3433,6 +3497,16 @@ void VoiceStickCoordinator::HandleLocalMicHotkeyReleased() {
 void VoiceStickCoordinator::FeedLocalMicPcm(std::span<const std::int16_t> pcm) {
     const auto session_id = local_mic_active_session_id_.load();
     if (session_id == 0) return;  // 会话未建立或已收尾：无锁早退
+    {
+        // 方案 A：本机麦直供 wechat 会话（小米 click toggle 无 ATVV 音频帧）——PCM
+        // 直写 ring buffer 供虚拟麦渲染，不经 Opus 编码-解码往返（那是设备流协议）。
+        // wechat 与 local-mic focused_app 会话互斥（active_session 唯一），无歧义。
+        std::lock_guard lock(audio_mutex_);
+        if (wechat_input_method_active_ && wechat_ring_buffer_) {
+            wechat_ring_buffer_->Write(pcm.data(), pcm.size());
+            return;
+        }
+    }
     for (const auto& frame : local_mic_slicer_.Append(pcm)) {
         std::uint8_t packet[512];
         const auto result = local_mic_encoder_.Encode(frame.data(), frame.size(),

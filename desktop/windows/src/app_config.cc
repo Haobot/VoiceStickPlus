@@ -685,6 +685,12 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 config.interaction_mode = InteractionMode::kHoldToTalk;
                 needs_wechat_trigger_migration_save = true;
             }
+            if (auto value = TomlString(*wechat, "session_model")) {
+                config.wechat_input_method.session_model = InteractionModeFromName(*value);
+            }
+            // 未配置保持 nullopt：运行时经 EffectiveSessionModel() 按 trigger_mode
+            // 推导（click_to_talk→click 保持 Typeless 现状；方案 A 用户显式配
+            // session_model = "hold_to_talk" 覆盖）。
         }
         // [local_asr]：本机麦克风模式（local-mic 会话 + SenseVoice 本地识别）。
         if (const auto* local_asr = table["local_asr"].as_table()) {
@@ -1010,6 +1016,8 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "hotkey_hold = \"" << TomlEscape(wechat_input_method.hotkey_hold) << "\"\n";
     output << "hotkey_click = \"" << TomlEscape(wechat_input_method.hotkey_click) << "\"\n";
     output << "trigger_mode = \"" << InteractionModeName(wechat_input_method.trigger_mode) << "\"\n";
+    output << "session_model = \"" << InteractionModeName(
+                   wechat_input_method.EffectiveSessionModel()) << "\"\n";
     output << "virtual_mic_playback_name = \"" << TomlEscape(wechat_input_method.virtual_mic_playback_name) << "\"\n";
     output << "virtual_mic_capture_name = \"" << TomlEscape(wechat_input_method.virtual_mic_capture_name) << "\"\n";
     output << "auto_switch_default_recording_device = "

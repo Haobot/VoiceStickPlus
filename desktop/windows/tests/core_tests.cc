@@ -7386,6 +7386,52 @@ void TestWechatTriggerModeRoundTrip() {
     std::filesystem::remove(temp);
 }
 
+// session_model（第三方输入法会话模型：hold=按住式 WeType / click=点按式 Typeless）
+// 默认值推导与显式往返：未配置时按 trigger_mode 推导（click_to_talk→click、
+// hold_to_talk→hold，兼容现状零破坏）；显式配置覆盖并可往返。
+void TestWechatSessionModelConfig() {
+    // 未配置 + trigger=click_to_talk → 推导 click（Typeless 现状不变）。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "vs_wechat_sm_default_click.toml";
+        {
+            std::ofstream out(temp);
+            out << "[wechat_input_method]\ntrigger_mode = \"click_to_talk\"\n";
+        }
+        auto loaded = AppConfig::Load(temp);
+        assert(!loaded.wechat_input_method.session_model.has_value());  // 未显式配置
+        assert(loaded.wechat_input_method.EffectiveSessionModel() ==
+               InteractionMode::kClickToTalk);  // 访问时按 trigger 推导
+        std::filesystem::remove(temp);
+    }
+    // 未配置 + trigger=hold_to_talk → 推导 hold。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "vs_wechat_sm_default_hold.toml";
+        {
+            std::ofstream out(temp);
+            out << "[wechat_input_method]\ntrigger_mode = \"hold_to_talk\"\n";
+        }
+        auto loaded = AppConfig::Load(temp);
+        assert(loaded.wechat_input_method.EffectiveSessionModel() ==
+               InteractionMode::kHoldToTalk);
+        std::filesystem::remove(temp);
+    }
+    // 显式 click_to_talk + session_model=hold（方案 A 组合）往返保持。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "vs_wechat_sm_explicit.toml";
+        AppConfig config;
+        config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+        config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+        config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
+        config.Save(temp);
+        auto loaded = AppConfig::Load(temp);
+        assert(loaded.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk);
+        assert(loaded.wechat_input_method.session_model.has_value());
+        assert(*loaded.wechat_input_method.session_model == InteractionMode::kHoldToTalk);
+        assert(loaded.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk);
+        std::filesystem::remove(temp);
+    }
+}
+
 void TestWechatInputMethodHotkeyParsing() {
     assert(WechatInputMethodHotkey("").KeyCount() == 0);
     assert(WechatInputMethodHotkey("ctrl+win").KeyCount() == 2);
@@ -8319,8 +8365,158 @@ void TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick() {
     assert(fake_renderer->start_count == 1);  // 未启动新会话
 }
 
+// 方案 A 端到端（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：小米设备 +
+// click_to_talk + hold 型输入法（WeType）——click 启动立即 SendDown（不等音频帧，
+// 物理 F5 流已随松开结束、静默期起算）+ 本机麦启动 + PCM 直写 ring buffer +
+// 第二击（复用 session_id）SendUp/采集停止/renderer 停止完整收尾。
+void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    auto* fake_capture = new FakeMicCapture();
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+    coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
+
+    // 登记小米设备（ATVV wechat_click_toggle 的按键折叠在会话层，协调器只认
+    // device_info 的 hardware 标签来决定本会话音频来自本机麦克风）。
+    ble_ptr->connected_device_ids.insert("6459");
+    ble_ptr->on_connection_change({ConnectedDevice{"6459", "RC-6459"}});
+    StateEvent info;
+    info.event = "device_info";
+    info.hardware = std::string(kHardwareXiaomiRemote2Pro);
+    ble_ptr->on_state_event("6459", info);
+
+    // 第一击（启动 click，session_id=1）：立即注入按住（无 send_click、无音频帧参与）。
+    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 120));
+    assert(fake_hotkey->send_down_count == 1);
+    assert(fake_hotkey->send_click_count == 0);
+    assert(fake_capture->start_count == 1);
+    assert(fake_renderer->start_count == 1);
+    assert(fake_renderer->running_);
+
+    // 本机麦 PCM 直通 wechat ring buffer（不经 Opus 编码-解码往返）。
+    const std::int16_t pcm[8] = {100, -100, 200, -200, 300, -300, 400, -400};
+    fake_capture->on_pcm(std::span<const std::int16_t>(pcm, 8));
+    assert(fake_renderer->last_ring != nullptr);
+    std::int16_t out[8] = {};
+    assert(fake_renderer->last_ring->Read(out, 8) == 8);
+    for (int i = 0; i < 8; ++i) {
+        assert(out[i] == pcm[i]);
+    }
+
+    // 第二击（停止 click，复用 session_id=1）：SendUp 配对 + 采集/渲染停止。
+    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
+    assert(fake_hotkey->send_up_count == 1);
+    assert(fake_hotkey->send_click_count == 0);
+    assert(fake_capture->stop_count == 1);
+    assert(fake_renderer->stop_count == 1);
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+}
+
+// 方案 A 采集启动失败：会话完整回滚（SendDown 已发则 SendUp 配对）+ 用户可见提示。
+void TestCoordinatorWechatClickHoldModelLocalMicStartFails() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    auto* fake_capture = new FakeMicCapture();
+    fake_capture->start_result = false;
+    fake_capture->start_error = "device in use";
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+    coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
+
+    ble_ptr->connected_device_ids.insert("6459");
+    ble_ptr->on_connection_change({ConnectedDevice{"6459", "RC-6459"}});
+    StateEvent info;
+    info.event = "device_info";
+    info.hardware = std::string(kHardwareXiaomiRemote2Pro);
+    ble_ptr->on_state_event("6459", info);
+
+    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 120));
+
+    // SendDown 已发出 → 回滚须 SendUp 配对；提示麦克风失败；回 ready。
+    assert(fake_hotkey->send_down_count == 1);
+    assert(fake_hotkey->send_up_count == 1);
+    assert(!ui.timed_messages.empty());
+    assert(ui.timed_messages.back().find("麦克风") != std::string::npos);
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+}
+
+// 方案 A 组合下 StickS3（非小米）：click 启动立即 SendDown 同样生效，但不启动
+// 本机麦（音频来自设备 BLE 流，经首帧解码进 ring buffer 的既有链路不变）。
+void TestCoordinatorWechatClickHoldModelStickNoLocalMic() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    auto* fake_capture = new FakeMicCapture();
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.Start();
+    coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 7, 150));
+    assert(fake_hotkey->send_down_count == 1);
+    assert(fake_capture->start_count == 0);  // 非小米：不启本机麦
+}
+
 // 点动式残留 active（停止 click + audio_end 都丢）时，新启动 click（新 session_id）
-// 不得被误当停止：应先停旧会话再启新会话，否则新会话音频被丢弃、状态错位不自愈。
 // 与 hold 模式 TestCoordinatorWechatInputMethodRecoversFromStaleActive 对称，验证 click_to_talk
 // 残留自愈（HandleWechatInputMethodPrimaryButtonDown 先 Stop 旧再 Start 新）。
 void TestCoordinatorWechatClickToTalkStaleActiveNewClickStartsNew() {
@@ -14327,6 +14523,7 @@ int main() {
     TestWechatInputMethodActiveHotkeyByMode();
     TestWechatTriggerModeMigratedFromLegacyInteractionMode();
     TestWechatTriggerModeRoundTrip();
+    TestWechatSessionModelConfig();
     TestWechatInputMethodHotkeyParsing();
     TestWechatHotkeySendDownRepeatsWhileHeld();
     TestCoordinatorWechatInputMethodButtonDownSendsHotkey();
@@ -14344,6 +14541,9 @@ int main() {
     TestCoordinatorWechatSessionRendererStartFailureSkipsHotkey();
     TestCoordinatorWechatClickToTalkSendsClickOnStart();
     TestCoordinatorWechatClickToTalkSendsClickOnStop();
+    TestCoordinatorWechatClickHoldModelXiaomiLocalMic();
+    TestCoordinatorWechatClickHoldModelLocalMicStartFails();
+    TestCoordinatorWechatClickHoldModelStickNoLocalMic();
     TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick();
     TestCoordinatorWechatClickToTalkStaleActiveNewClickStartsNew();
     TestCoordinatorWechatHotkeyDeferredUntilFirstAudioFrame();

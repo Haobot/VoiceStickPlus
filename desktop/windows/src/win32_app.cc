@@ -470,6 +470,13 @@ int Win32App::Run() {
                         OutputTarget::kWechatInputMethod
                     ? config_.wechat_input_method.trigger_mode
                     : config_.interaction_mode;
+            // 方案 A：wechat 点按触发 + 按住式输入法（WeType）——语音键折叠为
+            // click toggle（音频弃用，改由本机麦克风供给）。
+            options.wechat_click_toggle =
+                config_.OutputProfileForDevice(device_id).target ==
+                    OutputTarget::kWechatInputMethod &&
+                config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+                config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
             return options;
         });
 
@@ -1393,6 +1400,14 @@ void Win32App::SyncLocalMicRuntime() {
 #ifdef VOICESTICK_LOCAL_ASR_ENABLED
     if (coordinator_ == nullptr) return;
 
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：wechat 点按触发
+    // 组合（trigger=click_to_talk + session_model=hold_to_talk）下小米会话的音频
+    // 来自本机麦克风——不依赖 [local_asr] enabled，注入采集器即可（不加载模型）。
+    const bool wechat_click_hold =
+        config_.default_output_profile.target == OutputTarget::kWechatInputMethod &&
+        config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+        config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
+
     if (config_.local_asr.enabled) {
         // 空 = exe/models、相对路径锚 exe 目录（口径与设置界面状态检查共用）。
         const std::string models_dir = ResolveLocalMicModelsDir(
@@ -1404,6 +1419,13 @@ void Win32App::SyncLocalMicRuntime() {
                 std::make_unique<LocalAsrClient>(models_dir));
             local_mic_models_dir_applied_ = models_dir;
             LogLine("Local mic runtime ready, models: " + models_dir);
+        }
+    } else if (wechat_click_hold) {
+        // 仅方案 A：注入采集器不建本地 ASR（WeType 识别，不占模型内存）。
+        if (local_mic_models_dir_applied_.empty()) {
+            coordinator_->SetLocalMicRuntime(std::make_unique<WasapiMicCapture>(), nullptr);
+            local_mic_models_dir_applied_ = "wechat-click-hold";
+            LogLine("Local mic capture ready for wechat click toggle (no local ASR)");
         }
     } else if (!local_mic_models_dir_applied_.empty()) {
         // 关闭：拆运行件与热键（协调器侧负责取消活跃会话，采集器析构即 Stop）。
