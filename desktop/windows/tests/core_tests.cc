@@ -7323,6 +7323,63 @@ void TestWechatInputMethodHotkeyParsing() {
     assert(WechatInputMethodHotkey("unknown+key").KeyCount() == 0);
 }
 
+// WeType（微信输入法）的长按检测依赖持续的键盘事件流：物理长按时操作系统
+// auto-repeat 持续产生 keydown，仅注入一次 keydown 它不认为是长按、不弹语音
+// 面板（2026-09-11 实证：单次注入 2.5s 无面板；40ms 周期重复注入面板弹出）。
+// SendDown 必须启动重复注入线程，SendUp 停止。
+void TestWechatHotkeySendDownRepeatsWhileHeld() {
+    struct SendInputRecorder {
+        std::atomic<int> keydown_batches{0};
+        std::atomic<int> keyup_batches{0};
+        UINT WINAPI Record(UINT count, LPINPUT inputs, int) {
+            bool has_keyup = false;
+            for (UINT i = 0; i < count; ++i) {
+                if (inputs[i].type == INPUT_KEYBOARD &&
+                    (inputs[i].ki.dwFlags & KEYEVENTF_KEYUP)) {
+                    has_keyup = true;
+                }
+            }
+            if (has_keyup) {
+                keyup_batches.fetch_add(1);
+            } else {
+                keydown_batches.fetch_add(1);
+            }
+            return count;
+        }
+    };
+    SendInputRecorder recorder;
+    WechatInputMethodHotkey::SetSendInputForTest(
+        [&recorder](UINT count, LPINPUT inputs, int size) -> UINT {
+            return recorder.Record(count, inputs, size);
+        });
+
+    {
+        WechatInputMethodHotkey hotkey("ctrl+win");
+        assert(hotkey.SendDown());
+        // 40ms 周期重复：250ms 内应产生多批 keydown（首拍 + 若干重复拍）。
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        const int during_hold = recorder.keydown_batches.load();
+        assert(during_hold >= 3);
+
+        assert(hotkey.SendUp());
+        assert(recorder.keyup_batches.load() == 1);
+        const int after_up = recorder.keydown_batches.load();
+        // SendUp 后重复注入必须停止：150ms 内不再新增 keydown 批次。
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        assert(recorder.keydown_batches.load() == after_up);
+    }
+
+    // 只 SendDown 不 SendUp 直接析构：必须停止线程安全析构，不死锁不崩溃。
+    {
+        WechatInputMethodHotkey hotkey("ctrl+win");
+        assert(hotkey.SendDown());
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    }
+
+    WechatInputMethodHotkey::SetSendInputForTest(nullptr);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+}
+
 void TestCoordinatorWechatInputMethodButtonDownSendsHotkey() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -14186,6 +14243,7 @@ int main() {
     TestWechatTriggerModeMigratedFromLegacyInteractionMode();
     TestWechatTriggerModeRoundTrip();
     TestWechatInputMethodHotkeyParsing();
+    TestWechatHotkeySendDownRepeatsWhileHeld();
     TestCoordinatorWechatInputMethodButtonDownSendsHotkey();
     TestCoordinatorWechatInputMethodWritesDebugAudio();
     TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect();

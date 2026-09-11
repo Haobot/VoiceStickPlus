@@ -6,12 +6,27 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <sstream>
 #include <string_view>
 
 namespace voicestick {
 
 namespace {
+
+// SendInput 测试缝：非空时拦截全部注入（仅测试线程在 setup/teardown 时改写，
+// 无并发）。定义于本匿名命名空间，SetSendInputForTest 直接改写。
+WechatInputMethodHotkey::SendInputFn g_send_input_override = nullptr;
+
+// 长按重复注入周期。物理长按时操作系统 auto-repeat 约 30 次/秒（33ms）；
+// 实证 WeType 以 40ms 周期注入即可识别长按并弹语音面板（2026-09-11：
+// 单次注入 2.5s 无面板，40ms 重复注入面板弹出）。
+constexpr std::chrono::milliseconds kKeyDownRepeatInterval{40};
+
+UINT WINAPI CallSendInput(UINT count, LPINPUT inputs, int size) {
+  if (g_send_input_override) return g_send_input_override(count, inputs, size);
+  return SendInput(count, inputs, size);
+}
 
 std::string Lowercase(std::string_view value) {
   std::string out(value);
@@ -98,8 +113,8 @@ INPUT BuildKeyboardInput(int vk, bool key_up) {
 
 bool SendInputs(std::vector<INPUT>& inputs) {
   if (inputs.empty()) return false;
-  const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(),
-                              sizeof(INPUT));
+  const UINT sent = CallSendInput(static_cast<UINT>(inputs.size()), inputs.data(),
+                                  sizeof(INPUT));
   return sent == inputs.size();
 }
 
@@ -116,6 +131,10 @@ bool SendInputForKeys(const std::vector<int>& vk_codes, bool key_up) {
 
 }  // namespace
 
+void WechatInputMethodHotkey::SetSendInputForTest(SendInputFn fn) {
+  g_send_input_override = std::move(fn);
+}
+
 WechatInputMethodHotkey::WechatInputMethodHotkey(const std::string& hotkey) {
   const auto parts = Split(hotkey, '+');
   for (const auto& part : parts) {
@@ -126,11 +145,34 @@ WechatInputMethodHotkey::WechatInputMethodHotkey(const std::string& hotkey) {
   }
 }
 
+WechatInputMethodHotkey::~WechatInputMethodHotkey() {
+  StopRepeat();
+}
+
+void WechatInputMethodHotkey::StopRepeat() const {
+  repeating_.store(false, std::memory_order_relaxed);
+  if (repeat_thread_.joinable()) {
+    repeat_thread_.join();
+  }
+}
+
 bool WechatInputMethodHotkey::SendDown() const {
-  return SendInputForKeys(vk_codes_, false);
+  if (!SendInputForKeys(vk_codes_, false)) return false;
+  // 防御重入：上一轮 SendDown 未配对 SendUp 时先停旧线程再启动。
+  StopRepeat();
+  repeating_.store(true, std::memory_order_relaxed);
+  repeat_thread_ = std::thread([this] {
+    while (repeating_.load(std::memory_order_relaxed)) {
+      std::this_thread::sleep_for(kKeyDownRepeatInterval);
+      if (!repeating_.load(std::memory_order_relaxed)) break;
+      SendInputForKeys(vk_codes_, false);
+    }
+  });
+  return true;
 }
 
 bool WechatInputMethodHotkey::SendUp() const {
+  StopRepeat();
   return SendInputForKeys(vk_codes_, true);
 }
 

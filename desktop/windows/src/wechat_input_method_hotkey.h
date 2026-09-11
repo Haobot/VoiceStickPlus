@@ -6,7 +6,12 @@
 #ifndef VOICESTICK_WECHAT_INPUT_METHOD_HOTKEY_H_
 #define VOICESTICK_WECHAT_INPUT_METHOD_HOTKEY_H_
 
+#include <windows.h>
+
+#include <atomic>
+#include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace voicestick {
@@ -28,14 +33,22 @@ class IWechatInputMethodHotkey {
 
 class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
  public:
+  // SendInput 测试缝：签名与 Win32 SendInput 一致；传 nullptr 恢复真实注入。
+  // 测试用它拦截注入并统计 keydown/keyup 批次（不真注入键盘事件）。
+  using SendInputFn = std::function<UINT(UINT, LPINPUT, int)>;
+  static void SetSendInputForTest(SendInputFn fn);
+
   // 构造时解析 hotkey 字符串；解析失败时 IsValid() 返回 false。
   explicit WechatInputMethodHotkey(const std::string& hotkey);
+  ~WechatInputMethodHotkey() override;
 
   bool IsValid() const override { return !vk_codes_.empty(); }
 
-  // 发送所有按键的按下序列（修饰符在前，普通键在后）。
+  // 发送所有按键的按下序列（修饰符在前，普通键在后），并启动周期重复注入
+  // 线程直至 SendUp/析构——WeType 的长按检测依赖持续的 keydown 事件流
+  // （物理长按=操作系统 auto-repeat），仅一次注入不触发语音面板。
   bool SendDown() const override;
-  // 发送所有按键的释放序列（与按下顺序相反）。
+  // 停止重复注入线程，发送所有按键的释放序列（与按下顺序相反）。
   bool SendUp() const override;
   // 发送所有按键的按下+释放序列（一次 SendInput），模拟完整物理点击。
   bool SendClick() const override;
@@ -44,7 +57,12 @@ class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
   std::size_t KeyCount() const { return vk_codes_.size(); }
 
  private:
+  // 停止重复注入线程（幂等；SendUp 与析构共用）。
+  void StopRepeat() const;
+
   std::vector<int> vk_codes_;
+  mutable std::atomic<bool> repeating_{false};
+  mutable std::thread repeat_thread_;
 };
 
 }  // namespace voicestick
