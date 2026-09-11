@@ -1443,6 +1443,7 @@ std::string OutputTargetName(OutputTarget target) {
     switch (target) {
         case OutputTarget::kSubtitle: return "subtitle";
         case OutputTarget::kWechatInputMethod: return "wechat_input_method";
+        case OutputTarget::kVirtualMic: return "virtual_mic";
         case OutputTarget::kFocusedApp: return "focused_app";
     }
     return "focused_app";
@@ -1451,6 +1452,7 @@ std::string OutputTargetName(OutputTarget target) {
 OutputTarget OutputTargetFromName(std::string_view name) {
     if (name == "subtitle") return OutputTarget::kSubtitle;
     if (name == "wechat_input_method") return OutputTarget::kWechatInputMethod;
+    if (name == "virtual_mic") return OutputTarget::kVirtualMic;
     return OutputTarget::kFocusedApp;
 }
 
@@ -1458,6 +1460,7 @@ std::string OutputTargetDisplayName(OutputTarget target) {
     switch (target) {
         case OutputTarget::kSubtitle: return "Subtitle";
         case OutputTarget::kWechatInputMethod: return "Third-party Input Method";
+        case OutputTarget::kVirtualMic: return "Virtual Microphone";
         case OutputTarget::kFocusedApp: return "Focused App";
     }
     return "Focused App";

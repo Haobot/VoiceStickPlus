@@ -541,7 +541,9 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
 
     // 前台为高权限程序时 SendInput 注入必被 UIPI 丢弃，启动会话无意义且留空转残留。
     // 检测到则气泡提醒用户提权运行并跳过启动；按进程名去重，同一高权限程序本次运行只提醒一次。
-    if (MaybeWarnForegroundElevated(device_id)) {
+    // 仅第三方输入法模式需要（有 SendInput 注入）；virtual_mic 直通模式不注入，跳过检测。
+    if (config_.OutputProfileForDevice(device_id).target == OutputTarget::kWechatInputMethod &&
+        MaybeWarnForegroundElevated(device_id)) {
         ble_->SendUiState("ready", "", device_id);
         return;
     }
@@ -626,7 +628,8 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
 
                 // 首帧解码成功入 ring_buffer：持锁 SendDown 弹框，弹框前 CABLE Output 已有 PCM，
                 // 微信弹框即取到有效音频（避免弹框早于音频就绪的首字卡顿）。持锁避免与 Stop race。
-                if (!wechat_hotkey_sent_down_) {
+                // virtual_mic 直通模式不触发热键：应用自行从虚拟麦克风取音。
+                if (wechat_session_uses_hotkey_ && !wechat_hotkey_sent_down_) {
                     LogWechatLatency("first frame decoded, SendDown begin");
                     // 点按式发完整点击（down+up），hold 模式发按下：Typeless 等点按式输入法
                     // 靠完整 click 触发，仅按下不释放不弹框。
@@ -683,6 +686,11 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
 
 bool VoiceStickCoordinator::StartWechatInputMethodSession(
     std::optional<std::uint32_t> session_id, const std::string& device_id) {
+    // 会话行为按输出目标分流：wechat_input_method 触发第三方输入法热键 + auto_switch；
+    // virtual_mic 直通模式只渲染虚拟麦克风（不 SendDown/不切设备），由当前应用自行
+    // 从虚拟麦克风取音识别（应用内需选择该设备，如 CABLE Output）。
+    wechat_session_uses_hotkey_ =
+        config_.OutputProfileForDevice(device_id).target != OutputTarget::kVirtualMic;
     if (!wechat_decoder_) {
         wechat_decoder_ = std::make_unique<AudioOpusDecoder>(16000, 1);
     }
@@ -715,7 +723,9 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     // auto_switch：录音期把默认录音设备(eConsole)切到虚拟麦克风(CABLE Output)，松开切回。
     // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。
     // 必须在 SendDown 之前完成：微信弹框即从默认设备取音，未切好会取到真实麦。
-    if (config_.wechat_input_method.auto_switch_default_recording_device) {
+    // virtual_mic 直通模式不切：用户在应用内显式选择虚拟麦克风，切默认反而干扰其他应用。
+    if (config_.wechat_input_method.auto_switch_default_recording_device &&
+        wechat_session_uses_hotkey_) {
         LogWechatLatency("auto_switch begin");
         if (!wechat_device_switcher_) {
             wechat_device_switcher_ = wechat_device_switcher_factory_
@@ -813,6 +823,7 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     active_session_id_.reset();
     active_device_id_.reset();
     wechat_input_method_active_ = false;
+    wechat_session_uses_hotkey_ = false;
     wechat_hotkey_sent_down_ = false;
     wechat_latency_anchor_.reset();
 }
@@ -943,7 +954,8 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             }
             return;
         }
-        if (device_target == OutputTarget::kWechatInputMethod) {
+        if (device_target == OutputTarget::kWechatInputMethod ||
+            device_target == OutputTarget::kVirtualMic) {
             if (config_.wechat_input_method.trigger_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
@@ -1527,7 +1539,8 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
     }
     // 输出目标按设备生效（麦克风模式为设备级覆盖，无覆盖回全局默认）。
     const OutputTarget device_target = config_.OutputProfileForDevice(device_id).target;
-    if (device_target == OutputTarget::kWechatInputMethod) {
+    if (device_target == OutputTarget::kWechatInputMethod ||
+        device_target == OutputTarget::kVirtualMic) {
         HandleWechatInputMethodPrimaryButtonDown(session_id, device_id);
         return;
     }
@@ -3023,10 +3036,14 @@ InteractionMode VoiceStickCoordinator::InteractionModeToSend(
     // 非 wechat 模式（focused_app/字幕）仍下发全局 interaction_mode（托盘菜单控制），
     // 不被 wechat 的点按式选择污染。输出目标按设备生效（麦克风模式为设备级覆盖，
     // nullopt 广播场景取全局默认，与旧行为一致）。
-    if (config_.OutputProfileForDevice(device_id).target == OutputTarget::kWechatInputMethod) {
-        return config_.wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
-                   ? InteractionMode::kHoldToTalkInstant
-                   : InteractionMode::kClickToTalk;
+    // virtual_mic 直通模式同 wechat：按 trigger_mode 决定（无弹框但按下即出声同样最优）。
+    {
+        const OutputTarget target = config_.OutputProfileForDevice(device_id).target;
+        if (target == OutputTarget::kWechatInputMethod || target == OutputTarget::kVirtualMic) {
+            return config_.wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
+                       ? InteractionMode::kHoldToTalkInstant
+                       : InteractionMode::kClickToTalk;
+        }
     }
     return config_.interaction_mode;
 }

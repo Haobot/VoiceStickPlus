@@ -69,6 +69,9 @@ enum class OutputTarget {
     kFocusedApp,
     kSubtitle,
     kWechatInputMethod,
+    // 虚拟麦克风直通：音频只渲染到系统虚拟麦克风，由当前应用自行取音识别，
+    // 不触发第三方输入法热键、不切默认录音设备（应用内需选择虚拟麦克风）。
+    kVirtualMic,
 };
 
 enum class TextTransform {

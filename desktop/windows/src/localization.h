@@ -51,6 +51,7 @@ enum class StringId {
     kSettingsOutputTargetFocusedApp,
     kSettingsOutputTargetSubtitle,
     kSettingsOutputTargetWechatInputMethod,
+    kSettingsOutputTargetVirtualMic,
     kSettingsWechatHotkey,
     kSettingsWechatVirtualMic,
     kSettingsWechatAutoSwitch,

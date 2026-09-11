@@ -1425,7 +1425,9 @@ void Win32App::ShowTrayMenu() {
         auto identity_text = FirmwareIdentityText(hardware, firmware_version);
         AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, identity_text.c_str());
         // 设备状态显示：麦克风模式启用时明确标识（与复选框勾选态一致）。
-        if (config_.OutputProfileForDevice(id).target == OutputTarget::kWechatInputMethod) {
+        // virtual_mic（直通）与 wechat_input_method（第三方输入法）都算麦克风模式启用。
+        if (config_.OutputProfileForDevice(id).target == OutputTarget::kVirtualMic ||
+            config_.OutputProfileForDevice(id).target == OutputTarget::kWechatInputMethod) {
             AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
                         TrW(StringId::kStatusMicModeEnabled, language).c_str());
         }
@@ -1508,11 +1510,14 @@ void Win32App::ShowTrayMenu() {
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu),
                     TrW(StringId::kMenuTranslation, language).c_str());
 
-        // 麦克风模式复选框：勾选后该设备输出目标覆盖为 wechat_input_method（音频渲染
-        // 到系统虚拟麦克风，取代 ASR 语音识别），取消即恢复全局默认输出。StickS3 与
-        // 小米遥控器音频在协调器前已归一化，通用。
+        // 麦克风模式复选框：勾选后该设备输出目标覆盖为 virtual_mic（音频只渲染到系统
+        // 虚拟麦克风，由当前应用自行取音识别，不触发第三方输入法热键），取消即恢复全局
+        // 默认输出。StickS3 与小米遥控器音频在协调器前已归一化，通用。
+        const OutputTarget device_mic_target =
+            config_.OutputProfileForDevice(id).target;
         const bool mic_mode_enabled =
-            config_.OutputProfileForDevice(id).target == OutputTarget::kWechatInputMethod;
+            device_mic_target == OutputTarget::kVirtualMic ||
+            device_mic_target == OutputTarget::kWechatInputMethod;
         AppendMenuW(submenu,
                     MF_STRING | (mic_mode_enabled ? MF_CHECKED : 0),
                     kMenuMicModeBase + static_cast<UINT>(i),
@@ -1969,16 +1974,20 @@ void Win32App::ToggleDeviceMicMode(const std::string& device_id) {
     const auto language = EffectiveUiLanguage(config_.ui_language);
     OutputProfile profile = config_.OutputProfileForDevice(device_id);
     bool enabled;
-    if (profile.target == OutputTarget::kWechatInputMethod) {
+    if (profile.target == OutputTarget::kVirtualMic ||
+        profile.target == OutputTarget::kWechatInputMethod) {
         // 取消勾选：恢复全局默认输出（默认语音识别）；全局默认同为麦克风模式时
         // 显式回退 focused_app，保证复选框可关闭。
         profile.target = config_.default_output_profile.target;
-        if (profile.target == OutputTarget::kWechatInputMethod) {
+        if (profile.target == OutputTarget::kVirtualMic ||
+            profile.target == OutputTarget::kWechatInputMethod) {
             profile.target = OutputTarget::kFocusedApp;
         }
         enabled = false;
     } else {
-        profile.target = OutputTarget::kWechatInputMethod;
+        // 麦克风模式 = virtual_mic 直通：音频只进虚拟麦克风，应用内自行选择该设备
+        // 取音识别（不触发第三方输入法；需要输入法热键的用 设置→输出目标→第三方输入法）。
+        profile.target = OutputTarget::kVirtualMic;
         enabled = true;
     }
     SaveDeviceOutputProfile(device_id, profile);

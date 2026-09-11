@@ -6740,6 +6740,10 @@ void TestOutputTargetWechatInputMethod() {
     assert(OutputTargetName(OutputTarget::kWechatInputMethod) == "wechat_input_method");
     assert(OutputTargetName(OutputTarget::kSubtitle) == "subtitle");
     assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
+    // virtual_mic 直通模式（麦克风模式）：音频只进虚拟麦克风，由应用自行取音识别。
+    assert(OutputTargetFromName("virtual_mic") == OutputTarget::kVirtualMic);
+    assert(OutputTargetName(OutputTarget::kVirtualMic) == "virtual_mic");
+    assert(OutputTargetFromName("virtual_mic") != OutputTarget::kWechatInputMethod);
 }
 
 void TestWechatInputMethodConfigRoundTrip() {
@@ -9104,6 +9108,94 @@ void TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice() {
     std::filesystem::remove(state_path);
 }
 
+// virtual_mic 直通模式（麦克风模式）：音频渲染到虚拟麦克风，但不触发第三方输入法
+// 热键（SendDown/Up/Click 均 0 次），即使 auto_switch 开启也不切默认录音设备。
+void TestCoordinatorVirtualMicDirectModeSkipsHotkeyAndSwitch() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kVirtualMic;
+    // 故意开启 auto_switch：直通模式也必须跳过（应用内自选虚拟麦克风，不切默认设备）。
+    config.wechat_input_method.auto_switch_default_recording_device = true;
+    config.wechat_input_method.virtual_mic_capture_name = "CABLE Output";
+    auto state_path = std::filesystem::temp_directory_path() /
+                      "voicestick_virtual_mic_direct_state.json";
+    std::filesystem::remove(state_path);
+
+    auto fake_switcher = std::make_unique<FakeDefaultAudioDeviceController>();
+    fake_switcher->default_capture = AudioDeviceInfo{L"{real-mic}", L"Realtek Mic"};
+    fake_switcher->capture_devices = {
+        AudioDeviceInfo{L"{real-mic}", L"Realtek Mic"},
+        AudioDeviceInfo{L"{cable-out}", L"CABLE Output (VB-Audio Virtual Cable)"},
+    };
+    FakeDefaultAudioDeviceController* switcher_ptr = fake_switcher.get();
+
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        },
+        [&]() { return std::move(fake_switcher); },
+        state_path);
+    coordinator.Start();
+
+    const std::string kDev = "RC-5E6F";
+    ble_ptr->connected_device_ids.insert(kDev);
+    ble_ptr->on_connection_change({ConnectedDevice{kDev, "RC-5E6F"}});
+
+    XiaomiAtvvSession session;
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+
+    // 虚拟麦克风渲染启动（音频进 CABLE Input，应用从 CABLE Output 取音）。
+    assert(fake_renderer != nullptr);
+    assert(fake_renderer->start_count == 1);
+    // 直通模式：不触发第三方输入法热键。
+    assert(fake_hotkey != nullptr);
+    assert(fake_hotkey->send_down_count == 0);
+    assert(fake_hotkey->send_click_count == 0);
+    // 直通模式：不切默认录音设备、不落切换状态文件。
+    assert(switcher_ptr->set_call_count == 0);
+    assert(!std::filesystem::exists(state_path));
+
+    // 继续喂一帧真实 Opus 音频：解码成功入 ring（渲染链路真实工作），且首帧解码
+    // 成功路径依旧不发热键。
+    PcmRingBuffer* ring = fake_renderer->last_ring;
+    assert(ring != nullptr);
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+    std::vector<std::int16_t> pcm(AudioOpusEncoder::kFrameSamples, 0);
+    std::size_t readable = 0;
+    for (int i = 0; i < 50 && readable < pcm.size(); ++i) {
+        readable = ring->Available();
+        if (readable < pcm.size()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(readable >= pcm.size());
+    assert(fake_hotkey->send_down_count == 0);
+
+    // 松开：会话完整停止，全程不发热键释放/点击，不经 ASR。
+    AtvvEndRecording(*ble_ptr, kDev, session, t);
+    assert(fake_renderer->stop_count >= 1);
+    assert(fake_hotkey->send_up_count == 0);
+    assert(fake_hotkey->send_click_count == 0);
+    assert(switcher_ptr->set_call_count == 0);
+    assert(asr_ptr->sent_chunks == 0);
+    std::filesystem::remove(state_path);
+}
+
 // 残留自愈：上次崩溃未切回（状态文件 switched=true），Start 检测并 Restore + 清文件。
 void TestCoordinatorAutoSwitchRecoversStaleState() {
     auto ble = std::make_unique<FakeBleCentral>();
@@ -10142,6 +10234,7 @@ int main() {
     TestCoordinatorWechatHotkeySkippedOnDecodeFailure();
     TestCoordinatorWechatHotkeySkippedOnEmptyEndFirstFrame();
     TestCoordinatorWechatInputMethodAutoSwitchesDefaultDevice();
+    TestCoordinatorVirtualMicDirectModeSkipsHotkeyAndSwitch();
     TestCoordinatorWechatInputMethodNoSwitchWhenDisabled();
     TestWechatWarnsWhenForegroundElevated();
     TestWechatNoDuplicateElevationWarnForSameProcess();

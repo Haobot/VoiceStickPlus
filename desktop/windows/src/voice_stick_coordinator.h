@@ -642,6 +642,9 @@ private:
     // 已提醒过提权的前台进程名（按进程名去重，避免同一高权限程序重复弹气泡）。
     std::optional<std::wstring> elevation_warned_process_;
     bool wechat_input_method_active_ = false;
+    // 本次虚拟麦会话是否触发第三方输入法热键：wechat_input_method 模式 true；
+    // virtual_mic 直通模式 false（不 SendDown/不 auto_switch，由应用自行取音识别）。
+    bool wechat_session_uses_hotkey_ = false;
     // 是否已收到本次 wechat 会话的 audio_end 帧；用于 Stop 时判断是否需补 EOS 页。
     bool wechat_audio_end_received_ = false;
     // 是否已对本次会话发送 SendDown（首帧 Opus 解码成功才发送）；决定 Stop 是否配对 SendUp。

@@ -58,6 +58,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsOutputTargetFocusedApp)] = "Focused App";
     table[Index(StringId::kSettingsOutputTargetSubtitle)] = "Subtitle";
     table[Index(StringId::kSettingsOutputTargetWechatInputMethod)] = "Third-party Input Method";
+    table[Index(StringId::kSettingsOutputTargetVirtualMic)] = "Virtual Microphone (app recognition)";
     table[Index(StringId::kSettingsWechatHotkey)] = "Voice Hotkey";
     table[Index(StringId::kSettingsWechatVirtualMic)] = "Virtual Microphone Playback Name";
     table[Index(StringId::kSettingsWechatAutoSwitch)] = "Auto-switch default recording device during recording";
@@ -360,7 +361,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuMicMode)] = "Microphone Mode";
     table[Index(StringId::kStatusMicModeEnabled)] = "Microphone Mode Enabled";
     table[Index(StringId::kNotificationMicModeOnBody)] =
-        "This device now streams audio to the system virtual microphone.";
+        "This device now streams audio to the system virtual microphone. "
+        "Select it as the input device in your app (e.g. CABLE Output).";
     table[Index(StringId::kNotificationMicModeOffBody)] =
         "This device is back to voice recognition.";
     table[Index(StringId::kXiaomiKeymapTitle)] = "Key mapping - RC-{0}";
@@ -435,6 +437,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsOutputTargetFocusedApp)] = "当前应用";
     table[Index(StringId::kSettingsOutputTargetSubtitle)] = "字幕";
     table[Index(StringId::kSettingsOutputTargetWechatInputMethod)] = "第三方输入法";
+    table[Index(StringId::kSettingsOutputTargetVirtualMic)] = "虚拟麦克风（应用内识别）";
     table[Index(StringId::kSettingsWechatHotkey)] = "语音热键";
     table[Index(StringId::kSettingsWechatVirtualMic)] = "虚拟麦克风播放端名称";
     table[Index(StringId::kSettingsWechatAutoSwitch)] = "录音时自动切换默认录音设备";
@@ -729,7 +732,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuXiaomiKeymap)] = "按键映射…";
     table[Index(StringId::kMenuMicMode)] = "麦克风模式";
     table[Index(StringId::kStatusMicModeEnabled)] = "麦克风模式已启用";
-    table[Index(StringId::kNotificationMicModeOnBody)] = "该设备音频已输出到系统虚拟麦克风。";
+    table[Index(StringId::kNotificationMicModeOnBody)] =
+        "该设备音频已输出到系统虚拟麦克风，请在应用的麦克风设置中选择该设备（如 CABLE Output）。";
     table[Index(StringId::kNotificationMicModeOffBody)] = "该设备已恢复语音识别。";
     table[Index(StringId::kXiaomiKeymapTitle)] = "按键映射 - RC-{0}";
     table[Index(StringId::kXiaomiKeymapCurrentMapping)] = "当前映射";
