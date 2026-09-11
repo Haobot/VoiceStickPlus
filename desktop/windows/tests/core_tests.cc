@@ -8448,7 +8448,7 @@ void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
     assert(fake_hotkey->send_click_count == 0);
     assert(fake_switcher->set_call_count == 0);
     assert(fake_capture->stop_count == 0);
-    assert(input.left_click_count == 2);  // detach 点击 + 补点击兜底
+    assert(input.left_click_count == 3);  // detach 点击 + 两次补点击兜底
     assert(ble_ptr->sent_ui_states.back().state == "ready");
     std::filesystem::remove(switch_state_path);
 }
@@ -8503,7 +8503,7 @@ void TestCoordinatorWechatClickHoldAutoRelease() {
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
     assert(fake_hotkey->send_down_count == 2);
     assert(fake_hotkey->send_up_count == 3);
-    assert(input.left_click_count == 2);
+    assert(input.left_click_count == 3);
     assert(ble_ptr->sent_ui_states.back().state == "ready");
 }
 

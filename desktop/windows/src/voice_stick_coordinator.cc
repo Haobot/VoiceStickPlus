@@ -941,12 +941,19 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
             std::this_thread::sleep_for(wechat_recommit_hold_);
         }
         wechat_hotkey_->SendUp();
-        // 补点击：新按住重开的空会话（尚无 composition）上首次 detach 常停在
-        // mode=detaching 不完成，面板残留（真机复验：手动再点一次即稳定关闭）。
-        // 故注入两次点击（间隔 wechat_detach_click_delay_），第二次兜底补齐。
-        for (int attempt = 0; attempt < 2; ++attempt) {
-            if (wechat_detach_click_delay_ > std::chrono::milliseconds::zero()) {
-                std::this_thread::sleep_for(wechat_detach_click_delay_);
+        // 补点击：新按住重开的空会话（尚无 composition）上 detach 需多次触发才
+        // 走完 —— 引擎侧 `detach_request` 后要 ~1.8s 才 `detach_complete`，早于
+        // 完成时刻的点击不生效（真机复验：两次 1.5s 间隔点击仍残留，用户手动
+        // 在完成后点击即关闭）。故注入三次点击，最后一次间隔加倍等 detach 链
+        // 完成后再补，关闭浮窗。
+        constexpr int kDetachClickAttempts = 3;
+        for (int attempt = 0; attempt < kDetachClickAttempts; ++attempt) {
+            auto gap = wechat_detach_click_delay_;
+            if (attempt == kDetachClickAttempts - 1) {
+                gap *= 2;  // 末次等 detach 链完成（detach_request→complete ~1.8s）
+            }
+            if (gap > std::chrono::milliseconds::zero()) {
+                std::this_thread::sleep_for(gap);
             }
             LogCoordinatorLine("wechat click hold stop: detach click attempt " +
                                std::to_string(attempt + 1));
