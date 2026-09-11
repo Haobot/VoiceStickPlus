@@ -52,8 +52,8 @@
 
 ### 修复 v3
 
-- 停止击收尾序列（最终形态）：SendUp → **新按住 1.5s（SendDown+repeat）→ SendUp → 三次左键点击（间隔 1.5s / 1.5s / 3s）**。多次点击是必需的：引擎侧 `detach_request` 要 ~1.8s 才 `detach_complete`（真机日志实证），早于完成时刻的点击不生效；新按住重开的**空会话（尚无 composition）**上尤其如此，面板残留（用户手动在完成之后点击即关闭，且不再自弹——repeats 已停）。机制链：WeType 的 commit 只在「松开时语音仍活跃（或刚停 <~1s）」时触发（点击折叠停止击天然晚于语音结束 → SendUp 不 commit，文字滞留 composition 直到被 detach `detach_clear_preflight` 清除）；而**一次新按住会 commit 当前 composition（`commit_after_end`，真机日志实证）并重开新会话**——新按住即提交，detach 随后关闭重开的空会话（detach_complete 正常）。注入点击与用户亲手点击同语义（含点击回放副作用）。
-- **按住流必须限时（2500ms）自动松开**：持续 repeats 期间用户任何关闭面板的尝试（鼠标 detach/无文本超时）都被下一个 repeat keydown 立即重新弹开——真机现象「浮窗点关又弹出、输入法无法正常使用」。曾一度回滚为「持续到停止击」（当时以为 commit 依赖松开时机），在「新按住提交」上线后自动松开重新成立：提交不再依赖松开时机，限时松开同时消除弹窗风暴。
+- 停止击收尾序列（方案 B 定案）：**SendUp（配对松开）→ 两次左键点击（间隔 1.5s / 3s）**。文字提交靠「松开时语音仍活跃」触发 → **使用约定「说完即点停止」**。「新按住提交」虽能无条件提交文字（`commit_after_end` 实证），但会重开**无 composition 的空会话**，其浮窗在引擎侧 `detach_complete` 后仍残留于宿主、只能手动关闭（真机复验），故弃用；detach 从请求到完成约 1.8s，第二次点击需等其走完。机制链：WeType 的 commit 只在「松开时语音仍活跃（或刚停 <~1s）」时触发（点击折叠停止击天然晚于语音结束 → SendUp 不 commit，文字滞留 composition 直到被 detach `detach_clear_preflight` 清除）；而**一次新按住会 commit 当前 composition（`commit_after_end`，真机日志实证）并重开新会话**——新按住即提交，detach 随后关闭重开的空会话（detach_complete 正常）。注入点击与用户亲手点击同语义（含点击回放副作用）。
+- **热键按住流的自动松开（2500ms）是必需的**：持续 repeats 期间用户任何关闭面板的尝试（鼠标 detach/无文本超时）都被下一个 repeat keydown 立即重新弹开——真机现象「浮窗点关又弹出、输入法无法正常使用」。曾一度回滚为「持续到停止击」（当时以为 commit 依赖松开时机），在「新按住提交」上线后自动松开重新成立：提交不再依赖松开时机，限时松开同时消除弹窗风暴。
 - 常量与测试缝：`SetWechatDetachClickDelay`（默认 1500ms）；单测直连模式用例补左键点击断言（`left_click_count == 1`）。CTest 单测全绿；集成测试因当晚环境被打断未跑完，待重跑。
 
 ## 遗留/观察项

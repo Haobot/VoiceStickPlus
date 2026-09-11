@@ -8416,7 +8416,6 @@ void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
         switch_state_path);
     // 自动松开注入长延迟：本用例只验证启动击/停止击序列（自动松开单独用例覆盖）。
     coordinator.SetWechatClickHoldRelease(std::chrono::seconds{60});
-    coordinator.SetWechatRecommitHold(std::chrono::milliseconds{0});
     coordinator.SetWechatDetachClickDelay(std::chrono::milliseconds{0});
     coordinator.Start();
     coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
@@ -8439,16 +8438,16 @@ void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
     assert(fake_renderer != nullptr && fake_renderer->start_count == 0);
     assert(fake_switcher->set_call_count == 0);
 
-    // 第二击（停止 click，复用 session_id=1）：SendUp 配对 + 「新按住提交」循环
-    //（SendDown→SendUp，commit 当前 composition 并重开新会话）+ 注入一次鼠标左键
-    //（detach 关闭重开的空会话），回 ready。直连模式无任何管道拆除动作。
+    // 第二击（停止 click，复用 session_id=1，方案 B）：仅 SendUp 配对（文字提交靠
+    // 「说完即点」时的松开提交）+ 两次鼠标左键点击（detach 关浮窗，detach 链
+    // ~1.8s 故补一次），回 ready。直连模式无任何管道拆除动作。
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
-    assert(fake_hotkey->send_down_count == 2);  // 启动击 + 新按住提交
-    assert(fake_hotkey->send_up_count == 2);    // 停止击配对 + 新按住提交收尾
+    assert(fake_hotkey->send_down_count == 1);  // 仅启动击（无新按住提交）
+    assert(fake_hotkey->send_up_count == 1);    // 停止击配对
     assert(fake_hotkey->send_click_count == 0);
     assert(fake_switcher->set_call_count == 0);
     assert(fake_capture->stop_count == 0);
-    assert(input.left_click_count == 3);  // detach 点击 + 两次补点击兜底
+    assert(input.left_click_count == 2);  // detach 点击 + 补点击
     assert(ble_ptr->sent_ui_states.back().state == "ready");
     std::filesystem::remove(switch_state_path);
 }
@@ -8480,7 +8479,6 @@ void TestCoordinatorWechatClickHoldAutoRelease() {
             return p;
         });
     coordinator.SetWechatClickHoldRelease(std::chrono::milliseconds{0});
-    coordinator.SetWechatRecommitHold(std::chrono::milliseconds{0});
     coordinator.SetWechatDetachClickDelay(std::chrono::milliseconds{0});
     coordinator.Start();
 
@@ -8499,11 +8497,11 @@ void TestCoordinatorWechatClickHoldAutoRelease() {
     }
     assert(fake_hotkey->send_up_count == 1);  // 按住流已自动松开
 
-    // 停止击：SendUp 配对 + 新按住提交（SendDown→SendUp）+ 两次左键点击，回 ready。
+    // 停止击（方案 B）：SendUp 配对 + 两次左键点击（detach 关浮窗），回 ready。
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
-    assert(fake_hotkey->send_down_count == 2);
-    assert(fake_hotkey->send_up_count == 3);
-    assert(input.left_click_count == 3);
+    assert(fake_hotkey->send_down_count == 1);
+    assert(fake_hotkey->send_up_count == 2);
+    assert(input.left_click_count == 2);
     assert(ble_ptr->sent_ui_states.back().state == "ready");
 }
 

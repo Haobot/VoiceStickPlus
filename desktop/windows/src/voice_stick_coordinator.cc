@@ -925,28 +925,17 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
         }
     }
     if (hotkey_was_sent && click_hold_combo && input_injector_) {
-        // 点按折叠停止击收尾（2026-09-12 真机实验矩阵定案）：
-        // 1) WeType 的收尾 commit 只在「松开时语音仍活跃（或刚停 ~<1s）」时触发，
-        //    点击折叠的停止击天然晚于语音结束 → SendUp 不 commit，文字滞留
-        //    composition 直到被 detach「取消并清除」——故改用「新按住提交」：
-        //    一次新按住会 commit 当前 composition（commit_after_end，真机日志
-        //    实证）并重开新会话。
+        // 点按折叠停止击收尾（2026-09-12 真机实验矩阵 + 用户定案「方案 B」）：
+        // 1) 文字提交靠**松开时语音仍活跃（或刚停）**触发——使用约定「说完即点
+        //    停止」。刻意不做「新按住提交」：新按住虽能无条件提交，但会重开一个
+        //    无 composition 的空会话，其浮窗无法被 detach 清掉（真机复验：引擎侧
+        //    detach_complete 后宿主侧残留、需手动关闭）。
         // 2) 面板唯一关闭路径是鼠标点击 detach（热键只能重启会话、keyup 与 ESC
         //    均无效）；注入点击与用户亲手点击同语义（WeType 会把点击回放给光标
         //    下的应用）。detach 必须晚于 commit（提前 = 清除未上屏文本），且
         //    repeats 已停（detach 不会被重新弹开）。
-        LogCoordinatorLine("wechat click hold stop: recommit hold begin");
-        wechat_hotkey_->SendDown();
-        if (wechat_recommit_hold_ > std::chrono::milliseconds::zero()) {
-            std::this_thread::sleep_for(wechat_recommit_hold_);
-        }
-        wechat_hotkey_->SendUp();
-        // 补点击：新按住重开的空会话（尚无 composition）上 detach 需多次触发才
-        // 走完 —— 引擎侧 `detach_request` 后要 ~1.8s 才 `detach_complete`，早于
-        // 完成时刻的点击不生效（真机复验：两次 1.5s 间隔点击仍残留，用户手动
-        // 在完成后点击即关闭）。故注入三次点击，最后一次间隔加倍等 detach 链
-        // 完成后再补，关闭浮窗。
-        constexpr int kDetachClickAttempts = 3;
+        // 3) detach 从请求到完成约 1.8s，需两次点击（第二次等其走完）。
+        constexpr int kDetachClickAttempts = 2;
         for (int attempt = 0; attempt < kDetachClickAttempts; ++attempt) {
             auto gap = wechat_detach_click_delay_;
             if (attempt == kDetachClickAttempts - 1) {

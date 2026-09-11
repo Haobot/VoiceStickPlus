@@ -268,15 +268,9 @@ public:
     void SetWechatClickHoldRelease(std::chrono::milliseconds delay) {
         wechat_click_hold_release_ = delay;
     }
-    // 点按折叠停止击「新按住提交」的按住时长：一次新按住会 commit 当前
-    // composition（commit_after_end）并重开新会话，覆盖点击折叠停止击晚于语音
-    // 结束（SendUp 不触发 commit）的失配。须在 Start 前调用；测试注入 0。
-    void SetWechatRecommitHold(std::chrono::milliseconds hold) {
-        wechat_recommit_hold_ = hold;
-    }
-    // 新按住提交后的 detach 点击延迟：等 commit 落地 + 新会话稳定后再注入
-    // detach 点击——detach 在 commit 前发生会「取消并清除」未上屏文本
-    //（2026-09-12 真机复验）。须在 Start 前调用；测试注入 0。
+    // 点按折叠停止击的 detach 点击延迟/间隔（见 SetWechatDetachClickDelay）。
+    // 生产 1500ms：detach 从请求到完成约 1.8s，按此间隔连点两次（末次加倍等待）
+    // 保证浮窗关闭（2026-09-12 真机复验）。须在 Start 前调用；测试注入 0。
     void SetWechatDetachClickDelay(std::chrono::milliseconds delay) {
         wechat_detach_click_delay_ = delay;
     }
@@ -672,12 +666,8 @@ private:
     // 覆盖 WeType 弹框静默期 0.53~1.4s（偶发更慢）实测分布。
     std::chrono::milliseconds wechat_click_hold_release_{2500};
     std::atomic_uint64_t wechat_click_hold_generation_{0};
-    // 点按折叠停止击「新按住提交」时长（见 SetWechatRecommitHold）。生产 1500ms：
-    // 覆盖 WeType 一次按住检测（实测 commit 出现在按住后 ~0.65s、重开 ~0.73s）。
-    std::chrono::milliseconds wechat_recommit_hold_{1500};
-    // 新按住提交后的 detach 点击延迟/间隔（见 SetWechatDetachClickDelay）。生产
-    // 1500ms：新按住重开的会话在按住结束 ~0.6s 后才建立，detach 需要其稳定窗口；
-    // 且空会话首次 detach 常不完成，故按此间隔连点两次兜底（真机复验）。
+    // 点按折叠停止击的 detach 点击延迟/间隔（见 SetWechatDetachClickDelay）。
+    // 生产 1500ms（末次点击加倍等待，覆盖 detach 链 ~1.8s）。
     std::chrono::milliseconds wechat_detach_click_delay_{1500};
     std::atomic_uint64_t recording_hard_timeout_generation_{0};
     // 录音音频流停滞 watchdog（可经构造注入，测试用短值；默认 kAudioStallTimeout）。
