@@ -44,3 +44,18 @@
 
 - `AppConfig` 落盘路径注入缝（测试隔离的根治方案）未做；`integration_tests.cc` 的 `AppConfig::Load()` 经 `MaybeRecoverTencentSecretId` 迁移保存仍会规范式回写用户 config（内容保真但 mtime 变化，见 `Doc/Agent/build-and-test.md` 警告）。
 - 钉扎端点打开失败（如用户会话中途拔掉真实麦克风）走会话回滚提示"麦克风启动失败"，不做设备热切换——观察真机是否需要更细的恢复策略。
+
+## 追加（同日第三次真机反馈）：钉扎之后仍零音频——哑麦克风在源头
+
+d4fbfd13 部署后用户仍报零音频。日志证明链路已全通（`capturing from pinned endpoint`、会话正常起停、WeType 面板弹出），最终用 sounddevice 对每个录音设备录 2 秒测 RMS 定案：**默认录音设备（Realtek 麦克风阵列）未静音、音量 100%，但采集为纯数字零（RMS=0.5/peak=1）**——阵列侧哑了（典型诱因：睡眠/唤醒后 Realtek 阵列驱动挂死；不排除硬件电平开关）。钉扎修复只保证"采对设备"，不保证"设备有声"。
+
+系统侧同时发现两个其他麦克风端点被静音（"麦克风"@86%、"Microphone"@100%），已解除；**CABLE Output 从未静音**（排除了 WeType 侧被静音的假设）。全机唯一活麦 = "Microphone (2- MateView)"（华为显示器麦第二总线实例，RMS≈1081）。处置：经 IPolicyConfig `{F8679F50-…}`/`{870af99c-…}` `SetDefaultEndpoint` 把默认录音设备（eConsole 角色）切到该活麦；VoiceStick 无需重启——auto_switch 在会话开始时才读默认并钉扎，下一次点击自动生效。原默认为 `{0.0.1.00000000}.{fdfb1b53-…}`（麦克风阵列），声音设置可随时改回。
+
+诊断配方（复用）：
+
+- **逐设备录 2 秒看 RMS/peak 是判"哑麦"的唯一硬证据**：peak≤2（满量程 32768）即数字零，正常的设备即使安静房间也有底噪（RMS 几十起步）；未静音+100% 音量+数字零=驱动挂死或硬件电平开关，不是音量问题。
+- 端点静音枚举：pycaw 的 `AudioUtilities.GetAllDevices()` 不建模采集端（`Endpoint=None`），须走 `IMMDeviceEnumerator::EnumAudioEndpoints(eCapture, ACTIVE)` + `IMMDevice::Activate(IAudioEndpointVolume)`；名称对齐别猜 EnumAudioEndpoints 顺序（与声音设置顺序不一致），用注册表 `MMDevices\Audio\Capture\<guid>\Properties` 值名 `{a45c254e-…},2` 读友好名。
+- 隐私授权三处（HKCU microphone / NonPackaged / HKLM）均为 Allow 才排除隐私因素；Deny 时 WASAPI 通常直接激活失败而非静音。
+- 切默认录音设备：comtypes 定义 IPolicyConfig 全 12 方法 vtable（槽位必须齐），`SetDefaultEndpoint(id, 0=eConsole)`；pycaw 不含此接口。仓库生产实现见 `default_audio_device_controller.h`（同源移植）。
+- 产品观察：auto_switch+本机麦直供架构隐含依赖"切换前默认录音设备是活麦"，后续可考虑会话启动时对钉扎端点做静音检测（前 300ms RMS≈0 时提示用户检查麦克风）。
+
