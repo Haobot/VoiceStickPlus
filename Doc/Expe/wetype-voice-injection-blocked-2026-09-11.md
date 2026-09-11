@@ -60,7 +60,7 @@ PoC 环境残留：`C:\ProgramData\VoiceStickHidPoC\`（vs_hid_poc.js v4、注�
 ## 关联
 
 - 40ms 重复注入（7a444c7d）保留且必要：WeType 长按检测依赖持续 keydown 流。
-- `NeutralizeHeldF5`（f20dcb72）已被证伪，待回滚/标记；其测试 `TestWechatHotkeySendDownNeutralizesHeldF5` 一并处理。
+- `NeutralizeHeldF5`（f20dcb72）已被证伪并回滚（65db4a2b）；接续路线=方案 A 点按折叠（`Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md`），其真机首验两缺陷见 `Doc/Expe/wechat-click-toggle-acceptance-defects-2026-09-11.md`。
 - 第一轮死锁修复（f4480928）真实有效：解决了 SendDown 发不出的 UI 线程卡死。
 - VoiceF5Suppressor 吞键与异步键状态的关系是本案例核心知识点：**吞键 ≠ 状态不可见 ≠ 活动时间戳不刷新**。
 - MiVibe-Remote 参考实现：`platforms/windows/source/bridges/xiaomi/hid_tap_runtime.py`（Gadget 运行时）、`hid_tap_injector.py`（注入器蓝本）。
