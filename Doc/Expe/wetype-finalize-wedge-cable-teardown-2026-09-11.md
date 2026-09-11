@@ -52,10 +52,9 @@
 
 ### 修复 v3
 
-- 启动击的按住流**限时 2500ms 自动松开**（覆盖弹框静默期 0.53~1.4s 实测分布）：面板弹出后松开按键，会话靠 WeType 自身存活（keyup 不终止），repeats 不再与任何关闭动作对打。
-- 停止击在 SendUp 后**注入一次鼠标左键（当前光标位置）**触发 detach 关闭路径（`InputInjectorWin::ClickLeftButton`，既有能力）。与用户亲手点击同语义（含点击回放副作用）。
-- `WechatInputMethodHotkey::StopRepeat` 加锁：自动松开线程与停止路径可能并发 SendUp。
-- 常量与测试缝：`SetWechatClickHoldRelease`（默认 2500ms）；单测 `TestCoordinatorWechatClickHoldAutoRelease` + 直连模式用例补左键点击断言。CTest 单测全绿；集成测试因当晚环境被打断未跑完，待重跑。
+- 停止击收尾序列（最终形态）：SendUp → **新按住 1.5s（SendDown+repeat）→ SendUp → 0.5s → 注入左键点击 detach**。机制链：WeType 的 commit 只在「松开时语音仍活跃（或刚停 <~1s）」时触发（点击折叠停止击天然晚于语音结束 → SendUp 不 commit，文字滞留 composition 直到被 detach `detach_clear_preflight` 清除）；而**一次新按住会 commit 当前 composition（`commit_after_end`，真机日志实证）并重开新会话**——新按住即提交，detach 随后关闭重开的空会话（detach_complete 正常）。注入点击与用户亲手点击同语义（含点击回放副作用）。
+- **按住流必须限时（2500ms）自动松开**：持续 repeats 期间用户任何关闭面板的尝试（鼠标 detach/无文本超时）都被下一个 repeat keydown 立即重新弹开——真机现象「浮窗点关又弹出、输入法无法正常使用」。曾一度回滚为「持续到停止击」（当时以为 commit 依赖松开时机），在「新按住提交」上线后自动松开重新成立：提交不再依赖松开时机，限时松开同时消除弹窗风暴。
+- 常量与测试缝：`SetWechatDetachClickDelay`（默认 1500ms）；单测直连模式用例补左键点击断言（`left_click_count == 1`）。CTest 单测全绿；集成测试因当晚环境被打断未跑完，待重跑。
 
 ## 遗留/观察项
 

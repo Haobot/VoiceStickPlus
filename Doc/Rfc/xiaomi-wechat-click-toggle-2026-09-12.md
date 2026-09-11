@@ -173,6 +173,6 @@ options.wechat_click_toggle =
 
 直连麦克风修复后真机复验仍「停止击后面板不消失」。SendInput 注入实验矩阵 + WeType 诊断日志对照定案（见 `Doc/Expe/wetype-finalize-wedge-cable-teardown-2026-09-11.md` 追加节）：**WeType 语音热键只能启动/重启会话，keyup 与 ESC 均无收尾作用；面板唯一关闭路径是鼠标点击 detach（点击面板外任意处）**。且启动击的持续 repeat 按住会把任何关闭动作立即重新弹开面板（「永不消失」元凶）。
 
-- 启动击：SendDown + repeat **限时 2500ms** 后自动 SendUp（覆盖弹框静默期 0.53~1.4s 实测分布）；会话靠 WeType 自身存活（keyup 不终止会话，真机验证）。
-- 停止击：SendUp 后**注入一次鼠标左键（当前光标位置）**触发 detach 关闭（`InputInjectorWin::ClickLeftButton`）；与用户亲手点击同语义（WeType 会把点击回放给光标下的应用）。
-- §4.1 的「停止击 → SendUp 结束上屏」语义修正为「停止击 → SendUp + 注入左键点击 detach 关面板」；文字上屏由 WeType VAD 自动完成（停止说话后 ~150ms commit，与停止击解耦）。
+- 启动击：SendDown + repeat，**限时 2500ms 后自动松开**（覆盖弹框静默期 0.53~1.4s 实测分布）。必须限时：按住流持续期间，用户任何关闭面板的尝试（鼠标 detach/超时）都会被下一个 repeat keydown 立即重新弹开（「浮窗点关又弹出、输入法无法使用」真机复验）。松开后会话仍存活，文字提交由停止击的「新按住提交」保证，不再依赖松开时机。
+- 停止击：SendUp → **「新按住提交」循环（SendDown+repeat 1.5s → SendUp）→ 0.5s → 注入一次鼠标左键（当前光标位置）**触发 detach 关闭。机制：WeType 的 commit 只在「松开时语音仍活跃（或刚停 <~1s）」时触发，点击折叠停止击天然晚于语音结束（SendUp 不 commit，文字滞留 composition）——而一次**新按住会 commit 当前 composition（commit_after_end）并重开新会话**（真机日志实证），detach 随后关闭重开的空会话；与用户亲手点击同语义（WeType 会把点击回放给光标下的应用），且 detach 必须晚于 commit（提前 = 取消并清除未上屏文本）。
+- §4.1 的「停止击 → SendUp 结束上屏」语义修正为「停止击 → SendUp → 新按住提交（1.5s）→ SendUp → 0.5s 后注入左键点击 detach 关面板」；文字上屏由「新按住提交」保证（与语音时序解耦）。

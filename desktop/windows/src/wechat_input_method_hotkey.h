@@ -58,8 +58,7 @@ class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
   std::size_t KeyCount() const { return vk_codes_.size(); }
 
  private:
-  // 停止重复注入线程（幂等；SendUp/析构/点按折叠自动松开线程共用，
-  // 可并发调用）。
+  // 停止重复注入线程（幂等；SendUp/析构/点按折叠自动松开线程共用，可并发调用）。
   void StopRepeat() const;
 
   std::vector<int> vk_codes_;

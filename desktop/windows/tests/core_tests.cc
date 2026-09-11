@@ -8414,6 +8414,10 @@ void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
             return std::unique_ptr<IDefaultAudioDeviceController>(fake_switcher);
         },
         switch_state_path);
+    // 自动松开注入长延迟：本用例只验证启动击/停止击序列（自动松开单独用例覆盖）。
+    coordinator.SetWechatClickHoldRelease(std::chrono::seconds{60});
+    coordinator.SetWechatRecommitHold(std::chrono::milliseconds{0});
+    coordinator.SetWechatDetachClickDelay(std::chrono::milliseconds{0});
     coordinator.Start();
     coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
 
@@ -8435,10 +8439,12 @@ void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
     assert(fake_renderer != nullptr && fake_renderer->start_count == 0);
     assert(fake_switcher->set_call_count == 0);
 
-    // 第二击（停止 click，复用 session_id=1）：SendUp 配对，无任何拆除动作，回 ready；
-    // 点按折叠停止击须注入一次鼠标左键（WeType 面板 detach 关闭路径）。
+    // 第二击（停止 click，复用 session_id=1）：SendUp 配对 + 「新按住提交」循环
+    //（SendDown→SendUp，commit 当前 composition 并重开新会话）+ 注入一次鼠标左键
+    //（detach 关闭重开的空会话），回 ready。直连模式无任何管道拆除动作。
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
-    assert(fake_hotkey->send_up_count == 1);
+    assert(fake_hotkey->send_down_count == 2);  // 启动击 + 新按住提交
+    assert(fake_hotkey->send_up_count == 2);    // 停止击配对 + 新按住提交收尾
     assert(fake_hotkey->send_click_count == 0);
     assert(fake_switcher->set_call_count == 0);
     assert(fake_capture->stop_count == 0);
@@ -8447,10 +8453,10 @@ void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
     std::filesystem::remove(switch_state_path);
 }
 
-// 点按折叠按住流限时自动松开（2026-09-11 真机定案）：click 启动的 SendDown+repeat
-// 只为弹框，面板弹出后必须松开——持续 keydown 会把 WeType 的任何关闭动作（VAD
-// 收尾/鼠标 detach/停止击）立即重新弹开面板（「面板永不消失」根因）。松开后会话
-// 仍活跃（keyup 不终止会话），停止击仍配对 SendUp + 注入左键点击。
+// 点按折叠按住流限时自动松开（2026-09-12 真机定案）：click 启动的 SendDown+repeat
+// 只为弹框，面板弹出后必须松开——持续 repeats 会让用户任何关闭面板的尝试（鼠标
+// detach/VAD 收尾/超时）被下一个 keydown 立即重新弹开（「浮窗点关又弹出」真机
+// 复验）。松开后会话仍存活；文字提交由停止击的「新按住提交」保证（见直连模式用例）。
 void TestCoordinatorWechatClickHoldAutoRelease() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -8474,6 +8480,8 @@ void TestCoordinatorWechatClickHoldAutoRelease() {
             return p;
         });
     coordinator.SetWechatClickHoldRelease(std::chrono::milliseconds{0});
+    coordinator.SetWechatRecommitHold(std::chrono::milliseconds{0});
+    coordinator.SetWechatDetachClickDelay(std::chrono::milliseconds{0});
     coordinator.Start();
 
     ble_ptr->connected_device_ids.insert("6459");
@@ -8491,9 +8499,10 @@ void TestCoordinatorWechatClickHoldAutoRelease() {
     }
     assert(fake_hotkey->send_up_count == 1);  // 按住流已自动松开
 
-    // 停止击：再次配对 SendUp（幂等）+ 注入左键点击，回 ready。
+    // 停止击：SendUp 配对 + 新按住提交（SendDown→SendUp）+ 注入左键点击，回 ready。
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
-    assert(fake_hotkey->send_up_count == 2);
+    assert(fake_hotkey->send_down_count == 2);
+    assert(fake_hotkey->send_up_count == 3);
     assert(input.left_click_count == 1);
     assert(ble_ptr->sent_ui_states.back().state == "ready");
 }
