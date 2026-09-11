@@ -78,6 +78,8 @@ ctest --test-dir desktop\windows\build-x64 --output-on-failure -R voicestick_win
 
 `voicestick_windows_tests` 基于 `assert`，目前不支持按测试函数名过滤；新增核心测试时把 `Test...()` 函数加入 `desktop/windows/tests/core_tests.cc` 的 `main()`。`-R voicestick_integration_tests` 单独跑集成测试，需联网与 `volcengine_api_key`，无 key 时该测试返回 77 被 CTest 标记为 SKIP。
 
+⚠️ 集成测试会**写用户 config.toml**：`integration_tests.cc` 直接 `AppConfig::Load()` 用户文件，加载路径中 `MaybeRecoverTencentSecretId` 命中迁移或新增序列化字段时会 `Save()` 回写（2026-09-11 实证：跑集成测试把 `session_model` 行补写进了用户配置）。排查「配置莫名变化」时先对时间戳与测试运行时刻；根治需给集成测试换独立临时配置路径，尚未做。
+
 运行应用：
 
 ```powershell
