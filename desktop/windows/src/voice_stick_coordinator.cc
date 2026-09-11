@@ -941,11 +941,17 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
             std::this_thread::sleep_for(wechat_recommit_hold_);
         }
         wechat_hotkey_->SendUp();
-        if (wechat_detach_click_delay_ > std::chrono::milliseconds::zero()) {
-            std::this_thread::sleep_for(wechat_detach_click_delay_);
+        // 补点击：新按住重开的空会话（尚无 composition）上首次 detach 常停在
+        // mode=detaching 不完成，面板残留（真机复验：手动再点一次即稳定关闭）。
+        // 故注入两次点击（间隔 wechat_detach_click_delay_），第二次兜底补齐。
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (wechat_detach_click_delay_ > std::chrono::milliseconds::zero()) {
+                std::this_thread::sleep_for(wechat_detach_click_delay_);
+            }
+            LogCoordinatorLine("wechat click hold stop: detach click attempt " +
+                               std::to_string(attempt + 1));
+            input_injector_->ClickLeftButton();
         }
-        LogCoordinatorLine("wechat click hold stop: injecting left click to detach panel");
-        input_injector_->ClickLeftButton();
     }
     // 拆除段只服务于 CABLE 管道模式（StickS3 BLE 流）；直连默认麦克风模式
     // （方案 A 修订）无本端采集/渲染/设备切换，跳过整段——WeType 自行停采。
