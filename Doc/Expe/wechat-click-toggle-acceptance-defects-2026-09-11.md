@@ -59,3 +59,18 @@ d4fbfd13 部署后用户仍报零音频。日志证明链路已全通（`capturi
 - 切默认录音设备：comtypes 定义 IPolicyConfig 全 12 方法 vtable（槽位必须齐），`SetDefaultEndpoint(id, 0=eConsole)`；pycaw 不含此接口。仓库生产实现见 `default_audio_device_controller.h`（同源移植）。
 - 产品观察：auto_switch+本机麦直供架构隐含依赖"切换前默认录音设备是活麦"，后续可考虑会话启动时对钉扎端点做静音检测（前 300ms RMS≈0 时提示用户检查麦克风）。
 
+## 追加（同日第四次真机反馈）：keyup 后悬窗不退——停止顺序违背物理语义
+
+链路修通后的新现象：面板弹出、识别文本实时进 composition（WeType 诊断日志 gen84 收到 72 字节识别文本），但第二次点击后悬窗不退。诊断日志定案（`%TEMP%\WeTypeVoiceDiagnostic_*.log`）：
+
+- 说话会话（gen84）：`abort reason=composition_commit_timeout`（keyup 后 5s 超时）+ 3s 后 host_termination，共 ~8s 才收尾；
+- **无语音会话（gen83）：composition 永久不终止**（日志零结束标记）——用户"悬窗不退"的直接原因；
+- 对照：物理按住测试（gen77）同场景干净收尾。
+
+根因：旧停止顺序**先停采集再发 keyup**——keyup 到达时音频流已死。物理松开时麦克风永远在供电（房间底噪持续），WeType 的 finalize/commit 依赖"释放时音频流仍存活"。修复（24418ade）：停止顺序重排为「SendUp/SendClick → 600ms 音频存活宽限 → 停采 → 停渲染 → 恢复默认设备」，`SetWechatStopAudioGrace` 测试缝供单测注入 0。
+
+诊断配方补充：
+
+- WeType 诊断日志的会话生命周期要**两个进程联合读**：pid=voice 服务记 `abort reason=…`（finished_without_text=静音自行终止，composition_commit_timeout=提交卡死），pid=TSF 宿主记 `start_received`/`receive`（收到的识别文本）/`terminated composition`+`host_termination`；只有 `start_received` 而永无 terminated = composition 挂死。
+- 600ms 宽限是"音频存活窗口"的第一个估计值，真机复验后若仍有 commit 卡死优先调大它；副作用是停止路径同步阻塞事件线程 600ms，期间新按键会延迟处理。
+
