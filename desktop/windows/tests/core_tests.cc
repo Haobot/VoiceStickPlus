@@ -7380,6 +7380,92 @@ void TestWechatHotkeySendDownRepeatsWhileHeld() {
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
 }
 
+// 小米遥控器 2 Pro 的语音键上报为 F5 HID 键。按住期间 F5 的异步键状态
+// （GetAsyncKeyState；LL 钩子吞键不影响该状态）会让 WeType 拒绝启动
+// Ctrl+Win 语音会话（2026-09-11 实证：物理 F5 按住期间注入 Ctrl+Win 全程
+// 不触发，F5 松开后约 0.57s 才触发）。SendDown 前若 F5 处于按住状态，
+// 必须先注入一发 F5 keyup 把异步状态拉起，再注入热键。
+void TestWechatHotkeySendDownNeutralizesHeldF5() {
+    struct EventRecorder {
+        std::mutex mutex;
+        std::vector<std::pair<int, bool>> events;  // (vk, is_up) 按到达顺序
+        UINT WINAPI Record(UINT count, LPINPUT inputs, int) {
+            std::lock_guard<std::mutex> lock(mutex);
+            for (UINT i = 0; i < count; ++i) {
+                if (inputs[i].type == INPUT_KEYBOARD) {
+                    events.emplace_back(static_cast<int>(inputs[i].ki.wVk),
+                                        (inputs[i].ki.dwFlags & KEYEVENTF_KEYUP) != 0);
+                }
+            }
+            return count;
+        }
+        std::vector<std::pair<int, bool>> Snapshot() {
+            std::lock_guard<std::mutex> lock(mutex);
+            return events;
+        }
+    };
+
+    // 场景一：F5 异步状态按住 -> 首个事件必须是 F5 keyup，其后才是热键 keydown。
+    {
+        EventRecorder recorder;
+        WechatInputMethodHotkey::SetSendInputForTest(
+            [&recorder](UINT count, LPINPUT inputs, int size) -> UINT {
+                return recorder.Record(count, inputs, size);
+            });
+        // 测试缝让 GetAsyncKeyState(VK_F5) 恒报按住。
+        WechatInputMethodHotkey::SetGetAsyncKeyStateForTest(
+            [](int vk_code) -> SHORT {
+                return vk_code == VK_F5 ? static_cast<SHORT>(0x8001) : 0;
+            });
+
+        {
+            WechatInputMethodHotkey hotkey("ctrl+win");
+            assert(hotkey.SendDown());
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            assert(hotkey.SendUp());
+        }
+
+        const auto events = recorder.Snapshot();
+        assert(!events.empty());
+        assert(events.front().first == VK_F5);
+        assert(events.front().second == true);
+        const auto second = events.begin() + 1;
+        assert(second != events.end());
+        assert(second->first == VK_CONTROL && second->second == false);
+
+        WechatInputMethodHotkey::SetGetAsyncKeyStateForTest(nullptr);
+        WechatInputMethodHotkey::SetSendInputForTest(nullptr);
+    }
+
+    // 场景二：F5 未按住 -> 不产生任何 F5 事件（中和动作幂等静默）。
+    {
+        EventRecorder recorder;
+        WechatInputMethodHotkey::SetSendInputForTest(
+            [&recorder](UINT count, LPINPUT inputs, int size) -> UINT {
+                return recorder.Record(count, inputs, size);
+            });
+        WechatInputMethodHotkey::SetGetAsyncKeyStateForTest(
+            [](int) -> SHORT { return 0; });
+
+        {
+            WechatInputMethodHotkey hotkey("ctrl+win");
+            assert(hotkey.SendDown());
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            assert(hotkey.SendUp());
+        }
+
+        const auto events = recorder.Snapshot();
+        assert(!events.empty());
+        for (const auto& [vk, is_up] : events) {
+            assert(vk != VK_F5);
+        }
+
+        WechatInputMethodHotkey::SetGetAsyncKeyStateForTest(nullptr);
+        WechatInputMethodHotkey::SetSendInputForTest(nullptr);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+}
+
 void TestCoordinatorWechatInputMethodButtonDownSendsHotkey() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -14244,6 +14330,7 @@ int main() {
     TestWechatTriggerModeRoundTrip();
     TestWechatInputMethodHotkeyParsing();
     TestWechatHotkeySendDownRepeatsWhileHeld();
+    TestWechatHotkeySendDownNeutralizesHeldF5();
     TestCoordinatorWechatInputMethodButtonDownSendsHotkey();
     TestCoordinatorWechatInputMethodWritesDebugAudio();
     TestCoordinatorWechatInputMethodStopsOnDeviceDisconnect();

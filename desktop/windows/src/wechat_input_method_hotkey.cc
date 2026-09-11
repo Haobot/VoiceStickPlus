@@ -17,6 +17,8 @@ namespace {
 // SendInput 测试缝：非空时拦截全部注入（仅测试线程在 setup/teardown 时改写，
 // 无并发）。定义于本匿名命名空间，SetSendInputForTest 直接改写。
 WechatInputMethodHotkey::SendInputFn g_send_input_override = nullptr;
+// GetAsyncKeyState 测试缝：同上，仅测试线程改写。
+WechatInputMethodHotkey::GetAsyncKeyStateFn g_async_key_state_override = nullptr;
 
 // 长按重复注入周期。物理长按时操作系统 auto-repeat 约 30 次/秒（33ms）；
 // 实证 WeType 以 40ms 周期注入即可识别长按并弹语音面板（2026-09-11：
@@ -26,6 +28,11 @@ constexpr std::chrono::milliseconds kKeyDownRepeatInterval{40};
 UINT WINAPI CallSendInput(UINT count, LPINPUT inputs, int size) {
   if (g_send_input_override) return g_send_input_override(count, inputs, size);
   return SendInput(count, inputs, size);
+}
+
+SHORT CallGetAsyncKeyState(int vk_code) {
+  if (g_async_key_state_override) return g_async_key_state_override(vk_code);
+  return GetAsyncKeyState(vk_code);
 }
 
 std::string Lowercase(std::string_view value) {
@@ -135,6 +142,10 @@ void WechatInputMethodHotkey::SetSendInputForTest(SendInputFn fn) {
   g_send_input_override = std::move(fn);
 }
 
+void WechatInputMethodHotkey::SetGetAsyncKeyStateForTest(GetAsyncKeyStateFn fn) {
+  g_async_key_state_override = std::move(fn);
+}
+
 WechatInputMethodHotkey::WechatInputMethodHotkey(const std::string& hotkey) {
   const auto parts = Split(hotkey, '+');
   for (const auto& part : parts) {
@@ -156,7 +167,21 @@ void WechatInputMethodHotkey::StopRepeat() const {
   }
 }
 
+void WechatInputMethodHotkey::NeutralizeHeldF5() const {
+  // 小米遥控器 2 Pro 的语音键上报为 F5 HID 键，其 keydown/keyup 均被
+  // VoiceF5Suppressor 吞掉（不投递给任何窗口），但异步键状态
+  // （GetAsyncKeyState）在 RIT 层就已更新、不受 LL 钩子吞键影响。
+  // WeType 启动语音会话前会检查「无其他普通键按住」，F5 处于按住状态时
+  // 拒绝启动（2026-09-11 实证：物理 F5 按住期间注入 Ctrl+Win 全程不触发，
+  // F5 松开后约 0.57s 才触发）。注入一发 F5 keyup 可把异步状态拉起；
+  // 遥控器随后物理松开产生的 F5 keyup 落在被吞序列里，幂等无害。
+  if ((CallGetAsyncKeyState(VK_F5) & 0x8000) == 0) return;
+  INPUT neutralize = BuildKeyboardInput(VK_F5, true);
+  CallSendInput(1, &neutralize, sizeof(INPUT));
+}
+
 bool WechatInputMethodHotkey::SendDown() const {
+  NeutralizeHeldF5();
   if (!SendInputForKeys(vk_codes_, false)) return false;
   // 防御重入：上一轮 SendDown 未配对 SendUp 时先停旧线程再启动。
   StopRepeat();
@@ -177,6 +202,8 @@ bool WechatInputMethodHotkey::SendUp() const {
 }
 
 bool WechatInputMethodHotkey::SendClick() const {
+  // 点按式路径同样可能踩 F5 按住（小米遥控器 + click_to_talk 组合）。
+  NeutralizeHeldF5();
   // 按下+释放序列（修饰符在前），一次 SendInput 发出，模拟完整物理点击。
   // 点按式第三方输入法靠完整 click 触发语音面板，仅按下不释放不会弹框。
   if (vk_codes_.empty()) return false;
