@@ -909,21 +909,31 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {
     CancelRecordingHardTimeout();
-    // 方案 A 的本机麦收尾：先停采（实现契约保证 Stop 返回后 on_pcm 不再触发），
-    // 须在 audio_mutex_ 外（FeedLocalMicPcm 抢锁，持锁 Stop 会与采集线程死锁）。
-    if (local_mic_capture_) {
-        local_mic_capture_->Stop();
-        local_mic_active_session_id_.store(0);
-    }
+    // 先配对停止热键再停音频流（2026-09-11 真机定案）：WeType 在 keyup 触发
+    // finalize/commit，物理松开时麦克风始终在供电（房间底噪持续），先停音频流
+    // 再发 keyup 会让 commit 卡死（composition_commit_timeout，无语音会话更是
+    // composition 永久不终止）。keyup 后保留 wechat_stop_audio_grace_ 的音频
+    // 存活窗口再停采，模拟物理松开语义。
     // 仅当已 SendDown/SendClick 才配对停止热键；未弹框（首帧前 button_up/断连/空 end）不发。
     // 停止动作由 session_model（输入法会话模型）决定：hold 型（WeType）SendUp 配对
     // 按住注入；click 型（Typeless）发完整 SendClick（与启动对称）。
-    if (wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_) {
+    const bool hotkey_was_sent = wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_;
+    if (hotkey_was_sent) {
         if (config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kClickToTalk) {
             wechat_hotkey_->SendClick();
         } else {
             wechat_hotkey_->SendUp();
+            LogWechatLatency("SendUp end (stop, before mic teardown)");
         }
+        if (wechat_stop_audio_grace_ > std::chrono::milliseconds::zero()) {
+            std::this_thread::sleep_for(wechat_stop_audio_grace_);
+        }
+    }
+    // 方案 A 的本机麦收尾：停采（实现契约保证 Stop 返回后 on_pcm 不再触发），
+    // 须在 audio_mutex_ 外（FeedLocalMicPcm 抢锁，持锁 Stop 会与采集线程死锁）。
+    if (local_mic_capture_) {
+        local_mic_capture_->Stop();
+        local_mic_active_session_id_.store(0);
     }
     if (wechat_renderer_) {
         wechat_renderer_->Stop();

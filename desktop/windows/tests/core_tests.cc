@@ -8557,6 +8557,85 @@ void TestCoordinatorWechatClickHoldModelStickNoLocalMic() {
     assert(fake_capture->start_count == 0);  // 非小米：不启本机麦
 }
 
+// 停止顺序（WeType commit 挂死定案，2026-09-11 真机）：keyup 必须先于采集停止——
+// WeType 诊断日志显示先停音频流再发 keyup 时，finalize/commit 卡死
+//（composition_commit_timeout / composition 永久不终止）；物理松开时麦克风永远
+// 还在供电（房间底噪持续），合成释放须模拟同一语义。
+
+// 带事件顺序记录的采集/热键假件（order 由测试持有，仅测试线程触达）。
+class RecordingMicCapture : public FakeMicCapture {
+public:
+    explicit RecordingMicCapture(std::vector<std::string>* order) : order_(order) {}
+    void Stop() override {
+        order_->push_back("capture_stop");
+        FakeMicCapture::Stop();
+    }
+private:
+    std::vector<std::string>* order_;
+};
+
+class RecordingHotkey : public FakeWechatInputMethodHotkey {
+public:
+    explicit RecordingHotkey(std::vector<std::string>* order = nullptr) : order_(order) {}
+    bool SendDown() const override {
+        if (order_) order_->push_back("send_down");
+        return FakeWechatInputMethodHotkey::SendDown();
+    }
+    bool SendUp() const override {
+        if (order_) order_->push_back("send_up");
+        return FakeWechatInputMethodHotkey::SendUp();
+    }
+private:
+    std::vector<std::string>* order_;
+};
+
+void TestCoordinatorWechatStopReleasesHotkeyBeforeStoppingMic() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
+
+    std::vector<std::string> order;
+    auto* recording_capture = new RecordingMicCapture{&order};
+    RecordingHotkey* recording_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&recording_hotkey, &order](const std::string&) {
+            auto p = std::make_unique<RecordingHotkey>(&order);
+            recording_hotkey = p.get();
+            return p;
+        });
+    coordinator.SetWechatStopAudioGrace(std::chrono::milliseconds{0});
+    coordinator.Start();
+    coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(recording_capture), nullptr);
+
+    ble_ptr->connected_device_ids.insert("6459");
+    ble_ptr->on_connection_change({ConnectedDevice{"6459", "RC-6459"}});
+    StateEvent info;
+    info.event = "device_info";
+    info.hardware = std::string(kHardwareXiaomiRemote2Pro);
+    ble_ptr->on_state_event("6459", info);
+
+    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 120));
+    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
+
+    assert(order.size() >= 3);
+    assert(order[0] == "send_down");
+    const auto up_pos = std::find(order.begin(), order.end(), "send_up");
+    const auto stop_pos = std::find(order.begin(), order.end(), "capture_stop");
+    assert(up_pos != order.end());
+    assert(stop_pos != order.end());
+    assert(up_pos < stop_pos);
+}
+
 // 点动式残留 active（停止 click + audio_end 都丢）时，新启动 click（新 session_id）
 // 与 hold 模式 TestCoordinatorWechatInputMethodRecoversFromStaleActive 对称，验证 click_to_talk
 // 残留自愈（HandleWechatInputMethodPrimaryButtonDown 先 Stop 旧再 Start 新）。
@@ -14586,6 +14665,7 @@ int main() {
     TestSavePairedDeviceInfoUnknownDeviceNoEntry();
     TestCoordinatorWechatClickHoldModelLocalMicStartFails();
     TestCoordinatorWechatClickHoldModelStickNoLocalMic();
+    TestCoordinatorWechatStopReleasesHotkeyBeforeStoppingMic();
     TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick();
     TestCoordinatorWechatClickToTalkStaleActiveNewClickStartsNew();
     TestCoordinatorWechatHotkeyDeferredUntilFirstAudioFrame();
