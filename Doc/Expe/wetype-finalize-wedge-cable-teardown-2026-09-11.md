@@ -39,6 +39,24 @@
 - 给第三方语音输入法供音，优先让它直接采真实设备（物理同构）；虚拟麦 + CABLE 绕行只在音频源头本身不是 Windows 设备（BLE 流）时才必要。
 - 「会话中拆除」比「会话前拆除」更危险：gen84（keyup 前全拆）尚能 5s abort 自愈，gen88/89（keyup 后 600ms 拆）直接永久卡死——对第三方中间态容忍度未知时，物理语义是唯一可靠锚点。
 
+## 追加（2026-09-12 凌晨，第二定案）：面板关闭语义 = 鼠标 detach；repeats 持续按住是「永不消失」元凶
+
+直连麦克风修复后真机复验：激活/识别/上屏全部正常，但「停止击后面板不消失」依旧。当晚用 SendInput 注入实验矩阵 + WeType 诊断日志对照，得到 WeType 语音热键的真实语义（健康文本宿主下验证）：
+
+1. **keyup 无任何作用**：注入按住启动会话后，keyup 不产生任何收尾动作（无 abort、无 terminated）。
+2. **热键按住只能「重启会话」不能关闭**：会话打开期间再次按住 → 旧会话 abort + 新会话 start（~90ms 相邻，同一事件链）——面板永不因热键而关闭。
+3. **ESC 无效**（健康宿主与 Explorer 宿主均无反应）。
+4. **鼠标点击（物理）= detach 关闭**：用户物理点击面板外任意处 → `detach_request` → `detach_complete` + `click_replay`（点击回放给光标下的应用）——这是 WeType 设计的关闭路径。
+5. **repeats 持续按住 = 面板永不消失的元凶**：任何关闭动作（VAD 收尾/detach/无文本超时）发生后，仍在流动的下一个 repeat keydown（40ms 周期）立即重启会话——面板被瞬间重新弹开（真机风暴 gen100-116 等 0.3~4.6s 一个会话即此机制）。
+6. 文本上屏本身一直正常（VAD ~150ms 自动 commit；物理会话 gen93/98 与真机 T1 均验证）。
+
+### 修复 v3
+
+- 启动击的按住流**限时 2500ms 自动松开**（覆盖弹框静默期 0.53~1.4s 实测分布）：面板弹出后松开按键，会话靠 WeType 自身存活（keyup 不终止），repeats 不再与任何关闭动作对打。
+- 停止击在 SendUp 后**注入一次鼠标左键（当前光标位置）**触发 detach 关闭路径（`InputInjectorWin::ClickLeftButton`，既有能力）。与用户亲手点击同语义（含点击回放副作用）。
+- `WechatInputMethodHotkey::StopRepeat` 加锁：自动松开线程与停止路径可能并发 SendUp。
+- 常量与测试缝：`SetWechatClickHoldRelease`（默认 2500ms）；单测 `TestCoordinatorWechatClickHoldAutoRelease` + 直连模式用例补左键点击断言。CTest 单测全绿；集成测试因当晚环境被打断未跑完，待重跑。
+
 ## 遗留/观察项
 
 - StickS3 + wechat（hold_to_talk，BLE 音频经 CABLE）仍是同一停止顺序（600ms 宽限后拆管道），理论上存在同类卡死风险；本次问题范围是小米方案 A，StickS3 路径未动，若真机出现同样现象再评估异步延迟拆除。

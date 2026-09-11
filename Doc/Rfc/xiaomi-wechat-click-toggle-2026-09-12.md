@@ -168,3 +168,11 @@ options.wechat_click_toggle =
 - 配置矩阵表不变（`session_model = "hold"` 语义不变）；`auto_switch_default_recording_device` 对本组合不再生效（仅服务 StickS3 BLE 经 CABLE 的路径）。
 - StickS3 + click/hold（BLE 音频）路径保持 CABLE 管道不变，停止顺序约束（keyup 先于管道拆除）仍有回归测试覆盖。
 - §7「本机麦质量依赖」改为「默认录音设备质量依赖」（同源同质量）；「采集失败有显式提示」作废（本端无采集）。
+
+## 9. 修订 2（2026-09-12 凌晨，第二定案）：停止击改走鼠标 detach；按住流限时
+
+直连麦克风修复后真机复验仍「停止击后面板不消失」。SendInput 注入实验矩阵 + WeType 诊断日志对照定案（见 `Doc/Expe/wetype-finalize-wedge-cable-teardown-2026-09-11.md` 追加节）：**WeType 语音热键只能启动/重启会话，keyup 与 ESC 均无收尾作用；面板唯一关闭路径是鼠标点击 detach（点击面板外任意处）**。且启动击的持续 repeat 按住会把任何关闭动作立即重新弹开面板（「永不消失」元凶）。
+
+- 启动击：SendDown + repeat **限时 2500ms** 后自动 SendUp（覆盖弹框静默期 0.53~1.4s 实测分布）；会话靠 WeType 自身存活（keyup 不终止会话，真机验证）。
+- 停止击：SendUp 后**注入一次鼠标左键（当前光标位置）**触发 detach 关闭（`InputInjectorWin::ClickLeftButton`）；与用户亲手点击同语义（WeType 会把点击回放给光标下的应用）。
+- §4.1 的「停止击 → SendUp 结束上屏」语义修正为「停止击 → SendUp + 注入左键点击 detach 关面板」；文字上屏由 WeType VAD 自动完成（停止说话后 ~150ms commit，与停止击解耦）。

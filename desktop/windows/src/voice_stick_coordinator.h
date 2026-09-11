@@ -260,6 +260,13 @@ public:
     void SetWechatStopAudioGrace(std::chrono::milliseconds grace) {
         wechat_stop_audio_grace_ = grace;
     }
+    // 点按折叠（click/hold）按住流自动松开延迟：按住只为满足 WeType 长按检测
+    // 弹框，面板弹出后松开（WeType 会话靠自身存活；持续 keydown 会把任何关闭
+    // 动作——VAD 收尾/鼠标 detach/停止击——立即重新弹开面板，2026-09-11 真机
+    // 定案）。须在 Start 前调用；测试注入 0 以免拖慢单测。
+    void SetWechatClickHoldRelease(std::chrono::milliseconds delay) {
+        wechat_click_hold_release_ = delay;
+    }
     // 注入本地文本精修客户端（本地识别会话的 final 文本走 L1 规则 → L2 本地
     // LLM → L3 守卫三层防御，内部逐层回退，Doc/Plan/local-text-refinement.md）。
     // nullptr 允许：本地会话退化为纯规则精修。与 SetLocalMicRuntime 同为外壳
@@ -499,6 +506,10 @@ private:
     // 超时未收到结束信号则 CancelShortRecording 回 ready，覆盖 button_up 与 audio_end 同时丢失的卡死。
     void ScheduleRecordingHardTimeout();
     void CancelRecordingHardTimeout();
+    // 点按折叠（click/hold）按住流自动松开：SendDown 后延迟 wechat_click_hold_release_
+    // 自动 SendUp（见 SetWechatClickHoldRelease 的注释）。停止路径/新会话启动 bump
+    // wechat_click_hold_generation_ 取消未触发的释放。
+    void ScheduleWechatClickHoldRelease();
     // 录音音频流停滞 watchdog：focused_app 进 kRecording 时启动，每帧音频刷新时间戳。
     // 正常录音固件 25fps 持续发帧，超过 audio_stall_timeout_ 无任何帧说明 button_up 与
     // audio_end 双丢（或链路卡死），按 audio_stall 走 audio_end 等待路径收尾，
@@ -644,6 +655,10 @@ private:
     // 方案 A 停止宽限（keyup 先行，音频流保留窗口）。生产 600ms：覆盖 WeType
     // 收到 keyup 后 finalize 起步的最短存活需求；经验文档 2026-09-11 追加节。
     std::chrono::milliseconds wechat_stop_audio_grace_{600};
+    // 点按折叠按住流自动松开延迟（见 SetWechatClickHoldRelease）。生产 2500ms：
+    // 覆盖 WeType 弹框静默期 0.53~1.4s（偶发更慢）的实测分布。
+    std::chrono::milliseconds wechat_click_hold_release_{2500};
+    std::atomic_uint64_t wechat_click_hold_generation_{0};
     std::atomic_uint64_t recording_hard_timeout_generation_{0};
     // 录音音频流停滞 watchdog（可经构造注入，测试用短值；默认 kAudioStallTimeout）。
     std::chrono::milliseconds audio_stall_timeout_{kAudioStallTimeout};

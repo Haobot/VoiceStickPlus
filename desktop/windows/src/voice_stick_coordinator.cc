@@ -657,6 +657,9 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
             LogCoordinatorLine(
                 "wechat session audio: direct default mic (no local capture)");
         }
+        // 按住流限时：弹框后自动松开（WeType 会话靠自身存活，keyup 不终止；
+        // 持续 keydown 反而会把任何关闭动作立即重新弹开面板——真机定案）。
+        ScheduleWechatClickHoldRelease();
     }
 }
 
@@ -892,6 +895,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {
     CancelRecordingHardTimeout();
+    // 取消未触发的点按折叠按住流自动松开（本次停止已接管 SendUp）。
+    wechat_click_hold_generation_.fetch_add(1);
     // 先配对停止热键再停音频流（2026-09-11 真机定案）：WeType 在 keyup 触发
     // finalize/commit，物理松开时麦克风始终在供电（房间底噪持续），先停音频流
     // 再发 keyup 会让 commit 卡死（composition_commit_timeout，无语音会话更是
@@ -900,6 +905,9 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     // 仅当已 SendDown/SendClick 才配对停止热键；未弹框（首帧前 button_up/断连/空 end）不发。
     // 停止动作由 session_model（输入法会话模型）决定：hold 型（WeType）SendUp 配对
     // 按住注入；click 型（Typeless）发完整 SendClick（与启动对称）。
+    const bool click_hold_combo =
+        config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+        config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
     const bool hotkey_was_sent = wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_;
     if (hotkey_was_sent) {
         if (config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kClickToTalk) {
@@ -914,6 +922,15 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
             wechat_stop_audio_grace_ > std::chrono::milliseconds::zero()) {
             std::this_thread::sleep_for(wechat_stop_audio_grace_);
         }
+    }
+    if (hotkey_was_sent && click_hold_combo && input_injector_) {
+        // 点按折叠停止击收尾：注入一次鼠标左键（当前光标位置）——WeType 语音面板
+        // 的关闭语义是「点击面板外任意处 detach」（热键只能重启会话、keyup 与
+        // ESC 均无效，2026-09-11 真机实验矩阵）；注入点击与用户亲手点击同语义
+        // （WeType 会把点击回放给光标下的应用）。必须先于 SendUp 之后的此刻
+        // 注入：repeats 已停，detach 不会被重新弹开。
+        LogCoordinatorLine("wechat click hold stop: injecting left click to detach panel");
+        input_injector_->ClickLeftButton();
     }
     // 拆除段只服务于 CABLE 管道模式（StickS3 BLE 流）；直连默认麦克风模式
     // （方案 A 修订）无本端采集/渲染/设备切换，跳过整段——WeType 自行停采。
@@ -2699,6 +2716,30 @@ void VoiceStickCoordinator::ScheduleRecordingHardTimeout() {
 
 void VoiceStickCoordinator::CancelRecordingHardTimeout() {
     recording_hard_timeout_generation_.fetch_add(1);
+}
+
+// 点按折叠（click/hold）按住流自动松开：click 启动的 SendDown+repeat 只为满足
+// WeType 长按检测弹框，面板弹出后松开按键——WeType 会话靠自身存活（keyup 不
+// 终止，2026-09-11 真机验证），而持续 keydown 会让任何关闭动作（VAD 收尾/鼠标
+// detach/停止击）被下一个 repeat 立即重新弹开面板（「面板永不消失」根因）。
+// 停止路径与新会话启动 bump generation 取消未触发的释放。
+void VoiceStickCoordinator::ScheduleWechatClickHoldRelease() {
+    const auto generation = wechat_click_hold_generation_.fetch_add(1) + 1;
+    std::thread([this, alive = alive_, generation]() {
+        std::this_thread::sleep_for(wechat_click_hold_release_);
+        if (!alive->load()) return;
+        {
+            std::lock_guard lock(audio_mutex_);
+            if (wechat_click_hold_generation_.load() != generation ||
+                !wechat_input_method_active_) {
+                return;
+            }
+        }
+        LogCoordinatorLine("wechat click hold: auto release");
+        if (wechat_hotkey_) {
+            wechat_hotkey_->SendUp();  // StopRepeat 加锁，与停止路径并发安全
+        }
+    }).detach();
 }
 
 // 音频流停滞兜底：focused_app 录音中固件 25fps 持续发帧，超过 audio_stall_timeout_ 一帧未收

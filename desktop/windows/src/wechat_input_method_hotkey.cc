@@ -150,6 +150,7 @@ WechatInputMethodHotkey::~WechatInputMethodHotkey() {
 }
 
 void WechatInputMethodHotkey::StopRepeat() const {
+  std::lock_guard lock(repeat_mutex_);
   repeating_.store(false, std::memory_order_relaxed);
   if (repeat_thread_.joinable()) {
     repeat_thread_.join();
@@ -158,16 +159,24 @@ void WechatInputMethodHotkey::StopRepeat() const {
 
 bool WechatInputMethodHotkey::SendDown() const {
   if (!SendInputForKeys(vk_codes_, false)) return false;
-  // 防御重入：上一轮 SendDown 未配对 SendUp 时先停旧线程再启动。
-  StopRepeat();
-  repeating_.store(true, std::memory_order_relaxed);
-  repeat_thread_ = std::thread([this] {
-    while (repeating_.load(std::memory_order_relaxed)) {
-      std::this_thread::sleep_for(kKeyDownRepeatInterval);
-      if (!repeating_.load(std::memory_order_relaxed)) break;
-      SendInputForKeys(vk_codes_, false);
+  // 防御重入：上一轮 SendDown 未配对 SendUp 时先停旧线程再启动（与
+  // StopRepeat 共用 repeat_mutex_，避免并发 join 同一线程——点按折叠的
+  // 自动松开线程与停止路径可能同时调用 SendUp/StopRepeat）。
+  {
+    std::lock_guard lock(repeat_mutex_);
+    repeating_.store(false, std::memory_order_relaxed);
+    if (repeat_thread_.joinable()) {
+      repeat_thread_.join();
     }
-  });
+    repeating_.store(true, std::memory_order_relaxed);
+    repeat_thread_ = std::thread([this] {
+      while (repeating_.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(kKeyDownRepeatInterval);
+        if (!repeating_.load(std::memory_order_relaxed)) break;
+        SendInputForKeys(vk_codes_, false);
+      }
+    });
+  }
   return true;
 }
 

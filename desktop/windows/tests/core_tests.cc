@@ -8435,14 +8435,67 @@ void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
     assert(fake_renderer != nullptr && fake_renderer->start_count == 0);
     assert(fake_switcher->set_call_count == 0);
 
-    // 第二击（停止 click，复用 session_id=1）：SendUp 配对，无任何拆除动作，回 ready。
+    // 第二击（停止 click，复用 session_id=1）：SendUp 配对，无任何拆除动作，回 ready；
+    // 点按折叠停止击须注入一次鼠标左键（WeType 面板 detach 关闭路径）。
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
     assert(fake_hotkey->send_up_count == 1);
     assert(fake_hotkey->send_click_count == 0);
     assert(fake_switcher->set_call_count == 0);
     assert(fake_capture->stop_count == 0);
+    assert(input.left_click_count == 1);
     assert(ble_ptr->sent_ui_states.back().state == "ready");
     std::filesystem::remove(switch_state_path);
+}
+
+// 点按折叠按住流限时自动松开（2026-09-11 真机定案）：click 启动的 SendDown+repeat
+// 只为弹框，面板弹出后必须松开——持续 keydown 会把 WeType 的任何关闭动作（VAD
+// 收尾/鼠标 detach/停止击）立即重新弹开面板（「面板永不消失」根因）。松开后会话
+// 仍活跃（keyup 不终止会话），停止击仍配对 SendUp + 注入左键点击。
+void TestCoordinatorWechatClickHoldAutoRelease() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
+    config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
+
+    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<FakeVirtualMicRenderer>(true);
+        },
+        [&fake_hotkey](const std::string&) {
+            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
+            fake_hotkey = p.get();
+            return p;
+        });
+    coordinator.SetWechatClickHoldRelease(std::chrono::milliseconds{0});
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("6459");
+    ble_ptr->on_connection_change({ConnectedDevice{"6459", "RC-6459"}});
+    StateEvent info;
+    info.event = "device_info";
+    info.hardware = std::string(kHardwareXiaomiRemote2Pro);
+    ble_ptr->on_state_event("6459", info);
+
+    // 启动击：SendDown 立即注入；0ms 延迟下自动松开线程立即 SendUp。
+    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 120));
+    assert(fake_hotkey->send_down_count == 1);
+    for (int i = 0; i < 100 && fake_hotkey->send_up_count == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(fake_hotkey->send_up_count == 1);  // 按住流已自动松开
+
+    // 停止击：再次配对 SendUp（幂等）+ 注入左键点击，回 ready。
+    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
+    assert(fake_hotkey->send_up_count == 2);
+    assert(input.left_click_count == 1);
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
 }
 
 // SavePairedDeviceInfo 未知设备（内存配对列表无此 id）不得新建零地址条目：
@@ -14604,6 +14657,7 @@ int main() {
     TestCoordinatorWechatClickToTalkSendsClickOnStart();
     TestCoordinatorWechatClickToTalkSendsClickOnStop();
     TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic();
+    TestCoordinatorWechatClickHoldAutoRelease();
     TestSavePairedDeviceInfoUnknownDeviceNoEntry();
     TestCoordinatorWechatClickHoldModelStickNoLocalMic();
     TestCoordinatorWechatStopReleasesHotkeyBeforeStoppingMic();

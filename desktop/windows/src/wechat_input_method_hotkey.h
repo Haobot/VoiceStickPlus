@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -57,10 +58,12 @@ class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
   std::size_t KeyCount() const { return vk_codes_.size(); }
 
  private:
-  // 停止重复注入线程（幂等；SendUp 与析构共用）。
+  // 停止重复注入线程（幂等；SendUp/析构/点按折叠自动松开线程共用，
+  // 可并发调用）。
   void StopRepeat() const;
 
   std::vector<int> vk_codes_;
+  mutable std::mutex repeat_mutex_;  // 串行化 StopRepeat 与 SendDown 的线程创建
   mutable std::atomic<bool> repeating_{false};
   mutable std::thread repeat_thread_;
 };
