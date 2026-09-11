@@ -38,11 +38,6 @@ class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
   using SendInputFn = std::function<UINT(UINT, LPINPUT, int)>;
   static void SetSendInputForTest(SendInputFn fn);
 
-  // GetAsyncKeyState 测试缝：参数为虚拟键码；传 nullptr 恢复真实查询。
-  // 测试用它伪造「F5 是否处于按住状态」，验证中和逻辑分支。
-  using GetAsyncKeyStateFn = std::function<SHORT(int)>;
-  static void SetGetAsyncKeyStateForTest(GetAsyncKeyStateFn fn);
-
   // 构造时解析 hotkey 字符串；解析失败时 IsValid() 返回 false。
   explicit WechatInputMethodHotkey(const std::string& hotkey);
   ~WechatInputMethodHotkey() override;
@@ -64,8 +59,6 @@ class WechatInputMethodHotkey : public IWechatInputMethodHotkey {
  private:
   // 停止重复注入线程（幂等；SendUp 与析构共用）。
   void StopRepeat() const;
-  // F5 异步状态按住时先注入一发 F5 keyup 中和（SendDown/SendClick 前调用）。
-  void NeutralizeHeldF5() const;
 
   std::vector<int> vk_codes_;
   mutable std::atomic<bool> repeating_{false};

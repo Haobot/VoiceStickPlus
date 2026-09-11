@@ -1,34 +1,41 @@
-# 微信输入法（WeType）语音触发排查定案——F5 按住状态阻塞（原「注入封死」结论有误）
+# 微信输入法（WeType）语音触发排查定案——静默期毒化 + 用户态 HID 拦截不可达（三轮终版）
 
-- 日期：2026-09-11（当日两轮排查：第一轮结论错误，第二轮推翻定案）
+- 日期：2026-09-11 ~ 09-12（三轮排查，前两轮结论先后被推翻）
 - 背景：`wechat_input_method` 模式按小米遥控器语音键后，WeType 语音面板「没反应」，无识别无上屏；但 StickS3 走同一注入代码路径可正常触发。
-- **定案结论：SendInput 注入完全能触发 WeType 语音（干净键盘状态下 100% 复现）。真实根因是小米遥控器语音键（F5 HID 键）按住期间，F5 的异步键状态（GetAsyncKeyState）让 WeType 拒绝启动语音会话。修复：SendDown/SendClick 前检测 F5 按住则先注入一发 F5 keyup 中和异步状态。**
+- **终版定案：WeType 启动语音会话需要 ①快捷键按住 + ②普通键活动静默 ≥约 0.5~1.5s（活动时间戳判定，防打字误触）。小米语音键是 F5 HID 键，物理按住期间以 ~30ms 间隔持续产生真实按键活动——LL 吞键只挡投递，异步/更底层的活动时间戳照样刷新，静默条件永不满足。这是物理性冲突，注入侧（包括 F5 keyup 中和）无解。HID report 层拦截的 PoC 同时定案：report 流不经过 WUDFHost 用户态任何 IO 系统调用，用户态改写不可达；要改写必须内核驱动（签名/维护成本高）。**
 
-## ⚠️ 第一轮错误结论与教训
+## 三轮结论演进（每轮都推翻了上一轮）
 
-第一轮曾定论「WeType 全链路校验键盘物理来源，注入无法触发」——**这是错的**，错误根源有三：
+| 轮次 | 结论 | 命运 |
+|---|---|---|
+| 第一轮（09-11 晨） | 「WeType 校验物理来源，注入被封死」 | ❌ 实验工具自身坏（INPUT 结构 padding 错，SendInput 静默返回 0），被用户 StickS3 实测推翻（4/4 触发）|
+| 第二轮（09-11 午） | 「F5 异步按住状态阻塞，注入 F5 keyup 可中和」→ 落地 f20dcb72 `NeutralizeHeldF5` | ❌ 用户实测仍不触发；注入 up 本身也是活动，且毒化源是「活动时间戳」不是「按住状态」 |
+| 第三轮（09-11 晚~09-12） | 「静默期毒化（物理性）+ 用户态 HID 拦截不可达」 | ✅ 证据链闭合（见下）|
 
-1. **实验工具自身坏了没发现**：PowerShell 注入脚本的 `INPUT` 结构体 padding 算错，`SendInput` 因 cbSize 不符**静默返回 0**（脚本未检查返回值），所谓「注入实验」根本没注入。C++ 工具那次则是前台窗口失控（始终=终端窗口，不是可输入目标）。
-2. **把「当日所有注入时刻零 start_received」过度归因为「校验物理来源」**：当时小米会话全部被 F5 按住阻塞（见下），裸注入实验全部没真正注入/前台不对——两个独立变量都被当成了「WeType 拒绝注入」的证据。
-3. **用户用 StickS3 实测推翻**：同一条 SendDown 代码路径 4/4 触发（gen37-40，注入后约 0.53s）。物理来源校验说不攻自破。
+## 最终机制模型
 
-教训：**SendInput 实验必须检查返回值；「零触发」结论前必须先证明注入真的到了系统（旁观 LL 钩子/async 状态检查）；结论与用户实测定论冲突时优先怀疑自己的实验环境。**
+- **触发条件**：快捷键按住（事件流）+ 普通键活动静默 ≥T_s（约 0.5~1.5s）；触发有约 0.53~1.4s 的内部去抖；单会话占用。
+- **小米为何永不触发**：语音键 = F5 HID 键，按住期间遥控器以 ~30ms 持续发 report，每个 report 都是一次真实按键活动。VoiceF5Suppressor 在 LL 层全吞（不投递），但 WeType 透过更底层（RIT/async）感知到活动时间戳持续刷新 → 静默期永不满足。**hold 按住模式下这是物理性冲突。**
+- **StickS3/注入为何 100% 触发**：注入配方 = F5 down + 40ms repeat keydown。注入的 repeat 流不毒化静默期（实测 4/4 触发；推断 WeType 的活动判定与键来源/间隔模式相关，机制未深究，以实验为准）。
+- **`NeutralizeHeldF5`（f20dcb72）无效**：注入 F5 keyup 只清「按住位」，清不掉「活动时间戳」——且注入本身也是一次活动。该修复待回滚或标记无效。
 
-## 真实机制（全链路证据）
+## PoC 定案：WUDFHost 用户态拦截 HID report 不可行（2026-09-12）
 
-| 场景 | F5 keydown 去向 | F5 async 状态 | WeType 触发 |
-|---|---|---|---|
-| StickS3（无 F5） | — | 干净 | ✓ 注入后约 0.53s（4/4）|
-| 小米按住期间 | VoiceF5Suppressor 吞（keydown/keyup 配对全吞，不投递）| F5=down | ✗ 阻塞 |
-| 小米松开后 0.57s | — | F5=up | ✓ 触发（gen41）|
-| 注入 F5 down + Ctrl+Win | 投递（suppressor 对 INJECTED 放行）| F5=down | ✗ 阻塞（且注入 F5 up 后长时间不恢复——注入 F5 会在前台窗口产生真实按键副作用，如记事本 F5 插时间戳，可能毒化 WeType 状态）|
-| 干净状态注入 Ctrl+Win（vk+scan+记事本前台）| — | 干净 | ✓ 约 1.2-1.4s（gen43/47）|
+参照 MiVibe-Remote 的 Frida Gadget 注入方案（DLL 注入 HidOverGatt 的 WUDFHost，JS hook `ntdll!NtDeviceIoControlFile`），实证链：
 
-机制：LL 钩子吞键只挡「投递」（任何窗口/钩子链下游都看不到），**异步键状态在 RIT 层更新、不受吞键影响**——WeType 启动语音会话前检查「无其他普通键按住」（GetAsyncKeyState 全键扫描），F5 按住即拒绝。遥控器语音键松开瞬间语音也停了，VoiceStick 又在 button_up 后约 58ms 就 SendUp，WeType 约 0.53s 的启动去抖窗口不够——所以 08:32 那两次 0/2：既没在按住期间触发（F5 阻塞），也没在松开后触发（Ctrl+Win 也松了）。
+1. **注入链全通**：自提升注入器（SeDebugPrivilege + CreateRemoteThread+LoadLibraryW）→ Gadget interaction script 模式加载 JS → hook 挂载、心跳存活。
+2. **report 格式确认**：9 字节 `01 00 00 <usage> 00 00 00 00 00`，字节 3 = 键 usage（F5=0x3E、方向右=0x4F），松开=全零。
+3. **IOCTL 0x80018483（BTHLE GATT ReadCharacteristic）是事后缓存读，不是数据正主**：onLeave 改写 `3e→00` 写回成功，但 20ms 后 LL 钩子仍见 F5 keydown，WeType 仍不触发。
+4. **全码表观察（决定性）**：按住语音键 3 秒（~100 个重复 report 全部进系统，LL 钩子持续可见）期间，WUDFHost 用户态只发生 **2 次** `NtDeviceIoControlFile`（都是 0x80018483：按下/松开各一次状态变化驱动的缓存读）。`NtDeviceIoControlFileEx` 在 ntdll 无导出，通道不存在。
+5. **推论**：bthleenum.sys 收到 GATT notification 后在**内核内**直接把 report 提交给 hidclass，WUDFHost 里的 BthHidEnum 用户态组件只做枚举/配置/偶发状态读——**report 流不经过用户态任何 IO 系统调用，用户态 hook（无论钩哪个 API）都改不了**。MiVibe 的 Gadget tap 只做只读观察（读按键状态变化）而非改写，正是受此架构约束；他们真正的按键拦截同样在 LL 层。
 
-## 修复（已落地）
+PoC 环境残留：`C:\ProgramData\VoiceStickHidPoC\`（vs_hid_poc.js v4、注入器、日志；WUDFHost 重启即清注入，无持久影响）。
 
-`WechatInputMethodHotkey::SendDown/SendClick` 入口调用 `NeutralizeHeldF5()`：`GetAsyncKeyState(VK_F5)` 报按住（0x8000 位）则先注入一发 F5 keyup（带 scan code，走既有 BuildKeyboardInput）。物理 F5 keydown 已被 suppressor 吞掉（WeType 钩子无账），所以注入 keyup 只清异步状态、无死账；遥控器随后物理松开产生的 F5 keyup 落在被吞序列里，幂等无害。StickS3 场景 F5 从不按住，行为不变。TDD：`TestWechatHotkeySendDownNeutralizesHeldF5`（GetAsyncKeyState 测试缝伪造按住/未按住两场景）。
+## 可行路线盘点（截至定案日）
+
+- **方案 A（推荐，纯软件低成本）**：语音键改 click 语义——物理流结束后（静默期开始计时）注入已验证的「F5 down + 40ms repeat」配方，再点一下注入 F5 up 结束。代价：失去原生「按住说话」，触发延迟约 1~2s。
+- **内核过滤驱动**：理论上可在 hidclass 层改写 report、保住原生体验，但需驱动签名（WHQL/EV）+ 管理员安装 + 高维护成本 + 杀软误报，不适合当前阶段。
+- **物理按住期间叠加注入**：不可行——物理 30ms 活动流继续毒化静默期，注入什么都没用。
 
 ## 关键诊断手法（复用价值）
 
@@ -36,9 +43,12 @@
 2. **触发延迟是 WeType 侧固定去抖**：物理/注入均约 0.53-1.4s，「SendDown 后立刻没 start_received」不代表失败。
 3. **WeType 单会话占用**：上一个语音会话挂着（等音频）时后续触发被拒；连续实验要间隔或确认会话已结束。
 4. **旁观 LL 钩子 + SendInput 返回值 + GetAsyncKeyState 回读**三件套先自证「注入真的到了系统」，再归因上层。
-5. **AI 视觉分析截图只能作线索不能作证据**（本轮及第一轮多次与客观日志矛盾）。
+5. **AI 视觉分析截图只能作线索不能作证据**（多次与客观日志矛盾）。
 6. **窗口枚举（EnumWindows/C# 委托）**比截图可靠；PS 脚本块不能直接当 EnumWindows 回调指针，必须 C# 委托。
-7. **PowerShell P/Invoke 的 INPUT 结构**：必须用显式 union LayoutKind.Explicit 且打印 `Marshal.SizeOf` 核对（x64 应为 40），SendInput 返回值必须检查。
+7. **PowerShell P/Invoke 的 INPUT 结构**：必须用显式 union LayoutKind.Explicit 且打印 `Marshal.SizeOf` 核对（x64 应为 40），SendInput 返回值必须检查。**同款坑一轮排查内踩了两次**——中间结论（「X 键毒化」「1.5s 不够」）全部作废重来。
+8. **WUDFHost 定位与重置**：注册表 `HKLM\SYSTEM\CurrentControlSet\Enum\BTHLEDevice\{00001812-...}_Dev_VID&012717_PID&32b8_REV&00a4_<addr>\...\Device Parameters\WUDFDiagnosticInfo` 的 `HostPid`；杀宿主需提权（taskkill），重启后新 pid、注入清除。同路径 DLL 重注入只加引用计数不重跑 JS；同进程二次注入不同 Gadget 实例会初始化失败。
+9. **观察异步 IO 的坑**：`NtDeviceIoControlFile` 返回 STATUS_PENDING(0x103) 时 buffer 尚无数据；hook 挂载前已 pending 的 IO 完成时 onEnter/onLeave 均不触发（Frida 只见 hook 后发起的调用）。码表计数（onEnter 无条件）比 dump 过滤（retval==0）更能反映真实调用数。
+10. **JS（QuickJS）Object.keys 键是字符串**：`.toString(16)` 不做数值转换，须 `parseInt(code).toString(16)`（本 PoC 心跳曾把 0x80018483 打成十进制 2147583107）。
 
 ## 注入实验最小成功配方（2026-09-11 实证）
 
@@ -50,6 +60,7 @@
 ## 关联
 
 - 40ms 重复注入（7a444c7d）保留且必要：WeType 长按检测依赖持续 keydown 流。
-- F5 中和修复：见 `wechat_input_method_hotkey.cc` 的 `NeutralizeHeldF5`（当日提交）。
+- `NeutralizeHeldF5`（f20dcb72）已被证伪，待回滚/标记；其测试 `TestWechatHotkeySendDownNeutralizesHeldF5` 一并处理。
 - 第一轮死锁修复（f4480928）真实有效：解决了 SendDown 发不出的 UI 线程卡死。
-- VoiceF5Suppressor 吞键与异步键状态的关系是本案例核心知识点：**吞键 ≠ 状态不可见**。
+- VoiceF5Suppressor 吞键与异步键状态的关系是本案例核心知识点：**吞键 ≠ 状态不可见 ≠ 活动时间戳不刷新**。
+- MiVibe-Remote 参考实现：`platforms/windows/source/bridges/xiaomi/hid_tap_runtime.py`（Gadget 运行时）、`hid_tap_injector.py`（注入器蓝本）。
