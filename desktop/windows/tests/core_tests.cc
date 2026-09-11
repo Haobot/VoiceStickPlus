@@ -5833,6 +5833,84 @@ void TestXiaomiAtvvSessionReopenRejectWindow() {
     assert(restart.state() == XiaomiAtvvSessionState::kTapPending);
 }
 
+// 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：wechat 模式下小米
+// 语音键折叠为 click toggle——按下无事件、按住音频丢弃、松开合成 button_click。
+// session_id 协议：启动击用新 id、停止击复用同 id（协调器停止匹配
+// *event.session_id == *active_session_id_ 零改动命中）。
+void TestXiaomiAtvvWechatClickToggle() {
+    // 对齐 win32_app resolver 的真实填法：wechat + click_to_talk + 按住式输入法。
+    XiaomiAtvvSession::Options options;
+    options.interaction_mode = InteractionMode::kClickToTalk;
+    options.wechat_click_toggle = true;
+    XiaomiAtvvSession session(options);
+    AtvvHandshakeReady(session, 0);
+
+    // 2 Pro 一体帧 0x04 按下：无事件无 TX（0x04 不回 ACK），进 TapPending。
+    auto actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x09}, 100);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // 按住期间音频帧全部丢弃（无 AudioFrame 输出）。
+    actions = session.HandleAudioData(ByteVector(480, 0x11), 150);
+    assert(CollectAtvvFrames(actions).empty());
+
+    // 跨过 300ms 长按阈值也不确认长按（无 button_down，长按也是一次 click）。
+    actions = session.Tick(100 + XiaomiAtvvSession::kHoldThresholdMs);
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // STOP → 合成 button_click（session_id=1、duration>0）→ Ready（不开双击窗）。
+    actions = session.HandleControlCommand(ByteVector{0x00}, 800);
+    const auto* click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && click->button == "primary");
+    assert(click->session_id.has_value() && *click->session_id == 1);
+    assert(click->duration_ms.has_value() && *click->duration_ms > 0);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 拒绝窗内（STOP 后 100ms）第二击被拒：无事件、状态不变。
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0A}, 900);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 窗外第二击（启动击）：STOP 后复用 session_id=1（协调器停止匹配用）。
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0A}, 1200);
+    assert(CollectAtvvFrames(session.HandleAudioData(ByteVector(480, 0x11), 1250)).empty());
+    actions = session.HandleControlCommand(ByteVector{0x00}, 1300);
+    click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && *click->session_id == 1);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 第三击（toggle 重启）：分配新 session_id=2。
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0B}, 2000);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 2100);
+    click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && *click->session_id == 2);
+
+    // 断开 Stop() 复位 toggle：重连后第一击用全新 id（3），第二击复用 3。
+    session.Stop(2500);
+    AtvvHandshakeReady(session, 2600);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0C}, 2700);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 2800);
+    click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && *click->session_id == 3);
+    // 上一击 STOP@2800 武装拒绝窗至 3100，第四击须在窗外。
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0D}, 3200);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 3300);
+    click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && *click->session_id == 3);
+
+    // RC003 入径（0x08 等待 ACK）：同样折叠为 click，ACK 照回。
+    XiaomiAtvvSession rc003(options);
+    AtvvHandshakeReady(rc003, 0);
+    actions = rc003.HandleControlCommand(ByteVector{0x08}, 100);
+    const auto* tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr);  // 0x0C ACK
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    actions = rc003.HandleControlCommand(ByteVector{0x00}, 200);
+    click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && click->session_id.has_value());
+}
+
 void TestXiaomiAtvvStreamStartOpensSession() {
     // 2 Pro 入径（真机实测）：按下语音键直接发 0x04 <interaction> <codec> <sid>
     //（按下+开流一体帧，无 0x08、主机不写 0x0C ACK），松开发 0x00（可带尾字节）。
@@ -14216,6 +14294,7 @@ int main() {
     TestXiaomiAtvvSessionKeyMapping();
     TestXiaomiAtvvSessionClickTapTimeoutSilent();
     TestXiaomiAtvvSessionReopenRejectWindow();
+    TestXiaomiAtvvWechatClickToggle();
     TestXiaomiAtvvStreamStartOpensSession();
     TestXiaomiAtvvSessionEncoderResetPerSession();
     TestXiaomiAtvvServiceUuidAd();
