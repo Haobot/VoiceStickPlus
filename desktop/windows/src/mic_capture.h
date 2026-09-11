@@ -24,6 +24,11 @@ class IMicCapture {
 public:
     virtual ~IMicCapture() = default;
 
+    // 钉扎采集端点（endpoint id）：wechat 方案 A 在 auto_switch 把默认录音设备切到
+    // 虚拟麦后才启动采集，须钉住切换前的真实麦克风端点，否则按"默认设备"解析会
+    // 采到虚拟麦回环（ring buffer → 渲染 → 虚拟麦 → 采集 → ring buffer 自旋，无
+    // 真实输入）。空串/未调用 = 按当前默认设备打开。须在 Start 前调用。
+    virtual void SetPreferredEndpointId(const std::string& endpoint_id) { (void)endpoint_id; }
     // 打开默认麦克风并开始采集。失败返回 false，LastStartError 给出原因。
     virtual bool Start() = 0;
     // 停止采集并释放设备。幂等：未 Start 时为空操作。

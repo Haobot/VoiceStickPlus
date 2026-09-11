@@ -1221,11 +1221,12 @@ void AppConfig::SavePairedDeviceInfo(const std::string& device_id,
         }
     }
     if (!found) {
-        PairedDeviceEntry entry;
-        entry.device_id = device_id;
-        entry.hardware = hardware;
-        entry.firmware_version = firmware_version;
-        paired_devices.push_back(entry);
+        // 内存配对列表无此设备（未配对或来自无配对状态的配置副本）时不新建条目：
+        // 新建的零地址条目对用户无价值（启动排队连接要求地址非零），且随后的全量
+        // Save 会用这份（可能缺配对/凭据的）配置覆盖真实 config.toml——2026-09-11
+        // 事故：测试进程经此路径把用户配置整份抹成 Defaults。hardware 只对既有
+        // 配对条目的自愈有意义，此处直接跳过。
+        return;
     }
     if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
         paired_device_ids.push_back(device_id);

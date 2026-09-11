@@ -679,6 +679,12 @@ void VoiceStickCoordinator::StartLocalMicForWechatSession() {
             local_mic_active_session_id_.store(*active_session_id_);
         }
     }
+    // 钉住切换前的真实麦克风端点：此刻默认录音设备已被 auto_switch 切到虚拟麦，
+    // 采集器若按默认设备解析会采到自己渲染进虚拟麦的回环（无真实输入，2026-09-11
+    // 真机验收故障）。auto_switch 关闭或切换失败时无保存值，保持默认设备行为。
+    if (saved_default_capture_id_.has_value()) {
+        local_mic_capture_->SetPreferredEndpointId(WStringToUtf8(*saved_default_capture_id_));
+    }
     if (local_mic_capture_->Start()) {
         LogCoordinatorLine("wechat local mic session started session=" +
                            std::to_string(local_mic_active_session_id_.load()));

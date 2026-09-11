@@ -25,6 +25,8 @@ public:
     bool Start() override;
     void Stop() override;
     std::string LastStartError() const override { return last_start_error_; }
+    // 见 mic_capture.h：钉扎端点（wechat 方案 A 用，须在 Start 前调用）。
+    void SetPreferredEndpointId(const std::string& endpoint_id) override;
 
 private:
     // 采集线程：COM 初始化/设备打开在本线程完成后经 open_done 通知 Start
@@ -35,6 +37,8 @@ private:
     std::atomic_bool stop_requested_{false};
     // Start 失败原因（用户可见），空表示尚未失败。
     std::string last_start_error_;
+    // 钉扎的捕获端点 id（空 = 默认设备）。Start 前设置，采集线程读取。
+    std::wstring preferred_endpoint_id_;
 };
 
 }  // namespace voicestick

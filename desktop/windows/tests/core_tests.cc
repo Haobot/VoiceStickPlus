@@ -619,6 +619,9 @@ public:
 // （等价真实实现的采集线程回调语义）。
 class FakeMicCapture : public IMicCapture {
 public:
+    void SetPreferredEndpointId(const std::string& endpoint_id) override {
+        preferred_endpoint_id = endpoint_id;
+    }
     bool Start() override {
         ++start_count;
         return start_result;
@@ -634,6 +637,7 @@ public:
     std::string start_error;
     int start_count = 0;
     int stop_count = 0;
+    std::string preferred_endpoint_id;
 };
 
 StateEvent ButtonEvent(const std::string& event,
@@ -8379,10 +8383,23 @@ void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
     config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
     config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
+    // auto_switch 开启：会话期默认录音设备切到虚拟麦，本机麦采集须钉住切换前的
+    // 真实麦克风端点（否则按默认设备解析会采到虚拟麦回环，无真实输入）。
+    config.wechat_input_method.auto_switch_default_recording_device = true;
+    config.wechat_input_method.virtual_mic_capture_name = "CABLE Output";
 
     FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
     FakeVirtualMicRenderer* fake_renderer = nullptr;
     auto* fake_capture = new FakeMicCapture();
+    auto* fake_switcher = new FakeDefaultAudioDeviceController();
+    fake_switcher->default_capture = AudioDeviceInfo{L"real-mic-ep", L"Real Mic"};
+    fake_switcher->capture_devices = {
+        AudioDeviceInfo{L"real-mic-ep", L"Real Mic"},
+        AudioDeviceInfo{L"cable-ep", L"CABLE Output (VB-Audio Virtual Cable)"},
+    };
+    const auto switch_state_path =
+        std::filesystem::temp_directory_path() / "voicestick_wechat_switch_state_test.json";
+    std::filesystem::remove(switch_state_path);
     VoiceStickCoordinator coordinator(
         config, std::move(ble), std::move(asr), &ui, &input, {},
         [&fake_renderer](const IVirtualMicRenderer::Options&) {
@@ -8394,7 +8411,11 @@ void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
             auto p = std::make_unique<FakeWechatInputMethodHotkey>();
             fake_hotkey = p.get();
             return p;
-        });
+        },
+        [fake_switcher]() -> std::unique_ptr<IDefaultAudioDeviceController> {
+            return std::unique_ptr<IDefaultAudioDeviceController>(fake_switcher);
+        },
+        switch_state_path);
     coordinator.Start();
     coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
 
@@ -8414,6 +8435,11 @@ void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
     assert(fake_capture->start_count == 1);
     assert(fake_renderer->start_count == 1);
     assert(fake_renderer->running_);
+    // auto_switch 已把默认录音设备切到虚拟麦；采集器钉住的是切换前的真实麦克风
+    // 端点（钉默认设备会采到虚拟麦回环——真实故障复现于 2026-09-11 真机验收）。
+    assert(fake_switcher->set_call_count == 1);
+    assert(fake_switcher->set_calls[0].device_id == L"cable-ep");
+    assert(fake_capture->preferred_endpoint_id == "real-mic-ep");
 
     // 本机麦 PCM 直通 wechat ring buffer（不经 Opus 编码-解码往返）。
     const std::int16_t pcm[8] = {100, -100, 200, -200, 300, -300, 400, -400};
@@ -8425,13 +8451,28 @@ void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
         assert(out[i] == pcm[i]);
     }
 
-    // 第二击（停止 click，复用 session_id=1）：SendUp 配对 + 采集/渲染停止。
+    // 第二击（停止 click，复用 session_id=1）：SendUp 配对 + 采集/渲染停止，
+    // 默认录音设备切回真实麦克风。
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
     assert(fake_hotkey->send_up_count == 1);
     assert(fake_hotkey->send_click_count == 0);
     assert(fake_capture->stop_count == 1);
     assert(fake_renderer->stop_count == 1);
+    assert(fake_switcher->set_call_count == 2);
+    assert(fake_switcher->set_calls[1].device_id == L"real-mic-ep");
     assert(ble_ptr->sent_ui_states.back().state == "ready");
+    std::filesystem::remove(switch_state_path);
+}
+
+// SavePairedDeviceInfo 未知设备（内存配对列表无此 id）不得新建零地址条目：
+// 该分支曾让测试进程把 Defaults 配置整份覆盖真实 config.toml（2026-09-11 事故：
+// 凭据被抹 + 配对地址清零致启动期排队连接失效，设备永远"正在连接中"）。零地址
+// 条目对用户毫无价值（连接排队要求地址非零），合并仅对既有条目有意义。
+void TestSavePairedDeviceInfoUnknownDeviceNoEntry() {
+    AppConfig config = AppConfig::Defaults();
+    config.SavePairedDeviceInfo("9999", "xiaomi_remote_2_pro", "");
+    assert(config.paired_devices.empty());
+    assert(config.paired_device_ids.empty());
 }
 
 // 方案 A 采集启动失败：会话完整回滚（SendDown 已发则 SendUp 配对）+ 用户可见提示。
@@ -14542,6 +14583,7 @@ int main() {
     TestCoordinatorWechatClickToTalkSendsClickOnStart();
     TestCoordinatorWechatClickToTalkSendsClickOnStop();
     TestCoordinatorWechatClickHoldModelXiaomiLocalMic();
+    TestSavePairedDeviceInfoUnknownDeviceNoEntry();
     TestCoordinatorWechatClickHoldModelLocalMicStartFails();
     TestCoordinatorWechatClickHoldModelStickNoLocalMic();
     TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick();
