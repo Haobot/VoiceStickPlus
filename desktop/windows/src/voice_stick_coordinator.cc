@@ -651,51 +651,24 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
             wechat_hotkey_sent_down_ = true;
         }
         LogWechatLatency("SendDown end (click toggle, immediate)");
-        if (WechatSessionUsesLocalMic(device_id)) {
-            StartLocalMicForWechatSession();
+        if (WechatSessionUsesDefaultMicDirectly(device_id)) {
+            // 方案 A 修订（2026-09-11）：会话音频由 WeType 直接采集默认录音设备
+            //（真实麦克风），本端不启动采集/渲染/设备切换，无失败回滚面。
+            LogCoordinatorLine(
+                "wechat session audio: direct default mic (no local capture)");
         }
     }
 }
 
-// 方案 A 的本会话音频供给判定：小米设备（ATVV 音频已弃用、无设备帧）+ click/hold
-// 组合且采集器已注入。StickS3 等设备会话音频来自 BLE 流，返回 false。
-bool VoiceStickCoordinator::WechatSessionUsesLocalMic(const std::string& device_id) {
-    return local_mic_capture_ != nullptr && IsXiaomiRemoteDevice(device_id) &&
+// 方案 A（修订版）的会话音频供给判定：小米设备（ATVV 音频已弃用、无设备帧）+
+// click/hold 组合时由 WeType 直接采集默认录音设备（真实麦克风）——本端跳过
+// auto_switch/虚拟麦渲染/本机麦采集。CABLE 绕行在 keyup 后被拆除会卡死 WeType
+// finalize（2026-09-11 真机定案，见 Doc/Expe/）。StickS3 等设备会话音频来自
+// BLE 流（仍经 CABLE 管道），返回 false。
+bool VoiceStickCoordinator::WechatSessionUsesDefaultMicDirectly(const std::string& device_id) {
+    return IsXiaomiRemoteDevice(device_id) &&
            config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
            config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
-}
-
-// 方案 A 的本机麦启动（wechat 会话专用）：锁内登记会话 id 供 FeedLocalMicPcm
-// 路由，锁外 Start（on_pcm 在采集线程触发，回调自身抢 audio_mutex_，持锁 Start
-// 若与首回调交错会死锁——对齐 SetLocalMicRuntime 的锁序结论）。失败则完整
-// 回滚会话（SendDown 已发，Stop 内 SendUp 配对）并给用户可见提示。
-void VoiceStickCoordinator::StartLocalMicForWechatSession() {
-    {
-        std::lock_guard lock(audio_mutex_);
-        local_mic_slicer_.Reset();
-        local_mic_encoder_.Reset();
-        local_mic_next_seq_ = 1;
-        if (active_session_id_.has_value()) {
-            local_mic_active_session_id_.store(*active_session_id_);
-        }
-    }
-    // 钉住切换前的真实麦克风端点：此刻默认录音设备已被 auto_switch 切到虚拟麦，
-    // 采集器若按默认设备解析会采到自己渲染进虚拟麦的回环（无真实输入，2026-09-11
-    // 真机验收故障）。auto_switch 关闭或切换失败时无保存值，保持默认设备行为。
-    if (saved_default_capture_id_.has_value()) {
-        local_mic_capture_->SetPreferredEndpointId(WStringToUtf8(*saved_default_capture_id_));
-    }
-    if (local_mic_capture_->Start()) {
-        LogCoordinatorLine("wechat local mic session started session=" +
-                           std::to_string(local_mic_active_session_id_.load()));
-        return;
-    }
-    const auto error = local_mic_capture_->LastStartError();
-    LogCoordinatorLine("wechat local mic capture start failed: " + error);
-    local_mic_active_session_id_.store(0);
-    StopWechatInputMethodSession();
-    ui_->ShowTimedMessage("麦克风启动失败：" + error, 3000);
-    EnterReady("wechat_local_mic_failed");
 }
 
 void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonUp(
@@ -845,10 +818,17 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
                          ? wechat_hotkey_factory_(config_.wechat_input_method.ActiveHotkey(config_.wechat_input_method.trigger_mode))
                          : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.ActiveHotkey(config_.wechat_input_method.trigger_mode));
 
+    // 方案 A 修订：小米 click/hold 会话直连默认麦克风——WeType 弹框即从默认录音
+    // 设备（真实麦克风）取音，本端不做设备切换与虚拟麦渲染；拆除时序曾卡死
+    // WeType finalize（2026-09-11 真机定案，见 Doc/Expe/）。
+    const bool direct_mic = WechatSessionUsesDefaultMicDirectly(device_id);
+    if (direct_mic) {
+        LogCoordinatorLine("wechat session: direct default mic; skipping auto_switch/renderer");
+    }
     // auto_switch：录音期把默认录音设备(eConsole)切到虚拟麦克风(CABLE Output)，松开切回。
     // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。
     // 必须在 SendDown 之前完成：微信弹框即从默认设备取音，未切好会取到真实麦。
-    if (config_.wechat_input_method.auto_switch_default_recording_device) {
+    if (!direct_mic && config_.wechat_input_method.auto_switch_default_recording_device) {
         LogWechatLatency("auto_switch begin");
         if (!wechat_device_switcher_) {
             wechat_device_switcher_ = wechat_device_switcher_factory_
@@ -881,15 +861,17 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     // 先 renderer.Start（WASAPI 通路就绪），SendDown 推迟到首帧 Opus 解码成功后（见
     // HandleWechatInputMethodAudioFrame）：避免微信弹框即取音却读到静音致首字卡顿。
     // Start 失败直接返回：未 SendDown 故无需补 SendUp 回滚热键。
-    LogWechatLatency("renderer.Start begin");
-    if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
-        LogWechatLatency("renderer.Start failed");
-        ui_->ShowError("Virtual microphone not found: " +
-                           config_.wechat_input_method.virtual_mic_playback_name,
-                       device_id, {});
-        return false;
+    if (!direct_mic) {
+        LogWechatLatency("renderer.Start begin");
+        if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
+            LogWechatLatency("renderer.Start failed");
+            ui_->ShowError("Virtual microphone not found: " +
+                               config_.wechat_input_method.virtual_mic_playback_name,
+                           device_id, {});
+            return false;
+        }
+        LogWechatLatency("renderer.Start end");
     }
-    LogWechatLatency("renderer.Start end");
 
     {
         std::lock_guard lock(audio_mutex_);
@@ -902,6 +884,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         active_device_id_ = device_id;
         active_session_started_at_ = std::chrono::steady_clock::now();
         wechat_input_method_active_ = true;
+        wechat_session_direct_mic_ = direct_mic;
         SetSessionState(SessionState::kRecording, "wechat_primary_down");
     }
     return true;
@@ -925,26 +908,33 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
             wechat_hotkey_->SendUp();
             LogWechatLatency("SendUp end (stop, before mic teardown)");
         }
-        if (wechat_stop_audio_grace_ > std::chrono::milliseconds::zero()) {
+        // 直连默认麦克风模式无本端音频管道：keyup 后 WeType 仍自行采集真实麦克风
+        // （物理语义），宽限窗口只服务于 CABLE 管道。
+        if (!wechat_session_direct_mic_ &&
+            wechat_stop_audio_grace_ > std::chrono::milliseconds::zero()) {
             std::this_thread::sleep_for(wechat_stop_audio_grace_);
         }
     }
-    // 方案 A 的本机麦收尾：停采（实现契约保证 Stop 返回后 on_pcm 不再触发），
-    // 须在 audio_mutex_ 外（FeedLocalMicPcm 抢锁，持锁 Stop 会与采集线程死锁）。
-    if (local_mic_capture_) {
-        local_mic_capture_->Stop();
-        local_mic_active_session_id_.store(0);
-    }
-    if (wechat_renderer_) {
-        wechat_renderer_->Stop();
-    }
-    // 切回原默认录音设备(eConsole)。须在 renderer->Stop(drain 完成)之后：drain 期间
-    // renderer 仍往 CABLE Input 写，提前切回会让微信取音源错乱、丢尾音。
-    if (saved_default_capture_id_.has_value() && wechat_device_switcher_) {
-        wechat_device_switcher_->SetDefaultCapture(*saved_default_capture_id_,
-                                                   {DeviceRole::kConsole});
-        saved_default_capture_id_.reset();
-        ClearDeviceSwitchState(DeviceSwitchStatePath());
+    // 拆除段只服务于 CABLE 管道模式（StickS3 BLE 流）；直连默认麦克风模式
+    // （方案 A 修订）无本端采集/渲染/设备切换，跳过整段——WeType 自行停采。
+    if (!wechat_session_direct_mic_) {
+        // 本机麦收尾：停采（实现契约保证 Stop 返回后 on_pcm 不再触发），
+        // 须在 audio_mutex_ 外（FeedLocalMicPcm 抢锁，持锁 Stop 会与采集线程死锁）。
+        if (local_mic_capture_) {
+            local_mic_capture_->Stop();
+            local_mic_active_session_id_.store(0);
+        }
+        if (wechat_renderer_) {
+            wechat_renderer_->Stop();
+        }
+        // 切回原默认录音设备(eConsole)。须在 renderer->Stop(drain 完成)之后：drain 期间
+        // renderer 仍往 CABLE Input 写，提前切回会让微信取音源错乱、丢尾音。
+        if (saved_default_capture_id_.has_value() && wechat_device_switcher_) {
+            wechat_device_switcher_->SetDefaultCapture(*saved_default_capture_id_,
+                                                       {DeviceRole::kConsole});
+            saved_default_capture_id_.reset();
+            ClearDeviceSwitchState(DeviceSwitchStatePath());
+        }
     }
     if (wechat_ring_buffer_) {
         wechat_ring_buffer_->Clear();
@@ -964,6 +954,7 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     active_device_id_.reset();
     wechat_input_method_active_ = false;
     wechat_hotkey_sent_down_ = false;
+    wechat_session_direct_mic_ = false;
     wechat_latency_anchor_.reset();
 }
 
@@ -3513,16 +3504,6 @@ void VoiceStickCoordinator::HandleLocalMicHotkeyReleased() {
 void VoiceStickCoordinator::FeedLocalMicPcm(std::span<const std::int16_t> pcm) {
     const auto session_id = local_mic_active_session_id_.load();
     if (session_id == 0) return;  // 会话未建立或已收尾：无锁早退
-    {
-        // 方案 A：本机麦直供 wechat 会话（小米 click toggle 无 ATVV 音频帧）——PCM
-        // 直写 ring buffer 供虚拟麦渲染，不经 Opus 编码-解码往返（那是设备流协议）。
-        // wechat 与 local-mic focused_app 会话互斥（active_session 唯一），无歧义。
-        std::lock_guard lock(audio_mutex_);
-        if (wechat_input_method_active_ && wechat_ring_buffer_) {
-            wechat_ring_buffer_->Write(pcm.data(), pcm.size());
-            return;
-        }
-    }
     for (const auto& frame : local_mic_slicer_.Append(pcm)) {
         std::uint8_t packet[512];
         const auto result = local_mic_encoder_.Encode(frame.data(), frame.size(),

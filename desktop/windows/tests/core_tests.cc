@@ -619,9 +619,6 @@ public:
 // （等价真实实现的采集线程回调语义）。
 class FakeMicCapture : public IMicCapture {
 public:
-    void SetPreferredEndpointId(const std::string& endpoint_id) override {
-        preferred_endpoint_id = endpoint_id;
-    }
     bool Start() override {
         ++start_count;
         return start_result;
@@ -637,7 +634,6 @@ public:
     std::string start_error;
     int start_count = 0;
     int stop_count = 0;
-    std::string preferred_endpoint_id;
 };
 
 StateEvent ButtonEvent(const std::string& event,
@@ -8373,7 +8369,11 @@ void TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick() {
 // click_to_talk + hold 型输入法（WeType）——click 启动立即 SendDown（不等音频帧，
 // 物理 F5 流已随松开结束、静默期起算）+ 本机麦启动 + PCM 直写 ring buffer +
 // 第二击（复用 session_id）SendUp/采集停止/renderer 停止完整收尾。
-void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
+// 方案 A 修订（2026-09-11 真机定案）：小米 click/hold 会话由 WeType 直接采集
+// 默认录音设备（真实麦克风）——本端不启动采集/渲染/自动切换默认设备。CABLE
+// 绕行（本机麦 → ring buffer → CABLE → WeType）在 keyup 后被拆除会卡死 WeType
+// finalize（面板不消失、TSF 宿主永久卡死），拆除即物理语义失配。
+void TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -8383,8 +8383,6 @@ void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
     config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
     config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
-    // auto_switch 开启：会话期默认录音设备切到虚拟麦，本机麦采集须钉住切换前的
-    // 真实麦克风端点（否则按默认设备解析会采到虚拟麦回环，无真实输入）。
     config.wechat_input_method.auto_switch_default_recording_device = true;
     config.wechat_input_method.virtual_mic_capture_name = "CABLE Output";
 
@@ -8419,8 +8417,7 @@ void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
     coordinator.Start();
     coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
 
-    // 登记小米设备（ATVV wechat_click_toggle 的按键折叠在会话层，协调器只认
-    // device_info 的 hardware 标签来决定本会话音频来自本机麦克风）。
+    // 登记小米设备（协调器凭 device_info 的 hardware 标签判定直连默认麦克风）。
     ble_ptr->connected_device_ids.insert("6459");
     ble_ptr->on_connection_change({ConnectedDevice{"6459", "RC-6459"}});
     StateEvent info;
@@ -8432,34 +8429,18 @@ void TestCoordinatorWechatClickHoldModelXiaomiLocalMic() {
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 120));
     assert(fake_hotkey->send_down_count == 1);
     assert(fake_hotkey->send_click_count == 0);
-    assert(fake_capture->start_count == 1);
-    assert(fake_renderer->start_count == 1);
-    assert(fake_renderer->running_);
-    // auto_switch 已把默认录音设备切到虚拟麦；采集器钉住的是切换前的真实麦克风
-    // 端点（钉默认设备会采到虚拟麦回环——真实故障复现于 2026-09-11 真机验收）。
-    assert(fake_switcher->set_call_count == 1);
-    assert(fake_switcher->set_calls[0].device_id == L"cable-ep");
-    assert(fake_capture->preferred_endpoint_id == "real-mic-ep");
+    // 直连默认麦克风：本端不启动采集、不 Start 虚拟麦渲染器、不动默认录音设备。
+    //（渲染器对象仍由懒初始化创建，是跨会话共享成员，仅断言其未被 Start。）
+    assert(fake_capture->start_count == 0);
+    assert(fake_renderer != nullptr && fake_renderer->start_count == 0);
+    assert(fake_switcher->set_call_count == 0);
 
-    // 本机麦 PCM 直通 wechat ring buffer（不经 Opus 编码-解码往返）。
-    const std::int16_t pcm[8] = {100, -100, 200, -200, 300, -300, 400, -400};
-    fake_capture->on_pcm(std::span<const std::int16_t>(pcm, 8));
-    assert(fake_renderer->last_ring != nullptr);
-    std::int16_t out[8] = {};
-    assert(fake_renderer->last_ring->Read(out, 8) == 8);
-    for (int i = 0; i < 8; ++i) {
-        assert(out[i] == pcm[i]);
-    }
-
-    // 第二击（停止 click，复用 session_id=1）：SendUp 配对 + 采集/渲染停止，
-    // 默认录音设备切回真实麦克风。
+    // 第二击（停止 click，复用 session_id=1）：SendUp 配对，无任何拆除动作，回 ready。
     ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
     assert(fake_hotkey->send_up_count == 1);
     assert(fake_hotkey->send_click_count == 0);
-    assert(fake_capture->stop_count == 1);
-    assert(fake_renderer->stop_count == 1);
-    assert(fake_switcher->set_call_count == 2);
-    assert(fake_switcher->set_calls[1].device_id == L"real-mic-ep");
+    assert(fake_switcher->set_call_count == 0);
+    assert(fake_capture->stop_count == 0);
     assert(ble_ptr->sent_ui_states.back().state == "ready");
     std::filesystem::remove(switch_state_path);
 }
@@ -8475,54 +8456,9 @@ void TestSavePairedDeviceInfoUnknownDeviceNoEntry() {
     assert(config.paired_device_ids.empty());
 }
 
-// 方案 A 采集启动失败：会话完整回滚（SendDown 已发则 SendUp 配对）+ 用户可见提示。
-void TestCoordinatorWechatClickHoldModelLocalMicStartFails() {
-    auto ble = std::make_unique<FakeBleCentral>();
-    auto* ble_ptr = ble.get();
-    auto asr = std::make_unique<FakeAsrClient>();
-    FakeUi ui;
-    FakeInputInjector input;
-    AppConfig config = AppConfig::Defaults();
-    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
-    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
-    config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
-
-    FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
-    auto* fake_capture = new FakeMicCapture();
-    fake_capture->start_result = false;
-    fake_capture->start_error = "device in use";
-    VoiceStickCoordinator coordinator(
-        config, std::move(ble), std::move(asr), &ui, &input, {},
-        [](const IVirtualMicRenderer::Options&) {
-            return std::make_unique<FakeVirtualMicRenderer>(true);
-        },
-        [&fake_hotkey](const std::string&) {
-            auto p = std::make_unique<FakeWechatInputMethodHotkey>();
-            fake_hotkey = p.get();
-            return p;
-        });
-    coordinator.Start();
-    coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(fake_capture), nullptr);
-
-    ble_ptr->connected_device_ids.insert("6459");
-    ble_ptr->on_connection_change({ConnectedDevice{"6459", "RC-6459"}});
-    StateEvent info;
-    info.event = "device_info";
-    info.hardware = std::string(kHardwareXiaomiRemote2Pro);
-    ble_ptr->on_state_event("6459", info);
-
-    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 120));
-
-    // SendDown 已发出 → 回滚须 SendUp 配对；提示麦克风失败；回 ready。
-    assert(fake_hotkey->send_down_count == 1);
-    assert(fake_hotkey->send_up_count == 1);
-    assert(!ui.timed_messages.empty());
-    assert(ui.timed_messages.back().find("麦克风") != std::string::npos);
-    assert(ble_ptr->sent_ui_states.back().state == "ready");
-}
-
-// 方案 A 组合下 StickS3（非小米）：click 启动立即 SendDown 同样生效，但不启动
-// 本机麦（音频来自设备 BLE 流，经首帧解码进 ring buffer 的既有链路不变）。
+// 方案 A 组合下 StickS3（非小米）：click 启动立即 SendDown 同样生效，但不切换
+// 直连麦克风语义——音频仍来自设备 BLE 流，经首帧解码进 ring buffer + CABLE 渲染
+// 的既有链路不变。
 void TestCoordinatorWechatClickHoldModelStickNoLocalMic() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -8535,11 +8471,14 @@ void TestCoordinatorWechatClickHoldModelStickNoLocalMic() {
     config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
 
     FakeWechatInputMethodHotkey* fake_hotkey = nullptr;
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
     auto* fake_capture = new FakeMicCapture();
     VoiceStickCoordinator coordinator(
         config, std::move(ble), std::move(asr), &ui, &input, {},
-        [](const IVirtualMicRenderer::Options&) {
-            return std::make_unique<FakeVirtualMicRenderer>(true);
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
         },
         [&fake_hotkey](const std::string&) {
             auto p = std::make_unique<FakeWechatInputMethodHotkey>();
@@ -8555,20 +8494,22 @@ void TestCoordinatorWechatClickHoldModelStickNoLocalMic() {
     ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 7, 150));
     assert(fake_hotkey->send_down_count == 1);
     assert(fake_capture->start_count == 0);  // 非小米：不启本机麦
+    assert(fake_renderer != nullptr && fake_renderer->start_count == 1);  // CABLE 管道保留
 }
 
-// 停止顺序（WeType commit 挂死定案，2026-09-11 真机）：keyup 必须先于采集停止——
-// WeType 诊断日志显示先停音频流再发 keyup 时，finalize/commit 卡死
+// 停止顺序（WeType commit 挂死定案，2026-09-11 真机）：keyup 必须先于 CABLE 管道
+// 拆除——WeType 诊断日志显示先停音频流再发 keyup 时，finalize/commit 卡死
 //（composition_commit_timeout / composition 永久不终止）；物理松开时麦克风永远
-// 还在供电（房间底噪持续），合成释放须模拟同一语义。
+// 还在供电（房间底噪持续），合成释放须模拟同一语义（宽限窗口 wechat_stop_audio_grace_）。
 
-// 带事件顺序记录的采集/热键假件（order 由测试持有，仅测试线程触达）。
-class RecordingMicCapture : public FakeMicCapture {
+// 带事件顺序记录的渲染/热键假件（order 由测试持有，仅测试线程触达）。
+class RecordingVirtualMicRenderer : public FakeVirtualMicRenderer {
 public:
-    explicit RecordingMicCapture(std::vector<std::string>* order) : order_(order) {}
+    explicit RecordingVirtualMicRenderer(std::vector<std::string>* order)
+        : FakeVirtualMicRenderer(true), order_(order) {}
     void Stop() override {
-        order_->push_back("capture_stop");
-        FakeMicCapture::Stop();
+        order_->push_back("renderer_stop");
+        FakeVirtualMicRenderer::Stop();
     }
 private:
     std::vector<std::string>* order_;
@@ -8590,6 +8531,9 @@ private:
 };
 
 void TestCoordinatorWechatStopReleasesHotkeyBeforeStoppingMic() {
+    // StickS3 hold_to_talk（BLE 音频经 CABLE 管道；方案 A 直连麦克风模式无本端
+    // 管道，不适用本顺序约束）：停止时 SendUp 必须早于 renderer 停止，保证 keyup
+    // 到达时音频流仍存活。
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
     auto asr = std::make_unique<FakeAsrClient>();
@@ -8597,16 +8541,13 @@ void TestCoordinatorWechatStopReleasesHotkeyBeforeStoppingMic() {
     FakeInputInjector input;
     AppConfig config = AppConfig::Defaults();
     config.default_output_profile.target = OutputTarget::kWechatInputMethod;
-    config.wechat_input_method.trigger_mode = InteractionMode::kClickToTalk;
-    config.wechat_input_method.session_model = InteractionMode::kHoldToTalk;
 
     std::vector<std::string> order;
-    auto* recording_capture = new RecordingMicCapture{&order};
     RecordingHotkey* recording_hotkey = nullptr;
     VoiceStickCoordinator coordinator(
         config, std::move(ble), std::move(asr), &ui, &input, {},
-        [](const IVirtualMicRenderer::Options&) {
-            return std::make_unique<FakeVirtualMicRenderer>(true);
+        [&order](const IVirtualMicRenderer::Options&) {
+            return std::make_unique<RecordingVirtualMicRenderer>(&order);
         },
         [&recording_hotkey, &order](const std::string&) {
             auto p = std::make_unique<RecordingHotkey>(&order);
@@ -8615,22 +8556,23 @@ void TestCoordinatorWechatStopReleasesHotkeyBeforeStoppingMic() {
         });
     coordinator.SetWechatStopAudioGrace(std::chrono::milliseconds{0});
     coordinator.Start();
-    coordinator.SetLocalMicRuntime(std::unique_ptr<IMicCapture>(recording_capture), nullptr);
 
-    ble_ptr->connected_device_ids.insert("6459");
-    ble_ptr->on_connection_change({ConnectedDevice{"6459", "RC-6459"}});
-    StateEvent info;
-    info.event = "device_info";
-    info.hardware = std::string(kHardwareXiaomiRemote2Pro);
-    ble_ptr->on_state_event("6459", info);
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    // 首帧解码成功触发 SendDown。
+    AudioFrame first;
+    first.session_id = 7;
+    first.seq = 1;
+    first.payload = EncodeOpusPacket(MakeSinePcm(440));
+    ble_ptr->on_audio_frame("5A74", first);
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
 
-    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 120));
-    ble_ptr->on_state_event("6459", ButtonEvent("button_click", "primary", 1, 90));
-
+    assert(recording_hotkey != nullptr);
     assert(order.size() >= 3);
     assert(order[0] == "send_down");
     const auto up_pos = std::find(order.begin(), order.end(), "send_up");
-    const auto stop_pos = std::find(order.begin(), order.end(), "capture_stop");
+    const auto stop_pos = std::find(order.begin(), order.end(), "renderer_stop");
     assert(up_pos != order.end());
     assert(stop_pos != order.end());
     assert(up_pos < stop_pos);
@@ -14661,9 +14603,8 @@ int main() {
     TestCoordinatorWechatSessionRendererStartFailureSkipsHotkey();
     TestCoordinatorWechatClickToTalkSendsClickOnStart();
     TestCoordinatorWechatClickToTalkSendsClickOnStop();
-    TestCoordinatorWechatClickHoldModelXiaomiLocalMic();
+    TestCoordinatorWechatClickHoldModelXiaomiDirectDefaultMic();
     TestSavePairedDeviceInfoUnknownDeviceNoEntry();
-    TestCoordinatorWechatClickHoldModelLocalMicStartFails();
     TestCoordinatorWechatClickHoldModelStickNoLocalMic();
     TestCoordinatorWechatStopReleasesHotkeyBeforeStoppingMic();
     TestCoordinatorWechatClickToTalkAudioEndOvertakesStopClick();

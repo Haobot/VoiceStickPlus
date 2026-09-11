@@ -157,3 +157,14 @@ options.wechat_click_toggle =
 - **重开拒绝窗 300ms**：若用户快速连点 toggle（<300ms 间隔）第二击被吞，需再点一次。可接受（正常点按间隔 >300ms）。
 - **本机麦质量依赖**：音频质量从遥控器 ADPCM 16kHz 换成系统默认麦克风（通常更好）。采集失败有显式提示。
 - **`hold_to_talk` + 小米仍是死路**：不阻止不警告（配置矩阵表已说明）；若真机验收后用户在意，再评估设置项校验提示。
+
+## 8. 修订（2026-09-11 真机定案）：click/hold 会话直连默认麦克风，删除 CABLE 绕行
+
+真机验收发现 §4.3-c 的「本机麦直通 + auto_switch + renderer」音频管道有致命缺陷：停止顺序「SendUp → 600ms 宽限 → 停采 → 停渲染 → 切回默认设备」在 WeType finalize 进行到一半时拆除管道，TSF 宿主永久卡死——面板不退、文字不上屏、之后新会话连 `start_received` 都不再有（gen88/gen89 实证；旧顺序至少 5s abort 自愈，见 `Doc/Expe/wetype-finalize-wedge-cable-teardown-2026-09-11.md`）。
+
+修订：**小米 + click_to_talk + hold 组合下，本端不再启动本机麦采集、不做 auto_switch、不渲染 CABLE**——WeType 弹框后直接采集默认录音设备（真实麦克风），与本机麦直通音频等价（采集端本就钉住同一个默认设备）且物理同构（gen77 物理按住测试干净收尾）。停止只 SendUp，无任何拆除动作。
+
+- §4.3-c 的「本机麦直通」与 d 的「PCM 路由」作废；`StartLocalMicForWechatSession`、`FeedLocalMicPcm` wechat 分支、`SetPreferredEndpointId` 钉扎链删除（后者是 d4fbfd13 针对绕行回环的修复，绕行移除后失去意义）。
+- 配置矩阵表不变（`session_model = "hold"` 语义不变）；`auto_switch_default_recording_device` 对本组合不再生效（仅服务 StickS3 BLE 经 CABLE 的路径）。
+- StickS3 + click/hold（BLE 音频）路径保持 CABLE 管道不变，停止顺序约束（keyup 先于管道拆除）仍有回归测试覆盖。
+- §7「本机麦质量依赖」改为「默认录音设备质量依赖」（同源同质量）；「采集失败有显式提示」作废（本端无采集）。

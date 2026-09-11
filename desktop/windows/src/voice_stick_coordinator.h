@@ -279,11 +279,11 @@ public:
     // audio_end 收尾路径（短按丢弃/最终块发送/finalizing 全部既有逻辑）。
     void HandleLocalMicHotkeyPressed();
     void HandleLocalMicHotkeyReleased();
-    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：wechat click
-    // toggle 会话的本机麦供给——判定（小米设备 + click/hold 组合 + 采集器已注入）
-    // 与启动（锁内登记会话 id、锁外 Start、失败完整回滚会话并提示）。
-    bool WechatSessionUsesLocalMic(const std::string& device_id);
-    void StartLocalMicForWechatSession();
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md，2026-09-11 修订）：
+    // 小米设备 + click/hold 组合的会话由 WeType 直接采集默认录音设备（真实麦克风），
+    // 本端跳过 auto_switch/虚拟麦渲染/本机麦采集——CABLE 绕行在 keyup 后被拆除会
+    // 卡死 WeType finalize（真机定案，见 Doc/Expe/ 同日新文）。
+    bool WechatSessionUsesDefaultMicDirectly(const std::string& device_id);
     void UpdateConfig(AppConfig config);
     // 热调参：仅更新运行期某设备的 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
     void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);
@@ -741,6 +741,9 @@ private:
     bool wechat_audio_end_received_ = false;
     // 是否已对本次会话发送 SendDown（首帧 Opus 解码成功才发送）；决定 Stop 是否配对 SendUp。
     bool wechat_hotkey_sent_down_ = false;
+    // 当前 wechat 会话是否直连默认麦克风（方案 A 修订）：true 时停止路径跳过
+    // 本端采集/渲染/设备切换拆除段（无管道可拆，WeType 自行停采）。
+    bool wechat_session_direct_mic_ = false;
     // 最近一次停止的 wechat 会话 session_id 与时刻：点按式 audio_end 抢跑 button_click
     // 时，用于识别并忽略迟到的停止 click，避免误启动新会话。
     std::optional<std::uint32_t> last_stopped_wechat_session_id_;

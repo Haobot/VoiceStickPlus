@@ -27,19 +27,10 @@ std::string HrToHex(HRESULT hr) {
     return buf;
 }
 
-// 窄字符串（endpoint id 为 ASCII 形态的 "{guid}.{hex}"）转宽字符。
-std::wstring ToWide(const std::string& text) {
-    return std::wstring(text.begin(), text.end());
-}
-
 }  // namespace
 
 WasapiMicCapture::~WasapiMicCapture() {
     Stop();
-}
-
-void WasapiMicCapture::SetPreferredEndpointId(const std::string& endpoint_id) {
-    preferred_endpoint_id_ = ToWide(endpoint_id);
 }
 
 bool WasapiMicCapture::Start() {
@@ -88,16 +79,7 @@ void WasapiMicCapture::CaptureThreadMain(std::atomic_bool* started_ok,
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                           IID_PPV_ARGS(enumerator.GetAddressOf()));
     ComPtr<IMMDevice> device;
-    if (SUCCEEDED(hr) && !preferred_endpoint_id_.empty()) {
-        // 钉扎端点：wechat 方案 A 场景，默认设备已被切到虚拟麦，必须按保存的
-        // 真实麦克风端点 id 打开。失败不回退默认设备（那会采到虚拟麦回环），
-        // 如实报错让会话回滚。
-        hr = enumerator->GetDevice(preferred_endpoint_id_.c_str(),
-                                   device.GetAddressOf());
-        if (FAILED(hr)) {
-            last_start_error_ = "IMMDeviceEnumerator::GetDevice(preferred) failed " + HrToHex(hr);
-        }
-    } else if (SUCCEEDED(hr)) {
+    if (SUCCEEDED(hr)) {
         hr = enumerator->GetDefaultAudioEndpoint(eCapture, eConsole,
                                                  device.GetAddressOf());
     } else {
@@ -167,9 +149,7 @@ void WasapiMicCapture::CaptureThreadMain(std::atomic_bool* started_ok,
 
     started_ok->store(true);
     open_done->store(true);
-    LogApp(preferred_endpoint_id_.empty()
-               ? "WasapiMicCapture: capturing from default microphone (16kHz mono)"
-               : "WasapiMicCapture: capturing from pinned endpoint (16kHz mono)");
+    LogApp("WasapiMicCapture: capturing from default microphone (16kHz mono)");
 
     std::vector<std::int16_t> pcm;
     while (!stop_requested_.load()) {
