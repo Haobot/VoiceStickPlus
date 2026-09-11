@@ -6766,6 +6766,64 @@ void TestWechatInputMethodConfigRoundTrip() {
     std::filesystem::remove(temp);
 }
 
+void TestDeviceOutputTargetOverride() {
+    // 麦克风模式 = 设备级 [device.<id>.output] target 覆盖（wechat_input_method）。
+
+    // 默认：无覆盖，所有设备回全局默认输出目标。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.OutputProfileForDevice(std::optional<std::string>("5A74")).target ==
+           OutputTarget::kFocusedApp);
+
+    // TOML 文本加载：设备 target 覆盖 + 旧格式（无 target 键）回退全局默认。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_device_target_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "paired_device_ids = \"5A74, C3D8\"\n";
+        out << "[device.5A74.output]\n";
+        out << "target = \"wechat_input_method\"\n";
+        // 旧格式：只有 transform/translation_target，target 应跟随全局默认。
+        out << "[device.C3D8.output]\n";
+        out << "transform = \"translate\"\n";
+        out << "translation_target = \"en\"\n";
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.OutputProfileForDevice(std::optional<std::string>("5A74")).target ==
+           OutputTarget::kWechatInputMethod);
+    assert(loaded.OutputProfileForDevice(std::optional<std::string>("C3D8")).target ==
+           OutputTarget::kFocusedApp);
+    assert(loaded.OutputProfileForDevice(std::optional<std::string>("C3D8")).transform ==
+           TextTransform::kTranslate);
+    assert(loaded.default_output_profile.target == OutputTarget::kFocusedApp);
+    std::filesystem::remove(temp);
+
+    // 保存/加载往返：target 覆盖保留，未覆盖设备不受影响。
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"5A74"};
+    config.device_output_profiles["5A74"] = OutputProfile{
+        OutputTarget::kWechatInputMethod,
+        TextTransform::kOriginal,
+        "en",
+    };
+    config.Save(temp);
+    loaded = AppConfig::Load(temp);
+    assert(loaded.OutputProfileForDevice(std::optional<std::string>("5A74")).target ==
+           OutputTarget::kWechatInputMethod);
+    assert(loaded.OutputProfileForDevice(std::optional<std::string>("FFFF")).target ==
+           OutputTarget::kFocusedApp);
+
+    // 与全局默认完全相同（含 target）不落盘 .output 表。
+    config.device_output_profiles["5A74"] = config.default_output_profile;
+    config.Save(temp);
+    {
+        std::ifstream in(temp);
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        assert(buffer.str().find(".output") == std::string::npos);
+    }
+    std::filesystem::remove(temp);
+}
+
 void TestWechatInputMethodPerModeHotkeyRoundTrip() {
     // 两套热键独立保存：改 hold 不影响 click，反之亦然。
     auto temp = std::filesystem::temp_directory_path() / "voicestick_per_mode_hotkey_test.toml";
@@ -10054,6 +10112,7 @@ int main() {
     TestWasapiRendererRestartsAfterStop();
     TestOutputTargetWechatInputMethod();
     TestWechatInputMethodConfigRoundTrip();
+    TestDeviceOutputTargetOverride();
     TestWechatInputMethodPerModeHotkeyRoundTrip();
     TestWechatInputMethodLegacyHotkeyFallback();
     TestWechatInputMethodActiveHotkeyByMode();

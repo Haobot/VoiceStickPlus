@@ -357,6 +357,12 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotwordTrimBodySuffix)] =
         ". The rest are skipped this session (see log for details).";
     table[Index(StringId::kMenuXiaomiKeymap)] = "Key mapping...";
+    table[Index(StringId::kMenuMicMode)] = "Microphone Mode";
+    table[Index(StringId::kStatusMicModeEnabled)] = "Microphone Mode Enabled";
+    table[Index(StringId::kNotificationMicModeOnBody)] =
+        "This device now streams audio to the system virtual microphone.";
+    table[Index(StringId::kNotificationMicModeOffBody)] =
+        "This device is back to voice recognition.";
     table[Index(StringId::kXiaomiKeymapTitle)] = "Key mapping - RC-{0}";
     table[Index(StringId::kXiaomiKeymapCurrentMapping)] = "Current mapping";
     table[Index(StringId::kXiaomiKeymapNotMapped)] = "Not mapped (system default behavior)";
@@ -721,6 +727,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
     table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";
     table[Index(StringId::kMenuXiaomiKeymap)] = "按键映射…";
+    table[Index(StringId::kMenuMicMode)] = "麦克风模式";
+    table[Index(StringId::kStatusMicModeEnabled)] = "麦克风模式已启用";
+    table[Index(StringId::kNotificationMicModeOnBody)] = "该设备音频已输出到系统虚拟麦克风。";
+    table[Index(StringId::kNotificationMicModeOffBody)] = "该设备已恢复语音识别。";
     table[Index(StringId::kXiaomiKeymapTitle)] = "按键映射 - RC-{0}";
     table[Index(StringId::kXiaomiKeymapCurrentMapping)] = "当前映射";
     table[Index(StringId::kXiaomiKeymapNotMapped)] = "未映射（系统原生行为）";

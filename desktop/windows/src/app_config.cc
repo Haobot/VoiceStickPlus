@@ -701,9 +701,10 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 const auto* device_table = node.as_table();
                 if (!device_table) continue;
                 if (const auto* output = (*device_table)["output"].as_table()) {
+                    // 设备级输出覆盖：transform/translation_target 以全局默认填平；
+                    // target 键（麦克风模式设备级覆盖）存在则保留，缺失跟随全局默认。
                     config.device_output_profiles[device_id] = ParseOutputProfile(
-                        *output, config.default_output_profile, false);
-                    config.device_output_profiles[device_id].target = config.default_output_profile.target;
+                        *output, config.default_output_profile, true);
                 }
                 if (const auto* encoder = (*device_table)["encoder"].as_table()) {
                     config.device_encoder_settings[device_id] = ParseEncoderSettings(
@@ -989,11 +990,16 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
             continue;
         }
+        // target 为设备级覆盖（麦克风模式）：与全局默认不同时落盘 target 键；
+        // transform/translation_target 维度与全局相同且 target 未覆盖则整表跳过。
+        const bool target_overridden = profile.target != default_output_profile.target;
         OutputProfile comparable = profile;
         comparable.target = default_output_profile.target;
-        OutputProfile default_comparable = default_output_profile;
-        if (comparable == default_comparable) continue;
+        if (!target_overridden && comparable == default_output_profile) continue;
         output << "\n[device." << device_id << ".output]\n";
+        if (target_overridden) {
+            output << "target = \"" << OutputTargetName(profile.target) << "\"\n";
+        }
         output << "transform = \"" << TextTransformName(profile.transform) << "\"\n";
         output << "translation_target = \"" << TomlEscape(profile.translation_target) << "\"\n";
     }
@@ -1206,9 +1212,9 @@ OutputProfile AppConfig::OutputProfileForDevice(const std::optional<std::string>
     const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
     auto it = device_output_profiles.find(normalized);
     if (it == device_output_profiles.end()) return default_output_profile;
-    OutputProfile profile = it->second;
-    profile.target = default_output_profile.target;
-    return profile;
+    // target 含设备级覆盖（麦克风模式 = wechat_input_method）；无覆盖时
+    // 加载/写入侧已用全局默认填平，返回覆盖表即可。
+    return it->second;
 }
 
 const EncoderSettings& AppConfig::EncoderSettingsForDevice(

@@ -369,6 +369,11 @@ enum class StringId {
 
     // 小米遥控器按键映射（托盘设备子菜单入口 + 独立对话框，仅小米遥控器显示）
     kMenuXiaomiKeymap,
+    // 麦克风模式（设备级复选框：勾选后该设备音频渲染到系统虚拟麦克风，取代 ASR）
+    kMenuMicMode,
+    kStatusMicModeEnabled,
+    kNotificationMicModeOnBody,
+    kNotificationMicModeOffBody,
     // {0} = 设备 ID（如 RC-3A7F）
     kXiaomiKeymapTitle,
     kXiaomiKeymapCurrentMapping,

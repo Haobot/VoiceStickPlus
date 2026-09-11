@@ -77,6 +77,9 @@ constexpr UINT kMenuRemoteSettingsEnd = 6699;
 // 设备级按键映射入口：每设备一项（kMenuXiaomiKeymapBase + 设备索引，仅小米遥控器显示）。
 constexpr UINT kMenuXiaomiKeymapBase = 6700;
 constexpr UINT kMenuXiaomiKeymapEnd = 6799;
+// 设备级麦克风模式复选框：每设备一项（kMenuMicModeBase + 设备索引）。
+constexpr UINT kMenuMicModeBase = 6800;
+constexpr UINT kMenuMicModeEnd = 6899;
 constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
@@ -1087,6 +1090,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 if (index < paired_device_ids_.size()) {
                     ShowXiaomiKeymapDialog(paired_device_ids_[index]);
                 }
+            } else if (cmd >= kMenuMicModeBase && cmd <= kMenuMicModeEnd) {
+                std::size_t index = cmd - kMenuMicModeBase;
+                if (index < paired_device_ids_.size()) {
+                    ToggleDeviceMicMode(paired_device_ids_[index]);
+                }
             }
             return 0;
         }
@@ -1416,6 +1424,11 @@ void Win32App::ShowTrayMenu() {
                 : (firmware_it != firmware_info_map_.end() ? firmware_it->second.current_version : std::string{});
         auto identity_text = FirmwareIdentityText(hardware, firmware_version);
         AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, identity_text.c_str());
+        // 设备状态显示：麦克风模式启用时明确标识（与复选框勾选态一致）。
+        if (config_.OutputProfileForDevice(id).target == OutputTarget::kWechatInputMethod) {
+            AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
+                        TrW(StringId::kStatusMicModeEnabled, language).c_str());
+        }
 
         HMENU theme_menu = CreatePopupMenu();
         const auto theme_it = config_.device_theme_colors.find(id);
@@ -1494,6 +1507,16 @@ void Win32App::ShowTrayMenu() {
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu),
                     TrW(StringId::kMenuTranslation, language).c_str());
+
+        // 麦克风模式复选框：勾选后该设备输出目标覆盖为 wechat_input_method（音频渲染
+        // 到系统虚拟麦克风，取代 ASR 语音识别），取消即恢复全局默认输出。StickS3 与
+        // 小米遥控器音频在协调器前已归一化，通用。
+        const bool mic_mode_enabled =
+            config_.OutputProfileForDevice(id).target == OutputTarget::kWechatInputMethod;
+        AppendMenuW(submenu,
+                    MF_STRING | (mic_mode_enabled ? MF_CHECKED : 0),
+                    kMenuMicModeBase + static_cast<UINT>(i),
+                    TrW(StringId::kMenuMicMode, language).c_str());
 
         // 编码器设置入口：仅 StickS3 且编码器在线（encoder_present）时显示；
         // 未知（老固件/未上报）默认显示，避免误隐藏；小米遥控器无编码器，不显示。
@@ -1922,10 +1945,11 @@ void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPo
 
 void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile) {
     try {
-        profile.target = config_.default_output_profile.target;
-        OutputProfile default_profile = config_.default_output_profile;
-        default_profile.target = profile.target;
-        if (profile.transform == default_profile.transform &&
+        // target 允许设备级覆盖（麦克风模式）；transform/translation_target 与全局
+        // 默认相同且 target 未覆盖时移除覆盖条目（落盘自然清除）。
+        const OutputProfile& default_profile = config_.default_output_profile;
+        const bool target_overridden = profile.target != default_profile.target;
+        if (!target_overridden && profile.transform == default_profile.transform &&
             profile.translation_target == default_profile.translation_target) {
             config_.device_output_profiles.erase(device_id);
         } else {
@@ -1939,6 +1963,39 @@ void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfi
         LogLine(std::string("Output profile save failed: ") + error.what());
         SetStatus("Output save failed");
     }
+}
+
+void Win32App::ToggleDeviceMicMode(const std::string& device_id) {
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    OutputProfile profile = config_.OutputProfileForDevice(device_id);
+    bool enabled;
+    if (profile.target == OutputTarget::kWechatInputMethod) {
+        // 取消勾选：恢复全局默认输出（默认语音识别）；全局默认同为麦克风模式时
+        // 显式回退 focused_app，保证复选框可关闭。
+        profile.target = config_.default_output_profile.target;
+        if (profile.target == OutputTarget::kWechatInputMethod) {
+            profile.target = OutputTarget::kFocusedApp;
+        }
+        enabled = false;
+    } else {
+        profile.target = OutputTarget::kWechatInputMethod;
+        enabled = true;
+    }
+    SaveDeviceOutputProfile(device_id, profile);
+    // 即时视觉反馈：托盘气泡 + 状态栏文本；设备子菜单复选框/状态行在下次打开时呈现。
+    ShowNotification(Tr(StringId::kMenuMicMode, language),
+                     Tr(enabled ? StringId::kNotificationMicModeOnBody
+                                : StringId::kNotificationMicModeOffBody,
+                        language));
+    // 类别前缀取自 config 持久化的 hardware（与菜单构建处判定一致，简化为仅看配对条目）。
+    const auto entry_it =
+        std::find_if(config_.paired_devices.begin(), config_.paired_devices.end(),
+                     [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
+    const bool is_xiaomi =
+        entry_it != config_.paired_devices.end() &&
+        entry_it->hardware == kHardwareXiaomiRemote2Pro;
+    LogLine("Mic mode toggled " + std::string(is_xiaomi ? "RC-" : "VS-") +
+            device_id + " -> " + (enabled ? "on" : "off"));
 }
 
 void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {

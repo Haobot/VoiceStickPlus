@@ -486,9 +486,11 @@ private:
     // 内部取 firmware_mutex_，调用方不得持有该锁。
     bool IsXiaomiRemoteDevice(const std::string& device_id);
     OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
-    // 返回要下发给固件的交互模式：wechat 模式 + hold_to_talk 时派生为 kHoldToTalkInstant
-    // （按下即录音，跳过 300ms 阈值，降低按下到弹框延迟），其余按用户配置原样下发。
-    InteractionMode InteractionModeToSend() const;
+    // 返回要下发给固件的交互模式：wechat 模式（含麦克风模式设备级覆盖）+ hold_to_talk
+    // 时派生为 kHoldToTalkInstant（按下即录音，跳过 300ms 阈值，降低按下到弹框延迟），
+    // 其余按用户配置原样下发。device_id 为 nullopt 时取全局默认输出目标（广播场景）。
+    InteractionMode InteractionModeToSend(
+        const std::optional<std::string>& device_id = std::nullopt) const;
     OverlayThemeColor ThemeColorForDevice(const std::string& device_id) const;
     bool ShouldUseDefiniteSegments(const OutputProfile& profile) const;
     double CurrentRecordingDurationSeconds() const;

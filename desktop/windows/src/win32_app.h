@@ -128,6 +128,9 @@ private:
     void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
     void SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile);
+    // 设备级麦克风模式切换（托盘设备子菜单复选框）：勾选 = 输出目标覆盖为
+    // wechat_input_method（音频渲染到虚拟麦克风），取消 = 恢复全局默认输出。
+    void ToggleDeviceMicMode(const std::string& device_id);
     void ApplyOverlayStyle(const std::optional<std::string>& device_id);
     void StartFirmwareUpdate(const std::string& device_id);
     void StartFirmwareUpdateFromFile(const std::string& device_id);

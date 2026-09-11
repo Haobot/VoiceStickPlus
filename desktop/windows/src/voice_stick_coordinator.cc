@@ -101,6 +101,11 @@ void VoiceStickCoordinator::Start() {
         RefreshFirmwareAvailability();
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
+        // 交互模式下发按设备生效值单播：麦克风模式设备覆盖为 wechat trigger_mode
+        //（无覆盖设备收到全局默认，与广播等价；小米遥控器被 BLE 层按类门控跳过）。
+        for (const auto& dev : devices) {
+            ble_->SendInteractionMode(InteractionModeToSend(dev.id), dev.id);
+        }
         ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
         // 设备交互设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
         // 与旧广播行为等价）。小米遥控器无 IMU/敲击硬件，跳过（BLE 层另有按类门控兜底）。
@@ -215,6 +220,11 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     translator_ = LLMTranslationClient(config_);
     refiner_ = LLMRefinementClient(config_);
     ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
+    // 麦克风模式热切换（托盘复选框）：按设备生效值单播交互模式，覆盖上方广播值
+    //（无覆盖设备收到全局默认，与广播等价；小米遥控器被 BLE 层按类门控跳过）。
+    for (const auto& device_id : connected_device_ids_) {
+        ble_->SendInteractionMode(InteractionModeToSend(device_id), device_id);
+    }
     ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
     // 编码器/体感交互设置按设备覆盖：对已连接设备逐个取其有效配置单播
     // （InteractionSettingsForDevice 含 default 回退，故每个设备都已覆盖全局默认）。
@@ -903,7 +913,10 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             input_injector_->ClickLeftButton();
             return;
         }
-        if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
+        // 输出目标按设备生效（麦克风模式为设备级覆盖，无覆盖回全局默认）。
+        const OutputTarget device_target =
+            config_.OutputProfileForDevice(device_id).target;
+        if (device_target == OutputTarget::kSubtitle) {
             if (config_.interaction_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
@@ -930,7 +943,7 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             }
             return;
         }
-        if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+        if (device_target == OutputTarget::kWechatInputMethod) {
             if (config_.wechat_input_method.trigger_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
@@ -1512,11 +1525,13 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
     if (IsAirMouseActive(device_id)) {
         return;
     }
-    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+    // 输出目标按设备生效（麦克风模式为设备级覆盖，无覆盖回全局默认）。
+    const OutputTarget device_target = config_.OutputProfileForDevice(device_id).target;
+    if (device_target == OutputTarget::kWechatInputMethod) {
         HandleWechatInputMethodPrimaryButtonDown(session_id, device_id);
         return;
     }
-    if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
+    if (device_target == OutputTarget::kSubtitle) {
         HandleSubtitlePrimaryButtonDown(session_id, device_id);
         return;
     }
@@ -2999,13 +3014,16 @@ OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<
     return config_.OutputProfileForDevice(device_id);
 }
 
-InteractionMode VoiceStickCoordinator::InteractionModeToSend() const {
-    // wechat 模式按其专属触发模式（trigger_mode，与全局 interaction_mode 解耦）决定下发：
+InteractionMode VoiceStickCoordinator::InteractionModeToSend(
+    const std::optional<std::string>& device_id) const {
+    // wechat 模式（麦克风模式）按其专属触发模式（trigger_mode，与全局 interaction_mode 解耦）
+    // 决定下发：
     //   hold -> hold_to_talk_instant（按下即录音跳过 300ms 阈值，降低弹框延迟）
     //   click -> click_to_talk
     // 非 wechat 模式（focused_app/字幕）仍下发全局 interaction_mode（托盘菜单控制），
-    // 不被 wechat 的点按式选择污染。
-    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+    // 不被 wechat 的点按式选择污染。输出目标按设备生效（麦克风模式为设备级覆盖，
+    // nullopt 广播场景取全局默认，与旧行为一致）。
+    if (config_.OutputProfileForDevice(device_id).target == OutputTarget::kWechatInputMethod) {
         return config_.wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
                    ? InteractionMode::kHoldToTalkInstant
                    : InteractionMode::kClickToTalk;
