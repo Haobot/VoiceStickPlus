@@ -341,11 +341,36 @@ void BatteryMonitorDialog::OnPowerMgmtState(const std::string& device_id, bool u
 }
 
 void BatteryMonitorDialog::NotifyAllDisconnected() {
-    // 监测中设备断连立即中止；非监测态无需处理。
-    if (state_ == MonitorState::kAnchoring || state_ == MonitorState::kProbing ||
-        state_ == MonitorState::kMonitoring) {
+    // 监测中链路断开（Windows 蓝牙栈闪断/设备重启等）不中止监测：设备端
+    // power_log 持续记录，转入等待重连，链路恢复后增量续传补回数据。
+    // 启动阶段（锚定/探测）时间连续性尚在建立，仍按断连错误中止。
+    switch (state_) {
+    case MonitorState::kMonitoring:
+        KillTimer(hwnd_, kTimerCycle);
+        KillTimer(hwnd_, kTimerDumpTimeout);
+        dump_active_ = false;
+        pending_blob_.clear();
+        state_ = MonitorState::kWaitingReconnect;
+        RefreshStatus();
+        return;
+    case MonitorState::kAnchoring:
+    case MonitorState::kProbing:
         AbortWithError(StringId::kBatteryMonitorErrDisconnected);
+        return;
+    default:
+        return;
     }
+}
+
+void BatteryMonitorDialog::NotifyDeviceReconnected() {
+    if (state_ != MonitorState::kWaitingReconnect || !hwnd_) return;
+    state_ = MonitorState::kMonitoring;
+    // 链路恢复即拉一次增量 dump：补回断连期间设备端记录的样本，成功后
+    // FinishCycle 重新调度 60s 周期，节律回归；失败走既有重试/兜底路径。
+    attempt_ = 0;
+    failed_cycles_ = 0;
+    StartDumpAttempt();
+    RefreshStatus();
 }
 
 // ---------------------------------------------------------------- 状态显示
@@ -354,8 +379,9 @@ void BatteryMonitorDialog::RefreshStatus() {
     if (!status_label_) return;
     const auto language = EffectiveUiLanguage(language_);
     std::wstring text;
-    if (!status_override_.empty() && state_ != MonitorState::kMonitoring) {
-        text = status_override_;  // 保存结果等瞬态文案（监测中让位于周期倒计时）
+    if (!status_override_.empty() && state_ != MonitorState::kMonitoring &&
+        state_ != MonitorState::kWaitingReconnect) {
+        text = status_override_;  // 保存结果等瞬态文案（监测/等待重连态让位于状态文案）
     } else {
         switch (state_) {
         case MonitorState::kIdle:
@@ -366,6 +392,9 @@ void BatteryMonitorDialog::RefreshStatus() {
             break;
         case MonitorState::kProbing:
             text = TrW(StringId::kBatteryMonitorStatusProbing, language);
+            break;
+        case MonitorState::kWaitingReconnect:
+            text = TrW(StringId::kBatteryMonitorStatusWaitingReconnect, language);
             break;
         case MonitorState::kMonitoring:
             text = FormatText(TrW(StringId::kBatteryMonitorStatusMonitoring, language),
@@ -390,7 +419,8 @@ void BatteryMonitorDialog::RefreshStatus() {
 void BatteryMonitorDialog::UpdateButtons() {
     const bool running = state_ == MonitorState::kAnchoring ||
                          state_ == MonitorState::kProbing ||
-                         state_ == MonitorState::kMonitoring;
+                         state_ == MonitorState::kMonitoring ||
+                         state_ == MonitorState::kWaitingReconnect;
     if (start_button_) EnableWindow(start_button_, !running);
     if (stop_button_) EnableWindow(stop_button_, running);
     const bool has_samples = !accumulator_.samples().empty();
@@ -406,7 +436,8 @@ void BatteryMonitorDialog::UpdateUsbWarning() {
     const bool usb_powered = !samples.empty() && samples.back().usb_powered;
     const bool active = state_ == MonitorState::kAnchoring ||
                         state_ == MonitorState::kProbing ||
-                        state_ == MonitorState::kMonitoring;
+                        state_ == MonitorState::kMonitoring ||
+                        state_ == MonitorState::kWaitingReconnect;
     ShowWindow(warn_label_,
                (active && (usb_powered || usb_auto_off_state_)) ? SW_SHOW : SW_HIDE);
 }

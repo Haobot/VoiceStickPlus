@@ -34,8 +34,12 @@ public:
     void OnPowerLogFragment(const std::string& device_id, const PowerLogFragment& fragment);
     // 供电态（USB）自动关机开关状态推送，刷新勾选框。
     void OnPowerMgmtState(const std::string& device_id, bool usb_auto_off);
-    // 所有设备已断连（含本设备）：监测中立即按断连错误中止，避免干等导出超时。
+    // 所有设备已断连（含本设备）：监测中转入等待重连（设备端 power_log 持续
+    // 记录，重连后从 log_size_ 增量续传，数据不丢）；启动阶段仍按断连错误中止。
     void NotifyAllDisconnected();
+    // 本设备重新出现在连接列表（win32_app 在 GATT 就绪后才派发）：等待重连态
+    // 立即拉一次增量 dump 补回断连期间数据，随后恢复 60s 周期节律。
+    void NotifyDeviceReconnected();
 
     // 发送 control_rx 命令到本设备（win32_app 桥接到 VoiceStickCoordinator::SendPowerLogCommand）。
     std::function<void(const std::string& device_id, ByteVector payload)> on_send_command;
@@ -44,12 +48,13 @@ public:
 
 private:
     enum class MonitorState {
-        kIdle,        // 空闲（未开始/已停止）
-        kAnchoring,   // 已发 clear，正在写 time_anchor
-        kProbing,     // 已发越界探测 dump，等待 eof 空片拿 total
-        kMonitoring,  // 周期增量导出中
-        kFinished,    // 60 个周期跑完
-        kError,       // 中止（原因见 error_reason_）
+        kIdle,               // 空闲（未开始/已停止）
+        kAnchoring,          // 已发 clear，正在写 time_anchor
+        kProbing,            // 已发越界探测 dump，等待 eof 空片拿 total
+        kMonitoring,         // 周期增量导出中
+        kWaitingReconnect,   // 监测中链路断开：等待设备重连后续传
+        kFinished,           // 60 个周期跑完
+        kError,              // 中止（原因见 error_reason_）
     };
 
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
