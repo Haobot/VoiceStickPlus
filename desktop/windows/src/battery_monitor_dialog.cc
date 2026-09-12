@@ -1,6 +1,7 @@
 #include "battery_monitor_dialog.h"
 
 #include "dpi_util.h"
+#include "log.h"
 
 #include <Windows.h>
 #include <commdlg.h>
@@ -231,6 +232,8 @@ void BatteryMonitorDialog::StartDumpAttempt() {
     pending_blob_.clear();
     expected_offset_ = log_size_;
     dump_active_ = true;
+    LogApp("BatteryMonitor: dump attempt=" + std::to_string(attempt_) +
+           " offset=" + std::to_string(log_size_));
     SendCommand(BleProtocol::PowerLogDumpPayload(log_size_, kDumpChunkMax));
     SetTimer(hwnd_, kTimerDumpTimeout, kDumpTimeoutMs, nullptr);
     RefreshStatus();
@@ -240,6 +243,8 @@ void BatteryMonitorDialog::HandleDumpFailure() {
     KillTimer(hwnd_, kTimerDumpTimeout);
     dump_active_ = false;
     pending_blob_.clear();
+    LogApp("BatteryMonitor: dump timeout attempt=" + std::to_string(attempt_) +
+           " failed_cycles=" + std::to_string(failed_cycles_ + 1));
     if (attempt_ < kMaxAttemptsPerCycle) {
         StartDumpAttempt();  // 周期内立即重试
         return;
@@ -269,6 +274,8 @@ void BatteryMonitorDialog::FinishCycle(std::uint32_t total) {
     log_size_ = total;
     failed_cycles_ = 0;
     pending_blob_.clear();
+    LogApp("BatteryMonitor: cycle done total=" + std::to_string(total) +
+           " new_samples=" + std::to_string(new_samples.size()));
     if (cycle_ >= kTotalCycles) {
         FinishMonitoring();
         return;
@@ -351,10 +358,12 @@ void BatteryMonitorDialog::NotifyAllDisconnected() {
         dump_active_ = false;
         pending_blob_.clear();
         state_ = MonitorState::kWaitingReconnect;
+        LogApp("BatteryMonitor: link lost while monitoring; waiting reconnect");
         RefreshStatus();
         return;
     case MonitorState::kAnchoring:
     case MonitorState::kProbing:
+        LogApp("BatteryMonitor: link lost during startup; aborting");
         AbortWithError(StringId::kBatteryMonitorErrDisconnected);
         return;
     default:
@@ -367,8 +376,10 @@ void BatteryMonitorDialog::NotifyDeviceReconnected() {
     state_ = MonitorState::kMonitoring;
     // 链路恢复即拉一次增量 dump：补回断连期间设备端记录的样本，成功后
     // FinishCycle 重新调度 60s 周期，节律回归；失败走既有重试/兜底路径。
+    // failed_cycles_ 不在此清零：链路反复断连时每次重连都清零会让兜底
+    // 永不触发，监测卡在无限重试循环；只在 dump 成功（FinishCycle）时清零。
     attempt_ = 0;
-    failed_cycles_ = 0;
+    LogApp("BatteryMonitor: device reconnected; resuming incremental dump");
     StartDumpAttempt();
     RefreshStatus();
 }
