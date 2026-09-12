@@ -1955,7 +1955,7 @@ void TestParseRenameVirtualMicArgs() {
     {
         const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
                                  L"{0.0.1.00000000}.{guid}", L"My", L"Stick", L"S3"};
-        auto r = ParseRenameVirtualMicArgs(5, argv);
+        auto r = ParseRenameVirtualMicArgs(6, argv);
         assert(r.has_value());
         assert(r->new_name == L"My Stick S3");
     }
