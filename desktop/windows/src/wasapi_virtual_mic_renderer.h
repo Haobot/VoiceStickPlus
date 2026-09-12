@@ -31,11 +31,21 @@ class RenderPump {
   // 执行一次渲染迭代。返回本次提交到 WASAPI 的帧数；0 表示 buffer 已满或读取失败。
   UINT32 PumpOnce();
 
+  // 诊断统计：PumpOnce 累计。underrun_pumps = ring 数据不足补静音的迭代次数，
+  // underrun_samples = 补静音样本数（16kHz 单声道下 /16000 = 静音毫秒数）。
+  // 会话停止时汇总打日志，用于区分"BLE 供给抖动"与"链路固定延迟"。
+  std::uint64_t total_pumps() const { return total_pumps_; }
+  std::uint64_t underrun_pumps() const { return underrun_pumps_; }
+  std::uint64_t underrun_samples() const { return underrun_samples_; }
+
  private:
   WasapiRenderSink* sink_;
   PcmRingBuffer* source_;
   int samples_per_frame_;
   std::vector<int16_t> read_buffer_;
+  std::uint64_t total_pumps_ = 0;
+  std::uint64_t underrun_pumps_ = 0;
+  std::uint64_t underrun_samples_ = 0;
 };
 
 // WASAPI 渲染器：将 PcmRingBuffer 中的 16-bit PCM 持续写入指定的播放设备。

@@ -649,6 +649,8 @@ private:
     bool wechat_audio_end_received_ = false;
     // 是否已对本次会话发送 SendDown（首帧 Opus 解码成功才发送）；决定 Stop 是否配对 SendUp。
     bool wechat_hotkey_sent_down_ = false;
+    // 本会话是否已打首帧延迟日志（wechat/直通两模式共用，每会话一次）。
+    bool wechat_first_frame_logged_ = false;
     // 最近一次停止的 wechat 会话 session_id 与时刻：点按式 audio_end 抢跑 button_click
     // 时，用于识别并忽略迟到的停止 click，避免误启动新会话。
     std::optional<std::uint32_t> last_stopped_wechat_session_id_;

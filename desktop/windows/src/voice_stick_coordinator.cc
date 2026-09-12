@@ -626,11 +626,18 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
             } else {
                 wechat_ring_buffer_->Write(pcm, result.decoded_samples);
 
+                // 首帧可见性：直通模式也打首帧延迟日志（无热键动作），用于诊断
+                // "按下 → 首帧音频"链路延迟（BLE 建链 + 首包传输）。
+                if (!wechat_first_frame_logged_) {
+                    wechat_first_frame_logged_ = true;
+                    LogWechatLatency(wechat_session_uses_hotkey_
+                                         ? "first frame decoded, SendDown begin"
+                                         : "first frame decoded (direct mode)");
+                }
                 // 首帧解码成功入 ring_buffer：持锁 SendDown 弹框，弹框前 CABLE Output 已有 PCM，
                 // 微信弹框即取到有效音频（避免弹框早于音频就绪的首字卡顿）。持锁避免与 Stop race。
                 // virtual_mic 直通模式不触发热键：应用自行从虚拟麦克风取音。
                 if (wechat_session_uses_hotkey_ && !wechat_hotkey_sent_down_) {
-                    LogWechatLatency("first frame decoded, SendDown begin");
                     // 点按式发完整点击（down+up），hold 模式发按下：Typeless 等点按式输入法
                     // 靠完整 click 触发，仅按下不释放不弹框。
                     const bool click_mode =
@@ -774,6 +781,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         debug_audio_recorder_.Start(device_id, session_id);
         wechat_audio_end_received_ = false;
         wechat_hotkey_sent_down_ = false;
+        wechat_first_frame_logged_ = false;
         received_audio_frames_ = 0;
         active_session_id_ = session_id;
         active_device_id_ = device_id;
@@ -825,6 +833,7 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     wechat_input_method_active_ = false;
     wechat_session_uses_hotkey_ = false;
     wechat_hotkey_sent_down_ = false;
+    wechat_first_frame_logged_ = false;
     wechat_latency_anchor_.reset();
 }
 
