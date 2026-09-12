@@ -2201,6 +2201,15 @@ void VoiceStickCoordinator::ShowSubtitleText(const std::string& text,
 void VoiceStickCoordinator::TransformText(const std::string& text,
                                           const OutputProfile& profile,
                                           std::function<void(bool, std::string)> completion) {
+    // 热词纠错自动替换：翻译/精修/直通三条路径统一在最前面做错误文本替换，
+    // 保证后续精修 prompt 与最终注入/字幕/翻译都吃已修正文本。
+    std::string corrected = ApplyHotwordCorrections(text, config_.hotword_corrections);
+    if (corrected != text) {
+        LogCoordinatorLine("hotword correction applied: len " +
+                           std::to_string(text.size()) + " -> " +
+                           std::to_string(corrected.size()));
+    }
+    const std::string& effective = corrected;
     // 最终文本产出时记录热词使用统计（计数+最近使用时间），供高频优先裁剪评分；
     // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。
     auto wrapped = [this, completion = std::move(completion)](bool ok, std::string result) mutable {
@@ -2209,12 +2218,12 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
     };
     if (profile.transform == TextTransform::kTranslate) {
         // 翻译 prompt 热词段同样按高频评分取 top-N，防大库稀释小模型注意力。
-        translator_.Translate(text, profile.translation_target, HotwordsForLlmPrompts(),
+        translator_.Translate(effective, profile.translation_target, HotwordsForLlmPrompts(),
                               std::move(wrapped));
         return;
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
-    if (config_.refine_enabled && !text.empty()) {
+    if (config_.refine_enabled && !effective.empty()) {
         // 流式精修：on_token 在后台线程节流式追加显示（用 AppendPartial 跳过文字滚动
         // 动画，避免高频 token 反复重置 140ms 动画导致闪动；overlay OnTimer 已优化为
         // 文本未变时不重建 D2D 文本布局，避免卡死）。
@@ -2234,7 +2243,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         auto throttle = std::make_shared<ThrottleState>();
 
         refiner_.RefineStream(
-            text,
+            effective,
             config_.refine_prompt,
             // on_token（后台线程）：节流式追加更新悬浮窗
             [this, alive, cancel, device_id, throttle](std::string token) {
@@ -2257,7 +2266,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                 }
             },
             // on_complete（后台线程）：最终文本已就绪
-            [this, alive, cancel, text, device_id, throttle,
+            [this, alive, cancel, text = effective, device_id, throttle,
              wrapped = std::move(wrapped)](bool ok, std::string result) mutable {
                 if (!alive->load() || (cancel && cancel->load())) return;
                 std::string final_text = text;
@@ -2282,8 +2291,8 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
             cancel, HotwordsForLlmPrompts());
         return;
     }
-    wrapped(true, text);
-    MaybeExtractHotwordCandidates(text);
+    wrapped(true, effective);
+    MaybeExtractHotwordCandidates(effective);
 }
 
 void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::string& original,

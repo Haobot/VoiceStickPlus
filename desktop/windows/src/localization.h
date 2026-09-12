@@ -285,6 +285,23 @@ enum class StringId {
     kSettingsHotwordCandidateAddButton,
     kSettingsHotwordCandidateDismissButton,
 
+    // 热词纠错（划词纠错按钮 + 纠错对话框 + 保存反馈）
+    kSelectionCorrectionButton,
+    kCorrectionDialogTitle,
+    kCorrectionWrongLabel,
+    kCorrectionRightLabel,
+    kCorrectionSuggestLabel,
+    kCorrectionSuggestLoading,
+    kCorrectionSuggestNone,
+    kCorrectionSuggestFailed,
+    kCorrectionNoKey,
+    kCorrectionSaveButton,
+    kCorrectionSavedTitle,
+    kCorrectionSavedBody,
+    kCorrectionEmptyTitle,
+    kCorrectionEmptyBody,
+    kCorrectionDuplicateBody,
+
     // 热词处理（LLM 提炼）
     kHotwordProcessExtracting,
     kHotwordProcessAdded,

@@ -101,6 +101,7 @@ add_library(voicestick_core
     src/hotword_extractor.cc
     src/hotword_candidate_miner.cc
     src/hotword_selector.cc
+    src/hotword_suggest_client.cc
     src/localization.cc
     third_party/cjson/cJSON.c
     src/log.cc
@@ -156,6 +157,7 @@ add_executable(VoiceStickApp WIN32
     src/hotkey_settings_dialog.cc
     src/shortcut_capture.cc
     src/selection_hotword_manager.cc
+    src/correction_dialog.cc
     src/voice_f5_suppressor.cc
     resources/VoiceStick.rc
 )

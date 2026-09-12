@@ -1296,6 +1296,45 @@ bool Win32App::CreateWindowInternal() {
                     Tr(StringId::kSelectionHotwordAddedTitle, lang),
                     Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
             };
+        // on_correction_requested 回调：弹出纠错对话框（错误文本 + AI 建议输入）。
+        selection_hotword_manager_->on_correction_requested =
+            [this](const std::string& text) {
+                if (text.empty() || !correction_dialog_) return;
+                POINT pt{};
+                GetCursorPos(&pt);
+                correction_dialog_->Show(text, pt, config_);
+            };
+    }
+    LogLine("Creating correction dialog");
+    correction_dialog_ = std::make_unique<CorrectionDialog>(instance_, hwnd_);
+    if (correction_dialog_) {
+        correction_dialog_->SetLanguage(EffectiveUiLanguage(config_.ui_language));
+        // on_save 回调：写入热词纠错映射（错误文本 -> 正确文本），正确文本同时加入
+        // 热词表（提升后续 ASR 识别），持久化并应用到协调器。
+        correction_dialog_->on_save =
+            [this](const std::string& wrong, const std::string& right) {
+                const auto lang = EffectiveUiLanguage(config_.ui_language);
+                const bool is_update = config_.hotword_corrections.contains(wrong);
+                config_.hotword_corrections[wrong] = right;
+                // 正确文本加入热词表（若尚未存在且长度合规）。
+                if (right.size() <= SelectionHotwordManager::kMaxHotwordLen &&
+                    std::find(config_.asr_hotwords.begin(), config_.asr_hotwords.end(),
+                              right) == config_.asr_hotwords.end()) {
+                    config_.asr_hotwords.push_back(right);
+                }
+                try {
+                    config_.SavePreservingDiskCredentials();
+                } catch (const std::exception& e) {
+                    LogLine(std::string("Save config on correction save failed: ") + e.what());
+                }
+                ApplyUpdatedConfig();
+                ShowNotification(
+                    Tr(StringId::kCorrectionSavedTitle, lang),
+                    Tr(is_update ? StringId::kCorrectionDuplicateBody
+                                 : StringId::kCorrectionSavedBody,
+                       lang) +
+                        wrong + " -> " + right);
+            };
     }
     return true;
 }
@@ -1825,6 +1864,9 @@ void Win32App::SyncSelectionHotword() {
                                                  ? SelectionHotwordManager::kMaxProcessLen
                                                  : SelectionHotwordManager::kMaxHotwordLen);
     selection_hotword_manager_->SetEnabled(config_.selection_hotword_enabled);
+    if (correction_dialog_) {
+        correction_dialog_->SetLanguage(EffectiveUiLanguage(config_.ui_language));
+    }
 }
 
 void Win32App::ProcessHotwordWithLlm(const std::string& text) {

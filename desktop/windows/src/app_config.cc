@@ -686,6 +686,19 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 needs_wechat_trigger_migration_save = true;
             }
         }
+        // 顶层 [hotword_corrections]：热词纠错映射（错误文本 -> 正确文本）。
+        if (const auto* corrections = table["hotword_corrections"].as_table()) {
+            for (const auto& [key, node] : *corrections) {
+                const auto value = node.value<std::string>();
+                if (!value) {
+                    LogApp("hotword_corrections: 忽略非字符串值 key=" +
+                           std::string(key.str()));
+                    continue;
+                }
+                if (key.str().empty() || value->empty()) continue;
+                config.hotword_corrections[std::string(key.str())] = *value;
+            }
+        }
         // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
         // 设备表填平（ParseXiaomiSettings 的 fallback 拷贝）才能带上全局默认。
         if (const auto* xiaomi = table["xiaomi"].as_table()) {
@@ -972,6 +985,15 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         output << "\n[xiaomi.keys]\n";
         for (const auto& [button_id, spec] : default_xiaomi_settings.key_map) {
             output << button_id << " = \"" << TomlEscape(spec) << "\"\n";
+        }
+    }
+    if (!hotword_corrections.empty()) {
+        // 顶层 [hotword_corrections] 表：错误文本 -> 正确文本。TOML 表头会吞
+        // 后续裸键，故写在顶层标量区末尾、[output] 之前。
+        output << "\n[hotword_corrections]\n";
+        for (const auto& [wrong, right] : hotword_corrections) {
+            output << "\"" << TomlEscape(wrong) << "\" = \""
+                   << TomlEscape(right) << "\"\n";
         }
     }
     output << "\n[output]\n";
@@ -1582,6 +1604,35 @@ std::vector<std::string> ParseHotwordList(std::string_view text) {
         start = end + 1;
     }
     return hotwords;
+}
+
+std::string ApplyHotwordCorrections(
+    const std::string& text,
+    const std::map<std::string, std::string>& corrections) {
+    if (corrections.empty() || text.empty()) return text;
+    // 从左到右单遍扫描：每个位置查所有错误文本是否命中，命中即替换并跳过替换
+    // 结果（防 A->B、B->C 链式循环）。热词库规模（百级）× 文本长度（百级）在
+    // 最终文本产出路径上开销可接受。
+    std::string result;
+    result.reserve(text.size());
+    std::size_t i = 0;
+    while (i < text.size()) {
+        bool replaced = false;
+        for (const auto& [wrong, right] : corrections) {
+            if (wrong.empty() || wrong.size() > text.size() - i) continue;
+            if (text.compare(i, wrong.size(), wrong) == 0) {
+                result += right;
+                i += wrong.size();
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            result += text[i];
+            ++i;
+        }
+    }
+    return result;
 }
 
 } // namespace voicestick

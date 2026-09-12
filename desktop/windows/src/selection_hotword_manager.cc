@@ -26,7 +26,8 @@ namespace {
 SelectionHotwordManager* g_active_manager = nullptr;
 
 constexpr UINT kWmMouseLeftUp = WM_APP + 210;     // 钩子→helper：WM_LBUTTONUP 通知
-constexpr UINT kWmPopupClicked = WM_APP + 211;    // popup→helper：按钮被点击
+constexpr UINT kWmPopupClicked = WM_APP + 211;    // popup→helper：添加热词按钮被点击
+constexpr UINT kWmPopupCorrectionClicked = WM_APP + 212;  // popup→helper：纠错按钮被点击
 
 std::wstring Utf16FromUtf8(std::string_view text) {
     if (text.empty()) return {};
@@ -161,6 +162,12 @@ LRESULT CALLBACK SelectionHotwordManager::HelperWndProc(HWND hwnd, UINT msg,
                 if (self->on_add_hotword) self->on_add_hotword(text);
                 return 0;
             }
+            case kWmPopupCorrectionClicked: {
+                self->HidePopup();
+                std::string text = self->pending_text_;
+                if (self->on_correction_requested) self->on_correction_requested(text);
+                return 0;
+            }
         }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -173,9 +180,14 @@ LRESULT CALLBACK SelectionHotwordManager::PopupWndProc(HWND hwnd, UINT msg,
     if (self) {
         switch (msg) {
             case WM_LBUTTONUP: {
-                // 点击弹窗任意位置即触发"添加到热词"。投递到 helper 处理，
-                // 避免在弹窗 WndProc 内回调时弹窗仍可见导致重入。
-                PostMessage(self->helper_hwnd_, kWmPopupClicked, 0, 0);
+                // 按点击 x 坐标区分左右两个按钮：左半"添加到热词"、右半"纠错"。
+                // 投递到 helper 处理，避免在弹窗 WndProc 内回调时弹窗仍可见导致重入。
+                const int x = GET_X_LPARAM(lp);
+                RECT rc{};
+                GetClientRect(hwnd, &rc);
+                const UINT msg = (x < (rc.right - rc.left) / 2) ? kWmPopupClicked
+                                                                : kWmPopupCorrectionClicked;
+                PostMessage(self->helper_hwnd_, msg, 0, 0);
                 return 0;
             }
             case WM_MOUSEMOVE: {
@@ -197,22 +209,33 @@ LRESULT CALLBACK SelectionHotwordManager::PopupWndProc(HWND hwnd, UINT msg,
                 HBRUSH null_brush = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
                 HGDIOBJ old_brush = SelectObject(ps.hdc, null_brush);
                 Rectangle(ps.hdc, rc.left, rc.top, rc.right - 1, rc.bottom - 1);
+                // 中间分隔线：区分"添加到热词"（左）与"纠错"（右）两个热区。
+                const int mid_x = (rc.left + rc.right) / 2;
+                MoveToEx(ps.hdc, mid_x, rc.top + self->Dp(4), nullptr);
+                LineTo(ps.hdc, mid_x, rc.bottom - self->Dp(4));
                 SelectObject(ps.hdc, old_pen);
                 SelectObject(ps.hdc, old_brush);
                 DeleteObject(pen);
 
-                // 文本：居中。
-                const auto button_text = TrW(StringId::kSelectionHotwordButton,
-                                             self->language_);
+                // 文本：两个按钮各自居中于左右半区。
                 HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
                 HGDIOBJ old_font = SelectObject(ps.hdc, font);
                 SetBkMode(ps.hdc, TRANSPARENT);
                 SetTextColor(ps.hdc, RGB(40, 45, 55));
-                RECT text_rc = rc;
-                text_rc.left += self->Dp(8);
-                text_rc.right -= self->Dp(8);
-                DrawTextW(ps.hdc, button_text.c_str(), -1, &text_rc,
-                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                const auto draw_button_text = [&](RECT area, const wchar_t* label) {
+                    area.left += self->Dp(6);
+                    area.right -= self->Dp(6);
+                    DrawTextW(ps.hdc, label, -1, &area,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                };
+                RECT left_rc = rc;
+                left_rc.right = mid_x;
+                draw_button_text(
+                    left_rc, TrW(StringId::kSelectionHotwordButton, self->language_).c_str());
+                RECT right_rc = rc;
+                right_rc.left = mid_x;
+                draw_button_text(
+                    right_rc, TrW(StringId::kSelectionCorrectionButton, self->language_).c_str());
                 SelectObject(ps.hdc, old_font);
                 EndPaint(hwnd, &ps);
                 return 0;

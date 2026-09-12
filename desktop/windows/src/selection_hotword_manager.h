@@ -41,6 +41,10 @@ public:
     // 调用方负责把它加入热词库、持久化配置并给出反馈（通知/字幕等）。
     std::function<void(const std::string& text)> on_add_hotword;
 
+    // 用户点击"纠错"按钮（位于"添加到热词"右侧）时回调，参数为规范化后的
+    // 选中文本（即被识别错误的文本）。调用方负责弹出纠错对话框。
+    std::function<void(const std::string& text)> on_correction_requested;
+
     static constexpr int kMaxHotwordLen = 64;      // 未启用热词处理：超长选区忽略
     static constexpr int kMaxProcessLen = 2000;    // 启用热词处理：长文送 LLM 提炼
 
@@ -96,7 +100,8 @@ private:
     static constexpr int kAutoHideMs = 4000;       // 弹窗 4 秒自动隐藏
     static constexpr int kPopupOffsetX = 8;        // 弹窗相对光标的偏移
     static constexpr int kPopupOffsetY = 18;
-    static constexpr int kPopupWidthDp = 132;      // 弹窗宽度（DIP）
+    // 双按钮弹窗：左侧"添加到热词" + 右侧"纠错"，各占一半宽度。
+    static constexpr int kPopupWidthDp = 248;      // 弹窗宽度（DIP）
     static constexpr int kPopupHeightDp = 32;      // 弹窗高度（DIP）
     static constexpr wchar_t kHelperWindowClass[] = L"VoiceStickSelectionHelper";
     static constexpr wchar_t kPopupWindowClass[] = L"VoiceStickSelectionPopup";

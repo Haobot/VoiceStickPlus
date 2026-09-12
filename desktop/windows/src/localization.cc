@@ -290,6 +290,25 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsHotwordCandidateAddButton)] = "Add";
     table[Index(StringId::kSettingsHotwordCandidateDismissButton)] = "Dismiss";
 
+    // 热词纠错（划词纠错按钮 + 纠错对话框 + 保存反馈）
+    table[Index(StringId::kSelectionCorrectionButton)] = "Correct";
+    table[Index(StringId::kCorrectionDialogTitle)] = "Hotword Correction";
+    table[Index(StringId::kCorrectionWrongLabel)] = "Wrong text:";
+    table[Index(StringId::kCorrectionRightLabel)] = "Correct text:";
+    table[Index(StringId::kCorrectionSuggestLabel)] =
+        "AI suggestions (click one to save):";
+    table[Index(StringId::kCorrectionSuggestLoading)] = "Fetching AI suggestions...";
+    table[Index(StringId::kCorrectionSuggestNone)] = "(no suggestions)";
+    table[Index(StringId::kCorrectionSuggestFailed)] = "Failed to get AI suggestions";
+    table[Index(StringId::kCorrectionNoKey)] = "LLM API key not configured";
+    table[Index(StringId::kCorrectionSaveButton)] = "Save Correction";
+    table[Index(StringId::kCorrectionSavedTitle)] = "Correction Saved";
+    table[Index(StringId::kCorrectionSavedBody)] = "Correction rule saved: ";
+    table[Index(StringId::kCorrectionEmptyTitle)] = "No Correction Text";
+    table[Index(StringId::kCorrectionEmptyBody)] = "Please enter the correct text.";
+    table[Index(StringId::kCorrectionDuplicateBody)] =
+        "An existing rule for this wrong text was updated to: ";
+
     // 热词处理（LLM 提炼）
     table[Index(StringId::kHotwordProcessExtracting)] = "Extracting hotwords...";
     table[Index(StringId::kHotwordProcessAdded)] = "Hotwords added: ";
@@ -678,6 +697,23 @@ constexpr StringTable ChineseStrings() {
         "候选热词（从精修纠错中自动挖掘，确认后才会加入）：";
     table[Index(StringId::kSettingsHotwordCandidateAddButton)] = "加入";
     table[Index(StringId::kSettingsHotwordCandidateDismissButton)] = "忽略";
+
+    // 热词纠错（划词纠错按钮 + 纠错对话框 + 保存反馈）
+    table[Index(StringId::kSelectionCorrectionButton)] = "纠错";
+    table[Index(StringId::kCorrectionDialogTitle)] = "热词纠错";
+    table[Index(StringId::kCorrectionWrongLabel)] = "错误文本：";
+    table[Index(StringId::kCorrectionRightLabel)] = "正确文本：";
+    table[Index(StringId::kCorrectionSuggestLabel)] = "AI 建议词汇（点击即保存）：";
+    table[Index(StringId::kCorrectionSuggestLoading)] = "正在获取 AI 建议…";
+    table[Index(StringId::kCorrectionSuggestNone)] = "（暂无建议）";
+    table[Index(StringId::kCorrectionSuggestFailed)] = "AI 建议获取失败";
+    table[Index(StringId::kCorrectionNoKey)] = "未配置 LLM API Key，无法提供 AI 建议";
+    table[Index(StringId::kCorrectionSaveButton)] = "保存纠错";
+    table[Index(StringId::kCorrectionSavedTitle)] = "纠错已保存";
+    table[Index(StringId::kCorrectionSavedBody)] = "已保存纠错规则：";
+    table[Index(StringId::kCorrectionEmptyTitle)] = "无纠错文本";
+    table[Index(StringId::kCorrectionEmptyBody)] = "请输入正确文本。";
+    table[Index(StringId::kCorrectionDuplicateBody)] = "该错误文本已有纠错规则，已更新为：";
 
     // 热词处理（LLM 提炼）
     table[Index(StringId::kHotwordProcessExtracting)] = "热词提炼中…";

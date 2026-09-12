@@ -22,6 +22,7 @@
 #include "hotword_extractor.h"
 #include "hotword_candidate_miner.h"
 #include "hotword_selector.h"
+#include "hotword_suggest_client.h"
 #include "tencent_asr_vocab_client.h"
 #include "key_spec.h"
 #include "llm_refinement_client.h"
@@ -1693,6 +1694,66 @@ void TestHotwordSelector() {
     }
     assert(LoadHotwordUsage(bad_temp).empty());
     std::filesystem::remove(bad_temp);
+}
+
+void TestHotwordCorrections() {
+    // ApplyHotwordCorrections：错误文本 -> 正确文本自动替换。
+    std::map<std::string, std::string> corrections;
+    // 空映射 / 空文本原样返回。
+    assert(ApplyHotwordCorrections("今天天气不错", corrections) == "今天天气不错");
+    corrections["小/zhi"] = "小智";
+    assert(ApplyHotwordCorrections("", corrections).empty());
+    // 基本替换：中文名词。
+    assert(ApplyHotwordCorrections("打开小/zhi的设置", corrections) == "打开小智的设置");
+    // 多次出现全部替换。
+    assert(ApplyHotwordCorrections("小/zhi和小/zhi", corrections) == "小智和小智");
+    // 英文大小写敏感精确匹配。
+    corrections["voicestick"] = "VoiceStick";
+    assert(ApplyHotwordCorrections("voicestick and VoiceStick", corrections) ==
+           "VoiceStick and VoiceStick");
+    // 链式不级联：A->B 与 B->C 同时存在时，"A" 只替换为 "B"（替换结果不二次匹配）。
+    std::map<std::string, std::string> chained;
+    chained["阿尔法"] = "Alpha";
+    chained["Alpha"] = "Beta";
+    assert(ApplyHotwordCorrections("阿尔法", chained) == "Alpha");
+    // UTF-8 多字节边界：替换结果中的字节不会与后续错误文本错误拼接成假命中。
+    std::map<std::string, std::string> utf8_edge;
+    utf8_edge["智"] = "A";
+    utf8_edge["A"] = "B";
+    assert(ApplyHotwordCorrections("智A", utf8_edge) == "AB");
+    assert(ApplyHotwordCorrections("小智", utf8_edge) == "小A");
+
+    // HotwordSuggestClient::ParseSuggestResponse：JSON 数组解析与容错。
+    assert(HotwordSuggestClient::ParseSuggestResponse("[\"小智\", \"小志\"]") ==
+           (std::vector<std::string>{"小智", "小志"}));
+    // 容错：前后包裹解释文字。
+    assert(HotwordSuggestClient::ParseSuggestResponse(
+               "以下是建议：\n[\"VoiceStick\"]\n以上。") ==
+           (std::vector<std::string>{"VoiceStick"}));
+    // 去重（忽略大小写）+ 限量 + 超长过滤 + 非字符串跳过。
+    const std::string dup_response =
+        R"([{"word":"x"}, "小智", "小智", "voicestick", "小智"])";
+    assert(HotwordSuggestClient::ParseSuggestResponse(dup_response) ==
+           (std::vector<std::string>{"小智", "voicestick"}));
+    assert(HotwordSuggestClient::ParseSuggestResponse(
+               "[\"" + std::string(65, 'a') + "\"]").empty());
+    // 无数组 / 非法 JSON 返回空。
+    assert(HotwordSuggestClient::ParseSuggestResponse("no array here").empty());
+    assert(HotwordSuggestClient::ParseSuggestResponse("[broken").empty());
+
+    // TOML 往返：[hotword_corrections] 表 Save/Load。
+    AppConfig config;
+    config.hotword_corrections["小/zhi"] = "小智";
+    config.hotword_corrections["voicestick"] = "VoiceStick";
+    auto roundtrip = std::filesystem::temp_directory_path() /
+                     "voicestick_hotword_corrections_test.toml";
+    std::filesystem::remove(roundtrip);
+    config.Save(roundtrip);
+    const auto loaded_config = AppConfig::Load(roundtrip);
+    assert(loaded_config.hotword_corrections.at("小/zhi") == "小智");
+    assert(loaded_config.hotword_corrections.at("voicestick") == "VoiceStick");
+    assert(loaded_config.hotword_corrections.size() == 2);
+    std::filesystem::remove(roundtrip);
 }
 
 void TestHotwordExtractionPromptAndParse() {
@@ -10160,6 +10221,7 @@ int main() {
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
     TestHotwordSelector();
+    TestHotwordCorrections();
     TestTencentHotwordCharFilter();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();

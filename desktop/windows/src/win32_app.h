@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "battery_monitor_dialog.h"
 #include "cmd_line.h"
+#include "correction_dialog.h"
 #include "encoder_settings_dialog.h"
 #include "firmware_update_dialog.h"
 #include "interaction_settings_dialog.h"
@@ -173,6 +174,7 @@ private:
     std::unique_ptr<OverlayWindow> overlay_;
     std::unique_ptr<SubtitleWindow> subtitles_;
     std::unique_ptr<SelectionHotwordManager> selection_hotword_manager_;
+    std::unique_ptr<CorrectionDialog> correction_dialog_;
     class BleCentralWin* ble_central_ = nullptr;
     // 小米遥控器 F5 抑制：xiaomi_last_mic_open_ms_ 由 BLE 层在 MIC_OPEN 时写入，
     // VoiceF5Suppressor 键盘钩子据此在 80ms 窗内吞掉遥控器附带的 F5 按键。
