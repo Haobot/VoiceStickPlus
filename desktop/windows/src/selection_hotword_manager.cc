@@ -165,7 +165,9 @@ LRESULT CALLBACK SelectionHotwordManager::HelperWndProc(HWND hwnd, UINT msg,
             case kWmPopupCorrectionClicked: {
                 self->HidePopup();
                 std::string text = self->pending_text_;
-                if (self->on_correction_requested) self->on_correction_requested(text);
+                if (self->on_correction_requested) {
+                    self->on_correction_requested(text, self->selection_target_hwnd_);
+                }
                 return 0;
             }
         }
@@ -325,6 +327,9 @@ bool SelectionHotwordManager::IsPointOnPopup(POINT pt) const {
 void SelectionHotwordManager::ShowPopup(const std::string& text, POINT near_pt) {
     if (!popup_hwnd_) return;
     pending_text_ = text;
+    // 记录划词发生时的前台窗口（弹窗自身不抢焦点，此刻前台即划词目标应用）。
+    // 纠错保存后把正确文本粘贴回该窗口的选区，实现错误文本原地替换。
+    selection_target_hwnd_ = GetForegroundWindow();
 
     const int w = Dp(kPopupWidthDp);
     const int h = Dp(kPopupHeightDp);

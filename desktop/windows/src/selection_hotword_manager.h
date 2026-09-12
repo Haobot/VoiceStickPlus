@@ -42,8 +42,9 @@ public:
     std::function<void(const std::string& text)> on_add_hotword;
 
     // 用户点击"纠错"按钮（位于"添加到热词"右侧）时回调，参数为规范化后的
-    // 选中文本（即被识别错误的文本）。调用方负责弹出纠错对话框。
-    std::function<void(const std::string& text)> on_correction_requested;
+    // 选中文本（即被识别错误的文本）与划词发生时的前台窗口（纠错保存后把正确
+    // 文本粘贴回该窗口的选区，实现错误文本原地替换）。调用方负责弹出纠错对话框。
+    std::function<void(const std::string& text, HWND target_hwnd)> on_correction_requested;
 
     static constexpr int kMaxHotwordLen = 64;      // 未启用热词处理：超长选区忽略
     static constexpr int kMaxProcessLen = 2000;    // 启用热词处理：长文送 LLM 提炼
@@ -91,6 +92,7 @@ private:
     UINT_PTR auto_hide_timer_id_ = 0;
     bool popup_visible_ = false;
     std::string pending_text_;       // 弹窗当前对应的选中文本（已规范化）
+    HWND selection_target_hwnd_ = nullptr;  // 划词发生时的前台窗口（纠错回填目标）
     int max_length_ = kMaxHotwordLen;  // 当前生效的划词长度上限
 
     // 静态回调路由：从 HWND 反查 this 指针。窗口创建时存入 GWLP_USERDATA。
