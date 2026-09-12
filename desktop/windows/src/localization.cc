@@ -66,6 +66,22 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsTriggerMode)] = "Trigger Mode";
     table[Index(StringId::kSettingsTriggerModeHold)] = "Hold (WeChat Input Method)";
     table[Index(StringId::kSettingsTriggerModeClick)] = "Click (Typeless, etc.)";
+    table[Index(StringId::kSettingsRenameVirtualMic)] = "Virtual Microphone";
+    table[Index(StringId::kSettingsRenameVirtualMicButton)] = "Show as device name";
+    table[Index(StringId::kRenameVirtualMicConfirmTitle)] = "Rename Virtual Microphone";
+    table[Index(StringId::kRenameVirtualMicConfirmBody)] =
+        "Rename the system virtual microphone (e.g. CABLE Output) to your device name "
+        "(e.g. VS-091C), so it is easy to find in app microphone lists. "
+        "Administrator approval is required; reinstalling VB-CABLE restores the original "
+        "name. Continue?";
+    table[Index(StringId::kRenameVirtualMicSuccess)] =
+        "Virtual microphone renamed. If an app still shows the old name, restart that app.";
+    table[Index(StringId::kRenameVirtualMicFailed)] = "Failed to rename virtual microphone.";
+    table[Index(StringId::kRenameVirtualMicNotFound)] =
+        "Virtual microphone device not found. Please install VB-CABLE first "
+        "(https://vb-audio.com/Cable/), then try again.";
+    table[Index(StringId::kRenameVirtualMicAlreadyNamed)] =
+        "Virtual microphone already shows the device name.";
     table[Index(StringId::kSettingsDebugDir)] = "Audio Folder";
     table[Index(StringId::kSettingsChooseDir)] = "Choose...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "Open Config Folder";
@@ -445,6 +461,19 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsTriggerMode)] = "触发方式";
     table[Index(StringId::kSettingsTriggerModeHold)] = "长按式（微信输入法）";
     table[Index(StringId::kSettingsTriggerModeClick)] = "点按式（Typeless 等）";
+    table[Index(StringId::kSettingsRenameVirtualMic)] = "虚拟麦克风";
+    table[Index(StringId::kSettingsRenameVirtualMicButton)] = "显示为设备名";
+    table[Index(StringId::kRenameVirtualMicConfirmTitle)] = "重命名虚拟麦克风";
+    table[Index(StringId::kRenameVirtualMicConfirmBody)] =
+        "将系统虚拟麦克风（如 CABLE Output）重命名为设备名（如 VS-091C），"
+        "方便在应用的麦克风列表中找到它。需要管理员权限；VB-CABLE 重装后会恢复"
+        "原名。是否继续？";
+    table[Index(StringId::kRenameVirtualMicSuccess)] =
+        "虚拟麦克风已重命名。若应用中仍显示旧名称，请重启该应用。";
+    table[Index(StringId::kRenameVirtualMicFailed)] = "重命名虚拟麦克风失败。";
+    table[Index(StringId::kRenameVirtualMicNotFound)] =
+        "未找到虚拟麦克风设备。请先安装 VB-CABLE（https://vb-audio.com/Cable/）后重试。";
+    table[Index(StringId::kRenameVirtualMicAlreadyNamed)] = "虚拟麦克风已是设备名，无需重命名。";
     table[Index(StringId::kSettingsDebugDir)] = "音频文件夹";
     table[Index(StringId::kSettingsChooseDir)] = "选择...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "打开配置文件夹";

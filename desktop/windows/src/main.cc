@@ -1,6 +1,7 @@
 #include "win32_app.h"
 #include "cmd_line.h"
 #include "log.h"
+#include "virtual_mic_renamer.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -37,6 +38,9 @@ private:
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     // 命令行 --ota <path> [--device <id>]：解析请求，优先转发给已运行实例。
     std::optional<voicestick::OtaCliRequest> ota_request;
+    // 命令行 --rename-virtual-mic <endpoint-id> <name>：提权子进程分支（设置对话框
+    // runas 启动），执行完直接退出——必须在单例 Mutex 之前，与已运行主进程并存。
+    std::optional<voicestick::RenameVirtualMicCliRequest> rename_mic_request;
     // 用 GetCommandLineW 而非 wWinMain 的 command_line 参数：后者不含程序名，
     // CommandLineToArgvW 会把首个参数当作 argv[0]，导致 ParseOtaCliArgs 跳过程序名的约定失效。
     if (PWSTR raw = GetCommandLineW()) {
@@ -44,8 +48,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         wchar_t** argv = CommandLineToArgvW(raw, &argc);
         if (argv) {
             ota_request = voicestick::ParseOtaCliArgs(argc, argv);
+            rename_mic_request = voicestick::ParseRenameVirtualMicArgs(argc, argv);
             LocalFree(argv);
         }
+    }
+    if (rename_mic_request) {
+        return voicestick::RunRenameVirtualMicElevated(rename_mic_request->endpoint_id,
+                                                       rename_mic_request->new_name);
     }
     if (ota_request) {
         // 已有运行实例：WM_COPYDATA 转发后退出，不碰单例 Mutex。

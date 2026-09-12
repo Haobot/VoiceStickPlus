@@ -111,6 +111,7 @@ add_library(voicestick_core
     src/pcm_ring_buffer.cc
     src/power_log_monitor.cc
     src/voice_stick_coordinator.cc
+    src/virtual_mic_renamer.cc
     src/wasapi_virtual_mic_renderer.cc
     src/wechat_input_method_hotkey.cc
     src/device_switch_state.cc

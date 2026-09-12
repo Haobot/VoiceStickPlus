@@ -38,6 +38,7 @@
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
 #include "default_audio_device_controller.h"
+#include "virtual_mic_renamer.h"
 #include "device_switch_state.h"
 #include "debug_audio_recorder.h"
 #include "encoder_speed.h"
@@ -1930,6 +1931,132 @@ void TestParseOtaCliArgs() {
         assert(r->file_path == "C:/fw.bin");
         assert(!r->device_id.has_value());
     }
+}
+
+void TestParseRenameVirtualMicArgs() {
+    using namespace voicestick;
+    // 无 --rename-virtual-mic。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin"};
+        assert(!ParseRenameVirtualMicArgs(3, argv).has_value());
+    }
+    // 基本形态：endpoint id + 无空格名字。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}",
+                                 L"VS-091C"};
+        auto r = ParseRenameVirtualMicArgs(4, argv);
+        assert(r.has_value());
+        assert(r->endpoint_id ==
+               L"{0.0.1.00000000}.{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+        assert(r->new_name == L"VS-091C");
+    }
+    // 含空格名字：剩余参数以空格拼接还原。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{guid}", L"My", L"Stick", L"S3"};
+        auto r = ParseRenameVirtualMicArgs(5, argv);
+        assert(r.has_value());
+        assert(r->new_name == L"My Stick S3");
+    }
+    // 缺 endpoint-id / 缺名字 -> nullopt。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic"};
+        assert(!ParseRenameVirtualMicArgs(2, argv).has_value());
+    }
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{guid}"};
+        assert(!ParseRenameVirtualMicArgs(3, argv).has_value());
+    }
+    // 中文名字（宽字符原样传递）。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{guid}", L"我的语音棒"};
+        auto r = ParseRenameVirtualMicArgs(4, argv);
+        assert(r.has_value());
+        assert(r->new_name == L"我的语音棒");
+    }
+}
+
+void TestVirtualMicRenamerHelpers() {
+    using namespace voicestick;
+    // EndpointRegistryKeyName：endpoint id -> MMDevices 注册表键名。
+    assert(EndpointRegistryKeyName(
+               L"{0.0.1.00000000}.{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}") ==
+           L"{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+    assert(EndpointRegistryKeyName(L"garbage").empty());
+    assert(EndpointRegistryKeyName(L"{0.0.1.00000000}.").empty());
+    assert(EndpointRegistryKeyName(L"{0.0.1.00000000}.nosuffix").empty());
+
+    // WriteEndpointFriendlyNameToRegistry：HKCU 沙箱（HKCU 下 MMDevices 键无系统
+    // 语义，写入无害），写后回读校验，最后清理。
+    const std::wstring endpoint_id = L"{0.0.1.00000000}.{eeeeeeee-0000-0000-0000-000000000001}";
+    const std::wstring key_path = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture\\"
+                                  L"{eeeeeeee-0000-0000-0000-000000000001}\\Properties";
+    assert(WriteEndpointFriendlyNameToRegistry(HKEY_CURRENT_USER, endpoint_id, L"VS-091C"));
+    {
+        HKEY key = nullptr;
+        assert(RegOpenKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, KEY_QUERY_VALUE,
+                             &key) == ERROR_SUCCESS);
+        wchar_t buf[64] = {};
+        DWORD size = sizeof(buf);
+        DWORD type = 0;
+        assert(RegQueryValueExW(key, kEndpointFriendlyNameValueName, nullptr, &type,
+                                reinterpret_cast<BYTE*>(buf), &size) == ERROR_SUCCESS);
+        assert(type == REG_SZ);
+        assert(std::wstring(buf) == L"VS-091C");
+        RegCloseKey(key);
+    }
+    // 覆盖写回新名。
+    assert(WriteEndpointFriendlyNameToRegistry(HKEY_CURRENT_USER, endpoint_id, L"VS-5A74"));
+    {
+        HKEY key = nullptr;
+        assert(RegOpenKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, KEY_QUERY_VALUE,
+                             &key) == ERROR_SUCCESS);
+        wchar_t buf[64] = {};
+        DWORD size = sizeof(buf);
+        assert(RegQueryValueExW(key, kEndpointFriendlyNameValueName, nullptr, nullptr,
+                                reinterpret_cast<BYTE*>(buf), &size) == ERROR_SUCCESS);
+        assert(std::wstring(buf) == L"VS-5A74");
+        RegCloseKey(key);
+    }
+    // 非法 endpoint id 拒写。
+    assert(!WriteEndpointFriendlyNameToRegistry(HKEY_CURRENT_USER, L"garbage", L"X"));
+    // 清理沙箱键（Properties 与父键）。
+    const std::wstring parent_key_path =
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture\\"
+        L"{eeeeeeee-0000-0000-0000-000000000001}";
+    RegDeleteKeyW(HKEY_CURRENT_USER, key_path.c_str());
+    RegDeleteKeyW(HKEY_CURRENT_USER, parent_key_path.c_str());
+
+    // PickVirtualMicDisplayName：无配对设备回退。
+    AppConfig config;
+    assert(PickVirtualMicDisplayName(config) == L"VoiceStick");
+    // 小米遥控器跳过（不做虚拟麦克风直通）。
+    {
+        PairedDeviceEntry rc;
+        rc.device_id = "5E6F";
+        rc.hardware = std::string(kHardwareXiaomiRemote2Pro);
+        rc.name = "RC-5E6F";
+        config.paired_devices.push_back(rc);
+    }
+    assert(PickVirtualMicDisplayName(config) == L"VoiceStick");
+    // StickS3：name 为空时回退 VS-<id>。
+    {
+        PairedDeviceEntry stick;
+        stick.device_id = "5A74";
+        config.paired_devices.push_back(stick);
+    }
+    assert(PickVirtualMicDisplayName(config) == L"VS-5A74");
+    // 有 name 的 StickS3：name 优先，但取第一个匹配到的（前面的 5A74 无 name）。
+    {
+        PairedDeviceEntry stick;
+        stick.device_id = "091C";
+        stick.name = "VS-091C";
+        config.paired_devices.push_back(stick);
+    }
+    assert(PickVirtualMicDisplayName(config) == L"VS-5A74");
 }
 
 void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
@@ -10059,6 +10186,8 @@ int main() {
     TestCoordinatorSyncsInteractionSettingsPerDeviceOverride();
     TestCoordinatorUpdateFirmwareFromFile();
     TestParseOtaCliArgs();
+    TestParseRenameVirtualMicArgs();
+    TestVirtualMicRenamerHelpers();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();
