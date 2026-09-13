@@ -371,6 +371,10 @@ enum class StringId {
     kBatteryMonitorChartTitle,
     // 供电态（USB）10min 自动关机开关（监测窗口右上角勾选框）
     kBatteryMonitorUsbAutoOff,
+    // 开发者模式开关（监测窗口右上角勾选框，供电态开关左侧）：总时长 60 → 10 分钟
+    kBatteryMonitorDevMode,
+    // 开发者模式下的空闲状态说明文案（含时长缩短说明与开始指引）
+    kBatteryMonitorStatusIdleDev,
 
     // 热词预算裁剪提示（前缀 + 「保留数/总数」 + 后缀拼接）
     kHotwordTrimTitle,

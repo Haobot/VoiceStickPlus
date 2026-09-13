@@ -173,6 +173,9 @@ void BatteryMonitorDialog::StartMonitoring() {
     session_start_epoch_s_ = -1;
     state_ = MonitorState::kAnchoring;
     anchor_step_ = 1;
+    // 锁定本轮总周期数（开发者模式 10 分钟 / 默认 60 分钟）。
+    total_cycles_ = dev_mode_ ? kDevModeTotalCycles : kTotalCycles;
+    LogApp("BatteryMonitor: session start total_cycles=" + std::to_string(total_cycles_));
     // 先清空设备端环形区：旧固件在环形区写满后对 offset==total 的增量 dump 不回包，
     // 清空可保证之后以 offset==log_size_ 的增量导出始终有响应（代价是丢弃历史功耗记录）。
     SendCommand(BleProtocol::PowerLogClearPayload());
@@ -279,7 +282,7 @@ void BatteryMonitorDialog::FinishCycle(std::uint32_t total) {
     pending_blob_.clear();
     LogApp("BatteryMonitor: cycle done total=" + std::to_string(total) +
            " new_samples=" + std::to_string(new_samples.size()));
-    if (cycle_ >= kTotalCycles) {
+    if (cycle_ >= total_cycles_) {
         FinishMonitoring();
         return;
     }
@@ -404,7 +407,13 @@ void BatteryMonitorDialog::RefreshStatus() {
     } else {
         switch (state_) {
         case MonitorState::kIdle:
-            text = TrW(StringId::kBatteryMonitorStatusIdle, language);
+            if (dev_mode_) {
+                // 开发者模式说明：总时长缩短 + 快速验证用途。
+                text = TrW(StringId::kBatteryMonitorStatusIdleDev, language);
+            } else {
+                text = FormatText(TrW(StringId::kBatteryMonitorStatusIdle, language),
+                                  {std::to_wstring(kTotalCycles)});
+            }
             break;
         case MonitorState::kAnchoring:
             text = TrW(StringId::kBatteryMonitorStatusAnchoring, language);
@@ -417,9 +426,10 @@ void BatteryMonitorDialog::RefreshStatus() {
             break;
         case MonitorState::kMonitoring:
             text = FormatText(TrW(StringId::kBatteryMonitorStatusMonitoring, language),
-                              {std::to_wstring(cycle_),
-                               std::to_wstring(accumulator_.samples().size()),
-                               FormatCountdownText()});
+                              {std::to_wstring(cycle_),          // {0} 当前周期
+                               std::to_wstring(accumulator_.samples().size()),  // {1} 数据点
+                               FormatCountdownText(),            // {2} 倒计时
+                               std::to_wstring(total_cycles_)});  // {3} 总周期数
             break;
         case MonitorState::kFinished:
             text = FormatText(TrW(StringId::kBatteryMonitorStatusFinished, language),
@@ -442,6 +452,8 @@ void BatteryMonitorDialog::UpdateButtons() {
                          state_ == MonitorState::kWaitingReconnect;
     if (start_button_) EnableWindow(start_button_, !running);
     if (stop_button_) EnableWindow(stop_button_, running);
+    // 总周期数在 StartMonitoring 时锁定：监测中禁用开发者模式切换，避免中途变更语义。
+    if (dev_mode_check_) EnableWindow(dev_mode_check_, !running);
     const bool has_samples = !accumulator_.samples().empty();
     if (export_csv_button_) EnableWindow(export_csv_button_, has_samples);
     if (export_png_button_) EnableWindow(export_png_button_, has_samples);
@@ -607,7 +619,9 @@ void BatteryMonitorDialog::DrawChart(HDC hdc, const RECT& rect) {
     }
     if (y_min >= y_max) y_max = y_min + 200;
 
-    const double x_span_min = static_cast<double>(kTotalCycles);
+    // 横轴量程：本轮总周期数（开发者模式 10 分钟 / 默认 60 分钟）。
+    const int total_cycles = total_cycles_ > 0 ? total_cycles_ : kTotalCycles;
+    const double x_span_min = static_cast<double>(total_cycles);
     const auto x_of = [&](double minutes) {
         return left + static_cast<int>(minutes / x_span_min * plot_w);
     };
@@ -616,13 +630,15 @@ void BatteryMonitorDialog::DrawChart(HDC hdc, const RECT& rect) {
                                          static_cast<double>(y_max - y_min) * plot_h);
     };
 
-    // 网格 + 刻度：X 每 10 分钟一条；Y 步长取 25/50/100/200 中的合适数值。
+    // 网格 + 刻度：X 步长自适应（短时程 1 分钟一条，默认 10 分钟一条）；
+    // Y 步长取 25/50/100/200 中的合适数值。
+    const int x_step_min = total_cycles <= kDevModeTotalCycles ? 1 : 10;
     HPEN grid_pen = CreatePen(PS_SOLID, 1, kChartGrid);
     auto* old_pen = static_cast<HPEN>(SelectObject(hdc, grid_pen));
     SelectObject(hdc, chart_font_);
     SetTextColor(hdc, kChartAxis);
     wchar_t label[32];
-    for (int minutes = 0; minutes <= kTotalCycles; minutes += 10) {
+    for (int minutes = 0; minutes <= total_cycles; minutes += x_step_min) {
         const int x = x_of(minutes);
         MoveToEx(hdc, x, top, nullptr);
         LineTo(hdc, x, bottom);
@@ -911,6 +927,18 @@ INT_PTR BatteryMonitorDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
                 SendCommand(BleProtocol::UsbAutoOffPayload(checked));
             }
             return TRUE;
+        case kIdDevMode:
+            if (HIWORD(w_param) == BN_CLICKED) {
+                // 会话级开关（不下发设备）：勾选后总时长 60 → 10 分钟，仅空闲可切
+                // （UpdateButtons 在监测中禁用复选框），StartMonitoring 时锁定生效值。
+                dev_mode_ =
+                    SendMessageW(dev_mode_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                LogApp(std::string("BatteryMonitor: dev mode ") +
+                       (dev_mode_ ? "on (10 min)" : "off (60 min)"));
+                RefreshStatus();
+                InvalidateChart();  // 横轴量程随总时长切换
+            }
+            return TRUE;
         }
         break;
     case WM_TIMER:
@@ -1060,6 +1088,14 @@ void BatteryMonitorDialog::BuildUi() {
         return control;
     };
 
+    // 右上角：开发者模式开关（供电态开关左侧）：勾选后总时长 60 → 10 分钟。
+    dev_mode_check_ = remember(CreateWindowExW(
+        0, L"BUTTON", TrW(StringId::kBatteryMonitorDevMode, language).c_str(),
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        Dp(kClientWidth - 346), Dp(14), Dp(104), Dp(22), hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDevMode)), instance_, nullptr));
+    SendMessageW(dev_mode_check_, BM_SETCHECK,
+                 dev_mode_ ? BST_CHECKED : BST_UNCHECKED, 0);
     // 右上角：供电态（USB）10min 自动关机开关。
     usb_auto_off_check_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorUsbAutoOff, language).c_str(),
@@ -1117,6 +1153,7 @@ void BatteryMonitorDialog::DestroyControls() {
     status_label_ = nullptr;
     warn_label_ = nullptr;
     usb_auto_off_check_ = nullptr;
+    dev_mode_check_ = nullptr;
     start_button_ = nullptr;
     stop_button_ = nullptr;
     export_csv_button_ = nullptr;
