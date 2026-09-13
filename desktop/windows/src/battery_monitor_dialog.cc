@@ -230,11 +230,14 @@ void BatteryMonitorDialog::ScheduleNextCycle() {
 void BatteryMonitorDialog::StartDumpAttempt() {
     ++attempt_;
     pending_blob_.clear();
-    expected_offset_ = log_size_;
+    // 尚未收到 time_anchor 条目时从条目区头部拉取，确保锚点进入 accumulator：
+    // 锚点缺失时样本算不出墙钟 epoch_s（保持 -1），图表会过滤掉全部数据点。
+    // 重复条目由 ConsumeIncrementalBlob 的 uptime 去重兜底，不会产生重复样本。
+    expected_offset_ = accumulator_.has_anchor() ? log_size_ : kPowerLogStreamHeaderSize;
     dump_active_ = true;
     LogApp("BatteryMonitor: dump attempt=" + std::to_string(attempt_) +
-           " offset=" + std::to_string(log_size_));
-    SendCommand(BleProtocol::PowerLogDumpPayload(log_size_, kDumpChunkMax));
+           " offset=" + std::to_string(expected_offset_));
+    SendCommand(BleProtocol::PowerLogDumpPayload(expected_offset_, kDumpChunkMax));
     SetTimer(hwnd_, kTimerDumpTimeout, kDumpTimeoutMs, nullptr);
     RefreshStatus();
 }
@@ -312,7 +315,12 @@ void BatteryMonitorDialog::OnPowerLogFragment(const std::string& device_id,
         log_size_ = fragment.total;
         state_ = MonitorState::kMonitoring;
         cycle_ = 0;
-        ScheduleNextCycle();  // 首个采集周期 60s 后
+        attempt_ = 0;
+        // 立即拉首次增量（锚点尚未进 accumulator，从条目区头部拉取）：
+        // 一来把 time_anchor 喂给累积器（否则样本算不出 epoch_s，图表无点），
+        // 二来补回锚定/探测阶段设备端已记录的条目；完成后由 FinishCycle
+        // 调度 60s 周期节律。
+        StartDumpAttempt();
         SetTimer(hwnd_, kTimerStatusTick, 1000, nullptr);  // 1s 倒计时刷新
         RefreshStatus();
         UpdateButtons();
