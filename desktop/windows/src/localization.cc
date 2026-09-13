@@ -362,11 +362,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kBatteryMonitorExportPng)] = "Export PNG...";
     table[Index(StringId::kBatteryMonitorClose)] = "Close";
     table[Index(StringId::kBatteryMonitorStatusIdle)] =
-        "Idle. Click Start to run a 60-minute monitoring session (one sample per minute).";
+        "Idle. Click Start to run a {0}-minute monitoring session (one sample per minute).";
     table[Index(StringId::kBatteryMonitorStatusAnchoring)] = "Synchronizing time anchor...";
     table[Index(StringId::kBatteryMonitorStatusProbing)] = "Probing log baseline...";
     table[Index(StringId::kBatteryMonitorStatusMonitoring)] =
-        "Monitoring: cycle {0}/60, {1} points, next sample in {2}";
+        "Monitoring: cycle {0}/{3}, {1} points, next sample in {2}";
     table[Index(StringId::kBatteryMonitorStatusFinished)] =
         "Finished: {0} points collected.";
     table[Index(StringId::kBatteryMonitorStatusError)] = "Aborted: {0}";
@@ -387,6 +387,10 @@ constexpr StringTable EnglishStrings() {
     // {0}=设备ID {1}=点数
     table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} battery voltage ({1} points)";
     table[Index(StringId::kBatteryMonitorUsbAutoOff)] = "Auto power-off on USB (10 min)";
+    table[Index(StringId::kBatteryMonitorDevMode)] = "Developer mode";
+    table[Index(StringId::kBatteryMonitorStatusIdleDev)] =
+        "Developer mode: total duration shortened to 10 minutes (default 60) for quick "
+        "verification. Click Start.";
     table[Index(StringId::kHotwordTrimTitle)] = "Hotword Budget Trimmed";
     table[Index(StringId::kHotwordTrimBodyPrefix)] =
         "Hotwords exceed the per-session budget; kept by usage frequency: ";
@@ -767,11 +771,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kBatteryMonitorExportPng)] = "导出 PNG…";
     table[Index(StringId::kBatteryMonitorClose)] = "关闭";
     table[Index(StringId::kBatteryMonitorStatusIdle)] =
-        "空闲。点击「开始监测」启动 60 分钟监测（每分钟 1 个采样点）。";
+        "空闲。点击「开始监测」启动 {0} 分钟监测（每分钟 1 个采样点）。";
     table[Index(StringId::kBatteryMonitorStatusAnchoring)] = "正在同步时间锚点…";
     table[Index(StringId::kBatteryMonitorStatusProbing)] = "正在探测日志基线…";
     table[Index(StringId::kBatteryMonitorStatusMonitoring)] =
-        "监测中：第 {0}/60 周期，{1} 个数据点，下次采集 {2}";
+        "监测中：第 {0}/{3} 周期，{1} 个数据点，下次采集 {2}";
     table[Index(StringId::kBatteryMonitorStatusFinished)] =
         "监测完成：共 {0} 个数据点。";
     table[Index(StringId::kBatteryMonitorStatusError)] = "已中止：{0}";
@@ -791,6 +795,10 @@ constexpr StringTable ChineseStrings() {
     // {0}=设备ID {1}=点数
     table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} 电池电压监测（{1} 点）";
     table[Index(StringId::kBatteryMonitorUsbAutoOff)] = "供电时10分钟自动关机";
+    table[Index(StringId::kBatteryMonitorDevMode)] = "开发者模式";
+    table[Index(StringId::kBatteryMonitorStatusIdleDev)] =
+        "开发者模式已启用：监测总时长缩短为 10 分钟（默认 60 分钟），用于快速验证链路。"
+        "点击「开始监测」启动。";
     table[Index(StringId::kHotwordTrimTitle)] = "热词预算裁剪";
     table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
     table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";

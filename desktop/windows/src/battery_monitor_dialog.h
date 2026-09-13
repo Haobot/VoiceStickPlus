@@ -34,8 +34,12 @@ public:
     void OnPowerLogFragment(const std::string& device_id, const PowerLogFragment& fragment);
     // 供电态（USB）自动关机开关状态推送，刷新勾选框。
     void OnPowerMgmtState(const std::string& device_id, bool usb_auto_off);
-    // 所有设备已断连（含本设备）：监测中立即按断连错误中止，避免干等导出超时。
+    // 所有设备已断连（含本设备）：监测中转入等待重连（设备端 power_log 持续
+    // 记录，重连后从 log_size_ 增量续传，数据不丢）；启动阶段仍按断连错误中止。
     void NotifyAllDisconnected();
+    // 本设备重新出现在连接列表（win32_app 在 GATT 就绪后才派发）：等待重连态
+    // 立即拉一次增量 dump 补回断连期间数据，随后恢复 60s 周期节律。
+    void NotifyDeviceReconnected();
 
     // 发送 control_rx 命令到本设备（win32_app 桥接到 VoiceStickCoordinator::SendPowerLogCommand）。
     std::function<void(const std::string& device_id, ByteVector payload)> on_send_command;
@@ -44,12 +48,13 @@ public:
 
 private:
     enum class MonitorState {
-        kIdle,        // 空闲（未开始/已停止）
-        kAnchoring,   // 已发 clear，正在写 time_anchor
-        kProbing,     // 已发越界探测 dump，等待 eof 空片拿 total
-        kMonitoring,  // 周期增量导出中
-        kFinished,    // 60 个周期跑完
-        kError,       // 中止（原因见 error_reason_）
+        kIdle,               // 空闲（未开始/已停止）
+        kAnchoring,          // 已发 clear，正在写 time_anchor
+        kProbing,            // 已发越界探测 dump，等待 eof 空片拿 total
+        kMonitoring,         // 周期增量导出中
+        kWaitingReconnect,   // 监测中链路断开：等待设备重连后续传
+        kFinished,           // total_cycles_ 个周期跑完
+        kError,              // 中止（原因见 error_reason_）
     };
 
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -78,7 +83,7 @@ private:
     void UpdateUsbWarning();
     std::wstring FormatCountdownText() const;
 
-    // 图区自绘（GDI，双缓冲）：横轴 0..kTotalCycles 分钟，纵轴数据自适应。
+    // 图区自绘（GDI，双缓冲）：横轴 0..total_cycles_ 分钟，纵轴数据自适应。
     RECT ChartRect() const;
     void InvalidateChart();
     void DrawChart(HDC hdc, const RECT& rect);
@@ -102,6 +107,7 @@ private:
     HWND status_label_ = nullptr;
     HWND warn_label_ = nullptr;
     HWND usb_auto_off_check_ = nullptr;
+    HWND dev_mode_check_ = nullptr;
     HWND start_button_ = nullptr;
     HWND stop_button_ = nullptr;
     HWND export_csv_button_ = nullptr;
@@ -124,6 +130,8 @@ private:
     std::uint32_t expected_offset_ = 0;  // 下一分片期望 offset
     ULONGLONG next_cycle_tick_ = 0;      // 下次采集的 GetTickCount64 时刻（倒计时显示用）
     bool usb_auto_off_state_ = false;    // 最近一次设备上报的供电态自动关机开关状态
+    bool dev_mode_ = false;              // 开发者模式（会话级）：总时长 60 → 10 分钟
+    int total_cycles_ = kTotalCycles;    // 本轮监测总周期数（分钟），StartMonitoring 时锁定
     std::wstring status_override_;       // 保存结果等瞬态文案（非监测态优先于状态文案显示）
     std::int64_t session_start_epoch_s_ = -1;  // 会话起点（time_anchor 下发的 epoch），图区横轴基准
 
@@ -136,6 +144,7 @@ private:
     static constexpr UINT kIdExportPng = 2113;
     static constexpr UINT kIdClose = 2114;
     static constexpr UINT kIdUsbAutoOff = 2115;
+    static constexpr UINT kIdDevMode = 2116;
 
     static constexpr UINT_PTR kTimerAnchorStep = 1;
     static constexpr UINT_PTR kTimerProbeTimeout = 2;
@@ -145,7 +154,8 @@ private:
 
     static constexpr std::uint32_t kProbeOffset = 1000000000;  // 越界 offset：只探测 total 不传数据
     static constexpr std::uint32_t kDumpChunkMax = 160;        // 单片原始字节上限（协议 ≤160）
-    static constexpr int kTotalCycles = 60;                    // 60 分钟 × 每分钟 1 个周期
+    static constexpr int kTotalCycles = 60;                    // 默认 60 分钟 × 每分钟 1 个周期
+    static constexpr int kDevModeTotalCycles = 10;              // 开发者模式：10 分钟快速验证
     static constexpr UINT kCycleIntervalMs = 60000;
     static constexpr UINT kAnchorStepMs = 400;                 // clear → 锚点 → 探测的间隔
     static constexpr UINT kProbeTimeoutMs = 20000;

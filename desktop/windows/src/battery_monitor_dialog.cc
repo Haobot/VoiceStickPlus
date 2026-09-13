@@ -1,6 +1,7 @@
 #include "battery_monitor_dialog.h"
 
 #include "dpi_util.h"
+#include "log.h"
 
 #include <Windows.h>
 #include <commdlg.h>
@@ -172,6 +173,9 @@ void BatteryMonitorDialog::StartMonitoring() {
     session_start_epoch_s_ = -1;
     state_ = MonitorState::kAnchoring;
     anchor_step_ = 1;
+    // 锁定本轮总周期数（开发者模式 10 分钟 / 默认 60 分钟）。
+    total_cycles_ = dev_mode_ ? kDevModeTotalCycles : kTotalCycles;
+    LogApp("BatteryMonitor: session start total_cycles=" + std::to_string(total_cycles_));
     // 先清空设备端环形区：旧固件在环形区写满后对 offset==total 的增量 dump 不回包，
     // 清空可保证之后以 offset==log_size_ 的增量导出始终有响应（代价是丢弃历史功耗记录）。
     SendCommand(BleProtocol::PowerLogClearPayload());
@@ -229,9 +233,14 @@ void BatteryMonitorDialog::ScheduleNextCycle() {
 void BatteryMonitorDialog::StartDumpAttempt() {
     ++attempt_;
     pending_blob_.clear();
-    expected_offset_ = log_size_;
+    // 尚未收到 time_anchor 条目时从条目区头部拉取，确保锚点进入 accumulator：
+    // 锚点缺失时样本算不出墙钟 epoch_s（保持 -1），图表会过滤掉全部数据点。
+    // 重复条目由 ConsumeIncrementalBlob 的 uptime 去重兜底，不会产生重复样本。
+    expected_offset_ = accumulator_.has_anchor() ? log_size_ : kPowerLogStreamHeaderSize;
     dump_active_ = true;
-    SendCommand(BleProtocol::PowerLogDumpPayload(log_size_, kDumpChunkMax));
+    LogApp("BatteryMonitor: dump attempt=" + std::to_string(attempt_) +
+           " offset=" + std::to_string(expected_offset_));
+    SendCommand(BleProtocol::PowerLogDumpPayload(expected_offset_, kDumpChunkMax));
     SetTimer(hwnd_, kTimerDumpTimeout, kDumpTimeoutMs, nullptr);
     RefreshStatus();
 }
@@ -240,6 +249,8 @@ void BatteryMonitorDialog::HandleDumpFailure() {
     KillTimer(hwnd_, kTimerDumpTimeout);
     dump_active_ = false;
     pending_blob_.clear();
+    LogApp("BatteryMonitor: dump timeout attempt=" + std::to_string(attempt_) +
+           " failed_cycles=" + std::to_string(failed_cycles_ + 1));
     if (attempt_ < kMaxAttemptsPerCycle) {
         StartDumpAttempt();  // 周期内立即重试
         return;
@@ -269,7 +280,9 @@ void BatteryMonitorDialog::FinishCycle(std::uint32_t total) {
     log_size_ = total;
     failed_cycles_ = 0;
     pending_blob_.clear();
-    if (cycle_ >= kTotalCycles) {
+    LogApp("BatteryMonitor: cycle done total=" + std::to_string(total) +
+           " new_samples=" + std::to_string(new_samples.size()));
+    if (cycle_ >= total_cycles_) {
         FinishMonitoring();
         return;
     }
@@ -305,7 +318,12 @@ void BatteryMonitorDialog::OnPowerLogFragment(const std::string& device_id,
         log_size_ = fragment.total;
         state_ = MonitorState::kMonitoring;
         cycle_ = 0;
-        ScheduleNextCycle();  // 首个采集周期 60s 后
+        attempt_ = 0;
+        // 立即拉首次增量（锚点尚未进 accumulator，从条目区头部拉取）：
+        // 一来把 time_anchor 喂给累积器（否则样本算不出 epoch_s，图表无点），
+        // 二来补回锚定/探测阶段设备端已记录的条目；完成后由 FinishCycle
+        // 调度 60s 周期节律。
+        StartDumpAttempt();
         SetTimer(hwnd_, kTimerStatusTick, 1000, nullptr);  // 1s 倒计时刷新
         RefreshStatus();
         UpdateButtons();
@@ -341,11 +359,40 @@ void BatteryMonitorDialog::OnPowerMgmtState(const std::string& device_id, bool u
 }
 
 void BatteryMonitorDialog::NotifyAllDisconnected() {
-    // 监测中设备断连立即中止；非监测态无需处理。
-    if (state_ == MonitorState::kAnchoring || state_ == MonitorState::kProbing ||
-        state_ == MonitorState::kMonitoring) {
+    // 监测中链路断开（Windows 蓝牙栈闪断/设备重启等）不中止监测：设备端
+    // power_log 持续记录，转入等待重连，链路恢复后增量续传补回数据。
+    // 启动阶段（锚定/探测）时间连续性尚在建立，仍按断连错误中止。
+    switch (state_) {
+    case MonitorState::kMonitoring:
+        KillTimer(hwnd_, kTimerCycle);
+        KillTimer(hwnd_, kTimerDumpTimeout);
+        dump_active_ = false;
+        pending_blob_.clear();
+        state_ = MonitorState::kWaitingReconnect;
+        LogApp("BatteryMonitor: link lost while monitoring; waiting reconnect");
+        RefreshStatus();
+        return;
+    case MonitorState::kAnchoring:
+    case MonitorState::kProbing:
+        LogApp("BatteryMonitor: link lost during startup; aborting");
         AbortWithError(StringId::kBatteryMonitorErrDisconnected);
+        return;
+    default:
+        return;
     }
+}
+
+void BatteryMonitorDialog::NotifyDeviceReconnected() {
+    if (state_ != MonitorState::kWaitingReconnect || !hwnd_) return;
+    state_ = MonitorState::kMonitoring;
+    // 链路恢复即拉一次增量 dump：补回断连期间设备端记录的样本，成功后
+    // FinishCycle 重新调度 60s 周期，节律回归；失败走既有重试/兜底路径。
+    // failed_cycles_ 不在此清零：链路反复断连时每次重连都清零会让兜底
+    // 永不触发，监测卡在无限重试循环；只在 dump 成功（FinishCycle）时清零。
+    attempt_ = 0;
+    LogApp("BatteryMonitor: device reconnected; resuming incremental dump");
+    StartDumpAttempt();
+    RefreshStatus();
 }
 
 // ---------------------------------------------------------------- 状态显示
@@ -354,12 +401,19 @@ void BatteryMonitorDialog::RefreshStatus() {
     if (!status_label_) return;
     const auto language = EffectiveUiLanguage(language_);
     std::wstring text;
-    if (!status_override_.empty() && state_ != MonitorState::kMonitoring) {
-        text = status_override_;  // 保存结果等瞬态文案（监测中让位于周期倒计时）
+    if (!status_override_.empty() && state_ != MonitorState::kMonitoring &&
+        state_ != MonitorState::kWaitingReconnect) {
+        text = status_override_;  // 保存结果等瞬态文案（监测/等待重连态让位于状态文案）
     } else {
         switch (state_) {
         case MonitorState::kIdle:
-            text = TrW(StringId::kBatteryMonitorStatusIdle, language);
+            if (dev_mode_) {
+                // 开发者模式说明：总时长缩短 + 快速验证用途。
+                text = TrW(StringId::kBatteryMonitorStatusIdleDev, language);
+            } else {
+                text = FormatText(TrW(StringId::kBatteryMonitorStatusIdle, language),
+                                  {std::to_wstring(kTotalCycles)});
+            }
             break;
         case MonitorState::kAnchoring:
             text = TrW(StringId::kBatteryMonitorStatusAnchoring, language);
@@ -367,11 +421,15 @@ void BatteryMonitorDialog::RefreshStatus() {
         case MonitorState::kProbing:
             text = TrW(StringId::kBatteryMonitorStatusProbing, language);
             break;
+        case MonitorState::kWaitingReconnect:
+            text = TrW(StringId::kBatteryMonitorStatusWaitingReconnect, language);
+            break;
         case MonitorState::kMonitoring:
             text = FormatText(TrW(StringId::kBatteryMonitorStatusMonitoring, language),
-                              {std::to_wstring(cycle_),
-                               std::to_wstring(accumulator_.samples().size()),
-                               FormatCountdownText()});
+                              {std::to_wstring(cycle_),          // {0} 当前周期
+                               std::to_wstring(accumulator_.samples().size()),  // {1} 数据点
+                               FormatCountdownText(),            // {2} 倒计时
+                               std::to_wstring(total_cycles_)});  // {3} 总周期数
             break;
         case MonitorState::kFinished:
             text = FormatText(TrW(StringId::kBatteryMonitorStatusFinished, language),
@@ -390,9 +448,12 @@ void BatteryMonitorDialog::RefreshStatus() {
 void BatteryMonitorDialog::UpdateButtons() {
     const bool running = state_ == MonitorState::kAnchoring ||
                          state_ == MonitorState::kProbing ||
-                         state_ == MonitorState::kMonitoring;
+                         state_ == MonitorState::kMonitoring ||
+                         state_ == MonitorState::kWaitingReconnect;
     if (start_button_) EnableWindow(start_button_, !running);
     if (stop_button_) EnableWindow(stop_button_, running);
+    // 总周期数在 StartMonitoring 时锁定：监测中禁用开发者模式切换，避免中途变更语义。
+    if (dev_mode_check_) EnableWindow(dev_mode_check_, !running);
     const bool has_samples = !accumulator_.samples().empty();
     if (export_csv_button_) EnableWindow(export_csv_button_, has_samples);
     if (export_png_button_) EnableWindow(export_png_button_, has_samples);
@@ -406,7 +467,8 @@ void BatteryMonitorDialog::UpdateUsbWarning() {
     const bool usb_powered = !samples.empty() && samples.back().usb_powered;
     const bool active = state_ == MonitorState::kAnchoring ||
                         state_ == MonitorState::kProbing ||
-                        state_ == MonitorState::kMonitoring;
+                        state_ == MonitorState::kMonitoring ||
+                        state_ == MonitorState::kWaitingReconnect;
     ShowWindow(warn_label_,
                (active && (usb_powered || usb_auto_off_state_)) ? SW_SHOW : SW_HIDE);
 }
@@ -557,7 +619,9 @@ void BatteryMonitorDialog::DrawChart(HDC hdc, const RECT& rect) {
     }
     if (y_min >= y_max) y_max = y_min + 200;
 
-    const double x_span_min = static_cast<double>(kTotalCycles);
+    // 横轴量程：本轮总周期数（开发者模式 10 分钟 / 默认 60 分钟）。
+    const int total_cycles = total_cycles_ > 0 ? total_cycles_ : kTotalCycles;
+    const double x_span_min = static_cast<double>(total_cycles);
     const auto x_of = [&](double minutes) {
         return left + static_cast<int>(minutes / x_span_min * plot_w);
     };
@@ -566,13 +630,15 @@ void BatteryMonitorDialog::DrawChart(HDC hdc, const RECT& rect) {
                                          static_cast<double>(y_max - y_min) * plot_h);
     };
 
-    // 网格 + 刻度：X 每 10 分钟一条；Y 步长取 25/50/100/200 中的合适数值。
+    // 网格 + 刻度：X 步长自适应（短时程 1 分钟一条，默认 10 分钟一条）；
+    // Y 步长取 25/50/100/200 中的合适数值。
+    const int x_step_min = total_cycles <= kDevModeTotalCycles ? 1 : 10;
     HPEN grid_pen = CreatePen(PS_SOLID, 1, kChartGrid);
     auto* old_pen = static_cast<HPEN>(SelectObject(hdc, grid_pen));
     SelectObject(hdc, chart_font_);
     SetTextColor(hdc, kChartAxis);
     wchar_t label[32];
-    for (int minutes = 0; minutes <= kTotalCycles; minutes += 10) {
+    for (int minutes = 0; minutes <= total_cycles; minutes += x_step_min) {
         const int x = x_of(minutes);
         MoveToEx(hdc, x, top, nullptr);
         LineTo(hdc, x, bottom);
@@ -861,6 +927,18 @@ INT_PTR BatteryMonitorDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
                 SendCommand(BleProtocol::UsbAutoOffPayload(checked));
             }
             return TRUE;
+        case kIdDevMode:
+            if (HIWORD(w_param) == BN_CLICKED) {
+                // 会话级开关（不下发设备）：勾选后总时长 60 → 10 分钟，仅空闲可切
+                // （UpdateButtons 在监测中禁用复选框），StartMonitoring 时锁定生效值。
+                dev_mode_ =
+                    SendMessageW(dev_mode_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                LogApp(std::string("BatteryMonitor: dev mode ") +
+                       (dev_mode_ ? "on (10 min)" : "off (60 min)"));
+                RefreshStatus();
+                InvalidateChart();  // 横轴量程随总时长切换
+            }
+            return TRUE;
         }
         break;
     case WM_TIMER:
@@ -1010,6 +1088,14 @@ void BatteryMonitorDialog::BuildUi() {
         return control;
     };
 
+    // 右上角：开发者模式开关（供电态开关左侧）：勾选后总时长 60 → 10 分钟。
+    dev_mode_check_ = remember(CreateWindowExW(
+        0, L"BUTTON", TrW(StringId::kBatteryMonitorDevMode, language).c_str(),
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        Dp(kClientWidth - 346), Dp(14), Dp(104), Dp(22), hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDevMode)), instance_, nullptr));
+    SendMessageW(dev_mode_check_, BM_SETCHECK,
+                 dev_mode_ ? BST_CHECKED : BST_UNCHECKED, 0);
     // 右上角：供电态（USB）10min 自动关机开关。
     usb_auto_off_check_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorUsbAutoOff, language).c_str(),
@@ -1067,6 +1153,7 @@ void BatteryMonitorDialog::DestroyControls() {
     status_label_ = nullptr;
     warn_label_ = nullptr;
     usb_auto_off_check_ = nullptr;
+    dev_mode_check_ = nullptr;
     start_button_ = nullptr;
     stop_button_ = nullptr;
     export_csv_button_ = nullptr;

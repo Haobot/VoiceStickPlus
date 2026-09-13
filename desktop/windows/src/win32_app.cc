@@ -582,12 +582,21 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
         UpdateTrayIcon();
-        // 电池电压监测窗口：监测中设备断连立即中止（避免干等导出超时）。
+        // 电池电压监测窗口：监测中链路断开时转入等待重连（设备端 power_log
+        // 持续记录，数据不丢）；设备重新在线（GATT 已就绪）时恢复增量续传。
         if (battery_monitor_dialog_) {
+            bool monitor_device_connected = false;
             for (const auto& dev : devices) {
-                if (battery_monitor_dialog_->IsSameDevice(dev.id)) return;
+                if (battery_monitor_dialog_->IsSameDevice(dev.id)) {
+                    monitor_device_connected = true;
+                    break;
+                }
             }
-            battery_monitor_dialog_->NotifyAllDisconnected();
+            if (monitor_device_connected) {
+                battery_monitor_dialog_->NotifyDeviceReconnected();
+            } else {
+                battery_monitor_dialog_->NotifyAllDisconnected();
+            }
         }
         // 命令行 --ota 自启动场景：连上设备后触发 pending 请求。
         if (pending_ota_request_ && !connected_devices_.empty()) {
