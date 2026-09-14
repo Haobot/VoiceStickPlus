@@ -329,6 +329,9 @@ public:
                                std::function<void(FirmwareUpdateProgress)> progress,
                                std::function<void(bool, std::string)> completion);
     void CancelFirmwareUpdate();
+    // 当前已连接设备 ID 列表（on_connection_change 时刷新；只读访问，
+    // 供 app shell 侧装配授权绑定键等设备相关查询）。
+    const std::vector<std::string>& ConnectedDeviceIds() const { return connected_device_ids_; }
 
     static OverlayThemeColor ThemeColorForConfig(const AppConfig& config, const std::string& device_id);
 

@@ -282,6 +282,8 @@ add_executable(VoiceStickApp WIN32
     src/voice_f5_suppressor.cc
     src/xiaomi_keymap_hook.cc
     src/mic_mode_hotkey.cc
+    src/machine_guid_win.cc
+    src/license_runtime.cc
     resources/VoiceStick.rc
 )
 
