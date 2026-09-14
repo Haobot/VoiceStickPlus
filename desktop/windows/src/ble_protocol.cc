@@ -494,4 +494,24 @@ std::optional<DeviceClass> BleProtocol::DeviceClassFromName(std::string_view nam
     return std::nullopt;
 }
 
+ConnectFailureReconnectPlan BleProtocol::PlanReconnectAfterConnectFailure(
+    std::string_view failure_reason,
+    bool device_still_paired,
+    bool zombie_free_retry,
+    std::chrono::milliseconds failure_cooldown) {
+    // 2026-09-14 事故定案：开机自启的启动直连失败后无人重试——小米遥控器被
+    // 系统 HID 连上后不再广播，扫描路径与仅由广播触发的主动重连入队都永远
+    // 等不到，应用停在「正在连接...」直到手动忘记重配。凡非取消、仍配对的
+    // 失败一律入队心跳兜底直连；设备到位（含已被系统 HID 连上）后一次成功。
+    // 取消优先于一切：用户主动取消的连接不得被自动重试复活。
+    if (failure_reason == kConnectFailureReasonCancelled || !device_still_paired) {
+        return {};
+    }
+    ConnectFailureReconnectPlan plan;
+    plan.schedule = true;
+    // 僵尸拆链免退避窗口与失败退避互斥：免退避路径立即到期，心跳下一跳即重试。
+    plan.delay = zombie_free_retry ? std::chrono::milliseconds(0) : failure_cooldown;
+    return plan;
+}
+
 } // namespace voicestick

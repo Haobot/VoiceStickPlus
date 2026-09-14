@@ -2,6 +2,7 @@
 
 #include "byte_utils.h"
 
+#include <chrono>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +20,17 @@ enum class DeviceClass {
 // StickS3 固件在 device_info 中自报 "stick_s3"；小米遥控器无固件版本概念，
 // 由桌面端合成 device_info 时填入本常量。
 inline constexpr std::string_view kHardwareXiaomiRemote2Pro = "xiaomi_remote_2_pro";
+
+// 直连失败后的主动重连调度决策（PlanReconnectAfterConnectFailure 的返回值）：
+// schedule=false 不重试；否则 delay 毫秒后由 BleCentralWin 心跳按地址兜底直连。
+struct ConnectFailureReconnectPlan {
+    bool schedule = false;
+    std::chrono::milliseconds delay{0};
+};
+
+// 连接失败 reason 中代表「用户主动取消」的标识（CancelPendingConnect 路径
+// 的 fail 调用统一使用该字面量，纯函数据此拒绝对已取消连接自动重连）。
+inline constexpr std::string_view kConnectFailureReasonCancelled = "cancelled";
 
 struct AudioFrame {
     std::uint32_t session_id = 0;
@@ -150,6 +162,13 @@ public:
     static bool IsXiaomiRemoteName(std::string_view name);
     // 名称 → 设备类别：白名单或 RC- 前缀 → 小米；VS- 前缀 → StickS3；其余 nullopt。
     static std::optional<DeviceClass> DeviceClassFromName(std::string_view name);
+    // 直连失败后是否入队主动重连（心跳兜底直连）及首次重试延迟。决策抽纯函数
+    // 便于单测；消费方为 BleCentralWin 连接失败路径。
+    static ConnectFailureReconnectPlan PlanReconnectAfterConnectFailure(
+        std::string_view failure_reason,
+        bool device_still_paired,
+        bool zombie_free_retry,
+        std::chrono::milliseconds failure_cooldown);
 };
 
 } // namespace voicestick

@@ -75,6 +75,9 @@ constexpr std::chrono::milliseconds kReconnectSettleDelay{1500};
 constexpr std::int64_t kZombieFreshThresholdMs{45000};
 // 主动重连单地址重试间隔：一次直连失败后等下一轮心跳再试，避免热循环。
 constexpr std::chrono::seconds kProactiveReconnectRetry{60};
+// 连接失败后的退避期：扫描→立即重试→再失败的 tight-loop 防护。5 秒足以让
+// Windows BLE 栈从异常状态中恢复；同时也是失败入队主动重连的首次重试延迟。
+constexpr std::chrono::seconds kConnectFailureCooldown{5};
 
 // 链上首个 ATT 操作（state 订阅）的应用层超时。正常几十 ms 完成；撞上未死
 // 僵尸链路时 OS 要 ~3.5-4s 才宣告断连，这里 2.5s 提前取消并走失败路径，
@@ -1375,9 +1378,12 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         s->session_status_token = {};
     };
 
-    auto fail = [this, bluetooth_address, device_id, session, detach_device_handlers,
+    auto fail = [this, bluetooth_address, address_kind, device_id, session,
+                 detach_device_handlers,
                  detach_session_status_handler](const std::string& message) {
         int zombie_free_retry = 0;
+        bool reconnect_queued = false;
+        std::chrono::milliseconds reconnect_delay{};
         {
             std::lock_guard lock(mutex_);
             auto mark = zombie_suspect_marks_.find(bluetooth_address);
@@ -1392,13 +1398,31 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 if (mark != zombie_suspect_marks_.end()) {
                     zombie_suspect_marks_.erase(mark);
                 }
-                // 连接失败后设置 5 秒退避期，防止扫描→立即重试→再失败的
-                // tight-loop。5 秒足以让 Windows BLE 栈从异常状态中恢复。
+                // 连接失败后设置退避期，防止扫描→立即重试→再失败的
+                // tight-loop。退避期内 Windows BLE 栈得以从异常状态中恢复。
                 connect_cooldown_until_[bluetooth_address] =
-                    std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    std::chrono::steady_clock::now() + kConnectFailureCooldown;
             }
             connecting_addresses_.erase(bluetooth_address);
             cancelled_device_ids_.erase(device_id);
+            // 失败即入队主动重连（2026-09-14 定案，详见
+            // PlanReconnectAfterConnectFailure 注释）：广播触发的重连对「设备
+            // 在场但不广播」天然失明（小米被系统 HID 连上即停广播），心跳按
+            // 地址直连是唯一可靠兜底。取消/已忘记由纯函数守卫拦下。
+            const auto plan = BleProtocol::PlanReconnectAfterConnectFailure(
+                message, paired_device_ids_.contains(device_id),
+                zombie_free_retry > 0, kConnectFailureCooldown);
+            if (plan.schedule) {
+                BleCentralWin::ProactiveReconnect pending;
+                pending.device_id = device_id;
+                pending.address_kind = address_kind;
+                pending.device_class = session->device_class;
+                pending.not_before =
+                    std::chrono::steady_clock::now() + plan.delay;
+                pending_proactive_reconnects_[bluetooth_address] = std::move(pending);
+                reconnect_queued = true;
+                reconnect_delay = plan.delay;
+            }
         }
         detach_device_handlers(session);
         detach_session_status_handler(session);
@@ -1424,6 +1448,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                    (zombie_free_retry > 0
                         ? " [zombie-suspect: no cooldown, immediate retry #" +
                               std::to_string(zombie_free_retry) + "]"
+                        : "") +
+                   (reconnect_queued
+                        ? " [proactive reconnect queued in " +
+                              std::to_string(reconnect_delay.count()) + "ms]"
                         : ""));
         if (on_connection_error) on_connection_error(device_id, message);
     };
@@ -1578,7 +1606,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     cancelled = cancelled_device_ids_.contains(device_id);
                 }
                 if (cancelled) {
-                    fail("cancelled");
+                    fail(std::string(kConnectFailureReasonCancelled));
                     co_return;
                 }
             }
@@ -1606,7 +1634,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     }
                     if (cancelled) {
                         async_op.Cancel();
-                        fail("cancelled");
+                        fail(std::string(kConnectFailureReasonCancelled));
                         co_return;
                     }
                 }
@@ -3005,7 +3033,7 @@ void BleCentralWin::RunDueProactiveReconnects() {
             info.device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-";
         LogBleLine("proactive reconnect " + std::string(id_prefix) + info.device_id +
                    " address=" + FormatBluetoothAddress(address) +
-                   " (zombie teardown recovery; device not advertising)");
+                   " (heartbeat fallback: stale-session teardown or connect-failure retry)");
         DispatchToUiThread([this, address, info] {
             ConnectPairedDevice(info.device_id, address, info.address_kind,
                                 std::string(), info.device_class);

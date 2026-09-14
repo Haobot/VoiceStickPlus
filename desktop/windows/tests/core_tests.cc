@@ -746,6 +746,40 @@ void TestDeviceIds() {
     assert(BleProtocol::DeviceIdFromBluetoothAddress(0xAABBCCDDEEFF) == "EEFF");
 }
 
+void TestPlanReconnectAfterConnectFailure() {
+    using namespace std::chrono_literals;
+    const auto cooldown = 5s;
+    const std::string_view subscribe_timeout =
+        "atvv control subscribe timeout after 2500ms";
+
+    // 用户主动取消（CancelPendingConnect → fail(kConnectFailureReasonCancelled)）：不得自动重连。
+    const auto cancelled_plan = BleProtocol::PlanReconnectAfterConnectFailure(
+        kConnectFailureReasonCancelled, true, false, cooldown);
+    assert(!cancelled_plan.schedule);
+
+    // 失败时设备已被忘记（paired 集合不再包含）：重连只会对着空座位喊话。
+    const auto unpaired_plan = BleProtocol::PlanReconnectAfterConnectFailure(
+        subscribe_timeout, false, false, cooldown);
+    assert(!unpaired_plan.schedule);
+
+    // 常规失败：仍配对则入队主动重连，等待一个失败退避期再由心跳发起。
+    const auto normal_plan = BleProtocol::PlanReconnectAfterConnectFailure(
+        subscribe_timeout, true, false, cooldown);
+    assert(normal_plan.schedule);
+    assert(normal_plan.delay == cooldown);
+
+    // 僵尸拆链免退避窗口：与失败退避互斥，入队后立即到期，心跳下一跳即重试。
+    const auto zombie_plan = BleProtocol::PlanReconnectAfterConnectFailure(
+        subscribe_timeout, true, true, cooldown);
+    assert(zombie_plan.schedule);
+    assert(zombie_plan.delay == 0ms);
+
+    // 取消语义优先级最高：即便设备仍配对、处于僵尸免退避窗口也不重试。
+    const auto cancelled_zombie_plan = BleProtocol::PlanReconnectAfterConnectFailure(
+        kConnectFailureReasonCancelled, true, true, cooldown);
+    assert(!cancelled_zombie_plan.schedule);
+}
+
 void TestPairDeviceHelpers() {
     assert(ParseManualPairDeviceId("abcd").value() == "ABCD");
     assert(ParseManualPairDeviceId("VS-abcd").value() == "ABCD");
@@ -14373,6 +14407,7 @@ int main() {
     // stdout 重定向到文件时默认全缓冲，断言 abort 会丢掉之前的进度输出。
     setvbuf(stdout, nullptr, _IONBF, 0);
     TestDeviceIds();
+    TestPlanReconnectAfterConnectFailure();
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();
     TestPowerLogMonitor();
