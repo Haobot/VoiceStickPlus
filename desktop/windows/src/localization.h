@@ -444,6 +444,21 @@ enum class StringId {
     kSelectionCorrectionLoading,
     kSelectionCorrectionNoCandidates,
     kSelectionCorrectionManualLabel,
+
+    // 离线授权（Doc/Plan/offline-license-activation.md）
+    kLicenseSectionTitle,        // "License" / "授权"
+    kLicenseStatusTrial,         // "Trial: %d days remaining" / "试用剩余 %d 天"
+    kLicenseStatusActive,        // "Licensed until %s" / "已授权至 %s"
+    kLicenseStatusPerpetual,     // "Licensed (perpetual)" / "已授权（买断）"
+    kLicenseStatusExpired,       // "License expired" / "授权已到期，请购买续期"
+    kLicenseActivateButton,      // "Activate..." / "激活…"
+    kLicenseActivatePrompt,      // "Enter license key:" / "请输入授权码："
+    kLicenseActivateSuccess,     // "License activated." / "激活成功"
+    kLicenseActivateFailFormat,  // "Invalid license key format." / "授权码格式无效"
+    kLicenseActivateFailBinding, // "This key is bound to another device/machine." / "该授权码绑定了其他设备/电脑"
+    kLicenseActivateFailExpired, // "This license key has expired." / "该授权码已过期"
+    kLicenseDeviceRequired,      // "Connect your paired voice device first." / "请先连接已配对的语音设备"
+    kLicenseLocalBlocked,        // "Local ASR requires an active license (trial expired)." / "本地语音识别需要有效授权（试用已到期）"
 };
 
 // 返回 UTF-8 本地化文本

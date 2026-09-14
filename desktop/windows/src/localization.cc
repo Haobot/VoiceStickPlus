@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionCorrectionManualLabel) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kLicenseLocalBlocked) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -459,6 +459,22 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSelectionCorrectionNoCandidates)] =
         "No candidates; type the correct word below";
     table[Index(StringId::kSelectionCorrectionManualLabel)] = "Correct word:";
+    table[Index(StringId::kLicenseSectionTitle)] = "License";
+    table[Index(StringId::kLicenseStatusTrial)] = "Trial: %d days remaining";
+    table[Index(StringId::kLicenseStatusActive)] = "Licensed until %s";
+    table[Index(StringId::kLicenseStatusPerpetual)] = "Licensed (perpetual)";
+    table[Index(StringId::kLicenseStatusExpired)] = "License expired";
+    table[Index(StringId::kLicenseActivateButton)] = "Activate...";
+    table[Index(StringId::kLicenseActivatePrompt)] = "Enter license key:";
+    table[Index(StringId::kLicenseActivateSuccess)] = "License activated.";
+    table[Index(StringId::kLicenseActivateFailFormat)] = "Invalid license key format.";
+    table[Index(StringId::kLicenseActivateFailBinding)] =
+        "This key is bound to another device/machine.";
+    table[Index(StringId::kLicenseActivateFailExpired)] = "This license key has expired.";
+    table[Index(StringId::kLicenseDeviceRequired)] =
+        "Connect your paired voice device first.";
+    table[Index(StringId::kLicenseLocalBlocked)] =
+        "Local ASR requires an active license (trial expired).";
     return table;
 }
 
@@ -890,6 +906,19 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSelectionCorrectionNoCandidates)] =
         "无候选，请在下方输入正确词";
     table[Index(StringId::kSelectionCorrectionManualLabel)] = "正确词：";
+    table[Index(StringId::kLicenseSectionTitle)] = "授权";
+    table[Index(StringId::kLicenseStatusTrial)] = "试用剩余 %d 天";
+    table[Index(StringId::kLicenseStatusActive)] = "已授权至 %s";
+    table[Index(StringId::kLicenseStatusPerpetual)] = "已授权（买断）";
+    table[Index(StringId::kLicenseStatusExpired)] = "授权已到期，请购买续期";
+    table[Index(StringId::kLicenseActivateButton)] = "激活…";
+    table[Index(StringId::kLicenseActivatePrompt)] = "请输入授权码：";
+    table[Index(StringId::kLicenseActivateSuccess)] = "激活成功";
+    table[Index(StringId::kLicenseActivateFailFormat)] = "授权码格式无效";
+    table[Index(StringId::kLicenseActivateFailBinding)] = "该授权码绑定了其他设备/电脑";
+    table[Index(StringId::kLicenseActivateFailExpired)] = "该授权码已过期";
+    table[Index(StringId::kLicenseDeviceRequired)] = "请先连接已配对的语音设备";
+    table[Index(StringId::kLicenseLocalBlocked)] = "本地语音识别需要有效授权（试用已到期）";
     return table;
 }
 

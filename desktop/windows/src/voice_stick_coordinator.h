@@ -254,6 +254,10 @@ public:
     // config [local_asr] enabled=false 时按住说话热键完全旁路。
     void SetLocalMicRuntime(std::unique_ptr<IMicCapture> capture,
                             std::unique_ptr<AsrClient> local_asr);
+    // 本地引擎授权闸（app shell 注入；空 = 放行，默认空不影响既有行为）：
+    // 会话将路由本地引擎（local-mic 或 [local_asr].enabled 的设备会话）且闸返回
+    // false 时，通知用户并放弃本次会话。见 Doc/Plan/offline-license-activation.md。
+    void SetLicenseGate(std::function<bool()> allow_local_asr);
     // 方案 A 停止宽限：keyup 先于采集停止发出后，保留音频流至多这么久再停采
     // （模拟物理松开时麦克风仍在供电的语义，WeType finalize/commit 依赖）。
     // 须在 Start 前调用；测试注入 0 以免拖慢单测，生产默认见成员定义。
@@ -739,6 +743,8 @@ private:
     std::unique_ptr<AsrClient> local_asr_;
     // 本地文本精修客户端（外壳注入，本地识别会话专用）。
     std::unique_ptr<LocalRefinementClient> local_refiner_;
+    // 本地引擎授权闸（外壳注入；空 = 放行）。见 SetLicenseGate。
+    std::function<bool()> allow_local_asr_;
     // 跨轮上下文纠错历史（refine_cross_turn 开关，方案 §3.4）：全局单缓冲
     // 最近 5 轮 + 2 分钟 TTL；Turns() 供引擎续写重放，Add 由精修完成回调
     // 写入（取消轮不写入）。线程安全（会话线程读/精修后台线程写）。

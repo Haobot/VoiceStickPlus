@@ -13089,6 +13089,74 @@ void TestCoordinatorLocalMicSessionRoutesToLocalAsr() {
     assert(ui.hide_overlay_count == 1);
 }
 
+// 离线授权闸（Doc/Plan/offline-license-activation.md）：闸返回 false 时，主键
+// 本地分支与 local-mic 热键均不下发本地会话（通知用户后放弃）；闸空（默认）放行，
+// 既有测试不受影响。
+void TestCoordinatorLicenseGate() {
+    // 场景 1：设备主键 + [local_asr].enabled（会话将路由本地引擎）→ 被闸拦下。
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto* ble_ptr = ble.get();
+        auto cloud_asr = std::make_unique<FakeAsrClient>();
+        auto local_asr = std::make_unique<FakeAsrClient>();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.local_asr.enabled = true;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                          &ui, &input);
+        auto capture = std::make_unique<FakeMicCapture>();
+        coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+        coordinator.SetLicenseGate([] { return false; });
+        coordinator.Start();
+
+        ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 42));
+        assert(ui.show_listening_count == 0);
+        assert(!HasUiState(*ble_ptr, "recording", "5A74"));
+        assert(ui.timed_messages.size() == 1);
+        assert(ui.timed_messages[0] ==
+               Tr(StringId::kLicenseLocalBlocked, EffectiveUiLanguage(config.ui_language)) +
+                   ":3000");
+
+        // 闸放行后恢复本地会话下发。
+        coordinator.SetLicenseGate([] { return true; });
+        ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 43));
+        assert(ui.show_listening_count == 1);
+        assert(HasUiState(*ble_ptr, "recording", "5A74"));
+    }
+    // 场景 2：local-mic 热键被闸拦下（不启动采集、无本地会话）。
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto cloud_asr = std::make_unique<FakeAsrClient>();
+        auto local_asr = std::make_unique<FakeAsrClient>();
+        auto* local_asr_ptr = local_asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.local_asr.enabled = true;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(cloud_asr),
+                                          &ui, &input);
+        auto capture = std::make_unique<FakeMicCapture>();
+        auto* capture_ptr = capture.get();
+        coordinator.SetLocalMicRuntime(std::move(capture), std::move(local_asr));
+        coordinator.SetLicenseGate([] { return false; });
+        coordinator.Start();
+
+        coordinator.HandleLocalMicHotkeyPressed();
+        assert(capture_ptr->start_count == 0);
+        assert(ui.show_listening_count == 0);
+        assert(!local_asr_ptr->started);
+        assert(ui.timed_messages.size() == 1);
+
+        // 闸=true：热键正常启动本地会话。
+        coordinator.SetLicenseGate([] { return true; });
+        coordinator.HandleLocalMicHotkeyPressed();
+        assert(capture_ptr->start_count == 1);
+        assert(ui.show_listening_count == 1);
+        coordinator.HandleLocalMicHotkeyReleased();
+    }
+}
+
 // 本地识别会话钉住本地精修：final 文本过本地三层（规则 → LLM → 守卫），
 // 注入守卫放行的 LLM 结果；引擎失败回退规则级文本（最差不劣于规则）。
 // 云端 refine 保持关闭：本用例同时验证钉住互斥——本地会话不触发云端精修。
@@ -14611,6 +14679,7 @@ int main() {
     TestResolveAndValidateModelsDir();
     TestAppConfigLocalAsrRoundTrip();
     TestCoordinatorLocalMicSessionRoutesToLocalAsr();
+    TestCoordinatorLicenseGate();
     TestCoordinatorLocalMicSessionRefinesFinalText();
     TestCoordinatorLocalMicSessionCrossTurnRefinement();
     TestResolveLocalRefineModelPathCrossTurn();

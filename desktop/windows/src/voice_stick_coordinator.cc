@@ -442,6 +442,10 @@ void VoiceStickCoordinator::SetLocalMicRuntime(std::unique_ptr<IMicCapture> capt
     }
 }
 
+void VoiceStickCoordinator::SetLicenseGate(std::function<bool()> allow_local_asr) {
+    allow_local_asr_ = std::move(allow_local_asr);
+}
+
 // 本地精修运行件注入：与 SetLocalMicRuntime 同款"锁内解除钉住+替换、锁外
 // 析构"模式——旧 client 析构 join 其工作线程，线程的 completion 链会走到
 // EnterPendingConfirmation（抢 audio_mutex_），持锁析构会死锁。
@@ -1720,6 +1724,17 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
     }
     if (!session_id.has_value() || *session_id == 0) {
         ble_->SendUiState("ready", "", device_id);
+        return;
+    }
+
+    // 授权闸（离线授权，Doc/Plan/offline-license-activation.md）：本会话将路由本地
+    // 引擎（local_asr 在且 local-mic 会话或 [local_asr].enabled）且闸拒绝时，
+    // 通知用户并放弃本次会话（不下发、不进 recording）。
+    const bool routes_to_local =
+        local_asr_ && (device_id == kLocalMicDeviceId || config_.local_asr.enabled);
+    if (routes_to_local && allow_local_asr_ && !allow_local_asr_()) {
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        ui_->ShowTimedMessage(Tr(StringId::kLicenseLocalBlocked, language), 3000);
         return;
     }
 
@@ -3487,6 +3502,12 @@ void VoiceStickCoordinator::HandleLocalMicHotkeyPressed() {
     if (!local_mic_capture_ || !local_asr_ || !config_.local_asr.enabled) return;
     if (config_.default_output_profile.target != OutputTarget::kFocusedApp) return;
     if (local_mic_hotkey_down_) return;  // 按住期间自动重复去抖
+    // 授权闸：本地引擎被拒（试用到期/无有效授权）时提示并放弃本次会话。
+    if (allow_local_asr_ && !allow_local_asr_()) {
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        ui_->ShowTimedMessage(Tr(StringId::kLicenseLocalBlocked, language), 3000);
+        return;
+    }
 
     local_mic_hotkey_down_ = true;
     StateEvent event;
