@@ -42,6 +42,7 @@
 #include "pinyin_guard.h"
 #include "refine_history.h"
 #include "mic_capture.h"
+#include "license.h"
 #include "serial_base32.h"
 #include "wasapi_mic_capture.h"
 #include "push_to_talk_key.h"
@@ -1368,6 +1369,94 @@ void TestSerialBase32RoundTrip() {
     // 0 在值 0 位置合法（Crockford '0' 是字母表成员）
     const auto dec4 = SerialBase32Decode("00000");
     assert(dec4.has_value() && dec4->size() == 3 && dec4->front() == 0x00);
+}
+
+// 开发密钥对（scripts/license_private_key.hex，gitignored）签发的测试串码，
+// 与 scripts/license_test_vectors.json 同源；公钥在 src/license_public_key.h。
+// 发行密钥对替换时重新生成（见 Doc/Plan/offline-license-activation.md Task 4）。
+static const std::string kTestSerial1 =
+    "048V0-GQ6JD-S7VXB-D040G-0000T-QR3RC-WZT5Q-TCNTZ-M5RZA-PH0Q8-VZPZN-Y4GQV-"
+    "4H8EP-3H7MX-P8EKY-0MYKQ-Z1J6R-SBHS1-4BJHA-D7GTV-E7FXB-NSD3G-R0NJE-FYNGM-MJATM-0G";
+static const std::string kTestSerial2 =
+    "09XM4-63ZJ4-HJKKF-ZZW10-0000H-P1J9M-YA462-E9WSF-D3HE0-6KCZR-XXT6V-2XQR1-"
+    "9254S-SVXB5-Y39VQ-GNR34-T6ZP8-918AT-RJM1J-8XBBT-XPVR9-1XQ88-75RGX-D9B6Z-M56XM-3R";
+static const std::string kTestSerial3 =
+    "070K0-W9PTN-ERNPB-C041G-00008-A5DQY-XFK9E-B1S5Z-025HR-C2B9N-K9BK9-QMR5G-"
+    "E7650-GT39D-V9B0M-FH46M-Q05PZ-CBFPS-80QFK-J5F00-N3XW5-AVD6Q-AY1HD-AE2T7-1KY18-08";
+
+void TestLicenseVerifySerial() {
+    using namespace voicestick;
+    const std::vector<std::string> devices = {"AB12", "00FF"};
+    const std::string guid = "{11111111-2222-3333-4444-555555555555}";
+    // 向量 1：年费码，绑定 AB12，到期 2027-01-01（未过期，相对固定 now=2026-09-13）
+    auto r = VerifyLicenseSerial(kTestSerial1, devices, guid, DateToDays(2026, 9, 13));
+    assert(r.ok && r.edition == LicenseEdition::kAnnual);
+    assert(r.expiry_days == 365);  // 2027-01-01 距 2026-01-01
+    // 绑定机器不匹配 → kWrongBinding
+    r = VerifyLicenseSerial(kTestSerial1, devices, "{99999999-8888-7777-6666-555555555555}");
+    assert(!r.ok && r.reason == LicenseError::kWrongBinding);
+    // 设备不在场列表 → kWrongBinding
+    r = VerifyLicenseSerial(kTestSerial1, {"EEEE"}, guid);
+    assert(!r.ok && r.reason == LicenseError::kWrongBinding);
+    // 向量 2：买断码（edition 2, expiry 0xFFFF）
+    r = VerifyLicenseSerial(kTestSerial2, {"CD34"}, "{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+    assert(r.ok && r.edition == LicenseEdition::kPerpetual && r.perpetual);
+    // 篡改一个字符 → kBadSignature
+    std::string tampered = kTestSerial1; tampered[10] = tampered[10] == 'A' ? 'B' : 'A';
+    r = VerifyLicenseSerial(tampered, devices, guid);
+    assert(!r.ok && r.reason == LicenseError::kBadSignature);
+    // 截断/垃圾 → kBadFormat
+    r = VerifyLicenseSerial("HELLO", devices, guid);
+    assert(!r.ok && r.reason == LicenseError::kBadFormat);
+    // 向量 3 到期 2026-12-31，未过期边界（now=2026-12-30）仍可用
+    r = VerifyLicenseSerial(kTestSerial3, devices, "no-braces-guid", DateToDays(2026, 12, 30));
+    assert(r.ok && r.expiry_days == 364);
+    // 过期：用 now=2027-01-02 判定
+    r = VerifyLicenseSerial(kTestSerial3, devices, "no-braces-guid", DateToDays(2027, 1, 2));
+    assert(!r.ok && r.reason == LicenseError::kExpired);
+}
+
+void TestLicenseStatus() {
+    using namespace voicestick;
+    LicenseConfig cfg;  // 默认空
+    const std::vector<std::string> devices = {"AB12"};
+    const std::string guid = "{11111111-2222-3333-4444-555555555555}";
+    const auto now = DateToDays(2026, 9, 13);
+    // 无串码无锚点：调用方负责先写锚点；此处直接给锚点
+    cfg.trial_anchor_days = DateToDays(2026, 9, 1);
+    auto s = EvaluateLicense(cfg, devices, guid, now);
+    assert(s.state == LicenseState::kTrial && s.days_remaining == 18);  // 9-1 + 30d
+    // 锚点 40 天前 → 过期
+    cfg.trial_anchor_days = DateToDays(2026, 8, 4);
+    s = EvaluateLicense(cfg, devices, guid, now);
+    assert(s.state == LicenseState::kExpired);
+    // 有效串码 → Active
+    cfg.serial = kTestSerial1;
+    s = EvaluateLicense(cfg, devices, guid, now);
+    assert(s.state == LicenseState::kActive);
+    // 时钟回拨：last_seen 在未来 3 天 → grace 封顶（剩余按 last_seen 冻结为 15 天，
+    // 宽限自真实 now 起 7-3=4 天，取 min）
+    cfg.trial_anchor_days = DateToDays(2026, 9, 1);
+    cfg.serial.clear();
+    cfg.last_seen_days = now + 3;
+    s = EvaluateLicense(cfg, devices, guid, now);
+    assert(s.state == LicenseState::kTrial && s.clock_rollback && s.days_remaining == 4);
+    // 回拨超过宽限（last_seen 未来 30 天）
+    cfg.last_seen_days = now + 30;
+    s = EvaluateLicense(cfg, devices, guid, now);
+    assert(s.state == LicenseState::kExpired);
+    // 无锚点 → 满试用期，标记由调用方写锚点
+    cfg = LicenseConfig{};
+    s = EvaluateLicense(cfg, devices, guid, now);
+    assert(s.state == LicenseState::kTrial && s.days_remaining == kLicenseTrialDays);
+    // 过期串码（reason=kExpired）→ kExpired（serial3 绑定 00FF + no-braces-guid）
+    cfg.serial = kTestSerial3;
+    s = EvaluateLicense(cfg, {"00FF"}, "no-braces-guid", DateToDays(2027, 1, 2));
+    assert(s.state == LicenseState::kExpired);
+    // 格式错误/绑定不匹配的串码 → 落入试用（视为无串码）
+    cfg.serial = "HELLO";
+    s = EvaluateLicense(cfg, devices, guid, now);
+    assert(s.state == LicenseState::kTrial && s.days_remaining == kLicenseTrialDays);
 }
 
 void TestVolcengineTableIdConfigRoundTrip() {
@@ -14552,6 +14641,8 @@ int main() {
     TestHotwordSelector();
     TestTencentHotwordCharFilter();
     TestSerialBase32RoundTrip();
+    TestLicenseVerifySerial();
+    TestLicenseStatus();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();

@@ -68,3 +68,7 @@ _realtest_shots/
 # 本地 ASR/验收实验目录，不入库
 /m0/
 /p1/
+
+# 离线授权发卡私钥与测试向量（开发密钥，绝不可提交；见 Doc/Plan/offline-license-activation.md）
+scripts/license_private_key.hex
+scripts/license_test_vectors.json
