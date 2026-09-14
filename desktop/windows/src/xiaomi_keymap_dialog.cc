@@ -2,6 +2,7 @@
 
 #include "dpi_util.h"
 #include "key_spec.h"
+#include "log.h"
 #include "resource.h"
 
 #include <CommCtrl.h>
@@ -544,9 +545,12 @@ INT_PTR XiaomiKeymapDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
             // 只提示一次，不中断捕获。
             KillTimer(hwnd_, kCaptureHintTimerId);
             if (capture_.active()) {
+                LogApp("XiaomiKeymapDialog: capture hint shown (no keyboard event within " +
+                       std::to_string(kCaptureHintTimeoutMs) + "ms)");
                 const auto language = EffectiveUiLanguage(language_);
-                MessageBoxW(hwnd_, TrW(StringId::kHotkeyCaptureTimeoutBody, language).c_str(),
-                            TrW(StringId::kHotkeyCaptureTimeoutTitle, language).c_str(),
+                MessageBoxW(hwnd_,
+                            TrW(StringId::kXiaomiKeymapCaptureHintBody, language).c_str(),
+                            TrW(StringId::kXiaomiKeymapCaptureHintTitle, language).c_str(),
                             MB_OK | MB_ICONINFORMATION);
             }
             return TRUE;

@@ -411,6 +411,9 @@ enum class StringId {
     kXiaomiKeymapMicNote,
     // 画布底部提示
     kXiaomiKeymapClickHint,
+    // 录入超时提示（UIPI 隔离 + RC003 批次返回键被系统丢弃，两种原因并存）
+    kXiaomiKeymapCaptureHintTitle,
+    kXiaomiKeymapCaptureHintBody,
     // 13 个按键名（kXiaomiMappableButtons 12 键 + mic）
     kXiaomiButtonPower,
     kXiaomiButtonMic,

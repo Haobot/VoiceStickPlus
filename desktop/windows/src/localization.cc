@@ -414,6 +414,15 @@ constexpr StringTable EnglishStrings() {
         "The voice key is reserved for voice input. To customize the voice trigger hotkey, "
         "configure it in Settings -> Third-party Input Method.";
     table[Index(StringId::kXiaomiKeymapClickHint)] = "Click any button in the photo";
+    table[Index(StringId::kXiaomiKeymapCaptureHintTitle)] = "Key capture";
+    table[Index(StringId::kXiaomiKeymapCaptureHintBody)] =
+        "No key press was detected within a few seconds. Possible causes:\n"
+        "1. If the foreground window runs as administrator (elevated), its keyboard events are "
+        "isolated by the system and cannot be captured. Click this dialog (or any non-elevated "
+        "window) and try again.\n"
+        "2. The BACK key on some Xiaomi remote batches (RC003) is dropped by the Windows "
+        "Bluetooth stack and never reaches the system, so it can never be captured. To bind it, "
+        "use manual input below (e.g. backspace or alt+left).";
     table[Index(StringId::kXiaomiButtonPower)] = "Power";
     table[Index(StringId::kXiaomiButtonMic)] = "Microphone";
     table[Index(StringId::kXiaomiButtonUp)] = "Up";
@@ -839,6 +848,14 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kXiaomiKeymapMicNote)] =
         "语音键为语音输入专用。要自定义语音触发热键，请在 设置 → 微信输入法模式 中配置。";
     table[Index(StringId::kXiaomiKeymapClickHint)] = "点击照片中的任意按键";
+    table[Index(StringId::kXiaomiKeymapCaptureHintTitle)] = "按键录入";
+    table[Index(StringId::kXiaomiKeymapCaptureHintBody)] =
+        "几秒内未检测到任何按键，可能原因：\n"
+        "1. 若当前前台窗口是以管理员权限（提权）运行的程序（如提权终端、任务管理器），"
+        "键盘事件会被系统隔离而无法识别。请点击本对话框或任意普通权限窗口后重试。\n"
+        "2. 部分批次的小米遥控器（RC003）的返回键事件会被 Windows 蓝牙栈丢弃，系统"
+        "永远收不到，因此无法通过按键录入。如需绑定返回键，请使用下方手动输入"
+        "（例如 backspace 或 alt+left）。";
     table[Index(StringId::kXiaomiButtonPower)] = "电源键";
     table[Index(StringId::kXiaomiButtonMic)] = "麦克风键";
     table[Index(StringId::kXiaomiButtonUp)] = "上";
