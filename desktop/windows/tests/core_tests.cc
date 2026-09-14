@@ -1489,6 +1489,46 @@ void TestLicenseConfigRoundTrip() {
     std::filesystem::remove(temp);
 }
 
+void TestSavePairedDeviceInfoPreservesDiskLicense() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_paired_save_license.toml";
+    std::filesystem::remove(temp);
+
+    // 配对设备落盘（模拟首配）。
+    AppConfig config = AppConfig::Defaults();
+    PairedDeviceEntry entry;
+    entry.device_id = "AB12";
+    entry.bluetooth_address = 0x1234;
+    config.paired_devices.push_back(entry);
+    config.Save(temp);
+
+    // 协调器持有的是「锚点写入前」的过期快照（smoke 真机事故复现）。
+    AppConfig stale = AppConfig::Load(temp);
+
+    // LicenseRuntime 随后把试用锚点写进磁盘（经另一个对象 + 全量 Save）。
+    AppConfig runtime_view = AppConfig::Load(temp);
+    runtime_view.license.trial_anchor_days = 243;
+    runtime_view.license.last_seen_days = 258;
+    runtime_view.Save(temp);
+
+    // 过期快照走设备信息保存路径：必须先重取磁盘 license 再落盘。
+    stale.ReloadLicenseFromDisk(temp);
+    stale.SavePairedDeviceInfo(temp, "AB12", "xiaomi_remote_2_pro", "1.0");
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.license.trial_anchor_days == 243);
+    assert(loaded.license.last_seen_days == 258);
+    // 设备信息本身仍落盘。
+    assert(loaded.paired_devices.size() == 1);
+    assert(loaded.paired_devices[0].hardware == "xiaomi_remote_2_pro");
+
+    // 磁盘文件不存在时不崩溃、不改内存值。
+    AppConfig fresh = AppConfig::Defaults();
+    fresh.license.serial = "KEEP";
+    fresh.ReloadLicenseFromDisk(temp.parent_path() / "definitely_missing.toml");
+    assert(fresh.license.serial == "KEEP");
+
+    std::filesystem::remove(temp);
+}
+
 void TestVolcengineTableIdConfigRoundTrip() {
     assert(AppConfig::Defaults().volcengine_boosting_table_id.empty());
     assert(AppConfig::Defaults().volcengine_correct_table_id.empty());
@@ -14743,6 +14783,7 @@ int main() {
     TestLicenseVerifySerial();
     TestLicenseStatus();
     TestLicenseConfigRoundTrip();
+    TestSavePairedDeviceInfoPreservesDiskLicense();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();

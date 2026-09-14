@@ -397,6 +397,15 @@ struct AppConfig {
     void SavePairedDeviceInfo(const std::string& device_id,
                               const std::string& hardware,
                               const std::string& firmware_version);
+    // 测试/工具用：同 SavePairedDeviceInfo，但写指定路径而非 ConfigPath()。
+    void SavePairedDeviceInfo(const std::filesystem::path& path,
+                              const std::string& device_id,
+                              const std::string& hardware,
+                              const std::string& firmware_version);
+    // 用磁盘上的 [license] 覆盖本对象内存值。license 段由 LicenseRuntime 在 win32_app
+    // 内存中维护，而协调器等组件持有的是更早的 config 快照；快照落盘前须调用本方法，
+    // 否则会把磁盘上更新的试用锚点/last_seen/串码抹掉（见 SavePairedDeviceInfo）。
+    void ReloadLicenseFromDisk(const std::filesystem::path& path);
     void RemovePairedDevice(const std::string& device_id);
     std::string ActiveApiKey() const;
     // 腾讯云 ASR 凭据：配置空则回退编译期内置值（预配置 MSI 分发用；不落盘）。

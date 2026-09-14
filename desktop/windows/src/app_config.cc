@@ -1236,6 +1236,13 @@ void AppConfig::SavePairedDevice(const PairedDeviceEntry& entry) {
 void AppConfig::SavePairedDeviceInfo(const std::string& device_id,
                                      const std::string& hardware,
                                      const std::string& firmware_version) {
+    SavePairedDeviceInfo(ConfigPath(), device_id, hardware, firmware_version);
+}
+
+void AppConfig::SavePairedDeviceInfo(const std::filesystem::path& path,
+                                     const std::string& device_id,
+                                     const std::string& hardware,
+                                     const std::string& firmware_version) {
     bool found = false;
     for (auto& existing : paired_devices) {
         if (existing.device_id == device_id) {
@@ -1256,7 +1263,17 @@ void AppConfig::SavePairedDeviceInfo(const std::string& device_id,
     if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
         paired_device_ids.push_back(device_id);
     }
-    Save();
+    // license 段归 LicenseRuntime（win32_app 内存）所有：协调器持有的 config_ 副本
+    // 可能早于试用锚点/last_seen/串码写入，直接全量 Save 会把磁盘上的新值抹掉。
+    // 磁盘是 license 的最新可信源（激活/锚点/last_seen 写入都立即落盘），保存前重取。
+    ReloadLicenseFromDisk(path);
+    Save(path);
+}
+
+void AppConfig::ReloadLicenseFromDisk(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return;
+    license = Load(path).license;
 }
 
 void AppConfig::RemovePairedDevice(const std::string& device_id) {
