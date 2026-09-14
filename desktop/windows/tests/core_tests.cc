@@ -1436,6 +1436,15 @@ void TestAppConfig() {
     assert(!Tr(StringId::kHotkeyCaptureTimeoutBody, UiLanguage::kEnglish).empty());
     assert(Tr(StringId::kHotkeyCaptureTimeoutBody, UiLanguage::kSimplifiedChinese)
                .find("管理员") != std::string::npos);
+    // 按键映射录入超时提示（keymap 专用：UIPI 隔离 + RC003 返回键死键双因覆盖，
+    // 引导手动输入——死键系统零事件，按键录入永远无响应，见 Plan/xiaomi-keymap-hotkey-capture-issue.md §0.1）。
+    assert(Tr(StringId::kXiaomiKeymapCaptureHintTitle, UiLanguage::kSimplifiedChinese) == "按键录入");
+    assert(Tr(StringId::kXiaomiKeymapCaptureHintBody, UiLanguage::kSimplifiedChinese)
+               .find("RC003") != std::string::npos);
+    assert(Tr(StringId::kXiaomiKeymapCaptureHintBody, UiLanguage::kSimplifiedChinese)
+               .find("手动输入") != std::string::npos);
+    assert(Tr(StringId::kXiaomiKeymapCaptureHintBody, UiLanguage::kEnglish)
+               .find("RC003") != std::string::npos);
     assert(Tr(StringId::kFirmwareUpdateFinalizing, UiLanguage::kSimplifiedChinese) == "正在完成固件更新...");
     assert(BatteryStatusText(83, false, false, UiLanguage::kEnglish) == "83%");
     assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");
