@@ -240,6 +240,20 @@ struct LocalAsrConfig {
     bool operator==(const LocalAsrConfig& other) const = default;
 };
 
+// 离线授权配置（[license] 段，Windows 端）：串码激活 + 30 天试用锚点 +
+// 防时钟回拨 last_seen。见 Doc/Plan/offline-license-activation.md。
+struct LicenseConfigEntry {
+    // 原文串码（含连字符）。空 = 未激活，走试用/过期判定。
+    std::string serial;
+    // 试用期起锚（自 2026-01-01 的天数）。nullopt = 未锚定，
+    // 运行时在首次启用本地识别后立即写入并保存。
+    std::optional<std::uint32_t> trial_anchor_days;
+    // 见过的最大日期（同口径，单调不减），时钟回拨检测与 7 天宽限。
+    std::optional<std::uint32_t> last_seen_days;
+
+    bool operator==(const LicenseConfigEntry& other) const = default;
+};
+
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
 
@@ -288,6 +302,7 @@ struct AppConfig {
     OutputProfile default_output_profile;
     WechatInputMethodConfig wechat_input_method;
     LocalAsrConfig local_asr;
+    LicenseConfigEntry license;
     std::map<std::string, OutputProfile> device_output_profiles;
     // 粘贴文本后是否自动按回车确认。默认关闭（用户手动回车，避免误提交）。
     bool auto_enter = false;

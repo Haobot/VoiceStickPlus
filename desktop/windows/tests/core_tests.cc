@@ -1459,6 +1459,36 @@ void TestLicenseStatus() {
     assert(s.state == LicenseState::kTrial && s.days_remaining == kLicenseTrialDays);
 }
 
+void TestLicenseConfigRoundTrip() {
+    assert(AppConfig::Defaults().license.serial.empty());
+    assert(!AppConfig::Defaults().license.trial_anchor_days.has_value());
+    assert(!AppConfig::Defaults().license.last_seen_days.has_value());
+
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_license_test.toml";
+    std::filesystem::remove(temp);
+
+    // 缺省两态：只有 serial，锚点/last_seen 缺省 → 缺省不落盘，往返相等。
+    AppConfig config = AppConfig::Defaults();
+    config.license.serial = kTestSerial1;
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.license == config.license);
+    assert(loaded.license.serial == kTestSerial1);
+    assert(!loaded.license.trial_anchor_days.has_value());
+    assert(!loaded.license.last_seen_days.has_value());
+
+    // 锚点/last_seen 有值 → 序列化并往返。
+    config.license.trial_anchor_days = 243;  // 2026-09-01
+    config.license.last_seen_days = 258;     // 2026-09-16
+    config.Save(temp);
+    loaded = AppConfig::Load(temp);
+    assert(loaded.license == config.license);
+    assert(loaded.license.trial_anchor_days == 243);
+    assert(loaded.license.last_seen_days == 258);
+
+    std::filesystem::remove(temp);
+}
+
 void TestVolcengineTableIdConfigRoundTrip() {
     assert(AppConfig::Defaults().volcengine_boosting_table_id.empty());
     assert(AppConfig::Defaults().volcengine_correct_table_id.empty());
@@ -14643,6 +14673,7 @@ int main() {
     TestSerialBase32RoundTrip();
     TestLicenseVerifySerial();
     TestLicenseStatus();
+    TestLicenseConfigRoundTrip();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();

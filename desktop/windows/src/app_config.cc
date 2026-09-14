@@ -721,6 +721,23 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 config.local_asr.refine_cross_turn = *value;
             }
         }
+        // [license]：离线授权（串码激活 + 试用锚点 + 防回拨 last_seen）。
+        // 串码是密文签名，落盘无妨；不敏感之外的内容不落盘。
+        if (const auto* license = table["license"].as_table()) {
+            if (auto value = TomlString(*license, "serial")) {
+                config.license.serial = Trim(*value);
+            }
+            if (auto value = TomlInt(*license, "trial_anchor_days")) {
+                if (*value >= 0) {
+                    config.license.trial_anchor_days = static_cast<std::uint32_t>(*value);
+                }
+            }
+            if (auto value = TomlInt(*license, "last_seen_days")) {
+                if (*value >= 0) {
+                    config.license.last_seen_days = static_cast<std::uint32_t>(*value);
+                }
+            }
+        }
         // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
         // 设备表填平（ParseXiaomiSettings 的 fallback 拷贝）才能带上全局默认。
         if (const auto* xiaomi = table["xiaomi"].as_table()) {
@@ -1034,6 +1051,14 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     }
     if (local_asr.refine_cross_turn) {  // 默认关不落盘降噪
         output << "refine_cross_turn = true\n";
+    }
+    output << "\n[license]\n";
+    output << "serial = \"" << TomlEscape(license.serial) << "\"\n";
+    if (license.trial_anchor_days) {  // 未锚定（试用未开始）不落盘
+        output << "trial_anchor_days = " << *license.trial_anchor_days << "\n";
+    }
+    if (license.last_seen_days) {  // 未写过不落盘
+        output << "last_seen_days = " << *license.last_seen_days << "\n";
     }
     for (const auto& [device_id, profile] : device_output_profiles) {
         if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
