@@ -178,9 +178,10 @@ add_library(voicestick_core STATIC
     src/xiaomi_atvv_protocol.cc
     src/xiaomi_atvv_session.cc
     src/xiaomi_keymap_interceptor.cc
+    third_party/monocypher/monocypher.c
 )
 
-target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus third_party/monocypher ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(voicestick_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
