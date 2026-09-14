@@ -42,6 +42,7 @@
 #include "pinyin_guard.h"
 #include "refine_history.h"
 #include "mic_capture.h"
+#include "serial_base32.h"
 #include "wasapi_mic_capture.h"
 #include "push_to_talk_key.h"
 #include "provider_combo.h"
@@ -72,6 +73,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <crtdbg.h>
 #include <filesystem>
@@ -1323,6 +1325,49 @@ void TestTencentHotwordCharFilter() {
     assert(!TencentAsrVocabClient::IsValidHotwordChars("AGENTS.md"));
     assert(!TencentAsrVocabClient::IsValidHotwordChars("带空格 的词"));
     assert(!TencentAsrVocabClient::IsValidHotwordChars(""));
+}
+
+void TestSerialBase32RoundTrip() {
+    using namespace voicestick;
+    // 全 0 / 全 1 / 递增模式 / 随机 79 字节往返
+    for (int seed = 0; seed < 8; ++seed) {
+        std::vector<std::uint8_t> data(79);
+        std::uint8_t v = static_cast<std::uint8_t>(seed * 37);
+        for (auto& b : data) { b = v; v = static_cast<std::uint8_t>(v * 131 + 17); }
+        const std::string enc = SerialBase32Encode(data);
+        assert(enc.size() == 127);
+        const auto dec = SerialBase32Decode(enc);
+        assert(dec.has_value() && *dec == data);
+    }
+    // 输入规范化：小写 + 连字符 + 空格应等价
+    std::vector<std::uint8_t> data(79, 0xAB);
+    std::string enc = SerialBase32Encode(data);
+    std::string messy;
+    for (size_t i = 0; i < enc.size(); ++i) {
+        messy += static_cast<char>(std::tolower(static_cast<unsigned char>(enc[i])));
+        if (i % 5 == 4 && i + 1 < enc.size()) messy += '-';
+        if (i % 17 == 8) messy += ' ';
+    }
+    const auto dec2 = SerialBase32Decode(messy);
+    assert(dec2.has_value() && *dec2 == data);
+    // 非法字符：Crockford 排除 I L O U
+    assert(!SerialBase32Decode("IAAAA").has_value());
+    assert(!SerialBase32Decode("LAAAA").has_value());
+    assert(!SerialBase32Decode("UAAAA").has_value());
+    assert(!SerialBase32Decode("OAAAA").has_value());
+    assert(!SerialBase32Decode("!AAAA").has_value());
+    // 尾部碎片：5n mod 8 ∈ {5,6,7} 时不足一字节，拒绝（127+2=129 字符）
+    assert(!SerialBase32Decode(enc + "AA").has_value());
+    assert(!SerialBase32Decode("A").has_value());
+    // 128 字符 = 640 bit = 整 80 字节（无碎片，合法但长度由调用方校验）
+    const auto dec5 = SerialBase32Decode(enc + "A");
+    assert(dec5.has_value() && dec5->size() == 80 && dec5->front() == data.front());
+    // 空输入 = 空字节串（合法）
+    const auto dec3 = SerialBase32Decode("");
+    assert(dec3.has_value() && dec3->empty());
+    // 0 在值 0 位置合法（Crockford '0' 是字母表成员）
+    const auto dec4 = SerialBase32Decode("00000");
+    assert(dec4.has_value() && dec4->size() == 3 && dec4->front() == 0x00);
 }
 
 void TestVolcengineTableIdConfigRoundTrip() {
@@ -14506,6 +14551,7 @@ int main() {
     TestAsrHotwordCorpusBudget();
     TestHotwordSelector();
     TestTencentHotwordCharFilter();
+    TestSerialBase32RoundTrip();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();
