@@ -1,14 +1,17 @@
 #include "settings_dialog.h"
+#include "ble_protocol.h"
 #include "dpi_util.h"
 #include "hotword_candidate_miner.h"
 #include "hotword_extractor.h"
 #include "key_spec.h"
+#include "license.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
 #include "local_asr_client_win.h"
 #include "local_refinement_client.h"
 #include "log.h"
 #include "model_download_dialog.h"
+#include "serial_base32.h"
 #include "voice_stick_cloud_api_win.h"
 
 #include <ShlObj.h>
@@ -16,6 +19,8 @@
 #include <Shellapi.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <iterator>
 #include <string>
@@ -175,10 +180,97 @@ HWND CreateSeparator(HWND parent, int x, int y, int w, int h, HINSTANCE inst) {
                            x, y, w, h, parent, nullptr, inst, nullptr);
 }
 
+// days（自 2026-01-01）→ "YYYY-MM-DD"（Howard Hinnant civil_from_days 逆变换，
+// 与 license.cc DateToDays 互逆）。
+std::string LicenseDateString(std::uint32_t days_since_epoch) {
+    const std::int64_t z =
+        static_cast<std::int64_t>(days_since_epoch) + 719468 + kLicenseEpochDays;
+    const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = static_cast<unsigned>(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+    const int year =
+        static_cast<int>(yoe) + static_cast<int>(era) * 400 + (m <= 2 ? 1 : 0);
+    char buffer[16] = {};
+    snprintf(buffer, sizeof(buffer), "%04d-%02u-%02u", year, m, d);
+    return buffer;
+}
+
+// 本地化模板里的首个占位符替换（"%d"/"%s" 调用点替换，仿 kModelDownloadDiskSpace）。
+std::string ReplaceFirst(std::string text, std::string_view token, const std::string& value) {
+    const auto pos = text.find(token);
+    if (pos == std::string::npos) return text;
+    text.replace(pos, token.size(), value);
+    return text;
+}
+
+// 激活输入模态框的内存模板：static 提示 + edit + OK/Cancel（DS_SETFONT，
+// 文本运行时填充——提示/标题/按钮均走本地化）。
+LPCDLGTEMPLATE BuildLicensePromptTemplate(std::vector<BYTE>* storage) {
+    storage->clear();
+    AlignDialogData(storage, 4);
+    DLGTEMPLATE dialog{};
+    dialog.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT;
+    dialog.dwExtendedStyle = WS_EX_DLGMODALFRAME;
+    dialog.cdit = 4;
+    dialog.x = 0;
+    dialog.y = 0;
+    dialog.cx = 260;
+    dialog.cy = 96;
+    AppendDialogData(storage, &dialog, sizeof(dialog));
+    AppendDialogWord(storage, 0);            // menu
+    AppendDialogWord(storage, 0);            // class
+    AppendDialogWideString(storage, L"");    // 标题运行时设置
+    AppendDialogWord(storage, 9);            // 字号
+    AppendDialogWideString(storage, L"Segoe UI");
+    auto item = [&](DWORD style, int x, int y, int cx, int cy, WORD id,
+                    WORD class_ordinal, const wchar_t* title) {
+        AlignDialogData(storage, 4);
+        const DWORD ex_style = 0;
+        const short coords[4] = {static_cast<short>(x), static_cast<short>(y),
+                                 static_cast<short>(cx), static_cast<short>(cy)};
+        AppendDialogData(storage, &style, sizeof(style));
+        AppendDialogData(storage, &ex_style, sizeof(ex_style));
+        AppendDialogData(storage, coords, sizeof(coords));
+        AppendDialogWord(storage, id);
+        AppendDialogWord(storage, 0xFFFF);   // 0xFFFF 前缀 = 序数类名
+        AppendDialogWord(storage, class_ordinal);
+        AppendDialogWideString(storage, title);
+        AppendDialogWord(storage, 0);        // 无额外数据
+    };
+    item(WS_CHILD | WS_VISIBLE | SS_LEFT, 8, 8, 244, 14,
+         SettingsDialog::kIdLicensePromptLabel, 0x0082, L"");
+    item(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+         8, 26, 244, 16, SettingsDialog::kIdLicensePromptEdit, 0x0081, L"");
+    item(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+         92, 56, 76, 18, IDOK, 0x0080, L"OK");
+    item(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+         176, 56, 76, 18, IDCANCEL, 0x0080, L"Cancel");
+    return reinterpret_cast<LPCDLGTEMPLATE>(storage->data());
+}
+
+// 激活输入模态框运行期状态（DWLP_USER 挂载）。
+struct LicensePromptState {
+    std::wstring title;
+    std::wstring prompt;
+    std::wstring ok_text;
+    std::wstring cancel_text;
+    std::wstring serial;
+};
+
 } // namespace
 
-SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config)
-    : instance_(instance), parent_(parent), config_(std::move(config)) {}
+SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
+                               std::vector<std::string> connected_device_ids,
+                               std::string machine_guid)
+    : instance_(instance),
+      parent_(parent),
+      config_(std::move(config)),
+      connected_device_ids_(std::move(connected_device_ids)),
+      machine_guid_(std::move(machine_guid)) {}
 
 SettingsDialog::~SettingsDialog() {
     if (hwnd_) DestroyWindow(hwnd_);
@@ -262,6 +354,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         case kIdApplyTrialApiKey:
             ApplyTrialApiKey();
+            return TRUE;
+        case kIdLicenseActivate:
+            OnActivateLicense();
             return TRUE;
         case kIdProviderCombo:
             if (HIWORD(w_param) == CBN_SELCHANGE) {
@@ -430,6 +525,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         trigger_mode_label_ = nullptr;
         trigger_mode_hold_radio_ = nullptr;
         trigger_mode_click_radio_ = nullptr;
+        license_status_label_ = nullptr;
+        license_activate_button_ = nullptr;
         all_controls_.clear();
         label_controls_.clear();
         title_controls_.clear();
@@ -524,6 +621,8 @@ void SettingsDialog::DestroyControls() {
     trigger_mode_label_ = nullptr;
     trigger_mode_hold_radio_ = nullptr;
     trigger_mode_click_radio_ = nullptr;
+    license_status_label_ = nullptr;
+    license_activate_button_ = nullptr;
     save_button_ = nullptr;
     cancel_button_ = nullptr;
     if (ui_font_) {
@@ -632,6 +731,23 @@ void SettingsDialog::BuildControls() {
         add(row_h + Dp(10), {
             {lang_label, Dp(10), Dp(3), label_w, Dp(20)},
             {language_combo_, ctrl_x, 0, ctrl_w, Dp(140)},
+        });
+    }
+    separator();
+
+    // ===== 授权（本地识别离线授权：30 天试用 + 串码激活，
+    // Doc/Plan/offline-license-activation.md）=====
+    section_title(StringId::kLicenseSectionTitle);
+    {
+        HWND lic_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        license_status_label_ = lic_label;
+        const int activate_w = Dp(110);
+        license_activate_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kLicenseActivateButton, language).c_str(),
+            0, 0, activate_w, Dp(24), kIdLicenseActivate, instance_));
+        add(row_h + Dp(10), {
+            {lic_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {license_activate_button_, ctrl_x, 0, activate_w, Dp(24)},
         });
     }
     separator();
@@ -1295,6 +1411,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     UpdateProviderVisibility();
 
     RefreshHotwordCandidates();
+    RefreshLicenseStatus();
 }
 
 void SettingsDialog::SaveSettings() {
@@ -1507,6 +1624,139 @@ void SettingsDialog::ApplyTrialApiKey() {
                              : result.error).c_str(),
                 TrW(StringId::kSettingsTrialFailedTitle, language).c_str(), MB_ICONERROR | MB_OK);
     UpdateProviderVisibility();
+}
+
+// 归一化（去前缀大写 hex，BleProtocol::NormalizeDeviceId）快照设备列表；
+// 空 id 跳过。绑定键 = SHA-256(id\nmachine_guid)，与发卡端同口径。
+std::vector<std::string> NormalizedLicenseDevices(const std::vector<std::string>& device_ids) {
+    std::vector<std::string> devices;
+    for (const auto& id : device_ids) {
+        const auto normalized = BleProtocol::NormalizeDeviceId(id);
+        if (!normalized.empty()) devices.push_back(normalized);
+    }
+    return devices;
+}
+
+void SettingsDialog::RefreshLicenseStatus() {
+    if (license_status_label_ == nullptr) return;
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    LicenseConfig cfg;
+    cfg.serial = config_.license.serial;
+    cfg.trial_anchor_days = config_.license.trial_anchor_days;
+    cfg.last_seen_days = config_.license.last_seen_days;
+    const auto status = EvaluateLicense(cfg, NormalizedLicenseDevices(connected_device_ids_),
+                                        machine_guid_, DaysSinceEpochTodayUtc());
+    std::string text;
+    switch (status.state) {
+        case LicenseState::kTrial:
+            // 无锚点时 EvaluateLicense 返回满试用期（30 天），锚点由运行时落盘。
+            text = ReplaceFirst(Tr(StringId::kLicenseStatusTrial, language), "%d",
+                                std::to_string(status.days_remaining));
+            break;
+        case LicenseState::kActive:
+            text = status.perpetual
+                       ? Tr(StringId::kLicenseStatusPerpetual, language)
+                       : ReplaceFirst(Tr(StringId::kLicenseStatusActive, language), "%s",
+                                      LicenseDateString(status.expiry_days));
+            break;
+        case LicenseState::kExpired:
+            text = Tr(StringId::kLicenseStatusExpired, language);
+            break;
+    }
+    SetWindowTextW(license_status_label_, Utf16(text).c_str());
+}
+
+bool SettingsDialog::PromptLicenseSerial(std::wstring* serial, UiLanguage language) {
+    LicensePromptState state;
+    state.title = TrW(StringId::kLicenseSectionTitle, language);
+    state.prompt = TrW(StringId::kLicenseActivatePrompt, language);
+    state.ok_text = TrW(StringId::kOk, language);
+    state.cancel_text = TrW(StringId::kCancel, language);
+    std::vector<BYTE> template_storage;
+    const INT_PTR result = DialogBoxIndirectParamW(
+        instance_, BuildLicensePromptTemplate(&template_storage), hwnd_,
+        SettingsDialog::LicensePromptDialogProc, reinterpret_cast<LPARAM>(&state));
+    if (result != IDOK) return false;
+    *serial = state.serial;
+    return true;
+}
+
+INT_PTR CALLBACK SettingsDialog::LicensePromptDialogProc(HWND hwnd, UINT message,
+                                                         WPARAM w_param, LPARAM l_param) {
+    auto* state = reinterpret_cast<LicensePromptState*>(GetWindowLongPtrW(hwnd, DWLP_USER));
+    switch (message) {
+    case WM_INITDIALOG:
+        state = reinterpret_cast<LicensePromptState*>(l_param);
+        SetWindowLongPtrW(hwnd, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+        SetWindowTextW(hwnd, state->title.c_str());
+        SetDlgItemTextW(hwnd, kIdLicensePromptLabel, state->prompt.c_str());
+        SetDlgItemTextW(hwnd, IDOK, state->ok_text.c_str());
+        SetDlgItemTextW(hwnd, IDCANCEL, state->cancel_text.c_str());
+        SetFocus(GetDlgItem(hwnd, kIdLicensePromptEdit));
+        return FALSE;  // 已显式设置焦点
+    case WM_COMMAND:
+        if (LOWORD(w_param) == IDOK) {
+            wchar_t buffer[256] = {};
+            GetDlgItemTextW(hwnd, kIdLicensePromptEdit, buffer, 256);
+            state->serial = buffer;
+            EndDialog(hwnd, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(w_param) == IDCANCEL) {
+            EndDialog(hwnd, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+void SettingsDialog::OnActivateLicense() {
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    const auto title = TrW(StringId::kLicenseSectionTitle, language);
+    const auto devices = NormalizedLicenseDevices(connected_device_ids_);
+    if (devices.empty()) {
+        MessageBoxW(hwnd_, TrW(StringId::kLicenseDeviceRequired, language).c_str(),
+                    title.c_str(), MB_ICONWARNING | MB_OK);
+        return;
+    }
+    std::wstring serial_wide;
+    if (!PromptLicenseSerial(&serial_wide, language)) return;
+    const std::string serial = Utf8(serial_wide);
+    // 串码 = Crockford Base32(payload 15B || sig 64B) = 定长 79 字节。
+    constexpr std::size_t kSerialBytes = 79;
+    const auto decoded = SerialBase32Decode(serial);
+    if (!decoded.has_value() || decoded->size() != kSerialBytes) {
+        MessageBoxW(hwnd_, TrW(StringId::kLicenseActivateFailFormat, language).c_str(),
+                    title.c_str(), MB_ICONWARNING | MB_OK);
+        return;
+    }
+    const auto result = VerifyLicenseSerial(serial, devices, machine_guid_);
+    if (!result.ok) {
+        const StringId message_id =
+            result.reason == LicenseError::kWrongBinding
+                ? StringId::kLicenseActivateFailBinding
+                : result.reason == LicenseError::kExpired
+                      ? StringId::kLicenseActivateFailExpired
+                      : StringId::kLicenseActivateFailFormat;
+        MessageBoxW(hwnd_, TrW(message_id, language).c_str(), title.c_str(),
+                    MB_ICONWARNING | MB_OK);
+        return;
+    }
+    config_.license.serial = serial;
+    try {
+        config_.SaveSettingsDialog();
+    } catch (const std::exception& error) {
+        LogApp(std::string("OnActivateLicense: config save failed: ") + error.what());
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsSaveFailed, language).c_str(),
+                    title.c_str(), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    MessageBoxW(hwnd_, TrW(StringId::kLicenseActivateSuccess, language).c_str(),
+                title.c_str(), MB_OK | MB_ICONINFORMATION);
+    // 热更：外壳侧重建运行件（SetLicenseGate 等）并刷新托盘提示。
+    if (on_config_changed) on_config_changed(config_);
+    RefreshLicenseStatus();
 }
 
 void SettingsDialog::ChooseDebugDirectory() {

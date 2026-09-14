@@ -4,7 +4,9 @@
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
 #include "hotword_extractor.h"
+#include "license_runtime.h"
 #include "local_asr_client_win.h"
+#include "machine_guid_win.h"
 #ifdef VOICESTICK_LOCAL_REFINE_ENABLED
 #include "llama_cpp_engine.h"
 #include "local_refinement_client.h"
@@ -501,6 +503,10 @@ int Win32App::Run() {
             [make_asr](const AppConfig& config) {
                 return make_asr(config);
             });
+        // 离线授权运行时：授权状态装配（设备 ID + MachineGuid + config）与
+        // 试用锚点/last_seen 持久化。config 取 Win32App::config_ 地址——
+        // 设置保存/引导完成时的 move 赋值不改变该对象地址，指针不悬垂。
+        license_runtime_ = std::make_unique<LicenseRuntime>(&config_, coordinator_.get());
         LogLine("Starting coordinator");
         coordinator_->on_air_mouse_active_changed = [this](bool active) {
             // 有设备进入体感时启动 60Hz 定时器驱动 AirMouseTick；全部退出时停止。
@@ -546,6 +552,14 @@ int Win32App::Run() {
 #endif
         coordinator_->Start();
         LogLine("Coordinator started");
+
+        // 离线授权（Doc/Plan/offline-license-activation.md）：首次启用本地识别
+        // 立即写试用锚点；启动即推进 last_seen（防时钟回拨基准），此后每 6h 定时推进。
+        if (license_runtime_) {
+            license_runtime_->EnsureTrialAnchor();
+            license_runtime_->AdvanceLastSeen();
+        }
+        SetTimer(hwnd_, kLicenseLastSeenTimerId, kLicenseLastSeenIntervalMs, nullptr);
 
         f5_suppressor_ = std::make_unique<VoiceF5Suppressor>();
         SyncF5Suppressor();
@@ -1236,6 +1250,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             coordinator_->CheckFirmwareUpdatesPeriodically();
             return 0;
         }
+        if (w_param == kLicenseLastSeenTimerId && license_runtime_) {
+            // now > last_seen 才推进并落盘（幂等，时钟回拨时自动跳过）。
+            license_runtime_->AdvanceLastSeen();
+            return 0;
+        }
         break;
     case WM_POWERBROADCAST:
         // 休眠/睡眠恢复后 BluetoothLEAdvertisementWatcher 会静默失效：仍报告
@@ -1399,6 +1418,15 @@ void Win32App::SyncXiaomiKeymapHook() {
 void Win32App::SyncLocalMicRuntime() {
 #ifdef VOICESTICK_LOCAL_ASR_ENABLED
     if (coordinator_ == nullptr) return;
+
+    // 授权闸（离线授权）：会话将路由本地引擎时按当前授权状态放行
+    // （试用期内或已激活）。空/缺 runtime 时协调器默认放行，行为不变。
+    if (license_runtime_) {
+        coordinator_->SetLicenseGate(
+            [this] { return license_runtime_->LocalAsrAllowed(); });
+        // 用户本次才启用本地识别：立即写试用锚点（幂等，已有锚点跳过）。
+        license_runtime_->EnsureTrialAnchor();
+    }
 
     // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：wechat 点按触发
     // 组合（trigger=click_to_talk + session_model=hold_to_talk）下小米会话的音频
@@ -2483,7 +2511,10 @@ void Win32App::ShowSettings() {
     // 每次重新进入时重建（与 ShowEncoderSettingsDialog 同模式）：SettingsDialog 内部
     // 持有 config_ 的快照，复用旧实例会用过期快照覆盖当前 config_，丢失其他对话框
     // （如编码器设置）在两次打开之间所做的按设备覆盖修改。
-    settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
+    settings_dialog_ = std::make_unique<SettingsDialog>(
+        instance_, hwnd_, config_,
+        coordinator_ ? coordinator_->ConnectedDeviceIds() : std::vector<std::string>{},
+        ReadMachineGuid().value_or(std::string{}));
     settings_dialog_->on_config_changed = [this](AppConfig new_config) {
         config_ = std::move(new_config);
         // SaveInputOptions 内部已调用 coordinator_->UpdateConfig(config_) 完成同步。

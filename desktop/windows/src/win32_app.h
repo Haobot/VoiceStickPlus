@@ -49,6 +49,8 @@ struct DeviceBattery {
     bool usb_powered = false;
 };
 
+class LicenseRuntime;
+
 // 托盘气泡的点击动作：区分"发现程序新版本"（打开 WinSparkle 对话框）与
 // "固件可升级"（打开对应设备固件升级流程）。
 struct BalloonAction {
@@ -205,6 +207,10 @@ private:
     InputInjectorWin input_injector_;
     std::unique_ptr<GlobalHotkeyWin> global_hotkey_;
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
+    // 离线授权运行时（Doc/Plan/offline-license-activation.md）：授权状态装配 +
+    // 试用锚点/last_seen 持久化 + 协调器本地引擎闸判定源。持有 AppConfig* 指向
+    // 本类 config_ 值成员——move 赋值不改对象地址，不悬垂。
+    std::unique_ptr<LicenseRuntime> license_runtime_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
     std::unique_ptr<EncoderSettingsDialog> encoder_settings_dialog_;
@@ -271,6 +277,9 @@ private:
     // 已连接设备固件落后时发托盘气泡提醒。
     static constexpr UINT_PTR kFirmwarePeriodicCheckTimerId = 105;
     static constexpr UINT kFirmwarePeriodicCheckIntervalMs = 12 * 60 * 60'000;
+    // 授权 last_seen 周期推进（防时钟回拨基准）：每 6h 一次，now > last_seen 才落盘。
+    static constexpr UINT_PTR kLicenseLastSeenTimerId = 106;
+    static constexpr UINT kLicenseLastSeenIntervalMs = 6 * 60 * 60'000;
     bool air_mouse_timer_active_ = false;
     bool encoder_rotate_pending_timer_active_ = false;
     bool xiaomi_tick_timer_active_ = false;

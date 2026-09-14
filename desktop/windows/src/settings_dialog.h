@@ -17,12 +17,20 @@ class ModelDownloadDialog;
 
 class SettingsDialog {
 public:
-    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config);
+    // connected_device_ids/machine_guid 为打开时刻的快照（Win32App 每次重建本
+    // 对话框，快照即最新值），供授权状态显示与激活验签的绑定键计算。
+    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
+                   std::vector<std::string> connected_device_ids = {},
+                   std::string machine_guid = {});
     ~SettingsDialog();
 
     void Show();
 
     std::function<void(AppConfig)> on_config_changed;
+
+    // 激活输入模态框内控件（独立小对话框，ID 仅在其内有效）。
+    static constexpr UINT kIdLicensePromptLabel = 2050;
+    static constexpr UINT kIdLicensePromptEdit = 2051;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -45,6 +53,14 @@ private:
     void OnHotwordCandidateAdd();
     void OnHotwordCandidateDismiss();
     void ApplyTrialApiKey();
+    // 授权（离线激活）：刷新状态行（EvaluateLicense 纯函数，不依赖协调器）。
+    void RefreshLicenseStatus();
+    // 「激活…」：模态输入串码 → 归一化设备 + MachineGuid 验签 → 落盘 + 热更。
+    void OnActivateLicense();
+    // 激活输入模态框（内存 DLGTEMPLATE + edit + OK/Cancel）；取消返回 false。
+    bool PromptLicenseSerial(std::wstring* serial, UiLanguage language);
+    static INT_PTR CALLBACK LicensePromptDialogProc(HWND hwnd, UINT message,
+                                                    WPARAM w_param, LPARAM l_param);
     void ChooseDebugDirectory();
     // 通用文件夹选择（IFileDialog FOS_PICKFOLDERS）：选定路径写入目标编辑框，
     // ChooseDebugDirectory 与本地识别模型目录共用。
@@ -92,6 +108,9 @@ private:
     HWND parent_;
     HWND hwnd_ = nullptr;
     AppConfig config_;
+    // 授权区块（离线激活）输入快照：打开时刻的已连接设备 ID 与本机 MachineGuid。
+    std::vector<std::string> connected_device_ids_;
+    std::string machine_guid_;
     UINT dpi_ = 96;
     // 开发者模式：true 时设置页放出全部高级功能。从 config_.developer_mode 加载，
     // 切换复选框时实时更新并 Relayout，无需重建控件。
@@ -154,6 +173,9 @@ private:
     // 跨轮上下文纠错（refine_cross_turn）：勾选后携带最近 5 轮历史走纠正
     // 指令管线，模型档位切 Qwen3-4B 优先（M3）。
     HWND local_refine_cross_check_ = nullptr;
+    // 授权（离线激活）：状态行 + 「激活…」按钮（Doc/Plan/offline-license-activation.md）。
+    HWND license_status_label_ = nullptr;
+    HWND license_activate_button_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -207,6 +229,7 @@ private:
     static constexpr UINT kIdLocalRefinePromptEdit = 2046;
     static constexpr UINT kIdLocalMicModelsDownload = 2047;
     static constexpr UINT kIdLocalRefineCrossCheck = 2048;
+    static constexpr UINT kIdLicenseActivate = 2049;
 };
 
 } // namespace voicestick
