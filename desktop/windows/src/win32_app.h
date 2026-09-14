@@ -247,6 +247,8 @@ private:
     std::string local_refine_key_applied_;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;
+    // 上次记过授权状态日志的连接集合（去抖：设备无变化不重复记）。
+    std::vector<ConnectedDevice> last_logged_device_ids_;
     std::vector<std::string> paired_device_ids_;
     std::map<std::string, DeviceInfo> device_info_map_;
     std::map<std::string, DeviceBattery> device_battery_map_;

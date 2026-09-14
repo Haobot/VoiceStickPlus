@@ -61,6 +61,18 @@ bool LicenseRuntime::LocalAsrAllowed() const {
     return status.state == LicenseState::kTrial || status.state == LicenseState::kActive;
 }
 
+void LicenseRuntime::LogStatus(const char* reason) const {
+    const auto status = CurrentStatus();
+    const char* state = status.state == LicenseState::kTrial    ? "trial"
+                        : status.state == LicenseState::kActive ? "active"
+                                                                : "expired";
+    LogApp(std::string("license: status (") + reason + ") state=" + state +
+           " days_remaining=" + std::to_string(status.days_remaining) +
+           " perpetual=" + (status.perpetual ? "true" : "false") +
+           " rollback=" + (status.clock_rollback ? "true" : "false") +
+           " devices=" + std::to_string(NormalizedDeviceIds().size()));
+}
+
 void LicenseRuntime::SaveConfigQuietly(const char* what) {
     try {
         config_->Save();

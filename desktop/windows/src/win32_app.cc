@@ -558,6 +558,7 @@ int Win32App::Run() {
         if (license_runtime_) {
             license_runtime_->EnsureTrialAnchor();
             license_runtime_->AdvanceLastSeen();
+            license_runtime_->LogStatus("startup");
         }
         SetTimer(hwnd_, kLicenseLastSeenTimerId, kLicenseLastSeenIntervalMs, nullptr);
 
@@ -649,6 +650,12 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
         UpdateTrayIcon();
+        // 授权状态依赖已连接设备列表：连接集合变化时记录一次（启动时设备未连，
+        // 日志会误导为 expired/trial——此处的记录才是带设备的真实状态）。
+        if (license_runtime_ && last_logged_device_ids_ != devices) {
+            last_logged_device_ids_ = devices;
+            license_runtime_->LogStatus("devices_changed");
+        }
         // 电池电压监测窗口：监测中设备断连立即中止（避免干等导出超时）。
         if (battery_monitor_dialog_) {
             for (const auto& dev : devices) {

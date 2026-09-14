@@ -27,6 +27,8 @@ public:
     void AdvanceLastSeen();
     // 本地引擎放行：状态为 kTrial/kActive。
     bool LocalAsrAllowed() const;
+    // 记录当前状态一行（启动/状态变更时调用；不在按键路径上，避免日志噪音）。
+    void LogStatus(const char* reason) const;
 
 private:
     std::vector<std::string> NormalizedDeviceIds() const;

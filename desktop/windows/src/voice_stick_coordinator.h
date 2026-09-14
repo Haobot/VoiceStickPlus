@@ -49,6 +49,8 @@ struct ConnectedDevice {
     std::string name;
     // 设备类标识（kHardwareXiaomiRemote2Pro 等；StickS3 在拿到 device_info 前为空）。
     std::string hardware;
+
+    bool operator==(const ConnectedDevice& other) const = default;
 };
 
 struct DeviceInfo {
