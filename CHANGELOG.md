@@ -14,6 +14,8 @@
 
 ## Unreleased
 
+- 新增离线授权激活（Windows，本地语音识别）：本地离线 ASR 启用「30 天试用 + 串码激活」。串码为自包含离线凭证（payload 15 字节：版本/绑定键哈希/到期日/流水号 + monocypher EdDSA 签名 64 字节，Crockford Base32 分组显示），客户端只内嵌公钥验签，支付/发卡是一次性在线交易，之后永久离线可用。绑定键 = 设备 ID（`RC-XXXX`/`VS-XXXX`）+ Windows MachineGuid，激活/验签均要求绑定设备在场（任一在场即放行，多设备友好）；已绑定他机/他设备的串码验签通过但绑定不匹配，落到试用/过期态。防时钟回拨：持久化 `last_seen_days`，回拨时按上次所见时间计 + 7 天宽限封顶。`config.toml` 新增 `[license]`（serial/trial_anchor_days/last_seen_days，字段说明见 `Doc/Ref/desktop-config.md`）。协调器新增 `SetLicenseGate` 闸口，试用/授权过期时本地引擎会话不启动并提示（云端 ASR 不受影响）；设置页新增「授权」分组（状态行 + 激活对话框，区分格式错/签名无效/绑定不匹配/已过期）。配套 `scripts/gen_serial.py`（零依赖纯 Python EdDSA-BLAKE2b 发卡器 + 测试向量，私钥不进仓库）。修复事故：协调器持有的 config 副本早于试用锚点写入，`SavePairedDeviceInfo` 全量落盘会把锚点抹掉——落盘前先 `ReloadLicenseFromDisk`（新增回归测试）。`license: status` 日志在启动与设备连接变化时记录状态。设计与实施见 `Doc/Plan/offline-license-activation.md`；发行前需用正式密钥对重生成 `license_public_key.h` 与测试向量。
+
 - 新增本地模型下载向导（Windows）：本地语音识别（SenseVoice int8 约 240MB）与本地文本精修（Qwen3-1.7B Q4_K_M 约 1.1GB）改为按需下载，安装包保持瘦体。设置页选中「本地语音识别」时出现「下载模型…」入口，向导支持必选识别 + 可选精修勾选、磁盘空间提示、聚合进度、取消（`.part` 保留断点续传）与错误汇总，完成后自动回填模型目录并刷新就绪状态；已在位（字节数相符）的文件自动跳过。下载核心 `model_manifest` 内置清单 + `model_downloader`（WinHTTP 流式、Range 断点续传、BCrypt SHA-256 校验、`.part` 原子改名、磁盘预检），分发源四重回退：腾讯 COS 正式域名直出 → COS myqcloud 直出 → ModelScope 免费分流 → GitHub Release（渠道约定见 `Doc/Ref/cos-distribution.md`），下载链路带 MDL 观测日志（换源/校验/跳过/汇总）。配套 `scripts/pack_local_models.py` 打包全量离线 zip（`voicestick-models-full-v1.zip`，源文件硬校验后 STORED 打包，含 NOTICE/MANIFEST，供内网分发）。真机验证：COS 实下 1.34GB 三文件 SHA-256 与清单一致。设计见 `Doc/Plan/local-model-distribution.md`。
 
 - 新增热词识别自动化验收测试工具（`scripts/e2e_test/run_hotword_acceptance.py`）：按桌面端同款发送逻辑（腾讯=词表通道 / 火山=评分裁剪直传）回放真实 ASR，报告每个热词的命中率与识别原文，并诊断「不可入表词（含空格/'.'，只能靠 LLM 精修）」；音频可自动生成（edge-tts 造句）或经 `--manifest` 标注清单使用已有录音。
