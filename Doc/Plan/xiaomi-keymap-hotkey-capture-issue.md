@@ -1,6 +1,6 @@
 # 小米遥控器按键映射：「录入」状态识别不到键盘按键（缺陷调查）
 
-- 状态：**修复建议 1/2 已落码（未提交），机制层已证伪，根因待真机证据**
+- 状态：**已定位根因并修复（2026-09-15，commit 0f9c4fbb）**——RC003 批次返回键死键（系统层零事件）+ 录入超时提示覆盖两种原因；遥控器实按验证待用户补测
 - 报障日期：2026-09-07 晚（用户日志时段 23:09–23:25）
 - 关联模块：`desktop/windows/src/xiaomi_keymap_dialog.cc`、`shortcut_capture.cc`、`xiaomi_keymap_hook.cc`
 - 关联 GitHub Issue：见仓库 Issue 列表「录入状态识别不到键盘按键」
@@ -28,6 +28,33 @@
   提交会夹带其半成品。待并行会话收尾（或用户裁决）后，以本节清单为界补提交并补跑全量 CTest。
 - **未重启 VoiceStick.exe 真机冒烟**：避免占用 exe 锁干扰并行会话的后续构建（LNK1104 教训）。
   冒烟清单：托盘→按键映射→录入→不按键等 3 秒看提示→按键看捕获→查日志四条打点。
+
+## 0.1 根因定案与最终修复（2026-09-15 会话，commit 0f9c4fbb）
+
+用户再次报障（「无法录入新按键绑定，管理员启动也无效」）。当日志时段（23:57）两次
+`ShortcutCapture: started` 之后**均无 `first keyboard event`**，而同实例其他 LL 键盘
+钩子同期正常收到物理 F5（`f5 keydown -> suppress`）与遥控器 home/up
+（`swallow-down button=home/up`），结论钉死：**录入时间窗内操作系统层零键盘事件**，
+与提权与否无关，捕获机制无罪（机制层此前 spike 已证伪，本次不再怀疑）。
+
+唯一与「用户按键产生零系统事件」兼容且已在 §3.13 记录过的事实：报障设备 RC-6459
+即 RC003 批次，其 **back 键 usage 0xF1 被 WUDFHost 翻译层丢弃，PC 端零事件**——
+用户录入时按的是遥控器返回键（想绑定返回），系统永远收不到，任何钩子方案均不可行。
+
+最终修复（纯 UX 兜底，未动捕获机制）：
+
+1. 录入超时提示新增 keymap 专用文案 `kXiaomiKeymapCaptureHintTitle/Body`（中英双语），
+   同时覆盖两种零事件原因：①前台提权窗口 UIPI 隔离（点普通窗口重试）；②RC003
+   返回键死键（引导改用下方手动输入，如 `backspace`/`alt+left`）。
+   `hotkey_settings_dialog` 保留原 UIPI 专用文案不变。
+2. 提示触发时落一条日志（`XiaomiKeymapDialog: capture hint shown`），消除
+   「提示弹没弹」的日志盲区。
+3. RC003 常驻检测**未做**：配对记录持久化的 name 只有「小米蓝牙语音遥控器」等通用值，
+   无可靠批次识别信号，不做猜测性检测。
+
+验证：构建 + CTest 全量绿（含 localization 双表完整性）；真机注入 keybd_event 'B' →
+`first keyboard event` + `captured vk=0x42` + UI 回写成功；back 键录入 3 秒无事件 →
+新提示弹出 + 日志落点。**遗留**：遥控器实按（back 死键对照 up 可捕获）待用户 30 秒补测。
 
 ## 1. 现象
 
