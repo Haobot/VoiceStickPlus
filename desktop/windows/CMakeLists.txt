@@ -179,6 +179,7 @@ add_library(voicestick_core STATIC
     src/xiaomi_atvv_session.cc
     src/xiaomi_keymap_interceptor.cc
     src/xiaomi_usage_tap.cc
+    src/xiaomi_usage_tap_host.cc
     src/serial_base32.cc
     src/license.cc
     third_party/monocypher/monocypher.c
@@ -342,6 +343,53 @@ add_custom_command(TARGET VoiceStickApp POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/config.template.toml"
         "$<TARGET_FILE_DIR:VoiceStickApp>/config.template.toml"
 )
+
+# ---- 小米遥控器 usage tap 注入探针（Doc/Plan/xiaomi-remote-usage-tap.md §3）----
+# Detours v4.0.1（MIT，Microsoft 官方维护）：探针 DLL 的 hook 引擎。源码经
+# FetchContent 拉取（WinSparkle/llama 同款模式）静态链入。默认镜像加速源；
+# 离线时 VOICESTICK_DETOURS_URL 指向本地 zip，或
+# FETCHCONTENT_SOURCE_DIR_DETOURS 指向已解压源码目录。
+set(_detours_default_url "https://ghfast.top/https://github.com/microsoft/Detours/archive/refs/tags/v4.0.1.zip")
+if(DEFINED ENV{VOICESTICK_DETOURS_URL})
+    set(_detours_url "$ENV{VOICESTICK_DETOURS_URL}")
+elseif(DEFINED VOICESTICK_DETOURS_URL)
+    set(_detours_url "${VOICESTICK_DETOURS_URL}")
+else()
+    set(_detours_url "${_detours_default_url}")
+endif()
+option(VOICESTICK_ENABLE_XIAOMI_USAGE_TAP "Xiaomi remote usage tap probe (WUDFHost injection)" ON)
+if(VOICESTICK_ENABLE_XIAOMI_USAGE_TAP)
+    message(STATUS "Detours source: ${_detours_url}")
+    FetchContent_Declare(
+        detours
+        URL ${_detours_url}
+    )
+    FetchContent_MakeAvailable(detours)  # Detours 无 CMakeLists，仅解压取源
+    # 手动编静态库（x64 核心；creatwth.cpp 是 DetourCreateProcessWithDll 用
+    # 途且 C++ 编译下 goto 初始化报错，本项目不用，不编）。
+    add_library(detours STATIC
+        ${detours_SOURCE_DIR}/src/detours.cpp
+        ${detours_SOURCE_DIR}/src/disasm.cpp
+        ${detours_SOURCE_DIR}/src/disolx64.cpp
+        ${detours_SOURCE_DIR}/src/image.cpp
+        ${detours_SOURCE_DIR}/src/modules.cpp
+    )
+    target_include_directories(detours PUBLIC ${detours_SOURCE_DIR}/src)
+    target_compile_definitions(detours PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+
+    # VoiceStickHidTap.dll：注入 WUDFHost 的只读探针（零侵入，/MT 全局已钉）。
+    add_library(VoiceStickHidTap SHARED
+        src/hid_tap/hid_tap_dll.cc
+    )
+    target_link_libraries(VoiceStickHidTap PRIVATE detours)
+    set_target_properties(VoiceStickHidTap PROPERTIES OUTPUT_NAME VoiceStickHidTap)
+
+    # VoiceStickTapInject.exe：按需 UAC 的提权注入器（console，主程序 runas 启动）。
+    add_executable(VoiceStickTapInject
+        src/hid_tap/tap_inject_main.cc
+    )
+    target_link_libraries(VoiceStickTapInject PRIVATE voicestick_core advapi32 bcrypt)
+endif()
 
 # VoiceStickFlash：独立 COM 口固件烧录小工具（BLE OTA 之外的用户级兜底链路）。
 # 外壳只做 UI + 子进程，可测试逻辑在 voicestick_core（com_port_selector /
