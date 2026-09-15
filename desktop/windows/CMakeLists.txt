@@ -179,6 +179,7 @@ add_library(voicestick_core STATIC
     src/xiaomi_atvv_session.cc
     src/xiaomi_keymap_interceptor.cc
     src/xiaomi_usage_tap.cc
+    src/xiaomi_usage_tap_decoder.cc
     src/xiaomi_usage_tap_host.cc
     src/serial_base32.cc
     src/license.cc
@@ -283,6 +284,7 @@ add_executable(VoiceStickApp WIN32
     src/selection_correction_dialog.cc
     src/voice_f5_suppressor.cc
     src/xiaomi_keymap_hook.cc
+    src/xiaomi_usage_tap_manager.cc
     src/mic_mode_hotkey.cc
     src/machine_guid_win.cc
     src/license_runtime.cc

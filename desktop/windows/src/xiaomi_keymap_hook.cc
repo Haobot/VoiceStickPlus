@@ -46,9 +46,22 @@ int ButtonIndex(std::string_view button) {
 
 XiaomiKeymapHook::~XiaomiKeymapHook() { Stop(); }
 
-void XiaomiKeymapHook::Start(std::map<std::string, std::string> key_map) {
+void XiaomiKeymapHook::Start(std::map<std::string, std::string> key_map,
+                             bool enable_tap) {
     UpdateKeymap(std::move(key_map));
-    if (hook_) return;  // 幂等：已运行仅刷新 key_map
+    if (hook_) {
+        // 幂等：已运行仅刷新 key_map；tap 开关变化时同步启停探针链路。
+        if (enable_tap && !tap_enabled_) {
+            tap_enabled_ = true;
+            tap_manager_.Start(TapEdgeTrampoline, TapStateTrampoline, this);
+        } else if (!enable_tap && tap_enabled_) {
+            tap_manager_.Stop();
+            tap_enabled_ = false;
+            tap_direct_keys_.Reset();
+            tap_evidence_.Reset();
+        }
+        return;
+    }
     active_instance_ = this;
     // LL 钩子与异步判定窗口都在主线程（须有消息泵）；interceptor_ 仅主线程
     // 触达（LL 回调经主线程消息机制执行），无并发。
@@ -78,8 +91,17 @@ void XiaomiKeymapHook::Start(std::map<std::string, std::string> key_map) {
     }
     interceptor_.Reset();
     pending_timer_on_ = false;
+    repeat_timer_on_ = false;
     raw_input_thread_ = std::thread([this] { RawInputThreadMain(); });
-    LogApp("XiaomiKeymapHook: started (LL hook + post-keyup correlation)");
+    tap_enabled_ = enable_tap;
+    if (tap_enabled_) {
+        tap_direct_keys_.Reset();
+        tap_evidence_.Reset();
+        tap_state_ = XiaomiUsageTapManager::LinkState::kNoHost;
+        tap_manager_.Start(TapEdgeTrampoline, TapStateTrampoline, this);
+    }
+    LogApp("XiaomiKeymapHook: started (LL hook + post-keyup correlation" +
+           std::string(tap_enabled_ ? " + usage tap" : "") + ")");
 }
 
 void XiaomiKeymapHook::UpdateKeymap(
@@ -91,6 +113,12 @@ void XiaomiKeymapHook::UpdateKeymap(
 }
 
 void XiaomiKeymapHook::Stop() {
+    if (tap_enabled_) {
+        tap_manager_.Stop();
+        tap_enabled_ = false;
+        tap_direct_keys_.Reset();
+        tap_evidence_.Reset();
+    }
     if (hook_) {
         UnhookWindowsHookEx(hook_);
         hook_ = nullptr;
@@ -99,6 +127,10 @@ void XiaomiKeymapHook::Stop() {
         if (pending_timer_on_) {
             KillTimer(dispatch_hwnd_, kPendingTimerId);
             pending_timer_on_ = false;
+        }
+        if (repeat_timer_on_) {
+            KillTimer(dispatch_hwnd_, kRepeatTimerId);
+            repeat_timer_on_ = false;
         }
         DestroyWindow(dispatch_hwnd_);
         dispatch_hwnd_ = nullptr;
@@ -175,6 +207,11 @@ LRESULT CALLBACK XiaomiKeymapHook::LowLevelKeyboardProc(int code,
     if (!key_map || key_map->empty()) {
         return CallNextHookEx(nullptr, code, w_param, l_param);
     }
+    // 系统翻译到达（RC001 类固件三键可见）：取消直触发 hold 让现有管线接管
+    //（含 150ms 抑制窗，防 LL keydown 早于 tap pressed 的乱序双触发）。
+    if (is_down && XiaomiButtonIsTapDirect(*button)) {
+        self->tap_direct_keys_.CancelHold(*button, NowSteadyMs());
+    }
     // keyup 后置决策（2026-09-07 三次迭代定案）：keydown/按住重复一律吞（零
     // 副作用零等待）；keyup 放行让 BREAK 沿投递提供设备证据，归属判定与注入
     // 移到主线程消息完成（OnBreakMessage/OnPendingTimer）。
@@ -214,12 +251,46 @@ LRESULT CALLBACK XiaomiKeymapHook::DispatchWndProc(HWND hwnd, UINT msg,
             self->OnBreakMessage(static_cast<int>(w_param), l_param != 0);
             return 0;
         }
+        if (msg == kMsgTapEdge) {
+            self->OnTapEdge(static_cast<int>(w_param), l_param != 0);
+            return 0;
+        }
+        if (msg == kMsgTapState) {
+            self->OnTapState(static_cast<XiaomiUsageTapManager::LinkState>(
+                w_param));
+            return 0;
+        }
         if (msg == WM_TIMER && w_param == kPendingTimerId) {
             self->OnPendingTimer();
             return 0;
         }
+        if (msg == WM_TIMER && w_param == kRepeatTimerId) {
+            self->OnRepeatTimer();
+            return 0;
+        }
     }
     return DefWindowProcW(hwnd, msg, w_param, l_param);
+}
+
+void XiaomiKeymapHook::TapEdgeTrampoline(void* ctx, int button_index,
+                                         bool pressed) {
+    // 管道线程：仅转主线程消息（沿的消费全部在主线程，状态机无并发）。
+    auto* self = static_cast<XiaomiKeymapHook*>(ctx);
+    if (self && self->dispatch_hwnd_) {
+        PostMessageW(self->dispatch_hwnd_, kMsgTapEdge,
+                     static_cast<WPARAM>(button_index),
+                     static_cast<LPARAM>(pressed ? 1 : 0));
+    }
+}
+
+void XiaomiKeymapHook::TapStateTrampoline(
+    void* ctx, XiaomiUsageTapManager::LinkState state) {
+    // 监视线程：仅转主线程消息（状态记录与 UI 查询都在主线程）。
+    auto* self = static_cast<XiaomiKeymapHook*>(ctx);
+    if (self && self->dispatch_hwnd_) {
+        PostMessageW(self->dispatch_hwnd_, kMsgTapState,
+                     static_cast<WPARAM>(state), 0);
+    }
 }
 
 void XiaomiKeymapHook::OnBreakMessage(int button_index, bool from_remote) {
@@ -247,6 +318,16 @@ void XiaomiKeymapHook::OnPendingTimer() {
     if (!key_map) return;
     const std::int64_t now = NowSteadyMs();
     for (const auto& [button, released] : interceptor_.PendingAwaitingBreak()) {
+        // tap 佐证优先（GATT 层真源归属，物理键盘不可能产生 tap 信号）：
+        // 兜底窗内 tap 有沿 → 按遥控器注入映射，跳过物理键盘保守补偿。
+        if (tap_enabled_ && tap_evidence_.HasRecentEdge(button, now)) {
+            auto action = interceptor_.OnBreakEvidence(button, now, true,
+                                                        *key_map);
+            if (action.has_value()) {
+                ApplyAction(*action, "break-tap-evidence", button);
+            }
+            continue;
+        }
         auto action = interceptor_.OnPendingTimeout(button, now);
         if (action.has_value()) {
             ApplyAction(*action, "break-timeout-compensate", button);
@@ -255,6 +336,81 @@ void XiaomiKeymapHook::OnPendingTimer() {
     if (!interceptor_.HasPending() && pending_timer_on_) {
         KillTimer(dispatch_hwnd_, kPendingTimerId);
         pending_timer_on_ = false;
+    }
+}
+
+void XiaomiKeymapHook::OnTapEdge(int button_index, bool pressed) {
+    if (button_index < 0 ||
+        button_index >= static_cast<int>(kXiaomiMappableButtons.size())) {
+        return;
+    }
+    const auto key_map = key_map_.load(std::memory_order_acquire);
+    if (!key_map) return;
+    const auto button = kXiaomiMappableButtons[button_index];
+    const std::int64_t now = NowSteadyMs();
+    // 全部沿进佐证表（BREAK 兜底反查口径），直触发键再进状态机。
+    tap_evidence_.OnEdge(button, now);
+    if (!XiaomiButtonIsTapDirect(button)) return;
+    auto action = pressed
+                      ? tap_direct_keys_.OnPressed(button, now, *key_map)
+                      : tap_direct_keys_.OnReleased(button, now, *key_map);
+    if (action.has_value()) {
+        XiaomiKeymapHookAction wrapper;
+        wrapper.inject = std::move(action->inject);
+        wrapper.inject_up = std::move(action->inject_up);
+        ApplyAction(wrapper, pressed ? "tap-direct-fire" : "tap-direct-click",
+                    button);
+    }
+    SyncRepeatTimer();
+}
+
+void XiaomiKeymapHook::OnTapState(XiaomiUsageTapManager::LinkState state) {
+    tap_state_ = state;
+    const char* name = "unknown";
+    switch (state) {
+        case XiaomiUsageTapManager::LinkState::kNoHost: name = "no-host"; break;
+        case XiaomiUsageTapManager::LinkState::kInjectPending:
+            name = "inject-pending";
+            break;
+        case XiaomiUsageTapManager::LinkState::kConnected:
+            name = "connected";
+            break;
+        case XiaomiUsageTapManager::LinkState::kStale: name = "stale"; break;
+    }
+    LogApp(std::string("XiaomiKeymapHook: usage tap link state=") + name);
+}
+
+void XiaomiKeymapHook::OnRepeatTimer() {
+    const auto key_map = key_map_.load(std::memory_order_acquire);
+    if (!key_map) return;
+    const std::int64_t now = NowSteadyMs();
+    for (const auto button : kTapDirectButtons) {
+        auto action = tap_direct_keys_.PollRepeat(button, now, *key_map);
+        if (action.has_value()) {
+            XiaomiKeymapHookAction wrapper;
+            wrapper.inject = std::move(action->inject);
+            wrapper.inject_up = std::move(action->inject_up);
+            ApplyAction(wrapper, "tap-direct-repeat", button);
+        }
+    }
+    SyncRepeatTimer();
+}
+
+void XiaomiKeymapHook::SyncRepeatTimer() {
+    bool any_hold = false;
+    for (const auto button : kTapDirectButtons) {
+        if (tap_direct_keys_.HasHold(button)) {
+            any_hold = true;
+            break;
+        }
+    }
+    if (any_hold && !repeat_timer_on_ && dispatch_hwnd_) {
+        repeat_timer_on_ =
+            SetTimer(dispatch_hwnd_, kRepeatTimerId, kRepeatTimerMs,
+                     nullptr) != 0;
+    } else if (!any_hold && repeat_timer_on_ && dispatch_hwnd_) {
+        KillTimer(dispatch_hwnd_, kRepeatTimerId);
+        repeat_timer_on_ = false;
     }
 }
 

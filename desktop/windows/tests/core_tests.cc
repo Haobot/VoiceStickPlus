@@ -12,6 +12,8 @@
 #include "xiaomi_buttons.h"
 #include "xiaomi_keymap_interceptor.h"
 #include "xiaomi_usage_tap.h"
+#include "xiaomi_usage_tap_decoder.h"
+#include "xiaomi_usage_tap.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
 
@@ -7072,6 +7074,80 @@ void TestXiaomiTapEvidenceTable() {
     table.Reset();
     assert(!table.HasRecentEdge("back", kNow + 1000));
     assert(!table.HasRecentEdge("home", kNow + 2000));
+}
+
+// tap 管道帧解码器：DLL 侧变长帧字节流（1 字节心跳 0x01 / 10 字节数据
+// 0x02+9 报文）→ 完整帧；支持任意分片/粘包/非法字节重同步。
+void TestXiaomiTapFrameDecoder() {
+    const std::vector<uint8_t> report = {0x01, 0x00, 0x00,
+                                         0xF1, 0x00, 0x80, 0x00, 0x81, 0x00};
+    // 单心跳帧。
+    {
+        XiaomiTapFrameDecoder decoder;
+        const uint8_t heartbeat[] = {0x01};
+        const auto frames = decoder.OnBytes(heartbeat, 1);
+        assert(frames.size() == 1 && !frames[0].is_data);
+    }
+    // 单数据帧一次喂入：payload 原样。
+    {
+        XiaomiTapFrameDecoder decoder;
+        std::vector<uint8_t> stream = {0x02};
+        stream.insert(stream.end(), report.begin(), report.end());
+        const auto frames = decoder.OnBytes(stream.data(), stream.size());
+        assert(frames.size() == 1 && frames[0].is_data);
+        assert(std::equal(frames[0].report, frames[0].report + 9,
+                          report.begin()));
+    }
+    // 分片：数据帧拆 3 次喂，前两次无输出，第三次整帧产出。
+    {
+        XiaomiTapFrameDecoder decoder;
+        std::vector<uint8_t> stream = {0x02};
+        stream.insert(stream.end(), report.begin(), report.end());
+        assert(decoder.OnBytes(stream.data(), 3).empty());
+        assert(decoder.OnBytes(stream.data() + 3, 4).empty());
+        const auto frames = decoder.OnBytes(stream.data() + 7, 3);
+        assert(frames.size() == 1 && frames[0].is_data);
+    }
+    // 粘包：心跳+数据+心跳一次喂入，按序产出 3 帧。
+    {
+        XiaomiTapFrameDecoder decoder;
+        std::vector<uint8_t> stream = {0x01, 0x02};
+        stream.insert(stream.end(), report.begin(), report.end());
+        stream.push_back(0x01);
+        const auto frames = decoder.OnBytes(stream.data(), stream.size());
+        assert(frames.size() == 3);
+        assert(!frames[0].is_data && frames[1].is_data &&
+               !frames[2].is_data);
+    }
+    // 非法前导字节：逐字节丢弃重同步，后续帧正常解出。
+    {
+        XiaomiTapFrameDecoder decoder;
+        std::vector<uint8_t> stream = {0xFF, 0x00, 0x02};
+        stream.insert(stream.end(), report.begin(), report.end());
+        const auto frames = decoder.OnBytes(stream.data(), stream.size());
+        assert(frames.size() == 1 && frames[0].is_data);
+    }
+    // 心跳可作数据帧 payload 首字节：0x02 后跟 0x01 开头的报文仍是数据帧。
+    {
+        XiaomiTapFrameDecoder decoder;
+        const uint8_t stream[] = {0x02, 0x01, 0x00, 0x00, 0xF1,
+                                  0x00, 0x81, 0x00, 0x00, 0x00};
+        const auto frames =
+            decoder.OnBytes(stream, sizeof(stream) / sizeof(stream[0]));
+        assert(frames.size() == 1 && frames[0].is_data);
+        assert(frames[0].report[0] == 0x01);
+    }
+    // Reset：半帧残留清空，重新从帧头解码。
+    {
+        XiaomiTapFrameDecoder decoder;
+        const uint8_t partial[] = {0x02, 0x01, 0x00};
+        decoder.OnBytes(partial, 3);
+        decoder.Reset();
+        std::vector<uint8_t> stream = {0x02};
+        stream.insert(stream.end(), report.begin(), report.end());
+        const auto frames = decoder.OnBytes(stream.data(), stream.size());
+        assert(frames.size() == 1 && frames[0].is_data);
+    }
 }
 
 // 按键映射消费端（Doc/Plan/xiaomi-keymap-consumer.md）：kbdhid 翻译特征识别、
@@ -15285,6 +15361,7 @@ int main() {
     TestXiaomiUsageTapSessionEdges();
     TestXiaomiTapDirectKeys();
     TestXiaomiTapEvidenceTable();
+    TestXiaomiTapFrameDecoder();
     TestXiaomiKeymapInterceptor();
     TestXiaomiF5SuppressPredicate();
     TestCoordinatorXiaomiCapabilityGating();

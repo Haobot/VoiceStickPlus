@@ -1413,7 +1413,8 @@ void Win32App::SyncXiaomiKeymapHook() {
         if (!spec.empty()) { has_mapping = true; break; }
     }
     if (has_mapping) {
-        xiaomi_keymap_hook_->Start(std::move(key_map));
+        // usage tap 探针链路随钩子启停；开关接配置（Task 4），当前默认启用。
+        xiaomi_keymap_hook_->Start(std::move(key_map), /*enable_tap=*/true);
     } else {
         xiaomi_keymap_hook_->Stop();
     }
