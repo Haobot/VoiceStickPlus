@@ -265,9 +265,10 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotkeyConflictMessage)] = "This hotkey is already used by another app. Choose another combination.";
     table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "Hotkey capture";
     table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
-        "No key press was detected within a few seconds. If the foreground window runs as "
-        "administrator (elevated), its keyboard events are isolated by the system and cannot "
-        "be captured. Click this window (or any non-elevated window) and try again.";
+        "No key press was detected, so compatibility capture mode is now active. Press the "
+        "target hotkey again — it is now recognized no matter which window has focus, "
+        "including elevated (administrator) ones. Note: in this mode the key press also "
+        "reaches the foreground window.";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud needs attention";
     table[Index(StringId::kCloudOpenPageQuestion)] = "Open the VoiceStick Cloud page?";
 
@@ -416,13 +417,13 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kXiaomiKeymapClickHint)] = "Click any button in the photo";
     table[Index(StringId::kXiaomiKeymapCaptureHintTitle)] = "Key capture";
     table[Index(StringId::kXiaomiKeymapCaptureHintBody)] =
-        "No key press was detected within a few seconds. Possible causes:\n"
-        "1. If the foreground window runs as administrator (elevated), its keyboard events are "
-        "isolated by the system and cannot be captured. Click this dialog (or any non-elevated "
-        "window) and try again.\n"
-        "2. The BACK key on some Xiaomi remote batches (RC003) is dropped by the Windows "
-        "Bluetooth stack and never reaches the system, so it can never be captured. To bind it, "
-        "use manual input below (e.g. backspace or alt+left).";
+        "No key press was detected, so compatibility capture mode is now active. Press the "
+        "target key on your computer keyboard again (e.g. Backspace) — it is now recognized "
+        "no matter which window has focus.\n"
+        "Note: in this mode the key press also reaches the foreground window. If capture "
+        "still does not respond, use manual input below (e.g. backspace or alt+left). The "
+        "BACK key on some Xiaomi remote batches (RC003) is dropped by the Windows Bluetooth "
+        "stack and never reaches the system, so it can only be bound via manual input.";
     table[Index(StringId::kXiaomiButtonPower)] = "Power";
     table[Index(StringId::kXiaomiButtonMic)] = "Microphone";
     table[Index(StringId::kXiaomiButtonUp)] = "Up";
@@ -724,9 +725,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotkeyConflictMessage)] = "该快捷键已被其他程序占用，请选择其他组合。";
     table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "快捷键录入";
     table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
-        "几秒内未检测到任何按键。若当前前台窗口是以管理员权限（提权）运行的程序"
-        "（如提权终端、任务管理器），键盘事件会被系统隔离而无法识别。"
-        "请点击本窗口或任意普通权限窗口后重试。";
+        "几秒内未检测到按键，已自动切换为兼容录入模式。请再按一次目标快捷键：现在无论"
+        "焦点在哪个窗口（包括管理员权限的窗口）都能识别。注意：兼容模式无法屏蔽按键"
+        "透传，按下的键可能同时作用于当前前台窗口。";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud 需要处理";
     table[Index(StringId::kCloudOpenPageQuestion)] = "是否打开 VoiceStick Cloud 页面？";
 
@@ -866,12 +867,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kXiaomiKeymapClickHint)] = "点击照片中的任意按键";
     table[Index(StringId::kXiaomiKeymapCaptureHintTitle)] = "按键录入";
     table[Index(StringId::kXiaomiKeymapCaptureHintBody)] =
-        "几秒内未检测到任何按键，可能原因：\n"
-        "1. 若当前前台窗口是以管理员权限（提权）运行的程序（如提权终端、任务管理器），"
-        "键盘事件会被系统隔离而无法识别。请点击本对话框或任意普通权限窗口后重试。\n"
-        "2. 部分批次的小米遥控器（RC003）的返回键事件会被 Windows 蓝牙栈丢弃，系统"
-        "永远收不到，因此无法通过按键录入。如需绑定返回键，请使用下方手动输入"
-        "（例如 backspace 或 alt+left）。";
+        "几秒内未检测到按键，已自动切换为兼容录入模式。请再按一次要绑定的电脑键盘按键"
+        "（如 Backspace）：现在无论焦点在哪个窗口都能识别。\n"
+        "注意：兼容模式无法屏蔽按键透传，按下的键可能同时作用于当前前台窗口。若仍无"
+        "反应，请使用下方手动输入（例如 backspace 或 alt+left）。部分批次遥控器"
+        "（RC003）的返回键事件会被 Windows 蓝牙栈丢弃、系统永远收不到，只能手动输入绑定。";
     table[Index(StringId::kXiaomiButtonPower)] = "电源键";
     table[Index(StringId::kXiaomiButtonMic)] = "麦克风键";
     table[Index(StringId::kXiaomiButtonUp)] = "上";

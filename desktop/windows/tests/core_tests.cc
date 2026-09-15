@@ -13046,6 +13046,26 @@ void TestShortcutCaptureClassifyKey() {
            ShortcutCapture::KeyAction::kCancel);
 }
 
+void TestShortcutCapturePollEligibleVk() {
+    // 鼠标键与保留区不采纳：避免点击「录入」按钮/切换窗口被误判为按键。
+    assert(!ShortcutCapture::IsPollEligibleVk(0x00));
+    assert(!ShortcutCapture::IsPollEligibleVk(VK_LBUTTON));
+    assert(!ShortcutCapture::IsPollEligibleVk(VK_RBUTTON));
+    assert(!ShortcutCapture::IsPollEligibleVk(VK_MBUTTON));
+    assert(!ShortcutCapture::IsPollEligibleVk(VK_XBUTTON2));
+    assert(!ShortcutCapture::IsPollEligibleVk(0x07));
+    assert(!ShortcutCapture::IsPollEligibleVk(0xFF));
+    // 键盘区全覆盖：Backspace/字母/方向/功能/媒体键均可经轮询兜底捕获。
+    assert(ShortcutCapture::IsPollEligibleVk(VK_BACK));
+    assert(ShortcutCapture::IsPollEligibleVk('A'));
+    assert(ShortcutCapture::IsPollEligibleVk(VK_UP));
+    assert(ShortcutCapture::IsPollEligibleVk(VK_LCONTROL));
+    assert(ShortcutCapture::IsPollEligibleVk(VK_F13));
+    assert(ShortcutCapture::IsPollEligibleVk(VK_VOLUME_UP));
+    assert(ShortcutCapture::IsPollEligibleVk(VK_BROWSER_BACK));
+    assert(ShortcutCapture::IsPollEligibleVk(0xFE));
+}
+
 void TestAppConfigLocalAsrRoundTrip() {
     assert(!AppConfig::Defaults().local_asr.enabled);
     assert(AppConfig::Defaults().local_asr.models_dir.empty());
@@ -14716,6 +14736,7 @@ int main() {
     TestFormatPushToTalkKey();
     TestProviderComboMapping();
     TestShortcutCaptureClassifyKey();
+    TestShortcutCapturePollEligibleVk();
     TestResolveAndValidateModelsDir();
     TestAppConfigLocalAsrRoundTrip();
     TestCoordinatorLocalMicSessionRoutesToLocalAsr();
