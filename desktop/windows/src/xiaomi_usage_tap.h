@@ -103,7 +103,13 @@ public:
         std::string_view button, std::int64_t now_ms,
         const std::map<std::string, std::string>& key_map);
     // LL keydown 到达时取消 hold（该设备该键系统可见，现有管线接管）。
-    void CancelHold(std::string_view button);
+    // 同时记录取消时刻：时钟乱序（keydown 先于 tap pressed 到达）时，
+    // OnPressed 在抑制窗内拒绝登记，避免现有管线注入后 released 再补一发。
+    void CancelHold(std::string_view button, std::int64_t now_ms);
+    // CancelHold 抑制窗：LL keydown 与同报文 tap pressed 的乱序间隔远小于
+    // 100ms 量级，150ms 留余量；正常连按（RC001 可见场景）落在窗内也语义
+    // 正确——该次由现有管线接管，直触发不参与。
+    static constexpr std::int64_t kCancelGraceMs = 150;
     bool HasHold(std::string_view button) const;
     // 断连清全部（防按键状态卡死）。
     void Reset();
@@ -120,8 +126,11 @@ private:
     std::optional<XiaomiTapDirectAction> MakeAction(
         std::string_view button,
         const std::map<std::string, std::string>& key_map) const;
+    // now 时刻是否处于该按钮的取消抑制窗内。
+    bool InCancelGrace(std::string_view button, std::int64_t now_ms) const;
 
     std::vector<Hold> holds_;
+    std::map<std::string, std::int64_t, std::less<>> cancelled_at_;
 };
 
 // 「按钮 → 最近 tap 沿时刻」佐证表：BREAK 沿异常丢失（kBreakEvidenceWindowMs

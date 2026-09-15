@@ -6994,11 +6994,36 @@ void TestXiaomiTapDirectKeys() {
     {
         XiaomiTapDirectKeys keys;
         keys.OnPressed("back", kNow, key_map);
-        keys.CancelHold("back");
+        keys.CancelHold("back", kNow + 5);
         assert(!keys.HasHold("back"));
         assert(!keys.OnReleased("back", kNow + 50, key_map).has_value());
         assert(!keys.PollRepeat("back", kNow + 300, key_map).has_value());
-        keys.CancelHold("back");  // 无 hold 时幂等
+        keys.CancelHold("back", kNow + 10);  // 无 hold 时幂等
+    }
+    // 时钟乱序防御：LL keydown 先于 tap pressed 到达（CancelHold 在前），
+    // 抑制窗内的 pressed 不登记（该键由现有管线接管，released 无残留注入）。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.CancelHold("back", kNow);
+        assert(!keys.OnPressed("back", kNow + 100, key_map).has_value());
+        assert(!keys.HasHold("back"));
+        assert(!keys.OnReleased("back", kNow + 150, key_map).has_value());
+        assert(!keys.PollRepeat("back", kNow + 400, key_map).has_value());
+    }
+    // 抑制窗外恢复登记（正常 tap 信号晚于一次历史取消，如断连重连场景）。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.CancelHold("back", kNow);
+        assert(!keys.OnPressed("back", kNow + 200, key_map).has_value());
+        assert(keys.HasHold("back"));
+        assert(keys.OnReleased("back", kNow + 250, key_map).has_value());
+    }
+    // 抑制只作用于被取消的按钮：相邻直触发键不受影响。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.CancelHold("back", kNow);
+        assert(!keys.OnPressed("volume_up", kNow + 50, key_map).has_value());
+        assert(keys.HasHold("volume_up"));
     }
     // Reset：断连清全部（防按键状态卡死）。
     {

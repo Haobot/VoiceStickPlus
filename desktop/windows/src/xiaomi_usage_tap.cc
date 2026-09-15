@@ -124,6 +124,7 @@ std::optional<XiaomiTapDirectAction> XiaomiTapDirectKeys::OnPressed(
     std::string_view button, std::int64_t now_ms,
     const std::map<std::string, std::string>& key_map) {
     if (!XiaomiButtonIsTapDirect(button)) return std::nullopt;
+    if (InCancelGrace(button, now_ms)) return std::nullopt;  // 乱序防御
     if (FindHold(button) != holds_.end()) return std::nullopt;  // 报文抖动幂等
     if (!XiaomiMappedSpec(button, key_map).has_value()) return std::nullopt;
     Hold hold;
@@ -164,9 +165,19 @@ std::optional<XiaomiTapDirectAction> XiaomiTapDirectKeys::PollRepeat(
     return action;
 }
 
-void XiaomiTapDirectKeys::CancelHold(std::string_view button) {
+void XiaomiTapDirectKeys::CancelHold(std::string_view button,
+                                     std::int64_t now_ms) {
     const auto hold = FindHold(button);
     if (hold != holds_.end()) holds_.erase(hold);
+    cancelled_at_[std::string(button)] = now_ms;
+}
+
+bool XiaomiTapDirectKeys::InCancelGrace(std::string_view button,
+                                         std::int64_t now_ms) const {
+    const auto it = cancelled_at_.find(button);
+    if (it == cancelled_at_.end()) return false;
+    return now_ms >= it->second &&
+           now_ms - it->second <= kCancelGraceMs;
 }
 
 bool XiaomiTapDirectKeys::HasHold(std::string_view button) const {
@@ -174,7 +185,10 @@ bool XiaomiTapDirectKeys::HasHold(std::string_view button) const {
            holds_.end();
 }
 
-void XiaomiTapDirectKeys::Reset() { holds_.clear(); }
+void XiaomiTapDirectKeys::Reset() {
+    holds_.clear();
+    cancelled_at_.clear();
+}
 
 void XiaomiTapEvidenceTable::OnEdge(std::string_view button,
                                     std::int64_t now_ms) {
