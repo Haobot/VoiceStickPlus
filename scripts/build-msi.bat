@@ -83,6 +83,14 @@ if not exist "%BUILD_DIR%\VoiceStickFlash.exe" (
     echo ERROR: VoiceStickFlash.exe not found in build directory.
     exit /b 1
 )
+if not exist "%BUILD_DIR%\VoiceStickHidTap.dll" (
+    echo ERROR: VoiceStickHidTap.dll not found in build directory.
+    exit /b 1
+)
+if not exist "%BUILD_DIR%\VoiceStickTapInject.exe" (
+    echo ERROR: VoiceStickTapInject.exe not found in build directory.
+    exit /b 1
+)
 
 :: Step 2: Sign exe files (signtool from Windows SDK, PATH, or local signing folder)
 :: Certificate thumbprint: set env SIGNING_SHA1, or create scripts\.signing_sha1
@@ -155,6 +163,29 @@ if errorlevel 1 (
 powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\VoiceStickFlash.exe'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
 if errorlevel 1 (
     echo ERROR: VoiceStickFlash.exe is not signed.
+    exit /b 1
+)
+:: usage tap 探针 DLL 与提权注入器（增强按键识别链路）：注入系统 HID 宿主的
+:: 组件必须签名（AV/SmartScreen 关注度低；注入器部署前按签名后的文件做
+:: SHA-256 一致性校验）。
+"%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStickHidTap.dll"
+if errorlevel 1 (
+    echo ERROR: Signing VoiceStickHidTap.dll failed.
+    exit /b 1
+)
+powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\VoiceStickHidTap.dll'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
+if errorlevel 1 (
+    echo ERROR: VoiceStickHidTap.dll is not signed.
+    exit /b 1
+)
+"%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStickTapInject.exe"
+if errorlevel 1 (
+    echo ERROR: Signing VoiceStickTapInject.exe failed.
+    exit /b 1
+)
+powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\VoiceStickTapInject.exe'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
+if errorlevel 1 (
+    echo ERROR: VoiceStickTapInject.exe is not signed.
     exit /b 1
 )
 

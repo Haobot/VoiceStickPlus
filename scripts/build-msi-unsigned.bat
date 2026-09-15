@@ -78,6 +78,14 @@ if not exist "%BUILD_DIR%\VoiceStickFlash.exe" (
     echo ERROR: VoiceStickFlash.exe not found in build directory.
     exit /b 1
 )
+if not exist "%BUILD_DIR%\VoiceStickHidTap.dll" (
+    echo ERROR: VoiceStickHidTap.dll not found in build directory.
+    exit /b 1
+)
+if not exist "%BUILD_DIR%\VoiceStickTapInject.exe" (
+    echo ERROR: VoiceStickTapInject.exe not found in build directory.
+    exit /b 1
+)
 
 echo.
 echo Preparing VoiceStickFlash payload (embedded python + esptool)...

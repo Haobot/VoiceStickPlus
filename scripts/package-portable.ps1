@@ -41,6 +41,9 @@ Write-Host "[1/4] 收集产物..." -ForegroundColor Yellow
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStick.exe') $OutDir -Force
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\WinSparkle.dll') $OutDir -Force
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStickFlash.exe') $OutDir -Force
+# usage tap 探针 DLL + 提权注入器（增强按键识别链路）：注入器从 exe 同目录取 DLL 源。
+Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStickHidTap.dll') $OutDir -Force
+Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStickTapInject.exe') $OutDir -Force
 
 # 烧录工具运行时：FlashTool\python\python.exe + site-packages（esptool）。
 # 优先复用 MSI 打包已生成的 build-msi-x64\flash_payload（幂等，避免重复下载），
