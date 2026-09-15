@@ -1,6 +1,6 @@
 # 小米遥控器 usage 直读移植方案(参考 MiVibe-Remote)
 
-> 状态:**重启——A 方案(2026-09-15,用户需求变化,见 §5 决策史)**。2026-09-07 曾定案 C(维持现状);09-15 用户要求三键(back/volume_up/volume_down)全量可识别,触发上文既定重启条件,按「可选高级功能、默认关闭、运行时提权、hook 彻底自研(GPL/Frida 双规避)」激活方案 A,并按 §6 MiVibe 深读细节修订实施参数。
+> 状态:**已实施(2026-09-15,Task 1~5 交付,真机冒烟验收待做,见 §7)**。2026-09-07 曾定案 C(维持现状);09-15 用户要求三键(back/volume_up/volume_down)全量可识别,触发上文既定重启条件,按「可选高级功能、默认关闭、运行时提权、hook 彻底自研(GPL/Frida 双规避)」激活方案 A,并按 §6 MiVibe 深读细节修订实施参数。
 > 事实链依据:`Doc/Plan/xiaomi-keymap-consumer.md` §1 勘误段(2026-09-07 定案)。
 
 ## 1. 背景与目标
@@ -152,3 +152,33 @@ RC003 全键 usage 表(MiVibe `hid_report_tap.py` 与本项目 Raw Input 实测�
 4. **杀软与签名**:自研 DLL+注入器随 MSI 走既有签名渠道;DLL 固定路径+hash 校验+文档明示原理(README/网站 FAQ 增补「增强按键识别的原理与权限说明」)。接受残余误报风险,用户侧可关闭功能。
 5. **崩溃隔离**:hook DLL 只读旁路(IOCTL 过滤三重:号==0x80018483、NT_SUCCESS、输出长==9),任何异常吞掉不冒泡——WUDFHost 崩溃会连带遥控器/其它 BTHLE 外设掉线,载荷必须零侵入;管道写失败静默,宿主侧超时判不可用即回落。
 6. **TDD 边界不变**:报文校验(9 字节/`01 00 00` 前缀)、usage 集合解析与 diff、沿生成、断连全释放、tap 佐证融合优先级、长按重复节拍——全部纯逻辑进 `voicestick_core` 先红后绿;DLL/注入器/管道以真机冒烟脚本验证(注入→心跳→13 键逐个出沿→回落路径),冒烟不过不算完成。
+
+## 7. 实施交付清单(2026-09-15,分支 feat/xiaomi-usage-tap)
+
+| 提交 | 内容 |
+|---|---|
+| 14b79005 | 方案文档(本文件)状态头与 §6 深读增补 |
+| ba34f486 | Task 1 纯逻辑层:`xiaomi_usage_tap.h/.cc`(报文解析/13 键表/会话 diff 沿/直触发状态机/佐证表/长按节拍)+ `XiaomiMappedSpec` 公共化,TDD 5 组用例 |
+| 1535e5f9 | Task 2 探针 DLL(`hid_tap_dll.cc`,Detours v4.0.1 MIT,FetchContent)+ 提权注入器(`tap_inject_main.cc`,四重校验+SHA-256 部署+SID ACL 锁) |
+| 0c7424d1 | Task 3a `CancelHold` 抑制窗(150ms):LL keydown 先于 tap pressed 的时钟乱序防双触发 |
+| 2447cdab | Task 3 主程序接线:帧解码器(`xiaomi_usage_tap_decoder`,变长帧 1B 心跳/10B 数据,TDD 7 例)+ 管道服务/HostPid 监视/注入触发管理器(`xiaomi_usage_tap_manager`)+ KeymapHook 沿消费融合 |
+| 800eee04 | Task 4 设置:`hid_tap_enabled` 设备级配置 + 按键映射对话框开关(即时生效)/链路状态行(2s 刷新)+ 中英文案 + `desktop-config.md` |
+
+与 §6.2 要点的对应差异(实施期决策):
+
+- **开关位置**:设置入口放「按键映射…」对话框(该对话框本就是遥控器按键功能的设置面),非 §6.2-1 设想的「遥控器」分组;即时生效不等「保存」——UAC 授权流程需要即时反馈。
+- **状态行语义**(4 态):未启用/等待遥控器连接(kNoHost)/等待管理员授权…(kInjectPending,含注入重试 30s 节流)/工作正常(kConnected)/连接异常(kStale,心跳 15s 超时)。
+- **§6.2-3 的「计划任务静默重注入」未实施**:暂只有按需 UAC(新宿主/重试节流 30s),schtasks 静默方案留待真机验收后按体验决定是否补。
+- **§6.2-2 volume_mute 0x7F**:识别但不产沿回调(不在 `kXiaomiMappableButtons` 12 键表,`ButtonIndexOf` 返回 -1 丢弃)——与「先转发不进映射表」语义一致,RC003 有无该键待真机确认后再扩表。
+
+### 7.1 真机冒烟验收清单(未执行,下次连接 RC-6459 时逐项验证)
+
+1. **开关与授权**:按键映射对话框勾选「增强按键识别」→ UAC 弹窗(允许)→ 状态行 5~10s 内转「工作正常」;拒绝 UAC → 停留「等待管理员授权…」,30s 后重弹。
+2. **注入产物**:`%PROGRAMDATA%\VoiceStick\hid-tap\VoiceStickHidTap.dll` 存在,icacls 仅 SYSTEM/Admins 完全控制、Users 只读;`%PROGRAMDATA%\VoiceStick\logs\tap_inject.log` 阶段码到 0。
+3. **探针零侵入**:遥控器方向/OK/home 等 10 键原生行为与现有映射全部照常;其它 BTHLE 外设(若有)不掉线;WUDFHost CPU 无可见增量。
+4. **三键直触发**:back 映射 backspace——单击退格一次;长按按 280ms/40ms 连发;音量键同口径(400/120)。反馈延迟在松手瞬间(单击)符合 keyup 后置体验。
+5. **10 键佐证优先**:拔掉 Raw Input 佐证不可验的场景直接观察——BREAK 正常时行为不变;制造 BREAK 丢失(难)可跳过,信任单测口径。
+6. **断连释放**:按住 back 时遥控器关机 → 状态行转「等待遥控器连接」,无卡键(back 映射停发)。
+7. **宿主重启**:遥控器关开一次(WUDFHost 换进程)→ 状态行「等待遥控器连接」→「等待管理员授权…」(UAC)→「工作正常」。
+8. **回落路径**:开关关闭 → 管道监视停止,三键回到静默(与 09-07 现状一致),10 键管线不受影响;VoiceStick 退出 → WUDFHost 内 DLL 残留但管道写失败静默,遥控器原生功能完全正常。
+9. **MSI 安装面**:安装目录含 `VoiceStickHidTap.dll`/`VoiceStickTapInject.exe`;从安装版启动走 1~8 全链路。
