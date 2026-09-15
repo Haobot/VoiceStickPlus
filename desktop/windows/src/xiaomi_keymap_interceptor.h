@@ -19,6 +19,12 @@ namespace voicestick {
 // 翻译特征事实来源为 MiVibe 真机验证，本项目按事实重新实现。
 std::optional<std::string_view> XiaomiButtonFromVkScan(UINT vk, UINT scan_code);
 
+// 按钮在 key_map 中的映射规格；未配置/空串显式取消/非法串返回 nullopt（放行
+// 语义）。keymap 拦截器与 usage tap 直触发共用（同一 key_map 消费口径）。
+std::optional<KeySpec> XiaomiMappedSpec(
+    std::string_view button,
+    const std::map<std::string, std::string>& key_map);
+
 // 小米遥控器 2 Pro 的 HID VID/PID（Doc/Ref/protocol.md ATVV 设备档案）。
 constexpr uint32_t kXiaomiRemoteVendorId = 0x2717;
 constexpr uint32_t kXiaomiRemoteProductId = 0x32B8;

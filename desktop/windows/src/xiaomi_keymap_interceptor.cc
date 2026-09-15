@@ -85,16 +85,17 @@ std::optional<uint32_t> DeviceIdTokenValue(const std::wstring& device_name,
     return std::nullopt;
 }
 
+} // namespace
+
 // 按钮在 key_map 中的映射规格；未配置/空串取消/非法串返回 nullopt（放行语义）。
-std::optional<KeySpec> MappedSpec(
+// keymap 拦截器与 usage tap 直触发共用（xiaomi_usage_tap.cc 同口径消费）。
+std::optional<KeySpec> XiaomiMappedSpec(
     std::string_view button,
     const std::map<std::string, std::string>& key_map) {
     const auto it = key_map.find(std::string(button));
     if (it == key_map.end()) return std::nullopt;
     return ParseKeySpec(it->second);
 }
-
-} // namespace
 
 bool XiaomiRawInputNameIsRemote(const std::wstring& device_name) {
     const auto vid = DeviceIdTokenValue(device_name, L"vid");
@@ -153,7 +154,7 @@ XiaomiKeymapHookAction XiaomiKeymapInterceptor::OnKeyDown(
     std::string_view button, UINT vk, UINT scan_code, std::int64_t /*now_ms*/,
     const std::map<std::string, std::string>& key_map) {
     XiaomiKeymapHookAction action;
-    if (!MappedSpec(button, key_map).has_value()) return action;
+    if (!XiaomiMappedSpec(button, key_map).has_value()) return action;
     // 按住中的自动重复：持续吞（pending 未消费前不新建）。
     if (FindPending(button) != pendings_.end()) {
         action.swallow = true;
@@ -190,7 +191,7 @@ std::optional<XiaomiKeymapHookAction> XiaomiKeymapInterceptor::OnBreakEvidence(
     ConsumePending(pending);
     XiaomiKeymapHookAction action;
     if (from_remote) {
-        const auto spec = MappedSpec(button, key_map);
+        const auto spec = XiaomiMappedSpec(button, key_map);
         if (!spec.has_value()) return std::nullopt;  // 判定前映射被取消：等效原生
         action.swallow = true;  // 动作语义：原事件已被吞，此为归属后的映射注入
         action.inject = XiaomiKeymapInjectDownVks(*spec);

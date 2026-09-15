@@ -11,6 +11,7 @@
 #include "xiaomi_atvv_session.h"
 #include "xiaomi_buttons.h"
 #include "xiaomi_keymap_interceptor.h"
+#include "xiaomi_usage_tap.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
 
@@ -6758,6 +6759,294 @@ void TestAppConfigXiaomiKeyMap() {
     assert(loaded.default_xiaomi_settings.key_map == config.default_xiaomi_settings.key_map);
     assert(loaded.XiaomiSettingsForDevice("RC-3A7F") == dev_settings);
     std::filesystem::remove(temp);
+}
+
+// usage tap 纯逻辑层（Doc/Plan/xiaomi-remote-usage-tap.md §3.2.1 + §6）：9 字节
+// 报文解析、usage→按钮表、会话集合 diff 沿、三键直触发状态机、tap 佐证表。
+namespace {
+
+// 构造 9 字节 tap 报文：01 00 00 前缀（report ID 1）+ 3×LE16 usage（0=空槽）。
+void MakeTapReport(uint8_t (&out)[9], uint16_t a, uint16_t b, uint16_t c) {
+    out[0] = 0x01; out[1] = 0x00; out[2] = 0x00;
+    out[3] = static_cast<uint8_t>(a & 0xFF); out[4] = static_cast<uint8_t>(a >> 8);
+    out[5] = static_cast<uint8_t>(b & 0xFF); out[6] = static_cast<uint8_t>(b >> 8);
+    out[7] = static_cast<uint8_t>(c & 0xFF); out[8] = static_cast<uint8_t>(c >> 8);
+}
+
+} // namespace
+
+void TestXiaomiUsageTapParsing() {
+    // 合法报文：back(0x00F1)+音量+(0x0080) → 升序去零 usage 集合。
+    uint8_t report[9];
+    MakeTapReport(report, 0x00F1, 0x0080, 0);
+    const auto usages = ParseTapReportUsages(report, 9);
+    assert(usages.has_value());
+    assert(*usages == (std::vector<uint16_t>{0x0080, 0x00F1}));
+    // 全空槽 → 空集合（全部松开）。
+    MakeTapReport(report, 0, 0, 0);
+    const auto empty = ParseTapReportUsages(report, 9);
+    assert(empty.has_value() && empty->empty());
+    // 同 usage 重复出现（报文冗余）→ 去重。
+    MakeTapReport(report, 0x00F1, 0x00F1, 0x00F1);
+    const auto dedup = ParseTapReportUsages(report, 9);
+    assert(dedup.has_value());
+    assert(*dedup == (std::vector<uint16_t>{0x00F1}));
+    // 长度非法 → nullopt。
+    MakeTapReport(report, 1, 2, 3);
+    assert(!ParseTapReportUsages(report, 8).has_value());
+    assert(!ParseTapReportUsages(report, 10).has_value());
+    assert(!ParseTapReportUsages(nullptr, 9).has_value());
+    assert(!ParseTapReportUsages(report, 0).has_value());
+    // 前缀非法（非 01 00 00）→ nullopt。
+    MakeTapReport(report, 0x00F1, 0, 0);
+    report[0] = 0x02;
+    assert(!ParseTapReportUsages(report, 9).has_value());
+    MakeTapReport(report, 0x00F1, 0, 0);
+    report[2] = 0x01;
+    assert(!ParseTapReportUsages(report, 9).has_value());
+}
+
+void TestXiaomiUsageTapButtonTable() {
+    // 13 键 usage 表（MiVibe FORWARD_USAGES 与本项目实测互证，方案 §1）。
+    assert(XiaomiButtonFromUsage(0x00F1) == "back");
+    assert(XiaomiButtonFromUsage(0x0028) == "ok");
+    assert(XiaomiButtonFromUsage(0x0035) == "tv");
+    assert(XiaomiButtonFromUsage(0x004A) == "home");
+    assert(XiaomiButtonFromUsage(0x004F) == "right");
+    assert(XiaomiButtonFromUsage(0x0050) == "left");
+    assert(XiaomiButtonFromUsage(0x0051) == "down");
+    assert(XiaomiButtonFromUsage(0x0052) == "up");
+    assert(XiaomiButtonFromUsage(0x0065) == "menu");
+    assert(XiaomiButtonFromUsage(0x0066) == "power");
+    assert(XiaomiButtonFromUsage(0x007F) == "volume_mute");
+    assert(XiaomiButtonFromUsage(0x0080) == "volume_up");
+    assert(XiaomiButtonFromUsage(0x0081) == "volume_down");
+    // 未知/空 usage。
+    assert(XiaomiButtonFromUsage(0x0000) == std::nullopt);
+    assert(XiaomiButtonFromUsage(0x00F2) == std::nullopt);
+    assert(XiaomiButtonFromUsage(0x0027) == std::nullopt);
+    // 直触发三键（RC003 系统不可见：厂商页 0xFF00 报告不被 kbdhid 翻译）。
+    assert(XiaomiButtonIsTapDirect("back"));
+    assert(XiaomiButtonIsTapDirect("volume_up"));
+    assert(XiaomiButtonIsTapDirect("volume_down"));
+    // 其余键系统可见（RC003 实测），走现有 LL+Raw Input 管线。
+    assert(!XiaomiButtonIsTapDirect("home"));
+    assert(!XiaomiButtonIsTapDirect("tv"));
+    assert(!XiaomiButtonIsTapDirect("ok"));
+    assert(!XiaomiButtonIsTapDirect("volume_mute"));  // 系统可见性未定，保守不直触发
+    assert(!XiaomiButtonIsTapDirect("bogus"));
+}
+
+void TestXiaomiUsageTapSessionEdges() {
+    XiaomiUsageTapSession session;
+    uint8_t report[9];
+
+    // 空 → back+音量+：pressed 沿按 usage 升序（0x80 先于 0xF1）。
+    MakeTapReport(report, 0x00F1, 0x0080, 0);
+    auto edges = session.OnReport(report, 9);
+    assert(edges.has_value());
+    assert(edges->pressed.size() == 2);
+    assert(edges->pressed[0] == "volume_up" && edges->pressed[1] == "back");
+    assert(edges->released.empty() && edges->unknown_usages.empty());
+    // 追加 home：只 pressed home。
+    MakeTapReport(report, 0x00F1, 0x0080, 0x004A);
+    edges = session.OnReport(report, 9);
+    assert(edges->pressed.size() == 1 && edges->pressed[0] == "home");
+    assert(edges->released.empty());
+    // 松开 back：只 released back。
+    MakeTapReport(report, 0x0080, 0x004A, 0);
+    edges = session.OnReport(report, 9);
+    assert(edges->pressed.empty());
+    assert(edges->released.size() == 1 && edges->released[0] == "back");
+    // 全松开。
+    MakeTapReport(report, 0, 0, 0);
+    edges = session.OnReport(report, 9);
+    assert(edges->pressed.empty());
+    assert(edges->released.size() == 2);
+    assert(session.active_empty());
+    // 报文无变化：无沿。
+    edges = session.OnReport(report, 9);
+    assert(edges.has_value());
+    assert(edges->pressed.empty() && edges->released.empty());
+
+    // 非法报文：nullopt 且状态不变（后续 diff 基于旧活跃集合）。
+    MakeTapReport(report, 0x00F1, 0, 0);
+    assert(session.OnReport(report, 9).has_value());
+    assert(!session.active_empty());
+    const uint8_t bogus[9] = {0x02, 0x00, 0x00, 0xF1, 0x00, 0, 0, 0, 0};
+    assert(!session.OnReport(bogus, 9).has_value());
+    assert(!session.active_empty());
+    MakeTapReport(report, 0, 0, 0);
+    edges = session.OnReport(report, 9);
+    assert(edges->released.size() == 1 && edges->released[0] == "back");
+
+    // 未知 usage：进 unknown_usages（诊断），不产生按钮沿、不影响已按住键。
+    MakeTapReport(report, 0x00F1, 0, 0);
+    edges = session.OnReport(report, 9);
+    assert(edges->pressed.size() == 1 && edges->pressed[0] == "back");
+    MakeTapReport(report, 0x00F1, 0x0099, 0);  // 按住中冒出未知 usage
+    edges = session.OnReport(report, 9);
+    assert(edges->pressed.empty() && edges->released.empty());
+    assert(edges->unknown_usages == (std::vector<uint16_t>{0x0099}));
+    MakeTapReport(report, 0x00F1, 0, 0);  // 未知 usage 消失：无按钮沿
+    edges = session.OnReport(report, 9);
+    assert(edges->released.empty());
+    assert(edges->unknown_usages.empty());
+
+    // 断连：活跃集合全部 released 并清空状态。
+    MakeTapReport(report, 0x00F1, 0x0080, 0);
+    session.OnReport(report, 9);
+    auto disconnect = session.OnDisconnect();
+    assert(disconnect.released.size() == 2);
+    assert(disconnect.pressed.empty());
+    assert(session.active_empty());
+    // 再次断连：空沿。
+    const auto disconnect_again = session.OnDisconnect();
+    assert(disconnect_again.released.empty() &&
+           disconnect_again.pressed.empty());
+}
+
+void TestXiaomiTapDirectKeys() {
+    const std::map<std::string, std::string> key_map = {
+        {"back", "backspace"},
+        {"volume_up", "ctrl+shift+right"},
+        {"volume_down", "ctrl+down"},
+        {"home", "ctrl+shift+h"}};
+    constexpr std::int64_t kNow = 100000;
+
+    // 单击：pressed 只登记不注入（对齐 10 键 keyup 后置的松手反馈体验），
+    // released（重复延迟内）注入一次映射 down+up 对。
+    {
+        XiaomiTapDirectKeys keys;
+        assert(!keys.OnPressed("back", kNow, key_map).has_value());
+        assert(keys.HasHold("back"));
+        const auto action = keys.OnReleased("back", kNow + 50, key_map);
+        assert(action.has_value());
+        assert(action->inject == (std::vector<UINT>{VK_BACK}));
+        assert(action->inject_up == (std::vector<UINT>{VK_BACK}));
+        assert(!keys.HasHold("back"));
+    }
+    // 组合键映射：down 修饰键序+主键，up 反序（同 interceptor 注入构造）。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.OnPressed("volume_up", kNow, key_map);
+        const auto action = keys.OnReleased("volume_up", kNow + 100, key_map).value();
+        assert(action.inject == (std::vector<UINT>{VK_CONTROL, VK_SHIFT, VK_RIGHT}));
+        assert(action.inject_up ==
+               (std::vector<UINT>{VK_RIGHT, VK_SHIFT, VK_CONTROL}));
+    }
+    // 无映射 / 空串显式取消 / 非直触发键：不登记，released 无动作。
+    {
+        XiaomiTapDirectKeys keys;
+        const std::map<std::string, std::string> empty_map;
+        const std::map<std::string, std::string> cancel_map{{"back", ""}};
+        assert(!keys.OnPressed("back", kNow, empty_map).has_value());
+        assert(!keys.HasHold("back"));
+        assert(!keys.OnPressed("back", kNow, cancel_map).has_value());
+        assert(!keys.HasHold("back"));
+        // home 是系统可见键：tap 直触发不接管（RC003 事实，防与现有管线双触发）。
+        assert(!keys.OnPressed("home", kNow, key_map).has_value());
+        assert(!keys.HasHold("home"));
+        assert(!keys.OnPressed("volume_mute", kNow, key_map).has_value());
+        // released 无 hold：nullopt（残留沿，如 tap 会话中途恢复）。
+        assert(!keys.OnReleased("back", kNow, key_map).has_value());
+    }
+    // 长按重复（back 节拍 280/40，MiVibe 真机值初值）：延迟后按间隔连发，
+    // 重复已发过则 released 不再补发（松手不多一键）。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.OnPressed("back", kNow, key_map);
+        assert(!keys.PollRepeat("back", kNow + 279, key_map).has_value());
+        assert(keys.PollRepeat("back", kNow + 280, key_map).has_value());
+        assert(!keys.PollRepeat("back", kNow + 319, key_map).has_value());
+        assert(keys.PollRepeat("back", kNow + 320, key_map).has_value());
+        assert(!keys.OnReleased("back", kNow + 500, key_map).has_value());
+        assert(!keys.HasHold("back"));
+    }
+    // 音量节拍 400/120。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.OnPressed("volume_down", kNow, key_map);
+        assert(!keys.PollRepeat("volume_down", kNow + 399, key_map).has_value());
+        assert(keys.PollRepeat("volume_down", kNow + 400, key_map).has_value());
+        assert(!keys.PollRepeat("volume_down", kNow + 519, key_map).has_value());
+        assert(keys.PollRepeat("volume_down", kNow + 520, key_map).has_value());
+        assert(!keys.OnReleased("volume_down", kNow + 600, key_map).has_value());
+    }
+    // 重复 pressed（报文抖动）：幂等，节拍仍按首次 pressed 计算。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.OnPressed("back", kNow, key_map);
+        assert(!keys.OnPressed("back", kNow + 30, key_map).has_value());
+        assert(!keys.PollRepeat("back", kNow + 279, key_map).has_value());
+        assert(keys.PollRepeat("back", kNow + 280, key_map).has_value());
+    }
+    // 判定时映射已被取消（key_map 热更场景）：无注入，hold 清除（放行语义）。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.OnPressed("back", kNow, key_map);
+        const std::map<std::string, std::string> empty_map;
+        assert(!keys.OnReleased("back", kNow + 50, empty_map).has_value());
+        assert(!keys.HasHold("back"));
+    }
+    // CancelHold：系统翻译到达（RC001 类固件该键可见）时现有管线接管，
+    // 直触发让位，防双触发。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.OnPressed("back", kNow, key_map);
+        keys.CancelHold("back");
+        assert(!keys.HasHold("back"));
+        assert(!keys.OnReleased("back", kNow + 50, key_map).has_value());
+        assert(!keys.PollRepeat("back", kNow + 300, key_map).has_value());
+        keys.CancelHold("back");  // 无 hold 时幂等
+    }
+    // Reset：断连清全部（防按键状态卡死）。
+    {
+        XiaomiTapDirectKeys keys;
+        keys.OnPressed("back", kNow, key_map);
+        keys.OnPressed("volume_up", kNow, key_map);
+        keys.Reset();
+        assert(!keys.HasHold("back") && !keys.HasHold("volume_up"));
+        assert(!keys.OnReleased("back", kNow + 50, key_map).has_value());
+    }
+    // 节拍参数表（§6.1 MiVibe 真机值）。
+    assert(XiaomiTapRepeatTimingFor("back").delay_ms == 280);
+    assert(XiaomiTapRepeatTimingFor("back").interval_ms == 40);
+    assert(XiaomiTapRepeatTimingFor("volume_up").delay_ms == 400);
+    assert(XiaomiTapRepeatTimingFor("volume_up").interval_ms == 120);
+    assert(XiaomiTapRepeatTimingFor("volume_down").delay_ms == 400);
+    assert(XiaomiTapRepeatTimingFor("volume_down").interval_ms == 120);
+    // 非直触发键无节拍（0/0）。
+    assert(XiaomiTapRepeatTimingFor("home").delay_ms == 0);
+    assert(XiaomiTapRepeatTimingFor("home").interval_ms == 0);
+    assert(XiaomiTapRepeatTimingFor("bogus").interval_ms == 0);
+}
+
+void TestXiaomiTapEvidenceTable() {
+    XiaomiTapEvidenceTable table;
+    constexpr std::int64_t kNow = 100000;
+    // 空表：无佐证。
+    assert(!table.HasRecentEdge("back", kNow));
+    // 沿登记与窗口查询：now - last_edge <= window 命中。
+    table.OnEdge("back", kNow);
+    assert(table.HasRecentEdge("back", kNow));
+    assert(table.HasRecentEdge("back", kNow + 250));
+    assert(!table.HasRecentEdge("back", kNow + 251));
+    // 不同按钮互不影响。
+    assert(!table.HasRecentEdge("home", kNow));
+    // 新沿覆盖旧沿（单槽最新）。
+    table.OnEdge("back", kNow + 1000);
+    assert(table.HasRecentEdge("back", kNow + 1000 + 200));
+    assert(!table.HasRecentEdge("back", kNow + 1000 + 251));
+    assert(!table.HasRecentEdge("back", kNow + 240));  // 旧沿已被覆盖
+    // 自定义窗口。
+    table.OnEdge("home", kNow + 2000);
+    assert(table.HasRecentEdge("home", kNow + 2000 + 100, 100));
+    assert(!table.HasRecentEdge("home", kNow + 2000 + 101, 100));
+    // Reset。
+    table.Reset();
+    assert(!table.HasRecentEdge("back", kNow + 1000));
+    assert(!table.HasRecentEdge("home", kNow + 2000));
 }
 
 // 按键映射消费端（Doc/Plan/xiaomi-keymap-consumer.md）：kbdhid 翻译特征识别、
@@ -14966,6 +15255,11 @@ int main() {
     TestDeviceIdRcPrefix();
     TestAppConfigXiaomiTable();
     TestAppConfigXiaomiKeyMap();
+    TestXiaomiUsageTapParsing();
+    TestXiaomiUsageTapButtonTable();
+    TestXiaomiUsageTapSessionEdges();
+    TestXiaomiTapDirectKeys();
+    TestXiaomiTapEvidenceTable();
     TestXiaomiKeymapInterceptor();
     TestXiaomiF5SuppressPredicate();
     TestCoordinatorXiaomiCapabilityGating();

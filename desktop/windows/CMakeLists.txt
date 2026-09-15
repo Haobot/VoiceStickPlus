@@ -178,6 +178,7 @@ add_library(voicestick_core STATIC
     src/xiaomi_atvv_protocol.cc
     src/xiaomi_atvv_session.cc
     src/xiaomi_keymap_interceptor.cc
+    src/xiaomi_usage_tap.cc
     src/serial_base32.cc
     src/license.cc
     third_party/monocypher/monocypher.c
