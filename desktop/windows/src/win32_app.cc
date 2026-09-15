@@ -1407,14 +1407,16 @@ void Win32App::SyncXiaomiKeymapHook() {
     }
     // Raw Input 佐证只有 VID/PID 粒度（同型号多台无法区分），key_map 统一取
     // 活跃 RC 设备的有效映射（设备覆盖填平后回落全局默认）。
-    auto key_map = config_.XiaomiSettingsForDevice(active_rc).key_map;
+    const auto xiaomi_settings = config_.XiaomiSettingsForDevice(active_rc);
+    auto key_map = xiaomi_settings.key_map;
     bool has_mapping = false;
     for (const auto& [button, spec] : key_map) {
         if (!spec.empty()) { has_mapping = true; break; }
     }
     if (has_mapping) {
-        // usage tap 探针链路随钩子启停；开关接配置（Task 4），当前默认启用。
-        xiaomi_keymap_hook_->Start(std::move(key_map), /*enable_tap=*/true);
+        // usage tap 探针链路随钩子启停，开关为设备级设置（按键映射对话框）。
+        xiaomi_keymap_hook_->Start(std::move(key_map),
+                                   xiaomi_settings.hid_tap_enabled);
     } else {
         xiaomi_keymap_hook_->Stop();
     }
@@ -2701,6 +2703,28 @@ void Win32App::ShowXiaomiKeymapDialog(const std::string& device_id) {
             ApplyUpdatedConfig();
             LogLine("Keymap saved for RC-" + id);
         };
+    // 增强按键识别开关：即时保存设备级设置并同步钩子（UAC 授权流程即时反馈）。
+    xiaomi_keymap_dialog_->on_hid_tap_changed =
+        [this](const std::string& id, bool enabled) {
+            // 覆盖表里可能已有该设备的其他字段，先取现有覆盖再改字段。
+            XiaomiSettings settings = config_.XiaomiSettingsForDevice(id);
+            settings.hid_tap_enabled = enabled;
+            config_.device_xiaomi_settings[id] = settings;
+            try {
+                config_.SavePreservingDiskCredentials();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Keymap: config_.Save failed: ") + e.what());
+                return;
+            }
+            ApplyUpdatedConfig();
+            LogLine("HidTap " + std::string(enabled ? "enabled" : "disabled") +
+                    " for RC-" + id);
+        };
+    // 链路状态行查询：探针未启用/钩子未运行返回 nullopt（显示「未启用」）。
+    xiaomi_keymap_dialog_->tap_state_query = [this] {
+        return xiaomi_keymap_hook_ ? xiaomi_keymap_hook_->tap_state()
+                                   : std::nullopt;
+    };
     xiaomi_keymap_dialog_->Show();
 }
 

@@ -139,6 +139,10 @@ struct XiaomiSettings {
     double gain_db = 12.0;
     // 语音键双击时序窗（ms）：第一次短击释放后等待第二次按下的最大窗口。默认 350。
     int double_click_ms = 350;
+    // usage tap 增强按键识别（Doc/Plan/xiaomi-remote-usage-tap.md）：启用
+    // back/volume_up/volume_down 三键（系统蓝牙栈丢弃）的探针注入链路。
+    // 涉及 UAC 提权注入，默认关闭，用户在按键映射对话框主动开启。
+    bool hid_tap_enabled = false;
     // 按键映射：button_id（见 xiaomi_buttons.h，mic 除外）→ key_spec 字符串
     //（空串=显式取消该键映射，覆盖全局默认）。空 map = 全部保持系统原生行为。
     std::map<std::string, std::string> key_map;

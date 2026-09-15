@@ -533,6 +533,15 @@ INT_PTR XiaomiKeymapDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
             capture_.Cancel();
             EndDialog(hwnd_, IDCANCEL);
             return TRUE;
+        case kIdHidTapToggle:
+            if (HIWORD(w_param) == BN_CLICKED && hid_tap_toggle_) {
+                const bool checked = SendMessageW(hid_tap_toggle_, BM_GETCHECK, 0, 0) ==
+                                     BST_CHECKED;
+                current_.hid_tap_enabled = checked;
+                if (on_hid_tap_changed) on_hid_tap_changed(device_id_, checked);
+                RefreshTapStateLabel();
+            }
+            return TRUE;
         }
         break;
     case WM_CLOSE:
@@ -555,6 +564,10 @@ INT_PTR XiaomiKeymapDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
             }
             return TRUE;
         }
+        if (w_param == kTapStateTimerId) {
+            RefreshTapStateLabel();
+            return TRUE;
+        }
         break;
     case WM_CTLCOLORSTATIC: {
         const auto control = reinterpret_cast<HWND>(l_param);
@@ -570,6 +583,7 @@ INT_PTR XiaomiKeymapDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
     }
     case WM_DESTROY:
         StopCaptureHintTimer();
+        KillTimer(hwnd_, kTapStateTimerId);
         capture_.Cancel();
         hwnd_ = nullptr;
         return TRUE;
@@ -659,6 +673,22 @@ void XiaomiKeymapDialog::BuildControls() {
         0, L"STATIC", TrW(StringId::kXiaomiKeymapMicNote, language).c_str(),
         WS_CHILD | SS_LEFT, rx, Dp(56), rw, Dp(190), hwnd_, nullptr, instance_, nullptr);
     remember_label(mic_note_label_);
+
+    // ===== 增强按键识别（usage tap）：开关 + 说明 + 链路状态行 =====
+    // 右侧面板下半区（mapping 编辑区之下）。开关即时生效（on_hid_tap_changed
+    // 保存并同步钩子），不随「保存」走——UAC 授权流程需要即时反馈。
+    hid_tap_toggle_ = remember(CreateButton(
+        hwnd_, TrW(StringId::kXiaomiHidTapToggleLabel, language).c_str(),
+        rx, Dp(300), rw, Dp(28), kIdHidTapToggle, instance_, BS_AUTOCHECKBOX));
+    SendMessageW(hid_tap_toggle_, BM_SETCHECK,
+                 current_.hid_tap_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    hid_tap_hint_label_ = remember_label(CreateLabel(
+        hwnd_, TrW(StringId::kXiaomiHidTapHint, language).c_str(),
+        rx, Dp(332), rw, Dp(56), instance_));
+    hid_tap_state_label_ = remember_label(CreateLabel(
+        hwnd_, L"", rx, Dp(392), rw, Dp(20), instance_));
+    RefreshTapStateLabel();
+    SetTimer(hwnd_, kTapStateTimerId, kTapStateTimerMs, nullptr);
 
     const int btn_y = Dp(kClientHeight) - Dp(45);
     restore_defaults_button_ = remember(CreateButton(
@@ -797,6 +827,32 @@ void XiaomiKeymapDialog::ClearMapping() {
 void XiaomiKeymapDialog::RestoreDefaults() {
     working_key_map_ = defaults_.key_map;
     RefreshSidePanel();
+}
+
+void XiaomiKeymapDialog::RefreshTapStateLabel() {
+    if (!hid_tap_state_label_) return;
+    const auto language = EffectiveUiLanguage(language_);
+    StringId state_id = StringId::kXiaomiHidTapStateDisabled;
+    if (current_.hid_tap_enabled && tap_state_query) {
+        const auto state = tap_state_query();
+        if (state.has_value()) {
+            switch (*state) {
+                case XiaomiUsageTapManager::LinkState::kNoHost:
+                    state_id = StringId::kXiaomiHidTapStateNoHost;
+                    break;
+                case XiaomiUsageTapManager::LinkState::kInjectPending:
+                    state_id = StringId::kXiaomiHidTapStatePending;
+                    break;
+                case XiaomiUsageTapManager::LinkState::kConnected:
+                    state_id = StringId::kXiaomiHidTapStateConnected;
+                    break;
+                case XiaomiUsageTapManager::LinkState::kStale:
+                    state_id = StringId::kXiaomiHidTapStateStale;
+                    break;
+            }
+        }
+    }
+    SetWindowTextW(hid_tap_state_label_, TrW(state_id, language).c_str());
 }
 
 void XiaomiKeymapDialog::SaveSettings() {

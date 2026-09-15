@@ -437,6 +437,21 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "Volume Down";
     table[Index(StringId::kXiaomiButtonMenu)] = "Menu";
     table[Index(StringId::kXiaomiButtonTv)] = "TV";
+    table[Index(StringId::kXiaomiHidTapToggleLabel)] =
+        "Enhanced keys (Back / Volume) — requires admin approval";
+    table[Index(StringId::kXiaomiHidTapHint)] =
+        "Enables the three keys the Windows Bluetooth stack drops, via a helper "
+        "component injected into the system HID host. Re-approval is needed after "
+        "the remote reconnects or the app updates.";
+    table[Index(StringId::kXiaomiHidTapStateDisabled)] = "Enhanced keys: off";
+    table[Index(StringId::kXiaomiHidTapStateNoHost)] =
+        "Enhanced keys: waiting for the remote to connect";
+    table[Index(StringId::kXiaomiHidTapStatePending)] =
+        "Enhanced keys: waiting for administrator approval...";
+    table[Index(StringId::kXiaomiHidTapStateConnected)] =
+        "Enhanced keys: active";
+    table[Index(StringId::kXiaomiHidTapStateStale)] =
+        "Enhanced keys: link lost, reconnect the remote";
     table[Index(StringId::kSettingsLocalRefineEnable)] =
         "Local text refinement (filter filler words)";
     table[Index(StringId::kSettingsLocalRefineModelOk)] =
@@ -885,6 +900,20 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "音量-";
     table[Index(StringId::kXiaomiButtonMenu)] = "菜单键";
     table[Index(StringId::kXiaomiButtonTv)] = "TV 键";
+    table[Index(StringId::kXiaomiHidTapToggleLabel)] =
+        "增强按键识别（返回 / 音量键）——需要管理员授权";
+    table[Index(StringId::kXiaomiHidTapHint)] =
+        "启用 Windows 蓝牙栈会丢弃的三个按键（返回 / 音量+ / 音量-），通过注入系统"
+        " HID 宿主的辅助组件实现。遥控器重连或应用更新后需重新授权。";
+    table[Index(StringId::kXiaomiHidTapStateDisabled)] = "增强按键识别：未启用";
+    table[Index(StringId::kXiaomiHidTapStateNoHost)] =
+        "增强按键识别：等待遥控器连接";
+    table[Index(StringId::kXiaomiHidTapStatePending)] =
+        "增强按键识别：等待管理员授权…";
+    table[Index(StringId::kXiaomiHidTapStateConnected)] =
+        "增强按键识别：工作正常";
+    table[Index(StringId::kXiaomiHidTapStateStale)] =
+        "增强按键识别：连接异常，请重新连接遥控器";
     table[Index(StringId::kSettingsLocalRefineEnable)] =
         "本地文本精修（过滤口水词）";
     table[Index(StringId::kSettingsLocalRefineModelOk)] =

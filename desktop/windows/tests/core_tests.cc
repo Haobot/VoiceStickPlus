@@ -6638,6 +6638,7 @@ void TestAppConfigXiaomiTable() {
     assert(defaults.xiaomi_suppress_f5);
     assert(defaults.XiaomiSettingsForDevice(std::nullopt).gain_db == 12.0);
     assert(defaults.XiaomiSettingsForDevice(std::nullopt).double_click_ms == 350);
+    assert(!defaults.XiaomiSettingsForDevice(std::nullopt).hid_tap_enabled);
     // 未覆盖设备回落全局默认。
     assert(defaults.XiaomiSettingsForDevice("RC-3A7F").gain_db == 12.0);
 
@@ -6651,26 +6652,30 @@ void TestAppConfigXiaomiTable() {
         out << "[device.RC-3A7F.xiaomi]\n";
         out << "gain_db = 20.5\n";
         out << "double_click_ms = 450\n";
+        out << "hid_tap_enabled = true\n";
     }
     AppConfig loaded = AppConfig::Load(temp);
     assert(!loaded.xiaomi_suppress_f5);
     assert(loaded.XiaomiSettingsForDevice("3A7F").gain_db == 20.5);
     assert(loaded.XiaomiSettingsForDevice("3A7F").double_click_ms == 450);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").hid_tap_enabled);
     // 访问器内部归一化：带前缀与不带前缀等价。
     assert(loaded.XiaomiSettingsForDevice("RC-3A7F").gain_db == 20.5);
     assert(loaded.XiaomiSettingsForDevice("FFFF").gain_db == 12.0);
+    assert(!loaded.XiaomiSettingsForDevice("FFFF").hid_tap_enabled);
     std::filesystem::remove(temp);
 
     // 保存/加载往返。
     AppConfig config = AppConfig::Defaults();
     config.paired_device_ids = {"3A7F"};
     config.xiaomi_suppress_f5 = false;
-    config.device_xiaomi_settings["3A7F"] = XiaomiSettings{.gain_db = 18.0, .double_click_ms = 400};
+    config.device_xiaomi_settings["3A7F"] = XiaomiSettings{.gain_db = 18.0, .double_click_ms = 400, .hid_tap_enabled = true};
     config.Save(temp);
     loaded = AppConfig::Load(temp);
     assert(!loaded.xiaomi_suppress_f5);
     assert(loaded.XiaomiSettingsForDevice("3A7F").gain_db == 18.0);
     assert(loaded.XiaomiSettingsForDevice("3A7F").double_click_ms == 400);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").hid_tap_enabled);
 
     // 与默认相同不落盘。
     config.device_xiaomi_settings["3A7F"] = XiaomiSettings{};

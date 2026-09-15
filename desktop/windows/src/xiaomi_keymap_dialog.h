@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "localization.h"
 #include "shortcut_capture.h"
+#include "xiaomi_usage_tap_manager.h"
 
 #include <Windows.h>
 
@@ -39,6 +40,10 @@ public:
     // (device_id, override)：override 为 nullopt 表示与全局默认一致（清除覆盖）。
     std::function<void(const std::string& device_id,
                        std::optional<XiaomiSettings> override)> on_settings_changed;
+    // 增强按键识别开关即时回调（勾选即保存生效，不等「保存」——探针链路的
+    // UAC 授权流程需要即时反馈）。nullopt = 链路未启用/未运行。
+    std::function<void(const std::string& device_id, bool enabled)> on_hid_tap_changed;
+    std::function<std::optional<XiaomiUsageTapManager::LinkState>()> tap_state_query;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -62,6 +67,8 @@ private:
     // 「恢复默认」：工作副本重置为 defaults_.key_map 并刷新。
     void RestoreDefaults();
     void SaveSettings();
+    // 增强按键识别链路状态行刷新（2s 定时器 + 开关切换即时刷）。
+    void RefreshTapStateLabel();
     int Dp(int px) const;
 
     HINSTANCE instance_;
@@ -92,6 +99,10 @@ private:
     HWND clear_button_ = nullptr;
     // mic 键选中时显示的说明文案（其余按键隐藏）。
     HWND mic_note_label_ = nullptr;
+    // 增强按键识别（usage tap）开关与链路状态行。
+    HWND hid_tap_toggle_ = nullptr;
+    HWND hid_tap_hint_label_ = nullptr;
+    HWND hid_tap_state_label_ = nullptr;
     HWND restore_defaults_button_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
@@ -116,11 +127,16 @@ private:
     static constexpr UINT kIdRestoreDefaults = 2806;
     // 画布子窗口控件 ID：命中通知走 WM_COMMAND，LOWORD=kIdCanvas、HIWORD=热区索引。
     static constexpr UINT kIdCanvas = 2807;
+    // 增强按键识别开关（BS_AUTOCHECKBOX）。
+    static constexpr UINT kIdHidTapToggle = 2808;
 
     // 录入超时提示定时器：录入启动后 kCaptureHintTimeoutMs 内无任何键盘事件到
     // 达（UIPI 前台提权隔离等）时弹一次引导，不中断进行中的捕获。
     static constexpr UINT_PTR kCaptureHintTimerId = 0x5343;
     static constexpr UINT kCaptureHintTimeoutMs = 3000;
+    // 增强按键识别链路状态行刷新定时器（探针连接/授权进度跟随）。
+    static constexpr UINT_PTR kTapStateTimerId = 0x5450;
+    static constexpr UINT kTapStateTimerMs = 2000;
 };
 
 } // namespace voicestick

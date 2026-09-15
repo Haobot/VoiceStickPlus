@@ -85,6 +85,7 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 - **按设备覆盖**：`[device.<id>.xiaomi]` 表，结构镜像 `[device.<id>.output]`。未写的字段回落 `default_xiaomi_settings` 结构默认值；仅写入与默认不同的覆盖（相等则不落盘）。字段：
   - `gain_db`（double，默认 `12.0`）：ADPCM 解码后增益（dB），±24 dB 限幅在消费侧（`PcmPostprocessor`）完成。
   - `double_click_ms`（int >0，默认 `350`）：语音键双击判定窗（毫秒），镜像固件 `DOUBLE_CLICK_WINDOW_MS` 语义；非正值忽略并保留默认值。「遥控器设置…」UI 对话框将其限制在 200~600ms（越界 clamp）；手写配置 >0 均接受。
+  - `hid_tap_enabled`（bool，默认 `false`）：**增强按键识别**（usage tap）。启用 `back`/`volume_up`/`volume_down` 三键——这三键走厂商页 0xFF00 HID 报告，被 Windows HidOverGatt 蓝牙栈在翻译层丢弃，系统输入链路收不到。链路 = 特权注入器把只读探针 DLL 注入系统 HID 宿主（WUDFHost），经命名管道回传原始报文，桌面端直触发注入映射。涉及 UAC 管理员授权（遥控器重连/宿主重启后需重新授权），默认关闭，在「按键映射…」对话框开关（即时生效并保存）。设计见 `Doc/Plan/xiaomi-remote-usage-tap.md`。
 
   示例：
 
@@ -92,6 +93,7 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   [device.3A7F.xiaomi]
   gain_db = 18.0
   double_click_ms = 400
+  hid_tap_enabled = true   # 增强按键识别（返回/音量键）
   ```
 
 - **按键映射**（Windows，2026-09 起）：`[xiaomi.keys]` 全局默认表 + `[device.<id>.xiaomi.keys]` 按设备覆盖表，键为 12 个可映射按钮 ID（`power`/`up`/`left`/`ok`/`right`/`down`/`back`/`volume_up`/`home`/`volume_down`/`menu`/`tv`；语音键 `mic` 不参与映射），值为 key_spec 快捷键语法（同热键语法，如 `backspace`、`ctrl+shift+v`，见 `key_spec.h`）。空串显式取消该键映射。设备覆盖与全局默认相同的条目不落盘。消费端为 Windows 端 LL 钩子拦截 + Raw Input VID/PID 佐证 + SendInput 注入（设计见 `Doc/Plan/xiaomi-keymap-consumer.md`），未映射的键保持系统原生行为。托盘「按键映射…」对话框编辑（仅对已配对小米遥控器显示）。同型号多台遥控器无法按设备区分时，映射取活跃设备的有效值。
