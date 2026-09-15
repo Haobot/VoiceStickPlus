@@ -1,6 +1,6 @@
 # 小米遥控器 usage 直读移植方案(参考 MiVibe-Remote)
 
-> 状态:**已定案——C 方案(2026-09-07 用户确认,见 §5)**。本文档保留为决策记录与未来重启时的实施蓝图。
+> 状态:**重启——A 方案(2026-09-15,用户需求变化,见 §5 决策史)**。2026-09-07 曾定案 C(维持现状);09-15 用户要求三键(back/volume_up/volume_down)全量可识别,触发上文既定重启条件,按「可选高级功能、默认关闭、运行时提权、hook 彻底自研(GPL/Frida 双规避)」激活方案 A,并按 §6 MiVibe 深读细节修订实施参数。
 > 事实链依据:`Doc/Plan/xiaomi-keymap-consumer.md` §1 勘误段(2026-09-07 定案)。
 
 ## 1. 背景与目标
@@ -123,3 +123,32 @@ RC003 全键 usage 表(MiVibe `hid_report_tap.py` 与本项目 Raw Input 实测�
 推荐 **A**:B 出局后,唯一能拿到 back 的路线。MiVibe 已实证机制可行;侵入性代价(一次性 UAC、杀软残余风险)明确且可控。若用户不接受任何注入,**C** 零成本(back 放弃,home 替代)。
 
 > **决策定案(2026-09-07,用户确认):维持 C 方案,不启用注入路线。** 同日音量键定案后复核:非标准通道键共 3 个(back/volume_up/volume_down,厂商页 0xFF00 报告不被 kbdhid 翻译,见 `xiaomi-keymap-consumer.md` §1),用户在了解 A 路线全部优劣(信号完整/归属精确/零延迟 vs UAC+杀软对抗/WUDFHost 崩溃连带/自研 hook 维护/签名分发影响/仅为 3 键)后仍选择 C——三键接受不可用,home/方向/OK/menu/tv/power 六键映射已够用且 v4 链路真机验证通过。除非未来需求变化,不再重新评估;若重启此路线,按"可选高级功能、默认关闭、运行时提权、hook 部分彻底自研(GPL/Frida 双规避)"实施。
+
+> **决策更新(2026-09-15,重启 A 方案)**:用户新需求——「实现对小米蓝牙遥控器 BLE HID 设备的按键全量识别,返回键/音量加/音量减三键必须可用」,即 09-07 放弃的目标重新成立,构成上文预留的重启条件。当日对 MiVibe-Remote 现行源码(`platforms/windows/source/bridges/xiaomi/`)二次深读,机制结论与 09-07 研读一致(路线唯一性不变),新增工程细节见 §6;实施参数按 §6 真机值修订。
+
+## 6. MiVibe-Remote 深读增补(2026-09-15)与实施参数修订
+
+对 MiVibe 现行 Windows 实现的二次深读(`hid_report_tap.py` / `hid_tap_runtime.py` / `hid_tap_injector.py` / `atvv_live_bridge.py`),机制与 09-07 研读一致——**没有安装任何驱动,本质是特权注入只读探针**;以下工程细节为本次新增,方案 A 实施时吸收。
+
+### 6.1 MiVibe 工程细节清单
+
+| 机制 | MiVibe 现行实现(真机在用) | 方案 A 吸收方式 |
+|---|---|---|
+| hook 载荷 | Frida Gadget 17.15.3 x64 DLL(xz 压缩内嵌,双层 SHA-256 锁定:压缩包+解压 DLL) | 自研 Detours DLL,MSI 随包分发,构建期算 hash 写入安装清单(自研故 hash 自控,无运行时下载) |
+| 部署与加固 | 解压至 `%PROGRAMDATA%\MiVibeRemote\hid-tap\<ver>-x64-<hash12>\`,`icacls /inheritance:r` 锁 ACL(SYSTEM/Admins=F,Users=RX),防降级替换 | 同路径策略 `%PROGRAMDATA%\VoiceStick\hid-tap\`,同 ACL 锁;注入前校验 DLL hash |
+| 注入器 | 独立提权子进程(`ShellExecuteW "runas"` 隐藏启动),四重校验:IsUserAnAdmin、目标 PID==注册表当前 HostPid、进程名必须 `wudfhost.exe`、DLL SHA-256 一致;SeDebugPrivilege + VirtualAllocEx/WriteProcessMemory/CreateRemoteThread(LoadLibraryW) | 同构:`VoiceStickTapInject.exe`,同四重校验(防误注入/防资产篡改) |
+| 回传通道 | 127.0.0.1:30684 TCP,JSON 行协议(ready/heartbeat/gatt_read/error),回传 hex | 命名管道 `\\.\pipe\VoiceStickHidTap`(无端口占用冲突,当前用户 ACL),定长二进制帧+心跳帧 |
+| 健康监测 | 载荷 5s 心跳;宿主侧心跳停 15s→UNHEALTHY 重连;每 2s 轮询注册表 HostPid,PID 变→HOST CHANGED→重注入(再次 UAC) | 同参数:心跳 5s/不健康阈值 15s/HostPid 轮询 2s;宿主变化走「托盘气泡提示+按需 UAC 重注入」 |
+| 防双触发 | LL 键盘钩子在系统翻译到达时**等 tap 同键直连信号**(窗口:特殊键 60ms/常规键 15ms),命中才吞(返 1),否则放行——物理键盘零误伤 | 融入现有 interceptor:tap 沿写入「按钮→最近佐证时刻」表且**优先级高于 Raw Input**;系统可见键沿用现有 keyup 后置决策,tap 命中即定性为遥控器 |
+| 长按重复 | back:首次 280ms 后每 40ms;volume:首次 400ms 后每 120ms(真机值) | 取同值做初值(`hid_tap_back_repeat_delay_ms=280/interval=40`,`volume 400/120`),设置页可调 |
+| 兼容性门控 | `hid_report_tap_enabled`(默认开)AND `hid_tap_compatible`(默认**关**)双开关;Gadget 缺失/注入被拒→自动回落传统 Raw Input 映射线程,不阻塞启动 | 同策略:配置 `xiaomi.hid_tap_enabled` 默认**关**;tap 不可用时回落现有 9 键管线,三键静默不可用(与 09-07 现状一致) |
+| 直连 GATT 备胎 | 保留 `XiaomiGattHidSession`(WinRT 订阅 0x2A4D)作无微软 HID 驱动机器的备胎;注释确认「正常 HID 子节点在启用时该路 access denied」 | 不实现——本项目 09-07 已实测同一结论(FromIdAsync SharingViolation/Unreachable),备胎无增益 |
+
+### 6.2 修订后的实施要点(相对 §3 初稿的增量)
+
+1. **默认关闭 + 运行时提权**:配置新增 `xiaomi.hid_tap_enabled`(默认 false);设置页「遥控器」分组加「增强按键识别(返回/音量键)」开关与状态行(未启用/tap 心跳正常/宿主已重启待重新授权/注入被拒)。开启时才触发注入器 UAC,关闭即停监视并释放按键状态。
+2. **usage 前转集合**:13 键全量(MiVibe 与本项目实测表互证一致,含 volume_mute 0x7F——RC003 是否有独立静音键待真机确认,先转发不进映射表)。三键(back 0x00F1/vol+ 0x0080/vol− 0x0081)为系统不可见键,tap 沿直触发映射;其余 10 键 tap 沿仅作佐证。
+3. **UAC 频次控制**:WUDFHost 对 BTHLE 设备按连接起停,重连可能换宿主进程→每次重注入都要提权。缓解:①默认按需弹 UAC+托盘气泡引导;②提供可选「计划任务静默重注入」(schtasks 最高权限一次性设置,默认关,设置页显式开启);③宿主 PID 未变时不重复注入(幂等:枚举目标进程模块,已载入则跳过)。
+4. **杀软与签名**:自研 DLL+注入器随 MSI 走既有签名渠道;DLL 固定路径+hash 校验+文档明示原理(README/网站 FAQ 增补「增强按键识别的原理与权限说明」)。接受残余误报风险,用户侧可关闭功能。
+5. **崩溃隔离**:hook DLL 只读旁路(IOCTL 过滤三重:号==0x80018483、NT_SUCCESS、输出长==9),任何异常吞掉不冒泡——WUDFHost 崩溃会连带遥控器/其它 BTHLE 外设掉线,载荷必须零侵入;管道写失败静默,宿主侧超时判不可用即回落。
+6. **TDD 边界不变**:报文校验(9 字节/`01 00 00` 前缀)、usage 集合解析与 diff、沿生成、断连全释放、tap 佐证融合优先级、长按重复节拍——全部纯逻辑进 `voicestick_core` 先红后绿;DLL/注入器/管道以真机冒烟脚本验证(注入→心跳→13 键逐个出沿→回落路径),冒烟不过不算完成。
