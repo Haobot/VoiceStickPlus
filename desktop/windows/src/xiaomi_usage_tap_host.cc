@@ -1,5 +1,6 @@
 #include "xiaomi_usage_tap_host.h"
 
+#include <cstdint>
 #include <string>
 
 #include "xiaomi_keymap_interceptor.h"
@@ -16,6 +17,23 @@ constexpr wchar_t kWudfDiagnosticSuffix[] =
     L"Device Parameters\\WUDFDiagnosticInfo";
 
 } // namespace
+
+std::optional<DWORD> ParseHostPidValue(DWORD type, const uint8_t* data,
+                                       DWORD size) {
+    if (data == nullptr) return std::nullopt;
+    uint64_t value = 0;
+    if (type == REG_QWORD && size >= sizeof(uint64_t)) {
+        memcpy(&value, data, sizeof(value));  // 注册表整型均小端
+    } else if (type == REG_DWORD && size >= sizeof(DWORD)) {
+        uint32_t low = 0;
+        memcpy(&low, data, sizeof(low));
+        value = low;
+    } else {
+        return std::nullopt;
+    }
+    if (value == 0) return std::nullopt;
+    return static_cast<DWORD>(value);  // PID 恒 < 2^32，取低 32 位
+}
 
 std::optional<DWORD> FindXiaomiHidHostPid() {
     HKEY enum_root = nullptr;
@@ -62,14 +80,16 @@ std::optional<DWORD> FindXiaomiHidHostPid() {
                               &diagnostic_key) != ERROR_SUCCESS) {
                 continue;
             }
-            DWORD pid = 0;
-            DWORD pid_size = sizeof(pid);
+            // 真机实测 HostPid 为 REG_QWORD（Win11 26200）；缓冲按 8 字节给足，
+            // 由 ParseHostPidValue 统一按类型取值。
+            uint8_t pid_data[8] = {};
+            DWORD pid_size = sizeof(pid_data);
             DWORD pid_type = 0;
-            if (RegQueryValueExW(diagnostic_key, L"HostPid", nullptr, &pid_type,
-                                 reinterpret_cast<LPBYTE>(&pid),
-                                 &pid_size) == ERROR_SUCCESS &&
-                pid_type == REG_DWORD && pid != 0) {
-                host_pid = pid;
+            if (RegQueryValueExW(diagnostic_key, L"HostPid", nullptr,
+                                 &pid_type, pid_data,
+                                 &pid_size) == ERROR_SUCCESS) {
+                const auto pid = ParseHostPidValue(pid_type, pid_data, pid_size);
+                if (pid.has_value()) host_pid = pid;
             }
             RegCloseKey(diagnostic_key);
             if (host_pid.has_value()) break;

@@ -41,10 +41,11 @@ void ExpandPath(const wchar_t pattern[], std::wstring* out) {
 void AppendLog(const std::string& line) {
     std::wstring path;
     ExpandPath(kLogFile, &path);
-    // 目录可能不存在：容错创建（失败则丢弃日志，不影响注入主流程）。
-    const size_t slash = path.find_last_of(L'\\');
-    if (slash != std::wstring::npos) {
-        CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
+    // 逐级创建目录（CreateDirectoryW 不递归；首次运行时 VoiceStick 与
+    // VoiceStick\logs 两级都不存在。失败则丢弃日志，不影响注入主流程）。
+    for (size_t pos = path.find_first_of(L'\\'); pos != std::wstring::npos;
+         pos = path.find_first_of(L'\\', pos + 1)) {
+        if (pos > 2) CreateDirectoryW(path.substr(0, pos).c_str(), nullptr);
     }
     HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
@@ -81,15 +82,31 @@ bool IsElevated() {
 
 bool TargetIsWudfHost(DWORD pid) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (process == nullptr) return false;
+    if (process == nullptr) {
+        // 真机实测（Win11 26200）：非提权下即 err=5（WUDFHost ACL 拒普通
+        // 用户查询）；提权后仍失败须细分原因（PPL 等），日志给出错误码。
+        AppendLog("target check: OpenProcess err=" +
+                  std::to_string(GetLastError()));
+        return false;
+    }
     wchar_t image_path[MAX_PATH] = {};
     DWORD size = MAX_PATH;
     const bool ok = QueryFullProcessImageNameW(process, 0, image_path, &size);
     CloseHandle(process);
-    if (!ok) return false;
+    if (!ok) {
+        AppendLog("target check: QueryFullProcessImageNameW err=" +
+                  std::to_string(GetLastError()));
+        return false;
+    }
     const wchar_t* base = wcsrchr(image_path, L'\\');
     base = base != nullptr ? base + 1 : image_path;
-    return _wcsicmp(base, L"wudfhost.exe") == 0;
+    if (_wcsicmp(base, L"wudfhost.exe") != 0) {
+        const std::wstring wide(base);
+        AppendLog("target check: image name mismatch: " +
+                  std::string(wide.begin(), wide.end()));
+        return false;
+    }
+    return true;
 }
 
 std::string Sha256File(const std::wstring& path) {
@@ -163,9 +180,20 @@ std::wstring DeployDll(const std::wstring& source_dll) {
         }
         if (!MoveFileExW(staging.c_str(), deployed.c_str(),
                          MOVEFILE_REPLACE_EXISTING)) {
-            AppendLog("deploy: replace failed err=" +
-                      std::to_string(GetLastError()));
+            const DWORD replace_err = GetLastError();
             DeleteFileW(staging.c_str());
+            // 替换失败的典型场景：宿主正加载已部署 DLL（文件锁定，如应用
+            // 更新后重注入）。部署副本 hash 有效（旧版）即继续注入旧版，
+            // 新版等宿主重启（遥控器重连换 WUDFHost）后自然生效。
+            const std::string deployed_hash = Sha256File(deployed);
+            if (!deployed_hash.empty()) {
+                AppendLog("deploy: replace locked err=" +
+                          std::to_string(replace_err) +
+                          ", keep running version sha256=" + deployed_hash);
+                return deployed;
+            }
+            AppendLog("deploy: replace failed err=" +
+                      std::to_string(replace_err));
             return {};
         }
     }
@@ -313,6 +341,13 @@ int wmain(int argc, wchar_t** argv) {
                   std::to_string(host_pid.value_or(0)) + ")");
         return 4;
     }
+    if (!EnableDebugPrivilege()) {
+        AppendLog("exit 8: SeDebugPrivilege not assigned");
+        return 8;
+    }
+    // 进程名校验须在 SeDebugPrivilege 启用之后：WUDFHost ACL 拒绝未启用
+    // SeDebug 的进程 OpenProcess（提权管理员也一样，真机 Win11 26200 实测
+    // err=5——Administrators 只是「有权启用」，未启用时照样被拒）。
     if (!TargetIsWudfHost(pid)) {
         AppendLog("exit 5: target is not wudfhost.exe");
         return 5;
@@ -329,18 +364,16 @@ int wmain(int argc, wchar_t** argv) {
     source_dll.resize(slash);
     source_dll += L"\\";
     source_dll += kDllName;
-    const std::wstring deployed = DeployDll(source_dll);
-    if (deployed.empty()) {
-        AppendLog("exit 7: deploy failed");
-        return 7;
-    }
+    // 幂等前置：宿主已加载 DLL 时直接成功返回——部署副本可能被运行中的
+    // DLL 锁定，先部署后查幂等会在重注入/应用更新场景撞文件锁。
     if (DllAlreadyLoaded(pid)) {
         AppendLog("exit 0: already injected (idempotent)");
         return 0;
     }
-    if (!EnableDebugPrivilege()) {
-        AppendLog("exit 8: SeDebugPrivilege not assigned");
-        return 8;
+    const std::wstring deployed = DeployDll(source_dll);
+    if (deployed.empty()) {
+        AppendLog("exit 7: deploy failed");
+        return 7;
     }
     if (!InjectLibrary(pid, deployed)) {
         AppendLog("exit 9: inject failed");

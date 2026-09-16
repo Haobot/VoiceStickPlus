@@ -13,6 +13,7 @@
 #include "xiaomi_keymap_interceptor.h"
 #include "xiaomi_usage_tap.h"
 #include "xiaomi_usage_tap_decoder.h"
+#include "xiaomi_usage_tap_host.h"
 #include "xiaomi_usage_tap.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
@@ -7152,6 +7153,33 @@ void TestXiaomiTapFrameDecoder() {
         stream.insert(stream.end(), report.begin(), report.end());
         const auto frames = decoder.OnBytes(stream.data(), stream.size());
         assert(frames.size() == 1 && frames[0].is_data);
+    }
+}
+
+// WUDFDiagnosticInfo\HostPid 注册表值解析：真机（Win11 26200）为 REG_QWORD，
+// 兼容 REG_DWORD；类型不符/字节数不足拒绝。
+void TestXiaomiHostPidValueParsing() {
+    // REG_QWORD（真机形态）：8 字节小端，取低 32 位。
+    {
+        const uint8_t data[8] = {0xa4, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        assert(ParseHostPidValue(REG_QWORD, data, sizeof(data)) == 0x14a4);
+        // 高 32 位非零（不可能的 PID，防御性截断）也取低 32 位。
+        const uint8_t big[8] = {0xff, 0xff, 0x00, 0x00, 0xde, 0xad, 0x00, 0x00};
+        assert(ParseHostPidValue(REG_QWORD, big, sizeof(big)) == 0xffff);
+    }
+    // REG_DWORD（兼容形态）：4 字节。
+    {
+        const uint8_t data[4] = {0x84, 0x0c, 0x00, 0x00};
+        assert(ParseHostPidValue(REG_DWORD, data, sizeof(data)) == 0x0c84);
+    }
+    // 非法：类型不符 / 字节数不足 / 空 pid。
+    {
+        const uint8_t data[8] = {0xa4, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        assert(!ParseHostPidValue(REG_SZ, data, sizeof(data)).has_value());
+        assert(!ParseHostPidValue(REG_QWORD, data, 4).has_value());
+        assert(!ParseHostPidValue(REG_DWORD, data, 2).has_value());
+        const uint8_t zero[4] = {};
+        assert(!ParseHostPidValue(REG_DWORD, zero, sizeof(zero)).has_value());
     }
 }
 
@@ -15367,6 +15395,7 @@ int main() {
     TestXiaomiTapDirectKeys();
     TestXiaomiTapEvidenceTable();
     TestXiaomiTapFrameDecoder();
+    TestXiaomiHostPidValueParsing();
     TestXiaomiKeymapInterceptor();
     TestXiaomiF5SuppressPredicate();
     TestCoordinatorXiaomiCapabilityGating();

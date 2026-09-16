@@ -20,4 +20,10 @@ namespace voicestick {
 // 主程序用于注入监视（PID 变化 = 宿主重启需重注入），注入器用于注入前校验。
 std::optional<DWORD> FindXiaomiHidHostPid();
 
+// WUDFDiagnosticInfo\HostPid 注册表值 → PID（纯逻辑可单测）。真机实测该值
+// 为 REG_QWORD（Win11 26200），MiVibe 参考实现（Python winreg 整型读）与
+// REG_DWORD 兼容均按低 32 位取值；类型不符/字节数不足返回 nullopt。
+std::optional<DWORD> ParseHostPidValue(DWORD type, const uint8_t* data,
+                                       DWORD size);
+
 } // namespace voicestick

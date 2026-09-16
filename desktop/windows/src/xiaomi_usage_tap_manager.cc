@@ -6,6 +6,7 @@
 #include "xiaomi_usage_tap_host.h"
 
 #include <objbase.h>
+#include <sddl.h>
 #include <shellapi.h>
 
 #include <vector>
@@ -151,13 +152,26 @@ void XiaomiUsageTapManager::MonitorThreadMain() {
 void XiaomiUsageTapManager::PipeThreadMain() {
     XiaomiTapFrameDecoder decoder;
     std::vector<uint8_t> chunk(512);
+    // 管道 DACL：显式授予 SYSTEM + Everyone——探针在 WUDFHost（UMDF 受限
+    // 令牌，真机 Win11 26200 实测不含 LOCAL_SYSTEM SID）内连接，默认 DACL
+    // 只授创建者用户会被拒，SY-only 同样连不上（真机实测），WD 是真机可行
+    // 口径。安全权衡：伪造 tap 帧 ≡ 本地进程直接 SendInput 的能力（注入的
+    // 是用户自己配置的映射键），无提权增益，与 MiVibe 用 localhost TCP 同级。
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"D:P(A;;GA;;;WD)(A;;GA;;;SY)", SDDL_REVISION_1,
+        &sa.lpSecurityDescriptor, nullptr);
     while (WaitForSingleObject(stop_event_, 0) == WAIT_TIMEOUT) {
         HANDLE pipe = CreateNamedPipeW(
             kPipeName, PIPE_ACCESS_INBOUND,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 512, 512, 0,
-            nullptr);
+            sa.lpSecurityDescriptor ? &sa : nullptr);
         if (pipe == INVALID_HANDLE_VALUE) {
-            // 端口占用/资源不足：退避后重试（非 stop）。
+            // 端口占用/资源不足/ACL 拒绝：记错误码（诊断盲区，1s 退避限频）
+            // 后重试（非 stop）。
+            LogApp("XiaomiUsageTapManager: create pipe failed err=" +
+                   std::to_string(GetLastError()));
             if (WaitForSingleObject(stop_event_, kRecreatePipeDelayMs) !=
                 WAIT_TIMEOUT) {
                 break;
@@ -249,6 +263,9 @@ void XiaomiUsageTapManager::PipeThreadMain() {
         // 对端断开：活跃集合全释放（防按键卡死），随后回建管道实例等重连。
         DispatchSessionEdges(session_.OnDisconnect());
         LogApp("XiaomiUsageTapManager: probe disconnected");
+    }
+    if (sa.lpSecurityDescriptor) {
+        LocalFree(sa.lpSecurityDescriptor);
     }
     LogApp("XiaomiUsageTapManager: pipe server exited");
 }
