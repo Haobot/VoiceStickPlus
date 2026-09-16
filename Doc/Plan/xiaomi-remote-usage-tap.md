@@ -182,3 +182,14 @@ RC003 全键 usage 表(MiVibe `hid_report_tap.py` 与本项目 Raw Input 实测�
 7. **宿主重启**:遥控器关开一次(WUDFHost 换进程)→ 状态行「等待遥控器连接」→「等待管理员授权…」(UAC)→「工作正常」。
 8. **回落路径**:开关关闭 → 管道监视停止,三键回到静默(与 09-07 现状一致),10 键管线不受影响;VoiceStick 退出 → WUDFHost 内 DLL 残留但管道写失败静默,遥控器原生功能完全正常。
 9. **MSI 安装面**:安装目录含 `VoiceStickHidTap.dll`/`VoiceStickTapInject.exe`;从安装版启动走 1~8 全链路。
+
+### 7.2 真机首验发现与修复（2026-09-16，Win11 26200，提交 bb1d8232）
+
+用户启用开关后状态行恒「等待遥控器连接」，逐层定位出**四个串联缺陷**（全链修复后 probe connected/connected 稳定）：
+
+1. **HostPid 注册表值真机为 REG_QWORD**（非 REG_DWORD）：4 字节缓冲读出 ERROR_MORE_DATA → 监视循环永远无宿主。修复：`ParseHostPidValue` 纯函数（TDD）QWORD/DWORD 双口径取低 32 位。教训：PowerShell `Get-ItemProperty` 自动转换类型掩盖差异；MiVibe 用 Python winreg 整型读与类型无关故无此坑。
+2. **SeDebugPrivilege 须先于进程名校验启用**：WUDFHost ACL 拒绝未启用 SeDebug 的进程 OpenProcess（提权管理员同样被拒 err=5——Administrators 只是「有权启用」，未启用时照样拒绝）。
+3. **WUDFHost 是 UMDF 受限令牌，不含 LOCAL_SYSTEM SID**：命名管道默认 DACL（创建者用户）连不上，SY-only 也连不上；SDDL `WD+SY` 为真机可行口径。安全权衡：伪造 tap 帧 ≡ 本地 SendInput 能力（注入的是用户自己配置的映射键），无提权增益，与 MiVibe 用 localhost TCP（Everyone 可连）同级。
+4. **部署幂等须前置**：重注入时部署副本被运行中 DLL 锁定（MoveFileEx err=5）；幂等前置 + 同 hash 跳过替换 + 锁定时旧版继续服务（新版等宿主重启生效）。注意全量重建即使源码未变 DLL 链接时间戳也变（hash 恒不同），不能依赖「同版跳过」兜底。
+
+诊断方法沉淀：一次性诊断 exe（内联拷贝实现逐步 printf）比改主程序加日志快一个数量级；注入器 `AppendLog` 逐级建目录（单级 CreateDirectoryW 在两级目录缺失时静默丢日志，曾掩盖缺陷 2/4 的定位线索）。
