@@ -102,7 +102,11 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
   if (u16 == UUID_REPORT_MAP && chr->val_handle >= s_hid_start && chr->val_handle <= s_hid_end) {
     s_map_handle = chr->val_handle;
   } else if (u16 == UUID_REPORT && chr->val_handle >= s_hid_start && chr->val_handle <= s_hid_end) {
-    s_report_handle = chr->val_handle;
+    // 只认带 NOTIFY(0x10) 的 Report 特征（0x2A4D 有轮询形态 props=0x0a 无 CCCD）；
+    // 取第一个（真机枚举顺序 0x0064 即 Report ID 1 的键盘 usage 集合通道）
+    if ((chr->properties & 0x10) && s_report_handle == 0) {
+      s_report_handle = chr->val_handle;
+    }
   }
   if (ble_uuid_cmp(&chr->uuid.u, &UUID_ATVV_TX.u) == 0) s_atvv_tx = true;
   if (ble_uuid_cmp(&chr->uuid.u, &UUID_ATVV_AUDIO.u) == 0) s_atvv_audio = true;

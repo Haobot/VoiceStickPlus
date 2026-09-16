@@ -1,6 +1,6 @@
 # 小米遥控器 StickS3 网关（类 KVM 中转）方案
 
-> 状态：**设计中（待 Phase 0 spike 验证，未立项实施）**。2026-09-16 用户提出中转设想，经需求梳理与方案对比后定案四项范围决策：方案 A（固件全归一化）/ 本期不做移动端 / 双模式切换 / 屏幕菜单+编码器切换。本文档为设计交付稿，待用户审阅后进入实施计划。
+> 状态：**Phase 0 spike 已验证通过（2026-09-16，六项全过，风险 1 解除），待排期 Phase 1**。2026-09-16 用户提出中转设想，经需求梳理与方案对比后定案四项范围决策：方案 A（固件全归一化）/ 本期不做移动端 / 双模式切换 / 屏幕菜单+编码器切换。spike 结论见 §6.1。
 > 事实链依据：`Doc/Plan/xiaomi-remote-usage-tap.md`（三键问题现状与 13 键 usage 表）、`Doc/Plan/xiaomi-remote-2-pro-support.md`（ATVV 接入现状）、`Doc/Ref/protocol.md`（现有上行协议）。
 
 ## 1. 背景与目标
@@ -167,6 +167,30 @@
 
 任一项失败→回到方案评审（备选：B 隧道透传同样依赖 1/2/3，风险同源；彻底失败则维持 usage tap 现状路线）。
 
+### 6.1 Phase 0 spike 结论（2026-09-16 真机验证，六项全过 ✅）
+
+验证程序：`firmware/spikes/xiaomi_gateway_poc/`（一次性，不并入正式固件；串口采集工具 `serial_listen.py`）。
+
+| # | 验证项 | 结论 | 证据 |
+|---|---|---|---|
+| 1 | 扫描发现 | ✅ | **正常态广播名 `U-RFRC478`**（桌面端白名单的 `MI RC` 等是配对模式/已配对形态）；识别条件=名称含 `u-rfrc` 或配对模式白名单；Flags 0x06 纯 BLE 可连接，广播含 Service Data(0xFF01) |
+| 2 | 连接+配对+bond | ✅ | **配对模式下 Just Works 接受**（NoInputNoOutput，LE Secure Connections），bond 持久化 NVS；非配对模式连接会在 ~30s 后 Authentication Failure（HCI 0x05）断开——预期行为，非兼容性问题 |
+| 3 | 断电重启回连 | ✅ | 重启后 direct connect 对端身份地址 `c0:5d:39:xx:xx:xx`（public），4s 内连上，LTK 恢复加密成功 |
+| 4 | Report Map | ✅ | 86 字节：Report ID 1 = 3×16bit usage（键盘页 0x00~0xFE，同报最多 3 键）+ 厂商页 0xFF00 三个 120 字节输入报告（Report ID 6/7/8） |
+| 5 | 三键 notify | ✅ | back=`0x00F1` / volume_up=`0x0080` / volume_down=`0x0081`，与 usage-tap 文档 13 键表完全一致 |
+| 6 | ATVV 服务 | ✅ | `AB5E0001` 服务 + TX(0x0302, write)/Audio(0x0304, notify)/Control(0x0307, notify) 三特征齐全，句柄形态与协议档案一致 |
+
+**对 Phase 1/2 的设计输入（spike 附带收获）**：
+
+1. **按键报文实为 8 字节**：`[2 字节头][3×LE16 usage 槽]`，usage 在槽 1（byte 2-3），松开帧全零；与桌面端经 Windows HID 栈看到的 9 字节（`01 00 00` 前缀）不同——固件解析器按 8 字节实现。
+2. **Report notify 无需写 CCCD**：连接加密后小米默认推送（非标但稳定复现）——固件仍按标准先尝试写 CCCD，失败不视为错误。
+3. **双地址形态**：广播地址（`5c:24:1f:*` 小米 OUI）≠ 配对后身份地址（`c0:5d:39:*` public）；bond 后回连一律用身份地址。
+4. **连接参数**：遥控器主动请求 itvl=10(12.5ms)/latency=49/supervision=500ms；MTU 协商 247~256。
+5. **对端服务全景**：GATT/GAP/电量(0x2A19，句柄 0x30 推 89%)/设备信息/HID(0x1812)/ATVV/小米私有 `8a7a0001-…`/`0x01bf`/`0xfe59`。
+6. HID 服务内 0x2A4D 特征有 7 个带 notify（`0x0064` 为 Report ID 1 通道）+ 10 余个轮询形态（props=0x0a 无 CCCD）——订阅时必须按 notify 属性筛选。
+
+**风险 1（小米 bond 兼容性）解除**，方案 A 继续。遗留观察项（Phase 2 首日验证）：ATVV 音频流吞吐与双 ACL 并发。
+
 ## 7. 测试策略（TDD 纪律）
 
 - **纯逻辑 C 模块 host 侧单测**（固件首次引入单测目标）：`xiaomi_hid_host` 报文解码器（9 字节集合 diff）、`gateway_keymap` 翻译表、`gateway_switcher` 状态机、`gateway_session_arbiter`、ADPCM 解码器（与桌面端 C++ 实现互为金标准比对）——CMake host 目标，红-绿-重构。
@@ -192,3 +216,4 @@
 ## 10. 变更记录
 
 - 2026-09-16：初版设计稿（需求梳理、方案对比定案、架构与分期），待用户审阅。
+- 2026-09-16（二）：Phase 0 spike 真机验证六项全过（§6.1），风险 1 解除；spike 程序与串口采集工具入库；正常态广播名/8 字节报文/双地址/无 CCCD 推送四项新协议事实回填。

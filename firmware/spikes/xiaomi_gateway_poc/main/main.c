@@ -41,8 +41,10 @@ static uint8_t s_peer_addr_type;            // 对端地址类型
 static esp_timer_handle_t s_retry_timer;
 
 // 名称白名单（trim+小写子串匹配；来源：桌面端 pair_device_dialog 实测白名单）
+// "u-rfrc"：2026-09-16 spike 取证发现——正常态广播名为 U-RFRC478（5C:24:1F 小米 OUI +
+// Flags 0x06 纯 BLE 可连接 + Service Data 0xFF01），配对模式名才是 MI RC 等白名单形态
 static const char *kNameWhitelist[] = {
-    "mi rc", "xiaomi bluetooth remote 2 pro", "小米蓝牙语音遥控器", "rc001", "rc003",
+    "mi rc", "xiaomi bluetooth remote 2 pro", "小米蓝牙语音遥控器", "rc001", "rc003", "u-rfrc",
 };
 static const ble_uuid128_t kAtvvSvcUuid = BLE_UUID128_INIT(
     0x64, 0xB6, 0x17, 0xF6, 0x01, 0xAF, 0x7D, 0xBC,
@@ -201,8 +203,21 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
   }
 }
 
-static int disc_event(struct ble_gap_event *event, void *arg) {
-  if (event->type != BLE_GAP_EVENT_DISC) return 0;
+// 旁路设备取证打印去重：同一地址只打一次（缓存满则视为已打印）
+#define BYPASS_CACHE 12
+static uint8_t s_bypass_seen[BYPASS_CACHE][6];
+static int s_bypass_next;
+
+static bool bypass_seen_once(const uint8_t *addr) {
+  for (int i = 0; i < BYPASS_CACHE; i++) {
+    if (memcmp(s_bypass_seen[i], addr, 6) == 0) return true;
+  }
+  memcpy(s_bypass_seen[s_bypass_next], addr, 6);
+  s_bypass_next = (s_bypass_next + 1) % BYPASS_CACHE;
+  return false;
+}
+
+static int disc_event(struct ble_gap_event *event, void *arg) {  if (event->type != BLE_GAP_EVENT_DISC) return 0;
   struct ble_hs_adv_fields fields;
   int rc = ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data);
   if (rc != 0) return 0;
@@ -215,10 +230,29 @@ static int disc_event(struct ble_gap_event *event, void *arg) {
     memcpy(name, fields.name, fields.name_len);
   }
   if (!hit) {
-    // 有名字但白名单不匹配：低频打印避免刷屏（仅打印含 remote/rc 关键词的）
-    to_lower_str(name);
-    if (strstr(name, "remote") || strstr(name, "rc") || strstr(name, "小米")) {
-      ESP_LOGI(TAG, "旁路设备：%s", name);
+    // 有名字但白名单不匹配：按地址去重做一次全量取证打印（名字/地址/RSSI/厂商数据/原始广播）
+    // —— u-rfrc478 疑似小米广播名形态，靠完整字段判定而非瞎扩白名单
+    if (!bypass_seen_once(event->disc.addr.val)) {
+      char addr_buf[24];
+      snprintf(addr_buf, sizeof(addr_buf), "%02x:%02x:%02x:%02x:%02x:%02x",
+               event->disc.addr.val[5], event->disc.addr.val[4], event->disc.addr.val[3],
+               event->disc.addr.val[2], event->disc.addr.val[1], event->disc.addr.val[0]);
+      char mfg_hex[3 * 16 + 1] = "";
+      if (fields.mfg_data && fields.mfg_data_len > 0 && fields.mfg_data_len <= 16) {
+        int p = 0;
+        for (int i = 0; i < fields.mfg_data_len; i++) {
+          p += snprintf(mfg_hex + p, sizeof(mfg_hex) - p, "%02x", fields.mfg_data[i]);
+        }
+      }
+      char adv_hex[3 * 31 + 1] = "";
+      int p2 = 0;
+      for (int i = 0; i < event->disc.length_data && i < 31; i++) {
+        p2 += snprintf(adv_hex + p2, sizeof(adv_hex) - p2, "%02x", event->disc.data[i]);
+      }
+      ESP_LOGI(TAG, "旁路(首见) name=\"%s\" addr=%s type=%d rssi=%d mfg=%s %s",
+               name, addr_buf, event->disc.addr.type, event->disc.rssi, mfg_hex,
+               event->disc.length_data > 0 ? "(adv)" : "(scan-rsp)");
+      ESP_LOGI(TAG, "  raw[%u]: %s", (unsigned)event->disc.length_data, adv_hex);
     }
     return 0;
   }
