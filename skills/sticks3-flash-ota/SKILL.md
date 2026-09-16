@@ -5,7 +5,7 @@ description: >-
   下载固件 / 烧录固件 / 给 stick 刷进去 / 串口烧录 / OTA 升级 / 推送固件 / BLE OTA /
   flash / 把改好的固件刷到设备 / 更新设备固件"等，或在改完 firmware/ 后需要把固件装到设备上验证时使用。
   涵盖两条路径：默认优先的 BLE 本地文件 OTA（命令行 --ota 或托盘菜单，免拔线免按键），
-  以及回退的串口烧录（idf_cli.py，需人工按键进 Boot）。v1.8.0 已移除 VoiceStickCtl/HTTP OTA。
+  以及回退的串口烧录（idf_cli.py，设备运行时免按键自动进 Boot）。v1.8.0 已移除 VoiceStickCtl/HTTP OTA。
 ---
 
 # StickS3 固件烧录与 OTA
@@ -21,7 +21,7 @@ description: >-
 │        ├─ 命令行：VoiceStick.exe --ota <bin>（自动化首选）
 │        └─ GUI：托盘菜单"从本地文件更新固件..."
 └─ 未配对 / 设备深睡连不上 / 改了分区表 / OTA 失败不可恢复 / 首次烧录新板
-      -> 路径 B：串口烧录（需人工按键进 Boot）
+      -> 路径 B：串口烧录（设备正常运行时免按键；深睡/卡死/首烧需人工按键）
 ```
 
 只有在 A 不可用或失败不可恢复时才回退 B。详见根记忆 `firmware-http-ota-default`。
@@ -89,7 +89,10 @@ voice_ble: OTA complete transfer=<id>, rebooting
 
 ## 路径 B：串口烧录（回退）
 
-⚠️ **这块板的 Boot/复位/电源由前面板按钮电路接管，esptool 的自动复位无效，必须人工按键。** 详见根记忆 `stick-s3-button-boot-control`。
+⚠️ 按键时序分两个方向，可靠性不同（根记忆 `stick-s3-button-boot-control`）：
+
+- **进 Boot（烧录前）通常可自动**：USB 是 ESP32-S3 原生 USB Serial/JTAG 外设（VID 303A:1001），设备正常运行且 USB 可达时，esptool 的 USB JTAG magic reset 能软复位直接进下载模式，**不需长按**（与 zcode 等工具免按键刷机同一原理）。
+- **出 Boot（烧录后）必须手动**：这块板的复位线被按钮电路接管，`--after hard_reset` 无效，烧完必须**短按**重启，否则芯片留在 `waiting for download`。
 
 ### 一键编译+烧录+监控
 
@@ -99,11 +102,14 @@ python scripts/idf_cli.py -cus
 
 `idf_cli.py` 自动探测 ESP-IDF 环境、自动选串口（评分制，可 `-p COM17` 指定）。烧录 921600 / 监控 115200。单步：`-c` 编译、`-u` 烧录、`-s` 监控；`--list-ports` 列串口。
 
-### 必须的人工按键时序（不能跳过）
+### 按键时序（进 Boot 通常可自动，出 Boot 必须手动）
 
-1. **烧录前**：提示用户「请**长按**前面板按钮进入 Boot/下载模式」，等用户确认后再执行 `-u`。否则 esptool 识别不到芯片。
-2. **烧录成功后**：提示用户「烧录完成，请**短按**前面板按钮重启」，等确认后再 `-s` 监控。否则芯片留在下载模式，串口能开但无数据（`waiting for download`）。
-3. 看到「复位后串口完全无数据 / 读到 0 字节」时，**先怀疑是否漏了人工按键**，不要去调脚本。
+1. **烧录前**：设备正常运行且 USB JTAG 可达时，直接执行 `-u`，esptool 软复位自动进下载模式，**免长按**。仅以下情况才需先提示用户「请**长按**前面板按钮进入 Boot/下载模式」，等确认后再 `-u`：
+   - 设备在 deep sleep（USB JTAG 不可达，需先唤醒或长按）
+   - 设备卡死 / USB 断连
+   - 首次烧录新板 / 分区表变更 / 状态不明（长按更稳）
+2. **烧录成功后**（无论进 Boot 是否自动）：提示用户「烧录完成，请**短按**前面板按钮重启」，等确认后再 `-s` 监控。否则芯片留在下载模式，串口能开但无数据（`waiting for download`）。
+3. 看到「复位后串口完全无数据 / 读到 0 字节」时，**先怀疑是否漏了短按重启**，不要去调脚本。
 
 ### 分区表变更：首次需擦除重刷
 
@@ -113,7 +119,7 @@ python scripts/idf_cli.py -cus
 idf.py -p COMxx erase-flash flash monitor
 ```
 
-同样要先长按进 Boot。
+同样建议先手动长按进 Boot（分区表变更是关键烧录，长按更稳）。
 
 ---
 
@@ -123,8 +129,8 @@ idf.py -p COMxx erase-flash flash monitor
 |---|---|
 | `--ota` returncode 0 但设备无 OTA 日志 | app 未连上设备；读 app 日志确认 `stage=ready`，等连接或重启 app |
 | app 日志找不到 | 在 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`（非 Roaming） |
-| 设备串口 0 字节、`waiting for download` | 漏了人工短按重启；esptool 自动复位在本板无效 |
-| esptool 识别不到芯片 | 烧录前没长按进 Boot 模式 |
+| 设备串口 0 字节、`waiting for download` | 漏了人工短按重启；`--after hard_reset` 自动复位在本板无效 |
+| esptool 识别不到芯片 | 正常运行时 esptool 可自动进 Boot 无需长按；识别不到多为设备深睡/卡死/USB 断连（先长按唤醒重试）或串口选错/被占用 |
 | 串口采空（设备运行中） | deep sleep 或重启时 USB 重新枚举致 pyserial 句柄失效；重开串口或等稳定 |
 | 设备 OTA 重启后 BLE 连不上 | 设备进深睡（USB 未供电时）；USB 供电时不深睡（见 `deep-sleep-usb-logic-correct`）|
 | 还在用 VoiceStickCtl ota-pull | v1.8.0 已移除；改用 `VoiceStick.exe --ota` 或托盘菜单 |
