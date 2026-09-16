@@ -673,6 +673,10 @@ static int notify_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+// 额外 GATT 服务注入（gateway HOGP 等，见 voice_ble.h 注释）
+static voice_ble_extra_svcs_fn_t s_extra_svcs;
+void voice_ble_set_extra_svcs(voice_ble_extra_svcs_fn_t fn) { s_extra_svcs = fn; }
+
 static const struct ble_gatt_svc_def s_gatt_services[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -1024,6 +1028,19 @@ esp_err_t voice_ble_init(void)
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "count gatt failed rc=%d", rc);
     rc = ble_gatts_add_svcs(s_gatt_services);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "add gatt failed rc=%d", rc);
+
+    // 额外服务注入（gateway HOGP 等）：与主服务同一注册窗口，多次 count/add 为
+    // NimBLE 支持的合法用法，需在 host 任务启动（下方 freertos_init）前完成
+    if (s_extra_svcs != NULL) {
+        size_t extra_count = 0;
+        const struct ble_gatt_svc_def *extra = s_extra_svcs(&extra_count);
+        if (extra != NULL && extra_count > 0) {
+            rc = ble_gatts_count_cfg(extra);
+            ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "count extra gatt failed rc=%d", rc);
+            rc = ble_gatts_add_svcs(extra);
+            ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "add extra gatt failed rc=%d", rc);
+        }
+    }
 
     ble_npl_callout_init(&s_adv_retry_callout, nimble_port_get_dflt_eventq(),
                          adv_retry_callout_cb, NULL);

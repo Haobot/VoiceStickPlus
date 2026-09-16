@@ -19,6 +19,13 @@
 typedef void (*voice_ble_connection_cb_t)(bool connected);
 typedef void (*voice_ble_control_cb_t)(const char *json);
 
+// 额外 GATT 服务注入钩子：在 voice_ble_init 的 NimBLE 注册窗口
+// （nimble_port_freertos_init 之前）调用回调取服务数组统一 count/add。
+// 用于 gateway HOGP 等外设侧附加服务；普通模式下注入与否不影响既有行为。
+struct ble_gatt_svc_def;
+typedef const struct ble_gatt_svc_def *(*voice_ble_extra_svcs_fn_t)(size_t *count);
+void voice_ble_set_extra_svcs(voice_ble_extra_svcs_fn_t fn);
+
 typedef enum {
     VOICE_BLE_OTA_EVENT_BEGIN,
     VOICE_BLE_OTA_EVENT_PROGRESS,

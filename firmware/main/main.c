@@ -21,6 +21,10 @@
 
 #include "audio_pipeline.h"
 #include "bmi270.h"
+#include "gateway_hid_host.h"
+#include "gateway_hogp.h"
+#include "gateway_keymap.h"
+#include "gateway_mode.h"
 #include "mini_encoder_c.h"
 #include "power_log.h"
 #include "stick_s3_board.h"
@@ -2039,6 +2043,43 @@ static void set_tap_polling_enabled(bool enabled)
     }
 }
 
+// ---- 网关（小米中转）接线 ----
+// 按键沿：小米 usage 经 keymap 翻译后按动作路由——键盘/Consumer 直通 HOGP 输出给
+// 目标设备系统层；截留键（语音/电源/tv）留待 Phase 2 赋语义（当前仅日志）。
+static void gateway_on_key(uint16_t usage, bool pressed)
+{
+    gateway_key_action_t action = gateway_keymap_translate(usage);
+    switch (action.kind) {
+    case GATEWAY_KEY_KEYBOARD:
+        (void)gateway_hogp_send_keyboard((uint8_t)action.value, pressed);
+        break;
+    case GATEWAY_KEY_CONSUMER:
+        (void)gateway_hogp_send_consumer(action.value, pressed);
+        break;
+    case GATEWAY_KEY_INTERCEPT:
+        ESP_LOGI(TAG, "小米键截留 usage=0x%04x %s", usage, pressed ? "按下" : "松开");
+        break;
+    }
+}
+
+static void gateway_on_link(bool connected)
+{
+    ui_status_set_idle_hint(connected ? "网关：小米已连接" : "网关：等待小米");
+    ESP_LOGI(TAG, "小米链路%s", connected ? "就绪" : "断开");
+}
+
+// 按当前模式启动/停止小米链路并刷新屏幕提示；boot 翻转后与运行期复用同一入口
+static void gateway_apply_mode(void)
+{
+    if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
+        ui_status_set_idle_hint("网关：等待小米");
+        ESP_ERROR_CHECK(gateway_hid_host_start(gateway_on_key, gateway_on_link));
+    } else {
+        gateway_hid_host_stop();
+        ui_status_set_idle_hint(NULL);  // 恢复默认提示
+    }
+}
+
 // 编码器轮询：按钮边沿 → 主键 down/up 事件（APP_INPUT_SOURCE_ENCODER，语义等价物理键）；
 // 旋转增量 → APP_EVENT_ENCODER_ROTATE（非零读数即入队，发送门控在 app_event_task）。
 // 在 timer 任务上下文做 I2C 读，与 air_mouse_poll_timer_cb 同一先例（负载轻）。
@@ -2587,6 +2628,9 @@ void app_main(void)
     voice_ble_set_connection_callback(ble_connection_cb);
     voice_ble_set_control_callback(ble_control_cb);
     voice_ble_set_ota_callback(ble_ota_cb);
+    // 网关：模式读取与 HOGP 服务注入都必须在 voice_ble_init（NimBLE 注册窗口）之前
+    ESP_ERROR_CHECK(gateway_mode_init());
+    voice_ble_set_extra_svcs(gateway_hogp_services);
     esp_err_t err = voice_ble_init();
     ESP_ERROR_CHECK(ui_status_init());
     ESP_ERROR_CHECK(init_display_dim_timer());
@@ -2622,9 +2666,22 @@ void app_main(void)
     ESP_ERROR_CHECK(init_buttons());
     // 仅在线时启动 10ms 轮询；必须在 init_buttons 之后（事件队列已创建）。
     if (mini_encoder_c_present()) {
+        // 网关模式 boot 翻转：按住编码器上电 → 翻转模式。预置 pressed 状态吞掉
+        // 轮询首沿 down（切换瞬间不误触发主键/录音语义）；松开走"从未 down"干净路径。
+        bool boot_encoder_held = false;
+        if (mini_encoder_c_read_button(&boot_encoder_held) == ESP_OK && boot_encoder_held) {
+            if (gateway_mode_toggle() == ESP_OK) {
+                s_encoder_button_pressed = true;
+                ESP_LOGI(TAG, "boot 按住编码器：模式翻转 → %s",
+                         gateway_mode_name(gateway_mode_get()));
+            }
+        }
         ESP_ERROR_CHECK(esp_timer_start_periodic(s_encoder_poll_timer,
                                                  ENCODER_POLL_INTERVAL_US));
     }
+
+    // 网关模式：启动小米 central 链路（HOGP 服务已在 voice_ble 注册窗口注入）
+    gateway_apply_mode();
 
     // voice_ble_init 已提前到 ui_status_init 之前执行（见上方注释），此处仅处理其结果。
     if (err != ESP_OK) {

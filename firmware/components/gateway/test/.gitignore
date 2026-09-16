@@ -1,0 +1,5 @@
+# MSVC 单测中间产物
+*.obj
+*.exe
+*.pdb
+*.ilk
