@@ -250,6 +250,24 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       ble_npl_callout_reset(&s_sec_callout, pdMS_TO_TICKS(300));
       return 0;
 
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+      // 小米经 L2CAP signaling 请求省电参数（连接后 ~4.9s 一次性；不走应用的
+      // CONN_UPDATE_REQ 路径，NimBLE 自动原样转发 HCI）。其组合（itvl=10/
+      // latency=49/timeout=500）违反 BLE 规范 timeout > 2*(1+latency)*itvl_max，
+      // controller 以 HCI 0x212 同步拒绝——命令级失败不产生本事件，无法在此
+      // 拦截补救。实测 0x212 只吞掉恰在途的 ATT 请求-响应事务（ATVV 特征
+      // 枚举撞上即挂），notify 流与新发起事务不受影响——由 xiaomi_atvv_client
+      // 的发现延迟+超时看门狗规避（见该文件）。此处仅记录成功协商结果。
+      if (event->conn_update.status == 0) {
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
+          ESP_LOGI(TAG, "conn update 完成 itvl=%u latency=%u timeout=%u",
+                   desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+        }
+      }
+      return 0;
+    }
+
     case BLE_GAP_EVENT_ENC_CHANGE:
       if (event->enc_change.status != 0) {
         // 非配对模式下的拒绝属预期（Phase 0 结论）：静默重试等待遥控器可配对状态
@@ -329,10 +347,19 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       // 遥控器请求 latency=49 的省电参数；真机实测该参数生效后恰一个 supervision
       // 窗口(~5s)即被对端掐断（ESP32 central 高 slave-latency 下疑似跳过主发，
       // 遥控器醒来扑空自杀）。压平 latency 保链路存活，功耗优化留 Phase 4。
-      ESP_LOGI(TAG, "对端参数请求 itvl=%u latency=%u → 压平 latency",
-               event->conn_update_req.peer_params->itvl_max,
-               event->conn_update_req.peer_params->latency);
-      event->conn_update_req.self_params->latency = 0;
+      // self_params 必须全字段填充（仅改 latency 其余留 0 会被 controller 以
+      // HCI 0x212 拒绝，且失败发生在 ATT 事务进行中时链路响应断流——真机
+      // Phase 2 排查定案：ATVV 特征枚举恰撞上失败窗口后 GATT 回调全灭）。
+      struct ble_gap_upd_params *peer = event->conn_update_req.peer_params;
+      struct ble_gap_upd_params *self = event->conn_update_req.self_params;
+      self->itvl_min = peer->itvl_min;
+      self->itvl_max = peer->itvl_max;
+      self->latency = 0;  // 仅压平 latency
+      self->supervision_timeout = peer->supervision_timeout;
+      self->min_ce_len = peer->min_ce_len;
+      self->max_ce_len = peer->max_ce_len;
+      ESP_LOGI(TAG, "对端参数请求 itvl=%u latency=%u → 压平 latency（itvl %u-%u 保持）",
+               peer->itvl_max, peer->latency, self->itvl_min, self->itvl_max);
       return 0;
     }
 

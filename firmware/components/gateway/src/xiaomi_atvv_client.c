@@ -1,6 +1,7 @@
 // xiaomi_atvv_client.c — ATVV 语音链路 NimBLE 薄壳实现
 #include "xiaomi_atvv_client.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -32,10 +33,16 @@ static const ble_uuid128_t UUID_ATVV_CTRL = BLE_UUID128_INIT(
 #define CHR_PROP_WRITE 0x08
 #define CHR_PROP_NOTIFY 0x10
 
-// 发现启动延迟：HID 订阅的 CCCD 写还在飞（无回调可等），稍后再发起 ATVV 发现，
-// EBUSY 时由重试 callout 兜底
-#define DISC_DELAY_TICKS pdMS_TO_TICKS(400)
+// 发现启动延迟：两个目的——① 等 HID 订阅的 CCCD 写收尾（NimBLE 每连接同时仅
+// 一个 GATT 过程）；② 避开小米的 L2CAP 参数请求窗口（连接后 ~4.9s 一次性，
+// 其非法组合 latency=49/timeout=500 被 controller 以 HCI 0x212 同步拒绝，
+// 恰在途的 ATT 请求-响应会被吞掉——真机 Phase 2 定案）。link ready 在连接后
+// ~2.7s，再等 10s 即连接起 ~12.7s，安全越过 4.9s+落地余量。
+#define DISC_DELAY_TICKS pdMS_TO_TICKS(10000)
 #define DISC_RETRY_TICKS pdMS_TO_TICKS(500)
+// 发现阶段超时看门狗：某阶段发起后 4s 无推进则整链重来（兜底任何原因的
+// ATT 事务挂起——挂死的只是当次事务，重发即恢复）。
+#define DISC_STAGE_TIMEOUT_MS 4000
 // tick 周期：驱动 caps 超时与尾包宽限（150ms 宽限 → 250ms 周期最坏晚一拍，可接受）
 #define TICK_PERIOD_TICKS pdMS_TO_TICKS(250)
 
@@ -48,6 +55,16 @@ static uint16_t s_tx_handle;
 static uint16_t s_audio_handle;
 static uint16_t s_ctrl_handle;
 static gateway_atvv_session_t s_session;
+// 发现流程阶段与看门狗（disc 发起时记 stage+时刻，tick 检查超时整链重来）
+typedef enum {
+    DISC_STAGE_IDLE = 0,
+    DISC_STAGE_SVCS,
+    DISC_STAGE_CHRS,
+    DISC_STAGE_DONE,
+} disc_stage_t;
+static disc_stage_t s_disc_stage;
+static int64_t s_disc_stage_started_ms;
+static uint32_t s_disc_restarts;  // 看门狗触发计数（调试观测）
 static struct ble_npl_callout s_disc_callout;
 static bool s_disc_callout_inited;
 static struct ble_npl_callout s_tick_callout;
@@ -61,8 +78,10 @@ static void consume_actions(const gateway_atvv_action_t *actions, size_t count) 
         switch (a->kind) {
             case GATEWAY_ATVV_ACTION_WRITE_TX:
                 if (s_tx_handle != 0) {
-                    (void)ble_gattc_write_flat(s_conn, s_tx_handle, a->tx, a->tx_len,
-                                               NULL, NULL);
+                    int rc = ble_gattc_write_flat(s_conn, s_tx_handle, a->tx, a->tx_len,
+                                                  NULL, NULL);
+                    ESP_LOGI(TAG, "写 TX（op=0x%02x len=%u）rc=%d", a->tx[0],
+                             (unsigned)a->tx_len, rc);
                 }
                 break;
             case GATEWAY_ATVV_ACTION_PRESS_DOWN:
@@ -104,13 +123,22 @@ void xiaomi_atvv_client_notify_router(uint16_t attr_handle, const uint8_t *data,
     }
     gateway_atvv_action_t actions[GATEWAY_ATVV_MAX_ACTIONS];
     if (attr_handle == s_ctrl_handle && s_ctrl_handle != 0) {
+        const gateway_atvv_state_t before = s_session.state;
+        ESP_LOGI(TAG, "Control notify op=0x%02x len=%u state=%d",
+                 len > 0 ? data[0] : 0, (unsigned)len, (int)before);
         size_t n = gateway_atvv_session_control(&s_session, data, len, now_ms(), actions,
                                                 GATEWAY_ATVV_MAX_ACTIONS);
+        if (s_session.state != before) {
+            ESP_LOGI(TAG, "会话状态 %d -> %d", (int)before, (int)s_session.state);
+        }
         consume_actions(actions, n);
     } else if (attr_handle == s_audio_handle && s_audio_handle != 0) {
         size_t n = gateway_atvv_session_audio(&s_session, data, len, now_ms(), actions,
                                               GATEWAY_ATVV_MAX_ACTIONS);
         consume_actions(actions, n);
+    } else {
+        ESP_LOGW(TAG, "未识别的 notify attr=0x%04x（ctrl=0x%04x audio=0x%04x）len=%u",
+                 attr_handle, s_ctrl_handle, s_audio_handle, (unsigned)len);
     }
 }
 
@@ -127,15 +155,16 @@ static int on_atvv_chr(uint16_t conn, const struct ble_gatt_error *error,
 // CCCD 枚举回调：找到 0x2902 写使能 notify（与 hid_host 同模式）
 static int on_cccd_dsc(uint16_t conn, const struct ble_gatt_error *error,
                        uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg) {
-    (void)chr_val_handle;
     (void)arg;
     if (error->status != 0) {
         return 0;
     }
     if (dsc != NULL && ble_uuid_u16(&dsc->uuid.u) == 0x2902) {
         static const uint16_t enable_notify = 0x0001;  // 静态生命周期：write_flat 异步引用
-        (void)ble_gattc_write_flat(conn, dsc->handle, &enable_notify,
-                                   sizeof(enable_notify), NULL, NULL);
+        int rc = ble_gattc_write_flat(conn, dsc->handle, &enable_notify,
+                                      sizeof(enable_notify), NULL, NULL);
+        ESP_LOGI(TAG, "CCCD(0x%04x，特征 0x%04x) 写 0x0001 rc=%d", dsc->handle,
+                 chr_val_handle, rc);
     }
     return 0;
 }
@@ -153,9 +182,12 @@ static int on_atvv_svc(uint16_t conn, const struct ble_gatt_error *error,
     struct atvv_range *range = arg;
     if (error->status == BLE_HS_EDONE) {
         if (range->start == 0) {
+            s_disc_stage = DISC_STAGE_DONE;
             ESP_LOGW(TAG, "小米侧未发现 ATVV 服务（语音不可用，按键不受影响）");
             return 0;
         }
+        s_disc_stage = DISC_STAGE_CHRS;
+        s_disc_stage_started_ms = now_ms();
         int rc = ble_gattc_disc_all_chrs(conn, range->start, range->end, on_atvv_chr, range);
         if (rc != 0) {
             ESP_LOGE(TAG, "ATVV disc_all_chrs 失败 rc=%d", rc);
@@ -176,6 +208,7 @@ static int on_atvv_svc(uint16_t conn, const struct ble_gatt_error *error,
 static int on_atvv_chr(uint16_t conn, const struct ble_gatt_error *error,
                        const struct ble_gatt_chr *chr, void *arg) {
     if (error->status == BLE_HS_EDONE) {
+        s_disc_stage = DISC_STAGE_DONE;
         if (s_tx_handle == 0 || s_audio_handle == 0 || s_ctrl_handle == 0) {
             ESP_LOGW(TAG, "ATVV 特征不全 tx=%u audio=%u ctrl=%u（语音不可用）",
                      s_tx_handle, s_audio_handle, s_ctrl_handle);
@@ -209,42 +242,70 @@ static int on_atvv_chr(uint16_t conn, const struct ble_gatt_error *error,
     return 0;
 }
 
-static void disc_cb(struct ble_npl_event *ev) {
-    (void)ev;
-    if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE) {
-        return;
-    }
-    // 连接可能已被对端掐断而 DISCONNECT 未处理（竞态窗），二次确认
-    struct ble_gap_conn_desc desc;
-    if (ble_gap_conn_find(s_conn, &desc) != 0) {
-        return;
-    }
+// 发起一轮 ATVV 发现（首启与看门狗重来共用）
+static void start_discovery(void) {
     s_tx_handle = s_audio_handle = s_ctrl_handle = 0;
     static struct atvv_range range;  // 静态：异步回调链携带
     range.start = range.end = 0;
+    s_disc_stage = DISC_STAGE_SVCS;
+    s_disc_stage_started_ms = now_ms();
     int rc = ble_gattc_disc_all_svcs(s_conn, on_atvv_svc, &range);
+    ESP_LOGI(TAG, "disc_all_svcs 发起 conn=%d rc=%d（第 %" PRIu32 " 次尝试）",
+             s_conn, rc, s_disc_restarts);
     if (rc == BLE_HS_EBUSY) {
         // HID 侧 GATT 过程（CCCD 写）尚未收尾，稍后重试
+        s_disc_stage = DISC_STAGE_IDLE;
         ble_npl_callout_reset(&s_disc_callout, DISC_RETRY_TICKS);
         return;
     }
     if (rc != 0) {
         ESP_LOGE(TAG, "ATVV disc_all_svcs 失败 rc=%d，重试", rc);
+        s_disc_stage = DISC_STAGE_IDLE;
         ble_npl_callout_reset(&s_disc_callout, DISC_RETRY_TICKS);
     }
 }
 
+static void disc_cb(struct ble_npl_event *ev) {
+    (void)ev;
+    if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, "disc 跳过：running=%d conn=%d", s_running, s_conn);
+        return;
+    }
+    // 连接可能已被对端掐断而 DISCONNECT 未处理（竞态窗），二次确认
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(s_conn, &desc) != 0) {
+        ESP_LOGW(TAG, "disc 跳过：conn=%d 已不存在", s_conn);
+        return;
+    }
+    start_discovery();
+}
+
 static void tick_cb(struct ble_npl_event *ev) {
     (void)ev;
-    if (!s_running || !s_link_up) {
-        return;
+    if (!s_running) {
+        return;  // 模块停止后不再续期（stop 已显式 callout_stop，此为防御）
+    }
+    ble_npl_callout_reset(&s_tick_callout, TICK_PERIOD_TICKS);
+    // 发现阶段看门狗：超时整链重来（挂死的只是当次 ATT 事务，重发即恢复）
+    if (s_disc_stage == DISC_STAGE_SVCS || s_disc_stage == DISC_STAGE_CHRS) {
+        if (now_ms() - s_disc_stage_started_ms > DISC_STAGE_TIMEOUT_MS) {
+            s_disc_restarts++;
+            ESP_LOGW(TAG, "发现阶段 %d 超时 %" PRIu32 "ms，整链重试（第 %" PRIu32 " 次）",
+                     (int)s_disc_stage,
+                     (uint32_t)(now_ms() - s_disc_stage_started_ms), s_disc_restarts);
+            // 当前过程可能仍占着 GATT 过程表：NimBLE 无取消 API，等 EDONE
+            // 永不到来的情况下只能依赖过程超时……实测 0x212 吞事务后过程表
+            // 并未滞留（新事务可发起），直接重发。
+            start_discovery();
+        }
+    }
+    if (!s_link_up) {
+        return;  // 链路未就绪无会话可 tick
     }
     gateway_atvv_action_t actions[GATEWAY_ATVV_MAX_ACTIONS];
     size_t n = gateway_atvv_session_tick(&s_session, now_ms(), actions,
                                          GATEWAY_ATVV_MAX_ACTIONS);
     consume_actions(actions, n);
-    // 网关模式常开周期 tick：驱动 caps 超时/尾包宽限/重开拒绝窗到期
-    ble_npl_callout_reset(&s_tick_callout, TICK_PERIOD_TICKS);
 }
 
 // ---- 对外接口 ----
