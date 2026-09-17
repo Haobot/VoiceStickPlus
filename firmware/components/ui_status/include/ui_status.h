@@ -11,6 +11,9 @@ void ui_status_set_device_name(const char *device_name);
 void ui_status_set_advertising(void);
 void ui_status_set_pairing(const char *device_name);
 void ui_status_set_idle_hint(const char *hint);
+// 网关模式调试：设备号下方单行显示小米遥控器链路状态（"RC: ok/lost/..."），
+// NULL/空串清除（普通模式不显示）。
+void ui_status_set_gateway_link(const char *text);
 void ui_status_set_idle(void);
 void ui_status_set_idle_dimmed(bool dimmed);
 void ui_status_set_recording(uint32_t session_id);

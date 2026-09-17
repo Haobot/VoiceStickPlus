@@ -58,6 +58,7 @@ static lv_display_t *s_display;
 static esp_lcd_panel_handle_t s_panel;
 static lv_obj_t *s_screen;
 static lv_obj_t *s_top_label;
+static lv_obj_t *s_gateway_label;
 static lv_obj_t *s_ble_dot;
 static lv_obj_t *s_imu_label;
 static lv_obj_t *s_status_label;
@@ -202,6 +203,7 @@ static void render_scene_locked(ui_status_icon_scene_t scene, const char *status
     lv_obj_set_style_border_color(s_battery_shell, muted, 0);
     lv_obj_set_style_bg_color(s_battery_tip, muted, 0);
     lv_obj_set_style_text_color(s_imu_label, text, 0);
+    lv_obj_set_style_text_color(s_gateway_label, muted, 0);
 
     ui_status_icons_start_anim(&s_icons, scene);
 }
@@ -232,6 +234,16 @@ static void create_status_ui(void)
 
     s_ble_dot = create_blob(s_screen, 8, 8, lv_color_hex(0x8fb8ff));
     lv_obj_align(s_ble_dot, LV_ALIGN_TOP_LEFT, 0, 6);
+
+    // 网关模式调试行：设备号正下方显示小米遥控器链路状态（RC: ok/lost/...）。
+    // 小字号 + 左对齐窄宽度，避开右侧电量百分比与下方 IMU 行；普通模式为空串不显示。
+    s_gateway_label = lv_label_create(s_screen);
+    lv_label_set_text(s_gateway_label, "");
+    lv_obj_set_style_text_font(s_gateway_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_gateway_label, lv_color_hex(0x7f7180), 0);
+    lv_label_set_long_mode(s_gateway_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(s_gateway_label, 66);
+    lv_obj_align(s_gateway_label, LV_ALIGN_TOP_LEFT, 12, 21);
 
     // 顶部 IMU 行：实时显示 XYZ 三轴加速度，多行大字。放在设备号/电池标题行下方，
     // 末尾经 lv_obj_move_foreground 提到最顶图层，确保不被状态图标遮挡。
@@ -442,6 +454,15 @@ void ui_status_set_idle_hint(const char *hint)
     if (s_scene == UI_STATUS_ICON_IDLE) {
         strlcpy(s_hint_text, s_idle_hint_text, sizeof(s_hint_text));
         render_current_locked();
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
+void ui_status_set_gateway_link(const char *text)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready) {
+        lv_label_set_text(s_gateway_label, text ? text : "");
     }
     _lock_release(&s_lvgl_lock);
 }

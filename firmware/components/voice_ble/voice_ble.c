@@ -22,9 +22,11 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
+#include "host/ble_store.h"
 #include "host/ble_uuid.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "services/dis/ble_svc_dis.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
@@ -106,9 +108,13 @@ static void adv_retry_callout_cb(struct ble_npl_event *ev)
 {
     (void)ev;
     if (!s_connected && !ble_gap_adv_active()) {
-        ESP_LOGI(TAG, "retrying advertising after earlier failure");
+        ESP_LOGI(TAG, "advertising not active while disconnected; restarting");
         start_advertising();
     }
+    // 看门狗化：周期性自查并重新武装。NimBLE preempt（配对/隐私解析列表更新，
+    // ble_hs_pvcy.c）会静默停广播且失败不上报应用层（真机实测：网关模式连小米后
+    // HCI 0x212，广播再无恢复，Windows/桌面端无法连接）；一次性重试盖不住。
+    ble_npl_callout_reset(&s_adv_retry_callout, pdMS_TO_TICKS(ADV_RETRY_DELAY_MS));
 }
 
 static void adv_slow_callout_cb(struct ble_npl_event *ev)
@@ -872,7 +878,31 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                  event->enc_change.status);
         return 0;
 
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        // 双方 bond 不一致（Windows 删过设备/历史配对残留）时 NimBLE 发此事件，
+        // 要求应用先删旧 bond。返回 0 会被当作 FAIL 直接中止配对——真机日志即此
+        // 症状：事件到达后无 SMP 活动、Windows 30 秒超时断开（0x213）。
+        // 按 bleprph 例程：删除对端 bond 并 RETRY，让 SMP 重新完整走一遍。
+        struct ble_gap_conn_desc desc;
+        int find_rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
+        ESP_LOGW(TAG, "repeat pairing conn=%u cur(sc=%u auth=%u): delete stale bond, retry",
+                 event->repeat_pairing.conn_handle,
+                 event->repeat_pairing.cur_sc, event->repeat_pairing.cur_authenticated);
+        if (find_rc == 0) {
+            ble_store_util_delete_peer(&desc.peer_id_addr);
+        }
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
+
+    case BLE_GAP_EVENT_PARING_COMPLETE:
+        ESP_LOGI(TAG, "pairing complete conn=%u status=%d",
+                 event->pairing_complete.conn_handle, event->pairing_complete.status);
+        return 0;
+
     default:
+        // 未处理的 GAP 事件（事件号见 ble_gap.h BLE_GAP_EVENT_*）：debug 级留痕，
+        // 排查 SMP/连接类问题时可临时抬到 INFO。
+        ESP_LOGD(TAG, "gap event type=%d (unhandled)", event->type);
         return 0;
     }
 }
@@ -1012,14 +1042,31 @@ esp_err_t voice_ble_init(void)
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
+    // Windows HOGP 枚举 HID 设备依赖 DIS PnP ID；缺失时配对 30 秒后断开
+    // （reason=0x213，真机排查结论）。appearance=961 声明为键盘。
+    ble_svc_dis_init();
+    ble_svc_dis_manufacturer_name_set("VoiceStick");
+    static const char s_pnp_id[7] = {0x02, 0x3A, 0x30, 0x53, 0x56, 0x00, 0x01};
+    ble_svc_dis_pnp_id_set(s_pnp_id);
 
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_mitm = 0;
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
+    // LE Secure Connections + 完整密钥分发：与网关 spike（配对成功基线）一致，
+    // 仅 ENC 分发时小米遥控器拒配（Phase 1 真机排查）
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID |
+                                 BLE_SM_PAIR_KEY_DIST_SIGN;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID |
+                                   BLE_SM_PAIR_KEY_DIST_SIGN;
+
+    // bond 存储初始化（官方 blecent 例程同款前置声明）：ESP-IDF 不会自动调用，
+    // 缺失时 store_read_cb 为 NULL，任何配对发起都会同步返回 ENOTSUP(8)
+    // （网关模式小米 central 链路真机排查教训，Phase 1）
+    void ble_store_config_init(void);
+    ble_store_config_init();
 
     int rc = ble_svc_gap_device_name_set(s_device_name);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "set device name failed rc=%d", rc);
@@ -1039,6 +1086,10 @@ esp_err_t voice_ble_init(void)
             ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "count extra gatt failed rc=%d", rc);
             rc = ble_gatts_add_svcs(extra);
             ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "add extra gatt failed rc=%d", rc);
+            // 声明数据库变更：extra 服务在编译期就参与注册（两种模式都在），但固件
+            // 升级会改变句柄排布，已 bond 对端的 GATT 缓存随之失效。注册后声明一次，
+            // 让订阅了 Service Changed 的对端重新发现，避免按旧句柄访问失败。
+            ble_svc_gatt_changed(1, 0xFFFF);
         }
     }
 
@@ -1048,6 +1099,9 @@ esp_err_t voice_ble_init(void)
                          adv_slow_callout_cb, NULL);
     ble_npl_callout_init(&s_plog_dump_callout, nimble_port_get_dflt_eventq(),
                          power_log_dump_callout_cb, NULL);
+
+    // 广播看门狗启动（回调内自续期，见 adv_retry_callout_cb 注释）
+    ble_npl_callout_reset(&s_adv_retry_callout, pdMS_TO_TICKS(ADV_RETRY_DELAY_MS));
 
     nimble_port_freertos_init(nimble_host_task);
     ESP_LOGI(TAG, "BLE initialized as %s", s_device_name);

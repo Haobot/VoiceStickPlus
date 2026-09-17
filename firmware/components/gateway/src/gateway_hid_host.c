@@ -40,6 +40,8 @@ static uint8_t s_own_addr_type;
 static gateway_report_parser_t s_parser;
 static struct ble_npl_callout s_retry_callout;
 static bool s_retry_callout_inited;
+static struct ble_npl_callout s_sec_callout;
+static bool s_sec_callout_inited;
 
 static void start_scan(void);
 static void try_connect_known(void);
@@ -184,6 +186,14 @@ static void retry_cb(struct ble_npl_event *ev) {
   if (!s_running) {
     return;
   }
+  // 防堆积：连接仍在（含未断开的悬挂态）时不发起新连接尝试
+  if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(s_conn, &desc) == 0) {
+      return;  // 连接真实存在，等它断开事件再重试
+    }
+    s_conn = BLE_HS_CONN_HANDLE_NONE;
+  }
   // 此处 host 已完成同步（callout 首启延迟 1s），推断本机地址类型供扫描/连接使用
   if (ble_hs_util_ensure_addr(0) != 0 || ble_hs_id_infer_auto(0, &s_own_addr_type) != 0) {
     ESP_LOGE(TAG, "本机地址获取失败，3s 后重试");
@@ -191,6 +201,32 @@ static void retry_cb(struct ble_npl_event *ev) {
     return;
   }
   try_connect_known();
+}
+
+// 延迟发起加密：连接刚建立时 controller 状态未完全就绪（真机曾见 terminate 返回
+// CMD_DISALLOWED、security_initiate 同步失败），等 MTU 交换完成后再发起
+static void sec_cb(struct ble_npl_event *ev) {
+  (void)ev;
+  if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE) {
+    return;
+  }
+  struct ble_gap_conn_desc desc;
+  if (ble_gap_conn_find(s_conn, &desc) != 0) {
+    return;
+  }
+  ESP_LOGI(TAG, "发起加密：conn=%d role=%s enc=%d bonded=%d", s_conn,
+           desc.role == BLE_GAP_ROLE_MASTER ? "master" : "slave",
+           desc.sec_state.encrypted, desc.sec_state.bonded);
+  // 清除该对端的陈旧键再配对：NVS 跨烧录持久化，spike 时代的旧 LTK 会让对端
+  // 以"已有键"姿态拒绝新配对（真机排查：连接后 ~1s 被对端掐断 HCI 0x13）
+  (void)ble_store_util_delete_peer(&desc.peer_id_addr);
+  int rc = ble_gap_security_initiate(s_conn);
+  if (rc != 0) {
+    // 失败必须终止连接再重试：悬挂连接会占满连接表（MAX_CONNECTIONS=2 含桌面
+    // 端一条），后续 connect 全部 ENOMEM 死循环（真机验收实测教训）
+    ESP_LOGW(TAG, "security_initiate 失败 rc=%d，断开后重试", rc);
+    ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+  }
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg) {
@@ -204,12 +240,13 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         return 0;
       }
       s_conn = event->connect.conn_handle;
+      ESP_LOGI(TAG, "已连接小米 conn=%d", s_conn);
       ble_gattc_exchange_mtu(s_conn, NULL, NULL);
-      if (ble_gap_security_initiate(s_conn) != 0) {
-        // 已 bond 时此处即用 LTK 恢复；失败走重试
-        ESP_LOGW(TAG, "security_initiate 失败，3s 后重试");
-        schedule_retry();
+      if (!s_sec_callout_inited) {
+        ble_npl_callout_init(&s_sec_callout, nimble_port_get_dflt_eventq(), sec_cb, NULL);
+        s_sec_callout_inited = true;
       }
+      ble_npl_callout_reset(&s_sec_callout, pdMS_TO_TICKS(300));
       return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
@@ -273,6 +310,17 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
     case BLE_GAP_EVENT_REPEAT_PAIRING:
       // 反复测试场景：删旧 bond 重配避免卡死
       return BLE_GAP_REPEAT_PAIRING_RETRY;
+
+    case BLE_GAP_EVENT_CONN_UPDATE_REQ: {
+      // 遥控器请求 latency=49 的省电参数；真机实测该参数生效后恰一个 supervision
+      // 窗口(~5s)即被对端掐断（ESP32 central 高 slave-latency 下疑似跳过主发，
+      // 遥控器醒来扑空自杀）。压平 latency 保链路存活，功耗优化留 Phase 4。
+      ESP_LOGI(TAG, "对端参数请求 itvl=%u latency=%u → 压平 latency",
+               event->conn_update_req.peer_params->itvl_max,
+               event->conn_update_req.peer_params->latency);
+      event->conn_update_req.self_params->latency = 0;
+      return 0;
+    }
 
     default:
       return 0;
@@ -342,6 +390,10 @@ static void start_scan(void) {
       .passive = 0, .itvl = 0, .window = 0, .filter_duplicates = 1,
   };
   int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &params, disc_event, NULL);
+  if (rc == BLE_HS_EALREADY) {
+    // 扫描已在进行（前次尝试遗留），等 disc_event 命中即可，勿再叠加重试
+    return;
+  }
   if (rc != 0) {
     ESP_LOGW(TAG, "扫描启动失败 rc=%d，3s 后重试", rc);
     schedule_retry();
@@ -364,6 +416,7 @@ static void try_connect_known(void) {
   };
   int rc = ble_gap_connect(s_own_addr_type, &peer, 15000, &params, gap_event, NULL);
   if (rc != 0) {
+    ESP_LOGW(TAG, "direct connect 启动失败 rc=%d，3s 后重试", rc);
     schedule_retry();
   }
 }
