@@ -16,8 +16,16 @@
 typedef void (*gateway_hid_key_cb_t)(uint16_t usage, bool pressed);
 // 链路回调：connected=true 表示加密+订阅就绪的可用链路
 typedef void (*gateway_hid_link_cb_t)(bool connected);
+// notify 路由：小米连接上非 HID Report 特征的 notify（如 ATVV Control/Audio）
+// 转发给额外消费者，在 NimBLE host 任务上下文调用；data 生命周期仅限回调内。
+typedef void (*gateway_hid_notify_router_t)(uint16_t attr_handle, const uint8_t *data,
+                                            size_t len);
 
 esp_err_t gateway_hid_host_start(gateway_hid_key_cb_t on_key,
                                  gateway_hid_link_cb_t on_link);
 void gateway_hid_host_stop(void);
 bool gateway_hid_host_connected(void);
+// 注册 notify 路由（start 前调用；NULL 清除）
+void gateway_hid_host_set_notify_router(gateway_hid_notify_router_t router);
+// 当前小米连接句柄（未连接返回 BLE_HS_CONN_HANDLE_NONE）
+uint16_t gateway_hid_host_conn_handle(void);

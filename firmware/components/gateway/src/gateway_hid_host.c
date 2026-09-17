@@ -33,6 +33,7 @@ static const char *kNameWhitelist[] = {
 
 static gateway_hid_key_cb_t s_on_key;
 static gateway_hid_link_cb_t s_on_link;
+static gateway_hid_notify_router_t s_notify_router;
 static bool s_running;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_report_handle;  // 小米侧 Report 特征值句柄（notify 源）
@@ -281,7 +282,20 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
 
     case BLE_GAP_EVENT_NOTIFY_RX: {
       struct os_mbuf *om = event->notify_rx.om;
-      if (event->notify_rx.attr_handle != s_report_handle || om == NULL) {
+      if (om == NULL) {
+        return 0;
+      }
+      // 非 HID Report 特征的 notify（ATVV Control/Audio 等）转发给额外消费者
+      if (event->notify_rx.attr_handle != s_report_handle) {
+        if (s_notify_router != NULL) {
+          uint8_t buf[300];
+          size_t len = OS_MBUF_PKTLEN(om);
+          if (len > sizeof(buf)) {
+            len = sizeof(buf);  // ATVV 单包远小于 MTU，防御截断
+          }
+          ble_hs_mbuf_to_flat(om, buf, len, NULL);
+          s_notify_router(event->notify_rx.attr_handle, buf, len);
+        }
         return 0;
       }
       size_t len = OS_MBUF_PKTLEN(om);
@@ -462,3 +476,9 @@ void gateway_hid_host_stop(void) {
 }
 
 bool gateway_hid_host_connected(void) { return s_report_handle != 0; }
+
+void gateway_hid_host_set_notify_router(gateway_hid_notify_router_t router) {
+  s_notify_router = router;
+}
+
+uint16_t gateway_hid_host_conn_handle(void) { return s_conn; }

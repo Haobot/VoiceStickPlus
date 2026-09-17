@@ -25,6 +25,7 @@
 #include "gateway_hogp.h"
 #include "gateway_keymap.h"
 #include "gateway_mode.h"
+#include "xiaomi_atvv_client.h"
 #include "mini_encoder_c.h"
 #include "power_log.h"
 #include "stick_s3_board.h"
@@ -120,6 +121,15 @@ static esp_timer_handle_t s_tap_poll_timer;
 static esp_timer_handle_t s_air_mouse_poll_timer;
 static esp_timer_handle_t s_encoder_poll_timer;
 static bool s_encoder_button_pressed;
+// 小米语音键按住态缓存（NimBLE 任务写/app_event 与 timer 读，可接受竞态，
+// 与 s_encoder_button_pressed 同模式）：ATVV 会话 STREAMING 期间为 true。
+static bool s_xiaomi_voice_pressed;
+// 小米源延迟停录挂起：ATVV STOP 后 150ms 尾包宽限期内不立即 stop_recording，
+// 宽限过后再走 drain→button_up 收尾（对齐物理键「drain 完才发 button_up」次序）。
+static bool s_xiaomi_stop_pending;
+// 延迟量 = 尾包宽限 150ms + 余量 20ms（audio_task 40ms 帧粒度）。
+#define XIAOMI_STOP_DELAY_MS 170
+static esp_timer_handle_t s_xiaomi_stop_delay_timer;
 // boot 按住主键翻转网关模式成功后置位：吞掉 button 组件对"仍按住"主键补发的
 // 首个 PRESS_DOWN 及其配对的 PRESS_UP（详见 app_main 检测块与按键回调）。
 static bool s_swallow_boot_primary_down;
@@ -171,6 +181,10 @@ typedef enum {
     // click_to_talk、体感映射），仅日志里用 source 值区分来源；owner 仲裁独立
     // （PRIMARY_OWNER_ENCODER），避免与物理键互相截断录音。
     APP_INPUT_SOURCE_ENCODER,
+    // 小米遥控器语音键（网关模式 ATVV 会话沿）：手势语义同 PHYSICAL（走同一
+    // 交互状态机），但音频源是 ATVV PCM 馈送而非 ES8311（start_recording 按
+    // 本来源路由 start_ext）；owner 独立，与本地 mic 会话互斥。
+    APP_INPUT_SOURCE_XIAOMI,
 } app_input_source_t;
 
 static void apply_app_ui_state(const char *state, const char *text);
@@ -182,6 +196,8 @@ typedef enum {
     // 编码器按钮：手势语义同 PHYSICAL（见 is_local_primary_source），
     // 但 owner 仲裁独立，避免两个本地源互相截断对方的录音。
     PRIMARY_OWNER_ENCODER,
+    // 小米语音键：同上，owner 独立（本地 mic 录音中按语音键被拒，反之亦然）。
+    PRIMARY_OWNER_XIAOMI,
 } primary_owner_t;
 
 static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
@@ -255,6 +271,8 @@ typedef enum {
     APP_EVENT_TAP,
     APP_EVENT_ENCODER_ROTATE,
     APP_EVENT_ENTER_POWER_OFF,
+    // 小米语音键尾包宽限到期：执行延迟停录收尾（stop_recording + button_up）。
+    APP_EVENT_XIAOMI_STOP_DUE,
 } app_event_type_t;
 
 typedef struct {
@@ -282,6 +300,10 @@ static void queue_primary_up_event(app_input_source_t source, uint32_t request_i
 static void queue_encoder_rotate_event(int32_t delta);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
+static void finish_primary_release(app_input_source_t source);
+static void save_gateway_key_routes(void);
+static void load_gateway_key_routes(void);
+static void send_gateway_keymap_report(void);
 static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
 static void load_usb_auto_off_from_nvs(void);
@@ -334,6 +356,7 @@ static bool poweroff_allowed_now(void)
 
 // 主键当前是否处于按住态：正面物理键（GPIO 低电平）或编码器按钮任一按下即视为按住。
 // app 任务上下文（如关机前按住检查）用此活读判定；编码器 absent 时退化为纯 GPIO 判定。
+// 小米语音键无本地 GPIO：以 ATVV 会话 STREAMING 态代替（MIC_OPEN 后未 STOP）。
 // esp_timer 上下文（双击/hold 阈值定时器）改用 primary_button_held_from_timer()。
 static bool primary_button_held(void)
 {
@@ -346,14 +369,17 @@ static bool primary_button_held(void)
             return true;
         }
     }
-    return false;
+    return xiaomi_atvv_client_voice_pressed();
 }
 
 // esp_timer 上下文专用：编码器按钮态复用轮询缓存（同一任务，无竞态），
 // 避免再做一次带超时的 I2C 活读——瞬时 I2C 失败会误判"已松开"。
+// 小米语音键同样用缓存态（s_xiaomi_voice_pressed，NimBLE 任务写/app 任务读，
+// 与 s_encoder_button_pressed 同模式的可接受竞态）。
 static bool primary_button_held_from_timer(void)
 {
-    return gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0 || s_encoder_button_pressed;
+    return gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0 || s_encoder_button_pressed ||
+           s_xiaomi_voice_pressed;
 }
 
 static esp_err_t init_power_management(void)
@@ -656,7 +682,14 @@ static uint32_t start_recording(void)
         return 0;
     }
 
-    err = audio_pipeline_start(session_id);
+    // 源路由：小米语音键走外部 PCM 馈送（ATVV 解码后的 16kHz PCM），其余
+    // （物理/编码器/远程热键）走 ES8311 采集。s_primary_press_source 由本次
+    // 按下沿设置，timer 确认路径（hold 阈值/重试）读取同一变量。
+    if (s_primary_press_source == APP_INPUT_SOURCE_XIAOMI) {
+        err = audio_pipeline_start_ext(session_id);
+    } else {
+        err = audio_pipeline_start(session_id);
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "audio start failed: %s", esp_err_to_name(err));
         release_recording_pm_locks();
@@ -1021,6 +1054,39 @@ static void ble_control_cb(const char *json)
             audio_pipeline_set_playback_file(NULL);
             ESP_LOGI(TAG, "test_playback cleared (restore capture)");
         }
+    } else if (cJSON_IsString(event) &&
+               strcmp(event->valuestring, "gateway_keymap_set") == 0) {
+        // P1 按键自定义：设置单键路由（key=协议键名，route=passthrough|software），
+        // 成功即持久化并回执全表。语音键不在可路由表内（返回 usage=0 静默忽略）。
+        const cJSON *key_item = cJSON_GetObjectItemCaseSensitive(root, "key");
+        const cJSON *route_item = cJSON_GetObjectItemCaseSensitive(root, "route");
+        if (cJSON_IsString(key_item) && cJSON_IsString(route_item)) {
+            uint16_t usage = 0;
+            for (size_t i = 0; i < gateway_keymap_routable_key_count(); i++) {
+                uint16_t candidate = gateway_keymap_routable_usage_at(i);
+                const char *name = gateway_keymap_key_name(candidate);
+                if (name != NULL && strcmp(name, key_item->valuestring) == 0) {
+                    usage = candidate;
+                    break;
+                }
+            }
+            if (usage != 0) {
+                gateway_route_t route =
+                    strcmp(route_item->valuestring, "software") == 0
+                        ? GATEWAY_ROUTE_SOFTWARE : GATEWAY_ROUTE_PASSTHROUGH;
+                if (gateway_keymap_set_route(usage, route) == 0) {
+                    save_gateway_key_routes();
+                    ESP_LOGI(TAG, "gateway_keymap_set %s -> %s", key_item->valuestring,
+                             route == GATEWAY_ROUTE_SOFTWARE ? "software" : "passthrough");
+                    send_gateway_keymap_report();
+                }
+            } else {
+                ESP_LOGW(TAG, "gateway_keymap_set unknown key: %s", key_item->valuestring);
+            }
+        }
+    } else if (cJSON_IsString(event) &&
+               strcmp(event->valuestring, "gateway_keymap_get") == 0) {
+        send_gateway_keymap_report();
     }
     cJSON_Delete(root);
 }
@@ -1040,24 +1106,29 @@ static uint32_t elapsed_button_ms(int64_t down_us)
 // 编码器按钮与正面物理键在交互语义上完全等价：双击检测、hold 阈值、click_to_talk、
 // 体感鼠标映射对两者一视同仁（见 app_input_source_t 注释）；owner 仲裁按来源独立
 // （见 primary_owner_from_source），避免两个本地源互相截断录音。
+// 小米语音键同样纳入本地源：双击检测归位固件（网关方案 §5.3）。
 static bool is_local_primary_source(app_input_source_t source)
 {
-    return source == APP_INPUT_SOURCE_PHYSICAL || source == APP_INPUT_SOURCE_ENCODER;
+    return source == APP_INPUT_SOURCE_PHYSICAL || source == APP_INPUT_SOURCE_ENCODER ||
+           source == APP_INPUT_SOURCE_XIAOMI;
 }
 
-// 输入源 → owner 映射：三个来源各自独立仲裁，本地两源（物理/编码器）手势语义相同
-// 但 owner 不同，互相按住时不截断对方录音（与本地 vs 远程同一互斥行为）。
+// 输入源 → owner 映射：各来源各自独立仲裁，本地源（物理/编码器/小米）手势语义
+// 相同但 owner 不同，互相按住时不截断对方录音（与本地 vs 远程同一互斥行为）。
 static primary_owner_t primary_owner_from_source(app_input_source_t source)
 {
     return source == APP_INPUT_SOURCE_PHYSICAL ? PRIMARY_OWNER_PHYSICAL :
            source == APP_INPUT_SOURCE_ENCODER  ? PRIMARY_OWNER_ENCODER :
+           source == APP_INPUT_SOURCE_XIAOMI   ? PRIMARY_OWNER_XIAOMI :
                                                  PRIMARY_OWNER_REMOTE;
 }
 
-// 主键事件的 source 标签：编码器返回 "encoder"，其它来源返回 NULL（省略字段）。
+// 主键事件的 source 标签：编码器返回 "encoder"，小米语音键返回 "xiaomi"，
+// 其它来源返回 NULL（省略字段）。
 static const char *primary_button_source_tag(void)
 {
-    return s_primary_press_source == APP_INPUT_SOURCE_ENCODER ? "encoder" : NULL;
+    return s_primary_press_source == APP_INPUT_SOURCE_ENCODER ? "encoder" :
+           s_primary_press_source == APP_INPUT_SOURCE_XIAOMI  ? "xiaomi" : NULL;
 }
 
 // 侧键双击窗口超时：确认为单次点击，补发 button_click secondary（原单击语义）。
@@ -1378,6 +1449,25 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     if (!s_recording && s_primary_session_id == 0 && s_primary_down_us == 0) {
         return;
     }
+
+    // 小米源：ATVV STOP 后有 150ms 尾包宽限（Audio/Control 双特征异步），立即停录
+    // 会丢尾音——延迟停录让 audio_task 在宽限期内实时发出尾包，到期再走
+    // drain→button_up 收尾（对齐物理键「drain 完才发 button_up」次序）。
+    if (source == APP_INPUT_SOURCE_XIAOMI && s_recording && !s_xiaomi_stop_pending) {
+        s_xiaomi_stop_pending = true;
+        (void)esp_timer_start_once(s_xiaomi_stop_delay_timer,
+                                   XIAOMI_STOP_DELAY_MS * 1000ULL);
+        ESP_LOGI(TAG, "xiaomi voice up, delaying stop by %dms for audio tail",
+                 XIAOMI_STOP_DELAY_MS);
+        return;
+    }
+
+    finish_primary_release(source);
+}
+
+// 主键松开收尾（handle_primary_up 与小米延迟停录共用）：停录 → 双击窗或 button_up。
+static void finish_primary_release(app_input_source_t source)
+{
     const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
     if (s_recording) {
         s_primary_session_id = stop_recording();
@@ -1638,6 +1728,16 @@ static void app_event_task(void *arg)
                          direction, (unsigned)event.encoder_steps);
                 voice_ble_send_encoder_rotate(direction, event.encoder_steps);
                 note_activity();
+            }
+            break;
+        case APP_EVENT_XIAOMI_STOP_DUE:
+            // 小米语音键尾包宽限到期：ATVV 尾包已在宽限期内实时发出，走正常
+            // 停录收尾（stop drain → 双击窗/button_up）。非挂起态到达（如链路
+            // 断开补发后定时器又到期）为重复事件，忽略。
+            if (s_xiaomi_stop_pending) {
+                s_xiaomi_stop_pending = false;
+                ESP_LOGI(TAG, "xiaomi audio tail grace done, finishing release");
+                finish_primary_release(APP_INPUT_SOURCE_XIAOMI);
             }
             break;
         }
@@ -2060,8 +2160,70 @@ static void set_tap_polling_enabled(bool enabled)
 }
 
 // ---- 网关（小米中转）接线 ----
+
+// 按键路由表持久化：NVS blob（"gateway" 命名空间，13 字节与 keymap 可路由键表同序，
+// 值为 gateway_route_t）。语音键不在表内（固定 ATVV 语义）。
+static void save_gateway_key_routes(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("gateway", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    uint8_t blob[GATEWAY_KEYMAP_ROUTABLE_COUNT];
+    for (size_t i = 0; i < GATEWAY_KEYMAP_ROUTABLE_COUNT; i++) {
+        blob[i] = (uint8_t)gateway_keymap_get_route(gateway_keymap_routable_usage_at(i));
+    }
+    (void)nvs_set_blob(h, "key_routes", blob, sizeof(blob));
+    (void)nvs_commit(h);
+    nvs_close(h);
+}
+
+static void load_gateway_key_routes(void)
+{
+    gateway_keymap_reset_routes();
+    nvs_handle_t h;
+    if (nvs_open("gateway", NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    uint8_t blob[GATEWAY_KEYMAP_ROUTABLE_COUNT];
+    size_t len = sizeof(blob);
+    if (nvs_get_blob(h, "key_routes", blob, &len) == ESP_OK &&
+        len == GATEWAY_KEYMAP_ROUTABLE_COUNT) {
+        for (size_t i = 0; i < len; i++) {
+            if (blob[i] == GATEWAY_ROUTE_SOFTWARE) {
+                (void)gateway_keymap_set_route(gateway_keymap_routable_usage_at(i),
+                                               GATEWAY_ROUTE_SOFTWARE);
+            }
+        }
+    }
+    nvs_close(h);
+}
+
+// gateway_keymap_get 命令回执：全键路由表（桌面端配置 UI 同步用）
+static void send_gateway_keymap_report(void)
+{
+    char routes[400];
+    size_t off = 0;
+    for (size_t i = 0; i < gateway_keymap_routable_key_count() && off + 1 < sizeof(routes); i++) {
+        uint16_t usage = gateway_keymap_routable_usage_at(i);
+        const char *name = gateway_keymap_key_name(usage);
+        const char *route = gateway_keymap_get_route(usage) == GATEWAY_ROUTE_SOFTWARE
+                                ? "software" : "passthrough";
+        int written = snprintf(routes + off, sizeof(routes) - off, "%s{\"key\":\"%s\",\"route\":\"%s\"}",
+                               i ? "," : "", name ? name : "?", route);
+        if (written <= 0) {
+            break;
+        }
+        off += (size_t)written;
+    }
+    if (off < sizeof(routes)) {
+        (void)voice_ble_send_gateway_keymap(routes);
+    }
+}
+
 // 按键沿：小米 usage 经 keymap 翻译后按动作路由——键盘/Consumer 直通 HOGP 输出给
-// 目标设备系统层；截留键（语音/电源/tv）留待 Phase 2 赋语义（当前仅日志）。
+// 目标设备系统层；截留键（语音/电源/tv）中语音键会话沿由 ATVV 帧驱动
+// （gateway_atvv_on_press），HID 0x003E 沿忽略防双触发，电源/tv 仅日志。
 static void gateway_on_key(uint16_t usage, bool pressed)
 {
     gateway_key_action_t action = gateway_keymap_translate(usage);
@@ -2074,10 +2236,43 @@ static void gateway_on_key(uint16_t usage, bool pressed)
     case GATEWAY_KEY_CONSUMER:
         (void)gateway_hogp_send_consumer(action.value, pressed);
         break;
+    case GATEWAY_KEY_SOFTWARE:
+        // P1 隧道融合：软件路由键经 state_tx 上报桌面端自定义（网关模式才有小米
+        // 按键流，普通模式此分支不可达）
+        (void)voice_ble_send_gateway_key(gateway_keymap_key_name(usage), pressed);
+        break;
     case GATEWAY_KEY_INTERCEPT:
         ESP_LOGI(TAG, "小米键截留 usage=0x%04x %s", usage, pressed ? "按下" : "松开");
         break;
     }
+}
+
+// 小米语音键会话沿（ATVV control 帧驱动，NimBLE host 任务上下文）：
+// 与物理主键同链（APP_INPUT_SOURCE_XIAOMI），交互状态机无感知切换。
+static void gateway_atvv_on_press(bool pressed)
+{
+    s_xiaomi_voice_pressed = pressed;
+    if (pressed) {
+        // 清上一会话残留（含被拒会话溢出的样本），hold 阈值期间新语音重新暂存
+        audio_pipeline_external_reset();
+        queue_primary_down_event(APP_INPUT_SOURCE_XIAOMI, 0);
+    } else {
+        queue_primary_up_event(APP_INPUT_SOURCE_XIAOMI, 0);
+    }
+}
+
+// ATVV 解码 PCM 帧 → audio_pipeline 外部源缓冲
+static void gateway_atvv_on_pcm(const int16_t *pcm, size_t samples)
+{
+    (void)audio_pipeline_feed_pcm(pcm, samples);
+}
+
+// 尾包宽限到期：入队由 app_event_task 执行停录收尾（stop 同步等 drain，勿在
+// esp_timer 任务上下文长阻塞——tap/encoder 轮询定时器在同任务）。
+static void xiaomi_stop_delay_timer_cb(void *arg)
+{
+    (void)arg;
+    queue_app_event(APP_EVENT_XIAOMI_STOP_DUE);
 }
 
 static void gateway_on_link(bool connected)
@@ -2086,6 +2281,23 @@ static void gateway_on_link(bool connected)
     // 短文案适配 135px 宽屏顶部调试行（电量百分比左侧仅约 66px 可用）。
     ui_status_set_gateway_link(connected ? "RC: ok" : "RC: lost");
     ESP_LOGI(TAG, "小米链路%s", connected ? "就绪" : "断开");
+    if (connected) {
+        // ATVV 发现串行在 HID 发现之后（NimBLE 每连接同时仅一个 GATT 过程）
+        xiaomi_atvv_client_on_link_ready(gateway_hid_host_conn_handle());
+    } else {
+        xiaomi_atvv_client_on_link_down();
+        // 链路断开释放悬挂按住态：否则语音键会话沿丢失，主键状态机永远等不到 up
+        if (s_xiaomi_voice_pressed) {
+            s_xiaomi_voice_pressed = false;
+            queue_primary_up_event(APP_INPUT_SOURCE_XIAOMI, 0);
+        }
+        if (s_xiaomi_stop_pending) {
+            // 宽限未到期链路先断：录音已无新尾包，立即收尾
+            s_xiaomi_stop_pending = false;
+            (void)esp_timer_stop(s_xiaomi_stop_delay_timer);
+            queue_app_event(APP_EVENT_XIAOMI_STOP_DUE);
+        }
+    }
 }
 
 // 按当前模式启动/停止小米链路并刷新屏幕提示；boot 翻转后与运行期复用同一入口
@@ -2094,8 +2306,13 @@ static void gateway_apply_mode(void)
     ESP_LOGI(TAG, "boot 模式应用：%s", gateway_mode_name(gateway_mode_get()));
     if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
         ui_status_set_gateway_link("RC: ...");
+        gateway_hid_host_set_notify_router(xiaomi_atvv_client_notify_router);
+        ESP_ERROR_CHECK(xiaomi_atvv_client_start(gateway_atvv_on_press,
+                                                 gateway_atvv_on_pcm));
         ESP_ERROR_CHECK(gateway_hid_host_start(gateway_on_key, gateway_on_link));
     } else {
+        xiaomi_atvv_client_stop();
+        gateway_hid_host_set_notify_router(NULL);
         gateway_hid_host_stop();
         ui_status_set_gateway_link(NULL);  // 普通模式不显示网关调试行
     }
@@ -2709,6 +2926,15 @@ void app_main(void)
     //（桌面端据此显隐编码器设置）。
     voice_ble_set_encoder_present(mini_encoder_c_present());
     ESP_ERROR_CHECK(init_encoder_poll_timer());
+    // 小米语音键延迟停录定时器（一次性，尾包宽限到期入队收尾事件）
+    {
+        const esp_timer_create_args_t timer_args = {
+            .callback = xiaomi_stop_delay_timer_cb,
+            .name = "xiaomi_stop_delay",
+            .skip_unhandled_events = true,
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_xiaomi_stop_delay_timer));
+    }
     // boot 翻转后若主键已先于注册松开（不会有幽灵 PRESS_DOWN 产生），吞没标志即失效，
     // 避免误吞用户随后第一次真实按键。
     if (s_swallow_boot_primary_down && gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) != 0) {
@@ -2721,7 +2947,9 @@ void app_main(void)
                                                  ENCODER_POLL_INTERVAL_US));
     }
 
-    // 网关模式：启动小米 central 链路（HOGP 服务已在 voice_ble 注册窗口注入）
+    // 网关模式：启动小米 central 链路（HOGP 服务已在 voice_ble 注册窗口注入）；
+    // 先载入按键路由表（普通模式无小米链路，路由表加载无副作用）
+    load_gateway_key_routes();
     gateway_apply_mode();
 
     // voice_ble_init 已提前到 ui_status_init 之前执行（见上方注释），此处仅处理其结果。

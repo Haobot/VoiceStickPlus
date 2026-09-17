@@ -194,6 +194,12 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.direction = JsonStringValue(json, "direction");
     event.steps = JsonU32Value(json, "steps");
     event.source = JsonStringValue(json, "source");
+    // 网关按键事件（网关模式软件路由键）：
+    // {"event":"gateway_key","key":"back","pressed":true}
+    if (event.event == "gateway_key") {
+        event.gateway_key = JsonStringValue(json, "key");
+        event.gateway_pressed = JsonBoolValue(json, "pressed");
+    }
 
     return event;
 }
@@ -316,6 +322,18 @@ ByteVector BleProtocol::EncoderLedColorPayload(std::string_view color) {
 ByteVector BleProtocol::EncoderRecordingGatePayload(bool enabled) {
     const auto json = std::string("{\"event\":\"encoder_recording_gate\",\"enabled\":") +
                       (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::GatewayKeymapSetPayload(std::string_view key, bool software) {
+    const auto json = std::string("{\"event\":\"gateway_keymap_set\",\"key\":\"") +
+                      JsonEscape(key) + "\",\"route\":\"" +
+                      (software ? "software" : "passthrough") + "\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::GatewayKeymapGetPayload() {
+    const std::string json = "{\"event\":\"gateway_keymap_get\"}";
     return ByteVector(json.begin(), json.end());
 }
 

@@ -116,7 +116,9 @@ static int access_battery_level(uint16_t conn, uint16_t attr, struct ble_gatt_ac
 // 注意 2：自定义描述符必须显式给 att_flags=BLE_ATT_F_READ——留 0 等于"无读权限"，
 //         主机读 Report Reference 会被回 Read Not Permitted（Code 10 根因，见文件头）。
 
-static const struct ble_gatt_dsc_def s_report_consumer_dscs[] = {
+// 注意：descriptors 字段类型为非 const 指针（NimBLE 定义），数组保持非 const
+// 避免 -Wdiscarded-qualifiers 警告；NimBLE 注册过程只读不改。
+static struct ble_gatt_dsc_def s_report_consumer_dscs[] = {
     {
         .uuid = BLE_UUID16_DECLARE(0x2908),  // Report Reference: Report ID 1, Input
         .att_flags = BLE_ATT_F_READ,         // 必须：否则主机读不到 Report ID 映射
@@ -125,7 +127,7 @@ static const struct ble_gatt_dsc_def s_report_consumer_dscs[] = {
     {0},
 };
 
-static const struct ble_gatt_dsc_def s_report_keyboard_dscs[] = {
+static struct ble_gatt_dsc_def s_report_keyboard_dscs[] = {
     {
         .uuid = BLE_UUID16_DECLARE(0x2908),  // Report Reference: Report ID 2, Input
         .att_flags = BLE_ATT_F_READ,

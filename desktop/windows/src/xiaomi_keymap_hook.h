@@ -56,6 +56,10 @@ public:
         if (!tap_enabled_) return std::nullopt;
         return tap_state_;
     }
+    // 网关按键沿（P1 隧道融合）：网关模式软件路由键的 gateway_key 事件（协调器
+    // on_gateway_key 转发，主线程调用）。设备归属由固件保证（遥控器只连 StickS3），
+    // 无需 BREAK 佐证——直接查映射注入，按下沿 down 序、松开沿 up 序（支持按住）。
+    void OnGatewayKeyEdge(std::string_view button, bool pressed);
 
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM w_param,

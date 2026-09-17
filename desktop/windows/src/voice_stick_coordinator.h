@@ -96,6 +96,10 @@ public:
     // （桌面端把单击配为自定义按键时下发 false，从 encoder_press_action 派生）。
     virtual void SendEncoderRecordingGate(bool enabled,
                                           const std::optional<std::string>& device_id) = 0;
+    // 网关按键路由（P1 隧道融合）：key 为固件协议键名，software=true 设软件路由
+    //（gateway_key 事件上报桌面端）、false 恢复 HOGP 直通。仅对 StickS3 设备生效。
+    virtual void SendGatewayKeymapSet(const std::string& key, bool software,
+                                      const std::optional<std::string>& device_id) = 0;
     // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
     virtual void SendAirMouseEnabled(bool enabled,
                                      const std::optional<std::string>& device_id) = 0;
@@ -305,6 +309,10 @@ public:
     // 卡死 WeType finalize（真机定案，见 Doc/Expe/ 同日新文）。
     bool WechatSessionUsesDefaultMicDirectly(const std::string& device_id);
     void UpdateConfig(AppConfig config);
+private:
+    // 网关按键路由下发（P1）：对该设备逐键同步软件路由/直通（见 .cc 注释）。
+    void PushGatewayKeymapRoutesFor(const std::string& device_id);
+public:
     // 热调参：仅更新运行期某设备的 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
     void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);
     // 取某设备当前运行期 air_mouse 参数（调参窗口初始值）。无运行期覆盖时回退配置派生值。
@@ -350,6 +358,9 @@ public:
     void EncoderRotateTick();
     // 编码器慢速 pending 有无变化通知（true=有挂起，false=已清空）。平台层据此启停定时器。
     std::function<void(bool)> on_encoder_rotate_pending_changed;
+    // 网关按键沿（P1 隧道融合）：网关模式软件路由键的 gateway_key 事件
+    //（key 为协议键名，pressed 为按下沿）。UI 线程派发，keymap hook 消费。
+    std::function<void(const std::string& key, bool pressed)> on_gateway_key;
     // 体感鼠标激活态变化通知（true=有设备进入体感，false=全部退出）。平台层据此启停定时器。
     std::function<void(bool)> on_air_mouse_active_changed;
     // 查询某设备是否处于体感鼠标模式（供托盘菜单提示，避免用户不知情下主键变鼠标左键）。

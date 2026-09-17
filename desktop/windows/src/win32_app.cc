@@ -528,6 +528,14 @@ int Win32App::Run() {
                 encoder_rotate_pending_timer_active_ = false;
             }
         };
+        // 网关按键沿（P1 隧道融合）：软件路由键的 gateway_key 事件 → keymap hook
+        // 查映射注入（主线程：BLE 状态事件已在 UI 线程派发）。未挂载时丢弃
+        //（无映射配置则路由本不应为 software）。
+        coordinator_->on_gateway_key = [this](const std::string& key, bool pressed) {
+            if (xiaomi_keymap_hook_) {
+                xiaomi_keymap_hook_->OnGatewayKeyEdge(key, pressed);
+            }
+        };
         // power_log 分片路由到电池电压监测窗口（UI 线程回调，窗口未开时丢弃）。
         coordinator_->on_power_log_fragment = [this](std::string device_id,
                                                      PowerLogFragment fragment) {
@@ -1383,9 +1391,10 @@ void Win32App::SyncF5Suppressor() {
 
 void Win32App::SyncXiaomiKeymapHook() {
     if (!xiaomi_keymap_hook_) return;
-    // 按需装载：仅「有已配对/已连接 RC 设备 且 有效 key_map 非空」时挂钩。
-    // key_map 非空即用户显式配置了映射（空串显式取消留在表内，由决策层放行），
-    // 不再叠加全局开关。刷新时机与 SyncF5Suppressor 一致。
+    // 按需装载：「有已配对/已连接 RC 设备（直连模式）或有 StickS3 设备（网关
+    // 模式，P1） 且 有效 key_map 非空」时挂钩。key_map 非空即用户显式配置了映射
+    //（空串显式取消留在表内，由决策层放行），不再叠加全局开关。
+    // 刷新时机与 SyncF5Suppressor 一致。
     std::optional<std::string> active_rc;
     for (const auto& dev : connected_devices_) {
         if (dev.hardware == kHardwareXiaomiRemote2Pro) {
@@ -1401,12 +1410,31 @@ void Win32App::SyncXiaomiKeymapHook() {
             }
         }
     }
+    // 网关模式（遥控器只连 StickS3）：映射消费走 gateway_key 事件，挂载条件放宽
+    // 到「存在 StickS3 设备」，key_map 取全局默认（RC 设备不存在）。
+    bool gateway_stick_present = false;
     if (!active_rc.has_value()) {
+        for (const auto& dev : connected_devices_) {
+            if (dev.hardware == kHardwareStickS3) {
+                gateway_stick_present = true;
+                break;
+            }
+        }
+        if (!gateway_stick_present) {
+            for (const auto& entry : config_.paired_devices) {
+                if (entry.hardware == kHardwareStickS3) {
+                    gateway_stick_present = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!active_rc.has_value() && !gateway_stick_present) {
         xiaomi_keymap_hook_->Stop();
         return;
     }
     // Raw Input 佐证只有 VID/PID 粒度（同型号多台无法区分），key_map 统一取
-    // 活跃 RC 设备的有效映射（设备覆盖填平后回落全局默认）。
+    // 活跃 RC 设备的有效映射（设备覆盖填平后回落全局默认）；网关模式取全局默认。
     const auto xiaomi_settings = config_.XiaomiSettingsForDevice(active_rc);
     auto key_map = xiaomi_settings.key_map;
     bool has_mapping = false;
@@ -1415,6 +1443,7 @@ void Win32App::SyncXiaomiKeymapHook() {
     }
     if (has_mapping) {
         // usage tap 探针链路随钩子启停，开关为设备级设置（按键映射对话框）。
+        // 网关模式遥控器不经 Windows HID 栈，探针自然闲置（无管道对端即静默）。
         xiaomi_keymap_hook_->Start(std::move(key_map),
                                    xiaomi_settings.hid_tap_enabled);
     } else {

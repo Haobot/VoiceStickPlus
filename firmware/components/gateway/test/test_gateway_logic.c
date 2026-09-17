@@ -226,6 +226,87 @@ static void test_keymap_intercept_keys(void) {
     }
 }
 
+// ---------- gateway_keymap 软件路由（P1 隧道融合） ----------
+
+static void test_keymap_route_default_passthrough(void) {
+    printf("[用例] 路由：默认全部直通，translate 行为与 Phase 1 一致\n");
+    gateway_keymap_reset_routes();
+    gateway_key_action_t a = gateway_keymap_translate(0x00F1);  // back
+    CHECK(a.kind == GATEWAY_KEY_CONSUMER, "back 默认 Consumer 直通");
+    a = gateway_keymap_translate(0x0028);  // ok
+    CHECK(a.kind == GATEWAY_KEY_KEYBOARD, "ok 默认键盘直通");
+    a = gateway_keymap_translate(0x0066);  // power
+    CHECK(a.kind == GATEWAY_KEY_INTERCEPT, "power 默认截留");
+}
+
+static void test_keymap_route_software_override(void) {
+    printf("[用例] 路由：直通键设软件路由后 translate 返回 SOFTWARE（value=usage）\n");
+    gateway_keymap_reset_routes();
+    CHECK(gateway_keymap_set_route(0x00F1, GATEWAY_ROUTE_SOFTWARE) == 0, "back 设软件路由");
+    gateway_key_action_t a = gateway_keymap_translate(0x00F1);
+    CHECK(a.kind == GATEWAY_KEY_SOFTWARE, "back 软件路由");
+    CHECK(a.value == 0x00F1, "SOFTWARE value 携带原 usage");
+    CHECK(gateway_keymap_get_route(0x00F1) == GATEWAY_ROUTE_SOFTWARE, "get_route 一致");
+
+    printf("[用例] 路由：截留键 power/tv 也可软件路由\n");
+    CHECK(gateway_keymap_set_route(0x0066, GATEWAY_ROUTE_SOFTWARE) == 0, "power 设软件路由");
+    a = gateway_keymap_translate(0x0066);
+    CHECK(a.kind == GATEWAY_KEY_SOFTWARE, "power 软件路由");
+    CHECK(gateway_keymap_set_route(0x0035, GATEWAY_ROUTE_SOFTWARE) == 0, "tv 设软件路由");
+    a = gateway_keymap_translate(0x0035);
+    CHECK(a.kind == GATEWAY_KEY_SOFTWARE, "tv 软件路由");
+
+    printf("[用例] 路由：恢复直通后回到原动作\n");
+    CHECK(gateway_keymap_set_route(0x00F1, GATEWAY_ROUTE_PASSTHROUGH) == 0, "back 恢复直通");
+    a = gateway_keymap_translate(0x00F1);
+    CHECK(a.kind == GATEWAY_KEY_CONSUMER, "back 回 Consumer 直通");
+}
+
+static void test_keymap_route_voice_key_not_routable(void) {
+    printf("[用例] 路由：语音键不可软件路由（固定 ATVV 会话语义）\n");
+    gateway_keymap_reset_routes();
+    CHECK(gateway_keymap_set_route(0x003E, GATEWAY_ROUTE_SOFTWARE) != 0, "语音键设路由被拒");
+    CHECK(gateway_keymap_get_route(0x003E) == GATEWAY_ROUTE_PASSTHROUGH, "语音键路由恒直通");
+    gateway_key_action_t a = gateway_keymap_translate(0x003E);
+    CHECK(a.kind == GATEWAY_KEY_INTERCEPT, "语音键仍截留（ATVV 驱动）");
+
+    printf("[用例] 路由：未知 usage 设路由被拒\n");
+    CHECK(gateway_keymap_set_route(0x0299, GATEWAY_ROUTE_SOFTWARE) != 0, "未知 usage 被拒");
+}
+
+static void test_keymap_route_reset(void) {
+    printf("[用例] 路由：reset_routes 恢复全部默认\n");
+    gateway_keymap_set_route(0x0080, GATEWAY_ROUTE_SOFTWARE);
+    gateway_keymap_set_route(0x0066, GATEWAY_ROUTE_SOFTWARE);
+    gateway_keymap_reset_routes();
+    CHECK(gateway_keymap_get_route(0x0080) == GATEWAY_ROUTE_PASSTHROUGH, "volume_up 复位");
+    CHECK(gateway_keymap_get_route(0x0066) == GATEWAY_ROUTE_PASSTHROUGH, "power 复位");
+}
+
+static void test_keymap_key_names(void) {
+    printf("[用例] 键名：13 键 usage→协议 key 字符串，语音键无键名\n");
+    struct { uint16_t usage; const char *name; } table[] = {
+        {0x0028, "ok"},       {0x004F, "right"},   {0x0050, "left"},
+        {0x0051, "down"},     {0x0052, "up"},      {0x0065, "menu"},
+        {0x004A, "home"},     {0x00F1, "back"},    {0x0080, "volume_up"},
+        {0x0081, "volume_down"}, {0x007F, "volume_mute"}, {0x0066, "power"},
+        {0x0035, "tv"},
+    };
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        const char *name = gateway_keymap_key_name(table[i].usage);
+        s_total++;
+        if (name == NULL || strcmp(name, table[i].name) != 0) {
+            s_failed++;
+            printf("  [失败] usage 0x%04x 键名应为 %s，得到 %s\n", table[i].usage,
+                   table[i].name, name ? name : "NULL");
+        }
+    }
+    CHECK(gateway_keymap_key_name(0x003E) == NULL, "语音键无键名（不进软件路由协议）");
+    CHECK(gateway_keymap_key_name(0x0299) == NULL, "未知 usage 无键名");
+    // 可路由键名集合（NVS/协议枚举用）
+    CHECK(gateway_keymap_routable_key_count() == 13, "可路由键 13 个（含语音键外的全部）");
+}
+
 
 // ---------- gateway_hogp_report（HOGP Report Map 与 Report 报文） ----------
 //
@@ -391,6 +472,11 @@ int main(void) {
     test_keymap_consumer_keys();
     test_keymap_keyboard_keys();
     test_keymap_intercept_keys();
+    test_keymap_route_default_passthrough();
+    test_keymap_route_software_override();
+    test_keymap_route_voice_key_not_routable();
+    test_keymap_route_reset();
+    test_keymap_key_names();
     test_hogp_report_map();
     test_hogp_consumer_report();
     test_hogp_keyboard_report();

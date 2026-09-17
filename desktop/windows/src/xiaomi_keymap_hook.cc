@@ -364,6 +364,27 @@ void XiaomiKeymapHook::OnTapEdge(int button_index, bool pressed) {
     SyncRepeatTimer();
 }
 
+void XiaomiKeymapHook::OnGatewayKeyEdge(std::string_view button, bool pressed) {
+    const auto key_map = key_map_.load(std::memory_order_acquire);
+    if (!key_map) return;
+    const auto spec = XiaomiMappedSpec(button, *key_map);
+    if (!spec.has_value()) {
+        // 无映射沿：软件路由由桌面端下发（有映射才 software），此处属配置漂移
+        //（本地已改配置未同步固件），忽略并留痕。
+        LogApp("XiaomiKeymapHook: gateway edge without mapping button=" +
+               std::string(button));
+        return;
+    }
+    // 沿成对可靠（固件保证），支持真实按住：down 沿注 down 序、up 沿注 up 序。
+    if (pressed) {
+        InjectVks(XiaomiKeymapInjectDownVks(*spec), true);
+    } else {
+        InjectVks(XiaomiKeymapInjectUpVks(*spec), false);
+    }
+    LogApp("XiaomiKeymapHook: gateway key=" + std::string(button) +
+           (pressed ? " down" : " up"));
+}
+
 void XiaomiKeymapHook::OnTapState(XiaomiUsageTapManager::LinkState state) {
     tap_state_ = state;
     const char* name = "unknown";

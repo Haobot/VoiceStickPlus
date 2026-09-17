@@ -1491,6 +1491,29 @@ esp_err_t voice_ble_send_encoder_rotate(const char *direction, uint8_t steps)
     return send_state_json(json);
 }
 
+esp_err_t voice_ble_send_gateway_key(const char *key, bool pressed)
+{
+    if (key == NULL || key[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char json[96];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"gateway_key\",\"key\":\"%s\",\"pressed\":%s}",
+             key, pressed ? "true" : "false");
+    ESP_LOGI(TAG, "gateway key=%s %s", key, pressed ? "down" : "up");
+    return send_state_json(json);
+}
+
+esp_err_t voice_ble_send_gateway_keymap(const char *routes_json)
+{
+    // routes_json 为调用方拼好的路由数组（gateway_keymap_get 回执）
+    char json[512];
+    snprintf(json, sizeof(json), "{\"event\":\"gateway_keymap\",\"routes\":%s}",
+             routes_json && routes_json[0] ? routes_json : "[]");
+    ESP_LOGI(TAG, "gateway keymap report");
+    return send_state_json(json);
+}
+
 esp_err_t voice_ble_send_motion(int16_t dx, int16_t dy)
 {
     if (!s_connected || !s_state_subscribed || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {

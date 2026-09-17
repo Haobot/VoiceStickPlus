@@ -3,6 +3,7 @@
 #include "encoder_speed.h"
 #include "localization.h"
 #include "log.h"
+#include "xiaomi_buttons.h"
 
 #include <algorithm>
 #include <cmath>
@@ -119,6 +120,13 @@ void VoiceStickCoordinator::Start() {
             const EncoderSettings& enc = config_.EncoderSettingsForDevice(dev.id);
             ble_->SendEncoderLedColor(enc.led_color, dev.id);
             ble_->SendEncoderRecordingGate(enc.press_action == "recording", dev.id);
+        }
+        // 网关按键路由（P1）：StickS3 设备连接即同步一次（固件 NVS 断电保持，
+        // 此处幂等重发保证配置漂移自愈）。
+        for (const auto& dev : devices) {
+            if (dev.hardware == kHardwareStickS3) {
+                PushGatewayKeymapRoutesFor(dev.id);
+            }
         }
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
@@ -238,6 +246,12 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
         ble_->SendImuWakeSensitivity(
             ImuWakeSensitivityThresholdLsb(inter.imu_wake_sensitivity), device_id);
     }
+    // 网关按键路由（P1）：映射配置变化即重发（对话框保存路径）。
+    for (const auto& device_id : connected_device_ids_) {
+        if (!IsXiaomiRemoteDevice(device_id)) {
+            PushGatewayKeymapRoutesFor(device_id);
+        }
+    }
     debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
     if (asr_factory_) {
         // 旧云端客户端移交后台线程析构：AsrClientTencent 析构会 join WebSocket
@@ -260,6 +274,29 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
         ui_->SetPairedDeviceIds(paired_device_ids_);
         ble_->UpdatePairedDeviceIds(paired_device_ids_);
         CheckFirmwareUpdatesIfNeeded(false, false);
+    }
+}
+
+// 网关按键路由下发（P1 隧道融合）：对该设备按有效小米 key_map 逐键下发——有映射
+// 的键设软件路由（固件转 gateway_key 事件上报），无映射的键恢复 HOGP 直通。
+// key_map 取活跃 RC 设备的覆盖配置（无配对 RC 时取全局默认），与
+// Win32App::SyncXiaomiKeymapHook 同口径。BLE 层按设备类门控，仅 StickS3 生效。
+void VoiceStickCoordinator::PushGatewayKeymapRoutesFor(const std::string& device_id) {
+    std::optional<std::string> active_rc;
+    for (const auto& entry : config_.paired_devices) {
+        if (entry.hardware == kHardwareXiaomiRemote2Pro) {
+            active_rc = entry.device_id;
+            break;
+        }
+    }
+    const XiaomiSettings& settings =
+        config_.XiaomiSettingsForDevice(active_rc.has_value()
+                                            ? std::optional<std::string>(*active_rc)
+                                            : std::nullopt);
+    for (const auto button : kXiaomiMappableButtons) {
+        const auto it = settings.key_map.find(std::string(button));
+        const bool has_mapping = it != settings.key_map.end() && !it->second.empty();
+        ble_->SendGatewayKeymapSet(std::string(button), has_mapping, device_id);
     }
 }
 
@@ -552,6 +589,11 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
             ui_->SetDeviceBattery(device_id, event.battery_level.value(),
                                    event.battery_charging.value_or(false),
                                    event.battery_usb_powered.value_or(false));
+        }
+    } else if (event.event == "gateway_key") {
+        // P1 隧道融合：网关软件路由键沿（设备归属由固件保证，无需 BREAK 佐证）。
+        if (on_gateway_key && !event.gateway_key.empty()) {
+            on_gateway_key(event.gateway_key, event.gateway_pressed.value_or(false));
         }
     } else if (event.event == "button_down") {
         if (event.button == "primary" && event.source == "encoder") {

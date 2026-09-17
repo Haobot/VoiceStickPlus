@@ -25,6 +25,14 @@ SOURCES = [
 INC = os.path.join(HERE, "..", "include")
 EXE = os.path.join(HERE, "test_gateway_logic.exe")
 
+# Phase 2 新增：ATVV 纯逻辑件（ADPCM 归一 + 会话状态机）独立目标
+ATVV_SOURCES = [
+    os.path.join(HERE, "test_gateway_atvv.c"),
+    os.path.join(SRC, "gateway_adpcm.c"),
+    os.path.join(SRC, "gateway_atvv_session.c"),
+]
+ATVV_EXE = os.path.join(HERE, "test_gateway_atvv.exe")
+
 
 def capture_msvc_env() -> dict[str, str]:
     """跑 vcvars64 后导出完整环境，供后续直调 cl.exe。"""
@@ -45,32 +53,38 @@ def capture_msvc_env() -> dict[str, str]:
     return env
 
 
-def main() -> int:
-    env = capture_msvc_env()
-    # Windows 环境变量名不区分大小写而 dict 区分（PATH/Path 并存会让 CreateProcess
-    # 取到旧值），统一大写合并：vcvars 捕获值优先
-    merged = {k.upper(): v for k, v in os.environ.items()}
-    merged.update({k.upper(): v for k, v in env.items()})
-
+def build_and_run(sources: list[str], exe: str, env: dict[str, str]) -> int:
     cl_path = os.path.join(env["VCToolsInstallDir"], "bin", "Hostx64", "x64", "cl.exe")
     if not os.path.exists(cl_path):
         raise RuntimeError(f"未找到 cl.exe：{cl_path}")
+    merged = {k.upper(): v for k, v in os.environ.items()}
+    merged.update({k.upper(): v for k, v in env.items()})
     cl = subprocess.run(
-        [cl_path, "/nologo", "/W4", "/WX", "/utf-8", f"/I{INC}", *SOURCES, f"/Fe{EXE}", "/link", "/SUBSYSTEM:CONSOLE"],
+        [cl_path, "/nologo", "/W4", "/WX", "/utf-8", f"/I{INC}", *sources, f"/Fe{exe}", "/link", "/SUBSYSTEM:CONSOLE"],
         cwd=HERE, capture_output=True, text=True, encoding="utf-8", errors="replace", env=merged,
     )
     if cl.returncode != 0:
         print(cl.stdout)
         print(cl.stderr, file=sys.stderr)
-        print(f"[运行器] 编译失败 exit={cl.returncode}", file=sys.stderr)
+        print(f"[运行器] 编译失败 exit={cl.returncode}（{os.path.basename(exe)}）", file=sys.stderr)
         return cl.returncode
 
-    run = subprocess.run([EXE], capture_output=True, text=True,
+    run = subprocess.run([exe], capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
     print(run.stdout)
     if run.stderr:
         print(run.stderr, file=sys.stderr)
     return run.returncode
+
+
+def main() -> int:
+    env = capture_msvc_env()
+    failed = 0
+    for sources, exe in [(SOURCES, EXE), (ATVV_SOURCES, ATVV_EXE)]:
+        rc = build_and_run(sources, exe, env)
+        if rc != 0:
+            failed = rc if failed == 0 else failed
+    return failed
 
 
 if __name__ == "__main__":

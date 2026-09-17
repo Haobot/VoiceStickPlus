@@ -172,6 +172,10 @@ public:
                                   const std::optional<std::string>& device_id) override {
         sent_encoder_recording_gates.push_back(std::pair{enabled, device_id});
     }
+    void SendGatewayKeymapSet(const std::string& key, bool software,
+                              const std::optional<std::string>& device_id) override {
+        sent_gateway_keymap_sets.push_back(SentGatewayKeymapSet{key, software, device_id});
+    }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -212,6 +216,12 @@ public:
     std::vector<std::pair<bool, std::optional<std::string>>> sent_air_mouse_enabled;
     std::vector<std::pair<std::string, std::optional<std::string>>> sent_encoder_led_colors;
     std::vector<std::pair<bool, std::optional<std::string>>> sent_encoder_recording_gates;
+    struct SentGatewayKeymapSet {
+        std::string key;
+        bool software;
+        std::optional<std::string> device_id;
+    };
+    std::vector<SentGatewayKeymapSet> sent_gateway_keymap_sets;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -1057,8 +1067,55 @@ void TestStateParsing() {
     assert(event->session_id == 42);
 }
 
-void TestEncoderRotateStateParsing() {
-    const std::string json = "{\"event\":\"encoder_rotate\",\"direction\":\"ccw\",\"steps\":3}";
+// 网关按键事件（P1 隧道融合）：key/pressed 字段解析与命令 payload 构造。
+void TestGatewayKeyStateParsing() {
+    const std::string json =
+        "{\"event\":\"gateway_key\",\"key\":\"volume_up\",\"pressed\":true}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "gateway_key");
+    assert(event->gateway_key == "volume_up");
+    assert(event->gateway_pressed.has_value());
+    assert(event->gateway_pressed.value());
+
+    // 松开沿与缺字段容错
+    const std::string up_json =
+        "{\"event\":\"gateway_key\",\"key\":\"back\",\"pressed\":false}";
+    ByteVector up_frame = {1, 0x10};
+    AppendLe16(up_frame, static_cast<std::uint16_t>(up_json.size()));
+    up_frame.insert(up_frame.end(), up_json.begin(), up_json.end());
+    auto up_event = BleProtocol::ParseStateEvent(up_frame);
+    assert(up_event.has_value());
+    assert(up_event->gateway_key == "back");
+    assert(up_event->gateway_pressed.has_value());
+    assert(!up_event->gateway_pressed.value());
+
+    // 非 gateway_key 事件不带网关字段
+    const std::string other =
+        "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":7}";
+    ByteVector other_frame = {1, 0x10};
+    AppendLe16(other_frame, static_cast<std::uint16_t>(other.size()));
+    other_frame.insert(other_frame.end(), other.begin(), other.end());
+    auto other_event = BleProtocol::ParseStateEvent(other_frame);
+    assert(other_event.has_value());
+    assert(other_event->gateway_key.empty());
+    assert(!other_event->gateway_pressed.has_value());
+
+    // 路由命令 payload：软件路由与直通
+    const auto software_payload = BleProtocol::GatewayKeymapSetPayload("back", true);
+    const std::string software_json(software_payload.begin(), software_payload.end());
+    assert(software_json.find("\"event\":\"gateway_keymap_set\"") != std::string::npos);
+    assert(software_json.find("\"key\":\"back\"") != std::string::npos);
+    assert(software_json.find("\"route\":\"software\"") != std::string::npos);
+    const auto pass_payload = BleProtocol::GatewayKeymapSetPayload("ok", false);
+    const std::string pass_json(pass_payload.begin(), pass_payload.end());
+    assert(pass_json.find("\"route\":\"passthrough\"") != std::string::npos);
+}
+
+void TestEncoderRotateStateParsing() {    const std::string json = "{\"event\":\"encoder_rotate\",\"direction\":\"ccw\",\"steps\":3}";
     ByteVector frame = {1, 0x10};
     AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
     frame.insert(frame.end(), json.begin(), json.end());
@@ -15186,6 +15243,7 @@ int main() {
     TestBleControlPayloads();
     TestStateParsing();
     TestEncoderRotateStateParsing();
+    TestGatewayKeyStateParsing();
     TestStateEventSourceParsing();
     TestEncoderStatusParsing();
     TestMotionFrameParsing();

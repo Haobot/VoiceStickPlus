@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/queue.h"
+#include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "hal/i2s_types.h"
 #include "opus.h"
@@ -199,8 +200,24 @@ static uint32_t s_seq;
 static TaskHandle_t s_audio_task;
 static TaskHandle_t s_tx_task;
 static QueueHandle_t s_tx_queue;
+/* 当前会话采集源：ES8311（默认）或 EXTERNAL（网关 ATVV PCM 馈送）。
+ * 仅在 start（等待任务退出后）与 audio_task/tx_task 间传递，会话期间不变。 */
+static audio_source_t s_source = AUDIO_SOURCE_ES8311;
 // 首字延迟诊断：audio_pipeline_start 入口时刻，audio_task 首帧入队时打印相对值量化固件侧延迟。
 static int64_t s_pipeline_start_us = 0;
+
+/* 外部源 PCM 环形缓冲（懒创建，网关语音键首次馈送时分配到 SPIRAM）：
+ * 容量 2s（32KB 样本字节），hold 阈值 300ms 期间暂存不丢；溢出丢新保序。
+ * 单写（NimBLE host 任务 feed）单读（audio_task）无锁安全。 */
+#define EXT_STREAM_BYTES (2 * AUDIO_SAMPLE_RATE * sizeof(int16_t))
+/* 外部源饥饿判定：等数据 20ms×5=100ms 仍不足一帧则填静音保活（桌面端 ASR
+ * 按帧消费，断流会卡会话；BLE 短暂拥堵由 2s 缓冲吸收，持续饥饿属链路异常）。 */
+#define EXT_STARVE_WAIT_MS 20
+#define EXT_STARVE_TRIES 5
+/* 外部源 stop 后 drain 上限：ATVV 尾包 150ms 宽限 ≈ 3.75 帧，读 3 帧封顶防堵死。 */
+#define EXT_DRAIN_FRAMES 3
+static StreamBufferHandle_t s_ext_stream;
+static uint32_t s_ext_overflow_drops;
 
 /* Per-session resources: created on start, destroyed on stop */
 static i2s_chan_handle_t s_rx_handle;
@@ -308,6 +325,20 @@ esp_err_t audio_pipeline_set_playback_file(const char *filename)
     s_playback_active = true;
     ESP_LOGI(TAG, "playback loaded: %s size=%zu", path, s_playback_size);
     return ESP_OK;
+}
+
+/* 外部源读一帧：等待数据最多 100ms（20ms×5），仍不足填静音保活。 */
+static void read_frame_ext(int16_t *mono)
+{
+    const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
+    size_t got = 0;
+    for (int i = 0; i < EXT_STARVE_TRIES && got < need; i++) {
+        got += xStreamBufferReceive(s_ext_stream, (uint8_t *)mono + got, need - got,
+                                    pdMS_TO_TICKS(EXT_STARVE_WAIT_MS));
+    }
+    if (got < need) {
+        memset((uint8_t *)mono + got, 0, need - got);
+    }
 }
 
 static bool tasks_exited(void)
@@ -537,7 +568,10 @@ static void audio_task(void *arg)
     uint32_t dropped = 0;
 
     while (atomic_load(&s_running)) {
-        if (s_playback_active && s_playback_buffer != NULL) {
+        if (s_source == AUDIO_SOURCE_EXTERNAL) {
+            /* 外部源：网关 ATVV PCM 馈送（缓冲暂存 hold 阈值期间语音）。 */
+            read_frame_ext(mono);
+        } else if (s_playback_active && s_playback_buffer != NULL) {
             /* 回放模式：从 PSRAM 预读缓冲取 mono 样本替代 ES8311 采集。
              * 仅 memcpy（不触 flash）：audio_task 栈在 PSRAM，cache 禁用期不可 fread。 */
             const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
@@ -566,7 +600,11 @@ static void audio_task(void *arg)
             mono[i] = hpf_process(mono[i]);
         }
         agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
-        click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
+        /* click_guard 淡入仅 ES8311/playback：遥控器 mic 离按键远无外壳传导，
+         * 开头 60ms 静音会砍 ATVV 首音节（按住说话按下即说话）。 */
+        if (s_source != AUDIO_SOURCE_EXTERNAL) {
+            click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
+        }
 
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
@@ -609,9 +647,18 @@ static void audio_task(void *arg)
     /* Drain：松开按键时 I2S DMA 缓冲区（4 描述符×120 帧 ≈ 60ms）里仍有残留尾音 PCM，
      * 若不读出编码发出，用户说完话立即松开会丢最后 1-2 字（instant 模式下尤为明显）。
      * 这里固定读 AUDIO_DRAIN_FRAMES 帧（80ms，覆盖 60ms 残留+余量）编码入队，
-     * 让 tx_task 的 drain 一并发完。 */
-    for (int drain = 0; drain < AUDIO_DRAIN_FRAMES; ++drain) {
-        if (s_playback_active && s_playback_buffer != NULL) {
+     * 让 tx_task 的 drain 一并发完。
+     * 外部源：ATVV 尾包已由会话层 150ms 宽限补进缓冲，这里读残量（不足一帧即止，
+     * 上限 3 帧防堵死），不造帧不做淡出（尾音是真实语音）。 */
+    const int drain_frames =
+        (s_source == AUDIO_SOURCE_EXTERNAL) ? EXT_DRAIN_FRAMES : AUDIO_DRAIN_FRAMES;
+    for (int drain = 0; drain < drain_frames; ++drain) {
+        if (s_source == AUDIO_SOURCE_EXTERNAL) {
+            const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
+            if (xStreamBufferReceive(s_ext_stream, mono, need, 0) < need) {
+                break;  // 无残量，尾音已由会话宽限帧承载
+            }
+        } else if (s_playback_active && s_playback_buffer != NULL) {
             const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
             if (s_playback_pos + need <= s_playback_size) {
                 memcpy(mono, s_playback_buffer + s_playback_pos, need);
@@ -636,8 +683,10 @@ static void audio_task(void *arg)
             mono[i] = hpf_process(mono[i]);
         }
         agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
-        click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
-        click_guard_fade_out(mono, AUDIO_FRAME_SAMPLES, drain);
+        if (s_source != AUDIO_SOURCE_EXTERNAL) {
+            click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
+            click_guard_fade_out(mono, AUDIO_FRAME_SAMPLES, drain);
+        }
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
         if (encoded < 0) {
@@ -765,7 +814,7 @@ esp_err_t audio_pipeline_init(void)
     return ESP_OK;
 }
 
-esp_err_t audio_pipeline_start(uint32_t session_id)
+static esp_err_t start_session(uint32_t session_id, audio_source_t source)
 {
     s_last_error_step = "none";
     ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
@@ -779,28 +828,36 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         return err;
     }
     s_pipeline_start_us = esp_timer_get_time();
+    s_source = source;
 
-    s_last_error_step = "i2s";
-    err = init_i2s();
-    int64_t t_after_i2s = esp_timer_get_time();
-    ESP_LOGI(TAG, "latency: init_i2s %lldus", t_after_i2s - s_pipeline_start_us);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s init: %s", esp_err_to_name(err));
-        return err;
-    }
-    s_last_error_step = "codec";
-    err = init_codec();
-    int64_t t_after_codec = esp_timer_get_time();
-    ESP_LOGI(TAG, "latency: init_codec %lldus", t_after_codec - t_after_i2s);
-    if (err != ESP_OK) {
-        deinit_i2s();
-        ESP_LOGE(TAG, "codec init: %s", esp_err_to_name(err));
-        return err;
+    int64_t t_after_hw = s_pipeline_start_us;
+    if (source == AUDIO_SOURCE_ES8311) {
+        s_last_error_step = "i2s";
+        err = init_i2s();
+        int64_t t_after_i2s = esp_timer_get_time();
+        ESP_LOGI(TAG, "latency: init_i2s %lldus", t_after_i2s - s_pipeline_start_us);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "i2s init: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_last_error_step = "codec";
+        err = init_codec();
+        t_after_hw = esp_timer_get_time();
+        ESP_LOGI(TAG, "latency: init_codec %lldus", t_after_hw - t_after_i2s);
+        if (err != ESP_OK) {
+            deinit_i2s();
+            ESP_LOGE(TAG, "codec init: %s", esp_err_to_name(err));
+            return err;
+        }
+    } else {
+        /* 外部源：不碰 I2S/codec（省按下→首帧时延；hold 阈值期间的暂存 PCM
+         * 保留不清——start 前已 feed 的语音属本会话首段）。 */
+        ESP_LOGI(TAG, "external source session (i2s/codec skipped)");
     }
     s_last_error_step = "opus";
     err = init_opus();
     int64_t t_after_opus = esp_timer_get_time();
-    ESP_LOGI(TAG, "latency: init_opus %lldus", t_after_opus - t_after_codec);
+    ESP_LOGI(TAG, "latency: init_opus %lldus", t_after_opus - t_after_hw);
     if (err != ESP_OK) {
         deinit_codec();
         deinit_i2s();
@@ -864,9 +921,57 @@ esp_err_t audio_pipeline_start(uint32_t session_id)
         return ESP_ERR_NO_MEM;
     }
     s_last_error_step = "none";
-    ESP_LOGI(TAG, "start session %" PRIu32 " (pipeline init %lldus)",
-             session_id, t_after_opus - s_pipeline_start_us);
+    ESP_LOGI(TAG, "start session %" PRIu32 " source=%d (pipeline init %lldus)",
+             session_id, (int)s_source, t_after_opus - s_pipeline_start_us);
     return ESP_OK;
+}
+
+esp_err_t audio_pipeline_start(uint32_t session_id)
+{
+    return start_session(session_id, AUDIO_SOURCE_ES8311);
+}
+
+esp_err_t audio_pipeline_start_ext(uint32_t session_id)
+{
+    return start_session(session_id, AUDIO_SOURCE_EXTERNAL);
+}
+
+esp_err_t audio_pipeline_feed_pcm(const int16_t *pcm, size_t samples)
+{
+    if (pcm == NULL || samples == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_ext_stream == NULL) {
+        /* 懒创建：>16KB 分配走 SPIRAM（CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL）。
+         * 常驻不销毁（网关模式生命周期），跨会话残留由 external_reset 清。 */
+        s_ext_stream = xStreamBufferCreate(EXT_STREAM_BYTES, 2);
+        if (s_ext_stream == NULL) {
+            ESP_LOGE(TAG, "ext stream create %d bytes failed", EXT_STREAM_BYTES);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    const size_t bytes = samples * sizeof(int16_t);
+    const size_t sent = xStreamBufferSend(s_ext_stream, pcm, bytes, 0);
+    if (sent < bytes) {
+        /* 缓冲满（2s）：丢新保序。持续溢出=消费端停摆（未 start 的被拒会话），
+         * 会话收尾 external_reset 清空即恢复。每丢满 1s 样本打一条。 */
+        const size_t dropped_samples = (bytes - sent) / sizeof(int16_t);
+        const uint32_t before_sec = s_ext_overflow_drops / AUDIO_SAMPLE_RATE;
+        s_ext_overflow_drops += (uint32_t)dropped_samples;
+        if (s_ext_overflow_drops / AUDIO_SAMPLE_RATE != before_sec) {
+            ESP_LOGW(TAG, "ext stream overflow, dropped samples total=%" PRIu32,
+                     s_ext_overflow_drops);
+        }
+    }
+    return ESP_OK;
+}
+
+void audio_pipeline_external_reset(void)
+{
+    if (s_ext_stream != NULL) {
+        xStreamBufferReset(s_ext_stream);
+    }
+    s_ext_overflow_drops = 0;
 }
 
 const char *audio_pipeline_last_error_step(void)

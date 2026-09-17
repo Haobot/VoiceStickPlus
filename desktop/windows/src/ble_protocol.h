@@ -20,6 +20,8 @@ enum class DeviceClass {
 // StickS3 固件在 device_info 中自报 "stick_s3"；小米遥控器无固件版本概念，
 // 由桌面端合成 device_info 时填入本常量。
 inline constexpr std::string_view kHardwareXiaomiRemote2Pro = "xiaomi_remote_2_pro";
+// StickS3 自报硬件标识（device_info.hardware）。
+inline constexpr std::string_view kHardwareStickS3 = "stick_s3";
 
 // 直连失败后的主动重连调度决策（PlanReconnectAfterConnectFailure 的返回值）：
 // schedule=false 不重试；否则 delay 毫秒后由 BleCentralWin 心跳按地址兜底直连。
@@ -67,6 +69,10 @@ struct StateEvent {
     std::optional<std::uint32_t> steps;
     // 事件来源标签：编码器按钮事件为 "encoder"；物理键/远程键省略该字段（空串）。
     std::string source;
+    // 网关按键事件（gateway_key，P1 隧道融合）：key 为固件协议键名（如 "back"），
+    // pressed 为按下沿。非网关按键事件为空/缺省。
+    std::string gateway_key;
+    std::optional<bool> gateway_pressed;
 };
 
 struct FirmwareOtaStateEvent {
@@ -122,6 +128,10 @@ public:
     static ByteVector TapEnabledPayload(bool enabled);
     static ByteVector EncoderLedColorPayload(std::string_view color);
     static ByteVector EncoderRecordingGatePayload(bool enabled);
+    // 网关按键路由命令（P1）：key 为固件协议键名（gateway_keymap_key_name 口径），
+    // software=true 设软件路由（gateway_key 事件上报）、false 恢复 HOGP 直通。
+    static ByteVector GatewayKeymapSetPayload(std::string_view key, bool software);
+    static ByteVector GatewayKeymapGetPayload();
     static ByteVector TapSensitivityPayload(int level);
     static ByteVector AirMouseEnabledPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();

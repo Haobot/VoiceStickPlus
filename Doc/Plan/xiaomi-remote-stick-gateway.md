@@ -123,6 +123,29 @@
 - 会话互斥规则：小米会话激活时暂停 StickS3 mic 采集（`gateway_session_arbiter` 状态机，先到先得，忙源请求→屏幕提示+短提示音）。
 - 桌面端视角：小米语音键的按下/松开被固件翻译为与 StickS3 主键一致的"按住说话"会话触发沿（现有按键事件通道），协调器状态机无感知切换——**语音功能对桌面端真正零改动**。
 
+#### 5.4.1 Phase 2 实施定案（2026-09-18，编码前细化）
+
+1. **语音键会话沿以 ATVV control 帧为权威**（0x08 MIC_OPEN / 0x04 STREAM_START = 按下沿，
+   0x00 STOP = 松开沿），映射为新输入源 `APP_INPUT_SOURCE_XIAOMI` 走
+   `queue_primary_down/up_event` 现有主键链；HID usage 0x003E 截留后忽略（防双触发）。
+   理由：遥控器固件自身以 ATVV 帧驱动语音键（桌面端直连实现同源），HID 沿冗余且真机未复核。
+2. **交互模式分支不 C 化**：桌面端 `XiaomiAtvvSession` 的 hold/click_to_talk/双击窗/
+   wechat toggle 全部裁掉——固件 main.c 现有主键状态机（interaction_mode/双击检测/
+   owner 仲裁）原样接管小米源，与"双击检测归位固件"（§5.3）一致。C 化状态机只保留：
+   caps 握手（连接后 GET_CAPS，2s 超时）、legacy 布局、16kHz 检查、0x04 一体帧、
+   AUDIO_SYNC 重置、STOP 尾包 150ms 宽限、重开拒绝窗 300ms、断开 MIC_CLOSE。
+   双源互斥由 `PRIMARY_OWNER_XIAOMI` owner 仲裁实现（忙源按下被拒、ATVV 照常应答、
+   PCM 落缓冲无人消费、松开后清空），不另建 arbiter 组件。
+3. **audio_pipeline 外部音频源模式**：`audio_pipeline_start_ext(session_id)` 跳过
+   I2S/codec 初始化（省按下→首帧时延）与 click_guard 淡入（会砍 ATVV 首音节；遥控器
+   mic 离按键远无外壳传导），PCM 经 xStreamBuffer 喂入（hold 阈值 300ms 期间天然暂存），
+   下溢等待、100ms 饥饿超时填静音保活；HPF/AGC 保留（远场语音受益）；stop 走既有
+   sentinel drain。PCM 缓冲容量 2s，溢出丢新保序并计数告警。
+4. **纯逻辑模块拆分**：`gateway_adpcm`（IMA ADPCM 解码 + 120B 帧累积器 + 640 采样
+   切片器，与桌面端 C++ 实现金标准比对）与 `gateway_atvv_session`（上述裁剪状态机）
+   均无 ESP-IDF 依赖，进 host 单测；NimBLE 薄壳 `xiaomi_atvv_client` 串行在
+   HID 发现完成后发起 ATVV 服务发现/订阅/握手（NimBLE 每连接单 GATT 过程约束）。
+
 ### 5.5 切换器（R3）
 
 - 目标表：NVS 持久化，字段 {名称, 主机地址, 类型}，上限 4；经屏幕菜单增删（扫描附近已 bond 桌面端/手输地址，Phase 3 细化 UX）。
@@ -263,10 +286,53 @@ NimBLE 把 `dsc->att_flags` 原样登记为属性权限
 | Phase | 内容 | 预估 | 出口判据 |
 |---|---|---|---|
 | 0 | spike（§6 清单） | 1 天 | 全 6 项通过，报告归档 |
-| 1 | 按键直通链路（P2）+ 双模式框架 + `xiaomi_hid_host`/`gateway_keymap` | 3-5 天 | Mac/Win 均识别三键与全直通键；普通模式零回归 |
+| 1 | 按键直通链路（P2）+ 双模式框架 + `xiaomi_hid_host`/`gateway_keymap` | 3-5 天 | Mac/Win 均识别三键与全直通键；普通模式零回归 ✅ 2026-09-18 |
 | 2 | 语音链路（`xiaomi_atvv_client`+`gateway_audio`+仲裁器） | 5-8 天 | Mac/Win 语音端到端可用，时延增量实测 ≤80ms |
 | 3 | 切换器 + 目标管理 + 菜单 UX | 3-5 天 | 双目标切换 ≤2s，往返稳定 |
 | 4 | 打磨 + 全链路真机验收 + 文档收尾 | 2-3 天 | §7 验收清单全绿 |
+
+### 8.1 Phase 2 + P1 桌面侧交付清单（2026-09-18 编码完成，真机验收待执行）
+
+**固件（全部编译通过，host 单测 120/120 + 112/112）**：
+
+1. `gateway_adpcm.c`：IMA ADPCM 解码器 + 120B 帧累积器 + 640 采样切片器，
+   与桌面端 C++ 三件套逐字节金标准比对（含手推样本期望值）。
+2. `gateway_atvv_session.c`：ATVV 会话状态机 C 化裁剪版（§5.4.1），保留 caps
+   握手/legacy 布局/16kHz 校验/0x04 一体帧/AUDIO_SYNC/尾包 150ms 宽限/重开
+   拒绝窗 300ms/MIC_CLOSE；裁掉全部交互模式分支与 Opus 编码。
+3. `xiaomi_atvv_client.c`：NimBLE 薄壳——ATVV 服务发现（串行在 HID 发现后，
+   EBUSY 重试兜底）/CCCD 订阅/写 TX/notify 分发/250ms tick。
+4. `audio_pipeline` 外部音频源：`start_ext` 跳过 I2S/codec 初始化与
+   click_guard（防砍 ATVV 首音节），PCM 经 xStreamBuffer（2s，SPIRAM）馈送，
+   100ms 饥饿填静音保活，HPF/AGC 保留。
+5. `gateway_hid_host`：新增 notify 路由钩子（ATVV Control/Audio 特征转发）。
+6. `main.c`：`APP_INPUT_SOURCE_XIAOMI`/`PRIMARY_OWNER_XIAOMI` 纳入主键状态机
+   （双击检测/hold 阈值/仲裁免费获得）；小米源 **延迟停录 170ms**（尾包宽限
+   150ms+余量，对齐物理键「drain 完才发 button_up」次序）；链路断开补发
+   松开沿防悬挂。
+7. P1 按键软件路由：`gateway_keymap` 路由表（13 键，语音键不可路由）+
+   NVS 持久化 + `gateway_keymap_set/get` 命令 + `gateway_key` 事件。
+
+**Windows 桌面端（构建通过，测试全绿）**：
+
+1. `StateEvent` 扩展 `gateway_key`/`gateway_pressed` 解析；协调器
+   `on_gateway_key` 回调 + 连接/配置变化时对 StickS3 逐键下发路由
+   （有映射→software，无映射→passthrough，key_map 取 RC 设备覆盖或全局默认）。
+2. `XiaomiKeymapHook::OnGatewayKeyEdge`：网关沿查映射直接注入（设备归属由
+   固件保证，无需 BREAK 佐证；down/up 沿分离支持真实按住）。
+3. `SyncXiaomiKeymapHook` 挂载条件扩展：网关模式（仅 StickS3 在场）也挂载，
+   key_map 取全局默认；配置复用现有小米按键映射对话框与 `[xiaomi.keys]` 节。
+
+**真机验收清单（Phase 2，待执行）**：
+
+1. 网关模式：小米语音键按住说话，Windows 端 ASR 端到端识别（与 StickS3
+   本体 mic 会话无差异）；时延增量实测（对照 §5.6 预算 ≤80ms）。
+2. 会话互斥：本体 mic 录音中按语音键被拒（owner 仲裁），反向亦然。
+3. 双击：语音键快速双击 → 桌面端收 `button_double_click`（source=xiaomi）。
+4. 尾音：说完立即松开，最后 1-2 字不丢（延迟停录 + 尾包宽限验证）。
+5. 按键自定义：对话框给 back 配动作 → 固件路由 software → gateway_key 事件
+   → 注入动作；清除动作 → 恢复 HOGP 直通（系统层直接响应）。
+6. 回归：普通模式全功能；网关模式按键直通键行为与 Phase 1 一致。
 
 ## 9. 开放决策点（待用户审阅定案）
 

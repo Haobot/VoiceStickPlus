@@ -91,6 +91,8 @@ Currently emitted state events:
 {"event":"button_click","button":"primary","duration_ms":131,"source":"encoder"}
 {"event":"tap","button":"double"}
 {"event":"encoder_rotate","direction":"cw","steps":2}
+{"event":"gateway_key","key":"back","pressed":true}
+{"event":"gateway_keymap","routes":[{"key":"back","route":"software"}]}
 ```
 
 `encoder_status` (added after v2.2.0) reports whether the firmware detected
@@ -130,7 +132,22 @@ The button events (`button_down` / `button_up` / `button_click` /
 `button_double_click`) carry an optional `source` field identifying the input
 origin. Events from the MiniEncoderC encoder button (on the top Hat header)
 include `"source":"encoder"`; physical-button and remote (hotkey) events omit
-the field. Older desktops ignore the unknown field, so no migration is needed.
+the field. In gateway mode the Xiaomi remote voice button surfaces as primary
+presses with `"source":"xiaomi"` — the firmware drives them from the ATVV
+control frames (MIC_OPEN/STREAM_START/STOP), so the desktop coordinator treats
+them exactly like physical-button presses. Older desktops ignore the unknown
+field, so no migration is needed.
+
+`gateway_key` (gateway mode, P1 tunnel fusion — see
+`Doc/Plan/xiaomi-remote-stick-gateway.md` §5.3) reports a Xiaomi remote key that
+was routed to software via the `gateway_keymap_set` control command. `key` is
+the protocol key name (`ok`/`right`/`left`/`down`/`up`/`menu`/`home`/`back`/
+`volume_up`/`volume_down`/`volume_mute`/`power`/`tv`), `pressed` is the edge
+(pressed/released arrive in pairs; the firmware synthesizes a release edge if
+the remote link drops mid-press). The Windows desktop consumes these through the
+same keymap used for direct-connection mode and injects the configured mapping.
+`gateway_keymap` is the routing-table report sent in reply to
+`gateway_keymap_set`/`gateway_keymap_get`.
 
 `button_double_click` is emitted when the firmware detects two consecutive short
 presses of the primary button within 500 ms (each press < 300 ms). The desktop
@@ -241,6 +258,8 @@ Current desktop events:
 {"event":"air_mouse_enabled","enabled":true}
 {"event":"encoder_led_color","color":"red"}
 {"event":"encoder_recording_gate","enabled":true}
+{"event":"gateway_keymap_set","key":"back","route":"software"}
+{"event":"gateway_keymap_get"}
 {"event":"usb_auto_off","enabled":true}
 {"event":"usb_auto_off_get"}
 {"event":"battery_status_request"}
@@ -263,6 +282,8 @@ Current desktop events:
 | `usb_auto_off_get` | — | Windows -> StickS3 | Queries the current `usb_auto_off` state; the firmware replies with a `power_mgmt` state event on `state_tx`. (macOS does not send it — the firmware pushes `power_mgmt` once after each connection, which is sufficient.) |
 | `battery_status_request` | — | Windows -> StickS3 | Asks the firmware to re-send `battery_status`; the firmware always replies, so the Windows desktop also uses it as a periodic link heartbeat. macOS does not send it. |
 | `remote_button_down` / `remote_button_up` | `button`: `"primary"`, `source`: string, `request_id`: uint32 | Desktop -> StickS3 | Injects a virtual primary-button press/release (`APP_INPUT_SOURCE_REMOTE`), used by the desktop global hotkey and the encoder double-click recording toggle. Not gated by `encoder_recording_gate`. |
+| `gateway_keymap_set` | `key`: string, `route`: `"passthrough"` \| `"software"` | Desktop -> StickS3 | Gateway mode (P1 tunnel fusion, `Doc/Plan/xiaomi-remote-stick-gateway.md` §5.3): per-key routing for the Xiaomi remote keys relayed by this StickS3. `software` routes the key over `state_tx` as a `gateway_key` event (desktop keymap consumes it); `passthrough` (default) forwards it as standard HID via the HOGP peripheral to the OS. `key` is one of `ok`/`right`/`left`/`down`/`up`/`menu`/`home`/`back`/`volume_up`/`volume_down`/`volume_mute`/`power`/`tv`. The voice key is not routable (fixed ATVV session semantics); unknown keys are rejected. Persisted in firmware NVS. On success the firmware replies with a `gateway_keymap` report. |
+| `gateway_keymap_get` | — | Desktop -> StickS3 | Queries the current routing table; the firmware replies with `{"event":"gateway_keymap","routes":[{"key":"back","route":"software"},...]}` on `state_tx`. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as
