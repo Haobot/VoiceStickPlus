@@ -79,6 +79,29 @@
 
 Wi-Fi 链路 API（`esp_wifi_set_config/connect/disconnect`）单次调用需 3–4KB 局部栈，`Tmr Svc`（`CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=2048`）和 `sys_evt`（`CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304`）都不够，在 timer/event 回调里直接调会栈溢出 panic（backtrace 常 CORRUPTED，**看任务名比 backtrace 重要**）。正确做法：专用 worker task（栈 ≥6KB）+ timer 回调只 `xQueueSend` 投递命令。同理，timer/event 上下文里调 esp_http_client/mbedtls 等大栈 API 前先问"这个上下文栈够吗"。（Wi-Fi 代码虽已删除，此教训对任何大栈 API 仍适用。）
 
+### 1.9 NimBLE 自定义 GATT 描述符必须显式声明 att_flags（2026-09-18 定案）
+
+`struct ble_gatt_dsc_def` 的 `att_flags` **没有默认值语义**：留 0 就是"无任何权限"。
+NimBLE 把它原样登记为属性权限（`ble_gatts_register_dsc` → `ble_att_svr_register`），
+而读权限检查要求 `ha_flags & BLE_ATT_F_READ`，且**位于访问回调之前**
+（`nimble/host/src/ble_att_svr.c: ble_att_svr_check_perms`）——于是读请求被直接回
+`Read Not Permitted`（ATT 0x02），**自己的 access_cb 一行日志都不会打**，排查时极易
+误判为"主机根本没读这个描述符"。写权限同理（`BLE_ATT_F_WRITE`）。
+
+真机代价（Phase 1 网关）：HOGP 的 Report Reference 描述符（0x2908）漏配
+`att_flags = BLE_ATT_F_READ`，Windows `hidbthle` / 安卓 `bta_hh_le` 拿不到
+"特征句柄 ↔ Report ID/类型"映射，直接拒绝启动 HID 设备——Windows 侧表现是
+"符合蓝牙低能耗 GATT 的 HID 设备"节点 **Code 10 / 0xC00000E5（hidbthle.inf）**，
+而 DIS/GAP/GATT/电量等服务节点全部正常；安卓侧表现为配对后报"驱动程序错误"。
+官方参照：NimBLE 自带 HID 服务（`services/hid/ble_svc_hid.c`）对两个 0x2908 均显式写
+`.att_flags = BLE_ATT_F_READ`；自研服务定义应与官方实现逐字段对齐，不要依赖"零值即默认"。
+
+同批 HOGP 报文事实：Report 特征值**不含 Report ID 前缀**（ID 由 0x2908 承载，
+键盘 8 字节首字节为 modifier），多带一次会让按键永不生效；Report Map 里
+`0x2A FF 00` 是两字节形式的 Usage Maximum（`0x29` 才是一字节形式），不是笔误。
+纯逻辑模块 + host 侧描述符结构校验（usage 范围成对且 min ≤ max、各 Report ID 位宽 =
+报文长度）能同时锁住这两类问题。详见 `Doc/Plan/xiaomi-remote-stick-gateway.md` §6.2。
+
 ---
 
 ## 2. 固件烧录与串口日志

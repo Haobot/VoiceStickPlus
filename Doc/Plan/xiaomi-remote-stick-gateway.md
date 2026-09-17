@@ -236,10 +236,21 @@ NimBLE 把 `dsc->att_flags` 原样登记为属性权限
 3. 收尾：删除取证日志（access 打点/句柄打印/按键全量日志降为 debug）、
    NimBLE 日志级别恢复 `CONFIG_BT_NIMBLE_LOG_LEVEL=2`（WARNING）。
 
-**未决**：安卓侧本轮未复测（同一根因，待手机侧补验）；手机蓝牙列表把设备显示为
-"蓝牙耳机"属外观（Appearance）分类问题——GAP `0x2A01` 已是 961（HID Keyboard），
-但**广播 AD 里未携带 Appearance 字段**（`start_advertising` 只设了 flags/128 位服务
-UUID/名称），Android 因此按缺省分类，列为 Phase 4 打磨项。
+**Phase 1 验收结论（2026-09-18，全项通过）**：①Windows HID 节点无 Code 10、识别为
+键盘与 Consumer 设备；②按键在系统层直接响应（桌面端未运行）；③安卓侧复测通过
+（同根因双侧确认，配对不再报"驱动程序错误"、按键有效）；④普通模式回归正常
+（按住主键冷启动翻转往返）；⑤小米链路稳定性未破坏。
+
+**遗留（Phase 4 打磨项）**：
+
+1. 手机蓝牙列表把设备显示为"蓝牙耳机"：GAP `0x2A01` 已是 961（HID Keyboard），
+   但**广播 AD 里未携带 Appearance 字段**（`start_advertising` 只设了 flags/128 位服务
+   UUID/名称），Android 因此按缺省分类。
+2. Windows 作为 HID 主机现在会**保持**连接（设备侧日志 `connected=1 state_sub=0`），
+   普通模式下同样如此——若影响普通模式功耗/连接，Phase 3 可把 HID 服务注册移进网关模式
+   （代价：GATT 库随模式变化，需处理对端缓存失效，正是本轮 Code 10 的同类风险）。
+3. 非桌面端对端连接时 `send_state_json gated` 警告会周期性出现（HID 主机连接即触发），
+   属预期但噪音，Phase 3 可细分日志级别。
 
 ## 7. 测试策略（TDD 纪律）
 
