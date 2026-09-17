@@ -4,9 +4,10 @@
 idf_component_register(
     SRCS "src/gateway_report_parser.c"
          "src/gateway_keymap.c"
+         "src/gateway_hogp_report.c"
          "src/gateway_mode.c"
          "src/gateway_hogp.c"
          "src/gateway_hid_host.c"
     INCLUDE_DIRS "include"
-    REQUIRES bt nvs_flash
+    REQUIRES bt nvs_flash stick_s3_board
 )

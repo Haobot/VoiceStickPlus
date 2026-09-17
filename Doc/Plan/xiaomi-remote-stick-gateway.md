@@ -191,6 +191,56 @@
 
 **风险 1（小米 bond 兼容性）解除**，方案 A 继续。遗留观察项（Phase 2 首日验证）：ATVV 音频流吞吐与双 ACL 并发。
 
+### 6.2 Phase 1 真机卡点：HOGP HID 节点 Code 10 根因与修复（2026-09-18 真机闭环 ✅）
+
+**现象**：目标设备（Windows 11 26100 / 安卓）与 StickS3（BLE 名 `VS-53A8`）配对后，
+"符合蓝牙低能耗 GATT 的 HID 设备"节点 Code 10、问题状态 `0xC00000E5`
+（PnP 事件 411：`Driver Name: hidbthle.inf`、`Service: mshidumdf`）；DIS/GAP/GATT/BAS/自定义
+服务节点全部正常启动，**只有 HID 节点失败**。设备侧日志只见主机读 HID 服务 6 个特征
+（Protocol Mode/HID Information/Report Map/两个 Report/电量），**从不写任何 CCCD**，
+约 5 秒后被对端断开（reason 0x213）。
+
+**根因（描述符权限）**：两个 Report 特征（0x2A4D）的 Report Reference 描述符（0x2908）
+在 `ble_gatt_dsc_def` 里只填了 `uuid`/`access_cb`，**漏配 `att_flags`**（默认 0）。
+NimBLE 把 `dsc->att_flags` 原样登记为属性权限
+（`ble_gatts_register_dsc` → `ble_att_svr_register`），而读权限检查要求
+`ha_flags & BLE_ATT_F_READ`（`nimble/host/src/ble_att_svr.c: ble_att_svr_check_perms`）——
+于是**任何对 Report Reference 的读请求都在进入访问回调之前被回 Read Not Permitted
+（ATT 0x02）**，主机（Windows `hidbthle` / 安卓 `bta_hh_le`）无法建立
+"特征句柄 ↔ Report ID/类型"映射，直接判定 HID 设备不可用。
+
+**附带修复（HOGP 报文违规，与启动失败独立）**：Report 特征值曾带 Report ID 前缀
+（Consumer 2 字节、键盘 9 字节）。HOGP/HIDS 规定 Report ID 由 0x2908 描述符承载、
+**特征值内不含 ID**（ESP-IDF Bluedroid HID 例程同此约定：键盘 8 字节首字节为 modifier），
+否则即便节点启动成功，按键也永远不生效。
+
+**证据链**：
+
+| 证据 | 内容 |
+|---|---|
+| 代码机制 | NimBLE 读权限检查在访问回调之前（`ble_att_svr_check_perms`），att_flags=0 ⇒ Read Not Permitted |
+| 官方参照 | NimBLE 官方 HID 服务（`services/hid/ble_svc_hid.c`）对两个 0x2908 均显式声明 `att_flags = BLE_ATT_F_READ` |
+| 修复前设备日志 | 主机读 6 个特征后即止，**从无 0x2908 读记录**（权限拒绝先于回调，故无日志） |
+| 修复后设备日志 | 配对完成后立即出现 `hogp access attr=0x0031/0x0035 op=2 rc=0`（op=2 = 描述符读），随后 CCCD 订阅与 notify 正常 |
+| Windows 侧 | PnP 事件 411 消失，建出 `HID Keyboard Device` + `HID-compliant consumer control device`，`BTHLEDEVICE\{00001812-…}` 节点 `Status=OK prob=0` |
+| 系统层响应 | 遥控器按键 → 全局低级键盘钩子实测：返回→`VK_BROWSER_BACK`、音量±→`VK_VOLUME_UP/DOWN`（独立测得系统音量 40%→44%）、方向→`VK_LEFT/RIGHT`、OK→`VK_RETURN`、Home/菜单→`VK_HOME/VK_APPS`；桌面端未运行 |
+
+**同批交付**：
+
+1. 纯逻辑模块 `gateway_hogp_report.c`（Report Map + 报文构造）从 NimBLE 依赖中剥离，
+   host 侧单测新增描述符结构校验（数组项 usage 范围成对且 min ≤ max、各 Report ID
+   位宽 = 报文长度、报文不含 Report ID 前缀）——本轮 85/85 通过。
+2. 结构校验用例已证伪一处早期误判：键盘段 6 键槽的 `0x2A FF 00` 是**两字节形式的
+   Usage Maximum**（`0x29` 才是一字节形式），当前写法正确且刻意规避 1 字节 0xFF 的
+   符号歧义，不需要"修"。
+3. 收尾：删除取证日志（access 打点/句柄打印/按键全量日志降为 debug）、
+   NimBLE 日志级别恢复 `CONFIG_BT_NIMBLE_LOG_LEVEL=2`（WARNING）。
+
+**未决**：安卓侧本轮未复测（同一根因，待手机侧补验）；手机蓝牙列表把设备显示为
+"蓝牙耳机"属外观（Appearance）分类问题——GAP `0x2A01` 已是 961（HID Keyboard），
+但**广播 AD 里未携带 Appearance 字段**（`start_advertising` 只设了 flags/128 位服务
+UUID/名称），Android 因此按缺省分类，列为 Phase 4 打磨项。
+
 ## 7. 测试策略（TDD 纪律）
 
 - **纯逻辑 C 模块 host 侧单测**（固件首次引入单测目标）：`xiaomi_hid_host` 报文解码器（9 字节集合 diff）、`gateway_keymap` 翻译表、`gateway_switcher` 状态机、`gateway_session_arbiter`、ADPCM 解码器（与桌面端 C++ 实现互为金标准比对）——CMake host 目标，红-绿-重构。
@@ -217,3 +267,7 @@
 
 - 2026-09-16：初版设计稿（需求梳理、方案对比定案、架构与分期），待用户审阅。
 - 2026-09-16（二）：Phase 0 spike 真机验证六项全过（§6.1），风险 1 解除；spike 程序与串口采集工具入库；正常态广播名/8 字节报文/双地址/无 CCCD 推送四项新协议事实回填。
+- 2026-09-18：Phase 1 按键直通链路真机闭环（§6.2）。HOGP HID 节点 Code 10 根因定为
+  Report Reference 描述符（0x2908）漏配 `att_flags=BLE_ATT_F_READ`，NimBLE 按无读权限
+  登记导致主机读不到 Report ID 映射；同批修掉 Report 报文多带 Report ID 前缀的 HOGP 违规，
+  新增描述符结构 host 单测（85/85），取证日志与 NimBLE DEBUG 日志级别回收。

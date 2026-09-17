@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gateway_hogp_report.h"
 #include "gateway_keymap.h"
 #include "gateway_report_parser.h"
 
@@ -225,6 +226,161 @@ static void test_keymap_intercept_keys(void) {
     }
 }
 
+
+// ---------- gateway_hogp_report（HOGP Report Map 与 Report 报文） ----------
+//
+// 真机背景（Phase 1）：Windows 11 与安卓配对后 HID 节点 Code 10——两处报文级缺陷：
+//   1. 键盘段 6 键槽的 Usage Maximum 笔误写成 0x2A（=Usage Minimum），usage 范围反向；
+//   2. Report 特征值多带 Report ID 前缀，违反 HOGP"报文不含 Report ID"。
+// 下面的描述符解析器把这两条不变量固化成回归位。
+
+// 极简 HID 描述符解析器：只覆盖本 Report Map 用到的 item。
+// 断言两条不变量：usage 范围成对且 min ≤ max；各 Report ID 的位宽 = 报文长度。
+typedef struct {
+    uint16_t report_id;
+    uint32_t report_size;
+    uint32_t report_count;
+    uint32_t usage_min;
+    uint32_t usage_max;
+    bool have_min;
+    bool have_max;
+    bool bad_range;        // usage min > usage max
+    bool min_without_max;  // 数组项缺少成对的 usage min/max
+    uint32_t bits[4];      // 下标 = Report ID
+    bool seen_id[4];
+} map_scan_t;
+
+static void map_scan(const uint8_t *desc, size_t len, map_scan_t *s) {
+    memset(s, 0, sizeof(*s));
+    size_t i = 0;
+    while (i < len) {
+        uint8_t prefix = desc[i++];
+        size_t bsize = (size_t)(prefix & 0x03);
+        if (bsize == 3) {
+            bsize = 4;
+        }
+        uint8_t btype = (uint8_t)((prefix >> 2) & 0x03);
+        uint8_t btag = (uint8_t)((prefix >> 4) & 0x0F);
+        if (i + bsize > len) {
+            s->bad_range = true;  // 描述符截断
+            return;
+        }
+        uint32_t val = 0;
+        for (size_t k = 0; k < bsize; k++) {
+            val |= (uint32_t)desc[i + k] << (8 * k);
+        }
+        i += bsize;
+
+        if (btype == 1) {  // Global
+            switch (btag) {
+                case 7: s->report_size = val; break;
+                case 8:
+                    s->report_id = (uint16_t)val;
+                    if (val < 4u) {
+                        s->seen_id[val] = true;
+                    }
+                    break;
+                case 9: s->report_count = val; break;
+                default: break;
+            }
+        } else if (btype == 2) {  // Local
+            if (btag == 1) {
+                s->usage_min = val;
+                s->have_min = true;
+            } else if (btag == 2) {
+                s->usage_max = val;
+                s->have_max = true;
+            }
+        } else if (btype == 0) {  // Main
+            if (btag == 8 || btag == 9 || btag == 11) {  // Input / Output / Feature
+                bool is_const = (val & 0x01u) != 0u;     // Constant 位（保留位，无 usage）
+                bool is_var = (val & 0x02u) != 0u;       // Variable 位（位图；否则数组）
+                if (s->have_min || s->have_max) {
+                    if (!(s->have_min && s->have_max)) {
+                        s->min_without_max = true;
+                    } else if (s->usage_min > s->usage_max) {
+                        s->bad_range = true;
+                    }
+                } else if (!is_const && !is_var) {
+                    // 数据数组项必须自带 usage 范围（缺范围时主机无法解析键码）
+                    s->min_without_max = true;
+                }
+                if (s->report_id < 4u) {
+                    s->bits[s->report_id] += s->report_size * s->report_count;
+                }
+                s->have_min = false;
+                s->have_max = false;
+            } else {  // Collection / End Collection：局部项清零
+                s->have_min = false;
+                s->have_max = false;
+            }
+        }
+    }
+}
+
+static void test_hogp_report_map(void) {
+    printf("[用例] Report Map：usage 范围合法 + 各 Report ID 位宽与报文长度一致\n");
+    size_t len = 0;
+    const uint8_t *map = gateway_hogp_report_map(&len);
+    CHECK(map != NULL && len > 0, "Report Map 非空");
+    map_scan_t s;
+    map_scan(map, len, &s);
+    CHECK(!s.bad_range, "usage min 不得大于 usage max（0x2A/0x29 笔误回归位）");
+    CHECK(!s.min_without_max, "数组项必须成对声明 usage min/max");
+    CHECK(s.seen_id[GATEWAY_HOGP_REPORT_ID_CONSUMER], "Report ID 1（Consumer）已声明");
+    CHECK(s.seen_id[GATEWAY_HOGP_REPORT_ID_KEYBOARD], "Report ID 2（Keyboard）已声明");
+    CHECK(s.bits[GATEWAY_HOGP_REPORT_ID_CONSUMER] == GATEWAY_HOGP_CONSUMER_REPORT_LEN * 8u,
+          "Consumer 位宽 = 报文长度（1 字节）");
+    CHECK(s.bits[GATEWAY_HOGP_REPORT_ID_KEYBOARD] == GATEWAY_HOGP_KEYBOARD_REPORT_LEN * 8u,
+          "键盘位宽 = 报文长度（8 字节：modifier + 保留 + 6 键槽）");
+}
+
+static void test_hogp_consumer_report(void) {
+    printf("[用例] Consumer 报文：位图映射/释放清位/未声明 usage 拒绝\n");
+    gateway_hogp_reports_t r;
+    gateway_hogp_reports_reset(&r);
+    CHECK(r.consumer[0] == 0x00, "初值全零");
+
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x00E9, true) == 0, "Vol+ 已声明");
+    CHECK(r.consumer[0] == 0x02, "Vol+ 置 bit1");
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x00EA, true) == 0, "Vol- 已声明");
+    CHECK(r.consumer[0] == 0x06, "Vol- 置 bit2（位图累加，不互斥）");
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x0224, true) == 0, "AC Back 已声明");
+    CHECK(r.consumer[0] == 0x0E, "AC Back 置 bit3");
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x00E2, true) == 0, "Mute 已声明");
+    CHECK(r.consumer[0] == 0x0F, "Mute 置 bit0");
+
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x00E9, false) == 0, "Vol+ 释放");
+    CHECK(r.consumer[0] == 0x0D, "Vol+ 清 bit1，其余位保留");
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x00EA, false) == 0, "Vol- 释放");
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x0224, false) == 0, "AC Back 释放");
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x00E2, false) == 0, "Mute 释放");
+    CHECK(r.consumer[0] == 0x00, "全部释放后回全零");
+
+    CHECK(gateway_hogp_reports_set_consumer(&r, 0x0299, true) == -1, "未声明 usage 被拒绝");
+    CHECK(r.consumer[0] == 0x00, "拒绝的 usage 不改报文");
+    CHECK(gateway_hogp_consumer_usage_bit(0x0299) == -1, "未声明 usage 无 bit");
+}
+
+static void test_hogp_keyboard_report(void) {
+    printf("[用例] 键盘报文：无 Report ID 前缀 + 键槽位置 + 释放全零\n");
+    gateway_hogp_reports_t r;
+    gateway_hogp_reports_reset(&r);
+
+    gateway_hogp_reports_set_keyboard(&r, 0x4F, true);  // 方向右
+    CHECK(r.keyboard[0] == 0x00, "首字节是 modifier 而非 Report ID（HOGP 报文不含 ID）");
+    CHECK(r.keyboard[1] == 0x00, "第 2 字节为保留");
+    CHECK(r.keyboard[2] == 0x4F, "键码进 6 键槽首槽");
+    for (size_t i = 3; i < GATEWAY_HOGP_KEYBOARD_REPORT_LEN; i++) {
+        CHECK(r.keyboard[i] == 0x00, "其余键槽为空");
+    }
+
+    gateway_hogp_reports_set_keyboard(&r, 0x4F, false);
+    for (size_t i = 0; i < GATEWAY_HOGP_KEYBOARD_REPORT_LEN; i++) {
+        CHECK(r.keyboard[i] == 0x00, "释放帧全零");
+    }
+}
+
 int main(void) {
     test_parser_initial_empty_report();
     test_parser_single_press();
@@ -235,6 +391,9 @@ int main(void) {
     test_keymap_consumer_keys();
     test_keymap_keyboard_keys();
     test_keymap_intercept_keys();
+    test_hogp_report_map();
+    test_hogp_consumer_report();
+    test_hogp_keyboard_report();
 
     printf("\n结果：%d/%d 通过\n", s_total - s_failed, s_total);
     if (s_failed == 0) {

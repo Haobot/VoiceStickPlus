@@ -20,6 +20,7 @@ SOURCES = [
     os.path.join(HERE, "test_gateway_logic.c"),
     os.path.join(SRC, "gateway_report_parser.c"),
     os.path.join(SRC, "gateway_keymap.c"),
+    os.path.join(SRC, "gateway_hogp_report.c"),
 ]
 INC = os.path.join(HERE, "..", "include")
 EXE = os.path.join(HERE, "test_gateway_logic.exe")
