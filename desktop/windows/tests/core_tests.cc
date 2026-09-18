@@ -818,6 +818,21 @@ void TestPlanZombieRecovery() {
     assert(BleProtocol::PlanZombieRecovery(false, kTimeout + 1, kTimeout, false) == Action::kScanOnly);
 }
 
+void TestPlanAfterOsBondAttempt() {
+    using Follow = OsBondFollowUp;
+
+    // 已配对（含"本来就配过对"的幂等路径）：两类设备都直接继续。
+    assert(BleProtocol::PlanAfterOsBondAttempt(true, true) == Follow::kContinue);
+    assert(BleProtocol::PlanAfterOsBondAttempt(true, false) == Follow::kContinue);
+
+    // 未配对 + 硬前置（小米遥控器）：中止报错——ATVV GATT 没有 bond 连上也没用。
+    assert(BleProtocol::PlanAfterOsBondAttempt(false, true) == Follow::kAbortWithError);
+
+    // 未配对 + 软前置（VS 设备）：降级继续——app 自身 GATT 不需要 bond，
+    // 只有 HOGP 按键直通需要，不能因系统侧失败把语音也一起卡死。
+    assert(BleProtocol::PlanAfterOsBondAttempt(false, false) == Follow::kContinueWithWarning);
+}
+
 void TestPairDeviceHelpers() {
     assert(ParseManualPairDeviceId("abcd").value() == "ABCD");
     assert(ParseManualPairDeviceId("VS-abcd").value() == "ABCD");
@@ -15211,6 +15226,7 @@ int main() {
     TestDeviceIds();
     TestPlanReconnectAfterConnectFailure();
     TestPlanZombieRecovery();
+    TestPlanAfterOsBondAttempt();
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();
     TestPowerLogMonitor();

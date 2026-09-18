@@ -552,4 +552,15 @@ ZombieRecoveryAction BleProtocol::PlanZombieRecovery(bool link_gone,
                           : ZombieRecoveryAction::kScanOnly;
 }
 
+OsBondFollowUp BleProtocol::PlanAfterOsBondAttempt(bool bonded, bool bond_required) {
+    if (bonded) return OsBondFollowUp::kContinue;
+    // 硬前置（小米遥控器）：ATVV GATT 的读取/订阅要求 OS bond，没有 bond 连上也没用，
+    // 半可用状态只会让用户困惑，直接中止并给系统蓝牙设置引导。
+    if (bond_required) return OsBondFollowUp::kAbortWithError;
+    // 软前置（VS 设备）：app 自身 GATT 不需要 bond，只有 HOGP 按键直通需要。
+    // 失败降级继续，保住「语音可用」这条既有路径，并用状态栏把补救方式讲清楚。
+    // 2026-09-18 定案：不让系统侧的问题把整个设备卡死。
+    return OsBondFollowUp::kContinueWithWarning;
+}
+
 } // namespace voicestick

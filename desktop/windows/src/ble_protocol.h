@@ -39,6 +39,13 @@ enum class ZombieRecoveryAction {
                   // 必须由用户到系统蓝牙设置重新配对才能恢复
 };
 
+// 系统级配对尝试结束后的后续动作（PlanAfterOsBondAttempt 的返回值）。
+enum class OsBondFollowUp {
+    kContinue,             // 已配对：直接继续 GATT 连接
+    kAbortWithError,       // 未配对且为硬前置：报错中止本次配对
+    kContinueWithWarning,  // 未配对但可降级：提示后继续 GATT 连接
+};
+
 // 连接失败 reason 中代表「用户主动取消」的标识（CancelPendingConnect 路径
 // 的 fail 调用统一使用该字面量，纯函数据此拒绝对已取消连接自动重连）。
 inline constexpr std::string_view kConnectFailureReasonCancelled = "cancelled";
@@ -194,6 +201,11 @@ public:
                                                    std::int64_t silent_ms,
                                                    std::int64_t timeout_ms,
                                                    bool is_voice_stick);
+    // 系统级配对（WinRT PairAsync）尝试结束后的后续动作。bond_required 区分两类设备：
+    // 小米遥控器是硬前置（ATVV GATT 的读取/订阅要求 OS bond，失败必须中止）；
+    // VS 设备是软前置（HOGP 按键直通需要 bond，但 app 自身的 GATT 不需要，失败降级继续）。
+    // 决策抽纯函数便于单测；消费方为 PairDeviceDialog::HandleBondFinished。
+    static OsBondFollowUp PlanAfterOsBondAttempt(bool bonded, bool bond_required);
 };
 
 } // namespace voicestick

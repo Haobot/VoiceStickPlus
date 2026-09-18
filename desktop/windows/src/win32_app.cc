@@ -2533,6 +2533,13 @@ void Win32App::ShowPairDeviceDialog() {
     pair_device_dialog_->SetManualPairHandler([this](std::string device_id) {
         PairDeviceByManualId(device_id);
     });
+    // VS 设备系统配对（Bond）软降级告警：对话框关闭后状态栏就看不到了，改弹托盘
+    // 气泡把「按键直通可能不可用 + 怎么补救」讲清楚（复用既有通知通道）。
+    pair_device_dialog_->SetPairWarningHandler([this](std::string message) {
+        ShowNotification(Tr(StringId::kStaleSessionTitle, EffectiveUiLanguage(config_.ui_language)),
+                         message);
+        LogLine("pair warning: " + message);
+    });
     pair_device_dialog_->on_pair_timeout = [this](std::string device_id) {
         // 类别感知日志前缀：与 SetPairingError 同模式，reset 前先判定。
         const bool is_xiaomi =

@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kStaleSessionBody) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kPairOsBondOptionalFailed) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -496,6 +496,10 @@ constexpr StringTable EnglishStrings() {
         "The Bluetooth session went stale, so voice input is unavailable. Open Windows "
         "Bluetooth settings, remove this VoiceStick device, then add it back and let the app "
         "reconnect. Remote control buttons keep working meanwhile.";
+    table[Index(StringId::kPairOsBondOptionalFailed)] =
+        "Windows Bluetooth pairing did not complete, so remote-control buttons may not reach "
+        "this PC. Voice input still works. If buttons do nothing, remove this device in "
+        "Windows Bluetooth settings and add it again.";
     return table;
 }
 
@@ -957,6 +961,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kStaleSessionBody)] =
         "蓝牙会话已失效，语音输入暂时不可用。请打开 Windows 蓝牙设置，删除本 VoiceStick "
         "设备后重新添加并等待应用自动连接。期间遥控器按键不受影响。";
+    table[Index(StringId::kPairOsBondOptionalFailed)] =
+        "Windows 蓝牙配对未完成，遥控器按键可能无法进入本机；语音输入仍可用。若按键无反应，"
+        "请在 Windows 蓝牙设置中删除本设备后重新添加。";
     return table;
 }
 

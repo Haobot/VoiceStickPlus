@@ -35,6 +35,8 @@ public:
     void SetDeviceInfo(const DeviceInfo& info);
     void SetPairingError(const std::string& device_id, const std::string& message);
     void SetManualPairHandler(std::function<void(std::string)> handler) { on_pair_manual_ = std::move(handler); }
+    // 系统配对软降级告警（见 HandleBondFinished）。
+    void SetPairWarningHandler(std::function<void(std::string)> handler) { on_pair_warning_ = std::move(handler); }
 
     std::function<void(std::string device_id)> on_pair_timeout;
 
@@ -58,10 +60,15 @@ private:
     void PairSelectedDevice();
     void Close();
     void BeginPairing(const PairingDevice& device);
-    // 小米遥控器：先尝试 WinRT 应用内 Bond 配对（ATVV GATT 需要 OS Bond），成功后
-    // 经 kXiaomiBondedMessage 回到 UI 线程继续 on_pair_ 流程；失败给出系统蓝牙
-    // 设置引导文案。
-    winrt::fire_and_forget AttemptXiaomiOsPairing(PairingDevice device);
+    // 两类设备共用：先尝试 WinRT 应用内系统配对（Bond），成败都经
+    // kBondFinishedMessage 回到 UI 线程，由 HandleBondFinished() 决定继续还是中止。
+    // bond_required 区分小米遥控器（硬前置，ATVV GATT 需要 OS Bond）与 VS 设备
+    // （软前置，只有 HOGP 按键直通需要，失败降级继续）。
+    winrt::fire_and_forget AttemptOsPairing(PairingDevice device, bool bond_required);
+    // 系统配对阶段结束后的 GATT 连接续接（状态栏 + 超时定时器 + on_pair_）。
+    void StartGattConnect(const PairingDevice& device);
+    // 系统配对结果处置：按 BleProtocol::PlanAfterOsBondAttempt 继续或中止。
+    void HandleBondFinished(std::uint64_t address, bool bonded);
     void HandlePairingConnected();
     void HandlePairingSucceeded(const DeviceInfo& info);
     void HandlePairingError(const std::string& message);
@@ -91,13 +98,16 @@ private:
     std::optional<std::string> pairing_device_id_;
     // 正在配对的设备类别：决定状态文案 ID 前缀（VS-/RC-）与配对完成后的收尾路径。
     DeviceClass pairing_device_class_ = DeviceClass::kStickS3;
-    // 小米遥控器 OS Bond 进行中的候选设备：kXiaomiBondedMessage 到达后用它继续
-    // on_pair_ 连接流程（fire_and_forget 协程不直接回调 UI 线程外成员）。
+    // 系统配对进行中的候选设备：kBondFinishedMessage 到达后用它继续 on_pair_
+    // 连接流程（fire_and_forget 协程不直接回调 UI 线程外成员）。
     std::optional<PairingDevice> pending_pair_device_;
     std::vector<std::string> existing_device_ids_;
     std::function<void(std::string, std::uint64_t, BluetoothAddressKind, std::string)> on_pair_;
     std::function<void(std::string, std::optional<DeviceInfo>)> on_pair_completed_;
     std::function<void(std::string)> on_pair_manual_;
+    // 系统配对软降级告警（VS 设备）：配对窗口会关闭且状态栏会被连接进度覆盖，
+    // 故经该回调把「按键直通可能不可用」的补救说明弹成托盘气泡。
+    std::function<void(std::string)> on_pair_warning_;
     bool pairing_finalized_ = false;
     std::uint64_t received_advertisement_count_ = 0;
     std::uint64_t candidate_count_ = 0;

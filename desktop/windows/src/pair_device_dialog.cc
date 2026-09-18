@@ -28,8 +28,16 @@ constexpr UINT kDeviceListChangedMessage = WM_APP + 20;
 constexpr UINT kPairingConnectedMessage = WM_APP + 21;
 constexpr UINT kPairingSucceededMessage = WM_APP + 22;
 constexpr UINT kPairingErrorMessage = WM_APP + 23;
-// 小米遥控器 WinRT 应用内 Bond 配对完成（成功）：回 UI 线程继续 on_pair_ 连接流程。
-constexpr UINT kXiaomiBondedMessage = WM_APP + 24;
+// WinRT 应用内系统配对（Bond）尝试结束：回 UI 线程决定继续还是中止。
+// 两类设备都走这条消息；LPARAM 为堆上 BondFinishedPayload，由 handler 接管。
+constexpr UINT kBondFinishedMessage = WM_APP + 24;
+
+// kBondFinishedMessage 的载荷：地址用于丢弃陈旧消息（用户中途换了目标设备），
+// bonded 表示系统级配对是否已建立。
+struct BondFinishedPayload {
+    std::uint64_t address = 0;
+    bool bonded = false;
+};
 constexpr UINT_PTR kPairingTimeoutTimerId = 2;
 constexpr UINT_PTR kPairingFinalizeTimerId = 3;
 constexpr UINT_PTR kScanRestartTimerId = 4;
@@ -298,34 +306,20 @@ INT_PTR PairDeviceDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_p
         if (message) HandlePairingError(*message);
         return TRUE;
     }
-    case kXiaomiBondedMessage: {
-        // 小米遥控器 OS Bond 成功：继续走原 on_pair_ 连接流程（BleCentralWin
-        // 会按 hardware/名称识别走 ATVV 连接序列）。LPARAM 堆对象（蓝牙地址）
-        // 由本 handler 接管；地址与 pending 候选不符视为陈旧消息丢弃。
-        std::unique_ptr<std::uint64_t> bonded_address(reinterpret_cast<std::uint64_t*>(l_param));
+    case kBondFinishedMessage: {
+        // 系统配对（Bond）尝试结束：按设备类别决定继续/中止。LPARAM 堆对象由本
+        // handler 接管；地址与 pending 候选不符视为陈旧消息丢弃。
+        std::unique_ptr<BondFinishedPayload> payload(reinterpret_cast<BondFinishedPayload*>(l_param));
         if (!pairing_device_id_.has_value() || !pending_pair_device_.has_value()) return TRUE;
-        if (!bonded_address ||
-            !MatchesPendingPairAddress(*bonded_address,
+        if (!payload ||
+            !MatchesPendingPairAddress(payload->address,
                                        pending_pair_device_->candidate.bluetooth_address)) {
-            LogBleLine("xiaomi bonded message dropped: stale address " +
-                       std::string(bonded_address ? FormatBluetoothAddress(*bonded_address) : "<null>") +
+            LogBleLine("bond finished message dropped: stale address " +
+                       std::string(payload ? FormatBluetoothAddress(payload->address) : "<null>") +
                        " pending=" + FormatBluetoothAddress(pending_pair_device_->candidate.bluetooth_address));
             return TRUE;
         }
-        const auto device = *pending_pair_device_;
-        pending_pair_device_.reset();
-        const auto id_prefix = IdPrefixFor(device.candidate.device_class);
-        SetWindowTextW(status_label_,
-                       FormatText(TrW(StringId::kPairPairingDevice, language_),
-                                  {Utf16(std::string(id_prefix) + device.candidate.device_id)}).c_str());
-        // Bond 阶段可能已耗掉大部分超时窗口：重设 30s，给连接阶段完整窗口。
-        SetTimer(hwnd_, kPairingTimeoutTimerId, 30000, nullptr);
-        if (on_pair_) {
-            on_pair_(device.candidate.device_id,
-                     device.candidate.bluetooth_address,
-                     device.candidate.address_kind,
-                     device.candidate.display_name);
-        }
+        HandleBondFinished(payload->address, payload->bonded);
         return TRUE;
     }
     case WM_COMMAND:
@@ -798,19 +792,23 @@ void PairDeviceDialog::BeginPairing(const PairingDevice& device) {
     EnableWindow(manual_id_edit_, FALSE);
     EnableWindow(pair_button_, FALSE);
     SetWindowTextW(pair_button_, TrW(StringId::kPairConnecting, language_).c_str());
+    // 两类设备都先做系统级蓝牙配对，再走 GATT 连接，差别只在失败策略
+    //（见 BleProtocol::PlanAfterOsBondAttempt）：
+    //  - 小米遥控器硬前置：ATVV GATT 的读取/订阅要求 OS bond，不配对连上也没用；
+    //  - VS 设备软前置：app 自身 GATT 不需要 bond，但网关模式下把遥控器按键经
+    //    HOGP 转发进本机需要 bond（没有系统配对就没有 HID 节点）。失败降级继续，
+    //    保住「语音可用」，并用状态栏 + 托盘气泡讲清补救方式。
+    SetWindowTextW(status_label_, TrW(StringId::kPairXiaomiOsPairing, language_).c_str());
+    SetTimer(hwnd_, kPairingTimeoutTimerId, 30000, nullptr);
+    AttemptOsPairing(device, device.candidate.device_class == DeviceClass::kXiaomiRemote2Pro);
+}
+
+void PairDeviceDialog::StartGattConnect(const PairingDevice& device) {
     const auto id_prefix = IdPrefixFor(device.candidate.device_class);
     const std::string display_id = std::string(id_prefix) + device.candidate.device_id;
-    if (device.candidate.device_class == DeviceClass::kXiaomiRemote2Pro) {
-        // 小米遥控器走系统蓝牙 Bond（ATVV GATT 的读取/订阅要求 OS 配对），
-        // 成功后在 kXiaomiBondedMessage 里继续 on_pair_ 连接流程。
-        SetWindowTextW(status_label_, TrW(StringId::kPairXiaomiOsPairing, language_).c_str());
-        SetTimer(hwnd_, kPairingTimeoutTimerId, 30000, nullptr);
-        AttemptXiaomiOsPairing(device);
-        return;
-    }
-    auto status = FormatText(TrW(StringId::kPairPairingDevice, language_),
-                             {Utf16(display_id)});
+    auto status = FormatText(TrW(StringId::kPairPairingDevice, language_), {Utf16(display_id)});
     SetWindowTextW(status_label_, status.c_str());
+    // 系统配对阶段可能已耗掉大部分超时窗口：重设 30s，给连接阶段完整窗口。
     SetTimer(hwnd_, kPairingTimeoutTimerId, 30000, nullptr);
     if (on_pair_) {
         on_pair_(device.candidate.device_id,
@@ -818,6 +816,29 @@ void PairDeviceDialog::BeginPairing(const PairingDevice& device) {
                  device.candidate.address_kind,
                  device.candidate.display_name);
     }
+}
+
+void PairDeviceDialog::HandleBondFinished(std::uint64_t address, bool bonded) {
+    (void)address;  // 陈旧消息已在消息处理器里按地址滤掉
+    if (!pending_pair_device_.has_value()) return;
+    const auto device = *pending_pair_device_;
+    pending_pair_device_.reset();
+    const bool bond_required = device.candidate.device_class == DeviceClass::kXiaomiRemote2Pro;
+    switch (BleProtocol::PlanAfterOsBondAttempt(bonded, bond_required)) {
+    case OsBondFollowUp::kContinue:
+        break;
+    case OsBondFollowUp::kAbortWithError:
+        HandlePairingError(Tr(StringId::kPairXiaomiBondFailed, language_));
+        return;
+    case OsBondFollowUp::kContinueWithWarning:
+        // 软前置降级：状态栏给出补救方式；StartGattConnect 随后会覆盖状态栏，
+        // 故同时经回调弹一条托盘气泡，保证配对窗口关闭后提示仍然可见。
+        SetWindowTextW(status_label_,
+                       TrW(StringId::kPairOsBondOptionalFailed, language_).c_str());
+        if (on_pair_warning_) on_pair_warning_(Tr(StringId::kPairOsBondOptionalFailed, language_));
+        break;
+    }
+    StartGattConnect(device);
 }
 
 void PairDeviceDialog::HandlePairingConnected() {
@@ -839,20 +860,20 @@ void PairDeviceDialog::HandlePairingSucceeded(const DeviceInfo& info) {
     FinalizePairing(info);
 }
 
-winrt::fire_and_forget PairDeviceDialog::AttemptXiaomiOsPairing(PairingDevice device) {
+winrt::fire_and_forget PairDeviceDialog::AttemptOsPairing(PairingDevice device,
+                                                           bool bond_required) {
     // WinRT 应用内 Bond：PairAsync 在后台线程完成，结果经 PostMessage 回 UI 线程。
     // co_await 之后 this 可能已销毁（对话框被关闭），只使用入口快照的值。
+    // 两类设备共用本协程；成败都回 kBondFinishedMessage，由 HandleBondFinished()
+    // 按 BleProtocol::PlanAfterOsBondAttempt 决定继续还是中止。
     const auto hwnd = hwnd_;
     const auto language = language_;
     const auto address = device.candidate.bluetooth_address;
-    auto post_error = [hwnd, language](std::string message) {
+    auto post_result = [hwnd, address](bool bonded) {
         if (hwnd) {
-            PostMessageW(hwnd, kPairingErrorMessage, 0,
-                         reinterpret_cast<LPARAM>(new std::string(std::move(message))));
+            auto* payload = new BondFinishedPayload{address, bonded};
+            PostMessageW(hwnd, kBondFinishedMessage, 0, reinterpret_cast<LPARAM>(payload));
         }
-    };
-    auto bond_failed_text = [language]() {
-        return Tr(StringId::kPairXiaomiBondFailed, language);
     };
     try {
         using winrt::Windows::Devices::Bluetooth::BluetoothAddressType;
@@ -866,41 +887,41 @@ winrt::fire_and_forget PairDeviceDialog::AttemptXiaomiOsPairing(PairingDevice de
         auto ble_device = address_type == BluetoothAddressType::Unspecified
                               ? co_await BluetoothLEDevice::FromBluetoothAddressAsync(address)
                               : co_await BluetoothLEDevice::FromBluetoothAddressAsync(address, address_type);
+        const auto tag = bond_required ? "RC" : "VS";
         if (!ble_device) {
-            LogBleLine("xiaomi OS pairing failed: device not found address=" +
+            LogBleLine(std::string(tag) + " os pairing: device not found address=" +
                        FormatBluetoothAddress(address));
-            post_error(bond_failed_text());
+            post_result(false);
             co_return;
         }
         const auto pairing = ble_device.DeviceInformation().Pairing();
         if (pairing.IsPaired()) {
-            LogBleLine("xiaomi OS pairing already bonded address=" +
+            // 幂等路径：已在系统设置里配过对的存量用户走这里，不重复配对。
+            LogBleLine(std::string(tag) + " os pairing: already bonded address=" +
                        FormatBluetoothAddress(address));
         } else {
             const auto result = co_await pairing.PairAsync();
             using winrt::Windows::Devices::Enumeration::DevicePairingResultStatus;
             if (result.Status() != DevicePairingResultStatus::Paired &&
                 result.Status() != DevicePairingResultStatus::AlreadyPaired) {
-                LogBleLine("xiaomi OS pairing failed address=" + FormatBluetoothAddress(address) +
-                           " status=" + std::to_string(static_cast<int>(result.Status())));
+                LogBleLine(std::string(tag) + " os pairing failed address=" +
+                           FormatBluetoothAddress(address) +
+                           " status=" + std::to_string(static_cast<int>(result.Status())) +
+                           (bond_required ? " (required: aborting pair)" : " (optional: continuing)"));
                 ble_device.Close();
-                post_error(bond_failed_text());
+                post_result(false);
                 co_return;
             }
-            LogBleLine("xiaomi OS pairing bonded address=" + FormatBluetoothAddress(address));
+            LogBleLine(std::string(tag) + " os pairing bonded address=" +
+                       FormatBluetoothAddress(address));
         }
         ble_device.Close();
-        // LPARAM 携带堆分配蓝牙地址作关联令牌：handler 比对 pending 候选地址，
-        // 陈旧 bonded 消息（上一目标的迟到回调）不错位命中新配对目标；
-        // 堆对象由 handler 以 unique_ptr 接管（同 kPairingErrorMessage 约定）。
-        if (hwnd) {
-            PostMessageW(hwnd, kXiaomiBondedMessage, 0,
-                         reinterpret_cast<LPARAM>(new std::uint64_t(address)));
-        }
+        post_result(true);
     } catch (const winrt::hresult_error& error) {
-        LogBleLine("xiaomi OS pairing exception address=" + FormatBluetoothAddress(address) +
-                   " hr=" + FormatHresult(error.code()));
-        post_error(bond_failed_text());
+        LogBleLine("os pairing exception address=" + FormatBluetoothAddress(address) +
+                   " hr=" + FormatHresult(error.code()) +
+                   (bond_required ? " (required: aborting pair)" : " (optional: continuing)"));
+        post_result(false);
     }
 }
 

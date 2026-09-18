@@ -472,6 +472,9 @@ enum class StringId {
     // 放在 kLicenseLocalBlocked 之后，localization.cc 的 kStringCount 哨兵同步更新。
     kStaleSessionTitle,          // "Voice input needs re-pairing" / "语音输入需要重新配对"
     kStaleSessionBody,           // 说明删除并重新添加设备的操作步骤
+
+    // VS 设备配对时系统级配对失败（软前置降级）：提示补救方式但继续配对
+    kPairOsBondOptionalFailed,
 };
 
 // 返回 UTF-8 本地化文本
