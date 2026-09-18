@@ -327,10 +327,18 @@ esp_err_t audio_pipeline_set_playback_file(const char *filename)
     return ESP_OK;
 }
 
-/* 外部源读一帧：等待数据最多 100ms（20ms×5），仍不足填静音保活。 */
+/* 外部源读一帧：等待数据最多 100ms（20ms×5），仍不足填静音保活。
+ * 缓冲可能晚于本任务创建（懒创建在首次 feed_pcm——NimBLE 任务的 PCM 到达
+ * 前 task 已开跑），NULL 期间静音轮询等待，不触 xStreamBuffer 的 NULL 断言
+ * （真机崩溃定案：语音键首次触发的 start_ext 中 task 先于首帧 PCM 运行）。 */
 static void read_frame_ext(int16_t *mono)
 {
     const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
+    if (s_ext_stream == NULL) {
+        memset(mono, 0, need);
+        vTaskDelay(pdMS_TO_TICKS(EXT_STARVE_WAIT_MS));
+        return;
+    }
     size_t got = 0;
     for (int i = 0; i < EXT_STARVE_TRIES && got < need; i++) {
         got += xStreamBufferReceive(s_ext_stream, (uint8_t *)mono + got, need - got,
@@ -655,8 +663,9 @@ static void audio_task(void *arg)
     for (int drain = 0; drain < drain_frames; ++drain) {
         if (s_source == AUDIO_SOURCE_EXTERNAL) {
             const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
-            if (xStreamBufferReceive(s_ext_stream, mono, need, 0) < need) {
-                break;  // 无残量，尾音已由会话宽限帧承载
+            if (s_ext_stream == NULL ||
+                xStreamBufferReceive(s_ext_stream, mono, need, 0) < need) {
+                break;  // 无缓冲或无残量，尾音已由会话宽限帧承载
             }
         } else if (s_playback_active && s_playback_buffer != NULL) {
             const size_t need = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
@@ -851,7 +860,16 @@ static esp_err_t start_session(uint32_t session_id, audio_source_t source)
         }
     } else {
         /* 外部源：不碰 I2S/codec（省按下→首帧时延；hold 阈值期间的暂存 PCM
-         * 保留不清——start 前已 feed 的语音属本会话首段）。 */
+         * 保留不清——start 前已 feed 的语音属本会话首段）。StreamBuffer 在此
+         * 预创建（不等懒创建）：audio_task 先于首帧 PCM 开跑时读路径已有缓冲
+         * （NULL 断言崩溃的根治，read_frame_ext 另有判空防御）。 */
+        if (s_ext_stream == NULL) {
+            s_ext_stream = xStreamBufferCreate(EXT_STREAM_BYTES, 2);
+            if (s_ext_stream == NULL) {
+                ESP_LOGE(TAG, "ext stream create %d bytes failed", EXT_STREAM_BYTES);
+                return ESP_ERR_NO_MEM;
+            }
+        }
         ESP_LOGI(TAG, "external source session (i2s/codec skipped)");
     }
     s_last_error_step = "opus";

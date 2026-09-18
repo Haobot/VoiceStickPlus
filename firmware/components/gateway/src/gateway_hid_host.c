@@ -22,6 +22,11 @@ static const char *TAG = "gw_hid";
 #define RETRY_DELAY_TICKS pdMS_TO_TICKS(3000)
 #define START_DELAY_TICKS pdMS_TO_TICKS(1000)
 
+// 主机额外动作开关（真机对照实验）：07:04 按键正常时段的固件从未执行过
+// CCCD 写/ReportMap 读/Control Point 写（当时枚举路径挂着），此后版本加入
+// 三件套反而按键零推送——置 0 回到纯净形态验证，定位后再逐项恢复。
+#define XIAOMI_HID_HOST_EXTRAS 0
+
 #define UUID_HID_SVC 0x1812
 #define UUID_REPORT 0x2A4D
 #define UUID_REPORT_MAP 0x2A4B
@@ -38,6 +43,8 @@ static gateway_hid_link_cb_t s_on_link;
 static gateway_hid_notify_router_t s_notify_router;
 // latency 修正计次（每连接；防止对端反复强推省电参数造成循环）
 static uint8_t s_latency_fix_count;
+// direct connect 连续失败计数（改绑自愈：3 次后清 peer 转扫描重新配对）
+static uint8_t s_direct_fail_streak;
 // Report CCCD 订阅状态与重试：CCCD 枚举/写是 ATT 事务，可能被小米 ~4.9s 的
 // L2CAP 参数请求 0x212 窗口吞掉（真机 Phase 2 定案——与 ATVV 发现同机制），
 // 订阅不成则小米永不推 HID 按键。写确认回调置位，3s 未确认重试。
@@ -68,6 +75,7 @@ static int on_read_report_map(uint16_t conn, const struct ble_gatt_error *error,
   (void)conn; (void)arg;
   if (error->status == BLE_HS_EDONE) {
     ESP_LOGI(TAG, "Report Map 读取完成");
+#if XIAOMI_HID_HOST_EXTRAS
     if (s_hid_ctrl_point_handle != 0) {
       static const uint8_t exit_suspend = 0x00;  // 静态生命周期：write_flat 异步引用
       int rc = ble_gattc_write_flat(conn, s_hid_ctrl_point_handle, &exit_suspend, 1,
@@ -77,6 +85,7 @@ static int on_read_report_map(uint16_t conn, const struct ble_gatt_error *error,
     } else {
       ESP_LOGW(TAG, "未发现 HID Control Point 特征");
     }
+#endif
   }
   return 0;
 }
@@ -200,6 +209,8 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
     }
     // 订阅：直写 Report+1 的 CCCD（枚举路径小米无响应，见 try_write_report_cccd
     // 注释）；写是 ATT 事务，可能被 ~4.9s 参数窗口吞——retry callout 兜底重试。
+    // 对照实验开关：三件套疑致小米停推（见宏注释），关闭时零额外主机动作。
+#if XIAOMI_HID_HOST_EXTRAS
     if (!s_cccd_retry_callout_inited) {
       ble_npl_callout_init(&s_cccd_retry_callout, nimble_port_get_dflt_eventq(),
                            cccd_retry_cb, NULL);
@@ -209,6 +220,9 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
     s_cccd_retry_count = 0;
     try_write_report_cccd();
     ble_npl_callout_reset(&s_cccd_retry_callout, pdMS_TO_TICKS(3000));
+#else
+    ESP_LOGI(TAG, "纯净模式：不写 CCCD（对照实验）");
+#endif
     return 0;
   }
   if (error->status != 0) {
@@ -307,6 +321,22 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
   switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
       if (event->connect.status != 0) {
+        // direct connect 建立失败也计入改绑自愈 streak（对端不在此地址时
+        // 每次 15s 超时，3 次后清 peer 转扫描）
+        if (++s_direct_fail_streak >= 3) {
+          s_direct_fail_streak = 0;
+          nvs_handle_t h;
+          if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            (void)nvs_erase_key(h, NVS_KEY_PEER);
+            (void)nvs_commit(h);
+            nvs_close(h);
+          }
+          ESP_LOGW(TAG, "direct connect 连续失败 status=%d，清 peer 转扫描（对端可能已改绑）",
+                   event->connect.status);
+          s_conn = BLE_HS_CONN_HANDLE_NONE;
+          start_scan();
+          return 0;
+        }
         ESP_LOGW(TAG, "连接小米失败 status=%d，3s 后重试", event->connect.status);
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         schedule_retry();
@@ -541,6 +571,9 @@ static void try_connect_known(void) {
     start_scan();
     return;
   }
+  // 对端改绑自愈：遥控器与其他主机重新配对后地址形态改变（配对模式广播用
+  // 小米 OUI 地址），NVS 身份地址 direct connect 不再可达而死循环重试。
+  // 连续失败达 3 次即清 peer 转扫描，重新走配对抓取（白名单含配对模式名）。
   ble_addr_t peer = {.type = type};
   memcpy(peer.val, addr, 6);
   static const struct ble_gap_conn_params params = {
@@ -551,8 +584,22 @@ static void try_connect_known(void) {
   };
   int rc = ble_gap_connect(s_own_addr_type, &peer, 15000, &params, gap_event, NULL);
   if (rc != 0) {
+    if (++s_direct_fail_streak >= 3) {
+      s_direct_fail_streak = 0;
+      nvs_handle_t h;
+      if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        (void)nvs_erase_key(h, NVS_KEY_PEER);
+        (void)nvs_commit(h);
+        nvs_close(h);
+      }
+      ESP_LOGW(TAG, "direct connect 连续失败，清 peer 转扫描（对端可能已改绑）");
+      start_scan();
+      return;
+    }
     ESP_LOGW(TAG, "direct connect 启动失败 rc=%d，3s 后重试", rc);
     schedule_retry();
+  } else {
+    s_direct_fail_streak = 0;
   }
 }
 

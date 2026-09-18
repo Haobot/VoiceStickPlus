@@ -275,6 +275,36 @@ NimBLE 把 `dsc->att_flags` 原样登记为属性权限
 3. 非桌面端对端连接时 `send_state_json gated` 警告会周期性出现（HID 主机连接即触发），
    属预期但噪音，Phase 3 可细分日志级别。
 
+### 6.3 Phase 2 真机四连修（2026-09-18，DEBUG 日志多轮定位）
+
+1. **ATVV 发现链挂死（根因定案）**：小米连接后固定 ~4.9s 经 **L2CAP 信令**请求省电
+   参数（itvl=10/latency=49/timeout=500），NimBLE 自动原样转发 HCI——该组合违反
+   BLE 规范（`timeout > 2*(1+latency)*itvl_max`，500 < 1000），controller 以
+   HCI 0x212 同步拒绝。拒绝瞬间**恰在途的 ATT 请求-响应被吞**：ATVV 特征枚举
+   （原 400ms 延迟发起）正撞此窗口，回调链断流且无任何日志。修复 = 发现延迟
+   10s 避开窗口 + 各阶段 4s 超时看门狗整链重来。修复后一次成功
+   （tx=0x302/audio=0x304/ctrl=0x307，CAPS 握手 74ms 进 READY）。
+   - 附带定案：L2CAP 参数路径**不经**应用 `CONN_UPDATE_REQ` 回调——Phase 1 的
+     「压平 latency」代码从未生效（链路存活实因 update 被拒、参数保持初始）。
+     0x212 只吞当次在途事务，notify 流与新发起事务不受影响。
+   - 小米 ATVV notify 免 CCCD 直推（加密链路上 Control/Audio 均无 CCCD 也可收，
+     与 Phase 0 HID Report 结论一致）。
+2. **连接表满**：网关模式需三连接共存（Windows HID 主机 + 小米 + 桌面端 app），
+   MAX_CONNECTIONS=2 时 app 作为第三方进不来。2→3（§5.1 原规划）。
+3. **app 僵尸会话**：设备每次重启，Windows HID 主机重新配对（LTK 轮换），app
+   （WinRT）缓存的加密上下文失效——连接/发现/订阅全报假 Success 但数据面不通
+   （零 notify，118s 心跳超时循环）；OTA 报 0x80650008 同源。**解法 = OS 级
+   移除设备重新配对**（蓝牙设置删除 VS-53A8 → app 重新配对）——恢复后 app 与
+   HID 主机共存正常，语音链路端到端打通。遗留：设备重启后是否必现僵尸待
+   观察；若必现，Phase 3 考虑 HOGP 服务按模式注册（§6.2 遗留项 2）。
+4. **latency=49 生效 ⇒ ESP32 central 收不到对端 notify**：0x212 拒绝后小米仍可
+   经 LL 层强推同参数生效（真机抓到 `conn update 完成 latency=49`）——生效后
+   连接保持但**对端全部 notify 消失**（HID 按键沿与 ATVV 会话沿全死，CAPS 之后
+   无任何数据），是 Phase 1「latency=49 被对端掐断」的变体（此次未掐断但数据面
+   死）。修复 = `BLE_GAP_EVENT_CONN_UPDATE` 协商成功回调里检测 latency>8 主动
+   修正为 0（itvl 保持对端快参数 12.5ms，组合合法；上限 3 次防循环）——真机
+   验证修正 736ms 生效（itvl=10/latency=0/timeout=500）。
+
 ## 7. 测试策略（TDD 纪律）
 
 - **纯逻辑 C 模块 host 侧单测**（固件首次引入单测目标）：`xiaomi_hid_host` 报文解码器（9 字节集合 diff）、`gateway_keymap` 翻译表、`gateway_switcher` 状态机、`gateway_session_arbiter`、ADPCM 解码器（与桌面端 C++ 实现互为金标准比对）——CMake host 目标，红-绿-重构。
