@@ -266,6 +266,7 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 - **免退避必须有界**（次数+时间双上限），打标时间不能在重试间刷新（settle 条目放行即擦除，重试不会重新打标——保持这点，否则计数约束失效）。
 - **回连时长硬成本**（继续压缩空间有限）：固件 boot→广播 ~1s + 安定窗 1.5s + 扫描/认领 ~0.5s + Windows 建链/发现 ~2s（`GattServicesChanged` 每次连接都使 GATT 缓存失效，cached 发现实际走空口 ~760ms）。
 - **遗留观察项**：`Status()==Error` 的快速真实失败会被误标为 "timeout" 日志（行为正确，只损诊断精度，两次审查裁定可接受）；若日常日志频繁出现 `retry #2/#3`，说明 1.5s 安定窗偏短需上调。
+- **后续（2026-09-19）**：本节机制之上补了「连接期活性证明 + 僵尸后主动直连 + 有界自愈梯度」，并定下**自愈路径绝不 unpair** 的红线，见 §3.14。
 
 ### 3.11 COM 口烧录工具（VoiceStickFlash）与串口枚举（2026-08-07）
 
@@ -295,6 +296,17 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 修复（v4 keyup 后置决策）：keydown/按住重复一律吞 + 登记 Pending；keyup **放行**（孤立 up 无系统副作用，是取证动作）让 BREAK 沿带 `hDevice` 投递；主线程收到证据后遥控器→注入映射 down+up 对、物理→补偿原键 down+up 对；BREAK 异常丢失 200ms WM_TIMER 按物理兜底。代价：反馈延迟到松手、按住连删退化为单击多次。详见 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`，设计 `Doc/Plan/xiaomi-keymap-consumer.md`。
 
 附带坑：`RIDI_DEVICEINFO` 对 BTHLE 遥控器（呈现为 RIM_TYPEKEYBOARD）`hid.dwVendorId` 恒 0 静默失效，VID/PID 必须走 `RIDI_DEVICENAME` 接口路径解析，且 BTHLE 容器 VID 字段是六位十六进制（`012717`），须按低 16 位比对；RC003（RC-6459）back 键固件上报 usage 0xF1 被 WUDFHost 翻译层丢弃，PC 端零事件不可消费，勿再按"原生 Backspace"假设排查（早期 VK_BACK 日志是物理键盘污染）。录入侧兜底（2026-09-15，0f9c4fbb）：录入窗 3 秒零事件提示已同时覆盖 UIPI 隔离与本死键两种原因并引导手动输入（`backspace`/`alt+left`），提示触发落日志；配对记录无可靠批次识别信号（持久化 name 只有通用值），不做猜测性检测。
+
+### 3.14 BLE 僵尸会话自愈：活性证明与「不删系统配对」红线（2026-09-19 定案）
+
+设备重启后语音静默失效的根治（P0，commit `1557276e`），细节见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md`，设计 `Doc/Plan/xiaomi-gateway-p0-zombie-self-heal.md`：
+
+- **订阅「假成功」的判据**：`state subscribe … status=Success` 之后长时间零入站 notify。加密上下文陈旧时 CCCD 写返回 Success 而设备侧从未登记（`state_sub=0`）。**判定连接健康必须取对端反向证据**（收到的通知/回包），不是本机 API 返回码。
+- **连接期活性证明**：audio 订阅后等 `kSessionLivenessTimeout{2500}` 内首个入站 notify 才置 `ready`（旧实现据此发布假「已连接」，要等 90s 心跳才发现僵尸）。证据取 `last_rx_ms > 0`。**`device_info` 是本连接第一个通知、常被 BTHLE 在 handler 接线前吞掉（约半数连接收不到）**，故补发 `battery_status_request` 主动索要回包（<1s，代价 +0.7~0.9s 连接耗时）。
+- **僵尸拆除后必须按地址主动直连**：原先只 `StartScan()` 是死路——固件连接成功即停广播，而设备多已被系统 HID 宿主连上，实测零恢复 8 小时。新增 `ScheduleZombieReconnect`（队列 + 延迟线程提前唤醒）。
+- **自愈梯度绝不可 unpair**（本次最大教训）：`PlanZombieHeal` 三级 = A 只回收 WinRT 对象重连 → B **只重置 Bluetooth radio** → 末级托盘气泡。首版照旧 stale-bond 套路做 unpair + radio reset + `PairAsync`，**语音自愈成功却把 HOGP 按键直通弄死**（`BTHPORT` 有密钥、`Enum\BTHLE` 无节点）。实测 `PairAsync` 在设备被 app 连上（停广播）时必失败 `status=19 Failed`（12/12），停掉 app 后仍失败（串口证明设备侧连连接都没发生）。**恢复路径按「破坏性」而非「彻底性」排序**；破坏性动作留给用户。
+- **bond 只补不删**：`RepairOsBondAsync` 只读 `Pairing().IsPaired()` 确认缺失后才动手，条件是「无会话 + 设备在广播」，重试 3 次，每次运行最多 1 轮。
+- **真机验收**：连续 4 次重启全部自动 `stage=ready`（最快 10.4s），A/B 级未触发。B 级（radio reset）尚无真机样本。
 
 ---
 
@@ -554,3 +566,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - 按键映射「录入」完全无反应：日志只有 `ShortcutCapture: started`、没有 `first keyboard event` = 按键根本没到系统层，**不是捕获代码缺陷**（机制层已 spike + 真机注入双重证无罪，勿再怀疑钩子/链序/模态循环）。两种原因：①前台是提权窗口被 UIPI 隔离（点普通窗口重试）；②按的是 RC003 批次返回键（WUDF 丢弃，系统零事件，只能改用手动输入绑定）。3 秒零事件提示已双因覆盖并落日志（0f9c4fbb），详见 `Doc/Plan/xiaomi-keymap-hotkey-capture-issue.md` §0.1。
 - 小米网关「语音键正常、其他按键全死」先查 HID 侧不要查音频：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道互相掩盖。四处根因（只认 1/7 个带 notify 的 Report 特征、CCCD 靠「特征值+1」猜被拒、HOGP 只发第一条 slave 链路、**Windows 无 OS 级配对节点**）见 §1.10 与 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`；判据：`BTHPORT` 有密钥而 `Enum\BTHLE` 无节点 = 缺系统配对（app 配对时已会自动补，见 §1.10）。
 - 固件里给 StreamBuffer/Queue 之类 FreeRTOS 对象配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 限死在内部 RAM，`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它（见 §1.6）。
+- 设备重启后「app 显示已连接但语音静默失效」：判据是 `state subscribe status=Success` 后长时间零入站 notify（订阅假成功、设备侧 `state_sub=0`）。修复=连接期活性证明 + 僵尸后按地址主动直连 + 有界自愈梯度；**自愈路径绝不可 unpair**（会删 `Enum\BTHLE` 节点弄死 HOGP 按键直通，且 `PairAsync` 在设备已连上时必失败 status=19），见 §3.14 与 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md`。
