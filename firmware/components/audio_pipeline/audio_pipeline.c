@@ -206,8 +206,8 @@ static audio_source_t s_source = AUDIO_SOURCE_ES8311;
 // 首字延迟诊断：audio_pipeline_start 入口时刻，audio_task 首帧入队时打印相对值量化固件侧延迟。
 static int64_t s_pipeline_start_us = 0;
 
-/* 外部源 PCM 环形缓冲（懒创建，网关语音键首次馈送时分配到 SPIRAM）：
- * 容量 2s（32KB 样本字节），hold 阈值 300ms 期间暂存不丢；溢出丢新保序。
+/* 外部源 PCM 环形缓冲（首次使用时创建，常驻不销毁）：
+ * 容量 2s（32000 样本 = 64000 字节），hold 阈值 300ms 期间暂存不丢；溢出丢新保序。
  * 单写（NimBLE host 任务 feed）单读（audio_task）无锁安全。 */
 #define EXT_STREAM_BYTES (2 * AUDIO_SAMPLE_RATE * sizeof(int16_t))
 /* 外部源饥饿判定：等数据 20ms×5=100ms 仍不足一帧则填静音保活（桌面端 ASR
@@ -217,6 +217,40 @@ static int64_t s_pipeline_start_us = 0;
 /* 外部源 stop 后 drain 上限：ATVV 尾包 150ms 宽限 ≈ 3.75 帧，读 3 帧封顶防堵死。 */
 #define EXT_DRAIN_FRAMES 3
 static StreamBufferHandle_t s_ext_stream;
+
+/* 外部源 PCM 缓冲创建。必须显式指定 MALLOC_CAP_SPIRAM：
+ * FreeRTOS 的 xStreamBufferCreate() 内部走 pvPortMalloc()，而 IDF 把
+ * portFREERTOS_HEAP_CAPS 硬编码为 (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+ *（components/freertos/heap_idf.c），PSRAM 根本不在候选里。
+ * 64000 字节的连续内部 RAM 在网关模式（NimBLE 控制器+host、LVGL、双连接、
+ * 32KB 内部预留）下凑不出来，xStreamBufferCreate 必然返回 NULL。
+ * 真机定案：按遥控器语音键 ⇒ "ext stream create 64000 bytes failed" ⇒
+ * 屏幕 "Audio wait: ESP_ERR_NO_MEM"（本分支在 opus 步骤之前失败，
+ * s_last_error_step 仍停在 "wait"，故错误步骤标签显示为 wait）。
+ * 注意 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 只作用于普通 malloc()
+ *（heap_caps_malloc_default），对 pvPortMalloc 无效，不能指望它兜底。
+ * 常驻不销毁（网关模式生命周期），跨会话残留由 audio_pipeline_external_reset 清。 */
+static esp_err_t ext_stream_ensure(void)
+{
+    if (s_ext_stream != NULL) {
+        return ESP_OK;
+    }
+    s_ext_stream = xStreamBufferCreateWithCaps(EXT_STREAM_BYTES, 2, MALLOC_CAP_SPIRAM);
+    if (s_ext_stream == NULL) {
+        ESP_LOGE(TAG, "ext stream create %d bytes failed (spiram free=%u largest=%u)",
+                 EXT_STREAM_BYTES,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "ext stream ready %d bytes (SPIRAM)", EXT_STREAM_BYTES);
+    return ESP_OK;
+}
+
+esp_err_t audio_pipeline_external_prepare(void)
+{
+    return ext_stream_ensure();
+}
 static uint32_t s_ext_overflow_drops;
 
 /* Per-session resources: created on start, destroyed on stop */
@@ -863,12 +897,9 @@ static esp_err_t start_session(uint32_t session_id, audio_source_t source)
          * 保留不清——start 前已 feed 的语音属本会话首段）。StreamBuffer 在此
          * 预创建（不等懒创建）：audio_task 先于首帧 PCM 开跑时读路径已有缓冲
          * （NULL 断言崩溃的根治，read_frame_ext 另有判空防御）。 */
-        if (s_ext_stream == NULL) {
-            s_ext_stream = xStreamBufferCreate(EXT_STREAM_BYTES, 2);
-            if (s_ext_stream == NULL) {
-                ESP_LOGE(TAG, "ext stream create %d bytes failed", EXT_STREAM_BYTES);
-                return ESP_ERR_NO_MEM;
-            }
+        err = ext_stream_ensure();
+        if (err != ESP_OK) {
+            return err;
         }
         ESP_LOGI(TAG, "external source session (i2s/codec skipped)");
     }
@@ -959,14 +990,8 @@ esp_err_t audio_pipeline_feed_pcm(const int16_t *pcm, size_t samples)
     if (pcm == NULL || samples == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_ext_stream == NULL) {
-        /* 懒创建：>16KB 分配走 SPIRAM（CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL）。
-         * 常驻不销毁（网关模式生命周期），跨会话残留由 external_reset 清。 */
-        s_ext_stream = xStreamBufferCreate(EXT_STREAM_BYTES, 2);
-        if (s_ext_stream == NULL) {
-            ESP_LOGE(TAG, "ext stream create %d bytes failed", EXT_STREAM_BYTES);
-            return ESP_ERR_NO_MEM;
-        }
+    if (ext_stream_ensure() != ESP_OK) {
+        return ESP_ERR_NO_MEM;
     }
     const size_t bytes = samples * sizeof(int16_t);
     const size_t sent = xStreamBufferSend(s_ext_stream, pcm, bytes, 0);

@@ -2306,6 +2306,12 @@ static void gateway_apply_mode(void)
     ESP_LOGI(TAG, "boot 模式应用：%s", gateway_mode_name(gateway_mode_get()));
     if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
         ui_status_set_gateway_link("RC: ...");
+        // 外部源 PCM 缓冲在模式入口预创建：把 64KB PSRAM 分配移出「按下→首帧」
+        // 关键路径；失败在此一次性暴露（语音键按下时 start_ext 仍会自行重试）。
+        esp_err_t ext_err = audio_pipeline_external_prepare();
+        if (ext_err != ESP_OK) {
+            ESP_LOGE(TAG, "网关外部音频缓冲预创建失败: %s", esp_err_to_name(ext_err));
+        }
         gateway_hid_host_set_notify_router(xiaomi_atvv_client_notify_router);
         ESP_ERROR_CHECK(xiaomi_atvv_client_start(gateway_atvv_on_press,
                                                  gateway_atvv_on_pcm));

@@ -26,6 +26,11 @@ uint32_t audio_pipeline_session_id(void);
 esp_err_t audio_pipeline_feed_pcm(const int16_t *pcm, size_t samples);
 /* 清空外部源缓冲残留（语音键按下沿/会话收尾时调用，防跨会话污染）。 */
 void audio_pipeline_external_reset(void);
+/* 外部源缓冲预创建（网关模式入口调用，幂等）。把 64KB PSRAM 分配从「首次按
+ * 语音键」挪到模式入口：① 分配不再落在按下→首帧的关键路径上；② 分配失败在
+ * 模式入口一次性暴露，而不是每次按键刷屏；③ 模式入口时内存最干净。
+ * 失败返回 ESP_ERR_NO_MEM——调用方记录日志即可，start_ext 仍会自行重试创建。 */
+esp_err_t audio_pipeline_external_prepare(void);
 
 /* 测试回放（L3 端到端测试用）：设置预存 PCM 文件名（位于 storage SPIFFS 分区 /spiffs/ 下）。
  * 设置后，下一次 audio_pipeline_start 起，audio_task 从该文件读 16kHz/16bit/mono PCM 替代

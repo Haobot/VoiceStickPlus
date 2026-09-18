@@ -207,36 +207,45 @@ const struct ble_gatt_svc_def *gateway_hogp_services(size_t *count) {
 
 // ---- 发送 ----
 
-// 找外设侧连接（本机为 slave、目标设备为主机的链路）。网关模式下有两条连接：
-// central 侧连小米（role=master）与 peripheral 侧连目标设备（role=slave），且实测
-// conn_handle 可超过 CONFIG_BT_NIMBLE_MAX_CONNECTIONS-1（handle 从 1 起编）——
-// 按句柄 0..MAX-1 扫描既可能选错小米链路，也可能扫不到 handle 2，必须按角色过滤。
+// 注：外设侧连接的遴选见 send_report——网关模式下 role=slave 的连接不止一条
+//（目标设备 HID 主机 + 桌面端 app），且实测 conn_handle 可超过
+// CONFIG_BT_NIMBLE_MAX_CONNECTIONS-1（handle 从 1 起编），故按句柄 0..15 全扫。
 // NimBLE 的 ble_gap_conn_foreach_handle 未在公共头声明，这里小范围扫句柄代替。
-static uint16_t first_periph_handle(void) {
-    for (uint16_t h = 0; h < 16; h++) {
+static int send_report(uint16_t chr_handle, const uint8_t *report, size_t len) {
+    // 必须发到"订阅了 HOGP Report 的那条外设链路"。网关模式下外设侧可能同时存在
+    // 两条 role=slave 连接：目标设备（Windows HID 主机）与桌面端 app（走自己的
+    // audio_tx/state_tx，从不订阅 HOGP）。只发第一条会打错目标，且 NimBLE 对未订阅
+    // 的连接返回成功但不下发——报文静默消失（真机定案：小米按键已在设备侧正确翻译，
+    // 电脑却毫无反应）。未订阅的连接收到也不会下发，故逐条广播最稳。
+    uint16_t slaves[4];
+    size_t slave_count = 0;
+    for (uint16_t h = 0; h < 16 && slave_count < 4; h++) {
         struct ble_gap_conn_desc desc;
         if (ble_gap_conn_find(h, &desc) == 0 && desc.role == BLE_GAP_ROLE_SLAVE) {
-            return h;
+            slaves[slave_count++] = h;
         }
     }
-    return BLE_HS_CONN_HANDLE_NONE;
-}
-
-static int send_report(uint16_t chr_handle, const uint8_t *report, size_t len) {
-    uint16_t conn = first_periph_handle();
-    if (conn == BLE_HS_CONN_HANDLE_NONE) {
+    if (slave_count == 0) {
+        // 无外设连接 = 目标设备（HID 主机）没连上，按键直通无处可去。真机排查
+        // 关键词：此行使「电脑没反应」从「固件没发」里被区分出来。
+        ESP_LOGW(TAG, "hogp 无外设链路可下发，chr=0x%04x 丢弃（目标设备未连接）", chr_handle);
         return BLE_HS_ENOTCONN;
     }
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(report, len);
-    if (om == NULL) {
-        return BLE_HS_ENOMEM;
+    int last_rc = 0;
+    for (size_t i = 0; i < slave_count; i++) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(report, len);
+        if (om == NULL) {
+            last_rc = BLE_HS_ENOMEM;
+            continue;
+        }
+        int rc = ble_gatts_notify_custom(slaves[i], chr_handle, om);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "hogp notify conn=%u chr=0x%04x len=%u rc=%d", slaves[i],
+                     chr_handle, (unsigned)len, rc);
+            last_rc = rc;
+        }
     }
-    int rc = ble_gatts_notify_custom(conn, chr_handle, om);
-    if (rc != 0) {
-        // 未订阅（主机未写 CCCD）时 NimBLE 返回成功但不下发；真失败多为无连接/未订阅
-        ESP_LOGW(TAG, "hogp notify chr=0x%04x len=%u rc=%d", chr_handle, (unsigned)len, rc);
-    }
-    return rc;
+    return last_rc;
 }
 
 int gateway_hogp_send_keyboard(uint8_t keycode, bool pressed) {

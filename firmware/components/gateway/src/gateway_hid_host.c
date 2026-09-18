@@ -22,14 +22,21 @@ static const char *TAG = "gw_hid";
 #define RETRY_DELAY_TICKS pdMS_TO_TICKS(3000)
 #define START_DELAY_TICKS pdMS_TO_TICKS(1000)
 
-// 主机额外动作开关（真机对照实验）：07:04 按键正常时段的固件从未执行过
-// CCCD 写/ReportMap 读/Control Point 写（当时枚举路径挂着），此后版本加入
-// 三件套反而按键零推送——置 0 回到纯净形态验证，定位后再逐项恢复。
-#define XIAOMI_HID_HOST_EXTRAS 0
+// HOGP 主机侧两个必需动作（都不是可选优化，缺一即按键零推送）：
+//  - CCCD 订阅：不开 Report notify 通道，遥控器除语音键（走 ATVV 帧）以外的
+//    所有按键都不会上行。真机定案：置 0 时方向键/音量键/电源键全死，
+//    语音键仍能触发（它由 ATVV Control 帧驱动，与 HID 通道无关），
+//    现象即"只有语音键有反应、其他键全没反应"。
+//  - Exit Suspend：HOGP 规范要求主机写 HID Control Point(0x2A4C)=0x00，
+//    让重连后处于 suspend 态的 HID 设备恢复输入报告推送。
+// 历史上"三件套致小米停推"的假设已被证伪——真因是 sec_cb 每次连接无条件
+// delete_peer 重配对把遥控器配对状态机搞坏（见方案文档 §6.3 问题 6）。
+// 保留独立开关仅用于必要时二分定位。
+#define XIAOMI_HID_CCCD_SUBSCRIBE 1
+#define XIAOMI_HID_EXIT_SUSPEND 1
 
 #define UUID_HID_SVC 0x1812
 #define UUID_REPORT 0x2A4D
-#define UUID_REPORT_MAP 0x2A4B
 #define UUID_HID_CTRL_POINT 0x2A4C  // HID Control Point：写 0x00 = Exit Suspend
 #define CHR_PROP_NOTIFY 0x10
 
@@ -45,17 +52,31 @@ static gateway_hid_notify_router_t s_notify_router;
 static uint8_t s_latency_fix_count;
 // direct connect 连续失败计数（改绑自愈：3 次后清 peer 转扫描重新配对）
 static uint8_t s_direct_fail_streak;
-// Report CCCD 订阅状态与重试：CCCD 枚举/写是 ATT 事务，可能被小米 ~4.9s 的
-// L2CAP 参数请求 0x212 窗口吞掉（真机 Phase 2 定案——与 ATVV 发现同机制），
-// 订阅不成则小米永不推 HID 按键。写确认回调置位，3s 未确认重试。
-static volatile bool s_report_cccd_written;
+// 本连接是否已触发 HID 发现（bond 恢复与新建配对两条加密路径的幂等保护）
+static bool s_hid_explored;
+// 本连接清旧键重配的次数：用现存 bond 起不来时最多清一次（见 wipe_peer_and_retry）
+static uint8_t s_sec_wipe_count;
+// 小米 HID 服务内有 25 个 Report 特征（真机枚举），其中 7 个带 notify。按键流
+// 落在不同 Report 特征上（每个 Report ID 一个特征），只认第一个会漏掉大部分按键
+// ——真机定案：语音键 usage 走 0x0064，其余按键零推送（报文落到别的 Report 特征
+// 后被当成 ATVV 包丢弃）。故枚举阶段收集全部带 notify 的 Report 句柄，逐个写
+// CCCD 订阅；落入任一句柄的报文都按 HID 按键报文解析。
+#define MAX_REPORT_HANDLES 8
+static uint16_t s_report_handles[MAX_REPORT_HANDLES];
+static uint8_t s_report_handle_count;
+// CCCD 订阅顺序推进：一次只挂一个写事务，避免与小米 ~4.9s L2CAP 参数请求
+// 0x212 窗口撞车时叠压（真机 Phase 2 定案——该窗口会吞掉在途 ATT 事务）。
+// s_cccd_index = 当前推进到的特征下标（失败重试到上限即跳过前进，不卡整条链）；
+// s_cccd_confirmed = 实际订阅成功的特征数（诊断用）。
+static uint8_t s_cccd_index;
+static uint8_t s_cccd_confirmed;
 static uint8_t s_cccd_retry_count;
+static bool s_dsc_found;  // 本次描述符枚举是否命中 0x2902
 static struct ble_npl_callout s_cccd_retry_callout;
 static bool s_cccd_retry_callout_inited;
 static bool s_running;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_report_handle;  // 小米侧 Report 特征值句柄（notify 源）
-static uint16_t s_report_map_handle;      // Report Map(0x2A4B) 句柄
 static uint16_t s_hid_ctrl_point_handle;  // HID Control Point(0x2A4C) 句柄（唤醒推送）
 static uint8_t s_own_addr_type;
 static gateway_report_parser_t s_parser;
@@ -67,72 +88,145 @@ static bool s_sec_callout_inited;
 static void start_scan(void);
 static void try_connect_known(void);
 
-// Report Map 长读回调：内容丢弃，读毕写 HID Control Point（Exit Suspend）——
-// HOGP 规范：HID 设备重连后处于 suspend 态，主机必须写 Control Point(0x2A4C)
-// =0x00 才恢复输入报告推送。此前从未写过（真机按键零推送的规范层根因）。
-static int on_read_report_map(uint16_t conn, const struct ble_gatt_error *error,
-                              struct ble_gatt_attr *attr, void *arg) {
-  (void)conn; (void)arg;
-  if (error->status == BLE_HS_EDONE) {
-    ESP_LOGI(TAG, "Report Map 读取完成");
-#if XIAOMI_HID_HOST_EXTRAS
-    if (s_hid_ctrl_point_handle != 0) {
-      static const uint8_t exit_suspend = 0x00;  // 静态生命周期：write_flat 异步引用
-      int rc = ble_gattc_write_flat(conn, s_hid_ctrl_point_handle, &exit_suspend, 1,
-                                    NULL, NULL);
-      ESP_LOGI(TAG, "写 HID Control Point(0x%04x)=Exit Suspend rc=%d",
-               s_hid_ctrl_point_handle, rc);
-    } else {
-      ESP_LOGW(TAG, "未发现 HID Control Point 特征");
-    }
-#endif
+// 写 HID Control Point = 0x00 (Exit Suspend)：HOGP 规范要求 HID 设备重连后
+// 处于 suspend 态，主机必须写该特征才恢复输入报告推送。此前从未写过。
+// 直写即可，不再绕道 Report Map 长读（内容本就丢弃，只多一个可能被 ~4.9s
+// L2CAP 参数窗口吞掉的 ATT 事务）。写失败不致命：CCCD 订阅才是按键通道的硬前提。
+static void write_hid_exit_suspend(void) {
+#if XIAOMI_HID_EXIT_SUSPEND
+  if (s_conn == BLE_HS_CONN_HANDLE_NONE || s_hid_ctrl_point_handle == 0) {
+    ESP_LOGW(TAG, "HID Control Point 不可用，跳过 Exit Suspend");
+    return;
   }
-  return 0;
+  static const uint8_t exit_suspend = 0x00;  // 静态生命周期：write_flat 异步引用
+  int rc = ble_gattc_write_flat(s_conn, s_hid_ctrl_point_handle, &exit_suspend, 1,
+                                NULL, NULL);
+  ESP_LOGI(TAG, "写 HID Control Point(0x%04x)=Exit Suspend rc=%d",
+           s_hid_ctrl_point_handle, rc);
+#endif
 }
 
-// Report CCCD 订阅写完成回调：成功置订阅标志；Invalid Handle 等失败由
-// retry callout 重试（同句柄）。
+#define CCCD_RETRY_MAX 2
+
+static void report_cccd_step(void);
+
+// 推进到下一个 Report 特征；链尾写 Exit Suspend（HOGP 的唤醒动作放在全部订阅
+// 之后，避免与 CCCD 写在 ~4.9s L2CAP 参数窗口里叠压）。
+static void cccd_advance(void) {
+  s_cccd_index++;
+  s_cccd_retry_count = 0;
+  ble_npl_callout_stop(&s_cccd_retry_callout);
+  if (s_cccd_index >= s_report_handle_count) {
+    ESP_LOGI(TAG, "Report CCCD 订阅完成：成功 %u/%u（按键推送通道开通）",
+             (unsigned)s_cccd_confirmed, (unsigned)s_report_handle_count);
+    write_hid_exit_suspend();
+    return;
+  }
+  report_cccd_step();
+}
+
+// Report CCCD 订阅写完成回调：成功即推进下一个；失败交给 retry callout
+// （重试到上限就跳过该特征继续——单个句柄被拒不能卡死整条链，真机实证
+// 0x0077 返回 ATT 0x03 Write Not Permitted）。
 static int on_cccd_write_done(uint16_t conn, const struct ble_gatt_error *error,
                               struct ble_gatt_attr *attr, void *arg) {
   (void)conn; (void)attr; (void)arg;
-  if (error->status == 0) {
-    s_report_cccd_written = true;
-    ESP_LOGI(TAG, "Report CCCD 订阅确认（按键推送通道开通）");
-    if (s_report_map_handle != 0) {
-      int rc = ble_gattc_read_long(s_conn, s_report_map_handle, 0, on_read_report_map,
-                                   NULL);
-      ESP_LOGI(TAG, "读 Report Map(0x%04x) rc=%d", s_report_map_handle, rc);
+  if (error->status != 0) {
+    ESP_LOGW(TAG, "Report CCCD(0x%04x) 写失败 status=%d",
+             (uint16_t)(s_report_handles[s_cccd_index] + 1), error->status);
+    return 0;
+  }
+  s_cccd_confirmed++;
+  cccd_advance();
+  return 0;
+}
+
+// 落入任一带 notify 的 Report 特征句柄即按键报文
+static bool is_report_handle(uint16_t handle) {
+  for (uint8_t i = 0; i < s_report_handle_count; i++) {
+    if (s_report_handles[i] == handle) {
+      return true;
     }
-  } else {
-    ESP_LOGW(TAG, "Report CCCD 写失败 status=%d", error->status);
+  }
+  return false;
+}
+
+// 订阅第 s_cccd_index 个 Report 特征：先枚举描述符找真正的 0x2902（与
+// xiaomi_atvv_client 同一手法，ATVV 侧实测该枚举可用），再用 GATT 布局惯例
+// 的特征值句柄 +1 兜底（spike 实证 0x0065；小米 HID 侧描述符枚举时有不响应）。
+static int on_report_dsc(uint16_t conn, const struct ble_gatt_error *error,
+                         uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc,
+                         void *arg) {
+  (void)chr_val_handle; (void)arg;
+  if (error->status == BLE_HS_EDONE) {
+    if (!s_dsc_found) {
+      uint16_t fallback = (uint16_t)(s_report_handles[s_cccd_index] + 1);
+      ESP_LOGW(TAG, "Report 0x%04x 未枚举到 CCCD，回退直写 0x%04x",
+               s_report_handles[s_cccd_index], fallback);
+      static const uint16_t enable_notify = 0x0001;  // 静态：write_flat 异步引用
+      int rc = ble_gattc_write_flat(conn, fallback, &enable_notify,
+                                    sizeof(enable_notify), on_cccd_write_done, NULL);
+      ESP_LOGI(TAG, "Report CCCD(0x%04x) 直写 0x0001 rc=%d（%u/%u）", fallback, rc,
+               (unsigned)(s_cccd_index + 1), (unsigned)s_report_handle_count);
+    }
+    return 0;
+  }
+  if (error->status != 0 || dsc == NULL) {
+    return 0;
+  }
+  if (ble_uuid_u16(&dsc->uuid.u) == 0x2902) {
+    s_dsc_found = true;
+    static const uint16_t enable_notify = 0x0001;  // 静态：write_flat 异步引用
+    int rc = ble_gattc_write_flat(conn, dsc->handle, &enable_notify,
+                                  sizeof(enable_notify), on_cccd_write_done, NULL);
+    ESP_LOGI(TAG, "Report 0x%04x 的 CCCD(0x%04x) 写 0x0001 rc=%d（%u/%u）",
+             s_report_handles[s_cccd_index], dsc->handle, rc,
+             (unsigned)(s_cccd_index + 1), (unsigned)s_report_handle_count);
   }
   return 0;
 }
 
-// 直接写 Report 特征句柄 +1 的 CCCD：小米对描述符枚举（disc_all_dscs，
-// Read By Type 0x2902）真机无响应（四连发全挂，与 svcs/chrs 枚举通形成对照），
-// 改按 GATT 布局惯例直写（spike 实证 CCCD 句柄 = Report+1 = 0x0065）。
-static void try_write_report_cccd(void) {
-  static const uint16_t enable_notify = 0x0001;  // 静态生命周期：write_flat 异步引用
-  uint16_t handle = (uint16_t)(s_report_handle + 1);
-  int rc = ble_gattc_write_flat(s_conn, handle, &enable_notify, sizeof(enable_notify),
-                                on_cccd_write_done, NULL);
-  ESP_LOGI(TAG, "Report CCCD(0x%04x) 直写 0x0001 rc=%d", handle, rc);
+static void report_cccd_step(void) {
+  if (s_cccd_index >= s_report_handle_count) {
+    cccd_advance();
+    return;
+  }
+  s_dsc_found = false;
+  uint16_t val = s_report_handles[s_cccd_index];
+  int rc = ble_gattc_disc_all_dscs(s_conn, (uint16_t)(val + 1), (uint16_t)(val + 5),
+                                   on_report_dsc, NULL);
+  if (rc != 0) {
+    // 枚举起不来（或有在途 GATT 过程）：直接退回直写
+    ESP_LOGW(TAG, "Report 0x%04x 描述符枚举启动失败 rc=%d，退回直写", val, rc);
+    static const uint16_t enable_notify = 0x0001;  // 静态：write_flat 异步引用
+    int wrc = ble_gattc_write_flat(s_conn, (uint16_t)(val + 1), &enable_notify,
+                                   sizeof(enable_notify), on_cccd_write_done, NULL);
+    ESP_LOGI(TAG, "Report CCCD(0x%04x) 直写 0x0001 rc=%d（%u/%u）",
+             (uint16_t)(val + 1), wrc, (unsigned)(s_cccd_index + 1),
+             (unsigned)s_report_handle_count);
+  }
+  ble_npl_callout_reset(&s_cccd_retry_callout, pdMS_TO_TICKS(3000));
 }
 
 static void cccd_retry_cb(struct ble_npl_event *ev) {
   (void)ev;
-  if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE || s_report_handle == 0) {
+  if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE || s_report_handle_count == 0) {
     return;
   }
-  if (s_report_cccd_written || s_cccd_retry_count >= 3) {
+  if (s_cccd_index >= s_report_handle_count) {
+    return;  // 链已跑完，等确认
+  }
+  if (s_cccd_retry_count >= CCCD_RETRY_MAX) {
+    ESP_LOGW(TAG, "Report 0x%04x 订阅连续 %u 次未成功，跳过继续下一个",
+             s_report_handles[s_cccd_index], s_cccd_retry_count);
+    cccd_advance();
     return;
   }
   s_cccd_retry_count++;
-  ESP_LOGW(TAG, "Report CCCD 订阅未确认，直写重试第 %u 次", s_cccd_retry_count);
-  try_write_report_cccd();
-  // 无论发起成败都续 arm：写再次被吞时下一次重试继续（written 置位后停）
-  ble_npl_callout_reset(&s_cccd_retry_callout, pdMS_TO_TICKS(3000));
+  ESP_LOGW(TAG, "Report 0x%04x 订阅未确认，第 %u 次重试（%u/%u）",
+           s_report_handles[s_cccd_index], s_cccd_retry_count,
+           (unsigned)(s_cccd_index + 1), (unsigned)s_report_handle_count);
+  report_cccd_step();
 }
 
 // ---- 对端地址持久化 ----
@@ -203,25 +297,29 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
                   const struct ble_gatt_chr *chr, void *arg) {
   struct hid_range *range = arg;
   if (error->status == BLE_HS_EDONE) {
-    if (s_report_handle == 0) {
+    if (s_report_handle_count == 0) {
       ESP_LOGW(TAG, "HID 服务内无带 notify 的 Report 特征");
       return 0;
     }
-    // 订阅：直写 Report+1 的 CCCD（枚举路径小米无响应，见 try_write_report_cccd
-    // 注释）；写是 ATT 事务，可能被 ~4.9s 参数窗口吞——retry callout 兜底重试。
-    // 对照实验开关：三件套疑致小米停推（见宏注释），关闭时零额外主机动作。
-#if XIAOMI_HID_HOST_EXTRAS
+    ESP_LOGI(TAG, "小米 HID 服务内带 notify 的 Report 特征共 %u 个",
+             (unsigned)s_report_handle_count);
+    // 订阅：逐个 Report 特征枚举描述符找 0x2902（见 report_cccd_step）；写是
+    // ATT 事务，可能被 ~4.9s 参数窗口吞——retry callout 兜底重试/跳过。
+    // 不订阅则遥控器除语音键（走 ATVV 帧）以外的按键全部不上行。
+#if XIAOMI_HID_CCCD_SUBSCRIBE
     if (!s_cccd_retry_callout_inited) {
       ble_npl_callout_init(&s_cccd_retry_callout, nimble_port_get_dflt_eventq(),
                            cccd_retry_cb, NULL);
       s_cccd_retry_callout_inited = true;
     }
-    s_report_cccd_written = false;
+    s_cccd_index = 0;
+    s_cccd_confirmed = 0;
     s_cccd_retry_count = 0;
-    try_write_report_cccd();
+    report_cccd_step();
     ble_npl_callout_reset(&s_cccd_retry_callout, pdMS_TO_TICKS(3000));
 #else
-    ESP_LOGI(TAG, "纯净模式：不写 CCCD（对照实验）");
+    ESP_LOGI(TAG, "CCCD 订阅已关闭（对照实验）");
+    write_hid_exit_suspend();
 #endif
     return 0;
   }
@@ -230,16 +328,19 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
   }
   if (ble_uuid_u16(&chr->uuid.u) == UUID_REPORT &&
       (chr->properties & CHR_PROP_NOTIFY) &&
-      chr->val_handle >= range->start && chr->val_handle <= range->end &&
-      s_report_handle == 0) {
-    s_report_handle = chr->val_handle;
-    ESP_LOGI(TAG, "锁定小米 Report 特征 0x%04x，链路就绪", s_report_handle);
-    if (s_on_link != NULL) {
-      s_on_link(true);
+      chr->val_handle >= range->start && chr->val_handle <= range->end) {
+    // 收集全部带 notify 的 Report 特征（不只是第一个）：按键流分散在多个
+    // Report ID 上，漏订/漏解析哪一个就丢哪一组按键。
+    if (s_report_handle_count < MAX_REPORT_HANDLES) {
+      s_report_handles[s_report_handle_count++] = chr->val_handle;
     }
-  } else if (ble_uuid_u16(&chr->uuid.u) == UUID_REPORT_MAP &&
-             chr->val_handle >= range->start && chr->val_handle <= range->end) {
-    s_report_map_handle = chr->val_handle;
+    if (s_report_handle == 0) {
+      s_report_handle = chr->val_handle;  // 首个：链路就绪信号与 connected 判定
+      ESP_LOGI(TAG, "锁定小米 Report 特征 0x%04x，链路就绪", s_report_handle);
+      if (s_on_link != NULL) {
+        s_on_link(true);
+      }
+    }
   } else if (ble_uuid_u16(&chr->uuid.u) == UUID_HID_CTRL_POINT &&
              chr->val_handle >= range->start && chr->val_handle <= range->end) {
     s_hid_ctrl_point_handle = chr->val_handle;
@@ -249,7 +350,7 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
 
 static void explore_hid(uint16_t conn) {
   s_report_handle = 0;
-  s_report_map_handle = 0;
+  s_report_handle_count = 0;
   s_hid_ctrl_point_handle = 0;
   static struct hid_range range;  // 静态：异步回调链携带
   range.start = range.end = 0;
@@ -290,6 +391,37 @@ static void retry_cb(struct ble_npl_event *ev) {
   try_connect_known();
 }
 
+// 链路加密就绪后的统一入口：落盘对端地址 + 重置按键解析器 + 启动 HID 发现。
+// 幂等保护：bond 恢复时加密在连接建立阶段即完成，ENC_CHANGE 可能早于 sec_cb
+// 触发，两条路径都会走到这里；重复探索会打乱 ATT 事务并叠加重试。
+static void on_link_secured(uint16_t conn) {
+  if (s_hid_explored) {
+    return;
+  }
+  s_hid_explored = true;
+  s_sec_wipe_count = 0;
+  struct ble_gap_conn_desc desc;
+  if (ble_gap_conn_find(conn, &desc) == 0) {
+    save_peer(desc.peer_id_addr.val, desc.peer_id_addr.type);
+  }
+  gateway_report_parser_reset(&s_parser);
+  explore_hid(conn);
+}
+
+// 用现存 bond 起不来时的兜底：清掉本机存的旧 LTK 再重配（每次连接最多一次）。
+// 不无条件清键——那会把每次重连都变成一次全新配对，遥控器 NVS 被反复写键、
+// 配对状态机搞坏（真机问题 6 的元凶：所有按键零推送，重配对后才恢复）。
+static void wipe_peer_and_retry(const char *why, int rc) {
+  struct ble_gap_conn_desc desc;
+  if (s_conn == BLE_HS_CONN_HANDLE_NONE || ble_gap_conn_find(s_conn, &desc) != 0) {
+    return;
+  }
+  s_sec_wipe_count++;
+  ESP_LOGW(TAG, "%s rc=%d，清旧键重配对（第 %u 次）", why, rc, s_sec_wipe_count);
+  (void)ble_store_util_delete_peer(&desc.peer_id_addr);
+  ble_npl_callout_reset(&s_sec_callout, pdMS_TO_TICKS(500));
+}
+
 // 延迟发起加密：连接刚建立时 controller 状态未完全就绪（真机曾见 terminate 返回
 // CMD_DISALLOWED、security_initiate 同步失败），等 MTU 交换完成后再发起
 static void sec_cb(struct ble_npl_event *ev) {
@@ -304,16 +436,28 @@ static void sec_cb(struct ble_npl_event *ev) {
   ESP_LOGI(TAG, "发起加密：conn=%d role=%s enc=%d bonded=%d", s_conn,
            desc.role == BLE_GAP_ROLE_MASTER ? "master" : "slave",
            desc.sec_state.encrypted, desc.sec_state.bonded);
-  // 清除该对端的陈旧键再配对：NVS 跨烧录持久化，spike 时代的旧 LTK 会让对端
-  // 以"已有键"姿态拒绝新配对（真机排查：连接后 ~1s 被对端掐断 HCI 0x13）
-  (void)ble_store_util_delete_peer(&desc.peer_id_addr);
-  int rc = ble_gap_security_initiate(s_conn);
-  if (rc != 0) {
-    // 失败必须终止连接再重试：悬挂连接会占满连接表（MAX_CONNECTIONS=2 含桌面
-    // 端一条），后续 connect 全部 ENOMEM 死循环（真机验收实测教训）
-    ESP_LOGW(TAG, "security_initiate 失败 rc=%d，断开后重试", rc);
-    ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+  // bond 正常时链路已由 controller 用现存 LTK 加密，不需要也不应该重配。
+  if (desc.sec_state.encrypted) {
+    on_link_secured(s_conn);
+    return;
   }
+  int rc = ble_gap_security_initiate(s_conn);
+  if (rc == 0 || rc == BLE_HS_EALREADY) {
+    // EALREADY：controller 已用现存 bond 完成加密，而 ENC_CHANGE 早于本回调
+    // 触发过了——补一次发现，否则会一直空等到超时。
+    if (ble_gap_conn_find(s_conn, &desc) == 0 && desc.sec_state.encrypted) {
+      on_link_secured(s_conn);
+    }
+    return;
+  }
+  if (s_sec_wipe_count == 0) {
+    wipe_peer_and_retry("security_initiate 失败", rc);
+    return;
+  }
+  // 清键后仍失败：悬挂连接会占满连接表（MAX_CONNECTIONS=3 含桌面端一条），
+  // 后续 connect 全部 ENOMEM 死循环（真机验收实测教训），断开重试
+  ESP_LOGW(TAG, "security_initiate 再次失败 rc=%d，断开后重试", rc);
+  ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg) {
@@ -344,7 +488,11 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       }
       s_conn = event->connect.conn_handle;
       s_latency_fix_count = 0;
-      s_report_cccd_written = false;
+      s_hid_explored = false;
+      s_sec_wipe_count = 0;
+      s_report_handle_count = 0;
+      s_cccd_index = 0;
+      s_cccd_confirmed = 0;
       s_cccd_retry_count = 0;
       ble_npl_callout_stop(&s_cccd_retry_callout);
       ESP_LOGI(TAG, "已连接小米 conn=%d", s_conn);
@@ -392,19 +540,17 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
 
     case BLE_GAP_EVENT_ENC_CHANGE:
       if (event->enc_change.status != 0) {
-        // 非配对模式下的拒绝属预期（Phase 0 结论）：静默重试等待遥控器可配对状态
-        ESP_LOGI(TAG, "加密失败 status=%d（遥控器可能未进配对模式），3s 后重试",
+        // 现存 bond 用不起来（对端删了键/换了 LTK）清一次键重配；清过之后仍失败
+        // 属「遥控器未进配对模式」，静默等待即可（Phase 0 结论）。
+        if (event->enc_change.conn_handle == s_conn && s_sec_wipe_count == 0) {
+          wipe_peer_and_retry("加密失败", event->enc_change.status);
+          return 0;
+        }
+        ESP_LOGI(TAG, "加密失败 status=%d（遥控器可能未进配对模式），静默等待",
                  event->enc_change.status);
         return 0;
       }
-      {
-        struct ble_gap_conn_desc desc;
-        if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
-          save_peer(desc.peer_id_addr.val, desc.peer_id_addr.type);
-        }
-      }
-      gateway_report_parser_reset(&s_parser);
-      explore_hid(event->enc_change.conn_handle);
+      on_link_secured(event->enc_change.conn_handle);
       return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
@@ -414,8 +560,9 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       ESP_LOGW(TAG, "小米断开 reason=%d，3s 后重试", event->disconnect.reason);
       s_conn = BLE_HS_CONN_HANDLE_NONE;
       s_report_handle = 0;
-  s_report_map_handle = 0;
-  s_hid_ctrl_point_handle = 0;
+  s_report_handle_count = 0;
+      s_hid_ctrl_point_handle = 0;
+      s_hid_explored = false;
       if (s_on_link != NULL) {
         s_on_link(false);
       }
@@ -427,8 +574,11 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       if (om == NULL) {
         return 0;
       }
-      // 非 HID Report 特征的 notify（ATVV Control/Audio 等）转发给额外消费者
-      if (event->notify_rx.attr_handle != s_report_handle) {
+      // 非 HID Report 特征的 notify（ATVV Control/Audio 等）转发给额外消费者。
+      // 注意判定必须用「全部 Report 句柄」集合：只比对 s_report_handle（首个）
+      // 会把落在其余 Report 特征上的按键报文误当 ATVV 包丢弃——真机定案：
+      // 语音键 usage 在 0x0064，音量/方向等其他按键在别的 Report 特征上。
+      if (!is_report_handle(event->notify_rx.attr_handle)) {
         if (s_notify_router != NULL) {
           uint8_t buf[300];
           size_t len = OS_MBUF_PKTLEN(om);
@@ -618,7 +768,7 @@ esp_err_t gateway_hid_host_start(gateway_hid_key_cb_t on_key,
   s_running = true;
   s_conn = BLE_HS_CONN_HANDLE_NONE;
   s_report_handle = 0;
-  s_report_map_handle = 0;
+  s_report_handle_count = 0;
   s_hid_ctrl_point_handle = 0;
   gateway_report_parser_reset(&s_parser);
   if (!s_retry_callout_inited) {
@@ -642,7 +792,7 @@ void gateway_hid_host_stop(void) {
     s_conn = BLE_HS_CONN_HANDLE_NONE;
   }
   s_report_handle = 0;
-  s_report_map_handle = 0;
+  s_report_handle_count = 0;
   s_hid_ctrl_point_handle = 0;
   ESP_LOGI(TAG, "小米 central 链路停止");
 }

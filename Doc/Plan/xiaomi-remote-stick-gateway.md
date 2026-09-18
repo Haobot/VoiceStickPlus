@@ -275,7 +275,7 @@ NimBLE 把 `dsc->att_flags` 原样登记为属性权限
 3. 非桌面端对端连接时 `send_state_json gated` 警告会周期性出现（HID 主机连接即触发），
    属预期但噪音，Phase 3 可细分日志级别。
 
-### 6.3 Phase 2 真机四连修（2026-09-18，DEBUG 日志多轮定位）
+### 6.3 Phase 2 真机问题链（2026-09-18，DEBUG 日志多轮定位）
 
 1. **ATVV 发现链挂死（根因定案）**：小米连接后固定 ~4.9s 经 **L2CAP 信令**请求省电
    参数（itvl=10/latency=49/timeout=500），NimBLE 自动原样转发 HCI——该组合违反
@@ -304,6 +304,92 @@ NimBLE 把 `dsc->att_flags` 原样登记为属性权限
    死）。修复 = `BLE_GAP_EVENT_CONN_UPDATE` 协商成功回调里检测 latency>8 主动
    修正为 0（itvl 保持对端快参数 12.5ms，组合合法；上限 3 次防循环）——真机
    验证修正 736ms 生效（itvl=10/latency=0/timeout=500）。
+5. **小米按键零推送（排查期第二条死路）**：链路好、CAPS 应答正常，但遥控器
+   所有按键零推送。根因不在协议，而是**排查期几十次 `delete_peer` 重配对把
+   遥控器自己的配对状态机搞坏**。解法 = 用户长按组合键进配对模式 + 设备自动
+   抓取重新配对（恢复后按键沿立即回来）。
+   - 顺带定案：小米对 `disc_all_dscs`（Read By Type 0x2902）**完全无响应**
+     （四连发全挂，与 svcs/chrs 枚举通形成对照）——CCCD 只能按 GATT 布局惯例
+     **直写 Report+1 句柄**（spike 实证 0x0065）。
+6. **语音键按下设备崩溃重启（屏幕闪 Pairing）**：`assert failed:
+   xStreamBufferReceive` NULL 断言。`start_ext` 里 StreamBuffer 是懒创建的
+   （首次 feed PCM 才建），而 `audio_task` 先于首帧 PCM 开跑 ⇒
+   `xStreamBufferReceive(NULL)`。修复 = `start_ext` 预创建 + 读路径判空防御。
+7. **「纯净模式」对照实验是错误假设，且制造了回归（本次定案）**：排查期怀疑
+   「CCCD 写 / ReportMap 读 / Control Point 写三件套致小米停推」，把三者统一
+   关进 `XIAOMI_HID_HOST_EXTRAS=0`。真因是第 5 条的遥控器配对状态机损坏；
+   而关掉 CCCD 直接**制造回归**——真机日志只剩 `锁定小米 Report 特征 0x0064，
+   链路就绪` + `纯净模式：不写 CCCD`，HID Report notify 通道从未开通。
+   因为**语音键的上行由 ATVV Control 帧驱动（`gateway_atvv_on_press`），与
+   HID 通道无关**，所以现象恰好是用户报的「**只有语音键有反应、其他键全没反应**」。
+   修复 = CCCD 订阅与 Exit Suspend 拆成两个独立开关并默认打开
+   （`XIAOMI_HID_CCCD_SUBSCRIBE` / `XIAOMI_HID_EXIT_SUSPEND`），Exit Suspend
+   改为直写、不再绕道 Report Map 长读。真机确认：`Report CCCD(0x0065) 直写
+   0x0001 rc=0` ⇒ `Report CCCD 订阅确认（按键推送通道开通）` ⇒
+   `写 HID Control Point(0x0059)=Exit Suspend rc=0`。
+8. **语音键录音必然失败：`Audio wait:ESP_ERR_NO_MEM`（本次定案）**。
+   `EXT_STREAM_BYTES = 2 * 16000 * 2 = 64000` 字节的外部源 PCM 环形缓冲用
+   `xStreamBufferCreate()` 分配，**必然返回 NULL**：
+   - FreeRTOS 的 `xStreamBufferCreate()` 内部走 `pvPortMalloc()`，而 IDF 把
+     `portFREERTOS_HEAP_CAPS` **硬编码为 `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`**
+     （`components/freertos/heap_idf.c`）——**PSRAM 根本不在候选里**；
+   - 网关模式（NimBLE 控制器+host、LVGL、双连接并存、32KB 内部预留）下，
+     64000 字节连续**内部** RAM 凑不出来；
+   - 原注释「>16KB 分配走 SPIRAM（`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`）」是错的：
+     该阈值只作用于普通 `malloc()`（`heap_caps_malloc_default`），对
+     `pvPortMalloc` 无效。
+   修复 = `xStreamBufferCreateWithCaps(EXT_STREAM_BYTES, 2, MALLOC_CAP_SPIRAM)`
+   （与 `audio_task` 栈用 `xTaskCreatePinnedToCoreWithCaps(..., MALLOC_CAP_SPIRAM)`
+   是同一手法、同一个坑）。
+   - **诊断陷阱**：该失败点在 `start_ext` 中位于 `s_last_error_step = "opus"`
+     之前，步骤标签仍停在 `"wait"`，于是屏幕显示 `Audio wait:ESP_ERR_NO_MEM`；
+     而真正「等上一会话任务退出」超时返回的是 `ESP_ERR_TIMEOUT`。两者极易混淆，
+     定位时以 `esp_err_to_name` 的错误码为准而不是步骤标签。
+9. **「语音键正常、其他按键全死」= HID 侧只认了 1/7 个 Report 特征（本次定案）**。
+   真机枚举发现小米 HID 服务内有 **25 个 Report(0x2A4D) 特征，其中 7 个带 notify**
+   （props=0x1A：0x0064/0x006B/0x0072/0x0076/0x007A/0x007E/0x0085）。而代码：
+   - 发现阶段 `s_report_handle == 0` 只锁**第一个**（0x0064）并只订它的 CCCD；
+   - 接收阶段 `NOTIFY_RX` 按 `attr_handle != s_report_handle` 过滤，落在其余
+     6 个 Report 特征上的按键报文被**当成 ATVV 包转发/丢弃**。
+   修复 = 枚举阶段收集全部带 notify 的 Report 句柄，逐个订阅（顺序推进，一次只挂
+   一个 ATT 事务避开 ~4.9s 参数窗口）；接收阶段用句柄集合判定。
+   注意语音键掩盖了这个 bug：它的上行由 ATVV Control 帧驱动，与本通道无关。
+10. **CCCD 句柄不能靠「特征值句柄 +1」猜（本次定案）**。Report 0x0076 的 CCCD
+   实际在 **0x0078**，猜出来的 0x0077 被遥控器以 ATT 0x03 Write Not Permitted
+   拒绝（NimBLE 错误码 259）；且原实现「一个句柄失败就整条链卡死」，后 3 个特征
+   永远订不到。修复 = 改用描述符枚举找真正的 0x2902（与 `xiaomi_atvv_client` 同一
+   手法），**枚举不到才回退直写 +1**，单个句柄重试到上限即跳过继续，不卡整条链。
+   真机结果：`Report 0x0076 的 CCCD(0x0078) 写 0x0001 rc=0`、
+   `Report CCCD 订阅完成：成功 7/7`。
+11. **HOGP 直通只发第一条 role=slave 连接 ⇒ 网关模式下可能打错目标（本次定案）**。
+   `gateway_hogp.c` 的 `first_periph_handle()` 取「第一条外设连接」。网关模式外设侧
+   可能同时/先后存在两条 slave 角色链路（Windows HID 主机与桌面端 app，后者从不
+   订阅 HOGP），挑中 app 那条时 **NimBLE 对未订阅连接返回成功但不下发**，报文静默
+   消失。修复 = 向**所有** role=slave 连接广播（未订阅的自然丢弃），并在一条都没有
+   时打 `hogp 无外设链路可下发` —— 该日志把「电脑没反应」从「固件没发」里区分开。
+12. **「其他按键全没用」的最后一环在系统侧：Windows 没有 VS-53A8 的设备节点
+   （本次定案，非固件问题）**。BLE HID 直通要求目标机与设备有 **OS 级配对**——
+   没有 `Enum\BTHLE\Dev_70041ddc53aa` 节点就没有 HOGP HID 链路，设备发的报告
+   无处可去；而语音键走 app 自己的 GATT 通道，不受影响，于是现象仍是「只有语音键
+   有用」。真机取证：注册表 `BTHPORT\Parameters\Devices` 里**有** 70041ddc53aa
+   的密钥、`Enum\BTHLE` 里**没有**节点 = 密钥残留、节点被删。
+   - **元凶是桌面端 app 的失效恢复路径**：`ble_central_win.cc` 在
+     `IsLikelyStaleBondError` 命中（服务发现抛错）或 GATT `Unreachable` 时执行
+     `TryUnpairAsync` 删掉系统配对再重置蓝牙 radio。设备每次重启都会让 WinRT
+     缓存的加密上下文失效（见问题 3），于是**每次烧录/重启都可能顺手删掉系统配对**，
+     而 app 对 VS 设备**从不重建 OS 级 bond**（`PairAsync` 只在小米遥控器路径
+     `AttemptXiaomiOsPairing` 里调用）⇒ HOGP 直通静默失效。真机日志实锤：
+     `13:31:42 attempting to remove stale Windows pairing for VS-53A8`（恰在
+     13:31 烧录之后）、`13:35:56` 又一次。
+     恢复 = 用户在 **Windows 设置 → 添加设备 → 蓝牙** 里手动配对 VS-53A8（设备需
+     处于广播态）。配对后 Windows 侧出现 `HID Keyboard Device` +
+     `HID-compliant consumer control device` + `BLE GATT compliant HID device`。
+     **遗留项**：建议桌面端在 VS 设备的失效恢复路径里补一次 `PairAsync` 重建 bond
+     （或至少提示用户去系统设置重新配对），否则该故障会随每次设备重启复现。
+   - 顺带纠正一个此前的误判：**Windows 的 HID 主机与 app 复用同一条 ACL 链路**
+     （app 重连日志 `link-layer connected VS-53A8 after 0ms`，设备侧始终只有一条
+     peripheral 连接）。因此共存**不需要**第二条连接，也**不需要**保持广播——
+     `voice_ble` 连上即 `stop_advertising()` 不是问题，不要据此改动广播策略。
 
 ## 7. 测试策略（TDD 纪律）
 
