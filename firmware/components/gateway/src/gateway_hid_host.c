@@ -25,6 +25,7 @@ static const char *TAG = "gw_hid";
 #define UUID_HID_SVC 0x1812
 #define UUID_REPORT 0x2A4D
 #define UUID_REPORT_MAP 0x2A4B
+#define UUID_HID_CTRL_POINT 0x2A4C  // HID Control Point：写 0x00 = Exit Suspend
 #define CHR_PROP_NOTIFY 0x10
 
 // 名称白名单（trim+小写子串匹配；u-rfrc 为 Phase 0 取证发现的正常态广播名）
@@ -47,7 +48,8 @@ static bool s_cccd_retry_callout_inited;
 static bool s_running;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_report_handle;  // 小米侧 Report 特征值句柄（notify 源）
-static uint16_t s_report_map_handle;  // Report Map(0x2A4B) 句柄（读取以解锁按键推送）
+static uint16_t s_report_map_handle;      // Report Map(0x2A4B) 句柄
+static uint16_t s_hid_ctrl_point_handle;  // HID Control Point(0x2A4C) 句柄（唤醒推送）
 static uint8_t s_own_addr_type;
 static gateway_report_parser_t s_parser;
 static struct ble_npl_callout s_retry_callout;
@@ -58,14 +60,23 @@ static bool s_sec_callout_inited;
 static void start_scan(void);
 static void try_connect_known(void);
 
-// Report Map 长读回调：内容丢弃。读取本身是目的——spike 流程实证小米在主机
-// 读过 ReportMap 后才开始推按键 notify（未读则只响应请求不主动推送，真机
-// Phase 2 排查期对照发现）。
+// Report Map 长读回调：内容丢弃，读毕写 HID Control Point（Exit Suspend）——
+// HOGP 规范：HID 设备重连后处于 suspend 态，主机必须写 Control Point(0x2A4C)
+// =0x00 才恢复输入报告推送。此前从未写过（真机按键零推送的规范层根因）。
 static int on_read_report_map(uint16_t conn, const struct ble_gatt_error *error,
                               struct ble_gatt_attr *attr, void *arg) {
   (void)conn; (void)arg;
   if (error->status == BLE_HS_EDONE) {
-    ESP_LOGI(TAG, "Report Map 读取完成（按键推送解锁条件）");
+    ESP_LOGI(TAG, "Report Map 读取完成");
+    if (s_hid_ctrl_point_handle != 0) {
+      static const uint8_t exit_suspend = 0x00;  // 静态生命周期：write_flat 异步引用
+      int rc = ble_gattc_write_flat(conn, s_hid_ctrl_point_handle, &exit_suspend, 1,
+                                    NULL, NULL);
+      ESP_LOGI(TAG, "写 HID Control Point(0x%04x)=Exit Suspend rc=%d",
+               s_hid_ctrl_point_handle, rc);
+    } else {
+      ESP_LOGW(TAG, "未发现 HID Control Point 特征");
+    }
   }
   return 0;
 }
@@ -215,6 +226,9 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
   } else if (ble_uuid_u16(&chr->uuid.u) == UUID_REPORT_MAP &&
              chr->val_handle >= range->start && chr->val_handle <= range->end) {
     s_report_map_handle = chr->val_handle;
+  } else if (ble_uuid_u16(&chr->uuid.u) == UUID_HID_CTRL_POINT &&
+             chr->val_handle >= range->start && chr->val_handle <= range->end) {
+    s_hid_ctrl_point_handle = chr->val_handle;
   }
   return 0;
 }
@@ -222,6 +236,7 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
 static void explore_hid(uint16_t conn) {
   s_report_handle = 0;
   s_report_map_handle = 0;
+  s_hid_ctrl_point_handle = 0;
   static struct hid_range range;  // 静态：异步回调链携带
   range.start = range.end = 0;
   int rc = ble_gattc_disc_all_svcs(conn, on_svc, &range);
@@ -370,6 +385,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       s_conn = BLE_HS_CONN_HANDLE_NONE;
       s_report_handle = 0;
   s_report_map_handle = 0;
+  s_hid_ctrl_point_handle = 0;
       if (s_on_link != NULL) {
         s_on_link(false);
       }
@@ -556,6 +572,7 @@ esp_err_t gateway_hid_host_start(gateway_hid_key_cb_t on_key,
   s_conn = BLE_HS_CONN_HANDLE_NONE;
   s_report_handle = 0;
   s_report_map_handle = 0;
+  s_hid_ctrl_point_handle = 0;
   gateway_report_parser_reset(&s_parser);
   if (!s_retry_callout_inited) {
     ble_npl_callout_init(&s_retry_callout, nimble_port_get_dflt_eventq(), retry_cb, NULL);
@@ -579,6 +596,7 @@ void gateway_hid_host_stop(void) {
   }
   s_report_handle = 0;
   s_report_map_handle = 0;
+  s_hid_ctrl_point_handle = 0;
   ESP_LOGI(TAG, "小米 central 链路停止");
 }
 
