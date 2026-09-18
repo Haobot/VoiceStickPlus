@@ -28,10 +28,12 @@
   Suspend 都是协议必需动作，已拆成独立开关默认打开。
 
 **遗留项（未做，建议排期）**：
-1. 桌面端 `ble_central_win.cc` 的失效恢复路径会 `TryUnpairAsync` **删掉 Windows 配对**，而 app 对 VS
-   设备**从不重建 OS 级 bond**（`PairAsync` 只在小米路径 `AttemptXiaomiOsPairing` 里调用）⇒ HOGP 直通随
-   设备重启静默失效。本次真机日志实锤：`13:31:42 attempting to remove stale Windows pairing for VS-53A8`。
-   建议补一次 `PairAsync`，或明确提示用户去系统设置重新配对。
+1. ~~桌面端失效恢复路径删掉系统配对却不重建~~ **已修（`e0db7c63`）**：新增 `TryRestoreOsBondAsync`，
+   两条恢复路径（stale-bond / Unreachable）重开设备后补一次 `PairAsync`；小米遥控器不走该路径。
+   同批还补了**僵尸会话识别**：纯函数 `BleProtocol::PlanZombieRecovery` 判别「链路仍 Connected
+   却长时间零入站」的僵尸会话（订阅与写入全部假成功、固件侧 `state_sub=0`，录音必被拒），
+   经 `on_session_zombie` 回调弹托盘气泡指引用户到 Windows 蓝牙设置重配。真机已验证触发。
+   **仍待用户手动完成一次系统重配**才能恢复语音；自动化自愈（僵尸即 unpair+radio reset+PairAsync）未做。
 2. `CONFIG_BT_NIMBLE_LOG_LEVEL` 在本 §五.6 曾列为「回 WARNING」，但实为 2026-06-28 提交 `81c37c6b` 的既有设置
    （非本次调试引入），是否回退待定。
 3. P1 按键自定义（对话框配动作 → 软件路由 → 注入）尚未做真机验收。

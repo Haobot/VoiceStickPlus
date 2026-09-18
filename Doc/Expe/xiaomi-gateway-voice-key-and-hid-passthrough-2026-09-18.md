@@ -122,13 +122,28 @@ host 单测 120/120 + 112/112 通过。
 
 ## 遗留 / 观察项
 
-1. **桌面端失效恢复路径会删掉系统配对却不重建**（重要）：
+1. ~~**桌面端失效恢复路径会删掉系统配对却不重建**~~ **已修（`e0db7c63`）**——保留原始记录：
+   原状：
    `desktop/windows/src/ble_central_win.cc` 在 `IsLikelyStaleBondError` 命中或 GATT
    `Unreachable` 时执行 `TryUnpairAsync` 删除 Windows 配对并重置蓝牙 radio；
    而 app 对 VS 设备**从不重建 OS 级 bond**（`PairAsync` 只在小米遥控器路径
    `AttemptXiaomiOsPairing` 里调用）⇒ HOGP 直通静默失效。本次真机日志实锤：
    `13:31:42 attempting to remove stale Windows pairing for VS-53A8`（恰在 13:31 烧录之后）。
-   建议：VS 设备恢复路径补一次 `PairAsync`，或明确提示用户去系统设置重新配对。
+   修复：新增 `TryRestoreOsBondAsync`，在两条恢复路径（stale-bond / Unreachable）
+   重开设备后补一次 `PairAsync`；小米遥控器不走该路径。
+2. ~~**僵尸会话只重扫、不给用户出路**~~ **已修（`e0db7c63`）**：心跳超时曾只做
+   `HandleDeviceDisconnected` + `StartScan`，但设备此时多已被系统 HID 宿主连上并停止
+   广播，`voice_ble` 连上即 `stop_advertising()`，扫描永远等不到，应用卡死在无会话
+   状态（表现为语音键毫无反应）。新增纯函数 `BleProtocol::PlanZombieRecovery(link_gone,
+   silent_ms, timeout_ms, is_voice_stick)`（TDD 先行，五组断言覆盖断链/从未入站/边界/僵尸/小米），
+   心跳据此区分 `kScanOnly` 与 `kRepairBond`；后者经 `on_session_zombie` 回调
+   弹托盘气泡，明确指引用户到 Windows 蓝牙设置删除并重新添加设备（同设备一次
+   故障期只提示一次）。真机验证已触发：`heartbeat teardown reason=no_rx_timeout` ⇒
+   `"zombie session VS-53A8: bond repair required"` ⇒ `"stale session dev=VS-53A8: prompting"
+   `"user to re-pair in Windows Bluetooth settings"`。
+   **注意**：气泡只是把「静默失效」变成「可执行的指引」，僵尸本身仍需要用户手动到
+   系统设置重配一次——自动化解法（僵尸即触发 unpair+radio reset+PairAsync 自愈）未做，
+   因为失败时会把当前可用的按键直通一起弄坏，需另行评估。
 2. **Windows 的 HID 主机与 app 复用同一条 ACL 链路**（app 重连日志
    `link-layer connected VS-53A8 after 0ms`），设备侧始终只有一条 peripheral 连接。
    因此二者共存**不需要**第二条连接，也**不需要**保持广播——
