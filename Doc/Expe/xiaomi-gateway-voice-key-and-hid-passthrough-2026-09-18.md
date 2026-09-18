@@ -23,7 +23,7 @@ StickS3 网关模式下接小米遥控器，出现两个并存症状，且**互�
 | 现象 | 判据 |
 |---|---|
 | 语音键录音失败 | `audio_pipeline: ext stream create 64000 bytes failed` → 屏幕 `Audio <step>: ESP_ERR_NO_MEM` |
-| 按键到底有没有到设备 | `voice_stick: gw key usage=0x%04x down kind=N`（kind 0=键盘/1=Consumer/2=软件路由/3=截留） |
+| 按键到底有没有到设备 | `voice_stick: gw key usage=0x%04x down kind=N`（kind **0=键盘 / 1=Consumer / 2=截留 / 3=软件路由**，见 `gateway_keymap.h` 的 `gateway_key_kind_t`；语音键 0x003E 恒为 2=截留，会话沿由 ATVV 帧驱动） |
 | HOGP 报告发没发出去 | `gw_hogp: hogp 无外设链路可下发`（本次新增） |
 | 电脑侧有没有 HID 链路 | `Enum\BTHLE\Dev_<地址>` 节点是否存在；`BTHPORT\Parameters\Devices` 有密钥但 Enum 无节点 = 密钥残留、节点被删 |
 | 设备侧几条外设链路 | `voice_ble: connected handle=N` 与 `hogp 下发 … 外设链路 N 条` |
