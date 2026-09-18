@@ -134,10 +134,19 @@ NimBLE 把它原样登记为属性权限（`ble_gatts_register_dsc` → `ble_att
 `link-layer connected VS-53A8 after 0ms`，设备侧始终只有一条 peripheral 连接）——共存不需要第二条
 连接、也不需要保持广播，勿据此改 `voice_ble` 的 `stop_advertising()` 策略。
 
-遗留（桌面端）：`ble_central_win.cc` 的失效恢复路径命中 `IsLikelyStaleBondError`/
-`Unreachable` 时会 `TryUnpairAsync` **删掉 Windows 配对**，而 app 对 VS 设备**从不重建
-OS 级 bond**（`PairAsync` 只在小米路径 `AttemptXiaomiOsPairing` 里调用）⇒ HOGP 直通静默失效。
-详见 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`。
+**桌面端的三处修复（都已落地，别再按旧结论排查）**：
+
+1. 失效恢复路径（`IsLikelyStaleBondError` / `Unreachable`）里的 `TryUnpairAsync` 会**删掉整条**
+   Windows 配对记录（含 HOGP HID 节点），此前**没人补回来** ⇒ 按键直通静默失效。已加
+   `TryRestoreOsBondAsync` 在两条恢复路径重开后补一次 `PairAsync`（`e0db7c63`）。
+2. 僵尸会话（链路仍 Connected 却长时间零入站、订阅与写入全部假成功）此前只重扫，而设备此时
+   多已被系统 HID 宿主连上并停止广播，扫描永远等不到。已加纯函数 `BleProtocol::PlanZombieRecovery` +
+   `on_session_zombie` 托盘气泡指引用户重配（`e0db7c63`）。**僵尸本身仍需用户手动到系统设置重配一次**。
+3. app 配对 VS 设备时**自动完成系统级配对**（`PairDeviceDialog::AttemptOsPairing`，失败策略由纯函数
+   `BleProtocol::PlanAfterOsBondAttempt` 决定：小米硬前置 / VS 软前置降级）；忘记设备时也已自动清系统配对。
+   ⇒ **用户不需要再被指引去 Windows 蓝牙设置手动配对**，只在僵尸会话气泡提示时才需要（`43789aa9`）。
+
+详见 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md` 与 `Doc/Plan/windows-app-os-pairing.md`。
 
 ---
 
@@ -543,5 +552,5 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - 方案 A 最终修订（2026-09-11/12）：小米 click/hold 会话**直连默认麦克风**——本端零采集/零 auto_switch/零 CABLE 渲染；**WeType 语音热键只能启动/重启会话，keyup/ESC 无收尾作用，面板唯一关闭路径=鼠标点击 detach**——启动击按住流限时 2.5s 自动松开（**持续 repeats 会让用户任何关面板尝试被下一个 keydown 立即重新弹开**——「浮窗点关又弹出」）；停止击（方案 B）=SendUp+两次左键点击（1.5s/3s，detach 链约 1.8s 需补一次）；文字提交靠「松开时语音仍活跃」→**说完即点停止**；「新按住提交」虽可无条件提交但会重开无 composition 的空会话、浮窗残留只能手动关，故弃用。旧管道「keyup 后拆除」曾永久卡死 WeType TSF 宿主（判据：两进程诊断日志同时停笔、无 `terminated composition`/无 `abort reason=`；TSF 宿主 pid=焦点应用进程，卡死只影响该应用，换记事本可隔离验证）。给第三方语音输入法供音优先直接采真实设备（物理同构），CABLE 绕行只在音频源头非 Windows 设备（BLE 流）时必要。详见 `Doc/Expe/wetype-finalize-wedge-cable-teardown-2026-09-11.md`。
 - 重启后已配对小米遥控器永久卡「正在连接」（2026-09-14，66796df3）：开机自启直连失败（重启后蓝牙栈未就绪，`polls=40 status=disconnected`+`max_pdu_size=23` 全程死链，cached 发现假成功，CCCD 订阅 2.5s 超时）后**零重试**——扫描路径救不了（小米被系统 HID 连上即停广播），主动重连队列唯一入队口在广播分支。修复=fail lambda 统一经 `BleProtocol::PlanReconnectAfterConnectFailure` 纯函数决策入队心跳兜底直连（取消/忘记拦截，5s 退避）。判连接健康先看 max_pdu_size 协商没协商（23=死链 247=活链）；重连机制审计要覆盖失败路径而非只覆盖断连路径。重启场景真机验收待下次重启（预期 `proactive reconnect queued`→`proactive reconnect`→`connected` 日志序列）。详见 `Doc/Expe/ble-startup-connect-failure-permanent-stuck-2026-09-14.md`。
 - 按键映射「录入」完全无反应：日志只有 `ShortcutCapture: started`、没有 `first keyboard event` = 按键根本没到系统层，**不是捕获代码缺陷**（机制层已 spike + 真机注入双重证无罪，勿再怀疑钩子/链序/模态循环）。两种原因：①前台是提权窗口被 UIPI 隔离（点普通窗口重试）；②按的是 RC003 批次返回键（WUDF 丢弃，系统零事件，只能改用手动输入绑定）。3 秒零事件提示已双因覆盖并落日志（0f9c4fbb），详见 `Doc/Plan/xiaomi-keymap-hotkey-capture-issue.md` §0.1。
-- 小米网关「语音键正常、其他按键全死」先查 HID 侧不要查音频：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道互相掩盖。四处根因（只认 1/7 个带 notify 的 Report 特征、CCCD 靠「特征值+1」猜被拒、HOGP 只发第一条 slave 链路、**Windows 无 OS 级配对节点**）见 §1.10 与 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`；判据：`BTHPORT` 有密钥而 `Enum\BTHLE` 无节点 = 需去系统设置重新配对。
+- 小米网关「语音键正常、其他按键全死」先查 HID 侧不要查音频：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道互相掩盖。四处根因（只认 1/7 个带 notify 的 Report 特征、CCCD 靠「特征值+1」猜被拒、HOGP 只发第一条 slave 链路、**Windows 无 OS 级配对节点**）见 §1.10 与 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`；判据：`BTHPORT` 有密钥而 `Enum\BTHLE` 无节点 = 缺系统配对（app 配对时已会自动补，见 §1.10）。
 - 固件里给 StreamBuffer/Queue 之类 FreeRTOS 对象配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 限死在内部 RAM，`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它（见 §1.6）。
