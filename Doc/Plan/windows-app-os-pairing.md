@@ -92,12 +92,32 @@ static OsBondFollowUp PlanAfterOsBondAttempt(bool bonded, bool bond_required);
 
 ## 5. 测试与验证
 
-- **单测**：`PlanAfterOsBondAttempt` 三分支（成功 / 失败+必需 / 失败+非必需）。
-- **构建**：`build_win.bat` + CTest 全过（windows_tests + integration_tests）。
-- **真机验收**（`PairAsync` 无法单测，必须真机）：
-  1. 托盘「忘记设备」→ Windows 蓝牙列表中 VS-53A8 消失（**验证已存在的解绑侧**）
-  2. 托盘「配对设备…」→ 选 VS-53A8 → **不去系统设置**，检查 `Enum\BTHLE\Dev_70041ddc53aa` 自动出现
-  3. 遥控器按键直通可用、语音键可用
+- **单测**：`PlanAfterOsBondAttempt` 三分支（成功 / 失败+必需 / 失败+非必需）—— `core_tests.cc::TestPlanAfterOsBondAttempt`
+- **构建**：`build_win.bat` 通过；CTest **2/2 全过**（`voicestick_windows_tests` + `voicestick_integration_tests`）。
+
+### 5.1 真机验收 ✅ 2026-09-18（用户执行，日志取证）
+
+实施 commit `43789aa9`。三段日志正好逐条对上设计：
+
+```
+[APP 01:54:00.838] Forgot device VS-53A8
+[BLE 01:54:00.983] os unpair: removing Windows pairing of 70:04:1D:DC:53:AA (device 53A8)
+[BLE 01:54:42.546] VS os pairing bonded address=70:04:1D:DC:53:AA
+[BLE 01:54:43.510] connect stage VS-53A8 stage=ready t=954ms dt=4ms
+```
+
+1. **解绑侧**：忘记设备 → `os unpair: **removing** Windows pairing`（真删掉了）。
+   对照改前的 14:14 那次是 `no Windows pairing record … treating as done`。
+2. **配对侧（本设计新增）**：`VS os pairing bonded` —— 用户全程**未打开 Windows 蓝牙设置**。
+   改前这条日志根本不存在（VS 设备从不走系统配对）。
+3. **续接**：`stage=ready` 954ms —— 系统配对完成后自动进入 GATT 连接。
+
+Windows 侧独立取证：`Enum\BTHLE\Dev_70041ddc53aa` 节点存在，`HID Keyboard Device` +
+`HID-compliant consumer control device` + `BLE GATT compliant HID device` 状态全部 OK。
+遥控器按键直通与语音键均正常（用户确认）。
+
+**实际效果**：用户从「app 配一次 + 去系统设置再配一次」变成**只在 app 里配对一次**。
+
 
 ## 6. 风险
 

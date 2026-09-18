@@ -4,7 +4,7 @@
 > 相关文件：`firmware/components/audio_pipeline/audio_pipeline.c`、
 > `firmware/components/gateway/src/gateway_hid_host.c`、
 > `firmware/components/gateway/src/gateway_hogp.c`、
-> `desktop/windows/src/ble_central_win.cc`（遗留项）
+> `desktop/windows/src/ble_central_win.cc`、`pair_device_dialog.cc`（相关修复见 §遗留/观察项）
 > 方案文档：`Doc/Plan/xiaomi-remote-stick-gateway.md` §6.3 问题 8-12
 > 设备：VS-53A8（COM19）；遥控器：小米蓝牙遥控器 2 Pro
 
@@ -144,10 +144,21 @@ host 单测 120/120 + 112/112 通过。
    **注意**：气泡只是把「静默失效」变成「可执行的指引」，僵尸本身仍需要用户手动到
    系统设置重配一次——自动化解法（僵尸即触发 unpair+radio reset+PairAsync 自愈）未做，
    因为失败时会把当前可用的按键直通一起弄坏，需另行评估。
-2. **Windows 的 HID 主机与 app 复用同一条 ACL 链路**（app 重连日志
+3. **Windows 的 HID 主机与 app 复用同一条 ACL 链路**（app 重连日志
    `link-layer connected VS-53A8 after 0ms`），设备侧始终只有一条 peripheral 连接。
    因此二者共存**不需要**第二条连接，也**不需要**保持广播——
    `voice_ble` 连上即 `stop_advertising()` 不是问题，不要据此改广播策略。
    （此前交接文档里「MAX_CONNECTIONS 被 HID 主机+小米占满」的读法属误判。）
-3. 设备完成系统级配对后，重启/重烧**不再**触发 app 的 stale-bond 删除路径（实测 14:29 烧录后
+4. 设备完成系统级配对后，重启/重烧**不再**触发 app 的 stale-bond 删除路径（实测 14:29 烧录后
    无 unpair 日志）——该故障主要在「设备未 OS 配对 + 反复重启」的组合下出现。
+5. ~~**配对/解绑的系统配对需要用户手动做两遍**~~ **已修（`43789aa9`）**：解绑侧本来就会
+   调 `UnpairOsBondAsync`（VS/RC 通用），但**配对侧只有小米遥控器走系统配对**
+   （`pair_device_dialog.cc` 只判 `kXiaomiRemote2Pro`），于是用户必须「app 配一次 + 去 Windows
+   蓝牙设置再配一次」，漏了就是「语音正常、按键毫无反应」，而该路径又会被失效恢复悄悄删掉，
+   反复发作。现两类设备统一走「先系统配对、再 GATT 连接」，失败策略由纯函数
+   `BleProtocol::PlanAfterOsBondAttempt(bonded, bond_required)` 决定：小米硬前置（ATVV GATT 确实
+   需要 bond，失败中止），VS 软前置（只有 HOGP 需要，失败降级继续 + 状态栏/托盘气泡指引）。
+   幂等：`IsPaired()` 为真直接跳过 —— 已在系统设置配过对的存量用户行为不变。
+   真机验收（2026-09-18）：`os unpair: removing Windows pairing` ⇒ `VS os pairing bonded` ⇒
+   `stage=ready 954ms`，全程未打开系统设置；Windows 侧 `Dev_70041ddc53aa` 与
+   `HID Keyboard Device` 节点自动就位。设计见 `Doc/Plan/windows-app-os-pairing.md`。

@@ -34,10 +34,15 @@
    却长时间零入站」的僵尸会话（订阅与写入全部假成功、固件侧 `state_sub=0`，录音必被拒），
    经 `on_session_zombie` 回调弹托盘气泡指引用户到 Windows 蓝牙设置重配。真机已验证触发。
    **仍待用户手动完成一次系统重配**才能恢复语音；自动化自愈（僵尸即 unpair+radio reset+PairAsync）未做。
-2. `CONFIG_BT_NIMBLE_LOG_LEVEL` 在本 §五.6 曾列为「回 WARNING」，但实为 2026-06-28 提交 `81c37c6b` 的既有设置
+2. ~~app 配对/解绑需要用户手动做两遍系统蓝牙配对~~ **已修（`43789aa9`）**：解绑侧本来就会清系统配对，
+   配对侧原本只有小米遥控器走 —— 现两类设备统一「先系统配对、再 GATT 连接」，失败策略由纯函数
+   `BleProtocol::PlanAfterOsBondAttempt` 决定（小米硬前置 / VS 软前置降级）。真机验收：
+   `os unpair: removing Windows pairing` ⇒ `VS os pairing bonded` ⇒ `stage=ready 954ms`，全程未打开系统设置。
+   设计 `Doc/Plan/windows-app-os-pairing.md`。
+3. `CONFIG_BT_NIMBLE_LOG_LEVEL` 在本 §五.6 曾列为「回 WARNING」，但实为 2026-06-28 提交 `81c37c6b` 的既有设置
    （非本次调试引入），是否回退待定。
-3. P1 按键自定义（对话框配动作 → 软件路由 → 注入）尚未做真机验收。
-4. 固件升级一律走 **COM19 串口**；BLE 本地文件 OTA 在网关模式下会中途断链（本次 197KB 处断），勿再用。
+4. P1 按键自定义（对话框配动作 → 软件路由 → 注入）尚未做真机验收。
+5. 固件升级一律走 **COM19 串口**；BLE 本地文件 OTA 在网关模式下会中途断链（本次 197KB 处断），勿再用。
 
 
 ## 一、任务背景
