@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kLicenseLocalBlocked) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kStaleSessionBody) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -491,6 +491,11 @@ constexpr StringTable EnglishStrings() {
         "Connect your paired voice device first.";
     table[Index(StringId::kLicenseLocalBlocked)] =
         "Local ASR requires an active license (trial expired).";
+    table[Index(StringId::kStaleSessionTitle)] = "Voice input needs re-pairing";
+    table[Index(StringId::kStaleSessionBody)] =
+        "The Bluetooth session went stale, so voice input is unavailable. Open Windows "
+        "Bluetooth settings, remove this VoiceStick device, then add it back and let the app "
+        "reconnect. Remote control buttons keep working meanwhile.";
     return table;
 }
 
@@ -948,6 +953,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kLicenseActivateFailExpired)] = "该授权码已过期";
     table[Index(StringId::kLicenseDeviceRequired)] = "请先连接已配对的语音设备";
     table[Index(StringId::kLicenseLocalBlocked)] = "本地语音识别需要有效授权（试用已到期）";
+    table[Index(StringId::kStaleSessionTitle)] = "语音输入需要重新配对";
+    table[Index(StringId::kStaleSessionBody)] =
+        "蓝牙会话已失效，语音输入暂时不可用。请打开 Windows 蓝牙设置，删除本 VoiceStick "
+        "设备后重新添加并等待应用自动连接。期间遥控器按键不受影响。";
     return table;
 }
 

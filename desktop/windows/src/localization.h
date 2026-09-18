@@ -467,6 +467,11 @@ enum class StringId {
     kLicenseActivateFailExpired, // "This license key has expired." / "该授权码已过期"
     kLicenseDeviceRequired,      // "Connect your paired voice device first." / "请先连接已配对的语音设备"
     kLicenseLocalBlocked,        // "Local ASR requires an active license (trial expired)." / "本地语音识别需要有效授权（试用已到期）"
+
+    // 僵尸会话（心跳静默超时）提示：必须由用户到系统蓝牙设置重新配对才能恢复。
+    // 放在 kLicenseLocalBlocked 之后，localization.cc 的 kStringCount 哨兵同步更新。
+    kStaleSessionTitle,          // "Voice input needs re-pairing" / "语音输入需要重新配对"
+    kStaleSessionBody,           // 说明删除并重新添加设备的操作步骤
 };
 
 // 返回 UTF-8 本地化文本

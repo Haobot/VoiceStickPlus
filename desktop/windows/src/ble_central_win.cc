@@ -1300,6 +1300,50 @@ winrt::Windows::Foundation::IAsyncOperation<bool> TryUnpairAsync(winrt::hstring 
     }
 }
 
+// TryUnpairAsync 删掉的是整条 Windows 配对记录，其中**包含 HOGP HID 节点**。
+// VS 设备的按键直通完全依赖那条系统级 bond（设备经 HOGP 向本机发键盘/Consumer
+// 报告；没有 Enum\BTHLE\Dev_<地址> 节点就没有 HID 链路），所以失效恢复用完
+// 「删除」之后必须把 bond 补回来，否则恢复完只剩语音可用、所有按键静默失效。
+// 2026-09-18 真机定案：13:31 一次烧录触发的 stale bond 恢复顺手删掉了系统配对，
+// 现象即「语音键正常、其他按键全死」，排查耗掉半天。
+// 小米遥控器不走这里——它的系统级配对由 AttemptXiaomiOsPairing 负责。
+winrt::Windows::Foundation::IAsyncOperation<bool> TryRestoreOsBondAsync(
+    BluetoothLEDevice device, std::string device_id) {
+    try {
+        if (!device) {
+            LogBleLine("os bond restore VS-" + device_id + ": device handle gone");
+            co_return false;
+        }
+        auto pairing = device.DeviceInformation().Pairing();
+        if (!pairing) {
+            LogBleLine("os bond restore VS-" + device_id + ": no pairing interface");
+            co_return false;
+        }
+        if (pairing.IsPaired()) {
+            LogBleLine("os bond restore VS-" + device_id + ": already bonded");
+            co_return true;
+        }
+        const auto result = co_await pairing.PairAsync();
+        const auto status = result.Status();
+        const bool bonded = status == winrt::Windows::Devices::Enumeration::DevicePairingResultStatus::Paired ||
+                            status == winrt::Windows::Devices::Enumeration::DevicePairingResultStatus::AlreadyPaired;
+        if (bonded) {
+            LogBleLine("os bond restore VS-" + device_id + ": bonded (HID passthrough link restored)");
+        } else {
+            LogBleLine("os bond restore VS-" + device_id + ": failed status=" +
+                       std::to_string(static_cast<int>(status)) +
+                       " (HID passthrough stays dead until user re-pairs in Windows settings)");
+        }
+        co_return bonded;
+    } catch (const winrt::hresult_error& error) {
+        LogBleLine("os bond restore VS-" + device_id + ": exception hr=" + FormatHresult(error.code()));
+        co_return false;
+    } catch (...) {
+        LogBleLine("os bond restore VS-" + device_id + ": unknown exception");
+        co_return false;
+    }
+}
+
 winrt::Windows::Foundation::IAsyncOperation<bool> TryResetBluetoothRadioAsync() {
     using winrt::Windows::Devices::Radios::Radio;
     using winrt::Windows::Devices::Radios::RadioKind;
@@ -1724,6 +1768,8 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                         co_return;
                     }
                     attach_device_handlers(session);
+                    // 恢复动作里的 unpair 顺带删掉了 HOGP HID 节点，必须补回 bond
+                    co_await TryRestoreOsBondAsync(session->ble_device, device_id);
                     try {
                         session->gatt_session = co_await GattSession::FromDeviceIdAsync(
                             session->ble_device.BluetoothDeviceId());
@@ -1854,6 +1900,8 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     co_return;
                 }
                 attach_device_handlers(session);
+                // 恢复动作里的 unpair 顺带删掉了 HOGP HID 节点，必须补回 bond
+                co_await TryRestoreOsBondAsync(session->ble_device, device_id);
                 try {
                     session->gatt_session = co_await GattSession::FromDeviceIdAsync(
                         session->ble_device.BluetoothDeviceId());
@@ -3142,13 +3190,29 @@ void BleCentralWin::ProbeSessions() {
         }
         const auto last_rx = session->last_rx_ms.load(std::memory_order_relaxed);
         const auto silent_ms = last_rx > 0 ? now_ms - last_rx : -1;
-        const bool silent_too_long = silent_ms > timeout_ms;
-        if (link_gone || silent_too_long) {
+        const auto action = BleProtocol::PlanZombieRecovery(
+            link_gone, silent_ms, timeout_ms,
+            session->device_class != DeviceClass::kXiaomiRemote2Pro);
+        if (action != ZombieRecoveryAction::kNone) {
             LogBleLine(std::string("heartbeat teardown ") +
                        (session->device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-") +
                        session->device.id +
                        " reason=" + (link_gone ? "connection_status_disconnected" : "no_rx_timeout") +
                        " silent_ms=" + std::to_string(silent_ms));
+            if (action == ZombieRecoveryAction::kRepairBond) {
+                // 僵尸会话：订阅/写入全部假成功而设备侧从未登记（固件日志
+                // send_state_json gated: state_sub=0），录音因此被拒。此时设备
+                // 多半已被系统 HID 宿主连上并停止广播，重扫永远等不到，只能由
+                // 用户到系统蓝牙设置删除并重新配对。
+                LogBleLine("zombie session VS-" + session->device.id +
+                           ": bond repair required (subscriptions reported success but device never registered them)");
+                if (on_session_zombie) {
+                    auto notify = on_session_zombie;
+                    const auto zombie_device_id = session->device.id;
+                    DispatchToUiThread(
+                        [notify = std::move(notify), zombie_device_id] { notify(zombie_device_id); });
+                }
+            }
             HandleDeviceDisconnected(session->device.id, session);
             continue;
         }

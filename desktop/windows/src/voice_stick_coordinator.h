@@ -133,6 +133,11 @@ public:
     std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
     // 供电态（USB）自动关机开关状态回调：(device_id, usb_auto_off)。UI 线程派发。
     std::function<void(std::string, bool)> on_power_mgmt_state;
+    // 僵尸会话回调：(device_id)。心跳发现链路仍报 Connected 却长时间零入站——
+    // 订阅与写入全部「假成功」但设备侧从未登记，录音必然被拒。此类会话重扫救不
+    // 回来（设备多已被系统 HID 宿主连上而停止广播），需提示用户到系统蓝牙设置
+    // 删除并重新配对。UI 线程派发，同一设备在一次会话内只报一次。
+    std::function<void(std::string)> on_session_zombie;
 };
 
 class AsrClient {
@@ -728,6 +733,9 @@ private:
     // 固件更新气泡去重（device_id@latest_version）：同一设备同一目标版本
     // 每个进程会话只提醒一次，避免周期检查反复打扰。
     std::set<std::string> firmware_update_balloon_sent_keys_;
+    // 僵尸会话提示去重：同一设备在一次故障期间只弹一次气泡，避免心跳每轮重复
+    // 打扰；设备重新连上（on_connection_change 中出现）即清除，允许下次再提示。
+    std::set<std::string> stale_session_notified_devices_;
     FirmwareManifestClient firmware_manifest_client_;
     std::mutex firmware_mutex_;
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};

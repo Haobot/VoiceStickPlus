@@ -91,11 +91,28 @@ VoiceStickCoordinator::~VoiceStickCoordinator() {
 
 void VoiceStickCoordinator::Start() {
     RecoverDeviceSwitchStateIfNeeded();
+    // 僵尸会话（链路仍报 Connected 却长时间零入站，订阅与写入全部「假成功」）：
+    // 固件侧 state/audio 订阅从未登记，voice_ble_is_ready() 恒假、录音必被拒，
+    // 表现为「遥控器按键正常、语音键毫无反应」。此状态下重扫救不回来——设备多半
+    // 已被系统 HID 宿主连上并停止广播，应用扫描永远等不到广播。唯一解是让用户到
+    // Windows 蓝牙设置删除并重新添加设备（2026-09-18 真机定案）。
+    // 同一设备在一次故障期间只提示一次，避免心跳每轮重复打扰。
+    ble_->on_session_zombie = [this](std::string device_id) {
+        if (is_shutdown_) return;
+        if (!stale_session_notified_devices_.insert(device_id).second) return;
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        LogCoordinatorLine("stale session dev=VS-" + device_id +
+                           ": prompting user to re-pair in Windows Bluetooth settings");
+        ui_->ShowNotification(Tr(StringId::kStaleSessionTitle, language),
+                              Tr(StringId::kStaleSessionBody, language));
+    };
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
         if (is_shutdown_) return;
         connected_device_ids_.clear();
         for (const auto& dev : devices) {
             connected_device_ids_.push_back(dev.id);
+            // 设备重新连上：解除僵尸提示去重，允许下次故障再提示。
+            stale_session_notified_devices_.erase(dev.id);
         }
         ui_->SetConnectedDevices(devices);
         CancelActiveCycleIfDeviceDisconnected();
@@ -173,6 +190,7 @@ void VoiceStickCoordinator::Start() {
 void VoiceStickCoordinator::Shutdown() {
     if (is_shutdown_) return;
     is_shutdown_ = true;
+    ble_->on_session_zombie = nullptr;
     ble_->on_connection_change = nullptr;
     ble_->on_connection_error = nullptr;
     ble_->on_scan_error = nullptr;

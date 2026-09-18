@@ -30,6 +30,15 @@ struct ConnectFailureReconnectPlan {
     std::chrono::milliseconds delay{0};
 };
 
+// 心跳探测发现会话长时间零入站时的处置决策（PlanZombieRecovery 的返回值）。
+// 抽纯函数便于单测；消费方为 BleCentralWin 心跳线程 ProbeSessions。
+enum class ZombieRecoveryAction {
+    kNone,        // 会话健康，继续心跳探测
+    kScanOnly,    // 链路真的断了：按普通断连处理，重扫等待设备自然回连
+    kRepairBond,  // 僵尸会话：重扫等不到（设备多已被另一宿主连上而停止广播），
+                  // 必须由用户到系统蓝牙设置重新配对才能恢复
+};
+
 // 连接失败 reason 中代表「用户主动取消」的标识（CancelPendingConnect 路径
 // 的 fail 调用统一使用该字面量，纯函数据此拒绝对已取消连接自动重连）。
 inline constexpr std::string_view kConnectFailureReasonCancelled = "cancelled";
@@ -179,6 +188,12 @@ public:
         bool device_still_paired,
         bool zombie_free_retry,
         std::chrono::milliseconds failure_cooldown);
+    // 心跳静默超时后的处置决策。silent_ms < 0 表示本会话从未收到任何入站流量，
+    // 按既有语义不判僵尸（避免刚就绪的会话被误拆）。
+    static ZombieRecoveryAction PlanZombieRecovery(bool link_gone,
+                                                   std::int64_t silent_ms,
+                                                   std::int64_t timeout_ms,
+                                                   bool is_voice_stick);
 };
 
 } // namespace voicestick

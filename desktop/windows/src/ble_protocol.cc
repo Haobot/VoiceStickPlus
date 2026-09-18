@@ -532,4 +532,24 @@ ConnectFailureReconnectPlan BleProtocol::PlanReconnectAfterConnectFailure(
     return plan;
 }
 
+ZombieRecoveryAction BleProtocol::PlanZombieRecovery(bool link_gone,
+                                                     std::int64_t silent_ms,
+                                                     std::int64_t timeout_ms,
+                                                     bool is_voice_stick) {
+    // 链路属性已翻 Disconnected：普通断连，重扫等设备回连即可。
+    if (link_gone) return ZombieRecoveryAction::kScanOnly;
+    if (silent_ms < 0 || silent_ms <= timeout_ms) return ZombieRecoveryAction::kNone;
+    // 超时静默但链路属性仍是 Connected ⇒ 僵尸会话：CCCD 订阅与写入全部「假成功」，
+    // 设备侧从未登记订阅（固件日志 send_state_json gated: state_sub=0），因此
+    // 录音被拒（voice_ble_is_ready 需要 state+audio 均已订阅）。
+    // 重扫救不了：VS 设备此际多已被系统 HID 宿主连上并停止广播（voice_ble 连上
+    // 即 stop_advertising），应用扫描永远等不到广播。必须由用户到系统蓝牙设置
+    // 删除并重新配对 VS-XXXX（2026-09-18 真机定案，见 Doc/Expe/
+    // xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md）。
+    // 小米遥控器不走本路径：其会话由 ProbeXiaomiSessionAsync 单独探测，且不存在
+    // 系统级 bond 概念，误报只会打扰用户。
+    return is_voice_stick ? ZombieRecoveryAction::kRepairBond
+                          : ZombieRecoveryAction::kScanOnly;
+}
+
 } // namespace voicestick

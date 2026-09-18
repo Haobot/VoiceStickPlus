@@ -797,6 +797,27 @@ void TestPlanReconnectAfterConnectFailure() {
     assert(!cancelled_zombie_plan.schedule);
 }
 
+void TestPlanZombieRecovery() {
+    constexpr std::int64_t kTimeout = 90000;
+    using Action = ZombieRecoveryAction;
+
+    // 链路属性已翻 Disconnected：普通断连，重扫即可（与静默时长无关）。
+    assert(BleProtocol::PlanZombieRecovery(true, -1, kTimeout, true) == Action::kScanOnly);
+    assert(BleProtocol::PlanZombieRecovery(true, kTimeout * 10, kTimeout, true) == Action::kScanOnly);
+
+    // 从未收到任何入站流量（silent_ms < 0）：按既有语义不判僵尸。
+    assert(BleProtocol::PlanZombieRecovery(false, -1, kTimeout, true) == Action::kNone);
+
+    // 恰好等于超时阈值：尚未越界，继续探测（边界与既有 silent_ms > timeout 一致）。
+    assert(BleProtocol::PlanZombieRecovery(false, kTimeout, kTimeout, true) == Action::kNone);
+
+    // 越界且链路仍报 Connected ⇒ 僵尸会话，VS 设备需要系统级重新配对。
+    assert(BleProtocol::PlanZombieRecovery(false, kTimeout + 1, kTimeout, true) == Action::kRepairBond);
+
+    // 小米遥控器不走重配路径（无系统级 bond 概念）：只重扫，不打扰用户。
+    assert(BleProtocol::PlanZombieRecovery(false, kTimeout + 1, kTimeout, false) == Action::kScanOnly);
+}
+
 void TestPairDeviceHelpers() {
     assert(ParseManualPairDeviceId("abcd").value() == "ABCD");
     assert(ParseManualPairDeviceId("VS-abcd").value() == "ABCD");
@@ -15189,6 +15210,7 @@ int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     TestDeviceIds();
     TestPlanReconnectAfterConnectFailure();
+    TestPlanZombieRecovery();
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();
     TestPowerLogMonitor();
