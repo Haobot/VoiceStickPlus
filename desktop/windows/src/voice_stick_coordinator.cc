@@ -93,9 +93,10 @@ void VoiceStickCoordinator::Start() {
     RecoverDeviceSwitchStateIfNeeded();
     // 僵尸会话（链路仍报 Connected 却长时间零入站，订阅与写入全部「假成功」）：
     // 固件侧 state/audio 订阅从未登记，voice_ble_is_ready() 恒假、录音必被拒，
-    // 表现为「遥控器按键正常、语音键毫无反应」。此状态下重扫救不回来——设备多半
-    // 已被系统 HID 宿主连上并停止广播，应用扫描永远等不到广播。唯一解是让用户到
-    // Windows 蓝牙设置删除并重新添加设备（2026-09-18 真机定案）。
+    // 表现为「遥控器按键正常、语音键毫无反应」。
+    // 2026-09-19 P0 起自愈优先：先按地址主动直连（A），同一次故障期内用满次数再
+    // 全量修复（B：unpair + radio reset + PairAsync 重建）。只有 A、B 都失败才走
+    // 本回调提示用户到 Windows 蓝牙设置重新配对（末级），避免一出现僵尸就打扰用户。
     // 同一设备在一次故障期间只提示一次，避免心跳每轮重复打扰。
     ble_->on_session_zombie = [this](std::string device_id) {
         if (is_shutdown_) return;

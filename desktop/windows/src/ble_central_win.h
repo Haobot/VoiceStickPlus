@@ -102,6 +102,9 @@ public:
 private:
     struct DeviceSession {
         std::uint64_t bluetooth_address = 0;
+        // 连接时使用的地址类型：僵尸自愈后按地址主动直连需要它（ConnectPairedDevice
+        // 的地址类型参数），会话不记就只能退回 Unspecified 单参 FromBluetoothAddressAsync。
+        BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
         ConnectedDevice device;
         DeviceClass device_class = DeviceClass::kStickS3;
         winrt::Windows::Devices::Bluetooth::BluetoothLEDevice ble_device{nullptr};
@@ -213,6 +216,27 @@ private:
     // 心跳周期检查 pending_proactive_reconnects_ 到期项并按地址发起直连
     //（DispatchToUiThread 后走 ConnectPairedDevice 的正常 claim 路径）。
     void RunDueProactiveReconnects();
+    // ---- 僵尸会话自愈（P0，见 Doc/Plan/xiaomi-gateway-p0-zombie-self-heal.md）----
+    // 登记一次僵尸判定并返回本次应采取的力度（纯函数 PlanZombieHeal 决定，
+    // 记账含故障期过期重置）。kFullRepair 时把地址标记为「下次连接前先做全量修复」。
+    ZombieHealLevel NoteZombieEpisode(std::uint64_t bluetooth_address, bool is_voice_stick);
+    // 消费上述标记（一次性）：ConnectDeviceAsync 打开设备后据此执行全量修复。
+    bool ConsumeZombieRepair(std::uint64_t bluetooth_address);
+    // 僵尸拆除后按地址直连：登记主动重连队列（心跳 30s 周期兜底）+ 延迟线程提前唤醒，
+    // 避免自愈最坏要等满一个心跳周期。设备已不配对时不登记。
+    void ScheduleZombieReconnect(const std::shared_ptr<DeviceSession>& session,
+                                 std::chrono::milliseconds delay);
+    // 按 delay 提前唤醒主动重连队列（心跳 30s 周期只作兜底），带代数守卫。
+    void WakeProactiveReconnectsAfter(std::chrono::milliseconds delay);
+    // ---- 系统配对（bond）看门狗：只补不删 ----
+    // 节流判定（按地址，10min 间隔 + 每次运行最多 3 次），返回 true 表示可以开始一次检查。
+    bool BeginOsBondCheck(std::uint64_t bluetooth_address);
+    // 会话健康但 Windows 无系统级 bond 时重建它（HOGP 按键直通的前提）。
+    // 执行前会拆掉本会话让设备重新广播（PairAsync 在设备被 app 连上时必失败）。
+    winrt::fire_and_forget RepairOsBondAsync(std::shared_ptr<DeviceSession> session,
+                                             std::string device_id);
+    // 末级力度才打扰用户（托盘气泡指引到系统蓝牙设置重配）。UI 线程派发。
+    void NotifyZombieUserAction(const std::string& device_id);
     void ProbeSessions();
     // 扫描健康看门狗（心跳线程周期调用）：清理滞留超时的在途连接 claim，
     // 并检测广告 watcher 静默失效（有配对设备待发现却长时间零广告）后重建扫描。
@@ -248,6 +272,24 @@ private:
     // 让下一条广播立即触发重试（覆盖连按重启产生的多重僵尸）。
     std::map<std::uint64_t, std::pair<std::chrono::steady_clock::time_point, int>>
         zombie_suspect_marks_;
+    // 僵尸自愈故障期记账：key=蓝牙地址。一次故障期内累计各力度已用次数，
+    // 由 PlanZombieHeal 决定升级；会话恢复（连接期活性证明通过）即清零。
+    struct ZombieEpisode {
+        int light_attempts = 0;
+        int full_repairs = 0;
+        std::chrono::steady_clock::time_point last_at{};
+    };
+    std::map<std::uint64_t, ZombieEpisode> zombie_episodes_;
+    // 已判定「下次连接前先做全量修复（B）」的地址（一次性标记，连接时消费）。
+    std::set<std::uint64_t> zombie_repair_pending_;
+    // 已配对设备最近一次广播时间（steady_clock epoch ms）：bond 重建的前置条件是
+    // 「设备在广播且 Windows 已看到」（见 RepairOsBondAsync）。
+    std::map<std::uint64_t, std::int64_t> adv_seen_ms_by_address_;
+    // 系统配对看门狗节流：上次检查时间与本次运行已用重建次数（按地址）。
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> os_bond_check_at_;
+    std::map<std::uint64_t, int> os_bond_repair_attempts_;
+    // 延迟唤醒线程的代数守卫：Shutdown 递增使其失效（同 scan_epoch_ 手法）。
+    std::atomic<std::uint64_t> reconnect_wake_epoch_{0};
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
     winrt::event_token stopped_token_{};

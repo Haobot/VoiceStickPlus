@@ -133,10 +133,11 @@ public:
     std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
     // 供电态（USB）自动关机开关状态回调：(device_id, usb_auto_off)。UI 线程派发。
     std::function<void(std::string, bool)> on_power_mgmt_state;
-    // 僵尸会话回调：(device_id)。心跳发现链路仍报 Connected 却长时间零入站——
-    // 订阅与写入全部「假成功」但设备侧从未登记，录音必然被拒。此类会话重扫救不
-    // 回来（设备多已被系统 HID 宿主连上而停止广播），需提示用户到系统蓝牙设置
-    // 删除并重新配对。UI 线程派发，同一设备在一次会话内只报一次。
+    // 僵尸会话自愈失败回调：(device_id)。心跳或连接期活性证明发现链路仍报
+    // Connected 却零入站——订阅与写入全部「假成功」但设备侧从未登记（state_sub=0），
+    // 录音必然被拒。BleCentralWin 会先自行按地址重连（A）与全量修复（B）；只有两级
+    // 都用满仍失败才回调此处，提示用户到系统蓝牙设置删除并重新配对。
+    // UI 线程派发，同一设备在一次会话内只报一次。
     std::function<void(std::string)> on_session_zombie;
 };
 

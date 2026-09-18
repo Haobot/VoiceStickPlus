@@ -35,9 +35,32 @@ struct ConnectFailureReconnectPlan {
 enum class ZombieRecoveryAction {
     kNone,        // 会话健康，继续心跳探测
     kScanOnly,    // 链路真的断了：按普通断连处理，重扫等待设备自然回连
-    kRepairBond,  // 僵尸会话：重扫等不到（设备多已被另一宿主连上而停止广播），
-                  // 必须由用户到系统蓝牙设置重新配对才能恢复
+    kRepairBond,  // 僵尸会话（订阅假成功、设备侧 state_sub=0）：重扫等不到（设备
+                  // 多已被另一宿主连上而停止广播），必须按地址主动直连并走自愈梯度
+                  //（见 ZombieHealLevel）
 };
+
+// 僵尸会话自愈梯度（PlanZombieHeal 的返回值）。抽纯函数便于单测；消费方为
+// BleCentralWin（心跳判僵尸 / 连接期活性证明失败）。三级由弱到强，只有在上一级
+// 用满次数后才升级——力度越大代价越大（见 ble_protocol.cc 实现注释）。
+enum class ZombieHealLevel {
+    kLightReconnect,  // A：只回收 WinRT 侧对象后按地址直连。零副作用，不动系统配对，
+                      //    因此 HOGP 按键直通不受影响。
+    kFullRepair,      // B：重置 Bluetooth radio 清 controller 级加密上下文缓存。
+                      //    **不动系统配对** —— 2026-09-19 真机实测：unpair 会连 HOGP
+                      //    HID 节点一起删掉，而 PairAsync 在「设备已被 app 连上（停广播）」
+                      //    时必失败（status=19 Failed，12 次复现），按键直通就此死掉。
+                      //    代价是一次全链路中断（radio 灭约 5s），bond 保留、HID 宿主自行
+                      //    恢复。缺 bond 的重建改由独立的看门狗在「无会话 + 设备在广播」
+                      //    条件下做（BleCentralWin::RepairOsBondAsync）。
+    kUserAction,      // 末级：两级都恢复不了，保留现状，托盘气泡指引用户手动重配。
+};
+
+// 僵尸自愈梯度参数：一次故障期内先做 kZombieLightAttemptsBeforeRepair 次轻量重连，
+// 仍判定僵尸才升级为全量修复；全量修复一次故障期最多 kZombieMaxFullRepairsPerEpisode
+// 次（radio reset 是重动作，不能反复做），用满仍失败即转用户处理。
+inline constexpr int kZombieLightAttemptsBeforeRepair = 2;
+inline constexpr int kZombieMaxFullRepairsPerEpisode = 1;
 
 // 系统级配对尝试结束后的后续动作（PlanAfterOsBondAttempt 的返回值）。
 enum class OsBondFollowUp {
@@ -201,6 +224,12 @@ public:
                                                    std::int64_t silent_ms,
                                                    std::int64_t timeout_ms,
                                                    bool is_voice_stick);
+    // 僵尸会话自愈力度：同一次故障期内先轻量重连（A），试满次数升级为全量修复（B），
+    // 全量修复也用满仍失败则转用户处理。full_repair_allowed=false（小米遥控器：无系统
+    // 级 bond 概念，HOGP 直通也不适用）时永远停留在轻量重连。
+    static ZombieHealLevel PlanZombieHeal(int light_attempts_in_episode,
+                                          int full_repairs_in_episode,
+                                          bool full_repair_allowed);
     // 系统级配对（WinRT PairAsync）尝试结束后的后续动作。bond_required 区分两类设备：
     // 小米遥控器是硬前置（ATVV GATT 的读取/订阅要求 OS bond，失败必须中止）；
     // VS 设备是软前置（HOGP 按键直通需要 bond，但 app 自身的 GATT 不需要，失败降级继续）。

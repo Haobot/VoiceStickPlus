@@ -818,6 +818,30 @@ void TestPlanZombieRecovery() {
     assert(BleProtocol::PlanZombieRecovery(false, kTimeout + 1, kTimeout, false) == Action::kScanOnly);
 }
 
+void TestPlanZombieHeal() {
+    using Level = ZombieHealLevel;
+    constexpr int kLightMax = kZombieLightAttemptsBeforeRepair;
+    constexpr int kFullMax = kZombieMaxFullRepairsPerEpisode;
+
+    // 小米遥控器（无系统级 bond）：永远停在轻量重连，不碰系统配对。
+    assert(BleProtocol::PlanZombieHeal(0, 0, false) == Level::kLightReconnect);
+    assert(BleProtocol::PlanZombieHeal(kLightMax, 0, false) == Level::kLightReconnect);
+    assert(BleProtocol::PlanZombieHeal(kLightMax * 4, kFullMax * 4, false) == Level::kLightReconnect);
+
+    // VS 设备首次判僵尸：先走零副作用的轻量重连（A），不动系统配对。
+    assert(BleProtocol::PlanZombieHeal(0, 0, true) == Level::kLightReconnect);
+
+    // 边界：用满轻量重连次数那一次才升级（< kLightMax 仍为轻量）。
+    assert(BleProtocol::PlanZombieHeal(kLightMax - 1, 0, true) == Level::kLightReconnect);
+    assert(BleProtocol::PlanZombieHeal(kLightMax, 0, true) == Level::kFullRepair);
+
+    // 全量修复已用满：即便轻量次数更多也转用户处理，不再反复 radio reset。
+    assert(BleProtocol::PlanZombieHeal(kLightMax * 3, kFullMax, true) == Level::kUserAction);
+
+    // 计数已越界（不应发生，但必须稳定不越权）：仍停在用户处理而不是回到修复。
+    assert(BleProtocol::PlanZombieHeal(kLightMax * 3, kFullMax + 5, true) == Level::kUserAction);
+}
+
 void TestPlanAfterOsBondAttempt() {
     using Follow = OsBondFollowUp;
 
@@ -15226,6 +15250,7 @@ int main() {
     TestDeviceIds();
     TestPlanReconnectAfterConnectFailure();
     TestPlanZombieRecovery();
+    TestPlanZombieHeal();
     TestPlanAfterOsBondAttempt();
     TestPairDeviceHelpers();
     TestPairingAdvertisementClassify();

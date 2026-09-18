@@ -543,13 +543,30 @@ ZombieRecoveryAction BleProtocol::PlanZombieRecovery(bool link_gone,
     // 设备侧从未登记订阅（固件日志 send_state_json gated: state_sub=0），因此
     // 录音被拒（voice_ble_is_ready 需要 state+audio 均已订阅）。
     // 重扫救不了：VS 设备此际多已被系统 HID 宿主连上并停止广播（voice_ble 连上
-    // 即 stop_advertising），应用扫描永远等不到广播。必须由用户到系统蓝牙设置
-    // 删除并重新配对 VS-XXXX（2026-09-18 真机定案，见 Doc/Expe/
-    // xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md）。
+    // 即 stop_advertising），应用扫描永远等不到广播 —— 必须按地址主动直连，再按
+    // PlanZombieHeal 的梯度升级（2026-09-19 P0，见 Doc/Plan/
+    // xiaomi-gateway-p0-zombie-self-heal.md；此前的「只能由用户手动重配」结论已废弃）。
     // 小米遥控器不走本路径：其会话由 ProbeXiaomiSessionAsync 单独探测，且不存在
     // 系统级 bond 概念，误报只会打扰用户。
     return is_voice_stick ? ZombieRecoveryAction::kRepairBond
                           : ZombieRecoveryAction::kScanOnly;
+}
+
+ZombieHealLevel BleProtocol::PlanZombieHeal(int light_attempts_in_episode,
+                                            int full_repairs_in_episode,
+                                            bool full_repair_allowed) {
+    // 小米遥控器没有系统级 bond 概念（ATVV GATT 不依赖 OS 配对，HOGP 直通也不适用
+    // RC 设备），全量修复对它只有副作用，一律停在轻量重连。
+    if (!full_repair_allowed) return ZombieHealLevel::kLightReconnect;
+    // 全量修复次数先判：用满即转用户，避免 radio reset 反复中断全链路。
+    if (full_repairs_in_episode >= kZombieMaxFullRepairsPerEpisode) {
+        return ZombieHealLevel::kUserAction;
+    }
+    // 轻量重连（只回收 WinRT 对象、按地址直连）零副作用，先用满它再升级。
+    if (light_attempts_in_episode >= kZombieLightAttemptsBeforeRepair) {
+        return ZombieHealLevel::kFullRepair;
+    }
+    return ZombieHealLevel::kLightReconnect;
 }
 
 OsBondFollowUp BleProtocol::PlanAfterOsBondAttempt(bool bonded, bool bond_required) {
