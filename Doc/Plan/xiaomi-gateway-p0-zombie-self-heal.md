@@ -77,12 +77,21 @@
 
 ## 5. 验收
 
-| 项 | 口径 |
-|---|---|
-| 自愈 | 设备重启后**不改任何系统设置**，app 自行回到 `stage=ready` 且 `state notify` 恢复流动 |
-| 稳定性 | 连续 ≥3 次重启无人工干预 |
-| 不回归 | 自愈期间与之后 HOGP 按键直通仍可用（系统配对从未被删） |
-| 单测 | `voicestick_windows_tests` 全过（含 `TestPlanZombieHeal` 边界断言） |
+| 项 | 口径 | 结果（2026-09-19） |
+|---|---|---|
+| 自愈 | 设备重启后**不改任何系统设置**，app 自行回到 `stage=ready` 且 `state notify` 恢复流动 | ✅ 4/4 次重启自动恢复（最快 10.4s；连接本身 1.5-2.7s） |
+| 稳定性 | 连续 ≥3 次重启无人工干预 | ✅ 连续 4 次 |
+| 不回归 | 自愈期间与之后 HOGP 按键直通仍可用（系统配对从未被删） | ✅ 自愈路径无 unpair；A/B 均未触发 radio reset |
+| 单测 | `voicestick_windows_tests` 全过（含 `TestPlanZombieHeal` 边界断言） | ✅ CTest 2/2 |
+
+自愈轨迹（日志）：`advertisement from paired … dropping stale session` → `reconnect settle 1500ms`
+→ 首连 `state subscribe timeout` → `[zombie-suspect: no cooldown, immediate retry #1]` →
+二次连接收到 `device_info` → `stage=ready`。连接期活性证明在首版构建的循环里已实测触发
+（`zombie session … heal level=light-reconnect(A)`）。
+
+**遗留（未覆盖）**：缺系统配对时只有日志、没有用户提示（`RepairOsBondAsync` 自动重建在
+本机该状态下 3 次尝试均 status=19 失败）；VS-53A8 的 HOGP 配对因首版实现被删，需用户手动
+重新添加一次，详见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md` §遗留。
 
 ## 6. 非目标
 

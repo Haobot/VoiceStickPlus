@@ -305,7 +305,7 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 - **连接期活性证明**：audio 订阅后等 `kSessionLivenessTimeout{2500}` 内首个入站 notify 才置 `ready`（旧实现据此发布假「已连接」，要等 90s 心跳才发现僵尸）。证据取 `last_rx_ms > 0`。**`device_info` 是本连接第一个通知、常被 BTHLE 在 handler 接线前吞掉（约半数连接收不到）**，故补发 `battery_status_request` 主动索要回包（<1s，代价 +0.7~0.9s 连接耗时）。
 - **僵尸拆除后必须按地址主动直连**：原先只 `StartScan()` 是死路——固件连接成功即停广播，而设备多已被系统 HID 宿主连上，实测零恢复 8 小时。新增 `ScheduleZombieReconnect`（队列 + 延迟线程提前唤醒）。
 - **自愈梯度绝不可 unpair**（本次最大教训）：`PlanZombieHeal` 三级 = A 只回收 WinRT 对象重连 → B **只重置 Bluetooth radio** → 末级托盘气泡。首版照旧 stale-bond 套路做 unpair + radio reset + `PairAsync`，**语音自愈成功却把 HOGP 按键直通弄死**（`BTHPORT` 有密钥、`Enum\BTHLE` 无节点）。实测 `PairAsync` 在设备被 app 连上（停广播）时必失败 `status=19 Failed`（12/12），停掉 app 后仍失败（串口证明设备侧连连接都没发生）。**恢复路径按「破坏性」而非「彻底性」排序**；破坏性动作留给用户。
-- **bond 只补不删**：`RepairOsBondAsync` 只读 `Pairing().IsPaired()` 确认缺失后才动手，条件是「无会话 + 设备在广播」，重试 3 次，每次运行最多 1 轮。
+- **bond 只补不删**：`RepairOsBondAsync` 只读 `Pairing().IsPaired()` 确认缺失后才动手，条件是「无会话 + 设备在广播 + 先 radio reset 清 Windows 僵尸链路」，重试 3 次，每次运行最多 1 轮。**判据**：app 停掉 9s 后 `FromBluetoothAddressAsync` 仍报 `ConnectionStatus=Connected` = Windows 侧僵尸链路，此状态下 `PairAsync` 必失败（status=19）。彻底删过 `Enum\BTHLE` 节点后，本机三种自动重建尝试（拆会话后 / 见广播后 / radio reset 后）全部失败，仍需用户重新添加设备。
 - **真机验收**：连续 4 次重启全部自动 `stage=ready`（最快 10.4s），A/B 级未触发。B 级（radio reset）尚无真机样本。
 
 ---

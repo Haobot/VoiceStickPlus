@@ -3381,13 +3381,25 @@ winrt::fire_and_forget BleCentralWin::RepairOsBondAsync(std::shared_ptr<DeviceSe
     }
     if (already_paired) co_return;
 
-    // 缺 bond：设备在 app 连接期间停广播，而 PairAsync 需要 Windows 看到广播（见常量
-    // 注释的实测依据），所以先拆会话让固件重新 start_advertising()，再用广播时间戳
-    // 确认 Windows 侧已经重新看到设备。
+    // 缺 bond 时的三步（每步都有真机依据，见常量注释）：
+    // ① 拆会话 —— 设备在 app 连接期间停广播，而 PairAsync 需要 Windows 看到广播；
+    // ② 重置无线电 —— Windows 侧此时往往还挂着「僵尸链路」：对端早已消失，
+    //    FromBluetoothAddressAsync 仍返回 ConnectionStatus=Connected（2026-09-19 实测，
+    //    app 停掉 9s 后依旧如此）。PairAsync 在 Windows 认为设备已连接时必失败
+    //    status=19，radio reset 是唯一能清掉该状态的应用层动作；
+    // ③ 等设备重新广播后再 PairAsync（配对对话框那条已验证可行的路径）。
     HandleDeviceDisconnected(device_id, session);
     DispatchToUiThread([this] { StartScan(); });
-    LogBleLine("os bond repair VS-" + device_id +
-               ": session dropped, waiting for the device to advertise before PairAsync");
+    LogBleLine("os bond repair VS-" + device_id + ": session dropped, resetting radio");
+    self_radio_reset_.store(true, std::memory_order_relaxed);
+    const bool radio_reset = co_await TryResetBluetoothRadioAsync();
+    co_await WaitMs(std::chrono::milliseconds(500));
+    self_radio_reset_.store(false, std::memory_order_relaxed);
+    // 无线电关开会杀死广告 watcher（静默失效），必须重建扫描并重新取广播基线。
+    DispatchToUiThread([this] { StartScan(); });
+    LogBleLine(std::string("os bond repair VS-") + device_id +
+               (radio_reset ? ": radio reset ok (clears Windows zombie link state); waiting for advertisement"
+                            : ": radio reset skipped/failed; waiting for advertisement anyway"));
     const auto adv_baseline = NowSteadyMs();
     bool advertised = false;
     const auto adv_deadline = std::chrono::steady_clock::now() + kOsBondRepairAdvWait;

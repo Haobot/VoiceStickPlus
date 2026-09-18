@@ -163,12 +163,21 @@ audio 订阅完成后、`ready = true` 之前，等 `kSessionLivenessTimeout{250
 ## 遗留 / 观察项
 
 1. **VS-53A8 的 HOGP 系统配对于 2026-09-19 03:00 被首版自愈删除，需用户手动重新添加一次**
-   （Windows 蓝牙设置）；重配后 `IsPaired()` 为真，看门狗不再介入。
-   `RepairOsBondAsync` 的自动重建在本机该状态下 3 次尝试均 `status=19` 失败，原因未完全定位
-   （怀疑 `Enum` 节点被删后 `DeviceInformation` 已无活体关联，需按 Settings 的
-   DeviceWatcher/AssociationEndpoint 路径重建）。
+   （Windows 蓝牙设置，或走 app 自己的「配对设备」对话框——那条路径 01:54 实测成功）；
+   重配后 `IsPaired()` 为真，看门狗不再介入。
+   **自动重建在本机该状态下无法完成**（`PairAsync` 恒 `status=19 Failed`），已排除的可能：
+   - 设备被 app 连上（停广播）——已拆会话让设备重新广播，并在收到广播后 1.5s 内配对，仍失败；
+   - Windows 侧僵尸链路 —— 已加 `TryResetBluetoothRadioAsync` 清链路状态后再配对，仍失败；
+   - 主机侧根本没发起配对 —— 串口抓包显示设备侧零连接活动，故是 Windows 侧状态问题。
+
+   **判据（新增）**：app 停掉 9s 后 `BluetoothLEDevice::FromBluetoothAddressAsync()` 仍返回
+   `ConnectionStatus=Connected` = Windows 侧僵尸链路；此状态下 `PairAsync` 必失败。
+   剩余怀疑方向：`Enum\BTHLE` 节点被删后 `DeviceInformation` 已无活体关联，需按 Settings 的
+   DeviceWatcher / AssociationEndpoint 路径重建（未验证）。
 2. **缺 bond 时目前只记日志，没有用户提示**（`kPairOsBondOptionalFailed` 文案已存在，
    但只在配对对话框里用过）。「静默失效」在本项上仍然存在，建议后续补托盘气泡。
+   看门狗现状：`ProbeSessions` 每 10min 探测一次、每次运行最多重建 1 轮（`PairAsync` 重试 3 次），
+   并在重建前重置无线电 —— 即使配对失败也**只补不删**，不会把可用状态弄坏。
 3. 组件级 `heal level=full-repair(B)`（radio reset）**尚无真机样本**：4 次重启都在
    A 阶段收敛。若日后日志出现 B 级，关注 radio 恢复后是否一次连上。
 4. 设备重启被广告发现的延迟波动较大（3s ~ 51s，串口 DTR 复位的时机不完全可控），
