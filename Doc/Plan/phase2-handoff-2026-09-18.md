@@ -2,6 +2,42 @@
 
 > 你将接手 VoiceStick 项目 `feat/stick-gateway` 分支的网关 Phase 2 工作。上一个 AI 已完成全部代码交付与 7 个真机问题修复，当前剩最后一段端到端问题未闭环。请先完整阅读本文档，再开始行动。
 
+> **【2026-09-18 14:40 闭环】本文档的残留症状已全部定位并修复，提交 `81d91195`，真机验证通过。**
+> 经验沉淀见 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md` 与
+> `Doc/Expe/claude-memory-distilled.md` §1.6 / §1.10；方案文档补齐 §6.3 问题 8-12。
+
+## 零、闭环结论（2026-09-18 14:40）
+
+两个残留症状是**两套完全独立的通道**，互相掩盖，必须分开定位：
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| 按语音键屏幕报 `Audio wait:ESP_ERR_NO_MEM` | `xStreamBufferCreate(64000)` 走 `pvPortMalloc`，而 IDF 把 `portFREERTOS_HEAP_CAPS` 硬编码为内部 RAM，网关模式凑不出 64KB 连续内部 RAM | 改 `xStreamBufferCreateWithCaps(..., MALLOC_CAP_SPIRAM)` + 网关入口预创建 |
+| 遥控器除语音键外所有按键无反应 | ① HID 服务内 25 个 Report 特征、7 个带 notify，代码只认第一个；② CCCD 靠「特征值 +1」猜（0x0076 真值 0x0078）被拒；③ HOGP 直通只发第一条 role=slave 链路；④ **Windows 没有 VS-53A8 的 OS 级配对节点**（无 HOGP HID 链路） | ① 全量订阅 + 按句柄集合接收；② 描述符枚举找 0x2902；③ 广播所有外设链路；④ 用户在 Windows 设置手动配对 |
+
+**关键教训**：语音键会话沿由 **ATVV Control 帧**驱动（`gateway_atvv_on_press`），其他按键走
+**HOGP HID Report**——「语音正常、其他键全死」会把排查方向误导到 ATVV/音频侧，实际断点在 HID 订阅 +
+系统配对。**BLE HID 直通还要求目标机与设备有 OS 级配对**，这是固件之外的硬前提。
+
+**本文档中已被推翻或修正的判断**：
+- §三「MAX_CONNECTIONS 被 HID 主机+小米占满」属误判：**Windows 的 HID 主机与 app 复用同一条 ACL 链路**
+  （app 重连日志 `link-layer connected VS-53A8 after 0ms`），设备侧始终只有一条 peripheral 连接——
+  共存不需要第二条连接，也**不需要**保持广播，勿据此改 `voice_ble` 的 `stop_advertising()`。
+- §五.5「`sec_cb` 每次连接都 `delete_peer`」→ 已修（只在加密失败时清键重配）。
+- §五.6「`XIAOMI_HID_HOST_EXTRAS` 三件套二分验证」→「三件套致停推」假设已证伪：CCCD 订阅与 Exit
+  Suspend 都是协议必需动作，已拆成独立开关默认打开。
+
+**遗留项（未做，建议排期）**：
+1. 桌面端 `ble_central_win.cc` 的失效恢复路径会 `TryUnpairAsync` **删掉 Windows 配对**，而 app 对 VS
+   设备**从不重建 OS 级 bond**（`PairAsync` 只在小米路径 `AttemptXiaomiOsPairing` 里调用）⇒ HOGP 直通随
+   设备重启静默失效。本次真机日志实锤：`13:31:42 attempting to remove stale Windows pairing for VS-53A8`。
+   建议补一次 `PairAsync`，或明确提示用户去系统设置重新配对。
+2. `CONFIG_BT_NIMBLE_LOG_LEVEL` 在本 §五.6 曾列为「回 WARNING」，但实为 2026-06-28 提交 `81c37c6b` 的既有设置
+   （非本次调试引入），是否回退待定。
+3. P1 按键自定义（对话框配动作 → 软件路由 → 注入）尚未做真机验收。
+4. 固件升级一律走 **COM19 串口**；BLE 本地文件 OTA 在网关模式下会中途断链（本次 197KB 处断），勿再用。
+
+
 ## 一、任务背景
 
 用户需求：小米蓝牙遥控器 2 Pro 配对到 M5Stack StickS3（ESP32-S3，网关模式），实现：

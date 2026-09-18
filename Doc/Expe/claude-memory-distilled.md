@@ -68,6 +68,13 @@
 
 - 大栈任务（audio_task 32KB 等）用 `xTaskCreatePinnedToCoreWithCaps(..., MALLOC_CAP_SPIRAM)` + `vTaskDeleteWithCaps(NULL)`，需 `#include "freertos/idf_additions.h"` 与 `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y`。内部 RAM 不足时普通 xTaskCreate 报 `ESP_ERR_NO_MEM`（曾表现为按录音键屏幕报 `Audio audio_task: ESP_ERR_NO_MEM`）。audio_task 栈 24KB 在加 LVGL 后会溢出，须 32768。
 - **PSRAM 栈任务里不能做 flash 操作**（L3 回放钩子坑）：audio_task 里 fread SPIFFS 触发 `assert failed: esp_task_stack_is_sane_cache_disabled`（cache 禁用期 PSRAM 栈不可访问）。解法：在内部 RAM 栈任务（main）预读整个文件到 PSRAM buffer（`heap_caps_malloc MALLOC_CAP_SPIRAM`），PSRAM 栈任务仅 memcpy。串口抓到 assert+Rebooting 是铁证。
+- **FreeRTOS 动态对象默认只能拿内部 RAM**（2026-09-18 定案）：`xStreamBufferCreate`/`xQueueCreate` 等内部走
+  `pvPortMalloc`，而 IDF 把 `portFREERTOS_HEAP_CAPS` **硬编码为 `(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)`**
+  （`components/freertos/heap_idf.c`）——PSRAM 根本不在候选里，PSRAM 再空也没用。要放 PSRAM 必须用
+  `xStreamBufferCreateWithCaps(..., MALLOC_CAP_SPIRAM)` / `xQueueCreateWithCaps` 系列（同上头文件）。
+  **`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 只管普通 `malloc()`（`heap_caps_malloc_default`），对 `pvPortMalloc` 无效**——
+  曾据此在注释里写下「>16KB 会自动走 SPIRAM」而踩坑：网关模式 64KB 外部源 PCM 缓冲创建必失败，
+  表现为按语音键屏幕报 `Audio wait:ESP_ERR_NO_MEM`。与上面 audio_task 栈是同一个坑的两种表现。
 - 诊断内存：`heap_caps_get_free_size/largest_free_block(MALLOC_CAP_INTERNAL)`、`uxTaskGetStackHighWaterMark`。
 
 ### 1.7 深睡 / 电源管理
@@ -101,6 +108,36 @@ NimBLE 把它原样登记为属性权限（`ble_gatts_register_dsc` → `ble_att
 `0x2A FF 00` 是两字节形式的 Usage Maximum（`0x29` 才是一字节形式），不是笔误。
 纯逻辑模块 + host 侧描述符结构校验（usage 范围成对且 min ≤ max、各 Report ID 位宽 =
 报文长度）能同时锁住这两类问题。详见 `Doc/Plan/xiaomi-remote-stick-gateway.md` §6.2。
+
+### 1.10 小米网关：语音键与 HID 直通是两条独立通道（2026-09-18 定案）
+
+**「语音键正常、其他按键全死」先怀疑 HID 订阅与系统配对，不要往 ATVV/音频侧深挖。**
+语音键会话沿由 **ATVV Control 帧**驱动（`gateway_atvv_on_press`，与 HID 通道无关），其他按键才走
+**HOGP HID Report**；两条路的失败会互相掩盖。当日四处独立根因：
+
+1. **HID 侧只认了 1/7 个带 notify 的 Report 特征**。真机枚举小米 HID 服务有 **25 个 Report(0x2A4D)**
+   特征、其中 **7 个带 notify**（props=0x1A）。原实现发现阶段只锁第一个（0x0064）、接收阶段按
+   `attr_handle != s_report_handle` 过滤 ⇒ 其余 6 个特征上的按键报文被当成 ATVV 包丢弃。
+   教训：**多实例 GATT 特征必须全量收集**，「只取第一个匹配」是危险默认。
+2. **CCCD 句柄不要靠「特征值句柄 +1」猜**：Report 0x0076 的真 CCCD 在 **0x0078**，猜出的 0x0077
+   被以 ATT 0x03 Write Not Permitted 拒绝；且原实现一个句柄失败就卡死整条链。改描述符枚举
+   （`disc_all_dscs` 找 0x2902，与 `xiaomi_atvv_client` 同手法）+ 枚举不到才回退 +1 + 失败跳过。
+3. **`ble_gatts_notify_custom` 对未订阅连接返回成功但不下发**——`gateway_hogp` 原先只发第一条
+   role=slave 连接，挑中桌面端 app 那条（app 从不订阅 HOGP）时报文静默消失。改为向所有 role=slave
+   广播，并在一条都没有时告警。**发送成功 ≠ 送达**。
+4. **BLE HID 直通要求目标机与设备有 OS 级配对**，这是固件之外的硬前提：没有
+   `Enum\BTHLE\Dev_<地址>` 节点就没有 HOGP HID 链路。判据极为好用：注册表
+   `BTHPORT\Parameters\Devices` **有**密钥而 `Enum\BTHLE` **无**节点 = 密钥残留、节点被删。
+   恢复 = 在 **Windows 设置 → 添加设备 → 蓝牙** 手动配对（设备需处于广播态）。
+
+配套事实：**Windows 的 HID 主机与 app 复用同一条 ACL 链路**（app 重连日志
+`link-layer connected VS-53A8 after 0ms`，设备侧始终只有一条 peripheral 连接）——共存不需要第二条
+连接、也不需要保持广播，勿据此改 `voice_ble` 的 `stop_advertising()` 策略。
+
+遗留（桌面端）：`ble_central_win.cc` 的失效恢复路径命中 `IsLikelyStaleBondError`/
+`Unreachable` 时会 `TryUnpairAsync` **删掉 Windows 配对**，而 app 对 VS 设备**从不重建
+OS 级 bond**（`PairAsync` 只在小米路径 `AttemptXiaomiOsPairing` 里调用）⇒ HOGP 直通静默失效。
+详见 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`。
 
 ---
 
@@ -506,3 +543,5 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - 方案 A 最终修订（2026-09-11/12）：小米 click/hold 会话**直连默认麦克风**——本端零采集/零 auto_switch/零 CABLE 渲染；**WeType 语音热键只能启动/重启会话，keyup/ESC 无收尾作用，面板唯一关闭路径=鼠标点击 detach**——启动击按住流限时 2.5s 自动松开（**持续 repeats 会让用户任何关面板尝试被下一个 keydown 立即重新弹开**——「浮窗点关又弹出」）；停止击（方案 B）=SendUp+两次左键点击（1.5s/3s，detach 链约 1.8s 需补一次）；文字提交靠「松开时语音仍活跃」→**说完即点停止**；「新按住提交」虽可无条件提交但会重开无 composition 的空会话、浮窗残留只能手动关，故弃用。旧管道「keyup 后拆除」曾永久卡死 WeType TSF 宿主（判据：两进程诊断日志同时停笔、无 `terminated composition`/无 `abort reason=`；TSF 宿主 pid=焦点应用进程，卡死只影响该应用，换记事本可隔离验证）。给第三方语音输入法供音优先直接采真实设备（物理同构），CABLE 绕行只在音频源头非 Windows 设备（BLE 流）时必要。详见 `Doc/Expe/wetype-finalize-wedge-cable-teardown-2026-09-11.md`。
 - 重启后已配对小米遥控器永久卡「正在连接」（2026-09-14，66796df3）：开机自启直连失败（重启后蓝牙栈未就绪，`polls=40 status=disconnected`+`max_pdu_size=23` 全程死链，cached 发现假成功，CCCD 订阅 2.5s 超时）后**零重试**——扫描路径救不了（小米被系统 HID 连上即停广播），主动重连队列唯一入队口在广播分支。修复=fail lambda 统一经 `BleProtocol::PlanReconnectAfterConnectFailure` 纯函数决策入队心跳兜底直连（取消/忘记拦截，5s 退避）。判连接健康先看 max_pdu_size 协商没协商（23=死链 247=活链）；重连机制审计要覆盖失败路径而非只覆盖断连路径。重启场景真机验收待下次重启（预期 `proactive reconnect queued`→`proactive reconnect`→`connected` 日志序列）。详见 `Doc/Expe/ble-startup-connect-failure-permanent-stuck-2026-09-14.md`。
 - 按键映射「录入」完全无反应：日志只有 `ShortcutCapture: started`、没有 `first keyboard event` = 按键根本没到系统层，**不是捕获代码缺陷**（机制层已 spike + 真机注入双重证无罪，勿再怀疑钩子/链序/模态循环）。两种原因：①前台是提权窗口被 UIPI 隔离（点普通窗口重试）；②按的是 RC003 批次返回键（WUDF 丢弃，系统零事件，只能改用手动输入绑定）。3 秒零事件提示已双因覆盖并落日志（0f9c4fbb），详见 `Doc/Plan/xiaomi-keymap-hotkey-capture-issue.md` §0.1。
+- 小米网关「语音键正常、其他按键全死」先查 HID 侧不要查音频：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道互相掩盖。四处根因（只认 1/7 个带 notify 的 Report 特征、CCCD 靠「特征值+1」猜被拒、HOGP 只发第一条 slave 链路、**Windows 无 OS 级配对节点**）见 §1.10 与 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`；判据：`BTHPORT` 有密钥而 `Enum\BTHLE` 无节点 = 需去系统设置重新配对。
+- 固件里给 StreamBuffer/Queue 之类 FreeRTOS 对象配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 限死在内部 RAM，`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它（见 §1.6）。
