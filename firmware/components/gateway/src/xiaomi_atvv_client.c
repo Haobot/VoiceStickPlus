@@ -43,6 +43,12 @@ static const ble_uuid128_t UUID_ATVV_CTRL = BLE_UUID128_INIT(
 // 发现阶段超时看门狗：某阶段发起后 4s 无推进则整链重来（兜底任何原因的
 // ATT 事务挂起——挂死的只是当次事务，重发即恢复）。
 #define DISC_STAGE_TIMEOUT_MS 4000
+// 会话数据看门狗：READY 后持续无任何 Control/Audio 数据（正常链路 CAPS 后遥控
+// 器保持静默待命，但若其内部状态挂死则永不推送）时重握手一次 GET_CAPS 兜底
+// 唤醒；重握手后仍静默则 bounce 重连（on_link 链路重建）。真机 Phase 2 排查
+// 期启用：latency=49 强推生效过的小米链路即使参数修正后也可能静默。
+#define SESSION_IDLE_REHANDSHAKE_MS 30000
+#define SESSION_IDLE_BOUNCE_MS 65000
 // tick 周期：驱动 caps 超时与尾包宽限（150ms 宽限 → 250ms 周期最坏晚一拍，可接受）
 #define TICK_PERIOD_TICKS pdMS_TO_TICKS(250)
 
@@ -65,6 +71,9 @@ typedef enum {
 static disc_stage_t s_disc_stage;
 static int64_t s_disc_stage_started_ms;
 static uint32_t s_disc_restarts;  // 看门狗触发计数（调试观测）
+// 会话数据看门狗：最近一次收到小米 Control/Audio notify 的时刻；0=从未。
+static int64_t s_last_rx_ms;
+static uint8_t s_idle_rehandshake_count;
 static struct ble_npl_callout s_disc_callout;
 static bool s_disc_callout_inited;
 static struct ble_npl_callout s_tick_callout;
@@ -124,6 +133,7 @@ void xiaomi_atvv_client_notify_router(uint16_t attr_handle, const uint8_t *data,
     gateway_atvv_action_t actions[GATEWAY_ATVV_MAX_ACTIONS];
     if (attr_handle == s_ctrl_handle && s_ctrl_handle != 0) {
         const gateway_atvv_state_t before = s_session.state;
+        s_last_rx_ms = now_ms();
         ESP_LOGI(TAG, "Control notify op=0x%02x len=%u state=%d",
                  len > 0 ? data[0] : 0, (unsigned)len, (int)before);
         size_t n = gateway_atvv_session_control(&s_session, data, len, now_ms(), actions,
@@ -133,6 +143,7 @@ void xiaomi_atvv_client_notify_router(uint16_t attr_handle, const uint8_t *data,
         }
         consume_actions(actions, n);
     } else if (attr_handle == s_audio_handle && s_audio_handle != 0) {
+        s_last_rx_ms = now_ms();
         size_t n = gateway_atvv_session_audio(&s_session, data, len, now_ms(), actions,
                                               GATEWAY_ATVV_MAX_ACTIONS);
         consume_actions(actions, n);
@@ -302,6 +313,27 @@ static void tick_cb(struct ble_npl_event *ev) {
     if (!s_link_up) {
         return;  // 链路未就绪无会话可 tick
     }
+    // 会话数据看门狗：链路显示就绪但对端持续零数据（内部状态挂死）——先重握手
+    // GET_CAPS 唤醒，仍无数据则断开小米链路强制重建（hid_host 断开事件驱动重连）。
+    if (s_last_rx_ms > 0) {
+        const int64_t idle = now_ms() - s_last_rx_ms;
+        if (idle > SESSION_IDLE_BOUNCE_MS) {
+            s_last_rx_ms = now_ms();  // 防重连完成前重复触发
+            ESP_LOGW(TAG, "会话静默 %lldms，bounce 断开小米链路重建", idle);
+            (void)ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+            return;
+        }
+        if (idle > SESSION_IDLE_REHANDSHAKE_MS && s_idle_rehandshake_count < 2) {
+            s_idle_rehandshake_count++;
+            ESP_LOGW(TAG, "会话静默 %lldms，重发 GET_CAPS 唤醒（第 %u 次）",
+                     idle, s_idle_rehandshake_count);
+            gateway_atvv_session_reset(&s_session);
+            gateway_atvv_action_t acts[GATEWAY_ATVV_MAX_ACTIONS];
+            size_t rn = gateway_atvv_session_start(&s_session, now_ms(), acts,
+                                                   GATEWAY_ATVV_MAX_ACTIONS);
+            consume_actions(acts, rn);
+        }
+    }
     gateway_atvv_action_t actions[GATEWAY_ATVV_MAX_ACTIONS];
     size_t n = gateway_atvv_session_tick(&s_session, now_ms(), actions,
                                          GATEWAY_ATVV_MAX_ACTIONS);
@@ -355,7 +387,10 @@ void xiaomi_atvv_client_on_link_ready(uint16_t conn) {
     }
     s_conn = conn;
     s_link_up = false;
+    s_last_rx_ms = 0;
+    s_idle_rehandshake_count = 0;
     // 延迟发起发现：HID 订阅 CCCD 写尚未收尾（NimBLE 单连接单 GATT 过程）
+    // + 避开小米 L2CAP 参数请求窗口（见 DISC_DELAY_TICKS 注释）
     ble_npl_callout_reset(&s_disc_callout, DISC_DELAY_TICKS);
 }
 
@@ -363,6 +398,8 @@ void xiaomi_atvv_client_on_link_down(void) {
     s_link_up = false;
     s_conn = BLE_HS_CONN_HANDLE_NONE;
     s_tx_handle = s_audio_handle = s_ctrl_handle = 0;
+    s_last_rx_ms = 0;
+    s_idle_rehandshake_count = 0;
     ble_npl_callout_stop(&s_disc_callout);
     // 连接已断，MIC_CLOSE 不可发；直接复位（重连后重新握手）
     gateway_atvv_session_reset(&s_session);

@@ -24,6 +24,7 @@ static const char *TAG = "gw_hid";
 
 #define UUID_HID_SVC 0x1812
 #define UUID_REPORT 0x2A4D
+#define UUID_REPORT_MAP 0x2A4B
 #define CHR_PROP_NOTIFY 0x10
 
 // 名称白名单（trim+小写子串匹配；u-rfrc 为 Phase 0 取证发现的正常态广播名）
@@ -34,9 +35,19 @@ static const char *kNameWhitelist[] = {
 static gateway_hid_key_cb_t s_on_key;
 static gateway_hid_link_cb_t s_on_link;
 static gateway_hid_notify_router_t s_notify_router;
+// latency 修正计次（每连接；防止对端反复强推省电参数造成循环）
+static uint8_t s_latency_fix_count;
+// Report CCCD 订阅状态与重试：CCCD 枚举/写是 ATT 事务，可能被小米 ~4.9s 的
+// L2CAP 参数请求 0x212 窗口吞掉（真机 Phase 2 定案——与 ATVV 发现同机制），
+// 订阅不成则小米永不推 HID 按键。写确认回调置位，3s 未确认重试。
+static volatile bool s_report_cccd_written;
+static uint8_t s_cccd_retry_count;
+static struct ble_npl_callout s_cccd_retry_callout;
+static bool s_cccd_retry_callout_inited;
 static bool s_running;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_report_handle;  // 小米侧 Report 特征值句柄（notify 源）
+static uint16_t s_report_map_handle;  // Report Map(0x2A4B) 句柄（读取以解锁按键推送）
 static uint8_t s_own_addr_type;
 static gateway_report_parser_t s_parser;
 static struct ble_npl_callout s_retry_callout;
@@ -46,6 +57,63 @@ static bool s_sec_callout_inited;
 
 static void start_scan(void);
 static void try_connect_known(void);
+
+// Report Map 长读回调：内容丢弃。读取本身是目的——spike 流程实证小米在主机
+// 读过 ReportMap 后才开始推按键 notify（未读则只响应请求不主动推送，真机
+// Phase 2 排查期对照发现）。
+static int on_read_report_map(uint16_t conn, const struct ble_gatt_error *error,
+                              struct ble_gatt_attr *attr, void *arg) {
+  (void)conn; (void)arg;
+  if (error->status == BLE_HS_EDONE) {
+    ESP_LOGI(TAG, "Report Map 读取完成（按键推送解锁条件）");
+  }
+  return 0;
+}
+
+// Report CCCD 订阅写完成回调：成功置订阅标志；Invalid Handle 等失败由
+// retry callout 重试（同句柄）。
+static int on_cccd_write_done(uint16_t conn, const struct ble_gatt_error *error,
+                              struct ble_gatt_attr *attr, void *arg) {
+  (void)conn; (void)attr; (void)arg;
+  if (error->status == 0) {
+    s_report_cccd_written = true;
+    ESP_LOGI(TAG, "Report CCCD 订阅确认（按键推送通道开通）");
+    if (s_report_map_handle != 0) {
+      int rc = ble_gattc_read_long(s_conn, s_report_map_handle, 0, on_read_report_map,
+                                   NULL);
+      ESP_LOGI(TAG, "读 Report Map(0x%04x) rc=%d", s_report_map_handle, rc);
+    }
+  } else {
+    ESP_LOGW(TAG, "Report CCCD 写失败 status=%d", error->status);
+  }
+  return 0;
+}
+
+// 直接写 Report 特征句柄 +1 的 CCCD：小米对描述符枚举（disc_all_dscs，
+// Read By Type 0x2902）真机无响应（四连发全挂，与 svcs/chrs 枚举通形成对照），
+// 改按 GATT 布局惯例直写（spike 实证 CCCD 句柄 = Report+1 = 0x0065）。
+static void try_write_report_cccd(void) {
+  static const uint16_t enable_notify = 0x0001;  // 静态生命周期：write_flat 异步引用
+  uint16_t handle = (uint16_t)(s_report_handle + 1);
+  int rc = ble_gattc_write_flat(s_conn, handle, &enable_notify, sizeof(enable_notify),
+                                on_cccd_write_done, NULL);
+  ESP_LOGI(TAG, "Report CCCD(0x%04x) 直写 0x0001 rc=%d", handle, rc);
+}
+
+static void cccd_retry_cb(struct ble_npl_event *ev) {
+  (void)ev;
+  if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE || s_report_handle == 0) {
+    return;
+  }
+  if (s_report_cccd_written || s_cccd_retry_count >= 3) {
+    return;
+  }
+  s_cccd_retry_count++;
+  ESP_LOGW(TAG, "Report CCCD 订阅未确认，直写重试第 %u 次", s_cccd_retry_count);
+  try_write_report_cccd();
+  // 无论发起成败都续 arm：写再次被吞时下一次重试继续（written 置位后停）
+  ble_npl_callout_reset(&s_cccd_retry_callout, pdMS_TO_TICKS(3000));
+}
 
 // ---- 对端地址持久化 ----
 
@@ -78,15 +146,13 @@ static bool load_peer(uint8_t *addr, uint8_t *type) {
 
 // ---- GATT 发现（定位 notify Report 特征并订阅） ----
 
-static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
-                  const struct ble_gatt_chr *chr, void *arg);
-static int on_dsc(uint16_t conn, const struct ble_gatt_error *error,
-                  uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg);
-
 struct hid_range {
   uint16_t start;
   uint16_t end;
 };
+
+static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
+                  const struct ble_gatt_chr *chr, void *arg);
 
 static int on_svc(uint16_t conn, const struct ble_gatt_error *error,
                   const struct ble_gatt_svc *svc, void *arg) {
@@ -121,12 +187,17 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
       ESP_LOGW(TAG, "HID 服务内无带 notify 的 Report 特征");
       return 0;
     }
-    // 订阅：标准做法写 CCCD（小米实测无需 CCCD 也会推送，写失败不视为错误）
-    int rc = ble_gattc_disc_all_dscs(conn, s_report_handle + 1, s_report_handle + 5,
-                                     on_dsc, NULL);
-    if (rc != 0) {
-      ESP_LOGI(TAG, "CCCD 枚举启动失败 rc=%d（小米可免 CCCD，继续）", rc);
+    // 订阅：直写 Report+1 的 CCCD（枚举路径小米无响应，见 try_write_report_cccd
+    // 注释）；写是 ATT 事务，可能被 ~4.9s 参数窗口吞——retry callout 兜底重试。
+    if (!s_cccd_retry_callout_inited) {
+      ble_npl_callout_init(&s_cccd_retry_callout, nimble_port_get_dflt_eventq(),
+                           cccd_retry_cb, NULL);
+      s_cccd_retry_callout_inited = true;
     }
+    s_report_cccd_written = false;
+    s_cccd_retry_count = 0;
+    try_write_report_cccd();
+    ble_npl_callout_reset(&s_cccd_retry_callout, pdMS_TO_TICKS(3000));
     return 0;
   }
   if (error->status != 0) {
@@ -141,30 +212,16 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *error,
     if (s_on_link != NULL) {
       s_on_link(true);
     }
-  }
-  return 0;
-}
-
-static int on_dsc(uint16_t conn, const struct ble_gatt_error *error,
-                  uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg) {
-  (void)chr_val_handle; (void)arg;
-  if (error->status == BLE_HS_EDONE) {
-    return 0;
-  }
-  if (error->status != 0) {
-    return 0;
-  }
-  if (ble_uuid_u16(&dsc->uuid.u) == 0x2902) {
-    // 静态生命周期：write_flat 异步引用
-    static const uint16_t enable_notify = 0x0001;
-    (void)ble_gattc_write_flat(conn, dsc->handle, &enable_notify, sizeof(enable_notify),
-                               NULL, NULL);
+  } else if (ble_uuid_u16(&chr->uuid.u) == UUID_REPORT_MAP &&
+             chr->val_handle >= range->start && chr->val_handle <= range->end) {
+    s_report_map_handle = chr->val_handle;
   }
   return 0;
 }
 
 static void explore_hid(uint16_t conn) {
   s_report_handle = 0;
+  s_report_map_handle = 0;
   static struct hid_range range;  // 静态：异步回调链携带
   range.start = range.end = 0;
   int rc = ble_gattc_disc_all_svcs(conn, on_svc, &range);
@@ -241,6 +298,10 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         return 0;
       }
       s_conn = event->connect.conn_handle;
+      s_latency_fix_count = 0;
+      s_report_cccd_written = false;
+      s_cccd_retry_count = 0;
+      ble_npl_callout_stop(&s_cccd_retry_callout);
       ESP_LOGI(TAG, "已连接小米 conn=%d", s_conn);
       ble_gattc_exchange_mtu(s_conn, NULL, NULL);
       if (!s_sec_callout_inited) {
@@ -252,17 +313,33 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
 
     case BLE_GAP_EVENT_CONN_UPDATE: {
       // 小米经 L2CAP signaling 请求省电参数（连接后 ~4.9s 一次性；不走应用的
-      // CONN_UPDATE_REQ 路径，NimBLE 自动原样转发 HCI）。其组合（itvl=10/
-      // latency=49/timeout=500）违反 BLE 规范 timeout > 2*(1+latency)*itvl_max，
-      // controller 以 HCI 0x212 同步拒绝——命令级失败不产生本事件，无法在此
-      // 拦截补救。实测 0x212 只吞掉恰在途的 ATT 请求-响应事务（ATVV 特征
-      // 枚举撞上即挂），notify 流与新发起事务不受影响——由 xiaomi_atvv_client
-      // 的发现延迟+超时看门狗规避（见该文件）。此处仅记录成功协商结果。
-      if (event->conn_update.status == 0) {
-        struct ble_gap_conn_desc desc;
-        if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
-          ESP_LOGI(TAG, "conn update 完成 itvl=%u latency=%u timeout=%u",
-                   desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+      // CONN_UPDATE_REQ 路径，NimBLE 自动转发 HCI）。其组合（itvl=10/latency=49/
+      // timeout=500）违反 BLE 规范 timeout > 2*(1+latency)*itvl_max，controller
+      // 以 HCI 0x212 同步拒绝后对端仍可能经 LL 层强推同参数生效。真机 Phase 2
+      // 定案：latency=49 生效后 ESP32 central（master）收不到对端任何 notify
+      //（连接保持、按键/ATVV 全死）——协商成功且 latency 超阈值时主动修正为 0
+      //（itvl 保持对端快参数 12.5ms，组合合法），最多修正 3 次防循环。
+      struct ble_gap_conn_desc desc;
+      if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
+        ESP_LOGI(TAG, "conn update 完成 itvl=%u latency=%u timeout=%u",
+                 desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+        if (event->conn_update.conn_handle == s_conn && desc.conn_latency > 8 &&
+            s_latency_fix_count < 3) {
+          s_latency_fix_count++;
+          // 用连接初始健康组合（24-40/latency 0，07:04 正常时段验证过），不沿用
+          // 对端 12.5ms 快参数——ESP32 controller 高频连接间隔下疑似丢事件
+          //（真机：latency 修正为 0 但 itvl=10 时小米 notify 依旧全死）。
+          static const struct ble_gap_upd_params fix = {
+              .itvl_min = 24,  // 30ms
+              .itvl_max = 40,  // 50ms
+              .latency = 0,    // 修正：高 slave latency 下 ESP32 收不到 notify
+              .supervision_timeout = 400,
+              .min_ce_len = 0,
+              .max_ce_len = 0,
+          };
+          int rc = ble_gap_update_params(s_conn, &fix);
+          ESP_LOGW(TAG, "latency=%u 过高（notify 会死），修正为 30-50ms/lat=0 rc=%d（第 %u 次）",
+                   desc.conn_latency, rc, s_latency_fix_count);
         }
       }
       return 0;
@@ -292,6 +369,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       ESP_LOGW(TAG, "小米断开 reason=%d，3s 后重试", event->disconnect.reason);
       s_conn = BLE_HS_CONN_HANDLE_NONE;
       s_report_handle = 0;
+  s_report_map_handle = 0;
       if (s_on_link != NULL) {
         s_on_link(false);
       }
@@ -477,6 +555,7 @@ esp_err_t gateway_hid_host_start(gateway_hid_key_cb_t on_key,
   s_running = true;
   s_conn = BLE_HS_CONN_HANDLE_NONE;
   s_report_handle = 0;
+  s_report_map_handle = 0;
   gateway_report_parser_reset(&s_parser);
   if (!s_retry_callout_inited) {
     ble_npl_callout_init(&s_retry_callout, nimble_port_get_dflt_eventq(), retry_cb, NULL);
@@ -499,6 +578,7 @@ void gateway_hid_host_stop(void) {
     s_conn = BLE_HS_CONN_HANDLE_NONE;
   }
   s_report_handle = 0;
+  s_report_map_handle = 0;
   ESP_LOGI(TAG, "小米 central 链路停止");
 }
 
