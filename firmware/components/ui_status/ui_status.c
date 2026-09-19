@@ -467,6 +467,116 @@ void ui_status_set_gateway_link(const char *text)
     _lock_release(&s_lvgl_lock);
 }
 
+// ---- P1 切换器：目标选择菜单（覆盖层）----
+// 设计：一块半透明面板 + 标题 + 最多 4 行目标名；选中行用背景色高亮。
+// 懒创建（首次 show 时建），hide 只隐藏不销毁，避免反复进出菜单产生碎片。
+static lv_obj_t *s_menu_box;
+static lv_obj_t *s_menu_title;
+static lv_obj_t *s_menu_rows[UI_STATUS_MENU_MAX_ITEMS];
+static int s_menu_count;
+static int s_menu_selected;
+
+static void menu_create_locked(void)
+{
+    if (s_menu_box) {
+        return;
+    }
+    s_menu_box = lv_obj_create(s_screen);
+    lv_obj_set_size(s_menu_box, LCD_H_RES - 16, 132);
+    lv_obj_align(s_menu_box, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(s_menu_box, lv_color_hex(0xf7f2ec), 0);
+    lv_obj_set_style_bg_opa(s_menu_box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_menu_box, lv_color_hex(0x3f3440), 0);
+    lv_obj_set_style_border_width(s_menu_box, 2, 0);
+    lv_obj_set_style_radius(s_menu_box, 10, 0);
+    lv_obj_set_style_pad_all(s_menu_box, 8, 0);
+    lv_obj_clear_flag(s_menu_box, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_menu_title = lv_label_create(s_menu_box);
+    lv_label_set_text(s_menu_title, "Select target");
+    lv_obj_set_style_text_font(s_menu_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_menu_title, lv_color_hex(0x7f7180), 0);
+    lv_obj_align(s_menu_title, LV_ALIGN_TOP_MID, 0, 0);
+
+    for (int i = 0; i < UI_STATUS_MENU_MAX_ITEMS; i++) {
+        s_menu_rows[i] = lv_label_create(s_menu_box);
+        lv_label_set_text(s_menu_rows[i], "");
+        lv_obj_set_style_text_font(s_menu_rows[i], &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(s_menu_rows[i], lv_color_hex(0x3f3440), 0);
+        lv_obj_set_style_bg_opa(s_menu_rows[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_hor(s_menu_rows[i], 6, 0);
+        lv_obj_set_style_radius(s_menu_rows[i], 6, 0);
+        lv_obj_set_width(s_menu_rows[i], LCD_H_RES - 48);
+        lv_label_set_long_mode(s_menu_rows[i], LV_LABEL_LONG_CLIP);
+        lv_obj_align(s_menu_rows[i], LV_ALIGN_TOP_MID, 0, 22 + i * 24);
+        lv_obj_add_flag(s_menu_rows[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void menu_apply_selection_locked(void)
+{
+    for (int i = 0; i < UI_STATUS_MENU_MAX_ITEMS; i++) {
+        if (!s_menu_rows[i]) continue;
+        const bool active = i == s_menu_selected && i < s_menu_count;
+        lv_obj_set_style_bg_opa(s_menu_rows[i], active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(s_menu_rows[i], lv_color_hex(0xd8c7b8), 0);
+    }
+}
+
+void ui_status_menu_show(const char *const *items, int count, int selected)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready) {
+        menu_create_locked();
+        if (count > UI_STATUS_MENU_MAX_ITEMS) count = UI_STATUS_MENU_MAX_ITEMS;
+        s_menu_count = count < 0 ? 0 : count;
+        s_menu_selected = selected < 0 ? 0 : (selected >= s_menu_count ? s_menu_count - 1 : selected);
+        for (int i = 0; i < UI_STATUS_MENU_MAX_ITEMS; i++) {
+            if (!s_menu_rows[i]) continue;
+            if (i < s_menu_count) {
+                lv_label_set_text(s_menu_rows[i], items && items[i] ? items[i] : "?");
+                lv_obj_clear_flag(s_menu_rows[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(s_menu_rows[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        menu_apply_selection_locked();
+        lv_obj_clear_flag(s_menu_box, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_menu_box);
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
+void ui_status_menu_set_selection(int selected)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready && s_menu_box) {
+        s_menu_selected = selected < 0 ? 0 : (selected >= s_menu_count ? s_menu_count - 1 : selected);
+        menu_apply_selection_locked();
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
+void ui_status_menu_hide(void)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready && s_menu_box) {
+        lv_obj_add_flag(s_menu_box, LV_OBJ_FLAG_HIDDEN);
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
+bool ui_status_menu_visible(void)
+{
+    bool visible = false;
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready && s_menu_box) {
+        visible = !lv_obj_has_flag(s_menu_box, LV_OBJ_FLAG_HIDDEN);
+    }
+    _lock_release(&s_lvgl_lock);
+    return visible;
+}
+
 void ui_status_set_idle(void)
 {
     ESP_LOGD(TAG, "idle");

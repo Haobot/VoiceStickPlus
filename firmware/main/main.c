@@ -25,6 +25,7 @@
 #include "gateway_hogp.h"
 #include "gateway_keymap.h"
 #include "gateway_mode.h"
+#include "gateway_switcher.h"
 #include "gateway_targets.h"
 #include "xiaomi_atvv_client.h"
 #include "mini_encoder_c.h"
@@ -2316,21 +2317,137 @@ static void gateway_on_link(bool connected)
     }
 }
 
+// ---- P1 切换器（目标选择）----
+static gateway_switcher_t s_switcher;
+static esp_timer_handle_t s_switcher_timer;
+
+static gateway_switcher_peer_t switcher_peer_from(const uint8_t id_addr[6], uint8_t addr_type)
+{
+    gateway_switcher_peer_t peer;
+    memcpy(peer.addr, id_addr, 6);
+    peer.addr_type = addr_type;
+    return peer;
+}
+
+// 屏幕上的目标提示：切换中显示"正在切换"，连上后显示目标名。
+static void gateway_switcher_show_target(const char *prefix)
+{
+    uint8_t id_addr[6];
+    uint8_t addr_type = 0;
+    char display[40];
+    if (gateway_targets_current_peer(id_addr, &addr_type)) {
+        const int index =
+            gateway_targets_core_find(gateway_targets_table(), id_addr, addr_type);
+        if (index >= 0) {
+            char name[32];
+            gateway_targets_core_display_name(&gateway_targets_table()->items[index], name,
+                                              sizeof(name));
+            snprintf(display, sizeof(display), "%s%s", prefix, name);
+            ui_status_set_gateway_link(display);
+            return;
+        }
+    }
+    ui_status_set_gateway_link(prefix[0] ? prefix : NULL);
+}
+
+// 执行切换器产出的动作（纯逻辑只给意图，这里落 NimBLE/屏幕）。
+static void gateway_switcher_run(const gateway_switcher_actions_t *actions)
+{
+    for (int i = 0; i < actions->count; i++) {
+        const gateway_switcher_action_t action = actions->items[i];
+        ESP_LOGI(TAG, "切换器动作: %s (state=%s)", gateway_switcher_action_name(action),
+                 gateway_switcher_state_name(s_switcher.state));
+        switch (action) {
+        case GATEWAY_SWITCHER_ACTION_DISCONNECT_CURRENT:
+            if (voice_ble_is_connected()) {
+                (void)voice_ble_disconnect(0);
+            }
+            break;
+        case GATEWAY_SWITCHER_ACTION_START_ADV:
+            // 广播由 voice_ble 的看门狗在断开后自动重开，这里只记日志（显式重开见
+            // voice_ble_ensure_advertising，本阶段不需要）。
+            break;
+        case GATEWAY_SWITCHER_ACTION_REJECT_PEER:
+            ESP_LOGW(TAG, "非目标桌面端连接，主动断开");
+            (void)voice_ble_disconnect(0);
+            break;
+        case GATEWAY_SWITCHER_ACTION_ACCEPT_PEER:
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_SWITCHING:
+            gateway_switcher_show_target("切换中: ");
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_CONNECTED:
+            gateway_switcher_show_target("");
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_ERROR:
+            ESP_LOGW(TAG, "切换超时，回退上一目标");
+            ui_status_set_gateway_link("切换失败");
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_IDLE:
+            ui_status_set_gateway_link(NULL);
+            break;
+        case GATEWAY_SWITCHER_ACTION_NONE:
+        default:
+            break;
+        }
+    }
+}
+
+static void gateway_switcher_timer_cb(void *arg)
+{
+    (void)arg;
+    if (gateway_mode_get() != GATEWAY_MODE_GATEWAY) {
+        return;
+    }
+    gateway_switcher_actions_t actions;
+    gateway_switcher_tick(&s_switcher, (uint32_t)(esp_log_timestamp()), &actions);
+    gateway_switcher_run(&actions);
+}
+
+// 用户从菜单选定目标（P1 第 5 步的 LVGL 菜单调用）。
+void gateway_select_target(int target_index, bool clear)
+{
+    gateway_switcher_actions_t actions;
+    if (clear) {
+        gateway_switcher_clear_selection(&s_switcher, &actions);
+        gateway_switcher_run(&actions);
+        return;
+    }
+    const gateway_target_table_t *table = gateway_targets_table();
+    if (target_index < 0 || target_index >= table->count) {
+        return;
+    }
+    const gateway_target_t *item = &table->items[target_index];
+    const gateway_switcher_peer_t peer = switcher_peer_from(item->id_addr, item->addr_type);
+    ESP_LOGI(TAG, "选择目标 #%d", target_index);
+    gateway_switcher_select(&s_switcher, &peer, (uint32_t)esp_log_timestamp(), &actions);
+    gateway_switcher_run(&actions);
+}
+
 // 目标侧（peripheral）对端身份：桌面端连上/断开时更新当前对端，并在连接建立时登记到
 // 目标表（P1 切换器用它列目标）。切到别的模式不影响表内容，只影响是否继续登记。
 static void gateway_on_peer(bool connected, const uint8_t id_addr[6], uint8_t addr_type)
 {
     gateway_targets_set_current_peer(connected, id_addr, addr_type);
-    if (!connected || gateway_mode_get() != GATEWAY_MODE_GATEWAY) {
+    if (gateway_mode_get() != GATEWAY_MODE_GATEWAY) {
         return;
     }
-    int index = gateway_targets_note_peer(id_addr, addr_type);
-    if (index >= 0) {
-        char display[32];
-        gateway_targets_core_display_name(&gateway_targets_table()->items[index], display,
-                                          sizeof(display));
-        ESP_LOGI(TAG, "网关目标 #%d: %s", index, display);
+    const uint32_t now_ms = (uint32_t)esp_log_timestamp();
+    gateway_switcher_actions_t actions;
+    if (connected) {
+        int index = gateway_targets_note_peer(id_addr, addr_type);
+        if (index >= 0) {
+            char display[32];
+            gateway_targets_core_display_name(&gateway_targets_table()->items[index], display,
+                                              sizeof(display));
+            ESP_LOGI(TAG, "网关目标 #%d: %s", index, display);
+        }
+        const gateway_switcher_peer_t peer = switcher_peer_from(id_addr, addr_type);
+        gateway_switcher_peer_connected(&s_switcher, &peer, now_ms, &actions);
+    } else {
+        gateway_switcher_peer_disconnected(&s_switcher, now_ms, &actions);
     }
+    gateway_switcher_run(&actions);
 }
 
 // 按当前模式启动/停止小米链路并刷新屏幕提示；boot 翻转后与运行期复用同一入口
@@ -2340,12 +2457,26 @@ static void gateway_apply_mode(void)
     // 桌面端据此抑制「直连遥控器 ATVV」；未连接时静默返回，订阅成功后会补发。
     voice_ble_set_gateway_mode(gateway_mode_get() == GATEWAY_MODE_GATEWAY);
     (void)voice_ble_send_gateway_status();
-    // 目标表：网关模式才有意义（普通模式不登记，避免污染表内容）。
+    // 目标表 + 切换器：网关模式才有意义（普通模式不登记，避免污染表内容）。
     if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
         gateway_targets_init();
+        gateway_switcher_init(&s_switcher);
         voice_ble_set_peer_callback(gateway_on_peer);
+        if (!s_switcher_timer) {
+            // 500ms 轮询：只用于切换超时判定（纯逻辑无内部定时器）。
+            const esp_timer_create_args_t args = {
+                .callback = gateway_switcher_timer_cb,
+                .name = "gw_switcher",
+            };
+            if (esp_timer_create(&args, &s_switcher_timer) == ESP_OK) {
+                (void)esp_timer_start_periodic(s_switcher_timer, 500 * 1000);
+            }
+        }
     } else {
         voice_ble_set_peer_callback(NULL);
+        if (s_switcher_timer) {
+            (void)esp_timer_stop(s_switcher_timer);
+        }
     }
     if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
         ui_status_set_gateway_link("RC: ...");
@@ -2373,6 +2504,86 @@ static void gateway_apply_mode(void)
 // I2C 失败 streak 期间每次轮询最坏占 60ms（6 倍轮询周期，按钮+增量两次 I2C 交易），
 // 与双击 500ms/hold 300ms 窗口相比可忽略；累计 10 次失败即停表降级。
 // 组件连续 I2C 失败标记 absent 后停表，避免空转与日志刷屏。
+// ---- P1 切换器：编码器菜单交互 ----
+// 长按 ≥600ms 唤起目标菜单（仅在网关模式、非录音中）；旋转移动高亮；短按确认；
+// 菜单内长按或 8s 无操作取消。唤起菜单的那次长按在松开时不再触发"确认"。
+static bool s_menu_open;
+static int s_menu_index;
+static uint32_t s_menu_opened_ms;
+static uint32_t s_encoder_press_ms;
+static bool s_encoder_press_active;
+static bool s_menu_opened_during_press;
+
+#define GATEWAY_MENU_LONG_PRESS_MS 600u
+#define GATEWAY_MENU_IDLE_CLOSE_MS 8000u
+
+static void encoder_menu_close(void)
+{
+    if (!s_menu_open) {
+        return;
+    }
+    s_menu_open = false;
+    ui_status_menu_hide();
+    ESP_LOGI(TAG, "目标菜单关闭");
+}
+
+static void encoder_menu_open(void)
+{
+    const gateway_target_table_t *table = gateway_targets_table();
+    char names[UI_STATUS_MENU_MAX_ITEMS][32];
+    const char *items[UI_STATUS_MENU_MAX_ITEMS] = {0};
+    int count = table->count;
+    if (count > UI_STATUS_MENU_MAX_ITEMS) {
+        count = UI_STATUS_MENU_MAX_ITEMS;
+    }
+    for (int i = 0; i < count; i++) {
+        gateway_targets_core_display_name(&table->items[i], names[i], sizeof(names[i]));
+        items[i] = names[i];
+    }
+    // 高亮当前选定目标（若在表内），否则第一项。
+    int index = 0;
+    if (s_switcher.selected_valid) {
+        const int found = gateway_targets_core_find(table, s_switcher.selected.addr,
+                                                    s_switcher.selected.addr_type);
+        if (found >= 0 && found < count) {
+            index = found;
+        }
+    }
+    s_menu_index = index;
+    s_menu_open = true;
+    s_menu_opened_ms = (uint32_t)esp_log_timestamp();
+    s_menu_opened_during_press = s_encoder_press_active;
+    ui_status_menu_show(items, count, index);
+    ESP_LOGI(TAG, "目标菜单打开 count=%d index=%d", count, index);
+}
+
+// 旋转：菜单打开时移动高亮并返回 true（调用方据此不发 rotate 事件）。
+static bool encoder_menu_handle_rotate(int32_t steps)
+{
+    const int count = gateway_targets_table()->count;
+    if (!s_menu_open || count <= 0) {
+        return false;
+    }
+    int index = s_menu_index + steps;
+    if (index < 0) index = 0;
+    if (index > count - 1) index = count - 1;
+    if (index != s_menu_index) {
+        s_menu_index = index;
+        ui_status_menu_set_selection(index);
+        s_menu_opened_ms = (uint32_t)esp_log_timestamp();
+    }
+    return true;
+}
+
+// 短按：确认选定目标（-1 表示"不限制/自动"项在菜单外，这里只处理表内目标）。
+static void encoder_menu_confirm(void)
+{
+    const int index = s_menu_index;
+    encoder_menu_close();
+    gateway_select_target(index, false);
+    ESP_LOGI(TAG, "目标菜单确认 index=%d", index);
+}
+
 static void encoder_poll_timer_cb(void *arg)
 {
     (void)arg;
@@ -2394,10 +2605,50 @@ static void encoder_poll_timer_cb(void *arg)
         pressed != s_encoder_button_pressed) {
         s_encoder_button_pressed = pressed;
         if (pressed) {
+            s_encoder_press_active = true;
+            s_encoder_press_ms = (uint32_t)esp_log_timestamp();
+            s_menu_opened_during_press = false;
             queue_primary_down_event(APP_INPUT_SOURCE_ENCODER, 0);
         } else {
-            queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
+            s_encoder_press_active = false;
+            if (s_menu_opened_during_press) {
+                // 这次长按已用于唤起菜单：松开不再当作按下/抬起（避免误触发确认）。
+                s_menu_opened_during_press = false;
+            } else if (s_menu_open) {
+                queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
+                encoder_menu_confirm();
+            } else {
+                queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
+            }
         }
+    }
+
+    // 长按判定（仅在按下期间检查）：唤起目标菜单。录音中不唤起（P1 设计 O5），
+    // 同时把这次按下"撤销"——补发 up 事件让已开始的录音立刻结束（<600ms 的录音会被
+    // 桌面端最短时长门控丢弃），避免长按既录音又开菜单。
+    if (s_encoder_press_active && !s_menu_open &&
+        gateway_mode_get() == GATEWAY_MODE_GATEWAY && mini_encoder_c_present() &&
+        (uint32_t)(esp_log_timestamp() - s_encoder_press_ms) >= GATEWAY_MENU_LONG_PRESS_MS) {
+        // 录音中不打扰（P1 设计 O5），除非这段录音正是本次编码器按压启动的——那可以撤销：
+        // 补发 up 立刻停止（<600ms 的会话会被桌面端最短时长门控丢弃），避免"长按既录音又开菜单"。
+        const bool own_press_recording =
+            s_recording && s_encoder_button_pressed &&
+            s_primary_owner == primary_owner_from_source(APP_INPUT_SOURCE_ENCODER);
+        if (!s_recording) {
+            // 门控关闭（编码器按下不发 button 事件）时按下可能未进录音路径：清掉共享按下
+            // 时刻，让松开分支不把它当短按进双击窗口（否则会补发 button_click 触发用户映射键）。
+            s_primary_down_us = 0;
+            encoder_menu_open();
+        } else if (own_press_recording) {
+            queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
+            encoder_menu_open();
+        }
+    }
+
+    // 菜单无操作自动关闭。
+    if (s_menu_open &&
+        (uint32_t)(esp_log_timestamp() - s_menu_opened_ms) >= GATEWAY_MENU_IDLE_CLOSE_MS) {
+        encoder_menu_close();
     }
 
     int32_t delta = 0;
@@ -2410,7 +2661,9 @@ static void encoder_poll_timer_cb(void *arg)
         const int32_t steps = s_encoder_count_rem / 2;  // 向零取整，保留符号
         if (steps != 0) {
             s_encoder_count_rem -= steps * 2;
-            queue_encoder_rotate_event(steps);
+            if (!encoder_menu_handle_rotate(steps)) {
+                queue_encoder_rotate_event(steps);
+            }
         }
     }
 }

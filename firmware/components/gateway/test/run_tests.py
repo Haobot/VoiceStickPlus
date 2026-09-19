@@ -40,6 +40,13 @@ TARGETS_SOURCES = [
 ]
 TARGETS_EXE = os.path.join(HERE, "test_gateway_targets.exe")
 
+# P1 切换器：状态机纯逻辑件
+SWITCHER_SOURCES = [
+    os.path.join(HERE, "test_gateway_switcher.c"),
+    os.path.join(SRC, "gateway_switcher.c"),
+]
+SWITCHER_EXE = os.path.join(HERE, "test_gateway_switcher.exe")
+
 
 def capture_msvc_env() -> dict[str, str]:
     """跑 vcvars64 后导出完整环境，供后续直调 cl.exe。"""
@@ -87,7 +94,8 @@ def build_and_run(sources: list[str], exe: str, env: dict[str, str]) -> int:
 def main() -> int:
     env = capture_msvc_env()
     failed = 0
-    for sources, exe in [(SOURCES, EXE), (ATVV_SOURCES, ATVV_EXE), (TARGETS_SOURCES, TARGETS_EXE)]:
+    for sources, exe in [(SOURCES, EXE), (ATVV_SOURCES, ATVV_EXE), (TARGETS_SOURCES, TARGETS_EXE),
+                        (SWITCHER_SOURCES, SWITCHER_EXE)]:
         rc = build_and_run(sources, exe, env)
         if rc != 0:
             failed = rc if failed == 0 else failed

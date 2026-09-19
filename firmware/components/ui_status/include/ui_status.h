@@ -14,6 +14,14 @@ void ui_status_set_idle_hint(const char *hint);
 // 网关模式调试：设备号下方单行显示小米遥控器链路状态（"RC: ok/lost/..."），
 // NULL/空串清除（普通模式不显示）。
 void ui_status_set_gateway_link(const char *text);
+// P1 切换器：目标选择菜单（覆盖层）。items 为 UTF-8 显示名数组，selected 为高亮下标。
+// 菜单在 LVGL 任务外调用（内部加锁）；hide 后回到常规画面。
+#define UI_STATUS_MENU_MAX_ITEMS 4
+void ui_status_menu_show(const char *const *items, int count, int selected);
+void ui_status_menu_set_selection(int selected);
+void ui_status_menu_hide(void);
+bool ui_status_menu_visible(void);
+
 void ui_status_set_idle(void);
 void ui_status_set_idle_dimmed(bool dimmed);
 void ui_status_set_recording(uint32_t session_id);

@@ -97,6 +97,28 @@ controller 解析支持，风险高）。建议先做前者，真机量到切换
 | 5 | LVGL 菜单 + 屏幕状态显示 | 真机手操切换 ≤2s、来回 ≥10 次 |
 | 6 | 文档/经验沉淀 + roadmap 状态更新 | Hub + Expe 同步 |
 
+### 4.1 实施状态（2026-09-20 夜）
+
+| 步 | 状态 | 证据 / 缺口 |
+|---|---|---|
+| 1 | ✅ 完成 | `gateway_status` 小帧 + 桌面端抑制直连 ATVV（提交 `fd18b22c`，真机日志 `gateway status VS-53A8 mode=gateway`） |
+| 2 | ✅ 完成 | 目标表 + `gateway_target_info`（提交 `6840449f`）。真机：`gw_targets: loaded 1 target(s)` → `网关目标 #0: 未命名-FA44` → `target named: PROART16`。**踩坑**：`gateway_status` 帧先于会话 ready 到达，最初在 `SetDeviceGatewayMode` 里发主机名被静默丢弃，现改到 `on_connection_change`（只发布 ready 会话）里发 |
+| 3 | ✅ 完成 | `gateway_switcher` 纯逻辑 + 8 组 host 单测（`test_gateway_switcher: ALL PASS`） |
+| 4 | ✅ 代码完成，**缺真机验收** | 连接过滤/切换动作已接 NimBLE（`gateway_on_peer` → 状态机 → 动作执行：断开当前/拒非目标/屏幕提示）。真机已验证 IDLE 分支（`切换器动作: accept_peer (state=idle)`）。**缺口**：非目标拒绝、切换来回需要第二台 central（nRF Connect 模拟），今晚未做 |
+| 5 | ⚠️ 代码完成，**缺手操验收** | LVGL 覆盖层菜单（`ui_status_menu_show/set_selection/hide`）+ 编码器长按 ≥600ms 唤起 / 旋转选 / 短按确认 / 8s 自动关 / 录制中不打扰。**缺口**：编码器是物理 I2C 旋钮，无人手操作无法验证；菜单渲染、长按判定、确认路径均未真机走通 |
+| 6 | ✅ 完成 | 本文 + `Doc/Ref/protocol.md`（`gateway_target_info`）+ roadmap 状态 |
+
+真机（无手操）已验证的链路：开机 → `boot 模式应用：网关模式` → `gw_targets: loaded 1 target(s)`
+→ `网关目标 #0: PROART16`（名字已持久化）→ `切换器动作: accept_peer (state=idle)` → `target named: PROART16`；
+无 crash/assert。
+
+**下一步验收清单（需人手 / 第二台机器）**：
+
+1. 编码器长按 600ms：屏幕出现目标菜单（PROART16 高亮）；旋转移动高亮；短按确认 → 屏幕显示目标名；8s 无操作自动关。
+2. 录音中长按：不应弹菜单；若这次按压本身已启动录音（`encoder_press_action=recording`），长按应立刻结束该录音并打开菜单（<600ms 会话被桌面端最短时长门控丢弃）。
+3. 第二台 central（nRF Connect 或另一台 PC）：选定目标后，非目标连接应被立刻断开（日志 `非目标桌面端连接，主动断开` + `reject_peer`）。
+4. 切换来回 ≥10 次，切换 ≤2s，且**小米链路零断开**（`gw_hid`/`gw_atvv` 无断开日志）。
+
 ## 5. 风险
 
 | 风险 | 缓解 |

@@ -13,6 +13,7 @@ idf_component_register(
          "src/gateway_atvv_session.c"
          "src/gateway_targets_core.c"
          "src/gateway_targets.c"
+         "src/gateway_switcher.c"
          "src/xiaomi_atvv_client.c"
     INCLUDE_DIRS "include"
     REQUIRES bt nvs_flash stick_s3_board

@@ -71,10 +71,12 @@
 
 ### P1 — Phase 3 切换器（约 3-5 天）
 
-> **进行中（2026-09-20）**：设计稿 `Doc/Plan/xiaomi-gateway-p1-switcher.md` +
+> **进行中（2026-09-20 夜）**：设计稿 `Doc/Plan/xiaomi-gateway-p1-switcher.md` +
 > `Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md`（用户已按推荐项批准）。
-> **第 1 步已落地并真机验证**：固件新增 `gateway_status` 小帧（已烧录）→ 桌面端解析并抑制
-> 直连遥控器 ATVV；日志与测试见抑制设计 §4.4。后续按设计稿 §4 的 2→6 步推进。
+> 1→5 步代码全部落地：`gateway_status` 小帧 + 目标表（NVS）+ 桌面端主机名上报 + `gateway_switcher`
+> 纯逻辑状态机 + NimBLE 接线 + LVGL 目标菜单。**已真机验证**：网关模式切换、目标入表/命名、
+> 持久化、IDLE 分支接受连接、无 crash。**未验证**（需人手/第二台机器）：编码器长按菜单手操、
+> 非目标拒绝、来回切换 ≥10 次。逐条状态见设计稿 §4.1。
 
 **目标**：StickS3 作为唯一枢纽，遥控器只与它配对，由它在多个目标（Win / Mac）之间切换按键与语音的去向。
 
