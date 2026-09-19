@@ -70,6 +70,17 @@ auto op = characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(N
 设备串口侧同步由 `gated: state_sub=0` 变为正常 `GATT procedure initiated: notify; att_handle=30`
 （不再有 gated 告警）。首次尝试即恢复，连接耗时 696ms。
 
+**端到端验收（用户实按，12:32，网关模式）**：遥控器语音键 → 全部正常出字。日志链路完整：
+
+```
+12:32:04 state notify VS-53A8 {"event":"button_down","button":"primary","source":"xiaomi"}
+12:32:08 state notify VS-53A8 {"event":"button_up","duration_ms":3813}
+12:32:12/16 第二次会话（duration_ms=2419）同样正常
+```
+
+**稳态观察**：修复后会话自 12:23:44 起持续健康（每 30s 一次 battery_status notify 不断流，
+期间无任何 zombie 判定、无断连），不再出现「过一段时间就失效」。
+
 ## 排查过程中的装置陷阱（差点把结论带偏）
 
 本次定位期间用 pyserial 反复抓设备串口，**每开关一次串口就复位一次设备**（见
@@ -104,3 +115,6 @@ ESP32-S3 的 USB-Serial-JTAG 把跳变当复位序列。表现与误判：
    `control_rx` 任意写入时回应一个「未被订阅」的提示帧（走读/写而非 notify），
    让 app 无需依赖通知即可自查——当前靠 app 侧的活性证明已能发现，暂不做。
 2. 小米 ATVV 直连路径（app 直连 RC-XXXX，非网关模式）同样套用了缓存击穿，但**未单独真机复现**该路径的失败样本。
+   观察：网关模式下 app 仍会尝试直连旁边那台遥控器（`RC-6459`，12:32 日志里
+   `atvv control subscribe timeout after 2500ms`、`Xiaomi ATVV service UUID not present`），
+   与网关链路并存、互不影响但会刷日志。是否要在网关模式下抑制直连 ATVV，留待后续判断。
