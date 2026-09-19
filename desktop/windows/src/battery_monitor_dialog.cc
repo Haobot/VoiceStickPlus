@@ -79,6 +79,23 @@ void AppendDialogWideString(std::vector<BYTE>* buffer, const wchar_t* text) {
     AppendDialogWord(buffer, 0);
 }
 
+// 续航时长文案：< 60 分钟为「X分钟/X min」，否则「X小时Y分钟/Xh Ym」（Y=0 省略）。
+std::wstring FormatRuntimeText(int minutes, UiLanguage language) {
+    const bool zh = language == UiLanguage::kSimplifiedChinese;
+    if (minutes < 60) {
+        return zh ? std::to_wstring(minutes) + L"分钟"
+                  : std::to_wstring(minutes) + L" min";
+    }
+    const int hours = minutes / 60;
+    const int rest = minutes % 60;
+    if (rest == 0) {
+        return zh ? std::to_wstring(hours) + L"小时"
+                  : std::to_wstring(hours) + L"h";
+    }
+    return zh ? std::to_wstring(hours) + L"小时" + std::to_wstring(rest) + L"分钟"
+              : std::to_wstring(hours) + L"h " + std::to_wstring(rest) + L"m";
+}
+
 // 导出文件默认名：battery_VS-XXXX_YYYYMMDD_HHMMSS.<ext>。
 std::wstring DefaultExportFileName(const std::string& device_id, const wchar_t* ext) {
     const std::time_t t = std::time(nullptr);
@@ -358,6 +375,16 @@ void BatteryMonitorDialog::OnPowerMgmtState(const std::string& device_id, bool u
     UpdateUsbWarning();
 }
 
+void BatteryMonitorDialog::OnBatteryStatus(const std::string& device_id,
+                                           int level_percent, bool charging,
+                                           bool usb_powered) {
+    if (!IsSameDevice(device_id)) return;
+    battery_charging_ = charging;
+    battery_usb_powered_ = usb_powered;
+    battery_level_percent_ = level_percent;
+    UpdateChargeIndicator();
+}
+
 void BatteryMonitorDialog::NotifyAllDisconnected() {
     // 监测中链路断开（Windows 蓝牙栈闪断/设备重启等）不中止监测：设备端
     // power_log 持续记录，转入等待重连，链路恢复后增量续传补回数据。
@@ -480,6 +507,36 @@ std::wstring BatteryMonitorDialog::FormatCountdownText() const {
     return EffectiveUiLanguage(language_) == UiLanguage::kSimplifiedChinese
                ? std::to_wstring(secs) + L" 秒"
                : std::to_wstring(secs) + L"s";
+}
+
+void BatteryMonitorDialog::UpdateChargeIndicator() {
+    if (!charge_label_) return;
+    const auto language = EffectiveUiLanguage(language_);
+    std::wstring text;
+    bool visible = false;
+    if (battery_charging_) {
+        visible = true;
+        if (battery_level_percent_ >= kChargeAlmostFullPercent) {
+            // CV 涓流段：剩余容量极小，线性模型不再可信，改定性提示。
+            text = TrW(StringId::kBatteryMonitorChargingAlmostFull, language);
+        } else {
+            // 预计充满分钟数 = 剩余电量 × 满充时长模型（0→100% 约 1 小时）。
+            int minutes = (100 - battery_level_percent_) * kFullChargeMinutes / 100;
+            if (minutes < 1) minutes = 1;
+            text = FormatText(TrW(StringId::kBatteryMonitorCharging, language),
+                              {std::to_wstring(minutes)});
+        }
+    } else if (!battery_usb_powered_) {
+        // 电池供电（未充电）：预计可用 = 当前电量 × 满电续航模型（约 2.5 小时）。
+        visible = true;
+        int minutes = battery_level_percent_ * kFullRuntimeMinutes / 100;
+        if (minutes < 1) minutes = 1;
+        text = FormatText(TrW(StringId::kBatteryMonitorOnBattery, language),
+                          {FormatRuntimeText(minutes, language)});
+    }
+    // USB 供电未充电：设备由外部电源直驱、无电池放电消耗，此时显示续航会误导，隐藏。
+    SetText(charge_label_, text);
+    ShowWindow(charge_label_, visible ? SW_SHOW : SW_HIDE);
 }
 
 // ---------------------------------------------------------------- 导出
@@ -1006,6 +1063,16 @@ INT_PTR BatteryMonitorDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM
     case WM_CLOSE:
         DestroyWindow(hwnd_);
         return TRUE;
+    case WM_CTLCOLORSTATIC:
+        // 供电指示器：充电中绿色（与图区充电段底色呼应），电池续航灰色；其余
+        // 标签保持系统默认。
+        if (reinterpret_cast<HWND>(l_param) == charge_label_ && charge_label_) {
+            const HDC hdc = reinterpret_cast<HDC>(w_param);
+            SetTextColor(hdc, battery_charging_ ? RGB(16, 124, 16) : RGB(90, 90, 90));
+            SetBkColor(hdc, GetSysColor(COLOR_BTNFACE));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+        break;
     case WM_DPICHANGED: {
         UINT new_dpi = HIWORD(w_param);
         if (new_dpi != 0 && new_dpi != dpi_) {
@@ -1088,6 +1155,14 @@ void BatteryMonitorDialog::BuildUi() {
         return control;
     };
 
+    // 左上角：供电指示器（初始隐藏，UpdateChargeIndicator 按设备实时上报的
+    // 电池状态控制显隐与文案：充电=预计充满，电池供电=预计可用）；位于开发
+    // 者模式开关左侧同一行。
+    charge_label_ = remember(CreateWindowExW(
+        0, L"STATIC", L"", WS_CHILD | SS_LEFT,
+        Dp(16), Dp(14), Dp(308), Dp(22), hwnd_, nullptr, instance_, nullptr));
+    UpdateChargeIndicator();  // DPI 变更重建控件后恢复显示状态
+
     // 右上角：开发者模式开关（供电态开关左侧）：勾选后总时长 60 → 10 分钟。
     dev_mode_check_ = remember(CreateWindowExW(
         0, L"BUTTON", TrW(StringId::kBatteryMonitorDevMode, language).c_str(),
@@ -1152,6 +1227,7 @@ void BatteryMonitorDialog::DestroyControls() {
     all_controls_.clear();
     status_label_ = nullptr;
     warn_label_ = nullptr;
+    charge_label_ = nullptr;
     usb_auto_off_check_ = nullptr;
     dev_mode_check_ = nullptr;
     start_button_ = nullptr;

@@ -392,6 +392,12 @@ enum class StringId {
     kBatteryMonitorDevMode,
     // 开发者模式下的空闲状态说明文案（含时长缩短说明与开始指引）
     kBatteryMonitorStatusIdleDev,
+    // 充电状态指示器（监测窗口左上角，开发者模式开关左侧）：{0} = 预计充满分钟数
+    kBatteryMonitorCharging,
+    // 充电状态指示器：电量接近充满时的文案
+    kBatteryMonitorChargingAlmostFull,
+    // 电池供电续航指示器（同位置，不充电时）：{0} = 预计可用时长（分钟或小时分钟）
+    kBatteryMonitorOnBattery,
 
     // 热词预算裁剪提示（前缀 + 「保留数/总数」 + 后缀拼接）
     kHotwordTrimTitle,

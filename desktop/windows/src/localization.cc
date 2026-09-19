@@ -391,6 +391,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kBatteryMonitorStatusIdleDev)] =
         "Developer mode: total duration shortened to 10 minutes (default 60) for quick "
         "verification. Click Start.";
+    // {0}=预计充满分钟数
+    table[Index(StringId::kBatteryMonitorCharging)] = "Charging: full in {0} min";
+    table[Index(StringId::kBatteryMonitorChargingAlmostFull)] = "Charging: almost full";
+    // {0}=预计可用时长（X min / Xh Ym）
+    table[Index(StringId::kBatteryMonitorOnBattery)] = "Est. runtime: {0}";
     table[Index(StringId::kHotwordTrimTitle)] = "Hotword Budget Trimmed";
     table[Index(StringId::kHotwordTrimBodyPrefix)] =
         "Hotwords exceed the per-session budget; kept by usage frequency: ";
@@ -799,6 +804,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kBatteryMonitorStatusIdleDev)] =
         "开发者模式已启用：监测总时长缩短为 10 分钟（默认 60 分钟），用于快速验证链路。"
         "点击「开始监测」启动。";
+    // {0}=预计充满分钟数
+    table[Index(StringId::kBatteryMonitorCharging)] = "充电中: {0}分钟充满";
+    table[Index(StringId::kBatteryMonitorChargingAlmostFull)] = "充电中: 即将充满";
+    // {0}=预计可用时长（X分钟 / X小时Y分钟）
+    table[Index(StringId::kBatteryMonitorOnBattery)] = "预计可用: {0}";
     table[Index(StringId::kHotwordTrimTitle)] = "热词预算裁剪";
     table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
     table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";

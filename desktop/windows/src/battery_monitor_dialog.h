@@ -18,7 +18,9 @@ namespace voicestick {
 // 基线探测（越界 offset 空 dump 拿 total）→ 每 60s 增量 dump，共 60 个周期；
 // 中部图区实时 GDI 曲线（WM_PAINT 双缓冲自绘），过程可停止，结束后可导出
 // CSV（PowerLogAccumulator::FormatCsv）与 PNG 曲线。
-// 窗口右上角另有供电态（USB）10min 自动关机开关。
+// 窗口右上角另有供电态（USB）10min 自动关机开关与开发者模式开关；左上角
+// 供电指示器（开发者模式开关左侧）按设备实时上报的电池状态显示：充电中
+// 「充电中: XX分钟充满」/ 电池供电「预计可用: XX」。
 // 全部设备回调（OnPowerLogFragment / OnPowerMgmtState / NotifyAllDisconnected）
 // 由 win32_app 在 UI 线程派发。
 class BatteryMonitorDialog {
@@ -34,6 +36,10 @@ public:
     void OnPowerLogFragment(const std::string& device_id, const PowerLogFragment& fragment);
     // 供电态（USB）自动关机开关状态推送，刷新勾选框。
     void OnPowerMgmtState(const std::string& device_id, bool usb_auto_off);
+    // 实时电池状态推送（设备每 10s 检查、变化即上报），刷新左上角供电指示器：
+    // 充电中显示预计充满时间，电池供电显示预计可用时长，USB 供电未充电时隐藏。
+    void OnBatteryStatus(const std::string& device_id, int level_percent, bool charging,
+                        bool usb_powered);
     // 所有设备已断连（含本设备）：监测中转入等待重连（设备端 power_log 持续
     // 记录，重连后从 log_size_ 增量续传，数据不丢）；启动阶段仍按断连错误中止。
     void NotifyAllDisconnected();
@@ -81,6 +87,7 @@ private:
     void RefreshStatus();
     void UpdateButtons();
     void UpdateUsbWarning();
+    void UpdateChargeIndicator();
     std::wstring FormatCountdownText() const;
 
     // 图区自绘（GDI，双缓冲）：横轴 0..total_cycles_ 分钟，纵轴数据自适应。
@@ -106,6 +113,7 @@ private:
 
     HWND status_label_ = nullptr;
     HWND warn_label_ = nullptr;
+    HWND charge_label_ = nullptr;  // 左上角供电指示器（充电=充满预估，电池=续航预估）
     HWND usb_auto_off_check_ = nullptr;
     HWND dev_mode_check_ = nullptr;
     HWND start_button_ = nullptr;
@@ -131,6 +139,9 @@ private:
     ULONGLONG next_cycle_tick_ = 0;      // 下次采集的 GetTickCount64 时刻（倒计时显示用）
     bool usb_auto_off_state_ = false;    // 最近一次设备上报的供电态自动关机开关状态
     bool dev_mode_ = false;              // 开发者模式（会话级）：总时长 60 → 10 分钟
+    bool battery_charging_ = false;      // 最近一次设备上报的充电状态（实时，独立于监测会话）
+    bool battery_usb_powered_ = false;   // 最近一次设备上报的 USB 供电状态
+    int battery_level_percent_ = 0;      // 最近一次设备上报的电量百分比（充/放电预估的输入）
     int total_cycles_ = kTotalCycles;    // 本轮监测总周期数（分钟），StartMonitoring 时锁定
     std::wstring status_override_;       // 保存结果等瞬态文案（非监测态优先于状态文案显示）
     std::int64_t session_start_epoch_s_ = -1;  // 会话起点（time_anchor 下发的 epoch），图区横轴基准
@@ -162,6 +173,16 @@ private:
     static constexpr UINT kDumpTimeoutMs = 20000;
     static constexpr int kMaxAttemptsPerCycle = 3;
     static constexpr int kMaxFailedCycles = 3;
+    // 预计充满时长模型（分钟）：StickS3 电池约 200mAh（power_model.json），PMIC
+    // 恒流充电约 200mA（1C），0→100% 约 1 小时。设备端无充电电流上报，电量
+    // 百分比由电压线性映射（3350–4150mV → 0–100%）且充电中端电压偏高，估算
+    // 仅作量级参考；电量接近充满（CV 涓流段）时改显示「即将充满」。
+    static constexpr int kFullChargeMinutes = 60;
+    static constexpr int kChargeAlmostFullPercent = 98;
+    // 预计可用时长模型（分钟）：满电 200mAh 按混合典型电流 ~80mA（S0 亮屏 90 /
+    // S1 暗屏 70，power_model.json）持续使用约 2.5 小时。设备电池供电下空闲
+    // 10 分钟会自动关机，纯放置的实际可用时间远超此估计。
+    static constexpr int kFullRuntimeMinutes = 150;
 };
 
 } // namespace voicestick

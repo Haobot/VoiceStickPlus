@@ -655,6 +655,11 @@ void Win32App::SetDeviceBattery(const std::string& device_id, int level_percent,
                 " charging=" + std::to_string(charging) +
                 " usb=" + std::to_string(usb_powered));
         device_battery_map_[device_id] = {level_percent, charging, usb_powered};
+        // 实时电池状态路由到监测窗口左上角的供电指示器（窗口未开时丢弃）。
+        if (battery_monitor_dialog_) {
+            battery_monitor_dialog_->OnBatteryStatus(device_id, level_percent, charging,
+                                                      usb_powered);
+        }
         UpdateTrayIcon();
     });
 }
@@ -2444,6 +2449,13 @@ void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {
     const auto state_it = usb_auto_off_state_.find(device_id);
     if (state_it != usb_auto_off_state_.end()) {
         battery_monitor_dialog_->OnPowerMgmtState(device_id, state_it->second);
+    }
+    // 若已缓存设备上报的电池状态（连接时固件会推送），立即刷新供电指示器。
+    const auto battery_it = device_battery_map_.find(device_id);
+    if (battery_it != device_battery_map_.end()) {
+        battery_monitor_dialog_->OnBatteryStatus(
+            device_id, battery_it->second.level_percent, battery_it->second.charging,
+            battery_it->second.usb_powered);
     }
     LogLine("Battery monitor opened for VS-" + device_id);
 }
