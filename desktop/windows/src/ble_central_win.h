@@ -235,6 +235,14 @@ private:
                                  std::chrono::milliseconds delay);
     // 按 delay 提前唤醒主动重连队列（心跳 30s 周期只作兜底），带代数守卫。
     void WakeProactiveReconnectsAfter(std::chrono::milliseconds delay);
+    // 限时 CCCD 写（best-effort，结果只记日志）：用于订阅前的「缓存击穿」——
+    // Windows 缓存了 CCCD 值，值未变化时写操作会被本地短路（返回 Success 却不发空口包），
+    // 设备侧因此收不到订阅。先写 None 再写 Notify 保证至少有一次是真实变化。
+    winrt::Windows::Foundation::IAsyncAction WriteCccdBestEffortAsync(
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic characteristic,
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattClientCharacteristicConfigurationDescriptorValue value,
+        std::string device_id,
+        std::string label);
     // ---- 系统配对（bond）看门狗：只补不删 ----
     // 节流判定（按地址，10min 间隔 + 每次运行最多 3 次），返回 true 表示可以开始一次检查。
     bool BeginOsBondCheck(std::uint64_t bluetooth_address);

@@ -2205,6 +2205,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
             // 先 Control 后 Audio：MIC_OPEN/STOP 控制帧优先级高于音频流。
             LogBleLine("subscribing atvv control notifications RC-" + device_id);
+            // 同 VS 路径的 CCCD 缓存击穿：先写 None 再写 Notify。
+            co_await WriteCccdBestEffortAsync(
+                session->xiaomi_control_characteristic,
+                GattClientCharacteristicConfigurationDescriptorValue::None, device_id, "atvv_control");
             auto atvv_control_op = session->xiaomi_control_characteristic
                 .WriteClientCharacteristicConfigurationDescriptorAsync(
                     GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -2224,6 +2228,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                        " status=" + GattStatusName(atvv_control_subscribe));
 
             LogBleLine("subscribing atvv audio notifications RC-" + device_id);
+            co_await WriteCccdBestEffortAsync(
+                session->xiaomi_audio_characteristic,
+                GattClientCharacteristicConfigurationDescriptorValue::None, device_id, "atvv_audio");
             auto atvv_audio_op = session->xiaomi_audio_characteristic
                 .WriteClientCharacteristicConfigurationDescriptorAsync(
                     GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -2430,6 +2437,12 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         // state second has been observed to push device_info out by ~1s.
         LogBleLine("subscribing state notifications VS-" + device_id);
         log_stage("state_subscribe_begin");
+        // CCCD 缓存击穿：先写 None，使紧随其后的 Notify 一定是「值变化」，Windows 才不会
+        // 用缓存短路掉这次写（真机取证见 WriteCccdBestEffortAsync 注释与
+        // Doc/Expe/xiaomi-gateway-voice-key-stops-after-while-2026-09-19.md）。
+        co_await WriteCccdBestEffortAsync(session->state_characteristic,
+                                          GattClientCharacteristicConfigurationDescriptorValue::None,
+                                          device_id, "state");
         auto state_op = session->state_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -2460,6 +2473,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
         LogBleLine("subscribing audio notifications VS-" + device_id);
         log_stage("audio_subscribe_begin");
+        co_await WriteCccdBestEffortAsync(session->audio_characteristic,
+                                          GattClientCharacteristicConfigurationDescriptorValue::None,
+                                          device_id, "audio");
         auto audio_op = session->audio_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -2519,6 +2535,35 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             co_await WaitMs(kSessionLivenessPollInterval);
         }
         if (session->last_rx_ms.load(std::memory_order_relaxed) <= 0) {
+            // 诊断探针（区分两种僵尸成因）：强制走空口的未缓存读取。
+            //   · 读到应答（哪怕 ATT 错误）= 链路真的在收发 ⇒ 问题在 Windows 把 CCCD 写
+            //     短路在本地缓存里；
+            //   · 超时 = ATT 承载已死（Windows 只是还记着「已连接」）⇒ 必须重建链路。
+            try {
+                auto read_op =
+                    session->state_characteristic.ReadValueAsync(BluetoothCacheMode::Uncached);
+                auto read_wait = [](decltype(read_op) op)
+                    -> winrt::Windows::Foundation::IAsyncAction {
+                    try { co_await op; } catch (...) {}
+                }(read_op);
+                co_await winrt::when_any(read_wait, WaitMs(kSessionLivenessTimeout));
+                if (read_op.Status() == winrt::Windows::Foundation::AsyncStatus::Completed) {
+                    const auto read_result = read_op.GetResults();
+                    LogBleLine("zombie probe VS-" + device_id + ": uncached read status=" +
+                               GattStatusName(read_result.Status()) + " bytes=" +
+                               std::to_string(read_result.Value().Length()) +
+                               " (ATT bearer alive ⇒ CCCD write was short-circuited locally)");
+                } else {
+                    try { read_op.Cancel(); } catch (...) {}
+                    LogBleLine("zombie probe VS-" + device_id +
+                               ": uncached read TIMED OUT (ATT bearer looks dead)");
+                }
+            } catch (const winrt::hresult_error& error) {
+                LogBleLine("zombie probe VS-" + device_id + " uncached read threw hr=" +
+                           FormatHresult(error.code()));
+            } catch (...) {
+                LogBleLine("zombie probe VS-" + device_id + " uncached read threw unknown");
+            }
             const auto heal = NoteZombieEpisode(bluetooth_address, !is_xiaomi);
             LogBleLine("zombie session VS-" + device_id +
                        ": subscriptions reported success but device sent nothing within " +
@@ -3388,6 +3433,36 @@ void BleCentralWin::WakeProactiveReconnectsAfter(std::chrono::milliseconds delay
         if (reconnect_wake_epoch_.load(std::memory_order_acquire) != epoch) return;
         RunDueProactiveReconnects();
     }).detach();
+}
+
+winrt::Windows::Foundation::IAsyncAction BleCentralWin::WriteCccdBestEffortAsync(
+    GattCharacteristic characteristic,
+    GattClientCharacteristicConfigurationDescriptorValue value,
+    std::string device_id,
+    std::string label) {
+    try {
+        auto op = characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(value);
+        // 同 kSubscribeTimeout 的手法：cppwinrt 的 when_any 不支持 IAsyncOperation 与
+        // IAsyncAction 混搭，把操作包一层 IAsyncAction 再与定时器竞速，异常在包装内吞掉
+        //（否则超时取消后 when_any 内部的 fire_and_forget 分支会 terminate）。
+        auto wait = [](decltype(op) o) -> winrt::Windows::Foundation::IAsyncAction {
+            try { co_await o; } catch (...) {}
+        }(op);
+        co_await winrt::when_any(wait, WaitMs(kSubscribeTimeout));
+        if (op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+            try { op.Cancel(); } catch (...) {}
+            LogBleLine(label + " CCCD write did not complete VS-" + device_id + " (ignored)");
+        } else {
+            // 留痕：这条日志能证明「缓存击穿」这一步真的执行了（排查同类问题时看它）。
+            LogBleLine(label + " CCCD cache-bust write(None) VS-" + device_id + " status=" +
+                       GattStatusName(op.GetResults()));
+        }
+    } catch (const winrt::hresult_error& error) {
+        LogBleLine(label + " CCCD write threw VS-" + device_id +
+                   " hr=" + FormatHresult(error.code()));
+    } catch (...) {
+        LogBleLine(label + " CCCD write threw VS-" + device_id + " unknown exception");
+    }
 }
 
 bool BleCentralWin::BeginOsBondCheck(std::uint64_t bluetooth_address) {

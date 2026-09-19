@@ -88,7 +88,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 - MiniEncoderC 编码器是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）是唯一唤醒键。Grove 口 5V 不启用，编码器由顶部 Hat 排针供电。
 - 固件里给 FreeRTOS 对象（StreamBuffer/Queue 等）配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 硬编码限死在内部 RAM（`portFREERTOS_HEAP_CAPS`），`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它。详见 `Doc/Expe/claude-memory-distilled.md` §1.6。
 - 小米网关「语音键正常、其他按键没反应」先查 HID 侧：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道会互相掩盖；BLE HID 直通还要求目标机与设备有 **OS 级配对**（Windows 设置里手动配对），详见 `Doc/Expe/claude-memory-distilled.md` §1.10。
-- 设备重启后 app 显示已连接却语音静默失效 = 订阅「假成功」（`state subscribe status=Success` 后长时间零入站 notify，设备侧 `state_sub=0`）。判定连接健康必须取对端反向证据；**BLE 自愈/恢复路径绝不可 unpair** —— 会删 `Enum\BTHLE` 节点弄死 HOGP 按键直通，且 `PairAsync` 在设备已被 app 连上时必失败 status=19。细节见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md`。
+- 设备重启后 app 显示已连接却语音静默失效 = 订阅「假成功」（`state subscribe status=Success` 后长时间零入站 notify，设备串口 `send_state_json gated: state_sub=0`）。**真根因是 Windows 缓存 CCCD 值：要写的值与缓存相同就不发空口包**（Success 只花十几毫秒即为判据），修复=订阅前先写 `None` 再写 `Notify`（缓存击穿）。判定连接健康必须取对端反向证据；**BLE 自愈/恢复路径绝不可 unpair** —— 会删 `Enum\BTHLE` 节点弄死 HOGP 按键直通，且 `PairAsync` 在设备已被 app 连上时必失败 status=19。细节见 `Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md` 与 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md`。
 - VoiceStickFlash 改动除构建/CTest 外，用 `scripts\prepare_flash_payload.ps1` 冒烟 payload；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。
 - `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证）。
 

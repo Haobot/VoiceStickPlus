@@ -212,6 +212,22 @@ audio 订阅完成后、`ready = true` 之前，等 `kSessionLivenessTimeout{250
 教训：**连续自动复位设备做验证时要留人工兜底**，别在无人值守时反复 DTR 复位；
 设备侧还有没有响应，看它是否还发 `advertisement`（`advertisement matched` 日志）比看 USB 更可靠。
 
+## 三、根因定案（2026-09-19 12:00）：订阅假成功 = Windows 缓存 CCCD 值
+
+上面「观察 E」把假成功归因于「设备被 HID 宿主持有 + app 的 GATT 操作落在本地缓存」，
+方向对但没落到具体机制。当天下午拿到**决定性证据**后定案：
+
+- 设备串口持续输出 `W voice_ble: send_state_json gated: connected=1 state_sub=0 conn=1`
+  ⇒ 链路活着、订阅从没登记；而 app 侧 `state subscribe status=Success` 只花 **17ms**。
+- 机制：**Windows 缓存了 CCCD 值**（上次会话成功订阅过），再次写同一个值时本地直接返回
+  Success 而不发空口包；设备侧 NimBLE 在连接建立时清 CCCD ⇒ 两边状态漂移。
+- 修复：订阅前先写 `None` 再写 `Notify`（缓存击穿）。真机验证：同一故障状态（已连续失败
+  3 小时）换上新构建后 **696ms 恢复 ready**，设备串口 gated 告警消失。
+
+⇒ 本文此前的判断「加密上下文陈旧 / 只能靠 unpair 或用户重配」**已被推翻**：设备重启后
+语音静默失效并不需要重新配对。完整根因、判据与修复见
+`Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md`。
+
 ## 长期技术记忆 / 经验
 
 1. **「写成功」不等于「对端收到」**。BLE/ATT 应用的订阅、写入在加密上下文陈旧时会
