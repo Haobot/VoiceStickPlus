@@ -2635,9 +2635,12 @@ static void encoder_poll_timer_cb(void *arg)
             s_recording && s_encoder_button_pressed &&
             s_primary_owner == primary_owner_from_source(APP_INPUT_SOURCE_ENCODER);
         if (!s_recording) {
-            // 门控关闭（编码器按下不发 button 事件）时按下可能未进录音路径：清掉共享按下
-            // 时刻，让松开分支不把它当短按进双击窗口（否则会补发 button_click 触发用户映射键）。
-            s_primary_down_us = 0;
+            // 门控关闭（编码器按下不发 button 事件）时按下没进录音路径：清掉共享按下时刻，
+            // 让松开分支不把它当短按进双击窗口（否则会补发 button_click 触发用户映射键）。
+            // 仅当这次按下归编码器所有（owner==NONE 即门控关闭路径；物理键/远程源活跃时不碰）。
+            if (s_primary_owner == PRIMARY_OWNER_NONE) {
+                s_primary_down_us = 0;
+            }
             encoder_menu_open();
         } else if (own_press_recording) {
             queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);

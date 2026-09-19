@@ -75,6 +75,7 @@ void gateway_switcher_select(gateway_switcher_t *switcher, const gateway_switche
     remember_selected(switcher, target);
     switcher->state = GATEWAY_SWITCHER_SWITCHING;
     switcher->switch_started_ms = now_ms;
+    switcher->switch_user_initiated = true;
     actions_push(out, GATEWAY_SWITCHER_ACTION_DISCONNECT_CURRENT);
     actions_push(out, GATEWAY_SWITCHER_ACTION_START_ADV);
     actions_push(out, GATEWAY_SWITCHER_ACTION_UI_SWITCHING);
@@ -113,7 +114,8 @@ void gateway_switcher_peer_connected(gateway_switcher_t *switcher,
         switcher->current = *peer;
         switcher->current_valid = true;
         switcher->state = GATEWAY_SWITCHER_CONNECTED;
-        switcher->previous_valid = false;  // 切换成功，回退点作废
+        switcher->previous_valid = false;   // 切换成功，回退点作废
+        switcher->switch_user_initiated = false;
         actions_push(out, GATEWAY_SWITCHER_ACTION_ACCEPT_PEER);
         actions_push(out, GATEWAY_SWITCHER_ACTION_UI_CONNECTED);
         return;
@@ -136,8 +138,11 @@ void gateway_switcher_peer_disconnected(gateway_switcher_t *switcher, uint32_t n
     }
     if (switcher->state == GATEWAY_SWITCHER_CONNECTED) {
         // 目标掉线：回到广播态等它回来（重连由桌面端心跳兜底，无需重新选目标）。
+        // switch_user_initiated=false：这不是"切换失败"，不设超时回退——否则目标短暂掉线
+        // 5s 后就会被清空选择，任何别的 PC 都能连进来，与"只允许这个目标"的意图相悖。
         switcher->state = GATEWAY_SWITCHER_SWITCHING;
         switcher->switch_started_ms = now_ms;
+        switcher->switch_user_initiated = false;
         actions_push(out, GATEWAY_SWITCHER_ACTION_START_ADV);
         actions_push(out, GATEWAY_SWITCHER_ACTION_UI_SWITCHING);
     }
@@ -149,6 +154,9 @@ void gateway_switcher_tick(gateway_switcher_t *switcher, uint32_t now_ms,
     actions_reset(out);
     if (!switcher || switcher->state != GATEWAY_SWITCHER_SWITCHING) {
         return;
+    }
+    if (!switcher->switch_user_initiated) {
+        return;  // 等选定目标自己回来，不做超时回退
     }
     if ((uint32_t)(now_ms - switcher->switch_started_ms) < switcher->timeout_ms) {
         return;

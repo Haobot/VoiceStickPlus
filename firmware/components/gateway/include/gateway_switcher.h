@@ -52,6 +52,9 @@ typedef struct {
     bool current_valid;
     uint32_t switch_started_ms;        // SWITCHING 起点，用于超时判定
     uint32_t timeout_ms;               // 切换超时（默认 GATEWAY_SWITCHER_TIMEOUT_MS）
+    // true=用户主动切换（超时会回退/报错）；false=选定目标自己掉线（无限等待它回来，
+    // 不回退也不清选择——"只允许这个目标"是用户的明确意图，不该因为一次掉线失效）。
+    bool switch_user_initiated;
 } gateway_switcher_t;
 
 #define GATEWAY_SWITCHER_TIMEOUT_MS 5000u

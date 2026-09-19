@@ -162,6 +162,30 @@ static void test_target_disconnect_waits(void)
     CHECK(s.state == GATEWAY_SWITCHER_CONNECTED);
 }
 
+/* 目标掉线不做超时回退：等它回来，期间仍拒绝非目标。 */
+static void test_dropped_target_is_waited_for(void)
+{
+    gateway_switcher_t s;
+    gateway_switcher_actions_t a;
+    gateway_switcher_peer_t target = make_peer(0x98, 1);
+    gateway_switcher_peer_t other = make_peer(0x99, 1);
+    gateway_switcher_init(&s);
+
+    gateway_switcher_select(&s, &target, 0, &a);
+    gateway_switcher_peer_connected(&s, &target, 10, &a);
+    gateway_switcher_peer_disconnected(&s, 100, &a);
+
+    /* 远超超时窗口：仍不应回退/清空选择。 */
+    gateway_switcher_tick(&s, 100 + GATEWAY_SWITCHER_TIMEOUT_MS * 3, &a);
+    CHECK(a.count == 0);
+    CHECK(s.state == GATEWAY_SWITCHER_SWITCHING);
+    CHECK(s.selected_valid);
+
+    /* 期间别的 PC 来连：仍被拒。 */
+    gateway_switcher_peer_connected(&s, &other, 50000, &a);
+    CHECK(has(&a, GATEWAY_SWITCHER_ACTION_REJECT_PEER));
+}
+
 static void test_clear_selection(void)
 {
     gateway_switcher_t s;
@@ -203,6 +227,7 @@ int main(void)
     test_timeout_rolls_back();
     test_timeout_without_previous_goes_idle();
     test_target_disconnect_waits();
+    test_dropped_target_is_waited_for();
     test_clear_selection();
     test_addr_type_distinguishes();
     if (failures == 0) {
