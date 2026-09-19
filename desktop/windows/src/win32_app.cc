@@ -657,6 +657,8 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
     DispatchToUi([this, devices] {
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
+        // 连接集合变化会影响「网关是否活跃」（网关设备可能刚连上/刚断开）。
+        SyncGatewayModeSuppression();
         UpdateTrayIcon();
         // 授权状态依赖已连接设备列表：连接集合变化时记录一次（启动时设备未连，
         // 日志会误导为 expired/trial——此处的记录才是带设备的真实状态）。
@@ -709,6 +711,37 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
             pair_device_dialog_->SetDeviceInfo(info);
         }
     });
+}
+
+void Win32App::SetDeviceGatewayMode(const std::string& device_id, bool gateway) {
+    DispatchToUi([this, device_id, gateway] {
+        // device_info 尚未到达时先建条目（同 SetDeviceEncoderPresent 手法）。
+        auto& info = device_info_map_[device_id];
+        if (info.device_id.empty()) info.device_id = device_id;
+        if (info.gateway_mode == gateway) return;
+        info.gateway_mode = gateway;
+        LogLine("SetDeviceGatewayMode VS-" + device_id +
+                (gateway ? " mode=gateway (direct ATVV to remotes suppressed)"
+                         : " mode=normal"));
+        SyncGatewayModeSuppression();
+    });
+}
+
+// 网关抑制态汇总：任一台已连接 StickS3 处于网关模式 ⇒ 配对对话框禁用遥控器行。
+// 与 BleCentralWin::GatewayModeActiveLocked 同一判据（那边管自动连接，这边管 UI）。
+void Win32App::SyncGatewayModeSuppression() {
+    bool active = false;
+    for (const auto& device : connected_devices_) {
+        const auto it = device_info_map_.find(device.id);
+        if (it != device_info_map_.end() && it->second.hardware != kHardwareXiaomiRemote2Pro &&
+            it->second.gateway_mode) {
+            active = true;
+            break;
+        }
+    }
+    if (pair_device_dialog_) {
+        pair_device_dialog_->SetGatewayModeActive(active);
+    }
 }
 
 void Win32App::SetDeviceEncoderPresent(const std::string& device_id, bool present) {
@@ -2530,6 +2563,8 @@ void Win32App::ShowPairDeviceDialog() {
         [this](std::string device_id, std::optional<DeviceInfo> info) {
             HandlePairingCompleted(device_id, std::move(info));
         });
+    // 对话框按当前网关状态初始化（此后由 SetConnectedDevices/SetDeviceGatewayMode 刷新）。
+    SyncGatewayModeSuppression();
     pair_device_dialog_->SetManualPairHandler([this](std::string device_id) {
         PairDeviceByManualId(device_id);
     });

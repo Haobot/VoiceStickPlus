@@ -193,6 +193,10 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kPairXiaomiOsPairing)] = "Pairing with Windows Bluetooth...";
     table[Index(StringId::kPairXiaomiBondFailed)] =
         "Windows pairing failed. Remove the remote in Bluetooth settings, then re-add it and rescan.";
+    table[Index(StringId::kPairGatewayRelayedSuffix)] = " (relayed by the StickS3)";
+    table[Index(StringId::kPairGatewayRelayedBlocked)] =
+        "Gateway mode is on: the remote is relayed by the StickS3 and must not be paired with this PC. "
+        "Turn gateway mode off on the device to use the remote directly.";
     table[Index(StringId::kOnboardingTitle)] = "Welcome to VoiceStick";
     table[Index(StringId::kOnboardingSubtitle)] = "Pair your device and start voice input from anywhere.";
     table[Index(StringId::kOnboardingGetStarted)] = "Get Started";
@@ -677,6 +681,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kPairXiaomiOsPairing)] = "正在通过 Windows 蓝牙配对…";
     table[Index(StringId::kPairXiaomiBondFailed)] =
         "系统配对失败。请先在 Windows 蓝牙设置中删除并重新添加遥控器，然后重新扫描。";
+    table[Index(StringId::kPairGatewayRelayedSuffix)] = "（由 StickS3 中转）";
+    table[Index(StringId::kPairGatewayRelayedBlocked)] =
+        "网关模式已开启：遥控器由 StickS3 中转，不应与本机配对。"
+        "如需直连遥控器，请先在设备上关闭网关模式。";
     table[Index(StringId::kOnboardingTitle)] = "欢迎使用 VoiceStick";
     table[Index(StringId::kOnboardingSubtitle)] = "配对设备后，即可在任意位置使用语音输入。";
     table[Index(StringId::kOnboardingGetStarted)] = "开始使用";

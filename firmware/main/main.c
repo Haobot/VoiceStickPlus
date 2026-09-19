@@ -2304,6 +2304,9 @@ static void gateway_on_link(bool connected)
 static void gateway_apply_mode(void)
 {
     ESP_LOGI(TAG, "boot 模式应用：%s", gateway_mode_name(gateway_mode_get()));
+    // 桌面端据此抑制「直连遥控器 ATVV」；未连接时静默返回，订阅成功后会补发。
+    voice_ble_set_gateway_mode(gateway_mode_get() == GATEWAY_MODE_GATEWAY);
+    (void)voice_ble_send_gateway_status();
     if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
         ui_status_set_gateway_link("RC: ...");
         // 外部源 PCM 缓冲在模式入口预创建：把 64KB PSRAM 分配移出「按下→首帧」

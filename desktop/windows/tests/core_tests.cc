@@ -269,6 +269,10 @@ public:
     void SetDeviceEncoderPresent(const std::string& device_id, bool present) override {
         encoder_present_by_device_id[device_id] = present;
     }
+    void SetDeviceGatewayMode(const std::string& device_id, bool gateway) override {
+        gateway_mode_by_device_id[device_id] = gateway;
+        last_gateway_mode = gateway;
+    }
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override {
         (void)device_id;
@@ -357,6 +361,9 @@ public:
     std::vector<ConnectedDevice> connected_devices;
     std::vector<DeviceInfo> device_infos;
     std::map<std::string, bool> encoder_present_by_device_id;
+    // 网关模式上报（gateway_status）：仅记录，供需要时断言。
+    std::map<std::string, bool> gateway_mode_by_device_id;
+    bool last_gateway_mode = false;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
     std::vector<std::string> pairing_errors;
     std::vector<std::string> firmware_update_prompts;

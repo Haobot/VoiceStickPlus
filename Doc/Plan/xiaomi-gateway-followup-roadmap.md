@@ -71,6 +71,11 @@
 
 ### P1 — Phase 3 切换器（约 3-5 天）
 
+> **进行中（2026-09-20）**：设计稿 `Doc/Plan/xiaomi-gateway-p1-switcher.md` +
+> `Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md`（用户已按推荐项批准）。
+> **第 1 步已落地并真机验证**：固件新增 `gateway_status` 小帧（已烧录）→ 桌面端解析并抑制
+> 直连遥控器 ATVV；日志与测试见抑制设计 §4.4。后续按设计稿 §4 的 2→6 步推进。
+
 **目标**：StickS3 作为唯一枢纽，遥控器只与它配对，由它在多个目标（Win / Mac）之间切换按键与语音的去向。
 
 **现状核实**：`gateway_switcher` **零实现**；但底座已就位 —— `MAX_BONDS=6` / `MAX_CONNECTIONS=3` 已按 §5.1 调整。
@@ -116,7 +121,7 @@
 |---|---|
 | `CONFIG_BT_NIMBLE_LOG_LEVEL` | 现为 DEBUG，是 2026-06-28 `81c37c6b` 的既有设置（非本次调试引入）；是否回 WARNING 待定 |
 | `start_ext` 失败步骤标签 | 失败点位于 `"opus"` 赋值之前，屏幕显示 `Audio wait:…` 有误导；一行改 |
-| 网关模式下 BLE OTA 断链 | 实测在 ~197KB 处断链（本次已改走 COM19）。**OTA 是发布路径**：要么定位，要么明确网关模式只支持串口升级并写进文档 |
+| 网关模式下 BLE OTA 断链 | 实测在 ~197KB 处断链（本次已改走 COM19）。**OTA 是发布路径**：要么定位，要么明确网关模式只支持串口升级并写进文档。**2026-09-20 补第二个样本**：一次 **0% 即失败** —— `0x80650008 属性需要身份验证`，而固件 `ota_rx` 并未要求加密（`voice_ble.c:711`）⇒ 是 **Windows 对已配对设备的写入策略**在未加密链路上拦截。两例可能同族（链路安全状态 vs Windows 缓存认知不一致），建议合并定位 |
 | 版本与发布 | `VERSION` ↔ `firmware/version.txt` 同步；走 `Doc/Ref/release.md` |
 
 ## 3. 待定案决策点

@@ -833,6 +833,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (rc != ESP_OK) {
                     ESP_LOGW(TAG, "encoder_status send failed err=0x%x", rc);
                 }
+                // 网关模式随订阅成功一起补发：桌面端据此判断是否抑制直连遥控器 ATVV
+                // （见 Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）。
+                rc = voice_ble_send_gateway_status();
+                if (rc != ESP_OK) {
+                    ESP_LOGW(TAG, "gateway_status send failed err=0x%x", rc);
+                }
             }
         }
         return 0;
@@ -1368,6 +1374,30 @@ esp_err_t voice_ble_send_power_mgmt_status(bool usb_auto_off)
     snprintf(json, sizeof(json),
              "{\"event\":\"power_mgmt\",\"usb_auto_off\":%s}",
              usb_auto_off ? "true" : "false");
+    return send_state_json(json);
+}
+
+// 网关模式标志：由 main 在模式应用/翻转后设置。桌面端据此抑制「直连遥控器 ATVV」——
+// 网关模式下遥控器 bond 在本机，桌面端直连必然失败（订阅超时），白白刷连接与日志。
+// 注意：不复用 device_info 承载（该帧已到 BLE 通知长度预算，见其注释），走独立小帧。
+static bool s_gateway_mode;
+
+void voice_ble_set_gateway_mode(bool gateway)
+{
+    s_gateway_mode = gateway;
+}
+
+esp_err_t voice_ble_send_gateway_status(void)
+{
+    // 未连接/未订阅时静默返回：模式在开机时就已确定，此时桌面端多半还没连上，
+    // 真正需要送达的时机是 state 订阅成功后的补发（见 BLE_GAP_EVENT_SUBSCRIBE）。
+    if (!s_connected || !s_state_subscribed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    char json[64];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"gateway_status\",\"mode\":\"%s\"}",
+             s_gateway_mode ? "gateway" : "normal");
     return send_state_json(json);
 }
 

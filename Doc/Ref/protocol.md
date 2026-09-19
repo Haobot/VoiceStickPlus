@@ -93,6 +93,7 @@ Currently emitted state events:
 {"event":"encoder_rotate","direction":"cw","steps":2}
 {"event":"gateway_key","key":"back","pressed":true}
 {"event":"gateway_keymap","routes":[{"key":"back","route":"software"}]}
+{"event":"gateway_status","mode":"gateway"}
 ```
 
 `encoder_status` (added after v2.2.0) reports whether the firmware detected
@@ -115,6 +116,18 @@ control event. Both desktops surface it in the tray device submenu title
 uses `battery_status_request` as a periodic link heartbeat; macOS does not
 send it and relies on CoreBluetooth disconnect callbacks plus the
 connect/transition pushes.
+
+`gateway_status` reports the firmware's gateway/normal mode (`mode`:
+  `"gateway"` | `"normal"`). Like `encoder_status` it is a separate small
+  frame — `device_info` is already near the MTU limit and must not grow. The
+  firmware sends it right after `device_info`/ `encoder_status` on state
+  subscription, and again whenever the mode changes while connected. Desktops
+  use it to suppress **direct ATVV connections to a Xiaomi remote**: in gateway
+  mode the remote's bond lives on the StickS3, so a desktop-side direct
+  connection can only fail (`atvv control subscribe timeout`). Firmware older
+  than this event never sends it — desktops must treat the absence as "unknown"
+  and keep the previous behaviour (no suppression). See
+  `Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md`.
 
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is

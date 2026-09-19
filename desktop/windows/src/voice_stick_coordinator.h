@@ -60,6 +60,10 @@ struct DeviceInfo {
     // MiniEncoderC 编码器是否在线（来自 encoder_status 事件）。
     // 默认 true：老固件/尚未收到 encoder_status 时保持编码器设置可见，避免误隐藏。
     bool encoder_present = true;
+    // 固件是否处于网关模式（来自 gateway_status 事件）。默认 false=未知：
+    // 老固件不上报该事件，此时不得抑制直连遥控器 ATVV（见
+    // Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）。
+    bool gateway_mode = false;
 };
 
 struct FirmwareUpdateProgress {
@@ -167,6 +171,8 @@ public:
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
     // 编码器在线状态（encoder_status 事件）：驱动设置对话框编码器区块显隐。
     virtual void SetDeviceEncoderPresent(const std::string& device_id, bool present) = 0;
+    // 网关模式上报（gateway_status）：网关模式下不得直连遥控器 ATVV。
+    virtual void SetDeviceGatewayMode(const std::string& device_id, bool gateway) = 0;
     virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
                                    bool charging, bool usb_powered) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;

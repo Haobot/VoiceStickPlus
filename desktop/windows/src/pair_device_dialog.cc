@@ -667,6 +667,10 @@ void PairDeviceDialog::RebuildList() {
                                   ? TrW(StringId::kDeviceTypeXiaomiRemote, language_)
                                   : TrW(StringId::kDeviceTypeVoiceStick, language_);
         auto name = L"[" + type_tag + L"] " + Utf16(CandidateDisplayTitle(device.candidate));
+        // 网关模式下遥控器由 StickS3 中转：行内直接标注，避免用户误配对后直连失败。
+        if (gateway_mode_active_ && device.candidate.device_class == DeviceClass::kXiaomiRemote2Pro) {
+            name += TrW(StringId::kPairGatewayRelayedSuffix, language_);
+        }
         LVITEMW item{};
         item.mask = LVIF_TEXT;
         item.iItem = static_cast<int>(index);
@@ -729,6 +733,16 @@ void PairDeviceDialog::PairSelectedDevice() {
     const auto& device = devices[static_cast<std::size_t>(selected)];
     if (device.candidate.is_existing_device) {
         SetWindowTextW(status_label_, TrW(StringId::kPairAlreadyPaired, language_).c_str());
+        return;
+    }
+    // 网关模式：遥控器由 StickS3 中转，禁止在本机配对（直连 ATVV 必然失败）。
+    // 说明文案直接进状态行，并同步打到日志，便于事后回溯用户遇到的这条分支。
+    if (gateway_mode_active_ &&
+        device.candidate.device_class == DeviceClass::kXiaomiRemote2Pro) {
+        LogBleLine("pair blocked: gateway mode active, RC-" + device.candidate.device_id +
+                   " is relayed by the StickS3 (no direct ATVV when gateway mode is on)");
+        SetWindowTextW(status_label_,
+                       TrW(StringId::kPairGatewayRelayedBlocked, language_).c_str());
         return;
     }
     if (device.candidate.is_temporary_candidate) {

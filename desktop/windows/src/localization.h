@@ -178,6 +178,9 @@ enum class StringId {
     kDeviceTypeXiaomiRemote2Pro,
     kPairXiaomiOsPairing,
     kPairXiaomiBondFailed,
+    // 网关模式下抑制直连遥控器（Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）
+    kPairGatewayRelayedSuffix,
+    kPairGatewayRelayedBlocked,
 
     // 引导窗口
     kOnboardingTitle,

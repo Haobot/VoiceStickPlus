@@ -144,6 +144,9 @@ private:
         bool state_subscribed = false;
         bool ota_state_subscribed = false;
         bool ready = false;
+        // 固件上报的网关模式（gateway_status 小帧）：true=该 StickS3 正在做网关中转。
+        // 桌面端据此抑制「直连遥控器 ATVV」。老固件不上报 ⇒ 恒 false ⇒ 不抑制。
+        bool gateway_mode = false;
         // 心跳探活：任意入站 GATT 流量（audio/state/ota_state notify）刷新的时间戳
         //（steady_clock epoch 毫秒）。心跳线程据此判定对端静默消失的僵尸会话。
         std::atomic<std::int64_t> last_rx_ms{0};
@@ -235,6 +238,9 @@ private:
                                  std::chrono::milliseconds delay);
     // 按 delay 提前唤醒主动重连队列（心跳 30s 周期只作兜底），带代数守卫。
     void WakeProactiveReconnectsAfter(std::chrono::milliseconds delay);
+    // 网关是否活跃（存在已就绪且上报 gateway 模式的 StickS3 会话）。调用者须持 mutex_。
+    // 用于 HandleAdvertisement 抑制对小米遥控器的直连 ATVV 尝试。
+    bool GatewayModeActiveLocked() const;
     // 限时 CCCD 写（best-effort，结果只记日志）：用于订阅前的「缓存击穿」——
     // Windows 缓存了 CCCD 值，值未变化时写操作会被本地短路（返回 Success 却不发空口包），
     // 设备侧因此收不到订阅。先写 None 再写 Notify 保证至少有一次是真实变化。
@@ -305,6 +311,10 @@ private:
     // 系统配对看门狗节流：上次检查时间与本次运行已用重建次数（按地址）。
     std::map<std::uint64_t, std::chrono::steady_clock::time_point> os_bond_check_at_;
     std::map<std::uint64_t, int> os_bond_repair_attempts_;
+    // 网关模式抑制直连 ATVV 的日志节流：上次打日志时间 + 已记录过的遥控器设备 ID
+    //（每个地址首次必记一条，其后按 kGatewaySkipLogIntervalMs 节流）。
+    std::int64_t gateway_skip_log_at_ms_ = 0;
+    std::set<std::string> gateway_suppressed_rc_;
     // 延迟唤醒线程的代数守卫：Shutdown 递增使其失效（同 scan_epoch_ 手法）。
     std::atomic<std::uint64_t> reconnect_wake_epoch_{0};
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};

@@ -116,6 +116,8 @@ constexpr std::chrono::seconds kZombieGiveUpRetry{60};
 // 而设备 3.5 分钟后就自己重新广播、app 秒级恢复，气泡纯属误报。故延后到 2 分钟：
 // 期间只要恢复就不打扰用户，真有硬故障也仍在 2 分钟内拿到指引。
 constexpr std::chrono::seconds kZombieUserPromptDelay{120};
+// 网关模式下「跳过直连遥控器」日志的节流间隔（每个遥控器地址首次必记一条）。
+constexpr std::chrono::milliseconds kGatewaySkipLogIntervalMs{300000};
 
 // 系统配对看门狗（P0 安全网）：app 会话健康但 Windows 没有系统级 bond 时，HOGP
 // 按键直通是死的（设备发的 HID 报告无处可去）——2026-09-18 与 2026-09-19 两次踩到。
@@ -1142,6 +1144,17 @@ void BleCentralWin::StopScan() {
     }
 }
 
+// 网关是否活跃：存在「已就绪且固件上报 gateway 模式」的 StickS3 会话。
+// 调用者必须持有 mutex_。老固件不上报 gateway_status ⇒ gateway_mode 恒 false ⇒ 不抑制。
+bool BleCentralWin::GatewayModeActiveLocked() const {
+    for (const auto& [device_id, session] : sessions_by_device_id_) {
+        if (!session) continue;
+        if (session->device_class == DeviceClass::kXiaomiRemote2Pro) continue;
+        if (session->gateway_mode && session->ready) return true;
+    }
+    return false;
+}
+
 void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
                                         const BluetoothLEAdvertisementReceivedEventArgs& args) {
     // 任意广告包（不限配对设备）都是 watcher 存活证明，供 CheckScanHealth()
@@ -1221,6 +1234,24 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
     {
         std::lock_guard lock(mutex_);
         if (!paired_device_ids_.contains(*device_id)) return;
+        // 网关模式下抑制「直连遥控器 ATVV」：遥控器 bond 在 StickS3 上，桌面端直连必然
+        // 失败（atvv control subscribe timeout），只会刷连接与日志。判据取固件上报的
+        // gateway_status（device_info 已到长度预算，故走独立小帧）；老固件不上报 ⇒
+        // gateway_mode 缺省 false ⇒ 行为与今天一致，不误抑制。
+        // 只挡新连接：已在运行的直连会话不主动拆（P0 教训：不破坏当前可用状态）。
+        if (device_class == DeviceClass::kXiaomiRemote2Pro && GatewayModeActiveLocked()) {
+            // 每个地址首次必记一条，其后按全局节流（避免广告反复触发刷屏）。
+            const auto now = NowSteadyMs();
+            const bool first_for_device = gateway_suppressed_rc_.insert(*device_id).second;
+            if (first_for_device ||
+                now - gateway_skip_log_at_ms_ >= kGatewaySkipLogIntervalMs.count()) {
+                gateway_skip_log_at_ms_ = now;
+                LogBleLine("gateway mode active: skipping direct ATVV for " +
+                           std::string(id_prefix) + *device_id +
+                           " (remote is relayed by the StickS3)");
+            }
+            return;
+        }
         // 已配对设备最近一次广播时间：bond 重建要等设备重新广播（见 RepairOsBondAsync）。
         adv_seen_ms_by_address_[bluetooth_address] = NowSteadyMs();
         auto session_it = sessions_by_device_id_.find(*device_id);
@@ -2421,6 +2452,16 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                            (event->firmware_version.empty()
                                 ? std::string()
                                 : " firmware=" + event->firmware_version));
+                if (event->gateway_mode.has_value()) {
+                    // 网关模式标记：只存会话里供 HandleAdvertisement 判定，不改变
+                    // 与协调器之间的既有事件流（gateway_status 继续下发给 UI 层）。
+                    if (auto s = weak_session.lock()) {
+                        std::lock_guard lock(mutex_);
+                        s->gateway_mode = *event->gateway_mode;
+                    }
+                    LogBleLine("gateway status VS-" + device_id + " mode=" +
+                               (*event->gateway_mode ? "gateway" : "normal"));
+                }
                 DispatchToUiThread([this, device_id, e = std::move(*event)]() {
                     if (on_state_event) on_state_event(device_id, e);
                 });

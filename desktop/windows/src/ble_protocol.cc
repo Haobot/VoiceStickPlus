@@ -200,6 +200,14 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
         event.gateway_key = JsonStringValue(json, "key");
         event.gateway_pressed = JsonBoolValue(json, "pressed");
     }
+    // 网关模式：{"event":"gateway_status","mode":"gateway"|"normal"}
+    // 独立小帧（device_info 已到 MTU 预算）；老固件不发送 ⇒ 保持 nullopt = 未知。
+    if (event.event == "gateway_status") {
+        const auto mode = JsonStringValue(json, "mode");
+        if (!mode.empty()) {
+            event.gateway_mode = (mode == "gateway");
+        }
+    }
 
     return event;
 }

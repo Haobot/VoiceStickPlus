@@ -62,6 +62,12 @@ esp_err_t voice_ble_send_encoder_status(void);
 // 设置 MiniEncoderC 编码器在线标志。在 mini_encoder_c_init() 之后由 main 设置一次；
 // 运行期降级为 absent 时更新为 false 并触发一次 encoder_status 上报。
 void voice_ble_set_encoder_present(bool present);
+// 上报网关模式（gateway/normal，独立小帧）。桌面端据此抑制「直连遥控器 ATVV」：
+// 网关模式下遥控器 bond 在 Stick 上，桌面端直连必然订阅超时。
+// 发送时机：state_tx 订阅成功后随 device_info 一起补发；模式翻转后由 main 再发一次。
+esp_err_t voice_ble_send_gateway_status(void);
+// 设置网关模式标志（由 main 在 gateway_apply_mode() 中调用）。
+void voice_ble_set_gateway_mode(bool gateway);
 // source 为事件来源标签（如 "encoder"），NULL 时省略该字段（物理键/远程键行为不变）。
 esp_err_t voice_ble_send_button_down(const char *button, uint32_t session_id,
                                      const char *source);

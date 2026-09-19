@@ -72,6 +72,7 @@ public:
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) override;
     void SetDeviceInfo(const DeviceInfo& info) override;
     void SetDeviceEncoderPresent(const std::string& device_id, bool present) override;
+    void SetDeviceGatewayMode(const std::string& device_id, bool gateway) override;
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
@@ -186,6 +187,8 @@ private:
     // 按键映射消费端启停/热更：门控「有配对/连接 RC 设备 且 有效 key_map 非空」，
     // 刷新时机对齐 SyncF5Suppressor（幂等）。
     void SyncXiaomiKeymapHook();
+    // 网关抑制态汇总：任一已连接 StickS3 处于网关模式 ⇒ 配对对话框禁用遥控器行。
+    void SyncGatewayModeSuppression();
     // 本机麦克风模式运行件与按住说话热键的启停/热更（幂等）：enabled 时按需
     // （模型目录变化才）重建采集器+本地 ASR，热键变化换键；关闭时拆除运行件
     // 与热键。协调器侧 SetLocalMicRuntime 负责会话安全。

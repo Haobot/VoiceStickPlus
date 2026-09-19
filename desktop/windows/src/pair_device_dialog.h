@@ -34,6 +34,10 @@ public:
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices);
     void SetDeviceInfo(const DeviceInfo& info);
     void SetPairingError(const std::string& device_id, const std::string& message);
+    // 网关模式（固件上报 gateway_status）：为 true 时小米遥控器行标注"由 StickS3 中转"
+    // 且禁止配对——网关模式下遥控器 bond 在 Stick 上，直连 ATVV 必然失败。
+    // 见 Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md。
+    void SetGatewayModeActive(bool active) { gateway_mode_active_ = active; }
     void SetManualPairHandler(std::function<void(std::string)> handler) { on_pair_manual_ = std::move(handler); }
     // 系统配对软降级告警（见 HandleBondFinished）。
     void SetPairWarningHandler(std::function<void(std::string)> handler) { on_pair_warning_ = std::move(handler); }
@@ -109,6 +113,8 @@ private:
     // 故经该回调把「按键直通可能不可用」的补救说明弹成托盘气泡。
     std::function<void(std::string)> on_pair_warning_;
     bool pairing_finalized_ = false;
+    // 网关模式：遥控器行标注 + 禁止配对（见 SetGatewayModeActive）。
+    bool gateway_mode_active_ = false;
     std::uint64_t received_advertisement_count_ = 0;
     std::uint64_t candidate_count_ = 0;
     std::uint64_t scan_restart_count_ = 0;

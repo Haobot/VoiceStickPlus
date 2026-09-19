@@ -112,6 +112,10 @@ struct StateEvent {
     // pressed 为按下沿。非网关按键事件为空/缺省。
     std::string gateway_key;
     std::optional<bool> gateway_pressed;
+    // 网关模式（gateway_status 独立小帧）：true=网关模式。老固件不发送该事件，
+    // 消费端按「未知」处理（不抑制直连 ATVV），见
+    // Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md。
+    std::optional<bool> gateway_mode;
 };
 
 struct FirmwareOtaStateEvent {

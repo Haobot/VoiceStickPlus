@@ -69,6 +69,38 @@
 3. 网关模式下遥控器语音 + 按键回归正常（不能被抑制影响）；
 4. 旧固件（无 gateway_status）→ 行为与今天一致，不抑制。
 
+## 4.4 实施结果（2026-09-20 00:26，已落地）
+
+| 项 | 状态 |
+|---|---|
+| 固件 `gateway_status` 小帧 | ✅ 已实现并烧录（串口 COM19；`voice_ble_send_gateway_status` + 订阅成功后补发） |
+| 协议文档 | ✅ `Doc/Ref/protocol.md` 已加事件说明 |
+| 桌面端解析 + 会话标记 | ✅ `ble_protocol` 增字段；`ble_central_win` 记录到会话 |
+| 抑制守卫（新连接） | ✅ `HandleAdvertisement` + `GatewayModeActiveLocked`（本机当前未配对 RC，分支待场景复现） |
+| 配对对话框 | ✅ RC 行加「（由 StickS3 中转）」后缀 + 点击时说明（GUI 表现待人工确认） |
+| 真机日志 | `[BLE] gateway status VS-53A8 mode=gateway` → `[APP] SetDeviceGatewayMode VS-53A8 mode=gateway (direct ATVV to remotes suppressed)` → `stage=ready`（每次重连都复现） |
+| 单元/集成测试 | ✅ 2/2 通过（过程中发现并修掉一个**构建陷阱**，见下） |
+
+### 构建陷阱（本次踩坑，非功能缺陷）
+
+MSVC 在中文环境下输出 `注意: 包含文件:`，CMake 无法解析该前缀 ⇒ **Ninja 从不记录头文件依赖** ⇒
+改 .h 后 .obj 不重编。本次新增 UI 纯虚函数后，测试 TU 仍是旧的，链接出的二进制 vtable 错位、
+`core_tests` 出现假失败（`ui.show_listening_count == 1`，确定性复现）。
+处置：构建环境加 `VSLANG=1033`，并在改头文件后**强制全量重编**（touch 源码）；补全测试 Fake 的
+新虚函数实现后 2/2 通过。
+
+### 顺带发现（记入 P4）：BLE OTA 在未加密链路上被 Windows 拒绝
+
+本次尝试用 `VoiceStick.exe --ota` 推送新固件，**0% 即失败**：
+`BLEOTAfailed:0x80650008（属性需要进行身份验证，然后才能读取或写入）`。
+
+- 固件侧 `ota_rx` 的 flags 是 `WRITE | WRITE_NO_RSP`，**并未要求加密**（`voice_ble.c:711`）；
+- 即拒绝来自 **Windows 侧策略**：对「已配对设备」的 GATT 写入要求链路已加密，而当时那条链路
+  并非加密链路（同一条链路上 state/audio 的订阅与写入都正常，只有 OTA 写被拦）；
+- 影响：**发布路径（OTA）在这类链路状态下不可用**；本次改走串口（COM19）烧录成功。
+- 待办：与 roadmap P4「网关模式下 BLE OTA 断链」合并定位——两者可能同族
+  （链路安全状态与 Windows 缓存认知不一致）。
+
 ## 5. 风险与取舍
 
 - **误抑制**：仅当固件明确上报 gateway 时抑制，且提供显式日志，用户可从"日志/配对对话框提示"发现原因。

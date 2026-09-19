@@ -603,6 +603,12 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
         if (event.encoder_present.has_value()) {
             ui_->SetDeviceEncoderPresent(device_id, event.encoder_present.value());
         }
+    } else if (event.event == "gateway_status") {
+        // 网关模式（独立小帧）：桌面端据此抑制「直连遥控器 ATVV」。老固件不发送
+        // 该事件 ⇒ 不调用 ⇒ 设备信息里的 gateway_mode 保持 false（未知，不抑制）。
+        if (event.gateway_mode.has_value()) {
+            ui_->SetDeviceGatewayMode(device_id, event.gateway_mode.value());
+        }
     } else if (event.event == "battery_status") {
         if (event.battery_level.has_value()) {
             ui_->SetDeviceBattery(device_id, event.battery_level.value(),
