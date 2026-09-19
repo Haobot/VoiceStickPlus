@@ -1,6 +1,6 @@
 # 小米网关语音键「过一段时间就用不了」：Windows CCCD 缓存让订阅根本到不了设备
 
-> 日期：2026-09-19　相关 commit：`e2677f0a`（缓存击穿修复 + 文档）
+> 日期：2026-09-19　相关 commit：`d05f1676`（缓存击穿修复 + 文档；该提交经 amend 落库）
 > 相关文件：`desktop/windows/src/ble_central_win.cc`（`WriteCccdBestEffortAsync` 与两处订阅点）
 > 设备：VS-53A8（网关模式，固件 2.3.9）+ 小米蓝牙遥控器 2 Pro
 > 同主题：`Doc/Expe/ble-zombie-self-heal-2026-09-19.md`（僵尸自愈梯度）、
