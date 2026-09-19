@@ -132,7 +132,13 @@ pyserial 在 open（以及 close）时会置位 DTR/RTS，而 ESP32-S3 的 USB-S
   送不下去」那个 bug，于是把一次普通的日志采集变成了"语音功能时好时坏"的假象。
 
 **判据**：采集期间 uptime 单调增长 = 没扰动设备；出现小 uptime 或 `USB_UART_CHIP_RESET`
-= 你的脚本在复位它。**诊断期间尽量一次 open、长读，别反复开关。**
+= 你的脚本在复位它。
+
+⚠️ 注意：**「open 后把 DTR/RTS 压回低电平」并不能完全避免复位**（2026-09-19 实测：显式
+`dtr=False/rts=False` 后，每轮 open→close 仍各触发一次 `USB_UART_CHIP_RESET`，因为跳变
+本身就可能被 USB-JTAG 当成复位序列）。可操作的规则只有两条：
+1. **诊断期间一次 open、长时间读**，别反复开关（每个会话最多赔一次复位）；
+2. 抓完立刻确认设备能否自愈（app 侧应 5s 内重新 `stage=ready`），别在用户正在用设备时反复采。
 
 ⚠️ **运行时日志采集不稳定**，以下情况会读 0 字节（非设备挂死）：
 - Core1 / PSRAM 栈任务的 ESP_LOG 输出（如 audio_task）经常读不到
