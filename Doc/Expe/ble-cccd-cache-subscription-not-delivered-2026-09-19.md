@@ -115,6 +115,10 @@ ESP32-S3 的 USB-Serial-JTAG 把跳变当复位序列。表现与误判：
    `control_rx` 任意写入时回应一个「未被订阅」的提示帧（走读/写而非 notify），
    让 app 无需依赖通知即可自查——当前靠 app 侧的活性证明已能发现，暂不做。
 2. 小米 ATVV 直连路径（app 直连 RC-XXXX，非网关模式）同样套用了缓存击穿，但**未单独真机复现**该路径的失败样本。
-   观察：网关模式下 app 仍会尝试直连旁边那台遥控器（`RC-6459`，12:32 日志里
-   `atvv control subscribe timeout after 2500ms`、`Xiaomi ATVV service UUID not present`），
-   与网关链路并存、互不影响但会刷日志。是否要在网关模式下抑制直连 ATVV，留待后续判断。
+   **更正（据实）**：当日曾记「网关模式下 app 仍在反复直连 RC-6459 刷日志」——**这是误判**。
+   那些 `12:32 … atvv_tx / atvv control subscribe timeout` 行来自**前一日（2026-09-18）**的
+   直连 ATVV 调试，本日志文件跨多日且时间戳会跨天命中；核对最近 3 万行：`atvv` 命中 **0** 条，
+   且本机配置 `paired_device_ids = "53A8"` 并未配对任何 RC。教训：**在同一文件跨多日的日志里
+   用"时:分"做筛选必须同时确认日期**，否则会把历史故障当成当前现象。
+   设计层面仍要在网关模式下堵掉"配对过遥控器 + 开网关 ⇒ 必然失败的直连"这条路径，
+   见 `Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md`。
