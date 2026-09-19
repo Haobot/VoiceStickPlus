@@ -226,6 +226,9 @@ private:
     // 预算不该被上一轮吃掉（真机事故：设备重启前后各一次僵尸判定叠加，导致重启后
     // 一上来就被判 kUserAction 而不再尝试自愈）。
     void ClearZombieEpisode(std::uint64_t bluetooth_address);
+    // 末级用户提示是否到期（故障期已持续 kZombieUserPromptDelay）：避免设备被 HID 宿主
+    // 短暂持有期间误报「需要重新配对」。
+    bool ShouldPromptZombieUser(std::uint64_t bluetooth_address) const;
     // 僵尸拆除后按地址直连：登记主动重连队列（心跳 30s 周期兜底）+ 延迟线程提前唤醒，
     // 避免自愈最坏要等满一个心跳周期。设备已不配对时不登记。
     void ScheduleZombieReconnect(const std::shared_ptr<DeviceSession>& session,
@@ -282,6 +285,8 @@ private:
         int light_attempts = 0;
         int full_repairs = 0;
         std::chrono::steady_clock::time_point last_at{};
+        // 本次故障期起点：末级用户提示要等它过去 kZombieUserPromptDelay，避免误报。
+        std::chrono::steady_clock::time_point started_at{};
     };
     std::map<std::uint64_t, ZombieEpisode> zombie_episodes_;
     // 已判定「下次连接前先做全量修复（B）」的地址（一次性标记，连接时消费）。

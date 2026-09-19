@@ -111,6 +111,11 @@ constexpr std::chrono::milliseconds kZombieReconnectWakeSlack{200};
 // 自愈梯度用满（末级 kUserAction）后的重连间隔：已经提示过用户，不能再每几秒
 // 重建一次链路空转（每次尝试都要 1-2s 的 BLE 活动），退到分钟级重试。
 constexpr std::chrono::seconds kZombieGiveUpRetry{60};
+// 末级提示用户的延迟：故障期开始后多久才弹「请重新配对」。2026-09-19 真机：设备重启后
+// 被系统 HID 宿主持有的那段时间里，app 的连接全部「假成功」，梯度很快跑到末级就弹了气泡——
+// 而设备 3.5 分钟后就自己重新广播、app 秒级恢复，气泡纯属误报。故延后到 2 分钟：
+// 期间只要恢复就不打扰用户，真有硬故障也仍在 2 分钟内拿到指引。
+constexpr std::chrono::seconds kZombieUserPromptDelay{120};
 
 // 系统配对看门狗（P0 安全网）：app 会话健康但 Windows 没有系统级 bond 时，HOGP
 // 按键直通是死的（设备发的 HID 报告无处可去）——2026-09-18 与 2026-09-19 两次踩到。
@@ -2520,7 +2525,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                        std::to_string(kSessionLivenessTimeout.count()) +
                        "ms (device-side state_sub=0); heal level=" +
                        std::string(ZombieHealLevelName(heal)));
-            if (heal == ZombieHealLevel::kUserAction) {
+            if (heal == ZombieHealLevel::kUserAction && ShouldPromptZombieUser(bluetooth_address)) {
                 LogBleLine("zombie session VS-" + device_id +
                            ": self-heal exhausted (A and B both failed); prompting user to "
                            "re-pair in Windows Bluetooth settings");
@@ -3306,6 +3311,9 @@ ZombieHealLevel BleCentralWin::NoteZombieEpisode(std::uint64_t bluetooth_address
             // 故障期过期：上一轮自愈已过去很久，重新从零副作用的轻量重连开始。
             episode = ZombieEpisode{};
         }
+        if (episode.last_at == std::chrono::steady_clock::time_point{}) {
+            episode.started_at = now;
+        }
         episode.last_at = now;
         level = BleProtocol::PlanZombieHeal(episode.light_attempts, episode.full_repairs,
                                             is_voice_stick);
@@ -3329,6 +3337,15 @@ ZombieHealLevel BleCentralWin::NoteZombieEpisode(std::uint64_t bluetooth_address
                    " (light reconnects exhausted; next connect runs unpair + radio reset + PairAsync)");
     }
     return level;
+}
+
+bool BleCentralWin::ShouldPromptZombieUser(std::uint64_t bluetooth_address) const {
+    std::lock_guard lock(mutex_);
+    auto it = zombie_episodes_.find(bluetooth_address);
+    if (it == zombie_episodes_.end()) return false;
+    const auto& episode = it->second;
+    if (episode.started_at == std::chrono::steady_clock::time_point{}) return false;
+    return std::chrono::steady_clock::now() - episode.started_at >= kZombieUserPromptDelay;
 }
 
 void BleCentralWin::ClearZombieEpisode(std::uint64_t bluetooth_address) {
@@ -3594,10 +3611,20 @@ void BleCentralWin::ProbeSessions() {
                        zombie_device_id);
             if (heal == ZombieHealLevel::kUserAction) {
                 // 轻量重连与全量修复都用满仍失败：系统配对保持完好，转用户处理。
-                LogBleLine("zombie session VS-" + zombie_device_id +
-                           ": self-heal exhausted (A and B both failed); prompting user to "
-                           "re-pair in Windows Bluetooth settings");
-                NotifyZombieUserAction(zombie_device_id);
+                // 但要等故障期真的持续够久才提示——设备被系统 HID 宿主短暂持有时
+                // 梯度会很快跑到末级，而它往往几秒~几分钟后自己重新广播、app 即恢复
+                //（2026-09-19 真机：末级气泡弹出后 3.5 分钟就自行恢复，纯误报）。
+                if (ShouldPromptZombieUser(zombie_address)) {
+                    LogBleLine("zombie session VS-" + zombie_device_id +
+                               ": self-heal exhausted (A and B both failed); prompting user to "
+                               "re-pair in Windows Bluetooth settings");
+                    NotifyZombieUserAction(zombie_device_id);
+                } else {
+                    LogBleLine("zombie session VS-" + zombie_device_id +
+                               ": self-heal exhausted but episode younger than " +
+                               std::to_string(kZombieUserPromptDelay.count()) +
+                               "s; holding the user prompt (device may free itself)");
+                }
             }
             zombie_reconnect_delay = heal == ZombieHealLevel::kUserAction ? kZombieGiveUpRetry
                                                                          : kReconnectSettleDelay;
