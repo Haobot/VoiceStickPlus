@@ -105,14 +105,34 @@ s.close()
 
 ⚠️ DTR 复位会触发二次复位（ROM bootloader 日志出现两次），第二次 boot 会覆盖第一次的后续日志。抓启动阶段日志足够，抓运行时事件不可靠。
 
-### 方法 B：纯监听抓运行时事件
+### 方法 B：纯监听抓运行时事件（**开串口本身就会复位设备，必须先去掉 DTR/RTS**）
 
 设备已在跑 app 时，不复位直接监听，等事件触发产生日志：
 
 ```python
-s = serial.Serial('COM17', 115200, timeout=0.5)
+# dsrdtr/rtscts 关掉 + open 后立刻把 DTR/RTS 压低，close 前再压一次
+s = serial.Serial('COM19', 115200, timeout=0.2, dsrdtr=False, rtscts=False)
+s.dtr = False
+s.rts = False
 # 等用户操作（按键/录音/断连）产生日志
+...
+finally:
+    s.dtr = False; s.rts = False   # close 也会置位，务必先压回低电平
+    s.close()
 ```
+
+⚠️⚠️ **踩坑实录（2026-09-19）：不压低 DTR/RTS，每开关一次串口就重启一次设备。**
+pyserial 在 open（以及 close）时会置位 DTR/RTS，而 ESP32-S3 的 USB-Serial-JTAG 把这两根
+线的跳变当作**复位序列**，于是：
+- 日志里 **uptime 反复回到 15~50s 量级**（`I (15721) …` 这种小数值），看起来像"设备在
+  反复重启 / 固件有 bug"，其实是我的采集脚本干的；
+- 抓到的启动横幅写着 `rst:0x15 (USB_UART_CHIP_RESET)` —— **USB 主机侧触发的复位**，
+  不是看门狗/panic；
+- 副作用极大：每次复位都会清掉设备侧 CCCD 订阅状态，恰好撞上「Windows 缓存 CCCD → 订阅
+  送不下去」那个 bug，于是把一次普通的日志采集变成了"语音功能时好时坏"的假象。
+
+**判据**：采集期间 uptime 单调增长 = 没扰动设备；出现小 uptime 或 `USB_UART_CHIP_RESET`
+= 你的脚本在复位它。**诊断期间尽量一次 open、长读，别反复开关。**
 
 ⚠️ **运行时日志采集不稳定**，以下情况会读 0 字节（非设备挂死）：
 - Core1 / PSRAM 栈任务的 ESP_LOG 输出（如 audio_task）经常读不到

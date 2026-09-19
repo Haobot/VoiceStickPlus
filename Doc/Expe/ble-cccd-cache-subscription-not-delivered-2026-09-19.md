@@ -70,6 +70,22 @@ auto op = characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(N
 设备串口侧同步由 `gated: state_sub=0` 变为正常 `GATT procedure initiated: notify; att_handle=30`
 （不再有 gated 告警）。首次尝试即恢复，连接耗时 696ms。
 
+## 排查过程中的装置陷阱（差点把结论带偏）
+
+本次定位期间用 pyserial 反复抓设备串口，**每开关一次串口就复位一次设备**（见
+`usb-jtag-flash-log` skill 方法 B 的踩坑实录）：pyserial 在 open/close 时置位 DTR/RTS，
+ESP32-S3 的 USB-Serial-JTAG 把跳变当复位序列。表现与误判：
+
+| 现象 | 真相 |
+|---|---|
+| 设备 uptime 反复回到 15~50s 量级 | 我的采集脚本在复位它，**不是**固件重启/崩溃 |
+| 启动横幅 `rst:0x15 (USB_UART_CHIP_RESET)` | **USB 主机侧**触发的复位，不是看门狗或 panic |
+| 设备记 `state_sub=0` | 复位清掉订阅；再叠加本文的 CCCD 缓存问题 ⇒ 订阅补不回来 |
+| "语音时好时坏" | 采集本身制造了故障样本，一度掩盖了真根因 |
+
+**教训**：日志采集脚本必须先证明自己无副作用（`uptime 单调增长`），否则会把装置噪声
+当成设备缺陷来查。修好脚本后设备 uptime 稳定增长，故障样本也随之消失。
+
 ## 长期技术记忆 / 经验
 
 1. **「写 API 返回 Success」不代表空口发出了包**。Windows BLE 会对 CCCD 一类
