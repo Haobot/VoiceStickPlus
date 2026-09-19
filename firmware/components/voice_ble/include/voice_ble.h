@@ -38,6 +38,11 @@ typedef void (*voice_ble_ota_cb_t)(voice_ble_ota_event_t event,
                                    uint32_t written,
                                    uint32_t size);
 
+// 对端身份回调（peripheral 侧）：连接建立/断开时上报对端 identity address 与地址类型，
+// 供网关目标表（gateway_targets）识别「当前目标是哪台桌面端」。id_addr 为 NimBLE val 字节序。
+typedef void (*voice_ble_peer_cb_t)(bool connected, const uint8_t id_addr[6], uint8_t addr_type);
+void voice_ble_set_peer_callback(voice_ble_peer_cb_t callback);
+
 esp_err_t voice_ble_init(void);
 void voice_ble_set_connection_callback(voice_ble_connection_cb_t callback);
 void voice_ble_set_control_callback(voice_ble_control_cb_t callback);

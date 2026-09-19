@@ -54,6 +54,9 @@ public:
                                   const std::optional<std::string>& device_id) override;
     void SendGatewayKeymapSet(const std::string& key, bool software,
                               const std::optional<std::string>& device_id) override;
+    // P1 目标表：上报本机显示名（主机名），固件绑定到当前连接对端（见 gateway_targets）。
+    void SendGatewayTargetInfo(const std::string& name,
+                               const std::optional<std::string>& device_id) override;
     void SendAirMouseEnabled(bool enabled,
                              const std::optional<std::string>& device_id) override;
     void SendImuWakeSensitivity(int threshold_lsb,

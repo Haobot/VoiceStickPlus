@@ -783,6 +783,37 @@ void BleCentralWin::SendGatewayKeymapSet(const std::string& key, bool software,
     }
 }
 
+void BleCentralWin::SendGatewayTargetInfo(const std::string& name,
+                                          const std::optional<std::string>& device_id) {
+    if (name.empty()) return;
+    auto payload = BleProtocol::GatewayTargetInfoPayload(name);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
+            }
+        }
+    }
+    if (targets.empty()) {
+        LogBleLine("gateway target info dropped: no ready StickS3 session (device_id=" +
+                   device_id.value_or("<any>") + ")");
+        return;
+    }
+    for (auto& session : targets) {
+        // 固件把名字绑定到「当前连接对端」的 identity address，故只对目标设备自身下发。
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
 void BleCentralWin::SendAirMouseEnabled(bool enabled,
                                         const std::optional<std::string>& device_id) {
     auto payload = BleProtocol::AirMouseEnabledPayload(enabled);

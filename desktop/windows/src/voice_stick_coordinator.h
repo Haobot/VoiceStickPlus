@@ -104,6 +104,9 @@ public:
     //（gateway_key 事件上报桌面端）、false 恢复 HOGP 直通。仅对 StickS3 设备生效。
     virtual void SendGatewayKeymapSet(const std::string& key, bool software,
                                       const std::optional<std::string>& device_id) = 0;
+    // P1 目标表：上报本机显示名（主机名）给网关设备，供其目标表命名。
+    virtual void SendGatewayTargetInfo(const std::string& name,
+                                       const std::optional<std::string>& device_id) = 0;
     // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
     virtual void SendAirMouseEnabled(bool enabled,
                                      const std::optional<std::string>& device_id) = 0;
@@ -332,6 +335,11 @@ public:
     // 系统休眠/恢复后由平台层调用：丢弃 ASR 保活连接，下次录音重新握手。
     void InvalidateAsrConnection();
     void ReconnectPairedDevices();
+    // P1 目标表：把本机显示名（主机名）上报给网关设备（其固件把名字绑定到当前连接对端）。
+    // 幂等，可在每次进入网关模式/重连后调用。
+    void SendGatewayTargetInfo(const std::string& device_id, const std::string& name);
+    // 本机显示名（主机名）由平台层启动时注入，用于网关目标表命名（见上）。
+    void SetLocalHostName(std::string name);
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
                              BluetoothAddressKind address_kind,
@@ -727,6 +735,8 @@ private:
     std::optional<std::string> last_recoverable_text_;
     std::optional<std::string> last_recoverable_device_id_;
     std::vector<std::string> paired_device_ids_;
+    // 本机显示名（主机名）：网关目标表命名用，由平台层注入（空则不上报）。
+    std::string local_host_name_;
     std::vector<std::string> connected_device_ids_;
     bool hotkey_is_down_ = false;
     std::optional<std::string> hotkey_active_device_id_;

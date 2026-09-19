@@ -176,6 +176,10 @@ public:
                               const std::optional<std::string>& device_id) override {
         sent_gateway_keymap_sets.push_back(SentGatewayKeymapSet{key, software, device_id});
     }
+    void SendGatewayTargetInfo(const std::string& name,
+                               const std::optional<std::string>& device_id) override {
+        sent_gateway_target_infos.push_back(std::pair{name, device_id});
+    }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -222,6 +226,8 @@ public:
         std::optional<std::string> device_id;
     };
     std::vector<SentGatewayKeymapSet> sent_gateway_keymap_sets;
+    // P1 目标表：桌面端上报的主机名（name, device_id）。
+    std::vector<std::pair<std::string, std::optional<std::string>>> sent_gateway_target_infos;
 };
 
 class FakeAsrClient : public AsrClient {

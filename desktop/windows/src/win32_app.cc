@@ -205,6 +205,22 @@ std::string Utf8FromUtf16(std::wstring_view text) {
     return out;
 }
 
+// 本机显示名（网关目标表用，P1）：Windows 计算机名转 UTF-8，按固件侧
+// GATEWAY_TARGET_NAME_MAX(24) 截断到 23 字节，避免被固件判为超长丢弃。
+// 定义在文件前部：协调器创建处（约 line 508）就要用它注入。
+std::string LocalHostNameForGatewayTarget() {
+    wchar_t buffer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD size = static_cast<DWORD>(std::size(buffer));
+    if (!GetComputerNameW(buffer, &size) || size == 0) {
+        return "Windows PC";
+    }
+    auto name = Utf8FromUtf16(std::wstring_view(buffer, size));
+    if (name.size() > 23) {
+        name.resize(23);
+    }
+    return name;
+}
+
 std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
     for (const auto& value : values) {
         const auto pos = text.find(L"%s");
@@ -503,6 +519,9 @@ int Win32App::Run() {
             [make_asr](const AppConfig& config) {
                 return make_asr(config);
             });
+        // P1 目标表：注入本机显示名（主机名）。实际发送在协调器的「设备已连接」回调里
+        //（那时会话才 ready——gateway_status 帧先于 ready 到达，提前发会被丢弃）。
+        coordinator_->SetLocalHostName(LocalHostNameForGatewayTarget());
         // 离线授权运行时：授权状态装配（设备 ID + MachineGuid + config）与
         // 试用锚点/last_seen 持久化。config 取 Win32App::config_ 地址——
         // 设置保存/引导完成时的 move 赋值不改变该对象地址，指针不悬垂。

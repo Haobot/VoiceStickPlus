@@ -46,6 +46,7 @@ static uint16_t s_ota_state_attr_handle;
 static char s_device_id[5] = "0000";
 static char s_device_name[8] = VOICE_BLE_DEVICE_NAME_PREFIX "-0000";
 static voice_ble_connection_cb_t s_connection_cb;
+static voice_ble_peer_cb_t s_peer_cb;
 static voice_ble_control_cb_t s_control_cb;
 static voice_ble_ota_cb_t s_ota_cb;
 static uint32_t s_adv_started_ms;
@@ -751,6 +752,11 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (desc_rc == 0) {
                     ESP_LOGI(TAG, "conn initial: interval=%u latency=%u timeout=%u",
                              desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+                    // 对端身份上报（网关目标表用）：identity address 在 bond 生命周期内稳定，
+                    // 即便 Windows 用 RPA 轮换地址也能命中同一目标。
+                    if (s_peer_cb) {
+                        s_peer_cb(true, desc.peer_id_addr.val, desc.peer_id_addr.type);
+                    }
                 }
                 int mtu_rc = ble_gattc_exchange_mtu(s_conn_handle, NULL, NULL);
                 if (mtu_rc != 0 && mtu_rc != BLE_HS_EALREADY) {
@@ -804,6 +810,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         s_itvl_update_pending = false;
         power_log_dump_abort("disconnect");
         start_advertising();
+        if (s_peer_cb) {
+            s_peer_cb(false, NULL, 0);
+        }
         if (s_connection_cb) {
             s_connection_cb(false);
         }
@@ -1127,6 +1136,11 @@ const char *voice_ble_device_name(void)
 void voice_ble_set_connection_callback(voice_ble_connection_cb_t callback)
 {
     s_connection_cb = callback;
+}
+
+void voice_ble_set_peer_callback(voice_ble_peer_cb_t callback)
+{
+    s_peer_cb = callback;
 }
 
 void voice_ble_set_control_callback(voice_ble_control_cb_t callback)

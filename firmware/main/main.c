@@ -25,6 +25,7 @@
 #include "gateway_hogp.h"
 #include "gateway_keymap.h"
 #include "gateway_mode.h"
+#include "gateway_targets.h"
 #include "xiaomi_atvv_client.h"
 #include "mini_encoder_c.h"
 #include "power_log.h"
@@ -955,6 +956,21 @@ static void ble_control_cb(const char *json)
         restart_poweroff_timer();
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
         ESP_LOGI(TAG, "usb_auto_off %s", s_usb_auto_off ? "enabled" : "disabled");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_target_info") == 0) {
+        // P1 目标表：桌面端连上后上报自己的显示名（主机名）。命名对象是「当前连接对端」
+        // 的 identity address —— 桌面端无从得知自己的 RPA/identity 地址，由固件侧绑定。
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(root, "name");
+        uint8_t id_addr[6];
+        uint8_t addr_type = 0;
+        if (cJSON_IsString(name) && gateway_targets_current_peer(id_addr, &addr_type)) {
+            if (gateway_targets_set_name(id_addr, addr_type, name->valuestring) >= 0) {
+                ESP_LOGI(TAG, "网关目标命名: %s", name->valuestring);
+            } else {
+                ESP_LOGW(TAG, "网关目标命名失败（表内无该对端）");
+            }
+        } else {
+            ESP_LOGW(TAG, "gateway_target_info 缺少 name 或无当前对端");
+        }
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "usb_auto_off_get") == 0) {
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
@@ -2300,6 +2316,23 @@ static void gateway_on_link(bool connected)
     }
 }
 
+// 目标侧（peripheral）对端身份：桌面端连上/断开时更新当前对端，并在连接建立时登记到
+// 目标表（P1 切换器用它列目标）。切到别的模式不影响表内容，只影响是否继续登记。
+static void gateway_on_peer(bool connected, const uint8_t id_addr[6], uint8_t addr_type)
+{
+    gateway_targets_set_current_peer(connected, id_addr, addr_type);
+    if (!connected || gateway_mode_get() != GATEWAY_MODE_GATEWAY) {
+        return;
+    }
+    int index = gateway_targets_note_peer(id_addr, addr_type);
+    if (index >= 0) {
+        char display[32];
+        gateway_targets_core_display_name(&gateway_targets_table()->items[index], display,
+                                          sizeof(display));
+        ESP_LOGI(TAG, "网关目标 #%d: %s", index, display);
+    }
+}
+
 // 按当前模式启动/停止小米链路并刷新屏幕提示；boot 翻转后与运行期复用同一入口
 static void gateway_apply_mode(void)
 {
@@ -2307,6 +2340,13 @@ static void gateway_apply_mode(void)
     // 桌面端据此抑制「直连遥控器 ATVV」；未连接时静默返回，订阅成功后会补发。
     voice_ble_set_gateway_mode(gateway_mode_get() == GATEWAY_MODE_GATEWAY);
     (void)voice_ble_send_gateway_status();
+    // 目标表：网关模式才有意义（普通模式不登记，避免污染表内容）。
+    if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
+        gateway_targets_init();
+        voice_ble_set_peer_callback(gateway_on_peer);
+    } else {
+        voice_ble_set_peer_callback(NULL);
+    }
     if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
         ui_status_set_gateway_link("RC: ...");
         // 外部源 PCM 缓冲在模式入口预创建：把 64KB PSRAM 分配移出「按下→首帧」

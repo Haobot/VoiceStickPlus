@@ -340,6 +340,12 @@ ByteVector BleProtocol::GatewayKeymapSetPayload(std::string_view key, bool softw
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::GatewayTargetInfoPayload(std::string_view name) {
+    const auto json = std::string("{\"event\":\"gateway_target_info\",\"name\":\"") +
+                      JsonEscape(name) + "\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::GatewayKeymapGetPayload() {
     const std::string json = "{\"event\":\"gateway_keymap_get\"}";
     return ByteVector(json.begin(), json.end());

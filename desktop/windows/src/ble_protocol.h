@@ -175,6 +175,9 @@ public:
     // software=true 设软件路由（gateway_key 事件上报）、false 恢复 HOGP 直通。
     static ByteVector GatewayKeymapSetPayload(std::string_view key, bool software);
     static ByteVector GatewayKeymapGetPayload();
+    // P1 目标表：桌面端上报自己的显示名（主机名），固件把它绑定到当前连接对端的
+    // identity address 上。仅网关模式有意义（固件侧据此给目标表命名）。
+    static ByteVector GatewayTargetInfoPayload(std::string_view name);
     static ByteVector TapSensitivityPayload(int level);
     static ByteVector AirMouseEnabledPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();

@@ -146,6 +146,21 @@ void VoiceStickCoordinator::Start() {
                 PushGatewayKeymapRoutesFor(dev.id);
             }
         }
+        // P1 目标表：上报主机名给网关设备（固件绑定到当前连接对端）。只在设备真正
+        // ready 后发（PublishConnections 只发布 ready 会话）——gateway_status 帧先于
+        // ready 到达，那一刻 control 写入还没有就绪会话（真机踩坑：00:44 静默丢弃）。
+        // 条件用「非小米遥控器」而非 hardware==StickS3：device_info 未到前 hardware 可能
+        // 还是空的（BLE 层另有 device_class==kStickS3 兜底过滤）。
+        for (const auto& dev : devices) {
+            if (IsXiaomiRemoteDevice(dev.id)) continue;
+            if (local_host_name_.empty()) {
+                LogCoordinatorLine("gateway target info skipped for VS-" + dev.id +
+                                   ": local host name is empty");
+                continue;
+            }
+            LogCoordinatorLine("gateway target info -> VS-" + dev.id + " name=" + local_host_name_);
+            SendGatewayTargetInfo(dev.id, local_host_name_);
+        }
     };
     ble_->on_connection_error = [this](std::string device_id, std::string message) {
         if (is_shutdown_) return;
@@ -317,6 +332,16 @@ void VoiceStickCoordinator::PushGatewayKeymapRoutesFor(const std::string& device
         const bool has_mapping = it != settings.key_map.end() && !it->second.empty();
         ble_->SendGatewayKeymapSet(std::string(button), has_mapping, device_id);
     }
+}
+
+void VoiceStickCoordinator::SendGatewayTargetInfo(const std::string& device_id,
+                                                 const std::string& name) {
+    if (device_id.empty() || name.empty()) return;
+    ble_->SendGatewayTargetInfo(name, std::optional<std::string>(device_id));
+}
+
+void VoiceStickCoordinator::SetLocalHostName(std::string name) {
+    local_host_name_ = std::move(name);
 }
 
 void VoiceStickCoordinator::ReconnectPairedDevices() {
