@@ -10,6 +10,22 @@ description: >-
 
 在 Visual Studio 2022 BuildTools + Ninja 环境下构建 Windows 端，并运行 CTest。
 
+## ⚠️ 增量构建的两个坑（2026-09-20 真机踩坑，务必先读）
+
+1. **中文环境下改 .h 不会触发重编**：MSVC 输出 `注意: 包含文件:` 而非 `Note: including file:`，
+   CMake 解析不了这个前缀 ⇒ **Ninja 从不记录头文件依赖** ⇒ 改了头文件（加字段/虚函数）后旧的
+   `.obj` 照样参与链接。症状极具迷惑性：编译"成功"，但测试/运行期出现**确定性假失败**
+   （实测：给 UI 接口加一个纯虚函数后 `core_tests` 报 `ui.show_listening_count == 1` 断言失败，
+   真实原因是旧 TU 的 vtable 错位）。
+   **做法**：构建前 `set VSLANG=1033`，并在**改动任何 .h 之后强制全量重编**：
+   ```powershell
+   Get-ChildItem desktop\windows\src,desktop\windows\tests -Recurse -Include *.cc,*.h |
+       ForEach-Object { $_.LastWriteTime = Get-Date }
+   ```
+2. **链接失败会被误判为成功**：`LNK1104 无法打开 VoiceStick.exe` 的根因是 **VoiceStick.exe 正在运行**
+   （文件被占用）。任何自建增量脚本都必须先 `taskkill /f /im VoiceStick.exe`，并且**校验 exe 时间戳**
+   或 `%ERRORLEVEL%`——只看"没有报错输出"会把没生效的构建当成成功（实测连续两次改动都没进二进制）。
+
 ## 前置环境
 
 - Visual Studio 2022（含 C++ 工作负载，或 BuildTools）
