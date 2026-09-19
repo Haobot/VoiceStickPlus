@@ -1595,7 +1595,11 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 LogBleLine("connection status VS-" + device_id + " = " +
                            (status == BluetoothConnectionStatus::Connected ? "connected" : "disconnected"));
                 if (status == BluetoothConnectionStatus::Disconnected) {
-                    HandleDeviceDisconnected(device_id, weak_session.lock());
+                    auto session = weak_session.lock();
+                    // 真实断连（设备重启/关机）= 会话结束：故障期记账清零，下一次连接
+                    // 从零副作用的 A 级重新开始。
+                    if (session) ClearZombieEpisode(session->bluetooth_address);
+                    HandleDeviceDisconnected(device_id, std::move(session));
                 }
             });
         // GattServicesChanged fires when Windows invalidates its system-wide
@@ -1624,7 +1628,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                                (status == GattSessionStatus::Active ? "active" : "closed") +
                                " error=" + std::to_string(static_cast<int>(args.Error())));
                     if (status == GattSessionStatus::Closed) {
-                        HandleDeviceDisconnected(device_id, weak_session.lock());
+                        auto session = weak_session.lock();
+                        if (session) ClearZombieEpisode(session->bluetooth_address);
+                        HandleDeviceDisconnected(device_id, std::move(session));
                     }
                 });
         } catch (const winrt::hresult_error& error) {
@@ -3117,10 +3123,18 @@ void BleCentralWin::HandleDeviceDisconnected(const std::string& device_id,
     if (removed && removed->device_class == DeviceClass::kXiaomiRemote2Pro) {
         StopXiaomiSessionBestEffort(removed);
     }
+    // 断连后一律登记按地址主动直连（2026-09-19 P0 扩展，真机事故取证）：
+    // 扫描对「设备在场但不广播」天然失明 —— 设备有 OS 配对时，重启后 ~1s 就会被
+    // 系统 HID 宿主连上并 stop_advertising()，此后广告永远等不到（实测 08:16:16
+    // 断连 → 08:18:26 设备已作为 HID 设备被宿主连上，app 三分钟零恢复）。
+    // 登记是无条件安全的：RunDueProactiveReconnects 在设备未配对/已有会话/已有在途
+    // 连接时自动清项，失败后按 kProactiveReconnectRetry{60s} 节流。
+    auto reconnect_session = removed ? removed : session;
     if (removed) CloseSession(std::move(removed));
     LogBleLine("device disconnected " + std::string(id_prefix) + device_id +
-               "; restarting scan for reconnection");
+               "; restarting scan + scheduling address reconnect");
     LogConnectionSnapshot("disconnected");
+    ScheduleZombieReconnect(reconnect_session, kReconnectSettleDelay);
     DispatchToUiThread([this] {
         PublishConnections();
         StartScan();
@@ -3315,6 +3329,11 @@ ZombieHealLevel BleCentralWin::NoteZombieEpisode(std::uint64_t bluetooth_address
                    " (light reconnects exhausted; next connect runs unpair + radio reset + PairAsync)");
     }
     return level;
+}
+
+void BleCentralWin::ClearZombieEpisode(std::uint64_t bluetooth_address) {
+    std::lock_guard lock(mutex_);
+    zombie_episodes_.erase(bluetooth_address);
 }
 
 bool BleCentralWin::ConsumeZombieRepair(std::uint64_t bluetooth_address) {
@@ -3552,33 +3571,37 @@ void BleCentralWin::ProbeSessions() {
                        session->device.id +
                        " reason=" + (link_gone ? "connection_status_disconnected" : "no_rx_timeout") +
                        " silent_ms=" + std::to_string(silent_ms));
-            if (action == ZombieRecoveryAction::kRepairBond) {
-                // 僵尸会话：订阅/写入全部假成功而设备侧从未登记（固件日志
-                // send_state_json gated: state_sub=0），录音因此被拒。此时设备
-                // 多半已被系统 HID 宿主连上并停止广播，重扫永远等不到。
-                LogBleLine("zombie session VS-" + session->device.id +
-                           ": subscriptions reported success but device never registered them");
-                const auto heal = NoteZombieEpisode(session->bluetooth_address, true);
-                LogBleLine("zombie heal level=" + std::string(ZombieHealLevelName(heal)) + " VS-" +
-                           session->device.id);
-                if (heal == ZombieHealLevel::kUserAction) {
-                    // 轻量重连与全量修复都用满仍失败：系统配对保持完好，转用户处理。
-                    LogBleLine("zombie session VS-" + session->device.id +
-                               ": self-heal exhausted (A and B both failed); prompting user to "
-                               "re-pair in Windows Bluetooth settings");
-                    NotifyZombieUserAction(session->device.id);
-                }
-                zombie_reconnect_delay =
-                    heal == ZombieHealLevel::kUserAction ? kZombieGiveUpRetry
-                                                         : kReconnectSettleDelay;
+            // 顺序要紧：先拆会话（HandleDeviceDisconnected 内已排一次按地址直连），
+            // 僵尸路径随后再登记本次故障——真断连（link_gone）会清掉故障期记账，
+            // 而僵尸判定必须重新计数，否则梯度被自己在同一轮里清空。
+            const bool zombie = action == ZombieRecoveryAction::kRepairBond;
+            const auto zombie_device_id = session->device.id;
+            const auto zombie_address = session->bluetooth_address;
+            HandleDeviceDisconnected(zombie_device_id, session);
+            if (!zombie) {
+                // 链路真的断了：本次会话已结束，故障期记账清零，下次（可能是设备重启
+                // 后的全新链路）重新从零副作用的 A 级开始。
+                ClearZombieEpisode(zombie_address);
+                continue;
             }
-            HandleDeviceDisconnected(session->device.id, session);
-            if (action == ZombieRecoveryAction::kRepairBond) {
-                // P0（2026-09-19）：拆完必须按地址主动直连。原本只 StartScan，而设备
-                // 此际已被系统 HID 宿主连上、停止广播 ⇒ 扫描永远等不到（实测 14:55
-                // 拆除后连续 8 小时零恢复），自愈梯度根本没有机会执行。
-                ScheduleZombieReconnect(session, zombie_reconnect_delay);
+            // 僵尸会话：订阅/写入全部假成功而设备侧从未登记（固件日志 send_state_json
+            // gated: state_sub=0），录音因此被拒。此时设备多半已被系统 HID 宿主连上并
+            // 停止广播，重扫永远等不到（实测 14:55 拆除后连续 8 小时零恢复）。
+            LogBleLine("zombie session VS-" + zombie_device_id +
+                       ": subscriptions reported success but device never registered them");
+            const auto heal = NoteZombieEpisode(zombie_address, true);
+            LogBleLine("zombie heal level=" + std::string(ZombieHealLevelName(heal)) + " VS-" +
+                       zombie_device_id);
+            if (heal == ZombieHealLevel::kUserAction) {
+                // 轻量重连与全量修复都用满仍失败：系统配对保持完好，转用户处理。
+                LogBleLine("zombie session VS-" + zombie_device_id +
+                           ": self-heal exhausted (A and B both failed); prompting user to "
+                           "re-pair in Windows Bluetooth settings");
+                NotifyZombieUserAction(zombie_device_id);
             }
+            zombie_reconnect_delay = heal == ZombieHealLevel::kUserAction ? kZombieGiveUpRetry
+                                                                         : kReconnectSettleDelay;
+            ScheduleZombieReconnect(session, zombie_reconnect_delay);
             continue;
         }
         if (session->device_class == DeviceClass::kXiaomiRemote2Pro) {

@@ -139,6 +139,50 @@ audio 订阅完成后、`ready = true` 之前，等 `kSessionLivenessTimeout{250
   2500ms (device-side state_sub=0); heal level=light-reconnect(A)`），是本次自愈的入口。
 - 构建 `build_win.bat` + CTest 2/2 通过。
 
+## 二轮修复（2026-09-19 08:16-08:31，真机暴露的两个新缺陷）
+
+系统配对恢复后重跑重启验证，暴露两处与「有系统配对」相伴的新问题：
+
+### 缺陷 C：真断连路径只重扫，设备被 HID 宿主抢走后永久失联
+
+`connection status VS-53A8 = disconnected` → `device disconnected …; restarting scan` →
+**3 分钟零恢复**，随后日志出现 `XiaomiKeymapHook: raw input device not remote: …HID#{…}_70041ddc53aa…`
+⇒ 设备已被系统 HID 宿主连上并 `stop_advertising()`，扫描永远等不到。
+这与僵尸路径（D2）是同一个盲区，但发生在 `PlanZombieRecovery` 返回 `kScanOnly` 的分支上——
+原修复只给僵尸分支补了主动直连。
+
+**修复**：把按地址主动直连下沉到 `HandleDeviceDisconnected`（所有断连来源共用），
+僵尸分支再用自愈梯度算出的延迟覆盖队列项。登记是无条件安全的：
+`RunDueProactiveReconnects` 在设备未配对/已有会话/已有在途连接时自动清项，
+失败按 `kProactiveReconnectRetry{60s}` 节流。
+
+> **判据**：设备有 OS 配对时，「重启后 app 连不上」几乎必然走这条路径——HID 宿主会在
+> ~1s 内抢走设备。看到 `restarting scan` 之后再无 `advertisement matched` 即为此症。
+
+### 缺陷 D：故障期记账跨会话累积，重启后被一上来就判「自愈用尽」
+
+日志：`heal level=user-action` 出现在设备刚重启、梯度本应从零开始的时刻。
+原因：`zombie_episodes_` 只在**连接成功**时清零，而设备重启前后的多次僵尸判定落在
+同一个 10min 窗内（重启前 3 次 + 重启后第 1 次即触发 `kUserAction`），此后重连被节流到
+60s 且不再尝试 A/B —— 真正的故障期（设备重启后的全新链路）反而得不到自愈预算。
+
+**修复**：`ClearZombieEpisode` —— 真实断连（`ConnectionStatusChanged=Disconnected`、
+`GattSessionStatus::Closed`、心跳判 `kScanOnly`）时清空记账；`ProbeSessions` 里把
+`HandleDeviceDisconnected` 放到 `NoteZombieEpisode` **之前**，避免僵尸路径自己把刚登记的
+计数清掉（顺序敏感，注释已写明）。
+
+修复后日志轨迹符合设计：`heal level=light-reconnect(A)` → 仍僵尸 →
+`heal level=full-repair(B)` → `zombie heal B: radio reset` → 仍僵尸 → `kUserAction`（含气泡）。
+
+### 测试装置教训：自动化 DTR 复位会让设备进入不可用状态
+
+本轮用 pyserial 的 `dtr=False→True 0.3s→False` 序列自动重启设备，前几轮正常；
+08:16 之后该设备 **USB 停止枚举**（`COM19` 消失、PnP 设备状态 Unknown），
+而 BLE 侧仍被系统 HID 宿主持有 ⇒ app 的所有重连都「假成功」（GATT 无响应）。
+这种状态下 radio reset / 换句柄都无效，**只能给设备断电重启**（拔插 USB 或按前面板键）。
+教训：**连续自动复位设备做验证时要留人工兜底**，别在无人值守时反复 DTR 复位；
+设备侧还有没有响应，看它是否还发 `advertisement`（`advertisement matched` 日志）比看 USB 更可靠。
+
 ## 长期技术记忆 / 经验
 
 1. **「写成功」不等于「对端收到」**。BLE/ATT 应用的订阅、写入在加密上下文陈旧时会
@@ -178,7 +222,8 @@ audio 订阅完成后、`ready = true` 之前，等 `kSessionLivenessTimeout{250
    但只在配对对话框里用过）。「静默失效」在本项上仍然存在，建议后续补托盘气泡。
    看门狗现状：`ProbeSessions` 每 10min 探测一次、每次运行最多重建 1 轮（`PairAsync` 重试 3 次），
    并在重建前重置无线电 —— 即使配对失败也**只补不删**，不会把可用状态弄坏。
-3. 组件级 `heal level=full-repair(B)`（radio reset）**尚无真机样本**：4 次重启都在
-   A 阶段收敛。若日后日志出现 B 级，关注 radio 恢复后是否一次连上。
+3. 组件级 `heal level=full-repair(B)`（radio reset）**尚无成功样本**：08:31 那次是唯一
+   真机样本，但当时设备已进入 USB 掉线/固件不可用状态（见「测试装置教训」），
+   B 级执行成功却没能恢复 —— 该样本不能作为 B 级有效性的证据，需要在健康设备上重测。
 4. 设备重启被广告发现的延迟波动较大（3s ~ 51s，串口 DTR 复位的时机不完全可控），
    自愈时长的主要构成不是 app 侧逻辑。

@@ -222,6 +222,10 @@ private:
     ZombieHealLevel NoteZombieEpisode(std::uint64_t bluetooth_address, bool is_voice_stick);
     // 消费上述标记（一次性）：ConnectDeviceAsync 打开设备后据此执行全量修复。
     bool ConsumeZombieRepair(std::uint64_t bluetooth_address);
+    // 会话真的结束（链路断/设备重启）时清空故障期记账：新链路是新的故障期，自愈
+    // 预算不该被上一轮吃掉（真机事故：设备重启前后各一次僵尸判定叠加，导致重启后
+    // 一上来就被判 kUserAction 而不再尝试自愈）。
+    void ClearZombieEpisode(std::uint64_t bluetooth_address);
     // 僵尸拆除后按地址直连：登记主动重连队列（心跳 30s 周期兜底）+ 延迟线程提前唤醒，
     // 避免自愈最坏要等满一个心跳周期。设备已不配对时不登记。
     void ScheduleZombieReconnect(const std::shared_ptr<DeviceSession>& session,
