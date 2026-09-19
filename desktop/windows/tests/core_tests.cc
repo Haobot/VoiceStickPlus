@@ -1199,6 +1199,68 @@ void TestAsrHotwordCorpusBudget() {
     assert(table_only_payload.find("\"context\"") == std::string::npos);
 }
 
+void TestHotwordCategories() {
+    // 预置分类：默认（空名）+ 语文/数学/程序/AI。
+    auto defaults = DefaultHotwordCategories();
+    assert(defaults.size() == 5);
+    assert(defaults[0].name.empty());
+    assert(defaults[0].words.empty());
+    assert(defaults[1].name == "语文");
+
+    // JSON 编解码往返：中文分类名、默认分类（空名）、含引号的特殊分类名。
+    std::vector<HotwordCategory> categories;
+    categories.push_back(HotwordCategory{"", {"小智", "VoiceStick"}});
+    categories.push_back(HotwordCategory{"语文", {"杜甫", "文言文"}});
+    categories.push_back(HotwordCategory{"Program\"Quote", {}});
+    const auto json = EncodeHotwordCategories(categories);
+    auto parsed = ParseHotwordCategories(json);
+    assert(parsed.size() == categories.size());
+    for (std::size_t i = 0; i < categories.size(); ++i) {
+        assert(parsed[i].name == categories[i].name);
+        assert(parsed[i].words == categories[i].words);
+    }
+    // 非法 JSON 返回空。
+    assert(ParseHotwordCategories("not-json").empty());
+    assert(ParseHotwordCategories("{}").empty());
+
+    // 添加热词：去重 + 每分类 25 上限 + asr_hotwords 投影同步。
+    AppConfig config = AppConfig::Defaults();
+    config.hotword_categories = categories;
+    config.active_hotword_category = "";
+    assert(AddHotwordToActiveCategory(config, "新词"));
+    assert(config.asr_hotwords.size() == 3);  // 默认分类：小智/VoiceStick/新词
+    assert(!AddHotwordToActiveCategory(config, "小智"));  // 重复
+    config.hotword_categories[0].words.clear();
+    for (int i = 0; i < static_cast<int>(HotwordCategory::kMaxWords); ++i) {
+        assert(AddHotwordToActiveCategory(config, "词" + std::to_string(i)));
+    }
+    assert(config.hotword_categories[0].words.size() == HotwordCategory::kMaxWords);
+    assert(!AddHotwordToActiveCategory(config, "第26词"));  // 超上限
+    assert(config.asr_hotwords.size() == HotwordCategory::kMaxWords);
+
+    // 切换活跃分类：投影跟随；无效名回退第一个分类。
+    SetActiveHotwordCategory(config, "语文");
+    assert(config.active_hotword_category == "语文");
+    assert((config.asr_hotwords == std::vector<std::string>{"杜甫", "文言文"}));
+    SetActiveHotwordCategory(config, "不存在");
+    assert(config.active_hotword_category.empty());  // 回退默认分类（第一个）
+    assert(config.asr_hotwords.size() == HotwordCategory::kMaxWords);
+
+    // 旧配置迁移：asr_hotwords 迁入默认分类；活跃分类无效回退第一个。
+    AppConfig legacy = AppConfig::Defaults();
+    legacy.asr_hotwords = {"旧词一", "旧词二"};
+    NormalizeHotwordCategories(legacy);
+    assert(legacy.hotword_categories.size() == 5);
+    assert((legacy.hotword_categories[0].words ==
+            std::vector<std::string>{"旧词一", "旧词二"}));
+    assert(legacy.active_hotword_category.empty());
+    assert(legacy.asr_hotwords == legacy.hotword_categories[0].words);
+
+    // 新配置（已有分区数据）：投影强制对齐活跃分类。
+    NormalizeHotwordCategories(config);
+    assert(config.asr_hotwords == config.hotword_categories[0].words);
+}
+
 void TestTencentHotwordCharFilter() {
     // 腾讯词表 API 拒绝含 '.' 等字符的词（InvalidWordWeight），同步前必须过滤。
     assert(TencentAsrVocabClient::IsValidHotwordChars("Opus"));
@@ -10220,6 +10282,7 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
+    TestHotwordCategories();
     TestHotwordSelector();
     TestHotwordCorrections();
     TestTencentHotwordCharFilter();

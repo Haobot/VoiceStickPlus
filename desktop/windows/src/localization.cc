@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kXiaomiButtonTv) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionHotwordCategoryFullBody) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -32,7 +32,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "Resource ID";
     table[Index(StringId::kSettingsHotwords)] = "Hotwords";
-    table[Index(StringId::kSettingsHotwordsHint)] = "Separate hotwords with commas or new lines.";
+    table[Index(StringId::kSettingsHotwordsHint)] =
+        "Separate hotwords with commas or new lines. Up to 25 per category; "
+        "only the selected category is used for recognition.";
     table[Index(StringId::kSettingsLlmBaseUrl)] = "Base URL";
     table[Index(StringId::kSettingsLlmApiKey)] = "API Key";
     table[Index(StringId::kSettingsLlmModel)] = "Model";
@@ -437,6 +439,27 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "Volume Down";
     table[Index(StringId::kXiaomiButtonMenu)] = "Menu";
     table[Index(StringId::kXiaomiButtonTv)] = "TV";
+    // 热词分区管理（分类下拉）
+    table[Index(StringId::kSettingsHotwordCategory)] = "Category";
+    table[Index(StringId::kSettingsHotwordCategoryDefault)] = "Default";
+    table[Index(StringId::kSettingsHotwordCategoryAddButton)] = "Add";
+    table[Index(StringId::kSettingsHotwordCategoryDeleteButton)] = "Delete";
+    table[Index(StringId::kSettingsHotwordCategoryAddTitle)] = "Add Hotword Category";
+    table[Index(StringId::kSettingsHotwordCategoryNamePrompt)] = "Category name:";
+    table[Index(StringId::kSettingsHotwordCategoryEmptyName)] = "Category name cannot be empty.";
+    table[Index(StringId::kSettingsHotwordCategoryDuplicate)] = "This category already exists.";
+    table[Index(StringId::kSettingsHotwordCategoryNameTooLong)] = "Category name is too long.";
+    // {0}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryDeleteConfirm)] =
+        "Delete category \"{0}\" and all its hotwords?";
+    table[Index(StringId::kSettingsHotwordCategoryLastOne)] =
+        "At least one category must be kept.";
+    // {0}=保留数量 {1}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryTrimmed)] =
+        "Category \"{1}\" reached the 25-hotword limit; only the first {0} were kept.";
+    table[Index(StringId::kSelectionHotwordCategoryFullTitle)] = "Category Full";
+    table[Index(StringId::kSelectionHotwordCategoryFullBody)] =
+        "The active hotword category is full (25). Remove some hotwords or switch category first.";
     return table;
 }
 
@@ -455,7 +478,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "资源 ID";
     table[Index(StringId::kSettingsHotwords)] = "热词";
-    table[Index(StringId::kSettingsHotwordsHint)] = "使用逗号或换行分隔热词。";
+    table[Index(StringId::kSettingsHotwordsHint)] =
+        "使用逗号或换行分隔热词。每个分类最多 25 个，仅当前选中分类参与识别。";
     table[Index(StringId::kSettingsLlmBaseUrl)] = "Base URL";
     table[Index(StringId::kSettingsLlmApiKey)] = "API Key";
     table[Index(StringId::kSettingsLlmModel)] = "模型";
@@ -844,6 +868,26 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "音量-";
     table[Index(StringId::kXiaomiButtonMenu)] = "菜单键";
     table[Index(StringId::kXiaomiButtonTv)] = "TV 键";
+    // 热词分区管理（分类下拉）
+    table[Index(StringId::kSettingsHotwordCategory)] = "分类";
+    table[Index(StringId::kSettingsHotwordCategoryDefault)] = "默认";
+    table[Index(StringId::kSettingsHotwordCategoryAddButton)] = "新增分类";
+    table[Index(StringId::kSettingsHotwordCategoryDeleteButton)] = "删除分类";
+    table[Index(StringId::kSettingsHotwordCategoryAddTitle)] = "新增热词分类";
+    table[Index(StringId::kSettingsHotwordCategoryNamePrompt)] = "分类名称：";
+    table[Index(StringId::kSettingsHotwordCategoryEmptyName)] = "分类名称不能为空。";
+    table[Index(StringId::kSettingsHotwordCategoryDuplicate)] = "该分类已存在。";
+    table[Index(StringId::kSettingsHotwordCategoryNameTooLong)] = "分类名称过长。";
+    // {0}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryDeleteConfirm)] =
+        "确定删除分类“{0}”及其全部热词？";
+    table[Index(StringId::kSettingsHotwordCategoryLastOne)] = "至少需要保留一个分类。";
+    // {0}=保留数量 {1}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryTrimmed)] =
+        "分类“{1}”超出 25 个热词上限，仅保留前 {0} 个。";
+    table[Index(StringId::kSelectionHotwordCategoryFullTitle)] = "分类已满";
+    table[Index(StringId::kSelectionHotwordCategoryFullBody)] =
+        "当前热词分类已满（25 个），请先删除部分热词或切换分类。";
     return table;
 }
 

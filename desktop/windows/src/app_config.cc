@@ -3,6 +3,7 @@
 #include "builtin_secrets.h"
 
 #include "ble_protocol.h"
+#include "cJSON.h"
 #include "key_spec.h"
 #include "log.h"
 #include "toml.hpp"
@@ -391,6 +392,8 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "ui_language") config.ui_language = UiLanguageFromName(value);
     if (key == "resource_id") config.resource_id = value;
     if (key == "asr_hotwords") config.asr_hotwords = ParseHotwordList(value);
+    if (key == "hotword_categories") config.hotword_categories = ParseHotwordCategories(value);
+    if (key == "active_hotword_category") config.active_hotword_category = value;
     if (key == "paired_device_ids") config.paired_device_ids = ParseDeviceIdList(value);
     if (key == "device_theme_colors") {
         config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(value, OverlayThemeColorFromName);
@@ -596,7 +599,11 @@ AppConfig AppConfig::Load() {
 AppConfig AppConfig::Load(const std::filesystem::path& path) {
     AppConfig config = Defaults();
     std::ifstream input(path);
-    if (!input) return config;
+    if (!input) {
+        // 首启无配置文件：也要预置热词分区并初始化活跃分类。
+        NormalizeHotwordCategories(config);
+        return config;
+    }
 
     try {
         auto table = toml::parse(input, path.native());
@@ -627,6 +634,12 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "ui_language")) config.ui_language = UiLanguageFromName(*value);
         if (auto value = TomlString(table, "resource_id")) config.resource_id = *value;
         if (auto value = TomlString(table, "asr_hotwords")) config.asr_hotwords = ParseHotwordList(*value);
+        if (auto value = TomlString(table, "hotword_categories")) {
+            config.hotword_categories = ParseHotwordCategories(*value);
+        }
+        if (auto value = TomlString(table, "active_hotword_category")) {
+            config.active_hotword_category = *value;
+        }
         if (auto value = TomlString(table, "paired_device_ids")) config.paired_device_ids = ParseDeviceIdList(*value);
         if (auto value = TomlString(table, "device_theme_colors")) {
             config.device_theme_colors = ParseDeviceValueMap<OverlayThemeColor>(*value, OverlayThemeColorFromName);
@@ -778,6 +791,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
             auto entry = ParsePairedDeviceEntry(value);
             if (!entry.device_id.empty()) config.paired_devices.push_back(entry);
         }
+        // 热词分区对齐：预置/迁移/活跃分类回退/投影同步（先于迁移保存，
+        // 使旧 asr_hotwords 迁入默认分类的结果随迁移 Save 一并落盘）。
+        NormalizeHotwordCategories(config);
         if (MaybeRecoverTencentSecretId(config)) {
             config.Save(path);
         } else if (needs_wechat_trigger_migration_save) {
@@ -791,6 +807,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         // legacy 扁平格式无 trigger_mode 字段：从顶层 interaction_mode 继承并重置为 hold。
         legacy_config.wechat_input_method.trigger_mode = legacy_config.interaction_mode;
         legacy_config.interaction_mode = InteractionMode::kHoldToTalk;
+        NormalizeHotwordCategories(legacy_config);
         if (MaybeRecoverTencentSecretId(legacy_config)) {
             legacy_config.Save(path);
         }
@@ -926,6 +943,9 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         hotwords << asr_hotwords[i];
     }
     output << "asr_hotwords = \"" << TomlEscape(hotwords.str()) << "\"\n";
+    // 热词分区事实源 + 活跃分类；asr_hotwords（上行）为活跃分类的投影，供老版本兼容。
+    output << "hotword_categories = \"" << TomlEscape(EncodeHotwordCategories(hotword_categories)) << "\"\n";
+    output << "active_hotword_category = \"" << TomlEscape(active_hotword_category) << "\"\n";
     output << "paired_device_ids = \"" << paired.str() << "\"\n";
     output << "device_theme_colors = \"" << TomlEscape(FormatDeviceValueMap<OverlayThemeColor>(
         device_theme_colors, paired_device_ids, DefaultOverlayThemeColor(), OverlayThemeColorName)) << "\"\n";
@@ -1604,6 +1624,125 @@ std::vector<std::string> ParseHotwordList(std::string_view text) {
         start = end + 1;
     }
     return hotwords;
+}
+
+std::vector<HotwordCategory> DefaultHotwordCategories() {
+    std::vector<HotwordCategory> categories;
+    for (const char* name : {"", "语文", "数学", "程序", "AI"}) {
+        HotwordCategory category;
+        category.name = name;
+        categories.push_back(std::move(category));
+    }
+    return categories;
+}
+
+std::string EncodeHotwordCategories(const std::vector<HotwordCategory>& categories) {
+    cJSON* root = cJSON_CreateArray();
+    for (const auto& category : categories) {
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", category.name.c_str());
+        std::string joined;
+        for (std::size_t i = 0; i < category.words.size(); ++i) {
+            if (i != 0) joined += ",";
+            joined += category.words[i];
+        }
+        cJSON_AddStringToObject(item, "words", joined.c_str());
+        cJSON_AddItemToArray(root, item);
+    }
+    char* text = cJSON_PrintUnformatted(root);
+    std::string result = text ? text : "[]";
+    if (text) cJSON_free(text);
+    cJSON_Delete(root);
+    return result;
+}
+
+std::vector<HotwordCategory> ParseHotwordCategories(std::string_view json) {
+    std::vector<HotwordCategory> categories;
+    cJSON* root = cJSON_ParseWithLength(json.data(), json.size());
+    if (!root || !cJSON_IsArray(root)) {
+        if (root) cJSON_Delete(root);
+        return categories;
+    }
+    cJSON* item = nullptr;
+    cJSON_ArrayForEach(item, root) {
+        if (!cJSON_IsObject(item)) continue;
+        HotwordCategory category;
+        const cJSON* name = cJSON_GetObjectItemCaseSensitive(item, "name");
+        if (cJSON_IsString(name) && name->valuestring != nullptr) {
+            category.name = name->valuestring;
+        }
+        const cJSON* words = cJSON_GetObjectItemCaseSensitive(item, "words");
+        if (cJSON_IsString(words) && words->valuestring != nullptr) {
+            category.words = ParseHotwordList(words->valuestring);
+        }
+        categories.push_back(std::move(category));
+    }
+    cJSON_Delete(root);
+    return categories;
+}
+
+HotwordCategory* FindHotwordCategory(AppConfig& config, const std::string& name) {
+    for (auto& category : config.hotword_categories) {
+        if (category.name == name) return &category;
+    }
+    return nullptr;
+}
+
+const HotwordCategory* FindHotwordCategory(const AppConfig& config, const std::string& name) {
+    for (const auto& category : config.hotword_categories) {
+        if (category.name == name) return &category;
+    }
+    return nullptr;
+}
+
+void SetActiveHotwordCategory(AppConfig& config, const std::string& name) {
+    if (!FindHotwordCategory(config, name) && !config.hotword_categories.empty()) {
+        config.active_hotword_category = config.hotword_categories.front().name;
+    } else {
+        config.active_hotword_category = name;
+    }
+    if (const auto* active = FindHotwordCategory(config, config.active_hotword_category)) {
+        config.asr_hotwords = active->words;
+    }
+}
+
+bool AddHotwordToActiveCategory(AppConfig& config, const std::string& word) {
+    auto* active = FindHotwordCategory(config, config.active_hotword_category);
+    if (active == nullptr) return false;
+    if (word.empty() ||
+        std::find(active->words.begin(), active->words.end(), word) != active->words.end() ||
+        active->words.size() >= HotwordCategory::kMaxWords) {
+        return false;
+    }
+    active->words.push_back(word);
+    config.asr_hotwords = active->words;
+    return true;
+}
+
+void NormalizeHotwordCategories(AppConfig& config) {
+    // 无分区数据（老配置或首启）：预置默认分类组，旧热词迁入默认分类。
+    if (config.hotword_categories.empty()) {
+        config.hotword_categories = DefaultHotwordCategories();
+        if (!config.asr_hotwords.empty()) {
+            for (auto& category : config.hotword_categories) {
+                if (category.name.empty()) {
+                    category.words = config.asr_hotwords;
+                    break;
+                }
+            }
+        }
+    }
+    // 活跃分类无效时回退第一个分类（默认分类）。
+    if (!FindHotwordCategory(config, config.active_hotword_category)) {
+        config.active_hotword_category =
+            config.hotword_categories.empty() ? std::string() : config.hotword_categories.front().name;
+    }
+    // 强制对齐投影：asr_hotwords = 活跃分类 words。
+    if (const auto* active = FindHotwordCategory(config, config.active_hotword_category)) {
+        config.asr_hotwords = active->words;
+    } else {
+        config.asr_hotwords.clear();
+    }
 }
 
 std::string ApplyHotwordCorrections(

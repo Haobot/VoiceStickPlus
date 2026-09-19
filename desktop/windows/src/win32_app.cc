@@ -1292,14 +1292,20 @@ bool Win32App::CreateWindowInternal() {
                     return;
                 }
                 const auto lang = EffectiveUiLanguage(config_.ui_language);
-                auto& hotwords = config_.asr_hotwords;
-                if (std::find(hotwords.begin(), hotwords.end(), text) != hotwords.end()) {
+                // 添加到当前活跃分类（去重 + 每分类 25 上限，同步 asr_hotwords 投影）。
+                if (std::find(config_.asr_hotwords.begin(), config_.asr_hotwords.end(), text) !=
+                    config_.asr_hotwords.end()) {
                     ShowNotification(
                         Tr(StringId::kSelectionHotwordDuplicateTitle, lang),
                         Tr(StringId::kSelectionHotwordDuplicateBody, lang) + text);
                     return;
                 }
-                hotwords.push_back(text);
+                if (!AddHotwordToActiveCategory(config_, text)) {
+                    ShowNotification(
+                        Tr(StringId::kSelectionHotwordCategoryFullTitle, lang),
+                        Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
+                    return;
+                }
                 try {
                     config_.SavePreservingDiskCredentials();
                 } catch (const std::exception& e) {
@@ -1332,11 +1338,9 @@ bool Win32App::CreateWindowInternal() {
                 const auto lang = EffectiveUiLanguage(config_.ui_language);
                 const bool is_update = config_.hotword_corrections.contains(wrong);
                 config_.hotword_corrections[wrong] = right;
-                // 正确文本加入热词表（若尚未存在且长度合规）。
-                if (right.size() <= SelectionHotwordManager::kMaxHotwordLen &&
-                    std::find(config_.asr_hotwords.begin(), config_.asr_hotwords.end(),
-                              right) == config_.asr_hotwords.end()) {
-                    config_.asr_hotwords.push_back(right);
+                // 正确文本加入活跃热词分类（若尚未存在且分类未满 25，best-effort）。
+                if (right.size() <= SelectionHotwordManager::kMaxHotwordLen) {
+                    AddHotwordToActiveCategory(config_, right);
                 }
                 try {
                     config_.SavePreservingDiskCredentials();
@@ -1953,19 +1957,29 @@ void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
         feedback(Tr(StringId::kHotwordProcessAllDuplicate, lang));
         return;
     }
-    auto& hotwords = config_.asr_hotwords;
-    hotwords.insert(hotwords.end(), new_words.begin(), new_words.end());
+    // 新词逐个加入活跃分类（去重 + 每分类 25 上限，满 25 停止）。
+    std::vector<std::string> added;
+    for (const auto& word : new_words) {
+        if (!AddHotwordToActiveCategory(config_, word)) break;
+        added.push_back(word);
+    }
+    if (added.empty()) {
+        LogLine("Hotword extraction: active category full, nothing added");
+        feedback(Tr(StringId::kSelectionHotwordCategoryFullTitle, lang) + " " +
+                 Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
+        return;
+    }
     try {
         config_.SavePreservingDiskCredentials();
     } catch (const std::exception& e) {
         LogLine(std::string("Save config on hotword extract failed: ") + e.what());
     }
     ApplyUpdatedConfig();
-    // 顿号拼接新词列表用于浮窗展示（重复词不展示）。
+    // 顿号拼接实际加入的新词列表用于浮窗展示（重复词不展示）。
     std::string joined;
-    for (std::size_t i = 0; i < new_words.size(); ++i) {
+    for (std::size_t i = 0; i < added.size(); ++i) {
         if (i != 0) joined += "、";
-        joined += new_words[i];
+        joined += added[i];
     }
     feedback(Tr(StringId::kHotwordProcessAdded, lang) + joined);
     LogLine("Hotwords extracted and added: " + joined);

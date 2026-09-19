@@ -439,6 +439,22 @@ enum class StringId {
     kXiaomiButtonVolumeDown,
     kXiaomiButtonMenu,
     kXiaomiButtonTv,
+
+    // 热词分区管理（分类下拉）
+    kSettingsHotwordCategory,
+    kSettingsHotwordCategoryDefault,
+    kSettingsHotwordCategoryAddButton,
+    kSettingsHotwordCategoryDeleteButton,
+    kSettingsHotwordCategoryAddTitle,
+    kSettingsHotwordCategoryNamePrompt,
+    kSettingsHotwordCategoryEmptyName,
+    kSettingsHotwordCategoryDuplicate,
+    kSettingsHotwordCategoryNameTooLong,
+    kSettingsHotwordCategoryDeleteConfirm,
+    kSettingsHotwordCategoryLastOne,
+    kSettingsHotwordCategoryTrimmed,
+    kSelectionHotwordCategoryFullTitle,
+    kSelectionHotwordCategoryFullBody,
 };
 
 // 返回 UTF-8 本地化文本

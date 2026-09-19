@@ -39,6 +39,17 @@ private:
     void RefreshHotwordCandidates();
     void OnHotwordCandidateAdd();
     void OnHotwordCandidateDismiss();
+    // ===== 热词分区管理 =====
+    // 重填分类下拉（显示 "名称 (n/25)"，默认分类本地化显示）并选中当前分类。
+    void RefreshHotwordCategoryCombo();
+    // 切换分类：编辑框内容存回旧分类，加载新分类热词。
+    void OnHotwordCategoryChanged();
+    // 新增分类（输入框校验后插入空分类并选中）。
+    void OnHotwordCategoryAdd();
+    // 删除当前分类（至少保留一个；删活跃分类则切换到剩余第一个）。
+    void OnHotwordCategoryDelete();
+    // 编辑框内容（ParseHotwordList + 25 上限截断）写回 loaded_hotword_category_ 分类。
+    void StoreCurrentCategoryWords();
     void ApplyTrialApiKey();
     void ChooseDebugDirectory();
     // 虚拟麦克风改名：把录音端设备显示名改为设备名（如 VS-091C），提权子进程执行。
@@ -92,6 +103,12 @@ private:
     HWND apply_trial_button_ = nullptr;
     HWND resource_combo_ = nullptr;
     HWND hotwords_edit_ = nullptr;
+    // 热词分区管理：分类下拉 + 新增/删除按钮；编辑框始终显示 loaded_hotword_category_
+    // 分类的内容。分类增删改仅驻内存，随"保存"落盘，取消丢弃。
+    HWND hotword_category_combo_ = nullptr;
+    HWND hotword_category_add_button_ = nullptr;
+    HWND hotword_category_delete_button_ = nullptr;
+    std::string loaded_hotword_category_;
     HWND candidates_label_ = nullptr;
     HWND candidates_list_ = nullptr;
     HWND candidate_add_button_ = nullptr;
@@ -169,6 +186,9 @@ private:
     static constexpr UINT kIdDeveloperMode = 2039;
     static constexpr UINT kIdOpenSpectrogram = 2040;
     static constexpr UINT kIdRenameVirtualMic = 2041;
+    static constexpr UINT kIdHotwordCategoryCombo = 2042;
+    static constexpr UINT kIdHotwordCategoryAdd = 2043;
+    static constexpr UINT kIdHotwordCategoryDelete = 2044;
 };
 
 } // namespace voicestick
