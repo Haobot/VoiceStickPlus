@@ -155,7 +155,7 @@ static void create_battery_ui(lv_obj_t *screen)
     s_battery_label = lv_label_create(screen);
     lv_label_set_text(s_battery_label, "--%");
     lv_obj_set_style_text_color(s_battery_label, lv_color_hex(0x675f71), 0);
-    lv_obj_set_style_text_font(s_battery_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_battery_label, &lv_font_montserrat_14, 0);
     lv_label_set_long_mode(s_battery_label, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_battery_label, 46);
     lv_obj_set_style_text_align(s_battery_label, LV_TEXT_ALIGN_RIGHT, 0);
@@ -239,7 +239,7 @@ static void create_status_ui(void)
     // 小字号 + 左对齐窄宽度，避开右侧电量百分比与下方 IMU 行；普通模式为空串不显示。
     s_gateway_label = lv_label_create(s_screen);
     lv_label_set_text(s_gateway_label, "");
-    lv_obj_set_style_text_font(s_gateway_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_gateway_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_gateway_label, lv_color_hex(0xffffff), 0);
     lv_label_set_long_mode(s_gateway_label, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_gateway_label, 68);

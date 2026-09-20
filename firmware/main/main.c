@@ -2359,7 +2359,7 @@ static void gateway_on_link(bool connected)
 {
     // 屏幕提示用英文：LVGL 内嵌字体无 CJK 字形（现有 UI 文案全英文），中文会渲染成方框。
     // 短文案适配 135px 宽屏顶部调试行（电量百分比左侧仅约 66px 可用）。
-    ui_status_set_gateway_link(connected ? "RC: OK" : "RC: lost");
+    ui_status_set_gateway_link(connected ? "RC: OK" : "RC: LOST");
     ESP_LOGI(TAG, "小米链路%s", connected ? "就绪" : "断开");
     if (connected) {
         // ATVV 发现串行在 HID 发现之后（NimBLE 每连接同时仅一个 GATT 过程）
