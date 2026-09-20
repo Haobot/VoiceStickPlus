@@ -3157,6 +3157,11 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
         const std::size_t max_pdu = session->gatt_session ? session->gatt_session.MaxPduSize() : 247;
         const std::size_t chunk_size = std::max<std::size_t>(
             20, std::min<std::size_t>(max_pdu > 15 ? max_pdu - 15 : 20, 244));
+        // 在途窗口（app 领先设备已确认字节的上限）。
+        // **约束（2026-09-20 真机踩到）**：它必须**大于固件的进度回传间隔**
+        // （`OTA_PROGRESS_NOTIFY_BYTES = 32KB`）——收紧到 8KB 会立刻死锁：app 在 8KB 处
+        // 停下等确认，而设备要到 32KB 才回传，双方互等（靠 kOtaConfirmStallTimeout 15s
+        // 兜底报错才发现）。所以这个值不能随意调小。
         const std::size_t max_in_flight = 48 * 1024;
         LogBleLine("OTA data VS-" + update_session->device_id +
                    " chunk_size=" + std::to_string(chunk_size) +

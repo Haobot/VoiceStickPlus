@@ -43,6 +43,7 @@ static bool s_state_subscribed;
 // 真机实测（网关切换后）：目标机 app 要 14-26s 才恢复；根因即此（见 P4 device_info 截断项）。
 static bool s_state_burst_pending;
 static esp_timer_handle_t s_state_burst_timer;
+static esp_timer_handle_t s_ota_watchdog_timer;
 static uint32_t s_mbuf_fail_streak;   // 连续 mbuf alloc failed 次数（用于告警节流）
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint8_t s_own_addr_type;
@@ -75,6 +76,15 @@ typedef struct {
     uint32_t next_progress;
     esp_ota_handle_t handle;
     const esp_partition_t *partition;
+    // 吞吐诊断（2026-09-20）：实测 OTA 吞吐仅 ~9KB/s（MTU 247 + WriteWithoutResponse 本应
+    // 50–150KB/s），且传输会中途完全停住。嫌疑是 esp_ota_write 在 NimBLE 回调里同步做 flash
+    // 擦写（长时间关 cache）饿死协议栈。埋点记录单次写入耗时与两次回调之间的间隔，
+    // 在每次 32KB 进度日志里一并打印，用来证实/证伪。
+    int64_t last_cb_us;
+    int64_t write_max_us;
+    int64_t gap_max_us;
+    int64_t begin_us;
+    int64_t last_watchdog_log_us;
 } voice_ble_ota_state_t;
 
 static voice_ble_ota_state_t s_ota;
@@ -147,9 +157,37 @@ static uint32_t read_le32(const uint8_t *data)
            ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
 }
 
+// OTA 停摆看门狗（2026-09-20）：真机上传输会中途停住，而**设备侧看不到任何异常**——
+// 因为停摆时根本没有回调被触发（没有日志可打），只能靠"没有日志"反推。
+// 这个每秒一次的定时器在有传输但超过 1s 没收到新分块时主动报出 written/耗时统计，
+// 把"设备在忙"与"设备根本没收到数据"分开。
+static void ota_watchdog_cb(void *arg)
+{
+    (void)arg;
+    if (!s_ota.active) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    const int64_t idle_us = now - (s_ota.last_cb_us ? s_ota.last_cb_us : s_ota.begin_us);
+    if (idle_us < 1000000) {
+        return;
+    }
+    if (now - s_ota.last_watchdog_log_us < 1000000) {
+        return;
+    }
+    s_ota.last_watchdog_log_us = now;
+    ESP_LOGW(TAG, "OTA stalled %lldms without data: written=%" PRIu32 "/%" PRIu32
+             " write_max=%lldms gap_max=%lldms",
+             (long long)(idle_us / 1000), s_ota.written, s_ota.image_size,
+             (long long)(s_ota.write_max_us / 1000), (long long)(s_ota.gap_max_us / 1000));
+}
+
 static void ota_clear_state(void)
 {
     memset(&s_ota, 0, sizeof(s_ota));
+    if (s_ota_watchdog_timer) {
+        (void)esp_timer_stop(s_ota_watchdog_timer);
+    }
 }
 
 static esp_err_t ota_send_state_json(const char *json)
@@ -224,6 +262,14 @@ static int ota_begin(uint32_t transfer_id, uint32_t image_size)
     s_ota.image_size = image_size;
     s_ota.written = 0;
     s_ota.next_progress = OTA_PROGRESS_NOTIFY_BYTES;
+    s_ota.last_cb_us = 0;
+    s_ota.write_max_us = 0;
+    s_ota.gap_max_us = 0;
+    s_ota.begin_us = esp_timer_get_time();
+    s_ota.last_watchdog_log_us = 0;
+    if (s_ota_watchdog_timer) {
+        (void)esp_timer_start_periodic(s_ota_watchdog_timer, 1000 * 1000);
+    }
     s_ota.handle = handle;
     s_ota.partition = partition;
 
@@ -257,7 +303,16 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
         return BLE_ATT_ERR_INVALID_OFFSET;
     }
 
+    const int64_t cb_enter_us = esp_timer_get_time();
+    if (s_ota.last_cb_us != 0) {
+        const int64_t gap = cb_enter_us - s_ota.last_cb_us;
+        if (gap > s_ota.gap_max_us) s_ota.gap_max_us = gap;
+    }
+    s_ota.last_cb_us = cb_enter_us;
+
     esp_err_t err = esp_ota_write(s_ota.handle, payload, payload_len);
+    const int64_t write_us = esp_timer_get_time() - cb_enter_us;
+    if (write_us > s_ota.write_max_us) s_ota.write_max_us = write_us;
     if (err != ESP_OK) {
         ota_send_error("write_failed", err);
         return BLE_ATT_ERR_UNLIKELY;
@@ -276,9 +331,10 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
         if (s_ota_cb) {
             s_ota_cb(VOICE_BLE_OTA_EVENT_PROGRESS, s_ota.written, s_ota.image_size);
         }
-        ESP_LOGI(TAG, "OTA progress %" PRIu32 "/%" PRIu32 " (%d%%)",
+        ESP_LOGI(TAG, "OTA progress %" PRIu32 "/%" PRIu32 " (%d%%) write_max=%lldms gap_max=%lldms",
                  s_ota.written, s_ota.image_size,
-                 (int)(s_ota.written * 100 / s_ota.image_size));
+                 (int)(s_ota.written * 100 / s_ota.image_size),
+                 (long long)(s_ota.write_max_us / 1000), (long long)(s_ota.gap_max_us / 1000));
         while (s_ota.written >= s_ota.next_progress) {
             s_ota.next_progress += OTA_PROGRESS_NOTIFY_BYTES;
         }
@@ -1154,6 +1210,19 @@ esp_err_t voice_ble_init(void)
         if (timer_err != ESP_OK) {
             ESP_LOGW(TAG, "state burst timer create failed err=0x%x", timer_err);
             s_state_burst_timer = NULL;
+        }
+    }
+
+    // OTA 停摆看门狗（周期 1s，回调内自行判断是否真的有传输）。
+    if (!s_ota_watchdog_timer) {
+        const esp_timer_create_args_t ota_wd_args = {
+            .callback = ota_watchdog_cb,
+            .name = "ota_watchdog",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&ota_wd_args, &s_ota_watchdog_timer) != ESP_OK) {
+            ESP_LOGW(TAG, "ota watchdog timer create failed");
+            s_ota_watchdog_timer = NULL;
         }
     }
 
