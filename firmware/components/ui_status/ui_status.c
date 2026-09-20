@@ -239,10 +239,10 @@ static void create_status_ui(void)
     // 小字号 + 左对齐窄宽度，避开右侧电量百分比与下方 IMU 行；普通模式为空串不显示。
     s_gateway_label = lv_label_create(s_screen);
     lv_label_set_text(s_gateway_label, "");
-    lv_obj_set_style_text_font(s_gateway_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(s_gateway_label, lv_color_hex(0x7f7180), 0);
+    lv_obj_set_style_text_font(s_gateway_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_gateway_label, lv_color_hex(0xffffff), 0);
     lv_label_set_long_mode(s_gateway_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(s_gateway_label, 66);
+    lv_obj_set_width(s_gateway_label, 100);
     lv_obj_align(s_gateway_label, LV_ALIGN_TOP_LEFT, 12, 21);
 
     // 顶部 IMU 行：实时显示 XYZ 三轴加速度，多行大字。放在设备号/电池标题行下方，

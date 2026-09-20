@@ -1212,6 +1212,9 @@ static void handle_side_up(void)
 {
     const uint32_t duration_ms = elapsed_button_ms(s_secondary_down_us);
     s_secondary_down_us = 0;
+    ESP_LOGI(TAG, "side_up: gateway=%d rec=%d preview=%d dur=%" PRIu32,
+             gateway_mode_get() == GATEWAY_MODE_GATEWAY, (int)s_recording,
+             (int)s_side_switch_preview, duration_ms);
 
     if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
         if (s_recording) {
@@ -2456,7 +2459,7 @@ static void gateway_switcher_run(const gateway_switcher_actions_t *actions)
 // ─── 侧键切换器（网关模式）─────────────────────────────────────────────
 // 短按一次：显示当前目标（3s 预览窗）；窗口内再短按一次：轮流切换到下一个目标。
 // 录音进行中保留侧键的取消语义（转发桌面端）。普通模式侧键行为完全不变。
-#define SIDE_SWITCH_PREVIEW_WINDOW_MS 3000u
+#define SIDE_SWITCH_PREVIEW_WINDOW_MS 5000u
 
 // 显示当前目标到网关调试行：优先当前连接对端，无连接时回退已选目标。
 static void side_switch_show_current(void)
@@ -2505,6 +2508,7 @@ static void side_switch_cycle(void)
     }
     if (count == 1) {
         ESP_LOGI(TAG, "侧键切换: 仅一个目标，无需轮换");
+        ui_status_set_gateway_link("1 target only");
         return;
     }
     const int next = (cur + 1) % count;
