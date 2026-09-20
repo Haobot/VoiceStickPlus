@@ -180,6 +180,10 @@ public:
                                const std::optional<std::string>& device_id) override {
         sent_gateway_target_infos.push_back(std::pair{name, device_id});
     }
+    void SendGatewaySelectTarget(bool self,
+                                 const std::optional<std::string>& device_id) override {
+        sent_gateway_select_targets.push_back(std::pair{self, device_id});
+    }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -228,6 +232,8 @@ public:
     std::vector<SentGatewayKeymapSet> sent_gateway_keymap_sets;
     // P1 目标表：桌面端上报的主机名（name, device_id）。
     std::vector<std::pair<std::string, std::optional<std::string>>> sent_gateway_target_infos;
+    // P1 切换器：桌面端下发的目标选择（self, device_id）。
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_gateway_select_targets;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -1186,6 +1192,52 @@ void TestGatewayKeyStateParsing() {
     const auto pass_payload = BleProtocol::GatewayKeymapSetPayload("ok", false);
     const std::string pass_json(pass_payload.begin(), pass_payload.end());
     assert(pass_json.find("\"route\":\"passthrough\"") != std::string::npos);
+
+    // P1 切换器目标选择 payload：self 与 clear 两种形态（桌面端 --gateway-target）。
+    const auto self_select = BleProtocol::GatewaySelectTargetPayload(true);
+    const std::string self_json(self_select.begin(), self_select.end());
+    assert(self_json == "{\"event\":\"gateway_select_target\",\"self\":true}");
+    const auto clear_select = BleProtocol::GatewaySelectTargetPayload(false);
+    const std::string clear_json(clear_select.begin(), clear_select.end());
+    assert(clear_json == "{\"event\":\"gateway_select_target\",\"clear\":true}");
+}
+
+void TestParseGatewayTargetCliArgs() {
+    using namespace voicestick;
+    // 无该选项。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin"};
+        assert(!ParseGatewayTargetCliArgs(3, argv).has_value());
+    }
+    // --gateway-target self / clear。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--gateway-target", L"self"};
+        auto r = ParseGatewayTargetCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->self);
+    }
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--gateway-target", L"clear"};
+        auto r = ParseGatewayTargetCliArgs(3, argv);
+        assert(r.has_value());
+        assert(!r->self);
+    }
+    // 缺取值 / 取值非法 → nullopt。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--gateway-target"};
+        assert(!ParseGatewayTargetCliArgs(2, argv).has_value());
+    }
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--gateway-target", L"other"};
+        assert(!ParseGatewayTargetCliArgs(3, argv).has_value());
+    }
+    // 与 --ota 混用互不干扰。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin",
+                                 L"--gateway-target", L"self"};
+        auto r = ParseGatewayTargetCliArgs(5, argv);
+        assert(r.has_value() && r->self);
+    }
 }
 
 void TestEncoderRotateStateParsing() {    const std::string json = "{\"event\":\"encoder_rotate\",\"direction\":\"ccw\",\"steps\":3}";
@@ -15389,6 +15441,7 @@ int main() {
     TestCoordinatorSyncsInteractionSettingsPerDeviceOverride();
     TestCoordinatorUpdateFirmwareFromFile();
     TestParseOtaCliArgs();
+    TestParseGatewayTargetCliArgs();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();

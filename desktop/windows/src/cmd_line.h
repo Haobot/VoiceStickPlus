@@ -16,4 +16,15 @@ struct OtaCliRequest {
 // 无 --ota 或 --ota 缺路径时返回 nullopt；--device 缺值时忽略该选项。
 std::optional<OtaCliRequest> ParseOtaCliArgs(int argc, const wchar_t* const argv[]);
 
+// 命令行触发的网关目标选择请求（P1 切换器）。
+// self=true 表示"把本机设为网关目标"，false 表示清除选择（回到不限制）。
+struct GatewayTargetCliRequest {
+    bool self = true;
+};
+
+// 解析命令行 argv 中的 --gateway-target <self|clear>。argv[0] 视为程序名。
+// 无该选项或取值非法时返回 nullopt。
+std::optional<GatewayTargetCliRequest> ParseGatewayTargetCliArgs(int argc,
+                                                                 const wchar_t* const argv[]);
+
 } // namespace voicestick

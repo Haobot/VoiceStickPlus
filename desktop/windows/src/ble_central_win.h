@@ -57,6 +57,9 @@ public:
     // P1 目标表：上报本机显示名（主机名），固件绑定到当前连接对端（见 gateway_targets）。
     void SendGatewayTargetInfo(const std::string& name,
                                const std::optional<std::string>& device_id) override;
+    // P1 切换器：选择/清除网关目标（见 Doc/Ref/protocol.md gateway_select_target）。
+    void SendGatewaySelectTarget(bool self,
+                                 const std::optional<std::string>& device_id) override;
     void SendAirMouseEnabled(bool enabled,
                              const std::optional<std::string>& device_id) override;
     void SendImuWakeSensitivity(int threshold_lsb,

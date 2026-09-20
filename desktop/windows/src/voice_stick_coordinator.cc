@@ -344,6 +344,11 @@ void VoiceStickCoordinator::SetLocalHostName(std::string name) {
     local_host_name_ = std::move(name);
 }
 
+void VoiceStickCoordinator::SelectGatewayTarget(bool self) {
+    LogCoordinatorLine(std::string("gateway select target ") + (self ? "self" : "clear"));
+    ble_->SendGatewaySelectTarget(self, std::nullopt);
+}
+
 void VoiceStickCoordinator::ReconnectPairedDevices() {
     ble_->UpdatePairedDeviceIds(paired_device_ids_);
 }

@@ -107,6 +107,9 @@ public:
     // P1 目标表：上报本机显示名（主机名）给网关设备，供其目标表命名。
     virtual void SendGatewayTargetInfo(const std::string& name,
                                        const std::optional<std::string>& device_id) = 0;
+    // P1 切换器：选择网关目标（self=true 本机 / false 清除选择）。
+    virtual void SendGatewaySelectTarget(bool self,
+                                         const std::optional<std::string>& device_id) = 0;
     // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
     virtual void SendAirMouseEnabled(bool enabled,
                                      const std::optional<std::string>& device_id) = 0;
@@ -340,6 +343,8 @@ public:
     void SendGatewayTargetInfo(const std::string& device_id, const std::string& name);
     // 本机显示名（主机名）由平台层启动时注入，用于网关目标表命名（见上）。
     void SetLocalHostName(std::string name);
+    // P1 切换器：把本机设为网关目标 / 清除选择（桌面端 --gateway-target 入口调用）。
+    void SelectGatewayTarget(bool self);
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
                              BluetoothAddressKind address_kind,

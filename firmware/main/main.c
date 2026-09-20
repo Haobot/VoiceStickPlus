@@ -909,6 +909,10 @@ static bool encoder_led_rgb_from_name(const char *name, uint32_t *rgb_out)
     return false;
 }
 
+// P1 切换器入口（定义在下方，控制命令回调需要前向声明）。
+void gateway_select_target(int target_index, bool clear);
+void gateway_select_self(void);
+
 static void ble_control_cb(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
@@ -957,6 +961,25 @@ static void ble_control_cb(const char *json)
         restart_poweroff_timer();
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
         ESP_LOGI(TAG, "usb_auto_off %s", s_usb_auto_off ? "enabled" : "disabled");
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_select_target") == 0) {
+        // P1 切换器：由桌面端/自动化选择目标（设备菜单是主入口，本命令供桌面端选择与 E2E
+        // 驱动；index 超范围或非网关模式时静默忽略）。clear=true 回到"不限制"。
+        const cJSON *index_json = cJSON_GetObjectItemCaseSensitive(root, "index");
+        const cJSON *clear = cJSON_GetObjectItemCaseSensitive(root, "clear");
+        const cJSON *self = cJSON_GetObjectItemCaseSensitive(root, "self");
+        if (cJSON_IsBool(clear) && cJSON_IsTrue(clear)) {
+            ESP_LOGI(TAG, "gateway_select_target clear");
+            gateway_select_target(-1, true);
+        } else if (cJSON_IsBool(self) && cJSON_IsTrue(self)) {
+            // 桌面端口语化入口："把本机设为网关目标" —— 目标是当前连接对端，无需知道表下标。
+            ESP_LOGI(TAG, "gateway_select_target self");
+            gateway_select_self();
+        } else if (cJSON_IsNumber(index_json)) {
+            ESP_LOGI(TAG, "gateway_select_target index=%d", index_json->valueint);
+            gateway_select_target(index_json->valueint, false);
+        } else {
+            ESP_LOGW(TAG, "gateway_select_target 缺少 index/clear");
+        }
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_target_info") == 0) {
         // P1 目标表：桌面端连上后上报自己的显示名（主机名）。命名对象是「当前连接对端」
         // 的 identity address —— 桌面端无从得知自己的 RPA/identity 地址，由固件侧绑定。
@@ -2402,6 +2425,24 @@ static void gateway_switcher_timer_cb(void *arg)
     gateway_switcher_actions_t actions;
     gateway_switcher_tick(&s_switcher, (uint32_t)(esp_log_timestamp()), &actions);
     gateway_switcher_run(&actions);
+}
+
+// 把「当前连接的对端」设为网关目标（桌面端 --gateway-target self 用）。对端未连接时忽略。
+void gateway_select_self(void)
+{
+    uint8_t id_addr[6];
+    uint8_t addr_type = 0;
+    if (!gateway_targets_current_peer(id_addr, &addr_type)) {
+        ESP_LOGW(TAG, "gateway_select_target self: 当前无对端");
+        return;
+    }
+    const int index = gateway_targets_core_find(gateway_targets_table(), id_addr, addr_type);
+    if (index < 0) {
+        ESP_LOGW(TAG, "gateway_select_target self: 对端不在目标表内");
+        return;
+    }
+    ESP_LOGI(TAG, "gateway_select_target self -> #%d", index);
+    gateway_select_target(index, false);
 }
 
 // 用户从菜单选定目标（P1 第 5 步的 LVGL 菜单调用）。

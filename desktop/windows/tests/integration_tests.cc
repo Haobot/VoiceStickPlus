@@ -95,6 +95,7 @@ public:
     void SendGatewayKeymapSet(const std::string&, bool,
                               const std::optional<std::string>&) override {}
     void SendGatewayTargetInfo(const std::string&, const std::optional<std::string>&) override {}
+    void SendGatewaySelectTarget(bool, const std::optional<std::string>&) override {}
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }

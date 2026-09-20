@@ -178,6 +178,9 @@ public:
     // P1 目标表：桌面端上报自己的显示名（主机名），固件把它绑定到当前连接对端的
     // identity address 上。仅网关模式有意义（固件侧据此给目标表命名）。
     static ByteVector GatewayTargetInfoPayload(std::string_view name);
+    // P1 切换器：选择网关目标。self=true = "把本机（当前连接对端）设为目标"，
+    // false = 清除选择（回到不限制）。桌面端无需知道设备目标表的下标。
+    static ByteVector GatewaySelectTargetPayload(bool self);
     static ByteVector TapSensitivityPayload(int level);
     static ByteVector AirMouseEnabledPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();

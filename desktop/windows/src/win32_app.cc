@@ -692,6 +692,12 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
             }
             battery_monitor_dialog_->NotifyAllDisconnected();
         }
+        // 命令行 --gateway-target 自启动场景：连上设备后补发目标选择。
+        if (pending_gateway_target_.has_value() && !connected_devices_.empty()) {
+            const bool self = *pending_gateway_target_;
+            pending_gateway_target_.reset();
+            ApplyGatewayTargetSelection(self);
+        }
         // 命令行 --ota 自启动场景：连上设备后触发 pending 请求。
         if (pending_ota_request_ && !connected_devices_.empty()) {
             auto req = std::move(*pending_ota_request_);
@@ -730,6 +736,17 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
             pair_device_dialog_->SetDeviceInfo(info);
         }
     });
+}
+
+void Win32App::ApplyGatewayTargetSelection(bool self) {
+    LogLine(std::string("ApplyGatewayTargetSelection ") + (self ? "self" : "clear"));
+    if (!coordinator_) return;
+    if (connected_devices_.empty()) {
+        // 还没连上设备：记下待发，连上后由 SetConnectedDevices 补发（对齐 pending_ota 手法）。
+        pending_gateway_target_ = self;
+        return;
+    }
+    coordinator_->SelectGatewayTarget(self);
 }
 
 void Win32App::SetDeviceGatewayMode(const std::string& device_id, bool gateway) {
@@ -1021,6 +1038,16 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                 DispatchToUi([this, path, device_id] {
                     StartOtaFromFile(path, device_id);
                 });
+            }
+        } else if (cds && cds->dwData == kGatewayTargetCopyDataId && cds->lpData &&
+                   cds->cbData > 0) {
+            // payload 格式："self" 或 "clear"（P1 切换器目标选择）。
+            std::string payload(static_cast<const char*>(cds->lpData), cds->cbData);
+            const auto nul = payload.find('\0');
+            if (nul != std::string::npos) payload.resize(nul);
+            if (payload == "self" || payload == "clear") {
+                const bool self = payload == "self";
+                DispatchToUi([this, self] { ApplyGatewayTargetSelection(self); });
             }
         }
         return 0;

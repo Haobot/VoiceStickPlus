@@ -346,6 +346,13 @@ ByteVector BleProtocol::GatewayTargetInfoPayload(std::string_view name) {
     return ByteVector(json.begin(), json.end());
 }
 
+ByteVector BleProtocol::GatewaySelectTargetPayload(bool self) {
+    const std::string json = self
+        ? "{\"event\":\"gateway_select_target\",\"self\":true}"
+        : "{\"event\":\"gateway_select_target\",\"clear\":true}";
+    return ByteVector(json.begin(), json.end());
+}
+
 ByteVector BleProtocol::GatewayKeymapGetPayload() {
     const std::string json = "{\"event\":\"gateway_keymap_get\"}";
     return ByteVector(json.begin(), json.end());

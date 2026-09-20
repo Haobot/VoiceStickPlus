@@ -37,6 +37,8 @@ namespace voicestick {
 
 // WM_COPYDATA.dwData 标识：命令行 --ota 实例转发给已运行实例的 OTA 请求。'VSOT'。
 constexpr ULONG_PTR kOtaCopyDataId = 0x56534F54;
+// WM_COPYDATA.dwData 标识：命令行 --gateway-target 实例转发给已运行实例的目标选择请求。'VSGT'。
+constexpr ULONG_PTR kGatewayTargetCopyDataId = 0x56534754;
 
 } // namespace voicestick
 #include <vector>
@@ -111,6 +113,8 @@ public:
     // 无运行实例时由命令行入口(--ota)注入的待处理 OTA 请求，连上设备后自动触发。
     void SetPendingOtaRequest(std::string file_path,
                               std::optional<std::string> device_id);
+    // 命令行入口(--gateway-target)转发/注入的网关目标选择请求（P1 切换器）。
+    void ApplyGatewayTargetSelection(bool self);
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -258,6 +262,8 @@ private:
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     std::optional<OtaCliRequest> pending_ota_request_;
+    // 无运行实例时 --gateway-target 注入的待发目标选择（连上设备后补发）。
+    std::optional<bool> pending_gateway_target_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;
     static constexpr UINT_PTR kAirMouseTimerId = 100;

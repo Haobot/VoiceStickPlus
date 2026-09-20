@@ -37,6 +37,7 @@ private:
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     // 命令行 --ota <path> [--device <id>]：解析请求，优先转发给已运行实例。
     std::optional<voicestick::OtaCliRequest> ota_request;
+    std::optional<voicestick::GatewayTargetCliRequest> gateway_target_request;
     // 用 GetCommandLineW 而非 wWinMain 的 command_line 参数：后者不含程序名，
     // CommandLineToArgvW 会把首个参数当作 argv[0]，导致 ParseOtaCliArgs 跳过程序名的约定失效。
     if (PWSTR raw = GetCommandLineW()) {
@@ -44,7 +45,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         wchar_t** argv = CommandLineToArgvW(raw, &argc);
         if (argv) {
             ota_request = voicestick::ParseOtaCliArgs(argc, argv);
+            gateway_target_request = voicestick::ParseGatewayTargetCliArgs(argc, argv);
             LocalFree(argv);
+        }
+    }
+    if (gateway_target_request) {
+        // P1 切换器：--gateway-target self|clear。已有实例则转发后退出；否则正常启动并由
+        // SetConnectedDevices 在连上设备后补发（与 --ota 同款语义）。
+        HWND existing = FindWindowW(L"VoiceStickWindow", nullptr);
+        if (existing) {
+            std::string payload = gateway_target_request->self ? "self" : "clear";
+            COPYDATASTRUCT cds{};
+            cds.dwData = voicestick::kGatewayTargetCopyDataId;
+            cds.cbData = payload.size() + 1;
+            cds.lpData = payload.data();
+            SendMessageW(existing, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
+            return 0;
         }
     }
     if (ota_request) {
@@ -109,6 +125,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         if (ota_request) {
             app.SetPendingOtaRequest(std::move(ota_request->file_path),
                                       std::move(ota_request->device_id));
+        }
+        // 无运行实例时 --gateway-target 自启动：连上设备后由 SetConnectedDevices 补发。
+        if (gateway_target_request) {
+            app.ApplyGatewayTargetSelection(gateway_target_request->self);
         }
         return app.Run();
     } catch (const winrt::hresult_error& error) {

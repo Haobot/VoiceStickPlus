@@ -41,4 +41,18 @@ std::optional<OtaCliRequest> ParseOtaCliArgs(int argc, const wchar_t* const argv
     return OtaCliRequest{std::move(*file_path), std::move(device_id)};
 }
 
+std::optional<GatewayTargetCliRequest> ParseGatewayTargetCliArgs(int argc,
+                                                                 const wchar_t* const argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring token = argv[i];
+        if (token != L"--gateway-target") continue;
+        if (i + 1 >= argc) return std::nullopt;  // 缺取值
+        const std::wstring value = argv[i + 1];
+        if (value == L"self") return GatewayTargetCliRequest{true};
+        if (value == L"clear") return GatewayTargetCliRequest{false};
+        return std::nullopt;  // 取值非法（只接受 self/clear）
+    }
+    return std::nullopt;
+}
+
 } // namespace voicestick
