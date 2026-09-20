@@ -2461,29 +2461,46 @@ static void gateway_switcher_run(const gateway_switcher_actions_t *actions)
 // 录音进行中保留侧键的取消语义（转发桌面端）。普通模式侧键行为完全不变。
 #define SIDE_SWITCH_PREVIEW_WINDOW_MS 5000u
 
-// 显示当前目标到网关调试行：优先当前连接对端，无连接时回退已选目标。
+// 显示当前目标到浮窗。优先已选目标 → 当前连接对端 → 表里最近一次连上的目标。
+// 注意：voice_ble 的 s_current_peer 是**单值**，而网关模式下设备同时维持 OS-HID 链路与
+// 桌面端 app 链路（CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3），任一链路断连都会把单值 current_peer
+// 清掉（app 仍在连时也如此）——所以这里不能只依赖 current_peer，必须落到目标表兜底。
 static void side_switch_show_current(void)
 {
     char name[32] = {0};
     uint8_t id_addr[6];
     uint8_t addr_type = 0;
     const gateway_target_table_t *table = gateway_targets_table();
-    if (gateway_targets_current_peer(id_addr, &addr_type)) {
-        const int idx = gateway_targets_core_find(table, id_addr, addr_type);
-        if (idx >= 0) {
-            gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
-        }
-    } else if (s_switcher.selected_valid) {
+
+    if (s_switcher.selected_valid) {
         const int idx = gateway_targets_core_find(table, s_switcher.selected.addr,
                                                   s_switcher.selected.addr_type);
         if (idx >= 0) {
             gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
         }
     }
+    if (name[0] == '\0' && gateway_targets_current_peer(id_addr, &addr_type)) {
+        const int idx = gateway_targets_core_find(table, id_addr, addr_type);
+        if (idx >= 0) {
+            gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
+        }
+    }
+    if (name[0] == '\0' && table->count > 0) {
+        int best = 0;
+        for (int i = 1; i < table->count; i++) {
+            if (table->items[i].last_seen_s > table->items[best].last_seen_s) {
+                best = i;
+            }
+        }
+        gateway_targets_core_display_name(&table->items[best], name, sizeof(name));
+    }
+
+    const bool peer_ok = gateway_targets_current_peer(id_addr, &addr_type);
     ui_status_show_switch_preview(name[0] ? name : "No target");
     s_side_switch_preview = true;
     s_side_switch_preview_ms = (uint32_t)esp_log_timestamp();
-    ESP_LOGI(TAG, "侧键预览目标: %s", name[0] ? name : "(none)");
+    ESP_LOGI(TAG, "侧键预览目标: %s (peer=%d sel=%d count=%d)",
+             name[0] ? name : "(none)", (int)peer_ok, (int)s_switcher.selected_valid, table->count);
 }
 
 // 轮流切换到下一个目标（到头回绕）；目标表只有 1 项时不动。
