@@ -243,7 +243,7 @@ static void create_status_ui(void)
     lv_obj_set_style_text_color(s_gateway_label, lv_color_hex(0xffffff), 0);
     lv_label_set_long_mode(s_gateway_label, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_gateway_label, 100);
-    lv_obj_align(s_gateway_label, LV_ALIGN_TOP_LEFT, 12, 21);
+    lv_obj_align(s_gateway_label, LV_ALIGN_TOP_LEFT, 12, 40);
 
     // 顶部 IMU 行：实时显示 XYZ 三轴加速度，多行大字。放在设备号/电池标题行下方，
     // 末尾经 lv_obj_move_foreground 提到最顶图层，确保不被状态图标遮挡。
@@ -463,6 +463,56 @@ void ui_status_set_gateway_link(const char *text)
     _lock_acquire(&s_lvgl_lock);
     if (s_ready) {
         lv_label_set_text(s_gateway_label, text ? text : "");
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
+// ---- 侧键切换器：目标预览浮窗（半透明衬底 + 居中目标名）----
+// 懒创建（首次 show 时建），hide 只隐藏不销毁。
+static lv_obj_t *s_switch_preview_box;
+static lv_obj_t *s_switch_preview_label;
+
+static void switch_preview_create_locked(void)
+{
+    if (s_switch_preview_box) {
+        return;
+    }
+    s_switch_preview_box = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_switch_preview_box);
+    lv_obj_set_size(s_switch_preview_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(s_switch_preview_box, lv_color_hex(0x1b2430), 0);
+    lv_obj_set_style_bg_opa(s_switch_preview_box, LV_OPA_70, 0);  // 半透明衬底
+    lv_obj_set_style_radius(s_switch_preview_box, 10, 0);
+    lv_obj_set_style_border_width(s_switch_preview_box, 1, 0);
+    lv_obj_set_style_border_color(s_switch_preview_box, lv_color_hex(0x8fb8ff), 0);
+    lv_obj_set_style_pad_all(s_switch_preview_box, 14, 0);
+    lv_obj_align(s_switch_preview_box, LV_ALIGN_CENTER, 0, -34);
+    lv_obj_add_flag(s_switch_preview_box, LV_OBJ_FLAG_HIDDEN);
+
+    s_switch_preview_label = lv_label_create(s_switch_preview_box);
+    lv_label_set_long_mode(s_switch_preview_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(s_switch_preview_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_switch_preview_label, lv_color_hex(0xffffff), 0);
+    lv_obj_align(s_switch_preview_label, LV_ALIGN_CENTER, 0, 0);
+}
+
+void ui_status_show_switch_preview(const char *text)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready) {
+        switch_preview_create_locked();
+        lv_label_set_text(s_switch_preview_label, text ? text : "");
+        lv_obj_clear_flag(s_switch_preview_box, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_switch_preview_box);
+    }
+    _lock_release(&s_lvgl_lock);
+}
+
+void ui_status_hide_switch_preview(void)
+{
+    _lock_acquire(&s_lvgl_lock);
+    if (s_ready && s_switch_preview_box) {
+        lv_obj_add_flag(s_switch_preview_box, LV_OBJ_FLAG_HIDDEN);
     }
     _lock_release(&s_lvgl_lock);
 }

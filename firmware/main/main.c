@@ -2480,10 +2480,7 @@ static void side_switch_show_current(void)
             gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
         }
     }
-    char display[40];
-    // 屏幕内嵌字体无 CJK 字形，前缀用 ASCII。
-    snprintf(display, sizeof(display), name[0] ? "> %s" : "> none", name);
-    ui_status_set_gateway_link(display);
+    ui_status_show_switch_preview(name[0] ? name : "No target");
     s_side_switch_preview = true;
     s_side_switch_preview_ms = (uint32_t)esp_log_timestamp();
     ESP_LOGI(TAG, "侧键预览目标: %s", name[0] ? name : "(none)");
@@ -2508,11 +2505,13 @@ static void side_switch_cycle(void)
     }
     if (count == 1) {
         ESP_LOGI(TAG, "侧键切换: 仅一个目标，无需轮换");
-        ui_status_set_gateway_link("1 target only");
+        ui_status_show_switch_preview("1 target only");
+        s_side_switch_preview_ms = (uint32_t)esp_log_timestamp();
         return;
     }
     const int next = (cur + 1) % count;
     s_side_switch_preview = false;
+    ui_status_hide_switch_preview();
     ESP_LOGI(TAG, "侧键切换: #%d -> #%d (共 %d)", cur, next, count);
     gateway_select_target(next, false);
 }
@@ -2528,7 +2527,7 @@ static void gateway_switcher_timer_cb(void *arg)
         (uint32_t)(esp_log_timestamp() - s_side_switch_preview_ms) >=
             SIDE_SWITCH_PREVIEW_WINDOW_MS) {
         s_side_switch_preview = false;
-        gateway_switcher_show_target("");
+        ui_status_hide_switch_preview();
         ESP_LOGI(TAG, "侧键预览超时关闭");
     }
     gateway_switcher_actions_t actions;
