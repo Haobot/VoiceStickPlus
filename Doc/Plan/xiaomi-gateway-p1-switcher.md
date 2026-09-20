@@ -119,6 +119,34 @@ controller 解析支持，风险高）。建议先做前者，真机量到切换
 3. 第二台 central（nRF Connect 或另一台 PC）：选定目标后，非目标连接应被立刻断开（日志 `非目标桌面端连接，主动断开` + `reject_peer`）。
 4. 切换来回 ≥10 次，切换 ≤2s，且**小米链路零断开**（`gw_hid`/`gw_atvv` 无断开日志）。
 
+### 4.2 切换路径真机实测（2026-09-20 10:4x，桌面端驱动）
+
+设备菜单要手操，而第三方探针连不上（见下），所以补了**桌面端入口** `VoiceStick.exe --gateway-target self|clear`
+（复用 `--ota` 的 WM_COPYDATA 转发；固件 `gateway_select_target` 命令新增 `self` 变体，以「当前连接对端」
+为目标，桌面端无需知道表下标），用它驱动真机切换并量时延。
+
+| 轮次 | 发起 → 断开 | 断开 → 重新广播 | 广播 → 目标重连 | **发起 → accept_peer** |
+|---|---|---|---|---|
+| 1（10:46） | 250ms | 6ms | 411ms | **675ms** |
+| 2（10:49） | 33ms | 7ms | 398ms | **447ms** |
+
+- ✅ **设备侧切换 ≤2s 达标**（两次 675ms / 447ms，且 `accept_peer (state=connected)` 确认选定目标被接受）。
+- ✅ **切换期间小米 central 链路零断开**：切换后 `gw_hid`/`gw_atvv` 无任何断开/重连行（会话状态停在 `1 -> 2`）。
+- ⚠️ **发现（后续项）：目标机 app 恢复远慢于设备侧**。目标 PC 的恢复时间呈两极：首次尝试就成功时 1.5–2.0s，
+  但多数轮次会先失败 1–4 次（`state subscribe timeout after 2500ms`、`audio_tx discovery failed: AccessDenied`、
+  `notification subscriptions reported success but the device never registered them`），
+  实测两次分别约 **26s** 和 **14s** 才回到 `stage=ready`。这正对应设计稿「切换后目标侧依赖 P0」的预判，
+  但用户可感知的可用性是这 10–30s，而不是设备侧的 0.5s。
+
+  **下一步定位建议**：断开瞬间 Windows 的系统级 HOGP 配对会抢先自动重连（实测设备侧 `connected handle=1 … since_adv=411ms`，
+  而 app 自己的连接请求随后撞上这条链路，报 `AccessDenied`）——即「OS 抢链路 vs app 重连」竞态。
+  可能的缓解：网关模式下设备主动断链后，app 侧延长 settle（现 1500ms）或等链路空闲再发起；
+  或复用 P0 的 CCCD 缓存击穿 + 免退避重试节奏。**未实施，仅记录**。
+
+**第三方 BLE 探针为何连不上（对后续 E2E 很重要）**：app 退出后，Windows 会用系统级 HOGP 配对
+自动把设备连走（设备随即停止广播），所以 `bleak` 之类的第三方 central 既扫不到也连不上；
+要驱动设备只能走 app（或先解除系统配对——**绝不可做**，会弄死 HOGP 直通）。
+
 ## 5. 风险
 
 | 风险 | 缓解 |
