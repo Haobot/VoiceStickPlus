@@ -32,7 +32,11 @@
 
 static const char *TAG = "voice_ble";
 
-#define OTA_PROGRESS_NOTIFY_BYTES (32 * 1024)
+// 进度回传间隔，同时是**桌面端流控的粒度**（app 的"在途窗口"必须大于它，否则双方互等死锁）。
+// 2026-09-20 真机：48KB 在途窗口下传输会在 230KB 左右被对端单方面断链（设备侧看门狗证实数据本身
+// 没问题、flash 也不慢）。降到 8KB 后，桌面可把在途窗口压到 ~24KB，一次只灌 ~100 个无确认包，
+// 显著降低把控制器缓冲打满 / 触发对端超时的概率（代价仅每 8KB 一条状态通知，~15KB/s 下每秒 2 条）。
+#define OTA_PROGRESS_NOTIFY_BYTES (8 * 1024)
 
 static bool s_connected;
 static bool s_audio_subscribed;

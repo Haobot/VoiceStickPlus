@@ -92,6 +92,9 @@ constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
 //    device_confirmed_written，若设备不再回传（例如 OTA state 订阅其实没生效），
 //    循环会以 20ms 空转永远等下去——必须转成可见失败。
 constexpr std::chrono::milliseconds kOtaWriteTimeout{5000};
+// 广播报告的"会话仍活着"否决窗（见 HandleAdvertisement 的 stale_session 分支）：
+// 1s 内还有入站数据的会话不因一条广播被拆；真重启的设备 1s 内发不出任何数据。
+constexpr std::int64_t kAliveAdvVetoMs{1000};
 constexpr std::chrono::milliseconds kOtaConfirmStallTimeout{15000};
 
 // zombie_suspect 免退避重试的窗口与上限：连按重启会产生多重僵尸，
@@ -1324,6 +1327,9 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
     bool claimed = false;
     bool stale_session = false;
     bool stale_recently_alive = false;
+    // 见下方 stale_session 分支：广播报告不足以判定"活着的会话已死"。
+    bool stale_drop_vetoed = false;
+    const char* stale_veto_reason = "";
     {
         std::lock_guard lock(mutex_);
         if (!paired_device_ids_.contains(*device_id)) return;
@@ -1353,8 +1359,28 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             const auto last_rx = session_it->second->last_rx_ms.load(std::memory_order_relaxed);
             stale_recently_alive =
                 last_rx > 0 && (NowSteadyMs() - last_rx) < kZombieFreshThresholdMs;
+            // 「广播 ⇒ 旧链路已死」这条铁证的**前提**是"固件只在未连接时广播"。但一条广播报告
+            // 并不总是设备此刻真的在广播（Windows 广告 watcher 会送来延迟/复用的报告），
+            // 而拆掉一个**活着**的会话代价极高。2026-09-20 真机：网关模式 OTA 传到 ~270KB
+            // （开始后 ~30s）时来了这样一条报告，守卫据此拆会话 ⇒ OTA 必死（两次复现都在
+            // +30s / 16-17%；设备侧看门狗证明设备一直以为连接还在、数据也一直在写）。
+            // 判据：①有固件升级正在跑；②会话 1s 内还有入站数据（真重启的设备发不出数据）。
+            const bool ota_in_progress = firmware_update_session_ != nullptr &&
+                                         firmware_update_session_->device_id == *device_id;
+            const auto last_rx_now = session_it->second->last_rx_ms.load(std::memory_order_relaxed);
+            const bool alive_now =
+                last_rx_now > 0 && (NowSteadyMs() - last_rx_now) < kAliveAdvVetoMs;
+            if (ota_in_progress || alive_now) {
+                stale_drop_vetoed = true;
+                stale_veto_reason = ota_in_progress ? "ota_in_progress" : "alive_now";
+            }
         }
         if (!stale_session) claimed = try_claim_connect();
+    }
+    if (stale_session && stale_drop_vetoed) {
+        LogBleLine("ignoring advertisement for " + std::string(id_prefix) + *device_id +
+                   " (session still active: " + stale_veto_reason + ")");
+        return;
     }
     if (stale_session) {
         // 固件只在未连接时广播（连接成功即停广播，断连后才恢复广播），
@@ -3159,10 +3185,11 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
             20, std::min<std::size_t>(max_pdu > 15 ? max_pdu - 15 : 20, 244));
         // 在途窗口（app 领先设备已确认字节的上限）。
         // **约束（2026-09-20 真机踩到）**：它必须**大于固件的进度回传间隔**
-        // （`OTA_PROGRESS_NOTIFY_BYTES = 32KB`）——收紧到 8KB 会立刻死锁：app 在 8KB 处
-        // 停下等确认，而设备要到 32KB 才回传，双方互等（靠 kOtaConfirmStallTimeout 15s
-        // 兜底报错才发现）。所以这个值不能随意调小。
-        const std::size_t max_in_flight = 48 * 1024;
+        // （`OTA_PROGRESS_NOTIFY_BYTES`，2026-09-20 起为 8KB）——曾收紧到 8KB 而与当时的
+        // 32KB 间隔死锁：app 在 8KB 处停下等确认、设备要到 32KB 才回传，双方互等（靠
+        // `kOtaConfirmStallTimeout` 15s 兜底报错才发现）。现在固件间隔 8KB，故取 24KB（3 倍余量）。
+        // 降窗口的目的：48KB 时一次灌 ≈200 个无确认包，实测会在 230KB 左右被对端断链。
+        const std::size_t max_in_flight = 24 * 1024;
         LogBleLine("OTA data VS-" + update_session->device_id +
                    " chunk_size=" + std::to_string(chunk_size) +
                    " max_pdu=" + std::to_string(max_pdu) +
