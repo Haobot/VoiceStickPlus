@@ -159,6 +159,8 @@ static bool s_click_to_talk_pending_start;      // click_to_talk 首击后等双
 // button_double_click。用于桌面端把侧键单击/双击映射到不同语义（进体感 vs 恢复上次输入）。
 static bool s_side_click_pending;                // 侧键等待第二击（双击窗口内）
 static uint32_t s_side_pending_duration_ms;      // 暂存第一次侧键短按时长（窗口超时后补发 button_click）
+static bool s_side_switch_preview;               // 侧键切换器（网关模式）：预览窗开启中
+static uint32_t s_side_switch_preview_ms;        // 预览窗起始时刻（esp_log_timestamp）
 static esp_timer_handle_t s_side_double_click_timer;
 
 // power_log 模式钩子状态：叠加优先级 录音/OTA > 广播 > 屏幕态（S0/S1/S2）。
@@ -912,11 +914,9 @@ static bool encoder_led_rgb_from_name(const char *name, uint32_t *rgb_out)
 // P1 切换器入口（定义在下方，控制命令回调需要前向声明）。
 void gateway_select_target(int target_index, bool clear);
 void gateway_select_self(void);
-// 目标菜单入口（定义在编码器轮询附近，均为 static；控制命令回调需要前向声明）。
-static void encoder_menu_open(void);
-static void encoder_menu_close(void);
-static bool encoder_menu_handle_rotate(int32_t steps);
-static void encoder_menu_confirm(void);
+// 侧键切换器（网关模式）入口：定义在 gateway_switcher_timer_cb 之前，侧键释放处需要前向声明。
+static void side_switch_show_current(void);
+static void side_switch_cycle(void);
 
 static void ble_control_cb(const char *json)
 {
@@ -985,28 +985,21 @@ static void ble_control_cb(const char *json)
         } else {
             ESP_LOGW(TAG, "gateway_select_target 缺少 index/clear");
         }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_menu") == 0) {
-        // 调试/自动化：直接驱动目标菜单（编码器长按的同一条代码路径），无需手操旋钮。
-        // action: open/close/next/prev/confirm。见 Doc/Ref/protocol.md 「调试命令」。
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_side_switch") == 0) {
+        // 调试/自动化：驱动侧键切换器（预览当前目标 / 轮流切换），无需手按侧键。
+        // 走与侧键短按完全相同的内核（handle_side_up 的网关分支只多一层"录音中转发取消"）。
         const cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
         if (cJSON_IsString(action)) {
-            const char *a = action->valuestring;
-            ESP_LOGI(TAG, "gateway_menu action=%s", a);
-            if (strcmp(a, "open") == 0) {
-                encoder_menu_open();
-            } else if (strcmp(a, "close") == 0) {
-                encoder_menu_close();
-            } else if (strcmp(a, "next") == 0) {
-                (void)encoder_menu_handle_rotate(1);
-            } else if (strcmp(a, "prev") == 0) {
-                (void)encoder_menu_handle_rotate(-1);
-            } else if (strcmp(a, "confirm") == 0) {
-                encoder_menu_confirm();
+            ESP_LOGI(TAG, "gateway_side_switch action=%s", action->valuestring);
+            if (strcmp(action->valuestring, "preview") == 0) {
+                side_switch_show_current();
+            } else if (strcmp(action->valuestring, "cycle") == 0) {
+                side_switch_cycle();
             } else {
-                ESP_LOGW(TAG, "gateway_menu 未知 action=%s", a);
+                ESP_LOGW(TAG, "gateway_side_switch 未知 action=%s", action->valuestring);
             }
         } else {
-            ESP_LOGW(TAG, "gateway_menu 缺少 action");
+            ESP_LOGW(TAG, "gateway_side_switch 缺少 action");
         }
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_target_info") == 0) {
         // P1 目标表：桌面端连上后上报自己的显示名（主机名）。命名对象是「当前连接对端」
@@ -1213,10 +1206,26 @@ static void side_double_click_timer_cb(void *arg)
 
 // 侧键释放：单击延迟到双击窗口超时后确认；窗口内第二击直接发 button_double_click。
 // 桌面端据此把侧键单击/双击映射到不同语义（单击进体感、双击恢复上次输入）。
+// 网关模式下侧键改为「设备切换器」（本地处理，不进双击窗口）：短按一次预览当前目标，
+// 3s 内再短按一次轮流切换；录音进行中保留取消语义（转发桌面端）。
 static void handle_side_up(void)
 {
     const uint32_t duration_ms = elapsed_button_ms(s_secondary_down_us);
     s_secondary_down_us = 0;
+
+    if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
+        if (s_recording) {
+            ESP_LOGI(TAG, "侧键: 录音中，转发取消语义");
+            (void)voice_ble_send_button_click("secondary", duration_ms, 0, NULL);
+            return;
+        }
+        if (s_side_switch_preview) {
+            side_switch_cycle();
+        } else {
+            side_switch_show_current();
+        }
+        return;
+    }
 
     // 双击窗口内第二次释放：确认双击。
     if (s_side_click_pending) {
@@ -2444,11 +2453,79 @@ static void gateway_switcher_run(const gateway_switcher_actions_t *actions)
     }
 }
 
+// ─── 侧键切换器（网关模式）─────────────────────────────────────────────
+// 短按一次：显示当前目标（3s 预览窗）；窗口内再短按一次：轮流切换到下一个目标。
+// 录音进行中保留侧键的取消语义（转发桌面端）。普通模式侧键行为完全不变。
+#define SIDE_SWITCH_PREVIEW_WINDOW_MS 3000u
+
+// 显示当前目标到网关调试行：优先当前连接对端，无连接时回退已选目标。
+static void side_switch_show_current(void)
+{
+    char name[32] = {0};
+    uint8_t id_addr[6];
+    uint8_t addr_type = 0;
+    const gateway_target_table_t *table = gateway_targets_table();
+    if (gateway_targets_current_peer(id_addr, &addr_type)) {
+        const int idx = gateway_targets_core_find(table, id_addr, addr_type);
+        if (idx >= 0) {
+            gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
+        }
+    } else if (s_switcher.selected_valid) {
+        const int idx = gateway_targets_core_find(table, s_switcher.selected.addr,
+                                                  s_switcher.selected.addr_type);
+        if (idx >= 0) {
+            gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
+        }
+    }
+    char display[40];
+    // 屏幕内嵌字体无 CJK 字形，前缀用 ASCII。
+    snprintf(display, sizeof(display), name[0] ? "> %s" : "> none", name);
+    ui_status_set_gateway_link(display);
+    s_side_switch_preview = true;
+    s_side_switch_preview_ms = (uint32_t)esp_log_timestamp();
+    ESP_LOGI(TAG, "侧键预览目标: %s", name[0] ? name : "(none)");
+}
+
+// 轮流切换到下一个目标（到头回绕）；目标表只有 1 项时不动。
+static void side_switch_cycle(void)
+{
+    const gateway_target_table_t *table = gateway_targets_table();
+    const int count = table->count;
+    if (count <= 0) {
+        ESP_LOGW(TAG, "侧键切换: 目标表为空");
+        return;
+    }
+    int cur = 0;
+    if (s_switcher.selected_valid) {
+        const int f = gateway_targets_core_find(table, s_switcher.selected.addr,
+                                                s_switcher.selected.addr_type);
+        if (f >= 0) {
+            cur = f;
+        }
+    }
+    if (count == 1) {
+        ESP_LOGI(TAG, "侧键切换: 仅一个目标，无需轮换");
+        return;
+    }
+    const int next = (cur + 1) % count;
+    s_side_switch_preview = false;
+    ESP_LOGI(TAG, "侧键切换: #%d -> #%d (共 %d)", cur, next, count);
+    gateway_select_target(next, false);
+}
+
 static void gateway_switcher_timer_cb(void *arg)
 {
     (void)arg;
     if (gateway_mode_get() != GATEWAY_MODE_GATEWAY) {
         return;
+    }
+    // 侧键预览超时：恢复常规目标名显示（不切换）。
+    if (s_side_switch_preview &&
+        (uint32_t)(esp_log_timestamp() - s_side_switch_preview_ms) >=
+            SIDE_SWITCH_PREVIEW_WINDOW_MS) {
+        s_side_switch_preview = false;
+        gateway_switcher_show_target("");
+        ESP_LOGI(TAG, "侧键预览超时关闭");
     }
     gateway_switcher_actions_t actions;
     gateway_switcher_tick(&s_switcher, (uint32_t)(esp_log_timestamp()), &actions);
@@ -2574,85 +2651,6 @@ static void gateway_apply_mode(void)
 // 与双击 500ms/hold 300ms 窗口相比可忽略；累计 10 次失败即停表降级。
 // 组件连续 I2C 失败标记 absent 后停表，避免空转与日志刷屏。
 // ---- P1 切换器：编码器菜单交互 ----
-// 长按 ≥600ms 唤起目标菜单（仅在网关模式、非录音中）；旋转移动高亮；短按确认；
-// 菜单内长按或 8s 无操作取消。唤起菜单的那次长按在松开时不再触发"确认"。
-static bool s_menu_open;
-static int s_menu_index;
-static uint32_t s_menu_opened_ms;
-static uint32_t s_encoder_press_ms;
-static bool s_encoder_press_active;
-static bool s_menu_opened_during_press;
-
-#define GATEWAY_MENU_LONG_PRESS_MS 600u
-#define GATEWAY_MENU_IDLE_CLOSE_MS 8000u
-
-static void encoder_menu_close(void)
-{
-    if (!s_menu_open) {
-        return;
-    }
-    s_menu_open = false;
-    ui_status_menu_hide();
-    ESP_LOGI(TAG, "目标菜单关闭");
-}
-
-static void encoder_menu_open(void)
-{
-    const gateway_target_table_t *table = gateway_targets_table();
-    char names[UI_STATUS_MENU_MAX_ITEMS][32];
-    const char *items[UI_STATUS_MENU_MAX_ITEMS] = {0};
-    int count = table->count;
-    if (count > UI_STATUS_MENU_MAX_ITEMS) {
-        count = UI_STATUS_MENU_MAX_ITEMS;
-    }
-    for (int i = 0; i < count; i++) {
-        gateway_targets_core_display_name(&table->items[i], names[i], sizeof(names[i]));
-        items[i] = names[i];
-    }
-    // 高亮当前选定目标（若在表内），否则第一项。
-    int index = 0;
-    if (s_switcher.selected_valid) {
-        const int found = gateway_targets_core_find(table, s_switcher.selected.addr,
-                                                    s_switcher.selected.addr_type);
-        if (found >= 0 && found < count) {
-            index = found;
-        }
-    }
-    s_menu_index = index;
-    s_menu_open = true;
-    s_menu_opened_ms = (uint32_t)esp_log_timestamp();
-    s_menu_opened_during_press = s_encoder_press_active;
-    ui_status_menu_show(items, count, index);
-    ESP_LOGI(TAG, "目标菜单打开 count=%d index=%d", count, index);
-}
-
-// 旋转：菜单打开时移动高亮并返回 true（调用方据此不发 rotate 事件）。
-static bool encoder_menu_handle_rotate(int32_t steps)
-{
-    const int count = gateway_targets_table()->count;
-    if (!s_menu_open || count <= 0) {
-        return false;
-    }
-    int index = s_menu_index + steps;
-    if (index < 0) index = 0;
-    if (index > count - 1) index = count - 1;
-    if (index != s_menu_index) {
-        s_menu_index = index;
-        ui_status_menu_set_selection(index);
-        s_menu_opened_ms = (uint32_t)esp_log_timestamp();
-    }
-    return true;
-}
-
-// 短按：确认选定目标（-1 表示"不限制/自动"项在菜单外，这里只处理表内目标）。
-static void encoder_menu_confirm(void)
-{
-    const int index = s_menu_index;
-    encoder_menu_close();
-    gateway_select_target(index, false);
-    ESP_LOGI(TAG, "目标菜单确认 index=%d", index);
-}
-
 static void encoder_poll_timer_cb(void *arg)
 {
     (void)arg;
@@ -2674,53 +2672,10 @@ static void encoder_poll_timer_cb(void *arg)
         pressed != s_encoder_button_pressed) {
         s_encoder_button_pressed = pressed;
         if (pressed) {
-            s_encoder_press_active = true;
-            s_encoder_press_ms = (uint32_t)esp_log_timestamp();
-            s_menu_opened_during_press = false;
             queue_primary_down_event(APP_INPUT_SOURCE_ENCODER, 0);
         } else {
-            s_encoder_press_active = false;
-            if (s_menu_opened_during_press) {
-                // 这次长按已用于唤起菜单：松开不再当作按下/抬起（避免误触发确认）。
-                s_menu_opened_during_press = false;
-            } else if (s_menu_open) {
-                queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
-                encoder_menu_confirm();
-            } else {
-                queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
-            }
-        }
-    }
-
-    // 长按判定（仅在按下期间检查）：唤起目标菜单。录音中不唤起（P1 设计 O5），
-    // 同时把这次按下"撤销"——补发 up 事件让已开始的录音立刻结束（<600ms 的录音会被
-    // 桌面端最短时长门控丢弃），避免长按既录音又开菜单。
-    if (s_encoder_press_active && !s_menu_open &&
-        gateway_mode_get() == GATEWAY_MODE_GATEWAY && mini_encoder_c_present() &&
-        (uint32_t)(esp_log_timestamp() - s_encoder_press_ms) >= GATEWAY_MENU_LONG_PRESS_MS) {
-        // 录音中不打扰（P1 设计 O5），除非这段录音正是本次编码器按压启动的——那可以撤销：
-        // 补发 up 立刻停止（<600ms 的会话会被桌面端最短时长门控丢弃），避免"长按既录音又开菜单"。
-        const bool own_press_recording =
-            s_recording && s_encoder_button_pressed &&
-            s_primary_owner == primary_owner_from_source(APP_INPUT_SOURCE_ENCODER);
-        if (!s_recording) {
-            // 门控关闭（编码器按下不发 button 事件）时按下没进录音路径：清掉共享按下时刻，
-            // 让松开分支不把它当短按进双击窗口（否则会补发 button_click 触发用户映射键）。
-            // 仅当这次按下归编码器所有（owner==NONE 即门控关闭路径；物理键/远程源活跃时不碰）。
-            if (s_primary_owner == PRIMARY_OWNER_NONE) {
-                s_primary_down_us = 0;
-            }
-            encoder_menu_open();
-        } else if (own_press_recording) {
             queue_primary_up_event(APP_INPUT_SOURCE_ENCODER, 0);
-            encoder_menu_open();
         }
-    }
-
-    // 菜单无操作自动关闭。
-    if (s_menu_open &&
-        (uint32_t)(esp_log_timestamp() - s_menu_opened_ms) >= GATEWAY_MENU_IDLE_CLOSE_MS) {
-        encoder_menu_close();
     }
 
     int32_t delta = 0;
@@ -2733,9 +2688,7 @@ static void encoder_poll_timer_cb(void *arg)
         const int32_t steps = s_encoder_count_rem / 2;  // 向零取整，保留符号
         if (steps != 0) {
             s_encoder_count_rem -= steps * 2;
-            if (!encoder_menu_handle_rotate(steps)) {
-                queue_encoder_rotate_event(steps);
-            }
+            queue_encoder_rotate_event(steps);
         }
     }
 }

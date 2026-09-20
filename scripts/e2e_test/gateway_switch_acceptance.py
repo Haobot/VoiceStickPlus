@@ -3,10 +3,10 @@
 """P1 网关切换器验收harness（真机）。
 
 把设计稿 §4 的验收口径做成可重复执行的一条命令：采集设备串口日志 + 解析 app 日志，
-逐项给 PASS/FAIL。需要人手的两项（编码器菜单、非目标拒绝）以交互提示方式引导操作者完成。
+逐项给 PASS/FAIL。需要人手的两项（侧键切换器、非目标拒绝）以交互提示方式引导操作者完成。
 
 用法：
-  # 全量（含编码器手操，会提示你按键）
+  # 全量（含侧键切换器手操，会提示你按侧键）
   python scripts/e2e_test/gateway_switch_acceptance.py --port COM19 --address 70:04:1D:DC:53:AA
 
   # 只跑自动化部分（切换 soak），不提示手操
@@ -19,7 +19,7 @@
   2. 目标机 app 恢复（记录值）    —— app 日志 "device disconnected" → "stage=ready"
   3. 切换期间小米链路零断开       —— 切换窗口内无新的 gw_hid/gw_atvv 行
   4. 订阅时 MTU 截断告警为 0      —— 无 "exceeds notify budget"
-  5. 编码器菜单（人手）           —— 串口日志出现"目标菜单打开/关闭"、确认后 accept_peer
+  5. 侧键切换器（人手）           —— 串口日志出现"侧键预览目标/侧键切换"、切换后 accept_peer
 """
 import argparse
 import datetime as dt
@@ -245,25 +245,22 @@ def report(results, manual_findings):
 
 
 def manual_phase(tap):
-    """人手阶段：编码器菜单。返回 [(项, 是否通过, 说明)]。"""
-    log("\n=== 阶段 2：编码器菜单手操（需要你动手） ===")
+    """人手阶段：侧键切换器。返回 [(项, 是否通过, 说明)]。"""
+    log("\n=== 阶段 2：侧键切换器手操（需要你动手） ===")
     log("请在下面倒计时内完成：")
-    log("  1) 长按编码器按钮 ≥600ms  → 屏幕上应出现目标菜单")
-    log("  2) 旋转编码器            → 高亮在目标之间移动")
-    log("  3) 短按编码器            → 确认，屏幕显示目标名")
-    for i in range(10, 0, -1):
+    log("  1) 短按侧键一次      → 屏幕应显示当前目标名（前缀 '>'）")
+    log("  2) 3 秒内再短按一次  → 应轮流切换到下一个目标")
+    for i in range(12, 0, -1):
         log(f"  ... {i}")
         time.sleep(1)
     dev = parse_device_events(tap.lines)
-    opened = [l for _, l in dev if "目标菜单打开" in l]
-    closed = [l for _, l in dev if "目标菜单关闭" in l]
-    selected = [l for _, l in dev if "目标菜单确认" in l]
+    preview = [l for _, l in dev if "侧键预览目标" in l]
+    cycled = [l for _, l in dev if "侧键切换" in l]
     accepted = [l for _, l in dev if "accept_peer (state=connected)" in l]
     findings = [
-        ("编码器长按唤起菜单", bool(opened), f"'目标菜单打开' {len(opened)} 次"),
-        ("菜单确认并切换", bool(selected) and bool(accepted),
-         f"'目标菜单确认' {len(selected)} 次 / accept {len(accepted)} 次"),
-        ("菜单关闭", bool(closed), f"'目标菜单关闭' {len(closed)} 次"),
+        ("侧键短按预览当前目标", bool(preview), f"'侧键预览目标' {len(preview)} 次"),
+        ("3s 内再短按切换", bool(cycled) and bool(accepted),
+         f"'侧键切换' {len(cycled)} 次 / accept {len(accepted)} 次"),
     ]
     return findings
 
