@@ -840,6 +840,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_connected = true;
             s_conn_handle = event->subscribe.conn_handle;
         }
+        // 每个订阅都记一行：OTA 的 CCCD 订阅此前完全不可观测，桌面端卡在
+        // "subscribing OTA state notifications" 时无法判断写是否到了设备（2026-09-20 排查）。
+        ESP_LOGI(TAG, "subscribe attr=%u notify=%d indicate=%d (audio=%u state=%u ota_state=%u)",
+                 event->subscribe.attr_handle, event->subscribe.cur_notify,
+                 event->subscribe.cur_indicate, s_audio_attr_handle, s_state_attr_handle,
+                 s_ota_state_attr_handle);
         if (event->subscribe.attr_handle == s_audio_attr_handle) {
             s_audio_subscribed = event->subscribe.cur_notify;
         } else if (event->subscribe.attr_handle == s_state_attr_handle) {

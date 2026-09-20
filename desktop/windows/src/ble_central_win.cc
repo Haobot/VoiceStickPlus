@@ -3083,12 +3083,31 @@ winrt::Windows::Foundation::IAsyncOperation<bool> BleCentralWin::EnsureOtaCharac
 
     if (!session->ota_state_subscribed) {
         LogBleLine("subscribing OTA state notifications VS-" + device_id);
-        auto status = co_await session->ota_state_characteristic
+        // 与 state/audio 订阅同款两步走：先写 None 击穿 Windows 的 CCCD 缓存，
+        // 再写 Notify 并**与超时竞速**。2026-09-20 真机：这里原先直接裸 co_await，
+        // 设备侧日志证明写已到达并登记（subscribe attr=37 ota_state notify=1），
+        // 但 Windows 的 await 永不完成 ⇒ 整个 OTA 卡在 0%（正是 P4 记账的
+        // 「网关模式 OTA 失败」样本之一）。注意本路径失败**不**返回 false：
+        // 设备既然登记了订阅，OTA 数据通道仍可用，错过状态通知只影响进度显示。
+        co_await WriteCccdBestEffortAsync(session->ota_state_characteristic,
+                                          GattClientCharacteristicConfigurationDescriptorValue::None,
+                                          device_id, "ota_state");
+        auto ota_op = session->ota_state_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
-        LogBleLine("ota state subscribe VS-" + device_id + " status=" + GattStatusName(status));
-        if (status != GattCommunicationStatus::Success) {
-            co_return false;
+        auto ota_wait = [](decltype(ota_op) op)
+            -> winrt::Windows::Foundation::IAsyncAction {
+            try { co_await op; } catch (...) {}
+        }(ota_op);
+        co_await winrt::when_any(ota_wait, WaitMs(kSubscribeTimeout));
+        if (ota_op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+            try { ota_op.Cancel(); } catch (...) {}
+            LogBleLine("ota state subscribe did not complete VS-" + device_id +
+                       " within " + std::to_string(kSubscribeTimeout.count()) +
+                       "ms; continuing (device-side subscription still effective)");
+        } else {
+            LogBleLine("ota state subscribe VS-" + device_id +
+                       " status=" + GattStatusName(ota_op.GetResults()));
         }
         session->ota_state_subscribed = true;
     }

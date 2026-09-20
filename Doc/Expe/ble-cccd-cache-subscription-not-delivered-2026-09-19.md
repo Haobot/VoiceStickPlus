@@ -124,3 +124,43 @@ ESP32-S3 的 USB-Serial-JTAG 把跳变当复位序列。表现与误判：
    用"时:分"做筛选必须同时确认日期**，否则会把历史故障当成当前现象。
    设计层面仍要在网关模式下堵掉"配对过遥控器 + 开网关 ⇒ 必然失败的直连"这条路径，
    见 `Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md`。
+---
+
+## 追加（2026-09-20）：OTA 路径的 CCCD 写是裸 `co_await` ⇒ 固件 OTA 永远卡在 0%
+
+**症状**：网关模式下从 app 触发固件 OTA，进度永远 0%；app 日志最后一行停在
+`subscribing OTA state notifications VS-53A8`，其后**再无任何行**（连超时/失败都没有）；
+设备侧串口看不到任何 OTA 活动。P4 记账里的 `0x80650008 属性需要身份验证` 是同一处的另一种表现。
+
+**判据（一眼定位）**：app 日志出现 `subscribing OTA state notifications` 而没有紧随的
+`ota state subscribe … status=` ⇒ 卡在这次 CCCD 写。**再加一条设备侧判据**（本次为此新增的日志）：
+
+```
+I (27517) voice_ble: subscribe attr=37 notify=1 indicate=0 (audio=27 state=30 ota_state=37)
+```
+
+有这行 ⇒ **写已到达设备且设备已登记订阅**，卡的只是 Windows 的 await 完成回调（数据通道其实是通的）；
+没有这行 ⇒ 写根本没发出去。这条分流是本次定位的关键。
+
+**根因**：同一文件里 state/audio 的订阅都套了 `WriteCccdBestEffortAsync`（先写 None 击穿缓存）
++ `when_any(..., kSubscribeTimeout)` 兜底，而 **OTA 的 `ota_state` 订阅是裸
+`WriteClientCharacteristicConfigurationDescriptorAsync`、没有任何超时**——正是 §3.14 的老教训
+「裸 ``co_await`` 会永久挂起」。写发出去了、设备也登记了，但 WinRT 的完成回调没来，协程永久停住 ⇒ OTA 卡 0%。
+
+**修复**（`desktop/windows/src/ble_central_win.cc` 的 `EnsureOtaCharacteristicsAsync`）：改成与
+state/audio 同款两步（先 `None` 击穿、再 `Notify` 并与 2.5s 竞速），且**超时不中止流程**——
+设备既然登记了订阅，OTA 数据通道仍可用，错过状态通知只影响进度显示与流控确认。
+
+**验证（真机）**：
+- 修复前：两次尝试均**永远停在 0%**（其中一次设备侧连 CCCD 写都没到）。
+- 修复后：立刻开始传输——`OTA data … chunk_size=232 max_pdu=247 write_without_response=true`，
+  一次到 **393KB / 25%**，另一次到 131KB；设备侧 `subscribe attr=37 notify=1` 确认写入流已达。
+
+**遗留 / 观察项（据实）**：
+1. **传输中途仍会停**（一次停在 393KB 后不再前进，而设备同时仍在发 battery 通知）。原因**未定**；
+   且**本机存在长达数小时的整体冻结**（本次实测 12:19→15:37 日志时间戳跳变 3h18m，冻结期间一切
+   「停住」都不可信）。下次复现**必须同时采设备串口**（本次没采到，是方法论失误），
+   并先用 app 日志时间戳排除整机冻结，再判断是否真的停。
+2. 为避免误判重演：日志跨多日，**用「时:分」筛行必须同时确认日期**（本文件 §遗留 已有同一教训的更正记录）。
+3. 本次新增的固件日志 `subscribe attr=… notify=… (audio=… state=… ota_state=…)` 建议保留：
+   它把「写有没有到设备」和「Windows 有没有回调」彻底分开，是 OTA/订阅类问题的第一诊断证据。
