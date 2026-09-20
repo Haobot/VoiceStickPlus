@@ -84,6 +84,16 @@ constexpr std::chrono::seconds kConnectFailureCooldown{5};
 // 配合 zombie_suspect 免退避把最坏回连压在 ~5.5s 而不是 ~10s。
 constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
 
+// OTA 数据通道的两道保险（2026-09-20 真机：传输中途停住且**没有任何日志**——app 卡在
+// WriteValueAsync 的裸 co_await 上，用户侧只看到进度条不动）。
+//  - kOtaWriteTimeout：单次分块写的上限。写而无响应（设备在 flash 擦写里卡住、控制器
+//    缓冲被占满）时不能永久挂着，超时后明确失败并报出 offset。
+//  - kOtaConfirmStallTimeout：设备进度通知停更的上限。app 的流控靠设备回传的
+//    device_confirmed_written，若设备不再回传（例如 OTA state 订阅其实没生效），
+//    循环会以 20ms 空转永远等下去——必须转成可见失败。
+constexpr std::chrono::milliseconds kOtaWriteTimeout{5000};
+constexpr std::chrono::milliseconds kOtaConfirmStallTimeout{15000};
+
 // zombie_suspect 免退避重试的窗口与上限：连按重启会产生多重僵尸，
 // 单次免退避不够；但无限免退避会让持续失败的设备 tight-loop，
 // 故限 15s 窗内最多 3 次，超出回落正常 5s 退避。
@@ -3155,10 +3165,28 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
                    (ota_supports_write_without_response ? "true" : "false"));
         std::size_t offset = 0;
         std::size_t last_progress = 0;
+        auto last_confirm_ms = NowSteadyMs();
+        std::uint32_t last_confirmed_seen = 0;
         while (offset < update_session->image.size()) {
             if (update_session->cancel_requested) co_return;
-            if (ota_supports_write_without_response &&
-                offset > update_session->device_confirmed_written.load() + max_in_flight) {
+            const std::uint32_t confirmed =
+                update_session->device_confirmed_written.load();
+            if (confirmed != last_confirmed_seen) {
+                last_confirmed_seen = confirmed;
+                last_confirm_ms = NowSteadyMs();
+            }
+            if (ota_supports_write_without_response && offset > confirmed + max_in_flight) {
+                if (NowSteadyMs() - last_confirm_ms > kOtaConfirmStallTimeout.count()) {
+                    LogBleLine("OTA device progress stalled VS-" + update_session->device_id +
+                               " sent=" + std::to_string(offset) +
+                               " confirmed=" + std::to_string(confirmed));
+                    FinishFirmwareUpdate(
+                        update_session, false,
+                        "Device stopped confirming OTA progress at " +
+                            std::to_string(confirmed) + "/" +
+                            std::to_string(update_session->image.size()) + " bytes.");
+                    co_return;
+                }
                 co_await winrt::resume_after(std::chrono::milliseconds(20));
                 continue;
             }
@@ -3167,11 +3195,30 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
                 update_session->transfer_id,
                 static_cast<std::uint32_t>(offset),
                 std::span<const std::uint8_t>(update_session->image.data() + offset, end - offset));
-            status = co_await write_payload(
+            // 分块写同样要有上限：真机上这里曾永久挂住（无日志、无失败），
+            // 用户只能看到进度条停住。超时即失败并报出 offset，让问题可诊断。
+            auto write_op = write_payload(
                 payload,
                 ota_supports_write_without_response
                     ? GattWriteOption::WriteWithoutResponse
                     : GattWriteOption::WriteWithResponse);
+            auto write_wait = [](decltype(write_op) op)
+                -> winrt::Windows::Foundation::IAsyncAction {
+                try { co_await op; } catch (...) {}
+            }(write_op);
+            co_await winrt::when_any(write_wait, WaitMs(kOtaWriteTimeout));
+            if (write_op.Status() != winrt::Windows::Foundation::AsyncStatus::Completed) {
+                try { write_op.Cancel(); } catch (...) {}
+                LogBleLine("OTA write timed out VS-" + update_session->device_id +
+                           " offset=" + std::to_string(offset) +
+                           " confirmed=" +
+                           std::to_string(update_session->device_confirmed_written.load()));
+                FinishFirmwareUpdate(update_session, false,
+                                     "BLE OTA write timed out at offset " +
+                                         std::to_string(offset) + " bytes.");
+                co_return;
+            }
+            status = write_op.GetResults();
             if (status != GattCommunicationStatus::Success) {
                 LogBleLine("OTA write failed VS-" + update_session->device_id +
                            " offset=" + std::to_string(offset) +
