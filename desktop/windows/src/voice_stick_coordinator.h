@@ -110,6 +110,9 @@ public:
     // P1 切换器：选择网关目标（self=true 本机 / false 清除选择）。
     virtual void SendGatewaySelectTarget(bool self,
                                          const std::optional<std::string>& device_id) = 0;
+    // 原始控制帧下发（调试/自动化入口，见 cmd_line.h --control）。
+    virtual void SendRawControl(const std::string& json,
+                                const std::optional<std::string>& device_id) = 0;
     // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
     virtual void SendAirMouseEnabled(bool enabled,
                                      const std::optional<std::string>& device_id) = 0;
@@ -345,6 +348,8 @@ public:
     void SetLocalHostName(std::string name);
     // P1 切换器：把本机设为网关目标 / 清除选择（桌面端 --gateway-target 入口调用）。
     void SelectGatewayTarget(bool self);
+    // 原始控制帧下发（桌面端 --control 入口调用）。
+    void SendRawControl(const std::string& json);
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
                              BluetoothAddressKind address_kind,

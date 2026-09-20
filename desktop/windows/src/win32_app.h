@@ -39,6 +39,8 @@ namespace voicestick {
 constexpr ULONG_PTR kOtaCopyDataId = 0x56534F54;
 // WM_COPYDATA.dwData 标识：命令行 --gateway-target 实例转发给已运行实例的目标选择请求。'VSGT'。
 constexpr ULONG_PTR kGatewayTargetCopyDataId = 0x56534754;
+// WM_COPYDATA.dwData 标识：命令行 --control 实例转发给已运行实例的原始控制帧。'VSCT'。
+constexpr ULONG_PTR kControlCopyDataId = 0x56534354;
 
 } // namespace voicestick
 #include <vector>
@@ -115,6 +117,8 @@ public:
                               std::optional<std::string> device_id);
     // 命令行入口(--gateway-target)转发/注入的网关目标选择请求（P1 切换器）。
     void ApplyGatewayTargetSelection(bool self);
+    // 命令行入口(--control)转发/注入的原始控制帧（调试/自动化）。
+    void ApplyRawControl(const std::string& json);
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -264,6 +268,8 @@ private:
     std::optional<OtaCliRequest> pending_ota_request_;
     // 无运行实例时 --gateway-target 注入的待发目标选择（连上设备后补发）。
     std::optional<bool> pending_gateway_target_;
+    // 无运行实例时 --control 注入的待发控制帧（连上设备后补发）。
+    std::optional<std::string> pending_raw_control_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;
     static constexpr UINT_PTR kAirMouseTimerId = 100;

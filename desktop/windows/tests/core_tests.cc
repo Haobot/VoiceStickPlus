@@ -184,6 +184,10 @@ public:
                                  const std::optional<std::string>& device_id) override {
         sent_gateway_select_targets.push_back(std::pair{self, device_id});
     }
+    void SendRawControl(const std::string& json,
+                        const std::optional<std::string>& device_id) override {
+        sent_raw_controls.push_back(std::pair{json, device_id});
+    }
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -234,6 +238,8 @@ public:
     std::vector<std::pair<std::string, std::optional<std::string>>> sent_gateway_target_infos;
     // P1 切换器：桌面端下发的目标选择（self, device_id）。
     std::vector<std::pair<bool, std::optional<std::string>>> sent_gateway_select_targets;
+    // 调试/自动化：原始控制帧下发（json, device_id）。
+    std::vector<std::pair<std::string, std::optional<std::string>>> sent_raw_controls;
 };
 
 class FakeAsrClient : public AsrClient {
@@ -1200,6 +1206,45 @@ void TestGatewayKeyStateParsing() {
     const auto clear_select = BleProtocol::GatewaySelectTargetPayload(false);
     const std::string clear_json(clear_select.begin(), clear_select.end());
     assert(clear_json == "{\"event\":\"gateway_select_target\",\"clear\":true}");
+}
+
+void TestParseControlCliArgs() {
+    using namespace voicestick;
+    // 原始 JSON 原样透传。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--control", L"{\"event\":\"x\"}"};
+        auto r = ParseControlCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->json == "{\"event\":\"x\"}");
+    }
+    // 免引号简写：字符串/布尔/整数取值。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--control", L"gateway_menu:action=open"};
+        auto r = ParseControlCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->json == "{\"event\":\"gateway_menu\",\"action\":\"open\"}");
+    }
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--control",
+                                 L"gateway_select_target:self=true,index=2"};
+        auto r = ParseControlCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->json ==
+               "{\"event\":\"gateway_select_target\",\"self\":true,\"index\":2}");
+    }
+    // 无该选项 / 缺取值 / 简写非法（无冒号或无 key）。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe"};
+        assert(!ParseControlCliArgs(1, argv).has_value());
+    }
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--control"};
+        assert(!ParseControlCliArgs(2, argv).has_value());
+    }
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--control", L"no_colon_here"};
+        assert(!ParseControlCliArgs(3, argv).has_value());
+    }
 }
 
 void TestParseGatewayTargetCliArgs() {
@@ -15442,6 +15487,7 @@ int main() {
     TestCoordinatorUpdateFirmwareFromFile();
     TestParseOtaCliArgs();
     TestParseGatewayTargetCliArgs();
+    TestParseControlCliArgs();
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();

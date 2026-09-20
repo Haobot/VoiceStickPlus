@@ -912,6 +912,11 @@ static bool encoder_led_rgb_from_name(const char *name, uint32_t *rgb_out)
 // P1 切换器入口（定义在下方，控制命令回调需要前向声明）。
 void gateway_select_target(int target_index, bool clear);
 void gateway_select_self(void);
+// 目标菜单入口（定义在编码器轮询附近，均为 static；控制命令回调需要前向声明）。
+static void encoder_menu_open(void);
+static void encoder_menu_close(void);
+static bool encoder_menu_handle_rotate(int32_t steps);
+static void encoder_menu_confirm(void);
 
 static void ble_control_cb(const char *json)
 {
@@ -979,6 +984,29 @@ static void ble_control_cb(const char *json)
             gateway_select_target(index_json->valueint, false);
         } else {
             ESP_LOGW(TAG, "gateway_select_target 缺少 index/clear");
+        }
+    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_menu") == 0) {
+        // 调试/自动化：直接驱动目标菜单（编码器长按的同一条代码路径），无需手操旋钮。
+        // action: open/close/next/prev/confirm。见 Doc/Ref/protocol.md 「调试命令」。
+        const cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
+        if (cJSON_IsString(action)) {
+            const char *a = action->valuestring;
+            ESP_LOGI(TAG, "gateway_menu action=%s", a);
+            if (strcmp(a, "open") == 0) {
+                encoder_menu_open();
+            } else if (strcmp(a, "close") == 0) {
+                encoder_menu_close();
+            } else if (strcmp(a, "next") == 0) {
+                (void)encoder_menu_handle_rotate(1);
+            } else if (strcmp(a, "prev") == 0) {
+                (void)encoder_menu_handle_rotate(-1);
+            } else if (strcmp(a, "confirm") == 0) {
+                encoder_menu_confirm();
+            } else {
+                ESP_LOGW(TAG, "gateway_menu 未知 action=%s", a);
+            }
+        } else {
+            ESP_LOGW(TAG, "gateway_menu 缺少 action");
         }
     } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_target_info") == 0) {
         // P1 目标表：桌面端连上后上报自己的显示名（主机名）。命名对象是「当前连接对端」

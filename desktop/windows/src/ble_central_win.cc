@@ -838,6 +838,34 @@ void BleCentralWin::SendGatewaySelectTarget(bool self,
     }
 }
 
+void BleCentralWin::SendRawControl(const std::string& json,
+                                    const std::optional<std::string>& device_id) {
+    if (json.empty()) return;
+    auto payload = ByteVector(json.begin(), json.end());
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+        }
+    }
+    if (targets.empty()) {
+        LogBleLine("raw control dropped: no ready session (device_id=" +
+                   device_id.value_or("<any>") + ")");
+        return;
+    }
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
 void BleCentralWin::SendAirMouseEnabled(bool enabled,
                                         const std::optional<std::string>& device_id) {
     auto payload = BleProtocol::AirMouseEnabledPayload(enabled);

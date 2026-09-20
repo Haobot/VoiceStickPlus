@@ -692,6 +692,12 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
             }
             battery_monitor_dialog_->NotifyAllDisconnected();
         }
+        // 命令行 --control 自启动场景：连上设备后补发控制帧。
+        if (pending_raw_control_.has_value() && !connected_devices_.empty()) {
+            const auto json = *pending_raw_control_;
+            pending_raw_control_.reset();
+            ApplyRawControl(json);
+        }
         // 命令行 --gateway-target 自启动场景：连上设备后补发目标选择。
         if (pending_gateway_target_.has_value() && !connected_devices_.empty()) {
             const bool self = *pending_gateway_target_;
@@ -736,6 +742,18 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
             pair_device_dialog_->SetDeviceInfo(info);
         }
     });
+}
+
+void Win32App::ApplyRawControl(const std::string& json) {
+    LogLine("ApplyRawControl " + json);
+    if (!coordinator_) return;
+    if (connected_devices_.empty()) {
+        // 显式记一行：静默入队曾让一次验收误判为"命令没生效"（2026-09-20 真机）。
+        LogLine("ApplyRawControl queued (no connected device yet)");
+        pending_raw_control_ = json;  // 连上设备后由 SetConnectedDevices 补发
+        return;
+    }
+    coordinator_->SendRawControl(json);
 }
 
 void Win32App::ApplyGatewayTargetSelection(bool self) {
@@ -1048,6 +1066,14 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             if (payload == "self" || payload == "clear") {
                 const bool self = payload == "self";
                 DispatchToUi([this, self] { ApplyGatewayTargetSelection(self); });
+            }
+        } else if (cds && cds->dwData == kControlCopyDataId && cds->lpData && cds->cbData > 0) {
+            // payload 为完整控制帧 JSON（--control，调试/自动化用）。
+            std::string payload(static_cast<const char*>(cds->lpData), cds->cbData);
+            const auto nul = payload.find('\0');
+            if (nul != std::string::npos) payload.resize(nul);
+            if (!payload.empty()) {
+                DispatchToUi([this, payload] { ApplyRawControl(payload); });
             }
         }
         return 0;

@@ -212,6 +212,28 @@ python scripts/e2e_test/gateway_switch_acceptance.py --port COM19 --address 70:0
 `目标菜单打开/关闭/确认` 与后续 `accept_peer`）。2026-09-20 冒烟：2 轮 avg 688ms、worst 722ms，
 小米链路事件 0、截断告警 0、app 恢复 2.52s / 0.82s。
 
+### 4.6 菜单逻辑路径真机验证（2026-09-20 12:00，调试入口驱动）
+",
+"菜单此前**从未在硬件上执行过**（只有人手长按才能进），存在 LVGL 覆盖层创建即崩的风险。为此加了
+调试/自动化入口：固件 `gateway_menu` 控制命令（open/close/next/prev/confirm，走与编码器长按**完全相同**
+的代码路径）+ 桌面端 `VoiceStick.exe --control <帧>`（并支持免引号简写 `gateway_menu:action=open`，
+因为 PowerShell 会吞掉参数里的双引号）。
+
+真机结果（串口日志）：
+
+```
+I (6535)  gateway_menu action=open
+I (6542)  目标菜单打开 count=1 index=0          ← 覆盖层创建成功，无 crash/assert
+I (14546) 目标菜单关闭                          ← 8s 无操作自动关闭（6542→14546 = 8.0s，时序正确）
+I (15785) gateway_menu action=confirm
+I (15785) 切换器动作: disconnect_current / start_adv / ui_switching
+I (15788) 目标菜单确认 index=0
+I (16432) 切换器动作: accept_peer (state=connected)   ← 确认 → 完整切换，647ms
+```
+
+**因此菜单的「打开/高亮移动/确认→切换/自动关闭」逻辑与渲染路径已真机验证**；
+仍需人手的只剩：①**长按 ≥600ms 的物理判定**（含与录音门控的交互）、②**屏幕视觉效果**（有无我无法拍照）。
+
 **仍未验收**：非目标拒绝（需第二台机器/第二个适配器提供不同 identity address）、
 编码器菜单手操（需人手），以及多**目标**轮换（本次 9 轮是同目标来回，路径等价但目标维度未覆盖）。
 

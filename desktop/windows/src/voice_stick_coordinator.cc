@@ -349,6 +349,11 @@ void VoiceStickCoordinator::SelectGatewayTarget(bool self) {
     ble_->SendGatewaySelectTarget(self, std::nullopt);
 }
 
+void VoiceStickCoordinator::SendRawControl(const std::string& json) {
+    LogCoordinatorLine("raw control -> " + json);
+    ble_->SendRawControl(json, std::nullopt);
+}
+
 void VoiceStickCoordinator::ReconnectPairedDevices() {
     ble_->UpdatePairedDeviceIds(paired_device_ids_);
 }

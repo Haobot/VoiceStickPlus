@@ -27,4 +27,13 @@ struct GatewayTargetCliRequest {
 std::optional<GatewayTargetCliRequest> ParseGatewayTargetCliArgs(int argc,
                                                                  const wchar_t* const argv[]);
 
+// 命令行触发的原始控制帧下发（调试/自动化）。
+// 用于在没有 UI 入口时驱动固件的 control_rx 命令（如 `--control {"event":"gateway_menu","action":"open"}`）。
+struct ControlCliRequest {
+    std::string json;  // control_rx 的完整 JSON 帧
+};
+
+// 解析命令行 argv 中的 --control <json>。argv[0] 视为程序名；无该选项或空值时返回 nullopt。
+std::optional<ControlCliRequest> ParseControlCliArgs(int argc, const wchar_t* const argv[]);
+
 } // namespace voicestick
