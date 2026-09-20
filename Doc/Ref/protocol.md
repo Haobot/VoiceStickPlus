@@ -77,6 +77,20 @@ this and was slimmed; new capabilities should use separate small frames such as
 `encoder_status`). The firmware logs a warning when a state frame exceeds the
 budget.
 
+**Initial state burst timing (2026-09-20):** the burst sent on state
+subscription (`device_info` + `encoder_status` + `gateway_status`) is deferred
+until the ATT MTU exchange completes, because that exchange is still in flight
+when the SUBSCRIBE event arrives and the default MTU (23) leaves only a 16-byte
+JSON budget — every frame in the burst would be truncated, and peers that treat
+"subscribed but no parsable frame" as a dead subscription would reconnect
+(a real-device gateway switch took the peer 14–26s to recover this way; now
+~2.5s). The firmware logs `state burst deferred until MTU exchange completes`
+followed by `state burst flushed after MTU exchange (att_mtu=…)` (typically
+30–50 ms later); a 1.2s fallback timer flushes the burst anyway if the peer
+never completes the exchange. Counters: any `state_tx` frame must fit the
+**MTU 23 budget (16 bytes of JSON)** or be deferred, so compute the smallest
+budget when adding fields.
+
 Currently emitted state events:
 
 ```json

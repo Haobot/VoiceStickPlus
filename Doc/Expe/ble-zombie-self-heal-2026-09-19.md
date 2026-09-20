@@ -6,6 +6,8 @@
 > 方案：`Doc/Plan/xiaomi-gateway-p0-zombie-self-heal.md`；
 > 源头需求：`Doc/Plan/xiaomi-gateway-followup-roadmap.md` §2-P0
 > 同主题旧文：`Doc/Expe/ble-zombie-link-reboot-reconnect.md`（僵尸链路与快速重启回连）、
+> `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`（2026-09-20 补：**僵尸判定的第三例**——
+> 设备侧首帧被 MTU 预算截断也会让对端判僵尸，且它出现在网关切换等正常重连路径上，不是故障）、
 > `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`（系统配对与 HOGP）
 > 设备：VS-53A8（COM19，固件 2.3.9）；日志：`%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`
 

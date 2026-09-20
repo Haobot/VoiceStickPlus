@@ -4,6 +4,8 @@
 > 相关文件：`desktop/windows/src/ble_central_win.cc`（`WriteCccdBestEffortAsync` 与两处订阅点）
 > 设备：VS-53A8（网关模式，固件 2.3.9）+ 小米蓝牙遥控器 2 Pro
 > 同主题：`Doc/Expe/ble-zombie-self-heal-2026-09-19.md`（僵尸自愈梯度）、
+> `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`（**同族症状第三例**：不是 CCCD 没写出去，
+> 而是推出去的首帧被 MTU 预算截断——诊断分流看设备侧有没有 `exceeds notify budget`）、
 > `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`（语音键 vs HOGP 两条通道）
 
 ## 症状

@@ -309,6 +309,17 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 - **bond 只补不删**：`RepairOsBondAsync` 只读 `Pairing().IsPaired()` 确认缺失后才动手，条件是「无会话 + 设备在广播 + 先 radio reset 清 Windows 僵尸链路」，重试 3 次，每次运行最多 1 轮。**判据**：app 停掉 9s 后 `FromBluetoothAddressAsync` 仍报 `ConnectionStatus=Connected` = Windows 侧僵尸链路，此状态下 `PairAsync` 必失败（status=19）。彻底删过 `Enum\BTHLE` 节点后，本机三种自动重建尝试（拆会话后 / 见广播后 / radio reset 后）全部失败，仍需用户重新添加设备。
 - **真机验收**：连续 4 次重启全部自动 `stage=ready`（最快 10.4s），A/B 级未触发。B 级（radio reset）尚无真机样本。
 
+### 3.15 订阅首帧撞 MTU 未协商 ⇒ 对端把健康会话判成僵尸（2026-09-20 定案）
+
+细节见 `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`；修复 commit `cc82fb18`。
+
+- **判据（一眼分流「订阅假成功」的两个家族）**：设备侧出现 `state json <n>B + 4B header exceeds notify budget (att_mtu=23), peer will truncate` ⇒ 是**帧被截断**；没有这条而 CCCD 写只花十几毫秒 ⇒ 是 **Windows CCCD 缓存没发空口包**（§3.14）。两者桌面端症状都是 `state subscribe timeout`/僵尸判定，但根因完全不同。
+- **机制**：`BLE_GAP_EVENT_SUBSCRIBE` 里立刻推初始状态帧串（device_info/encoder_status/gateway_status），而连接时自己发起的 MTU 交换还在途，`att_mtu=23` ⇒ 通知预算只有 **16B JSON**。三个帧全超 ⇒ 对端拿不到可解析帧 ⇒ 活性证明 2.5s 超时 ⇒ 判僵尸 ⇒ 免退避重试风暴。**跟帧多大无关**：早先把 device_info 从 258B 精简到 235B 并没解决（41B 的 encoder_status 同样过不去）。
+- **修复**：订阅时 `ble_att_mtu(conn) <= 23` 就挂起帧串，等 `BLE_GAP_EVENT_MTU` 再推（实测只晚 33–48ms）；1.2s 兜底定时器防对端不响应；断连清标志。
+- **真机收益**（网关切换路径）：目标机 app 恢复 **14–26s → 2.5s**；设备侧切换 9 轮 avg **690ms/worst 893ms**；订阅时截断告警归零。
+- **通用设计规则**：任何新增/扩容 `state_tx` 帧，先按最小预算（MTU 23 ⇒ 16B）算一遍；超预算的首帧要么等 MTU、要么不发——**别靠「把帧缩小一点」**。
+- **附带（E2E）**：app 退出后 Windows 会用系统级 HOGP 配对自动连走设备并停止广播 ⇒ `bleak` 等第三方 central **驱动不了设备**，自动化只能走 app（本轮为此加了 `VoiceStick.exe --gateway-target self|clear`）；测试也**绝不能解除系统配对**（红线，见 §3.14）。
+
 ---
 
 ## 4. 微信输入法模式（wechat_input_method）
@@ -550,7 +561,7 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - 火山 nonstream 二遍会把第一遍正确的术语改错（Opus→Auk 稳定复现）；内联热词与 `boosting_table_id` 对二遍最终文本均无效（真实表 ID 实测），唯一兜底是 LLM 精修。评估热词效果必须分清看的是第一遍 partial 还是二遍 final。
 - 热词「没识别到」先查三个运行时事实：`asr_provider`、热词构成、`refine_enabled`。含空格/`.` 的词（Claude Code、CLAUDE.md）进不了腾讯任何热词通道（词表/临时表均拒收），火山侧评分模型同样过滤，唯一兜底是开启 LLM 精修。评测/验收报告里「C++ 策略同向/已实现」这类实现状态断言要回源码核对（2026-08-01 bench 结论 5 与代码不符的先例）。热词改动后用 `run_hotword_acceptance.py`（桌面同款发送回归，基线+desktop 两组即可）验收，不要每次烧 bench 全矩阵；`--report-only` 可从部分结果续报。详见 `Doc/Expe/hotword-recognition-diagnosis-2026-08-11.md`。
 - 火山首 partial 延迟 ≈ 音频全长，与 result_type/enable_nonstream/enable_ddc 无关（5 组消融完全相同），不要再消融这三个参数；腾讯发包节奏测量用 select 零超时（1ms 超时 recv 在 Windows 实际 10–15ms/帧，会严重污染总延迟）。
-- `device_info` 曾超 BLE 通知 MTU 预算被截断（258B JSON，MTU 247 链路截到 244B、桌面 parse failed）——已修复：精简到 235B + `send_state_json` 超预算告警（4B 帧头 + JSON ≤ ATT MTU−3，预算 240B@MTU247）。state 帧仍严禁盲目加字段，新增状态走独立小帧（先例 `encoder_status`）。改 BLE 协议后必须看一次真机连接日志。见 `Doc/Expe/encoder-present-reporting-2026-08-02.md`。
+- `device_info`/初始状态帧串曾超 BLE 通知 MTU 预算被截断——**两轮修复**：①（早期）把 device_info 从 258B 精简到 235B + 超预算告警；②（2026-09-20 真根因，commit `cc82fb18`）**订阅时 MTU 还没协商（`att_mtu=23`，预算仅 16B JSON），三个初始帧全被截断 ⇒ 对端活性证明超时 ⇒ 判僵尸 ⇒ 网关切换后目标机 14–26s 才恢复**；现改为「MTU≤23 时挂起帧串，`BLE_GAP_EVENT_MTU` 到了再推」（只晚 33–48ms，+1.2s 兜底定时器）。真机：恢复 14–26s → **2.5s**，截断告警归零。判据与通用规则见 §3.15 与 `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`
 - `VoiceStickUi` 接口有三处实现（`Win32App`、`core_tests.cc` 与 `integration_tests.cc` 的 FakeUi），加纯虚函数必须三处同改；设置对话框控件一律创建、未入 `layout_` 表的由 BuildControls 隐藏但 Load/Save 照常读写（整段隐藏不丢配置），区块前置 `separator()` 要挂同一可见性谓词。
 - 首次 GitHub Release / fork 迁移发布全流程（坑：`gh release view` 无 Release 即炸、MSI 上传与网站部署竞态、`gh` 不在 Bash PATH、PowerShell 读 octet-stream 给字节数组、CI 固件与本地固件体积不同），见 `Doc/Expe/release-v236-first-github-release-2026-08-10.md`。
 - macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须按 `peripheral.state` 分支 connect——对断开外设空发 discoverServices 无任何回调（静默卡死），判据是「恢复日志后 didDiscoverServices 静默」；另有「闭包注入读到的 config 快照陈旧致配对后 RC 永不连接」（判据：F5 tap installed 但零 `connected RC-` 日志）。CLT-only 机器 `swift test` 不可用（XCTest/swift-testing 均无），测试用 executable runner。详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
