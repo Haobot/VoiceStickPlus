@@ -243,6 +243,32 @@ I (16432) 切换器动作: accept_peer (state=connected)   ← 确认 → 完整
 **第三方 BLE 探针为何连不上（对后续 E2E 很重要）**：app 退出后，Windows 会用系统级 HOGP 配对
 自动把设备连走（设备随即停止广播），所以 `bleak` 之类的第三方 central 既扫不到也连不上；
 要驱动设备只能走 app（或先解除系统配对——**绝不可做**，会弄死 HOGP 直通）。
+### 4.7 非目标拒绝验收步骤（需第二台机器）
+
+**目标**：选定目标 A 后，第二台机器 B 连接应被设备**立即断开**（`reject_peer`）。
+
+**准备**：机器 A = 目标（现 PROART16），机器 B = 第二台（手机/笔记本都行）；B 装 nRF Connect
+（最省事，避免 VoiceStick 的重连循环）。Stick 在网关模式。
+
+**步骤**：
+1. A 上确认已连且网关模式（app 日志 `stage=ready` + `mode=gateway`）。
+2. A 上执行 `VoiceStick.exe --gateway-target self` 把 A 设为目标（设备进入「只允许 A」）。
+3. A 上开始采集串口（`vs_serial_listen.py COM19`，保持 DTR/RTS 低）。
+4. **A 关闭蓝牙**（设置里关，或飞行模式/关机）——设备随即断连、重新广播、等 A 回来；
+   关 A 蓝牙是为了**不让 A 的 OS-HID 立刻抢连**，否则设备不会处于「广播等目标」态。
+5. B 上扫描 → 找到 `VS-53A8`（地址 `70:04:1D:DC:53:AA`）→ 连接。
+6. **预期**：B 一连上就被设备主动断开；nRF Connect 显示连接后立刻断开。
+
+**证据（设备串口）**：
+```
+W (...) voice_stick: 切换器动作: reject_peer (state=switching)
+W (...) voice_stick: 非目标桌面端连接，主动断开
+```
+
+**恢复**：A 重新开蓝牙，VoiceStick 重连（A 是目标，被接受）。**绝不在 A 解除系统配对**（红线）。
+
+**若 B 扫不到设备**：说明设备没在广播——多半是第 4 步没生效（A 的 OS-HID 抢连了），确认 A 蓝牙真的关了
+再试；或用 B 直接按地址连接（nRF Connect 支持直接连接已知地址）。
 
 ## 5. 风险
 
