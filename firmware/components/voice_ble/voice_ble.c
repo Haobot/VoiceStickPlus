@@ -37,6 +37,12 @@ static const char *TAG = "voice_ble";
 static bool s_connected;
 static bool s_audio_subscribed;
 static bool s_state_subscribed;
+// 初始状态帧串（device_info/encoder_status/gateway_status）延迟标志：SUBSCRIBE 往往在我们
+// 自己发起的 MTU 交换完成之前到达，此时 att_mtu 仍是 23，235B 的 device_info 会被截断成
+// 20B，桌面端解析失败 → 它的"订阅存活证明"2.5s 超时 → 走 zombie-suspect 重连风暴。
+// 真机实测（网关切换后）：目标机 app 要 14-26s 才恢复；根因即此（见 P4 device_info 截断项）。
+static bool s_state_burst_pending;
+static esp_timer_handle_t s_state_burst_timer;
 static uint32_t s_mbuf_fail_streak;   // 连续 mbuf alloc failed 次数（用于告警节流）
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint8_t s_own_addr_type;
@@ -95,6 +101,7 @@ static const ble_uuid128_t s_ota_state_uuid =
 static void start_advertising(void);
 static void start_advertising_with_mode(bool fast);
 static void stop_advertising(void);
+static void send_state_burst(void);
 static esp_err_t send_state_json(const char *json);
 static struct ble_npl_callout s_adv_retry_callout;
 static struct ble_npl_callout s_adv_slow_callout;
@@ -809,6 +816,10 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         s_itvl_target = CONN_ITVL_NONE;
         s_itvl_update_pending = false;
         power_log_dump_abort("disconnect");
+        s_state_burst_pending = false;
+        if (s_state_burst_timer) {
+            (void)esp_timer_stop(s_state_burst_timer);
+        }
         start_advertising();
         if (s_peer_cb) {
             s_peer_cb(false, NULL, 0);
@@ -834,19 +845,21 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         } else if (event->subscribe.attr_handle == s_state_attr_handle) {
             s_state_subscribed = event->subscribe.cur_notify;
             if (s_state_subscribed) {
-                esp_err_t rc = voice_ble_send_device_info();
-                if (rc != ESP_OK) {
-                    ESP_LOGW(TAG, "device_info send failed err=0x%x", rc);
-                }
-                rc = voice_ble_send_encoder_status();
-                if (rc != ESP_OK) {
-                    ESP_LOGW(TAG, "encoder_status send failed err=0x%x", rc);
-                }
-                // 网关模式随订阅成功一起补发：桌面端据此判断是否抑制直连遥控器 ATVV
-                // （见 Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）。
-                rc = voice_ble_send_gateway_status();
-                if (rc != ESP_OK) {
-                    ESP_LOGW(TAG, "gateway_status send failed err=0x%x", rc);
+                // MTU 未协商完就推 235B 的 device_info 会被截断（att_mtu=23 ⇒ 20B 负载），
+                // 桌面端解析失败会把这次连接判成僵尸（订阅存活证明超时）。等我们自己在
+                // 连接时发起的 MTU 交换完成后再推；兜底定时器防对端不响应交换。
+                const uint16_t mtu_now = ble_att_mtu(event->subscribe.conn_handle);
+                if (mtu_now <= 23) {
+                    s_state_burst_pending = true;
+                    if (s_state_burst_timer) {
+                        (void)esp_timer_stop(s_state_burst_timer);
+                        (void)esp_timer_start_once(s_state_burst_timer, 1200 * 1000);
+                    }
+                    ESP_LOGI(TAG,
+                             "state burst deferred until MTU exchange completes (att_mtu=%u)",
+                             mtu_now);
+                } else {
+                    send_state_burst();
                 }
             }
         }
@@ -875,7 +888,15 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     }
 
     case BLE_GAP_EVENT_MTU:
-        ESP_LOGD(TAG, "mtu=%u", event->mtu.value);
+        ESP_LOGI(TAG, "mtu=%u", event->mtu.value);
+        if (s_state_burst_pending) {
+            s_state_burst_pending = false;
+            if (s_state_burst_timer) {
+                (void)esp_timer_stop(s_state_burst_timer);
+            }
+            ESP_LOGI(TAG, "state burst flushed after MTU exchange (att_mtu=%u)", event->mtu.value);
+            send_state_burst();
+        }
         return 0;
 
     case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
@@ -991,6 +1012,39 @@ static void start_advertising_with_mode(bool fast)
     }
 }
 
+// 订阅成功后的初始状态帧串：device_info（能力/版本）+ encoder_status + gateway_status。
+// 桌面端靠这几帧完成能力登记与网关模式判定；正常在 MTU 协商完成后调用（见 SUBSCRIBE/MTU 分支）。
+static void send_state_burst(void)
+{
+    esp_err_t rc = voice_ble_send_device_info();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "device_info send failed err=0x%x", rc);
+    }
+    rc = voice_ble_send_encoder_status();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "encoder_status send failed err=0x%x", rc);
+    }
+    // 网关模式随订阅成功一起补发：桌面端据此判断是否抑制直连遥控器 ATVV
+    // （见 Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）。
+    rc = voice_ble_send_gateway_status();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "gateway_status send failed err=0x%x", rc);
+    }
+}
+
+// 兜底：对端不接受 MTU 交换（事件不来）时，仍按旧行为在短延迟后推送（会被截断，但不至于静默）。
+static void state_burst_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_state_burst_pending) {
+        return;
+    }
+    s_state_burst_pending = false;
+    ESP_LOGW(TAG, "state burst fallback: MTU exchange not completed, sending at att_mtu=%u",
+             ble_att_mtu(s_conn_handle));
+    send_state_burst();
+}
+
 static void stop_advertising(void)
 {
     ble_npl_callout_stop(&s_adv_slow_callout);
@@ -1082,6 +1136,20 @@ esp_err_t voice_ble_init(void)
     // （网关模式小米 central 链路真机排查教训，Phase 1）
     void ble_store_config_init(void);
     ble_store_config_init();
+
+    // 初始状态帧串的兜底定时器（见 send_state_burst：MTU 协商完成前不推大帧）。
+    if (!s_state_burst_timer) {
+        const esp_timer_create_args_t burst_timer_args = {
+            .callback = state_burst_timer_cb,
+            .name = "state_burst",
+            .skip_unhandled_events = true,
+        };
+        esp_err_t timer_err = esp_timer_create(&burst_timer_args, &s_state_burst_timer);
+        if (timer_err != ESP_OK) {
+            ESP_LOGW(TAG, "state burst timer create failed err=0x%x", timer_err);
+            s_state_burst_timer = NULL;
+        }
+    }
 
     int rc = ble_svc_gap_device_name_set(s_device_name);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "set device name failed rc=%d", rc);

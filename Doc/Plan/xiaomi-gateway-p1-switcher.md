@@ -143,6 +143,38 @@ controller 解析支持，风险高）。建议先做前者，真机量到切换
   可能的缓解：网关模式下设备主动断链后，app 侧延长 settle（现 1500ms）或等链路空闲再发起；
   或复用 P0 的 CCCD 缓存击穿 + 免退避重试节奏。**未实施，仅记录**。
 
+
+### 4.3 目标机恢复慢：根因定位与修复（2026-09-20 11:2x）
+
+§4.2 那个「目标机 app 要 14–26s 才恢复」不是重连节奏问题，而是**固件侧的帧序问题**：
+
+**根因**：`BLE_GAP_EVENT_SUBSCRIBE`（state_tx 订阅成功）时，固件立刻推送初始状态帧串
+（device_info 235B + encoder_status + gateway_status），但此刻**我们自己发起的 MTU 交换还没完成**，
+`att_mtu` 仍是 23 ⇒ 单帧通知预算只有 20B ⇒ 235B 的 device_info 被截断成 ~16B。
+桌面端解析不出任何合法状态帧，其「订阅存活证明」（2.5s）超时 ⇒ 判为僵尸会话 ⇒ zombie-suspect
+免退避重试风暴 ⇒ 实测 14–26s 才恢复。设备日志现场：
+
+```
+I (28642) voice_ble: pairing complete conn=1 status=0
+I (28642) voice_ble: subscribe state desync: ... resyncing
+W (28643) voice_ble: state json 235B + 4B header exceeds notify budget (att_mtu=23), peer will truncate
+I (28673) NimBLE: GATT procedure initiated: exchange mtu      ← MTU 交换排在推送之后
+```
+
+**修复**（`firmware/components/voice_ble/voice_ble.c`）：订阅时若 `ble_att_mtu(conn) <= 23`，把初始帧串
+挂起，等 `BLE_GAP_EVENT_MTU` 到达后再推（实测只晚 33–48ms）；另加 1.2s 兜底定时器，防对端不响应
+MTU 交换时静默不发（此时按旧行为发送，不劣于修复前）。断连时清除挂起标志。
+
+**修复后实测**（同一条 `--gateway-target self` 路径）：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 设备侧 发起→accept_peer | 447 / 675ms | **642ms** |
+| 目标机 app 断开→`stage=ready` | 14s / 26s | **2.53s**（首次尝试即成功，无 connect failed） |
+| 订阅时 MTU 截断告警 | 每次必现 `exceeds notify budget (att_mtu=23)` | **零**（`state burst flushed after MTU exchange (att_mtu=247)`） |
+
+这条同时清掉了 P4 里的「device_info 首帧被截断」技术债——两者是同一个 bug。
+
 **第三方 BLE 探针为何连不上（对后续 E2E 很重要）**：app 退出后，Windows 会用系统级 HOGP 配对
 自动把设备连走（设备随即停止广播），所以 `bleak` 之类的第三方 central 既扫不到也连不上；
 要驱动设备只能走 app（或先解除系统配对——**绝不可做**，会弄死 HOGP 直通）。
