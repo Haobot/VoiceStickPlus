@@ -197,6 +197,21 @@ MTU 交换时静默不发（此时按旧行为发送，不劣于修复前）。�
 
 订阅时 MTU 截断告警：**0 次**（修复前每次订阅必现）。
 
+### 4.5 验收 harness（可重复执行）
+```powershell
+# 自动化部分（桌面端驱动切换 + 三项判据）
+python scripts/e2e_test/gateway_switch_acceptance.py --rounds 5 --skip-manual
+
+# 全量（含编码器菜单手操提示，需要人手按旋钮）
+python scripts/e2e_test/gateway_switch_acceptance.py --port COM19 --address 70:04:1D:DC:53:AA
+```
+
+脚本自己采集串口（显式保持 DTR/RTS 低，不扰动设备）、解析 app 日志，逐项给 PASS/FAIL：
+设备侧切换 ≤2s、切换期间小米链路零断开、订阅时 MTU 截断告警为 0、目标机恢复时间（记录值），
+以及人手阶段的「长按唤起菜单 / 旋转移动高亮 / 短按确认」判定依据（设备日志里的
+`目标菜单打开/关闭/确认` 与后续 `accept_peer`）。2026-09-20 冒烟：2 轮 avg 688ms、worst 722ms，
+小米链路事件 0、截断告警 0、app 恢复 2.52s / 0.82s。
+
 **仍未验收**：非目标拒绝（需第二台机器/第二个适配器提供不同 identity address）、
 编码器菜单手操（需人手），以及多**目标**轮换（本次 9 轮是同目标来回，路径等价但目标维度未覆盖）。
 
