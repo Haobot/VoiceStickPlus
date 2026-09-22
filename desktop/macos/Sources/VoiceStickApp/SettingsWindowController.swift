@@ -496,7 +496,8 @@ final class SettingsWindowController: NSWindowController {
             interactionSettings: config.interactionSettings,
             deviceInteractionSettings: config.deviceInteractionSettings,
             encoderSettings: config.encoderSettings,
-            deviceEncoderSettings: config.deviceEncoderSettings
+            deviceEncoderSettings: config.deviceEncoderSettings,
+            deviceButtonsSettings: config.deviceButtonsSettings
         )
 
         do {

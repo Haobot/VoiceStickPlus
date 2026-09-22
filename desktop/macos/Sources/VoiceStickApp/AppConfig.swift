@@ -342,6 +342,8 @@ struct AppConfig {
     var encoderSettings: EncoderSettings
     /// [device.<id>.encoder] 按设备覆盖（键名去 encoder_ 前缀，加载时已用全局默认填平）。
     var deviceEncoderSettings: [String: EncoderSettings]
+    /// [device.<id>.buttons] 按设备覆盖（小米遥控器按键映射；键为归一化 4 位大写 hex ID）。
+    var deviceButtonsSettings: [String: ButtonsSettings]
 
     static var configDirectory: URL {
         FileManager.default
@@ -417,7 +419,8 @@ struct AppConfig {
             interactionSettings: .default,
             deviceInteractionSettings: [:],
             encoderSettings: .default,
-            deviceEncoderSettings: [:]
+            deviceEncoderSettings: [:],
+            deviceButtonsSettings: [:]
         )
     }
 
@@ -493,7 +496,8 @@ struct AppConfig {
             interactionSettings: interaction,
             deviceInteractionSettings: deviceInteractionSettingsMap(file.device, fallback: interaction),
             encoderSettings: encoder,
-            deviceEncoderSettings: deviceEncoderSettingsMap(file.device, fallback: encoder)
+            deviceEncoderSettings: deviceEncoderSettingsMap(file.device, fallback: encoder),
+            deviceButtonsSettings: deviceButtonsSettingsMap(file.device)
         )
         recoverTencentSecretID(&config)
         return config
@@ -568,6 +572,7 @@ struct AppConfig {
         """
         return text + deviceOutputProfileText + deviceXiaomiSettingsText
             + deviceInteractionSettingsText + deviceEncoderSettingsText
+            + deviceButtonsSettingsText
     }
 
     private static func loadLegacy(text: String, defaults: AppConfig) -> AppConfig {
@@ -657,7 +662,8 @@ struct AppConfig {
             // 逐行解析能力；Windows legacy 同样不解析 device 表）。
             deviceInteractionSettings: [:],
             encoderSettings: encoder,
-            deviceEncoderSettings: [:]
+            deviceEncoderSettings: [:],
+            deviceButtonsSettings: [:]
         )
         recoverTencentSecretID(&config)
         return config
@@ -949,6 +955,7 @@ struct AppConfig {
         deviceXiaomiSettings.removeValue(forKey: deviceID)
         deviceInteractionSettings.removeValue(forKey: deviceID)
         deviceEncoderSettings.removeValue(forKey: deviceID)
+        deviceButtonsSettings.removeValue(forKey: deviceID)
         try? save()
     }
 
@@ -989,6 +996,42 @@ struct AppConfig {
         }
     }
 
+    // ---- 小米遥控器 [device.<id>.buttons] 覆盖（按键映射）----
+
+    /// keys 值为 "none" 时表示禁用（TOML 无法表达动作枚举，用哨兵值区分
+    /// action=disabled 与 action=key；空串/非法值回落 native）。
+    private static let buttonsDisabledSentinel = "none"
+
+    /// 解析 [device.<id>.buttons] 表：keys 值为 KeySpec 文本（action=key）或
+    /// "none"（action=disabled）；未写出的键回落 native；KeySpec 非法的条目忽略。
+    private static func buttonsSettings(from file: ButtonsConfigFile) -> ButtonsSettings {
+        var settings = ButtonsSettings.default
+        if let intercept = file.intercept { settings.intercept = intercept }
+        for (rawKey, value) in file.keys ?? [:] {
+            guard let button = RemoteButton(rawValue: rawKey) else { continue }
+            if value == buttonsDisabledSentinel {
+                settings.setMapping(ButtonMapping(action: .disabled, key: ""), for: button)
+            } else if !value.isEmpty, KeySpec.parse(value) != nil {
+                settings.setMapping(ButtonMapping(action: .key, key: value), for: button)
+            }
+        }
+        return settings
+    }
+
+    private static func deviceButtonsSettingsMap(
+        _ devices: [String: DeviceConfigFile]?
+    ) -> [String: ButtonsSettings] {
+        guard let devices else { return [:] }
+        return devices.reduce(into: [:]) { map, pair in
+            let deviceID = normalizedDeviceID(pair.key)
+            guard deviceID.count == 4, deviceID.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+                  let buttons = pair.value.buttons else {
+                return
+            }
+            map[deviceID] = buttonsSettings(from: buttons)
+        }
+    }
+
     // ---- 设备交互/编码器设置（对齐 Windows Parse{Interaction,Encoder}Settings）----
 
     /// 返回设备有效交互设置：有覆盖返回覆盖（加载时已用全局默认填平），否则全局默认。
@@ -1007,6 +1050,26 @@ struct AppConfig {
             return encoderSettings
         }
         return settings
+    }
+
+    // ---- 小米遥控器按键映射（[device.<id>.buttons]，语义对齐 Windows [xiaomi.keys]）----
+
+    /// 全局默认：拦截关闭、全部原生（映射是设备级概念，无顶层全局覆盖表）。
+    var buttonsSettings: ButtonsSettings { ButtonsSettings.default }
+
+    /// 返回设备有效按键映射：有覆盖返回覆盖（加载时已校验回填），否则全局默认。
+    func buttonsSettings(for deviceID: String?) -> ButtonsSettings {
+        guard let deviceID,
+              let settings = deviceButtonsSettings[Self.normalizedDeviceID(deviceID)] else {
+            return buttonsSettings
+        }
+        return settings
+    }
+
+    /// 按前台应用合并 app 级覆盖（三期）。v1 无 app 级覆盖存储，等价设备有效值；
+    /// AppDelegate 每次前台切换经此 resolve，将来加 app 覆盖表只改这里。
+    func effectiveButtonsSettings(for deviceID: String?, activeApp: String) -> ButtonsSettings {
+        buttonsSettings(for: deviceID)
     }
 
     /// 对齐 Windows：按键字段仅当 ParseKeySpec 成功才覆盖 fallback；press_key 唯一允许空。
@@ -1288,6 +1351,38 @@ struct AppConfig {
             .joined(separator: "\n")
     }
 
+    /// [device.<id>.buttons] 覆盖段（未配对或与默认一致不写出；只写出非原生条目，
+    /// 自含、加载顺序无关）。
+    private var deviceButtonsSettingsText: String {
+        deviceButtonsSettings
+            .filter { pairedDeviceIDs.contains($0.key) && $0.value != .default }
+            .sorted { $0.key < $1.key }
+            .map { deviceID, settings -> String in
+                var text = "\n\n[device.\(deviceID).buttons]"
+                if settings.intercept {
+                    text += "\nintercept = true"
+                }
+                let keys = settings.mappings
+                    .sorted { $0.key < $1.key }
+                    .compactMap { key, mapping -> String? in
+                        switch mapping.action {
+                        case .native:
+                            return nil
+                        case .disabled:
+                            return "\(key) = \"\(Self.buttonsDisabledSentinel)\""
+                        case .key:
+                            return "\(key) = \"\(mapping.key.tomlEscaped)\""
+                        }
+                    }
+                if !keys.isEmpty {
+                    text += "\n\n[device.\(deviceID).buttons.keys]\n"
+                    text += keys.joined(separator: "\n")
+                }
+                return text
+            }
+            .joined()
+    }
+
     /// [device.<id>.interaction] 覆盖段（对齐 Windows Save：未配对或与全局默认一致
     /// 不写出；写出的表全量含 5 个字段，保证自含、加载顺序无关）。
     private var deviceInteractionSettingsText: String {
@@ -1408,6 +1503,14 @@ private struct DeviceConfigFile: Decodable {
     var xiaomi: XiaomiConfigFile?
     var interaction: InteractionConfigFile?
     var encoder: EncoderConfigFile?
+    var buttons: ButtonsConfigFile?
+}
+
+/// [device.<id>.buttons] 表：intercept + keys 子表（键为 RemoteButton rawValue，
+/// 值为 KeySpec 文本或 "none"=禁用）。
+private struct ButtonsConfigFile: Decodable {
+    var intercept: Bool?
+    var keys: [String: String]?
 }
 
 /// [device.<id>.interaction] 表：键名与顶层一致。

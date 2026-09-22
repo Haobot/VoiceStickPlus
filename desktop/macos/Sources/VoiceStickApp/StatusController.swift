@@ -91,6 +91,7 @@ final class StatusController {
     var onOpenInteractionSettings: ((String) -> Void)?
     var onOpenEncoderSettings: ((String) -> Void)?
     var onOpenRemoteSettings: ((String) -> Void)?
+    var onOpenButtonMapping: ((String) -> Void)?
     var onOpenBatteryMonitor: ((String) -> Void)?
     var onUpdateFirmwareFromFile: ((String) -> Void)?
     var onSetDeviceThemeColor: ((String, OverlayThemeColor) -> Void)?
@@ -462,6 +463,15 @@ final class StatusController {
                 )
                 remoteItem.representedObject = deviceID
                 submenu.addItem(remoteItem)
+
+                // 按键映射（仅小米；对齐 Windows kMenuXiaomiKeymap）。
+                let buttonMappingItem = makeMenuItem(
+                    title: tr(.menuButtonMapping),
+                    symbolName: "keyboard",
+                    action: #selector(openButtonMapping)
+                )
+                buttonMappingItem.representedObject = deviceID
+                submenu.addItem(buttonMappingItem)
             } else {
                 // 设备交互设置（仅 StickS3；对齐 Windows kMenuInteractionSettings）。
                 let interactionItem = makeMenuItem(
@@ -945,6 +955,11 @@ final class StatusController {
     @objc private func openRemoteSettings(_ sender: NSMenuItem) {
         guard let deviceID = sender.representedObject as? String else { return }
         onOpenRemoteSettings?(deviceID)
+    }
+
+    @objc private func openButtonMapping(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onOpenButtonMapping?(deviceID)
     }
 
     @objc private func openBatteryMonitor(_ sender: NSMenuItem) {

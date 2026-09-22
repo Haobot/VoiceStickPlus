@@ -3,12 +3,25 @@
 > 状态：**设计稿（待用户定案）**。承 `Doc/Plan/xiaomi-gateway-followup-roadmap.md` P2。
 > 前置：P1（切换器）代码已落地；本文只覆盖 macOS 作为**目标端**需要补的东西。
 > 核实时间 2026-09-20 06:4x，结论以当时源码行号为准。
+> **2026-09-22 更新**：发现并修复 macOS 端自 `bffa235`（2026-09-08）起构建损坏的问题
+>（见 §8）；§1/§2 据此补两个设计稿遗漏交付物。Mac 测试环境已确认可用（本机 arm64），
+> roadmap §3 决策点 3 的「无 Mac 可测」前置不再成立。
 
 ## 1. 目标与交付物（承 roadmap P2）
 
 1. `gateway_key` 事件解析（网关软件路由键）——现状 macOS 静默忽略。
 2. HOGP 按键直通的**系统配对引导**——macOS 没有 Windows 式 `PairAsync`，需先 spike。
 3. 语音链路真机验证（预期零改动，但必须实测）。
+4. **`gateway_target_info` 主机名上报（2026-09-22 补，原稿遗漏）**——P1 目标表靠
+   这条命令给目标机起名（固件绑定到当前连接对端并存 NVS）；macOS 不发，切换器
+   屏幕上 Mac 目标就没有名字。Windows 参照 `voice_stick_coordinator.cc:162`（连接
+   ready 即发）。
+5. **`gateway_keymap_set` 路由表下发（2026-09-22 补，原稿遗漏）**——`gateway_key`
+   事件只对被路由为 `software` 的键产生，而路由表默认全部 `passthrough` 且持久化在
+   固件 NVS：macOS 若从不下发路由，软件路由键在 Mac 上是死功能；若只靠 Windows
+   配置对话框设置，Mac 会继承 Windows 的路由表。对齐 Windows `PushGatewayKeymapRoutesFor`
+   （连接 ready 时按本机按键映射幂等重发；两端各自连接时重发 = 当前活跃目标的配置
+   生效，语义自洽）。macOS 侧映射源 = `[device.<id>.buttons]`（见 `Doc/Ref/desktop-config.md`）。
 
 **验收**：Mac 上语音、按键直通、软件路由键三项均可用；配对引导不给用户制造「配两遍」的新负担。
 
@@ -17,6 +30,7 @@
 | 事实 | 证据 |
 |---|---|
 | macOS 端**零网关代码** | `desktop/macos` 全树 grep `gateway|Gateway` = 0 命中 |
+| **macOS 端构建自 2026-09-08 起损坏（2026-09-22 发现，已修复，见 §8）** | `bffa235` 提交了「使用方」（AppDelegate 引用约 15 个 VoiceStickCore/app 类型）却从未提交「定义方」——`Package.swift` 无 VoiceStickCore target，`KeySpec`/`sendKeyCombo`/`RemoteButton`/`ButtonsSettings`/`ButtonMappingWindowController`/`FrontmostAppProvider` 等在全仓历史零定义；`swift build` 失败于 `import VoiceStickCore` |
 | 状态事件白名单式解析，未知事件被丢弃 | `VoiceStickCoordinator.swift:398-416` `handleStateEvent` 的 `switch event.event`，`gateway_status`/`gateway_key` 走 `default: break` |
 | 事件模型缺网关字段 | `BleProtocol.swift:13-30` `StateEvent` 只有 `event/button/hardware/firmware_version/buttons` |
 | 控制通道已就绪，可直接下发新命令 | `BleCentral.swift:119-160` `sendUIState` 等一律 `writeValue(..., for: controlCharacteristic, type: .withoutResponse)` |
@@ -71,6 +85,35 @@ macOS 的等价物是「系统设置 → 蓝牙 → 连接键盘」，而**核�
 | 系统配对 + app 连接可否共存 | 待测 | — |
 | 能否由 app 触发系统配对 | 待测 | — |
 | 引导最小形态 | 待测 | — |
+
+## 8. 2026-09-22 构建修复记录（P2 前置，已交付）
+
+**问题**：`swift build` 自 `bffa235`（2026-09-08，已在 main）起失败——该提交把按键拦截
+重构的「使用方」提交到了 main（AppDelegate +574 行引用约 15 个类型），「定义方」却
+从未提交到任何分支。核实：`git log --all -S` 对 `KeySpec`/`sendKeyCombo`/`ButtonsSettings`
+等全历史零定义命中。
+
+**根因与修复**：这些定义实际完整存在于未合并的 `feat/add-MiRemote` 分支（2026-09-03，
+258 文件 +67k 行，含 Package.swift 的 VoiceStickCore/测试 target、Localization、全部
+设置窗口控制器）。分歧面量化：merge-base（09-02）以来 main 侧 macos 只改 5 个文件
+（就是弄坏构建的 bffa235），**双方共同修改仅 `AppDelegate.swift` 与 `Info.plist`**。
+处理：
+
+1. `git merge feat/add-MiRemote`（备份分支 `backup/pre-macos-merge` 先行）。冲突 6 文件：
+   AppDelegate 取 HEAD（bffa235 是 MiRemote 版的后续演进，diff 仅 178 行）；其余 5 个
+   文档取并集。根 `VERSION`/firmware version.txt 无回退（base 即 2.3.8）。
+2. 补齐全历史从未存在的类型（bffa235 架构意图，`RemoteButtonHIDTests` 为规格）：
+   `VoiceStickCore/VoiceStickButtons.swift`（`RemoteButton`/`ButtonMapping`/`ButtonsSettings`）、
+   `FrontmostAppProvider`、`ButtonMappingWindowController`（托盘「按键映射…」对话框）、
+   AppConfig `[device.<id>.buttons]` 读写族 + `effectiveButtonsSettings(for:activeApp:)`
+   （三期 app 级覆盖预留，v1 等价设备有效值）+ 协调器语音键双击（A 级）按映射处置。
+3. 工具链适配：新 CLT 的 SwiftPM 显式模块构建要求 C target 有链接产物，纯头文件
+   的 CZlib target 补 `CZlib_shim.c` 空翻译单元（修 `CZlib.o cannot be found`）。
+4. 验证：`swift build` 通过；`swift run VoiceStickTests` **438/438 全过**（含
+   `runRemoteButtonHIDTests`，其断言即重建类型的规格来源）。
+
+**影响**：P2 的「第 1 步 StateEvent 扩字段」等实施项现在有了可编译的基线；
+`bffa235` 意图的按键映射功能（含 A 级语音键双击动作）在 macOS 端完整可用。
 
 ## 6. 风险
 

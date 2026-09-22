@@ -128,6 +128,9 @@ final class VoiceStickCoordinator {
     private var asr: any ASRClient
     private var translator: LLMTranslationClient
     private var refiner: LLMRefinementClient
+    /// 前台应用追踪（三期按键映射按前台应用切换的注入点；AppDelegate 启动时装配，
+    /// v1 协调器暂不消费，app 级覆盖落地后由按键映射 resolve 使用）。
+    var frontmostAppProvider: FrontmostAppProvider?
     private let subtitleController = SubtitleController()
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
     private let inputInjector = InputInjector()
@@ -537,13 +540,37 @@ final class VoiceStickCoordinator {
 
         cancelActiveSessionsForDoubleClick(peripheralID: peripheralID)
 
-        // 注入 Enter 按键。
-        inputInjector.sendEnter()
+        injectDoubleClickAction(peripheralID: peripheralID)
 
         // 回到就绪状态。
         ble.sendUIState("ready", to: peripheralID)
         mainInputState = .ready
         statusController.setStatus("Ready")
+    }
+
+    /// 双击注入动作：StickS3 主键双击恒为 Enter（核心交互）；小米语音键双击（A 级）
+    /// 按按键映射处置——原生=Enter / 禁用=不注入 / 按键=KeySpec 注入，解析失败回落
+    /// Enter（对齐 HID 拦截层语义）。
+    private func injectDoubleClickAction(peripheralID: UUID) {
+        guard ble.deviceClass(for: peripheralID) == .xiaomiRemote2Pro,
+              let deviceID = deviceID(for: peripheralID) else {
+            inputInjector.sendEnter()
+            return
+        }
+        let mapping = config.buttonsSettings(for: deviceID).mapping(for: .voiceDoubleClick)
+        switch mapping.action {
+        case .native:
+            inputInjector.sendEnter()
+        case .disabled:
+            NSLog("xiaomi voice double-click disabled by mapping on \(deviceID)")
+        case .key:
+            guard let spec = KeySpec.parse(mapping.key) else {
+                NSLog("xiaomi voice double-click key invalid: \"\(mapping.key)\" on \(deviceID), fallback to Enter")
+                inputInjector.sendEnter()
+                return
+            }
+            inputInjector.sendKeyCombo(spec)
+        }
     }
 
     /// 双击取消结构（对齐 Windows CancelActiveSessionsForDoubleClick）：取消当前活跃

@@ -71,7 +71,7 @@ enum L10nKey: String, CaseIterable {
     case stateScanning, stateConnected
     case menuThemeColor, menuThemeSize, menuOverlayPosition
     case menuTranslation, textOriginal, menuTranslateTo
-    case menuInteractionSettings, menuEncoderSettings, menuRemoteSettings, menuBatteryMonitor
+    case menuInteractionSettings, menuEncoderSettings, menuRemoteSettings, menuButtonMapping, menuBatteryMonitor
     case menuUpdateFirmwareFromFile, menuForgetDevice
     case firmwareCheckingUpdates, firmwareUpdateCheckFailed, firmwareUpdateTo, menuFirmwareUpToDate
 
@@ -274,6 +274,7 @@ enum Localization {
         .menuInteractionSettings: "Device interaction settings...",
         .menuEncoderSettings: "Encoder settings...",
         .menuRemoteSettings: "Remote settings...",
+        .menuButtonMapping: "Button Mapping...",
         .menuBatteryMonitor: "Battery voltage monitor...",
         .menuUpdateFirmwareFromFile: "Update Firmware from File...",
         .menuForgetDevice: "Forget This Device",
@@ -537,6 +538,7 @@ enum Localization {
         .menuInteractionSettings: "设备交互设置…",
         .menuEncoderSettings: "编码器设置…",
         .menuRemoteSettings: "遥控器设置…",
+        .menuButtonMapping: "按键映射…",
         .menuBatteryMonitor: "电池电压监测…",
         .menuUpdateFirmwareFromFile: "从本地文件更新固件...",
         .menuForgetDevice: "忘记设备",

@@ -111,3 +111,24 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   home = "win+d"            # 该设备主页键 → 显示桌面
   menu = ""                 # 该设备菜单键显式取消映射
   ```
+
+- **按键映射（macOS）**：`[device.<id>.buttons]` 按设备覆盖表（macOS 端无全局覆盖表，
+  全局默认 = 拦截关闭、全部原生）。`intercept` 为 HID 拦截总开关（B 级键生效前提，
+  默认 `false`）；`keys` 子表键为 12 个按钮 ID（同 Windows 键表，另含 `voice_double_click`
+  语音键双击，A 级、不受 `intercept` 门控），值为 KeySpec 快捷键语法（action=key）或
+  `"none"`（action=disabled）；未写出的键回落原生。加载时 KeySpec 非法的条目忽略并回落
+  原生；保存时与默认一致的设备不落盘。消费端：B 级键走 `XiaomiButtonInterceptManager`
+  （IOHID 观察 + CGEvent tap 吞除 + `sendKeyCombo` 注入）；`voice_double_click` 走
+  ATVV 会话合成的 `button_double_click`（协调器按映射处置）。托盘设备菜单「按键映射…」
+  对话框编辑（仅小米设备显示）。
+
+  ```toml
+  [device.3A7F.buttons]
+  intercept = true
+
+  [device.3A7F.buttons.keys]
+  back = "alt+left"          # 返回键 → Option+左方向
+  volume_up = "none"         # 禁用音量+
+  voice_double_click = "cmd+t"  # 语音键双击 → Command+T
+  ```
+
