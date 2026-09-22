@@ -39,12 +39,22 @@ public struct StateEvent: Decodable {
     public let batteryLevel: Int?
     public let batteryCharging: Bool?
     public let batteryUsbPowered: Bool?
+    /// gateway_key 事件字段（P1 隧道融合）：被路由为 software 的小米遥控器键名与
+    /// 按下/抬起沿（pressed/released 成对到达，链路中断由固件合成抬起沿）。
+    public let gatewayKey: String?
+    public let gatewayPressed: Bool?
+    /// gateway_status 事件字段：固件当前 "gateway"/"normal"（独立小帧，老固件不发）。
+    public let gatewayMode: String?
+    /// gateway_keymap 报告帧字段：路由表回报（gateway_keymap_set/get 的应答）。
+    public let keymapRoutes: [GatewayKeymapRoute]?
 
     public init(event: String, button: String?, sessionID: UInt32?, durationMs: UInt32?,
                 hardware: String?, firmwareVersion: String?, buttons: [String]?, uiStates: [String]?,
                 source: String? = nil, steps: UInt32? = nil, direction: String? = nil,
                 encoderPresent: Bool? = nil, batteryLevel: Int? = nil,
-                batteryCharging: Bool? = nil, batteryUsbPowered: Bool? = nil) {
+                batteryCharging: Bool? = nil, batteryUsbPowered: Bool? = nil,
+                gatewayKey: String? = nil, gatewayPressed: Bool? = nil,
+                gatewayMode: String? = nil, keymapRoutes: [GatewayKeymapRoute]? = nil) {
         self.event = event
         self.button = button
         self.sessionID = sessionID
@@ -60,6 +70,10 @@ public struct StateEvent: Decodable {
         self.batteryLevel = batteryLevel
         self.batteryCharging = batteryCharging
         self.batteryUsbPowered = batteryUsbPowered
+        self.gatewayKey = gatewayKey
+        self.gatewayPressed = gatewayPressed
+        self.gatewayMode = gatewayMode
+        self.keymapRoutes = keymapRoutes
     }
 
     enum CodingKeys: String, CodingKey {
@@ -78,6 +92,10 @@ public struct StateEvent: Decodable {
         case batteryLevel = "level"
         case batteryCharging = "charging"
         case batteryUsbPowered = "usb_powered"
+        case gatewayKey = "key"
+        case gatewayPressed = "pressed"
+        case gatewayMode = "mode"
+        case keymapRoutes = "routes"
     }
 }
 
@@ -260,6 +278,29 @@ public enum BleProtocol {
         let payload = [
             "event": "interaction_mode",
             "mode": mode.rawValue
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 网关目标机名上报帧（对齐 Windows BleProtocol::GatewayTargetInfoPayload，P1 切换器）：
+    /// `{"event":"gateway_target_info","name":"<name>"}`。固件绑定到当前连接对端并存
+    /// NVS；>23 字节拒收——截断在 GatewaySupport.targetInfoName 完成。
+    public static func gatewayTargetInfoPayload(name: String) -> Data {
+        let payload = [
+            "event": "gateway_target_info",
+            "name": name
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 网关按键路由设置帧（对齐 Windows BleProtocol::GatewayKeymapSetPayload，P1 隧道融合）：
+    /// `{"event":"gateway_keymap_set","key":"<key>","route":"software"|"passthrough"}`。
+    /// 固件应答 `gateway_keymap` 报告帧；路由表持久化在固件 NVS（全局，非按目标）。
+    public static func gatewayKeymapSetPayload(key: String, route: String) -> Data {
+        let payload = [
+            "event": "gateway_keymap_set",
+            "key": key,
+            "route": route
         ]
         return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
     }

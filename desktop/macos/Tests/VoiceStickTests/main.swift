@@ -18,6 +18,7 @@ runAtvvSessionTests()
 runF5PredicateTests()
 runBleProtocolHelpersTests()
 runRemoteButtonHIDTests()
+runGatewaySupportTests()
 
 let passed = totalChecks - failedChecks
 print("PASSED \(passed)/\(totalChecks) (golden fixtures: \(goldenChecked) session(s))")

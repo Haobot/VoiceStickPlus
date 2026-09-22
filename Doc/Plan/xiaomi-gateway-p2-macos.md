@@ -115,6 +115,22 @@ macOS 的等价物是「系统设置 → 蓝牙 → 连接键盘」，而**核�
 **影响**：P2 的「第 1 步 StateEvent 扩字段」等实施项现在有了可编译的基线；
 `bffa235` 意图的按键映射功能（含 A 级语音键双击动作）在 macOS 端完整可用。
 
+## 9. 代码交付记录（2026-09-22，交付物 1/4/5）
+
+构建修复完成后同日交付网关适配的代码部分（设计见 §3.1，协议帧 `Doc/Ref/protocol.md`）：
+
+| 交付物 | 实现 | 备注 |
+|---|---|---|
+| `gateway_key` 解析与注入 | `StateEvent` 增 `gateway_key`/`gateway_pressed`/`mode`/`routes` 字段（core `BleProtocol`）；`handleStateEvent` 增 `gateway_status`（信息性日志，macOS 无直连 ATVV 可抑制）/`gateway_key`/`gateway_keymap` 分支；按下沿按活跃配对 RC 的按键映射注入（`.key`→KeySpec 组合键、`.disabled`→吞掉、`.native`→忽略防错误注入） | 注入复用 `KeySpec.parse` + `InputInjector.sendKeyCombo`（§3.1 设想的 usage→keyCode 表不再需要） |
+| `gateway_target_info` 上报 | 连接就绪（`onConnectionChange` 的 StickS3 循环）即发本机电脑名；`GatewaySupport.targetInfoName` 规整（去空白、UTF-8 ≤23 字节按字符边界截断） | Windows 参照 `voice_stick_coordinator.cc:162` |
+| `gateway_keymap_set` 下发 | 连接就绪 + 配置热更（`updateConfig`）时逐键幂等重发：key/disabled → `software`（禁用键路由到软件侧吞掉——HOGP 直通会放行，达不成禁用语义）、native → `passthrough`；显式覆盖全部 13 协议键（含 macOS 无映射 UI 的 volume_mute/power，避免继承上一目标残留的 software 路由） | 路由与消费同源（活跃配对 RC 的 `[device.<id>.buttons]`），「路由为 software 的键必能被消费」 |
+
+纯逻辑（`GatewaySupport` 路由推导/主机名规整、StateEvent 网关字段解析、payload 构造器）全部下沉
+VoiceStickCore，新增 29 项单测（`GatewaySupportTests`），runner 438/438 → 467/467。
+
+**未完成（需真机，按 §4 步骤 3-5）**：HOGP 系统配对 spike 三问（§3.2/§5）、配对引导文案
+（依赖 spike）、语音/按键/软件路由键真机验收（P3 §5.6 时延口径）。
+
 ## 6. 风险
 
 | 风险 | 缓解 |

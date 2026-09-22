@@ -237,6 +237,9 @@ final class VoiceStickCoordinator {
                 // （对齐 Windows 连接回调；BLE 层另有按类门控兜底）。
                 for device in connectedDevices where device.deviceClass == .stickS3 {
                     self.sendDeviceInteractionSettings(deviceID: device.deviceID)
+                    // 网关模式（P2）：就绪即上报主机名（P1 目标表命名）+ 推送按键路由
+                    //（幂等重发，配置漂移自愈；对齐 Windows PublishConnections 路径）。
+                    self.pushGatewayConfig(deviceID: device.deviceID)
                 }
             } else {
                 self.statusController.setStatus(self.pairedDeviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
@@ -306,6 +309,9 @@ final class VoiceStickCoordinator {
         // （对齐 Windows UpdateConfig；小米遥控器跳过）。
         for deviceID in ble.connectedStickDeviceIDs() {
             sendDeviceInteractionSettings(deviceID: deviceID)
+            // 按键映射配置变化 → 重发网关路由（主机名不变不重报；对齐 Windows
+            // OnSettingsChanged 重发路径）。
+            pushGatewayKeymapRoutes(deviceID: deviceID)
         }
         debugAudioRecorder = DebugAudioRecorder(
             enabled: config.debugAudioCache,
@@ -529,6 +535,19 @@ final class VoiceStickCoordinator {
             handleTapEvent(event, peripheralID: peripheralID)
         case "encoder_rotate":
             handleEncoderRotate(event, peripheralID: peripheralID)
+        case "gateway_status":
+            // 网关模式小帧（信息性）。Windows 用它抑制「直连遥控器 ATVV」；macOS
+            // 无直连 ATVV 路径，仅记日志。老固件不发此事件，缺席即未知。
+            if let mode = event.gatewayMode {
+                NSLog("gateway status dev=\(deviceID(for: peripheralID) ?? "unknown") mode=\(mode)")
+            }
+        case "gateway_key":
+            handleGatewayKey(event)
+        case "gateway_keymap":
+            if let routes = event.keymapRoutes {
+                NSLog("gateway keymap report: " +
+                      routes.map { "\($0.key)=\($0.route)" }.joined(separator: ", "))
+            }
         default:
             break
         }
@@ -570,6 +589,74 @@ final class VoiceStickCoordinator {
                 return
             }
             inputInjector.sendKeyCombo(spec)
+        }
+    }
+
+    // ---- 网关模式（P2，Doc/Plan/xiaomi-gateway-p2-macos.md）----
+
+    /// 本机「电脑名称」（对齐 Windows ComputerName 语义）：localizedName 优先，
+    /// 回退 hostname。规整与 23 字节截断在 GatewaySupport.targetInfoName。
+    private static var localHostName: String {
+        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+    }
+
+    /// 活跃小米遥控器（首个配对 RC 条目，对齐 Windows active_rc 取法）：路由下发与
+    /// gateway_key 消费共用其按键映射；无配对 RC 时回落全局默认。
+    private var activeXiaomiDeviceID: String? {
+        config.pairedDevices.first {
+            $0.hardware == PairedDeviceEntry.hardwareXiaomiRemote2Pro
+        }?.deviceID
+    }
+
+    /// 连接就绪即上报主机名 + 推送按键路由（幂等）。
+    private func pushGatewayConfig(deviceID: String) {
+        if let name = GatewaySupport.targetInfoName(Self.localHostName) {
+            ble.sendStickControlPayload(
+                BleProtocol.gatewayTargetInfoPayload(name: name),
+                label: "gateway_target_info '\(name)'", deviceID: deviceID
+            )
+        } else {
+            NSLog("gateway target info skipped (empty host name) dev=VS-\(deviceID)")
+        }
+        pushGatewayKeymapRoutes(deviceID: deviceID)
+    }
+
+    /// 按本机按键映射逐键下发路由：key/disabled → software，native → passthrough
+    /// （对齐 Windows PushGatewayKeymapRoutesFor；key_map 是固件 NVS 全局态，两端各自
+    /// 连接时重发 = 当前活跃目标的配置生效）。
+    private func pushGatewayKeymapRoutes(deviceID: String) {
+        let settings = config.buttonsSettings(for: activeXiaomiDeviceID)
+        for route in GatewaySupport.routes(for: settings) {
+            ble.sendStickControlPayload(
+                BleProtocol.gatewayKeymapSetPayload(key: route.key, route: route.route),
+                label: "gateway_keymap_set \(route.key)=\(route.route)", deviceID: deviceID
+            )
+        }
+    }
+
+    /// 网关软件路由键消费（对齐 Windows OnGatewayKey）：只处理按下沿（抬起沿成对
+    /// 到达，注入为 down+up 点按）。映射取活跃 RC 的配置——与路由下发同源，保证
+    /// 「路由为 software 的键必能在此被消费」。禁用键吞掉；native/不可映射键忽略
+    ///（理论上是 Windows 端路由的残留，忽略避免错误注入）。
+    private func handleGatewayKey(_ event: StateEvent) {
+        guard event.gatewayPressed == true, let keyName = event.gatewayKey else { return }
+        guard let button = RemoteButton(rawValue: keyName) else {
+            NSLog("gateway key \(keyName) not mappable on macOS, ignored")
+            return
+        }
+        let mapping = config.buttonsSettings(for: activeXiaomiDeviceID).mapping(for: button)
+        switch mapping.action {
+        case .key:
+            guard let spec = KeySpec.parse(mapping.key) else {
+                NSLog("gateway key \(keyName) invalid key spec \"\(mapping.key)\", ignored")
+                return
+            }
+            NSLog("gateway key \(keyName) -> inject \(spec.displayText)")
+            inputInjector.sendKeyCombo(spec)
+        case .disabled:
+            NSLog("gateway key \(keyName) disabled by mapping, swallowed")
+        case .native:
+            NSLog("gateway key \(keyName) routed software but mapping native, ignored")
         }
     }
 
