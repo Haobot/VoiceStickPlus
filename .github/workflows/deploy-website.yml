@@ -166,6 +166,9 @@ jobs:
         working-directory: website
 
       - name: Sync website to COS
+        # 非阻塞：COS 渠道未就绪时不得阻塞最后的 GitHub Pages 部署（v2.4.0
+        # 实测 upload_cos.py 缺 import 曾卡住 Pages）；渠道就绪后恢复硬失败。
+        continue-on-error: true
         run: |
           set -euo pipefail
           pip install cos-python-sdk-v5

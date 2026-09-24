@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cos_uploader import upload_files
+from cos_uploader import collect_dir, upload_files
 
 
 def main() -> None:
