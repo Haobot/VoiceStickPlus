@@ -60,6 +60,10 @@ public:
     // on_gateway_key 转发，主线程调用）。设备归属由固件保证（遥控器只连 StickS3），
     // 无需 BREAK 佐证——直接查映射注入，按下沿 down 序、松开沿 up 序（支持按住）。
     void OnGatewayKeyEdge(std::string_view button, bool pressed);
+    // 网关长按连发间隔（ms，状态机内部钳位 [30,300]）；设置页滑块热更路径。
+    void SetGatewayRepeatIntervalMs(std::int64_t ms) {
+        gateway_repeater_.SetRepeatIntervalMs(ms);
+    }
 
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM w_param,
@@ -120,6 +124,8 @@ private:
     XiaomiUsageTapManager tap_manager_;
     XiaomiTapDirectKeys tap_direct_keys_;
     XiaomiTapEvidenceTable tap_evidence_;
+    // 网关软件路由键长按连发（gateway_key 沿驱动，音量键同款节拍）。
+    XiaomiGatewayKeyRepeater gateway_repeater_;
     XiaomiUsageTapManager::LinkState tap_state_ =
         XiaomiUsageTapManager::LinkState::kNoHost;
     static XiaomiKeymapHook* active_instance_;

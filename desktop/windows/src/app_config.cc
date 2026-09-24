@@ -777,6 +777,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
         if (auto value = TomlBool(table, "xiaomi_suppress_f5")) config.xiaomi_suppress_f5 = *value;
+        if (auto value = TomlInt(table, "xiaomi_gateway_repeat_interval_ms")) config.xiaomi_gateway_repeat_interval_ms = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.default_interaction_settings.tap_to_arrow = *value;
         if (auto value = TomlBool(table, "encoder_to_arrow")) config.default_encoder_settings.to_arrow = *value;

@@ -459,6 +459,38 @@ NimBLE 把 `dsc->att_flags` 原样登记为属性权限
    → 注入动作；清除动作 → 恢复 HOGP 直通（系统层直接响应）。
 6. 回归：普通模式全功能；网关模式按键直通键行为与 Phase 1 一致。
 
+### 8.2 Phase 2 真机验收闭环 + P1 体验增强（2026-09-23/24）
+
+**验收结论（2026-09-23 用户确认）**：语音识别可用、全部按键可识别——Phase 2
+出口判据达成。收尾：NimBLE 日志级别回归 WARNING（`489c70a3`），最终版固件烧录
+验证启动全链（小米链路 → 7/7 Report CCCD → Control Point 唤醒 → ATVV READY）。
+
+**P1 体验增强（2026-09-23/24，用户真机验收通过）**：
+
+1. **网关按键映射 UI 入口**：按键映射对话框菜单原先只对直连桌面端的小米
+   遥控器显示（`is_xiaomi` 判定）——网关模式遥控器配对在 StickS3 上，桌面端
+   无入口，P1 配置链路实际不可用。修复：StickS3 设备子菜单同样显示「按键映射」
+   入口，新增 `ShowGatewayKeymapDialog` 编辑全局默认 `[xiaomi.keys]`（与协调器
+   `PushGatewayKeymapRoutesFor` 无配对 RC 时的取值口径一致）；菜单命令按设备
+   hardware 分发直连/网关两种对话框。
+2. **软件路由键长按连发**：`gateway_key` 沿注入原为按下 down/松开 up 各一次，
+   无连发（Backspace 按住只删一字）。新增 `XiaomiGatewayKeyRepeater` 纯逻辑
+   状态机（TDD）：按下沿登记 hold，400ms 延迟后按 120ms 间隔产出完整 down+up
+   对（音量键直触发同款节拍 `XiaomiTapRepeatTimingFor` volume 400/120），
+   松开沿清除；复用钩子 40ms `kRepeatTimerId` 轮询（`SyncRepeatTimer` 的
+   any_hold 纳入网关 hold）；映射热更取消时放行；断连/卸载 Reset 防卡键。
+3. **连发间隔可调滑块**：连发间隔默认 120ms 偏慢（用户反馈）——新配置项
+   `xiaomi_gateway_repeat_interval_ms`（钳位 [30,300]），按键映射对话框滑块
+   （两处对话框共享全局设置），**拖动中只刷数值标签、松手（TB_ENDTRACK）/
+   离散步进才回调落盘**（避免逐 tick 写配置文件）；`ApplyUpdatedConfig →
+   SyncXiaomiKeymapHook` 路径热更连发状态机节拍（先于启停判定，钩子未运行
+   时也带入新值）。
+4. 配套单测：路由逐键下发（12 键口径）、连发节拍/多键并存/热更取消/间隔
+   钳位——`TestCoordinatorPushesGatewayKeymapRoutes`/`TestXiaomiGatewayKeyRepeater`。
+   桌面可映射键表为 12 键（`kXiaomiMappableButtons`，无 mic/volume_mute），
+   固件可路由键表 13 键（含 volume_mute 保持系统直通默认），两侧口径差异
+   属预期。
+
 ## 9. 开放决策点（待用户审阅定案）
 
 1. **power/tv 键默认行为**：截留（本文默认，防误关机）还是映射（如 power→屏幕菜单、tv→模式切换）？

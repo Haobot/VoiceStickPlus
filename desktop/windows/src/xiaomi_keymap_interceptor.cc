@@ -236,4 +236,55 @@ XiaomiKeymapInterceptor::PendingAwaitingBreak() const {
 
 void XiaomiKeymapInterceptor::Reset() { pendings_.clear(); }
 
+// ---- 网关软件路由键长按连发（音量键直触发同款节拍，纯逻辑） ----
+
+std::vector<XiaomiGatewayKeyRepeater::Hold>::iterator
+XiaomiGatewayKeyRepeater::FindHold(std::string_view button) {
+    return std::find_if(holds_.begin(), holds_.end(),
+                        [button](const Hold& hold) {
+                            return hold.button == button;
+                        });
+}
+
+void XiaomiGatewayKeyRepeater::OnPressed(
+    std::string_view button, std::int64_t now_ms,
+    const std::map<std::string, std::string>& key_map) {
+    if (FindHold(button) != holds_.end()) return;  // 报文抖动幂等，节拍不重置
+    if (!XiaomiMappedSpec(button, key_map).has_value()) return;  // 放行语义
+    Hold hold;
+    hold.button = std::string(button);
+    hold.pressed_ms = now_ms;
+    holds_.push_back(std::move(hold));
+}
+
+void XiaomiGatewayKeyRepeater::OnReleased(std::string_view button) {
+    const auto hold = FindHold(button);
+    if (hold != holds_.end()) holds_.erase(hold);
+}
+
+std::optional<XiaomiTapDirectAction> XiaomiGatewayKeyRepeater::PollRepeat(
+    std::string_view button, std::int64_t now_ms,
+    const std::map<std::string, std::string>& key_map) {
+    const auto hold = FindHold(button);
+    if (hold == holds_.end()) return std::nullopt;
+    if (hold->last_fire_ms == 0) {
+        if (now_ms - hold->pressed_ms < kRepeatDelayMs) return std::nullopt;
+    } else if (now_ms - hold->last_fire_ms < repeat_interval_ms_) {
+        return std::nullopt;
+    }
+    // 判定时映射已被取消（key_map 热更）：hold 清除，放行语义。
+    const auto spec = XiaomiMappedSpec(button, key_map);
+    if (!spec.has_value()) {
+        holds_.erase(hold);
+        return std::nullopt;
+    }
+    XiaomiTapDirectAction action;
+    action.inject = XiaomiKeymapInjectDownVks(*spec);
+    action.inject_up = XiaomiKeymapInjectUpVks(*spec);
+    hold->last_fire_ms = now_ms;
+    return action;
+}
+
+void XiaomiGatewayKeyRepeater::Reset() { holds_.clear(); }
+
 } // namespace voicestick

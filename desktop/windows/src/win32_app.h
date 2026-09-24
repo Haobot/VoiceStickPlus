@@ -143,6 +143,9 @@ private:
     void ShowRemoteSettingsDialog(const std::string& device_id);
     // 打开指定设备的按键映射对话框（托盘设备子菜单「按键映射…」，仅小米遥控器显示）。
     void ShowXiaomiKeymapDialog(const std::string& device_id);
+    // 打开网关模式遥控器按键映射对话框（StickS3 设备子菜单入口）：编辑全局默认
+    // [xiaomi.keys]，协调器经 gateway_keymap_set 下发固件软件路由（P1）。
+    void ShowGatewayKeymapDialog();
     // 打开指定设备的电池电压监测窗口（托盘设备子菜单「电池电压监测…」，仅连接设备）。
     void ShowBatteryMonitorDialog(const std::string& device_id);
     void ShowAirMouseTuning();

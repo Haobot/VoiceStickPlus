@@ -331,6 +331,9 @@ struct AppConfig {
     XiaomiSettings default_xiaomi_settings;
     std::map<std::string, XiaomiSettings> device_xiaomi_settings;
     bool xiaomi_suppress_f5 = true;
+    // 网关软件路由键长按连发间隔（ms）：按键映射对话框滑块调整，钳位
+    // [30, 300]（对话框/连发状态机双重钳位），默认 120ms（音量键直触发同款）。
+    int xiaomi_gateway_repeat_interval_ms = 120;
     // 体感鼠标：速度环时间常数（秒），手停滑行 ≈ 3×tau，越大缓停越长。默认 0.05。
     double air_mouse_tau = 0.05;
     // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。

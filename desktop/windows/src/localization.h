@@ -438,6 +438,8 @@ enum class StringId {
     kXiaomiHidTapStateNoHost,
     kXiaomiHidTapStatePending,
     kXiaomiHidTapStateConnected,
+    // 网关软件路由键长按连发间隔（按键映射对话框滑块）
+    kXiaomiGatewayRepeatLabel,
     kXiaomiHidTapStateStale,
     kSettingsLocalRefineEnable,
     kSettingsLocalRefineModelOk,

@@ -2631,6 +2631,57 @@ void TestBleEncoderPayloads() {
     assert(std::string(gate_on.begin(), gate_on.end()) == "{\"event\":\"encoder_recording_gate\",\"enabled\":true}");
 }
 
+// 网关按键路由（P1）：连接/配置变化时对 StickS3 设备逐键下发软件路由。
+// 无配对 RC 设备时取全局默认 [xiaomi.keys]（网关模式遥控器不直连桌面端的口径）。
+void TestCoordinatorPushesGatewayKeymapRoutes() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_xiaomi_settings.key_map["back"] = "ctrl+alt+d";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 连接即下发：桌面端可映射 12 键各一条（kXiaomiMappableButtons，无 mic/
+    // volume_mute），back 有映射→software，其余→passthrough。
+    ble_ptr->connected_device_ids.insert("53A8");
+    ble_ptr->on_connection_change(
+        {ConnectedDevice{"53A8", "VS-53A8", std::string(kHardwareStickS3)}});
+    assert(ble_ptr->sent_gateway_keymap_sets.size() == 12);
+    bool back_software = false;
+    for (const auto& sent : ble_ptr->sent_gateway_keymap_sets) {
+        assert(sent.device_id.has_value());
+        assert(*sent.device_id == "53A8");
+        if (sent.key == "back") {
+            back_software = sent.software;
+        } else {
+            assert(!sent.software);
+        }
+    }
+    assert(back_software);
+
+    // 配置热更（对话框保存路径）：映射变化逐键重发——back 清除、tv 新增。
+    AppConfig updated = AppConfig::Defaults();
+    updated.default_xiaomi_settings.key_map["tv"] = "f5";
+    coordinator.UpdateConfig(updated);
+    assert(ble_ptr->sent_gateway_keymap_sets.size() == 24);
+    bool tv_software = false;
+    bool back_passthrough = false;
+    // 只查第二批（前 12 条属第一批：back 当时确为 software）。
+    for (std::size_t k = 12; k < ble_ptr->sent_gateway_keymap_sets.size(); ++k) {
+        const auto& sent = ble_ptr->sent_gateway_keymap_sets[k];
+        if (sent.key == "tv") {
+            tv_software = sent.software;
+        } else if (sent.key == "back") {
+            back_passthrough = !sent.software;  // 已清除 → 恢复直通
+        }
+    }
+    assert(tv_software);
+    assert(back_passthrough);
+}
+
 void TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -7280,6 +7331,67 @@ void TestXiaomiTapDirectKeys() {
     assert(XiaomiTapRepeatTimingFor("home").delay_ms == 0);
     assert(XiaomiTapRepeatTimingFor("home").interval_ms == 0);
     assert(XiaomiTapRepeatTimingFor("bogus").interval_ms == 0);
+}
+
+// 网关软件路由键长按连发（音量键同款手感）：按下沿由调用方注入 down 序（本
+// 状态机只登记），延迟节拍后 PollRepeat 产出完整 down+up 对，松开沿清除。
+void TestXiaomiGatewayKeyRepeater() {
+    const std::map<std::string, std::string> key_map = {
+        {"back", "backspace"},
+        {"ok", "ctrl+alt+d"}};
+    constexpr std::int64_t kNow = 100000;
+
+    // 登记与节拍：延迟前不出对，到点出对，间隔内不重复。
+    {
+        XiaomiGatewayKeyRepeater rep;
+        rep.OnPressed("back", kNow, key_map);
+        assert(rep.HasHold());
+        assert(!rep.PollRepeat("back", kNow + 399, key_map).has_value());
+        const auto first = rep.PollRepeat("back", kNow + 400, key_map);
+        assert(first.has_value());
+        // 完整 down+up 对（Backspace 单键：down 序与 up 序同键）。
+        assert(first->inject == (std::vector<UINT>{VK_BACK}));
+        assert(first->inject_up == (std::vector<UINT>{VK_BACK}));
+        assert(!rep.PollRepeat("back", kNow + 519, key_map).has_value());
+        assert(rep.PollRepeat("back", kNow + 520, key_map).has_value());
+    }
+    // 松开沿清除：长按中途松手不再出对。
+    {
+        XiaomiGatewayKeyRepeater rep;
+        rep.OnPressed("back", kNow, key_map);
+        assert(rep.PollRepeat("back", kNow + 400, key_map).has_value());
+        rep.OnReleased("back");
+        assert(!rep.HasHold());
+        assert(!rep.PollRepeat("back", kNow + 600, key_map).has_value());
+    }
+    // 无映射按键不登记（放行语义，连发无从谈起）。
+    {
+        XiaomiGatewayKeyRepeater rep;
+        const std::map<std::string, std::string> empty_map;
+        rep.OnPressed("home", kNow, empty_map);
+        assert(!rep.HasHold());
+        assert(!rep.PollRepeat("home", kNow + 400, empty_map).has_value());
+    }
+    // 组合键映射：重复对 = 修饰键序 down + 主键，up 反序（与单击注入同构）。
+    {
+        XiaomiGatewayKeyRepeater rep;
+        rep.OnPressed("ok", kNow, key_map);
+        const auto pair = rep.PollRepeat("ok", kNow + 400, key_map).value();
+        assert(pair.inject == (std::vector<UINT>{VK_CONTROL, VK_MENU, 'D'}));
+        assert(pair.inject_up == (std::vector<UINT>{'D', VK_MENU, VK_CONTROL}));
+    }
+    // 多键并存互不干扰；Reset 断连清全部。
+    {
+        XiaomiGatewayKeyRepeater rep;
+        rep.OnPressed("back", kNow, key_map);
+        rep.OnPressed("ok", kNow + 100, key_map);
+        assert(rep.PollRepeat("back", kNow + 400, key_map).has_value());
+        assert(!rep.PollRepeat("ok", kNow + 400, key_map).has_value());
+        assert(rep.PollRepeat("ok", kNow + 500, key_map).has_value());
+        rep.Reset();
+        assert(!rep.HasHold());
+        assert(!rep.PollRepeat("back", kNow + 800, key_map).has_value());
+    }
 }
 
 void TestXiaomiTapEvidenceTable() {
@@ -14276,9 +14388,19 @@ void TestWasapiMicCaptureSmoke() {
 
 namespace {
 
+// OpenClipboard 对其他进程的瞬时占用（剪贴板监听器/IME 等）会短暂失败，
+// Win32 官方建议重试。带重试的打开：最多 ~500ms，仍失败返回 false。
+bool VaultOpenClipboardWithRetry() {
+    for (int attempt = 0; attempt < 25; ++attempt) {
+        if (OpenClipboard(nullptr)) return true;
+        Sleep(20);
+    }
+    return false;
+}
+
 // 一次打开写入多个 HGLOBAL 格式（布置“用户剪贴板”内容；EmptyClipboard 清场）。
 void VaultSetClipboard(const std::vector<std::pair<UINT, std::vector<BYTE>>>& items) {
-    assert(OpenClipboard(nullptr));
+    assert(VaultOpenClipboardWithRetry());
     EmptyClipboard();
     for (const auto& item : items) {
         HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, item.second.size());
@@ -14363,7 +14485,7 @@ void TestClipboardVaultSkipsHandleFormats() {
 
     // CF_BITMAP 是句柄类格式（非 HGLOBAL，GlobalLock 无意义）：Save 必须跳过；
     // 恢复后位图丢失为已知限制（位图场景应用几乎都同时提供 CF_DIB 内存版）。
-    assert(OpenClipboard(nullptr));
+    assert(VaultOpenClipboardWithRetry());
     EmptyClipboard();
     {
         const wchar_t* text = L"带位图的文本";
@@ -14406,7 +14528,7 @@ void TestClipboardVaultEmptyClipboardSnapshot() {
     } catch (const std::runtime_error&) {
     }
 
-    assert(OpenClipboard(nullptr));
+    assert(VaultOpenClipboardWithRetry());
     EmptyClipboard();
     CloseClipboard();
 
@@ -15482,6 +15604,7 @@ int main() {
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
     TestBleEncoderPayloads();
+    TestCoordinatorPushesGatewayKeymapRoutes();
     TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsInteractionSettingsPerDeviceOverride();
     TestCoordinatorUpdateFirmwareFromFile();
@@ -15626,6 +15749,7 @@ int main() {
     TestXiaomiUsageTapButtonTable();
     TestXiaomiUsageTapSessionEdges();
     TestXiaomiTapDirectKeys();
+    TestXiaomiGatewayKeyRepeater();
     TestXiaomiTapEvidenceTable();
     TestXiaomiTapFrameDecoder();
     TestXiaomiHostPidValueParsing();

@@ -448,6 +448,8 @@ constexpr StringTable EnglishStrings() {
         "component injected into the system HID host. Re-approval is needed after "
         "the remote reconnects or the app updates.";
     table[Index(StringId::kXiaomiHidTapStateDisabled)] = "Enhanced keys: off";
+    table[Index(StringId::kXiaomiGatewayRepeatLabel)] =
+        "Long-press repeat interval";
     table[Index(StringId::kXiaomiHidTapStateNoHost)] =
         "Enhanced keys: waiting for the remote to connect";
     table[Index(StringId::kXiaomiHidTapStatePending)] =
@@ -923,6 +925,7 @@ constexpr StringTable ChineseStrings() {
         "启用 Windows 蓝牙栈会丢弃的三个按键（返回 / 音量+ / 音量-），通过注入系统"
         " HID 宿主的辅助组件实现。遥控器重连或应用更新后需重新授权。";
     table[Index(StringId::kXiaomiHidTapStateDisabled)] = "增强按键识别：未启用";
+    table[Index(StringId::kXiaomiGatewayRepeatLabel)] = "长按连发间隔";
     table[Index(StringId::kXiaomiHidTapStateNoHost)] =
         "增强按键识别：等待遥控器连接";
     table[Index(StringId::kXiaomiHidTapStatePending)] =

@@ -58,6 +58,7 @@ void XiaomiKeymapHook::Start(std::map<std::string, std::string> key_map,
             tap_manager_.Stop();
             tap_enabled_ = false;
             tap_direct_keys_.Reset();
+            gateway_repeater_.Reset();
             tap_evidence_.Reset();
         }
         return;
@@ -96,6 +97,7 @@ void XiaomiKeymapHook::Start(std::map<std::string, std::string> key_map,
     tap_enabled_ = enable_tap;
     if (tap_enabled_) {
         tap_direct_keys_.Reset();
+        gateway_repeater_.Reset();
         tap_evidence_.Reset();
         tap_state_ = XiaomiUsageTapManager::LinkState::kNoHost;
         tap_manager_.Start(TapEdgeTrampoline, TapStateTrampoline, this);
@@ -117,6 +119,7 @@ void XiaomiKeymapHook::Stop() {
         tap_manager_.Stop();
         tap_enabled_ = false;
         tap_direct_keys_.Reset();
+        gateway_repeater_.Reset();
         tap_evidence_.Reset();
     }
     if (hook_) {
@@ -376,11 +379,16 @@ void XiaomiKeymapHook::OnGatewayKeyEdge(std::string_view button, bool pressed) {
         return;
     }
     // 沿成对可靠（固件保证），支持真实按住：down 沿注 down 序、up 沿注 up 序。
+    // 长按连发：down 沿登记 hold，重复定时器到节拍后注入完整 down+up 对
+    //（音量键同款手感），up 沿清除。
     if (pressed) {
         InjectVks(XiaomiKeymapInjectDownVks(*spec), true);
+        gateway_repeater_.OnPressed(button, NowSteadyMs(), *key_map);
     } else {
         InjectVks(XiaomiKeymapInjectUpVks(*spec), false);
+        gateway_repeater_.OnReleased(button);
     }
+    SyncRepeatTimer();
     LogApp("XiaomiKeymapHook: gateway key=" + std::string(button) +
            (pressed ? " down" : " up"));
 }
@@ -414,11 +422,21 @@ void XiaomiKeymapHook::OnRepeatTimer() {
             ApplyAction(wrapper, "tap-direct-repeat", button);
         }
     }
+    // 网关软件路由键长按连发（按下沿已注入 down 序，此处补完整 down+up 对）。
+    for (const auto& button : kXiaomiMappableButtons) {
+        auto action = gateway_repeater_.PollRepeat(button, now, *key_map);
+        if (action.has_value()) {
+            XiaomiKeymapHookAction wrapper;
+            wrapper.inject = std::move(action->inject);
+            wrapper.inject_up = std::move(action->inject_up);
+            ApplyAction(wrapper, "gateway-repeat", button);
+        }
+    }
     SyncRepeatTimer();
 }
 
 void XiaomiKeymapHook::SyncRepeatTimer() {
-    bool any_hold = false;
+    bool any_hold = gateway_repeater_.HasHold();
     for (const auto button : kTapDirectButtons) {
         if (tap_direct_keys_.HasHold(button)) {
             any_hold = true;

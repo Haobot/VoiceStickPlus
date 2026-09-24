@@ -440,10 +440,12 @@ XiaomiKeymapDialog::XiaomiKeymapDialog(HINSTANCE instance, HWND parent,
                                        std::string device_id,
                                        XiaomiSettings current,
                                        XiaomiSettings defaults,
-                                       UiLanguage language)
+                                       UiLanguage language,
+                                       int repeat_interval_ms)
     : instance_(instance), parent_(parent), device_id_(std::move(device_id)),
       current_(std::move(current)), defaults_(std::move(defaults)),
-      language_(language), working_key_map_(current_.key_map) {}
+      language_(language), working_key_map_(current_.key_map),
+      repeat_interval_ms_(repeat_interval_ms) {}
 
 XiaomiKeymapDialog::~XiaomiKeymapDialog() {
     capture_.Cancel();
@@ -569,6 +571,12 @@ INT_PTR XiaomiKeymapDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
             return TRUE;
         }
         break;
+    case WM_HSCROLL:
+        if (reinterpret_cast<HWND>(l_param) == repeat_slider_) {
+            OnRepeatSliderScroll(static_cast<int>(LOWORD(w_param)));
+            return TRUE;
+        }
+        break;
     case WM_CTLCOLORSTATIC: {
         const auto control = reinterpret_cast<HWND>(l_param);
         if (std::find(label_controls_.begin(), label_controls_.end(), control) !=
@@ -690,6 +698,24 @@ void XiaomiKeymapDialog::BuildControls() {
     RefreshTapStateLabel();
     SetTimer(hwnd_, kTapStateTimerId, kTapStateTimerMs, nullptr);
 
+    // ===== 网关长按连发间隔滑块：即时生效（on_repeat_interval_changed 保存
+    // 并热更连发状态机），不随「保存」走。拖动中只刷数值标签，松手/离散步进
+    // 才触发回调（避免逐 tick 落盘）。范围 [30,300]ms，与连发状态机钳位一致。
+    repeat_label_ = remember_label(CreateLabel(
+        hwnd_, L"", rx, Dp(424), rw, Dp(20), instance_));
+    repeat_slider_ = remember(CreateWindowExW(
+        0, TRACKBAR_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
+        rx, Dp(446), rw, Dp(30), hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdRepeatSlider)),
+        instance_, nullptr));
+    SendMessageW(repeat_slider_, TBM_SETRANGE, TRUE,
+                 MAKELPARAM(kRepeatSliderMin, kRepeatSliderMax));
+    SendMessageW(repeat_slider_, TBM_SETTICFREQ, 30, 0);
+    SendMessageW(repeat_slider_, TBM_SETPOS, TRUE,
+                 static_cast<LPARAM>(repeat_interval_ms_));
+    RefreshRepeatIntervalLabel();
+
     const int btn_y = Dp(kClientHeight) - Dp(45);
     restore_defaults_button_ = remember(CreateButton(
         hwnd_, TrW(StringId::kEncoderSettingsRestoreDefaults, language).c_str(),
@@ -712,6 +738,28 @@ void XiaomiKeymapDialog::BuildControls() {
     selected_hotspot_ = 0;
     canvas_->SetSelected(0);
     RefreshSidePanel();
+}
+
+void XiaomiKeymapDialog::RefreshRepeatIntervalLabel() {
+    if (repeat_label_ == nullptr) return;
+    const auto language = EffectiveUiLanguage(language_);
+    const std::wstring text =
+        TrW(StringId::kXiaomiGatewayRepeatLabel, language) + L": " +
+        std::to_wstring(repeat_interval_ms_) + L" ms";
+    SetWindowTextW(repeat_label_, text.c_str());
+}
+
+void XiaomiKeymapDialog::OnRepeatSliderScroll(int scroll_code) {
+    const int pos = static_cast<int>(
+        SendMessageW(repeat_slider_, TBM_GETPOS, 0, 0));
+    repeat_interval_ms_ = pos;
+    RefreshRepeatIntervalLabel();
+    // 拖动中（TB_THUMBTRACK）只刷标签；松手（TB_ENDTRACK）与键盘/翻页等
+    // 离散步进才触发回调（保存配置 + 热更连发状态机）。
+    if (scroll_code == TB_THUMBTRACK) return;
+    if (on_repeat_interval_changed) {
+        on_repeat_interval_changed(repeat_interval_ms_);
+    }
 }
 
 void XiaomiKeymapDialog::OnCanvasButtonClicked(int hotspot_index) {

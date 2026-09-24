@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "key_spec.h"
+#include "xiaomi_usage_tap.h"  // XiaomiTapDirectAction（注入对，直触发/网关键共用）
 
 namespace voicestick {
 
@@ -49,6 +50,55 @@ struct XiaomiKeymapHookAction {
     bool swallow = false;
     std::vector<UINT> inject;
     std::vector<UINT> inject_up;
+};
+
+// 网关软件路由键的长按连发状态机（纯逻辑，时钟与 key_map 由外部注入）：
+// 按下沿由调用方注入 down 序并登记 hold（真按住语义——组合键映射按住时
+// 修饰键保持），到达延迟节拍后 PollRepeat 产出完整 down+up 对（音量键
+// 直触发同款 400/120 手感，Doc/Plan/xiaomi-remote-stick-gateway.md P1），
+// 松开沿调用方注入 up 序并清除。无映射按键不登记（放行语义）。
+class XiaomiGatewayKeyRepeater {
+public:
+    static constexpr std::int64_t kRepeatDelayMs = 400;
+    // 连发间隔默认 120ms（音量键直触发同款）；用户可经按键映射对话框滑块
+    // 调整（钳位 [30, 300]，热更对下一次重复立即生效）。
+    static constexpr std::int64_t kRepeatIntervalMs = 120;
+    static constexpr std::int64_t kMinIntervalMs = 30;
+    static constexpr std::int64_t kMaxIntervalMs = 300;
+
+    void SetRepeatIntervalMs(std::int64_t ms) {
+        repeat_interval_ms_ = ms < kMinIntervalMs   ? kMinIntervalMs
+                              : ms > kMaxIntervalMs ? kMaxIntervalMs
+                                                    : ms;
+    }
+    std::int64_t repeat_interval_ms() const { return repeat_interval_ms_; }
+
+    // pressed：有有效映射才登记 hold（无映射/空串取消不登记，放行语义）；
+    // 重复抖动幂等：已有同键 hold 不重置节拍。
+    void OnPressed(std::string_view button, std::int64_t now_ms,
+                   const std::map<std::string, std::string>& key_map);
+    // released：清除该键 hold（无 hold 幂等）。
+    void OnReleased(std::string_view button);
+    // 长按轮询（WM_TIMER 40ms 粒度驱动）：到节拍返回映射的完整注入对；
+    // 未到点/无 hold/映射已取消（key_map 热更）→ nullopt。
+    std::optional<XiaomiTapDirectAction> PollRepeat(
+        std::string_view button, std::int64_t now_ms,
+        const std::map<std::string, std::string>& key_map);
+    bool HasHold() const { return !holds_.empty(); }
+    // 断连/钩子卸载清全部（防按键状态卡死）。
+    void Reset();
+
+private:
+    struct Hold {
+        std::string button;
+        std::int64_t pressed_ms = 0;
+        std::int64_t last_fire_ms = 0;
+    };
+
+    std::vector<Hold>::iterator FindHold(std::string_view button);
+
+    std::vector<Hold> holds_;
+    std::int64_t repeat_interval_ms_ = kRepeatIntervalMs;
 };
 
 // 消费端决策状态机（纯逻辑，时钟与佐证时刻由外部注入，可单测）。

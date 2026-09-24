@@ -32,7 +32,8 @@ public:
                        std::string device_id,
                        XiaomiSettings current,
                        XiaomiSettings defaults,
-                       UiLanguage language);
+                       UiLanguage language,
+                       int repeat_interval_ms = 120);
     ~XiaomiKeymapDialog();
 
     void Show();
@@ -44,6 +45,8 @@ public:
     // UAC 授权流程需要即时反馈）。nullopt = 链路未启用/未运行。
     std::function<void(const std::string& device_id, bool enabled)> on_hid_tap_changed;
     std::function<std::optional<XiaomiUsageTapManager::LinkState>()> tap_state_query;
+    // 网关长按连发间隔滑块即时回调（拖动释放即保存生效，不等「保存」）。
+    std::function<void(int interval_ms)> on_repeat_interval_changed;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -69,6 +72,10 @@ private:
     void SaveSettings();
     // 增强按键识别链路状态行刷新（2s 定时器 + 开关切换即时刷）。
     void RefreshTapStateLabel();
+    // 长按连发间隔滑块：标签刷新 + WM_HSCROLL 处理（拖动中只刷标签，
+    // 释放/离散步进才触发回调，避免逐 tick 落盘）。
+    void RefreshRepeatIntervalLabel();
+    void OnRepeatSliderScroll(int scroll_code);
     int Dp(int px) const;
 
     HINSTANCE instance_;
@@ -103,6 +110,10 @@ private:
     HWND hid_tap_toggle_ = nullptr;
     HWND hid_tap_hint_label_ = nullptr;
     HWND hid_tap_state_label_ = nullptr;
+    // 网关长按连发间隔滑块与数值标签。
+    HWND repeat_slider_ = nullptr;
+    HWND repeat_label_ = nullptr;
+    int repeat_interval_ms_ = 120;
     HWND restore_defaults_button_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
@@ -117,6 +128,8 @@ private:
 
     static constexpr int kClientWidth = 620;
     static constexpr int kClientHeight = 660;
+    static constexpr int kRepeatSliderMin = 30;
+    static constexpr int kRepeatSliderMax = 300;
 
     static constexpr UINT kIdCapture = 2800;
     static constexpr UINT kIdManualEdit = 2801;
@@ -129,6 +142,7 @@ private:
     static constexpr UINT kIdCanvas = 2807;
     // 增强按键识别开关（BS_AUTOCHECKBOX）。
     static constexpr UINT kIdHidTapToggle = 2808;
+    static constexpr UINT kIdRepeatSlider = 2809;
 
     // 录入超时提示定时器：录入启动后 kCaptureHintTimeoutMs 内无任何键盘事件到
     // 达（UIPI 前台提权隔离等）时弹一次引导，不中断进行中的捕获。

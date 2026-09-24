@@ -1332,7 +1332,19 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             } else if (cmd >= kMenuXiaomiKeymapBase && cmd <= kMenuXiaomiKeymapEnd) {
                 std::size_t index = cmd - kMenuXiaomiKeymapBase;
                 if (index < paired_device_ids_.size()) {
-                    ShowXiaomiKeymapDialog(paired_device_ids_[index]);
+                    // 按设备类型分发：直连遥控器编辑其设备覆盖；StickS3 设备项
+                    // 是网关模式遥控器映射（编辑全局默认 [xiaomi.keys]）。
+                    const auto& id = paired_device_ids_[index];
+                    const auto entry_it = std::find_if(
+                        config_.paired_devices.begin(), config_.paired_devices.end(),
+                        [&id](const auto& e) { return e.device_id == id; });
+                    const bool is_xiaomi = entry_it != config_.paired_devices.end() &&
+                                           entry_it->hardware == kHardwareXiaomiRemote2Pro;
+                    if (is_xiaomi) {
+                        ShowXiaomiKeymapDialog(id);
+                    } else {
+                        ShowGatewayKeymapDialog();
+                    }
                 }
             }
             return 0;
@@ -1496,6 +1508,10 @@ void Win32App::SyncF5Suppressor() {
 
 void Win32App::SyncXiaomiKeymapHook() {
     if (!xiaomi_keymap_hook_) return;
+    // 连发间隔先于启停判定热更：配置滑块保存路径（ApplyUpdatedConfig）在钩子
+    // 未运行时也把新值带入，Start 后立即按新节拍工作。
+    xiaomi_keymap_hook_->SetGatewayRepeatIntervalMs(
+        config_.xiaomi_gateway_repeat_interval_ms);
     // 按需装载：「有已配对/已连接 RC 设备（直连模式）或有 StickS3 设备（网关
     // 模式，P1） 且 有效 key_map 非空」时挂钩。key_map 非空即用户显式配置了映射
     //（空串显式取消留在表内，由决策层放行），不再叠加全局开关。
@@ -2060,6 +2076,13 @@ void Win32App::ShowTrayMenu() {
                         kMenuRemoteSettingsBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuRemoteSettings, language).c_str());
             // 按键映射入口：key_map 由桌面端 XiaomiAtvvSession 按键分发消费。
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuXiaomiKeymapBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuXiaomiKeymap, language).c_str());
+        } else {
+            // 网关模式按键映射入口（P1）：遥控器配对在 StickS3 上（不直连桌面端），
+            // 映射编辑走全局默认 [xiaomi.keys]，协调器经 gateway_keymap_set 下发
+            // 固件软件路由，按键沿以 gateway_key 事件回流注入。
             AppendMenuW(submenu, MF_STRING,
                         kMenuXiaomiKeymapBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuXiaomiKeymap, language).c_str());
@@ -2828,6 +2851,20 @@ void Win32App::ShowXiaomiKeymapDialog(const std::string& device_id) {
         config_.XiaomiSettingsForDevice(device_id),
         config_.default_xiaomi_settings,
         config_.ui_language);
+    xiaomi_keymap_dialog_->on_repeat_interval_changed =
+        [this](int interval_ms) {
+            // 与网关对话框共享同一全局设置（直连模式映射的连发走直触发节拍，
+            // 但滑块值全局持久化，两侧语义一致：网关路由键的连发速度）。
+            config_.xiaomi_gateway_repeat_interval_ms = interval_ms;
+            try {
+                config_.SavePreservingDiskCredentials();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Keymap: config_.Save failed: ") + e.what());
+                return;
+            }
+            ApplyUpdatedConfig();
+            LogLine("Gateway repeat interval set to " + std::to_string(interval_ms) + "ms");
+        };
     xiaomi_keymap_dialog_->on_settings_changed =
         [this](const std::string& id, std::optional<XiaomiSettings> override) {
             if (override.has_value()) {
@@ -2868,6 +2905,57 @@ void Win32App::ShowXiaomiKeymapDialog(const std::string& device_id) {
         return xiaomi_keymap_hook_ ? xiaomi_keymap_hook_->tap_state()
                                    : std::nullopt;
     };
+    xiaomi_keymap_dialog_->Show();
+}
+
+void Win32App::ShowGatewayKeymapDialog() {
+    // 网关模式遥控器映射（P1，Doc/Plan/xiaomi-remote-stick-gateway.md §5.3）：
+    // 遥控器配对在 StickS3 上、不在桌面端 paired_devices 里，映射编辑直接落在
+    // 全局默认 default_xiaomi_settings（[xiaomi.keys]）——协调器路由下发与钩子
+    // 快照在「无配对 RC」时取同一口径，保存即经 UpdateConfig 逐键下发固件。
+    const XiaomiSettings saved = config_.default_xiaomi_settings;
+    xiaomi_keymap_dialog_ = std::make_unique<XiaomiKeymapDialog>(
+        instance_, hwnd_, "gateway",
+        config_.default_xiaomi_settings,
+        XiaomiSettings{},  // 「恢复默认」= 清空全部映射（全局默认即正在编辑的对象）
+        EffectiveUiLanguage(config_.ui_language),
+        config_.xiaomi_gateway_repeat_interval_ms);
+    xiaomi_keymap_dialog_->on_repeat_interval_changed =
+        [this](int interval_ms) {
+            config_.xiaomi_gateway_repeat_interval_ms = interval_ms;
+            try {
+                config_.SavePreservingDiskCredentials();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Keymap: config_.Save failed: ") + e.what());
+                return;
+            }
+            ApplyUpdatedConfig();  // → SyncXiaomiKeymapHook 热更连发节拍
+            LogLine("Gateway repeat interval set to " + std::to_string(interval_ms) + "ms");
+        };
+    xiaomi_keymap_dialog_->on_settings_changed =
+        [this, saved](const std::string&, std::optional<XiaomiSettings> override) {
+            // 只回写 key_map：gain_db/double_click_ms 等其余字段服务直连模式，
+            // 不随网关映射编辑变动。nullopt（编辑结果与空默认全等）回存原映射。
+            if (override.has_value()) {
+                config_.default_xiaomi_settings.key_map = override->key_map;
+            } else {
+                config_.default_xiaomi_settings.key_map = saved.key_map;
+            }
+            try {
+                config_.SavePreservingDiskCredentials();
+            } catch (const std::exception& e) {
+                LogLine(std::string("Keymap: config_.Save failed: ") + e.what());
+                return;
+            }
+            ApplyUpdatedConfig();
+            LogLine("Keymap saved for gateway RC");
+        };
+    xiaomi_keymap_dialog_->on_hid_tap_changed =
+        [this](const std::string&, bool enabled) {
+            // 网关模式遥控器不经 Windows HID 栈，探针无意义：忽略开关，避免
+            // 误写全局默认。对话框仍显示该开关（控件复用），行为在此收口。
+            LogLine("HidTap toggle ignored in gateway keymap dialog");
+        };
     xiaomi_keymap_dialog_->Show();
 }
 
