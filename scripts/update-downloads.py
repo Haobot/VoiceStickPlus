@@ -51,6 +51,9 @@ def build_entry(release: dict, mirror_base: str | None = None) -> dict:
             "name": asset["name"],
             "platform": platform,
             "url": asset_url(asset["url"]),
+            # GitHub 源站直链：COS 镜像（dl.davenger.cloud）未就绪时的可用下载路径；
+            # 渠道上线后前端把它降级为备用源链接。
+            "url_fallback": asset["url"],
             "size": asset["size"],
             "sha256": asset_url(checksum["url"]) if checksum else None,
         })

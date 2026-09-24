@@ -84,6 +84,8 @@ function isPrimaryWindows(asset) {
                   <span class="downloads-asset-meta">
                     <span v-if="asset.size">{{ formatBytes(asset.size) }}</span>
                     <a v-if="asset.sha256" :href="asset.sha256" class="downloads-checksum">{{ t('downloads.checksum') }}</a>
+                    <a v-if="asset.url_fallback && asset.url_fallback !== asset.url"
+                       :href="asset.url_fallback" class="downloads-checksum">{{ t('downloads.fallback') }}</a>
                   </span>
                 </li>
               </ul>
@@ -109,6 +111,8 @@ function isPrimaryWindows(asset) {
                   <span class="downloads-asset-meta">
                     <span v-if="asset.size">{{ formatBytes(asset.size) }}</span>
                     <a v-if="asset.sha256" :href="asset.sha256" class="downloads-checksum">{{ t('downloads.checksum') }}</a>
+                    <a v-if="asset.url_fallback && asset.url_fallback !== asset.url"
+                       :href="asset.url_fallback" class="downloads-checksum">{{ t('downloads.fallback') }}</a>
                   </span>
                 </li>
               </ul>

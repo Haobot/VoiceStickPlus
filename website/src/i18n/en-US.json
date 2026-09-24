@@ -98,6 +98,7 @@
     "minFirmware": "Minimum firmware {version}",
     "history": "Previous releases",
     "checksum": "SHA-256",
+      "fallback": "Mirror (GitHub)",
     "platform": {
       "windows": "Windows",
       "macos": "macOS",

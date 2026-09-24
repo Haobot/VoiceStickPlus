@@ -98,6 +98,7 @@
     "minFirmware": "最低兼容固件 {version}",
     "history": "历史版本",
     "checksum": "SHA-256",
+      "fallback": "备用源（GitHub）",
     "platform": {
       "windows": "Windows",
       "macos": "macOS",
