@@ -28,7 +28,9 @@ def plan_mirror_assets(release: dict):
     download_name 为 Release 资产名（下载阶段用），最新版 manifest 追加
     latest 别名条目（同一资产上传到第二个 key）。
     """
-    tag = release["tagName"]
+    # gh CLI 的 JSON 输出会把 snake_case 转 camelCase，但 release view 直出的
+    # REST 字段是 tag_name——两种来源都兼容（真机 CI 定案：KeyError 'tagName'）。
+    tag = release.get("tagName") or release["tag_name"]
     plan = []
     for asset in release["assets"]:
         name = asset["name"]
@@ -76,7 +78,9 @@ def main() -> None:
             plan = plan_mirror_assets(release)
             if not plan:
                 continue
-            tag = release["tagName"]
+            # gh CLI 的 JSON 输出会把 snake_case 转 camelCase，但 release view 直出的
+    # REST 字段是 tag_name——两种来源都兼容（真机 CI 定案：KeyError 'tagName'）。
+    tag = release.get("tagName") or release["tag_name"]
             names = sorted({name for name, _ in plan})
             subprocess.run(
                 ["gh", "release", "download", tag, "--repo", args.repo,

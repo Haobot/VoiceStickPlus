@@ -46,6 +46,9 @@ jobs:
       - name: Mirror release assets to COS
         # GitHub Release 为源站事实，资产镜像到 COS 供 appcast/downloads.json 指向国内源。
         # 镜像路径规则见 scripts/mirror_urls.py；未知资产跳过。
+        # 非阻塞：COS 渠道未就绪（dl.davenger.cloud 域名未解析 + 密钥无桶写权限）
+        # 时不得阻塞 GitHub Pages 站点部署——渠道就绪后此步骤恢复硬失败。
+        continue-on-error: true
         run: |
           set -euo pipefail
           pip install cos-python-sdk-v5

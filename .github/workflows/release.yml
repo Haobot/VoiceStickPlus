@@ -117,6 +117,9 @@ jobs:
           path: dist/*
 
       - name: Upload firmware to COS
+        # 非阻塞：COS 渠道未就绪（域名/密钥权限）时不得阻塞 Release 发布；
+        # GitHub Release 为源站事实，COS 镜像可事后补传。渠道就绪后恢复硬失败。
+        continue-on-error: true
         run: |
           set -euo pipefail
           pip install cos-python-sdk-v5
