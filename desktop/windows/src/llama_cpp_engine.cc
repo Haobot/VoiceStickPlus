@@ -38,19 +38,24 @@ std::vector<llama_token> Tokenize(const llama_vocab* vocab, const std::string& t
     return tokens;
 }
 
-// s 是否结束在完整 UTF-8 序列边界（无悬空前导字节），流式回调按边界切分
+// s 是否结束在完整 UTF-8 序列边界（无悬空前导/续字节），流式回调按边界切分。
+// 判据：末序列的续字节数必须恰好等于前导字节声明的长度减一。
+// 旧实现 `cont < len` 在「末尾只有悬空前导字节或续字节不足」时误判为完整，
+// 会把半截码点交给上层渲染（替换符/吞字）。
 bool EndsOnUtf8Boundary(const std::string& s) {
     if (s.empty()) return true;
     std::size_t i = s.size() - 1;
     std::size_t cont = 0;
     while (true) {
         const auto b = static_cast<unsigned char>(s[i]);
-        if (b < 0x80 || (b & 0xc0) == 0xc0) {
+        if (b < 0x80) return cont == 0;
+        if ((b & 0xc0) == 0xc0) {
             std::size_t len = 1;
             if ((b & 0xe0) == 0xc0) len = 2;
             else if ((b & 0xf0) == 0xe0) len = 3;
             else if ((b & 0xf8) == 0xf0) len = 4;
-            return cont < len;
+            else return false;  // 非法前导字节（0xF8..0xFF）
+            return cont == len - 1;
         }
         ++cont;
         if (cont > 3 || i == 0) return false;

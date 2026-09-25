@@ -30,6 +30,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         case firmwareUpdateCancelled
         case peripheralWriteFailed(String)
         case deviceError(String)
+        case timeout
 
         var errorDescription: String? {
             switch self {
@@ -47,6 +48,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 return "BLE write failed: \(message)"
             case .deviceError(let code):
                 return "Device rejected OTA: \(code)"
+            case .timeout:
+                return "Firmware update timed out waiting for the device."
             }
         }
     }
@@ -95,6 +98,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var xiaomiContexts: [UUID: XiaomiPeripheralContext] = [:]
     private var xiaomiTickTimer: Timer?
     private var firmwareUpdateSession: FirmwareUpdateSession?
+    private var firmwareUpdateTimeoutTimer: Timer?
     private var interactionMode: InteractionMode = .holdToTalk
     private var showIMUDebug = false
     private var isWorkspaceSleeping = false
@@ -128,6 +132,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     deinit {
         xiaomiTickTimer?.invalidate()
+        firmwareUpdateTimeoutTimer?.invalidate()
         xiaomiContexts.keys.forEach { cancelXiaomiSubscribeTimeout(for: $0) }
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
@@ -285,6 +290,9 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             totalBytes: image.count,
             isDeviceConfirmed: true
         ))
+        // begin 是 write-with-response：5s 内没有 ack/事件就判超时，
+        // 否则一次丢 ack 会让 firmwareUpdateSession 永久非空、后续升级全被拒。
+        armFirmwareUpdateTimeout(5)
         sendNextFirmwareUpdateFrame()
     }
 
@@ -750,6 +758,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             session.began = true
             firmwareUpdateSession = session
             peripheral.writeValue(payload, for: characteristic, type: .withResponse)
+            armFirmwareUpdateTimeout(5)
         } else if session.offset < session.image.count {
             while session.offset < session.image.count && peripheral.canSendWriteWithoutResponse {
                 let end = min(session.offset + session.chunkSize, session.image.count)
@@ -772,6 +781,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 }
             }
             firmwareUpdateSession = session
+            // 数据走 write-without-response：以「进度/事件停滞」为判据（progress 会重新武装）。
+            armFirmwareUpdateTimeout(15)
             if session.offset == session.image.count {
                 sendNextFirmwareUpdateFrame()
             }
@@ -783,6 +794,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             session.ended = true
             firmwareUpdateSession = session
             peripheral.writeValue(payload, for: characteristic, type: .withResponse)
+            armFirmwareUpdateTimeout(5)
         } else {
             return
         }
@@ -802,8 +814,10 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                     totalBytes: Int(size),
                     isDeviceConfirmed: true
                 ))
+                armFirmwareUpdateTimeout(15)
             }
         case "done":
+            cancelFirmwareUpdateTimeout()
             firmwareUpdateSession = nil
             session.progress(FirmwareUpdateProgress(
                 writtenBytes: session.image.count,
@@ -818,7 +832,22 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
     }
 
+    /// OTA 看门狗：begin/end 的 write-with-response ack 限 5s，数据流/事件停滞限 15s；
+    /// 触发即 failFirmwareUpdate（会发 abort 帧），一次丢 ack 不再永久锁死后续升级。
+    private func armFirmwareUpdateTimeout(_ seconds: TimeInterval) {
+        firmwareUpdateTimeoutTimer?.invalidate()
+        firmwareUpdateTimeoutTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            self?.failFirmwareUpdate(FirmwareUpdateError.timeout)
+        }
+    }
+
+    private func cancelFirmwareUpdateTimeout() {
+        firmwareUpdateTimeoutTimer?.invalidate()
+        firmwareUpdateTimeoutTimer = nil
+    }
+
     private func failFirmwareUpdate(_ error: Error) {
+        cancelFirmwareUpdateTimeout()
         guard let session = firmwareUpdateSession else { return }
         if let peripheral = peripherals[session.peripheralID],
            let characteristic = otaCharacteristics[session.peripheralID] {

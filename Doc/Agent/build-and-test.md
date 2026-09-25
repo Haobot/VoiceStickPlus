@@ -43,6 +43,14 @@ SPARKLE_PUBLIC_ED_KEY="..." scripts/build-macos.sh --release
 scripts/make-dmg.sh
 ```
 
+`build-macos.sh` 签名身份自动选择，优先级递减：
+
+1. **Developer ID Application**（发布机，带 `--options runtime`）；
+2. **本地自签证书**（默认 CN `"VoiceStick Local Code Signing"`，可用 `VOICESTICK_DEV_IDENTITY` 覆盖）：开发构建用它固定 TCC 身份，蓝牙/输入监控/辅助功能授权一次即可跨编译保持；pem 源在 `~/.voicestick-sign/`，生成与排障见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md`；
+3. **ad-hoc**：无证书时回退，每次编译 cdhash 变化，TCC 权限失效需重新授权。
+
+架构与工具链注意：默认产出 universal（`arm64 x86_64`），可用 `VOICESTICK_ARCHS` 覆盖（如 `VOICESTICK_ARCHS=arm64`）。**本机 CLT（macOS 27 SDK）的 Swift 兼容静态库（libswiftCompatibility56/Packs.a）已不含 x86_64 slice，x86_64 可执行文件链接必失败**——本机开发构建一律 `VOICESTICK_ARCHS=arm64`；universal 发布包需在发布机（有 Xcode 或旧 SDK）构建。另：SwiftPM 拉 GitHub 依赖需代理（直连不通），见上方「给 Agent 的提示」的代理说明。
+
 macOS 端测试用 executable runner（非 XCTest——本机 CLT-only 无 Xcode，`swift test` 不可用）：
 
 ```sh

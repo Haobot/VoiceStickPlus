@@ -38,12 +38,20 @@ jobs:
 
       - name: Resolve tag and validate VERSION
         id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              tag="${{ inputs.tag }}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+              tag="${INPUT_TAG}"
           else
               tag="${GITHUB_REF_NAME}"
+          fi
+          # 手动输入不可信：先做形态校验再使用（旧写法直接内插进 shell，可越出引号执行命令）。
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error ::invalid tag '${tag}' (expected vX.Y.Z)."
+              exit 1
           fi
           version="$(cat VERSION | head -n1 | tr -d '[:space:]')"
           if [ "v${version}" != "${tag}" ]; then
@@ -151,12 +159,19 @@ jobs:
 
       - name: Resolve tag
         id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              tag="${{ inputs.tag }}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+              tag="${INPUT_TAG}"
           else
               tag="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error ::invalid tag '${tag}' (expected vX.Y.Z)."
+              exit 1
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"

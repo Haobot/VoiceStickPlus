@@ -4,22 +4,36 @@ import Foundation
 struct FirmwareManifest: Decodable {
     let hardware: String
     let version: String
+    /// 最低兼容固件版本（manifest 下发；缺失时回退本地常量）。
+    let minVersion: String?
     let otaURL: URL
+    /// 主源失败时的回退源（GitHub Release 直链）；老 manifest 可能缺失。
+    let otaURLFallback: URL?
     let otaSHA256: String
     let otaSize: Int
     let mergedURL: URL?
+    let mergedURLFallback: URL?
     let mergedSHA256: String?
     let mergedSize: Int?
 
     enum CodingKeys: String, CodingKey {
         case hardware
         case version
+        case minVersion = "min_version"
         case otaURL = "ota_url"
+        case otaURLFallback = "ota_url_fallback"
         case otaSHA256 = "ota_sha256"
         case otaSize = "ota_size"
         case mergedURL = "merged_url"
+        case mergedURLFallback = "merged_url_fallback"
         case mergedSHA256 = "merged_sha256"
         case mergedSize = "merged_size"
+    }
+
+    /// manifest 下发的最低兼容版本优先；空/缺失时用调用方回退值。
+    func effectiveMinimumVersion(fallback: String) -> String {
+        let trimmed = minVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? fallback : trimmed
     }
 }
 
@@ -137,7 +151,32 @@ final class FirmwareManifestClient {
     }
 
     func downloadOTA(from manifest: FirmwareManifest, completion: @escaping (Result<Data, Error>) -> Void) {
-        URLSession.shared.dataTask(with: manifest.otaURL) { data, response, error in
+        // 主源失败且 manifest 带 fallback 时自动换源（与 Windows 的下载源序列对齐）。
+        downloadAndVerify(url: manifest.otaURL, manifest: manifest) { [weak self] result in
+            switch result {
+            case .success:
+                completion(result)
+            case .failure(let primaryError):
+                guard let self, let fallback = manifest.otaURLFallback else {
+                    completion(.failure(primaryError))
+                    return
+                }
+                NSLog("Firmware OTA primary source failed, retrying fallback: \(primaryError.localizedDescription)")
+                self.downloadAndVerify(url: fallback, manifest: manifest) { fallbackResult in
+                    switch fallbackResult {
+                    case .success:
+                        completion(fallbackResult)
+                    case .failure:
+                        completion(.failure(primaryError))
+                    }
+                }
+            }
+        }
+    }
+
+    private func downloadAndVerify(url: URL, manifest: FirmwareManifest,
+                                   completion: @escaping (Result<Data, Error>) -> Void) {
+        URLSession.shared.dataTask(with: url) { data, response, error in
             if let error {
                 completion(.failure(error))
                 return

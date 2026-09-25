@@ -137,6 +137,12 @@ def main() -> int:
               f"cer_mean={s['cer_mean']} "
               f"tail_p50={_fmt_ms(s['tail_latency_ms']['p50'])} "
               f"jitter_max={s['jitter_max']}")
+    # 不伪造结果：某 provider 有运行但零成功必须非零退出，避免 CI/脚本被判成 PASS。
+    failed = [p for p, s in report["providers"].items()
+              if s.get("runs") and not s.get("success")]
+    if failed:
+        print(f"FAIL: 零成功 provider: {', '.join(failed)}", file=sys.stderr)
+        return 1
     return 0
 
 

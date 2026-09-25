@@ -564,41 +564,64 @@ std::string VoiceStickCoordinator::RecentRefineContextText() const {
     return refine_history_.ContextText();
 }
 
+void VoiceStickCoordinator::SetUiDispatcher(std::function<void(std::function<void()>)> dispatcher) {
+    ui_dispatcher_ = std::move(dispatcher);
+}
+
+void VoiceStickCoordinator::RunOnUiThread(std::function<void()> fn) {
+    if (!fn) return;
+    if (!ui_dispatcher_) {
+        fn();
+        return;
+    }
+    ui_dispatcher_(std::move(fn));
+}
+
 void VoiceStickCoordinator::ConfigureAsrCallbacks() {
     WireAsrClientCallbacks(asr_.get());
 }
 
 void VoiceStickCoordinator::WireAsrClientCallbacks(AsrClient* client) {
     if (!client) return;
+    // P0-3：以下回调全部运行在 ASR worker 线程。探针/日志先按到达时刻记录
+    //（原子量 + 线程安全日志），其余一律经 RunOnUiThread 回到 UI 线程再进入状态机。
     client->on_partial = [this](std::string text) {
-        TouchFinalizingWatchdog();
-        // 时序探针：首个 ASR partial 到达（识别结果开始上屏）。
-        if (probe_first_partial_ms_.load() == 0) {
-            probe_first_partial_ms_.store(SteadyNowMs());
-            LogCoordinatorLine("tseq first_partial ts=" + std::to_string(probe_first_partial_ms_.load()));
-        }
-        ui_->ShowPartial(text, active_device_id_);
-        if (ShouldSendPartialToDevice()) {
-            SendUiStateForActiveDevice("thinking", text);
-        }
+        const auto arrived_ms = SteadyNowMs();
+        RunOnUiThread([this, text = std::move(text), arrived_ms] {
+            TouchFinalizingWatchdog();
+            // 时序探针：首个 ASR partial 到达（识别结果开始上屏）。
+            if (probe_first_partial_ms_.load() == 0) {
+                probe_first_partial_ms_.store(arrived_ms);
+                LogCoordinatorLine("tseq first_partial ts=" + std::to_string(arrived_ms));
+            }
+            ui_->ShowPartial(text, active_device_id_);
+            if (ShouldSendPartialToDevice()) {
+                SendUiStateForActiveDevice("thinking", text);
+            }
+        });
     };
     client->on_segment = [this](AsrSegment segment) {
-        TouchFinalizingWatchdog();
-        HandleDefiniteSegment(segment);
+        RunOnUiThread([this, segment = std::move(segment)] {
+            TouchFinalizingWatchdog();
+            HandleDefiniteSegment(segment);
+        });
     };
     client->on_final = [this](std::string text) {
         // 时序探针：ASR final 到达，此后 FinishWithFinalText 立即进粘贴（无精修时几乎无延迟）。
-        probe_asr_final_ms_.store(SteadyNowMs());
-        LogCoordinatorLine("tseq asr_final ts=" + std::to_string(probe_asr_final_ms_.load()));
-        FinishWithFinalText(text);
+        const auto arrived_ms = SteadyNowMs();
+        probe_asr_final_ms_.store(arrived_ms);
+        LogCoordinatorLine("tseq asr_final ts=" + std::to_string(arrived_ms));
+        RunOnUiThread([this, text = std::move(text)] { FinishWithFinalText(text); });
     };
     client->on_error = [this](std::string message) {
-        FinishWithAsrError(message);
+        RunOnUiThread([this, message = std::move(message)] { FinishWithAsrError(message); });
     };
     client->on_upgrade_url = [this](std::string url, std::string message) {
-        const auto device_id = active_device_id_;
-        RecoverFromAsrError(false);
-        ui_->ShowCloudUpgrade(message, url, device_id);
+        RunOnUiThread([this, url = std::move(url), message = std::move(message)] {
+            const auto device_id = active_device_id_;
+            RecoverFromAsrError(false);
+            ui_->ShowCloudUpgrade(message, url, device_id);
+        });
     };
 }
 
@@ -606,27 +629,39 @@ void VoiceStickCoordinator::ConfigureSubtitleAsrCallbacks(SubtitleCycle* cycle) 
     if (!cycle || !cycle->asr) return;
     const auto device_id = cycle->device_id;
     const auto session_id = cycle->session_id;
+    // P0-3：字幕会话的 ASR 回调同样来自 worker 线程，统一封送回 UI 线程
+    //（subtitle_cycles_ 由 UI 线程增删，裸查/裸改是数据竞争）。
     cycle->asr->on_partial = [this, device_id, session_id](std::string text) {
-        auto* cycle = FindSubtitleCycle(device_id, session_id);
-        if (!cycle || !CanUpdateOverlayForSubtitleCycle(device_id, session_id)) return;
-        ui_->ShowPartial(text, device_id);
-        if (ShouldSendSubtitlePartialToDevice(cycle)) {
-            ble_->SendUiState("thinking", text, device_id);
-        }
+        RunOnUiThread([this, device_id, session_id, text = std::move(text)] {
+            auto* cycle = FindSubtitleCycle(device_id, session_id);
+            if (!cycle || !CanUpdateOverlayForSubtitleCycle(device_id, session_id)) return;
+            ui_->ShowPartial(text, device_id);
+            if (ShouldSendSubtitlePartialToDevice(cycle)) {
+                ble_->SendUiState("thinking", text, device_id);
+            }
+        });
     };
     cycle->asr->on_segment = [this, device_id, session_id](AsrSegment segment) {
-        if (!IsActiveSubtitleCycle(device_id, session_id)) return;
-        HandleSubtitleDefiniteSegment(segment, device_id);
+        RunOnUiThread([this, device_id, session_id, segment = std::move(segment)] {
+            if (!IsActiveSubtitleCycle(device_id, session_id)) return;
+            HandleSubtitleDefiniteSegment(segment, device_id);
+        });
     };
     cycle->asr->on_final = [this, device_id, session_id](std::string text) {
-        FinishSubtitleCycleWithFinalText(device_id, session_id, text);
+        RunOnUiThread([this, device_id, session_id, text = std::move(text)] {
+            FinishSubtitleCycleWithFinalText(device_id, session_id, text);
+        });
     };
     cycle->asr->on_error = [this, device_id, session_id](std::string message) {
-        FinishSubtitleCycleWithError(device_id, session_id, message);
+        RunOnUiThread([this, device_id, session_id, message = std::move(message)] {
+            FinishSubtitleCycleWithError(device_id, session_id, message);
+        });
     };
     cycle->asr->on_upgrade_url = [this, device_id](std::string url, std::string message) {
-        ble_->SendUiState("ready", "", device_id);
-        ui_->ShowCloudUpgrade(message, url, device_id);
+        RunOnUiThread([this, device_id, url = std::move(url), message = std::move(message)] {
+            ble_->SendUiState("ready", "", device_id);
+            ui_->ShowCloudUpgrade(message, url, device_id);
+        });
     };
 }
 
@@ -2492,8 +2527,12 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
     // 最终文本产出时记录热词使用统计（计数+最近使用时间），供高频优先裁剪评分；
     // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。
     auto wrapped = [this, completion = std::move(completion)](bool ok, std::string result) mutable {
-        if (ok) RecordHotwordUsageFromText(result);
-        completion(ok, std::move(result));
+        if (ok) RecordHotwordUsageFromText(result);  // 内部持 hotword_usage_mutex_，任意线程安全
+        if (!completion) return;
+        // P0-3：翻译/精修完成回调可能来自 worker 线程，回到 UI 线程再收口。
+        RunOnUiThread([completion = std::move(completion), ok, result = std::move(result)]() mutable {
+            completion(ok, std::move(result));
+        });
     };
     if (profile.transform == TextTransform::kTranslate) {
         // 翻译 prompt 热词段同样按高频评分取 top-N，防大库稀释小模型注意力。
@@ -2562,17 +2601,25 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
              wrapped = std::move(wrapped)](bool ok, std::string result,
                                            std::string instruction) mutable {
                 if (!alive->load() || (cancel && cancel->load())) return;
-                std::string final_text = (ok && !result.empty()) ? result : text;
-                CancelStreamingRefinement();
-                ui_->ShowPartial(final_text, device_id);
-                if (ok) {
-                    if (config_.local_asr.refine_cross_turn) {
-                        refine_history_.Add(text, final_text, instruction);
+                // P0-3：on_complete 在精修 worker 线程；整段收口回 UI 线程执行
+                //（CancelStreamingRefinement / config_ / 历史 / 状态机字段均为 UI 线程持有）。
+                RunOnUiThread([this, alive, cancel, text, device_id, ok,
+                               result = std::move(result),
+                               instruction = std::move(instruction),
+                               wrapped = std::move(wrapped)]() mutable {
+                    if (!alive->load() || (cancel && cancel->load())) return;
+                    std::string final_text = (ok && !result.empty()) ? result : text;
+                    CancelStreamingRefinement();
+                    ui_->ShowPartial(final_text, device_id);
+                    if (ok) {
+                        if (config_.local_asr.refine_cross_turn) {
+                            refine_history_.Add(text, final_text, instruction);
+                        }
+                        MineHotwordCandidatesFromRefinement(text, final_text);
                     }
-                    MineHotwordCandidatesFromRefinement(text, final_text);
-                }
-                wrapped(true, final_text);
-                MaybeExtractHotwordCandidates(final_text);
+                    wrapped(true, final_text);
+                    MaybeExtractHotwordCandidates(final_text);
+                });
             },
             cancel, config_.asr_hotwords, std::move(context));
         return;
@@ -2621,27 +2668,33 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                 }
             },
             // on_complete（后台线程）：最终文本已就绪
-            [this, alive, cancel, text, device_id, throttle,
+            [this, alive, cancel, text, device_id,
              wrapped = std::move(wrapped)](bool ok, std::string result) mutable {
                 if (!alive->load() || (cancel && cancel->load())) return;
-                std::string final_text = text;
-                if (ok && !result.empty()) {
-                    // 热词守卫：精修把 ASR 原文中已正确的热词改坏时回退原文
-                    // （小模型精修不稳定的本地兜底）。
-                    if (LLMRefinementClient::RefineResultKeepsHotwords(text, result,
-                                                                       config_.asr_hotwords)) {
-                        final_text = result;
-                        // 用最终的累积文本做最后一次 UI 刷新
-                        ui_->ShowPartial(result, device_id);
-                        MineHotwordCandidatesFromRefinement(text, result);
-                    } else {
-                        LogCoordinatorLine("refine corrupted a hotword present in ASR text; "
-                                           "falling back to original");
+                // P0-3：on_complete 在精修 worker 线程，整段收口回 UI 线程执行。
+                RunOnUiThread([this, alive, cancel, text, device_id, ok,
+                               result = std::move(result),
+                               wrapped = std::move(wrapped)]() mutable {
+                    if (!alive->load() || (cancel && cancel->load())) return;
+                    std::string final_text = text;
+                    if (ok && !result.empty()) {
+                        // 热词守卫：精修把 ASR 原文中已正确的热词改坏时回退原文
+                        // （小模型精修不稳定的本地兜底）。
+                        if (LLMRefinementClient::RefineResultKeepsHotwords(text, result,
+                                                                           config_.asr_hotwords)) {
+                            final_text = result;
+                            // 用最终的累积文本做最后一次 UI 刷新
+                            ui_->ShowPartial(result, device_id);
+                            MineHotwordCandidatesFromRefinement(text, result);
+                        } else {
+                            LogCoordinatorLine("refine corrupted a hotword present in ASR text; "
+                                               "falling back to original");
+                        }
                     }
-                }
-                CancelStreamingRefinement();
-                wrapped(true, final_text);
-                MaybeExtractHotwordCandidates(final_text);
+                    CancelStreamingRefinement();
+                    wrapped(true, final_text);
+                    MaybeExtractHotwordCandidates(final_text);
+                });
             },
             cancel, HotwordsForLlmPrompts());
         return;

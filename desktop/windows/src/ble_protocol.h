@@ -124,6 +124,8 @@ struct FirmwareOtaStateEvent {
     std::optional<std::uint32_t> written;
     std::optional<std::uint32_t> size;
     std::string code;
+    // 固件侧 esp_err_t 原始错误码（最有排查价值；老固件可能不发）。
+    std::optional<std::uint32_t> esp_err;
     std::optional<std::uint32_t> reboot_ms;
 };
 

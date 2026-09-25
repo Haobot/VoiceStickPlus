@@ -10,8 +10,10 @@
 #include <mmdeviceapi.h>
 #include <wrl/client.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -34,38 +36,76 @@ WasapiMicCapture::~WasapiMicCapture() {
 }
 
 bool WasapiMicCapture::Start() {
-    if (capture_thread_.joinable()) return true;  // 已在采集：幂等
+    // 幂等：只有上一次启动确实成功（running_）才算已在采集。上次 Start 超时后
+    // 线程可能仍在退出，此时不能再报成功；若线程已结束则回收后允许重新启动。
+    if (capture_thread_.joinable()) {
+        if (running_.load()) return true;
+        if (open_done_ && open_done_->load()) {
+            capture_thread_.join();
+            capture_thread_ = std::thread{};
+            open_done_.reset();
+        } else {
+            return false;
+        }
+    }
     last_start_error_.clear();
     stop_requested_.store(false);
     // 设备打开挪到采集线程（CaptureThreadMain 内 COM 初始化与设备激活同线程），
     // Start 本身只负责起线程；打开失败经 last_start_error_ 暴露，由协调器会话
-    // 收尾路径消费。为让失败同步可见，这里 join 等待首帧或失败信号。
-    std::atomic_bool started_ok{false};
-    std::atomic_bool open_done{false};
-    capture_thread_ = std::thread([this, &started_ok, &open_done] {
-        CaptureThreadMain(&started_ok, &open_done);
+    // 收尾路径消费。
+    // 有界等待：音频服务/驱动挂起时旧实现 while(!open_done) yield() 会永久占满
+    // UI 线程；这里 3s 超时后置 stop_requested_ 并返回 false，线程自行收尾。
+    auto started_ok = std::make_shared<std::atomic_bool>(false);
+    auto open_done = std::make_shared<std::atomic_bool>(false);
+    open_done_ = open_done;
+    capture_thread_ = std::thread([this, started_ok, open_done] {
+        CaptureThreadMain(started_ok, open_done);
     });
-    while (!open_done.load()) {
-        std::this_thread::yield();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!open_done->load()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            last_start_error_ = "audio capture open timeout";
+            stop_requested_.store(true);
+            LogApp("WasapiMicCapture: open timeout (audio service/driver hung), Start aborted");
+            // 给线程 500ms 收尾窗口；能收就收，收不了也不能在这里无限等。
+            for (int i = 0; i < 50 && !open_done->load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (open_done->load()) {
+                capture_thread_.join();
+                capture_thread_ = std::thread{};
+                open_done_.reset();
+            }
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    if (!started_ok.load()) {
+    if (!started_ok->load()) {
         capture_thread_.join();
         capture_thread_ = std::thread{};
+        open_done_.reset();
+        running_.store(false);
         return false;
     }
+    running_.store(true);
     return true;
 }
 
 void WasapiMicCapture::Stop() {
-    if (!capture_thread_.joinable()) return;
+    running_.store(false);
+    if (!capture_thread_.joinable()) {
+        open_done_.reset();
+        return;
+    }
     stop_requested_.store(true);
     // CaptureThreadMain 在事件/包处理间隙检查 stop_requested_，最长一个包周期内退出。
     capture_thread_.join();
     capture_thread_ = std::thread{};
+    open_done_.reset();
 }
 
-void WasapiMicCapture::CaptureThreadMain(std::atomic_bool* started_ok,
-                                         std::atomic_bool* open_done) {
+void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> started_ok,
+                                         std::shared_ptr<std::atomic_bool> open_done) {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool com_initialized = SUCCEEDED(hr);
     if (!com_initialized && hr != RPC_E_CHANGED_MODE) {

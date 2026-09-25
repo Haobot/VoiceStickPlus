@@ -40,11 +40,18 @@ echo [1/4] CMake RelWithDebInfo build...
 :: Baked into VoiceStick.exe at compile time; Active*() accessors fall back to them on
 :: first launch, skipping the ASR onboarding step for new users.
 :: See Doc/Plan/windows-builtin-api-key.md.
-for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "%%a=%%b"
-if not defined VOICESTICK_BUILTIN_API_KEY (
-    echo WARNING: volcengine_api_key not found; exe will have no built-in ASR key, new users must fill it in onboarding.
+:: P0-4: built-in credentials are now explicit opt-in. Public builds embed NO real keys.
+:: Internal keyed build: set VOICESTICK_EMBED_BUILTIN_KEYS=1 before running this script.
+:: scripts/scan_release_artifacts.py is the release gate that blocks leaks as a backstop.
+if /I "%VOICESTICK_EMBED_BUILTIN_KEYS%"=="1" (
+    for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "%%a=%%b"
+    if not defined VOICESTICK_BUILTIN_API_KEY (
+        echo WARNING: VOICESTICK_EMBED_BUILTIN_KEYS=1 but volcengine_api_key not found; exe has no built-in ASR key.
+    ) else (
+        echo Injecting built-in credentials into VoiceStick.exe [OPT-IN]
+    )
 ) else (
-    echo Injecting built-in credentials into VoiceStick.exe
+    echo NOTICE: VOICESTICK_EMBED_BUILTIN_KEYS not set to 1 - building WITHOUT built-in credentials.
 )
 cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
     -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%" ^
@@ -199,27 +206,29 @@ if errorlevel 1 (
     echo ERROR: prepare_flash_payload failed.
     exit /b 1
 )
-:: Generate MSI config.template.toml with real test keys so installed users get
-:: Volcengine/Tencent/LLM working out of the box. Default source: the local
-:: %APPDATA%\VoiceStick\config.toml (same file extract_builtin_key.ps1 reads for
-:: exe-baked credentials). Override with VOICESTICK_MSI_CONFIG_SOURCE.
-:: Secrets live in the generated build-dir copy only, never committed.
+:: P0-4: the real-key config.template.toml is now explicit opt-in. Unless
+:: VOICESTICK_MSI_CONFIG_SOURCE is set (or VOICESTICK_MSI_EMBED_REAL_KEYS=1), the
+:: placeholder template copied by CMake POST_BUILD stays in place - public MSI has no keys.
 if not defined VOICESTICK_MSI_CONFIG_SOURCE (
-    set "VOICESTICK_MSI_CONFIG_SOURCE=%APPDATA%\VoiceStick\config.toml"
+    if /I "%VOICESTICK_MSI_EMBED_REAL_KEYS%"=="1" set "VOICESTICK_MSI_CONFIG_SOURCE=%APPDATA%\VoiceStick\config.toml"
 )
-if not exist "%VOICESTICK_MSI_CONFIG_SOURCE%" (
-    echo WARNING: MSI config source not found: %VOICESTICK_MSI_CONFIG_SOURCE%
-    echo          Falling back to placeholder template from resources\config.template.toml
-) else (
-    echo Generating MSI config with test keys from: %VOICESTICK_MSI_CONFIG_SOURCE%
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0generate_msi_config.ps1" ^
-        -SourceConfig "%VOICESTICK_MSI_CONFIG_SOURCE%" ^
-        -TemplateConfig "%PROJECT_DIR%\desktop\windows\resources\config.template.toml" ^
-        -OutputConfig "%BUILD_DIR%\config.template.toml"
-    if errorlevel 1 (
-        echo ERROR: Failed to generate MSI config from test keys.
-        exit /b 1
+if defined VOICESTICK_MSI_CONFIG_SOURCE (
+    if not exist "%VOICESTICK_MSI_CONFIG_SOURCE%" (
+        echo WARNING: MSI config source not found: %VOICESTICK_MSI_CONFIG_SOURCE%
+        echo          Using placeholder template from resources\config.template.toml
+    ) else (
+        echo Generating MSI config with real keys from: %VOICESTICK_MSI_CONFIG_SOURCE% [OPT-IN]
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0generate_msi_config.ps1" ^
+            -SourceConfig "%VOICESTICK_MSI_CONFIG_SOURCE%" ^
+            -TemplateConfig "%PROJECT_DIR%\desktop\windows\resources\config.template.toml" ^
+            -OutputConfig "%BUILD_DIR%\config.template.toml"
+        if errorlevel 1 (
+            echo ERROR: Failed to generate MSI config from test keys.
+            exit /b 1
+        )
     )
+) else (
+    echo NOTICE: MSI config uses placeholder template - no real keys embedded [OPT-IN off]
 )
 :: Optional: inject a real config (with secrets) via VOICESTICK_CONFIG_TEMPLATE to override the placeholder.
 :: Used to distribute a pre-configured MSI to testers; secrets are injected only at local build time, never committed.

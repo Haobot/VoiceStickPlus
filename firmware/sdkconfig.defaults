@@ -9,8 +9,10 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
-# 网关 dual-role：1 条对小米(central) + 1 条对目标设备(peripheral)；bond 覆盖双端
+# 网关模式同时存在 OS-HID、桌面 app、小米遥控器（central）多条链路，需 3 条连接；
+# 旧值 2 会让网关模式少一条链路（与受版本控制的 sdkconfig 漂移，2026-09-22 对齐）。
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+# bond 覆盖双端：网关模式下设备可能同时保留 OS-HID 与桌面 app 两条 bond。
 CONFIG_BT_NIMBLE_MAX_BONDS=6
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
 CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=200

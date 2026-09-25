@@ -519,6 +519,11 @@ int Win32App::Run() {
             [make_asr](const AppConfig& config) {
                 return make_asr(config);
             });
+        // P0-3：ASR/精修/翻译完成回调统一封送回 UI 线程再进入协调器状态机。
+        // DispatchToUi 在 UI 线程内联执行，非 UI 线程 PostMessage 到消息循环。
+        coordinator_->SetUiDispatcher([this](std::function<void()> action) {
+            DispatchToUi(std::move(action));
+        });
         // P1 目标表：注入本机显示名（主机名）。实际发送在协调器的「设备已连接」回调里
         //（那时会话才 ready——gateway_status 帧先于 ready 到达，提前发会被丢弃）。
         coordinator_->SetLocalHostName(LocalHostNameForGatewayTarget());

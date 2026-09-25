@@ -58,6 +58,8 @@ const firmwareBaseUrl = `${import.meta.env.BASE_URL}firmware/latest/`
 const defaultFirmwareUrl = `${firmwareBaseUrl}voicestick-firmware-sticks3-merged-${version}.bin`
 const firmwareManifestUrl = `${firmwareBaseUrl}manifest.json`
 const firmwareUrl = ref(defaultFirmwareUrl)
+const firmwareFallbackUrl = ref('')
+const firmwareManifest = ref(null)
 const appResetSequence = 'D0|R1|W100|R0|W500|D0'
 
 const languageLabel = computed(() => (locale.value === 'zh-CN' ? t('language.en') : t('language.zh')))
@@ -113,17 +115,51 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+async function sha256Hex(data) {
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function expectedFirmwareHash(firmware) {
+  const expectedSize = Number(firmwareManifest.value?.merged_size)
+  const expectedHash = String(firmwareManifest.value?.merged_sha256 || '').toLowerCase()
+  if (!expectedHash) {
+    throw new Error(t('flasher.error.missingHash'))
+  }
+  if (Number.isFinite(expectedSize) && expectedSize > 0 && firmware.byteLength !== expectedSize) {
+    throw new Error(t('flasher.error.sizeMismatch', {
+      expected: expectedSize,
+      actual: firmware.byteLength,
+    }))
+  }
+  return expectedHash
+}
+
 async function fetchFirmware() {
   flashStatus.value = 'downloading'
   appendLog(t('flasher.log.downloading'))
 
   await resolveFirmwareUrl()
-  const response = await fetch(firmwareUrl.value, { cache: 'no-store' })
+  let response = await fetch(firmwareUrl.value, { cache: 'no-store' })
+  if (!response.ok && firmwareFallbackUrl.value) {
+    appendLog(t('flasher.log.fallback'))
+    response = await fetch(firmwareFallbackUrl.value, { cache: 'no-store' })
+  }
   if (!response.ok) {
     throw new Error(t('flasher.error.downloadFailed', { status: response.status }))
   }
 
   const firmware = new Uint8Array(await response.arrayBuffer())
+  // 完整性门禁：manifest 的 sha256/size 之前完全没被消费，链路任一环被篡改都会
+  // 直接写入 0x0（含 bootloader/分区表）。校验通过才交给 esptool-js。
+  const expectedHash = expectedFirmwareHash(firmware)
+  const actualHash = await sha256Hex(firmware)
+  if (actualHash !== expectedHash) {
+    throw new Error(t('flasher.error.hashMismatch'))
+  }
+  appendLog(t('flasher.log.verified'))
   firmwareSize.value = formatBytes(firmware.byteLength)
   appendLog(t('flasher.log.downloaded', { size: firmwareSize.value }))
   return firmware
@@ -136,12 +172,16 @@ async function resolveFirmwareUrl() {
 
   const response = await fetch(firmwareManifestUrl, { cache: 'no-store' })
   if (!response.ok) {
-    return
+    throw new Error(t('flasher.error.manifestFailed', { status: response.status }))
   }
 
   const manifest = await response.json()
+  firmwareManifest.value = manifest
   if (manifest?.merged_url) {
     firmwareUrl.value = manifest.merged_url
+  }
+  if (manifest?.merged_url_fallback) {
+    firmwareFallbackUrl.value = manifest.merged_url_fallback
   }
 }
 

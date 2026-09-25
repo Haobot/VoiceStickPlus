@@ -439,6 +439,9 @@ class PortDetector:
             for p in ports:
                 if p["device"].lower() == fixed_port.lower():
                     return p, f"命中指定端口 {fixed_port}"
+            # 显式指定端口未命中时不得回退自动匹配（曾导致 -p COM17 烧到别的设备）；
+            # 需要自动匹配请显式传 --port auto/detect/scan。
+            return None, f"指定端口 {fixed_port} 不在当前枚举列表中"
         scored = []
         for p in ports:
             s, r = self._score(p)

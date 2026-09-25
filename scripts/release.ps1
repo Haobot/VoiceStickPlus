@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
   VoiceStick 一键发布脚本（在 Windows 签名机上运行）。
@@ -181,6 +181,15 @@ if (-not $SkipMsi) {
             [IO.File]::WriteAllText("$p.sha256", "$hash  $m`n")
             $files += $p
             $files += "$p.sha256"
+        }
+        # P0-4：公开产物凭据门禁。用本机 config.toml 的真实值做精确匹配（含 exe 内置
+        # 凭据与 zip 内配置）叠加形态扫描，命中即拒绝上传；内测含 key 包不得走本流程。
+        if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+            throw "发布门禁需要 python 运行 scripts/scan_release_artifacts.py"
+        }
+        python (Join-Path $PSScriptRoot 'scan_release_artifacts.py') @files
+        if ($LASTEXITCODE -ne 0) {
+            throw "公开产物凭据扫描未通过，拒绝上传（见上方命中项）"
         }
         $uploaded = $false
         foreach ($attempt in 1..2) {

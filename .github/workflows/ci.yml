@@ -1,0 +1,75 @@
+name: CI
+
+# P0-1 回归门禁：任一分支都要能构建 macOS/Windows 并跑测试；
+# P0-3（回调线程封送）与 P0-4（凭据扫描）的改动必须在这里被编译/测试覆盖。
+on:
+  push:
+    branches: [main, "feat/**", "fix/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS build + tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift build
+        working-directory: desktop/macos
+        run: swift build
+      - name: swift run VoiceStickTests
+        working-directory: desktop/macos
+        run: swift run VoiceStickTests
+
+  firmware:
+    name: Firmware build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: idf.py build (esp32s3)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: firmware
+          command: idf.py build
+
+  windows:
+    name: Windows build + ctest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure (Debug, local ASR/LLM off)
+        # 本地 ASR（sherpa-onnx 二进制）与本地 LLM（llama.cpp 源码）不在 git 中，
+        # CI 显式关闭；Debug 保留 assert，测试才有意义（RelWithDebInfo 的 NDEBUG
+        # 会让 core_tests 的断言整段消失）。
+        run: >
+          cmake -S desktop/windows -B desktop/windows/build-x64 -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DVOICESTICK_ENABLE_LOCAL_ASR=OFF
+          -DVOICESTICK_ENABLE_LOCAL_REFINE=OFF
+      - name: Build
+        run: cmake --build desktop/windows/build-x64
+      - name: ctest
+        run: ctest --test-dir desktop/windows/build-x64 --output-on-failure
+
+  script-tests:
+    name: Script unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run script unit tests
+        run: |
+          set -euo pipefail
+          python3 scripts/test_scan_release_artifacts.py
+          python3 scripts/test_update_appcast.py
+          python3 scripts/test_mirror_urls.py
+          python3 scripts/test_update_downloads.py
+          python3 scripts/test_cos_scripts.py

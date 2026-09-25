@@ -609,8 +609,9 @@ static void enter_power_off(void)
         (void)voice_ble_disconnect(1000);
     }
 
-    ui_status_prepare_deep_sleep();
-    stick_s3_board_prepare_deep_sleep();
+    /* 关机准备（关背光/面板、断 L3B 麦克风供电）必须放在所有可能中止的分支之后：
+       旧顺序在 ext1 配置失败或主键仍按住而中止时已执行不可逆准备，导致设备仍在运行
+       但屏幕永久黑、麦克风断电。见 Doc/Plan/architecture-review-... P1-A5。 */
 
     /* Clear any stale wakeup source bits left over from light sleep / esp_pm
        configuration (e.g. gpio_wakeup_enable on the PMIC IRQ line). Without
@@ -652,6 +653,9 @@ static void enter_power_off(void)
     // 放在所有中止检查之后，确保只在真正 commit 深睡时落一条 S3 记录。
     s_power_reported_mode = POWER_MODE_S3_POWER_OFF;
     power_log_note_mode(POWER_MODE_S3_POWER_OFF);
+    // 到这里已不可能中止：执行不可逆的关机准备，然后立刻深睡。
+    ui_status_prepare_deep_sleep();
+    stick_s3_board_prepare_deep_sleep();
     esp_deep_sleep_start();
 }
 
@@ -746,6 +750,23 @@ static void queue_app_event(app_event_type_t type)
     queue_app_event_with_ota(type, 0, 0);
 }
 
+// 关键事件不允许静默丢弃：队列满时旧实现直接丢，曾让录音/OTA/断连状态机卡死
+//（XIAOMI_STOP_DUE 丢失 = 永久录音；OTA_END 丢失 = 永久拒绝录音/关机）。
+static bool app_event_is_critical(app_event_type_t type)
+{
+    switch (type) {
+    case APP_EVENT_BLE_DISCONNECTED:
+    case APP_EVENT_OTA_BEGIN:
+    case APP_EVENT_OTA_DONE:
+    case APP_EVENT_OTA_END:
+    case APP_EVENT_XIAOMI_STOP_DUE:
+    case APP_EVENT_ENTER_POWER_OFF:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, uint32_t size)
 {
     if (s_app_event_queue) {
@@ -756,7 +777,13 @@ static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, ui
             .written = written,
             .size = size,
         };
-        (void)xQueueSend(s_app_event_queue, &event, 0);
+        // 关键事件最多等 20ms 让消费者腾出槽位（任务上下文，最坏一次短阻塞），
+        // 仍失败则一定留下告警日志，不再无声吞掉。
+        const TickType_t wait = app_event_is_critical(type) ? pdMS_TO_TICKS(20) : 0;
+        if (xQueueSend(s_app_event_queue, &event, wait) != pdTRUE) {
+            ESP_LOGW(TAG, "app event queue full: dropped type=%d critical=%d",
+                     (int)type, app_event_is_critical(type) ? 1 : 0);
+        }
     }
 }
 
@@ -1108,9 +1135,17 @@ static void ble_control_cb(const char *json)
         // file 为空或缺失则关闭回放恢复 ES8311 采集。仅端到端测试用，正常使用不触发。
         const cJSON *file_item = cJSON_GetObjectItemCaseSensitive(root, "file");
         if (cJSON_IsString(file_item) && file_item->valuestring[0] != '\0') {
-            esp_err_t pb_err = audio_pipeline_set_playback_file(file_item->valuestring);
-            ESP_LOGI(TAG, "test_playback file=%s -> %s", file_item->valuestring,
-                     esp_err_to_name(pb_err));
+            // 安全：test_playback 只服务 L3 回放，文件名必须是 SPIFFS 根下的裸名字。
+            // 拒绝路径分隔符与 ".."，避免已连接 peer 把它当作任意路径读取原语。
+            const char *playback_name = file_item->valuestring;
+            if (strchr(playback_name, '/') != NULL || strchr(playback_name, '\\') != NULL ||
+                strstr(playback_name, "..") != NULL) {
+                ESP_LOGW(TAG, "test_playback rejected: path separators/.. not allowed");
+            } else {
+                esp_err_t pb_err = audio_pipeline_set_playback_file(playback_name);
+                ESP_LOGI(TAG, "test_playback file=%s -> %s", playback_name,
+                         esp_err_to_name(pb_err));
+            }
         } else {
             audio_pipeline_set_playback_file(NULL);
             ESP_LOGI(TAG, "test_playback cleared (restore capture)");

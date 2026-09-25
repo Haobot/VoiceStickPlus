@@ -220,13 +220,18 @@ def run_switch_rounds(exe, rounds, pause_s, tap, app_mark):
 
 
 def report(results, manual_findings):
+    """打印验收结果，返回是否全部通过（供 main 决定退出码）。"""
     log("\n=== 验收结果 ===")
     switches = [r["switch_ms"] for r in results if r["switch_ms"] is not None]
     recoveries = [r["recovery_s"] for r in results if r["recovery_s"] is not None]
     xiaomi = sum(r["xiaomi_events"] for r in results)
     trunc = sum(r["truncation"] for r in results)
+    failed = 0
 
     def verdict(ok, name, detail):
+        nonlocal failed
+        if not ok:
+            failed += 1
         log(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
     if switches:
@@ -242,6 +247,9 @@ def report(results, manual_findings):
             f"{', '.join(f'{r:.2f}s' for r in recoveries)}（修复前同口径 14–26s）")
     for item, ok, detail in manual_findings:
         verdict(ok, item, detail)
+    if failed:
+        log(f"\n{failed} 项未通过（FAIL）：退出码 1")
+    return failed == 0
 
 
 def manual_phase(tap):
@@ -294,9 +302,9 @@ def main():
     results = run_switch_rounds(exe, args.rounds, args.pause, tap, None)
     manual = [] if args.skip_manual else manual_phase(tap)
     tap.stop()
-    report(results, manual)
+    passed = report(results, manual)
     log("\n提示：非目标拒绝需要第二个 identity address（第二台机器/第二个适配器），本 harness 覆盖不到。")
-    return 0
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

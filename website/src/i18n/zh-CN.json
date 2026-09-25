@@ -72,11 +72,17 @@
       "connecting": "正在同步 ESP32-S3 bootloader...",
       "downloading": "正在下载 Release 固件...",
       "downloaded": "固件下载完成：{size}",
+      "fallback": "主源下载失败，改用 GitHub Release 备用源...",
+      "verified": "SHA-256 完整性校验通过。",
       "flashing": "开始写入 merged 固件到 0x0...",
       "done": "烧录完成，已发送设备重启信号。"
     },
     "error": {
       "downloadFailed": "固件下载失败，HTTP {status}",
+      "manifestFailed": "无法获取固件清单（HTTP {status}），为避免写入未校验镜像已中止。",
+      "missingHash": "固件清单缺少 SHA-256，已中止烧录。",
+      "sizeMismatch": "固件大小不符（期望 {expected} 字节，实际 {actual} 字节），已中止。",
+      "hashMismatch": "固件 SHA-256 校验失败，镜像可能被篡改，已中止烧录。",
       "wrongChip": "检测到 {chip}，请连接 M5Stack StickS3。"
     }
   },

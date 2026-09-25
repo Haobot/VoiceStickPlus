@@ -72,11 +72,17 @@
       "connecting": "Syncing ESP32-S3 bootloader...",
       "downloading": "Downloading Release firmware...",
       "downloaded": "Firmware downloaded: {size}",
+      "fallback": "Primary source failed, retrying the GitHub Release fallback...",
+      "verified": "SHA-256 integrity check passed.",
       "flashing": "Writing merged firmware to 0x0...",
       "done": "Flashing complete. A reset signal was sent to the device."
     },
     "error": {
       "downloadFailed": "Firmware download failed, HTTP {status}",
+      "manifestFailed": "Could not fetch the firmware manifest (HTTP {status}); flashing was aborted to avoid writing an unverified image.",
+      "missingHash": "The firmware manifest has no SHA-256; flashing was aborted.",
+      "sizeMismatch": "Firmware size mismatch (expected {expected} bytes, got {actual}); flashing was aborted.",
+      "hashMismatch": "Firmware SHA-256 verification failed; the image may be tampered with, flashing was aborted.",
       "wrongChip": "Detected {chip}. Please connect an M5Stack StickS3."
     }
   },

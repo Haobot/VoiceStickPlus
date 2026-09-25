@@ -97,7 +97,7 @@ macOS 对暴露为「键盘类」的 HID 设备（usage page 键盘/消费控制
 
 ### 遗留 / 观察项（2026-09-04）
 
-- 自签证书已生成导入登录钥匙串（`~/.voicestick-sign/`，CN="VoiceStick Local Code Signing"），但私钥访问需用户在 SecurityAgent 弹窗点「始终允许」（两次命令行尝试均因弹窗未处理超时）。完成后把 `scripts/build-macos.sh` 签名优先级改为 Developer ID → 自签 → ad-hoc，TCC 权限跨构建才稳。
+- **已完成（2026-09-22）**：`scripts/build-macos.sh` 签名优先级已改为 Developer ID → 自签 → ad-hoc，自签分支不带 `--options runtime`（无 Team ID，同 ad-hoc 一样会触发库校验崩溃）。原证书「valid identity 但签名报 errSecInternalComponent」的根因是私钥未授权 codesign 访问且旧钥匙串项无法补授权；处置：重建同 CN 证书（`openssl req -x509` + `EKU=codeSigning`/`KU=digitalSignature`，**不要画蛇添足加 Basic Constraints**——加了反而被 `find-identity` 判 invalid，尽管 `codesign --sign` 实际可用）、p12 密码不能空串（否则 `security import` 报 MAC verification failed）、先删旧证书项再以 `-T /usr/bin/codesign` 导入登录钥匙串。另注意新版 macOS `find-identity -p codesigning` 不列出该自签身份（0 valid），属正常，签名/验签均通过；designated requirement 变为 `identifier "app.voicestick.mac" and certificate leaf = H"…"`，授权一次后跨编译保持。
 - 遥控器休眠后 app 的 `central.connect` 重连依赖按键唤醒广播；若长时间不回连，检查遥控器电量与蓝牙设置里的连接状态。
 - Windows 端二期/三期代码仍未编译验证（本机无 MSVC），沿用旧结论。
 
@@ -108,3 +108,15 @@ macOS 对暴露为「键盘类」的 HID 设备（usage page 键盘/消费控制
 - **macOS**：`swift build` 通过；`VoiceStickTests` **494/494** 全绿（一期 420 + 二期 usage/decision + 三期 app 合并单测）。已实现：配置 schema、语音键双击可配、罗技式映射窗、非独占 IOHID 观察 + CGEvent tap 关联拦截、前台应用切换映射（`NSWorkspace.didActivate` → `FrontmostAppProvider`）。
 - **Windows**：全部功能代码落地但**未编译验证**（本机无 MSVC），靠模式模仿 + 逐块自查；含 Raw Input + `WH_KEYBOARD_LL` 关联拦截、`EVENT_SYSTEM_FOREGROUND` 前台映射。落地前须在 Windows 机 `build_win.bat` + `ctest --test-dir desktop\windows\build-x64 --output-on-failure`。
 - **共同待真机验证**（人手按遥控器按钮）：①非独占 IOHID/Raw Input 能否稳定收到该设备报告；②逐键 usage page 归属与实际上报值；③tap/hook 与观察事件的 80ms 时序关联在方向键连发、音量连按、与真键盘并发下的错配率；④拦截开启后未自定义键 1:1 透传与 app 退出后回归原生；⑤多台同型 RC 的按句柄/设备独立映射（现取首台配对 RC 配置）。
+
+## 追加：自签证书固定 TCC 身份——落地实录与排障链（2026-09-22）
+
+任务：无 Apple Developer 认证的前提下，让 TCC 权限（蓝牙/输入监控/辅助功能）跨编译保持。方案＝自签代码签名证书固定签名身份：designated requirement 从「锚定二进制 cdhash」变为「`identifier "app.voicestick.mac" and certificate leaf = H"…"`」，授权一次后重编译不再失效。`scripts/build-macos.sh` 签名优先级改为 Developer ID → 自签（`VOICESTICK_DEV_IDENTITY`，默认 CN `"VoiceStick Local Code Signing"`）→ ad-hoc；自签与 ad-hoc 分支均不带 `--options runtime`（无 Team ID，带则 Sparkle dyld 崩，见 `Doc/Expe/app-update-mechanism-and-fork-migration-2026-07-30.md`）。pem 源在 `~/.voicestick-sign/`（旧 pem 备份 `*.bak-20260922`）。验证：arm64-only debug 包 `valid on disk` + `satisfies its Designated Requirement`；用户真机授权一次后重编译权限保持（2026-09-22 验证通过）。
+
+排障链（按踩坑顺序，均为 macOS 27 实测）：
+
+1. **`errSecInternalComponent`（证书显示 valid identity 但签名失败）**：根因＝私钥的 partition list 未授权 codesign 访问。修法＝**先删除钥匙串中旧证书项**（不删的话 import 不会修复既有密钥的 ACL），再 `security import sign.p12 -T /usr/bin/codesign` 导入登录钥匙串。`security set-key-partition-list` 路线需要钥匙串密码，非交互场景不可行。
+2. **重建证书不要画蛇添足加 Basic Constraints**：可用形态＝`openssl req -x509` + `-addext "extendedKeyUsage=codeSigning"` + `-addext "keyUsage=digitalSignature"`，**不加 Basic Constraints**。加了 CA:FALSE 或 CA:TRUE 都会被 `find-identity -p codesigning` 判为 invalid identity（0 valid）——尽管 `codesign --sign` 实际仍可用，但会让一切依赖 find-identity 的检测逻辑误判。
+3. **新版 macOS 特性**：`find-identity -p codesigning` 不再把自签证书列为 valid identity（输出 0 valid 属正常）；按证书名 `codesign -s "CN"` 签名、`codesign --verify --strict` 验签均正常。脚本里探测证书/私钥要用 `security find-certificate -c` + `security find-key -l`，不能依赖 find-identity。
+4. **空密码 p12 陷阱**：`openssl pkcs12 -export -passout pass:`（空密码）生成的 p12 会被 `security import` 以 `MAC verification failed` 拒收；给任意非空密码、导入时 `-P` 传入即可。
+5. **自签证书只认登录钥匙串**：导入自定义钥匙串（`security create-keychain` + `set-key-partition-list` + `add-trusted-cert` 全套）依然 0 valid identity、无法签名；放登录钥匙串才生效。

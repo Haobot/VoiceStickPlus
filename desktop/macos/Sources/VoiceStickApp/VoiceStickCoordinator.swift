@@ -707,6 +707,35 @@ final class VoiceStickCoordinator {
                 ble.sendUIState("ready", to: peripheralID)
                 return
             }
+            // click_to_talk 的启动 click 发 duration_ms=0、停止 click 发 >0（均带
+            // session_id）。仅靠本地状态消歧会在失步后（识别中启动 click 被忽略、
+            // 固件仍在录音）把停止 click 误判为启动，产生永远收不到音频的幽灵会话。
+            // 缺失 duration_ms（旧固件）时回退原状态判定（对齐 Windows HandleButtonClick）。
+            if let durationMs = event.durationMs {
+                if durationMs > 0 {
+                    // 停止 click：仅在匹配的活跃录音会话上生效，否则按失步残留忽略。
+                    if case .recording(let sessionID, let recordingPeripheralID, _) = mainInputState,
+                       recordingPeripheralID == peripheralID,
+                       let eventSessionID = event.sessionID,
+                       eventSessionID == sessionID {
+                        handlePrimaryButtonUp(peripheralID: peripheralID)
+                    } else {
+                        NSLog("click_to_talk stale stop click ignored dev=VS-\(deviceID(for: peripheralID) ?? "unknown")")
+                    }
+                    return
+                }
+                // 启动 click（duration_ms==0）：finalizing 期间维持忽略，其余交
+                // handlePrimaryButtonDown（含 recording 残留自愈）。
+                if case .finalizing(_, let finalizingPeripheralID, _) = mainInputState,
+                   finalizingPeripheralID == peripheralID {
+                    NSLog("Ignoring primary button click while recording is finalizing")
+                    ble.sendUIState("thinking", to: peripheralID)
+                    return
+                }
+                handlePrimaryButtonDown(sessionID: event.sessionID, peripheralID: peripheralID)
+                return
+            }
+            // 旧固件无 duration_ms：回退本地状态判定。
             if case .recording(_, let recordingPeripheralID, _) = mainInputState,
                recordingPeripheralID == peripheralID {
                 handlePrimaryButtonUp(peripheralID: peripheralID)
@@ -2037,9 +2066,14 @@ final class VoiceStickCoordinator {
             return
         }
         pendingFirmwareUpdatePromptDeviceIDs.remove(deviceID)
+        // 最低兼容版本优先用 manifest 下发的 min_version（可远端抬升门槛），
+        // 缺失时回退本地常量（老 manifest/离线场景）。
+        let minimumVersion = latestFirmwareManifest?.effectiveMinimumVersion(
+            fallback: AppConfig.minimumCompatibleFirmwareVersion
+        ) ?? AppConfig.minimumCompatibleFirmwareVersion
         let isBelowMinimum = FirmwareVersion.isVersion(
             currentVersion,
-            olderThan: AppConfig.minimumCompatibleFirmwareVersion
+            olderThan: minimumVersion
         )
         DispatchQueue.main.async { [onFirmwareUpdatePrompt] in
             onFirmwareUpdatePrompt?(deviceID, currentVersion, latestVersion, isBelowMinimum)

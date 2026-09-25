@@ -285,6 +285,12 @@ public:
     // 会话将路由本地引擎（local-mic 或 [local_asr].enabled 的设备会话）且闸返回
     // false 时，通知用户并放弃本次会话。见 Doc/Plan/offline-license-activation.md。
     void SetLicenseGate(std::function<bool()> allow_local_asr);
+    // P0-3：UI 线程封送器（app shell 注入；空 = 在当前线程同步执行，测试保持原行为）。
+    // ASR / 精修 / 翻译的完成回调从各自 worker 线程到达，必须先回到 UI 线程再进入
+    // 状态机，否则会与 UI 线程并发读写 pending_paste_state_ / active_session_id_ /
+    // buffered_ogg_chunks_ / subtitle_cycles_ 等字段（数据竞争 = UB）。
+    // 见 Doc/Plan/architecture-review-and-optimization-2026-09-22.md P0-3。
+    void SetUiDispatcher(std::function<void(std::function<void()>)> dispatcher);
     // 方案 A 停止宽限：keyup 先于采集停止发出后，保留音频流至多这么久再停采
     // （模拟物理松开时麦克风仍在供电的语义，WeType finalize/commit 依赖）。
     // 须在 Start 前调用；测试注入 0 以免拖慢单测，生产默认见成员定义。
@@ -632,6 +638,8 @@ private:
     // 与 focused_app/subtitle 路径对齐，避免无意点按 / button_up 抢跑产生极小 ogg 文件。
     bool ShouldDiscardWechatRecording() const;
     std::optional<std::string> ResolveHotkeyTargetDevice() const;
+    // 把 fn 投递到 UI 线程执行；未注入 dispatcher 时在当前线程同步执行。
+    void RunOnUiThread(std::function<void()> fn);
 
     AppConfig config_;
     std::unique_ptr<BleCentral> ble_;
@@ -640,6 +648,8 @@ private:
     LLMTranslationClient translator_;
     LLMRefinementClient refiner_;
     VoiceStickUi* ui_;
+    // UI 线程封送器（见 SetUiDispatcher）；空时 RunOnUiThread 同步执行。
+    std::function<void(std::function<void()>)> ui_dispatcher_;
     InputInjector* input_injector_;
     std::mutex audio_mutex_;
     OggOpusMuxer ogg_muxer_{16000, 1};

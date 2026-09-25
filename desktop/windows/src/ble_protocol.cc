@@ -293,6 +293,7 @@ std::optional<FirmwareOtaStateEvent> BleProtocol::ParseFirmwareOtaStateEvent(std
     event.written = JsonU32Value(json, "written");
     event.size = JsonU32Value(json, "size");
     event.code = JsonStringValue(json, "code");
+    event.esp_err = JsonU32Value(json, "esp_err");
     event.reboot_ms = JsonU32Value(json, "reboot_ms");
     return event;
 }

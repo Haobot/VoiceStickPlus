@@ -3341,9 +3341,14 @@ void BleCentralWin::HandleFirmwareOtaStateEvent(const std::string& device_id,
         FinishFirmwareUpdate(update_session, true, {});
     } else if (event.event == "error") {
         LogBleLine("OTA device error VS-" + device_id +
-                   " code=" + (event.code.empty() ? "unknown" : event.code));
+                   " code=" + (event.code.empty() ? "unknown" : event.code) +
+                   (event.esp_err.has_value() ? " esp_err=" + std::to_string(*event.esp_err)
+                                              : std::string()));
         FinishFirmwareUpdate(update_session, false,
-                             "Device rejected OTA: " + (event.code.empty() ? "unknown" : event.code));
+                             "Device rejected OTA: " + (event.code.empty() ? "unknown" : event.code) +
+                             (event.esp_err.has_value()
+                                  ? " esp_err=" + std::to_string(*event.esp_err)
+                                  : std::string()));
     }
 }
 

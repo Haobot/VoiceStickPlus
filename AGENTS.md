@@ -86,6 +86,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 - `build_native.bat` / `do_build.bat` / `desktop\windows\build.bat` 含本机绝对路径或固定版本号，复用前先检查内容；根目录 `test.bat` 是占位脚本；根目录散落的 `*.log`、`%BUILD_LOG%` 等是构建残留日志，不是源码。
 - Windows 构建若报 `C1083: winrt/base.h` 找不到：`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 生成投影头到 `desktop/windows/generated_winrt/`（gitignored）并 prepend 到 `INCLUDE`；手动 vcvars64 构建时须同样加入。
 - macOS 端拉取 SwiftPM 依赖（Sparkle/TOMLKit 走 GitHub）需走系统代理（github 直连不通）：命令前缀 `https_proxy=http://127.0.0.1:5782`（端口以 `scutil --proxy` 为准）。
+- 本机（CLT-only，macOS 27 SDK）构建 macOS 桌面端必须加 `VOICESTICK_ARCHS=arm64`（Swift 兼容静态库已不含 x86_64 slice，x86_64 链接必失败；脚本默认仍 universal，发布机不受影响）；开发包签名已内置自签证书固定 TCC 身份（CN `"VoiceStick Local Code Signing"`），蓝牙/输入监控/辅助功能授权一次跨编译保持，证书排障与构建链三坑见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节与 `Doc/Expe/macos-clt27-build-chain-traps-2026-09-22.md`。
 - MiniEncoderC 编码器是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）是唯一唤醒键。Grove 口 5V 不启用，编码器由顶部 Hat 排针供电。
 - 固件里给 FreeRTOS 对象（StreamBuffer/Queue 等）配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 硬编码限死在内部 RAM（`portFREERTOS_HEAP_CAPS`），`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它。详见 `Doc/Expe/claude-memory-distilled.md` §1.6。
 - 小米网关「语音键正常、其他按键没反应」先查 HID 侧：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道会互相掩盖；BLE HID 直通还要求目标机与设备有 **OS 级配对**（Windows 设置里手动配对），详见 `Doc/Expe/claude-memory-distilled.md` §1.10。
