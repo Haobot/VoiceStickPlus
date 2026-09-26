@@ -58,6 +58,9 @@ def fetch_releases(repo: str, limit: int):
     for item in listed:
         detail = gh_json(["release", "view", item["tagName"], "--repo", repo,
                           "--json", "assets"])
+        # release view 此处只请求 assets 字段，tagName 须由列表步补齐，
+        # 否则 plan_mirror_assets 的双 fallback 均落空（CI 定案 KeyError）
+        detail["tagName"] = item["tagName"]
         detail["isLatest"] = item["isLatest"]
         releases.append(detail)
     return releases

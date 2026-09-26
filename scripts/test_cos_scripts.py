@@ -6,6 +6,7 @@
 import importlib.util
 import os
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -103,6 +104,22 @@ class PlanMirrorAssetsTests(unittest.TestCase):
         }
         plan = mirror.plan_mirror_assets(release)
         self.assertEqual([key for _, key in plan], ["firmware/v2.3.7/manifest.json"])
+
+
+class FetchReleasesTests(unittest.TestCase):
+    def test_view_assets_response_gets_tag_name_backfilled(self):
+        # 真机 CI 定案（run 36242775900）：release view --json assets 只返回
+        # assets 字段，tagName 必须由 release list 步补齐，否则
+        # plan_mirror_assets 的双 fallback 均落空，KeyError: 'tag_name'
+        responses = [
+            [{"tagName": "v2.4.0", "isLatest": True}],
+            {"assets": [{"name": "manifest.json"}]},
+        ]
+        with unittest.mock.patch.object(mirror, "gh_json", side_effect=responses):
+            releases = mirror.fetch_releases("Haobot/VoiceStickPlus", 10)
+        self.assertEqual(releases[0]["tagName"], "v2.4.0")
+        plan = mirror.plan_mirror_assets(releases[0])
+        self.assertIn(("manifest.json", "firmware/v2.4.0/manifest.json"), plan)
 
 
 if __name__ == "__main__":
