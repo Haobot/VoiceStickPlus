@@ -2687,6 +2687,17 @@ HotwordActivitySnapshot VoiceStickCoordinator::TakeHotwordActivitySnapshot() {
     return snapshot;
 }
 
+void VoiceStickCoordinator::RemoveEvictedWords(const std::vector<std::string>& words) {
+    if (words.empty()) return;
+    std::lock_guard smart_lock(smart_hotword_mutex_);
+    EnsureEvictedPoolLoadedLocked();
+    if (std::erase_if(evicted_pool_, [&](const EvictedWord& e) {
+            return std::find(words.begin(), words.end(), e.word) != words.end();
+        }) > 0) {
+        SaveEvictedPool(EvictedPoolPath(), evicted_pool_);
+    }
+}
+
 void VoiceStickCoordinator::BeginWaitingForAudioEnd(std::string_view reason) {
     if (waiting_for_audio_end_.load()) return;
     waiting_for_audio_end_.store(true);

@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordActivityEvictedGroup) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordActivityClearConfirmBodySuffix) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -476,6 +476,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotwordActivityColScore)] = "Activity";
     table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "Idle days";
     table[Index(StringId::kHotwordActivityColEvictedDays)] = "Evicted days";
+    table[Index(StringId::kHotwordActivityClearPoolButton)] = "Clear pool";
+    table[Index(StringId::kHotwordActivityClearConfirmTitle)] = "Clear pool";
+    table[Index(StringId::kHotwordActivityClearConfirmBodyPrefix)] = "Delete all ";
+    table[Index(StringId::kHotwordActivityClearConfirmBodySuffix)] =
+        " word(s) from the pool?";
     table[Index(StringId::kHotwordActivityActiveCategoryLabel)] = "Active category: ";
     table[Index(StringId::kHotwordActivityStatusMonitoring)] = "monitoring";
     table[Index(StringId::kHotwordActivityStatusNormal)] = "normal";
@@ -925,6 +930,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotwordActivityColScore)] = "活跃度";
     table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "闲置天数";
     table[Index(StringId::kHotwordActivityColEvictedDays)] = "逐出天数";
+    table[Index(StringId::kHotwordActivityClearPoolButton)] = "清空回收池";
+    table[Index(StringId::kHotwordActivityClearConfirmTitle)] = "清空回收池";
+    table[Index(StringId::kHotwordActivityClearConfirmBodyPrefix)] = "回收池中的 ";
+    table[Index(StringId::kHotwordActivityClearConfirmBodySuffix)] =
+        " 个词将被全部删除，确定吗？";
     table[Index(StringId::kHotwordActivityActiveCategoryLabel)] = "活跃分类：";
     table[Index(StringId::kHotwordActivityStatusMonitoring)] = "监控中";
     table[Index(StringId::kHotwordActivityStatusNormal)] = "正常";

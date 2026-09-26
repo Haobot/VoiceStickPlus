@@ -311,6 +311,8 @@ public:
     std::optional<AppConfig> AddHotwordWithEviction(const std::string& word);
     // 活跃度快照（设置-热词活跃度对话框展示用）。
     HotwordActivitySnapshot TakeHotwordActivitySnapshot();
+    // 从回收池删除指定词（活跃度对话框勾选删除/清空入口；words 空则不动）。
+    void RemoveEvictedWords(const std::vector<std::string>& words);
 
 private:
     enum class PendingPasteKind {

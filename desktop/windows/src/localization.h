@@ -486,6 +486,11 @@ enum class StringId {
     kHotwordActivityStatusNormal,
     // 回收池分组标签
     kHotwordActivityEvictedGroup,
+    // 回收池清空按钮 + 确认框（正文 = 前缀 + 词数 + 后缀）
+    kHotwordActivityClearPoolButton,
+    kHotwordActivityClearConfirmTitle,
+    kHotwordActivityClearConfirmBodyPrefix,
+    kHotwordActivityClearConfirmBodySuffix,
 };
 
 // 返回 UTF-8 本地化文本

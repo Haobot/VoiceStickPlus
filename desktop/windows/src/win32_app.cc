@@ -2326,6 +2326,9 @@ void Win32App::ShowHotwordActivityDialog() {
         return coordinator_ ? coordinator_->TakeHotwordActivitySnapshot()
                             : HotwordActivityDialog::SnapshotType{};
     };
+    hotword_activity_dialog_->remove_evicted_words = [this](const std::vector<std::string>& words) {
+        if (coordinator_) coordinator_->RemoveEvictedWords(words);
+    };
     hotword_activity_dialog_->Show();
 }
 
