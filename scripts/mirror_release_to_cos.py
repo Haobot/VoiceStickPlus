@@ -79,8 +79,8 @@ def main() -> None:
             if not plan:
                 continue
             # gh CLI 的 JSON 输出会把 snake_case 转 camelCase，但 release view 直出的
-    # REST 字段是 tag_name——两种来源都兼容（真机 CI 定案：KeyError 'tagName'）。
-    tag = release.get("tagName") or release["tag_name"]
+            # REST 字段是 tag_name——两种来源都兼容（真机 CI 定案：KeyError 'tagName'）。
+            tag = release.get("tagName") or release["tag_name"]
             names = sorted({name for name, _ in plan})
             subprocess.run(
                 ["gh", "release", "download", tag, "--repo", args.repo,
