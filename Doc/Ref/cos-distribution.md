@@ -76,4 +76,4 @@
 3. ~~CAM 子账号与仓库 Secrets~~ Secrets 已配置（2026-09-26）；~~CI 上行路径不可用~~ **修法已落地（2026-09-26）**：CI 海外 runner 跨境上行不可用（~8KB/s + ~130s 断连，≥1MB 分块必死；两轮诊断 run 36244545602 / 36245561012，与 CAM/桶策略无关），故 COS 写入全部移交签名机：发布流程 `scripts/release.ps1` → `scripts/publish_cos.py`（固件/软件/manifest 直传 + Pages 小文件转传 + 整站同步；凭据 `TENCENT_COS_*` 或 `TENCENTCLOUD_*` 环境变量），CI 侧 COS 步骤已删除（`release.yml` 瘦身为构建验证门禁、`deploy-website.yml` 只管 Pages）。云侧 URL 拉取（COS 迁移任务/云函数境内中转）保留为可选自动化增强；**剩余：首次真实发布跑通全链路**；
 4. **模型对象迁移**：旧桶 `models/` 下三个已核验对象需重新上传到新桶（本机国内网络直传，`scripts/publish_cos.py` 或 `scripts/cos_uploader.py` 均可，`Cache-Control: max-age=31536000`），上传后按上表逐对象核对字节数与 SHA-256；
 5. 配置 COS 流量监控告警（替代防盗链的防护手段）；
-6. 上述就绪后跑一次 `release.ps1`（或对既有版本手工执行 publish_cos 各子命令）完成联调，并从国内网络直连验证下载页、appcast、模型清单 URL。
+6. ~~联调~~ **已跑通（2026-09-26/27，v2.4.1）**：COS 先行（本机构建+直传+验证）→ GitHub Release v2.4.1（tag 打在 feat/stick-gateway，CI 构建验证绿，9 资产）→ deploy-website（feat 分支 ref，Pages 更新）→ pages-mirror 转传 COS。终验：正式域名 9 URL 全 200、downloads.json/appcast 双侧 latest=2.4.1、SHA 抽验一致。经验：真跑时若非 release.ps1 一键流程，注意 MSYS 下 bat 需 PowerShell 包装、环境变量以注册表为准、downloads.json 顶层键为 releases/latest。
