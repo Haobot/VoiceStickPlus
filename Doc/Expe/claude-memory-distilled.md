@@ -163,6 +163,8 @@ Wi-Fi STA 配网与 LAN HTTP OTA 已**物理删除**（voice_net 组件、Window
 
 本地 bin 在 `firmware/build/voice_stick.bin`；验证靠设备串口 `OTA complete, rebooting`。`ota_commit` BLE 命令保留（boot 已自动签到，双槽分区表与 `CONFIG_APP_ROLLBACK_ENABLE=y` 不变）。烧录 skill（`.agents/skills/sticks3-flash-ota/`，另有 `.claude/skills/`、`skills/` 两处同步副本，改时三处同步）2026-07-09 已重写为上述流程，旧 VoiceStickCtl/HTTP OTA 描述已清除。
 
+**OTA 流控是 app×固件跨版本契约**（2026-09-26）：桌面端在途窗口（`OtaMaxInFlightBytes`，首条确认前 40KB/之后 24KB）必须大于**对端固件实际**的进度回传间隔（现行 8KB，v2.3.8 及更早 32KB），且超窗等待时按 200ms/块降速续发——2026-09-20 只按当时固件调优，v2.4.0 app 对 v2.3.8 设备 OTA 必死锁（`sent` 恒等于窗口值 + `confirmed=0` + 设备端 begin 成功零 progress = 互等死锁判据；random 数值才是无线问题）。发布前在最旧服役固件上真机过一遍 OTA。见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
+
 ### 2.2 Stick S3 Boot 按键时序
 
 前面板按钮：短按=重启、双击=关机、长按=进下载模式。
@@ -516,7 +518,7 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **firmware 偶发断连 reason=8 排查**：whisper_pen 已定位为 slow interval(latency=4)+supervision timeout（PM 配置补全根治）；firmware 是否也有此偶发断连待验证（差别点 MAX_BONDS=1 vs 3）。
 - **Qt 迁移**：暂缓，留作后续 UI 美化方向。
 - **回连二轮观察项**（2026-07-25 增补）：安定窗 1.5s 若日常日志频繁出现 `retry #2/#3` 需上调；`Status()==Error` 误标 timeout 的诊断精度可留待需要时细分；连按风暴双僵尸已由 15s/3 次免退避覆盖，长期体感待观察。
-- **BLE OTA 停滞根因未查**（2026-07-25 增补）：07:45 曾现 65656 字节处卡 5 分钟（旧固件+新 app），当时走串口绕过；用户再提 OTA 失败时从桌面端 OTA 发送节奏/流控与 `voice_ble.c` 的 ota_write_data 查起。
+- **BLE OTA 停滞根因已查**（2026-07-25 增补，2026-09-26 定案销项）：65656 字节处卡住 = 旧固件 32KB 回传间隔与新 app 流控窗口互等死锁的中间态，非个例。修复见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
 - **文本精修效果不理想**（2026-07-25 增补）：用户最初目标之一，尚未动；本机配置 `refine_enabled=false`。再做时先确认期望行为（准确理解意图+快速完成），参考 §3.8 流式精修与微信输入法的对标。
 
 ---
@@ -564,6 +566,7 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - 火山首 partial 延迟 ≈ 音频全长，与 result_type/enable_nonstream/enable_ddc 无关（5 组消融完全相同），不要再消融这三个参数；腾讯发包节奏测量用 select 零超时（1ms 超时 recv 在 Windows 实际 10–15ms/帧，会严重污染总延迟）。
 - Windows 上同一文件里同类操作可能**有的带超时封装、有的是裸 `co_await`**：BLE 订阅路径 state/audio 套了 `WriteCccdBestEffortAsync`（None 击穿缓存）+ `when_any(kSubscribeTimeout)`，而 **OTA 的 `ota_state` 订阅曾是裸 await ⇒ 固件 OTA 永远卡 0%**（固件侧新增的 `subscribe attr=… notify=… (audio=… state=… ota_state=…)` 一行可判定写是否到达设备：到了 ⇒ 卡的是 Windows 回调、通道其实可用）。改「少用路径」时先抄旁边成熟路径的封装。见 `Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md` 追加节。
 - **广播报告是 watcher 的观察，不是设备的实时状态**：Windows 广告 watcher 会送**延迟/复用的报告**（尤其扫描开着时），曾让「已配对设备广播 ⇒ 旧链路已死」的守卫误杀**正在 OTA 的活会话**（网关模式 OTA 每次 +30s / 16% 断链的根因）。拆会话前先确认它真死了：最近 1s 内有入站数据或有固件升级在跑 ⇒ 绝不拆（真重启的设备 1s 内发不出数据，僵尸恢复不受影响）。见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md` §五。
+- **OTA `stalled` 且 `sent` 恒等于窗口值** ⇒ 流控互等死锁（app 在途窗口 < 固件回传间隔），不是无线问题；随机值才是链路抖动。app×固件流控参数是跨版本契约，改任一侧要在最旧服役固件上真机过 OTA。见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
 - **网关模式设备多连接**（OS-HID + app 两条链路，`BT_NIMBLE_MAX_CONNECTIONS=3`），而 voice_ble 的 `s_connected`/`s_conn_handle`/`current_peer` 都是**单值**——任一链路断连就清掉，曾让侧键预览误显 `No target`；显示层要**落表兜底**（已选目标→当前对端→表内最近目标），别只依赖单值 current_peer。深修（按连接计数）未做。见 `Doc/Expe/gateway-p1-ota-session-2026-09-20.md`。
 - **编码器按钮本身就是录音触发**（与主键同语义），长按会拉起语音识别——切换/菜单这类长按交互**别挂编码器**，放侧键（短按预览 → 3s 内再按轮流切换）。屏幕 135px 且 **LVGL 内嵌字体无 CJK**，UI 文案全英文；电量标签在电池壳下方 y≈20–38，顶部加行要避开（同行为佳、字号对齐）。
 - **本机会整机冻结数小时**（实测日志时间戳跳变 3h18m），冻结期一切「停住/超时」观测不可信；定位「卡住」类问题先用日志时间戳排除冻结，再判断是否真停。另：多日日志用「时:分」筛行会命中历史天同刻行，须同时确认日期/行号。
