@@ -73,7 +73,7 @@
 
 1. ~~DNS：`dl.davenger.cloud` CNAME → 桶默认域名~~ **已完成**（2026-09-26，指向 `voicestick-dl-1329978361.cos.ap-shanghai.myqcloud.com`）；
 2. 腾讯云申请免费 DV 证书（如未签发），COS 控制台为**新桶** `voicestick-dl-1329978361` 绑定自定义域名 `dl.davenger.cloud` 并开启 HTTPS——当前 https 直连报证书主体不匹配（桶侧未绑）；
-3. ~~CAM 子账号与仓库 Secrets~~ Secrets 已配置（2026-09-26）；**需核对**子账号自定义策略的 resource ARN 必须指向 `qcs::cos:ap-shanghai:uid/1329978361:voicestick-dl-1329978361/*`（若沿用旧 APPID 的 ARN 会 403）；
+3. ~~CAM 子账号与仓库 Secrets~~ Secrets 已配置（2026-09-26）；**当前阻塞项（联调实证 2026-09-26，run 36243193068）**：子账号策略缺分块上传动作——小文件（PutObject 简单上传）全部成功、大文件（≥1MB 走分块）`upload_part fail after max_retry` 必败。需在 CAM 控制台为子账号策略补全 `cos:InitiateMultipartUpload` / `cos:UploadPart` / `cos:ListParts` / `cos:CompleteMultipartUpload` / `cos:AbortMultipartUpload`，且 resource ARN 必须指向 `qcs::cos:ap-shanghai:uid/1329978361:voicestick-dl-1329978361/*`（含不带 `/*` 的桶本身）；
 4. **模型对象迁移**：旧桶 `models/` 下三个已核验对象需凭凭据重新上传到新桶（`scripts/cos_uploader.py`，`Cache-Control: max-age=31536000`），上传后按上表逐对象核对字节数与 SHA-256；
 5. 配置 COS 流量监控告警（替代防盗链的防护手段）；
-6. 以上就绪后手动触发 `deploy-website.yml` 发布联调，并从国内网络直连验证下载页、appcast、模型清单 URL。
+6. 上述就绪后手动触发 `deploy-website.yml` 发布联调（`gh workflow run deploy-website.yml --ref <分支>`），**必须看 COS 步骤日志而非 run 结论**（两处 COS 步骤 `continue-on-error`，失败不红），并从国内网络直连验证下载页、appcast、模型清单 URL。CI 端整站同步与固件直传已验证通路（2026-09-26 run 36242775900 部分对象已落桶），仅待权限修复后全量通过。
