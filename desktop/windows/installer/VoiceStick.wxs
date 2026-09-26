@@ -109,6 +109,16 @@
         <Component Id="WinSparkleDll" Guid="*" Bitness="always64">
           <File Id="WinSparkleDllFile" Source="$(var.BuildDir)\WinSparkle.dll" KeyPath="yes" />
         </Component>
+        <!-- 本机 ASR（SenseVoice）运行时依赖：VoiceStick.exe 隐式链接
+             sherpa-onnx-c-api.dll，后者再加载 onnxruntime.dll；缺任一安装后
+             启动即报"找不到 DLL"（v2.4.1 曾因此全新安装不可用）。
+             构建目录里这两个 DLL 由 CMake file(COPY) 从 third_party 复制。 -->
+        <Component Id="SherpaOnnxCApiDll" Guid="*" Bitness="always64">
+          <File Id="SherpaOnnxCApiDllFile" Source="$(var.BuildDir)\sherpa-onnx-c-api.dll" KeyPath="yes" />
+        </Component>
+        <Component Id="OnnxRuntimeDll" Guid="*" Bitness="always64">
+          <File Id="OnnxRuntimeDllFile" Source="$(var.BuildDir)\onnxruntime.dll" KeyPath="yes" />
+        </Component>
         <Component Id="ConfigTemplate" Guid="*" Bitness="always64">
           <File Id="ConfigTemplateFile" Source="$(var.BuildDir)\config.template.toml" KeyPath="yes" />
         </Component>
@@ -167,6 +177,8 @@
     <Feature Id="Main" Title="VoiceStick" Level="1">
       <ComponentRef Id="VoiceStickExe" />
       <ComponentRef Id="WinSparkleDll" />
+      <ComponentRef Id="SherpaOnnxCApiDll" />
+      <ComponentRef Id="OnnxRuntimeDll" />
       <ComponentRef Id="ConfigTemplate" />
       <ComponentRef Id="VoiceStickFlashExe" />
       <ComponentRef Id="HidTapDll" />
