@@ -527,10 +527,14 @@ int Win32App::Run() {
         // P1 目标表：注入本机显示名（主机名）。实际发送在协调器的「设备已连接」回调里
         //（那时会话才 ready——gateway_status 帧先于 ready 到达，提前发会被丢弃）。
         coordinator_->SetLocalHostName(LocalHostNameForGatewayTarget());
+#ifdef VOICESTICK_LICENSE_ENABLED
         // 离线授权运行时：授权状态装配（设备 ID + MachineGuid + config）与
         // 试用锚点/last_seen 持久化。config 取 Win32App::config_ 地址——
         // 设置保存/引导完成时的 move 赋值不改变该对象地址，指针不悬垂。
+        // 默认不编译（VOICESTICK_ENABLE_LICENSE=OFF）：runtime 恒空，授权闸
+        // 不装配（协调器默认放行），last_seen 定时器回调按空指针短路。
         license_runtime_ = std::make_unique<LicenseRuntime>(&config_, coordinator_.get());
+#endif
         LogLine("Starting coordinator");
         coordinator_->on_air_mouse_active_changed = [this](bool active) {
             // 有设备进入体感时启动 60Hz 定时器驱动 AirMouseTick；全部退出时停止。

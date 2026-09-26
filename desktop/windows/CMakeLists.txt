@@ -200,6 +200,15 @@ if(VOICESTICK_ENABLE_LOCAL_ASR)
     target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LOCAL_ASR_ENABLED=1)
 endif()
 
+# 离线授权（串码激活 + 30 天试用，Doc/Plan/offline-license-activation.md）：
+# 默认关闭——不装配 LicenseRuntime（门控为空=本地识别默认放行）且设置对话框
+# 隐藏「授权」区块（激活时间/试用状态行 + 激活按钮）。license.cc/license_runtime.cc
+# 仍编译入库（纯函数单测继续覆盖），恢复发行时 -DVOICESTICK_ENABLE_LICENSE=ON。
+option(VOICESTICK_ENABLE_LICENSE "Offline license activation (serial + 30-day trial)" OFF)
+if(VOICESTICK_ENABLE_LICENSE)
+    target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LICENSE_ENABLED=1)
+endif()
+
 # llama.cpp（本地文本精修 LLM 推理，Qwen3-1.7B GGUF）：pin b10868（与
 # m0/refine spike 验证版一致，Doc/Plan/local-text-refinement.md）。
 # 源码经 FetchContent 拉取（WinSparkle 同款模式），静态链入 voicestick_core，

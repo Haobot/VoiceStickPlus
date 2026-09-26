@@ -735,8 +735,12 @@ void SettingsDialog::BuildControls() {
     }
     separator();
 
+#ifdef VOICESTICK_LICENSE_ENABLED
     // ===== 授权（本地识别离线授权：30 天试用 + 串码激活，
     // Doc/Plan/offline-license-activation.md）=====
+    // 默认不编译（VOICESTICK_ENABLE_LICENSE=OFF）：不创建状态行/激活按钮，
+    // RefreshLicenseStatus 按空指针直接返回。保留上一条 separator 作为
+    // 语言区块与语音识别区块之间的分隔。
     section_title(StringId::kLicenseSectionTitle);
     {
         HWND lic_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
@@ -751,6 +755,7 @@ void SettingsDialog::BuildControls() {
         });
     }
     separator();
+#endif
 
     // ===== 语音识别 =====
     section_title(StringId::kSettingsSectionAsr);

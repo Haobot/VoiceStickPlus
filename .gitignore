@@ -61,6 +61,8 @@ scripts/e2e_test/fixtures/xiaomi/*/
 .venv-replay/
 .superpowers/brainstorm/
 desktop/windows/generated_winrt/
+# 本机测试凭据（真实 key），绝不入库
+desktop/Ref/Config/
 dist/
 desktop/windows/winsparkle-local/
 _realtest_shots/
