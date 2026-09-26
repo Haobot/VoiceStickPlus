@@ -131,7 +131,7 @@ ESP32-S3 USB JTAG 控制台（VID 303A:1001）的运行时日志抓取不可靠�
 
 ### 3.2 git add -f 与签名 MSI
 
-- `.gitignore` 整体忽略 `desktop/windows/`：已追踪文件照常 modified，但**新建 .h/.cc 被静默忽略**，必须 `git add -f <新文件>`，否则提交后他人构建缺文件。
+- `.gitignore` 整体忽略 `desktop/windows/`：已追踪文件照常 modified，但**新建 .h/.cc 被静默忽略**，必须 `git add -f <新文件>`，否则提交后他人构建缺文件。**2026-09-26 重演**：智能热词管理 4 个功能提交全部漏掉 6 个新源文件（CMakeLists/协调器已引用、新克隆无法构建），`git status --short desktop/windows/` 干净具有欺骗性——提交后必须 `git show --stat` 核对新文件在列。
 - 本机 `Cert:\CurrentUser\My` 有自签证书 `CN=VoiceStick Dev`（Thumbprint `5416B0067FAEF56F52EB615503A484350D04D4FC`，有效期至 2027/6/30），`scripts\build-msi.bat` 自动选中它走通「构建+签名 exe/dll+WiX+签名 MSI」，**无需签名机**（旧记录"本机无证书"已过时）。
 
 ### 3.3 WinSparkle file URL 坑
@@ -216,6 +216,16 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 根因：`FlushEncoderRotatePending(const std::string& device_id)` 参数为 const 引用，`EncoderRotateTick()`（30ms 定时器冲刷慢速挂起）调用时传入的正是成员 `encoder_pending_device_id_`；函数体 `encoder_pending_device_id_.clear()` 把参数引用的对象清成空串，后续 `EncoderSettingsForDevice("")` 查不到设备覆盖、回落全局默认。**判据特征（日志）**：慢速注入 `encoder rotate inject on VS-`（设备 ID 为空）+ 默认键，而换向冲刷（传局部参数，非成员）显示 `VS-<id>` 且键正确——同一日志里两种注入并存即可定位。
 
 修复：参数改按值传递 `std::string device_id`，消除引用别名；回归测试 `TestEncoderRotateCustomKeysPendingPathDeviceOverride`（设备覆盖 + pending → Tick 冲刷）。**教训**：const 引用参数若可能指向会被函数体修改的成员，必须先复制或按值传参；单测要覆盖"设备覆盖 ≠ 全局默认"场景（此前 pending 路径测试全用全局默认键，查回默认也断言通过，掩盖了回落路径）。
+
+### 3.13 智能热词管理与回收池分类错位（2026-09-26）
+
+智能热词管理三层自动化（上下文切换/容量动态管理/活跃度回收池）当日落地，细节见 `Doc/Expe/smart-hotword-pool-reclaim-2026-09-26.md`。核心教训：
+
+- **回收池 `category` 记录的是"逐出时所在抽屉"，不是语义归属**；用户把数学词划词加进语文分类满 25 连环逐出后，数学词全挂"语文"。回归目标已改为**当前活跃分类**（在上下文切换决策之后执行）——触发回收=用户正在用这个词，热词表只服务活跃分类，**可用性 > 语义归属**。判据：日志 `evicted 'X' to make room for 'Y'` 密集连续出现且逐出/腾位词同语义域 = 批量划词加进了语义不匹配的活跃分类。
+- **关键词表分类器只能做文本级语境判定，不能做单词级语义判定**：数学词表判不出"因式分解/公比/内错角"（领域术语不在通用词表），文本级靠多词叠加有冗余，单词级没有。
+- 协调器后台改配置走 `on_config_mutated` 回调（拷贝传外壳），外壳严禁回手调 UpdateConfig（取消活跃会话）；锁序 `smart_hotword_mutex_` → `hotword_usage_mutex_`。
+- **localization 新增 StringId 必须同步 `kStringCount`**（= 枚举尾 +1）：漏改报 C2131/`_CrtDbgReport`（`array::operator[]` 编译期断言），报错位置在表赋值行、远离根因。
+- **跑 Windows 单测前先结束运行中的 VoiceStick.exe**：时序断言（编码器 EWMA/overlay）与真实应用并发时偶发失败且**失败点漂移**（两次分别 core_tests.cc:4062/:7893），极易误判代码回归。
 
 ---
 
@@ -462,4 +472,5 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - macOS 本地 ad-hoc 打包：`.app` 启动即崩且 dyld 报 Sparkle.framework `different Team IDs`（尽管两端都是 adhoc）= `build-macos.sh` 曾给 ad-hoc 分支误加 `--options runtime`（hardened runtime 库校验拒绝无 Team ID 组合）；修复后 ad-hoc 分支不带 runtime 选项，已产出包可 `codesign --force --deep --sign -` 重签救回，见 `Doc/Expe/app-update-mechanism-and-fork-migration-2026-07-30.md` 追加节。
 - macOS 注入类功能（CGEvent 粘贴/按键）验收必须用最终 `.app` 形态：裸二进制寄生终端的 TCC 辅助功能授权，注入「看起来正常」；独立 `.app` 以自身 bundle id 单独授权，未授权时 CGEvent 静默丢弃（识别正常唯独粘贴不进，极具迷惑性）。判据：文本到悬浮窗/剪贴板但输入框无内容 → 查 TCC.db 该 bundle id 有无 `kTCCServiceAccessibility`（本机该 service 在**系统级** `/Library/.../TCC.db`，用户级库无此 service）。签名变动（重打包/重签，cdhash 变化）会使已有授权失效需重勾选；**授权对运行中进程不生效，勾选后必须退出重开 app**（引导弹窗 `accessibilityAlertBody` 已写明）；调试期改 app 层代码不要急着重打包替换正在验收的 .app。`InputInjector` 已加 `AXIsProcessTrusted` 前置拦截 + 每次启动一次引导弹窗（Localization 三键中英双表）。详见 `Doc/Expe/macos-windows-design-parity-port-2026-09-03.md` §3。
 - macOS 拦截「键盘/消费控制类」蓝牙 HID 按键做逐键自定义：纯用户态 `IOHIDDeviceOpen`+`kIOHIDOptionsTypeSeizeDevice` 被 `kIOReturnNotPermitted`（0xe00002c1）拒绝（app 内含 matching 回调抢占时机同样被拒，结论已加固），Karabiner 式独占不可行（其真实路线是内核/DriverKit 虚拟 HID 驱动）。spike 探针 `scripts/ref/hid_seize_probe.swift`，详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md`。
+- 智能热词回收池词挂错"原分类"（数学词全标语文）：逐出记录的是"当时所在分类"而非语义归属，回归目标已改为当前活跃分类（切换决策后执行）；日志 `evicted 'X' to make room for 'Y'` 连续密集 + 同语义域 = 批量划词进错分类连环逐出。单词语义判定不可依赖关键词表（领域术语覆盖不全）。跑 Windows 单测前先结束运行中的 VoiceStick.exe（时序断言偶发失败且失败点漂移）。详见 `Doc/Expe/smart-hotword-pool-reclaim-2026-09-26.md`。
 - 小米遥控器 macOS 按键自定义（二期拦截层，2026-09-04 重构定稿）：**IOHID 观察驱动处置 + tap 只吞除原生事件**——处置（inject/suppress）挂 IOHID value 回调（variable 元素 usage 精确 + page==0x07 过滤 vendor 数据流），因 0xF1(back)/0x65(menu) 在 macOS 不产生 keyDown CGEvent，挂 tap 的旧「锚点+时序关联」架构对它们永远静默；音量键原生事件是 systemDefined（subtype=8，data1=(keyCode<<16)|0xa00 down/0xb00 up），非 keyDown。**「按键报告连 IOHID 层都收不到」先重配对**（蓝牙设置忽略设备 + 主页菜单长按重配对即恢复全键报告；判据：连系统音量 OSD 都不变）。TCC 权限结论须以 `open` 启动形态复核（终端直接执行 .app 二进制时 TCC 归终端身份），`log stream` 可见 `kTCCServiceListenEvent auth_value` 判定明细。详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节。

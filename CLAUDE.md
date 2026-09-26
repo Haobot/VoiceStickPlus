@@ -78,6 +78,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 ## 给 Agent 的提示（高频坑）
 
 - Windows 桌面端修改构建通过后，自动重启 VoiceStick.exe 让改动生效（先结束运行中进程，启动后查 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`），无需用户另行指示。
+- 跑 Windows 单测前先结束运行中的 VoiceStick.exe：时序断言与真实应用并发时偶发失败且失败点漂移，易误判为代码回归（详见 Doc/Expe/smart-hotword-pool-reclaim-2026-09-26.md）。
 - `.gitignore` 整体忽略 `desktop/windows/`：提交 Windows 源码必须 `git add -f`，并用 `git ls-files <path>` 逐个验证新文件已被跟踪（教训：f75af4f5 曾因漏提交导致全新克隆无法构建）。
 - Windows 构建目录统一用 `desktop/windows/build-x64`；旧 `desktop/windows/build` 可能混入错误 VS/SDK 缓存。
 - 搜索仓库时排除 `website/node_modules/` 和 `firmware/build/`。
