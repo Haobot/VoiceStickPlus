@@ -43,6 +43,38 @@ def newest_version_in_appcast(path: Path) -> tuple:
     return max(keys) if keys else ()
 
 
+def render_notes_html(md_text: str) -> str:
+    """受控 markdown 发行说明 → WinSparkle 展示用 HTML。
+
+    显式亮色内联样式：WinSparkle 的内嵌浏览器（mshtml）在系统深色模式下对
+    无样式 HTML 黑底渲染、文字默认黑，黑底黑字不可读（2026-09-27 用户报告）。
+    先整行转义再做标记替换，发行说明内容无法注入 HTML 标签。
+    """
+    items: list[str] = []
+    blocks: list[str] = []
+    for line in md_text.replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        s = html.escape(s, quote=False)
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+        if s.startswith("## "):
+            blocks.append("<b>" + s[3:].strip() + "</b>")
+        elif s.startswith("- "):
+            items.append("<li>" + s[2:].strip() + "</li>")
+        else:
+            blocks.append("<div>" + s + "</div>")
+    inner = "".join(blocks)
+    if items:
+        inner += "<ul>" + "".join(items) + "</ul>"
+    if not inner:
+        inner = "<ul><li>VoiceStick release.</li></ul>"
+    style = ("background:#ffffff;color:#1a1a1a;"
+             "font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;")
+    return f'<div style="{style}">{inner}</div>'
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Write the Sparkle appcast for a VoiceStick release.")
     parser.add_argument("--version", required=True)
@@ -95,9 +127,7 @@ def main() -> None:
         sys.exit(f"Error: refusing to downgrade appcast from {'.'.join(map(str, newest))} "
                  f"to {args.version}; pass --allow-version-downgrade to override.")
 
-    notes = "".join(f"<li>{html.escape(line)}</li>" for line in args.release_notes.splitlines() if line.strip())
-    if not notes:
-        notes = "<li>VoiceStick release.</li>"
+    notes = render_notes_html(args.release_notes)
 
     pub_date = email.utils.format_datetime(datetime.now(timezone.utc))
     windows_item = ""
@@ -105,9 +135,7 @@ def main() -> None:
         windows_item = f"""    <item>
       <title>Version {html.escape(args.version)}</title>
       <description><![CDATA[
-        <ul>
-          {notes}
-        </ul>
+        {notes}
       ]]></description>
       <pubDate>{pub_date}</pubDate>
       <enclosure
@@ -129,9 +157,7 @@ def main() -> None:
         macos_item = f"""    <item>
       <title>Version {html.escape(args.version)}</title>
       <description><![CDATA[
-        <ul>
-          {notes}
-        </ul>
+        {notes}
       ]]></description>
       <pubDate>{pub_date}</pubDate>
       <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>

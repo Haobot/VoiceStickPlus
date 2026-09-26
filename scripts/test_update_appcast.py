@@ -102,6 +102,33 @@ class UpdateAppcastTests(unittest.TestCase):
         ])
         self.assertIn('sparkle:version="2.9.9"', path.read_text(encoding="utf-8"))
 
+    def test_release_notes_rendered_as_styled_html(self):
+        # 黑底黑字回归（2026-09-27）：notes 必须渲染成带显式亮色样式的 HTML，
+        # markdown 标记不得原样透出（WinSparkle 内嵌浏览器深色模式下无样式
+        # HTML 会黑底渲染、文字默认黑）。
+        md = ("## VoiceStick 2.4.2（Windows）\n\n"
+              "- 修复：MSI 补齐 `sherpa-onnx-c-api.dll`\n"
+              "- 变更：**测试配置**内置\n")
+        html = appcast.render_notes_html(md)
+        self.assertIn('background:#ffffff', html)
+        self.assertIn('color:#1a1a1a', html)
+        self.assertNotIn('## ', html)
+        self.assertNotIn('- 修复', html)
+        self.assertIn('<b>VoiceStick 2.4.2（Windows）</b>', html)
+        self.assertIn('<li>修复：MSI 补齐 <code>sherpa-onnx-c-api.dll</code></li>', html)
+        self.assertIn('<b>测试配置</b>', html)
+        self.assertIn('<ul>', html)
+        # 危险内容必须转义
+        hostile = "- 尝试 <script>alert(1)</script> & 注入"
+        safe = appcast.render_notes_html(hostile)
+        self.assertNotIn('<script>', safe)
+        self.assertIn('&lt;script&gt;', safe)
+
+    def test_release_notes_empty_fallback(self):
+        html = appcast.render_notes_html("")
+        self.assertIn('<ul>', html)
+        self.assertIn('background:#ffffff', html)
+
     def test_version_helpers(self):
         self.assertEqual(appcast._version_key("2.3.10"), (2, 3, 10))
         self.assertGreater(appcast._version_key("2.3.10"), appcast._version_key("2.3.9"))

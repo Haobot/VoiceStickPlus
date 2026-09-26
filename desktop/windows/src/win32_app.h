@@ -190,6 +190,13 @@ private:
     void OnAppUpdateFound();
     // WinSparkle 静默检查到新版本：气泡 → 用户点击 → check_update_with_ui 标准对话框。
     static void __cdecl WinSparkleFoundUpdateBridge();
+    // 更新安装前探询（WinSparkle 工作线程）：应用无可阻断的未保存状态，随时可退出。
+    static int __cdecl WinSparkleCanShutdownBridge();
+    // 用户确认安装后（WinSparkle 工作线程）：封送 UI 线程优雅退出（托盘清理 +
+    // 协调器 Shutdown）；应用退出后 WinSparkle 等安装器跑完并自动重启新版本。
+    // 不注册这对回调时 WinSparkle 不等关闭直接跑安装器——运行中的 exe 不可替换，
+    // 表现为「装完要手动关掉老程序再开」（2026-09-27 用户报告）。
+    static void __cdecl WinSparkleShutdownRequestBridge();
     void ShutdownAndQuit();
     // 以管理员身份重启自身：ShellExecuteW runas 触发 UAC，新 High 实例启动后旧实例清理退出。
     void RelaunchElevatedAndQuit();

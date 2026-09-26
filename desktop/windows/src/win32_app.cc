@@ -462,6 +462,10 @@ int Win32App::Run() {
             // 30s 避开启动带宽争抢，此后每 24h 静默检查一次（见 WM_TIMER 104）。
             win_sparkle_set_automatic_check_for_updates(0);
             win_sparkle_set_did_find_update_callback(&WinSparkleFoundUpdateBridge);
+            // 更新安装链：先探询可关闭，再请求优雅退出（托盘清理+协调器 Shutdown），
+            // 应用退出后 WinSparkle 等安装器完成并自动重启新版本。
+            win_sparkle_set_can_shutdown_callback(&WinSparkleCanShutdownBridge);
+            win_sparkle_set_shutdown_request_callback(&WinSparkleShutdownRequestBridge);
             win_sparkle_init();
             SetTimer(hwnd_, kAppUpdateSilentCheckTimerId, kAppUpdateFirstCheckDelayMs, nullptr);
             LogLine("WinSparkle initialized");
@@ -3182,6 +3186,18 @@ void Win32App::ShowFirmwareUpdateBalloon(const std::string& device_id,
 void __cdecl Win32App::WinSparkleFoundUpdateBridge() {
     if (active_instance_ != nullptr) {
         active_instance_->OnAppUpdateFound();
+    }
+}
+
+int __cdecl Win32App::WinSparkleCanShutdownBridge() {
+    // 本应用无可阻断的未保存状态（配置即改即落盘），始终允许优雅退出。
+    return TRUE;
+}
+
+void __cdecl Win32App::WinSparkleShutdownRequestBridge() {
+    Win32App* inst = active_instance_;
+    if (inst != nullptr) {
+        inst->DispatchToUi([inst] { inst->ShutdownAndQuit(); });
     }
 }
 
