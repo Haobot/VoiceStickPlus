@@ -1,20 +1,31 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
   VoiceStick 一键发布脚本（在 Windows 签名机上运行）。
 
 .DESCRIPTION
-  串起完整发布流程：版本文件同步 -> MSI 构建+签名 -> commit/tag/push ->
-  等待 release.yml CI -> 上传 MSI(+sha256) -> 触发网站部署 -> 验证全部更新 URL。
-  固件/macOS/网站由 GitHub Actions 负责；本脚本只做本地能与编排。
+  串起完整发布流程：版本文件同步 -> MSI 构建+签名 -> 固件构建（本机 IDF，
+  与真机验证同一份产物）-> commit/tag/push -> 等待 release.yml 构建验证 ->
+  本机创建 GitHub Release 并上传全部资产 -> 触发网站部署（Pages）->
+  COS 国内源直传 -> 验证全部更新 URL。
 
-  详见 Doc/Plan/downloads-and-release.md 阶段一。
+  国内 COS 直传在签名机本机执行（GitHub Actions 海外 runner 跨境上行
+  ~8KB/s 且 ~130s 断连，大文件分块上传必死，见 Doc/Ref/cos-distribution.md
+  待办 3 定案）；CI 只负责构建验证与 GitHub Pages。
+
+  详见 Doc/Ref/release.md。
 
 .PARAMETER Version
   目标版本号（如 2.3.9）。脚本会把 VERSION 与 firmware/version.txt 写成该值。
 
 .PARAMETER SkipMsi
   跳过 Windows MSI 构建与上传（纯固件发布）。
+
+.PARAMETER SkipFirmware
+  跳过固件构建与上传（纯软件发布）。
+
+.PARAMETER SkipCos
+  跳过 COS 国内源直传（仅发布 GitHub 渠道；本机凭据未配置时使用）。
 
 .PARAMETER Repo
   目标仓库，默认 Haobot/VoiceStickPlus。
@@ -30,6 +41,8 @@
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [switch]$SkipMsi,
+    [switch]$SkipFirmware,
+    [switch]$SkipCos,
     [string]$Repo = "Haobot/VoiceStickPlus",
     [switch]$DryRun
 )
@@ -44,6 +57,12 @@ $PagesBase = "https://$RepoOwner.github.io/$RepoName"
 $DistDomain = "https://dl.davenger.cloud"
 $MsiDir = Join-Path $ProjectDir 'desktop\windows\build-msi-x64'
 $MsiNames = @("VoiceStick_${Version}_zh-CN.msi", "VoiceStick_${Version}_en-US.msi")
+$FwBuildDir = Join-Path $ProjectDir 'firmware\build'
+$DistDir = Join-Path $ProjectDir 'dist'
+$OtaName = "voicestick-firmware-sticks3-ota-${Version}.bin"
+$MergedName = "voicestick-firmware-sticks3-merged-${Version}.bin"
+$CosBucket = "voicestick-dl-1329978361"
+$CosRegion = "ap-shanghai"
 $report = New-Object System.Collections.Generic.List[string]
 
 function Invoke-Step {
@@ -116,6 +135,18 @@ Invoke-Step "前置工具检查（gh 已认证）" {
     Assert-Tool git
     gh auth status | Out-Null
 }
+if (-not $SkipFirmware -or -not $SkipCos) {
+    Invoke-Step "前置工具检查（python，固件构建/发布门禁/COS 直传需要）" {
+        Assert-Tool python
+    }
+}
+if (-not $SkipCos) {
+    Invoke-Step "前置检查（COS 凭据环境变量，兼容 TENCENT_COS_* / TENCENTCLOUD_* 命名）" {
+        if (-not $env:TENCENT_COS_SECRET_ID -and -not $env:TENCENTCLOUD_SECRET_ID) {
+            throw "未检测到 COS 凭据（TENCENT_COS_SECRET_ID 或 TENCENTCLOUD_SECRET_ID）；本机无凭据时请加 -SkipCos"
+        }
+    }
+}
 
 $branch = git -C $ProjectDir rev-parse --abbrev-ref HEAD
 if ($branch -ne 'main' -and -not $DryRun) { throw "必须在 main 分支发布，当前是 $branch" }
@@ -150,6 +181,24 @@ if (-not $SkipMsi) {
     Write-Host "==> 跳过 Windows MSI（-SkipMsi）" -ForegroundColor DarkGray
 }
 
+# ---------- 3.5 固件构建（本机 IDF，可跳过）----------
+# 与真机烧录验证同一份产物：idf_cli.py -c --merge 产出 voice_stick.bin（OTA）
+# 与 merged.bin（整包），随后的 .sha256 / manifest.json 由 publish_cos.py 生成。
+if (-not $SkipFirmware) {
+    Invoke-Step "构建固件并合并整包镜像（idf_cli.py -c --merge）" {
+        python (Join-Path $PSScriptRoot 'idf_cli.py') -c --merge
+    }
+    Invoke-Step "收集固件产物到 dist/ 并生成 .sha256 与 manifest.json（未上传）" {
+        New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+        Copy-Item (Join-Path $FwBuildDir 'voice_stick.bin') (Join-Path $DistDir $OtaName) -Force
+        Copy-Item (Join-Path $FwBuildDir 'merged.bin') (Join-Path $DistDir $MergedName) -Force
+        python (Join-Path $PSScriptRoot 'publish_cos.py') `
+            firmware --dist $DistDir --version $Version --min-version $minVersion --skip-upload
+    }
+} else {
+    Write-Host "==> 跳过固件构建（-SkipFirmware）" -ForegroundColor DarkGray
+}
+
 # ---------- 4. commit + tag + push ----------
 Invoke-Step "提交版本变更" {
     $pending = git -C $ProjectDir status --porcelain VERSION firmware/version.txt
@@ -166,48 +215,108 @@ Invoke-Step "打 tag $Tag 并推送 main 与 tag" {
     git -C $ProjectDir push origin $Tag
 }
 
-# ---------- 5. 等待 release.yml（固件构建 + GitHub Release 发布）----------
-Invoke-Step "等待 Release Build CI 完成（tag $Tag）" {
+# ---------- 5. 等待 release.yml（构建验证门禁：tag 与 VERSION 匹配 + CI 交叉编译）----------
+Invoke-Step "等待 Release Build CI 构建验证完成（tag $Tag）" {
     Wait-WorkflowRun -Workflow 'release.yml' -BaselineRunId 0 -Branch $Tag
 }
 
-# ---------- 6. 上传 MSI + sha256（可跳过，失败重试一次）----------
+# ---------- 6. 创建 GitHub Release 并统一上传资产（可部分跳过，失败重试一次）----------
+Invoke-Step "创建 GitHub Release $Tag（已存在则复用）" {
+    gh release view $Tag --repo $Repo 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        gh release create $Tag --repo $Repo --title "VoiceStick $Version" --generate-notes
+    } else {
+        Write-Host "    Release $Tag 已存在，直接复用"
+    }
+}
+
+$releaseFiles = @()
+if (-not $SkipFirmware) {
+    $releaseFiles += @(
+        (Join-Path $DistDir $OtaName),
+        (Join-Path $DistDir "$OtaName.sha256"),
+        (Join-Path $DistDir $MergedName),
+        (Join-Path $DistDir "$MergedName.sha256"),
+        (Join-Path $DistDir 'manifest.json')
+    )
+}
 if (-not $SkipMsi) {
-    Invoke-Step "生成 MSI sha256 并上传到 $Tag" {
-        $files = @()
-        foreach ($m in $MsiNames) {
-            $p = Join-Path $MsiDir $m
-            $hash = (Get-FileHash -Algorithm SHA256 $p).Hash.ToLower()
-            [IO.File]::WriteAllText("$p.sha256", "$hash  $m`n")
-            $files += $p
-            $files += "$p.sha256"
-        }
-        # P0-4：公开产物凭据门禁。用本机 config.toml 的真实值做精确匹配（含 exe 内置
-        # 凭据与 zip 内配置）叠加形态扫描，命中即拒绝上传；内测含 key 包不得走本流程。
-        if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-            throw "发布门禁需要 python 运行 scripts/scan_release_artifacts.py"
-        }
-        python (Join-Path $PSScriptRoot 'scan_release_artifacts.py') @files
+    foreach ($m in $MsiNames) {
+        $p = Join-Path $MsiDir $m
+        $hash = (Get-FileHash -Algorithm SHA256 $p).Hash.ToLower()
+        [IO.File]::WriteAllText("$p.sha256", "$hash  $m`n")
+        $releaseFiles += $p
+        $releaseFiles += "$p.sha256"
+    }
+}
+if ($releaseFiles.Count -gt 0) {
+    # P0-4：公开产物凭据门禁。固件 bin 与 MSI 同样按原始字节扫描（含 exe 内置
+    # 凭据与 zip 内配置的精确值匹配 + 凭据形态扫描），命中即拒绝上传。
+    Invoke-Step "公开产物凭据扫描（P0-4 门禁，共 $($releaseFiles.Count) 个文件）" {
+        python (Join-Path $PSScriptRoot 'scan_release_artifacts.py') @releaseFiles
         if ($LASTEXITCODE -ne 0) {
             throw "公开产物凭据扫描未通过，拒绝上传（见上方命中项）"
         }
+    }
+    Invoke-Step "上传 $($releaseFiles.Count) 个资产到 Release $Tag（--clobber 幂等）" {
         $uploaded = $false
         foreach ($attempt in 1..2) {
-            gh release upload $Tag $files --repo $Repo
+            gh release upload $Tag $releaseFiles --repo $Repo --clobber
             if ($LASTEXITCODE -eq 0) { $uploaded = $true; break }
             Write-Host "上传失败（第 $attempt 次），3 秒后重试..." -ForegroundColor Yellow
             Start-Sleep -Seconds 3
         }
-        if (-not $uploaded) { throw "MSI 上传重试后仍失败" }
+        if (-not $uploaded) { throw "资产上传重试后仍失败" }
     }
 }
 
-# ---------- 7. 触发并等待网站部署（appcast + downloads.json + 固件同步）----------
+# ---------- 7. 触发并等待网站部署（GitHub Pages：appcast + downloads.json + 烧录器固件）----------
 $deployBaseline = Get-LatestRunId -Workflow 'deploy-website.yml'
 Invoke-Step "触发 deploy-website.yml 并等待完成" {
     gh workflow run deploy-website.yml --repo $Repo --ref main
     Start-Sleep -Seconds 20   # 等 run 出现在列表里
     Wait-WorkflowRun -Workflow 'deploy-website.yml' -BaselineRunId $deployBaseline -TimeoutMinutes 15
+}
+
+# ---------- 7.5 COS 国内源直传（本机上行，可跳过）----------
+if (-not $SkipCos) {
+    if (-not $SkipFirmware) {
+        Invoke-Step "COS 直传：固件产物 + manifest（publish_cos.py firmware）" {
+            python (Join-Path $PSScriptRoot 'publish_cos.py') `
+                --bucket $CosBucket --region $CosRegion `
+                firmware --dist $DistDir --version $Version --min-version $minVersion
+        }
+    }
+    if (-not $SkipMsi) {
+        Invoke-Step "COS 直传：Windows MSI（publish_cos.py software）" {
+            python (Join-Path $PSScriptRoot 'publish_cos.py') `
+                --bucket $CosBucket --region $CosRegion `
+                software --msi-dir $MsiDir --version $Version
+        }
+    }
+    Invoke-Step "COS 直传：appcast / downloads.json（Pages 小文件转传）" {
+        python (Join-Path $PSScriptRoot 'publish_cos.py') `
+            --bucket $CosBucket --region $CosRegion `
+            pages-mirror --pages-base $PagesBase
+    }
+    Invoke-Step "COS 直传：整站同步（website 以 base=/ 构建，npm 缺失时降级跳过）" {
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            Write-Host "    未检测到 npm，跳过整站同步（下载页由 GitHub Pages 服务）" -ForegroundColor Yellow
+            return
+        }
+        Push-Location (Join-Path $ProjectDir 'website')
+        try {
+            npm ci
+            npm run build -- --base=/
+        } finally {
+            Pop-Location
+        }
+        python (Join-Path $PSScriptRoot 'upload_cos.py') `
+            --bucket $CosBucket --region $CosRegion `
+            --sync-dir (Join-Path $ProjectDir 'website\dist') ''
+    }
+} else {
+    Write-Host "==> 跳过 COS 国内源直传（-SkipCos）" -ForegroundColor DarkGray
 }
 
 # ---------- 8. 验证全部更新 URL ----------

@@ -73,7 +73,7 @@
 
 1. ~~DNS：`dl.davenger.cloud` CNAME → 桶默认域名~~ **已完成**（2026-09-26，指向 `voicestick-dl-1329978361.cos.ap-shanghai.myqcloud.com`）；
 2. 腾讯云申请免费 DV 证书（如未签发），COS 控制台为**新桶** `voicestick-dl-1329978361` 绑定自定义域名 `dl.davenger.cloud` 并开启 HTTPS——当前 https 直连报证书主体不匹配（桶侧未绑）；
-3. ~~CAM 子账号与仓库 Secrets~~ Secrets 已配置（2026-09-26）；**当前阻塞项定案（2026-09-26 两轮诊断，run 36244545602 / 36245561012）**：**CI 上行路径不可用，与 CAM/桶策略无关**（服务端无 request id，请求从未被服务端处理完；`create_multipart_upload` 成功证明分块动作已授权）。证据：runner 出口为 Azure 美东（AS8075，Dulles Town Center），无代理；同凭据同 API 只变 body 大小——put_object 100KB 成功 3.3s、512KB 成功 **68s（有效吞吐 ~8KB/s）**、1MB/2MB 在 ~130s 连接被断，upload_part 1MB 两连测 100% 复现；TLS 小请求 RTT 正常（TTFB ~2s），ping 被 COS 前端禁用（不作为证据）。结论：跨境上行吞吐 ~8KB/s + 中间链路 ~130s 断连，≥1MB 必死；MSI 40MB 按此吞吐需 85 分钟，调超时/并发救不了。**采用方向：发布时本机直传 COS**（国内上行快，`scripts/cos_uploader.py` + 本机凭据 `TENCENTCLOUD_SECRET_ID/KEY`，1.34GB 模型当年即此路径）；CI 的 COS 步骤降级为尽力而为（或注释停用），云侧 URL 拉取（COS 迁移任务/云函数境内中转）为可选自动化增强；
-4. **模型对象迁移**：旧桶 `models/` 下三个已核验对象需凭凭据重新上传到新桶（`scripts/cos_uploader.py`，`Cache-Control: max-age=31536000`），上传后按上表逐对象核对字节数与 SHA-256——本机国内网络直传即可（此路径不受待办 3 影响）；
+3. ~~CAM 子账号与仓库 Secrets~~ Secrets 已配置（2026-09-26）；~~CI 上行路径不可用~~ **修法已落地（2026-09-26）**：CI 海外 runner 跨境上行不可用（~8KB/s + ~130s 断连，≥1MB 分块必死；两轮诊断 run 36244545602 / 36245561012，与 CAM/桶策略无关），故 COS 写入全部移交签名机：发布流程 `scripts/release.ps1` → `scripts/publish_cos.py`（固件/软件/manifest 直传 + Pages 小文件转传 + 整站同步；凭据 `TENCENT_COS_*` 或 `TENCENTCLOUD_*` 环境变量），CI 侧 COS 步骤已删除（`release.yml` 瘦身为构建验证门禁、`deploy-website.yml` 只管 Pages）。云侧 URL 拉取（COS 迁移任务/云函数境内中转）保留为可选自动化增强；**剩余：首次真实发布跑通全链路**；
+4. **模型对象迁移**：旧桶 `models/` 下三个已核验对象需重新上传到新桶（本机国内网络直传，`scripts/publish_cos.py` 或 `scripts/cos_uploader.py` 均可，`Cache-Control: max-age=31536000`），上传后按上表逐对象核对字节数与 SHA-256；
 5. 配置 COS 流量监控告警（替代防盗链的防护手段）；
-6. 上述就绪后按选定修法重跑同步，**必须看 COS 步骤日志而非 run 结论**（两处 COS 步骤 `continue-on-error`，失败不红），并从国内网络直连验证下载页、appcast、模型清单 URL。整站小对象同步已验证通路（2026-09-26 run 36242775900 部分对象已落桶），大对象仅差传输路径。
+6. 上述就绪后跑一次 `release.ps1`（或对既有版本手工执行 publish_cos 各子命令）完成联调，并从国内网络直连验证下载页、appcast、模型清单 URL。

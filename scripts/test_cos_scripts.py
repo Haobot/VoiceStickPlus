@@ -38,8 +38,11 @@ class CacheControlTests(unittest.TestCase):
 
 class RequireCredentialsTests(unittest.TestCase):
     def test_missing_credentials_exit_with_error(self):
-        saved = {k: os.environ.pop(k, None) for k in
-                 ("TENCENT_COS_SECRET_ID", "TENCENT_COS_SECRET_KEY")}
+        # 回退命名 TENCENTCLOUD_*（本机发布常见命名）一并清理，
+        # 否则本机配置了该命名时测试假失败
+        keys = ("TENCENT_COS_SECRET_ID", "TENCENT_COS_SECRET_KEY",
+                "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY")
+        saved = {k: os.environ.pop(k, None) for k in keys}
         try:
             with self.assertRaises(SystemExit) as ctx:
                 uploader.require_credentials()

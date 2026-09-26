@@ -17,11 +17,11 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
-# 国内 COS 分发面（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）。
-# 凭据在仓库 Secrets：TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY（未配置时 COS 相关步骤失败，不静默）。
+# GitHub Pages 国际/备胎站点部署：appcast、downloads.json、烧录器同源固件。
+# COS 国内源的同步（软件/固件/整站/appcast 转传）已移交签名机发布流程
+# scripts/release.ps1 -> scripts/publish_cos.py（CI 海外 runner 跨境上行
+# 大文件必死，Doc/Ref/cos-distribution.md 待办 3 定案）。
 env:
-  VOICESTICK_COS_BUCKET: "voicestick-dl-1329978361"
-  VOICESTICK_COS_REGION: "ap-shanghai"
   VOICESTICK_DIST_DOMAIN: "https://dl.davenger.cloud"
 
 jobs:
@@ -42,25 +42,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
         working-directory: website
-
-      - name: Mirror release assets to COS
-        # GitHub Release 为源站事实，资产镜像到 COS 供 appcast/downloads.json 指向国内源。
-        # 镜像路径规则见 scripts/mirror_urls.py；未知资产跳过。
-        # 非阻塞：COS 渠道未就绪（dl.davenger.cloud 域名未解析 + 密钥无桶写权限）
-        # 时不得阻塞 GitHub Pages 站点部署——渠道就绪后此步骤恢复硬失败。
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          pip install cos-python-sdk-v5
-          python scripts/mirror_release_to_cos.py \
-            --repo "${{ github.repository }}" \
-            --bucket "${VOICESTICK_COS_BUCKET}" \
-            --region "${VOICESTICK_COS_REGION}" \
-            --limit 10
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
-          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
 
       - name: Update appcast from latest release
         run: |
@@ -155,30 +136,6 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: website/dist
-
-      - name: Rebuild website (COS root base)
-        # COS 自定义域名挂在 bucket 根，整站以 base=/ 重新构建；
-        # GitHub Pages 版本（/VoiceStickPlus/）保留为国际/备胎站点。
-        run: |
-          set -euo pipefail
-          rm -rf dist
-          npm run build -- --base=/
-        working-directory: website
-
-      - name: Sync website to COS
-        # 非阻塞：COS 渠道未就绪时不得阻塞最后的 GitHub Pages 部署（v2.4.0
-        # 实测 upload_cos.py 缺 import 曾卡住 Pages）；渠道就绪后恢复硬失败。
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          pip install cos-python-sdk-v5
-          python scripts/upload_cos.py \
-            --bucket "${VOICESTICK_COS_BUCKET}" \
-            --region "${VOICESTICK_COS_REGION}" \
-            --sync-dir website/dist ""
-        env:
-          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
-          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
 
       - name: Deploy to GitHub Pages
         id: deployment

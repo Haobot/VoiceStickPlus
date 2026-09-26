@@ -678,6 +678,31 @@ class EspIdfAutomation:
         if not success:
             self.logger.error("编译失败，终止流程")
             sys.exit(10)
+        if getattr(self.args, 'merge', False):
+            self.merge_bin()
+        return True
+
+    # ---------- 整包镜像合并 ----------
+    def merge_bin(self):
+        """合并整包烧录镜像到 build/merged.bin（发布产物，与 CI release.yml 等价）。
+
+        在 build 目录内执行 esptool merge_bin，@flash_args 由 idf.py 生成，
+        包含 bootloader/分区表/应用镜像的偏移布局。
+        """
+        build_dir = os.path.join(self.project_dir, "build")
+        if not os.path.isdir(build_dir):
+            self.logger.error(f"未找到 build 目录: {build_dir}（请先编译）")
+            sys.exit(14)
+        cmd = [self.idf_env.python_exe, "-m", "esptool", "--chip", self.target,
+               "merge_bin", "-o", "merged.bin", "@flash_args"]
+        success, _ = self.run_command(
+            cmd, message="正在合并整包镜像... ",
+            cwd=build_dir,
+        )
+        if not success:
+            self.logger.error("merge_bin 失败，终止流程")
+            sys.exit(15)
+        self.logger.info(f"整包镜像: {os.path.join(build_dir, 'merged.bin')}")
         return True
 
     # ---------- 烧录 ----------
@@ -863,6 +888,8 @@ def main():
     setup_signal_handlers()
     parser = argparse.ArgumentParser(description="ESP-IDF 固件开发脚本：编译/烧录/监控")
     parser.add_argument('-c', '--compile', action='store_true', help='编译 (idf.py build)')
+    parser.add_argument('--merge', dest='merge', action='store_true',
+                        help='编译后合并整包镜像 (esptool merge_bin -> build/merged.bin)，需配合 -c')
     parser.add_argument('-u', '--upload', action='store_true', help='烧录 (idf.py flash)')
     parser.add_argument('-s', '--serial', action='store_true', help='串口监控')
     parser.add_argument('--port', '-p', help='串口设备 (COMx / /dev/ttyUSBx)，留空自动检测')

@@ -3,10 +3,10 @@
 VoiceStick releases have three moving parts:
 
 - macOS app: built, signed, notarized, and uploaded by GitHub Actions. (The macOS job is currently disabled in the CI pipeline; only the Windows package and firmware are published for v2.3.6.)
-- StickS3 firmware: built by GitHub Actions and uploaded to GitHub Releases (as release assets; the firmware manifest is served from COS `dl.davenger.cloud/firmware/latest/manifest.json` with the GitHub `releases/latest/download/manifest.json` kept as client fallback).
+- StickS3 firmware: built on the Windows signing machine (`python scripts/idf_cli.py -c --merge`), so the binary that was verified on a real device is the binary that gets published. The one-command script uploads it to the GitHub Release and COS.
 - Windows app: built and signed manually on the Windows signing machine, then uploaded to the matching GitHub Release.
 
-Domestic distribution: every release additionally mirrors assets to Tencent COS (`dl.davenger.cloud`) — firmware at `firmware/v<tag>/`, MSIs at `software/windows/v<tag>/`, macOS zips at `software/macos/v<tag>/`, plus the whole website at the bucket root. GitHub stays the source of truth; GitHub Pages remains the international/backup site. See `Doc/Ref/cos-distribution.md` (channel conventions) and `Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md`. COS writes happen only in GitHub Actions with repo secrets `TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY`; the signing machine keeps talking to GitHub only.
+Domestic distribution: every release additionally publishes assets to Tencent COS (`dl.davenger.cloud`) — firmware at `firmware/v<tag>/`, MSIs at `software/windows/v<tag>/`, plus the whole website at the bucket root. GitHub stays the source of truth; GitHub Pages remains the international/backup site. See `Doc/Ref/cos-distribution.md` (channel conventions) and `Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md`. COS writes happen on the Windows signing machine only (`scripts/publish_cos.py`; credentials from `TENCENT_COS_*` env vars, `TENCENTCLOUD_*` accepted as fallback): GitHub Actions runners are overseas and the cross-border uplink to the Shanghai bucket stalls at ~8 KB/s with ~130 s connection cuts, which kills every multipart upload (>=1 MB body) — diagnosed 2026-09-26, see `Doc/Ref/cos-distribution.md` item 3. The CI-side COS steps were removed accordingly.
 
 The Windows package is the special case because the signing certificate is local hardware or local machine state. The release process supports either order:
 
@@ -23,7 +23,9 @@ The whole flow above is scripted for the Windows signing machine:
 powershell -File scripts\release.ps1 -Version 2.3.9
 ```
 
-The script syncs `VERSION` / `firmware/version.txt`, builds and signs the MSI, commits and pushes the `v<version>` tag, waits for the release workflow, uploads both MSIs with `.sha256` checksums, triggers the website deploy, and verifies every update URL — GitHub and COS alike (appcast, `manifest.json` incl. `min_version`, `downloads.json`, firmware and MSI assets on both `dl.davenger.cloud` and GitHub). Use `-SkipMsi` for firmware/website-only releases and `-DryRun` to print the steps without executing anything. It refuses to run off `main` or with a dirty tree.
+The script syncs `VERSION` / `firmware/version.txt`, builds and signs the MSI, builds the firmware locally (`idf_cli.py -c --merge`), commits and pushes the `v<version>` tag, waits for the `release.yml` build-verification gate, creates the GitHub Release and uploads all assets (firmware bins + checksums + `manifest.json` + both MSIs, all gated by the P0-4 credential scan), triggers the website deploy (Pages), then pushes everything to COS from the local machine (`scripts/publish_cos.py`: firmware, MSIs, appcast/downloads.json mirrored from Pages, whole website) and verifies every update URL — GitHub and COS alike (appcast, `manifest.json` incl. `min_version`, `downloads.json`, firmware and MSI assets on both `dl.davenger.cloud` and GitHub). Use `-SkipMsi` / `-SkipFirmware` for partial releases, `-SkipCos` when the machine has no COS credentials (GitHub channel only), and `-DryRun` to print the steps without executing anything. It refuses to run off `main` or with a dirty tree.
+
+Note: with `-SkipFirmware` (software-only release) the new Release carries no `manifest.json`, so `releases/latest/download/manifest.json` resolves to the newest Release without it; the COS stable address `dl.davenger.cloud/firmware/latest/manifest.json` keeps serving the previous firmware's manifest, which remains correct.
 
 `FIRMWARE_MIN_VERSION` (repo root) feeds the manifest `min_version` field: devices below it get a mandatory upgrade prompt. Bump it manually when the desktop protocol drops compatibility with older firmware; it must never exceed `VERSION`.
 
@@ -63,15 +65,7 @@ git push origin main
 git push origin v2.3.6
 ```
 
-Pushing the tag runs `.github/workflows/release.yml`. That workflow builds:
-
-- `voicestick-firmware-sticks3-ota-<version>.bin`
-- `voicestick-firmware-sticks3-merged-<version>.bin`
-- firmware checksums and `manifest.json`
-
-The firmware assets and `manifest.json` are uploaded to the GitHub Release (no Aliyun OSS upload; the CI no longer carries OSS credentials).
-
-After publishing the GitHub Release, the workflow requests a website deploy so the appcast is refreshed.
+Pushing the tag runs `.github/workflows/release.yml`, which is now a build-verification gate only: it validates the tag against `VERSION` and cross-compiles the firmware (Espressif CI action; bins, checksums, and `manifest.json` are retained as run artifacts). It does **not** publish the Release or write to COS — `scripts/release.ps1` owns both.
 
 ## Windows First
 

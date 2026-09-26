@@ -10,20 +10,17 @@ on:
         required: true
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
-  actions: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-# 国内 COS 分发面（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）。
-# 凭据在仓库 Secrets：TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY（未配置时 COS 上传步骤失败，不静默）。
+# 构建验证门禁：tag 推送后交叉编译固件、校验 tag 与 VERSION 一致，产物留存 artifact。
+# GitHub Release 发布与 COS 国内源直传已移交签名机 scripts/release.ps1
+#（CI 海外 runner 到 COS 跨境上行 ~8KB/s 且 ~130s 断连，大文件分块上传必死，
+#  Doc/Ref/cos-distribution.md 待办 3 定案）。
 env:
-  VOICESTICK_COS_BUCKET: "voicestick-dl-1329978361"
-  VOICESTICK_COS_REGION: "ap-shanghai"
   VOICESTICK_DIST_DOMAIN: "https://dl.davenger.cloud"
 
 jobs:
@@ -123,88 +120,3 @@ jobs:
         with:
           name: voicestick-firmware-${{ steps.ver.outputs.version }}
           path: dist/*
-
-      - name: Upload firmware to COS
-        # 非阻塞：COS 渠道未就绪（域名/密钥权限）时不得阻塞 Release 发布；
-        # GitHub Release 为源站事实，COS 镜像可事后补传。渠道就绪后恢复硬失败。
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          pip install cos-python-sdk-v5
-          version="${{ steps.ver.outputs.version }}"
-          tag="${{ steps.ver.outputs.tag }}"
-          python scripts/upload_cos.py \
-            --bucket "${VOICESTICK_COS_BUCKET}" \
-            --region "${VOICESTICK_COS_REGION}" \
-            --upload "dist/voicestick-firmware-sticks3-ota-${version}.bin" "firmware/${tag}/voicestick-firmware-sticks3-ota-${version}.bin" \
-            --upload "dist/voicestick-firmware-sticks3-ota-${version}.bin.sha256" "firmware/${tag}/voicestick-firmware-sticks3-ota-${version}.bin.sha256" \
-            --upload "dist/voicestick-firmware-sticks3-merged-${version}.bin" "firmware/${tag}/voicestick-firmware-sticks3-merged-${version}.bin" \
-            --upload "dist/voicestick-firmware-sticks3-merged-${version}.bin.sha256" "firmware/${tag}/voicestick-firmware-sticks3-merged-${version}.bin.sha256" \
-            --upload "dist/manifest.json" "firmware/${tag}/manifest.json" \
-            --upload "dist/manifest.json" "firmware/latest/manifest.json"
-        env:
-          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
-          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
-
-  publish-release:
-    name: Publish GitHub Release
-    needs: [build-firmware]
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.ver.outputs.tag }}
-      version: ${{ steps.ver.outputs.version }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Resolve tag
-        id: ver
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-              tag="${INPUT_TAG}"
-          else
-              tag="${GITHUB_REF_NAME}"
-          fi
-          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error ::invalid tag '${tag}' (expected vX.Y.Z)."
-              exit 1
-          fi
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: voicestick-*
-          merge-multiple: true
-
-      - name: Publish Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: VoiceStick ${{ steps.ver.outputs.version }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/voicestick-firmware-sticks3-ota-${{ steps.ver.outputs.version }}.bin
-            dist/voicestick-firmware-sticks3-ota-${{ steps.ver.outputs.version }}.bin.sha256
-            dist/voicestick-firmware-sticks3-merged-${{ steps.ver.outputs.version }}.bin
-            dist/voicestick-firmware-sticks3-merged-${{ steps.ver.outputs.version }}.bin.sha256
-            dist/manifest.json
-
-  request-website-deploy:
-    name: Request Website Deploy
-    needs: [publish-release]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger website deploy on main
-        run: |
-          set -euo pipefail
-          gh workflow run deploy-website.yml --repo ${{ github.repository }} --ref main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

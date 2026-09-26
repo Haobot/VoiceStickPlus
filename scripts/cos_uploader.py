@@ -13,10 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def require_credentials():
-    secret_id = os.environ.get("TENCENT_COS_SECRET_ID", "").strip()
-    secret_key = os.environ.get("TENCENT_COS_SECRET_KEY", "").strip()
+    # CI 注入 TENCENT_COS_*；本机发布常见命名是 TENCENTCLOUD_*，作回退兼容。
+    secret_id = (os.environ.get("TENCENT_COS_SECRET_ID")
+                 or os.environ.get("TENCENTCLOUD_SECRET_ID") or "").strip()
+    secret_key = (os.environ.get("TENCENT_COS_SECRET_KEY")
+                  or os.environ.get("TENCENTCLOUD_SECRET_KEY") or "").strip()
     if not secret_id or not secret_key:
         sys.exit("Error: TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY "
+                 "(或 TENCENTCLOUD_SECRET_ID / TENCENTCLOUD_SECRET_KEY) "
                  "environment variables are required.")
     return secret_id, secret_key
 
