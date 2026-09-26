@@ -2536,6 +2536,19 @@ void TestCoordinatorUpdateFirmwareFromFile() {
     std::filesystem::remove(empty_path, ec);
 }
 
+// OTA 发送在途窗口选择：v2.3.8 及更早固件的进度回传间隔是 32KB，未收到首条
+// 确认前窗口必须能覆盖它，否则 app 灌到 24KB 就停下等确认、设备攒不到 32KB 不
+// 回传，双方互等直到 15s stalled（2026-09-26 真机：confirmed 恒为 0，v2.4.0
+// bin 无法推给 v2.3.8 设备）。确认开始流动后回到 24KB 常规窗口（8KB 回传间隔
+// 的 3 倍余量，2026-09-20 定的流控节拍）。
+void TestOtaMaxInFlightBytes() {
+    // 未收到任何确认：窗口须大于旧固件 32KB 回传间隔（含一个 chunk 的余量）。
+    assert(BleProtocol::OtaMaxInFlightBytes(0) > 32 * 1024);
+    // 任意非零确认（哪怕只有 1 字节）都证明回传通道活着：立即收紧常规窗口。
+    assert(BleProtocol::OtaMaxInFlightBytes(1) == 24 * 1024);
+    assert(BleProtocol::OtaMaxInFlightBytes(8 * 1024) == 24 * 1024);
+}
+
 void TestParseOtaCliArgs() {
     using namespace voicestick;
     // 无 --ota。
@@ -15608,6 +15621,8 @@ int main() {
     TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate();
     TestCoordinatorSyncsInteractionSettingsPerDeviceOverride();
     TestCoordinatorUpdateFirmwareFromFile();
+    printf(">> TestOtaMaxInFlightBytes\n"); fflush(stdout);
+    TestOtaMaxInFlightBytes();
     TestParseOtaCliArgs();
     TestParseGatewayTargetCliArgs();
     TestParseControlCliArgs();

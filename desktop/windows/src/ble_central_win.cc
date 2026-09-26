@@ -96,6 +96,12 @@ constexpr std::chrono::milliseconds kOtaWriteTimeout{5000};
 // 1s 内还有入站数据的会话不因一条广播被拆；真重启的设备 1s 内发不出任何数据。
 constexpr std::int64_t kAliveAdvVetoMs{1000};
 constexpr std::chrono::milliseconds kOtaConfirmStallTimeout{15000};
+// 在途窗口等待期间的降速续发节拍（2026-09-26）：v2.3.8 及更早固件的进度回传间隔
+// 是 32KB（现行固件 8KB），大于 24KB 常规窗口——若窗口等待时完全停发，设备永远
+// 攒不到下一条回传阈值，双方互等死锁（真机：首条确认 32944 后再次 stalled）。
+// 低节拍续发（每 200ms 一块 ≈1.2KB/s）让 8KB 缺口约 7s 内补齐并触发回传，且单位
+// 时间在途包极少，不触当年 48KB 高在途把对端控制器灌满断链的条件（2026-09-20）。
+constexpr std::chrono::milliseconds kOtaWindowedWriteInterval{200};
 
 // zombie_suspect 免退避重试的窗口与上限：连按重启会产生多重僵尸，
 // 单次免退避不够；但无限免退避会让持续失败的设备 tight-loop，
@@ -3183,13 +3189,10 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
         const std::size_t max_pdu = session->gatt_session ? session->gatt_session.MaxPduSize() : 247;
         const std::size_t chunk_size = std::max<std::size_t>(
             20, std::min<std::size_t>(max_pdu > 15 ? max_pdu - 15 : 20, 244));
-        // 在途窗口（app 领先设备已确认字节的上限）。
-        // **约束（2026-09-20 真机踩到）**：它必须**大于固件的进度回传间隔**
-        // （`OTA_PROGRESS_NOTIFY_BYTES`，2026-09-20 起为 8KB）——曾收紧到 8KB 而与当时的
-        // 32KB 间隔死锁：app 在 8KB 处停下等确认、设备要到 32KB 才回传，双方互等（靠
-        // `kOtaConfirmStallTimeout` 15s 兜底报错才发现）。现在固件间隔 8KB，故取 24KB（3 倍余量）。
-        // 降窗口的目的：48KB 时一次灌 ≈200 个无确认包，实测会在 230KB 左右被对端断链。
-        const std::size_t max_in_flight = 24 * 1024;
+        // 在途窗口（app 领先设备已确认字节的上限）按已确认字节数自适应，取值与
+        // 历史约束见 BleProtocol::OtaMaxInFlightBytes：首条确认前放宽 40KB（覆盖
+        // v2.3.8 及更早固件的 32KB 进度回传间隔，否则互等死锁 15s stalled），
+        // 确认流动后收紧 24KB（持续在途过大曾把对端控制器灌满断链，2026-09-20）。
         LogBleLine("OTA data VS-" + update_session->device_id +
                    " chunk_size=" + std::to_string(chunk_size) +
                    " max_pdu=" + std::to_string(max_pdu) +
@@ -3199,6 +3202,7 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
         std::size_t last_progress = 0;
         auto last_confirm_ms = NowSteadyMs();
         std::uint32_t last_confirmed_seen = 0;
+        auto last_window_write_ms = NowSteadyMs();
         while (offset < update_session->image.size()) {
             if (update_session->cancel_requested) co_return;
             const std::uint32_t confirmed =
@@ -3207,7 +3211,8 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
                 last_confirmed_seen = confirmed;
                 last_confirm_ms = NowSteadyMs();
             }
-            if (ota_supports_write_without_response && offset > confirmed + max_in_flight) {
+            if (ota_supports_write_without_response &&
+                offset > confirmed + BleProtocol::OtaMaxInFlightBytes(confirmed)) {
                 if (NowSteadyMs() - last_confirm_ms > kOtaConfirmStallTimeout.count()) {
                     LogBleLine("OTA device progress stalled VS-" + update_session->device_id +
                                " sent=" + std::to_string(offset) +
@@ -3219,8 +3224,14 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
                             std::to_string(update_session->image.size()) + " bytes.");
                     co_return;
                 }
-                co_await winrt::resume_after(std::chrono::milliseconds(20));
-                continue;
+                // 超窗不完全停发：按低节拍续发（见 kOtaWindowedWriteInterval），
+                // 让设备能攒到下一条进度回传阈值；回传一到窗口即恢复正常全速。
+                if (NowSteadyMs() - last_window_write_ms <
+                    kOtaWindowedWriteInterval.count()) {
+                    co_await winrt::resume_after(std::chrono::milliseconds(20));
+                    continue;
+                }
+                last_window_write_ms = NowSteadyMs();
             }
             const auto end = std::min(offset + chunk_size, update_session->image.size());
             auto payload = BleProtocol::OtaDataPayload(

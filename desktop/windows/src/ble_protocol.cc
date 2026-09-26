@@ -453,6 +453,11 @@ ByteVector BleProtocol::OtaAbortPayload(std::uint32_t transfer_id) {
     return data;
 }
 
+std::size_t BleProtocol::OtaMaxInFlightBytes(std::uint32_t confirmed_written) {
+    // 数值语义见头文件注释：首窗覆盖旧固件 32KB 回传间隔，确认流动后收紧 24KB。
+    return confirmed_written == 0 ? std::size_t{40} * 1024 : std::size_t{24} * 1024;
+}
+
 std::optional<std::string> BleProtocol::DeviceIdFromName(std::string_view name) {
     auto value = Uppercase(TrimCopy(name));
     std::string_view prefix;

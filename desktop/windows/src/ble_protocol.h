@@ -3,6 +3,7 @@
 #include "byte_utils.h"
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -205,6 +206,12 @@ public:
     static ByteVector OtaDataPayload(std::uint32_t transfer_id, std::uint32_t offset, std::span<const std::uint8_t> chunk);
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);
     static ByteVector OtaAbortPayload(std::uint32_t transfer_id);
+    // OTA 发送在途窗口（字节），随设备已确认字节数变化：
+    // 未收到首条确认时放宽到 40KB——v2.3.8 及更早固件的进度回传间隔是 32KB，
+    // 24KB 窗口会在首条确认到达前与设备互等死锁（15s stalled，2026-09-26 真机）；
+    // 首条确认证明回传通道活着，立即收紧回 24KB（8KB 回传间隔的 3 倍余量，
+    // 2026-09-20 定的流控节拍：窗口过大持续在途曾把对端控制器灌满断链）。
+    static std::size_t OtaMaxInFlightBytes(std::uint32_t confirmed_written);
     // 设备 ID 双前缀：StickS3 广播名 VS-XXXX，小米遥控器分配 RC-XXXX；
     // 两者均归一化为 4 位大写 hex（内部存储形式，向后兼容旧配置）。
     static std::optional<std::string> DeviceIdFromName(std::string_view name);
