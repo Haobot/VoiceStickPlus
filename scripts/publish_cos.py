@@ -127,13 +127,14 @@ def cmd_firmware(args):
 
 
 def cmd_software(args):
-    """MSI（含已生成的 .sha256）-> COS 直传。"""
+    """MSI -> COS 直传；缺失 .sha256 时自动按 sha256sum 格式生成。"""
     tag = f"v{args.version}"
     msi_dir = Path(args.msi_dir)
     files = []
     for lang in ("zh-CN", "en-US"):
         msi = _require_local(msi_dir / f"VoiceStick_{args.version}_{lang}.msi")
-        _require_local(str(msi) + ".sha256")
+        if not Path(str(msi) + ".sha256").is_file():
+            write_sha256_file(msi)
         files.append(msi)
         files.append(Path(str(msi) + ".sha256"))
     upload_files(args.bucket, args.region, software_upload_plan(files, tag))
