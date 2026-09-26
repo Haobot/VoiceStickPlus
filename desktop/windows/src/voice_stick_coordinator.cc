@@ -2502,46 +2502,7 @@ void VoiceStickCoordinator::MaybeSmartHotwordUpdate(const std::string& text) {
         EnsureEvictedPoolLoadedLocked();
         const std::int64_t now_s = std::time(nullptr);
 
-        // ① 回收：池内词再次出现在最终文本 = 活跃度回升，回归原分类（原分类
-        // 已满时先逐出更冷的词腾位）。
-        if (auto reclaim = PickReclaimWord(evicted_pool_, text)) {
-            if (auto* target = FindHotwordCategory(config_, reclaim->category);
-                target != nullptr &&
-                std::find(target->words.begin(), target->words.end(), reclaim->word) ==
-                    target->words.end()) {
-                if (target->words.size() >= HotwordCategory::kMaxWords) {
-                    std::string coldest;
-                    {
-                        std::lock_guard usage_lock(hotword_usage_mutex_);
-                        EnsureHotwordUsageLoadedLocked();
-                        coldest =
-                            PickEvictionWord(target->words, hotword_usage_, true, now_s)
-                                .value_or("");
-                    }
-                    if (!coldest.empty()) {
-                        EvictWordToPool(*target, coldest, now_s);
-                        if (evicted_word.empty()) evicted_word = coldest;
-                        pool_mutated = true;
-                        config_mutated = true;
-                    }
-                }
-                if (target->words.size() < HotwordCategory::kMaxWords) {
-                    target->words.push_back(reclaim->word);
-                    if (target->name == config_.active_hotword_category) {
-                        config_.asr_hotwords = target->words;
-                    }
-                    std::erase_if(evicted_pool_, [&](const EvictedWord& e) {
-                        return e.word == reclaim->word && e.category == reclaim->category;
-                    });
-                    pool_mutated = true;
-                    config_mutated = true;
-                    LogCoordinatorLine("smart hotword: reclaimed '" + reclaim->word +
-                                       "' into category '" + reclaim->category + "'");
-                }
-            }
-        }
-
-        // ② 上下文识别自动切换（只改热词分类，不触碰文本纠错/注入路径）。
+        // ① 上下文识别自动切换（只改热词分类，不触碰文本纠错/注入路径）。
         auto* active = FindHotwordCategory(config_, config_.active_hotword_category);
         if (auto target = ctx_classifier_.DecideCategory(
                 text, config_.active_hotword_category,
@@ -2554,6 +2515,48 @@ void VoiceStickCoordinator::MaybeSmartHotwordUpdate(const std::string& text) {
                 LogCoordinatorLine("smart hotword: auto-switched to category '" +
                                    *target + "'");
                 active = FindHotwordCategory(config_, config_.active_hotword_category);
+            }
+        }
+
+        // ② 回收：池内词再次出现在最终文本 = 活跃度回升，回归当前活跃分类
+        // （在切换决策之后执行，词落在最新语境的分类；池内记录的原分类仅供
+        // 展示，不作回归目标——用户可能把词加进与语义无关的分类，按原分类
+        // 回归会错位且不活跃不可用。活跃分类已满时先逐出更冷的词腾位）。
+        if (auto reclaim = PickReclaimWord(evicted_pool_, text)) {
+            if (active != nullptr) {
+                if (std::find(active->words.begin(), active->words.end(), reclaim->word) ==
+                    active->words.end()) {
+                    if (active->words.size() >= HotwordCategory::kMaxWords) {
+                        std::string coldest;
+                        {
+                            std::lock_guard usage_lock(hotword_usage_mutex_);
+                            EnsureHotwordUsageLoadedLocked();
+                            coldest =
+                                PickEvictionWord(active->words, hotword_usage_, true, now_s)
+                                    .value_or("");
+                        }
+                        if (!coldest.empty()) {
+                            EvictWordToPool(*active, coldest, now_s);
+                            if (evicted_word.empty()) evicted_word = coldest;
+                            pool_mutated = true;
+                            config_mutated = true;
+                        }
+                    }
+                    if (active->words.size() < HotwordCategory::kMaxWords) {
+                        active->words.push_back(reclaim->word);
+                        config_.asr_hotwords = active->words;
+                        config_mutated = true;
+                        LogCoordinatorLine("smart hotword: reclaimed '" + reclaim->word +
+                                           "' into category '" + active->name + "'");
+                    }
+                }
+                // 词已回归（或本就在活跃分类）：按 word 清除池内全部条目
+                // （跨分类残留一并清理，池内 category 不再参与匹配）。
+                if (std::erase_if(evicted_pool_, [&](const EvictedWord& e) {
+                        return e.word == reclaim->word;
+                    }) > 0) {
+                    pool_mutated = true;
+                }
             }
         }
 

@@ -471,6 +471,8 @@ enum class StringId {
     kHotwordActivityRefreshButton,
     kHotwordActivityColWord,
     kHotwordActivityColCategory,
+    // 回收池第二列：词被逐出时所在的分类
+    kHotwordActivityColOrigCategory,
     kHotwordActivityColCount,
     kHotwordActivityColScore,
     // 距上次使用的天数（闲置天数）

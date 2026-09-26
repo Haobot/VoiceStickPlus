@@ -471,6 +471,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotwordActivityRefreshButton)] = "Refresh";
     table[Index(StringId::kHotwordActivityColWord)] = "Hotword";
     table[Index(StringId::kHotwordActivityColCategory)] = "Category";
+    table[Index(StringId::kHotwordActivityColOrigCategory)] = "Original category";
     table[Index(StringId::kHotwordActivityColCount)] = "Uses";
     table[Index(StringId::kHotwordActivityColScore)] = "Activity";
     table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "Idle days";
@@ -919,6 +920,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotwordActivityRefreshButton)] = "刷新";
     table[Index(StringId::kHotwordActivityColWord)] = "热词";
     table[Index(StringId::kHotwordActivityColCategory)] = "分类";
+    table[Index(StringId::kHotwordActivityColOrigCategory)] = "原分类";
     table[Index(StringId::kHotwordActivityColCount)] = "使用次数";
     table[Index(StringId::kHotwordActivityColScore)] = "活跃度";
     table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "闲置天数";
