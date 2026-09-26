@@ -46,6 +46,9 @@ ui_language = "system"
 resource_id = "volc.seedasr.sauc.duration"
 # 热词列表（逗号分隔）
 asr_hotwords = ""
+# 智能热词管理：按上下文自动切换热词分类 + 冷词自动清理（活跃度回收池）。
+# 关闭后恢复纯手动分区管理。
+smart_hotword_enabled = true
 # 已配对设备 ID 列表（逗号分隔，如 5A74,3F21）
 paired_device_ids = ""
 

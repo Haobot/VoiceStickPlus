@@ -18,6 +18,8 @@ public:
     void Show();
 
     std::function<void(AppConfig)> on_config_changed;
+    // 「活跃度…」按钮：打开热词活跃度可视化对话框（外壳接线协调器快照）。
+    std::function<void()> on_open_hotword_activity;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -109,6 +111,9 @@ private:
     HWND hotword_category_add_button_ = nullptr;
     HWND hotword_category_delete_button_ = nullptr;
     std::string loaded_hotword_category_;
+    // 智能热词管理：开关（上下文自动切换 + 冷词自动清理）+ 活跃度对话框入口。
+    HWND smart_hotword_check_ = nullptr;
+    HWND hotword_activity_button_ = nullptr;
     HWND candidates_label_ = nullptr;
     HWND candidates_list_ = nullptr;
     HWND candidate_add_button_ = nullptr;
@@ -189,6 +194,8 @@ private:
     static constexpr UINT kIdHotwordCategoryCombo = 2042;
     static constexpr UINT kIdHotwordCategoryAdd = 2043;
     static constexpr UINT kIdHotwordCategoryDelete = 2044;
+    static constexpr UINT kIdSmartHotwordEnable = 2045;
+    static constexpr UINT kIdHotwordActivity = 2046;
 };
 
 } // namespace voicestick

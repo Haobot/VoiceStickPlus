@@ -9,6 +9,7 @@
 #include "interaction_settings_dialog.h"
 #include "global_hotkey_win.h"
 #include "hotkey_settings_dialog.h"
+#include "hotword_activity_dialog.h"
 #include "input_injector_win.h"
 #include "onboarding_dialog.h"
 #include "overlay_window.h"
@@ -106,6 +107,8 @@ private:
     bool ShowOnboarding();
     void ShowPairDeviceDialog();
     void ShowSettings();
+    // 打开热词活跃度可视化对话框（设置页「活跃度…」按钮，快照来自协调器）。
+    void ShowHotwordActivityDialog();
     // 打开指定设备的编码器设置对话框（托盘设备子菜单「编码器设置…」）。
     void ShowEncoderSettingsDialog(const std::string& device_id);
     // 打开指定设备的交互设置对话框（托盘设备子菜单「设备交互设置…」）。
@@ -167,6 +170,7 @@ private:
     std::unique_ptr<RemoteSettingsDialog> remote_settings_dialog_;
     std::unique_ptr<XiaomiKeymapDialog> xiaomi_keymap_dialog_;
     std::unique_ptr<BatteryMonitorDialog> battery_monitor_dialog_;
+    std::unique_ptr<HotwordActivityDialog> hotword_activity_dialog_;
     // 设备最新上报的供电态（USB）自动关机开关状态（device_id -> enabled）。
     std::map<std::string, bool> usb_auto_off_state_;
     std::unique_ptr<AirMouseTuningWindow> air_mouse_tuning_window_;

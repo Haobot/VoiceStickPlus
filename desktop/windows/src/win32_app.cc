@@ -491,6 +491,13 @@ int Win32App::Run() {
                 battery_monitor_dialog_->OnPowerMgmtState(device_id, usb_auto_off);
             }
         };
+        // 智能热词管理：协调器后台线程自动切换分类/逐出回收后回传配置拷贝。仅
+        // 同步本地副本，严禁调用 UpdateConfig/ApplyUpdatedConfig（会取消进行中会话）。
+        coordinator_->on_config_mutated = [this](AppConfig cfg) {
+            DispatchToUi([this, cfg = std::move(cfg)]() mutable {
+                config_ = std::move(cfg);
+            });
+        };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
         coordinator_->Start();
@@ -1300,6 +1307,22 @@ bool Win32App::CreateWindowInternal() {
                         Tr(StringId::kSelectionHotwordDuplicateBody, lang) + text);
                     return;
                 }
+                // 智能热词管理开启时经协调器加词：满 25 自动逐出低活跃度词腾位，
+                // 返回已落盘的最新配置拷贝（不能再走 Save+ApplyUpdatedConfig，避免
+                // 用本地旧副本覆盖协调器新状态）。
+                if (config_.smart_hotword_enabled && coordinator_) {
+                    if (auto updated = coordinator_->AddHotwordWithEviction(text)) {
+                        config_ = std::move(*updated);
+                        ShowNotification(
+                            Tr(StringId::kSelectionHotwordAddedTitle, lang),
+                            Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
+                        return;
+                    }
+                    ShowNotification(
+                        Tr(StringId::kSelectionHotwordCategoryFullTitle, lang),
+                        Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
+                    return;
+                }
                 if (!AddHotwordToActiveCategory(config_, text)) {
                     ShowNotification(
                         Tr(StringId::kSelectionHotwordCategoryFullTitle, lang),
@@ -1338,9 +1361,18 @@ bool Win32App::CreateWindowInternal() {
                 const auto lang = EffectiveUiLanguage(config_.ui_language);
                 const bool is_update = config_.hotword_corrections.contains(wrong);
                 config_.hotword_corrections[wrong] = right;
-                // 正确文本加入活跃热词分类（若尚未存在且分类未满 25，best-effort）。
+                // 正确文本加入活跃热词分类（best-effort）。智能热词管理开启时经
+                // 协调器加词（满 25 逐冷腾位）：返回的配置拷贝不含刚写入的纠错
+                // 映射，覆盖后需补写再统一保存。
                 if (right.size() <= SelectionHotwordManager::kMaxHotwordLen) {
-                    AddHotwordToActiveCategory(config_, right);
+                    if (config_.smart_hotword_enabled && coordinator_) {
+                        if (auto updated = coordinator_->AddHotwordWithEviction(right)) {
+                            config_ = std::move(*updated);
+                            config_.hotword_corrections[wrong] = right;
+                        }
+                    } else {
+                        AddHotwordToActiveCategory(config_, right);
+                    }
                 }
                 try {
                     config_.SavePreservingDiskCredentials();
@@ -1957,10 +1989,19 @@ void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
         feedback(Tr(StringId::kHotwordProcessAllDuplicate, lang));
         return;
     }
-    // 新词逐个加入活跃分类（去重 + 每分类 25 上限，满 25 停止）。
+    // 新词逐个加入活跃分类。智能热词管理开启时经协调器加词：满 25 自动逐出低
+    // 活跃度词腾位（协调器已落盘并同步，返回值覆盖本地副本即可）；关闭时按
+    // 原逻辑满 25 停止并自行保存应用。
     std::vector<std::string> added;
+    const bool smart_path = config_.smart_hotword_enabled && coordinator_;
     for (const auto& word : new_words) {
-        if (!AddHotwordToActiveCategory(config_, word)) break;
+        if (smart_path) {
+            auto updated = coordinator_->AddHotwordWithEviction(word);
+            if (!updated) break;
+            config_ = std::move(*updated);
+        } else if (!AddHotwordToActiveCategory(config_, word)) {
+            break;
+        }
         added.push_back(word);
     }
     if (added.empty()) {
@@ -1969,12 +2010,14 @@ void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
                  Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
         return;
     }
-    try {
-        config_.SavePreservingDiskCredentials();
-    } catch (const std::exception& e) {
-        LogLine(std::string("Save config on hotword extract failed: ") + e.what());
+    if (!smart_path) {
+        try {
+            config_.SavePreservingDiskCredentials();
+        } catch (const std::exception& e) {
+            LogLine(std::string("Save config on hotword extract failed: ") + e.what());
+        }
+        ApplyUpdatedConfig();
     }
-    ApplyUpdatedConfig();
     // 顿号拼接实际加入的新词列表用于浮窗展示（重复词不展示）。
     std::string joined;
     for (std::size_t i = 0; i < added.size(); ++i) {
@@ -2268,7 +2311,22 @@ void Win32App::ShowSettings() {
         RebuildTooltip();
         LogLine("Settings saved");
     };
+    settings_dialog_->on_open_hotword_activity = [this]() {
+        ShowHotwordActivityDialog();
+    };
     settings_dialog_->Show();
+}
+
+void Win32App::ShowHotwordActivityDialog() {
+    if (!coordinator_) return;
+    // 每次重建（与 ShowSettings 同模式）：快照对话框只读，重建确保拿到最新接线和语言。
+    hotword_activity_dialog_ = std::make_unique<HotwordActivityDialog>(
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language));
+    hotword_activity_dialog_->take_snapshot = [this]() {
+        return coordinator_ ? coordinator_->TakeHotwordActivitySnapshot()
+                            : HotwordActivityDialog::SnapshotType{};
+    };
+    hotword_activity_dialog_->Show();
 }
 
 void Win32App::ShowEncoderSettingsDialog(const std::string& device_id) {

@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionHotwordCategoryFullBody) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordActivityEvictedGroup) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -460,6 +460,26 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSelectionHotwordCategoryFullTitle)] = "Category Full";
     table[Index(StringId::kSelectionHotwordCategoryFullBody)] =
         "The active hotword category is full (25). Remove some hotwords or switch category first.";
+    table[Index(StringId::kSmartHotwordSwitchedBodyPrefix)] = "Hotwords switched to \"";
+    table[Index(StringId::kSmartHotwordSwitchedBodySuffix)] = "\"";
+    table[Index(StringId::kSmartHotwordEvictedTitle)] = "Hotword auto-cleanup";
+    table[Index(StringId::kSmartHotwordEvictedBodyPrefix)] = "Evicted cold hotword: ";
+    table[Index(StringId::kSettingsSmartHotwordEnable)] =
+        "Smart hotword management (auto-switch by context, evict cold words)";
+    table[Index(StringId::kSettingsHotwordActivityButton)] = "Activity...";
+    table[Index(StringId::kHotwordActivityTitle)] = "Hotword Activity";
+    table[Index(StringId::kHotwordActivityRefreshButton)] = "Refresh";
+    table[Index(StringId::kHotwordActivityColWord)] = "Hotword";
+    table[Index(StringId::kHotwordActivityColCategory)] = "Category";
+    table[Index(StringId::kHotwordActivityColCount)] = "Uses";
+    table[Index(StringId::kHotwordActivityColScore)] = "Activity";
+    table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "Idle days";
+    table[Index(StringId::kHotwordActivityColEvictedDays)] = "Evicted days";
+    table[Index(StringId::kHotwordActivityActiveCategoryLabel)] = "Active category: ";
+    table[Index(StringId::kHotwordActivityStatusMonitoring)] = "monitoring";
+    table[Index(StringId::kHotwordActivityStatusNormal)] = "normal";
+    table[Index(StringId::kHotwordActivityEvictedGroup)] =
+        "Evicted pool (auto-reclaims on reuse)";
     return table;
 }
 
@@ -888,6 +908,25 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSelectionHotwordCategoryFullTitle)] = "分类已满";
     table[Index(StringId::kSelectionHotwordCategoryFullBody)] =
         "当前热词分类已满（25 个），请先删除部分热词或切换分类。";
+    table[Index(StringId::kSmartHotwordSwitchedBodyPrefix)] = "已切换热词库：";
+    table[Index(StringId::kSmartHotwordSwitchedBodySuffix)] = "。";
+    table[Index(StringId::kSmartHotwordEvictedTitle)] = "热词自动清理";
+    table[Index(StringId::kSmartHotwordEvictedBodyPrefix)] = "已移除低活跃度热词：";
+    table[Index(StringId::kSettingsSmartHotwordEnable)] =
+        "智能热词管理（按上下文自动切换，冷词自动清理）";
+    table[Index(StringId::kSettingsHotwordActivityButton)] = "活跃度…";
+    table[Index(StringId::kHotwordActivityTitle)] = "热词活跃度";
+    table[Index(StringId::kHotwordActivityRefreshButton)] = "刷新";
+    table[Index(StringId::kHotwordActivityColWord)] = "热词";
+    table[Index(StringId::kHotwordActivityColCategory)] = "分类";
+    table[Index(StringId::kHotwordActivityColCount)] = "使用次数";
+    table[Index(StringId::kHotwordActivityColScore)] = "活跃度";
+    table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "闲置天数";
+    table[Index(StringId::kHotwordActivityColEvictedDays)] = "逐出天数";
+    table[Index(StringId::kHotwordActivityActiveCategoryLabel)] = "活跃分类：";
+    table[Index(StringId::kHotwordActivityStatusMonitoring)] = "监控中";
+    table[Index(StringId::kHotwordActivityStatusNormal)] = "正常";
+    table[Index(StringId::kHotwordActivityEvictedGroup)] = "回收池（活跃度回升自动回归）";
     return table;
 }
 

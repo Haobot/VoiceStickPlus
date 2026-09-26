@@ -396,6 +396,11 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdHotwordCategoryDelete:
             if (HIWORD(w_param) == BN_CLICKED) OnHotwordCategoryDelete();
             return TRUE;
+        case kIdHotwordActivity:
+            if (HIWORD(w_param) == BN_CLICKED && on_open_hotword_activity) {
+                on_open_hotword_activity();
+            }
+            return TRUE;
         case kIdDeveloperMode:
             if (HIWORD(w_param) == BN_CLICKED) OnDeveloperModeToggled();
             return TRUE;
@@ -784,17 +789,28 @@ void SettingsDialog::BuildControls() {
                                                     0, 0, label_w, Dp(20), instance_));
         hotwords_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(74),
                                                       kIdHotwordsEdit, instance_));
+        // 智能热词管理行：开关（上下文自动切换 + 冷词自动清理）+ 活跃度对话框入口。
+        const int activity_btn_w = Dp(78);
+        smart_hotword_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsSmartHotwordEnable, language).c_str(),
+            0, 0, ctrl_w - activity_btn_w - Dp(8), Dp(22), kIdSmartHotwordEnable,
+            instance_, BS_AUTOCHECKBOX));
+        hotword_activity_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordActivityButton, language).c_str(),
+            0, 0, activity_btn_w, Dp(24), kIdHotwordActivity, instance_));
         HWND hot_hint = remember_label(CreateLeftLabel(hwnd_, TrW(StringId::kSettingsHotwordsHint, language).c_str(),
                                                        0, 0, ctrl_w, Dp(16), instance_));
         const int cat_combo_w = ctrl_w - 2 * (cat_btn_w + Dp(8));
-        add(Dp(80) + Dp(26) + Dp(34), {
+        add(Dp(80) + Dp(26) + Dp(64) + Dp(34), {
             {cat_label, Dp(10), Dp(3), label_w, Dp(20)},
             {hotword_category_combo_, ctrl_x, 0, cat_combo_w, Dp(200)},
             {hotword_category_add_button_, ctrl_x + cat_combo_w + Dp(8), 0, cat_btn_w, Dp(24)},
             {hotword_category_delete_button_, ctrl_x + cat_combo_w + cat_btn_w + Dp(16), 0, cat_btn_w, Dp(24)},
             {hot_label, Dp(10), Dp(34), label_w, Dp(20)},
             {hotwords_edit_, ctrl_x, Dp(34), ctrl_w, Dp(74)},
-            {hot_hint, ctrl_x, Dp(114), ctrl_w, Dp(16)},
+            {smart_hotword_check_, ctrl_x, Dp(114), ctrl_w - activity_btn_w - Dp(8), Dp(22)},
+            {hotword_activity_button_, ctrl_x + ctrl_w - activity_btn_w, Dp(113), activity_btn_w, Dp(24)},
+            {hot_hint, ctrl_x, Dp(144), ctrl_w, Dp(16)},
         });
     }
     {
@@ -1273,6 +1289,8 @@ void SettingsDialog::LoadConfigIntoControls() {
     RefreshHotwordCategoryCombo();
     SetWindowTextW(hotwords_edit_,
                    Utf16(JoinHotwords(config_.asr_hotwords)).c_str());
+    SendMessageW(smart_hotword_check_, BM_SETCHECK,
+                 config_.smart_hotword_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(llm_base_url_edit_, Utf16(config_.llm_base_url).c_str());
     SetWindowTextW(llm_api_key_edit_, Utf16(config_.llm_api_key).c_str());
     SetWindowTextW(llm_model_edit_, Utf16(config_.llm_model).c_str());
@@ -1373,6 +1391,8 @@ void SettingsDialog::SaveSettings() {
     }
     config_.hotword_process_enabled =
         SendMessageW(hotword_process_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.smart_hotword_enabled =
+        SendMessageW(smart_hotword_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     {
         auto prompt = Utf8(GetWindowText(hotword_process_prompt_edit_));
         // 归一化 \r\n → \n（编辑控件返回 CRLF，LLM 用 LF）。

@@ -240,6 +240,9 @@ struct AppConfig {
     // 热词候选挖掘：每次识别会话完成后异步让 LLM 从最终文本提炼候选热词，
     // 同一词达阈值后经托盘通知+设置-热词区人工确认入表。默认关闭（多一次 LLM 调用）。
     bool hotword_mining_enabled = false;
+    // 智能热词管理：上下文识别自动切换活跃分类 + 热词容量动态管理（软限 5 词监控、
+    // 25 词上限按活跃度逐出/回收）。默认开启；关闭后恢复纯手动分区管理。
+    bool smart_hotword_enabled = true;
     // 热词提炼 system prompt 覆盖；为空时使用内置默认 prompt。
     std::string hotword_process_prompt;
     InteractionMode interaction_mode = InteractionMode::kHoldToTalk;

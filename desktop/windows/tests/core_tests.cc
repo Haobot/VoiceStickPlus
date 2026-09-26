@@ -20,7 +20,9 @@
 #include "esptool_progress.h"
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
+#include "hotword_activity.h"
 #include "hotword_candidate_miner.h"
+#include "hotword_context.h"
 #include "hotword_selector.h"
 #include "hotword_suggest_client.h"
 #include "tencent_asr_vocab_client.h"
@@ -1259,6 +1261,200 @@ void TestHotwordCategories() {
     // 新配置（已有分区数据）：投影强制对齐活跃分类。
     NormalizeHotwordCategories(config);
     assert(config.asr_hotwords == config.hotword_categories[0].words);
+}
+
+void TestHotwordContextClassifier() {
+    const auto rules = HotwordContextClassifier::DefaultRules();
+    assert(rules.size() == 4);  // 程序 / AI / 数学 / 语文
+
+    HotwordContextClassifier classifier(rules);
+    const std::int64_t now = 1'000'000;
+
+    // 45 条标注语料：判定 = 最高分分类且 得分≥阈值、命中词数≥最少命中，否则不判定。
+    // 覆盖率目标 ≥90%（需求：上下文识别准确率 ≥90%）。
+    struct Sample { const char* text; const char* label; };
+    const Sample samples[] = {
+        // 程序（10）
+        {"这段代码有个函数没处理异常，运行会报错", "程序"},
+        {"用 python 写个脚本调用接口，git 提交后再部署到服务器", "程序"},
+        {"前端页面编译不过，后端接口也报错", "程序"},
+        {"这个类的对象有内存泄漏，重构一下再调试", "程序"},
+        {"数据库的 sql 查询很慢，索引和算法都要优化", "程序"},
+        {"docker 容器里的进程起不来，看下日志再回滚版本", "程序"},
+        {"javascript 的回调函数写成异步，语法检查没过", "程序"},
+        {"单元测试挂了，分支合并前先修好这个 bug", "程序"},
+        {"html 和 css 的类名要统一，客户端也要同步改", "程序"},
+        {"linux 服务器上部署新版本，先备份数据库再回滚", "程序"},
+        // AI（8）
+        {"大模型训练要多少算力，显存不够怎么办", "AI"},
+        {"这个模型的参数量太大，推理延迟高", "AI"},
+        {"机器学习的数据集要先标注，过拟合了就加正则", "AI"},
+        {"神经网络的梯度消失了，换个损失函数再训练", "AI"},
+        {"用大模型写个提示词，让智能体自动完成推理任务", "AI"},
+        {"深度学习模型微调后效果提升明显", "AI"},
+        {"这个大语言模型的 token 限制太小，多模态也不支持", "AI"},
+        {"自然语言处理和语音识别都是人工智能方向", "AI"},
+        // 数学（8）
+        {"解线性方程组，系数矩阵的行列式不为零", "数学"},
+        {"微积分求导，再用定积分算面积", "数学"},
+        {"概率统计的期望值和方差怎么算", "数学"},
+        {"勾股定理证明直角三角形斜边", "数学"},
+        {"数列求和用不等式放缩，再求极限", "数学"},
+        {"这道几何题求坐标和斜率", "数学"},
+        {"向量的内积公式和夹角计算", "数学"},
+        {"整数的质数分解和分数化简，开方后取立方", "数学"},
+        // 语文（8）
+        {"这篇课文的中心思想和段落大意是什么", "语文"},
+        {"古诗默写和文言文翻译都考了", "语文"},
+        {"作文用比喻和排比的修辞手法", "语文"},
+        {"阅读理解要抓作者的主旨和题材", "语文"},
+        {"这个成语和谚语都出自同一篇文章", "语文"},
+        {"一年级生字要练笔画和偏旁部首", "语文"},
+        {"散文和小说的区别在于题材和段落结构", "语文"},
+        {"用这些词语造句，注意标点", "语文"},
+        // 日常闲聊（11，不得判定为任何分类）
+        {"今天天气不错，出去走走", ""},
+        {"中午吃什么好呢", ""},
+        {"周末去爬山吧，记得带水", ""},
+        {"这部电影真好看，结局很感人", ""},
+        {"晚安，明天见", ""},
+        {"路上有点堵，晚点到", ""},
+        {"多喝热水，早点休息", ""},
+        {"帮我看看这份合同有没有问题", ""},
+        {"超市里的水果挺新鲜的", ""},
+        {"孩子今天在学校表现不错", ""},
+        {"这衣服洗了会缩水吗", ""},
+    };
+    int correct = 0;
+    const int total = static_cast<int>(sizeof(samples) / sizeof(samples[0]));
+    for (const auto& sample : samples) {
+        const auto scored = classifier.Score(sample.text);
+        std::string best;
+        double best_score = 0.0;
+        int best_hits = 0;
+        for (const auto& [category, score] : scored.scores) {
+            const int hits = scored.hits.count(category) > 0 ? scored.hits.at(category) : 0;
+            if (score > best_score) {
+                best = category;
+                best_score = score;
+                best_hits = hits;
+            }
+        }
+        const std::string decided =
+            (best_score >= kHotwordCtxScoreThreshold && best_hits >= kHotwordCtxMinHits)
+                ? best
+                : std::string();
+        if (decided == sample.label) ++correct;
+    }
+    assert(correct * 10 >= total * 9);  // 准确率 ≥ 90%
+
+    // 状态机：弱信号（单关键词）不切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("顺带提一句 python", "语文", {}, now));
+    // 强信号需连续 2 次决策一致才切换。
+    classifier.Reset();
+    const std::string program_text = "这段代码有个函数没处理异常，运行会报错";
+    assert(!classifier.DecideCategory(program_text, "语文", {}, now));
+    auto target = classifier.DecideCategory(program_text, "语文", {}, now);
+    assert(target.has_value() && *target == "程序");
+    // 切换冷却期内（300s）：后续强信号决策不切换。
+    const std::string ai_text = "大模型训练要多少算力，数据集先标注再微调";
+    assert(!classifier.DecideCategory(ai_text, "程序", {}, now));
+    assert(!classifier.DecideCategory(ai_text, "程序", {}, now));
+    // 当前分类热词命中保护：文本出现当前分类热词（"函数"）时拒绝切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("javascript 的回调函数写成异步，语法检查没过",
+                                      "数学", {"函数"}, now));
+    // 日常文本无关键词命中：不切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("今天天气不错", "语文", {}, now));
+    // 排除当前分类后无其他候选（纯数学文本在数学活跃时）：不切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("微积分求导，再用定积分算面积，数列求极限",
+                                      "数学", {}, now + kHotwordCtxCooldownS));
+    assert(!classifier.DecideCategory("微积分求导，再用定积分算面积，数列求极限",
+                                      "数学", {}, now + kHotwordCtxCooldownS));
+}
+
+void TestHotwordActivityAndEviction() {
+    const std::int64_t now = 1'000'000;
+
+    // 冷淡判定：零使用且非 manual 为冷；manual 有加成不冷；高频不冷。
+    assert(IsCold(HotwordUsage{}, now));
+    HotwordUsage hot;
+    hot.count = 10;
+    hot.last_used_ts = now;
+    assert(!IsCold(hot, now));
+    HotwordUsage manual_word;
+    manual_word.source = "manual";
+    assert(!IsCold(manual_word, now));
+
+    // 逐出候选：最低活跃度优先；无统计记录的词按 manual 保护（2.0 分）。
+    HotwordUsageStore store;
+    store["高频"] = HotwordUsage{10, now, "manual"};
+    store["低频"] = HotwordUsage{1, now - 50LL * 86400, "mined"};
+    store["零频"] = HotwordUsage{0, 0, "mined"};
+    const std::vector<std::string> words = {"高频", "低频", "零频", "新词"};
+    assert(PickEvictionWord(words, store, true, now) == "零频");
+    // 全 manual 时降级逐出最低分 manual 词。
+    HotwordUsageStore manual_store;
+    manual_store["甲"] = HotwordUsage{1, now, "manual"};
+    manual_store["乙"] = HotwordUsage{5, now - 10LL * 86400, "manual"};
+    assert(PickEvictionWord({"甲", "乙"}, manual_store, true, now) == "甲");
+    // 空列表无候选。
+    assert(!PickEvictionWord({}, store, true, now).has_value());
+    // 同分（均无统计记录）按字典序保证确定性（UTF-8 字节序：乙 < 甲）。
+    assert(PickEvictionWord({"乙", "甲"}, HotwordUsageStore{}, false, now) == "乙");
+
+    // 回收判定：池内词出现在文本中即命中，返回完整条目拷贝。
+    EvictedPool pool;
+    pool.push_back(EvictedWord{"回收词", "程序", now, HotwordUsage{3, now, "mined"}});
+    pool.push_back(EvictedWord{"另一个", "语文", now, HotwordUsage{}});
+    auto hit = PickReclaimWord(pool, "这段话里出现了回收词");
+    assert(hit.has_value());
+    assert(hit->word == "回收词" && hit->category == "程序");
+    assert(hit->usage.count == 3 && hit->usage.source == "mined");
+    assert(!PickReclaimWord(pool, "没有命中任何池内词").has_value());
+    assert(!PickReclaimWord(pool, "").has_value());
+}
+
+void TestEvictedPoolJson() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_evicted_test.json";
+    std::filesystem::remove(temp);
+    // 空池保存/加载。
+    SaveEvictedPool(temp, {});
+    assert(LoadEvictedPool(temp).empty());
+    // 往返：字段逐项一致。
+    EvictedPool pool;
+    pool.push_back(EvictedWord{"词甲", "程序", 1'700'000'000, HotwordUsage{4, 1'699'000'000, "manual"}});
+    pool.push_back(EvictedWord{"词乙", "", 1'700'000'100, HotwordUsage{0, 0, "mined"}});
+    SaveEvictedPool(temp, pool);
+    auto loaded = LoadEvictedPool(temp);
+    assert(loaded.size() == 2);
+    assert(loaded[0].word == "词甲" && loaded[0].category == "程序");
+    assert(loaded[0].evicted_ts == 1'700'000'000);
+    assert(loaded[0].usage.count == 4 && loaded[0].usage.source == "manual");
+    assert(loaded[1].word == "词乙" && loaded[1].category.empty());
+    assert(loaded[1].usage.count == 0);
+    // 损坏 JSON 返回空池。
+    {
+        std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+        f << "not-json";
+    }
+    assert(LoadEvictedPool(temp).empty());
+    std::filesystem::remove(temp);
+}
+
+void TestSmartHotwordConfig() {
+    // 默认开启；TOML 读写往返。
+    assert(AppConfig::Defaults().smart_hotword_enabled);
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_smart_hotword_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.smart_hotword_enabled = false;
+    config.Save(temp);
+    assert(!AppConfig::Load(temp).smart_hotword_enabled);
+    std::filesystem::remove(temp);
 }
 
 void TestTencentHotwordCharFilter() {
@@ -10283,6 +10479,10 @@ int main() {
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
     TestHotwordCategories();
+    TestHotwordContextClassifier();
+    TestHotwordActivityAndEviction();
+    TestEvictedPoolJson();
+    TestSmartHotwordConfig();
     TestHotwordSelector();
     TestHotwordCorrections();
     TestTencentHotwordCharFilter();

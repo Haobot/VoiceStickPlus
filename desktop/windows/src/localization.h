@@ -455,6 +455,35 @@ enum class StringId {
     kSettingsHotwordCategoryTrimmed,
     kSelectionHotwordCategoryFullTitle,
     kSelectionHotwordCategoryFullBody,
+
+    // 智能热词管理（上下文自动切换 + 容量动态管理 + 活跃度可视化）
+    // 切换提示：前缀 + 分类名 + 后缀（如 已切换热词库：程序）
+    kSmartHotwordSwitchedBodyPrefix,
+    kSmartHotwordSwitchedBodySuffix,
+    // 逐出通知（5 分钟节流）：前缀 + 被逐出词
+    kSmartHotwordEvictedTitle,
+    kSmartHotwordEvictedBodyPrefix,
+    // 设置页开关 + 活跃度对话框入口按钮
+    kSettingsSmartHotwordEnable,
+    kSettingsHotwordActivityButton,
+    // 活跃度对话框
+    kHotwordActivityTitle,
+    kHotwordActivityRefreshButton,
+    kHotwordActivityColWord,
+    kHotwordActivityColCategory,
+    kHotwordActivityColCount,
+    kHotwordActivityColScore,
+    // 距上次使用的天数（闲置天数）
+    kHotwordActivityColDaysSinceUse,
+    // 距逐出的天数
+    kHotwordActivityColEvictedDays,
+    // 状态行前缀："活跃分类："
+    kHotwordActivityActiveCategoryLabel,
+    // 状态行尾部：词数超过软限 5 时显示"监控中"，否则"正常"
+    kHotwordActivityStatusMonitoring,
+    kHotwordActivityStatusNormal,
+    // 回收池分组标签
+    kHotwordActivityEvictedGroup,
 };
 
 // 返回 UTF-8 本地化文本

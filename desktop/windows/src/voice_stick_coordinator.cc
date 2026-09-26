@@ -215,7 +215,14 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
         EnterReady("config_update_cancel");
     }
 
-    config_ = std::move(config);
+    {
+        // 智能热词管理：热词字段整体替换与分类器状态重置（配置变化后上下文
+        // 决策重新起算）；与 MaybeSmartHotwordUpdate 的后台写互斥。
+        std::lock_guard smart_lock(smart_hotword_mutex_);
+        config_ = std::move(config);
+        ctx_classifier_.Reset();
+        hotword_monitoring_active_ = false;
+    }
     live_air_mouse_params_.clear();  // config_ 变化，运行期 live 参数跟随回退到 AirMouseParamsForDevice
     translator_ = LLMTranslationClient(config_);
     refiner_ = LLMRefinementClient(config_);
@@ -2211,9 +2218,13 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
     }
     const std::string& effective = corrected;
     // 最终文本产出时记录热词使用统计（计数+最近使用时间），供高频优先裁剪评分；
-    // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。
+    // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。统计刷新后
+    // 走智能热词管理（上下文识别自动切换 + 回收回归 + 容量防御），同步 <1ms。
     auto wrapped = [this, completion = std::move(completion)](bool ok, std::string result) mutable {
-        if (ok) RecordHotwordUsageFromText(result);
+        if (ok) {
+            RecordHotwordUsageFromText(result);
+            MaybeSmartHotwordUpdate(result);
+        }
         completion(ok, std::move(result));
     };
     if (profile.transform == TextTransform::kTranslate) {
@@ -2410,15 +2421,267 @@ std::vector<std::string> VoiceStickCoordinator::HotwordsForLlmPrompts() {
 }
 
 void VoiceStickCoordinator::RecordHotwordUsageFromText(const std::string& text) {
-    if (text.empty() || config_.asr_hotwords.empty()) return;
+    if (text.empty()) return;
+    // 统计范围：全部分类词 + 回收池词（跨分类活跃度监控与回收池回升展示依赖）。
+    // 先在 smart 锁内收集词表并释放，再进 usage 锁（保持 smart → usage 锁序）。
+    std::vector<std::string> words;
+    {
+        std::lock_guard smart_lock(smart_hotword_mutex_);
+        for (const auto& category : config_.hotword_categories) {
+            words.insert(words.end(), category.words.begin(), category.words.end());
+        }
+        EnsureEvictedPoolLoadedLocked();
+        for (const auto& entry : evicted_pool_) words.push_back(entry.word);
+    }
+    if (words.empty()) return;
+    std::sort(words.begin(), words.end());
+    words.erase(std::unique(words.begin(), words.end()), words.end());
     std::lock_guard lock(hotword_usage_mutex_);
+    EnsureHotwordUsageLoadedLocked();
+    RecordHotwordUsageInText(hotword_usage_, text, words, std::time(nullptr));
+    SaveHotwordUsage(config_.ConfigPath().parent_path() / "hotword_usage.json", hotword_usage_);
+}
+
+// ===== 智能热词管理 =====
+
+std::filesystem::path VoiceStickCoordinator::EvictedPoolPath() const {
+    return config_.ConfigPath().parent_path() / "hotword_evicted.json";
+}
+
+void VoiceStickCoordinator::EnsureEvictedPoolLoadedLocked() {
+    if (!evicted_pool_loaded_) {
+        evicted_pool_ = LoadEvictedPool(EvictedPoolPath());
+        evicted_pool_loaded_ = true;
+    }
+}
+
+void VoiceStickCoordinator::EnsureHotwordUsageLoadedLocked() {
     if (!hotword_usage_loaded_) {
         hotword_usage_ = LoadHotwordUsage(
             config_.ConfigPath().parent_path() / "hotword_usage.json");
         hotword_usage_loaded_ = true;
     }
-    RecordHotwordUsageInText(hotword_usage_, text, config_.asr_hotwords, std::time(nullptr));
-    SaveHotwordUsage(config_.ConfigPath().parent_path() / "hotword_usage.json", hotword_usage_);
+}
+
+void VoiceStickCoordinator::EvictWordToPool(HotwordCategory& category,
+                                            const std::string& word,
+                                            std::int64_t now_s) {
+    std::erase_if(category.words, [&](const std::string& w) { return w == word; });
+    EvictedWord entry;
+    entry.word = word;
+    entry.category = category.name;
+    entry.evicted_ts = now_s;
+    {
+        std::lock_guard lock(hotword_usage_mutex_);
+        if (const auto it = hotword_usage_.find(word); it != hotword_usage_.end()) {
+            entry.usage = it->second;
+        }
+    }
+    // 同词同分类已在池中则只刷新时间戳与统计快照。
+    for (auto& existing : evicted_pool_) {
+        if (existing.word == word && existing.category == category.name) {
+            existing.evicted_ts = now_s;
+            existing.usage = entry.usage;
+            return;
+        }
+    }
+    evicted_pool_.push_back(std::move(entry));
+}
+
+void VoiceStickCoordinator::MaybeSmartHotwordUpdate(const std::string& text) {
+    if (text.empty()) return;
+    bool config_mutated = false;
+    bool pool_mutated = false;
+    bool switched = false;
+    std::string switch_target;
+    std::string evicted_word;
+    AppConfig mutated_config;
+    {
+        std::lock_guard smart_lock(smart_hotword_mutex_);
+        if (!config_.smart_hotword_enabled) return;
+        EnsureEvictedPoolLoadedLocked();
+        const std::int64_t now_s = std::time(nullptr);
+
+        // ① 回收：池内词再次出现在最终文本 = 活跃度回升，回归原分类（原分类
+        // 已满时先逐出更冷的词腾位）。
+        if (auto reclaim = PickReclaimWord(evicted_pool_, text)) {
+            if (auto* target = FindHotwordCategory(config_, reclaim->category);
+                target != nullptr &&
+                std::find(target->words.begin(), target->words.end(), reclaim->word) ==
+                    target->words.end()) {
+                if (target->words.size() >= HotwordCategory::kMaxWords) {
+                    std::string coldest;
+                    {
+                        std::lock_guard usage_lock(hotword_usage_mutex_);
+                        EnsureHotwordUsageLoadedLocked();
+                        coldest =
+                            PickEvictionWord(target->words, hotword_usage_, true, now_s)
+                                .value_or("");
+                    }
+                    if (!coldest.empty()) {
+                        EvictWordToPool(*target, coldest, now_s);
+                        if (evicted_word.empty()) evicted_word = coldest;
+                        pool_mutated = true;
+                        config_mutated = true;
+                    }
+                }
+                if (target->words.size() < HotwordCategory::kMaxWords) {
+                    target->words.push_back(reclaim->word);
+                    if (target->name == config_.active_hotword_category) {
+                        config_.asr_hotwords = target->words;
+                    }
+                    std::erase_if(evicted_pool_, [&](const EvictedWord& e) {
+                        return e.word == reclaim->word && e.category == reclaim->category;
+                    });
+                    pool_mutated = true;
+                    config_mutated = true;
+                    LogCoordinatorLine("smart hotword: reclaimed '" + reclaim->word +
+                                       "' into category '" + reclaim->category + "'");
+                }
+            }
+        }
+
+        // ② 上下文识别自动切换（只改热词分类，不触碰文本纠错/注入路径）。
+        auto* active = FindHotwordCategory(config_, config_.active_hotword_category);
+        if (auto target = ctx_classifier_.DecideCategory(
+                text, config_.active_hotword_category,
+                active != nullptr ? active->words : std::vector<std::string>{}, now_s)) {
+            if (FindHotwordCategory(config_, *target) != nullptr) {
+                SetActiveHotwordCategory(config_, *target);
+                switched = true;
+                switch_target = *target;
+                config_mutated = true;
+                LogCoordinatorLine("smart hotword: auto-switched to category '" +
+                                   *target + "'");
+                active = FindHotwordCategory(config_, config_.active_hotword_category);
+            }
+        }
+
+        // ③ 容量防御：活跃分类被外部写入超出 25 上限（未走智能加词路径）时，
+        // 逐出最低活跃度词直至回到上限。
+        while (active != nullptr && active->words.size() > HotwordCategory::kMaxWords) {
+            std::string coldest;
+            {
+                std::lock_guard usage_lock(hotword_usage_mutex_);
+                EnsureHotwordUsageLoadedLocked();
+                coldest = PickEvictionWord(active->words, hotword_usage_, true, now_s)
+                              .value_or("");
+            }
+            if (coldest.empty()) break;
+            EvictWordToPool(*active, coldest, now_s);
+            config_.asr_hotwords = active->words;
+            if (evicted_word.empty()) evicted_word = coldest;
+            pool_mutated = true;
+            config_mutated = true;
+        }
+
+        // ④ 软限监控：词数超过软限进入监控态（活跃度统计本就全量记录，这里
+        // 只在状态翻转时打日志供排查）。
+        const std::size_t active_size = active != nullptr ? active->words.size() : 0;
+        const bool monitoring = static_cast<int>(active_size) > kHotwordCtxSoftLimit;
+        if (monitoring != hotword_monitoring_active_) {
+            hotword_monitoring_active_ = monitoring;
+            LogCoordinatorLine("smart hotword: category '" +
+                               config_.active_hotword_category + "' " +
+                               (monitoring ? "entered" : "left") +
+                               " monitoring (size=" + std::to_string(active_size) + ")");
+        }
+
+        if (config_mutated) {
+            mutated_config = config_;
+            try {
+                config_.SavePreservingDiskCredentials();
+            } catch (const std::exception& e) {
+                LogCoordinatorLine(std::string("smart hotword: save config failed: ") +
+                                   e.what());
+            }
+        }
+        if (pool_mutated) SaveEvictedPool(EvictedPoolPath(), evicted_pool_);
+    }  // smart_hotword_mutex_
+
+    // 锁外反馈（后台线程）：切换走悬浮窗临时消息（会话活跃时实现侧自动回退
+    // 托盘气泡）；逐出走节流托盘通知；on_config_mutated 通知外壳同步副本。
+    if (switched) {
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        ui_->ShowTimedMessage(
+            Tr(StringId::kSmartHotwordSwitchedBodyPrefix, language) + switch_target +
+                Tr(StringId::kSmartHotwordSwitchedBodySuffix, language),
+            2500);
+    }
+    if (!evicted_word.empty()) {
+        const auto now_ms = SteadyNowMs();
+        auto last = last_evict_notify_ms_.load();
+        if (now_ms - last > 5 * 60 * 1000 &&
+            last_evict_notify_ms_.compare_exchange_strong(last, now_ms)) {
+            const auto language = EffectiveUiLanguage(config_.ui_language);
+            ui_->ShowNotification(Tr(StringId::kSmartHotwordEvictedTitle, language),
+                                  Tr(StringId::kSmartHotwordEvictedBodyPrefix, language) +
+                                      evicted_word);
+        }
+    }
+    if (config_mutated && on_config_mutated) {
+        on_config_mutated(std::move(mutated_config));
+    }
+}
+
+std::optional<AppConfig> VoiceStickCoordinator::AddHotwordWithEviction(const std::string& word) {
+    if (word.empty()) return std::nullopt;
+    std::lock_guard smart_lock(smart_hotword_mutex_);
+    auto* active = FindHotwordCategory(config_, config_.active_hotword_category);
+    if (active == nullptr) return std::nullopt;
+    if (std::find(active->words.begin(), active->words.end(), word) != active->words.end()) {
+        return std::nullopt;  // 重复
+    }
+    EnsureEvictedPoolLoadedLocked();
+    const auto now_s = std::time(nullptr);
+    bool pool_mutated = false;
+    if (active->words.size() >= HotwordCategory::kMaxWords) {
+        // 满员：逐出最低活跃度词（manual 保护）腾位，词移入回收池待回升回归。
+        std::string coldest;
+        {
+            std::lock_guard usage_lock(hotword_usage_mutex_);
+            EnsureHotwordUsageLoadedLocked();
+            coldest = PickEvictionWord(active->words, hotword_usage_, true, now_s)
+                          .value_or("");
+        }
+        if (!coldest.empty()) {
+            EvictWordToPool(*active, coldest, now_s);
+            config_.asr_hotwords = active->words;
+            pool_mutated = true;
+            LogCoordinatorLine("smart hotword: evicted '" + coldest +
+                               "' to make room for '" + word + "'");
+        }
+    }
+    if (active->words.size() >= HotwordCategory::kMaxWords) return std::nullopt;
+    active->words.push_back(word);
+    config_.asr_hotwords = active->words;
+    // 该词此前若已被逐出（仍在回收池），一并移除池内残留，防同词双处存在。
+    if (std::erase_if(evicted_pool_, [&](const EvictedWord& e) { return e.word == word; }) > 0) {
+        pool_mutated = true;
+    }
+    try {
+        config_.SavePreservingDiskCredentials();
+    } catch (const std::exception& e) {
+        LogCoordinatorLine(std::string("smart hotword: save config failed: ") + e.what());
+    }
+    if (pool_mutated) SaveEvictedPool(EvictedPoolPath(), evicted_pool_);
+    return config_;
+}
+
+HotwordActivitySnapshot VoiceStickCoordinator::TakeHotwordActivitySnapshot() {
+    HotwordActivitySnapshot snapshot;
+    {
+        std::lock_guard smart_lock(smart_hotword_mutex_);
+        snapshot.config = config_;
+        EnsureEvictedPoolLoadedLocked();
+        snapshot.evicted = evicted_pool_;
+    }
+    {
+        std::lock_guard lock(hotword_usage_mutex_);
+        EnsureHotwordUsageLoadedLocked();
+        snapshot.usage = hotword_usage_;
+    }
+    return snapshot;
 }
 
 void VoiceStickCoordinator::BeginWaitingForAudioEnd(std::string_view reason) {
