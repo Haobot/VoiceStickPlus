@@ -87,6 +87,8 @@ desktop\windows\build-msi-x64\VoiceStick_<version>_en-US.msi
 
 The MSI also installs the COM flash tool `VoiceStickFlash.exe` (BLE OTA fallback path) and its self-contained esptool runtime under `INSTALLFOLDER\FlashTool\` (embedded Python + esptool, prepared by `scripts/prepare_flash_payload.ps1`, which `build-msi.bat` invokes automatically; override the embeddable-Python download with `VOICESTICK_PYTHON_EMBED_URL`). See `Doc/Plan/windows-com-flash-tool.md`.
 
+After signing, `build-msi.bat` runs a content gate (Step 4b, `scripts/verify_msi_contents.ps1`): it enumerates each MSI's `File` table and fails the build if any required top-level file is missing (`VoiceStick.exe`, `WinSparkle.dll`, `config.template.toml`, `VoiceStickFlash.exe`, `VoiceStickHidTap.dll`, `VoiceStickTapInject.exe`, `sherpa-onnx-c-api.dll`, `onnxruntime.dll`). When you add a new top-level packaged file to `installer/VoiceStick.wxs`, update `-RequiredFiles` in that script too — v2.4.1 shipped without the sherpa-onnx DLLs because the hand-maintained packaging list had no gate. See `Doc/Expe/msi-missing-sherpa-dll-defender-sign-flake-2026-09-27.md`.
+
 Installer localization lives in `desktop/windows/installer/` (`zh-CN.wxl` / `en-US.wxl` plus `license-zh-CN.rtf` / `license-en.rtf`). The install-time UI (wizard dialogs, uninstall confirm, start-menu shortcut name for the flash tool) follows the MSI's culture. **WinSparkle 0.9.2 does not support per-language enclosure selection** (`sparkle:language` is not implemented), so the appcast only lists the `en-US` MSI; the `zh-CN` MSI is for manual download only.
 
 3. Confirm `firmware/version.txt` also matches the new version.
