@@ -72,7 +72,7 @@
 ## 剩余待办（渠道完全就绪前）
 
 1. ~~DNS：`dl.davenger.cloud` CNAME → 桶默认域名~~ **已完成**（2026-09-26，指向 `voicestick-dl-1329978361.cos.ap-shanghai.myqcloud.com`）；
-2. 腾讯云申请免费 DV 证书（如未签发），COS 控制台为**新桶** `voicestick-dl-1329978361` 绑定自定义域名 `dl.davenger.cloud` 并开启 HTTPS——当前 https 直连报证书主体不匹配（桶侧未绑）；
+2. ~~腾讯云申请免费 DV 证书，绑定自定义域名并开启 HTTPS~~ **已完成**（2026-09-26：证书 `b6l8Zl22` 签发并托管到 COS 自定义域名，强制 HTTPS 已开，`https://dl.davenger.cloud` 全链路实测通过。注意两点：证书控制台「已签发」还需完成「托管/去托管」才会真正下发到 COS 前端，实测部署传播约需 10~20 分钟逐节点收敛；期间部分节点回通用证书属中间态）——桶内尚缺的对象（v2.4.0 bin/MSI、index.html，CI 时代从未成功镜像）待本机直传补齐；
 3. ~~CAM 子账号与仓库 Secrets~~ Secrets 已配置（2026-09-26）；~~CI 上行路径不可用~~ **修法已落地（2026-09-26）**：CI 海外 runner 跨境上行不可用（~8KB/s + ~130s 断连，≥1MB 分块必死；两轮诊断 run 36244545602 / 36245561012，与 CAM/桶策略无关），故 COS 写入全部移交签名机：发布流程 `scripts/release.ps1` → `scripts/publish_cos.py`（固件/软件/manifest 直传 + Pages 小文件转传 + 整站同步；凭据 `TENCENT_COS_*` 或 `TENCENTCLOUD_*` 环境变量），CI 侧 COS 步骤已删除（`release.yml` 瘦身为构建验证门禁、`deploy-website.yml` 只管 Pages）。云侧 URL 拉取（COS 迁移任务/云函数境内中转）保留为可选自动化增强；**剩余：首次真实发布跑通全链路**；
 4. **模型对象迁移**：旧桶 `models/` 下三个已核验对象需重新上传到新桶（本机国内网络直传，`scripts/publish_cos.py` 或 `scripts/cos_uploader.py` 均可，`Cache-Control: max-age=31536000`），上传后按上表逐对象核对字节数与 SHA-256；
 5. 配置 COS 流量监控告警（替代防盗链的防护手段）；
