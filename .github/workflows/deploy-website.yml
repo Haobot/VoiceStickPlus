@@ -55,7 +55,10 @@ jobs:
           sig_asset="VoiceStick-${version}.signature"
           zip_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${zip_asset}\") | .size" || true)"
-          msi_asset="VoiceStick_${version}_en-US.msi"
+          # appcast 只能挂一个包（WinSparkle 0.9.2 不支持按语言选 enclosure）。
+          # 2026-09-27 起挂 zh-CN：当前用户群全中文，走自动更新的安装界面随包语言；
+          # zh-CN 与 en-US MSI 内容除语言外完全一致。改回 en-US 需同步 Doc/Ref/release.md。
+          msi_asset="VoiceStick_${version}_zh-CN.msi"
           msi_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${msi_asset}\") | .size" || true)"
           if [ -n "${zip_length:-}" ]; then
