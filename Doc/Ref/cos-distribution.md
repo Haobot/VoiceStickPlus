@@ -2,13 +2,13 @@
 
 本文是 COS 国内分发渠道的**权威事实参考**，作为软件/固件侧与模型侧工作会话的交接媒介：模型侧从此文档读取桶信息回填 `model_manifest` 清单 URL 并做真机下载验证。方案背景见 `Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md`。
 
-状态：2026-09-10 建立并完成首次模型上传；域名与凭据项见文末待办。
+状态：2026-09-10 建立并完成首次模型上传；**2026-09-26 桶切换**——实际使用的腾讯云账号 APPID 为 1329978361，新建桶 `voicestick-dl-1329978361` 接替旧桶 `voicestick-dl-1259040144`（旧桶属另一账号，弃用，其中的模型对象需迁到新桶）；DNS 与 GitHub Secrets 已于同日配置。剩余项见文末待办。
 
 ## 桶信息
 
 | 项 | 值 |
 |---|---|
-| 桶名 | `voicestick-dl-1259040144`（含 APPID 后缀） |
+| 桶名 | `voicestick-dl-1329978361`（含 APPID 后缀） |
 | 地域 | `ap-shanghai` |
 | 读写权限 | 公有读、私有写（写操作仅凭据方：CI 子账号 / 管理脚本） |
 
@@ -16,8 +16,8 @@
 
 | 域名 | 性质 | 状态 |
 |---|---|---|
-| `https://dl.davenger.cloud` | **COS 自定义域名，直出（非 CDN）**，已备案 | 规划正式域名；DNS 尚未配置（见待办） |
-| `https://voicestick-dl-1259040144.cos.ap-shanghai.myqcloud.com` | COS 默认直出域名（腾讯通用证书，HTTPS 可用） | **立即可用**；正式域名就绪前的回退/联调地址 |
+| `https://dl.davenger.cloud` | **COS 自定义域名，直出（非 CDN）**，已备案 | 规划正式域名；DNS 已解析（CNAME → 新桶默认域名），**证书与自定义域名绑定待完成**（见待办） |
+| `https://voicestick-dl-1329978361.cos.ap-shanghai.myqcloud.com` | COS 默认直出域名（腾讯通用证书，HTTPS 可用） | **立即可用**；正式域名就绪前的回退/联调地址 |
 
 模型侧回填清单 URL 的建议：直接回填正式域名 `https://dl.davenger.cloud/models/...`（域名是访问层，DNS/证书就绪后无需改清单）；联调验证期可临时用 myqcloud 直出域名。
 
@@ -71,8 +71,9 @@
 
 ## 剩余待办（渠道完全就绪前）
 
-1. DNS：`dl.davenger.cloud` CNAME → `voicestick-dl-1259040144.cos.ap-shanghai.myqcloud.com`（当前 NXDOMAIN）；
-2. 腾讯云申请免费 DV 证书，COS 控制台为桶绑定自定义域名 `dl.davenger.cloud` 并开启 HTTPS；
-3. 创建最小权限 CAM 子账号（仅 `voicestick-dl-1259040144` 写权限），密钥入仓库 GitHub Secrets（`TENCENT_COS_SECRET_ID` / `TENCENT_COS_SECRET_KEY`）——配置前 CI 的 COS 步骤会如实失败；
-4. 配置 COS 流量监控告警（替代防盗链的防护手段）；
-5. 以上就绪后跑一次发布联调（`release.ps1` 或手动触发 `deploy-website.yml`），并从国内网络直连验证下载页、appcast、模型清单 URL。
+1. ~~DNS：`dl.davenger.cloud` CNAME → 桶默认域名~~ **已完成**（2026-09-26，指向 `voicestick-dl-1329978361.cos.ap-shanghai.myqcloud.com`）；
+2. 腾讯云申请免费 DV 证书（如未签发），COS 控制台为**新桶** `voicestick-dl-1329978361` 绑定自定义域名 `dl.davenger.cloud` 并开启 HTTPS——当前 https 直连报证书主体不匹配（桶侧未绑）；
+3. ~~CAM 子账号与仓库 Secrets~~ Secrets 已配置（2026-09-26）；**需核对**子账号自定义策略的 resource ARN 必须指向 `qcs::cos:ap-shanghai:uid/1329978361:voicestick-dl-1329978361/*`（若沿用旧 APPID 的 ARN 会 403）；
+4. **模型对象迁移**：旧桶 `models/` 下三个已核验对象需凭凭据重新上传到新桶（`scripts/cos_uploader.py`，`Cache-Control: max-age=31536000`），上传后按上表逐对象核对字节数与 SHA-256；
+5. 配置 COS 流量监控告警（替代防盗链的防护手段）；
+6. 以上就绪后手动触发 `deploy-website.yml` 发布联调，并从国内网络直连验证下载页、appcast、模型清单 URL。
