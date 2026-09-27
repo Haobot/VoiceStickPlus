@@ -143,6 +143,14 @@ connect/transition pushes.
   and keep the previous behaviour (no suppression). See
   `Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md`.
 
+  Since the always-gateway firmware change (2026-09-27), the StickS3 firmware
+  boots in gateway mode unconditionally, overwrites the persisted NVS mode to
+  `"gateway"` on every boot, and the "hold primary button during cold boot to
+  toggle" entry point is removed. Devices on that firmware always report
+  `"mode":"gateway"`; `"normal"` can only come from older firmware. The wire
+  format and both values stay valid so old/new firmware/desktop combinations
+  keep working.
+
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is
 included when a `primary` press starts or stops a local audio recording.

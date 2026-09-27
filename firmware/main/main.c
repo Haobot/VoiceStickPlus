@@ -132,9 +132,6 @@ static bool s_xiaomi_stop_pending;
 // 延迟量 = 尾包宽限 150ms + 余量 20ms（audio_task 40ms 帧粒度）。
 #define XIAOMI_STOP_DELAY_MS 170
 static esp_timer_handle_t s_xiaomi_stop_delay_timer;
-// boot 按住主键翻转网关模式成功后置位：吞掉 button 组件对"仍按住"主键补发的
-// 首个 PRESS_DOWN 及其配对的 PRESS_UP（详见 app_main 检测块与按键回调）。
-static bool s_swallow_boot_primary_down;
 // MiniEncoderC 每格（detent）产生 2 个正交计数（真机验证）：跨轮询窗口累计计数，
 // 每满 2 个同向计数上报 1 步；方向反转时丢弃反向余数。取值为 [-1,1] 的余数。
 static int32_t s_encoder_count_rem;
@@ -879,13 +876,6 @@ static void front_button_down_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
     (void)usr_data;
-    // boot 翻转网关模式时主键仍按住，组件注册后补发的首个 down 不是语音输入意图：
-    // 吞掉（否则 300ms hold 阈值会触发 start_recording + button_down）。标志保持到
-    // 配对 up 一并吞掉后才清除。
-    if (s_swallow_boot_primary_down) {
-        ESP_LOGI(TAG, "swallow boot primary down (gateway mode toggle)");
-        return;
-    }
     queue_primary_down_event(APP_INPUT_SOURCE_PHYSICAL, 0);
 }
 
@@ -893,12 +883,6 @@ static void front_button_up_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
     (void)usr_data;
-    // 被吞 down 的配对 up：一并吞掉并清除标志（避免进体感鼠标分支误发 button_click）。
-    if (s_swallow_boot_primary_down) {
-        s_swallow_boot_primary_down = false;
-        ESP_LOGI(TAG, "swallow boot primary up (gateway mode toggle)");
-        return;
-    }
     queue_primary_up_event(APP_INPUT_SOURCE_PHYSICAL, 0);
 }
 
@@ -3248,33 +3232,11 @@ void app_main(void)
     voice_ble_set_connection_callback(ble_connection_cb);
     voice_ble_set_control_callback(ble_control_cb);
     voice_ble_set_ota_callback(ble_ota_cb);
-    // 网关：模式读取与 HOGP 服务注入都必须在 voice_ble_init（NimBLE 注册窗口）之前
+    // 网关：模式初始化与 HOGP 服务注入都必须在 voice_ble_init（NimBLE 注册窗口）之前。
+    // 设备恒定工作在网关模式（向下兼容普通模式行为），历史上「冷启动按住主键翻转
+    // 模式」的入口已随 gateway_mode_toggle 一并移除。
     ESP_ERROR_CHECK(gateway_mode_init());
     voice_ble_set_extra_svcs(gateway_hogp_services);
-
-    // 网关模式 boot 翻转：按住主键（语音输入键）经历冷启动（重启按钮断电重启/上电/
-    // 烧录复位）→ 翻转模式。EXT1 深睡唤醒（主键按醒）不检测：避免"按醒即按住说话"
-    // 被误翻转。主键为直连 GPIO 无编码器 I2C 上电毛刺（旧方案毛刺实测超 300ms），
-    // 仍保留 10×100ms 连读作为"故意按住"确认窗，方向安全（宁可漏检不误翻）。
-    // 检测必须早于 init_buttons：翻转成功后置吞没标志，组件注册时补发的首个
-    // PRESS_DOWN 才能被回调吞掉（见 front_button_down_cb）。
-    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1 &&
-        gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0) {
-        int held_count = 1;
-        for (int i = 0; i < 9; i++) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            if (gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) != 0) {
-                break;
-            }
-            held_count++;
-        }
-        ESP_LOGI(TAG, "boot 主键按住检测：%d/10 连读为按下", held_count);
-        if (held_count == 10 && gateway_mode_toggle() == ESP_OK) {
-            s_swallow_boot_primary_down = true;
-            ESP_LOGI(TAG, "boot 按住主键：模式翻转 → %s",
-                     gateway_mode_name(gateway_mode_get()));
-        }
-    }
 
     esp_err_t err = voice_ble_init();
     ESP_ERROR_CHECK(ui_status_init());
@@ -3316,11 +3278,6 @@ void app_main(void)
             .skip_unhandled_events = true,
         };
         ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_xiaomi_stop_delay_timer));
-    }
-    // boot 翻转后若主键已先于注册松开（不会有幽灵 PRESS_DOWN 产生），吞没标志即失效，
-    // 避免误吞用户随后第一次真实按键。
-    if (s_swallow_boot_primary_down && gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) != 0) {
-        s_swallow_boot_primary_down = false;
     }
     ESP_ERROR_CHECK(init_buttons());
     // 仅在线时启动 10ms 轮询；必须在 init_buttons 之后（事件队列已创建）。
