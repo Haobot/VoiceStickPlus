@@ -41,11 +41,11 @@ echo [1/4] CMake RelWithDebInfo build...
 :: first launch, skipping the ASR onboarding step for new users.
 :: See Doc/Plan/windows-builtin-api-key.md.
 :: P0-4 note: 本项目当前为内部测试模式，默认嵌入内置凭据（开箱即用免输 API Key）；
-:: 显式 VOICESTICK_EMBED_BUILTIN_KEYS=0 才构建无凭据公开包。配套发布门禁
+:: 显式 VOICESTICK_EMBED_BUILTIN_KEYS=0 才构建无凭据公开包。配套门禁
 :: scan_release_artifacts.py 需加 --allow-builtin（内测包命中仅告警不阻断）。
 if not defined VOICESTICK_EMBED_BUILTIN_KEYS set "VOICESTICK_EMBED_BUILTIN_KEYS=1"
 if /I "%VOICESTICK_EMBED_BUILTIN_KEYS%"=="1" (
-    for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "%%a=%%b"
+    for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1" -ConfigPath "%PROJECT_DIR%\desktop\Ref\Config\config.toml"`) do set "%%a=%%b"
     if not defined VOICESTICK_BUILTIN_API_KEY (
         echo WARNING: VOICESTICK_EMBED_BUILTIN_KEYS=1 but volcengine_api_key not found; exe has no built-in ASR key.
     ) else (
@@ -208,6 +208,16 @@ if defined VOICESTICK_MSI_CONFIG_SOURCE (
 :: Used to distribute a pre-configured MSI to testers; secrets are injected only at local build time, never committed.
 :: On first launch the exe-adjacent config.template.toml is copied to %APPDATA%\VoiceStick\config.toml if absent.
 :: See Doc/Plan/windows-msi-config-template-seed.md for details.
+:: 内部测试模式：未设置时默认用测试凭据配置（开箱即用免输 API Key）；设 none 则强制用占位模板。
+if not defined VOICESTICK_CONFIG_TEMPLATE (
+    if exist "%PROJECT_DIR%\desktop\Ref\Config\config.toml" (
+        set "VOICESTICK_CONFIG_TEMPLATE=%PROJECT_DIR%\desktop\Ref\Config\config.toml"
+    )
+)
+if /I "%VOICESTICK_CONFIG_TEMPLATE%"=="none" (
+    set "VOICESTICK_CONFIG_TEMPLATE="
+    echo NOTICE: VOICESTICK_CONFIG_TEMPLATE=none - using placeholder template.
+)
 if defined VOICESTICK_CONFIG_TEMPLATE (
     if exist "%VOICESTICK_CONFIG_TEMPLATE%" (
         echo Overriding MSI config template from: %VOICESTICK_CONFIG_TEMPLATE%
