@@ -19,6 +19,7 @@ description: >-
 4. **appcast 依赖 Release 里的 MSI 资产**：仅固件轮想刷网页前，必须先把 MSI 补传 Release，否则 appcast 生成残缺、WinSparkle 指向 404。
 5. **CI 门禁必须真看结论**（`completed success`），continue-on-error 的 run 不算过。
 6. GitHub 侧验证一律用 `gh api` / `gh release download`（走 API 链路）；curl 直连 github.com 国内超时属常态，不代表发布失败。
+7. **MSI 必须内置凭据（内部测试模式）**：`build-msi.bat` 已默认注入本机 config.toml 凭据（开箱即用免输 API Key；显式 `VOICESTICK_EMBED_BUILTIN_KEYS=0` 才构建无凭据公开包）。构建日志必须出现 `Injecting built-in credentials into VoiceStick.exe`——若见 `building WITHOUT built-in credentials` 产物作废重建；发布扫描用 `--allow-builtin`（内测包命中仅告警，无它则嵌入凭据必 FAIL）。
 
 ## 发布轮次决策
 
@@ -54,8 +55,9 @@ git push origin feat/stick-gateway
 git tag -a vX.Y.Z -m "VoiceStick X.Y.Z" && git push origin vX.Y.Z
 gh run list --repo Haobot/VoiceStickPlus --workflow release.yml --limit 1   # 轮询至 completed success
 
-# 5. P0-4 凭据扫描（命中即停）→ 创建 Release → 上传 5 个资产
-python scripts/scan_release_artifacts.py dist/<ota.bin> dist/<ota.bin.sha256> \
+# 5. P0-4 凭据扫描（内测包 --allow-builtin：命中仅告警；无它则嵌入凭据必 FAIL）
+#    → 创建 Release → 上传 5 个资产
+python scripts/scan_release_artifacts.py --allow-builtin dist/<ota.bin> dist/<ota.bin.sha256> \
     dist/<merged.bin> dist/<merged.bin.sha256> dist/manifest.json
 gh release create vX.Y.Z --repo Haobot/VoiceStickPlus --title "VoiceStick X.Y.Z" --generate-notes
 gh release upload vX.Y.Z dist/* --repo Haobot/VoiceStickPlus --clobber   # 失败重试一次
@@ -71,11 +73,20 @@ python scripts/publish_cos.py --bucket voicestick-dl-1329978361 --region ap-shan
 # 1. 构建签名双语 MSI（脚本全自动：构建→签名 exe→WiX 双语→签名→verify_msi_contents 门禁）
 #    必须用 PowerShell 包装调 bat（MSYS 下 cmd /c 吞参数）；exit code 可能误报 1，
 #    以产物时间戳 + 签名 Valid 为准（Get-AuthenticodeSignature）
+#    ⚠️ 构建日志必须出现 "Injecting built-in credentials into VoiceStick.exe"——
+#    内部测试模式默认注入本机 config.toml 凭据；见 "building WITHOUT built-in
+#    credentials" 即产物作废（缺 API Key，用户升级后被要求手动输入），禁止发布
 cmd /c 'scripts\build-msi.bat'
 # 产物 desktop\windows\build-msi-x64\VoiceStick_X.Y.Z_zh-CN.msi / _en-US.msi
 
-# 2. 生成 .sha256 → P0-4 扫描 → 上传 Release → COS
+# 2. 生成 .sha256 → P0-4 扫描（--allow-builtin，内测包仅告警）→ 上传 Release → COS
 #    sha256 格式：<hash>  <文件名>（两空格+换行）
+python scripts/scan_release_artifacts.py --allow-builtin `
+    desktop/windows/build-msi-x64/VoiceStick_X.Y.Z_zh-CN.msi `
+    desktop/windows/build-msi-x64/VoiceStick_X.Y.Z_zh-CN.msi.sha256 `
+    desktop/windows/build-msi-x64/VoiceStick_X.Y.Z_en-US.msi `
+    desktop/windows/build-msi-x64/VoiceStick_X.Y.Z_en-US.msi.sha256
+gh release upload vX.Y.Z <4 个 MSI 文件> --repo Haobot/VoiceStickPlus --clobber
 python scripts/publish_cos.py --bucket voicestick-dl-1329978361 --region ap-shanghai `
     software --msi-dir desktop/windows/build-msi-x64 --version X.Y.Z
 ```

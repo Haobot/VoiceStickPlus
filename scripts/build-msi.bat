@@ -40,9 +40,10 @@ echo [1/4] CMake RelWithDebInfo build...
 :: Baked into VoiceStick.exe at compile time; Active*() accessors fall back to them on
 :: first launch, skipping the ASR onboarding step for new users.
 :: See Doc/Plan/windows-builtin-api-key.md.
-:: P0-4: built-in credentials are now explicit opt-in. Public builds embed NO real keys.
-:: Internal keyed build: set VOICESTICK_EMBED_BUILTIN_KEYS=1 before running this script.
-:: scripts/scan_release_artifacts.py is the release gate that blocks leaks as a backstop.
+:: P0-4 note: 本项目当前为内部测试模式，默认嵌入内置凭据（开箱即用免输 API Key）；
+:: 显式 VOICESTICK_EMBED_BUILTIN_KEYS=0 才构建无凭据公开包。配套发布门禁
+:: scan_release_artifacts.py 需加 --allow-builtin（内测包命中仅告警不阻断）。
+if not defined VOICESTICK_EMBED_BUILTIN_KEYS set "VOICESTICK_EMBED_BUILTIN_KEYS=1"
 if /I "%VOICESTICK_EMBED_BUILTIN_KEYS%"=="1" (
     for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "%%a=%%b"
     if not defined VOICESTICK_BUILTIN_API_KEY (
@@ -51,7 +52,7 @@ if /I "%VOICESTICK_EMBED_BUILTIN_KEYS%"=="1" (
         echo Injecting built-in credentials into VoiceStick.exe [OPT-IN]
     )
 ) else (
-    echo NOTICE: VOICESTICK_EMBED_BUILTIN_KEYS not set to 1 - building WITHOUT built-in credentials.
+    echo NOTICE: VOICESTICK_EMBED_BUILTIN_KEYS=0 - building WITHOUT built-in credentials.
 )
 cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
     -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%" ^
