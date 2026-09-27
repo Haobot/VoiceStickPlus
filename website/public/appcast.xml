@@ -2,9 +2,43 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>VoiceStick</title>
-    <link>https://haobot.github.io/VoiceStickPlus/appcast.xml</link>
+    <link>https://dl.davenger.cloud/appcast.xml</link>
     <description>VoiceStick app updates</description>
     <language>zh-CN</language>
-    <!-- 本文件为模板：发布时由 scripts/update-appcast.py 依据 GitHub Release 资产重写。 -->
+    <item>
+      <title>Version 2.4.4</title>
+      <description><![CDATA[
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div><b>Full Changelog</b>: https://github.com/Haobot/VoiceStickPlus/compare/v2.4.3...v2.4.4</div></div>
+      ]]></description>
+      <pubDate>Sun, 27 Sep 2026 05:33:31 +0000</pubDate>
+      <enclosure
+        url="https://dl.davenger.cloud/software/windows/v2.4.4/VoiceStick_2.4.4_zh-CN.msi"
+        sparkle:os="windows"
+        sparkle:version="2.4.4"
+        sparkle:shortVersionString="2.4.4"
+        sparkle:installerArguments="/passive"
+        length="33472512"
+        type="application/octet-stream"
+      />
+    </item>
+    <item>
+      <title>Version 0.3.2</title>
+      <description><![CDATA[
+        <ul>
+          <li>**Full Changelog**: https://github.com/78/voicestick/compare/v0.3.1...v0.3.2</li>
+        </ul>
+      ]]></description>
+      <pubDate>Mon, 11 May 2026 23:00:53 +0000</pubDate>
+      <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/78/voicestick/releases/download/v0.3.2/VoiceStick-0.3.2.zip"
+        sparkle:os="macos"
+        sparkle:version="0.3.2"
+        sparkle:shortVersionString="0.3.2"
+        sparkle:edSignature="Fii4yGhAqnU39+DU/ihZQ4IhZJvk0XgR+nxMPoHUKIw+OchrsSx77efxz6FsDzWy6Mop2Y1Pwgns71CDiq9zBw=="
+        length="4787136"
+        type="application/octet-stream"
+      />
+    </item>
   </channel>
 </rss>
