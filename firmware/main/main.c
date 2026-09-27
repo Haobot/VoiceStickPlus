@@ -321,6 +321,14 @@ static bool is_external_powered(void)
     return s_battery_charging || s_usb_powered;
 }
 
+// 供电态屏幕常亮：外部供电（充电/USB）且用户未开启 usb_auto_off 时跳过 dim/off
+// 空闲降级。网关模式下灭屏/深睡会让小米遥控器链路「像失联」（深睡只能按主键
+// 唤醒）；插电即常驻是桌面网关的预期形态，拔电回到电池空闲策略。
+static bool display_keep_awake(void)
+{
+    return is_external_powered() && !s_usb_auto_off;
+}
+
 // 由当前状态推导上报模式并去重记录。各转移点只更新 s_power_screen_mode 或
 // 直接调用本函数；模式未变化时不产生日志条目。
 static void power_log_refresh_mode(void)
@@ -457,6 +465,9 @@ static void restart_display_dim_timer(void)
         return;
     }
     (void)esp_timer_stop(s_display_dim_timer);
+    if (display_keep_awake()) {
+        return;  // 供电态常亮：不进入 S1 dim 降级（空闲时也无操作可省）
+    }
     if (!s_recording && !s_ota_updating) {
         esp_err_t err = esp_timer_start_once(s_display_dim_timer, DISPLAY_DIM_TIMEOUT_US);
         if (err != ESP_OK) {
@@ -472,7 +483,8 @@ static void restart_display_off_timer(void)
         return;
     }
     (void)esp_timer_stop(s_display_off_timer);
-    if (s_display_dimmed && !s_screen_off && !s_recording && !s_ota_updating) {
+    if (s_display_dimmed && !s_screen_off && !display_keep_awake() &&
+        !s_recording && !s_ota_updating) {
         esp_err_t err = esp_timer_start_once(s_display_off_timer, DISPLAY_OFF_TIMEOUT_US);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "start display-off timer failed: %s", esp_err_to_name(err));
@@ -974,6 +986,9 @@ static void ble_control_cb(const char *json)
         // 供电态（USB）10min 自动关机开关：电池监测窗口勾选框控制，NVS 持久化。
         s_usb_auto_off = cJSON_IsTrue(enabled);
         save_usb_auto_off_to_nvs(s_usb_auto_off);
+        // 开关切换即时改变供电态屏幕常亮与关机准入，按新状态刷新空闲计时器
+        //（LEDC 亮度与 esp_timer 启停均可跨任务调用，BLE 回调上下文安全）。
+        note_activity();
         restart_poweroff_timer();
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
         ESP_LOGI(TAG, "usb_auto_off %s", s_usb_auto_off ? "enabled" : "disabled");
@@ -2956,7 +2971,9 @@ static void update_battery_status(void)
         if (external_power_changed) {
             ESP_LOGI(TAG, "power source changed charging=%d usb=%d",
                      charging, usb_powered);
-            restart_poweroff_timer();
+            // 插电瞬间若已 dim/screen-off 立即恢复常亮；拔电瞬间回到电池空闲策略
+            // （note_activity 按新供电状态重启三级空闲计时器并覆盖关机计时）。
+            note_activity();
         }
     } else {
         ESP_LOGW(TAG, "battery read failed: %s", esp_err_to_name(err));
@@ -3305,6 +3322,10 @@ void app_main(void)
     load_tap_settings_from_nvs();
     load_encoder_settings_from_nvs();
     set_tap_polling_enabled(s_tap_enabled);
+    // 主动读一次供电状态：s_battery_charging/s_usb_powered 的缓存初值是 false，
+    // 只靠 60s 周期采样/PMIC IRQ 更新会让「插线开机」先按电池策略 dim/off，
+    // 几十秒后供电变化事件才恢复常亮（先暗后亮的假性失联窗口）。
+    update_battery_status();
 
     esp_err_t audio_err = audio_pipeline_init();
     if (audio_err != ESP_OK) {
