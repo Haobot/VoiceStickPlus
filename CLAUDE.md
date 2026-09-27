@@ -120,4 +120,4 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 | 腾讯 COS 分发渠道约定（桶/域名/布局/防盗链/模型清单） | `Doc/Ref/cos-distribution.md` |
 | E2E 真机验证工具链 | `Doc/Ref/e2e-test-toolchain.md` |
 | 经验教训记忆（排查问题前先查） | `Doc/Expe/claude-memory-distilled.md`（寄存器值/阈值/行号为记录时点结论，引用前以当前源码为准） |
-| 项目 Skills（`.agents/skills/`，场景命中自动加载） | `sticks3-flash-ota`（固件烧录/OTA）、`build-windows`、`build-firmware`、`usb-jtag-flash-log`（串口日志采集）、`work-summary-retro`（工作总结/经验沉淀/教训反思的文档管理）；新增/修改 Skill 后需重启会话刷新 |
+| 项目 Skills（`.agents/skills/`，场景命中自动加载） | `sticks3-flash-ota`（固件烧录/OTA）、`build-windows`、`build-firmware`、`usb-jtag-flash-log`（串口日志采集）、`work-summary-retro`（工作总结/经验沉淀/教训反思的文档管理）、`release-publish`（发布操作全流程：GitHub Release + COS + 静态网页三渠道同步，含轮次决策/整站配方/终验清单/已踩坑）；新增/修改 Skill 后需重启会话刷新 |
