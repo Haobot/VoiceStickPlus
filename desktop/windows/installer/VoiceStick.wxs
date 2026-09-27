@@ -52,6 +52,20 @@
     <CustomAction Id="SeedMsiConfigExec.SetCmd"
                   Property="SeedMsiConfigExec"
                   Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;New-Item -ItemType Directory -Force -Path '[AppDataFolder]VoiceStick' | Out-Null; Copy-Item -LiteralPath '[INSTALLFOLDER]config.template.toml' -Destination '[AppDataFolder]VoiceStick\config.toml' -Force; exit 0&quot;" />
+    <!-- 方案 2 升级解绑：每次安装/升级写 SeedUnpairSticks 标记（HKCU，TenClass\VoiceStick）。
+         新版 app 首次启动读到标记后解除所有 StickS3 的 OS 级配对并清本地配对条目，
+         小米遥控器条目保留（HOGP 按键直通依赖其 bond，绝不可解绑）。全新安装时
+         app 侧无配对条目，解绑为 no-op。app 消费成功即删标记；解绑失败保留标记
+         下次启动重试。Condition 排除卸载序列。 -->
+    <CustomAction Id="SeedUnpairSticksExec"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+    <CustomAction Id="SeedUnpairSticksExec.SetCmd"
+                  Property="SeedUnpairSticksExec"
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;New-Item -ItemType Directory -Force -Path 'HKCU:\Software\TenClass\VoiceStick' | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\TenClass\VoiceStick' -Name SeedUnpairSticks -Value 1 -Type DWord; exit 0&quot;" />
     <InstallExecuteSequence>
       <Custom Action="RemoveUserDataExec.SetCmd"
               Condition='REMOVE_USER_DATA=1 AND Installed AND REMOVE~="ALL"'
@@ -68,6 +82,14 @@
               Condition="NOT Installed"
               After="InstallValidate" />
       <Custom Action="SeedMsiConfigExec"
+              Condition="NOT Installed"
+              After="InstallFiles" />
+      <!-- 标记写入排在 SeedMsiConfig 之后：deferred CA 均在 InstallInitialize 与
+           InstallFinalize 之间，先后无实质依赖，仅集中摆放便于阅读 -->
+      <Custom Action="SeedUnpairSticksExec.SetCmd"
+              Condition="NOT Installed"
+              After="InstallValidate" />
+      <Custom Action="SeedUnpairSticksExec"
               Condition="NOT Installed"
               After="InstallFiles" />
     </InstallExecuteSequence>

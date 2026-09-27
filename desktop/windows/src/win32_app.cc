@@ -398,6 +398,73 @@ void LaunchFlashToolExe(HWND owner) {
 
 } // namespace
 
+// 升级首启解绑标记（方案 2，见 Win32App 构造函数内的消费点）：MSI 每次安装/
+// 升级经 SeedUnpairSticks CustomAction 写入，app 首启消费后删除。键路径与
+// 卸载清理（RemoveUserDataExec）的 TenClass\VoiceStick 同根，卸载时一并移除。
+namespace {
+constexpr wchar_t kSeedUnpairFlagKey[] = L"Software\\TenClass\\VoiceStick";
+constexpr wchar_t kSeedUnpairFlagName[] = L"SeedUnpairSticks";
+
+bool ReadSeedUnpairSticksFlag() {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    return RegGetValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairFlagName,
+                        RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS &&
+           value != 0;
+}
+
+void DeleteSeedUnpairSticksFlag() {
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairFlagName);
+}
+
+// 待解绑地址清单（REG_SZ，逗号分隔十进制地址）：OS 侧解绑的持久待办。
+// MSI 标记只表示「本次升级需要清 StickS3 配对」，消费后即删；地址清单由 app
+// 维护到 OS 解绑真正完成为止（后台执行可能跨越本次进程生命周期）。
+constexpr wchar_t kSeedUnpairPendingName[] = L"SeedUnpairPendingAddresses";
+
+std::vector<std::uint64_t> ReadSeedUnpairPendingAddresses() {
+    std::vector<std::uint64_t> out;
+    wchar_t buf[1024] = {};
+    DWORD size = sizeof(buf);
+    if (RegGetValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairPendingName,
+                     RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS) {
+        return out;
+    }
+    std::wstring raw(buf);
+    std::size_t pos = 0;
+    while (pos < raw.size()) {
+        const std::size_t comma = raw.find(L',', pos);
+        const std::wstring token = raw.substr(
+            pos, comma == std::wstring::npos ? std::wstring::npos : comma - pos);
+        if (!token.empty()) {
+            try {
+                out.push_back(std::stoull(token));
+            } catch (...) {
+                // 坏段跳过（手工改动防御），不阻断其余地址。
+            }
+        }
+        if (comma == std::wstring::npos) break;
+        pos = comma + 1;
+    }
+    return out;
+}
+
+void WriteSeedUnpairPendingAddresses(const std::vector<std::uint64_t>& addresses) {
+    std::wstring raw;
+    for (std::size_t i = 0; i < addresses.size(); i++) {
+        if (i > 0) raw += L',';
+        raw += std::to_wstring(addresses[i]);
+    }
+    RegSetKeyValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairPendingName,
+                    REG_SZ, raw.c_str(),
+                    static_cast<DWORD>((raw.size() + 1) * sizeof(wchar_t)));
+}
+
+void DeleteSeedUnpairPendingAddresses() {
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairPendingName);
+}
+} // namespace
+
 Win32App* Win32App::active_instance_ = nullptr;
 
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
@@ -411,6 +478,47 @@ Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig:
         LogApp("Tencent config appid=" + config_.tencent_appid +
                " secret_id=" + config_.tencent_secret_id.substr(0, 8) + "..." +
                " secret_key_len=" + std::to_string(config_.tencent_secret_key.size()));
+    }
+    // 升级首启解绑（方案 2）：MSI 升级安装写入标记 → 此处解除所有 StickS3 的
+    // OS 级配对并清本地配对条目，让下次绑定从干净状态开始；小米遥控器条目
+    // 保留（其 OS bond 承载 HOGP 按键直通，解绑会弄死按键，绝不可动）。
+    // 必须在 paired_device_ids_/device_info_map_ 同步与 BLE 协调器创建之前
+    // 完成，避免旧配对参与首轮自动重连。解绑失败保留标记，下次启动重试
+    //（按地址匹配，无系统配对记录的地址按已清除处理，天然幂等）。
+    if (ReadSeedUnpairSticksFlag()) {
+        std::vector<std::uint64_t> stick_addresses;
+        std::vector<std::string> stick_ids;
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.hardware != kHardwareXiaomiRemote2Pro && entry.bluetooth_address != 0) {
+                stick_addresses.push_back(entry.bluetooth_address);
+                stick_ids.push_back(entry.device_id);
+            }
+        }
+        LogApp("seed unpair: flag present, " + std::to_string(stick_addresses.size()) +
+               " StickS3 device(s) to clear");
+        for (const auto& device_id : stick_ids) {
+            // 内部含 Save() 与 per-device 配置段清理；此时协调器尚未创建，
+            // 无需会话侧清理。本地条目即时清除 → BLE 协调器拿到干净的配对
+            // 列表，启动后直接进配对引导（升级后绑定流畅的关键）。
+            config_.RemovePairedDevice(device_id);
+            LogApp("seed unpair: forgot " + device_id);
+        }
+        // OS 侧解绑移交后台（WinRT 枚举冷启动可达 15s+ 且不可预测，实测同步
+        // 等待两轮分别 15s/45s 超时——不能阻塞启动路径）。地址并入持久待办
+        // 清单，coordinator 创建后逐个消费；进程中途退出由下次启动续做。
+        auto pending = ReadSeedUnpairPendingAddresses();
+        for (const auto& address : stick_addresses) {
+            if (std::find(pending.begin(), pending.end(), address) == pending.end()) {
+                pending.push_back(address);
+            }
+        }
+        WriteSeedUnpairPendingAddresses(pending);
+        DeleteSeedUnpairSticksFlag();
+    }
+    seed_unpair_pending_ = ReadSeedUnpairPendingAddresses();
+    if (!seed_unpair_pending_.empty()) {
+        LogApp("seed unpair: " + std::to_string(seed_unpair_pending_.size()) +
+               " OS bond(s) pending removal (background)");
     }
     paired_device_ids_ = config_.paired_device_ids;
     for (const auto& entry : config_.paired_devices) {
@@ -478,6 +586,38 @@ int Win32App::Run() {
         LogLine("Creating BLE coordinator");
         auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
         ble_central_ = ble.get();
+
+        // 方案 2 升级解绑的 OS 侧收尾：待办地址逐个解除 Windows 配对（复用
+        // 「忘记设备」的 UnpairOsBondAsync，幂等——系统无该地址记录按成功）。
+        // 全程后台，不阻塞启动；全部完成后把失败子集写回持久待办（空则删），
+        // 进程中途退出/回调未派发时待办保留，下次启动续做。remote 拒绝或
+        // rolled keys 的特例见 UnpairOsBondAsync 注释（升级解绑场景无在连
+        // 会话，无此分支）。
+        if (!seed_unpair_pending_.empty()) {
+            LogLine("seed unpair: removing " + std::to_string(seed_unpair_pending_.size()) +
+                    " OS bond(s) in background");
+            const auto failed = std::make_shared<std::vector<std::uint64_t>>();
+            const auto remaining =
+                std::make_shared<std::atomic<std::size_t>>(seed_unpair_pending_.size());
+            for (const auto& address : seed_unpair_pending_) {
+                ble_central_->UnpairOsBondAsync(
+                    std::to_string(address), address,
+                    [this, failed, remaining, address](bool ok) {
+                        if (!ok) failed->push_back(address);
+                        if (remaining->fetch_sub(1) == 1) {
+                            if (failed->empty()) {
+                                DeleteSeedUnpairPendingAddresses();
+                                LogApp("seed unpair: all OS bonds removed");
+                            } else {
+                                WriteSeedUnpairPendingAddresses(*failed);
+                                LogApp("seed unpair: " + std::to_string(failed->size()) +
+                                       " bond(s) failed, kept for retry");
+                            }
+                            seed_unpair_pending_.clear();
+                        }
+                    });
+            }
+        }
 
         // 小米遥控器接线：MIC_OPEN 时刻写入原子量供 F5 抑制钩子消费；ATVV 会话
         // Options 在会话创建时（UI 线程）从 config_ 现取，配置热更对新连接生效。

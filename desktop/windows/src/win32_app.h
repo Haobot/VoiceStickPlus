@@ -271,6 +271,9 @@ private:
     // 上次记过授权状态日志的连接集合（去抖：设备无变化不重复记）。
     std::vector<ConnectedDevice> last_logged_device_ids_;
     std::vector<std::string> paired_device_ids_;
+    // 方案 2 升级解绑：待解除 OS 配对的 StickS3 地址（注册表 SeedUnpairPendingAddresses
+    // 的内存映像，构造函数填充、coordinator 创建后逐个消费）。空 = 无待办。
+    std::vector<std::uint64_t> seed_unpair_pending_;
     std::map<std::string, DeviceInfo> device_info_map_;
     std::map<std::string, DeviceBattery> device_battery_map_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
