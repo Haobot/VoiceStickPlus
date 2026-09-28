@@ -6,18 +6,18 @@
     <description>VoiceStick app updates</description>
     <language>zh-CN</language>
     <item>
-      <title>Version 2.4.5</title>
+      <title>Version 2.4.6</title>
       <description><![CDATA[
-        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><b>VoiceStick 2.4.5（固件 + Windows）</b><ul><li>修复（Windows）：安装包恢复<b>内置 API Key 的内部测试模式</b>——v2.4.4 安装包因构建缺配置，安装后配置被清空、要求手动输入 API Key；本版起安装/升级自动写入完整测试配置（火山/腾讯/LLM 开箱即用），被 v2.4.4 清掉配置的设备升级本版后自动恢复可用</li><li>改进（Windows）：构建流程默认嵌入内置凭据与测试配置，后续版本不再依赖手工步骤，杜绝同类问题复发</li><li>固件无功能变更（版本号随发布对齐 2.4.5；包含 2.4.4 的「USB 供电屏幕常亮」与 2.4.3 的「恒定网关模式」）</li></ul></div>
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><b>VoiceStick 2.4.6（Windows + 固件）</b><ul><li>新增（Windows）：升级安装时自动重置 StickS3 配对——安装新版后首次启动会解除设备在系统蓝牙里的旧配对记录并清理本地配对信息，直接进入配对引导，重新绑定更流畅；小米蓝牙遥控器的配对<b>不受影响</b>（其按键直通依赖系统配对，保持原样）</li><li>修复（Windows）：延续 2.4.5 的内置凭据修复——安装/升级自动写入完整测试配置（火山/腾讯/LLM 开箱即用），无需手动输入 API Key</li><li>固件无功能变更（版本号随发布对齐 2.4.6；包含 2.4.5/2.4.4/2.4.3 的全部固件特性）</li></ul></div>
       ]]></description>
-      <pubDate>Sun, 27 Sep 2026 11:41:48 +0000</pubDate>
+      <pubDate>Sun, 27 Sep 2026 23:59:46 +0000</pubDate>
       <enclosure
-        url="https://dl.davenger.cloud/software/windows/v2.4.5/VoiceStick_2.4.5_zh-CN.msi"
+        url="https://dl.davenger.cloud/software/windows/v2.4.6/VoiceStick_2.4.6_zh-CN.msi"
         sparkle:os="windows"
-        sparkle:version="2.4.5"
-        sparkle:shortVersionString="2.4.5"
+        sparkle:version="2.4.6"
+        sparkle:shortVersionString="2.4.6"
         sparkle:installerArguments="/passive"
-        length="33476608"
+        length="33488896"
         type="application/octet-stream"
       />
     </item>
