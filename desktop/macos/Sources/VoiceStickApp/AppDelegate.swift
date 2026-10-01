@@ -172,6 +172,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController.onOpenEncoderSettings = { [weak self] deviceID in
             self?.showEncoderSettings(for: deviceID)
         }
+        statusController.onToggleAirMouse = { [weak self] deviceID in
+            self?.coordinator?.toggleAirMouse(deviceID: deviceID)
+        }
         statusController.onOpenRemoteSettings = { [weak self] deviceID in
             self?.showRemoteSettings(for: deviceID)
         }

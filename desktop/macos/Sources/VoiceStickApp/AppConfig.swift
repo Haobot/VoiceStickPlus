@@ -280,6 +280,45 @@ struct EncoderSettings: Equatable {
     static let `default` = EncoderSettings()
 }
 
+/// 体感鼠标全局进阶参数（对齐 Windows app_config.h air_mouse_* 顶层键；灵敏度档位
+/// 在 InteractionSettings.airMouseSensitivityX/Y，按设备覆盖）。键名与 Windows 一致，
+/// 配置文件跨端通用；数值钳位对齐 Windows（越界回落默认值，见 AirMouseKin）。
+struct AirMouseSettings: Equatable {
+    /// 速度环时间常数（秒），[0.02, 0.5]，默认 0.05。
+    var tau: Double = 0.05
+    var invertY: Bool = false
+    /// sigmoid 增益曲线特征点（单位=固件缩放角速率 dps×4）。默认 100/333/0.25/4.0（真机标定）。
+    var curveLowThresh: Double = 100.0
+    var curveHighThresh: Double = 333.0
+    var curveLowFactor: Double = 0.25
+    var curveHighFactor: Double = 4.0
+    /// 方向锁中立区死区，[1, 10]，默认 3.0。
+    var neutralDeadzone: Double = 3.0
+    /// 控制模式："angle"（角速率→速度）/"rate"（飞行摇杆），未知名回落 rate（对齐 Windows）。
+    var controlMode: String = "rate"
+    /// rate 模式参数：加速度增益 [10,500]、摩擦 [0,0.5]、速度上限 [500,8000]。
+    var rateGain: Double = 80.0
+    var rateFriction: Double = 0.05
+    var rateMaxSpeed: Double = 4000.0
+
+    static let `default` = AirMouseSettings()
+
+    /// TOML 序列化数字格式（4 位有效数字，避免科学计数法）。
+    func tomlNumber(_ value: Double) -> String {
+        String(format: "%.4g", value)
+    }
+
+    /// 解析时钳位（对齐 Windows 加载路径：越界回落默认值）。
+    mutating func applyClamps() {
+        tau = AirMouseKin.tauClamp(tau)
+        neutralDeadzone = AirMouseKin.neutralDeadzoneClamp(neutralDeadzone)
+        rateGain = AirMouseKin.rateGainClamp(rateGain)
+        rateFriction = AirMouseKin.rateFrictionClamp(rateFriction)
+        rateMaxSpeed = AirMouseKin.rateMaxSpeedClamp(rateMaxSpeed)
+        controlMode = AirMouseControlMode.fromName(controlMode).name
+    }
+}
+
 struct AppConfig {
     var asrProvider: ASRProvider
     var voiceStickAPIKey: String
@@ -295,7 +334,7 @@ struct AppConfig {
     var llmAPIKey: String
     var llmModel: String
     /// ASR 文本精修开关与自定义 prompt（对齐 Windows refine_enabled/refine_prompt；
-    /// 默认关，prompt 留空用内置默认）。
+    /// 默认开（对齐 Windows 默认），prompt 留空用内置默认）。
     var refineEnabled: Bool
     var refinePrompt: String
     /// 向所有 LLM 请求注入 enable_thinking:false 关闭深度思考（对齐 Windows，默认开）。
@@ -342,6 +381,8 @@ struct AppConfig {
     var encoderSettings: EncoderSettings
     /// [device.<id>.encoder] 按设备覆盖（键名去 encoder_ 前缀，加载时已用全局默认填平）。
     var deviceEncoderSettings: [String: EncoderSettings]
+    /// 体感鼠标全局进阶参数（对齐 Windows 顶层键 air_mouse_*，默认值=真机标定）。
+    var airMouse: AirMouseSettings
     /// [device.<id>.buttons] 按设备覆盖（小米遥控器按键映射；键为归一化 4 位大写 hex ID）。
     var deviceButtonsSettings: [String: ButtonsSettings]
 
@@ -392,7 +433,7 @@ struct AppConfig {
             llmBaseURL: "https://api.openai.com/v1",
             llmAPIKey: "",
             llmModel: "gpt-5.5",
-            refineEnabled: false,
+            refineEnabled: true,
             refinePrompt: "",
             llmDisableThinking: true,
             interactionMode: .holdToTalk,
@@ -420,6 +461,7 @@ struct AppConfig {
             deviceInteractionSettings: [:],
             encoderSettings: .default,
             deviceEncoderSettings: [:],
+            airMouse: .default,
             deviceButtonsSettings: [:]
         )
     }
@@ -497,10 +539,48 @@ struct AppConfig {
             deviceInteractionSettings: deviceInteractionSettingsMap(file.device, fallback: interaction),
             encoderSettings: encoder,
             deviceEncoderSettings: deviceEncoderSettingsMap(file.device, fallback: encoder),
+            airMouse: airMouseSettingsValue(
+                tau: file.air_mouse_tau,
+                invertY: file.air_mouse_invert_y,
+                curveLowThresh: file.air_mouse_curve_low_thresh,
+                curveHighThresh: file.air_mouse_curve_high_thresh,
+                curveLowFactor: file.air_mouse_curve_low_factor,
+                curveHighFactor: file.air_mouse_curve_high_factor,
+                neutralDeadzone: file.air_mouse_neutral_deadzone,
+                controlMode: file.air_mouse_control_mode,
+                rateGain: file.air_mouse_rate_gain,
+                rateFriction: file.air_mouse_rate_friction,
+                rateMaxSpeed: file.air_mouse_rate_max_speed,
+                default: defaults.airMouse
+            ),
             deviceButtonsSettings: deviceButtonsSettingsMap(file.device)
         )
         recoverTencentSecretID(&config)
         return config
+    }
+
+    /// air_mouse_* 顶层键解析（对齐 Windows：越界/非法回落默认，见 AirMouseSettings.applyClamps）。
+    private static func airMouseSettingsValue(
+        tau: Double?, invertY: Bool?,
+        curveLowThresh: Double?, curveHighThresh: Double?,
+        curveLowFactor: Double?, curveHighFactor: Double?,
+        neutralDeadzone: Double?, controlMode: String?,
+        rateGain: Double?, rateFriction: Double?, rateMaxSpeed: Double?,
+        default fallback: AirMouseSettings
+    ) -> AirMouseSettings {
+        var settings = fallback
+        if let value = tau { settings.tau = AirMouseKin.tauClamp(value) }
+        if let value = invertY { settings.invertY = value }
+        if let value = curveLowThresh { settings.curveLowThresh = value }
+        if let value = curveHighThresh { settings.curveHighThresh = value }
+        if let value = curveLowFactor { settings.curveLowFactor = value }
+        if let value = curveHighFactor { settings.curveHighFactor = value }
+        if let value = neutralDeadzone { settings.neutralDeadzone = AirMouseKin.neutralDeadzoneClamp(value) }
+        if let value = controlMode { settings.controlMode = AirMouseControlMode.fromName(value).name }
+        if let value = rateGain { settings.rateGain = AirMouseKin.rateGainClamp(value) }
+        if let value = rateFriction { settings.rateFriction = AirMouseKin.rateFrictionClamp(value) }
+        if let value = rateMaxSpeed { settings.rateMaxSpeed = AirMouseKin.rateMaxSpeedClamp(value) }
+        return settings
     }
 
     func save() throws {
@@ -546,6 +626,17 @@ struct AppConfig {
         tap_sensitivity = \(interactionSettings.tapSensitivity)
         air_mouse_sensitivity_x = \(interactionSettings.airMouseSensitivityX)
         air_mouse_sensitivity_y = \(interactionSettings.airMouseSensitivityY)
+        air_mouse_tau = \(airMouse.tomlNumber(airMouse.tau))
+        air_mouse_invert_y = \(airMouse.invertY.tomlValue)
+        air_mouse_curve_low_thresh = \(airMouse.tomlNumber(airMouse.curveLowThresh))
+        air_mouse_curve_high_thresh = \(airMouse.tomlNumber(airMouse.curveHighThresh))
+        air_mouse_curve_low_factor = \(airMouse.tomlNumber(airMouse.curveLowFactor))
+        air_mouse_curve_high_factor = \(airMouse.tomlNumber(airMouse.curveHighFactor))
+        air_mouse_neutral_deadzone = \(airMouse.tomlNumber(airMouse.neutralDeadzone))
+        air_mouse_control_mode = "\(airMouse.controlMode.tomlEscaped)"
+        air_mouse_rate_gain = \(airMouse.tomlNumber(airMouse.rateGain))
+        air_mouse_rate_friction = \(airMouse.tomlNumber(airMouse.rateFriction))
+        air_mouse_rate_max_speed = \(airMouse.tomlNumber(airMouse.rateMaxSpeed))
         encoder_to_arrow = \(encoderSettings.toArrow.tomlValue)
         encoder_rotation_invert = \(encoderSettings.rotationInvert.tomlValue)
         encoder_rotate_cw_key = "\(encoderSettings.rotateCwKey.tomlEscaped)"
@@ -663,6 +754,20 @@ struct AppConfig {
             deviceInteractionSettings: [:],
             encoderSettings: encoder,
             deviceEncoderSettings: [:],
+            airMouse: airMouseSettingsValue(
+                tau: values["air_mouse_tau"].flatMap(Double.init),
+                invertY: values["air_mouse_invert_y"].map { boolValue($0, default: defaults.airMouse.invertY) },
+                curveLowThresh: values["air_mouse_curve_low_thresh"].flatMap(Double.init),
+                curveHighThresh: values["air_mouse_curve_high_thresh"].flatMap(Double.init),
+                curveLowFactor: values["air_mouse_curve_low_factor"].flatMap(Double.init),
+                curveHighFactor: values["air_mouse_curve_high_factor"].flatMap(Double.init),
+                neutralDeadzone: values["air_mouse_neutral_deadzone"].flatMap(Double.init),
+                controlMode: values["air_mouse_control_mode"],
+                rateGain: values["air_mouse_rate_gain"].flatMap(Double.init),
+                rateFriction: values["air_mouse_rate_friction"].flatMap(Double.init),
+                rateMaxSpeed: values["air_mouse_rate_max_speed"].flatMap(Double.init),
+                default: defaults.airMouse
+            ),
             deviceButtonsSettings: [:]
         )
         recoverTencentSecretID(&config)
@@ -1475,6 +1580,17 @@ private struct ConfigFile: Decodable {
     var tap_sensitivity: Int?
     var air_mouse_sensitivity_x: Int?
     var air_mouse_sensitivity_y: Int?
+    var air_mouse_tau: Double?
+    var air_mouse_invert_y: Bool?
+    var air_mouse_curve_low_thresh: Double?
+    var air_mouse_curve_high_thresh: Double?
+    var air_mouse_curve_low_factor: Double?
+    var air_mouse_curve_high_factor: Double?
+    var air_mouse_neutral_deadzone: Double?
+    var air_mouse_control_mode: String?
+    var air_mouse_rate_gain: Double?
+    var air_mouse_rate_friction: Double?
+    var air_mouse_rate_max_speed: Double?
     var encoder_to_arrow: Bool?
     var encoder_rotation_invert: Bool?
     var encoder_rotate_cw_key: String?

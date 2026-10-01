@@ -110,6 +110,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     var onPowerLogFragment: ((UUID, PowerLogFragment) -> Void)?
     /// power_mgmt 事件回调（固件连接时主动推送 / usb_auto_off set 后回推确认）。
     var onPowerMgmtEvent: ((UUID, PowerMgmtEvent) -> Void)?
+    /// 体感鼠标 motion 帧回调（state_tx 0x11 二进制小帧，~50Hz；协调器 AirMouseTick 消费）。
+    var onMotionFrame: ((UUID, MotionFrame) -> Void)?
 
     /// 标准 Battery Service（小米遥控器电量；对齐 Windows kBatteryServiceUuid/kBatteryLevelUuid）。
     private static let batteryServiceUUID = "180F"
@@ -319,6 +321,11 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     /// 已连接 StickS3 设备 ID 列表（全局热键 remote_button 目标解析用；
     /// 小米遥控器无 remote_button 概念，不参与）。
+    /// deviceID → 已连接外设 UUID 反查（体感态 per-device ui_state 下发用）。
+    func peripheralID(forDeviceID deviceID: String) -> UUID? {
+        connectedDevices.first(where: { $0.value.deviceID == deviceID })?.key
+    }
+
     func connectedStickDeviceIDs() -> [String] {
         connectedDevices.values
             .filter { $0.deviceClass == .stickS3 }
@@ -657,13 +664,15 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             }
         case BleProtocol.stateUUID:
             // 分发顺序对齐 Windows：StateEvent（power_mgmt 返回 nil）→ power_log
-            // 分片（无 "event" 键）→ power_mgmt 事件。
+            // 分片（无 "event" 键）→ power_mgmt 事件 → motion 帧（0x11 二进制小帧）。
             if let event = BleProtocol.parseStateEvent(data) {
                 onStateEvent?(peripheral.identifier, event)
             } else if let fragment = BleProtocol.parsePowerLogFragment(data) {
                 onPowerLogFragment?(peripheral.identifier, fragment)
             } else if let powerMgmt = BleProtocol.parsePowerMgmtEvent(data) {
                 onPowerMgmtEvent?(peripheral.identifier, powerMgmt)
+            } else if let motion = BleProtocol.parseMotionFrame(data) {
+                onMotionFrame?(peripheral.identifier, motion)
             }
         case BleProtocol.otaStateUUID:
             if let event = BleProtocol.parseFirmwareOTAStateEvent(data) {

@@ -93,6 +93,9 @@ final class StatusController {
     var onOpenRemoteSettings: ((String) -> Void)?
     var onOpenButtonMapping: ((String) -> Void)?
     var onOpenBatteryMonitor: ((String) -> Void)?
+    /// 体感鼠标开关（仅 StickS3 且已连接；Windows 侧入口在设置对话框已隐藏，macOS
+    /// 按平台习惯放进设备子菜单，勾选=进入体感态）。
+    var onToggleAirMouse: ((String) -> Void)?
     var onUpdateFirmwareFromFile: ((String) -> Void)?
     var onSetDeviceThemeColor: ((String, OverlayThemeColor) -> Void)?
     var onSetDeviceOverlayPosition: ((String, OverlayPosition) -> Void)?
@@ -127,6 +130,8 @@ final class StatusController {
     private(set) var encoderPresentByDeviceID: [String: Bool] = [:]
     /// 电量状态（固件 battery_status 事件 / 小米 0x2A19 合成事件驱动），供菜单标题后缀。
     private(set) var batteryByDeviceID: [String: (level: Int, charging: Bool, usbPowered: Bool)] = [:]
+    /// 体感鼠标激活集（协调器 toggle/断连清理驱动），供设备子菜单勾选态。
+    private(set) var airMouseActiveDevices: Set<String> = []
     private var interactionMode: InteractionMode
     private var autoEnter: Bool
     private var defaultOutputProfile: OutputProfile
@@ -216,6 +221,17 @@ final class StatusController {
         guard old?.level != value.level || old?.charging != value.charging ||
                 old?.usbPowered != value.usbPowered else { return }
         batteryByDeviceID[deviceID] = value
+        rebuildMenu()
+    }
+
+    /// 体感鼠标激活态上报（协调器 toggle / 断连清理时调用）。
+    func setAirMouseActive(_ active: Bool, deviceID: String) {
+        guard airMouseActiveDevices.contains(deviceID) != active else { return }
+        if active {
+            airMouseActiveDevices.insert(deviceID)
+        } else {
+            airMouseActiveDevices.remove(deviceID)
+        }
         rebuildMenu()
     }
 
@@ -491,6 +507,19 @@ final class StatusController {
                     )
                     encoderItem.representedObject = deviceID
                     submenu.addItem(encoderItem)
+                }
+
+                // 体感鼠标开关（仅 StickS3 且已连接；macOS 平台入口，勾选=进入体感态，
+                // 侧键单击退出。Windows 侧入口已在设置对话框隐藏，引擎两端一致）。
+                if connectedDevice != nil {
+                    let airMouseItem = makeMenuItem(
+                        title: tr(.menuAirMouse),
+                        symbolName: "cursorarrow.motionlines",
+                        action: #selector(toggleAirMouse)
+                    )
+                    airMouseItem.representedObject = deviceID
+                    airMouseItem.state = airMouseActiveDevices.contains(deviceID) ? .on : .off
+                    submenu.addItem(airMouseItem)
                 }
 
                 // 电池电压监测（仅已连接；对齐 Windows kMenuBatteryMonitor）。
@@ -950,6 +979,11 @@ final class StatusController {
     @objc private func openEncoderSettings(_ sender: NSMenuItem) {
         guard let deviceID = sender.representedObject as? String else { return }
         onOpenEncoderSettings?(deviceID)
+    }
+
+    @objc private func toggleAirMouse(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onToggleAirMouse?(deviceID)
     }
 
     @objc private func openRemoteSettings(_ sender: NSMenuItem) {

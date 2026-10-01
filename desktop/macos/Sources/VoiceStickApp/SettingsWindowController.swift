@@ -497,6 +497,7 @@ final class SettingsWindowController: NSWindowController {
             deviceInteractionSettings: config.deviceInteractionSettings,
             encoderSettings: config.encoderSettings,
             deviceEncoderSettings: config.deviceEncoderSettings,
+            airMouse: config.airMouse,
             deviceButtonsSettings: config.deviceButtonsSettings
         )
 

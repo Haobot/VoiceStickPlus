@@ -117,6 +117,50 @@ final class InputInjector {
         sendKeyCombo(KeySpec(keyCode: 125, mediaKey: nil, displayText: "Down"))
     }
 
+    // ---- 体感鼠标注入（对齐 Windows MoveMouse/ClickLeftButton）----
+
+    /// 相对移动光标（像素）。Windows dy 正值向下；CGEventDeltaY 正值向上，注入前取反。
+    /// delta 字段注入保留原始相对位移（不经过系统指针加速），手感与 Windows 一致；
+    /// .mouseMoved 事件的位置参数被 HID 系统忽略，以 delta 合成当前位置的相对移动。
+    func moveMouse(dx: Int, dy: Int) {
+        guard dx != 0 || dy != 0 else { return }
+        guard requireAccessibility("mouse move") else { return }
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        guard let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: .zero,
+            mouseButton: .center
+        ) else { return }
+        event.setIntegerValueField(.mouseEventDeltaX, value: Int64(dx))
+        event.setIntegerValueField(.mouseEventDeltaY, value: Int64(-dy))
+        event.post(tap: .cghidEventTap)
+    }
+
+    /// 在当前光标位置点按鼠标左键（体感态主键语义）。NSEvent.mouseLocation 为
+    /// AppKit 全局坐标（主屏左下原点），CG 事件坐标为主屏左上原点，翻转 Y。
+    func clickLeftButton() {
+        guard requireAccessibility("mouse click") else { return }
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        let mouseLocation = NSEvent.mouseLocation
+        let mainHeight = CGDisplayBounds(CGMainDisplayID()).height
+        let position = CGPoint(x: mouseLocation.x, y: mainHeight - mouseLocation.y)
+        let down = CGEvent(
+            mouseEventSource: source,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: position,
+            mouseButton: .left
+        )
+        let up = CGEvent(
+            mouseEventSource: source,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: position,
+            mouseButton: .left
+        )
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
+
     /// 媒体键（音量增/减/静音）：NSEvent systemDefined，subtype 8，data1 = keyCode<<16 | down<<8。
     /// keyCode：0=音量增，1=音量减，7=静音。
     private func sendMediaKey(_ key: KeySpec.MediaKey) {

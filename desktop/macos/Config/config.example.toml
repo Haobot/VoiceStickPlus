@@ -32,11 +32,21 @@ auto_enter = true
 debug_audio_cache = false
 # debug_audio_dir = "~/Library/Application Support/VoiceStick/DebugAudio"
 
-# 体感鼠标（侧键单击进入）：角度控制——积分角速度得相对偏转角 θ，保持 θ 光标持续移动。
-air_mouse_sensitivity_x = 5  # 左右灵敏度 1~10，映射 gain_x=sensitivity_x×320.0
-air_mouse_sensitivity_y = 5  # 上下灵敏度 1~10，映射 gain_y=sensitivity_y×320.0
-air_mouse_tau = 0.10         # 速度环时间常数（秒），越大惯性/缓停越长
-air_mouse_invert_y = false   # 反转 Y 轴（适配用户习惯）
+# 体感鼠标（v2.4.7 起 macOS 消费；开关在托盘设备子菜单「体感鼠标」，侧键单击退出；
+# 键名与默认值与 Windows 完全一致，配置文件跨端通用）。
+air_mouse_sensitivity_x = 5      # 左右灵敏度档 1~10，映射 gain_x = sensitivity×48
+air_mouse_sensitivity_y = 5      # 上下灵敏度档 1~10，映射 gain_y = sensitivity×48
+air_mouse_tau = 0.05             # 速度环时间常数（秒），[0.02, 0.5]，越大惯性/缓停越长
+air_mouse_invert_y = false       # 反转 Y 轴（适配用户习惯）
+air_mouse_control_mode = "rate"  # angle=角速率→光标速度（停转即停）/ rate=飞行摇杆（默认）
+air_mouse_neutral_deadzone = 3.0 # 方向锁中立区死区 [1, 10]
+air_mouse_rate_gain = 80.0       # rate 模式 theta→加速度增益 [10, 500]
+air_mouse_rate_friction = 0.05   # rate 模式速度摩擦系数（1/s）[0, 0.5]
+air_mouse_rate_max_speed = 4000.0 # rate 模式速度上限（像素/秒）[500, 8000]
+air_mouse_curve_low_thresh = 100.0  # sigmoid 增益曲线特征点（单位=固件缩放角速率 dps×4）
+air_mouse_curve_high_thresh = 333.0
+air_mouse_curve_low_factor = 0.25   # 低速段相对增益（精准对位）
+air_mouse_curve_high_factor = 4.0   # 高速段相对增益（跨屏甩动）
 
 # 设备交互设置（Windows + macOS 均消费；顶层键为全局默认，
 # 可用 [device.<id>.interaction] 按设备覆盖，键名相同）：

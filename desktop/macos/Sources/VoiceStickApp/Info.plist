@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.3.9</string>
+	<string>2.4.7</string>
 	<key>CFBundleVersion</key>
-	<string>2.3.9</string>
+	<string>2.4.7</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
@@ -34,7 +34,7 @@
 	<key>SUFeedURL</key>
 	<string>https://dl.davenger.cloud/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>3JnsktQiuygz/L9+t9w2fnvryjWNH3yq5+o6Osed2aM=</string>
+	<string>edLoTxJwkX8YQvDk3uW0kq3xNPXVFJZs6r7DAsOTgzQ=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>

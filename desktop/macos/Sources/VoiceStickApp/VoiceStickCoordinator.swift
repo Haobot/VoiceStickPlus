@@ -181,6 +181,34 @@ final class VoiceStickCoordinator {
     private var encoderPendingPeripheralID: UUID?
     /// decide_window 到期冲刷定时器（pending 激活时 30ms 周期运行）。
     private var encoderRotateTimer: Timer?
+
+    /// 进行中的流式精修取消令牌（finishWithFinalText 建立新流前先 cancel 旧的）。
+    private var refinementCancelToken: RefineCancelToken?
+    /// 热词使用统计（hotword_usage.json，懒加载；仅主线程读写）。
+    private var hotwordUsageStore: HotwordUsageStore?
+
+    // ---- 体感鼠标状态（对齐 Windows air_mouse_active_devices_/air_mouse_states_）----
+    /// 每设备运动学状态（速度 v + 相对角度 theta + 最近 omega 采样与时间戳）。
+    private struct AirMouseDeviceState {
+        var kin = AirMouseKinState()
+        var lastOmegaX: Double = 0
+        var lastOmegaY: Double = 0
+        var lastOmegaAt = Date()
+        var thetaX: Double = 0
+        var thetaY: Double = 0
+    }
+    private var airMouseActiveDevices: Set<String> = []
+    private var airMouseStates: [String: AirMouseDeviceState] = [:]
+    private var airMouseTimer: Timer?
+    /// tick 周期 ~60Hz（对齐 Windows kAirMouseTickInterval=16ms，WM_TIMER 驱动）。
+    private static let airMouseTickInterval: TimeInterval = 16.0 / 1000.0
+    /// omega 超龄视为静止（固件 ~50Hz 上报；≥3× 帧周期容忍抖动与偶发丢帧，绝不误触发归零）。
+    private static let airMouseOmegaStaleAge: TimeInterval = 0.080
+    /// theta 积分上限（防异常累积）与 angle/omega 归零死区（对齐 Windows 常量）。
+    private static let airMouseMaxTheta: Double = 100.0
+    private static let airMouseAngleDeadzone: Double = 0.5
+    private static let airMouseOmegaDeadzone: Double = 2.0
+
     var onFirmwareUpdatePrompt: ((String, String, String, Bool) -> Void)?
     /// 注入路径发现无辅助功能权限（AppDelegate 接此回调弹引导窗；悬浮窗提示由协调器自带节流）。
     var onAccessibilityPermissionMissing: (() -> Void)?
@@ -266,6 +294,12 @@ final class VoiceStickCoordinator {
             self?.handleAudioFrame(frame, peripheralID: peripheralID)
         }
 
+        // 体感鼠标 motion 帧（state_tx 0x11，~50Hz）：仅更新 omega/积分 theta，
+        // 光标位移由 airMouseTick 统一驱动（对齐 Windows HandleMotionEvent/AirMouseTick 分工）。
+        ble.onMotionFrame = { [weak self] peripheralID, frame in
+            self?.handleMotionFrame(frame, peripheralID: peripheralID)
+        }
+
         configureASRCallbacks()
         ble.start()
         checkFirmwareUpdatesIfNeeded(force: false, showErrors: false)
@@ -276,6 +310,7 @@ final class VoiceStickCoordinator {
         audioEndTimeoutTimer?.invalidate()
         firmwareManifestRefreshTimer?.invalidate()
         encoderRotateTimer?.invalidate()
+        airMouseTimer?.invalidate()
     }
 
     func updateConfig(_ config: AppConfig) {
@@ -287,6 +322,7 @@ final class VoiceStickCoordinator {
             asr.onError = nil
             asr.onUpgradeURL = nil
             asr.cancel()
+            cancelStreamingRefinement()
             for cycle in subtitleCycles.values {
                 cycle.asr.cancel()
                 cycle.debugAudioRecorder.discard()
@@ -422,6 +458,8 @@ final class VoiceStickCoordinator {
         // 否则 ble.pairedDevicesProvider 读到的是启动时的旧快照，
         // RC 设备（靠 paired_device 条目反查 UUID 重连）在重启前永远连不上。
         config.pairedDevices = AppConfig.load().pairedDevices
+        // forget 后设备会断开重连：清理残留体感态，避免拦截重连后的主键录音（对齐 Windows）。
+        clearAirMouseForInactiveDevices(reason: "forget")
         statusController.setPairedDeviceIDs(deviceIDs)
         statusController.setConnectedDevices([])
         statusController.setStatus(deviceIDs.isEmpty ? "Pair a VoiceStick" : "Ready")
@@ -700,6 +738,12 @@ final class VoiceStickCoordinator {
         NSLog("Button click button=\(event.button ?? "nil") dev=VS-\(deviceID(for: peripheralID) ?? "unknown") session=\(event.sessionID.map(String.init) ?? "nil") duration_ms=\(event.durationMs.map(String.init) ?? "nil")")
         switch event.button {
         case "primary":
+            // 体感态：主键单击映射为鼠标左键，不走录音/字幕逻辑（对齐 Windows）。
+            if isAirMouseActive(deviceID: deviceID(for: peripheralID)) {
+                NSLog("air mouse primary click on VS-\(deviceID(for: peripheralID) ?? "unknown"), left button")
+                inputInjector.clickLeftButton()
+                return
+            }
             if handleFrontButtonDuringPendingPaste(peripheralID: peripheralID) {
                 return
             }
@@ -754,6 +798,11 @@ final class VoiceStickCoordinator {
     }
 
     private func handleSecondaryButtonClick(peripheralID: UUID) {
+        // 体感态已开：侧键单击退出体感（优先于其它语义，对齐 Windows）。
+        if let deviceID = deviceID(for: peripheralID), isAirMouseActive(deviceID: deviceID) {
+            _ = toggleAirMouse(deviceID: deviceID)
+            return
+        }
         if activeSubtitleSessions[peripheralID] != nil {
             cancelSubtitleCycle(peripheralID: peripheralID, reason: "secondary_cancel")
             return
@@ -792,6 +841,173 @@ final class VoiceStickCoordinator {
             BleProtocol.encoderRecordingGatePayload(enabled: enc.pressAction == .recording),
             label: "encoder_recording_gate", deviceID: deviceID
         )
+    }
+
+    // MARK: - 体感鼠标（对齐 Windows ToggleAirMouse/HandleMotionEvent/AirMouseTick）
+
+    func isAirMouseActive(deviceID: String?) -> Bool {
+        guard let deviceID else { return false }
+        return airMouseActiveDevices.contains(deviceID)
+    }
+
+    /// 切换指定设备的体感态。进入：通知固件校准零偏并上报 motion + 设备显示体感态提示
+    /// （主键变鼠标左键，避免不知情误判「按下没反应」）；退出：停表 + 恢复 ready。
+    @discardableResult
+    func toggleAirMouse(deviceID: String) -> Bool {
+        if isAirMouseActive(deviceID: deviceID) {
+            airMouseActiveDevices.remove(deviceID)
+            airMouseStates.removeValue(forKey: deviceID)
+            ble.sendStickControlPayload(
+                BleProtocol.airMouseEnabledPayload(enabled: false),
+                label: "air_mouse_enabled(false)", deviceID: deviceID
+            )
+            if let peripheralID = ble.peripheralID(forDeviceID: deviceID) {
+                ble.sendUIState("ready", to: peripheralID)
+            }
+            statusController.setAirMouseActive(false, deviceID: deviceID)
+            NSLog("air mouse disabled on VS-\(deviceID)")
+            stopAirMouseTimerIfIdle()
+            return false
+        }
+        airMouseActiveDevices.insert(deviceID)
+        // lastOmegaAt 初始化为当下，防止首次积分 dt 爆炸（对齐 Windows）。
+        airMouseStates[deviceID] = AirMouseDeviceState(lastOmegaAt: Date())
+        ble.sendStickControlPayload(
+            BleProtocol.airMouseEnabledPayload(enabled: true),
+            label: "air_mouse_enabled(true)", deviceID: deviceID
+        )
+        if let peripheralID = ble.peripheralID(forDeviceID: deviceID) {
+            ble.sendUIState("air_mouse", to: peripheralID)
+        }
+        statusController.setAirMouseActive(true, deviceID: deviceID)
+        NSLog("air mouse enabled on VS-\(deviceID)")
+        startAirMouseTimerIfNeeded()
+        return true
+    }
+
+    private func startAirMouseTimerIfNeeded() {
+        guard airMouseTimer == nil else { return }
+        airMouseTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.airMouseTickInterval, repeats: true
+        ) { [weak self] _ in
+            self?.airMouseTick()
+        }
+    }
+
+    private func stopAirMouseTimerIfIdle() {
+        if airMouseStates.isEmpty {
+            airMouseTimer?.invalidate()
+            airMouseTimer = nil
+        }
+    }
+
+    /// 运行期参数组装（对齐 Windows AirMouseParamsForDevice）：灵敏度按设备取
+    /// （gain = sensitivity × 48，P1 去双重缩放标定），其余进阶参数走全局配置。
+    private func airMouseParams(forDevice deviceID: String) -> AirMouseParams {
+        var params = AirMouseParams()
+        let inter = config.interactionSettings(for: deviceID)
+        params.gainX = Double(inter.airMouseSensitivityX) * 48.0
+        params.gainY = Double(inter.airMouseSensitivityY) * 48.0
+        params.tau = config.airMouse.tau
+        params.invertY = config.airMouse.invertY
+        params.curve = AirMouseKin.curveClamp(AirMouseCurveParams(
+            lowThresh: config.airMouse.curveLowThresh,
+            highThresh: config.airMouse.curveHighThresh,
+            lowFactor: config.airMouse.curveLowFactor,
+            highFactor: config.airMouse.curveHighFactor
+        ))
+        params.controlMode = AirMouseControlMode.fromName(config.airMouse.controlMode)
+        params.neutralDeadzone = config.airMouse.neutralDeadzone
+        params.rateGain = config.airMouse.rateGain
+        params.rateFriction = config.airMouse.rateFriction
+        params.rateMaxSpeed = config.airMouse.rateMaxSpeed
+        return params
+    }
+
+    /// motion 帧入口：仅在该设备处于体感态时更新 omega 并积分 theta；光标位移由
+    /// airMouseTick 统一驱动（~50Hz 固件上报与 60Hz 桌面 tick 分工，对齐 Windows）。
+    private func handleMotionFrame(_ frame: MotionFrame, peripheralID: UUID) {
+        guard let deviceID = deviceID(for: peripheralID),
+              isAirMouseActive(deviceID: deviceID),
+              var state = airMouseStates[deviceID] else { return }
+
+        // theta = 对 omega 积分（dt 用 tick 周期估计，避免 BLE 帧率抖动致 dt≈0），
+        // 供 rate 飞行摇杆模式；angle 模式用瞬时 omega，不依赖 theta。
+        let dt = Self.airMouseTickInterval
+        state.thetaX += Double(frame.dx) * dt
+        state.thetaY += Double(frame.dy) * dt
+        state.thetaX = min(max(state.thetaX, -Self.airMouseMaxTheta), Self.airMouseMaxTheta)
+        state.thetaY = min(max(state.thetaY, -Self.airMouseMaxTheta), Self.airMouseMaxTheta)
+
+        state.lastOmegaX = Double(frame.dx)
+        state.lastOmegaY = Double(frame.dy)
+        state.lastOmegaAt = Date()
+        airMouseStates[deviceID] = state
+    }
+
+    /// 60Hz tick：速度环驱动光标（对齐 Windows AirMouseTick）。固定 dt = tick 周期；
+    /// omega 超龄（stale）归零输入，速度环经 tau 滑行停止（防断帧仍持续移动）。
+    private func airMouseTick() {
+        guard !airMouseStates.isEmpty else { return }
+        let now = Date()
+        for (deviceID, state) in airMouseStates {
+            var state = state
+            let params = airMouseParams(forDevice: deviceID)
+            let omegaAge = now.timeIntervalSince(state.lastOmegaAt)
+            let stale = omegaAge > Self.airMouseOmegaStaleAge
+            if stale {
+                state.lastOmegaX = 0
+                state.lastOmegaY = 0
+            }
+            // 回到中立区（theta/omega 都很小）或 stale 时归零 theta，实现「回正即停」。
+            if stale ||
+                (abs(state.thetaX) < Self.airMouseAngleDeadzone &&
+                 abs(state.thetaY) < Self.airMouseAngleDeadzone &&
+                 abs(state.lastOmegaX) < Self.airMouseOmegaDeadzone &&
+                 abs(state.lastOmegaY) < Self.airMouseOmegaDeadzone) {
+                state.thetaX = 0
+                state.thetaY = 0
+            }
+
+            var input = AirMouseInput()
+            if params.controlMode == .angle {
+                // angle 模式速度命令用瞬时 omega（theta 无限增长会正反馈失控，P0 修复）。
+                input.valueX = Int(state.lastOmegaX)
+                input.valueY = Int(state.lastOmegaY)
+            } else {
+                // rate 模式 theta 控制光标速度变化率（回中后速度保持 + 摩擦衰减）。
+                input.valueX = Int(state.thetaX)
+                input.valueY = Int(state.thetaY)
+                input.isAngle = true
+            }
+
+            let result = AirMouseKin.step(
+                &state.kin,
+                input: input,
+                dtSeconds: Self.airMouseTickInterval,
+                inputIsStale: stale,
+                params: params
+            )
+            airMouseStates[deviceID] = state
+            if result.dx != 0 || result.dy != 0 {
+                inputInjector.moveMouse(dx: result.dx, dy: result.dy)
+            }
+        }
+    }
+
+    /// 断连/遗忘设备的体感态必须清理，否则残留激活会拦截重连后的主键录音（对齐 Windows）。
+    private func clearAirMouseForInactiveDevices(reason: String) {
+        for deviceID in airMouseActiveDevices where !ble.isConnected(deviceID: deviceID) {
+            airMouseActiveDevices.remove(deviceID)
+            airMouseStates.removeValue(forKey: deviceID)
+            ble.sendStickControlPayload(
+                BleProtocol.airMouseEnabledPayload(enabled: false),
+                label: "air_mouse_enabled(false)", deviceID: deviceID
+            )
+            statusController.setAirMouseActive(false, deviceID: deviceID)
+            NSLog("air mouse disabled on VS-\(deviceID) (\(reason))")
+        }
+        stopAirMouseTimerIfIdle()
     }
 
     // MARK: - 编码器按键事件（对齐 Windows HandleEncoderButton{Down,Up,Click,DoubleClick}）
@@ -869,8 +1085,10 @@ final class VoiceStickCoordinator {
     private func handleTapEvent(_ event: StateEvent, peripheralID: UUID) {
         // 总开关关闭则忽略（按设备取有效配置）。
         guard config.interactionSettings(for: deviceID(for: peripheralID)).tapToArrow else { return }
-        // 录音中或识别中忽略敲击，避免震动干扰当前语音周期（macOS 无体感鼠标，
-        // 无 IsAirMouseActive 分支）。与双击主键不同：tap 不取消录音/识别，仅在不冲突时注入方向键。
+        // 体感态忽略敲击，避免与体感移动/点击冲突（对齐 Windows）。
+        if isAirMouseActive(deviceID: deviceID(for: peripheralID)) { return }
+        // 录音中或识别中忽略敲击，避免震动干扰当前语音周期。
+        // 与双击主键不同：tap 不取消录音/识别，仅在不冲突时注入方向键。
         if mainInputState.isRecording || mainInputState.isFinalizing {
             return
         }
@@ -901,8 +1119,9 @@ final class VoiceStickCoordinator {
         let enc = config.encoderSettings(for: deviceID)
         // 总开关关闭则忽略。
         guard enc.toArrow else { return }
-        // 录音中或识别中忽略旋转，避免干扰当前语音周期（门控与 tap 一致；
-        // macOS 无体感鼠标，无 IsAirMouseActive 分支）。
+        // 体感态忽略旋转，避免与体感移动/点击冲突（固件侧也有体感门控，双保险）。
+        if isAirMouseActive(deviceID: deviceID) { return }
+        // 录音中或识别中忽略旋转，避免干扰当前语音周期（门控与 tap 一致）。
         if mainInputState.isRecording || mainInputState.isFinalizing {
             return
         }
@@ -1064,6 +1283,8 @@ final class VoiceStickCoordinator {
     }
 
     private func handlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID) {
+        // 体感态：主键长按/按下不启动录音（点击由 button_click 映射为左键，对齐 Windows）。
+        if isAirMouseActive(deviceID: deviceID(for: peripheralID)) { return }
         if config.defaultOutputProfile.target == .subtitle {
             handleSubtitlePrimaryButtonDown(sessionID: sessionID, peripheralID: peripheralID)
             return
@@ -1481,16 +1702,55 @@ final class VoiceStickCoordinator {
 
     private func finishWithFinalText(_ text: String) {
         guard !pastedFinalText else { return }
-        // LLM 精修（对齐 Windows refine_enabled 语义）：final 原文先经 LLM 改写，
-        // overlay 进 refining 态（三点跳动 + 原文）；失败/热词丢失回退原文。
+        // LLM 流式精修（对齐 Windows RefineStream 语义）：final 原文先经 LLM 改写，
+        // overlay 进 refining 态后 token 增量追加（~60ms 节流）；失败/热词丢失回退原文，
+        // SSE 失败客户端内部自动回退非流式。
         if config.refineEnabled, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             statusController.showRefining(text, deviceID: activeDeviceID)
-            refiner.refine(text, hotwords: config.asrHotwords) { [weak self] refined in
-                DispatchQueue.main.async {
-                    guard let self, !self.pastedFinalText else { return }
-                    self.finishWithRefinedText(refined ?? text)
+            cancelStreamingRefinement()
+            let token = RefineCancelToken()
+            refinementCancelToken = token
+            let overlayDeviceID = activeDeviceID
+            // 节流状态（onToken 串行到达于 URLSession 线程，仅此处读写）。
+            var accumulated = ""
+            var lastUpdateAt = Date.distantPast
+            refiner.refineStream(
+                text,
+                promptOverride: config.refinePrompt,
+                hotwords: hotwordsForLlmPrompts(),
+                cancel: token,
+                onToken: { [weak self] delta in
+                    guard let self, !token.isCancelled, !self.pastedFinalText else { return }
+                    accumulated += delta
+                    let now = Date()
+                    guard now.timeIntervalSince(lastUpdateAt) >= 0.06 else { return }
+                    lastUpdateAt = now
+                    let snapshot = accumulated
+                    DispatchQueue.main.async {
+                        guard !token.isCancelled, !self.pastedFinalText else { return }
+                        self.statusController.appendPartial(snapshot, deviceID: overlayDeviceID)
+                    }
+                },
+                onComplete: { [weak self] ok, result in
+                    DispatchQueue.main.async {
+                        guard let self, !token.isCancelled, !self.pastedFinalText else { return }
+                        self.refinementCancelToken = nil
+                        if ok, !result.isEmpty,
+                           LLMRefinementClient.resultKeepsHotwords(
+                               original: text, refined: result, hotwords: self.config.asrHotwords
+                           ) {
+                            // 用最终累积文本做最后一次 UI 刷新。
+                            self.statusController.showPartial(result, deviceID: overlayDeviceID)
+                            self.finishWithRefinedText(result)
+                        } else {
+                            if ok, !result.isEmpty {
+                                NSLog("refine corrupted a hotword present in ASR text; falling back to original")
+                            }
+                            self.finishWithRefinedText(text)
+                        }
+                    }
                 }
-            }
+            )
             return
         }
         finishWithRefinedText(text)
@@ -1498,6 +1758,9 @@ final class VoiceStickCoordinator {
 
     private func finishWithRefinedText(_ text: String) {
         guard !pastedFinalText else { return }
+        // 热词使用统计：最终文本（精修或原文）中命中的热词计数 + 刷新时间戳
+        //（对齐 Windows RecordHotwordUsageFromText；仅主线程调用，无锁）。
+        recordHotwordUsage(fromText: text)
         let profile = outputProfile(for: activeDeviceID)
         if profile.target == .subtitle {
             pastedFinalText = true
@@ -1740,13 +2003,55 @@ final class VoiceStickCoordinator {
         translator.translate(
             text,
             targetLanguage: profile.translationTarget,
-            hotwords: config.asrHotwords
+            hotwords: hotwordsForLlmPrompts()
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard self != nil else { return }
                 completion(result)
             }
         }
+    }
+
+    // MARK: - 流式精修取消与热词使用统计（对齐 Windows CancelStreamingRefinement /
+    // HotwordsForLlmPrompts / RecordHotwordUsageFromText）
+
+    /// 取消进行中的流式精修（新会话开始/取消识别/配置热更新时调用；仅主线程）。
+    private func cancelStreamingRefinement() {
+        refinementCancelToken?.cancel()
+        refinementCancelToken = nil
+    }
+
+    private var hotwordUsageURL: URL {
+        AppConfig.configDirectory.appendingPathComponent("hotword_usage.json")
+    }
+
+    /// 精修/翻译 prompt 热词段：评分 top-50（高频 × 新近度 × 手动加权，对齐 Windows
+    /// HotwordsForLlmPrompts——防大库稀释小模型注意力；ASR 通道热词不受此裁剪）。
+    private func hotwordsForLlmPrompts() -> [String] {
+        if hotwordUsageStore == nil {
+            hotwordUsageStore = HotwordSelector.loadUsage(url: hotwordUsageURL)
+        }
+        return HotwordSelector.trimForPrompt(
+            hotwordUsageStore ?? [:],
+            hotwords: config.asrHotwords,
+            maxWords: kHotwordPromptMaxWords,
+            nowS: Int64(Date().timeIntervalSince1970)
+        )
+    }
+
+    /// 最终文本命中热词的计数与时间戳刷新（大小写不敏感子串匹配），立即落盘。
+    private func recordHotwordUsage(fromText text: String) {
+        guard !text.isEmpty, !config.asrHotwords.isEmpty else { return }
+        if hotwordUsageStore == nil {
+            hotwordUsageStore = HotwordSelector.loadUsage(url: hotwordUsageURL)
+        }
+        var store = hotwordUsageStore ?? [:]
+        HotwordSelector.recordUsage(
+            &store, text: text, hotwords: config.asrHotwords,
+            nowS: Int64(Date().timeIntervalSince1970)
+        )
+        hotwordUsageStore = store
+        HotwordSelector.saveUsage(store, url: hotwordUsageURL)
     }
 
     private func finishWithASRError(_ message: String) {
@@ -1923,6 +2228,7 @@ final class VoiceStickCoordinator {
     }
 
     private func cancelRecognitionInProgress() {
+        cancelStreamingRefinement()
         cancelAudioEndTimeout()
         asr.cancel()
         pendingPasteState = .idle
@@ -1934,6 +2240,8 @@ final class VoiceStickCoordinator {
     }
 
     private func cancelActiveCycleIfDeviceDisconnected() {
+        // 断连设备的体感态清理（对齐 Windows CancelActiveCycleIfDeviceDisconnected）。
+        clearAirMouseForInactiveDevices(reason: "disconnected")
         let disconnectedSubtitleKeys = subtitleCycles.keys.filter { !ble.isConnected($0.peripheralID) }
         for key in disconnectedSubtitleKeys {
             guard let cycle = subtitleCycles[key] else { continue }

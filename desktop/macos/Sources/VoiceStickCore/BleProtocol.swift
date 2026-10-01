@@ -152,6 +152,19 @@ public struct PowerMgmtEvent {
     }
 }
 
+/// 体感鼠标 motion 帧（state_tx 上行，二进制小帧，对齐 Windows MotionEvent/ParseMotionFrame）：
+/// 固定 6 字节 `version=1 + type=0x11 + int16LE dx + int16LE dy`，固件在体感态以
+/// ~50Hz 上报陀螺角速率（dps × REPORT_GAIN=4）。
+public struct MotionFrame: Equatable {
+    public let dx: Int16
+    public let dy: Int16
+
+    public init(dx: Int16, dy: Int16) {
+        self.dx = dx
+        self.dy = dy
+    }
+}
+
 public struct FirmwareOTAStateEvent: Decodable {
     public let event: String
     public let transferID: UInt32?
@@ -257,6 +270,18 @@ public enum BleProtocol {
         return PowerMgmtEvent.decode(jsonPayload: payload)
     }
 
+    /// state_tx 帧类型：体感鼠标 motion 帧（对齐 Windows state_type_motion）。
+    public static let stateTypeMotion: UInt8 = 0x11
+
+    /// 解析体感鼠标 motion 帧（对齐 Windows ParseMotionFrame）：
+    /// 固定 6 字节 `version(1) + type(0x11) + int16LE dx + int16LE dy`。
+    public static func parseMotionFrame(_ data: Data) -> MotionFrame? {
+        guard data.count >= 6, data[0] == 1, data[1] == stateTypeMotion else { return nil }
+        let dx = Int16(bitPattern: UInt16(littleEndianBytes: data[2..<4]))
+        let dy = Int16(bitPattern: UInt16(littleEndianBytes: data[4..<6]))
+        return MotionFrame(dx: dx, dy: dy)
+    }
+
     public static func parseFirmwareOTAStateEvent(_ data: Data) -> FirmwareOTAStateEvent? {
         guard data.count >= 4, data[0] == 1, data[1] == otaTypeState else { return nil }
         let payloadLength = Int(UInt16(littleEndianBytes: data[2..<4]))
@@ -301,6 +326,17 @@ public enum BleProtocol {
             "event": "gateway_keymap_set",
             "key": key,
             "route": route
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// 体感鼠标开关帧（对齐 Windows AirMouseEnabledPayload）：
+    /// `{"event":"air_mouse_enabled","enabled":bool}`。固件开启时校准零偏并开始
+    /// ~50Hz 上报 motion 帧，关闭时停表。
+    public static func airMouseEnabledPayload(enabled: Bool) -> Data {
+        let payload: [String: Any] = [
+            "event": "air_mouse_enabled",
+            "enabled": enabled
         ]
         return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
     }

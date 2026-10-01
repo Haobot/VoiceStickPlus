@@ -1,7 +1,27 @@
 import Foundation
+import VoiceStickCore
+
+/// 流式精修取消令牌（线程安全；协调器 UI 线程 cancel，URLSession 回调线程查询）。
+final class RefineCancelToken {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelled = true
+    }
+}
 
 /// ASR 文本精修客户端（对齐 Windows llm_refinement_client.cc）：OpenAI 兼容
-/// chat/completions，非流式一次取回；best-effort——任何失败/热词丢失都回退原文。
+/// chat/completions。精修走 SSE 流式（onToken 增量 + 失败自动回退非流式 refine()）；
+/// best-effort——任何失败/热词丢失都回退原文。
 final class LLMRefinementClient {
     private let config: AppConfig
     private let session: URLSession
@@ -11,38 +31,71 @@ final class LLMRefinementClient {
         self.session = session
     }
 
-    /// 精修文本。completion 参数为精修结果；失败或热词被吞时回传 nil（调用侧回退原文）。
-    func refine(_ text: String, hotwords: [String], completion: @escaping (String?) -> Void) {
-        let apiKey = config.llmAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !apiKey.isEmpty, let url = chatCompletionsURL() else {
-            completion(nil)
+    /// 流式精修（对齐 Windows RefineStream）：请求带 "stream":true，逐 token 回调
+    /// onToken（URLSession 回调线程，调用方自行节流/切主线程）；完成回调
+    /// onComplete(ok, fullText)——SSE 失败（服务端不支持 stream/网络断）自动回退
+    /// 非流式 refine()，再失败回传 ok=false。
+    func refineStream(
+        _ text: String,
+        promptOverride: String = "",
+        hotwords: [String]? = nil,
+        cancel: RefineCancelToken,
+        onToken: @escaping (String) -> Void,
+        onComplete: @escaping (Bool, String) -> Void
+    ) {
+        let effectiveHotwords = hotwords ?? config.asrHotwords
+        guard let request = makeRequest(
+            text: text, promptOverride: promptOverride, hotwords: effectiveHotwords, stream: true
+        ) else {
+            onComplete(false, "")
             return
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 8
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        var payload: [String: Any] = [
-            "model": config.llmModel,
-            "temperature": 0,
-            "messages": [
-                ["role": "system", "content": Self.buildPrompt(override: config.refinePrompt, hotwords: hotwords)],
-                ["role": "user", "content": text]
-            ]
-        ]
-        // 关闭推理型模型深度思考（对齐 Windows：两种风格都发，DashScope/Qwen 兼容 +
-        // vLLM/SGLang chat_template_kwargs）。
-        if config.llmDisableThinking {
-            payload["enable_thinking"] = false
-            payload["chat_template_kwargs"] = ["enable_thinking": false]
+        Task { [session] in
+            do {
+                let (bytes, _) = try await session.bytes(for: request)
+                var full = ""
+                for try await line in bytes.lines {
+                    if cancel.isCancelled { return }
+                    switch LlmSseParser.parseLine(line) {
+                    case .token(let token):
+                        full += token
+                        onToken(token)
+                    case .done:
+                        onComplete(true, full)
+                        return
+                    case .none:
+                        break
+                    }
+                }
+                // 流自然结束（部分兼容端不发 [DONE]）。
+                if cancel.isCancelled { return }
+                onComplete(true, full)
+            } catch {
+                if cancel.isCancelled { return }
+                // SSE 失败回退非流式精修（对齐 Windows on_error → Refine）。
+                self.refine(text, promptOverride: promptOverride, hotwords: effectiveHotwords) { refined in
+                    if let refined {
+                        onComplete(true, refined)
+                    } else {
+                        onComplete(false, "")
+                    }
+                }
+            }
         }
+    }
 
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        } catch {
+    /// 精修文本。completion 参数为精修结果；失败或热词被吞时回传 nil（调用侧回退原文）。
+    func refine(
+        _ text: String,
+        promptOverride: String = "",
+        hotwords: [String]? = nil,
+        completion: @escaping (String?) -> Void
+    ) {
+        let effectiveHotwords = hotwords ?? config.asrHotwords
+        guard let request = makeRequest(
+            text: text, promptOverride: promptOverride, hotwords: effectiveHotwords, stream: false
+        ) else {
             completion(nil)
             return
         }
@@ -61,12 +114,46 @@ final class LLMRefinementClient {
             // 热词保护：原文中已正确出现的热词在精修结果里必须原样保留
             //（对齐 Windows RefineResultKeepsHotwords），否则视为精修失败回退原文。
             guard !refined.isEmpty,
-                  Self.resultKeepsHotwords(original: text, refined: refined, hotwords: hotwords) else {
+                  Self.resultKeepsHotwords(original: text, refined: refined, hotwords: effectiveHotwords) else {
                 completion(nil)
                 return
             }
             completion(refined)
         }.resume()
+    }
+
+    private func makeRequest(
+        text: String, promptOverride: String, hotwords: [String], stream: Bool
+    ) -> URLRequest? {
+        let apiKey = config.llmAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty, let url = chatCompletionsURL() else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        // 流式场景 timeoutInterval 为空闲超时（有数据到达即重置），8s 覆盖 token 间隙。
+        request.timeoutInterval = 8
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var payload: [String: Any] = [
+            "model": config.llmModel,
+            "temperature": 0,
+            "messages": [
+                ["role": "system", "content": Self.buildPrompt(override: promptOverride, hotwords: hotwords)],
+                ["role": "user", "content": text]
+            ]
+        ]
+        if stream {
+            payload["stream"] = true
+        }
+        // 关闭推理型模型深度思考（对齐 Windows：两种风格都发，DashScope/Qwen 兼容 +
+        // vLLM/SGLang chat_template_kwargs）。
+        if config.llmDisableThinking {
+            payload["enable_thinking"] = false
+            payload["chat_template_kwargs"] = ["enable_thinking": false]
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        return request
     }
 
     private func chatCompletionsURL() -> URL? {
