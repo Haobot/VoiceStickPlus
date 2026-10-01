@@ -24,6 +24,12 @@ on:
     branches:
       - "ci/publish-stage-v*"
       - "ci/publish-finalize-v*"
+      - "feat/stick-gateway"
+    paths:
+      - "dist/**"
+      - "RELEASE_NOTES.md"
+      - "FINALIZE"
+      - ".publish-finalize"
 
 permissions:
   contents: write
@@ -141,7 +147,10 @@ jobs:
 
   finalize:
     name: Website refresh + COS site presign
-    if: startsWith(github.ref_name, 'ci/publish-finalize-')
+    # 两条触发路径：ci/publish-finalize-* 标记分支；或 feat/stick-gateway 上
+    # .publish-finalize 标记文件变化（Pages environment 部署分支保护只放行
+    # 主发布分支——ci/* 分支直接部署会 2 秒内 startup failure，2026-10-02 实测）。
+    if: startsWith(github.ref_name, 'ci/publish-finalize-') || github.ref_name == 'feat/stick-gateway'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
