@@ -129,14 +129,15 @@ jobs:
           print(f"presigned {len(objects)} objects")
           PY
 
-      - name: Commit URL manifest back
+      - name: Publish URL manifest as release asset
+        # 清单以 Release 资产下发（Mac 侧匿名可下载）。git push 回写在 GITHUB_TOKEN
+        # 下曾被拒（2026-10-02 首跑实测），资产通道更稳且免去分支同步。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cos-urls.json
-          git commit -m "cos presign ${TAG} (stage)"
-          git push
+          cp cos-urls.json "cos-presign-${TAG}.json"
+          gh release upload "${TAG}" "cos-presign-${TAG}.json" --clobber
 
   finalize:
     name: Website refresh + COS site presign
@@ -321,11 +322,11 @@ jobs:
           print(f"presigned {len(objects)} site objects, {len(deletes)} deletes")
           PY
 
-      - name: Commit site URL manifest back
+      - name: Publish site URL manifest as release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cos-site-urls.json
-          git commit -m "cos presign site (finalize)"
-          git push
+          TAG="$(gh release view --json tagName -q .tagName)"
+          cp cos-site-urls.json "cos-site-presign-${TAG}.json"
+          gh release upload "${TAG}" "cos-site-presign-${TAG}.json" --clobber
