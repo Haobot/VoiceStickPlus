@@ -120,3 +120,20 @@ macOS 对暴露为「键盘类」的 HID 设备（usage page 键盘/消费控制
 3. **新版 macOS 特性**：`find-identity -p codesigning` 不再把自签证书列为 valid identity（输出 0 valid 属正常）；按证书名 `codesign -s "CN"` 签名、`codesign --verify --strict` 验签均正常。脚本里探测证书/私钥要用 `security find-certificate -c` + `security find-key -l`，不能依赖 find-identity。
 4. **空密码 p12 陷阱**：`openssl pkcs12 -export -passout pass:`（空密码）生成的 p12 会被 `security import` 以 `MAC verification failed` 拒收；给任意非空密码、导入时 `-P` 传入即可。
 5. **自签证书只认登录钥匙串**：导入自定义钥匙串（`security create-keychain` + `set-key-partition-list` + `add-trusted-cert` 全套）依然 0 valid identity、无法签名；放登录钥匙串才生效。
+
+## 追加：换机后无人值守签名链定案——登录钥匙串 ACL 死锁，自建钥匙串 + 显式 --keychain 可用（2026-10-02）
+
+场景：换机重建签名链（本机此前无 `~/.voicestick-sign/`）。按 2026-09-22 配方 `security import sign.p12 -T /usr/bin/codesign` 导入登录钥匙串后，**`codesign --sign` 无限挂起**（0 CPU，SecurityAgent 进程在场）——登录钥匙串中新建私钥首次被 codesign 访问会弹 ACL 授权 GUI，无人值守无法放行，且 `security import -A`（允许任意应用）同样被拦（新版 securityd 强制 partition ID 校验）。`set-key-partition-list` 需要用户钥匙串密码，深夜无人值守不可行。
+
+**修正 2026-09-22 结论 5「自签证书只认登录钥匙串」**：该结论过时/不完整。定案配方（2026-10-02 macOS 27 实测，签名+验签通过、app 冒烟启动正常）：
+
+1. `security create-keychain -p <自定密码>` 自建钥匙串（密码已知 → 可非交互操作）。
+2. `security set-keychain-settings -lut 999999`（防自动锁定）+ `unlock-keychain`。
+3. `security import sign.p12 -k <自建钥匙串> -P <p12密码> -T /usr/bin/codesign`。
+4. `security set-key-partition-list -S apple-tool:,apple:,codesign: -k <自定密码> <自建钥匙串>`（这一步在自建钥匙串上**不需要用户密码**，是整条链的关键）。
+5. 签名时**必须显式** `codesign --keychain <自建钥匙串路径> --sign "CN"`——不加 `--keychain` 时 codesign 只搜钥匙串搜索列表，找不到身份（或命中登录钥匙串里的残留身份继续挂死）。
+6. 登录钥匙串中若已导入过同 CN 身份，务必删除（`security delete-identity -c <CN> login.keychain-db`），否则不带 `--keychain` 的签名调用会命中它并挂死。
+
+判据（下次快速识别）：`codesign` 长时间 0 CPU 挂起 + `ps` 有 `SecurityAgent` = 钥匙串 ACL 授权弹窗在等人；不是死锁也不是证书问题。
+
+工程化：`scripts/build-macos.sh` 新增 `VOICESTICK_CODESIGN_KEYCHAIN` env（sign 追加 `--keychain`）；`scripts/make-dmg.sh` 新增「已带有效非 ad-hoc 签名则跳过重签」（旧逻辑会把自签产物降级为 ad-hoc + `--options runtime` → Sparkle 库校验崩溃，即 2026-09-22 修复过的同一坑的死而复生）。本机资产与密码见 `~/.voicestick-sign/README.md`（不入仓库）。
