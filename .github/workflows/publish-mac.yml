@@ -322,11 +322,15 @@ jobs:
           print(f"presigned {len(objects)} site objects, {len(deletes)} deletes")
           PY
 
-      - name: Publish site URL manifest as release asset
+      - name: Publish site dist + URL manifest as release assets
+        # dist 以 zip 资产下发：Mac 侧本地重建 dist 的产物哈希可能与 CI 不同
+        #（预签名键按文件名钉死），必须用 CI 构建的原始字节上传。
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="$(gh release view --json tagName -q .tagName)"
           cp cos-site-urls.json "cos-site-presign-${TAG}.json"
-          gh release upload "${TAG}" "cos-site-presign-${TAG}.json" --clobber
+          (cd website && zip -qr "$RUNNER_TEMP/cos-site-dist-${TAG}.zip" dist)
+          gh release upload "${TAG}" "cos-site-presign-${TAG}.json" \
+            "$RUNNER_TEMP/cos-site-dist-${TAG}.zip" --clobber
