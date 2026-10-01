@@ -154,10 +154,22 @@ fi
 # 注意：新版 macOS 的 find-identity -p codesigning 不把自签证书列为 valid
 # identity，但 codesign --sign 按证书名仍可正常解析签名，故用 find-certificate
 # + find-key 探测证书与私钥是否存在。
+# 无人值守（CI/深夜自动发布）：登录钥匙串的私钥首次被 codesign 访问会弹
+# SecurityAgent ACL 授权且无法非交互放行（set-key-partition-list 需要用户密码）。
+# 解法 = VOICESTICK_CODESIGN_KEYCHAIN 指向自建钥匙串（密码已知，已对其
+# set-key-partition-list），本脚本对 sign 追加 --keychain。2026-10-02 实测：
+# 自建钥匙串 + 显式 --keychain 可正常签名/验签（旧结论「只认登录钥匙串」过时）。
 CODESIGN_IDENTITY="-"
-CODESIGN_EXTRA_FLAGS=(--deep --force --options runtime)
+CODESIGN_EXTRA_FLAGS=(--deep --force)
+CODESIGN_KEYCHAIN_ARGS=()
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
     CODESIGN_IDENTITY="$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')"
+elif [ -n "${VOICESTICK_CODESIGN_KEYCHAIN:-}" ] && [ -f "$VOICESTICK_CODESIGN_KEYCHAIN" ] \
+    && security find-certificate -c "$VOICESTICK_DEV_IDENTITY" "$VOICESTICK_CODESIGN_KEYCHAIN" >/dev/null 2>&1; then
+    CODESIGN_IDENTITY="$VOICESTICK_DEV_IDENTITY"
+    CODESIGN_KEYCHAIN_ARGS=(--keychain "$VOICESTICK_CODESIGN_KEYCHAIN")
+    # 自签证书没有 Apple Team ID，同 ad-hoc 一样不能带 --options runtime。
+    CODESIGN_EXTRA_FLAGS=(--deep --force)
 elif security find-certificate -c "$VOICESTICK_DEV_IDENTITY" >/dev/null 2>&1 \
     && security find-key -l "$VOICESTICK_DEV_IDENTITY" >/dev/null 2>&1; then
     CODESIGN_IDENTITY="$VOICESTICK_DEV_IDENTITY"
@@ -176,7 +188,7 @@ if [ "$CODESIGN_IDENTITY" = "-" ]; then
 else
     echo "Using: $CODESIGN_IDENTITY"
 fi
-codesign "${CODESIGN_EXTRA_FLAGS[@]}" --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+codesign "${CODESIGN_EXTRA_FLAGS[@]}" --sign "$CODESIGN_IDENTITY" "${CODESIGN_KEYCHAIN_ARGS[@]}" "$APP_DIR"
 
 echo "Verifying app signature..."
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"

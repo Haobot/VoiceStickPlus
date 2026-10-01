@@ -15,6 +15,19 @@ The Windows package is the special case because the signing certificate is local
 
 In both cases, finish by redeploying the website and verifying all update URLs.
 
+## macOS-only Release Round (unattended CI rail, from the Mac)
+
+For rounds that ship macOS changes only (Windows MSI and firmware unchanged functionally; firmware is still rebuilt because `firmware/version.txt` is version-inlined). Execution machine = a Mac with SSH push access but **no gh PAT / no COS credentials** — the CI acts as the publishing proxy (`.github/workflows/publish-mac.yml`):
+
+1. Package on the Mac: `SPARKLE_PRIVATE_ED_KEY="$(cat ~/.voicestick-sign/sparkle/ed-private-key)" VOICESTICK_ARCHS=arm64 scripts/build-macos.sh --release` (needs proxy env — separate scratch path re-fetches SwiftPM deps) + `scripts/make-dmg.sh` + `shasum -a 256` for zip/dmg. Verify `codesign --verify --deep --strict` passed and the `.signature` file is non-empty.
+2. Commit + push `feat/stick-gateway`, then push tag `v<version>` (triggers `release.yml` firmware verification gate; CI `ci.yml` runs mac/win/firmware builds + tests on the branch push). Poll both to **completed success** (anonymous `api.github.com` works from the Mac with the proxy).
+3. Prepare branch `ci/publish-stage-v<version>` from the release branch containing `dist/` (mac zip + `.signature` + `.sha256` + dmg + dmg sha256) and `RELEASE_NOTES.md`; push it. The stage job creates/updates the GitHub Release (mac assets + firmware assets pulled from the release.yml artifact, P0-4 scan with `--allow-builtin`) and commits `cos-urls.json` (presigned PUT URLs, 2h TTL) back to the branch.
+4. On the Mac: fetch the branch, PUT each listed local file to its presigned URL (Mac is domestic → COS ap-shanghai uplink is fast), verify with `HEAD` + sha256.
+5. Push marker branch `ci/publish-finalize-v<version>` (contains file `FINALIZE`). The finalize job refreshes appcast (macOS item added; Windows item keeps the last MSI release), regenerates `downloads.json`, syncs firmware to Pages, deploys Pages, then builds the site with `--base=/` and commits `cos-site-urls.json` (whole-site PUT list + stale `firmware/latest/` bin DELETE list).
+6. On the Mac: PUT all site files, DELETE the stale keys, run the final verification checklist (appcast version + mac enclosure on COS, `software/macos/v<tag>/` HEAD 200, `[^"']*assets/` grep without `/VoiceStickPlus/` prefix, `firmware/latest/manifest.json` version), then delete both `ci/publish-*` branches (SSH `git push origin --delete`).
+
+Notes: presigned URLs cover fixed keys only; branches are deleted after use. The Sparkle EdDSA keypair and self-signed code-signing identity live only in `~/.voicestick-sign/` on the Mac (identity also in the login keychain); the matching public key is pinned in `Info.plist` `SUPublicEDKey` (rotated 2026-10-02 — no installed 2.x Mac base, so rotation was free). First open of a self-signed, non-notarized build requires right-click → Open.
+
 ## One-Command Release (Windows signing machine)
 
 The whole flow above is scripted for the Windows signing machine:

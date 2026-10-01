@@ -15,11 +15,11 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 - `volcengine_api_key` / `voicestick_api_key` / `voicestick_cloud_url`：火山直连密钥，或 VoiceStick Cloud 中转密钥与 WebSocket URL。
 - `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山自学习平台热词表/替换词表 ID（控制台创建；仅 Windows 消费），作为 `corpus.boosting_table_id` / `corpus.correct_table_id` 发送；背景见 `Doc/Ref/volcengine-asr.md`（corpus 热词直传只在流式第一遍生效，二遍最终文本不吃直传，精修 prompt 会附加热词表由 LLM 兜底纠正）。
 - `tencent_secret_id` / `tencent_secret_key` / `tencent_appid`：腾讯云 ASR 凭据（加载时自动 Trim 去前后空格）。
-- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `false`（v2.3.2 起需用户手动开启）。
+- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认值 Windows 一直为 `true`，macOS 自 v2.4.7 起对齐为 `true`（此前默认 `false`）。精修走 SSE 流式（token 级增量上屏，失败自动回退非流式，两端一致）。
 - `llm_disable_thinking`（默认 `true`）：向所有 LLM 请求（精修/翻译/热词提取）注入 `enable_thinking:false` 与 `chat_template_kwargs.enable_thinking:false`，关闭推理型模型（DeepSeek-R1、Qwen3 混合思考等）的深度思考以加快输出；对接严格校验未知字段、报 400 的 OpenAI 官方 API 时可设 `false` 关闭该组参数。
 - `hotword_process_enabled` / `hotword_process_prompt`：热词处理（Windows），划词加词时用 LLM 提炼热词，复用 `llm_*` 连接配置；默认关闭。
 - `hotword_mining_enabled`：热词候选挖掘（Windows，默认关闭）。两条挖掘通道共用计数存储：①精修 diff 挖掘（精修纠回不在表标识符时计数，无开关）；②LLM 主动提炼（本开关打开时，每会话完成后异步让 LLM 从最终文本提炼候选）。同一词达 3 次（`kHotwordCandidateThreshold`）弹托盘通知并在设置-热词区给出「加入/忽略」候选；计数存 `%APPDATA%\VoiceStick\hotword_candidates.json`。明确不做全自动入表，原因见 `Doc/Expe/hotword-two-pass-and-candidate-mining-2026-07-28.md`。
-- `asr_hotwords` 发送策略（Windows）：火山 corpus 直传前按「频率 × 新近度 × 手动加权」评分排序并装入 80 tokens 预算（`kHotwordCorpusTokenBudget`），超预算时优先保留高频/新近/手动词，其余本次会话不参与识别（每次运行提示一次，明细见日志）；使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本本身）存 `%APPDATA%\VoiceStick\hotword_usage.json`。评分模型与 `scripts/e2e_test/asr_bench/hotword_select.py` 一致，设计见 `Doc/Plan/hotword-eval-and-prioritization.md` §3；实现 `desktop/windows/src/hotword_selector.cc`。精修/翻译 prompt 的热词段取评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。
+- `asr_hotwords` 发送策略（Windows）：火山 corpus 直传前按「频率 × 新近度 × 手动加权」评分排序并装入 80 tokens 预算（`kHotwordCorpusTokenBudget`），超预算时优先保留高频/新近/手动词，其余本次会话不参与识别（每次运行提示一次，明细见日志）；使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本本身）Windows 存 `%APPDATA%\VoiceStick\hotword_usage.json`、macOS 存 `~/Library/Application Support/VoiceStick/hotword_usage.json`（v2.4.7 起，JSON 形态两端一致）。评分模型与 `scripts/e2e_test/asr_bench/hotword_select.py` 一致，设计见 `Doc/Plan/hotword-eval-and-prioritization.md` §3；实现 `desktop/windows/src/hotword_selector.cc` 与 `desktop/macos/Sources/VoiceStickCore/HotwordSelector.swift`。精修/翻译 prompt 的热词段取评分 top-50（`kHotwordPromptMaxWords`，两端一致），防大库稀释小模型注意力。
 - `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`，控制 focused_app/字幕模式的触发方式（托盘菜单可切）。wechat 模式的触发方式由 `[wechat_input_method].trigger_mode` 独立控制，不联动全局 `interaction_mode`。
 - `ui_language`：界面语言（Windows + macOS），`system`（默认，按系统 locale：zh 前缀→简体中文，否则英文）/ `en` / `zh-Hans`；加载兼容 `zh_CN`/`zh-CN`/`zh`，非法值回 `system`。设置窗「界面语言」下拉改写，保存后立即重建托盘/窗口文案。
 - `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`（`VS-`/`RC-` 前缀均可，加载时剥前缀归一化）。
@@ -57,9 +57,9 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 
 - **UI 入口**：编码器设置已从「设置」对话框移除，改为从托盘设备子菜单的「编码器设置…」（Encoder settings...）打开**设备级对话框**，仅当设备 `encoder_present`（固件上报 MiniEncoderC 探测成功）时显示该菜单项。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。
 
-以上编码器设置项 Windows 与 macOS 两端均消费：连接与配置更新时向已连接 StickS3 逐台单播有效设置（`encoder_led_color`/`encoder_recording_gate` 经 control_rx 下发固件），旋转注入、快慢分档与判定窗逻辑两端一致（macOS 无体感鼠标，其余分支相同）。
+以上编码器设置项 Windows 与 macOS 两端均消费：连接与配置更新时向已连接 StickS3 逐台单播有效设置（`encoder_led_color`/`encoder_recording_gate` 经 control_rx 下发固件），旋转注入、快慢分档与判定窗逻辑两端一致。
 
-- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等）。其中 `air_mouse_sensitivity_x/y`（左右/上下灵敏度档 1~10）为**设备级覆盖**字段，详见下方「设备交互配置」；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍为全局唯一值，完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
+- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等），v2.4.7 起 **Windows 与 macOS 两端均消费**（macOS 运动学自 Windows `air_mouse_kin` 逐行移植，配置键同名同默认值、文件跨端通用；两端入口差异：Windows 入口自 v2.3.x 起隐藏，macOS 在托盘设备子菜单「体感鼠标」开关）。其中 `air_mouse_sensitivity_x/y`（左右/上下灵敏度档 1~10）为**设备级覆盖**字段，详见下方「设备交互配置」；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍为全局唯一值，完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
 
 ### 设备交互配置（Windows + macOS）
 
