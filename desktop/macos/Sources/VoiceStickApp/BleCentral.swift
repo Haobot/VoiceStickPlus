@@ -58,11 +58,14 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         let peripheralID: UUID
         let transferID: UInt32
         let image: Data
-        let chunkSize: Int
         var began = false
         var offset = 0
         var lastQueuedProgressOffset = 0
         var ended = false
+        /// 设备已确认落盘字节数（progress 事件推进）；在途窗口流控依据。
+        var confirmedWritten = 0
+        /// 数据段诊断日志去重（chunk/max_write/window 只在变化时打一次）。
+        var lastLoggedChunkSize = 0
         let progress: (FirmwareUpdateProgress) -> Void
         let completion: (Result<Void, Error>) -> Void
     }
@@ -99,6 +102,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var xiaomiTickTimer: Timer?
     private var firmwareUpdateSession: FirmwareUpdateSession?
     private var firmwareUpdateTimeoutTimer: Timer?
+    /// OTA 超窗低节拍续发定时器（200ms 一拍，对齐 Windows kOtaWindowedWriteInterval）。
+    private var otaWindowTickTimer: Timer?
     private var interactionMode: InteractionMode = .holdToTalk
     private var showIMUDebug = false
     private var isWorkspaceSleeping = false
@@ -277,16 +282,18 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             return
         }
 
-        let maxWrite = peripheral.maximumWriteValueLength(for: .withoutResponse)
-        let chunkSize = max(20, min(maxWrite - 12, 244))
+        // chunkSize 不在此处固化：maximumWriteValueLength 反映的是 ATT MTU 协商
+        // 结果，OTA 开始可能早于协商完成（届时返回 20 → 每包 20B → <1KB/s 的
+        // 根因，2026-10-02 实测定案）；发送循环逐轮惰性重取。
         firmwareUpdateSession = FirmwareUpdateSession(
             peripheralID: peripheralID,
             transferID: UInt32.random(in: 1...UInt32.max),
             image: image,
-            chunkSize: chunkSize,
             progress: progress,
             completion: completion
         )
+        NSLog("OTA begin VS-%@ image=%d bytes max_write=%d", deviceID, image.count,
+              peripheral.maximumWriteValueLength(for: .withoutResponse))
         progress(FirmwareUpdateProgress(
             writtenBytes: 0,
             totalBytes: image.count,
@@ -769,8 +776,46 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             peripheral.writeValue(payload, for: characteristic, type: .withResponse)
             armFirmwareUpdateTimeout(5)
         } else if session.offset < session.image.count {
+            // 全速路径先停节拍器（progress 到达后由本函数直接驱动）。
+            otaWindowTickTimer?.invalidate()
+            otaWindowTickTimer = nil
+            // 在途窗口（对齐 Windows OtaMaxInFlightBytes 定案参数，跨版本契约）：
+            // app 领先设备已确认字节数不超过 首确认 40KB / 稳态 24KB。首窗覆盖
+            // v2.3.8 及更早固件的 32KB 进度回传间隔（防互等死锁）；稳态收紧防
+            // 持续在途过大灌满对端控制器断链（2026-09-20 Windows 真机教训）。
+            let window = BleProtocol.otaMaxInFlightBytes(confirmedWritten: session.confirmedWritten)
+            if session.offset - session.confirmedWritten >= window {
+                firmwareUpdateSession = session
+                // 超窗不完全停发：按 200ms 低节拍续发（对齐 Windows
+                // kOtaWindowedWriteInterval），让设备攒到 32KB 进度回传阈值——
+                // 完全停发会与回传间隔互等死锁（app×固件流控跨版本契约）。
+                if otaWindowTickTimer == nil {
+                    otaWindowTickTimer = Timer.scheduledTimer(
+                        withTimeInterval: 0.2, repeats: false
+                    ) { [weak self] _ in
+                        self?.otaWindowTickTimer = nil
+                        self?.sendNextFirmwareUpdateFrame()
+                    }
+                }
+                armFirmwareUpdateTimeout(15)
+                return
+            }
+            // chunkSize 逐轮惰性重取：maximumWriteValueLength 随 ATT MTU 协商完成
+            // 才变大，固化在 session 里会永久 20B/包（<1KB/s 根因）。总包长 =
+            // chunk + 12B 帧头，预算对齐 Windows（min(max_pdu-15, 244)）。
+            let maxWrite = peripheral.maximumWriteValueLength(for: .withoutResponse)
+            let chunkSize = max(20, min(maxWrite - BleProtocol.otaDataHeaderLength,
+                                        BleProtocol.otaMaxChunkSize))
+            if chunkSize != session.lastLoggedChunkSize {
+                session.lastLoggedChunkSize = chunkSize
+                firmwareUpdateSession = session
+                NSLog("OTA data VS chunk_size=%d max_write=%d window=%d offset=%d",
+                      chunkSize, maxWrite, window, session.offset)
+            }
             while session.offset < session.image.count && peripheral.canSendWriteWithoutResponse {
-                let end = min(session.offset + session.chunkSize, session.image.count)
+                // 窗口内逐包检查（首窗 40KB 大于单轮 CB 背压深度，通常单轮不会触顶）。
+                if session.offset - session.confirmedWritten >= window { break }
+                let end = min(session.offset + chunkSize, session.image.count)
                 let chunk = session.image.subdata(in: session.offset..<end)
                 let payload = BleProtocol.otaDataPayload(
                     transferID: session.transferID,
@@ -810,7 +855,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func handleFirmwareUpdateStateEvent(_ event: FirmwareOTAStateEvent) {
-        guard let session = firmwareUpdateSession else { return }
+        guard var session = firmwareUpdateSession else { return }
         if let transferID = event.transferID, transferID != session.transferID {
             return
         }
@@ -824,9 +869,17 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                     isDeviceConfirmed: true
                 ))
                 armFirmwareUpdateTimeout(15)
+                // 在途窗口续发点：confirmedWritten 推进后窗口重新放开。
+                if Int(written) > session.confirmedWritten {
+                    session.confirmedWritten = Int(written)
+                    firmwareUpdateSession = session
+                    sendNextFirmwareUpdateFrame()
+                }
             }
         case "done":
             cancelFirmwareUpdateTimeout()
+            otaWindowTickTimer?.invalidate()
+            otaWindowTickTimer = nil
             firmwareUpdateSession = nil
             session.progress(FirmwareUpdateProgress(
                 writtenBytes: session.image.count,
@@ -857,6 +910,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     private func failFirmwareUpdate(_ error: Error) {
         cancelFirmwareUpdateTimeout()
+        otaWindowTickTimer?.invalidate()
+        otaWindowTickTimer = nil
         guard let session = firmwareUpdateSession else { return }
         if let peripheral = peripherals[session.peripheralID],
            let characteristic = otaCharacteristics[session.peripheralID] {

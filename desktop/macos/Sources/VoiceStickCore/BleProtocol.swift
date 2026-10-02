@@ -273,6 +273,23 @@ public enum BleProtocol {
     /// state_tx 帧类型：体感鼠标 motion 帧（对齐 Windows state_type_motion）。
     public static let stateTypeMotion: UInt8 = 0x11
 
+    /// OTA 数据帧头部长度（version/type/length + transfer_id + offset = 12B），
+    /// chunkSize 预算 = 最大写长 - 该值。
+    public static let otaDataHeaderLength = 12
+
+    /// OTA 单包 chunk 上限（对齐 Windows：协商后 MTU 再大也截到 244，固件侧
+    /// 接收缓冲契约）。Windows 实测真机标定值，跨版本契约勿改。
+    public static let otaMaxChunkSize = 244
+
+    /// OTA 在途窗口（app 领先设备已确认字节的上限，对齐 Windows
+    /// BleProtocol::OtaMaxInFlightBytes 定案参数——跨版本契约勿改）：
+    /// 首条确认前放宽 40KB（覆盖 v2.3.8 及更早固件 32KB 进度回传间隔，
+    /// 否则互等死锁）；确认流动后收紧 24KB（持续在途过大曾把对端控制器
+    /// 灌满断链，2026-09-20 Windows 真机教训）。
+    public static func otaMaxInFlightBytes(confirmedWritten: Int) -> Int {
+        confirmedWritten == 0 ? 40 * 1024 : 24 * 1024
+    }
+
     /// 解析体感鼠标 motion 帧（对齐 Windows ParseMotionFrame）：
     /// 固定 6 字节 `version(1) + type(0x11) + int16LE dx + int16LE dy`。
     public static func parseMotionFrame(_ data: Data) -> MotionFrame? {
