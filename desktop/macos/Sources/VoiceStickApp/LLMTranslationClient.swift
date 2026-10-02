@@ -32,7 +32,7 @@ final class LLMTranslationClient {
         hotwords: [String],
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        let apiKey = config.llmAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = config.activeLlmAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
             completion(.failure(TranslationError.missingAPIKey))
             return
@@ -51,7 +51,7 @@ final class LLMTranslationClient {
 
         let systemPrompt = Self.systemPrompt(targetLanguage: targetLanguage, hotwords: hotwords)
         var payload: [String: Any] = [
-            "model": config.llmModel,
+            "model": config.activeLlmModel,
             "temperature": 0,
             "messages": [
                 ["role": "system", "content": systemPrompt],
@@ -91,7 +91,7 @@ final class LLMTranslationClient {
     }
 
     private func chatCompletionsURL() -> URL? {
-        let base = config.llmBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ \n\r\t"))
+        let base = config.activeLlmBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ \n\r\t"))
         guard !base.isEmpty else { return nil }
         if base.hasSuffix("/chat/completions") {
             return URL(string: base)

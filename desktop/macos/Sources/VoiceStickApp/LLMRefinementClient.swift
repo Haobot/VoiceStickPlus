@@ -125,7 +125,7 @@ final class LLMRefinementClient {
     private func makeRequest(
         text: String, promptOverride: String, hotwords: [String], stream: Bool
     ) -> URLRequest? {
-        let apiKey = config.llmAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = config.activeLlmAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty, let url = chatCompletionsURL() else { return nil }
 
         var request = URLRequest(url: url)
@@ -136,7 +136,7 @@ final class LLMRefinementClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var payload: [String: Any] = [
-            "model": config.llmModel,
+            "model": config.activeLlmModel,
             "temperature": 0,
             "messages": [
                 ["role": "system", "content": Self.buildPrompt(override: promptOverride, hotwords: hotwords)],
@@ -157,7 +157,7 @@ final class LLMRefinementClient {
     }
 
     private func chatCompletionsURL() -> URL? {
-        let base = config.llmBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ \n\r\t"))
+        let base = config.activeLlmBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ \n\r\t"))
         guard !base.isEmpty else { return nil }
         if base.hasSuffix("/chat/completions") {
             return URL(string: base)

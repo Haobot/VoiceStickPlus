@@ -15,6 +15,7 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 - `volcengine_api_key` / `voicestick_api_key` / `voicestick_cloud_url`：火山直连密钥，或 VoiceStick Cloud 中转密钥与 WebSocket URL。
 - `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山自学习平台热词表/替换词表 ID（控制台创建；仅 Windows 消费），作为 `corpus.boosting_table_id` / `corpus.correct_table_id` 发送；背景见 `Doc/Ref/volcengine-asr.md`（corpus 热词直传只在流式第一遍生效，二遍最终文本不吃直传，精修 prompt 会附加热词表由 LLM 兜底纠正）。
 - `tencent_secret_id` / `tencent_secret_key` / `tencent_appid`：腾讯云 ASR 凭据（加载时自动 Trim 去前后空格）。
+- **内置凭据回退（内部测试构建，v2.4.8 起 macOS 与 Windows 同语义）**：`volcengine_api_key` / `tencent_secret_id` / `tencent_secret_key` / `tencent_appid` / `llm_api_key` / `llm_base_url` / `llm_model` 七项在配置值为空（trim 后）时回退编译期内置值（`AppConfig.active*` 访问器），不落盘；内测安装包开箱即用，公开构建内置值为空、行为不变。`config.toml` 缺失 + 内置凭据在场时 macOS 首启自动落默认配置（provider=内置方）跳过 onboarding。
 - `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认值 Windows 一直为 `true`，macOS 自 v2.4.7 起对齐为 `true`（此前默认 `false`）。精修走 SSE 流式（token 级增量上屏，失败自动回退非流式，两端一致）。
 - `llm_disable_thinking`（默认 `true`）：向所有 LLM 请求（精修/翻译/热词提取）注入 `enable_thinking:false` 与 `chat_template_kwargs.enable_thinking:false`，关闭推理型模型（DeepSeek-R1、Qwen3 混合思考等）的深度思考以加快输出；对接严格校验未知字段、报 400 的 OpenAI 官方 API 时可设 `false` 关闭该组参数。
 - `hotword_process_enabled` / `hotword_process_prompt`：热词处理（Windows），划词加词时用 LLM 提炼热词，复用 `llm_*` 连接配置；默认关闭。

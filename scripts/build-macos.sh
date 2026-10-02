@@ -67,6 +67,85 @@ elif /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST" | grep -q "REPLA
     echo "         Generate Sparkle keys before shipping a public release."
 fi
 
+# ---- 内置凭据注入（对齐 Windows build-msi.bat 内部测试模式）----
+# 源：本机 config.toml（VOICESTICK_BUILTIN_CONFIG_SOURCE 可覆盖）；提取 7 项字段
+# 重写 Sources/VoiceStickApp/BuiltinSecrets.swift（仓库内占位模板），构建完成后
+# trap 恢复占位（凭据不进 git）。VOICESTICK_EMBED_BUILTIN_KEYS=0 显式构建无凭据
+# 公开包。门禁日志（发布 skill 铁律）：见 "Injecting built-in credentials into
+# VoiceStickApp" 即内测包；见 "building WITHOUT built-in credentials" 即公开包。
+BUILTIN_SECRETS_SWIFT="$DESKTOP_DIR/Sources/VoiceStickApp/BuiltinSecrets.swift"
+BUILTIN_SECRETS_RESTORED=0
+restore_builtin_secrets() {
+    if [ "$BUILTIN_SECRETS_RESTORED" -eq 0 ] && [ -n "${BUILTIN_SECRETS_DIRTY:-}" ]; then
+        git -C "$ROOT_DIR" checkout -- "$BUILTIN_SECRETS_SWIFT" 2>/dev/null || true
+        BUILTIN_SECRETS_RESTORED=1
+    fi
+}
+trap restore_builtin_secrets EXIT
+
+if [ "${VOICESTICK_EMBED_BUILTIN_KEYS:-1}" != "0" ]; then
+    BUILTIN_CONFIG_SOURCE="${VOICESTICK_BUILTIN_CONFIG_SOURCE:-$HOME/Library/Application Support/VoiceStick/config.toml}"
+    if [ -f "$BUILTIN_CONFIG_SOURCE" ]; then
+        if INJECT_STATUS="$(python3 - "$BUILTIN_CONFIG_SOURCE" "$BUILTIN_SECRETS_SWIFT" <<'PYEOF'
+import re, sys
+
+src_path, out_path = sys.argv[1], sys.argv[2]
+content = open(src_path, encoding="utf-8").read()
+
+FIELDS = [
+    ("volcengineAPIKey", "volcengine_api_key"),
+    ("tencentSecretID", "tencent_secret_id"),
+    ("tencentSecretKey", "tencent_secret_key"),
+    ("tencentAppid", "tencent_appid"),
+    ("llmAPIKey", "llm_api_key"),
+    ("llmBaseURL", "llm_base_url"),
+    ("llmModel", "llm_model"),
+]
+
+def esc(v: str) -> str:
+    return v.replace("\\", "\\\\").replace('"', '\\"')
+
+values = {}
+missing = []
+for swift_name, toml_name in FIELDS:
+    m = re.search(rf'^\s*{toml_name}\s*=\s*"([^"]*)"', content, re.M)
+    value = (m.group(1).strip() if m else "")
+    values[swift_name] = value
+    if not value:
+        missing.append(toml_name)
+
+# 逐字段替换占位空值（保持文件其余注释/结构不变，git diff 最小）
+out = open(out_path, encoding="utf-8").read()
+for swift_name, _ in FIELDS:
+    out, n = re.subn(
+        rf'(static let {swift_name} = ")[^"]*(")',
+        lambda m, v=values[swift_name]: m.group(1) + v.replace("\\", "\\\\").replace('"', '\\"') + m.group(2),
+        out, count=1)
+    if n != 1:
+        sys.exit(f"Error: BuiltinSecrets.swift 缺少 {swift_name} 占位行")
+open(out_path, "w", encoding="utf-8").write(out)
+
+print("PARTIAL:" + ",".join(missing) if missing else "FULL")
+PYEOF
+        )"; then
+            BUILTIN_SECRETS_DIRTY=1
+            echo "Injecting built-in credentials into VoiceStickApp (source: $BUILTIN_CONFIG_SOURCE)"
+            case "$INJECT_STATUS" in
+                PARTIAL:*) echo "WARNING: 部分字段缺失，留空回退：${INJECT_STATUS#PARTIAL:}" ;;
+                FULL) ;;
+            esac
+        else
+            echo "Error: 内置凭据注入失败（解析 $BUILTIN_CONFIG_SOURCE 出错）"
+            restore_builtin_secrets
+            exit 1
+        fi
+    else
+        echo "building WITHOUT built-in credentials (no config source at $BUILTIN_CONFIG_SOURCE)"
+    fi
+else
+    echo "building WITHOUT built-in credentials (VOICESTICK_EMBED_BUILTIN_KEYS=0)"
+fi
+
 for ARCH in $TARGET_ARCHS; do
     echo ""
     echo "Building VoiceStickApp for $ARCH..."

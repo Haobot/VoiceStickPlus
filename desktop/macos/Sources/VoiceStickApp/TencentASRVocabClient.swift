@@ -29,7 +29,7 @@ final class TencentASRVocabClient {
     /// 同步热词表：用给定的热词列表创建或更新默认热词表，返回 VocabId；失败返回空串。
     func syncHotwords(_ hotwords: [String]) -> String {
         guard !hotwords.isEmpty else { return "" }
-        guard !config.tencentSecretID.isEmpty, !config.tencentSecretKey.isEmpty else { return "" }
+        guard !config.activeTencentSecretID.isEmpty, !config.activeTencentSecretKey.isEmpty else { return "" }
 
         // 过滤：去首尾空白、词长 <= 30 字节、字符白名单（一个非法词会让整表同步被拒，
         // 见 Windows 端 2026-08-01 热词评测实测 InvalidParameterValue.InvalidWordWeight）。
@@ -134,8 +134,8 @@ final class TencentASRVocabClient {
     private func callAPI(_ action: String, payload: String) -> String {
         let timestamp = Int64(Date().timeIntervalSince1970)
         let authorization = Self.tc3Authorization(
-            secretID: config.tencentSecretID,
-            secretKey: config.tencentSecretKey,
+            secretID: config.activeTencentSecretID,
+            secretKey: config.activeTencentSecretKey,
             action: action,
             payload: payload,
             timestamp: timestamp

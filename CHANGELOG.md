@@ -1,5 +1,11 @@
 # CHANGELOG.md
 
+## v2.4.8
+
+- 新增（macOS）：**内置凭据内部测试模式**（对齐 Windows MSI 同款机制，方便测试人员开箱即用）——安装包预打包 7 项 API 凭据（火山 ASR key、腾讯 SecretId/SecretKey/AppId、DeepSeek LLM key/base_url/model）。`config.toml` 缺失时首启自动落一份默认配置（provider 指向内置凭据方，默认 tencent）并跳过 onboarding 向导；用户配置值始终优先（trim 非空即用），内置值仅作运行时回退、不写入 `config.toml`（`AppConfig.active*` 访问器，逻辑对齐 Windows `Active*()`）。构建机制：`build-macos.sh` 从本机 `~/Library/Application Support/VoiceStick/config.toml` 提取注入 `BuiltinSecrets.swift`（编译后 trap 恢复仓库占位，凭据不进 git），`VOICESTICK_EMBED_BUILTIN_KEYS=0` 显式构建无凭据公开包；门禁日志 "Injecting built-in credentials into VoiceStickApp"（对齐 build-msi.bat 措辞，发布扫描 `--allow-builtin`）。凭据可被逆向提取，仅用于内测分发。
+- 说明（macOS）：本版面向测试人员升级——v2.4.7 用户经 Sparkle 自动更新到位；v2.3.x 旧自装包仍受密钥轮换断点影响需手动装一次（见 v2.4.7 勘误）。
+- Windows MSI 与固件无功能变更（版本号随发布对齐）。
+
 ## v2.4.7
 
 首个 2.x 线 macOS 发布轮（以最新 Windows 端为基准对齐，自签名证书，GitHub Release + COS 双渠道；Windows MSI 与固件无功能变更）：

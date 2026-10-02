@@ -646,13 +646,15 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
     }
 
     private func apiKey(for provider: ASRProvider) -> String {
+        // Active 读取：内测构建的内置凭据预填到输入框（可直接完成向导），
+        // 用户输入留空保存时写回空值、运行时继续回退内置（不落盘）。
         switch provider {
         case .voiceStickCloud:
             return config.voiceStickAPIKey
         case .volcengine:
-            return config.volcengineAPIKey
+            return config.activeVolcengineAPIKey
         case .tencent:
-            return config.tencentSecretID
+            return config.activeTencentSecretID
         }
     }
 
@@ -661,9 +663,9 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate, CB
         case .voiceStickCloud:
             return config.voiceStickAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .volcengine:
-            return config.volcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            return config.activeVolcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .tencent:
-            return config.tencentSecretID.trimmingCharacters(in: .whitespacesAndNewlines)
+            return config.activeTencentSecretID.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 

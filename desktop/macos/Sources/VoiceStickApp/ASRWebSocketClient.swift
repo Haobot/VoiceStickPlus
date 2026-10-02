@@ -137,7 +137,7 @@ final class ASRWebSocketClient: ASRClient {
         case .voiceStickCloud:
             return config.voiceStickAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .volcengine:
-            return config.volcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            return config.activeVolcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .tencent:
             // 走 TencentASRClient（见 ASRClientFactory），此分支仅为穷举兜底。
             return config.tencentSecretID

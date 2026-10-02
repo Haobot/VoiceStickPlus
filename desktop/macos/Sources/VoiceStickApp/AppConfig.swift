@@ -419,6 +419,51 @@ struct AppConfig {
         FileManager.default.fileExists(atPath: configURL.path)
     }
 
+    // ---- 内置凭据回退（对齐 Windows Active*()：配置值优先，空则回退编译期内置；
+    // 不修改 config 字段、不落盘。内测构建经 BuiltinSecrets 预打包，公开构建全空。）----
+
+    var activeVolcengineAPIKey: String {
+        resolveActiveString(volcengineAPIKey, builtin: BuiltinSecrets.volcengineAPIKey)
+    }
+
+    var activeTencentSecretID: String {
+        resolveActiveString(tencentSecretID, builtin: BuiltinSecrets.tencentSecretID)
+    }
+
+    var activeTencentSecretKey: String {
+        resolveActiveString(tencentSecretKey, builtin: BuiltinSecrets.tencentSecretKey)
+    }
+
+    var activeTencentAppid: String {
+        resolveActiveString(tencentAppid, builtin: BuiltinSecrets.tencentAppid)
+    }
+
+    var activeLlmAPIKey: String {
+        resolveActiveString(llmAPIKey, builtin: BuiltinSecrets.llmAPIKey)
+    }
+
+    var activeLlmBaseURL: String {
+        resolveActiveString(llmBaseURL, builtin: BuiltinSecrets.llmBaseURL)
+    }
+
+    var activeLlmModel: String {
+        resolveActiveString(llmModel, builtin: BuiltinSecrets.llmModel)
+    }
+
+    /// 首启引导（内测包开箱即用，对齐 Windows「内置 key 跳过 onboarding」）：
+    /// config.toml 不存在且内置凭据带可用 ASR provider 时，落一份默认配置
+    ///（provider 指向内置凭据方；不带任何密钥——Active 层运行时回退），
+    /// 使 applicationDidFinishLaunching 走 startApp 而非 onboarding 向导。
+    /// 公开构建（无内置凭据）保持原行为不变。
+    static func bootstrapBuiltinDefaultsIfNeeded() {
+        guard !configExists, let provider = BuiltinSecrets.builtinProvider else { return }
+        var defaults = AppConfig.defaults
+        defaults.asrProvider = provider
+        defaults.resourceID = resourceIDValue(defaults.resourceID, default: defaults.resourceID)
+        try? defaults.save()
+        NSLog("BuiltinSecrets: bootstrapped default config with provider \(provider.rawValue)")
+    }
+
     static var defaults: AppConfig {
         AppConfig(
             asrProvider: .voiceStickCloud,

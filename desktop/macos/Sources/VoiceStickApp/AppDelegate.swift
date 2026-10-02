@@ -35,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         assert(Localization.tablesAreComplete())
         configureMainMenu()
         configureApplicationIcon()
+        // 内测包首启引导：内置凭据在场时落默认配置（provider 指向内置方），
+        // 跳过 onboarding 向导开箱即用；公开构建（无内置）保持原行为。
+        AppConfig.bootstrapBuiltinDefaultsIfNeeded()
         if AppConfig.configExists {
             startApp(config: AppConfig.load())
         } else {

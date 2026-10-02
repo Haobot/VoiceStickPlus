@@ -59,12 +59,12 @@ final class TencentASRClient: ASRClient {
 
     @discardableResult
     func start(options: ASRSessionOptions) -> Bool {
-        guard !config.tencentSecretID.isEmpty, !config.tencentSecretKey.isEmpty else {
+        guard !config.activeTencentSecretID.isEmpty, !config.activeTencentSecretKey.isEmpty else {
             NSLog("TencentAsr config error: missing SecretId/SecretKey")
             notifyError("缺少腾讯云 SecretId/SecretKey")
             return false
         }
-        guard !config.tencentAppid.isEmpty else {
+        guard !config.activeTencentAppid.isEmpty else {
             NSLog("TencentAsr config error: missing AppId")
             notifyError("缺少腾讯云 AppId")
             return false
@@ -407,7 +407,7 @@ final class TencentASRClient: ASRClient {
         let nonce = UInt32.random(in: UInt32.min ... UInt32.max)
 
         var params: [(key: String, value: String)] = [
-            ("secretid", config.tencentSecretID),
+            ("secretid", config.activeTencentSecretID),
             ("timestamp", "\(timestamp)"),
             ("expired", "\(expired)"),
             ("nonce", "\(nonce)"),
@@ -425,11 +425,11 @@ final class TencentASRClient: ASRClient {
         params.sort { $0.key < $1.key }
         let query = params.map { "\($0.key)=\($0.value)" }.joined(separator: "&")
 
-        let signString = "asr.cloud.tencent.com/asr/v2/\(config.tencentAppid)?\(query)"
-        let hmacResult = hmacSHA1(key: config.tencentSecretKey, message: signString)
+        let signString = "asr.cloud.tencent.com/asr/v2/\(config.activeTencentAppid)?\(query)"
+        let hmacResult = hmacSHA1(key: config.activeTencentSecretKey, message: signString)
         let signature = urlEncode(base64Encode(hmacResult))
 
-        return "wss://asr.cloud.tencent.com/asr/v2/\(config.tencentAppid)?\(query)&signature=\(signature)"
+        return "wss://asr.cloud.tencent.com/asr/v2/\(config.activeTencentAppid)?\(query)&signature=\(signature)"
     }
 
     static func hmacSHA1(key: String, message: String) -> Data {

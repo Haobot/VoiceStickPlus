@@ -108,3 +108,14 @@ func runHotwordSelectorTests() {
         "文件缺失返回空 store"
     )
 }
+
+func runActiveSecretTests() {
+    // 内置凭据回退（对齐 Windows ResolveActiveString）：配置值优先（trim 非空），
+    // 空则回退内置；不反向写回。
+    checkEqual(resolveActiveString("cfg-value", builtin: "builtin"), "cfg-value", "Active 配置值优先")
+    checkEqual(resolveActiveString("  cfg-value  ", builtin: "builtin"), "cfg-value", "Active 配置值 trim")
+    checkEqual(resolveActiveString("", builtin: "builtin"), "builtin", "Active 空配置回退内置")
+    checkEqual(resolveActiveString("   ", builtin: "builtin"), "builtin", "Active 空白配置回退内置")
+    checkEqual(resolveActiveString("", builtin: ""), "", "Active 双空保持空（公开构建语义）")
+    checkEqual(resolveActiveString("cfg", builtin: ""), "cfg", "Active 无内置不影响配置值")
+}
