@@ -22,19 +22,19 @@
       />
     </item>
     <item>
-      <title>Version 2.4.7</title>
+      <title>Version 2.4.8</title>
       <description><![CDATA[
-        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div><b>VoiceStick 2.4.7（macOS 首发 · 自签名版）</b></div><div>本轮为 macOS 客户端 2.x 线首个发布：以最新 Windows 端为基准补齐并按 macOS 实际情况优化。Windows 安装包与固件无功能变更（版本号随发布对齐）。</div><div><b>新增（macOS）</b></div><div><b>说明（macOS）</b></div><div><b>Windows</b></div><div><b>固件</b></div><ul><li>体感鼠标：StickS3 的 BMI270 陀螺仪直接驱动光标（自 Windows 端逐行移植的运动学：平滑增益曲线、方向锁、飞行摇杆/角速率双控制模式）。入口在托盘图标 → 设备子菜单 → 「体感鼠标」；体感态下主键=鼠标左键，侧键单击退出。灵敏度等参数与 Windows 同名配置，配置文件两端通用。</li><li>LLM 精修流式输出：精修文字随模型生成逐字上屏（此前需等待完整结果）；SSE 中断自动回退非流式，精修失败/热词被改坏自动回退原文。</li><li>文本精修默认开启（对齐 Windows 默认行为；可在设置中关闭）。</li><li>热词高频优先：进入 LLM 精修/翻译提示词的热词按「使用频率 × 新近度 × 手动加权」评分裁剪前 50 个，防止大热词库稀释小模型注意力；命中统计本地保存（不记录文本内容）。</li><li>本版使用自签名证书分发（未做 Apple 公证）：首次打开请在 Finder 中右键 →「打开」，或到「系统设置 → 隐私与安全性」放行。蓝牙、辅助功能（文本注入）、输入监控权限需各授权一次，重编译升级后保持。</li><li>包体为 arm64（Apple Silicon）；Intel Mac 支持待后续 universal 构建。</li><li>自动更新走 Sparkle（EdDSA 签名校验），更新源与 Windows 一致双通道（国内 COS 主源 + GitHub 回退）。</li><li>微信输入法模式（虚拟麦克风）暂未在 macOS 提供：macOS 无用户态虚拟声卡注册路径，需音频驱动，后续版本评估替代方案；划词加词与热词挖掘、本地离线识别同样后续跟进。</li><li>无功能变更（v2.4.6 用户无需升级；自动更新不会推送本版）。</li><li>无功能变更（版本号对齐 2.4.7；包含 2.4.3 起的全部固件特性）。</li></ul></div>
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div><b>VoiceStick 2.4.8（macOS · 内置凭据测试版）</b></div><div>本版面向测试人员：macOS 安装包与 Windows MSI 一样<b>预打包全部 API 凭据</b>（火山/腾讯 ASR + DeepSeek LLM），装好即用，无需填写任何 API Key。</div><div><b>新增（macOS）</b></div><div><b>说明</b></div><ul><li>内置凭据内部测试模式：<code>config.toml</code> 不存在时首启自动生成默认配置（语音识别走内置凭据通道）并跳过配置向导；已配置的账号凭据始终优先，内置值仅作回退、不会写入配置文件。</li><li>v2.4.7 用户会通过 Sparkle 自动更新到本版；v2.3.x 旧手动安装包因更新签名密钥更换无法自动升级，请手动下载本版安装一次。</li><li>自签名证书分发（未公证）：首次打开请右键 →「打开」；蓝牙/辅助功能/输入监控权限各授权一次。</li><li>arm64（Apple Silicon）。</li><li>Windows 与固件无功能变更（版本号对齐）。</li></ul></div>
       ]]></description>
-      <pubDate>Thu, 01 Oct 2026 17:50:23 +0000</pubDate>
+      <pubDate>Fri, 02 Oct 2026 08:43:19 +0000</pubDate>
       <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
       <enclosure
-        url="https://dl.davenger.cloud/software/macos/v2.4.7/VoiceStick-2.4.7.zip"
+        url="https://dl.davenger.cloud/software/macos/v2.4.8/VoiceStick-2.4.8.zip"
         sparkle:os="macos"
-        sparkle:version="2.4.7"
-        sparkle:shortVersionString="2.4.7"
-        sparkle:edSignature="rItTD02b47JE8DW1xe87ux+BC1k8AKgmBi2kDA3VjLwigYUIeE8tJCxpSi0Zs0BrhPQWfGUyq//mn+Qri6xLCw=="
-        length="4584694"
+        sparkle:version="2.4.8"
+        sparkle:shortVersionString="2.4.8"
+        sparkle:edSignature="AVqHeMFXXFydCGCcmx5yLYb+YuAwpWpNuOGMZvIjF7gDFeN2Gn2+MLqL+enmucy2In/8CBG92OR23i5iGc++BA=="
+        length="4585509"
         type="application/octet-stream"
       />
     </item>
