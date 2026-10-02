@@ -6,6 +6,7 @@ final class FirmwareUpdateWindowController: NSWindowController {
     private let progressIndicator = NSProgressIndicator()
     private let percentLabel = NSTextField(labelWithString: "0%")
     private let speedLabel = NSTextField(labelWithString: "")
+    private var speedHintShown = false
     private let timeLabel = NSTextField(labelWithString: "")
     private let cancelButton = NSButton(title: "", target: nil, action: nil)
     private let closeButton = NSButton(title: "", target: nil, action: nil)
@@ -63,6 +64,15 @@ final class FirmwareUpdateWindowController: NSWindowController {
         let elapsed = max(0.1, Date().timeIntervalSince(startedAt))
         let bytesPerSecond = Double(max(confirmedBytes, displayedBytes)) / elapsed
         speedLabel.stringValue = tr(.firmwareSpeed, Self.format(bytesPerSecond: bytesPerSecond))
+        // macOS 平台限制提示（2026-10-02 定案）：与系统 HID 配对连接共享 ACL 的
+        // 设备被强制 400ms 省电调度，BLE OTA 上限 ~0.6-1KB/s（固件快间隔请求
+        // status=571 被拒、readRSSI 诱导无效，均为实测）。低速即平台行为，
+        // 提示用户可走 USB 串口烧录（10 秒量级）。
+        if bytesPerSecond > 0, bytesPerSecond < 3 * 1024,
+           !speedHintShown {
+            speedHintShown = true
+            speedLabel.stringValue += " · " + tr(.firmwareMacSpeedLimited)
+        }
 
         if bytesPerSecond > 1 && displayedBytes < progress.totalBytes {
             let remainingBytes = progress.totalBytes - displayedBytes

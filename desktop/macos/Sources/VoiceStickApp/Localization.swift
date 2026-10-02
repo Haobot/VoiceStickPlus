@@ -73,6 +73,7 @@ enum L10nKey: String, CaseIterable {
     case menuTranslation, textOriginal, menuTranslateTo
     case menuInteractionSettings, menuEncoderSettings, menuRemoteSettings, menuButtonMapping, menuBatteryMonitor, menuAirMouse
     case menuUpdateFirmwareFromFile, menuForgetDevice
+    case firmwareMacSpeedLimited
     case firmwareCheckingUpdates, firmwareUpdateCheckFailed, firmwareUpdateTo, menuFirmwareUpToDate
 
     // 主题/灵敏度/编码器枚举显示名
@@ -280,6 +281,8 @@ enum Localization {
         .menuUpdateFirmwareFromFile: "Update Firmware from File...",
         .menuForgetDevice: "Forget This Device",
         .firmwareCheckingUpdates: "Checking for Updates",
+        .firmwareMacSpeedLimited: "macOS Bluetooth is rate-limited (system HID scheduling); use a USB cable for serial flashing (~10 s) instead",
+        .firmwareMacSpeedLimited: "macOS 蓝牙限速（系统 HID 调度）；可改用 USB 数据线串口烧录（约 10 秒）",
         .firmwareUpdateCheckFailed: "Update Check Failed",
         .firmwareUpdateTo: "Update to %@...",
         .menuFirmwareUpToDate: "Firmware Up to Date",
