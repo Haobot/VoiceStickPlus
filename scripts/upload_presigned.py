@@ -31,7 +31,7 @@ def curl(args: list[str], **kwargs) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, **kwargs)
 
 
-def put_one(obj: dict, chdir: str | None) -> None:
+def put_one(obj: dict, chdir) -> None:
     local = Path(obj["local"])
     if not local.is_file():
         raise FileNotFoundError(f"local file missing for key {obj['key']}: {local}")
