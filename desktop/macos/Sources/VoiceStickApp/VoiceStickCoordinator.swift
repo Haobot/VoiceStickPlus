@@ -1811,10 +1811,14 @@ final class VoiceStickCoordinator {
         lastRecoverablePeripheralID = activePeripheralID
         statusController.setHasRecoverableInput(true)
         pendingPasteState = .waitingToPaste(text: text)
+        pendingPasteEnteredAt = Date()
         if let peripheralID = activePeripheralID {
             mainInputState = .pendingConfirmation(peripheralID: peripheralID)
         }
+        NSLog("Enter pending confirmation dev=VS-%@ text_len=%d (overlay showFinal)",
+              activeDeviceID ?? "unknown", text.utf8.count)
         statusController.showFinal(text, deviceID: activeDeviceID) { [weak self] in
+            NSLog("Pending confirmation hidden; committing paste text_len=%d", text.utf8.count)
             self?.commitPendingPaste(text: text)
         }
         sendUIStateForActiveDevice("pending_confirmation", text: text)
@@ -2132,6 +2136,8 @@ final class VoiceStickCoordinator {
     }
 
     private func completePendingPaste(text: String) {
+        NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d",
+              text.utf8.count, config.autoEnter ? 1 : 0, AXIsProcessTrusted() ? 1 : 0)
         let shouldPressEnter = config.autoEnter
         pendingPasteState = .idle
         finishRecognitionCycle()
@@ -2182,12 +2188,26 @@ final class VoiceStickCoordinator {
         return true
     }
 
+    /// 「待粘贴确认」态的进入时刻（防卡死保险用：超过 60s 视为陈旧残留，
+    /// 新会话按键时自动提交旧文本归位，而非静默吞掉按键）。
+    private var pendingPasteEnteredAt = Date.distantPast
+
     private func handleFrontButtonDuringPendingPaste(peripheralID: UUID) -> Bool {
         switch pendingPasteState {
         case .idle:
             return false
         case .waitingToPaste(let text):
             guard activePeripheralID == peripheralID else { return true }
+            // 防卡死保险：确认态滞留 >60s（正常 1.2s 自动提交）视为状态机残留
+            //（如实例重启前的会话、hide 回调丢失），自动提交旧文本归位，
+            // 本次按键继续走正常新会话路径而非被吞。
+            if Date().timeIntervalSince(pendingPasteEnteredAt) > 60 {
+                NSLog("Stale pending confirmation (%.0fs); force committing before new session",
+                      Date().timeIntervalSince(pendingPasteEnteredAt))
+                pendingPasteState = .idle
+                completePendingPaste(text: text)
+                return false
+            }
             pendingPasteState = .paused(text: text)
             mainInputState = .pausedConfirmation(peripheralID: peripheralID)
             statusController.showPausedFinal(text, deviceID: deviceID(for: peripheralID))
@@ -2200,6 +2220,7 @@ final class VoiceStickCoordinator {
             }
             return true
         }
+    }
     }
 
     private func cancelPendingPaste(peripheralID: UUID) {
