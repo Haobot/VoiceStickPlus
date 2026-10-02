@@ -2221,7 +2221,6 @@ final class VoiceStickCoordinator {
             return true
         }
     }
-    }
 
     private func cancelPendingPaste(peripheralID: UUID) {
         if activeSessionID != nil {
