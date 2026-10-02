@@ -69,10 +69,14 @@ jobs:
           # 用 gh api 全量拉取后自行按 head_branch 匹配：gh run list --branch 对
           # tag 触发 run 的过滤不稳（v2.4.8 实测漏匹配致 validate 误杀）。
           RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?per_page=20")"
+          # 取「已完成的最新一条」（list 可能混入同分支的 in_progress run，
+          # 其 conclusion 为 null——v2.4.9 首跑实锤）：按 completed_at 降序取首条。
           RUN_ID="$(printf '%s' "${RUN_JSON}" | jq -r --arg tag "${TAG}" \
-            '.workflow_runs[] | select(.head_branch == $tag) | .id' | head -1)"
+            '[.workflow_runs[] | select(.head_branch == $tag and .status == "completed")] \
+             | sort_by(.created_at) | last | .id')"
           RUN_CONCLUSION="$(printf '%s' "${RUN_JSON}" | jq -r --arg tag "${TAG}" \
-            '.workflow_runs[] | select(.head_branch == $tag) | .conclusion' | head -1)"
+            '[.workflow_runs[] | select(.head_branch == $tag and .status == "completed")] \
+             | sort_by(.created_at) | last | .conclusion')"
           if [ -z "${RUN_ID}" ] || [ "${RUN_ID}" = "null" ]; then
             echo "::error ::release.yml run for ${TAG} not found; workflow_runs head_branches:"
             printf '%s' "${RUN_JSON}" | jq -r '.workflow_runs[].head_branch' | head -10
