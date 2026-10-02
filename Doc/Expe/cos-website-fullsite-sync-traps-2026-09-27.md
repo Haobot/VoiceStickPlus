@@ -59,3 +59,30 @@ GET https://dl.davenger.cloud/VoiceStickPlus/assets/index-CwFo6QFZ.css net::ERR_
 
 - `publish_cos.py` 没有 `website` 子命令，整站上传目前是手工配方（本文档步骤 3）；上传频次低、配方已固化，暂不固化代码，下次再发整站时评估。
 - COS 无对象生命周期清理：版本化路径（`firmware/v*`、`software/windows/v*`）的历史对象按设计保留；仅 `firmware/latest/` 需要每次手工清理旧 bin。
+
+## 2026-10-02 追加：第四坑——预签名直传丢 Content-Type/Cache-Control（整站白屏）
+
+### 症状
+
+v2.4.7 发布首次走 publish-mac 预签名轨道完成整站同步后，用户报告 `dl.davenger.cloud` 无法访问：浏览器导航根路径 ERR_FAILED/触发下载、模块脚本拒载，全站白屏。curl 一切 200——纯 MIME 层问题。
+
+### 根因
+
+CI `get_presigned_url(Method="PUT")` 签发时未带 `Headers`（Content-Type/Cache-Control 未签入），Mac 侧 curl 直传也不发这两个头 → COS 把**全部对象**落默认 `application/octet-stream` 且无缓存策略。浏览器不渲染 octet-stream 的 HTML、`<script type="module">` 的严格 MIME 检查拒载 JS → 白屏。同构建下 `cos_uploader.upload_files`（Windows 直传路径）同样不传 ContentType——qcloud SDK 全程不做任何 MIME 猜测，不传即 octet-stream（此前 9-27 配方「正常」实为侥幸/旧对象尚在）。
+
+### 判据（下次快速识别）
+
+- `curl -I` 站点任意对象 `Content-Type: application/octet-stream`（尤其 index.html）＝本坑。
+- 对照实验：`/?v=2` 能打开而裸 `/` 打不开＝浏览器把修复前无 Cache-Control 的 octet-stream 响应按启发式（Last-Modified×10%）缓存了，**换 URL 立即绕开**；受影响用户强刷一次或等启发式窗口（小时级）过期即可，`no-cache` 上线后不再复发。
+
+### 修复（2026-10-02 已落地并实测恢复）
+
+1. `publish-mac.yml` 两处预签名步骤：按扩展名算 MIME（`.js` 固定 `text/javascript`；`.html/.json/.xml` no-cache，其余 `max-age=31536000`），以 `Headers={"Content-Type": ct, "Cache-Control": cc}` 签入 URL，清单对象带 `content_type`/`cache_control` 字段。**签发与直传必须成对**：COS 签名校验按请求头重建，直传多带未签名的头 403，少带则落 octet-stream。
+2. `scripts/cos_uploader.py upload_files` 补 `ContentType=`（Windows 直传路径）。
+3. 新增 `scripts/upload_presigned.py` 固化 Mac 侧消费清单（回放双头 + 3 次重试 + 公有域名 HEAD 校验 Content-Type），替代手工 curl 循环。
+4. 修复轮实测：重触发 finalize → Release 拉 `cos-site-presign-v2.4.8.json` + `cos-site-dist-v2.4.8.zip` → 31 对象全量重传，逐对象 HEAD 验证 `text/html`/`text/javascript`/`application/xml` 等全部正确，浏览器实测渲染恢复（appcast/downloads.json/firmware latest 同步对齐 2.4.8）。
+
+### 经验
+
+- COS 对象元数据不能就地改：修复 = 重传（或 copy 自身 REPLACE），都要写权限——Mac 无凭据时唯一路径就是再跑一轮预签名。
+- 预签名轨道的头是**签名契约**的一部分：清单里每个对象必须同时携带「签了什么」和「该发什么」，两头缺一即静默劣化。
