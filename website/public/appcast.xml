@@ -22,19 +22,19 @@
       />
     </item>
     <item>
-      <title>Version 2.4.8</title>
+      <title>Version 2.4.9</title>
       <description><![CDATA[
-        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div><b>VoiceStick 2.4.8（macOS · 内置凭据测试版）</b></div><div>本版面向测试人员：macOS 安装包与 Windows MSI 一样<b>预打包全部 API 凭据</b>（火山/腾讯 ASR + DeepSeek LLM），装好即用，无需填写任何 API Key。</div><div><b>新增（macOS）</b></div><div><b>说明</b></div><ul><li>内置凭据内部测试模式：<code>config.toml</code> 不存在时首启自动生成默认配置（语音识别走内置凭据通道）并跳过配置向导；已配置的账号凭据始终优先，内置值仅作回退、不会写入配置文件。</li><li>v2.4.7 用户会通过 Sparkle 自动更新到本版；v2.3.x 旧手动安装包因更新签名密钥更换无法自动升级，请手动下载本版安装一次。</li><li>自签名证书分发（未公证）：首次打开请右键 →「打开」；蓝牙/辅助功能/输入监控权限各授权一次。</li><li>arm64（Apple Silicon）。</li><li>Windows 与固件无功能变更（版本号对齐）。</li></ul></div>
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div><b>VoiceStick 2.4.9（macOS OTA 修复轮）</b></div><div>升级提示：v2.4.7/2.4.8 用户经应用内自动更新到本版（macOS 上此次更新本身也走限速链路，请耐心等待约 25 分钟，或插 USB 线手动升级）；Windows 用户无需升级。</div><ul><li>修复（macOS）：固件更新过程断链（~21% 处卡死报「没有设备连接」）——发送节奏对齐 Windows，不再突发灌满设备。</li><li>定案（macOS）：macOS 蓝牙对已配对 HID 设备强制省电调度，<b>无线固件更新速度上限约 0.6-1KB/s，属系统平台限制</b>（Windows 不受限）。更新窗口会在低速时提示；<b>建议 Mac 用户升级固件时优先插 USB 数据线</b>（约 10 秒完成）。</li><li>修复（固件）：连接参数请求改为范围式，兼容 macOS/Windows 双端调度策略。</li><li>延续 2.4.8：安装包内置全部 API 凭据，开箱即用。</li></ul></div>
       ]]></description>
-      <pubDate>Fri, 02 Oct 2026 08:43:19 +0000</pubDate>
+      <pubDate>Fri, 02 Oct 2026 15:20:53 +0000</pubDate>
       <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
       <enclosure
-        url="https://dl.davenger.cloud/software/macos/v2.4.8/VoiceStick-2.4.8.zip"
+        url="https://dl.davenger.cloud/software/macos/v2.4.9/VoiceStick-2.4.9.zip"
         sparkle:os="macos"
-        sparkle:version="2.4.8"
-        sparkle:shortVersionString="2.4.8"
-        sparkle:edSignature="AVqHeMFXXFydCGCcmx5yLYb+YuAwpWpNuOGMZvIjF7gDFeN2Gn2+MLqL+enmucy2In/8CBG92OR23i5iGc++BA=="
-        length="4585509"
+        sparkle:version="2.4.9"
+        sparkle:shortVersionString="2.4.9"
+        sparkle:edSignature="GHuVqlkFdW4NZ6mQ39XSrueDmTLmHI4hx52vNd/Xcwzs14m67/cZKL4H5ChnRkuUEvcaWT+OUasKqO0/qKu2Dg=="
+        length="4587368"
         type="application/octet-stream"
       />
     </item>
