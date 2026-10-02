@@ -24,12 +24,14 @@ on:
     branches:
       - "ci/publish-stage-v*"
       - "ci/publish-finalize-v*"
+      - "ci/firmware-*"
       - "feat/stick-gateway"
     paths:
       - "dist/**"
       - "RELEASE_NOTES.md"
       - "FINALIZE"
       - ".publish-finalize"
+      - "FWBUILD"
 
 permissions:
   contents: write
@@ -381,3 +383,54 @@ jobs:
           (cd website && zip -qr "$RUNNER_TEMP/cos-site-dist-${TAG}.zip" dist)
           gh release upload "${TAG}" "cos-site-presign-${TAG}.json" \
             "$RUNNER_TEMP/cos-site-dist-${TAG}.zip" --clobber
+
+  firmware-build:
+    name: Build test firmware bin
+    # Mac 无 ESP-IDF/Docker 时的固件代构建轨道：推 ci/firmware-* 分支（含
+    # FWBUILD 标记），构建 app bin + merged bin，经回传分支（首选）或 Release
+    # 资产（回退）送达 Mac 侧。临时验证用，正式固件仍走 release.yml 门禁。
+    if: startsWith(github.ref_name, 'ci/firmware-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build firmware and merged image
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: firmware
+          command: |
+            idf.py build
+            cd build
+            esptool.py --chip esp32s3 merge_bin -o ../../fw-merged.bin @flash_args
+            cp voice_stick.bin ../../fw-app.bin
+
+      - name: Push bins back to an output branch
+        run: |
+          set -euo pipefail
+          OUT="ci/firmware-out-$(git rev-parse --short HEAD)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$OUT"
+          git add fw-app.bin fw-merged.bin
+          git commit -m "firmware test bins $(git rev-parse --short HEAD~1)"
+          if git push origin "$OUT"; then
+            echo "OUT_BRANCH=$OUT" >> "$GITHUB_ENV"
+          else
+            echo "push-back failed; falling back to release asset"
+          fi
+
+      - name: Fallback upload to release assets
+        if: env.OUT_BRANCH == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="$(gh release view --json tagName -q .tagName)"
+          SHA="$(git rev-parse --short HEAD)"
+          cp fw-app.bin "firmware-test-app-${SHA}.bin"
+          cp fw-merged.bin "firmware-test-merged-${SHA}.bin"
+          gh release upload "$TAG" "firmware-test-app-${SHA}.bin" "firmware-test-merged-${SHA}.bin" --clobber

@@ -1416,8 +1416,12 @@ esp_err_t voice_ble_request_fast_interval(void)
     }
     s_itvl_target = CONN_ITVL_FAST;
     struct ble_gap_upd_params params = {
-        .itvl_min = 6,    // 7.5ms，固定不留给 central 上浮空间
-        .itvl_max = 6,    // 7.5ms
+        // 范围请求而非固定值（2026-10-02 定案）：macOS central 对「固定 7.5ms」
+        // 的参数请求直接拒绝并单方面落回省电档（实测 interval=320 即 400ms，
+        // OTA/音频吞吐被钉死在 ~1KB/s）；范围请求 macOS 会选 15-30ms 档，Windows
+        // 仍取 min（7.5ms），两端兼容。范围下限保持 6 不变。
+        .itvl_min = 6,    // 7.5ms
+        .itvl_max = 24,   // 30ms
         .latency = 0,
         .supervision_timeout = 200,  // 2s
         .min_ce_len = 8,  // 每 connection event 至少 5ms，1M PHY 下尽量多发几个
