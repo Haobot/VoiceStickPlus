@@ -102,8 +102,14 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var xiaomiTickTimer: Timer?
     private var firmwareUpdateSession: FirmwareUpdateSession?
     private var firmwareUpdateTimeoutTimer: Timer?
-    /// OTA 超窗低节拍续发定时器（200ms 一拍，对齐 Windows kOtaWindowedWriteInterval）。
+    /// OTA 发送节拍器。数据段恒定限深节拍发送（每拍 ≤2 包），窗口内 15ms/拍、
+    /// 超窗 200ms/拍（对齐 Windows kOtaWindowedWriteInterval）。不能 while 猛灌：
+    /// 固件 esp_ota_write 在 BLE 回调线程同步写 flash（擦除块卡几十上百 ms），
+    /// 突发过深会灌满对端控制器断链（2026-10-02 Mac 21% 断链实测；Windows 逐包
+    /// await 天然温和故无此问题）。上限 ≈ 2×244B/15ms ≈ 32KB/s。
     private var otaWindowTickTimer: Timer?
+    /// 当前节拍间隔（0=无节拍器）；间隔未变时不重建 timer，防每拍重建丢拍。
+    private var otaPaceInterval: TimeInterval = 0
     private var interactionMode: InteractionMode = .holdToTalk
     private var showIMUDebug = false
     private var isWorkspaceSleeping = false
@@ -138,6 +144,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     deinit {
+        stopOtaPacingTimer()
         xiaomiTickTimer?.invalidate()
         firmwareUpdateTimeoutTimer?.invalidate()
         xiaomiContexts.keys.forEach { cancelXiaomiSubscribeTimeout(for: $0) }
@@ -766,6 +773,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             return
         }
 
+        stopOtaPacingTimer()
         if !session.began {
             let payload = BleProtocol.otaBeginPayload(
                 imageSize: UInt32(session.image.count),
@@ -776,44 +784,29 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             peripheral.writeValue(payload, for: characteristic, type: .withResponse)
             armFirmwareUpdateTimeout(5)
         } else if session.offset < session.image.count {
-            // 全速路径先停节拍器（progress 到达后由本函数直接驱动）。
-            otaWindowTickTimer?.invalidate()
-            otaWindowTickTimer = nil
             // 在途窗口（对齐 Windows OtaMaxInFlightBytes 定案参数，跨版本契约）：
-            // app 领先设备已确认字节数不超过 首确认 40KB / 稳态 24KB。首窗覆盖
-            // v2.3.8 及更早固件的 32KB 进度回传间隔（防互等死锁）；稳态收紧防
-            // 持续在途过大灌满对端控制器断链（2026-09-20 Windows 真机教训）。
+            // 首确认 40KB / 稳态 24KB——防互等死锁与灌满对端（见下节拍注释）。
             let window = BleProtocol.otaMaxInFlightBytes(confirmedWritten: session.confirmedWritten)
-            if session.offset - session.confirmedWritten >= window {
-                firmwareUpdateSession = session
-                // 超窗不完全停发：按 200ms 低节拍续发（对齐 Windows
-                // kOtaWindowedWriteInterval），让设备攒到 32KB 进度回传阈值——
-                // 完全停发会与回传间隔互等死锁（app×固件流控跨版本契约）。
-                if otaWindowTickTimer == nil {
-                    otaWindowTickTimer = Timer.scheduledTimer(
-                        withTimeInterval: 0.2, repeats: false
-                    ) { [weak self] _ in
-                        self?.otaWindowTickTimer = nil
-                        self?.sendNextFirmwareUpdateFrame()
-                    }
-                }
-                armFirmwareUpdateTimeout(15)
-                return
-            }
+            let overWindow = session.offset - session.confirmedWritten >= window
             // chunkSize 逐轮惰性重取：maximumWriteValueLength 随 ATT MTU 协商完成
-            // 才变大，固化在 session 里会永久 20B/包（<1KB/s 根因）。总包长 =
-            // chunk + 12B 帧头，预算对齐 Windows（min(max_pdu-15, 244)）。
+            // 才变大，固化在 session 里会永久 20B/包（<1KB/s 根因）。
             let maxWrite = peripheral.maximumWriteValueLength(for: .withoutResponse)
             let chunkSize = max(20, min(maxWrite - BleProtocol.otaDataHeaderLength,
                                         BleProtocol.otaMaxChunkSize))
             if chunkSize != session.lastLoggedChunkSize {
                 session.lastLoggedChunkSize = chunkSize
-                firmwareUpdateSession = session
-                NSLog("OTA data VS chunk_size=%d max_write=%d window=%d offset=%d",
-                      chunkSize, maxWrite, window, session.offset)
+                NSLog("OTA data VS chunk_size=%d max_write=%d window=%d offset=%d confirmed=%d",
+                      chunkSize, maxWrite, window, session.offset, session.confirmedWritten)
             }
-            while session.offset < session.image.count && peripheral.canSendWriteWithoutResponse {
-                // 窗口内逐包检查（首窗 40KB 大于单轮 CB 背压深度，通常单轮不会触顶）。
+            // 限深节拍发送：每拍最多 2 包，绝不做 while 猛灌——固件 esp_ota_write
+            // 在 BLE 回调线程同步写 flash（擦除块卡几十上百 ms），突发过深会灌满
+            // 对端控制器断链（2026-10-02 Mac 21% 断链实测；Windows 逐包 await
+            // 天然温和）。窗口内 15ms/拍（≈32KB/s 上限），超窗 200ms/拍（低节拍
+            // 续发让设备攒到 progress 回传阈值，完全停发会互等死锁）。
+            let paceInterval: TimeInterval = overWindow ? 0.2 : 0.015
+            var burst = 0
+            while burst < 2 && session.offset < session.image.count,
+                  peripheral.canSendWriteWithoutResponse {
                 if session.offset - session.confirmedWritten >= window { break }
                 let end = min(session.offset + chunkSize, session.image.count)
                 let chunk = session.image.subdata(in: session.offset..<end)
@@ -824,6 +817,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 )
                 peripheral.writeValue(payload, for: characteristic, type: .withoutResponse)
                 session.offset = end
+                burst += 1
                 if session.offset - session.lastQueuedProgressOffset >= 64 * 1024 ||
                     session.offset == session.image.count {
                     session.lastQueuedProgressOffset = session.offset
@@ -835,6 +829,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 }
             }
             firmwareUpdateSession = session
+            startOtaPacingTimer(paceInterval)
             // 数据走 write-without-response：以「进度/事件停滞」为判据（progress 会重新武装）。
             armFirmwareUpdateTimeout(15)
             if session.offset == session.image.count {
@@ -854,6 +849,25 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
     }
 
+    /// OTA 数据段节拍器（repeats）：每拍驱动 sendNextFirmwareUpdateFrame（限深 2 包）。
+    /// 间隔变化（窗口内 15ms ↔ 超窗 200ms）时重建；begin/end/done/fail 前必须停。
+    private func startOtaPacingTimer(_ interval: TimeInterval) {
+        if otaWindowTickTimer != nil && otaPaceInterval == interval { return }
+        otaWindowTickTimer?.invalidate()
+        otaPaceInterval = interval
+        otaWindowTickTimer = Timer.scheduledTimer(
+            withTimeInterval: interval, repeats: true
+        ) { [weak self] _ in
+            self?.sendNextFirmwareUpdateFrame()
+        }
+    }
+
+    private func stopOtaPacingTimer() {
+        otaWindowTickTimer?.invalidate()
+        otaWindowTickTimer = nil
+        otaPaceInterval = 0
+    }
+
     private func handleFirmwareUpdateStateEvent(_ event: FirmwareOTAStateEvent) {
         guard var session = firmwareUpdateSession else { return }
         if let transferID = event.transferID, transferID != session.transferID {
@@ -869,17 +883,15 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                     isDeviceConfirmed: true
                 ))
                 armFirmwareUpdateTimeout(15)
-                // 在途窗口续发点：confirmedWritten 推进后窗口重新放开。
+                // confirmedWritten 只在此更新（节拍器统一驱动续发，防重入）。
                 if Int(written) > session.confirmedWritten {
                     session.confirmedWritten = Int(written)
                     firmwareUpdateSession = session
-                    sendNextFirmwareUpdateFrame()
                 }
             }
         case "done":
             cancelFirmwareUpdateTimeout()
-            otaWindowTickTimer?.invalidate()
-            otaWindowTickTimer = nil
+            stopOtaPacingTimer()
             firmwareUpdateSession = nil
             session.progress(FirmwareUpdateProgress(
                 writtenBytes: session.image.count,
@@ -910,8 +922,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     private func failFirmwareUpdate(_ error: Error) {
         cancelFirmwareUpdateTimeout()
-        otaWindowTickTimer?.invalidate()
-        otaWindowTickTimer = nil
+        stopOtaPacingTimer()
         guard let session = firmwareUpdateSession else { return }
         if let peripheral = peripherals[session.peripheralID],
            let characteristic = otaCharacteristics[session.peripheralID] {
