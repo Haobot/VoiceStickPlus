@@ -110,6 +110,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var otaWindowTickTimer: Timer?
     /// 当前节拍间隔（0=无节拍器）；间隔未变时不重建 timer，防每拍重建丢拍。
     private var otaPaceInterval: TimeInterval = 0
+    /// readRSSI 诱导提速的节流计数（macOS HID 调度 workaround）。
+    private var otaRssiTick = 0
     private var interactionMode: InteractionMode = .holdToTalk
     private var showIMUDebug = false
     private var isWorkspaceSleeping = false
@@ -858,7 +860,18 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         otaWindowTickTimer = Timer.scheduledTimer(
             withTimeInterval: interval, repeats: true
         ) { [weak self] _ in
-            self?.sendNextFirmwareUpdateFrame()
+            guard let self else { return }
+            self.sendNextFirmwareUpdateFrame()
+            // macOS HID 省电调度 workaround（2026-10-02）：与系统 HID 共享 ACL 的
+            // 链路被 bluetoothd 按 400ms+latency4 调度，外设的快间隔请求被无视
+            //（实测 580B/s）。周期 readRSSI 强制控制器即时交互，诱导 central 缩
+            // 短连接间隔。~10 拍一次节流。
+            self.otaRssiTick = (self.otaRssiTick + 1) % 10
+            if self.otaRssiTick == 0,
+               let session = self.firmwareUpdateSession,
+               let peripheral = self.peripherals[session.peripheralID] {
+                peripheral.readRSSI()
+            }
         }
     }
 
