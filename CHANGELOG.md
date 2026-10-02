@@ -1,5 +1,15 @@
 # CHANGELOG.md
 
+## v2.4.9
+
+macOS 端 OTA 与体验修复轮（Windows MSI 无功能变更；固件含连接参数兼容性修复，Windows 用户无需升级）：
+
+- 修复（macOS）：**BLE OTA 不断链**——数据段改限深节拍发送（每 15ms ≤2 包，超窗 200ms 低节拍续发）。此前 while 猛灌最多 24KB 突发，撞上固件 flash 擦除卡顿（esp_ota_write 在 BLE 回调线程同步写）会灌满对端控制器致 ~21% 处断链。
+- 修复（macOS）：**OTA 吞吐诊断三件套**——chunkSize 逐轮惰性重取（修复 OTA 开始早于 ATT MTU 协商完成时永久 20B/包的问题）、在途窗口流控对齐 Windows 定案参数（首确认 40KB/稳态 24KB）、`OTA data chunk_size=…` 诊断日志。
+- 定案（macOS）：**BLE OTA 速度上限 ~0.6-1KB/s 是 macOS 平台硬限制**——与系统配对的 HID 设备共享的链路被 bluetoothd 强制 400ms 省电调度，外设参数请求被拒（status=571 实测）。更新窗口在速度 <3KB/s 时显示「macOS 蓝牙限速（系统 HID 调度）；可改用 USB 数据线串口烧录（约 10 秒）」提示（中英双语）。USB 串口烧录实测定案：1.5MB/10s @921600 baud。
+- 修复（固件）：快连接间隔请求从固定 7.5ms 改为 7.5-30ms 范围——macOS 对固定值参数请求直接拒绝并单方面落回 400ms（Windows 仍取最小值 7.5ms，两端兼容；对音频链路在非 macOS 目标上同样有益）。
+- 延续 v2.4.8：安装包内置全部 API 凭据（内部测试模式），开箱即用；v2.4.7/2.4.8 用户经 Sparkle 自动更新（注意 macOS 限速提示，耐心等或走 USB）。
+
 ## v2.4.8
 
 - 新增（macOS）：**内置凭据内部测试模式**（对齐 Windows MSI 同款机制，方便测试人员开箱即用）——安装包预打包 7 项 API 凭据（火山 ASR key、腾讯 SecretId/SecretKey/AppId、DeepSeek LLM key/base_url/model）。`config.toml` 缺失时首启自动落一份默认配置（provider 指向内置凭据方，默认 tencent）并跳过 onboarding 向导；用户配置值始终优先（trim 非空即用），内置值仅作运行时回退、不写入 `config.toml`（`AppConfig.active*` 访问器，逻辑对齐 Windows `Active*()`）。构建机制：`build-macos.sh` 从本机 `~/Library/Application Support/VoiceStick/config.toml` 提取注入 `BuiltinSecrets.swift`（编译后 trap 恢复仓库占位，凭据不进 git），`VOICESTICK_EMBED_BUILTIN_KEYS=0` 显式构建无凭据公开包；门禁日志 "Injecting built-in credentials into VoiceStickApp"（对齐 build-msi.bat 措辞，发布扫描 `--allow-builtin`）。凭据可被逆向提取，仅用于内测分发。
