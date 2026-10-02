@@ -5,6 +5,7 @@
 （GitHub Secrets 注入，不入仓库）；qcloud_cos SDK 延迟导入，纯逻辑
 （cache_control_for / require_credentials）可在未装 SDK 的环境单测。
 """
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -32,6 +33,15 @@ def cache_control_for(key: str) -> str:
     return "max-age=31536000"
 
 
+def content_type_for(key: str) -> str:
+    """按扩展名猜 MIME；qcloud SDK 不做任何猜测，不传即落 octet-stream
+    （浏览器拒渲染 HTML/模块 JS → 白屏）。.js 固定 text/javascript 供
+    <script type="module"> 的严格 MIME 检查。"""
+    if key.endswith(".js"):
+        return "text/javascript"
+    return mimetypes.guess_type(key)[0] or "application/octet-stream"
+
+
 def collect_dir(local_dir: str, key_prefix: str):
     """目录递归映射为 (local_path, cos_key) 列表；空前缀表示同步到 bucket 根。"""
     root = Path(local_dir)
@@ -55,6 +65,7 @@ def upload_files(bucket: str, region: str, files) -> None:
             Bucket=bucket,
             Key=key,
             LocalFilePath=local,
+            ContentType=content_type_for(key),
             CacheControl=cache_control_for(key),
             EnableMD5=False,
         )

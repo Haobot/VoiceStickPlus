@@ -119,7 +119,7 @@ jobs:
           set -euo pipefail
           pip install --quiet cos-python-sdk-v5
           python3 - <<'PY'
-          import json, os, pathlib
+          import json, mimetypes, os, pathlib
           from qcloud_cos import CosConfig, CosS3Client
 
           secret_id = os.environ.get("TENCENT_COS_SECRET_ID") or os.environ.get("TENCENTCLOUD_SECRET_ID")
@@ -130,6 +130,17 @@ jobs:
           client = CosS3Client(CosConfig(
               Region=os.environ["COS_REGION"], SecretId=secret_id, SecretKey=secret_key, Scheme="https"))
 
+          # Content-Type/Cache-Control 必须签入 URL 并在直传时原样回放：COS 签名
+          # 校验按请求头重建，直传多带未签名的头会 403，不带则对象落默认
+          # octet-stream 且无缓存策略（浏览器拒渲染 HTML/模块 JS → 全站白屏）。
+          def headers_for(key):
+              ct = mimetypes.guess_type(key)[0]
+              if key.endswith(".js"):
+                  ct = "text/javascript"
+              ct = ct or "application/octet-stream"
+              cc = "no-cache" if key.endswith((".html", ".json", ".xml")) else "max-age=31536000"
+              return {"Content-Type": ct, "Cache-Control": cc}
+
           objects = []
           for name in sorted(p.name for p in pathlib.Path("dist").iterdir() if p.is_file()):
               if name.startswith("VoiceStick-"):
@@ -137,8 +148,12 @@ jobs:
           for name in sorted(p.name for p in pathlib.Path("firmware-dist").iterdir() if p.is_file()):
               objects.append({"local": f"firmware-dist/{name}", "key": f"firmware/{tag}/{name}"})
           for obj in objects:
+              headers = headers_for(obj["key"])
+              obj["content_type"] = headers["Content-Type"]
+              obj["cache_control"] = headers["Cache-Control"]
               obj["url"] = client.get_presigned_url(
-                  Method="PUT", Bucket=os.environ["COS_BUCKET"], Key=obj["key"], Expired=7200)
+                  Method="PUT", Bucket=os.environ["COS_BUCKET"], Key=obj["key"], Expired=7200,
+                  Headers=headers)
           pathlib.Path("cos-urls.json").write_text(json.dumps(objects, indent=2) + "\n")
           print(f"presigned {len(objects)} objects")
           PY
@@ -296,7 +311,7 @@ jobs:
           (cd website && rm -rf dist && npm run build -- --base=/)
           pip install --quiet cos-python-sdk-v5
           python3 - <<'PY'
-          import json, os, pathlib
+          import json, mimetypes, os, pathlib
           from qcloud_cos import CosConfig, CosS3Client
 
           secret_id = os.environ.get("TENCENT_COS_SECRET_ID") or os.environ.get("TENCENTCLOUD_SECRET_ID")
@@ -308,15 +323,30 @@ jobs:
           client = CosS3Client(CosConfig(
               Region=os.environ["COS_REGION"], SecretId=secret_id, SecretKey=secret_key, Scheme="https"))
 
+          # Content-Type/Cache-Control 必须签入 URL 并在直传时原样回放：COS 签名
+          # 校验按请求头重建，直传多带未签名的头会 403，不带则对象落默认
+          # octet-stream 且无缓存策略（浏览器拒渲染 HTML/模块 JS → 全站白屏）。
+          def headers_for(key):
+              ct = mimetypes.guess_type(key)[0]
+              if key.endswith(".js"):
+                  ct = "text/javascript"
+              ct = ct or "application/octet-stream"
+              cc = "no-cache" if key.endswith((".html", ".json", ".xml")) else "max-age=31536000"
+              return {"Content-Type": ct, "Cache-Control": cc}
+
           objects = []
           for p in sorted(pathlib.Path("website/dist").rglob("*")):
               if p.is_file():
                   key = p.relative_to("website/dist").as_posix()
+                  headers = headers_for(key)
                   objects.append({
                       "local": str(p),
                       "key": key,
+                      "content_type": headers["Content-Type"],
+                      "cache_control": headers["Cache-Control"],
                       "url": client.get_presigned_url(
-                          Method="PUT", Bucket=os.environ["COS_BUCKET"], Key=key, Expired=7200),
+                          Method="PUT", Bucket=os.environ["COS_BUCKET"], Key=key, Expired=7200,
+                          Headers=headers),
                   })
           # firmware/latest/ 旧版本 bin 清理（upload 只增不删；显式列出待删键）。
           deletes = []
