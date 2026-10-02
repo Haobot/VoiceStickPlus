@@ -64,10 +64,18 @@ jobs:
           [ -f RELEASE_NOTES.md ] || { echo "::error ::RELEASE_NOTES.md missing"; exit 1; }
           ls dist/ | grep -q "VoiceStick-${VERSION}.zip" || { echo "::error ::mac zip missing"; exit 1; }
           # 固件门禁必须已成功（release.yml 由 Mac 侧先推 tag 触发）。
-          RUN_JSON="$(gh run list --workflow=release.yml --branch "${TAG}" --limit 1 \
-            --json databaseId,conclusion,status)"
-          RUN_ID="$(printf '%s' "${RUN_JSON}" | jq -r '.[0].databaseId')"
-          RUN_CONCLUSION="$(printf '%s' "${RUN_JSON}" | jq -r '.[0].conclusion')"
+          # 用 gh api 全量拉取后自行按 head_branch 匹配：gh run list --branch 对
+          # tag 触发 run 的过滤不稳（v2.4.8 实测漏匹配致 validate 误杀）。
+          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?per_page=20")"
+          RUN_ID="$(printf '%s' "${RUN_JSON}" | jq -r --arg tag "${TAG}" \
+            '.workflow_runs[] | select(.head_branch == $tag) | .id' | head -1)"
+          RUN_CONCLUSION="$(printf '%s' "${RUN_JSON}" | jq -r --arg tag "${TAG}" \
+            '.workflow_runs[] | select(.head_branch == $tag) | .conclusion' | head -1)"
+          if [ -z "${RUN_ID}" ] || [ "${RUN_ID}" = "null" ]; then
+            echo "::error ::release.yml run for ${TAG} not found; workflow_runs head_branches:"
+            printf '%s' "${RUN_JSON}" | jq -r '.workflow_runs[].head_branch' | head -10
+            exit 1
+          fi
           [ "${RUN_CONCLUSION}" = "success" ] || { echo "::error ::release.yml gate not success (${RUN_CONCLUSION})"; exit 1; }
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "TAG=${TAG}" >> "$GITHUB_ENV"
