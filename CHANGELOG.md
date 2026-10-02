@@ -7,7 +7,7 @@
 - 新增（macOS）：体感鼠标全链路，自 Windows `air_mouse_kin` 逐行移植——`VoiceStickCore/AirMouseKin`（sigmoid 增益曲线/方向锁/亚像素累积/angle+rate 双控制模式，纯逻辑 24 项单测）、`state_tx` 0x11 motion 帧解析、CGEvent 相对位移与左键注入、协调器 60Hz tick 与体感态语义门控（主键=左键、侧键退出、tap/旋转忽略、断连/遗忘清理）、全局 `air_mouse_*` 配置键与 Windows 同名同默认值（配置文件跨端通用）。入口在托盘设备子菜单（Windows 侧入口自 a813cd4 隐藏，Mac 按平台习惯放出）；设备交互设置中的体感灵敏度滑杆自此实际生效。
 - 新增（macOS）：LLM 精修流式输出（对齐 Windows `RefineStream`）——SSE `stream:true` token 级增量，悬浮窗 ~60ms 节流追加；SSE 失败自动回退非流式精修；热词守卫失败回退原文；取消令牌随会话取消/配置热更新生效。`refine_enabled` 默认值改为开（对齐 Windows 默认）。
 - 新增（macOS）：热词高频优先裁剪（对齐 Windows `hotword_selector`）——LLM prompt 热词段取评分 top-50（`score = 1.0·log1p(count) + 0.5·exp(-age/30d) + 2.0·manual`，库外新词按 manual 加权防新词先裁），最终文本命中热词计数入 `~/Library/Application Support/VoiceStick/hotword_usage.json`（与 Windows JSON 形态兼容）；ASR 通道热词不受裁剪。
-- 发布说明（macOS）：本版为自签名证书签名（未公证、无 Developer ID），首次打开需在 Finder 右键打开或系统设置放行；包体 arm64-only（Apple Silicon）；Sparkle EdDSA 公钥更换为新生成密钥对（无 2.x Mac 安装基数，无升级影响），自动更新链路启用。
+- 发布说明（macOS）：本版为自签名证书签名（未公证、无 Developer ID），首次打开需在 Finder 右键打开或系统设置放行；包体 arm64-only（Apple Silicon）。Sparkle EdDSA 公钥更换为新生成密钥对——旧公钥对应的私钥已不可恢复（fork 后自生成，非上游 0.3.x 签名钥；本机钥匙串/文件系统/快照均无）。**影响（勘误，2026-10-02）**：v2.3.x 及更早的自装 Mac 包无法经 Sparkle 自动升级到本版（旧公钥验新签名必失败，报「update is improperly signed」），需手动下载 dmg/zip 覆盖安装一次；自本版起自动更新链路恢复（COS zip × appcast EdDSA × 内嵌公钥三方已实测自洽）。
 - 平台差异（macOS 暂缺，后续评估）：微信输入法模式（虚拟麦克风需 CoreAudio 驱动，macOS 无用户态注册路径）、划词加词/候选热词挖掘（AXUIElement 选区读取待做）、本地离线 ASR/LLM 与离线授权（Windows 产品线）、COM 口烧录工具（Mac 走浏览器烧录器 + BLE OTA）。
 - 工程配套：`.github/workflows/publish-mac.yml` 无人值守发布轨道（Mac 侧仅 SSH push；CI 代理建 Release/传资产，COS 大文件走「CI 预签名 URL + Mac 国内直传」绕开跨境上行必死限制）。
 

@@ -149,3 +149,11 @@ macOS 对暴露为「键盘类」的 HID 设备（usage page 键盘/消费控制
 3. 两脚本自动发现默认钥匙串路径（未显式设 `VOICESTICK_CODESIGN_KEYCHAIN` 且默认路径存在即采用），防照抄旧命令静默降级 ad-hoc。
 
 附带修正：make-dmg.sh 跳过重签的判据从 `codesign -dvv | grep "Authority="` 改为 `! grep "Signature=adhoc"`——本机自签证书的 `-dvv` 输出可能不含 Authority 行（2026-10-02 实测），按 Authority 判会漏判、对自签产物白白重签。
+
+## 追加：Sparkle EdDSA 密钥轮换断点——「无安装基数」误判（2026-10-02 下午定案）
+
+v2.3.9 自装 Mac 包经 Sparkle 升级 2.4.7 报「The update is improperly signed and could not be validated」。根因＝发布时轮换了 EdDSA 密钥对（旧私钥不在本机），而旧公钥自 2026-05-07 起钉在 plist 里——**开发者自己的旧自装包就是「安装基数」**，发布时断言「无 2.x Mac 安装基数，无升级影响」是误判。排查链：登录钥匙串 `svce="https://sparkle-project.org"` 条目是新生成钥（generate_keys 当时打印「Generating a new signing key」= 事前无旧钥）；文件系统/本地 TM 快照无导出物；**旧公钥连上游 0.3.2 的 appcast 签名都验不过**（CryptoKit 验证脚本实测）= 它是 fork 后自生成钥、私钥已丢失，非上游 CI 之钥。
+
+判定与出路：旧钥不可恢复 ⇒ 旧包的自动更新是**永久断点**，唯一修复＝手动下载新版 dmg/zip 覆盖安装一次（桥接升级），之后回到新钥链路。发布链自洽验证法（可复用）：`Curve25519.Signing.PublicKey(rawRepresentation: plist公钥)` 验 `appcast edSignature` 对 **COS 实际字节**（注意别拿本地重建产物验——签名钉死发布时字节，v2.4.7 当天就因用下午重建的 zip 验出假阴性）。
+
+教训：轮换任何「钉在已发布产物里的公钥」前，必须盘点**包括开发者本机在内的全部存量安装**；「没有公开发布过」≠「没有安装基数」。另：`security find-generic-password -s "Sparkle"` 查不到 Sparkle 默认钥——默认 service 是 `https://sparkle-project.org`（按 svce grep dump-keychain 才对）。
