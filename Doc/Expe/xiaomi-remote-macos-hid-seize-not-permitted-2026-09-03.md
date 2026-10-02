@@ -137,3 +137,15 @@ macOS 对暴露为「键盘类」的 HID 设备（usage page 键盘/消费控制
 判据（下次快速识别）：`codesign` 长时间 0 CPU 挂起 + `ps` 有 `SecurityAgent` = 钥匙串 ACL 授权弹窗在等人；不是死锁也不是证书问题。
 
 工程化：`scripts/build-macos.sh` 新增 `VOICESTICK_CODESIGN_KEYCHAIN` env（sign 追加 `--keychain`）；`scripts/make-dmg.sh` 新增「已带有效非 ad-hoc 签名则跳过重签」（旧逻辑会把自签产物降级为 ad-hoc + `--options runtime` → Sparkle 库校验崩溃，即 2026-09-22 修复过的同一坑的死而复生）。本机资产与密码见 `~/.voicestick-sign/README.md`（不入仓库）。
+
+## 追加：自建钥匙串睡眠锁定弹窗定案（2026-10-02 下午，用户实测踩坑）
+
+用户白天构建时遇到密码弹窗，输入开机密码与 Apple ID 密码均「不对」。**判据**：弹窗文案「"security"想使用"voicestick-sign"钥匙串。请输入钥匙串密码」＝自建签名钥匙串的**解锁窗**，预期密码是创建钥匙串时自设的（`~/.voicestick-sign/keychain-password`），与用户系统凭据无关——所以怎么输都不对。诱因＝凌晨创建时 `set-keychain-settings -lut 999999` 的 `-l`（睡眠锁定）：机器睡眠后钥匙串回锁定态，任何裸访问（含 `security show-keychain-info`，不止 codesign）都会触发 GUI 解锁。
+
+修复（三层，2026-10-02 定案）：
+
+1. `security set-keychain-settings <KC>`（不带任何标志）→ `no-timeout`（清除睡眠锁定与超时锁定；重启后仍会回锁定态，此项只是减少触发面）。
+2. 密码落 `~/.voicestick-sign/keychain-password`（chmod 600）；`build-macos.sh` / `make-dmg.sh` 签名前 `security unlock-keychain -p "$(cat …)"`（幂等，已解锁也安全）。
+3. 两脚本自动发现默认钥匙串路径（未显式设 `VOICESTICK_CODESIGN_KEYCHAIN` 且默认路径存在即采用），防照抄旧命令静默降级 ad-hoc。
+
+附带修正：make-dmg.sh 跳过重签的判据从 `codesign -dvv | grep "Authority="` 改为 `! grep "Signature=adhoc"`——本机自签证书的 `-dvv` 输出可能不含 Authority 行（2026-10-02 实测），按 Authority 判会漏判、对自签产物白白重签。
