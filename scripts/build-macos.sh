@@ -159,6 +159,32 @@ fi
 # 解法 = VOICESTICK_CODESIGN_KEYCHAIN 指向自建钥匙串（密码已知，已对其
 # set-key-partition-list），本脚本对 sign 追加 --keychain。2026-10-02 实测：
 # 自建钥匙串 + 显式 --keychain 可正常签名/验签（旧结论「只认登录钥匙串」过时）。
+#
+# 2026-10-02 追加（用户实测踩坑）：自建钥匙串在睡眠/重启后回到锁定态，裸访问
+# （含 security show-keychain-info）会弹 GUI 解锁窗且密码非用户开机密码，极易
+# 误判死锁。两道防线：
+#   1) 未显式指定 VOICESTICK_CODESIGN_KEYCHAIN 时自动采用默认路径（存在即用），
+#      避免照抄旧命令静默降级 ad-hoc；
+#   2) 签名前用 ~/.voicestick-sign/keychain-password 自动 unlock-keychain
+#      （幂等，已解锁也安全）。
+DEFAULT_CODESIGN_KEYCHAIN="$HOME/Library/Keychains/voicestick-sign.keychain-db"
+if [ -z "${VOICESTICK_CODESIGN_KEYCHAIN:-}" ] && [ -f "$DEFAULT_CODESIGN_KEYCHAIN" ]; then
+    VOICESTICK_CODESIGN_KEYCHAIN="$DEFAULT_CODESIGN_KEYCHAIN"
+fi
+# 自动解锁（幂等，已解锁同样安全）：锁定态下任何访问（含证书探测）都可能弹
+# GUI 解锁窗。密码文件缺失/不符时降级为警告——不阻断构建（钥匙串恰好已解锁
+# 仍可完成签名）。
+if [ -n "${VOICESTICK_CODESIGN_KEYCHAIN:-}" ] && [ -f "$VOICESTICK_CODESIGN_KEYCHAIN" ]; then
+    SIGN_KEYCHAIN_PASSWORD_FILE="$HOME/.voicestick-sign/keychain-password"
+    if [ -f "$SIGN_KEYCHAIN_PASSWORD_FILE" ]; then
+        if ! security unlock-keychain -p "$(cat "$SIGN_KEYCHAIN_PASSWORD_FILE")" \
+                "$VOICESTICK_CODESIGN_KEYCHAIN" 2>/dev/null; then
+            echo "WARNING: 解锁 $VOICESTICK_CODESIGN_KEYCHAIN 失败（$SIGN_KEYCHAIN_PASSWORD_FILE 与钥匙串密码不符？）；签名阶段可能弹窗。"
+        fi
+    else
+        echo "WARNING: 缺少 $SIGN_KEYCHAIN_PASSWORD_FILE，无法自动解锁自建签名钥匙串；若弹解锁窗，密码见 ~/.voicestick-sign/README.md。"
+    fi
+fi
 CODESIGN_IDENTITY="-"
 CODESIGN_EXTRA_FLAGS=(--deep --force)
 CODESIGN_KEYCHAIN_ARGS=()

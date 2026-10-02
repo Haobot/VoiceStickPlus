@@ -22,13 +22,34 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
+# 无人值守链路对齐 build-macos.sh：自动发现 + 自动解锁自建签名钥匙串
+#（睡眠/重启后回锁定态，裸访问弹 GUI 解锁窗且密码非用户开机密码，见
+# build-macos.sh 注释与 Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md）。
+DEFAULT_CODESIGN_KEYCHAIN="$HOME/Library/Keychains/voicestick-sign.keychain-db"
+if [ -z "${VOICESTICK_CODESIGN_KEYCHAIN:-}" ] && [ -f "$DEFAULT_CODESIGN_KEYCHAIN" ]; then
+    VOICESTICK_CODESIGN_KEYCHAIN="$DEFAULT_CODESIGN_KEYCHAIN"
+fi
+if [ -n "${VOICESTICK_CODESIGN_KEYCHAIN:-}" ] && [ -f "$VOICESTICK_CODESIGN_KEYCHAIN" ]; then
+    SIGN_KEYCHAIN_PASSWORD_FILE="$HOME/.voicestick-sign/keychain-password"
+    if [ -f "$SIGN_KEYCHAIN_PASSWORD_FILE" ]; then
+        if ! security unlock-keychain -p "$(cat "$SIGN_KEYCHAIN_PASSWORD_FILE")" \
+                "$VOICESTICK_CODESIGN_KEYCHAIN" 2>/dev/null; then
+            echo "WARNING: 解锁 $VOICESTICK_CODESIGN_KEYCHAIN 失败（$SIGN_KEYCHAIN_PASSWORD_FILE 与钥匙串密码不符？）；重签（如需）可能弹窗。"
+        fi
+    else
+        echo "WARNING: 缺少 $SIGN_KEYCHAIN_PASSWORD_FILE，无法自动解锁自建签名钥匙串；若弹解锁窗，密码见 ~/.voicestick-sign/README.md。"
+    fi
+fi
+
 # 已带有效非 ad-hoc 签名（如 build-macos.sh 自签证书产物）则跳过重签：
 # 默认分支会把身份降级为 ad-hoc 且带 --options runtime——自签证书无 Team ID，
 # hardened runtime 库校验会拒载 Sparkle.framework（启动即崩，见 CHANGELOG v2.3.8）。
 # VOICESTICK_RESIGN=1 可强制重签（Developer ID 公证流程保留原语义）。
+# 判据用 "Signature=adhoc"：自签证书的 codesign -dvv 可能不打印 Authority 行
+#（2026-10-02 实测本机自签产物即无），按 Authority 判会漏判、白白重签。
 if [ "${VOICESTICK_RESIGN:-0}" != "1" ] \
     && codesign --verify --deep --strict "$APP_PATH" 2>/dev/null \
-    && codesign -dvv "$APP_PATH" 2>&1 | grep -q "Authority="; then
+    && ! codesign -dvv "$APP_PATH" 2>&1 | grep -q "Signature=adhoc"; then
     echo "App already carries a valid non-adhoc signature; skipping re-sign."
 else
     CODESIGN_IDENTITY="-"
