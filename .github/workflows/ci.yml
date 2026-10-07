@@ -2,6 +2,8 @@ name: CI
 
 # P0-1 回归门禁：任一分支都要能构建 macOS/Windows 并跑测试；
 # P0-3（回调线程封送）与 P0-4（凭据扫描）的改动必须在这里被编译/测试覆盖。
+# release-guard + website：跟进评审（Doc/Plan/architecture-review-followup-2026-10-07.md）
+# 阶段 0 动作 0.2/0.3——一致性硬门禁与网站构建，防止版本/协议/Hub/文档漂移与网页编译错后置暴露。
 on:
   push:
     branches: [main, "feat/**", "fix/**"]
@@ -73,3 +75,36 @@ jobs:
           python3 scripts/test_mirror_urls.py
           python3 scripts/test_update_downloads.py
           python3 scripts/test_cos_scripts.py
+
+  release-guard:
+    name: Release consistency guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tag 检查需要完整历史与标签（浅克隆拿不到 v* tag 会退化为 SKIP）
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Guard unit tests
+        run: python3 scripts/test_release_guard.py
+      - name: Run release guard
+        run: python3 scripts/release_guard.py
+
+  website:
+    name: Website build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: npm ci
+        working-directory: website
+        run: npm ci
+      - name: npm run build
+        working-directory: website
+        run: npm run build
