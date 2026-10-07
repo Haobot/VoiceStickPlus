@@ -16164,9 +16164,11 @@ int main() {
     TestCoordinatorUpdateFirmwareFromFile();
     printf(">> TestOtaMaxInFlightBytes\n"); fflush(stdout);
     TestOtaMaxInFlightBytes();
+    printf(">> TestParseOtaCliArgs\n"); fflush(stdout);
     TestParseOtaCliArgs();
     TestParseGatewayTargetCliArgs();
     TestParseControlCliArgs();
+    printf(">> cluster: coordinator hotkey/click/tap\n"); fflush(stdout);
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
     TestCoordinatorCancelsShortPrimaryPress();
@@ -16275,7 +16277,9 @@ int main() {
     TestTencentVoiceIdGeneration();
     TestTencentReceiveLoopExitsAfterFinalEmitted();
     TestTencentShutdownForcesHandleCloseNotWebSocketClose();
+    printf(">> TestCoordinatorUpdateConfigDestroysOldAsrOffThread\n"); fflush(stdout);
     TestCoordinatorUpdateConfigDestroysOldAsrOffThread();
+    printf(">> TestCoordinatorConcurrentUpdateConfigStress\n"); fflush(stdout);
     TestCoordinatorConcurrentUpdateConfigStress();
     TestAudioOpusDecoderRoundTrip();
     TestAudioOpusDecoderNullData();
@@ -16399,5 +16403,6 @@ int main() {
     TestFinalizePartFile();
     TestModelDownloaderLoopback();
     TestModelDownloadSession();
+    printf(">> ALL TESTS DONE\n"); fflush(stdout);
     return 0;
 }
