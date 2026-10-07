@@ -15487,7 +15487,26 @@ void TestModelDownloadSession() {
     AbortIfFailed(failed, "TestModelDownloadSession");
 }
 
+// CI 诊断（2026-10-07）：进程级首机会异常探针——任何线程的硬异常（AV/栈溢出/
+// fail-fast）在进程死亡前把错误码与地址打进日志，用于 ctest SEGFAULT 定位。
+static LONG WINAPI UnhandledExceptionProbe(PEXCEPTION_POINTERS info) {
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code == 0xC0000005u || code == 0xC00000FDu || code == 0xC000001Du ||
+        code == 0xC0000409u || code == 0x80000003u) {
+        std::printf("[probe] exception 0x%08lX addr=%p\n",
+                    static_cast<unsigned long>(code),
+                    info->ExceptionRecord->ExceptionAddress);
+        if (code == 0xC0000005u && info->ExceptionRecord->ExceptionInformation[0] != 0) {
+            std::printf("[probe] AV access addr=%p\n",
+                        reinterpret_cast<void*>(info->ExceptionRecord->ExceptionInformation[1]));
+        }
+        fflush(stdout);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int main() {
+    AddVectoredExceptionHandlerFirst(&UnhandledExceptionProbe);
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接终止，
     // 避免 CRT 默认弹「Microsoft Visual C++ Runtime Library」对话框挂起测试进程。

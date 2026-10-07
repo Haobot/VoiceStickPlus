@@ -85,6 +85,7 @@ bool WasapiMicCapture::Start() {
         capture_thread_ = std::thread{};
         open_done_.reset();
         running_.store(false);
+        std::printf("[wasapi] main: joined after failed open, Start=false\n");
         return false;
     }
     running_.store(true);
@@ -183,14 +184,18 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
         last_start_error_ = "GetService(IAudioCaptureClient) failed " + HrToHex(hr);
     }
     if (FAILED(hr)) {
+        std::printf("[wasapi] failure path entered\n");
         if (last_start_error_.empty()) {
             last_start_error_ = "IAudioClient Start failed " + HrToHex(hr);
         }
+        std::printf("[wasapi] before LogApp\n");
         LogApp("WasapiMicCapture: open failed: " + last_start_error_);
+        std::printf("[wasapi] after LogApp\n");
         if (event != nullptr) CloseHandle(event);
         started_ok->store(false);
         open_done->store(true);
         if (com_initialized) CoUninitialize();
+        std::printf("[wasapi] failure path exiting\n");
         return;
     }
 
