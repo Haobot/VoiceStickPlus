@@ -1800,7 +1800,9 @@ void Win32App::SyncLocalMicRuntime() {
         mic_mode_hotkey_.reset();
     }
 
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
     SyncLocalRefiner();
+#endif
 #endif
 }
 
