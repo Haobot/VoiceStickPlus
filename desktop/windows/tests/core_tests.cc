@@ -15533,11 +15533,17 @@ int main() {
     TestCoordinatorLocalMicSessionCrossTurnRefinement();
     TestResolveLocalRefineModelPathCrossTurn();
     TestLlamaCppEngineRealModelSmoke();
+    printf(">> TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled\n"); fflush(stdout);
     TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled();
+    printf(">> TestCoordinatorLocalMicShortPressDiscards\n"); fflush(stdout);
     TestCoordinatorLocalMicShortPressDiscards();
+    printf(">> TestCoordinatorLocalMicDisabledDoesNothing\n"); fflush(stdout);
     TestCoordinatorLocalMicDisabledDoesNothing();
+    printf(">> TestCoordinatorLocalMicCaptureStartFailureCancelsSession\n"); fflush(stdout);
     TestCoordinatorLocalMicCaptureStartFailureCancelsSession();
+    printf(">> TestWasapiMicCaptureSmoke\n"); fflush(stdout);
     TestWasapiMicCaptureSmoke();
+    printf(">> wasapi smoke done\n"); fflush(stdout);
     printf(">> TestClipboardVaultMultiFormatRoundTrip\n"); fflush(stdout);
     TestClipboardVaultMultiFormatRoundTrip();
     printf(">> TestClipboardVaultSkipsHandleFormats\n"); fflush(stdout);
