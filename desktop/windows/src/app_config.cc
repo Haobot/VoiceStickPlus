@@ -858,6 +858,8 @@ void AppConfig::SavePreservingDiskCredentials(const std::filesystem::path& path)
     // 修复路径 A：程序运行时不重读 config.toml，运行时 Save 若用内存过期凭据会覆盖用户手改的 key。
     AppConfig disk = Load(path);
     AppConfig merged = *this;
+    // [license] 磁盘即权威（B9）：本对象是运行期副本，license 可能早于激活/锚点写入。
+    merged.license = disk.license;
     merged.voicestick_api_key = disk.voicestick_api_key;
     merged.voicestick_cloud_url = disk.voicestick_cloud_url;
     merged.volcengine_api_key = disk.volcengine_api_key;
@@ -893,6 +895,8 @@ void AppConfig::SaveSettingsDialog(const std::filesystem::path& path) const {
     }
     AppConfig disk = Load(path);
     AppConfig merged = *this;
+    // [license] 磁盘即权威（B9）：同 SavePreservingDiskCredentials。
+    merged.license = disk.license;
     // 内存值（用户刚输入的）优先；空字段用磁盘值兜底，避免内存过期空值覆盖磁盘 key。
     auto keep_memory_if_nonempty = [](const std::string& memory_value,
                                       const std::string& disk_value) {
@@ -924,16 +928,11 @@ void AppConfig::SaveSettingsDialog(const std::filesystem::path& path) const {
 }
 
 void AppConfig::Save(const std::filesystem::path& path) const {
-    // [license] 磁盘即权威：LicenseRuntime 的激活/锚点/last_seen 均立即落盘，而任何
-    // 保存方（协调器旧副本/设置对话框/合并保存）的内存 license 都可能陈旧或为空——
-    // 直接全量写出会抹掉磁盘 [license]（B9 数据丢失面）。保存前从磁盘重取，与
-    // SavePairedDeviceInfo 既有的 ReloadLicenseFromDisk 同口径（后者成为双保险）。
-    AppConfig out = *this;
-    std::error_code ec;
-    if (std::filesystem::exists(path, ec)) {
-        out.license = Load(path).license;
-    }
-    out.WriteTo(path);
+    // [license] 语义（B9 定案）：Save 写**本对象**的 license——LicenseRuntime 经
+    // config_->Save() 持久化激活/锚点/last_seen，必须写内存值，故此处不做全局重取。
+    // 持有陈旧副本的保存方由各合并路径自行重取磁盘（SavePreservingDiskCredentials /
+    // SaveSettingsDialog / SavePairedDeviceInfo），谁的副本谁负责。
+    WriteTo(path);
 }
 
 void AppConfig::WriteTo(const std::filesystem::path& path) const {

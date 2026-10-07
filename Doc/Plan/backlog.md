@@ -53,7 +53,7 @@
 | B3 | 微信模式启动失败不回滚默认录音设备 | open | 9-22 未复核 |
 | B7 | 腾讯热词同步移出 `audio_mutex_` | open | 9-22 未复核（B6 已修） |
 | B8 | 协调器 `config_` 跨线程竞争 → `shared_ptr<const AppConfig>` 原子换入 | **closed（10-07）** | `std::atomic<shared_ptr<const AppConfig>>` 快照 + `config_write_mutex_` 写侧 copy-mutate-store；109 读点转 `ConfigSnapshot()`，4 写点（UpdateConfig/配对表×2/SavePairedDeviceInfo）入互斥；压测 `TestCoordinatorConcurrentUpdateConfigStress`（4 读线程 × 300 次换入） |
-| B9 | 配置写盘非原子 + 合并保存丢 `[license]` | **closed（10-07）** | `Save(path)` 改包装器（保存前从磁盘重取 `[license]`——磁盘即权威）+ `WriteTo` 原子写（同目录 `.tmp` → `MoveFileExW` REPLACE_EXISTING\|WRITE_THROUGH）；单测 `TestSaveStaleCopyKeepsLicense` 覆盖三条保存路径 + 无 `.tmp` 残迹 |
+| B9 | 配置写盘非原子 + 合并保存丢 `[license]` | **closed（10-07）** | `WriteTo` 原子写（同目录 `.tmp` → `MoveFileExW` REPLACE_EXISTING\|WRITE_THROUGH）+ **两条合并保存路径**（Preserving/SettingsDialog）落盘前保留磁盘 `[license]`——「谁的副本谁重取」；plain Save 写本对象 license（LicenseRuntime 激活/锚点落盘语义所依赖，首版全局重取被既有回归测试拦下后修正）；单测 `TestSaveStaleCopyKeepsLicense` + `TestLicenseConfigRoundTrip` 回归 |
 | B11 | `SetLocalRefiner` 持 `audio_mutex_` 析构旧 client | open | 9-22 未复核 |
 | B12 | 精修线程对象只增不减 | open | 9-22 未复核 |
 | B13 | 热词候选文件双写者 + 陈旧快照覆盖「忽略」 | open | 9-22 未复核 |

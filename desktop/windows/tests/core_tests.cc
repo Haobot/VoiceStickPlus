@@ -15552,22 +15552,21 @@ void TestSaveStaleCopyKeepsLicense() {
     on_disk.volcengine_api_key = "disk-key";
     on_disk.Save(path);
 
-    // 2) 陈旧副本（license 为空 = 协调器旧快照）走三条保存路径，[license] 必须幸存。
+    // 2) 陈旧副本（license 为空 = 运行期快照）走两条合并保存路径，[license] 必须幸存。
+    // plain Save 写**本对象** license（LicenseRuntime 激活/锚点落盘依赖该语义，见
+    // TestLicenseConfigRoundTrip 往返），陈旧持有者约定不走 plain Save——B9 定案：
+    // 谁的副本谁重取，合并路径自带磁盘 license 保留。
     AppConfig stale = AppConfig::Defaults();
-    stale.Save(path);
-    AppConfig loaded = AppConfig::Load(path);
-    expect(loaded.license.serial == "VS-B9-SERIAL", "Save 后 license.serial 被抹");
-    expect(loaded.license.trial_anchor_days.has_value() &&
-               *loaded.license.trial_anchor_days == 100,
-           "Save 后 trial_anchor_days 被抹");
-    expect(loaded.license.last_seen_days.has_value() &&
-               *loaded.license.last_seen_days == 105,
-           "Save 后 last_seen_days 被抹");
-
     stale.SavePreservingDiskCredentials(path);
-    loaded = AppConfig::Load(path);
+    AppConfig loaded = AppConfig::Load(path);
     expect(loaded.license.serial == "VS-B9-SERIAL",
            "SavePreservingDiskCredentials 后 license.serial 被抹");
+    expect(loaded.license.trial_anchor_days.has_value() &&
+               *loaded.license.trial_anchor_days == 100,
+           "SavePreservingDiskCredentials 后 trial_anchor_days 被抹");
+    expect(loaded.license.last_seen_days.has_value() &&
+               *loaded.license.last_seen_days == 105,
+           "SavePreservingDiskCredentials 后 last_seen_days 被抹");
     expect(loaded.volcengine_api_key == "disk-key",
            "SavePreservingDiskCredentials 凭据保留语义回归");
 
