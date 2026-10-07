@@ -88,7 +88,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 - Windows 构建若报 `C1083: winrt/base.h` 找不到：`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 生成投影头到 `desktop/windows/generated_winrt/`（gitignored）并 prepend 到 `INCLUDE`；手动 vcvars64 构建时须同样加入。
 - MiniEncoderC 编码器是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）是唯一唤醒键。Grove 口 5V 不启用，编码器由顶部 Hat 排针供电。
 - VoiceStickFlash 改动除构建/CTest 外，用 `scripts\prepare_flash_payload.ps1` 冒烟 payload；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。
-- `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证）。
+- `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证，含音频回归 `run_audio_regression.py`：语料合成回归闭环，支持 `--watch` 监听与 `--install-hook` commit 触发）。
 
 ## 文档索引
 

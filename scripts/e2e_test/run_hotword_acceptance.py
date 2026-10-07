@@ -88,7 +88,9 @@ def load_clips(manifest: list[dict], base: Path) -> list[dict]:
     """
     items: list[dict] = []
     for item in manifest:
-        ogg = Path(item.get("audio", base / f"{item['id']}.ogg"))
+        ogg = Path(item["audio"]) if "audio" in item else base / f"{item['id']}.ogg"
+        if not ogg.is_absolute():  # 相对路径以清单所在目录为基准（清单可整体拷走复用）
+            ogg = base / ogg
         if not ogg.exists():
             print(f"WARN 跳过 {item['id']}: 音频不存在 {ogg}", file=sys.stderr)
             continue
