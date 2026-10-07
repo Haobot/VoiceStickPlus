@@ -10,7 +10,7 @@
 
 | ID | 事项 | 状态 | 备注 |
 |---|---|---|---|
-| 0.1 | 跨端契约 fixtures（golden-frame 三端对拍，进 CI） | **open** | 下一批；granule/60ms 两处战果已提前修复（见关闭记录） |
+| 0.1 | 跨端契约 fixtures（golden-frame 多端对拍，进 CI） | **closed（Win+macOS）** | `tests/contract/` 48 黄金样本（state 14/power_mgmt 2/ota_state 5/binary 5/control 18/ota_control 4），两端测试随 CI 运行；**固件端 reader 余项**：待 E8 host 构建（`run_tests.py` 跨平台化）后消费同一 manifest |
 | 0.2 | release-guard 脚本 + CI job | **closed** | `scripts/release_guard.py`（7 项检查）+ `test_release_guard.py`（13 用例）+ `ci.yml` release-guard job |
 | 0.3 | 网站 `npm run build` 进 CI | **closed** | `ci.yml` website job（npm ci + build，lock 缓存） |
 | 0.4 | 本 backlog 建立 | **closed** | 本文件 |
@@ -125,4 +125,5 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-07 | **0.1 契约 fixtures 两端落地**：`tests/contract/`（生成器独立手搓字节 + manifest.json 48 样本）+ Windows `TestContractFixtures`（ctest）+ macOS `runContractFixtureTests`（swift run）；键序不构成契约、expect 只取公共字段（单端缺口清单见 `tests/contract/README.md`） | 本地 macOS `swift run VoiceStickTests` **644/644**（契约 48 样本对拍行输出）；Windows 侧由 CI ctest 复核 |
 | 2026-10-07 | **CI 六 job 首次全绿**（此前连续 15+ 次恒红，E6 门禁从「形同虚设」变真闸）：① macOS `BatteryMonitorWindowController.swift` `/` 跨工具链二义显式化（CI Xcode16 实锤、本地新 SDK 恰好可解）；② WinSparkle 下载源 vslavnik→vslavik（旧 fork 已 404）+ SHA256 钉死 + zip 顶层目录布局自适应；③ `settings_dialog`/`win32_app` 补 `VOICESTICK_LOCAL_ASR/REFINE_ENABLED` 守卫（ASR-OFF/REFINE-OFF 瘦构建从未被编译过，链接即失败）；④ CI 注入 sherpa-onnx 官方包（缓存 + SHA256），本地 ASR 保持默认 ON、LocalAsrClient 测试全量覆盖；⑤ **WasapiMicCapture COM 释放顺序修复**（ComPtr 在 `CoUninitialize` 之后析构属 UB——无麦克风失败路径 CI 首次执行即 ctest SEGFAULT，经进度标记 + SEH 探针二分定位） | CI run `37634784237`：macOS/Windows(build+ctest)/firmware/website/release-guard/script-tests 六 job 全部 ✓ |

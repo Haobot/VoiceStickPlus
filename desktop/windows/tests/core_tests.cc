@@ -15488,6 +15488,417 @@ void TestModelDownloadSession() {
     AbortIfFailed(failed, "TestModelDownloadSession");
 }
 
+// ===== 跨端契约 fixtures（tests/contract，规格 Doc/Ref/protocol.md）=====
+// 黄金字节由 tests/contract/generate_fixtures.py 独立构造（不从实现反推）；本测试
+// 用 Windows 解析器/构建器对拍期望。键序不构成契约，control 组比对对象语义；
+// expect 只取两端公共字段（单端缺口清单见 tests/contract/README.md）。
+
+static std::vector<std::uint8_t> ContractUnhex(const std::string& hex) {
+    auto nib = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::vector<std::uint8_t> out;
+    out.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size();) {
+        if (std::isspace(static_cast<unsigned char>(hex[i]))) { ++i; continue; }
+        if (i + 1 >= hex.size()) return {};
+        const int hi = nib(hex[i]);
+        const int lo = nib(hex[i + 1]);
+        if (hi < 0 || lo < 0) return {};
+        out.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+        i += 2;
+    }
+    return out;
+}
+
+static std::string ContractHexStr(const std::vector<std::uint8_t>& bytes) {
+    static const char* kDigits = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (const auto b : bytes) {
+        out.push_back(kDigits[b >> 4]);
+        out.push_back(kDigits[b & 0x0F]);
+    }
+    return out;
+}
+
+static std::string ContractJsonStr(const cJSON* item) {
+    return (item && item->valuestring) ? item->valuestring : std::string();
+}
+
+static std::uint32_t ContractJsonU32(const cJSON* item) {
+    return item ? static_cast<std::uint32_t>(item->valuedouble) : 0;
+}
+
+// control 构建器分发（args → 本端 payload）。两端缺一边的构建器不入公共样本。
+static std::optional<ByteVector> ContractBuildControl(const std::string& kind,
+                                                      const cJSON* args) {
+    auto s = [&](const char* k) {
+        return ContractJsonStr(cJSON_GetObjectItemCaseSensitive(args, k));
+    };
+    if (kind == "ui_state") {
+        return BleProtocol::UiStatePayload(s("state"), s("text"));
+    }
+    if (kind == "interaction_mode") {
+        return BleProtocol::InteractionModePayload(s("mode"));
+    }
+    if (kind == "show_imu_debug") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::ShowImuDebugPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "imu_wake_sensitivity") {
+        return BleProtocol::ImuWakeSensitivityPayload(
+            cJSON_GetObjectItemCaseSensitive(args, "threshold")->valueint);
+    }
+    if (kind == "tap_enabled") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::TapEnabledPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "tap_sensitivity") {
+        return BleProtocol::TapSensitivityPayload(
+            cJSON_GetObjectItemCaseSensitive(args, "level")->valueint);
+    }
+    if (kind == "encoder_led_color") {
+        return BleProtocol::EncoderLedColorPayload(s("color"));
+    }
+    if (kind == "encoder_recording_gate") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::EncoderRecordingGatePayload(cJSON_IsTrue(v));
+    }
+    if (kind == "gateway_keymap_set") {
+        return BleProtocol::GatewayKeymapSetPayload(s("key"), s("route") == "software");
+    }
+    if (kind == "gateway_target_info") {
+        return BleProtocol::GatewayTargetInfoPayload(s("name"));
+    }
+    if (kind == "air_mouse_enabled") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::AirMouseEnabledPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "usb_auto_off") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::UsbAutoOffPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "battery_status_request") {
+        return BleProtocol::BatteryStatusRequestPayload();
+    }
+    if (kind == "remote_button") {
+        return BleProtocol::RemoteButtonPayload(
+            s("action"), s("button"), s("source"),
+            ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, "request_id")));
+    }
+    if (kind == "power_log_dump") {
+        return BleProtocol::PowerLogDumpPayload(
+            ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, "offset")),
+            ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, "max")));
+    }
+    if (kind == "power_log_clear") {
+        return BleProtocol::PowerLogClearPayload();
+    }
+    return std::nullopt;
+}
+
+static std::optional<ByteVector> ContractBuildOtaControl(const std::string& kind,
+                                                         const cJSON* args) {
+    auto u32 = [&](const char* k) {
+        return ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, k));
+    };
+    if (kind == "ota_begin") {
+        return BleProtocol::OtaBeginPayload(u32("image_size"), u32("transfer_id"));
+    }
+    if (kind == "ota_data") {
+        const auto chunk = ContractUnhex(ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(args, "chunk_hex")));
+        if (chunk.empty()) return std::nullopt;
+        return BleProtocol::OtaDataPayload(u32("transfer_id"), u32("offset"), chunk);
+    }
+    if (kind == "ota_end") {
+        return BleProtocol::OtaEndPayload(u32("transfer_id"), u32("image_size"));
+    }
+    if (kind == "ota_abort") {
+        return BleProtocol::OtaAbortPayload(u32("transfer_id"));
+    }
+    return std::nullopt;
+}
+
+void TestContractFixtures() {
+    int failed = 0;
+    auto fail = [&](const std::string& msg) {
+        ++failed;
+        std::printf("FAIL contract: %s\n", msg.c_str());
+        fflush(stdout);
+    };
+#ifdef VOICESTICK_REPO_ROOT
+    const std::string path = std::filesystem::path(VOICESTICK_REPO_ROOT) /
+                             "tests/contract/fixtures/manifest.json";
+#else
+    const std::string path = "tests/contract/fixtures/manifest.json";
+#endif
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        fail("manifest 打不开: " + path);
+        AbortIfFailed(failed, "TestContractFixtures");
+        return;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    cJSON* manifest = cJSON_Parse(text.c_str());
+    if (manifest == nullptr) {
+        fail("manifest JSON 解析失败: " + path);
+        AbortIfFailed(failed, "TestContractFixtures");
+        return;
+    }
+    auto section = [&](const char* key) -> cJSON* {
+        return cJSON_GetObjectItemCaseSensitive(manifest, key);
+    };
+
+    // 1) state 事件：黄金字节 → ParseStateEvent → 公共字段期望（线上字段名）。
+    const cJSON* item = nullptr;
+    cJSON_ArrayForEach(item, section("state_frames")) {
+        const std::string name = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "name"));
+        const auto bytes = ContractUnhex(
+            ContractJsonStr(cJSON_GetObjectItemCaseSensitive(item, "hex")));
+        const auto event = BleProtocol::ParseStateEvent(bytes);
+        if (!event.has_value()) {
+            fail(name + ": ParseStateEvent 返回空");
+            continue;
+        }
+        const cJSON* expect = cJSON_GetObjectItemCaseSensitive(item, "expect");
+        const cJSON* field = nullptr;
+        cJSON_ArrayForEach(field, expect) {
+            const std::string key = field->string ? field->string : "";
+            bool known = true;
+            bool ok = false;
+            if (key == "event") {
+                ok = event->event == ContractJsonStr(field);
+            } else if (key == "button") {
+                ok = event->button == ContractJsonStr(field);
+            } else if (key == "hardware") {
+                ok = event->hardware == ContractJsonStr(field);
+            } else if (key == "firmware_version") {
+                ok = event->firmware_version == ContractJsonStr(field);
+            } else if (key == "direction") {
+                ok = event->direction == ContractJsonStr(field);
+            } else if (key == "source") {
+                ok = event->source == ContractJsonStr(field);
+            } else if (key == "key") {
+                ok = event->gateway_key == ContractJsonStr(field);
+            } else if (key == "session_id") {
+                ok = event->session_id.has_value() &&
+                     *event->session_id == ContractJsonU32(field);
+            } else if (key == "duration_ms") {
+                ok = event->duration_ms.has_value() &&
+                     *event->duration_ms == ContractJsonU32(field);
+            } else if (key == "steps") {
+                ok = event->steps.has_value() && *event->steps == ContractJsonU32(field);
+            } else if (key == "level") {
+                ok = event->battery_level.has_value() &&
+                     *event->battery_level == field->valueint;
+            } else if (key == "present") {
+                ok = event->encoder_present.has_value() &&
+                     *event->encoder_present == cJSON_IsTrue(field);
+            } else if (key == "charging") {
+                ok = event->battery_charging.has_value() &&
+                     *event->battery_charging == cJSON_IsTrue(field);
+            } else if (key == "usb_powered") {
+                ok = event->battery_usb_powered.has_value() &&
+                     *event->battery_usb_powered == cJSON_IsTrue(field);
+            } else if (key == "pressed") {
+                ok = event->gateway_pressed.has_value() &&
+                     *event->gateway_pressed == cJSON_IsTrue(field);
+            } else if (key == "mode") {
+                // gateway_status.mode 线上值 "gateway"/"normal" → 本端 bool。
+                ok = event->gateway_mode.has_value() &&
+                     *event->gateway_mode == (ContractJsonStr(field) == "gateway");
+            } else {
+                known = false;
+            }
+            if (!known) {
+                fail(name + ": 未映射的 expect 键 " + key);
+            } else if (!ok) {
+                fail(name + ": 字段 " + key + " 不符");
+            }
+        }
+    }
+
+    // 2) power_mgmt：独立解析器（ParseStateEvent 对其返回空）。
+    cJSON_ArrayForEach(item, section("power_mgmt_frames")) {
+        const std::string name = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "name"));
+        const auto bytes = ContractUnhex(
+            ContractJsonStr(cJSON_GetObjectItemCaseSensitive(item, "hex")));
+        const auto pm = BleProtocol::ParsePowerMgmtEvent(bytes);
+        const cJSON* expect = cJSON_GetObjectItemCaseSensitive(item, "expect");
+        const cJSON* want = cJSON_GetObjectItemCaseSensitive(expect, "usb_auto_off");
+        if (!pm.has_value() || want == nullptr) {
+            fail(name + ": ParsePowerMgmtEvent/expect 失败");
+            continue;
+        }
+        if (*pm != cJSON_IsTrue(want)) {
+            fail(name + ": usb_auto_off 不符");
+        }
+        // ParseStateEvent 必须跳过 power_mgmt（分发链契约）。
+        if (BleProtocol::ParseStateEvent(bytes).has_value()) {
+            fail(name + ": ParseStateEvent 应跳过 power_mgmt");
+        }
+    }
+
+    // 3) OTA state 五态。
+    cJSON_ArrayForEach(item, section("ota_state_frames")) {
+        const std::string name = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "name"));
+        const auto bytes = ContractUnhex(
+            ContractJsonStr(cJSON_GetObjectItemCaseSensitive(item, "hex")));
+        const auto ota = BleProtocol::ParseFirmwareOtaStateEvent(bytes);
+        if (!ota.has_value()) {
+            fail(name + ": ParseFirmwareOtaStateEvent 返回空");
+            continue;
+        }
+        const cJSON* expect = cJSON_GetObjectItemCaseSensitive(item, "expect");
+        const cJSON* field = nullptr;
+        cJSON_ArrayForEach(field, expect) {
+            const std::string key = field->string ? field->string : "";
+            bool ok = false;
+            if (key == "event") {
+                ok = ota->event == ContractJsonStr(field);
+            } else if (key == "code") {
+                ok = ota->code == ContractJsonStr(field);
+            } else if (key == "transfer_id") {
+                ok = ota->transfer_id.has_value() &&
+                     *ota->transfer_id == ContractJsonU32(field);
+            } else if (key == "written") {
+                ok = ota->written.has_value() && *ota->written == ContractJsonU32(field);
+            } else if (key == "size") {
+                ok = ota->size.has_value() && *ota->size == ContractJsonU32(field);
+            } else if (key == "esp_err") {
+                ok = ota->esp_err.has_value() && *ota->esp_err == ContractJsonU32(field);
+            } else if (key == "reboot_ms") {
+                ok = ota->reboot_ms.has_value() && *ota->reboot_ms == ContractJsonU32(field);
+            } else {
+                fail(name + ": 未映射的 expect 键 " + key);
+                continue;
+            }
+            if (!ok) fail(name + ": 字段 " + key + " 不符");
+        }
+    }
+
+    // 4) 二进制 audio / motion。
+    cJSON_ArrayForEach(item, section("binary_frames")) {
+        const std::string name = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "name"));
+        const std::string kind = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "kind"));
+        const auto bytes = ContractUnhex(
+            ContractJsonStr(cJSON_GetObjectItemCaseSensitive(item, "hex")));
+        const cJSON* expect = cJSON_GetObjectItemCaseSensitive(item, "expect");
+        if (kind == "audio") {
+            const auto audio = BleProtocol::ParseAudioFrame(bytes);
+            if (!audio.has_value()) {
+                fail(name + ": ParseAudioFrame 返回空");
+                continue;
+            }
+            const cJSON* want_session =
+                cJSON_GetObjectItemCaseSensitive(expect, "session_id");
+            const cJSON* want_seq = cJSON_GetObjectItemCaseSensitive(expect, "seq");
+            const cJSON* want_flags = cJSON_GetObjectItemCaseSensitive(expect, "flags");
+            const cJSON* want_payload =
+                cJSON_GetObjectItemCaseSensitive(expect, "payload_hex");
+            if (want_session && audio->session_id != ContractJsonU32(want_session)) {
+                fail(name + ": session_id 不符");
+            }
+            if (want_seq && audio->seq != ContractJsonU32(want_seq)) {
+                fail(name + ": seq 不符");
+            }
+            if (want_flags &&
+                audio->flags != static_cast<std::uint8_t>(want_flags->valueint)) {
+                fail(name + ": flags 不符");
+            }
+            if (want_payload &&
+                ContractHexStr(audio->payload) != ContractJsonStr(want_payload)) {
+                fail(name + ": payload 不符 got=" + ContractHexStr(audio->payload));
+            }
+            // 帧头 flags 语义位（spec：bit0=start bit1=end）。
+            const cJSON* want_u32 = want_flags;
+            if (want_u32 && (ContractJsonU32(want_u32) & 0x01) && !audio->IsStart()) {
+                fail(name + ": IsStart() 应为真");
+            }
+            if (want_u32 && (ContractJsonU32(want_u32) & 0x02) && !audio->IsEnd()) {
+                fail(name + ": IsEnd() 应为真");
+            }
+        } else if (kind == "motion") {
+            const auto motion = BleProtocol::ParseMotionFrame(bytes);
+            if (!motion.has_value()) {
+                fail(name + ": ParseMotionFrame 返回空");
+                continue;
+            }
+            const cJSON* want_dx = cJSON_GetObjectItemCaseSensitive(expect, "dx");
+            const cJSON* want_dy = cJSON_GetObjectItemCaseSensitive(expect, "dy");
+            if (want_dx &&
+                motion.dx != static_cast<std::int16_t>(want_dx->valueint)) {
+                fail(name + ": dx 不符");
+            }
+            if (want_dy &&
+                motion.dy != static_cast<std::int16_t>(want_dy->valueint)) {
+                fail(name + ": dy 不符");
+            }
+        } else {
+            fail(name + ": 未知 binary kind " + kind);
+        }
+    }
+
+    // 5) control 构建 → 对象语义比对（键序无关，cJSON_Compare 大小写敏感）。
+    cJSON_ArrayForEach(item, section("control_payloads")) {
+        const std::string name = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "name"));
+        const std::string kind = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "kind"));
+        const cJSON* args = cJSON_GetObjectItemCaseSensitive(item, "args");
+        const cJSON* expect = cJSON_GetObjectItemCaseSensitive(item, "expect");
+        const auto built = ContractBuildControl(kind, args);
+        if (!built.has_value()) {
+            fail(name + ": 构建器缺失/构建失败 (kind=" + kind + ")");
+            continue;
+        }
+        const std::string built_text(built->begin(), built->end());
+        cJSON* actual = cJSON_Parse(built_text.c_str());
+        if (actual == nullptr) {
+            fail(name + ": 构建输出不是合法 JSON: " + built_text);
+            continue;
+        }
+        if (!cJSON_Compare(actual, expect, /*case_sensitive=*/TRUE)) {
+            fail(name + ": 构建输出与期望不符 got=" + built_text);
+        }
+        cJSON_Delete(actual);
+    }
+
+    // 6) OTA 控制二进制帧：整帧字节相等。
+    cJSON_ArrayForEach(item, section("ota_control_frames")) {
+        const std::string name = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "name"));
+        const std::string kind = ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(item, "kind"));
+        const cJSON* args = cJSON_GetObjectItemCaseSensitive(item, "args");
+        const auto want = ContractUnhex(
+            ContractJsonStr(cJSON_GetObjectItemCaseSensitive(item, "hex")));
+        const auto built = ContractBuildOtaControl(kind, args);
+        if (!built.has_value()) {
+            fail(name + ": 构建器缺失/构建失败 (kind=" + kind + ")");
+            continue;
+        }
+        if (*built != want) {
+            fail(name + ": 字节不符 got=" + ContractHexStr(*built) +
+                 " want=" + ContractHexStr(want));
+        }
+    }
+
+    cJSON_Delete(manifest);
+    AbortIfFailed(failed, "TestContractFixtures");
+}
+
 // CI 诊断（2026-10-07）：进程级未处理异常探针——任何线程的硬异常（AV/栈溢出/
 // fail-fast）在默认终止前把错误码与地址打进日志，用于 ctest SEGFAULT 定位。
 //（曾试 AddVectoredExceptionHandlerFirst：SDK 头未声明、且 kernel32 导入库无此符号，
@@ -15583,6 +15994,7 @@ int main() {
     TestAudioFrameParsing();
     TestBleControlPayloads();
     TestStateParsing();
+    TestContractFixtures();
     TestEncoderRotateStateParsing();
     TestGatewayKeyStateParsing();
     TestStateEventSourceParsing();
