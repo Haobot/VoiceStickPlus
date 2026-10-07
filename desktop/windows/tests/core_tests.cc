@@ -16000,8 +16000,11 @@ void TestContractFixtures() {
 // 改用声明与导出俱在的 SetUnhandledExceptionFilter。）
 static LONG WINAPI UnhandledExceptionProbe(PEXCEPTION_POINTERS info) {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
-    if (code == 0xC0000005u || code == 0xC00000FDu || code == 0xC000001Du ||
-        code == 0xC0000409u || code == 0x80000003u) {
+    // 广谱：所有 NTSTATUS 错误段（0xC000xxxx）+ C++ 异常（0xE06D7363，未捕获即
+    // terminate→静默 abort）+ 断点。C++ 异常首机会也会为「已捕获」的异常触发，
+    // 若为噪声以最后一条为准（死亡前最后一条即真凶）。
+    if ((code & 0xC0000000u) == 0xC0000000u || code == 0xE06D7363u ||
+        code == 0x80000003u) {
         std::printf("[probe] exception 0x%08lX addr=%p\n",
                     static_cast<unsigned long>(code),
                     info->ExceptionRecord->ExceptionAddress);
@@ -16025,6 +16028,9 @@ int main() {
 #endif
     // stdout 重定向到文件时默认全缓冲，断言 abort 会丢掉之前的进度输出。
     setvbuf(stdout, nullptr, _IONBF, 0);
+    // 全程异常围栏：未捕获 C++ 异常（0xE06D7363 → terminate → 静默 abort）打出 what()，
+    // 否则只剩 SEH 探针的错误码，定位不到抛出点。
+    try {
     TestDeviceIds();
     TestPlanReconnectAfterConnectFailure();
     TestPlanZombieRecovery();
@@ -16405,4 +16411,11 @@ int main() {
     TestModelDownloadSession();
     printf(">> ALL TESTS DONE\n"); fflush(stdout);
     return 0;
+    } catch (const std::exception& e) {
+        printf("UNCAUGHT EXCEPTION: %s\n", e.what()); fflush(stdout);
+        return 1;
+    } catch (...) {
+        printf("UNCAUGHT EXCEPTION: unknown type\n"); fflush(stdout);
+        return 1;
+    }
 }
