@@ -106,7 +106,7 @@
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
 | N1 | macOS App target 16.8k 行零测试（状态机/配置/Ogg 下沉 Core） | open | 阶段 2 首位；测试 runner 自带 NOTE 印证缺口 |
-| N2 | 跨端契约零 fixtures（golden-frame 对拍） | open | 即 0.1，下一批 |
+| N2 | 跨端契约零 fixtures（golden-frame 对拍） | **closed（随 0.1）** | `tests/contract/` 48 样本双端进 CI；固件端余项挂 E8 |
 | N3 | CI 缺 website/release-guard | **closed（本批）** | 两 job 已入 `ci.yml`；契约 fixtures 归 0.1 |
 | N4 | 遗留项无跟踪载体 | **closed（本文件）** | 状态变更规则见头部 |
 | N5 | 三份 Hub 漂移（CLAUDE/CODEBUDDY 合并行 + 多余空行） | **closed（本批）** | 已修复；`release_guard` hub 检查守护 |
@@ -125,6 +125,6 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
-| 2026-10-07 | **阶段 1 B8/B9 关闭**：B8 配置快照化（原子换入 + 写互斥，109 读点/4 写点，压测 4 读线程 × 300 次换入）+ B9 配置原子写与 `[license]` 磁盘权威重取（三保存路径 + 无 `.tmp` 残迹单测） | 本地无法编译 Windows——由推送后 CI ctest 复核（见下行） |
+| 2026-10-07 | **阶段 1 B8/B9 关闭**：B8 配置快照化（`atomic<shared_ptr>` 原子换入 + 写互斥，109 读点/4 写点，压测 4 读线程 × 300 换入）；B9 原子写 + 合并路径保留 `[license]`。**落地三折**：①首版 Save 全局重取 license 被既有 `TestLicenseConfigRoundTrip` 拦下（LicenseRuntime 经 Save 落盘语义）→ 改「谁的副本谁重取」；②原子替换被 `Load` **自持读句柄迁移回写**顶死（MoveFileEx err=5，旧原地写共享兼容故此前不炸）→ Load 解析后即关句柄 + WriteTo 原地降级兜底；③未捕获异常静默终止靠 main 围栏 + SEH 广谱探针二分定位 | CI run `37647304192` 六 job 全绿（Windows ctest 全量含压测/契约/B9 单测通过） |
 | 2026-10-07 | **0.1 契约 fixtures 两端落地**：`tests/contract/`（生成器独立手搓字节 + manifest.json 48 样本）+ Windows `TestContractFixtures`（ctest）+ macOS `runContractFixtureTests`（swift run）；键序不构成契约、expect 只取公共字段（单端缺口清单见 `tests/contract/README.md`） | 本地 macOS `swift run VoiceStickTests` **644/644**（契约 48 样本对拍行输出）；Windows 侧由 CI ctest 复核 |
 | 2026-10-07 | **CI 六 job 首次全绿**（此前连续 15+ 次恒红，E6 门禁从「形同虚设」变真闸）：① macOS `BatteryMonitorWindowController.swift` `/` 跨工具链二义显式化（CI Xcode16 实锤、本地新 SDK 恰好可解）；② WinSparkle 下载源 vslavnik→vslavik（旧 fork 已 404）+ SHA256 钉死 + zip 顶层目录布局自适应；③ `settings_dialog`/`win32_app` 补 `VOICESTICK_LOCAL_ASR/REFINE_ENABLED` 守卫（ASR-OFF/REFINE-OFF 瘦构建从未被编译过，链接即失败）；④ CI 注入 sherpa-onnx 官方包（缓存 + SHA256），本地 ASR 保持默认 ON、LocalAsrClient 测试全量覆盖；⑤ **WasapiMicCapture COM 释放顺序修复**（ComPtr 在 `CoUninitialize` 之后析构属 UB——无麦克风失败路径 CI 首次执行即 ctest SEGFAULT，经进度标记 + SEH 探针二分定位） | CI run `37634784237`：macOS/Windows(build+ctest)/firmware/website/release-guard/script-tests 六 job 全部 ✓ |
