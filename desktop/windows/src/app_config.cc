@@ -1153,16 +1153,21 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
     output.close();
     if (!output) {
         std::filesystem::remove(tmp, ec);
-        throw std::runtime_error("failed to write config");
+        throw std::runtime_error("failed to write config: " + path.string() +
+                                 " err=" + std::to_string(GetLastError()));
     }
     // 原子替换：MoveFileExW 同卷原子替换 + WRITE_THROUGH（半截文件不再可能）。
     if (!MoveFileExW(tmp.c_str(), path.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const DWORD move_err = GetLastError();
         std::error_code rename_ec;
         std::filesystem::rename(tmp, path, rename_ec);
         if (rename_ec) {
             std::filesystem::remove(tmp, ec);
-            throw std::runtime_error("failed to replace config");
+            throw std::runtime_error(
+                "failed to replace config: path=" + path.string() +
+                " tmp=" + tmp.string() + " move_err=" + std::to_string(move_err) +
+                " rename_err=" + rename_ec.message());
         }
     }
 }
