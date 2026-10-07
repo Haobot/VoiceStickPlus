@@ -15488,12 +15488,10 @@ void TestModelDownloadSession() {
     AbortIfFailed(failed, "TestModelDownloadSession");
 }
 
-// CI 诊断（2026-10-07）：进程级首机会异常探针——任何线程的硬异常（AV/栈溢出/
-// fail-fast）在进程死亡前把错误码与地址打进日志，用于 ctest SEGFAULT 定位。
-// 本编译单元的 SDK 头组合下 <windows.h> 未导出该声明（实测 error C3861），按 Win32
-// 官方签名显式声明；kernel32.lib 自 Win2000 导出该函数，链接无虞。
-extern "C" __declspec(dllimport) void* __stdcall AddVectoredExceptionHandlerFirst(void* handler);
-
+// CI 诊断（2026-10-07）：进程级未处理异常探针——任何线程的硬异常（AV/栈溢出/
+// fail-fast）在默认终止前把错误码与地址打进日志，用于 ctest SEGFAULT 定位。
+//（曾试 AddVectoredExceptionHandlerFirst：SDK 头未声明、且 kernel32 导入库无此符号，
+// 改用声明与导出俱在的 SetUnhandledExceptionFilter。）
 static LONG WINAPI UnhandledExceptionProbe(PEXCEPTION_POINTERS info) {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
     if (code == 0xC0000005u || code == 0xC00000FDu || code == 0xC000001Du ||
@@ -15511,7 +15509,7 @@ static LONG WINAPI UnhandledExceptionProbe(PEXCEPTION_POINTERS info) {
 }
 
 int main() {
-    AddVectoredExceptionHandlerFirst(reinterpret_cast<void*>(&UnhandledExceptionProbe));
+    SetUnhandledExceptionFilter(&UnhandledExceptionProbe);
 #ifdef _DEBUG
     // CI/命令行友好：Debug 下 assert 失败写 stderr 后直接终止，
     // 避免 CRT 默认弹「Microsoft Visual C++ Runtime Library」对话框挂起测试进程。
