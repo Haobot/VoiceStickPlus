@@ -19,9 +19,19 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - name: toolchain info
+        working-directory: desktop/macos
+        run: |
+          xcode-select -p
+          xcodebuild -version || true
+          swift --version
       - name: swift build
         working-directory: desktop/macos
-        run: swift build
+        # -v：fatalError 需要定位到具体命令（2026-10-07 起 CI 恒红于最后一步，
+        # 本地 CLT-only 全绿）；pipefail 保住退出码，tail 限制日志体积。
+        run: |
+          set -o pipefail
+          swift build -v 2>&1 | tail -200
       - name: swift run VoiceStickTests
         working-directory: desktop/macos
         run: swift run VoiceStickTests
@@ -54,6 +64,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug
           -DVOICESTICK_ENABLE_LOCAL_ASR=OFF
           -DVOICESTICK_ENABLE_LOCAL_REFINE=OFF
+          -DVOICESTICK_DETOURS_URL=https://github.com/microsoft/Detours/archive/refs/tags/v4.0.1.zip
       - name: Build
         run: cmake --build desktop/windows/build-x64
       - name: ctest

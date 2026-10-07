@@ -31,10 +31,13 @@ set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
 set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# 默认从 github 拉 WinSparkle；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
+# 默认从 github 拉 WinSparkle（官方仓库 vslavik/winsparkle；旧 vslavnik fork 已 404，
+# 曾致 CI 与全新克隆 configure 必失败）；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
 #   用户环境变量 VOICESTICK_WINSPARKLE_URL=C:/path/to/WinSparkle-0.9.2.zip
 # 或 cmake -DVOICESTICK_WINSPARKLE_URL=C:/path/... -S desktop\windows -B ...
-set(_winsparkle_default_url "https://github.com/vslavnik/winsparkle/releases/download/v0.9.2/WinSparkle-0.9.2.zip")
+set(_winsparkle_default_url "https://github.com/vslavik/winsparkle/releases/download/v0.9.2/WinSparkle-0.9.2.zip")
+# 默认下载钉死 SHA256（供应链完整性；本地覆盖 URL 时不校验，便于内网/缓存副本）
+set(_winsparkle_default_sha256 "2a5facf5a22056edf7afc4d0a4bf05620b7aa7cc1619c3078b281e374cdb9996")
 if(DEFINED ENV{VOICESTICK_WINSPARKLE_URL})
     set(_winsparkle_url "$ENV{VOICESTICK_WINSPARKLE_URL}")
 elseif(DEFINED VOICESTICK_WINSPARKLE_URL)
@@ -46,18 +49,37 @@ message(STATUS "WinSparkle source: ${_winsparkle_url}")
 # Allow pre-extracted source dir to bypass download (for offline/dev builds):
 #   cmake -DFETCHCONTENT_SOURCE_DIR_WINSPARKLE=C:/path/to/winsparkle ...
 set(FETCHCONTENT_SOURCE_DIR_WINSPARKLE "" CACHE PATH "WinSparkle pre-extracted source dir (optional, for offline builds)")
+set(_winsparkle_declare_args URL ${_winsparkle_url})
+if(_winsparkle_url STREQUAL "${_winsparkle_default_url}")
+    list(APPEND _winsparkle_declare_args URL_HASH SHA256=${_winsparkle_default_sha256})
+endif()
 FetchContent_Declare(
     winsparkle
-    URL ${_winsparkle_url}
+    ${_winsparkle_declare_args}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(winsparkle)
 
+# 官方 zip 带顶层目录（WinSparkle-0.9.2/），手动解压或本地缓存可能是扁平布局：自动识别根。
+set(_winsparkle_root "${winsparkle_SOURCE_DIR}")
+if(NOT EXISTS "${_winsparkle_root}/x64/Release/WinSparkle.lib")
+    file(GLOB _winsparkle_nested "${winsparkle_SOURCE_DIR}/*/x64/Release/WinSparkle.lib")
+    if(_winsparkle_nested)
+        get_filename_component(_winsparkle_dir "${_winsparkle_nested}" DIRECTORY)  # <top>/x64/Release
+        get_filename_component(_winsparkle_dir "${_winsparkle_dir}" DIRECTORY)     # <top>/x64
+        get_filename_component(_winsparkle_root "${_winsparkle_dir}" DIRECTORY)    # <top>
+        message(STATUS "WinSparkle layout: nested root ${_winsparkle_root}")
+    endif()
+endif()
+if(NOT EXISTS "${_winsparkle_root}/x64/Release/WinSparkle.lib")
+    message(FATAL_ERROR "WinSparkle x64/Release/WinSparkle.lib not found under ${winsparkle_SOURCE_DIR}")
+endif()
+
 add_library(winsparkle_lib SHARED IMPORTED GLOBAL)
 set_target_properties(winsparkle_lib PROPERTIES
-    IMPORTED_IMPLIB "${winsparkle_SOURCE_DIR}/x64/Release/WinSparkle.lib"
-    IMPORTED_LOCATION "${winsparkle_SOURCE_DIR}/x64/Release/WinSparkle.dll"
-    INTERFACE_INCLUDE_DIRECTORIES "${winsparkle_SOURCE_DIR}/include"
+    IMPORTED_IMPLIB "${_winsparkle_root}/x64/Release/WinSparkle.lib"
+    IMPORTED_LOCATION "${_winsparkle_root}/x64/Release/WinSparkle.dll"
+    INTERFACE_INCLUDE_DIRECTORIES "${_winsparkle_root}/include"
 )
 
 # sherpa-onnx C API（本机麦克风模式迭代一：SenseVoice 本地离线识别，v1.13.7）。
