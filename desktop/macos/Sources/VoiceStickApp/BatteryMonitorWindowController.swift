@@ -678,7 +678,10 @@ final class BatteryMonitorWindowController: NSWindowController, NSWindowDelegate
             .font: titleFont, .foregroundColor: textColor
         ]
         let titleSize = title.size(withAttributes: titleAttrs)
-        title.draw(at: NSPoint(x: (Double(width) - titleSize.width) / 2,
+        // 显式 CGFloat：Double(width) 与 CGFloat(titleSize.width) 混算在 CI 工具链
+        //（Xcode 16 / Swift 6.1）下使 '/' 二义（ambiguous use of operator '/'）；
+        // 本地新 SDK 恰好能解，属跨工具链类型推断差异，显式转换两端皆稳。
+        title.draw(at: NSPoint(x: (CGFloat(width) - titleSize.width) / 2,
                                y: cgY(12 + 24)), withAttributes: titleAttrs)
 
         // Y 轴网格 4 等分（5 条横线）+ 右对齐刻度标签。

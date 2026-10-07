@@ -86,7 +86,8 @@ set_target_properties(winsparkle_lib PROPERTIES
 # 二进制不进 git；来源二选一：
 #   1) m0/.venv wheel 同款文件（与 Python 端同版本同 ABI，推荐开发机）：
 #      m0/.venv/Lib/site-packages/sherpa_onnx/{include,lib}
-#   2) GitHub release v1.13.7 sherpa-onnx-v1.13.7-win-x64.tar.bz2 的 include/lib
+#   2) GitHub release v1.13.7 sherpa-onnx-v1.13.7-win-x64-shared-MT-Release.tar.bz2
+#      的 include/lib（旧 plain 命名 win-x64 包已不存在；CI 缓存注入同款，SHA256 见 ci.yml）
 # 放到 third_party/sherpa-onnx/（include/ + lib/），或用 VOICESTICK_SHERPA_ONNX_DIR
 # 指向解压目录。显式 -DVOICESTICK_ENABLE_LOCAL_ASR=OFF 可跳过（不需要本地识别时）。
 option(VOICESTICK_ENABLE_LOCAL_ASR "SenseVoice local offline ASR (local mic mode)" ON)

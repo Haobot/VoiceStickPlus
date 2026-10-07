@@ -1807,6 +1807,15 @@ void SettingsDialog::ChooseLocalMicModelsDir() {
 }
 
 void SettingsDialog::UpdateLocalMicModelsStatus() {
+#ifndef VOICESTICK_LOCAL_ASR_ENABLED
+    // 本地识别未编译（-DVOICESTICK_ENABLE_LOCAL_ASR=OFF）：三个解析函数在
+    // local_asr_client_win.cc 内随 sherpa 一起被裁剪，引用即链接失败（CI 首次实锤）。
+    // 状态行留空，其余 UI 行为不变。
+    if (local_mic_models_status_label_ != nullptr) {
+        SetWindowTextW(local_mic_models_status_label_, L"");
+    }
+    return;
+#else
     if (local_mic_models_status_label_ == nullptr || local_mic_models_dir_edit_ == nullptr) {
         return;
     }
@@ -1835,6 +1844,7 @@ void SettingsDialog::UpdateLocalMicModelsStatus() {
                        .c_str());
     // 精修模型探测锚同一 models_dir（编辑框当前值）：目录变化联动刷新精修状态。
     UpdateLocalRefineStatus();
+#endif
 }
 
 void SettingsDialog::OpenModelDownloadDialog() {
@@ -1867,6 +1877,13 @@ bool SettingsDialog::IsLocalRefineCrossChecked() const {
 }
 
 void SettingsDialog::UpdateLocalRefineStatus() {
+#ifndef VOICESTICK_LOCAL_ASR_ENABLED
+    // 同 UpdateLocalMicModelsStatus：瘦构建下解析符号被裁剪，状态行留空。
+    if (local_refine_status_label_ != nullptr) {
+        SetWindowTextW(local_refine_status_label_, L"");
+    }
+    return;
+#else
     if (local_refine_status_label_ == nullptr || local_mic_models_dir_edit_ == nullptr) {
         return;
     }
@@ -1912,6 +1929,7 @@ void SettingsDialog::UpdateLocalRefineStatus() {
                                      : StringId::kSettingsLocalRefineModelOk,
                        language)
                        .c_str());
+#endif
 }
 
 void SettingsDialog::OpenSpectrogramViewer() {
