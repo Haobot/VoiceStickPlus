@@ -69,6 +69,7 @@
 
 #include <algorithm>
 #include <winsock2.h>
+#include <windows.h>  // SEH 探针（AddVectoredExceptionHandlerFirst）；置于 winsock2 之后避免 winsock 冲突
 #include <bcrypt.h>
 #include <thread>
 #include <utility>
