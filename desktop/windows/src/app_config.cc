@@ -601,6 +601,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
 
     try {
         auto table = toml::parse(input, path.native());
+        // 立即关闭读句柄：下方迁移回写会 Save 到同一路径，原子替换（MoveFileEx）
+        // 要求目标无占用句柄，自持读句柄会 ERROR_ACCESS_DENIED（B9，CI 实锤）。
+        input.close();
         bool needs_wechat_trigger_migration_save = false;
 
         if (auto value = TomlString(table, "asr_provider")) config.asr_provider = AsrProviderFromName(*value);
@@ -1163,11 +1166,22 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
         std::error_code rename_ec;
         std::filesystem::rename(tmp, path, rename_ec);
         if (rename_ec) {
+            // 目标被无 FILE_SHARE_DELETE 的句柄占用（外部编辑器打开 config.toml 等）：
+            // 原子替换物理不可行，降级为原地覆盖（CopyFile 走写共享，fopen 类句柄
+            // 默认允许）——保保存成功而不是抛错丢配置（与 B9 前行为对齐）。
+            std::error_code copy_ec;
+            std::filesystem::copy_file(tmp, path,
+                                       std::filesystem::copy_options::overwrite_existing,
+                                       copy_ec);
             std::filesystem::remove(tmp, ec);
-            throw std::runtime_error(
-                "failed to replace config: path=" + path.string() +
-                " tmp=" + tmp.string() + " move_err=" + std::to_string(move_err) +
-                " rename_err=" + rename_ec.message());
+            if (copy_ec) {
+                throw std::runtime_error(
+                    "failed to replace config: path=" + path.string() +
+                    " tmp=" + tmp.string() +
+                    " move_err=" + std::to_string(move_err) +
+                    " rename_err=" + rename_ec.message() +
+                    " copy_err=" + copy_ec.message());
+            }
         }
     }
 }
