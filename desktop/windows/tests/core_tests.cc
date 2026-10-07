@@ -14378,17 +14378,22 @@ void TestWasapiMicCaptureSmoke() {
         ++callbacks;
         got_pcm.notify_one();
     };
+    printf("  wasapi: Start()...\n"); fflush(stdout);
     if (!capture.Start()) {
         printf("TestWasapiMicCaptureSmoke skipped: %s\n", capture.LastStartError().c_str());
         return;
     }
+    printf("  wasapi: started, waiting pcm\n"); fflush(stdout);
+    bool received = false;
     {
         std::unique_lock<std::mutex> lock(mutex);
-        const auto received = got_pcm.wait_for(lock, std::chrono::seconds(8),
-                                               [&] { return total_samples >= 16000; });
-        assert(received);
-        assert(total_samples >= 16000);
+        received = got_pcm.wait_for(lock, std::chrono::seconds(8),
+                                    [&] { return total_samples >= 16000; });
     }
+    printf("  wasapi: wait done received=%d samples=%zu callbacks=%d\n",
+           received ? 1 : 0, total_samples, callbacks); fflush(stdout);
+    assert(received);
+    assert(total_samples >= 16000);
     capture.Stop();
     capture.Stop();  // 幂等
     printf("TestWasapiMicCaptureSmoke passed: %d callbacks, %zu samples\n",

@@ -106,6 +106,8 @@ void WasapiMicCapture::Stop() {
 
 void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> started_ok,
                                          std::shared_ptr<std::atomic_bool> open_done) {
+    // CI 诊断（2026-10-07：ctest SEGFAULT 定位到本函数；阶段输出直达无缓冲 stdout）
+    std::printf("[wasapi] thread enter\n");
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool com_initialized = SUCCEEDED(hr);
     if (!com_initialized && hr != RPC_E_CHANGED_MODE) {
@@ -118,10 +120,12 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
     ComPtr<IMMDeviceEnumerator> enumerator;
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                           IID_PPV_ARGS(enumerator.GetAddressOf()));
+    std::printf("[wasapi] CoCreateInstance hr=0x%08lX\n", static_cast<unsigned long>(hr));
     ComPtr<IMMDevice> device;
     if (SUCCEEDED(hr)) {
         hr = enumerator->GetDefaultAudioEndpoint(eCapture, eConsole,
                                                  device.GetAddressOf());
+        std::printf("[wasapi] GetDefaultAudioEndpoint hr=0x%08lX\n", static_cast<unsigned long>(hr));
     } else {
         last_start_error_ = "CoCreateInstance(MMDeviceEnumerator) failed " + HrToHex(hr);
     }
@@ -129,6 +133,7 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
     if (SUCCEEDED(hr)) {
         hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                               reinterpret_cast<void**>(audio_client.GetAddressOf()));
+        std::printf("[wasapi] Activate hr=0x%08lX\n", static_cast<unsigned long>(hr));
     } else if (last_start_error_.empty()) {
         last_start_error_ = "GetDefaultAudioEndpoint failed " + HrToHex(hr);
     }
@@ -155,6 +160,7 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
     if (SUCCEEDED(hr)) {
         hr = audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED, stream_flags,
                                       buffer_duration, 0, &format, nullptr);
+        std::printf("[wasapi] Initialize hr=0x%08lX\n", static_cast<unsigned long>(hr));
     } else if (last_start_error_.empty()) {
         last_start_error_ = "IAudioClient Activate failed " + HrToHex(hr);
     }
@@ -172,6 +178,7 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
     }
     if (SUCCEEDED(hr)) {
         hr = audio_client->Start();
+        std::printf("[wasapi] AudioClient.Start hr=0x%08lX\n", static_cast<unsigned long>(hr));
     } else if (last_start_error_.empty()) {
         last_start_error_ = "GetService(IAudioCaptureClient) failed " + HrToHex(hr);
     }
@@ -189,6 +196,7 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
 
     started_ok->store(true);
     open_done->store(true);
+    std::printf("[wasapi] open ok, entering capture loop\n");
     LogApp("WasapiMicCapture: capturing from default microphone (16kHz mono)");
 
     std::vector<std::int16_t> pcm;
