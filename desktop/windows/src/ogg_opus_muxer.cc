@@ -1,5 +1,6 @@
 #include "ogg_opus_muxer.h"
 #include "ogg_crc.h"
+#include "audio_opus_encoder.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -27,7 +28,9 @@ ByteVector OggOpusMuxer::Append(std::span<const std::uint8_t> opus_payload, bool
         out.insert(out.end(), tags.begin(), tags.end());
         wrote_headers_ = true;
     }
-    granule_position_ += static_cast<std::uint64_t>(960 * 48000 / sample_rate_);
+    // granule 恒以 48kHz 计：帧采样数×48000/sample_rate（40ms@16k → +1920）。
+    // 原 960 口径按 60ms 计，与固件/编码器 40ms 帧长不符，曾致 Ogg 时长虚高 50%。
+    granule_position_ += static_cast<std::uint64_t>(AudioOpusEncoder::kFrameSamples) * 48000 / sample_rate_;
     auto page = MakePage(opus_payload, granule_position_, is_last ? 0x04 : 0x00);
     out.insert(out.end(), page.begin(), page.end());
     return out;

@@ -49,7 +49,7 @@ struct AudioBleFrame {
 }
 ```
 
-The payload contains one raw Opus packet when `payload_len > 0`. The firmware currently encodes 60 ms of 16 kHz mono audio per packet. When recording stops, the firmware also sends an end frame with `flags & 0x02` and an empty payload.
+The payload contains one raw Opus packet when `payload_len > 0`. The firmware currently encodes 40 ms of 16 kHz mono audio per packet. When recording stops, the firmware also sends an end frame with `flags & 0x02` and an empty payload.
 
 The macOS app wraps incoming Opus packets into an Ogg Opus stream before sending them to ASR. It does not decode Opus to PCM.
 

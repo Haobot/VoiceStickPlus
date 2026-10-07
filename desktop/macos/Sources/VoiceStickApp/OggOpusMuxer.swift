@@ -1,4 +1,5 @@
 import Foundation
+import VoiceStickCore
 
 final class OggOpusMuxer {
     private let sampleRate: Int
@@ -29,7 +30,9 @@ final class OggOpusMuxer {
             wroteHeaders = true
         }
 
-        granulePosition += UInt64(960 * 48_000 / sampleRate)
+        // granule 恒以 48kHz 计：帧采样数×48_000/sampleRate（40ms@16k → +1920）。
+        // 原 960 口径按 60ms 计，与固件/编码器 40ms 帧长不符，曾致 Ogg 时长虚高 50%。
+        granulePosition += UInt64(AudioOpusEncoder.frameSamples * 48_000 / sampleRate)
         out.append(makePage(packet: opusPayload, granule: granulePosition, headerType: isLast ? 0x04 : 0x00))
         return out
     }
