@@ -194,6 +194,12 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
         if (event != nullptr) CloseHandle(event);
         started_ok->store(false);
         open_done->store(true);
+        // RAII 顺序：COM 对象必须在 CoUninitialize 之前释放（ComPtr 在 return 后的
+        // 栈展开中析构 = 公寓已反初始化仍调 Release，属 UB——本次 CI 崩溃候选）。
+        capture_client.Reset();
+        audio_client.Reset();
+        device.Reset();
+        enumerator.Reset();
         if (com_initialized) CoUninitialize();
         std::printf("[wasapi] failure path exiting\n");
         return;
@@ -242,6 +248,11 @@ void WasapiMicCapture::CaptureThreadMain(std::shared_ptr<std::atomic_bool> start
 
     audio_client->Stop();
     if (event != nullptr) CloseHandle(event);
+    // RAII 顺序：同失败路径，COM 对象先于 CoUninitialize 释放。
+    capture_client.Reset();
+    audio_client.Reset();
+    device.Reset();
+    enumerator.Reset();
     if (com_initialized) CoUninitialize();
     LogApp("WasapiMicCapture: stopped");
 }
