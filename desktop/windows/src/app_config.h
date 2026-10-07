@@ -391,6 +391,9 @@ struct AppConfig {
 
     void Save() const;
     void Save(const std::filesystem::path& path) const;
+    // 实际写入器（B9）：序列化到同目录 .tmp 后 MoveFileExW 原子替换，不处理
+    // [license] 重取（Save 包装器负责）。一般不直接调用，测试可用。
+    void WriteTo(const std::filesystem::path& path) const;
     // 运行时 Save：先重读磁盘最新凭据覆盖到副本再写回，避免内存过期凭据覆盖用户手改的 key。
     // onboarding/设置对话框保存仍用普通 Save()（需写入用户刚输入的 key）。
     void SavePreservingDiskCredentials() const;

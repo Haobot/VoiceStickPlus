@@ -924,11 +924,28 @@ void AppConfig::SaveSettingsDialog(const std::filesystem::path& path) const {
 }
 
 void AppConfig::Save(const std::filesystem::path& path) const {
+    // [license] 磁盘即权威：LicenseRuntime 的激活/锚点/last_seen 均立即落盘，而任何
+    // 保存方（协调器旧副本/设置对话框/合并保存）的内存 license 都可能陈旧或为空——
+    // 直接全量写出会抹掉磁盘 [license]（B9 数据丢失面）。保存前从磁盘重取，与
+    // SavePairedDeviceInfo 既有的 ReloadLicenseFromDisk 同口径（后者成为双保险）。
+    AppConfig out = *this;
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec)) {
+        out.license = Load(path).license;
+    }
+    out.WriteTo(path);
+}
+
+void AppConfig::WriteTo(const std::filesystem::path& path) const {
     // create_directories 用 error_code 版本：目录已存在或创建失败都不抛，
     // 避免路径无效时抛 filesystem_error（ofstream 后续会兜底报错）。
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    std::ofstream output(path, std::ios::trunc);
+    // 原子写（B9）：先写同目录 .tmp，完整落盘后原子替换——崩溃/断电最多丢本次
+    // 修改，绝不产生半截 config.toml（原 trunc 直写窗口 = 数据丢失面）。
+    std::filesystem::path tmp = path;
+    tmp += ".tmp";
+    std::ofstream output(tmp, std::ios::trunc);
     if (!output) {
         throw std::runtime_error("failed to open config for writing");
     }
@@ -1131,6 +1148,22 @@ void AppConfig::Save(const std::filesystem::path& path) const {
                 keys_header_written = true;
             }
             output << button_id << " = \"" << TomlEscape(spec) << "\"\n";
+        }
+    }
+
+    output.close();
+    if (!output) {
+        std::filesystem::remove(tmp, ec);
+        throw std::runtime_error("failed to write config");
+    }
+    // 原子替换：MoveFileExW 同卷原子替换 + WRITE_THROUGH（半截文件不再可能）。
+    if (!MoveFileExW(tmp.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code rename_ec;
+        std::filesystem::rename(tmp, path, rename_ec);
+        if (rename_ec) {
+            std::filesystem::remove(tmp, ec);
+            throw std::runtime_error("failed to replace config");
         }
     }
 }

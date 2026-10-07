@@ -52,8 +52,8 @@
 | B2 | usage tap 管道缺 OVERLAPPED → 退出挂死 / Mutex 不释放 | open | **10-07 抽查**：manager 文件内仍无 `FILE_FLAG_OVERLAPPED` |
 | B3 | 微信模式启动失败不回滚默认录音设备 | open | 9-22 未复核 |
 | B7 | 腾讯热词同步移出 `audio_mutex_` | open | 9-22 未复核（B6 已修） |
-| B8 | 协调器 `config_` 跨线程竞争 → `shared_ptr<const AppConfig>` 原子换入 | open | **10-07 抽查**：`voice_stick_coordinator.h:644` 仍普通成员；阶段 1 首位 |
-| B9 | 配置写盘非原子 + 合并保存丢 `[license]`（临时文件 + 原子替换） | open | 与 B8 同批；数据丢失面最大 |
+| B8 | 协调器 `config_` 跨线程竞争 → `shared_ptr<const AppConfig>` 原子换入 | **closed（10-07）** | `std::atomic<shared_ptr<const AppConfig>>` 快照 + `config_write_mutex_` 写侧 copy-mutate-store；109 读点转 `ConfigSnapshot()`，4 写点（UpdateConfig/配对表×2/SavePairedDeviceInfo）入互斥；压测 `TestCoordinatorConcurrentUpdateConfigStress`（4 读线程 × 300 次换入） |
+| B9 | 配置写盘非原子 + 合并保存丢 `[license]` | **closed（10-07）** | `Save(path)` 改包装器（保存前从磁盘重取 `[license]`——磁盘即权威）+ `WriteTo` 原子写（同目录 `.tmp` → `MoveFileExW` REPLACE_EXISTING\|WRITE_THROUGH）；单测 `TestSaveStaleCopyKeepsLicense` 覆盖三条保存路径 + 无 `.tmp` 残迹 |
 | B11 | `SetLocalRefiner` 持 `audio_mutex_` 析构旧 client | open | 9-22 未复核 |
 | B12 | 精修线程对象只增不减 | open | 9-22 未复核 |
 | B13 | 热词候选文件双写者 + 陈旧快照覆盖「忽略」 | open | 9-22 未复核 |
@@ -125,5 +125,6 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-07 | **阶段 1 B8/B9 关闭**：B8 配置快照化（原子换入 + 写互斥，109 读点/4 写点，压测 4 读线程 × 300 次换入）+ B9 配置原子写与 `[license]` 磁盘权威重取（三保存路径 + 无 `.tmp` 残迹单测） | 本地无法编译 Windows——由推送后 CI ctest 复核（见下行） |
 | 2026-10-07 | **0.1 契约 fixtures 两端落地**：`tests/contract/`（生成器独立手搓字节 + manifest.json 48 样本）+ Windows `TestContractFixtures`（ctest）+ macOS `runContractFixtureTests`（swift run）；键序不构成契约、expect 只取公共字段（单端缺口清单见 `tests/contract/README.md`） | 本地 macOS `swift run VoiceStickTests` **644/644**（契约 48 样本对拍行输出）；Windows 侧由 CI ctest 复核 |
 | 2026-10-07 | **CI 六 job 首次全绿**（此前连续 15+ 次恒红，E6 门禁从「形同虚设」变真闸）：① macOS `BatteryMonitorWindowController.swift` `/` 跨工具链二义显式化（CI Xcode16 实锤、本地新 SDK 恰好可解）；② WinSparkle 下载源 vslavnik→vslavik（旧 fork 已 404）+ SHA256 钉死 + zip 顶层目录布局自适应；③ `settings_dialog`/`win32_app` 补 `VOICESTICK_LOCAL_ASR/REFINE_ENABLED` 守卫（ASR-OFF/REFINE-OFF 瘦构建从未被编译过，链接即失败）；④ CI 注入 sherpa-onnx 官方包（缓存 + SHA256），本地 ASR 保持默认 ON、LocalAsrClient 测试全量覆盖；⑤ **WasapiMicCapture COM 释放顺序修复**（ComPtr 在 `CoUninitialize` 之后析构属 UB——无麦克风失败路径 CI 首次执行即 ctest SEGFAULT，经进度标记 + SEH 探针二分定位） | CI run `37634784237`：macOS/Windows(build+ctest)/firmware/website/release-guard/script-tests 六 job 全部 ✓ |

@@ -53,16 +53,16 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
                                              std::chrono::milliseconds recording_hard_timeout,
                                              std::chrono::milliseconds finalizing_timeout,
                                              std::chrono::milliseconds audio_stall_timeout)
-    : config_(std::move(config)),
+    : config_(std::make_shared<const AppConfig>(std::move(config))),
       ble_(std::move(ble)),
       asr_(std::move(asr)),
       asr_factory_(std::move(asr_factory)),
-      translator_(config_),
-      refiner_(config_),
+      translator_(*ConfigSnapshot()),
+      refiner_(*ConfigSnapshot()),
       ui_(ui),
       input_injector_(input_injector),
-      debug_audio_recorder_(config_.debug_audio_cache, config_.debug_audio_directory),
-      paired_device_ids_(config_.paired_device_ids),
+      debug_audio_recorder_(ConfigSnapshot()->debug_audio_cache, ConfigSnapshot()->debug_audio_directory),
+      paired_device_ids_(ConfigSnapshot()->paired_device_ids),
       wechat_renderer_factory_(std::move(wechat_renderer_factory)),
       wechat_hotkey_factory_(std::move(wechat_hotkey_factory)),
       wechat_device_switcher_factory_(std::move(wechat_device_switcher_factory)),
@@ -70,7 +70,7 @@ VoiceStickCoordinator::VoiceStickCoordinator(AppConfig config,
     recording_hard_timeout_ = recording_hard_timeout;
     finalizing_timeout_ = finalizing_timeout;
     audio_stall_timeout_ = audio_stall_timeout;
-    for (const auto& entry : config_.paired_devices) {
+    for (const auto& entry : ConfigSnapshot()->paired_devices) {
         if (entry.device_id.empty()) continue;
         auto& info = firmware_info_by_device_id_[entry.device_id];
         info.hardware = entry.hardware;
@@ -101,7 +101,7 @@ void VoiceStickCoordinator::Start() {
     ble_->on_session_zombie = [this](std::string device_id) {
         if (is_shutdown_) return;
         if (!stale_session_notified_devices_.insert(device_id).second) return;
-        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
         LogCoordinatorLine("stale session dev=VS-" + device_id +
                            ": prompting user to re-pair in Windows Bluetooth settings");
         ui_->ShowNotification(Tr(StringId::kStaleSessionTitle, language),
@@ -120,12 +120,12 @@ void VoiceStickCoordinator::Start() {
         RefreshFirmwareAvailability();
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
-        ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
+        ble_->SendShowImuDebug(ConfigSnapshot()->show_imu_debug, std::nullopt);
         // 设备交互设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
         // 与旧广播行为等价）。小米遥控器无 IMU/敲击硬件，跳过（BLE 层另有按类门控兜底）。
         for (const auto& dev : devices) {
             if (IsXiaomiRemoteDevice(dev.id)) continue;
-            const InteractionSettings& inter = config_.InteractionSettingsForDevice(dev.id);
+            const InteractionSettings& inter = ConfigSnapshot()->InteractionSettingsForDevice(dev.id);
             ble_->SendTapEnabled(inter.tap_to_arrow, dev.id);
             ble_->SendTapSensitivity(inter.tap_sensitivity, dev.id);
             ble_->SendImuWakeSensitivity(
@@ -135,7 +135,7 @@ void VoiceStickCoordinator::Start() {
         // 与旧广播行为等价）。小米遥控器无编码器，跳过。
         for (const auto& dev : devices) {
             if (IsXiaomiRemoteDevice(dev.id)) continue;
-            const EncoderSettings& enc = config_.EncoderSettingsForDevice(dev.id);
+            const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(dev.id);
             ble_->SendEncoderLedColor(enc.led_color, dev.id);
             ble_->SendEncoderRecordingGate(enc.press_action == "recording", dev.id);
         }
@@ -260,21 +260,24 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
         EnterReady("config_update_cancel");
     }
 
-    config_ = std::move(config);
+    {
+        std::lock_guard<std::mutex> write_lock(config_write_mutex_);
+        config_.store(std::make_shared<const AppConfig>(std::move(config)));
+    }
     live_air_mouse_params_.clear();  // config_ 变化，运行期 live 参数跟随回退到 AirMouseParamsForDevice
-    translator_ = LLMTranslationClient(config_);
-    refiner_ = LLMRefinementClient(config_);
+    translator_ = LLMTranslationClient(*ConfigSnapshot());
+    refiner_ = LLMRefinementClient(*ConfigSnapshot());
     ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
-    ble_->SendShowImuDebug(config_.show_imu_debug, std::nullopt);
+    ble_->SendShowImuDebug(ConfigSnapshot()->show_imu_debug, std::nullopt);
     // 编码器/体感交互设置按设备覆盖：对已连接设备逐个取其有效配置单播
     // （InteractionSettingsForDevice 含 default 回退，故每个设备都已覆盖全局默认）。
     // 小米遥控器无编码器/IMU 硬件，跳过（BLE 层另有按类门控兜底）。
     for (const auto& device_id : connected_device_ids_) {
         if (IsXiaomiRemoteDevice(device_id)) continue;
-        const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+        const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(device_id);
         ble_->SendEncoderLedColor(enc.led_color, device_id);
         ble_->SendEncoderRecordingGate(enc.press_action == "recording", device_id);
-        const InteractionSettings& inter = config_.InteractionSettingsForDevice(device_id);
+        const InteractionSettings& inter = ConfigSnapshot()->InteractionSettingsForDevice(device_id);
         ble_->SendTapEnabled(inter.tap_to_arrow, device_id);
         ble_->SendTapSensitivity(inter.tap_sensitivity, device_id);
         ble_->SendImuWakeSensitivity(
@@ -286,14 +289,14 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
             PushGatewayKeymapRoutesFor(device_id);
         }
     }
-    debug_audio_recorder_ = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
+    debug_audio_recorder_ = DebugAudioRecorder(ConfigSnapshot()->debug_audio_cache, ConfigSnapshot()->debug_audio_directory);
     if (asr_factory_) {
         // 旧云端客户端移交后台线程析构：AsrClientTencent 析构会 join WebSocket
         // worker（网络阻塞时可达秒级），在调用线程（UI）同步析构曾把 UI 线程卡死
         // 30s+，小米 ATVV 事件全部依赖 UI 线程分发而彻底无响应（2026-09-10 事故）。
         // detached 线程只持有客户端指针、不触碰协调器，生命周期安全。
         std::unique_ptr<AsrClient> retired_asr = std::move(asr_);
-        asr_ = asr_factory_(config_);
+        asr_ = asr_factory_(*ConfigSnapshot());
         ConfigureAsrCallbacks();
         // 云端客户端已被替换：会话级路由指针必须解除，避免悬垂（活跃会话在上方
         // was_recognizing 分支已经 EnterReady 清空）。
@@ -303,8 +306,8 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
             std::thread([retired = std::move(retired_asr)]() {}).detach();
         }
     }
-    if (paired_device_ids_ != config_.paired_device_ids) {
-        paired_device_ids_ = config_.paired_device_ids;
+    if (paired_device_ids_ != ConfigSnapshot()->paired_device_ids) {
+        paired_device_ids_ = ConfigSnapshot()->paired_device_ids;
         ui_->SetPairedDeviceIds(paired_device_ids_);
         ble_->UpdatePairedDeviceIds(paired_device_ids_);
         CheckFirmwareUpdatesIfNeeded(false, false);
@@ -317,14 +320,14 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
 // Win32App::SyncXiaomiKeymapHook 同口径。BLE 层按设备类门控，仅 StickS3 生效。
 void VoiceStickCoordinator::PushGatewayKeymapRoutesFor(const std::string& device_id) {
     std::optional<std::string> active_rc;
-    for (const auto& entry : config_.paired_devices) {
+    for (const auto& entry : ConfigSnapshot()->paired_devices) {
         if (entry.hardware == kHardwareXiaomiRemote2Pro) {
             active_rc = entry.device_id;
             break;
         }
     }
     const XiaomiSettings& settings =
-        config_.XiaomiSettingsForDevice(active_rc.has_value()
+        ConfigSnapshot()->XiaomiSettingsForDevice(active_rc.has_value()
                                             ? std::optional<std::string>(*active_rc)
                                             : std::nullopt);
     for (const auto button : kXiaomiMappableButtons) {
@@ -377,10 +380,15 @@ void VoiceStickCoordinator::CancelPendingConnect(const std::string& device_id) {
 
 void VoiceStickCoordinator::ConfirmPairedDeviceIds(const std::vector<std::string>& device_ids) {
     paired_device_ids_ = device_ids;
-    config_.paired_device_ids = device_ids;
+    {
+        std::lock_guard<std::mutex> write_lock(config_write_mutex_);
+        AppConfig next = *ConfigSnapshot();
+        next.paired_device_ids = device_ids;
+        config_.store(std::make_shared<const AppConfig>(std::move(next)));
+    }
     ui_->SetPairedDeviceIds(paired_device_ids_);
     ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
-    for (const auto& entry : config_.paired_devices) {
+    for (const auto& entry : ConfigSnapshot()->paired_devices) {
         if (std::find(paired_device_ids_.begin(), paired_device_ids_.end(), entry.device_id) == paired_device_ids_.end()) {
             continue;
         }
@@ -395,7 +403,12 @@ void VoiceStickCoordinator::RemovePairedDevice(const std::string& device_id) {
     auto it = std::find(paired_device_ids_.begin(), paired_device_ids_.end(), device_id);
     if (it == paired_device_ids_.end()) return;
     paired_device_ids_.erase(it);
-    config_.paired_device_ids = paired_device_ids_;
+    {
+        std::lock_guard<std::mutex> write_lock(config_write_mutex_);
+        AppConfig next = *ConfigSnapshot();
+        next.paired_device_ids = paired_device_ids_;
+        config_.store(std::make_shared<const AppConfig>(std::move(next)));
+    }
     // forget 后设备会断开重连：清理残留体感态，避免拦截重连后的主键录音。
     {
         const bool was_active = air_mouse_active_devices_.erase(device_id) > 0;
@@ -779,8 +792,8 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
     // hold 型输入法（WeType）——click 在物理键流结束后到达（松开沿合成），静默期
     // 自松开起算，此刻立即注入按住（repeat 流不毒化静默期，2026-09-11 实验定案），
     // 不等首帧：小米会话无设备音频帧，StickS3 首帧也远早于 WeType 弹面板（0.5~1.5s）。
-    if (config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
-        config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk) {
+    if (ConfigSnapshot()->wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+        ConfigSnapshot()->wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk) {
         if (!wechat_hotkey_->IsValid() || !wechat_hotkey_->SendDown()) {
             StopWechatInputMethodSession();
             ui_->ShowError("Failed to send WeChat input method hotkey", device_id, {});
@@ -812,8 +825,8 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
 // BLE 流（仍经 CABLE 管道），返回 false。
 bool VoiceStickCoordinator::WechatSessionUsesDefaultMicDirectly(const std::string& device_id) {
     return IsXiaomiRemoteDevice(device_id) &&
-           config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
-           config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
+           ConfigSnapshot()->wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+           ConfigSnapshot()->wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
 }
 
 void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonUp(
@@ -881,7 +894,7 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
                     LogWechatLatency("first frame decoded, SendDown begin");
                     // 点按式发完整点击（down+up），hold 模式发按下：Typeless 等点按式输入法
                     // 靠完整 click 触发，仅按下不释放不弹框。
-                    const bool click_mode = (config_.wechat_input_method.EffectiveSessionModel() ==
+                    const bool click_mode = (ConfigSnapshot()->wechat_input_method.EffectiveSessionModel() ==
                                              InteractionMode::kClickToTalk);
                     const bool ok = wechat_hotkey_->IsValid() &&
                         (click_mode ? wechat_hotkey_->SendClick()
@@ -950,8 +963,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         // underrun）。真机 BLE 稳态（日志首帧后 1:1）故余量充足；若抖动致丢字可回退 30/50。
         options.buffer_duration_ms = 20;
         options.device_name_substring =
-            std::wstring(config_.wechat_input_method.virtual_mic_playback_name.begin(),
-                         config_.wechat_input_method.virtual_mic_playback_name.end());
+            std::wstring(ConfigSnapshot()->wechat_input_method.virtual_mic_playback_name.begin(),
+                         ConfigSnapshot()->wechat_input_method.virtual_mic_playback_name.end());
         wechat_renderer_ = wechat_renderer_factory_
                                ? wechat_renderer_factory_(options)
                                : std::make_unique<WasapiVirtualMicRenderer>(options);
@@ -960,8 +973,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     wechat_ring_buffer_->Clear();
     wechat_decoder_->Reset();
     wechat_hotkey_ = wechat_hotkey_factory_
-                         ? wechat_hotkey_factory_(config_.wechat_input_method.ActiveHotkey(config_.wechat_input_method.trigger_mode))
-                         : std::make_unique<WechatInputMethodHotkey>(config_.wechat_input_method.ActiveHotkey(config_.wechat_input_method.trigger_mode));
+                         ? wechat_hotkey_factory_(ConfigSnapshot()->wechat_input_method.ActiveHotkey(ConfigSnapshot()->wechat_input_method.trigger_mode))
+                         : std::make_unique<WechatInputMethodHotkey>(ConfigSnapshot()->wechat_input_method.ActiveHotkey(ConfigSnapshot()->wechat_input_method.trigger_mode));
 
     // 方案 A 修订：小米 click/hold 会话直连默认麦克风——WeType 弹框即从默认录音
     // 设备（真实麦克风）取音，本端不做设备切换与虚拟麦渲染；拆除时序曾卡死
@@ -973,7 +986,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     // auto_switch：录音期把默认录音设备(eConsole)切到虚拟麦克风(CABLE Output)，松开切回。
     // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。
     // 必须在 SendDown 之前完成：微信弹框即从默认设备取音，未切好会取到真实麦。
-    if (!direct_mic && config_.wechat_input_method.auto_switch_default_recording_device) {
+    if (!direct_mic && ConfigSnapshot()->wechat_input_method.auto_switch_default_recording_device) {
         LogWechatLatency("auto_switch begin");
         if (!wechat_device_switcher_) {
             wechat_device_switcher_ = wechat_device_switcher_factory_
@@ -983,8 +996,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         if (wechat_device_switcher_) {
             auto saved = wechat_device_switcher_->GetDefaultCapture(DeviceRole::kConsole);
             std::wstring cable_name_w(
-                config_.wechat_input_method.virtual_mic_capture_name.begin(),
-                config_.wechat_input_method.virtual_mic_capture_name.end());
+                ConfigSnapshot()->wechat_input_method.virtual_mic_capture_name.begin(),
+                ConfigSnapshot()->wechat_input_method.virtual_mic_capture_name.end());
             auto cable = wechat_device_switcher_->FindCaptureByName(cable_name_w);
             if (saved && cable &&
                 wechat_device_switcher_->SetDefaultCapture(cable->id, {DeviceRole::kConsole})) {
@@ -994,7 +1007,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
                 SaveDeviceSwitchState(DeviceSwitchStatePath(), state);
             } else {
                 LogCoordinatorLine("auto_switch: failed to switch default capture to " +
-                                   config_.wechat_input_method.virtual_mic_capture_name);
+                                   ConfigSnapshot()->wechat_input_method.virtual_mic_capture_name);
                 // 不阻断会话：renderer.Start 会自行报错或正常，保持现有错误路径。
             }
         } else {
@@ -1011,7 +1024,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
             LogWechatLatency("renderer.Start failed");
             ui_->ShowError("Virtual microphone not found: " +
-                               config_.wechat_input_method.virtual_mic_playback_name,
+                               ConfigSnapshot()->wechat_input_method.virtual_mic_playback_name,
                            device_id, {});
             return false;
         }
@@ -1048,11 +1061,11 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     // 停止动作由 session_model（输入法会话模型）决定：hold 型（WeType）SendUp 配对
     // 按住注入；click 型（Typeless）发完整 SendClick（与启动对称）。
     const bool click_hold_combo =
-        config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
-        config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
+        ConfigSnapshot()->wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+        ConfigSnapshot()->wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
     const bool hotkey_was_sent = wechat_hotkey_ && wechat_hotkey_->IsValid() && wechat_hotkey_sent_down_;
     if (hotkey_was_sent) {
-        if (config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kClickToTalk) {
+        if (ConfigSnapshot()->wechat_input_method.EffectiveSessionModel() == InteractionMode::kClickToTalk) {
             wechat_hotkey_->SendClick();
         } else {
             wechat_hotkey_->SendUp();
@@ -1179,7 +1192,7 @@ bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& devic
     // 前台为高权限程序：SendInput 注入必被 UIPI 丢弃，跳过会话启动。
     // 按进程名去重，同一高权限程序本次运行只弹一次气泡。
     if (!elevation_warned_process_.has_value() || *elevation_warned_process_ != process_name) {
-        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
         std::string body = Tr(StringId::kElevationNeededBody, language);
         const auto marker = body.find("%s");
         if (marker != std::string::npos) {
@@ -1196,7 +1209,7 @@ bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& devic
 
 std::filesystem::path VoiceStickCoordinator::DeviceSwitchStatePath() const {
     if (!device_switch_state_path_.empty()) return device_switch_state_path_;
-    return config_.ConfigPath().parent_path() / "default_device_switch_state.json";
+    return ConfigSnapshot()->ConfigPath().parent_path() / "default_device_switch_state.json";
 }
 
 void VoiceStickCoordinator::RecoverDeviceSwitchStateIfNeeded() {
@@ -1229,8 +1242,8 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             input_injector_->ClickLeftButton();
             return;
         }
-        if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
-            if (config_.interaction_mode != InteractionMode::kClickToTalk) {
+        if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kSubtitle) {
+            if (ConfigSnapshot()->interaction_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
             }
@@ -1256,8 +1269,8 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             }
             return;
         }
-        if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
-            if (config_.wechat_input_method.trigger_mode != InteractionMode::kClickToTalk) {
+        if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kWechatInputMethod) {
+            if (ConfigSnapshot()->wechat_input_method.trigger_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
             }
@@ -1279,7 +1292,7 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             return;
         }
         if (HandleFrontButtonDuringPendingPaste(device_id)) return;
-        if (config_.interaction_mode != InteractionMode::kClickToTalk) {
+        if (ConfigSnapshot()->interaction_mode != InteractionMode::kClickToTalk) {
             ble_->SendUiState("ready", "", device_id);
             return;
         }
@@ -1392,7 +1405,7 @@ void VoiceStickCoordinator::HandleButtonDoubleClick(const StateEvent& event, con
 
 void VoiceStickCoordinator::HandleEncoderButtonDown(const StateEvent& event,
                                                     const std::string& device_id) {
-    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(device_id);
     if (enc.press_action == "recording") {
         HandleButtonDown(event, device_id);
         return;
@@ -1403,7 +1416,7 @@ void VoiceStickCoordinator::HandleEncoderButtonDown(const StateEvent& event,
 
 void VoiceStickCoordinator::HandleEncoderButtonUp(const StateEvent& event,
                                                   const std::string& device_id) {
-    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(device_id);
     if (enc.press_action == "recording") {
         HandleButtonUp(event, device_id);
         return;
@@ -1413,7 +1426,7 @@ void VoiceStickCoordinator::HandleEncoderButtonUp(const StateEvent& event,
 
 void VoiceStickCoordinator::HandleEncoderButtonClick(const StateEvent& event,
                                                      const std::string& device_id) {
-    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(device_id);
     if (enc.press_action == "recording") {
         HandleButtonClick(event, device_id);
         return;
@@ -1433,7 +1446,7 @@ void VoiceStickCoordinator::HandleEncoderButtonClick(const StateEvent& event,
 void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& event,
                                                            const std::string& device_id) {
     (void)event;
-    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(device_id);
     if (enc.double_click_action == "recording") {
         // 切换录音起停：复用固件 remote_button 通道（固件侧等价一次远程按下/松开，
         // 音频链路真实完整，等同 click_to_talk 点按起停）。remote_button 走
@@ -1467,7 +1480,7 @@ void VoiceStickCoordinator::HandleEncoderButtonDoubleClick(const StateEvent& eve
 void VoiceStickCoordinator::HandleTapEvent(const StateEvent& event, const std::string& device_id) {
     (void)event;
     // 总开关关闭则忽略（按设备取有效配置）。
-    if (!config_.InteractionSettingsForDevice(device_id).tap_to_arrow) return;
+    if (!ConfigSnapshot()->InteractionSettingsForDevice(device_id).tap_to_arrow) return;
     // 体感态忽略敲击，避免与体感移动/点击冲突。
     if (IsAirMouseActive(device_id)) return;
     // 录音中或识别中忽略敲击，避免震动干扰当前语音周期。
@@ -1492,7 +1505,7 @@ void VoiceStickCoordinator::HandleEncoderRotate(const StateEvent& event, const s
     // steps 上限钳制：固件侧已截断到 uint8（255），桌面端再钳到物理合理值，
     // 防伪造/异常 BLE 帧让注入循环放大挂死线程。真实 10ms 窗口内旋转 1~3 步。
     constexpr std::uint32_t kMaxEncoderRotateSteps = 64;
-    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(device_id);
     // 总开关关闭则忽略。
     if (!enc.to_arrow) return;
     // 体感态忽略旋转，避免与体感移动/点击冲突（固件侧也有体感门控，双保险）。
@@ -1649,7 +1662,7 @@ void VoiceStickCoordinator::FlushEncoderRotatePending(std::string device_id) {
     // （慢速旋转输出锁死在方向键）。按值传递后 clear 只清成员，不影响参数副本。
     encoder_pending_device_id_.clear();
     if (on_encoder_rotate_pending_changed) on_encoder_rotate_pending_changed(false);
-    const EncoderSettings& enc = config_.EncoderSettingsForDevice(device_id);
+    const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(device_id);
     const std::string& key = ccw ? enc.rotate_ccw_key
                                  : enc.rotate_cw_key;
     InjectEncoderRotateSteps(ccw, steps, key, device_id);
@@ -1658,7 +1671,7 @@ void VoiceStickCoordinator::FlushEncoderRotatePending(std::string device_id) {
 void VoiceStickCoordinator::EncoderRotateTick() {
     if (!encoder_pending_active_) return;
     // 到期判定用挂起 pending 来源设备的覆盖配置（ decide_window_ms 可按设备不同）。
-    const EncoderSettings& enc = config_.EncoderSettingsForDevice(encoder_pending_device_id_);
+    const EncoderSettings& enc = ConfigSnapshot()->EncoderSettingsForDevice(encoder_pending_device_id_);
     if (enc.rotate_decide_window_ms <= 0) return;
     const auto now = std::chrono::steady_clock::now();
     if (now - encoder_pending_started_at_ >=
@@ -1709,23 +1722,23 @@ AirMouseParams VoiceStickCoordinator::AirMouseParamsForDevice(const std::string&
     // P2 曲线改为平滑 sigmoid、low_factor 0.15→0.25：低端精细段响应更跟手（10dps 处约 2.8× 更灵敏），
     // 40dps 处约 +12%，甩动段基本不变；gain 维持 48 无需重标。真机标定范围约 24~96。
     // 灵敏度按设备取（InteractionSettingsForDevice），其余进阶参数仍走全局配置。
-    const InteractionSettings& inter = config_.InteractionSettingsForDevice(device_id);
+    const InteractionSettings& inter = ConfigSnapshot()->InteractionSettingsForDevice(device_id);
     p.gain_x = static_cast<double>(inter.air_mouse_sensitivity_x) * 48.0;
     p.gain_y = static_cast<double>(inter.air_mouse_sensitivity_y) * 48.0;
-    p.tau = config_.air_mouse_tau;
-    p.invert_y = config_.air_mouse_invert_y;
+    p.tau = ConfigSnapshot()->air_mouse_tau;
+    p.invert_y = ConfigSnapshot()->air_mouse_invert_y;
     // 曲线参数从配置组装，经 AirMouseCurveClamp 钳位（防配置越界致曲线退化或除零）。
-    p.curve.low_thresh = config_.air_mouse_curve_low_thresh;
-    p.curve.high_thresh = config_.air_mouse_curve_high_thresh;
-    p.curve.low_factor = config_.air_mouse_curve_low_factor;
-    p.curve.high_factor = config_.air_mouse_curve_high_factor;
+    p.curve.low_thresh = ConfigSnapshot()->air_mouse_curve_low_thresh;
+    p.curve.high_thresh = ConfigSnapshot()->air_mouse_curve_high_thresh;
+    p.curve.low_factor = ConfigSnapshot()->air_mouse_curve_low_factor;
+    p.curve.high_factor = ConfigSnapshot()->air_mouse_curve_high_factor;
     p.curve = AirMouseCurveClamp(p.curve);
     // 控制模式与飞行摇杆参数。
-    p.control_mode = AirMouseControlModeFromName(config_.air_mouse_control_mode);
-    p.neutral_deadzone = AirMouseNeutralDeadzoneClamp(config_.air_mouse_neutral_deadzone);
-    p.rate_gain = AirMouseRateGainClamp(config_.air_mouse_rate_gain);
-    p.rate_friction = AirMouseRateFrictionClamp(config_.air_mouse_rate_friction);
-    p.rate_max_speed = AirMouseRateMaxSpeedClamp(config_.air_mouse_rate_max_speed);
+    p.control_mode = AirMouseControlModeFromName(ConfigSnapshot()->air_mouse_control_mode);
+    p.neutral_deadzone = AirMouseNeutralDeadzoneClamp(ConfigSnapshot()->air_mouse_neutral_deadzone);
+    p.rate_gain = AirMouseRateGainClamp(ConfigSnapshot()->air_mouse_rate_gain);
+    p.rate_friction = AirMouseRateFrictionClamp(ConfigSnapshot()->air_mouse_rate_friction);
+    p.rate_max_speed = AirMouseRateMaxSpeedClamp(ConfigSnapshot()->air_mouse_rate_max_speed);
     return p;
 }
 
@@ -1838,11 +1851,11 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
     if (IsAirMouseActive(device_id)) {
         return;
     }
-    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
+    if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kWechatInputMethod) {
         HandleWechatInputMethodPrimaryButtonDown(session_id, device_id);
         return;
     }
-    if (config_.default_output_profile.target == OutputTarget::kSubtitle) {
+    if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kSubtitle) {
         HandleSubtitlePrimaryButtonDown(session_id, device_id);
         return;
     }
@@ -1868,9 +1881,9 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
     // 引擎（local_asr 在且 local-mic 会话或 [local_asr].enabled）且闸拒绝时，
     // 通知用户并放弃本次会话（不下发、不进 recording）。
     const bool routes_to_local =
-        local_asr_ && (device_id == kLocalMicDeviceId || config_.local_asr.enabled);
+        local_asr_ && (device_id == kLocalMicDeviceId || ConfigSnapshot()->local_asr.enabled);
     if (routes_to_local && allow_local_asr_ && !allow_local_asr_()) {
-        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
         ui_->ShowTimedMessage(Tr(StringId::kLicenseLocalBlocked, language), 3000);
         return;
     }
@@ -1884,7 +1897,7 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         // 标准 Ogg Opus 流，断网场景设备语音输入可用；其余 → 云端。
         //（SessionAsrClient 见注释：final 块发送时会话 id 已重置，路由必须提前定死。）
         session_asr_ = (local_asr_ &&
-                        (device_id == kLocalMicDeviceId || config_.local_asr.enabled))
+                        (device_id == kLocalMicDeviceId || ConfigSnapshot()->local_asr.enabled))
                            ? local_asr_.get()
                            : asr_.get();
         // 本地精修钉住与 ASR 路由同源：本会话走本地识别且 [local_asr]
@@ -1892,7 +1905,7 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         //（规则 → LLM → 守卫）。未钉住时设备/云端会话维持云端 refine_enabled
         // 分支，行为不变。
         session_uses_local_refine_ =
-            session_asr_ == local_asr_.get() && config_.local_asr.refine_enabled &&
+            session_asr_ == local_asr_.get() && ConfigSnapshot()->local_asr.refine_enabled &&
             local_refiner_ != nullptr;
         // 路由钉住留痕：实测排查「口水词没过滤」先看这行——local/cloud 与
         // 是否带本地精修一目了然（后续归因行见 Local refine: in=/llm ok 等）。
@@ -2032,8 +2045,8 @@ void VoiceStickCoordinator::HandleSubtitlePrimaryButtonDown(std::optional<std::u
     cycle->device_id = device_id;
     cycle->session_id = *session_id;
     cycle->started_at = std::chrono::steady_clock::now();
-    cycle->asr = asr_factory_(config_);
-    cycle->debug_audio_recorder = DebugAudioRecorder(config_.debug_audio_cache, config_.debug_audio_directory);
+    cycle->asr = asr_factory_(*ConfigSnapshot());
+    cycle->debug_audio_recorder = DebugAudioRecorder(ConfigSnapshot()->debug_audio_cache, ConfigSnapshot()->debug_audio_directory);
     ConfigureSubtitleAsrCallbacks(cycle.get());
     cycle->debug_audio_recorder.Start(device_id, session_id);
     subtitle_cycles_[{device_id, *session_id}] = std::move(cycle);
@@ -2093,7 +2106,7 @@ void VoiceStickCoordinator::BeginWaitingForSubtitleAudioEnd(SubtitleCycle* cycle
     cycle->waiting_for_audio_end = true;
     LogCoordinatorLine("waiting for subtitle audio END VS-" + cycle->device_id +
                        (reason.empty() ? std::string() : " reason=" + std::string(reason)));
-    if (config_.interaction_mode != InteractionMode::kHoldToTalk) {
+    if (ConfigSnapshot()->interaction_mode != InteractionMode::kHoldToTalk) {
         ui_->SetStatus("Processing");
         ble_->SendUiState("thinking", "", cycle->device_id);
     }
@@ -2127,7 +2140,7 @@ void VoiceStickCoordinator::CancelSubtitleAudioEndTimeout(SubtitleCycle* cycle) 
 
 void VoiceStickCoordinator::FinishSubtitleAudioInput(SubtitleCycle* cycle) {
     if (!cycle) return;
-    if (config_.interaction_mode == InteractionMode::kHoldToTalk) {
+    if (ConfigSnapshot()->interaction_mode == InteractionMode::kHoldToTalk) {
         ClearActiveSubtitleSession(cycle->device_id, cycle->session_id);
         ble_->SendUiState("ready", "", cycle->device_id);
     } else {
@@ -2328,7 +2341,7 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
         });
         return;
     }
-    if (config_.refine_enabled || (session_uses_local_refine_ && local_refiner_)) {
+    if (ConfigSnapshot()->refine_enabled || (session_uses_local_refine_ && local_refiner_)) {
         ui_->SetStatus("Refining");
         // 立即把 ASR 原文刷上悬浮窗并进入精修态（kRefining 指示器 + 末尾闪烁光标），
         // 让用户在 LLM 首 token 到达前（建连 + TTFT 约 1~2s；本地引擎首句含
@@ -2553,7 +2566,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         // 在 Turns() 内惰性完成，过期后历史为空、引擎会话由下一次 Chat 调用
         // 自动作废，无需显式重置。
         LocalRefinementClient::RefineContext context;
-        context.cross_turn = config_.local_asr.refine_cross_turn;
+        context.cross_turn = ConfigSnapshot()->local_asr.refine_cross_turn;
         if (context.cross_turn) {
             context.turns = refine_history_.Turns();
         }
@@ -2612,7 +2625,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                     CancelStreamingRefinement();
                     ui_->ShowPartial(final_text, device_id);
                     if (ok) {
-                        if (config_.local_asr.refine_cross_turn) {
+                        if (ConfigSnapshot()->local_asr.refine_cross_turn) {
                             refine_history_.Add(text, final_text, instruction);
                         }
                         MineHotwordCandidatesFromRefinement(text, final_text);
@@ -2621,11 +2634,11 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                     MaybeExtractHotwordCandidates(final_text);
                 });
             },
-            cancel, config_.asr_hotwords, std::move(context));
+            cancel, ConfigSnapshot()->asr_hotwords, std::move(context));
         return;
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
-    if (config_.refine_enabled && !text.empty()) {
+    if (ConfigSnapshot()->refine_enabled && !text.empty()) {
         // 流式精修：on_token 在后台线程节流式追加显示（用 AppendPartial 跳过文字滚动
         // 动画，避免高频 token 反复重置 140ms 动画导致闪动；overlay OnTimer 已优化为
         // 文本未变时不重建 D2D 文本布局，避免卡死）。
@@ -2646,7 +2659,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
 
         refiner_.RefineStream(
             text,
-            config_.refine_prompt,
+            ConfigSnapshot()->refine_prompt,
             // on_token（后台线程）：节流式追加更新悬浮窗
             [this, alive, cancel, device_id, throttle](std::string token) {
                 if (!alive->load() || (cancel && cancel->load())) return;
@@ -2681,7 +2694,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                         // 热词守卫：精修把 ASR 原文中已正确的热词改坏时回退原文
                         // （小模型精修不稳定的本地兜底）。
                         if (LLMRefinementClient::RefineResultKeepsHotwords(text, result,
-                                                                           config_.asr_hotwords)) {
+                                                                           ConfigSnapshot()->asr_hotwords)) {
                             final_text = result;
                             // 用最终的累积文本做最后一次 UI 刷新
                             ui_->ShowPartial(result, device_id);
@@ -2705,25 +2718,25 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
 
 void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::string& original,
                                                                 const std::string& refined) {
-    const auto mined = MineRefinementCandidates(original, refined, config_.asr_hotwords);
+    const auto mined = MineRefinementCandidates(original, refined, ConfigSnapshot()->asr_hotwords);
     if (!mined.empty()) RecordAndNotifyHotwordCandidates(mined);
 }
 
 void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& final_text) {
-    if (!config_.hotword_mining_enabled || config_.llm_api_key.empty() || final_text.empty()) {
+    if (!ConfigSnapshot()->hotword_mining_enabled || ConfigSnapshot()->llm_api_key.empty() || final_text.empty()) {
         LogCoordinatorLine(std::string("hotword extraction skipped: ") +
-                           (!config_.hotword_mining_enabled
+                           (!ConfigSnapshot()->hotword_mining_enabled
                                 ? "mining_disabled"
-                                : (config_.llm_api_key.empty() ? "no_llm_key" : "empty_text")));
+                                : (ConfigSnapshot()->llm_api_key.empty() ? "no_llm_key" : "empty_text")));
         return;
     }
     LogCoordinatorLine("hotword extraction started: text_len=" +
                        std::to_string(final_text.size()) +
-                       " model=" + config_.llm_model +
-                       " hotwords=" + std::to_string(config_.asr_hotwords.size()));
+                       " model=" + ConfigSnapshot()->llm_model +
+                       " hotwords=" + std::to_string(ConfigSnapshot()->asr_hotwords.size()));
     auto alive = alive_;
     refiner_.ExtractHotwordCandidates(
-        final_text, config_.asr_hotwords,
+        final_text, ConfigSnapshot()->asr_hotwords,
         [this, alive](bool ok, std::vector<std::string> words) {
             if (!alive->load()) return;
             LogCoordinatorLine("hotword extraction finished ok=" + std::string(ok ? "1" : "0") +
@@ -2735,7 +2748,7 @@ void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& fin
 }
 
 void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words) {
-    const auto path = config_.ConfigPath().parent_path() / "hotword_candidates.json";
+    const auto path = ConfigSnapshot()->ConfigPath().parent_path() / "hotword_candidates.json";
     std::vector<std::string> suggestions;
     {
         std::lock_guard lock(hotword_candidates_mutex_);
@@ -2749,7 +2762,7 @@ void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<s
     }
 
     if (!suggestions.empty()) {
-        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
         std::string joined;
         for (std::size_t i = 0; i < suggestions.size(); ++i) {
             if (i != 0) joined += ", ";
@@ -2770,15 +2783,15 @@ std::vector<std::string> VoiceStickCoordinator::RankedHotwordsForAsr() {
         std::lock_guard lock(hotword_usage_mutex_);
         if (!hotword_usage_loaded_) {
             hotword_usage_ = LoadHotwordUsage(
-                config_.ConfigPath().parent_path() / "hotword_usage.json");
+                ConfigSnapshot()->ConfigPath().parent_path() / "hotword_usage.json");
             hotword_usage_loaded_ = true;
         }
-        ranked = RankHotwords(hotword_usage_, config_.asr_hotwords, std::time(nullptr));
+        ranked = RankHotwords(hotword_usage_, ConfigSnapshot()->asr_hotwords, std::time(nullptr));
     }
     const auto fitted = AsrProtocol::FitHotwordsToCorpusBudget(ranked);
     if (fitted.size() < ranked.size() && !hotword_trim_notified_.exchange(true)) {
         // 每次运行只提示一次：热词库超出直传预算，按使用频率优先保留，其余本次不参与。
-        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
         const std::string body =
             Tr(StringId::kHotwordTrimBodyPrefix, language) +
             std::to_string(fitted.size()) + "/" + std::to_string(ranked.size()) +
@@ -2810,23 +2823,23 @@ std::vector<std::string> VoiceStickCoordinator::HotwordsForLlmPrompts() {
     std::lock_guard lock(hotword_usage_mutex_);
     if (!hotword_usage_loaded_) {
         hotword_usage_ = LoadHotwordUsage(
-            config_.ConfigPath().parent_path() / "hotword_usage.json");
+            ConfigSnapshot()->ConfigPath().parent_path() / "hotword_usage.json");
         hotword_usage_loaded_ = true;
     }
-    return TrimHotwordsForPrompt(hotword_usage_, config_.asr_hotwords,
+    return TrimHotwordsForPrompt(hotword_usage_, ConfigSnapshot()->asr_hotwords,
                                  kHotwordPromptMaxWords, std::time(nullptr));
 }
 
 void VoiceStickCoordinator::RecordHotwordUsageFromText(const std::string& text) {
-    if (text.empty() || config_.asr_hotwords.empty()) return;
+    if (text.empty() || ConfigSnapshot()->asr_hotwords.empty()) return;
     std::lock_guard lock(hotword_usage_mutex_);
     if (!hotword_usage_loaded_) {
         hotword_usage_ = LoadHotwordUsage(
-            config_.ConfigPath().parent_path() / "hotword_usage.json");
+            ConfigSnapshot()->ConfigPath().parent_path() / "hotword_usage.json");
         hotword_usage_loaded_ = true;
     }
-    RecordHotwordUsageInText(hotword_usage_, text, config_.asr_hotwords, std::time(nullptr));
-    SaveHotwordUsage(config_.ConfigPath().parent_path() / "hotword_usage.json", hotword_usage_);
+    RecordHotwordUsageInText(hotword_usage_, text, ConfigSnapshot()->asr_hotwords, std::time(nullptr));
+    SaveHotwordUsage(ConfigSnapshot()->ConfigPath().parent_path() / "hotword_usage.json", hotword_usage_);
 }
 
 void VoiceStickCoordinator::BeginWaitingForAudioEnd(std::string_view reason) {
@@ -3066,7 +3079,7 @@ void VoiceStickCoordinator::CommitPendingPaste(const std::string& text) {
 }
 
 void VoiceStickCoordinator::CompletePendingPaste(const std::string& text) {
-    const bool should_press_enter = config_.auto_enter;
+    const bool should_press_enter = ConfigSnapshot()->auto_enter;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
     // 时序探针汇总：button_up -> ready 各阶段耗时，定位 Thinking 延迟根因。
@@ -3219,7 +3232,7 @@ bool VoiceStickCoordinator::IsXiaomiRemoteDevice(const std::string& device_id) {
     }
     // 配对配置种子：HandlePairingCompleted 先存 config 再调 CheckFirmwareAfterPairing，
     // 早于 UpdateDeviceFirmwareInfo 时这里兜底。
-    for (const auto& entry : config_.paired_devices) {
+    for (const auto& entry : ConfigSnapshot()->paired_devices) {
         if (entry.device_id == device_id && entry.hardware == kHardwareXiaomiRemote2Pro) {
             return true;
         }
@@ -3244,7 +3257,10 @@ void VoiceStickCoordinator::UpdateDeviceFirmwareInfo(const StateEvent& event, co
         info.error_message.clear();
     }
     if (!hardware_to_save.empty() || !version_to_save.empty()) {
-        config_.SavePairedDeviceInfo(device_id, hardware_to_save, version_to_save);
+        std::lock_guard<std::mutex> write_lock(config_write_mutex_);
+        AppConfig next = *ConfigSnapshot();
+        next.SavePairedDeviceInfo(device_id, hardware_to_save, version_to_save);
+        config_.store(std::make_shared<const AppConfig>(std::move(next)));
     }
     RefreshFirmwareAvailability();
 }
@@ -3507,7 +3523,7 @@ void VoiceStickCoordinator::SendUiStateForActiveDevice(const std::string& state,
 }
 
 OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<std::string>& device_id) const {
-    return config_.OutputProfileForDevice(device_id);
+    return ConfigSnapshot()->OutputProfileForDevice(device_id);
 }
 
 InteractionMode VoiceStickCoordinator::InteractionModeToSend() const {
@@ -3516,16 +3532,16 @@ InteractionMode VoiceStickCoordinator::InteractionModeToSend() const {
     //   click -> click_to_talk
     // 非 wechat 模式（focused_app/字幕）仍下发全局 interaction_mode（托盘菜单控制），
     // 不被 wechat 的点按式选择污染。
-    if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) {
-        return config_.wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
+    if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kWechatInputMethod) {
+        return ConfigSnapshot()->wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
                    ? InteractionMode::kHoldToTalkInstant
                    : InteractionMode::kClickToTalk;
     }
-    return config_.interaction_mode;
+    return ConfigSnapshot()->interaction_mode;
 }
 
 OverlayThemeColor VoiceStickCoordinator::ThemeColorForDevice(const std::string& device_id) const {
-    return ThemeColorForConfig(config_, device_id);
+    return ThemeColorForConfig(*ConfigSnapshot(), device_id);
 }
 
 OverlayThemeColor VoiceStickCoordinator::ThemeColorForConfig(const AppConfig& config,
@@ -3536,7 +3552,7 @@ OverlayThemeColor VoiceStickCoordinator::ThemeColorForConfig(const AppConfig& co
 
 bool VoiceStickCoordinator::ShouldUseDefiniteSegments(const OutputProfile& profile) const {
     return profile.target == OutputTarget::kSubtitle &&
-           config_.interaction_mode == InteractionMode::kClickToTalk;
+           ConfigSnapshot()->interaction_mode == InteractionMode::kClickToTalk;
 }
 
 double VoiceStickCoordinator::CurrentRecordingDurationSeconds() const {
@@ -3585,12 +3601,12 @@ void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
     if (!target_device) {
         if (paired_device_ids_.empty()) {
             ui_->SetStatus("Hotkey: pair a VoiceStick first");
-            if (config_.debug_audio_cache) {
+            if (ConfigSnapshot()->debug_audio_cache) {
                 ui_->ShowNotification("热键触发失败", "请先配对 VoiceStick 设备");
             }
         } else {
             ui_->SetStatus("Hotkey: VoiceStick not connected; press the main button to wake it");
-            if (config_.debug_audio_cache) {
+            if (ConfigSnapshot()->debug_audio_cache) {
                 ui_->ShowNotification("热键触发失败", "设备可能已休眠，请按主键唤醒后重试。");
             }
         }
@@ -3601,21 +3617,21 @@ void VoiceStickCoordinator::HandleGlobalHotkeyPressed() {
     LogApp("  resolved target device: VS-" + *target_device);
 
     const auto request_id = next_hotkey_request_id_++;
-    if (config_.interaction_mode == InteractionMode::kHoldToTalk) {
+    if (ConfigSnapshot()->interaction_mode == InteractionMode::kHoldToTalk) {
         hotkey_is_down_ = true;
         hotkey_active_device_id_ = target_device;
     }
     LogApp("  sending remote_button_down to VS-" + *target_device + ", request_id=" + std::to_string(request_id));
     ble_->SendRemoteButton(RemoteButtonAction::kDown, "primary", target_device, request_id);
     ui_->SetStatus("Recording (hotkey) on VS-" + *target_device);
-    if (config_.debug_audio_cache) {
+    if (ConfigSnapshot()->debug_audio_cache) {
         ui_->ShowNotification("热键已触发", "正在 VS-" + *target_device + " 上启动录音，松开热键结束识别");
     }
     LogApp("hotkey pressed, starting recording on VS-" + *target_device);
 }
 
 void VoiceStickCoordinator::HandleGlobalHotkeyReleased() {
-    if (config_.interaction_mode == InteractionMode::kClickToTalk) {
+    if (ConfigSnapshot()->interaction_mode == InteractionMode::kClickToTalk) {
         return;
     }
 
@@ -3654,12 +3670,12 @@ void VoiceStickCoordinator::CancelAsrClients() {
 void VoiceStickCoordinator::HandleLocalMicHotkeyPressed() {
     // 门控：运行件齐备 + 配置开启。focused_app 之外的目标（wechat/字幕）是设备流
     // 设计，本机麦克风首期不接（迭代三后再评估）。
-    if (!local_mic_capture_ || !local_asr_ || !config_.local_asr.enabled) return;
-    if (config_.default_output_profile.target != OutputTarget::kFocusedApp) return;
+    if (!local_mic_capture_ || !local_asr_ || !ConfigSnapshot()->local_asr.enabled) return;
+    if (ConfigSnapshot()->default_output_profile.target != OutputTarget::kFocusedApp) return;
     if (local_mic_hotkey_down_) return;  // 按住期间自动重复去抖
     // 授权闸：本地引擎被拒（试用到期/无有效授权）时提示并放弃本次会话。
     if (allow_local_asr_ && !allow_local_asr_()) {
-        const auto language = EffectiveUiLanguage(config_.ui_language);
+        const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
         ui_->ShowTimedMessage(Tr(StringId::kLicenseLocalBlocked, language), 3000);
         return;
     }

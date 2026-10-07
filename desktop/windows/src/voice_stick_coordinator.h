@@ -641,7 +641,14 @@ private:
     // 把 fn 投递到 UI 线程执行；未注入 dispatcher 时在当前线程同步执行。
     void RunOnUiThread(std::function<void()> fn);
 
-    AppConfig config_;
+    // B8 配置快照：整份值语义原子换入——后台线程（ASR/LLM/热词回调）读取不再与
+    // UI 线程 UpdateConfig/配对写入构成数据竞争（原裸成员跨线程读写 = UB）。读方
+    // 经 ConfigSnapshot() 拿 shared_ptr 快照（活到所在完整表达式结束；同一逻辑需
+    // 多次读取时先取局部快照）；写方在 config_write_mutex_ 下 copy-mutate-store。
+    // 禁止保存 config_ 的引用/指针（换入即悬垂）。
+    std::atomic<std::shared_ptr<const AppConfig>> config_;
+    std::mutex config_write_mutex_;
+    std::shared_ptr<const AppConfig> ConfigSnapshot() const { return config_.load(); }
     std::unique_ptr<BleCentral> ble_;
     std::unique_ptr<AsrClient> asr_;
     std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory_;

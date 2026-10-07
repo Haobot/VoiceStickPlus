@@ -15488,6 +15488,102 @@ void TestModelDownloadSession() {
     AbortIfFailed(failed, "TestModelDownloadSession");
 }
 
+// B8：UpdateConfig 原子换入与后台读取并发（快照语义压力冒烟）——4 读线程持续走
+// 纯配置读路径（WechatSessionUsesDefaultMicDirectly：快照 + firmware_mutex_），
+// 主线程 300 次整份换入；无撕裂读、无死锁、读线程全程存活。
+void TestCoordinatorConcurrentUpdateConfigStress() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto cloud_asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble),
+                                      std::move(cloud_asr), &ui, &input);
+    std::atomic<bool> stop{false};
+    std::atomic<int> reads{0};
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 4; ++i) {
+        readers.emplace_back([&] {
+            while (!stop.load(std::memory_order_relaxed)) {
+                (void)coordinator.WechatSessionUsesDefaultMicDirectly("RC-0001");
+                reads.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (int i = 0; i < 300; ++i) {
+        AppConfig next = AppConfig::Defaults();
+        next.ui_language = (i % 2 == 0) ? UiLanguage::kSimplifiedChinese
+                                       : UiLanguage::kEnglish;
+        coordinator.UpdateConfig(std::move(next));
+    }
+    stop.store(true);
+    for (auto& thread : readers) {
+        thread.join();
+    }
+    int failed = reads.load() > 0 ? 0 : 1;
+    if (failed != 0) {
+        std::printf("FAIL contract-ish: 读线程零读取（未真正压到快照路径）\n");
+        fflush(stdout);
+    }
+    AbortIfFailed(failed, "TestCoordinatorConcurrentUpdateConfigStress");
+}
+
+// B9：任何保存路径都不抹磁盘 [license]（陈旧/空内存副本），且原子写成功不留 .tmp 残迹。
+void TestSaveStaleCopyKeepsLicense() {
+    namespace fs = std::filesystem;
+    int failed = 0;
+    auto expect = [&](bool ok, const char* what) {
+        if (!ok) {
+            ++failed;
+            std::printf("FAIL contract-ish: %s\n", what);
+            fflush(stdout);
+        }
+    };
+    const auto dir = fs::temp_directory_path() / "vs_config_b9";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const auto path = dir / "config.toml";
+
+    // 1) 建立带 license 的磁盘配置。
+    AppConfig on_disk = AppConfig::Defaults();
+    on_disk.license.serial = "VS-B9-SERIAL";
+    on_disk.license.trial_anchor_days = 100;
+    on_disk.license.last_seen_days = 105;
+    on_disk.volcengine_api_key = "disk-key";
+    on_disk.Save(path);
+
+    // 2) 陈旧副本（license 为空 = 协调器旧快照）走三条保存路径，[license] 必须幸存。
+    AppConfig stale = AppConfig::Defaults();
+    stale.Save(path);
+    AppConfig loaded = AppConfig::Load(path);
+    expect(loaded.license.serial == "VS-B9-SERIAL", "Save 后 license.serial 被抹");
+    expect(loaded.license.trial_anchor_days.has_value() &&
+               *loaded.license.trial_anchor_days == 100,
+           "Save 后 trial_anchor_days 被抹");
+    expect(loaded.license.last_seen_days.has_value() &&
+               *loaded.license.last_seen_days == 105,
+           "Save 后 last_seen_days 被抹");
+
+    stale.SavePreservingDiskCredentials(path);
+    loaded = AppConfig::Load(path);
+    expect(loaded.license.serial == "VS-B9-SERIAL",
+           "SavePreservingDiskCredentials 后 license.serial 被抹");
+    expect(loaded.volcengine_api_key == "disk-key",
+           "SavePreservingDiskCredentials 凭据保留语义回归");
+
+    stale.SaveSettingsDialog(path);
+    loaded = AppConfig::Load(path);
+    expect(loaded.license.serial == "VS-B9-SERIAL",
+           "SaveSettingsDialog 后 license.serial 被抹");
+
+    // 3) 原子写：成功路径不留 .tmp 残迹，文件完整可回读。
+    expect(!fs::exists(fs::path(path.string() + ".tmp")), "成功保存后残留 .tmp");
+    expect(loaded.asr_provider == AppConfig::Defaults().asr_provider, "回读内容完整");
+
+    fs::remove_all(dir, ec);
+    AbortIfFailed(failed, "TestSaveStaleCopyKeepsLicense");
+}
+
 // ===== 跨端契约 fixtures（tests/contract，规格 Doc/Ref/protocol.md）=====
 // 黄金字节由 tests/contract/generate_fixtures.py 独立构造（不从实现反推）；本测试
 // 用 Windows 解析器/构建器对拍期望。键序不构成契约，control 组比对对象语义；
@@ -16039,6 +16135,7 @@ int main() {
     TestLicenseStatus();
     TestLicenseConfigRoundTrip();
     TestSavePairedDeviceInfoPreservesDiskLicense();
+    TestSaveStaleCopyKeepsLicense();
     TestVolcengineTableIdConfigRoundTrip();
     TestAppConfig();
     TestAppConfigTapSensitivityRoundTrip();
@@ -16180,6 +16277,7 @@ int main() {
     TestTencentReceiveLoopExitsAfterFinalEmitted();
     TestTencentShutdownForcesHandleCloseNotWebSocketClose();
     TestCoordinatorUpdateConfigDestroysOldAsrOffThread();
+    TestCoordinatorConcurrentUpdateConfigStress();
     TestAudioOpusDecoderRoundTrip();
     TestAudioOpusDecoderNullData();
     TestAudioOpusDecoderInvalidData();
