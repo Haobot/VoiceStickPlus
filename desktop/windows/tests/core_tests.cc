@@ -15632,8 +15632,8 @@ void TestContractFixtures() {
         fflush(stdout);
     };
 #ifdef VOICESTICK_REPO_ROOT
-    const std::string path = std::filesystem::path(VOICESTICK_REPO_ROOT) /
-                             "tests/contract/fixtures/manifest.json";
+    const std::string path = (std::filesystem::path(VOICESTICK_REPO_ROOT) /
+                              "tests/contract/fixtures/manifest.json").string();
 #else
     const std::string path = "tests/contract/fixtures/manifest.json";
 #endif
@@ -15838,11 +15838,11 @@ void TestContractFixtures() {
             const cJSON* want_dx = cJSON_GetObjectItemCaseSensitive(expect, "dx");
             const cJSON* want_dy = cJSON_GetObjectItemCaseSensitive(expect, "dy");
             if (want_dx &&
-                motion.dx != static_cast<std::int16_t>(want_dx->valueint)) {
+                motion->dx != static_cast<std::int16_t>(want_dx->valueint)) {
                 fail(name + ": dx 不符");
             }
             if (want_dy &&
-                motion.dy != static_cast<std::int16_t>(want_dy->valueint)) {
+                motion->dy != static_cast<std::int16_t>(want_dy->valueint)) {
                 fail(name + ": dy 不符");
             }
         } else {
