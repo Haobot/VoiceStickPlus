@@ -1,4 +1,5 @@
 import Foundation
+import VoiceStickCore
 
 /// 编译期内置凭据（对齐 Windows desktop/windows/src/builtin_secrets.h.in 机制）。
 ///

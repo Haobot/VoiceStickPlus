@@ -457,50 +457,51 @@ final class SettingsWindowController: NSWindowController {
         let defaultRefinePrompt = LLMRefinementClient.buildPrompt(override: "", hotwords: [])
         let savedRefinePrompt = refinePrompt == defaultRefinePrompt ? "" : refinePrompt
 
-        config = AppConfig(
-            asrProvider: provider,
-            voiceStickAPIKey: config.voiceStickAPIKey,
-            voiceStickCloudURL: config.voiceStickCloudURL,
-            volcengineAPIKey: config.volcengineAPIKey,
-            tencentSecretID: config.tencentSecretID,
-            tencentSecretKey: config.tencentSecretKey,
-            tencentAppid: config.tencentAppid,
-            tencentEngineModelType: config.tencentEngineModelType,
-            tencentHotwordID: config.tencentHotwordID,
-            llmBaseURL: llmBaseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
-            llmAPIKey: llmAPIKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
-            llmModel: llmModelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
-            refineEnabled: refineButton.state == .on,
-            refinePrompt: savedRefinePrompt,
-            llmDisableThinking: config.llmDisableThinking,
-            interactionMode: config.interactionMode,
-            uiLanguage: selectedLanguage(),
-            resourceID: resourceID,
-            asrHotwords: AppConfig.hotwordList(hotwordsTextView.string),
-            pairedDeviceIDs: config.pairedDeviceIDs,
-            deviceThemeColors: config.deviceThemeColors,
-            deviceOverlayPositions: config.deviceOverlayPositions,
-            deviceThemeSizes: config.deviceThemeSizes,
-            defaultOutputProfile: outputProfile,
-            deviceOutputProfiles: config.deviceOutputProfiles,
-            autoEnter: config.autoEnter,
-            debugAudioCache: debugAudioButton.state == .on,
-            debugAudioDirectory: URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true),
-            pairedDevices: config.pairedDevices,
-            deviceXiaomiSettings: config.deviceXiaomiSettings,
-            xiaomiSuppressF5: config.xiaomiSuppressF5,
-            globalHotkeyEnabled: config.globalHotkeyEnabled,
-            globalHotkey: config.globalHotkey,
-            launchAtLogin: launchAtLoginButton.state == .on,
-            developerMode: developerMode,
-            showIMUDebug: imuDebugButton.state == .on,
-            interactionSettings: config.interactionSettings,
-            deviceInteractionSettings: config.deviceInteractionSettings,
-            encoderSettings: config.encoderSettings,
-            deviceEncoderSettings: config.deviceEncoderSettings,
-            airMouse: config.airMouse,
-            deviceButtonsSettings: config.deviceButtonsSettings
-        )
+        // N1 根刀：跨模块成员构造改拷贝-变异式（public init() 后隐式成员构造不可用）。
+        var updatedConfig = config
+        updatedConfig.asrProvider = provider
+        updatedConfig.voiceStickAPIKey = config.voiceStickAPIKey
+        updatedConfig.voiceStickCloudURL = config.voiceStickCloudURL
+        updatedConfig.volcengineAPIKey = config.volcengineAPIKey
+        updatedConfig.tencentSecretID = config.tencentSecretID
+        updatedConfig.tencentSecretKey = config.tencentSecretKey
+        updatedConfig.tencentAppid = config.tencentAppid
+        updatedConfig.tencentEngineModelType = config.tencentEngineModelType
+        updatedConfig.tencentHotwordID = config.tencentHotwordID
+        updatedConfig.llmBaseURL = llmBaseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        updatedConfig.llmAPIKey = llmAPIKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        updatedConfig.llmModel = llmModelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        updatedConfig.refineEnabled = refineButton.state == .on
+        updatedConfig.refinePrompt = savedRefinePrompt
+        updatedConfig.llmDisableThinking = config.llmDisableThinking
+        updatedConfig.interactionMode = config.interactionMode
+        updatedConfig.uiLanguage = selectedLanguage()
+        updatedConfig.resourceID = resourceID
+        updatedConfig.asrHotwords = AppConfig.hotwordList(hotwordsTextView.string)
+        updatedConfig.pairedDeviceIDs = config.pairedDeviceIDs
+        updatedConfig.deviceThemeColors = config.deviceThemeColors
+        updatedConfig.deviceOverlayPositions = config.deviceOverlayPositions
+        updatedConfig.deviceThemeSizes = config.deviceThemeSizes
+        updatedConfig.defaultOutputProfile = outputProfile
+        updatedConfig.deviceOutputProfiles = config.deviceOutputProfiles
+        updatedConfig.autoEnter = config.autoEnter
+        updatedConfig.debugAudioCache = debugAudioButton.state == .on
+        updatedConfig.debugAudioDirectory = URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)
+        updatedConfig.pairedDevices = config.pairedDevices
+        updatedConfig.deviceXiaomiSettings = config.deviceXiaomiSettings
+        updatedConfig.xiaomiSuppressF5 = config.xiaomiSuppressF5
+        updatedConfig.globalHotkeyEnabled = config.globalHotkeyEnabled
+        updatedConfig.globalHotkey = config.globalHotkey
+        updatedConfig.launchAtLogin = launchAtLoginButton.state == .on
+        updatedConfig.developerMode = developerMode
+        updatedConfig.showIMUDebug = imuDebugButton.state == .on
+        updatedConfig.interactionSettings = config.interactionSettings
+        updatedConfig.deviceInteractionSettings = config.deviceInteractionSettings
+        updatedConfig.encoderSettings = config.encoderSettings
+        updatedConfig.deviceEncoderSettings = config.deviceEncoderSettings
+        updatedConfig.airMouse = config.airMouse
+        updatedConfig.deviceButtonsSettings = config.deviceButtonsSettings
+        config = updatedConfig
 
         do {
             try config.save()

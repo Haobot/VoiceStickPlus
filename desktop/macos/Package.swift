@@ -40,7 +40,11 @@ let package = Package(
         // runner 共用；测试 runner 单独链接，不依赖 executable。
         .target(
             name: "VoiceStickCore",
-            dependencies: ["COpus"],
+            dependencies: [
+                "COpus",
+                // N1 根刀：AppConfig（TOML 读写）下迁 Core 需 TOMLKit（测试 runner 经 Core 传递获取，无需改 runner 声明）。
+                .product(name: "TOMLKit", package: "TOMLKit"),
+            ],
             path: "Sources/VoiceStickCore"
         ),
         .target(

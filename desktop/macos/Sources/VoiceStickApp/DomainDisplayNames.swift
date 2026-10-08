@@ -118,3 +118,13 @@ extension OverlayPosition {
     }
 }
 
+// N1 S1：UiLanguage.displayName 随类型下沉迁入。
+extension UiLanguage {
+    var displayName: String {
+        switch self {
+        case .system: return tr(.languageSystem)
+        case .en: return tr(.languageEnglish)
+        case .zhHans: return tr(.languageChineseSimplified)
+        }
+    }
+}

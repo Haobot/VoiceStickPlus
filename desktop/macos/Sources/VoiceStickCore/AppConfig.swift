@@ -1,154 +1,136 @@
-import AppKit
 import Foundation
 import TOMLKit
-import VoiceStickCore
 
-enum ASRProvider: String {
-    case voiceStickCloud = "voicestick_cloud"
-    case volcengine
-    case tencent
-
-    var displayName: String {
-        switch self {
-        case .voiceStickCloud:
-            return "VoiceStick Cloud"
-        case .volcengine:
-            return "Volcengine"
-        case .tencent:
-            return "Tencent Cloud ASR"
-        }
-    }
-}
 
 /// 悬浮窗主题色（对齐 Windows OverlayThemeColor，菜单顺序：自动/白/黑/粉/绿/黄/蓝/紫）。
 /// auto 为默认：Windows 按悬浮窗背景亮度采样选白/黑；macOS 无录屏权限无法采样屏幕，
 /// 跟随系统深浅外观近似（浅色→黑主题、深色→白主题）。
-struct AppConfig {
-    var asrProvider: ASRProvider
-    var voiceStickAPIKey: String
-    var voiceStickCloudURL: String
-    var volcengineAPIKey: String
+public struct AppConfig {
+    public var asrProvider: ASRProvider
+    public var voiceStickAPIKey: String
+    public var voiceStickCloudURL: String
+    public var volcengineAPIKey: String
     /// 腾讯云实时语音识别凭据（对齐 Windows tencent_*；加载时 Trim，引擎模型默认 16k_zh）。
-    var tencentSecretID: String
-    var tencentSecretKey: String
-    var tencentAppid: String
-    var tencentEngineModelType: String
-    var tencentHotwordID: String
-    var llmBaseURL: String
-    var llmAPIKey: String
-    var llmModel: String
+    public var tencentSecretID: String
+    public var tencentSecretKey: String
+    public var tencentAppid: String
+    public var tencentEngineModelType: String
+    public var tencentHotwordID: String
+    public var llmBaseURL: String
+    public var llmAPIKey: String
+    public var llmModel: String
     /// ASR 文本精修开关与自定义 prompt（对齐 Windows refine_enabled/refine_prompt；
     /// 默认开（对齐 Windows 默认），prompt 留空用内置默认）。
-    var refineEnabled: Bool
-    var refinePrompt: String
+    public var refineEnabled: Bool
+    public var refinePrompt: String
     /// 向所有 LLM 请求注入 enable_thinking:false 关闭深度思考（对齐 Windows，默认开）。
-    var llmDisableThinking: Bool
-    var interactionMode: InteractionMode
+    public var llmDisableThinking: Bool
+    public var interactionMode: InteractionMode
     /// 界面语言（对齐 Windows ui_language，默认 system 跟随系统）。
-    var uiLanguage: UiLanguage
-    var resourceID: String
-    var asrHotwords: [String]
-    var pairedDeviceIDs: [String]
-    var deviceThemeColors: [String: OverlayThemeColor]
-    var deviceOverlayPositions: [String: OverlayPosition]
-    var deviceThemeSizes: [String: OverlayThemeSize]
-    var defaultOutputProfile: OutputProfile
-    var deviceOutputProfiles: [String: OutputProfile]
-    var autoEnter: Bool
-    var debugAudioCache: Bool
-    var debugAudioDirectory: URL
+    public var uiLanguage: UiLanguage
+    public var resourceID: String
+    public var asrHotwords: [String]
+    public var pairedDeviceIDs: [String]
+    public var deviceThemeColors: [String: OverlayThemeColor]
+    public var deviceOverlayPositions: [String: OverlayPosition]
+    public var deviceThemeSizes: [String: OverlayThemeSize]
+    public var defaultOutputProfile: OutputProfile
+    public var deviceOutputProfiles: [String: OutputProfile]
+    public var autoEnter: Bool
+    public var debugAudioCache: Bool
+    public var debugAudioDirectory: URL
     /// 配对设备条目表（paired_device CSV 数组持久化），与 pairedDeviceIDs 同步维护。
-    var pairedDevices: [PairedDeviceEntry]
+    public var pairedDevices: [PairedDeviceEntry]
     /// [device.<id>.xiaomi] 按设备覆盖（键为归一化 4 位大写 hex ID）。
-    var deviceXiaomiSettings: [String: XiaomiSettings]
+    public var deviceXiaomiSettings: [String: XiaomiSettings]
     /// 小米语音键按下时遥控器固件会多发一个 F5 键：是否由事件钩子吞掉（默认开）。
-    var xiaomiSuppressF5: Bool
+    public var xiaomiSuppressF5: Bool
     /// 全局热键开关与绑定（对齐 Windows global_hotkey_enabled / global_hotkey，
     /// 默认开 + "Alt+X"=Option+X；键名语法跨端兼容：Alt→⌥、Win→⌘、Ctrl→⌃、Shift→⇧）。
-    var globalHotkeyEnabled: Bool
-    var globalHotkey: String
+    public var globalHotkeyEnabled: Bool
+    public var globalHotkey: String
     /// 开机自启动（对齐 Windows launch_at_login，默认开；macOS 13+ 经 SMAppService 生效）。
-    var launchAtLogin: Bool
+    public var launchAtLogin: Bool
     /// 开发者模式（对齐 Windows developer_mode，默认关）：设置窗口放出 API Key/资源 ID/
     /// LLM 凭据/输出目标/系统区/调试开关等高级行，勾选实时生效。
-    var developerMode: Bool
+    public var developerMode: Bool
     /// IMU 调试显示开关（对齐 Windows show_imu_debug，默认关）：经 control_rx 下发固件，
     /// 固件在屏幕上渲染 IMU 调试信息。
-    var showIMUDebug: Bool
+    public var showIMUDebug: Bool
     /// 全局默认设备交互设置（对齐 Windows default_interaction_settings，顶层键
     /// imu_wake_sensitivity/tap_to_arrow/tap_sensitivity/air_mouse_sensitivity_x/y）。
-    var interactionSettings: InteractionSettings
+    public var interactionSettings: InteractionSettings
     /// [device.<id>.interaction] 按设备覆盖（键为归一化 4 位大写 hex ID，加载时已用
     /// 全局默认填平）。
-    var deviceInteractionSettings: [String: InteractionSettings]
+    public var deviceInteractionSettings: [String: InteractionSettings]
     /// 全局默认编码器设置（对齐 Windows default_encoder_settings，顶层键 encoder_*）。
-    var encoderSettings: EncoderSettings
+    public var encoderSettings: EncoderSettings
     /// [device.<id>.encoder] 按设备覆盖（键名去 encoder_ 前缀，加载时已用全局默认填平）。
-    var deviceEncoderSettings: [String: EncoderSettings]
+    public var deviceEncoderSettings: [String: EncoderSettings]
     /// 体感鼠标全局进阶参数（对齐 Windows 顶层键 air_mouse_*，默认值=真机标定）。
-    var airMouse: AirMouseSettings
+    public var airMouse: AirMouseSettings
     /// [device.<id>.buttons] 按设备覆盖（小米遥控器按键映射；键为归一化 4 位大写 hex ID）。
-    var deviceButtonsSettings: [String: ButtonsSettings]
+    public var deviceButtonsSettings: [String: ButtonsSettings]
 
-    static var configDirectory: URL {
+    public static var configDirectory: URL {
         FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/VoiceStick", isDirectory: true)
     }
 
-    static var configURL: URL {
+    public static var configURL: URL {
         configDirectory.appendingPathComponent("config.toml")
     }
 
-    static var defaultDebugAudioDirectory: URL {
+    public static var defaultDebugAudioDirectory: URL {
         configDirectory.appendingPathComponent("DebugAudio", isDirectory: true)
     }
 
-    static let supportedResourceIDs = [
+    public static let supportedResourceIDs = [
         "volc.seedasr.sauc.duration",
         "volc.seedasr.sauc.concurrent",
         "volc.bigasr.sauc.duration",
         "volc.bigasr.sauc.concurrent"
     ]
 
-    static let defaultVoiceStickCloudURL = "wss://api.xiaozhi.me/voicestick/asr/"
-    static let volcengineWebSocketURL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
-    static let websiteURL = URL(string: "https://haobot.github.io/VoiceStickPlus/")!
-    static let minimumCompatibleFirmwareVersion = "0.3.0"
+    public static let defaultVoiceStickCloudURL = "wss://api.xiaozhi.me/voicestick/asr/"
+    public static let volcengineWebSocketURL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+    public static let websiteURL = URL(string: "https://haobot.github.io/VoiceStickPlus/")!
+    public static let minimumCompatibleFirmwareVersion = "0.3.0"
 
-    static var configExists: Bool {
+    public static var configExists: Bool {
         FileManager.default.fileExists(atPath: configURL.path)
     }
 
     // ---- 内置凭据回退（对齐 Windows Active*()：配置值优先，空则回退编译期内置；
     // 不修改 config 字段、不落盘。内测构建经 BuiltinSecrets 预打包，公开构建全空。）----
 
-    var activeVolcengineAPIKey: String {
-        resolveActiveString(volcengineAPIKey, builtin: BuiltinSecrets.volcengineAPIKey)
+    public var activeVolcengineAPIKey: String {
+        resolveActiveString(volcengineAPIKey, builtin: BuiltInSecretSlots.volcengineAPIKey)
     }
 
-    var activeTencentSecretID: String {
-        resolveActiveString(tencentSecretID, builtin: BuiltinSecrets.tencentSecretID)
+    public var activeTencentSecretID: String {
+        resolveActiveString(tencentSecretID, builtin: BuiltInSecretSlots.tencentSecretID)
     }
 
-    var activeTencentSecretKey: String {
-        resolveActiveString(tencentSecretKey, builtin: BuiltinSecrets.tencentSecretKey)
+    public var activeTencentSecretKey: String {
+        resolveActiveString(tencentSecretKey, builtin: BuiltInSecretSlots.tencentSecretKey)
     }
 
-    var activeTencentAppid: String {
-        resolveActiveString(tencentAppid, builtin: BuiltinSecrets.tencentAppid)
+    public var activeTencentAppid: String {
+        resolveActiveString(tencentAppid, builtin: BuiltInSecretSlots.tencentAppid)
     }
 
-    var activeLlmAPIKey: String {
-        resolveActiveString(llmAPIKey, builtin: BuiltinSecrets.llmAPIKey)
+    public var activeLlmAPIKey: String {
+        resolveActiveString(llmAPIKey, builtin: BuiltInSecretSlots.llmAPIKey)
     }
 
-    var activeLlmBaseURL: String {
-        resolveActiveString(llmBaseURL, builtin: BuiltinSecrets.llmBaseURL)
+    public var activeLlmBaseURL: String {
+        resolveActiveString(llmBaseURL, builtin: BuiltInSecretSlots.llmBaseURL)
     }
 
-    var activeLlmModel: String {
-        resolveActiveString(llmModel, builtin: BuiltinSecrets.llmModel)
+    public var activeLlmModel: String {
+        resolveActiveString(llmModel, builtin: BuiltInSecretSlots.llmModel)
     }
 
     /// 首启引导（内测包开箱即用，对齐 Windows「内置 key 跳过 onboarding」）：
@@ -156,8 +138,8 @@ struct AppConfig {
     ///（provider 指向内置凭据方；不带任何密钥——Active 层运行时回退），
     /// 使 applicationDidFinishLaunching 走 startApp 而非 onboarding 向导。
     /// 公开构建（无内置凭据）保持原行为不变。
-    static func bootstrapBuiltinDefaultsIfNeeded() {
-        guard !configExists, let provider = BuiltinSecrets.builtinProvider else { return }
+    public static func bootstrapBuiltinDefaultsIfNeeded() {
+        guard !configExists, let provider = BuiltInSecretSlots.builtinProvider else { return }
         var defaults = AppConfig.defaults
         defaults.asrProvider = provider
         defaults.resourceID = resourceIDValue(defaults.resourceID, default: defaults.resourceID)
@@ -165,7 +147,7 @@ struct AppConfig {
         NSLog("BuiltinSecrets: bootstrapped default config with provider \(provider.rawValue)")
     }
 
-    static var defaults: AppConfig {
+    public static var defaults: AppConfig {
         AppConfig(
             asrProvider: .voiceStickCloud,
             voiceStickAPIKey: "",
@@ -212,7 +194,7 @@ struct AppConfig {
         )
     }
 
-    static func load() -> AppConfig {
+    public static func load() -> AppConfig {
         let defaults = Self.defaults
 
         guard let text = try? String(contentsOf: configURL) else {
@@ -224,7 +206,7 @@ struct AppConfig {
 
     /// 从 TOML 文本解析配置（纯函数，不触碰磁盘；单测直接喂字符串）。
     /// TOML 解码失败回退 legacy 逐行解析（兼容古早配置），与原 load() 行为一致。
-    static func parse(text: String, defaults: AppConfig = Self.defaults) -> AppConfig {
+    public static func parse(text: String, defaults: AppConfig = Self.defaults) -> AppConfig {
         guard let file = try? TOMLDecoder().decode(ConfigFile.self, from: TOMLTable(string: text)) else {
             return loadLegacy(text: text, defaults: defaults)
         }
@@ -329,13 +311,13 @@ struct AppConfig {
         return settings
     }
 
-    func save() throws {
+    public func save() throws {
         try FileManager.default.createDirectory(at: Self.configDirectory, withIntermediateDirectories: true)
         try serializedText().write(to: Self.configURL, atomically: true, encoding: .utf8)
     }
 
     /// 序列化为 TOML 文本（纯函数，不触碰磁盘；单测与 parse(text:) 对拍 round-trip）。
-    func serializedText() -> String {
+    public func serializedText() -> String {
         var text = """
         asr_provider = "\(asrProvider.rawValue)"
         voicestick_api_key = "\(voiceStickAPIKey.tomlEscaped)"
@@ -520,15 +502,6 @@ struct AppConfig {
         return config
     }
 
-    static func openConfigDirectory() {
-        try? FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(configDirectory)
-    }
-
-    static func openDebugAudioDirectory(_ directory: URL = defaultDebugAudioDirectory) {
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(directory)
-    }
 
     private static func trimmed(_ text: String?, default defaultValue: String) -> String {
         guard let text else { return defaultValue }
@@ -579,11 +552,11 @@ struct AppConfig {
 
     /// N1：实现已下沉 VoiceStickCore（ConfigParsing.swift）；保留静态门面，
     /// 全仓 AppConfig.normalizedDeviceID / Self.normalizedDeviceID 调用点零改动。
-    static func normalizedDeviceID(_ text: String) -> String {
+    public static func normalizedDeviceID(_ text: String) -> String {
         VoiceStickCore.normalizedDeviceID(text)
     }
 
-    static func hotwordList(_ text: String) -> [String] {
+    public static func hotwordList(_ text: String) -> [String] {
         text.split { character in
             character == "," || character == "\n" || character == "\r"
         }
@@ -596,7 +569,7 @@ struct AppConfig {
             }
     }
 
-    static func deviceThemeColorMap(_ text: String) -> [String: OverlayThemeColor] {
+    public static func deviceThemeColorMap(_ text: String) -> [String: OverlayThemeColor] {
         text.split(separator: ",").reduce(into: [:]) { colorsByDeviceID, rawPair in
             let parts = rawPair.split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2 else { return }
@@ -609,12 +582,12 @@ struct AppConfig {
         }
     }
 
-    func themeColor(for deviceID: String?) -> OverlayThemeColor {
+    public func themeColor(for deviceID: String?) -> OverlayThemeColor {
         guard let deviceID else { return .auto }
         return deviceThemeColors[Self.normalizedDeviceID(deviceID)] ?? .auto
     }
 
-    static func deviceOverlayPositionMap(_ text: String) -> [String: OverlayPosition] {
+    public static func deviceOverlayPositionMap(_ text: String) -> [String: OverlayPosition] {
         text.split(separator: ",").reduce(into: [:]) { positionsByDeviceID, rawPair in
             let parts = rawPair.split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2 else { return }
@@ -627,12 +600,12 @@ struct AppConfig {
         }
     }
 
-    func overlayPosition(for deviceID: String?) -> OverlayPosition {
+    public func overlayPosition(for deviceID: String?) -> OverlayPosition {
         guard let deviceID else { return .bottomCenter }
         return deviceOverlayPositions[Self.normalizedDeviceID(deviceID)] ?? .bottomCenter
     }
 
-    static func deviceThemeSizeMap(_ text: String) -> [String: OverlayThemeSize] {
+    public static func deviceThemeSizeMap(_ text: String) -> [String: OverlayThemeSize] {
         text.split(separator: ",").reduce(into: [:]) { sizesByDeviceID, rawPair in
             let parts = rawPair.split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2 else { return }
@@ -645,12 +618,12 @@ struct AppConfig {
         }
     }
 
-    func themeSize(for deviceID: String?) -> OverlayThemeSize {
+    public func themeSize(for deviceID: String?) -> OverlayThemeSize {
         guard let deviceID else { return .big }
         return deviceThemeSizes[Self.normalizedDeviceID(deviceID)] ?? .big
     }
 
-    func outputProfile(for deviceID: String?) -> OutputProfile {
+    public func outputProfile(for deviceID: String?) -> OutputProfile {
         guard let deviceID, let deviceProfile = deviceOutputProfiles[Self.normalizedDeviceID(deviceID)] else {
             return defaultOutputProfile
         }
@@ -668,26 +641,26 @@ struct AppConfig {
     // N1：parsePairedDeviceEntry / formatPairedDeviceEntry / pairedDeviceEntryList
     // 已下沉 VoiceStickCore（ConfigParsing.swift），非限定调用经 import 解析。
 
-    func pairedDeviceEntry(forID deviceID: String) -> PairedDeviceEntry? {
+    public func pairedDeviceEntry(forID deviceID: String) -> PairedDeviceEntry? {
         let normalized = Self.normalizedDeviceID(deviceID)
         return pairedDevices.first { $0.deviceID == normalized }
     }
 
     /// 按 CoreBluetooth 外设 UUID 查找（addr 段存大写 uuidString，大小写不敏感比较）。
-    func pairedDeviceEntry(forPeripheralUUID uuidString: String) -> PairedDeviceEntry? {
+    public func pairedDeviceEntry(forPeripheralUUID uuidString: String) -> PairedDeviceEntry? {
         let target = uuidString.uppercased()
         return pairedDevices.first { $0.address.uppercased() == target }
     }
 
     /// 设备 hardware 标识（如 "stick_s3"/"xiaomi_remote_2_pro"）；未配对返回 nil。
-    func hardware(forID deviceID: String) -> String? {
+    public func hardware(forID deviceID: String) -> String? {
         pairedDeviceEntry(forID: deviceID)?.hardware
     }
 
     /// 更新或追加配对设备条目并触发存盘（对齐 Windows SavePairedDevice：整条目替换，
     /// 同时保证 id 进入 pairedDeviceIDs）。id 归一化、addr 大写化。
     /// 返回存盘是否成功；id 归一化为空（非法）时拒绝落库并返回 false。
-    mutating func savePairedDevice(id: String, addr: String, kind: String, name: String,
+    public mutating func savePairedDevice(id: String, addr: String, kind: String, name: String,
                                    hardware: String, firmwareVersion: String) -> Bool {
         let deviceID = Self.normalizedDeviceID(id)
         guard !deviceID.isEmpty else { return false }
@@ -708,7 +681,7 @@ struct AppConfig {
     }
 
     /// 纯内存 upsert（不存盘），savePairedDevice 与单测共用。
-    mutating func upsertPairedDevice(_ entry: PairedDeviceEntry) {
+    public mutating func upsertPairedDevice(_ entry: PairedDeviceEntry) {
         guard !entry.deviceID.isEmpty else { return }
         if let index = pairedDevices.firstIndex(where: { $0.deviceID == entry.deviceID }) {
             pairedDevices[index] = entry
@@ -722,7 +695,7 @@ struct AppConfig {
 
     /// 移除配对设备：连带清 paired_devices 条目与全部按设备覆盖并触发存盘
     ///（对齐 Windows RemovePairedDevice）。
-    mutating func removePairedDevice(id: String) {
+    public mutating func removePairedDevice(id: String) {
         let deviceID = Self.normalizedDeviceID(id)
         pairedDevices.removeAll { $0.deviceID == deviceID }
         pairedDeviceIDs.removeAll { $0 == deviceID }
@@ -740,7 +713,7 @@ struct AppConfig {
     // ---- 小米遥控器 [device.<id>.xiaomi] 覆盖（对齐 Windows XiaomiSettingsForDevice）----
 
     /// 返回设备有效小米设置：有覆盖返回覆盖（加载时已用默认填平），否则全局默认。
-    func xiaomiSettings(for deviceID: String?) -> (gainDb: Double, doubleClickMs: Int) {
+    public func xiaomiSettings(for deviceID: String?) -> (gainDb: Double, doubleClickMs: Int) {
         guard let deviceID,
               let settings = deviceXiaomiSettings[Self.normalizedDeviceID(deviceID)] else {
             return (XiaomiSettings.default.gainDb, XiaomiSettings.default.doubleClickMs)
@@ -752,7 +725,7 @@ struct AppConfig {
     ///（对齐 Windows ParseXiaomiSettings）。gain_db 的 ±24 限幅在消费侧（后处理）完成。
     // ---- 小米遥控器 [device.<id>.buttons] 覆盖（按键映射）----
 
-    func interactionSettings(for deviceID: String?) -> InteractionSettings {
+    public func interactionSettings(for deviceID: String?) -> InteractionSettings {
         guard let deviceID,
               let settings = deviceInteractionSettings[Self.normalizedDeviceID(deviceID)] else {
             return interactionSettings
@@ -761,7 +734,7 @@ struct AppConfig {
     }
 
     /// 返回设备有效编码器设置：有覆盖返回覆盖（加载时已用全局默认填平），否则全局默认。
-    func encoderSettings(for deviceID: String?) -> EncoderSettings {
+    public func encoderSettings(for deviceID: String?) -> EncoderSettings {
         guard let deviceID,
               let settings = deviceEncoderSettings[Self.normalizedDeviceID(deviceID)] else {
             return encoderSettings
@@ -772,10 +745,10 @@ struct AppConfig {
     // ---- 小米遥控器按键映射（[device.<id>.buttons]，语义对齐 Windows [xiaomi.keys]）----
 
     /// 全局默认：拦截关闭、全部原生（映射是设备级概念，无顶层全局覆盖表）。
-    var buttonsSettings: ButtonsSettings { ButtonsSettings.default }
+    public var buttonsSettings: ButtonsSettings { ButtonsSettings.default }
 
     /// 返回设备有效按键映射：有覆盖返回覆盖（加载时已校验回填），否则全局默认。
-    func buttonsSettings(for deviceID: String?) -> ButtonsSettings {
+    public func buttonsSettings(for deviceID: String?) -> ButtonsSettings {
         guard let deviceID,
               let settings = deviceButtonsSettings[Self.normalizedDeviceID(deviceID)] else {
             return buttonsSettings
@@ -785,7 +758,7 @@ struct AppConfig {
 
     /// 按前台应用合并 app 级覆盖（三期）。v1 无 app 级覆盖存储，等价设备有效值；
     /// AppDelegate 每次前台切换经此 resolve，将来加 app 覆盖表只改这里。
-    func effectiveButtonsSettings(for deviceID: String?, activeApp: String) -> ButtonsSettings {
+    public func effectiveButtonsSettings(for deviceID: String?, activeApp: String) -> ButtonsSettings {
         buttonsSettings(for: deviceID)
     }
 

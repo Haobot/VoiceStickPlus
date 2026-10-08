@@ -1,4 +1,5 @@
 import Foundation
+import VoiceStickCore
 
 final class LLMTranslationClient {
     enum TranslationError: LocalizedError {

@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoreBluetooth
+import VoiceStickCore
 
 private struct OnboardingDevice {
     let identifier: UUID

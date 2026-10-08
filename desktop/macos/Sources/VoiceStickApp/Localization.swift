@@ -1,50 +1,6 @@
 import Foundation
+import VoiceStickCore
 
-/// UI 界面语言（对齐 Windows UiLanguage；rawValue 即 config.toml `ui_language` 序列化值，
-/// 跨端配置兼容，勿改字符串）。
-enum UiLanguage: String, CaseIterable {
-    case system
-    case en = "en"
-    case zhHans = "zh-Hans"
-
-    /// 设置窗语言下拉显示名（按当前界面语言；对齐 Windows kSettingsLanguage* 三选项）。
-    var displayName: String {
-        switch self {
-        case .system: return tr(.languageSystem)
-        case .en: return tr(.languageEnglish)
-        case .zhHans: return tr(.languageChineseSimplified)
-        }
-    }
-
-    /// 生效语言（对齐 Windows EffectiveUiLanguage）：system 时读系统首选语言，
-    /// zh 前缀（zh/zh-*/zh_*）→ 简体中文，否则 → 英文。
-    var effective: UiLanguage {
-        guard self == .system else { return self }
-        return Self.fromLocaleName(Locale.preferredLanguages.first)
-    }
-
-    /// 对齐 Windows UiLanguageFromLocaleName。
-    static func fromLocaleName(_ name: String?) -> UiLanguage {
-        guard let name else { return .en }
-        let locale = name.lowercased()
-        if locale == "zh" || locale.hasPrefix("zh-") || locale.hasPrefix("zh_") {
-            return .zhHans
-        }
-        return .en
-    }
-
-    /// 对齐 Windows UiLanguageFromName：zh_CN/zh-CN/zh 兼容，非法值回 system。
-    init(configValue: String) {
-        switch configValue {
-        case "en":
-            self = .en
-        case "zh-Hans", "zh_CN", "zh-CN", "zh":
-            self = .zhHans
-        default:
-            self = .system
-        }
-    }
-}
 
 /// 稳定语义 key（对齐 Windows StringId；不要用英文原文做 key，以免文案微调破坏索引）。
 /// 只覆盖 macOS 现有 UI 点位；英文文案与 macOS 原有硬编码一致，中文文案逐条对齐

@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 内测包首启引导：内置凭据在场时落默认配置（provider 指向内置方），
         // 跳过 onboarding 向导开箱即用；公开构建（无内置）保持原行为。
         AppConfig.bootstrapBuiltinDefaultsIfNeeded()
+        // N1 S3：内置凭据灌槽必须先于任何 AppConfig.load()（active 解析读槽）。
+        BuiltinSecrets.loadIntoCoreSlots()
         if AppConfig.configExists {
             startApp(config: AppConfig.load())
         } else {

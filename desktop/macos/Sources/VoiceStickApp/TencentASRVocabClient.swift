@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import VoiceStickCore
 
 /// 腾讯云 ASR 热词表管理 REST API 客户端（逐行移植 Windows tencent_asr_vocab_client）。
 ///
