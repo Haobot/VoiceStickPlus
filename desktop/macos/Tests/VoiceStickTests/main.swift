@@ -32,6 +32,7 @@ runContractFixtureTests()
 runConfigParsingTests()
 runOggMuxerTests()
 runConfigFileModelTests()
+runCoordinatorFsmTests()
 runConfigDomainTests()
 
 let passed = totalChecks - failedChecks

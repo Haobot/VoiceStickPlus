@@ -1,7 +1,6 @@
 import Foundation
-import VoiceStickCore
 
-final class VoiceStickCoordinator {
+public final class VoiceStickCoordinator {
     private enum PendingPasteState {
         case idle
         case waitingToPaste(text: String)
@@ -137,11 +136,16 @@ final class VoiceStickCoordinator {
     /// 前台应用追踪（三期按键映射按前台应用切换的注入点；AppDelegate 启动时装配，
     /// v1 协调器暂不消费，app 级覆盖落地后由按键映射 resolve 使用）。
     // N1 切5 闸5：AppKit 原语闭包注入——协调器入 Core 前置（Core 不得 import AppKit）。
-    var openExternalURL: ((URL) -> Void)?
-    var presentUpgradeAlertUI: ((URL, String) -> Void)?
-    var isProcessTrusted: (() -> Bool)?
+    public var openExternalURL: ((URL) -> Void)?
+    public var presentUpgradeAlertUI: ((URL, String) -> Void)?
+    public var isProcessTrusted: (() -> Bool)?
     // N1 闸6b：单点本地化键闭包（L10nKey 为 App 枚举，原样键串入闭包）。
-    var trText: ((String) -> String)?
+    public var trText: ((String) -> String)?
+    // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
+    public var fsmSnapshot: String {
+        "main=\(mainInputState) pendingPaste=\(pendingPasteState) "
+            + "subtitleCycles=\(subtitleCycles.count)"
+    }
     private let subtitleController: any VoiceStickSubtitleServing
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
     private let inputInjector: any VoiceStickInputServing
@@ -222,14 +226,14 @@ final class VoiceStickCoordinator {
     private static let airMouseAngleDeadzone: Double = 0.5
     private static let airMouseOmegaDeadzone: Double = 2.0
 
-    var onFirmwareUpdatePrompt: ((String, String, String, Bool) -> Void)?
+    public var onFirmwareUpdatePrompt: ((String, String, String, Bool) -> Void)?
     /// 注入路径发现无辅助功能权限（AppDelegate 接此回调弹引导窗；悬浮窗提示由协调器自带节流）。
-    var onAccessibilityPermissionMissing: (() -> Void)?
+    public var onAccessibilityPermissionMissing: (() -> Void)?
     /// power_log 分片 / power_mgmt 事件（deviceID 寻址；AppDelegate 转发到电量监测窗口）。
-    var onPowerLogFragment: ((String, PowerLogFragment) -> Void)?
-    var onPowerMgmtEvent: ((String, PowerMgmtEvent) -> Void)?
+    public var onPowerLogFragment: ((String, PowerLogFragment) -> Void)?
+    public var onPowerMgmtEvent: ((String, PowerMgmtEvent) -> Void)?
 
-    init(config: AppConfig, statusController: VoiceStickStatusSink,
+    public init(config: AppConfig, statusController: VoiceStickStatusSink,
          ble: any VoiceStickBleServing,
          makeAsr: @escaping (AppConfig) -> any ASRClient,
          makeTranslator: @escaping (AppConfig) -> any TranslatorServing,
@@ -261,19 +265,19 @@ final class VoiceStickCoordinator {
     }
 
     /// 透传：按 RC deviceID 解析 ATVV 会话参数（见 BleCentral.xiaomiOptionsResolver）。
-    func setXiaomiOptionsResolver(_ resolver: @escaping (String) -> XiaomiAtvvSession.Options) {
+    public func setXiaomiOptionsResolver(_ resolver: @escaping (String) -> XiaomiAtvvSession.Options) {
         ble.xiaomiOptionsResolver = resolver
     }
 
     /// 透传：F5 抑制锚点（AppDelegate 事件钩子读取；写入在 BleCentral 回调线程）。
-    var xiaomiMicOpenAnchor: XiaomiMicOpenAnchor {
+    public var xiaomiMicOpenAnchor: XiaomiMicOpenAnchor {
         ble.micOpenAnchor
     }
 
     /// 透传：BLE 连接集变化（AppDelegate 的 F5 suppressor 门控挂在上面）。
-    var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
+    public var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
 
-    func start() {
+    public func start() {
         ble.onConnectionChange = { [weak self] connectedDevices in
             guard let self else { return }
             self.statusController.setConnectedDevices(connectedDevices)
@@ -336,7 +340,7 @@ final class VoiceStickCoordinator {
         airMouseTimer?.invalidate()
     }
 
-    func updateConfig(_ config: AppConfig) {
+    public func updateConfig(_ config: AppConfig) {
         let wasRecognizing = asrStarted || mainInputState.isBusy || isWaitingForFinalText || !subtitleCycles.isEmpty
         if wasRecognizing {
             asr.onPartial = nil
@@ -472,7 +476,7 @@ final class VoiceStickCoordinator {
         }
     }
 
-    func updatePairedDeviceIDs(_ deviceIDs: [String]) {
+    public func updatePairedDeviceIDs(_ deviceIDs: [String]) {
         pairedDeviceIDs = deviceIDs
         // 配对/遗忘由 AppDelegate 先落盘；此处从磁盘刷新配对条目，
         // 否则 ble.pairedDevicesProvider 读到的是启动时的旧快照，
@@ -486,7 +490,7 @@ final class VoiceStickCoordinator {
         ble.updatePairedDeviceIDs(deviceIDs)
     }
 
-    func updateFirmware(from url: URL, for deviceID: String,
+    public func updateFirmware(from url: URL, for deviceID: String,
                         progress: @escaping (FirmwareUpdateProgress) -> Void,
                         completion: @escaping (Result<Void, Error>) -> Void) {
         do {
@@ -501,26 +505,26 @@ final class VoiceStickCoordinator {
         }
     }
 
-    func cancelFirmwareUpdate() {
+    public func cancelFirmwareUpdate() {
         ble.cancelFirmwareUpdate()
     }
 
     /// power_log 命令下发（电量监测窗口；对齐 Windows VoiceStickCoordinator::SendPowerLogCommand）。
-    func sendPowerLogCommand(deviceID: String, payload: Data) {
+    public func sendPowerLogCommand(deviceID: String, payload: Data) {
         ble.sendPowerLogCommand(payload, to: deviceID)
     }
 
-    func checkFirmwareUpdatesNow() {
+    public func checkFirmwareUpdatesNow() {
         checkFirmwareUpdatesIfNeeded(force: true, showErrors: true)
     }
 
-    func checkFirmwareAfterPairing(deviceID: String) {
+    public func checkFirmwareAfterPairing(deviceID: String) {
         pendingFirmwareUpdatePromptDeviceIDs.insert(deviceID)
         checkFirmwareUpdatesIfNeeded(force: true, showErrors: false)
         refreshFirmwareAvailability()
     }
 
-    func updateFirmwareFromLatest(for deviceID: String,
+    public func updateFirmwareFromLatest(for deviceID: String,
                                   progress: @escaping (FirmwareUpdateProgress) -> Void,
                                   completion: @escaping (Result<Void, Error>) -> Void) {
         guard let manifest = latestFirmwareManifest else {
@@ -877,7 +881,7 @@ final class VoiceStickCoordinator {
 
     // MARK: - 体感鼠标（对齐 Windows ToggleAirMouse/HandleMotionEvent/AirMouseTick）
 
-    func isAirMouseActive(deviceID: String?) -> Bool {
+    public func isAirMouseActive(deviceID: String?) -> Bool {
         guard let deviceID else { return false }
         return airMouseActiveDevices.contains(deviceID)
     }
@@ -885,7 +889,7 @@ final class VoiceStickCoordinator {
     /// 切换指定设备的体感态。进入：通知固件校准零偏并上报 motion + 设备显示体感态提示
     /// （主键变鼠标左键，避免不知情误判「按下没反应」）；退出：停表 + 恢复 ready。
     @discardableResult
-    func toggleAirMouse(deviceID: String) -> Bool {
+    public func toggleAirMouse(deviceID: String) -> Bool {
         if isAirMouseActive(deviceID: deviceID) {
             airMouseActiveDevices.remove(deviceID)
             airMouseStates.removeValue(forKey: deviceID)
@@ -2188,7 +2192,7 @@ final class VoiceStickCoordinator {
         }
     }
 
-    func restoreLastInputConfirmation() -> Bool {
+    public func restoreLastInputConfirmation() -> Bool {
         restoreLastInputConfirmation(peripheralID: lastRecoverablePeripheralID)
     }
 
@@ -2505,7 +2509,7 @@ final class VoiceStickCoordinator {
 
     /// 热键按下：目标 = 活跃设备（已连接）否则首台已连接 StickS3；
     /// 按住说话模式记录按下态等松开，点击说话模式固件侧按 down 翻转起停。
-    func handleGlobalHotkeyPressed() {
+    public func handleGlobalHotkeyPressed() {
         guard !hotkeyIsDown else { return }
         let connected = ble.connectedStickDeviceIDs()
         let target: String?
@@ -2531,7 +2535,7 @@ final class VoiceStickCoordinator {
     }
 
     /// 热键松开：仅按住说话模式补发 remote_button_up。
-    func handleGlobalHotkeyReleased() {
+    public func handleGlobalHotkeyReleased() {
         guard config.interactionMode == .holdToTalk else { return }
         guard hotkeyIsDown else { return }
         let target = hotkeyActiveDeviceID
