@@ -3075,6 +3075,67 @@ void TestCoordinatorHotkeyWithConnectionSendsRemoteButton() {
     assert(ble_ptr->sent_remote_buttons.back().device_id == std::optional<std::string>("5A74"));
 }
 
+void TestWechatStartFailureRollsBackDefaultCapture() {
+    // B3：auto_switch 已把默认录音设备切到 CABLE 后 renderer.Start 失败必须回滚，
+    // 否则默认麦长期停在 CABLE（静音）；且下次会话把 CABLE 当「原设备」存回（毒化）。
+    // 注入缝：假 switcher（记录 SetDefaultCapture）+ 假 renderer（Start 恒 false）
+    // + 独立 device_switch_state_path（不碰真实 %APPDATA%）。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+
+    FakeDefaultAudioDeviceController* switcher = nullptr;
+    auto switcher_factory = [&switcher]() -> std::unique_ptr<IDefaultAudioDeviceController> {
+        auto p = std::make_unique<FakeDefaultAudioDeviceController>();
+        p->default_capture = AudioDeviceInfo{L"real-mic-id", L"Real Microphone"};
+        p->capture_devices = {AudioDeviceInfo{L"real-mic-id", L"Real Microphone"},
+                              AudioDeviceInfo{L"cable-id", L"CABLE (VB-Audio)"}};
+        switcher = p.get();
+        return p;
+    };
+    FakeVirtualMicRenderer* renderer = nullptr;
+    auto renderer_factory =
+        [&renderer](const IVirtualMicRenderer::Options&) -> std::unique_ptr<IVirtualMicRenderer> {
+        auto p = std::make_unique<FakeVirtualMicRenderer>(false);  // Start 恒失败
+        renderer = p.get();
+        return p;
+    };
+    auto hotkey_factory = [](const std::string&) -> std::unique_ptr<IWechatInputMethodHotkey> {
+        return std::make_unique<FakeWechatInputMethodHotkey>();
+    };
+
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    config.wechat_input_method.auto_switch_default_recording_device = true;
+    config.wechat_input_method.virtual_mic_capture_name = "CABLE";
+
+    const auto state_path =
+        std::filesystem::temp_directory_path() / "voicestick_b3_device_switch.json";
+    std::error_code ec;
+    std::filesystem::remove(state_path, ec);
+
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input,
+                                      /*asr_factory*/ {}, renderer_factory, hotkey_factory,
+                                      switcher_factory, state_path);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 42));
+
+    // 断言 1：确实先切到 CABLE、失败后又切回原设备（两次 SetDefaultCapture）。
+    assert(switcher != nullptr);
+    assert(switcher->set_calls.size() == 2);
+    assert(switcher->set_calls[0].device_id == L"cable-id");
+    assert(switcher->set_calls[1].device_id == L"real-mic-id");
+    // 断言 2：回滚后默认录音设备回到真实麦克风（不是 CABLE）。
+    assert(switcher->default_capture.has_value());
+    assert(switcher->default_capture->id == L"real-mic-id");
+    // 断言 3：落盘的设备切换状态已清（下次启动不会再把 CABLE 当「原设备」）。
+    assert(!std::filesystem::exists(state_path, ec));
+    std::filesystem::remove(state_path, ec);
+}
+
 void TestCoordinatorCancelsShortPrimaryPress() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
@@ -16456,6 +16517,8 @@ int main() {
     printf(">> cluster: coordinator hotkey/click/tap\n"); fflush(stdout);
     TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
     TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
+    printf(">> cluster: B3 wechat start failure rolls back default capture\n"); fflush(stdout);
+    TestWechatStartFailureRollsBackDefaultCapture();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();

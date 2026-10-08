@@ -1023,6 +1023,9 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         LogWechatLatency("renderer.Start begin");
         if (!wechat_renderer_->Start(wechat_ring_buffer_.get())) {
             LogWechatLatency("renderer.Start failed");
+            // B3：此刻 auto_switch 已把默认录音设备切到 CABLE，启动失败必须回滚——
+            // 否则默认麦长期停在 CABLE（静音），且下次会话把 CABLE 当"原设备"存回。
+            RestoreDefaultCaptureDevice();
             ui_->ShowError("Virtual microphone not found: " +
                                ConfigSnapshot()->wechat_input_method.virtual_mic_playback_name,
                            device_id, {});
@@ -1046,6 +1049,16 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
         SetSessionState(SessionState::kRecording, "wechat_primary_down");
     }
     return true;
+}
+
+void VoiceStickCoordinator::RestoreDefaultCaptureDevice() {
+    if (!saved_default_capture_id_.has_value()) return;
+    if (wechat_device_switcher_) {
+        wechat_device_switcher_->SetDefaultCapture(*saved_default_capture_id_,
+                                                   {DeviceRole::kConsole});
+    }
+    saved_default_capture_id_.reset();
+    ClearDeviceSwitchState(DeviceSwitchStatePath());
 }
 
 void VoiceStickCoordinator::StopWechatInputMethodSession() {
@@ -1117,12 +1130,8 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
         }
         // 切回原默认录音设备(eConsole)。须在 renderer->Stop(drain 完成)之后：drain 期间
         // renderer 仍往 CABLE Input 写，提前切回会让微信取音源错乱、丢尾音。
-        if (saved_default_capture_id_.has_value() && wechat_device_switcher_) {
-            wechat_device_switcher_->SetDefaultCapture(*saved_default_capture_id_,
-                                                       {DeviceRole::kConsole});
-            saved_default_capture_id_.reset();
-            ClearDeviceSwitchState(DeviceSwitchStatePath());
-        }
+        // B3：与启动失败路径共用同一恢复函数（单一出口，语义不再各写一份）。
+        RestoreDefaultCaptureDevice();
     }
     if (wechat_ring_buffer_) {
         wechat_ring_buffer_->Clear();

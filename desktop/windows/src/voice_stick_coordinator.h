@@ -501,6 +501,10 @@ private:
     bool StartWechatInputMethodSession(std::optional<std::uint32_t> session_id,
                                        const std::string& device_id);
     void StopWechatInputMethodSession();
+    // B3：把 auto_switch 切走的默认录音设备切回并清落盘状态（幂等；未切过为 no-op）。
+    // 启动失败路径与 Stop 共用——失败不回滚会让默认麦长期停在 CABLE（静音），且下次
+    // 会话把 CABLE 当"原设备"存回（毒化后续会话）。
+    void RestoreDefaultCaptureDevice();
     // 检测前台是否高权限进程，若是则气泡提醒（按进程名去重防打扰）。返回 true 表示已检测到高权限
     // 前台、调用方应跳过本次会话启动（SendInput 必被 UIPI 丢弃，启动无意义且会留空转残留）。
     bool MaybeWarnForegroundElevated(const std::string& device_id);
