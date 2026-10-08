@@ -2664,17 +2664,6 @@ void TestImaAdpcmDecoderGolden() {
     assert(out.size() == 4);
 }
 
-
-
-
-struct AtvvGoldenSegment {
-    std::size_t offset = 0;
-    std::size_t bytes = 0;
-    int predictor = 0;
-    int step_index = 0;
-};
-
-
 void TestFlashToolFlow() {
     const FlashTestPaths paths;
 

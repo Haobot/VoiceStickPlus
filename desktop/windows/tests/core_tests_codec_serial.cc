@@ -2863,25 +2863,6 @@ void TestEsptoolProgressParser() {
 
 namespace {
 
-// 可编程假运行器：按 exit_codes 队列返回退出码，记录全部调用。
-class FakeFlashRunner : public IFlashProcessRunner {
-public:
-    std::vector<std::vector<std::wstring>> calls;
-    std::vector<int> exit_codes;
-
-    int Run(const std::vector<std::wstring>& argv,
-            const std::function<void(const std::string& line)>& on_line) override {
-        calls.push_back(argv);
-        const int code = calls.size() <= exit_codes.size()
-                             ? exit_codes[calls.size() - 1]
-                             : 0;
-        if (on_line) on_line("Writing at 0x00000000... (100 %)");
-        return code;
-    }
-    void Cancel() override { cancel_called = true; }
-
-    bool cancel_called = false;
-};
 
 struct FlashTestPaths {
     std::filesystem::path dir;
