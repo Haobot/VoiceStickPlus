@@ -110,7 +110,10 @@ static bool s_battery_charging;
 static bool s_usb_powered;
 static int s_battery_level = 0;
 static bool s_show_imu_debug = false;
-static bool s_tap_enabled = true;
+// A12：默认 false——对齐 protocol.md「tap_enabled ... Default false」与桌面端
+// InteractionSettings::tap_to_arrow 默认值；开箱（NVS 空 + 桌面未连接前）不注入
+// Down 键。桌面连接后按设备逐台下发其有效值（连接变更与配置变更两处）。
+static bool s_tap_enabled = false;
 // 供电态（USB）自动关机开关：默认关闭（保持 USB 充电常亮行为）。开启后外部供电时
 // 关机准入放行，空闲 T_usb=10min 关机。NVS 持久化，由电池监测窗口的勾选开关控制。
 static bool s_usb_auto_off = false;
@@ -1116,21 +1119,29 @@ static void execute_control_cmd(const control_cmd_t *cmd)
     case CONTROL_CMD_TAP_SENSITIVITY: {
         // 灵敏度 1..10（用户面向）：1=最不灵敏，10=最灵敏，默认 5。
         // 兼容 legacy 字符串 low/medium/high -> 2/5/9。
+        // A13：缺字段/未知字符串 → 告警后**显式 break**（原实现静默按默认 5 落盘，
+        // 会把用户 NVS 里的既有设置覆盖掉）；数值一律夹取到协议契约 1..10 再下发+落盘。
+        if (!cmd->has_number && !cmd->has_str1) {
+            ESP_LOGW(TAG, "tap_sensitivity missing level field; keeping current value");
+            break;
+        }
         int32_t sensitivity = 5;
         if (cmd->has_number) {
             sensitivity = cmd->value;
-        } else if (cmd->has_str1) {
-            if (strcmp(cmd->str1, "low") == 0) {
-                sensitivity = 2;
-            } else if (strcmp(cmd->str1, "medium") == 0) {
-                sensitivity = 5;
-            } else if (strcmp(cmd->str1, "high") == 0) {
-                sensitivity = 9;
-            } else {
-                ESP_LOGW(TAG, "unknown tap_sensitivity %s", cmd->str1);
-            }
+        } else if (strcmp(cmd->str1, "low") == 0) {
+            sensitivity = 2;
+        } else if (strcmp(cmd->str1, "medium") == 0) {
+            sensitivity = 5;
+        } else if (strcmp(cmd->str1, "high") == 0) {
+            sensitivity = 9;
         } else {
-            ESP_LOGW(TAG, "tap_sensitivity missing level field");
+            ESP_LOGW(TAG, "unknown tap_sensitivity %s; keeping current value", cmd->str1);
+            break;
+        }
+        if (sensitivity < 1) {
+            sensitivity = 1;
+        } else if (sensitivity > 10) {
+            sensitivity = 10;
         }
         bmi270_set_tap_sensitivity((int)sensitivity);
         save_tap_settings_to_nvs(s_tap_enabled, sensitivity);
@@ -3120,7 +3131,8 @@ static void load_tap_settings_from_nvs(void)
 {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
-    int32_t enabled = 1;  // 默认开启
+    int32_t enabled = 0;  // 默认关闭（A12：对齐 protocol.md Default false；仅 NVS
+                          // 缺 key 时生效，用户已存值不受影响）
     int32_t sensitivity = 5;  // 默认档 5（对应原 medium 体验）
     bool migrated = false;
     if (err == ESP_OK) {

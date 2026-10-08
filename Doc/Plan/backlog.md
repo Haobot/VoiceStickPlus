@@ -37,8 +37,8 @@
 | A9 | esp_timer 任务当工作队列：I2C 轮询与硬件初始化移出 timer | open | 9-22 未复核 |
 | A10 | 编码器降级不可恢复 + I2C 总线泄漏 | open | 9-22 未复核 |
 | A11 | BMI270 加载失败仍报 present | open | 9-22 未复核 |
-| A12 | `tap_enabled` 默认值与 protocol.md 相反（实现/文档取一） | open | 9-22 未复核 |
-| A13 | `tap_sensitivity` 无范围校验 + 缺字段静默落盘 | open | 9-22 未复核 |
+| A12 | `tap_enabled` 默认值与 protocol.md 相反（实现/文档取一） | **closed（10-08，实现侧对齐文档）** | 取向论证：protocol.md:311 明写 Default false、桌面 `InteractionSettings::tap_to_arrow=false` 且在**连接变更/配置变更两处逐台下发**其有效值（coordinator:129/281）→ 固件默认是唯一异类，且只在「上电到桌面首次下发」的窗口生效（开箱可能注入 Down 键）。两处改 false：静态初值 `s_tap_enabled` + `load_tap_settings_from_nvs` 缺省 `enabled=0`（仅 NVS 缺 key 生效，用户已存值不受影响）。**文档无需改** |
+| A13 | `tap_sensitivity` 无范围校验 + 缺字段静默落盘 | **closed（10-08）** | 复核 B14 重构后的执行分支仍缺两道闸：① **缺字段 → 静默按默认5 落盘**，覆盖用户 NVS 既有设置；② 数值无 1..10 校验即 `bmi270_set_tap_sensitivity` + 落盘（协议契约1..10）。修复：缺字段/未知 legacy 字符串 → 告警后**显式 break**（不动当前值、不落盘）；数值夹取 1..10 再下发+落盘。桌面侧本有 `TapSensitivityClamp`（配置解析 + UI trackbar 双重夹取），固件补齐**端点防御**（控制通道对任意已连接 central 开放，不可信任桌面已夹取） |
 | A14 | `ui_state.text` 超 MTU 预算：发送端零校验、固件硬截断 | open | 9-22 未复核；与 state_tx MTU 红线相关 |
 | A15 | `gateway_keymap` 回执 400B 缓冲发不出 | open | 9-22 未复核 |
 | A16 | 双击收尾不清 owner / click_to_talk 忽略 remote up | open | 9-22 未复核 |
@@ -132,6 +132,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **A12 + A13 关闭（tap 域双项）**：A12 固件默认对齐 protocol.md/桌面（两处 false，用户已存 NVS 不受影响，文档无需改）；A13 缺字段/未知字符串显式 break 不落盘 + 数值夹取 1..10 再落盘 | 本地 host 7/7 + CI 七 job（固件编译 main.c 改动） |
 | 2026-10-08 | **A17 关闭**：主机无响应看门狗从死代码变为实装——`apply_app_ui_state` 进非 ready 态武装 30s one-shot（桌面15s finalize看门狗先兜底，cb 的 !s_recording 防误伤） | 定义/使用顺序核验（54<564<1655）+ 本地 host 7/7 + CI 七 job（固件编译） |
 | 2026-10-08 | **A6 关闭**：OTA 三处终局错误（bad_offset/write_failed/incomplete）统一 `ota_fail_terminal` 清理（原 active 残留→录音/关机永久拒绝）；rollback 签到延后 15s（坏固件不再被 boot 即刻背书，失败回退旧行为）；互斥非原子拆出 A6b | 本地 host `run_tests.py` **7/7**；CI 七 job（固件编译 voice_ble.c + main.c 改动） |
 | 2026-10-08 | **A1 关闭 + A2 关闭（代码层）**：A1 ERROR 死端 → 冷却5s 自动重发 GET_CAPS（抽 `begin_caps_request` 公共）；A2 发现死端 DONE → 回置 SVCS 复用看门狗4s 整链重试 + 60s 限频「ATVV 不可用」上报；A3 勘察后留真机（推流连续性未知，防误收尾） | A1 回归 `test_session_error_cooldown_retry`；本地 `run_tests.py` **7/7**；CI 七 job（固件编译覆盖 A2） |
