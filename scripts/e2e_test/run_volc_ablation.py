@@ -231,6 +231,11 @@ def main() -> int:
               f"first_p50={_fmt(s['first_partial_latency_ms']['p50'], 0, 'ms')} "
               f"tail_p50={_fmt(s['tail_latency_ms']['p50'], 0, 'ms')} "
               f"jitter_max={s['jitter_max']}")
+    # E9：任一 run 失败即非零退出——成功数汇总不上抛等于假 PASS。
+    failed = [r for r in results if not r.success]
+    if failed:
+        print(f"存在失败 run：{len(failed)}/{len(results)}——退出码 1", file=sys.stderr)
+        return 1
     return 0
 
 

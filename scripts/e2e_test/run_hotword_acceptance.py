@@ -420,6 +420,7 @@ def main() -> int:
                 print(f"SKIP desktop/{prov}（无可发送热词）")
                 continue
             results: list[ClipResult] = []
+            any_clip_fail = False  # E9：逐词判定上抛退出码
             total = args.rounds * len(clips)
             done = 0
             for round_no in range(1, args.rounds + 1):
@@ -428,6 +429,8 @@ def main() -> int:
                     res = run_one(prov, item, round_no, cfg, args.timeout, extra)
                     results.append(res)
                     tag = "OK " if res.success else "FAIL"
+                    if not res.success:
+                        any_clip_fail = True
                     note = (f" cer={cer(res.reference, res.final_text):.3f}"
                             if res.success else f" err={res.error}")
                     print(f"[{group}/{prov} {done}/{total}] {tag} "
@@ -447,6 +450,11 @@ def main() -> int:
             partial.write_text(json.dumps(report, ensure_ascii=False, indent=2),
                                encoding="utf-8")
 
+    # E9：任一逐词失败即非零退出——报告工具属性不掩盖判定（不假 PASS）。
+    if any(any(not r["success"] for r in g.get("detail", []))
+           for g in report["groups"].values()):
+        print("存在逐词 FAIL——退出码 1（见上方 tag 与 JSON detail）", file=sys.stderr)
+        return 1
     if not report["groups"]:
         print("无任何可运行组", file=sys.stderr)
         return 1
