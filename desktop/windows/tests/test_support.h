@@ -1085,3 +1085,288 @@ public:
 
     bool cancel_called = false;
 };
+
+// N8 cut14 helper: IMA golden vector builder (used outside the span).
+// 测试本地 IMA 编码器（公开标准算法的独立实现）：输出编码字节与编码器内部
+// predictor 轨迹（即标准解码的期望输出），用于与解码器逐样本对拍。
+struct ImaGoldenVector {
+    ByteVector encoded;
+    std::vector<std::int16_t> expected_decoded;
+};
+
+inline ImaGoldenVector ImaEncodeForTest(const std::vector<std::int16_t>& pcm) {
+    static const int kStepTable[89] = {
+        7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+        50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+        253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+        1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+        3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+        11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+        32767,
+    };
+    static const int kIndexTable[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+    ImaGoldenVector out;
+    int predictor = 0;
+    int index = 0;
+    std::optional<std::uint8_t> high_nibble;  // 高半字节优先
+    for (const std::int16_t sample : pcm) {
+        const int step = kStepTable[index];
+        int nibble = 0;
+        int diff = step >> 3;
+        int delta = sample - predictor;
+        if (delta < 0) {
+            nibble = 8;
+            delta = -delta;
+        }
+        if (delta >= step) {
+            nibble |= 4;
+            delta -= step;
+            diff += step;
+        }
+        if (delta >= (step >> 1)) {
+            nibble |= 2;
+            delta -= step >> 1;
+            diff += step >> 1;
+        }
+        if (delta >= (step >> 2)) {
+            nibble |= 1;
+            diff += step >> 2;
+        }
+        predictor = (nibble & 8) ? predictor - diff : predictor + diff;
+        predictor = std::clamp(predictor, -32768, 32767);
+        index = std::clamp(index + kIndexTable[nibble & 7], 0, 88);
+        out.expected_decoded.push_back(static_cast<std::int16_t>(predictor));
+        if (high_nibble.has_value()) {
+            out.encoded.push_back(static_cast<std::uint8_t>((*high_nibble << 4) | nibble));
+            high_nibble.reset();
+        } else {
+            high_nibble = static_cast<std::uint8_t>(nibble);
+        }
+    }
+    // 奇数样本需补低半字节，会多解一个样本；测试只用偶数样本输入，此处不处理。
+    assert(!high_nibble.has_value());
+    return out;
+}
+
+// N8 cut14 helper: BuildStateJsonFrame
+inline std::vector<std::uint8_t> BuildStateJsonFrame(const std::string& json) {
+    std::vector<std::uint8_t> frame{0x01, 0x10,
+                                    static_cast<std::uint8_t>(json.size() & 0xFF),
+                                    static_cast<std::uint8_t>((json.size() >> 8) & 0xFF)};
+    frame.insert(frame.end(), json.begin(), json.end());
+    return frame;
+}
+
+// N8 cut14 helper: Base64EncodeForTest
+inline std::string Base64EncodeForTest(const std::vector<std::uint8_t>& data) {
+    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < data.size(); i += 3) {
+        const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16) |
+                                (i + 1 < data.size() ? static_cast<std::uint32_t>(data[i + 1]) << 8 : 0) |
+                                (i + 2 < data.size() ? static_cast<std::uint32_t>(data[i + 2]) : 0);
+        out.push_back(kTable[(n >> 18) & 0x3F]);
+        out.push_back(kTable[(n >> 12) & 0x3F]);
+        out.push_back(i + 1 < data.size() ? kTable[(n >> 6) & 0x3F] : '=');
+        out.push_back(i + 2 < data.size() ? kTable[n & 0x3F] : '=');
+    }
+    return out;
+}
+
+// N8 cut14 helper: BuildPowerLogEntry
+// ---- 电池电压监测：power_log 解析与增量累积 ----
+
+inline std::vector<std::uint8_t> BuildPowerLogEntry(std::uint32_t uptime_s, std::uint16_t vbat_mv,
+                                             std::uint8_t mode, std::uint8_t flags,
+                                             std::uint32_t reserved = 0) {
+    return {
+        static_cast<std::uint8_t>(uptime_s & 0xFF),
+        static_cast<std::uint8_t>((uptime_s >> 8) & 0xFF),
+        static_cast<std::uint8_t>((uptime_s >> 16) & 0xFF),
+        static_cast<std::uint8_t>((uptime_s >> 24) & 0xFF),
+        static_cast<std::uint8_t>(vbat_mv & 0xFF),
+        static_cast<std::uint8_t>((vbat_mv >> 8) & 0xFF),
+        mode,
+        flags,
+        static_cast<std::uint8_t>(reserved & 0xFF),
+        static_cast<std::uint8_t>((reserved >> 8) & 0xFF),
+        static_cast<std::uint8_t>((reserved >> 16) & 0xFF),
+        static_cast<std::uint8_t>((reserved >> 24) & 0xFF),
+    };
+}
+
+// N8 cut14 helper: ReadMonoPcm16Wav
+// 读 16 kHz 单声道 PCM16 wav 的 data 段（RIFF 解析，非 PCM16/mono 直接失败）。
+inline static bool ReadMonoPcm16Wav(const std::filesystem::path& path,
+                             std::vector<std::int16_t>& pcm) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return false;
+    ByteVector bytes((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+    if (bytes.size() < 44 || std::memcmp(bytes.data(), "RIFF", 4) != 0) return false;
+    // 遍历 chunk 找 fmt 与 data。
+    bool pcm16_mono_16k = false;
+    size_t pos = 12;
+    while (pos + 8 <= bytes.size()) {
+        const auto chunk_size = static_cast<size_t>(bytes[pos + 4]) |
+                                (static_cast<size_t>(bytes[pos + 5]) << 8) |
+                                (static_cast<size_t>(bytes[pos + 6]) << 16) |
+                                (static_cast<size_t>(bytes[pos + 7]) << 24);
+        if (std::memcmp(bytes.data() + pos, "fmt ", 4) == 0 && pos + 8 + 16 <= bytes.size()) {
+            const auto channels = static_cast<uint16_t>(bytes[pos + 10] |
+                                                        (bytes[pos + 11] << 8));
+            const auto sample_rate = static_cast<uint32_t>(bytes[pos + 12]) |
+                                     (static_cast<uint32_t>(bytes[pos + 13]) << 8) |
+                                     (static_cast<uint32_t>(bytes[pos + 14]) << 16) |
+                                     (static_cast<uint32_t>(bytes[pos + 15]) << 24);
+            const auto bits = static_cast<uint16_t>(bytes[pos + 22] |
+                                                    (bytes[pos + 23] << 8));
+            pcm16_mono_16k = channels == 1 && sample_rate == 16000 && bits == 16;
+        } else if (std::memcmp(bytes.data() + pos, "data", 4) == 0) {
+            if (!pcm16_mono_16k) return false;
+            const auto sample_bytes = std::min(chunk_size, bytes.size() - pos - 8);
+            pcm.resize(sample_bytes / 2);
+            std::memcpy(pcm.data(), bytes.data() + pos + 8, pcm.size() * 2);
+            return true;
+        }
+        pos += 8 + chunk_size + (chunk_size & 1);
+    }
+    return false;
+}
+
+// N8 cut14 helper: DetectSenseVoiceDir
+// ---------- LocalAsrClient（本机麦克风模式迭代一：SenseVoice 离线识别） ----------
+
+// 探测 SenseVoice 模型目录：环境变量 VOICESTICK_SENSEVOICE_DIR 优先，
+// 否则按测试 exe 位置（build-x64）回推仓库根下的 m0/models。
+inline static std::filesystem::path DetectSenseVoiceDir() {
+    if (const char* env = std::getenv("VOICESTICK_SENSEVOICE_DIR"); env && *env) {
+        return std::filesystem::path(env);
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* rel : {"../../../m0/models", "../../../../m0/models"}) {
+        auto dir = fs::weakly_canonical(fs::path(rel) /
+            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17", ec);
+        if (!ec && fs::exists(dir / "model.int8.onnx", ec) &&
+            fs::exists(dir / "tokens.txt", ec)) {
+            return dir;
+        }
+    }
+    return {};
+}
+
+// N8 cut14 helper: SamplesFromFakeText
+// 从 "n=<样本数>" 假引擎文本取样本数。
+inline static size_t SamplesFromFakeText(const std::string& text) {
+    assert(text.size() > 2 && text.substr(0, 2) == "n=");
+    return static_cast<size_t>(std::stoull(text.substr(2)));
+}
+
+// N8 cut14 helper: EncodeSilenceFrames
+// 追加 frame_count 个 40ms 静音帧并返回新增 Ogg 页字节（编码器/复用器状态跨调用
+// 保留，复现协调器逐帧送流的形态）。
+inline static ByteVector EncodeSilenceFrames(AudioOpusEncoder& encoder, OggOpusMuxer& muxer,
+                                      int frame_count) {
+    ByteVector out;
+    std::vector<std::int16_t> silence(AudioOpusEncoder::kFrameSamples, 0);
+    std::uint8_t packet[512];
+    for (int i = 0; i < frame_count; ++i) {
+        const auto result = encoder.Encode(silence.data(), silence.size(),
+                                           packet, sizeof(packet));
+        assert(result.encoded_bytes > 0);
+        auto page = muxer.Append({packet, static_cast<size_t>(result.encoded_bytes)},
+                                 false);
+        out.insert(out.end(), page.begin(), page.end());
+    }
+    return out;
+}
+
+// N8 cut14 helper: VaultBytesOf
+inline std::vector<BYTE> VaultBytesOf(const std::wstring& text) {
+    // 含 NUL 终止符：剪贴板 CF_UNICODETEXT 数据系统按终止符结尾规范化，
+    // 布置与读回的字节口径必须一致（都含终止符）。
+    return std::vector<BYTE>(
+        reinterpret_cast<const BYTE*>(text.c_str()),
+        reinterpret_cast<const BYTE*>(text.c_str()) + (text.size() + 1) * sizeof(wchar_t));
+}
+
+// N8 cut14 helper: VaultGetBytes
+// 读回单个格式的字节（GetClipboardData 须在剪贴板打开态，返回前拷出）。
+inline std::vector<BYTE> VaultGetBytes(UINT format) {
+    std::vector<BYTE> out;
+    if (OpenClipboard(nullptr)) {
+        if (HANDLE handle = GetClipboardData(format)) {
+            if (const SIZE_T size = GlobalSize(handle)) {
+                if (void* ptr = GlobalLock(handle)) {
+                    out.assign(static_cast<const BYTE*>(ptr),
+                               static_cast<const BYTE*>(ptr) + size);
+                    GlobalUnlock(handle);
+                }
+            }
+        }
+        CloseClipboard();
+    }
+    return out;
+}
+
+// N8 cut14 helper: VaultSetClipboard
+// 一次打开写入多个 HGLOBAL 格式（布置“用户剪贴板”内容；EmptyClipboard 清场）。
+inline void VaultSetClipboard(const std::vector<std::pair<UINT, std::vector<BYTE>>>& items) {
+    assert(VaultOpenClipboardWithRetry());
+    EmptyClipboard();
+    for (const auto& item : items) {
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, item.second.size());
+        assert(memory != nullptr);
+        void* ptr = GlobalLock(memory);
+        assert(ptr != nullptr);
+        memcpy(ptr, item.second.data(), item.second.size());
+        GlobalUnlock(memory);
+        assert(SetClipboardData(item.first, memory));
+    }
+    CloseClipboard();
+}
+
+// N8 cut14 helper: AbortIfFailed
+// 失败即终止：保持「测试失败 = 进程异常终止」语义，exit code 层面可见
+//（NDEBUG 下 assert 结构性失效的教训，见 Doc/Expe 五坑文档坑 1）。
+inline void AbortIfFailed(int failed, const char* test_name) {
+    if (failed > 0) {
+        std::fprintf(stderr, "FAIL %s: %d assertion(s) failed\n", test_name, failed);
+        std::abort();
+    }
+    std::printf(">> %s OK\n", test_name);
+}
+
+// N8 cut14 helper: WriteFileBytes
+inline void WriteFileBytes(const std::filesystem::path& path, const std::string& data) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(data.data(), static_cast<std::streamsize>(data.size()));
+}
+
+// N8 cut14 helper: ReadFileBytes
+inline std::string ReadFileBytes(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+}
+
+// N8 cut14 helper: MakeTempDir
+inline std::filesystem::path MakeTempDir(const char* name) {
+    static std::atomic<int> counter{0};
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("voicestick_model_dl_" + std::to_string(counter.fetch_add(1)) + "_" + name);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+// N8 cut14 helper: MakeSpecFromBody
+inline ModelFileSpec MakeSpecFromBody(const std::string& body, std::vector<std::string> urls) {
+    ModelFileSpec spec;
+    spec.rel_path = "test/file.bin";
+    spec.bytes = body.size();
+    spec.sha256 = TestSha256Hex(body);
+    spec.urls = std::move(urls);
+    return spec;
+}

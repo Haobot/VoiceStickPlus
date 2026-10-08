@@ -36,3 +36,6 @@ void RunDeviceInputMiscBatchTests();
 
 // N8 cut13：编解码/夹具/串口/esptool/flash/电源批（106 测——收敛循环迁移 6 组共享助手后切出）。
 void RunCodecFixtureSerialBatchTests();
+
+// N8 cut14：license/ima/asr-refiner/caps 批（40 测；孤儿注册修复 + 16 助手收敛迁移 + ns 配对闸首用）。
+void RunLicenseImaAtvvBatchTests();
