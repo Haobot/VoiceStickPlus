@@ -85,7 +85,7 @@ final class VoiceStickCoordinator {
         let sessionID: UInt32
         let startedAt: Date
         let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
-        let debugAudioRecorder: DebugAudioRecorder
+        let debugAudioRecorder: any VoiceStickDebugRecordServing
         var asr: any ASRClient
         var receivedAudioFrames = 0
         var bufferedOggChunks: [Data] = []
@@ -96,16 +96,14 @@ final class VoiceStickCoordinator {
         var audioEndTimeoutTimer: Timer?
 
         init(peripheralID: UUID, deviceID: String?, sessionID: UInt32,
-             config: AppConfig, asr: any ASRClient) {
+             config: AppConfig, asr: any ASRClient,
+             makeDebugRecorder: @escaping (AppConfig) -> any VoiceStickDebugRecordServing) {
             self.peripheralID = peripheralID
             self.deviceID = deviceID
             self.sessionID = sessionID
             self.startedAt = Date()
             self.asr = asr
-            self.debugAudioRecorder = DebugAudioRecorder(
-                enabled: config.debugAudioCache,
-                directory: config.debugAudioDirectory
-            )
+            self.debugAudioRecorder = makeDebugRecorder(config)
         }
 
         var duration: TimeInterval {
@@ -131,6 +129,7 @@ final class VoiceStickCoordinator {
     private let makeAsr: (AppConfig) -> any ASRClient
     // N1 切5 闸3/4：精修与翻译同样闭包注入（具体客户端留 App 合规）。
     private let makeRefiner: (AppConfig) -> any RefinerServing
+    private let makeDebugRecorder: (AppConfig) -> any VoiceStickDebugRecordServing
     private let makeTranslator: (AppConfig) -> any TranslatorServing
     private var asr: any ASRClient
     private var translator: any TranslatorServing
@@ -141,11 +140,13 @@ final class VoiceStickCoordinator {
     var openExternalURL: ((URL) -> Void)?
     var presentUpgradeAlertUI: ((URL, String) -> Void)?
     var isProcessTrusted: (() -> Bool)?
-    private let subtitleController = SubtitleController()
+    // N1 闸6b：单点本地化键闭包（L10nKey 为 App 枚举，原样键串入闭包）。
+    var trText: ((String) -> String)?
+    private let subtitleController: any VoiceStickSubtitleServing
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
-    private let inputInjector = InputInjector()
+    private let inputInjector: any VoiceStickInputServing
     private let firmwareManifestClient = FirmwareManifestClient()
-    private var debugAudioRecorder: DebugAudioRecorder
+    private var debugAudioRecorder: any VoiceStickDebugRecordServing
     private let minimumRecordingDuration: TimeInterval = 0.5
     private let audioEndTimeout: TimeInterval = 1.0
     private let firmwareManifestCacheDuration: TimeInterval = 24 * 60 * 60
@@ -232,7 +233,10 @@ final class VoiceStickCoordinator {
          ble: any VoiceStickBleServing,
          makeAsr: @escaping (AppConfig) -> any ASRClient,
          makeTranslator: @escaping (AppConfig) -> any TranslatorServing,
-         makeRefiner: @escaping (AppConfig) -> any RefinerServing) {
+         makeRefiner: @escaping (AppConfig) -> any RefinerServing,
+         inputInjector: any VoiceStickInputServing,
+         subtitleController: any VoiceStickSubtitleServing,
+         makeDebugRecorder: @escaping (AppConfig) -> any VoiceStickDebugRecordServing) {
         self.config = config
         self.statusController = statusController
         self.pairedDeviceIDs = config.pairedDeviceIDs
@@ -240,13 +244,13 @@ final class VoiceStickCoordinator {
         self.makeAsr = makeAsr
         self.makeTranslator = makeTranslator
         self.makeRefiner = makeRefiner
+        self.inputInjector = inputInjector
+        self.subtitleController = subtitleController
+        self.makeDebugRecorder = makeDebugRecorder
         self.asr = makeAsr(config)
         self.translator = makeTranslator(config)
         self.refiner = makeRefiner(config)
-        self.debugAudioRecorder = DebugAudioRecorder(
-            enabled: config.debugAudioCache,
-            directory: config.debugAudioDirectory
-        )
+        self.debugAudioRecorder = makeDebugRecorder(config)
         // 小米遥控器接入：paired_device 条目表注入（实时读最新 config，配对/遗忘
         // 即时生效）；同款注入方式见 BleCentral.pairedDevicesProvider 注释。
         ble.pairedDevicesProvider = { [weak self] in self?.config.pairedDevices ?? [] }
@@ -368,10 +372,7 @@ final class VoiceStickCoordinator {
             // OnSettingsChanged 重发路径）。
             pushGatewayKeymapRoutes(deviceID: deviceID)
         }
-        debugAudioRecorder = DebugAudioRecorder(
-            enabled: config.debugAudioCache,
-            directory: config.debugAudioDirectory
-        )
+        debugAudioRecorder = makeDebugRecorder(config)
         asr = makeAsr(config)
         translator = makeTranslator(config)
         refiner = makeRefiner(config)
@@ -1479,7 +1480,8 @@ final class VoiceStickCoordinator {
             deviceID: deviceID,
             sessionID: sessionID,
             config: config,
-            asr: makeAsr(config)
+            asr: makeAsr(config),
+            makeDebugRecorder: makeDebugRecorder
         )
         configureSubtitleASRCallbacks(for: cycle)
         subtitleCycles[SubtitleCycleKey(peripheralID: peripheralID, sessionID: sessionID)] = cycle
@@ -2151,7 +2153,7 @@ final class VoiceStickCoordinator {
             || now.timeIntervalSince(lastAccessibilityWarningAt!) > 10 {
             lastAccessibilityWarningAt = now
             statusController.showTimedMessage(
-                tr(.accessibilityPasteBlocked), duration: 2.5, deviceID: activeDeviceID
+                (trText?("accessibilityPasteBlocked") ?? "accessibilityPasteBlocked"), duration: 2.5, deviceID: activeDeviceID
             )
         }
         onAccessibilityPermissionMissing?()

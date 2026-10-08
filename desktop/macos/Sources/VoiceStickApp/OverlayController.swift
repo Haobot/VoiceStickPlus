@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import VoiceStickCore
 
 /// 悬浮窗主题计量：三档尺寸参数逐值对齐 Windows overlay_window.h:143-167 +
 /// SizePx 映射表（overlay_window.cc:730-760）。shadowPadding=12 是窗口级透明边距

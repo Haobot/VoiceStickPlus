@@ -1,4 +1,5 @@
 import AppKit
+import VoiceStickCore
 
 /// 字幕条：每设备一条 lane 纵向堆叠，7 秒无更新自动消除。
 /// 视觉与布局逐值对齐 Windows subtitle_window.h:83-115 / subtitle_window.cc：

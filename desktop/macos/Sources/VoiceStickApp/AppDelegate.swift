@@ -93,7 +93,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ble: BleCentral(pairedDeviceIDs: config.pairedDeviceIDs),
             makeAsr: { ASRClientFactory.makeClient(config: $0) },
             makeTranslator: { LLMTranslationClient(config: $0) },
-            makeRefiner: { LLMRefinementClient(config: $0) }
+            makeRefiner: { LLMRefinementClient(config: $0) },
+            inputInjector: InputInjector(),
+            subtitleController: SubtitleController(),
+            makeDebugRecorder: { cfg in
+                DebugAudioRecorder(enabled: cfg.debugAudioCache,
+                                    directory: cfg.debugAudioDirectory)
+            }
         )
 
         self.statusController = statusController
@@ -104,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // N1 切5 闸5：AppKit 原语闭包注入（告警 UI 块自协调器原样迁入）。
         coordinator.openExternalURL = { NSWorkspace.shared.open($0) }
         coordinator.isProcessTrusted = { AXIsProcessTrusted() }
+        coordinator.trText = { key in tr(L10nKey(rawValue: key) ?? .statusError) }
         coordinator.presentUpgradeAlertUI = { url, message in
             NSApp.activate(ignoringOtherApps: true)
 

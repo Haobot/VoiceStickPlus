@@ -59,3 +59,62 @@ extension EncoderButtonAction {
     }
 }
 
+
+
+// N1 闸6b：Overlay 三枚举 displayName 随类型下沉迁入。
+
+extension OverlayThemeColor {
+    var displayName: String {
+        switch self {
+        case .auto:
+            return tr(.themeAuto)
+        case .white:
+            return tr(.themeWhite)
+        case .black:
+            return tr(.themeBlack)
+        case .pink:
+            return tr(.themePink)
+        case .green:
+            return tr(.themeGreen)
+        case .yellow:
+            return tr(.themeYellow)
+        case .blue:
+            return tr(.themeBlue)
+        case .purple:
+            return tr(.themePurple)
+        }
+    }
+}
+
+extension OverlayThemeSize {
+    var displayName: String {
+        switch self {
+        case .big:
+            return tr(.sizeBig)
+        case .medium:
+            return tr(.sizeMedium)
+        case .small:
+            return tr(.sizeSmall)
+        }
+    }
+}
+
+extension OverlayPosition {
+    var displayName: String {
+        switch self {
+        case .center:
+            return tr(.positionCenter)
+        case .bottomCenter:
+            return tr(.positionBottomCenter)
+        case .topLeft:
+            return tr(.positionTopLeft)
+        case .topRight:
+            return tr(.positionTopRight)
+        case .bottomLeft:
+            return tr(.positionBottomLeft)
+        case .bottomRight:
+            return tr(.positionBottomRight)
+        }
+    }
+}
+
