@@ -1549,6 +1549,11 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         ESP_LOGI(TAG, "button front up ignored (second press of double-click)");
         s_double_click_second_press = false;
         s_primary_down_us = 0;
+        // A16：双击确认后 owner 必须清零——down#2 已停止双击窗定时器，原先那条
+        // 定时器里的 owner 清理永远不会跑，owner 残留会让后续异源按键被仲裁拒绝
+        //（编码器"自定义键"失效的根因）。session 同清（双击确认路径不存在录音会话）。
+        s_primary_session_id = 0;
+        s_primary_owner = PRIMARY_OWNER_NONE;
         return;
     }
 
@@ -1571,6 +1576,28 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     }
 
     if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK) {
+        // A16：远程热键按下即启动（远程不走双击窗，见 down 侧注释），**松手必须停录**
+        // ——原实现无条件 return，远程 up 被忽略，录音无人停（直到下一次 down 才被
+        // 1418 分支关掉）。本地源保持点按切换语义（停录在下一次 down）不变。
+        // owner 门：只停本源启动的，防混源误停（等价 UP 侧既有仲裁）。
+        if (source == APP_INPUT_SOURCE_REMOTE && s_recording &&
+            s_primary_owner == PRIMARY_OWNER_REMOTE) {
+            const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
+            s_primary_session_id = stop_recording();
+            esp_err_t primary_up_err =
+                voice_ble_send_button_click("primary", primary_duration_ms,
+                                            s_primary_session_id,
+                                            primary_button_source_tag());
+            if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
+                apply_app_ui_state("ready", "");
+            }
+            s_primary_down_us = 0;
+            s_primary_session_id = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            ESP_LOGI(TAG, "click_to_talk remote up stopped recording (%" PRIu32 " ms)",
+                     primary_duration_ms);
+            return;
+        }
         return;
     }
 
