@@ -6695,6 +6695,8 @@ int main() {
     TestEncoderStatusParsing();
     TestMotionFrameParsing();
     RunCodecFixtureSerialBatchTests();  // N8 cut13: suite in core_tests_codec_serial.cc
+
+} // namespace
     TestOggMuxer();
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
