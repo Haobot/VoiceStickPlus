@@ -20,6 +20,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | 文档引用完整性 | r99 定向核：本会话迁移/删除 6 旧指针全 clean；现行三文档 dir-ful 断链 0（唯一旗标 firmware/latest/ = 发布产物路径按设计不在库）|
 | 提交范围 | r101 近 12 提交逐个核：触达文件与信息主张一一对应，零越界零漏提（docs 类仅 Doc/Plan、feat/fix 类为 main.c+台账配对）|
 | 测试注册完整性 | r102 Windows 测试三面核：磁盘↔CMake 16=16 双向空差；test_suites.h 声明↔core_tests.cc 定义↔main 调用 14=14=14 四向交叉全空（N8 拆分纪律结构化实证）|
+| macOS 测试注册 | r103 三面核：21 文件 ↔ main.swift 24 调用 ↔ 24 定义，call↔def 双向空差；未挂套件仅 Runner/TestSupport 两基础设施件（按设计豁免）|
 
 ## 二、拍板邀请（11 项，按解锁价值排序）
 
