@@ -1,5 +1,5 @@
 # 软件 AGC：录音电平自动均衡
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：firmware/components/audio_pipeline/audio_pipeline.c。核销 2026-10-08/N10）
 
 ## 背景与症状
 

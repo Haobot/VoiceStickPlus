@@ -1,5 +1,5 @@
 # 体感鼠标（IMU Air Mouse）实施方案
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：firmware/components/bmi270/bmi270.c、main.c。核销 2026-10-08/N10）
 
 ## 1. 需求
 

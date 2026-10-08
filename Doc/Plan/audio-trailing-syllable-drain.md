@@ -1,5 +1,5 @@
 # 录音松开尾音截断修复（audio_task drain）
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：firmware/main/main.c、audio_pipeline.c。核销 2026-10-08/N10）
 
 ## 背景
 

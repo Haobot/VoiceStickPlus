@@ -1,5 +1,5 @@
 # 本机麦克风模式（Local Mic Mode）——P1 核心闭环并入 VoiceStick.exe 设计
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：local_asr_client_win.h + LocalMic 测试簇 tests/core_tests_coordinator6.cc。核销 2026-10-08/N10）
 
 状态：迭代一/二/三均已交付（ceb2550a / 820bb43c / 0897cbdc），迭代三 UX 补全（录入式热键 + 模型目录浏览/有效性回显）a3deb3fc 已交付，后续候选见文末
 决策：2026-09-07 用户确认「并入 VoiceStick.exe、核心闭环优先」。

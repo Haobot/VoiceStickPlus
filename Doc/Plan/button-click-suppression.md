@@ -1,5 +1,5 @@
 # 按键音抑制：录音窗口两端的机械咔哒声
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：xiaomi_atvv_session.cc + atvv 测试簇 tests/core_tests_xiaomi_atvv.cc。核销 2026-10-08/N10）
 
 ## 背景与症状
 

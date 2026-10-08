@@ -1,5 +1,5 @@
 # 体感鼠标：角度控制 → 速度控制（手停即停）
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：TestAirMouseStepVelocityFollowsOmega 载于 tests/core_tests_codec_serial.cc。核销 2026-10-08/N10）
 
 ## 背景
 

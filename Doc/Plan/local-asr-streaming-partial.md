@@ -1,5 +1,5 @@
 # 本地语音识别流式 Partial 输出
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：TestLocalAsrClientEmitsPartial 载于 tests/core_tests_license_ima.cc。核销 2026-10-08/N10）
 
 状态：已实现（feat/voice-recognition-option 分支）
 日期：2026-09-09

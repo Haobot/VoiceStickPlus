@@ -1,5 +1,5 @@
 # 离线授权激活（EdDSA 串码）设计与实施方案
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：settings_dialog.cc 激活入口 + license.h/VerifyLicenseSerial。核销 2026-10-08/N10）
 
 - 日期：2026-09-13
 - 状态：**已交付**（2026-09-15 凌晨；commits bfec04e8 → e20e49e2 + 后续修复）
