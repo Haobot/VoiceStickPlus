@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import VoiceStickCore
 
 final class InputInjector {
     /// 无辅助功能权限时的回调（CGEvent 键盘注入会被系统静默丢弃；由协调器接 UI 提示）。

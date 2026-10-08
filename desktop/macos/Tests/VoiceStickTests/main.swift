@@ -32,6 +32,7 @@ runContractFixtureTests()
 runConfigParsingTests()
 runOggMuxerTests()
 runConfigFileModelTests()
+runConfigDomainTests()
 
 let passed = totalChecks - failedChecks
 print("PASSED \(passed)/\(totalChecks) (golden fixtures: \(goldenChecked) session(s))")

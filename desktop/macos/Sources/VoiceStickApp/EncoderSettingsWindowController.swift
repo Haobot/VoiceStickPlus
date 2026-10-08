@@ -1,4 +1,5 @@
 import AppKit
+import VoiceStickCore
 
 /// 编码器设置窗口（对齐 Windows EncoderSettingsDialog）：13 行设置 +
 /// Restore defaults/Save/Cancel。press/double-click action=Custom key 时对应 key 行

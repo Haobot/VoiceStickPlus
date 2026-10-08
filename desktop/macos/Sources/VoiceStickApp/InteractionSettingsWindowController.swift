@@ -1,4 +1,5 @@
 import AppKit
+import VoiceStickCore
 
 /// 设备交互设置窗口（对齐 Windows InteractionSettingsDialog）：
 /// Wake Sensitivity 下拉（Windows 第一行标签是空串 bug，macOS 用正常标签

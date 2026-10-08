@@ -100,201 +100,6 @@ enum OverlayPosition: String, CaseIterable {
     }
 }
 
-enum OutputTarget: String, CaseIterable {
-    case focusedApp = "focused_app"
-    case subtitle
-
-    var displayName: String {
-        switch self {
-        case .focusedApp:
-            return tr(.outputFocusedApp)
-        case .subtitle:
-            return tr(.outputSubtitle)
-        }
-    }
-}
-
-enum TextTransform: String, CaseIterable {
-    case original
-    case translate
-
-    var displayName: String {
-        switch self {
-        case .original:
-            return tr(.textOriginal)
-        case .translate:
-            return tr(.menuTranslation)
-        }
-    }
-}
-
-struct OutputProfile: Equatable {
-    var target: OutputTarget
-    var transform: TextTransform
-    var translationTarget: String
-
-    static let `default` = OutputProfile(
-        target: .focusedApp,
-        transform: .original,
-        translationTarget: "en"
-    )
-
-    var usesSubtitleASR: Bool {
-        target == .subtitle
-    }
-}
-
-// N1：PairedDeviceEntry / XiaomiSettings 已下沉 VoiceStickCore（ConfigParsing.swift），
-// 本文件经既有 import VoiceStickCore 可见，调用点零改动。
-
-/// IMU 唤醒灵敏度（对齐 Windows ImuWakeSensitivity）：low/medium/high。
-/// 阈值映射注意是反向的：灵敏度越高阈值越低（low=800 / medium=500 / high=250 lsb）。
-enum ImuWakeSensitivity: String, CaseIterable {
-    case low
-    case medium
-    case high
-
-    var thresholdLsb: Int {
-        switch self {
-        case .low: return 800
-        case .medium: return 500
-        case .high: return 250
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .low: return tr(.wakeLow)
-        case .medium: return tr(.wakeMedium)
-        case .high: return tr(.wakeHigh)
-        }
-    }
-}
-
-/// 设备交互设置（对齐 Windows InteractionSettings；[device.<id>.interaction] 覆盖表
-/// 键名与顶层一致，加载时以全局默认填平）。体感鼠标 X/Y 灵敏度保留字段（跨端配置
-/// 兼容），macOS 暂无体感鼠标消费侧。
-struct InteractionSettings: Equatable {
-    var imuWakeSensitivity: ImuWakeSensitivity = .low
-    var tapToArrow = false
-    /// 1...10；加载时越界值回落 5（对齐 Windows TapSensitivityClamp）。
-    var tapSensitivity = 5
-    var airMouseSensitivityX = 5
-    var airMouseSensitivityY = 5
-
-    static let `default` = InteractionSettings()
-
-    /// 对齐 Windows TapSensitivityClamp/AirMouseSensitivityClamp：不在 1...10 回落 5。
-    static func clampedSensitivity(_ value: Int) -> Int {
-        (1...10).contains(value) ? value : 5
-    }
-}
-
-/// 编码器录音灯颜色（对齐 Windows encoder_led_color 8 色枚举，顺序固定）。
-enum EncoderLedColor: String, CaseIterable {
-    case red
-    case green
-    case blue
-    case yellow
-    case purple
-    case cyan
-    case white
-    case off
-
-    var displayName: String {
-        switch self {
-        case .red: return tr(.ledRed)
-        case .green: return tr(.ledGreen)
-        case .blue: return tr(.ledBlue)
-        case .yellow: return tr(.ledYellow)
-        case .purple: return tr(.ledPurple)
-        case .cyan: return tr(.ledCyan)
-        case .white: return tr(.ledWhite)
-        case .off: return tr(.ledOff)
-        }
-    }
-}
-
-/// 编码器单击/双击动作：recording=录音语义（press 路由主键 / double-click 远程起停），
-/// key=自定义按键注入（对齐 Windows EncoderSettings press_action/double_click_action）。
-enum EncoderButtonAction: String, CaseIterable {
-    case recording
-    case key
-
-    var displayName: String {
-        switch self {
-        case .recording: return tr(.actionRecording)
-        case .key: return tr(.actionCustomKey)
-        }
-    }
-}
-
-/// 编码器设置（对齐 Windows EncoderSettings；[device.<id>.encoder] 覆盖表键名去掉
-/// encoder_ 前缀，加载时以全局默认填平）。按键字段为 key_spec 语法字符串
-/// （见 KeySpec.parse）；加载校验失败的字段保留 fallback。
-struct EncoderSettings: Equatable {
-    /// 旋转注入总开关（false 时旋转事件整段忽略）。默认开。
-    var toArrow = true
-    /// 旋转方向翻转（cw/ccw 键互换）。默认关。
-    var rotationInvert = false
-    var rotateCwKey = "down"
-    var rotateCcwKey = "up"
-    /// 快慢分档阈值（格/秒）：EWMA 估计速度 >= 阈值走快速键；<=0 关闭分档。
-    /// 加载要求 >0（存 0 下次加载回默认）。默认 200。
-    var rotateFastThreshold = 200
-    var rotateCwFastKey = "pagedown"
-    var rotateCcwFastKey = "pageup"
-    /// 慢速判定窗口（ms）：0=立即注入（旧行为）；加载要求 >=0。默认 80。
-    var rotateDecideWindowMs = 80
-    var ledColor: EncoderLedColor = .red
-    var pressAction: EncoderButtonAction = .recording
-    /// press_action=key 时的注入键；唯一显式允许为空的按键字段。
-    var pressKey = ""
-    var doubleClickAction: EncoderButtonAction = .key
-    var doubleClickKey = "enter"
-
-    static let `default` = EncoderSettings()
-}
-
-/// 体感鼠标全局进阶参数（对齐 Windows app_config.h air_mouse_* 顶层键；灵敏度档位
-/// 在 InteractionSettings.airMouseSensitivityX/Y，按设备覆盖）。键名与 Windows 一致，
-/// 配置文件跨端通用；数值钳位对齐 Windows（越界回落默认值，见 AirMouseKin）。
-struct AirMouseSettings: Equatable {
-    /// 速度环时间常数（秒），[0.02, 0.5]，默认 0.05。
-    var tau: Double = 0.05
-    var invertY: Bool = false
-    /// sigmoid 增益曲线特征点（单位=固件缩放角速率 dps×4）。默认 100/333/0.25/4.0（真机标定）。
-    var curveLowThresh: Double = 100.0
-    var curveHighThresh: Double = 333.0
-    var curveLowFactor: Double = 0.25
-    var curveHighFactor: Double = 4.0
-    /// 方向锁中立区死区，[1, 10]，默认 3.0。
-    var neutralDeadzone: Double = 3.0
-    /// 控制模式："angle"（角速率→速度）/"rate"（飞行摇杆），未知名回落 rate（对齐 Windows）。
-    var controlMode: String = "rate"
-    /// rate 模式参数：加速度增益 [10,500]、摩擦 [0,0.5]、速度上限 [500,8000]。
-    var rateGain: Double = 80.0
-    var rateFriction: Double = 0.05
-    var rateMaxSpeed: Double = 4000.0
-
-    static let `default` = AirMouseSettings()
-
-    /// TOML 序列化数字格式（4 位有效数字，避免科学计数法）。
-    func tomlNumber(_ value: Double) -> String {
-        String(format: "%.4g", value)
-    }
-
-    /// 解析时钳位（对齐 Windows 加载路径：越界回落默认值）。
-    mutating func applyClamps() {
-        tau = AirMouseKin.tauClamp(tau)
-        neutralDeadzone = AirMouseKin.neutralDeadzoneClamp(neutralDeadzone)
-        rateGain = AirMouseKin.rateGainClamp(rateGain)
-        rateFriction = AirMouseKin.rateFrictionClamp(rateFriction)
-        rateMaxSpeed = AirMouseKin.rateMaxSpeedClamp(rateMaxSpeed)
-        controlMode = AirMouseControlMode.fromName(controlMode).name
-    }
-}
-
 struct AppConfig {
     var asrProvider: ASRProvider
     var voiceStickAPIKey: String
@@ -530,7 +335,7 @@ struct AppConfig {
             deviceThemeColors: deviceThemeColorMap(file.device_theme_colors ?? ""),
             deviceOverlayPositions: deviceOverlayPositionMap(file.device_overlay_positions ?? ""),
             deviceThemeSizes: deviceThemeSizeMap(file.device_theme_sizes ?? ""),
-            defaultOutputProfile: outputProfile(
+            defaultOutputProfile: VoiceStickCore.outputProfile(
                 target: file.output?.target ?? file.output_target,
                 transform: file.output?.transform ?? file.text_transform,
                 translationTarget: file.output?.translation_target ?? file.translation_target,
@@ -538,7 +343,7 @@ struct AppConfig {
             ),
             deviceOutputProfiles: deviceOutputProfileMap(
                 file.device,
-                defaultProfile: outputProfile(
+                defaultProfile: VoiceStickCore.outputProfile(
                     target: file.output?.target ?? file.output_target,
                     transform: file.output?.transform ?? file.text_transform,
                     translationTarget: file.output?.translation_target ?? file.translation_target,
@@ -749,7 +554,7 @@ struct AppConfig {
             deviceThemeColors: deviceThemeColorMap(values["device_theme_colors"] ?? ""),
             deviceOverlayPositions: deviceOverlayPositionMap(values["device_overlay_positions"] ?? ""),
             deviceThemeSizes: deviceThemeSizeMap(values["device_theme_sizes"] ?? ""),
-            defaultOutputProfile: outputProfile(
+            defaultOutputProfile: VoiceStickCore.outputProfile(
                 target: values["output_target"],
                 transform: values["text_transform"],
                 translationTarget: values["translation_target"],
@@ -805,19 +610,6 @@ struct AppConfig {
         NSWorkspace.shared.open(directory)
     }
 
-    private static func boolValue(_ text: String?, default defaultValue: Bool) -> Bool {
-        guard let text else { return defaultValue }
-        switch text.lowercased() {
-        case "true", "yes", "1", "on":
-            return true
-        case "false", "no", "0", "off":
-            return false
-        default:
-            return defaultValue
-        }
-    }
-
-    /// 对齐 Windows TomlTrimmedString：凭据类字段加载时去首尾空白。
     private static func trimmed(_ text: String?, default defaultValue: String) -> String {
         guard let text else { return defaultValue }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -857,30 +649,8 @@ struct AppConfig {
         return UiLanguage(configValue: text)
     }
 
-    private static func outputTargetValue(_ text: String?, default defaultValue: OutputTarget) -> OutputTarget {
-        guard let text, let target = OutputTarget(rawValue: text) else { return defaultValue }
-        return target
-    }
 
-    private static func textTransformValue(_ text: String?, default defaultValue: TextTransform) -> TextTransform {
-        guard let text, let transform = TextTransform(rawValue: text) else { return defaultValue }
-        return transform
-    }
 
-    private static func outputProfile(
-        target: String?,
-        transform: String?,
-        translationTarget: String?,
-        default defaultValue: OutputProfile
-    ) -> OutputProfile {
-        OutputProfile(
-            target: outputTargetValue(target, default: defaultValue.target),
-            transform: textTransformValue(transform, default: defaultValue.transform),
-            translationTarget: (translationTarget?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-                $0.isEmpty ? nil : $0
-            } ?? defaultValue.translationTarget
-        )
-    }
 
     private static func resourceIDValue(_ text: String?, default defaultValue: String) -> String {
         guard let text, supportedResourceIDs.contains(text) else { return defaultValue }
@@ -1062,43 +832,6 @@ struct AppConfig {
     ///（对齐 Windows ParseXiaomiSettings）。gain_db 的 ±24 限幅在消费侧（后处理）完成。
     // ---- 小米遥控器 [device.<id>.buttons] 覆盖（按键映射）----
 
-    /// keys 值为 "none" 时表示禁用（TOML 无法表达动作枚举，用哨兵值区分
-    /// action=disabled 与 action=key；空串/非法值回落 native）。
-    private static let buttonsDisabledSentinel = "none"
-
-    /// 解析 [device.<id>.buttons] 表：keys 值为 KeySpec 文本（action=key）或
-    /// "none"（action=disabled）；未写出的键回落 native；KeySpec 非法的条目忽略。
-    private static func buttonsSettings(from file: ButtonsConfigFile) -> ButtonsSettings {
-        var settings = ButtonsSettings.default
-        if let intercept = file.intercept { settings.intercept = intercept }
-        for (rawKey, value) in file.keys ?? [:] {
-            guard let button = RemoteButton(rawValue: rawKey) else { continue }
-            if value == buttonsDisabledSentinel {
-                settings.setMapping(ButtonMapping(action: .disabled, key: ""), for: button)
-            } else if !value.isEmpty, KeySpec.parse(value) != nil {
-                settings.setMapping(ButtonMapping(action: .key, key: value), for: button)
-            }
-        }
-        return settings
-    }
-
-    private static func deviceButtonsSettingsMap(
-        _ devices: [String: DeviceConfigFile]?
-    ) -> [String: ButtonsSettings] {
-        guard let devices else { return [:] }
-        return devices.reduce(into: [:]) { map, pair in
-            let deviceID = normalizedDeviceID(pair.key)
-            guard deviceID.count == 4, deviceID.allSatisfy({ $0.isASCII && $0.isHexDigit }),
-                  let buttons = pair.value.buttons else {
-                return
-            }
-            map[deviceID] = buttonsSettings(from: buttons)
-        }
-    }
-
-    // ---- 设备交互/编码器设置（对齐 Windows Parse{Interaction,Encoder}Settings）----
-
-    /// 返回设备有效交互设置：有覆盖返回覆盖（加载时已用全局默认填平），否则全局默认。
     func interactionSettings(for deviceID: String?) -> InteractionSettings {
         guard let deviceID,
               let settings = deviceInteractionSettings[Self.normalizedDeviceID(deviceID)] else {
@@ -1137,218 +870,6 @@ struct AppConfig {
     }
 
     /// 对齐 Windows：按键字段仅当 ParseKeySpec 成功才覆盖 fallback；press_key 唯一允许空。
-    private static func keySpecValue(_ text: String?, fallback: String, allowEmpty: Bool = false) -> String {
-        guard let text else { return fallback }
-        if text.isEmpty { return allowEmpty ? text : fallback }
-        return KeySpec.parse(text) != nil ? text : fallback
-    }
-
-    /// 顶层 interaction 键解析（对齐 Windows Load 顶层分支）。imu_wake_sensitivity 例外：
-    /// 对齐 ImuWakeSensitivityFromName，非法值回 low 而不是保留 fallback。
-    private static func interactionSettingsValue(
-        imuWakeSensitivity: String?, tapToArrow: Bool?, tapSensitivity: Int?,
-        airMouseSensitivityX: Int?, airMouseSensitivityY: Int?,
-        default fallback: InteractionSettings
-    ) -> InteractionSettings {
-        var settings = fallback
-        if let value = imuWakeSensitivity {
-            settings.imuWakeSensitivity = ImuWakeSensitivity(rawValue: value) ?? .low
-        }
-        if let value = tapToArrow { settings.tapToArrow = value }
-        if let value = tapSensitivity {
-            settings.tapSensitivity = InteractionSettings.clampedSensitivity(value)
-        }
-        if let value = airMouseSensitivityX {
-            settings.airMouseSensitivityX = InteractionSettings.clampedSensitivity(value)
-        }
-        if let value = airMouseSensitivityY {
-            settings.airMouseSensitivityY = InteractionSettings.clampedSensitivity(value)
-        }
-        return settings
-    }
-
-    /// 顶层 encoder 键解析（对齐 Windows Load 顶层分支）：非法值保留 fallback。
-    private static func encoderSettingsValue(
-        toArrow: Bool?, rotationInvert: Bool?, rotateCwKey: String?, rotateCcwKey: String?,
-        rotateFastThreshold: Int?, rotateCwFastKey: String?, rotateCcwFastKey: String?,
-        rotateDecideWindowMs: Int?, ledColor: String?, pressAction: String?, pressKey: String?,
-        doubleClickAction: String?, doubleClickKey: String?,
-        default fallback: EncoderSettings
-    ) -> EncoderSettings {
-        var settings = fallback
-        if let value = toArrow { settings.toArrow = value }
-        if let value = rotationInvert { settings.rotationInvert = value }
-        settings.rotateCwKey = keySpecValue(rotateCwKey, fallback: settings.rotateCwKey)
-        settings.rotateCcwKey = keySpecValue(rotateCcwKey, fallback: settings.rotateCcwKey)
-        if let value = rotateFastThreshold, value > 0 { settings.rotateFastThreshold = value }
-        settings.rotateCwFastKey = keySpecValue(rotateCwFastKey, fallback: settings.rotateCwFastKey)
-        settings.rotateCcwFastKey = keySpecValue(rotateCcwFastKey, fallback: settings.rotateCcwFastKey)
-        if let value = rotateDecideWindowMs, value >= 0 { settings.rotateDecideWindowMs = value }
-        if let value = ledColor, let color = EncoderLedColor(rawValue: value) {
-            settings.ledColor = color
-        }
-        if let value = pressAction, let action = EncoderButtonAction(rawValue: value) {
-            settings.pressAction = action
-        }
-        settings.pressKey = keySpecValue(pressKey, fallback: settings.pressKey, allowEmpty: true)
-        if let value = doubleClickAction, let action = EncoderButtonAction(rawValue: value) {
-            settings.doubleClickAction = action
-        }
-        settings.doubleClickKey = keySpecValue(doubleClickKey, fallback: settings.doubleClickKey)
-        return settings
-    }
-
-    private static func interactionSettingsValue(
-        _ file: ConfigFile, default fallback: InteractionSettings
-    ) -> InteractionSettings {
-        interactionSettingsValue(
-            imuWakeSensitivity: file.imu_wake_sensitivity,
-            tapToArrow: file.tap_to_arrow,
-            tapSensitivity: file.tap_sensitivity,
-            airMouseSensitivityX: file.air_mouse_sensitivity_x,
-            airMouseSensitivityY: file.air_mouse_sensitivity_y,
-            default: fallback
-        )
-    }
-
-    private static func encoderSettingsValue(
-        _ file: ConfigFile, default fallback: EncoderSettings
-    ) -> EncoderSettings {
-        encoderSettingsValue(
-            toArrow: file.encoder_to_arrow,
-            rotationInvert: file.encoder_rotation_invert,
-            rotateCwKey: file.encoder_rotate_cw_key,
-            rotateCcwKey: file.encoder_rotate_ccw_key,
-            rotateFastThreshold: file.encoder_rotate_fast_threshold,
-            rotateCwFastKey: file.encoder_rotate_cw_fast_key,
-            rotateCcwFastKey: file.encoder_rotate_ccw_fast_key,
-            rotateDecideWindowMs: file.encoder_rotate_decide_window_ms,
-            ledColor: file.encoder_led_color,
-            pressAction: file.encoder_press_action,
-            pressKey: file.encoder_press_key,
-            doubleClickAction: file.encoder_double_click_action,
-            doubleClickKey: file.encoder_double_click_key,
-            default: fallback
-        )
-    }
-
-    /// legacy 逐行解析版：字符串值先转类型（非整数保留 fallback），语义与 TOML 版一致。
-    private static func interactionSettingsValue(
-        _ values: [String: String], default fallback: InteractionSettings
-    ) -> InteractionSettings {
-        interactionSettingsValue(
-            imuWakeSensitivity: values["imu_wake_sensitivity"],
-            tapToArrow: values["tap_to_arrow"].map { boolValue($0, default: fallback.tapToArrow) },
-            tapSensitivity: values["tap_sensitivity"].flatMap(Int.init),
-            airMouseSensitivityX: values["air_mouse_sensitivity_x"].flatMap(Int.init),
-            airMouseSensitivityY: values["air_mouse_sensitivity_y"].flatMap(Int.init),
-            default: fallback
-        )
-    }
-
-    private static func encoderSettingsValue(
-        _ values: [String: String], default fallback: EncoderSettings
-    ) -> EncoderSettings {
-        encoderSettingsValue(
-            toArrow: values["encoder_to_arrow"].map { boolValue($0, default: fallback.toArrow) },
-            rotationInvert: values["encoder_rotation_invert"].map {
-                boolValue($0, default: fallback.rotationInvert)
-            },
-            rotateCwKey: values["encoder_rotate_cw_key"],
-            rotateCcwKey: values["encoder_rotate_ccw_key"],
-            rotateFastThreshold: values["encoder_rotate_fast_threshold"].flatMap(Int.init),
-            rotateCwFastKey: values["encoder_rotate_cw_fast_key"],
-            rotateCcwFastKey: values["encoder_rotate_ccw_fast_key"],
-            rotateDecideWindowMs: values["encoder_rotate_decide_window_ms"].flatMap(Int.init),
-            ledColor: values["encoder_led_color"],
-            pressAction: values["encoder_press_action"],
-            pressKey: values["encoder_press_key"],
-            doubleClickAction: values["encoder_double_click_action"],
-            doubleClickKey: values["encoder_double_click_key"],
-            default: fallback
-        )
-    }
-
-    private static func interactionSettings(
-        from file: InteractionConfigFile, fallback: InteractionSettings
-    ) -> InteractionSettings {
-        interactionSettingsValue(
-            imuWakeSensitivity: file.imu_wake_sensitivity,
-            tapToArrow: file.tap_to_arrow,
-            tapSensitivity: file.tap_sensitivity,
-            airMouseSensitivityX: file.air_mouse_sensitivity_x,
-            airMouseSensitivityY: file.air_mouse_sensitivity_y,
-            default: fallback
-        )
-    }
-
-    private static func encoderSettings(
-        from file: EncoderConfigFile, fallback: EncoderSettings
-    ) -> EncoderSettings {
-        encoderSettingsValue(
-            toArrow: file.to_arrow,
-            rotationInvert: file.rotation_invert,
-            rotateCwKey: file.rotate_cw_key,
-            rotateCcwKey: file.rotate_ccw_key,
-            rotateFastThreshold: file.rotate_fast_threshold,
-            rotateCwFastKey: file.rotate_cw_fast_key,
-            rotateCcwFastKey: file.rotate_ccw_fast_key,
-            rotateDecideWindowMs: file.rotate_decide_window_ms,
-            ledColor: file.led_color,
-            pressAction: file.press_action,
-            pressKey: file.press_key,
-            doubleClickAction: file.double_click_action,
-            doubleClickKey: file.double_click_key,
-            default: fallback
-        )
-    }
-
-    private static func deviceInteractionSettingsMap(
-        _ devices: [String: DeviceConfigFile]?, fallback: InteractionSettings
-    ) -> [String: InteractionSettings] {
-        guard let devices else { return [:] }
-        return devices.reduce(into: [:]) { map, pair in
-            let deviceID = normalizedDeviceID(pair.key)
-            guard deviceID.count == 4, deviceID.allSatisfy({ $0.isASCII && $0.isHexDigit }),
-                  let interaction = pair.value.interaction else {
-                return
-            }
-            map[deviceID] = interactionSettings(from: interaction, fallback: fallback)
-        }
-    }
-
-    private static func deviceEncoderSettingsMap(
-        _ devices: [String: DeviceConfigFile]?, fallback: EncoderSettings
-    ) -> [String: EncoderSettings] {
-        guard let devices else { return [:] }
-        return devices.reduce(into: [:]) { map, pair in
-            let deviceID = normalizedDeviceID(pair.key)
-            guard deviceID.count == 4, deviceID.allSatisfy({ $0.isASCII && $0.isHexDigit }),
-                  let encoder = pair.value.encoder else {
-                return
-            }
-            map[deviceID] = encoderSettings(from: encoder, fallback: fallback)
-        }
-    }
-
-    private static func deviceOutputProfileMap(
-        _ devices: [String: DeviceConfigFile]?,
-        defaultProfile: OutputProfile
-    ) -> [String: OutputProfile] {
-        guard let devices else { return [:] }
-        return devices.reduce(into: [:]) { profiles, pair in
-            let deviceID = normalizedDeviceID(pair.key)
-            guard deviceID.count == 4, deviceID.allSatisfy({ $0.isASCII && $0.isHexDigit }), let output = pair.value.output else {
-                return
-            }
-            profiles[deviceID] = outputProfile(
-                target: nil,
-                transform: output.transform,
-                translationTarget: output.translation_target,
-                default: defaultProfile
-            )
-        }
-    }
 
     private var deviceThemeColorText: String {
         deviceThemeColors
@@ -1433,7 +954,7 @@ struct AppConfig {
                         case .native:
                             return nil
                         case .disabled:
-                            return "\(key) = \"\(Self.buttonsDisabledSentinel)\""
+                            return "\(key) = \"\(buttonsDisabledSentinel)\""
                         case .key:
                             return "\(key) = \"\(mapping.key.tomlEscaped)\""
                         }
