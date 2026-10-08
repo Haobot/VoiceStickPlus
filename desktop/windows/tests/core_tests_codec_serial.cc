@@ -1201,8 +1201,6 @@ void TestRingBacklogUpperBoundByCapacity() {
     assert(max_backlog_ms >= 511.0 && max_backlog_ms <= 513.0);
 }
 
-} // namespace
-
 void TestOutputTargetWechatInputMethod() {
     assert(OutputTargetFromName("wechat_input_method") == OutputTarget::kWechatInputMethod);
     assert(OutputTargetFromName("subtitle") == OutputTarget::kSubtitle);
