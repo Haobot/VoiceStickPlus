@@ -20,6 +20,28 @@
 #include "ble_central_win_util.h"
 
 namespace voicestick {
+
+using winrt::Windows::Devices::Bluetooth::BluetoothAddressType;
+using winrt::Windows::Devices::Bluetooth::BluetoothConnectionStatus;
+using winrt::Windows::Devices::Bluetooth::BluetoothError;
+using winrt::Windows::Devices::Bluetooth::BluetoothLEDevice;
+using winrt::Windows::Devices::Bluetooth::BluetoothCacheMode;
+using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs;
+using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher;
+using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcherStoppedEventArgs;
+using winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicProperties;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattClientCharacteristicConfigurationDescriptorValue;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCommunicationStatus;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSessionStatus;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSessionStatusChangedEventArgs;
+using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteOption;
+using winrt::Windows::Devices::Enumeration::DeviceInformation;
+using winrt::Windows::Devices::Enumeration::DeviceUnpairingResultStatus;
+using winrt::Windows::Storage::Streams::DataReader;
+using winrt::Windows::Storage::Streams::DataWriter;
 // ---- 小米 ATVV 会话辅助实现 ----
 
 void BleCentralWin::DriveXiaomiSession(
