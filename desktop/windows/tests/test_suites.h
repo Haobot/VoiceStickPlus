@@ -21,3 +21,6 @@ void RunXiaomiAtvvBatchTests();
 
 // N8 cut8：协调器第五批（8 测；预检含多行签名定义头感知）。
 void RunCoordinatorBatch5Tests();
+
+// N8 cut9：协调器第六批（LocalMic 组 8 测）。
+void RunCoordinatorBatch6Tests();
