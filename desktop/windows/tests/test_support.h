@@ -1569,3 +1569,14 @@ inline static std::optional<ByteVector> ContractBuildOtaControl(const std::strin
     }
     return std::nullopt;
 }
+
+// N8 cut14: license serial fixtures (static data, per-TU copies by design).
+static const std::string kTestSerial1 =
+    "048V0-GQ6JD-S7VXB-D040G-0000T-QR3RC-WZT5Q-TCNTZ-M5RZA-PH0Q8-VZPZN-Y4GQV-"
+    "4H8EP-3H7MX-P8EKY-0MYKQ-Z1J6R-SBHS1-4BJHA-D7GTV-E7FXB-NSD3G-R0NJE-FYNGM-MJATM-0G";
+static const std::string kTestSerial2 =
+    "09XM4-63ZJ4-HJKKF-ZZW10-0000H-P1J9M-YA462-E9WSF-D3HE0-6KCZR-XXT6V-2XQR1-"
+    "9254S-SVXB5-Y39VQ-GNR34-T6ZP8-918AT-RJM1J-8XBBT-XPVR9-1XQ88-75RGX-D9B6Z-M56XM-3R";
+static const std::string kTestSerial3 =
+    "070K0-W9PTN-ERNPB-C041G-00008-A5DQY-XFK9E-B1S5Z-025HR-C2B9N-K9BK9-QMR5G-"
+    "E7650-GT39D-V9B0M-FH46M-Q05PZ-CBFPS-80QFK-J5F00-N3XW5-AVD6Q-AY1HD-AE2T7-1KY18-08";
