@@ -1786,7 +1786,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                            " attempt=" + std::to_string(attempt) +
                            " hr=" + FormatHresult(throw_hresult) +
                            " message=" + throw_message);
-                if (!unpair_attempted && IsLikelyStaleBondError(throw_hresult)) {
+                // B16 红线闸（10-08）：自愈路径绝不 unpair RC——删 Enum\BTHLE 即毁
+                // HOGP 按键直通，且 PairAsync 于已连设备必失败；RC 陈旧键走本 fail 路径
+                //（用户手动重配对）。VS 无 HOGP 键盘角色，保留陈旧键恢复。
+                if (!unpair_attempted && !is_xiaomi && IsLikelyStaleBondError(throw_hresult)) {
                     unpair_attempted = true;
                     LogBleLine("attempting to remove stale Windows pairing for VS-" + device_id);
                     co_await TryUnpairAsync(session->ble_device.DeviceId());
@@ -1922,7 +1925,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             // Unreachable usually means the peripheral rejected the encrypted
             // link (stale bond / LTK mismatch). Unpair, reset the Bluetooth
             // radio to flush the controller-level key cache, then recycle.
-            if (status == GattCommunicationStatus::Unreachable && !unpair_attempted) {
+            // B16 红线闸（10-08）：同上——RC 自愈绝不 unpair（见 1792 处闸注释）。
+            if (status == GattCommunicationStatus::Unreachable && !unpair_attempted
+                && !is_xiaomi) {
                 unpair_attempted = true;
                 LogBleLine("Unreachable: removing stale Windows pairing for VS-" + device_id);
                 co_await TryUnpairAsync(session->ble_device.DeviceId());

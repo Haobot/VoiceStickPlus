@@ -63,7 +63,11 @@
 | B14 | 热词合法性四套口径 → 统一 `IsValidHotword` | **partial（10-08）** | 四处口径实测：①selector/文档权威 `hotword_select.py::is_valid_word` = 仅「无空白 + ≤10 非 ASCII / ≤30 ASCII」（**允许点号**，旗舰热词 `CLAUDE.md`/`AGENTS.md` 依赖它）；②win32 加词只查重复+长度（空格可入配置）；④腾讯另有字符集（拒点号）→①④分歧即「加进去但不生效」。**已统一（本轮）**：`ValidateHotword` = 平台权威（严格对齐 python + `HotwordRejectReason` 拒绝原因）+ `ValidateHotwordForTencent` = 权威 **再收窄**（API 字符集，**唯一有意差异**）；① 改布尔包装、② 加词入口补校验并**给出提示**（新增 `kSelectionHotwordInvalidTitle/Body` + `kStringCount` 哨兵 + EN/ZH 双表）、④ 委托腾讯口径且**被拒热词带词记录进日志**。**两轮 CI 各抓一次方向错误**：首版把腾讯字符集并入权威（破坏文档对齐与既有排序测试）；次版把权威并入③提炼（破坏多词候选）——均改正，最终 ①②④ 统一。**③ 未并入 → B14b** |
 | B14b | ③ LLM 提炼的**多词候选**（"Stack Chain"）是否纳入统一口径 | open（产品决策） | 10-08 从 B14 拆出：③ 允许 ≤3 词候选，而权威/腾讯/ASR 语料（`RankHotwords` 按 `IsValidHotword` 过滤）都不支持空格 → 多词候选「提出来但用不上」。但既有提取测试 8 处断言钉死多词，且 `AppearsInSourceText` 空白容忍是生产 **candidates=0** 根因的修复。路线 A=统一拒绝（改提取测试，容忍匹配退居幕后）；路线 B=全面支持多词（腾讯 API 拒空格，实际不可行）→ 倾向 A，**待拍板** |
 | B15 | F5 抑制器低级钩子内 Sleep 忙等 + 文件日志 | open | 9-22 未复核 |
-| B16 | 自愈路径调 `TryUnpairAsync` 与「绝不 unpair」红线冲突 | **待核查** | 10-07：红线注释已在（`:1845`），但 `TryUnpairAsync` 调用点仍在（`:595/:1827`）——需确认调用路径均非自愈 |
+| B16 | 自愈路径调 TryUnpairAsync 与「绝不 unpair」红线冲突 | **closed（10-08 红线闸落地）** |
+复核判定=违例实锤：ConnectDeviceAsync@1404 共享流（is_xiaomi 分支仅@2026、1404-2026 无 RC 早退、
+服务发现@1900 类感知=RC 必经同一重试环）→ 陈旧键 unpair@1792/1928 自愈对 RC 可达=删 Enum\BTHLE 毁 HOGP 直通；
+三调用点定性：421=用户遗忘（合规）、1792/1928=自愈违例 → 双闸 !is_xiaomi 落地（RC 走既有 fail 路径+手动重配对；
+VS 无 HOGP 键盘角色保留陈旧键恢复）；改后 TryUnpairAsync 全 6 引用复核（decl/def/421/1792/1928/注释）。 |
 | B17 | 后台线程直接 `ShowNotification`（统一 DispatchToUi） | open | 9-22 未复核 |
 | B18 | 云端精修/翻译取消不回调 + 断流当成功 | open | 9-22 未复核 |
 | B19 | OTA 流控记账被 progress 回调存在性门控 | open | 9-22 未复核 |
