@@ -2470,9 +2470,10 @@ static void sensor_poll_task(void *arg)
 
 static void pickup_poll_timer_cb(void *arg)
 {
+    (void)arg;
     if (!s_display_dimmed || s_recording || s_ota_updating) {
-            return;
-        }
+        return;
+    }
     sensor_poll_kick(SENSOR_POLL_PICKUP_BIT);
 }
 
@@ -2500,12 +2501,13 @@ static esp_err_t init_pickup_poll_timer(void)
 // 敲击检测轮询：10ms 周期，仅在启用、BMI270 在线、未录音/OTA、BLE 已连接时工作。
 static void tap_poll_timer_cb(void *arg)
 {
+    (void)arg;
     if (!s_tap_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
-            return;
-        }
-        if (esp_timer_get_time() < __atomic_load_n(&s_tap_suppress_until_us, __ATOMIC_RELAXED)) {
-            return;
-        }
+        return;
+    }
+    if (esp_timer_get_time() < __atomic_load_n(&s_tap_suppress_until_us, __ATOMIC_RELAXED)) {
+        return;
+    }
     sensor_poll_kick(SENSOR_POLL_TAP_BIT);
 }
 
@@ -3014,6 +3016,7 @@ static void gateway_apply_mode(void)
 // ---- P1 切换器：编码器菜单交互 ----
 static void encoder_poll_timer_cb(void *arg)
 {
+    (void)arg;
     sensor_poll_kick(SENSOR_POLL_ENCODER_BIT);
 }
 
@@ -3072,6 +3075,7 @@ static esp_err_t init_encoder_poll_timer(void)
 // 任务里做 I²C + BLE notify（负载轻，非 Wi-Fi 重活，不违反 timer cb 栈约束）。
 static void air_mouse_poll_timer_cb(void *arg)
 {
+    (void)arg;
     if (!s_air_mouse_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
             return;
         }
@@ -3158,6 +3162,7 @@ static void update_display_orientation(float x_g)
 // IMU 不在线时仅在首次刷一次 "IMU: n/a" 并停表，避免空转刷屏。
 static void imu_poll_timer_cb(void *arg)
 {
+    (void)arg;
     sensor_poll_kick(SENSOR_POLL_IMU_BIT);
 }
 
