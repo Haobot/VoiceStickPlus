@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 
 namespace voicestick {
 
@@ -124,8 +125,28 @@ void SaveHotwordCandidates(const std::filesystem::path& path, const HotwordCandi
 
     char* json = cJSON_PrintUnformatted(root);
     if (!json) return;
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (f) f << json;
+    // B13：先写同目录临时文件再改名（原 trunc 直写，另一线程读到半截 JSON 会判空、
+    // 列表闪空）。改名失败（极端）回退直写，宁可退化为旧行为也不丢数据。
+    const std::filesystem::path tmp = path.string() + ".tmp";
+    bool wrote = false;
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (f) {
+            f << json;
+            wrote = static_cast<bool>(f);
+        }
+    }
+    if (wrote) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        ec.clear();
+        std::filesystem::rename(tmp, path, ec);
+        wrote = !ec;
+    }
+    if (!wrote) {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        if (f) f << json;
+    }
     cJSON_free(json);
 }
 
@@ -152,6 +173,49 @@ std::vector<std::string> PendingHotwordSuggestions(const HotwordCandidateStore& 
         }
     }
     return pending;
+}
+
+namespace {
+
+// B13：进程级文件互斥——coordinator 后台挖掘线程与设置页 UI 线程同写一个文件。
+std::mutex& CandidatesFileMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+}  // namespace
+
+std::vector<std::string> RecordHotwordCandidatesToDisk(const std::filesystem::path& path,
+                                                      const std::vector<std::string>& words) {
+    std::lock_guard lock(CandidatesFileMutex());
+    // 每次从磁盘重读（reload-merge-save）：绝不使用陈旧快照写回，否则会覆盖设置页
+    // 刚写入的 dismissed/加入状态。
+    HotwordCandidateStore store = LoadHotwordCandidates(path);
+    std::vector<std::string> suggestions = RecordHotwordCandidates(store, words);
+    for (const auto& word : suggestions) store.notified.insert(word);
+    SaveHotwordCandidates(path, store);
+    return suggestions;
+}
+
+bool ConsumeHotwordCandidateOnDisk(const std::filesystem::path& path, const std::string& word) {
+    std::lock_guard lock(CandidatesFileMutex());
+    HotwordCandidateStore store = LoadHotwordCandidates(path);
+    const bool known = store.counts.contains(word) || store.notified.contains(word) ||
+                       store.dismissed.contains(word);
+    store.counts.erase(word);
+    store.notified.erase(word);
+    SaveHotwordCandidates(path, store);
+    return known;
+}
+
+bool DismissHotwordCandidateOnDisk(const std::filesystem::path& path, const std::string& word) {
+    std::lock_guard lock(CandidatesFileMutex());
+    HotwordCandidateStore store = LoadHotwordCandidates(path);
+    store.dismissed.insert(word);
+    store.counts.erase(word);
+    store.notified.erase(word);
+    SaveHotwordCandidates(path, store);
+    return true;
 }
 
 } // namespace voicestick

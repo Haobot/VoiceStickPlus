@@ -46,4 +46,16 @@ std::vector<std::string> RecordHotwordCandidates(HotwordCandidateStore& store,
 // 当前待确认建议（达到阈值且未忽略），供设置界面展示。
 std::vector<std::string> PendingHotwordSuggestions(const HotwordCandidateStore& store);
 
+// ---- B13：候选文件的**唯一写入口** ----
+// 原实现两处写者各自为政：coordinator load-once 缓存整存（陈旧快照覆盖设置页刚写入
+// 的 dismissed/加入 → 用户「忽略」的词反复弹回）+ 设置页 UI 线程读改写（与后台挖掘
+// 线程竞争）。以下三个事务统一「进程级互斥 + 每次从磁盘重读后改写」，全部文件变更收敛到本模块。
+// 挖掘：记录候选并返回本次新晋建议（已达阈值、未忽略、未通知）。
+std::vector<std::string> RecordHotwordCandidatesToDisk(const std::filesystem::path& path,
+                                                      const std::vector<std::string>& words);
+// 设置页「加入」：从 counts/notified 移除（词已进入热词表）。
+bool ConsumeHotwordCandidateOnDisk(const std::filesystem::path& path, const std::string& word);
+// 设置页「忽略」：记入 dismissed（永不建议）并移除 counts/notified。
+bool DismissHotwordCandidateOnDisk(const std::filesystem::path& path, const std::string& word);
+
 } // namespace voicestick

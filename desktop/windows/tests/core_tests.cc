@@ -2263,6 +2263,46 @@ void TestHotwordCandidateMiner() {
     assert(LoadHotwordCandidates(temp).counts.empty());
 }
 
+void TestHotwordCandidatesSingleWriter() {
+    // B13：候选文件唯一写入口——coordinator 后台挖掘与设置页 UI 同写一个文件，原
+    // coordinator load-once 缓存整存会用陈旧快照覆盖设置页刚写入的 dismissed，
+    // 用户「忽略」的词反复弹回（评审 B13）。
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto dir = fs::temp_directory_path() / "voicestick_b13_candidates";
+    fs::create_directories(dir, ec);
+    const auto path = dir / "hotword_candidates.json";
+    fs::remove(path, ec);
+
+    // 挖掘三轮达阈值（kHotwordCandidateThreshold = 3）→ 第三轮给出建议。
+    assert(RecordHotwordCandidatesToDisk(path, {"AlphaCode"}).empty());
+    assert(RecordHotwordCandidatesToDisk(path, {"AlphaCode"}).empty());
+    const auto suggested = RecordHotwordCandidatesToDisk(path, {"AlphaCode"});
+    assert((suggested == std::vector<std::string>{"AlphaCode"}));
+    assert((PendingHotwordSuggestions(LoadHotwordCandidates(path)) ==
+            std::vector<std::string>{"AlphaCode"}));
+
+    // 用户在设置页「忽略」
+    assert(DismissHotwordCandidateOnDisk(path, "AlphaCode"));
+    assert(PendingHotwordSuggestions(LoadHotwordCandidates(path)).empty());
+
+    // 关键回归：后续挖掘不得让已忽略的词重新弹回（原 load-once 缓存会覆盖 dismissed）。
+    const auto after = RecordHotwordCandidatesToDisk(path, {"AlphaCode", "FreshWord"});
+    for (const auto& word : after) assert(word != "AlphaCode");
+    assert(LoadHotwordCandidates(path).dismissed.contains("AlphaCode"));
+
+    // 「加入」消费路径：从 counts/notified 移除。
+    RecordHotwordCandidatesToDisk(path, {"FreshWord"});
+    assert(ConsumeHotwordCandidateOnDisk(path, "FreshWord"));
+    assert(!LoadHotwordCandidates(path).counts.contains("FreshWord"));
+
+    // 写入原子性：保存后文件可立即解析（原 trunc 直写会读到半截 JSON）。
+    for (int i = 0; i < 3; ++i) RecordHotwordCandidatesToDisk(path, {"AtomicCheck"});
+    assert(LoadHotwordCandidates(path).counts.contains("AtomicCheck"));
+
+    fs::remove_all(dir, ec);
+}
+
 void TestHotwordValidationUnified() {
     // B14：四套口径统一到 ValidateHotword——断言拒绝原因 + 既有两个布尔包装完全一致。
     assert(ValidateHotword("Opus") == HotwordRejectReason::kNone);
@@ -16537,6 +16577,8 @@ int main() {
     TestLlmRefinePromptAndPayload();
     TestHotwordProcessConfig();
     TestHotwordExtractorPromptAndParse();
+    printf(">> cluster: B13 hotword candidates single writer\n"); fflush(stdout);
+    TestHotwordCandidatesSingleWriter();
     TestHotwordCandidateMiner();
     TestHotwordExtractionPromptAndParse();
     TestFirmwareManifestParsingAndVersionCompare();

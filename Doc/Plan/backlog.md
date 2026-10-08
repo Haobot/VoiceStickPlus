@@ -57,7 +57,7 @@
 | B9 | 配置写盘非原子 + 合并保存丢 `[license]` | **closed（10-07）** | `WriteTo` 原子写（同目录 `.tmp` → `MoveFileExW` REPLACE_EXISTING\|WRITE_THROUGH）+ **两条合并保存路径**（Preserving/SettingsDialog）落盘前保留磁盘 `[license]`——「谁的副本谁重取」；plain Save 写本对象 license（LicenseRuntime 激活/锚点落盘语义所依赖，首版全局重取被既有回归测试拦下后修正）；单测 `TestSaveStaleCopyKeepsLicense` + `TestLicenseConfigRoundTrip` 回归 |
 | B11 | `SetLocalRefiner` 持 `audio_mutex_` 析构旧 client | open | 9-22 未复核 |
 | B12 | 精修线程对象只增不减 | open | 9-22 未复核 |
-| B13 | 热词候选文件双写者 + 陈旧快照覆盖「忽略」 | open | 9-22 未复核 |
+| B13 | 热词候选文件双写者 + 陈旧快照覆盖「忽略」 | **closed（10-08）** | 缺陷链实锤：coordinator `RecordAndNotifyHotwordCandidates` **load-once 缓存整存**（`hotword_candidates_loaded_` 置位后永不再读盘），设置页 Dismiss/加入写入的 `dismissed` 被下一次挖掘的陈旧快照覆盖 → **用户忽略的词反复弹回**；且设置页 UI 线程与后台挖掘线程同写一文件无互斥。按评审「单一持有者或 reload-merge-save」双管齐下：miner 模块提供**唯一写入口** `Record/Consume/DismissHotwordCandidateOnDisk`（进程级互斥 + 每次从磁盘重读后改写），coordinator 缓存三成员全删、设置页两处改走入口；另把 `SaveHotwordCandidates` 改**临时文件+改名**（原 trunc 直写会读到半截 JSON、列表闪空）。回归 `TestHotwordCandidatesSingleWriter`（达阈值→忽略→**后续挖掘不回弹**→消费路径→写后即读） |
 | B14 | 热词合法性四套口径 → 统一 `IsValidHotword` | **partial（10-08）** | 四处口径实测：①selector/文档权威 `hotword_select.py::is_valid_word` = 仅「无空白 + ≤10 非 ASCII / ≤30 ASCII」（**允许点号**，旗舰热词 `CLAUDE.md`/`AGENTS.md` 依赖它）；②win32 加词只查重复+长度（空格可入配置）；④腾讯另有字符集（拒点号）→①④分歧即「加进去但不生效」。**已统一（本轮）**：`ValidateHotword` = 平台权威（严格对齐 python + `HotwordRejectReason` 拒绝原因）+ `ValidateHotwordForTencent` = 权威 **再收窄**（API 字符集，**唯一有意差异**）；① 改布尔包装、② 加词入口补校验并**给出提示**（新增 `kSelectionHotwordInvalidTitle/Body` + `kStringCount` 哨兵 + EN/ZH 双表）、④ 委托腾讯口径且**被拒热词带词记录进日志**。**两轮 CI 各抓一次方向错误**：首版把腾讯字符集并入权威（破坏文档对齐与既有排序测试）；次版把权威并入③提炼（破坏多词候选）——均改正，最终 ①②④ 统一。**③ 未并入 → B14b** |
 | B14b | ③ LLM 提炼的**多词候选**（"Stack Chain"）是否纳入统一口径 | open（产品决策） | 10-08 从 B14 拆出：③ 允许 ≤3 词候选，而权威/腾讯/ASR 语料（`RankHotwords` 按 `IsValidHotword` 过滤）都不支持空格 → 多词候选「提出来但用不上」。但既有提取测试 8 处断言钉死多词，且 `AppearsInSourceText` 空白容忍是生产 **candidates=0** 根因的修复。路线 A=统一拒绝（改提取测试，容忍匹配退居幕后）；路线 B=全面支持多词（腾讯 API 拒空格，实际不可行）→ 倾向 A，**待拍板** |
 | B15 | F5 抑制器低级钩子内 Sleep 忙等 + 文件日志 | open | 9-22 未复核 |
@@ -129,6 +129,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **阶段 1 B13 关闭**：热词候选文件收敛为 miner 单一写入口（进程级互斥 + reload-merge-save），coordinator load-once 缓存删除、设置页两处改走入口、Save 原子化 | 本地断言（忽略不回弹/消费/写后即读）+ CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **阶段 1 B14（partial）**：①②④ 统一为 `ValidateHotword` 平台权威 + `ValidateHotwordForTencent` 唯一 API 收窄（腾讯被拒热词带词入日志，加词入口补用户提示）；③多词候选拆 B14b 待产品决策 | 两轮 CI 各抓一次方向错误并改正（腾讯字符集误并权威 → 破坏排序测试；权威误并③ → 破坏多词候选与生产修复）；回归 `TestHotwordValidationUnified` 含双口径与超集对拍 |
 | 2026-10-08 | **阶段 1 B3 关闭**：微信模式启动失败路径抽 `RestoreDefaultCaptureDevice()` 与 Stop 共用（默认麦不再卡 CABLE 静音、不再毒化下次会话的「原设备」） | 事件驱动回归（FakeBleCentral `on_state_event` + 注入假 switcher/renderer）；CI 七 job（Windows ctest） |
 | 2026-10-08 | **阶段 1 B2 关闭**：usage tap 管道补 `FILE_FLAG_OVERLAPPED`（原 OVERLAPPED 分支形同虚设、Stop/退出挂死）+ 连接/读两路取消后等内核用完栈上 OVERLAPPED（防修复后暴露的 UB）；顺带核实 C8b 的 i18n 子项——`check_i18n` **已是键集合双向对拍**，评审「只查非空」已过时 | 新增 `TestUsageTapManagerStopBounded`（有界 5s、卡住快速失败）；CI 七 job（Windows ctest） |

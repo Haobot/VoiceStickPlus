@@ -2018,10 +2018,7 @@ void SettingsDialog::OnHotwordCandidateAdd() {
                    current.empty() ? wide_word.c_str() : (current + L"," + wide_word).c_str());
     // 候选已入表，从存储中移除（notified 一并清掉，避免残留状态）。
     const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
-    auto store = LoadHotwordCandidates(path);
-    store.counts.erase(word);
-    store.notified.erase(word);
-    SaveHotwordCandidates(path, store);
+    ConsumeHotwordCandidateOnDisk(path, word);  // B13：唯一写入口（互斥 + 重读后改写）
     RefreshHotwordCandidates();
 }
 
@@ -2032,11 +2029,7 @@ void SettingsDialog::OnHotwordCandidateDismiss() {
     const std::string word = candidate_words_[static_cast<std::size_t>(sel)];
     // 忽略：记入 dismissed（永不建议），并从 counts/notified 移除。
     const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
-    auto store = LoadHotwordCandidates(path);
-    store.dismissed.insert(word);
-    store.counts.erase(word);
-    store.notified.erase(word);
-    SaveHotwordCandidates(path, store);
+    DismissHotwordCandidateOnDisk(path, word);  // B13：唯一写入口（互斥 + 重读后改写）
     RefreshHotwordCandidates();
 }
 

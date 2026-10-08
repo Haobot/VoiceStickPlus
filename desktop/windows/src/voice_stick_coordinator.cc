@@ -2758,17 +2758,9 @@ void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& fin
 
 void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words) {
     const auto path = ConfigSnapshot()->ConfigPath().parent_path() / "hotword_candidates.json";
-    std::vector<std::string> suggestions;
-    {
-        std::lock_guard lock(hotword_candidates_mutex_);
-        if (!hotword_candidates_loaded_) {
-            hotword_candidates_ = LoadHotwordCandidates(path);
-            hotword_candidates_loaded_ = true;
-        }
-        suggestions = RecordHotwordCandidates(hotword_candidates_, words);
-        for (const auto& word : suggestions) hotword_candidates_.notified.insert(word);
-        SaveHotwordCandidates(path, hotword_candidates_);
-    }
+    // B13：走 miner 的唯一写入口（进程级互斥 + reload-merge-save）——原 load-once
+    // 缓存整存会用陈旧快照覆盖设置页刚写入的 dismissed/加入，用户「忽略」的词反复弹回。
+    const std::vector<std::string> suggestions = RecordHotwordCandidatesToDisk(path, words);
 
     if (!suggestions.empty()) {
         const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);

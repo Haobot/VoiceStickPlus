@@ -790,9 +790,8 @@ private:
     std::shared_ptr<std::atomic_bool> refinement_cancel_token_;
     // 热词候选挖掘存储（懒加载，见 RecordAndNotifyHotwordCandidates）。
     // 精修回调与 LLM 提炼回调都可能落在后台线程，用互斥锁串行化。
-    HotwordCandidateStore hotword_candidates_;
-    bool hotword_candidates_loaded_ = false;
-    std::mutex hotword_candidates_mutex_;
+    // B13：候选文件不再在协调器里缓存——统一走 hotword_candidate_miner 的唯一写入口
+    //（进程级互斥 + 每次重读磁盘），原 load-once 缓存是「用户忽略的词反复弹回」的根因。
     // 热词使用统计存储（懒加载，见 RankedHotwordsForAsr/RecordHotwordUsageFromText）。
     // TransformText 完成回调可能落在 LLM 后台线程，用互斥锁串行化。
     HotwordUsageStore hotword_usage_;
