@@ -130,6 +130,13 @@ static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
 // A19：PMIC IRQ ISR 队列满时置位，由周期电池刷新（清源后）补臂中断线。
 static volatile bool s_pmic_irq_dropped;
+// A7：关键事件入队失败的重试槽与累计计数——槽=单件暂存（关键事件并发极低），
+// app_event_task 每消费一件即回灌；计数=丢弃事件分类累计（上报通道另见 A7b）。
+static app_event_t s_critical_retry_pending;
+static volatile bool s_critical_retry_valid;
+static portMUX_TYPE s_crit_retry_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_app_event_dropped_total;
+static volatile uint32_t s_app_event_critical_dropped;
 static esp_timer_handle_t s_pickup_poll_timer;
 static esp_timer_handle_t s_imu_poll_timer;
 static esp_timer_handle_t s_tap_poll_timer;
@@ -831,8 +838,30 @@ static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, ui
         // 仍失败则一定留下告警日志，不再无声吞掉。
         const TickType_t wait = app_event_is_critical(type) ? pdMS_TO_TICKS(20) : 0;
         if (xQueueSend(s_app_event_queue, &event, wait) != pdTRUE) {
-            ESP_LOGW(TAG, "app event queue full: dropped type=%d critical=%d",
-                     (int)type, app_event_is_critical(type) ? 1 : 0);
+            // A7：关键事件不再一丢了之——20ms 后仍满则存单槽待 app_event_task 回灌；
+            // 槽占用与丢弃分类累计入告警日志（计数保留在静态量，待 A7b 上报通道）。
+            if (app_event_is_critical(type)) {
+                bool stashed = false;
+                portENTER_CRITICAL(&s_crit_retry_mux);
+                if (!s_critical_retry_valid) {
+                    s_critical_retry_pending = event;
+                    s_critical_retry_valid = true;
+                    stashed = true;
+                }
+                s_app_event_critical_dropped++;
+                uint32_t critical_dropped = s_app_event_critical_dropped;
+                portEXIT_CRITICAL(&s_crit_retry_mux);
+                ESP_LOGW(TAG, "app event queue full: critical type=%d %s (critical_dropped=%u)",
+                         (int)type, stashed ? "stashed for retry" : "STASH ALSO FULL",
+                         (unsigned)critical_dropped);
+            } else {
+                portENTER_CRITICAL(&s_crit_retry_mux);
+                s_app_event_dropped_total++;
+                uint32_t dropped = s_app_event_dropped_total;
+                portEXIT_CRITICAL(&s_crit_retry_mux);
+                ESP_LOGW(TAG, "app event queue full: dropped type=%d (dropped_total=%u)",
+                         (int)type, (unsigned)dropped);
+            }
         }
     }
 }
@@ -1801,6 +1830,28 @@ static void app_event_task(void *arg)
     while (true) {
         if (xQueueReceive(s_app_event_queue, &event, portMAX_DELAY) != pdTRUE) {
             continue;
+        }
+
+        // A7：回灌重试槽——刚取走一件，槽位在手即回灌；临界区内拷+清单一并完成
+        // （防生产者在拷贝与清位之间覆盖）；发送失败（间隙被填满）原样回存。
+        app_event_t retry_event;
+        bool have_retry = false;
+        portENTER_CRITICAL(&s_crit_retry_mux);
+        if (s_critical_retry_valid) {
+            retry_event = s_critical_retry_pending;
+            s_critical_retry_valid = false;
+            have_retry = true;
+        }
+        portEXIT_CRITICAL(&s_crit_retry_mux);
+        if (have_retry && xQueueSend(s_app_event_queue, &retry_event, 0) != pdTRUE) {
+            portENTER_CRITICAL(&s_crit_retry_mux);
+            if (!s_critical_retry_valid) {
+                s_critical_retry_pending = retry_event;
+                s_critical_retry_valid = true;
+            } else {
+                s_app_event_critical_dropped++;
+            }
+            portEXIT_CRITICAL(&s_crit_retry_mux);
         }
 
         switch (event.type) {

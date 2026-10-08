@@ -31,7 +31,16 @@
 | A4 | `voice_ble` 多连接表（按 conn_handle 维护 peer，替换单值） | **closed（10-08，核心）** | 新增纯 C `voice_ble/conn_table`（宿主单测 5/5 本地 `cc` 通过，含 stale 断连回归）；`voice_ble.c` CONNECT/DISCONNECT/SUBSCRIBE 按 handle 记账——断开只清本链路、**入站归零才发 peer/connection false**（stale 断连不再误清 `current_peer`）、SUBSCRIBE 表补录替代单值覆盖；镜像派生使全部发送/门控点零改动；CONN_UPDATE/MTU 按应用链路守卫；Hub 红线三条同文更新 |
 | A4b | A4 余项：**双入站广播放开**（现仍首连即停播，OS-HID+app 并存与 sdkconfig 三链路设计意图未对齐——放开涉及功耗权衡需产品决策）+ 切换器动作携带对端身份（9-22 §366 后半）+ 真机回归（入侵者连接/断开不污染切换器、双机切换 100%） | open（产品决策 + 真机） | 10-08 立项：A4 只落连接表/按 handle 语义/回调转换，广播策略未动 |
 | A6 | OTA 错误路径统一 `esp_ota_abort` + `ota_clear_state`；rollback 签到延后 | **closed（10-08）** | ① **错误不清理实锤**：`ota_write_data` 的 `bad_offset`/`write_failed` 与 `ota_finish` 的 `incomplete` 发完 error 后 `s_ota.active` 残留 → `voice_ble_ota_is_active()` 恒真 → **录音/关机被永久拒绝**；新增 `ota_fail_terminal()`（send_error + `esp_ota_abort` + `ota_clear_state`）统一三处，**明确排除** `not_active`/transfer 不匹配（D7：可能属另一条在飞传输）与 `end_failed`/`set_boot_failed`（`esp_ota_end` 已消费 handle，再 abort 反而 UB——原路径已正确清理）。② **rollback 签到延后**：boot 无条件 `mark_app_valid` 使「能启动但不健康」的固件立即被背书、坏固件永不回滚 → 改一次性 esp_timer **15s 稳定运行后签到**，窗口内复位保持 PENDING_VERIFY → bootloader 回滚；定时器创建/启动失败**回退旧行为**（宁可坏固件不回滚，也不让健康固件因超时被误回滚）；手动 `ota_commit` 仍即时签到作逃生门。③ 评审三合一中「录音/OTA 互斥非原子」未含本行 → **A6b 单列** |
-| A7 | app_event 关键事件处理 | **partial** | 10-07 抽查：`main.c:764` 关键标记 + 20ms 等待 + 日志已在；重试/计数上报未见 |
+| A7 | app_event 关键事件处理 | **partial（10-08 重试+计数落地）** |
+10-07 抽查的缺口两半进度：**重试已落（本轮）**——20ms 后仍满的关键事件存单槽
+（portMUX 临界区：拷+清单一并防覆盖），app_event_task 每消费一件即回灌（发送失败原样回存）；
+**计数已累计**（s_app_event_dropped_total / s_app_event_critical_dropped，临界区内自增）并随告警日志带出；
+10-07 已有项（关键标记+20ms+日志）保持。**上报通道 → A7b**。验证=括号对比 HEAD 恒等 + host 7/7 + CI 固件编译。 |
+| A7b | app_event 丢弃/重试计数上报通道（A7 半边） | open | 10-08 自 A7 拆出：计数已在静态量+告警日志，
+尚无桌面可见通道——选项 A=state 周期突发帧加字段（须重算 237B 分片预算+初始 16B@MTU23 红线=只挂突发帧）+
+protocol.md 同步+Win/Mac 解析兼容（加键式）+host json 测试；选项 B=power_log dump 条目（power_log 不在 host 面=CI 编译验）；
+选项 C=仅日志（现状，接受即关）。 |
+
 | A6b | 录音/OTA 互斥非原子（录音中触发 OTA begin 的 cache-disable 窗口） | open（需跨模块 API + 真机复现） | 10-08 从 A6 核出：现有门是**单向**的（`voice_ble_ota_is_active()` 阻录音），反向无门——`voice_ble.h` 不导出任何 streaming 状态，main 无法在 OTA begin 前拒绝；需新增 `voice_ble_set_streaming(bool)`（main 在 start/stop_recording 调用）+ `ota_begin` 入口拒绝，并真机复现 cache-disable 崩溃窗口确认生效 |
 | A8 | audio_task 错误分支热循环 → Task WDT（失败退避 + 主动收尾） | **closed（10-08）** | 实锤两处热循环：`esp_codec_dev_read` 失败与 `opus_encode` 失败均**零延时 `continue`** → codec 持续失败打满 CPU1（sdkconfig 开 CPU1 idle 检查）→ 5s Task WDT 整机复位。修复：① **退避**——两处失败各 `vTaskDelay(AUDIO_FRAME_MS=40ms)`；② **连续 N 次主动收尾**（`AUDIO_FAULT_ABORT_STREAK=100` ≈4s，远在 WDT 前、又给瞬时抖动恢复余量）→ 置 `faulted` 退出主循环 → **与 `audio_pipeline_stop` 同序**（`s_running=false` + END 哨兵入队），tx_task 见哨兵排空并发 `audio_end`、在 `s_audio_task==NULL` 同步点等本任务 drain 完才清资源（**正常停机同一路径，顺序经生产验证**）；成功各自清零 streak。故障日志含两侧连续次数。**验证边界**：audio_pipeline 不在 host 面 → CI 固件编译 + 括号净数/片段复读（A20 后的固定动作）+ host 7/7 卫生 |
 | A9b | 轮询类回调 I2C 仍在 esp_timer 任务（encoder/imu/air_mouse/pickup/tap 30-100ms 超时上界 + power_log 模式切换 2-3 笔） | open（需专用轮询任务设计） | 10-08 从 A9 拆出：双击回调重活已移交 app_event_task（A9 主体）；轮询高频（10-20ms 级）**不可灌 app 队列**（会淹没低频状态事件），需专用传感器轮询任务 + 任务通知（timer cb 仅 notify），encoder 增量/IMU 样本的后处理语义随迁——单独一轮做设计与真机回归 |
