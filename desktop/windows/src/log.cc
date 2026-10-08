@@ -36,13 +36,32 @@ std::filesystem::path LogFilePath() {
     return AppConfig::DefaultDebugAudioDirectory().parent_path() / "VoiceStickApp.log";
 }
 
+// C8：单文件上限 8MB，超限轮转为 <path>.old（只留一代历史）。
+constexpr std::uintmax_t kMaxLogBytes = 8ull * 1024 * 1024;
+
 } // namespace
+
+void RotateLogIfTooLarge(const std::filesystem::path& path, std::uintmax_t max_bytes) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size <= max_bytes) return;
+    std::filesystem::path old_path = path;
+    old_path += ".old";
+    // 先清上一代（rename 对已存在目标的行为随实现而异），再改名；任一步失败都
+    // 不动原文件，下一次写入继续追加。
+    std::error_code remove_ec;
+    std::filesystem::remove(old_path, remove_ec);
+    std::error_code rename_ec;
+    std::filesystem::rename(path, old_path, rename_ec);
+}
 
 void Log(std::string_view category, std::string_view message) {
     std::lock_guard lock(g_log_mutex);
     try {
         const auto path = LogFilePath();
         std::filesystem::create_directories(path.parent_path());
+        // C8：超限先轮转再追加（在写锁内，避免与并发写交错）。
+        RotateLogIfTooLarge(path, kMaxLogBytes);
         std::ofstream output(path, std::ios::app);
         output << "[" << category << " " << CurrentTimestamp() << "] " << message << "\n";
     } catch (...) {

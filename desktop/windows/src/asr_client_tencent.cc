@@ -371,6 +371,11 @@ std::string AsrClientTencent::UrlEncode(std::string_view value) {
     return out;
 }
 
+std::string AsrClientTencent::UrlWithoutQuery(std::string_view url) {
+    const auto cut = url.find_first_of("?#");
+    return std::string(url.substr(0, cut));
+}
+
 std::string AsrClientTencent::BuildSignedUrl(const AppConfig& config,
                                               std::string_view voice_id) {
     // 收集签名参数（除 signature 外）
@@ -755,7 +760,8 @@ void AsrClientTencent::RunWebSocket() {
         signed_config.tencent_hotword_id = hotword_id;
     }
     auto signed_url = BuildSignedUrl(signed_config, voice_id);
-    Log("TASR", "connecting to: " + signed_url.substr(0, 150) + "...");
+    // C8：只记 scheme/host/path——签名串在 query 里，截前 150 字符照样会带出片段。
+    Log("TASR", "connecting to: " + UrlWithoutQuery(signed_url));
 
     URL_COMPONENTSW components{};
     components.dwStructSize = sizeof(components);

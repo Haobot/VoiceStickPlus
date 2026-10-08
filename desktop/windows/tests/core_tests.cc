@@ -31,6 +31,7 @@
 #include "tencent_asr_vocab_client.h"
 #include "key_spec.h"
 #include "llm_refinement_client.h"
+#include "log.h"
 #include "localization.h"
 #include "ogg_opus_muxer.h"
 #include "ogg_opus_demuxer.h"
@@ -1647,6 +1648,55 @@ void TestLicenseVerifySerial() {
     // 过期：用 now=2027-01-02 判定
     r = VerifyLicenseSerial(kTestSerial3, devices, "no-braces-guid", DateToDays(2027, 1, 2));
     assert(!r.ok && r.reason == LicenseError::kExpired);
+}
+
+void TestC8LogUrlPromptHygiene() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // ① 日志轮转：超限改名 <path>.old（只留一代），未超限不动，文件缺失静默。
+    const auto dir = fs::temp_directory_path() / "voicestick_c8_log";
+    fs::create_directories(dir, ec);
+    const auto log_path = dir / "app.log";
+    {
+        std::ofstream out(log_path, std::ios::binary | std::ios::trunc);
+        out << std::string(2048, 'x');
+    }
+    RotateLogIfTooLarge(log_path, 1024);  // 2048 > 1024 → 轮转
+    assert(!fs::exists(log_path, ec));
+    const auto old_path = dir / "app.log.old";
+    assert(fs::exists(old_path, ec));
+    assert(fs::file_size(old_path, ec) == 2048);
+    RotateLogIfTooLarge(log_path, 1024);  // 文件已不在 → 静默返回
+    assert(fs::exists(old_path, ec));
+    {
+        std::ofstream out(log_path, std::ios::binary | std::ios::trunc);
+        out << "tiny";
+    }
+    RotateLogIfTooLarge(log_path, 1024);  // 4 < 1024 → 不轮转
+    assert(fs::exists(log_path, ec));
+    assert(fs::file_size(log_path, ec) == 4);
+    fs::remove_all(dir, ec);
+
+    // ② URL 脱敏：query（腾讯签名串所在）与 fragment 必须去掉，日志只留 scheme/host/path。
+    assert(AsrClientTencent::UrlWithoutQuery(
+               "wss://asr.cloud.tencent.com/asr/v2/1?authorization=SECRET&x=1") ==
+           "wss://asr.cloud.tencent.com/asr/v2/1");
+    assert(AsrClientTencent::UrlWithoutQuery("wss://h/p#frag") == "wss://h/p");
+    assert(AsrClientTencent::UrlWithoutQuery("wss://h/p") == "wss://h/p");
+    assert(AsrClientTencent::UrlWithoutQuery("").empty());
+
+    // ③ 精修 prompt 封顶 4096 字节，且截断落在 UTF-8 字符边界。
+    const auto capped = LLMRefinementClient::BuildRefinePrompt(std::string(6000, 'a'), {});
+    assert(capped.size() == 4096);
+    assert(capped == std::string(4096, 'a'));
+    std::string cjk;  // 3000 × "中"(3B) = 9000B；4096 % 3 == 1 → 直接截必切半码点
+    for (int i = 0; i < 3000; ++i) cjk += "\xE4\xB8\xAD";
+    const auto capped_cjk = LLMRefinementClient::BuildRefinePrompt(cjk, {});
+    assert(capped_cjk.size() <= 4096);
+    assert(capped_cjk.size() % 3 == 0);  // 无半截码点
+    // 短 override 不受影响
+    assert(LLMRefinementClient::BuildRefinePrompt("my custom prompt", {}) == "my custom prompt");
 }
 
 void TestSecureCloudUrlPolicy() {
@@ -16324,6 +16374,8 @@ int main() {
     TestTencentHotwordCharFilter();
     TestSerialBase32RoundTrip();
     TestLicenseVerifySerial();
+    printf(">> cluster: C8 log rotation + url redaction + prompt cap\n"); fflush(stdout);
+    TestC8LogUrlPromptHygiene();
     printf(">> cluster: C7 cloud url TLS-only policy\n"); fflush(stdout);
     TestSecureCloudUrlPolicy();
     printf(">> cluster: C2 license binding devices union\n"); fflush(stdout);

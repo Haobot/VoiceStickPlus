@@ -58,6 +58,9 @@ public:
     static std::string SegmentKey(int start_ms, int end_ms, std::string_view text);
     /// 把单句稳态结果累积到已确定文本上。空 sentence 不改变累积。
     static std::string AccumulateSentence(std::string_view current, std::string_view sentence);
+    /// C8：日志脱敏——去掉 URL 的 query 与 fragment，只留 scheme/host/path。
+    /// 腾讯签名串（authorization=…/signature=…）就在 query 里，整串入日志等于泄密钥。
+    static std::string UrlWithoutQuery(std::string_view url);
 
     // ---- 单元测试缝（公开以便单元测试；生产路径走真实 WinHTTP 默认值）----
     // WinHTTP 函数指针注入：测试替换为 fake 免真实网络，可复刻「服务端 final=1

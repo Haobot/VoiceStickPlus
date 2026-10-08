@@ -94,6 +94,33 @@ void LLMRefinementClient::RefineStream(std::string text,
     ChatStream(system_prompt, text, std::move(cbs), std::move(cancel));
 }
 
+namespace {
+
+// C8：系统提示词封顶（4096 字节）。prompt_override 来自配置（用户可任意长）、热词表
+// 也随配置增长，无上限会让每次精修的 token 成本与上下文无界。截断按 UTF-8 字符边界
+// 回退，绝不发出半截码点（否则对端解析可能出错）。
+std::string ClampRefinePrompt(std::string prompt) {
+    constexpr std::size_t kMaxBytes = 4096;
+    if (prompt.size() <= kMaxBytes) return prompt;
+    std::size_t pos = 0;
+    std::size_t good = 0;
+    while (pos < kMaxBytes) {
+        const auto lead = static_cast<unsigned char>(prompt[pos]);
+        const std::size_t len = lead < 0x80   ? 1
+                                : (lead & 0xE0) == 0xC0 ? 2
+                                : (lead & 0xF0) == 0xE0 ? 3
+                                : (lead & 0xF8) == 0xF0 ? 4
+                                                        : 1;
+        if (pos + len > kMaxBytes) break;
+        pos += len;
+        good = pos;
+    }
+    prompt.resize(good);
+    return prompt;
+}
+
+}  // namespace
+
 std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_override,
                                                    const std::vector<std::string>& hotwords) {
     const auto trimmed = Trim(prompt_override);
@@ -117,7 +144,7 @@ std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_ove
             "\n"
             "仅返回清理后的文本，无需解释、引号、前缀、备选方案或 Markdown 格式。";
     }
-    if (hotwords.empty()) return prompt;
+    if (hotwords.empty()) return ClampRefinePrompt(prompt);
 
     prompt += "\n\n用户常用术语热词表：";
     for (std::size_t i = 0; i < hotwords.size(); ++i) {
@@ -129,7 +156,7 @@ std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_ove
               "示例：热词表含「AGENTS.md」时，识别文本「编辑 agentsdmd 这个文件」"
               "应改为「编辑 AGENTS.md 这个文件」。"
               "原文中已经正确出现的热词必须原样保留，不得改写。";
-    return prompt;
+    return ClampRefinePrompt(prompt);
 }
 
 bool LLMRefinementClient::RefineResultKeepsHotwords(const std::string& original,
