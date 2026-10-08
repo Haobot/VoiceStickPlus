@@ -458,6 +458,8 @@ target_link_libraries(VoiceStickFlash PRIVATE
 
 add_executable(voicestick_windows_tests
     tests/core_tests.cc
+    # N8: first split suite (protocol/contract cluster), declared in tests/test_suites.h
+    tests/core_tests_protocol.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入

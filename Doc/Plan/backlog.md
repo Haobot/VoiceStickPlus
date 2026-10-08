@@ -120,7 +120,7 @@
 | N5 | 三份 Hub 漂移（CLAUDE/CODEBUDDY 合并行 + 多余空行） | **closed（本批）** | 已修复；`release_guard` hub 检查守护 |
 | N6 | 仓库卫生（根 9 个 .bat / m0·p1 跟踪矛盾 / skills 双份 / superpowers） | open | 阶段 3 |
 | N7 | 上帝对象与接口膨胀（67 virtual / 最大单文件） | open | 阶段 2 |
-| N8 | `core_tests.cc` 单文件 + main() 手工注册 | open | 阶段 2 |
+| N8 | `core_tests.cc` 单文件 + main() 手工注册 | **in_progress（10-08 首刀已落，范式立）** | **首刀 = 协议契约簇**：5 测（StateParsing/GatewayKeymapReceipt/UiStateBudget/ProtoVersionNegotiation/GatewayKeyStateParsing）逐字迁至 `tests/core_tests_protocol.cc`（211 行、纯 BleProtocol 无 Fake 依赖），cluster 标记随套件走；新增 **`tests/test_suites.h` 注册表**（域套件声明的唯一清单，main() 每域一次调用）；CMake 增源。17011→16819 行。**切分纪律**：行级 splice + 边界断言（起止函数名/函数计数/定义-调用差集）+ 括号 delta 复核（字符串字面量致 delta 有噪，以 CI 编译裁决）。**后续余量**：按域继续（Coordinator 94/Xiaomi 19/Tencent 16…），每轮一簇。**验证**：定义5/调用0缺/标记0-3迁移/guard 全过 + CI ctest |
 | N9 | 本地化三套实现无奇偶守护（网站 zh/en 已由 guard 覆盖） | **closed（10-08，首跑即抓出真漂移）** | release_guard 新增 `i18n-desktop` 检查：**StringId/L10nKey 枚举 ⇄ EN 表 ⇄ ZH 表 三集合双向一致**（Windows 枚举按 C++ 裸 k-名解析、Swift 按 case 行；字典/表段按声明定位、先剥字符串字面量防译文误配）。既有两端**运行期自检**（LocalizationTablesAreComplete/tablesAreComplete）只有跑到才暴露、数组表缺项还不编译报错（值初始化空串）→ 静态门禁补位。**首跑战果**：抓出真漂移——macOS 中文 `firmwareMacSpeedLimited` 条目**误置在 english 字典**（chinese 表实缺、中文界面经 tr() 回退显英文长文案），已移入正确字典；Windows 解析器初版误用 Swift `case` 语法致伪影，分平台解析后真仓零差异。**验证**：真仓 `release_guard` 全过（含新检查 PASS）+ 单测 **17/17**（基线绿 + 缺 EN/ZH + 幽灵项 4 新用例）+ mac build+**PASSED 674/674** + CI 七 job |
 | N10 | Doc/Plan 89 篇状态标注 + 可观测性计数 | open | 阶段 3 |
 | 既往 P2 | Ogg granule 1.5× 偏差 | **closed（本批）** | 两端改由帧采样常量推导（`kFrameSamples`/`frameSamples`），guard `frame-ms` 守护；Windows 侧由 CI ctest 复核 |
@@ -133,6 +133,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **N8 首刀（in_progress）**：协议契约簇 5 测迁出 + test_suites.h 注册表 + CMake 增源，范式与切分纪律固化 | 边界断言 + 定义/调用差集 + 标记 0-3 + guard 全过 + CI ctest |
 | 2026-10-08 | **N9 关闭**：桌面本地化奇偶静态守护（枚举⇄EN⇄ZH 三集合）入 release_guard，首跑抓出 mac 中文条目误置英文字典的真漂移 | 真仓 guard 全过 + 单测 17/17（4 新用例）+ mac 674/674 + CI 七 job |
 | 2026-10-08 | **E7 + E10 关闭**：E7 双测试目标 -UNDEBUG（本地假绿面封死，验证边界=本机无 MSVC 记明）；E10 现网 manifest 取证（主源国内 + GitHub 仅 fallback + mirror 映射在位） | CI 七 job（-UNDEBUG 语法被 Debug 构建接受）+ web_fetch 现网 200 实据 |
 | 2026-10-08 | **D3b 关闭**：macOS 入站活性兜底（30s 探活 + 90s 告警 + 双拍确认拆链重订阅，不 unpair）；真实 Windows 口径勘定为 30s battery_status_request（修正行前猜测），protocol.md 双端同步 | 本地 build + 674/674 + 队列核验 + CI 七 job（Timer/BT 无单测 = 验证边界） |

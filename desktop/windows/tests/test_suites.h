@@ -1,0 +1,5 @@
+#pragma once
+
+// N8：测试套件注册表（core_tests.cc 按域拆分后的唯一调用点清单）。
+// 新拆套件在此声明，并在 core_tests.cc 的 main() 中各调用一次。
+void RunProtocolContractTests();
