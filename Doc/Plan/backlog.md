@@ -72,10 +72,10 @@
 |---|---|---|---|
 | C1 | 试用锚点/防回拨冗余到注册表/DPAPI（删 config 不重置） | open | 9-22 未复核 |
 | C2 | 授权绑定改「已配对 ∪ 已连接」持久集合（设备离线不断供） | open | 9-22 未复核 |
-| C3 | `DateToDays` uint32 下溢 → int64 | open | 9-22 未复核 |
+| C3 | `DateToDays` uint32 下溢 → int64 | **closed（10-08，按钳位落地）** | 纪元（2026-01-01）前日期在 `days - kLicenseEpochDays` 处为负，转 uint32 下溢成 ~42.9 亿 → ①有效年卡被 `now >= expiry` 误判过期；②`last_seen > now` 恒假致回拨检测完全失效。按评审「显式处理负值」改为**钳到 0**（语义「不早于纪元」：now=0 时年卡不过期、last_seen(>0)>now 能识别回拨并交既有宽限机制按大幅回拨处理）——存储域本就是「自 2026-01-01 的 uint32」，钳位比改 int64 更小且不动配置 schema。回归 `TestLicenseDateToDaysPreEpoch` |
 | C4 | 固件 OTA manifest detached 签名 + 下载超时/上限/https-only | open | 9-22 未复核 |
 | C5 | 模型在位 sha256 复核（非只比大小） | open | 9-22 未复核 |
-| C6 | 固件版本比较 fail-open + 预发布后缀字典序 | open | 9-22 未复核 |
+| C6 | 固件版本比较 fail-open + 预发布后缀字典序 | **closed（10-08）** | ① `IsOlderThan` 解析失败由 `return false`（fail-open=「已是最新」，坏版本串让升级提示与最低版本门永不触发）改为按「当前较旧」；② 后缀比较由字典序改「非数字前缀 + 尾部数字」（`rc10 > rc9`，原字典序因 `'1'<'9'` 颠倒），「无后缀 > 有后缀」与前缀字典序语义保留；回归 `TestFirmwareVersionC6Robustness`，本地 clang 复刻纯逻辑全断言通过 |
 | C7 | 云试用凭据下发无设备证明 + 允许 ws://→http:// | open | 9-22 未复核 |
 | C8 | 日志轮转/热词与签名 URL 明文、精修 prompt 长度上限等分组治理 | open | 9-22 未复核 |
 
@@ -126,6 +126,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **安全组 C3/C6 关闭**：`DateToDays` 纪元前钳位（修年卡误判过期 + 回拨检测失效）；`IsOlderThan` 解析失败 fail-open→按较旧 + 后缀数字序（`rc10>rc9`） | 本地 clang 复刻纯逻辑全断言通过；CI 七 job（Windows ctest 含 2 个新用例） |
 | 2026-10-08 | **阶段 1 B7 关闭**：`AsrClientTencent` 热词表同步改后台线程（构造预热 + Start 幂等 Kick），修掉「持 `audio_mutex_` 内联 HTTP 冻结状态机/按键/音频帧至超时」；测试缝与回归用例齐 | CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **0.1 固件端 reader 落地（三端齐）**：解析/执行分层——新抽纯模块 `voice_ble/control_cmd`（control_rx 全命令族解析，零 ESP 依赖，宿主编译）+ main.c `ble_control_cb` 改 parse→execute（244 行分支体逐条保真迁移，告警文案同）+ voice_ble power_log 族共用同一解析；`control_cmd_contract_test` 消费 manifest（18 样本 + 4 反向门用例）；vendored cJSON 与 Windows third_party 同 MD5 同源拷贝；run_tests.py 第 6 目标（注入 REPO_ROOT） | 本地 6/6 host 全过；CI 七 job（host-tests 含 reader + firmware job 编译 main.c/voice_ble.c 改动） |
 | 2026-10-08 | **阶段 1 E8 关闭**：`run_tests.py` 跨平台化（POSIX cc / Windows MSVC 双路线，5 目标含 voice_ble conn_table，临时目录产物）+ CI `host-tests` job 每推送运行；删 gateway 测试死函数；Hub 固件测试行 ×3 同步更新 | 本地 5/5 全过（ATVV 112/112）；CI 七 job 验证（见下行） |

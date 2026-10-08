@@ -1648,6 +1648,37 @@ void TestLicenseVerifySerial() {
     assert(!r.ok && r.reason == LicenseError::kExpired);
 }
 
+void TestLicenseDateToDaysPreEpoch() {
+    using namespace voicestick;
+    // C3 回归：纪元（2026-01-01）前的日期必须钳到 0，不得 uint32 下溢。
+    // 下溢时 now 约为 42.9 亿 → ① 有效年卡被 now >= expiry 误判过期；
+    // ② last_seen > now 恒假 → 时钟回拨检测完全失效。
+    assert(DateToDays(2026, 1, 1) == 0);
+    assert(DateToDays(2026, 1, 2) == 1);
+    assert(DateToDays(2027, 1, 1) == 365);
+    // 纪元前：RTC 失电复位到 1970、2024/2025 手动回调
+    assert(DateToDays(1970, 1, 1) == 0);
+    assert(DateToDays(2024, 6, 15) == 0);
+    assert(DateToDays(2025, 12, 31) == 0);
+    // 正常年份的「今天」不可能是下溢大数（40000 天 ≈ 2135 年）
+    assert(DaysSinceEpochTodayUtc() < 40000);
+
+    // 语义级：时钟早于纪元时——年费码仍有效（不被判过期）。
+    const std::vector<std::string> devices = {"AB12", "00FF"};
+    const std::string guid = "{11111111-2222-3333-4444-555555555555}";
+    const auto pre_epoch = DateToDays(1970, 1, 1);
+    assert(pre_epoch == 0);
+    auto r = VerifyLicenseSerial(kTestSerial1, devices, guid, pre_epoch);
+    assert(r.ok && r.edition == LicenseEdition::kAnnual);
+
+    // 语义级：回拨必须被识别（下溢时恒为 false）。
+    LicenseConfig cfg;
+    cfg.trial_anchor_days = DateToDays(2026, 9, 1);
+    cfg.last_seen_days = DateToDays(2026, 9, 13);  // 纪元后的正常日期
+    auto s = EvaluateLicense(cfg, devices, guid, pre_epoch);
+    assert(s.clock_rollback);
+}
+
 void TestLicenseStatus() {
     using namespace voicestick;
     LicenseConfig cfg;  // 默认空
@@ -2364,6 +2395,26 @@ void TestFirmwareManifestParsingAndVersionCompare() {
     assert(IsFirmwareHardwareCompatible("sticks3", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "0.1.2", "stick_s3"));
     assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
+}
+
+void TestFirmwareVersionC6Robustness() {
+    // C6 回归①：预发布后缀按「前缀 + 数字」比较——rc10 必须新于 rc9。
+    // 原字典序因 '1' < '9' 会把 rc10 判成比 rc9 旧，导致 rc10 用户收不到 rc11 之前的
+    // 正确顺序判断（发布序颠倒）。
+    assert(FirmwareVersion::IsOlderThan("1.0.0-rc9", "1.0.0-rc10"));
+    assert(!FirmwareVersion::IsOlderThan("1.0.0-rc10", "1.0.0-rc9"));
+    assert(!FirmwareVersion::IsOlderThan("1.0.0-rc10", "1.0.0-rc10"));
+    assert(FirmwareVersion::IsOlderThan("1.0.0-beta9", "1.0.0-rc1"));  // 前缀序
+    assert(FirmwareVersion::IsOlderThan("1.0.0-rc", "1.0.0-rc1"));     // 无数字后缀=0
+
+    // C6 回归②：解析失败不得 fail-open 成「已是最新」——原实现返回 false，
+    // 坏 manifest 版本串 / 设备上报异常格式会让升级提示与最低版本门永不触发。
+    assert(FirmwareVersion::IsOlderThan("", "2.4.9"));
+    assert(FirmwareVersion::IsOlderThan("garbage", "2.4.9"));
+    assert(FirmwareVersion::IsOlderThan("2.4.9", ""));
+    // 正常路径不受影响
+    assert(!FirmwareVersion::IsOlderThan("2.4.9", "2.4.9"));
+    assert(FirmwareVersion::IsOlderThan("2.4.8", "2.4.9"));
 }
 
 void TestFirmwareManifestMinimumVersion() {
@@ -16189,6 +16240,8 @@ int main() {
     TestTencentHotwordCharFilter();
     TestSerialBase32RoundTrip();
     TestLicenseVerifySerial();
+    printf(">> cluster: C3 DateToDays pre-epoch clamp\n"); fflush(stdout);
+    TestLicenseDateToDaysPreEpoch();
     TestLicenseStatus();
     TestLicenseConfigRoundTrip();
     TestSavePairedDeviceInfoPreservesDiskLicense();
@@ -16211,6 +16264,8 @@ int main() {
     TestHotwordCandidateMiner();
     TestHotwordExtractionPromptAndParse();
     TestFirmwareManifestParsingAndVersionCompare();
+    printf(">> cluster: C6 firmware version compare robustness\n"); fflush(stdout);
+    TestFirmwareVersionC6Robustness();
     TestFirmwareManifestMinimumVersion();
     TestFirmwareManifestFallbackUrls();
     TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();

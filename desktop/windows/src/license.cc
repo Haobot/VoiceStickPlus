@@ -34,7 +34,14 @@ std::uint32_t DateToDays(int year, int month, int day) {
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;                       // [0, 146096]
     const std::int64_t days = static_cast<std::int64_t>(era) * 146097 +
                               static_cast<std::int64_t>(doe) - 719468;
-    return static_cast<std::uint32_t>(days - kLicenseEpochDays);
+    // C3：时钟早于 2026-01-01 纪元（RTC 失电复位到 1970/2020、用户手动回调）时
+    // days - kLicenseEpochDays 为负，直接转 uint32 会下溢成 ~42.9 亿，两个后果：
+    //   ① 有效年卡被 now >= expiry_days 误判过期；
+    //   ② last_seen > now 恒为 false → 时钟回拨检测完全失效。
+    // 显式钳到 0（语义「不早于纪元」）：now=0 时年卡不过期，且 last_seen(>0) > now
+    // → 回拨被识别，交由既有宽限机制按大幅回拨处理（与真实大幅回拨同语义）。
+    const std::int64_t rel = days - kLicenseEpochDays;
+    return rel <= 0 ? 0u : static_cast<std::uint32_t>(rel);
 }
 
 std::uint32_t DaysSinceEpochTodayUtc() {

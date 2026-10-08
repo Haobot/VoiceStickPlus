@@ -77,6 +77,24 @@ std::optional<ParsedVersion> ParseVersion(std::string_view text) {
     return version.numbers.empty() ? std::nullopt : std::optional<ParsedVersion>(std::move(version));
 }
 
+// C6：预发布后缀拆成「非数字前缀 + 尾部数字」比较——rc10 必须新于 rc9，
+// 原字典序因 '1' < '9' 会把 rc10 判成更旧（rc10/rc9 顺序颠倒）。
+// 数字缺省记 0（无数字后缀比同前缀带数字的更旧）；数字饱和防溢出。
+void SplitVersionSuffix(const std::string& suffix, std::string* prefix, int* number) {
+    std::size_t i = suffix.size();
+    while (i > 0 && suffix[i - 1] >= '0' && suffix[i - 1] <= '9') --i;
+    *prefix = suffix.substr(0, i);
+    int value = 0;
+    for (std::size_t k = i; k < suffix.size(); ++k) {
+        if (value > 100000000) {
+            value = 1000000000;
+            break;
+        }
+        value = value * 10 + (suffix[k] - '0');
+    }
+    *number = value;
+}
+
 bool VersionLess(const ParsedVersion& left, const ParsedVersion& right) {
     const auto count = std::max(left.numbers.size(), right.numbers.size());
     for (std::size_t i = 0; i < count; ++i) {
@@ -86,7 +104,14 @@ bool VersionLess(const ParsedVersion& left, const ParsedVersion& right) {
     }
     if (left.has_suffix && !right.has_suffix) return true;
     if (!left.has_suffix && right.has_suffix) return false;
-    if (left.has_suffix && right.has_suffix) return left.suffix < right.suffix;
+    if (left.has_suffix && right.has_suffix) {
+        std::string left_prefix, right_prefix;
+        int left_number = 0, right_number = 0;
+        SplitVersionSuffix(left.suffix, &left_prefix, &left_number);
+        SplitVersionSuffix(right.suffix, &right_prefix, &right_number);
+        if (left_prefix != right_prefix) return left_prefix < right_prefix;
+        return left_number < right_number;
+    }
     return false;
 }
 
@@ -283,7 +308,10 @@ std::optional<ByteVector> FirmwareManifestClient::DownloadOtaSync(const Firmware
 bool FirmwareVersion::IsOlderThan(std::string_view current, std::string_view latest) {
     auto current_version = ParseVersion(current);
     auto latest_version = ParseVersion(latest);
-    if (!current_version.has_value() || !latest_version.has_value()) return false;
+    // C6：解析失败不得 fail-open 成「已是最新」——原实现返回 false，坏 manifest 版本串
+    // 或设备上报异常格式会让升级提示与最低版本门永远不触发（静默吞掉安全修复通道）。
+    // 统一按「当前版本较旧」处理：宁可提示一次升级，也不漏报。
+    if (!current_version.has_value() || !latest_version.has_value()) return true;
     return VersionLess(*current_version, *latest_version);
 }
 
