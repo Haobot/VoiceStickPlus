@@ -128,6 +128,8 @@ static esp_timer_handle_t s_poweroff_timer;      // S2→S3（原 deep_sleep_tim
 static esp_timer_handle_t s_disc_poweroff_timer; // BLE 断连→S3
 static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
+// A19：PMIC IRQ ISR 队列满时置位，由周期电池刷新（清源后）补臂中断线。
+static volatile bool s_pmic_irq_dropped;
 static esp_timer_handle_t s_pickup_poll_timer;
 static esp_timer_handle_t s_imu_poll_timer;
 static esp_timer_handle_t s_tap_poll_timer;
@@ -823,7 +825,9 @@ static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, ui
     }
 }
 
-static void queue_app_event_from_isr(app_event_type_t type, BaseType_t *high_task_woken)
+// A19：返回是否成功入队——调用方（PMIC IRQ ISR）据此补臂中断线；原 void 返回把
+// xQueueSendFromISR 的失败静默丢掉，是「中断线永久失效」的根因之一。
+static bool queue_app_event_from_isr(app_event_type_t type, BaseType_t *high_task_woken)
 {
     if (s_app_event_queue) {
         app_event_t event = {
@@ -833,8 +837,9 @@ static void queue_app_event_from_isr(app_event_type_t type, BaseType_t *high_tas
             .written = 0,
             .size = 0,
         };
-        (void)xQueueSendFromISR(s_app_event_queue, &event, high_task_woken);
+        return xQueueSendFromISR(s_app_event_queue, &event, high_task_woken) == pdTRUE;
     }
+    return pdTRUE;  // 队列尚未创建（启动早期）：不计「丢弃」，避免补臂告警刷屏
 }
 
 static void queue_primary_down_event(app_input_source_t source, uint32_t request_id)
@@ -1806,10 +1811,20 @@ static void app_event_task(void *arg)
             power_log_refresh_mode();
             break;
         case APP_EVENT_POWER_IRQ:
-            gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
-            /* fall through */
-        case APP_EVENT_BATTERY_REFRESH:
+            // A19：**先清源再 enable**——原顺序 enable 在前，此时 PMIC 源未清、
+            // 线仍为低电平（GPIO_INTR_LOW_LEVEL），ISR 立即重入（disable→队列→
+            // enable→…），期间任一次队列满即永久失效。
             update_battery_status();
+            gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
+            break;
+        case APP_EVENT_BATTERY_REFRESH:
+            update_battery_status();  // 同时清 PMIC IRQ 源
+            if (s_pmic_irq_dropped) {
+                // A19：ISR 队列满导致的丢失补臂（清源已在其上方完成，此刻 enable 安全）。
+                s_pmic_irq_dropped = false;
+                ESP_LOGW(TAG, "PMIC IRQ event dropped earlier (queue full); re-arming line");
+                gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
+            }
             break;
         case APP_EVENT_BATTERY_STATUS_REQUEST:
             update_battery_status();
@@ -2938,7 +2953,12 @@ static void IRAM_ATTR pmic_irq_isr(void *arg)
     gpio_intr_disable(STICK_S3_PIN_PMIC_IRQ);
 
     BaseType_t high_task_woken = pdFALSE;
-    queue_app_event_from_isr(APP_EVENT_POWER_IRQ, &high_task_woken);
+    if (!queue_app_event_from_isr(APP_EVENT_POWER_IRQ, &high_task_woken)) {
+        // A19：队列满 → 事件丢失且线已 disable，原实现无补救 → 中断线永久失效
+        //（只剩 10s 电池兜底）。置位交给周期电池刷新：**先清源再 enable**。
+        // 刻意不在 ISR 内直接 enable：源未清时 line 仍为低电平会无限自激。
+        s_pmic_irq_dropped = true;
+    }
     if (high_task_woken) {
         portYIELD_FROM_ISR();
     }
