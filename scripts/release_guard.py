@@ -380,6 +380,46 @@ def check_frame_ms_and_granule(root: Path) -> str | None:
     return "\n".join(errors) if errors else None
 
 
+def check_test_ns_balance(root: Path) -> str | None:
+    """N8 cut13（六轮 CI 教训）：desktop/windows/tests 的匿名 namespace 配对审计。
+
+    span 切割曾把 ns 闭合线随段迁走（C1075/C2059 级联、修点又落进 main 的 try 围栏）。
+    此检查按仓库约定（col0 'namespace {' 开、col0 '} // namespace' 闭，容忍多空格）
+    做**位置交替**扫描：深度不得为负、文件尾必须归零，且 'int main' 必须处于全局域
+    （深度 0）。tests 目录缺失时 SKIP（最小夹具不含测试目录）。
+    """
+    d = root / "desktop" / "windows" / "tests"
+    if not d.is_dir():
+        return ("skip", "desktop/windows/tests 不存在（最小夹具）")
+    errors = []
+    open_re = re.compile(r"^namespace\b.*\{$")  # 匿名与带名 ns 皆计
+    close_re = re.compile(r"^\}[ \t]*//[ \t]*namespace")
+    main_re = re.compile(r"^int main\s*\(")
+    files = sorted(list(d.glob("*.cc")) + list(d.glob("*.h")))
+    if not files:
+        return ("skip", "tests 目录为空")
+    for f in files:
+        depth = 0
+        saw_main = False
+        for i, raw in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if close_re.match(raw):
+                depth -= 1
+                if depth < 0:
+                    errors.append(f"{f.name}:{i} 闭合早于任何开（深度为负）")
+                    depth = 0
+            elif open_re.match(raw):
+                depth += 1
+            elif not saw_main and main_re.match(raw):
+                saw_main = True
+                if depth != 0:
+                    errors.append(
+                        f"{f.name}:{i} int main 不在全局域（namespace 深度 {depth}）"
+                    )
+        if depth != 0:
+            errors.append(f"{f.name} 文件尾 namespace 深度 {depth}（开闭未配平）")
+    return "\n".join(errors) if errors else None
+
+
 CHECKS = [
     ("versions", check_versions),
     ("tag", check_tag),
@@ -389,6 +429,8 @@ CHECKS = [
     ("i18n-desktop", check_desktop_i18n),  # N9：桌面两端枚举⇄EN⇄ZH 静态奇偶
     ("uuid", check_uuid),
     ("frame-ms", check_frame_ms_and_granule),
+    # N8 cut13 教训：tests 匿名 ns 配对 + main 全局域（防 span 撕裂重演）
+    ("test-ns", check_test_ns_balance),
 ]
 
 

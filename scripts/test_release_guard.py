@@ -262,6 +262,40 @@ class ReleaseGuardTests(unittest.TestCase):
             any(f.startswith("i18n-desktop") and "幽灵" in f for f in fails), fails
         )
 
+    def _write_test_cc(self, body: str) -> None:
+        d = self.root / "desktop" / "windows" / "tests"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "core_tests_x.cc").write_text(body, encoding="utf-8")
+
+    def test_test_ns_balance_balanced_passes(self):
+        # 约定：ns 闭合必须是 col0 的 "} // namespace" 注释式（与仓库现状一致）
+        self._write_test_cc(
+            "namespace {\nint a;\n} // namespace\nint main() { return 0; }\n"
+        )
+        self.assertEqual(self.failures(), [])
+
+    def test_test_ns_balance_unclosed_detected(self):
+        # cut13 原型：闭合随 span 迁走 → 文件尾不配平
+        self._write_test_cc(
+            "namespace {\nint a;\n}\n"      # 开1闭0（第二段开未闭）
+            "namespace {\nint b;\nint main() { return 0; }\n"
+        )
+        fails = self.failures()
+        self.assertTrue(
+            any(f.startswith("test-ns") and "未配平" in f for f in fails), fails
+        )
+        self.assertTrue(
+            any("main 不在全局域" in f for f in fails), fails
+        )
+
+    def test_test_ns_balance_stray_close_detected(self):
+        # cut13 五修原型：新文件吞了别处的闭合 → 深度为负
+        self._write_test_cc("} // namespace\nint main() { return 0; }\n")
+        fails = self.failures()
+        self.assertTrue(
+            any(f.startswith("test-ns") and "深度为负" in f for f in fails), fails
+        )
+
     def test_uuid_byte_order_mismatch_detected(self):
         bad = SERVICE_BYTES_LE[::-1]  # 端序反了
         hex_bytes = ", ".join(f"0x{x:02X}" for x in bad)
