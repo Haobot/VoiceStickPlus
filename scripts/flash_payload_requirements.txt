@@ -12,7 +12,7 @@ esptool==5.2.0 \
 bitstring==4.4.0 \
     --hash=sha256:feac49524fcf3ef27e6081e86f02b10d2adf6c3773bf22fbe0e7eea9534bc737
 bitarray==3.6.0 \
-    --hash=sha256:2585824c2615c85ce90c0ecee7b085dc5e930c1a8dda1c983529f93533d8c136
+    --hash=sha256:552a93be286ca485914777461b384761519db313e0a7f3012dca424c9610a4d5
 cryptography==50.0.2 \
     --hash=sha256:7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c
 cffi==2.1.1 \
