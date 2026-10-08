@@ -190,7 +190,7 @@ public:
     // D10b：完整路由回执到达（gateway_keymap 分片攒全表）——现开的键位映射对话框
     // 据此回显设备侧真实路由表。默认空实现保护既有实现者。
     virtual void OnGatewayKeymapReport(
-        const std::vector<BleProtocol::StateEvent::KeyRoute>&) {}
+        const std::vector<StateEvent::KeyRoute>&) {}
     virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
                                    bool charging, bool usb_powered) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;

@@ -3073,7 +3073,7 @@ void Win32App::ShowXiaomiKeymapDialog(const std::string& device_id) {
 
 // D10b：回执文本 = i18n 标签前缀 + "key=route, …"（key/route 均 ASCII，直接宽化）。
 static std::wstring FormatGatewayReceipt(
-    const std::vector<BleProtocol::StateEvent::KeyRoute>& routes, UiLanguage language) {
+    const std::vector<StateEvent::KeyRoute>& routes, UiLanguage language) {
     std::wstring text = TrW(StringId::kGatewayDeviceRoutesLabel, language);
     text += L" ";
     bool first = true;
@@ -3088,7 +3088,7 @@ static std::wstring FormatGatewayReceipt(
 }
 
 void Win32App::OnGatewayKeymapReport(
-    const std::vector<BleProtocol::StateEvent::KeyRoute>& routes) {
+    const std::vector<StateEvent::KeyRoute>& routes) {
     // D10b：完整回执到达 → 现开对话框回显；未开则留存于 coordinator 下次打开预填。
     if (!xiaomi_keymap_dialog_) return;
     xiaomi_keymap_dialog_->SetDeviceReceipt(
