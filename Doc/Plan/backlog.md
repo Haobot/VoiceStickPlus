@@ -50,7 +50,7 @@
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
 | B1 | 烧录工具关窗/析构 UAF（硬同步 + 取消令牌） | **closed（10-07，代码层）** | 采用评审 shared_ptr 方案：`FlashThreadCtx` 让 worker 自持 `shared_ptr<FlashTool>`+`shared_ptr<IFlashProcessRunner>`，`FlashThreadProc` 不再触碰 `this`；关窗/析构 5s 有界等待**超时也不再 UAF**（worker 跑完 Run() 对象才析构，无挂死风险）；`flash_tool_`/`runner_` 独占转共享。验证=CI 编译；**发布前**按 AGENTS 跑 `scripts/prepare_flash_payload.ps1` 冒烟 + `Doc/Plan/windows-com-flash-tool.md` §7.2 真机清单（本机无 Windows） |
-| B2 | usage tap 管道缺 OVERLAPPED → 退出挂死 / Mutex 不释放 | open | **10-07 抽查**：manager 文件内仍无 `FILE_FLAG_OVERLAPPED` |
+| B2 | usage tap 管道缺 OVERLAPPED → 退出挂死 / Mutex 不释放 | **closed（10-08）** | 根因逐层拆开：`CreateNamedPipeW` 的 `dwOpenMode` 只有 `PIPE_ACCESS_INBOUND` **缺 `FILE_FLAG_OVERLAPPED`** → 后面两处 `OVERLAPPED` 结构与 `ERROR_IO_PENDING` 分支全是摆设（`lpOverlapped` 被忽略，`ConnectNamedPipe`/`ReadFile` 实为阻塞调用）→ `stop_event_` 永远观察不到 → `Stop()` 卡在 `join()` → 析构/进程退出挂死。修复：① 补 `FILE_FLAG_OVERLAPPED`；② 连接/读两条等待路径在 stop 分支补 **`CancelIoEx` + `GetOverlappedResult(..., TRUE)`**——否则句柄改对后反而暴露新问题：取消是异步的，栈上 `OVERLAPPED` 提前离开作用域而内核仍会写入（UB）。回归 `TestUsageTapManagerStopBounded`（Start 后不连客户端=阻塞点，异步 Stop 5s 有界；卡住则 assert→abort **快速失败而非拖死 CI**，并刻意泄漏 manager/线程避免二次挂死） |
 | B3 | 微信模式启动失败不回滚默认录音设备 | open | 9-22 未复核 |
 | B7 | 腾讯热词同步移出 `audio_mutex_` | **closed（10-08）** | 同步整体移出 `Start` 改后台线程：**构造点预热**（`UpdateConfig`/字幕周期创建均在锁外）+ `Start` 只做幂等 `KickHotwordVocabSync`（在飞不重复、成功不重跑）；结果经 `VocabSyncState` 互斥共享，`RunWebSocket` 锁外读 `CachedVocabId()`（顺带修掉原 `cached_vocab_id_` 无锁读写）；线程按值捕获 config/词表、**不持 this**，重建/销毁无需 join（避免销毁路径再引入网络阻塞）；新增静态测试缝 `SetVocabSyncTestSeam` + 回归 `TestTencentVocabSyncOffMainThread`（注入 1200ms 慢同步，断言构造与 Start 均 <600ms、在飞期间重复 kick 幂等、完成后 `CachedVocabId` 可见） |
 | B8 | 协调器 `config_` 跨线程竞争 → `shared_ptr<const AppConfig>` 原子换入 | **closed（10-07）** | `std::atomic<shared_ptr<const AppConfig>>` 快照 + `config_write_mutex_` 写侧 copy-mutate-store；109 读点转 `ConfigSnapshot()`，4 写点（UpdateConfig/配对表×2/SavePairedDeviceInfo）入互斥；压测 `TestCoordinatorConcurrentUpdateConfigStress`（4 读线程 × 300 次换入） |
@@ -128,6 +128,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **阶段 1 B2 关闭**：usage tap 管道补 `FILE_FLAG_OVERLAPPED`（原 OVERLAPPED 分支形同虚设、Stop/退出挂死）+ 连接/读两路取消后等内核用完栈上 OVERLAPPED（防修复后暴露的 UB）；顺带核实 C8b 的 i18n 子项——`check_i18n` **已是键集合双向对拍**，评审「只查非空」已过时 | 新增 `TestUsageTapManagerStopBounded`（有界 5s、卡住快速失败）；CI 七 job（Windows ctest） |
 | 2026-10-08 | **安全组 C8 分组治理（partial）**：日志轮转（8MB→.old 一代）+ 签名 URL 去 query 脱敏 + 精修 prompt 4096B UTF-8 边界封顶；核实热词日志只记计数 | 本地复刻三段算法全过；CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **安全组 C7 明文堵漏（partial）**：云/ASR 链路 TLS-only——api_key 申请请求与 ASR 长连接都不再接受 `ws://`/`http://`，响应链接只放行 `https://`；策略收敛为头文件内联函数供单测直测；设备证明拆为 C7b 待后端 | 本地用**真实头文件**编译运行 13 项策略断言全过；CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **安全组 C5 关闭**：模型在位判定由「仅比大小」改「存在 + 尺寸 + SHA-256」，判定下沉会话工作线程（UI/音频热路径不哈希）；同尺寸损坏文件不再被静默跳过，改走重下修复 | 本地核验 `sha256("hello")` 常量与 `DownloadFile` 无尺寸捷径；CI 七 job（Windows ctest 含新用例） |

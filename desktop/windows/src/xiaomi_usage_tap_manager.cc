@@ -163,8 +163,12 @@ void XiaomiUsageTapManager::PipeThreadMain() {
         L"D:P(A;;GA;;;WD)(A;;GA;;;SY)", SDDL_REVISION_1,
         &sa.lpSecurityDescriptor, nullptr);
     while (WaitForSingleObject(stop_event_, 0) == WAIT_TIMEOUT) {
+        // B2：必须带 FILE_FLAG_OVERLAPPED——句柄非 overlapped 时 ConnectNamedPipe/
+        // ReadFile 的 lpOverlapped 被忽略（实为阻塞调用），stop_event_ 永远观察不到
+        // → Stop() / 析构 / 退出挂死（10-07 抽查实锤：文件内无 FILE_FLAG_OVERLAPPED）。
+        // 加此标志后才真正走 ERROR_IO_PENDING + 双事件等待。
         HANDLE pipe = CreateNamedPipeW(
-            kPipeName, PIPE_ACCESS_INBOUND,
+            kPipeName, PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 512, 512, 0,
             sa.lpSecurityDescriptor ? &sa : nullptr);
         if (pipe == INVALID_HANDLE_VALUE) {
@@ -193,6 +197,11 @@ void XiaomiUsageTapManager::PipeThreadMain() {
                     WaitForMultipleObjects(2, waits, FALSE, INFINITE);
                 if (wait_result != WAIT_OBJECT_0) {
                     stop_requested = true;
+                    // B2：连接 IO 仍在飞——取消并等内核用完栈上的 cov 再退出作用域，
+                    // 否则内核随后写入已销毁的 OVERLAPPED（未定义行为）。
+                    CancelIoEx(pipe, &cov);
+                    DWORD ignored = 0;
+                    (void)GetOverlappedResult(pipe, &cov, &ignored, TRUE);
                 } else {
                     DWORD dummy = 0;
                     connected = GetOverlappedResult(pipe, &cov, &dummy, FALSE);
@@ -237,6 +246,11 @@ void XiaomiUsageTapManager::PipeThreadMain() {
                     WaitForMultipleObjects(2, waits, FALSE, INFINITE);
                 if (wait_result != WAIT_OBJECT_0) {
                     stop_requested = true;
+                    // B2：读 IO 仍在飞——取消并等内核用完栈上的 rov 再退出循环作用域
+                    //（否则内核随后写入已销毁的 OVERLAPPED，未定义行为）。
+                    CancelIoEx(pipe, &rov);
+                    DWORD ignored = 0;
+                    (void)GetOverlappedResult(pipe, &rov, &ignored, TRUE);
                     break;
                 }
                 ok = GetOverlappedResult(pipe, &rov, &read_bytes, FALSE);

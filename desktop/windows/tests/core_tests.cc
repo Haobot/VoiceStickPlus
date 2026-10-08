@@ -14,6 +14,7 @@
 #include "xiaomi_usage_tap.h"
 #include "xiaomi_usage_tap_decoder.h"
 #include "xiaomi_usage_tap_host.h"
+#include "xiaomi_usage_tap_manager.h"
 #include "xiaomi_usage_tap.h"
 #include "cmd_line.h"
 #include "com_port_selector.h"
@@ -7282,6 +7283,37 @@ void TestXiaomiUsageTapButtonTable() {
     assert(!XiaomiButtonIsTapDirect("ok"));
     assert(!XiaomiButtonIsTapDirect("volume_mute"));  // 系统可见性未定，保守不直触发
     assert(!XiaomiButtonIsTapDirect("bogus"));
+}
+
+void TestUsageTapManagerStopBounded() {
+    // B2 回归：管道句柄缺 FILE_FLAG_OVERLAPPED 时 ConnectNamedPipe/ReadFile 的
+    // lpOverlapped 被忽略（实为阻塞调用），stop_event_ 永远观察不到 → Stop() 不返回
+    // → 析构/进程退出挂死。用例 Start 后不连客户端（恰是阻塞点），异步 Stop，5s 内
+    // 必须完成；卡住则 assert 失败（abort 立即结束测试，而非拖死 CI），并刻意泄漏
+    // manager 与 stopper 线程（绝不 join，否则测试进程被一并拖死）。
+    auto* manager = new XiaomiUsageTapManager();
+    if (!manager->Start(nullptr, nullptr, nullptr)) {
+        delete manager;
+        printf("TestUsageTapManagerStopBounded: SKIP (start failed)\n");
+        fflush(stdout);
+        return;
+    }
+    std::atomic<bool> stopped{false};
+    std::thread stopper([manager, &stopped] {
+        manager->Stop();
+        stopped.store(true);
+    });
+    for (int i = 0; i < 500 && !stopped.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const bool ok = stopped.load();
+    if (ok) {
+        stopper.join();
+        delete manager;
+    } else {
+        stopper.detach();  // 卡住：不 join；manager 泄漏，随进程退出回收
+    }
+    assert(ok && "XiaomiUsageTapManager::Stop() must return within 5s");
 }
 
 void TestXiaomiUsageTapSessionEdges() {
@@ -16564,6 +16596,8 @@ int main() {
     TestXiaomiUsageTapParsing();
     TestXiaomiUsageTapButtonTable();
     TestXiaomiUsageTapSessionEdges();
+    printf(">> cluster: B2 usage tap Stop bounded\n"); fflush(stdout);
+    TestUsageTapManagerStopBounded();
     TestXiaomiTapDirectKeys();
     TestXiaomiGatewayKeyRepeater();
     TestXiaomiTapEvidenceTable();
