@@ -123,7 +123,8 @@ final class VoiceStickCoordinator {
     }
 
     private var config: AppConfig
-    private let statusController: StatusController
+    // N1 切5：成员类型换协议（VoiceStickCore/StatusSink.swift），类向 Core 迁移第一步。
+    private let statusController: VoiceStickStatusSink
     private let ble: BleCentral
     private var asr: any ASRClient
     private var translator: LLMTranslationClient
@@ -218,7 +219,7 @@ final class VoiceStickCoordinator {
     var onPowerLogFragment: ((String, PowerLogFragment) -> Void)?
     var onPowerMgmtEvent: ((String, PowerMgmtEvent) -> Void)?
 
-    init(config: AppConfig, statusController: StatusController) {
+    init(config: AppConfig, statusController: VoiceStickStatusSink) {
         self.config = config
         self.statusController = statusController
         self.pairedDeviceIDs = config.pairedDeviceIDs

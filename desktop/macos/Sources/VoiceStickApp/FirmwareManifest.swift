@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import VoiceStickCore
 
 struct FirmwareManifest: Decodable {
     let hardware: String
@@ -37,15 +38,7 @@ struct FirmwareManifest: Decodable {
     }
 }
 
-struct DeviceFirmwareInfo {
-    var hardware: String?
-    var currentVersion: String?
-    var latestVersion: String?
-    var updateAvailable = false
-    var isChecking = false
-    var errorMessage: String?
-}
-
+// N1 切5：DeviceFirmwareInfo 已下沉 VoiceStickCore/StatusSink.swift（随状态出口协议）。
 enum FirmwareVersion {
     static func isVersion(_ current: String, olderThan latest: String) -> Bool {
         guard let current = ParsedVersion(current), let latest = ParsedVersion(latest) else {

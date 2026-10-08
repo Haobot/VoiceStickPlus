@@ -3,13 +3,7 @@ import CoreBluetooth
 import Foundation
 import VoiceStickCore
 
-struct ConnectedVoiceStickDevice {
-    let name: String
-    let deviceID: String
-    /// 输入设备类别：StickS3（VS-XXXX）或小米遥控器 2 Pro（RC-XXXX，ATVV 协议）。
-    let deviceClass: DeviceClass
-}
-
+// N1 切5：ConnectedVoiceStickDevice 已下沉 VoiceStickCore/StatusSink.swift（随状态出口协议）。
 struct FirmwareUpdateProgress {
     let writtenBytes: Int
     let totalBytes: Int
