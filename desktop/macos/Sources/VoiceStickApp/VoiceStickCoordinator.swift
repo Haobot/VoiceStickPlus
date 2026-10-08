@@ -130,9 +130,12 @@ final class VoiceStickCoordinator {
     private let ble: any VoiceStickBleServing
     // N1 切5：ASR 工厂外置注入（工厂构造 App 实现留 App）。
     private let makeAsr: (AppConfig) -> any ASRClient
+    // N1 切5 闸3/4：精修与翻译同样闭包注入（具体客户端留 App 合规）。
+    private let makeRefiner: (AppConfig) -> any RefinerServing
+    private let makeTranslator: (AppConfig) -> any TranslatorServing
     private var asr: any ASRClient
-    private var translator: LLMTranslationClient
-    private var refiner: LLMRefinementClient
+    private var translator: any TranslatorServing
+    private var refiner: any RefinerServing
     /// 前台应用追踪（三期按键映射按前台应用切换的注入点；AppDelegate 启动时装配，
     /// v1 协调器暂不消费，app 级覆盖落地后由按键映射 resolve 使用）。
     var frontmostAppProvider: FrontmostAppProvider?
@@ -225,15 +228,19 @@ final class VoiceStickCoordinator {
 
     init(config: AppConfig, statusController: VoiceStickStatusSink,
          ble: any VoiceStickBleServing,
-         makeAsr: @escaping (AppConfig) -> any ASRClient) {
+         makeAsr: @escaping (AppConfig) -> any ASRClient,
+         makeTranslator: @escaping (AppConfig) -> any TranslatorServing,
+         makeRefiner: @escaping (AppConfig) -> any RefinerServing) {
         self.config = config
         self.statusController = statusController
         self.pairedDeviceIDs = config.pairedDeviceIDs
         self.ble = ble
         self.makeAsr = makeAsr
+        self.makeTranslator = makeTranslator
+        self.makeRefiner = makeRefiner
         self.asr = makeAsr(config)
-        self.translator = LLMTranslationClient(config: config)
-        self.refiner = LLMRefinementClient(config: config)
+        self.translator = makeTranslator(config)
+        self.refiner = makeRefiner(config)
         self.debugAudioRecorder = DebugAudioRecorder(
             enabled: config.debugAudioCache,
             directory: config.debugAudioDirectory
@@ -364,8 +371,8 @@ final class VoiceStickCoordinator {
             directory: config.debugAudioDirectory
         )
         asr = makeAsr(config)
-        translator = LLMTranslationClient(config: config)
-        refiner = LLMRefinementClient(config: config)
+        translator = makeTranslator(config)
+        refiner = makeRefiner(config)
         configureASRCallbacks()
 
         if pairedDeviceIDs != config.pairedDeviceIDs {

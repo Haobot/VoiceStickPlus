@@ -1,23 +1,6 @@
 import Foundation
 import VoiceStickCore
-
-/// 流式精修取消令牌（线程安全；协调器 UI 线程 cancel，URLSession 回调线程查询）。
-final class RefineCancelToken {
-    private let lock = NSLock()
-    private var cancelled = false
-
-    var isCancelled: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return cancelled
-    }
-
-    func cancel() {
-        lock.lock()
-        defer { lock.unlock() }
-        cancelled = true
-    }
-}
+import VoiceStickCore
 
 /// ASR 文本精修客户端（对齐 Windows llm_refinement_client.cc）：OpenAI 兼容
 /// chat/completions。精修走 SSE 流式（onToken 增量 + 失败自动回退非流式 refine()）；

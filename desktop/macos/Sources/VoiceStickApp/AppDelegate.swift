@@ -91,7 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             config: config,
             statusController: statusController,
             ble: BleCentral(pairedDeviceIDs: config.pairedDeviceIDs),
-            makeAsr: { ASRClientFactory.makeClient(config: $0) }
+            makeAsr: { ASRClientFactory.makeClient(config: $0) },
+            makeTranslator: { LLMTranslationClient(config: $0) },
+            makeRefiner: { LLMRefinementClient(config: $0) }
         )
 
         self.statusController = statusController
