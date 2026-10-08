@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+using namespace voicestick;  // 与 core_tests.cc 文件级一致（ByteVector/BleProtocol）
+
 void TestStateParsing() {
     const std::string json = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
     ByteVector frame = {1, 0x10};
