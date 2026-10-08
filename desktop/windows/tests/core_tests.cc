@@ -6618,6 +6618,8 @@ static LONG WINAPI UnhandledExceptionProbe(PEXCEPTION_POINTERS info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+} // namespace
+
 int main() {
     SetUnhandledExceptionFilter(&UnhandledExceptionProbe);
 #ifdef _DEBUG
@@ -6695,8 +6697,6 @@ int main() {
     TestEncoderStatusParsing();
     TestMotionFrameParsing();
     RunCodecFixtureSerialBatchTests();  // N8 cut13: suite in core_tests_codec_serial.cc
-
-} // namespace
     TestOggMuxer();
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
