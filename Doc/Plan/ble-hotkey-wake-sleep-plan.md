@@ -1,5 +1,5 @@
 # BLE 热键唤醒与休眠策略方案
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：interaction_settings_dialog.h/settings_dialog.cc 热键与唤醒配置面。核销 2026-10-08/N10）
 
 ## 问题
 

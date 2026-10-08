@@ -1,4 +1,4 @@
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：desktop/windows/src/ble_central_win.cc 重连逻辑。核销 2026-10-08/N10）
 
  启用 BLE bonding 以加快 Stick 重启/主机重启后的重连
 

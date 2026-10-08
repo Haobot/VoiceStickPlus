@@ -1,5 +1,5 @@
 # 本地模型分发（按需下载器）设计与实施方案
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：model_downloader.h + model_download_session.{h,cc}。核销 2026-10-08/N10）
 
 - 日期：2026-09-09
 - 状态：**三迭代全部交付**（570dbcd4 + 94d34bba + 6e82fc35 + 本轮迭代三）。分发渠道已定案腾讯 COS（见 `Doc/Ref/cos-distribution.md`），四源回退真机验证通过。遗留两小项：GitHub Release `model-pack-v1` asset 随下个发版上传、离线 zip 上传 COS 顶层（`scripts/pack_local_models.py` 本地打包已就绪）。

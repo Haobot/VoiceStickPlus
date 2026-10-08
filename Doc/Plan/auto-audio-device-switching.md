@@ -1,5 +1,5 @@
 # 自动音频设备切换（降低会议软件干扰）
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：desktop/windows/src/device_switch_state.h 专文件 + voice_stick_coordinator.cc。核销 2026-10-08/N10）
 
 ## 1. 背景与目标
 

@@ -1,5 +1,5 @@
 # hold_to_talk 连接就绪过渡期录音启动增加重试
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：firmware/main/main.c APP_EVENT_RECORDING_RETRY_TICK（A9 同源改造）。核销 2026-10-08/N10）
 
 ## 背景
 
