@@ -282,7 +282,6 @@ enum Localization {
         .menuForgetDevice: "Forget This Device",
         .firmwareCheckingUpdates: "Checking for Updates",
         .firmwareMacSpeedLimited: "macOS Bluetooth is rate-limited (system HID scheduling); use a USB cable for serial flashing (~10 s) instead",
-        .firmwareMacSpeedLimited: "macOS 蓝牙限速（系统 HID 调度）；可改用 USB 数据线串口烧录（约 10 秒）",
         .firmwareUpdateCheckFailed: "Update Check Failed",
         .firmwareUpdateTo: "Update to %@...",
         .menuFirmwareUpToDate: "Firmware Up to Date",
@@ -548,6 +547,9 @@ enum Localization {
         .menuUpdateFirmwareFromFile: "从本地文件更新固件...",
         .menuForgetDevice: "忘记设备",
         .firmwareCheckingUpdates: "正在检查固件更新...",
+        // N9：此条原误置于 english 字典（与英文条目相邻），chinese 表实缺 →
+        // 中文界面经 tr() 回退显示英文长文案；静态奇偶守护首跑即抓出。
+        .firmwareMacSpeedLimited: "macOS 蓝牙限速（系统 HID 调度）；可改用 USB 数据线串口烧录（约 10 秒）",
         .firmwareUpdateCheckFailed: "固件检查失败",
         .firmwareUpdateTo: "更新到 %@...",
         .menuFirmwareUpToDate: "固件已是最新",

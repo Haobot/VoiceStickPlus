@@ -122,6 +122,33 @@ def build_repo(root: Path) -> None:
         encoding="utf-8",
     )
 
+    # N9 桌面本地化奇偶守护的夹具（枚举⇄EN⇄ZH 三集合齐全 → 基线绿）。
+    (root / "desktop" / "windows" / "src" / "localization.h").write_text(
+        "enum class StringId {\n    kOk,\n    kCancel,\n};\n", encoding="utf-8"
+    )
+    (root / "desktop" / "windows" / "src" / "localization.cc").write_text(
+        "constexpr StringTable EnglishStrings() {\n"
+        "    table[Index(StringId::kOk)] = \"OK\";\n"
+        "    table[Index(StringId::kCancel)] = \"Cancel\";\n"
+        "    return table;\n}\n"
+        "constexpr StringTable ChineseStrings() {\n"
+        "    table[Index(StringId::kOk)] = \"好\";\n"
+        "    table[Index(StringId::kCancel)] = \"取消\";\n"
+        "    return table;\n}\n"
+        "constexpr StringTable kEnglish = EnglishStrings();\n"
+        "constexpr StringTable kChinese = ChineseStrings();\n",
+        encoding="utf-8",
+    )
+    (root / "desktop" / "macos" / "Sources" / "VoiceStickApp" / "Localization.swift").write_text(
+        "enum L10nKey: String, CaseIterable {\n    case ok\n    case cancel\n}\n"
+        "enum Localization {\n"
+        "    private static let english: [L10nKey: String] = [\n"
+        "        .ok: \"OK\",\n        .cancel: \"Cancel\",\n    ]\n"
+        "    private static let chinese: [L10nKey: String] = [\n"
+        "        .ok: \"好\",\n        .cancel: \"取消\",\n    ]\n}\n",
+        encoding="utf-8",
+    )
+
 
 class ReleaseGuardTests(unittest.TestCase):
     def setUp(self):
@@ -169,6 +196,71 @@ class ReleaseGuardTests(unittest.TestCase):
         )
         fails = self.failures()
         self.assertTrue(any(f.startswith("i18n") for f in fails), fails)
+
+    def test_desktop_i18n_baseline_green(self):
+        # 夹具三集合齐全 → 必须通过（与 test_baseline_all_green 互为呼应）。
+        self.assertEqual(self.failures(), [])
+
+    def test_desktop_i18n_windows_missing_zh_detected(self):
+        p = self.root / "desktop" / "windows" / "src" / "localization.cc"
+        p.write_text(
+            "constexpr StringTable EnglishStrings() {\n"
+            "    table[Index(StringId::kOk)] = \"OK\";\n"
+            "    table[Index(StringId::kCancel)] = \"Cancel\";\n"
+            "    return table;\n}\n"
+            "constexpr StringTable ChineseStrings() {\n"
+            "    table[Index(StringId::kOk)] = \"好\";\n"
+            "    return table;\n}\n"
+            "constexpr StringTable kEnglish = EnglishStrings();\n"
+            "constexpr StringTable kChinese = ChineseStrings();\n",
+            encoding="utf-8",
+        )
+        fails = self.failures()
+        self.assertTrue(
+            any(f.startswith("i18n-desktop") and "windows ZH" in f for f in fails), fails
+        )
+
+    def test_desktop_i18n_macos_missing_chinese_detected(self):
+        p = self.root / "desktop" / "macos" / "Sources" / "VoiceStickApp" / "Localization.swift"
+        p.write_text(
+            "enum L10nKey: String, CaseIterable {\n    case ok\n    case cancel\n}\n"
+            "enum Localization {\n"
+            "    private static let english: [L10nKey: String] = [\n"
+            "        .ok: \"OK\",\n        .cancel: \"Cancel\",\n    ]\n"
+            "    private static let chinese: [L10nKey: String] = [\n"
+            "        .ok: \"好\",\n    ]\n}\n",
+            encoding="utf-8",
+        )
+        fails = self.failures()
+        self.assertTrue(
+            any(f.startswith("i18n-desktop") and "macos chinese" in f for f in fails), fails
+        )
+
+    def test_desktop_i18n_ghost_entry_detected(self):
+        # 表里有、枚举已无（改名残留）→ 幽灵项必须被抓。
+        p = self.root / "desktop" / "windows" / "src" / "localization.h"
+        p.write_text(
+            "enum class StringId {\n    kOk,\n    kCancel,\n    kLegacy,\n};\n",
+            encoding="utf-8",
+        )
+        (self.root / "desktop" / "windows" / "src" / "localization.cc").write_text(
+            "constexpr StringTable EnglishStrings() {\n"
+            "    table[Index(StringId::kOk)] = \"OK\";\n"
+            "    table[Index(StringId::kCancel)] = \"Cancel\";\n"
+            "    table[Index(StringId::kGone)] = \"ghost\";\n"
+            "    return table;\n}\n"
+            "constexpr StringTable ChineseStrings() {\n"
+            "    table[Index(StringId::kOk)] = \"好\";\n"
+            "    table[Index(StringId::kCancel)] = \"取消\";\n"
+            "    return table;\n}\n"
+            "constexpr StringTable kEnglish = EnglishStrings();\n"
+            "constexpr StringTable kChinese = ChineseStrings();\n",
+            encoding="utf-8",
+        )
+        fails = self.failures()
+        self.assertTrue(
+            any(f.startswith("i18n-desktop") and "幽灵" in f for f in fails), fails
+        )
 
     def test_uuid_byte_order_mismatch_detected(self):
         bad = SERVICE_BYTES_LE[::-1]  # 端序反了

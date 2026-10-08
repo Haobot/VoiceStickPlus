@@ -181,6 +181,94 @@ def check_i18n(root: Path) -> str | None:
     return "\n".join(errors) if errors else None
 
 
+def _swift_enum_names(body: str) -> set[str]:
+    """Swift 枚举体（case a, b / case c = \"x\"）。"""
+    names: set[str] = set()
+    for line in re.findall(r"^\s*case\s+(.+)$", body, re.MULTILINE):
+        for part in line.split(","):
+            ident = part.split("=")[0].strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", ident):
+                names.add(ident)
+    return names
+
+
+def _cpp_enum_names(body: str) -> set[str]:
+    """C++ enum class 体：成员为裸标识符（全仓 StringId 均 k 前缀），兼容尾逗号
+    与 = 初值；跳过 // 注释行。"""
+    names: set[str] = set()
+    for line in body.splitlines():
+        code = line.split("//", 1)[0].strip().rstrip(",")
+        if not code or "=" in code:
+            code = code.split("=", 1)[0].strip()
+        if re.fullmatch(r"k[A-Za-z0-9_]*", code or ""):
+            names.add(code)
+    return names
+
+
+def _strip_strings(text: str) -> str:
+    """去掉字符串字面量（防译文里的 .foo: 或 case 被误当结构）。"""
+    return re.sub(r'"(?:[^"\\]|\\.)*"', '""', text)
+
+
+def check_desktop_i18n(root: Path) -> str | None:
+    """N9：桌面两端本地化奇偶守护（静态、CI 强制）——
+
+    两端已有运行期自检（Windows LocalizationTablesAreComplete / macOS
+    tablesAreComplete），但只有跑到才暴露；此检查在发布门禁静态比对：
+    StringId/L10nKey 枚举 ⇄ EN 表 ⇄ ZH 表 三集合双向一致（网页 zh/en 已由
+    check_i18n 覆盖）。数组表缺项不会编译报错（值初始化为空串），必须靠本检查。
+    """
+    errors: list[str] = []
+
+    # ---- Windows：localization.h 枚举 vs localization.cc 两张表 ----
+    wh = _text(root / "desktop" / "windows" / "src" / "localization.h")
+    wc = _text(root / "desktop" / "windows" / "src" / "localization.cc")
+    enum_m = re.search(r"enum\s+class\s+StringId\s*\{(.*?)\n\}", wh, re.DOTALL)
+    if not enum_m:
+        errors.append("windows: 未找到 enum class StringId")
+    elif "EnglishStrings()" not in wc or "ChineseStrings()" not in wc:
+        errors.append("windows: localization.cc 缺 EnglishStrings/ChineseStrings")
+    else:
+        enum_names = _cpp_enum_names(enum_m.group(1))
+        en_seg = wc.split("EnglishStrings()", 1)[1].split("ChineseStrings()", 1)[0]
+        zh_part = wc.split("ChineseStrings()", 1)[1]
+        zh_seg = zh_part.split("kEnglish =", 1)[0] if "kEnglish =" in zh_part else zh_part
+        en_names = set(re.findall(r"Index\(StringId::([A-Za-z0-9_]+)\)", en_seg))
+        zh_names = set(re.findall(r"Index\(StringId::([A-Za-z0-9_]+)\)", zh_seg))
+        for label, table in (("EN", en_names), ("ZH", zh_names)):
+            missing = sorted(enum_names - table)
+            extra = sorted(table - enum_names)
+            if missing:
+                errors.append(f"windows {label} 表缺项: {missing[:10]}")
+            if extra:
+                errors.append(f"windows {label} 表幽灵项(枚举已无): {extra[:10]}")
+
+    # ---- macOS：Localization.swift 的 L10nKey vs english/chinese 两字典 ----
+    ms = _text(root / "desktop" / "macos" / "Sources" / "VoiceStickApp" / "Localization.swift")
+    menum = re.search(r"enum\s+L10nKey[^{]*\{(.*?)\n\}", ms, re.DOTALL)
+    en_decl = "static let english: [L10nKey: String] = ["
+    zh_decl = "static let chinese: [L10nKey: String] = ["
+    if not menum:
+        errors.append("macos: 未找到 enum L10nKey")
+    elif en_decl not in ms or zh_decl not in ms:
+        errors.append("macos: Localization.swift 缺 english/chinese 字典")
+    else:
+        m_enums = _swift_enum_names(menum.group(1))
+        en_body = _strip_strings(ms.split(en_decl, 1)[1].split("\n    ]", 1)[0])
+        zh_body = _strip_strings(ms.split(zh_decl, 1)[1].split("\n    ]", 1)[0])
+        en_keys = set(re.findall(r"^\s*\.([A-Za-z0-9_]+)\s*:", en_body, re.MULTILINE))
+        zh_keys = set(re.findall(r"^\s*\.([A-Za-z0-9_]+)\s*:", zh_body, re.MULTILINE))
+        for label, table in (("english", en_keys), ("chinese", zh_keys)):
+            missing = sorted(m_enums - table)
+            extra = sorted(table - m_enums)
+            if missing:
+                errors.append(f"macos {label} 表缺项: {missing[:10]}")
+            if extra:
+                errors.append(f"macos {label} 表幽灵项(枚举已无): {extra[:10]}")
+
+    return "\n".join(errors) if errors else None
+
+
 def _firmware_service_uuid_bytes(firmware_src: str) -> str | None:
     m = re.search(
         r"s_service_uuid\s*=\s*\n?\s*BLE_UUID128_INIT\(([^;]+?)\);",
@@ -298,6 +386,7 @@ CHECKS = [
     ("appcast", check_appcast),
     ("hub", check_hub),
     ("i18n", check_i18n),
+    ("i18n-desktop", check_desktop_i18n),  # N9：桌面两端枚举⇄EN⇄ZH 静态奇偶
     ("uuid", check_uuid),
     ("frame-ms", check_frame_ms_and_granule),
 ]
