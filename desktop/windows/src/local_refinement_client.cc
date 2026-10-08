@@ -1,4 +1,5 @@
 #include "local_refinement_client.h"
+#include <chrono>
 
 #include "pinyin_guard.h"
 #include "selection_correction.h"
@@ -23,11 +24,20 @@ LocalRefinementClient::LocalRefinementClient(std::unique_ptr<LocalLlmEngine> eng
                                            : std::move(system_prompt)),
       log_(std::move(log)) {}
 
-LocalRefinementClient::~LocalRefinementClient() {
-    std::lock_guard lock(threads_mutex_);
-    for (auto& t : threads_) {
-        if (t.joinable()) t.join();
+void LocalRefinementClient::ReapFinishedJobsLocked() {
+    for (auto it = refine_jobs_.begin(); it != refine_jobs_.end();) {
+        if (it->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            it = refine_jobs_.erase(it);
+        } else {
+            ++it;
+        }
     }
+}
+
+LocalRefinementClient::~LocalRefinementClient() {
+    // future<void> 析构即等待（std::async 语义），clear = 原 join 全量。
+    std::lock_guard lock(threads_mutex_);
+    refine_jobs_.clear();
 }
 
 std::string LocalRefinementClient::BuildSystemPrompt() {
@@ -186,12 +196,13 @@ void LocalRefinementClient::Refine(std::string text,
     // 每句一个短命线程（推理数百毫秒级，量级=会话数，进程内可控）；
     // 析构 join 所有线程保证回调不悬垂。
     std::lock_guard lock(threads_mutex_);
-    threads_.emplace_back(
+    ReapFinishedJobsLocked();
+    refine_jobs_.push_back(std::async(
+        std::launch::async,
         [this, text = std::move(text), on_token = std::move(on_token),
          on_complete = std::move(on_complete), cancel = std::move(cancel),
          hotwords = std::move(hotwords), context = std::move(context)]() mutable {
-            RunRefine(text, on_token, on_complete, cancel, hotwords, context);
-        });
+            RunRefine(text, on_token, on_complete, cancel, hotwords, context)));
 }
 
 void LocalRefinementClient::RunRefine(
@@ -328,11 +339,13 @@ void LocalRefinementClient::GenerateCandidates(const std::string& wrong_text,
                                                CandidatesComplete on_done) {
     // 与 Refine 同款短命线程模型；析构 join 保证回调不悬垂。
     std::lock_guard lock(threads_mutex_);
-    threads_.emplace_back(
+    ReapFinishedJobsLocked();
+    refine_jobs_.push_back(std::async(
+        std::launch::async,
         [this, wrong_text, context, hotwords,
          on_done = std::move(on_done)]() mutable {
             RunGenerateCandidates(wrong_text, context, hotwords, on_done);
-        });
+        }));
 }
 
 void LocalRefinementClient::RunGenerateCandidates(

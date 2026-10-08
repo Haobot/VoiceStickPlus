@@ -552,9 +552,14 @@ void VoiceStickCoordinator::SetLicenseGate(std::function<bool()> allow_local_asr
 // 析构"模式——旧 client 析构 join 其工作线程，线程的 completion 链会走到
 // EnterPendingConfirmation（抢 audio_mutex_），持锁析构会死锁。
 void VoiceStickCoordinator::SetLocalRefiner(std::unique_ptr<LocalRefinementClient> refiner) {
+    // B11 修复（9-22 复核 10-08）：锁内只换指针，旧 client 由 retired 持有、锁外析构
+    //（与上方注释及 SetLocalMicRuntime 同款——dtor join 工作线程，completion 链抢
+    // audio_mutex_，持锁析构即死锁）。
+    std::unique_ptr<LocalRefinementClient> retired;
     {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         session_uses_local_refine_ = false;
+        retired = std::move(local_refiner_);
         local_refiner_ = std::move(refiner);
     }
 }

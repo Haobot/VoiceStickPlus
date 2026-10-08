@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <functional>
+#include <future>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,6 +33,8 @@ class LocalRefinementClient {
                                  std::function<void(std::string_view)> log = {});
 
   ~LocalRefinementClient();
+  void ReapFinishedJobsLocked();
+  void ReapFinishedJobsLocked();
 
   LocalRefinementClient(const LocalRefinementClient&) = delete;
   LocalRefinementClient& operator=(const LocalRefinementClient&) = delete;
@@ -118,7 +122,10 @@ class LocalRefinementClient {
   std::function<void(std::string_view)> log_;
   std::mutex engine_mutex_;   // 引擎调用串行化（Refine 与 GenerateCandidates）
   std::mutex threads_mutex_;
-  std::vector<std::thread> threads_;
+  // B12 修复（9-22 复核 10-08）：vector<thread> 只增不减 → vector<future<void>>，
+  // 下次入队前回收就绪项（wait_for(0)==ready 即 erase）；析构 clear() 逐个等待
+  //（std::async future 析构阻塞语义等价原 join 循环，回调不悬垂不变）。
+  std::vector<std::future<void>> refine_jobs_;
 };
 
 } // namespace voicestick
