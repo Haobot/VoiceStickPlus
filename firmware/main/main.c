@@ -344,6 +344,7 @@ static void load_encoder_settings_from_nvs(void);
 static void save_encoder_settings_to_nvs(void);
 static void set_tap_polling_enabled(bool enabled);
 static void set_air_mouse_enabled(bool enabled);
+static void sensor_poll_task(void *arg);
 static void sensor_poll_kick(uint32_t bit);
 static void sensor_poll_pickup(void);
 static void sensor_poll_tap(void);
