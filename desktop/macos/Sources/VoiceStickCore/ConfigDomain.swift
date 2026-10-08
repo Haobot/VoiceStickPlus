@@ -200,6 +200,19 @@ public struct KeySpec: Equatable {
     public let mediaKey: MediaKey?
     public let displayText: String
 
+    /// 跨模块构造（InputInjector 等注入固定键位用）；解析走 parse。
+    public init(control: Bool = false, option: Bool = false, shift: Bool = false,
+                command: Bool = false, keyCode: CGKeyCode?, mediaKey: MediaKey?,
+                displayText: String) {
+        self.control = control
+        self.option = option
+        self.shift = shift
+        self.command = command
+        self.keyCode = keyCode
+        self.mediaKey = mediaKey
+        self.displayText = displayText
+    }
+
     public static func parse(_ text: String) -> KeySpec? {
         var modifiers: (ctrl: Bool, alt: Bool, shift: Bool, win: Bool) = (false, false, false, false)
         var main: (keyCode: CGKeyCode?, mediaKey: MediaKey?, display: String)?
