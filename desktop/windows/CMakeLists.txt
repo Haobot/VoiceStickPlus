@@ -460,9 +460,12 @@ add_executable(voicestick_windows_tests
     tests/core_tests.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
+    # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入
+    src/xiaomi_usage_tap_manager.cc
 )
 
-target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt ws2_32)
+# ole32/shell32：manager 的 RequestInject 走 CoInitializeEx/ShellExecuteW（提权注入器）
+target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt ws2_32 ole32 shell32)
 # golden fixtures（ATVV 采集）相对仓库根解析，不依赖测试进程工作目录
 target_compile_definitions(voicestick_windows_tests PRIVATE
     VOICESTICK_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
