@@ -44,6 +44,7 @@ public:
                              const std::optional<std::string>& device_id) override;
     void SendShowImuDebug(bool enabled,
                           const std::optional<std::string>& device_id) override;
+    void SendProtoNegotiate(const std::optional<std::string>& device_id) override;
     void SendTapEnabled(bool enabled,
                         const std::optional<std::string>& device_id) override;
     void SendTapSensitivity(int level,

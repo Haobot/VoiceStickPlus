@@ -1220,6 +1220,19 @@ static void execute_control_cmd(const control_cmd_t *cmd)
     case CONTROL_CMD_GATEWAY_KEYMAP_GET:
         send_gateway_keymap_report();
         break;
+    case CONTROL_CMD_PROTO_NEGOTIATE:
+        // D9：桌面端协议版本上报——无论是否出界都回发 proto_info（对端据此对齐，
+        // 出界仅多一条 WARN）。双方版本从此可见，静默不兼容被消除。
+        if (cmd->has_number && cmd->value >= VOICE_BLE_PROTO_MIN_VERSION &&
+            cmd->value <= VOICE_BLE_PROTO_VERSION) {
+            ESP_LOGI(TAG, "desktop proto=%d within [%d,%d]",
+                     cmd->value, VOICE_BLE_PROTO_MIN_VERSION, VOICE_BLE_PROTO_VERSION);
+        } else {
+            ESP_LOGW(TAG, "desktop proto=%d OUT OF RANGE [%d,%d]; replying proto_info",
+                     cmd->value, VOICE_BLE_PROTO_MIN_VERSION, VOICE_BLE_PROTO_VERSION);
+        }
+        (void)voice_ble_send_proto_info();
+        break;
     case CONTROL_CMD_POWER_LOG_DUMP:
     case CONTROL_CMD_POWER_LOG_CLEAR:
     case CONTROL_CMD_POWER_LOG_TIME_ANCHOR:

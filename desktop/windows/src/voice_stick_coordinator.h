@@ -89,6 +89,9 @@ public:
                                      const std::optional<std::string>& device_id) = 0;
     virtual void SendShowImuDebug(bool enabled,
                                   const std::optional<std::string>& device_id) = 0;
+    // D9：桌面端协议版本上报（proto_negotiate，见 protocol.md「Protocol version &
+    // negotiation」）；设备恒以 proto_info 应答，出界即双方告警。
+    virtual void SendProtoNegotiate(const std::optional<std::string>& device_id) = 0;
     virtual void SendTapEnabled(bool enabled,
                                 const std::optional<std::string>& device_id) = 0;
     virtual void SendTapSensitivity(int level,

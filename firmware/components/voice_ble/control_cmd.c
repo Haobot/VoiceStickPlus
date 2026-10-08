@@ -218,6 +218,15 @@ bool control_cmd_parse(const char *json, control_cmd_t *out)
     } else if (cJSON_IsString(event) &&
                strcmp(event->valuestring, "gateway_keymap_get") == 0) {
         out->kind = CONTROL_CMD_GATEWAY_KEYMAP_GET;
+    } else if (cJSON_IsString(event) &&
+               strcmp(event->valuestring, "proto_negotiate") == 0) {
+        // D9：{"event":"proto_negotiate","proto":N}——桌面端协议版本上报。
+        out->kind = CONTROL_CMD_PROTO_NEGOTIATE;
+        const cJSON *proto_item = cJSON_GetObjectItemCaseSensitive(root, "proto");
+        if (cJSON_IsNumber(proto_item)) {
+            out->value = proto_item->valueint;
+            out->has_number = true;
+        }
     }
     // 其余未知 event → kind 保持 NONE（静默忽略，等价原链 fallthrough）。
 

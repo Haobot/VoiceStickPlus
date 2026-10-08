@@ -16,6 +16,16 @@
 #define VOICE_BLE_OTA_TYPE_ABORT 0x23
 #define VOICE_BLE_OTA_TYPE_STATE 0x30
 
+// D9：协议版本（= state_tx/state 帧首字节 version 的取值，语义与协商流程见
+// Doc/Ref/protocol.md「Protocol version & negotiation」）。min = 本固件仍能理解
+// 的最旧桌面端版本。三端常量必须随协议演进同步修改（红线：改协议同步 protocol.md
+// 与全部实现端）。
+#define VOICE_BLE_PROTO_VERSION 1
+#define VOICE_BLE_PROTO_MIN_VERSION 1
+// 连上订阅成功后随 send_state_burst 下发（独立小帧，规避 device_info 的 MTU 预算，
+// 同 encoder_status/gateway_status 先例）；也是 proto_negotiate 出界时的应答。
+esp_err_t voice_ble_send_proto_info(void);
+
 typedef void (*voice_ble_connection_cb_t)(bool connected);
 typedef void (*voice_ble_control_cb_t)(const char *json);
 

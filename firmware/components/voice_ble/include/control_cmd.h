@@ -43,6 +43,9 @@ typedef enum {
     CONTROL_CMD_TEST_PLAYBACK,
     CONTROL_CMD_GATEWAY_KEYMAP_SET,
     CONTROL_CMD_GATEWAY_KEYMAP_GET,
+    // D9：桌面端上报自身协议版本（协商语义见 protocol.md「Protocol version」）。
+    // value = proto（uint 语义，负值即非法由执行侧忽略）。
+    CONTROL_CMD_PROTO_NEGOTIATE,
     // power_log 族由 voice_ble 内部执行（main 侧收到仅忽略，保持原行为）
     CONTROL_CMD_POWER_LOG_DUMP,
     CONTROL_CMD_POWER_LOG_CLEAR,

@@ -61,6 +61,7 @@ static control_cmd_kind_t kind_from_contract(const cJSON *expect)
     if (strcmp(ev, "test_playback") == 0) return CONTROL_CMD_TEST_PLAYBACK;
     if (strcmp(ev, "gateway_keymap_set") == 0) return CONTROL_CMD_GATEWAY_KEYMAP_SET;
     if (strcmp(ev, "gateway_keymap_get") == 0) return CONTROL_CMD_GATEWAY_KEYMAP_GET;
+    if (strcmp(ev, "proto_negotiate") == 0) return CONTROL_CMD_PROTO_NEGOTIATE;
     return CONTROL_CMD_NONE;
 }
 
@@ -161,6 +162,14 @@ static void check_gates(void)
     // 未知事件 → true + NONE（静默，等价原链 fallthrough）。
     CHECK(control_cmd_parse("{\"event\":\"no_such_event\"}", &cmd) && cmd.kind == CONTROL_CMD_NONE,
           "unknown event -> NONE");
+    // D9：proto_negotiate——带 proto 数字字段；缺 proto 仍置 kind、has_number=false
+    //（执行侧据此告警出界而非崩溃）。
+    CHECK(control_cmd_parse("{\"event\":\"proto_negotiate\",\"proto\":1}", &cmd) &&
+              cmd.kind == CONTROL_CMD_PROTO_NEGOTIATE && cmd.has_number && cmd.value == 1,
+          "proto_negotiate with proto");
+    CHECK(control_cmd_parse("{\"event\":\"proto_negotiate\"}", &cmd) &&
+              cmd.kind == CONTROL_CMD_PROTO_NEGOTIATE && !cmd.has_number,
+          "proto_negotiate without proto -> kind set, no number");
     // ui_state 缺 state → NONE（原链 IsString(state) 门 fallthrough）。
     CHECK(control_cmd_parse("{\"event\":\"ui_state\",\"text\":\"x\"}", &cmd) &&
               cmd.kind == CONTROL_CMD_NONE,

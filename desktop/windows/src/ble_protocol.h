@@ -130,6 +130,9 @@ struct StateEvent {
     // 保持 seq=0/more=false = 完整单帧（向后兼容）。
     unsigned keymap_seq = 0;
     bool keymap_more = false;
+    // D9：proto_info 小帧字段（设备协议版本；非该事件为空）。
+    std::optional<int> proto;
+    std::optional<int> min_proto;
 };
 
 struct FirmwareOtaStateEvent {
@@ -178,6 +181,14 @@ public:
     //（旧式单帧缺 seq/more → seq0/false → 即到即完整，向后兼容）。
     static bool AccumulateKeymap(std::vector<StateEvent::KeyRoute>& pending,
                                  const StateEvent& event);
+
+    // D9：协议版本（= state_tx 帧首字节 version 的取值）。与固件
+    // VOICE_BLE_PROTO_VERSION、macOS BleProtocol 常量三端同步演进，见
+    // protocol.md「Protocol version & negotiation」。
+    static constexpr int kProtocolVersion = 1;
+    static constexpr int kProtocolMinVersion = 1;
+    // D9：桌面端版本上报帧 {"event":"proto_negotiate","proto":N}。
+    static ByteVector ProtoNegotiatePayload();
     static std::optional<MotionEvent> ParseMotionFrame(std::span<const std::uint8_t> data);
     // power_log 分片帧（type==0x10，payload 含 "power_log" 键；ParseStateEvent 对
     // 其返回 nullopt，因无 "event" 字段）。

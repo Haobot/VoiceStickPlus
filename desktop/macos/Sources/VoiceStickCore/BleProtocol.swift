@@ -52,6 +52,10 @@ public struct StateEvent: Decodable {
     /// 累计时按 seq0/more=false = 完整单帧处理。
     public let keymapSeq: Int?
     public let keymapMore: Bool?
+    /// D9：proto_info 小帧字段（设备协议版本，protocol.md「Protocol version &
+    /// negotiation」）；非该事件为 nil。
+    public let proto: Int?
+    public let minProto: Int?
 
     public init(event: String, button: String?, sessionID: UInt32?, durationMs: UInt32?,
                 hardware: String?, firmwareVersion: String?, buttons: [String]?, uiStates: [String]?,
@@ -60,7 +64,8 @@ public struct StateEvent: Decodable {
                 batteryCharging: Bool? = nil, batteryUsbPowered: Bool? = nil,
                 gatewayKey: String? = nil, gatewayPressed: Bool? = nil,
                 gatewayMode: String? = nil, keymapRoutes: [GatewayKeymapRoute]? = nil,
-                keymapSeq: Int? = nil, keymapMore: Bool? = nil) {
+                keymapSeq: Int? = nil, keymapMore: Bool? = nil,
+                proto: Int? = nil, minProto: Int? = nil) {
         self.event = event
         self.button = button
         self.sessionID = sessionID
@@ -82,6 +87,8 @@ public struct StateEvent: Decodable {
         self.keymapRoutes = keymapRoutes
         self.keymapSeq = keymapSeq
         self.keymapMore = keymapMore
+        self.proto = proto
+        self.minProto = minProto
     }
 
     enum CodingKeys: String, CodingKey {
@@ -106,6 +113,8 @@ public struct StateEvent: Decodable {
         case keymapRoutes = "routes"
         case keymapSeq = "seq"
         case keymapMore = "more"
+        case proto = "proto"
+        case minProto = "min_proto"
     }
 
     /// A15：gateway_keymap 分片累计（protocol.md）——seq==0 重启未完成的累计；
@@ -355,6 +364,17 @@ public enum BleProtocol {
         }
         return data
     }
+
+    /// D9：桌面端协议版本上报帧 {"event":"proto_negotiate","proto":N}——与固件
+    /// VOICE_BLE_PROTO_VERSION、Windows BleProtocol 常量三端同步演进。
+    public static func protoNegotiatePayload() -> Data {
+        let payload = ["event": "proto_negotiate", "proto": kProtocolVersion] as [String: Any]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+    }
+
+    /// D9：本端支持的协议版本区间（见 protocol.md「Protocol version & negotiation」）。
+    public static let kProtocolVersion = 1
+    public static let kProtocolMinVersion = 1
 
     public static func interactionModePayload(_ mode: InteractionMode) -> Data {
         let payload = [

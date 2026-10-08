@@ -1202,11 +1202,27 @@ static void start_advertising_with_mode(bool fast)
 
 // 订阅成功后的初始状态帧串：device_info（能力/版本）+ encoder_status + gateway_status。
 // 桌面端靠这几帧完成能力登记与网关模式判定；正常在 MTU 协商完成后调用（见 SUBSCRIBE/MTU 分支）。
+// D9：协议版本小帧（独立发送以规避 device_info 的 MTU 预算，同 encoder_status
+// /gateway_status 先例）。桌面端解析 proto/min_proto 后记日志、出界即告警——
+// 消除「未来协议升级即静默不兼容」。
+esp_err_t voice_ble_send_proto_info(void)
+{
+    char json[96];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"proto_info\",\"proto\":%d,\"min_proto\":%d}",
+             VOICE_BLE_PROTO_VERSION, VOICE_BLE_PROTO_MIN_VERSION);
+    return send_state_json(json);
+}
+
 static void send_state_burst(void)
 {
     esp_err_t rc = voice_ble_send_device_info();
     if (rc != ESP_OK) {
         ESP_LOGW(TAG, "device_info send failed err=0x%x", rc);
+    }
+    rc = voice_ble_send_proto_info();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "proto_info send failed err=0x%x", rc);
     }
     rc = voice_ble_send_encoder_status();
     if (rc != ESP_OK) {
@@ -1612,7 +1628,7 @@ static esp_err_t send_state_json(const char *json)
                  json_len, att_mtu);
     }
     uint8_t header[4] = {
-        1,
+        VOICE_BLE_PROTO_VERSION,  // 帧首字节 version == 协议版本（D9）
         0x10,
         json_len & 0xff,
         json_len >> 8,

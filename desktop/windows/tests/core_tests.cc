@@ -152,6 +152,11 @@ public:
         (void)enabled;
         (void)device_id;
     }
+    void SendProtoNegotiate(const std::optional<std::string>& device_id) override {
+        proto_negotiate_count++;
+        (void)device_id;
+    }
+    int proto_negotiate_count = 0;
     void SendTapEnabled(bool enabled,
                         const std::optional<std::string>& device_id) override {
         sent_tap_enabled.push_back(std::pair{enabled, device_id});
@@ -1242,6 +1247,36 @@ void TestUiStateBudget() {
     std::string zs(long_zh.begin(), long_zh.end());
     assert(zs.find("\"state\":\"recording\"") != std::string::npos);
     assert(zs.size() >= 2 && zs[zs.size() - 1] == '}' && zs[zs.size() - 2] == '"');
+}
+
+// D9：协议版本协商——proto_info 解析 + proto_negotiate 构造 + 版本常量语义
+//（protocol.md「Protocol version & negotiation」；三端常量同步演进）。
+void TestProtoVersionNegotiation() {
+    const std::string json = R"({"event":"proto_info","proto":1,"min_proto":1})";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "proto_info");
+    assert(event->proto.value_or(-1) == BleProtocol::kProtocolVersion);
+    assert(event->min_proto.value_or(-1) == BleProtocol::kProtocolMinVersion);
+
+    // 桌面端上报帧：值取自同一常量（帧首字节与 JSON proto 同源）。
+    auto payload = BleProtocol::ProtoNegotiatePayload();
+    std::string sent(payload.begin(), payload.end());
+    assert(sent.find(R"("event":"proto_negotiate")") != std::string::npos);
+    assert(sent.find("\"proto\":" +
+                    std::to_string(BleProtocol::kProtocolVersion)) != std::string::npos);
+
+    // 非 proto_info 事件不带版本字段（缺省语义）。
+    const std::string other = R"({"event":"gateway_status","mode":"gateway"})";
+    ByteVector other_frame = {1, 0x10};
+    AppendLe16(other_frame, static_cast<std::uint16_t>(other.size()));
+    other_frame.insert(other_frame.end(), other.begin(), other.end());
+    auto other_event = BleProtocol::ParseStateEvent(other_frame);
+    assert(other_event.has_value() && !other_event->proto.has_value() &&
+           !other_event->min_proto.has_value());
 }
 
 void TestGatewayKeyStateParsing() {
@@ -16618,6 +16653,8 @@ int main() {
     TestContractFixtures();
     TestEncoderRotateStateParsing();
     printf(">> cluster: D10 gateway_keymap receipt parsing\n"); fflush(stdout);
+    printf(">> cluster: D9 proto version negotiation\n"); fflush(stdout);
+    TestProtoVersionNegotiation();
     TestGatewayKeymapReceiptParsing();
     printf(">> cluster: D14 ui_state frame budget\n"); fflush(stdout);
     TestUiStateBudget();

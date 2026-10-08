@@ -583,6 +583,15 @@ final class VoiceStickCoordinator {
             }
         case "gateway_key":
             handleGatewayKey(event)
+        case "proto_info":
+            // D9：设备协议版本——出界告警（把「未来升级静默不兼容」变成日志可见）。
+            let proto = event.proto ?? -1
+            let minProto = event.minProto ?? -1
+            if proto < BleProtocol.kProtocolMinVersion || proto > BleProtocol.kProtocolVersion {
+                NSLog("WARNING: device proto=\(proto) min=\(minProto) out of supported range [\(BleProtocol.kProtocolMinVersion),\(BleProtocol.kProtocolVersion)]")
+            } else {
+                NSLog("device proto=\(proto) min=\(minProto) (supported)")
+            }
         case "gateway_keymap":
             // A15：分片回执（seq/more，protocol.md）——攒到 more=false 才当完整表。
             if event.accumulateKeymap(into: &keymapReportPending) {

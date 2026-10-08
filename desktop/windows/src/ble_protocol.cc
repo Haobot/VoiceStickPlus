@@ -211,6 +211,11 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     // 网关路由回执（D10）：{"event":"gateway_keymap","routes":[{"key":"back",
     // "route":"software"}, ...]}——按本文件既有字符串扫描风格逐对象提取
     //（macOS 侧已解析；此前 Windows 丢弃 → 路由 UI 无法回显）。
+    if (event.event == "proto_info") {
+        // D9：{"event":"proto_info","proto":1,"min_proto":1} 独立小帧。
+        event.proto = JsonIntValue(json, "proto");
+        event.min_proto = JsonIntValue(json, "min_proto");
+    }
     if (event.event == "gateway_keymap") {
         // A15：分片字段（缺省 = 旧式完整单帧）。固件格式为 "seq":N、"more":true/false。
         if (const auto seq = JsonU32Value(json, "seq")) {
@@ -359,6 +364,12 @@ ByteVector BleProtocol::UiStatePayload(std::string_view state, std::string_view 
         text = TrimLastUtf8Codepoint(text);
         json = build(state, text);
     }
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::ProtoNegotiatePayload() {
+    const auto json = std::string("{\"event\":\"proto_negotiate\",\"proto\":") +
+                      std::to_string(kProtocolVersion) + "}";
     return ByteVector(json.begin(), json.end());
 }
 

@@ -59,7 +59,7 @@ All multibyte fields are little-endian.
 
 ```text
 struct StateBleFrame {
-  uint8_t  version;       // 1
+  uint8_t  version;       // 1 = protocol version (see "Protocol version & negotiation")
   uint8_t  type;          // 0x10 state
   uint16_t payload_len;
   uint8_t  json[payload_len];
@@ -96,6 +96,7 @@ Currently emitted state events:
 ```json
 {"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"interaction_modes":["hold_to_talk","click_to_talk"],"ui_states":["ready","recording","thinking","pending_confirmation","error","air_mouse"]}
 {"event":"encoder_status","present":true}
+{"event":"proto_info","proto":1,"min_proto":1}
 {"event":"battery_status","level":87,"charging":false,"usb_powered":true}
 {"event":"button_down","button":"primary","session_id":1234}
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
@@ -263,6 +264,14 @@ the gain/acceleration curve and integrates them into cursor motion. The int16 ra
 Motion frames are emitted only while air-mouse mode is enabled
 (see `air_mouse_enabled` control event). See `Doc/Plan/imu-air-mouse.md`.
 
+`proto_info` (D9) carries the firmware's protocol version: `proto` (identical
+  to the frame `version` byte) and `min_proto` (the oldest desktop version this
+  firmware still understands). It is a separate small frame included in the initial
+  state burst, and it is also the firmware's reply to every `proto_negotiate` —
+  so both directions of the version handshake are visible in logs instead of a
+  future upgrade failing silently. Semantics and evolution rules: see
+  "Protocol version & negotiation" below.
+
 Deprecated firmware-to-app events:
 
 | Event | Replacement | Reason |
@@ -270,6 +279,38 @@ Deprecated firmware-to-app events:
 | `press_start` | `button_down` with `button:"primary"` | The old name assumed the front button and implied recording semantics. |
 | `press_end` | `button_up` with `button:"primary"` | The old name implied recording semantics and did not include a button role. |
 | `cancel` | `button_down` / `button_up` with `button:"secondary"` | The old event encoded app meaning; the same button can cancel, restore, or be ignored depending on app state. |
+
+## Protocol Version & Negotiation
+
+Two coupled numbers, kept equal by contract:
+
+- **Frame byte 0** (`version` in every `state`/`audio`/`ota` frame): the wire
+  frame layout generation. Hardcoded `1` on all three ends today
+  (firmware `VOICE_BLE_PROTO_VERSION`, Windows `BleProtocol`, macOS
+  `BleProtocol`).
+- **`proto` in JSON events**: the semantic version carried by `proto_info`
+  (device → desktop) and `proto_negotiate` (desktop → device).
+
+Negotiation flow, on every connection:
+
+1. After state subscription (post deferred-MTU burst) the firmware includes
+   `{"event":"proto_info","proto":1,"min_proto":1}`.
+2. The desktop announces its own version with
+   `{"event":"proto_negotiate","proto":1}` on `control_rx`.
+3. The firmware always answers with `proto_info`, warning when the desktop's
+   value is outside `[min_proto, proto]`; desktops warn on receipt when the
+   device's value is outside their own supported range.
+
+Evolution rules:
+
+- **Backward-compatible additions** (new optional JSON fields/events): change no
+  version — parsers must ignore unknown fields and events (all three ends do).
+- **Breaking changes** (field removed/renamed/meaning changes or frame byte
+  change): bump the shared constants on firmware + both desktops **in one
+  change** (red line: protocol changes update this file and every
+  implementation), widen `min_proto` only while old counterparts can still be
+  served, and keep the out-of-range warnings **loud** — this chapter exists so
+  that a future upgrade can never be quietly incompatible.
 
 ## Control Event
 
@@ -302,6 +343,7 @@ Current desktop events:
 {"event":"battery_status_request"}
 {"event":"remote_button_down","button":"primary","source":"global_hotkey","request_id":7}
 {"event":"test_playback","file":"lab_sample.pcm"}
+{"event":"proto_negotiate","proto":1}
 {"event":"remote_button_up","button":"primary","source":"global_hotkey","request_id":7}
 ```
 
@@ -325,6 +367,7 @@ Current desktop events:
 | `gateway_select_target` | `self`: boolean | `index`: integer | `clear`: boolean | Desktop -> StickS3 | Gateway mode (P1 switcher): chooses which bonded desktop is allowed to hold the peripheral link. `self:true` = "make this PC (the currently connected peer) the target" (the firmware resolves the index itself — the desktop cannot know its own identity address); `index:N` = pick entry N of the on-device target table (automation); `clear:true` = drop the restriction (any bonded PC may connect, the default). A switch disconnects the current target, re-advertises, and accepts only the selected peer; non-selected peers are disconnected on connect. The Xiaomi (central) link is never touched. Persisted? No — the selection is runtime state and resets to "unrestricted" on reboot. |
 | `gateway_target_info` | `name`: string (≤23 bytes) | Desktop -> StickS3 | Gateway mode (P1 switcher, `Doc/Plan/xiaomi-gateway-p1-switcher.md`): the desktop reports its own display name (Windows computer name) so the firmware can label this PC in its target table. The firmware binds the name to the **identity address of the currently connected peer** (the desktop cannot know its own identity address) and persists it in NVS. Names longer than 23 bytes are rejected; unknown/absent name is ignored. |
 | `test_playback` | `file`: string | Desktop -> StickS3 | **Test/debug control (L3 end-to-end replay), not part of normal user flows.** Points audio capture at a pre-recorded PCM file in the SPIFFS root so the whole pipeline runs without the microphone; `file` empty/absent restores ES8311 capture. The filename must be a bare name — path separators (`/`/\`) and `..` are rejected (a connected peer must not gain an arbitrary-path read primitive). Restricting this control to debug builds is tracked as P0-2. |
+| `proto_negotiate` | `proto`: integer | Desktop -> StickS3 | D9: the desktop announces its supported protocol version; the firmware always replies with a `proto_info` state event and logs a warning when the value is outside `[min_proto, proto]`. See "Protocol version & negotiation". |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as

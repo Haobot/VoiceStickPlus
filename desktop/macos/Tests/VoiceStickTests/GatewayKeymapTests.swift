@@ -8,6 +8,36 @@ import VoiceStickCore
 // A14：ui_state 帧预算（ATT MTU247-3=244B，protocol.md）——超长 text 按**字符边界**
 // 截断（String.dropLast 不切 UTF-8）、state 恒完整；原发送端零校验 → 固件 512B 缓冲
 // 截出半截 JSON → 整帧丢（设备屏卡 thinking）。
+// D9：协议版本协商（protocol.md「Protocol version & negotiation」）——
+// proto_info 解析 + proto_negotiate 构造 + 三端常量同源。
+func runProtoNegotiationTests() {
+    let infoJson = #"{"event":"proto_info","proto":1,"min_proto":1}"#
+    let frame = stateFrameBytes(infoJson)
+    let info = BleProtocol.parseStateEvent(frame)
+    checkNotNil(info, "D9: proto_info 解析")
+    check(info?.proto == BleProtocol.kProtocolVersion, "D9: proto == kProtocolVersion")
+    check(info?.minProto == BleProtocol.kProtocolMinVersion, "D9: min_proto == kProtocolMinVersion")
+
+    let payload = BleProtocol.protoNegotiatePayload()
+    let sent = String(data: payload, encoding: .utf8) ?? ""
+    check(sent.contains(#""event":"proto_negotiate""#), "D9: 上报帧事件名")
+    check(sent.contains(#""proto":\#(BleProtocol.kProtocolVersion)"#), "D9: 上报帧值取自常量")
+
+    // 非 proto_info 事件不带版本字段。
+    let other = BleProtocol.parseStateEvent(stateFrameBytes(#"{"event":"gateway_status","mode":"gateway"}"#))
+    check(other?.proto == nil && other?.minProto == nil, "D9: 非该事件无版本字段")
+}
+
+// D9/D14 共用的 state 帧构造（{1,0x10}+LE16+JSON）。
+private func stateFrameBytes(_ json: String) -> Data {
+    var d = Data([1, 0x10])
+    let bytes = Array(json.utf8)
+    d.append(UInt8(bytes.count & 0xff))
+    d.append(UInt8((bytes.count >> 8) & 0xff))
+    d.append(contentsOf: bytes)
+    return d
+}
+
 func runUiStateBudgetTests() {
     let ok = BleProtocol.uiStatePayload(state: "thinking", text: "ok")
     let okStr = String(data: ok, encoding: .utf8) ?? ""

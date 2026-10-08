@@ -121,6 +121,8 @@ void VoiceStickCoordinator::Start() {
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
         ble_->SendShowImuDebug(ConfigSnapshot()->show_imu_debug, std::nullopt);
+        // D9：连接即上报本端协议版本，设备恒以 proto_info 应答（双向可见）。
+        ble_->SendProtoNegotiate(std::nullopt);
         // 设备交互设置按设备覆盖：逐设备取其有效配置单播（无覆盖设备收到全局默认值，
         // 与旧广播行为等价）。小米遥控器无 IMU/敲击硬件，跳过（BLE 层另有按类门控兜底）。
         for (const auto& dev : devices) {
@@ -702,6 +704,21 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
         // P1 隧道融合：网关软件路由键沿（设备归属由固件保证，无需 BREAK 佐证）。
         if (on_gateway_key && !event.gateway_key.empty()) {
             on_gateway_key(event.gateway_key, event.gateway_pressed.value_or(false));
+        }
+    } else if (event.event == "proto_info") {
+        // D9：设备协议版本——出界 WARN（把「未来升级静默不兼容」变成日志可见），界内 INFO。
+        const int proto = event.proto.value_or(-1);
+        const int min_proto = event.min_proto.value_or(-1);
+        if (proto < BleProtocol::kProtocolMinVersion ||
+            proto > BleProtocol::kProtocolVersion) {
+            LogCoordinatorLine("WARNING: device proto=" + std::to_string(proto) +
+                               " min=" + std::to_string(min_proto) +
+                               " out of supported range [" +
+                               std::to_string(BleProtocol::kProtocolMinVersion) + "," +
+                               std::to_string(BleProtocol::kProtocolVersion) + "]");
+        } else {
+            LogCoordinatorLine("device proto=" + std::to_string(proto) +
+                               " min=" + std::to_string(min_proto) + " (supported)");
         }
     } else if (event.event == "gateway_keymap") {
         // D10 解析 + A15 分片累计（seq/more，protocol.md）：13 键全表超单帧预算，

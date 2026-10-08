@@ -272,6 +272,21 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
     }
 
+    /// D9：连接（控制特征就绪）即上报本端协议版本；设备恒以 proto_info 应答，
+    /// 出界双方各自告警（protocol.md「Protocol version & negotiation」）。
+    func sendProtoNegotiate(to peripheralID: UUID? = nil) {
+        let data = BleProtocol.protoNegotiatePayload()
+        if let peripheralID {
+            if let characteristic = controlCharacteristics[peripheralID] {
+                peripherals[peripheralID]?.writeValue(data, for: characteristic, type: .withoutResponse)
+            }
+            return
+        }
+        for (id, characteristic) in controlCharacteristics {
+            peripherals[id]?.writeValue(data, for: characteristic, type: .withoutResponse)
+        }
+    }
+
     func updateFirmware(image: Data, for deviceID: String,
                         progress: @escaping (FirmwareUpdateProgress) -> Void,
                         completion: @escaping (Result<Void, Error>) -> Void) {
@@ -537,6 +552,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 sendUIState("ready", to: peripheral.identifier)
                 sendInteractionMode(interactionMode, to: peripheral.identifier)
                 sendShowIMUDebug(showIMUDebug, to: peripheral.identifier)
+                sendProtoNegotiate(to: peripheral.identifier)
             case BleProtocol.otaRXUUID:
                 otaCharacteristics[peripheral.identifier] = characteristic
             case BleProtocol.otaStateUUID:
