@@ -102,7 +102,13 @@ device_confirmed_written.store（窗口推进+停转检测的动力源）被连�
 
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
-| C1 | 试用锚点/防回拨冗余到注册表/DPAPI（删 config 不重置） | open | 9-22 未复核 |
+| C1 | 试用锚点/防回拨冗余到注册表/DPAPI（删 config 不重置） | **closed（10-08 复核=不成立，加固意图转拍板）** |
+双证澄清：1) 现码=纯 config 单存储——trial_anchor_days/last_seen_days 均在 [license] 段（app_config 读 734/739、写 1079/1082），
+license_runtime 经 config_ 地址直写；2) 注册表全库仅 Run 键（启动项 2403-2437 与授权无关）、
+CryptProtectData/DPAPI 在 desktop/windows 全树 git 搜索 0 命中、-S 演化史=离线授权 Task3-8 从未出现冗余形态 →
+原述「冗余到注册表/DPAPI」从未实现，前提不成立。**底层加固意图（防删 config 重置试用=现行可重置）未实现**→
+转产品拍板：若要防篡改，方案=注册表镜像锚点/last_seen（DPAPI 包 device_ids+MachineGuid+days）加载取 min 合并；
+试用防篡改属授权强度取舍（现行为对正版激活无影响——.lic 独立验签）。 |
 | C2 | 授权绑定改「已配对 ∪ 已连接」持久集合（设备离线不断供） | **closed（10-08）** | 新增共享纯函数 `LicenseBindingDevices(connected, paired)`（`license.cc`，归一化+去重+连接侧在前）；**两处**独立构造点同改——`LicenseRuntime::NormalizedDeviceIds`（原只用 `ConnectedDeviceIds`）与 settings 对话框状态刷新/串码激活（原用本地 `NormalizedLicenseDevices`，已删除并统一）；语义：付费用户设备关机/休眠不再被判 `kWrongBinding` 跌回试用、本地麦不再被误闸；**无安全降级**（配对要求设备曾实际到场，仍须 `machine_guid` 匹配）；回归 `TestLicenseBindingDevicesUnion`（并集/归一化/去重 + 离线配对可验签 + 未连接未配对仍拒） |
 | C3 | `DateToDays` uint32 下溢 → int64 | **closed（10-08，按钳位落地）** | 纪元（2026-01-01）前日期在 `days - kLicenseEpochDays` 处为负，转 uint32 下溢成 ~42.9 亿 → ①有效年卡被 `now >= expiry` 误判过期；②`last_seen > now` 恒假致回拨检测完全失效。按评审「显式处理负值」改为**钳到 0**（语义「不早于纪元」：now=0 时年卡不过期、last_seen(>0)>now 能识别回拨并交既有宽限机制按大幅回拨处理）——存储域本就是「自 2026-01-01 的 uint32」，钳位比改 int64 更小且不动配置 schema。回归 `TestLicenseDateToDaysPreEpoch` |
 | C4 | 固件 OTA manifest detached 签名 + 下载超时/上限/https-only | open | 9-22 未复核 |
