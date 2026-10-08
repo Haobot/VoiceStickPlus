@@ -45,6 +45,8 @@ static const char *TAG = "voice_stick";
 #define POWEROFF_TIMEOUT_MS (5 * 60 * 1000)    // T_pwr：S2 ScreenOff → S3 PowerOff（连接态）
 #define DISC_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)  // T_disc：BLE 断连 → S3 PowerOff
 #define USB_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)   // T_usb：usb_auto_off 开启时的供电态关机时长
+// A6：rollback 签到延后窗口——新固件稳定运行这么久后才 mark_app_valid。
+#define ROLLBACK_SIGNOFF_DELAY_MS (15 * 1000)
 #define DISPLAY_ACTIVE_BRIGHTNESS 20
 #define DISPLAY_DIM_BRIGHTNESS 4
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
@@ -3233,6 +3235,26 @@ static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity)
     nvs_close(handle);
 }
 
+// A6：rollback 签到延后的一次性定时器（定义在 app_main 前）。
+static esp_timer_handle_t s_rollback_signoff_timer;
+
+static void rollback_signoff_timer_cb(void *arg)
+{
+    (void)arg;
+    // boot 无条件 mark 会让「能启动但不健康」的新固件立即被背书，坏固件永不回滚
+    //（评审 A6）。延后窗口内任何复位 → 仍处 PENDING_VERIFY → bootloader 回滚到上一版。
+    // 手动 ota_commit（control_rx）仍可立即签到，作为逃生门。
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "rollback signoff after %d ms stable uptime (A6)",
+                 ROLLBACK_SIGNOFF_DELAY_MS);
+    } else if (err == ESP_ERR_NOT_SUPPORTED || err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGD(TAG, "rollback signoff no-op: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGW(TAG, "rollback signoff failed: %s", esp_err_to_name(err));
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "boot reset_reason=%d wakeup_cause=%d ext1_status=0x%llx",
@@ -3345,16 +3367,34 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Voice Stick booted");
 
-    // OTA rollback 签到（CONFIG_APP_ROLLBACK_ENABLE=y）：新固件首次启动处于
-    // PENDING_VERIFY，必须签到否则 bootloader 超时回滚。BLE OTA 与 COM 口烧录的
-    // OTA 都依赖此签到，故 boot 时无条件直接 mark_app_valid_cancel_rollback。
-    esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
-    if (mark_err == ESP_OK) {
-        ESP_LOGI(TAG, "mark_app_valid_cancel_rollback ok");
-    } else if (mark_err == ESP_ERR_NOT_SUPPORTED || mark_err == ESP_ERR_INVALID_STATE) {
-        ESP_LOGD(TAG, "mark_valid no-op: %s", esp_err_to_name(mark_err));
+    // A6：rollback 签到**延后**——原 boot 无条件 mark 让「能启动但不健康」的
+    // 新固件立即被背书，坏固件永不回滚（评审 A6）。改为一次性定时器：稳定运行
+    // ROLLBACK_SIGNOFF_DELAY_MS 后签到；窗口内复位则保持 PENDING_VERIFY →
+    // bootloader 回滚。BLE OTA 与 COM 口烧录同样受益；手动 ota_commit 仍即时签到。
+    // 定时器创建/启动任一失败 → 回退旧行为（立即签到）并大声报错：宁可退回
+    //「坏固件不回滚」也不能让健康固件因超时被误回滚。
+    const esp_timer_create_args_t rollback_args = {
+        .callback = rollback_signoff_timer_cb,
+        .name = "rollback_signoff",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_handle_t rollback_timer = NULL;
+    esp_err_t rollback_err = esp_timer_create(&rollback_args, &rollback_timer);
+    if (rollback_err == ESP_OK) {
+        rollback_err = esp_timer_start_once(rollback_timer,
+                                            ROLLBACK_SIGNOFF_DELAY_MS * 1000);
+    }
+    if (rollback_err == ESP_OK) {
+        ESP_LOGI(TAG, "rollback signoff scheduled in %d ms (A6)",
+                 ROLLBACK_SIGNOFF_DELAY_MS);
     } else {
-        ESP_LOGW(TAG, "mark_valid failed: %s", esp_err_to_name(mark_err));
+        ESP_LOGE(TAG, "rollback signoff timer failed (%s); falling back to immediate mark",
+                 esp_err_to_name(rollback_err));
+        esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
+        if (mark_err != ESP_OK && mark_err != ESP_ERR_NOT_SUPPORTED &&
+            mark_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "mark_valid failed: %s", esp_err_to_name(mark_err));
+        }
     }
 
     update_battery_status();

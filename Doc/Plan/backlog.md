@@ -30,8 +30,9 @@
 | A3 | STREAMING 无音频看门狗（合成 PRESS_UP 收尾） | open（需真机判定门槛） | 10-08 勘察：`tick` 确无 STREAMING 分支、`SESSION_IDLE_REHANDSHAKE_MS=0` 是**有意停用**（真机实证：周期性 TX 写/会话重置疑似打断小米输入推送状态机）→ 不能靠重握手自愈。可行设计=「STREAMING 中无入站 N 秒 → 合成 PRESS_UP + finalize」，但**门槛取决于遥控器开麦后是否连续推流**：若 VAD 门控，长静默会误收尾（切断真实口述）——**需真机确认推流连续性后再定 N**，否则有误伤风险 |
 | A4 | `voice_ble` 多连接表（按 conn_handle 维护 peer，替换单值） | **closed（10-08，核心）** | 新增纯 C `voice_ble/conn_table`（宿主单测 5/5 本地 `cc` 通过，含 stale 断连回归）；`voice_ble.c` CONNECT/DISCONNECT/SUBSCRIBE 按 handle 记账——断开只清本链路、**入站归零才发 peer/connection false**（stale 断连不再误清 `current_peer`）、SUBSCRIBE 表补录替代单值覆盖；镜像派生使全部发送/门控点零改动；CONN_UPDATE/MTU 按应用链路守卫；Hub 红线三条同文更新 |
 | A4b | A4 余项：**双入站广播放开**（现仍首连即停播，OS-HID+app 并存与 sdkconfig 三链路设计意图未对齐——放开涉及功耗权衡需产品决策）+ 切换器动作携带对端身份（9-22 §366 后半）+ 真机回归（入侵者连接/断开不污染切换器、双机切换 100%） | open（产品决策 + 真机） | 10-08 立项：A4 只落连接表/按 handle 语义/回调转换，广播策略未动 |
-| A6 | OTA 错误路径统一 `esp_ota_abort` + `ota_clear_state`；rollback 签到延后 | open | 9-22 未复核 |
+| A6 | OTA 错误路径统一 `esp_ota_abort` + `ota_clear_state`；rollback 签到延后 | **closed（10-08）** | ① **错误不清理实锤**：`ota_write_data` 的 `bad_offset`/`write_failed` 与 `ota_finish` 的 `incomplete` 发完 error 后 `s_ota.active` 残留 → `voice_ble_ota_is_active()` 恒真 → **录音/关机被永久拒绝**；新增 `ota_fail_terminal()`（send_error + `esp_ota_abort` + `ota_clear_state`）统一三处，**明确排除** `not_active`/transfer 不匹配（D7：可能属另一条在飞传输）与 `end_failed`/`set_boot_failed`（`esp_ota_end` 已消费 handle，再 abort 反而 UB——原路径已正确清理）。② **rollback 签到延后**：boot 无条件 `mark_app_valid` 使「能启动但不健康」的固件立即被背书、坏固件永不回滚 → 改一次性 esp_timer **15s 稳定运行后签到**，窗口内复位保持 PENDING_VERIFY → bootloader 回滚；定时器创建/启动失败**回退旧行为**（宁可坏固件不回滚，也不让健康固件因超时被误回滚）；手动 `ota_commit` 仍即时签到作逃生门。③ 评审三合一中「录音/OTA 互斥非原子」未含本行 → **A6b 单列** |
 | A7 | app_event 关键事件处理 | **partial** | 10-07 抽查：`main.c:764` 关键标记 + 20ms 等待 + 日志已在；重试/计数上报未见 |
+| A6b | 录音/OTA 互斥非原子（录音中触发 OTA begin 的 cache-disable 窗口） | open（需跨模块 API + 真机复现） | 10-08 从 A6 核出：现有门是**单向**的（`voice_ble_ota_is_active()` 阻录音），反向无门——`voice_ble.h` 不导出任何 streaming 状态，main 无法在 OTA begin 前拒绝；需新增 `voice_ble_set_streaming(bool)`（main 在 start/stop_recording 调用）+ `ota_begin` 入口拒绝，并真机复现 cache-disable 崩溃窗口确认生效 |
 | A8 | audio_task 错误分支热循环 → Task WDT（失败退避 + 主动收尾） | open | 9-22 未复核 |
 | A9 | esp_timer 任务当工作队列：I2C 轮询与硬件初始化移出 timer | open | 9-22 未复核 |
 | A10 | 编码器降级不可恢复 + I2C 总线泄漏 | open | 9-22 未复核 |
@@ -131,6 +132,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **A6 关闭**：OTA 三处终局错误（bad_offset/write_failed/incomplete）统一 `ota_fail_terminal` 清理（原 active 残留→录音/关机永久拒绝）；rollback 签到延后 15s（坏固件不再被 boot 即刻背书，失败回退旧行为）；互斥非原子拆出 A6b | 本地 host `run_tests.py` **7/7**；CI 七 job（固件编译 voice_ble.c + main.c 改动） |
 | 2026-10-08 | **A1 关闭 + A2 关闭（代码层）**：A1 ERROR 死端 → 冷却5s 自动重发 GET_CAPS（抽 `begin_caps_request` 公共）；A2 发现死端 DONE → 回置 SVCS 复用看门狗4s 整链重试 + 60s 限频「ATVV 不可用」上报；A3 勘察后留真机（推流连续性未知，防误收尾） | A1 回归 `test_session_error_cooldown_retry`；本地 `run_tests.py` **7/7**；CI 七 job（固件编译覆盖 A2） |
 | 2026-10-08 | **C8b 关闭（逐子项）**：`hotword_candidates.json` 路径 4 处字面量收敛为 `HotwordCandidatesPath()` 单一出处；i18n 键集合对拍复核确认早已就位；f5 子项归 B15 | `TestHotwordCandidatesSingleWriter` 追加路径推导断言；CI 七 job（Windows ctest） |
 | 2026-10-08 | **E3 关闭**：macOS 更新链三处静默降级全部 fail-hard（占位公钥/签名失败/公证跳过），签名永不落错误文本、格式校验、公证跳过需显式放行 | 本地 `bash -n` + 抽取真实脚本块注入用例（sign 3 例 + 公证 3 例）全过；bash 脚本不经 CI，本地验证为唯一证据 |

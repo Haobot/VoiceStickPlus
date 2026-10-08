@@ -249,6 +249,20 @@ static void ota_send_error(const char *code, esp_err_t err)
     voice_ble_request_slow_interval();
 }
 
+// A6：终局错误统一 abort + 清状态——原实现发完 error 后 s_ota.active 残留，
+// voice_ble_ota_is_active() 恒真 → 录音/关机被永久拒绝（评审「一次 OTA 报错后
+// 永久拒绝录音/关机」）。仅用于本传输已失步/不可续的错误；not_active 与
+// transfer 不匹配（D7）不得走此路径——那可能属于另一条在飞传输。
+static void ota_fail_terminal(const char *code, esp_err_t err)
+{
+    ota_send_error(code, err);
+    if (s_ota.active) {
+        (void)esp_ota_abort(s_ota.handle);
+        ota_clear_state();
+        ESP_LOGW(TAG, "OTA %s: transfer aborted, state cleared (A6)", code);
+    }
+}
+
 static int ota_begin(uint32_t transfer_id, uint32_t image_size)
 {
     if (s_ota.active) {
@@ -315,7 +329,8 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
     if (offset != s_ota.written ||
         payload_len == 0 ||
         s_ota.written + payload_len > s_ota.image_size) {
-        ota_send_error("bad_offset", ESP_ERR_INVALID_ARG);
+        // A6：偏移失步即终局（桌面端不会回退重排），清状态避免 active 残留。
+        ota_fail_terminal("bad_offset", ESP_ERR_INVALID_ARG);
         return BLE_ATT_ERR_INVALID_OFFSET;
     }
 
@@ -330,7 +345,8 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
     const int64_t write_us = esp_timer_get_time() - cb_enter_us;
     if (write_us > s_ota.write_max_us) s_ota.write_max_us = write_us;
     if (err != ESP_OK) {
-        ota_send_error("write_failed", err);
+        // A6：闪存写失败不可续传，终局清理（否则 active 残留永久锁死录音/关机）。
+        ota_fail_terminal("write_failed", err);
         return BLE_ATT_ERR_UNLIKELY;
     }
 
@@ -366,7 +382,8 @@ static int ota_finish(uint32_t transfer_id, uint32_t image_size)
         return BLE_ATT_ERR_UNLIKELY;
     }
     if (image_size != s_ota.image_size || s_ota.written != s_ota.image_size) {
-        ota_send_error("incomplete", ESP_ERR_INVALID_SIZE);
+        // A6：END 已到且长度不符 = 终局（桌面端不会再补数据），清状态。
+        ota_fail_terminal("incomplete", ESP_ERR_INVALID_SIZE);
         return BLE_ATT_ERR_UNLIKELY;
     }
 
