@@ -9,3 +9,6 @@ void RunCoordinatorBatchTests();
 
 // N8 cut4：协调器第二批（17 测连续段）。
 void RunCoordinatorBatch2Tests();
+
+// N8 cut5：协调器第三批（11 测连续段，注册与他域交错、按名逐删）。
+void RunCoordinatorBatch3Tests();

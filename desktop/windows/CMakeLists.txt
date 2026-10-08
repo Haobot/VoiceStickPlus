@@ -464,6 +464,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_coordinator.cc
     # N8 cut4: coordinator batch 2 (17 tests)
     tests/core_tests_coordinator2.cc
+    # N8 cut5: coordinator batch 3 (11 tests)
+    tests/core_tests_coordinator3.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入
