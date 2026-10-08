@@ -345,15 +345,15 @@ public:
     // 卡死 WeType finalize（真机定案，见 Doc/Expe/ 同日新文）。
     bool WechatSessionUsesDefaultMicDirectly(const std::string& device_id);
     void UpdateConfig(AppConfig config);
-private:
-    // 网关按键路由下发（P1）：对该设备逐键同步软件路由/直通（见 .cc 注释）。
-    void PushGatewayKeymapRoutesFor(const std::string& device_id);
     // D10b：最近一次完整路由回执（打开键位映射对话框时回显）。
     const std::vector<StateEvent::KeyRoute>& LastGatewayKeymapReport() const {
         return keymap_report_routes_;
     }
     // D10b：向设备请求当前路由表（打开对话框时拉取；回执分片回流）。
     void RequestGatewayKeymapReport();
+private:
+    // 网关按键路由下发（P1）：对该设备逐键同步软件路由/直通（见 .cc 注释）。
+    void PushGatewayKeymapRoutesFor(const std::string& device_id);
     // A15：gateway_keymap 分片回执的未完成累计（seq0 起攒，more=false 收口）。
     std::vector<StateEvent::KeyRoute> keymap_report_pending_;
     // D10b：收口后的完整表**留存**（打开对话框回显；原攒完即清 UI 无从取）。
