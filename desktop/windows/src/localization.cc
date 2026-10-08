@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kPairOsBondOptionalFailed) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionHotwordInvalidBody) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -312,6 +312,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "No selectable text was found.";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "Selection Too Long";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "Selection is too long to be a hotword and was ignored.";
+    table[Index(StringId::kSelectionHotwordInvalidTitle)] = "Invalid Hotword";
+    table[Index(StringId::kSelectionHotwordInvalidBody)] =
+        "Selection has unsupported characters or exceeds the hotword limits; ignored: ";
     table[Index(StringId::kHotwordCandidateNotifyTitle)] = "Hotword Suggestion";
     table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
         " was corrected repeatedly. Review it in Settings - Hotwords.";
@@ -798,6 +801,9 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "未找到可划选的文本。";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "选区过长";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "选区过长不适合作为热词，已忽略。";
+    table[Index(StringId::kSelectionHotwordInvalidTitle)] = "非法热词";
+    table[Index(StringId::kSelectionHotwordInvalidBody)] =
+        "选区含不支持的字符或超出热词限制，已忽略：";
     table[Index(StringId::kHotwordCandidateNotifyTitle)] = "热词候选建议";
     table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
         " 反复被精修纠正，可在设置-热词中确认加入。";

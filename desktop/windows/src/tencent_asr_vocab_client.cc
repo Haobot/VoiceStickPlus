@@ -1,5 +1,7 @@
 #include "tencent_asr_vocab_client.h"
 
+#include "hotword_selector.h"  // ValidateHotword（B14 统一口径）
+
 #include "cJSON.h"
 
 #include "log.h"
@@ -389,16 +391,9 @@ std::string TencentAsrVocabClient::FindVocabId(const std::string& name) {
 }
 
 bool TencentAsrVocabClient::IsValidHotwordChars(std::string_view word) {
-    if (word.empty()) return false;
-    for (const unsigned char c : word) {
-        if (c >= 0x80) continue;  // UTF-8 多字节序列（CJK 等）放行
-        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') || c == '_' || c == '-') {
-            continue;
-        }
-        return false;  // '.'、空格及其余 ASCII 标点腾讯词表 API 会拒绝
-    }
-    return true;
+    // B14：口径统一到 hotword_selector::ValidateHotword——原实现无长度/CJK 上限且对
+    // 孤立续字节放行，与其余三处分歧导致「加进去但不生效」。
+    return ValidateHotword(word) == HotwordRejectReason::kNone;
 }
 
 std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& hotwords) {

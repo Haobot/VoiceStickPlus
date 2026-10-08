@@ -480,6 +480,11 @@ enum class StringId {
 
     // VS 设备配对时系统级配对失败（软前置降级）：提示补救方式但继续配对
     kPairOsBondOptionalFailed,
+
+    // B14：热词统一口径（hotword_selector::ValidateHotword）的拒绝提示——原四处各写
+    // 一套规则，"加进去但不生效"且无提示。
+    kSelectionHotwordInvalidTitle,  // "Invalid Hotword" / "非法热词"
+    kSelectionHotwordInvalidBody,   // 说明字符/长度原因 + 追加原文
 };
 
 // 返回 UTF-8 本地化文本

@@ -33,26 +33,35 @@ bool ContainsCaseInsensitive(const std::string& text, const std::string& needle)
 
 } // namespace
 
-bool IsValidHotword(const std::string& word) {
-    if (word.empty()) return false;
+HotwordRejectReason ValidateHotword(std::string_view word) {
+    if (word.empty()) return HotwordRejectReason::kEmpty;
     int cjk = 0;
     int ascii = 0;
     for (std::size_t i = 0; i < word.size();) {
         const auto lead = static_cast<unsigned char>(word[i]);
         if (lead < 0x80) {
-            if (std::isspace(lead) != 0) return false;
+            if (std::isspace(lead) != 0) return HotwordRejectReason::kWhitespace;
+            const bool allowed = (lead >= '0' && lead <= '9') || (lead >= 'a' && lead <= 'z') ||
+                                 (lead >= 'A' && lead <= 'Z') || lead == '_' || lead == '-';
+            if (!allowed) return HotwordRejectReason::kCharset;
             ++ascii;
             ++i;
         } else {
-            std::size_t seq_len = 1;
+            std::size_t seq_len = 0;
             if ((lead & 0xe0) == 0xc0) seq_len = 2;
             else if ((lead & 0xf0) == 0xe0) seq_len = 3;
             else if ((lead & 0xf8) == 0xf0) seq_len = 4;
+            else return HotwordRejectReason::kCharset;  // 孤立续字节/非法 lead：非合法 UTF-8
             ++cjk;
             i += seq_len;
         }
     }
-    return cjk <= 10 && ascii <= 30;
+    if (cjk > 10 || ascii > 30) return HotwordRejectReason::kTooLong;
+    return HotwordRejectReason::kNone;
+}
+
+bool IsValidHotword(const std::string& word) {
+    return ValidateHotword(word) == HotwordRejectReason::kNone;
 }
 
 double HotwordScore(const HotwordUsage& usage, std::int64_t now_s) {

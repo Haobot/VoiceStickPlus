@@ -72,6 +72,7 @@ public:
         int rejected_not_in_text = 0;  // 未在原文出现（防臆造）
         int rejected_hotword = 0;    // 已在热词表
         int rejected_dup = 0;        // 重复候选
+        int rejected_invalid = 0;    // 不过统一热词口径（B14 ValidateHotword）
     };
 
     // 提炼结果解析（纯函数可单测）：容错截取首个 JSON 数组，逐条过滤——

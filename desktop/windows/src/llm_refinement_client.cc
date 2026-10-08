@@ -1,5 +1,7 @@
 #include "llm_refinement_client.h"
 
+#include "hotword_selector.h"  // ValidateHotword（B14 统一口径）
+
 #include "cJSON.h"
 
 #include <algorithm>
@@ -292,6 +294,12 @@ std::vector<std::string> LLMRefinementClient::ParseHotwordExtractionResponse(
         }
         if (word_count > 3) {
             if (stats) ++stats->rejected_words;
+            continue;
+        }
+        // B14：过统一热词口径——原 LLM 提炼路径自成一套（只查长度/词数），会产出
+        // 配置端/腾讯端都会丢弃的候选。
+        if (ValidateHotword(word) != HotwordRejectReason::kNone) {
+            if (stats) ++stats->rejected_invalid;
             continue;
         }
         // 防臆造：候选必须在原文中实际出现（忽略大小写与空白差异）。

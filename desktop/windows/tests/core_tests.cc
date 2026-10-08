@@ -2263,6 +2263,40 @@ void TestHotwordCandidateMiner() {
     assert(LoadHotwordCandidates(temp).counts.empty());
 }
 
+void TestHotwordValidationUnified() {
+    // B14：四套口径统一到 ValidateHotword——断言拒绝原因 + 既有两个布尔包装完全一致。
+    assert(ValidateHotword("Opus") == HotwordRejectReason::kNone);
+    assert(ValidateHotword("覃海洋") == HotwordRejectReason::kNone);
+    assert(ValidateHotword("ESP32-S3") == HotwordRejectReason::kNone);
+    assert(ValidateHotword("win_sparkle") == HotwordRejectReason::kNone);
+    assert(ValidateHotword("") == HotwordRejectReason::kEmpty);
+    assert(ValidateHotword("带空格 的词") == HotwordRejectReason::kWhitespace);
+    assert(ValidateHotword("hello world") == HotwordRejectReason::kWhitespace);
+    // 原分歧点：hello.world 由①（selector）放行、④（腾讯）拒绝 →「加进去但不生效」。
+    assert(ValidateHotword("CLAUDE.md") == HotwordRejectReason::kCharset);
+    assert(ValidateHotword("hello.world") == HotwordRejectReason::kCharset);
+    // 孤立续字节：原①当 seq_len=1 计入 CJK、原④直接放行——现统一拒绝非法 UTF-8。
+    assert(ValidateHotword(std::string("a\x80z")) == HotwordRejectReason::kCharset);
+    std::string cjk_too_long;  // 11 个真实 CJK 字符（勿用 std::string(n, '热')：多字节
+    for (int i = 0; i < 11; ++i) {  // 字符字面量会被截断成单字节，验的就不是长度规则）
+        cjk_too_long += "\xE7\x83\xAD";
+    }
+    assert(ValidateHotword(cjk_too_long) == HotwordRejectReason::kTooLong);
+    assert(ValidateHotword(std::string(31, 'a')) == HotwordRejectReason::kTooLong);
+
+    // 统一性对拍：selector 与腾讯两个既有包装在整份语料上必须给出完全相同的判定。
+    const std::vector<std::string> corpus = {
+        "Opus", "覃海洋", "ESP32-S3", "VB-CABLE", "win_sparkle", "CLAUDE.md",
+        "AGENTS.md", "带空格 的词", "", "hello.world", "a-b_c",
+        "Node.js", "中文中文中文中文中文中文", "tab\there", "ok_123", "..hidden"};
+    for (const auto& word : corpus) {
+        assert(IsValidHotword(word) == TencentAsrVocabClient::IsValidHotwordChars(word));
+    }
+    // 明确回归：两处都必须拒绝（原①放行、④拒绝的分歧已消除）。
+    assert(!IsValidHotword("hello.world"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars("hello.world"));
+}
+
 void TestHotwordSelector() {
     const std::int64_t now = 1760000000;  // 固定 now，保证确定性
 
@@ -16463,6 +16497,8 @@ int main() {
     TestOggMuxer();
     TestAsrProtocol();
     TestAsrHotwordCorpusBudget();
+    printf(">> cluster: B14 hotword validation unified\n"); fflush(stdout);
+    TestHotwordValidationUnified();
     TestHotwordSelector();
     TestTencentHotwordCharFilter();
     TestSerialBase32RoundTrip();

@@ -36,8 +36,16 @@ struct HotwordUsage {
 
 using HotwordUsageStore = std::map<std::string, HotwordUsage>;
 
-// 两平台共同的硬约束：不含空白，≤10 汉字 / ≤30 英文字符
-// （与 hotword_select.py 的 is_valid_word 一致）。
+// 热词合法性拒绝原因（B14：统一原四套口径，调用方据此给出具体提示）。
+enum class HotwordRejectReason { kNone, kEmpty, kWhitespace, kCharset, kTooLong };
+
+// B14 **单一权威口径**（原四处各自为政 →「加进去但不生效」且无提示）：
+//   非空；不含 ASCII 空白；ASCII 仅 [0-9A-Za-z_-]（与腾讯词表 API 实际接受面对齐，
+//   '.' 等标点在所有环节统一拒绝）；≤10 个非 ASCII 字符 / ≤30 个 ASCII 字符。
+// 与 hotword_select.py 的 is_valid_word 一致；拒绝原因供 UI 提示与单测断言。
+HotwordRejectReason ValidateHotword(std::string_view word);
+
+// 上述口径的布尔包装（保持既有调用方签名不变）。
 bool IsValidHotword(const std::string& word);
 
 // 评分；last_used_ts 未知（0）时新近度记 0。

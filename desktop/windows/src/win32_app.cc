@@ -4,6 +4,7 @@
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
 #include "hotword_extractor.h"
+#include "hotword_selector.h"  // ValidateHotword（B14 统一口径）
 #include "license_runtime.h"
 #include "local_asr_client_win.h"
 #include "machine_guid_win.h"
@@ -1929,6 +1930,13 @@ void Win32App::AddHotwordAndNotify(const std::string& text) {
                           SelectionHotwordManager::kMaxHotwordLen)) {
         ShowNotification(Tr(StringId::kSelectionHotwordTooLongTitle, lang),
                          Tr(StringId::kSelectionHotwordTooLongBody, lang));
+        return;
+    }
+    // B14：统一口径（原只查重复+长度，空格/标点可入配置却被下游过滤 →
+    //「加进去但不生效」且无提示）。拒绝时给出具体原因提示。
+    if (ValidateHotword(text) != HotwordRejectReason::kNone) {
+        ShowNotification(Tr(StringId::kSelectionHotwordInvalidTitle, lang),
+                         Tr(StringId::kSelectionHotwordInvalidBody, lang) + text);
         return;
     }
     hotwords.push_back(text);
