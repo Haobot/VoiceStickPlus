@@ -1,5 +1,5 @@
 # Windows 桌面端底层平台选型评估：维持 Win32，迁移则 .NET WPF 是唯一现实方向
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：决策记录（17c3fd1 选型评估——维持 Win32，迁移唯一现实方向 .NET WPF。核销 2026-10-08/N10）
 
 - 日期：2026-09-08
 - 评估对象：`desktop/windows/`（C++20 + Win32 + C++/WinRT + Direct2D，CMake + Ninja + MSVC 2022 x64）

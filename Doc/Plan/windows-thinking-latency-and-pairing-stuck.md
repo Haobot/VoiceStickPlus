@@ -1,5 +1,5 @@
 # Windows 桌面端稳定性：Thinking 延迟消除 + Pairing 误触发治理
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（git 实证：46066f0 Thinking 延迟与 Pairing 误触发诊断探针 + 096ca37 supervision_timeout 5→10s 容忍窗。核销 2026-10-08/N10）
 
 日期：2026-08-06。涉及：`desktop/windows/src/voice_stick_coordinator.cc`、`desktop/windows/src/ble_central_win.cc`、`firmware/main/main.c`、`firmware/components/voice_ble/voice_ble.c`、`desktop/windows/tests/core_tests.cc`。
 

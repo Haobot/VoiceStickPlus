@@ -1,5 +1,5 @@
 # 快速重启回连时长压缩 实现计划
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（git 实证：a9fcca2 回连压缩二轮真机实测中位 5.4s、风暴兜底、15s/3 次免退避加固记录。核销 2026-10-08/N10）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
