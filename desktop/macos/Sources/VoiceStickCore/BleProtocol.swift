@@ -281,6 +281,14 @@ public enum BleProtocol {
     /// 接收缓冲契约）。Windows 实测真机标定值，跨版本契约勿改。
     public static let otaMaxChunkSize = 244
 
+    /// D6：OTA 数据分块 = maxWrite − 12B 帧头，**无下限兜底**。原 max(20, …) 在
+    /// ATT MTU 未协商（maxWrite=20）时算出 20B chunk，总包 32B 超可写上限 → 固件
+    /// 必 bad_offset。放不下（maxWrite ≤ 帧头）返回 0，调用方据此报错终止，绝不硬发。
+    public static func otaChunkSize(maxWrite: Int) -> Int {
+        guard maxWrite > otaDataHeaderLength else { return 0 }
+        return min(maxWrite - otaDataHeaderLength, otaMaxChunkSize)
+    }
+
     /// OTA 在途窗口（app 领先设备已确认字节的上限，对齐 Windows
     /// BleProtocol::OtaMaxInFlightBytes 定案参数——跨版本契约勿改）：
     /// 首条确认前放宽 40KB（覆盖 v2.3.8 及更早固件 32KB 进度回传间隔，

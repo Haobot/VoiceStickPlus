@@ -440,6 +440,13 @@ ByteVector BleProtocol::OtaDataPayload(std::uint32_t transfer_id,
     return data;
 }
 
+std::size_t BleProtocol::OtaChunkSizeForPdu(std::size_t max_pdu) {
+    constexpr std::size_t kOverhead = 15;  // 12B OTA 数据帧头 + 3B ATT 头（MaxPduSize 口径）
+    constexpr std::size_t kMaxChunk = 244;
+    if (max_pdu <= kOverhead) return 0;
+    return std::min(max_pdu - kOverhead, kMaxChunk);
+}
+
 ByteVector BleProtocol::OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size) {
     ByteVector data = {1, ota_type_end, 12, 0};
     AppendLe32(data, transfer_id);

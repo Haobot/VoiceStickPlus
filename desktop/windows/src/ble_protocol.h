@@ -204,6 +204,10 @@ public:
                                           std::uint32_t request_id);
     static ByteVector OtaBeginPayload(std::uint32_t image_size, std::uint32_t transfer_id);
     static ByteVector OtaDataPayload(std::uint32_t transfer_id, std::uint32_t offset, std::span<const std::uint8_t> chunk);
+    // D6：OTA 数据分块 = max_pdu −15（12B 帧头 + 3B ATT 头，MaxPduSize 口径含 ATT），
+    // **无下限兜底**；放不下返回 0（调用方据此报错，绝不构造超 MTU 的包——原
+    // max(20,…) 在 MTU 退化到 20 时必 bad_offset）。
+    static std::size_t OtaChunkSizeForPdu(std::size_t max_pdu);
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);
     static ByteVector OtaAbortPayload(std::uint32_t transfer_id);
     // OTA 发送在途窗口（字节），随设备已确认字节数变化：

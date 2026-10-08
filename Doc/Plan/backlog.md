@@ -88,7 +88,7 @@
 |---|---|---|---|
 | D1 | macOS 消费 device_info 以外能力帧（battery/encoder/gateway/power…） | open | 9-22 未复核 |
 | D3 | macOS 订阅错误处理/活性兜底/重订阅 | open | 9-22 未复核；「显示已连接但语音静默失效」在 macOS 不可观测 |
-| D6 | OTA 分块下限 `max(20,…)` 突破帧头预算（MTU 20 必 bad_offset） | open | 9-22 未复核 |
+| D6 | OTA 分块下限 `max(20,…)` 突破帧头预算（MTU 20 必 bad_offset） | **closed（10-08）** | 两端同病：`max(20, min(maxWrite-帧头, 244))` 的**下限 20 覆盖了正确的小值**——MTU 未协商（macOS `maxWrite=20`/Windows `MaxPduSize=20`）时算出 20B chunk，包长 32B/35B 超可写上限 → 固件必 `bad_offset`。收敛为协议层纯函数：macOS `BleProtocol.otaChunkSize(maxWrite:)`（= maxWrite−12，放不下返回 0）、Windows `BleProtocol::OtaChunkSizeForPdu`（= max_pdu−15 含3B ATT，≤15 返回 0），调用方对 0 **报错终止**（macOS `attMtuTooSmall` 新错误 case、Windows `FinishFirmwareUpdate`）而非硬发。两端各带单测（macOS `runOtaFlowControlTests` 追加5断言+包长自检；Windows `TestOtaChunkSizeForPdu` 含预算自检） |
 | D7 | 固件 `ota_abort` transfer_id 不匹配时清状态且不 abort | open | 9-22 未复核 |
 | D9 | 三端 `version`=1 硬编码，无协议版本协商 | open | 9-22 未复核 |
 | D10 | `gateway_keymap` 回执 Windows 无解析 / macOS 无事件 | open | 9-22 未复核 |
@@ -129,6 +129,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **D6 关闭**：OTA 分块两端收敛为协议层纯函数（去 `max(20,…)` 下限，放不下报错不硬发），修 MTU 未协商必 `bad_offset` | macOS 本地 `swift run VoiceStickTests` + Windows CI ctest 双端单测；两端包长 ≤ 预算自检 |
 | 2026-10-08 | **阶段 1 B13 关闭**：热词候选文件收敛为 miner 单一写入口（进程级互斥 + reload-merge-save），coordinator load-once 缓存删除、设置页两处改走入口、Save 原子化 | 本地断言（忽略不回弹/消费/写后即读）+ CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **阶段 1 B14（partial）**：①②④ 统一为 `ValidateHotword` 平台权威 + `ValidateHotwordForTencent` 唯一 API 收窄（腾讯被拒热词带词入日志，加词入口补用户提示）；③多词候选拆 B14b 待产品决策 | 两轮 CI 各抓一次方向错误并改正（腾讯字符集误并权威 → 破坏排序测试；权威误并③ → 破坏多词候选与生产修复）；回归 `TestHotwordValidationUnified` 含双口径与超集对拍 |
 | 2026-10-08 | **阶段 1 B3 关闭**：微信模式启动失败路径抽 `RestoreDefaultCaptureDevice()` 与 Stop 共用（默认麦不再卡 CABLE 静音、不再毒化下次会话的「原设备」） | 事件驱动回归（FakeBleCentral `on_state_event` + 注入假 switcher/renderer）；CI 七 job（Windows ctest） |

@@ -19,4 +19,14 @@ func runOtaFlowControlTests() {
     // 数据帧构造：总包长 = 12 + chunk（chunk 预算自检用）。
     let payload = BleProtocol.otaDataPayload(transferID: 7, offset: 100, chunk: Data(repeating: 0xAB, count: 244))
     checkEqual(payload.count, 12 + 244, "OTA 数据帧总长 = 帧头 + chunk")
+
+    // D6：分块预算 = maxWrite − 12B 帧头，**无下限兜底**。原 max(20, …) 在 ATT MTU
+    // 未协商（maxWrite=20）时算出 20B chunk，总包 32B 超可写上限 → 固件必 bad_offset。
+    checkEqual(BleProtocol.otaChunkSize(maxWrite: 20), 8, "D6: MTU 未协商时 chunk = 20-12（非 20）")
+    checkEqual(BleProtocol.otaChunkSize(maxWrite: 12), 0, "D6: 放不下帧头 → 0（调用方报错）")
+    checkEqual(BleProtocol.otaChunkSize(maxWrite: 11), 0, "D6: 负预算钳到 0")
+    checkEqual(BleProtocol.otaChunkSize(maxWrite: 247), 235, "D6: 正常 = maxWrite-12")
+    checkEqual(BleProtocol.otaChunkSize(maxWrite: 1000), 244, "D6: chunk 上限 244")
+    // 自检：分块 + 帧头 永不超过写预算。
+    checkEqual(BleProtocol.otaChunkSize(maxWrite: 20) + 12 <= 20, true, "D6: 包长不超预算")
 }

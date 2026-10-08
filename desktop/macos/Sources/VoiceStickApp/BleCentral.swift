@@ -26,6 +26,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         case noConnectedDevice
         case otaCharacteristicUnavailable
         case imageTooLarge
+        case attMtuTooSmall(Int)
         case transferAlreadyActive
         case firmwareUpdateCancelled
         case peripheralWriteFailed(String)
@@ -40,6 +41,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 return "The connected firmware does not expose BLE OTA."
             case .imageTooLarge:
                 return "Firmware image is larger than the OTA partition."
+            case .attMtuTooSmall(let maxWrite):
+                return "ATT write budget \(maxWrite) is too small for an OTA frame."
             case .transferAlreadyActive:
                 return "A firmware update is already running."
             case .firmwareUpdateCancelled:
@@ -793,8 +796,13 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             // chunkSize 逐轮惰性重取：maximumWriteValueLength 随 ATT MTU 协商完成
             // 才变大，固化在 session 里会永久 20B/包（<1KB/s 根因）。
             let maxWrite = peripheral.maximumWriteValueLength(for: .withoutResponse)
-            let chunkSize = max(20, min(maxWrite - BleProtocol.otaDataHeaderLength,
-                                        BleProtocol.otaMaxChunkSize))
+            // D6：分块走协议 helper（无下限兜底）——原 max(20,…) 在 MTU 未协商时
+            // 构造超可写上限的包，固件必 bad_offset；放不下则报错终止。
+            let chunkSize = BleProtocol.otaChunkSize(maxWrite: maxWrite)
+            if chunkSize <= 0 {
+                failFirmwareUpdate(FirmwareUpdateError.attMtuTooSmall(maxWrite))
+                return
+            }
             if chunkSize != session.lastLoggedChunkSize {
                 session.lastLoggedChunkSize = chunkSize
                 NSLog("OTA data VS chunk_size=%d max_write=%d window=%d offset=%d confirmed=%d",

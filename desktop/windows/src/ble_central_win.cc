@@ -3187,8 +3187,15 @@ winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
         }
 
         const std::size_t max_pdu = session->gatt_session ? session->gatt_session.MaxPduSize() : 247;
-        const std::size_t chunk_size = std::max<std::size_t>(
-            20, std::min<std::size_t>(max_pdu > 15 ? max_pdu - 15 : 20, 244));
+        // D6：分块走协议 helper（无下限兜底）——原 max(20,…) 在 MTU 退化（pdu≤20）时
+        // 构造出超过可写上限的包，固件必 bad_offset；放不下则报错终止。
+        const std::size_t chunk_size = BleProtocol::OtaChunkSizeForPdu(max_pdu);
+        if (chunk_size == 0) {
+            FinishFirmwareUpdate(update_session, false,
+                                 "BLE OTA unsupported ATT MTU: pdu=" +
+                                     std::to_string(max_pdu));
+            co_return;
+        }
         // 在途窗口（app 领先设备已确认字节的上限）按已确认字节数自适应，取值与
         // 历史约束见 BleProtocol::OtaMaxInFlightBytes：首条确认前放宽 40KB（覆盖
         // v2.3.8 及更早固件的 32KB 进度回传间隔，否则互等死锁 15s stalled），

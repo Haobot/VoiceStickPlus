@@ -2779,6 +2779,22 @@ void TestOtaMaxInFlightBytes() {
     assert(BleProtocol::OtaMaxInFlightBytes(8 * 1024) == 24 * 1024);
 }
 
+void TestOtaChunkSizeForPdu() {
+    // D6：分块 = max_pdu −15（12B 帧头 +3B ATT），**无下限兜底**——原 max(20,…) 在
+    // MTU 退化（pdu≤20）时构造出超过可写上限的包，固件必 bad_offset。
+    assert(BleProtocol::OtaChunkSizeForPdu(20) == 5);    // MTU23 退化：20-15（原返回 20 ✗）
+    assert(BleProtocol::OtaChunkSizeForPdu(15) == 0);    // 恰好放不下 → 报错
+    assert(BleProtocol::OtaChunkSizeForPdu(14) == 0);
+    assert(BleProtocol::OtaChunkSizeForPdu(16) == 1);
+    assert(BleProtocol::OtaChunkSizeForPdu(247) == 232);   // 247-15
+    assert(BleProtocol::OtaChunkSizeForPdu(1000) == 244);  // chunk 上限
+    // 自检：包长（chunk + 15）永不超过 PDU 预算。
+    for (const std::size_t pdu : {16u, 20u, 247u, 512u}) {
+        const std::size_t chunk = BleProtocol::OtaChunkSizeForPdu(pdu);
+        assert(chunk > 0 && chunk + 15 <= pdu);
+    }
+}
+
 void TestParseOtaCliArgs() {
     using namespace voicestick;
     // 无 --ota。
@@ -16594,6 +16610,8 @@ int main() {
     TestCoordinatorSyncsInteractionSettingsPerDeviceOverride();
     TestCoordinatorUpdateFirmwareFromFile();
     printf(">> TestOtaMaxInFlightBytes\n"); fflush(stdout);
+    printf(">> cluster: D6 OTA chunk size for PDU\n"); fflush(stdout);
+    TestOtaChunkSizeForPdu();
     TestOtaMaxInFlightBytes();
     printf(">> TestParseOtaCliArgs\n"); fflush(stdout);
     TestParseOtaCliArgs();
