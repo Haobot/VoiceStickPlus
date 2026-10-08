@@ -101,7 +101,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 三期：注入前台应用追踪（双击动作按前台应用取 app 覆盖）；
         // 前台应用切换 → 重新 resolve + 刷新 intercept 层。
-        coordinator.frontmostAppProvider = frontmostAppProvider
+        // N1 切5 闸5：AppKit 原语闭包注入（告警 UI 块自协调器原样迁入）。
+        coordinator.openExternalURL = { NSWorkspace.shared.open($0) }
+        coordinator.isProcessTrusted = { AXIsProcessTrusted() }
+        coordinator.presentUpgradeAlertUI = { url, message in
+            NSApp.activate(ignoringOtherApps: true)
+
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "VoiceStick Cloud needs attention"
+            alert.informativeText = message
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(url)
+            }
+        }
         frontmostAppProvider.onActiveAppChange = { [weak self] _ in
             self?.syncButtonsIntercept()
         }

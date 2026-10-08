@@ -97,7 +97,7 @@ final class LLMRefinementClient {
             // 热词保护：原文中已正确出现的热词在精修结果里必须原样保留
             //（对齐 Windows RefineResultKeepsHotwords），否则视为精修失败回退原文。
             guard !refined.isEmpty,
-                  Self.resultKeepsHotwords(original: text, refined: refined, hotwords: effectiveHotwords) else {
+                  resultKeepsHotwords(original: text, refined: refined, hotwords: effectiveHotwords) else {
                 completion(nil)
                 return
             }
@@ -185,12 +185,4 @@ final class LLMRefinementClient {
         return prompt
     }
 
-    /// 原文中出现过的热词必须保留在精修结果中（对齐 Windows RefineResultKeepsHotwords）。
-    static func resultKeepsHotwords(original: String, refined: String, hotwords: [String]) -> Bool {
-        for hotword in hotwords where !hotword.isEmpty {
-            guard original.contains(hotword) else { continue }
-            if !refined.contains(hotword) { return false }
-        }
-        return true
-    }
 }

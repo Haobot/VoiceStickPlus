@@ -28,3 +28,13 @@ public protocol RefinerServing: AnyObject {
                       onToken: @escaping (String) -> Void,
                       onComplete: @escaping (Bool, String) -> Void)
 }
+
+
+/// 精修结果是否保住热词（原 LLMRefinementClient.resultKeepsHotwords 静态工具，纯文本判定，随协调器引用迁 Core）。
+public func resultKeepsHotwords(original: String, refined: String, hotwords: [String]) -> Bool {
+    for hotword in hotwords where !hotword.isEmpty {
+        guard original.contains(hotword) else { continue }
+        if !refined.contains(hotword) { return false }
+    }
+    return true
+}

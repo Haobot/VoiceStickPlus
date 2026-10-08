@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import VoiceStickCore
 
@@ -138,7 +137,10 @@ final class VoiceStickCoordinator {
     private var refiner: any RefinerServing
     /// 前台应用追踪（三期按键映射按前台应用切换的注入点；AppDelegate 启动时装配，
     /// v1 协调器暂不消费，app 级覆盖落地后由按键映射 resolve 使用）。
-    var frontmostAppProvider: FrontmostAppProvider?
+    // N1 切5 闸5：AppKit 原语闭包注入——协调器入 Core 前置（Core 不得 import AppKit）。
+    var openExternalURL: ((URL) -> Void)?
+    var presentUpgradeAlertUI: ((URL, String) -> Void)?
+    var isProcessTrusted: (() -> Bool)?
     private let subtitleController = SubtitleController()
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
     private let inputInjector = InputInjector()
@@ -462,9 +464,9 @@ final class VoiceStickCoordinator {
                 )
             }
         }
-        cycle.asr.onUpgradeURL = { url, _ in
+        cycle.asr.onUpgradeURL = { [weak self] url, _ in
             DispatchQueue.main.async {
-                NSWorkspace.shared.open(url)
+                self?.openExternalURL?(url)
             }
         }
     }
@@ -1766,7 +1768,7 @@ final class VoiceStickCoordinator {
                         guard let self, !token.isCancelled, !self.pastedFinalText else { return }
                         self.refinementCancelToken = nil
                         if ok, !result.isEmpty,
-                           LLMRefinementClient.resultKeepsHotwords(
+                           resultKeepsHotwords(
                                original: text, refined: result, hotwords: self.config.asrHotwords
                            ) {
                             // 用最终累积文本做最后一次 UI 刷新。
@@ -2111,17 +2113,7 @@ final class VoiceStickCoordinator {
         statusController.hideOverlay { [weak self] in
             guard let self else { return }
             self.recoverFromASRError(hideOverlay: false)
-            NSApp.activate(ignoringOtherApps: true)
-
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = "VoiceStick Cloud needs attention"
-            alert.informativeText = message
-            alert.addButton(withTitle: "Open")
-            alert.addButton(withTitle: "Cancel")
-            if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(url)
-            }
+            self.presentUpgradeAlertUI?(url, message)
         }
     }
 
@@ -2167,7 +2159,7 @@ final class VoiceStickCoordinator {
 
     private func completePendingPaste(text: String) {
         NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d",
-              text.utf8.count, config.autoEnter ? 1 : 0, AXIsProcessTrusted() ? 1 : 0)
+              text.utf8.count, config.autoEnter ? 1 : 0, (isProcessTrusted?() ?? false) ? 1 : 0)
         let shouldPressEnter = config.autoEnter
         pendingPasteState = .idle
         finishRecognitionCycle()
