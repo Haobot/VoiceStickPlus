@@ -6,3 +6,6 @@ void RunProtocolContractTests();
 
 // N8 cut3：协调器第一批（20 测连续段）。
 void RunCoordinatorBatchTests();
+
+// N8 cut4：协调器第二批（17 测连续段）。
+void RunCoordinatorBatch2Tests();
