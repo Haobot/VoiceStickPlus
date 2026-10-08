@@ -27,3 +27,6 @@ void RunCoordinatorBatch6Tests();
 
 // N8 cut10：小米 usage-tap 批（8 测；MakeTapReport 同批迁 support）。
 void RunXiaomiUsageTapBatchTests();
+
+// N8 cut11：腾讯 ASR 批（15 测）。
+void RunTencentBatchTests();
