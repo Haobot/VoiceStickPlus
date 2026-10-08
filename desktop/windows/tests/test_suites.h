@@ -18,3 +18,6 @@ void RunCoordinatorBatch4Tests();
 
 // N8 cut7：小米 ATVV 会话批（8 测；6 个共用助手随预检入 test_support.h）。
 void RunXiaomiAtvvBatchTests();
+
+// N8 cut8：协调器第五批（8 测；预检含多行签名定义头感知）。
+void RunCoordinatorBatch5Tests();

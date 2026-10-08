@@ -470,6 +470,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_coordinator4.cc
     # N8 cut7: xiaomi ATVV batch (8 tests)
     tests/core_tests_xiaomi_atvv.cc
+    # N8 cut8: coordinator batch 5 (8 tests)
+    tests/core_tests_coordinator5.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入
