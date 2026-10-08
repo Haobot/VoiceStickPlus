@@ -185,6 +185,10 @@ std::mutex& CandidatesFileMutex() {
 
 }  // namespace
 
+std::filesystem::path HotwordCandidatesPath(const std::filesystem::path& config_path) {
+    return config_path.parent_path() / "hotword_candidates.json";
+}
+
 std::vector<std::string> RecordHotwordCandidatesToDisk(const std::filesystem::path& path,
                                                       const std::vector<std::string>& words) {
     std::lock_guard lock(CandidatesFileMutex());

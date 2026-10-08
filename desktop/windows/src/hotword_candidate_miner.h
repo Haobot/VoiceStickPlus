@@ -46,6 +46,10 @@ std::vector<std::string> RecordHotwordCandidates(HotwordCandidateStore& store,
 // 当前待确认建议（达到阈值且未忽略），供设置界面展示。
 std::vector<std::string> PendingHotwordSuggestions(const HotwordCandidateStore& store);
 
+// 候选文件路径（与 config.toml 同目录）。C8b：文件名原在协调器/设置页 4 处硬编码
+// 字面量——改名会静默脱钩（越界耦合），收敛到本模块单一出处。
+std::filesystem::path HotwordCandidatesPath(const std::filesystem::path& config_path);
+
 // ---- B13：候选文件的**唯一写入口** ----
 // 原实现两处写者各自为政：coordinator load-once 缓存整存（陈旧快照覆盖设置页刚写入
 // 的 dismissed/加入 → 用户「忽略」的词反复弹回）+ 设置页 UI 线程读改写（与后台挖掘

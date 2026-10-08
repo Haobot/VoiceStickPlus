@@ -2766,7 +2766,7 @@ void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& fin
 }
 
 void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words) {
-    const auto path = ConfigSnapshot()->ConfigPath().parent_path() / "hotword_candidates.json";
+    const auto path = HotwordCandidatesPath(ConfigSnapshot()->ConfigPath());
     // B13：走 miner 的唯一写入口（进程级互斥 + reload-merge-save）——原 load-once
     // 缓存整存会用陈旧快照覆盖设置页刚写入的 dismissed/加入，用户「忽略」的词反复弹回。
     const std::vector<std::string> suggestions = RecordHotwordCandidatesToDisk(path, words);

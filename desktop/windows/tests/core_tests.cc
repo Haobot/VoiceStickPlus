@@ -2326,6 +2326,12 @@ void TestHotwordCandidatesSingleWriter() {
     for (int i = 0; i < 3; ++i) RecordHotwordCandidatesToDisk(path, {"AtomicCheck"});
     assert(LoadHotwordCandidates(path).counts.contains("AtomicCheck"));
 
+    // C8b：路径单一出处——由配置路径推导，文件名不再散落各模块字面量
+    //（原协调器/设置页4处硬编码，改名会静默脱钩）。
+    const auto derived = HotwordCandidatesPath(dir / "config.toml");
+    assert(derived.parent_path() == dir);
+    assert(derived.filename() == "hotword_candidates.json");
+
     fs::remove_all(dir, ec);
 }
 

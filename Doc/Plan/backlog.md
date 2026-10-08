@@ -79,7 +79,7 @@
 | C6 | 固件版本比较 fail-open + 预发布后缀字典序 | **closed（10-08）** | ① `IsOlderThan` 解析失败由 `return false`（fail-open=「已是最新」，坏版本串让升级提示与最低版本门永不触发）改为按「当前较旧」；② 后缀比较由字典序改「非数字前缀 + 尾部数字」（`rc10 > rc9`，原字典序因 `'1'<'9'` 颠倒），「无后缀 > 有后缀」与前缀字典序语义保留；回归 `TestFirmwareVersionC6Robustness`，本地 clang 复刻纯逻辑全断言通过 |
 | C7 | 云试用凭据下发无设备证明 + 允许 ws://→http:// | **partial（10-08，明文已堵）** | TLS-only 策略收敛为 `voice_stick_cloud_api_win.h` 内联的 `SecureHttpUrlFromWebSocketUrl` / `IsHttpsUrl`（头文件内联 → core 单测可直测，无需链接外壳层 .cc）：① api_key 申请请求不再接受 `ws://`→`http://` 与 `http://`；② ASR 长连接 `WinHttpUrlFromWebSocketUrl` 同策略（原实现同样把 `ws://` 映射成 `http://`，api_key 随明文连接暴露）；③ 响应 `url` 只放行 `https://` 再交 `ShellExecute`（防 `file://` 等被篡改执行）；顺删 asr_client_win 中失去用途的 `StartsWithScheme`。**设备证明未做 → C7b** |
 | C7b | 云试用凭据下发加**设备证明**（挑战-应答） | open（需后端/产品决策） | 10-08 从 C7 拆出：客户端侧明文与 scheme 治理已随 C7 完成；设备证明需服务端协议配合，客户端先行无意义 |
-| C8b | C8 余项：`hotword_candidates` 越界耦合、i18n 完整性校验只查非空（应改键集合对拍）、`voice_f5_suppressor` 等 | open | 10-08 从 C8 拆出：日志轮转/URL 脱敏/prompt 封顶已随 C8 完成；i18n 校验涉及 CI 脚本 `release_guard.py`，建议单独一轮做键集合对拍 + 13 用例 |
+| C8b | C8 余项：`hotword_candidates` 越界耦合、i18n 完整性校验只查非空（应改键集合对拍）、`voice_f5_suppressor` 等 | **closed（10-08 逐子项核销）** | ① **越界耦合 = 文件名 4 处硬编码字面量**（协调器1 + 设置页3，改名静默脱钩）→ 收敛为 `HotwordCandidatesPath(config_path)` 单一出处，4 处全部改用，测试断言路径推导；② **i18n 键集合对拍早已就位**（`check_i18n` 递归展平 + 双向差集，`test_i18n_missing_key_detected` 在 `test_release_guard.py`）——复核确认无需再做；③ `voice_f5_suppressor` = **B15**（独立行仍 open）不在本行范围 | 10-08 从 C8 拆出：日志轮转/URL 脱敏/prompt 封顶已随 C8 完成；i18n 校验涉及 CI 脚本 `release_guard.py`，建议单独一轮做键集合对拍 + 13 用例 |
 | C8 | 日志轮转/热词与签名 URL 明文、精修 prompt 长度上限等分组治理 | **partial（10-08）** | ① **日志轮转**：`RotateLogIfTooLarge(path, 8MB)` → 改名 `<path>.old`（只留一代），在 `Log()` 写锁内调用，轮转失败静默保留原文件；② **签名 URL 脱敏**：新增 `AsrClientTencent::UrlWithoutQuery`（去 query/fragment），TASR `connecting to` 原先 `substr(0,150)` 照样会带出 `authorization=` 片段，现只记 scheme/host/path；③ **精修 prompt 封顶** `ClampRefinePrompt` 4096 字节且按 UTF-8 字符边界回退（不发半截码点），override 与热词两路出口都过；④ **热词入日志**已核：现只记 `size()` 计数，无明文，无需改。回归 `TestC8LogUrlPromptHygiene`；余项 → C8b |
 
 ## 5. P1 — 跨端/ macOS（D 类）
@@ -131,6 +131,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **C8b 关闭（逐子项）**：`hotword_candidates.json` 路径 4 处字面量收敛为 `HotwordCandidatesPath()` 单一出处；i18n 键集合对拍复核确认早已就位；f5 子项归 B15 | `TestHotwordCandidatesSingleWriter` 追加路径推导断言；CI 七 job（Windows ctest） |
 | 2026-10-08 | **E3 关闭**：macOS 更新链三处静默降级全部 fail-hard（占位公钥/签名失败/公证跳过），签名永不落错误文本、格式校验、公证跳过需显式放行 | 本地 `bash -n` + 抽取真实脚本块注入用例（sign 3 例 + 公证 3 例）全过；bash 脚本不经 CI，本地验证为唯一证据 |
 | 2026-10-08 | **D1 复核关闭 + D10（partial）**：D1 实测已由后续工作完成（macOS 14 case、真实接线、gateway_status 逐平台标注）；D10 Windows 半边补 `StateEvent::keymap_routes` 解析 + 协调器落日志（macOS 半边本已解析，评审陈旧），UI 回显拆 D10b | 新增 `TestGatewayKeymapReceiptParsing`（回执帧 + 非回执事件负例）；CI 七 job（Windows ctest） |
 | 2026-10-08 | **D3（partial）**：macOS StickS3 订阅结果不再被 guard 吞掉——失败记日志 + 逐特征 3×0.5s 退避重订阅 + 超限断开重建；主动心跳留 D3b | 本地 `swift build` + `PASSED 650/650`；CI 七 job |

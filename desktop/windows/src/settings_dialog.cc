@@ -1990,7 +1990,7 @@ void SettingsDialog::UpdateHotwordProcessPromptVisibility() {
 
 void SettingsDialog::RefreshHotwordCandidates() {
     if (!candidates_list_) return;
-    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
+    const auto path = HotwordCandidatesPath(AppConfig::ConfigPath());
     const auto store = LoadHotwordCandidates(path);
     candidate_words_ = PendingHotwordSuggestions(store);
     SendMessageW(candidates_list_, LB_RESETCONTENT, 0, 0);
@@ -2017,7 +2017,7 @@ void SettingsDialog::OnHotwordCandidateAdd() {
     SetWindowTextW(hotwords_edit_,
                    current.empty() ? wide_word.c_str() : (current + L"," + wide_word).c_str());
     // 候选已入表，从存储中移除（notified 一并清掉，避免残留状态）。
-    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
+    const auto path = HotwordCandidatesPath(AppConfig::ConfigPath());
     ConsumeHotwordCandidateOnDisk(path, word);  // B13：唯一写入口（互斥 + 重读后改写）
     RefreshHotwordCandidates();
 }
@@ -2028,7 +2028,7 @@ void SettingsDialog::OnHotwordCandidateDismiss() {
     if (sel < 0 || sel >= static_cast<int>(candidate_words_.size())) return;
     const std::string word = candidate_words_[static_cast<std::size_t>(sel)];
     // 忽略：记入 dismissed（永不建议），并从 counts/notified 移除。
-    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
+    const auto path = HotwordCandidatesPath(AppConfig::ConfigPath());
     DismissHotwordCandidateOnDisk(path, word);  // B13：唯一写入口（互斥 + 重读后改写）
     RefreshHotwordCandidates();
 }
