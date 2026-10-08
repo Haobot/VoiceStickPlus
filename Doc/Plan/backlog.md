@@ -58,7 +58,8 @@
 | B11 | `SetLocalRefiner` 持 `audio_mutex_` 析构旧 client | open | 9-22 未复核 |
 | B12 | 精修线程对象只增不减 | open | 9-22 未复核 |
 | B13 | 热词候选文件双写者 + 陈旧快照覆盖「忽略」 | open | 9-22 未复核 |
-| B14 | 热词合法性四套口径 → 统一 `IsValidHotword` | **closed（10-08，方向修正后）** | 四处口径实测：①selector 与文档权威 `hotword_select.py::is_valid_word` = 仅「无空白 + ≤10 非 ASCII / ≤30 ASCII」（**允许点号**——旗舰热词 `CLAUDE.md`/`AGENTS.md` 依赖它，且既有排序测试断言保留）；②win32 加词只查重复+长度（空格可入配置）；③LLM 提炼只查长度/词数；④腾讯另有字符集（拒点号）。**首版把④字符集并入权威是错的**（违反文档对齐目标并破坏既有测试，本地复验/CI 抓出后改正）。终版：`ValidateHotword` = **平台权威**（严格对齐 python，拒绝原因 `HotwordRejectReason`）+ `ValidateHotwordForTencent` = 权威 **再收窄**（API 字符集，**唯一有意差异**）；①②③ 全部委托权威（②加词入口补提示：新增 `kSelectionHotwordInvalidTitle/Body` + `kStringCount` 哨兵 + EN/ZH 双表；③新增 `stats.rejected_invalid`），④ 委托腾讯口径且**被拒热词带词记录进日志**（不再零线索）。回归 `TestHotwordValidationUnified`（原因逐条 + 两包装语料对拍 + 腾讯口径为权威**超集**） |
+| B14 | 热词合法性四套口径 → 统一 `IsValidHotword` | **partial（10-08）** | 四处口径实测：①selector/文档权威 `hotword_select.py::is_valid_word` = 仅「无空白 + ≤10 非 ASCII / ≤30 ASCII」（**允许点号**，旗舰热词 `CLAUDE.md`/`AGENTS.md` 依赖它）；②win32 加词只查重复+长度（空格可入配置）；④腾讯另有字符集（拒点号）→①④分歧即「加进去但不生效」。**已统一（本轮）**：`ValidateHotword` = 平台权威（严格对齐 python + `HotwordRejectReason` 拒绝原因）+ `ValidateHotwordForTencent` = 权威 **再收窄**（API 字符集，**唯一有意差异**）；① 改布尔包装、② 加词入口补校验并**给出提示**（新增 `kSelectionHotwordInvalidTitle/Body` + `kStringCount` 哨兵 + EN/ZH 双表）、④ 委托腾讯口径且**被拒热词带词记录进日志**。**两轮 CI 各抓一次方向错误**：首版把腾讯字符集并入权威（破坏文档对齐与既有排序测试）；次版把权威并入③提炼（破坏多词候选）——均改正，最终 ①②④ 统一。**③ 未并入 → B14b** |
+| B14b | ③ LLM 提炼的**多词候选**（"Stack Chain"）是否纳入统一口径 | open（产品决策） | 10-08 从 B14 拆出：③ 允许 ≤3 词候选，而权威/腾讯/ASR 语料（`RankHotwords` 按 `IsValidHotword` 过滤）都不支持空格 → 多词候选「提出来但用不上」。但既有提取测试 8 处断言钉死多词，且 `AppearsInSourceText` 空白容忍是生产 **candidates=0** 根因的修复。路线 A=统一拒绝（改提取测试，容忍匹配退居幕后）；路线 B=全面支持多词（腾讯 API 拒空格，实际不可行）→ 倾向 A，**待拍板** |
 | B15 | F5 抑制器低级钩子内 Sleep 忙等 + 文件日志 | open | 9-22 未复核 |
 | B16 | 自愈路径调 `TryUnpairAsync` 与「绝不 unpair」红线冲突 | **待核查** | 10-07：红线注释已在（`:1845`），但 `TryUnpairAsync` 调用点仍在（`:595/:1827`）——需确认调用路径均非自愈 |
 | B17 | 后台线程直接 `ShowNotification`（统一 DispatchToUi） | open | 9-22 未复核 |
@@ -128,7 +129,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
-| 2026-10-08 | **阶段 1 B14 关闭**：热词四套口径收敛为 `ValidateHotword` 平台权威（python 对齐）+ `ValidateHotwordForTencent` 唯一 API 收窄；①②③ 委托权威、④ 委托腾讯口径且带词记录；加词入口补用户提示 | 首版方向错误（把腾讯字符集并入权威）由本地复验 + CI 既有测试抓出并改正；终版本地全过 + CI 七 job（Windows ctest 含统一性对拍） |
+| 2026-10-08 | **阶段 1 B14（partial）**：①②④ 统一为 `ValidateHotword` 平台权威 + `ValidateHotwordForTencent` 唯一 API 收窄（腾讯被拒热词带词入日志，加词入口补用户提示）；③多词候选拆 B14b 待产品决策 | 两轮 CI 各抓一次方向错误并改正（腾讯字符集误并权威 → 破坏排序测试；权威误并③ → 破坏多词候选与生产修复）；回归 `TestHotwordValidationUnified` 含双口径与超集对拍 |
 | 2026-10-08 | **阶段 1 B3 关闭**：微信模式启动失败路径抽 `RestoreDefaultCaptureDevice()` 与 Stop 共用（默认麦不再卡 CABLE 静音、不再毒化下次会话的「原设备」） | 事件驱动回归（FakeBleCentral `on_state_event` + 注入假 switcher/renderer）；CI 七 job（Windows ctest） |
 | 2026-10-08 | **阶段 1 B2 关闭**：usage tap 管道补 `FILE_FLAG_OVERLAPPED`（原 OVERLAPPED 分支形同虚设、Stop/退出挂死）+ 连接/读两路取消后等内核用完栈上 OVERLAPPED（防修复后暴露的 UB）；顺带核实 C8b 的 i18n 子项——`check_i18n` **已是键集合双向对拍**，评审「只查非空」已过时 | 新增 `TestUsageTapManagerStopBounded`（有界 5s、卡住快速失败）；CI 七 job（Windows ctest） |
 | 2026-10-08 | **安全组 C8 分组治理（partial）**：日志轮转（8MB→.old 一代）+ 签名 URL 去 query 脱敏 + 精修 prompt 4096B UTF-8 边界封顶；核实热词日志只记计数 | 本地复刻三段算法全过；CI 七 job（Windows ctest 含新用例） |
