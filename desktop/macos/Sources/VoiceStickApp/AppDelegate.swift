@@ -86,7 +86,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             globalHotkey: config.globalHotkey,
             launchAtLogin: config.launchAtLogin
         )
-        let coordinator = VoiceStickCoordinator(config: config, statusController: statusController)
+        // N1 切5 第二步：BLE 具体类外置构造注入（协调器只持协议）。
+        let coordinator = VoiceStickCoordinator(
+            config: config,
+            statusController: statusController,
+            ble: BleCentral(pairedDeviceIDs: config.pairedDeviceIDs)
+        )
 
         self.statusController = statusController
         self.coordinator = coordinator

@@ -3,17 +3,8 @@ import CoreBluetooth
 import Foundation
 import VoiceStickCore
 
-// N1 切5：ConnectedVoiceStickDevice 已下沉 VoiceStickCore/StatusSink.swift（随状态出口协议）。
-struct FirmwareUpdateProgress {
-    let writtenBytes: Int
-    let totalBytes: Int
-    let isDeviceConfirmed: Bool
-
-    var fraction: Double {
-        guard totalBytes > 0 else { return 0 }
-        return Double(writtenBytes) / Double(totalBytes)
-    }
-}
+// N1 切5：ConnectedVoiceStickDevice（StatusSink.swift）与 FirmwareUpdateProgress
+//（BleServing.swift）均已下沉 VoiceStickCore（随状态/BLE 出口协议）。
 
 final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     enum FirmwareUpdateError: LocalizedError {

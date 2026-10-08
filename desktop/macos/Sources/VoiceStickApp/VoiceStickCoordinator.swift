@@ -125,7 +125,8 @@ final class VoiceStickCoordinator {
     private var config: AppConfig
     // N1 切5：成员类型换协议（VoiceStickCore/StatusSink.swift），类向 Core 迁移第一步。
     private let statusController: VoiceStickStatusSink
-    private let ble: BleCentral
+    // N1 切5 第二步：BLE 成员换协议（VoiceStickCore/BleServing.swift），具体类外置注入。
+    private let ble: any VoiceStickBleServing
     private var asr: any ASRClient
     private var translator: LLMTranslationClient
     private var refiner: LLMRefinementClient
@@ -219,11 +220,12 @@ final class VoiceStickCoordinator {
     var onPowerLogFragment: ((String, PowerLogFragment) -> Void)?
     var onPowerMgmtEvent: ((String, PowerMgmtEvent) -> Void)?
 
-    init(config: AppConfig, statusController: VoiceStickStatusSink) {
+    init(config: AppConfig, statusController: VoiceStickStatusSink,
+         ble: any VoiceStickBleServing) {
         self.config = config
         self.statusController = statusController
         self.pairedDeviceIDs = config.pairedDeviceIDs
-        self.ble = BleCentral(pairedDeviceIDs: config.pairedDeviceIDs)
+        self.ble = ble
         self.asr = ASRClientFactory.makeClient(config: config)
         self.translator = LLMTranslationClient(config: config)
         self.refiner = LLMRefinementClient(config: config)

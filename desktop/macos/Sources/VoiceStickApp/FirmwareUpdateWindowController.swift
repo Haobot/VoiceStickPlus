@@ -1,4 +1,5 @@
 import AppKit
+import VoiceStickCore
 
 final class FirmwareUpdateWindowController: NSWindowController {
     private let titleLabel = NSTextField(labelWithString: "")
