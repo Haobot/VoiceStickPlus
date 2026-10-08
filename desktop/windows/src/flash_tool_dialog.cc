@@ -208,6 +208,8 @@ FlashToolDialog::FlashToolDialog(HINSTANCE instance, int show_cmd)
 
 FlashToolDialog::~FlashToolDialog() {
     if (flashing_ && flash_thread_) {
+        // B1：Cancel 后有界等待——超时不再危险：worker 经 FlashThreadCtx 自持
+        // 共享引用，本对象随对话框析构不影响 worker 跑完 Run()。
         if (flash_tool_) flash_tool_->Cancel();
         WaitForSingleObject(flash_thread_, 5000);
         CloseHandle(flash_thread_);
@@ -669,8 +671,8 @@ void FlashToolDialog::OnFlash() {
 
     // 创建烧录工具（runner_ 持有所有权，flash_tool_ 持有裸指针）
     const HWND hwnd = hwnd_;
-    runner_ = std::make_unique<FlashProcessRunner>();
-    flash_tool_ = std::make_unique<FlashTool>(
+    runner_ = std::make_shared<FlashProcessRunner>();
+    flash_tool_ = std::make_shared<FlashTool>(
         opts, python_exe, runner_.get(),
         [hwnd](const FlashEvent& event) {
             auto* heap_event = new FlashEvent(event);
@@ -687,9 +689,13 @@ void FlashToolDialog::OnFlash() {
 
     SetFlashing(true);
 
-    // 启动工作线程（esptool 子进程在后台运行，事件通过 PostMessage 回 UI）
-    flash_thread_ = CreateThread(nullptr, 0, FlashThreadProc, this, 0, nullptr);
+    // 启动工作线程（esptool 子进程在后台运行，事件通过 PostMessage 回 UI）。
+    // B1：上下文堆上自带共享引用，FlashThreadProc 不再触碰 this——对话框可在
+    // worker 仍运行时安全析构（5s 等待超时兜底不再构成 UAF）。
+    auto* ctx = new FlashThreadCtx{hwnd_, flash_tool_, runner_};
+    flash_thread_ = CreateThread(nullptr, 0, FlashThreadProc, ctx, 0, nullptr);
     if (!flash_thread_) {
+        delete ctx;
         MessageBoxW(hwnd_,
             zh ? L"无法启动烧录线程。" : L"Failed to start flash thread.",
             zh ? L"错误" : L"Error", MB_OK | MB_ICONERROR);
@@ -697,15 +703,25 @@ void FlashToolDialog::OnFlash() {
     }
 }
 
+// B1：工作线程上下文——worker 只经 ctx 持有的共享引用触碰烧录对象，与对话框生命周期
+// 彻底解耦。原实现直接解引用 this 与对话框独占成员（unique_ptr flash_tool_/runner_），
+// 关窗/析构 5s 有界等待超时（esptool 子进程卡死）后对话框释放而 worker 仍在 Run()
+// → use-after-free（9-22 评审 B1）。事件回传只用 hwnd 值（PostMessage 到已销毁窗口
+// =失败即弃），无悬垂指针。
+struct FlashThreadCtx {
+    HWND hwnd;
+    std::shared_ptr<FlashTool> tool;
+    std::shared_ptr<IFlashProcessRunner> runner;
+};
+
 DWORD WINAPI FlashToolDialog::FlashThreadProc(void* param) {
-    auto* self = static_cast<FlashToolDialog*>(param);
-    const HWND hwnd = self->hwnd_;
+    std::unique_ptr<FlashThreadCtx> ctx(static_cast<FlashThreadCtx*>(param));
 
     // Run() 是同步阻塞调用：运行 esptool 子进程，逐行解析进度并回调。
     // 回调在工作线程执行，通过堆分配 + PostMessageW 把事件安全传递到 UI 线程。
-    self->flash_tool_->Run();
+    ctx->tool->Run();
 
-    PostMessageW(hwnd, kWmFlashDone, 0, 0);
+    PostMessageW(ctx->hwnd, kWmFlashDone, 0, 0);
     return 0;
 }
 
