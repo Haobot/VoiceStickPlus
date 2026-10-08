@@ -78,4 +78,7 @@ poweroff 等同任务排队）的结构性风险。A9 已除主犯（double_clic
   + POWER_LOG 位入同任务消费、组件零改动（组件内去重兜底）；S3 直呼同步保留（唯一 flush 点@power_log.c:456）；
   附带修 r92 粘行（mux 声明缺换行，合法 C 故 CI 未报、p2 锚点断言暴露）。
 - 走查（r97）：环 push/pop 均在临界区、kick 在临界区外、双路径分工=exec@371 与 S3@758 恰两处（refresh 零直呼）。
+- 全量审计（r98）：main.c 全部 16 个已注册 esp_timer 回调逐一定性——去注释后 HEAVY 残留=无，
+  16/16 全部轻量（kicks/queue_app_event/log 级）；首版审计曾把 double_click 注释里的 start_recording 字样
+  误判为 HEAVY（假阳性），去注释复审推翻 → A9/A9b 覆盖完整性得到证明（timer 任务无 I2C/IO 残留）。
 - 余：真机验收四项 + power_log 条目连续性（power_log_dump 对拍）并 A 组。
