@@ -29,6 +29,7 @@
 #include "services/dis/ble_svc_dis.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#include "voice_ble_conn_table.h"
 
 static const char *TAG = "voice_ble";
 
@@ -62,6 +63,15 @@ static voice_ble_control_cb_t s_control_cb;
 static voice_ble_ota_cb_t s_ota_cb;
 static uint32_t s_adv_started_ms;
 static uint32_t s_connected_ms;   // 连接建立时间戳，断连时算连接时长（辅助判 supervision timeout）
+
+// ---- A4 入站连接表（2026-10-08，9-22 评审 A4 深修）----
+// conn_table 为多链路真相；上方 s_connected / s_conn_handle / s_*_subscribed 全部是
+// 「应用链路视图」镜像（见 gap_event_cb 前的 sync_app_mirrors），所有既有发送/门控点
+// 零改动。断开按 handle 只清本条：重连后旧 handle 的 stale DISCONNECT 迟到不再清掉
+// 新连接的订阅态（gateway-p1-ota-session-2026-09-20 复盘事故的根因）。
+// 静态零值即 init。广播维持策略不变（有任一入站即停播）——OS-HID+app 双入站并存
+// 的广播放开属产品决策，见 backlog A4b。
+static voice_ble_conn_table_t s_conns;
 
 typedef enum {
     CONN_ITVL_NONE,
@@ -790,6 +800,27 @@ static const struct ble_gatt_svc_def s_gatt_services[] = {
     {0},
 };
 
+// 应用链路 = 已订阅 state/audio 特征的入站连接（OS-HID 中央只订 HID 服务，不入选）。
+static uint16_t derive_app_handle(void)
+{
+    return voice_ble_conn_table_app_handle(&s_conns);
+}
+
+// 表 → 镜像同步：send/门控仍读旧单值，语义收敛为「应用链路」。
+static void sync_app_mirrors(void)
+{
+    const uint16_t app = derive_app_handle();
+    s_conn_handle = app;
+    if (app == BLE_HS_CONN_HANDLE_NONE) {
+        s_audio_subscribed = false;
+        s_state_subscribed = false;
+        return;
+    }
+    const voice_ble_conn_t *e = voice_ble_conn_table_find(&s_conns, app);
+    s_audio_subscribed = e && e->audio_sub;
+    s_state_subscribed = e && e->state_sub;
+}
+
 static int gap_event_cb(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
@@ -797,14 +828,18 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
-            s_connected = true;
-            s_audio_subscribed = false;
-            s_state_subscribed = false;
-            s_conn_handle = event->connect.conn_handle;
+            const uint16_t conn = event->connect.conn_handle;
+            if (!voice_ble_conn_table_add(&s_conns, conn, esp_log_timestamp(), NULL)) {
+                ESP_LOGW(TAG, "conn table full; handle=%u left untracked", conn);
+            }
+            s_connected = voice_ble_conn_table_count(&s_conns) > 0;
+            // 不再无条件清订阅镜像：旧链路尚未断连时其订阅态仍有效（stale 断连场景）。
+            sync_app_mirrors();
             uint32_t connected_ms = esp_log_timestamp();
             s_connected_ms = connected_ms;
-            ESP_LOGI(TAG, "connected handle=%u ts=%" PRIu32 " since_adv=%" PRIu32 "ms",
-                     s_conn_handle, connected_ms, connected_ms - s_adv_started_ms);
+            ESP_LOGI(TAG, "connected handle=%u ts=%" PRIu32 " since_adv=%" PRIu32 "ms links=%d",
+                     conn, connected_ms, connected_ms - s_adv_started_ms,
+                     voice_ble_conn_table_count(&s_conns));
             stop_advertising();
             // Some BLE centrals (notably WinRT on Windows) do not always
             // initiate the ATT MTU exchange themselves. Without it the MTU
@@ -815,7 +850,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             // measure so the link is usable for both audio and state.
             {
                 struct ble_gap_conn_desc desc;
-                int desc_rc = ble_gap_conn_find(s_conn_handle, &desc);
+                int desc_rc = ble_gap_conn_find(conn, &desc);
                 if (desc_rc == 0) {
                     ESP_LOGI(TAG, "conn initial: interval=%u latency=%u timeout=%u",
                              desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
@@ -825,7 +860,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                         s_peer_cb(true, desc.peer_id_addr.val, desc.peer_id_addr.type);
                     }
                 }
-                int mtu_rc = ble_gattc_exchange_mtu(s_conn_handle, NULL, NULL);
+                int mtu_rc = ble_gattc_exchange_mtu(conn, NULL, NULL);
                 if (mtu_rc != 0 && mtu_rc != BLE_HS_EALREADY) {
                     ESP_LOGW(TAG, "mtu exchange request failed rc=%d", mtu_rc);
                 }
@@ -836,7 +871,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 // central 不支持 2M 时自动回退，零兼容风险。PHY 更新异步完成，
                 // 结果由 BLE_GAP_EVENT_PHY_UPDATE_COMPLETE 回报。
                 int phy_rc = ble_gap_set_prefered_le_phy(
-                    s_conn_handle,
+                    conn,
                     BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
                     BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
                     0);
@@ -857,60 +892,94 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         }
         return 0;
 
-    case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected reason=%d conn_dur=%" PRIu32 "ms",
-                 event->disconnect.reason, esp_log_timestamp() - s_connected_ms);
-        if (s_ota.active) {
-            (void)esp_ota_abort(s_ota.handle);
-            ota_clear_state();
-            if (s_ota_cb) {
-                s_ota_cb(VOICE_BLE_OTA_EVENT_ABORT, 0, 0);
+    case BLE_GAP_EVENT_DISCONNECT: {
+        const uint16_t conn = event->disconnect.conn_handle;
+        // A4：stale 断连（重连后旧 handle 迟到）只清它自己——先取快照判断被断的
+        // 是不是当前应用链路，绝不让旧事件清掉新连接的订阅态。
+        const bool was_app = (conn == s_conn_handle);
+        voice_ble_conn_t *found = voice_ble_conn_table_find(&s_conns, conn);
+        voice_ble_conn_t removed = {0};
+        const bool tracked = found != NULL;
+        if (found) {
+            removed = *found;
+        }
+        bool last = false;
+        voice_ble_conn_table_remove(&s_conns, conn, &last);
+        s_connected = voice_ble_conn_table_count(&s_conns) > 0;
+        const uint32_t now = esp_log_timestamp();
+        if (tracked) {
+            ESP_LOGI(TAG,
+                     "disconnected handle=%u reason=%d dur=%" PRIu32 "ms was_app=%d links=%d",
+                     conn, event->disconnect.reason, now - removed.connected_ms,
+                     was_app ? 1 : 0, voice_ble_conn_table_count(&s_conns));
+        } else {
+            ESP_LOGI(TAG, "disconnected handle=%u reason=%d (untracked) links=%d",
+                     conn, event->disconnect.reason, voice_ble_conn_table_count(&s_conns));
+        }
+        if (was_app) {
+            // 只有应用链路断开才中止与它绑定的会话资源（OTA/状态突发/间隔/功耗日志）。
+            if (s_ota.active) {
+                (void)esp_ota_abort(s_ota.handle);
+                ota_clear_state();
+                if (s_ota_cb) {
+                    s_ota_cb(VOICE_BLE_OTA_EVENT_ABORT, 0, 0);
+                }
+                ESP_LOGI(TAG, "OTA aborted after app link disconnect");
             }
-            ESP_LOGI(TAG, "OTA aborted after disconnect");
+            s_mbuf_fail_streak = 0;
+            s_state_burst_pending = false;
+            if (s_state_burst_timer) {
+                (void)esp_timer_stop(s_state_burst_timer);
+            }
+            s_itvl_target = CONN_ITVL_NONE;
+            s_itvl_update_pending = false;
+            power_log_dump_abort("disconnect");
         }
-        s_connected = false;
-        s_audio_subscribed = false;
-        s_state_subscribed = false;
-        s_mbuf_fail_streak = 0;
-        s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        s_itvl_target = CONN_ITVL_NONE;
-        s_itvl_update_pending = false;
-        power_log_dump_abort("disconnect");
-        s_state_burst_pending = false;
-        if (s_state_burst_timer) {
-            (void)esp_timer_stop(s_state_burst_timer);
-        }
-        start_advertising();
-        if (s_peer_cb) {
-            s_peer_cb(false, NULL, 0);
-        }
-        if (s_connection_cb) {
-            s_connection_cb(false);
+        sync_app_mirrors();
+        if (last) {
+            // 归零才发 false：单值消费方（main / gateway_targets current_peer、显示层）
+            // 的语义是「还有没有对端」，多链路下中途一条断开不再误清（A4 事故根因）。
+            start_advertising();
+            if (s_peer_cb) {
+                s_peer_cb(false, NULL, 0);
+            }
+            if (s_connection_cb) {
+                s_connection_cb(false);
+            }
         }
         return 0;
+    }
 
-    case BLE_GAP_EVENT_SUBSCRIBE:
-        // SUBSCRIBE always implies an active connection on this conn_handle.
-        // Defensively re-sync our cached state in case a stale DISCONNECT
-        // for an older connection arrived out of order and cleared things,
-        // which would otherwise make send_state_json bail with INVALID_STATE.
-        if (!s_connected || s_conn_handle != event->subscribe.conn_handle) {
-            ESP_LOGW(TAG, "subscribe state desync: cached conn=%u connected=%d, event conn=%u; resyncing",
-                     s_conn_handle, s_connected, event->subscribe.conn_handle);
-            s_connected = true;
-            s_conn_handle = event->subscribe.conn_handle;
-        }
+    case BLE_GAP_EVENT_SUBSCRIBE: {
+        const uint16_t conn = event->subscribe.conn_handle;
         // 每个订阅都记一行：OTA 的 CCCD 订阅此前完全不可观测，桌面端卡在
         // "subscribing OTA state notifications" 时无法判断写是否到了设备（2026-09-20 排查）。
-        ESP_LOGI(TAG, "subscribe attr=%u notify=%d indicate=%d (audio=%u state=%u ota_state=%u)",
-                 event->subscribe.attr_handle, event->subscribe.cur_notify,
+        ESP_LOGI(TAG, "subscribe conn=%u attr=%u notify=%d indicate=%d (audio=%u state=%u ota_state=%u)",
+                 conn, event->subscribe.attr_handle, event->subscribe.cur_notify,
                  event->subscribe.cur_indicate, s_audio_attr_handle, s_state_attr_handle,
                  s_ota_state_attr_handle);
+        // A4：防御性补录进表（替代原「resync 覆盖单值」）——SUBSCRIBE 隐含连接存在，
+        // 记录缺失说明 CONNECT 事件乱序，补一条即可，不再覆盖任何既有链路状态。
+        const bool known = voice_ble_conn_table_find(&s_conns, conn) != NULL;
+        voice_ble_conn_t *entry = voice_ble_conn_table_touch(&s_conns, conn,
+                                                             esp_log_timestamp());
+        if (entry == NULL) {
+            ESP_LOGW(TAG, "conn table full; subscribe from conn=%u dropped", conn);
+            return 0;
+        }
+        if (!known) {
+            ESP_LOGW(TAG, "subscribe without connect record; added conn=%u", conn);
+            s_connected = voice_ble_conn_table_count(&s_conns) > 0;
+        }
+        bool became_state_app = false;
         if (event->subscribe.attr_handle == s_audio_attr_handle) {
-            s_audio_subscribed = event->subscribe.cur_notify;
+            entry->audio_sub = event->subscribe.cur_notify;
         } else if (event->subscribe.attr_handle == s_state_attr_handle) {
-            s_state_subscribed = event->subscribe.cur_notify;
-            if (s_state_subscribed) {
+            entry->state_sub = event->subscribe.cur_notify;
+            became_state_app = entry->state_sub && (conn == derive_app_handle());
+        }
+        sync_app_mirrors();
+        if (became_state_app) {
                 // MTU 未协商完就推 235B 的 device_info 会被截断（att_mtu=23 ⇒ 20B 负载），
                 // 桌面端解析失败会把这次连接判成僵尸（订阅存活证明超时）。等我们自己在
                 // 连接时发起的 MTU 交换完成后再推；兜底定时器防对端不响应交换。
@@ -942,7 +1011,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "conn updated: status=%d (desc unavailable)",
                      event->conn_update.status);
         }
-        if (s_itvl_update_pending) {
+        // A4：间隔重请求只对应用链路（镜像句柄）的 CONN_UPDATE 生效，
+        // OS-HID/第三方链路的参数协商不牵动应用链路。
+        if (s_itvl_update_pending && event->conn_update.conn_handle == s_conn_handle) {
             s_itvl_update_pending = false;
             if (s_itvl_target == CONN_ITVL_FAST) {
                 voice_ble_request_fast_interval();
@@ -955,7 +1026,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "mtu=%u", event->mtu.value);
-        if (s_state_burst_pending) {
+        // A4：只有应用链路的 MTU 协商完成才冲状态突发（其他链路的 MTU 事件不触发）。
+        if (s_state_burst_pending && event->mtu.conn_handle == s_conn_handle) {
             s_state_burst_pending = false;
             if (s_state_burst_timer) {
                 (void)esp_timer_stop(s_state_burst_timer);

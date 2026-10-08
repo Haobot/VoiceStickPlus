@@ -28,7 +28,8 @@
 | A1 | ATVV ERROR 终局：冷却重试 + 状态上报 | open | 9-22 未复核 |
 | A2 | ATVV 发现链终局：CHRS 退避重试 + 「ATVV 不可用」上报 | open | 9-22 未复核 |
 | A3 | STREAMING 无音频看门狗（合成 PRESS_UP 收尾） | open | 9-22 未复核 |
-| A4 | `voice_ble` 多连接表（按 conn_handle 维护 peer，替换单值） | open | **10-07 抽查**：`voice_ble.c:52` 仍单值 `s_conn_handle`；Hub「显示层落表兜底」绕行仍在 |
+| A4 | `voice_ble` 多连接表（按 conn_handle 维护 peer，替换单值） | **closed（10-08，核心）** | 新增纯 C `voice_ble/conn_table`（宿主单测 5/5 本地 `cc` 通过，含 stale 断连回归）；`voice_ble.c` CONNECT/DISCONNECT/SUBSCRIBE 按 handle 记账——断开只清本链路、**入站归零才发 peer/connection false**（stale 断连不再误清 `current_peer`）、SUBSCRIBE 表补录替代单值覆盖；镜像派生使全部发送/门控点零改动；CONN_UPDATE/MTU 按应用链路守卫；Hub 红线三条同文更新 |
+| A4b | A4 余项：**双入站广播放开**（现仍首连即停播，OS-HID+app 并存与 sdkconfig 三链路设计意图未对齐——放开涉及功耗权衡需产品决策）+ 切换器动作携带对端身份（9-22 §366 后半）+ 真机回归（入侵者连接/断开不污染切换器、双机切换 100%） | open（产品决策 + 真机） | 10-08 立项：A4 只落连接表/按 handle 语义/回调转换，广播策略未动 |
 | A6 | OTA 错误路径统一 `esp_ota_abort` + `ota_clear_state`；rollback 签到延后 | open | 9-22 未复核 |
 | A7 | app_event 关键事件处理 | **partial** | 10-07 抽查：`main.c:764` 关键标记 + 20ms 等待 + 日志已在；重试/计数上报未见 |
 | A8 | audio_task 错误分支热循环 → Task WDT（失败退避 + 主动收尾） | open | 9-22 未复核 |
@@ -125,6 +126,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **阶段 1 A4 深修落地（核心）**：新增纯 C `voice_ble/conn_table`（宿主单测 5/5 本地 cc -Wall -Wextra -Werror 通过，含 stale 断连回归用例）；`voice_ble.c` 三段 GAP 事件按 handle 记账 + 镜像派生（发送/门控点零改动）+ CONN_UPDATE/MTU 应用链路守卫；Hub 红线三条同文更新；余项立 A4b（广播放开产品决策 + 切换器身份 + 真机双机/入侵者回归） | 本机仅 IDF6.1 无 xtensa 工具链（项目要 v5.5.1）→ **CI firmware job 编译验证**；真机项挂 A4b |
 | 2026-10-07 | **阶段 1 B1 关闭（代码层）**：`FlashThreadCtx` 生命周期解耦（worker 自持共享引用、与对话框彻底解绑），5s 有界等待从「超时即 UAF」变为「超时也安全」 | CI 六 job 编译/测试通过；真机验收与 payload 冒烟留发布前（AGENTS 约定） |
 | 2026-10-07 | **阶段 1 B8/B9 关闭**：B8 配置快照化（`atomic<shared_ptr>` 原子换入 + 写互斥，109 读点/4 写点，压测 4 读线程 × 300 换入）；B9 原子写 + 合并路径保留 `[license]`。**落地三折**：①首版 Save 全局重取 license 被既有 `TestLicenseConfigRoundTrip` 拦下（LicenseRuntime 经 Save 落盘语义）→ 改「谁的副本谁重取」；②原子替换被 `Load` **自持读句柄迁移回写**顶死（MoveFileEx err=5，旧原地写共享兼容故此前不炸）→ Load 解析后即关句柄 + WriteTo 原地降级兜底；③未捕获异常静默终止靠 main 围栏 + SEH 广谱探针二分定位 | CI run `37647304192` 六 job 全绿（Windows ctest 全量含压测/契约/B9 单测通过） |
 | 2026-10-07 | **0.1 契约 fixtures 两端落地**：`tests/contract/`（生成器独立手搓字节 + manifest.json 48 样本）+ Windows `TestContractFixtures`（ctest）+ macOS `runContractFixtureTests`（swift run）；键序不构成契约、expect 只取公共字段（单端缺口清单见 `tests/contract/README.md`） | 本地 macOS `swift run VoiceStickTests` **644/644**（契约 48 样本对拍行输出）；Windows 侧由 CI ctest 复核 |
