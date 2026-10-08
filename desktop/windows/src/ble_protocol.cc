@@ -208,6 +208,29 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
             event.gateway_mode = (mode == "gateway");
         }
     }
+    // 网关路由回执（D10）：{"event":"gateway_keymap","routes":[{"key":"back",
+    // "route":"software"}, ...]}——按本文件既有字符串扫描风格逐对象提取
+    //（macOS 侧已解析；此前 Windows 丢弃 → 路由 UI 无法回显）。
+    if (event.event == "gateway_keymap") {
+        const auto routes_pos = json.find("\"routes\"");
+        const auto arr_open = routes_pos == std::string::npos ? std::string::npos
+                                                              : json.find('[', routes_pos);
+        const auto arr_close = arr_open == std::string::npos ? std::string::npos
+                                                             : json.find(']', arr_open);
+        std::size_t pos = arr_open == std::string::npos ? 0 : arr_open + 1;
+        while (arr_close != std::string::npos && pos < arr_close) {
+            const auto obj_open = json.find('{', pos);
+            if (obj_open == std::string::npos || obj_open >= arr_close) break;
+            const auto obj_close = json.find('}', obj_open);
+            if (obj_close == std::string::npos || obj_close > arr_close) break;
+            const auto object = std::string_view(json).substr(obj_open, obj_close - obj_open + 1);
+            const auto key = JsonStringValue(object, "key");
+            if (!key.empty()) {
+                event.keymap_routes.push_back({key, JsonStringValue(object, "route")});
+            }
+            pos = obj_close + 1;
+        }
+    }
 
     return event;
 }

@@ -117,6 +117,14 @@ struct StateEvent {
     // 消费端按「未知」处理（不抑制直连 ATVV），见
     // Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md。
     std::optional<bool> gateway_mode;
+    // 网关路由回执（gateway_keymap，D10）：固件回发当前生效的 key→route 表
+    //（gateway_keymap_get 或 set 之后）。非该事件为空；此前 Windows 完全不解析
+    // 被静默丢弃 → 路由 UI 无法回显（macOS 侧已解析）。
+    struct KeyRoute {
+        std::string key;
+        std::string route;
+    };
+    std::vector<KeyRoute> keymap_routes;
 };
 
 struct FirmwareOtaStateEvent {

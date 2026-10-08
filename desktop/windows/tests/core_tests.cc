@@ -1157,6 +1157,32 @@ void TestStateParsing() {
 }
 
 // 网关按键事件（P1 隧道融合）：key/pressed 字段解析与命令 payload 构造。
+// D10：网关路由回执解析——Windows 此前完全不解析被静默丢弃（路由 UI 无法回显）。
+void TestGatewayKeymapReceiptParsing() {
+    const std::string json =
+        R"({"event":"gateway_keymap","routes":[{"key":"back","route":"software"},{"key":"menu","route":"passthrough"}]})";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "gateway_keymap");
+    assert(event->keymap_routes.size() == 2);
+    assert(event->keymap_routes[0].key == "back");
+    assert(event->keymap_routes[0].route == "software");
+    assert(event->keymap_routes[1].key == "menu");
+    assert(event->keymap_routes[1].route == "passthrough");
+
+    // 非回执事件不产生 routes。
+    const std::string other = R"({"event":"gateway_status","mode":"gateway"})";
+    ByteVector other_frame = {1, 0x10};
+    AppendLe16(other_frame, static_cast<std::uint16_t>(other.size()));
+    other_frame.insert(other_frame.end(), other.begin(), other.end());
+    auto other_event = BleProtocol::ParseStateEvent(other_frame);
+    assert(other_event.has_value());
+    assert(other_event->keymap_routes.empty());
+}
+
 void TestGatewayKeyStateParsing() {
     const std::string json =
         "{\"event\":\"gateway_key\",\"key\":\"volume_up\",\"pressed\":true}";
@@ -16524,6 +16550,8 @@ int main() {
     TestStateParsing();
     TestContractFixtures();
     TestEncoderRotateStateParsing();
+    printf(">> cluster: D10 gateway_keymap receipt parsing\n"); fflush(stdout);
+    TestGatewayKeymapReceiptParsing();
     TestGatewayKeyStateParsing();
     TestStateEventSourceParsing();
     TestEncoderStatusParsing();

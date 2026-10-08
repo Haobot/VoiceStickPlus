@@ -86,13 +86,14 @@
 
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
-| D1 | macOS 消费 device_info 以外能力帧（battery/encoder/gateway/power…） | open | 9-22 未复核 |
+| D1 | macOS 消费 device_info 以外能力帧（battery/encoder/gateway/power…） | **closed（10-08 复核，评审已过时）** | 实测 macOS `handleStateEvent` 现有 **14 个 case**（Windows 全部 11 类均有对应）：`battery_status`→`statusController.setDeviceBattery`、`encoder_status`→`setDeviceEncoderPresent`、`encoder_rotate`→`handleEncoderRotate`、`gateway_key`→`handleGatewayKey` 均为**真实接线**；`gateway_status` 仅日志且**已逐平台标注原因**（注释：macOS 无直连 ATVV 路径故无需抑制）——正是评审要求的「补实现**或**逐条标注平台」。9-22 的「只处理 5 类 / grep 只命中注释」已不成立 |
+| D10b | `gateway_keymap` 回执**回显到键位映射对话框**（新增状态行/表格刷新 + i18n） | open | 10-08 从 D10 拆出：协议解析与日志已就绪（Windows `StateEvent::keymap_routes`、macOS `keymapRoutes`），剩 UI 消费——需在对话框加回显控件并决定是否与 `[xiaomi.keys]` 配置比对提示不一致 |
 | D3 | macOS 订阅错误处理/活性兜底/重订阅 | **partial（10-08）** | 实锤：`didUpdateNotificationStateFor` 开头 `guard xiaomiContexts` 把 **StickS3 三特征（state/audio/otaState）的订阅结果整个吞掉**（代码注释甚至自认「沿用现状不检查」）→ 订阅失败/设备侧清 CCCD **零日志零重订阅**，「显示已连接但语音静默失效」不可观测。已落：StickS3 分支前置处理（成功复位/失败记日志）+ **逐特征有限退避重订阅**（3 次 ×0.5s）+ 超限断开重建（对齐 Windows fail 语义）+ 全局/逐外设清理点同步。**主动心跳活性兜底未做 → D3b**（需对齐 Windows 心跳/僵尸判定语义，防无心跳空闲态误判重连）。本地 `swift build` + `PASSED 650/650` |
 | D3b | macOS 入站**心跳活性兜底**（僵尸连接判定） | open（需对齐 Windows 语义） | 10-08 从 D3 拆出：D3 已覆盖「订阅状态变化」可恢复场景；但**无入站数据**的静默失效（CCCD 仍 on）无法感知。实现须复用 Windows 口径（心跳 5s 周期 + `kHeartbeatStaleMs=15000` + 连接期活性证明），并防「空闲无心跳」误判重连——先读固件 state_tx 心跳语义再动 |
 | D6 | OTA 分块下限 `max(20,…)` 突破帧头预算（MTU 20 必 bad_offset） | **closed（10-08）** | 两端同病：`max(20, min(maxWrite-帧头, 244))` 的**下限 20 覆盖了正确的小值**——MTU 未协商（macOS `maxWrite=20`/Windows `MaxPduSize=20`）时算出 20B chunk，包长 32B/35B 超可写上限 → 固件必 `bad_offset`。收敛为协议层纯函数：macOS `BleProtocol.otaChunkSize(maxWrite:)`（= maxWrite−12，放不下返回 0）、Windows `BleProtocol::OtaChunkSizeForPdu`（= max_pdu−15 含3B ATT，≤15 返回 0），调用方对 0 **报错终止**（macOS `attMtuTooSmall` 新错误 case、Windows `FinishFirmwareUpdate`）而非硬发。两端各带单测（macOS `runOtaFlowControlTests` 追加5断言+包长自检；Windows `TestOtaChunkSizeForPdu` 含预算自检） |
 | D7 | 固件 `ota_abort` transfer_id 不匹配时清状态且不 abort | **closed（10-08）** | 缺陷实锤：id 不匹配时跳过 `esp_ota_abort` 却**照旧** `ota_clear_state()` + 发 `{event:aborted}` + ABORT 回调 → 进行中的传输被悄悄废掉、`esp_ota_handle` 泄漏、桌面端拿假 aborted 误判已中止（空闲时也发假 aborted）。判定抽成纯头文件策略 `voice_ble_ota_abort_allowed`（无活动→允许幂等收尾，桌面取消流程不挂；匹配→允许；**有活动且不匹配→拒绝**），`ota_abort` 拒绝时 `ota_send_error("transfer_mismatch")` + `BLE_ATT_ERR_UNLIKELY`、**不清理不发帧**——对齐 `ota_write_data` 的既有不匹配先例。host 测试 `voice_ble_ota_policy_test`（`run_tests.py` 第 7 目标，本地 7/7） |
 | D9 | 三端 `version`=1 硬编码，无协议版本协商 | open | 9-22 未复核 |
-| D10 | `gateway_keymap` 回执 Windows 无解析 / macOS 无事件 | open | 9-22 未复核 |
+| D10 | `gateway_keymap` 回执 Windows 无解析 / macOS 无事件 | **partial（10-08）** | 复核：**macOS 半边已过时**（`case "gateway_keymap"` 已解析 `keymapRoutes` 并日志）。**Windows 半边属实**：`ParseStateEvent` 此前对 `gateway_keymap` 静默丢弃 → 回执不可观测。已落：`StateEvent::KeyRoute` + `keymap_routes` 字段、按本文件既有字符串扫描风格逐对象提取（key/route 顺序无关）、协调器新分支落日志（`gateway keymap report: k=v, …`，与 macOS NSLog 对齐）。**回显 UI → D10b** |
 
 ## 6. P1 — 发布与测试设施（E 类）
 
@@ -130,6 +131,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **D1 复核关闭 + D10（partial）**：D1 实测已由后续工作完成（macOS 14 case、真实接线、gateway_status 逐平台标注）；D10 Windows 半边补 `StateEvent::keymap_routes` 解析 + 协调器落日志（macOS 半边本已解析，评审陈旧），UI 回显拆 D10b | 新增 `TestGatewayKeymapReceiptParsing`（回执帧 + 非回执事件负例）；CI 七 job（Windows ctest） |
 | 2026-10-08 | **D3（partial）**：macOS StickS3 订阅结果不再被 guard 吞掉——失败记日志 + 逐特征 3×0.5s 退避重订阅 + 超限断开重建；主动心跳留 D3b | 本地 `swift build` + `PASSED 650/650`；CI 七 job |
 | 2026-10-08 | **D7 关闭**：固件 ota_abort 不匹配拒绝（不清理/不发假 aborted/不漏 handle），判定抽纯头文件策略供宿主单测 | 本地 `run_tests.py` **7/7**（新增 voice_ble_ota_policy 目标）+ CI 七 job（固件编译） |
 | 2026-10-08 | **D6 关闭**：OTA 分块两端收敛为协议层纯函数（去 `max(20,…)` 下限，放不下报错不硬发），修 MTU 未协商必 `bad_offset` | macOS 本地 `swift run VoiceStickTests` + Windows CI ctest 双端单测；两端包长 ≤ 预算自检 |
