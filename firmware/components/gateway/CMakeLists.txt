@@ -1,6 +1,7 @@
 # gateway 组件：小米遥控器 → StickS3 网关（方案 A，Doc/Plan/xiaomi-remote-stick-gateway.md）
 # 纯逻辑模块（gateway_report_parser/gateway_keymap/gateway_adpcm/gateway_atvv_session）
-# 不依赖 ESP-IDF，另有 test/run_tests.py 主机侧单测（MSVC 编译）；
+# 不依赖 ESP-IDF，另有 test/run_tests.py 主机侧单测（跨平台：POSIX cc / Windows MSVC，
+# CI host-tests job 每次推送运行；同脚本亦覆盖 voice_ble 连接表）；
 # 设备侧模块依赖 NimBLE/NVS。
 idf_component_register(
     SRCS "src/gateway_report_parser.c"

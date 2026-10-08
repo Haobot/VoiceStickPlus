@@ -1,63 +1,69 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gateway 纯逻辑 host 侧单测运行器。
+"""gateway / voice_ble 纯逻辑 host 侧单测运行器（跨平台，E8）。
 
-策略：先经 vcvars64.bat 捕获 MSVC 编译环境（cl.exe 路径与 INCLUDE/LIB），
-再以参数化列表直调 cl.exe 编译运行——绕开 Git Bash→cmd 的引号转义问题。
-纯逻辑模块（gateway_report_parser/gateway_keymap）不依赖 ESP-IDF，可在主机验证。
+- POSIX（macOS / Linux / CI ubuntu）：cc 直编（-std=c11 -Wall -Wextra -Werror）。
+- Windows：保留原 MSVC 路线（vcvars64.bat 捕获环境 → cl.exe /W4 /WX），绕开
+  Git Bash→cmd 的引号转义问题。
+纯逻辑模块（gateway_report_parser/keymap/atvv/targets/switcher、voice_ble conn_table）
+不依赖 ESP-IDF，可在主机验证；产物写临时目录，不污染源码树。
+CI：.github/workflows/ci.yml 的 host-tests job 每次推送运行 POSIX 路线。
 
-用法：python test/run_tests.py
+用法：
+    python3 test/run_tests.py            # 全部目标
+    python3 test/run_tests.py atvv        # 按名字子串过滤
 """
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, "..", "src")
+GATEWAY_SRC = os.path.join(HERE, "..", "src")
+GATEWAY_INC = os.path.join(HERE, "..", "include")
+VOICE_BLE = os.path.abspath(os.path.join(HERE, "..", "..", "voice_ble"))
+VOICE_BLE_INC = os.path.join(VOICE_BLE, "include")
 VCVARS = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 
-SOURCES = [
-    os.path.join(HERE, "test_gateway_logic.c"),
-    os.path.join(SRC, "gateway_report_parser.c"),
-    os.path.join(SRC, "gateway_keymap.c"),
-    os.path.join(SRC, "gateway_hogp_report.c"),
+# (name, sources, include_dirs)
+TARGETS = [
+    ("gateway_logic",
+     [os.path.join(HERE, "test_gateway_logic.c"),
+      os.path.join(GATEWAY_SRC, "gateway_report_parser.c"),
+      os.path.join(GATEWAY_SRC, "gateway_keymap.c"),
+      os.path.join(GATEWAY_SRC, "gateway_hogp_report.c")],
+     [GATEWAY_INC]),
+    ("gateway_atvv",
+     [os.path.join(HERE, "test_gateway_atvv.c"),
+      os.path.join(GATEWAY_SRC, "gateway_adpcm.c"),
+      os.path.join(GATEWAY_SRC, "gateway_atvv_session.c")],
+     [GATEWAY_INC]),
+    ("gateway_targets",
+     [os.path.join(HERE, "test_gateway_targets.c"),
+      os.path.join(GATEWAY_SRC, "gateway_targets_core.c")],
+     [GATEWAY_INC]),
+    ("gateway_switcher",
+     [os.path.join(HERE, "test_gateway_switcher.c"),
+      os.path.join(GATEWAY_SRC, "gateway_switcher.c")],
+     [GATEWAY_INC]),
+    # A4：voice_ble 连接表宿主单测与 gateway 同跑道（纯 C 零 ESP 依赖）。
+    ("voice_ble_conn_table",
+     [os.path.join(VOICE_BLE, "test", "conn_table_test.c"),
+      os.path.join(VOICE_BLE, "conn_table.c")],
+     [VOICE_BLE_INC]),
 ]
-INC = os.path.join(HERE, "..", "include")
-EXE = os.path.join(HERE, "test_gateway_logic.exe")
-
-# Phase 2 新增：ATVV 纯逻辑件（ADPCM 归一 + 会话状态机）独立目标
-ATVV_SOURCES = [
-    os.path.join(HERE, "test_gateway_atvv.c"),
-    os.path.join(SRC, "gateway_adpcm.c"),
-    os.path.join(SRC, "gateway_atvv_session.c"),
-]
-ATVV_EXE = os.path.join(HERE, "test_gateway_atvv.exe")
-
-# P1 切换器：目标表纯逻辑件
-TARGETS_SOURCES = [
-    os.path.join(HERE, "test_gateway_targets.c"),
-    os.path.join(SRC, "gateway_targets_core.c"),
-]
-TARGETS_EXE = os.path.join(HERE, "test_gateway_targets.exe")
-
-# P1 切换器：状态机纯逻辑件
-SWITCHER_SOURCES = [
-    os.path.join(HERE, "test_gateway_switcher.c"),
-    os.path.join(SRC, "gateway_switcher.c"),
-]
-SWITCHER_EXE = os.path.join(HERE, "test_gateway_switcher.exe")
 
 
-def capture_msvc_env() -> dict[str, str]:
+def capture_msvc_env() -> dict:
     """跑 vcvars64 后导出完整环境，供后续直调 cl.exe。"""
-    # 经中间 .bat 避免 Git Bash 对 && 的干扰
     probe = os.path.join(HERE, "_msvc_env.bat")
     with open(probe, "w", encoding="ascii") as f:
         f.write(f'@echo off\r\ncall "{VCVARS}" >nul 2>&1\r\nset\r\n')
     result = subprocess.run(["cmd", "/c", probe], capture_output=True, text=True,
                             encoding="utf-8", errors="replace")
     os.remove(probe)
-    env: dict[str, str] = {}
+    env = {}
     for line in result.stdout.splitlines():
         if "=" in line:
             key, _, value = line.partition("=")
@@ -67,22 +73,46 @@ def capture_msvc_env() -> dict[str, str]:
     return env
 
 
-def build_and_run(sources: list[str], exe: str, env: dict[str, str]) -> int:
+def build_and_run_posix(sources, includes, exe, workdir) -> int:
+    cc = os.environ.get("CC", "cc")
+    cmd = [cc, "-std=c11", "-Wall", "-Wextra", "-Werror"]
+    for inc in includes:
+        cmd += ["-I", inc]
+    cmd += sources + ["-o", exe]
+    build = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+    if build.returncode != 0:
+        print(build.stdout)
+        print(build.stderr, file=sys.stderr)
+        print(f"[运行器] 编译失败 exit={build.returncode}（{os.path.basename(exe)}）",
+              file=sys.stderr)
+        return build.returncode
+    run = subprocess.run([exe], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    print(run.stdout)
+    if run.stderr:
+        print(run.stderr, file=sys.stderr)
+    return run.returncode
+
+
+def build_and_run_msvc(sources, includes, exe, env, workdir) -> int:
     cl_path = os.path.join(env["VCToolsInstallDir"], "bin", "Hostx64", "x64", "cl.exe")
     if not os.path.exists(cl_path):
         raise RuntimeError(f"未找到 cl.exe：{cl_path}")
     merged = {k.upper(): v for k, v in os.environ.items()}
     merged.update({k.upper(): v for k, v in env.items()})
-    cl = subprocess.run(
-        [cl_path, "/nologo", "/W4", "/WX", "/utf-8", f"/I{INC}", *sources, f"/Fe{exe}", "/link", "/SUBSYSTEM:CONSOLE"],
-        cwd=HERE, capture_output=True, text=True, encoding="utf-8", errors="replace", env=merged,
-    )
+    args = [cl_path, "/nologo", "/W4", "/WX", "/utf-8"]
+    for inc in includes:
+        args.append(f"/I{inc}")
+    args += [*sources, f"/Fe{exe}", "/link", "/SUBSYSTEM:CONSOLE"]
+    cl = subprocess.run(args, cwd=workdir, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", env=merged)
     if cl.returncode != 0:
         print(cl.stdout)
         print(cl.stderr, file=sys.stderr)
-        print(f"[运行器] 编译失败 exit={cl.returncode}（{os.path.basename(exe)}）", file=sys.stderr)
+        print(f"[运行器] 编译失败 exit={cl.returncode}（{os.path.basename(exe)}）",
+              file=sys.stderr)
         return cl.returncode
-
     run = subprocess.run([exe], capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
     print(run.stdout)
@@ -92,13 +122,28 @@ def build_and_run(sources: list[str], exe: str, env: dict[str, str]) -> int:
 
 
 def main() -> int:
-    env = capture_msvc_env()
+    wanted = sys.argv[1:]
+    targets = [(n, s, i) for (n, s, i) in TARGETS
+               if not wanted or any(w in n for w in wanted)]
+    if not targets:
+        print(f"[运行器] 无匹配目标：{wanted}", file=sys.stderr)
+        return 2
+    is_windows = os.name == "nt"
+    msvc_env = capture_msvc_env() if is_windows else None
     failed = 0
-    for sources, exe in [(SOURCES, EXE), (ATVV_SOURCES, ATVV_EXE), (TARGETS_SOURCES, TARGETS_EXE),
-                        (SWITCHER_SOURCES, SWITCHER_EXE)]:
-        rc = build_and_run(sources, exe, env)
-        if rc != 0:
-            failed = rc if failed == 0 else failed
+    with tempfile.TemporaryDirectory(prefix="voicestick_host_tests_") as tmp:
+        for name, sources, includes in targets:
+            exe = os.path.join(tmp, name + (".exe" if is_windows else ""))
+            if is_windows:
+                rc = build_and_run_msvc(sources, includes, exe, msvc_env, tmp)
+            else:
+                rc = build_and_run_posix(sources, includes, exe, tmp)
+            if rc != 0:
+                print(f"[运行器] {name} FAILED exit={rc}", file=sys.stderr)
+                failed = rc if failed == 0 else failed
+    if failed == 0:
+        print(f"[运行器] {len(targets)} 个 host 测试目标全部通过"
+              + ("（MSVC）" if is_windows else "（cc）"))
     return failed
 
 

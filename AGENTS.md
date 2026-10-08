@@ -38,7 +38,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 
 | 模块 | 最小验证 | 测试 |
 |---|---|---|
-| 固件 | `cd firmware && idf.py build`（Windows 可用 `python scripts/idf_cli.py -c`） | 无单测，编译通过 + 真机验证 |
+| 固件 | `cd firmware && idf.py build`（Windows 可用 `python scripts/idf_cli.py -c`） | host 单测：`python3 firmware/components/gateway/test/run_tests.py`（gateway+voice_ble 纯逻辑 5 目标，CI `host-tests` job）；整机=编译通过 + 真机验证 |
 | macOS | `cd desktop/macos && swift build` | `swift run VoiceStickTests`（executable 测试 runner，非 XCTest——本机 CLT-only 无 Xcode）+ 手动测试 |
 | Windows | 根目录 `build_win.bat` | `ctest --test-dir desktop\windows\build-x64 --output-on-failure` |
 | 网站 | `cd website && npm run build` | 无自动化测试 |

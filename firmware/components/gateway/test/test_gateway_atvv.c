@@ -239,17 +239,6 @@ static size_t drive_to_streaming(int64_t now_ms) {
                                         g_acts, GATEWAY_ATVV_MAX_ACTIONS);
 }
 
-// 喂 3 个 120B 全零 ADPCM 帧 → 720 零样本 → 1 个 640 采样 PCM 帧
-static size_t feed_zero_audio(int64_t now_ms) {
-    uint8_t frame[GATEWAY_ADPCM_DEFAULT_FRAME_BYTES];
-    memset(frame, 0, sizeof(frame));
-    size_t n = 0;
-    for (int i = 0; i < 3; i++) {
-        n = gateway_atvv_session_audio(&g_s, frame, sizeof(frame), now_ms, g_acts,
-                                       GATEWAY_ATVV_MAX_ACTIONS);
-    }
-    return n;
-}
 
 // ---------- gateway_atvv_session：caps 握手 ----------
 

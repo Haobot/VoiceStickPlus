@@ -10,7 +10,7 @@
 
 | ID | 事项 | 状态 | 备注 |
 |---|---|---|---|
-| 0.1 | 跨端契约 fixtures（golden-frame 多端对拍，进 CI） | **closed（Win+macOS）** | `tests/contract/` 48 黄金样本（state 14/power_mgmt 2/ota_state 5/binary 5/control 18/ota_control 4），两端测试随 CI 运行；**固件端 reader 余项**：待 E8 host 构建（`run_tests.py` 跨平台化）后消费同一 manifest |
+| 0.1 | 跨端契约 fixtures（golden-frame 多端对拍，进 CI） | **closed（Win+macOS）** | `tests/contract/` 48 黄金样本（state 14/power_mgmt 2/ota_state 5/binary 5/control 18/ota_control 4），两端测试随 CI 运行；**固件端 reader 余项**：E8 跑道已就绪（跨平台 `run_tests.py` + CI `host-tests`），reader 实现待办（消费同一 manifest） |
 | 0.2 | release-guard 脚本 + CI job | **closed** | `scripts/release_guard.py`（7 项检查）+ `test_release_guard.py`（13 用例）+ `ci.yml` release-guard job |
 | 0.3 | 网站 `npm run build` 进 CI | **closed** | `ci.yml` website job（npm ci + build，lock 缓存） |
 | 0.4 | 本 backlog 建立 | **closed** | 本文件 |
@@ -97,7 +97,7 @@
 | E3 | macOS 更新链 3 处静默降级（占位公钥/sign 失败/未公证）→ fail-hard | open | 9-22 未复核 |
 | E4 | `prepare_flash_payload.ps1` 供应链哈希锚点（require-hashes） | open | 9-22 未复核 |
 | E7 | Windows 测试目标显式 `-UNDEBUG` 或统一 CHECK 宏 | **partial** | CI 用 Debug 构建 + ctest 已实跑全绿（2026-10-07，断言真实生效）；本地 RelWithDebInfo 假绿面仍在 |
-| E8 | 固件 gateway host 测试改跨平台 CTest 并进 CI | open | **10-07 抽查**：`run_tests.py:17` 仍硬编码 MSVC vcvars 路径 |
+| E8 | 固件 gateway host 测试改跨平台 CTest 并进 CI | **closed（10-08）** | `run_tests.py` 重写为跨平台（POSIX `cc -std=c11 -Wall -Wextra -Werror`；Windows 保留 vcvars+cl `/W4 /WX`），目标表 5（gateway logic/atvv/targets/switcher + voice_ble conn_table），产物进临时目录不污染源码树；顺删 `test_gateway_atvv` 死函数 `feed_zero_audio`（gcc -Werror 拦下）；CI 新增 `host-tests` job；本地 5/5 全过 |
 | E9 | E2E 脚本退出码反映判定（不假 PASS） | **partial** | 9-22 已修两项（gateway_switch/run_asr_bench），其余未复核 |
 | E10 | appcast 单调性（✅已随 E2 修）+ COS `firmware/latest/manifest.json` 指向国内域名 | **partial** | manifest 指向未复核 |
 | E12 | `test_playback` 收进调试构建 + 补 protocol.md 文档 | open | 与 P0-2 同批 |
@@ -107,7 +107,7 @@
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
 | N1 | macOS App target 16.8k 行零测试（状态机/配置/Ogg 下沉 Core） | open | 阶段 2 首位；测试 runner 自带 NOTE 印证缺口 |
-| N2 | 跨端契约零 fixtures（golden-frame 对拍） | **closed（随 0.1）** | `tests/contract/` 48 样本双端进 CI；固件端余项挂 E8 |
+| N2 | 跨端契约零 fixtures（golden-frame 对拍） | **closed（随 0.1）** | `tests/contract/` 48 样本双端进 CI；固件端余项：E8 跑道已就绪，reader 待实现 |
 | N3 | CI 缺 website/release-guard | **closed（本批）** | 两 job 已入 `ci.yml`；契约 fixtures 归 0.1 |
 | N4 | 遗留项无跟踪载体 | **closed（本文件）** | 状态变更规则见头部 |
 | N5 | 三份 Hub 漂移（CLAUDE/CODEBUDDY 合并行 + 多余空行） | **closed（本批）** | 已修复；`release_guard` hub 检查守护 |
@@ -126,6 +126,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **阶段 1 E8 关闭**：`run_tests.py` 跨平台化（POSIX cc / Windows MSVC 双路线，5 目标含 voice_ble conn_table，临时目录产物）+ CI `host-tests` job 每推送运行；删 gateway 测试死函数；Hub 固件测试行 ×3 同步更新 | 本地 5/5 全过（ATVV 112/112）；CI 七 job 验证（见下行） |
 | 2026-10-08 | **阶段 1 A4 深修落地（核心）**：新增纯 C `voice_ble/conn_table`（宿主单测 5/5 本地 cc -Wall -Wextra -Werror 通过，含 stale 断连回归用例）；`voice_ble.c` 三段 GAP 事件按 handle 记账 + 镜像派生（发送/门控点零改动）+ CONN_UPDATE/MTU 应用链路守卫；Hub 红线三条同文更新；余项立 A4b（广播放开产品决策 + 切换器身份 + 真机双机/入侵者回归） | 本机仅 IDF6.1 无 xtensa 工具链（项目要 v5.5.1）→ **CI firmware job 编译验证**；真机项挂 A4b |
 | 2026-10-07 | **阶段 1 B1 关闭（代码层）**：`FlashThreadCtx` 生命周期解耦（worker 自持共享引用、与对话框彻底解绑），5s 有界等待从「超时即 UAF」变为「超时也安全」 | CI 六 job 编译/测试通过；真机验收与 payload 冒烟留发布前（AGENTS 约定） |
 | 2026-10-07 | **阶段 1 B8/B9 关闭**：B8 配置快照化（`atomic<shared_ptr>` 原子换入 + 写互斥，109 读点/4 写点，压测 4 读线程 × 300 换入）；B9 原子写 + 合并路径保留 `[license]`。**落地三折**：①首版 Save 全局重取 license 被既有 `TestLicenseConfigRoundTrip` 拦下（LicenseRuntime 经 Save 落盘语义）→ 改「谁的副本谁重取」；②原子替换被 `Load` **自持读句柄迁移回写**顶死（MoveFileEx err=5，旧原地写共享兼容故此前不炸）→ Load 解析后即关句柄 + WriteTo 原地降级兜底；③未捕获异常静默终止靠 main 围栏 + SEH 广谱探针二分定位 | CI run `37647304192` 六 job 全绿（Windows ctest 全量含压测/契约/B9 单测通过） |

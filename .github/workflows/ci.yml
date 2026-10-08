@@ -49,6 +49,16 @@ jobs:
           path: firmware
           command: idf.py build
 
+  host-tests:
+    name: Firmware host tests (pure-C logic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run gateway + voice_ble host tests
+        # E8：跨平台运行器（POSIX cc -Wall -Wextra -Werror），5 个纯逻辑目标
+        #（gateway logic/atvv/targets/switcher + voice_ble conn_table）。
+        run: python3 firmware/components/gateway/test/run_tests.py
+
   windows:
     name: Windows build + ctest
     runs-on: windows-latest
