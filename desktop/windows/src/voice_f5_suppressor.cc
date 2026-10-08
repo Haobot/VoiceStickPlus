@@ -31,10 +31,10 @@ void VoiceF5Suppressor::Start(const std::atomic<std::int64_t>* mic_open_sink) {
                               GetModuleHandleW(nullptr), 0);
     if (!hook_) {
         active_instance_ = nullptr;
-        LogApp("VoiceF5Suppressor: SetWindowsHookEx WH_KEYBOARD_LL failed err=" +
+        LogAppNonBlocking("VoiceF5Suppressor: SetWindowsHookEx WH_KEYBOARD_LL failed err=" +
                std::to_string(GetLastError()));
     } else {
-        LogApp("VoiceF5Suppressor: WH_KEYBOARD_LL hook installed");
+        LogAppNonBlocking("VoiceF5Suppressor: WH_KEYBOARD_LL hook installed");
     }
 }
 
@@ -80,7 +80,7 @@ LRESULT CALLBACK VoiceF5Suppressor::LowLevelKeyboardProc(int code, WPARAM w_para
     const auto last = self->mic_open_sink_->load(std::memory_order_relaxed);
     if (ShouldSuppressF5(now, last, true)) {
         self->f5_sequence_suppressed_ = true;
-        LogApp("f5 keydown mic_open_age_ms=" + std::to_string(now - last) +
+        LogAppNonBlocking("f5 keydown mic_open_age_ms=" + std::to_string(now - last) +
                " -> suppress");
         return 1;
     }
@@ -95,12 +95,12 @@ LRESULT CALLBACK VoiceF5Suppressor::LowLevelKeyboardProc(int code, WPARAM w_para
         const auto cur = self->mic_open_sink_->load(std::memory_order_relaxed);
         if (ShouldSuppressF5(NowSteadyMs(), cur, true)) {
             self->f5_sequence_suppressed_ = true;
-            LogApp("f5 keydown -> suppress (waited " +
+            LogAppNonBlocking("f5 keydown -> suppress (waited " +
                    std::to_string(NowSteadyMs() - wait_start) + "ms)");
             return 1;
         }
     }
-    LogApp(std::string("f5 keydown mic_open_age_ms=") +
+    LogAppNonBlocking(std::string("f5 keydown mic_open_age_ms=") +
            (last > 0 ? std::to_string(now - last) : std::string("never")) + " -> pass");
     return CallNextHookEx(nullptr, code, w_param, l_param);
 }

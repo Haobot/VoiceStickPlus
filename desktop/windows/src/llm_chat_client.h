@@ -34,6 +34,8 @@ public:
         std::function<void(std::string token)> on_token;
         std::function<void(std::string full_text)> on_done;
         std::function<void(std::string error)> on_error;
+        // B18：取消专道——不走 on_error（其消费方会回退非流式重试=取消被绕过）。
+        std::function<void()> on_cancelled;
     };
 
     // SSE 行解析（可单测）：从 "data: <json>" 行提取 delta.content token，返回空表示无 token。

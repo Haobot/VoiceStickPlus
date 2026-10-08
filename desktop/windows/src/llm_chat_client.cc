@@ -260,6 +260,7 @@ void LLMChatClient::ChatStream(std::string system_prompt,
     OutputDebugStringA("[ChatStream] HTTP 200, reading SSE stream...");
 
     // 增量读取 SSE 事件流
+    bool saw_finish = false;  // B18：断流截断检测（见循环退出分支）。
     std::string line_buffer;
     std::string full_text;
     DWORD available = 0;
@@ -269,6 +270,8 @@ void LLMChatClient::ChatStream(std::string system_prompt,
             WinHttpCloseHandle(request);
             WinHttpCloseHandle(connect);
             WinHttpCloseHandle(session);
+            // B18：取消必回调（专道，防调用方无限等；不复用 on_error=其会回退重试）。
+            if (callbacks.on_cancelled) callbacks.on_cancelled();
             return;
         }
         std::string chunk(available, '\0');
@@ -293,6 +296,7 @@ void LLMChatClient::ChatStream(std::string system_prompt,
             if (line[0] == ':') continue;
 
             bool is_done = false;
+            if (line.find("\"finish_reason\":\"") != std::string::npos) saw_finish = true;
             std::string token = ParseSseLine(line, &is_done);
             if (is_done) {
                 OutputDebugStringA(("[ChatStream] [DONE] received, total tokens=" + std::to_string(full_text.size())).c_str());
@@ -313,13 +317,18 @@ void LLMChatClient::ChatStream(std::string system_prompt,
     // 循环退出：可能超时或连接关闭
     const auto exit_err = LastErrorText();
     OutputDebugStringA(("[ChatStream] stream loop exited, full_text=" + std::to_string(full_text.size()) +
-                        " bytes, WinHttp err=" + exit_err).c_str());
+                        " bytes, saw_finish=" + std::to_string(saw_finish) +
+                        ", WinHttp err=" + exit_err).c_str());
     WinHttpCloseHandle(request);
     WinHttpCloseHandle(connect);
     WinHttpCloseHandle(session);
 
-    if (!full_text.empty()) {
+    if (!full_text.empty() && saw_finish) {
         if (callbacks.on_done) callbacks.on_done(full_text);
+    } else if (!full_text.empty()) {
+        // B18：中途断流（无 finish 标记）=截断文本——不得当成功提交；
+        // 走 on_error 让消费方回退非流式重试拿完整结果。
+        if (callbacks.on_error) callbacks.on_error("LLM stream truncated without finish marker (err=" + exit_err + ")");
     } else {
         if (callbacks.on_error) callbacks.on_error("LLM stream returned no content (err=" + exit_err + ")");
     }

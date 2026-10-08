@@ -91,6 +91,10 @@ void LLMRefinementClient::RefineStream(std::string text,
         Refine(std::move(text), std::move(prompt), std::move(on_complete),
                std::move(hotwords));
     };
+    // B18：取消完成 ok=false（协调器完成 lambda 已有 cancel 守卫——注释明示 !ok=取消）。
+    cbs.on_cancelled = [on_complete]() {
+        if (on_complete) on_complete(false, std::string());
+    };
     ChatStream(system_prompt, text, std::move(cbs), std::move(cancel));
 }
 

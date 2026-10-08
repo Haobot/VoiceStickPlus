@@ -55,8 +55,8 @@ void RotateLogIfTooLarge(const std::filesystem::path& path, std::uintmax_t max_b
     std::filesystem::rename(path, old_path, rename_ec);
 }
 
-void Log(std::string_view category, std::string_view message) {
-    std::lock_guard lock(g_log_mutex);
+namespace {
+void LogUnlocked(std::string_view category, std::string_view message) {
     try {
         const auto path = LogFilePath();
         std::filesystem::create_directories(path.parent_path());
@@ -66,6 +66,18 @@ void Log(std::string_view category, std::string_view message) {
         output << "[" << category << " " << CurrentTimestamp() << "] " << message << "\n";
     } catch (...) {
     }
+}
+} // namespace
+
+void Log(std::string_view category, std::string_view message) {
+    std::lock_guard lock(g_log_mutex);
+    LogUnlocked(category, message);
+}
+
+void LogNonBlocking(std::string_view category, std::string_view message) {
+    std::unique_lock<std::mutex> lock(g_log_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return;  // B15：钩子路径宁丢一条不等锁。
+    LogUnlocked(category, message);
 }
 
 } // namespace voicestick
