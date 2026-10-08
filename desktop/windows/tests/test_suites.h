@@ -39,3 +39,6 @@ void RunCodecFixtureSerialBatchTests();
 
 // N8 cut14：license/ima/asr-refiner/caps 批（40 测；孤儿注册修复 + 16 助手收敛迁移 + ns 配对闸首用）。
 void RunLicenseImaAtvvBatchTests();
+
+// N8 cut15（终刀）：device/plan/serial 等余量 20 测——core_tests.cc 收官为注册壳。
+void RunDevicePlanMiscBatchTests();

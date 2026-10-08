@@ -484,6 +484,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_codec_serial.cc
     # N8 cut14: license/ima/asr batch (40 tests)
     tests/core_tests_license_ima.cc
+    # N8 cut15 (final): device/plan/serial remainder (20 tests)
+    tests/core_tests_device_plan.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入
