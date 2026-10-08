@@ -200,13 +200,21 @@ static void flush_locked(bool force)
     }
 
     bool wrapped = false;
+    size_t written = 0;
     for (size_t i = 0; i < s_ram_count; ++i) {
-        if (s_file_count >= FILE_CAPACITY) {
-            wrapped = true;     // 本 flush 起开始覆盖最旧条目
-        }
         const uint32_t slot = s_file_write_index % FILE_CAPACITY;
-        fseek(fp, (long)(FILE_HDR_SIZE + slot * ENTRY_SIZE), SEEK_SET);
-        fwrite(&s_ram[i], ENTRY_SIZE, 1, fp);
+        // A20：fseek/fwrite 逐一检查——原先不查，FS 出错时计数照常推进、头部照常
+        // 写，文件与计数静默不一致且零日志（遥测静默丢失）。
+        if (fseek(fp, (long)(FILE_HDR_SIZE + slot * ENTRY_SIZE), SEEK_SET) != 0 ||
+            fwrite(&s_ram[i], ENTRY_SIZE, 1, fp) != 1) {
+            ESP_LOGE(TAG, "flush write failed at entry %u/%u (%s)", (unsigned)i,
+                     (unsigned)s_ram_count, ferror(fp) ? "io error" : "seek/short");
+            break;
+        }
+        ++written;
+        if (s_file_count >= FILE_CAPACITY) {
+            wrapped = true;     // 本 flush 起开始覆盖最旧条目（仅在成功写后记）
+        }
         ++s_file_write_index;
         if (s_file_count < FILE_CAPACITY) {
             ++s_file_count;
@@ -217,10 +225,22 @@ static void flush_locked(bool force)
         ESP_LOGI(TAG, "log file wrapped, overwriting oldest (wrap=%" PRIu32 ")", s_wrap_count);
     }
     file_write_hdr_locked(fp);
-    fclose(fp);
-    ESP_LOGD(TAG, "flushed %u entries (total=%" PRIu32 ")", (unsigned)s_ram_count, s_file_count);
-    s_ram_count = 0;
-}
+    if (fclose(fp) != 0) {
+        // A20：缓冲写出错通常到 fclose 才暴露——原先不查。
+        ESP_LOGE(TAG, "flush fclose failed (buffered entries may be lost)");
+    }
+    if (written < s_ram_count) {
+        // A20：未落盘条目保留在 RAM——原先无条件 s_ram_count=0，写失败即静默丢。
+        const size_t total = s_ram_count;
+        memmove(&s_ram[0], &s_ram[written], (total - written) * sizeof(s_ram[0]));
+        s_ram_count = total - written;
+        ESP_LOGE(TAG, "flush partial: %u/%u written, %u kept in RAM",
+                 (unsigned)written, (unsigned)total, (unsigned)s_ram_count);
+    } else {
+        ESP_LOGD(TAG, "flushed %u entries (total=%" PRIu32 ")", (unsigned)s_ram_count,
+                 s_file_count);
+        s_ram_count = 0;
+    }
 
 static void append_locked(const power_log_entry_t *entry)
 {
@@ -539,6 +559,14 @@ size_t power_log_read(size_t offset, uint8_t *buf, size_t max)
             const uint32_t slot = (oldest + k) % FILE_CAPACITY;
             fseek(fp, (long)(FILE_HDR_SIZE + slot * ENTRY_SIZE), SEEK_SET);
             if (fread(&entry, ENTRY_SIZE, 1, fp) != 1) {
+                // A20：短读区分读错与真 EOF——原先一律 break，FS 故障下导出静默
+                // 截断、桌面误以为 dump 完整。
+                if (ferror(fp)) {
+                    ESP_LOGE(TAG, "power_log export read error at entry %u", (unsigned)k);
+                } else {
+                    ESP_LOGW(TAG, "power_log export short read at entry %u (file shorter than count)",
+                             (unsigned)k);
+                }
                 break;
             }
         } else {

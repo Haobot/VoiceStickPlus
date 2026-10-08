@@ -2405,12 +2405,23 @@ static void gateway_on_key(uint16_t usage, bool pressed)
     ESP_LOGD(TAG, "gw key usage=0x%04x %s kind=%d value=0x%lx", usage,
              pressed ? "down" : "up", (int)action.kind, (unsigned long)action.value);
     switch (action.kind) {
-    case GATEWAY_KEY_KEYBOARD:
-        (void)gateway_hogp_send_keyboard((uint8_t)action.value, pressed);
+    case GATEWAY_KEY_KEYBOARD: {
+        // A20：返回值不再丢——HOGP 发送失败（链路未就绪/mbuf 耗尽）必须可见。
+        const int rc = gateway_hogp_send_keyboard((uint8_t)action.value, pressed);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "hogp keyboard send 0x%02x %s rc=%d",
+                     (unsigned)(action.value & 0xFF), pressed ? "down" : "up", rc);
+        }
         break;
-    case GATEWAY_KEY_CONSUMER:
-        (void)gateway_hogp_send_consumer(action.value, pressed);
+    }
+    case GATEWAY_KEY_CONSUMER: {
+        const int rc = gateway_hogp_send_consumer(action.value, pressed);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "hogp consumer send usage=0x%lx %s rc=%d",
+                     (unsigned long)action.value, pressed ? "down" : "up", rc);
+        }
         break;
+    }
     case GATEWAY_KEY_SOFTWARE:
         // P1 隧道融合：软件路由键经 state_tx 上报桌面端自定义（网关模式才有小米
         // 按键流，普通模式此分支不可达）

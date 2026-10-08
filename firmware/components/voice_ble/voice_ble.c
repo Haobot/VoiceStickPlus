@@ -613,6 +613,13 @@ static void power_log_dump_send_next(void)
     // 避免 got==0 时空片死循环。
     const int eof = (got < want ||
                      s_plog_dump.offset + got >= s_plog_dump.total) ? 1 : 0;
+    if (got < want) {
+        // A20：短读收尾是有意的（并发 clear），但 FS 读故障同样表现为短读——
+        // 原先零日志、两种原因不可分辨，导出静默截断不可观测。
+        ESP_LOGW(TAG, "power_log dump short read got=%u want=%u offset=%" PRIu32
+                 " total=%" PRIu32 " (treated as EOF)",
+                 (unsigned)got, (unsigned)want, s_plog_dump.offset, s_plog_dump.total);
+    }
 
     char b64[((POWER_LOG_CHUNK_RAW_MAX + 2) / 3) * 4 + 1];
     (void)base64_encode(raw, got, b64, sizeof(b64));

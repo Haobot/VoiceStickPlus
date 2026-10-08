@@ -44,7 +44,7 @@
 | A16 | 双击收尾不清 owner / click_to_talk 忽略 remote up | open | 9-22 未复核 |
 | A17 | 主机无响应看门狗是死代码（timer 从不 start） | **closed（10-08）** | 确认死代码：创建/init + stop + 回调 + `APP_EVENT_HOST_RESPONSE_TIMEOUT` 处理（回 ready）四件俱全，**全仓无 start**。修复：新增 `start_host_response_timer()`（30s one-shot，失败仅告警）；武装点= `apply_app_ui_state` **进入非 ready 态**（每次状态迁移先 stop 再按需 start，窗口随主机每次响应刷新）。**30s 取值有据**：桌面端自身 `kFinalizingWatchdogTimeout=15s` 先兜住正常收尾，30s 只在主机真静默时触发；cb 的 `!s_recording` 条件保证**录音中不误伤**；录音结束必然经 device-side audio_end 进入 thinking（非 ready）重新武装，链路自洽 |
 | A19 | PMIC IRQ 先 enable 后清源 + ISR 内队列失败永久 disable | **closed（10-08）** | 两缺陷均实锤：① `APP_EVENT_POWER_IRQ` 原顺序 **enable 在前**（fall-through 到 `update_battery_status()`）——清源前线为低电平（`GPIO_INTR_LOW_LEVEL`）→ ISR 立即重入（disable→队列→enable→…风暴）；② `queue_app_event_from_isr` 为 void 且 `(void)xQueueSendFromISR` **吞掉失败** → 队列满时事件丢且线已 disable，**永久失效只剩 10s 电池兜底**。修复：① 调序为**先 `update_battery_status()`（内含 `stick_s3_board_clear_power_irqs` 清 IRQ_STATUS1/2/3）再 enable**、去 fall-through；② 队列函数改返回 `pdTRUE/pdFALSE`，ISR 失败置 `s_pmic_irq_dropped`（volatile），**周期电池刷新处先清源再补臂**——刻意不在 ISR 内 enable（源未清会无限自激）；队列未创建（启动早期）不计丢弃，防告警刷屏 |
-| A20 | 错误路径吞掉（ATVV TX rc / HOGP rc / power_log IO） | open | 9-22 未复核 |
+| A20 | 错误路径吞掉（ATVV TX rc / HOGP rc / power_log IO） | **closed（10-08，四处全落）** | ① **ATVV TX 写 rc**：成功/失败同一条 INFO → 失败升级 `ESP_LOGE`（GET_CAPS/MIC_CLOSE 丢写即静默卡住，原先不可辨）；② **HOGP**：`gateway_hogp_send_keyboard/consumer` 两处 `(void)` 丢返回值 → 捕获 `rc !=0` 记 WARN（链路未就绪/mbuf 耗尽可见）；③ **power_log flush**：`fseek/fwrite/fclose` 全部检查——写失败 `ESP_LOGE` 并 **`memmove` 保留未落盘条目在 RAM**（原先无条件 `s_ram_count=0` 即静默丢）、`fclose` 失败补日志（缓冲错误到此才暴露）、`wrapped` 计数移到成功写后；④ **导出短读**：`fread!=1` 区分 `ferror`（`ESP_LOGE`）与真 EOF（`ESP_LOGW`）+ voice_ble dump 侧短读补 WARN（got/want/offset/total），原先一律 `break` 零日志=FS故障静默截断桌面误判 dump 完整。**验证边界**：power_log 不在 host 覆盖面（`run_tests.py` 0 引用）→ 验证=CI 固件编译 + 本地 host 7/7 卫生 |
 
 ## 3. P1 — Windows（B 类）
 
@@ -132,6 +132,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **A20 关闭**：错误路径吞 rc 四处全落（ATVV TX 升 ERROR、HOGP 捕获 rc、power_log flush 全链检查+RAM 保留、导出短读区分 ferror/EOF+dump 侧短读可见） | 本地 host 7/7（卫生）+ CI 七 job（固件编译 xiaomi_atvv_client/main/power_log/voice_ble 四文件；power_log 不在 host 面，编译即其验证） |
 | 2026-10-08 | **A19 关闭**：PMIC IRQ 中断链两处根因修复——先清源再 enable（消 ISR 自激风暴）+ 队列满置位由周期刷新补臂（消永久失效） | 定义/使用顺序核验（flag@132 < 队列@830 < handler@1822 < ISR@2956）+ 本地 host 7/7 + CI 七 job（固件编译 main.c） |
 | 2026-10-08 | **A12 + A13 关闭（tap 域双项）**：A12 固件默认对齐 protocol.md/桌面（两处 false，用户已存 NVS 不受影响，文档无需改）；A13 缺字段/未知字符串显式 break 不落盘 + 数值夹取 1..10 再落盘 | 本地 host 7/7 + CI 七 job（固件编译 main.c 改动） |
 | 2026-10-08 | **A17 关闭**：主机无响应看门狗从死代码变为实装——`apply_app_ui_state` 进非 ready 态武装 30s one-shot（桌面15s finalize看门狗先兜底，cb 的 !s_recording 防误伤） | 定义/使用顺序核验（54<564<1655）+ 本地 host 7/7 + CI 七 job（固件编译） |

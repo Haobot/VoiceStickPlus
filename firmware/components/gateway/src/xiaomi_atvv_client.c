@@ -86,8 +86,15 @@ static void consume_actions(const gateway_atvv_action_t *actions, size_t count) 
                 if (s_tx_handle != 0) {
                     int rc = ble_gattc_write_flat(s_conn, s_tx_handle, a->tx, a->tx_len,
                                                   NULL, NULL);
-                    ESP_LOGI(TAG, "写 TX（op=0x%02x len=%u）rc=%d", a->tx[0],
-                             (unsigned)a->tx_len, rc);
+                    if (rc != 0) {
+                        // A20：失败升 ERROR——原先成功/失败同一条 INFO，丢写在
+                        // 生产日志里不可辨（GET_CAPS/MIC_CLOSE 丢写即静默卡住）。
+                        ESP_LOGE(TAG, "写 TX 失败（op=0x%02x len=%u）rc=%d", a->tx[0],
+                                 (unsigned)a->tx_len, rc);
+                    } else {
+                        ESP_LOGI(TAG, "写 TX（op=0x%02x len=%u）rc=%d", a->tx[0],
+                                 (unsigned)a->tx_len, rc);
+                    }
                 }
                 break;
             case GATEWAY_ATVV_ACTION_PRESS_DOWN:
