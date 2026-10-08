@@ -32,6 +32,13 @@ LicenseVerifyResult VerifyLicenseSerial(const std::string& serial,
 std::string ComputeBindingKey(const std::string& normalized_device_id,
                               const std::string& machine_guid);  // 8 字节原始值返回 string
 
+// C2：授权绑定候选 = 「当前已连接 ∪ 已配对」的持久集合——两份列表各自归一化、去重，
+// 连接侧在前保持既有顺序语义。只取「当前已连接」会让付费用户在设备关机/休眠时被判
+// kWrongBinding 而跌回试用（本地麦模式同时被闸）。配对本身要求设备曾实际到场，
+// 故不放宽机器绑定（仍须 machine_guid 匹配），无安全降级。
+std::vector<std::string> LicenseBindingDevices(const std::vector<std::string>& connected,
+                                               const std::vector<std::string>& paired);
+
 struct LicenseConfig {
     std::string serial;             // 原文串码（含连字符）
     std::optional<std::uint32_t> trial_anchor_days;  // 试用期起锚（自 2026-01-01）

@@ -1631,17 +1631,6 @@ void SettingsDialog::ApplyTrialApiKey() {
     UpdateProviderVisibility();
 }
 
-// 归一化（去前缀大写 hex，BleProtocol::NormalizeDeviceId）快照设备列表；
-// 空 id 跳过。绑定键 = SHA-256(id\nmachine_guid)，与发卡端同口径。
-std::vector<std::string> NormalizedLicenseDevices(const std::vector<std::string>& device_ids) {
-    std::vector<std::string> devices;
-    for (const auto& id : device_ids) {
-        const auto normalized = BleProtocol::NormalizeDeviceId(id);
-        if (!normalized.empty()) devices.push_back(normalized);
-    }
-    return devices;
-}
-
 void SettingsDialog::RefreshLicenseStatus() {
     if (license_status_label_ == nullptr) return;
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
@@ -1649,7 +1638,7 @@ void SettingsDialog::RefreshLicenseStatus() {
     cfg.serial = config_.license.serial;
     cfg.trial_anchor_days = config_.license.trial_anchor_days;
     cfg.last_seen_days = config_.license.last_seen_days;
-    const auto status = EvaluateLicense(cfg, NormalizedLicenseDevices(connected_device_ids_),
+    const auto status = EvaluateLicense(cfg, LicenseBindingDevices(connected_device_ids_, config_.paired_device_ids),
                                         machine_guid_, DaysSinceEpochTodayUtc());
     std::string text;
     switch (status.state) {
@@ -1719,7 +1708,7 @@ INT_PTR CALLBACK SettingsDialog::LicensePromptDialogProc(HWND hwnd, UINT message
 void SettingsDialog::OnActivateLicense() {
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
     const auto title = TrW(StringId::kLicenseSectionTitle, language);
-    const auto devices = NormalizedLicenseDevices(connected_device_ids_);
+    const auto devices = LicenseBindingDevices(connected_device_ids_, config_.paired_device_ids);
     if (devices.empty()) {
         MessageBoxW(hwnd_, TrW(StringId::kLicenseDeviceRequired, language).c_str(),
                     title.c_str(), MB_ICONWARNING | MB_OK);

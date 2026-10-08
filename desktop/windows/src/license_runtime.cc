@@ -16,13 +16,13 @@ LicenseRuntime::LicenseRuntime(AppConfig* config, VoiceStickCoordinator* coordin
     : config_(config), coordinator_(coordinator) {}
 
 std::vector<std::string> LicenseRuntime::NormalizedDeviceIds() const {
-    std::vector<std::string> devices;
-    if (coordinator_ == nullptr) return devices;
-    for (const auto& id : coordinator_->ConnectedDeviceIds()) {
-        const auto normalized = BleProtocol::NormalizeDeviceId(id);
-        if (!normalized.empty()) devices.push_back(normalized);
-    }
-    return devices;
+    // C2：绑定候选 = 已连接 ∪ 已配对（持久集合）。只取「当前已连接」时，付费用户的
+    // 设备关机/休眠即被判 kWrongBinding 跌回试用、本地麦模式同时被闸。配对本身要求
+    // 设备曾实际到场，且仍须 machine_guid 匹配，故无安全降级。
+    static const std::vector<std::string> kDisconnected;
+    const auto& connected =
+        coordinator_ != nullptr ? coordinator_->ConnectedDeviceIds() : kDisconnected;
+    return LicenseBindingDevices(connected, config_->paired_device_ids);
 }
 
 LicenseStatus LicenseRuntime::CurrentStatus() const {

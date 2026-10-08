@@ -1648,6 +1648,30 @@ void TestLicenseVerifySerial() {
     assert(!r.ok && r.reason == LicenseError::kExpired);
 }
 
+void TestLicenseBindingDevicesUnion() {
+    using namespace voicestick;
+    // C2：绑定候选 = 已连接 ∪ 已配对，归一化（去 VS-/RC- 前缀 + 大写 hex）、去重，
+    // 连接侧在前保持既有顺序语义；非法 id 跳过。
+    auto devices = LicenseBindingDevices({"VS-00ff", "vs-1234"}, {"00FF", "AB12", "zz"});
+    assert(devices.size() == 3);
+    assert(devices[0] == "00FF");
+    assert(devices[1] == "1234");
+    assert(devices[2] == "AB12");
+    assert(LicenseBindingDevices({}, {"", "VS-", "hello"}).empty());
+
+    // 语义级：设备关机（已连接为空）但已配对 → 串码仍验签通过。
+    // 原实现只取「当前已连接」，此处会 kWrongBinding 而跌回试用、本地麦被闸。
+    const std::string guid = "{11111111-2222-3333-4444-555555555555}";
+    auto offline = LicenseBindingDevices({}, {"AB12", "00FF"});
+    auto r = VerifyLicenseSerial(kTestSerial1, offline, guid, DateToDays(2026, 9, 13));
+    assert(r.ok && r.edition == LicenseEdition::kAnnual);
+
+    // 反例：既未连接也未配对 → 仍判绑定不符（配对才放宽，不是无条件放行）。
+    auto r2 = VerifyLicenseSerial(kTestSerial1, LicenseBindingDevices({}, {}), guid,
+                                  DateToDays(2026, 9, 13));
+    assert(!r2.ok && r2.reason == LicenseError::kWrongBinding);
+}
+
 void TestLicenseDateToDaysPreEpoch() {
     using namespace voicestick;
     // C3 回归：纪元（2026-01-01）前的日期必须钳到 0，不得 uint32 下溢。
@@ -16240,6 +16264,8 @@ int main() {
     TestTencentHotwordCharFilter();
     TestSerialBase32RoundTrip();
     TestLicenseVerifySerial();
+    printf(">> cluster: C2 license binding devices union\n"); fflush(stdout);
+    TestLicenseBindingDevicesUnion();
     printf(">> cluster: C3 DateToDays pre-epoch clamp\n"); fflush(stdout);
     TestLicenseDateToDaysPreEpoch();
     TestLicenseStatus();

@@ -1,4 +1,5 @@
 #include "license.h"
+#include "ble_protocol.h"
 #include "license_public_key.h"
 #include "serial_base32.h"
 #include <Windows.h>
@@ -6,6 +7,7 @@
 #include <monocypher.h>
 #include <algorithm>
 #include <ctime>
+#include <unordered_set>
 namespace voicestick {
 namespace {
 constexpr std::size_t kPayloadLen = 15, kSerialBytes = 79;
@@ -86,6 +88,23 @@ LicenseVerifyResult VerifyLicenseSerial(const std::string& serial,
 
 std::string ComputeBindingKey(const std::string& device_id, const std::string& machine_guid) {
     return Sha256Raw(device_id + "\n" + machine_guid).substr(0, 8);
+}
+
+std::vector<std::string> LicenseBindingDevices(const std::vector<std::string>& connected,
+                                               const std::vector<std::string>& paired) {
+    // C2：绑定候选 = 已连接 ∪ 已配对（持久）。连接侧在前保持既有顺序语义；
+    // 归一化（去 VS-/RC- 前缀 + 大写 hex）后去重。
+    std::vector<std::string> devices;
+    std::unordered_set<std::string> seen;
+    const std::vector<std::string>* lists[2] = {&connected, &paired};
+    for (const auto* list : lists) {
+        for (const auto& id : *list) {
+            const auto normalized = BleProtocol::NormalizeDeviceId(id);
+            if (normalized.empty()) continue;
+            if (seen.insert(normalized).second) devices.push_back(normalized);
+        }
+    }
+    return devices;
 }
 
 LicenseStatus EvaluateLicense(const LicenseConfig& cfg,
