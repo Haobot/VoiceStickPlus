@@ -39,6 +39,7 @@
 #include "model_manifest.h"
 #include "model_downloader.h"
 #include "model_download_session.h"
+#include "voice_stick_cloud_api_win.h"
 #ifdef VOICESTICK_LOCAL_REFINE_ENABLED
 #include "llama_cpp_engine.h"
 #endif
@@ -1646,6 +1647,27 @@ void TestLicenseVerifySerial() {
     // 过期：用 now=2027-01-02 判定
     r = VerifyLicenseSerial(kTestSerial3, devices, "no-braces-guid", DateToDays(2027, 1, 2));
     assert(!r.ok && r.reason == LicenseError::kExpired);
+}
+
+void TestSecureCloudUrlPolicy() {
+    // C7：云/ASR 链路 TLS-only——ws:// 与 http:// 明文一律拒绝（api_key 经此传输，
+    // 明文等于把凭据放到网络上）；wss:// 映射 https://、https:// 原样。
+    assert(SecureHttpUrlFromWebSocketUrl("wss://api.xiaozhi.me/voicestick/asr/") ==
+           "https://api.xiaozhi.me/voicestick/asr/");
+    assert(SecureHttpUrlFromWebSocketUrl("https://example.com/x") == "https://example.com/x");
+    assert(!SecureHttpUrlFromWebSocketUrl("ws://api.xiaozhi.me/x"));
+    assert(!SecureHttpUrlFromWebSocketUrl("http://example.com/x"));
+    assert(!SecureHttpUrlFromWebSocketUrl("ftp://example.com"));
+    assert(!SecureHttpUrlFromWebSocketUrl(""));
+    assert(!SecureHttpUrlFromWebSocketUrl("api.xiaozhi.me"));  // 无 scheme
+    assert(!SecureHttpUrlFromWebSocketUrl("wss:/broken"));     // scheme 残缺
+
+    // 响应结果链接由 ShellExecute 打开，只放行 https://（防明文与 file:// 等被篡改执行）。
+    assert(IsHttpsUrl("https://example.com/pay"));
+    assert(!IsHttpsUrl("http://example.com/pay"));
+    assert(!IsHttpsUrl("file:///C:/Windows/System32/cmd.exe"));
+    assert(!IsHttpsUrl("javascript:alert(1)"));
+    assert(!IsHttpsUrl(""));
 }
 
 void TestLicenseBindingDevicesUnion() {
@@ -16302,6 +16324,8 @@ int main() {
     TestTencentHotwordCharFilter();
     TestSerialBase32RoundTrip();
     TestLicenseVerifySerial();
+    printf(">> cluster: C7 cloud url TLS-only policy\n"); fflush(stdout);
+    TestSecureCloudUrlPolicy();
     printf(">> cluster: C2 license binding devices union\n"); fflush(stdout);
     TestLicenseBindingDevicesUnion();
     printf(">> cluster: C3 DateToDays pre-epoch clamp\n"); fflush(stdout);

@@ -2,6 +2,7 @@
 
 #include "asr_protocol.h"
 #include "log.h"
+#include "voice_stick_cloud_api_win.h"  // SecureHttpUrlFromWebSocketUrl（C7 TLS-only 策略）
 
 #include <bcrypt.h>
 
@@ -26,14 +27,6 @@ std::wstring Utf16FromUtf8(std::string_view text) {
     return wide;
 }
 
-bool StartsWithScheme(std::string_view text, std::string_view scheme) {
-    return text.size() >= scheme.size() &&
-           std::equal(scheme.begin(), scheme.end(), text.begin(), [](char lhs, char rhs) {
-               return std::tolower(static_cast<unsigned char>(lhs)) ==
-                      std::tolower(static_cast<unsigned char>(rhs));
-           });
-}
-
 constexpr int kAsrResolveTimeoutMs = 5000;
 constexpr int kAsrConnectTimeoutMs = 5000;
 constexpr int kAsrSendTimeoutMs = 5000;
@@ -49,18 +42,12 @@ void SetAsrWinHttpTimeouts(HINTERNET handle) {
 }
 
 std::optional<std::wstring> WinHttpUrlFromWebSocketUrl(std::string_view websocket_url) {
-    std::string http_url;
-    if (StartsWithScheme(websocket_url, "wss://")) {
-        http_url = "https://";
-        http_url.append(websocket_url.substr(6));
-    } else if (StartsWithScheme(websocket_url, "ws://")) {
-        http_url = "http://";
-        http_url.append(websocket_url.substr(5));
-    } else {
-        http_url = std::string(websocket_url);
-    }
+    // C7：ASR 长连接同样只接受 TLS——原实现把 ws:// 映射成 http://，api_key 会随
+    // 明文连接暴露在网络上。ws:// / http:// / 其余 scheme 一律拒绝。
+    const auto http_url = SecureHttpUrlFromWebSocketUrl(std::string(websocket_url));
+    if (!http_url) return std::nullopt;
 
-    auto wide = Utf16FromUtf8(http_url);
+    auto wide = Utf16FromUtf8(*http_url);
     if (wide.empty()) return std::nullopt;
     return wide;
 }

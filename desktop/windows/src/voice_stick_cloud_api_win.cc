@@ -42,21 +42,13 @@ std::wstring Utf16FromUtf8(std::string_view text) {
 }
 
 std::optional<std::wstring> ApplyUrlFromWebSocketUrl(const std::string& websocket_url) {
+    // C7：申请 api_key 的请求只允许 TLS——原实现把 ws:// 映射成 http:// 并放行
+    // http://，device_id 与下发的 api_key 会在明文链路上传输，可被中间人窃取/伪造。
     const auto trimmed = Trim(websocket_url);
-    std::string http_url;
-    if (StartsWithScheme(trimmed, "wss://")) {
-        http_url = "https://";
-        http_url.append(trimmed.substr(6));
-    } else if (StartsWithScheme(trimmed, "ws://")) {
-        http_url = "http://";
-        http_url.append(trimmed.substr(5));
-    } else if (StartsWithScheme(trimmed, "https://") || StartsWithScheme(trimmed, "http://")) {
-        http_url = trimmed;
-    } else {
-        return std::nullopt;
-    }
+    const auto http_url = SecureHttpUrlFromWebSocketUrl(trimmed);
+    if (!http_url) return std::nullopt;
 
-    auto wide = Utf16FromUtf8(http_url);
+    auto wide = Utf16FromUtf8(*http_url);
     if (wide.empty()) return std::nullopt;
 
     URL_COMPONENTSW components{};
@@ -225,6 +217,12 @@ VoiceStickCloudApplyResult ApplyVoiceStickCloudTrialApiKey(
     if (root) {
         result.api_key = JsonString(root, "api_key");
         result.url = JsonString(root, "url");
+        // C7：结果链接随后由调用方 ShellExecute 打开，只放行 https://——
+        // 明文或非 http scheme（file:// 等）在响应被篡改时会被直接执行。
+        if (!result.url.empty() && !IsHttpsUrl(result.url)) {
+            result.error = "VoiceStick Cloud returned a non-https url; refused.";
+            result.url.clear();
+        }
         const auto message = JsonString(root, "message");
         const auto error = JsonString(root, "error");
         cJSON_Delete(root);

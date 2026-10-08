@@ -76,7 +76,8 @@
 | C4 | 固件 OTA manifest detached 签名 + 下载超时/上限/https-only | open | 9-22 未复核 |
 | C5 | 模型在位 sha256 复核（非只比大小） | **closed（10-08）** | 在位判定收敛为「存在 + 尺寸 + SHA-256」：新增 `VerifyFileSha256`（同 TU 包装匿名空间 `Sha256HexOfFile`，大小写不敏感）+ `ModelFilePresentAndVerified`；**判定下沉到会话工作线程**（`ModelDownloadSession::Run` 内，整文件哈希不占 UI/音频线程）；删除下载向导 UI 线程的「大小相符即跳过」预筛；同尺寸损坏/被替换 → 判不在位 → `DownloadFile` 重下 → `.part` 哈希 + 原子改名覆盖修复（`DownloadFile` 无尺寸捷径，已核）。设置页状态与 `ValidateSenseVoiceModelsDir` 保持**存在性**检查——它们在 UI 刷新与音频启动路径上，不得整文件哈希（已加代码注释说明分工）。回归 `TestModelFilePresentAndVerified` |
 | C6 | 固件版本比较 fail-open + 预发布后缀字典序 | **closed（10-08）** | ① `IsOlderThan` 解析失败由 `return false`（fail-open=「已是最新」，坏版本串让升级提示与最低版本门永不触发）改为按「当前较旧」；② 后缀比较由字典序改「非数字前缀 + 尾部数字」（`rc10 > rc9`，原字典序因 `'1'<'9'` 颠倒），「无后缀 > 有后缀」与前缀字典序语义保留；回归 `TestFirmwareVersionC6Robustness`，本地 clang 复刻纯逻辑全断言通过 |
-| C7 | 云试用凭据下发无设备证明 + 允许 ws://→http:// | open | 9-22 未复核 |
+| C7 | 云试用凭据下发无设备证明 + 允许 ws://→http:// | **partial（10-08，明文已堵）** | TLS-only 策略收敛为 `voice_stick_cloud_api_win.h` 内联的 `SecureHttpUrlFromWebSocketUrl` / `IsHttpsUrl`（头文件内联 → core 单测可直测，无需链接外壳层 .cc）：① api_key 申请请求不再接受 `ws://`→`http://` 与 `http://`；② ASR 长连接 `WinHttpUrlFromWebSocketUrl` 同策略（原实现同样把 `ws://` 映射成 `http://`，api_key 随明文连接暴露）；③ 响应 `url` 只放行 `https://` 再交 `ShellExecute`（防 `file://` 等被篡改执行）；顺删 asr_client_win 中失去用途的 `StartsWithScheme`。**设备证明未做 → C7b** |
+| C7b | 云试用凭据下发加**设备证明**（挑战-应答） | open（需后端/产品决策） | 10-08 从 C7 拆出：客户端侧明文与 scheme 治理已随 C7 完成；设备证明需服务端协议配合，客户端先行无意义 |
 | C8 | 日志轮转/热词与签名 URL 明文、精修 prompt 长度上限等分组治理 | open | 9-22 未复核 |
 
 ## 5. P1 — 跨端/ macOS（D 类）
@@ -126,6 +127,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **安全组 C7 明文堵漏（partial）**：云/ASR 链路 TLS-only——api_key 申请请求与 ASR 长连接都不再接受 `ws://`/`http://`，响应链接只放行 `https://`；策略收敛为头文件内联函数供单测直测；设备证明拆为 C7b 待后端 | 本地用**真实头文件**编译运行 13 项策略断言全过；CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **安全组 C5 关闭**：模型在位判定由「仅比大小」改「存在 + 尺寸 + SHA-256」，判定下沉会话工作线程（UI/音频热路径不哈希）；同尺寸损坏文件不再被静默跳过，改走重下修复 | 本地核验 `sha256("hello")` 常量与 `DownloadFile` 无尺寸捷径；CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **安全组 C2 关闭**：授权绑定候选改「已连接 ∪ 已配对」持久集合，共享 `LicenseBindingDevices` 统一 runtime 与 settings 两条构造路径——设备关机不再断供 | 本地 clang 复刻并集/归一化逻辑通过；CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **安全组 C3/C6 关闭**：`DateToDays` 纪元前钳位（修年卡误判过期 + 回拨检测失效）；`IsOlderThan` 解析失败 fail-open→按较旧 + 后缀数字序（`rc10>rc9`） | 本地 clang 复刻纯逻辑全断言通过；CI 七 job（Windows ctest 含 2 个新用例） |
