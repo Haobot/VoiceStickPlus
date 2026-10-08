@@ -906,3 +906,124 @@ inline void MakeTapReport(uint8_t (&out)[9], uint16_t a, uint16_t b, uint16_t c)
     out[7] = static_cast<uint8_t>(c & 0xFF); out[8] = static_cast<uint8_t>(c >> 8);
 }
 
+// N8 cut13 helper: ArgvContains
+inline bool ArgvContains(const std::vector<std::wstring>& argv, const std::wstring& needle) {
+    return std::find(argv.begin(), argv.end(), needle) != argv.end();
+}
+
+// N8 cut13 helper: ParseAtvvSidecarForTest
+inline bool ParseAtvvSidecarForTest(const std::string& json_text, double* gain_db,
+                             std::vector<AtvvGoldenSegment>* segments) {
+    cJSON* root = cJSON_Parse(json_text.c_str());
+    if (root == nullptr) return false;
+    const cJSON* gain = cJSON_GetObjectItemCaseSensitive(root, "gain_db");
+    const cJSON* segs = cJSON_GetObjectItemCaseSensitive(root, "segments");
+    bool ok = cJSON_IsNumber(gain) && cJSON_IsArray(segs) &&
+              !cJSON_IsInvalid(segs) && cJSON_GetArraySize(segs) > 0;
+    if (ok) {
+        *gain_db = gain->valuedouble;
+        const cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, segs) {
+            const cJSON* offset = cJSON_GetObjectItemCaseSensitive(item, "offset");
+            const cJSON* nbytes = cJSON_GetObjectItemCaseSensitive(item, "bytes");
+            const cJSON* predictor = cJSON_GetObjectItemCaseSensitive(item, "predictor");
+            const cJSON* step_index = cJSON_GetObjectItemCaseSensitive(item, "step_index");
+            if (!cJSON_IsNumber(offset) || !cJSON_IsNumber(nbytes) ||
+                !cJSON_IsNumber(predictor) || !cJSON_IsNumber(step_index)) {
+                ok = false;
+                break;
+            }
+            // double→size_t 窄化前提：sidecar 是本仓库自生成 fixtures 资产
+            // （atvv_capture.py / atvv_bench.py --emit-demo-fixture 写出），
+            // offset/bytes 为非负小整数；万一出现畸形值，由下方 golden 解码循环的
+            // assert(seg.offset + seg.bytes <= adpcm_size) 兜底，属可接受前提。
+            segments->push_back(AtvvGoldenSegment{
+                static_cast<std::size_t>(offset->valuedouble),
+                static_cast<std::size_t>(nbytes->valuedouble),
+                predictor->valueint, step_index->valueint});
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+// N8 cut13 helper: ReadWavPcm16ForTest
+// 读 PCM16 mono WAV（Python wave 模块产物）：walk RIFF chunk 取 fmt/data。
+inline std::vector<std::int16_t> ReadWavPcm16ForTest(const std::filesystem::path& path) {
+    const std::string bytes = ReadTextFileForTest(path);
+    if (bytes.size() < 12 || bytes.compare(0, 4, "RIFF") != 0 ||
+        bytes.compare(8, 4, "WAVE") != 0) {
+        return {};
+    }
+    auto u16 = [&bytes](std::size_t off) -> std::uint16_t {
+        return static_cast<std::uint16_t>(
+            static_cast<unsigned char>(bytes[off]) |
+            (static_cast<unsigned int>(static_cast<unsigned char>(bytes[off + 1])) << 8));
+    };
+    auto u32 = [&bytes](std::size_t off) -> std::uint32_t {
+        return static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off])) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 1])) << 8) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 2])) << 16) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 3])) << 24);
+    };
+    std::size_t pos = 12;
+    bool fmt_ok = false;
+    while (pos + 8 <= bytes.size()) {
+        const std::string id = bytes.substr(pos, 4);
+        const std::uint32_t size = u32(pos + 4);
+        const std::size_t payload = pos + 8;
+        if (payload + size > bytes.size()) break;
+        if (id == "fmt ") {
+            fmt_ok = size >= 16 && u16(payload) == 1 &&      // PCM
+                     u16(payload + 2) == 1 &&                // mono
+                     u16(payload + 14) == 16;                // 16bit
+        } else if (id == "data" && fmt_ok) {
+            std::vector<std::int16_t> out(size / 2);
+            for (std::size_t i = 0; i < out.size(); ++i) {
+                out[i] = static_cast<std::int16_t>(u16(payload + i * 2));
+            }
+            return out;
+        }
+        pos = payload + size + (size & 1);  // chunk 按偶数字节对齐
+    }
+    return {};
+}
+
+// N8 cut13 helper: ReadTextFileForTest
+inline std::string ReadTextFileForTest(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+}
+
+// N8 cut13 helper: ResolveAtvvFixturesRoot
+// ===== ATVV golden fixtures 对拍 =====
+// 数据源：atvv_capture.py 真机采集（或 atvv_bench.py --emit-demo-fixture 合成），
+// 默认扫描 scripts/e2e_test/fixtures/xiaomi/**（VOICESTICK_REPO_ROOT 编译宏解析，
+// 可用 VOICESTICK_ATVV_FIXTURES_DIR 环境变量覆盖）。每会话四件套：
+// session_N.adpcm（原始流）、session_N.json（sidecar：帧长/增益/逐段 reset 区间）、
+// session_N.raw.wav（纯解码）、session_N.wav（解码+三点平滑+增益）。
+// 本测试按 sidecar 段落复现 C++ 解码路径，与两份 WAV 逐样本对拍。
+// 无 fixtures 时打印 SKIP 直接返回（不算失败，不伪造结果）。
+
+inline std::filesystem::path ResolveAtvvFixturesRoot() {
+    if (const char* env = std::getenv("VOICESTICK_ATVV_FIXTURES_DIR");
+        env != nullptr && *env != '\0') {
+        return std::filesystem::path(env);
+    }
+#ifdef VOICESTICK_REPO_ROOT
+    return std::filesystem::path(VOICESTICK_REPO_ROOT) /
+           "scripts" / "e2e_test" / "fixtures" / "xiaomi";
+#else
+    return std::filesystem::path("scripts") / "e2e_test" / "fixtures" / "xiaomi";
+#endif
+}
+
+// N8 cut13 helper: MakeFlashOptions
+inline FlashOptions MakeFlashOptions(const FlashTestPaths& paths) {
+    FlashOptions options;
+    options.serial_port = L"COM5";
+    options.firmware_path = paths.firmware.wstring();
+    return options;
+}

@@ -33,3 +33,6 @@ void RunTencentBatchTests();
 
 // N8 cut12：设备/输入杂项批（59 测——最大连续块，纯测试体三断言全净）。
 void RunDeviceInputMiscBatchTests();
+
+// N8 cut13：编解码/夹具/串口/esptool/flash/电源批（106 测——收敛循环迁移 6 组共享助手后切出）。
+void RunCodecFixtureSerialBatchTests();
