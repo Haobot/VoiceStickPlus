@@ -84,8 +84,19 @@ RecordAndNotifyHotwordCandidates@tail66/107（MineHotword 链=P0-3 注释明示 
 协调器完成 lambda 既有 cancel 守卫（注释明示 !ok=取消）零误报；2) 循环退出有半截文本即 on_done=提交截断结果
 → saw_finish 跟踪 finish_reason，无标记走 on_error 回退非流式拿完整文本；翻译侧=非流式+调用方 cancel 守卫既有（并案无新缺）。
 配平对比 HEAD 四文件全 (0,0)。 |
-| B19 | OTA 流控记账被 progress 回调存在性门控 | open | 9-22 未复核 |
-| B20 | VS 控制写未拷贝局部句柄 / 扫描状态跨线程无锁 | open | 9-22 未复核 |
+| B19 | OTA 流控记账被 progress 回调存在性门控 | **closed（10-08 门拆）** |
+复核实锤：HandleFirmwareOtaStateEvent progress 分支原条件含 && update_session->progress，
+device_confirmed_written.store（窗口推进+停转检测的动力源）被连坐——无回调（无头 OTA）时记账饿死→误报 stalled。
+修法：条件去 progress 项，记账+日志无条件、仅显示调用留门（B19 注释落位）；过程返修 1 次：
+首轮包裹误中同文首站（512 的 64KB 报告处、且真站失门出现裸调用）→ 按 HEAD 原文还原 512 + 真站 573 补门。
+配平对比 HEAD 三文件 (0,0)。 |
+| B20 | VS 控制写未拷贝局部句柄 / 扫描状态跨线程无锁 | **closed（10-08 双修）** |
+复核两半皆实锤：1) 控制写检查-使用间 TOCTOU——WriteControlPayloadAsync 检查后仍直读成员、
+成员可被断链线程改写 → 检查后拷 GattCharacteristic 局部（co_await 用局部）；电池回包 fire-and-forget 同法+补空值守卫；
+2) scan_started_at_ time_point 写=StartScan/读=广告命中回调线程无同步 → 改 atomic<int64> 毫秒（scan_started_ms_，
+对齐同组 last_adv_received_ms_/scan_epoch_ 原子风格，0=未扫描，读点拆局部算 scan_to_adv）；
+另两扫描字段核后判安全：last_scan_watchdog_restart_at_ 读写同在 CheckScanHealth 单调用方、claim_denied_log_ms_ 单点单线程。
+配平 (0,0)。 |
 
 ## 4. P1 — 商业化/授权（C 类）
 

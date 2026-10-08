@@ -565,15 +565,19 @@ void BleCentralWin::HandleFirmwareOtaStateEvent(const std::string& device_id,
     if (event.transfer_id.has_value() && *event.transfer_id != update_session->transfer_id) return;
 
     if (event.event == "progress") {
-        if (event.written.has_value() && event.size.has_value() && update_session->progress) {
+        if (event.written.has_value() && event.size.has_value()) {
             update_session->device_confirmed_written.store(*event.written);
             LogBleLine("OTA device progress VS-" + device_id +
                        " written=" + std::to_string(*event.written) +
                        "/" + std::to_string(*event.size));
-            update_session->progress(FirmwareUpdateProgress{
-                static_cast<int>(*event.written),
-                static_cast<int>(*event.size),
-                true});
+            // B19：流控记账与显示解耦——device_confirmed_written 驱动窗口推进与停转检测，
+            // 与是否传入 progress 回调无关（无回调=无头 OTA；此前记账被连坐饿死→误报 stalled）。
+            if (update_session->progress) {
+                update_session->progress(FirmwareUpdateProgress{
+                    static_cast<int>(*event.written),
+                    static_cast<int>(*event.size),
+                    true});
+            }
         }
     } else if (event.event == "done") {
         LogBleLine("OTA device done VS-" + device_id);

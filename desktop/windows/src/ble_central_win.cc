@@ -1056,7 +1056,7 @@ void BleCentralWin::StartScan() {
         });
     try {
         watcher_.Start();
-        scan_started_at_ = std::chrono::steady_clock::now();
+        scan_started_ms_.store(NowSteadyMs(), std::memory_order_relaxed);
         last_adv_received_ms_.store(NowSteadyMs(), std::memory_order_relaxed);
         LogBleLine("scan started");
     } catch (const winrt::hresult_error& error) {
@@ -1113,7 +1113,7 @@ void BleCentralWin::StopScan() {
         }
         stopped_token_ = {};
         watcher_ = nullptr;
-        scan_started_at_ = {};
+        scan_started_ms_.store(0, std::memory_order_relaxed);
         LogBleLine("scan stopped");
     }
 }
@@ -1317,10 +1317,12 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
         return;
     }
 
+    const auto scan_started = scan_started_ms_.load(std::memory_order_relaxed);
+    const auto scan_to_adv = scan_started > 0 ? (NowSteadyMs() - scan_started) : -1;
     LogBleLine("advertisement matched " + std::string(id_prefix) + *device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
                " kind=" + AddressKindName(address_kind) +
-               " scan_to_adv_ms=" + std::to_string(ElapsedMs(scan_started_at_)));
+               " scan_to_adv_ms=" + std::to_string(scan_to_adv));
     ConnectDeviceAsync(bluetooth_address, address_kind, identity.local_name, *device_id,
                        device_class);
 }
@@ -2475,9 +2477,12 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         [](std::shared_ptr<DeviceSession> s) -> winrt::fire_and_forget {
             try {
                 auto payload = BleProtocol::BatteryStatusRequestPayload();
+                // B20：检查-使用间成员可被断链线程改写——先拷局部句柄再用（含空值守卫）。
+                const GattCharacteristic control = s->control_characteristic;
+                if (!control) co_return;
                 DataWriter writer;
                 writer.WriteBytes(payload);
-                co_await s->control_characteristic.WriteValueAsync(
+                co_await control.WriteValueAsync(
                     writer.DetachBuffer(), GattWriteOption::WriteWithoutResponse);
             } catch (...) {
             }
@@ -2575,12 +2580,14 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
 winrt::fire_and_forget BleCentralWin::WriteControlPayloadAsync(std::shared_ptr<DeviceSession> session, ByteVector payload) {
     if (!session || !session->ready || !session->control_characteristic) co_return;
+    // B20：检查后先拷局部句柄再用——成员可被断链线程并发改写（检查-使用间 TOCTOU）。
+    const GattCharacteristic control = session->control_characteristic;
     const std::string device_id = session->device.id;
     GattCommunicationStatus status = GattCommunicationStatus::Unreachable;
     try {
         DataWriter writer;
         writer.WriteBytes(payload);
-        status = co_await session->control_characteristic.WriteValueAsync(
+        status = co_await control.WriteValueAsync(
             writer.DetachBuffer(), GattWriteOption::WriteWithoutResponse);
     } catch (const winrt::hresult_error& error) {
         // 写入抛异常说明 GATT 对象已不可用（句柄失效/设备对象被关闭/协议栈

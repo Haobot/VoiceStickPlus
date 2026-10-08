@@ -337,7 +337,9 @@ private:
     // 应用自己执行 radio reset（陈旧 bond 恢复）期间置位：StateChanged 处理器
     // 据此跳过自建重置引发的重建（该路径已显式 StartScan，避免与在途连接争抢）。
     std::atomic<bool> self_radio_reset_{false};
-    std::chrono::steady_clock::time_point scan_started_at_{};
+    // B20：扫描起点跨线程（写=StartScan、读=广告命中回调线程）——改原子毫秒，
+    // 对齐同组 last_adv_received_ms_/scan_epoch_ 既有原子风格；0=未在扫描。
+    std::atomic<std::int64_t> scan_started_ms_{0};
     // watcher 存活证明：HandleAdvertisement 收到任意广告包即刷新（steady_clock
     // epoch 毫秒）。CheckScanHealth() 用它检测 watcher 静默失效；StartScan()
     // 成功时写入当前时间作为基线。
