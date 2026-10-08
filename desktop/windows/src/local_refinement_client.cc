@@ -202,7 +202,8 @@ void LocalRefinementClient::Refine(std::string text,
         [this, text = std::move(text), on_token = std::move(on_token),
          on_complete = std::move(on_complete), cancel = std::move(cancel),
          hotwords = std::move(hotwords), context = std::move(context)]() mutable {
-            RunRefine(text, on_token, on_complete, cancel, hotwords, context)));
+            RunRefine(text, on_token, on_complete, cancel, hotwords, context);
+        }));
 }
 
 void LocalRefinementClient::RunRefine(

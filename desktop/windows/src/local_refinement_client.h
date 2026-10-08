@@ -34,7 +34,6 @@ class LocalRefinementClient {
 
   ~LocalRefinementClient();
   void ReapFinishedJobsLocked();
-  void ReapFinishedJobsLocked();
 
   LocalRefinementClient(const LocalRefinementClient&) = delete;
   LocalRefinementClient& operator=(const LocalRefinementClient&) = delete;
