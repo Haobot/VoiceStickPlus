@@ -294,6 +294,8 @@ add_executable(VoiceStickApp WIN32
     src/tencent_asr_vocab_client.cc
     src/input_injector_win.cc
     src/ble_central_win.cc
+    # N7 cut1: 小米/OTA/心跳僵尸域方法拆出（共享助手在 ble_central_win_util.h）
+    src/ble_central_win_xiaomi.cc
     src/global_hotkey_win.cc
     src/voice_stick_cloud_api_win.cc
     src/firmware_update_dialog.cc
