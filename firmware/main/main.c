@@ -130,13 +130,6 @@ static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
 // A19：PMIC IRQ ISR 队列满时置位，由周期电池刷新（清源后）补臂中断线。
 static volatile bool s_pmic_irq_dropped;
-// A7：关键事件入队失败的重试槽与累计计数——槽=单件暂存（关键事件并发极低），
-// app_event_task 每消费一件即回灌；计数=丢弃事件分类累计（上报通道另见 A7b）。
-static app_event_t s_critical_retry_pending;
-static volatile bool s_critical_retry_valid;
-static portMUX_TYPE s_crit_retry_mux = portMUX_INITIALIZER_UNLOCKED;
-static volatile uint32_t s_app_event_dropped_total;
-static volatile uint32_t s_app_event_critical_dropped;
 static esp_timer_handle_t s_pickup_poll_timer;
 static esp_timer_handle_t s_imu_poll_timer;
 static esp_timer_handle_t s_tap_poll_timer;
@@ -803,6 +796,14 @@ static void queue_app_event(app_event_type_t type)
 
 // 关键事件不允许静默丢弃：队列满时旧实现直接丢，曾让录音/OTA/断连状态机卡死
 //（XIAOMI_STOP_DUE 丢失 = 永久录音；OTA_END 丢失 = 永久拒绝录音/关机）。
+// A7：关键事件入队失败的重试槽与累计计数——槽=单件暂存（关键事件并发极低），
+// app_event_task 每消费一件即回灌；计数=丢弃事件分类累计（上报通道另见 A7b）。
+static app_event_t s_critical_retry_pending;
+static volatile bool s_critical_retry_valid;
+static portMUX_TYPE s_crit_retry_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_app_event_dropped_total;
+static volatile uint32_t s_app_event_critical_dropped;
+
 static bool app_event_is_critical(app_event_type_t type)
 {
     switch (type) {
