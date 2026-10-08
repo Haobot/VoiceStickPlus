@@ -1,4 +1,5 @@
 # whisper_pen_firmware 改造为 ES8311（复用 StickS3 硬件）
+> 状态：未核销（N10 占位：待逐篇按实际进展改写）
 
 ## 背景与目标
 

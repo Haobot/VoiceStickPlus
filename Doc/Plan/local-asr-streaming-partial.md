@@ -1,4 +1,5 @@
 # 本地语音识别流式 Partial 输出
+> 状态：未核销（N10 占位：待逐篇按实际进展改写）
 
 状态：已实现（feat/voice-recognition-option 分支）
 日期：2026-09-09

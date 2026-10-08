@@ -420,6 +420,31 @@ def check_test_ns_balance(root: Path) -> str | None:
     return "\n".join(errors) if errors else None
 
 
+def check_doc_plan_status(root: Path) -> str | None:
+    """N10：Doc/Plan 每篇必须带引用式状态行（`> 状态：<值>`）。
+
+    目标（跟进评审 N10）：89+ 篇方案文档需状态标注 + 可观测性计数。本检查
+    （1）强制新文档不缺载体（防新增无标注）；（2）目录缺失时 SKIP（最小夹具）。
+    语义核销（把占位改写为真实状态）按篇另行推进——占位文案本身即
+    「未核销」的诚实表达，不伪造进度。
+    """
+    d = root / "Doc" / "Plan"
+    if not d.is_dir():
+        return ("skip", "Doc/Plan 不存在（最小夹具）")
+    files = sorted(d.glob("*.md"))
+    if not files:
+        return ("skip", "Doc/Plan 无 md 文件")
+    errors = []
+    marked = 0
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        if re.search(r"^> 状态[:：]\s*\S", text, re.MULTILINE):
+            marked += 1
+        else:
+            errors.append(f"{f.name}: 缺引用式状态行（> 状态：<值>）")
+    return "\n".join(errors) if errors else None
+
+
 CHECKS = [
     ("versions", check_versions),
     ("tag", check_tag),
@@ -431,6 +456,8 @@ CHECKS = [
     ("frame-ms", check_frame_ms_and_granule),
     # N8 cut13 教训：tests 匿名 ns 配对 + main 全局域（防 span 撕裂重演）
     ("test-ns", check_test_ns_balance),
+    # N10：Doc/Plan 状态标注载体（防新增无标注；语义核销另行推进）
+    ("doc-plan-status", check_doc_plan_status),
 ]
 
 

@@ -1,4 +1,5 @@
 # Windows 桌面端稳定性：Thinking 延迟消除 + Pairing 误触发治理
+> 状态：未核销（N10 占位：待逐篇按实际进展改写）
 
 日期：2026-08-06。涉及：`desktop/windows/src/voice_stick_coordinator.cc`、`desktop/windows/src/ble_central_win.cc`、`firmware/main/main.c`、`firmware/components/voice_ble/voice_ble.c`、`desktop/windows/tests/core_tests.cc`。
 

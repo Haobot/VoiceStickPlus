@@ -1,4 +1,5 @@
 # 设置页「语音识别」合并本地识别为服务提供方选项
+> 状态：未核销（N10 占位：待逐篇按实际进展改写）
 
 日期：2026-09-09 · 分支：`feat/voice-recognition-option` · 前置：`Doc/Plan/local-mic-mode.md`
 

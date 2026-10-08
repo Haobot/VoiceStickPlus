@@ -1,4 +1,5 @@
 # 快速重启回连时长压缩 实现计划
+> 状态：未核销（N10 占位：待逐篇按实际进展改写）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

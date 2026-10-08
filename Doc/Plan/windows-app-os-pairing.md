@@ -1,4 +1,5 @@
 # Windows 桌面端：app 配对自动完成系统蓝牙配对
+> 状态：未核销（N10 占位：待逐篇按实际进展改写）
 
 > 日期：2026-09-18　目标平台：Windows（macOS 另行排期）
 > 相关文件：`desktop/windows/src/pair_device_dialog.{h,cc}`、`ble_protocol.{h,cc}`、

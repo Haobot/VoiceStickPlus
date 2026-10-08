@@ -262,6 +262,27 @@ class ReleaseGuardTests(unittest.TestCase):
             any(f.startswith("i18n-desktop") and "幽灵" in f for f in fails), fails
         )
 
+    def _write_plan(self, name: str, body: str) -> Path:
+        d = self.root / "Doc" / "Plan"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / name
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    def test_doc_plan_status_marked_passes(self):
+        self._write_plan(
+            "a-plan.md", "# 标题\n\n> 状态：closed（示例）\n\n正文\n"
+        )
+        self.assertEqual(self.failures(), [])
+
+    def test_doc_plan_status_missing_detected(self):
+        self._write_plan("a-plan.md", "# 标题\n\n正文\n")
+        fails = self.failures()
+        self.assertTrue(
+            any(f.startswith("doc-plan-status") and "缺引用式状态行" in f for f in fails),
+            fails,
+        )
+
     def _write_test_cc(self, body: str) -> None:
         d = self.root / "desktop" / "windows" / "tests"
         d.mkdir(parents=True, exist_ok=True)
