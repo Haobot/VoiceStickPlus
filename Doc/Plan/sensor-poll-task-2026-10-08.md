@@ -1,4 +1,4 @@
-> 状态：设计中
+> 状态：已实施（一期 r92 + 二期 r96；真机验收并 A 组）
 
 # 传感轮询任务（sensor_poll_task）设计 — A9b
 
@@ -68,3 +68,14 @@ poweroff 等同任务排队）的结构性风险。A9 已除主犯（double_clic
 
 - 单文件：firmware/main/main.c（5 回调体迁移 + 任务创建/通知位 + Shutdown 挂接）。
 - 无协议 / 无桌面端 / 无配置变更。
+
+## 七、实施记录（与设计对照）
+
+- 一期（r92，fd209f4/e547374/13e39e6）：5 回调改守卫+kick、原体改名 sensor_poll_X 迁执行、
+  sensor_poll_task（3KB/prio6）合并唤醒摘位图；两必核结论：send_motion=audio 任务同假设、
+  suppress 64 位改 __atomic×4；自审五项过 + 卫生修（(void)arg×5、缩进归位）。
+- 二期（r96，604b611）：§4 power_log 承诺兑现——refresh 纯推导化、main 侧 4 槽环（portMUX 多生产者）
+  + POWER_LOG 位入同任务消费、组件零改动（组件内去重兜底）；S3 直呼同步保留（唯一 flush 点@power_log.c:456）；
+  附带修 r92 粘行（mux 声明缺换行，合法 C 故 CI 未报、p2 锚点断言暴露）。
+- 走查（r97）：环 push/pop 均在临界区、kick 在临界区外、双路径分工=exec@371 与 S3@758 恰两处（refresh 零直呼）。
+- 余：真机验收四项 + power_log 条目连续性（power_log_dump 对拍）并 A 组。
