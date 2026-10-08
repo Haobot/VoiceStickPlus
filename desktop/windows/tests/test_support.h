@@ -806,3 +806,55 @@ inline std::vector<uint8_t> EncodeOpusPacket(const std::vector<int16_t>& pcm,
     opus_encoder_destroy(encoder);
     return packet;
 }
+
+// ---- 小米蓝牙遥控器 2 Pro（ATVV）core 纯逻辑层 ----
+// 协议规范见 Doc/Plan/xiaomi-remote-2-pro-support.md §3；按键语义镜像固件双击设计。
+
+// 会话动作列表查找/收集辅助。
+inline const XiaomiAtvvWriteTx* FindAtvvWriteTx(const std::vector<XiaomiAtvvAction>& actions) {
+    for (const auto& action : actions) {
+        if (const auto* tx = std::get_if<XiaomiAtvvWriteTx>(&action)) return tx;
+    }
+    return nullptr;
+}
+
+inline const StateEvent* FindAtvvEvent(const std::vector<XiaomiAtvvAction>& actions, std::string_view name) {
+    for (const auto& action : actions) {
+        if (const auto* event = std::get_if<XiaomiAtvvStateEvent>(&action)) {
+            if (event->event.event == name) return &event->event;
+        }
+    }
+    return nullptr;
+}
+
+inline std::vector<AudioFrame> CollectAtvvFrames(const std::vector<XiaomiAtvvAction>& actions) {
+    std::vector<AudioFrame> frames;
+    for (const auto& action : actions) {
+        if (const auto* frame = std::get_if<XiaomiAtvvAudioFrame>(&action)) {
+            frames.push_back(frame->frame);
+        }
+    }
+    return frames;
+}
+
+inline bool HasAtvvError(const std::vector<XiaomiAtvvAction>& actions, std::string_view code) {
+    for (const auto& action : actions) {
+        if (const auto* error = std::get_if<XiaomiAtvvError>(&action)) {
+            if (error->code == code) return true;
+        }
+    }
+    return false;
+}
+
+// 快速完成握手进入 Ready（Start + v1.0 CAPS：16kHz、帧长 120）。
+inline void AtvvHandshakeReady(XiaomiAtvvSession& session, std::int64_t now_ms) {
+    session.Start(now_ms);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, now_ms + 10);
+}
+
+// 完成 ATVV 握手（Start + v1.0 CAPS：16kHz、ADPCM 帧长 120 字节）。
+inline void AtvvCoordinatorHandshake(XiaomiAtvvSession& session, std::int64_t& t) {
+    session.Start(t);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, t + 10);
+    t += 10;
+}

@@ -15,3 +15,6 @@ void RunCoordinatorBatch3Tests();
 
 // N8 cut6：协调器第四批（9 测，跨段依赖预检=0）。
 void RunCoordinatorBatch4Tests();
+
+// N8 cut7：小米 ATVV 会话批（8 测；6 个共用助手随预检入 test_support.h）。
+void RunXiaomiAtvvBatchTests();
