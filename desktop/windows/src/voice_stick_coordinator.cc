@@ -94,8 +94,11 @@ void VoiceStickCoordinator::Start() {
         const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
         LogCoordinatorLine("stale session dev=VS-" + device_id +
                            ": prompting user to re-pair in Windows Bluetooth settings");
-        ui_->ShowNotification(Tr(StringId::kStaleSessionTitle, language),
-                              Tr(StringId::kStaleSessionBody, language));
+        // B17：本回调在 BLE 心跳/自愈 worker 线程到达——UI 呼点收口回 UI 线程。
+        RunOnUiThread([this, language] {
+            ui_->ShowNotification(Tr(StringId::kStaleSessionTitle, language),
+                                  Tr(StringId::kStaleSessionBody, language));
+        });
     };
     ble_->on_connection_change = [this](std::vector<ConnectedDevice> devices) {
         if (is_shutdown_) return;
@@ -1245,8 +1248,12 @@ bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& devic
         if (marker != std::string::npos) {
             body.replace(marker, 2, WStringToUtf8(process_name));
         }
-        ui_->ShowNotification(Tr(StringId::kElevationNeededTitle, language), body);
-        elevation_warned_process_ = process_name;
+        // B17：本函数经 HandleWechatInputMethodPrimaryButtonDown（热键钩子线程）可达——
+        // 通知与去重标记成对收口回 UI 线程（elevation_warned_process_ 由 UI 线程读写）。
+        RunOnUiThread([this, language, body, process_name] {
+            ui_->ShowNotification(Tr(StringId::kElevationNeededTitle, language), body);
+            elevation_warned_process_ = process_name;
+        });
     }
     LogCoordinatorLine("foreground elevated dev=VS-" + device_id +
                        " proc=" + WStringToUtf8(process_name) +

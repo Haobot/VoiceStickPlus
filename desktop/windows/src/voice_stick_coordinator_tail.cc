@@ -49,25 +49,29 @@ void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& fin
 }
 
 void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words) {
-    const auto path = HotwordCandidatesPath(ConfigSnapshot()->ConfigPath());
-    // B13：走 miner 的唯一写入口（进程级互斥 + reload-merge-save）——原 load-once
-    // 缓存整存会用陈旧快照覆盖设置页刚写入的 dismissed/加入，用户「忽略」的词反复弹回。
-    const std::vector<std::string> suggestions = RecordHotwordCandidatesToDisk(path, words);
+    // B17：本函数由 MineHotwordCandidatesFromRefinement 链触发（P0-3 注释明示
+    // on_complete 在精修 worker 线程）——整函数体收口回 UI 线程。
+    RunOnUiThread([this, words] {
+            const auto path = HotwordCandidatesPath(ConfigSnapshot()->ConfigPath());
+            // B13：走 miner 的唯一写入口（进程级互斥 + reload-merge-save）——原 load-once
+            // 缓存整存会用陈旧快照覆盖设置页刚写入的 dismissed/加入，用户「忽略」的词反复弹回。
+            const std::vector<std::string> suggestions = RecordHotwordCandidatesToDisk(path, words);
 
-    if (!suggestions.empty()) {
-        const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
-        std::string joined;
-        for (std::size_t i = 0; i < suggestions.size(); ++i) {
-            if (i != 0) joined += ", ";
-            joined += suggestions[i];
-        }
-        LogCoordinatorLine("hotword candidates suggested: " + joined);
-        const auto message = joined + Tr(StringId::kHotwordCandidateNotifyBodySuffix, language);
-        ui_->ShowNotification(Tr(StringId::kHotwordCandidateNotifyTitle, language), message);
-        // 托盘气球可能被系统勿扰/通知设置静默拦截（实测 Win+N 通知中心无记录），
-        // 悬浮窗临时消息保证用户必现；会话活跃时实现侧自动回退托盘。
-        ui_->ShowTimedMessage(message, 3000);
-    }
+            if (!suggestions.empty()) {
+                const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
+                std::string joined;
+                for (std::size_t i = 0; i < suggestions.size(); ++i) {
+                    if (i != 0) joined += ", ";
+                    joined += suggestions[i];
+                }
+                LogCoordinatorLine("hotword candidates suggested: " + joined);
+                const auto message = joined + Tr(StringId::kHotwordCandidateNotifyBodySuffix, language);
+                ui_->ShowNotification(Tr(StringId::kHotwordCandidateNotifyTitle, language), message);
+                // 托盘气球可能被系统勿扰/通知设置静默拦截（实测 Win+N 通知中心无记录），
+                // 悬浮窗临时消息保证用户必现；会话活跃时实现侧自动回退托盘。
+                ui_->ShowTimedMessage(message, 3000);
+            }
+    });
 }
 
 std::vector<std::string> VoiceStickCoordinator::RankedHotwordsForAsr() {

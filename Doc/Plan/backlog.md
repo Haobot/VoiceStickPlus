@@ -71,7 +71,13 @@
 服务发现@1900 类感知=RC 必经同一重试环）→ 陈旧键 unpair@1792/1928 自愈对 RC 可达=删 Enum\BTHLE 毁 HOGP 直通；
 三调用点定性：421=用户遗忘（合规）、1792/1928=自愈违例 → 双闸 !is_xiaomi 落地（RC 走既有 fail 路径+手动重配对；
 VS 无 HOGP 键盘角色保留陈旧键恢复）；改后 TryUnpairAsync 全 6 引用复核（decl/def/421/1792/1928/注释）。 |
-| B17 | 后台线程直接 `ShowNotification`（统一 DispatchToUi） | open | 9-22 未复核 |
+| B17 | 后台线程直接 ShowNotification（统一 DispatchToUi） | **closed（10-08 三点收口）** |
+复核 7 点定谳：3 危+4 安全——危=on_session_zombie@97（BLE 心跳 worker）、
+MaybeWarnForegroundElevated@1248（经 HandleWechatInputMethodPrimaryButtonDown=热键钩子线程）、
+RecordAndNotifyHotwordCandidates@tail66/107（MineHotword 链=P0-3 注释明示 on_complete 在精修 worker 线程）
+→ 前两者 RunOnUiThread 局部包、第三者整函数体 choke-point 收口（捕获=参数集 [this, words]，体内局部不入列）；
+安=HandleGlobalHotkeyPressed 三点（GlobalHotkeyWin=RegisterHotKey+WM_HOTKEY@270 消息循环=UI 线程）、win32_app@715（App 自有）。
+配平对比 HEAD (0,-3)/(0,0) 恒等。 |
 | B18 | 云端精修/翻译取消不回调 + 断流当成功 | **closed（10-08 云流三修）** |
 复核实锤两点：1) ChatStream 取消=裸 return 零回调（调用方悬等）→ 新增 on_cancelled 专道
 （刻意不复用 on_error——其消费方回退非流式重试会把取消变成重跑），RunRefine 接线完成 ok=false，
