@@ -31,6 +31,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "voice_ble_conn_table.h"
+#include "voice_ble_ota_policy.h"
 
 static const char *TAG = "voice_ble";
 
@@ -400,7 +401,18 @@ static int ota_finish(uint32_t transfer_id, uint32_t image_size)
 
 static int ota_abort(uint32_t transfer_id)
 {
-    if (s_ota.active && transfer_id == s_ota.transfer_id) {
+    // D7：id 不匹配且有活动传输 → **拒绝**（返回错误、不清理、不发帧）。原实现跳过
+    // esp_ota_abort 却照旧 ota_clear_state() + 发 aborted + ABORT 回调：进行中的
+    // 传输被悄悄废掉而 esp_ota_handle 泄漏，桌面端还拿到假 aborted 帧误判已中止。
+    if (!voice_ble_ota_abort_allowed(s_ota.active, transfer_id, s_ota.transfer_id)) {
+        ESP_LOGW(TAG,
+                 "OTA abort rejected (transfer mismatch): incoming=%" PRIu32
+                 " active=%" PRIu32 " -- keeping in-flight transfer",
+                 transfer_id, s_ota.transfer_id);
+        ota_send_error("transfer_mismatch", ESP_ERR_INVALID_STATE);
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    if (s_ota.active) {
         (void)esp_ota_abort(s_ota.handle);
         ESP_LOGI(TAG, "OTA aborted transfer=%" PRIu32, transfer_id);
     }

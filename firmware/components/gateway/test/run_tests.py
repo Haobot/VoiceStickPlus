@@ -55,6 +55,10 @@ TARGETS = [
      [os.path.join(VOICE_BLE, "test", "conn_table_test.c"),
       os.path.join(VOICE_BLE, "conn_table.c")],
      [VOICE_BLE_INC]),
+    # D7：OTA abort 作用判定（不匹配拒绝）——纯头文件策略，宿主可测。
+    ("voice_ble_ota_policy",
+     [os.path.join(VOICE_BLE, "test", "voice_ble_ota_policy_test.c")],
+     [VOICE_BLE_INC]),
     # 0.1 固件端契约 reader：control_rx 黄金样本经 control_cmd_parse 对拍
     #（消费 tests/contract/fixtures/manifest.json，需 VOICESTICK_REPO_ROOT）。
     ("firmware_control_cmd",
