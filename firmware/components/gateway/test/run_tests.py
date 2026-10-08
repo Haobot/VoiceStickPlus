@@ -24,6 +24,9 @@ GATEWAY_SRC = os.path.join(HERE, "..", "src")
 GATEWAY_INC = os.path.join(HERE, "..", "include")
 VOICE_BLE = os.path.abspath(os.path.join(HERE, "..", "..", "voice_ble"))
 VOICE_BLE_INC = os.path.join(VOICE_BLE, "include")
+CJSON_INC = os.path.join(VOICE_BLE, "test", "third_party", "cjson")
+# repo root = gateway/test -> gateway -> components -> firmware -> <root>
+REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 VCVARS = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 
 # (name, sources, include_dirs)
@@ -52,6 +55,13 @@ TARGETS = [
      [os.path.join(VOICE_BLE, "test", "conn_table_test.c"),
       os.path.join(VOICE_BLE, "conn_table.c")],
      [VOICE_BLE_INC]),
+    # 0.1 固件端契约 reader：control_rx 黄金样本经 control_cmd_parse 对拍
+    #（消费 tests/contract/fixtures/manifest.json，需 VOICESTICK_REPO_ROOT）。
+    ("firmware_control_cmd",
+     [os.path.join(VOICE_BLE, "test", "control_cmd_contract_test.c"),
+      os.path.join(VOICE_BLE, "control_cmd.c"),
+      os.path.join(CJSON_INC, "cJSON.c")],
+     [VOICE_BLE_INC, CJSON_INC]),
 ]
 
 
@@ -130,6 +140,8 @@ def main() -> int:
         return 2
     is_windows = os.name == "nt"
     msvc_env = capture_msvc_env() if is_windows else None
+    # 契约 reader 用它定位 tests/contract/fixtures（子进程继承）。
+    os.environ["VOICESTICK_REPO_ROOT"] = REPO_ROOT
     failed = 0
     with tempfile.TemporaryDirectory(prefix="voicestick_host_tests_") as tmp:
         for name, sources, includes in targets:

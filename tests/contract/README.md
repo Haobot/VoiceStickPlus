@@ -30,7 +30,7 @@ manifest.json 六组样本（共 48 条，规格出处 `Doc/Ref/protocol.md`）�
 |---|---|---|
 | Windows | `desktop/windows/tests/core_tests.cc::TestContractFixtures` | ✅ 随 CI ctest 运行 |
 | macOS | `desktop/macos/Tests/VoiceStickTests/ContractFixtureTests.swift` | ✅ 随 CI swift run 运行 |
-| 固件 | 待 `voice_ble` host 构建 | ⏳ backlog 0.1 余项（依赖 E8 跨平台 host 测试）；在此之前本目录即固件行为的字面规格 |
+| 固件 | `firmware/components/voice_ble/test/control_cmd_contract_test.c`（经 run_tests.py 目标 `firmware_control_cmd` 注入 REPO_ROOT 消费同一 manifest） | ✅ control_rx 18 样本 + 反向门用例，随 CI host-tests 运行 |
 
 ## 键序与字段集约定
 

@@ -6,8 +6,8 @@ fixtures/manifest.json 供三端契约测试消费：
 
   - Windows: desktop/windows/tests/core_tests.cc::TestContractFixtures（CI ctest）
   - macOS:   desktop/macos/Tests/VoiceStickTests/ContractFixtureTests.swift（CI swift run）
-  - 固件端:  待 voice_ble host 构建（Doc/Plan/backlog.md 0.1 余项，依赖 E8 跨平台
-            host 测试）；在此之前本目录即固件行为的字面规格。
+  - 固件端:  control_cmd_contract_test.c（run_tests.py 目标 firmware_control_cmd，
+            CI host-tests）✅ 三端齐。
 
 约定：
   - JSON 类帧（state/power_mgmt/ota_state/control）expect 用**线上字段名**（snake_case），

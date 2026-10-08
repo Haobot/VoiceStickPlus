@@ -7,6 +7,7 @@
 #include <sys/param.h>
 
 #include "cJSON.h"
+#include "control_cmd.h"
 #include "esp_check.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
@@ -672,48 +673,37 @@ static void power_log_dump_start(uint32_t offset, uint32_t max_bytes)
 
 static void handle_power_log_control(const char *json)
 {
-    cJSON *root = cJSON_Parse(json);
-    if (!root) {
+    // 0.1 契约 reader：power_log 族解析与 main 共用 control_cmd（纯逻辑，宿主可测）。
+    control_cmd_t cmd;
+    if (!control_cmd_parse(json, &cmd)) {
         ESP_LOGW(TAG, "power_log control json parse failed");
         return;
     }
-    const cJSON *plog = cJSON_GetObjectItemCaseSensitive(root, "power_log");
-    const cJSON *cmd = plog ? cJSON_GetObjectItemCaseSensitive(plog, "cmd") : NULL;
-    if (!cJSON_IsString(cmd)) {
-        cJSON_Delete(root);
-        return;
-    }
-
-    if (strcmp(cmd->valuestring, "dump") == 0) {
-        uint32_t offset = 0;
-        uint32_t max_bytes = 0;
-        const cJSON *offset_item = cJSON_GetObjectItemCaseSensitive(plog, "offset");
-        const cJSON *max_item = cJSON_GetObjectItemCaseSensitive(plog, "max");
-        if (cJSON_IsNumber(offset_item) && offset_item->valuedouble > 0) {
-            offset = (uint32_t)offset_item->valuedouble;
-        }
-        if (cJSON_IsNumber(max_item) && max_item->valuedouble > 0) {
-            max_bytes = (uint32_t)max_item->valuedouble;
-        }
-        power_log_dump_start(offset, max_bytes);
-    } else if (strcmp(cmd->valuestring, "clear") == 0) {
+    switch (cmd.kind) {
+    case CONTROL_CMD_POWER_LOG_DUMP:
+        power_log_dump_start((uint32_t)cmd.value, cmd.uvalue);
+        break;
+    case CONTROL_CMD_POWER_LOG_CLEAR:
         power_log_dump_abort("cleared");
         power_log_clear();
         ESP_LOGI(TAG, "power_log cleared");
         (void)send_state_json("{\"power_log\":{\"cmd\":\"clear\",\"ok\":true}}");
-    } else if (strcmp(cmd->valuestring, "time_anchor") == 0) {
-        const cJSON *epoch_item = cJSON_GetObjectItemCaseSensitive(plog, "epoch");
-        if (cJSON_IsNumber(epoch_item) && epoch_item->valuedouble > 0) {
-            power_log_set_time_anchor((uint32_t)epoch_item->valuedouble);
-            ESP_LOGI(TAG, "power_log time anchor epoch=%" PRIu32,
-                     (uint32_t)epoch_item->valuedouble);
+        break;
+    case CONTROL_CMD_POWER_LOG_TIME_ANCHOR:
+        if (cmd.has_number && cmd.value > 0) {
+            power_log_set_time_anchor((uint32_t)cmd.value);
+            ESP_LOGI(TAG, "power_log time anchor epoch=%" PRIu32, (uint32_t)cmd.value);
         } else {
             ESP_LOGW(TAG, "power_log time_anchor missing epoch field");
         }
-    } else {
-        ESP_LOGW(TAG, "unknown power_log cmd: %s", cmd->valuestring);
+        break;
+    case CONTROL_CMD_POWER_LOG_UNKNOWN:
+        ESP_LOGW(TAG, "unknown power_log cmd: %s", cmd.str1);
+        break;
+    default:
+        // power_log 键存在但缺 cmd：原实现静默 return，此处等价静默。
+        break;
     }
-    cJSON_Delete(root);
 }
 
 static int control_access_cb(uint16_t conn_handle, uint16_t attr_handle,

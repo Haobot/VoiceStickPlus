@@ -9,6 +9,7 @@
 
 #include "button_gpio.h"
 #include "cJSON.h"
+#include "control_cmd.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_pm.h"
@@ -941,50 +942,36 @@ void gateway_select_self(void);
 static void side_switch_show_current(void);
 static void side_switch_cycle(void);
 
-static void ble_control_cb(const char *json)
+// 解析/执行分层（0.1 固件端契约 reader，2026-10-08）：control_rx JSON 的结构化解析
+// 在 voice_ble/control_cmd.c（纯逻辑、宿主编译可测、消费 tests/contract 黄金样本）；
+// 本函数只做副作用执行——每个 case 的分支体与原 if-else 链逐条等价（含告警文案）。
+static void execute_control_cmd(const control_cmd_t *cmd)
 {
-    cJSON *root = cJSON_Parse(json);
-    if (!root) {
-        ESP_LOGW(TAG, "ignore invalid control json");
-        return;
-    }
-
-    const cJSON *event = cJSON_GetObjectItemCaseSensitive(root, "event");
-    const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
-    const cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
-    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
-    const cJSON *button = cJSON_GetObjectItemCaseSensitive(root, "button");
-    const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
-    const cJSON *threshold_item = cJSON_GetObjectItemCaseSensitive(root, "threshold");
-    const cJSON *request_id_json = cJSON_GetObjectItemCaseSensitive(root, "request_id");
-    uint32_t request_id = 0;
-    if (cJSON_IsNumber(request_id_json)) {
-        request_id = (uint32_t)request_id_json->valueint;
-    }
-    if (cJSON_IsString(event) && strcmp(event->valuestring, "ui_state") == 0 &&
-        cJSON_IsString(state)) {
-        queue_ui_state_event(state->valuestring, cJSON_IsString(text) ? text->valuestring : "");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "interaction_mode") == 0 &&
-               cJSON_IsString(mode)) {
-        if (strcmp(mode->valuestring, "click_to_talk") == 0) {
+    switch (cmd->kind) {
+    case CONTROL_CMD_UI_STATE:
+        queue_ui_state_event(cmd->str1, cmd->text);
+        break;
+    case CONTROL_CMD_INTERACTION_MODE:
+        if (strcmp(cmd->str1, "click_to_talk") == 0) {
             apply_interaction_mode(INTERACTION_MODE_CLICK_TO_TALK);
-        } else if (strcmp(mode->valuestring, "hold_to_talk") == 0) {
+        } else if (strcmp(cmd->str1, "hold_to_talk") == 0) {
             apply_interaction_mode(INTERACTION_MODE_HOLD_TO_TALK);
-        } else if (strcmp(mode->valuestring, "hold_to_talk_instant") == 0) {
+        } else if (strcmp(cmd->str1, "hold_to_talk_instant") == 0) {
             apply_interaction_mode(INTERACTION_MODE_HOLD_TO_TALK_INSTANT);
         } else {
-            ESP_LOGW(TAG, "unknown interaction_mode %s", mode->valuestring);
+            ESP_LOGW(TAG, "unknown interaction_mode %s", cmd->str1);
         }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "show_imu_debug") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_show_imu_debug = cJSON_IsTrue(enabled);
+        break;
+    case CONTROL_CMD_SHOW_IMU_DEBUG:
+        s_show_imu_debug = cmd->enabled;
         ESP_LOGI(TAG, "show_imu_debug %s", s_show_imu_debug ? "enabled" : "disabled");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "battery_status_request") == 0) {
+        break;
+    case CONTROL_CMD_BATTERY_STATUS_REQUEST:
         queue_app_event(APP_EVENT_BATTERY_STATUS_REQUEST);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "usb_auto_off") == 0 &&
-               cJSON_IsBool(enabled)) {
+        break;
+    case CONTROL_CMD_USB_AUTO_OFF: {
         // 供电态（USB）10min 自动关机开关：电池监测窗口勾选框控制，NVS 持久化。
-        s_usb_auto_off = cJSON_IsTrue(enabled);
+        s_usb_auto_off = cmd->enabled;
         save_usb_auto_off_to_nvs(s_usb_auto_off);
         // 开关切换即时改变供电态屏幕常亮与关机准入，按新状态刷新空闲计时器
         //（LEDC 亮度与 esp_timer 启停均可跨任务调用，BLE 回调上下文安全）。
@@ -992,67 +979,69 @@ static void ble_control_cb(const char *json)
         restart_poweroff_timer();
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
         ESP_LOGI(TAG, "usb_auto_off %s", s_usb_auto_off ? "enabled" : "disabled");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_select_target") == 0) {
+        break;
+    }
+    case CONTROL_CMD_GATEWAY_SELECT_TARGET:
         // P1 切换器：由桌面端/自动化选择目标（设备菜单是主入口，本命令供桌面端选择与 E2E
         // 驱动；index 超范围或非网关模式时静默忽略）。clear=true 回到"不限制"。
-        const cJSON *index_json = cJSON_GetObjectItemCaseSensitive(root, "index");
-        const cJSON *clear = cJSON_GetObjectItemCaseSensitive(root, "clear");
-        const cJSON *self = cJSON_GetObjectItemCaseSensitive(root, "self");
-        if (cJSON_IsBool(clear) && cJSON_IsTrue(clear)) {
+        if (cmd->flag_clear) {
             ESP_LOGI(TAG, "gateway_select_target clear");
             gateway_select_target(-1, true);
-        } else if (cJSON_IsBool(self) && cJSON_IsTrue(self)) {
+        } else if (cmd->flag_self) {
             // 桌面端口语化入口："把本机设为网关目标" —— 目标是当前连接对端，无需知道表下标。
             ESP_LOGI(TAG, "gateway_select_target self");
             gateway_select_self();
-        } else if (cJSON_IsNumber(index_json)) {
-            ESP_LOGI(TAG, "gateway_select_target index=%d", index_json->valueint);
-            gateway_select_target(index_json->valueint, false);
+        } else if (cmd->has_number) {
+            ESP_LOGI(TAG, "gateway_select_target index=%d", (int)cmd->value);
+            gateway_select_target(cmd->value, false);
         } else {
             ESP_LOGW(TAG, "gateway_select_target 缺少 index/clear");
         }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_side_switch") == 0) {
+        break;
+    case CONTROL_CMD_GATEWAY_SIDE_SWITCH:
         // 调试/自动化：驱动侧键切换器（预览当前目标 / 轮流切换），无需手按侧键。
         // 走与侧键短按完全相同的内核（handle_side_up 的网关分支只多一层"录音中转发取消"）。
-        const cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
-        if (cJSON_IsString(action)) {
-            ESP_LOGI(TAG, "gateway_side_switch action=%s", action->valuestring);
-            if (strcmp(action->valuestring, "preview") == 0) {
+        if (cmd->has_str1) {
+            ESP_LOGI(TAG, "gateway_side_switch action=%s", cmd->str1);
+            if (strcmp(cmd->str1, "preview") == 0) {
                 side_switch_show_current();
-            } else if (strcmp(action->valuestring, "cycle") == 0) {
+            } else if (strcmp(cmd->str1, "cycle") == 0) {
                 side_switch_cycle();
             } else {
-                ESP_LOGW(TAG, "gateway_side_switch 未知 action=%s", action->valuestring);
+                ESP_LOGW(TAG, "gateway_side_switch 未知 action=%s", cmd->str1);
             }
         } else {
             ESP_LOGW(TAG, "gateway_side_switch 缺少 action");
         }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "gateway_target_info") == 0) {
+        break;
+    case CONTROL_CMD_GATEWAY_TARGET_INFO: {
         // P1 目标表：桌面端连上后上报自己的显示名（主机名）。命名对象是「当前连接对端」
         // 的 identity address —— 桌面端无从得知自己的 RPA/identity 地址，由固件侧绑定。
-        const cJSON *name = cJSON_GetObjectItemCaseSensitive(root, "name");
         uint8_t id_addr[6];
         uint8_t addr_type = 0;
-        if (cJSON_IsString(name) && gateway_targets_current_peer(id_addr, &addr_type)) {
-            if (gateway_targets_set_name(id_addr, addr_type, name->valuestring) >= 0) {
-                ESP_LOGI(TAG, "网关目标命名: %s", name->valuestring);
+        if (cmd->has_str1 && gateway_targets_current_peer(id_addr, &addr_type)) {
+            if (gateway_targets_set_name(id_addr, addr_type, cmd->str1) >= 0) {
+                ESP_LOGI(TAG, "网关目标命名: %s", cmd->str1);
             } else {
                 ESP_LOGW(TAG, "网关目标命名失败（表内无该对端）");
             }
         } else {
             ESP_LOGW(TAG, "gateway_target_info 缺少 name 或无当前对端");
         }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "usb_auto_off_get") == 0) {
+        break;
+    }
+    case CONTROL_CMD_USB_AUTO_OFF_GET:
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
-               cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
-        ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, request_id);
-        queue_primary_down_event(APP_INPUT_SOURCE_REMOTE, request_id);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_up") == 0 &&
-               cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
-        ESP_LOGI(TAG, "remote primary up request_id=%" PRIu32, request_id);
-        queue_primary_up_event(APP_INPUT_SOURCE_REMOTE, request_id);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "ota_commit") == 0) {
+        break;
+    case CONTROL_CMD_REMOTE_BUTTON_DOWN:
+        ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, (uint32_t)cmd->value);
+        queue_primary_down_event(APP_INPUT_SOURCE_REMOTE, (uint32_t)cmd->value);
+        break;
+    case CONTROL_CMD_REMOTE_BUTTON_UP:
+        ESP_LOGI(TAG, "remote primary up request_id=%" PRIu32, (uint32_t)cmd->value);
+        queue_primary_up_event(APP_INPUT_SOURCE_REMOTE, (uint32_t)cmd->value);
+        break;
+    case CONTROL_CMD_OTA_COMMIT: {
         // 桌面端手动确认新固件健康：直接签到 mark_app_valid_cancel_rollback。
         // 正常情况下 boot 时已无条件自动签到，此命令作为手动兜底。
         ESP_LOGI(TAG, "ota_commit");
@@ -1061,62 +1050,61 @@ static void ble_control_cb(const char *json)
             mark_err != ESP_ERR_INVALID_STATE) {
             ESP_LOGW(TAG, "ota_commit mark_valid failed: %s", esp_err_to_name(mark_err));
         }
-    } else if (cJSON_IsString(event) &&
-               strcmp(event->valuestring, "imu_wake_sensitivity") == 0 &&
-               cJSON_IsNumber(threshold_item)) {
-        double threshold_raw = threshold_item->valuedouble;
-        if (threshold_raw < BMI270_PICKUP_THRESHOLD_MIN_LSB) {
-            threshold_raw = BMI270_PICKUP_THRESHOLD_MIN_LSB;
-        } else if (threshold_raw > BMI270_PICKUP_THRESHOLD_MAX_LSB) {
-            threshold_raw = BMI270_PICKUP_THRESHOLD_MAX_LSB;
+        break;
+    }
+    case CONTROL_CMD_IMU_WAKE_SENSITIVITY: {
+        int32_t threshold = cmd->value;
+        if (threshold < BMI270_PICKUP_THRESHOLD_MIN_LSB) {
+            threshold = BMI270_PICKUP_THRESHOLD_MIN_LSB;
+        } else if (threshold > BMI270_PICKUP_THRESHOLD_MAX_LSB) {
+            threshold = BMI270_PICKUP_THRESHOLD_MAX_LSB;
         }
-        int32_t threshold = (int32_t)threshold_raw;
         bmi270_set_pickup_threshold((float)threshold);
         save_pickup_threshold_to_nvs(threshold);
         ESP_LOGI(TAG, "imu_wake_sensitivity threshold=%" PRId32, threshold);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_enabled") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_tap_enabled = cJSON_IsTrue(enabled);
+        break;
+    }
+    case CONTROL_CMD_TAP_ENABLED:
+        s_tap_enabled = cmd->enabled;
         bmi270_set_tap_enabled(s_tap_enabled);
         set_tap_polling_enabled(s_tap_enabled);
         save_tap_settings_to_nvs(s_tap_enabled, (int32_t)-1);
         ESP_LOGI(TAG, "tap_enabled %s", s_tap_enabled ? "true" : "false");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "encoder_led_color") == 0) {
-        const cJSON *color_item = cJSON_GetObjectItemCaseSensitive(root, "color");
+        break;
+    case CONTROL_CMD_ENCODER_LED_COLOR: {
         uint32_t rgb = 0;
-        if (cJSON_IsString(color_item) &&
-            encoder_led_rgb_from_name(color_item->valuestring, &rgb)) {
+        if (cmd->has_str1 && encoder_led_rgb_from_name(cmd->str1, &rgb)) {
             s_encoder_led_rgb = rgb;
             save_encoder_settings_to_nvs();
             ESP_LOGI(TAG, "encoder_led_color %s -> 0x%06" PRIX32,
-                     color_item->valuestring, s_encoder_led_rgb);
+                     cmd->str1, s_encoder_led_rgb);
         } else {
             ESP_LOGW(TAG, "unknown encoder_led_color ignored: %s",
-                     cJSON_IsString(color_item) ? color_item->valuestring : "<missing>");
+                     cmd->has_str1 ? cmd->str1 : "<missing>");
         }
-    } else if (cJSON_IsString(event) &&
-               strcmp(event->valuestring, "encoder_recording_gate") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_encoder_recording_gate = cJSON_IsTrue(enabled);
+        break;
+    }
+    case CONTROL_CMD_ENCODER_RECORDING_GATE:
+        s_encoder_recording_gate = cmd->enabled;
         save_encoder_settings_to_nvs();
         ESP_LOGI(TAG, "encoder_recording_gate %s",
                  s_encoder_recording_gate ? "enabled" : "disabled");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0) {
+        break;
+    case CONTROL_CMD_TAP_SENSITIVITY: {
         // 灵敏度 1..10（用户面向）：1=最不灵敏，10=最灵敏，默认 5。
         // 兼容 legacy 字符串 low/medium/high -> 2/5/9。
-        const cJSON *level_item = cJSON_GetObjectItemCaseSensitive(root, "level");
         int32_t sensitivity = 5;
-        if (cJSON_IsNumber(level_item)) {
-            sensitivity = (int32_t)level_item->valueint;
-        } else if (cJSON_IsString(level_item)) {
-            if (strcmp(level_item->valuestring, "low") == 0) {
+        if (cmd->has_number) {
+            sensitivity = cmd->value;
+        } else if (cmd->has_str1) {
+            if (strcmp(cmd->str1, "low") == 0) {
                 sensitivity = 2;
-            } else if (strcmp(level_item->valuestring, "medium") == 0) {
+            } else if (strcmp(cmd->str1, "medium") == 0) {
                 sensitivity = 5;
-            } else if (strcmp(level_item->valuestring, "high") == 0) {
+            } else if (strcmp(cmd->str1, "high") == 0) {
                 sensitivity = 9;
             } else {
-                ESP_LOGW(TAG, "unknown tap_sensitivity %s", level_item->valuestring);
+                ESP_LOGW(TAG, "unknown tap_sensitivity %s", cmd->str1);
             }
         } else {
             ESP_LOGW(TAG, "tap_sensitivity missing level field");
@@ -1124,66 +1112,85 @@ static void ble_control_cb(const char *json)
         bmi270_set_tap_sensitivity((int)sensitivity);
         save_tap_settings_to_nvs(s_tap_enabled, sensitivity);
         ESP_LOGI(TAG, "tap_sensitivity=%" PRId32, sensitivity);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "air_mouse_enabled") == 0 &&
-               cJSON_IsBool(enabled)) {
+        break;
+    }
+    case CONTROL_CMD_AIR_MOUSE_ENABLED:
         // 体感鼠标开关：由桌面端状态机权威控制。开启时校准零偏并启动 20ms 轮询上报 motion。
-        set_air_mouse_enabled(cJSON_IsTrue(enabled));
-        ESP_LOGI(TAG, "air_mouse_enabled %s", cJSON_IsTrue(enabled) ? "true" : "false");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "test_playback") == 0) {
+        set_air_mouse_enabled(cmd->enabled);
+        ESP_LOGI(TAG, "air_mouse_enabled %s", cmd->enabled ? "true" : "false");
+        break;
+    case CONTROL_CMD_TEST_PLAYBACK:
         // 测试回放（L3 端到端测试）：设置预存 PCM 文件名，audio_task 从该文件读 PCM 替代采集。
         // file 为空或缺失则关闭回放恢复 ES8311 采集。仅端到端测试用，正常使用不触发。
-        const cJSON *file_item = cJSON_GetObjectItemCaseSensitive(root, "file");
-        if (cJSON_IsString(file_item) && file_item->valuestring[0] != '\0') {
+        if (cmd->has_str1 && cmd->str1[0] != '\0') {
             // 安全：test_playback 只服务 L3 回放，文件名必须是 SPIFFS 根下的裸名字。
             // 拒绝路径分隔符与 ".."，避免已连接 peer 把它当作任意路径读取原语。
-            const char *playback_name = file_item->valuestring;
-            if (strchr(playback_name, '/') != NULL || strchr(playback_name, '\\') != NULL ||
-                strstr(playback_name, "..") != NULL) {
+            if (strchr(cmd->str1, '/') != NULL || strchr(cmd->str1, '\\') != NULL ||
+                strstr(cmd->str1, "..") != NULL) {
                 ESP_LOGW(TAG, "test_playback rejected: path separators/.. not allowed");
             } else {
-                esp_err_t pb_err = audio_pipeline_set_playback_file(playback_name);
-                ESP_LOGI(TAG, "test_playback file=%s -> %s", playback_name,
+                esp_err_t pb_err = audio_pipeline_set_playback_file(cmd->str1);
+                ESP_LOGI(TAG, "test_playback file=%s -> %s", cmd->str1,
                          esp_err_to_name(pb_err));
             }
         } else {
             audio_pipeline_set_playback_file(NULL);
             ESP_LOGI(TAG, "test_playback cleared (restore capture)");
         }
-    } else if (cJSON_IsString(event) &&
-               strcmp(event->valuestring, "gateway_keymap_set") == 0) {
+        break;
+    case CONTROL_CMD_GATEWAY_KEYMAP_SET:
         // P1 按键自定义：设置单键路由（key=协议键名，route=passthrough|software），
         // 成功即持久化并回执全表。语音键不在可路由表内（返回 usage=0 静默忽略）。
-        const cJSON *key_item = cJSON_GetObjectItemCaseSensitive(root, "key");
-        const cJSON *route_item = cJSON_GetObjectItemCaseSensitive(root, "route");
-        if (cJSON_IsString(key_item) && cJSON_IsString(route_item)) {
+        if (cmd->has_str1 && cmd->has_str2) {
             uint16_t usage = 0;
             for (size_t i = 0; i < gateway_keymap_routable_key_count(); i++) {
                 uint16_t candidate = gateway_keymap_routable_usage_at(i);
                 const char *name = gateway_keymap_key_name(candidate);
-                if (name != NULL && strcmp(name, key_item->valuestring) == 0) {
+                if (name != NULL && strcmp(name, cmd->str1) == 0) {
                     usage = candidate;
                     break;
                 }
             }
             if (usage != 0) {
                 gateway_route_t route =
-                    strcmp(route_item->valuestring, "software") == 0
+                    strcmp(cmd->str2, "software") == 0
                         ? GATEWAY_ROUTE_SOFTWARE : GATEWAY_ROUTE_PASSTHROUGH;
                 if (gateway_keymap_set_route(usage, route) == 0) {
                     save_gateway_key_routes();
-                    ESP_LOGI(TAG, "gateway_keymap_set %s -> %s", key_item->valuestring,
+                    ESP_LOGI(TAG, "gateway_keymap_set %s -> %s", cmd->str1,
                              route == GATEWAY_ROUTE_SOFTWARE ? "software" : "passthrough");
                     send_gateway_keymap_report();
                 }
             } else {
-                ESP_LOGW(TAG, "gateway_keymap_set unknown key: %s", key_item->valuestring);
+                ESP_LOGW(TAG, "gateway_keymap_set unknown key: %s", cmd->str1);
             }
         }
-    } else if (cJSON_IsString(event) &&
-               strcmp(event->valuestring, "gateway_keymap_get") == 0) {
+        break;
+    case CONTROL_CMD_GATEWAY_KEYMAP_GET:
         send_gateway_keymap_report();
+        break;
+    case CONTROL_CMD_POWER_LOG_DUMP:
+    case CONTROL_CMD_POWER_LOG_CLEAR:
+    case CONTROL_CMD_POWER_LOG_TIME_ANCHOR:
+    case CONTROL_CMD_POWER_LOG_UNKNOWN:
+        // power_log 命令族由 voice_ble 内部执行（control_access_cb 分流），
+        // main 侧保持原行为：静默忽略。
+        break;
+    case CONTROL_CMD_NONE:
+    default:
+        // 未知/不完整事件静默忽略（等价原 if-else 链 fallthrough）。
+        break;
     }
-    cJSON_Delete(root);
+}
+
+static void ble_control_cb(const char *json)
+{
+    control_cmd_t cmd;
+    if (!control_cmd_parse(json, &cmd)) {
+        ESP_LOGW(TAG, "ignore invalid control json");
+        return;
+    }
+    execute_control_cmd(&cmd);
 }
 
 static uint32_t elapsed_button_ms(int64_t down_us)
