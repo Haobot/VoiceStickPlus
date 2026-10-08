@@ -10107,6 +10107,58 @@ void TestTencentResultParsing() {
     assert(segments2.empty());
 }
 
+void TestTencentVocabSyncOffMainThread() {
+    // B7：热词表同步是纯网络操作（Find+Update/Create，WinHTTP 各阶段 10s 超时）。
+    // Start 常被调用方持 audio_mutex_ 调用（HandleAudioFrame → SendOrBufferOggChunk
+    // → Start），内联等待会把状态机/按键/音频帧一起冻结到超时（评审记录最长 ~80s）。
+    // 注入 1200ms 慢同步，断言构造与 Start 都立即返回、在飞期间不重复起线程。
+    std::atomic<int> sync_calls{0};
+    AsrClientTencent::SetVocabSyncTestSeam(
+        [&sync_calls](const AppConfig&, const std::vector<std::string>&) {
+            sync_calls.fetch_add(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+            return std::string("vocab-b7-test");
+        });
+
+    AppConfig cfg;
+    cfg.tencent_appid = "1259000001";
+    cfg.tencent_secret_id = "AKIDtestsecretid";
+    cfg.tencent_secret_key = "testsecretkey";
+    cfg.tencent_hotword_id.clear();   // 自动同步路径（配置指定 VocabId 时不同步）
+    cfg.asr_hotwords = {"Opus", "ESP32-S3"};
+
+    const auto ctor_at = std::chrono::steady_clock::now();
+    auto client = std::make_unique<AsrClientTencent>(cfg);  // 构造即预热（锁外）
+    const auto ctor_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - ctor_at).count();
+    assert(ctor_ms < 600);  // 内联同步需 1200ms —— 构造必须不等它
+
+    // 等预热线程真正进入同步体，确认"在飞"后再测 Start。
+    for (int i = 0; i < 200 && sync_calls.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(sync_calls.load() == 1);
+
+    const auto start_at = std::chrono::steady_clock::now();
+    AsrSessionOptions opts;  // hotwords 空 → 回落 config_.asr_hotwords
+    const bool started = client->Start(opts);
+    const auto start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - start_at).count();
+    assert(started);
+    assert(start_ms < 600);     // 同步仍在飞（1200ms），Start 绝不能等它
+    assert(sync_calls.load() == 1);  // 在飞期间重复 kick 幂等，不起第二个线程
+
+    // 后台同步完成后结果通过 CachedVocabId 可见（有界等待）。
+    for (int i = 0; i < 400 && client->CachedVocabId().empty(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(client->CachedVocabId() == "vocab-b7-test");
+
+    client->Cancel();
+    client.reset();  // 析构 join websocket worker（有界，WinHTTP 超时兜底）
+    AsrClientTencent::SetVocabSyncTestSeam(nullptr);
+}
+
 void TestTencentFinalFlagParsing() {
     // final=1：整段音频识别结束（顶层字段，无 result）
     const char* json_final_end = R"(
@@ -16283,6 +16335,8 @@ int main() {
     TestTencentVoiceIdGeneration();
     TestTencentReceiveLoopExitsAfterFinalEmitted();
     TestTencentShutdownForcesHandleCloseNotWebSocketClose();
+    printf(">> cluster: B7 tencent hotword vocab async sync\n"); fflush(stdout);
+    TestTencentVocabSyncOffMainThread();
     printf(">> TestCoordinatorUpdateConfigDestroysOldAsrOffThread\n"); fflush(stdout);
     TestCoordinatorUpdateConfigDestroysOldAsrOffThread();
     printf(">> TestCoordinatorConcurrentUpdateConfigStress\n"); fflush(stdout);

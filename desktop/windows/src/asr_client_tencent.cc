@@ -142,10 +142,55 @@ std::string JsonEscape(std::string_view value) {
 
 } // namespace
 
-AsrClientTencent::AsrClientTencent(AppConfig config) : config_(std::move(config)) {}
+AsrClientTencent::AsrClientTencent(AppConfig config) : config_(std::move(config)) {
+    // B7 启动预热：构造点在锁外（UpdateConfig / 字幕周期创建），立即把热词表同步丢到
+    // 后台线程，使首次 Start 时通常已就绪——首会话不再因同步未完成而缺失自动热词表。
+    KickHotwordVocabSync(config_.asr_hotwords);
+}
 
 AsrClientTencent::~AsrClientTencent() {
     ShutdownConnection();
+}
+
+// ============================================================
+// 热词表同步（B7）
+// ============================================================
+
+void AsrClientTencent::KickHotwordVocabSync(const std::vector<std::string>& hotwords) {
+    if (!config_.tencent_hotword_id.empty()) return;  // 用户自管 VocabId，不自动同步
+    if (hotwords.empty()) return;
+    {
+        std::lock_guard lock(vocab_sync_->mu);
+        // 幂等：已在飞不重复起；已成功不再重跑（词表变更由 UpdateConfig 重建客户端覆盖）。
+        if (vocab_sync_->in_flight || vocab_sync_->succeeded) return;
+        vocab_sync_->in_flight = true;
+    }
+    // 全部按值捕获：线程不持有 this，客户端被 UpdateConfig 重建 / 字幕周期销毁时
+    // 后台同步仍能安全收尾，也无需在析构里 join（避免销毁路径再引入网络阻塞）。
+    auto state = vocab_sync_;
+    auto sync_fn = vocab_sync_fn_for_test_;  // 测试缝快照（生产为 nullptr → 真实 HTTP）
+    AppConfig config = config_;
+    std::vector<std::string> words = hotwords;
+    std::thread([state, sync_fn, config = std::move(config), words = std::move(words)]() {
+        std::string id;
+        if (sync_fn) {
+            id = sync_fn(config, words);
+        } else {
+            TencentAsrVocabClient client(config);
+            id = client.SyncHotwords(words);
+        }
+        std::lock_guard lock(state->mu);
+        state->in_flight = false;
+        if (!id.empty()) {
+            state->vocab_id = id;
+            state->succeeded = true;
+        }
+    }).detach();
+}
+
+std::string AsrClientTencent::CachedVocabId() const {
+    std::lock_guard lock(vocab_sync_->mu);
+    return vocab_sync_->vocab_id;
 }
 
 void AsrClientTencent::SetWinHttpTestSeams(WebSocketReceiveFn receive, WebSocketCloseFn ws_close,
@@ -182,17 +227,10 @@ bool AsrClientTencent::Start(AsrSessionOptions options) {
     emitted_definite_segment_keys_.clear();
     latest_transcript_.clear();
 
-    // 热词自动同步：在主线程执行（worker 线程产生前），避免跨线程 HTTP 请求死锁。
-    // 仅首次调用时触发（cached_vocab_id_ 为空且配置未指定 hotword_id）。
-    if (config_.tencent_hotword_id.empty() &&
-        cached_vocab_id_.empty() &&
-        !session_options_.hotwords.empty()) {
-        TencentAsrVocabClient vocab_client(config_);
-        auto synced_id = vocab_client.SyncHotwords(session_options_.hotwords);
-        if (!synced_id.empty()) {
-            cached_vocab_id_ = synced_id;
-        }
-    }
+    // B7：热词表同步已移出本路径——Start 常在调用方持 audio_mutex_ 时执行，早先在这里
+    // 内联 HTTP 会把状态机/按键/音频帧冻结至超时（最长 ~80s）。此处只做幂等触发：
+    // 尚未成功且未在飞才起后台线程；本次会话若未就绪则不带自动热词表，完成后下次生效。
+    KickHotwordVocabSync(session_options_.hotwords);
 
     {
         std::lock_guard lock(mutex_);
@@ -697,10 +735,11 @@ void AsrClientTencent::RunWebSocket() {
         }
     } fire_guard{this};
 
-    // 热词表 ID：优先使用配置的 VocabId，否则使用本次会话缓存（Start 中同步获取）
+    // 热词表 ID：优先使用配置的 VocabId，否则用后台同步已完成的结果（B7：Start 不再
+    // 内联同步，未就绪时本会话不带自动热词表，由构造预热/后续 Start 补上）。
     std::string hotword_id = config_.tencent_hotword_id;
-    if (hotword_id.empty() && !cached_vocab_id_.empty()) {
-        hotword_id = cached_vocab_id_;
+    if (hotword_id.empty()) {
+        hotword_id = CachedVocabId();
     }
 
     // 复制本次会话的 voice_id（在锁外使用）

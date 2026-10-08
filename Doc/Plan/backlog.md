@@ -52,7 +52,7 @@
 | B1 | 烧录工具关窗/析构 UAF（硬同步 + 取消令牌） | **closed（10-07，代码层）** | 采用评审 shared_ptr 方案：`FlashThreadCtx` 让 worker 自持 `shared_ptr<FlashTool>`+`shared_ptr<IFlashProcessRunner>`，`FlashThreadProc` 不再触碰 `this`；关窗/析构 5s 有界等待**超时也不再 UAF**（worker 跑完 Run() 对象才析构，无挂死风险）；`flash_tool_`/`runner_` 独占转共享。验证=CI 编译；**发布前**按 AGENTS 跑 `scripts/prepare_flash_payload.ps1` 冒烟 + `Doc/Plan/windows-com-flash-tool.md` §7.2 真机清单（本机无 Windows） |
 | B2 | usage tap 管道缺 OVERLAPPED → 退出挂死 / Mutex 不释放 | open | **10-07 抽查**：manager 文件内仍无 `FILE_FLAG_OVERLAPPED` |
 | B3 | 微信模式启动失败不回滚默认录音设备 | open | 9-22 未复核 |
-| B7 | 腾讯热词同步移出 `audio_mutex_` | open | 9-22 未复核（B6 已修） |
+| B7 | 腾讯热词同步移出 `audio_mutex_` | **closed（10-08）** | 同步整体移出 `Start` 改后台线程：**构造点预热**（`UpdateConfig`/字幕周期创建均在锁外）+ `Start` 只做幂等 `KickHotwordVocabSync`（在飞不重复、成功不重跑）；结果经 `VocabSyncState` 互斥共享，`RunWebSocket` 锁外读 `CachedVocabId()`（顺带修掉原 `cached_vocab_id_` 无锁读写）；线程按值捕获 config/词表、**不持 this**，重建/销毁无需 join（避免销毁路径再引入网络阻塞）；新增静态测试缝 `SetVocabSyncTestSeam` + 回归 `TestTencentVocabSyncOffMainThread`（注入 1200ms 慢同步，断言构造与 Start 均 <600ms、在飞期间重复 kick 幂等、完成后 `CachedVocabId` 可见） |
 | B8 | 协调器 `config_` 跨线程竞争 → `shared_ptr<const AppConfig>` 原子换入 | **closed（10-07）** | `std::atomic<shared_ptr<const AppConfig>>` 快照 + `config_write_mutex_` 写侧 copy-mutate-store；109 读点转 `ConfigSnapshot()`，4 写点（UpdateConfig/配对表×2/SavePairedDeviceInfo）入互斥；压测 `TestCoordinatorConcurrentUpdateConfigStress`（4 读线程 × 300 次换入） |
 | B9 | 配置写盘非原子 + 合并保存丢 `[license]` | **closed（10-07）** | `WriteTo` 原子写（同目录 `.tmp` → `MoveFileExW` REPLACE_EXISTING\|WRITE_THROUGH）+ **两条合并保存路径**（Preserving/SettingsDialog）落盘前保留磁盘 `[license]`——「谁的副本谁重取」；plain Save 写本对象 license（LicenseRuntime 激活/锚点落盘语义所依赖，首版全局重取被既有回归测试拦下后修正）；单测 `TestSaveStaleCopyKeepsLicense` + `TestLicenseConfigRoundTrip` 回归 |
 | B11 | `SetLocalRefiner` 持 `audio_mutex_` 析构旧 client | open | 9-22 未复核 |
@@ -126,6 +126,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **阶段 1 B7 关闭**：`AsrClientTencent` 热词表同步改后台线程（构造预热 + Start 幂等 Kick），修掉「持 `audio_mutex_` 内联 HTTP 冻结状态机/按键/音频帧至超时」；测试缝与回归用例齐 | CI 七 job（Windows ctest 含新用例） |
 | 2026-10-08 | **0.1 固件端 reader 落地（三端齐）**：解析/执行分层——新抽纯模块 `voice_ble/control_cmd`（control_rx 全命令族解析，零 ESP 依赖，宿主编译）+ main.c `ble_control_cb` 改 parse→execute（244 行分支体逐条保真迁移，告警文案同）+ voice_ble power_log 族共用同一解析；`control_cmd_contract_test` 消费 manifest（18 样本 + 4 反向门用例）；vendored cJSON 与 Windows third_party 同 MD5 同源拷贝；run_tests.py 第 6 目标（注入 REPO_ROOT） | 本地 6/6 host 全过；CI 七 job（host-tests 含 reader + firmware job 编译 main.c/voice_ble.c 改动） |
 | 2026-10-08 | **阶段 1 E8 关闭**：`run_tests.py` 跨平台化（POSIX cc / Windows MSVC 双路线，5 目标含 voice_ble conn_table，临时目录产物）+ CI `host-tests` job 每推送运行；删 gateway 测试死函数；Hub 固件测试行 ×3 同步更新 | 本地 5/5 全过（ATVV 112/112）；CI 七 job 验证（见下行） |
 | 2026-10-08 | **阶段 1 A4 深修落地（核心）**：新增纯 C `voice_ble/conn_table`（宿主单测 5/5 本地 cc -Wall -Wextra -Werror 通过，含 stale 断连回归用例）；`voice_ble.c` 三段 GAP 事件按 handle 记账 + 镜像派生（发送/门控点零改动）+ CONN_UPDATE/MTU 应用链路守卫；Hub 红线三条同文更新；余项立 A4b（广播放开产品决策 + 切换器身份 + 真机双机/入侵者回归） | 本机仅 IDF6.1 无 xtensa 工具链（项目要 v5.5.1）→ **CI firmware job 编译验证**；真机项挂 A4b |

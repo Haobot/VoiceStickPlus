@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -73,6 +75,34 @@ public:
     /// 关停连接（公开以便单测断言强制关闭路径）。
     void ShutdownConnection();
 
+    // ---- 热词表同步（B7）----
+    // 同步是纯网络操作（Find+Update/Create，WinHTTP 各阶段 10s 超时）。Start() 常被
+    // 调用方持 audio_mutex_ 调用（HandleAudioFrame → SendOrBufferOggChunk → Start），
+    // 在其中同步等待会把状态机/按键/音频帧全部冻结——故改为后台线程预热 + 幂等触发，
+    // 本方法绝不阻塞。线程只持有 config/词表的值拷贝与共享状态，不触碰 this。
+    void KickHotwordVocabSync(const std::vector<std::string>& hotwords);
+    /// 后台同步已完成后返回词表 ID；未就绪返回空（本次会话不带自动热词表）。
+    std::string CachedVocabId() const;
+
+    // ---- 单元测试缝（公开以便单元测试；生产路径 nullptr → 真实 HTTP）----
+    using VocabSyncFn =
+        std::function<std::string(const AppConfig&, const std::vector<std::string>&)>;
+    /// 注入同步实现。**必须在构造实例之前设置**（构造即预热，否则预热线程会走真实
+    /// HTTP）；进程级静态，仅单测使用。
+    static void SetVocabSyncTestSeam(VocabSyncFn fn) { vocab_sync_fn_for_test_ = std::move(fn); }
+
+private:
+    inline static VocabSyncFn vocab_sync_fn_for_test_;
+
+    /// 热词表同步的共享状态：后台线程与 RunWebSocket（锁外）通过它交换结果。
+    struct VocabSyncState {
+        mutable std::mutex mu;
+        std::string vocab_id;  // 成功后写入
+        bool succeeded = false;
+        bool in_flight = false;
+    };
+    std::shared_ptr<VocabSyncState> vocab_sync_ = std::make_shared<VocabSyncState>();
+
 private:
     enum class ConnectionState {
         kDisconnected,
@@ -137,7 +167,6 @@ private:
     WebSocketCloseFn websocket_close_ = &WinHttpWebSocketClose;
     HandleCloseFn handle_close_ = &WinHttpCloseHandle;
     std::string last_start_error_;
-    std::string cached_vocab_id_;      // 本次会话自动创建的热词表 ID
     std::string pending_error_message_; // 延迟触发的错误消息（避免跨线程死锁）
 };
 
