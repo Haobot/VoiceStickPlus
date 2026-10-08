@@ -478,6 +478,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_xiaomi_usage_tap.cc
     # N8 cut11: tencent ASR batch (15 tests)
     tests/core_tests_tencent.cc
+    # N8 cut12: device/input misc batch (59 tests)
+    tests/core_tests_device_misc.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入

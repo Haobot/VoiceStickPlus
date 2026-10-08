@@ -30,3 +30,6 @@ void RunXiaomiUsageTapBatchTests();
 
 // N8 cut11：腾讯 ASR 批（15 测）。
 void RunTencentBatchTests();
+
+// N8 cut12：设备/输入杂项批（59 测——最大连续块，纯测试体三断言全净）。
+void RunDeviceInputMiscBatchTests();
