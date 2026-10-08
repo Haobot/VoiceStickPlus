@@ -117,7 +117,8 @@ def build_repo(root: Path) -> None:
         " * 48000 / sample_rate_;\n",
         encoding="utf-8",
     )
-    (root / "desktop" / "macos" / "Sources" / "VoiceStickApp" / "OggOpusMuxer.swift").write_text(
+    # N1 第二刀：OggOpusMuxer 已下沉 VoiceStickCore，夹具随迁
+    (root / "desktop" / "macos" / "Sources" / "VoiceStickCore" / "OggOpusMuxer.swift").write_text(
         "granulePosition += UInt64(AudioOpusEncoder.frameSamples * 48_000 / sampleRate)\n",
         encoding="utf-8",
     )
@@ -345,7 +346,8 @@ class ReleaseGuardTests(unittest.TestCase):
         self.assertTrue(any(f.startswith("frame-ms") for f in fails), fails)
 
     def test_mac_stale_granule_detected(self):
-        (self.root / "desktop" / "macos" / "Sources" / "VoiceStickApp" / "OggOpusMuxer.swift").write_text(
+        # N1 第二刀：OggOpusMuxer 随迁 VoiceStickCore，篡改路径同步
+        (self.root / "desktop" / "macos" / "Sources" / "VoiceStickCore" / "OggOpusMuxer.swift").write_text(
             "granulePosition += UInt64(960 * 48_000 / sampleRate)\n", encoding="utf-8"
         )
         fails = self.failures()

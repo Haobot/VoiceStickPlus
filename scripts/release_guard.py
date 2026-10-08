@@ -350,13 +350,13 @@ def check_frame_ms_and_granule(root: Path) -> str | None:
             r"(kFrameSamples|frameSamples|\d+)\)*\s*\*\s*48000\s*/\s*sample_rate_",
         ),
         (
-            "macOS OggOpusMuxer.swift",
+            "macOS OggOpusMuxer.swift",  # N1 第二刀：文件已下沉 VoiceStickCore
             _text(
                 root
                 / "desktop"
                 / "macos"
                 / "Sources"
-                / "VoiceStickApp"
+                / "VoiceStickCore"
                 / "OggOpusMuxer.swift"
             ),
             r"(kFrameSamples|frameSamples|\d+)\)*\s*\*\s*48_000\s*/\s*sampleRate",
