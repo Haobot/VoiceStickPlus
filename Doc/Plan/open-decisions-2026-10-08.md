@@ -15,6 +15,7 @@
 | release_guard | **9 检查全过** + 单测 **22/22** |
 | CI | 七 job（macos/firmware/host/windows/script-tests/release-guard/website）全绿 |
 | Windows 测试面 | 20 套件（N8 十五刀切分后）CI ctest 全绿 |
+| 文档引用完整性 | r99 定向核：本会话迁移/删除 6 旧指针全 clean；现行三文档 dir-ful 断链 0（唯一旗标 firmware/latest/ = 发布产物路径按设计不在库）|
 
 ## 二、拍板邀请（11 项，按解锁价值排序）
 
