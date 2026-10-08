@@ -1,0 +1,45 @@
+# VoiceStickFlash 自包含运行时的哈希锁（E4 供应链锚点）——由 prepare_flash_payload.ps1
+# 经 pip --require-hashes 消费；每行 = pip 精确版本 + 官方源文件 sha256（PyPI JSON /
+# simple 索引 #sha256 片段，2026-10-08 取）。任一哈希不匹配即拒装：镜像源
+# （VOICESTICK_PIP_INDEX_URL）只能投递**逐字节相同**的制品，无法夹带任意代码。
+# 依赖闭包：esptool(sdist) -> bitstring/cryptography/pyserial/reedsolo/PyYAML/
+# intelhex/rich-click/click 及其传递依赖（bitarray/tibs/cffi/pycparser/colorama/
+# rich/markdown-it-py/mdurl/pygments），目标 = Windows x64 + CPython 3.12。
+# 更新方式：改版本号前先在 Windows/py3.12 上重跑 pip download --dest x 与 pip hash，
+# 连同本文件一并提交（CI 的 flash payload 冒烟会真实执行整条链路）。
+esptool==5.2.0 \
+    --hash=sha256:9c355b7d6331cc92979cc710ae5c41f59830d1ea29ec24c467c6005a092c06d6
+bitstring==4.4.0 \
+    --hash=sha256:feac49524fcf3ef27e6081e86f02b10d2adf6c3773bf22fbe0e7eea9534bc737
+bitarray==3.6.0 \
+    --hash=sha256:2585824c2615c85ce90c0ecee7b085dc5e930c1a8dda1c983529f93533d8c136
+cryptography==50.0.2 \
+    --hash=sha256:7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c
+cffi==2.1.1 \
+    --hash=sha256:f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pyserial==3.5 \
+    --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0
+reedsolo==1.7.0 \
+    --hash=sha256:2b6a3e402a1ee3e1eea3f932f81e6c0b7bbc615588074dca1dbbcdeb055002bd
+PyYAML==6.0.3 \
+    --hash=sha256:5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b
+intelhex==2.3.0 \
+    --hash=sha256:87cc5225657524ec6361354be928adfd56bcf2a3dcc646c40f8f094c39c07db4
+rich-click==1.9.9 \
+    --hash=sha256:365e7a9d0adb42e41ea832a0a12e02c44c079a26536dee688125eb9814f97274
+click==8.5.0 \
+    --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360
+colorama==0.4.6 \
+    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
+rich==15.0.0 \
+    --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+markdown-it-py==4.2.0 \
+    --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+mdurl==0.1.2 \
+    --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+tibs==0.5.7 \
+    --hash=sha256:a61d36155f8ab8642e1b6744e13822f72050fc7ec4f86ec6965295afa04949e2

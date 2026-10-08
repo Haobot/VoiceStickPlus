@@ -99,6 +99,16 @@ jobs:
         run: cmake --build desktop/windows/build-x64
       - name: ctest
         run: ctest --test-dir desktop/windows/build-x64 --output-on-failure
+      # E4：flash payload 供应链锁的真实执行验证——哈希锁定 pip 闭包 + embed zip 校验
+      # 在 Windows/py3.12 上端到端跑通（幂等跳过外的每次 CI 都重建），任何哈希/
+      # 依赖/参数错误在此暴露，而不是发布日。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Flash payload supply-chain smoke (hash-locked)
+        shell: pwsh
+        run: |
+          ./scripts/prepare_flash_payload.ps1 -OutputDir (Join-Path $env:RUNNER_TEMP 'flash_payload_ci')
 
   script-tests:
     name: Script unit tests
