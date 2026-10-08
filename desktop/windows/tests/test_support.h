@@ -1086,7 +1086,7 @@ public:
     bool cancel_called = false;
 };
 
-// N8 cut14 helper: IMA golden vector builder (used outside the span).
+// N8 cut14 helper: IMA golden vector builder
 // 测试本地 IMA 编码器（公开标准算法的独立实现）：输出编码字节与编码器内部
 // predictor 轨迹（即标准解码的期望输出），用于与解码器逐样本对拍。
 struct ImaGoldenVector {
@@ -1148,32 +1148,32 @@ inline ImaGoldenVector ImaEncodeForTest(const std::vector<std::int16_t>& pcm) {
     return out;
 }
 
-// N8 cut14 helper: BuildStateJsonFrame
-inline std::vector<std::uint8_t> BuildStateJsonFrame(const std::string& json) {
-    std::vector<std::uint8_t> frame{0x01, 0x10,
-                                    static_cast<std::uint8_t>(json.size() & 0xFF),
-                                    static_cast<std::uint8_t>((json.size() >> 8) & 0xFF)};
-    frame.insert(frame.end(), json.begin(), json.end());
-    return frame;
-}
-
-// N8 cut14 helper: Base64EncodeForTest
-inline std::string Base64EncodeForTest(const std::vector<std::uint8_t>& data) {
-    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    for (std::size_t i = 0; i < data.size(); i += 3) {
-        const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16) |
-                                (i + 1 < data.size() ? static_cast<std::uint32_t>(data[i + 1]) << 8 : 0) |
-                                (i + 2 < data.size() ? static_cast<std::uint32_t>(data[i + 2]) : 0);
-        out.push_back(kTable[(n >> 18) & 0x3F]);
-        out.push_back(kTable[(n >> 12) & 0x3F]);
-        out.push_back(i + 1 < data.size() ? kTable[(n >> 6) & 0x3F] : '=');
-        out.push_back(i + 2 < data.size() ? kTable[n & 0x3F] : '=');
+// N8 cut14 helper: TestSha256Hex is a hash helper despite its Test prefix.
+// 测试内独立 SHA-256：与被测实现各算各的，避免自证。
+inline std::string TestSha256Hex(std::string_view data) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+        std::fprintf(stderr, "TestSha256Hex: BCryptOpenAlgorithmProvider failed\n");
+        std::abort();
     }
-    return out;
+    std::uint8_t digest[32] = {};
+    const NTSTATUS status =
+        BCryptHash(algorithm, nullptr, 0,
+                   reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+                   static_cast<ULONG>(data.size()), digest, sizeof(digest));
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (status != 0) {
+        std::fprintf(stderr, "TestSha256Hex: BCryptHash failed\n");
+        std::abort();
+    }
+    char hex[65] = {};
+    for (std::size_t i = 0; i < sizeof(digest); ++i) {
+        snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    }
+    return hex;
 }
 
-// N8 cut14 helper: BuildPowerLogEntry
+// N8 cut14 helper block (orig 2758)
 // ---- 电池电压监测：power_log 解析与增量累积 ----
 
 inline std::vector<std::uint8_t> BuildPowerLogEntry(std::uint32_t uptime_s, std::uint16_t vbat_mv,
@@ -1195,7 +1195,58 @@ inline std::vector<std::uint8_t> BuildPowerLogEntry(std::uint32_t uptime_s, std:
     };
 }
 
-// N8 cut14 helper: ReadMonoPcm16Wav
+
+// N8 cut14 helper block (orig 2779)
+inline std::string Base64EncodeForTest(const std::vector<std::uint8_t>& data) {
+    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < data.size(); i += 3) {
+        const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16) |
+                                (i + 1 < data.size() ? static_cast<std::uint32_t>(data[i + 1]) << 8 : 0) |
+                                (i + 2 < data.size() ? static_cast<std::uint32_t>(data[i + 2]) : 0);
+        out.push_back(kTable[(n >> 18) & 0x3F]);
+        out.push_back(kTable[(n >> 12) & 0x3F]);
+        out.push_back(i + 1 < data.size() ? kTable[(n >> 6) & 0x3F] : '=');
+        out.push_back(i + 2 < data.size() ? kTable[n & 0x3F] : '=');
+    }
+    return out;
+}
+
+
+// N8 cut14 helper block (orig 2794)
+inline std::vector<std::uint8_t> BuildStateJsonFrame(const std::string& json) {
+    std::vector<std::uint8_t> frame{0x01, 0x10,
+                                    static_cast<std::uint8_t>(json.size() & 0xFF),
+                                    static_cast<std::uint8_t>((json.size() >> 8) & 0xFF)};
+    frame.insert(frame.end(), json.begin(), json.end());
+    return frame;
+}
+
+
+// N8 cut14 helper block (orig 2957)
+// ---------- LocalAsrClient（本机麦克风模式迭代一：SenseVoice 离线识别） ----------
+
+// 探测 SenseVoice 模型目录：环境变量 VOICESTICK_SENSEVOICE_DIR 优先，
+// 否则按测试 exe 位置（build-x64）回推仓库根下的 m0/models。
+inline static std::filesystem::path DetectSenseVoiceDir() {
+    if (const char* env = std::getenv("VOICESTICK_SENSEVOICE_DIR"); env && *env) {
+        return std::filesystem::path(env);
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* rel : {"../../../m0/models", "../../../../m0/models"}) {
+        auto dir = fs::weakly_canonical(fs::path(rel) /
+            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17", ec);
+        if (!ec && fs::exists(dir / "model.int8.onnx", ec) &&
+            fs::exists(dir / "tokens.txt", ec)) {
+            return dir;
+        }
+    }
+    return {};
+}
+
+
+// N8 cut14 helper block (orig 2978)
 // 读 16 kHz 单声道 PCM16 wav 的 data 段（RIFF 解析，非 PCM16/mono 直接失败）。
 inline static bool ReadMonoPcm16Wav(const std::filesystem::path& path,
                              std::vector<std::int16_t>& pcm) {
@@ -1234,36 +1285,8 @@ inline static bool ReadMonoPcm16Wav(const std::filesystem::path& path,
     return false;
 }
 
-// N8 cut14 helper: DetectSenseVoiceDir
-// ---------- LocalAsrClient（本机麦克风模式迭代一：SenseVoice 离线识别） ----------
 
-// 探测 SenseVoice 模型目录：环境变量 VOICESTICK_SENSEVOICE_DIR 优先，
-// 否则按测试 exe 位置（build-x64）回推仓库根下的 m0/models。
-inline static std::filesystem::path DetectSenseVoiceDir() {
-    if (const char* env = std::getenv("VOICESTICK_SENSEVOICE_DIR"); env && *env) {
-        return std::filesystem::path(env);
-    }
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    for (const char* rel : {"../../../m0/models", "../../../../m0/models"}) {
-        auto dir = fs::weakly_canonical(fs::path(rel) /
-            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17", ec);
-        if (!ec && fs::exists(dir / "model.int8.onnx", ec) &&
-            fs::exists(dir / "tokens.txt", ec)) {
-            return dir;
-        }
-    }
-    return {};
-}
-
-// N8 cut14 helper: SamplesFromFakeText
-// 从 "n=<样本数>" 假引擎文本取样本数。
-inline static size_t SamplesFromFakeText(const std::string& text) {
-    assert(text.size() > 2 && text.substr(0, 2) == "n=");
-    return static_cast<size_t>(std::stoull(text.substr(2)));
-}
-
-// N8 cut14 helper: EncodeSilenceFrames
+// N8 cut14 helper block (orig 4505)
 // 追加 frame_count 个 40ms 静音帧并返回新增 Ogg 页字节（编码器/复用器状态跨调用
 // 保留，复现协调器逐帧送流的形态）。
 inline static ByteVector EncodeSilenceFrames(AudioOpusEncoder& encoder, OggOpusMuxer& muxer,
@@ -1282,16 +1305,46 @@ inline static ByteVector EncodeSilenceFrames(AudioOpusEncoder& encoder, OggOpusM
     return out;
 }
 
-// N8 cut14 helper: VaultBytesOf
-inline std::vector<BYTE> VaultBytesOf(const std::wstring& text) {
-    // 含 NUL 终止符：剪贴板 CF_UNICODETEXT 数据系统按终止符结尾规范化，
-    // 布置与读回的字节口径必须一致（都含终止符）。
-    return std::vector<BYTE>(
-        reinterpret_cast<const BYTE*>(text.c_str()),
-        reinterpret_cast<const BYTE*>(text.c_str()) + (text.size() + 1) * sizeof(wchar_t));
+
+// N8 cut14 helper block (orig 4561)
+// 从 "n=<样本数>" 假引擎文本取样本数。
+inline static size_t SamplesFromFakeText(const std::string& text) {
+    assert(text.size() > 2 && text.substr(0, 2) == "n=");
+    return static_cast<size_t>(std::stoull(text.substr(2)));
 }
 
-// N8 cut14 helper: VaultGetBytes
+
+// N8 cut14 helper block (orig 4973)
+// OpenClipboard 对其他进程的瞬时占用（剪贴板监听器/IME 等）会短暂失败，
+// Win32 官方建议重试。带重试的打开：最多 ~500ms，仍失败返回 false。
+inline bool VaultOpenClipboardWithRetry() {
+    for (int attempt = 0; attempt < 25; ++attempt) {
+        if (OpenClipboard(nullptr)) return true;
+        Sleep(20);
+    }
+    return false;
+}
+
+
+// N8 cut14 helper block (orig 4983)
+// 一次打开写入多个 HGLOBAL 格式（布置“用户剪贴板”内容；EmptyClipboard 清场）。
+inline void VaultSetClipboard(const std::vector<std::pair<UINT, std::vector<BYTE>>>& items) {
+    assert(VaultOpenClipboardWithRetry());
+    EmptyClipboard();
+    for (const auto& item : items) {
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, item.second.size());
+        assert(memory != nullptr);
+        void* ptr = GlobalLock(memory);
+        assert(ptr != nullptr);
+        memcpy(ptr, item.second.data(), item.second.size());
+        GlobalUnlock(memory);
+        assert(SetClipboardData(item.first, memory));
+    }
+    CloseClipboard();
+}
+
+
+// N8 cut14 helper block (orig 4999)
 // 读回单个格式的字节（GetClipboardData 须在剪贴板打开态，返回前拷出）。
 inline std::vector<BYTE> VaultGetBytes(UINT format) {
     std::vector<BYTE> out;
@@ -1310,24 +1363,55 @@ inline std::vector<BYTE> VaultGetBytes(UINT format) {
     return out;
 }
 
-// N8 cut14 helper: VaultSetClipboard
-// 一次打开写入多个 HGLOBAL 格式（布置“用户剪贴板”内容；EmptyClipboard 清场）。
-inline void VaultSetClipboard(const std::vector<std::pair<UINT, std::vector<BYTE>>>& items) {
-    assert(VaultOpenClipboardWithRetry());
-    EmptyClipboard();
-    for (const auto& item : items) {
-        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, item.second.size());
-        assert(memory != nullptr);
-        void* ptr = GlobalLock(memory);
-        assert(ptr != nullptr);
-        memcpy(ptr, item.second.data(), item.second.size());
-        GlobalUnlock(memory);
-        assert(SetClipboardData(item.first, memory));
-    }
-    CloseClipboard();
+
+// N8 cut14 helper block (orig 5017)
+inline std::vector<BYTE> VaultBytesOf(const std::wstring& text) {
+    // 含 NUL 终止符：剪贴板 CF_UNICODETEXT 数据系统按终止符结尾规范化，
+    // 布置与读回的字节口径必须一致（都含终止符）。
+    return std::vector<BYTE>(
+        reinterpret_cast<const BYTE*>(text.c_str()),
+        reinterpret_cast<const BYTE*>(text.c_str()) + (text.size() + 1) * sizeof(wchar_t));
 }
 
-// N8 cut14 helper: AbortIfFailed
+
+// N8 cut14 helper block (orig 5189)
+inline ModelFileSpec MakeSpecFromBody(const std::string& body, std::vector<std::string> urls) {
+    ModelFileSpec spec;
+    spec.rel_path = "test/file.bin";
+    spec.bytes = body.size();
+    spec.sha256 = TestSha256Hex(body);
+    spec.urls = std::move(urls);
+    return spec;
+}
+
+
+// N8 cut14 helper block (orig 5371)
+inline std::filesystem::path MakeTempDir(const char* name) {
+    static std::atomic<int> counter{0};
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("voicestick_model_dl_" + std::to_string(counter.fetch_add(1)) + "_" + name);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+
+// N8 cut14 helper block (orig 5380)
+inline std::string ReadFileBytes(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+}
+
+
+// N8 cut14 helper block (orig 5386)
+inline void WriteFileBytes(const std::filesystem::path& path, const std::string& data) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(data.data(), static_cast<std::streamsize>(data.size()));
+}
+
+
+// N8 cut14 helper block (orig 5391)
 // 失败即终止：保持「测试失败 = 进程异常终止」语义，exit code 层面可见
 //（NDEBUG 下 assert 结构性失效的教训，见 Doc/Expe 五坑文档坑 1）。
 inline void AbortIfFailed(int failed, const char* test_name) {
@@ -1338,35 +1422,150 @@ inline void AbortIfFailed(int failed, const char* test_name) {
     std::printf(">> %s OK\n", test_name);
 }
 
-// N8 cut14 helper: WriteFileBytes
-inline void WriteFileBytes(const std::filesystem::path& path, const std::string& data) {
-    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-    stream.write(data.data(), static_cast<std::streamsize>(data.size()));
+
+// N8 cut14 helper block (orig 6187)
+// ===== 跨端契约 fixtures（tests/contract，规格 Doc/Ref/protocol.md）=====
+// 黄金字节由 tests/contract/generate_fixtures.py 独立构造（不从实现反推）；本测试
+// 用 Windows 解析器/构建器对拍期望。键序不构成契约，control 组比对对象语义；
+// expect 只取两端公共字段（单端缺口清单见 tests/contract/README.md）。
+
+inline static std::vector<std::uint8_t> ContractUnhex(const std::string& hex) {
+    auto nib = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::vector<std::uint8_t> out;
+    out.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size();) {
+        if (std::isspace(static_cast<unsigned char>(hex[i]))) { ++i; continue; }
+        if (i + 1 >= hex.size()) return {};
+        const int hi = nib(hex[i]);
+        const int lo = nib(hex[i + 1]);
+        if (hi < 0 || lo < 0) return {};
+        out.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+        i += 2;
+    }
+    return out;
 }
 
-// N8 cut14 helper: ReadFileBytes
-inline std::string ReadFileBytes(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(stream)),
-                       std::istreambuf_iterator<char>());
+
+// N8 cut14 helper block (orig 6213)
+inline static std::string ContractHexStr(const std::vector<std::uint8_t>& bytes) {
+    static const char* kDigits = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (const auto b : bytes) {
+        out.push_back(kDigits[b >> 4]);
+        out.push_back(kDigits[b & 0x0F]);
+    }
+    return out;
 }
 
-// N8 cut14 helper: MakeTempDir
-inline std::filesystem::path MakeTempDir(const char* name) {
-    static std::atomic<int> counter{0};
-    const auto dir = std::filesystem::temp_directory_path() /
-                     ("voicestick_model_dl_" + std::to_string(counter.fetch_add(1)) + "_" + name);
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    return dir;
+
+// N8 cut14 helper block (orig 6224)
+inline static std::string ContractJsonStr(const cJSON* item) {
+    return (item && item->valuestring) ? item->valuestring : std::string();
 }
 
-// N8 cut14 helper: MakeSpecFromBody
-inline ModelFileSpec MakeSpecFromBody(const std::string& body, std::vector<std::string> urls) {
-    ModelFileSpec spec;
-    spec.rel_path = "test/file.bin";
-    spec.bytes = body.size();
-    spec.sha256 = TestSha256Hex(body);
-    spec.urls = std::move(urls);
-    return spec;
+
+// N8 cut14 helper block (orig 6228)
+inline static std::uint32_t ContractJsonU32(const cJSON* item) {
+    return item ? static_cast<std::uint32_t>(item->valuedouble) : 0;
+}
+
+
+// N8 cut14 helper block (orig 6232)
+// control 构建器分发（args → 本端 payload）。两端缺一边的构建器不入公共样本。
+inline static std::optional<ByteVector> ContractBuildControl(const std::string& kind,
+                                                      const cJSON* args) {
+    auto s = [&](const char* k) {
+        return ContractJsonStr(cJSON_GetObjectItemCaseSensitive(args, k));
+    };
+    if (kind == "ui_state") {
+        return BleProtocol::UiStatePayload(s("state"), s("text"));
+    }
+    if (kind == "interaction_mode") {
+        return BleProtocol::InteractionModePayload(s("mode"));
+    }
+    if (kind == "show_imu_debug") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::ShowImuDebugPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "imu_wake_sensitivity") {
+        return BleProtocol::ImuWakeSensitivityPayload(
+            cJSON_GetObjectItemCaseSensitive(args, "threshold")->valueint);
+    }
+    if (kind == "tap_enabled") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::TapEnabledPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "tap_sensitivity") {
+        return BleProtocol::TapSensitivityPayload(
+            cJSON_GetObjectItemCaseSensitive(args, "level")->valueint);
+    }
+    if (kind == "encoder_led_color") {
+        return BleProtocol::EncoderLedColorPayload(s("color"));
+    }
+    if (kind == "encoder_recording_gate") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::EncoderRecordingGatePayload(cJSON_IsTrue(v));
+    }
+    if (kind == "gateway_keymap_set") {
+        return BleProtocol::GatewayKeymapSetPayload(s("key"), s("route") == "software");
+    }
+    if (kind == "gateway_target_info") {
+        return BleProtocol::GatewayTargetInfoPayload(s("name"));
+    }
+    if (kind == "air_mouse_enabled") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::AirMouseEnabledPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "usb_auto_off") {
+        const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        return BleProtocol::UsbAutoOffPayload(cJSON_IsTrue(v));
+    }
+    if (kind == "battery_status_request") {
+        return BleProtocol::BatteryStatusRequestPayload();
+    }
+    if (kind == "remote_button") {
+        return BleProtocol::RemoteButtonPayload(
+            s("action"), s("button"), s("source"),
+            ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, "request_id")));
+    }
+    if (kind == "power_log_dump") {
+        return BleProtocol::PowerLogDumpPayload(
+            ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, "offset")),
+            ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, "max")));
+    }
+    if (kind == "power_log_clear") {
+        return BleProtocol::PowerLogClearPayload();
+    }
+    return std::nullopt;
+}
+
+
+// N8 cut14 helper block (orig 6300)
+inline static std::optional<ByteVector> ContractBuildOtaControl(const std::string& kind,
+                                                         const cJSON* args) {
+    auto u32 = [&](const char* k) {
+        return ContractJsonU32(cJSON_GetObjectItemCaseSensitive(args, k));
+    };
+    if (kind == "ota_begin") {
+        return BleProtocol::OtaBeginPayload(u32("image_size"), u32("transfer_id"));
+    }
+    if (kind == "ota_data") {
+        const auto chunk = ContractUnhex(ContractJsonStr(
+            cJSON_GetObjectItemCaseSensitive(args, "chunk_hex")));
+        if (chunk.empty()) return std::nullopt;
+        return BleProtocol::OtaDataPayload(u32("transfer_id"), u32("offset"), chunk);
+    }
+    if (kind == "ota_end") {
+        return BleProtocol::OtaEndPayload(u32("transfer_id"), u32("image_size"));
+    }
+    if (kind == "ota_abort") {
+        return BleProtocol::OtaAbortPayload(u32("transfer_id"));
+    }
+    return std::nullopt;
 }
