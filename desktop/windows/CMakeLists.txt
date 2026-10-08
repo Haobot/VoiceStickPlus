@@ -291,6 +291,8 @@ endif()
 add_executable(VoiceStickApp WIN32
     src/main.cc
     src/win32_app.cc
+    # N7 cut3: 设备偏好/覆盖层/托盘域方法拆出（同 VoiceStickApp target；共享助手在 win32_app_util.h）
+    src/win32_app_prefs.cc
     src/asr_client_win.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
