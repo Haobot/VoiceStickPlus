@@ -18,6 +18,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | CI | 七 job（macos/firmware/host/windows/script-tests/release-guard/website）全绿 |
 | Windows 测试面 | 20 套件（N8 十五刀切分后）CI ctest 全绿 |
 | 文档引用完整性 | r99 定向核：本会话迁移/删除 6 旧指针全 clean；现行三文档 dir-ful 断链 0（唯一旗标 firmware/latest/ = 发布产物路径按设计不在库）|
+| 提交范围 | r101 近 12 提交逐个核：触达文件与信息主张一一对应，零越界零漏提（docs 类仅 Doc/Plan、feat/fix 类为 main.c+台账配对）|
 
 ## 二、拍板邀请（11 项，按解锁价值排序）
 
