@@ -259,6 +259,48 @@ static void test_session_start_gets_caps(void) {
     CHECK(n == 0, "重复 Start 返回 0");
 }
 
+// A1 回归：ERROR 不再是死端——冷却到期由 tick 自动重发 GET_CAPS。原实现 control
+// 全丢弃 + start 只认 IDLE + tick 无 ERROR 分支 → 一次 CAPS 失败即本连接内永久静默。
+static void test_session_error_cooldown_retry(void) {
+    printf("[用例] 会话：ERROR 冷却后自动重试（A1）\n");
+    session_setup();
+    gateway_atvv_session_start(&g_s, 100, g_acts, GATEWAY_ATVV_MAX_ACTIONS);
+    size_t n = gateway_atvv_session_tick(&g_s, 100 + GATEWAY_ATVV_CAPS_TIMEOUT_MS, g_acts,
+                                         GATEWAY_ATVV_MAX_ACTIONS);
+    CHECK(g_s.state == GATEWAY_ATVV_STATE_ERROR, "CAPS 超时转 ERROR");
+    const int64_t retry_at =
+        100 + GATEWAY_ATVV_CAPS_TIMEOUT_MS + GATEWAY_ATVV_ERROR_COOLDOWN_MS;
+    CHECK(g_s.error_retry_at_ms == retry_at, "记录冷却截止");
+    const gateway_atvv_action_t *err = find_action(n, GATEWAY_ATVV_ACTION_ERROR);
+    CHECK(err != NULL && strcmp(err->error_code, "caps_timeout") == 0, "上报 caps_timeout");
+
+    // 冷却中：保持 ERROR、不产生任何动作。
+    n = gateway_atvv_session_tick(&g_s, retry_at - 1, g_acts, GATEWAY_ATVV_MAX_ACTIONS);
+    CHECK(g_s.state == GATEWAY_ATVV_STATE_ERROR && n == 0, "冷却中保持 ERROR 且无动作");
+
+    // 冷却到期：自动重发 GET_CAPS → CAPS_REQUESTED。
+    n = gateway_atvv_session_tick(&g_s, retry_at, g_acts, GATEWAY_ATVV_MAX_ACTIONS);
+    CHECK(g_s.state == GATEWAY_ATVV_STATE_CAPS_REQUESTED, "冷却到期自动重试");
+    const gateway_atvv_action_t *tx = find_action(n, GATEWAY_ATVV_ACTION_WRITE_TX);
+    CHECK(tx != NULL && tx->tx_len == 6 && tx->tx[0] == 0x0A, "重发 GET_CAPS(0x0A)");
+
+    // 重试后 CAPS 应答正常 → READY（闭环，语音恢复）。
+    uint8_t caps_ok[] = {0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78};
+    n = gateway_atvv_session_control(&g_s, caps_ok, sizeof(caps_ok), retry_at + 10, g_acts,
+                                     GATEWAY_ATVV_MAX_ACTIONS);
+    CHECK(g_s.state == GATEWAY_ATVV_STATE_READY, "重试后 CAPS 应答 → READY");
+
+    // codec 不符路径同样记录冷却（8kHz-only）。
+    session_setup();
+    gateway_atvv_session_start(&g_s, 500, g_acts, GATEWAY_ATVV_MAX_ACTIONS);
+    uint8_t caps8k[] = {0x0B, 0x01, 0x00, 0x01, 0x03, 0x00, 0x78};
+    n = gateway_atvv_session_control(&g_s, caps8k, sizeof(caps8k), 510, g_acts,
+                                     GATEWAY_ATVV_MAX_ACTIONS);
+    CHECK(g_s.state == GATEWAY_ATVV_STATE_ERROR, "8kHz 转 ERROR");
+    CHECK(g_s.error_retry_at_ms == 510 + GATEWAY_ATVV_ERROR_COOLDOWN_MS,
+          "8kHz 同样记录冷却截止");
+}
+
 static void test_session_caps_ok_and_timeout(void) {
     printf("[用例] 会话：CAPS v1.0/16kHz/120B → READY，帧长协商生效\n");
     session_setup();
@@ -555,6 +597,7 @@ int main(void) {
     test_slicer_fill_and_flush();
     test_slicer_take_remainder();
     test_session_start_gets_caps();
+    test_session_error_cooldown_retry();
     test_session_caps_ok_and_timeout();
     test_session_caps_reject_8khz();
     test_session_caps_legacy_layout();

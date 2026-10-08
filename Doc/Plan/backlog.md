@@ -25,9 +25,9 @@
 
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
-| A1 | ATVV ERROR 终局：冷却重试 + 状态上报 | open | 9-22 未复核 |
-| A2 | ATVV 发现链终局：CHRS 退避重试 + 「ATVV 不可用」上报 | open | 9-22 未复核 |
-| A3 | STREAMING 无音频看门狗（合成 PRESS_UP 收尾） | open | 9-22 未复核 |
+| A1 | ATVV ERROR 终局：冷却重试 + 状态上报 | **closed（10-08）** | 实锤三重死端：ERROR 后 `control` 全丢弃、`start` 只认 IDLE、`tick` 无 ERROR 分支 → CAPS 2s 超时/8kHz/codec 不符任一命中即**本连接内永久静默**。修复：新增 `GATEWAY_ATVV_ERROR_COOLDOWN_MS`(5s) + `error_retry_at_ms`，两处进 ERROR 时记录冷却截止；`tick` 新增 ERROR 分支——冷却到期 `begin_caps_request()`（自 `start` 抽出的公共逻辑）**自动重发 GET_CAPS**，失败再冷却再重试（限速 7s/轮）；每次失败仍产 `ACTION_ERROR` 供 `consume_actions` 记日志。回归 `test_session_error_cooldown_retry`（超时→记冷却→冷却中无动作→到期重发 0x0A→CAPS 应答恢复 READY；8kHz 路径同样记冷却） |
+| A2 | ATVV 发现链终局：CHRS 退避重试 + 「ATVV 不可用」上报 | **closed（10-08，代码层）** | 实锤：服务未发现/特征不全两处直接置 `DISC_STAGE_DONE`，而 **DONE 从不被任何逻辑读取 = 纯死端** → 本次连接内永不再发现；看门狗只轮询 SVCS/CHRS。修复：两处改为回置 `DISC_STAGE_SVCS` + 刷新 `s_disc_stage_started_ms` → **复用既有发现看门狗**按 `DISC_STAGE_TIMEOUT_MS`(4s) 整链 `start_discovery`（含句柄清零）重试；新增 `atvv_unavailable_report_due()` **60s 限频**上报「ATVV 不可用：…持续重试」（原每次尝试都打会4s刷屏）。`DISC_STAGE_DONE` 仅在握手完整成功路径设置。**真机观测项**：小米侧无 ATVV 服务时的持续重试行为待真机复核 |
+| A3 | STREAMING 无音频看门狗（合成 PRESS_UP 收尾） | open（需真机判定门槛） | 10-08 勘察：`tick` 确无 STREAMING 分支、`SESSION_IDLE_REHANDSHAKE_MS=0` 是**有意停用**（真机实证：周期性 TX 写/会话重置疑似打断小米输入推送状态机）→ 不能靠重握手自愈。可行设计=「STREAMING 中无入站 N 秒 → 合成 PRESS_UP + finalize」，但**门槛取决于遥控器开麦后是否连续推流**：若 VAD 门控，长静默会误收尾（切断真实口述）——**需真机确认推流连续性后再定 N**，否则有误伤风险 |
 | A4 | `voice_ble` 多连接表（按 conn_handle 维护 peer，替换单值） | **closed（10-08，核心）** | 新增纯 C `voice_ble/conn_table`（宿主单测 5/5 本地 `cc` 通过，含 stale 断连回归）；`voice_ble.c` CONNECT/DISCONNECT/SUBSCRIBE 按 handle 记账——断开只清本链路、**入站归零才发 peer/connection false**（stale 断连不再误清 `current_peer`）、SUBSCRIBE 表补录替代单值覆盖；镜像派生使全部发送/门控点零改动；CONN_UPDATE/MTU 按应用链路守卫；Hub 红线三条同文更新 |
 | A4b | A4 余项：**双入站广播放开**（现仍首连即停播，OS-HID+app 并存与 sdkconfig 三链路设计意图未对齐——放开涉及功耗权衡需产品决策）+ 切换器动作携带对端身份（9-22 §366 后半）+ 真机回归（入侵者连接/断开不污染切换器、双机切换 100%） | open（产品决策 + 真机） | 10-08 立项：A4 只落连接表/按 handle 语义/回调转换，广播策略未动 |
 | A6 | OTA 错误路径统一 `esp_ota_abort` + `ota_clear_state`；rollback 签到延后 | open | 9-22 未复核 |
@@ -131,6 +131,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **A1 关闭 + A2 关闭（代码层）**：A1 ERROR 死端 → 冷却5s 自动重发 GET_CAPS（抽 `begin_caps_request` 公共）；A2 发现死端 DONE → 回置 SVCS 复用看门狗4s 整链重试 + 60s 限频「ATVV 不可用」上报；A3 勘察后留真机（推流连续性未知，防误收尾） | A1 回归 `test_session_error_cooldown_retry`；本地 `run_tests.py` **7/7**；CI 七 job（固件编译覆盖 A2） |
 | 2026-10-08 | **C8b 关闭（逐子项）**：`hotword_candidates.json` 路径 4 处字面量收敛为 `HotwordCandidatesPath()` 单一出处；i18n 键集合对拍复核确认早已就位；f5 子项归 B15 | `TestHotwordCandidatesSingleWriter` 追加路径推导断言；CI 七 job（Windows ctest） |
 | 2026-10-08 | **E3 关闭**：macOS 更新链三处静默降级全部 fail-hard（占位公钥/签名失败/公证跳过），签名永不落错误文本、格式校验、公证跳过需显式放行 | 本地 `bash -n` + 抽取真实脚本块注入用例（sign 3 例 + 公证 3 例）全过；bash 脚本不经 CI，本地验证为唯一证据 |
 | 2026-10-08 | **D1 复核关闭 + D10（partial）**：D1 实测已由后续工作完成（macOS 14 case、真实接线、gateway_status 逐平台标注）；D10 Windows 半边补 `StateEvent::keymap_routes` 解析 + 协调器落日志（macOS 半边本已解析，评审陈旧），UI 回显拆 D10b | 新增 `TestGatewayKeymapReceiptParsing`（回执帧 + 非回执事件负例）；CI 七 job（Windows ctest） |

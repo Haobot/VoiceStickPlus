@@ -41,6 +41,10 @@ extern "C" {
 #define GATEWAY_ATVV_AUDIO_TAIL_GRACE_MS 150
 #define GATEWAY_ATVV_CAPS_TIMEOUT_MS 2000
 #define GATEWAY_ATVV_REOPEN_REJECT_MS 300
+// A1：ERROR（caps_timeout / unsupported_codec 等）冷却截止后由 tick 自动回 IDLE
+// 并重发 GET_CAPS——原实现 ERROR 为死端（start 只认 IDLE、control 全丢弃、tick 无
+// 分支），一次 CAPS 失败即本连接内永久静默。冷却用于限速重试、避免 4~7s 风暴。
+#define GATEWAY_ATVV_ERROR_COOLDOWN_MS 5000
 
 typedef enum {
     GATEWAY_ATVV_STATE_IDLE = 0,
@@ -82,6 +86,7 @@ typedef struct {
     int64_t caps_requested_at_ms;
     int64_t stop_received_at_ms;
     int64_t reject_reopen_until_ms;  // 长按键程 STOP 后的重开拒绝窗截止
+    int64_t error_retry_at_ms;        // A1：ERROR 冷却截止，到点 tick 自动重试
     bool mic_open_remote;            // 遥控器侧 mic 打开未 STOP，断开需 MIC_CLOSE
     uint8_t remote_session_id;       // 0x04 byte3（可选），MIC_CLOSE 透传
     // PCM 帧输出缓冲（单帧，动作 pcm 指针指向这里）

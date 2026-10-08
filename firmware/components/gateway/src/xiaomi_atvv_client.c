@@ -175,6 +175,18 @@ static int on_cccd_dsc(uint16_t conn, const struct ble_gatt_error *error,
     return 0;
 }
 
+// A2：发现失败原因上报（60s 限频）——原先每 4s 重试会刷屏，且终态 DONE 后根本
+// 不再有重试机会（DONE 从不被任何逻辑读取 = 纯死端）。返回 true 表示此刻应打日志。
+static bool atvv_unavailable_report_due(void) {
+    static int64_t last_logged_ms = -1000000000LL;  // 首次调用即放行
+    const int64_t now = now_ms();
+    if (now - last_logged_ms < 60000) {
+        return false;
+    }
+    last_logged_ms = now;
+    return true;
+}
+
 static void write_cccd(uint16_t conn, uint16_t chr_val_handle) {
     int rc = ble_gattc_disc_all_dscs(conn, chr_val_handle + 1, chr_val_handle + 5,
                                      on_cccd_dsc, NULL);
@@ -188,8 +200,15 @@ static int on_atvv_svc(uint16_t conn, const struct ble_gatt_error *error,
     struct atvv_range *range = arg;
     if (error->status == BLE_HS_EDONE) {
         if (range->start == 0) {
-            s_disc_stage = DISC_STAGE_DONE;
-            ESP_LOGW(TAG, "小米侧未发现 ATVV 服务（语音不可用，按键不受影响）");
+            // A2：不终态 DONE——回置 SVCS 并刷新时间戳，交给发现看门狗按
+            // DISC_STAGE_TIMEOUT_MS 整链 start_discovery 重试（服务缺失后
+            // 本次连接内永不再发现的死端由此消除）。
+            s_disc_stage = DISC_STAGE_SVCS;
+            s_disc_stage_started_ms = now_ms();
+            if (atvv_unavailable_report_due()) {
+                ESP_LOGW(TAG, "ATVV 不可用：小米侧未发现服务（按键不受影响）；每 %d ms 持续重试",
+                         DISC_STAGE_TIMEOUT_MS);
+            }
             return 0;
         }
         s_disc_stage = DISC_STAGE_CHRS;
@@ -214,12 +233,17 @@ static int on_atvv_svc(uint16_t conn, const struct ble_gatt_error *error,
 static int on_atvv_chr(uint16_t conn, const struct ble_gatt_error *error,
                        const struct ble_gatt_chr *chr, void *arg) {
     if (error->status == BLE_HS_EDONE) {
-        s_disc_stage = DISC_STAGE_DONE;
         if (s_tx_handle == 0 || s_audio_handle == 0 || s_ctrl_handle == 0) {
-            ESP_LOGW(TAG, "ATVV 特征不全 tx=%u audio=%u ctrl=%u（语音不可用）",
-                     s_tx_handle, s_audio_handle, s_ctrl_handle);
+            // A2：特征不全同样回置 SVCS 持续重试（原 DONE 为死端）；60s 限频上报。
+            s_disc_stage = DISC_STAGE_SVCS;
+            s_disc_stage_started_ms = now_ms();
+            if (atvv_unavailable_report_due()) {
+                ESP_LOGW(TAG, "ATVV 不可用：特征不全 tx=%u audio=%u ctrl=%u；每 %d ms 持续重试",
+                         s_tx_handle, s_audio_handle, s_ctrl_handle, DISC_STAGE_TIMEOUT_MS);
+            }
             return 0;
         }
+        s_disc_stage = DISC_STAGE_DONE;
         write_cccd(conn, s_audio_handle);
         write_cccd(conn, s_ctrl_handle);
         // 握手启动：GET_CAPS 写 TX（caps 超时由 tick 兜底）

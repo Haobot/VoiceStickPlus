@@ -189,21 +189,28 @@ void gateway_atvv_session_reset(gateway_atvv_session_t *s) {
     gateway_pcm_slicer_init(&s->slicer);
 }
 
-size_t gateway_atvv_session_start(gateway_atvv_session_t *s, int64_t now_ms,
-                                  gateway_atvv_action_t *actions, size_t max_actions) {
-    if (s->state != GATEWAY_ATVV_STATE_IDLE) {
-        return 0;
-    }
+// A1：GET_CAPS 启动逻辑抽公共——start 与 ERROR 冷却后的自动重试共用一份。
+static void begin_caps_request(gateway_atvv_session_t *s, int64_t now_ms,
+                               gateway_atvv_action_t *actions, size_t max_actions,
+                               size_t *count) {
     s->caps_requested_at_ms = now_ms;
     s->state = GATEWAY_ATVV_STATE_CAPS_REQUESTED;
-    size_t count = 0;
-    gateway_atvv_action_t *tx = push_action(actions, max_actions, &count,
+    gateway_atvv_action_t *tx = push_action(actions, max_actions, count,
                                             GATEWAY_ATVV_ACTION_WRITE_TX);
     if (tx != NULL) {
         static const uint8_t get_caps[6] = {0x0A, 0x01, 0x00, 0x00, 0x03, 0x03};
         memcpy(tx->tx, get_caps, sizeof(get_caps));
         tx->tx_len = sizeof(get_caps);
     }
+}
+
+size_t gateway_atvv_session_start(gateway_atvv_session_t *s, int64_t now_ms,
+                                  gateway_atvv_action_t *actions, size_t max_actions) {
+    if (s->state != GATEWAY_ATVV_STATE_IDLE) {
+        return 0;
+    }
+    size_t count = 0;
+    begin_caps_request(s, now_ms, actions, max_actions, &count);
     return count;
 }
 
@@ -248,6 +255,7 @@ size_t gateway_atvv_session_control(gateway_atvv_session_t *s, const uint8_t *da
             }
             if ((caps.codecs & CODEC_16KHZ) == 0) {
                 s->state = GATEWAY_ATVV_STATE_ERROR;
+                s->error_retry_at_ms = now_ms + GATEWAY_ATVV_ERROR_COOLDOWN_MS;  // A1
                 gateway_atvv_action_t *err =
                     push_action(actions, max_actions, &count, GATEWAY_ATVV_ACTION_ERROR);
                 if (err != NULL) {
@@ -354,11 +362,20 @@ size_t gateway_atvv_session_tick(gateway_atvv_session_t *s, int64_t now_ms,
         case GATEWAY_ATVV_STATE_CAPS_REQUESTED:
             if (now_ms - s->caps_requested_at_ms >= GATEWAY_ATVV_CAPS_TIMEOUT_MS) {
                 s->state = GATEWAY_ATVV_STATE_ERROR;
+                s->error_retry_at_ms = now_ms + GATEWAY_ATVV_ERROR_COOLDOWN_MS;  // A1
                 gateway_atvv_action_t *err =
                     push_action(actions, max_actions, &count, GATEWAY_ATVV_ACTION_ERROR);
                 if (err != NULL) {
                     err->error_code = "caps_timeout";
                 }
+            }
+            break;
+        case GATEWAY_ATVV_STATE_ERROR:
+            // A1：ERROR 不再是死端——冷却到期自动重试（重发 GET_CAPS）。原实现
+            // ERROR 后 control 全丢弃、start 只认 IDLE、tick 无分支 → 一次 CAPS
+            // 失败即本连接内永久静默（CAPS 2s 超时 /8kHz / codec 不符任一命中）。
+            if (now_ms >= s->error_retry_at_ms) {
+                begin_caps_request(s, now_ms, actions, max_actions, &count);
             }
             break;
         case GATEWAY_ATVV_STATE_DRAINING:
