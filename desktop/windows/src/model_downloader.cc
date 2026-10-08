@@ -392,6 +392,16 @@ RangeVerdict InterpretRangeResponse(const RangeResponseInfo& info) {
     return RangeVerdict::kInvalid;
 }
 
+bool VerifyFileSha256(const std::filesystem::path& dest,
+                      const std::string& expected_sha256) {
+    // 同 TU 内可见匿名命名空间的 Sha256HexOfFile / ToLowerAscii。
+    if (expected_sha256.size() != 64) return false;
+    bool ok = false;
+    const std::string digest = Sha256HexOfFile(dest, ok);
+    if (!ok || digest.size() != 64) return false;
+    return digest == ToLowerAscii(expected_sha256);
+}
+
 DownloadResult FinalizePartFile(const std::filesystem::path& dest,
                                 const std::string& expected_sha256) {
     std::filesystem::path part = dest;

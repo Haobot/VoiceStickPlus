@@ -91,6 +91,12 @@ DownloadResult FinalizePartFile(const std::filesystem::path& dest,
 // 向导磁盘预检：文件期望体积合计。
 std::uint64_t RequiredDiskBytes(const std::vector<ModelFileSpec>& files);
 
+// C5：整文件流式 SHA-256 与期望值比对（大小写不敏感；读/哈希失败一律 false）。
+// 模型在位判定必须用它而非仅比尺寸——同尺寸损坏或被替换的文件仅比尺寸会被静默接受。
+// 整文件哈希较贵，调用方须在后台线程执行。
+bool VerifyFileSha256(const std::filesystem::path& dest,
+                      const std::string& expected_sha256);
+
 class ModelDownloader {
  public:
     // 多源顺序下载单文件到 dest（先写 <dest>.part，逐源回退）。progress 每块

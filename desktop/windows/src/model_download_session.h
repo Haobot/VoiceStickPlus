@@ -56,6 +56,12 @@ std::filesystem::path LocalModelCacheModelsDir();
 std::vector<ModelDownloadItem> BuildModelDownloadItems(
     const std::filesystem::path& models_dir, bool include_refine);
 
+// C5：模型文件「在位」判定 = 存在 + 尺寸相符 + SHA-256 相符三者齐全。
+// 只比尺寸会把同尺寸损坏/被替换的文件当在位而静默跳过重下，问题拖到运行期才暴露。
+// 整文件哈希较贵，必须在后台线程调用（会话 Run() 即工作线程）。
+bool ModelFilePresentAndVerified(const std::filesystem::path& dest,
+                                 const ModelFileSpec& spec);
+
 class ModelDownloadSession {
  public:
     // items：BuildModelDownloadItems 产物（selected 已按用户勾选置位）。

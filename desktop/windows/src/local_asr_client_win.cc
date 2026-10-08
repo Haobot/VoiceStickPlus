@@ -280,6 +280,10 @@ LocalAsrClient::LocalAsrClient(std::string models_dir, int num_threads,
     impl_->client = this;
 }
 
+// C5：此处只查存在性，**不**做整文件哈希——本函数同时用于 LocalAsrClient::Start
+//（音频启动路径）与设置页状态刷新（UI 线程），整文件哈希会冻结两者。完整性的权威
+// 判定在模型下载会话（ModelFilePresentAndVerified，后台线程）：在位必须过 SHA-256，
+// 校验不过即重下修复。
 std::optional<std::string> ValidateSenseVoiceModelsDir(const std::string& models_dir) {
     namespace fs = std::filesystem;
     const fs::path model = fs::path(models_dir) / "model.int8.onnx";

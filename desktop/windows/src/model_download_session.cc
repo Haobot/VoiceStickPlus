@@ -46,6 +46,16 @@ std::vector<ModelDownloadItem> BuildModelDownloadItems(
     return items;
 }
 
+bool ModelFilePresentAndVerified(const std::filesystem::path& dest,
+                                 const ModelFileSpec& spec) {
+    std::error_code ec;
+    if (!std::filesystem::exists(dest, ec) || ec) return false;
+    const auto size = std::filesystem::file_size(dest, ec);
+    if (ec || size != spec.bytes) return false;
+    // 尺寸已相符仍须哈希：同尺寸损坏/替换文件仅凭尺寸会被静默接受（C5）。
+    return VerifyFileSha256(dest, spec.sha256);
+}
+
 ModelDownloadSession::ModelDownloadSession(
     std::vector<ModelDownloadItem> items, ModelDownloader* downloader,
     const ModelSessionProgressFn& progress,
@@ -73,6 +83,15 @@ ModelDownloadSummary ModelDownloadSession::Run() {
             summary.cancelled = true;
             if (item.kind == ModelKind::kAsr) asr_all_ok = false;
             break;
+        }
+        // C5：在位判定走「存在 + 尺寸 + SHA-256」，哈希在本工作线程做不阻塞 UI。
+        // 判不在位（含同尺寸损坏/被替换）即落入下方正常下载，由 .part 哈希校验
+        // + 原子改名收尾，损坏文件被覆盖修复。
+        if (ModelFilePresentAndVerified(item.dest, item.spec)) {
+            done += item.spec.bytes;
+            if (item.kind == ModelKind::kRefine) summary.refine_ok = true;
+            Log("MDL", "present and hash-verified, skip: " + item.spec.rel_path);
+            continue;
         }
         std::error_code ec;
         std::filesystem::create_directories(item.dest.parent_path(), ec);

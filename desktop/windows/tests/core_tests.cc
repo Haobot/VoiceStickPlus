@@ -15106,6 +15106,44 @@ void TestBundledModelManifestWellFormed() {
     AbortIfFailed(failed, "TestBundledModelManifestWellFormed");
 }
 
+void TestModelFilePresentAndVerified() {
+    namespace fs = std::filesystem;
+    // C5：在位判定 = 存在 + 尺寸 + SHA-256 三者齐全；同尺寸损坏/被替换文件必须判不在位。
+    const auto dir = fs::temp_directory_path() / "voicestick_c5_present_test";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const auto file = dir / "sample.bin";
+    const std::string hello_sha =
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";  // "hello"
+    {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << "hello";
+    }
+
+    ModelFileSpec spec;
+    spec.bytes = 5;
+    spec.sha256 = hello_sha;
+    assert(VerifyFileSha256(file, hello_sha));                // 底层包装直接可用
+    assert(ModelFilePresentAndVerified(file, spec));           // 三者齐全 → 在位
+
+    spec.sha256 = "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824";
+    assert(ModelFilePresentAndVerified(file, spec));           // 大小写不敏感
+
+    spec.sha256 = std::string(64, '0');                        // 同尺寸但内容不同
+    assert(!ModelFilePresentAndVerified(file, spec));          // 核心回归：不得静默接受
+
+    spec.sha256 = hello_sha;
+    spec.bytes = 6;                                            // 尺寸不符
+    assert(!ModelFilePresentAndVerified(file, spec));
+
+    spec.bytes = 5;
+    assert(!ModelFilePresentAndVerified(dir / "missing.bin", spec));  // 不存在
+    spec.sha256 = "abc";                                             // 非法哈希长度
+    assert(!ModelFilePresentAndVerified(file, spec));
+
+    fs::remove_all(dir, ec);
+}
+
 void TestModelDownloaderPureFunctions() {
     int failed = 0;
 
@@ -16540,6 +16578,8 @@ int main() {
     TestEsptoolProgressParser();
     TestFlashToolFlow();
     TestBundledModelManifestWellFormed();
+    printf(">> cluster: C5 model present sha256 verify\n"); fflush(stdout);
+    TestModelFilePresentAndVerified();
     TestModelDownloaderPureFunctions();
     TestFinalizePartFile();
     TestModelDownloaderLoopback();

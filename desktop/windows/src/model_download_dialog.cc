@@ -112,21 +112,10 @@ void ModelDownloadDialog::StartDownload() {
         refine_check_ && SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const auto models_dir = LocalModelCacheModelsDir();
     std::vector<ModelDownloadItem> items = BuildModelDownloadItems(models_dir, true);
-    // 已在位（大小相符）的文件跳过：重下既浪费带宽也无意义，完整性由设置页
-    // 状态检查与加载校验把关。
-    std::error_code ec;
-    items.erase(std::remove_if(items.begin(), items.end(),
-                               [&](const ModelDownloadItem& item) {
-                                   if (std::filesystem::exists(item.dest, ec) &&
-                                       std::filesystem::file_size(item.dest, ec) ==
-                                           item.spec.bytes) {
-                                       Log("MDL", "already present, skip: " +
-                                                      item.spec.rel_path);
-                                       return true;
-                                   }
-                                   return false;
-                               }),
-                items.end());
+    // C5：删除此处「大小相符即跳过」的 UI 线程预筛——它会把同尺寸损坏/被替换的文件
+    // 当在位而静默跳过重下，问题拖到运行期才暴露。在位判定（存在 + 尺寸 + SHA-256）
+    // 下沉到会话工作线程（ModelFilePresentAndVerified）：哈希校验通过才跳过，否则走
+    // 下载修复；整文件哈希也不再占用 UI 线程。
     if (!include_refine) {
         for (auto& item : items) {
             if (item.kind == ModelKind::kRefine) item.selected = false;
