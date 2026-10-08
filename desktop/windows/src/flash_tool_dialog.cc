@@ -602,6 +602,17 @@ void FlashToolDialog::OnBrowseFirmware() {
     }
 }
 
+// B1：工作线程上下文——worker 只经 ctx 持有的共享引用触碰烧录对象，与对话框生命周期
+// 彻底解耦。原实现直接解引用 this 与对话框独占成员（unique_ptr flash_tool_/runner_），
+// 关窗/析构 5s 有界等待超时（esptool 子进程卡死）后对话框释放而 worker 仍在 Run()
+// → use-after-free（9-22 评审 B1）。事件回传只用 hwnd 值（PostMessage 到已销毁窗口
+// =失败即弃），无悬垂指针。
+struct FlashThreadCtx {
+    HWND hwnd;
+    std::shared_ptr<FlashTool> tool;
+    std::shared_ptr<IFlashProcessRunner> runner;
+};
+
 void FlashToolDialog::OnFlash() {
     const auto lang = EffectiveUiLanguage(UiLanguage::kSystem);
     const bool zh = (lang == UiLanguage::kSimplifiedChinese);
@@ -702,17 +713,6 @@ void FlashToolDialog::OnFlash() {
         ResetFlashState();
     }
 }
-
-// B1：工作线程上下文——worker 只经 ctx 持有的共享引用触碰烧录对象，与对话框生命周期
-// 彻底解耦。原实现直接解引用 this 与对话框独占成员（unique_ptr flash_tool_/runner_），
-// 关窗/析构 5s 有界等待超时（esptool 子进程卡死）后对话框释放而 worker 仍在 Run()
-// → use-after-free（9-22 评审 B1）。事件回传只用 hwnd 值（PostMessage 到已销毁窗口
-// =失败即弃），无悬垂指针。
-struct FlashThreadCtx {
-    HWND hwnd;
-    std::shared_ptr<FlashTool> tool;
-    std::shared_ptr<IFlashProcessRunner> runner;
-};
 
 DWORD WINAPI FlashToolDialog::FlashThreadProc(void* param) {
     std::unique_ptr<FlashThreadCtx> ctx(static_cast<FlashThreadCtx*>(param));
