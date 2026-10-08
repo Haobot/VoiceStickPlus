@@ -469,6 +469,10 @@ target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp b
 # golden fixtures（ATVV 采集）相对仓库根解析，不依赖测试进程工作目录
 target_compile_definitions(voicestick_windows_tests PRIVATE
     VOICESTICK_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
+# E7：测试目标无论何种构建配置都保留 assert()——RelWithDebInfo/Release 的 NDEBUG
+# 会把 assert 编译成空操作，本地跑出「假绿」（评审 E7）。-UNDEBUG 追加在配置
+# 标志之后，cl 按顺序解析 → 宏被撤销；CI 用 Debug 本就无 NDEBUG，此标志无副作用。
+target_compile_options(voicestick_windows_tests PRIVATE -UNDEBUG)
 
 enable_testing()
 add_test(NAME voicestick_windows_tests COMMAND voicestick_windows_tests)
@@ -481,6 +485,8 @@ add_executable(voicestick_integration_tests
     src/asr_client_win.cc
 )
 target_link_libraries(voicestick_integration_tests PRIVATE voicestick_core winhttp bcrypt)
+# E7：同 voicestick_windows_tests——任何配置下断言必须真实生效。
+target_compile_options(voicestick_integration_tests PRIVATE -UNDEBUG)
 add_test(NAME voicestick_integration_tests COMMAND voicestick_integration_tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set_tests_properties(voicestick_integration_tests PROPERTIES SKIP_RETURN_CODE 77)
