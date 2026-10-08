@@ -87,7 +87,8 @@
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
 | D1 | macOS 消费 device_info 以外能力帧（battery/encoder/gateway/power…） | open | 9-22 未复核 |
-| D3 | macOS 订阅错误处理/活性兜底/重订阅 | open | 9-22 未复核；「显示已连接但语音静默失效」在 macOS 不可观测 |
+| D3 | macOS 订阅错误处理/活性兜底/重订阅 | **partial（10-08）** | 实锤：`didUpdateNotificationStateFor` 开头 `guard xiaomiContexts` 把 **StickS3 三特征（state/audio/otaState）的订阅结果整个吞掉**（代码注释甚至自认「沿用现状不检查」）→ 订阅失败/设备侧清 CCCD **零日志零重订阅**，「显示已连接但语音静默失效」不可观测。已落：StickS3 分支前置处理（成功复位/失败记日志）+ **逐特征有限退避重订阅**（3 次 ×0.5s）+ 超限断开重建（对齐 Windows fail 语义）+ 全局/逐外设清理点同步。**主动心跳活性兜底未做 → D3b**（需对齐 Windows 心跳/僵尸判定语义，防无心跳空闲态误判重连）。本地 `swift build` + `PASSED 650/650` |
+| D3b | macOS 入站**心跳活性兜底**（僵尸连接判定） | open（需对齐 Windows 语义） | 10-08 从 D3 拆出：D3 已覆盖「订阅状态变化」可恢复场景；但**无入站数据**的静默失效（CCCD 仍 on）无法感知。实现须复用 Windows 口径（心跳 5s 周期 + `kHeartbeatStaleMs=15000` + 连接期活性证明），并防「空闲无心跳」误判重连——先读固件 state_tx 心跳语义再动 |
 | D6 | OTA 分块下限 `max(20,…)` 突破帧头预算（MTU 20 必 bad_offset） | **closed（10-08）** | 两端同病：`max(20, min(maxWrite-帧头, 244))` 的**下限 20 覆盖了正确的小值**——MTU 未协商（macOS `maxWrite=20`/Windows `MaxPduSize=20`）时算出 20B chunk，包长 32B/35B 超可写上限 → 固件必 `bad_offset`。收敛为协议层纯函数：macOS `BleProtocol.otaChunkSize(maxWrite:)`（= maxWrite−12，放不下返回 0）、Windows `BleProtocol::OtaChunkSizeForPdu`（= max_pdu−15 含3B ATT，≤15 返回 0），调用方对 0 **报错终止**（macOS `attMtuTooSmall` 新错误 case、Windows `FinishFirmwareUpdate`）而非硬发。两端各带单测（macOS `runOtaFlowControlTests` 追加5断言+包长自检；Windows `TestOtaChunkSizeForPdu` 含预算自检） |
 | D7 | 固件 `ota_abort` transfer_id 不匹配时清状态且不 abort | **closed（10-08）** | 缺陷实锤：id 不匹配时跳过 `esp_ota_abort` 却**照旧** `ota_clear_state()` + 发 `{event:aborted}` + ABORT 回调 → 进行中的传输被悄悄废掉、`esp_ota_handle` 泄漏、桌面端拿假 aborted 误判已中止（空闲时也发假 aborted）。判定抽成纯头文件策略 `voice_ble_ota_abort_allowed`（无活动→允许幂等收尾，桌面取消流程不挂；匹配→允许；**有活动且不匹配→拒绝**），`ota_abort` 拒绝时 `ota_send_error("transfer_mismatch")` + `BLE_ATT_ERR_UNLIKELY`、**不清理不发帧**——对齐 `ota_write_data` 的既有不匹配先例。host 测试 `voice_ble_ota_policy_test`（`run_tests.py` 第 7 目标，本地 7/7） |
 | D9 | 三端 `version`=1 硬编码，无协议版本协商 | open | 9-22 未复核 |
@@ -129,6 +130,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **D3（partial）**：macOS StickS3 订阅结果不再被 guard 吞掉——失败记日志 + 逐特征 3×0.5s 退避重订阅 + 超限断开重建；主动心跳留 D3b | 本地 `swift build` + `PASSED 650/650`；CI 七 job |
 | 2026-10-08 | **D7 关闭**：固件 ota_abort 不匹配拒绝（不清理/不发假 aborted/不漏 handle），判定抽纯头文件策略供宿主单测 | 本地 `run_tests.py` **7/7**（新增 voice_ble_ota_policy 目标）+ CI 七 job（固件编译） |
 | 2026-10-08 | **D6 关闭**：OTA 分块两端收敛为协议层纯函数（去 `max(20,…)` 下限，放不下报错不硬发），修 MTU 未协商必 `bad_offset` | macOS 本地 `swift run VoiceStickTests` + Windows CI ctest 双端单测；两端包长 ≤ 预算自检 |
 | 2026-10-08 | **阶段 1 B13 关闭**：热词候选文件收敛为 miner 单一写入口（进程级互斥 + reload-merge-save），coordinator load-once 缓存删除、设置页两处改走入口、Save 原子化 | 本地断言（忽略不回弹/消费/写后即读）+ CI 七 job（Windows ctest 含新用例） |

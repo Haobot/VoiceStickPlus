@@ -100,6 +100,9 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var connectedDevices: [UUID: ConnectedVoiceStickDevice] = [:]
     private var controlCharacteristics: [UUID: CBCharacteristic] = [:]
     private var otaCharacteristics: [UUID: CBCharacteristic] = [:]
+    // D3：StickS3 逐特征订阅重试计数（key = "<peripheralUUID>|<charUUID>"）。
+    // 订阅失败/CCCD 被清时有限次退避重订阅，超限断开重建；成功即复位。
+    private var stickSubscribeRetries: [String: Int] = [:]
     private var deviceClasses: [UUID: DeviceClass] = [:]
     private var xiaomiContexts: [UUID: XiaomiPeripheralContext] = [:]
     private var xiaomiTickTimer: Timer?
@@ -192,6 +195,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         connectedDevices.removeAll()
         controlCharacteristics.removeAll()
         otaCharacteristics.removeAll()
+        stickSubscribeRetries.removeAll()
         deviceClasses.removeAll()
         xiaomiContexts.keys.forEach { cancelXiaomiSubscribeTimeout(for: $0) }
         xiaomiContexts.removeAll()
@@ -619,8 +623,17 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     /// ATVV 订阅链：Control 订阅成功后订阅 Audio，Audio 就绪后创建并启动会话。
-    /// StickS3 特征不处理（沿用现状不检查订阅结果）。
+    /// StickS3 特征（state/audio/otaState）：**订阅结果必须处理**（D3）——此前被
+    /// xiaomiContexts guard 吞掉，订阅失败/设备侧清 CCCD 零日志零重订阅，
+    /// 「显示已连接但语音静默失效」在 macOS 不可观测；现走有限退避重订阅。
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        let notifyUUID = characteristic.uuid.uuidString.uppercased()
+        if notifyUUID == BleProtocol.stateUUID || notifyUUID == BleProtocol.audioUUID ||
+            notifyUUID == BleProtocol.otaStateUUID {
+            handleStickS3NotificationState(peripheral, characteristic: characteristic,
+                                           uuid: notifyUUID, error: error)
+            return
+        }
         guard let context = xiaomiContexts[peripheral.identifier] else { return }
         let deviceID = connectedDevices[peripheral.identifier]?.deviceID ?? "????"
         if characteristic == context.controlCharacteristic {
@@ -644,6 +657,37 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             // 订阅链完成：撤兜底定时器。
             cancelXiaomiSubscribeTimeout(for: peripheral.identifier)
             startXiaomiSessionIfNeeded(peripheral)
+        }
+    }
+
+    /// D3：StickS3 订阅状态处理。失败（error 或 isNotifying=false——后者含设备侧
+    /// 清 CCCD 的静默失效）时按特征有限次退避重订阅；超限视为链路不可用，断开让
+    /// 重连走全新「发现 + 订阅」周期（对齐 Windows fail 语义）。成功即复位计数。
+    private func handleStickS3NotificationState(_ peripheral: CBPeripheral,
+                                                characteristic: CBCharacteristic,
+                                                uuid: String, error: Error?) {
+        let id = peripheral.identifier
+        let deviceID = connectedDevices[id]?.deviceID ?? "????"
+        let key = id.uuidString + "|" + uuid
+        if error == nil && characteristic.isNotifying {
+            if (stickSubscribeRetries[key] ?? 0) > 0 {
+                NSLog("subscribe recovered VS-\(deviceID) char=\(uuid)")
+            }
+            stickSubscribeRetries[key] = 0
+            return
+        }
+        let attempt = (stickSubscribeRetries[key] ?? 0) + 1
+        stickSubscribeRetries[key] = attempt
+        let maxAttempts = 3
+        NSLog("subscribe failed VS-\(deviceID) char=\(uuid) attempt=\(attempt)/\(maxAttempts): \(error?.localizedDescription ?? "not notifying")")
+        if attempt >= maxAttempts {
+            NSLog("subscribe gave up VS-\(deviceID); disconnecting to re-discover")
+            central?.cancelPeripheralConnection(peripheral)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak peripheral] in
+            guard let peripheral else { return }
+            peripheral.setNotifyValue(true, for: characteristic)
         }
     }
 
@@ -1101,6 +1145,7 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         connectedDevices.removeAll()
         controlCharacteristics.removeAll()
         otaCharacteristics.removeAll()
+        stickSubscribeRetries.removeAll()
         deviceClasses.removeAll()
         xiaomiContexts.keys.forEach { cancelXiaomiSubscribeTimeout(for: $0) }
         xiaomiContexts.removeAll()
@@ -1115,6 +1160,10 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         connectedDevices.removeValue(forKey: peripheral.identifier)
         controlCharacteristics.removeValue(forKey: peripheral.identifier)
         otaCharacteristics.removeValue(forKey: peripheral.identifier)
+        let cleanedPeripheral = peripheral.identifier.uuidString
+        stickSubscribeRetries = stickSubscribeRetries.filter {
+            !$0.key.hasPrefix(cleanedPeripheral + "|")
+        }
         deviceClasses.removeValue(forKey: peripheral.identifier)
         cancelXiaomiSubscribeTimeout(for: peripheral.identifier)
         xiaomiContexts.removeValue(forKey: peripheral.identifier)
