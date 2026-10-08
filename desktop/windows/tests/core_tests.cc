@@ -1200,7 +1200,7 @@ void TestGatewayKeymapReceiptParsing() {
     auto c1 = BleProtocol::ParseStateEvent(c1_frame);
     assert(c1.has_value() && c1->keymap_seq == 1 && !c1->keymap_more);
 
-    std::vector<BleProtocol::StateEvent::KeyRoute> pending;
+    std::vector<StateEvent::KeyRoute> pending;
     assert(!BleProtocol::AccumulateKeymap(pending, *c0));   // more → 未完成
     assert(pending.size() == 1);
     assert(BleProtocol::AccumulateKeymap(pending, *c1));    // 收口 = 完整表
@@ -1212,7 +1212,7 @@ void TestGatewayKeymapReceiptParsing() {
 
     // 旧式单帧（无 seq/more 字段）→ seq0/false → 即到即完整（向后兼容）。
     assert(event->keymap_seq == 0 && !event->keymap_more);
-    std::vector<BleProtocol::StateEvent::KeyRoute> legacy_pending;
+    std::vector<StateEvent::KeyRoute> legacy_pending;
     assert(BleProtocol::AccumulateKeymap(legacy_pending, *event));
     assert(legacy_pending.size() == 2);
 }
