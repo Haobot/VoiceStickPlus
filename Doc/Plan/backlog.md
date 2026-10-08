@@ -42,7 +42,7 @@
 | A14 | `ui_state.text` 超 MTU 预算：发送端零校验、固件硬截断 | open | 9-22 未复核；与 state_tx MTU 红线相关 |
 | A15 | `gateway_keymap` 回执 400B 缓冲发不出 | open | 9-22 未复核 |
 | A16 | 双击收尾不清 owner / click_to_talk 忽略 remote up | open | 9-22 未复核 |
-| A17 | 主机无响应看门狗是死代码（timer 从不 start） | open | 9-22 未复核 |
+| A17 | 主机无响应看门狗是死代码（timer 从不 start） | **closed（10-08）** | 确认死代码：创建/init + stop + 回调 + `APP_EVENT_HOST_RESPONSE_TIMEOUT` 处理（回 ready）四件俱全，**全仓无 start**。修复：新增 `start_host_response_timer()`（30s one-shot，失败仅告警）；武装点= `apply_app_ui_state` **进入非 ready 态**（每次状态迁移先 stop 再按需 start，窗口随主机每次响应刷新）。**30s 取值有据**：桌面端自身 `kFinalizingWatchdogTimeout=15s` 先兜住正常收尾，30s 只在主机真静默时触发；cb 的 `!s_recording` 条件保证**录音中不误伤**；录音结束必然经 device-side audio_end 进入 thinking（非 ready）重新武装，链路自洽 |
 | A19 | PMIC IRQ 先 enable 后清源 + ISR 内队列失败永久 disable | open | 9-22 未复核 |
 | A20 | 错误路径吞掉（ATVV TX rc / HOGP rc / power_log IO） | open | 9-22 未复核 |
 
@@ -132,6 +132,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **A17 关闭**：主机无响应看门狗从死代码变为实装——`apply_app_ui_state` 进非 ready 态武装 30s one-shot（桌面15s finalize看门狗先兜底，cb 的 !s_recording 防误伤） | 定义/使用顺序核验（54<564<1655）+ 本地 host 7/7 + CI 七 job（固件编译） |
 | 2026-10-08 | **A6 关闭**：OTA 三处终局错误（bad_offset/write_failed/incomplete）统一 `ota_fail_terminal` 清理（原 active 残留→录音/关机永久拒绝）；rollback 签到延后 15s（坏固件不再被 boot 即刻背书，失败回退旧行为）；互斥非原子拆出 A6b | 本地 host `run_tests.py` **7/7**；CI 七 job（固件编译 voice_ble.c + main.c 改动） |
 | 2026-10-08 | **A1 关闭 + A2 关闭（代码层）**：A1 ERROR 死端 → 冷却5s 自动重发 GET_CAPS（抽 `begin_caps_request` 公共）；A2 发现死端 DONE → 回置 SVCS 复用看门狗4s 整链重试 + 60s 限频「ATVV 不可用」上报；A3 勘察后留真机（推流连续性未知，防误收尾） | A1 回归 `test_session_error_cooldown_retry`；本地 `run_tests.py` **7/7**；CI 七 job（固件编译覆盖 A2） |
 | 2026-10-08 | **C8b 关闭（逐子项）**：`hotword_candidates.json` 路径 4 处字面量收敛为 `HotwordCandidatesPath()` 单一出处；i18n 键集合对拍复核确认早已就位；f5 子项归 B15 | `TestHotwordCandidatesSingleWriter` 追加路径推导断言；CI 七 job（Windows ctest） |

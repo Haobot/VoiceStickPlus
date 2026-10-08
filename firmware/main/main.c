@@ -47,6 +47,11 @@ static const char *TAG = "voice_stick";
 #define USB_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)   // T_usb：usb_auto_off 开启时的供电态关机时长
 // A6：rollback 签到延后窗口——新固件稳定运行这么久后才 mark_app_valid。
 #define ROLLBACK_SIGNOFF_DELAY_MS (15 * 1000)
+// A17：主机 ui_state 无响应看门狗。桌面端自身 finalizing 看门狗
+// kFinalizingWatchdogTimeout=15s 会先兜住正常收尾，故取 30s：只有主机真的
+// 静默（超时后仍无 ui_state）才强制回 ready；cb 内 !s_recording 条件保证
+// 录音中不误伤。
+#define HOST_RESPONSE_TIMEOUT_MS (30 * 1000)
 #define DISPLAY_ACTIVE_BRIGHTNESS 20
 #define DISPLAY_DIM_BRIGHTNESS 4
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
@@ -550,6 +555,22 @@ static void stop_host_response_timer(void)
 {
     if (s_host_response_timer) {
         (void)esp_timer_stop(s_host_response_timer);
+    }
+}
+
+// A17：原 timer 只创建/只停止、全仓从不 start（死代码）——主机不回 ui_state 时
+// 设备永远停在 recording/thinking。进入非 ready 态即武装，超时由
+// host_response_timer_cb → APP_EVENT_HOST_RESPONSE_TIMEOUT 收尾。
+static void start_host_response_timer(void)
+{
+    if (!s_host_response_timer) {
+        return;
+    }
+    (void)esp_timer_stop(s_host_response_timer);
+    esp_err_t err = esp_timer_start_once(s_host_response_timer,
+                                         HOST_RESPONSE_TIMEOUT_MS * 1000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "start host response timer failed: %s", esp_err_to_name(err));
     }
 }
 
@@ -1628,6 +1649,11 @@ static void apply_app_ui_state(const char *state, const char *text)
              app_ui_state_name(s_app_ui_state),
              s_recording);
     stop_host_response_timer();
+    // A17：进入非 ready 态即武装主机无响应看门狗（下一次 ui_state 到达会重新
+    // stop+按需 start，故每次状态迁移都会刷新窗口）。
+    if (state != NULL && strcmp(state, "ready") != 0) {
+        start_host_response_timer();
+    }
     if (strcmp(state, "ready") == 0) {
         if (s_recording) {
             ESP_LOGI(TAG, "ignore ready ui_state while recording");
