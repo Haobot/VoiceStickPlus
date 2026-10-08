@@ -625,45 +625,7 @@ void TestXiaomiAtvvServiceUuidAd() {
     assert(!BleProtocol::HasXiaomiAtvvServiceUuid(ByteVector{0x11, 0x06, 0x64}));
 }
 
-// ---- 协调器 × 小米事件流（规格 §7.1）----
-// 事件由 XiaomiAtvvSession 真实产出后直接注入 FakeBleCentral 回调（不需真 BLE）；
-// 协调器对设备类别无感知，RC-XXXX 与 VS-XXXX 走同一状态机。
 
-// 把 session 产出的动作注入协调器（WriteTx 是回遥控器字节、Error 无协调器语义，均忽略）。
-void InjectAtvvActions(FakeBleCentral& ble, const std::string& device_id,
-                       const std::vector<XiaomiAtvvAction>& actions) {
-    for (const auto& action : actions) {
-        if (const auto* event = std::get_if<XiaomiAtvvStateEvent>(&action)) {
-            ble.on_state_event(device_id, event->event);
-        } else if (const auto* frame = std::get_if<XiaomiAtvvAudioFrame>(&action)) {
-            ble.on_audio_frame(device_id, frame->frame);
-        }
-    }
-}
-
-
-// hold_to_talk 按下段：MIC_OPEN → STREAM_START → 音频暂存 → 跨 300ms 阈值确认长按
-// （button_down + 暂存帧注入协调器）。返回后协调器应处于 recording。
-void AtvvBeginHoldRecording(FakeBleCentral& ble, const std::string& device_id,
-                            XiaomiAtvvSession& session, std::int64_t& t) {
-    InjectAtvvActions(ble, device_id, session.HandleControlCommand(ByteVector{0x08}, t));
-    InjectAtvvActions(ble, device_id,
-                      session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, t + 10));
-    InjectAtvvActions(ble, device_id, session.HandleAudioData(ByteVector(480, 0x11), t + 20));
-    InjectAtvvActions(ble, device_id, session.Tick(t + XiaomiAtvvSession::kHoldThresholdMs));
-    t += XiaomiAtvvSession::kHoldThresholdMs;
-}
-
-// 松开段：STOP（button_up 注入）→ 150ms 尾包宽限到期 FinalizeStream（end 帧注入）。
-void AtvvEndRecording(FakeBleCentral& ble, const std::string& device_id,
-                      XiaomiAtvvSession& session, std::int64_t& t) {
-    t += 600;
-    InjectAtvvActions(ble, device_id, session.HandleControlCommand(ByteVector{0x00}, t));
-    InjectAtvvActions(ble, device_id, session.Tick(t + XiaomiAtvvSession::kAudioTailGraceMs));
-    t += XiaomiAtvvSession::kAudioTailGraceMs;
-}
-
-// ①hold_to_talk 正常录音 → ASR 送出 Ogg，final 后粘贴。
 
 // Suite entry: core_tests.cc main() calls this once.
 void RunXiaomiAtvvBatchTests() {

@@ -4403,6 +4403,7 @@ void TestAudioOpusEncoderRoundTrip() {
     assert(slicer.remainder().empty());
 }
 
+// ①hold_to_talk 正常录音 → ASR 送出 Ogg，final 后粘贴。
 void TestCoordinatorXiaomiHoldToTalkStreamsOggToAsr() {
     auto ble = std::make_unique<FakeBleCentral>();
     auto* ble_ptr = ble.get();
