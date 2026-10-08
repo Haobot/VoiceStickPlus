@@ -335,9 +335,30 @@ std::optional<FirmwareOtaStateEvent> BleProtocol::ParseFirmwareOtaStateEvent(std
     return event;
 }
 
+// A14：在 UTF-8 边界去掉末尾一个码点（不产生半截多字节）。
+static std::string_view TrimLastUtf8Codepoint(std::string_view s) {
+    if (s.empty()) return s;
+    std::size_t n = s.size() - 1;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
+    return s.substr(0, n);
+}
+
 ByteVector BleProtocol::UiStatePayload(std::string_view state, std::string_view text) {
-    const auto json = std::string("{\"event\":\"ui_state\",\"state\":\"") +
-                      JsonEscape(state) + "\",\"text\":\"" + JsonEscape(text) + "\"}";
+    // A14：control_rx 单帧预算 = ATT MTU247-3 = 244B（.withoutResponse 的硬上限）。
+    // 原发送端零校验：超长 text 让固件 512B 接收缓冲静默截断 → JSON 半截 parse
+    // 失败**整帧丢**（state 一起丢 → 设备屏卡在 thinking），text 字段固件侧
+    // char[256] 亦会静默切。按预算 UTF-8 边界截断 text，state 恒短保完整；
+    // protocol.md ui_state 行载明同约束（macOS 端同口径 244B）。
+    constexpr std::size_t kControlFrameMaxBytes = 244;
+    auto build = [](std::string_view s, std::string_view t) {
+        return std::string("{\"event\":\"ui_state\",\"state\":\"") +
+               JsonEscape(s) + "\",\"text\":\"" + JsonEscape(t) + "\"}";
+    };
+    auto json = build(state, text);
+    while (json.size() > kControlFrameMaxBytes && !text.empty()) {
+        text = TrimLastUtf8Codepoint(text);
+        json = build(state, text);
+    }
     return ByteVector(json.begin(), json.end());
 }
 

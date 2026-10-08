@@ -1217,6 +1217,33 @@ void TestGatewayKeymapReceiptParsing() {
     assert(legacy_pending.size() == 2);
 }
 
+// A14：ui_state 帧预算（ATT MTU247-3=244B，protocol.md）——超长 text 按 UTF-8 边界
+// 截断、state 恒完整；原发送端零校验 → 固件 512B 缓冲截出半截 JSON → 整帧丢（连
+// state 一起丢，设备屏卡 thinking）。
+void TestUiStateBudget() {
+    // 正常帧不改。
+    auto ok = BleProtocol::UiStatePayload("thinking", "ok");
+    std::string ok_s(ok.begin(), ok.end());
+    assert(ok_s.find "\"text\":\"ok\"" != std::string::npos);
+
+    // ASCII 长文 → 帧 ≤244 且 state/截断内容俱在。
+    auto long_ascii = BleProtocol::UiStatePayload("thinking", std::string(500, 'x'));
+    assert(long_ascii.size() <= 244);
+    std::string la(long_ascii.begin(), long_ascii.end());
+    assert(la.find "\"state\":\"thinking\"" != std::string::npos);
+    assert(la.find("xxx") != std::string::npos);
+    assert(la.size() >= 2 && la[la.size() - 1] == '}' && la[la.size() - 2] == '"');
+
+    // 中文长文（多字节）→ 帧 ≤244；每轮整体重建 JSON，不会切出半截转义/码点。
+    std::string zh;
+    for (int i = 0; i < 200; i++) zh += "\xE7\x83\xAD";  // 热 ×200
+    auto long_zh = BleProtocol::UiStatePayload("recording", zh);
+    assert(long_zh.size() <= 244);
+    std::string zs(long_zh.begin(), long_zh.end());
+    assert(zs.find "\"state\":\"recording\"" != std::string::npos);
+    assert(zs.size() >= 2 && zs[zs.size() - 1] == '}' && zs[zs.size() - 2] == '"');
+}
+
 void TestGatewayKeyStateParsing() {
     const std::string json =
         "{\"event\":\"gateway_key\",\"key\":\"volume_up\",\"pressed\":true}";
@@ -16592,6 +16619,8 @@ int main() {
     TestEncoderRotateStateParsing();
     printf(">> cluster: D10 gateway_keymap receipt parsing\n"); fflush(stdout);
     TestGatewayKeymapReceiptParsing();
+    printf(">> cluster: D14 ui_state frame budget\n"); fflush(stdout);
+    TestUiStateBudget();
     TestGatewayKeyStateParsing();
     TestStateEventSourceParsing();
     TestEncoderStatusParsing();

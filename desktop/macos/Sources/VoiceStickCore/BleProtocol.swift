@@ -333,13 +333,27 @@ public enum BleProtocol {
         return try? JSONDecoder().decode(FirmwareOTAStateEvent.self, from: payload)
     }
 
+    /// A14：control_rx 单帧预算 = ATT MTU247-3 = 244B（macOS 走 .withoutResponse，
+    /// 该值即硬上限）。超预算会让固件 512B 接收缓冲静默截断 → JSON 半截 parse 失败
+    /// **整帧丢**（设备屏卡在 thinking）。按**字符边界**截断 text（String.dropLast
+    /// 不会切开 UTF-8），state 恒短保完整；protocol.md ui_state 行载明同约束。
     public static func uiStatePayload(state: String, text: String) -> Data {
-        let payload = [
-            "event": "ui_state",
-            "state": state,
-            "text": text
-        ]
-        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        let budget = 244
+        func build(_ t: String) -> Data {
+            let payload = [
+                "event": "ui_state",
+                "state": state,
+                "text": t
+            ]
+            return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        }
+        var t = text
+        var data = build(t)
+        while data.count > budget && !t.isEmpty {
+            t = String(t.dropLast())
+            data = build(t)
+        }
+        return data
     }
 
     public static func interactionModePayload(_ mode: InteractionMode) -> Data {

@@ -5,6 +5,30 @@ import VoiceStickCore
 // 13 键全表 ≈470B 超 state_tx 单帧预算（ATT MTU 247 → JSON ≤240B），固件按
 // seq/more 分片发送；本端 seq0 起累计、more=false 收口，旧式无 seq/more 单帧
 // 即到即完整。
+// A14：ui_state 帧预算（ATT MTU247-3=244B，protocol.md）——超长 text 按**字符边界**
+// 截断（String.dropLast 不切 UTF-8）、state 恒完整；原发送端零校验 → 固件 512B 缓冲
+// 截出半截 JSON → 整帧丢（设备屏卡 thinking）。
+func runUiStateBudgetTests() {
+    let ok = BleProtocol.uiStatePayload(state: "thinking", text: "ok")
+    let okStr = String(data: ok, encoding: .utf8) ?? ""
+    check(okStr.contains(#""text":"ok""#), "A14: 正常帧不改")
+
+    let asciiLong = BleProtocol.uiStatePayload(state: "thinking",
+                                               text: String(repeating: "x", count: 500))
+    check(asciiLong.count <= 244, "A14: ASCII 长文 ≤244")
+    let asciiStr = String(data: asciiLong, encoding: .utf8) ?? ""
+    check(asciiStr.contains(#""state":"thinking""#), "A14: ASCII 案 state 完整")
+    check(asciiStr.hasSuffix(#""}"#), "A14: ASCII 案 JSON 收尾完整")
+
+    // 中文长文：每轮整体重建，最终 Data 必仍可按 UTF-8 解码（证明没有切开码点）。
+    let zhLong = BleProtocol.uiStatePayload(state: "recording",
+                                            text: String(repeating: "热", count: 200))
+    check(zhLong.count <= 244, "A14: 中文长文 ≤244")
+    let zhStr = String(data: zhLong, encoding: .utf8)
+    check(zhStr != nil, "A14: 中文截断后仍是合法 UTF-8")
+    check((zhStr ?? "").contains(#""state":"recording""#), "A14: 中文案 state 完整")
+}
+
 func runGatewayKeymapChunkTests() {
     func stateFrame(_ json: String) -> Data {
         var d = Data([1, 0x10])

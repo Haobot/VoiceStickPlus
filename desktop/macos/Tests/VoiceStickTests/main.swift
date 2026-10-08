@@ -25,6 +25,7 @@ runLlmSseParserTests()
 runHotwordSelectorTests()
 runActiveSecretTests()
 runOtaFlowControlTests()
+runUiStateBudgetTests()
 runGatewayKeymapChunkTests()
 runContractFixtureTests()
 

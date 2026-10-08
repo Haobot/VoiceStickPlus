@@ -307,7 +307,7 @@ Current desktop events:
 
 | Event | Field | Direction | Meaning |
 | --- | --- | --- | --- |
-| `ui_state` | `state`: string, `text`: string | Desktop -> StickS3 | Authoritative display state from the app to the firmware display. |
+| `ui_state` | `state`: string, `text`: string | Desktop -> StickS3 | Authoritative display state from the app to the firmware display. **Frame budget: 244 bytes (ATT MTU 247 − 3, the hard cap of a `withoutResponse` write).** Senders must truncate `text` on a character/UTF-8 boundary until the whole JSON fits — an oversize write gets truncated by the firmware's 512B receive buffer mid-JSON, fails to parse, and is dropped **together with `state`** (screen stuck on the previous hint); `text` is additionally capped at 255 bytes on the firmware side (`char text[256]`). The firmware rejects control writes ≥512B with an ATT length error instead of truncating. |
 | `interaction_mode` | `mode`: string | Desktop -> StickS3 | Controls the front-button behavior and idle screen hint. |
 | `show_imu_debug` | `enabled`: boolean | Desktop -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
 | `imu_wake_sensitivity` | `threshold`: integer (LSB) | Desktop -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |

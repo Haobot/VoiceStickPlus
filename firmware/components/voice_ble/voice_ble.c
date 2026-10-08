@@ -755,8 +755,15 @@ static int control_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 
     char buffer[512] = {0};
     const uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    const uint16_t copy_len = MIN(len, sizeof(buffer) - 1);
-    int rc = ble_hs_mbuf_to_flat(ctxt->om, buffer, copy_len, NULL);
+    // A14：超缓冲的控制写**拒绝**而非静默截断——截断出的半截 JSON 必 parse 失败，
+    // 只会无信号整帧丢（原实现）。桌面端已按 244B 预算发送（protocol.md ui_state），
+    // 正常帧永不到此；到此即为异常，给 ATT 错误让发送端可见。
+    if (len >= sizeof(buffer)) {
+        ESP_LOGW(TAG, "control write %uB exceeds buffer %u, rejected",
+                 (unsigned)len, (unsigned)sizeof(buffer));
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    int rc = ble_hs_mbuf_to_flat(ctxt->om, buffer, len, NULL);
     if (rc != 0) {
         return BLE_ATT_ERR_UNLIKELY;
     }
