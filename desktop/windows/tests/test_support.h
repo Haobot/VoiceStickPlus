@@ -776,3 +776,33 @@ inline bool HasUiStateText(const FakeBleCentral& ble,
                                   *sent.device_id == device_id;
                        });
 }
+
+// 构造一个 16 kHz、40 ms（640 样本）的单声道正弦波 PCM 帧。
+inline std::vector<int16_t> MakeSinePcm(int frequency_hz, int sample_rate = 16000) {
+    constexpr double kPi = 3.14159265358979323846;
+    const int kFrameSize = sample_rate * 40 / 1000;  // 40 ms
+    std::vector<int16_t> pcm(kFrameSize);
+    for (int i = 0; i < kFrameSize; ++i) {
+        const double t = static_cast<double>(i) / sample_rate;
+        pcm[i] = static_cast<int16_t>(std::sin(2.0 * kPi * frequency_hz * t) * 30000.0);
+    }
+    return pcm;
+}
+
+// 使用 opus_encoder 将 PCM 编码为 Opus packet，用于解码器测试。
+inline std::vector<uint8_t> EncodeOpusPacket(const std::vector<int16_t>& pcm,
+                                      int sample_rate = 16000) {
+    int error = 0;
+    OpusEncoder* encoder = opus_encoder_create(sample_rate, 1, OPUS_APPLICATION_VOIP, &error);
+    assert(encoder != nullptr);
+    assert(error == OPUS_OK);
+
+    std::vector<uint8_t> packet(1275);  // Opus 单帧最大长度。
+    const int encoded_bytes = opus_encode(encoder, pcm.data(), static_cast<int>(pcm.size()),
+                                          packet.data(), static_cast<int>(packet.size()));
+    assert(encoded_bytes > 0);
+    packet.resize(encoded_bytes);
+
+    opus_encoder_destroy(encoder);
+    return packet;
+}
