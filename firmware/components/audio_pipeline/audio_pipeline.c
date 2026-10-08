@@ -30,6 +30,9 @@ static const char *TAG = "audio_pipeline";
 #define AUDIO_SAMPLE_RATE 16000
 #define AUDIO_CHANNELS 1
 #define AUDIO_FRAME_MS 40
+// A8：codec/opus 连续失败到此次数即主动收尾会话（每失败一次退避 AUDIO_FRAME_MS，
+// 100 次 ≈4s）——既给瞬时抖动恢复余量，又远在 Task WDT（5s）之前收手。
+#define AUDIO_FAULT_ABORT_STREAK 100
 #define AUDIO_FRAME_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)
 #define OPUS_BITRATE 32000
 #define OPUS_MAX_PACKET_SIZE 220
@@ -608,6 +611,10 @@ static void audio_task(void *arg)
     uint8_t opus_buf[OPUS_MAX_PACKET_SIZE];
     uint32_t enqueued = 0;
     uint32_t dropped = 0;
+    // A8：错误分支热循环防护计数（连续失败 → 退避 + 达阈主动收尾）。
+    uint32_t read_fail_streak = 0;
+    uint32_t encode_fail_streak = 0;
+    bool faulted = false;
 
     while (atomic_load(&s_running)) {
         if (s_source == AUDIO_SOURCE_EXTERNAL) {
@@ -631,9 +638,19 @@ static void audio_task(void *arg)
         } else {
             esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "codec read failed: %s", esp_err_to_name(err));
+                ++read_fail_streak;
+                ESP_LOGW(TAG, "codec read failed (%u consecutive): %s",
+                         (unsigned)read_fail_streak, esp_err_to_name(err));
+                // A8：失败必须退避——原实现 continue 零延时，codec 持续失败会
+                // 打满 CPU1 触发 Task WDT（sdkconfig 开了 CPU1 idle 检查）5s 整机复位。
+                vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
+                if (read_fail_streak >= AUDIO_FAULT_ABORT_STREAK) {
+                    faulted = true;
+                    break;
+                }
                 continue;
             }
+            read_fail_streak = 0;
             for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
                 mono[i] = stereo[i * 2];
             }
@@ -651,9 +668,18 @@ static void audio_task(void *arg)
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
         if (encoded < 0) {
-            ESP_LOGE(TAG, "opus encode failed: %d", (int)encoded);
+            ++encode_fail_streak;
+            ESP_LOGE(TAG, "opus encode failed (%u consecutive): %d",
+                     (unsigned)encode_fail_streak, (int)encoded);
+            // A8：同 codec 读——退避 + 达阈收尾（原 continue 零延时热循环）。
+            vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
+            if (encode_fail_streak >= AUDIO_FAULT_ABORT_STREAK) {
+                faulted = true;
+                break;
+            }
             continue;
         }
+        encode_fail_streak = 0;
 
         audio_packet_t pkt = {
             .session_id = s_session_id,
@@ -684,6 +710,23 @@ static void audio_task(void *arg)
                 ESP_LOGW(TAG, "tx queue overflow, dropped oldest (total=%" PRIu32 ")", dropped);
             }
         }
+    }
+
+    if (faulted) {
+        // A8：主动收尾——与 audio_pipeline_stop 同序（置停 + END 哨兵）。tx_task
+        // 见哨兵排空队列并发 audio_end，随后在 s_audio_task==NULL 同步点等本任务
+        // drain 完才清理资源（正常停机同一路径，顺序已由生产验证）。桌面端收到
+        // audio_end 正常收尾；硬件级持续故障的会话就此终止，而不是 5s 后整机复位。
+        ESP_LOGE(TAG, "audio pipeline faulted (read=%u encode=%u consecutive); finishing session",
+                 (unsigned)read_fail_streak, (unsigned)encode_fail_streak);
+        atomic_store(&s_running, false);
+        audio_packet_t sentinel = {
+            .session_id = s_session_id,
+            .seq = s_seq,
+            .flags = VOICE_BLE_FLAG_END,
+            .len = 0,
+        };
+        xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
     }
 
     /* Drain：松开按键时 I2S DMA 缓冲区（4 描述符×120 帧 ≈ 60ms）里仍有残留尾音 PCM，

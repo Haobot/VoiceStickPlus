@@ -33,7 +33,7 @@
 | A6 | OTA 错误路径统一 `esp_ota_abort` + `ota_clear_state`；rollback 签到延后 | **closed（10-08）** | ① **错误不清理实锤**：`ota_write_data` 的 `bad_offset`/`write_failed` 与 `ota_finish` 的 `incomplete` 发完 error 后 `s_ota.active` 残留 → `voice_ble_ota_is_active()` 恒真 → **录音/关机被永久拒绝**；新增 `ota_fail_terminal()`（send_error + `esp_ota_abort` + `ota_clear_state`）统一三处，**明确排除** `not_active`/transfer 不匹配（D7：可能属另一条在飞传输）与 `end_failed`/`set_boot_failed`（`esp_ota_end` 已消费 handle，再 abort 反而 UB——原路径已正确清理）。② **rollback 签到延后**：boot 无条件 `mark_app_valid` 使「能启动但不健康」的固件立即被背书、坏固件永不回滚 → 改一次性 esp_timer **15s 稳定运行后签到**，窗口内复位保持 PENDING_VERIFY → bootloader 回滚；定时器创建/启动失败**回退旧行为**（宁可坏固件不回滚，也不让健康固件因超时被误回滚）；手动 `ota_commit` 仍即时签到作逃生门。③ 评审三合一中「录音/OTA 互斥非原子」未含本行 → **A6b 单列** |
 | A7 | app_event 关键事件处理 | **partial** | 10-07 抽查：`main.c:764` 关键标记 + 20ms 等待 + 日志已在；重试/计数上报未见 |
 | A6b | 录音/OTA 互斥非原子（录音中触发 OTA begin 的 cache-disable 窗口） | open（需跨模块 API + 真机复现） | 10-08 从 A6 核出：现有门是**单向**的（`voice_ble_ota_is_active()` 阻录音），反向无门——`voice_ble.h` 不导出任何 streaming 状态，main 无法在 OTA begin 前拒绝；需新增 `voice_ble_set_streaming(bool)`（main 在 start/stop_recording 调用）+ `ota_begin` 入口拒绝，并真机复现 cache-disable 崩溃窗口确认生效 |
-| A8 | audio_task 错误分支热循环 → Task WDT（失败退避 + 主动收尾） | open | 9-22 未复核 |
+| A8 | audio_task 错误分支热循环 → Task WDT（失败退避 + 主动收尾） | **closed（10-08）** | 实锤两处热循环：`esp_codec_dev_read` 失败与 `opus_encode` 失败均**零延时 `continue`** → codec 持续失败打满 CPU1（sdkconfig 开 CPU1 idle 检查）→ 5s Task WDT 整机复位。修复：① **退避**——两处失败各 `vTaskDelay(AUDIO_FRAME_MS=40ms)`；② **连续 N 次主动收尾**（`AUDIO_FAULT_ABORT_STREAK=100` ≈4s，远在 WDT 前、又给瞬时抖动恢复余量）→ 置 `faulted` 退出主循环 → **与 `audio_pipeline_stop` 同序**（`s_running=false` + END 哨兵入队），tx_task 见哨兵排空并发 `audio_end`、在 `s_audio_task==NULL` 同步点等本任务 drain 完才清资源（**正常停机同一路径，顺序经生产验证**）；成功各自清零 streak。故障日志含两侧连续次数。**验证边界**：audio_pipeline 不在 host 面 → CI 固件编译 + 括号净数/片段复读（A20 后的固定动作）+ host 7/7 卫生 |
 | A9 | esp_timer 任务当工作队列：I2C 轮询与硬件初始化移出 timer | open | 9-22 未复核 |
 | A10 | 编码器降级不可恢复 + I2C 总线泄漏 | open | 9-22 未复核 |
 | A11 | BMI270 加载失败仍报 present | open | 9-22 未复核 |
@@ -132,6 +132,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **A8 关闭**：audio_task 两处错误热循环修复——codec/opus 失败各退避 40ms、连续 100 次（≈4s）主动收尾（复用 stop 的置停+END 哨兵序，tx_task 同步点保证资源清理），消 5s Task WDT 整机复位风险 | 括号净数归零 + 片段复读 + 本地 host 7/7 + CI 七 job（固件编译 audio_pipeline.c） |
 | 2026-10-08 | **A20 关闭**：错误路径吞 rc 四处全落（ATVV TX 升 ERROR、HOGP 捕获 rc、power_log flush 全链检查+RAM 保留、导出短读区分 ferror/EOF+dump 侧短读可见） | 本地 host 7/7（卫生）+ CI 七 job（固件编译 xiaomi_atvv_client/main/power_log/voice_ble 四文件；power_log 不在 host 面，编译即其验证） |
 | 2026-10-08 | **A19 关闭**：PMIC IRQ 中断链两处根因修复——先清源再 enable（消 ISR 自激风暴）+ 队列满置位由周期刷新补臂（消永久失效） | 定义/使用顺序核验（flag@132 < 队列@830 < handler@1822 < ISR@2956）+ 本地 host 7/7 + CI 七 job（固件编译 main.c） |
 | 2026-10-08 | **A12 + A13 关闭（tap 域双项）**：A12 固件默认对齐 protocol.md/桌面（两处 false，用户已存 NVS 不受影响，文档无需改）；A13 缺字段/未知字符串显式 break 不落盘 + 数值夹取 1..10 再落盘 | 本地 host 7/7 + CI 七 job（固件编译 main.c 改动） |
