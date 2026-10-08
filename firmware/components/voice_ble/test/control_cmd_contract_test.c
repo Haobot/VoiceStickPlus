@@ -4,8 +4,9 @@
 // 反向门用例固化「未知事件静默、缺字段 fallthrough、非法 JSON 拒绝」的原链语义。
 //
 // 运行：由 run_tests.py 设置 VOICESTICK_REPO_ROOT；直跑需手动 export。
-// 编译：cc -std=c11 -Wall -Wextra -Werror -I <voice_ble/include> -I <cJSON> \
-//         control_cmd_contract_test.c ../control_cmd.c <cJSON.c> -o t && VOICESTICK_REPO_ROOT=... ./t
+// 编译：cc -std=c11 -Wall -Wextra -Werror -I <voice_ble/include> -I <cJSON>
+//        control_cmd_contract_test.c ../control_cmd.c <cJSON.c> -o t；运行前 export
+//        VOICESTICK_REPO_ROOT=<仓库根>（run_tests.py 已自动注入）。
 #include "control_cmd.h"
 
 #include "cJSON.h"
