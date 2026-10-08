@@ -1,7 +1,10 @@
 import Foundation
-import VoiceStickCore
 
-final class OggOpusMuxer {
+// N1 第二刀：Ogg/Opus 复用器下沉 Core（自 VoiceStickApp 整文件迁移）。
+// 纯字节容器层：OpusHead/OpusTags 头页 + 逐帧页 + eos 空页；granule 恒以 48kHz 计
+// （帧采样数×48_000/sampleRate，40ms@16k → +1920）；页 CRC 用 OggCRC 查表。
+// 调用方（TencentASRClient / VoiceStickCoordinator）经 import VoiceStickCore 可见。
+public final class OggOpusMuxer {
     private let sampleRate: Int
     private let channels: Int
     private var wroteHeaders = false
@@ -9,18 +12,18 @@ final class OggOpusMuxer {
     private var granulePosition: UInt64 = 0
     private let serial: UInt32 = 0x5653544B
 
-    init(sampleRate: Int, channels: Int) {
+    public init(sampleRate: Int, channels: Int) {
         self.sampleRate = sampleRate
         self.channels = channels
     }
 
-    func reset() {
+    public func reset() {
         wroteHeaders = false
         sequence = 0
         granulePosition = 0
     }
 
-    func append(opusPayload: Data, isLast: Bool) -> Data {
+    public func append(opusPayload: Data, isLast: Bool) -> Data {
         precondition(!opusPayload.isEmpty, "empty Opus payloads must be written with finish()")
 
         var out = Data()
@@ -37,7 +40,7 @@ final class OggOpusMuxer {
         return out
     }
 
-    func finish() -> Data {
+    public func finish() -> Data {
         var out = Data()
         if !wroteHeaders {
             out.append(makePage(packet: opusHead(), granule: 0, headerType: 0x02))

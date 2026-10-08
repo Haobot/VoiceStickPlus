@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import VoiceStickCore  // N1: OggOpusMuxer 下沉 Core 后需显式导入
 
 /// 腾讯云实时语音识别（WebSocket）客户端（逐行移植 Windows asr_client_tencent.cc）。
 ///
