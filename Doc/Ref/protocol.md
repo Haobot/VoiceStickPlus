@@ -128,9 +128,14 @@ and `usb_powered`. The firmware sends it once after each BLE connection, on
 charger/USB power transitions, and in reply to a `battery_status_request`
 control event. Both desktops surface it in the tray device submenu title
 (`VS-XXXX (87%)`, with a charging/plugged-in suffix). Windows additionally
-uses `battery_status_request` as a periodic link heartbeat; macOS does not
-send it and relies on CoreBluetooth disconnect callbacks plus the
-connect/transition pushes.
+uses `battery_status_request` as a periodic link heartbeat (every 30s; the
+firmware's reply is the reverse liveness proof). **macOS sends it too since the
+D3b link-liveness monitor**: a 30s probe per connected StickS3, and if no
+state/audio inbound has been seen for >90s the device is flagged, and if the
+next tick is still silent the connection is cancelled so the normal
+disconnect → rescan → resubscribe path recovers it (never unpair). This makes
+"CCCD still on but silently dead" links observable and recoverable on macOS;
+CoreBluetooth disconnect callbacks remain the coarse fallback.
 
 `gateway_status` reports the firmware's gateway/normal mode (`mode`:
   `"gateway"` | `"normal"`). Like `encoder_status` it is a separate small
@@ -360,7 +365,7 @@ Current desktop events:
 | `encoder_recording_gate` | `enabled`: boolean | Desktop -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses never emit `button_down`/`button_up` and never start audio; they only feed the firmware double-click window, which emits `button_click`/`button_double_click` with `source:"encoder"`. The physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
 | `usb_auto_off` | `enabled`: boolean | Desktop -> StickS3 | Enables/disables auto power-off while USB powered. When enabled, the device powers off after 10 idle minutes even on external power (recording/OTA still block it; the BLE-disconnect timer also applies). Persisted in firmware NVS. Default false. |
 | `usb_auto_off_get` | — | Windows -> StickS3 | Queries the current `usb_auto_off` state; the firmware replies with a `power_mgmt` state event on `state_tx`. (macOS does not send it — the firmware pushes `power_mgmt` once after each connection, which is sufficient.) |
-| `battery_status_request` | — | Windows -> StickS3 | Asks the firmware to re-send `battery_status`; the firmware always replies, so the Windows desktop also uses it as a periodic link heartbeat. macOS does not send it. |
+| `battery_status_request` | — | Desktop -> StickS3 | Asks the firmware to re-send `battery_status`; the firmware always replies, so both desktops use it as a periodic 30s link heartbeat — the reply doubles as the reverse liveness proof (D3b macOS silence monitor keys off it). |
 | `remote_button_down` / `remote_button_up` | `button`: `"primary"`, `source`: string, `request_id`: uint32 | Desktop -> StickS3 | Injects a virtual primary-button press/release (`APP_INPUT_SOURCE_REMOTE`), used by the desktop global hotkey and the encoder double-click recording toggle. Not gated by `encoder_recording_gate`. |
 | `gateway_keymap_set` | `key`: string, `route`: `"passthrough"` \| `"software"` | Desktop -> StickS3 | Gateway mode (P1 tunnel fusion, `Doc/Plan/xiaomi-remote-stick-gateway.md` §5.3): per-key routing for the Xiaomi remote keys relayed by this StickS3. `software` routes the key over `state_tx` as a `gateway_key` event (desktop keymap consumes it); `passthrough` (default) forwards it as standard HID via the HOGP peripheral to the OS. `key` is one of `ok`/`right`/`left`/`down`/`up`/`menu`/`home`/`back`/`volume_up`/`volume_down`/`volume_mute`/`power`/`tv`. The voice key is not routable (fixed ATVV session semantics); unknown keys are rejected. Persisted in firmware NVS. On success the firmware replies with a `gateway_keymap` report. |
 | `gateway_keymap_get` | — | Desktop -> StickS3 | Queries the current routing table; the firmware replies on `state_tx` with one or more **chunked** reports: `{"event":"gateway_keymap","seq":N,"more":bool,"routes":[{"key":"back","route":"software"},...]}`. Chunks arrive in ascending `seq` starting at 0; the table is complete when `more:false` arrives — the desktop accumulates from `seq:0` (a new `seq:0` restarts an incomplete accumulation) and replaces its view only on completion. Chunking is mandatory: the full 13-key table (~470B) exceeds the single-frame budget (ATT MTU 247 → JSON ≤ 240B), and a truncated frame fails JSON parsing on the desktop. |

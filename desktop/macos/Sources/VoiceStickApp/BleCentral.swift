@@ -103,6 +103,12 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     // D3：StickS3 逐特征订阅重试计数（key = "<peripheralUUID>|<charUUID>"）。
     // 订阅失败/CCCD 被清时有限次退避重订阅，超限断开重建；成功即复位。
     private var stickSubscribeRetries: [String: Int] = [:]
+    // D3b：入站活性兜底（30s 探活 + 90s 静默判定 + 下一拍仍静默才拆链）。机制对齐
+    // Windows（ble_central_win：周期 battery_status_request，回包即反向活性证明）；
+    // macOS 此前只靠断连回调——CCCD 仍 on 的静默僵尸不可感知（D3 拆出项）。
+    private var lastInboundAt: [UUID: TimeInterval] = [:]
+    private var livenessTimer: Timer?
+    private var livenessStaleWarned: Set<UUID> = []
     private var deviceClasses: [UUID: DeviceClass] = [:]
     private var xiaomiContexts: [UUID: XiaomiPeripheralContext] = [:]
     private var xiaomiTickTimer: Timer?
@@ -284,6 +290,42 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
         for (id, characteristic) in controlCharacteristics {
             peripherals[id]?.writeValue(data, for: characteristic, type: .withoutResponse)
+        }
+    }
+
+    // D3b：30s 探活 tick——对每个已连接 StickS3 发 battery_status_request（回包经
+    // didUpdateValueFor 打点），静默 >90s（连丢三拍）先告警、下一拍仍静默才拆链
+    //（双拍确认防瞬时抖动误杀；拆链走 didDisconnect → scanIfReady 重连重订阅，
+    // 绝不 unpair——红线：自愈路径禁删配对）。payload 构造器在 Core 早已存在但
+    // 从未接线（与 Windows SendBatteryStatusRequest 同型）。
+    private func startLinkLivenessMonitor() {
+        guard livenessTimer == nil else { return }
+        livenessTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.livenessTick()
+        }
+    }
+
+    private func livenessTick() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for (id, control) in controlCharacteristics {
+            guard let peripheral = peripherals[id], peripheral.state == .connected else { continue }
+            // 探活：强制一次链路层收发（固件收到必回 battery_status → 入站打点刷新）。
+            peripheral.writeValue(BleProtocol.batteryStatusRequestPayload(),
+                                  for: control, type: .withoutResponse)
+            let last = lastInboundAt[id] ?? now
+            guard now - last > 90 else {
+                livenessStaleWarned.remove(id)
+                continue
+            }
+            if livenessStaleWarned.contains(id) {
+                let deviceID = connectedDevices[id]?.deviceID ?? "unknown"
+                NSLog("LINK SILENT VS-\(deviceID): no inbound for \(Int(now - last))s across probes; cancelling connection (scan will resubscribe)")
+                livenessStaleWarned.remove(id)
+                central?.cancelPeripheralConnection(peripheral)
+            } else {
+                livenessStaleWarned.insert(id)
+                NSLog("LINK SILENT (first): no inbound for \(Int(now - last))s; will act next 30s tick if still silent")
+            }
         }
     }
 
@@ -553,6 +595,9 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 sendInteractionMode(interactionMode, to: peripheral.identifier)
                 sendShowIMUDebug(showIMUDebug, to: peripheral.identifier)
                 sendProtoNegotiate(to: peripheral.identifier)
+                // D3b：注册即打活性基线（覆盖"订阅假成功"从连接起就静默的形态）+ 起表。
+                lastInboundAt[peripheral.identifier] = ProcessInfo.processInfo.systemUptime
+                startLinkLivenessMonitor()
             case BleProtocol.otaRXUUID:
                 otaCharacteristics[peripheral.identifier] = characteristic
             case BleProtocol.otaStateUUID:
@@ -709,6 +754,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard let data = characteristic.value else { return }
+        // D3b：任何入站 notify 都是活性证据（含 battery_status 探活回包）。
+        lastInboundAt[peripheral.identifier] = ProcessInfo.processInfo.systemUptime
         // ATVV 两路分发（按 per-peripheral 存的特征句柄匹配）：Control/Audio 字节
         // 喂会话状态机并分发动作；F5 锚点在驱动会话前刷新（对齐 Windows）。
         if let context = xiaomiContexts[peripheral.identifier] {
@@ -1176,6 +1223,8 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         connectedDevices.removeValue(forKey: peripheral.identifier)
         controlCharacteristics.removeValue(forKey: peripheral.identifier)
         otaCharacteristics.removeValue(forKey: peripheral.identifier)
+        lastInboundAt.removeValue(forKey: peripheral.identifier)
+        livenessStaleWarned.remove(peripheral.identifier)
         let cleanedPeripheral = peripheral.identifier.uuidString
         stickSubscribeRetries = stickSubscribeRetries.filter {
             !$0.key.hasPrefix(cleanedPeripheral + "|")
