@@ -1,5 +1,5 @@
 # 第三方输入法点按式热键修复（ralt 不弹 + 停止竞态）
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：desktop/windows/src/wechat_input_method_hotkey.cc 专文件。核销 2026-10-08/N10）
 
 ## 根因（已证实）
 

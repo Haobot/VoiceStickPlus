@@ -1,5 +1,5 @@
 # 小米蓝牙遥控器 2 Pro 接入设计
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：主实现双端落地——firmware gateway_atvv_session.h + test_gateway_atvv.c（桌面 ATVV 见 desktop/windows/src/xiaomi_atvv_session.cc）。核销 2026-10-08/N10）
 
 - 状态：已评审，实施中
 - 日期：2026-08（分支 `feat/add-MiRemote`）

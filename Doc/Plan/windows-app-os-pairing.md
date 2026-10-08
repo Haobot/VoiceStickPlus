@@ -1,5 +1,5 @@
 # Windows 桌面端：app 配对自动完成系统蓝牙配对
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：PairAsync（AGENTS 红线条目在案）+ ble_protocol.h/localization 配对面。核销 2026-10-08/N10）
 
 > 日期：2026-09-18　目标平台：Windows（macOS 另行排期）
 > 相关文件：`desktop/windows/src/pair_device_dialog.{h,cc}`、`ble_protocol.{h,cc}`、

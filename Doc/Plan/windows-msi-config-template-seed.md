@@ -1,5 +1,5 @@
 # Windows MSI 内置 config 模板 + 首启复制
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：模板种子测试载 tests/core_tests_codec_serial.cc。核销 2026-10-08/N10）
 
 ## 背景
 

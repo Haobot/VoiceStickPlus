@@ -1,5 +1,5 @@
 # Windows MSI 内置密钥 + 向导免填 key + 替换 config 不破坏 ASR
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：app_config.h + win32_app.cc onboarding 流。核销 2026-10-08/N10）
 
 ## 背景
 

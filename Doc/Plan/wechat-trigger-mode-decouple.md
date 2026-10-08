@@ -1,5 +1,5 @@
 # 第三方输入法触发模式与全局 interaction_mode 解耦
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：settings_dialog.cc 触发模式配置面 + localization 双语条目。核销 2026-10-08/N10）
 
 ## 背景
 

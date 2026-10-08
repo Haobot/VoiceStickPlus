@@ -1,5 +1,5 @@
 # 小米遥控器按键映射消费端设计(key_map 拦截与注入)
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：gateway_keymap@firmware/main/main.c + voice_ble control_cmd_contract_test（D10/D15 实证）。核销 2026-10-08/N10）
 
 - 状态:已评审,实施中
 - 日期:2026-09(修复 8e051f2b 遗留的消费端缺口)

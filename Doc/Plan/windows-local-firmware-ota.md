@@ -1,5 +1,5 @@
 # Windows 桌面端"从本地文件更新固件"BLE OTA 入口
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：已实施（代码实证：win32_app.cc kMenuUpdateFirmwareFromFile* + StartOtaFromFile。核销 2026-10-08/N10）
 
 ## 背景与目标
 

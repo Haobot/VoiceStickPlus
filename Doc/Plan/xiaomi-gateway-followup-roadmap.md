@@ -1,5 +1,5 @@
 # 小米网关后续实施计划（2026-09-18 拟定）
-> 状态：未核销（N10 占位：待逐篇按实际进展改写）
+> 状态：部分实施（实证：gateway_target@main.c + control_cmd_contract_test；余项分散跟踪于 backlog。核销 2026-10-08/N10）
 
 > 上游：`Doc/Plan/xiaomi-remote-stick-gateway.md`（方案 + §6.3 问题链 + §8 分期）、
 > `Doc/Plan/windows-app-os-pairing.md`（桌面端配对口径）、
