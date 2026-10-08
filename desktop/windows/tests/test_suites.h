@@ -24,3 +24,6 @@ void RunCoordinatorBatch5Tests();
 
 // N8 cut9：协调器第六批（LocalMic 组 8 测）。
 void RunCoordinatorBatch6Tests();
+
+// N8 cut10：小米 usage-tap 批（8 测；MakeTapReport 同批迁 support）。
+void RunXiaomiUsageTapBatchTests();

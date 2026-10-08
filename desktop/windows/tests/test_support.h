@@ -896,3 +896,13 @@ inline void AtvvEndRecording(FakeBleCentral& ble, const std::string& device_id,
     InjectAtvvActions(ble, device_id, session.Tick(t + XiaomiAtvvSession::kAudioTailGraceMs));
     t += XiaomiAtvvSession::kAudioTailGraceMs;
 }
+
+// usage tap 纯逻辑层（Doc/Plan/xiaomi-remote-usage-tap.md §3.2.1 + §6）：9 字节
+// 报文解析、usage→按钮表、会话集合 diff 沿、三键直触发状态机、tap 佐证表。
+inline void MakeTapReport(uint8_t (&out)[9], uint16_t a, uint16_t b, uint16_t c) {
+    out[0] = 0x01; out[1] = 0x00; out[2] = 0x00;
+    out[3] = static_cast<uint8_t>(a & 0xFF); out[4] = static_cast<uint8_t>(a >> 8);
+    out[5] = static_cast<uint8_t>(b & 0xFF); out[6] = static_cast<uint8_t>(b >> 8);
+    out[7] = static_cast<uint8_t>(c & 0xFF); out[8] = static_cast<uint8_t>(c >> 8);
+}
+
