@@ -320,6 +320,12 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
 // 的键设软件路由（固件转 gateway_key 事件上报），无映射的键恢复 HOGP 直通。
 // key_map 取活跃 RC 设备的覆盖配置（无配对 RC 时取全局默认），与
 // Win32App::SyncXiaomiKeymapHook 同口径。BLE 层按设备类门控，仅 StickS3 生效。
+void VoiceStickCoordinator::RequestGatewayKeymapReport() {
+    // D10b：打开键位映射对话框时拉取设备当前路由表（分片回执经 LastGatewayKeymapReport
+    // 回显）。nullopt = 广播给已连接的 StickS3（与 SendInteractionMode 同口径）。
+    ble_->SendGatewayKeymapGet(std::nullopt);
+}
+
 void VoiceStickCoordinator::PushGatewayKeymapRoutesFor(const std::string& device_id) {
     std::optional<std::string> active_rc;
     for (const auto& entry : ConfigSnapshot()->paired_devices) {
@@ -733,7 +739,12 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
             LogCoordinatorLine("gateway keymap report (" +
                                std::to_string(keymap_report_pending_.size()) + " keys): " +
                                routes);
+            // D10b：完整表留存并推送（原攒完即清，键位映射对话框无从回显设备真表）。
+            keymap_report_routes_ = keymap_report_pending_;
             keymap_report_pending_.clear();
+            if (ui_) {
+                ui_->OnGatewayKeymapReport(keymap_report_routes_);
+            }
         }
     } else if (event.event == "button_down") {
         if (event.button == "primary" && event.source == "encoder") {

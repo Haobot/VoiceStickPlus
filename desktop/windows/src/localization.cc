@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kSelectionHotwordInvalidBody) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kGatewayDeviceRoutesLabel) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -315,6 +315,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSelectionHotwordInvalidTitle)] = "Invalid Hotword";
     table[Index(StringId::kSelectionHotwordInvalidBody)] =
         "Selection has unsupported characters or exceeds the hotword limits; ignored: ";
+    table[Index(StringId::kGatewayDeviceRoutesLabel)] = "Device routes:";
     table[Index(StringId::kHotwordCandidateNotifyTitle)] = "Hotword Suggestion";
     table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
         " was corrected repeatedly. Review it in Settings - Hotwords.";
@@ -804,6 +805,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSelectionHotwordInvalidTitle)] = "非法热词";
     table[Index(StringId::kSelectionHotwordInvalidBody)] =
         "选区含不支持的字符或超出热词限制，已忽略：";
+    table[Index(StringId::kGatewayDeviceRoutesLabel)] = "设备路由回执：";
     table[Index(StringId::kHotwordCandidateNotifyTitle)] = "热词候选建议";
     table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
         " 反复被精修纠正，可在设置-热词中确认加入。";

@@ -157,6 +157,11 @@ public:
         (void)device_id;
     }
     int proto_negotiate_count = 0;
+    void SendGatewayKeymapGet(const std::optional<std::string>& device_id) override {
+        keymap_get_count++;
+        (void)device_id;
+    }
+    int keymap_get_count = 0;
     void SendTapEnabled(bool enabled,
                         const std::optional<std::string>& device_id) override {
         sent_tap_enabled.push_back(std::pair{enabled, device_id});

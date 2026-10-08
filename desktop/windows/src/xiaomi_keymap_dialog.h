@@ -38,6 +38,9 @@ public:
 
     void Show();
 
+    // D10b：回显设备侧真实路由表（打开预填 + 每次回执到达推送）。
+    void SetDeviceReceipt(const std::wstring& text);
+
     // (device_id, override)：override 为 nullopt 表示与全局默认一致（清除覆盖）。
     std::function<void(const std::string& device_id,
                        std::optional<XiaomiSettings> override)> on_settings_changed;
@@ -113,6 +116,8 @@ private:
     // 网关长按连发间隔滑块与数值标签。
     HWND repeat_slider_ = nullptr;
     HWND repeat_label_ = nullptr;
+    // D10b：设备路由回执行（gateway_keymap 攒全表后由 Win32App 推送文本）。
+    HWND gateway_receipt_label_ = nullptr;
     int repeat_interval_ms_ = 120;
     HWND restore_defaults_button_ = nullptr;
     HWND save_button_ = nullptr;

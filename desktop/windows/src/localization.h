@@ -485,6 +485,9 @@ enum class StringId {
     // 一套规则，"加进去但不生效"且无提示。
     kSelectionHotwordInvalidTitle,  // "Invalid Hotword" / "非法热词"
     kSelectionHotwordInvalidBody,   // 说明字符/长度原因 + 追加原文
+
+    // D10b：键位映射对话框的设备路由回执行标签（值 = "key=route, …" 列表）
+    kGatewayDeviceRoutesLabel,      // "Device routes:" / "设备路由回执："
 };
 
 // 返回 UTF-8 本地化文本

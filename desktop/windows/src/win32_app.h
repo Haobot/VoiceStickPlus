@@ -77,6 +77,9 @@ public:
     void SetDeviceInfo(const DeviceInfo& info) override;
     void SetDeviceEncoderPresent(const std::string& device_id, bool present) override;
     void SetDeviceGatewayMode(const std::string& device_id, bool gateway) override;
+    // D10b：完整路由回执 → 现开的键位映射对话框回显设备真表。
+    void OnGatewayKeymapReport(
+        const std::vector<BleProtocol::StateEvent::KeyRoute>& routes) override;
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;

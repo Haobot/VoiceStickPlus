@@ -3071,6 +3071,30 @@ void Win32App::ShowXiaomiKeymapDialog(const std::string& device_id) {
     xiaomi_keymap_dialog_->Show();
 }
 
+// D10b：回执文本 = i18n 标签前缀 + "key=route, …"（key/route 均 ASCII，直接宽化）。
+static std::wstring FormatGatewayReceipt(
+    const std::vector<BleProtocol::StateEvent::KeyRoute>& routes, UiLanguage language) {
+    std::wstring text = TrW(StringId::kGatewayDeviceRoutesLabel, language);
+    text += L" ";
+    bool first = true;
+    for (const auto& route : routes) {
+        if (!first) text += L", ";
+        first = false;
+        text += std::wstring(route.key.begin(), route.key.end());
+        text += L"=";
+        text += std::wstring(route.route.begin(), route.route.end());
+    }
+    return text;
+}
+
+void Win32App::OnGatewayKeymapReport(
+    const std::vector<BleProtocol::StateEvent::KeyRoute>& routes) {
+    // D10b：完整回执到达 → 现开对话框回显；未开则留存于 coordinator 下次打开预填。
+    if (!xiaomi_keymap_dialog_) return;
+    xiaomi_keymap_dialog_->SetDeviceReceipt(
+        FormatGatewayReceipt(routes, EffectiveUiLanguage(config_.ui_language)));
+}
+
 void Win32App::ShowGatewayKeymapDialog() {
     // 网关模式遥控器映射（P1，Doc/Plan/xiaomi-remote-stick-gateway.md §5.3）：
     // 遥控器配对在 StickS3 上、不在桌面端 paired_devices 里，映射编辑直接落在
@@ -3120,6 +3144,16 @@ void Win32App::ShowGatewayKeymapDialog() {
             LogLine("HidTap toggle ignored in gateway keymap dialog");
         };
     xiaomi_keymap_dialog_->Show();
+    // D10b：打开即回显留存的最近回执，并主动 GET 拉新（分片回执到达后经
+    // OnGatewayKeymapReport 刷新）。
+    if (coordinator_) {
+        const auto& receipt = coordinator_->LastGatewayKeymapReport();
+        if (!receipt.empty()) {
+            xiaomi_keymap_dialog_->SetDeviceReceipt(
+                FormatGatewayReceipt(receipt, EffectiveUiLanguage(config_.ui_language)));
+        }
+        coordinator_->RequestGatewayKeymapReport();
+    }
 }
 
 void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {

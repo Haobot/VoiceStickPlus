@@ -78,6 +78,7 @@ public:
     }
     void SendShowImuDebug(bool, const std::optional<std::string>&) override {}
     void SendProtoNegotiate(const std::optional<std::string>&) override {}
+    void SendGatewayKeymapGet(const std::optional<std::string>&) override {}
     void SendTapEnabled(bool enabled, const std::optional<std::string>& device_id) override {
         sent_tap_enabled.push_back(std::pair{enabled, device_id});
     }

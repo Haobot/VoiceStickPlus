@@ -740,6 +740,12 @@ void XiaomiKeymapDialog::BuildControls() {
     RefreshSidePanel();
 }
 
+void XiaomiKeymapDialog::SetDeviceReceipt(const std::wstring& text) {
+    // D10b：回显设备侧真实路由表（打开预填 + 回执推送两用）。
+    if (gateway_receipt_label_ == nullptr) return;
+    SetWindowTextW(gateway_receipt_label_, text.c_str());
+}
+
 void XiaomiKeymapDialog::RefreshRepeatIntervalLabel() {
     if (repeat_label_ == nullptr) return;
     const auto language = EffectiveUiLanguage(language_);

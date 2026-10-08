@@ -107,6 +107,8 @@ public:
     //（gateway_key 事件上报桌面端）、false 恢复 HOGP 直通。仅对 StickS3 设备生效。
     virtual void SendGatewayKeymapSet(const std::string& key, bool software,
                                       const std::optional<std::string>& device_id) = 0;
+    // D10b：拉取当前路由表——回执经 gateway_keymap 分片回流，coordinator 攒全表。
+    virtual void SendGatewayKeymapGet(const std::optional<std::string>& device_id) = 0;
     // P1 目标表：上报本机显示名（主机名）给网关设备，供其目标表命名。
     virtual void SendGatewayTargetInfo(const std::string& name,
                                        const std::optional<std::string>& device_id) = 0;
@@ -185,6 +187,10 @@ public:
     virtual void SetDeviceEncoderPresent(const std::string& device_id, bool present) = 0;
     // 网关模式上报（gateway_status）：网关模式下不得直连遥控器 ATVV。
     virtual void SetDeviceGatewayMode(const std::string& device_id, bool gateway) = 0;
+    // D10b：完整路由回执到达（gateway_keymap 分片攒全表）——现开的键位映射对话框
+    // 据此回显设备侧真实路由表。默认空实现保护既有实现者。
+    virtual void OnGatewayKeymapReport(
+        const std::vector<BleProtocol::StateEvent::KeyRoute>&) {}
     virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
                                    bool charging, bool usb_powered) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;
@@ -342,8 +348,16 @@ public:
 private:
     // 网关按键路由下发（P1）：对该设备逐键同步软件路由/直通（见 .cc 注释）。
     void PushGatewayKeymapRoutesFor(const std::string& device_id);
+    // D10b：最近一次完整路由回执（打开键位映射对话框时回显）。
+    const std::vector<StateEvent::KeyRoute>& LastGatewayKeymapReport() const {
+        return keymap_report_routes_;
+    }
+    // D10b：向设备请求当前路由表（打开对话框时拉取；回执分片回流）。
+    void RequestGatewayKeymapReport();
     // A15：gateway_keymap 分片回执的未完成累计（seq0 起攒，more=false 收口）。
     std::vector<StateEvent::KeyRoute> keymap_report_pending_;
+    // D10b：收口后的完整表**留存**（打开对话框回显；原攒完即清 UI 无从取）。
+    std::vector<StateEvent::KeyRoute> keymap_report_routes_;
 public:
     // 热调参：仅更新运行期某设备的 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
     void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);
