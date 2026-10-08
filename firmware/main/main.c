@@ -281,6 +281,12 @@ typedef enum {
     APP_EVENT_OTA_DONE,
     APP_EVENT_OTA_END,
     APP_EVENT_HOST_RESPONSE_TIMEOUT,
+    // A9：double_click_timer_cb 的重活移交（原在 esp_timer 共享任务内联启动录音
+    // 并发 BLE 帧）——处理器以标志复核方式领取执行。
+    APP_EVENT_CLICK_TO_TALK_CONFIRM,
+    APP_EVENT_RECORDING_RETRY_TICK,
+    APP_EVENT_HOLD_THRESHOLD_CONFIRM,
+    APP_EVENT_DOUBLE_CLICK_TIMEOUT,
     APP_EVENT_PICKUP,
     APP_EVENT_TAP,
     APP_EVENT_ENCODER_ROTATE,
@@ -799,6 +805,12 @@ static bool app_event_is_critical(app_event_type_t type)
     case APP_EVENT_OTA_END:
     case APP_EVENT_XIAOMI_STOP_DUE:
     case APP_EVENT_ENTER_POWER_OFF:
+    // A9：双击定时器派发的录音启动链——丢失即手势卡死（按住不录音/单击无回执），
+    // 与 XIAOMI_STOP_DUE 同级关键。
+    case APP_EVENT_CLICK_TO_TALK_CONFIRM:
+    case APP_EVENT_RECORDING_RETRY_TICK:
+    case APP_EVENT_HOLD_THRESHOLD_CONFIRM:
+    case APP_EVENT_DOUBLE_CLICK_TIMEOUT:
         return true;
     default:
         return false;
@@ -1891,6 +1903,115 @@ static void app_event_task(void *arg)
             ui_status_set_idle();
             note_activity();
             break;
+        // A9：double_click_timer_cb 派发的重活在 app_event_task 上下文执行
+        //（原回调内联 start_recording 的 I2S/ES8311/Opus 初始化与 BLE 帧发送，
+        // 挤占 esp_timer 共享任务致手势窗口/空闲计时/OTA 看门狗抖动）。
+        // 每案首行**复核标志**：派发与执行之间状态可能被新按键周期消费
+        //（双击定时器与按键事件共用同一状态机），复核失败即安全空操作。
+        case APP_EVENT_CLICK_TO_TALK_CONFIRM: {
+            if (!s_click_to_talk_pending_start) break;
+            s_click_to_talk_pending_start = false;
+            ESP_LOGI(TAG, "click_to_talk pending start timeout, confirming recording");
+            s_primary_session_id = start_recording();
+            if (s_primary_session_id != 0) {
+                esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag());
+                if (err != ESP_OK) {
+                    (void)stop_recording();
+                    s_primary_session_id = 0;
+                    s_primary_owner = PRIMARY_OWNER_NONE;
+                    apply_app_ui_state("ready", "");
+                }
+            } else {
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+            }
+            break;
+        }
+        case APP_EVENT_RECORDING_RETRY_TICK: {
+            if (!s_recording_retry_pending) break;
+            // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
+            s_recording_retry_pending = false;
+            // 用户已松开 → 干净放弃（未发过 button_down，无需补 button_up）。
+            if (!primary_button_held_from_timer()) {
+                ESP_LOGI(TAG, "recording start retry aborted: button released");
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                break;
+            }
+            if (esp_timer_get_time() >= s_recording_retry_deadline_us) {
+                ESP_LOGW(TAG, "recording start retry timed out (ble not ready in window)");
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                break;
+            }
+            if (!voice_ble_is_ready()) {
+                // 仍未就绪，继续重试。
+                s_recording_retry_pending = true;
+                (void)esp_timer_start_once(s_double_click_timer,
+                                           RECORDING_RETRY_INTERVAL_MS * 1000ULL);
+                break;
+            }
+            // ble_ready 已就绪，启动录音（复用现有成功路径）。
+            ESP_LOGI(TAG, "recording start retry: ble ready, starting");
+            s_primary_session_id = start_recording();
+            if (s_primary_session_id != 0) {
+                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
+                if (err != ESP_OK) {
+                    (void)stop_recording();
+                    s_primary_session_id = 0;
+                    s_primary_owner = PRIMARY_OWNER_NONE;
+                    apply_app_ui_state("ready", "");
+                }
+            } else {
+                // ble_ready=1 仍失败 → 不可恢复原因，放弃。
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+            }
+            break;
+        }
+        case APP_EVENT_HOLD_THRESHOLD_CONFIRM: {
+            if (!s_hold_threshold_pending) break;
+            // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
+            s_hold_threshold_pending = false;
+            if (primary_button_held_from_timer()) {
+                ESP_LOGI(TAG, "hold threshold reached, starting recording");
+                s_primary_session_id = start_recording();
+                if (s_primary_session_id != 0) {
+                    esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
+                    if (err != ESP_OK) {
+                        (void)stop_recording();
+                        s_primary_session_id = 0;
+                        s_primary_owner = PRIMARY_OWNER_NONE;
+                        apply_app_ui_state("ready", "");
+                    }
+                } else if (!voice_ble_is_ready()) {
+                    // ble_ready=0 可恢复：按住等待重试，覆盖 Windows 订阅完成的过渡期。
+                    ESP_LOGI(TAG, "ble not ready, deferring recording start (retrying)");
+                    s_recording_retry_pending = true;
+                    s_recording_retry_deadline_us =
+                        esp_timer_get_time() + RECORDING_RETRY_WINDOW_MS * 1000LL;
+                    (void)esp_timer_start_once(s_double_click_timer,
+                                               RECORDING_RETRY_INTERVAL_MS * 1000ULL);
+                    // 保留 s_primary_owner / s_primary_down_us 不变。
+                } else {
+                    // 不可恢复原因，放弃。
+                    s_primary_down_us = 0;
+                }
+            }
+            break;
+        }
+        case APP_EVENT_DOUBLE_CLICK_TIMEOUT: {
+            if (!s_double_click_pending) break;
+            // 双击窗口超时：单次短击。
+            s_double_click_pending = false;
+            ESP_LOGI(TAG, "double-click window expired, sending button_click");
+            voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0,
+                                        primary_button_source_tag());
+            s_primary_down_us = 0;
+            s_primary_session_id = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            break;
+        }
         case APP_EVENT_HOST_RESPONSE_TIMEOUT:
             if (!s_recording && (s_app_ui_state == APP_UI_STATE_RECORDING ||
                                  s_app_ui_state == APP_UI_STATE_THINKING)) {
@@ -2067,108 +2188,31 @@ static void double_click_timer_cb(void *arg)
 {
     (void)arg;
 
+    // A9：双击回调原在此内联启动录音（I2S/ES8311/Opus 初始化，毫秒~百毫秒级）
+    // 并发 BLE 帧，全部挤在 esp_timer 共享任务里 → 手势窗口/空闲计时/OTA 看门狗
+    // 抖动。现只派发事件，重活移交 app_event_task（同 disc_poweroff 范式）；
+    // 处理器以**标志复核**领取（派发延迟窗口内被新按键周期消费则安全空操作）。
     // click_to_talk 首击延迟确认：双击窗口超时无第二次 click -> 确认启动录音。
     if (s_click_to_talk_pending_start) {
-        s_click_to_talk_pending_start = false;
-        ESP_LOGI(TAG, "click_to_talk pending start timeout, confirming recording");
-        s_primary_session_id = start_recording();
-        if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag());
-            if (err != ESP_OK) {
-                (void)stop_recording();
-                s_primary_session_id = 0;
-                s_primary_owner = PRIMARY_OWNER_NONE;
-                apply_app_ui_state("ready", "");
-            }
-        } else {
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-        }
+        queue_app_event(APP_EVENT_CLICK_TO_TALK_CONFIRM);
         return;
     }
 
     if (s_recording_retry_pending) {
-        // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
-        s_recording_retry_pending = false;
-        // 用户已松开 → 干净放弃（未发过 button_down，无需补 button_up）。
-        if (!primary_button_held_from_timer()) {
-            ESP_LOGI(TAG, "recording start retry aborted: button released");
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-            return;
-        }
-        if (esp_timer_get_time() >= s_recording_retry_deadline_us) {
-            ESP_LOGW(TAG, "recording start retry timed out (ble not ready in window)");
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-            return;
-        }
-        if (!voice_ble_is_ready()) {
-            // 仍未就绪，继续重试。
-            s_recording_retry_pending = true;
-            (void)esp_timer_start_once(s_double_click_timer,
-                                       RECORDING_RETRY_INTERVAL_MS * 1000ULL);
-            return;
-        }
-        // ble_ready 已就绪，启动录音（复用现有成功路径）。
-        ESP_LOGI(TAG, "recording start retry: ble ready, starting");
-        s_primary_session_id = start_recording();
-        if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
-            if (err != ESP_OK) {
-                (void)stop_recording();
-                s_primary_session_id = 0;
-                s_primary_owner = PRIMARY_OWNER_NONE;
-                apply_app_ui_state("ready", "");
-            }
-        } else {
-            // ble_ready=1 仍失败 → 不可恢复原因，放弃。
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-        }
+        // A9：重活（start_recording + BLE 帧 + 重试续臂）移交 app_event_task。
+        queue_app_event(APP_EVENT_RECORDING_RETRY_TICK);
         return;
     }
 
     if (s_hold_threshold_pending) {
-        // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
-        s_hold_threshold_pending = false;
-        if (primary_button_held_from_timer()) {
-            ESP_LOGI(TAG, "hold threshold reached, starting recording");
-            s_primary_session_id = start_recording();
-            if (s_primary_session_id != 0) {
-                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
-                if (err != ESP_OK) {
-                    (void)stop_recording();
-                    s_primary_session_id = 0;
-                    s_primary_owner = PRIMARY_OWNER_NONE;
-                    apply_app_ui_state("ready", "");
-                }
-            } else if (!voice_ble_is_ready()) {
-                // ble_ready=0 可恢复：按住等待重试，覆盖 Windows 订阅完成的过渡期。
-                ESP_LOGI(TAG, "ble not ready, deferring recording start (retrying)");
-                s_recording_retry_pending = true;
-                s_recording_retry_deadline_us =
-                    esp_timer_get_time() + RECORDING_RETRY_WINDOW_MS * 1000LL;
-                (void)esp_timer_start_once(s_double_click_timer,
-                                           RECORDING_RETRY_INTERVAL_MS * 1000ULL);
-                // 保留 s_primary_owner / s_primary_down_us 不变。
-            } else {
-                // 不可恢复原因，放弃。
-                s_primary_down_us = 0;
-            }
-        }
+        // A9：重活（start_recording + button_down + 可能的重试续臂）移交 app_event_task。
+        queue_app_event(APP_EVENT_HOLD_THRESHOLD_CONFIRM);
         return;
     }
 
     if (s_double_click_pending) {
-        // 双击窗口超时：单次短击。
-        s_double_click_pending = false;
-        ESP_LOGI(TAG, "double-click window expired, sending button_click");
-        voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0,
-                                    primary_button_source_tag());
-        s_primary_down_us = 0;
-        s_primary_session_id = 0;
-        s_primary_owner = PRIMARY_OWNER_NONE;
+        // A9：BLE 帧发送（mbuf 分配 + 协议编码）也移交 app_event_task。
+        queue_app_event(APP_EVENT_DOUBLE_CLICK_TIMEOUT);
     }
 }
 
