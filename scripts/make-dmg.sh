@@ -103,7 +103,21 @@ if xcrun notarytool history --keychain-profile "AC_PASSWORD" >/dev/null 2>&1; th
     xcrun notarytool submit "$OUTPUT" --keychain-profile "AC_PASSWORD" --wait
     xcrun stapler staple "$OUTPUT"
 else
-    echo "Skipping notarization: keychain profile AC_PASSWORD was not found."
+    # E3-③：公证被跳过不再静默。release 意图（发布命令行带 SPARKLE_PRIVATE_ED_KEY，
+    # 或显式 VOICESTICK_RELEASE=1）下必须显式确认——未公证的自签包首次打开需
+    # 右键→Open（Doc/Ref/release.md 已记），要么配好 AC_PASSWORD 要么显式放行。
+    if [ -n "${SPARKLE_PRIVATE_ED_KEY:-}" ] || [ "${VOICESTICK_RELEASE:-0}" = "1" ]; then
+        if [ "${VOICESTICK_ALLOW_UNNOTARIZED:-0}" != "1" ]; then
+            echo "Error: notarization skipped (keychain profile AC_PASSWORD not found) for a release build."
+            echo "       Fix: xcrun notarytool store-credentials AC_PASSWORD"
+            echo "       Or acknowledge shipping a non-notarized DMG (right-click -> Open for users):"
+            echo "            VOICESTICK_ALLOW_UNNOTARIZED=1 scripts/make-dmg.sh ..."
+            exit 1
+        fi
+        echo "Acknowledged: shipping non-notarized release DMG (VOICESTICK_ALLOW_UNNOTARIZED=1)."
+    else
+        echo "Skipping notarization: keychain profile AC_PASSWORD was not found."
+    fi
 fi
 
 echo "DMG complete: $OUTPUT"

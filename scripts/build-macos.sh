@@ -63,6 +63,14 @@ fi
 if [ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]; then
     /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_PUBLIC_ED_KEY" "$PLIST"
 elif /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST" | grep -q "REPLACE_WITH"; then
+    # E3-①：release 构建带占位公钥 = 签出来的更新永远无法被验证（Sparkle 静默拒收，
+    # 用户拿不到修复）→ fail-hard；debug 构建保留告警（本地迭代不应被卡住）。
+    if [ "$SWIFT_CONFIG" = "release" ]; then
+        echo "Error: SUPublicEDKey is still a placeholder in a release build."
+        echo "       Shipped updates could never be verified by clients."
+        echo "       Set SPARKLE_PUBLIC_ED_KEY (and SPARKLE_PRIVATE_ED_KEY for sign_update)."
+        exit 1
+    fi
     echo "WARNING: SUPublicEDKey is still a placeholder."
     echo "         Generate Sparkle keys before shipping a public release."
 fi
@@ -311,22 +319,45 @@ ditto -c -k --norsrc --noextattr --keepParent "$STAGING_DIR/VoiceStick.app" "$ZI
 rm -rf "$STAGING_DIR"
 
 SIGN_TOOL="$(find -L "$DESKTOP_DIR/.build-$FIRST_ARCH/artifacts" -name sign_update -type f 2>/dev/null | head -1 || true)"
+SIGN_FAIL=""
 if [ -n "$SIGN_TOOL" ] && [ -x "$SIGN_TOOL" ]; then
     echo "Signing Sparkle ZIP..."
+    SIGN_RC=0
     if [ -n "${SPARKLE_PRIVATE_ED_KEY:-}" ]; then
-        SIGN_OUTPUT="$(printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | "$SIGN_TOOL" --ed-key-file - "$ZIP_PATH" 2>&1 || true)"
+        SIGN_OUTPUT="$(printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | "$SIGN_TOOL" --ed-key-file - "$ZIP_PATH" 2>&1)" || SIGN_RC=$?
     else
-        SIGN_OUTPUT="$("$SIGN_TOOL" --account "$SPARKLE_KEY_ACCOUNT" "$ZIP_PATH" 2>&1 || true)"
+        SIGN_OUTPUT="$("$SIGN_TOOL" --account "$SPARKLE_KEY_ACCOUNT" "$ZIP_PATH" 2>&1)" || SIGN_RC=$?
     fi
     echo "$SIGN_OUTPUT"
     ED_SIGNATURE="$(printf '%s\n' "$SIGN_OUTPUT" | sed -nE 's/.*sparkle:edSignature="([^"]+)".*/\1/p' | head -1)"
+    # E3-② 格式校验：EdDSA 签名必须是 base64 且 ≥40 字符——畸形值绝不落盘。
+    if [ -n "$ED_SIGNATURE" ] && ! printf '%s' "$ED_SIGNATURE" | grep -qE '^[A-Za-z0-9+/=]{40,}$'; then
+        echo "Error: sign_update produced a malformed edSignature."
+        ED_SIGNATURE=""
+        SIGN_RC=1
+    fi
     if [ -n "$ED_SIGNATURE" ]; then
         printf '%s\n' "$ED_SIGNATURE" > "$SIGNATURE_PATH"
     else
-        printf '%s\n' "$SIGN_OUTPUT" > "$SIGNATURE_PATH"
+        # E3-②：原 else 分支把**错误文本**写进 .signature（不可验证还伪装成已签名）；
+        # 改为删除任何陈旧签名，绝不产生"新 zip + 旧/坏签名"的组合。
+        rm -f "$SIGNATURE_PATH"
+        if [ "$SIGN_RC" -ne 0 ]; then
+            echo "Error: sign_update failed (rc=$SIGN_RC)."
+        fi
+        SIGN_FAIL="sign_update did not produce a signature"
     fi
 else
-    echo "WARNING: Sparkle sign_update tool was not found."
+    SIGN_FAIL="Sparkle sign_update tool was not found"
+fi
+if [ -n "$SIGN_FAIL" ]; then
+    # E3-②：release 构建没有签名 = 发出去的更新无法验证 → fail-hard；
+    # debug 构建保留告警（本地不装 Sparkle 工具链也不该卡住）。
+    if [ "$SWIFT_CONFIG" = "release" ]; then
+        echo "Error: cannot ship a release build without a Sparkle signature ($SIGN_FAIL)."
+        exit 1
+    fi
+    echo "WARNING: Sparkle signature unavailable in debug build ($SIGN_FAIL)."
 fi
 
 echo ""

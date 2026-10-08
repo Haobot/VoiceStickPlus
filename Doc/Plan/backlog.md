@@ -99,7 +99,7 @@
 
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
-| E3 | macOS 更新链 3 处静默降级（占位公钥/sign 失败/未公证）→ fail-hard | open | 9-22 未复核 |
+| E3 | macOS 更新链 3 处静默降级（占位公钥/sign 失败/未公证）→ fail-hard | **closed（10-08）** | 三处全落：① `build-macos.sh` 占位 `SUPublicEDKey` 在 **release 构建直接 exit1**（debug 保留告警，本地迭代不被卡）；② `sign_update` 失败**绝不把错误文本写进 `.signature`**（原 else 分支正是如此）——改为删陈旧签名防「新 zip + 旧签名」组合、**格式校验**（base64 ≥40 字符）不合规按失败、捕获退出码（原实现吞掉失败码）→ release 无签名 exit1；③ `make-dmg.sh` 公证跳过（无 `AC_PASSWORD`）在 **release 意图下须 `VOICESTICK_ALLOW_UNNOTARIZED=1` 显式放行**，否则 exit1 并给 `notarytool store-credentials` 指引（非 release 行为不变；未公证=首次右键→Open 已在 `release.md` 记载）。**本地验证**：`bash -n` 双脚本 + 从真实脚本**抽取 sign 块**跑注入用例（有效写入 / sign 失败删陈旧签名 / 畸形按失败）3 例 + 公证闸门 3 例（非 release 跳过、release 无确认拒绝、显式放行）全过 |
 | E4 | `prepare_flash_payload.ps1` 供应链哈希锚点（require-hashes） | open | 9-22 未复核 |
 | E7 | Windows 测试目标显式 `-UNDEBUG` 或统一 CHECK 宏 | **partial** | CI 用 Debug 构建 + ctest 已实跑全绿（2026-10-07，断言真实生效）；本地 RelWithDebInfo 假绿面仍在 |
 | E8 | 固件 gateway host 测试改跨平台 CTest 并进 CI | **closed（10-08）** | `run_tests.py` 重写为跨平台（POSIX `cc -std=c11 -Wall -Wextra -Werror`；Windows 保留 vcvars+cl `/W4 /WX`），目标表 5（gateway logic/atvv/targets/switcher + voice_ble conn_table），产物进临时目录不污染源码树；顺删 `test_gateway_atvv` 死函数 `feed_zero_audio`（gcc -Werror 拦下）；CI 新增 `host-tests` job；本地 5/5 全过 |
@@ -131,6 +131,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **E3 关闭**：macOS 更新链三处静默降级全部 fail-hard（占位公钥/签名失败/公证跳过），签名永不落错误文本、格式校验、公证跳过需显式放行 | 本地 `bash -n` + 抽取真实脚本块注入用例（sign 3 例 + 公证 3 例）全过；bash 脚本不经 CI，本地验证为唯一证据 |
 | 2026-10-08 | **D1 复核关闭 + D10（partial）**：D1 实测已由后续工作完成（macOS 14 case、真实接线、gateway_status 逐平台标注）；D10 Windows 半边补 `StateEvent::keymap_routes` 解析 + 协调器落日志（macOS 半边本已解析，评审陈旧），UI 回显拆 D10b | 新增 `TestGatewayKeymapReceiptParsing`（回执帧 + 非回执事件负例）；CI 七 job（Windows ctest） |
 | 2026-10-08 | **D3（partial）**：macOS StickS3 订阅结果不再被 guard 吞掉——失败记日志 + 逐特征 3×0.5s 退避重订阅 + 超限断开重建；主动心跳留 D3b | 本地 `swift build` + `PASSED 650/650`；CI 七 job |
 | 2026-10-08 | **D7 关闭**：固件 ota_abort 不匹配拒绝（不清理/不发假 aborted/不漏 handle），判定抽纯头文件策略供宿主单测 | 本地 `run_tests.py` **7/7**（新增 voice_ble_ota_policy 目标）+ CI 七 job（固件编译） |
