@@ -25,6 +25,7 @@ runLlmSseParserTests()
 runHotwordSelectorTests()
 runActiveSecretTests()
 runOtaFlowControlTests()
+runGatewayKeymapChunkTests()
 runContractFixtureTests()
 
 let passed = totalChecks - failedChecks

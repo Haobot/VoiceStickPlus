@@ -40,7 +40,7 @@
 | A12 | `tap_enabled` 默认值与 protocol.md 相反（实现/文档取一） | **closed（10-08，实现侧对齐文档）** | 取向论证：protocol.md:311 明写 Default false、桌面 `InteractionSettings::tap_to_arrow=false` 且在**连接变更/配置变更两处逐台下发**其有效值（coordinator:129/281）→ 固件默认是唯一异类，且只在「上电到桌面首次下发」的窗口生效（开箱可能注入 Down 键）。两处改 false：静态初值 `s_tap_enabled` + `load_tap_settings_from_nvs` 缺省 `enabled=0`（仅 NVS 缺 key 生效，用户已存值不受影响）。**文档无需改** |
 | A13 | `tap_sensitivity` 无范围校验 + 缺字段静默落盘 | **closed（10-08）** | 复核 B14 重构后的执行分支仍缺两道闸：① **缺字段 → 静默按默认5 落盘**，覆盖用户 NVS 既有设置；② 数值无 1..10 校验即 `bmi270_set_tap_sensitivity` + 落盘（协议契约1..10）。修复：缺字段/未知 legacy 字符串 → 告警后**显式 break**（不动当前值、不落盘）；数值夹取 1..10 再下发+落盘。桌面侧本有 `TapSensitivityClamp`（配置解析 + UI trackbar 双重夹取），固件补齐**端点防御**（控制通道对任意已连接 central 开放，不可信任桌面已夹取） |
 | A14 | `ui_state.text` 超 MTU 预算：发送端零校验、固件硬截断 | open | 9-22 未复核；与 state_tx MTU 红线相关 |
-| A15 | `gateway_keymap` 回执 400B 缓冲发不出 | open | 9-22 未复核 |
+| A15 | `gateway_keymap` 回执 400B 缓冲发不出 | **closed（10-08，三端分片）** | 实锤两重死因：① `routes[400]` + `snprintf` 返回值累加使 `off` 越过 sizeof，收尾 `off < sizeof` 恒假 → **整帧静默丢**；② 即便不丢，13 键全表 ≈470B > 单帧预算（ATT MTU247 → JSON ≤240B）必被 ATT 截断、对端解析失败（MTU512 方案不可靠——取决于 central 请求，弃）。**方案=按预算分片**（protocol.md 新契约）：固件每片 `routes[180]`+57B 包络 ≤237B，`voice_ble_send_gateway_keymap(routes, seq, more)`，`seq0` 起、`more:false` 收口；Windows `StateEvent.keymap_seq/more` + `BleProtocol::AccumulateKeymap`（seq0 重启自愈、旧式单帧即完整）+ 协调器攒全表才落日志；macOS `StateEvent.keymapSeq/More` + `accumulateKeymap(into:)` + 协调器同语义。**验证**：本地抽取**真实固件函数**跑 harness 4 用例（13 键最坏 3 片 166/140/148B、seq 连续、无前导逗号、13 键不重不漏、空表 `[]`、单键单帧）+ Windows `TestGatewayKeymapReceiptParsing` 扩展（分片解析/累计/重启/旧帧兼容）+ macOS `runGatewayKeymapChunkTests`（同四断面）+ CI 七 job |
 | A16 | 双击收尾不清 owner / click_to_talk 忽略 remote up | open | 9-22 未复核 |
 | A17 | 主机无响应看门狗是死代码（timer 从不 start） | **closed（10-08）** | 确认死代码：创建/init + stop + 回调 + `APP_EVENT_HOST_RESPONSE_TIMEOUT` 处理（回 ready）四件俱全，**全仓无 start**。修复：新增 `start_host_response_timer()`（30s one-shot，失败仅告警）；武装点= `apply_app_ui_state` **进入非 ready 态**（每次状态迁移先 stop 再按需 start，窗口随主机每次响应刷新）。**30s 取值有据**：桌面端自身 `kFinalizingWatchdogTimeout=15s` 先兜住正常收尾，30s 只在主机真静默时触发；cb 的 `!s_recording` 条件保证**录音中不误伤**；录音结束必然经 device-side audio_end 进入 thinking（非 ready）重新武装，链路自洽 |
 | A19 | PMIC IRQ 先 enable 后清源 + ISR 内队列失败永久 disable | **closed（10-08）** | 两缺陷均实锤：① `APP_EVENT_POWER_IRQ` 原顺序 **enable 在前**（fall-through 到 `update_battery_status()`）——清源前线为低电平（`GPIO_INTR_LOW_LEVEL`）→ ISR 立即重入（disable→队列→enable→…风暴）；② `queue_app_event_from_isr` 为 void 且 `(void)xQueueSendFromISR` **吞掉失败** → 队列满时事件丢且线已 disable，**永久失效只剩 10s 电池兜底**。修复：① 调序为**先 `update_battery_status()`（内含 `stick_s3_board_clear_power_irqs` 清 IRQ_STATUS1/2/3）再 enable**、去 fall-through；② 队列函数改返回 `pdTRUE/pdFALSE`，ISR 失败置 `s_pmic_irq_dropped`（volatile），**周期电池刷新处先清源再补臂**——刻意不在 ISR 内 enable（源未清会无限自激）；队列未创建（启动早期）不计丢弃，防告警刷屏 |
@@ -106,7 +106,7 @@
 | E8 | 固件 gateway host 测试改跨平台 CTest 并进 CI | **closed（10-08）** | `run_tests.py` 重写为跨平台（POSIX `cc -std=c11 -Wall -Wextra -Werror`；Windows 保留 vcvars+cl `/W4 /WX`），目标表 5（gateway logic/atvv/targets/switcher + voice_ble conn_table），产物进临时目录不污染源码树；顺删 `test_gateway_atvv` 死函数 `feed_zero_audio`（gcc -Werror 拦下）；CI 新增 `host-tests` job；本地 5/5 全过 |
 | E9 | E2E 脚本退出码反映判定（不假 PASS） | **partial** | 9-22 已修两项（gateway_switch/run_asr_bench），其余未复核 |
 | E10 | appcast 单调性（✅已随 E2 修）+ COS `firmware/latest/manifest.json` 指向国内域名 | **partial** | manifest 指向未复核 |
-| E12 | `test_playback` 收进调试构建 + 补 protocol.md 文档 | open | 与 P0-2 同批 |
+| E12 | `test_playback` 收进调试构建 + 补 protocol.md 文档 | **partial（10-08，文档半边完成）** | 已补 protocol.md：控制事件表新行（用途= L3 端到端回放、**裸文件名约束/拒绝路径分隔符与 `..`**、非用户流程）+ JSON 样例。**收进调试构建未做**：P0-2 明确把它整包列入 blocked（产品决策 + 真机 + eFuse），且当前仓库只有单一 `firmware/sdkconfig`（无 dev/release 配置分叉，CI 即用它），改门控=建立配置分叉属发布链结构变更 → 随 P0-2 一并决策 |
 
 ## 7. N 系列（10-07 跟进评审）与 P2/P3 摘要
 
@@ -132,6 +132,7 @@
 | 日期 | 项 | 验证 |
 |---|---|---|
 | 2026-10-07 | 0.2 release-guard（13 单测 + 真实仓库 7/7 PASS）、0.3 网站 CI、0.4 backlog、N3、N4、N5、granule、protocol 60ms | 本地：`test_release_guard.py` 13/13、`release_guard.py` 全绿、`npm run build` ✅、macOS `swift build` + 552/552 ✅；CI 已复核见下行 |
+| 2026-10-08 | **A15 关闭（三端分片）+ E12 partial（文档半边）**：keymap 回执按预算分片（固件 seq/more + Windows AccumulateKeymap + macOS accumulateKeymap + protocol.md 新契约），真函数 harness 4 用例全过；test_playback 补入协议表（调试门留 P0-2） | macOS 本地 build+测试 + Windows ctest + CI 七 job |
 | 2026-10-08 | **E4 关闭**：flash payload 供应链四件套——embed zip 官方 SPDX 哈希解压前校验（含缓存污染重下）、18 件闭包哈希锁 requirements.txt、`--require-hashes` 单路径 + 宿主 py==3.12 强校验、CI windows job 端到端真跑 | 静态：括号净数/YAML 解析/fallback 消失/BOM 保住；动态=CI 冒烟步（下一次 push 见真章） |
 | 2026-10-08 | **A8 关闭**：audio_task 两处错误热循环修复——codec/opus 失败各退避 40ms、连续 100 次（≈4s）主动收尾（复用 stop 的置停+END 哨兵序，tx_task 同步点保证资源清理），消 5s Task WDT 整机复位风险 | 括号净数归零 + 片段复读 + 本地 host 7/7 + CI 七 job（固件编译 audio_pipeline.c） |
 | 2026-10-08 | **A20 关闭**：错误路径吞 rc 四处全落（ATVV TX 升 ERROR、HOGP 捕获 rc、power_log flush 全链检查+RAM 保留、导出短读区分 ferror/EOF+dump 侧短读可见） | 本地 host 7/7（卫生）+ CI 七 job（固件编译 xiaomi_atvv_client/main/power_log/voice_ble 四文件；power_log 不在 host 面，编译即其验证） |

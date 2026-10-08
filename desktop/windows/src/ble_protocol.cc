@@ -212,6 +212,11 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     // "route":"software"}, ...]}——按本文件既有字符串扫描风格逐对象提取
     //（macOS 侧已解析；此前 Windows 丢弃 → 路由 UI 无法回显）。
     if (event.event == "gateway_keymap") {
+        // A15：分片字段（缺省 = 旧式完整单帧）。固件格式为 "seq":N、"more":true/false。
+        if (const auto seq = JsonU32Value(json, "seq")) {
+            event.keymap_seq = (unsigned)*seq;
+        }
+        event.keymap_more = json.find("\"more\":true") != std::string::npos;
         const auto routes_pos = json.find("\"routes\"");
         const auto arr_open = routes_pos == std::string::npos ? std::string::npos
                                                               : json.find('[', routes_pos);
@@ -233,6 +238,15 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     }
 
     return event;
+}
+
+bool BleProtocol::AccumulateKeymap(std::vector<StateEvent::KeyRoute>& pending,
+                                    const StateEvent& event) {
+    if (event.keymap_seq == 0) {
+        pending.clear();
+    }
+    pending.insert(pending.end(), event.keymap_routes.begin(), event.keymap_routes.end());
+    return !event.keymap_more;
 }
 
 std::optional<MotionEvent> BleProtocol::ParseMotionFrame(std::span<const std::uint8_t> data) {

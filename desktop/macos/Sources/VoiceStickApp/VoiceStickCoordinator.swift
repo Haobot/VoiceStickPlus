@@ -158,6 +158,8 @@ final class VoiceStickCoordinator {
     private var firmwareManifestCheckInFlight = false
     private var firmwareManifestRefreshTimer: Timer?
     private var pendingFirmwareUpdatePromptDeviceIDs: Set<String> = []
+    // A15：gateway_keymap 分片回执的未完成累计（seq0 起攒，more=false 收口）。
+    private var keymapReportPending: [GatewayKeymapRoute] = []
     private var errorRecoveryToken = 0
     private var isShowingASRError = false
     private var subtitleCycles: [SubtitleCycleKey: SubtitleCycle] = [:]
@@ -582,9 +584,12 @@ final class VoiceStickCoordinator {
         case "gateway_key":
             handleGatewayKey(event)
         case "gateway_keymap":
-            if let routes = event.keymapRoutes {
-                NSLog("gateway keymap report: " +
-                      routes.map { "\($0.key)=\($0.route)" }.joined(separator: ", "))
+            // A15：分片回执（seq/more，protocol.md）——攒到 more=false 才当完整表。
+            if event.accumulateKeymap(into: &keymapReportPending) {
+                let routes = keymapReportPending.map { "\($0.key)=\($0.route)" }
+                    .joined(separator: ", ")
+                NSLog("gateway keymap report (\(keymapReportPending.count) keys): " + routes)
+                keymapReportPending.removeAll()
             }
         default:
             break

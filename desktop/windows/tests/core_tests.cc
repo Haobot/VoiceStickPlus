@@ -1181,6 +1181,40 @@ void TestGatewayKeymapReceiptParsing() {
     auto other_event = BleProtocol::ParseStateEvent(other_frame);
     assert(other_event.has_value());
     assert(other_event->keymap_routes.empty());
+
+    // A15：分片回执——seq/more 解析与累计器（seq0 重启未完成累计、more=false 收口）。
+    const std::string c0_json = R"({"event":"gateway_keymap","seq":0,"more":true,)"
+                                R"("routes":[{"key":"back","route":"software"}]})";
+    ByteVector c0_frame = {1, 0x10};
+    AppendLe16(c0_frame, static_cast<std::uint16_t>(c0_json.size()));
+    c0_frame.insert(c0_frame.end(), c0_json.begin(), c0_json.end());
+    auto c0 = BleProtocol::ParseStateEvent(c0_frame);
+    assert(c0.has_value() && c0->keymap_seq == 0 && c0->keymap_more);
+    assert(c0->keymap_routes.size() == 1 && c0->keymap_routes[0].key == "back");
+
+    const std::string c1_json = R"({"event":"gateway_keymap","seq":1,"more":false,)"
+                                R"("routes":[{"key":"menu","route":"passthrough"}]})";
+    ByteVector c1_frame = {1, 0x10};
+    AppendLe16(c1_frame, static_cast<std::uint16_t>(c1_json.size()));
+    c1_frame.insert(c1_frame.end(), c1_json.begin(), c1_json.end());
+    auto c1 = BleProtocol::ParseStateEvent(c1_frame);
+    assert(c1.has_value() && c1->keymap_seq == 1 && !c1->keymap_more);
+
+    std::vector<BleProtocol::StateEvent::KeyRoute> pending;
+    assert(!BleProtocol::AccumulateKeymap(pending, *c0));   // more → 未完成
+    assert(pending.size() == 1);
+    assert(BleProtocol::AccumulateKeymap(pending, *c1));    // 收口 = 完整表
+    assert(pending.size() == 2 && pending[0].key == "back" && pending[1].key == "menu");
+
+    // seq0 重启未完成累计（帧丢失/新表自愈）。
+    assert(!BleProtocol::AccumulateKeymap(pending, *c0));
+    assert(pending.size() == 1);
+
+    // 旧式单帧（无 seq/more 字段）→ seq0/false → 即到即完整（向后兼容）。
+    assert(event->keymap_seq == 0 && !event->keymap_more);
+    std::vector<BleProtocol::StateEvent::KeyRoute> legacy_pending;
+    assert(BleProtocol::AccumulateKeymap(legacy_pending, *event));
+    assert(legacy_pending.size() == 2);
 }
 
 void TestGatewayKeyStateParsing() {

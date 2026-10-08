@@ -2377,23 +2377,42 @@ static void load_gateway_key_routes(void)
 // gateway_keymap_get 命令回执：全键路由表（桌面端配置 UI 同步用）
 static void send_gateway_keymap_report(void)
 {
-    char routes[400];
+    // A15：13 键全表 ≈470B 超 state_tx 单帧预算（ATT MTU 247 → JSON ≤240B）。原实现
+    // routes[400] + snprintf 返回值累加会让 off 越过 sizeof，收尾 `off < sizeof` 恒假
+    // → **整帧静默丢**（路由设置界面永远拿不到表）。改为按预算分片（seq/more，
+    // protocol.md）：每片 = 57B 包络 + routes ≤179B + '}' ≤237B，预算由 send_state_json
+    // 的既有告警复核；尾片 more=false（空表即 "[]"）。
+    char routes[180];
     size_t off = 0;
-    for (size_t i = 0; i < gateway_keymap_routable_key_count() && off + 1 < sizeof(routes); i++) {
+    unsigned seq = 0;
+    routes[0] = '\0';
+    for (size_t i = 0; i < gateway_keymap_routable_key_count(); i++) {
         uint16_t usage = gateway_keymap_routable_usage_at(i);
         const char *name = gateway_keymap_key_name(usage);
         const char *route = gateway_keymap_get_route(usage) == GATEWAY_ROUTE_SOFTWARE
                                 ? "software" : "passthrough";
-        int written = snprintf(routes + off, sizeof(routes) - off, "%s{\"key\":\"%s\",\"route\":\"%s\"}",
-                               i ? "," : "", name ? name : "?", route);
-        if (written <= 0) {
-            break;
+        char entry[64];
+        int written = snprintf(entry, sizeof(entry), "%s{\"key\":\"%s\",\"route\":\"%s\"}",
+                               off ? "," : "", name ? name : "?", route);
+        if (written <= 0 || (size_t)written >= sizeof(entry)) {
+            break;  // 防御：键名为编译期常量（最长 volume_mute ≈42B），正常不可达
         }
+        if (off + (size_t)written + 1 > sizeof(routes)) {
+            // 当前片放不下 → 发出（more=true）后开新片重拼（去掉前导逗号）。
+            (void)voice_ble_send_gateway_keymap(routes, seq, true);
+            seq++;
+            off = 0;
+            written = snprintf(entry, sizeof(entry), "{\"key\":\"%s\",\"route\":\"%s\"}",
+                               name ? name : "?", route);
+            if (written <= 0 || (size_t)written >= sizeof(entry)) {
+                break;
+            }
+        }
+        memcpy(routes + off, entry, (size_t)written);
         off += (size_t)written;
+        routes[off] = '\0';
     }
-    if (off < sizeof(routes)) {
-        (void)voice_ble_send_gateway_keymap(routes);
-    }
+    (void)voice_ble_send_gateway_keymap(routes, seq, false);  // 尾片（含空表）
 }
 
 // 按键沿：小米 usage 经 keymap 翻译后按动作路由——键盘/Consumer 直通 HOGP 输出给

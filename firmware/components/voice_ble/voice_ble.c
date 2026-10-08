@@ -1814,13 +1814,16 @@ esp_err_t voice_ble_send_gateway_key(const char *key, bool pressed)
     return send_state_json(json);
 }
 
-esp_err_t voice_ble_send_gateway_keymap(const char *routes_json)
+esp_err_t voice_ble_send_gateway_keymap(const char *routes_json, unsigned seq, bool more)
 {
-    // routes_json 为调用方拼好的路由数组（gateway_keymap_get 回执）
+    // A15：分片回执（seq/more，见 protocol.md）——单帧只装得下 13 键表的一部分，
+    // 超预算帧会被 ATT 层截断、对端 JSON 解析失败（send_state_json 有预算告警）。
     char json[512];
-    snprintf(json, sizeof(json), "{\"event\":\"gateway_keymap\",\"routes\":%s}",
+    snprintf(json, sizeof(json),
+             "{\"event\":\"gateway_keymap\",\"seq\":%u,\"more\":%s,\"routes\":%s}",
+             seq, more ? "true" : "false",
              routes_json && routes_json[0] ? routes_json : "[]");
-    ESP_LOGI(TAG, "gateway keymap report");
+    ESP_LOGI(TAG, "gateway keymap report seq=%u more=%d", seq, more ? 1 : 0);
     return send_state_json(json);
 }
 

@@ -89,9 +89,11 @@ esp_err_t voice_ble_send_encoder_rotate(const char *direction, uint8_t steps);
 // 发送网关按键事件（小米软件路由键，P1 隧道融合）：key 为 gateway_keymap_key_name
 // 给出的协议键名（如 "back"/"volume_up"）。仅网关模式且该键设软件路由时发出。
 esp_err_t voice_ble_send_gateway_key(const char *key, bool pressed);
-// 上报网关按键路由表（gateway_keymap_get 命令的回执）。routes_json 为调用方
-// 拼好的 JSON 数组，元素形如 {"key":"back","route":"software"}。
-esp_err_t voice_ble_send_gateway_keymap(const char *routes_json);
+// 上报网关按键路由表（gateway_keymap_get/set 命令的回执）。routes_json 为调用方
+// 拼好的 JSON 数组，元素形如 {"key":"back","route":"software"}。A15：按分片发送
+//（seq/more，protocol.md gateway_keymap 章节）——13 键全表 ≈470B 超 state_tx 单帧
+// 预算（ATT MTU 247 → JSON ≤240B），单帧必被对端截断、JSON 解析失败。
+esp_err_t voice_ble_send_gateway_keymap(const char *routes_json, unsigned seq, bool more);
 // 发送体感鼠标运动帧（state_tx 通道，type=0x11 二进制帧，6 字节）。
 esp_err_t voice_ble_send_motion(int16_t dx, int16_t dy);
 esp_err_t voice_ble_send_battery_status(int level_percent, bool charging, bool usb_powered);

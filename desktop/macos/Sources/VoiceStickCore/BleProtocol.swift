@@ -47,6 +47,11 @@ public struct StateEvent: Decodable {
     public let gatewayMode: String?
     /// gateway_keymap 报告帧字段：路由表回报（gateway_keymap_set/get 的应答）。
     public let keymapRoutes: [GatewayKeymapRoute]?
+    /// A15：分片字段（protocol.md gateway_keymap 章节）——13 键全表 ≈470B 超单帧
+    /// 预算（ATT MTU 247 → JSON ≤240B），固件按片发送；旧式单帧缺此二字段 = nil，
+    /// 累计时按 seq0/more=false = 完整单帧处理。
+    public let keymapSeq: Int?
+    public let keymapMore: Bool?
 
     public init(event: String, button: String?, sessionID: UInt32?, durationMs: UInt32?,
                 hardware: String?, firmwareVersion: String?, buttons: [String]?, uiStates: [String]?,
@@ -54,7 +59,8 @@ public struct StateEvent: Decodable {
                 encoderPresent: Bool? = nil, batteryLevel: Int? = nil,
                 batteryCharging: Bool? = nil, batteryUsbPowered: Bool? = nil,
                 gatewayKey: String? = nil, gatewayPressed: Bool? = nil,
-                gatewayMode: String? = nil, keymapRoutes: [GatewayKeymapRoute]? = nil) {
+                gatewayMode: String? = nil, keymapRoutes: [GatewayKeymapRoute]? = nil,
+                keymapSeq: Int? = nil, keymapMore: Bool? = nil) {
         self.event = event
         self.button = button
         self.sessionID = sessionID
@@ -74,6 +80,8 @@ public struct StateEvent: Decodable {
         self.gatewayPressed = gatewayPressed
         self.gatewayMode = gatewayMode
         self.keymapRoutes = keymapRoutes
+        self.keymapSeq = keymapSeq
+        self.keymapMore = keymapMore
     }
 
     enum CodingKeys: String, CodingKey {
@@ -96,6 +104,16 @@ public struct StateEvent: Decodable {
         case gatewayPressed = "pressed"
         case gatewayMode = "mode"
         case keymapRoutes = "routes"
+        case keymapSeq = "seq"
+        case keymapMore = "more"
+    }
+
+    /// A15：gateway_keymap 分片累计（protocol.md）——seq==0 重启未完成的累计；
+    /// 返回 true 表示 pending 即完整路由表。旧式单帧无 seq/more → nil → 即到即完整。
+    public func accumulateKeymap(into pending: inout [GatewayKeymapRoute]) -> Bool {
+        if (keymapSeq ?? 0) == 0 { pending.removeAll() }
+        pending.append(contentsOf: keymapRoutes ?? [])
+        return (keymapMore ?? false) == false
     }
 }
 

@@ -704,14 +704,20 @@ void VoiceStickCoordinator::HandleStateEvent(const StateEvent& event, const std:
             on_gateway_key(event.gateway_key, event.gateway_pressed.value_or(false));
         }
     } else if (event.event == "gateway_keymap") {
-        // D10：路由回执落日志（此前 Windows 无解析被静默丢弃；macOS 已解析+日志）。
+        // D10 解析 + A15 分片累计（seq/more，protocol.md）：13 键全表超单帧预算，
+        // 固件按片发；本端攒到 more=false 才视为完整表并落日志（旧式单帧即到即完成）。
         // 回显到键位映射对话框的 UI 见 backlog D10b。
-        std::string routes;
-        for (const auto& route : event.keymap_routes) {
-            if (!routes.empty()) routes += ", ";
-            routes += route.key + "=" + route.route;
+        if (BleProtocol::AccumulateKeymap(keymap_report_pending_, event)) {
+            std::string routes;
+            for (const auto& route : keymap_report_pending_) {
+                if (!routes.empty()) routes += ", ";
+                routes += route.key + "=" + route.route;
+            }
+            LogCoordinatorLine("gateway keymap report (" +
+                               std::to_string(keymap_report_pending_.size()) + " keys): " +
+                               routes);
+            keymap_report_pending_.clear();
         }
-        LogCoordinatorLine("gateway keymap report: " + routes);
     } else if (event.event == "button_down") {
         if (event.button == "primary" && event.source == "encoder") {
             HandleEncoderButtonDown(event, device_id);

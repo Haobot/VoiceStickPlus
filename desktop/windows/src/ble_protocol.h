@@ -125,6 +125,11 @@ struct StateEvent {
         std::string route;
     };
     std::vector<KeyRoute> keymap_routes;
+    // A15：分片回执（seq/more，protocol.md）——13 键全表 ≈470B 超单帧预算
+    //（ATT MTU 247 → JSON ≤240B），固件按片发送；旧式单帧缺此二字段时
+    // 保持 seq=0/more=false = 完整单帧（向后兼容）。
+    unsigned keymap_seq = 0;
+    bool keymap_more = false;
 };
 
 struct FirmwareOtaStateEvent {
@@ -167,6 +172,12 @@ public:
 
     static std::optional<AudioFrame> ParseAudioFrame(std::span<const std::uint8_t> data);
     static std::optional<StateEvent> ParseStateEvent(std::span<const std::uint8_t> data);
+
+    // A15：gateway_keymap 分片累计（纯逻辑，单测直驱）。语义见 protocol.md：
+    // seq==0 重启未完成的累计；more=false 时返回 true 表示 pending 即完整路由表
+    //（旧式单帧缺 seq/more → seq0/false → 即到即完整，向后兼容）。
+    static bool AccumulateKeymap(std::vector<StateEvent::KeyRoute>& pending,
+                                 const StateEvent& event);
     static std::optional<MotionEvent> ParseMotionFrame(std::span<const std::uint8_t> data);
     // power_log 分片帧（type==0x10，payload 含 "power_log" 键；ParseStateEvent 对
     // 其返回 nullopt，因无 "event" 字段）。

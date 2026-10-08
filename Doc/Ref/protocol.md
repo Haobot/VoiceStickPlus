@@ -182,7 +182,9 @@ the protocol key name (`ok`/`right`/`left`/`down`/`up`/`menu`/`home`/`back`/
 the remote link drops mid-press). The Windows desktop consumes these through the
 same keymap used for direct-connection mode and injects the configured mapping.
 `gateway_keymap` is the routing-table report sent in reply to
-`gateway_keymap_set`/`gateway_keymap_get`.
+`gateway_keymap_set`/`gateway_keymap_get`. It is **chunked** (`seq`/`more`)
+whenever the full table does not fit one `state_tx` frame — see the event
+table below for the accumulation rules.
 
 `button_double_click` is emitted when the firmware detects two consecutive short
 presses of the primary button within 500 ms (each press < 300 ms). The desktop
@@ -299,6 +301,7 @@ Current desktop events:
 {"event":"usb_auto_off_get"}
 {"event":"battery_status_request"}
 {"event":"remote_button_down","button":"primary","source":"global_hotkey","request_id":7}
+{"event":"test_playback","file":"lab_sample.pcm"}
 {"event":"remote_button_up","button":"primary","source":"global_hotkey","request_id":7}
 ```
 
@@ -318,9 +321,10 @@ Current desktop events:
 | `battery_status_request` | — | Windows -> StickS3 | Asks the firmware to re-send `battery_status`; the firmware always replies, so the Windows desktop also uses it as a periodic link heartbeat. macOS does not send it. |
 | `remote_button_down` / `remote_button_up` | `button`: `"primary"`, `source`: string, `request_id`: uint32 | Desktop -> StickS3 | Injects a virtual primary-button press/release (`APP_INPUT_SOURCE_REMOTE`), used by the desktop global hotkey and the encoder double-click recording toggle. Not gated by `encoder_recording_gate`. |
 | `gateway_keymap_set` | `key`: string, `route`: `"passthrough"` \| `"software"` | Desktop -> StickS3 | Gateway mode (P1 tunnel fusion, `Doc/Plan/xiaomi-remote-stick-gateway.md` §5.3): per-key routing for the Xiaomi remote keys relayed by this StickS3. `software` routes the key over `state_tx` as a `gateway_key` event (desktop keymap consumes it); `passthrough` (default) forwards it as standard HID via the HOGP peripheral to the OS. `key` is one of `ok`/`right`/`left`/`down`/`up`/`menu`/`home`/`back`/`volume_up`/`volume_down`/`volume_mute`/`power`/`tv`. The voice key is not routable (fixed ATVV session semantics); unknown keys are rejected. Persisted in firmware NVS. On success the firmware replies with a `gateway_keymap` report. |
-| `gateway_keymap_get` | — | Desktop -> StickS3 | Queries the current routing table; the firmware replies with `{"event":"gateway_keymap","routes":[{"key":"back","route":"software"},...]}` on `state_tx`. |
+| `gateway_keymap_get` | — | Desktop -> StickS3 | Queries the current routing table; the firmware replies on `state_tx` with one or more **chunked** reports: `{"event":"gateway_keymap","seq":N,"more":bool,"routes":[{"key":"back","route":"software"},...]}`. Chunks arrive in ascending `seq` starting at 0; the table is complete when `more:false` arrives — the desktop accumulates from `seq:0` (a new `seq:0` restarts an incomplete accumulation) and replaces its view only on completion. Chunking is mandatory: the full 13-key table (~470B) exceeds the single-frame budget (ATT MTU 247 → JSON ≤ 240B), and a truncated frame fails JSON parsing on the desktop. |
 | `gateway_select_target` | `self`: boolean | `index`: integer | `clear`: boolean | Desktop -> StickS3 | Gateway mode (P1 switcher): chooses which bonded desktop is allowed to hold the peripheral link. `self:true` = "make this PC (the currently connected peer) the target" (the firmware resolves the index itself — the desktop cannot know its own identity address); `index:N` = pick entry N of the on-device target table (automation); `clear:true` = drop the restriction (any bonded PC may connect, the default). A switch disconnects the current target, re-advertises, and accepts only the selected peer; non-selected peers are disconnected on connect. The Xiaomi (central) link is never touched. Persisted? No — the selection is runtime state and resets to "unrestricted" on reboot. |
 | `gateway_target_info` | `name`: string (≤23 bytes) | Desktop -> StickS3 | Gateway mode (P1 switcher, `Doc/Plan/xiaomi-gateway-p1-switcher.md`): the desktop reports its own display name (Windows computer name) so the firmware can label this PC in its target table. The firmware binds the name to the **identity address of the currently connected peer** (the desktop cannot know its own identity address) and persists it in NVS. Names longer than 23 bytes are rejected; unknown/absent name is ignored. |
+| `test_playback` | `file`: string | Desktop -> StickS3 | **Test/debug control (L3 end-to-end replay), not part of normal user flows.** Points audio capture at a pre-recorded PCM file in the SPIFFS root so the whole pipeline runs without the microphone; `file` empty/absent restores ES8311 capture. The filename must be a bare name — path separators (`/`/\`) and `..` are rejected (a connected peer must not gain an arbitrary-path read primitive). Restricting this control to debug builds is tracked as P0-2. |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as
