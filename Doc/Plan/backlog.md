@@ -43,7 +43,11 @@ protocol.md 同步+Win/Mac 解析兼容（加键式）+host json 测试；选项
 
 | A6b | 录音/OTA 互斥非原子（录音中触发 OTA begin 的 cache-disable 窗口） | open（需跨模块 API + 真机复现） | 10-08 从 A6 核出：现有门是**单向**的（`voice_ble_ota_is_active()` 阻录音），反向无门——`voice_ble.h` 不导出任何 streaming 状态，main 无法在 OTA begin 前拒绝；需新增 `voice_ble_set_streaming(bool)`（main 在 start/stop_recording 调用）+ `ota_begin` 入口拒绝，并真机复现 cache-disable 崩溃窗口确认生效 |
 | A8 | audio_task 错误分支热循环 → Task WDT（失败退避 + 主动收尾） | **closed（10-08）** | 实锤两处热循环：`esp_codec_dev_read` 失败与 `opus_encode` 失败均**零延时 `continue`** → codec 持续失败打满 CPU1（sdkconfig 开 CPU1 idle 检查）→ 5s Task WDT 整机复位。修复：① **退避**——两处失败各 `vTaskDelay(AUDIO_FRAME_MS=40ms)`；② **连续 N 次主动收尾**（`AUDIO_FAULT_ABORT_STREAK=100` ≈4s，远在 WDT 前、又给瞬时抖动恢复余量）→ 置 `faulted` 退出主循环 → **与 `audio_pipeline_stop` 同序**（`s_running=false` + END 哨兵入队），tx_task 见哨兵排空并发 `audio_end`、在 `s_audio_task==NULL` 同步点等本任务 drain 完才清资源（**正常停机同一路径，顺序经生产验证**）；成功各自清零 streak。故障日志含两侧连续次数。**验证边界**：audio_pipeline 不在 host 面 → CI 固件编译 + 括号净数/片段复读（A20 后的固定动作）+ host 7/7 卫生 |
-| A9b | 专用传感器轮询任务（A9 余留） | **partial（10-08 设计+实施落，待真机）** |
+| A9b | 专用传感器轮询任务（A9 余留） | **partial（10-08 一二期实施落，待真机）** **二期已落（r96）**：power_log 模式切换 I2C 2 笔（power_log.c:94/104 电量+充电读）随 refresh 纯推导化移出——
+main 侧 4 槽环（portMUX 多生产者）+ SENSOR_POLL_POWER_LOG_BIT 入 sensor_poll_task 消费直呼原函数
+（组件零改动、组件内 s_current_mode 去重兜底）；display 定时器/app_event/note_activity 全部调用方不再内联阻塞 I2C；
+S3 关机条目仍直呼同步（组件内唯一同步 flush 点@456，enter_power_off 上下文非 timer ✓ 保留不动）；
+附带修 r92 粘行残留（mux 声明与下一行缺换行、合法 C 故 CI 未报）。真机项=power_log 条目连续性并 A 组。 |
 实施按 sensor-poll-task-2026-10-08.md 一次到位：5 回调改「守卫+kick」（原体改名 sensor_poll_X 原样迁执行）、
 sensor_poll_task（3KB、prio6=app_event 同档）合并唤醒摘位图逐位执行、kick=portMUX 置位+xTaskNotify、
 两必核结论入册（send_motion 跨线程=audio 任务先例已存在同假设、无新增风险；suppress 64 位改 __atomic 读写×4 点）；

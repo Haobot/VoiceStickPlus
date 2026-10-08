@@ -143,9 +143,16 @@ static esp_timer_handle_t s_encoder_poll_timer;
 #define SENSOR_POLL_ENCODER_BIT (1u << 2)
 #define SENSOR_POLL_AIR_MOUSE_BIT (1u << 3)
 #define SENSOR_POLL_IMU_BIT (1u << 4)
+#define SENSOR_POLL_POWER_LOG_BIT (1u << 5)
 static TaskHandle_t s_sensor_task_handle;
 static volatile uint32_t s_sensor_poll_pending;
-static portMUX_TYPE s_sensor_poll_mux = portMUX_INITIALIZER_UNLOCKED;static bool s_encoder_button_pressed;
+static portMUX_TYPE s_sensor_poll_mux = portMUX_INITIALIZER_UNLOCKED;
+// A9b 二期（power_log 模式切换 I2C 2 笔 @power_log.c:94/104）：refresh 侧纯状态推导，
+// 记条目改入本环由 sensor_poll_task 执行（电量/充电读不再卡 display 定时器与 app_event 任务）；
+// S3 关机条目仍由 enter_power_off 直呼同步（组件内唯一同步 flush 点，勿走本环）。
+static power_mode_t s_power_note_ring[4];
+static uint8_t s_power_note_head;
+static uint8_t s_power_note_tail;static bool s_encoder_button_pressed;
 // 小米语音键按住态缓存（NimBLE 任务写/app_event 与 timer 读，可接受竞态，
 // 与 s_encoder_button_pressed 同模式）：ATVV 会话 STREAMING 期间为 true。
 static bool s_xiaomi_voice_pressed;
@@ -345,11 +352,32 @@ static void save_encoder_settings_to_nvs(void);
 static void set_tap_polling_enabled(bool enabled);
 static void set_air_mouse_enabled(bool enabled);
 static void sensor_poll_task(void *arg);
+// A9b 二期：消费 power_log 记条目环（组件内去重兜底，逐条直呼同步原函数）。
+static void sensor_poll_power_log(void)
+{
+    for (;;) {
+        power_mode_t mode;
+        bool have = false;
+        portENTER_CRITICAL(&s_sensor_poll_mux);
+        if (s_power_note_tail != s_power_note_head) {
+            mode = s_power_note_ring[s_power_note_tail];
+            s_power_note_tail = (uint8_t)((s_power_note_tail + 1) % 4);
+            have = true;
+        }
+        portEXIT_CRITICAL(&s_sensor_poll_mux);
+        if (!have) {
+            break;
+        }
+        power_log_note_mode(mode);
+    }
+}
+
 static void sensor_poll_kick(uint32_t bit);
 static void sensor_poll_pickup(void);
 static void sensor_poll_tap(void);
 static void sensor_poll_encoder(void);
 static void sensor_poll_air_mouse(void);
+static void sensor_poll_power_log(void);
 static void sensor_poll_imu(void);
 static bool is_external_powered(void)
 {
@@ -380,7 +408,22 @@ static void power_log_refresh_mode(void)
     }
     if (mode != s_power_reported_mode) {
         s_power_reported_mode = mode;
-        power_log_note_mode(mode);
+        // A9b 二期：记条目（含 2 笔 I2C 读）入环异步执行；本函数保持纯状态推导，
+        // 调用方（display 定时器/app_event/note_activity 等）不再内联阻塞在 I2C 上。
+        bool pushed = false;
+        portENTER_CRITICAL(&s_sensor_poll_mux);
+        uint8_t next = (uint8_t)((s_power_note_head + 1) % 4);
+        if (next != s_power_note_tail) {
+            s_power_note_ring[s_power_note_head] = mode;
+            s_power_note_head = next;
+            pushed = true;
+        }
+        portEXIT_CRITICAL(&s_sensor_poll_mux);
+        if (pushed) {
+            sensor_poll_kick(SENSOR_POLL_POWER_LOG_BIT);
+        } else {
+            ESP_LOGW(TAG, "power note ring full, dropped mode=%d", (int)mode);
+        }
     }
 }
 
@@ -2464,6 +2507,9 @@ static void sensor_poll_task(void *arg)
         }
         if (pending & SENSOR_POLL_IMU_BIT) {
             sensor_poll_imu();
+        }
+        if (pending & SENSOR_POLL_POWER_LOG_BIT) {
+            sensor_poll_power_log();
         }
     }
 }
