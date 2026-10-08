@@ -893,29 +893,43 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT: {
-        const uint16_t conn = event->disconnect.conn_handle;
-        // A4：stale 断连（重连后旧 handle 迟到）只清它自己——先取快照判断被断的
-        // 是不是当前应用链路，绝不让旧事件清掉新连接的订阅态。
-        const bool was_app = (conn == s_conn_handle);
-        voice_ble_conn_t *found = voice_ble_conn_table_find(&s_conns, conn);
-        voice_ble_conn_t removed = {0};
-        const bool tracked = found != NULL;
-        if (found) {
-            removed = *found;
+        // IDF v5.5.1 的 BLE_GAP_EVENT_DISCONNECT 不携带 conn_handle（编译实测：
+        // 'struct <anonymous> has no member conn_handle'）。反查法：事件时点 NimBLE
+        // 已把断开的连接从 GAP 连接集移除，表内已 find 不到的条目即本次断开的链路；
+        // 其他存活 handle 仍可 find。stale 断连（重连后旧 handle 迟到）因此只清它自己。
+        uint16_t dead[VOICE_BLE_CONN_MAX];
+        int dead_count = 0;
+        for (int i = 0; i < VOICE_BLE_CONN_MAX; ++i) {
+            const voice_ble_conn_t *e = &s_conns.entries[i];
+            struct ble_gap_conn_desc probe;
+            if (e->used && ble_gap_conn_find(e->handle, &probe) != 0) {
+                dead[dead_count++] = e->handle;
+            }
         }
+        if (dead_count == 0) {
+            // 表内全部仍可 find（事件与查询竞态 / 未知 handle）：不动状态，绝不误清。
+            ESP_LOGW(TAG, "disconnect event but no tracked handle gone; state untouched");
+            return 0;
+        }
+        bool was_app = false;
         bool last = false;
-        voice_ble_conn_table_remove(&s_conns, conn, &last);
-        s_connected = voice_ble_conn_table_count(&s_conns) > 0;
-        const uint32_t now = esp_log_timestamp();
-        if (tracked) {
+        for (int d = 0; d < dead_count; ++d) {
+            const uint16_t conn = dead[d];
+            const bool conn_was_app = (conn == s_conn_handle);
+            was_app = was_app || conn_was_app;
+            voice_ble_conn_t *found = voice_ble_conn_table_find(&s_conns, conn);
+            voice_ble_conn_t removed = {0};
+            if (found) {
+                removed = *found;
+            }
+            voice_ble_conn_table_remove(&s_conns, conn, &last);
             ESP_LOGI(TAG,
                      "disconnected handle=%u reason=%d dur=%" PRIu32 "ms was_app=%d links=%d",
-                     conn, event->disconnect.reason, now - removed.connected_ms,
-                     was_app ? 1 : 0, voice_ble_conn_table_count(&s_conns));
-        } else {
-            ESP_LOGI(TAG, "disconnected handle=%u reason=%d (untracked) links=%d",
-                     conn, event->disconnect.reason, voice_ble_conn_table_count(&s_conns));
+                     conn, event->disconnect.reason,
+                     esp_log_timestamp() - removed.connected_ms,
+                     conn_was_app ? 1 : 0, voice_ble_conn_table_count(&s_conns));
         }
+        s_connected = voice_ble_conn_table_count(&s_conns) > 0;
         if (was_app) {
             // 只有应用链路断开才中止与它绑定的会话资源（OTA/状态突发/间隔/功耗日志）。
             if (s_ota.active) {
@@ -1026,8 +1040,11 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "mtu=%u", event->mtu.value);
-        // A4：只有应用链路的 MTU 协商完成才冲状态突发（其他链路的 MTU 事件不触发）。
-        if (s_state_burst_pending && event->mtu.conn_handle == s_conn_handle) {
+        // A4：只有应用链路自身的 MTU 真正协商成功（>23）才冲状态突发——用实测值
+        // 而非事件句柄（v5.5.1 的 MTU 事件同样不带 conn_handle），其他链路的 MTU
+        // 完成不会触发；对端不响应时由 1.2s fallback 定时器兜底。
+        if (s_state_burst_pending && s_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+            ble_att_mtu(s_conn_handle) > 23) {
             s_state_burst_pending = false;
             if (s_state_burst_timer) {
                 (void)esp_timer_stop(s_state_burst_timer);
