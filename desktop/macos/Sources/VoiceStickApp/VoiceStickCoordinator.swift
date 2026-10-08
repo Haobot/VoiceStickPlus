@@ -96,12 +96,13 @@ final class VoiceStickCoordinator {
         var waitingForAudioEnd = false
         var audioEndTimeoutTimer: Timer?
 
-        init(peripheralID: UUID, deviceID: String?, sessionID: UInt32, config: AppConfig) {
+        init(peripheralID: UUID, deviceID: String?, sessionID: UInt32,
+             config: AppConfig, asr: any ASRClient) {
             self.peripheralID = peripheralID
             self.deviceID = deviceID
             self.sessionID = sessionID
             self.startedAt = Date()
-            self.asr = ASRClientFactory.makeClient(config: config)
+            self.asr = asr
             self.debugAudioRecorder = DebugAudioRecorder(
                 enabled: config.debugAudioCache,
                 directory: config.debugAudioDirectory
@@ -127,6 +128,8 @@ final class VoiceStickCoordinator {
     private let statusController: VoiceStickStatusSink
     // N1 切5 第二步：BLE 成员换协议（VoiceStickCore/BleServing.swift），具体类外置注入。
     private let ble: any VoiceStickBleServing
+    // N1 切5：ASR 工厂外置注入（工厂构造 App 实现留 App）。
+    private let makeAsr: (AppConfig) -> any ASRClient
     private var asr: any ASRClient
     private var translator: LLMTranslationClient
     private var refiner: LLMRefinementClient
@@ -221,12 +224,14 @@ final class VoiceStickCoordinator {
     var onPowerMgmtEvent: ((String, PowerMgmtEvent) -> Void)?
 
     init(config: AppConfig, statusController: VoiceStickStatusSink,
-         ble: any VoiceStickBleServing) {
+         ble: any VoiceStickBleServing,
+         makeAsr: @escaping (AppConfig) -> any ASRClient) {
         self.config = config
         self.statusController = statusController
         self.pairedDeviceIDs = config.pairedDeviceIDs
         self.ble = ble
-        self.asr = ASRClientFactory.makeClient(config: config)
+        self.makeAsr = makeAsr
+        self.asr = makeAsr(config)
         self.translator = LLMTranslationClient(config: config)
         self.refiner = LLMRefinementClient(config: config)
         self.debugAudioRecorder = DebugAudioRecorder(
@@ -358,7 +363,7 @@ final class VoiceStickCoordinator {
             enabled: config.debugAudioCache,
             directory: config.debugAudioDirectory
         )
-        asr = ASRClientFactory.makeClient(config: config)
+        asr = makeAsr(config)
         translator = LLMTranslationClient(config: config)
         refiner = LLMRefinementClient(config: config)
         configureASRCallbacks()
@@ -1464,7 +1469,8 @@ final class VoiceStickCoordinator {
             peripheralID: peripheralID,
             deviceID: deviceID,
             sessionID: sessionID,
-            config: config
+            config: config,
+            asr: makeAsr(config)
         )
         configureSubtitleASRCallbacks(for: cycle)
         subtitleCycles[SubtitleCycleKey(peripheralID: peripheralID, sessionID: sessionID)] = cycle

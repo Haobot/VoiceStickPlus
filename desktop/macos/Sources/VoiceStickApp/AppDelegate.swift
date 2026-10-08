@@ -90,7 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let coordinator = VoiceStickCoordinator(
             config: config,
             statusController: statusController,
-            ble: BleCentral(pairedDeviceIDs: config.pairedDeviceIDs)
+            ble: BleCentral(pairedDeviceIDs: config.pairedDeviceIDs),
+            makeAsr: { ASRClientFactory.makeClient(config: $0) }
         )
 
         self.statusController = statusController
