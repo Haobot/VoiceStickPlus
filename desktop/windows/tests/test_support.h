@@ -690,7 +690,7 @@ public:
     int stop_count = 0;
 };
 
-StateEvent ButtonEvent(const std::string& event,
+inline StateEvent ButtonEvent(const std::string& event,
                        const std::string& button,
                        std::optional<std::uint32_t> session_id = std::nullopt,
                        std::optional<std::uint32_t> duration_ms = std::nullopt) {
@@ -703,7 +703,7 @@ StateEvent ButtonEvent(const std::string& event,
 }
 
 // 构造双击事件（固件上报的 {"event":"button_double_click","button":"..."}）。
-StateEvent DoubleClickEvent(const std::string& button) {
+inline StateEvent DoubleClickEvent(const std::string& button) {
     StateEvent state_event;
     state_event.event = "button_double_click";
     state_event.button = button;
@@ -711,7 +711,7 @@ StateEvent DoubleClickEvent(const std::string& button) {
 }
 
 // 构造敲击事件（固件上报的 {"event":"tap","kind":"double"}）。
-StateEvent TapEvent(const std::string& kind = "double") {
+inline StateEvent TapEvent(const std::string& kind = "double") {
     StateEvent state_event;
     state_event.event = "tap";
     state_event.button = kind;  // 复用 button 字段承载 kind，与协议解析一致
@@ -719,7 +719,7 @@ StateEvent TapEvent(const std::string& kind = "double") {
 }
 
 // 构造编码器旋转事件（固件上报的 {"event":"encoder_rotate","direction":"cw","steps":2}）。
-StateEvent EncoderRotateEvent(const std::string& direction, std::uint32_t steps) {
+inline StateEvent EncoderRotateEvent(const std::string& direction, std::uint32_t steps) {
     StateEvent state_event;
     state_event.event = "encoder_rotate";
     state_event.direction = direction;
@@ -728,7 +728,7 @@ StateEvent EncoderRotateEvent(const std::string& direction, std::uint32_t steps)
 }
 
 // 构造编码器按键事件（固件上报带 "source":"encoder"）。
-StateEvent EncoderButtonEvent(const std::string& event,
+inline StateEvent EncoderButtonEvent(const std::string& event,
                               std::optional<std::uint32_t> session_id = std::nullopt) {
     StateEvent state_event;
     state_event.event = event;
@@ -738,7 +738,7 @@ StateEvent EncoderButtonEvent(const std::string& event,
     return state_event;
 }
 
-AudioFrame AudioDataFrame(std::uint32_t session_id, std::uint32_t seq, bool is_end = false) {
+inline AudioFrame AudioDataFrame(std::uint32_t session_id, std::uint32_t seq, bool is_end = false) {
     AudioFrame frame;
     frame.session_id = session_id;
     frame.seq = seq;
@@ -747,7 +747,7 @@ AudioFrame AudioDataFrame(std::uint32_t session_id, std::uint32_t seq, bool is_e
     return frame;
 }
 
-AudioFrame EmptyEndFrame(std::uint32_t session_id, std::uint32_t seq) {
+inline AudioFrame EmptyEndFrame(std::uint32_t session_id, std::uint32_t seq) {
     AudioFrame frame;
     frame.session_id = session_id;
     frame.seq = seq;
