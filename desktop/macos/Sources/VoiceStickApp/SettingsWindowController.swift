@@ -1,4 +1,5 @@
 import AppKit
+import VoiceStickCore  // N1: XiaomiSettings 下沉 Core 后需显式导入
 
 /// 设置窗口（布局与显隐规则对齐 Windows SettingsDialog）：
 /// - 通用：界面语言下拉（System/English/简体中文）+ 开发者模式勾选（始终可见，实时重排）。

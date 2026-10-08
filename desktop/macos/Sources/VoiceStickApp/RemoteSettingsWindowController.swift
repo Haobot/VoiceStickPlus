@@ -1,4 +1,5 @@
 import AppKit
+import VoiceStickCore  // N1: XiaomiSettings 下沉 Core 后需显式导入
 
 /// 小米遥控器设置窗口（对齐 Windows RemoteSettingsDialog）：Gain (dB) 与
 /// Double-click window (ms) 两个编辑框 + 生效时机提示；纯本地配置无 BLE 下发。

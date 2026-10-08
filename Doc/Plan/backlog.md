@@ -113,7 +113,7 @@
 
 | 编号 | 事项 | 状态 | 备注 |
 |---|---|---|---|
-| N1 | macOS App target 16.8k 行零测试（状态机/配置/Ogg 下沉 Core） | open | 阶段 2 首位；测试 runner 自带 NOTE 印证缺口 |
+| N1 | macOS App target 16.8k 行零测试（状态机/配置/Ogg 下沉 Core） | **partial（10-08 第一刀）** | **配置纯逻辑下沉 `VoiceStickCore/ConfigParsing.swift`**：runner NOTE 旧三缺的前两件（normalizedDeviceID 双前缀 + paired CSV 解析/格式化/列表）+ XiaomiSettings 结构——纯 Foundation **零 Package 依赖变动**；AppConfig 保留 `normalizedDeviceID` 静态门面（`Self.` 6+ 调用点零改动）、CSV 三 fn 删静态改全局经 import 解析（唯一 `Self.format…` 调用点已改）、两控制补 `import VoiceStickCore`。**新套件 runConfigParsingTests 17 检查**（VS-/RC-/裸 hex/截断/非hex/空白、ID 列表去重、CSV 六段/短行/往返恒等/空行丢弃、XiaomiSettings 默认与显式初值）→ **本地 PASSED 691/691**（674+17，NOTE 同步改为诚实余项：xiaomi TOML 映射随 DeviceConfigFile 闭包 + 全量 load/save）。App 16970→16910、Core 2107→2206。**余量**：TOML 闭包下刀（需 TOMLKit→Core 或签名重构）、协调器/Ogg 域下沉。 |
 | N2 | 跨端契约零 fixtures（golden-frame 对拍） | **closed（随 0.1）** | `tests/contract/` 48 样本**三端**进 CI（Windows/macOS/host-tests） |
 | N3 | CI 缺 website/release-guard | **closed（本批）** | 两 job 已入 `ci.yml`；契约 fixtures 归 0.1 |
 | N4 | 遗留项无跟踪载体 | **closed（本文件）** | 状态变更规则见头部 |

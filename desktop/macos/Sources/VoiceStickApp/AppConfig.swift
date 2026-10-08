@@ -144,32 +144,8 @@ struct OutputProfile: Equatable {
     }
 }
 
-/// 配对设备条目（对齐 Windows PairedDeviceEntry，CSV 持久化格式
-/// `id,addr,address_kind,name[,hardware,firmware_version]`）。
-/// macOS 读不到蓝牙 MAC：addr 存 CBPeripheral.identifier.uuidString（大写），
-/// addressKind 恒为 "uuid"；Windows 的 12 位 hex MAC + "0"/"1"/"2" 原样透传不解释。
-struct PairedDeviceEntry: Equatable {
-    var deviceID: String
-    var address: String
-    var addressKind: String
-    var name: String
-    var hardware: String
-    var firmwareVersion: String
-
-    /// hardware 段标识（对齐 Windows kHardwareXiaomiRemote2Pro）。
-    static let hardwareXiaomiRemote2Pro = "xiaomi_remote_2_pro"
-}
-
-/// 小米蓝牙遥控器 2 Pro 设置（对齐 Windows XiaomiSettings）：全局默认即结构默认值，
-/// [device.<id>.xiaomi] 按设备覆盖（加载时已用默认填平所有字段）。
-struct XiaomiSettings: Equatable {
-    /// ADPCM 解码后增益（dB），消费侧 ±24 限幅。默认 12.0。
-    var gainDb = 12.0
-    /// 语音键双击时序窗（ms）：第一次短击释放后等待第二次按下的最大窗口。默认 350。
-    var doubleClickMs = 350
-
-    static let `default` = XiaomiSettings()
-}
+// N1：PairedDeviceEntry / XiaomiSettings 已下沉 VoiceStickCore（ConfigParsing.swift），
+// 本文件经既有 import VoiceStickCore 可见，调用点零改动。
 
 /// IMU 唤醒灵敏度（对齐 Windows ImuWakeSensitivity）：low/medium/high。
 /// 阈值映射注意是反向的：灵敏度越高阈值越低（low=800 / medium=500 / high=250 lsb）。
@@ -911,28 +887,10 @@ struct AppConfig {
         return text
     }
 
+    /// N1：实现已下沉 VoiceStickCore（ConfigParsing.swift）；保留静态门面，
+    /// 全仓 AppConfig.normalizedDeviceID / Self.normalizedDeviceID 调用点零改动。
     static func normalizedDeviceID(_ text: String) -> String {
-        let upper = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        // 对齐 Windows NormalizeDeviceId：VS-/RC- 前缀都剥、截 4 位后必须恰好
-        // 4 位 ASCII hex（IsHex4），非法一律返回 ""（校验不再下放调用方）。
-        let stripped = (upper.hasPrefix("VS-") || upper.hasPrefix("RC-"))
-            ? upper.dropFirst(3).prefix(4)
-            : upper.prefix(4)
-        guard stripped.count == 4, stripped.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
-            return ""
-        }
-        return String(stripped)
-    }
-
-    static func deviceIDList(_ text: String) -> [String] {
-        text.split(separator: ",")
-            .map { normalizedDeviceID(String($0)) }
-            .filter { $0.count == 4 && $0.allSatisfy({ $0.isASCII && $0.isHexDigit }) }
-            .reduce(into: []) { ids, id in
-                if !ids.contains(id) {
-                    ids.append(id)
-                }
-            }
+        VoiceStickCore.normalizedDeviceID(text)
     }
 
     static func hotwordList(_ text: String) -> [String] {
@@ -1017,28 +975,8 @@ struct AppConfig {
 
     /// 解析一行 CSV：`id,addr,address_kind,name[,hardware,firmware_version]`。
     /// 与 Windows next_field 语义一致：只取前 6 段，缺省段补空字符串，多余段丢弃。
-    static func parsePairedDeviceEntry(_ line: String) -> PairedDeviceEntry {
-        let fields = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-        func field(_ index: Int) -> String { index < fields.count ? fields[index] : "" }
-        return PairedDeviceEntry(
-            deviceID: field(0),
-            address: field(1),
-            addressKind: field(2),
-            name: field(3),
-            hardware: field(4),
-            firmwareVersion: field(5)
-        )
-    }
-
-    /// 格式化对齐 Windows FormatPairedDeviceEntry：固定写满 6 段。
-    static func formatPairedDeviceEntry(_ entry: PairedDeviceEntry) -> String {
-        [entry.deviceID, entry.address, entry.addressKind, entry.name,
-         entry.hardware, entry.firmwareVersion].joined(separator: ",")
-    }
-
-    static func pairedDeviceEntryList(_ lines: [String]) -> [PairedDeviceEntry] {
-        lines.map { parsePairedDeviceEntry($0) }.filter { !$0.deviceID.isEmpty }
-    }
+    // N1：parsePairedDeviceEntry / formatPairedDeviceEntry / pairedDeviceEntryList
+    // 已下沉 VoiceStickCore（ConfigParsing.swift），非限定调用经 import 解析。
 
     func pairedDeviceEntry(forID deviceID: String) -> PairedDeviceEntry? {
         let normalized = Self.normalizedDeviceID(deviceID)
@@ -1464,7 +1402,7 @@ struct AppConfig {
     private var pairedDevicesText: String {
         guard !pairedDevices.isEmpty else { return "" }
         let lines = pairedDevices
-            .map { "  \"\(Self.formatPairedDeviceEntry($0).tomlEscaped)\"," }
+            .map { "  \"\(formatPairedDeviceEntry($0).tomlEscaped)\"," }
             .joined(separator: "\n")
         return "\npaired_device = [\n\(lines)\n]\n"
     }
