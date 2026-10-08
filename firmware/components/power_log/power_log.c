@@ -241,6 +241,7 @@ static void flush_locked(bool force)
                  s_file_count);
         s_ram_count = 0;
     }
+}
 
 static void append_locked(const power_log_entry_t *entry)
 {
