@@ -15,16 +15,18 @@ import Foundation
 ///   estimate = 0.5 * (steps*100) + 0.5 * estimate
 /// 每次新手势（静默超过停转窗口 250ms）估计值从零冷启动。冷启动从零起步是有意的：
 /// 它给阈值附近的手势起步段一个宽容区，消除"稍微快一点就触发快速档"的非线性跳变。
-struct EncoderRotateSpeedEstimator {
+public struct EncoderRotateSpeedEstimator {
     /// 停转窗口：与协调器停转锁定同一时长；静默超过该值视为新手势，估计值清零冷启动。
-    static let gestureGap: TimeInterval = 0.25
+    public static let gestureGap: TimeInterval = 0.25
+
+    public init() {}
 
     private static let alpha = 0.5
     private var estimateSps = 0.0
     private var lastSampleAt: Date?
 
     /// 喂入一个旋转事件（固件一个 10ms 窗口的步数），返回平滑后的格速估计（格/秒）。
-    mutating func addSample(now: Date, steps: UInt32) -> Double {
+    public mutating func addSample(now: Date, steps: UInt32) -> Double {
         if let last = lastSampleAt, now.timeIntervalSince(last) <= Self.gestureGap {
             // 同一手势延续
         } else {
@@ -35,13 +37,13 @@ struct EncoderRotateSpeedEstimator {
         return estimateSps
     }
 
-    mutating func reset() {
+    public mutating func reset() {
         estimateSps = 0.0
         lastSampleAt = nil
     }
 
     /// 判快：平滑估计值达到阈值即判快。thresholdSps <= 0 永不判快（关闭分档）。
-    static func isFast(smoothedSpeedSps: Double, thresholdSps: Int) -> Bool {
+    public static func isFast(smoothedSpeedSps: Double, thresholdSps: Int) -> Bool {
         thresholdSps > 0 && smoothedSpeedSps >= Double(thresholdSps)
     }
 }

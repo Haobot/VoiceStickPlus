@@ -1,21 +1,25 @@
 import CryptoKit
 import Foundation
-import VoiceStickCore
 
-struct FirmwareManifest: Decodable {
-    let hardware: String
-    let version: String
+// N1 闸6：清单地址常量自 AppConfig 迁入（唯一消费方即本文件 init 默认参；根留 App）。
+public let kFirmwareManifestURL = URL(
+    string: "https://github.com/Haobot/VoiceStickPlus/releases/latest/download/manifest.json"
+)!
+
+public struct FirmwareManifest: Decodable {
+    public let hardware: String
+    public let version: String
     /// 最低兼容固件版本（manifest 下发；缺失时回退本地常量）。
-    let minVersion: String?
-    let otaURL: URL
+    public let minVersion: String?
+    public let otaURL: URL
     /// 主源失败时的回退源（GitHub Release 直链）；老 manifest 可能缺失。
-    let otaURLFallback: URL?
-    let otaSHA256: String
-    let otaSize: Int
-    let mergedURL: URL?
-    let mergedURLFallback: URL?
-    let mergedSHA256: String?
-    let mergedSize: Int?
+    public let otaURLFallback: URL?
+    public let otaSHA256: String
+    public let otaSize: Int
+    public let mergedURL: URL?
+    public let mergedURLFallback: URL?
+    public let mergedSHA256: String?
+    public let mergedSize: Int?
 
     enum CodingKeys: String, CodingKey {
         case hardware
@@ -32,15 +36,15 @@ struct FirmwareManifest: Decodable {
     }
 
     /// manifest 下发的最低兼容版本优先；空/缺失时用调用方回退值。
-    func effectiveMinimumVersion(fallback: String) -> String {
+    public func effectiveMinimumVersion(fallback: String) -> String {
         let trimmed = minVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? fallback : trimmed
     }
 }
 
 // N1 切5：DeviceFirmwareInfo 已下沉 VoiceStickCore/StatusSink.swift（随状态出口协议）。
-enum FirmwareVersion {
-    static func isVersion(_ current: String, olderThan latest: String) -> Bool {
+public enum FirmwareVersion {
+    public static func isVersion(_ current: String, olderThan latest: String) -> Bool {
         guard let current = ParsedVersion(current), let latest = ParsedVersion(latest) else {
             return false
         }
@@ -90,13 +94,13 @@ enum FirmwareVersion {
     }
 }
 
-final class FirmwareManifestClient {
-    enum FirmwareManifestError: LocalizedError {
+public final class FirmwareManifestClient {
+    public enum FirmwareManifestError: LocalizedError {
         case invalidResponse
         case checksumMismatch
         case sizeMismatch
 
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .invalidResponse:
                 return "Firmware update server returned an invalid response."
@@ -110,11 +114,11 @@ final class FirmwareManifestClient {
 
     private let manifestURL: URL
 
-    init(manifestURL: URL = AppConfig.firmwareManifestURL) {
+    public init(manifestURL: URL = kFirmwareManifestURL) {
         self.manifestURL = manifestURL
     }
 
-    func fetchManifest(completion: @escaping (Result<FirmwareManifest, Error>) -> Void) {
+    public func fetchManifest(completion: @escaping (Result<FirmwareManifest, Error>) -> Void) {
         var request = URLRequest(
             url: manifestURL,
             cachePolicy: .reloadIgnoringLocalAndRemoteCacheData
@@ -143,7 +147,7 @@ final class FirmwareManifestClient {
         }.resume()
     }
 
-    func downloadOTA(from manifest: FirmwareManifest, completion: @escaping (Result<Data, Error>) -> Void) {
+    public func downloadOTA(from manifest: FirmwareManifest, completion: @escaping (Result<Data, Error>) -> Void) {
         // 主源失败且 manifest 带 fallback 时自动换源（与 Windows 的下载源序列对齐）。
         downloadAndVerify(url: manifest.otaURL, manifest: manifest) { [weak self] result in
             switch result {
