@@ -2272,9 +2272,12 @@ void TestHotwordValidationUnified() {
     assert(ValidateHotword("") == HotwordRejectReason::kEmpty);
     assert(ValidateHotword("带空格 的词") == HotwordRejectReason::kWhitespace);
     assert(ValidateHotword("hello world") == HotwordRejectReason::kWhitespace);
-    // 原分歧点：hello.world 由①（selector）放行、④（腾讯）拒绝 →「加进去但不生效」。
-    assert(ValidateHotword("CLAUDE.md") == HotwordRejectReason::kCharset);
-    assert(ValidateHotword("hello.world") == HotwordRejectReason::kCharset);
+    // 点号：平台权威**放行**（旗舰热词 CLAUDE.md/AGENTS.md 必须可用，与
+    // hotword_select.py 对齐）；腾讯 API 单独收窄拒绝（唯一有意差异，同步处带词记录）。
+    assert(ValidateHotword("CLAUDE.md") == HotwordRejectReason::kNone);
+    assert(ValidateHotwordForTencent("CLAUDE.md") == HotwordRejectReason::kCharset);
+    assert(ValidateHotword("hello.world") == HotwordRejectReason::kNone);
+    assert(ValidateHotwordForTencent("hello.world") == HotwordRejectReason::kCharset);
     // 孤立续字节：原①当 seq_len=1 计入 CJK、原④直接放行——现统一拒绝非法 UTF-8。
     assert(ValidateHotword(std::string("a\x80z")) == HotwordRejectReason::kCharset);
     std::string cjk_too_long;  // 11 个真实 CJK 字符（勿用 std::string(n, '热')：多字节
@@ -2284,16 +2287,20 @@ void TestHotwordValidationUnified() {
     assert(ValidateHotword(cjk_too_long) == HotwordRejectReason::kTooLong);
     assert(ValidateHotword(std::string(31, 'a')) == HotwordRejectReason::kTooLong);
 
-    // 统一性对拍：selector 与腾讯两个既有包装在整份语料上必须给出完全相同的判定。
+    // 统一性对拍：两个既有包装分别等价于其委托口径；且腾讯口径必须是平台权威的
+    // **超集**（只多拒绝、绝不少拒绝）——差异仅来自 API 收窄，且同步处已带词记录。
     const std::vector<std::string> corpus = {
         "Opus", "覃海洋", "ESP32-S3", "VB-CABLE", "win_sparkle", "CLAUDE.md",
         "AGENTS.md", "带空格 的词", "", "hello.world", "a-b_c",
         "Node.js", "中文中文中文中文中文中文", "tab\there", "ok_123", "..hidden"};
     for (const auto& word : corpus) {
-        assert(IsValidHotword(word) == TencentAsrVocabClient::IsValidHotwordChars(word));
+        assert(IsValidHotword(word) == (ValidateHotword(word) == HotwordRejectReason::kNone));
+        assert(TencentAsrVocabClient::IsValidHotwordChars(word) ==
+               (ValidateHotwordForTencent(word) == HotwordRejectReason::kNone));
+        if (!IsValidHotword(word)) assert(!TencentAsrVocabClient::IsValidHotwordChars(word));
     }
-    // 明确回归：两处都必须拒绝（原①放行、④拒绝的分歧已消除）。
-    assert(!IsValidHotword("hello.world"));
+    // 点号词：平台放行、腾讯拒绝（唯一有意差异）。
+    assert(IsValidHotword("hello.world"));
     assert(!TencentAsrVocabClient::IsValidHotwordChars("hello.world"));
 }
 

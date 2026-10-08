@@ -41,9 +41,6 @@ HotwordRejectReason ValidateHotword(std::string_view word) {
         const auto lead = static_cast<unsigned char>(word[i]);
         if (lead < 0x80) {
             if (std::isspace(lead) != 0) return HotwordRejectReason::kWhitespace;
-            const bool allowed = (lead >= '0' && lead <= '9') || (lead >= 'a' && lead <= 'z') ||
-                                 (lead >= 'A' && lead <= 'Z') || lead == '_' || lead == '-';
-            if (!allowed) return HotwordRejectReason::kCharset;
             ++ascii;
             ++i;
         } else {
@@ -57,6 +54,18 @@ HotwordRejectReason ValidateHotword(std::string_view word) {
         }
     }
     if (cjk > 10 || ascii > 30) return HotwordRejectReason::kTooLong;
+    return HotwordRejectReason::kNone;
+}
+
+HotwordRejectReason ValidateHotwordForTencent(std::string_view word) {
+    const auto base = ValidateHotword(word);
+    if (base != HotwordRejectReason::kNone) return base;
+    for (const unsigned char c : word) {
+        if (c >= 0x80) continue;  // UTF-8 多字节（CJK 等）腾讯放行
+        const bool allowed = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                             (c >= 'A' && c <= 'Z') || c == '_' || c == '-';
+        if (!allowed) return HotwordRejectReason::kCharset;  // 点号等 API 会拒
+    }
     return HotwordRejectReason::kNone;
 }
 

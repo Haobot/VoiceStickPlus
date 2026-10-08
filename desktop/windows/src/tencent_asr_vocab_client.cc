@@ -391,9 +391,9 @@ std::string TencentAsrVocabClient::FindVocabId(const std::string& name) {
 }
 
 bool TencentAsrVocabClient::IsValidHotwordChars(std::string_view word) {
-    // B14：口径统一到 hotword_selector::ValidateHotword——原实现无长度/CJK 上限且对
-    // 孤立续字节放行，与其余三处分歧导致「加进去但不生效」。
-    return ValidateHotword(word) == HotwordRejectReason::kNone;
+    // B14：委托腾讯专用口径（平台权威 + API 字符集收窄）——原实现无长度/CJK 上限且对
+    // 孤立续字节放行。与其余三处的分歧属于**有意的 API 适配差异**，必须在同步处记录。
+    return ValidateHotwordForTencent(word) == HotwordRejectReason::kNone;
 }
 
 std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& hotwords) {
@@ -404,7 +404,7 @@ std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& 
     // 构建 HotWordEntry 列表（权重默认 10）；被过滤的词计数上报，避免「加进去但
     // 永不生效」却零线索。
     std::vector<HotWordEntry> entries;
-    std::size_t skipped = 0;
+    std::vector<std::string> rejected;
     for (const auto& word : hotwords) {
         auto trimmed = word;
         // 去除首尾空格
@@ -413,15 +413,22 @@ std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& 
         auto end = trimmed.find_last_not_of(" \t\n\r");
         trimmed = trimmed.substr(start, end - start + 1);
         if (trimmed.empty()) continue;
-        // 限制词长
-        if (trimmed.size() > 30) { ++skipped; continue; }
-        // 过滤腾讯词表 API 不接受的字符（如 '.'），避免一个非法词毁掉整表同步
-        if (!IsValidHotwordChars(trimmed)) { ++skipped; continue; }
+        // B14：过统一的腾讯口径（平台权威 + API 字符集收窄）；被拒必须**带词记录**——
+        // 否则热词进了配置却在这里静默失效，正是「加进去但不生效」的现场。
+        if (ValidateHotwordForTencent(trimmed) != HotwordRejectReason::kNone) {
+            rejected.push_back(trimmed);
+            continue;
+        }
         entries.push_back({trimmed, 10});
     }
-    if (skipped > 0) {
-        LogApp("tencent vocab sync: skipped " + std::to_string(skipped) +
-               " hotword(s) rejected by the table rules (length/charset)");
+    if (!rejected.empty()) {
+        std::string detail;
+        for (std::size_t i = 0; i < rejected.size() && i < 5; ++i) {
+            if (i != 0) detail += ", ";
+            detail += rejected[i];
+        }
+        LogApp("tencent vocab sync: " + std::to_string(rejected.size()) +
+               " hotword(s) rejected by Tencent charset/length rules: " + detail);
     }
     if (entries.empty()) return {};
 
