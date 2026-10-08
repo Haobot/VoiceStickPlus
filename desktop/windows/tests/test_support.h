@@ -906,48 +906,40 @@ inline void MakeTapReport(uint8_t (&out)[9], uint16_t a, uint16_t b, uint16_t c)
     out[7] = static_cast<uint8_t>(c & 0xFF); out[8] = static_cast<uint8_t>(c >> 8);
 }
 
-// N8 cut13 helper: ArgvContains
-inline bool ArgvContains(const std::vector<std::wstring>& argv, const std::wstring& needle) {
-    return std::find(argv.begin(), argv.end(), needle) != argv.end();
-}
+// N8 cut13 helper block (orig lines 2667-2687)
+// ===== ATVV golden fixtures 对拍 =====
+// 数据源：atvv_capture.py 真机采集（或 atvv_bench.py --emit-demo-fixture 合成），
+// 默认扫描 scripts/e2e_test/fixtures/xiaomi/**（VOICESTICK_REPO_ROOT 编译宏解析，
+// 可用 VOICESTICK_ATVV_FIXTURES_DIR 环境变量覆盖）。每会话四件套：
+// session_N.adpcm（原始流）、session_N.json（sidecar：帧长/增益/逐段 reset 区间）、
+// session_N.raw.wav（纯解码）、session_N.wav（解码+三点平滑+增益）。
+// 本测试按 sidecar 段落复现 C++ 解码路径，与两份 WAV 逐样本对拍。
+// 无 fixtures 时打印 SKIP 直接返回（不算失败，不伪造结果）。
 
-// N8 cut13 helper: ParseAtvvSidecarForTest
-inline bool ParseAtvvSidecarForTest(const std::string& json_text, double* gain_db,
-                             std::vector<AtvvGoldenSegment>* segments) {
-    cJSON* root = cJSON_Parse(json_text.c_str());
-    if (root == nullptr) return false;
-    const cJSON* gain = cJSON_GetObjectItemCaseSensitive(root, "gain_db");
-    const cJSON* segs = cJSON_GetObjectItemCaseSensitive(root, "segments");
-    bool ok = cJSON_IsNumber(gain) && cJSON_IsArray(segs) &&
-              !cJSON_IsInvalid(segs) && cJSON_GetArraySize(segs) > 0;
-    if (ok) {
-        *gain_db = gain->valuedouble;
-        const cJSON* item = nullptr;
-        cJSON_ArrayForEach(item, segs) {
-            const cJSON* offset = cJSON_GetObjectItemCaseSensitive(item, "offset");
-            const cJSON* nbytes = cJSON_GetObjectItemCaseSensitive(item, "bytes");
-            const cJSON* predictor = cJSON_GetObjectItemCaseSensitive(item, "predictor");
-            const cJSON* step_index = cJSON_GetObjectItemCaseSensitive(item, "step_index");
-            if (!cJSON_IsNumber(offset) || !cJSON_IsNumber(nbytes) ||
-                !cJSON_IsNumber(predictor) || !cJSON_IsNumber(step_index)) {
-                ok = false;
-                break;
-            }
-            // double→size_t 窄化前提：sidecar 是本仓库自生成 fixtures 资产
-            // （atvv_capture.py / atvv_bench.py --emit-demo-fixture 写出），
-            // offset/bytes 为非负小整数；万一出现畸形值，由下方 golden 解码循环的
-            // assert(seg.offset + seg.bytes <= adpcm_size) 兜底，属可接受前提。
-            segments->push_back(AtvvGoldenSegment{
-                static_cast<std::size_t>(offset->valuedouble),
-                static_cast<std::size_t>(nbytes->valuedouble),
-                predictor->valueint, step_index->valueint});
-        }
+inline std::filesystem::path ResolveAtvvFixturesRoot() {
+    if (const char* env = std::getenv("VOICESTICK_ATVV_FIXTURES_DIR");
+        env != nullptr && *env != '\0') {
+        return std::filesystem::path(env);
     }
-    cJSON_Delete(root);
-    return ok;
+#ifdef VOICESTICK_REPO_ROOT
+    return std::filesystem::path(VOICESTICK_REPO_ROOT) /
+           "scripts" / "e2e_test" / "fixtures" / "xiaomi";
+#else
+    return std::filesystem::path("scripts") / "e2e_test" / "fixtures" / "xiaomi";
+#endif
 }
 
-// N8 cut13 helper: ReadWavPcm16ForTest
+
+// N8 cut13 helper block (orig lines 2689-2694)
+inline std::string ReadTextFileForTest(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+}
+
+
+// N8 cut13 helper block (orig lines 2696-2735)
 // 读 PCM16 mono WAV（Python wave 模块产物）：walk RIFF chunk 取 fmt/data。
 inline std::vector<std::int16_t> ReadWavPcm16ForTest(const std::filesystem::path& path) {
     const std::string bytes = ReadTextFileForTest(path);
@@ -989,38 +981,82 @@ inline std::vector<std::int16_t> ReadWavPcm16ForTest(const std::filesystem::path
     return {};
 }
 
-// N8 cut13 helper: ReadTextFileForTest
-inline std::string ReadTextFileForTest(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return {};
-    return std::string(std::istreambuf_iterator<char>(in),
-                       std::istreambuf_iterator<char>());
-}
 
-// N8 cut13 helper: ResolveAtvvFixturesRoot
-// ===== ATVV golden fixtures 对拍 =====
-// 数据源：atvv_capture.py 真机采集（或 atvv_bench.py --emit-demo-fixture 合成），
-// 默认扫描 scripts/e2e_test/fixtures/xiaomi/**（VOICESTICK_REPO_ROOT 编译宏解析，
-// 可用 VOICESTICK_ATVV_FIXTURES_DIR 环境变量覆盖）。每会话四件套：
-// session_N.adpcm（原始流）、session_N.json（sidecar：帧长/增益/逐段 reset 区间）、
-// session_N.raw.wav（纯解码）、session_N.wav（解码+三点平滑+增益）。
-// 本测试按 sidecar 段落复现 C++ 解码路径，与两份 WAV 逐样本对拍。
-// 无 fixtures 时打印 SKIP 直接返回（不算失败，不伪造结果）。
+// N8 cut13 helper block (orig lines 2737-2742)
+struct AtvvGoldenSegment {
+    std::size_t offset = 0;
+    std::size_t bytes = 0;
+    int predictor = 0;
+    int step_index = 0;
+};
 
-inline std::filesystem::path ResolveAtvvFixturesRoot() {
-    if (const char* env = std::getenv("VOICESTICK_ATVV_FIXTURES_DIR");
-        env != nullptr && *env != '\0') {
-        return std::filesystem::path(env);
+
+// N8 cut13 helper block (orig lines 2744-2777)
+inline bool ParseAtvvSidecarForTest(const std::string& json_text, double* gain_db,
+                             std::vector<AtvvGoldenSegment>* segments) {
+    cJSON* root = cJSON_Parse(json_text.c_str());
+    if (root == nullptr) return false;
+    const cJSON* gain = cJSON_GetObjectItemCaseSensitive(root, "gain_db");
+    const cJSON* segs = cJSON_GetObjectItemCaseSensitive(root, "segments");
+    bool ok = cJSON_IsNumber(gain) && cJSON_IsArray(segs) &&
+              !cJSON_IsInvalid(segs) && cJSON_GetArraySize(segs) > 0;
+    if (ok) {
+        *gain_db = gain->valuedouble;
+        const cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, segs) {
+            const cJSON* offset = cJSON_GetObjectItemCaseSensitive(item, "offset");
+            const cJSON* nbytes = cJSON_GetObjectItemCaseSensitive(item, "bytes");
+            const cJSON* predictor = cJSON_GetObjectItemCaseSensitive(item, "predictor");
+            const cJSON* step_index = cJSON_GetObjectItemCaseSensitive(item, "step_index");
+            if (!cJSON_IsNumber(offset) || !cJSON_IsNumber(nbytes) ||
+                !cJSON_IsNumber(predictor) || !cJSON_IsNumber(step_index)) {
+                ok = false;
+                break;
+            }
+            // double→size_t 窄化前提：sidecar 是本仓库自生成 fixtures 资产
+            // （atvv_capture.py / atvv_bench.py --emit-demo-fixture 写出），
+            // offset/bytes 为非负小整数；万一出现畸形值，由下方 golden 解码循环的
+            // assert(seg.offset + seg.bytes <= adpcm_size) 兜底，属可接受前提。
+            segments->push_back(AtvvGoldenSegment{
+                static_cast<std::size_t>(offset->valuedouble),
+                static_cast<std::size_t>(nbytes->valuedouble),
+                predictor->valueint, step_index->valueint});
+        }
     }
-#ifdef VOICESTICK_REPO_ROOT
-    return std::filesystem::path(VOICESTICK_REPO_ROOT) /
-           "scripts" / "e2e_test" / "fixtures" / "xiaomi";
-#else
-    return std::filesystem::path("scripts") / "e2e_test" / "fixtures" / "xiaomi";
-#endif
+    cJSON_Delete(root);
+    return ok;
 }
 
-// N8 cut13 helper: MakeFlashOptions
+
+// N8 cut13 helper block (orig lines 5526-5528)
+inline bool ArgvContains(const std::vector<std::wstring>& argv, const std::wstring& needle) {
+    return std::find(argv.begin(), argv.end(), needle) != argv.end();
+}
+
+
+// N8 cut13 helper block (orig lines 5660-5678)
+struct FlashTestPaths {
+    std::filesystem::path dir;
+    std::filesystem::path firmware;
+    std::filesystem::path python;
+
+    FlashTestPaths() {
+        dir = std::filesystem::temp_directory_path() /
+              L"voicestick_flash_core_tests";
+        std::filesystem::create_directories(dir);
+        firmware = dir / L"测试固件.bin";
+        python = dir / L"python.exe";
+        { std::ofstream(firmware, std::ios::binary) << "fake-firmware"; }
+        { std::ofstream(python, std::ios::binary) << "fake-python"; }
+    }
+    ~FlashTestPaths() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+
+// N8 cut13 helper block (orig lines 5680-5685)
 inline FlashOptions MakeFlashOptions(const FlashTestPaths& paths) {
     FlashOptions options;
     options.serial_port = L"COM5";
