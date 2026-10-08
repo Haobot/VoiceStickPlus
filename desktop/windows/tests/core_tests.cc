@@ -1224,13 +1224,13 @@ void TestUiStateBudget() {
     // 正常帧不改。
     auto ok = BleProtocol::UiStatePayload("thinking", "ok");
     std::string ok_s(ok.begin(), ok.end());
-    assert(ok_s.find "\"text\":\"ok\"" != std::string::npos);
+    assert(ok_s.find("\"text\":\"ok\"") != std::string::npos);
 
     // ASCII 长文 → 帧 ≤244 且 state/截断内容俱在。
     auto long_ascii = BleProtocol::UiStatePayload("thinking", std::string(500, 'x'));
     assert(long_ascii.size() <= 244);
     std::string la(long_ascii.begin(), long_ascii.end());
-    assert(la.find "\"state\":\"thinking\"" != std::string::npos);
+    assert(la.find("\"state\":\"thinking\"") != std::string::npos);
     assert(la.find("xxx") != std::string::npos);
     assert(la.size() >= 2 && la[la.size() - 1] == '}' && la[la.size() - 2] == '"');
 
@@ -1240,7 +1240,7 @@ void TestUiStateBudget() {
     auto long_zh = BleProtocol::UiStatePayload("recording", zh);
     assert(long_zh.size() <= 244);
     std::string zs(long_zh.begin(), long_zh.end());
-    assert(zs.find "\"state\":\"recording\"" != std::string::npos);
+    assert(zs.find("\"state\":\"recording\"") != std::string::npos);
     assert(zs.size() >= 2 && zs[zs.size() - 1] == '}' && zs[zs.size() - 2] == '"');
 }
 
