@@ -33,7 +33,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | 协议 UUID 三端 | r113：protocol.md 10 个 UUID 三端零现=EMPTY（10/10 在 win+mac 字面量在场）；固件镜头须读小端数组形——voice_ble.c BLE_UUID128_INIT @109-125 六条（服务+5100-5105 特征）与 AB5E0002 在 gateway client 均实证（字面量搜法误判 fw=0，格式形核后归真）|
 | 下载三端核 | r114：version=VERSION(2.4.9) build 内联；实资产 gh 核——mac dmg ✓ 固件 merged/ota bin ✓ 齐、**windows msi v2.4.9 缺席=按钮 404 真断链**（v2.4.6 有 msi=模板命名无误、仅发布未至）→ 转拍板第 12 项；appcast 各平台版本=最后已发布（win 2.4.6/mac 2.4.9 各自正确非漂移）|
 
-## 二、拍板邀请（11 项，按解锁价值排序）
+## 二、拍板邀请（12 项，按解锁价值排序；r114 增第 12 项 Windows msi）
 
 | # | 问题 | 选项 | 拍板后动作 |
 |---|---|---|---|
