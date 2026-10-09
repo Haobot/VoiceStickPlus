@@ -21,6 +21,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | 提交范围 | r101 近 12 提交逐个核：触达文件与信息主张一一对应，零越界零漏提（docs 类仅 Doc/Plan、feat/fix 类为 main.c+台账配对）|
 | 技能内容引用 | r133：6 份 SKILL.md 内 Doc/desktop/firmware/scripts/website 路径 14 处全实存零缺（r105 名字核 + r108 文档核之后的最后一块引用域）|
 | example 全键终核 | r134：config.example 全 70 键（含注释态）对 mac+win+template 全源池——**70/70 见源零死键**；r107 的 17 疑键终判=镜头池过窄（子表读取在 ConfigDomain/ConfigFileModels、output 子键与设备映射键各有其读取处），全池扫描后清零；方法要点=池必须覆盖全部解析/序列化文件 |
+| 已跟踪即忽略扫描 | r135：git ls-files -ic 共 1086——分诊四类：desktop/windows 整树=git add -f 惯例（AGENTS 明文）；m0/p1 共 109=N6-b 拍板项；bench_results 14=.gitignore:51 明文按设计（历史跟踪+新忽略）；**firmware/sdkconfig=忽略规则误伤**（源 9-23 摘除裸 sdkconfig 行：build/ 规则已盖产物、源改动恢复 status 可见）|
 | 测试注册完整性 | r102 Windows 测试三面核：磁盘↔CMake 16=16 双向空差；test_suites.h 声明↔core_tests.cc 定义↔main 调用 14=14=14 四向交叉全空（N8 拆分纪律结构化实证）|
 | macOS 测试注册 | r103 三面核：21 文件 ↔ main.swift 24 调用 ↔ 24 定义，call↔def 双向空差；未挂套件仅 Runner/TestSupport 两基础设施件（按设计豁免）|
 | 台账行间引用 | r104：实有 81 行；文中引用而无行的 16 个 ID 逐名=backlog 行6 声明豁免集（9-22 三批已关闭项见上游记录，逐项吻合）；本文档 11 拍板项引用零缺 |

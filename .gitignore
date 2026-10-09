@@ -19,7 +19,6 @@ __pycache__/
 node_modules/
 website/dist/
 firmware/.vscode/
-sdkconfig
 docs/cat_sprites/
 docs/cat.png
 docs/app_icon/
