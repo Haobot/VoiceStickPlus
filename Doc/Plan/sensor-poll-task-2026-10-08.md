@@ -52,11 +52,14 @@ poweroff 等同任务排队）的结构性风险。A9 已除主犯（double_clic
    的读者分布（按键路径在 app_event 任务写 suppress）——迁移后写者由 timer 任务变
    sensor 任务；suppress 为 64 位时间戳，新增任务-任务对需按 64 位原子或临界区收口。
 
-## 四、power_log 模式切换 I²C（2-3 笔）——第二期
+## 四、power_log 同步 I2C——r139 判定：已被一期环覆盖，二期撤销
 
-控制处理线程（BLE 回调）里的同步 I²C 属同类风险，但需要请求-响应（读回结果当场用），
-与 fire 标记模型不同：提供 sensor_i2c_sync(fn)（任务收请求 → 执行 → 信号量回执）。
-本期只做 5 个轮询回调（纯 fire-and-enqueue 形态），同步 helper 列为第二期可选项。
+复核（r139，以调用方全量 grep 为准）：`power_log_note_mode` 仅 2 个调用点——
+1. `power_log_refresh_mode`（全部非 S3 调用方的唯一汇聚点）已改经 4 槽环异步执行（r96 一期）；
+2. `enter_power_off` 的 S3 关机条目**刻意保持同步**（组件内唯一同步 flush 点，断电前必须落盘）。
+
+即「控制处理线程上的同步 I2C 残余 = 零」，原设想的 `sensor_i2c_sync(fn)` 请求-响应 helper
+**无需实现**（避免了为一个不存在的问题加锁路）。结论：一期设计已完整覆盖，本节由候选转闭环记录。
 
 ## 五、验收
 
