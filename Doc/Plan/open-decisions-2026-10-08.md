@@ -8,13 +8,13 @@
 
 ## 一、验证基线（本页所有数字均本机/CI 实测）
 
-_r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全数当轮实取）._
+_r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全数当轮实取）。r127 更新：guard 11 检查 · 单测 24/24（protocol-events 与 D11 双测入列）。_
 
 | 基线 | 数值 |
 |---|---|
 | macOS 测试 runner | **PASSED 768/768**（r116 连接 +4 / r117 状态 +3 / r118 电量 +3 / r119 电源 +3：四链统一范式，r119 附 Core PowerMgmtEvent public init 一行放宽） |
 | 固件 host 测试 | **7/7 目标全过**（gateway+voice_ble 纯逻辑） |
-| release_guard | **10 检查全过**（注册表实数；r100 复测纠正此前 9 之误）+ 单测 **22/22** |
+| release_guard | **11 检查全过**（r127 增 protocol-events；r100 曾纠 9 之误）+ 单测 **24/24**（r127 增 D11 双测） |
 | CI | 七 job（macos/firmware/host/windows/script-tests/release-guard/website）全绿 |
 | Windows 测试面 | 20 套件（N8 十五刀切分后）CI ctest 全绿 |
 | 文档引用完整性 | r99 定向核：本会话迁移/删除 6 旧指针全 clean；现行三文档 dir-ful 断链 0（唯一旗标 firmware/latest/ = 发布产物路径按设计不在库）|

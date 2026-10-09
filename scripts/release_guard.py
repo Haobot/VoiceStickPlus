@@ -445,6 +445,85 @@ def check_doc_plan_status(root: Path) -> str | None:
     return "\n".join(errors) if errors else None
 
 
+
+def _walk_text(root: Path, rel: str, suffixes) -> str:
+    base = root / rel
+    if not base.exists():
+        return ""
+    parts = []
+    for f in base.rglob("*"):
+        if f.suffix in suffixes and "/build/" not in str(f):
+            parts.append(f.read_text(encoding="utf-8", errors="ignore"))
+    return "".join(parts)
+
+
+def _present_event(name: str, text: str) -> bool:
+    # 明引号形（case/==）与反斜杠嵌入形（C 字符串、win 构造器）双覆盖。
+    q = chr(34)
+    e = chr(92) + q
+    return (q + name + q) in text or (e + name + e) in text
+
+
+def check_protocol_events(root: Path) -> str | None:
+    """D11-①：protocol.md 事件名三端存在性（State/Control 切向 + 分端要求 + 显式豁免）。"""
+    doc_path = root / "Doc" / "Ref" / "protocol.md"
+    if not doc_path.exists():
+        return "protocol.md 缺失"
+    state_set = set()
+    ctrl_set = set()
+    sec = None
+    for line in doc_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            sec = line[3:].strip()
+        for m in re.finditer(
+            chr(34) + "event" + chr(34) + ":" + chr(34) + "([a-z_]+)" + chr(34),
+            line,
+        ):
+            if sec == "State Event":
+                state_set.add(m.group(1))
+            elif sec == "Control Event":
+                ctrl_set.add(m.group(1))
+    if not state_set or not ctrl_set:
+        return "protocol.md State/Control Event 章节切向失败（缺示例 JSON？）"
+    sides = {
+        "firmware": _walk_text(root, "firmware", (".c", ".h")),
+        "mac": _walk_text(root, "desktop/macos/Sources", (".swift",)),
+        "win": _walk_text(root, "desktop/windows/src", (".cc", ".h")),
+        "scripts": _walk_text(root, "scripts", (".py",)),
+    }
+    # 显式豁免/范围表（每条带理由；r126 五名溯源定谳产物）。
+    overrides = {
+        "test_playback": (
+            {"firmware", "scripts"},
+            "L3 工具下发（run_l3_firmware.py），桌面端不发送",
+        ),
+        "gateway_keymap_get": (
+            {"firmware", "win"},
+            "win 连接期主动查询；mac 走 gateway_status 报告回读",
+        ),
+        "usb_auto_off_get": (
+            {"firmware", "win"},
+            "win 电池窗查询；mac 依赖 power_mgmt 主动推送回推",
+        ),
+    }
+    dynamic_prefix = {
+        "remote_button_down": "remote_button_",
+        "remote_button_up": "remote_button_",
+    }
+    errors = []
+    for name in sorted(state_set | ctrl_set):
+        required, _reason = overrides.get(name, ({"firmware", "mac", "win"}, ""))
+        for side in required:
+            text = sides[side]
+            if _present_event(name, text):
+                continue
+            prefix = dynamic_prefix.get(name)
+            if prefix and prefix in text:
+                continue
+            scope = "（豁免表范围内）" if name in overrides else ""
+            errors.append(f"事件 {name} 在 {side} 缺字面量{scope}")
+    return chr(10).join(errors) if errors else None
+
 CHECKS = [
     ("versions", check_versions),
     ("tag", check_tag),
@@ -458,6 +537,8 @@ CHECKS = [
     ("test-ns", check_test_ns_balance),
     # N10：Doc/Plan 状态标注载体（防新增无标注；语义核销另行推进）
     ("doc-plan-status", check_doc_plan_status),
+    # D11-①：协议事件名三端存在性（r126 勘察的正式化）
+    ("protocol-events", check_protocol_events),
 ]
 
 

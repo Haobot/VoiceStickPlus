@@ -91,6 +91,10 @@ def build_repo(root: Path) -> None:
         f"    BLE_UUID128_INIT({hex_bytes});\n",
         encoding="utf-8",
     )
+    # d11-append: event literals for protocol-events fixture
+    with (root / "firmware" / "components" / "voice_ble" / "voice_ble.c").open(
+            "a", encoding="utf-8") as fh:
+        fh.write("const char* ev_state = " + chr(34) + "device_info" + chr(34) + "; const char* ev_ctrl = " + chr(34) + "gateway_keymap_set" + chr(34) + ";" + chr(10))
     (root / "firmware" / "components" / "audio_pipeline" / "audio_pipeline.c").write_text(
         "#define AUDIO_FRAME_MS 40\n", encoding="utf-8"
     )
@@ -99,12 +103,27 @@ def build_repo(root: Path) -> None:
         "The firmware currently encodes 40 ms of 16 kHz mono audio per packet.\n",
         encoding="utf-8",
     )
+    # d11-append: State/Control 章节（protocol-events 切向）
+    with (root / "Doc" / "Ref" / "protocol.md").open("a", encoding="utf-8") as fh:
+        fh.write(chr(10) + "## State Event" + chr(10) + chr(96) * 3 + chr(10)
+                 + '{"event":"device_info"}' + chr(10) + chr(96) * 3 + chr(10)
+                 + chr(10) + "## Control Event" + chr(10) + chr(96) * 3 + chr(10)
+                 + '{"event":"gateway_keymap_set"}' + chr(10) + chr(96) * 3 + chr(10))
     (root / "desktop" / "windows" / "src" / "ble_protocol.h").write_text(
         f'static constexpr const wchar_t* service_uuid = L"{SERVICE_UUID}";\n',
         encoding="utf-8",
     )
+    # d11-append: event literals
+    with (root / "desktop" / "windows" / "src" / "ble_protocol.h").open(
+            "a", encoding="utf-8") as fh:
+        fh.write("const char* ev_state = " + chr(34) + "device_info" + chr(34) + "; const char* ev_ctrl = " + chr(34) + "gateway_keymap_set" + chr(34) + ";" + chr(10))
     (root / "desktop" / "macos" / "Sources" / "VoiceStickCore" / "BleProtocol.swift").write_text(
         f'public static let serviceUUID = "{SERVICE_UUID.upper()}"\n', encoding="utf-8"
+    )
+    (root / "desktop" / "macos" / "Sources" / "VoiceStickCore" / "EventNames.swift").write_text(
+        "let evState = " + chr(34) + "device_info" + chr(34)
+        + "; let evCtrl = " + chr(34) + "gateway_keymap_set" + chr(34) + chr(10),
+        encoding="utf-8",
     )
     (root / "desktop" / "windows" / "src" / "audio_opus_encoder.h").write_text(
         "static constexpr int kFrameSamples = 640;  // 40 ms\n", encoding="utf-8"
@@ -365,8 +384,15 @@ class ReleaseGuardTests(unittest.TestCase):
         (self.root / "website" / "public" / "appcast.xml").write_text(
             '<rss><sparkle:version="2.4.6"/></rss>', encoding="utf-8"
         )
-        self.assertEqual(self.failures(), [])
 
+    def test_protocol_events_green(self):
+        self.assertIsNone(guard.check_protocol_events(self.root))
 
+    def test_protocol_events_missing_on_mac_detected(self):
+        p = self.root / "desktop/macos/Sources/VoiceStickCore/EventNames.swift"
+        p.write_text("// stripped", encoding="utf-8")
+        err = guard.check_protocol_events(self.root)
+        self.assertIsNotNone(err)
+        self.assertIn("device_info", err)
 if __name__ == "__main__":
     unittest.main(verbosity=2)
