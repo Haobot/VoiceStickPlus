@@ -11,7 +11,10 @@ private final class FakeStatusSink: VoiceStickStatusSink {
     func setStatus(_ text: String) { receivedStatuses.append(text) }
     func setPairedDeviceIDs(_ deviceIDs: [String]) {}
     func setConnectedDevices(_ devices: [ConnectedVoiceStickDevice]) { receivedConnected.append(devices) }
-    func setFirmwareInfo(_ infoByDeviceID: [String: DeviceFirmwareInfo]) {}
+    var receivedFirmwareInfo: [[String: DeviceFirmwareInfo]] = []
+    func setFirmwareInfo(_ infoByDeviceID: [String: DeviceFirmwareInfo]) {
+        receivedFirmwareInfo.append(infoByDeviceID)
+    }
     func setDeviceEncoderPresent(_ deviceID: String, present: Bool) {}
     func setDeviceBattery(_ deviceID: String, level: Int, charging: Bool, usbPowered: Bool) {}
     func setAirMouseActive(_ active: Bool, deviceID: String) {}
@@ -44,7 +47,8 @@ private final class FakeBleServing: VoiceStickBleServing {
     func updatePairedDeviceIDs(_ deviceIDs: [String]) {}
     func connectedStickDeviceIDs() -> [String] { [] }
     func deviceClass(for peripheralID: UUID) -> DeviceClass { .stickS3 }
-    func deviceID(for peripheralID: UUID) -> String? { nil }
+    var stubDeviceID: String? = "TEST"
+    func deviceID(for peripheralID: UUID) -> String? { stubDeviceID }
     func peripheralID(forDeviceID deviceID: String) -> UUID? { nil }
     func isConnected(_ peripheralID: UUID) -> Bool { false }
     func isConnected(deviceID: String) -> Bool { false }
@@ -144,4 +148,14 @@ func runCoordinatorFsmTests() {
     check(sink.receivedStatuses.contains("Ready"), "N1fsm: 有设备连接即置 Ready")
     check(!fakeBle.sentInteractionModes.isEmpty, "N1fsm: 连接即下发交互模式")
     check(coordinator.fsmSnapshot.contains("main=ready"), "N1fsm: 事件链后状态机仍一致")
+    // 状态事件链：device_info 经 JSON 解码（StateEvent 为 Decodable，跨模块免成员构造）
+    // → handleStateEvent → updateDeviceFirmwareInfo → refresh（manifest 为空亦必经末行）
+    // → sink.setFirmwareInfo 可观察。
+    let jsonData = #"{"event":"device_info","hardware":"stick_s3","firmware_version":"9.9.9"}"#.data(using: .utf8)!
+    let deviceInfo = try! JSONDecoder().decode(StateEvent.self, from: jsonData)
+    fakeBle.onStateEvent?(UUID(), deviceInfo)
+    let fw = sink.receivedFirmwareInfo.last ?? [:]
+    check(fw["TEST"]?.currentVersion == "9.9.9", "N1fsm: device_info 事件落固件字典")
+    check(fw["TEST"]?.hardware == "stick_s3", "N1fsm: 硬件字段随事件更新")
+    check(coordinator.fsmSnapshot.contains("main=ready"), "N1fsm: 状态事件链后状态机仍一致")
 }

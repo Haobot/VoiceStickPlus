@@ -12,7 +12,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 
 | 基线 | 数值 |
 |---|---|
-| macOS 测试 runner | **PASSED 759/759**（r116 FSM 事件链 +4：start 装配→连接回调→sink 状态/交互模式下发→快照一致） |
+| macOS 测试 runner | **PASSED 762/762**（r116 连接事件链 +4 / r117 状态事件链 +3：device_info 经 JSON 解码→固件字典落 sink；键名 snake_case 教训=firmware_version） |
 | 固件 host 测试 | **7/7 目标全过**（gateway+voice_ble 纯逻辑） |
 | release_guard | **10 检查全过**（注册表实数；r100 复测纠正此前 9 之误）+ 单测 **22/22** |
 | CI | 七 job（macos/firmware/host/windows/script-tests/release-guard/website）全绿 |
