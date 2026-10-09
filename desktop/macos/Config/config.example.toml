@@ -114,3 +114,10 @@ translation_target = "en"
 # [device."09AF".output]
 # transform = "translate"
 # translation_target = "zh-Hans"
+
+# ---- r111 双模板对账补录（mac 解析、此前 example 全文未现） ----
+# launch_at_login = true          # 开机自启动（设置页可切，两端同义）
+# global_hotkey_enabled = true    # 全局热键开关
+# global_hotkey = "Alt+X"         # 全局热键组合（托盘菜单可设）
+# developer_mode = false          # 开发者模式（解锁高级入口）
+# llm_disable_thinking = true     # 向 LLM 请求注入 enable_thinking:false 加速输出（见 desktop-config）
