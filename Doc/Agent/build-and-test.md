@@ -109,7 +109,7 @@ scripts\build-msi.bat
 
 该脚本在 WiX 构建前自动调用 `scripts\prepare_flash_payload.ps1` 准备 VoiceStickFlash 的自包含 esptool payload（`build-msi-x64\flash_payload\`，gitignored 构建产物），并随 MSI 安装到 `INSTALLFOLDER\FlashTool\`（exe 本体装到 `INSTALLFOLDER\VoiceStickFlash.exe`）。脚本还会用 `extract_builtin_key.ps1` 输出 7 项内置凭据环境变量供 cmake 注入，并调用 `generate_msi_config.ps1` 生成含 key 的 MSI config 产物。
 
-注意：`build_native.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。
+注意：`build_win.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。
 
 ### 网站（Vue 3 + Vite，Node 22）
 
