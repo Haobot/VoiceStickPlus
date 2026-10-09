@@ -133,3 +133,18 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   voice_double_click = "cmd+t"  # 语音键双击 → Command+T
   ```
 
+**补录（2026-10-08 r107 三面盘点）**：以下字段见于 `desktop/macos/Config/config.example.toml` 而本文此前未收录；语义按 example 内联注释与两端实现对齐补录。
+
+- `resource_id`：火山方舟 SeedASR 资源 ID（随识别请求携带的资源标识，如 `volc.seedasr.sauc.duration`）。
+- `auto_enter`（默认 `true`）：文本粘贴完成后追加一次回车（pending-paste 收尾语义，两端一致）。
+- `debug_audio_cache`（默认 `false`）：录音调试缓存开关——开启后会话 PCM 落盘留档供回放排查（目录由 `debug_audio_directory` 配置；仅诊断用，发布默认关）。
+- `device_theme_colors`：按设备覆盖的悬浮窗主题色映射 CSV（空=跟随全局主题；设置页「悬浮窗」写入）。
+- `device_overlay_positions`：按设备覆盖的悬浮窗位置映射 CSV（空=跟随默认位置；同上）。
+- `translation_target`（默认 `en`）：`[output].transform = translate` 时 LLM 翻译的目标语言代码。
+- `air_mouse_neutral_deadzone`（默认 `3.0`，区间 [1, 10]）：体感鼠标方向锁中立区死区。
+- `air_mouse_rate_gain`（默认 `80.0`，区间 [10, 500]）：rate 模式 θ→加速度增益。
+- `air_mouse_rate_friction`（默认 `0.05`，区间 [0, 0.5]）：rate 模式速度摩擦系数（单位 1/s）。
+- `air_mouse_rate_max_speed`（默认 `4000.0`，区间 [500, 8000]）：rate 模式速度上限（像素/秒）。
+- `air_mouse_curve_low_thresh`（默认 `100.0`）/ `air_mouse_curve_high_thresh`（默认 `333.0`）：sigmoid 增益曲线特征点（单位=固件缩放角速率 dps×4）。
+- `air_mouse_curve_low_factor`（默认 `0.25`）：低速段相对增益（精准对位）。
+- `air_mouse_curve_high_factor`（默认 `4.0`）：高速段相对增益（跨屏甩动）。

@@ -24,6 +24,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | 台账行间引用 | r104：实有 81 行；文中引用而无行的 16 个 ID 逐名=backlog 行6 声明豁免集（9-22 三批已关闭项见上游记录，逐项吻合）；本文档 11 拍板项引用零缺 |
 | Hub 索引实存 | r105：AGENTS 文档索引 22 个 Doc 路径全实存；6 技能名全挂目录（磁盘 6=索引 6）；三 hub 原始 sha 差异=标题/自指行设计差，check_hub 经 normalize 比对为权威语义（持续绿）|
 | 固件组件注册 | r106：main SRCS↔磁盘 1=1 双向空差；REQUIRES 全列 8/8 本地组件（audio_pipeline/bmi270/gateway/mini_encoder_c/power_log/stick_s3_board/ui_status/voice_ble），首版 PRIV_REQUIRES 单模式正则漏抓=误报，实文定谳 |
+| 配置字段三面 | r107：example↔desktop-config 文档↔解析器——抓真漂移 14 键（example 有、文档零提及，含 air_mouse 调参 8 键 + resource_id/auto_enter/debug_audio_cache/两设备覆盖/translation_target）→ 当轮已补录 desktop-config 文末；解析器两侧读取风格异构致镜头噪声（win 值 9/mac 值 47 不作互证，target/transform=子表键已文档化为 [output] 形式）|
 
 ## 二、拍板邀请（11 项，按解锁价值排序）
 
