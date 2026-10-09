@@ -53,6 +53,9 @@ HotwordRejectReason ValidateHotwordForTencent(std::string_view word);
 
 // 上述口径的布尔包装（保持既有调用方签名不变）。
 bool IsValidHotword(const std::string& word);
+// B14b（r141 拍板并入③）：提炼候选进池前过滤——单一权威口径（ValidateHotword）。
+// 返回按原序过滤后的合法词（空/超长/含空白等被拒）。
+std::vector<std::string> FilterValidHotwordCandidates(const std::vector<std::string>& words);
 
 // 评分；last_used_ts 未知（0）时新近度记 0。
 double HotwordScore(const HotwordUsage& usage, std::int64_t now_s);

@@ -733,7 +733,13 @@ void TestHotwordValidationUnified() {
     // 点号词：平台放行、腾讯拒绝（唯一有意差异）。
     assert(IsValidHotword("hello.world"));
     assert(!TencentAsrVocabClient::IsValidHotwordChars("hello.world"));
-}
+
+    // B14b（r141 拍板并入③）：提炼候选过滤——合法保留原序、非法剔除。
+    {
+        const auto got = FilterValidHotwordCandidates(
+            {"AlphaCode", "bad word", "", "覃海洋", "way_too_long_word_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+        assert((got == std::vector<std::string>{"AlphaCode", "覃海洋"}));
+    }}
 
 void TestHotwordSelector() {
     const std::int64_t now = 1760000000;  // 固定 now，保证确定性

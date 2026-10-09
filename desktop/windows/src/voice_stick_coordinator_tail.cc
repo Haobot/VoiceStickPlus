@@ -1,5 +1,6 @@
 #include "voice_stick_coordinator.h"
 
+#include "hotword_selector.h"  // B14b 提炼候选过滤
 #include "encoder_speed.h"
 #include "localization.h"
 #include "log.h"
@@ -49,13 +50,15 @@ void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& fin
 }
 
 void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<std::string>& words) {
+    // B14b（r141 拍板并入③）：LLM 提炼候选进池前过统一权威口径——非法词不入池、不通知。
+    const std::vector<std::string> filtered = FilterValidHotwordCandidates(words);
     // B17：本函数由 MineHotwordCandidatesFromRefinement 链触发（P0-3 注释明示
     // on_complete 在精修 worker 线程）——整函数体收口回 UI 线程。
-    RunOnUiThread([this, words] {
+    RunOnUiThread([this, filtered] {
             const auto path = HotwordCandidatesPath(ConfigSnapshot()->ConfigPath());
             // B13：走 miner 的唯一写入口（进程级互斥 + reload-merge-save）——原 load-once
             // 缓存整存会用陈旧快照覆盖设置页刚写入的 dismissed/加入，用户「忽略」的词反复弹回。
-            const std::vector<std::string> suggestions = RecordHotwordCandidatesToDisk(path, words);
+            const std::vector<std::string> suggestions = RecordHotwordCandidatesToDisk(path, filtered);
 
             if (!suggestions.empty()) {
                 const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);

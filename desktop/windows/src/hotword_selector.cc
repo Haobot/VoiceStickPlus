@@ -73,6 +73,17 @@ bool IsValidHotword(const std::string& word) {
     return ValidateHotword(word) == HotwordRejectReason::kNone;
 }
 
+std::vector<std::string> FilterValidHotwordCandidates(const std::vector<std::string>& words) {
+    std::vector<std::string> out;
+    out.reserve(words.size());
+    for (const auto& w : words) {
+        if (ValidateHotword(w) == HotwordRejectReason::kNone) {
+            out.push_back(w);
+        }
+    }
+    return out;
+}
+
 double HotwordScore(const HotwordUsage& usage, std::int64_t now_s) {
     const double count_term =
         kHotwordWCount * std::log1p(static_cast<double>(std::max(0, usage.count)));
