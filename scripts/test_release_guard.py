@@ -95,6 +95,11 @@ def build_repo(root: Path) -> None:
     with (root / "firmware" / "components" / "voice_ble" / "voice_ble.c").open(
             "a", encoding="utf-8") as fh:
         fh.write("const char* ev_state = " + chr(34) + "device_info" + chr(34) + "; const char* ev_ctrl = " + chr(34) + "gateway_keymap_set" + chr(34) + ";" + chr(10))
+    # d11-append-2: 最小 control schema（与 protocol 示例对齐）
+    import json as _j
+    (root / "Doc" / "Ref" / "control-frame-schema.json").write_text(
+        _j.dumps({"events": {"gateway_keymap_set": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}}) + chr(10), encoding="utf-8",
+    )
     (root / "firmware" / "components" / "audio_pipeline" / "audio_pipeline.c").write_text(
         "#define AUDIO_FRAME_MS 40\n", encoding="utf-8"
     )
@@ -394,5 +399,20 @@ class ReleaseGuardTests(unittest.TestCase):
         err = guard.check_protocol_events(self.root)
         self.assertIsNotNone(err)
         self.assertIn("device_info", err)
+
+
+    def test_control_frame_schema_green(self):
+        self.assertIsNone(guard.check_control_frame_schema(self.root))
+
+    def test_control_frame_schema_drift_detected(self):
+        p = self.root / "Doc" / "Ref" / "protocol.md"
+        orig = p.read_text(encoding="utf-8")
+        old = '{"event":"gateway_keymap_set"}'
+        new = '{"event":"gateway_keymap_set","key":"back"}'
+        self.assertIn(old, orig)
+        p.write_text(orig.replace(old, new), encoding="utf-8")
+        err = guard.check_control_frame_schema(self.root)
+        self.assertIsNotNone(err)
+        self.assertIn("gateway_keymap_set", err)
 if __name__ == "__main__":
     unittest.main(verbosity=2)

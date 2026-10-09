@@ -464,17 +464,18 @@ def _present_event(name: str, text: str) -> bool:
     return (q + name + q) in text or (e + name + e) in text
 
 
-def check_protocol_events(root: Path) -> str | None:
-    """D11-①：protocol.md 事件名三端存在性（State/Control 切向 + 分端要求 + 显式豁免）。"""
+def _protocol_event_sets(root: Path):
+    """返回 (state_set, ctrl_set)：protocol.md 按 State/Control 章节切向解析事件名。"""
     doc_path = root / "Doc" / "Ref" / "protocol.md"
-    if not doc_path.exists():
-        return "protocol.md 缺失"
     state_set = set()
     ctrl_set = set()
     sec = None
     for line in doc_path.read_text(encoding="utf-8").splitlines():
         if line.startswith("## "):
             sec = line[3:].strip()
+        # 仅收 JSON 示例行（{ 开头）：表格/散文里的内联提及（如 Control 章引用 state 侧报告）不算
+        if not line.lstrip().startswith("{"):
+            continue
         for m in re.finditer(
             chr(34) + "event" + chr(34) + ":" + chr(34) + "([a-z_]+)" + chr(34),
             line,
@@ -483,6 +484,15 @@ def check_protocol_events(root: Path) -> str | None:
                 state_set.add(m.group(1))
             elif sec == "Control Event":
                 ctrl_set.add(m.group(1))
+    return state_set, ctrl_set
+
+
+def check_protocol_events(root: Path) -> str | None:
+    """D11-①：protocol.md 事件名三端存在性（State/Control 切向 + 分端要求 + 显式豁免）。"""
+    doc_path = root / "Doc" / "Ref" / "protocol.md"
+    if not doc_path.exists():
+        return "protocol.md 缺失"
+    state_set, ctrl_set = _protocol_event_sets(root)
     if not state_set or not ctrl_set:
         return "protocol.md State/Control Event 章节切向失败（缺示例 JSON？）"
     sides = {
@@ -524,6 +534,68 @@ def check_protocol_events(root: Path) -> str | None:
             errors.append(f"事件 {name} 在 {side} 缺字面量{scope}")
     return chr(10).join(errors) if errors else None
 
+def check_control_frame_schema(root: Path) -> str | None:
+    """D11-②：控制帧 JSON schema 与 protocol.md Control 章节双向对拍（键/型/必填）。"""
+    import json as _json
+
+    schema_path = root / "Doc" / "Ref" / "control-frame-schema.json"
+    if not schema_path.exists():
+        return "Doc/Ref/control-frame-schema.json 缺失"
+    try:
+        schema = _json.loads(schema_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return "control-frame-schema.json 解析失败"
+    _state, ctrl = _protocol_event_sets(root)
+    events = schema.get(
+        "events", {})
+    if not isinstance(events, dict) or not events:
+        return "schema 缺 events 表"
+    errors = []
+    doc_names, sch_names = set(ctrl), set(events)
+    for n in sorted(doc_names - sch_names):
+        errors.append(f"doc Control 事件 {n} 缺 schema 条目")
+    for n in sorted(sch_names - doc_names):
+        errors.append(f"schema 条目 {n} 不在 doc Control 章节（陈旧）")
+    # 逐事件：doc 示例键/型 与 schema properties/required 对拍（重写于 r128 调试后，原生成段存隐伤）
+    doc_fields = {}
+    sec = None
+    text = (root / "Doc" / "Ref" / "protocol.md").read_text(encoding="utf-8")
+    for raw in text.splitlines():
+        if raw.startswith("## "):
+            sec = raw[3:].strip()
+            continue
+        if sec != "Control Event":
+            continue
+        if not raw.startswith("{"):
+            continue
+        try:
+            obj = _json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or "event" not in obj:
+            continue
+        name = obj.pop("event")
+        bucket = doc_fields.setdefault(name, {})
+        for key, val in obj.items():
+            tn = {
+                "str": "string", "bool": "boolean",
+                "int": "integer", "float": "number",
+                "list": "array",
+            }.get(type(val).__name__, type(val).__name__)
+            bucket[key] = tn
+    for name, props in events.items():
+        if name not in doc_fields:
+            continue
+        want = doc_fields[name]
+        got = props.get(
+            "properties", {})
+        if got != want:
+            errors.append(f"{name} properties 与 doc 示例不一致: schema={got} doc={want}")
+        if props.get(
+            "required") != list(want.keys()):
+            errors.append(f"{name} required 非全键或顺序不齐")
+    return chr(10).join(errors) if errors else None
+
 CHECKS = [
     ("versions", check_versions),
     ("tag", check_tag),
@@ -539,6 +611,8 @@ CHECKS = [
     ("doc-plan-status", check_doc_plan_status),
     # D11-①：协议事件名三端存在性（r126 勘察的正式化）
     ("protocol-events", check_protocol_events),
+    # D11-②：控制帧 JSON schema ⇄ doc Control 章节（r128）
+    ("control-frame-schema", check_control_frame_schema),
 ]
 
 

@@ -3,18 +3,18 @@
 # 开放决策与收官盘点（2026-10-08）
 
 架构评审后续（`architecture-review-followup-2026-10-07.md`）执行至此的终态快照：
-**backlog 66 行 closed / 15 行余量（r126 复算：r125 计划覆盖核补挂 D11 后）**（余量全部为：拍板、真机、设计三类——可机械面已清零）。
+**backlog 67 行 closed / 14 行余量（r128 D11 双落收官；r126 复算后 D11 已闭）**（余量全部为：拍板、真机、设计三类——可机械面已清零）。
 本文把「等你一句话」的事项收成一页；每项给问题、选项、影响，拍板后即可按项推进。
 
 ## 一、验证基线（本页所有数字均本机/CI 实测）
 
-_r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全数当轮实取）。r127 更新：guard 11 检查 · 单测 24/24（protocol-events 与 D11 双测入列）。_
+_r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全数当轮实取）。r127-128 更新：guard 12 检查 · 单测 26/26（protocol-events + control-frame-schema 四测入列）。_
 
 | 基线 | 数值 |
 |---|---|
 | macOS 测试 runner | **PASSED 768/768**（r116 连接 +4 / r117 状态 +3 / r118 电量 +3 / r119 电源 +3：四链统一范式，r119 附 Core PowerMgmtEvent public init 一行放宽） |
 | 固件 host 测试 | **7/7 目标全过**（gateway+voice_ble 纯逻辑） |
-| release_guard | **11 检查全过**（r127 增 protocol-events；r100 曾纠 9 之误）+ 单测 **24/24**（r127 增 D11 双测） |
+| release_guard | **12 检查全过**（r127 protocol-events + r128 control-frame-schema）+ 单测 **26/26**（D11 四测） |
 | CI | 七 job（macos/firmware/host/windows/script-tests/release-guard/website）全绿 |
 | Windows 测试面 | 20 套件（N8 十五刀切分后）CI ctest 全绿 |
 | 文档引用完整性 | r99 定向核：本会话迁移/删除 6 旧指针全 clean；现行三文档 dir-ful 断链 0（唯一旗标 firmware/latest/ = 发布产物路径按设计不在库）|
