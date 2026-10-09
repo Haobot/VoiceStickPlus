@@ -29,6 +29,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | README 双语对等 | r109：EN/ZH 结构全平（17 标题/8 链接/12 围栏逐一相等）、双语相对链接零断链；VERSION=2.4.9 串双 README 同缺=对称（README 版本无关设计，版本权威在 VERSION/appcast）|
 | 网站 i18n 用键 | r110：zh/en 字典 80=80 对等（check_i18n 复证）；Vue/TS 字面量用键 67 个全命中、字典缺 0（动态拼键不在字面量镜头内=已声明盲区）；补足 check_i18n 只查对等不查 usage 覆盖的缺口 |
 | 双模板对账 | r111：example 与 windows config.template tomllib 解析双绿；键差 10/32 分层定谳（角色异构+注释态呈现算在场+兼容别名噪声剔除后真缺 5 键：launch_at_login/global_hotkey/global_hotkey_enabled/developer_mode/llm_disable_thinking=mac 解析而 example 零现） 当轮按 mac 默认值注释式补入 example；tomllib 有效性纳入基线 |
+| template 键文档覆盖 | r112：32 个 template-only 键对 desktop-config 正文——零现 9 键（r111 的 4 跨平台键文档侧亦缺 + selection_hotword_enabled/tencent_engine_model_type/tencent_hotword_id + 2 兼容别名 output_target/text_transform）→ 当轮 9 键补录文档并标注别名等义 |
 
 ## 二、拍板邀请（11 项，按解锁价值排序）
 

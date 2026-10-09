@@ -148,3 +148,12 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 - `air_mouse_curve_low_thresh`（默认 `100.0`）/ `air_mouse_curve_high_thresh`（默认 `333.0`）：sigmoid 增益曲线特征点（单位=固件缩放角速率 dps×4）。
 - `air_mouse_curve_low_factor`（默认 `0.25`）：低速段相对增益（精准对位）。
 - `air_mouse_curve_high_factor`（默认 `4.0`）：高速段相对增益（跨屏甩动）。
+
+**补录（2026-10-08 r112 双模板对账续·文档侧）**：以下 template 键本文此前零现（4 个跨平台键同 r111 已补 example、3 个 Windows 侧键、2 个兼容别名）。
+
+- `launch_at_login`（默认 `true`）：开机自启动（设置页可切，macOS 与 Windows 同义；Windows 走 HKCU Run 键同步）。
+- `global_hotkey_enabled`（默认 `true`）/ `global_hotkey`（默认 `Alt+X`）：全局热键开关与组合键（托盘菜单「热键」子菜单可设）。
+- `developer_mode`（默认 `false`）：开发者模式（解锁高级/诊断入口）。
+- `selection_hotword_enabled`（Windows，`hotword_process_enabled` 同族）：划词加词时 LLM 提炼热词的启用开关（与 `hotword_process_enabled` 配合，见上文热词处理节）。
+- `tencent_engine_model_type` / `tencent_hotword_id`：腾讯云 ASR 请求参数——引擎模型类型与热词表 ID（`tencent` 提供商在场时随识别请求携带）。
+- `output_target` / `text_transform`：Windows 兼容平表别名（与 `[output].target` / `[output].transform` 等义；新配置一律用 `[output]` 正典形态，见上文输出节）。
