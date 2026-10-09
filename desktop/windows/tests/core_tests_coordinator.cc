@@ -601,8 +601,7 @@ void TestCoordinatorConnectionChangeChain() {
     assert(ui.connected_devices[0].id == "5A74");
     assert(!ui.statuses.empty());
     assert(ui.statuses.back() == "Pair a VoiceStick");
-    printf("TestCoordinatorConnectionChangeChain passed
-");
+    printf("TestCoordinatorConnectionChangeChain passed\n");
 }
 void RunCoordinatorBatchTests() {
     TestCoordinatorConnectionChangeChain();
