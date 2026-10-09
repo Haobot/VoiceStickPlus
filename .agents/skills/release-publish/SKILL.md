@@ -20,6 +20,7 @@ description: >-
 5. **CI 门禁必须真看结论**（`completed success`），continue-on-error 的 run 不算过。
 6. GitHub 侧验证一律用 `gh api` / `gh release download`（走 API 链路）；curl 直连 github.com 国内超时属常态，不代表发布失败。
 7. **MSI 必须内置凭据（内部测试模式）**：`build-msi.bat` 已默认注入本机 config.toml 凭据（开箱即用免输 API Key；显式 `VOICESTICK_EMBED_BUILTIN_KEYS=0` 才构建无凭据公开包）。构建日志必须出现 `Injecting built-in credentials into VoiceStick.exe`——若见 `building WITHOUT built-in credentials` 产物作废重建；发布扫描用 `--allow-builtin`（内测包命中仅告警，无它则嵌入凭据必 FAIL）。**macOS 同款门禁（v2.4.8 起）**：`build-macos.sh` 默认注入（源 `~/Library/Application Support/VoiceStick/config.toml`，`VOICESTICK_EMBED_BUILTIN_KEYS=0` 构建公开包），日志必须出现 `Injecting built-in credentials into VoiceStickApp`；构建后 `git status` 中 `BuiltinSecrets.swift` 必须已恢复占位（trap 兜底，凭据不进 git）；发布扫描同样 `--allow-builtin`。
+8. **网站下载按钮按 VERSION 拼 GitHub 直链，非全平台轮必 404**（r114 实核：v2.4.9 无 msi 资产、页面 Windows 按钮 404；v2.4.6 有 msi 证模板命名无误、仅发布未至）。发布收尾必跑 gh release view vX.Y.Z --json assets，核三件与页面/默认链接一致：VoiceStick-X.Y.Z.dmg、VoiceStick_X.Y.Z_zh-CN.msi 与 _en-US.msi、voicestick-firmware-sticks3-merged-X.Y.Z.bin；本轮若缺某平台资产（拍板#12 未走选项 B/C 改链前），须在发布记录显式注明受影响按钮或先补齐资产。
 
 ## 发布轮次决策
 
