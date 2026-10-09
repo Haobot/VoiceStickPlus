@@ -6,9 +6,11 @@ import VoiceStickCore
 // 快照以字符串外泄最小面（构造即验证 9 参注入链全通）。
 
 private final class FakeStatusSink: VoiceStickStatusSink {
-    func setStatus(_ text: String) {}
+    var receivedStatuses: [String] = []
+    var receivedConnected: [[ConnectedVoiceStickDevice]] = []
+    func setStatus(_ text: String) { receivedStatuses.append(text) }
     func setPairedDeviceIDs(_ deviceIDs: [String]) {}
-    func setConnectedDevices(_ devices: [ConnectedVoiceStickDevice]) {}
+    func setConnectedDevices(_ devices: [ConnectedVoiceStickDevice]) { receivedConnected.append(devices) }
     func setFirmwareInfo(_ infoByDeviceID: [String: DeviceFirmwareInfo]) {}
     func setDeviceEncoderPresent(_ deviceID: String, present: Bool) {}
     func setDeviceBattery(_ deviceID: String, level: Int, charging: Bool, usbPowered: Bool) {}
@@ -46,7 +48,10 @@ private final class FakeBleServing: VoiceStickBleServing {
     func peripheralID(forDeviceID deviceID: String) -> UUID? { nil }
     func isConnected(_ peripheralID: UUID) -> Bool { false }
     func isConnected(deviceID: String) -> Bool { false }
-    func sendInteractionMode(_ mode: InteractionMode, to peripheralID: UUID?) {}
+    var sentInteractionModes: [InteractionMode] = []
+    func sendInteractionMode(_ mode: InteractionMode, to peripheralID: UUID?) {
+        sentInteractionModes.append(mode)
+    }
     func sendPowerLogCommand(_ data: Data, to deviceID: String) {}
     func sendRemoteButton(action: String, deviceID: String, requestID: UInt32) {}
     func sendShowIMUDebug(_ enabled: Bool, to peripheralID: UUID?) {}
@@ -108,10 +113,12 @@ private final class FakeRefiner: RefinerServing {
 }
 
 func runCoordinatorFsmTests() {
+    let sink = FakeStatusSink()
+    let fakeBle = FakeBleServing()
     let coordinator = VoiceStickCoordinator(
         config: .defaults,
-        statusController: FakeStatusSink(),
-        ble: FakeBleServing(),
+        statusController: sink,
+        ble: fakeBle,
         makeAsr: { _ in FakeASR() },
         makeTranslator: { _ in FakeTranslator() },
         makeRefiner: { _ in FakeRefiner() },
@@ -127,4 +134,14 @@ func runCoordinatorFsmTests() {
     let snap2 = coordinator.fsmSnapshot
     check(snap2.contains("main=ready"), "N1fsm: updateConfig 往返仍 ready")
     check(snap2.contains("subtitleCycles=0"), "N1fsm: 往返后仍无字幕周期")
+
+    // 事件链：start() 才装配 ble 闭包（公共注册 API；副作用=fake ble + 异步 manifest 尝试
+    // + 刷新定时器 deinit 复位，测试进程即退不等异步）——随后直调捕获的连接闭包。
+    coordinator.start()
+    fakeBle.onConnectionChange?([ConnectedVoiceStickDevice(
+        name: "VS-TEST", deviceID: "TEST", deviceClass: .stickS3)])
+    check(sink.receivedConnected.count == 1, "N1fsm: 连接回调抵达 sink 一次")
+    check(sink.receivedStatuses.contains("Ready"), "N1fsm: 有设备连接即置 Ready")
+    check(!fakeBle.sentInteractionModes.isEmpty, "N1fsm: 连接即下发交互模式")
+    check(coordinator.fsmSnapshot.contains("main=ready"), "N1fsm: 事件链后状态机仍一致")
 }
