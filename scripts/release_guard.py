@@ -596,6 +596,40 @@ def check_control_frame_schema(root: Path) -> str | None:
             errors.append(f"{name} required 非全键或顺序不齐")
     return chr(10).join(errors) if errors else None
 
+
+def check_backlog_structure(root: Path):
+    """backlog 行结构与状态词汇核（r130；N10 语义核销的结构层）。
+
+    1) 每个数据行必须以 | 收尾——抓跨物理行断行（r126 D11 行内嵌换行实案）；
+    2) 状态列首词须在既定词汇（closed/open/partial/blocked/待核查）——抓错列与新造词。
+    """
+    path = root / 'Doc' / 'Plan' / 'backlog.md'
+    if not path.exists():
+        return ("skip", "backlog.md not in minimal fixture")
+    allow = {'closed', 'open', 'partial', 'blocked', '待核查'}
+    all_lines = path.read_text(encoding='utf-8').splitlines()
+    errors = []
+    for idx, raw in enumerate(all_lines, 1):
+        if not raw.startswith('| '):
+            continue
+        if not raw.rstrip().endswith("|"):
+            errors.append(f"第{idx}行行尾缺竖线（表格行断裂/跨物理行）")
+            continue
+        parts = [x.strip() for x in raw.split('|')]
+        if len(parts) < 4:
+            continue
+        ident = parts[1]
+        # 表头行恒后随分隔线——动态跳过（ID/编号/日期 等任意命名）
+        if idx < len(all_lines) and all_lines[idx].lstrip().startswith('|---'):
+            continue
+        if len(ident) >= 4 and ident[:4].isdigit() and ident[4:5] == "-":
+            continue  # 闭环记录日期行（列语义不同）
+        status = parts[3].replace("*", "").strip()
+        first = status.split(chr(0xFF08))[0].split('(')[0].strip()
+        if first not in allow:
+            errors.append(f"{ident} 状态词汇未知: {status[:24]}")
+    return chr(10).join(errors) if errors else None
+
 CHECKS = [
     ("versions", check_versions),
     ("tag", check_tag),
@@ -613,6 +647,8 @@ CHECKS = [
     ("protocol-events", check_protocol_events),
     # D11-②：控制帧 JSON schema ⇄ doc Control 章节（r128）
     ("control-frame-schema", check_control_frame_schema),
+    # r130：backlog 行结构 + 状态词汇（N10 结构层语义核销）
+    ("backlog-structure", check_backlog_structure),
 ]
 
 

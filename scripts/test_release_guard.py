@@ -67,6 +67,16 @@ def build_repo(root: Path) -> None:
     (root / "website" / "public").mkdir(parents=True)
 
     (root / "VERSION").write_text("2.4.9", encoding="utf-8")
+    (root / 'Doc' / 'Plan').mkdir(parents=True, exist_ok=True)
+    (root / 'Doc' / 'Plan' / 'backlog.md').write_text(
+        '> 状态：closed（样例载体）' + chr(10) + chr(10) + '# backlog' + chr(10)
+        + '| ID | 事项 | 状态 | 证据 |' + chr(10)
+        + '|---|---|---|---|' + chr(10)
+        + '| T1 | 样例 | closed | 全过 |' + chr(10)
+        + '| T2 | 样例 | open | 待办 |' + chr(10)
+        + '| 2026-10-08 | 闭环记录样例 | 证据... |' + chr(10),
+        encoding='utf-8',
+    )
     (root / "firmware" / "version.txt").write_text("2.4.9", encoding="utf-8")
     (root / "CHANGELOG.md").write_text(
         "# CHANGELOG\n\n## v2.4.9\n\n- fix\n\n## v2.4.8\n", encoding="utf-8"
@@ -414,5 +424,28 @@ class ReleaseGuardTests(unittest.TestCase):
         err = guard.check_control_frame_schema(self.root)
         self.assertIsNotNone(err)
         self.assertIn("gateway_keymap_set", err)
+
+    def test_backlog_structure_green(self):
+        res = guard.check_backlog_structure(self.root)
+        self.assertTrue(res is None or (isinstance(res, tuple) and res[0] == 'skip'), res)
+
+    def test_backlog_broken_row_detected(self):
+        p = self.root / 'Doc' / 'Plan' / 'backlog.md'
+        t = p.read_text(encoding='utf-8')
+        t = t.replace("| T2 | 样例 | open | 待办 |", "| T2 | 样例 | open | 待办")
+        p.write_text(t, encoding='utf-8')
+        res = guard.check_backlog_structure(self.root)
+        self.assertIsNotNone(res)
+        self.assertIn("行尾缺竖线", str(res))
+
+    def test_backlog_bad_status_detected(self):
+        p = self.root / 'Doc' / 'Plan' / 'backlog.md'
+        t = p.read_text(encoding='utf-8')
+        t = t.replace("| T1 | 样例 | closed | 全过 |", "| T1 | 样例 | closd | 全过 |")
+        p.write_text(t, encoding='utf-8')
+        res = guard.check_backlog_structure(self.root)
+        self.assertIsNotNone(res)
+        self.assertIn("closd", str(res))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
