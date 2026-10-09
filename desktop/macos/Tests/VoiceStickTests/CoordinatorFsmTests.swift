@@ -158,4 +158,14 @@ func runCoordinatorFsmTests() {
     check(fw["TEST"]?.currentVersion == "9.9.9", "N1fsm: device_info 事件落固件字典")
     check(fw["TEST"]?.hardware == "stick_s3", "N1fsm: 硬件字段随事件更新")
     check(coordinator.fsmSnapshot.contains("main=ready"), "N1fsm: 状态事件链后状态机仍一致")
+    // 电量透传链：fake-ble 片段 → start() 装配的内部闭包 → deviceID 映射（TEST 桩）
+    // → 协调器公共出口 onPowerLogFragment（App 端同款接法）。
+    var gotFragment: (String, PowerLogFragment)?
+    coordinator.onPowerLogFragment = { dev, frag in gotFragment = (dev, frag) }
+    let fragJSON = #"{"seq":1,"offset":0,"total":10,"eof":false,"data":"AQID"}"#.data(using: .utf8)!
+    let frag = try! JSONDecoder().decode(PowerLogFragment.self, from: fragJSON)
+    fakeBle.onPowerLogFragment?(UUID(), frag)
+    check(gotFragment?.0 == "TEST", "N1fsm: 片段经 deviceID 映射到出口")
+    check(gotFragment?.1.data == Data([1, 2, 3]), "N1fsm: 片段负载 base64 保真")
+    check(gotFragment?.1.total == 10, "N1fsm: 片段元数据保真")
 }
