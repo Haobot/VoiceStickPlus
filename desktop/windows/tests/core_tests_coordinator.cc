@@ -583,7 +583,29 @@ void TestCoordinatorInvalidateAsrConnectionForwardsToClient() {
 
 
 // Suite entry: core_tests.cc main() calls this once.
+// r121：Windows 侧连接事件链（对齐 mac r116 范式）——Start 装配 → 直调捕获回调 →
+// FakeUi 观察（连接即状态刷新；配对表空 = Pair a VoiceStick 语义，非 mac 的 Ready）。
+void TestCoordinatorConnectionChangeChain() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble),
+                                       std::make_unique<FakeAsrClient>(), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_connection_change(std::vector<ConnectedDevice>{
+        ConnectedDevice{"5A74", "VS-TEST", ""}});
+
+    assert(ui.connected_devices.size() == 1);
+    assert(ui.connected_devices[0].id == "5A74");
+    assert(!ui.statuses.empty());
+    assert(ui.statuses.back() == "Pair a VoiceStick");
+    printf("TestCoordinatorConnectionChangeChain passed
+");
+}
 void RunCoordinatorBatchTests() {
+    TestCoordinatorConnectionChangeChain();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();
