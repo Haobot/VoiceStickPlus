@@ -178,8 +178,27 @@ def check_i18n(root: Path) -> str | None:
         errors.append(f"仅 zh-CN 有: {only_zh[:8]}")
     if only_en:
         errors.append(f"仅 en-US 有: {only_en[:8]}")
+    # r136：占位符对拍（键对等之外，值内插值 token 集须一致——单侧加 {count} 类
+    # token 会造成运行期显示错乱；实测 80 对键零不一致基线 + 负检单测守护）。
+    ph = re.compile("\{[a-zA-Z0-9_]+\}")
+    zv, ev = _flatten_vals(zh), _flatten_vals(en)
+    for key in sorted(set(zv) & set(ev)):
+        if not isinstance(zv[key], str) or not isinstance(ev[key], str):
+            continue
+        if set(ph.findall(zv[key])) != set(ph.findall(ev[key])):
+            errors.append("{key} 占位符不一致" + f": zh={sorted(set(ph.findall(zv[key])))} en={sorted(set(ph.findall(ev[key])))}")
     return "\n".join(errors) if errors else None
 
+
+def _flatten_vals(d, prefix="") -> dict:
+    out = {}
+    for k, v in d.items():
+        key = prefix + k
+        if isinstance(v, dict):
+            out.update(_flatten_vals(v, key + '.'))
+        else:
+            out[key] = v
+    return out
 
 def _swift_enum_names(body: str) -> set[str]:
     """Swift 枚举体（case a, b / case c = \"x\"）。"""

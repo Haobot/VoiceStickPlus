@@ -447,5 +447,19 @@ class ReleaseGuardTests(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertIn("closd", str(res))
 
+    def test_i18n_placeholder_mismatch_detected(self):
+        import json as _j
+        p = self.root / 'website' / 'src' / 'i18n' / 'zh-CN.json'
+        d = _j.loads(p.read_text(encoding='utf-8'))
+        first_key = next(iter(d))
+        if isinstance(d[first_key], dict):
+            sub = next(iter(d[first_key]))
+            d[first_key][sub] = str(d[first_key][sub]) + ' {count}'
+        else:
+            d[first_key] = str(d[first_key]) + ' {count}'
+        p.write_text(_j.dumps(d, ensure_ascii=False), encoding='utf-8')
+        fails = self.failures()
+        self.assertTrue(any('占位符不一致' in f for f in fails), fails)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
