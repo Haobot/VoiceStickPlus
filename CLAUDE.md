@@ -106,6 +106,8 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 - macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须先判 `peripheral.state`——对断开外设空发 discoverServices 无任何回调（静默卡死），详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
 - 仅固件轮发布后同步静态网页三件套：先补 MSI 上 Release（appcast 依赖）→ `gh workflow run deploy-website.yml --ref feat/stick-gateway` 刷 Pages → COS 整站必须在 PowerShell 跑 `npm run build -- --base=/` 后整站重传，并显式删 `firmware/latest/` 旧版本 bin（默认 base=/VoiceStickPlus/ 误传 COS 即全站白屏；版本号构建时内联进 JS，只更新数据文件不重建无效）；验证引用必须 grep 全路径模式 `[^"']*assets/`。详见 `Doc/Expe/cos-website-fullsite-sync-traps-2026-09-27.md`。
 
+- 协议演进纪律：改 `Doc/Ref/protocol.md` 控制帧示例（Control Event 的 JSON）后必须重生成 `Doc/Ref/control-frame-schema.json`（r128 起 release_guard 第 12 检查 control-frame-schema 强制 schema 与 doc 双向对拍：事件集/键型/必填任一漂移即红）；协议事件名三端存在性由第 11 检查 protocol-events 覆盖（State/Control 切向 + 分端豁免表——新增事件名须在三端或豁免表落字面量）。
+
 ## 文档索引
 
 用到哪个主题，直接查对应文档：
