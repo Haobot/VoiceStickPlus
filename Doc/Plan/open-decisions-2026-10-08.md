@@ -24,6 +24,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | 已跟踪即忽略扫描 | r135：git ls-files -ic 共 1086——分诊四类：desktop/windows 整树=git add -f 惯例（AGENTS 明文）；m0/p1 共 109=N6-b 拍板项；bench_results 14=.gitignore:51 明文按设计（历史跟踪+新忽略）；**firmware/sdkconfig=忽略规则误伤**（源 9-23 摘除裸 sdkconfig 行：build/ 规则已盖产物、源改动恢复 status 可见）|
 | 已跟踪即忽略扫描 | r135：git ls-files -ic 共 1086——分诊四类：desktop/windows 整树=git add -f 惯例（AGENTS 明文）；m0/p1 共 109=N6-b 拍板项；bench_results 14=.gitignore:51 明文按设计（历史跟踪+新忽略）；**firmware/sdkconfig=忽略规则误伤**（源 9-23 摘除裸 sdkconfig 行：build/ 规则已盖产物、源改动恢复 status 可见）|
 | i18n 占位符对拍 | r136：zh/en 80 对键占位 token 集**零不一致**（键对等之上值内对拍；就地扩展进 check_i18n 不增计数）+ 负检单测（单侧加 {count} 必报）；实测基线+门禁双层 |
+| 技能加载契约 | r140：6 份 SKILL.md front-matter 结构核——起止分隔符、name、description、name 与目录一致 4 项全过（front-matter 坏=技能对 agent 隐身的静默故障面）|
 | 测试注册完整性 | r102 Windows 测试三面核：磁盘↔CMake 16=16 双向空差；test_suites.h 声明↔core_tests.cc 定义↔main 调用 14=14=14 四向交叉全空（N8 拆分纪律结构化实证）|
 | macOS 测试注册 | r103 三面核：21 文件 ↔ main.swift 24 调用 ↔ 24 定义，call↔def 双向空差；未挂套件仅 Runner/TestSupport 两基础设施件（按设计豁免）|
 | 台账行间引用 | r104：实有 81 行；文中引用而无行的 16 个 ID 逐名=backlog 行6 声明豁免集（9-22 三批已关闭项见上游记录，逐项吻合）；本文档 11 拍板项引用零缺 |
