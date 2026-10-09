@@ -603,8 +603,41 @@ void TestCoordinatorConnectionChangeChain() {
     assert(ui.statuses.back() == "Pair a VoiceStick");
     printf("TestCoordinatorConnectionChangeChain passed\n");
 }
+// r122：Windows 电量透传链（对齐 mac r118）——Win 结构更简：device_id 由 BLE 层直传、
+// 协调器只转发（无 deviceID 映射步）。
+void TestCoordinatorPowerLogFragmentPassthrough() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble),
+                                       std::make_unique<FakeAsrClient>(), &ui, &input);
+    coordinator.Start();
+
+    int calls = 0;
+    std::string got_dev;
+    PowerLogFragment got_frag;
+    coordinator.on_power_log_fragment =
+        [&](std::string dev, PowerLogFragment f) {
+            got_dev = std::move(dev);
+            got_frag = std::move(f);
+            ++calls;
+        };
+    PowerLogFragment frag;
+    frag.seq = 1;
+    frag.total = 10;
+    frag.data = {1, 2, 3};
+    ble_ptr->on_power_log_fragment("5A74", frag);
+
+    assert(calls == 1);
+    assert(got_dev == "5A74");
+    assert(got_frag.total == 10);
+    assert(got_frag.data.size() == 3 && got_frag.data[1] == 2);
+    printf("TestCoordinatorPowerLogFragmentPassthrough passed\n");
+}
 void RunCoordinatorBatchTests() {
     TestCoordinatorConnectionChangeChain();
+    TestCoordinatorPowerLogFragmentPassthrough();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();
