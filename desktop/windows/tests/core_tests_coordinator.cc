@@ -635,9 +635,37 @@ void TestCoordinatorPowerLogFragmentPassthrough() {
     assert(got_frag.data.size() == 3 && got_frag.data[1] == 2);
     printf("TestCoordinatorPowerLogFragmentPassthrough passed\n");
 }
+// r123：Windows 电源管理链（对齐 mac r119）——on_power_mgmt_state 同为直通转发
+// （device_id 由 BLE 层直传）；出口 bool=usbAutoOff 负载保真。
+void TestCoordinatorPowerMgmtStatePassthrough() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble),
+                                       std::make_unique<FakeAsrClient>(), &ui, &input);
+    coordinator.Start();
+
+    int calls = 0;
+    std::string got_dev;
+    bool got_usb = true;
+    coordinator.on_power_mgmt_state =
+        [&](std::string dev, bool usb) {
+            got_dev = std::move(dev);
+            got_usb = usb;
+            ++calls;
+        };
+    ble_ptr->on_power_mgmt_state("5A74", false);
+
+    assert(calls == 1);
+    assert(got_dev == "5A74");
+    assert(got_usb == false);
+    printf("TestCoordinatorPowerMgmtStatePassthrough passed\n");
+}
 void RunCoordinatorBatchTests() {
     TestCoordinatorConnectionChangeChain();
     TestCoordinatorPowerLogFragmentPassthrough();
+    TestCoordinatorPowerMgmtStatePassthrough();
     TestCoordinatorCancelsShortPrimaryPress();
     TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
     TestCoordinatorSecondaryCancelsFinalizing();
