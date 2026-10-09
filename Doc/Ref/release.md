@@ -204,3 +204,4 @@ The release is complete when:
 - firmware `latest/manifest.json` reports the new version.
 - OTA and merged firmware URLs are reachable.
 - the GitHub Release contains all macOS, Windows, and firmware assets.
+- platform asset completeness is machine-checked: `gh release view v<tag> --json assets` must list the dmg, both MSIs (zh-CN/en-US), and the merged firmware bin — website download buttons are built from `VERSION` at build time, so a missing platform asset becomes a live 404 button (r114: v2.4.9 shipped without MSIs while v2.4.6 assets proved the naming template correct; skill release-publish rule 8 carries the same gate). Until backlog decision #12 picks a link strategy (backfill / COS channel / fallback), missing assets must be backfilled or the affected button explicitly recorded.
