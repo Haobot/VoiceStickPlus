@@ -169,6 +169,9 @@ public struct PowerLogFragment: Decodable {
 public struct PowerMgmtEvent {
     public let usbAutoOff: Bool
 
+    // r119：公开成员构造（跨模块测试/调用方唯一入口；decode 内同名调用不受影响）。
+    public init(usbAutoOff: Bool) { self.usbAutoOff = usbAutoOff }
+
     static func decode(jsonPayload: Data) -> PowerMgmtEvent? {
         guard let object = try? JSONSerialization.jsonObject(with: jsonPayload) as? [String: Any],
               (object["event"] as? String) == "power_mgmt",

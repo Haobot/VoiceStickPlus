@@ -168,4 +168,11 @@ func runCoordinatorFsmTests() {
     check(gotFragment?.0 == "TEST", "N1fsm: 片段经 deviceID 映射到出口")
     check(gotFragment?.1.data == Data([1, 2, 3]), "N1fsm: 片段负载 base64 保真")
     check(gotFragment?.1.total == 10, "N1fsm: 片段元数据保真")
+    // 电源管理链：PowerMgmtEvent 直造（r119 public init）→ 同款映射 → 公共出口。
+    var gotPower: (String, Bool)?
+    coordinator.onPowerMgmtEvent = { dev, ev in gotPower = (dev, ev.usbAutoOff) }
+    fakeBle.onPowerMgmtEvent?(UUID(), PowerMgmtEvent(usbAutoOff: true))
+    check(gotPower?.0 == "TEST", "N1fsm: 电源事件经映射到出口")
+    check(gotPower?.1 == true, "N1fsm: usbAutoOff 负载保真")
+    check(coordinator.fsmSnapshot.contains("main=ready"), "N1fsm: 电源链后状态机仍一致")
 }

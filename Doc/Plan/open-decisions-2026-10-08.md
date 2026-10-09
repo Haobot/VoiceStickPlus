@@ -12,7 +12,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 
 | 基线 | 数值 |
 |---|---|
-| macOS 测试 runner | **PASSED 765/765**（r116 连接链 +4 / r117 状态链 +3 / r118 电量透传链 +3：片段→deviceID 映射→公共出口，base64 负载保真一把过） |
+| macOS 测试 runner | **PASSED 768/768**（r116 连接 +4 / r117 状态 +3 / r118 电量 +3 / r119 电源 +3：四链统一范式，r119 附 Core PowerMgmtEvent public init 一行放宽） |
 | 固件 host 测试 | **7/7 目标全过**（gateway+voice_ble 纯逻辑） |
 | release_guard | **10 检查全过**（注册表实数；r100 复测纠正此前 9 之误）+ 单测 **22/22** |
 | CI | 七 job（macos/firmware/host/windows/script-tests/release-guard/website）全绿 |
