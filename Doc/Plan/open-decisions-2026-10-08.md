@@ -31,6 +31,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | 双模板对账 | r111：example 与 windows config.template tomllib 解析双绿；键差 10/32 分层定谳（角色异构+注释态呈现算在场+兼容别名噪声剔除后真缺 5 键：launch_at_login/global_hotkey/global_hotkey_enabled/developer_mode/llm_disable_thinking=mac 解析而 example 零现） 当轮按 mac 默认值注释式补入 example；tomllib 有效性纳入基线 |
 | template 键文档覆盖 | r112：32 个 template-only 键对 desktop-config 正文——零现 9 键（r111 的 4 跨平台键文档侧亦缺 + selection_hotword_enabled/tencent_engine_model_type/tencent_hotword_id + 2 兼容别名 output_target/text_transform）→ 当轮 9 键补录文档并标注别名等义 |
 | 协议 UUID 三端 | r113：protocol.md 10 个 UUID 三端零现=EMPTY（10/10 在 win+mac 字面量在场）；固件镜头须读小端数组形——voice_ble.c BLE_UUID128_INIT @109-125 六条（服务+5100-5105 特征）与 AB5E0002 在 gateway client 均实证（字面量搜法误判 fw=0，格式形核后归真）|
+| 下载三端核 | r114：version=VERSION(2.4.9) build 内联；实资产 gh 核——mac dmg ✓ 固件 merged/ota bin ✓ 齐、**windows msi v2.4.9 缺席=按钮 404 真断链**（v2.4.6 有 msi=模板命名无误、仅发布未至）→ 转拍板第 12 项；appcast 各平台版本=最后已发布（win 2.4.6/mac 2.4.9 各自正确非漂移）|
 
 ## 二、拍板邀请（11 项，按解锁价值排序）
 
@@ -47,6 +48,7 @@ _r100 全基线复测：755/755 · 7/7 · 10+22 · success@c756dbd（六项全�
 | 9 | **B14b** 热词③提炼口径并入统一校验 | 并入（收紧）/ 维持有意差异 | 一行决策+回归 |
 | 10 | **A7b** app_event 丢弃计数上报通道 | A=state 突发帧加键（须重算 237B 预算+16B 初始帧红线+protocol 同步）/ B=power_log 条目 / C=仅日志（接受即关） | 按选项实现或直接关 |
 | 11 | **C1 加固** 防删 config 重置试用 | 做（注册表镜像+DPAPI 包绑+加载取 min）/ 不做（接受现状） | 安全加固排期或关 |
+| 12 | **Windows 2.4.9 msi 缺席**：网站按钮按 VERSION 拼 GH 链接、v2.4.9 无 msi 资产 → **按钮 404**（r114 实核；dmg/固件 bin 齐、v2.4.6 命名规范佐证模板无误） | A=补发 windows 2.4.9 msi 至 GH release（发布动作）/ B=按钮改指 COS 主源（dl.davenger.cloud 同 appcast 通道）/ C=页面回退最近含 msi 版本 | 发布轮执行或前端改链 |
 
 ## 三、真机清单（须设备在手，4 项）
 
