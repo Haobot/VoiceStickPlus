@@ -278,12 +278,15 @@ final class OverlayController {
              skipTextTransition: true)
     }
 
-    /// 1.2s 圆环倒计时后隐藏并回调（对齐 Windows ShowFinalCountdown）。
+    /// 0.4s 圆环倒计时后隐藏并回调（对齐 Windows ShowFinalCountdown）。
+    /// 2026-10-11 从 1.2s 压到 0.4s：粘贴被这段倒计时整体延后，实测「浮窗→粘贴」
+    /// 固定 +1.26s，是用户反馈延迟的主要可压缩项；倒计时仍保留（前端键暂停/侧键取消
+    /// 确认语义不变，恢复上次输入确认仍是误粘贴兜底）。
     func showFinal(text: String, onHidden: (() -> Void)? = nil) {
         show(
-            mode: .countdown(startedAt: CFAbsoluteTimeGetCurrent(), duration: 1.2),
+            mode: .countdown(startedAt: CFAbsoluteTimeGetCurrent(), duration: 0.4),
             text: text.isEmpty ? "No speech" : text,
-            autoHideAfter: 1.2,
+            autoHideAfter: 0.4,
             onHidden: onHidden
         )
     }

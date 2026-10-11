@@ -5,6 +5,8 @@ import AppKit
 @main
 struct VoiceStickMain {
     static func main() {
+        // 文件日志先行：NSLog（stderr）落 VoiceStickApp.log，排障入口与 Windows 对齐。
+        AppFileLog.redirectStderr()
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let delegate = AppDelegate()

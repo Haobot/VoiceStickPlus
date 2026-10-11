@@ -127,7 +127,8 @@ Important response fields:
 
 Voice Stick shows partial text while ASR is active and keeps the firmware display
 in the thinking state after the push-to-talk session ends. Final text enters a
-1.2 second confirmation countdown before paste. The primary button can pause and
+0.4 second confirmation countdown before paste (reduced from 1.2s on 2026-10-11
+to cut end-to-end input latency; the pause/cancel semantics are unchanged). The primary button can pause and
 then confirm that paste; the secondary button cancels in-progress recognition or
 pending text.
 

@@ -39,8 +39,11 @@ static const char *TAG = "audio_pipeline";
 #define OPUS_COMPLEXITY 1
 
 #define TX_QUEUE_DEPTH 50
-#define TX_RETRY_DELAY_MS 10
-#define TX_MAX_RETRIES 30
+/* 2026-10-11：重试粒度 10ms→2ms（总预算保持 300ms）。notify/mbuf 瞬时拥塞时
+ * 旧粒度要 10ms 才能抓住空档，单帧恢复动辄数十~数百毫秒，链路稍慢整条音频就
+ * 塌到 ~2.4fps；2ms 步进让 tx_task 跟得上 connection event 的出帧节奏。 */
+#define TX_RETRY_DELAY_MS 2
+#define TX_MAX_RETRIES 150
 /* drain 超时：松开按键后 tx_task 排空队列尾部帧的预算。BLE 拥堵时 500ms 经常不够，
  * 超时直接 xQueueReset 丢弃剩余尾帧导致识别丢最后几个字；放宽到 2000ms 后只有在
  * 持续 2s 完全发不出去的极端情况下才丢尾帧。配合 TASK_EXIT_WAIT_MS 同步放宽。 */
@@ -1080,7 +1083,16 @@ esp_err_t audio_pipeline_stop(void)
         .flags = VOICE_BLE_FLAG_END,
         .len = 0,
     };
-    xQueueSend(s_tx_queue, &sentinel, portMAX_DELAY);
+    /* sentinel 入队有界（2026-10-11）：旧实现 portMAX_DELAY 在 BLE 持续拥塞时会被
+     * 满队列堵住（tx 每帧最坏 300ms 重试 × 队列 50 = 15s+），stop_recording 与随后的
+     * button_up 一起被拖住，桌面端表现为松键后数秒~数十秒才收尾。3s 等不到说明队列
+     * 已深度积压（这些帧本来就已过时），丢弃剩余尾帧换确定性收尾，随后必然送达 END
+     * 标记触发 tx_task drain 发 audio_end。 */
+    if (xQueueSend(s_tx_queue, &sentinel, pdMS_TO_TICKS(TASK_EXIT_WAIT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "tx queue full for end sentinel, resetting queue (tail frames dropped)");
+        xQueueReset(s_tx_queue);
+        (void)xQueueSend(s_tx_queue, &sentinel, pdMS_TO_TICKS(TASK_EXIT_WAIT_MS));
+    }
 
     /* 同步等 audio_task + tx_task 退出：audio_task 先 drain I2S DMA 残留尾音编码入队，
      * tx_task 再把队列排空（含 drain 帧）发往 BLE 并发 audio_end，最后 deinit codec/i2s。

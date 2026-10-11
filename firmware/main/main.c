@@ -338,6 +338,9 @@ static void queue_encoder_rotate_event(int32_t delta);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
 static void finish_primary_release(app_input_source_t source);
+static uint32_t elapsed_button_ms(int64_t down_us);
+static void schedule_idle_slow_interval(void);
+static void cancel_idle_slow_interval(void);
 static void save_gateway_key_routes(void);
 static void load_gateway_key_routes(void);
 static void send_gateway_keymap_report(void);
@@ -601,6 +604,11 @@ static void cancel_disc_poweroff_timer(void);
 // 活动复位钩子：按键/拿起/BLE事件/UI变化时调用，回到 S0 Active 态并重启全部空闲计时器。
 static void note_activity(void)
 {
+    // 任何用户活动（拿起/按键/编码器）都先把连接拉到快档并推迟空闲降档——
+    // macOS 应用参数更新 ~5s 延迟由此被「拿起到开口」的自然间隔吸收（幂等，已是
+    // 快档时不发请求）。
+    cancel_idle_slow_interval();
+    (void)voice_ble_request_fast_interval();
     if (s_screen_off || s_display_dimmed) {
         // S2/S1 → S0：恢复正常背光。S2 因没关 L3B、panel 一直供电，PWM 恢复即亮屏。
         esp_err_t err = ui_status_set_brightness(DISPLAY_ACTIVE_BRIGHTNESS);
@@ -767,6 +775,78 @@ static bool app_ui_allows_recording_start(void)
     return s_app_ui_state != APP_UI_STATE_PENDING_CONFIRMATION;
 }
 
+// 录音期间快连接间隔周期重申（2026-10-11）：录音开始时的 fast 请求可能丢失或被
+// central 静默忽略（实测音频通知塌到 ~2.4fps、3.4s 语音拖 28s 才送完）。每 1.5s
+// 重申一次；request_fast_interval 已幂等（已是快档不发请求），此调用开销可忽略。
+static esp_timer_handle_t s_fast_interval_reassert_timer;
+
+static void fast_interval_reassert_cb(void *arg)
+{
+    (void)arg;
+    (void)voice_ble_request_fast_interval();
+}
+
+static void start_fast_interval_reassert_timer(void)
+{
+    if (!s_fast_interval_reassert_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &fast_interval_reassert_cb,
+            .name = "fast_itvl_re",
+        };
+        if (esp_timer_create(&args, &s_fast_interval_reassert_timer) != ESP_OK) {
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_fast_interval_reassert_timer);
+    (void)esp_timer_start_periodic(s_fast_interval_reassert_timer, 1500 * 1000ULL);
+}
+
+static void stop_fast_interval_reassert_timer(void)
+{
+    if (s_fast_interval_reassert_timer) {
+        (void)esp_timer_stop(s_fast_interval_reassert_timer);
+    }
+}
+
+// 空闲降档延迟化（2026-10-11）：ready 即切 400ms 省电档会让下一次录音的头几秒
+// 音频在慢档里爬行——macOS 应用连接参数更新要 ~5s，短句（3-4s）整段都在慢档，
+// 实测松键后 2.8s 才收到尾帧。改为「活动后 5 分钟内保持当前档位，纯空闲才降档」；
+// 拿起/按键等 note_activity 路径同时拉快档（幂等）。电池代价量化：快档比慢档多
+// ~0.5mA，5 分钟窗口每次活动只多 0.04mAh，可忽略；长时静置仍回省电档不变。
+#define IDLE_SLOW_DELAY_US (300ULL * 1000 * 1000)
+static esp_timer_handle_t s_idle_slow_timer;
+
+static void idle_slow_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_recording && s_app_ui_state == APP_UI_STATE_READY) {
+        ESP_LOGI(TAG, "idle 5min, dropping to power-save conn interval");
+        (void)voice_ble_request_slow_interval();
+    }
+}
+
+static void schedule_idle_slow_interval(void)
+{
+    if (!s_idle_slow_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &idle_slow_timer_cb,
+            .name = "idle_slow",
+        };
+        if (esp_timer_create(&args, &s_idle_slow_timer) != ESP_OK) {
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_idle_slow_timer);
+    (void)esp_timer_start_once(s_idle_slow_timer, IDLE_SLOW_DELAY_US);
+}
+
+static void cancel_idle_slow_interval(void)
+{
+    if (s_idle_slow_timer) {
+        (void)esp_timer_stop(s_idle_slow_timer);
+    }
+}
+
 static uint32_t start_recording(void)
 {
     const bool ble_ready = voice_ble_is_ready();
@@ -824,6 +904,7 @@ static uint32_t start_recording(void)
     restart_display_dim_timer();
     restart_poweroff_timer();
     ui_status_set_recording(session_id);
+    start_fast_interval_reassert_timer();
     return session_id;
 }
 
@@ -834,7 +915,12 @@ static uint32_t stop_recording(void)
     }
 
     const uint32_t session_id = audio_pipeline_session_id();
+    // 诊断锚点（2026-10-11 排查松键丢失/幽灵录音）：每次停录必打点，串口时间线
+    // 可直接对齐「松开→drain→audio_end→button_up」各段耗时与调用来源。
+    ESP_LOGI(TAG, "stop_recording session=%" PRIu32 " down_age_ms=%" PRIu32,
+             session_id, elapsed_button_ms(s_primary_down_us));
     s_recording = false;
+    stop_fast_interval_reassert_timer();
     audio_pipeline_stop();
     // 录音会话真正结束点：恢复到录音前的屏幕态/广播态（由 refresh 推导）。
     power_log_refresh_mode();
@@ -878,6 +964,13 @@ static bool app_event_is_critical(app_event_type_t type)
     case APP_EVENT_RECORDING_RETRY_TICK:
     case APP_EVENT_HOLD_THRESHOLD_CONFIRM:
     case APP_EVENT_DOUBLE_CLICK_TIMEOUT:
+    // 按键沿事件与录音开停直接成对（2026-10-11 实证：编码器旋转风暴挤满事件队列时
+    // FRONT_UP 走非关键路径被静默丢弃，录音无人停——桌面端 33s 幽灵会话/收不到
+    // button_up 的根因）。丢失即状态机失步，与 XIAOMI_STOP_DUE 同级关键。
+    case APP_EVENT_FRONT_DOWN:
+    case APP_EVENT_FRONT_UP:
+    case APP_EVENT_SIDE_DOWN:
+    case APP_EVENT_SIDE_UP:
         return true;
     default:
         return false;
@@ -1823,7 +1916,8 @@ static void apply_app_ui_state(const char *state, const char *text)
         s_app_ui_state = APP_UI_STATE_READY;
         ui_status_set_idle();
         note_activity();
-        voice_ble_request_slow_interval();
+        // 延迟降档（原为立即 request_slow）：见 IDLE_SLOW_DELAY_US 注释。
+        schedule_idle_slow_interval();
     } else if (strcmp(state, "recording") == 0) {
         s_app_ui_state = APP_UI_STATE_RECORDING;
         if (!s_recording) {

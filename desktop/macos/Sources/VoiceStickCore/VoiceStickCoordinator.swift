@@ -153,6 +153,11 @@ public final class VoiceStickCoordinator {
     private var debugAudioRecorder: any VoiceStickDebugRecordServing
     private let minimumRecordingDuration: TimeInterval = 0.5
     private let audioEndTimeout: TimeInterval = 1.0
+    /// 录音中音频帧静默看门狗：录音态下超过该时长没有任何音频帧，视为设备侧
+    /// 音频链路已死（2026-10-11 实证：tx 通道卡住后桌面端永远等不到 audio_end/
+    /// button_up，会话悬挂 77s 直到 ASR 服务端报错）。到点即按 audio_end 收尾，
+    /// 无帧时走 "No audio frames from device" 快速失败，不再无限等待。
+    private let recordingInactivityTimeout: TimeInterval = 3.0
     private let firmwareManifestCacheDuration: TimeInterval = 24 * 60 * 60
 
     private var mainInputState = MainInputState.ready
@@ -163,6 +168,9 @@ public final class VoiceStickCoordinator {
     private var pastedFinalText = false
     private var waitingForAudioEnd = false
     private var audioEndTimeoutTimer: Timer?
+    private var recordingInactivityTimer: Timer?
+    private var firstAudioFrameAt: Date?
+    private var lastAudioFrameAt: Date?
     private var pendingPasteState = PendingPasteState.idle
     private var lastRecoverableText: String?
     private var lastRecoverablePeripheralID: UUID?
@@ -1345,6 +1353,9 @@ public final class VoiceStickCoordinator {
 
         mainInputState = .recording(sessionID: sessionID, peripheralID: peripheralID, startedAt: Date())
         receivedAudioFrames = 0
+        firstAudioFrameAt = nil
+        lastAudioFrameAt = nil
+        armRecordingInactivityWatchdog(sessionID: sessionID, peripheralID: peripheralID)
         bufferedOggChunks.removeAll(keepingCapacity: true)
         asrStarted = false
         sentFinalAudioChunk = false
@@ -1393,6 +1404,10 @@ public final class VoiceStickCoordinator {
 
         guard !frame.payload.isEmpty else { return }
         receivedAudioFrames += 1
+        let frameArrivedAt = Date()
+        if firstAudioFrameAt == nil { firstAudioFrameAt = frameArrivedAt }
+        lastAudioFrameAt = frameArrivedAt
+        armRecordingInactivityWatchdog(sessionID: frame.sessionID, peripheralID: peripheralID)
         let oggChunk = oggMuxer.append(opusPayload: frame.payload, isLast: frame.isEnd)
         debugAudioRecorder.append(oggChunk)
         sendOrBufferOggChunk(
@@ -1435,6 +1450,7 @@ public final class VoiceStickCoordinator {
         guard case .recording(let sessionID, let peripheralID, let startedAt) = mainInputState else {
             return
         }
+        recordingInactivityTimer?.invalidate()
         NSLog("Main input finalizing reason=\(reason)")
         mainInputState = .finalizing(sessionID: sessionID, peripheralID: peripheralID, startedAt: startedAt)
         statusController.setStatus("Processing")
@@ -1460,6 +1476,25 @@ public final class VoiceStickCoordinator {
         waitingForAudioEnd = false
         audioEndTimeoutTimer?.invalidate()
         audioEndTimeoutTimer = nil
+    }
+
+    /// 录音中音频静默看门狗：每个音频帧到达时重新计时；到点仍无帧即按 audio_end 收尾。
+    /// 回调内二次校验会话身份，过期定时器误触发为无害 no-op。
+    private func armRecordingInactivityWatchdog(sessionID: UInt32, peripheralID: UUID) {
+        recordingInactivityTimer?.invalidate()
+        recordingInactivityTimer = Timer.scheduledTimer(
+            withTimeInterval: recordingInactivityTimeout,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            guard case .recording(let activeSessionID, let activePeripheralID, _) = self.mainInputState,
+                  activeSessionID == sessionID,
+                  activePeripheralID == peripheralID
+            else { return }
+            NSLog("Recording inactivity timeout (no audio frames for %.1fs); finalizing buffered audio",
+                  self.recordingInactivityTimeout)
+            self.sendFinalOggChunkIfNeeded(recordingDuration: self.currentRecordingDuration)
+        }
     }
 
     private func handleSubtitlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID) {
@@ -1659,6 +1694,14 @@ public final class VoiceStickCoordinator {
         guard !sentFinalAudioChunk else { return }
         sentFinalAudioChunk = true
         cancelAudioEndTimeout()
+        recordingInactivityTimer?.invalidate()
+        // 诊断锚点：音频流到达跨度 vs 录音时长。跨度远大于录音时长 = BLE 侧积压拖尾；
+        // 跨度≈0 且 frames 少 = 设备侧没发帧。2026-10-11 排查识别延迟时加。
+        let streamSpan = (firstAudioFrameAt != nil && lastAudioFrameAt != nil)
+            ? lastAudioFrameAt!.timeIntervalSince(firstAudioFrameAt!)
+            : 0
+        NSLog("Audio stream summary frames=%d span=%.3fs recording=%.3fs",
+              receivedAudioFrames, streamSpan, recordingDuration)
         enterFinalizingState(reason: "final_audio_sent")
         if !asrStarted && recordingDuration < minimumRecordingDuration {
             cancelShortRecording()
@@ -1726,6 +1769,7 @@ public final class VoiceStickCoordinator {
     private func cancelShortRecording() {
         NSLog("Ignoring short recording under \(minimumRecordingDuration)s")
         cancelAudioEndTimeout()
+        recordingInactivityTimer?.invalidate()
         bufferedOggChunks.removeAll(keepingCapacity: true)
         asr.cancel()
         asrStarted = false
@@ -2226,7 +2270,7 @@ public final class VoiceStickCoordinator {
             return false
         case .waitingToPaste(let text):
             guard activePeripheralID == peripheralID else { return true }
-            // 防卡死保险：确认态滞留 >60s（正常 1.2s 自动提交）视为状态机残留
+            // 防卡死保险：确认态滞留 >60s（正常 0.4s 自动提交）视为状态机残留
             //（如实例重启前的会话、hide 回调丢失），自动提交旧文本归位，
             // 本次按键继续走正常新会话路径而非被吞。
             if Date().timeIntervalSince(pendingPasteEnteredAt) > 60 {

@@ -332,7 +332,9 @@ void OverlayWindow::ShowRefining(const std::string& text) {
 }
 
 void OverlayWindow::ShowFinalCountdown(const std::string& text, std::function<void()> on_complete) {
-    countdown_duration_ms_ = 1200;
+    // 2026-10-11 1200ms → 400ms（对齐 macOS showFinal）：粘贴被这段倒计时整体延后，
+    // 是「浮窗→粘贴」延迟的主要可压缩项；确认/暂停/取消语义保留。
+    countdown_duration_ms_ = 400;
     countdown_started_at_ms_ = GetTickCount64();
     Show(Mode::kCountdown, text);
     pending_callback_ = std::move(on_complete);
