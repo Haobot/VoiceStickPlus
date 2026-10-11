@@ -310,6 +310,8 @@ typedef enum {
     APP_EVENT_ENTER_POWER_OFF,
     // 小米语音键尾包宽限到期：执行延迟停录收尾（stop_recording + button_up）。
     APP_EVENT_XIAOMI_STOP_DUE,
+    // gateway_keymap 回执延迟发送（2026-10-12 栈压穿修复，见生产者处注释）。
+    APP_EVENT_GW_KEYMAP_REPORT,
 } app_event_type_t;
 
 typedef struct {
@@ -344,6 +346,10 @@ static void cancel_idle_slow_interval(void);
 static void save_gateway_key_routes(void);
 static void load_gateway_key_routes(void);
 static void send_gateway_keymap_report(void);
+// gateway_keymap 回执待发标志：nimble host 任务（ATT 写回调）置位，app_event_task
+// 消费。volatile：跨核（双核）单标志单向流，丢标仅致一次回执延迟，连接/热更会
+// 重推全表自愈。
+static volatile bool s_gw_keymap_report_pending;
 static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
 static void load_usb_auto_off_from_nvs(void);
@@ -1392,7 +1398,14 @@ static void execute_control_cmd(const control_cmd_t *cmd)
                     save_gateway_key_routes();
                     ESP_LOGI(TAG, "gateway_keymap_set %s -> %s", cmd->str1,
                              route == GATEWAY_ROUTE_SOFTWARE ? "software" : "passthrough");
-                    send_gateway_keymap_report();
+                    // 回执延迟到 app_event_task 发送（2026-10-12 串口实证修复）：
+                    // 本回调跑在 nimble host 任务（栈仅 4096B）的 ATT 写处理深处，
+                    // 内联发回执（分片拼装 routes/entry + json[512] + ble_att_mtu 加锁）
+                    // 把栈压穿、砸毁堆上 FreeRTOS 队列对象 → xQueueSemaphoreTake
+                    // (uxItemSize==0) assert → 设备 4-5s 崩溃重启循环。批量 13 键
+                    // 经标志合并为 app 任务一次全表回执。
+                    s_gw_keymap_report_pending = true;
+                    queue_app_event(APP_EVENT_GW_KEYMAP_REPORT);
                 }
             } else {
                 ESP_LOGW(TAG, "gateway_keymap_set unknown key: %s", cmd->str1);
@@ -1400,7 +1413,9 @@ static void execute_control_cmd(const control_cmd_t *cmd)
         }
         break;
     case CONTROL_CMD_GATEWAY_KEYMAP_GET:
-        send_gateway_keymap_report();
+        // 同 SET：回执移交 app 任务（host 任务栈上发回执会压穿，见 SET 处注释）。
+        s_gw_keymap_report_pending = true;
+        queue_app_event(APP_EVENT_GW_KEYMAP_REPORT);
         break;
     case CONTROL_CMD_PROTO_NEGOTIATE:
         // D9：桌面端协议版本上报——无论是否出界都回发 proto_info（对端据此对齐，
@@ -2285,6 +2300,14 @@ static void app_event_task(void *arg)
                 finish_primary_release(APP_INPUT_SOURCE_XIAOMI);
             }
             break;
+        case APP_EVENT_GW_KEYMAP_REPORT:
+            // 清标先行：发送期间新到的 set 重新置标，其事件会再触发一轮（幂等
+            // 全表回执）；清标与置标竞争最多漏发一次，连接/热更重推自愈。
+            if (s_gw_keymap_report_pending) {
+                s_gw_keymap_report_pending = false;
+                send_gateway_keymap_report();
+            }
+            break;
         }
     }
 }
@@ -2338,7 +2361,9 @@ static esp_err_t init_buttons(void)
         return err;
     }
 
-    BaseType_t ok = xTaskCreate(app_event_task, "app_event_task", 4096,
+    // 5120（2026-10-12 +1024）：承担原在 host 任务内联的 gateway_keymap 回执发送
+    //（json[512]+分片拼装 ≈800B），留足基线余量。
+    BaseType_t ok = xTaskCreate(app_event_task, "app_event_task", 5120,
                                 NULL, 6, NULL);
     if (ok != pdPASS) {
         return ESP_ERR_NO_MEM;

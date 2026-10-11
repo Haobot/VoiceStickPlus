@@ -1871,11 +1871,20 @@ esp_err_t voice_ble_send_gateway_keymap(const char *routes_json, unsigned seq, b
 {
     // A15：分片回执（seq/more，见 protocol.md）——单帧只装得下 13 键表的一部分，
     // 超预算帧会被 ATT 层截断、对端 JSON 解析失败（send_state_json 有预算告警）。
+    // 2026-10-12：分片体是 {"key":...},{...} 条目序列，必须包成 JSON 数组再嵌入——
+    // A15 分片重写漏了方括号，产出 "routes":{...},{...} 非法 JSON，桌面端 JSON
+    // 解码失败静默丢弃全部回执（键位映射对话框永远拿不到表）；空表兜底本就是
+    // "[]"，掩盖了非空路径的缺陷。串口+app 侧 DIAG payload 实证后修复。
+    char wrapped[200];
+    if (routes_json && routes_json[0]) {
+        snprintf(wrapped, sizeof(wrapped), "[%s]", routes_json);
+    } else {
+        snprintf(wrapped, sizeof(wrapped), "[]");
+    }
     char json[512];
     snprintf(json, sizeof(json),
              "{\"event\":\"gateway_keymap\",\"seq\":%u,\"more\":%s,\"routes\":%s}",
-             seq, more ? "true" : "false",
-             routes_json && routes_json[0] ? routes_json : "[]");
+             seq, more ? "true" : "false", wrapped);
     ESP_LOGI(TAG, "gateway keymap report seq=%u more=%d", seq, more ? 1 : 0);
     return send_state_json(json);
 }
