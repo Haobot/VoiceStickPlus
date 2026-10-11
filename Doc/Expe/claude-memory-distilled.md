@@ -445,6 +445,10 @@ Qt 迁移暂缓；优先"随包带 VB-CABLE 原始 zip+首启自动装驱动+自
 
 用户拍板（2026-07-03）：侧键**单击**=进/退体感鼠标，**双击**=恢复上次输入确认；有活跃录音/识别/待粘贴时单击仍走取消语义。固件层 `s_side_double_click_timer` 区分：单击延迟 500ms 双击窗口超时后发 `button_click secondary`，窗口内第二击发 `button_double_click secondary`；桌面端 `HandleButtonDoubleClick` secondary 分支调 `RestoreLastInputConfirmation`，体感态下双击忽略。代价：侧键单击响应延迟 500ms（可接受）。
 
+### 5.5 网关按键自定义恢复（macOS 四断链，2026-10-12）
+
+用户报「手柄自定义界面和功能都不见了、除录音键外按键全无作用」（网关模式）= 四条独立断链叠加：①托盘「按键映射…」只在 `isXiaomi`（RC 条目）分支出现，网关模式桌面端无 RC 条目 ⇒ 入口永不可见（Windows `b65baf3` 有 StickS3 分支先例，macOS 未移植）；②`AppConfig.buttonsSettings` 恒返回 `.default` 且无存储——「无 RC 回落全局」是没有支撑的死路；③`onConnectionChange`（didConnect）早于控制特征就绪 ~0.8s，`gateway_target_info`+13 键 `gateway_keymap_set` 全部 `(not connected)` 丢弃且此后无补推（判据：**整批 skipped、该 label 再无成功行**，真机日志 182/182）；④**静默丢表**：`tomlNumber`（`%.4g`）把整数 Double 写成 `3`/`80`（TOML 整数形态），TOMLKit 解 Double 严格判 `.float` → 单字段 typeMismatch → `ConfigFile` 整表解码失败 → `AppConfig.parse` 静默回落 `loadLegacy`（不认任何 `[表]` 段、零日志）⇒ 每次重启所有 `[device.*]` 表蒸发（`gain_db` 同族问题当年只修 xiaomi 子表、根表 9 个 `air_mouse_*` Double 漏网）。修复 `65a94f7`：网关入口 + `hidesIntercept`、根 `[buttons]` 全局表（`globalButtonsSettings` 存储/解析/序列化，入口-存储-消费三层同源）、`onControlChannelReady` 就绪补推、`LenientDouble` + `tomlNumber` 规范 float 双保险；判别 parse 走没走主路径用「回读 `[output].target`」（legacy 只读根 `output_target`）。测试 798/798。详见 `Doc/Expe/mac-gateway-keymap-restore-2026-10-12.md`。
+
 ---
 
 ## 6. 测试方法论（E2E L0–L4）
@@ -608,3 +612,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **仅固件轮发布后静态网页三层坑（2026-09-27）**：①deploy-website.yml 不自动跑，Pages/COS 网页停在旧版，且 appcast 依赖 MSI 资产——补网页前必须先补传 MSI；②COS 整站构建必须 PowerShell 跑 `npm run build -- --base=/`（vite.config 默认 base=/VoiceStickPlus/ 为 Pages 设计，裸构建产出全资源 404 白屏；MSYS 下 `/` 被转成 Git 安装路径）；③`website/public/firmware/latest/` 残留旧 bin 会被打进 dist，`publish_cos.py firmware` 只覆盖 manifest 不清理——整站上传后必须显式删 `latest/` 旧版本 bin。判据：资源 URL 带 `/VoiceStickPlus/` 前缀＝base 错误；页面正常但下载指旧版＝旧 bundle（版本号经 `VERSION?raw` 构建时内联）；验证 index.html 引用必须 grep `[^"]*assets/...` 全路径（`assets/...` 模式截前缀漏检）。完整配方与终验六点见 `Doc/Expe/cos-website-fullsite-sync-traps-2026-09-27.md`。
 
 - **JS 模板写文件的转义陷阱家族（2026-10-09）**：反引号关模板、反斜杠+引号剥一层、换行转义变真行、插入块缺尾换行粘邻行——判据=Expected 型 JS 报错、C2001、1+1 异常 diff、RC=0 空转；修法=chr 圣经+write 先行+双门前置；生成代码两轮调不通即整段人写。详见 Doc/Expe/js-template-escape-trap-family-2026-10-09.md。
+- **macOS「配置保存后重启自定义全丢」/「网关按键全无作用」（2026-10-12 四断链）**：判据=序列化文本回读丢 `[output].target`（`AppConfig.parse` 静默回落 `loadLegacy` 不认 `[表]` 段；根因 `tomlNumber` 整数形态 Double `3`/`80` 撞 TOMLKit 严格 `.float` 解码）+ 连接日志整批 `gateway_keymap_set ... skipped` 且此后该 label 零成功（didConnect 早于控制特征就绪、无补推，真机 182/182）+ StickS3 子菜单无「按键映射…」（网关入口只挂在 RC 条目分支）。修复=读侧 `LenientDouble` + 写侧规范 float 双保险、`onControlChannelReady` 就绪补推、根 `[buttons]` 全局表与网关入口，见 `Doc/Expe/mac-gateway-keymap-restore-2026-10-12.md`。

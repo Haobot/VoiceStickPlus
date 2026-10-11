@@ -162,3 +162,5 @@ host 单测 120/120 + 112/112 通过。
    真机验收（2026-09-18）：`os unpair: removing Windows pairing` ⇒ `VS os pairing bonded` ⇒
    `stage=ready 954ms`，全程未打开系统设置；Windows 侧 `Dev_70041ddc53aa` 与
    `HID Keyboard Device` 节点自动就位。设计见 `Doc/Plan/windows-app-os-pairing.md`。
+
+（2026-10-12 追参：macOS 桌面侧同症状「除录音键外按键全无作用」另有四断链——网关映射入口缺失、全局 [buttons] 存储缺失、控制特征就绪前下发全被丢弃、整数形态 Double 解码静默丢表——见 `Doc/Expe/mac-gateway-keymap-restore-2026-10-12.md`。）
