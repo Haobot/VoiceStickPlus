@@ -56,3 +56,22 @@
 - `loadLegacy` 依旧不认 `[表]` 段（古早配置兼容所需）——正常配置已不会再落到它，「解码主路径探针」测试守回归。
 - 网关模式「遥控器设置」（gain_db/double_click_ms）仍需 RC 条目：roadmap 根因 2 的「RC 条目获取路径」待办保留，本次只处置了按键映射半边（`Doc/Plan/xiaomi-gateway-followup-roadmap.md` 已标注）。
 - 遥控器「原生」键走固件 HOGP 直通，需目标机与 StickS3 有 OS 级配对（既有结论见关联旧文）；软件路由键（映射过的键）不受此限制。
+
+## 8. 追加（2026-10-12 深夜二轮）：真机端到端验收暴露固件侧两雷（已修复 + 已烧录）
+
+入口/存储/下发三线修复上真机后，连接出现 **4-5s 崩溃重启循环**（每轮 13 键送达后断链）。串口取证（单次 open、DTR/RTS 压低）+ ELF addr2line（`firmware/build/voice_stick.elf` SHA256 前 9 位与 boot 横幅 `ELF file SHA256: b454859c8` 一致 ⇒ 地址解析逐帧可信）定位两层根因，修复于 commit `7736441`：
+
+1. **host 任务栈压穿崩溃**：`gateway_keymap_set` 回执 `send_gateway_keymap_report()` 在 ATT 写回调内**同步**执行（backtrace：`ble_att_svr_write → control_access_cb → execute_control_cmd → send_gateway_keymap_report → voice_ble_send_gateway_keymap → send_state_json → ble_att_mtu → ble_hs_lock → xQueueSemaphoreTake`），跑在 nimble host 任务（栈 4096B）深处——`json[512]`+分片拼装+大 switch 叠加压穿栈 → 堆上 FreeRTOS 队列对象被毁 → `assert failed: xQueueSemaphoreTake queue.c:1713 (pxQueue->uxItemSize == 0)` → `rst:0xc (RTC_SW_CPU_RST)` 循环。
+   - **判据**：串口每 4-5s 一组**同款 assert+backtrace**；app 侧 `Connected VoiceStick` 每 4-5s 一条（连接循环）。A/B（旧包单连接稳定）+ 探针二分（仅停发 13 键批 → 稳定；仅发 target_info → 稳定）锁定触发组。
+   - **修复**：SET/GET 置待发标志 + 新 `APP_EVENT_GW_KEYMAP_REPORT` 移交 `app_event_task` 发送（清标先行，同批 13 键合并为一次全表回执；竞争漏发由连接/热更重推自愈）；`app_event_task` 与 host 任务栈 4096→5120。
+2. **回执 JSON 缺数组括号（A15 起潜伏）**：分片体是 `{"key":...},{...}` 条目序列，`voice_ble_send_gateway_keymap` 直接嵌入 `"routes":%s` 未包 `[]` → 非法 JSON → 桌面端 JSONDecoder/rapidjson 解码失败**静默丢弃全部回执**。空表兜底 `"[]"` 掩盖了非空路径缺陷；A15 harness 只验分片序、不验 JSON 合法性（**教训：格式类修复的测试必须断言产物可解析**）。
+   - **判据**：app 侧 `gateway keymap report` 完成日志恒为 0、设备侧却报 `gateway keymap report seq=...` 已发；临时 DIAG 打出 payload 才见 `"routes":{...},{...}` 畸形。
+   - **修复**：发送前包 `[...]`。**Windows 同固件族的键位映射对话框回执同样受害**，随 2.4.10 固件轮一并修复。
+
+**验证（真机，2026-10-12 03:0x）**：macOS 2.4.10 包 = 单连接 ≥85s 零循环、13 键 `gateway_keymap_set` 全送达、`gateway keymap report (13 keys)` 完整回显 12 次；串口单次采集仅脚本自身一次 `USB_UART_CHIP_RESET`、零 assert；mac 测试 798/798、固件 host 7/7。
+
+**新判据/观察项**：
+- 该板出 Boot：`hard_reset` 无效、esptool 4.12 无 `usb_jtag_reset` → **`--after watchdog_reset` 可免手动按键**（本次两轮烧录实证）。
+- 串口采集脚本 open 自身会触发一次 `USB_UART_CHIP_RESET`——uptime 单调/仅一次 banner = 无扰动（技能既有判据再验证）。
+- `gateway_target_info 缺少 name 或无当前对端` 警告（mac 连接在固件目标表登记失败）——侧键切换目标列表可能缺 MacBook，**遗留观察**，不影响按键/语音链路。
+- 取证期间疑似见到对端（Windows 机）重连推送的批次——多机同抢一台网关时回执/路由会互踩，**遗留观察**。
