@@ -113,23 +113,31 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   menu = ""                 # 该设备菜单键显式取消映射
   ```
 
-- **按键映射（macOS）**：`[device.<id>.buttons]` 按设备覆盖表（macOS 端无全局覆盖表，
-  全局默认 = 拦截关闭、全部原生）。`intercept` 为 HID 拦截总开关（B 级键生效前提，
-  默认 `false`）；`keys` 子表键为 12 个按钮 ID（同 Windows 键表，另含 `voice_double_click`
-  语音键双击，A 级、不受 `intercept` 门控），值为 KeySpec 快捷键语法（action=key）或
-  `"none"`（action=disabled）；未写出的键回落原生。加载时 KeySpec 非法的条目忽略并回落
-  原生；保存时与默认一致的设备不落盘。消费端：B 级键走 `XiaomiButtonInterceptManager`
-  （IOHID 观察 + CGEvent tap 吞除 + `sendKeyCombo` 注入）；`voice_double_click` 走
-  ATVV 会话合成的 `button_double_click`（协调器按映射处置）。托盘设备菜单「按键映射…」
-  对话框编辑（仅小米设备显示）。
+- **按键映射（macOS）**：根 `[buttons]` 全局默认表（2026-10-12 起，网关模式写入目标，
+  语义对齐 Windows `[xiaomi.keys]`）+ `[device.<id>.buttons]` 按设备覆盖表（直连小米
+  遥控器的设备级覆盖优先；无覆盖回落全局）。`intercept` 为 HID 拦截总开关（B 级键生效
+  前提，默认 `false`，仅直连 RC 消费）；`keys` 子表键为 12 个按钮 ID（同 Windows 键表，
+  另含 `voice_double_click` 语音键双击，A 级、不受 `intercept` 门控），值为 KeySpec
+  快捷键语法（action=key）或 `"none"`（action=disabled）；未写出的键回落原生。加载时
+  KeySpec 非法的条目忽略并回落原生；与默认一致的表不落盘。消费端：B 级键走
+  `XiaomiButtonInterceptManager`（IOHID 观察 + CGEvent tap 吞除 + `sendKeyCombo` 注入）；
+  `voice_double_click` 走 ATVV 会话合成的 `button_double_click`（协调器按映射处置）；
+  **网关模式**（遥控器配对在 StickS3、桌面端无 RC 条目）下，该表同时是
+  `gateway_keymap_set` 路由推导与 `gateway_key` 注入的取值源——key/disabled 推
+  `software` 路由回桌面注入，native 推 `passthrough` 由固件 HOGP 直通（需系统级配对）。
+  托盘设备菜单「按键映射…」对话框：小米设备项编辑设备覆盖，StickS3 设备项（网关入口）
+  编辑根 `[buttons]` 全局表。
 
   ```toml
+  [buttons]                 # 网关模式全局默认（无 RC 条目时的路由/消费取值源）
+  [buttons.keys]
+  back = "alt+left"          # 返回键 → Option+左方向
+  volume_up = "none"         # 禁用音量+
+
   [device.3A7F.buttons]
   intercept = true
 
   [device.3A7F.buttons.keys]
-  back = "alt+left"          # 返回键 → Option+左方向
-  volume_up = "none"         # 禁用音量+
   voice_double_click = "cmd+t"  # 语音键双击 → Command+T
   ```
 

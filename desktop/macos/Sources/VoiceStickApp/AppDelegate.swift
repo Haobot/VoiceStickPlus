@@ -216,6 +216,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController.onOpenButtonMapping = { [weak self] deviceID in
             self?.showButtonMapping(for: deviceID)
         }
+        statusController.onOpenGatewayButtonMapping = { [weak self] deviceID in
+            self?.showGatewayButtonMapping(for: deviceID)
+        }
         statusController.onOpenBatteryMonitor = { [weak self] deviceID in
             self?.showBatteryMonitor(for: deviceID)
         }
@@ -742,6 +745,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.show()
     }
 
+    /// 网关模式按键映射窗口（对齐 Windows ShowGatewayKeymapDialog）：遥控器配对在
+    /// StickS3、无 RC 配对条目，编辑全局 [buttons] 默认表——协调器无配对 RC 时的
+    /// gateway_keymap 路由推导与 gateway_key 消费即取该表，保存经 updateConfig
+    /// 热更即时下发（连接态逐键重发）。HID 拦截是直连 RC 专属能力，网关模式隐藏。
+    private func showGatewayButtonMapping(for deviceID: String) {
+        let controller = ButtonMappingWindowController(
+            deviceID: deviceID,
+            settings: config.buttonsSettings,
+            defaults: .default,
+            hidesIntercept: true
+        ) { [weak self] override in
+            self?.updateGlobalButtonsSettings(override)
+        }
+        buttonMappingWindowController = controller
+        showDockIconWhileWindowVisible(controller)
+        controller.show()
+    }
+
     /// 保存语义同 updateDeviceEncoderSettings；语音键双击动作消费 config，
     /// 须走 coordinator.updateConfig 热更即时生效。
     private func updateDeviceButtonsSettings(deviceID: String, override: ButtonsSettings?) {
@@ -756,6 +777,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.config = config
             coordinator?.updateConfig(config)
             syncButtonsIntercept()
+        } catch {
+            statusController?.setStatus("Button mapping save failed")
+        }
+    }
+
+    /// 全局 [buttons] 保存（网关模式对话框）：nil=恢复默认（清空全局表）。落盘后经
+    /// coordinator.updateConfig 热更——连接中的 StickS3 逐键重发 gateway_keymap_set。
+    private func updateGlobalButtonsSettings(_ override: ButtonsSettings?) {
+        var config = self.config
+        config.globalButtonsSettings = override ?? .default
+        do {
+            try config.save()
+            self.config = config
+            coordinator?.updateConfig(config)
         } catch {
             statusController?.setStatus("Button mapping save failed")
         }

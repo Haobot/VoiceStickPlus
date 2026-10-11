@@ -28,11 +28,17 @@ final class ButtonMappingWindowController: NSWindowController {
     private var hotkeyCapture: HotkeyCaptureWindowController?
     private var captureButtons: [RemoteButton: NSButton] = [:]
 
+    /// hidesIntercept：网关模式入口专用——拦截是直连 RC 的 HID 能力，网关链路
+    /// （固件路由→gateway_key 事件）不消费该开关，隐藏避免误导。
+    private let hidesIntercept: Bool
+
     init(deviceID: String, settings: ButtonsSettings, defaults: ButtonsSettings,
+         hidesIntercept: Bool = false,
          onSave: @escaping (ButtonsSettings?) -> Void) {
         self.deviceID = deviceID
         self.settings = settings
         self.defaults = defaults
+        self.hidesIntercept = hidesIntercept
         self.onSave = onSave
 
         let window = NSWindow(
@@ -79,6 +85,7 @@ final class ButtonMappingWindowController: NSWindowController {
         interceptCheck.state = settings.intercept ? .on : .off
         interceptCheck.target = self
         interceptCheck.action = #selector(interceptToggled)
+        interceptCheck.isHidden = hidesIntercept
         outer.addArrangedSubview(interceptCheck)
 
         let hint = NSTextField(wrappingLabelWithString: l10n(

@@ -153,9 +153,20 @@ public struct AirMouseSettings: Equatable {
 
     public static let `default` = AirMouseSettings()
 
-    /// TOML 序列化数字格式（4 位有效数字，避免科学计数法）。
+    /// TOML 序列化数字格式（4 位有效数字，避免科学计数法）。整数值必须带小数点落盘
+    ///（`%.4g` 对 3 输出 "3" = TOML 整数）：TOMLKit 解 Double 严格按类型，整数形态
+    /// 曾让整表解码失败、静默回落 legacy 丢掉全部 [表] 段（LenientDouble 是读侧双保险，
+    /// 此处保证新写出为规范 float 形态）。
     public func tomlNumber(_ value: Double) -> String {
-        String(format: "%.4g", value)
+        let text = String(format: "%.4g", value)
+        let lowered = text.lowercased()
+        if lowered == "inf" || lowered == "-inf" || lowered == "nan" {
+            return text
+        }
+        if text.contains(".") || lowered.contains("e") {
+            return text
+        }
+        return text + ".0"
     }
 
     /// 解析时钳位（对齐 Windows 加载路径：越界回落默认值）。

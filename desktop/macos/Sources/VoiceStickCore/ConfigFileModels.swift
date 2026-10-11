@@ -47,17 +47,18 @@ public struct ConfigFile: Decodable {
     public var tap_sensitivity: Int?
     public var air_mouse_sensitivity_x: Int?
     public var air_mouse_sensitivity_y: Int?
-    public var air_mouse_tau: Double?
+    // 9 个 air_mouse 双精度字段走 LenientDouble（整数形态宽容，见其文档注释）。
+    public var air_mouse_tau: LenientDouble?
     public var air_mouse_invert_y: Bool?
-    public var air_mouse_curve_low_thresh: Double?
-    public var air_mouse_curve_high_thresh: Double?
-    public var air_mouse_curve_low_factor: Double?
-    public var air_mouse_curve_high_factor: Double?
-    public var air_mouse_neutral_deadzone: Double?
+    public var air_mouse_curve_low_thresh: LenientDouble?
+    public var air_mouse_curve_high_thresh: LenientDouble?
+    public var air_mouse_curve_low_factor: LenientDouble?
+    public var air_mouse_curve_high_factor: LenientDouble?
+    public var air_mouse_neutral_deadzone: LenientDouble?
     public var air_mouse_control_mode: String?
-    public var air_mouse_rate_gain: Double?
-    public var air_mouse_rate_friction: Double?
-    public var air_mouse_rate_max_speed: Double?
+    public var air_mouse_rate_gain: LenientDouble?
+    public var air_mouse_rate_friction: LenientDouble?
+    public var air_mouse_rate_max_speed: LenientDouble?
     public var encoder_to_arrow: Bool?
     public var encoder_rotation_invert: Bool?
     public var encoder_rotate_cw_key: String?
@@ -73,6 +74,8 @@ public struct ConfigFile: Decodable {
     public var encoder_double_click_key: String?
     public var output: OutputConfigFile?
     public var device: [String: DeviceConfigFile]?
+    /// 根 [buttons] 表（网关模式全局键位映射，Windows [xiaomi.keys] 的 macOS 对应物）。
+    public var buttons: ButtonsConfigFile?
 }
 
 public struct OutputConfigFile: Decodable {
@@ -99,6 +102,33 @@ public struct DeviceConfigFile: Decodable {
         self.interaction = interaction
         self.encoder = encoder
         self.buttons = buttons
+    }
+}
+
+/// TOML 整数形态宽容双精度：`%.4g` 序列化的整数值（3/80/4000 等）落盘为 TOML 整数，
+/// 而 TOMLKit 的 decode(Double) 严格要求 .double 类型——单字段 typeMismatch 会让
+/// ConfigFile 整表解码失败并静默回落 loadLegacy（不认任何 [表] 段），把所有
+/// [device.*] 表与根 [buttons] 表在下次启动时丢光。与 XiaomiConfigFile.gain_db 的
+/// 整数宽容同一根因（Windows C++ << 整数值 double 同款形态），回归断言见
+/// GlobalButtonsConfigTests 的「整数形态 Double 宽容解码」与「解码主路径」两条。
+public struct LenientDouble: Decodable {
+    public var value: Double
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let double = try? container.decode(Double.self) {
+            value = double
+        } else if let int = try? container.decode(Int.self) {
+            value = Double(int)
+        } else {
+            throw DecodingError.typeMismatch(
+                Double.self,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Expected number (int or float)"
+                )
+            )
+        }
     }
 }
 

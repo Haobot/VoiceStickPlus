@@ -27,6 +27,11 @@ public struct FirmwareUpdateProgress: Equatable {
 /// BLE 服务出口（对齐 BleCentral 现有 24 面；事件类型均在 Core）。
 public protocol VoiceStickBleServing: AnyObject {
     var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)? { get set }
+    /// 控制特征（control_rx）发现完成、控制通道可写时触发（仅 StickS3；参数为
+    /// deviceID）。onConnectionChange 在 didConnect 时刻先于特征发现触发，彼时
+    /// sendStickControlPayload 必因 controlCharacteristics 未就绪被丢弃，协调器
+    /// 在此补推按设备下发项与网关配置（幂等）。
+    var onControlChannelReady: ((String) -> Void)? { get set }
     var onStateEvent: ((UUID, StateEvent) -> Void)? { get set }
     var onAudioFrame: ((UUID, AudioFrame) -> Void)? { get set }
     var onMotionFrame: ((UUID, MotionFrame) -> Void)? { get set }

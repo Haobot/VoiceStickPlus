@@ -69,6 +69,10 @@ public struct AppConfig {
     public var deviceEncoderSettings: [String: EncoderSettings]
     /// 体感鼠标全局进阶参数（对齐 Windows 顶层键 air_mouse_*，默认值=真机标定）。
     public var airMouse: AirMouseSettings
+    /// 根 [buttons] 全局键位映射表（Windows [xiaomi.keys] 的 macOS 对应物）：网关模式下
+    /// 遥控器配对在 StickS3、无 RC 配对条目，协调器的 gateway_keymap 路由推导与
+    /// gateway_key 消费回落于此；直连 RC 的 [device.<id>.buttons] 覆盖仍优先。
+    public var globalButtonsSettings: ButtonsSettings = .default
     /// [device.<id>.buttons] 按设备覆盖（小米遥控器按键映射；键为归一化 4 位大写 hex ID）。
     public var deviceButtonsSettings: [String: ButtonsSettings]
 
@@ -268,21 +272,26 @@ public struct AppConfig {
             encoderSettings: encoder,
             deviceEncoderSettings: deviceEncoderSettingsMap(file.device, fallback: encoder),
             airMouse: airMouseSettingsValue(
-                tau: file.air_mouse_tau,
+                // LenientDouble 解包（整数形态宽容，见 ConfigFileModels 注释）。
+                tau: file.air_mouse_tau?.value,
                 invertY: file.air_mouse_invert_y,
-                curveLowThresh: file.air_mouse_curve_low_thresh,
-                curveHighThresh: file.air_mouse_curve_high_thresh,
-                curveLowFactor: file.air_mouse_curve_low_factor,
-                curveHighFactor: file.air_mouse_curve_high_factor,
-                neutralDeadzone: file.air_mouse_neutral_deadzone,
+                curveLowThresh: file.air_mouse_curve_low_thresh?.value,
+                curveHighThresh: file.air_mouse_curve_high_thresh?.value,
+                curveLowFactor: file.air_mouse_curve_low_factor?.value,
+                curveHighFactor: file.air_mouse_curve_high_factor?.value,
+                neutralDeadzone: file.air_mouse_neutral_deadzone?.value,
                 controlMode: file.air_mouse_control_mode,
-                rateGain: file.air_mouse_rate_gain,
-                rateFriction: file.air_mouse_rate_friction,
-                rateMaxSpeed: file.air_mouse_rate_max_speed,
+                rateGain: file.air_mouse_rate_gain?.value,
+                rateFriction: file.air_mouse_rate_friction?.value,
+                rateMaxSpeed: file.air_mouse_rate_max_speed?.value,
                 default: defaults.airMouse
             ),
             deviceButtonsSettings: deviceButtonsSettingsMap(file.device)
         )
+        // 根 [buttons] 全局键位表（网关模式）；缺段回落默认。
+        config.globalButtonsSettings = file.buttons.map {
+            VoiceStickCore.buttonsSettings(from: $0)
+        } ?? defaults.globalButtonsSettings
         recoverTencentSecretID(&config)
         return config
     }
@@ -389,7 +398,7 @@ public struct AppConfig {
         transform = "\(defaultOutputProfile.transform.rawValue)"
         translation_target = "\(defaultOutputProfile.translationTarget.tomlEscaped)"
         """
-        return text + deviceOutputProfileText + deviceXiaomiSettingsText
+        return text + globalButtonsText + deviceOutputProfileText + deviceXiaomiSettingsText
             + deviceInteractionSettingsText + deviceEncoderSettingsText
             + deviceButtonsSettingsText
     }
@@ -742,10 +751,12 @@ public struct AppConfig {
         return settings
     }
 
-    // ---- 小米遥控器按键映射（[device.<id>.buttons]，语义对齐 Windows [xiaomi.keys]）----
+    // ---- 小米遥控器按键映射（根 [buttons] 全局表 + [device.<id>.buttons] 覆盖）----
 
-    /// 全局默认：拦截关闭、全部原生（映射是设备级概念，无顶层全局覆盖表）。
-    public var buttonsSettings: ButtonsSettings { ButtonsSettings.default }
+    /// 全局有效键位映射（根 [buttons]，语义对齐 Windows [xiaomi.keys]）：默认拦截关闭、
+    /// 全部原生；网关模式无配对 RC 条目时即以此推导 gateway_keymap 路由与 gateway_key
+    /// 消费。设备覆盖见 buttonsSettings(for:)。
+    public var buttonsSettings: ButtonsSettings { globalButtonsSettings }
 
     /// 返回设备有效按键映射：有覆盖返回覆盖（加载时已校验回填），否则全局默认。
     public func buttonsSettings(for deviceID: String?) -> ButtonsSettings {
@@ -829,6 +840,39 @@ public struct AppConfig {
             .joined(separator: "\n")
     }
 
+    /// keys 子表键值行（native 不落盘、disabled 用 none 哨兵、key 走 TOML 转义；
+    /// 根 [buttons] 与 [device.<id>.buttons] 两段共用，保证两端 round-trip 同形）。
+    private func buttonsKeyLines(_ settings: ButtonsSettings) -> [String] {
+        settings.mappings
+            .sorted { $0.key < $1.key }
+            .compactMap { key, mapping -> String? in
+                switch mapping.action {
+                case .native:
+                    return nil
+                case .disabled:
+                    return "\(key) = \"\(buttonsDisabledSentinel)\""
+                case .key:
+                    return "\(key) = \"\(mapping.key.tomlEscaped)\""
+                }
+            }
+    }
+
+    /// 根 [buttons] 全局段（网关模式键位映射；与默认一致不写出 = Windows
+    /// [xiaomi.keys] 同款「不落盘默认」语义；写出的表自含、加载顺序无关）。
+    private var globalButtonsText: String {
+        guard globalButtonsSettings != .default else { return "" }
+        var text = "\n\n[buttons]"
+        if globalButtonsSettings.intercept {
+            text += "\nintercept = true"
+        }
+        let keys = buttonsKeyLines(globalButtonsSettings)
+        if !keys.isEmpty {
+            text += "\n\n[buttons.keys]\n"
+            text += keys.joined(separator: "\n")
+        }
+        return text
+    }
+
     /// [device.<id>.buttons] 覆盖段（未配对或与默认一致不写出；只写出非原生条目，
     /// 自含、加载顺序无关）。
     private var deviceButtonsSettingsText: String {
@@ -840,18 +884,7 @@ public struct AppConfig {
                 if settings.intercept {
                     text += "\nintercept = true"
                 }
-                let keys = settings.mappings
-                    .sorted { $0.key < $1.key }
-                    .compactMap { key, mapping -> String? in
-                        switch mapping.action {
-                        case .native:
-                            return nil
-                        case .disabled:
-                            return "\(key) = \"\(buttonsDisabledSentinel)\""
-                        case .key:
-                            return "\(key) = \"\(mapping.key.tomlEscaped)\""
-                        }
-                    }
+                let keys = buttonsKeyLines(settings)
                 if !keys.isEmpty {
                     text += "\n\n[device.\(deviceID).buttons.keys]\n"
                     text += keys.joined(separator: "\n")

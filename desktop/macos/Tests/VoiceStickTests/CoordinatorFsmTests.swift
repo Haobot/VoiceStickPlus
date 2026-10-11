@@ -34,6 +34,7 @@ private final class FakeStatusSink: VoiceStickStatusSink {
 
 private final class FakeBleServing: VoiceStickBleServing {
     var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
+    var onControlChannelReady: ((String) -> Void)?
     var onStateEvent: ((UUID, StateEvent) -> Void)?
     var onAudioFrame: ((UUID, AudioFrame) -> Void)?
     var onMotionFrame: ((UUID, MotionFrame) -> Void)?
@@ -45,7 +46,11 @@ private final class FakeBleServing: VoiceStickBleServing {
 
     func start() {}
     func updatePairedDeviceIDs(_ deviceIDs: [String]) {}
-    func connectedStickDeviceIDs() -> [String] { [] }
+    /// 网关推送链测试用：置位后 updateConfig 的逐台单播循环视为有已连接 StickS3。
+    var stickDeviceIDs: [String] = []
+    func connectedStickDeviceIDs() -> [String] { stickDeviceIDs }
+    /// 控制通道下发记录（label, deviceID）——就绪补推/热更下发断言用。
+    var sentControlLabels: [(label: String, deviceID: String)] = []
     func deviceClass(for peripheralID: UUID) -> DeviceClass { .stickS3 }
     var stubDeviceID: String? = "TEST"
     func deviceID(for peripheralID: UUID) -> String? { stubDeviceID }
@@ -59,7 +64,9 @@ private final class FakeBleServing: VoiceStickBleServing {
     func sendPowerLogCommand(_ data: Data, to deviceID: String) {}
     func sendRemoteButton(action: String, deviceID: String, requestID: UInt32) {}
     func sendShowIMUDebug(_ enabled: Bool, to peripheralID: UUID?) {}
-    func sendStickControlPayload(_ data: Data, label: String, deviceID: String) {}
+    func sendStickControlPayload(_ data: Data, label: String, deviceID: String) {
+        sentControlLabels.append((label: label, deviceID: deviceID))
+    }
     func sendUIState(_ state: String, text: String, to peripheralID: UUID?) {}
     func cancelFirmwareUpdate() {}
     func updateFirmware(image: Data, for deviceID: String,
@@ -75,7 +82,9 @@ private final class FakeInput: VoiceStickInputServing {
     func sendArrowDown() {}
     func sendArrowUp() {}
     func sendEnter() {}
-    func sendKeyCombo(_ spec: KeySpec) {}
+    /// gateway_key 注入断言用：记录收到的组合键。
+    var sentKeyCombos: [KeySpec] = []
+    func sendKeyCombo(_ spec: KeySpec) { sentKeyCombos.append(spec) }
 }
 
 private final class FakeSubtitle: VoiceStickSubtitleServing {
@@ -119,6 +128,7 @@ private final class FakeRefiner: RefinerServing {
 func runCoordinatorFsmTests() {
     let sink = FakeStatusSink()
     let fakeBle = FakeBleServing()
+    let fakeInput = FakeInput()
     let coordinator = VoiceStickCoordinator(
         config: .defaults,
         statusController: sink,
@@ -126,7 +136,7 @@ func runCoordinatorFsmTests() {
         makeAsr: { _ in FakeASR() },
         makeTranslator: { _ in FakeTranslator() },
         makeRefiner: { _ in FakeRefiner() },
-        inputInjector: FakeInput(),
+        inputInjector: fakeInput,
         subtitleController: FakeSubtitle(),
         makeDebugRecorder: { _ in FakeRecorder() }
     )
@@ -175,4 +185,51 @@ func runCoordinatorFsmTests() {
     check(gotPower?.0 == "TEST", "N1fsm: 电源事件经映射到出口")
     check(gotPower?.1 == true, "N1fsm: usbAutoOff 负载保真")
     check(coordinator.fsmSnapshot.contains("main=ready"), "N1fsm: 电源链后状态机仍一致")
+
+    // ---- 网关按键自定义恢复链（P1 macOS 补口）----
+    // 1) 控制通道就绪补推：真机缺口=didConnect 时刻下发 182/182 被 "(not connected)"
+    //    丢弃、特征发现后无人补推（固件永远收不到本机路由表与目标名）。
+    fakeBle.sentControlLabels.removeAll()
+    fakeBle.onControlChannelReady?("TEST")
+    let readyPushes = fakeBle.sentControlLabels.map(\.label)
+    check(readyPushes.filter { $0.hasPrefix("gateway_keymap_set") }.count
+          == GatewaySupport.routableKeys.count,
+          "gwPush: 就绪补推 13 键路由全量")
+    check(readyPushes.contains { $0.hasPrefix("gateway_target_info") },
+          "gwPush: 就绪补推目标机名")
+    check(readyPushes.contains("tap_enabled"),
+          "gwPush: 就绪补推按设备交互设置")
+
+    // 2) 全局 [buttons] 映射 → updateConfig 热更逐键重发（软件路由/直通分流）。
+    fakeBle.stickDeviceIDs = ["TEST"]
+    fakeBle.sentControlLabels.removeAll()
+    var gwConfig = AppConfig.defaults
+    var gwButtons = ButtonsSettings.default
+    gwButtons.setMapping(ButtonMapping(action: .key, key: "backspace"), for: .back)
+    gwButtons.setMapping(ButtonMapping(action: .disabled, key: ""), for: .volUp)
+    gwConfig.globalButtonsSettings = gwButtons
+    coordinator.updateConfig(gwConfig)
+    let hotPushes = fakeBle.sentControlLabels.map(\.label)
+    check(hotPushes.contains("gateway_keymap_set back=software"),
+          "gwPush: 映射键热更下发软件路由")
+    check(hotPushes.contains("gateway_keymap_set volume_up=software"),
+          "gwPush: 禁用键热更下发软件路由（吞在桌面侧）")
+    check(hotPushes.contains("gateway_keymap_set up=passthrough"),
+          "gwPush: 未映射键热更下发直通")
+
+    // 3) gateway_key 回流 → 按全局映射注入 / 禁用键吞掉。
+    let gwDown = try! JSONDecoder().decode(
+        StateEvent.self,
+        from: #"{"event":"gateway_key","key":"back","pressed":true}"#.data(using: .utf8)!)
+    fakeBle.onStateEvent?(UUID(), gwDown)
+    check(fakeInput.sentKeyCombos.last == KeySpec.parse("backspace"),
+          "gwConsume: gateway_key 按全局映射注入")
+    let gwVolDown = try! JSONDecoder().decode(
+        StateEvent.self,
+        from: #"{"event":"gateway_key","key":"volume_up","pressed":true}"#.data(using: .utf8)!)
+    let combosBefore = fakeInput.sentKeyCombos.count
+    fakeBle.onStateEvent?(UUID(), gwVolDown)
+    check(fakeInput.sentKeyCombos.count == combosBefore,
+          "gwConsume: 禁用键吞掉不注入")
+    check(coordinator.fsmSnapshot.contains("main=ready"), "gw: 消费链后状态机仍一致")
 }

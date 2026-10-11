@@ -114,6 +114,10 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var isWorkspaceSleeping = false
 
     var onConnectionChange: (([ConnectedVoiceStickDevice]) -> Void)?
+    /// 控制特征发现完成（控制通道可写；仅 StickS3 分支触发）。didConnect 时刻的
+    /// onConnectionChange 先于此发生，彼时按 deviceID 寻址的下发会因特征未就绪被
+    /// 「(not connected)」丢弃——协调器在此补推交互设置与网关目标名/路由表。
+    var onControlChannelReady: ((String) -> Void)?
     var onAudioFrame: ((UUID, AudioFrame) -> Void)?
     var onStateEvent: ((UUID, StateEvent) -> Void)?
     /// power_log 分片帧回调（state_tx 上行，无 "event" 键；电量监测窗口消费）。
@@ -580,6 +584,11 @@ final class BleCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 sendInteractionMode(interactionMode, to: peripheral.identifier)
                 sendShowIMUDebug(showIMUDebug, to: peripheral.identifier)
                 sendProtoNegotiate(to: peripheral.identifier)
+                // 控制通道就绪：通知协调器补推（真机实证 didConnect 时刻的
+                // gateway_target_info/gateway_keymap_set 182/182 被 skipped）。
+                if let deviceID = connectedDevices[peripheral.identifier]?.deviceID {
+                    onControlChannelReady?(deviceID)
+                }
                 // D3b：注册即打活性基线（覆盖"订阅假成功"从连接起就静默的形态）+ 起表。
                 lastInboundAt[peripheral.identifier] = ProcessInfo.processInfo.systemUptime
                 startLinkLivenessMonitor()

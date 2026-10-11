@@ -310,6 +310,17 @@ public final class VoiceStickCoordinator {
             self.onConnectionChange?(connectedDevices)
         }
 
+        // 控制特征就绪补推（网关 P1 闭环的送达保证）：didConnect 时刻 onConnectionChange
+        // 里的交互设置/网关下发会因 controlCharacteristics 未就绪全部被丢弃（真机日志
+        // gateway_keymap_set 182/182 skipped、就绪后无重发 ⇒ 固件永远收不到本机路由表
+        // 与目标名）。就绪回调只在 StickS3 控制特征分支触发，幂等重发交互设置 + 网关
+        // 目标名/路由表；与 onConnectionChange 路径重叠时多发一轮亦无害。
+        ble.onControlChannelReady = { [weak self] deviceID in
+            guard let self else { return }
+            self.sendDeviceInteractionSettings(deviceID: deviceID)
+            self.pushGatewayConfig(deviceID: deviceID)
+        }
+
         ble.onStateEvent = { [weak self] peripheralID, event in
             self?.handleStateEvent(event, peripheralID: peripheralID)
         }

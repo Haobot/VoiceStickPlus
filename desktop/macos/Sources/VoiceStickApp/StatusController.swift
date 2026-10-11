@@ -92,6 +92,9 @@ final class StatusController {
     var onOpenEncoderSettings: ((String) -> Void)?
     var onOpenRemoteSettings: ((String) -> Void)?
     var onOpenButtonMapping: ((String) -> Void)?
+    /// 网关模式按键映射（StickS3 设备项入口；编辑全局 [buttons]，对齐 Windows
+    /// kMenuXiaomiKeymap 的非小米分支）。
+    var onOpenGatewayButtonMapping: ((String) -> Void)?
     var onOpenBatteryMonitor: ((String) -> Void)?
     /// 体感鼠标开关（仅 StickS3 且已连接；Windows 侧入口在设置对话框已隐藏，macOS
     /// 按平台习惯放进设备子菜单，勾选=进入体感态）。
@@ -508,6 +511,17 @@ final class StatusController {
                     encoderItem.representedObject = deviceID
                     submenu.addItem(encoderItem)
                 }
+
+                // 网关模式按键映射入口（对齐 Windows kMenuXiaomiKeymap 非小米分支）：
+                // 遥控器配对在 StickS3、桌面端无 RC 条目时，经此编辑全局 [buttons]
+                // 默认表——与协调器无配对 RC 时的路由推导/gateway_key 消费同源。
+                let gatewayKeymapItem = makeMenuItem(
+                    title: tr(.menuButtonMapping),
+                    symbolName: "keyboard",
+                    action: #selector(openGatewayButtonMapping)
+                )
+                gatewayKeymapItem.representedObject = deviceID
+                submenu.addItem(gatewayKeymapItem)
 
                 // 体感鼠标开关（仅 StickS3 且已连接；macOS 平台入口，勾选=进入体感态，
                 // 侧键单击退出。Windows 侧入口已在设置对话框隐藏，引擎两端一致）。
@@ -994,6 +1008,11 @@ final class StatusController {
     @objc private func openButtonMapping(_ sender: NSMenuItem) {
         guard let deviceID = sender.representedObject as? String else { return }
         onOpenButtonMapping?(deviceID)
+    }
+
+    @objc private func openGatewayButtonMapping(_ sender: NSMenuItem) {
+        guard let deviceID = sender.representedObject as? String else { return }
+        onOpenGatewayButtonMapping?(deviceID)
     }
 
     @objc private func openBatteryMonitor(_ sender: NSMenuItem) {
