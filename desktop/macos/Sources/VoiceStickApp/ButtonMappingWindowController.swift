@@ -75,10 +75,16 @@ final class ButtonMappingWindowController: NSWindowController {
         outer.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(outer)
 
+        // 宽度显式定死（2026-10-12 修复「窗口被压成 40pt」）：outer 为 .leading 对齐
+        // 纵向栈且含 NSScrollView（无固有尺寸），只按 leading/trailing 钉 contentView
+        // 时「outer 宽 ↔ contentView 宽」互相依赖、无第三条宽度约束 ⇒ 宽度欠定，布局
+        // 求解把窗口内容宽塌到 40pt（真机几何自检：win=40 / outer=8 / 行区=0）。
+        // 改为 leading + 固定宽 528（= 560 - 左右 16），配合 buildContent 末尾
+        // setContentSize 强制窗口尺寸，宽度不再随求解结果漂移。
         NSLayoutConstraint.activate([
             outer.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
             outer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            outer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            outer.widthAnchor.constraint(equalToConstant: 528),
             outer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
         ])
 
@@ -94,6 +100,7 @@ final class ButtonMappingWindowController: NSWindowController {
         ))
         hint.textColor = .secondaryLabelColor
         hint.preferredMaxLayoutWidth = 520
+        hint.widthAnchor.constraint(equalToConstant: 520).isActive = true
         outer.addArrangedSubview(hint)
 
         // 键行区放滚动视图（12 行超出一屏）。
@@ -101,6 +108,7 @@ final class ButtonMappingWindowController: NSWindowController {
         rows.orientation = .vertical
         rows.alignment = .leading
         rows.spacing = 4
+        rows.translatesAutoresizingMaskIntoConstraints = false
         for button in RemoteButton.allCases {
             rows.addArrangedSubview(makeRow(button))
         }
@@ -115,10 +123,8 @@ final class ButtonMappingWindowController: NSWindowController {
             scroll.leadingAnchor.constraint(equalTo: outer.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: outer.trailingAnchor),
         ])
-        // documentView 行宽跟随滚动区。
-        if let documentView = scroll.documentView {
-            documentView.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-        }
+        // 行区定宽 500（滚动区可见宽 ≈528-15 竖条，留足显示余量；行内容 ≈470）。
+        rows.widthAnchor.constraint(equalToConstant: 500).isActive = true
 
         let buttonRow = NSStackView()
         buttonRow.orientation = .horizontal
@@ -132,6 +138,9 @@ final class ButtonMappingWindowController: NSWindowController {
         buttonRow.addArrangedSubview(restoreButton)
         buttonRow.addArrangedSubview(saveButton)
         outer.addArrangedSubview(buttonRow)
+
+        // 内容构建完强制窗口内容尺寸（宽度欠定塌缩的第二道保险）。
+        window?.setContentSize(NSSize(width: 560, height: 520))
     }
 
     private func makeRow(_ button: RemoteButton) -> NSView {
@@ -140,7 +149,7 @@ final class ButtonMappingWindowController: NSWindowController {
         row.alignment = .centerY
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: 520).isActive = true
+        row.widthAnchor.constraint(equalToConstant: 500).isActive = true
 
         let label = NSTextField(labelWithString: Self.buttonName(button))
         label.widthAnchor.constraint(equalToConstant: 96).isActive = true
