@@ -148,6 +148,16 @@ NimBLE 把它原样登记为属性权限（`ble_gatts_register_dsc` → `ble_att
 
 详见 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md` 与 `Doc/Plan/windows-app-os-pairing.md`。
 
+**语音输入端到端延迟根因链（2026-10-11/12 五连修，commit `fb09bec`，实测松键→粘贴 25.6s→0.44s）**：
+
+1. **按键事件曾被事件队列静默挤丢**（队列 12 深度 + FRONT/SIDE DOWN/UP 非 critical，编码器旋转风暴是触发条件）→ 录音无人停、button_up 不发 = 幽灵录音/永久等待；已升 A7 关键事件。判据：`Button up duration_ms` 与 down→up 间隔对不上。
+2. **macOS 拒绝含 <15ms 的连接参数范围请求**（`ble_gap_update_params` rc=530 = 0x200+HCI 0x12，Apple 按范围整体校验非选档），链路锁死 400ms 慢档、音频通知塌到 ~2.4fps（3.4s 语音拖 28-35s）——**语音延迟最大头**；快档下限 15ms（`itvl_min=12`）即被接受，**推翻** `mac-ble-ota-400ms-hid-scheduling-2026-10-02.md` 的「无解」定案（详见其追加节）。
+3. **空闲即降 400ms + macOS 应用参数更新 ~5s 延迟** = 短句整段在慢档爬行；已改「活动即拉快档（幂等）+ 空闲 5 分钟才降档」+ CONN_UPDATE 慢参数自愈重申 + 录音中 1.5s 周期重申。
+4. 确认倒计时 1.2s→0.4s（`showFinal`/`ShowFinalCountdown` 两端同步）；桌面录音静默看门狗 3s + 停录 sentinel 3s 有界 + tx 重试 2ms 粒度。
+5. **macOS 排障基建**：统一日志对 NSLog 脱敏 `<private>` ⇒ 文件日志 `~/Library/Application Support/VoiceStick/App.log`（AppFileLog，8MB 轮转）；**CLI 直接启动 app 因 TCC 归因失效会静默失去蓝牙**（判据：进程零 CoreBluetooth 日志），测试一律 `open` 启动。
+
+完整判据表/三轮实测对照/遗留项见 `Doc/Expe/voice-input-latency-root-cause-chain-2026-10-12.md`。
+
 ---
 
 ## 2. 固件烧录与串口日志
@@ -551,9 +561,10 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **macOS 无人值守打包签名挂死（codesign 0 CPU + SecurityAgent 在场）**＝登录钥匙串 ACL 授权弹窗在等人：走自建钥匙串 + 显式 `--keychain`（`VOICESTICK_CODESIGN_KEYCHAIN`），详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 2026-10-02 追加节。
 
 - 桌面端日志在 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`（非 Roaming 的 `%APPDATA%`）。
+- **macOS 端日志**在 `~/Library/Application Support/VoiceStick/VoiceStickApp.log`（统一日志对 NSLog 脱敏 `<private>` 不可读；CLI 直接启动 app 因 TCC 归因失效静默失去蓝牙，测试一律 `open` 启动）。语音延迟分段判据 `Audio stream summary frames/span` + 串口 `fast interval request failed rc=530`，见 `Doc/Expe/voice-input-latency-root-cause-chain-2026-10-12.md`。
 - 任何「按住开始/松开结束」的音频会话，固件 `*_stop` 必须同步等 drain 完成再返回，否则 button_up 抢跑丢尾音。
 - SendInput 注入第三方输入法热键必须带 scan code（`MapVirtualKey`），仅 wVk 时输入法不响应。
-- BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。
+- BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。**2026-10-11 修订**：连接参数**请求范围**下限改 15ms（macOS 拒绝含 <15ms 的范围请求 rc=530、链路塌到 2.4fps），勿把 `itvl_min` 改回 6。
 - ES8311 ALC 寄存器位域以 Linux 主线 `es8311.h` 为准，不信 `es8311_reg.h` 注释。
 - 设备 EN 复位后 USB JTAG 重枚举，间隙内 boot 日志直接丢失，循环重开 pyserial 也盖不住；boot→广播耗时从主机日志反推（断连事件→`advertisement matched` 时间差），不要试图串口抓 boot。
 - 排查 BLE 回连/僵尸链路先看 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`；`link-layer connected` 的 `polls=0` 是典型僵尸，`polls=1` 也可能是垂死链路（ATT 挂起），勿凭 polls 单一判据下结论。
