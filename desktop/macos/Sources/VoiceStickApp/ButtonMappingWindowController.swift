@@ -401,7 +401,9 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
 
     @objc private func captureKey() {
         guard let button = currentButton() else { return }
-        let controller = HotkeyCaptureWindowController()
+        // 按键映射场景：单键（Backspace 等）也允许，不要求修饰键
+        //（对齐 Windows xiaomi_keymap_dialog 的 require_modifier=false）。
+        let controller = HotkeyCaptureWindowController(requireModifier: false)
         controller.onCapture = { [weak self] spec in
             guard let self else { return }
             self.keyField.stringValue = spec

@@ -92,7 +92,7 @@ enum L10nKey: String, CaseIterable {
     case firmwarePromptUpdateButton, firmwarePromptLaterButton
 
     // 热键捕获窗口
-    case hotkeyCaptureTitle, hotkeyCaptureHint, hotkeyCaptureMissingModifier, hotkeyCaptureApplyHint
+    case hotkeyCaptureTitle, hotkeyCaptureHint, hotkeyCaptureMissingModifier, hotkeyCaptureApplyHint, hotkeyCaptureAnyKeyHint
 
     // 设备交互设置窗口
     case interactionSettingsTitle
@@ -392,6 +392,7 @@ enum Localization {
         .hotkeyCaptureHint: "Press the new hotkey (modifier + key). Esc cancels.",
         .hotkeyCaptureMissingModifier: "Hotkey needs at least one modifier (Control/Option/Shift/Command).",
         .hotkeyCaptureApplyHint: "Press OK to apply, or press another combination.",
+        .hotkeyCaptureAnyKeyHint: "Press the key to bind — single keys (e.g. Backspace) are fine, modifiers optional. Esc cancels.",
 
         .interactionSettingsTitle: "Device interaction - VS-%@",
         .settingsWakeSensitivity: "Wake Sensitivity",
@@ -660,6 +661,7 @@ enum Localization {
         .hotkeyCaptureHint: "请按下新的快捷键（修饰键 + 主键），Esc 取消。",
         .hotkeyCaptureMissingModifier: "错误：至少需要 1 个修饰键（Control/Option/Shift/Command）",
         .hotkeyCaptureApplyHint: "按「确定」应用，或按下其他组合。",
+        .hotkeyCaptureAnyKeyHint: "请按下要绑定的按键——允许单键（如 Backspace），修饰键可选。Esc 取消。",
 
         .interactionSettingsTitle: "设备交互 - VS-%@",
         .settingsWakeSensitivity: "拿起灵敏度",
