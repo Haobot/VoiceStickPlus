@@ -2804,7 +2804,10 @@ static void send_gateway_keymap_report(void)
 static void gateway_on_key(uint16_t usage, bool pressed)
 {
     gateway_key_action_t action = gateway_keymap_translate(usage);
-    ESP_LOGD(TAG, "gw key usage=0x%04x %s kind=%d value=0x%lx", usage,
+    // INFO（2026-10-12 提级）：按键到达是「遥控器→设备 HID 报告通道」的唯一观测点，
+    // DEBUG 级在默认日志电平下不可见，曾让"语音键正常、其它键全死"的双通道问题
+    // 无法分叉（到达?→发送?→门控?）。
+    ESP_LOGI(TAG, "gw key usage=0x%04x %s kind=%d value=0x%lx", usage,
              pressed ? "down" : "up", (int)action.kind, (unsigned long)action.value);
     switch (action.kind) {
     case GATEWAY_KEY_KEYBOARD: {
