@@ -466,6 +466,16 @@ enum class StringId {
     // 设置页开关 + 活跃度对话框入口按钮
     kSettingsSmartHotwordEnable,
     kSettingsHotwordActivityButton,
+    // 热词碟（设置页只读面板，Doc/Plan/hotword-tray-and-domain-context.md）
+    kSettingsHotwordTrayTitle,
+    kSettingsHotwordTrayRefresh,
+    // 提示行：prefix + 已入碟数 + infix + 碟容量 + suffix
+    kSettingsHotwordTrayHintPrefix,
+    kSettingsHotwordTrayHintInfix,
+    kSettingsHotwordTrayHintSuffix,
+    kSettingsHotwordTrayEmpty,
+    // 回收池词在碟中的来源显示名
+    kHotwordTraySourceEvicted,
     // 活跃度对话框
     kHotwordActivityTitle,
     kHotwordActivityRefreshButton,
