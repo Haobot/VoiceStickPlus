@@ -1,36 +1,231 @@
 import AppKit
 import VoiceStickCore
 
-/// 按键映射窗口（小米遥控器按键自定义，对齐 Windows kMenuXiaomiKeymap）：
-/// 拦截总开关 checkbox（即时生效，经 onInterceptToggled 由调用方落盘并同步拦截层）
-/// + 12 键动作行（原生/禁用/按键 + KeySpec 文本 + 捕获按钮）+ 恢复默认/保存。
+/// 按键映射窗口（对齐 Windows XiaomiKeymapDialog 的图片热区设计，2026-10-12 恢复）：
+/// 左侧遥控器照片（悬停浅蓝框/选中蓝框 + 手型光标，点击热区选键）+ 右侧选中键的
+/// 映射编辑（原生/禁用/按键 + KeySpec 文本 + 捕获）+ 拦截总开关（直连 RC 模式）
+/// + 恢复默认/保存。
 /// 保存语义（对齐 RemoteSettingsWindowController）：解析失败弹提示不写入；
-/// 与全局默认一致 → onSave(nil)（调用方清除覆盖回落默认）。
-/// 文案未进 Localization 共享表（新增键较多，表完整性断言会强制双端补齐），
-/// 暂在本文件内按生效语言取词；后续需要时下沉 L10nKey。
+/// 与 defaults 一致 → onSave(nil)（调用方清覆盖/恢复默认）。
+/// 布局为手写 frame（不参与 Auto Layout）——规避 2026-10-12 修复过的
+/// 「宽度欠定把窗口塌到 40pt」问题（见 git 32be9fe）。
+/// 文案未进 Localization 共享表（同旧版），按生效语言在本文件内取词。
 private func l10n(_ zh: String, _ en: String) -> String {
     Localization.current.effective == .zhHans ? zh : en
 }
-final class ButtonMappingWindowController: NSWindowController {
+
+/// 遥控器照片热区表（与 Windows XiaomiKeymapDialog 同源：原始图片坐标系 228×889，
+/// oval=椭圆框高亮，rect=矩形框；命中检测按矩形包含，ok 与方向键边界相接处优先 ok）。
+private struct RemoteHotspot {
+    let id: String
+    let x1, y1, x2, y2: Int
+    let oval: Bool
+}
+
+private let kRemoteImageWidth = 228
+private let kRemoteImageHeight = 889
+private let kRemoteHotspots: [RemoteHotspot] = [
+    RemoteHotspot(id: "power", x1: 36, y1: 18, x2: 114, y2: 96, oval: true),
+    RemoteHotspot(id: "mic", x1: 116, y1: 18, x2: 192, y2: 96, oval: true),
+    RemoteHotspot(id: "up", x1: 67, y1: 102, x2: 157, y2: 152, oval: false),
+    RemoteHotspot(id: "left", x1: 18, y1: 152, x2: 67, y2: 242, oval: false),
+    RemoteHotspot(id: "ok", x1: 67, y1: 152, x2: 157, y2: 242, oval: true),
+    RemoteHotspot(id: "right", x1: 157, y1: 152, x2: 206, y2: 242, oval: false),
+    RemoteHotspot(id: "down", x1: 67, y1: 242, x2: 157, y2: 292, oval: false),
+    RemoteHotspot(id: "back", x1: 18, y1: 303, x2: 99, y2: 382, oval: true),
+    RemoteHotspot(id: "volume_up", x1: 125, y1: 300, x2: 208, y2: 393, oval: false),
+    RemoteHotspot(id: "home", x1: 18, y1: 385, x2: 99, y2: 467, oval: true),
+    RemoteHotspot(id: "volume_down", x1: 125, y1: 393, x2: 208, y2: 488, oval: false),
+    RemoteHotspot(id: "menu", x1: 18, y1: 470, x2: 99, y2: 550, oval: true),
+    RemoteHotspot(id: "tv", x1: 125, y1: 470, x2: 208, y2: 550, oval: true),
+]
+private let kRemoteOkHotspotIndex = 4
+
+/// 照片画布：图片等比缩放到可用高度、水平居中；热区悬停/选中描边 + 手型光标；
+/// 底部提示条。全部手写绘制，无 Auto Layout 参与。
+private final class RemoteCanvasView: NSView {
+    var image: NSImage?
+    /// 选中热区下标（初值由控制器设置）。
+    var selected: Int = kRemoteOkHotspotIndex
+    var hover: Int = -1
+    var onSelect: ((Int) -> Void)?
+
+    /// 图片显示区（非翻转坐标系，原点在左下）：可用高 = 视图高 - 提示条 - 上下留白。
+    private func imageFrame() -> NSRect? {
+        guard image != nil else { return nil }
+        let margin: CGFloat = 6
+        let hintHeight: CGFloat = 24
+        let availableHeight = bounds.height - hintHeight - margin * 2
+        guard availableHeight > 0 else { return nil }
+        let scale = availableHeight / CGFloat(kRemoteImageHeight)
+        let width = CGFloat(kRemoteImageWidth) * scale
+        return NSRect(
+            x: (bounds.width - width) / 2,
+            y: margin,
+            width: width,
+            height: CGFloat(kRemoteImageHeight) * scale
+        )
+    }
+
+    /// 图片坐标（原点左上）→ 热区命中；未命中返回 -1。
+    private func hotspotIndex(at point: NSPoint) -> Int {
+        guard let frame = imageFrame() else { return -1 }
+        let scale = frame.width / CGFloat(kRemoteImageWidth)
+        let ix = (point.x - frame.minX) / scale
+        let iy = (frame.maxY - point.y) / scale
+        guard ix >= 0, ix < CGFloat(kRemoteImageWidth),
+              iy >= 0, iy < CGFloat(kRemoteImageHeight) else {
+            return -1
+        }
+        func contains(_ hs: RemoteHotspot) -> Bool {
+            ix >= CGFloat(hs.x1) && ix <= CGFloat(hs.x2)
+                && iy >= CGFloat(hs.y1) && iy <= CGFloat(hs.y2)
+        }
+        // ok 优先：ok 与方向键热区边界相接，重叠命中时取 ok（与 Windows 一致）。
+        if contains(kRemoteHotspots[kRemoteOkHotspotIndex]) {
+            return kRemoteOkHotspotIndex
+        }
+        for index in kRemoteHotspots.indices where index != kRemoteOkHotspotIndex {
+            if contains(kRemoteHotspots[index]) { return index }
+        }
+        return -1
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.setFill()
+        bounds.fill()
+        guard let frame = imageFrame(), let image else {
+            let placeholder = l10n("遥控器照片缺失", "Remote photo missing")
+            let attrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.systemGray,
+                .font: NSFont.systemFont(ofSize: 13),
+            ]
+            let size = (placeholder as NSString).size(withAttributes: attrs)
+            (placeholder as NSString).draw(
+                at: NSPoint(x: (bounds.width - size.width) / 2, y: bounds.midY - size.height / 2),
+                withAttributes: attrs
+            )
+            drawHintStrip()
+            return
+        }
+        image.draw(in: frame, from: .zero, operation: .sourceOver, fraction: 1)
+        if hover >= 0, hover != selected {
+            drawOutline(hover, selected: false, in: frame)
+        }
+        if selected >= 0, selected < kRemoteHotspots.count {
+            drawOutline(selected, selected: true, in: frame)
+        }
+        drawHintStrip()
+    }
+
+    private func drawOutline(_ index: Int, selected: Bool, in frame: NSRect) {
+        let hs = kRemoteHotspots[index]
+        let scale = frame.width / CGFloat(kRemoteImageWidth)
+        let rect = NSRect(
+            x: frame.minX + CGFloat(hs.x1) * scale,
+            y: frame.maxY - CGFloat(hs.y2) * scale,
+            width: CGFloat(hs.x2 - hs.x1) * scale,
+            height: CGFloat(hs.y2 - hs.y1) * scale
+        )
+        // 选中 3px 蓝（RGB 22/119/255），悬停 2px 浅蓝——与 Windows 对话框同色。
+        let color = selected
+            ? NSColor(srgbRed: 22.0 / 255.0, green: 119.0 / 255.0, blue: 1.0, alpha: 1.0)
+            : NSColor(srgbRed: 145.0 / 255.0, green: 200.0 / 255.0, blue: 1.0, alpha: 1.0)
+        color.setStroke()
+        let path = hs.oval ? NSBezierPath(ovalIn: rect) : NSBezierPath(rect: rect)
+        path.lineWidth = selected ? 3 : 2
+        path.stroke()
+    }
+
+    private func drawHintStrip() {
+        let hint = l10n("点击图片中的按钮进行配置", "Click a button in the photo to configure")
+        let attrs: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.systemGray,
+            .font: NSFont.systemFont(ofSize: 11),
+        ]
+        let size = (hint as NSString).size(withAttributes: attrs)
+        (hint as NSString).draw(
+            at: NSPoint(x: (bounds.width - size.width) / 2, y: 5),
+            withAttributes: attrs
+        )
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let index = hotspotIndex(at: convert(event.locationInWindow, from: nil))
+        guard index >= 0 else { return }
+        selected = index
+        hover = index
+        needsDisplay = true
+        onSelect?(index)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let index = hotspotIndex(at: convert(event.locationInWindow, from: nil))
+        if index != hover {
+            hover = index
+            needsDisplay = true
+        }
+        (index >= 0 ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if hover != -1 {
+            hover = -1
+            needsDisplay = true
+        }
+        NSCursor.arrow.set()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+}
+
+final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelegate {
     private let deviceID: String
     private var settings: ButtonsSettings
     private let defaults: ButtonsSettings
     private let onSave: (ButtonsSettings?) -> Void
     var onInterceptToggled: ((Bool) -> Void)?
 
-    private var popups: [RemoteButton: NSPopUpButton] = [:]
-    private var keyFields: [RemoteButton: NSTextField] = [:]
+    /// hidesIntercept：网关模式入口专用——拦截是直连 RC 的 HID 能力，网关链路
+    /// （固件路由→gateway_key 事件）不消费该开关，隐藏避免误导。
+    private let hidesIntercept: Bool
+
+    private let canvas = RemoteCanvasView()
+    private let keyNameLabel = NSTextField(labelWithString: "")
+    private let actionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let keyField = NSTextField(frame: .zero)
+    private let hintLabel = NSTextField(wrappingLabelWithString: "")
     private let interceptCheck = NSButton(
         checkboxWithTitle: l10n("启用按键拦截（HID 按键自定义生效前提）", "Enable key interception (required for HID key customization)"),
         target: nil,
         action: nil
     )
+    private let captureButton = NSButton(
+        title: l10n("捕获…", "Capture…"), target: nil, action: nil
+    )
+    private let restoreButton = NSButton(
+        title: tr(.restoreDefaults), target: nil, action: nil
+    )
+    private let saveButton = NSButton(title: tr(.save), target: nil, action: nil)
     private var hotkeyCapture: HotkeyCaptureWindowController?
-    private var captureButtons: [RemoteButton: NSButton] = [:]
 
-    /// hidesIntercept：网关模式入口专用——拦截是直连 RC 的 HID 能力，网关链路
-    /// （固件路由→gateway_key 事件）不消费该开关，隐藏避免误导。
-    private let hidesIntercept: Bool
+    /// 照片资源（打包脚本拷入 .app/Contents/Resources；缺失时降级占位不崩溃）。
+    private static let remoteImage: NSImage? = {
+        guard let path = Bundle.main.path(forResource: "xiaomi_remote_2pro", ofType: "png") else {
+            NSLog("ButtonMapping: remote photo missing in bundle \(Bundle.main.bundlePath)")
+            return nil
+        }
+        return NSImage(contentsOfFile: path)
+    }()
 
     init(deviceID: String, settings: ButtonsSettings, defaults: ButtonsSettings,
          hidesIntercept: Bool = false,
@@ -42,13 +237,15 @@ final class ButtonMappingWindowController: NSWindowController {
         self.onSave = onSave
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 640),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = l10n("按键映射 — \(deviceID)", "Button Mapping — \(deviceID)")
         window.isReleasedWhenClosed = false
+        // 热区悬停高亮依赖鼠标移动事件。
+        window.acceptsMouseMovedEvents = true
         super.init(window: window)
         buildContent()
     }
@@ -68,150 +265,152 @@ final class ButtonMappingWindowController: NSWindowController {
     private func buildContent() {
         guard let contentView = window?.contentView else { return }
 
-        let outer = NSStackView()
-        outer.orientation = .vertical
-        outer.alignment = .leading
-        outer.spacing = 10
-        outer.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(outer)
+        // ===== 左侧：遥控器照片画布（手写 frame，宽度不参与约束求解） =====
+        canvas.frame = NSRect(x: 10, y: 54, width: 170, height: 576)
+        canvas.image = Self.remoteImage
+        // 默认选中「上方向」（power 不可映射，不宜做首屏选中）。
+        canvas.selected = 2
+        canvas.onSelect = { [weak self] _ in self?.refreshPanel() }
+        contentView.addSubview(canvas)
 
-        // 宽度显式定死（2026-10-12 修复「窗口被压成 40pt」）：outer 为 .leading 对齐
-        // 纵向栈且含 NSScrollView（无固有尺寸），只按 leading/trailing 钉 contentView
-        // 时「outer 宽 ↔ contentView 宽」互相依赖、无第三条宽度约束 ⇒ 宽度欠定，布局
-        // 求解把窗口内容宽塌到 40pt（真机几何自检：win=40 / outer=8 / 行区=0）。
-        // 改为 leading + 固定宽 528（= 560 - 左右 16），配合 buildContent 末尾
-        // setContentSize 强制窗口尺寸，宽度不再随求解结果漂移。
-        NSLayoutConstraint.activate([
-            outer.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
-            outer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            outer.widthAnchor.constraint(equalToConstant: 528),
-            outer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+        // ===== 右侧：选中键信息与映射编辑 =====
+        keyNameLabel.font = NSFont.boldSystemFont(ofSize: 18)
+        keyNameLabel.frame = NSRect(x: 196, y: 598, width: 430, height: 30)
+        contentView.addSubview(keyNameLabel)
+
+        actionPopup.frame = NSRect(x: 196, y: 562, width: 200, height: 26)
+        actionPopup.addItems(withTitles: [
+            l10n("原生", "Native"), l10n("禁用", "Disabled"), l10n("按键", "Key"),
         ])
+        actionPopup.target = self
+        actionPopup.action = #selector(actionChanged)
+        contentView.addSubview(actionPopup)
+
+        keyField.frame = NSRect(x: 196, y: 524, width: 300, height: 26)
+        keyField.placeholderString = "ctrl+shift+v"
+        keyField.delegate = self
+        contentView.addSubview(keyField)
+
+        captureButton.bezelStyle = .rounded
+        captureButton.target = self
+        captureButton.action = #selector(captureKey)
+        captureButton.frame = NSRect(x: 504, y: 523, width: 122, height: 28)
+        contentView.addSubview(captureButton)
+
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.frame = NSRect(x: 196, y: 424, width: 430, height: 96)
+        contentView.addSubview(hintLabel)
 
         interceptCheck.state = settings.intercept ? .on : .off
         interceptCheck.target = self
         interceptCheck.action = #selector(interceptToggled)
         interceptCheck.isHidden = hidesIntercept
-        outer.addArrangedSubview(interceptCheck)
+        interceptCheck.frame = NSRect(x: 196, y: 392, width: 430, height: 20)
+        contentView.addSubview(interceptCheck)
 
-        let hint = NSTextField(wrappingLabelWithString: l10n(
-            "「按键」动作支持修饰键组合（如 ctrl+shift+v）；「禁用」吸掉该键；未配置的键保持系统原生行为。语音键双击为 A 级（不经 HID 拦截，拦截关闭时仍生效）。",
-            "\"Key\" supports modifier combos (e.g. ctrl+shift+v); \"Disabled\" swallows the key; unmapped keys keep native behavior. Voice double-click is A-level (ATVV layer, effective even when interception is off)."
-        ))
-        hint.textColor = .secondaryLabelColor
-        hint.preferredMaxLayoutWidth = 520
-        hint.widthAnchor.constraint(equalToConstant: 520).isActive = true
-        outer.addArrangedSubview(hint)
+        // ===== 底部：恢复默认 / 保存 =====
+        restoreButton.target = self
+        restoreButton.action = #selector(restoreDefaults)
+        restoreButton.frame = NSRect(x: 196, y: 12, width: 130, height: 32)
+        contentView.addSubview(restoreButton)
 
-        // 键行区放滚动视图（12 行超出一屏）。
-        let rows = NSStackView()
-        rows.orientation = .vertical
-        rows.alignment = .leading
-        rows.spacing = 4
-        rows.translatesAutoresizingMaskIntoConstraints = false
-        for button in RemoteButton.allCases {
-            rows.addArrangedSubview(makeRow(button))
-        }
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .noBorder
-        scroll.documentView = rows
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.heightAnchor.constraint(equalToConstant: 300).isActive = true
-        outer.addArrangedSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: outer.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: outer.trailingAnchor),
-        ])
-        // 行区定宽 500（滚动区可见宽 ≈528-15 竖条，留足显示余量；行内容 ≈470）。
-        rows.widthAnchor.constraint(equalToConstant: 500).isActive = true
-
-        let buttonRow = NSStackView()
-        buttonRow.orientation = .horizontal
-        buttonRow.spacing = 8
-        let restoreButton = NSButton(
-            title: tr(.restoreDefaults), target: self, action: #selector(restoreDefaults)
-        )
-        let saveButton = NSButton(title: tr(.save), target: self, action: #selector(saveSettings))
+        saveButton.target = self
+        saveButton.action = #selector(saveSettings)
         saveButton.bezelStyle = .rounded
         saveButton.keyEquivalent = "\r"
-        buttonRow.addArrangedSubview(restoreButton)
-        buttonRow.addArrangedSubview(saveButton)
-        outer.addArrangedSubview(buttonRow)
+        saveButton.frame = NSRect(x: 500, y: 12, width: 126, height: 32)
+        contentView.addSubview(saveButton)
 
-        // 内容构建完强制窗口内容尺寸（宽度欠定塌缩的第二道保险）。
-        window?.setContentSize(NSSize(width: 560, height: 520))
-    }
-
-    private func makeRow(_ button: RemoteButton) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: 500).isActive = true
-
-        let label = NSTextField(labelWithString: Self.buttonName(button))
-        label.widthAnchor.constraint(equalToConstant: 96).isActive = true
-        row.addArrangedSubview(label)
-
-        let popup = NSPopUpButton()
-        popup.addItems(withTitles: [
-            l10n("原生", "Native"),
-            l10n("禁用", "Disabled"),
-            l10n("按键", "Key"),
-        ])
-        popup.widthAnchor.constraint(equalToConstant: 92).isActive = true
-        let mapping = settings.mapping(for: button)
-        switch mapping.action {
-        case .native: popup.selectItem(at: 0)
-        case .disabled: popup.selectItem(at: 1)
-        case .key: popup.selectItem(at: 2)
-        }
-        popup.target = self
-        popup.action = #selector(actionChanged(_:))
-        popups[button] = popup
-        row.addArrangedSubview(popup)
-
-        let field = NSTextField()
-        field.placeholderString = "ctrl+shift+v"
-        field.widthAnchor.constraint(equalToConstant: 180).isActive = true
-        field.stringValue = mapping.key
-        keyFields[button] = field
-        row.addArrangedSubview(field)
-
-        let capture = NSButton(
-            title: l10n("捕获…", "Capture…"), target: self, action: #selector(captureKey(_:))
-        )
-        capture.bezelStyle = .rounded
-        captureButtons[button] = capture
-        row.addArrangedSubview(capture)
-
-        return row
+        refreshPanel()
     }
 
     // MARK: - 状态同步
 
-    @objc private func interceptToggled() {
-        let enabled = interceptCheck.state == .on
-        settings.intercept = enabled
-        onInterceptToggled?(enabled)
+    /// 当前选中热区对应的可映射键；power → nil（不可映射），mic → 语音键双击
+    ///（照片上的语音键在桌面侧的映射面即 A 级双击动作）。
+    private func currentButton() -> RemoteButton? {
+        guard canvas.selected >= 0, canvas.selected < kRemoteHotspots.count else { return nil }
+        let id = kRemoteHotspots[canvas.selected].id
+        if id == "mic" { return .voiceDoubleClick }
+        if id == "power" { return nil }
+        return RemoteButton(rawValue: id)
     }
 
-    @objc private func actionChanged(_ sender: NSPopUpButton) {
-        guard let button = popups.first(where: { $0.value === sender })?.key else { return }
-        // 切回「按键」时若字段为空，聚焦字段提示补录（保存时仍会校验）。
-        if sender.indexOfSelectedItem == 2, keyFields[button]?.stringValue.isEmpty == true {
-            window?.makeFirstResponder(keyFields[button])
+    private func refreshPanel() {
+        guard canvas.selected >= 0, canvas.selected < kRemoteHotspots.count else { return }
+        let id = kRemoteHotspots[canvas.selected].id
+        if id == "power" {
+            keyNameLabel.stringValue = l10n("电源键", "Power")
+            hintLabel.stringValue = l10n(
+                "电源键由设备固件管理，不参与桌面映射（保持直通）。",
+                "Power is firmware-managed and not mappable (stays passthrough)."
+            )
+            actionPopup.isEnabled = false
+            keyField.isEnabled = false
+            captureButton.isEnabled = false
+            return
+        }
+        guard let button = currentButton() else { return }
+        keyNameLabel.stringValue = Self.buttonName(button)
+        hintLabel.stringValue = Self.normalHint
+        actionPopup.isEnabled = true
+        captureButton.isEnabled = true
+
+        let mapping = settings.mapping(for: button)
+        actionPopup.selectItem(at: mapping.action == .native ? 0 : (mapping.action == .disabled ? 1 : 2))
+        keyField.stringValue = mapping.action == .key ? mapping.key : ""
+        keyField.isEnabled = mapping.action == .key
+    }
+
+    @objc private func interceptToggled() {
+        settings.intercept = interceptCheck.state == .on
+        onInterceptToggled?(settings.intercept)
+    }
+
+    @objc private func actionChanged() {
+        guard let button = currentButton() else { return }
+        switch actionPopup.indexOfSelectedItem {
+        case 0:
+            settings.mappings.removeValue(forKey: button.rawValue)
+        case 1:
+            settings.setMapping(ButtonMapping(action: .disabled, key: ""), for: button)
+        case 2:
+            settings.setMapping(
+                ButtonMapping(action: .key, key: keyField.stringValue), for: button
+            )
+        default:
+            break
+        }
+        keyField.isEnabled = actionPopup.indexOfSelectedItem == 2
+        if actionPopup.indexOfSelectedItem == 2, keyField.stringValue.isEmpty {
+            window?.makeFirstResponder(keyField)
         }
     }
 
-    @objc private func captureKey(_ sender: NSButton) {
-        guard let button = captureButtons.first(where: { $0.value === sender })?.key else { return }
+    /// KeySpec 文本即时提交（与旧列表版一致：保存时统一校验，输入过程不打断）。
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === keyField,
+              let button = currentButton(),
+              actionPopup.indexOfSelectedItem == 2 else {
+            return
+        }
+        settings.setMapping(
+            ButtonMapping(action: .key, key: keyField.stringValue), for: button
+        )
+    }
+
+    @objc private func captureKey() {
+        guard let button = currentButton() else { return }
         let controller = HotkeyCaptureWindowController()
         controller.onCapture = { [weak self] spec in
-            self?.keyFields[button]?.stringValue = spec
-            self?.hotkeyCapture = nil
+            guard let self else { return }
+            self.keyField.stringValue = spec
+            if self.actionPopup.indexOfSelectedItem != 2 {
+                self.actionPopup.selectItem(at: 2)
+            }
+            self.keyField.isEnabled = true
+            self.settings.setMapping(ButtonMapping(action: .key, key: spec), for: button)
+            self.hotkeyCapture = nil
         }
         hotkeyCapture = controller
         controller.show()
@@ -225,37 +424,24 @@ final class ButtonMappingWindowController: NSWindowController {
     }
 
     @objc private func saveSettings() {
-        // KeySpec 校验前置（对齐 Windows 按键映射对话框：非法弹提示且不写入）。
-        for button in RemoteButton.allCases {
-            guard popups[button]?.indexOfSelectedItem == 2,
-                  let field = keyFields[button] else { continue }
-            let text = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard !text.isEmpty, KeySpec.parse(text) != nil else {
+        // KeySpec 校验前置（对齐旧列表版与 Windows 对话框：非法弹提示且不写入），
+        // 通过者 trim 归一后落盘。
+        var saved = settings
+        for (raw, mapping) in saved.mappings where mapping.action == .key {
+            guard let button = RemoteButton(rawValue: raw) else { continue }
+            let trimmedKey = mapping.key.trimmingCharacters(in: .whitespaces)
+            guard !trimmedKey.isEmpty, KeySpec.parse(trimmedKey) != nil else {
                 let alert = NSAlert()
                 alert.alertStyle = .warning
                 alert.messageText = l10n("按键映射无效", "Invalid key mapping")
                 alert.informativeText = l10n(
-                    "「\(Self.buttonName(button))」的目标按键 \"\(field.stringValue)\" 无法识别。",
-                    "The target key \"\(field.stringValue)\" for \"\(Self.buttonName(button))\" could not be parsed."
+                    "「\(Self.buttonName(button))」的目标按键 \"\(mapping.key)\" 无法识别。",
+                    "The target key \"\(mapping.key)\" for \"\(Self.buttonName(button))\" could not be parsed."
                 )
                 alert.runModal()
                 return
             }
-            field.stringValue = text
-        }
-
-        var saved = settings
-        saved.mappings = [:]
-        for button in RemoteButton.allCases {
-            switch popups[button]?.indexOfSelectedItem ?? 0 {
-            case 1:
-                saved.setMapping(ButtonMapping(action: .disabled, key: ""), for: button)
-            case 2:
-                let key = keyFields[button]?.stringValue ?? ""
-                saved.setMapping(ButtonMapping(action: .key, key: key), for: button)
-            default:
-                break  // 原生：不落盘
-            }
+            saved.setMapping(ButtonMapping(action: .key, key: trimmedKey), for: button)
         }
         if saved == defaults {
             onSave(nil)
@@ -267,7 +453,15 @@ final class ButtonMappingWindowController: NSWindowController {
 
     // MARK: - 文案
 
-    /// 键显示名（未进 Localization 共享表，按生效语言取词，见类注释）。
+    /// 说明文案（选中可映射键时显示）。
+    private static var normalHint: String {
+        l10n(
+            "「按键」动作支持修饰键组合（如 ctrl+shift+v）；「禁用」吸掉该键；「原生」按系统等价按键注入（方向/回车/音量等）。语音键双击为 A 级（不经 HID 拦截，拦截关闭时仍生效）。",
+            "\"Key\" supports modifier combos (e.g. ctrl+shift+v); \"Disabled\" swallows the key; \"Native\" injects the system-equivalent key (arrows/enter/volume...). Voice double-click is A-level (ATVV layer, effective even when interception is off)."
+        )
+    }
+
+    /// 键显示名（未进 Localization 共享表，按生效语言取词，见文件头注释）。
     private static func buttonName(_ button: RemoteButton) -> String {
         let zh = Localization.current.effective == .zhHans
         switch button {
@@ -275,16 +469,14 @@ final class ButtonMappingWindowController: NSWindowController {
         case .home: return zh ? "主页" : "Home"
         case .back: return zh ? "返回" : "Back"
         case .menu: return zh ? "菜单" : "Menu"
-        case .tv: return zh ? "TV" : "TV"
+        case .tv: return "TV"
         case .right: return zh ? "右方向" : "Right"
         case .left: return zh ? "左方向" : "Left"
         case .down: return zh ? "下方向" : "Down"
         case .up: return zh ? "上方向" : "Up"
         case .volUp: return zh ? "音量+" : "Volume Up"
-        case .volDown: return zh ? "音量-" : "Volume Down"
+        case .volDown: return zh ? "音量−" : "Volume Down"
         case .voiceDoubleClick: return zh ? "语音键双击" : "Voice Double-Click"
         }
     }
-
-    
 }

@@ -218,6 +218,15 @@ else
     echo "WARNING: App icon was not found: $ICON_PATH"
 fi
 
+# 按键映射对话框的遥控器照片（图片热区交互；app 运行时经 Bundle.main 读取，
+# 缺失时界面降级为占位提示而非崩溃）。
+REMOTE_PNG="$DESKTOP_DIR/Resources/xiaomi_remote_2pro.png"
+if [ -f "$REMOTE_PNG" ]; then
+    cp "$REMOTE_PNG" "$APP_DIR/Contents/Resources/xiaomi_remote_2pro.png"
+else
+    echo "WARNING: Xiaomi remote photo was not found: $REMOTE_PNG"
+fi
+
 FIRST_ARCH="${TARGET_ARCHS%% *}"
 # 优先取产物目录里 SwiftPM 已铺好的 Sparkle.framework（与链接所用一致），
 # 取不到再回退到 binary artifact 目录（旧工具链行为）。
