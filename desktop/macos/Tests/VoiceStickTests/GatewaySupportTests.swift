@@ -40,10 +40,16 @@ func runGatewaySupportTests() {
     checkEqual(unknown?.event, "something_new", "GatewayEvent.unknownTolerated")
     checkNil(unknown?.gatewayKey, "GatewayEvent.unknownNoKey")
 
-    // ---- 路由表推导 ----
+    // ---- 路由表推导（2026-10-12 语义修正：可映射键一律 software）----
+    // 背景：macOS 无程序化 OS 配对 API，系统级 HID 会话建不起来（真机 hidutil/ioreg
+    // 无 IOHIDDevice 节点），HOGP 直通=死键 → 原生改由桌面 naturalSpec 注入。
     let defaultRoutes = GatewaySupport.routes(for: .default)
     checkEqual(defaultRoutes.count, GatewaySupport.routableKeys.count, "GatewayRoutes.defaultCount13")
-    check(defaultRoutes.allSatisfy { $0.route == "passthrough" }, "GatewayRoutes.defaultPassthrough")
+    checkEqual(defaultRoutes.filter { $0.route == "software" }.count, 11,
+               "GatewayRoutes.defaultMappableSoftware11")
+    checkEqual(defaultRoutes.filter { $0.route == "passthrough" }.map(\.key).sorted(),
+               ["power", "volume_mute"],
+               "GatewayRoutes.unmappablePassthrough")
 
     var settings = ButtonsSettings.default
     settings.setMapping(ButtonMapping(action: .key, key: "alt+left"), for: .back)
@@ -53,14 +59,27 @@ func runGatewaySupportTests() {
                "GatewayRoutes.keySoftware")
     checkEqual(customRoutes.first { $0.key == "volume_up" }?.route, "software",
                "GatewayRoutes.disabledSoftware")
-    checkEqual(customRoutes.first { $0.key == "ok" }?.route, "passthrough",
-               "GatewayRoutes.nativePassthrough")
+    checkEqual(customRoutes.first { $0.key == "ok" }?.route, "software",
+               "GatewayRoutes.nativeSoftware")
 
-    // 语音键不参与路由（ATVV 会话层固定语义）；macOS 无映射 UI 的键仍在全集内
-    //（显式推 passthrough，避免继承上一目标的 software 路由）。
+    // 语音键不参与路由（ATVV 会话层固定语义）；桌面无映射面的键仍在全集内
+    //（保持 passthrough，OS 级配对可用时直通）。
     check(!GatewaySupport.routableKeys.contains("voice_double_click"), "GatewayRoutes.voiceExcluded")
     check(GatewaySupport.routableKeys.contains("power") &&
           GatewaySupport.routableKeys.contains("volume_mute"), "GatewayRoutes.powerMuteIncluded")
+
+    // ---- 原生自然键映射（macOS 系统 HID 不可用时的原生语义实现）----
+    checkEqual(GatewaySupport.naturalSpec(for: .volUp), KeySpec.parse("volumeup"),
+               "GatewayNatural.volUp")
+    checkEqual(GatewaySupport.naturalSpec(for: .volDown), KeySpec.parse("volumedown"),
+               "GatewayNatural.volDown")
+    checkEqual(GatewaySupport.naturalSpec(for: .ok), KeySpec.parse("enter"), "GatewayNatural.ok")
+    checkEqual(GatewaySupport.naturalSpec(for: .up), KeySpec.parse("up"), "GatewayNatural.up")
+    checkEqual(GatewaySupport.naturalSpec(for: .back), KeySpec.parse("backspace"),
+               "GatewayNatural.back")
+    checkEqual(GatewaySupport.naturalSpec(for: .home), KeySpec.parse("home"), "GatewayNatural.home")
+    check(GatewaySupport.naturalSpec(for: .menu) == nil, "GatewayNatural.menuNil")
+    check(GatewaySupport.naturalSpec(for: .tv) == nil, "GatewayNatural.tvNil")
 
     // ---- 目标机名规整 ----
     checkEqual(GatewaySupport.targetInfoName("MacBook Pro"), "MacBook Pro", "GatewayName.ascii")

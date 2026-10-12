@@ -44,12 +44,16 @@ func runGlobalButtonsConfigTests() {
     check(cfg.buttonsSettings(for: "FFFF") == cfg.globalButtonsSettings,
           "gb: 无覆盖设备回落全局")
 
-    // 路由推导与消费同源：映射键 → software，未映射 → passthrough。
+    // 路由推导与消费同源（2026-10-12 语义修正）：可映射键一律 software——
+    // 原生由桌面 naturalSpec 注入（macOS 系统级 HID 会话不可用）；桌面无映射面的
+    // power/volume_mute 保持 passthrough。
     let routes = GatewaySupport.routes(for: cfg.buttonsSettings(for: nil))
     check(routes.first { $0.key == "back" }?.route == "software",
           "gb: 映射键推软件路由")
-    check(routes.first { $0.key == "up" }?.route == "passthrough",
-          "gb: 未映射键推直通")
+    check(routes.first { $0.key == "up" }?.route == "software",
+          "gb: 未映射键（原生）推软件路由（桌面自然键注入）")
+    check(routes.first { $0.key == "power" }?.route == "passthrough",
+          "gb: 无映射面的 power 推直通")
 
     // 整数形态 Double 宽容解码（LenientDouble）：%.4g 曾把 3/80/4000 写成 TOML
     // 整数，TOMLKit 严格 typeMismatch → 整表解码失败回落 legacy → 所有 [表] 段丢光。

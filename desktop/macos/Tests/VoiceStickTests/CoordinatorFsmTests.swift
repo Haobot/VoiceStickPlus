@@ -214,8 +214,8 @@ func runCoordinatorFsmTests() {
           "gwPush: 映射键热更下发软件路由")
     check(hotPushes.contains("gateway_keymap_set volume_up=software"),
           "gwPush: 禁用键热更下发软件路由（吞在桌面侧）")
-    check(hotPushes.contains("gateway_keymap_set up=passthrough"),
-          "gwPush: 未映射键热更下发直通")
+    check(hotPushes.contains("gateway_keymap_set up=software"),
+          "gwPush: 未映射键（原生）热更下发软件路由（桌面自然键注入）")
 
     // 3) gateway_key 回流 → 按全局映射注入 / 禁用键吞掉。
     let gwDown = try! JSONDecoder().decode(
@@ -231,5 +231,12 @@ func runCoordinatorFsmTests() {
     fakeBle.onStateEvent?(UUID(), gwVolDown)
     check(fakeInput.sentKeyCombos.count == combosBefore,
           "gwConsume: 禁用键吞掉不注入")
+    // 原生键（未映射）→ naturalSpec 自然键注入（macOS 系统 HID 不可用的原生语义实现）。
+    let gwUp = try! JSONDecoder().decode(
+        StateEvent.self,
+        from: #"{"event":"gateway_key","key":"up","pressed":true}"#.data(using: .utf8)!)
+    fakeBle.onStateEvent?(UUID(), gwUp)
+    check(fakeInput.sentKeyCombos.last == KeySpec.parse("up"),
+          "gwConsume: 原生键按自然映射注入（up→方向上）")
     check(coordinator.fsmSnapshot.contains("main=ready"), "gw: 消费链后状态机仍一致")
 }

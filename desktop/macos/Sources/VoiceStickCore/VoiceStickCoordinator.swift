@@ -714,9 +714,9 @@ public final class VoiceStickCoordinator {
         pushGatewayKeymapRoutes(deviceID: deviceID)
     }
 
-    /// 按本机按键映射逐键下发路由：key/disabled → software，native → passthrough
-    /// （对齐 Windows PushGatewayKeymapRoutesFor；key_map 是固件 NVS 全局态，两端各自
-    /// 连接时重发 = 当前活跃目标的配置生效）。
+    /// 按本机按键映射逐键下发路由（macOS 语义见 GatewaySupport.routes：可映射键
+    /// 一律 software——原生=桌面自然键注入；power/volume_mute → passthrough。
+    /// key_map 是固件 NVS 全局态，两端各自连接时重发 = 当前活跃目标的配置生效）。
     private func pushGatewayKeymapRoutes(deviceID: String) {
         let settings = config.buttonsSettings(for: activeXiaomiDeviceID)
         for route in GatewaySupport.routes(for: settings) {
@@ -729,8 +729,10 @@ public final class VoiceStickCoordinator {
 
     /// 网关软件路由键消费（对齐 Windows OnGatewayKey）：只处理按下沿（抬起沿成对
     /// 到达，注入为 down+up 点按）。映射取活跃 RC 的配置——与路由下发同源，保证
-    /// 「路由为 software 的键必能在此被消费」。禁用键吞掉；native/不可映射键忽略
-    ///（理论上是 Windows 端路由的残留，忽略避免错误注入）。
+    /// 「路由为 software 的键必能在此被消费」。禁用键吞掉；native 按 naturalSpec
+    /// 注入等价自然键（2026-10-12：macOS 系统级 HID 会话不可用，原生语义由桌面
+    /// 实现，见 GatewaySupport.routes 语义修正）；不可映射键（power/volume_mute，
+    /// 路由本就 passthrough 到不了这里）忽略防误注入。
     private func handleGatewayKey(_ event: StateEvent) {
         guard event.gatewayPressed == true, let keyName = event.gatewayKey else { return }
         guard let button = RemoteButton(rawValue: keyName) else {
@@ -749,7 +751,12 @@ public final class VoiceStickCoordinator {
         case .disabled:
             NSLog("gateway key \(keyName) disabled by mapping, swallowed")
         case .native:
-            NSLog("gateway key \(keyName) routed software but mapping native, ignored")
+            guard let spec = GatewaySupport.naturalSpec(for: button) else {
+                NSLog("gateway key \(keyName) native has no desktop equivalent, ignored (map it in Button Mapping)")
+                return
+            }
+            NSLog("gateway key \(keyName) -> native inject \(spec.displayText)")
+            inputInjector.sendKeyCombo(spec)
         }
     }
 
