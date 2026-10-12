@@ -55,7 +55,7 @@
 - 真机 UI 回归与遥控器实按验收待做；长按连发（Windows P1 的 `XiaomiGatewayKeyRepeater`）macOS 仍未移植，软件路由键长按只有单次注入。
 - `loadLegacy` 依旧不认 `[表]` 段（古早配置兼容所需）——正常配置已不会再落到它，「解码主路径探针」测试守回归。
 - 网关模式「遥控器设置」（gain_db/double_click_ms）仍需 RC 条目：roadmap 根因 2 的「RC 条目获取路径」待办保留，本次只处置了按键映射半边（`Doc/Plan/xiaomi-gateway-followup-roadmap.md` 已标注）。
-- 遥控器「原生」键走固件 HOGP 直通，需目标机与 StickS3 有 OS 级配对（既有结论见关联旧文）；软件路由键（映射过的键）不受此限制。
+- 遥控器「原生」键走固件 HOGP 直通，需目标机与 StickS3 有 OS 级配对（既有结论见关联旧文）；软件路由键（映射过的键）不受此限制。**（2026-10-12 §9 已改判：macOS 原生键改桌面自然键注入，不再依赖 OS 配对；本条仅对 Windows 成立）**
 
 ## 8. 追加（2026-10-12 深夜二轮）：真机端到端验收暴露固件侧两雷（已修复 + 已烧录）
 
@@ -75,3 +75,25 @@
 - 串口采集脚本 open 自身会触发一次 `USB_UART_CHIP_RESET`——uptime 单调/仅一次 banner = 无扰动（技能既有判据再验证）。
 - `gateway_target_info 缺少 name 或无当前对端` 警告（mac 连接在固件目标表登记失败）——侧键切换目标列表可能缺 MacBook，**遗留观察**，不影响按键/语音链路。
 - 取证期间疑似见到对端（Windows 机）重连推送的批次——多机同抢一台网关时回执/路由会互踩，**遗留观察**。
+## 9. 追加（2026-10-12 三轮）：音量±等按键不工作的根因（mac 无 OS 级 HID 会话）+ 图片热区界面恢复
+
+**现象**：录音键正常，音量±/方向等其它键全无反应。
+
+**判据链（可复用）**：
+1. 录音键走 ATVV 控制帧（app 自己的 GATT 通道），其它键走 HOGP HID Report——两条独立通道互相掩盖（Hub 既有判据）；
+2. `hidutil list`（274 设备）与 `ioreg -c IOHIDDevice` **均无 VS-53A8 节点**，而 `system_profiler SPBluetoothDataType` 显示 Connected HID BLE——蓝牙层的 Connected 是 app 自己的 CoreBluetooth 链路，Services 是能力位 ≠ HID 会话存在。**判据：「蓝牙设置里已连接」≠「系统把它当输入设备」，以 IOHIDDevice 节点为准**；
+3. macOS 无程序化配对 API（roadmap 已记「无 PairAsync 等价物」）→ 系统级 HID 会话从未建立 → 固件 passthrough（HOGP 直通到 OS）在 mac 上**等价死键**；而默认路由 native→passthrough、software 通道又只消费映射键 ⇒ 除录音键外全灭。
+
+**修复（commit `7109936`）**——macOS 端语义修正（Windows 有 OS 配对可用，不动）：
+- `GatewaySupport.routes`：RemoteButton 覆盖的 11 键**一律 software**（key/disabled/native 都由桌面消费）；桌面无映射面的 power/volume_mute 保持 passthrough；
+- 新增 `GatewaySupport.naturalSpec(for:)`：原生语义的桌面等价实现（方向/回车/退格/Home/音量±；menu/tv 返回 nil → 提示去映射界面配置）；
+- `handleGatewayKey` 的 `.native` 从「忽略」改为按 naturalSpec 注入（直连 RC 拦截路径不受影响）。
+
+**界面恢复（commit `d433763`）**：「按键映射…」对话框从平铺下拉列表改回 Windows 同款**遥控器照片热区交互**——点图选键（悬停浅蓝/选中蓝框+手型光标、13 热区与 Windows 同源坐标、ok 优先）、右侧大号键名+三动作编辑+捕获、power 选中显不可映射说明、mic=语音键双击；全部手写 frame 不进 Auto Layout（结构性规避 32be9fe 的宽度欠定塌缩）；照片 `Resources/xiaomi_remote_2pro.png` 随包体（缺失降级占位）。
+
+**验证**：VoiceStickTests **809/809**；真机重启后下发 `11×software + power/volume_mute=passthrough`、回执 `gateway_keymap report` 13/13。
+
+**遗留**：
+- **待真机实按验收**：音量±/方向按下去应立即生效（app 日志出现 `gateway key ... -> native inject VolumeUp`）；若按键后 app 日志**没有** `gateway key` 行 → 远程器→StickS3 的 HID 报告通道断（重配对遥控器即可），不是桌面侧问题。
+- 长按连发（Windows `XiaomiGatewayKeyRepeater`）仍未移植——若遥控器自身不重复发报，长按音量只有单步（待实按确认遥控器是否自重复）。
+- menu/tv 无自然映射，需在图片界面手动指定。

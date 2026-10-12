@@ -123,10 +123,15 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   `XiaomiButtonInterceptManager`（IOHID 观察 + CGEvent tap 吞除 + `sendKeyCombo` 注入）；
   `voice_double_click` 走 ATVV 会话合成的 `button_double_click`（协调器按映射处置）；
   **网关模式**（遥控器配对在 StickS3、桌面端无 RC 条目）下，该表同时是
-  `gateway_keymap_set` 路由推导与 `gateway_key` 注入的取值源——key/disabled 推
-  `software` 路由回桌面注入，native 推 `passthrough` 由固件 HOGP 直通（需系统级配对）。
+  `gateway_keymap_set` 路由推导与 `gateway_key` 注入的取值源。**2026-10-12 路由语义
+  修正（macOS）**：可映射的 11 键（RemoteButton 集合）一律推 `software`——key/disabled
+  由映射注入/吞键，native 由桌面按 `GatewaySupport.naturalSpec` 注入等价自然键
+  （方向/回车/退格/Home/音量±；menu/tv 无桌面等价语义，日志提示去对话框配置）；
+  桌面无映射面的 `power`/`volume_mute` 保持 `passthrough`（HOGP 直通需系统级配对，
+  macOS 无程序化配对 API、实测无 IOHIDDevice 节点，故原生键不走该路径）。
   托盘设备菜单「按键映射…」对话框：小米设备项编辑设备覆盖，StickS3 设备项（网关入口）
-  编辑根 `[buttons]` 全局表。
+  编辑根 `[buttons]` 全局表；对话框为遥控器照片热区交互（点图选键，对齐 Windows
+  XiaomiKeymapDialog，照片资源 `Resources/xiaomi_remote_2pro.png` 随包体携带）。
 
   ```toml
   [buttons]                 # 网关模式全局默认（无 RC 条目时的路由/消费取值源）
