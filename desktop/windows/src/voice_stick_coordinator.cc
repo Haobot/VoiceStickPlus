@@ -2253,6 +2253,19 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         };
         auto throttle = std::make_shared<ThrottleState>();
 
+        // 深度适配（方案 §4.3）：智能热词开启时按最终文本判定内容深度档位，
+        // 标准/专业档注入领域语境提示（术语保护由热词段碟词优先承担）。
+        // 判定走本地规则引擎（<1ms），在 smart 锁内复用分类器规则表。
+        std::string domain_hint;
+        {
+            std::lock_guard smart_lock(smart_hotword_mutex_);
+            if (config_.smart_hotword_enabled) {
+                const auto scored = ctx_classifier_.Score(effective);
+                const auto depth = ClassifyContentDepth(effective, scored);
+                domain_hint = BuildDomainHint(TopHotwordDomain(scored), depth);
+            }
+        }
+
         refiner_.RefineStream(
             effective,
             config_.refine_prompt,
@@ -2299,7 +2312,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                 wrapped(true, final_text);
                 MaybeExtractHotwordCandidates(final_text);
             },
-            cancel, HotwordsForLlmPrompts());
+            cancel, HotwordsForLlmPrompts(), domain_hint);
         return;
     }
     wrapped(true, effective);
@@ -2368,7 +2381,20 @@ void VoiceStickCoordinator::RecordAndNotifyHotwordCandidates(const std::vector<s
 }
 
 std::vector<std::string> VoiceStickCoordinator::RankedHotwordsForAsr() {
+    // 碟开启：碟词（跨分类高分）在前 + 活跃分类未入碟词补足；碟关闭：现状行为
+    // （仅活跃分类按活跃度排序）。合并表保序进入预算裁剪（碟词优先占预算，
+    // 即"碟未命中再检索各分类"的预算等价物）。
     std::vector<std::string> ranked;
+    bool tray_enabled = false;
+    {
+        std::lock_guard smart_lock(smart_hotword_mutex_);
+        tray_enabled = config_.hotword_tray_enabled;
+        if (tray_enabled) EnsureHotwordTrayLocked();
+        if (tray_enabled) {
+            ranked.reserve(hotword_tray_.size());
+            for (const auto& entry : hotword_tray_) ranked.push_back(entry.word);
+        }
+    }
     {
         std::lock_guard lock(hotword_usage_mutex_);
         if (!hotword_usage_loaded_) {
@@ -2376,7 +2402,16 @@ std::vector<std::string> VoiceStickCoordinator::RankedHotwordsForAsr() {
                 config_.ConfigPath().parent_path() / "hotword_usage.json");
             hotword_usage_loaded_ = true;
         }
-        ranked = RankHotwords(hotword_usage_, config_.asr_hotwords, std::time(nullptr));
+        const auto now_s = std::time(nullptr);
+        if (tray_enabled) {
+            std::set<std::string> in_tray(ranked.begin(), ranked.end());
+            for (const auto& word :
+                 RankHotwords(hotword_usage_, config_.asr_hotwords, now_s)) {
+                if (in_tray.insert(word).second) ranked.push_back(word);
+            }
+        } else {
+            ranked = RankHotwords(hotword_usage_, config_.asr_hotwords, now_s);
+        }
     }
     const auto fitted = AsrProtocol::FitHotwordsToCorpusBudget(ranked);
     if (fitted.size() < ranked.size() && !hotword_trim_notified_.exchange(true)) {
@@ -2410,14 +2445,41 @@ std::vector<std::string> VoiceStickCoordinator::RankedHotwordsForAsr() {
 }
 
 std::vector<std::string> VoiceStickCoordinator::HotwordsForLlmPrompts() {
-    std::lock_guard lock(hotword_usage_mutex_);
-    if (!hotword_usage_loaded_) {
-        hotword_usage_ = LoadHotwordUsage(
-            config_.ConfigPath().parent_path() / "hotword_usage.json");
-        hotword_usage_loaded_ = true;
+    // 与 RankedHotwordsForAsr 同规则的碟优先合并；合并表已按活跃度降序，直接
+    // 截断 top-N（不再走 RankHotwords 重排，保住碟词在前语义）。
+    std::vector<std::string> ranked;
+    bool tray_enabled = false;
+    {
+        std::lock_guard smart_lock(smart_hotword_mutex_);
+        tray_enabled = config_.hotword_tray_enabled;
+        if (tray_enabled) EnsureHotwordTrayLocked();
+        if (tray_enabled) {
+            ranked.reserve(hotword_tray_.size());
+            for (const auto& entry : hotword_tray_) ranked.push_back(entry.word);
+        }
     }
-    return TrimHotwordsForPrompt(hotword_usage_, config_.asr_hotwords,
-                                 kHotwordPromptMaxWords, std::time(nullptr));
+    {
+        std::lock_guard lock(hotword_usage_mutex_);
+        if (!hotword_usage_loaded_) {
+            hotword_usage_ = LoadHotwordUsage(
+                config_.ConfigPath().parent_path() / "hotword_usage.json");
+            hotword_usage_loaded_ = true;
+        }
+        const auto now_s = std::time(nullptr);
+        if (tray_enabled) {
+            std::set<std::string> in_tray(ranked.begin(), ranked.end());
+            for (const auto& word :
+                 RankHotwords(hotword_usage_, config_.asr_hotwords, now_s)) {
+                if (in_tray.insert(word).second) ranked.push_back(word);
+            }
+        } else {
+            ranked = RankHotwords(hotword_usage_, config_.asr_hotwords, now_s);
+        }
+    }
+    if (static_cast<int>(ranked.size()) > kHotwordPromptMaxWords) {
+        ranked.resize(static_cast<std::size_t>(kHotwordPromptMaxWords));
+    }
+    return ranked;
 }
 
 void VoiceStickCoordinator::RecordHotwordUsageFromText(const std::string& text) {
@@ -2503,17 +2565,27 @@ void VoiceStickCoordinator::MaybeSmartHotwordUpdate(const std::string& text) {
         const std::int64_t now_s = std::time(nullptr);
 
         // ① 上下文识别自动切换（只改热词分类，不触碰文本纠错/注入路径）。
+        // 判定返回的是内置领域名：若它不是现有分类，经 [hotword_domain_map]
+        // 映射到用户分类；未映射或映射的分类不存在则不切换。
         auto* active = FindHotwordCategory(config_, config_.active_hotword_category);
         if (auto target = ctx_classifier_.DecideCategory(
                 text, config_.active_hotword_category,
                 active != nullptr ? active->words : std::vector<std::string>{}, now_s)) {
-            if (FindHotwordCategory(config_, *target) != nullptr) {
-                SetActiveHotwordCategory(config_, *target);
+            std::string dest = *target;
+            if (FindHotwordCategory(config_, dest) == nullptr) {
+                if (auto mapped = config_.hotword_domain_map.find(dest);
+                    mapped != config_.hotword_domain_map.end()) {
+                    dest = mapped->second;
+                }
+            }
+            if (dest != config_.active_hotword_category &&
+                FindHotwordCategory(config_, dest) != nullptr) {
+                SetActiveHotwordCategory(config_, dest);
                 switched = true;
-                switch_target = *target;
+                switch_target = dest;
                 config_mutated = true;
                 LogCoordinatorLine("smart hotword: auto-switched to category '" +
-                                   *target + "'");
+                                   dest + "' (domain '" + *target + "')");
                 active = FindHotwordCategory(config_, config_.active_hotword_category);
             }
         }
@@ -2669,6 +2741,33 @@ std::optional<AppConfig> VoiceStickCoordinator::AddHotwordWithEviction(const std
     }
     if (pool_mutated) SaveEvictedPool(EvictedPoolPath(), evicted_pool_);
     return config_;
+}
+
+void VoiceStickCoordinator::EnsureHotwordTrayLocked() {
+    // 调用方需已持 smart_hotword_mutex_；重建按 smart→usage 锁序取统计。
+    EnsureEvictedPoolLoadedLocked();
+    const auto start_ms = SteadyNowMs();
+    {
+        std::lock_guard lock(hotword_usage_mutex_);
+        EnsureHotwordUsageLoadedLocked();
+        hotword_tray_ = BuildHotwordTray(
+            hotword_usage_, config_.hotword_categories,
+            config_.active_hotword_category, evicted_pool_,
+            HotwordTraySizeClamp(config_.hotword_tray_size),
+            config_.hotword_tray_min_score, std::time(nullptr));
+    }
+    const auto elapsed_ms = SteadyNowMs() - start_ms;
+    if (elapsed_ms > 10) {
+        // 性能观测（方案 §8 风险 3）：>10ms 记 warning，词量暴涨时触发增量优化预案。
+        LogCoordinatorLine("hotword tray rebuild took " + std::to_string(elapsed_ms) +
+                           "ms (warning threshold 10ms)");
+    }
+}
+
+std::vector<HotwordTrayEntry> VoiceStickCoordinator::TakeHotwordTraySnapshot() {
+    std::lock_guard smart_lock(smart_hotword_mutex_);
+    EnsureHotwordTrayLocked();
+    return hotword_tray_;
 }
 
 HotwordActivitySnapshot VoiceStickCoordinator::TakeHotwordActivitySnapshot() {

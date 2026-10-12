@@ -1265,7 +1265,7 @@ void TestHotwordCategories() {
 
 void TestHotwordContextClassifier() {
     const auto rules = HotwordContextClassifier::DefaultRules();
-    assert(rules.size() == 4);  // 程序 / AI / 数学 / 语文
+    assert(rules.size() == 20);  // 程序/AI/数学/语文 + 16 个扩展领域（方案 §4.1）
 
     HotwordContextClassifier classifier(rules);
     const std::int64_t now = 1'000'000;
@@ -1376,6 +1376,274 @@ void TestHotwordContextClassifier() {
                                       "数学", {}, now + kHotwordCtxCooldownS));
 }
 
+void TestContentDepthAndDomainHint() {
+    // TopHotwordDomain：空分返回空串；多项取最高分；同分按 map 序（字典序小者）。
+    HotwordContextScore empty_score;
+    assert(TopHotwordDomain(empty_score).empty());
+    HotwordContextScore single;
+    single.scores["程序"] = 3.0;
+    assert(TopHotwordDomain(single) == "程序");
+    HotwordContextScore multi;
+    multi.scores["程序"] = 3.0;
+    multi.scores["AI"] = 5.0;
+    multi.scores["数学"] = 1.0;
+    assert(TopHotwordDomain(multi) == "AI");
+    HotwordContextScore tie;
+    tie.scores["程序"] = 2.0;
+    tie.scores["AI"] = 2.0;
+    assert(TopHotwordDomain(tie) == "AI");  // 同分字典序 AI < 程序（UTF-8 字节序）
+
+    // ClassifyContentDepth：纯阈值函数，text 只取字符数、score 只取命中总数。
+    // 辅助构造：hits=n 的分数。
+    auto score_with_hits = [](int n) {
+        HotwordContextScore s;
+        s.scores["程序"] = static_cast<double>(n);
+        s.hits["程序"] = n;
+        return s;
+    };
+    // 短文本（≤30 字符）恒 Light，即使命中多。
+    assert(ClassifyContentDepth(std::string(30, 'x'), score_with_hits(5)) ==
+           ContentDepth::kLight);
+    // 零命中恒 Light，即使超长。
+    assert(ClassifyContentDepth(std::string(200, 'x'), score_with_hits(0)) ==
+           ContentDepth::kLight);
+    // 中等长度 + 命中 1..4 → Standard。
+    assert(ClassifyContentDepth(std::string(31, 'x'), score_with_hits(2)) ==
+           ContentDepth::kStandard);
+    assert(ClassifyContentDepth(std::string(120, 'x'), score_with_hits(4)) ==
+           ContentDepth::kStandard);
+    // 命中 ≥5 → Professional（31 字符即触发）。
+    assert(ClassifyContentDepth(std::string(31, 'x'), score_with_hits(5)) ==
+           ContentDepth::kProfessional);
+    // 超长（>120 字符）→ Professional。
+    assert(ClassifyContentDepth(std::string(121, 'x'), score_with_hits(2)) ==
+           ContentDepth::kProfessional);
+    // UTF-8 字符数按非续字节计：11 个汉字 = 33 字节 = 11 字符 → Light。
+    assert(ClassifyContentDepth("大模型训练需要算力支撑", score_with_hits(5)) ==
+           ContentDepth::kLight);
+
+    // BuildDomainHint：Light 恒空；未知领域（含自定义分类名）空；20 内置领域
+    // kStandard 全非空；kProfessional 追加术语保护强约束。
+    assert(BuildDomainHint("程序", ContentDepth::kLight).empty());
+    assert(BuildDomainHint("用户自定义", ContentDepth::kStandard).empty());
+    const auto rules = HotwordContextClassifier::DefaultRules();
+    for (const auto& rule : rules) {
+        const auto std_hint = BuildDomainHint(rule.category, ContentDepth::kStandard);
+        assert(!std_hint.empty());
+        assert(std_hint.find("必须保持原文") == std::string::npos);
+        const auto pro_hint = BuildDomainHint(rule.category, ContentDepth::kProfessional);
+        assert(pro_hint.find("必须保持原文") != std::string::npos);
+        assert(pro_hint.size() > std_hint.size());
+    }
+    // BuildDomainHint 只覆盖内置领域名，未列出的内置分类也返回空串。
+    assert(BuildDomainHint("不存在领域", ContentDepth::kProfessional).empty());
+
+    // BuildRefinePrompt：domain_hint 插入在基础 prompt 后、热词段前；空串跳过。
+    const auto no_hint =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {}, "");
+    assert(no_hint == "custom prompt");
+    const auto with_hint =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {}, "属于软件工程语境");
+    assert(with_hint.find("custom prompt\n\n领域语境：属于软件工程语境") == 0);
+    assert(with_hint.find("用户常用术语热词表") == std::string::npos);
+    const auto hint_before_hotwords =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {"AGENTS.md"},
+                                               "属于软件工程语境");
+    const auto hint_pos = hint_before_hotwords.find("\n\n领域语境：");
+    const auto hotwords_pos = hint_before_hotwords.find("\n\n用户常用术语热词表：");
+    assert(hint_pos != std::string::npos && hotwords_pos != std::string::npos);
+    assert(hint_pos < hotwords_pos);
+    // 领域分档联动：Light 档（短文本零深度）注入空串，prompt 不含领域段。
+    const auto light_flow =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {},
+                                               BuildDomainHint("程序", ContentDepth::kLight));
+    assert(light_flow == "custom prompt");
+}
+
+void TestHotwordContextAnnotationSet() {
+    // 20 领域标注集（开发者标注初版，方案 §8 决议 3；需真实语料校准）：
+    // 每领域 5 条 + 日常闲聊 20 条 = 120 条。判定口径与 TestHotwordContextClassifier
+    // 一致（无状态 Score + 阈值）；带标签样本「不切换」也算对（方案允许口径），
+    // 误切到其他领域算错；闲聊样本不得判定为任何分类。门槛 ≥95%。
+    struct Sample { const char* text; const char* label; };
+    static const Sample samples[] = {
+        // 程序（5）
+        {"这段代码函数报错了，先调试再提交", "程序"},
+        {"前端页面部署到服务器后接口超时", "程序"},
+        {"用 python 写脚本处理数据库里的数据", "程序"},
+        {"这个分支合并有冲突，回滚到上个版本", "程序"},
+        {"内存泄漏导致进程崩溃，需要重构", "程序"},
+        // AI（5）
+        {"大模型训练需要多少算力和显卡", "AI"},
+        {"机器学习模型过拟合了，加正则化", "AI"},
+        {"神经网络的梯度消失影响训练效果", "AI"},
+        {"智能体调用大语言模型完成推理任务", "AI"},
+        {"数据集标注质量决定深度学习效果", "AI"},
+        // 数学（5）
+        {"数学作业里线性方程组用矩阵求解", "数学"},
+        {"微积分先求导数再算定积分", "数学"},
+        {"概率统计的期望值和方差公式", "数学"},
+        {"勾股定理证明三角形边长关系", "数学"},
+        {"向量坐标和斜率这道几何题怎么算", "数学"},
+        // 语文（5）
+        {"这篇课文的中心思想和段落大意", "语文"},
+        {"古诗默写和文言文翻译是考试重点", "语文"},
+        {"作文里用比喻和排比的修辞手法", "语文"},
+        {"这个成语出自哪篇文章的作者之手", "语文"},
+        {"一年级生字的笔画和偏旁要练熟", "语文"},
+        // 英语（5）
+        {"背英语单词要注意发音和语感", "英语"},
+        {"语法填空考从句和时态的用法", "英语"},
+        {"ielts 口语和听力要每天练习", "英语"},
+        {"介词和冠词是英语语法的基础", "英语"},
+        {"英文写作要先背单词再练语法", "英语"},
+        // 历史（5）
+        {"历史课上讲皇帝与朝代的更替", "历史"},
+        {"考古队发现了商代遗址和文物", "历史"},
+        {"辛亥革命和鸦片战争都是近代史大事", "历史"},
+        {"史记是研究古代史的重要史料", "历史"},
+        {"文艺复兴在欧洲历史上有重要文明成果", "历史"},
+        // 地理（5）
+        {"高原和平原的地形差异很大", "地理"},
+        {"季风气候影响东部降雨分布", "地理"},
+        {"地震和火山多发生在板块交界地带", "地理"},
+        {"地形图上这条山脉是两大河流分水岭", "地理"},
+        {"经度和纬度组成经纬坐标定位", "地理"},
+        // 物理（5）
+        {"牛顿定律解释了惯性和加速度", "物理"},
+        {"串联电路的电阻和电压怎么算", "物理"},
+        {"光的折射和反射遵循波长规律", "物理"},
+        {"磁场和电场的相互作用产生电磁波", "物理"},
+        {"摩擦力和功率是力学基础概念", "物理"},
+        // 化学（5）
+        {"化学实验里用试管做滴定", "化学"},
+        {"水分子的氧化还原反应", "化学"},
+        {"元素周期表上原子序数排列", "化学"},
+        {"催化剂能加快化学方程式的反应速率", "化学"},
+        {"酸碱溶液混合发生中和，这是基础化学", "化学"},
+        // 生物（5）
+        {"细胞里的基因决定蛋白质合成", "生物"},
+        {"光合作用与呼吸作用影响新陈代谢", "生物"},
+        {"dna 携带遗传信息决定生物性状", "生物"},
+        {"细菌和病毒感染引发炎症", "生物"},
+        {"生态系统里物种进化很缓慢", "生物"},
+        // 医学（5）
+        {"医生根据症状和化验结果诊断病情", "医学"},
+        {"这种药物的治疗方案需要处方", "医学"},
+        {"手术之后患者需要康复治疗", "医学"},
+        {"疫苗激发免疫反应预防感染", "医学"},
+        {"血压和血糖要定期测量记录病历", "医学"},
+        // 法律（5）
+        {"律师根据合同条款分析违约责任", "法律"},
+        {"原告向法院提交了关键证据", "法律"},
+        {"刑法和民法是基础法律部门", "法律"},
+        {"这起侵权诉讼的判决支持了被告的反诉", "法律"},
+        {"知识产权保护依赖立法和仲裁机制", "法律"},
+        // 金融（5）
+        {"股票和基金是常见投资渠道", "金融"},
+        {"央行下调利率和存款准备金影响债券价格", "金融"},
+        {"牛市里股息率高的证券受青睐", "金融"},
+        {"通胀推高市值也影响汇率", "金融"},
+        {"k线图显示期货和股票的走势分化", "金融"},
+        // 音乐（5）
+        {"钢琴演奏要注意音准和节拍", "音乐"},
+        {"这首歌曲旋律优美，歌词也动人", "音乐"},
+        {"吉他和弦转换要练音阶", "音乐"},
+        {"交响乐乐谱的和声编排体现了作曲功力", "音乐"},
+        {"演唱这首乐谱上的歌需要节奏和音准", "音乐"},
+        // 美术（5）
+        {"素描要练好构图和透视", "美术"},
+        {"油画颜料厚重，水彩颜料通透", "美术"},
+        {"国画用笔触和色彩表现意境", "美术"},
+        {"这次画展展出了版画和插画", "美术"},
+        {"绘画基础从写生和临摹开始练", "美术"},
+        // 体育（5）
+        {"这场篮球联赛的比分一直没拉开", "体育"},
+        {"运动员参加马拉松前要练跑步耐力", "体育"},
+        {"足球训练里教练强调进球效率", "体育"},
+        {"奥运会游泳冠军破了纪录", "体育"},
+        {"季后赛羽毛球和乒乓球的球场排队很满", "体育"},
+        // 烹饪（5）
+        {"做菜前把食材和佐料备齐", "烹饪"},
+        {"红烧肉腌制半小时再做菜更入味", "烹饪"},
+        {"烘焙面团要控制发酵时间", "烹饪"},
+        {"清蒸鱼讲究火候和咸淡", "烹饪"},
+        {"炖汤的菜谱写着调味步骤", "烹饪"},
+        // 游戏（5）
+        {"刷这个副本的装备要组战队", "游戏"},
+        {"排位匹配机制改后玩家吐槽很多", "游戏"},
+        {"这关卡通关要用血量和攻击力优势", "游戏"},
+        {"电竞主播用手柄玩游戏", "游戏"},
+        {"单机游戏的存档别丢了", "游戏"},
+        // 汽车（5）
+        {"发动机异响先检查机油和底盘", "汽车"},
+        {"燃油汽车看油耗，新能源车看续航", "汽车"},
+        {"刹车和轮胎的保养周期到了", "汽车"},
+        {"方向盘的仪表盘显示油门开度", "汽车"},
+        {"考了驾照之后汽车行驶更规范", "汽车"},
+        // 航空航天（5）
+        {"火箭发射升空后进入预定轨道", "航空航天"},
+        {"载人飞船与空间站对接，宇航员进入舱内", "航空航天"},
+        {"探测器和卫星都靠火箭送入太空轨道", "航空航天"},
+        {"客机机翼设计影响起降性能", "航空航天"},
+        {"这次航天科普展讲了返回舱和推进器", "航空航天"},
+        // 日常闲聊（20，不得判定为任何分类）
+        {"今天天气不错，出去走走", ""},
+        {"中午吃什么好呢", ""},
+        {"周末去爬山吧，记得带水", ""},
+        {"这部电影真好看，结局很感人", ""},
+        {"晚安，明天见", ""},
+        {"路上有点堵，晚点到", ""},
+        {"多喝热水，早点休息", ""},
+        {"超市里的水果挺新鲜的", ""},
+        {"孩子今天在学校表现不错", ""},
+        {"这衣服洗了会缩水吗", ""},
+        {"帮我订个明天上午的闹钟", ""},
+        {"快递到了放门口就行", ""},
+        {"这首歌真好听，循环了一晚上", ""},
+        {"晚上一起散步去公园", ""},
+        {"我的杯子找不到了", ""},
+        {"明天记得还书给图书馆", ""},
+        {"这个椅子坐着挺舒服", ""},
+        {"停电了手机快没电了", ""},
+        {"给我倒杯温水谢谢", ""},
+        {"假期打算回老家看看", ""},
+    };
+    const int total = static_cast<int>(sizeof(samples) / sizeof(samples[0]));
+    assert(total == 120);
+    HotwordContextClassifier classifier(HotwordContextClassifier::DefaultRules());
+    int correct = 0;
+    int miss = 0;  // 带标签样本「不切换」计数（允许但对，统计可见度）
+    for (const auto& sample : samples) {
+        const auto scored = classifier.Score(sample.text);
+        std::string best;
+        double best_score = 0.0;
+        int best_hits = 0;
+        for (const auto& [category, score] : scored.scores) {
+            const int hits = scored.hits.count(category) > 0 ? scored.hits.at(category) : 0;
+            if (score > best_score) {
+                best = category;
+                best_score = score;
+                best_hits = hits;
+            }
+        }
+        const bool decided = best_score >= kHotwordCtxScoreThreshold &&
+                             best_hits >= kHotwordCtxMinHits;
+        if (sample.label[0] == '\0') {
+            // 闲聊：不得判定为任何分类。
+            if (!decided) ++correct;
+            continue;
+        }
+        if (decided && best == sample.label) {
+            ++correct;
+        } else if (!decided) {
+            ++correct;  // 不切换算对（宽松口径，方案 §8）
+            ++miss;
+        }
+    }
+    assert(correct * 20 >= total * 19);  // 一致率 ≥ 95%（120 条最多 6 条失败）
+}
+
 void TestHotwordActivityAndEviction() {
     const std::int64_t now = 1'000'000;
 
@@ -1416,6 +1684,103 @@ void TestHotwordActivityAndEviction() {
     assert(hit->usage.count == 3 && hit->usage.source == "mined");
     assert(!PickReclaimWord(pool, "没有命中任何池内词").has_value());
     assert(!PickReclaimWord(pool, "").has_value());
+}
+
+void TestBuildHotwordTray() {
+    const std::int64_t now = 1'000'000;
+    const std::int64_t fresh = now;
+    // HotwordScore = log1p(count) + 0.5*exp(-age/30d) + 2.0*manual，测试只依赖相对序。
+    HotwordCategory cat_a;
+    cat_a.name = "甲";
+    cat_a.words = {"高频", "次高频", "非法 词"};
+    HotwordCategory cat_b;
+    cat_b.name = "乙";
+    cat_b.words = {"手动词"};
+    HotwordCategory cat_c;
+    cat_c.name = "丙";
+    cat_c.words = {"低频"};
+    const std::vector<HotwordCategory> categories = {cat_a, cat_b, cat_c};
+
+    HotwordUsageStore store;
+    store["高频"] = HotwordUsage{10, fresh, "mined"};    // log1p(10)+0.5 ≈ 2.90
+    store["次高频"] = HotwordUsage{3, fresh, "mined"};   // log1p(3)+0.5 ≈ 1.89
+    store["低频"] = HotwordUsage{1, now - 60LL * 86400, "mined"};  // ≈ 0.76
+    // 手动词无统计记录 → 按 manual 计 2.0（与 RankHotwords 一致）。
+    // 池词 count=2 fresh → log1p(2)+0.5 ≈ 1.60，低于手动词高于次高频之后。
+    EvictedPool pool;
+    pool.push_back(EvictedWord{"池词", "甲", now - 3600, HotwordUsage{2, fresh, "mined"}});
+    // 回收池词与分类词重复：分类优先，回收池跳过（去重）。
+    pool.push_back(EvictedWord{"高频", "甲", now - 7200, HotwordUsage{9, fresh, "mined"}});
+
+    // 基本排序（无池）：高频 > 手动词 > 次高频 > 低频（来源 甲乙丙=3 不超限）。
+    const auto tray = BuildHotwordTray(store, categories, "甲", {}, 10, 0.5, now);
+    assert(tray.size() == 4);
+    assert(tray[0].word == "高频" && tray[0].category == "甲");
+    assert(tray[0].in_active_category && tray[0].count == 10);
+    assert(tray[1].word == "手动词" && tray[1].category == "乙" && tray[1].count == 0);
+    assert(tray[2].word == "次高频" && tray[2].category == "甲");
+    assert(tray[3].word == "低频" && tray[3].category == "丙" && !tray[3].in_active_category);
+    // 确定性：分数快照降序。
+    for (std::size_t i = 1; i < tray.size(); ++i) {
+        assert(tray[i - 1].score >= tray[i].score);
+    }
+
+    // 回收池来源标记与去重：池词来源 evicted 计为独立来源（占满 3 来源），
+    // 低频（丙）成第 4 来源被内聚约束跳过；池内「高频」与分类词重复，分类优先。
+    const auto tray_pool = BuildHotwordTray(store, categories, "甲", pool, 10, 0.5, now);
+    assert(tray_pool.size() == 4);
+    assert(tray_pool[0].word == "高频" && tray_pool[1].word == "手动词");
+    assert(tray_pool[2].word == "次高频");
+    assert(tray_pool[3].word == "池词" && tray_pool[3].category == kHotwordTrayEvictedSource);
+    assert(!tray_pool[3].in_active_category);
+    assert(std::none_of(tray_pool.begin(), tray_pool.end(),
+                        [](const HotwordTrayEntry& e) { return e.word == "低频"; }));
+
+    // min_score 门槛（带池）：0.8 滤掉低频（0.76），碟序不变。
+    const auto tray_min = BuildHotwordTray(store, categories, "甲", pool, 10, 0.8, now);
+    assert(tray_min.size() == 4);
+    assert(tray_min[3].word == "池词");
+    // 门槛 2.5：只剩高频（2.90）。
+    const auto tray_high = BuildHotwordTray(store, categories, "甲", pool, 10, 2.5, now);
+    assert(tray_high.size() == 1);
+    assert(tray_high[0].word == "高频");
+
+    // max_size 截断：取前 2。
+    const auto tray_small = BuildHotwordTray(store, categories, "甲", pool, 2, 0.5, now);
+    assert(tray_small.size() == 2);
+    assert(tray_small[0].word == "高频" && tray_small[1].word == "手动词");
+    // max_size <= 0 返回空碟。
+    assert(BuildHotwordTray(store, categories, "甲", pool, 0, 0.5, now).empty());
+
+    // 领域内聚约束：来源分类（含回收池）最多 kHotwordTrayMaxCategories=3 个；
+    // 新来源的词被跳过后，已接受来源的后续词继续入碟。
+    HotwordCategory cat_d;
+    cat_d.name = "丁";
+    cat_d.words = {"丁词", "丁冷词"};
+    auto wide = categories;
+    wide.push_back(cat_d);
+    HotwordUsageStore store2 = store;
+    store2["丁词"] = HotwordUsage{6, fresh, "mined"};   // ≈ 2.45，高于手动词
+    store2["丁冷词"] = HotwordUsage{0, fresh, "mined"};  // 0.5，低于低频
+    const auto tray_coh = BuildHotwordTray(store2, wide, "甲", {}, 10, 0.5, now);
+    // 排序：高频(甲) > 丁词(丁) > 手动词(乙) > 次高频(甲) > 低频(丙) > 丁冷词(丁)。
+    // 甲丁乙占满 3 来源：低频（第 4 来源）被跳过，丁冷词（来源丁已接受）继续入碟。
+    assert(tray_coh.size() == 5);
+    assert(tray_coh[0].word == "高频" && tray_coh[1].word == "丁词");
+    assert(tray_coh[2].word == "手动词" && tray_coh[3].word == "次高频");
+    assert(tray_coh[4].word == "丁冷词");
+    assert(std::none_of(tray_coh.begin(), tray_coh.end(),
+                        [](const HotwordTrayEntry& e) { return e.word == "低频"; }));
+
+    // 非法词（含空格）被过滤；同词跨分类取首个出现分类。
+    HotwordCategory dup1;
+    dup1.name = "先";
+    dup1.words = {"重复词"};
+    HotwordCategory dup2;
+    dup2.name = "后";
+    dup2.words = {"重复词"};
+    const auto tray_dup = BuildHotwordTray({}, {dup1, dup2}, "", {}, 10, 0.5, now);
+    assert(tray_dup.size() == 1 && tray_dup[0].category == "先");
 }
 
 void TestEvictedPoolJson() {
@@ -10480,7 +10845,10 @@ int main() {
     TestAsrHotwordCorpusBudget();
     TestHotwordCategories();
     TestHotwordContextClassifier();
+    TestContentDepthAndDomainHint();
+    TestHotwordContextAnnotationSet();
     TestHotwordActivityAndEviction();
+    TestBuildHotwordTray();
     TestEvictedPoolJson();
     TestSmartHotwordConfig();
     TestHotwordSelector();

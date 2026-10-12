@@ -71,4 +71,37 @@ struct HotwordActivitySnapshot {
     EvictedPool evicted;
 };
 
+// ===== 热词碟（跨分类高活跃词聚合视图） =====
+//
+// 碟是活跃度统计的投影视图：全部分类词 ∪ 回收池词按 HotwordScore 降序取前
+// max_size 个，动态计算不落盘——单一事实源仍是分类词表 + hotword_usage.json，
+// 碟随统计与词表变更天然更新（见 Doc/Plan/hotword-tray-and-domain-context.md）。
+// 领域内聚约束：碟内词的来源分类最多 kHotwordTrayMaxCategories 个，新来源的词
+// 即使分高也不入碟（防跨域混碟稀释 ASR corpus 偏置，方案 §8 风险 1）。
+
+// 碟内词来源分类数上限（回收池计为一个独立来源）。
+inline constexpr int kHotwordTrayMaxCategories = 3;
+// 回收池词在碟中的来源标记（UI 本地化显示，非真实分类名）。
+inline constexpr const char* kHotwordTrayEvictedSource = "evicted";
+
+struct HotwordTrayEntry {
+    std::string word;
+    std::string category;             // 来源分类名；回收池词为 kHotwordTrayEvictedSource
+    double score = 0.0;               // HotwordScore 快照
+    int count = 0;                    // 使用次数快照
+    bool in_active_category = false;  // 是否同时属于当前活跃分类
+};
+
+// 构建热词碟：分类词 + 回收池词聚合去重 → 过滤 score < min_score → 按活跃度降序
+// （同分按 count 降序、字典序，保证确定性）→ 领域内聚约束下取前 max_size 个。
+// 缺统计记录的词按 manual 处理（与 RankHotwords 一致）；非法词过滤。
+std::vector<HotwordTrayEntry> BuildHotwordTray(
+    const HotwordUsageStore& store,
+    const std::vector<HotwordCategory>& categories,
+    const std::string& active_category,
+    const EvictedPool& evicted,
+    int max_size,
+    double min_score,
+    std::int64_t now_s);
+
 } // namespace voicestick

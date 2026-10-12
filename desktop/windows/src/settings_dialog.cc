@@ -401,6 +401,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
                 on_open_hotword_activity();
             }
             return TRUE;
+        case kIdHotwordTrayRefresh:
+            if (HIWORD(w_param) == BN_CLICKED) RefreshHotwordTray();
+            return TRUE;
         case kIdDeveloperMode:
             if (HIWORD(w_param) == BN_CLICKED) OnDeveloperModeToggled();
             return TRUE;
@@ -497,6 +500,10 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         hotword_category_combo_ = nullptr;
         hotword_category_add_button_ = nullptr;
         hotword_category_delete_button_ = nullptr;
+        tray_label_ = nullptr;
+        tray_refresh_button_ = nullptr;
+        tray_edit_ = nullptr;
+        tray_hint_ = nullptr;
         candidates_label_ = nullptr;
         candidates_list_ = nullptr;
         candidate_add_button_ = nullptr;
@@ -568,6 +575,7 @@ void SettingsDialog::RebuildUi() {
     BuildControls();
     LoadConfigIntoControls();
     RefreshHotwordCandidates();
+    RefreshHotwordTray();
 }
 
 void SettingsDialog::DestroyControls() {
@@ -587,6 +595,10 @@ void SettingsDialog::DestroyControls() {
     hotword_category_combo_ = nullptr;
     hotword_category_add_button_ = nullptr;
     hotword_category_delete_button_ = nullptr;
+    tray_label_ = nullptr;
+    tray_refresh_button_ = nullptr;
+    tray_edit_ = nullptr;
+    tray_hint_ = nullptr;
     candidates_label_ = nullptr;
     candidates_list_ = nullptr;
     candidate_add_button_ = nullptr;
@@ -835,6 +847,28 @@ void SettingsDialog::BuildControls() {
         }, [this]() {
             return !candidate_words_.empty();
         });
+    }
+    {
+        // 热词碟块（Doc/Plan/hotword-tray-and-domain-context.md）：标题 + 刷新按钮 +
+        // 只读 chips 面板 + 提示行（n/容量）。仅 hotword_tray_enabled 开启时显示，
+        // 隐藏不占位（同候选块模式）。面板只读，初版无点击交互（方案 §8 决议 2）。
+        const int tray_btn_w = Dp(78);
+        tray_label_ = remember_label(CreateLeftLabel(hwnd_,
+            TrW(StringId::kSettingsHotwordTrayTitle, language).c_str(),
+            0, 0, ctrl_w - tray_btn_w - Dp(8), Dp(16), instance_));
+        tray_refresh_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordTrayRefresh, language).c_str(),
+            0, 0, tray_btn_w, Dp(24), kIdHotwordTrayRefresh, instance_));
+        tray_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(40),
+                                                  kIdHotwordTrayEdit, instance_));
+        SendMessageW(tray_edit_, EM_SETREADONLY, TRUE, 0);
+        tray_hint_ = remember_label(CreateLeftLabel(hwnd_, L"", 0, 0, ctrl_w, Dp(16), instance_));
+        add(Dp(88), {
+            {tray_label_, ctrl_x, Dp(4), ctrl_w - tray_btn_w - Dp(8), Dp(16)},
+            {tray_refresh_button_, ctrl_x + ctrl_w - tray_btn_w, 0, tray_btn_w, Dp(24)},
+            {tray_edit_, ctrl_x, Dp(24), ctrl_w, Dp(40)},
+            {tray_hint_, ctrl_x, Dp(68), ctrl_w, Dp(16)},
+        }, [this]() { return config_.hotword_tray_enabled; });
     }
     separator();
 
@@ -1782,6 +1816,44 @@ void SettingsDialog::RefreshHotwordCategoryCombo() {
         if (category.name == loaded_hotword_category_) select = static_cast<int>(i);
     }
     if (select >= 0) SendMessageW(hotword_category_combo_, CB_SETCURSEL, select, 0);
+}
+
+void SettingsDialog::RefreshHotwordTray() {
+    if (!tray_edit_) return;
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    const auto entries =
+        on_get_hotword_tray ? on_get_hotword_tray() : std::vector<HotwordTrayEntry>{};
+    if (entries.empty()) {
+        SetWindowTextW(tray_edit_,
+                       Utf16(Tr(StringId::kSettingsHotwordTrayEmpty, language)).c_str());
+    } else {
+        // chips 文本：[词 ★档位·来源分类]，活跃度三档（≥3 高活跃 / ≥1 活跃 / 其余观察）。
+        std::string text;
+        for (const auto& entry : entries) {
+            if (!text.empty()) text += "  ";
+            text += "[";
+            text += entry.word;
+            text += " ";
+            text += entry.score >= 3.0 ? "★★★" : (entry.score >= 1.0 ? "★★☆" : "★☆☆");
+            text += "·";
+            if (entry.category == kHotwordTrayEvictedSource) {
+                text += Tr(StringId::kHotwordTraySourceEvicted, language);
+            } else if (entry.category.empty()) {
+                text += Tr(StringId::kSettingsHotwordCategoryDefault, language);
+            } else {
+                text += entry.category;
+            }
+            text += "]";
+        }
+        SetWindowTextW(tray_edit_, Utf16(text).c_str());
+    }
+    // 提示行：已入碟数 / 碟容量（钳位后）。
+    std::string hint = Tr(StringId::kSettingsHotwordTrayHintPrefix, language);
+    hint += std::to_string(entries.size());
+    hint += Tr(StringId::kSettingsHotwordTrayHintInfix, language);
+    hint += std::to_string(HotwordTraySizeClamp(config_.hotword_tray_size));
+    hint += Tr(StringId::kSettingsHotwordTrayHintSuffix, language);
+    SetWindowTextW(tray_hint_, Utf16(hint).c_str());
 }
 
 void SettingsDialog::StoreCurrentCategoryWords() {

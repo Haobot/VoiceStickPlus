@@ -6,7 +6,9 @@
 #include <cctype>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
+#include <set>
 
 namespace voicestick {
 
@@ -34,6 +36,73 @@ bool ContainsCaseInsensitive(const std::string& text, const std::string& needle)
 
 bool IsCold(const HotwordUsage& usage, std::int64_t now_s) {
     return HotwordScore(usage, now_s) < kHotwordActivityColdThreshold;
+}
+
+std::vector<HotwordTrayEntry> BuildHotwordTray(
+    const HotwordUsageStore& store,
+    const std::vector<HotwordCategory>& categories,
+    const std::string& active_category,
+    const EvictedPool& evicted,
+    int max_size,
+    double min_score,
+    std::int64_t now_s) {
+    std::vector<HotwordTrayEntry> tray;
+    if (max_size <= 0) return tray;
+    // 聚合：分类词在前（配置顺序即遍历顺序，同词取首个出现分类，保证确定性），
+    // 回收池词补后（同词已在分类中则跳过）。
+    std::vector<HotwordTrayEntry> candidates;
+    std::set<std::string> seen;
+    auto collect = [&](const std::string& word, std::string category,
+                       bool in_active,
+                       const std::optional<HotwordUsage>& usage_override = std::nullopt) {
+        if (!IsValidHotword(word) || !seen.insert(word).second) return;
+        HotwordUsage usage;
+        if (const auto it = store.find(word); it != store.end()) {
+            usage = it->second;
+        } else if (usage_override) {
+            usage = *usage_override;  // 池词缺统计：用逐出时的统计快照（避免按 manual 虚高）
+        } else {
+            usage.source = "manual";  // 缺统计按手动加词处理，与 RankHotwords 一致
+        }
+        HotwordTrayEntry entry;
+        entry.word = word;
+        entry.category = std::move(category);
+        entry.score = HotwordScore(usage, now_s);
+        entry.count = usage.count;
+        entry.in_active_category = in_active;
+        if (entry.score >= min_score) candidates.push_back(std::move(entry));
+    };
+    for (const auto& category : categories) {
+        const bool in_active = category.name == active_category;
+        for (const auto& word : category.words) {
+            collect(word, category.name, in_active);
+        }
+    }
+    for (const auto& entry : evicted) {
+        collect(entry.word, kHotwordTrayEvictedSource, false, entry.usage);
+    }
+    // 活跃度降序；同分按 count 降序、字典序，保证确定性。
+    std::sort(candidates.begin(), candidates.end(),
+              [](const HotwordTrayEntry& a, const HotwordTrayEntry& b) {
+                  if (a.score != b.score) return a.score > b.score;
+                  if (a.count != b.count) return a.count > b.count;
+                  return a.word < b.word;
+              });
+    // 领域内聚约束：来源分类最多 kHotwordTrayMaxCategories 个；新来源的词跳过，
+    // 继续向后找已接受来源的词（高分词优先占位）。
+    std::map<std::string, int> source_counts;
+    for (auto& entry : candidates) {
+        if (static_cast<int>(tray.size()) >= max_size) break;
+        if (auto it = source_counts.find(entry.category); it != source_counts.end()) {
+            ++it->second;
+        } else if (static_cast<int>(source_counts.size()) >= kHotwordTrayMaxCategories) {
+            continue;
+        } else {
+            source_counts[entry.category] = 1;
+        }
+        tray.push_back(std::move(entry));
+    }
+    return tray;
 }
 
 std::optional<std::string> PickEvictionWord(const std::vector<std::string>& words,

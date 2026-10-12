@@ -467,6 +467,15 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsSmartHotwordEnable)] =
         "Smart hotword management (auto-switch by context, evict cold words)";
     table[Index(StringId::kSettingsHotwordActivityButton)] = "Activity...";
+    table[Index(StringId::kSettingsHotwordTrayTitle)] = "Hotword Tray";
+    table[Index(StringId::kSettingsHotwordTrayRefresh)] = "Refresh";
+    table[Index(StringId::kSettingsHotwordTrayHintPrefix)] =
+        "Auto-aggregates active hotwords across categories (";
+    table[Index(StringId::kSettingsHotwordTrayHintInfix)] = "/";
+    table[Index(StringId::kSettingsHotwordTrayHintSuffix)] =
+        "), matched with priority during recognition; updates with usage.";
+    table[Index(StringId::kSettingsHotwordTrayEmpty)] = "No hot words in the tray yet.";
+    table[Index(StringId::kHotwordTraySourceEvicted)] = "Evicted";
     table[Index(StringId::kHotwordActivityTitle)] = "Hotword Activity";
     table[Index(StringId::kHotwordActivityRefreshButton)] = "Refresh";
     table[Index(StringId::kHotwordActivityColWord)] = "Hotword";
@@ -921,6 +930,15 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsSmartHotwordEnable)] =
         "智能热词管理（按上下文自动切换，冷词自动清理）";
     table[Index(StringId::kSettingsHotwordActivityButton)] = "活跃度…";
+    table[Index(StringId::kSettingsHotwordTrayTitle)] = "热词碟";
+    table[Index(StringId::kSettingsHotwordTrayRefresh)] = "刷新";
+    table[Index(StringId::kSettingsHotwordTrayHintPrefix)] =
+        "按活跃度自动聚合各分类热词（";
+    table[Index(StringId::kSettingsHotwordTrayHintInfix)] = "/";
+    table[Index(StringId::kSettingsHotwordTrayHintSuffix)] =
+        "），识别时优先匹配，随使用频率动态更新";
+    table[Index(StringId::kSettingsHotwordTrayEmpty)] = "暂无入碟热词";
+    table[Index(StringId::kHotwordTraySourceEvicted)] = "回收池";
     table[Index(StringId::kHotwordActivityTitle)] = "热词活跃度";
     table[Index(StringId::kHotwordActivityRefreshButton)] = "刷新";
     table[Index(StringId::kHotwordActivityColWord)] = "热词";

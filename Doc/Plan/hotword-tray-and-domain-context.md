@@ -1,6 +1,6 @@
 # 热词碟与领域上下文推理方案
 
-状态：设计稿（待评审）
+状态：已实施（Windows 端，2026-10-07）。实施偏差三处（其余按本方案落地）：① `BuildHotwordTray` 落在 `hotword_activity.{h,cc}` 而非 §3.1 原定的 `hotword_selector.*`（避免 hotword_selector.h → app_config.h 循环依赖）；② 配置用平铺键 `hotword_tray_enabled/size/min_score` + 顶层 `[hotword_domain_map]`，而非 §5 原定的 `[hotword_tray]` 子表（与代码库平铺键惯例一致）；③ §6.2 评测承载为 C++ CTest 锚点单测（`core_tests.cc` 内 120 条标注集 + 碟/深度/提示语单测），不建 Python `context_bench.py`（避免 Python 复刻评分逻辑漂移）。
 范围：Windows 桌面端（macOS 端智能热词体系暂缺，本方案不覆盖，见 §8 开放问题）
 关联：`Doc/Plan/hotword-eval-and-prioritization.md`、`Doc/Expe/smart-hotword-pool-reclaim-2026-09-26.md`、`Doc/Expe/hotword-two-pass-and-candidate-mining-2026-07-28.md`
 
@@ -255,9 +255,9 @@ min_score = 0.5       # 入碟活跃度门槛
 
 | 阶段 | 内容 | 交付物 | 验证 |
 |---|---|---|---|
-| P1 碟数据层 | `BuildHotwordTray` 纯函数 + 协调器缓存/快照 + corpus 组装重排 + 单测 | `hotword_selector.h/.cc`、协调器、`core_tests.cc` | 构建 + CTest + asr_bench 回归 |
+| P1 碟数据层 | `BuildHotwordTray` 纯函数 + 协调器缓存/快照 + corpus 组装重排 + 单测 | `hotword_activity.{h,cc}`（实施偏差①）、协调器、`core_tests.cc` | 构建 + CTest + asr_bench 回归 |
 | P2 碟 UI | 设置页热词碟块 + 刷新/快照回调 + 本地化 + config 字段 | `settings_dialog.*`、`localization.*`、`app_config.*`、`config.template.toml` | 构建 + 手动验收 |
-| P3 领域 20+ | 规则表数据化 + 20 领域关键词 + `context_bench` + 标注集 | `resources/hotword_domains.toml`、`hotword_context.*`、`scripts/e2e_test/asr_bench/context_bench.py` | context_bench 基线报告 |
+| P3 领域 20+ | 规则表数据化 + 20 领域关键词 + 标注集一致性单测（实施偏差③：CTest 锚点而非 Python context_bench） | `hotword_context.*`、`core_tests.cc` | CTest 标注集 ≥95% 基线 |
 | P4 深度适配 | 档位判定 + 精修 prompt 分档 + 评审 | `hotword_context.h`、`llm_refinement_client.*` | 单测 + 双盲评审 ≥85 |
 | P5 收尾 | desktop-config.md / AGENTS.md 索引同步，Expe 沉淀 | 文档 | — |
 
@@ -281,9 +281,9 @@ min_score = 0.5       # 入碟活跃度门槛
 3. **保性能（先观测后优化）**：碟重算加耗时打点，>10ms 记 warning；真到万级词量再改增量堆维护（落账只更新受影响词，O(log N)），现在明确不做，避免过度设计。
 4. **保布局（纯复用）**：直接复用现有动态高度机制；碟关闭时整块不占位、窗口高度自动回落；验收覆盖 96/144/192 DPI 三档滚动到底不裁字、间距正常。
 
-**开放问题**：
+**开放问题（已决议 2026-10-07）**：
 
-1. macOS 端是否同步建设智能热词体系（本方案 Windows 先行）；
-2. 碟 chip 是否需要点击交互（点击 → 跳活跃度对话框定位该词）——初版只读，留待用户反馈；
-3. 20 领域的具体领域清单与关键词表需按用户真实语料分布校准，标注集初版由开发者标注，后续可从候选挖掘日志扩充；
-4. 领域语境提示语（精修 prompt 段）文案需逐领域人工评审，避免提示本身引入幻觉。
+1. macOS 端**不同步**建设智能热词体系，本方案以 Windows 为唯一实施范围；
+2. 碟 chip **初版只读**，无点击交互，留待用户反馈再评估；
+3. 20 领域清单与关键词表按真实语料分布校准，**标注集初版由开发者标注**（已确认）；
+4. 领域语境提示语（精修 prompt 段）文案**逐领域人工评审**（已确认）。

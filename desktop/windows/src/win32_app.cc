@@ -2314,6 +2314,9 @@ void Win32App::ShowSettings() {
     settings_dialog_->on_open_hotword_activity = [this]() {
         ShowHotwordActivityDialog();
     };
+    settings_dialog_->on_get_hotword_tray = [this]() {
+        return coordinator_->TakeHotwordTraySnapshot();
+    };
     settings_dialog_->Show();
 }
 

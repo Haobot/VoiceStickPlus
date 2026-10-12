@@ -311,6 +311,8 @@ public:
     std::optional<AppConfig> AddHotwordWithEviction(const std::string& word);
     // 活跃度快照（设置-热词活跃度对话框展示用）。
     HotwordActivitySnapshot TakeHotwordActivitySnapshot();
+    // 热词碟快照（设置页只读面板展示）：锁内重建并拷贝，调用方可安全离线使用。
+    std::vector<HotwordTrayEntry> TakeHotwordTraySnapshot();
     // 从回收池删除指定词（活跃度对话框勾选删除/清空入口；words 空则不动）。
     void RemoveEvictedWords(const std::vector<std::string>& words);
 
@@ -439,6 +441,7 @@ private:
     // 按频率×新近度×手动加权排序后装入 kHotwordCorpusTokenBudget；超裁时首次提示。
     std::vector<std::string> RankedHotwordsForAsr();
     // 精修/翻译 prompt 热词段（评分 top-kHotwordPromptMaxWords，防大库稀释 LLM）。
+    // 碟开启时碟词在前（跨分类高分），活跃分类词补足后截断。
     std::vector<std::string> HotwordsForLlmPrompts();
     // 记录最终文本中出现的热词使用统计（计数+刷新最近使用时间），落盘 best-effort。
     void RecordHotwordUsageFromText(const std::string& text);
@@ -456,6 +459,9 @@ private:
     void EnsureEvictedPoolLoadedLocked();
     // 懒加载使用统计（调用方需已持 hotword_usage_mutex_）。
     void EnsureHotwordUsageLoadedLocked();
+    // 重建热词碟缓存（调用方需已持 smart_hotword_mutex_；重建按 smart→usage 锁序
+    // 取统计）。碟是 <1ms 级投影视图，取用前即时重建，无脏标记（重构成本 > 缓存收益）。
+    void EnsureHotwordTrayLocked();
     void BeginWaitingForAudioEnd(std::string_view reason);
     void ScheduleAudioEndTimeout(std::optional<std::uint32_t> session_id,
                                  std::optional<std::string> device_id);
@@ -667,6 +673,9 @@ private:
     // 回收池（懒加载，见 EnsureEvictedPoolLoadedLocked）。
     EvictedPool evicted_pool_;
     bool evicted_pool_loaded_ = false;
+    // 热词碟缓存（投影视图，动态计算不落盘）：EnsureHotwordTrayLocked 重建，
+    // 守卫 smart_hotword_mutex_。
+    std::vector<HotwordTrayEntry> hotword_tray_;
     // 智能热词管理状态锁：保护 config_ 的热词字段（hotword_categories/
     // active_hotword_category/asr_hotwords）、分类器状态与回收池。
     // 锁序：smart_hotword_mutex_ → hotword_usage_mutex_（不得反序嵌套）。

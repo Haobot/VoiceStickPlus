@@ -388,6 +388,9 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "hotword_process_enabled") config.hotword_process_enabled = BoolValue(value, config.hotword_process_enabled);
     if (key == "hotword_mining_enabled") config.hotword_mining_enabled = BoolValue(value, config.hotword_mining_enabled);
     if (key == "smart_hotword_enabled") config.smart_hotword_enabled = BoolValue(value, config.smart_hotword_enabled);
+    if (key == "hotword_tray_enabled") config.hotword_tray_enabled = BoolValue(value, config.hotword_tray_enabled);
+    if (key == "hotword_tray_size") config.hotword_tray_size = HotwordTraySizeClamp(IntValue(value, config.hotword_tray_size));
+    if (key == "hotword_tray_min_score") config.hotword_tray_min_score = DoubleValue(value, config.hotword_tray_min_score);
     if (key == "hotword_process_prompt") config.hotword_process_prompt = value;
     if (key == "interaction_mode") config.interaction_mode = InteractionModeFromName(value);
     if (key == "ui_language") config.ui_language = UiLanguageFromName(value);
@@ -631,6 +634,13 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "hotword_process_enabled")) config.hotword_process_enabled = *value;
         if (auto value = TomlBool(table, "hotword_mining_enabled")) config.hotword_mining_enabled = *value;
         if (auto value = TomlBool(table, "smart_hotword_enabled")) config.smart_hotword_enabled = *value;
+        if (auto value = TomlBool(table, "hotword_tray_enabled")) config.hotword_tray_enabled = *value;
+        if (auto value = TomlInt(table, "hotword_tray_size")) {
+            config.hotword_tray_size = HotwordTraySizeClamp(static_cast<int>(*value));
+        }
+        if (auto value = TomlDouble(table, "hotword_tray_min_score")) {
+            config.hotword_tray_min_score = *value;
+        }
         if (auto value = TomlString(table, "hotword_process_prompt")) config.hotword_process_prompt = *value;
         if (auto value = TomlString(table, "interaction_mode")) config.interaction_mode = InteractionModeFromName(*value);
         if (auto value = TomlString(table, "ui_language")) config.ui_language = UiLanguageFromName(*value);
@@ -712,6 +722,19 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 }
                 if (key.str().empty() || value->empty()) continue;
                 config.hotword_corrections[std::string(key.str())] = *value;
+            }
+        }
+        // 顶层 [hotword_domain_map]：内置领域 -> 用户分类映射（上下文自动切换目标解析）。
+        if (const auto* domain_map = table["hotword_domain_map"].as_table()) {
+            for (const auto& [key, node] : *domain_map) {
+                const auto value = node.value<std::string>();
+                if (!value) {
+                    LogApp("hotword_domain_map: 忽略非字符串值 key=" +
+                           std::string(key.str()));
+                    continue;
+                }
+                if (key.str().empty() || value->empty()) continue;
+                config.hotword_domain_map[std::string(key.str())] = *value;
             }
         }
         // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
@@ -936,6 +959,9 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "hotword_process_enabled = " << (hotword_process_enabled ? "true" : "false") << "\n";
     output << "hotword_mining_enabled = " << (hotword_mining_enabled ? "true" : "false") << "\n";
     output << "smart_hotword_enabled = " << (smart_hotword_enabled ? "true" : "false") << "\n";
+    output << "hotword_tray_enabled = " << (hotword_tray_enabled ? "true" : "false") << "\n";
+    output << "hotword_tray_size = " << HotwordTraySizeClamp(hotword_tray_size) << "\n";
+    output << "hotword_tray_min_score = " << hotword_tray_min_score << "\n";
     output << "hotword_process_prompt = \"" << TomlEscape(hotword_process_prompt) << "\"\n";
     output << "interaction_mode = \"" << InteractionModeName(interaction_mode) << "\"\n";
     output << "ui_language = \"" << UiLanguageName(ui_language) << "\"\n";
@@ -1017,6 +1043,14 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         for (const auto& [wrong, right] : hotword_corrections) {
             output << "\"" << TomlEscape(wrong) << "\" = \""
                    << TomlEscape(right) << "\"\n";
+        }
+    }
+    if (!hotword_domain_map.empty()) {
+        // 顶层 [hotword_domain_map] 表：内置领域 -> 用户分类映射（同上表头规则）。
+        output << "\n[hotword_domain_map]\n";
+        for (const auto& [domain, category] : hotword_domain_map) {
+            output << TomlEscape(domain) << " = \""
+                   << TomlEscape(category) << "\"\n";
         }
     }
     output << "\n[output]\n";

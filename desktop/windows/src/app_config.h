@@ -206,6 +206,11 @@ struct HotwordCategory {
     std::vector<std::string> words;
 };
 
+// 热词碟容量钳位（6..24）。
+inline int HotwordTraySizeClamp(int size) {
+    return size < 6 ? 6 : (size > 24 ? 24 : size);
+}
+
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
 
@@ -243,6 +248,17 @@ struct AppConfig {
     // 智能热词管理：上下文识别自动切换活跃分类 + 热词容量动态管理（软限 5 词监控、
     // 25 词上限按活跃度逐出/回收）。默认开启；关闭后恢复纯手动分区管理。
     bool smart_hotword_enabled = true;
+    // 热词碟：跨分类高活跃热词聚合视图，ASR corpus 与精修热词段碟词优先。
+    // 默认开启；关闭恢复"仅活跃分类"现状行为（Doc/Plan/hotword-tray-and-domain-context.md）。
+    bool hotword_tray_enabled = true;
+    // 碟容量（钳位 6..24）。默认 12。
+    int hotword_tray_size = 12;
+    // 入碟活跃度门槛（HotwordScore ≥ 该值）。默认 0.5。
+    double hotword_tray_min_score = 0.5;
+    // 内置领域 → 用户分类映射（TOML [hotword_domain_map] 表：领域名 = 分类名）。
+    // 上下文识别命中内置领域而该领域名不是现有分类时，经此映射解析切换目标；
+    // 未映射或映射的分类不存在则不切换。
+    std::map<std::string, std::string> hotword_domain_map;
     // 热词提炼 system prompt 覆盖；为空时使用内置默认 prompt。
     std::string hotword_process_prompt;
     InteractionMode interaction_mode = InteractionMode::kHoldToTalk;

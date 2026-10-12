@@ -62,9 +62,11 @@ bool AppearsInSourceText(const std::string& source_text, const std::string& word
 void LLMRefinementClient::Refine(std::string text,
                                  std::string prompt_override,
                                  std::function<void(bool, std::string)> completion,
-                                 std::vector<std::string> hotwords) const {
+                                 std::vector<std::string> hotwords,
+                                 const std::string& domain_hint) const {
     ChatAsync(BuildRefinePrompt(prompt_override,
-                                hotwords.empty() ? config().asr_hotwords : hotwords),
+                                hotwords.empty() ? config().asr_hotwords : hotwords,
+                                domain_hint),
               std::move(text), std::move(completion));
 }
 
@@ -73,10 +75,12 @@ void LLMRefinementClient::RefineStream(std::string text,
                                        std::function<void(std::string token)> on_token,
                                        std::function<void(bool ok, std::string full_text)> on_complete,
                                        std::shared_ptr<std::atomic_bool> cancel,
-                                       std::vector<std::string> hotwords) const {
+                                       std::vector<std::string> hotwords,
+                                       const std::string& domain_hint) const {
     const auto effective_hotwords =
         hotwords.empty() ? config().asr_hotwords : hotwords;
-    const auto system_prompt = BuildRefinePrompt(prompt_override, effective_hotwords);
+    const auto system_prompt = BuildRefinePrompt(prompt_override, effective_hotwords,
+                                                 domain_hint);
     StreamCallbacks cbs;
     cbs.on_token = std::move(on_token);
     cbs.on_done = [on_complete](std::string full_text) {
@@ -84,18 +88,19 @@ void LLMRefinementClient::RefineStream(std::string text,
     };
     cbs.on_error = [this, text, prompt = std::move(prompt_override),
                     hotwords = std::move(effective_hotwords),
-                    on_complete](std::string error) mutable {
+                    domain_hint, on_complete](std::string error) mutable {
         // SSE 流式失败（服务端不支持 stream:true 或网络超时等）：
         // 回退到非流式 ChatAsync → ChatSync 精修，不丢精修能力。
         (void)error;
         Refine(std::move(text), std::move(prompt), std::move(on_complete),
-               std::move(hotwords));
+               std::move(hotwords), domain_hint);
     };
     ChatStream(system_prompt, text, std::move(cbs), std::move(cancel));
 }
 
 std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_override,
-                                                   const std::vector<std::string>& hotwords) {
+                                                   const std::vector<std::string>& hotwords,
+                                                   const std::string& domain_hint) {
     const auto trimmed = Trim(prompt_override);
     std::string prompt;
     if (!trimmed.empty()) {
@@ -116,6 +121,12 @@ std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_ove
             "• 专有名词、数字、代码及专业术语保持不变。\n"
             "\n"
             "仅返回清理后的文本，无需解释、引号、前缀、备选方案或 Markdown 格式。";
+    }
+    // 领域语境提示（深度适配标准/专业档注入；空串跳过，见 hotword_context.h）。
+    const auto hint_trimmed = Trim(domain_hint);
+    if (!hint_trimmed.empty()) {
+        prompt += "\n\n领域语境：";
+        prompt += hint_trimmed;
     }
     if (hotwords.empty()) return prompt;
 
