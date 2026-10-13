@@ -3,7 +3,8 @@
 
 输入为 atvv_capture.py 采集的 fixtures 目录（session_<N>.adpcm 原始流 +
 session_<N>.json sidecar），按 sidecar 段落复现解码为 16kHz PCM，做与桌面端
-同参数的后处理（三点平滑 + 增益，默认 12dB 对齐 XiaomiAtvvSession::Options；
+同参数的后处理（三点平滑 + HPF(90Hz) + 增益 + AGC，默认 12dB 对齐
+XiaomiAtvvSession::Options；
 粒度差异：本脚本按整段会话平滑，桌面端按 640 样本帧切片平滑，每 640 样本
 有 2 个边界样本取值不同，约 0.3%，对 ASR 无实质影响），
 再以裸 PCM 直送真实 ASR（火山 bigmodel_async format=pcm / 腾讯 voice_format=1；
@@ -13,7 +14,7 @@ Python 侧无 Opus 编码器，PCM 直送是协议允许的等价路径），按
 用法：
     python atvv_bench.py                                   # 最新一次采集，火山
     python atvv_bench.py --fixtures fixtures/xiaomi/<ts> --provider all --rounds 2
-    python atvv_bench.py --gain-db 6 --no-smooth           # 调参闭环
+    python atvv_bench.py --gain-db 6 --no-hpf --no-agc       # 调参闭环
     python atvv_bench.py --self-test                       # 离线自测（不联网）
     python atvv_bench.py --emit-demo-fixture DIR --pcm-source corpus/short_01.pcm \
         --text "今天天气不错。"                            # 合成 golden fixtures
@@ -35,8 +36,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from atvv_capture import (ImaAdpcmDecoder, apply_gain, ima_encode,  # noqa: E402
-                          read_wav_samples, smooth3, ts, write_wav)
+from atvv_capture import (ImaAdpcmDecoder, ima_encode, postprocess,  # noqa: E402
+                          read_wav_samples, ts, write_wav)
 from asr_bench import tencent, volcengine  # noqa: E402
 from asr_bench.metrics import cer  # noqa: E402
 from asr_bench.report import build_json_report, build_markdown  # noqa: E402
@@ -200,16 +201,17 @@ def run_bench(args: argparse.Namespace) -> int:
             continue
         adpcm = session["adpcm_path"].read_bytes()
         pcm = decode_session_pcm(adpcm, sidecar)
-        if not args.no_smooth:
-            pcm = smooth3(pcm)
-        pcm = apply_gain(pcm, args.gain_db)
+        # 完整后处理链（smooth3+HPF+增益+AGC，默认全关=A/B 消融），
+        # 对齐桌面端 PcmPostprocessor 与 atvv_capture 落盘链。
+        pcm = postprocess(pcm, args.gain_db,
+                          hpf=not args.no_hpf, agc=not args.no_agc)
         prepared.append((session, pcm, refs[key]))
     if not prepared:
         print("无可用会话（检查 refs.json 与采样率）", file=sys.stderr)
         return 2
 
     print(f"{ts()} fixtures={fixtures_dir} sessions={len(prepared)} "
-          f"gain_db={args.gain_db} smooth={not args.no_smooth} "
+          f"gain_db={args.gain_db} hpf={not args.no_hpf} agc={not args.no_agc} "
           f"providers={providers} rounds={args.rounds}", flush=True)
 
     results: list[ClipResult] = []
@@ -243,7 +245,8 @@ def run_bench(args: argparse.Namespace) -> int:
     report["fixtures"] = str(fixtures_dir)
     report["audio_format"] = "pcm"
     report["gain_db"] = args.gain_db
-    report["smooth"] = not args.no_smooth
+    report["hpf"] = not args.no_hpf
+    report["agc"] = not args.no_agc
     # synthetic 标记传播：任一会话 sidecar 标了 synthetic 即整份报告标记
     # （合成 fixtures 只验证链路，不作识别率结论）
     synthetic = any(s["sidecar"].get("synthetic") for s, _, _ in prepared)
@@ -310,8 +313,7 @@ def emit_demo_fixture(args: argparse.Namespace) -> int:
     assert decoded == _expected and len(decoded) == len(pcm)
 
     write_wav(out_dir / "session_1.raw.wav", decoded, 16000)
-    write_wav(out_dir / "session_1.wav",
-              apply_gain(smooth3(decoded), args.gain_db), 16000)
+    write_wav(out_dir / "session_1.wav", postprocess(decoded, args.gain_db), 16000)
     (out_dir / "session_1.adpcm").write_bytes(encoded)
     sidecar = {
         "session": 1,
@@ -388,8 +390,8 @@ def self_test() -> int:
             pcm = decode_session_pcm(adpcm, sidecar)
             # 与 raw.wav 逐样本一致
             assert pcm == read_wav_samples(out / "session_1.raw.wav")
-            # wav = raw 经 smooth+gain(6dB)
-            assert (apply_gain(smooth3(pcm), 6.0)
+            # wav = raw 经完整后处理链 smooth3→HPF→gain(6dB)→AGC
+            assert (postprocess(pcm, 6.0)
                     == read_wav_samples(out / "session_1.wav"))
             # refs.json 已写
             refs = load_refs(out, None)
@@ -536,7 +538,10 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=30.0, help="单条超时秒数")
     ap.add_argument("--gain-db", type=float, default=DEFAULT_GAIN_DB,
                     help=f"后处理增益 dB（默认 {DEFAULT_GAIN_DB}，对齐桌面端）")
-    ap.add_argument("--no-smooth", action="store_true", help="关闭三点平滑（消融）")
+    ap.add_argument("--no-hpf", action="store_true",
+                    help="关闭 90Hz 高通滤波（消融，默认开）")
+    ap.add_argument("--no-agc", action="store_true",
+                    help="关闭软件 AGC（消融，默认开）")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="报告输出目录")
     ap.add_argument("--stamp", default=datetime.now().strftime("%Y%m%d-%H%M%S"))
     ap.add_argument("--self-test", action="store_true",

@@ -95,11 +95,15 @@ air_mouse_curve_high_factor = 4.0   # 高速段相对增益（跨屏甩动）
 # xiaomi_suppress_f5 = true
 
 # 小米遥控器按设备设置（也可从托盘设备子菜单「遥控器设置…」对话框编辑；结构镜像 [device.<id>.output]）：
-# gain_db：ADPCM 解码后增益（dB），消费侧 ±24 限幅；
-# double_click_ms：语音键双击判定窗（毫秒），非正值忽略并保留默认。
+# gain_db：ADPCM 解码后固定预增益（dB），消费侧 ±24 限幅（HPF 后、AGC 前）；
+# double_click_ms：语音键双击判定窗（毫秒），非正值忽略并保留默认；
+# hpf：90Hz 高通去爆破音（直连桌面链路，默认开；关=回滚旧行为）；
+# agc：软件自动增益控制（-6dBFS 目标、0.8FS 限幅，默认开；关=回滚旧行为）。
 # [device.3A7F.xiaomi]
 # gain_db = 12.0
 # double_click_ms = 350
+# hpf = true
+# agc = true
 
 [output]
 target = "focused_app"

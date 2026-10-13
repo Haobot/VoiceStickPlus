@@ -6,6 +6,7 @@
 # 用法：
 #   python scripts/e2e_test/atvv_capture.py [--address ADDR | --name NAME]
 #       [--out-dir DIR] [--gain-db 0.0] [--duration 60] [--max-sessions 3]
+#       [--no-hpf] [--no-agc]
 #   python scripts/e2e_test/atvv_capture.py --self-test   # 纯逻辑自测，不连设备
 #
 # 注意：
@@ -356,18 +357,111 @@ def smooth3(samples: list) -> list:
     return out
 
 
+def lround(v: float) -> int:
+    """half-away-from-zero 舍入，与 C++ std::lround / Swift .rounded() 逐样本对齐
+    （golden 对拍要求）。"""
+    return int(math.floor(v + 0.5)) if v >= 0 else -int(math.floor(-v + 0.5))
+
+
 def apply_gain(samples: list, gain_db: float) -> list:
-    """增益（gain_db 钳位到 ±24dB），int16 限幅。
-    舍入用 half-away-from-zero，与 C++ std::lround 逐样本对齐（golden 对拍要求）。"""
+    """增益（gain_db 钳位到 ±24dB），int16 限幅。"""
     gain_db = max(-24.0, min(24.0, gain_db))
     if gain_db == 0.0:
         return [max(-32768, min(32767, s)) for s in samples]
     factor = math.pow(10.0, gain_db / 20.0)
-
-    def lround(v: float) -> int:
-        return int(math.floor(v + 0.5)) if v >= 0 else -int(math.floor(-v + 0.5))
-
     return [max(-32768, min(32767, lround(s * factor))) for s in samples]
+
+
+# ---- 直连桌面链路后处理链（对齐固件 audio_pipeline.c 与桌面端 PcmPostprocessor）----
+# 链：smooth3 → HPF(90Hz) → 固定增益 → AGC（含 0.8FS 瞬时限幅），级间量化回 int16。
+# 常量逐字拷贝固件 audio_pipeline.c（HPF :61-65，AGC :92-100），
+# 三端（Swift/C++/Python）bit 级对齐 golden fixture 对拍。
+
+# 二阶 Butterworth 高通（transposed DF-II），fc≈90Hz @16kHz，Q=0.707：
+# 90Hz -3.0dB / 50Hz -10.6dB / 30Hz -19.1dB / ≥300Hz ~0dB。
+_HPF_B0 = 0.975318
+_HPF_B1 = -1.950637
+_HPF_B2 = 0.975318
+_HPF_A1 = -1.950028
+_HPF_A2 = 0.951246
+
+_AGC_TARGET = 16384.0        # -6 dBFS
+_AGC_MAX_GAIN = 10.0         # +20 dB
+_AGC_MIN_GAIN = 0.1          # -20 dB
+_AGC_NOISE_FLOOR = 184.0     # -45 dBFS
+_AGC_ENV_ATTACK = 0.98758    # exp(-1/(16000*0.005))
+_AGC_ENV_RELEASE = 0.99979   # exp(-1/(16000*0.300))
+_AGC_GAIN_UP = 0.99988       # exp(-1/(16000*0.500))
+_AGC_GAIN_DOWN = 0.73162     # exp(-1/(16000*0.002))
+_AGC_GAIN_GATE = 0.9999961   # exp(-1/(16000*1.0))
+_AGC_CEIL = 26214.0          # 0.8FS 瞬时限幅（Opus 解码 +1.5~2dB 过冲余量）
+
+
+class Hpf90Hz:
+    """二阶 Butterworth 高通滤波器（逐样本，transposed DF-II，double）。"""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.z1 = 0.0
+        self.z2 = 0.0
+
+    def process(self, samples: list) -> list:
+        out = []
+        for x in samples:
+            v = _HPF_B0 * x + self.z1
+            self.z1 = _HPF_B1 * x - _HPF_A1 * v + self.z2
+            self.z2 = _HPF_B2 * x - _HPF_A2 * v
+            y = max(-32768.0, min(32767.0, v))
+            out.append(max(-32768, min(32767, lround(y))))
+        return out
+
+
+class Agc:
+    """软件 AGC（逐样本，double）：包络快攻 5ms/慢释 300ms，增益快下 2ms/慢上
+    500ms，噪声门 -45dBFS，0.8FS 瞬时限幅（无记忆，不回写增益状态）。"""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.env = 0.0
+        self.gain = 1.0
+
+    def process(self, samples: list) -> list:
+        out = []
+        for x in samples:
+            ax = abs(x)
+            ec = _AGC_ENV_ATTACK if ax > self.env else _AGC_ENV_RELEASE
+            self.env = ec * self.env + (1.0 - ec) * ax
+            gated = self.env < _AGC_NOISE_FLOOR
+            if gated:
+                desired = 1.0
+            else:
+                desired = max(_AGC_MIN_GAIN,
+                              min(_AGC_TARGET / self.env, _AGC_MAX_GAIN))
+            gc = _AGC_GAIN_GATE if gated else (
+                _AGC_GAIN_DOWN if desired < self.gain else _AGC_GAIN_UP)
+            self.gain = gc * self.gain + (1.0 - gc) * desired
+            g = self.gain
+            if ax > 1.0:
+                g = min(g, _AGC_CEIL / ax)
+            y = max(-32768.0, min(32767.0, x * g))
+            out.append(max(-32768, min(32767, lround(y))))
+        return out
+
+
+def postprocess(samples: list, gain_db: float, hpf: bool = True, agc: bool = True) -> list:
+    """完整后处理链（单次入口，滤波/增益状态从零开始）：
+    smooth3 → HPF → 固定增益 → AGC，按开关跳过对应级。"""
+    out = smooth3(samples)
+    if hpf:
+        out = Hpf90Hz().process(out)
+    out = apply_gain(out, gain_db)
+    if agc:
+        out = Agc().process(out)
+    return out
 
 
 def write_wav(path: Path, samples: list, sample_rate: int) -> None:
@@ -497,7 +591,9 @@ class AtvvCapture:
         adpcm_path.write_bytes(raw)
         # raw.wav：纯解码（无平滑/增益），供单测 golden 逐样本对拍
         write_wav(raw_wav_path, self.pcm_samples, self.session_rate)
-        samples = apply_gain(smooth3(self.pcm_samples), self.args.gain_db)
+        # wav：完整后处理链（smooth3+HPF+增益+AGC），与桌面端 PcmPostprocessor 对齐
+        samples = postprocess(self.pcm_samples, self.args.gain_db,
+                              hpf=self.args.hpf, agc=self.args.agc)
         write_wav(wav_path, samples, self.session_rate)
         duration_s = len(self.pcm_samples) / float(self.session_rate)
         latency_ms = None
@@ -967,6 +1063,65 @@ def self_test() -> int:
         # gain_db 钳位 ±24：30dB 按 24dB 处理
         assert apply_gain([1000], 30.0) == apply_gain([1000], 24.0)
 
+    def test_hpf_dc_decay() -> None:
+        # 恒定 5000 输入 1000 样本：HPF 抑制 DC，末 100 样本 |out| < 50
+        h = Hpf90Hz()
+        out = h.process([5000] * 1000)
+        assert max(abs(s) for s in out[-100:]) < 50, max(abs(s) for s in out[-100:])
+
+    def test_hpf_frequency_response() -> None:
+        # 50Hz 对 1kHz 稳态 RMS 比 ≥ 10dB 衰减（参考频响 50Hz -10.6dB）
+        def sine(amp: float, freq: float, n: int) -> list:
+            return [int(amp * math.sin(2.0 * math.pi * freq * i / 16000.0))
+                    for i in range(n)]
+
+        def steady_rms(samples: list) -> float:
+            tail = samples[-8000:]
+            return math.sqrt(sum(s * s for s in tail) / len(tail))
+
+        out50 = Hpf90Hz().process(sine(10000.0, 50.0, 16000))
+        out1k = Hpf90Hz().process(sine(10000.0, 1000.0, 16000))
+        ratio = steady_rms(out50) / steady_rms(out1k)
+        assert ratio <= 10.0 ** (-10.0 / 20.0), f"50Hz/1kHz RMS ratio {ratio:.3f}"
+
+    def test_agc_pullup() -> None:
+        # -40dBFS（幅度 ≈328）1kHz 正弦 2s：AGC 最大增益 +20dB，稳态输出 ≈3280±20%
+        #（-40dBFS 目标 -6dBFS 需 +34dB，超出 MAX_GAIN +20dB，故拉到 -20dBFS 量级）
+        pcm = [int(328.0 * math.sin(2.0 * math.pi * 1000.0 * i / 16000.0))
+               for i in range(32000)]
+        out = Agc().process(pcm)
+        peak = max(abs(s) for s in out[-4000:])
+        assert 2624 <= peak <= 3936, f"pull-up peak {peak}"
+
+    def test_agc_instant_ceil() -> None:
+        # 满幅（±32000）突发起音：0.8FS 瞬时限幅 |out| ≤ 26215（且不削波到 32767）
+        pcm = [32000 if i % 2 == 0 else -32000 for i in range(2000)]
+        out = Agc().process(pcm)
+        peak = max(abs(s) for s in out)
+        assert peak <= 26215, f"instant ceil peak {peak}"
+        assert peak >= 26000, f"signal lost: peak {peak}"
+
+    def test_filter_reset_idempotent() -> None:
+        # reset() 后同一输入输出逐样本一致；且连续流式分块处理与整段处理一致。
+        pcm = [int(6000.0 * math.sin(2.0 * math.pi * 300.0 * i / 16000.0)
+                   + 2000.0 * math.sin(2.0 * math.pi * 1.0 * i / 16000.0))
+               for i in range(16000)]
+        for filt in (Hpf90Hz(), Agc()):
+            full = filt.process(pcm)
+            filt.reset()
+            assert filt.process(pcm) == full
+            # 流式连续性：640 样本帧逐帧处理 == 整段一次处理
+            filt.reset()
+            chunked = []
+            for i in range(0, len(pcm), 640):
+                chunked += filt.process(pcm[i:i + 640])
+            assert chunked == full
+        # 组合入口 = 手动链（smooth3 → HPF → 增益 → AGC）
+        manual = Agc().process(apply_gain(Hpf90Hz().process(smooth3(pcm)), 12.0))
+        assert postprocess(pcm, 12.0) == manual
+        # 开关关闭：回退旧链（仅 smooth3+增益）
+        assert postprocess(pcm, 12.0, hpf=False, agc=False) == apply_gain(smooth3(pcm), 12.0)
+
     def test_session_sidecar_segments() -> None:
         # 离线模拟一次会话（不调 GATT 回调的 asyncio 路径），验证 raw.wav /
         # sidecar 段落记账与解码可复现性。
@@ -976,7 +1131,8 @@ def self_test() -> int:
         encoded, expected = ima_encode(pcm_src)   # 400 字节
         with tempfile.TemporaryDirectory() as td:
             args = types.SimpleNamespace(out_dir=td, gain_db=6.0,
-                                         duration=1.0, max_sessions=1)
+                                         duration=1.0, max_sessions=1,
+                                         hpf=True, agc=True)
             cap = AtvvCapture(args)
             cap.accum.frame_len = 120
             cap._begin_session(3, CODEC_16K, 7)
@@ -1008,9 +1164,9 @@ def self_test() -> int:
                                              seg["offset"] + seg["bytes"]])
             pcm_from_raw = read_wav_samples(out / "session_1.raw.wav")
             assert reproduced == pcm_from_raw
-            # wav = raw 经 smooth3+gain(6dB)
+            # wav = raw 经完整后处理链 smooth3→HPF→gain(6dB)→AGC
             pcm_from_wav = read_wav_samples(out / "session_1.wav")
-            assert pcm_from_wav == apply_gain(smooth3(reproduced), 6.0)
+            assert pcm_from_wav == postprocess(reproduced, 6.0)
             assert (out / "events.jsonl").exists()
 
     check("adpcm_basic", test_adpcm_basic)
@@ -1023,9 +1179,14 @@ def self_test() -> int:
     check("caps_bad", test_caps_bad)
     check("smooth", test_smooth)
     check("gain", test_gain)
+    check("hpf_dc_decay", test_hpf_dc_decay)
+    check("hpf_frequency_response", test_hpf_frequency_response)
+    check("agc_pullup", test_agc_pullup)
+    check("agc_instant_ceil", test_agc_instant_ceil)
+    check("filter_reset_idempotent", test_filter_reset_idempotent)
     check("session_sidecar_segments", test_session_sidecar_segments)
 
-    total = 11
+    total = 16
     print(f"---- self-test: {total - len(failures)}/{total} passed ----",
           flush=True)
     return 1 if failures else 0
@@ -1040,6 +1201,10 @@ def main() -> int:
                     help="输出目录（默认 scripts/e2e_test/fixtures/xiaomi/<timestamp>/）")
     ap.add_argument("--gain-db", type=float, default=0.0,
                     help="PCM 增益 dB（钳位 ±24，默认 0）")
+    ap.add_argument("--no-hpf", action="store_true",
+                    help="关闭 90Hz 高通滤波（A/B 对照用，默认开）")
+    ap.add_argument("--no-agc", action="store_true",
+                    help="关闭软件 AGC（A/B 对照用，默认开）")
     ap.add_argument("--duration", type=float, default=60.0,
                     help="总采集时长上限秒数（默认 60）")
     ap.add_argument("--max-sessions", type=int, default=3,

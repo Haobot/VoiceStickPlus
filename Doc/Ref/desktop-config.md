@@ -81,15 +81,17 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 - **UI 入口**：设备交互设置已从「设置」对话框移除，改为从托盘设备子菜单的「设备交互设置…」（Device interaction settings...）打开**设备级对话框**（仅 StickS3 显示该菜单项，两端一致；小米遥控器无 IMU/编码器硬件）。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。连接时与配置更新时，协调器对所有已连接 StickS3 逐台单播其有效交互设置（无覆盖设备收到全局默认；Windows 与 macOS 均如此）。
 - **体感鼠标热调参**（仅 Windows；macOS 无体感鼠标）：托盘「体感鼠标调参」打开非模态窗口，标题带设备 ID，按**当前激活设备**调参。其中的左右/上下灵敏度滑杆写入该设备的 `[device.<id>.interaction]` 覆盖；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍写全局 `config.toml`。
 
-### 小米遥控器配置（仅 Windows 消费）
+### 小米遥控器配置（Windows + macOS 双端消费）
 
 小米蓝牙遥控器 2 Pro（ATVV 协议）相关配置。设备 ID 形如 `RC-XXXX`（4 位大写 hex，与 StickS3 的 `VS-XXXX` 双前缀并存；内部存储与 `[device.<id>.*]` 表键均用去前缀的 4 位 hex，如 `[device.3A7F.xiaomi]`），ID 由 BLE 地址低 16 位分配，名称白名单/`RC-` 前缀识别见 `BleProtocol::DeviceClassFromName`。
 
-- `xiaomi_suppress_f5`（bool，默认 `true`）：全局 F5 抑制开关。遥控器语音键按下时 Windows 会收到附带的 F5 按键（HID 副作用）；开启后桌面端用低级键盘钩子（`WH_KEYBOARD_LL`）在「80ms 窗内有 ATVV MIC_OPEN」时吞掉该 F5。
+- `xiaomi_suppress_f5`（bool，默认 `true`）：全局 F5 抑制开关。遥控器语音键按下时系统会收到附带的 F5 按键（HID 副作用）；开启后桌面端吞掉该 F5（Windows 低级键盘钩子 / macOS CGEvent tap）。
 - **按设备覆盖**：`[device.<id>.xiaomi]` 表，结构镜像 `[device.<id>.output]`。未写的字段回落 `default_xiaomi_settings` 结构默认值；仅写入与默认不同的覆盖（相等则不落盘）。字段：
-  - `gain_db`（double，默认 `12.0`）：ADPCM 解码后增益（dB），±24 dB 限幅在消费侧（`PcmPostprocessor`）完成。
-- `double_click_ms`（int >0，默认 `350`）：语音键双击判定窗（毫秒），镜像固件 `DOUBLE_CLICK_WINDOW_MS` 语义；非正值忽略并保留默认值。「遥控器设置…」UI 对话框将其限制在 200~600ms（越界 clamp）；手写配置 >0 均接受。
+  - `gain_db`（double，默认 `12.0`）：ADPCM 解码后固定预增益（dB），±24 dB 限幅在消费侧（`PcmPostprocessor`）完成；语义为 HPF 之后、AGC 之前的固定增益。
+  - `double_click_ms`（int >0，默认 `350`）：语音键双击判定窗（毫秒），镜像固件 `DOUBLE_CLICK_WINDOW_MS` 语义；非正值忽略并保留默认值。「遥控器设置…」UI 对话框将其限制在 200~600ms（越界 clamp）；手写配置 >0 均接受。
   - `hid_tap_enabled`（bool，默认 `false`）：**增强按键识别**（usage tap）。启用 `back`/`volume_up`/`volume_down` 三键——这三键走厂商页 0xFF00 HID 报告，被 Windows HidOverGatt 蓝牙栈在翻译层丢弃，系统输入链路收不到。链路 = 特权注入器把只读探针 DLL 注入系统 HID 宿主（WUDFHost），经命名管道回传原始报文，桌面端直触发注入映射。涉及 UAC 管理员授权（遥控器重连/宿主重启后需重新授权），默认关闭，在「按键映射…」对话框开关（即时生效并保存）。设计见 `Doc/Plan/xiaomi-remote-usage-tap.md`。
+  - `hpf`（bool，默认 `true`）：直连桌面链路 90Hz 二阶 Butterworth 高通滤波（去 20–100Hz 爆破音，避免固定增益把低频推进 int16 饱和削波）。
+  - `agc`（bool，默认 `true`）：直连桌面链路软件 AGC（-6dBFS 目标、+20dB 上限、-45dBFS 噪声门、快下慢上、0.8FS 瞬时限幅），与固件链路算法一致。`hpf = false` + `agc = false` 即回滚旧行为（平滑+固定增益）。
 
   示例：
 
@@ -98,6 +100,8 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   gain_db = 18.0
   double_click_ms = 400
   hid_tap_enabled = true   # 增强按键识别（返回/音量键）
+  hpf = true               # 90Hz 高通去爆破音
+  agc = true               # 自动增益控制
   ```
 
 - **按键映射**（Windows，2026-09 起）：`[xiaomi.keys]` 全局默认表 + `[device.<id>.xiaomi.keys]` 按设备覆盖表，键为 12 个可映射按钮 ID（`power`/`up`/`left`/`ok`/`right`/`down`/`back`/`volume_up`/`home`/`volume_down`/`menu`/`tv`；语音键 `mic` 不参与映射），值为 key_spec 快捷键语法（同热键语法，如 `backspace`、`ctrl+shift+v`，见 `key_spec.h`）。空串显式取消该键映射。设备覆盖与全局默认相同的条目不落盘。消费端为 Windows 端 LL 钩子拦截 + Raw Input VID/PID 佐证 + SendInput 注入（设计见 `Doc/Plan/xiaomi-keymap-consumer.md`），未映射的键保持系统原生行为。托盘「按键映射…」对话框编辑（仅对已配对小米遥控器显示）。同型号多台遥控器无法按设备区分时，映射取活跃设备的有效值。

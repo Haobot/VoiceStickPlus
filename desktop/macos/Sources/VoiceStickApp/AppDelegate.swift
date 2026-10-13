@@ -370,7 +370,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return XiaomiAtvvSession.Options(
                 interactionMode: self.config.interactionMode,
                 gainDb: settings.gainDb,
-                doubleClickWindowMs: settings.doubleClickMs
+                doubleClickWindowMs: settings.doubleClickMs,
+                hpf: settings.hpf,
+                agc: settings.agc
             )
         }
     }
@@ -713,11 +715,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showRemoteSettings(for deviceID: String) {
+        let effective = config.xiaomiSettings(for: deviceID)
         let controller = RemoteSettingsWindowController(
             deviceID: deviceID,
             settings: XiaomiSettings(
-                gainDb: config.xiaomiSettings(for: deviceID).gainDb,
-                doubleClickMs: config.xiaomiSettings(for: deviceID).doubleClickMs
+                gainDb: effective.gainDb,
+                doubleClickMs: effective.doubleClickMs,
+                hpf: effective.hpf,
+                agc: effective.agc
             ),
             defaults: .default
         ) { [weak self] override in

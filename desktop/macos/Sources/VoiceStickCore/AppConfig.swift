@@ -722,12 +722,14 @@ public struct AppConfig {
     // ---- 小米遥控器 [device.<id>.xiaomi] 覆盖（对齐 Windows XiaomiSettingsForDevice）----
 
     /// 返回设备有效小米设置：有覆盖返回覆盖（加载时已用默认填平），否则全局默认。
-    public func xiaomiSettings(for deviceID: String?) -> (gainDb: Double, doubleClickMs: Int) {
+    public func xiaomiSettings(for deviceID: String?) -> (gainDb: Double, doubleClickMs: Int,
+                                                          hpf: Bool, agc: Bool) {
         guard let deviceID,
               let settings = deviceXiaomiSettings[Self.normalizedDeviceID(deviceID)] else {
-            return (XiaomiSettings.default.gainDb, XiaomiSettings.default.doubleClickMs)
+            return (XiaomiSettings.default.gainDb, XiaomiSettings.default.doubleClickMs,
+                    XiaomiSettings.default.hpf, XiaomiSettings.default.agc)
         }
-        return (settings.gainDb, settings.doubleClickMs)
+        return (settings.gainDb, settings.doubleClickMs, settings.hpf, settings.agc)
     }
 
     /// 解析 [device.<id>.xiaomi] 表：以默认填平；double_click_ms <= 0 保留默认
@@ -824,7 +826,7 @@ public struct AppConfig {
     }
 
     /// [device.<id>.xiaomi] 覆盖段（对齐 Windows Save：未配对或与默认一致不写出；
-    /// 写出的表全量含 2 个字段，保证自含、加载顺序无关）。
+    /// 写出的表全量含 4 个字段，保证自含、加载顺序无关）。
     private var deviceXiaomiSettingsText: String {
         deviceXiaomiSettings
             .filter { pairedDeviceIDs.contains($0.key) && $0.value != .default }
@@ -835,6 +837,8 @@ public struct AppConfig {
                 [device.\(deviceID).xiaomi]
                 gain_db = \(settings.gainDb)
                 double_click_ms = \(settings.doubleClickMs)
+                hpf = \(settings.hpf.tomlValue)
+                agc = \(settings.agc.tomlValue)
                 """
             }
             .joined(separator: "\n")

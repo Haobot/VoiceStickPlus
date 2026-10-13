@@ -21,7 +21,8 @@ StateEvent MakePrimaryButtonEvent(std::string_view event,
 } // namespace
 
 XiaomiAtvvSession::XiaomiAtvvSession(Options options)
-    : options_(options), postprocessor_(options.gain_db) {}
+    : options_(options),
+      postprocessor_(options.gain_db, options.hpf, options.agc) {}
 
 std::vector<XiaomiAtvvAction> XiaomiAtvvSession::Start(std::int64_t now_ms) {
     std::vector<XiaomiAtvvAction> actions;
@@ -55,6 +56,7 @@ std::vector<XiaomiAtvvAction> XiaomiAtvvSession::Stop(std::int64_t now_ms) {
     encoder_.Reset();
     accumulator_.Reset();
     slicer_.Reset();
+    postprocessor_.Reset();
     pending_payloads_.clear();
     current_session_id_ = 0;
     next_seq_ = 1;
@@ -289,6 +291,7 @@ void XiaomiAtvvSession::HardResetStream() {
     decoder_.Reset(0, 0);
     accumulator_.Reset();
     slicer_.Reset();
+    postprocessor_.Reset();
     pending_payloads_.clear();
     stream_active_ = true;
 }

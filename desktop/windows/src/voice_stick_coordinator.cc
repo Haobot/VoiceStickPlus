@@ -1078,7 +1078,8 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     {
         std::lock_guard lock(audio_mutex_);
         ogg_muxer_.Reset();
-        debug_audio_recorder_.Start(device_id, session_id);
+        debug_audio_recorder_.Start(device_id, session_id,
+                                    IsXiaomiRemoteDevice(device_id) ? "RC-" : "VS-");
         wechat_audio_end_received_ = false;
         wechat_hotkey_sent_down_ = false;
         received_audio_frames_ = 0;
@@ -1977,7 +1978,8 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         pending_paste_state_ = {};
         is_showing_asr_error_ = false;
         ogg_muxer_.Reset();
-        debug_audio_recorder_.Start(device_id, session_id);
+        debug_audio_recorder_.Start(device_id, session_id,
+                                    IsXiaomiRemoteDevice(device_id) ? "RC-" : "VS-");
         // 时序探针重置：新会话开始，清空上一轮各阶段时间戳。
         probe_button_up_ms_.store(0);
         probe_audio_end_done_ms_.store(0);
@@ -2102,7 +2104,8 @@ void VoiceStickCoordinator::HandleSubtitlePrimaryButtonDown(std::optional<std::u
     cycle->asr = asr_factory_(*ConfigSnapshot());
     cycle->debug_audio_recorder = DebugAudioRecorder(ConfigSnapshot()->debug_audio_cache, ConfigSnapshot()->debug_audio_directory);
     ConfigureSubtitleAsrCallbacks(cycle.get());
-    cycle->debug_audio_recorder.Start(device_id, session_id);
+    cycle->debug_audio_recorder.Start(device_id, session_id,
+                                      IsXiaomiRemoteDevice(device_id) ? "RC-" : "VS-");
     subtitle_cycles_[{device_id, *session_id}] = std::move(cycle);
     active_subtitle_sessions_[device_id] = *session_id;
     ui_->ShowListening(device_id);

@@ -9,25 +9,66 @@
 
 namespace voicestick {
 
-// PCM 后处理：三点平滑（首尾样本不动）+ dB 增益（钳位 ±24 dB）+ int16 限幅。
-// 平滑与增益一次遍历完成：out[i] = clamp((in[i-1]+2*in[i]+in[i+1])>>2 * gain)。
+// PCM 后处理链：三点平滑（首尾样本不动）→ HPF(90Hz) → 固定 dB 增益（钳位
+// ±24 dB）→ 软件 AGC（含 0.8FS 瞬时限幅）。算法逐字移植固件
+// audio_pipeline.c:55-153（HPF 系数与 AGC 常量），级间量化回 int16，
+// 与 macOS Swift / Python 镜像 bit 级对齐（golden fixture 对拍）。
+// HPF 置于固定增益之前：先削掉爆破音的 20–100Hz 能量，避免 +12dB 把它
+// 推进 int16 饱和区。HPF/AGC 状态跨 Process 调用保持（按 640 样本帧流式
+// 处理），每次录音会话开始由 XiaomiAtvvSession 调 Reset() 清零。
 class PcmPostprocessor {
 public:
     // 增益钳位范围（dB）。
     static constexpr double kMaxGainDb = 24.0;
 
-    explicit PcmPostprocessor(double gain_db = 0.0);
+    explicit PcmPostprocessor(double gain_db = 0.0, bool hpf = true, bool agc = true);
 
     void set_gain_db(double gain_db) { gain_db_ = ClampGainDb(gain_db); }
     double gain_db() const { return gain_db_; }
+    bool hpf_enabled() const { return hpf_enabled_; }
+    bool agc_enabled() const { return agc_enabled_; }
+
+    // 清零 HPF/AGC 状态（新录音会话开始时调用；幂等）。
+    void Reset();
 
     // 返回处理后的新缓冲；少于 3 个样本时跳过平滑只做增益。
-    std::vector<std::int16_t> Process(std::span<const std::int16_t> pcm) const;
+    std::vector<std::int16_t> Process(std::span<const std::int16_t> pcm);
 
     static double ClampGainDb(double gain_db);
 
 private:
+    // 二阶 Butterworth 高通（transposed DF-II），fc≈90Hz @16kHz，Q=0.707
+    // （逐字拷贝固件）：90Hz -3.0dB / 50Hz -10.6dB / ≥300Hz ~0dB。
+    static constexpr double kHpfB0 = 0.975318;
+    static constexpr double kHpfB1 = -1.950637;
+    static constexpr double kHpfB2 = 0.975318;
+    static constexpr double kHpfA1 = -1.950028;
+    static constexpr double kHpfA2 = 0.951246;
+
+    // 软件 AGC 常量（逐字拷贝固件；固件为 float，桌面端统一 double 保证
+    // C++↔Python 对拍确定）。
+    static constexpr double kAgcTarget = 16384.0;      // -6 dBFS
+    static constexpr double kAgcMaxGain = 10.0;        // +20 dB
+    static constexpr double kAgcMinGain = 0.1;         // -20 dB
+    static constexpr double kAgcNoiseFloor = 184.0;    // -45 dBFS
+    static constexpr double kAgcEnvAttack = 0.98758;   // 快攻 5ms
+    static constexpr double kAgcEnvRelease = 0.99979;  // 慢释 300ms
+    static constexpr double kAgcGainUp = 0.99988;      // 慢上 500ms
+    static constexpr double kAgcGainDown = 0.73162;    // 快下 2ms
+    static constexpr double kAgcGainGate = 0.9999961;  // 噪声门缓回 ~1s
+    static constexpr double kAgcCeil = 26214.0;        // 0.8FS 瞬时限幅
+
+    int hpf_process(int x);
+    int agc_process(int x);
+
     double gain_db_ = 0.0;
+    bool hpf_enabled_ = true;
+    bool agc_enabled_ = true;
+    // HPF/AGC 滤波状态（会话开始时 Reset() 清零，防跨会话泄漏）。
+    double hpf_z1_ = 0.0;
+    double hpf_z2_ = 0.0;
+    double agc_env_ = 0.0;
+    double agc_gain_ = 1.0;
 };
 
 // ADPCM 裸字节流跨包累积切帧器：ATVV audio notify 无帧头无序号，

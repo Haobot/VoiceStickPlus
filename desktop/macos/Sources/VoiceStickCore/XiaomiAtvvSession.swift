@@ -33,22 +33,27 @@ public enum XiaomiAtvvSessionState {
 ///   第二击合成 button_double_click。
 /// - 重开拒绝窗：经过 streaming 的键程 STOP 后 300ms 内忽略 MIC_OPEN（不回 ACK、
 ///   不开新会话）；双击路径走 waitSecondTap 不受影响。
-/// 音频路径：ADPCM 累积切帧 → IMA 解码 → 三点平滑+增益 → Opus（640 采样/帧）→
-/// AudioFrame（sessionID 每录音会话自增，与 button_down 一致；flags bit0 首帧 bit1 末帧）。
+/// 音频路径：ADPCM 累积切帧 → IMA 解码 → 后处理链（三点平滑+HPF+增益+AGC）
+/// → Opus（640 采样/帧）→ AudioFrame（sessionID 每录音会话自增，与 button_down
+/// 一致；flags bit0 首帧 bit1 末帧）。
 /// 线程契约：全部公开入口（start/stop/handleControlCommand/handleAudioData/tick）须在
 /// 单一线程串行调用（集成层负责 marshal 到主线程），本类无内部锁。
 public final class XiaomiAtvvSession {
     public struct Options {
         public var interactionMode: InteractionMode = .holdToTalk
-        public var gainDb = 12.0 // ADPCM 解码后增益（±24dB 限幅）
+        public var gainDb = 12.0 // ADPCM 解码后增益（±24dB 限幅，HPF 后、AGC 前）
         public var doubleClickWindowMs = 350 // [device.<id>.xiaomi] double_click_ms；
         // 有意小于固件 500ms 窗（更快确认单击），勿对齐
+        public var hpf = true // [device.<id>.xiaomi] hpf：90Hz 高通去爆破音
+        public var agc = true // [device.<id>.xiaomi] agc：自动增益控制（含 0.8FS 限幅）
 
         public init(interactionMode: InteractionMode = .holdToTalk, gainDb: Double = 12.0,
-                    doubleClickWindowMs: Int = 350) {
+                    doubleClickWindowMs: Int = 350, hpf: Bool = true, agc: Bool = true) {
             self.interactionMode = interactionMode
             self.gainDb = gainDb
             self.doubleClickWindowMs = doubleClickWindowMs
+            self.hpf = hpf
+            self.agc = agc
         }
     }
 
@@ -95,7 +100,7 @@ public final class XiaomiAtvvSession {
     /// AudioOpusEncoder 创建失败时抛错。
     public init(options: Options = Options()) throws {
         self.options = options
-        postprocessor = PcmPostprocessor(gainDb: options.gainDb)
+        postprocessor = PcmPostprocessor(gainDb: options.gainDb, hpf: options.hpf, agc: options.agc)
         encoder = try AudioOpusEncoder()
     }
 
@@ -138,6 +143,7 @@ public final class XiaomiAtvvSession {
         encoder.reset()
         accumulator.reset()
         slicer.reset()
+        postprocessor.reset()
         pendingPayloads.removeAll()
         currentSessionID = 0
         nextSeq = 1
@@ -321,11 +327,12 @@ public final class XiaomiAtvvSession {
     }
 
     /// 0x04 到达时的流硬重置：RC003 每次会话编码器从 0/0 重启但可能不发 SYNC，
-    /// 一律重置，否则第二次按键 DC 饱和。
+    /// 一律重置，否则第二次按键 DC 饱和。HPF/AGC 状态一并清零（新录音会话）。
     private func hardResetStream() {
         decoder.reset()
         accumulator.reset()
         slicer.reset()
+        postprocessor.reset()
         pendingPayloads.removeAll()
         streamActive = true
     }

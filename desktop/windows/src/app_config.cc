@@ -556,6 +556,8 @@ XiaomiSettings ParseXiaomiSettings(const toml::table& table, const XiaomiSetting
     if (auto value = TomlDouble(table, "gain_db")) settings.gain_db = *value;
     if (auto value = TomlInt(table, "double_click_ms"); value && *value > 0) settings.double_click_ms = static_cast<int>(*value);
     if (auto value = TomlBool(table, "hid_tap_enabled")) settings.hid_tap_enabled = *value;
+    if (auto value = TomlBool(table, "hpf")) settings.hpf = *value;
+    if (auto value = TomlBool(table, "agc")) settings.agc = *value;
     if (const auto* keys = table["keys"].as_table()) {
         settings.key_map = ParseXiaomiKeyMap(*keys, settings.key_map);
     }
@@ -1135,11 +1137,13 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
         }
         // 与全局默认相同则跳过，不落盘冗余覆盖。
         if (settings == default_xiaomi_settings) continue;
-        // 覆盖表全量写出 3 个字段，保证表自含、加载顺序无关。
+        // 覆盖表全量写出 5 个字段，保证表自含、加载顺序无关。
         output << "\n[device." << device_id << ".xiaomi]\n";
         output << "gain_db = " << settings.gain_db << "\n";
         output << "double_click_ms = " << settings.double_click_ms << "\n";
         output << "hid_tap_enabled = " << (settings.hid_tap_enabled ? "true" : "false") << "\n";
+        output << "hpf = " << (settings.hpf ? "true" : "false") << "\n";
+        output << "agc = " << (settings.agc ? "true" : "false") << "\n";
         // key_map 只写与全局默认不同的条目（设备端空串 = 显式取消全局映射，也算不同）。
         bool keys_header_written = false;
         for (const auto& [button_id, spec] : settings.key_map) {

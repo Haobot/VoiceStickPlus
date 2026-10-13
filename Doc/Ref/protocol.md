@@ -683,8 +683,15 @@ mono. Audio notifications carry a headerless, sequence-number-free ADPCM byte
 stream; the desktop accumulates bytes across notifications and cuts frames at
 the CAPS-negotiated frame length (default 120 bytes = 240 samples), decodes to
 int16 PCM, then re-encodes to Opus so the downstream Ogg/ASR pipeline is
-identical to the StickS3 path. With no sequence numbers, a lost packet drifts
-the decoder until the next sync.
+identical to the StickS3 path. Between decode and re-encode the desktop runs a
+PCM post-processing chain: three-point smoothing → 90 Hz Butterworth high-pass
+(plosive suppression) → fixed `gain_db` pre-gain → software AGC (-6 dBFS
+target, noise gate, 0.8FS instantaneous limiter) — algorithmically identical to
+the firmware chain (`audio_pipeline.c`), each stage re-quantized to int16 and
+bit-aligned across the Swift/C++/Python implementations, with per-session
+`hpf`/`agc` kill switches in `[device.<id>.xiaomi]` (see
+`Doc/Plan/xiaomi-direct-desktop-hpf-agc.md`). With no sequence numbers, a lost
+packet drifts the decoder until the next sync.
 
 Key mapping: ATVV voice-key press (`0x08` MIC_OPEN on RC003, `0x04`
 STREAM_START on the 2 Pro) and release (`0x00` STOP) are normalized to

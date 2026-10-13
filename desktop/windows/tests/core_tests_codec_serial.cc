@@ -94,8 +94,8 @@ void TestImaAdpcmDecoderGoldenFixtures() {
         }
 
         // 对拍 2：解码 + PcmPostprocessor(sidecar 增益) == session_N.wav。
-        // Python 侧 smooth3+apply_gain 的舍入已对齐 std::lround。
-        const PcmPostprocessor postprocessor(gain_db);
+        // Python 侧 postprocess 的舍入已对齐 std::lround；默认构造 hpf/agc 开。
+        PcmPostprocessor postprocessor(gain_db);
         const auto processed = postprocessor.Process(pcm);
         const auto expected_wav = ReadWavPcm16ForTest(wav_path);
         if (processed != expected_wav) {
@@ -144,23 +144,25 @@ void TestFrameAccumulator() {
 }
 
 void TestPcmPostprocessor() {
+    // ---- 旧路径用例（关 HPF/AGC，守 smooth3+增益 语义）----
+
     // 三点平滑公式（首尾样本不动），增益 0dB。
-    PcmPostprocessor flat(0.0);
+    PcmPostprocessor flat(0.0, /*hpf=*/false, /*agc=*/false);
     const std::vector<std::int16_t> in{0, 100, 200, 300, 400};
     const auto smoothed = flat.Process(in);
     // out[1]=(0+200+200)>>2=100, out[2]=(100+400+300)>>2=200, out[3]=(200+600+400)>>2=300
     assert((smoothed == std::vector<std::int16_t>{0, 100, 200, 300, 400}));
 
     // 增益 +6.02dB ≈ ×2；-6.02dB ≈ ×0.5（少于 3 样本跳过平滑只作增益）。
-    PcmPostprocessor boost(6.020599913279624);
+    PcmPostprocessor boost(6.020599913279624, /*hpf=*/false, /*agc=*/false);
     const auto boosted = boost.Process(std::vector<std::int16_t>{1000});
     assert(boosted.size() == 1 && boosted[0] == 2000);
-    PcmPostprocessor cut(-6.020599913279624);
+    PcmPostprocessor cut(-6.020599913279624, /*hpf=*/false, /*agc=*/false);
     const auto attenuated = cut.Process(std::vector<std::int16_t>{1000});
     assert(attenuated.size() == 1 && attenuated[0] == 500);
 
     // 增益钳位 ±24dB。
-    PcmPostprocessor clamped(30.0);
+    PcmPostprocessor clamped(30.0, /*hpf=*/false, /*agc=*/false);
     assert(clamped.gain_db() == 24.0);
     clamped.set_gain_db(-30.0);
     assert(clamped.gain_db() == -24.0);
@@ -173,6 +175,102 @@ void TestPcmPostprocessor() {
     assert(limited[0] == 32767);
     const auto limited_neg = clamped.Process(std::vector<std::int16_t>{-3000});
     assert(limited_neg[0] == -32768);
+
+    // ---- 新链用例（HPF/AGC，算法规格见 Doc/Plan/xiaomi-direct-desktop-hpf-agc.md）----
+    constexpr double kPi = 3.14159265358979323846;
+    const auto make_sine = [](double amp, double freq_hz, int n) {
+        std::vector<std::int16_t> pcm(n);
+        for (int i = 0; i < n; ++i) {
+            pcm[i] = static_cast<std::int16_t>(
+                std::lround(amp * std::sin(2.0 * kPi * freq_hz * i / 16000.0)));
+        }
+        return pcm;
+    };
+    const auto steady_rms = [](const std::vector<std::int16_t>& samples) {
+        const std::size_t tail = std::min<std::size_t>(samples.size(), 8000);
+        double sum = 0.0;
+        for (std::size_t i = samples.size() - tail; i < samples.size(); ++i) {
+            sum += static_cast<double>(samples[i]) * samples[i];
+        }
+        return std::sqrt(sum / static_cast<double>(tail));
+    };
+
+    // HPF 直流衰减：恒定 5000 输入 1000 样本，末 100 样本 |out| < 50。
+    {
+        PcmPostprocessor pp(0.0, /*hpf=*/true, /*agc=*/false);
+        const auto out = pp.Process(std::vector<std::int16_t>(1000, 5000));
+        int tail_peak = 0;
+        for (std::size_t i = out.size() - 100; i < out.size(); ++i) {
+            tail_peak = std::max(tail_peak, std::abs(static_cast<int>(out[i])));
+        }
+        assert(tail_peak < 50);
+    }
+
+    // HPF 频响：50Hz 对 1kHz 稳态 RMS 比 ≥ 10dB 衰减（参考频响 50Hz -10.6dB）。
+    {
+        PcmPostprocessor pp50(0.0, /*hpf=*/true, /*agc=*/false);
+        const auto out50 = pp50.Process(make_sine(10000.0, 50.0, 16000));
+        PcmPostprocessor pp1k(0.0, /*hpf=*/true, /*agc=*/false);
+        const auto out1k = pp1k.Process(make_sine(10000.0, 1000.0, 16000));
+        const double ratio = steady_rms(out50) / steady_rms(out1k);
+        assert(ratio <= std::pow(10.0, -10.0 / 20.0));
+    }
+
+    // AGC 拉起：-40dBFS（幅度 ≈328）1kHz 正弦 2s：最大增益 +20dB，稳态 ≈3280±20%
+    //（-40dBFS 目标 -6dBFS 需 +34dB，超出 MAX_GAIN +20dB，故拉到 -20dBFS 量级）。
+    {
+        PcmPostprocessor pp(0.0);  // hpf/agc 默认开
+        const auto out = pp.Process(make_sine(328.0, 1000.0, 32000));
+        int peak = 0;
+        for (std::size_t i = out.size() - 4000; i < out.size(); ++i) {
+            peak = std::max(peak, std::abs(static_cast<int>(out[i])));
+        }
+        assert(peak >= 2624 && peak <= 3936);
+    }
+
+    // 瞬时限幅：满幅（±32000）突发起音，|out| ≤ 26215（且不削波到 32767）。
+    {
+        PcmPostprocessor pp(0.0);  // hpf/agc 默认开
+        std::vector<std::int16_t> full_scale(2000);
+        for (std::size_t i = 0; i < full_scale.size(); ++i) {
+            full_scale[i] = (i % 2 == 0) ? 32000 : -32000;
+        }
+        const auto out = pp.Process(full_scale);
+        int peak = 0;
+        for (const auto s : out) peak = std::max(peak, std::abs(static_cast<int>(s)));
+        assert(peak <= 26215);
+        assert(peak >= 26000);  // 信号未丢
+    }
+
+    // reset() 幂等：同一输入整段输出一致；640 样本帧流式喂法 reset 后与全新
+    // 实例一致（三点平滑按 process 调用粒度作用，帧边界样本两种喂法本就不同，
+    // 故流式对照组用新实例而非整段输出）。
+    {
+        std::vector<std::int16_t> mixed(16000);
+        for (std::size_t i = 0; i < mixed.size(); ++i) {
+            const double v = 6000.0 * std::sin(2.0 * kPi * 300.0 * i / 16000.0) +
+                             2000.0 * std::sin(2.0 * kPi * 1.0 * i / 16000.0);
+            mixed[i] = static_cast<std::int16_t>(std::lround(v));
+        }
+        PcmPostprocessor pp(0.0);  // hpf/agc 默认开
+        const auto full = pp.Process(mixed);
+        pp.Reset();
+        assert(pp.Process(mixed) == full);
+        const auto run_chunked = [&mixed](PcmPostprocessor& proc) {
+            std::vector<std::int16_t> out;
+            for (std::size_t start = 0; start < mixed.size(); start += 640) {
+                const auto end = std::min(start + 640, mixed.size());
+                const auto part = proc.Process(
+                    std::span<const std::int16_t>(mixed).subspan(start, end - start));
+                out.insert(out.end(), part.begin(), part.end());
+            }
+            return out;
+        };
+        pp.Reset();
+        const auto chunked = run_chunked(pp);
+        PcmPostprocessor fresh(0.0);
+        assert(chunked == run_chunked(fresh));
+    }
 }
 
 void TestAudioOpusEncoderRoundTrip() {

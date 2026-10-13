@@ -166,20 +166,28 @@ public struct EncoderConfigFile: Decodable {
 }
 
 /// [device.<id>.xiaomi] 表。gain_db 宽容接受 TOML 整数（Windows C++ << 对整数值
-/// double 会写出 "gain_db = 18" 这种整数形态），double_click_ms 严格整数。
+/// double 会写出 "gain_db = 18" 这种整数形态），double_click_ms 严格整数；
+/// hpf/agc 普通 Bool 解码。
 public struct XiaomiConfigFile: Decodable {
     public var gain_db: Double?
     public var double_click_ms: Int?
+    public var hpf: Bool?
+    public var agc: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case gain_db = "gain_db"
         case double_click_ms = "double_click_ms"
+        case hpf = "hpf"
+        case agc = "agc"
     }
 
     /// 跨模块构造（测试与转换器侧）；解码走 Decodable init(from:)。
-    public init(gain_db: Double? = nil, double_click_ms: Int? = nil) {
+    public init(gain_db: Double? = nil, double_click_ms: Int? = nil,
+                hpf: Bool? = nil, agc: Bool? = nil) {
         self.gain_db = gain_db
         self.double_click_ms = double_click_ms
+        self.hpf = hpf
+        self.agc = agc
     }
 
     public init(from decoder: Decoder) throws {
@@ -192,6 +200,8 @@ public struct XiaomiConfigFile: Decodable {
             gain_db = nil
         }
         double_click_ms = try? container.decodeIfPresent(Int.self, forKey: .double_click_ms)
+        hpf = try? container.decodeIfPresent(Bool.self, forKey: .hpf)
+        agc = try? container.decodeIfPresent(Bool.self, forKey: .agc)
     }
 }
 
@@ -212,6 +222,8 @@ public extension String {
         if let doubleClickMs = file.double_click_ms, doubleClickMs > 0 {
             settings.doubleClickMs = doubleClickMs
         }
+        if let hpf = file.hpf { settings.hpf = hpf }
+        if let agc = file.agc { settings.agc = agc }
         return settings
     }
 

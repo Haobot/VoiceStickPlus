@@ -39,10 +39,17 @@ public struct XiaomiSettings: Equatable {
     public var gainDb = 12.0
     /// 语音键双击时序窗（ms）：第一次短击释放后等待第二次按下的最大窗口。默认 350。
     public var doubleClickMs = 350
+    /// 90Hz 高通滤波开关（直连链路去爆破音）。默认开。
+    public var hpf = true
+    /// 软件 AGC 开关（含 0.8FS 瞬时限幅）。默认开。
+    public var agc = true
 
-    public init(gainDb: Double = 12.0, doubleClickMs: Int = 350) {
+    public init(gainDb: Double = 12.0, doubleClickMs: Int = 350,
+                hpf: Bool = true, agc: Bool = true) {
         self.gainDb = gainDb
         self.doubleClickMs = doubleClickMs
+        self.hpf = hpf
+        self.agc = agc
     }
 
     public static let `default` = XiaomiSettings()

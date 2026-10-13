@@ -579,6 +579,8 @@ int Win32App::Run() {
             const auto& xiaomi = config_.XiaomiSettingsForDevice(device_id);
             options.gain_db = xiaomi.gain_db;
             options.double_click_window_ms = xiaomi.double_click_ms;
+            options.hpf = xiaomi.hpf;
+            options.agc = xiaomi.agc;
             options.interaction_mode =
                 config_.OutputProfileForDevice(device_id).target ==
                         OutputTarget::kWechatInputMethod
