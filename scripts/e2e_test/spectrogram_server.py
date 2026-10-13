@@ -3,13 +3,15 @@
 用法：
     python scripts/e2e_test/spectrogram_server.py [--port 8765] [--dir PATH] [--no-browser]
 
-- 自动读取 %APPDATA%\\VoiceStick\\config.toml 的 debug_audio_dir（--dir 可覆盖）
+- 自动读取 config.toml 的 debug_audio_dir（Windows %APPDATA%\\VoiceStick，macOS ~/Library/Application Support/VoiceStick；--dir 可覆盖）
 - 浏览器打开 http://127.0.0.1:8765 ，左侧选会话，右侧频谱图 + 波形图联动
 - 交互：滚轮缩放时间轴、拖动平移、悬停读数（时间/频率/dB）、点击或空格播放
 
 纯标准库实现，无第三方依赖。页面（HTML/JS）内嵌在本文件中，单文件可分
 发。音频解码与 STFT 全部在浏览器内完成（Web Audio + JS FFT）。
 """
+
+from __future__ import annotations
 
 import argparse
 import http.server
@@ -473,16 +475,27 @@ loadSessions(false);
 
 
 def find_debug_dir(cli_dir: str | None) -> Path:
-    """确定调试音频目录：--dir 优先，其次 config.toml 的 debug_audio_dir，兜底 %APPDATA%\\VoiceStick。"""
+    """确定调试音频目录：--dir 优先，其次 config.toml 的 debug_audio_dir，兜底平台默认位置。
+
+    config.toml 位置：Windows %APPDATA%\\VoiceStick，macOS ~/Library/Application Support/VoiceStick。
+    路径下没有 DebugAudio 子目录时退回该根目录本身（main() 会报目录不存在）。
+    """
     if cli_dir:
         return Path(cli_dir)
     appdata = os.environ.get("APPDATA", "")
-    cfg = Path(appdata) / "VoiceStick" / "config.toml"
-    if cfg.is_file():
-        m = re.search(r'debug_audio_dir\s*=\s*"([^"]+)"', cfg.read_text(encoding="utf-8"))
-        if m:
-            return Path(m.group(1).replace("\\\\", "\\"))
-    return Path(appdata) / "VoiceStick"
+    if appdata:  # Windows
+        roots = [Path(appdata) / "VoiceStick"]
+    else:        # macOS / Linux
+        roots = [Path.home() / "Library" / "Application Support" / "VoiceStick"]
+    for root in roots:
+        cfg = root / "config.toml"
+        if cfg.is_file():
+            m = re.search(r'debug_audio_dir\s*=\s*"([^"]+)"', cfg.read_text(encoding="utf-8"))
+            if m:
+                return Path(m.group(1).replace("\\\\", "\\"))
+        if (root / "DebugAudio").is_dir():
+            return root / "DebugAudio"
+    return roots[0]
 
 
 def make_handler(audio_dir: Path):
