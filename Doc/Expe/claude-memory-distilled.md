@@ -42,6 +42,7 @@
 - 参数：fc≈90Hz @16kHz，Q=0.707；b0=0.975318 b1=-1.950637 b2=0.975318 a1=-1.950028 a2=0.951246。
 - 频响：90Hz -3dB / 50Hz -10.6dB / 30Hz -19dB / 150Hz -0.5dB / 300Hz+ ~0dB。
 - 调参：男声偏闷调到 100–120Hz；爆破残留调到 70–80Hz。状态每会话 start 清零；**audio_task 与 drain 路径都要过滤**；`hpf_process` 用 lround 取整+软限幅防漂移。
+- **2026-10-13 起桌面端镜像同一链路**：小米直连桌面（ATVV）后处理 = 三点平滑 → HPF(90Hz) → 固定增益 → AGC（0.8FS 限幅），算法/常量逐字拷贝、级间 int16 量化、Swift/C++/Python 三端 bit 级对齐（golden fixture 对拍），`[device.<id>.xiaomi]` 加 `hpf`/`agc` 开关（默认开，关=旧行为）。实施与跨端对拍手法见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`，方案见 `Doc/Plan/xiaomi-direct-desktop-hpf-agc.md`。
 
 ### 1.4 尾音丢失：button_up 抢跑 drain（已根治）
 
@@ -613,3 +614,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 
 - **JS 模板写文件的转义陷阱家族（2026-10-09）**：反引号关模板、反斜杠+引号剥一层、换行转义变真行、插入块缺尾换行粘邻行——判据=Expected 型 JS 报错、C2001、1+1 异常 diff、RC=0 空转；修法=chr 圣经+write 先行+双门前置；生成代码两轮调不通即整段人写。详见 Doc/Expe/js-template-escape-trap-family-2026-10-09.md。
 - **macOS「配置保存后重启自定义全丢」/「网关按键全无作用」（2026-10-12 四断链）**：判据=序列化文本回读丢 `[output].target`（`AppConfig.parse` 静默回落 `loadLegacy` 不认 `[表]` 段；根因 `tomlNumber` 整数形态 Double `3`/`80` 撞 TOMLKit 严格 `.float` 解码）+ 连接日志整批 `gateway_keymap_set ... skipped` 且此后该 label 零成功（didConnect 早于控制特征就绪、无补推，真机 182/182）+ StickS3 子菜单无「按键映射…」（网关入口只挂在 RC 条目分支）。修复=读侧 `LenientDouble` + 写侧规范 float 双保险、`onControlChannelReady` 就绪补推、根 `[buttons]` 全局表与网关入口，见 `Doc/Expe/mac-gateway-keymap-restore-2026-10-12.md`。
+- **改 Windows core 纯逻辑但本机（macOS）无法跑 build_win.bat**：`pcm_postprocessor.cc`/`ima_adpcm_decoder.cc` 等无 Win32 依赖的 .cc 可直接 `clang++ -std=c++20 -fsyntax-only` 语法检查，并本地链接个小 main 与 Python 镜像 golden 对拍（本次 31104 样本 bit 级一致，检出力等同 ctest 对拍 2）。clang/MSVC 差异边界预存：`xiaomi_atvv_session.h` 嵌套 `Options = {}` 默认实参 clang 严格拒绝（MSVC 接受，勿误判改坏）；`localtime_s` MSVC 专属；initializer_list 喂 span 要显式 vector。另：**方案里的数值测试期望值先用常量对算一遍**（本次方案写「-40dBFS 拉起至 -6dBFS」，MAX_GAIN=+20dB 数学上只能到 ≈-20dBFS，照抄会把三端断言全写错）；DSP 链「分帧流式 == 整段一次」断言必红（平滑按 process 调用粒度作用，正确姿势=reset 后流式 vs 全新实例流式）。详见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`。
