@@ -37,6 +37,11 @@
 
 #define LPC_ORDER 24
 
+/* MSVC 不支持 C99 VLA，rnn_autocorr 内的栈数组改用定长上限：唯一调用点
+   pitch.c rnn_pitch_downsample 传 n = PITCH_BUF_SIZE>>1 = 864（denoise.c 常量），
+   越界由 celt_assert 兜底；调整 PITCH_* 常量后须同步此值。 */
+#define RNN_AUTOCORR_MAX_N 864
+
 void rnn_lpc(opus_val16 *_lpc, const opus_val32 *ac, int p);
 
 int rnn_autocorr(const opus_val16 *x, opus_val32 *ac,
