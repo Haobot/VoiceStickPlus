@@ -204,11 +204,13 @@ final class SettingsWindowController: NSWindowController {
         buttonRow.alignment = .centerY
         buttonRow.spacing = 10
         let openFolderButton = NSButton(title: tr(.settingsOpenConfigFolder), target: self, action: #selector(openConfigFolder))
+        let audioDebugButton = NSButton(title: tr(.settingsAudioDebug), target: self, action: #selector(launchAudioDebug))
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let saveButton = NSButton(title: tr(.save), target: self, action: #selector(saveSettings))
         saveButton.keyEquivalent = "\r"
         buttonRow.addArrangedSubview(openFolderButton)
+        buttonRow.addArrangedSubview(audioDebugButton)
         buttonRow.addArrangedSubview(statusLabel)
         buttonRow.addArrangedSubview(spacer)
         buttonRow.addArrangedSubview(saveButton)
@@ -216,6 +218,8 @@ final class SettingsWindowController: NSWindowController {
         buttonRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         statusLabel.textColor = .secondaryLabelColor
+        // 底部行较宽：状态文案最长（试用流程）时先截断自身，不挤压两侧按钮。
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
@@ -526,6 +530,59 @@ final class SettingsWindowController: NSWindowController {
         AppConfig.openConfigDirectory()
     }
 
+    /// 「启动音频调试」：起 scripts/e2e_test/spectrogram_server.py（浏览器列调试会话并回听
+    /// .ogg/.wav，与 Windows 设置「打开频谱查看器」同一入口）。服务首启后进程常驻：
+    /// 再次点击先探测 8765 已在监听就直接重开页面，避免二次绑端口静默失败。
+    @objc private func launchAudioDebug() {
+        if audioDebugServerListening() {
+            if let url = URL(string: "http://127.0.0.1:8765/") {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        guard let script = audioDebugScriptPath() else {
+            showErrorAlert(title: tr(.settingsAudioDebugFailedTitle), message: tr(.settingsAudioDebugNotFound))
+            return
+        }
+        let process = Process()
+        let python = ["/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        if let python {
+            process.executableURL = URL(fileURLWithPath: python)
+            process.arguments = [script]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["python3", script]
+        }
+        // 传当前编辑框内容：未保存的目录修改也对本次调试生效；为空则由脚本读 config.toml。
+        let dir = debugAudioDirectoryField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !dir.isEmpty {
+            process.arguments?.append(contentsOf: ["--dir", dir])
+        }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            showErrorAlert(title: tr(.settingsAudioDebugFailedTitle), message: tr(.settingsAudioDebugNotFound))
+        }
+    }
+
+    /// 与 Windows OpenSpectrogramViewer 对齐的脚本解析：exe 同目录 → 向上逐级找仓库根。
+    private func audioDebugScriptPath() -> String? {
+        guard let exeDir = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
+        let fm = FileManager.default
+        let sibling = exeDir.appendingPathComponent("spectrogram_server.py")
+        if fm.fileExists(atPath: sibling.path) { return sibling.path }
+        var dir = exeDir
+        for _ in 0..<8 {
+            dir = dir.deletingLastPathComponent()
+            let candidate = dir.appendingPathComponent("scripts/e2e_test/spectrogram_server.py")
+            if fm.fileExists(atPath: candidate.path) { return candidate.path }
+        }
+        return nil
+    }
+
     private func selectedProvider() -> ASRProvider {
         switch providerPopup.titleOfSelectedItem {
         case ASRProvider.voiceStickCloud.displayName:
@@ -622,5 +679,23 @@ final class SettingsWindowController: NSWindowController {
         row.addArrangedSubview(spacer)
         row.addArrangedSubview(label)
         return row
+    }
+}
+
+/// 8765 有监听即认为调试回放服务已起（loopback connect 收/拒均为即时返回）。
+/// 文件作用域函数：类内裸调 `close` 会被 NSWindowController 的实例方法遮蔽。
+private func audioDebugServerListening() -> Bool {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = in_port_t(8765).bigEndian
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    return withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+        }
     }
 }
