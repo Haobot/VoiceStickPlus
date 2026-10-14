@@ -6,35 +6,35 @@
     <description>VoiceStick app updates</description>
     <language>zh-CN</language>
     <item>
-      <title>Version 2.4.6</title>
+      <title>Version 2.4.10</title>
       <description><![CDATA[
-        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><b>VoiceStick 2.4.6（Windows + 固件）</b><ul><li>新增（Windows）：升级安装时自动重置 StickS3 配对——安装新版后首次启动会解除设备在系统蓝牙里的旧配对记录并清理本地配对信息，直接进入配对引导，重新绑定更流畅；小米蓝牙遥控器的配对<b>不受影响</b>（其按键直通依赖系统配对，保持原样）</li><li>修复（Windows）：延续 2.4.5 的内置凭据修复——安装/升级自动写入完整测试配置（火山/腾讯/LLM 开箱即用），无需手动输入 API Key</li><li>固件无功能变更（版本号随发布对齐 2.4.6；包含 2.4.5/2.4.4/2.4.3 的全部固件特性）</li></ul></div>
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div># VoiceStick 2.4.10</div><b>改进</b><b>说明</b><ul><li><b>录音音质与识别精度（本版核心）</b>：固件音频链路参数收紧——软件高通滤波 90→120Hz（喷麦爆破音能量实测集中在 100-150Hz）、AGC 目标 -6→-12dBFS、增益上限 +20→+12dB。爆点不再撞限幅产生削波失真，语音间隙底噪泵升直降约 8dB；近场说话、喷麦场景的语音识别准确率明显提升（真机 A/B 已验证）。</li><li><b>桌面端人声增强/降噪（RNNoise，PoC）</b>：新增 <code>audio_noise_suppression</code> 配置项（默认关）。开启后 ASR 前对音频做 RNNoise 频域降噪（抑制风扇/空调/环境稳态底噪），macOS 与 Windows 双端可用；仅覆盖主输入路径，处理失败自动回退透传，增加约 10ms 时延。</li><li><b>小米遥控器直连模式</b>：桌面端后处理链 HPF/AGC 与固件同步收紧，音质与网关模式拉齐。</li><li>本版本包含固件 2.4.10：设备 OTA 会自动提示升级，建议 app 与固件一起升。</li><li>喷麦的物理层手段（麦克风防风罩/海绵罩）仍是最有效单点，与本次软件改进叠加效果最佳。</li><li>网站下载按钮按版本号拼直链；若某平台安装包处于发布过渡窗口暂未就绪，请直接在本 Release 页面下载对应资产。</li></ul></div>
       ]]></description>
-      <pubDate>Sun, 27 Sep 2026 23:59:46 +0000</pubDate>
+      <pubDate>Wed, 14 Oct 2026 05:06:00 +0000</pubDate>
       <enclosure
-        url="https://dl.davenger.cloud/software/windows/v2.4.6/VoiceStick_2.4.6_zh-CN.msi"
+        url="https://dl.davenger.cloud/software/windows/v2.4.10/VoiceStick_2.4.10_zh-CN.msi"
         sparkle:os="windows"
-        sparkle:version="2.4.6"
-        sparkle:shortVersionString="2.4.6"
+        sparkle:version="2.4.10"
+        sparkle:shortVersionString="2.4.10"
         sparkle:installerArguments="/passive"
-        length="33488896"
+        length="33652736"
         type="application/octet-stream"
       />
     </item>
     <item>
-      <title>Version 2.4.9</title>
+      <title>Version 2.4.10</title>
       <description><![CDATA[
-        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div><b>VoiceStick 2.4.9（macOS OTA 修复轮）</b></div><div>升级提示：v2.4.7/2.4.8 用户经应用内自动更新到本版（macOS 上此次更新本身也走限速链路，请耐心等待约 25 分钟，或插 USB 线手动升级）；Windows 用户无需升级。</div><ul><li>修复（macOS）：固件更新过程断链（~21% 处卡死报「没有设备连接」）——发送节奏对齐 Windows，不再突发灌满设备。</li><li>定案（macOS）：macOS 蓝牙对已配对 HID 设备强制省电调度，<b>无线固件更新速度上限约 0.6-1KB/s，属系统平台限制</b>（Windows 不受限）。更新窗口会在低速时提示；<b>建议 Mac 用户升级固件时优先插 USB 数据线</b>（约 10 秒完成）。</li><li>修复（固件）：连接参数请求改为范围式，兼容 macOS/Windows 双端调度策略。</li><li>延续 2.4.8：安装包内置全部 API 凭据，开箱即用。</li></ul></div>
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div># VoiceStick 2.4.10</div><b>改进</b><b>说明</b><ul><li><b>录音音质与识别精度（本版核心）</b>：固件音频链路参数收紧——软件高通滤波 90→120Hz（喷麦爆破音能量实测集中在 100-150Hz）、AGC 目标 -6→-12dBFS、增益上限 +20→+12dB。爆点不再撞限幅产生削波失真，语音间隙底噪泵升直降约 8dB；近场说话、喷麦场景的语音识别准确率明显提升（真机 A/B 已验证）。</li><li><b>桌面端人声增强/降噪（RNNoise，PoC）</b>：新增 <code>audio_noise_suppression</code> 配置项（默认关）。开启后 ASR 前对音频做 RNNoise 频域降噪（抑制风扇/空调/环境稳态底噪），macOS 与 Windows 双端可用；仅覆盖主输入路径，处理失败自动回退透传，增加约 10ms 时延。</li><li><b>小米遥控器直连模式</b>：桌面端后处理链 HPF/AGC 与固件同步收紧，音质与网关模式拉齐。</li><li>本版本包含固件 2.4.10：设备 OTA 会自动提示升级，建议 app 与固件一起升。</li><li>喷麦的物理层手段（麦克风防风罩/海绵罩）仍是最有效单点，与本次软件改进叠加效果最佳。</li><li>网站下载按钮按版本号拼直链；若某平台安装包处于发布过渡窗口暂未就绪，请直接在本 Release 页面下载对应资产。</li></ul></div>
       ]]></description>
-      <pubDate>Fri, 02 Oct 2026 15:20:53 +0000</pubDate>
+      <pubDate>Wed, 14 Oct 2026 05:06:00 +0000</pubDate>
       <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
       <enclosure
-        url="https://dl.davenger.cloud/software/macos/v2.4.9/VoiceStick-2.4.9.zip"
+        url="https://dl.davenger.cloud/software/macos/v2.4.10/VoiceStick-2.4.10.zip"
         sparkle:os="macos"
-        sparkle:version="2.4.9"
-        sparkle:shortVersionString="2.4.9"
-        sparkle:edSignature="GHuVqlkFdW4NZ6mQ39XSrueDmTLmHI4hx52vNd/Xcwzs14m67/cZKL4H5ChnRkuUEvcaWT+OUasKqO0/qKu2Dg=="
-        length="4587368"
+        sparkle:version="2.4.10"
+        sparkle:shortVersionString="2.4.10"
+        sparkle:edSignature="wualeLKN+WzyCA4JyjFQJbIGMRPPJXSLtI5mfmwqvAu66WG6goB6+vNw3AzjTnWM6HL8q+aL+3p+LoW49NXTAw=="
+        length="5026324"
         type="application/octet-stream"
       />
     </item>
