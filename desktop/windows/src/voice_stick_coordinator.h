@@ -3,6 +3,7 @@
 #include "air_mouse_kin.h"
 #include "app_config.h"
 #include "asr_protocol.h"
+#include "audio_enhancer.h"
 #include "audio_opus_decoder.h"
 #include "audio_opus_encoder.h"
 #include "ble_protocol.h"
@@ -684,6 +685,10 @@ private:
     std::mutex audio_mutex_;
     OggOpusMuxer ogg_muxer_{16000, 1};
     DebugAudioRecorder debug_audio_recorder_;
+    // RNNoise 人声增强（主输入路径，按会话创建；audio_noise_suppression 开关，
+    // 默认关）。创建/处理失败回退透传原始帧，后者每会话只记一次日志。
+    std::unique_ptr<AudioEnhancer> audio_enhancer_;
+    bool audio_enhancer_fallback_logged_ = false;
     SessionState session_state_ = SessionState::kReady;
     std::optional<std::uint32_t> active_session_id_;
     std::optional<std::string> active_device_id_;

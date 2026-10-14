@@ -72,3 +72,7 @@ clang++ -std=c++20 -fsyntax-only -Idesktop/windows/src desktop/windows/src/pcm_p
 - Windows 正式构建 + ctest（重点 `TestPcmPostprocessor` 与 ATVV golden fixtures）**待 Windows 机**；本机 clang 交叉验证已过不能替代 MSVC/Win32 全量。
 - 真机 A/B：同环境近场录音改前/改后各一段（`debug_audio_cache = true`），判据 = 调试会话页频谱 0–100Hz 能量显著消失、波形不再平顶；`--no-hpf --no-agc` 可做同源对照。
 - `gain_db` 语义已变为「HPF 后、AGC 前的固定预增益」；旧配置值不变，但调参手感与旧版不同（AGC 会接管电平）。
+
+## 2026-10-14 追加：参数收紧（喷麦/底噪治理）
+
+本文 §链路规格 与正文中的 HPF 90Hz、AGC -6dBFS/+20dB 为 2026-10-13 实施时点值，**已于 2026-10-14 被取代**：HPF 上调 120Hz、AGC 目标 -12dBFS、上限 +12dB（网关模式真机录音爆点/底噪分析驱动，现行常量以 `Doc/Plan/software-agc.md` 附录与源码为准）。Python 镜像类名随之改为 `Hpf120Hz`；golden fixture 已按新常量重生成，三端对拍纪律与本文经验不受影响。

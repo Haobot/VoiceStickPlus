@@ -9,11 +9,11 @@
 
 namespace voicestick {
 
-// PCM 后处理链：三点平滑（首尾样本不动）→ HPF(90Hz) → 固定 dB 增益（钳位
+// PCM 后处理链：三点平滑（首尾样本不动）→ HPF(120Hz) → 固定 dB 增益（钳位
 // ±24 dB）→ 软件 AGC（含 0.8FS 瞬时限幅）。算法逐字移植固件
 // audio_pipeline.c:55-153（HPF 系数与 AGC 常量），级间量化回 int16，
 // 与 macOS Swift / Python 镜像 bit 级对齐（golden fixture 对拍）。
-// HPF 置于固定增益之前：先削掉爆破音的 20–100Hz 能量，避免 +12dB 把它
+// HPF 置于固定增益之前：先削掉爆破音的 20–150Hz 能量，避免 +12dB 把它
 // 推进 int16 饱和区。HPF/AGC 状态跨 Process 调用保持（按 640 样本帧流式
 // 处理），每次录音会话开始由 XiaomiAtvvSession 调 Reset() 清零。
 class PcmPostprocessor {
@@ -37,18 +37,21 @@ public:
     static double ClampGainDb(double gain_db);
 
 private:
-    // 二阶 Butterworth 高通（transposed DF-II），fc≈90Hz @16kHz，Q=0.707
-    // （逐字拷贝固件）：90Hz -3.0dB / 50Hz -10.6dB / ≥300Hz ~0dB。
-    static constexpr double kHpfB0 = 0.975318;
-    static constexpr double kHpfB1 = -1.950637;
-    static constexpr double kHpfB2 = 0.975318;
-    static constexpr double kHpfA1 = -1.950028;
-    static constexpr double kHpfA2 = 0.951246;
+    // 二阶 Butterworth 高通（transposed DF-II），fc≈120Hz @16kHz，Q=0.707
+    // （逐字拷贝固件）：120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / ≥300Hz ~0dB。
+    // （2026-10-14 由 90Hz 上调至 120Hz：喷麦爆点能量集中在 100-150Hz。）
+    static constexpr double kHpfB0 = 0.967227;
+    static constexpr double kHpfB1 = -1.934455;
+    static constexpr double kHpfB2 = 0.967227;
+    static constexpr double kHpfA1 = -1.933380;
+    static constexpr double kHpfA2 = 0.935529;
 
     // 软件 AGC 常量（逐字拷贝固件；固件为 float，桌面端统一 double 保证
     // C++↔Python 对拍确定）。
-    static constexpr double kAgcTarget = 16384.0;      // -6 dBFS
-    static constexpr double kAgcMaxGain = 10.0;        // +20 dB
+    // 2026-10-14 收紧：目标 -6→-12dBFS、上限 +20→+12dB——旧参数把语音推到贴近
+    // 满幅致爆点撞限幅，且 +20dB 上限在语音间隙把环境底噪抬高 20dB。
+    static constexpr double kAgcTarget = 8192.0;       // -12 dBFS
+    static constexpr double kAgcMaxGain = 4.0;         // +12 dB
     static constexpr double kAgcMinGain = 0.1;         // -20 dB
     static constexpr double kAgcNoiseFloor = 184.0;    // -45 dBFS
     static constexpr double kAgcEnvAttack = 0.98758;   // 快攻 5ms

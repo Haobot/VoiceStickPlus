@@ -52,17 +52,19 @@ static const char *TAG = "audio_pipeline";
  * audio_task 残留 drain（~80ms）与余量，否则 drain 未完成就返回、button_up 抢跑丢尾音。 */
 #define TASK_EXIT_WAIT_MS 3000
 
-/* 二阶 Butterworth 高通滤波器（transposed direct form II），截止 fc≈90Hz @ 16kHz，
- * 抑制近距离说话时呼吸气流冲击麦克风的低频爆破音（plosive，能量集中在 20-100Hz）。
+/* 二阶 Butterworth 高通滤波器（transposed direct form II），截止 fc≈120Hz @ 16kHz，
+ * 抑制近距离说话时呼吸气流冲击麦克风的低频爆破音（plosive，能量集中在 20-150Hz）。
  * 硬件 ES8311 ADC HPF 截止太低（去 DC 级）无法去爆破音，故在 PCM 进入 Opus 前软件再过一道。
- * 系数（Q=0.707 Butterworth，fc=90Hz，fs=16000Hz）离线计算并验证频响：
- * 90Hz -3.0dB / 50Hz -10.6dB / 30Hz -19.1dB / 150Hz -0.5dB / 300Hz+ ~0dB（语音中高频无损）。
+ * 系数（Q=0.707 Butterworth，fc=120Hz，fs=16000Hz）离线计算并验证频响：
+ * 120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / 200Hz -0.5dB / 300Hz+ ~0dB（语音中高频无损）。
+ * （2026-10-14 由 90Hz 上调至 120Hz：喷麦爆点能量集中在 100-150Hz，90Hz 档位削不动；
+ * 中文 ASR 不依赖 200Hz 以下信息。）
  * 截止频率若需调整，重算系数即可（scripts/ 下可复现）。状态每会话开始时清零。 */
-static const double kHpfB0 = 0.975318;
-static const double kHpfB1 = -1.950637;
-static const double kHpfB2 = 0.975318;
-static const double kHpfA1 = -1.950028;
-static const double kHpfA2 = 0.951246;
+static const double kHpfB0 = 0.967227;
+static const double kHpfB1 = -1.934455;
+static const double kHpfB2 = 0.967227;
+static const double kHpfA1 = -1.933380;
+static const double kHpfA2 = 0.935529;
 static double s_hpf_z1 = 0.0;
 static double s_hpf_z2 = 0.0;
 
@@ -81,16 +83,21 @@ static inline int16_t hpf_process(int16_t x) {
  * （大声近场削波到 0dB、轻声拉不到 -11dBFS 目标），且增益不可观测；电平归一收回软件。
  * 设计依据与实测数据见 Doc/Plan/software-agc.md。
  * 包络：|x| 一阶峰值跟随，快攻 5ms / 慢释 300ms。
- * 增益：desired = target/env，target=-6dBFS，上限 +20dB；上升慢 500ms（防 pumping）、
+ * 增益：desired = target/env，target=-12dBFS，上限 +12dB；上升慢 500ms（防 pumping）、
  * 下降快 2ms（兼软限幅，突发大声 2ms 内压到不削波）。
+ * （2026-10-14 由 -6dBFS/+20dB 收紧：旧参数把语音推到贴近满幅，爆点撞 0.8FS 限幅
+ * 产生可闻"砰"声；且 +20dB 上限把 -50dBFS 级环境噪声在语音间隙抬到 -30dBFS，
+ * 底噪明显。云端 ASR 对绝对电平不敏感（服务端归一化），收紧后 SNR 不变但
+ * 失真与噪声泵升同降。语音进行中的带内噪声由桌面端降噪负责，勿靠抬门限硬压
+ * ——-40dBFS 轻声与真实噪声包络区间重叠，硬门会吃掉轻声起音。）
  * 噪声门：env < -45dBFS 时不再加增益，增益以 ~1s 时间常数缓回 0dB，
  * 既不抬静音段底噪，也避免句间停顿后增益骤降导致下一句起音偏轻。
  * 瞬时限幅：逐样本保证 |x|*gain <= 0.8FS（无记忆，不改增益状态），
  * 压住「增益挂在高位时突发起音」头几毫秒的过冲，避免硬削波（实测真机会撞到 0dB）。
  * 上限取 0.8FS 而非贴近满幅：Opus 解码有 +1.5~2dB 过冲，需预留余量（实测见下）。
  * 状态每会话开始时复位（见 audio_pipeline_start）。 */
-#define AGC_TARGET 16384.0f        /* -6 dBFS */
-#define AGC_MAX_GAIN 10.0f         /* +20 dB */
+#define AGC_TARGET 8192.0f         /* -12 dBFS */
+#define AGC_MAX_GAIN 4.0f          /* +12 dB */
 #define AGC_MIN_GAIN 0.1f          /* -20 dB */
 #define AGC_NOISE_FLOOR 184.0f     /* -45 dBFS */
 #define AGC_ENV_ATTACK 0.98758f    /* exp(-1/(16000*0.005)) */
@@ -124,7 +131,7 @@ static inline int16_t agc_process(int16_t x)
     }
     s_agc_gain = gc * s_agc_gain + (1.0f - gc) * desired;
     /* 瞬时峰值限幅：无记忆，不回写 s_agc_gain。增益平滑下降需 2ms，
-     * 突发起音（尤其增益挂在 +20dB 高位时）靠它兜底防削波。
+     * 突发起音（尤其增益挂在 +12dB 高位时）靠它兜底防削波。
      * 上限取 0.8FS（-1.9dB）而非贴近满幅：Opus 编解码有约 +1.5~2dB 的过冲
      * （真机实测 0.95FS 上限时解码后峰值 +1.2dB 越界），预留过冲余量。 */
     float g = s_agc_gain;

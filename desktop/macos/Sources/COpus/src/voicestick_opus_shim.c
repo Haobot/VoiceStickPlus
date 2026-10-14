@@ -75,3 +75,11 @@ void vs_opus_decoder_destroy(void* st) {
     if (st == NULL) return;
     opus_decoder_destroy((OpusDecoder*)st);
 }
+
+void* vs_opus_decoder_create_48k(int* errorOut) {
+    int error = OPUS_OK;
+    OpusDecoder* st = opus_decoder_create(48000, VS_OPUS_CHANNELS, &error);
+    if (errorOut) *errorOut = error;
+    if (error != OPUS_OK) return NULL;
+    return st;
+}

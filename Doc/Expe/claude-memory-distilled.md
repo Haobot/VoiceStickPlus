@@ -39,10 +39,10 @@
 
 `audio_pipeline.c` 在 PCM 抽单声道后、Opus 编码前加二阶 Butterworth HPF（transposed direct form II），抑制 20–100Hz 呼吸气流爆破音；硬件 ES8311 HPF 截止太低（去 DC 级）对爆破音无效。去掉 100Hz 以下气流噪声后 ASR 字错率也明显改善。
 
-- 参数：fc≈90Hz @16kHz，Q=0.707；b0=0.975318 b1=-1.950637 b2=0.975318 a1=-1.950028 a2=0.951246。
-- 频响：90Hz -3dB / 50Hz -10.6dB / 30Hz -19dB / 150Hz -0.5dB / 300Hz+ ~0dB。
+- 参数（2026-10-14 起）：fc≈120Hz @16kHz，Q=0.707；b0=0.967227 b1=-1.934455 b2=0.967227 a1=-1.933380 a2=0.935529（爆点能量实测集中 100-150Hz；旧 90Hz 系数 b0=0.975318 b1=-1.950637 b2=0.975318 a1=-1.950028 a2=0.951246）。
+- 频响：120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / 200Hz -0.5dB / 300Hz+ ~0dB。
 - 调参：男声偏闷调到 100–120Hz；爆破残留调到 70–80Hz。状态每会话 start 清零；**audio_task 与 drain 路径都要过滤**；`hpf_process` 用 lround 取整+软限幅防漂移。
-- **2026-10-13 起桌面端镜像同一链路**：小米直连桌面（ATVV）后处理 = 三点平滑 → HPF(90Hz) → 固定增益 → AGC（0.8FS 限幅），算法/常量逐字拷贝、级间 int16 量化、Swift/C++/Python 三端 bit 级对齐（golden fixture 对拍），`[device.<id>.xiaomi]` 加 `hpf`/`agc` 开关（默认开，关=旧行为）。实施与跨端对拍手法见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`，方案见 `Doc/Plan/xiaomi-direct-desktop-hpf-agc.md`。
+- **2026-10-13 起桌面端镜像同一链路**：小米直连桌面（ATVV）后处理 = 三点平滑 → HPF(120Hz) → 固定增益 → AGC（0.8FS 限幅），算法/常量逐字拷贝、级间 int16 量化、Swift/C++/Python 三端 bit 级对齐（golden fixture 对拍），`[device.<id>.xiaomi]` 加 `hpf`/`agc` 开关（默认开，关=旧行为）。**2026-10-14 参数收紧**：HPF 90→120Hz、AGC 目标 -6→-12dBFS、上限 +20→+12dB（动机与新常量见 `Doc/Plan/software-agc.md` 附录）；RNNoise 人声增强 PoC（`audio_noise_suppression` 配置项，默认关；macOS `AudioEnhancer.swift` + Windows `audio_enhancer.cc` 双端镜像：Opus 解码@48k → RNNoise → 重编码 16k，仅主输入路径，失败回退透传）。实施与跨端对拍手法见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`，方案见 `Doc/Plan/xiaomi-direct-desktop-hpf-agc.md`。
 
 ### 1.4 尾音丢失：button_up 抢跑 drain（已根治）
 

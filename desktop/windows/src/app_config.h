@@ -370,6 +370,8 @@ struct AppConfig {
     bool selection_hotword_enabled = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
+    // RNNoise 人声增强/降噪（ASR 前；PoC，默认关；仅主输入路径，字幕/微信路径不覆盖）。
+    bool audio_noise_suppression = false;
     // 便携模式：当 exe 同级目录存在 config.toml 时自动激活，
     // 所有数据（配置/日志/调试音频）存储在 exe 目录而非 %APPDATA%。
     bool portable_mode = false;

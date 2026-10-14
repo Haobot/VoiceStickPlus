@@ -35,6 +35,7 @@ public struct ConfigFile: Decodable {
     public var auto_enter: Bool?
     public var debug_audio_cache: Bool?
     public var debug_audio_dir: String?
+    public var audio_noise_suppression: Bool?
     public var paired_device: [String]?
     public var xiaomi_suppress_f5: Bool?
     public var global_hotkey_enabled: Bool?

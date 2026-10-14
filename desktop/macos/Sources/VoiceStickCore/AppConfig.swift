@@ -39,6 +39,9 @@ public struct AppConfig {
     public var autoEnter: Bool
     public var debugAudioCache: Bool
     public var debugAudioDirectory: URL
+    /// ASR 前桌面端人声增强/降噪（RNNoise，对齐 Windows 侧规划中的同名能力）：
+    /// 解码 Opus→RNNoise→重编码后送 ASR，默认关（PoC 阶段，config 显式开启）。
+    public var audioNoiseSuppression: Bool
     /// 配对设备条目表（paired_device CSV 数组持久化），与 pairedDeviceIDs 同步维护。
     public var pairedDevices: [PairedDeviceEntry]
     /// [device.<id>.xiaomi] 按设备覆盖（键为归一化 4 位大写 hex ID）。
@@ -181,6 +184,7 @@ public struct AppConfig {
             autoEnter: true,
             debugAudioCache: false,
             debugAudioDirectory: defaultDebugAudioDirectory,
+            audioNoiseSuppression: false,
             pairedDevices: [],
             deviceXiaomiSettings: [:],
             xiaomiSuppressF5: true,
@@ -259,6 +263,7 @@ public struct AppConfig {
             autoEnter: file.auto_enter ?? defaults.autoEnter,
             debugAudioCache: file.debug_audio_cache ?? defaults.debugAudioCache,
             debugAudioDirectory: directoryValue(file.debug_audio_dir, default: defaults.debugAudioDirectory),
+            audioNoiseSuppression: file.audio_noise_suppression ?? defaults.audioNoiseSuppression,
             pairedDevices: pairedDeviceEntryList(file.paired_device ?? []),
             deviceXiaomiSettings: deviceXiaomiSettingsMap(file.device),
             xiaomiSuppressF5: file.xiaomi_suppress_f5 ?? defaults.xiaomiSuppressF5,
@@ -389,6 +394,7 @@ public struct AppConfig {
         encoder_double_click_key = "\(encoderSettings.doubleClickKey.tomlEscaped)"
         debug_audio_cache = \(debugAudioCache.tomlValue)
         debug_audio_dir = "\(debugAudioDirectory.path.tomlEscaped)"
+        audio_noise_suppression = \(audioNoiseSuppression.tomlValue)
         """
         text += pairedDevicesText
         text += """
@@ -475,6 +481,7 @@ public struct AppConfig {
             autoEnter: boolValue(values["auto_enter"], default: defaults.autoEnter),
             debugAudioCache: boolValue(values["debug_audio_cache"], default: defaults.debugAudioCache),
             debugAudioDirectory: directoryValue(values["debug_audio_dir"], default: defaults.debugAudioDirectory),
+            audioNoiseSuppression: boolValue(values["audio_noise_suppression"], default: defaults.audioNoiseSuppression),
             pairedDevices: pairedDeviceEntryList(pairedDeviceLines),
             // [device.<id>.xiaomi] 表放弃解析（表结构超出逐行解析能力；
             // Windows legacy 同样不解析 device 表）。

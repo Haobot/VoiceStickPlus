@@ -31,6 +31,9 @@ device_overlay_positions = ""
 auto_enter = true
 debug_audio_cache = false
 # debug_audio_dir = "~/Library/Application Support/VoiceStick/DebugAudio"
+# ASR 前桌面端 RNNoise 人声增强/降噪（PoC，默认关）：开启后 Opus 解码→降噪→
+# 重编码再送 ASR，抑制环境底噪；增加约 10ms 处理时延。仅 macOS 主输入路径。
+audio_noise_suppression = false
 
 # 体感鼠标（v2.4.7 起 macOS 消费；开关在托盘设备子菜单「体感鼠标」，侧键单击退出；
 # 键名与默认值与 Windows 完全一致，配置文件跨端通用）。

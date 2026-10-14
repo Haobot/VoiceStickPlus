@@ -1,6 +1,6 @@
 # 小米遥控器直连桌面链路补 HPF + AGC（音质/ASR 修复）
 
-2026-10-13。状态：已实施（Python 镜像 + fixture 再生、macOS 全绿 816/816、Windows 代码就绪待 Windows 机 ctest 复验）。
+2026-10-13。状态：已实施（Python 镜像 + fixture 再生、macOS 全绿 816/816、Windows 代码就绪待 Windows 机 ctest 复验）。**2026-10-14 追加**：HPF 90→120Hz、AGC -6dBFS/+20dB → -12dBFS/+12dB 四端收紧（含 golden fixture 重生成，macOS 825/825 全绿；动机见 `Doc/Plan/software-agc.md` 附录）；下文常量与测试期望值均已按新值更新。
 
 ## 背景与根因
 
@@ -13,8 +13,8 @@
 
 | 处理 | 固件链路（含网关模式中继） | 小米直连桌面链路 |
 |---|---|---|
-| 二阶 Butterworth HPF fc≈90Hz（去 20–100Hz 爆破音） | 有（`firmware/components/audio_pipeline/audio_pipeline.c:55-78`） | 无 |
-| 软件 AGC（-6dBFS 目标、快下慢上、噪声门、0.8FS 瞬时限幅） | 有（`audio_pipeline.c:80-153`） | 无（固定增益硬削波） |
+| 二阶 Butterworth HPF fc≈120Hz（去 20–150Hz 爆破音；2026-10-14 由 90Hz 上调） | 有（`firmware/components/audio_pipeline/audio_pipeline.c:55-78`） | 无 |
+| 软件 AGC（-12dBFS 目标/+12dB 上限——2026-10-14 收紧，原 -6dBFS/+20dB、快下慢上、噪声门、0.8FS 瞬时限幅） | 有（`audio_pipeline.c:80-153`） | 无（固定增益硬削波） |
 
 爆破音低频能量无 HPF 滤除，经 +12dB 固定增益后 int16 饱和削波 → 宽带谐波失真 → ASR 特征被毁；
 轻声/远场又电平不足。网关模式音频过固件 HPF+AGC，可作 A/B 对照。
@@ -39,17 +39,18 @@ HPF 放在固定增益**之前**：先削爆破低频能量，避免 +12dB 把�
 
 ### HPF（transposed DF-II biquad，double）
 
-系数逐字拷贝固件 `audio_pipeline.c:61-65`（fc≈90Hz @16kHz，Q=0.707）：
+系数逐字拷贝固件 `audio_pipeline.c:61-65`（fc≈120Hz @16kHz，Q=0.707；
+2026-10-14 由 90Hz 上调，爆点能量实测集中 100-150Hz）：
 
 ```text
-b0 = 0.975318   b1 = -1.950637   b2 = 0.975318   a1 = -1.950028   a2 = 0.951246
+b0 = 0.967227   b1 = -1.934455   b2 = 0.967227   a1 = -1.933380   a2 = 0.935529
 y  = b0*x + z1
 z1 = b1*x - a1*y + z2
 z2 = b2*x - a2*y
 out = clamp(lround(y))
 ```
 
-参考频响（固件已实测验证）：90Hz -3.0dB / 50Hz -10.6dB / 30Hz -19.1dB / ≥300Hz ~0dB。
+参考频响（离线计算验证）：120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / 200Hz -0.5dB / ≥300Hz ~0dB。
 状态：`z1`、`z2`，会话开始清零。
 
 ### AGC（double；固件为 float，桌面端统一 double 保证 C++↔Python 对拍确定）
@@ -57,8 +58,8 @@ out = clamp(lround(y))
 常量逐字拷贝固件 `audio_pipeline.c:92-100`：
 
 ```text
-TARGET = 16384.0        # -6 dBFS
-MAX_GAIN = 10.0         # +20 dB
+TARGET = 8192.0         # -12 dBFS（2026-10-14 由 -6dBFS 收紧）
+MAX_GAIN = 4.0          # +12 dB（2026-10-14 由 +20dB 收紧）
 MIN_GAIN = 0.1          # -20 dB
 NOISE_FLOOR = 184.0     # -45 dBFS
 ENV_ATTACK = 0.98758    ENV_RELEASE = 0.99979
@@ -147,10 +148,11 @@ out = clamp(lround(x * g))
 ### 3. Python 镜像 + golden fixtures（强制，否则三端对拍红）
 
 - `scripts/e2e_test/atvv_capture.py`
-  - `smooth3`（:347）/`apply_gain`（:359）保留不动；新增 `hpf_90hz(samples)` 与
-    `agc_process(samples)`（常量、lround half-away-from-zero 与 `apply_gain` 同一 helper）。
+  - `smooth3`（:347）/`apply_gain`（:359）保留不动；新增 `Hpf120Hz` 与
+    `Agc` 两个处理器类（常量、lround half-away-from-zero 与 `apply_gain` 同一 helper；
+    2026-10-14 HPF 上调后类名由 `Hpf90Hz` 改为 `Hpf120Hz`）。
   - 新增组合入口 `postprocess(samples, gain_db, hpf=True, agc=True)` =
-    `agc_process(apply_gain(hpf_90hz(smooth3(samples))))`（按开关跳过）。
+    `Agc().process(apply_gain(Hpf120Hz().process(smooth3(samples))))`（按开关跳过）。
   - 落盘点 `:500` 改为 `postprocess(self.pcm_samples, self.args.gain_db, …)`；
     CLI 加 `--no-hpf` / `--no-agc`（A/B 采集用）。
   - `self_test()`（:853 起）：新增 HPF（直流衰减、50Hz vs 1kHz 幅度比）与 AGC
@@ -169,8 +171,9 @@ out = clamp(lround(x * g))
     断言语义不变，继续守旧路径。
   - 新增：
     - HPF 直流衰减：1000 个恒定 5000 输入，末 100 样本 |out| < 50。
-    - HPF 频响：10000 幅度 50Hz 与 1kHz 正弦各 1s，稳态 RMS 比 ≥ 10dB 衰减。
-    - AGC 拉起：-40dBFS（幅度 ≈328）1kHz 正弦 2s，稳态输出幅度 ≈16384 ±20%。
+    - HPF 频响：10000 幅度 50Hz 与 1kHz 正弦各 1s，稳态 RMS 比 ≥ 13dB 衰减。
+    - AGC 拉起：-40dBFS（幅度 ≈328）1kHz 正弦 2s，稳态输出幅度 ≈1312 ±20%
+      （上限增益 4.0 × 328 = 1312，Python 仿真 1291）。
     - 瞬时限幅：满幅（±32000）突发起音，|out| ≤ 26215。
     - `reset()`：同一输入序列跑两遍（中间 reset）输出逐样本一致。
 - Windows `tests/core_tests_codec_serial.cc` `TestPcmPostprocessor()`（:146-172）：

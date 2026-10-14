@@ -34,7 +34,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 
 固件关键外部依赖：`espressif/button` ^4.1.6、`espressif/esp_codec_dev` ^1.3.4 + `78/esp-opus` ^1.0.5、`lvgl/lvgl` 9.2.0，由 ESP-IDF component manager 经各组件 `idf_component.yml` 管理。
 
-macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `desktop/windows/third_party/opus` 同源拷贝），供小米遥控器 ATVV 链路把 PCM 归一化为标准 Opus 帧。
+macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `desktop/windows/third_party/opus` 同源拷贝），供小米遥控器 ATVV 链路把 PCM 归一化为标准 Opus 帧。RNNoise 人声增强（`audio_noise_suppression`，默认关）双端 vendored 同源：macOS `Sources/CRnnoise`、Windows `desktop/windows/third_party/rnnoise`（xiph/rnnoise master 2026-10-14，BSD-2，仅推理最小集，改动须双侧同步）。
 
 ## 构建与测试速查
 
@@ -89,6 +89,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 - Windows 构建若报 `C1083: winrt/base.h` 找不到：`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 生成投影头到 `desktop/windows/generated_winrt/`（gitignored）并 prepend 到 `INCLUDE`；手动 vcvars64 构建时须同样加入。
 - 本机（macOS）改完 Windows core 无法跑 `build_win.bat` 时：`desktop/windows` 里**无 Win32 依赖的纯逻辑 .cc**（如 `pcm_postprocessor.cc`/`ima_adpcm_decoder.cc`）可用 `clang++ -std=c++20 -fsyntax-only` 语法检查 + 本地链接小 main 与 Python 镜像 golden 对拍做预验证；`xiaomi_atvv_session.h` 嵌套 `Options = {}` 默认实参与 `localtime_s` 是 clang/MSVC 预存差异，勿误判为自己改坏。方案的数值测试期望值**先用算法常量对算一遍**（先例：-40dBFS 输入经 MAX_GAIN=+20dB 只能到 ≈-20dBFS，方案写「拉起至 -6dBFS」系笔误）；DSP 链「分帧流式 == 整段一次」断言必红（平滑按 process 调用粒度作用），正确姿势是 reset 后流式 vs 全新实例流式。详见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`。
 - macOS 端拉取 SwiftPM 依赖（Sparkle/TOMLKit 走 GitHub）需走系统代理（github 直连不通）：命令前缀 `https_proxy=http://127.0.0.1:5782`（端口以 `scutil --proxy` 为准）。
+- 本机 `~/esp/esp-idf` 已切到 **v6.1 主线**（esp32s31 项目用）；本项目固件仍须用 **ESP-IDF v5.5.1**（`/Users/hwp/esp/v5.5.1/esp-idf`）：构建 `source /Users/hwp/esp/v5.5.1/esp-idf/export.sh && idf.py build`，烧录 `python3 scripts/idf_cli.py -u --idf-path /Users/hwp/esp/v5.5.1/esp-idf`——误 source `~/esp/esp-idf/export.sh` 会拉到 v6.1 构建失败。
 - 本机（CLT-only，macOS 27 SDK）构建 macOS 桌面端必须加 `VOICESTICK_ARCHS=arm64`（Swift 兼容静态库已不含 x86_64 slice，x86_64 链接必失败；脚本默认仍 universal，发布机不受影响）；开发包签名已内置自签证书固定 TCC 身份（CN `"VoiceStick Local Code Signing"`），蓝牙/输入监控/辅助功能授权一次跨编译保持，证书排障与构建链三坑见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节与 `Doc/Expe/macos-clt27-build-chain-traps-2026-09-22.md`。
 - macOS 发布打包：`SPARKLE_PRIVATE_ED_KEY="$(cat ~/.voicestick-sign/sparkle/ed-private-key)" VOICESTICK_ARCHS=arm64 scripts/build-macos.sh --release`（须带代理 env：脚本用独立 scratch path 会重新拉 SwiftPM 依赖）→ `scripts/make-dmg.sh`。内测包须见日志 `Injecting built-in credentials into VoiceStickApp`（源=本机 config.toml，构建后 BuiltinSecrets.swift 自动恢复占位；`VOICESTICK_EMBED_BUILTIN_KEYS=0` 为公开包）。Sparkle EdDSA 密钥对（2026-10-02 起现行）与自签代码证书都只在 `~/.voicestick-sign/`；证书放在自建钥匙串 `~/Library/Keychains/voicestick-sign.keychain-db`（两脚本自动发现+自动解锁，密码文件 `~/.voicestick-sign/keychain-password`；见「voicestick-sign 钥匙串弹窗≠开机密码」条）；换机器须重做，公钥在 Info.plist `SUPublicEDKey`。
 - 「"xxx"想使用"voicestick-sign"钥匙串」弹窗＝自建签名钥匙串的**解锁窗**（睡眠/重启后回锁定态触发），密码是 `~/.voicestick-sign/keychain-password` 的内容，**不是**开机/Apple ID 密码；打包脚本已内置自动解锁，见到它说明绕过脚本裸调 security/codesign 了。

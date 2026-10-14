@@ -148,6 +148,11 @@ public final class VoiceStickCoordinator {
     }
     private let subtitleController: any VoiceStickSubtitleServing
     private let oggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
+    /// ASR 前 RNNoise 人声增强（config.audio_noise_suppression 开启时按会话创建；
+    /// 仅主输入路径，字幕路径 PoC 阶段不覆盖）。
+    private var audioEnhancer: AudioEnhancer?
+    /// 增强失败回退透传的节流日志标记（每会话最多打一条）。
+    private var audioEnhancerFallbackLogged = false
     private let inputInjector: any VoiceStickInputServing
     private let firmwareManifestClient = FirmwareManifestClient()
     private var debugAudioRecorder: any VoiceStickDebugRecordServing
@@ -1381,6 +1386,17 @@ public final class VoiceStickCoordinator {
         pendingPasteState = .idle
         isShowingASRError = false
         oggMuxer.reset()
+        if config.audioNoiseSuppression {
+            do {
+                audioEnhancer = try AudioEnhancer()
+            } catch {
+                NSLog("AudioEnhancer init failed: \(error.localizedDescription); audio passthrough")
+                audioEnhancer = nil
+            }
+        } else {
+            audioEnhancer = nil
+        }
+        audioEnhancerFallbackLogged = false
         debugAudioRecorder.start(deviceID: deviceID(for: peripheralID), sessionID: sessionID,
                                  devicePrefix: deviceNamePrefix(for: peripheralID))
         statusController.showListening(deviceID: deviceID(for: peripheralID))
@@ -1426,7 +1442,16 @@ public final class VoiceStickCoordinator {
         if firstAudioFrameAt == nil { firstAudioFrameAt = frameArrivedAt }
         lastAudioFrameAt = frameArrivedAt
         armRecordingInactivityWatchdog(sessionID: frame.sessionID, peripheralID: peripheralID)
-        let oggChunk = oggMuxer.append(opusPayload: frame.payload, isLast: frame.isEnd)
+        var payload = frame.payload
+        if let audioEnhancer {
+            if let enhanced = audioEnhancer.processFrame(frame.payload) {
+                payload = enhanced
+            } else if !audioEnhancerFallbackLogged {
+                audioEnhancerFallbackLogged = true
+                NSLog("AudioEnhancer processFrame failed; passthrough for rest of session")
+            }
+        }
+        let oggChunk = oggMuxer.append(opusPayload: payload, isLast: frame.isEnd)
         debugAudioRecorder.append(oggChunk)
         sendOrBufferOggChunk(
             oggChunk,

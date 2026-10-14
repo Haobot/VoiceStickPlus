@@ -31,6 +31,20 @@ set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
 set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# rnnoise：vendored xiph/rnnoise（BSD-2，third_party/rnnoise/README.md 记 provenance，
+# 与 desktop/macos/Sources/CRnnoise 同源同版，仅推理最小集）。ASR 前 RNNoise
+# 人声增强/降噪（audio_enhancer；audio_noise_suppression 开关，默认关）。
+add_library(rnnoise STATIC
+    third_party/rnnoise/src/celt_lpc.c
+    third_party/rnnoise/src/denoise.c
+    third_party/rnnoise/src/kiss_fft.c
+    third_party/rnnoise/src/pitch.c
+    third_party/rnnoise/src/rnn.c
+    third_party/rnnoise/src/rnn_data.c
+)
+target_include_directories(rnnoise PUBLIC third_party/rnnoise/include)
+target_include_directories(rnnoise PRIVATE third_party/rnnoise/src)
+
 # 默认从 github 拉 WinSparkle（官方仓库 vslavik/winsparkle；旧 vslavnik fork 已 404，
 # 曾致 CI 与全新克隆 configure 必失败）；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
 #   用户环境变量 VOICESTICK_WINSPARKLE_URL=C:/path/to/WinSparkle-0.9.2.zip
@@ -154,6 +168,7 @@ add_library(voicestick_core STATIC
     src/asr_protocol.cc
     src/audio_opus_decoder.cc
     src/audio_opus_encoder.cc
+    src/audio_enhancer.cc
     src/ble_protocol.cc
     src/cmd_line.cc
     src/com_port_selector.cc
@@ -216,6 +231,7 @@ target_compile_definitions(voicestick_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
 target_link_libraries(voicestick_core PUBLIC opus)
+target_link_libraries(voicestick_core PUBLIC rnnoise)
 target_link_libraries(voicestick_core PUBLIC mmdevapi ole32 uuid)
 target_link_libraries(voicestick_core PUBLIC setupapi)  # com_port_selector 串口枚举
 target_link_libraries(voicestick_core PUBLIC shell32)  # model_download_session SHGetKnownFolderPath

@@ -90,8 +90,8 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   - `gain_db`（double，默认 `12.0`）：ADPCM 解码后固定预增益（dB），±24 dB 限幅在消费侧（`PcmPostprocessor`）完成；语义为 HPF 之后、AGC 之前的固定增益。
   - `double_click_ms`（int >0，默认 `350`）：语音键双击判定窗（毫秒），镜像固件 `DOUBLE_CLICK_WINDOW_MS` 语义；非正值忽略并保留默认值。「遥控器设置…」UI 对话框将其限制在 200~600ms（越界 clamp）；手写配置 >0 均接受。
   - `hid_tap_enabled`（bool，默认 `false`）：**增强按键识别**（usage tap）。启用 `back`/`volume_up`/`volume_down` 三键——这三键走厂商页 0xFF00 HID 报告，被 Windows HidOverGatt 蓝牙栈在翻译层丢弃，系统输入链路收不到。链路 = 特权注入器把只读探针 DLL 注入系统 HID 宿主（WUDFHost），经命名管道回传原始报文，桌面端直触发注入映射。涉及 UAC 管理员授权（遥控器重连/宿主重启后需重新授权），默认关闭，在「按键映射…」对话框开关（即时生效并保存）。设计见 `Doc/Plan/xiaomi-remote-usage-tap.md`。
-  - `hpf`（bool，默认 `true`）：直连桌面链路 90Hz 二阶 Butterworth 高通滤波（去 20–100Hz 爆破音，避免固定增益把低频推进 int16 饱和削波）。
-  - `agc`（bool，默认 `true`）：直连桌面链路软件 AGC（-6dBFS 目标、+20dB 上限、-45dBFS 噪声门、快下慢上、0.8FS 瞬时限幅），与固件链路算法一致。`hpf = false` + `agc = false` 即回滚旧行为（平滑+固定增益）。
+  - `hpf`（bool，默认 `true`）：直连桌面链路 120Hz 二阶 Butterworth 高通滤波（去 20–150Hz 爆破音，避免固定增益把低频推进 int16 饱和削波；2026-10-14 由 90Hz 上调）。
+  - `agc`（bool，默认 `true`）：直连桌面链路软件 AGC（-12dBFS 目标、+12dB 上限、-45dBFS 噪声门、快下慢上、0.8FS 瞬时限幅；2026-10-14 由 -6dBFS/+20dB 收紧），与固件链路算法一致。`hpf = false` + `agc = false` 即回滚旧行为（平滑+固定增益）。
 
   示例：
 
@@ -100,7 +100,7 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   gain_db = 18.0
   double_click_ms = 400
   hid_tap_enabled = true   # 增强按键识别（返回/音量键）
-  hpf = true               # 90Hz 高通去爆破音
+  hpf = true               # 120Hz 高通去爆破音
   agc = true               # 自动增益控制
   ```
 
@@ -155,6 +155,7 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 - `resource_id`：火山方舟 SeedASR 资源 ID（随识别请求携带的资源标识，如 `volc.seedasr.sauc.duration`）。
 - `auto_enter`（默认 `true`）：文本粘贴完成后追加一次回车（pending-paste 收尾语义，两端一致）。
 - `debug_audio_cache`（默认 `false`）：录音调试缓存开关——开启后会话 PCM 落盘留档供回放排查（目录由 `debug_audio_directory` 配置；仅诊断用，发布默认关）。
+- `audio_noise_suppression`（默认 `false`，macOS + Windows 双端）：ASR 前桌面端 RNNoise 人声增强/降噪——Opus 解码（上采样 48kHz）→ RNNoise → 重编码回 16kHz 再送 ASR，抑制环境底噪与部分喷麦残留；增加约 10ms 处理时延，处理失败自动回退透传。PoC 阶段仅覆盖主输入路径（字幕路径不覆盖）。
 - `device_theme_colors`：按设备覆盖的悬浮窗主题色映射 CSV（空=跟随全局主题；设置页「悬浮窗」写入）。
 - `device_overlay_positions`：按设备覆盖的悬浮窗位置映射 CSV（空=跟随默认位置；同上）。
 - `translation_target`（默认 `en`）：`[output].transform = translate` 时 LLM 翻译的目标语言代码。

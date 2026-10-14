@@ -1,28 +1,31 @@
 import Foundation
 
-/// PCM 后处理链：三点平滑（首尾样本不动）→ HPF(90Hz) → 固定 dB 增益（钳位 ±24 dB）
+/// PCM 后处理链：三点平滑（首尾样本不动）→ HPF(120Hz) → 固定 dB 增益（钳位 ±24 dB）
 /// → 软件 AGC（含 0.8FS 瞬时限幅）。算法逐字移植固件 audio_pipeline.c:55-153
 ///（HPF 系数与 AGC 常量），级间量化回 int16，与 Windows C++ / Python 镜像
 /// bit 级对齐（golden fixture 对拍）。HPF 置于固定增益之前：先削掉爆破音的
-/// 20–100Hz 能量，避免 +12dB 把它推进 int16 饱和区。
+/// 20–150Hz 能量，避免 +12dB 把它推进 int16 饱和区。
 /// HPF/AGC 状态跨 process 调用保持（按 640 样本帧流式处理），每次录音会话开始
 /// 由 XiaomiAtvvSession 调 reset() 清零。
 public final class PcmPostprocessor {
     /// 增益钳位范围（dB）。
     public static let maxGainDb = 24.0
 
-    // 二阶 Butterworth 高通（transposed DF-II），fc≈90Hz @16kHz，Q=0.707：
-    // 90Hz -3.0dB / 50Hz -10.6dB / 30Hz -19.1dB / ≥300Hz ~0dB（逐字拷贝固件）。
-    private static let hpfB0 = 0.975318
-    private static let hpfB1 = -1.950637
-    private static let hpfB2 = 0.975318
-    private static let hpfA1 = -1.950028
-    private static let hpfA2 = 0.951246
+    // 二阶 Butterworth 高通（transposed DF-II），fc≈120Hz @16kHz，Q=0.707：
+    // 120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / ≥300Hz ~0dB（逐字拷贝固件）。
+    // （2026-10-14 由 90Hz 上调至 120Hz：喷麦爆点能量集中在 100-150Hz。）
+    private static let hpfB0 = 0.967227
+    private static let hpfB1 = -1.934455
+    private static let hpfB2 = 0.967227
+    private static let hpfA1 = -1.933380
+    private static let hpfA2 = 0.935529
 
     // 软件 AGC 常量（逐字拷贝固件；固件为 float，桌面端统一 double 保证
     // C++↔Python 对拍确定）。
-    private static let agcTarget = 16384.0       // -6 dBFS
-    private static let agcMaxGain = 10.0         // +20 dB
+    // 2026-10-14 收紧：目标 -6→-12dBFS、上限 +20→+12dB——旧参数把语音推到贴近
+    // 满幅致爆点撞限幅，且 +20dB 上限在语音间隙把环境底噪抬高 20dB。
+    private static let agcTarget = 8192.0        // -12 dBFS
+    private static let agcMaxGain = 4.0          // +12 dB
     private static let agcMinGain = 0.1          // -20 dB
     private static let agcNoiseFloor = 184.0     // -45 dBFS
     private static let agcEnvAttack = 0.98758    // 快攻 5ms

@@ -684,9 +684,9 @@ stream; the desktop accumulates bytes across notifications and cuts frames at
 the CAPS-negotiated frame length (default 120 bytes = 240 samples), decodes to
 int16 PCM, then re-encodes to Opus so the downstream Ogg/ASR pipeline is
 identical to the StickS3 path. Between decode and re-encode the desktop runs a
-PCM post-processing chain: three-point smoothing → 90 Hz Butterworth high-pass
-(plosive suppression) → fixed `gain_db` pre-gain → software AGC (-6 dBFS
-target, noise gate, 0.8FS instantaneous limiter) — algorithmically identical to
+PCM post-processing chain: three-point smoothing → 120 Hz Butterworth high-pass
+(plosive suppression) → fixed `gain_db` pre-gain → software AGC (-12 dBFS
+target, +12 dB max gain, noise gate, 0.8FS instantaneous limiter) — algorithmically identical to
 the firmware chain (`audio_pipeline.c`), each stage re-quantized to int16 and
 bit-aligned across the Swift/C++/Python implementations, with per-session
 `hpf`/`agc` kill switches in `[device.<id>.xiaomi]` (see

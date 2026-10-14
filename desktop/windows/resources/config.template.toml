@@ -92,6 +92,8 @@ air_mouse_rate_max_speed = 4000.0
 debug_audio_cache = false
 developer_mode = false
 debug_audio_dir = ""
+# RNNoise 人声增强/降噪（ASR 前；PoC，默认关）
+audio_noise_suppression = false
 
 # ---- 第三方输入法模式（output_target = wechat_input_method 时生效）----
 [wechat_input_method]

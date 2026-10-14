@@ -206,18 +206,20 @@ void TestPcmPostprocessor() {
         assert(tail_peak < 50);
     }
 
-    // HPF 频响：50Hz 对 1kHz 稳态 RMS 比 ≥ 10dB 衰减（参考频响 50Hz -10.6dB）。
+    // HPF 频响：50Hz 对 1kHz 稳态 RMS 比 ≥ 13dB 衰减（120Hz 档位参考频响
+    // 50Hz -15.3dB，留 2.3dB 余量；旧 90Hz 档位 -10.6dB≈0.295 会触红，可防系数回退）。
     {
         PcmPostprocessor pp50(0.0, /*hpf=*/true, /*agc=*/false);
         const auto out50 = pp50.Process(make_sine(10000.0, 50.0, 16000));
         PcmPostprocessor pp1k(0.0, /*hpf=*/true, /*agc=*/false);
         const auto out1k = pp1k.Process(make_sine(10000.0, 1000.0, 16000));
         const double ratio = steady_rms(out50) / steady_rms(out1k);
-        assert(ratio <= std::pow(10.0, -10.0 / 20.0));
+        assert(ratio <= std::pow(10.0, -13.0 / 20.0));
     }
 
-    // AGC 拉起：-40dBFS（幅度 ≈328）1kHz 正弦 2s：最大增益 +20dB，稳态 ≈3280±20%
-    //（-40dBFS 目标 -6dBFS 需 +34dB，超出 MAX_GAIN +20dB，故拉到 -20dBFS 量级）。
+    // AGC 拉起：-40dBFS（幅度 ≈328）1kHz 正弦 2s：最大增益 +12dB，稳态 ≈1312±20%
+    //（-40dBFS 到目标 -12dBFS 需 +28dB，超出 MAX_GAIN +12dB，故拉到 -28dBFS 量级；
+    // Python 镜像仿真稳态峰值 1291）。
     {
         PcmPostprocessor pp(0.0);  // hpf/agc 默认开
         const auto out = pp.Process(make_sine(328.0, 1000.0, 32000));
@@ -225,7 +227,7 @@ void TestPcmPostprocessor() {
         for (std::size_t i = out.size() - 4000; i < out.size(); ++i) {
             peak = std::max(peak, std::abs(static_cast<int>(out[i])));
         }
-        assert(peak >= 2624 && peak <= 3936);
+        assert(peak >= 1049 && peak <= 1574);
     }
 
     // 瞬时限幅：满幅（±32000）突发起音，|out| ≤ 26215（且不削波到 32767）。
@@ -321,6 +323,118 @@ void TestAudioOpusEncoderRoundTrip() {
     assert(rest_pcm.size() == 60 && slicer.remainder().empty());
     slicer.Reset();
     assert(slicer.remainder().empty());
+}
+
+// ---- AudioEnhancer（RNNoise 桌面端降噪 PoC）----
+// 镜像 macOS AudioEnhancerTests.swift：帧形 / 平稳噪声抑制 / 类语音保留。
+// 固定种子 LCG 保证确定性；断言边界留有 ≥2x 余量防平台数值抖动。
+
+struct EnhLcg {
+    std::uint64_t state;
+    double Next() {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<double>((state >> 33) & 0xFFFFFF) / 8388608.0 - 1.0;
+    }
+};
+
+double EnhRms(const std::vector<int16_t>& samples, std::size_t offset, std::size_t count) {
+    double sum = 0.0;
+    for (std::size_t i = offset; i < offset + count; ++i) {
+        sum += static_cast<double>(samples[i]) * samples[i];
+    }
+    return std::sqrt(sum / static_cast<double>(count));
+}
+
+// 把一个 PCM 会话切成 40ms 帧依次编码 → 增强 → 16k 解码，返回增强后整段 PCM。
+// 任一帧失败返回 nullopt（调用处 assert 失败）。
+std::optional<std::vector<int16_t>> EnhanceSession(const std::vector<int16_t>& pcm,
+                                                   AudioEnhancer& enhancer) {
+    AudioOpusEncoder encoder;
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> out;
+    for (std::size_t start = 0; start + AudioOpusEncoder::kFrameSamples <= pcm.size();
+         start += AudioOpusEncoder::kFrameSamples) {
+        std::vector<std::uint8_t> packet(1500);
+        const auto enc = encoder.Encode(pcm.data() + start, AudioOpusEncoder::kFrameSamples,
+                                        packet.data(), packet.size());
+        if (enc.opus_error != 0 || enc.encoded_bytes <= 0) return std::nullopt;
+        packet.resize(static_cast<std::size_t>(enc.encoded_bytes));
+        auto enhanced = enhancer.ProcessFrame(packet);
+        if (!enhanced.has_value()) return std::nullopt;
+        std::vector<int16_t> frame(AudioOpusEncoder::kFrameSamples, 0);
+        const auto dec = decoder.Decode(enhanced->data(), enhanced->size(),
+                                        frame.data(), frame.size());
+        if (dec.opus_error != 0 || dec.decoded_samples != AudioOpusEncoder::kFrameSamples) {
+            return std::nullopt;
+        }
+        out.insert(out.end(), frame.begin(), frame.end());
+    }
+    return out;
+}
+
+void TestAudioEnhancer() {
+    constexpr double kPi = 3.14159265358979323846;
+
+    // ---- 帧形 ----
+    // 单帧 440Hz 正弦：增强后仍是合法 Opus 帧，16k 解码回 640 样本。
+    {
+        auto enhancer = AudioEnhancer::Create();
+        assert(enhancer != nullptr);
+        const auto pcm_in = MakeSinePcm(440);  // 640 采样（40ms）
+        AudioOpusEncoder encoder;
+        std::vector<std::uint8_t> packet(1500);
+        const auto enc = encoder.Encode(pcm_in.data(), pcm_in.size(),
+                                        packet.data(), packet.size());
+        assert(enc.opus_error == 0 && enc.encoded_bytes > 0);
+        packet.resize(static_cast<std::size_t>(enc.encoded_bytes));
+        const auto enhanced = enhancer->ProcessFrame(packet);
+        assert(enhanced.has_value() && !enhanced->empty());
+        AudioOpusDecoder decoder(16000, 1);
+        std::vector<int16_t> pcm_out(AudioOpusEncoder::kFrameSamples, 0);
+        const auto dec = decoder.Decode(enhanced->data(), enhanced->size(),
+                                        pcm_out.data(), pcm_out.size());
+        assert(dec.opus_error == 0);
+        assert(dec.decoded_samples == AudioOpusEncoder::kFrameSamples);
+    }
+
+    // ---- 平稳噪声抑制 ----
+    // 2s 平稳白噪声（rms≈1000 ≈ -30dBFS）：RNNoise 收敛后尾部 1s 输出 rms
+    // 须压到输入的 30% 以下（典型 -20dB 以上，断言留大余量）。
+    {
+        EnhLcg lcg{0x12345678};
+        std::vector<int16_t> noise(32000);
+        for (auto& s : noise) s = static_cast<int16_t>(lcg.Next() * 1700.0);
+        const double in_rms = EnhRms(noise, 0, noise.size());
+        assert(in_rms > 700.0 && in_rms < 1300.0);
+        auto enhancer = AudioEnhancer::Create();
+        assert(enhancer != nullptr);
+        const auto out = EnhanceSession(noise, *enhancer);
+        assert(out.has_value());
+        const double out_rms = EnhRms(*out, out->size() - 16000, 16000);
+        assert(out_rms < in_rms * 0.3);
+    }
+
+    // ---- 类语音保留 ----
+    // 类语音信号（200+800Hz 复合音，4Hz 音节级幅度调制，1.52s=38 帧整帧对齐）：
+    // 尾部 0.5s 输出 rms 保留 ≥ 45%（RNNoise 不应把持续有声段当噪声吃掉）。
+    {
+        std::vector<int16_t> speech(24320);
+        for (std::size_t i = 0; i < speech.size(); ++i) {
+            const double t = static_cast<double>(i) / 16000.0;
+            const double am = 0.55 + 0.45 * std::sin(2.0 * kPi * 4.0 * t);
+            const double v = am * (0.6 * std::sin(2.0 * kPi * 200.0 * t) +
+                                   0.4 * std::sin(2.0 * kPi * 800.0 * t)) * 9000.0;
+            const long value = std::clamp<long>(std::lround(v), -32768, 32767);
+            speech[i] = static_cast<int16_t>(value);
+        }
+        const double in_rms = EnhRms(speech, speech.size() - 8000, 8000);
+        auto enhancer = AudioEnhancer::Create();
+        assert(enhancer != nullptr);
+        const auto out = EnhanceSession(speech, *enhancer);
+        assert(out.has_value());
+        const double out_rms = EnhRms(*out, out->size() - 8000, 8000);
+        assert(out_rms > in_rms * 0.45);
+    }
 }
 
 // ①hold_to_talk 正常录音 → ASR 送出 Ogg，final 后粘贴。
@@ -2990,6 +3104,7 @@ void RunCodecFixtureSerialBatchTests() {
     TestFrameAccumulator();
     TestPcmPostprocessor();
     TestAudioOpusEncoderRoundTrip();
+    TestAudioEnhancer();
     TestCoordinatorXiaomiHoldToTalkStreamsOggToAsr();
     TestCoordinatorXiaomiCancelSemantics();
     TestCoordinatorXiaomiWechatInputMethodDecodesToVirtualMic();

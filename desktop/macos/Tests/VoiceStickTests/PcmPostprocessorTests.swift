@@ -103,24 +103,26 @@ func runPcmPostprocessorTests() {
     }
 
     // ---- testHpfFrequencyResponse ----
-    // 50Hz 对 1kHz 稳态 RMS 比 ≥ 10dB 衰减（参考频响 50Hz -10.6dB）。
+    // 50Hz 对 1kHz 稳态 RMS 比 ≥ 13dB 衰减（120Hz 档位参考频响 50Hz -15.3dB，
+    // 留 2.3dB 余量；旧 90Hz 档位 -10.6dB≈0.295 会触红，可防系数回退）。
     do {
         let pp50 = PcmPostprocessor(gainDb: 0.0, hpf: true, agc: false)
         let out50 = pp50.process(makeSine(10000, 50, 16000))
         let pp1k = PcmPostprocessor(gainDb: 0.0, hpf: true, agc: false)
         let out1k = pp1k.process(makeSine(10000, 1000, 16000))
         let ratio = steadyRms(out50) / steadyRms(out1k)
-        check(ratio <= pow(10.0, -10.0 / 20.0), "HpfFrequencyResponse ratio=\(ratio)")
+        check(ratio <= pow(10.0, -13.0 / 20.0), "HpfFrequencyResponse ratio=\(ratio)")
     }
 
     // ---- testAgcPullup ----
-    // -40dBFS（幅度 ≈328）1kHz 正弦 2s：AGC 最大增益 +20dB，稳态输出 ≈3280±20%
-    //（-40dBFS 目标 -6dBFS 需 +34dB，超出 MAX_GAIN +20dB，故拉到 -20dBFS 量级）。
+    // -40dBFS（幅度 ≈328）1kHz 正弦 2s：AGC 最大增益 +12dB，稳态输出 ≈1312±20%
+    //（-40dBFS 到目标 -12dBFS 需 +28dB，超出 MAX_GAIN +12dB，故拉到 -28dBFS 量级；
+    // Python 镜像仿真稳态峰值 1291）。
     do {
         let pp = PcmPostprocessor(gainDb: 0.0) // hpf/agc 默认开
         let out = pp.process(makeSine(328, 1000, 32000))
         let peak = out.suffix(4000).reduce(0) { max($0, abs(Int($1))) }
-        check(peak >= 2624 && peak <= 3936, "AgcPullup peak=\(peak)")
+        check(peak >= 1049 && peak <= 1574, "AgcPullup peak=\(peak)")
     }
 
     // ---- testAgcInstantCeil ----

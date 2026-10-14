@@ -36,6 +36,10 @@ int vs_opus_decode(void* st, const uint8_t* data, int32_t len,
                    int16_t* out, int frame_size, int decode_fec);
 void vs_opus_decoder_destroy(void* st);
 
+/* 创建解码器：48000 Hz / 1 ch。供 AudioEnhancer 用——RNNoise 固定 48kHz 帧，
+ * Opus 解码器内部重采样把固件 16kHz 流上采样到 48kHz（40ms 帧 = 1920 样本）。 */
+void* vs_opus_decoder_create_48k(int* errorOut);
+
 #ifdef __cplusplus
 }
 #endif

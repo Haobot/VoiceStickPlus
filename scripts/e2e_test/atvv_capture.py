@@ -373,20 +373,22 @@ def apply_gain(samples: list, gain_db: float) -> list:
 
 
 # ---- 直连桌面链路后处理链（对齐固件 audio_pipeline.c 与桌面端 PcmPostprocessor）----
-# 链：smooth3 → HPF(90Hz) → 固定增益 → AGC（含 0.8FS 瞬时限幅），级间量化回 int16。
+# 链：smooth3 → HPF(120Hz) → 固定增益 → AGC（含 0.8FS 瞬时限幅），级间量化回 int16。
 # 常量逐字拷贝固件 audio_pipeline.c（HPF :61-65，AGC :92-100），
 # 三端（Swift/C++/Python）bit 级对齐 golden fixture 对拍。
+# 2026-10-14：HPF 90→120Hz（喷麦爆点能量集中在 100-150Hz）、
+# AGC 目标 -6→-12dBFS / 上限 +20→+12dB（旧参数爆点撞限幅、语音间隙底噪泵升）。
 
-# 二阶 Butterworth 高通（transposed DF-II），fc≈90Hz @16kHz，Q=0.707：
-# 90Hz -3.0dB / 50Hz -10.6dB / 30Hz -19.1dB / ≥300Hz ~0dB。
-_HPF_B0 = 0.975318
-_HPF_B1 = -1.950637
-_HPF_B2 = 0.975318
-_HPF_A1 = -1.950028
-_HPF_A2 = 0.951246
+# 二阶 Butterworth 高通（transposed DF-II），fc≈120Hz @16kHz，Q=0.707：
+# 120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / ≥300Hz ~0dB。
+_HPF_B0 = 0.967227
+_HPF_B1 = -1.934455
+_HPF_B2 = 0.967227
+_HPF_A1 = -1.933380
+_HPF_A2 = 0.935529
 
-_AGC_TARGET = 16384.0        # -6 dBFS
-_AGC_MAX_GAIN = 10.0         # +20 dB
+_AGC_TARGET = 8192.0         # -12 dBFS
+_AGC_MAX_GAIN = 4.0          # +12 dB
 _AGC_MIN_GAIN = 0.1          # -20 dB
 _AGC_NOISE_FLOOR = 184.0     # -45 dBFS
 _AGC_ENV_ATTACK = 0.98758    # exp(-1/(16000*0.005))
@@ -397,7 +399,7 @@ _AGC_GAIN_GATE = 0.9999961   # exp(-1/(16000*1.0))
 _AGC_CEIL = 26214.0          # 0.8FS 瞬时限幅（Opus 解码 +1.5~2dB 过冲余量）
 
 
-class Hpf90Hz:
+class Hpf120Hz:
     """二阶 Butterworth 高通滤波器（逐样本，transposed DF-II，double）。"""
 
     def __init__(self) -> None:
@@ -457,7 +459,7 @@ def postprocess(samples: list, gain_db: float, hpf: bool = True, agc: bool = Tru
     smooth3 → HPF → 固定增益 → AGC，按开关跳过对应级。"""
     out = smooth3(samples)
     if hpf:
-        out = Hpf90Hz().process(out)
+        out = Hpf120Hz().process(out)
     out = apply_gain(out, gain_db)
     if agc:
         out = Agc().process(out)
@@ -1065,12 +1067,13 @@ def self_test() -> int:
 
     def test_hpf_dc_decay() -> None:
         # 恒定 5000 输入 1000 样本：HPF 抑制 DC，末 100 样本 |out| < 50
-        h = Hpf90Hz()
+        h = Hpf120Hz()
         out = h.process([5000] * 1000)
         assert max(abs(s) for s in out[-100:]) < 50, max(abs(s) for s in out[-100:])
 
     def test_hpf_frequency_response() -> None:
-        # 50Hz 对 1kHz 稳态 RMS 比 ≥ 10dB 衰减（参考频响 50Hz -10.6dB）
+        # 50Hz 对 1kHz 稳态 RMS 比 ≥ 13dB 衰减（120Hz 档位参考频响 50Hz -15.3dB，
+        # 留 2.3dB 余量；旧 90Hz 档位 -10.6dB≈0.295 会触红，可防系数回退）
         def sine(amp: float, freq: float, n: int) -> list:
             return [int(amp * math.sin(2.0 * math.pi * freq * i / 16000.0))
                     for i in range(n)]
@@ -1079,19 +1082,19 @@ def self_test() -> int:
             tail = samples[-8000:]
             return math.sqrt(sum(s * s for s in tail) / len(tail))
 
-        out50 = Hpf90Hz().process(sine(10000.0, 50.0, 16000))
-        out1k = Hpf90Hz().process(sine(10000.0, 1000.0, 16000))
+        out50 = Hpf120Hz().process(sine(10000.0, 50.0, 16000))
+        out1k = Hpf120Hz().process(sine(10000.0, 1000.0, 16000))
         ratio = steady_rms(out50) / steady_rms(out1k)
-        assert ratio <= 10.0 ** (-10.0 / 20.0), f"50Hz/1kHz RMS ratio {ratio:.3f}"
+        assert ratio <= 10.0 ** (-13.0 / 20.0), f"50Hz/1kHz RMS ratio {ratio:.3f}"
 
     def test_agc_pullup() -> None:
-        # -40dBFS（幅度 ≈328）1kHz 正弦 2s：AGC 最大增益 +20dB，稳态输出 ≈3280±20%
-        #（-40dBFS 目标 -6dBFS 需 +34dB，超出 MAX_GAIN +20dB，故拉到 -20dBFS 量级）
+        # -40dBFS（幅度 ≈328）1kHz 正弦 2s：AGC 最大增益 +12dB，稳态输出 ≈1312±20%
+        #（-40dBFS 到目标 -12dBFS 需 +28dB，超出 MAX_GAIN +12dB，故拉到 -28dBFS 量级）
         pcm = [int(328.0 * math.sin(2.0 * math.pi * 1000.0 * i / 16000.0))
                for i in range(32000)]
         out = Agc().process(pcm)
         peak = max(abs(s) for s in out[-4000:])
-        assert 2624 <= peak <= 3936, f"pull-up peak {peak}"
+        assert 1049 <= peak <= 1574, f"pull-up peak {peak}"
 
     def test_agc_instant_ceil() -> None:
         # 满幅（±32000）突发起音：0.8FS 瞬时限幅 |out| ≤ 26215（且不削波到 32767）
@@ -1106,7 +1109,7 @@ def self_test() -> int:
         pcm = [int(6000.0 * math.sin(2.0 * math.pi * 300.0 * i / 16000.0)
                    + 2000.0 * math.sin(2.0 * math.pi * 1.0 * i / 16000.0))
                for i in range(16000)]
-        for filt in (Hpf90Hz(), Agc()):
+        for filt in (Hpf120Hz(), Agc()):
             full = filt.process(pcm)
             filt.reset()
             assert filt.process(pcm) == full
@@ -1117,7 +1120,7 @@ def self_test() -> int:
                 chunked += filt.process(pcm[i:i + 640])
             assert chunked == full
         # 组合入口 = 手动链（smooth3 → HPF → 增益 → AGC）
-        manual = Agc().process(apply_gain(Hpf90Hz().process(smooth3(pcm)), 12.0))
+        manual = Agc().process(apply_gain(Hpf120Hz().process(smooth3(pcm)), 12.0))
         assert postprocess(pcm, 12.0) == manual
         # 开关关闭：回退旧链（仅 smooth3+增益）
         assert postprocess(pcm, 12.0, hpf=False, agc=False) == apply_gain(smooth3(pcm), 12.0)

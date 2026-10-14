@@ -1980,6 +1980,14 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
         ogg_muxer_.Reset();
         debug_audio_recorder_.Start(device_id, session_id,
                                     IsXiaomiRemoteDevice(device_id) ? "RC-" : "VS-");
+        // RNNoise 人声增强（PoC，audio_noise_suppression 开关）：每会话新实例，
+        // 无跨会话状态泄漏；创建失败回退透传并留痕。
+        audio_enhancer_fallback_logged_ = false;
+        audio_enhancer_ =
+            ConfigSnapshot()->audio_noise_suppression ? AudioEnhancer::Create() : nullptr;
+        if (ConfigSnapshot()->audio_noise_suppression && !audio_enhancer_) {
+            LogCoordinatorLine("AudioEnhancer init failed; audio passthrough");
+        }
         // 时序探针重置：新会话开始，清空上一轮各阶段时间戳。
         probe_button_up_ms_.store(0);
         probe_audio_end_done_ms_.store(0);
@@ -2053,7 +2061,21 @@ void VoiceStickCoordinator::HandleAudioFrame(const AudioFrame& frame, const std:
     }
     last_audio_seq_ = frame.seq;
     ++received_audio_frames_;
-    auto ogg_chunk = ogg_muxer_.Append(frame.payload, frame.IsEnd());
+    // RNNoise 人声增强（audio_noise_suppression）：处理失败回退透传原始帧，
+    // 每会话只记一次日志（增强是增强，不是单点故障）。
+    std::span<const std::uint8_t> payload = frame.payload;
+    ByteVector enhanced;
+    if (audio_enhancer_) {
+        auto result = audio_enhancer_->ProcessFrame(frame.payload);
+        if (result.has_value() && !result->empty()) {
+            enhanced = std::move(*result);
+            payload = enhanced;
+        } else if (!audio_enhancer_fallback_logged_) {
+            audio_enhancer_fallback_logged_ = true;
+            LogCoordinatorLine("AudioEnhancer ProcessFrame failed; passthrough for rest of session");
+        }
+    }
+    auto ogg_chunk = ogg_muxer_.Append(payload, frame.IsEnd());
     debug_audio_recorder_.Append(ogg_chunk);
     SendOrBufferOggChunk(
         ogg_chunk,

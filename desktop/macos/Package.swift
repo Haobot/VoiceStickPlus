@@ -42,6 +42,7 @@ let package = Package(
             name: "VoiceStickCore",
             dependencies: [
                 "COpus",
+                "CRnnoise",
                 // N1 根刀：AppConfig（TOML 读写）下迁 Core 需 TOMLKit（测试 runner 经 Core 传递获取，无需改 runner 声明）。
                 .product(name: "TOMLKit", package: "TOMLKit"),
             ],
@@ -59,6 +60,16 @@ let package = Package(
             name: "VoiceStickTests",
             dependencies: ["VoiceStickCore", "COpus"],
             path: "Tests/VoiceStickTests"
+        ),
+        // vendored xiph/rnnoise（master 2026-10-14，BSD-2，见 Sources/CRnnoise/README.md）：
+        // ASR 前桌面端人声增强/降噪（AudioEnhancer），48kHz/480 样本帧推理。
+        .target(
+            name: "CRnnoise",
+            path: "Sources/CRnnoise",
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("src"),
+            ]
         ),
         // vendored xiph/opus v1.5.2（浮点路径），供小米遥控器 ATVV 链路把
         // IMA-ADPCM 解码后的 PCM 编码为与固件一致的标准 Opus 帧。
