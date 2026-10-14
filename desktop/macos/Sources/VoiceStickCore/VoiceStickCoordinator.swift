@@ -158,6 +158,16 @@ public final class VoiceStickCoordinator {
     private var debugAudioRecorder: any VoiceStickDebugRecordServing
     private let minimumRecordingDuration: TimeInterval = 0.5
     private let audioEndTimeout: TimeInterval = 1.0
+    // ---- 精修预算与短文本跳过（B2/B3；常量先硬编码，是否提 config 字段留作后续）----
+    /// 精修首 token 预算：到点仍无 token 判端点卡死，取消精修回退原文。
+    private let kRefineFirstTokenBudget: TimeInterval = 2.5
+    /// 精修总预算地板：短文本封顶 5s。
+    private let kRefineTotalBudgetFloor: TimeInterval = 5.0
+    /// 精修总预算按输入 utf8 字节伸缩的单价（25ms/字节，351B ≈ 8.8s）。
+    private let kRefineTotalBudgetPerByte: TimeInterval = 0.025
+    /// 短文本跳过精修的去空白字符阈值（字符数非字节；实测 12B 短句精修也要 1.2s+，
+    /// 收益极低，直接粘贴原文）。
+    private let kRefineMinChars = 12
     /// 录音中音频帧静默看门狗：录音态下超过该时长没有任何音频帧，视为设备侧
     /// 音频链路已死（2026-10-11 实证：tx 通道卡住后桌面端永远等不到 audio_end/
     /// button_up，会话悬挂 77s 直到 ASR 服务端报错）。到点即按 audio_end 收尾，
@@ -214,6 +224,10 @@ public final class VoiceStickCoordinator {
 
     /// 进行中的流式精修取消令牌（finishWithFinalText 建立新流前先 cancel 旧的）。
     private var refinementCancelToken: RefineCancelToken?
+    /// B2 精修预算定时器：首 token 预算（首个 onToken 到达即失效）+ 总预算（全程 armed）。
+    /// 仅主线程创建/失效；触发回调二次校验令牌身份，悬挂定时器误触发为无害 no-op。
+    private var refineFirstTokenTimer: Timer?
+    private var refineTotalTimer: Timer?
     /// 热词使用统计（hotword_usage.json，懒加载；仅主线程读写）。
     private var hotwordUsageStore: HotwordUsageStore?
 
@@ -362,6 +376,7 @@ public final class VoiceStickCoordinator {
         firmwareManifestRefreshTimer?.invalidate()
         encoderRotateTimer?.invalidate()
         airMouseTimer?.invalidate()
+        cancelRefineBudgetTimers()
     }
 
     public func updateConfig(_ config: AppConfig) {
@@ -1828,17 +1843,28 @@ public final class VoiceStickCoordinator {
     private func finishWithFinalText(_ text: String) {
         guard !pastedFinalText else { return }
         // LLM 流式精修（对齐 Windows RefineStream 语义）：final 原文先经 LLM 改写，
-        // overlay 进 refining 态后 token 增量追加（~60ms 节流）；失败/热词丢失回退原文，
-        // SSE 失败客户端内部自动回退非流式。
+        // overlay 进 refining 态后 token 增量追加（~60ms 节流）；失败/热词丢失/预算
+        // 超时回退原文，SSE 失败客户端内部自动回退非流式。
         if config.refineEnabled, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // B3：短文本跳过精修，直接粘贴原文。
+            guard text.trimmingCharacters(in: .whitespacesAndNewlines).count >= kRefineMinChars else {
+                NSLog("refine skipped (short text) len=%d", text.utf8.count)
+                cancelStreamingRefinement()
+                finishWithRefinedText(text)
+                return
+            }
             statusController.showRefining(text, deviceID: activeDeviceID)
             cancelStreamingRefinement()
             let token = RefineCancelToken()
             refinementCancelToken = token
             let overlayDeviceID = activeDeviceID
+            // B1 打点：begin 时刻，首 token/complete 分段耗时全靠它。
+            let refineBeginAt = Date()
+            NSLog("refine begin text_len=%d", text.utf8.count)
             // 节流状态（onToken 串行到达于 URLSession 线程，仅此处读写）。
             var accumulated = ""
             var lastUpdateAt = Date.distantPast
+            var didLogFirstToken = false
             refiner.refineStream(
                 text,
                 promptOverride: config.refinePrompt,
@@ -1846,6 +1872,16 @@ public final class VoiceStickCoordinator {
                 cancel: token,
                 onToken: { [weak self] delta in
                     guard let self, !token.isCancelled, !self.pastedFinalText else { return }
+                    if !didLogFirstToken {
+                        didLogFirstToken = true
+                        let ms = Int(Date().timeIntervalSince(refineBeginAt) * 1000)
+                        NSLog("refine first token ms=%d", ms)
+                        // onToken 在 URLSession 回调线程，定时器失效切回主线程。
+                        DispatchQueue.main.async {
+                            self.refineFirstTokenTimer?.invalidate()
+                            self.refineFirstTokenTimer = nil
+                        }
+                    }
                     accumulated += delta
                     let now = Date()
                     guard now.timeIntervalSince(lastUpdateAt) >= 0.06 else { return }
@@ -1856,26 +1892,34 @@ public final class VoiceStickCoordinator {
                         self.statusController.appendPartial(snapshot, deviceID: overlayDeviceID)
                     }
                 },
-                onComplete: { [weak self] ok, result in
+                onComplete: { [weak self] ok, result, fallback in
                     DispatchQueue.main.async {
                         guard let self, !token.isCancelled, !self.pastedFinalText else { return }
                         self.refinementCancelToken = nil
+                        self.cancelRefineBudgetTimers()
+                        var reason = fallback
                         if ok, !result.isEmpty,
-                           resultKeepsHotwords(
+                           !resultKeepsHotwords(
                                original: text, refined: result, hotwords: self.config.asrHotwords
                            ) {
+                            reason = .hotwordGuard
+                        }
+                        NSLog("refine complete ok=%d ms=%d out_len=%d fallback=%@",
+                              ok ? 1 : 0, Int(Date().timeIntervalSince(refineBeginAt) * 1000),
+                              result.utf8.count, reason.rawValue)
+                        if ok, !result.isEmpty, reason != .hotwordGuard {
                             // 用最终累积文本做最后一次 UI 刷新。
                             self.statusController.showPartial(result, deviceID: overlayDeviceID)
                             self.finishWithRefinedText(result)
                         } else {
-                            if ok, !result.isEmpty {
-                                NSLog("refine corrupted a hotword present in ASR text; falling back to original")
-                            }
                             self.finishWithRefinedText(text)
                         }
                     }
                 }
             )
+            // B2：预算定时器在启动精修后 arm——放协调器层是为了覆盖
+            // 「SSE 失败→非流式重发」的内部回退总时长（client 层看不到全程）。
+            armRefineBudgetTimers(text: text, token: token, beginAt: refineBeginAt)
             return
         }
         finishWithRefinedText(text)
@@ -2148,6 +2192,49 @@ public final class VoiceStickCoordinator {
     private func cancelStreamingRefinement() {
         refinementCancelToken?.cancel()
         refinementCancelToken = nil
+        cancelRefineBudgetTimers()
+    }
+
+    // MARK: - 精修预算超时回退（B2；Windows 对齐见方案 B7）
+
+    /// arm 双预算定时器（仅主线程；重复 arm 前先清旧的，防悬挂定时器误杀后续会话）。
+    /// 首 token 预算单独一个，onToken 首次到达即失效；总预算全程 armed。
+    private func armRefineBudgetTimers(text: String, token: RefineCancelToken, beginAt: Date) {
+        cancelRefineBudgetTimers()
+        refineFirstTokenTimer = Timer.scheduledTimer(
+            withTimeInterval: kRefineFirstTokenBudget, repeats: false
+        ) { [weak self] _ in
+            self?.handleRefineBudgetExceeded(token: token, beginAt: beginAt, text: text,
+                                             kind: "first_token")
+        }
+        let totalBudget = max(kRefineTotalBudgetFloor,
+                              kRefineTotalBudgetPerByte * Double(text.utf8.count))
+        refineTotalTimer = Timer.scheduledTimer(
+            withTimeInterval: totalBudget, repeats: false
+        ) { [weak self] _ in
+            self?.handleRefineBudgetExceeded(token: token, beginAt: beginAt, text: text,
+                                             kind: "total")
+        }
+    }
+
+    private func cancelRefineBudgetTimers() {
+        refineFirstTokenTimer?.invalidate()
+        refineFirstTokenTimer = nil
+        refineTotalTimer?.invalidate()
+        refineTotalTimer = nil
+    }
+
+    /// 预算触发：取消精修（迟到的 complete 被 token 守卫丢弃）+ 回退原文走完既有粘贴链路。
+    private func handleRefineBudgetExceeded(token: RefineCancelToken, beginAt: Date,
+                                            text: String, kind: String) {
+        // 二次校验会话身份：过期定时器误触发为无害 no-op。
+        guard refinementCancelToken === token, !pastedFinalText else { return }
+        NSLog("refine budget exceeded (%@) after %dms; pasting original text_len=%d",
+              kind, Int(Date().timeIntervalSince(beginAt) * 1000), text.utf8.count)
+        token.cancel()
+        refinementCancelToken = nil
+        cancelRefineBudgetTimers()
+        finishWithRefinedText(text)
     }
 
     private var hotwordUsageURL: URL {

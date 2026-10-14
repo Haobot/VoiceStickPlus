@@ -34,6 +34,7 @@ runConfigParsingTests()
 runOggMuxerTests()
 runConfigFileModelTests()
 runCoordinatorFsmTests()
+runRefineBudgetTests()
 runConfigDomainTests()
 runGlobalButtonsConfigTests()
 

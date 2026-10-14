@@ -22,11 +22,24 @@ public final class RefineCancelToken {
     }
 }
 
+/// 精修完成的路径归因（B1 打点：写入 VoiceStickApp.log refine complete 行的 fallback 字段）。
+public enum RefineFallback: String {
+    /// SSE 流式链路产出（含本地请求构造即败的 ok=false）。
+    case none = "none"
+    /// SSE 失败后回退非流式链路产出（成败由 ok 位表达）。
+    case sseToBlocking = "sse_to_blocking"
+    /// 协调器预算超时回退原文：只打 "refine budget exceeded" 行，迟到的 complete 被
+    /// RefineCancelToken 守卫丢弃，complete 行不会携带此值。
+    case budget = "budget"
+    /// 热词守卫拦截回退原文（协调器在 ok 但热词丢失时改写）。
+    case hotwordGuard = "hotword_guard"
+}
+
 public protocol RefinerServing: AnyObject {
     func refineStream(_ text: String, promptOverride: String, hotwords: [String]?,
                       cancel: RefineCancelToken,
                       onToken: @escaping (String) -> Void,
-                      onComplete: @escaping (Bool, String) -> Void)
+                      onComplete: @escaping (Bool, String, RefineFallback) -> Void)
 }
 
 

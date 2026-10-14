@@ -16,21 +16,21 @@ final class LLMRefinementClient {
 
     /// 流式精修（对齐 Windows RefineStream）：请求带 "stream":true，逐 token 回调
     /// onToken（URLSession 回调线程，调用方自行节流/切主线程）；完成回调
-    /// onComplete(ok, fullText)——SSE 失败（服务端不支持 stream/网络断）自动回退
-    /// 非流式 refine()，再失败回传 ok=false。
+    /// onComplete(ok, fullText, fallback)——SSE 失败（服务端不支持 stream/网络断）自动回退
+    /// 非流式 refine()，再失败回传 ok=false（fallback 标记回退路径，供 B1 打点归因）。
     func refineStream(
         _ text: String,
         promptOverride: String = "",
         hotwords: [String]? = nil,
         cancel: RefineCancelToken,
         onToken: @escaping (String) -> Void,
-        onComplete: @escaping (Bool, String) -> Void
+        onComplete: @escaping (Bool, String, RefineFallback) -> Void
     ) {
         let effectiveHotwords = hotwords ?? config.asrHotwords
         guard let request = makeRequest(
             text: text, promptOverride: promptOverride, hotwords: effectiveHotwords, stream: true
         ) else {
-            onComplete(false, "")
+            onComplete(false, "", .none)
             return
         }
 
@@ -45,7 +45,7 @@ final class LLMRefinementClient {
                         full += token
                         onToken(token)
                     case .done:
-                        onComplete(true, full)
+                        onComplete(true, full, .none)
                         return
                     case .none:
                         break
@@ -53,15 +53,15 @@ final class LLMRefinementClient {
                 }
                 // 流自然结束（部分兼容端不发 [DONE]）。
                 if cancel.isCancelled { return }
-                onComplete(true, full)
+                onComplete(true, full, .none)
             } catch {
                 if cancel.isCancelled { return }
                 // SSE 失败回退非流式精修（对齐 Windows on_error → Refine）。
                 self.refine(text, promptOverride: promptOverride, hotwords: effectiveHotwords) { refined in
                     if let refined {
-                        onComplete(true, refined)
+                        onComplete(true, refined, .sseToBlocking)
                     } else {
-                        onComplete(false, "")
+                        onComplete(false, "", .sseToBlocking)
                     }
                 }
             }
@@ -129,11 +129,16 @@ final class LLMRefinementClient {
         if stream {
             payload["stream"] = true
         }
+        // 注意： deliberately 不发 max_tokens——2026-10-14 基准实测 deepseek-v4-flash 是
+        // 推理型模型，思考链会烧掉 max_tokens 预算导致 content 为空（精修假性失败）；
+        // 输出拖长已由协调器层 B2 预算定时器兜底（超时回退原文），此处无需再限。
         // 关闭推理型模型深度思考（对齐 Windows：两种风格都发，DashScope/Qwen 兼容 +
-        // vLLM/SGLang chat_template_kwargs）。
+        // vLLM/SGLang chat_template_kwargs）；另发 "think": false——Ollama 约定的关思考
+        // 字段（A 方案本地 qwen3 不思考直出的前提），其他端点忽略未知字段无副作用。
         if config.llmDisableThinking {
             payload["enable_thinking"] = false
             payload["chat_template_kwargs"] = ["enable_thinking": false]
+            payload["think"] = false
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         return request

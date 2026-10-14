@@ -24,7 +24,12 @@ private final class FakeStatusSink: VoiceStickStatusSink {
     func showRefining(_ text: String, deviceID: String?) {}
     func appendPartial(_ text: String, deviceID: String?) {}
     func showPausedFinal(_ text: String, deviceID: String?) {}
-    func showFinal(_ text: String, deviceID: String?, onHidden: (() -> Void)?) {}
+    var shownFinalTexts: [String] = []
+    func showFinal(_ text: String, deviceID: String?, onHidden: (() -> Void)?) {
+        shownFinalTexts.append(text)
+        // 模拟真机浮窗确认倒计时结束（OverlayController 延时回调 onHidden → 提交粘贴）。
+        DispatchQueue.main.async { onHidden?() }
+    }
     func showTimedMessage(_ text: String, duration: TimeInterval, deviceID: String?,
                           onHidden: (() -> Void)?) {}
     func showError(_ text: String, deviceID: String?, onHidden: (() -> Void)?) {}
@@ -76,7 +81,9 @@ private final class FakeBleServing: VoiceStickBleServing {
 
 private final class FakeInput: VoiceStickInputServing {
     var onAccessibilityPermissionMissing: (() -> Void)?
-    func paste(text: String, pressEnter: Bool) {}
+    /// 已粘贴文本记录（B6 精修预算断言用；真机由 OverlayController 倒计时结束驱动注入）。
+    var pastedTexts: [String] = []
+    func paste(text: String, pressEnter: Bool) { pastedTexts.append(text) }
     func clickLeftButton() {}
     func moveMouse(dx: Int, dy: Int) {}
     func sendArrowDown() {}
@@ -119,10 +126,36 @@ private final class FakeTranslator: TranslatorServing {
 }
 
 private final class FakeRefiner: RefinerServing {
+    enum Behavior {
+        /// 同步完成（ok=true，fallback=none）。
+        case completeImmediately(String)
+        /// 延迟完成：故意不检查 cancel.isCancelled，迟到 complete 由协调器侧
+        /// RefineCancelToken 守卫丢弃（B2 预算回退路径的回归点）。
+        case completeAfter(TimeInterval, String)
+        /// 永不回调（预算超时路径）。
+        case neverComplete
+    }
+    var behavior: Behavior = .completeImmediately("精修结果")
+    private(set) var callCount = 0
+    private(set) var lastText: String?
+
     func refineStream(_ text: String, promptOverride: String, hotwords: [String]?,
                       cancel: RefineCancelToken,
                       onToken: @escaping (String) -> Void,
-                      onComplete: @escaping (Bool, String) -> Void) {}
+                      onComplete: @escaping (Bool, String, RefineFallback) -> Void) {
+        callCount += 1
+        lastText = text
+        switch behavior {
+        case .completeImmediately(let result):
+            onComplete(true, result, .none)
+        case .completeAfter(let delay, let result):
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                onComplete(true, result, .none)
+            }
+        case .neverComplete:
+            break
+        }
+    }
 }
 
 func runCoordinatorFsmTests() {
@@ -239,4 +272,87 @@ func runCoordinatorFsmTests() {
     check(fakeInput.sentKeyCombos.last == KeySpec.parse("up"),
           "gwConsume: 原生键按自然映射注入（up→方向上）")
     check(coordinator.fsmSnapshot.contains("main=ready"), "gw: 消费链后状态机仍一致")
+}
+
+// ---- B6 精修预算回退 + 短文本跳过（refine-latency-optimization 方案）----
+
+private func makeRefineHarness() -> (coordinator: VoiceStickCoordinator, sink: FakeStatusSink,
+                                     ble: FakeBleServing, input: FakeInput,
+                                     asr: FakeASR, refiner: FakeRefiner) {
+    let sink = FakeStatusSink()
+    let fakeBle = FakeBleServing()
+    let fakeInput = FakeInput()
+    let asr = FakeASR()
+    let refiner = FakeRefiner()
+    let coordinator = VoiceStickCoordinator(
+        config: .defaults,
+        statusController: sink,
+        ble: fakeBle,
+        makeAsr: { _ in asr },
+        makeTranslator: { _ in FakeTranslator() },
+        makeRefiner: { _ in refiner },
+        inputInjector: fakeInput,
+        subtitleController: FakeSubtitle(),
+        makeDebugRecorder: { _ in FakeRecorder() }
+    )
+    // updateConfig 经 make* 闭包重建 asr/refiner（同实例）并装配 ASR 回调（init 不装配）。
+    coordinator.updateConfig(.defaults)
+    return (coordinator, sink, fakeBle, fakeInput, asr, refiner)
+}
+
+/// 推进主线程 RunLoop：服务 GCD 主队列块与 Timer——预算断言全靠真实定时器触发。
+private func pumpMainRunLoop(_ seconds: TimeInterval) {
+    RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+}
+
+func runRefineBudgetTests() {
+    // 与 VoiceStickCoordinator 的 kRefineFirstTokenBudget（2.5s，private）保持一致：
+    // 推进 2.9s 必越首 token 预算，且短于任何总预算地板（5s）。
+    let budgetProbe: TimeInterval = 2.9
+
+    // 1) 预算超时（fake 永不 complete）→ 首 token 预算触发 → 粘贴原文。
+    var h = makeRefineHarness()
+    let original = "这段文本足够长用来触发精修预算超时回退路径"
+    h.refiner.behavior = .neverComplete
+    h.asr.onFinal?(original)
+    pumpMainRunLoop(0.05)
+    checkEqual(h.refiner.callCount, 1, "refineBudget: 长文本进入精修")
+    check(h.input.pastedTexts.isEmpty, "refineBudget: 预算未到期不粘贴")
+    pumpMainRunLoop(budgetProbe)
+    checkEqual(h.input.pastedTexts.last, original, "refineBudget: 预算超时粘贴原文")
+    checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 超时路径仅粘贴一次")
+
+    // 2) 预算内完成（同步 complete）→ 粘贴精修结果（现行为回归）。
+    h = makeRefineHarness()
+    h.refiner.behavior = .completeImmediately("精修后的结果文本")
+    h.asr.onFinal?(original)
+    pumpMainRunLoop(0.2)
+    checkEqual(h.input.pastedTexts.last, "精修后的结果文本", "refineBudget: 预算内完成粘贴精修结果")
+    checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 正常路径仅粘贴一次")
+
+    // 3) 短文本跳过精修：11 字符不调用 refiner，12 字符边界进入精修。
+    h = makeRefineHarness()
+    h.refiner.behavior = .neverComplete
+    h.asr.onFinal?(String(repeating: "短", count: 11))
+    pumpMainRunLoop(0.1)
+    checkEqual(h.refiner.callCount, 0, "refineBudget: 11 字符跳过精修")
+    checkEqual(h.input.pastedTexts.last, String(repeating: "短", count: 11),
+               "refineBudget: 短文本直接粘贴原文")
+
+    h = makeRefineHarness()
+    h.asr.onFinal?(String(repeating: "长", count: 12))
+    pumpMainRunLoop(0.1)
+    checkEqual(h.refiner.callCount, 1, "refineBudget: 12 字符边界进入精修")
+
+    // 4) 预算超时后迟到的 complete 被 RefineCancelToken 守卫丢弃（不二次粘贴）。
+    h = makeRefineHarness()
+    h.refiner.behavior = .completeAfter(3.0, "迟到的精修结果")
+    let original2 = "这段文本用来验证预算超时后迟到的精修结果会被守卫丢弃"
+    h.asr.onFinal?(original2)
+    pumpMainRunLoop(0.05)
+    pumpMainRunLoop(budgetProbe) // ≈2.95s：首 token 预算（2.5s）已触发，迟到 complete（3.0s）未到期
+    checkEqual(h.input.pastedTexts.last, original2, "refineBudget: 超时先粘贴原文")
+    checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 超时后仅一次粘贴")
+    pumpMainRunLoop(0.6) // 越过 3.0s 迟到 complete
+    checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 迟到 complete 被守卫丢弃")
 }
