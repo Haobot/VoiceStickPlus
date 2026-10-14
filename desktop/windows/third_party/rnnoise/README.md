@@ -12,3 +12,11 @@ codeload.github.com/xiph/rnnoise/tar.gz/refs/heads/master）。BSD-2-Clause，�
 内部头），去掉 rnn_reader.c（外部模型加载）、examples/、training/、
 构建系统文件（Makefile.am/configure.ac 等）；由根 CMakeLists 的 `rnnoise`
 静态库目标编译。
+
+本地补丁（双侧同步，2026-10-14）：MSVC 编译兼容——上游代码假定
+GCC/Clang（VLA + POSIX math.h），MSVC 下 5 处 C99 VLA（celt_lpc.c `xx[n]`、
+pitch.c `x_lp4/y_lp4/xcorr/yy_lookup`）改为头文件定长上限 + `celt_assert`
+兜底（`RNN_AUTOCORR_MAX_N`、`RNN_PITCH_SEARCH_*`、
+`RNN_REMOVE_DOUBLING_MAX_HALFPERIOD`）；`M_PI` 由 Windows 构建层
+`_USE_MATH_DEFINES` 解决（CMakeLists，源码零改动）。维度上限与 denoise.c
+的 PITCH_* 常量一一对应，调整常量须同步。

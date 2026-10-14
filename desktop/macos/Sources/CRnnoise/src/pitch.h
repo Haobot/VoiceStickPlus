@@ -38,6 +38,16 @@
 //#include "cpu_support.h"
 #include "arch.h"
 
+/* MSVC 不支持 C99 VLA，pitch 搜索内的栈数组改用定长上限：唯一调用点
+   denoise.c 以 PITCH_* 常量实例化——PITCH_FRAME_SIZE=960、
+   max_pitch = PITCH_MAX_PERIOD-3*PITCH_MIN_PERIOD = 588、
+   rnn_remove_doubling 内 maxperiod 先折半为 384。越界由 celt_assert 兜底；
+   调整 denoise.c 的 PITCH_* 常量后须同步下列各值。 */
+#define RNN_PITCH_SEARCH_MAX_LEN 960            /* len 上限 = PITCH_FRAME_SIZE */
+#define RNN_PITCH_SEARCH_MAX_LAG4 387           /* (len+max_pitch)>>2 上限 = (960+588)>>2 */
+#define RNN_PITCH_SEARCH_MAX_XCORR 294          /* max_pitch>>1 上限 = 588>>1 */
+#define RNN_REMOVE_DOUBLING_MAX_HALFPERIOD 385  /* (PITCH_MAX_PERIOD>>1)+1 */
+
 void rnn_pitch_downsample(celt_sig *x[], opus_val16 *x_lp,
       int len, int C);
 

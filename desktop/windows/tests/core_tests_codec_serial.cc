@@ -435,6 +435,7 @@ void TestAudioEnhancer() {
         const double out_rms = EnhRms(*out, out->size() - 8000, 8000);
         assert(out_rms > in_rms * 0.45);
     }
+    std::printf(">> TestAudioEnhancer OK: 帧形/噪声抑制/类语音保留 三段全过\n");
 }
 
 // ①hold_to_talk 正常录音 → ASR 送出 Ogg，final 后粘贴。

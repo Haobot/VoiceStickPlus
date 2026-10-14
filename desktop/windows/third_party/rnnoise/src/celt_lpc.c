@@ -101,8 +101,10 @@ int rnn_autocorr(
    int fastN=n-lag;
    int shift;
    const opus_val16 *xptr;
-   opus_val16 xx[n];
+   /* MSVC 无 VLA：定长上限替代（见 celt_lpc.h RNN_AUTOCORR_MAX_N 注释） */
+   opus_val16 xx[RNN_AUTOCORR_MAX_N];
    celt_assert(n>0);
+   celt_assert(n<=RNN_AUTOCORR_MAX_N);
    celt_assert(overlap>=0);
    if (overlap == 0)
    {

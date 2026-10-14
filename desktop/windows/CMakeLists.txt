@@ -44,6 +44,8 @@ add_library(rnnoise STATIC
 )
 target_include_directories(rnnoise PUBLIC third_party/rnnoise/include)
 target_include_directories(rnnoise PRIVATE third_party/rnnoise/src)
+# MSVC 的 math.h 需要此宏才暴露 M_PI（denoise.c 用）；clang 不需要，留平台构建层
+target_compile_definitions(rnnoise PRIVATE _USE_MATH_DEFINES)
 
 # 默认从 github 拉 WinSparkle（官方仓库 vslavik/winsparkle；旧 vslavnik fork 已 404，
 # 曾致 CI 与全新克隆 configure 必失败）；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
