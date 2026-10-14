@@ -219,11 +219,23 @@ def main() -> int:
         action="store_true",
         help="覆盖 config 的 llm_disable_thinking=false（默认按 config，关思考字段照常发）",
     )
+    ap.add_argument(
+        "--prompt-file",
+        help="自定义 refine_prompt 文件路径（复刻 app refine_prompt 非空时的 override 形态，"
+        "A4 回退路径 few-shot 重测用；仍追加测试热词表后缀）",
+    )
     args = ap.parse_args()
 
     if not (args.base_url and args.model):
         print("缺少 base-url/model（config.toml 无 llm_base_url/llm_model）", file=sys.stderr)
         return 1
+    if args.prompt_file:
+        override = Path(args.prompt_file).read_text(encoding="utf-8")
+        # 与 app 一致：override 非空时整体替换默认 prompt。
+        build_prompt = lambda hotwords: override + (
+            HOTWORDS_SUFFIX.format(terms=", ".join([w.strip() for w in hotwords if w.strip()]))
+            if [w.strip() for w in hotwords if w.strip()] else ""
+        )
     api_key = (args.api_key or "").strip() or "ollama"  # Ollama 忽略该头，占位即可
     disable_thinking = not args.thinking and cfg.get("llm_disable_thinking", "true") != "false"
     url = chat_completions_url(args.base_url)
