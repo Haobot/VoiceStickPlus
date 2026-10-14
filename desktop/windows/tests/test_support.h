@@ -1388,8 +1388,13 @@ inline ModelFileSpec MakeSpecFromBody(const std::string& body, std::vector<std::
 // N8 cut14 helper block (orig 5371)
 inline std::filesystem::path MakeTempDir(const char* name) {
     static std::atomic<int> counter{0};
+    // 目录名必须跨进程唯一：static 计数器每次进程都从 0 起跑，同名残留目录里
+    // 上次下载的文件会让 ModelFilePresentAndVerified 判「在位」跳过下载，
+    // 进度聚合断言扑空（本机反复跑必挂，CI 干净环境单跑故从未暴露）。
     const auto dir = std::filesystem::temp_directory_path() /
-                     ("voicestick_model_dl_" + std::to_string(counter.fetch_add(1)) + "_" + name);
+                     ("voicestick_model_dl_" +
+                      std::to_string(::GetCurrentProcessId()) + "_" +
+                      std::to_string(counter.fetch_add(1)) + "_" + name);
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;
