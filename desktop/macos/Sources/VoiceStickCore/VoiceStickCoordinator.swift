@@ -146,6 +146,12 @@ public final class VoiceStickCoordinator {
     /// 测试不落盘）= 关闭记录。打开/迁移失败由工厂返回 nil，记录降级停用，
     /// 绝不阻塞识别主链路。
     public var makeSessionHistoryStore: ((URL) -> SessionHistoryStore?)?
+    /// 用户数据文件目录覆盖（纠错对/热词候选两个 JSON 的落盘位置）：生产为 nil
+    ///（真实 config 目录），FSM/预算类真实协调器测试必须注入会话级临时目录——
+    /// 否则测试挖掘会污染真实用户数据，甚至让后续测试被精确命中改写对误拦截
+    ///（2026-10-15 教训：FSM 精修用例把「长长长…」→「精修结果」写进真实
+    /// correction_pairs.json，预算边界用例随后被精确命中跳过精修而转红）。
+    public var userDataDirectoryOverride: URL?
     private var sessionHistoryStore: SessionHistoryStore?
     /// 进行中会话的历史草稿（finishWithFinalText 建立、finishWithRefinedText 落库）。
     private struct PendingSessionHistory {
@@ -1865,6 +1871,12 @@ public final class VoiceStickCoordinator {
         // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立，落库在
         // finishWithRefinedText（所有收口路径统一经过）。
         beginSessionHistory(rawAsr: text)
+        // 改写对应用闭环（用户数据飞轮，doubao 方案 §3.1 应用位置 1）：全句精确命中
+        // 改写对 → 直接替换（毫秒级零 LLM，同一错误第二次不犯），use_count 落盘。
+        if let applied = applyCorrectionPairExact(rawAsr: text) {
+            finishWithRefinedText(applied)
+            return
+        }
         // LLM 流式精修（对齐 Windows RefineStream 语义）：final 原文先经 LLM 改写，
         // overlay 进 refining 态后 token 增量追加（~60ms 节流）；失败/热词丢失/预算
         // 超时回退原文，SSE 失败客户端内部自动回退非流式。
@@ -2311,7 +2323,8 @@ public final class VoiceStickCoordinator {
     }
 
     private var correctionPairsURL: URL {
-        AppConfig.configDirectory.appendingPathComponent("correction_pairs.json")
+        (userDataDirectoryOverride ?? AppConfig.configDirectory)
+            .appendingPathComponent("correction_pairs.json")
     }
 
     /// 精修 prompt 纠错 few-shot 段候选（用户数据飞轮 P0-1，对齐 Windows
@@ -2335,8 +2348,23 @@ public final class VoiceStickCoordinator {
         )
     }
 
-    private var hotwordCandidatesURL: URL {
-        AppConfig.configDirectory.appendingPathComponent("hotword_candidates.json")
+    /// 改写对全句精确命中应用（doubao 方案 §3.1 应用位置 1）：命中即返回替换文本
+    /// 并把 use_count 落盘；未命中/库停用返回 nil 走既有精修管线。
+    private func applyCorrectionPairExact(rawAsr: String) -> String? {
+        let url = correctionPairsURL
+        guard let pair = CorrectionPairs.exactReplacement(
+            for: rawAsr, in: CorrectionPairs.load(url: url)
+        ) else { return nil }
+        CorrectionPairs.markUsedOnDisk(
+            url: url, pair: pair, nowTs: Int64(Date().timeIntervalSince1970)
+        )
+        NSLog("correction pair applied exact: len=%d", pair.after.utf8.count)
+        return pair.after
+    }
+
+    private var hotwordCandidatesFileURL: URL {
+        (userDataDirectoryOverride ?? AppConfig.configDirectory)
+            .appendingPathComponent("hotword_candidates.json")
     }
 
     /// 精修完成后的热词候选挖掘（用户数据飞轮 P0-2，对齐 Windows
@@ -2349,7 +2377,7 @@ public final class VoiceStickCoordinator {
             original: original, refined: refined, existingHotwords: config.asrHotwords
         )
         guard !mined.isEmpty else { return }
-        let suggestions = HotwordCandidateMiner.recordToDisk(url: hotwordCandidatesURL, words: mined)
+        let suggestions = HotwordCandidateMiner.recordToDisk(url: hotwordCandidatesFileURL, words: mined)
         guard !suggestions.isEmpty else { return }
         NSLog("hotword candidates suggested: %@", suggestions.joined(separator: ", "))
         let suffix = trText?("hotwordCandidateNotifyBodySuffix") ?? "hotwordCandidateNotifyBodySuffix"

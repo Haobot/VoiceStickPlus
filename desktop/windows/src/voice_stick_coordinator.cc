@@ -2632,6 +2632,13 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                               std::move(wrapped));
         return;
     }
+    // 改写对应用闭环（doubao 方案 §3.1 应用位置 1）：全句精确命中改写对 → 直接替换
+    // 跳过精修（毫秒级零 LLM，同一错误第二次不犯）；use_count 落盘供 P3 反馈环。
+    if (auto applied = ExactMatchCorrectionPairFromDisk(text)) {
+        wrapped(true, *applied);
+        MaybeExtractHotwordCandidates(*applied);
+        return;
+    }
     // 本地识别会话（钉住路由）的 final 文本走本地三层精修：规则 → 本地 LLM →
     // 守卫在 client 内逐层回退，on_complete 的结果已过守卫，这里只节流渐显+
     // 收口。与云端 refine 互斥：本地钉住优先（断网可用语义），未钉住时落到

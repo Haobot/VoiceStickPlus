@@ -22,16 +22,18 @@ public let kCorrectionPairStoreCap = 1000
 public struct CorrectionPair: Equatable {
     public var before: String             // ASR/精修前错误形式
     public var after: String              // 精修后用户认可形式
-    public var count: Int                 // 累计出现次数
+    public var count: Int                 // 累计出现次数（精修 diff 挖掘 seen 计数）
+    public var useCount: Int              // 自动应用次数（doubao 方案 use_count，反馈环基底）
     public var lastSeenTs: Int64          // 最近出现 epoch 秒
     public var source: String             // 产物来源（当前仅精修 diff）
     public var app: String                // 前台应用分桶（P1-2 接线，当前恒空=全局）
 
-    public init(before: String, after: String, count: Int = 0, lastSeenTs: Int64 = 0,
-                source: String = "refine", app: String = "") {
+    public init(before: String, after: String, count: Int = 0, useCount: Int = 0,
+                lastSeenTs: Int64 = 0, source: String = "refine", app: String = "") {
         self.before = before
         self.after = after
         self.count = count
+        self.useCount = useCount
         self.lastSeenTs = lastSeenTs
         self.source = source
         self.app = app
@@ -196,6 +198,7 @@ public enum CorrectionPairs {
                   let after = item["after"] as? String, !after.isEmpty else { continue }
             var pair = CorrectionPair(before: before, after: after)
             if let count = item["count"] as? Int { pair.count = count }
+            if let useCount = item["use_count"] as? Int { pair.useCount = useCount }
             if let ts = item["last_seen_ts"] as? Int64 { pair.lastSeenTs = ts }
             if let ts = item["last_seen_ts"] as? Int { pair.lastSeenTs = Int64(ts) }
             if let source = item["source"] as? String, !source.isEmpty { pair.source = source }
@@ -217,6 +220,7 @@ public enum CorrectionPairs {
                 "before": pair.before,
                 "after": pair.after,
                 "count": pair.count,
+                "use_count": pair.useCount,
                 "last_seen_ts": pair.lastSeenTs,
                 "source": pair.source,
                 "app": pair.app
@@ -237,6 +241,39 @@ public enum CorrectionPairs {
         defer { fileLock.unlock() }
         var store = load(url: url)
         record(&store, pairs: pairs, nowTs: nowTs)
+        save(store, url: url)
+    }
+
+    /// 应用位置 1（doubao 方案 §3.1）：全句精确命中——文本（去首尾空白）与某改写对
+    /// before 完全相等时返回该对（跳过 LLM 直接替换的确定性路径）。命中多条取
+    /// （count 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
+    public static func exactReplacement(
+        for text: String, in store: [CorrectionPair]
+    ) -> CorrectionPair? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return store
+            .filter { $0.count > 0 && $0.before.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }
+            .sorted { lhs, rhs in
+                if lhs.count != rhs.count { return lhs.count > rhs.count }
+                if lhs.lastSeenTs != rhs.lastSeenTs { return lhs.lastSeenTs > rhs.lastSeenTs }
+                if lhs.before != rhs.before { return lhs.before < rhs.before }
+                return lhs.after < rhs.after
+            }
+            .first
+    }
+
+    /// B13 单写入口：精确命中应用后 use_count+1 落盘（doubao 方案 use_count，
+    /// P3 反馈环的召回侧基底）。
+    public static func markUsedOnDisk(url: URL, pair: CorrectionPair, nowTs: Int64) {
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        var store = load(url: url)
+        guard let index = store.firstIndex(where: {
+            $0.before == pair.before && $0.after == pair.after && $0.app == pair.app
+        }) else { return }
+        store[index].useCount += 1
+        store[index].lastSeenTs = nowTs
         save(store, url: url)
     }
 

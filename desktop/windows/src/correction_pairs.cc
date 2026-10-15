@@ -248,6 +248,8 @@ std::vector<CorrectionPair> LoadCorrectionPairs(const std::filesystem::path& pat
         if (pair.before.empty() || pair.after.empty()) continue;
         auto* count = cJSON_GetObjectItemCaseSensitive(item, "count");
         if (cJSON_IsNumber(count)) pair.count = count->valueint;
+        auto* use_count = cJSON_GetObjectItemCaseSensitive(item, "use_count");
+        if (cJSON_IsNumber(use_count)) pair.use_count = use_count->valueint;
         auto* last_seen = cJSON_GetObjectItemCaseSensitive(item, "last_seen_ts");
         if (cJSON_IsNumber(last_seen)) pair.last_seen_ts = static_cast<std::int64_t>(last_seen->valuedouble);
         pair.source = str_field("source");
@@ -280,6 +282,7 @@ void SaveCorrectionPairs(const std::filesystem::path& path,
         cJSON_AddStringToObject(item, "before", entry->before.c_str());
         cJSON_AddStringToObject(item, "after", entry->after.c_str());
         cJSON_AddNumberToObject(item, "count", entry->count);
+        cJSON_AddNumberToObject(item, "use_count", entry->use_count);
         cJSON_AddNumberToObject(item, "last_seen_ts", static_cast<double>(entry->last_seen_ts));
         cJSON_AddStringToObject(item, "source", entry->source.c_str());
         cJSON_AddStringToObject(item, "app", entry->app.c_str());
@@ -322,6 +325,51 @@ void RecordCorrectionPairsToDisk(const std::filesystem::path& path,
     // 每次从磁盘重读（reload-merge-save）：绝不使用陈旧快照写回。
     std::vector<CorrectionPair> store = LoadCorrectionPairs(path);
     RecordCorrectionPairs(store, pairs, now_ts);
+    SaveCorrectionPairs(path, store);
+}
+
+std::optional<CorrectionPair> ExactMatchCorrectionPair(
+    const std::string& text, const std::vector<CorrectionPair>& store) {
+    // 去首尾 ASCII 空白后全串比较（ASR final 偶带首尾空格）。
+    std::string trimmed(text);
+    const auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+    trimmed.erase(trimmed.begin(), std::find_if_not(trimmed.begin(), trimmed.end(), is_space));
+    trimmed.erase(std::find_if_not(trimmed.rbegin(), trimmed.rend(), is_space).base(), trimmed.end());
+    if (trimmed.empty()) return std::nullopt;
+    const CorrectionPair* best = nullptr;
+    for (const auto& entry : store) {
+        if (entry.count <= 0) continue;
+        std::string before_trimmed = entry.before;
+        before_trimmed.erase(before_trimmed.begin(),
+                             std::find_if_not(before_trimmed.begin(), before_trimmed.end(), is_space));
+        before_trimmed.erase(
+            std::find_if_not(before_trimmed.rbegin(), before_trimmed.rend(), is_space).base(),
+            before_trimmed.end());
+        if (before_trimmed != trimmed) continue;
+        // count 降序 → last_seen 降序 → 字典序（确定性）。
+        if (best == nullptr || entry.count > best->count ||
+            (entry.count == best->count && entry.last_seen_ts > best->last_seen_ts) ||
+            (entry.count == best->count && entry.last_seen_ts == best->last_seen_ts &&
+             (entry.before < best->before ||
+              (entry.before == best->before && entry.after < best->after)))) {
+            best = &entry;
+        }
+    }
+    if (best == nullptr) return std::nullopt;
+    return *best;
+}
+
+void MarkCorrectionPairUsedOnDisk(const std::filesystem::path& path,
+                                  const CorrectionPair& pair, std::int64_t now_ts) {
+    std::lock_guard lock(CorrectionPairsFileMutex());
+    std::vector<CorrectionPair> store = LoadCorrectionPairs(path);
+    for (auto& entry : store) {
+        if (entry.before == pair.before && entry.after == pair.after && entry.app == pair.app) {
+            entry.use_count += 1;
+            entry.last_seen_ts = now_ts;
+            break;
+        }
+    }
     SaveCorrectionPairs(path, store);
 }
 

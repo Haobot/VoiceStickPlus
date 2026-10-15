@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -32,7 +33,8 @@ inline constexpr std::size_t kCorrectionPairStoreCap = 1000;
 struct CorrectionPair {
     std::string before;             // ASR/精修前错误形式
     std::string after;              // 精修后用户认可形式
-    int count = 0;                  // 累计出现次数
+    int count = 0;                  // 累计出现次数（精修 diff 挖掘 seen 计数）
+    int use_count = 0;              // 自动应用次数（doubao 方案 use_count，反馈环基底）
     std::int64_t last_seen_ts = 0;  // 最近出现 epoch 秒
     std::string source = "refine";  // 产物来源（当前仅精修 diff）
     std::string app;                // 前台应用分桶（P1-2 接线，当前恒空=全局）
@@ -59,6 +61,17 @@ void SaveCorrectionPairs(const std::filesystem::path& path,
 void RecordCorrectionPairsToDisk(const std::filesystem::path& path,
                                  const std::vector<std::pair<std::string, std::string>>& pairs,
                                  std::int64_t now_ts);
+
+// 应用位置 1（doubao 方案 §3.1）：全句精确命中——文本（去首尾空白）与某改写对
+// before 完全相等时返回该对（跳过 LLM 直接替换的确定性路径）。命中多条取
+// （count 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
+std::optional<CorrectionPair> ExactMatchCorrectionPair(
+    const std::string& text, const std::vector<CorrectionPair>& store);
+
+// B13 单写入口：精确命中应用后 use_count+1 落盘（doubao 方案 use_count，
+// P3 反馈环的召回侧基底）。未命中该对（并发改写）静默跳过。
+void MarkCorrectionPairUsedOnDisk(const std::filesystem::path& path,
+                                  const CorrectionPair& pair, std::int64_t now_ts);
 
 // prompt few-shot 候选：按 count 降序、last_seen 降序、(before, after, app) 字典序
 // 取前 max_pairs；count<=0 剔除。

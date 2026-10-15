@@ -33,6 +33,16 @@ void VoiceStickCoordinator::MineCorrectionPairsFromRefinement(const std::string&
                                 std::time(nullptr));
 }
 
+std::optional<std::string> VoiceStickCoordinator::ExactMatchCorrectionPairFromDisk(
+    const std::string& text) {
+    const auto path = CorrectionPairsPath(ConfigSnapshot()->ConfigPath());
+    const auto pair = ExactMatchCorrectionPair(text, LoadCorrectionPairs(path));
+    if (!pair) return std::nullopt;
+    MarkCorrectionPairUsedOnDisk(path, *pair, std::time(nullptr));
+    LogCoordinatorLine("correction pair applied exact len=" + std::to_string(pair->after.size()));
+    return pair->after;
+}
+
 std::vector<CorrectionPair> VoiceStickCoordinator::CorrectionPairsForLlmPrompts() {
     return TrimCorrectionPairsForPrompt(
         LoadCorrectionPairs(CorrectionPairsPath(ConfigSnapshot()->ConfigPath())),

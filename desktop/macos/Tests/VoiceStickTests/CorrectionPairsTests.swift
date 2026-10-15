@@ -141,6 +141,49 @@ func runCorrectionPairsTests() {
         "few-shot：无效对被逐条跳过"
     )
 
+    // ---- exactReplacement：全句精确命中（doubao 方案 §3.1 应用位置 1）----
+    var applyStore: [CorrectionPair] = []
+    applyStore.append(CorrectionPair(before: "鱼器渍", after: "语气词", count: 1))
+    applyStore.append(CorrectionPair(before: "克劳德", after: "Claude", count: 3))
+    applyStore.append(CorrectionPair(before: "零次", after: "zero", count: 0))
+    checkEqual(
+        CorrectionPairs.exactReplacement(for: "克劳德", in: applyStore)?.after,
+        "Claude",
+        "精确命中：多条命中取 count 最高"
+    )
+    checkEqual(
+        CorrectionPairs.exactReplacement(for: " 鱼器渍 ", in: applyStore)?.after,
+        "语气词",
+        "精确命中：首尾空白容忍"
+    )
+    checkNil(
+        CorrectionPairs.exactReplacement(for: "这个鱼器渍是什么", in: applyStore),
+        "精确命中：子串不算（只做整句替换）"
+    )
+    checkNil(
+        CorrectionPairs.exactReplacement(for: "零次", in: applyStore),
+        "精确命中：count<=0 剔除"
+    )
+    checkNil(CorrectionPairs.exactReplacement(for: "", in: applyStore), "精确命中：空文本不命中")
+
+    // markUsedOnDisk：use_count 累计落盘。
+    let applyURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voicestick_correction_apply.json")
+    try? FileManager.default.removeItem(at: applyURL)
+    CorrectionPairs.recordToDisk(
+        url: applyURL,
+        pairs: [CorrectionReplacement(before: "鱼器渍", after: "语气词")],
+        nowTs: 1000
+    )
+    let storedPair = CorrectionPairs.load(url: applyURL).first!
+    CorrectionPairs.markUsedOnDisk(url: applyURL, pair: storedPair, nowTs: 2000)
+    CorrectionPairs.markUsedOnDisk(url: applyURL, pair: storedPair, nowTs: 3000)
+    let applied = CorrectionPairs.load(url: applyURL)
+    checkEqual(applied.count, 1, "markUsed：不新增行")
+    checkEqual(applied.first?.useCount, 2, "markUsed：use_count 累计 2")
+    checkEqual(applied.first?.lastSeenTs, Int64(3000), "markUsed：刷新时间戳")
+    try? FileManager.default.removeItem(at: applyURL)
+
     // ---- recordToDisk：B13 reload-merge-save 跨调用累计 ----
     let diskURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("voicestick_correction_pairs_rw.json")

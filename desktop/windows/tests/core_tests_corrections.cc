@@ -219,6 +219,49 @@ void TestBuildRefinePromptWithCorrections() {
     assert(corrections_only.find(std::string(kFewshotHeader)) != std::string::npos);
 }
 
+void TestExactMatchCorrectionPair() {
+    std::vector<CorrectionPair> store;
+    auto add = [&store](const char* before, const char* after, int count) {
+        CorrectionPair pair;
+        pair.before = before;
+        pair.after = after;
+        pair.count = count;
+        store.push_back(pair);
+        return pair;
+    };
+    const auto low = add("鱼器渍", "语气词", 1);
+    add("克劳德", "Claude", 3);
+
+    // 全句命中（取 count 最高者）。
+    auto hit = ExactMatchCorrectionPair("克劳德", store);
+    assert(hit.has_value() && hit->after == "Claude");
+    // 首尾空白容忍（ASR final 偶带首尾空格）。
+    hit = ExactMatchCorrectionPair(" 鱼器渍 ", store);
+    assert(hit.has_value() && hit->after == "语气词");
+    // 非全句（子串）不命中——精确路径只做整句替换。
+    assert(!ExactMatchCorrectionPair("这个鱼器渍是什么", store).has_value());
+    // count<=0 剔除。
+    add("零次", "zero", 0);
+    assert(!ExactMatchCorrectionPair("零次", store).has_value());
+    (void)low;
+
+    // MarkCorrectionPairUsedOnDisk：use_count 累计落盘（B13 reload-merge-save）。
+    const auto dir = fs::temp_directory_path() / "voicestick_correction_apply";
+    fs::create_directories(dir);
+    const auto path = dir / "correction_pairs.json";
+    std::error_code ec;
+    fs::remove(path, ec);
+    RecordCorrectionPairsToDisk(path, {{"鱼器渍", "语气词"}}, 1000);
+    CorrectionPair stored = LoadCorrectionPairs(path).front();
+    MarkCorrectionPairUsedOnDisk(path, stored, 2000);
+    MarkCorrectionPairUsedOnDisk(path, stored, 3000);
+    const auto applied = LoadCorrectionPairs(path);
+    assert(applied.size() == 1);
+    assert(applied.front().use_count == 2);
+    assert(applied.front().last_seen_ts == 3000);
+    fs::remove_all(dir, ec);
+}
+
 void RunCorrectionPairsBatchTests() {
     TestExtractReplacementPairs();
     TestCorrectionPairStoreMergeAndCap();
@@ -226,5 +269,6 @@ void RunCorrectionPairsBatchTests() {
     TestCorrectionPairsSingleWriter();
     TestTrimCorrectionPairsForPrompt();
     TestCorrectionFewshotSection();
+    TestExactMatchCorrectionPair();
     TestBuildRefinePromptWithCorrections();
 }

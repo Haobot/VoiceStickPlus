@@ -129,6 +129,8 @@ CREATE TABLE modify_exempt (          -- 豁免表（学豆包 AsrModifyExemptWo
 - **拼音校验前置**（§3.2）：src 与 dst 拼音距离在阈值内的对优先入表（同音纠错是最安全、复用价值最高的）；非同音对（语序调整、删口头语）标记 `source` 但初始权重低；
 - 与热词候选挖掘的关系：`hotword_candidate_miner` 继续负责"词"维度，本表负责"改写"维度，互不替代。
 
+> **落地注记（2026-10-15）**：应用位置 1（全句精确命中 → 直接替换跳过 LLM）已实施——双端 `ExactMatchCorrectionPair`（去首尾空白全串比较，多条命中取 count 最高，确定性）+ `MarkCorrectionPairUsedOnDisk`（use_count 落盘，P3 反馈环召回侧基底）；位置 2（拼音片段近邻）与位置 3（few-shot 已先行）随 P2 拼音约束落地。
+
 **应用位置**（读取侧）：ASR final 文本 → 精修 LLM 调用**之前**，先查改写表：
 1. 全句精确匹配 `src_text` → 直接替换（毫秒级，跳过 LLM）；
 2. 分词后逐片段拼音匹配（走 `pinyin_src` 索引）→ 生成"建议替换集"；

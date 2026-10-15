@@ -174,6 +174,9 @@ func runCoordinatorFsmTests() {
         subtitleController: FakeSubtitle(),
         makeDebugRecorder: { _ in FakeRecorder() }
     )
+    // 测试隔离：用户数据文件（纠错对/热词候选）写入会话级临时目录。
+    coordinator.userDataDirectoryOverride = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voicestick_fsm_userdata_1")
     let snap = coordinator.fsmSnapshot
     check(snap.contains("main=ready"), "N1fsm: 初态 main=ready")
     check(snap.contains("pendingPaste=idle"), "N1fsm: 初态 pendingPaste=idle")
@@ -296,6 +299,9 @@ private func makeRefineHarness() -> (coordinator: VoiceStickCoordinator, sink: F
         subtitleController: FakeSubtitle(),
         makeDebugRecorder: { _ in FakeRecorder() }
     )
+    // 测试隔离：用户数据文件（纠错对/热词候选）写入会话级临时目录。
+    coordinator.userDataDirectoryOverride = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voicestick_fsm_userdata_2")
     // updateConfig 经 make* 闭包重建 asr/refiner（同实例）并装配 ASR 回调（init 不装配）。
     coordinator.updateConfig(.defaults)
     return (coordinator, sink, fakeBle, fakeInput, asr, refiner)
