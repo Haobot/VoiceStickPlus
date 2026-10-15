@@ -36,7 +36,10 @@ public enum RefineFallback: String {
 }
 
 public protocol RefinerServing: AnyObject {
+    /// corrections 非空时在精修 prompt 末尾追加用户历史纠正 few-shot 段
+    /// （用户数据飞轮 P0-1，调用方传入按 count/新近度裁剪后的 top-N）。
     func refineStream(_ text: String, promptOverride: String, hotwords: [String]?,
+                      corrections: [CorrectionPair],
                       cancel: RefineCancelToken,
                       onToken: @escaping (String) -> Void,
                       onComplete: @escaping (Bool, String, RefineFallback) -> Void)

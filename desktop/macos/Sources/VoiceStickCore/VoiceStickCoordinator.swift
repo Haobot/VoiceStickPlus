@@ -141,6 +141,30 @@ public final class VoiceStickCoordinator {
     public var isProcessTrusted: (() -> Bool)?
     // N1 闸6b：单点本地化键闭包（L10nKey 为 App 枚举，原样键串入闭包）。
     public var trText: ((String) -> String)?
+    // ---- 会话历史（用户数据飞轮 P0-3，Typeless 方案 P0-1）----
+    /// 会话历史存储工厂：AppDelegate 装配（系统 SQLite 打开闭包）；nil（默认，
+    /// 测试不落盘）= 关闭记录。打开/迁移失败由工厂返回 nil，记录降级停用，
+    /// 绝不阻塞识别主链路。
+    public var makeSessionHistoryStore: ((URL) -> SessionHistoryStore?)?
+    /// 用户数据文件目录覆盖（纠错对/热词候选两个 JSON 的落盘位置）：生产为 nil
+    ///（真实 config 目录），FSM/预算类真实协调器测试必须注入会话级临时目录——
+    /// 否则测试挖掘会污染真实用户数据，甚至让后续测试被精确命中改写对误拦截
+    ///（2026-10-15 教训：FSM 精修用例把「长长长…」→「精修结果」写进真实
+    /// correction_pairs.json，预算边界用例随后被精确命中跳过精修而转红）。
+    public var userDataDirectoryOverride: URL?
+    private var sessionHistoryStore: SessionHistoryStore?
+    /// 进行中会话的历史草稿（finishWithFinalText 建立、finishWithRefinedText 落库）。
+    private struct PendingSessionHistory {
+        let id: String
+        let createdAt: Int64
+        let deviceID: String?
+        let asrProvider: String?
+        let mode: String
+        let rawAsr: String
+        let duration: Double?
+        let hotwordsSent: String?
+    }
+    private var pendingSessionHistory: PendingSessionHistory?
     // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
     public var fsmSnapshot: String {
         "main=\(mainInputState) pendingPaste=\(pendingPasteState) "
@@ -1731,6 +1755,7 @@ public final class VoiceStickCoordinator {
         let useDefiniteSegments = shouldUseDefiniteSegments(for: outputProfile(for: cycle.deviceID))
         guard cycle.asr.start(options: ASRSessionOptions(
             hotwords: config.asrHotwords,
+            dialogContext: recentDialogContext(),
             resultType: useDefiniteSegments ? .single : .full,
             showUtterances: useDefiniteSegments
         )) else {
@@ -1806,6 +1831,7 @@ public final class VoiceStickCoordinator {
         let useDefiniteSegments = shouldUseDefiniteSegments(for: profile)
         guard asr.start(options: ASRSessionOptions(
             hotwords: config.asrHotwords,
+            dialogContext: recentDialogContext(),
             resultType: useDefiniteSegments ? .single : .full,
             showUtterances: useDefiniteSegments
         )) else {
@@ -1842,6 +1868,15 @@ public final class VoiceStickCoordinator {
 
     private func finishWithFinalText(_ text: String) {
         guard !pastedFinalText else { return }
+        // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立，落库在
+        // finishWithRefinedText（所有收口路径统一经过）。
+        beginSessionHistory(rawAsr: text)
+        // 改写对应用闭环（用户数据飞轮，doubao 方案 §3.1 应用位置 1）：全句精确命中
+        // 改写对 → 直接替换（毫秒级零 LLM，同一错误第二次不犯），use_count 落盘。
+        if let applied = applyCorrectionPairExact(rawAsr: text) {
+            finishWithRefinedText(applied)
+            return
+        }
         // LLM 流式精修（对齐 Windows RefineStream 语义）：final 原文先经 LLM 改写，
         // overlay 进 refining 态后 token 增量追加（~60ms 节流）；失败/热词丢失/预算
         // 超时回退原文，SSE 失败客户端内部自动回退非流式。
@@ -1869,6 +1904,7 @@ public final class VoiceStickCoordinator {
                 text,
                 promptOverride: config.refinePrompt,
                 hotwords: hotwordsForLlmPrompts(),
+                corrections: correctionPairsForLlmPrompts(),
                 cancel: token,
                 onToken: { [weak self] delta in
                     guard let self, !token.isCancelled, !self.pastedFinalText else { return }
@@ -1908,6 +1944,13 @@ public final class VoiceStickCoordinator {
                               ok ? 1 : 0, Int(Date().timeIntervalSince(refineBeginAt) * 1000),
                               result.utf8.count, reason.rawValue)
                         if ok, !result.isEmpty, reason != .hotwordGuard {
+                            // 纠错对挖掘（用户数据飞轮 P0-1）：original→refined 提取最小
+                            // 替换片段对落盘，供后续精修 prompt few-shot 注入。
+                            self.recordCorrectionPairs(original: text, refined: result)
+                            // 热词候选挖掘（用户数据飞轮 P0-2，对齐 Windows
+                            // MineHotwordCandidatesFromRefinement）：refined 新出现的
+                            // 标识符样式词计数入池，达阈值提示用户确认。
+                            self.mineHotwordCandidates(original: text, refined: result)
                             // 用最终累积文本做最后一次 UI 刷新。
                             self.statusController.showPartial(result, deviceID: overlayDeviceID)
                             self.finishWithRefinedText(result)
@@ -1930,6 +1973,9 @@ public final class VoiceStickCoordinator {
         // 热词使用统计：最终文本（精修或原文）中命中的热词计数 + 刷新时间戳
         //（对齐 Windows RecordHotwordUsageFromText；仅主线程调用，无锁）。
         recordHotwordUsage(fromText: text)
+        // 会话历史落库（用户数据飞轮 P0-3）：refined/injected 先按 final 文本记，
+        // translate 成功后回填 injected（见下方 transform 分支）。
+        let sessionHistoryID = completeSessionHistory(finalText: text)
         let profile = outputProfile(for: activeDeviceID)
         if profile.target == .subtitle {
             pastedFinalText = true
@@ -1963,6 +2009,12 @@ public final class VoiceStickCoordinator {
                 guard let self else { return }
                 switch result {
                 case .success(let translatedText):
+                    // 会话历史回填实际注入文本（与 refined 不同：翻译产物）。
+                    if let sessionHistoryID {
+                        self.sessionHistoryStore?.updateInjectedText(
+                            id: sessionHistoryID, text: translatedText
+                        )
+                    }
                     self.enterPendingConfirmation(text: translatedText)
                 case .failure(let error):
                     self.finishWithASRError(error.localizedDescription)
@@ -2268,6 +2320,140 @@ public final class VoiceStickCoordinator {
         )
         hotwordUsageStore = store
         HotwordSelector.saveUsage(store, url: hotwordUsageURL)
+    }
+
+    private var correctionPairsURL: URL {
+        (userDataDirectoryOverride ?? AppConfig.configDirectory)
+            .appendingPathComponent("correction_pairs.json")
+    }
+
+    /// 精修 prompt 纠错 few-shot 段候选（用户数据飞轮 P0-1，对齐 Windows
+    /// CorrectionPairsForLlmPrompts）：按 count/新近度 top-8，每次精修从磁盘现读，
+    /// 不做内存缓存——文件小且写点分散。
+    private func correctionPairsForLlmPrompts() -> [CorrectionPair] {
+        return CorrectionPairs.trimForPrompt(
+            CorrectionPairs.load(url: correctionPairsURL),
+            maxPairs: kCorrectionPromptMaxPairs
+        )
+    }
+
+    /// 精修完成后的纠错对挖掘：original→refined 提取最小替换片段对，经 B13 单写
+    /// 入口落盘 correction_pairs.json（与 config.toml 同目录）。
+    private func recordCorrectionPairs(original: String, refined: String) {
+        guard original != refined else { return }
+        CorrectionPairs.recordToDisk(
+            url: correctionPairsURL,
+            pairs: CorrectionPairs.extractReplacementPairs(original, refined),
+            nowTs: Int64(Date().timeIntervalSince1970)
+        )
+    }
+
+    /// 改写对全句精确命中应用（doubao 方案 §3.1 应用位置 1）：命中即返回替换文本
+    /// 并把 use_count 落盘；未命中/库停用返回 nil 走既有精修管线。
+    private func applyCorrectionPairExact(rawAsr: String) -> String? {
+        let url = correctionPairsURL
+        guard let pair = CorrectionPairs.exactReplacement(
+            for: rawAsr, in: CorrectionPairs.load(url: url)
+        ) else { return nil }
+        CorrectionPairs.markUsedOnDisk(
+            url: url, pair: pair, nowTs: Int64(Date().timeIntervalSince1970)
+        )
+        NSLog("correction pair applied exact: len=%d", pair.after.utf8.count)
+        return pair.after
+    }
+
+    private var hotwordCandidatesFileURL: URL {
+        (userDataDirectoryOverride ?? AppConfig.configDirectory)
+            .appendingPathComponent("hotword_candidates.json")
+    }
+
+    /// 精修完成后的热词候选挖掘（用户数据飞轮 P0-2，对齐 Windows
+    /// MineHotwordCandidatesFromRefinement/RecordAndNotifyHotwordCandidates）：
+    /// refined 新出现的标识符样式词走 B13 单写入口计数，本次新晋达阈值的词弹悬浮
+    /// 提示（Windows 同款「托盘可能被静默、悬浮消息保证必现」策略），由用户在
+    /// 设置-热词候选区确认加入/忽略——挖掘只产候选，绝不自动入表。
+    private func mineHotwordCandidates(original: String, refined: String) {
+        let mined = HotwordCandidateMiner.mineRefinementCandidates(
+            original: original, refined: refined, existingHotwords: config.asrHotwords
+        )
+        guard !mined.isEmpty else { return }
+        let suggestions = HotwordCandidateMiner.recordToDisk(url: hotwordCandidatesFileURL, words: mined)
+        guard !suggestions.isEmpty else { return }
+        NSLog("hotword candidates suggested: %@", suggestions.joined(separator: ", "))
+        let suffix = trText?("hotwordCandidateNotifyBodySuffix") ?? "hotwordCandidateNotifyBodySuffix"
+        statusController.showTimedMessage(suggestions.joined(separator: ", ") + suffix, duration: 3)
+    }
+
+    /// 最近精修文本作为火山 dialog_ctx 上下文（用户数据飞轮 P1-6，零新数据纯接线）：
+    /// 取最近完成会话的 refined 文本（latestRefinedTexts 旧→新，符合对话语序），
+    /// 总量截到 600 字符（dialog_ctx 预算 800 tokens，留余量给分词差异）——让
+    /// 同音纠错在 ASR 第一遍发生，而不是等精修兜底。
+    private func recentDialogContext() -> [String] {
+        guard let store = sessionHistoryStore else { return [] }
+        var dialog: [String] = []
+        var total = 0
+        for text in store.latestRefinedTexts(limit: 3) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if total + trimmed.count > 600 { break }
+            dialog.append(trimmed)
+            total += trimmed.count
+        }
+        return dialog
+    }
+
+    /// 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立；空文本/工厂未装配
+    ///（测试默认 nil）跳过。库打开/迁移失败降级停用，绝不阻塞主链路。
+    private func beginSessionHistory(rawAsr: String) {
+        pendingSessionHistory = nil
+        guard let makeStore = makeSessionHistoryStore,
+              !rawAsr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if sessionHistoryStore == nil {
+            sessionHistoryStore = makeStore(SessionHistoryStore.defaultURL)
+        }
+        guard sessionHistoryStore != nil else { return }
+        let profile = outputProfile(for: activeDeviceID)
+        let hotwordsJSON = config.asrHotwords.isEmpty
+            ? nil
+            : (try? JSONSerialization.data(withJSONObject: config.asrHotwords))
+                .flatMap { String(data: $0, encoding: .utf8) }
+        pendingSessionHistory = PendingSessionHistory(
+            id: UUID().uuidString,
+            createdAt: Int64(Date().timeIntervalSince1970),
+            deviceID: activeDeviceID,
+            asrProvider: config.asrProvider.rawValue,
+            mode: profile.transform == .translate ? "translate" : "original",
+            rawAsr: rawAsr,
+            duration: mainInputState.startedAt.map { Date().timeIntervalSince($0) },
+            hotwordsSent: hotwordsJSON
+        )
+    }
+
+    /// 历史落库（用户数据飞轮 P0-3）：返回行 ID 供 translate 回填 injected。
+    private func completeSessionHistory(finalText: String) -> String? {
+        guard let store = sessionHistoryStore, let pending = pendingSessionHistory else {
+            pendingSessionHistory = nil
+            return nil
+        }
+        pendingSessionHistory = nil
+        var record = SessionHistoryRecord(
+            id: pending.id,
+            createdAt: pending.createdAt,
+            deviceID: pending.deviceID,
+            asrProvider: pending.asrProvider,
+            mode: pending.mode,
+            rawAsr: pending.rawAsr,
+            refinedText: finalText,
+            injectedText: finalText,
+            duration: pending.duration,
+            hotwordsSent: pending.hotwordsSent
+        )
+        // 客户端元数据：app 版本（Typeless app_version 字段的等价物）。
+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            record.clientMetadata = "{\"app_version\":\"\(version)\"}"
+        }
+        store.insert(record)
+        return pending.id
     }
 
     private func finishWithASRError(_ message: String) {

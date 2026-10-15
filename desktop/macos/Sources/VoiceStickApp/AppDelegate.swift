@@ -113,6 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.openExternalURL = { NSWorkspace.shared.open($0) }
         coordinator.isProcessTrusted = { AXIsProcessTrusted() }
         coordinator.trText = { key in tr(L10nKey(rawValue: key) ?? .statusError) }
+        // 会话历史（用户数据飞轮 P0-3）：系统 SQLite 落库识别会话（默认库与
+        // config.toml 同目录）；打开/迁移失败由工厂返回 nil，记录降级停用。
+        coordinator.makeSessionHistoryStore = { SessionHistoryStore(url: $0) }
         coordinator.presentUpgradeAlertUI = { url, message in
             NSApp.activate(ignoringOtherApps: true)
 

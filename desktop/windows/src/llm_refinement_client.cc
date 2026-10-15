@@ -62,9 +62,11 @@ bool AppearsInSourceText(const std::string& source_text, const std::string& word
 void LLMRefinementClient::Refine(std::string text,
                                  std::string prompt_override,
                                  std::function<void(bool, std::string)> completion,
-                                 std::vector<std::string> hotwords) const {
+                                 std::vector<std::string> hotwords,
+                                 std::vector<CorrectionPair> correction_pairs) const {
     ChatAsync(BuildRefinePrompt(prompt_override,
-                                hotwords.empty() ? config().asr_hotwords : hotwords),
+                                hotwords.empty() ? config().asr_hotwords : hotwords,
+                                std::move(correction_pairs)),
               std::move(text), std::move(completion));
 }
 
@@ -73,10 +75,12 @@ void LLMRefinementClient::RefineStream(std::string text,
                                        std::function<void(std::string token)> on_token,
                                        std::function<void(bool ok, std::string full_text)> on_complete,
                                        std::shared_ptr<std::atomic_bool> cancel,
-                                       std::vector<std::string> hotwords) const {
+                                       std::vector<std::string> hotwords,
+                                       std::vector<CorrectionPair> correction_pairs) const {
     const auto effective_hotwords =
         hotwords.empty() ? config().asr_hotwords : hotwords;
-    const auto system_prompt = BuildRefinePrompt(prompt_override, effective_hotwords);
+    const auto system_prompt = BuildRefinePrompt(prompt_override, effective_hotwords,
+                                                 correction_pairs);
     StreamCallbacks cbs;
     cbs.on_token = std::move(on_token);
     cbs.on_done = [on_complete](std::string full_text) {
@@ -84,12 +88,13 @@ void LLMRefinementClient::RefineStream(std::string text,
     };
     cbs.on_error = [this, text, prompt = std::move(prompt_override),
                     hotwords = std::move(effective_hotwords),
+                    correction_pairs = std::move(correction_pairs),
                     on_complete](std::string error) mutable {
         // SSE 流式失败（服务端不支持 stream:true 或网络超时等）：
         // 回退到非流式 ChatAsync → ChatSync 精修，不丢精修能力。
         (void)error;
         Refine(std::move(text), std::move(prompt), std::move(on_complete),
-               std::move(hotwords));
+               std::move(hotwords), std::move(correction_pairs));
     };
     // B18：取消完成 ok=false（协调器完成 lambda 已有 cancel 守卫——注释明示 !ok=取消）。
     cbs.on_cancelled = [on_complete]() {
@@ -126,7 +131,8 @@ std::string ClampRefinePrompt(std::string prompt) {
 }  // namespace
 
 std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_override,
-                                                   const std::vector<std::string>& hotwords) {
+                                                   const std::vector<std::string>& hotwords,
+                                                   const std::vector<CorrectionPair>& correction_pairs) {
     const auto trimmed = Trim(prompt_override);
     std::string prompt;
     if (!trimmed.empty()) {
@@ -148,7 +154,13 @@ std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_ove
             "\n"
             "仅返回清理后的文本，无需解释、引号、前缀、备选方案或 Markdown 格式。";
     }
-    if (hotwords.empty()) return ClampRefinePrompt(prompt);
+    if (hotwords.empty()) {
+        // 纠错 few-shot 段（用户数据飞轮 P0-1）：无热词段时独立追加；超预算由
+        // ClampRefinePrompt 尾部截断——few-shot 在末尾，天然先被裁（裁段顺序：
+        // 先 few-shot 后热词，对齐 wetype 方案 §2 预算约束）。
+        prompt += BuildCorrectionFewshotSection(correction_pairs);
+        return ClampRefinePrompt(prompt);
+    }
 
     prompt += "\n\n用户常用术语热词表：";
     for (std::size_t i = 0; i < hotwords.size(); ++i) {
@@ -160,6 +172,7 @@ std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_ove
               "示例：热词表含「AGENTS.md」时，识别文本「编辑 agentsdmd 这个文件」"
               "应改为「编辑 AGENTS.md 这个文件」。"
               "原文中已经正确出现的热词必须原样保留，不得改写。";
+    prompt += BuildCorrectionFewshotSection(correction_pairs);
     return ClampRefinePrompt(prompt);
 }
 

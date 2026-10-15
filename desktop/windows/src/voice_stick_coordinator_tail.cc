@@ -24,6 +24,31 @@ void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::strin
     if (!mined.empty()) RecordAndNotifyHotwordCandidates(mined);
 }
 
+void VoiceStickCoordinator::MineCorrectionPairsFromRefinement(const std::string& original,
+                                                              const std::string& refined) {
+    // 精修没改动（原文回退路径）无对可提取，跳过磁盘事务。
+    if (original == refined) return;
+    RecordCorrectionPairsToDisk(CorrectionPairsPath(ConfigSnapshot()->ConfigPath()),
+                                ExtractReplacementPairs(original, refined),
+                                std::time(nullptr));
+}
+
+std::optional<std::string> VoiceStickCoordinator::ExactMatchCorrectionPairFromDisk(
+    const std::string& text) {
+    const auto path = CorrectionPairsPath(ConfigSnapshot()->ConfigPath());
+    const auto pair = ExactMatchCorrectionPair(text, LoadCorrectionPairs(path));
+    if (!pair) return std::nullopt;
+    MarkCorrectionPairUsedOnDisk(path, *pair, std::time(nullptr));
+    LogCoordinatorLine("correction pair applied exact len=" + std::to_string(pair->after.size()));
+    return pair->after;
+}
+
+std::vector<CorrectionPair> VoiceStickCoordinator::CorrectionPairsForLlmPrompts() {
+    return TrimCorrectionPairsForPrompt(
+        LoadCorrectionPairs(CorrectionPairsPath(ConfigSnapshot()->ConfigPath())),
+        kCorrectionPromptMaxPairs);
+}
+
 void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& final_text) {
     if (!ConfigSnapshot()->hotword_mining_enabled || ConfigSnapshot()->llm_api_key.empty() || final_text.empty()) {
         LogCoordinatorLine(std::string("hotword extraction skipped: ") +

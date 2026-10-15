@@ -7,6 +7,7 @@
 #include "audio_opus_decoder.h"
 #include "audio_opus_encoder.h"
 #include "ble_protocol.h"
+#include "correction_pairs.h"
 #include "default_audio_device_controller.h"
 #include "debug_audio_recorder.h"
 #include "device_switch_state.h"
@@ -572,6 +573,16 @@ private:
     // 由用户在设置-热词区确认后才真正入表。
     void MineHotwordCandidatesFromRefinement(const std::string& original,
                                              const std::string& refined);
+    // 精修完成后的纠错对挖掘（用户数据飞轮 P0-1）：original→refined 提取最小替换
+    // 片段对，经 B13 单写入口落盘 correction_pairs.json（与 config.toml 同目录）。
+    void MineCorrectionPairsFromRefinement(const std::string& original,
+                                           const std::string& refined);
+    // 精修 prompt 纠错 few-shot 段候选（按 count/新近度 top-kCorrectionPromptMaxPairs，
+    // 每次精修从磁盘现读，不做内存缓存——文件小且写点分散）。
+    std::vector<CorrectionPair> CorrectionPairsForLlmPrompts();
+    // 改写对全句精确命中应用（doubao 方案 §3.1 应用位置 1）：命中即返回替换文本并
+    // 落 use_count；未命中/库停用返回 nullopt 走既有精修管线。
+    std::optional<std::string> ExactMatchCorrectionPairFromDisk(const std::string& text);
     // LLM 主动提炼挖掘（hotword_mining_enabled）：识别会话完成后异步让 LLM 从
     // 最终文本提炼候选热词，覆盖 diff 挖掘够不到的场景（ASR 本来就识别对、或
     // LLM 不认识的全新词无法被纠错引入）。不阻塞粘贴。

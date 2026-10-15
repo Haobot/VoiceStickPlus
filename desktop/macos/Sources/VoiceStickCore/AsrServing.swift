@@ -15,14 +15,43 @@ public enum ASRResultType: String {
 /// 会话参数（原 ASRWebSocketClient.swift；字段默认值即构造默认）。
 public struct ASRSessionOptions {
     public var hotwords: [String] = []
+    /// 最近精修文本对话上下文（用户数据飞轮 P1-6：火山 corpus.context.dialog_ctx，
+    /// 让同音纠错在第一遍发生；调用方负责总量预算）。
+    public var dialogContext: [String] = []
     public var resultType: ASRResultType = .full
     public var showUtterances: Bool = false
 
-    public init(hotwords: [String] = [], resultType: ASRResultType = .full,
-                showUtterances: Bool = false) {
+    public init(hotwords: [String] = [], dialogContext: [String] = [],
+                resultType: ASRResultType = .full, showUtterances: Bool = false) {
         self.hotwords = hotwords
+        self.dialogContext = dialogContext
         self.resultType = resultType
         self.showUtterances = showUtterances
+    }
+}
+
+/// 火山 bigmodel corpus.context 直传载荷（纯函数，双端对拍口径）：
+/// `{"hotwords":[{"word":..}],"dialog_ctx":[..]}`，两段皆空返回 nil（不带 corpus）。
+/// 预算约束（kHotwordCorpusTokenBudget 直传热词 80 tokens；dialog_ctx 800 tokens/20 轮）
+/// 由调用方负责，本函数只做序列化与空白过滤。
+public enum ASRCorpus {
+    public static func contextJSON(hotwords: [String], dialogContext: [String]) -> String? {
+        var context: [String: Any] = [:]
+        let words = hotwords
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !words.isEmpty {
+            context["hotwords"] = words.map { ["word": $0] }
+        }
+        let dialog = dialogContext
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !dialog.isEmpty {
+            context["dialog_ctx"] = dialog
+        }
+        guard !context.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: context) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }
 

@@ -22,13 +22,15 @@ final class LLMRefinementClient {
         _ text: String,
         promptOverride: String = "",
         hotwords: [String]? = nil,
+        corrections: [CorrectionPair] = [],
         cancel: RefineCancelToken,
         onToken: @escaping (String) -> Void,
         onComplete: @escaping (Bool, String, RefineFallback) -> Void
     ) {
         let effectiveHotwords = hotwords ?? config.asrHotwords
         guard let request = makeRequest(
-            text: text, promptOverride: promptOverride, hotwords: effectiveHotwords, stream: true
+            text: text, promptOverride: promptOverride, hotwords: effectiveHotwords,
+            corrections: corrections, stream: true
         ) else {
             onComplete(false, "", .none)
             return
@@ -57,7 +59,8 @@ final class LLMRefinementClient {
             } catch {
                 if cancel.isCancelled { return }
                 // SSE 失败回退非流式精修（对齐 Windows on_error → Refine）。
-                self.refine(text, promptOverride: promptOverride, hotwords: effectiveHotwords) { refined in
+                self.refine(text, promptOverride: promptOverride, hotwords: effectiveHotwords,
+                            corrections: corrections) { refined in
                     if let refined {
                         onComplete(true, refined, .sseToBlocking)
                     } else {
@@ -73,11 +76,13 @@ final class LLMRefinementClient {
         _ text: String,
         promptOverride: String = "",
         hotwords: [String]? = nil,
+        corrections: [CorrectionPair] = [],
         completion: @escaping (String?) -> Void
     ) {
         let effectiveHotwords = hotwords ?? config.asrHotwords
         guard let request = makeRequest(
-            text: text, promptOverride: promptOverride, hotwords: effectiveHotwords, stream: false
+            text: text, promptOverride: promptOverride, hotwords: effectiveHotwords,
+            corrections: corrections, stream: false
         ) else {
             completion(nil)
             return
@@ -106,7 +111,8 @@ final class LLMRefinementClient {
     }
 
     private func makeRequest(
-        text: String, promptOverride: String, hotwords: [String], stream: Bool
+        text: String, promptOverride: String, hotwords: [String],
+        corrections: [CorrectionPair], stream: Bool
     ) -> URLRequest? {
         let apiKey = config.activeLlmAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty, let url = chatCompletionsURL() else { return nil }
@@ -122,7 +128,7 @@ final class LLMRefinementClient {
             "model": config.activeLlmModel,
             "temperature": 0,
             "messages": [
-                ["role": "system", "content": Self.buildPrompt(override: promptOverride, hotwords: hotwords)],
+                ["role": "system", "content": Self.buildPrompt(override: promptOverride, hotwords: hotwords, corrections: corrections)],
                 ["role": "user", "content": text]
             ]
         ]
@@ -153,8 +159,11 @@ final class LLMRefinementClient {
         return URL(string: "\(base)/chat/completions")
     }
 
-    /// 默认精修 prompt 逐字对齐 Windows BuildRefinePrompt（含热词表后缀与示例）。
-    static func buildPrompt(override promptOverride: String, hotwords: [String]) -> String {
+    /// 默认精修 prompt 逐字对齐 Windows BuildRefinePrompt（含热词表后缀与示例、
+    /// 纠错 few-shot 段）。
+    static func buildPrompt(
+        override promptOverride: String, hotwords: [String], corrections: [CorrectionPair] = []
+    ) -> String {
         let trimmed = promptOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         var prompt: String
         if !trimmed.isEmpty {
@@ -180,13 +189,17 @@ final class LLMRefinementClient {
         let terms = hotwords
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        guard !terms.isEmpty else { return prompt }
-        prompt += "\n\n用户常用术语热词表：" + terms.joined(separator: ", ")
-        prompt += "。若识别文本中出现与热词发音相近的写法（如拼读、同音、分写或连写变形），"
-            + "请替换为热词原形；没有相近发音的词时不要凭空插入热词。"
-            + "示例：热词表含「AGENTS.md」时，识别文本「编辑 agentsdmd 这个文件」"
-            + "应改为「编辑 AGENTS.md 这个文件」。"
-            + "原文中已经正确出现的热词必须原样保留，不得改写。"
+        if !terms.isEmpty {
+            prompt += "\n\n用户常用术语热词表：" + terms.joined(separator: ", ")
+            prompt += "。若识别文本中出现与热词发音相近的写法（如拼读、同音、分写或连写变形），"
+                + "请替换为热词原形；没有相近发音的词时不要凭空插入热词。"
+                + "示例：热词表含「AGENTS.md」时，识别文本「编辑 agentsdmd 这个文件」"
+                + "应改为「编辑 AGENTS.md 这个文件」。"
+                + "原文中已经正确出现的热词必须原样保留，不得改写。"
+        }
+        // 纠错 few-shot 段（用户数据飞轮 P0-1）：与 Windows BuildRefinePrompt 相同，
+        // 追加在热词段之后。
+        prompt += CorrectionPairs.promptSection(corrections)
         return prompt
     }
 
