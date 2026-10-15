@@ -1,9 +1,30 @@
 # 耳语/轻声电平修复：AGC v2（噪声预算 + 自适应本底 + 增益上限 +12→+36dB）
 
-> 状态：已实施（2026-10-15）。四端同步（固件 C / macOS Swift / Windows C++ / Python 镜像）+ golden fixture 再生；
-> Python self-test 17/17、macOS VoiceStickTests 928/928、C++↔Python 逐样本 bit 级对拍一致、固件 idf.py build 通过。
-> 真机 A/B 验收清单见 §6（**尚未在真机上验收**）。证据 = 本机 `~/Library/Application Support/VoiceStick/DebugAudio`
-> 29 段真实录音离线分析（2026-10-13 ~ 10-14，含截图中的 `20261014-222826-VS-53A8-session-11.ogg`）。
+> 状态：已实施（2026-10-15，含当日 v2.1 修复）。四端同步（固件 C / macOS Swift / Windows C++ / Python 镜像）+ golden fixture 再生；
+> Python self-test 17/17、macOS VoiceStickTests 1033/1033、C++↔Python **全链逐字节一致**（113680 样本 `cmp` 通过）、
+> 固件 idf.py build 通过 + **已串口烧录到 VS-53A8**。真机 A/B 验收清单见 §6。
+> 证据 = 本机 `~/Library/Application Support/VoiceStick/DebugAudio` 真机录音离线分析（2026-10-13 ~ 10-15，
+> 含截图中的 `20261014-222826-VS-53A8-session-11.ogg` 与 10-15 19:24~20:01 的 15 段复现）。
+
+## 0. v2.1 修复（2026-10-15 晚，同日第二次）：click guard 必须在 AGC 之前
+
+v2 落地后用户复测「**还是太轻**」，10-15 19:24~20:01 的 15 段新录音峰值 -10~-40 dBFS、语音帧 RMS -28~-58 dBFS，
+与「AGC 生效」的预期（-12dBFS 包络 / 约 -22dBFS RMS）不符。逐一排除后定位到**冷启动本底估计被按键咔哒污染**：
+
+- 管线顺序是 `HPF → AGC → click_guard`，即 **AGC 看得到按键咔哒**；
+- 包络是 300ms 慢释，咔哒在 0~50ms 落下后把包络顶到很高，**整个冷启动窗（120ms）量到的「本底」其实是咔哒尾部**；
+- 本底被钳到上限 -45dBFS ⇒ 门限 = 3×184 = **-33dBFS** ⇒ 耳语包络（-46dBFS）永远低于门限 ⇒ 增益被噪声预算压在
+  `184/env ≈ 1.1` ⇒ **整场不放大**（输出 ≈ 原始拾音电平，正是用户听到的「还是太轻」）。
+
+为什么离线测试没抓到：线下测试用的 `.ogg` 已经是 **click guard 之后**的输出（头部 120ms 被静音），
+本底估计自然干净；真机 AGC 看到的却是 guard 之前的信号。**这是一次「测试向量与真机输入形状不一致」的教训。**
+
+v2.1 两处改动：
+
+1. **固件把 click guard 移到 HPF/AGC 之前**（主循环 + drain 两处）——咔哒不再进入 AGC 包络；
+2. **本底估计只统计「有效信号」**：跳过 1920 样本（120ms，= guard 斜坡长度）+ 数字静音（`env < 1.0`），
+   累计 960 样本（60ms）有效信号定罪，300ms（index 4800）封顶；门限比 4.0→**3.0**（+9.5dB）。
+   桌面端无 guard，但同样跳 120ms 前置区（保持四端逐字一致）。
 
 ## 1. 现象与实测数据
 

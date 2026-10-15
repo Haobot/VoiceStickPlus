@@ -51,7 +51,9 @@ private:
     // 旧版「env < -45dBFS ⇒ desired = 1.0」把耳语前级包络（-42~-52dBFS）整段挡在门外，
     // 门限之上又被 +12dB 上限截断在 -33dBFS。
     // 新版把 -45dBFS 从「门限」改为「噪声预算」：噪声段只允许把本底抬到 -45dBFS，
-    // 语音段放开到 +36dB；本底用冷启动窗估计，门限 = 本底 +12dB。
+    // 语音段放开到 +36dB；本底只统计「有效信号」的最小包络（跳过 120ms 前置无效区，
+    // 固件端该区是 click guard 斜坡——咔哒必须先于 AGC 抑制，否则包络被整场污染）。
+    // v2.1（2026-10-15 晚）：门限比由 +12dB 收窄到 +9.5dB、前置无效区 120ms。
     static constexpr double kAgcTarget = 8192.0;            // -12 dBFS
     static constexpr double kAgcMaxGain = 63.0;             // +36 dB（由 +12dB 放开）
     static constexpr double kAgcMinGain = 0.1;              // -20 dB
@@ -64,14 +66,14 @@ private:
     static constexpr double kAgcFastRatio = 4.0;            // desired > 4×gain 走快攻
     static constexpr double kAgcCeil = 26214.0;             // 0.8FS 瞬时限幅
     static constexpr double kAgcNfAbs = 16.0;               // -66 dBFS：门限绝对下限
-    static constexpr double kAgcNfRatio = 4.0;              // 门限 = 本底 +12 dB
+    static constexpr double kAgcNfRatio = 3.0;              // 门限 = 本底 +9.5 dB
     static constexpr double kAgcNfNear = 2.0;               // 仅 env < 2×nf 时缓升本底
     static constexpr double kAgcNfRise = 6.25e-5;           // 本底缓升 τ=1s
     static constexpr double kAgcNfTrustMin = 1.0;           // 本底低于此视为数字静音
     static constexpr double kAgcNfMaxTrust = 184.0;         // -45 dBFS：本底估计上限
-    static constexpr int kAgcNfWarmSamples = 1920;          // 冷启动窗 120ms
-    static constexpr int kAgcNfSkipSamples = 80;            // 跳过包络冷启动 5ms
-    static constexpr int kAgcNfWarmMaxSamples = 7680;       // 冷启动窗封顶 480ms
+    static constexpr int kAgcNfSkipSamples = 1920;          // 前置无效区 120ms
+    static constexpr int kAgcNfWarmSamples = 960;           // 有效信号累计 60ms
+    static constexpr int kAgcNfWarmMaxSamples = 4800;       // 绝对封顶 300ms
     static constexpr double kAgcNfSentinel = 1e30;          // nf 初值（尚未观测）
 
     int hpf_process(int x);
@@ -87,8 +89,8 @@ private:
     double agc_gain_ = 1.0;
     double agc_nf_ = kAgcNfSentinel;
     int agc_index_ = 0;
+    int agc_nf_valid_ = 0;
     bool agc_nf_ready_ = false;
-    bool agc_nf_seen_ = false;
 };
 
 // ADPCM 裸字节流跨包累积切帧器：ATVV audio notify 无帧头无序号，

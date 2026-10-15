@@ -115,12 +115,12 @@ func runPcmPostprocessorTests() {
     }
 
     // ---- testAgcPullup ----
-    // AGC v2 轻声拉起：120ms 极低底噪（本底估计窗）铺垫后，8 段「200ms 幅度 100
-    //（-50dBFS）1kHz 正弦 + 150ms 静音」。稳态输出峰值 ≈6269（+36dB 上限：
-    // -50dBFS 到目标 -12dBFS 需 +38dB，被 MAX_GAIN 截断）。
+    // AGC v2.1 轻声拉起：1920 前置无效区（固件端 = click guard 斜坡）+ 960 有效底噪
+    //（本底估计窗）+ 8 段「200ms 幅度 100（-50dBFS）1kHz 正弦 + 150ms 静音」。
+    // 稳态输出峰值 ≈6269（+36dB 上限：-50dBFS 到目标 -12dBFS 需 +38dB，被 MAX_GAIN 截断）。
     do {
         let pp = PcmPostprocessor(gainDb: 0.0) // hpf/agc 默认开
-        var pcm: [Int16] = (0..<1920).map { $0 % 2 == 0 ? 3 : -3 }
+        var pcm: [Int16] = (0..<2880).map { $0 % 2 == 0 ? 3 : -3 }
         for _ in 0..<8 {
             pcm.append(contentsOf: makeSine(100, 1000, 3200))
             pcm.append(contentsOf: [Int16](repeating: 0, count: 2400))
@@ -128,7 +128,7 @@ func runPcmPostprocessorTests() {
         let out = pp.process(pcm)
         var peak = 0
         for k in 0..<8 {
-            let base = 1920 + k * 5600 + 1600
+            let base = 2880 + k * 5600 + 1600
             for v in out[base..<(base + 1600)] { peak = max(peak, abs(Int(v))) }
         }
         check(peak >= 5300 && peak <= 6600, "AgcPullup peak=\(peak)")

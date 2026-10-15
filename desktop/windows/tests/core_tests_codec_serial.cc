@@ -217,13 +217,13 @@ void TestPcmPostprocessor() {
         assert(ratio <= std::pow(10.0, -13.0 / 20.0));
     }
 
-    // AGC v2 轻声拉起：120ms 极低底噪（本底估计窗）铺垫后，8 段「200ms 幅度 100
-    //（-50dBFS）1kHz 正弦 + 150ms 静音」。稳态输出峰值 ≈5956（全链；+36dB 上限：
-    // -50dBFS 到目标 -12dBFS 需 +38dB，被 MAX_GAIN 截断）。三端同值，见
-    // Doc/Plan/whisper-level-agc-v2.md。
+    // AGC v2.1 轻声拉起：1920 前置无效区（固件端 = click guard 斜坡）+ 960 有效底噪
+    //（本底估计窗）+ 8 段「200ms 幅度 100（-50dBFS）1kHz 正弦 + 150ms 静音」。
+    // 稳态输出峰值 ≈5956（全链；+36dB 上限：-50dBFS 到目标 -12dBFS 需 +38dB，
+    // 被 MAX_GAIN 截断）。三端同值，见 Doc/Plan/whisper-level-agc-v2.md。
     {
         std::vector<std::int16_t> pcm;
-        for (int i = 0; i < 1920; ++i) pcm.push_back(i % 2 == 0 ? 3 : -3);
+        for (int i = 0; i < 2880; ++i) pcm.push_back(i % 2 == 0 ? 3 : -3);
         for (int k = 0; k < 8; ++k) {
             auto burst = make_sine(100.0, 1000.0, 3200);
             pcm.insert(pcm.end(), burst.begin(), burst.end());
@@ -233,7 +233,7 @@ void TestPcmPostprocessor() {
         const auto out = pp.Process(pcm);
         int peak = 0;
         for (std::size_t k = 0; k < 8; ++k) {
-            for (std::size_t i = 1920 + k * 5600 + 1600; i < 1920 + k * 5600 + 3200; ++i) {
+            for (std::size_t i = 2880 + k * 5600 + 1600; i < 2880 + k * 5600 + 3200; ++i) {
                 peak = std::max(peak, std::abs(static_cast<int>(out[i])));
             }
         }

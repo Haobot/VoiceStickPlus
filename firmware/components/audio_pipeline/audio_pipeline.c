@@ -86,9 +86,11 @@ static inline int16_t hpf_process(int16_t x) {
  * -52dBFS，判据见方案文档），而门限之上又被 +12dB 上限截断在 -33dBFS；本项目主打
  * 「嘴贴麦克风的耳语」，两处都必须改。
  * 新版把 -45dBFS 从「门限」改为「噪声预算」：
- *   - 本底 nf：冷启动窗取包络最小值（5ms~120ms，若不可信最多读到 480ms），钳到
- *     [-45dBFS, -66dBFS]；之后瞬时下降，仅在 env < 2×nf 时以 τ=1s 缓升。
- *   - 噪声段（env < max(-66dBFS, 4×nf)）：增益上限 = -45dBFS/env，即只允许把本底
+ *   - 本底 nf：只统计「有效信号」（跳过前置无效区与数字静音）里的最小包络，累计
+ *     60ms 即可定罪；钳到 [-45dBFS, -66dBFS]；之后瞬时下降，仅 env < 2×nf 时 τ=1s 缓升。
+ *     **前置无效区 = click guard 斜坡（120ms）**：guard 已移到 AGC 之前（见主循环），
+ *     否则按键咔哒会把 300ms 慢释包络抬起整场（v2.1 修复的真机根因）。
+ *   - 噪声段（env < max(-66dBFS, 3×nf)）：增益上限 = -45dBFS/env，即只允许把本底
  *     抬到 -45dBFS，绝不放大噪声（嘈杂房间自动退回近 0dB，不会噪声泵升）。
  *   - 语音段：desired = clamp(-12dBFS/env, -20dB, +36dB)（耳语需 +30~+40dB）。
  *   - 增益平滑：下降快（τ≈0.2ms，兼软限幅）；上升在 desired > 4×gain 时 100ms、
@@ -110,21 +112,21 @@ static inline int16_t hpf_process(int16_t x) {
 #define AGC_FAST_RATIO 4.0f             /* desired > 4×gain 时走快攻 */
 #define AGC_CEIL 26214.0f               /* 0.8FS 瞬时限幅 */
 #define AGC_NF_ABS 16.0f                /* -66 dBFS：门限绝对下限 */
-#define AGC_NF_RATIO 4.0f               /* 门限 = 本底 +12 dB */
+#define AGC_NF_RATIO 3.0f               /* 门限 = 本底 +9.5 dB */
 #define AGC_NF_NEAR 2.0f                /* 仅 env < 2×nf 时缓升本底 */
 #define AGC_NF_RISE 6.25e-5f            /* 1/(16000*1)：本底缓升 τ=1s */
 #define AGC_NF_TRUST_MIN 1.0f           /* 本底低于此视为数字静音（不可信） */
 #define AGC_NF_MAX_TRUST 184.0f         /* -45 dBFS：本底估计上限（防压死语音） */
-#define AGC_NF_WARM_SAMPLES 1920u       /* 冷启动窗 120ms */
-#define AGC_NF_SKIP_SAMPLES 80u         /* 跳过包络冷启动 5ms */
-#define AGC_NF_WARM_MAX_SAMPLES 7680u   /* 冷启动窗封顶 480ms */
+#define AGC_NF_SKIP_SAMPLES 1920u       /* 前置无效区 = click guard 斜坡长度（120ms） */
+#define AGC_NF_WARM_SAMPLES 960u        /* 有效信号累计 60ms 即可定本底 */
+#define AGC_NF_WARM_MAX_SAMPLES 4800u   /* 绝对封顶：index >= 4800（300ms）强制就绪 */
 #define AGC_NF_SENTINEL 1e30f           /* nf 初值（尚未观测） */
 static float s_agc_env = 0.0f;
 static float s_agc_gain = 1.0f;
 static float s_agc_nf = AGC_NF_SENTINEL;
 static uint32_t s_agc_index = 0;
+static uint32_t s_agc_nf_valid = 0;
 static bool s_agc_nf_ready = false;
-static bool s_agc_nf_seen = false;
 static uint32_t s_agc_log_frames = 0;
 
 static inline int16_t agc_process(int16_t x)
@@ -139,15 +141,15 @@ static inline int16_t agc_process(int16_t x)
     }
 
     if (!s_agc_nf_ready) {
-        /* 冷启动窗：只测本底；本底可信前直通（仅保留 0.8FS 限幅）。 */
-        if (s_agc_index >= AGC_NF_SKIP_SAMPLES) {
+        /* 冷启动：只统计「有效信号」（跳过 guard 斜坡与数字静音）里的最小包络；
+         * 本底就绪前直通（增益 1.0，仅保留 0.8FS 限幅）。 */
+        if (s_agc_index >= AGC_NF_SKIP_SAMPLES && s_agc_env >= AGC_NF_TRUST_MIN) {
             if (s_agc_env < s_agc_nf) s_agc_nf = s_agc_env;
-            if (s_agc_env >= AGC_NF_TRUST_MIN) s_agc_nf_seen = true;
+            s_agc_nf_valid++;
         }
-        if ((s_agc_index >= AGC_NF_WARM_SAMPLES && s_agc_nf_seen &&
-             s_agc_nf <= AGC_NF_MAX_TRUST) ||
+        if (s_agc_nf_valid >= AGC_NF_WARM_SAMPLES ||
             s_agc_index >= AGC_NF_WARM_MAX_SAMPLES) {
-            float nf = s_agc_nf_seen ? s_agc_nf : AGC_NF_ABS;
+            float nf = (s_agc_nf_valid > 0) ? s_agc_nf : AGC_NF_ABS;
             if (nf < AGC_NF_TRUST_MIN) nf = AGC_NF_ABS;
             else if (nf > AGC_NF_MAX_TRUST) nf = AGC_NF_MAX_TRUST;
             s_agc_nf = nf;
@@ -720,15 +722,18 @@ static void audio_task(void *arg)
                 mono[i] = stereo[i * 2];
             }
         }
+        /* click_guard 必须在 HPF/AGC 之前（2026-10-15 v2.1 修复）：AGC 包络慢释 300ms，
+         * 按键咔哒若落在 AGC 之后被抑制，咔哒本身已把包络顶起来并持续污染「本底估计」
+         * ——真机实测冷启动窗量到的本底 = 咔哒尾部 ⇒ 门限被顶到 -33dBFS ⇒ 耳语整场
+         * 不再放大（用户反馈「还是太轻」的真根因）。置于最前同时也让 HPF 少受瞬态冲击。
+         * 仅 ES8311/playback：遥控器 mic 离按键远无外壳传导，开头 60ms 静音会砍 ATVV 首音节。 */
+        if (s_source != AUDIO_SOURCE_EXTERNAL) {
+            click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
+        }
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = hpf_process(mono[i]);
         }
         agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
-        /* click_guard 淡入仅 ES8311/playback：遥控器 mic 离按键远无外壳传导，
-         * 开头 60ms 静音会砍 ATVV 首音节（按住说话按下即说话）。 */
-        if (s_source != AUDIO_SOURCE_EXTERNAL) {
-            click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
-        }
 
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
@@ -830,14 +835,14 @@ static void audio_task(void *arg)
                 mono[i] = stereo[i * 2];
             }
         }
-        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
-            mono[i] = hpf_process(mono[i]);
-        }
-        agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
         if (s_source != AUDIO_SOURCE_EXTERNAL) {
             click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
             click_guard_fade_out(mono, AUDIO_FRAME_SAMPLES, drain);
         }
+        for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
+            mono[i] = hpf_process(mono[i]);
+        }
+        agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
         if (encoded < 0) {
@@ -1034,8 +1039,8 @@ static esp_err_t start_session(uint32_t session_id, audio_source_t source)
     s_agc_gain = 1.0f;
     s_agc_nf = AGC_NF_SENTINEL;
     s_agc_index = 0;
+    s_agc_nf_valid = 0;
     s_agc_nf_ready = false;
-    s_agc_nf_seen = false;
     s_agc_log_frames = 0;
     s_session_samples = 0;
     /* 回放模式：每次录音从缓冲开头重放，保证可重复。 */

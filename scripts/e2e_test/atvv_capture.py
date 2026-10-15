@@ -403,14 +403,17 @@ _AGC_GAIN_DOWN = 0.73162        # 快下（τ≈0.2ms；旧注释写 2ms，实�
 _AGC_FAST_RATIO = 4.0           # desired > 4×gain 时走快攻
 _AGC_CEIL = 26214.0             # 0.8FS 瞬时限幅（Opus 解码 +1.5~2dB 过冲余量）
 _AGC_NF_ABS = 16.0              # -66 dBFS：门限绝对下限
-_AGC_NF_RATIO = 4.0             # 门限 = 本底 +12 dB
+_AGC_NF_RATIO = 3.0             # 门限 = 本底 +9.5 dB
 _AGC_NF_NEAR = 2.0              # 仅 env < 2×nf 时缓升本底
 _AGC_NF_RISE = 6.25e-5          # 1/(16000*1)：本底缓升 τ=1s
 _AGC_NF_TRUST_MIN = 1.0         # 本底低于此视为数字静音（不可信 → 取绝对下限）
 _AGC_NF_MAX_TRUST = 184.0       # 本底估计上限 = -45 dBFS（防语音污染后压死语音）
-_AGC_NF_WARM_SAMPLES = 1920     # 冷启动窗 120ms
-_AGC_NF_SKIP_SAMPLES = 80       # 跳过包络冷启动 5ms
-_AGC_NF_WARM_MAX_SAMPLES = 7680 # 冷启动窗封顶 480ms
+# 冷启动：跳过前置无效区（固件 = click guard 斜坡 120ms；桌面端无 guard，同样跳 120ms
+# 以免 ATVV/ATVV 归一化链路的起始瞬态污染本底），随后只统计「有效信号」（env >= MIN）
+# 累计 60ms 即可定本底；index >= 4800（300ms）封顶强制就绪。
+_AGC_NF_SKIP_SAMPLES = 1920     # 前置无效区 120ms
+_AGC_NF_WARM_SAMPLES = 960      # 有效信号累计 60ms
+_AGC_NF_WARM_MAX_SAMPLES = 4800 # 绝对封顶 300ms
 _AGC_NF_SENTINEL = 1e30         # nf 初值（尚未观测）
 
 
@@ -439,9 +442,11 @@ class Agc:
     """软件 AGC v2（逐样本，double，状态跨 process 调用保持）：
 
     - 包络：|x| 一阶峰值跟随，快攻 5ms / 慢释 300ms（不变）。
-    - 本底估计 nf：冷启动窗 [5ms,120ms]（不可信则最多读到 480ms）取包络最小值，
-      上限钳到 -45dBFS；之后瞬时下降、仅在 env < 2×nf 时以 τ=1s 缓升。
-    - 噪声段（env < max(-66dBFS, nf×4)）：增益上限 = -45dBFS/env，即只允许把本底
+    - 本底估计 nf：跳过前置无效区（120ms）后，只统计「有效信号」的最小包络，累计
+      60ms 定罪（300ms 封顶）；上限钳到 -45dBFS；之后瞬时下降、仅 env < 2×nf 时 τ=1s 缓升。
+      **前置无效区是硬要求**：固件端按键咔哒必须由 click guard 在 AGC 之前抑制，
+      否则 300ms 慢释包络被咔哒抬起来整场污染本底（v2.1 真机根因）。
+    - 噪声段（env < max(-66dBFS, nf×3)）：增益上限 = -45dBFS/env，即只允许把本底
       抬到 -45dBFS，绝不放大噪声。
     - 语音段：desired = clamp(-12dBFS/env, -20dB, +36dB)。
     - 增益平滑：下降快（τ≈0.2ms）；上升在大误差（desired > 4×gain）时 100ms、
@@ -456,8 +461,8 @@ class Agc:
         self.gain = 1.0
         self.nf = _AGC_NF_SENTINEL
         self.index = 0
+        self.valid = 0
         self.nf_ready = False
-        self.nf_seen = False
 
     def process(self, samples: list) -> list:
         out = []
@@ -471,15 +476,14 @@ class Agc:
                 else:
                     ec = _AGC_ENV_ATTACK if ax > self.env else _AGC_ENV_RELEASE
                     self.env = ec * self.env + (1.0 - ec) * ax
-                if self.index >= _AGC_NF_SKIP_SAMPLES:
+                if (self.index >= _AGC_NF_SKIP_SAMPLES
+                        and self.env >= _AGC_NF_TRUST_MIN):
                     if self.env < self.nf:
                         self.nf = self.env
-                    if self.env >= _AGC_NF_TRUST_MIN:
-                        self.nf_seen = True
-                if ((self.index >= _AGC_NF_WARM_SAMPLES and self.nf_seen
-                     and self.nf <= _AGC_NF_MAX_TRUST)
+                    self.valid += 1
+                if (self.valid >= _AGC_NF_WARM_SAMPLES
                         or self.index >= _AGC_NF_WARM_MAX_SAMPLES):
-                    nf = self.nf if self.nf_seen else _AGC_NF_ABS
+                    nf = self.nf if self.valid > 0 else _AGC_NF_ABS
                     if nf < _AGC_NF_TRUST_MIN:
                         nf = _AGC_NF_ABS
                     elif nf > _AGC_NF_MAX_TRUST:
@@ -1166,12 +1170,12 @@ def self_test() -> int:
             return [lround(amp * math.sin(2.0 * math.pi * freq * i / 16000.0))
                     for i in range(n)]
 
-        pcm = [3 if i % 2 else -3 for i in range(1920)]
+        pcm = [3 if i % 2 else -3 for i in range(2880)]   # 1920 跳过区 + 960 有效底噪
         for _ in range(8):
             pcm += sine(100.0, 1000.0, 3200) + [0] * 2400
         out = postprocess(pcm, 0.0)          # 全链：smooth3 → HPF → 增益 → AGC
         steady = [abs(v) for k in range(8)
-                  for v in out[1920 + k * 5600 + 1600: 1920 + k * 5600 + 3200]]
+                  for v in out[2880 + k * 5600 + 1600: 2880 + k * 5600 + 3200]]
         peak = max(steady)
         assert 5300 <= peak <= 6600, f"pull-up peak {peak}"
 

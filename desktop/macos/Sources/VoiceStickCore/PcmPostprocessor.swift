@@ -25,7 +25,8 @@ public final class PcmPostprocessor {
     // 旧版「env < -45dBFS ⇒ desired = 1.0」把耳语前级包络（-42~-52dBFS）整段挡在门外
     // （真机耳语会话生效增益 ≈0dB），门限之上又被 +12dB 上限截断在 -33dBFS。
     // 新版把 -45dBFS 从「门限」改为「噪声预算」：噪声段只允许把本底抬到 -45dBFS，
-    // 语音段放开到 +36dB；本底用冷启动窗估计，门限 = 本底 +12dB。
+    // 语音段放开到 +36dB；本底只统计「有效信号」的最小包络（跳过 120ms 前置无效区，
+    // 该区在固件端是 click guard 斜坡），门限 = 本底 +9.5dB。
     private static let agcTarget = 8192.0            // -12 dBFS
     private static let agcMaxGain = 63.0             // +36 dB（由 +12dB 放开）
     private static let agcMinGain = 0.1              // -20 dB
@@ -38,14 +39,14 @@ public final class PcmPostprocessor {
     private static let agcFastRatio = 4.0            // desired > 4×gain 走快攻
     private static let agcCeil = 26214.0             // 0.8FS 瞬时限幅
     private static let agcNfAbs = 16.0               // -66 dBFS：门限绝对下限
-    private static let agcNfRatio = 4.0              // 门限 = 本底 +12 dB
+    private static let agcNfRatio = 3.0              // 门限 = 本底 +9.5 dB
     private static let agcNfNear = 2.0               // 仅 env < 2×nf 时缓升本底
     private static let agcNfRise = 6.25e-5           // 本底缓升 τ=1s
     private static let agcNfTrustMin = 1.0           // 本底低于此视为数字静音
     private static let agcNfMaxTrust = 184.0         // -45 dBFS：本底估计上限
-    private static let agcNfWarmSamples = 1920       // 冷启动窗 120ms
-    private static let agcNfSkipSamples = 80         // 跳过包络冷启动 5ms
-    private static let agcNfWarmMaxSamples = 7680    // 冷启动窗封顶 480ms
+    private static let agcNfSkipSamples = 1920       // 前置无效区 120ms
+    private static let agcNfWarmSamples = 960        // 有效信号累计 60ms
+    private static let agcNfWarmMaxSamples = 4800    // 绝对封顶 300ms
     private static let agcNfSentinel = 1e30          // nf 初值（尚未观测）
 
     public private(set) var gainDb: Double
@@ -60,8 +61,8 @@ public final class PcmPostprocessor {
     private var agcGain = 1.0
     private var agcNf = PcmPostprocessor.agcNfSentinel
     private var agcIndex = 0
+    private var agcNfValid = 0
     private var agcNfReady = false
-    private var agcNfSeen = false
 
     public init(gainDb: Double = 0.0, hpf: Bool = true, agc: Bool = true) {
         self.gainDb = Self.clampGainDb(gainDb)
@@ -81,8 +82,8 @@ public final class PcmPostprocessor {
         agcGain = 1.0
         agcNf = Self.agcNfSentinel
         agcIndex = 0
+        agcNfValid = 0
         agcNfReady = false
-        agcNfSeen = false
     }
 
     public static func clampGainDb(_ gainDb: Double) -> Double {
@@ -134,14 +135,14 @@ public final class PcmPostprocessor {
         }
 
         if !agcNfReady {
-            // 冷启动窗：只测本底；本底可信前直通（仅保留 0.8FS 限幅）。
-            if agcIndex >= Self.agcNfSkipSamples {
+            // 冷启动：只统计「有效信号」（跳过前置无效区/数字静音）里的最小包络；
+            // 本底就绪前直通（增益 1.0，仅保留 0.8FS 限幅）。
+            if agcIndex >= Self.agcNfSkipSamples && agcEnv >= Self.agcNfTrustMin {
                 if agcEnv < agcNf { agcNf = agcEnv }
-                if agcEnv >= Self.agcNfTrustMin { agcNfSeen = true }
+                agcNfValid += 1
             }
-            if (agcIndex >= Self.agcNfWarmSamples && agcNfSeen && agcNf <= Self.agcNfMaxTrust)
-                || agcIndex >= Self.agcNfWarmMaxSamples {
-                var nf = agcNfSeen ? agcNf : Self.agcNfAbs
+            if agcNfValid >= Self.agcNfWarmSamples || agcIndex >= Self.agcNfWarmMaxSamples {
+                var nf = agcNfValid > 0 ? agcNf : Self.agcNfAbs
                 if nf < Self.agcNfTrustMin { nf = Self.agcNfAbs }
                 else if nf > Self.agcNfMaxTrust { nf = Self.agcNfMaxTrust }
                 agcNf = nf

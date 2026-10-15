@@ -19,8 +19,8 @@ void PcmPostprocessor::Reset() {
     agc_gain_ = 1.0;
     agc_nf_ = kAgcNfSentinel;
     agc_index_ = 0;
+    agc_nf_valid_ = 0;
     agc_nf_ready_ = false;
-    agc_nf_seen_ = false;
 }
 
 std::vector<std::int16_t> PcmPostprocessor::Process(std::span<const std::int16_t> pcm) {
@@ -65,14 +65,14 @@ int PcmPostprocessor::agc_process(int x) {
     }
 
     if (!agc_nf_ready_) {
-        // 冷启动窗：只测本底；本底可信前直通（仅保留 0.8FS 限幅）。
-        if (agc_index_ >= kAgcNfSkipSamples) {
+        // 冷启动：只统计「有效信号」（跳过前置无效区/数字静音）里的最小包络；
+        // 本底就绪前直通（增益 1.0，仅保留 0.8FS 限幅）。
+        if (agc_index_ >= kAgcNfSkipSamples && agc_env_ >= kAgcNfTrustMin) {
             if (agc_env_ < agc_nf_) agc_nf_ = agc_env_;
-            if (agc_env_ >= kAgcNfTrustMin) agc_nf_seen_ = true;
+            ++agc_nf_valid_;
         }
-        if ((agc_index_ >= kAgcNfWarmSamples && agc_nf_seen_ && agc_nf_ <= kAgcNfMaxTrust) ||
-            agc_index_ >= kAgcNfWarmMaxSamples) {
-            double nf = agc_nf_seen_ ? agc_nf_ : kAgcNfAbs;
+        if (agc_nf_valid_ >= kAgcNfWarmSamples || agc_index_ >= kAgcNfWarmMaxSamples) {
+            double nf = agc_nf_valid_ > 0 ? agc_nf_ : kAgcNfAbs;
             if (nf < kAgcNfTrustMin) nf = kAgcNfAbs;
             else if (nf > kAgcNfMaxTrust) nf = kAgcNfMaxTrust;
             agc_nf_ = nf;
