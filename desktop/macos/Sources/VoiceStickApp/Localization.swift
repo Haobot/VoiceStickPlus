@@ -52,6 +52,7 @@ enum L10nKey: String, CaseIterable {
     case settingsSectionSystem, settingsLaunchAtLogin, settingsShowImuDebug
     case settingsSectionAudioFiles, settingsDebugAudio, settingsDebugDir, settingsChooseDir
     case settingsOpenConfigFolder
+    case settingsAudioDebug, settingsAudioDebugFailedTitle, settingsAudioDebugNotFound
     case settingsApplyingTrial, settingsTrialApplied, settingsTrialPageOpened
     case settingsTrialOpenFailedTitle, settingsTrialFailedTitle
     case settingsSaved, settingsSaveFailedTitle
@@ -299,6 +300,9 @@ enum Localization {
         .settingsDebugDir: "Audio Folder",
         .settingsChooseDir: "Choose...",
         .settingsOpenConfigFolder: "Open Config Folder",
+        .settingsAudioDebug: "Audio Debug",
+        .settingsAudioDebugFailedTitle: "Could Not Start Audio Debug",
+        .settingsAudioDebugNotFound: "Make sure Python is installed and scripts/e2e_test/spectrogram_server.py exists in the repository.",
         .settingsApplyingTrial: "Applying trial API key...",
         .settingsTrialApplied: "Trial API key applied.",
         .settingsTrialPageOpened: "Opened trial application page.",
@@ -568,6 +572,9 @@ enum Localization {
         .settingsDebugDir: "音频文件夹",
         .settingsChooseDir: "选择...",
         .settingsOpenConfigFolder: "打开配置文件夹",
+        .settingsAudioDebug: "启动音频调试",
+        .settingsAudioDebugFailedTitle: "无法启动音频调试",
+        .settingsAudioDebugNotFound: "请确认已安装 Python，且仓库中存在 scripts/e2e_test/spectrogram_server.py。",
         .settingsApplyingTrial: "正在申请试用 API Key...",
         .settingsTrialApplied: "试用 API Key 已应用。",
         .settingsTrialPageOpened: "已打开试用申请页面。",
