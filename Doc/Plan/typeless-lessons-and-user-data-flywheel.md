@@ -89,6 +89,8 @@ v2 增量(0011~0013):`user_id, server_updated_at, sync_status(默认 pending_upl
 
 ### P0 — 数据底座 + 编辑追踪(最高优先)
 
+> **P0-1 状态：已实施（macOS 先行）**（feat/session-history-sqlite，2026-10-15）：`Sources/VoiceStickCore/SessionHistory.swift`——系统 libsqlite3 直连（`import SQLite3`，本机 CLT-only 无 Xcode，方案原文的 GRDB 建议换用系统库，语义等价、零新依赖）；history_v2 裁剪版 schema + `schema_migrations` 按序迁移；协调器 finishWithFinalText 建草稿 / finishWithRefinedText 落库 / translate 成功回填 injected；工厂注入（`makeSessionHistoryStore`，测试默认 nil 不落盘）、打开/迁移失败降级停用。edited_* 三件套字段已预留，编辑追踪（P0-2）接入即用。Windows 端同 schema 待后续分支。
+
 > **落地注记（2026-10-15）**：P0-3 通道 2 的纠错对素材基础已落地——精修 diff 最小替换对提取与落库见 `correction_pairs` 模块（wetype 方案 §2 同构），编辑 diff（edited_text 对）接入随 P0-2 编辑追踪落地。
 
 **P0-1 SQLite 会话历史表**(macOS 用 GRDB,Windows 直接 sqlite3;不引入 Electron 栈的 drizzle)

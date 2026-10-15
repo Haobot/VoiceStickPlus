@@ -141,6 +141,24 @@ public final class VoiceStickCoordinator {
     public var isProcessTrusted: (() -> Bool)?
     // N1 闸6b：单点本地化键闭包（L10nKey 为 App 枚举，原样键串入闭包）。
     public var trText: ((String) -> String)?
+    // ---- 会话历史（用户数据飞轮 P0-3，Typeless 方案 P0-1）----
+    /// 会话历史存储工厂：AppDelegate 装配（系统 SQLite 打开闭包）；nil（默认，
+    /// 测试不落盘）= 关闭记录。打开/迁移失败由工厂返回 nil，记录降级停用，
+    /// 绝不阻塞识别主链路。
+    public var makeSessionHistoryStore: ((URL) -> SessionHistoryStore?)?
+    private var sessionHistoryStore: SessionHistoryStore?
+    /// 进行中会话的历史草稿（finishWithFinalText 建立、finishWithRefinedText 落库）。
+    private struct PendingSessionHistory {
+        let id: String
+        let createdAt: Int64
+        let deviceID: String?
+        let asrProvider: String?
+        let mode: String
+        let rawAsr: String
+        let duration: Double?
+        let hotwordsSent: String?
+    }
+    private var pendingSessionHistory: PendingSessionHistory?
     // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
     public var fsmSnapshot: String {
         "main=\(mainInputState) pendingPaste=\(pendingPasteState) "
@@ -1842,6 +1860,9 @@ public final class VoiceStickCoordinator {
 
     private func finishWithFinalText(_ text: String) {
         guard !pastedFinalText else { return }
+        // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立，落库在
+        // finishWithRefinedText（所有收口路径统一经过）。
+        beginSessionHistory(rawAsr: text)
         // LLM 流式精修（对齐 Windows RefineStream 语义）：final 原文先经 LLM 改写，
         // overlay 进 refining 态后 token 增量追加（~60ms 节流）；失败/热词丢失/预算
         // 超时回退原文，SSE 失败客户端内部自动回退非流式。
@@ -1938,6 +1959,9 @@ public final class VoiceStickCoordinator {
         // 热词使用统计：最终文本（精修或原文）中命中的热词计数 + 刷新时间戳
         //（对齐 Windows RecordHotwordUsageFromText；仅主线程调用，无锁）。
         recordHotwordUsage(fromText: text)
+        // 会话历史落库（用户数据飞轮 P0-3）：refined/injected 先按 final 文本记，
+        // translate 成功后回填 injected（见下方 transform 分支）。
+        let sessionHistoryID = completeSessionHistory(finalText: text)
         let profile = outputProfile(for: activeDeviceID)
         if profile.target == .subtitle {
             pastedFinalText = true
@@ -1971,6 +1995,12 @@ public final class VoiceStickCoordinator {
                 guard let self else { return }
                 switch result {
                 case .success(let translatedText):
+                    // 会话历史回填实际注入文本（与 refined 不同：翻译产物）。
+                    if let sessionHistoryID {
+                        self.sessionHistoryStore?.updateInjectedText(
+                            id: sessionHistoryID, text: translatedText
+                        )
+                    }
                     self.enterPendingConfirmation(text: translatedText)
                 case .failure(let error):
                     self.finishWithASRError(error.localizedDescription)
@@ -2322,6 +2352,60 @@ public final class VoiceStickCoordinator {
         NSLog("hotword candidates suggested: %@", suggestions.joined(separator: ", "))
         let suffix = trText?("hotwordCandidateNotifyBodySuffix") ?? "hotwordCandidateNotifyBodySuffix"
         statusController.showTimedMessage(suggestions.joined(separator: ", ") + suffix, duration: 3)
+    }
+
+    /// 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立；空文本/工厂未装配
+    ///（测试默认 nil）跳过。库打开/迁移失败降级停用，绝不阻塞主链路。
+    private func beginSessionHistory(rawAsr: String) {
+        pendingSessionHistory = nil
+        guard let makeStore = makeSessionHistoryStore,
+              !rawAsr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if sessionHistoryStore == nil {
+            sessionHistoryStore = makeStore(SessionHistoryStore.defaultURL)
+        }
+        guard sessionHistoryStore != nil else { return }
+        let profile = outputProfile(for: activeDeviceID)
+        let hotwordsJSON = config.asrHotwords.isEmpty
+            ? nil
+            : (try? JSONSerialization.data(withJSONObject: config.asrHotwords))
+                .flatMap { String(data: $0, encoding: .utf8) }
+        pendingSessionHistory = PendingSessionHistory(
+            id: UUID().uuidString,
+            createdAt: Int64(Date().timeIntervalSince1970),
+            deviceID: activeDeviceID,
+            asrProvider: config.asrProvider.rawValue,
+            mode: profile.transform == .translate ? "translate" : "original",
+            rawAsr: rawAsr,
+            duration: mainInputState.startedAt.map { Date().timeIntervalSince($0) },
+            hotwordsSent: hotwordsJSON
+        )
+    }
+
+    /// 历史落库（用户数据飞轮 P0-3）：返回行 ID 供 translate 回填 injected。
+    private func completeSessionHistory(finalText: String) -> String? {
+        guard let store = sessionHistoryStore, let pending = pendingSessionHistory else {
+            pendingSessionHistory = nil
+            return nil
+        }
+        pendingSessionHistory = nil
+        var record = SessionHistoryRecord(
+            id: pending.id,
+            createdAt: pending.createdAt,
+            deviceID: pending.deviceID,
+            asrProvider: pending.asrProvider,
+            mode: pending.mode,
+            rawAsr: pending.rawAsr,
+            refinedText: finalText,
+            injectedText: finalText,
+            duration: pending.duration,
+            hotwordsSent: pending.hotwordsSent
+        )
+        // 客户端元数据：app 版本（Typeless app_version 字段的等价物）。
+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            record.clientMetadata = "{\"app_version\":\"\(version)\"}"
+        }
+        store.insert(record)
+        return pending.id
     }
 
     private func finishWithASRError(_ message: String) {
