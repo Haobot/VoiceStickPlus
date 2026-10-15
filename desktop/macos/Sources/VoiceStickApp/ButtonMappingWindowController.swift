@@ -212,6 +212,14 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
     private let captureButton = NSButton(
         title: l10n("捕获…", "Capture…"), target: nil, action: nil
     )
+    // 长按连发调节区（方向/返回删除/音量类注入键的全局节拍；网关模式隐藏）。
+    private let repeatTitle = NSTextField(labelWithString: "")
+    private let repeatDelayLabel = NSTextField(labelWithString: "")
+    private let repeatDelaySlider = NSSlider(value: 0, minValue: 0, maxValue: 0, target: nil, action: nil)
+    private let repeatDelayValue = NSTextField(labelWithString: "")
+    private let repeatIntervalLabel = NSTextField(labelWithString: "")
+    private let repeatIntervalSlider = NSSlider(value: 0, minValue: 0, maxValue: 0, target: nil, action: nil)
+    private let repeatIntervalValue = NSTextField(labelWithString: "")
     private let restoreButton = NSButton(
         title: tr(.restoreDefaults), target: nil, action: nil
     )
@@ -308,6 +316,48 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
         interceptCheck.frame = NSRect(x: 196, y: 392, width: 430, height: 20)
         contentView.addSubview(interceptCheck)
 
+        // ===== 长按连发区（全局节拍，非单键属性；直连 HID inject 与网关 key 沿共用）=====
+        repeatTitle.stringValue = l10n(
+            "长按连发 — 按住映射键自动重复（语音键不适用）",
+            "Hold-to-Repeat — held mapped keys auto-repeat (voice key excluded)"
+        )
+        repeatTitle.font = NSFont.boldSystemFont(ofSize: 12)
+        repeatTitle.frame = NSRect(x: 196, y: 360, width: 430, height: 18)
+        contentView.addSubview(repeatTitle)
+
+        repeatDelayLabel.stringValue = l10n("首次延迟", "Initial delay")
+        repeatDelayLabel.font = NSFont.systemFont(ofSize: 12)
+        repeatDelayLabel.frame = NSRect(x: 196, y: 330, width: 64, height: 18)
+        contentView.addSubview(repeatDelayLabel)
+        repeatDelaySlider.minValue = Double(ButtonsSettings.repeatDelayRange.lowerBound)
+        repeatDelaySlider.maxValue = Double(ButtonsSettings.repeatDelayRange.upperBound)
+        repeatDelaySlider.intValue = Int32(settings.repeatDelayMs)
+        repeatDelaySlider.target = self
+        repeatDelaySlider.action = #selector(repeatDelayChanged)
+        repeatDelaySlider.frame = NSRect(x: 264, y: 328, width: 236, height: 22)
+        contentView.addSubview(repeatDelaySlider)
+        repeatDelayValue.font = NSFont.systemFont(ofSize: 12)
+        repeatDelayValue.textColor = .secondaryLabelColor
+        repeatDelayValue.frame = NSRect(x: 508, y: 330, width: 118, height: 18)
+        contentView.addSubview(repeatDelayValue)
+
+        repeatIntervalLabel.stringValue = l10n("重复间隔", "Repeat interval")
+        repeatIntervalLabel.font = NSFont.systemFont(ofSize: 12)
+        repeatIntervalLabel.frame = NSRect(x: 196, y: 302, width: 64, height: 18)
+        contentView.addSubview(repeatIntervalLabel)
+        repeatIntervalSlider.minValue = Double(ButtonsSettings.repeatIntervalRange.lowerBound)
+        repeatIntervalSlider.maxValue = Double(ButtonsSettings.repeatIntervalRange.upperBound)
+        repeatIntervalSlider.intValue = Int32(settings.repeatIntervalMs)
+        repeatIntervalSlider.target = self
+        repeatIntervalSlider.action = #selector(repeatIntervalChanged)
+        repeatIntervalSlider.frame = NSRect(x: 264, y: 300, width: 236, height: 22)
+        contentView.addSubview(repeatIntervalSlider)
+        repeatIntervalValue.font = NSFont.systemFont(ofSize: 12)
+        repeatIntervalValue.textColor = .secondaryLabelColor
+        repeatIntervalValue.frame = NSRect(x: 508, y: 302, width: 118, height: 18)
+        contentView.addSubview(repeatIntervalValue)
+        refreshRepeatValues()
+
         // ===== 底部：恢复默认 / 保存 =====
         restoreButton.target = self
         restoreButton.action = #selector(restoreDefaults)
@@ -365,6 +415,22 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
     @objc private func interceptToggled() {
         settings.intercept = interceptCheck.state == .on
         onInterceptToggled?(settings.intercept)
+    }
+
+    /// 长按连发节拍滑块（连续拖动即时生效；数值就近取整，保存随整体 settings 落盘）。
+    @objc private func repeatDelayChanged() {
+        settings.repeatDelayMs = Int(repeatDelaySlider.doubleValue.rounded())
+        refreshRepeatValues()
+    }
+
+    @objc private func repeatIntervalChanged() {
+        settings.repeatIntervalMs = Int(repeatIntervalSlider.doubleValue.rounded())
+        refreshRepeatValues()
+    }
+
+    private func refreshRepeatValues() {
+        repeatDelayValue.stringValue = "\(settings.repeatDelayMs) ms"
+        repeatIntervalValue.stringValue = "\(settings.repeatIntervalMs) ms"
     }
 
     @objc private func actionChanged() {

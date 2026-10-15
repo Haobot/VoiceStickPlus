@@ -16,6 +16,7 @@
 补充说明：
 
 - 双击检测在固件端完成（小米遥控器语音键则在桌面端适配层完成，阈值见 `Doc/Plan/primary-button-double-click.md` / `[device.<id>.xiaomi]` 的 `double_click_ms`），桌面端统一处理 `button_double_click`：主键双击取消当前活跃录音/字幕后注入 Enter；侧键双击执行「恢复上一次输入确认」（体感鼠标态下忽略）。小米遥控器无侧键，其余 HID 键由 OS 原生消费。
+- 小米遥控器**长按连发**（macOS，2026-10-15 起，直连 + 网关双路径）：除语音键外的可映射键按住时，首发后按 `[buttons]`/`[device.<id>.buttons]` 的 `repeat_delay_ms`（默认 300ms）/`repeat_interval_ms`（默认 80ms）节拍重复注入直至抬起——对齐系统键盘自动重复；直连路径由 `XiaomiButtonInterceptManager`（inject 动作）消费，网关路径由协调器 `gateway_key` 双沿消费（key/native 动作皆连发，disabled 不连发）。连发集合 = `RemoteButton.supportsRepeat`（仅排除 `voice_double_click`，语音键走 ATVV 层不经键路）。按键映射对话框有「长按连发」延迟/间隔滑块（两种模式共用，节拍为表级全局值）。
 - 侧键单击的取消语义仅在有活跃录音/识别/待粘贴时生效；体感鼠标态下单击退出体感；真正空闲时单击无操作（体感入口已移除，`ToggleAirMouse` 不再由侧键触发）。
 - 另有敲击检测（`tap_to_arrow` 配置，IMU 敲击映射为方向键），体感态下忽略。
 

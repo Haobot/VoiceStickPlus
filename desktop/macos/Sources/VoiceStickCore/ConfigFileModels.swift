@@ -134,10 +134,12 @@ public struct LenientDouble: Decodable {
 }
 
 /// [device.<id>.buttons] 表：intercept + keys 子表（键为 RemoteButton rawValue，
-/// 值为 KeySpec 文本或 "none"=禁用）。
+/// 值为 KeySpec 文本或 "none"=禁用）+ repeat_* 长按连发节拍（缺省回落默认）。
 public struct ButtonsConfigFile: Decodable {
     public var intercept: Bool?
     public var keys: [String: String]?
+    public var repeat_delay_ms: Int?
+    public var repeat_interval_ms: Int?
 }
 
 /// [device.<id>.interaction] 表：键名与顶层一致。

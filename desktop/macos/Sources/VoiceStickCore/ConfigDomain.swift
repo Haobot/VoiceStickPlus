@@ -338,6 +338,16 @@ public struct KeySpec: Equatable {
     public func buttonsSettings(from file: ButtonsConfigFile) -> ButtonsSettings {
         var settings = ButtonsSettings.default
         if let intercept = file.intercept { settings.intercept = intercept }
+        // 节拍解析侧钳位：越界回落默认（对齐 AirMouseSettings.applyClamps 语义；
+        // init 也有同款防线，此处保证解析路径独立成立）。
+        if let delay = file.repeat_delay_ms {
+            settings.repeatDelayMs = ButtonsSettings.repeatDelayRange.contains(delay)
+                ? delay : ButtonsSettings.defaultRepeatDelayMs
+        }
+        if let interval = file.repeat_interval_ms {
+            settings.repeatIntervalMs = ButtonsSettings.repeatIntervalRange.contains(interval)
+                ? interval : ButtonsSettings.defaultRepeatIntervalMs
+        }
         for (rawKey, value) in file.keys ?? [:] {
             guard let button = RemoteButton(rawValue: rawKey) else { continue }
             if value == buttonsDisabledSentinel {
