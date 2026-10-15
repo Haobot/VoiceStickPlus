@@ -57,6 +57,20 @@ func runCorrectionPairsTests() {
         CorrectionPairs.extractReplacementPairs(huge, huge + "b").isEmpty,
         "diff 提取：超 512 码点护栏"
     )
+    // 任一侧为空（编辑追踪纯追加/纯删除的中段形态）：返回空对，且不触发
+    // 1...n 空区间崩溃（回归：VoiceStickApp 2026-10-15 崩溃）。
+    check(
+        CorrectionPairs.extractReplacementPairs("", "啊").isEmpty,
+        "diff 提取：空 original 返回空"
+    )
+    check(
+        CorrectionPairs.extractReplacementPairs("你好世界", "").isEmpty,
+        "diff 提取：空 refined 返回空"
+    )
+    check(
+        CorrectionPairs.extractReplacementPairs("", "").isEmpty,
+        "diff 提取：双侧为空返回空"
+    )
 
     // ---- record：合并计数 + 容量逐出 ----
     var store: [CorrectionPair] = []

@@ -96,6 +96,9 @@ public enum CorrectionPairs {
         let a = Array(original.unicodeScalars)
         let b = Array(refined.unicodeScalars)
         guard a.count <= maxCodepoints, b.count <= maxCodepoints else { return [] }
+        // 任一侧为空 = 纯插入/删除（编辑追踪的纯追加编辑会产出空 before），无替换对；
+        // 也挡住下方 1...n 循环在 n/m 为 0 时的无效区间崩溃。
+        guard !a.isEmpty, !b.isEmpty else { return [] }
 
         // LCS（码点级）求最长公共子序列，未匹配的连续片段即替换对。
         let n = a.count

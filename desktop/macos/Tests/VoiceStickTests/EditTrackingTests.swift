@@ -37,6 +37,17 @@ func runEditTrackingTests() {
     checkEqual(deleted?.before, "嗯", "editRegion：删除 before")
     checkEqual(deleted?.after, "", "editRegion：纯删除 after 为空")
 
+    // 纯追加编辑整链路（回归：VoiceStickApp 2026-10-15 崩溃——before 为空串时
+    // extractReplacementPairs 的 1...n 空区间崩溃）：追加 region 必须产出空对。
+    let appendRegion = EditTracking.editedRegion(
+        fieldText: "你好世界啊", injectedText: "你好世界"
+    )
+    checkEqual(
+        CorrectionPairs.extractReplacementPairs(appendRegion?.before ?? "x", appendRegion?.after ?? "x"),
+        [],
+        "editRegion→extract：纯追加编辑返回空对不崩溃"
+    )
+
     // recordToDisk source=edit：来源字段写入 JSON 且读回一致（纠错对来源可观测）。
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("voicestick_correction_source_edit.json")

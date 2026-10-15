@@ -56,6 +56,10 @@ void TestExtractReplacementPairs() {
     // 任一侧超过 512 码点（整句改写量级护栏）返回空。
     const std::string huge(600, static_cast<char>('a'));
     assert(ExtractReplacementPairs(huge, huge + "b").empty());
+    // 任一侧为空（编辑追踪纯追加/纯删除的中段形态）返回空，与 macOS 端同向量。
+    assert(ExtractReplacementPairs("", "啊").empty());
+    assert(ExtractReplacementPairs("你好世界", "").empty());
+    assert(ExtractReplacementPairs("", "").empty());
 }
 
 void TestCorrectionPairStoreMergeAndCap() {
