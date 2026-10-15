@@ -94,6 +94,8 @@
 
 ## 4. P1 项（按 ROI 排序）
 
+> **状态：事件采集已实施（macOS 先行）**（feat/usage-negative-events，2026-10-15）：`UsageEventLog` JSONL 流水（`usage_events.jsonl`，与 config 同目录、随 `userDataDirectoryOverride` 测试隔离）——待确认文本的自动/手动确认（含停留时长疑惑度信号）、取消、识别中途取消四类动作全埋点；事件只记文本长度与热词命中名单（成员关系），绝不记文本。**热词评分负项（`score -= w·negative_count`）未做**——需 hotword_usage.json schema 双端同步（negative_count 列），随下一轮与 Windows 事件接线同批。
+
 ### P1-1 负信号采集（G3）
 - 状态机埋点（`VoiceStickCoordinator` / Windows coordinator）：
   - 识别后**取消粘贴 / 侧键取消 / 重录** → 对本次结果文本记负事件；
