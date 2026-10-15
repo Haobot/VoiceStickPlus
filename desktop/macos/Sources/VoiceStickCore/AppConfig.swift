@@ -868,6 +868,18 @@ public struct AppConfig {
             }
     }
 
+    /// 长按连发节拍行（与默认一致不落盘，同「不落盘默认」语义）。
+    private func buttonsRepeatLines(_ settings: ButtonsSettings) -> [String] {
+        var lines: [String] = []
+        if settings.repeatDelayMs != ButtonsSettings.defaultRepeatDelayMs {
+            lines.append("repeat_delay_ms = \(settings.repeatDelayMs)")
+        }
+        if settings.repeatIntervalMs != ButtonsSettings.defaultRepeatIntervalMs {
+            lines.append("repeat_interval_ms = \(settings.repeatIntervalMs)")
+        }
+        return lines
+    }
+
     /// 根 [buttons] 全局段（网关模式键位映射；与默认一致不写出 = Windows
     /// [xiaomi.keys] 同款「不落盘默认」语义；写出的表自含、加载顺序无关）。
     private var globalButtonsText: String {
@@ -875,6 +887,9 @@ public struct AppConfig {
         var text = "\n\n[buttons]"
         if globalButtonsSettings.intercept {
             text += "\nintercept = true"
+        }
+        for line in buttonsRepeatLines(globalButtonsSettings) {
+            text += "\n\(line)"
         }
         let keys = buttonsKeyLines(globalButtonsSettings)
         if !keys.isEmpty {
@@ -894,6 +909,9 @@ public struct AppConfig {
                 var text = "\n\n[device.\(deviceID).buttons]"
                 if settings.intercept {
                     text += "\nintercept = true"
+                }
+                for line in buttonsRepeatLines(settings) {
+                    text += "\n\(line)"
                 }
                 let keys = buttonsKeyLines(settings)
                 if !keys.isEmpty {

@@ -89,4 +89,45 @@ func runGlobalButtonsConfigTests() {
           "gb: 缺段回落默认")
     check(!AppConfig.defaults.serializedText().contains("[buttons"),
           "gb: 默认配置不写出 [buttons] 段")
+
+    // 长按连发节拍（[buttons] repeat_*）：解析、越界钳位、非默认 round-trip。
+    let repeatToml = """
+    [buttons]
+    repeat_delay_ms = 450
+    repeat_interval_ms = 120
+
+    [buttons.keys]
+    back = "delete"
+    """
+    let repeatCfg = AppConfig.parse(text: repeatToml)
+    check(repeatCfg.globalButtonsSettings.repeatDelayMs == 450,
+          "gb: repeat_delay_ms 解析")
+    check(repeatCfg.globalButtonsSettings.repeatIntervalMs == 120,
+          "gb: repeat_interval_ms 解析")
+    check(repeatCfg.globalButtonsSettings.mapping(for: .back).key == "delete",
+          "gb: repeat_* 与 keys 共存")
+    let repeatClamped = AppConfig.parse(text: """
+    [buttons]
+    repeat_delay_ms = 5
+    repeat_interval_ms = 99999
+    """)
+    check(repeatClamped.globalButtonsSettings.repeatDelayMs == 300
+          && repeatClamped.globalButtonsSettings.repeatIntervalMs == 80,
+          "gb: repeat_* 越界钳位回落默认")
+    let repeatText = repeatCfg.serializedText()
+    check(repeatText.contains("repeat_delay_ms = 450")
+          && repeatText.contains("repeat_interval_ms = 120"),
+          "gb: 非默认节拍落盘")
+    let repeatReparsed = AppConfig.parse(text: repeatText)
+    check(repeatReparsed.globalButtonsSettings == repeatCfg.globalButtonsSettings,
+          "gb: repeat_* save→load round-trip 恒等")
+    check(repeatReparsed.serializedText() == repeatText, "gb: repeat_* 序列化幂等")
+
+    // 设备级覆盖表同款节拍字段。
+    let deviceRepeat = AppConfig.parse(text: """
+    [device.FFFF.buttons]
+    repeat_delay_ms = 600
+    """)
+    check(deviceRepeat.deviceButtonsSettings["FFFF"]?.repeatDelayMs == 600,
+          "gb: [device.*.buttons] repeat_delay_ms 解析")
 }

@@ -42,6 +42,14 @@ final class XiaomiButtonInterceptManager {
     private static let auxKeyUpLow: Int64 = 0xb00
 
     private let inputInjector = InputInjector()
+    /// 长按连发状态机（supportsRepeat 按钮的 inject 动作；节拍热更随 settings 同步）。
+    private var repeater = RemoteButtonRepeater(timing: .init(
+        delayMs: ButtonsSettings.defaultRepeatDelayMs,
+        intervalMs: ButtonsSettings.defaultRepeatIntervalMs
+    ))
+    /// 连发轮询定时器（主 RunLoop；有 hold 才运行，30ms 粒度——连发判定走绝对
+    /// deadline，粒度抖动不累积误差；对齐 Windows kRepeatTimerMs=40 量级）。
+    private var repeatTimer: Timer?
 
     private var manager: IOHIDManager?
     private var tap: CFMachPort?
@@ -65,6 +73,8 @@ final class XiaomiButtonInterceptManager {
     /// 权限缺失只 NSLog 放弃（权限引导在按键映射窗/Onboarding）。
     func start(settings: ButtonsSettings) {
         self.settings = settings
+        repeater.setTiming(.init(delayMs: settings.repeatDelayMs,
+                                 intervalMs: settings.repeatIntervalMs))
         guard tap == nil else { return }
         guard Self.isAvailable() else {
             NSLog("XiaomiButtonInterceptManager: input-monitoring or accessibility permission missing; " +
@@ -81,6 +91,9 @@ final class XiaomiButtonInterceptManager {
         pendingSuppressByUsage = [:]
         latchedKeyCode = nil
         latchedVolumeUsage = nil
+        repeater.reset()
+        repeatTimer?.invalidate()
+        repeatTimer = nil
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
@@ -136,7 +149,10 @@ final class XiaomiButtonInterceptManager {
         let usage = IOHIDElementGetUsage(element)
         guard usage != 0xFFFF_FFFF,
               IOHIDElementGetUsagePage(element) == 0x07 else { return }
-        guard IOHIDValueGetIntegerValue(value) != 0 else { return }  // 抬起无需处置
+        if IOHIDValueGetIntegerValue(value) == 0 {
+            handleRemoteButtonUp(usage: usage)  // 抬起沿：仅连发 hold 清理消费
+            return
+        }
         NSLog("XiaomiButtonInterceptManager: button down usage=0x%x", usage)
         handleRemoteButtonDown(usage: usage)
     }
@@ -164,7 +180,62 @@ final class XiaomiButtonInterceptManager {
             pendingSuppressByUsage[usage] = XiaomiMicOpenAnchor.nowMs()
             NSLog("XiaomiButtonInterceptManager: inject \(button.rawValue) -> \(spec.displayText)")
             inputInjector.sendKeyCombo(spec)
+            // 按住连发登记（方向/返回删除/音量类；按下首发已完成，delay 后 poll 接管）。
+            if repeater.press(button, atMs: XiaomiMicOpenAnchor.nowMs()) {
+                NSLog("XiaomiButtonInterceptManager: repeat armed \(button.rawValue) " +
+                      "delay=\(settings.repeatDelayMs)ms interval=\(settings.repeatIntervalMs)ms")
+                syncRepeatTimer()
+            }
         }
+    }
+
+    /// 遥控器按键抬起处置：只消费连发 hold 清理（吞除标记/闩锁面向 down，抬起无关）。
+    private func handleRemoteButtonUp(usage: UInt32) {
+        guard settings != nil,
+              let button = RemoteButtonHIDMap.button(forUsage: usage) else { return }
+        if repeater.release(button) {
+            NSLog("XiaomiButtonInterceptManager: repeat stop \(button.rawValue)")
+            syncRepeatTimer()
+        }
+    }
+
+    // MARK: - 长按连发定时器
+
+    /// hold 存在性 ↔ 连发定时器开关联动（对齐 Windows SyncRepeatTimer）。
+    private func syncRepeatTimer() {
+        if repeater.hasHolds {
+            guard repeatTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+                self?.fireRepeat()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            repeatTimer = timer
+        } else if repeatTimer != nil {
+            repeatTimer?.invalidate()
+            repeatTimer = nil
+        }
+    }
+
+    /// 连发轮询：到期按钮按当前映射重新解析注入（热改映射即刻生效；改失配则
+    /// 撤销该 hold 不再连发）。注入事件 sourceUnixProcessID≠0，tap 侧放行。
+    private func fireRepeat() {
+        guard let settings else {
+            repeater.reset()
+            syncRepeatTimer()
+            return
+        }
+        for button in repeater.poll(atMs: XiaomiMicOpenAnchor.nowMs()) {
+            let mapping = settings.mapping(for: button)
+            guard case .inject(let keyText) = RemoteButtonHIDMap.decision(intercept: settings.intercept, mapping: mapping),
+                  let spec = KeySpec.parse(keyText) else {
+                NSLog("XiaomiButtonInterceptManager: repeat drop \(button.rawValue) (mapping changed)")
+                repeater.release(button)
+                continue
+            }
+            NSLog("XiaomiButtonInterceptManager: repeat fire \(button.rawValue) -> \(spec.displayText)")
+            inputInjector.sendKeyCombo(spec)
+        }
+        syncRepeatTimer()
     }
 
     /// 吞除标记查询（一次性消费 + 短窗兜底）：命中即清除并返回 true。
