@@ -116,6 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 会话历史（用户数据飞轮 P0-3）：系统 SQLite 落库识别会话（默认库与
         // config.toml 同目录）；打开/迁移失败由工厂返回 nil，记录降级停用。
         coordinator.makeSessionHistoryStore = { SessionHistoryStore(url: $0) }
+        // App 场景分域（用户数据飞轮 P1-2 纠错对部分）：只取 bundle id，不读窗口内容。
+        coordinator.frontmostAppBundleID = { [frontmostAppProvider] in
+            let bundleID = frontmostAppProvider.currentBundleIdentifier
+            return bundleID.isEmpty ? nil : bundleID
+        }
         // 编辑追踪（用户数据飞轮 P0-2）：AX 读取焦点字段文本（AppKit/ApplicationServices
         // 合规层），与注入文本做区间 diff——字段全文只在内存参与 diff，落库的只有改动
         // span。辅助功能权限与输入注入同源（CGEvent 已要求）。

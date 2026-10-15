@@ -184,6 +184,49 @@ func runCorrectionPairsTests() {
     checkEqual(applied.first?.lastSeenTs, Int64(3000), "markUsed：刷新时间戳")
     try? FileManager.default.removeItem(at: applyURL)
 
+    // ---- App 场景分域（wetype P1-2 / doubao §3.4）：同对不同桶各自累计；查询桶优先 ----
+    var bucketStore: [CorrectionPair] = []
+    let bucketPairs = [
+        CorrectionReplacement(before: "克劳德", after: "Claude"),
+        CorrectionReplacement(before: "魏碑", after: "WeBank")
+    ]
+    CorrectionPairs.record(&bucketStore, pairs: bucketPairs, nowTs: 1000, app: "com.microsoft.VSCode")
+    CorrectionPairs.record(&bucketStore, pairs: bucketPairs, nowTs: 2000, app: "")
+    CorrectionPairs.record(&bucketStore, pairs: bucketPairs, nowTs: 3000, app: "com.microsoft.VSCode")
+    // 对齐 doubao UNIQUE(src,dst,app_bucket)：同对在两个桶各自累计 = 4 条。
+    checkEqual(bucketStore.count, 4, "分域：同对不同桶各自累计")
+    checkEqual(bucketStore[0].app, "com.microsoft.VSCode", "分域：App 桶标记")
+    checkEqual(bucketStore[0].count, 2, "分域：App 桶计数独立")
+    checkEqual(bucketStore[2].count, 1, "分域：全局桶计数独立")
+
+    // 精确命中：App 桶优先，miss 落全局桶。
+    var mixed: [CorrectionPair] = []
+    mixed.append(CorrectionPair(before: "部署到", after: "部署到服务器", count: 9,
+                                app: "com.microsoft.VSCode"))
+    mixed.append(CorrectionPair(before: "部署到", after: "部署到集群", count: 5, app: ""))
+    checkEqual(
+        CorrectionPairs.exactReplacement(for: "部署到", in: mixed, app: "com.microsoft.VSCode")?.after,
+        "部署到服务器",
+        "分域：精确命中 App 桶优先"
+    )
+    checkEqual(
+        CorrectionPairs.exactReplacement(for: "部署到", in: mixed, app: "com.apple.Safari")?.after,
+        "部署到集群",
+        "分域：无当前桶命中落全局桶"
+    )
+    // 其他 App 的桶不参与查询。
+    checkEqual(
+        CorrectionPairs.trimForPrompt(mixed, maxPairs: 8, app: "com.apple.Safari").count,
+        1,
+        "分域：其他 App 桶被排除"
+    )
+
+    // few-shot 查询：App 桶优先占预算；其他 App 的桶不参与、全局桶兜底。
+    let bucketRanked = CorrectionPairs.trimForPrompt(mixed, maxPairs: 1, app: "com.microsoft.VSCode")
+    checkEqual(bucketRanked.first?.after, "部署到服务器", "分域：few-shot App 桶优先占预算")
+    let globalRanked = CorrectionPairs.trimForPrompt(mixed, maxPairs: 2, app: "com.apple.Safari")
+    checkEqual(globalRanked.map(\.after), ["部署到集群"], "分域：无当前桶时只落全局桶")
+
     // ---- recordToDisk：B13 reload-merge-save 跨调用累计 ----
     let diskURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("voicestick_correction_pairs_rw.json")

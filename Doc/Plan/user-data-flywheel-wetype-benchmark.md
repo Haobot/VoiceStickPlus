@@ -102,6 +102,8 @@
 - 用途：热词评分扩展负样本维度（`score -= w·negative_count`）；纠错对挖掘只取「用户实际放行」的样本。
 - 验收：状态机各取消路径均有事件；评分函数含负项单测。
 
+> **状态：纠错对部分已实施（macOS 先行）**（feat/correction-app-bucket，2026-10-15）：`FrontmostAppProvider` 经 `frontmostAppBundleID` 闭包入协调器（只取 bundle id）；纠错对采集（refine/edit 两源）按当前前台应用打 `app` 桶（对齐 doubao UNIQUE(src,dst,app_bucket)）；查询口径 = 当前应用桶 ∪ 全局桶、当前桶优先（few-shot 预算与全句精确命中两处）。**热词 usage 分域与 ASR 直传选桶未做**（涉及 hotword_usage.json schema 与会话开始选桶，随下一轮），Windows 端接线同批待补。
+
 ### P1-2 App 场景分域（G4）
 - `usage` 与 `corrections` 加 `app` 字段（bundle ID，`FrontmostAppProvider` 已有；Windows 取前台窗口进程）。
 - 热词选桶策略：会话开始时按当前 App 取「App 桶 ∪ 全局桶」，App 桶优先填 ASR 直传预算，剩余给全局桶。

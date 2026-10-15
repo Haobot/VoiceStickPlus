@@ -155,6 +155,9 @@ public final class VoiceStickCoordinator {
     /// 焦点字段文本读取闭包（编辑追踪用，App 侧 AX 实现；nil=编辑追踪停用）。
     /// 隐私约束：仅用于与本次注入文本做区间 diff，读取内容不落库、不打日志。
     public var readFocusedFieldText: (() -> String?)?
+    /// 前台应用 bundle id 闭包（App 场景分域用，App 侧 NSWorkspace 实现；nil=不分工
+    /// 桶，全部落全局桶）。只取 bundle id，不读窗口内容。
+    public var frontmostAppBundleID: (() -> String?)?
     private var sessionHistoryStore: SessionHistoryStore?
     /// 最近一次落库的会话历史行 ID（编辑追踪回填锚点）。
     private var lastSessionHistoryID: String?
@@ -2352,18 +2355,21 @@ public final class VoiceStickCoordinator {
     private func correctionPairsForLlmPrompts() -> [CorrectionPair] {
         return CorrectionPairs.trimForPrompt(
             CorrectionPairs.load(url: correctionPairsURL),
-            maxPairs: kCorrectionPromptMaxPairs
+            maxPairs: kCorrectionPromptMaxPairs,
+            app: frontmostAppBundleID?()
         )
     }
 
     /// 精修完成后的纠错对挖掘：original→refined 提取最小替换片段对，经 B13 单写
-    /// 入口落盘 correction_pairs.json（与 config.toml 同目录）。
+    /// 入口落盘 correction_pairs.json（与 config.toml 同目录），按当前前台应用
+    /// 分桶（doubao §3.4：微信聊天桶与 IDE 桶的改写几乎不重叠）。
     private func recordCorrectionPairs(original: String, refined: String) {
         guard original != refined else { return }
         CorrectionPairs.recordToDisk(
             url: correctionPairsURL,
             pairs: CorrectionPairs.extractReplacementPairs(original, refined),
-            nowTs: Int64(Date().timeIntervalSince1970)
+            nowTs: Int64(Date().timeIntervalSince1970),
+            app: frontmostAppBundleID?() ?? ""
         )
     }
 
@@ -2372,7 +2378,7 @@ public final class VoiceStickCoordinator {
     private func applyCorrectionPairExact(rawAsr: String) -> String? {
         let url = correctionPairsURL
         guard let pair = CorrectionPairs.exactReplacement(
-            for: rawAsr, in: CorrectionPairs.load(url: url)
+            for: rawAsr, in: CorrectionPairs.load(url: url), app: frontmostAppBundleID?()
         ) else { return nil }
         CorrectionPairs.markUsedOnDisk(
             url: url, pair: pair, nowTs: Int64(Date().timeIntervalSince1970)
@@ -2540,7 +2546,8 @@ public final class VoiceStickCoordinator {
         let pairs = CorrectionPairs.extractReplacementPairs(region.before, region.after)
         CorrectionPairs.recordToDisk(
             url: correctionPairsURL, pairs: pairs,
-            nowTs: Int64(Date().timeIntervalSince1970), source: "edit"
+            nowTs: Int64(Date().timeIntervalSince1970), source: "edit",
+            app: frontmostAppBundleID?() ?? ""
         )
         NSLog("edit tracking captured span len=%d", region.after.utf8.count)
     }
