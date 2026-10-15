@@ -136,6 +136,8 @@ CREATE TABLE modify_exempt (          -- 豁免表（学豆包 AsrModifyExemptWo
 2. 分词后逐片段拼音匹配（走 `pinyin_src` 索引）→ 生成"建议替换集"；
 3. 未命中部分才进入现有精修管线，且把命中过的改写对作为 few-shot 示例拼进精修 prompt（豆包 `CloudPrefetchDict` 思路：确定性结果落地，LLM 只处理增量）。
 
+> **落地注记（2026-10-15）**：入表闸门的同音标注已实施（macOS 先行，feat/pinyin-same-pronunciation）——`PinyinData.swift`（scripts/gen_pinyin_swift.py 从 Windows pinyin_data.cc 机械转换，同表同口径）+ `PinyinGuard.swift`（PinyinSameOrNear/SameOrNearText 1:1 移植）+ 纠错对 `same_pronunciation` 标注与 few-shot 同音优先；**封闭集 prompt 改造未做**（需 ASR 文本运行时拼音近邻候选集，随下一轮评估）。
+
 ### 3.2 拼音约束纠错
 
 **数据源**：不要用豆包的 `hzpy-utf8.txt` 文件本身（版权洁净度考虑），用开源等价数据：`mozillazg/pinyin-data`（MIT，`pinyin.txt` 无声调 + `pinyinTone.txt` 带调）或 pinyin-pro 的数据。豆包那份格式（`汉字,全拼,声母,韵母,Unicode,声调`）可作为字段设计参考与交叉校验样本。

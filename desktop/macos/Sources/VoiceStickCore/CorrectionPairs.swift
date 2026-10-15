@@ -24,16 +24,19 @@ public struct CorrectionPair: Equatable {
     public var after: String              // 精修后用户认可形式
     public var count: Int                 // 累计出现次数（精修 diff 挖掘 seen 计数）
     public var useCount: Int              // 自动应用次数（doubao 方案 use_count，反馈环基底）
+    public var samePronunciation: Bool    // 同音/近音对（doubao P2 入表闸门：拼音校验前置）
     public var lastSeenTs: Int64          // 最近出现 epoch 秒
     public var source: String             // 产物来源（当前仅精修 diff）
     public var app: String                // 前台应用分桶（P1-2 接线，当前恒空=全局）
 
     public init(before: String, after: String, count: Int = 0, useCount: Int = 0,
-                lastSeenTs: Int64 = 0, source: String = "refine", app: String = "") {
+                samePronunciation: Bool = false, lastSeenTs: Int64 = 0,
+                source: String = "refine", app: String = "") {
         self.before = before
         self.after = after
         self.count = count
         self.useCount = useCount
+        self.samePronunciation = samePronunciation
         self.lastSeenTs = lastSeenTs
         self.source = source
         self.app = app
@@ -169,8 +172,12 @@ public enum CorrectionPairs {
                 store[index].lastSeenTs = nowTs
                 continue
             }
-            store.append(CorrectionPair(before: replacement.before, after: replacement.after,
-                                        count: 1, lastSeenTs: nowTs, source: source, app: app))
+            store.append(CorrectionPair(
+                before: replacement.before, after: replacement.after,
+                count: 1,
+                samePronunciation: PinyinGuard.sameOrNearText(replacement.before, replacement.after),
+                lastSeenTs: nowTs, source: source, app: app
+            ))
         }
         // 容量硬上限：count 升序、last_seen 升序、字典序稳定逐出。
         if store.count > kCorrectionPairStoreCap {
@@ -201,6 +208,7 @@ public enum CorrectionPairs {
             var pair = CorrectionPair(before: before, after: after)
             if let count = item["count"] as? Int { pair.count = count }
             if let useCount = item["use_count"] as? Int { pair.useCount = useCount }
+            if let same = item["same_pronunciation"] as? Bool { pair.samePronunciation = same }
             if let ts = item["last_seen_ts"] as? Int64 { pair.lastSeenTs = ts }
             if let ts = item["last_seen_ts"] as? Int { pair.lastSeenTs = Int64(ts) }
             if let source = item["source"] as? String, !source.isEmpty { pair.source = source }
@@ -223,6 +231,7 @@ public enum CorrectionPairs {
                 "after": pair.after,
                 "count": pair.count,
                 "use_count": pair.useCount,
+                "same_pronunciation": pair.samePronunciation,
                 "last_seen_ts": pair.lastSeenTs,
                 "source": pair.source,
                 "app": pair.app
@@ -313,6 +322,10 @@ public enum CorrectionPairs {
             .sorted { lhs, rhs in
                 if isCurrentBucket(lhs.app, app: app) != isCurrentBucket(rhs.app, app: app) {
                     return isCurrentBucket(lhs.app, app: app)
+                }
+                // 同音/近音对优先（doubao §3.2：同音纠错最安全、复用价值最高）。
+                if lhs.samePronunciation != rhs.samePronunciation {
+                    return lhs.samePronunciation
                 }
                 if lhs.count != rhs.count { return lhs.count > rhs.count }
                 if lhs.lastSeenTs != rhs.lastSeenTs { return lhs.lastSeenTs > rhs.lastSeenTs }
