@@ -1,6 +1,9 @@
 # 小米遥控器直连桌面链路补 HPF + AGC（音质/ASR 修复）
 
-2026-10-13。状态：已实施（Python 镜像 + fixture 再生、macOS 全绿 816/816、Windows 代码就绪待 Windows 机 ctest 复验）。**2026-10-14 追加**：HPF 90→120Hz、AGC -6dBFS/+20dB → -12dBFS/+12dB 四端收紧（含 golden fixture 重生成，macOS 825/825 全绿；动机见 `Doc/Plan/software-agc.md` 附录）；下文常量与测试期望值均已按新值更新。
+> 状态：已实施（2026-10-13 落地；Python 镜像 + fixture 再生、macOS 全绿；2026-10-14 HPF 120Hz/AGC -12dBFS+12dB 收紧；
+> **2026-10-15 AGC 常量被 AGC v2 取代**——见 `Doc/Plan/whisper-level-agc-v2.md`，本文常量表仅存历史）
+
+2026-10-13。**2026-10-14 追加**：HPF 90→120Hz、AGC -6dBFS/+20dB → -12dBFS/+12dB 四端收紧（含 golden fixture 重生成，macOS 825/825 全绿；动机见 `Doc/Plan/software-agc.md` 附录）；下文常量与测试期望值均已按新值更新。
 
 ## 背景与根因
 

@@ -176,7 +176,7 @@ void TestPcmPostprocessor() {
     const auto limited_neg = clamped.Process(std::vector<std::int16_t>{-3000});
     assert(limited_neg[0] == -32768);
 
-    // ---- 新链用例（HPF/AGC，算法规格见 Doc/Plan/xiaomi-direct-desktop-hpf-agc.md）----
+    // ---- 新链用例（HPF + AGC v2；算法规格见 Doc/Plan/whisper-level-agc-v2.md）----
     constexpr double kPi = 3.14159265358979323846;
     const auto make_sine = [](double amp, double freq_hz, int n) {
         std::vector<std::int16_t> pcm(n);
@@ -217,17 +217,54 @@ void TestPcmPostprocessor() {
         assert(ratio <= std::pow(10.0, -13.0 / 20.0));
     }
 
-    // AGC 拉起：-40dBFS（幅度 ≈328）1kHz 正弦 2s：最大增益 +12dB，稳态 ≈1312±20%
-    //（-40dBFS 到目标 -12dBFS 需 +28dB，超出 MAX_GAIN +12dB，故拉到 -28dBFS 量级；
-    // Python 镜像仿真稳态峰值 1291）。
+    // AGC v2 轻声拉起：120ms 极低底噪（本底估计窗）铺垫后，8 段「200ms 幅度 100
+    //（-50dBFS）1kHz 正弦 + 150ms 静音」。稳态输出峰值 ≈5956（全链；+36dB 上限：
+    // -50dBFS 到目标 -12dBFS 需 +38dB，被 MAX_GAIN 截断）。三端同值，见
+    // Doc/Plan/whisper-level-agc-v2.md。
     {
-        PcmPostprocessor pp(0.0);  // hpf/agc 默认开
-        const auto out = pp.Process(make_sine(328.0, 1000.0, 32000));
-        int peak = 0;
-        for (std::size_t i = out.size() - 4000; i < out.size(); ++i) {
-            peak = std::max(peak, std::abs(static_cast<int>(out[i])));
+        std::vector<std::int16_t> pcm;
+        for (int i = 0; i < 1920; ++i) pcm.push_back(i % 2 == 0 ? 3 : -3);
+        for (int k = 0; k < 8; ++k) {
+            auto burst = make_sine(100.0, 1000.0, 3200);
+            pcm.insert(pcm.end(), burst.begin(), burst.end());
+            pcm.insert(pcm.end(), 2400, 0);
         }
-        assert(peak >= 1049 && peak <= 1574);
+        PcmPostprocessor pp(0.0);  // hpf/agc 默认开
+        const auto out = pp.Process(pcm);
+        int peak = 0;
+        for (std::size_t k = 0; k < 8; ++k) {
+            for (std::size_t i = 1920 + k * 5600 + 1600; i < 1920 + k * 5600 + 3200; ++i) {
+                peak = std::max(peak, std::abs(static_cast<int>(out[i])));
+            }
+        }
+        assert(peak >= 5300 && peak <= 6600);
+    }
+
+    // AGC v2 噪声预算：确定性 LCG 均匀白噪声（RMS≈173 ≈ -45.6dBFS）不得被放大
+    //（语义 = 只允许把本底抬到 -45dBFS）。与 Python 侧 agc_noise_budget 用例同序列。
+    {
+        std::int32_t state = 12345;
+        std::vector<std::int16_t> pcm;
+        pcm.reserve(48000);
+        for (int i = 0; i < 48000; ++i) {
+            state = static_cast<std::int32_t>((1103515245LL * state + 12345) & 0x7FFFFFFF);
+            const int v = (static_cast<int>((state >> 8) & 0xFFFF) - 32768) * 300 / 32768;
+            pcm.push_back(static_cast<std::int16_t>(v));
+        }
+        PcmPostprocessor pp(0.0);  // hpf/agc 默认开
+        const auto out = pp.Process(pcm);
+        int peak_in = 0, peak_out = 0;
+        double sum_in = 0.0, sum_out = 0.0;
+        for (std::size_t i = 0; i < pcm.size(); ++i) {
+            peak_in = std::max(peak_in, std::abs(static_cast<int>(pcm[i])));
+            peak_out = std::max(peak_out, std::abs(static_cast<int>(out[i])));
+            sum_in += static_cast<double>(pcm[i]) * pcm[i];
+            sum_out += static_cast<double>(out[i]) * out[i];
+        }
+        assert(peak_out <= peak_in * 12 / 10);
+        const double rms_in = std::sqrt(sum_in / static_cast<double>(pcm.size()));
+        const double rms_out = std::sqrt(sum_out / static_cast<double>(out.size()));
+        assert(rms_out <= rms_in * 1.1);
     }
 
     // 瞬时限幅：满幅（±32000）突发起音，|out| ≤ 26215（且不削波到 32767）。

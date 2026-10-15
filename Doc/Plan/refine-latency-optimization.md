@@ -1,7 +1,8 @@
 # 精修链路延迟优化（B 方案先行 + A 方案本地小模型实测）实施方案
 
+> 状态：已定案待实施（2026-10-14 定案；实施者另一 AI 会话，本文自包含；未核销）
+
 - 日期：2026-10-14
-- 状态：已定案待实施（实施者：另一 AI 会话；本文自包含）
 - 关联：`Doc/Expe/voice-input-latency-root-cause-chain-2026-10-12.md`（BLE/倒计时段延迟已修）、`Doc/Plan/local-text-refinement.md`（Windows 本地精修 spike：小模型必须 few-shot、指令式 prompt 在 ≤1.7B 上失败）
 
 ## 0. 给实施者的环境须知（先读）

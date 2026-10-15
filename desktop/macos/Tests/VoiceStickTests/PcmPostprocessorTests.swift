@@ -115,14 +115,45 @@ func runPcmPostprocessorTests() {
     }
 
     // ---- testAgcPullup ----
-    // -40dBFS（幅度 ≈328）1kHz 正弦 2s：AGC 最大增益 +12dB，稳态输出 ≈1312±20%
-    //（-40dBFS 到目标 -12dBFS 需 +28dB，超出 MAX_GAIN +12dB，故拉到 -28dBFS 量级；
-    // Python 镜像仿真稳态峰值 1291）。
+    // AGC v2 轻声拉起：120ms 极低底噪（本底估计窗）铺垫后，8 段「200ms 幅度 100
+    //（-50dBFS）1kHz 正弦 + 150ms 静音」。稳态输出峰值 ≈6269（+36dB 上限：
+    // -50dBFS 到目标 -12dBFS 需 +38dB，被 MAX_GAIN 截断）。
     do {
         let pp = PcmPostprocessor(gainDb: 0.0) // hpf/agc 默认开
-        let out = pp.process(makeSine(328, 1000, 32000))
-        let peak = out.suffix(4000).reduce(0) { max($0, abs(Int($1))) }
-        check(peak >= 1049 && peak <= 1574, "AgcPullup peak=\(peak)")
+        var pcm: [Int16] = (0..<1920).map { $0 % 2 == 0 ? 3 : -3 }
+        for _ in 0..<8 {
+            pcm.append(contentsOf: makeSine(100, 1000, 3200))
+            pcm.append(contentsOf: [Int16](repeating: 0, count: 2400))
+        }
+        let out = pp.process(pcm)
+        var peak = 0
+        for k in 0..<8 {
+            let base = 1920 + k * 5600 + 1600
+            for v in out[base..<(base + 1600)] { peak = max(peak, abs(Int(v))) }
+        }
+        check(peak >= 5300 && peak <= 6600, "AgcPullup peak=\(peak)")
+    }
+
+    // ---- testAgcNoiseBudget ----
+    // 噪声预算：确定性 LCG 均匀白噪声（RMS≈173 ≈ -45.6dBFS）不得被放大
+    //（AGC v2 语义 = 只允许把本底抬到 -45dBFS）。
+    do {
+        let pp = PcmPostprocessor(gainDb: 0.0) // hpf/agc 默认开
+        var state: Int32 = 12345
+        var pcm: [Int16] = []
+        pcm.reserveCapacity(48000)
+        for _ in 0..<48000 {
+            state = (1103515245 &* state &+ 12345) & 0x7FFF_FFFF
+            let v = Int((Int(state >> 8) & 0xFFFF) - 32768) * 300 / 32768
+            pcm.append(Int16(v))
+        }
+        let out = pp.process(pcm)
+        let peakIn = pcm.reduce(0) { max($0, abs(Int($1))) }
+        let peakOut = out.reduce(0) { max($0, abs(Int($1))) }
+        check(peakOut <= peakIn * 120 / 100, "AgcNoiseBudget peak \(peakIn) -> \(peakOut)")
+        let rmsIn = sqrt(pcm.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(pcm.count))
+        let rmsOut = sqrt(out.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(out.count))
+        check(rmsOut <= rmsIn * 1.1, "AgcNoiseBudget rms \(rmsIn) -> \(rmsOut)")
     }
 
     // ---- testAgcInstantCeil ----

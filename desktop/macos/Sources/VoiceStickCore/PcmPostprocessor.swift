@@ -20,20 +20,33 @@ public final class PcmPostprocessor {
     private static let hpfA1 = -1.933380
     private static let hpfA2 = 0.935529
 
-    // 软件 AGC 常量（逐字拷贝固件；固件为 float，桌面端统一 double 保证
-    // C++↔Python 对拍确定）。
-    // 2026-10-14 收紧：目标 -6→-12dBFS、上限 +20→+12dB——旧参数把语音推到贴近
-    // 满幅致爆点撞限幅，且 +20dB 上限在语音间隙把环境底噪抬高 20dB。
-    private static let agcTarget = 8192.0        // -12 dBFS
-    private static let agcMaxGain = 4.0          // +12 dB
-    private static let agcMinGain = 0.1          // -20 dB
-    private static let agcNoiseFloor = 184.0     // -45 dBFS
-    private static let agcEnvAttack = 0.98758    // 快攻 5ms
-    private static let agcEnvRelease = 0.99979   // 慢释 300ms
-    private static let agcGainUp = 0.99988       // 慢上 500ms
-    private static let agcGainDown = 0.73162     // 快下 2ms
-    private static let agcGainGate = 0.9999961   // 噪声门缓回 ~1s
-    private static let agcCeil = 26214.0         // 0.8FS 瞬时限幅
+    // 软件 AGC v2 常量（逐字拷贝固件；固件为 float，桌面端统一 double 保证
+    // C++↔Python 对拍确定）。2026-10-15 耳语电平修复，方案 Doc/Plan/whisper-level-agc-v2.md：
+    // 旧版「env < -45dBFS ⇒ desired = 1.0」把耳语前级包络（-42~-52dBFS）整段挡在门外
+    // （真机耳语会话生效增益 ≈0dB），门限之上又被 +12dB 上限截断在 -33dBFS。
+    // 新版把 -45dBFS 从「门限」改为「噪声预算」：噪声段只允许把本底抬到 -45dBFS，
+    // 语音段放开到 +36dB；本底用冷启动窗估计，门限 = 本底 +12dB。
+    private static let agcTarget = 8192.0            // -12 dBFS
+    private static let agcMaxGain = 63.0             // +36 dB（由 +12dB 放开）
+    private static let agcMinGain = 0.1              // -20 dB
+    private static let agcNoiseBudget = 184.0        // -45 dBFS：噪声段被放大后的上限
+    private static let agcEnvAttack = 0.98758        // 快攻 5ms
+    private static let agcEnvRelease = 0.99979       // 慢释 300ms
+    private static let agcGainUp = 0.99988           // 小误差慢上 500ms
+    private static let agcGainUpFast = 0.9993752     // 大误差快上 100ms
+    private static let agcGainDown = 0.73162         // 快下（τ≈0.2ms）
+    private static let agcFastRatio = 4.0            // desired > 4×gain 走快攻
+    private static let agcCeil = 26214.0             // 0.8FS 瞬时限幅
+    private static let agcNfAbs = 16.0               // -66 dBFS：门限绝对下限
+    private static let agcNfRatio = 4.0              // 门限 = 本底 +12 dB
+    private static let agcNfNear = 2.0               // 仅 env < 2×nf 时缓升本底
+    private static let agcNfRise = 6.25e-5           // 本底缓升 τ=1s
+    private static let agcNfTrustMin = 1.0           // 本底低于此视为数字静音
+    private static let agcNfMaxTrust = 184.0         // -45 dBFS：本底估计上限
+    private static let agcNfWarmSamples = 1920       // 冷启动窗 120ms
+    private static let agcNfSkipSamples = 80         // 跳过包络冷启动 5ms
+    private static let agcNfWarmMaxSamples = 7680    // 冷启动窗封顶 480ms
+    private static let agcNfSentinel = 1e30          // nf 初值（尚未观测）
 
     public private(set) var gainDb: Double
     /// HPF/AGC 开关（默认开）；关闭时该级直通（不动状态），用于逃生与测试隔离。
@@ -45,6 +58,10 @@ public final class PcmPostprocessor {
     private var hpfZ2 = 0.0
     private var agcEnv = 0.0
     private var agcGain = 1.0
+    private var agcNf = PcmPostprocessor.agcNfSentinel
+    private var agcIndex = 0
+    private var agcNfReady = false
+    private var agcNfSeen = false
 
     public init(gainDb: Double = 0.0, hpf: Bool = true, agc: Bool = true) {
         self.gainDb = Self.clampGainDb(gainDb)
@@ -62,6 +79,10 @@ public final class PcmPostprocessor {
         hpfZ2 = 0.0
         agcEnv = 0.0
         agcGain = 1.0
+        agcNf = Self.agcNfSentinel
+        agcIndex = 0
+        agcNfReady = false
+        agcNfSeen = false
     }
 
     public static func clampGainDb(_ gainDb: Double) -> Double {
@@ -100,20 +121,56 @@ public final class PcmPostprocessor {
         return Int(y.rounded()) // .toNearestOrAwayFromZero，对齐 C lround
     }
 
-    /// 软件 AGC：包络快攻/慢释，增益快下慢上，噪声门，0.8FS 瞬时限幅
-    /// （无记忆，不回写增益状态）。逐样本，double 状态。
+    /// 软件 AGC v2（逐样本，double 状态，跨 process 调用保持）：
+    /// 噪声预算 + 本底自适应门限 + 大误差快攻 + 0.8FS 瞬时限幅（无记忆）。
     private func agcProcess(_ x: Int) -> Int {
         let ax = abs(Double(x))
-        let ec = ax > agcEnv ? Self.agcEnvAttack : Self.agcEnvRelease
-        agcEnv = ec * agcEnv + (1.0 - ec) * ax
-        let gated = agcEnv < Self.agcNoiseFloor
-        let desired: Double
-        if gated {
-            desired = 1.0
+        if agcIndex == 0 {
+            // 包络冷启动：首样本直接取 |x|，避免爬升污染本底估计。
+            agcEnv = ax
         } else {
-            desired = min(max(Self.agcTarget / agcEnv, Self.agcMinGain), Self.agcMaxGain)
+            let ec = ax > agcEnv ? Self.agcEnvAttack : Self.agcEnvRelease
+            agcEnv = ec * agcEnv + (1.0 - ec) * ax
         }
-        let gc = gated ? Self.agcGainGate : (desired < agcGain ? Self.agcGainDown : Self.agcGainUp)
+
+        if !agcNfReady {
+            // 冷启动窗：只测本底；本底可信前直通（仅保留 0.8FS 限幅）。
+            if agcIndex >= Self.agcNfSkipSamples {
+                if agcEnv < agcNf { agcNf = agcEnv }
+                if agcEnv >= Self.agcNfTrustMin { agcNfSeen = true }
+            }
+            if (agcIndex >= Self.agcNfWarmSamples && agcNfSeen && agcNf <= Self.agcNfMaxTrust)
+                || agcIndex >= Self.agcNfWarmMaxSamples {
+                var nf = agcNfSeen ? agcNf : Self.agcNfAbs
+                if nf < Self.agcNfTrustMin { nf = Self.agcNfAbs }
+                else if nf > Self.agcNfMaxTrust { nf = Self.agcNfMaxTrust }
+                agcNf = nf
+                agcNfReady = true
+            }
+            agcIndex += 1
+            var g0 = 1.0
+            if ax > 1.0 { g0 = min(g0, Self.agcCeil / ax) }
+            var y0 = Double(x) * g0
+            if y0 > 32767.0 { y0 = 32767.0 } else if y0 < -32768.0 { y0 = -32768.0 }
+            return Int(y0.rounded())
+        }
+
+        if agcEnv < agcNf {
+            agcNf = agcEnv
+        } else if agcEnv < agcNf * Self.agcNfNear {
+            agcNf += (agcEnv - agcNf) * Self.agcNfRise
+        }
+        if agcNf > Self.agcNfMaxTrust { agcNf = Self.agcNfMaxTrust }
+
+        let gated = agcEnv < max(Self.agcNfAbs, agcNf * Self.agcNfRatio)
+        var desired = min(max(Self.agcTarget / max(agcEnv, 1.0), Self.agcMinGain), Self.agcMaxGain)
+        if gated {
+            desired = min(desired, Self.agcNoiseBudget / max(agcEnv, 1.0))
+        }
+        let gc: Double
+        if desired < agcGain { gc = Self.agcGainDown }
+        else if desired > Self.agcFastRatio * agcGain { gc = Self.agcGainUpFast }
+        else { gc = Self.agcGainUp }
         agcGain = gc * agcGain + (1.0 - gc) * desired
         var g = agcGain
         if ax > 1.0 { g = min(g, Self.agcCeil / ax) }

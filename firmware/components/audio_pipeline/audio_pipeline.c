@@ -79,64 +79,117 @@ static inline int16_t hpf_process(int16_t x) {
     return (int16_t)lround(y);
 }
 
-/* 软件 AGC：替代 ES8311 硬件 ALC（已在 init_codec 关闭）。硬件 ALC 实测两头守不住
- * （大声近场削波到 0dB、轻声拉不到 -11dBFS 目标），且增益不可观测；电平归一收回软件。
- * 设计依据与实测数据见 Doc/Plan/software-agc.md。
- * 包络：|x| 一阶峰值跟随，快攻 5ms / 慢释 300ms。
- * 增益：desired = target/env，target=-12dBFS，上限 +12dB；上升慢 500ms（防 pumping）、
- * 下降快 2ms（兼软限幅，突发大声 2ms 内压到不削波）。
- * （2026-10-14 由 -6dBFS/+20dB 收紧：旧参数把语音推到贴近满幅，爆点撞 0.8FS 限幅
- * 产生可闻"砰"声；且 +20dB 上限把 -50dBFS 级环境噪声在语音间隙抬到 -30dBFS，
- * 底噪明显。云端 ASR 对绝对电平不敏感（服务端归一化），收紧后 SNR 不变但
- * 失真与噪声泵升同降。语音进行中的带内噪声由桌面端降噪负责，勿靠抬门限硬压
- * ——-40dBFS 轻声与真实噪声包络区间重叠，硬门会吃掉轻声起音。）
- * 噪声门：env < -45dBFS 时不再加增益，增益以 ~1s 时间常数缓回 0dB，
- * 既不抬静音段底噪，也避免句间停顿后增益骤降导致下一句起音偏轻。
- * 瞬时限幅：逐样本保证 |x|*gain <= 0.8FS（无记忆，不改增益状态），
- * 压住「增益挂在高位时突发起音」头几毫秒的过冲，避免硬削波（实测真机会撞到 0dB）。
- * 上限取 0.8FS 而非贴近满幅：Opus 解码有 +1.5~2dB 过冲，需预留余量（实测见下）。
- * 状态每会话开始时复位（见 audio_pipeline_start）。 */
-#define AGC_TARGET 8192.0f         /* -12 dBFS */
-#define AGC_MAX_GAIN 4.0f          /* +12 dB */
-#define AGC_MIN_GAIN 0.1f          /* -20 dB */
-#define AGC_NOISE_FLOOR 184.0f     /* -45 dBFS */
-#define AGC_ENV_ATTACK 0.98758f    /* exp(-1/(16000*0.005)) */
-#define AGC_ENV_RELEASE 0.99979f   /* exp(-1/(16000*0.300)) */
-#define AGC_GAIN_UP 0.99988f       /* exp(-1/(16000*0.500)) */
-#define AGC_GAIN_DOWN 0.73162f     /* exp(-1/(16000*0.002)) */
-#define AGC_GAIN_GATE 0.9999961f   /* exp(-1/(16000*1.0)) */
+/* 软件 AGC v2（噪声预算型）：替代 ES8311 硬件 ALC（已在 init_codec 关闭）。
+ * 设计依据与真机数据见 Doc/Plan/whisper-level-agc-v2.md。
+ * 2026-10-15 耳语电平修复：旧版 `gated = env < 184 → desired = 1.0` 把耳语前级包络
+ * （-42~-52dBFS）整段挡在门外——真机 22:2x 耳语会话实测生效增益 ≈0dB（输出包络
+ * -52dBFS，判据见方案文档），而门限之上又被 +12dB 上限截断在 -33dBFS；本项目主打
+ * 「嘴贴麦克风的耳语」，两处都必须改。
+ * 新版把 -45dBFS 从「门限」改为「噪声预算」：
+ *   - 本底 nf：冷启动窗取包络最小值（5ms~120ms，若不可信最多读到 480ms），钳到
+ *     [-45dBFS, -66dBFS]；之后瞬时下降，仅在 env < 2×nf 时以 τ=1s 缓升。
+ *   - 噪声段（env < max(-66dBFS, 4×nf)）：增益上限 = -45dBFS/env，即只允许把本底
+ *     抬到 -45dBFS，绝不放大噪声（嘈杂房间自动退回近 0dB，不会噪声泵升）。
+ *   - 语音段：desired = clamp(-12dBFS/env, -20dB, +36dB)（耳语需 +30~+40dB）。
+ *   - 增益平滑：下降快（τ≈0.2ms，兼软限幅）；上升在 desired > 4×gain 时 100ms、
+ *     否则 500ms（会话起始 gain=1 → +36dB，500ms 会砍掉首字，0.8FS 限幅兜底防过冲）。
+ *   - 冷启动窗直通（增益 1.0，仅保留 0.8FS 限幅）：本底就绪前不调增益，避免用未标定的
+ *     本底去压语音。
+ * 瞬时限幅：逐样本保证 |x|*gain <= 0.8FS（无记忆，不改增益状态）。上限取 0.8FS 而非
+ * 贴近满幅：Opus 编解码有 +1.5~2dB 过冲（真机实测 0.95FS 上限时解码后峰值越界）。
+ * 状态每会话开始时复位（见 start_session）。串口每秒打印 env/nf/gain 便于观测工作点。 */
+#define AGC_TARGET 8192.0f              /* -12 dBFS（不变） */
+#define AGC_MAX_GAIN 63.0f              /* +36 dB（2026-10-15 由 +12dB 放开） */
+#define AGC_MIN_GAIN 0.1f               /* -20 dB */
+#define AGC_NOISE_BUDGET 184.0f         /* -45 dBFS：噪声段被放大后的上限 */
+#define AGC_ENV_ATTACK 0.98758f         /* exp(-1/(16000*0.005)) 快攻 5ms */
+#define AGC_ENV_RELEASE 0.99979f        /* exp(-1/(16000*0.300)) 慢释 300ms */
+#define AGC_GAIN_UP 0.99988f            /* exp(-1/(16000*0.500)) 小误差慢上 500ms */
+#define AGC_GAIN_UP_FAST 0.9993752f     /* exp(-1/(16000*0.100)) 大误差快上 100ms */
+#define AGC_GAIN_DOWN 0.73162f          /* 快下（系数对应 τ≈0.2ms，旧注释写 2ms 有误） */
+#define AGC_FAST_RATIO 4.0f             /* desired > 4×gain 时走快攻 */
+#define AGC_CEIL 26214.0f               /* 0.8FS 瞬时限幅 */
+#define AGC_NF_ABS 16.0f                /* -66 dBFS：门限绝对下限 */
+#define AGC_NF_RATIO 4.0f               /* 门限 = 本底 +12 dB */
+#define AGC_NF_NEAR 2.0f                /* 仅 env < 2×nf 时缓升本底 */
+#define AGC_NF_RISE 6.25e-5f            /* 1/(16000*1)：本底缓升 τ=1s */
+#define AGC_NF_TRUST_MIN 1.0f           /* 本底低于此视为数字静音（不可信） */
+#define AGC_NF_MAX_TRUST 184.0f         /* -45 dBFS：本底估计上限（防压死语音） */
+#define AGC_NF_WARM_SAMPLES 1920u       /* 冷启动窗 120ms */
+#define AGC_NF_SKIP_SAMPLES 80u         /* 跳过包络冷启动 5ms */
+#define AGC_NF_WARM_MAX_SAMPLES 7680u   /* 冷启动窗封顶 480ms */
+#define AGC_NF_SENTINEL 1e30f           /* nf 初值（尚未观测） */
 static float s_agc_env = 0.0f;
 static float s_agc_gain = 1.0f;
+static float s_agc_nf = AGC_NF_SENTINEL;
+static uint32_t s_agc_index = 0;
+static bool s_agc_nf_ready = false;
+static bool s_agc_nf_seen = false;
 static uint32_t s_agc_log_frames = 0;
 
 static inline int16_t agc_process(int16_t x)
 {
     float ax = fabsf((float)x);
-    float ec = (ax > s_agc_env) ? AGC_ENV_ATTACK : AGC_ENV_RELEASE;
-    s_agc_env = ec * s_agc_env + (1.0f - ec) * ax;
-    bool gated = s_agc_env < AGC_NOISE_FLOOR;
-    float desired;
-    if (gated) {
-        desired = 1.0f;
+    /* 包络冷启动：首样本直接取 |x|，避免包络从 0 爬升污染本底估计。 */
+    if (s_agc_index == 0) {
+        s_agc_env = ax;
     } else {
-        desired = AGC_TARGET / s_agc_env;
-        if (desired > AGC_MAX_GAIN) desired = AGC_MAX_GAIN;
-        else if (desired < AGC_MIN_GAIN) desired = AGC_MIN_GAIN;
+        float ec = (ax > s_agc_env) ? AGC_ENV_ATTACK : AGC_ENV_RELEASE;
+        s_agc_env = ec * s_agc_env + (1.0f - ec) * ax;
+    }
+
+    if (!s_agc_nf_ready) {
+        /* 冷启动窗：只测本底；本底可信前直通（仅保留 0.8FS 限幅）。 */
+        if (s_agc_index >= AGC_NF_SKIP_SAMPLES) {
+            if (s_agc_env < s_agc_nf) s_agc_nf = s_agc_env;
+            if (s_agc_env >= AGC_NF_TRUST_MIN) s_agc_nf_seen = true;
+        }
+        if ((s_agc_index >= AGC_NF_WARM_SAMPLES && s_agc_nf_seen &&
+             s_agc_nf <= AGC_NF_MAX_TRUST) ||
+            s_agc_index >= AGC_NF_WARM_MAX_SAMPLES) {
+            float nf = s_agc_nf_seen ? s_agc_nf : AGC_NF_ABS;
+            if (nf < AGC_NF_TRUST_MIN) nf = AGC_NF_ABS;
+            else if (nf > AGC_NF_MAX_TRUST) nf = AGC_NF_MAX_TRUST;
+            s_agc_nf = nf;
+            s_agc_nf_ready = true;
+        }
+        s_agc_index++;
+        float g0 = 1.0f;
+        if (ax > 1.0f) {
+            float c0 = AGC_CEIL / ax;
+            if (g0 > c0) g0 = c0;
+        }
+        float y0 = (float)x * g0;
+        if (y0 > 32767.0f) y0 = 32767.0f;
+        else if (y0 < -32768.0f) y0 = -32768.0f;
+        return (int16_t)lroundf(y0);
+    }
+
+    /* 本底跟踪：瞬时下降；仅 env < 2×nf（噪声段）时缓升；上限 -45dBFS。 */
+    if (s_agc_env < s_agc_nf) {
+        s_agc_nf = s_agc_env;
+    } else if (s_agc_env < s_agc_nf * AGC_NF_NEAR) {
+        s_agc_nf += (s_agc_env - s_agc_nf) * AGC_NF_RISE;
+    }
+    if (s_agc_nf > AGC_NF_MAX_TRUST) s_agc_nf = AGC_NF_MAX_TRUST;
+
+    bool gated = s_agc_env < fmaxf(AGC_NF_ABS, s_agc_nf * AGC_NF_RATIO);
+    float desired = AGC_TARGET / fmaxf(s_agc_env, 1.0f);
+    if (desired > AGC_MAX_GAIN) desired = AGC_MAX_GAIN;
+    else if (desired < AGC_MIN_GAIN) desired = AGC_MIN_GAIN;
+    if (gated) {
+        float cap = AGC_NOISE_BUDGET / fmaxf(s_agc_env, 1.0f);
+        if (cap < desired) desired = cap;
     }
     float gc;
-    if (gated) {
-        gc = AGC_GAIN_GATE;
-    } else {
-        gc = (desired < s_agc_gain) ? AGC_GAIN_DOWN : AGC_GAIN_UP;
-    }
+    if (desired < s_agc_gain) gc = AGC_GAIN_DOWN;
+    else if (desired > AGC_FAST_RATIO * s_agc_gain) gc = AGC_GAIN_UP_FAST;
+    else gc = AGC_GAIN_UP;
     s_agc_gain = gc * s_agc_gain + (1.0f - gc) * desired;
-    /* 瞬时峰值限幅：无记忆，不回写 s_agc_gain。增益平滑下降需 2ms，
-     * 突发起音（尤其增益挂在 +12dB 高位时）靠它兜底防削波。
-     * 上限取 0.8FS（-1.9dB）而非贴近满幅：Opus 编解码有约 +1.5~2dB 的过冲
-     * （真机实测 0.95FS 上限时解码后峰值 +1.2dB 越界），预留过冲余量。 */
+    /* 瞬时峰值限幅：无记忆，不回写 s_agc_gain（压住增益挂高位时的突发起音过冲）。 */
     float g = s_agc_gain;
     if (ax > 1.0f) {
-        float ceil_gain = 26214.0f / ax;
+        float ceil_gain = AGC_CEIL / ax;
         if (g > ceil_gain) g = ceil_gain;
     }
     float y = (float)x * g;
@@ -155,7 +208,9 @@ static void agc_process_frame(int16_t *pcm, int n)
         s_agc_log_frames = 0;
         float env_db = 20.0f * log10f(s_agc_env / 32768.0f + 1e-9f);
         float gain_db = 20.0f * log10f(s_agc_gain + 1e-9f);
-        ESP_LOGI(TAG, "agc env=%.1f dBFS gain=%+.1f dB", env_db, gain_db);
+        float nf_db = (s_agc_nf >= AGC_NF_SENTINEL) ? -120.0f
+                                                     : 20.0f * log10f(s_agc_nf / 32768.0f + 1e-9f);
+        ESP_LOGI(TAG, "agc env=%.1f dBFS nf=%.1f dBFS gain=%+.1f dB", env_db, nf_db, gain_db);
     }
 }
 
@@ -977,6 +1032,10 @@ static esp_err_t start_session(uint32_t session_id, audio_source_t source)
     s_hpf_z2 = 0.0;
     s_agc_env = 0.0f;
     s_agc_gain = 1.0f;
+    s_agc_nf = AGC_NF_SENTINEL;
+    s_agc_index = 0;
+    s_agc_nf_ready = false;
+    s_agc_nf_seen = false;
     s_agc_log_frames = 0;
     s_session_samples = 0;
     /* 回放模式：每次录音从缓冲开头重放，保证可重复。 */

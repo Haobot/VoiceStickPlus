@@ -46,20 +46,33 @@ private:
     static constexpr double kHpfA1 = -1.933380;
     static constexpr double kHpfA2 = 0.935529;
 
-    // 软件 AGC 常量（逐字拷贝固件；固件为 float，桌面端统一 double 保证
-    // C++↔Python 对拍确定）。
-    // 2026-10-14 收紧：目标 -6→-12dBFS、上限 +20→+12dB——旧参数把语音推到贴近
-    // 满幅致爆点撞限幅，且 +20dB 上限在语音间隙把环境底噪抬高 20dB。
-    static constexpr double kAgcTarget = 8192.0;       // -12 dBFS
-    static constexpr double kAgcMaxGain = 4.0;         // +12 dB
-    static constexpr double kAgcMinGain = 0.1;         // -20 dB
-    static constexpr double kAgcNoiseFloor = 184.0;    // -45 dBFS
-    static constexpr double kAgcEnvAttack = 0.98758;   // 快攻 5ms
-    static constexpr double kAgcEnvRelease = 0.99979;  // 慢释 300ms
-    static constexpr double kAgcGainUp = 0.99988;      // 慢上 500ms
-    static constexpr double kAgcGainDown = 0.73162;    // 快下 2ms
-    static constexpr double kAgcGainGate = 0.9999961;  // 噪声门缓回 ~1s
-    static constexpr double kAgcCeil = 26214.0;        // 0.8FS 瞬时限幅
+    // 软件 AGC v2 常量（逐字拷贝固件；固件为 float，桌面端统一 double 保证
+    // C++↔Python 对拍确定）。2026-10-15 耳语电平修复，方案 Doc/Plan/whisper-level-agc-v2.md：
+    // 旧版「env < -45dBFS ⇒ desired = 1.0」把耳语前级包络（-42~-52dBFS）整段挡在门外，
+    // 门限之上又被 +12dB 上限截断在 -33dBFS。
+    // 新版把 -45dBFS 从「门限」改为「噪声预算」：噪声段只允许把本底抬到 -45dBFS，
+    // 语音段放开到 +36dB；本底用冷启动窗估计，门限 = 本底 +12dB。
+    static constexpr double kAgcTarget = 8192.0;            // -12 dBFS
+    static constexpr double kAgcMaxGain = 63.0;             // +36 dB（由 +12dB 放开）
+    static constexpr double kAgcMinGain = 0.1;              // -20 dB
+    static constexpr double kAgcNoiseBudget = 184.0;        // -45 dBFS：噪声段放大后的上限
+    static constexpr double kAgcEnvAttack = 0.98758;        // 快攻 5ms
+    static constexpr double kAgcEnvRelease = 0.99979;       // 慢释 300ms
+    static constexpr double kAgcGainUp = 0.99988;           // 小误差慢上 500ms
+    static constexpr double kAgcGainUpFast = 0.9993752;     // 大误差快上 100ms
+    static constexpr double kAgcGainDown = 0.73162;         // 快下（τ≈0.2ms）
+    static constexpr double kAgcFastRatio = 4.0;            // desired > 4×gain 走快攻
+    static constexpr double kAgcCeil = 26214.0;             // 0.8FS 瞬时限幅
+    static constexpr double kAgcNfAbs = 16.0;               // -66 dBFS：门限绝对下限
+    static constexpr double kAgcNfRatio = 4.0;              // 门限 = 本底 +12 dB
+    static constexpr double kAgcNfNear = 2.0;               // 仅 env < 2×nf 时缓升本底
+    static constexpr double kAgcNfRise = 6.25e-5;           // 本底缓升 τ=1s
+    static constexpr double kAgcNfTrustMin = 1.0;           // 本底低于此视为数字静音
+    static constexpr double kAgcNfMaxTrust = 184.0;         // -45 dBFS：本底估计上限
+    static constexpr int kAgcNfWarmSamples = 1920;          // 冷启动窗 120ms
+    static constexpr int kAgcNfSkipSamples = 80;            // 跳过包络冷启动 5ms
+    static constexpr int kAgcNfWarmMaxSamples = 7680;       // 冷启动窗封顶 480ms
+    static constexpr double kAgcNfSentinel = 1e30;          // nf 初值（尚未观测）
 
     int hpf_process(int x);
     int agc_process(int x);
@@ -72,6 +85,10 @@ private:
     double hpf_z2_ = 0.0;
     double agc_env_ = 0.0;
     double agc_gain_ = 1.0;
+    double agc_nf_ = kAgcNfSentinel;
+    int agc_index_ = 0;
+    bool agc_nf_ready_ = false;
+    bool agc_nf_seen_ = false;
 };
 
 // ADPCM 裸字节流跨包累积切帧器：ATVV audio notify 无帧头无序号，

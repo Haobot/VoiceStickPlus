@@ -17,6 +17,10 @@ void PcmPostprocessor::Reset() {
     hpf_z2_ = 0.0;
     agc_env_ = 0.0;
     agc_gain_ = 1.0;
+    agc_nf_ = kAgcNfSentinel;
+    agc_index_ = 0;
+    agc_nf_ready_ = false;
+    agc_nf_seen_ = false;
 }
 
 std::vector<std::int16_t> PcmPostprocessor::Process(std::span<const std::int16_t> pcm) {
@@ -52,17 +56,52 @@ int PcmPostprocessor::hpf_process(int x) {
 
 int PcmPostprocessor::agc_process(int x) {
     const double ax = std::fabs(static_cast<double>(x));
-    const double ec = ax > agc_env_ ? kAgcEnvAttack : kAgcEnvRelease;
-    agc_env_ = ec * agc_env_ + (1.0 - ec) * ax;
-    const bool gated = agc_env_ < kAgcNoiseFloor;
-    double desired;
-    if (gated) {
-        desired = 1.0;
+    // 包络冷启动：首样本直接取 |x|，避免包络从 0 爬升污染本底估计。
+    if (agc_index_ == 0) {
+        agc_env_ = ax;
     } else {
-        desired = std::clamp(kAgcTarget / agc_env_, kAgcMinGain, kAgcMaxGain);
+        const double ec = ax > agc_env_ ? kAgcEnvAttack : kAgcEnvRelease;
+        agc_env_ = ec * agc_env_ + (1.0 - ec) * ax;
     }
-    const double gc = gated ? kAgcGainGate
-                            : (desired < agc_gain_ ? kAgcGainDown : kAgcGainUp);
+
+    if (!agc_nf_ready_) {
+        // 冷启动窗：只测本底；本底可信前直通（仅保留 0.8FS 限幅）。
+        if (agc_index_ >= kAgcNfSkipSamples) {
+            if (agc_env_ < agc_nf_) agc_nf_ = agc_env_;
+            if (agc_env_ >= kAgcNfTrustMin) agc_nf_seen_ = true;
+        }
+        if ((agc_index_ >= kAgcNfWarmSamples && agc_nf_seen_ && agc_nf_ <= kAgcNfMaxTrust) ||
+            agc_index_ >= kAgcNfWarmMaxSamples) {
+            double nf = agc_nf_seen_ ? agc_nf_ : kAgcNfAbs;
+            if (nf < kAgcNfTrustMin) nf = kAgcNfAbs;
+            else if (nf > kAgcNfMaxTrust) nf = kAgcNfMaxTrust;
+            agc_nf_ = nf;
+            agc_nf_ready_ = true;
+        }
+        ++agc_index_;
+        double g0 = 1.0;
+        if (ax > 1.0) g0 = std::min(g0, kAgcCeil / ax);
+        double y0 = static_cast<double>(x) * g0;
+        y0 = std::clamp(y0, -32768.0, 32767.0);
+        return static_cast<int>(std::lround(y0));
+    }
+
+    // 本底跟踪：瞬时下降；仅 env < 2×nf（噪声段）时缓升；上限 -45dBFS。
+    if (agc_env_ < agc_nf_) {
+        agc_nf_ = agc_env_;
+    } else if (agc_env_ < agc_nf_ * kAgcNfNear) {
+        agc_nf_ += (agc_env_ - agc_nf_) * kAgcNfRise;
+    }
+    if (agc_nf_ > kAgcNfMaxTrust) agc_nf_ = kAgcNfMaxTrust;
+
+    const bool gated = agc_env_ < std::max(kAgcNfAbs, agc_nf_ * kAgcNfRatio);
+    double desired = std::clamp(kAgcTarget / std::max(agc_env_, 1.0), kAgcMinGain, kAgcMaxGain);
+    if (gated) {
+        desired = std::min(desired, kAgcNoiseBudget / std::max(agc_env_, 1.0));
+    }
+    const double gc = (desired < agc_gain_)
+                          ? kAgcGainDown
+                          : (desired > kAgcFastRatio * agc_gain_ ? kAgcGainUpFast : kAgcGainUp);
     agc_gain_ = gc * agc_gain_ + (1.0 - gc) * desired;
     // 瞬时峰值限幅：无记忆，不回写 agc_gain_（压住增益挂在高位时的突发起音）。
     double g = agc_gain_;
