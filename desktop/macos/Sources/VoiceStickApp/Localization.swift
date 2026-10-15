@@ -46,6 +46,8 @@ enum L10nKey: String, CaseIterable {
     case settingsSectionGeneral, settingsDeveloperMode
     case settingsSectionAsr, settingsProvider, settingsApiKey, settingsApplyTrial
     case settingsResourceId, settingsHotwords, settingsHotwordsHint
+    case hotwordCandidateNotifyBodySuffix
+    case settingsSectionHotwordCandidates, settingsHotwordCandidateAdd, settingsHotwordCandidateDismiss, settingsHotwordCandidatesHint
     case settingsSectionRefine, settingsLlmBaseUrl, settingsLlmModel
     case settingsRefineText, settingsRefinePrompt
     case settingsSectionOutput, settingsOutputTarget
@@ -284,6 +286,11 @@ enum Localization {
         .settingsResourceId: "Resource ID",
         .settingsHotwords: "Hotwords",
         .settingsHotwordsHint: "Separate hotwords with commas or new lines.",
+        .hotwordCandidateNotifyBodySuffix: " appeared several times. Add or dismiss it in Settings → Hotword Candidates.",
+        .settingsSectionHotwordCandidates: "Hotword Candidates",
+        .settingsHotwordCandidateAdd: "Add Hotword",
+        .settingsHotwordCandidateDismiss: "Dismiss",
+        .settingsHotwordCandidatesHint: "New words repeatedly corrected by the refiner appear here; click Save after adding to apply.",
         .settingsSectionRefine: "Text Refinement",
         .settingsLlmBaseUrl: "Base URL",
         .settingsLlmModel: "Model",
@@ -553,6 +560,11 @@ enum Localization {
         .settingsResourceId: "资源 ID",
         .settingsHotwords: "热词",
         .settingsHotwordsHint: "使用逗号或换行分隔热词。",
+        .hotwordCandidateNotifyBodySuffix: " 已多次出现，可在设置-热词候选区加入或忽略。",
+        .settingsSectionHotwordCandidates: "热词候选",
+        .settingsHotwordCandidateAdd: "加入热词",
+        .settingsHotwordCandidateDismiss: "忽略",
+        .settingsHotwordCandidatesHint: "精修纠错中反复出现的新词会进入候选；「加入热词」后需点保存生效。",
         .settingsSectionRefine: "文本精修",
         .settingsLlmBaseUrl: "Base URL",
         .settingsLlmModel: "模型",

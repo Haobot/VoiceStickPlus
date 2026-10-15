@@ -21,6 +21,11 @@ final class SettingsWindowController: NSWindowController {
     private let resourcePopup = NSPopUpButton()
     private let hotwordsTextView = NSTextView()
     private let hotwordsScrollView = NSScrollView()
+    // 热词候选（用户数据飞轮 P0-2，对齐 Windows SettingsDialog 候选块：列表 + 加入/忽略；
+    // macOS 用下拉替代列表框，无候选时整块隐藏）。
+    private let candidatePopup = NSPopUpButton()
+    private let candidateAddButton = NSButton(title: "", target: nil, action: nil)
+    private let candidateDismissButton = NSButton(title: "", target: nil, action: nil)
     private let llmBaseURLField = NSTextField()
     private let llmAPIKeyField = NSSecureTextField()
     private let llmModelField = NSTextField()
@@ -46,6 +51,9 @@ final class SettingsWindowController: NSWindowController {
     private var systemSectionTitle: NSView?
     private var launchAtLoginRow: NSStackView?
     private var imuDebugRow: NSStackView?
+    private var hotwordCandidateSectionTitle: NSView?
+    private var hotwordCandidateRow: NSStackView?
+    private var hotwordCandidateHintRow: NSView?
     private var audioSectionTitle: NSView?
     private var debugAudioRow: NSStackView?
     private var debugDirRow: NSStackView?
@@ -130,6 +138,33 @@ final class SettingsWindowController: NSWindowController {
         configureMultiline(textView: hotwordsTextView, scrollView: hotwordsScrollView, height: 78)
         stack.addArrangedSubview(row(label: tr(.settingsHotwords), control: hotwordsScrollView))
         stack.addArrangedSubview(hintRow(tr(.settingsHotwordsHint)))
+
+        // ===== 热词候选（有候选才显示，对齐 Windows 布局 lambda 判定）=====
+        let candidateTitle = sectionTitle(tr(.settingsSectionHotwordCandidates))
+        hotwordCandidateSectionTitle = candidateTitle
+        stack.addArrangedSubview(candidateTitle)
+        candidatePopup.target = self
+        candidatePopup.action = #selector(candidateSelectionChanged)
+        candidateAddButton.title = tr(.settingsHotwordCandidateAdd)
+        candidateAddButton.target = self
+        candidateAddButton.action = #selector(addHotwordCandidate)
+        candidateDismissButton.title = tr(.settingsHotwordCandidateDismiss)
+        candidateDismissButton.target = self
+        candidateDismissButton.action = #selector(dismissHotwordCandidate)
+        let candidateControl = NSStackView()
+        candidateControl.orientation = .horizontal
+        candidateControl.alignment = .centerY
+        candidateControl.spacing = 8
+        candidateControl.addArrangedSubview(candidatePopup)
+        candidateControl.addArrangedSubview(candidateAddButton)
+        candidateControl.addArrangedSubview(candidateDismissButton)
+        candidatePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
+        let candidateRow = row(label: "", control: candidateControl)
+        hotwordCandidateRow = candidateRow
+        stack.addArrangedSubview(candidateRow)
+        let candidateHint = hintRow(tr(.settingsHotwordCandidatesHint))
+        hotwordCandidateHintRow = candidateHint
+        stack.addArrangedSubview(candidateHint)
 
         // ===== 文本精修 =====
         stack.addArrangedSubview(sectionTitle(tr(.settingsSectionRefine)))
@@ -323,11 +358,59 @@ final class SettingsWindowController: NSWindowController {
         if resourcePopup.itemTitles.contains(config.resourceID) {
             resourcePopup.selectItem(withTitle: config.resourceID)
         }
+        refreshHotwordCandidates()
         updateVisibility()
         statusLabel.stringValue = ""
     }
 
     /// 行显隐（对齐 Windows Relayout 的 vis 谓词）：隐藏行在 NSStackView 中不占位。
+    /// 候选下拉重填（对齐 Windows RefreshHotwordCandidates）：重填后无选中，
+    /// 加入/忽略按钮禁用；整块显隐由 updateVisibility 按候选数判定。
+    private func refreshHotwordCandidates() {
+        let store = HotwordCandidateMiner.load(url: hotwordCandidatesURL)
+        let words = HotwordCandidateMiner.pendingSuggestions(store)
+        candidatePopup.removeAllItems()
+        candidatePopup.addItems(withTitles: words)
+        candidateAddButton.isEnabled = !words.isEmpty
+        candidateDismissButton.isEnabled = !words.isEmpty
+    }
+
+    /// 选中候选词（无选中禁用按钮，对齐 Windows 列表选中语义）。
+    @objc private func candidateSelectionChanged() {
+        let hasSelection = candidatePopup.indexOfSelectedItem >= 0
+            && candidatePopup.numberOfItems > 0
+        candidateAddButton.isEnabled = hasSelection
+        candidateDismissButton.isEnabled = hasSelection
+    }
+
+    /// 「加入热词」：追加到热词编辑框（保存时随热词表持久化，此处不改 config，
+    /// 对齐 Windows OnHotwordCandidateAdd），并从候选存储移除。
+    @objc private func addHotwordCandidate() {
+        let index = candidatePopup.indexOfSelectedItem
+        guard index >= 0, index < candidatePopup.numberOfItems else { return }
+        let word = candidatePopup.titleOfSelectedItem ?? ""
+        guard !word.isEmpty else { return }
+        let current = hotwordsTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        hotwordsTextView.string = current.isEmpty ? word : current + "," + word
+        HotwordCandidateMiner.consumeOnDisk(url: hotwordCandidatesURL, word: word)
+        refreshHotwordCandidates()
+        updateVisibility()
+        resizeWindowToFit(animated: true)
+    }
+
+    /// 「忽略」：记入 dismissed（永不建议），并从 counts/notified 移除。
+    @objc private func dismissHotwordCandidate() {
+        guard let word = candidatePopup.titleOfSelectedItem, !word.isEmpty else { return }
+        HotwordCandidateMiner.dismissOnDisk(url: hotwordCandidatesURL, word: word)
+        refreshHotwordCandidates()
+        updateVisibility()
+        resizeWindowToFit(animated: true)
+    }
+
+    private var hotwordCandidatesURL: URL {
+        AppConfig.configDirectory.appendingPathComponent("hotword_candidates.json")
+    }
+
     private func updateVisibility() {
         apiKeyRow?.isHidden = !developerMode
         resourceRow?.isHidden = !(developerMode && currentDisplayedProvider == .volcengine)
@@ -351,6 +434,12 @@ final class SettingsWindowController: NSWindowController {
         audioSectionTitle?.isHidden = !developerMode
         debugAudioRow?.isHidden = !developerMode
         debugDirRow?.isHidden = !developerMode
+
+        // 热词候选整块显隐：无待确认候选时全部隐藏（对齐 Windows candidate_words_ 判定）。
+        let hasCandidates = candidatePopup.numberOfItems > 0
+        hotwordCandidateSectionTitle?.isHidden = !hasCandidates
+        hotwordCandidateRow?.isHidden = !hasCandidates
+        hotwordCandidateHintRow?.isHidden = !hasCandidates
 
         updateApplyTrialButton()
     }

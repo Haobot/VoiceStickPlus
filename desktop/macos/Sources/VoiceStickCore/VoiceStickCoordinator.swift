@@ -1912,6 +1912,10 @@ public final class VoiceStickCoordinator {
                             // 纠错对挖掘（用户数据飞轮 P0-1）：original→refined 提取最小
                             // 替换片段对落盘，供后续精修 prompt few-shot 注入。
                             self.recordCorrectionPairs(original: text, refined: result)
+                            // 热词候选挖掘（用户数据飞轮 P0-2，对齐 Windows
+                            // MineHotwordCandidatesFromRefinement）：refined 新出现的
+                            // 标识符样式词计数入池，达阈值提示用户确认。
+                            self.mineHotwordCandidates(original: text, refined: result)
                             // 用最终累积文本做最后一次 UI 刷新。
                             self.statusController.showPartial(result, deviceID: overlayDeviceID)
                             self.finishWithRefinedText(result)
@@ -2297,6 +2301,27 @@ public final class VoiceStickCoordinator {
             pairs: CorrectionPairs.extractReplacementPairs(original, refined),
             nowTs: Int64(Date().timeIntervalSince1970)
         )
+    }
+
+    private var hotwordCandidatesURL: URL {
+        AppConfig.configDirectory.appendingPathComponent("hotword_candidates.json")
+    }
+
+    /// 精修完成后的热词候选挖掘（用户数据飞轮 P0-2，对齐 Windows
+    /// MineHotwordCandidatesFromRefinement/RecordAndNotifyHotwordCandidates）：
+    /// refined 新出现的标识符样式词走 B13 单写入口计数，本次新晋达阈值的词弹悬浮
+    /// 提示（Windows 同款「托盘可能被静默、悬浮消息保证必现」策略），由用户在
+    /// 设置-热词候选区确认加入/忽略——挖掘只产候选，绝不自动入表。
+    private func mineHotwordCandidates(original: String, refined: String) {
+        let mined = HotwordCandidateMiner.mineRefinementCandidates(
+            original: original, refined: refined, existingHotwords: config.asrHotwords
+        )
+        guard !mined.isEmpty else { return }
+        let suggestions = HotwordCandidateMiner.recordToDisk(url: hotwordCandidatesURL, words: mined)
+        guard !suggestions.isEmpty else { return }
+        NSLog("hotword candidates suggested: %@", suggestions.joined(separator: ", "))
+        let suffix = trText?("hotwordCandidateNotifyBodySuffix") ?? "hotwordCandidateNotifyBodySuffix"
+        statusController.showTimedMessage(suggestions.joined(separator: ", ") + suffix, duration: 3)
     }
 
     private func finishWithASRError(_ message: String) {

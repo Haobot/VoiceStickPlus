@@ -82,6 +82,8 @@
 
 ## 3. P0-2：macOS 补齐挖掘管道（双端能力对齐）
 
+> **状态：已实施**（feat/macos-hotword-mining，2026-10-15）：`HotwordCandidateMiner.swift` 1:1 移植（提取/挖掘/存储/B13 单写者三事务，存储与 Windows `hotword_candidates.json` 同构）；协调器精修完成回调接线；设置页新增「热词候选」块（下拉 + 加入/忽略，无候选整块隐藏，对齐 Windows 布局判定）；达阈值悬浮提示走既有 showTimedMessage。i18n 键入 L10nKey 枚举 + en/zh 双表（check_desktop_i18n 奇偶守护覆盖）。
+
 **方案**：
 
 1. 移植 Windows `MineRefinementCandidates` + `ExtractIdentifierTokens`（纯函数，Swift 化，参考 `HotwordSelector.swift` 1:1 移植先例与 `scripts/e2e_test/asr_bench/hotword_select.py` 对齐惯例）。
