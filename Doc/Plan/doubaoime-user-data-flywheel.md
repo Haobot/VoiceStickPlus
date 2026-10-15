@@ -158,6 +158,8 @@ CREATE TABLE modify_exempt (          -- 豁免表（学豆包 AsrModifyExemptWo
 
 ### 3.4 用户 bigram 与分应用分桶
 
+> **落地注记（2026-10-15）**：分桶已在纠错对上先行落地（macOS 先行，feat/correction-app-bucket）——采集打 `app` 桶 + 查询「当前应用桶 ∪ 全局桶、当前桶优先」应用于 few-shot 与全句精确命中两处；bigram 未做（依赖 P2-1 SQLite 化）。
+
 **分桶（先做，成本低）**：
 - `FrontmostAppProvider`（macOS）/ Windows 前台进程检测（现有粘贴注入目标检测可复用）取 app 标识；
 - 改写对与热词记录时打 `app_bucket`；查询时先查当前应用桶，miss 再查全局桶；

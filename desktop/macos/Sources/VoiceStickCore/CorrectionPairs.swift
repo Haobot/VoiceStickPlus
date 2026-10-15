@@ -154,22 +154,23 @@ public enum CorrectionPairs {
         return deduped
     }
 
-    /// 内存合并：同 (before, after, app=空) 计数 +1 并刷新时间；新对追加；超容量按
-    /// （count 升序、last_seen 升序、字典序）逐出。
+    /// 内存合并：同 (before, after, app) 计数 +1 并刷新时间（对齐 doubao 方案
+    /// UNIQUE(src,dst,app_bucket)——同对在不同 App 分桶各自累计）；新对追加；超容量
+    /// 按（count 升序、last_seen 升序、字典序）逐出。
     public static func record(
         _ store: inout [CorrectionPair], pairs: [CorrectionReplacement], nowTs: Int64,
-        source: String = "refine"
+        source: String = "refine", app: String = ""
     ) {
         for replacement in pairs {
             if let index = store.firstIndex(where: {
-                $0.before == replacement.before && $0.after == replacement.after && $0.app.isEmpty
+                $0.before == replacement.before && $0.after == replacement.after && $0.app == app
             }) {
                 store[index].count += 1
                 store[index].lastSeenTs = nowTs
                 continue
             }
             store.append(CorrectionPair(before: replacement.before, after: replacement.after,
-                                        count: 1, lastSeenTs: nowTs, source: source))
+                                        count: 1, lastSeenTs: nowTs, source: source, app: app))
         }
         // 容量硬上限：count 升序、last_seen 升序、字典序稳定逐出。
         if store.count > kCorrectionPairStoreCap {
@@ -235,33 +236,55 @@ public enum CorrectionPairs {
     private static let fileLock = NSLock()
 
     public static func recordToDisk(
-        url: URL, pairs: [CorrectionReplacement], nowTs: Int64, source: String = "refine"
+        url: URL, pairs: [CorrectionReplacement], nowTs: Int64, source: String = "refine",
+        app: String = ""
     ) {
         guard !pairs.isEmpty else { return }
         fileLock.lock()
         defer { fileLock.unlock() }
         var store = load(url: url)
-        record(&store, pairs: pairs, nowTs: nowTs, source: source)
+        record(&store, pairs: pairs, nowTs: nowTs, source: source, app: app)
         save(store, url: url)
     }
 
     /// 应用位置 1（doubao 方案 §3.1）：全句精确命中——文本（去首尾空白）与某改写对
-    /// before 完全相等时返回该对（跳过 LLM 直接替换的确定性路径）。命中多条取
-    /// （count 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
+    /// before 完全相等时返回该对（跳过 LLM 直接替换的确定性路径）。分桶查询口径
+    /// （§3.4）：app 非空时候选 = 当前应用桶 ∪ 全局桶（其他 App 的桶不参与），当前
+    /// 桶优先；桶内取（count 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
     public static func exactReplacement(
-        for text: String, in store: [CorrectionPair]
+        for text: String, in store: [CorrectionPair], app: String? = nil
     ) -> CorrectionPair? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return store
-            .filter { $0.count > 0 && $0.before.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }
+            .filter { entry in
+                guard entry.count > 0,
+                      entry.before.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else {
+                    return false
+                }
+                return isBucketMatch(entry.app, app: app)
+            }
             .sorted { lhs, rhs in
+                if isCurrentBucket(lhs.app, app: app) != isCurrentBucket(rhs.app, app: app) {
+                    return isCurrentBucket(lhs.app, app: app)
+                }
                 if lhs.count != rhs.count { return lhs.count > rhs.count }
                 if lhs.lastSeenTs != rhs.lastSeenTs { return lhs.lastSeenTs > rhs.lastSeenTs }
                 if lhs.before != rhs.before { return lhs.before < rhs.before }
                 return lhs.after < rhs.after
             }
             .first
+    }
+
+    /// 分桶匹配：app 为空/nil（未分工桶）= 全局查询；否则当前应用桶 ∪ 全局桶。
+    private static func isBucketMatch(_ entryApp: String, app: String?) -> Bool {
+        guard let app, !app.isEmpty else { return entryApp.isEmpty }
+        return entryApp == app || entryApp.isEmpty
+    }
+
+    private static func isCurrentBucket(_ entryApp: String, app: String?) -> Bool {
+        guard let app, !app.isEmpty else { return false }
+        return entryApp == app
     }
 
     /// B13 单写入口：精确命中应用后 use_count+1 落盘（doubao 方案 use_count，
@@ -278,18 +301,23 @@ public enum CorrectionPairs {
         save(store, url: url)
     }
 
-    /// prompt few-shot 候选：按 count 降序、last_seen 降序、(before, after, app) 字典序
+    /// prompt few-shot 候选：分桶查询（doubao §3.4）——app 非空时候选 = 当前应用桶
+    /// ∪ 全局桶，当前桶优先占预算；桶内按 count 降序、last_seen 降序、字典序；
     /// 取前 maxPairs；count<=0 剔除。
-    public static func trimForPrompt(_ store: [CorrectionPair], maxPairs: Int) -> [CorrectionPair] {
+    public static func trimForPrompt(
+        _ store: [CorrectionPair], maxPairs: Int, app: String? = nil
+    ) -> [CorrectionPair] {
         guard maxPairs > 0 else { return [] }
         return store
-            .filter { $0.count > 0 }
+            .filter { $0.count > 0 && isBucketMatch($0.app, app: app) }
             .sorted { lhs, rhs in
+                if isCurrentBucket(lhs.app, app: app) != isCurrentBucket(rhs.app, app: app) {
+                    return isCurrentBucket(lhs.app, app: app)
+                }
                 if lhs.count != rhs.count { return lhs.count > rhs.count }
                 if lhs.lastSeenTs != rhs.lastSeenTs { return lhs.lastSeenTs > rhs.lastSeenTs }
                 if lhs.before != rhs.before { return lhs.before < rhs.before }
-                if lhs.after != rhs.after { return lhs.after < rhs.after }
-                return lhs.app < rhs.app
+                return lhs.after < rhs.after
             }
             .prefix(maxPairs)
             .map { $0 }
