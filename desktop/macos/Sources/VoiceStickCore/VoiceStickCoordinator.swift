@@ -2062,7 +2062,7 @@ public final class VoiceStickCoordinator {
               activeDeviceID ?? "unknown", text.utf8.count)
         statusController.showFinal(text, deviceID: activeDeviceID) { [weak self] in
             NSLog("Pending confirmation hidden; committing paste text_len=%d", text.utf8.count)
-            self?.commitPendingPaste(text: text)
+            self?.commitPendingPaste(text: text, manual: false)
         }
         sendUIStateForActiveDevice("pending_confirmation", text: text)
     }
@@ -2344,6 +2344,31 @@ public final class VoiceStickCoordinator {
         HotwordSelector.saveUsage(store, url: hotwordUsageURL)
     }
 
+    private var usageEventsURL: URL {
+        (userDataDirectoryOverride ?? AppConfig.configDirectory)
+            .appendingPathComponent("usage_events.jsonl")
+    }
+
+    /// 负信号事件落 JSONL（用户数据飞轮 P1-1；对齐 WeType「上屏与回退都记录」）。
+    /// 只记文本长度与热词命中名单，绝不记文本本身。
+    private func recordUsageEvent(
+        kind: String, text: String?, dwellSeconds: TimeInterval? = nil
+    ) {
+        let lowered = (text ?? "").lowercased()
+        let matched = config.asrHotwords.filter { !$0.isEmpty && lowered.contains($0.lowercased()) }
+        UsageEventLog.append(
+            url: usageEventsURL,
+            event: UsageEvent(
+                kind: kind,
+                ts: Int64(Date().timeIntervalSince1970),
+                deviceID: activeDeviceID,
+                textLength: (text ?? "").count,
+                hotwords: matched,
+                dwellSeconds: dwellSeconds
+            )
+        )
+    }
+
     private var correctionPairsURL: URL {
         (userDataDirectoryOverride ?? AppConfig.configDirectory)
             .appendingPathComponent("correction_pairs.json")
@@ -2607,12 +2632,12 @@ public final class VoiceStickCoordinator {
         }
     }
 
-    private func commitPendingPaste(text: String) {
+    private func commitPendingPaste(text: String, manual: Bool) {
         guard pendingPasteText == text else {
             return
         }
 
-        completePendingPaste(text: text)
+        completePendingPaste(text: text, manual: manual)
     }
 
     /// 无辅助功能权限时的注入兜底：悬浮窗提示（10s 节流，防编码器旋转等高频路径
@@ -2631,10 +2656,16 @@ public final class VoiceStickCoordinator {
         onAccessibilityPermissionMissing?()
     }
 
-    private func completePendingPaste(text: String) {
+    private func completePendingPaste(text: String, manual: Bool) {
         NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d",
               text.utf8.count, config.autoEnter ? 1 : 0, (isProcessTrusted?() ?? false) ? 1 : 0)
         let shouldPressEnter = config.autoEnter
+        // 负信号采集（P1-1）：确认动作 + 停留时长（疑惑度信号）。
+        recordUsageEvent(
+            kind: manual ? UsageEventKind.pasteManuallyConfirmed : UsageEventKind.pasteAutoConfirmed,
+            text: text,
+            dwellSeconds: Date().timeIntervalSince(pendingPasteEnteredAt)
+        )
         pendingPasteState = .idle
         finishRecognitionCycle()
         statusController.setStatus("Ready")
@@ -2702,7 +2733,7 @@ public final class VoiceStickCoordinator {
                 NSLog("Stale pending confirmation (%.0fs); force committing before new session",
                       Date().timeIntervalSince(pendingPasteEnteredAt))
                 pendingPasteState = .idle
-                completePendingPaste(text: text)
+                completePendingPaste(text: text, manual: false)
                 return false
             }
             pendingPasteState = .paused(text: text)
@@ -2713,7 +2744,7 @@ public final class VoiceStickCoordinator {
         case .paused(let text):
             guard activePeripheralID == peripheralID else { return true }
             statusController.hideOverlay { [weak self] in
-                self?.commitPendingPaste(text: text)
+                self?.commitPendingPaste(text: text, manual: true)
             }
             return true
         }
@@ -2736,6 +2767,13 @@ public final class VoiceStickCoordinator {
             return
         }
         guard activePeripheralID == peripheralID else { return }
+        // 负信号采集（P1-1）：待确认文本被取消 + 停留时长。
+        if case .waitingToPaste(let text) = pendingPasteState {
+            recordUsageEvent(
+                kind: UsageEventKind.pasteCanceled, text: text,
+                dwellSeconds: Date().timeIntervalSince(pendingPasteEnteredAt)
+            )
+        }
         pendingPasteState = .idle
         finishRecognitionCycle()
         statusController.hideOverlay()
@@ -2745,6 +2783,8 @@ public final class VoiceStickCoordinator {
     }
 
     private func cancelRecognitionInProgress() {
+        // 负信号采集（P1-1）：识别中途取消/重录（无文本）。
+        recordUsageEvent(kind: UsageEventKind.recognitionCanceled, text: nil)
         cancelStreamingRefinement()
         cancelAudioEndTimeout()
         asr.cancel()
