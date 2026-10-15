@@ -121,6 +121,8 @@ CREATE TABLE history (
 
 迁移机制仿 Typeless:迁移 SQL 随包分发、启动时按序应用,保证 schema 演进不破坏存量资产。保留策略:默认保留(本地资产),`historyDurationSeconds` 类配置裁剪。
 
+> **状态：已实施（macOS 先行）**（feat/edit-tracking，2026-10-15）：AppDelegate 注入 AX 焦点字段读取闭包（`readFocusedFieldText`；`AXUIElementCopyAttributeValue` 在 27 SDK 移除 error 出参，经 dlsym 固定 4 参 C ABI 调用实现跨 SDK 兼容）；协调器 `completePendingPaste` 后启动有限读窗（8s 首读 + 每 10s 一读、最多 5 读，新会话开始即 SKIPPED 收口），`EditTracking.editedRegion` 公共前后缀归因（覆盖 ≥ 注入长度一半才认定编辑；焦点切走/整体重写不归因），改动区间落 `history.edited_text`（edited_* 状态机/attempts 全套），「注入中段→编辑后」对按 `source=edit` 记入纠错对库（typeless P0-3 通道 2 素材）。隐私红线落实：字段全文只在内存参与 diff，落库只有改动区间。
+
 **P0-2 编辑追踪窗口**
 
 - 时机:文本注入成功后启动,窗口 30~60s 或到下一次录音开始,取先到者。

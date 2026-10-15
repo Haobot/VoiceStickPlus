@@ -157,7 +157,8 @@ public enum CorrectionPairs {
     /// 内存合并：同 (before, after, app=空) 计数 +1 并刷新时间；新对追加；超容量按
     /// （count 升序、last_seen 升序、字典序）逐出。
     public static func record(
-        _ store: inout [CorrectionPair], pairs: [CorrectionReplacement], nowTs: Int64
+        _ store: inout [CorrectionPair], pairs: [CorrectionReplacement], nowTs: Int64,
+        source: String = "refine"
     ) {
         for replacement in pairs {
             if let index = store.firstIndex(where: {
@@ -168,7 +169,7 @@ public enum CorrectionPairs {
                 continue
             }
             store.append(CorrectionPair(before: replacement.before, after: replacement.after,
-                                        count: 1, lastSeenTs: nowTs))
+                                        count: 1, lastSeenTs: nowTs, source: source))
         }
         // 容量硬上限：count 升序、last_seen 升序、字典序稳定逐出。
         if store.count > kCorrectionPairStoreCap {
@@ -234,13 +235,13 @@ public enum CorrectionPairs {
     private static let fileLock = NSLock()
 
     public static func recordToDisk(
-        url: URL, pairs: [CorrectionReplacement], nowTs: Int64
+        url: URL, pairs: [CorrectionReplacement], nowTs: Int64, source: String = "refine"
     ) {
         guard !pairs.isEmpty else { return }
         fileLock.lock()
         defer { fileLock.unlock() }
         var store = load(url: url)
-        record(&store, pairs: pairs, nowTs: nowTs)
+        record(&store, pairs: pairs, nowTs: nowTs, source: source)
         save(store, url: url)
     }
 
