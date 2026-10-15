@@ -237,6 +237,41 @@ public final class SessionHistoryStore {
         _ = sqlite3_step(statement)
     }
 
+    /// 编辑追踪结果回填（Typeless edited_* 三件套语义：状态机 + 尝试计数）。
+    public func updateEditedText(id: String, text: String?, status: String, attempts: Int) {
+        guard let handle else { return }
+        var statement: OpaquePointer?
+        let sql = "UPDATE history SET edited_text = ?, edited_text_status = ?, edited_text_attempts = ? WHERE id = ?"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else { return }
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, text)
+        bindText(statement, 2, status)
+        sqlite3_bind_int(statement, 3, Int32(attempts))
+        bindText(statement, 4, id)
+        _ = sqlite3_step(statement)
+    }
+
+    /// 读回某行的 edited_* 三件套（测试与设置页展示用）。
+    public func editedText(id: String) -> (text: String?, status: String, attempts: Int)? {
+        guard let handle else { return nil }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            handle, "SELECT edited_text, edited_text_status, edited_text_attempts FROM history WHERE id = ?",
+            -1, &statement, nil
+        ) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+        bindText(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        var text: String?
+        if let cString = sqlite3_column_text(statement, 0) {
+            text = String(cString: cString)
+        }
+        let status = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
+        let attempts = Int(sqlite3_column_int64(statement, 2))
+        return (text, status, attempts)
+    }
+
     /// 行数（测试与导出用）。
     public func rowCount() -> Int {
         guard let handle else { return 0 }
@@ -271,5 +306,43 @@ public final class SessionHistoryStore {
         } else {
             sqlite3_bind_null(statement, index)
         }
+    }
+}
+
+/// edited_text 状态机取值（Typeless edited_text_status 同名枚举裁剪）。
+public enum EditTrackingStatus {
+    public static let pending = "PENDING"
+    public static let extracted = "EXTRACTED"
+    public static let timeout = "TIMEOUT"
+    public static let skipped = "SKIPPED"
+}
+
+/// 编辑追踪纯逻辑（Typeless P0-2 的 diff 口径）。
+public enum EditTracking {
+    /// 计算用户相对注入文本的改动区间：对焦点字段与注入文本做公共前后缀对齐，
+    /// 归因闸要求公共前后缀合计覆盖注入文本至少一半（真实编辑保留原注入的大部；
+    /// 焦点切走的无关字段公共前后缀趋近 0，不作归因）。返回（注入侧中段, 字段侧
+    /// 中段）；字段侧中段为空串 = 纯删除形态；nil = 未编辑或无法归因。
+    /// 隐私红线：只取改动区间，绝不返回/落库整个字段内容。
+    public static func editedRegion(
+        fieldText: String, injectedText: String
+    ) -> (before: String, after: String)? {
+        guard !injectedText.isEmpty, fieldText != injectedText else { return nil }
+        let field = Array(fieldText.unicodeScalars)
+        let injected = Array(injectedText.unicodeScalars)
+        var prefix = 0
+        while prefix < min(field.count, injected.count),
+              field[prefix] == injected[prefix] {
+            prefix += 1
+        }
+        var suffix = 0
+        while suffix < min(field.count, injected.count) - prefix,
+              field[field.count - 1 - suffix] == injected[injected.count - 1 - suffix] {
+            suffix += 1
+        }
+        guard prefix + suffix >= injected.count / 2 else { return nil }
+        let before = String(String.UnicodeScalarView(injected[prefix..<(injected.count - suffix)]))
+        let after = String(String.UnicodeScalarView(field[prefix..<(field.count - suffix)]))
+        return (before, after)
     }
 }

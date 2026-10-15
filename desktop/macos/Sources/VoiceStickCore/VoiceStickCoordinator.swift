@@ -152,7 +152,12 @@ public final class VoiceStickCoordinator {
     ///（2026-10-15 教训：FSM 精修用例把「长长长…」→「精修结果」写进真实
     /// correction_pairs.json，预算边界用例随后被精确命中跳过精修而转红）。
     public var userDataDirectoryOverride: URL?
+    /// 焦点字段文本读取闭包（编辑追踪用，App 侧 AX 实现；nil=编辑追踪停用）。
+    /// 隐私约束：仅用于与本次注入文本做区间 diff，读取内容不落库、不打日志。
+    public var readFocusedFieldText: (() -> String?)?
     private var sessionHistoryStore: SessionHistoryStore?
+    /// 最近一次落库的会话历史行 ID（编辑追踪回填锚点）。
+    private var lastSessionHistoryID: String?
     /// 进行中会话的历史草稿（finishWithFinalText 建立、finishWithRefinedText 落库）。
     private struct PendingSessionHistory {
         let id: String
@@ -165,6 +170,18 @@ public final class VoiceStickCoordinator {
         let hotwordsSent: String?
     }
     private var pendingSessionHistory: PendingSessionHistory?
+    /// 编辑追踪进行态（Typeless P0-2：注入后追踪用户修改；generation 防迟到回调）。
+    private struct EditTrackingSession {
+        let historyID: String
+        let injectedText: String
+        var attempts: Int
+    }
+    private var editTrackingSession: EditTrackingSession?
+    private var editTrackingGeneration = 0
+    /// 追踪窗口参数：8s 首读（给粘贴/应用切换留时间），之后每 10s 一读，最多 5 读（~48s）。
+    private let kEditTrackingFirstDelay: TimeInterval = 8
+    private let kEditTrackingRetryDelay: TimeInterval = 10
+    private let kEditTrackingMaxAttempts = 5
     // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
     public var fsmSnapshot: String {
         "main=\(mainInputState) pendingPaste=\(pendingPasteState) "
@@ -1871,6 +1888,8 @@ public final class VoiceStickCoordinator {
         // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立，落库在
         // finishWithRefinedText（所有收口路径统一经过）。
         beginSessionHistory(rawAsr: text)
+        // 新会话开始 = 上一轮编辑追踪窗口提前结束（Typeless track 边界同款）。
+        finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
         // 改写对应用闭环（用户数据飞轮，doubao 方案 §3.1 应用位置 1）：全句精确命中
         // 改写对 → 直接替换（毫秒级零 LLM，同一错误第二次不犯），use_count 落盘。
         if let applied = applyCorrectionPairExact(rawAsr: text) {
@@ -2453,7 +2472,89 @@ public final class VoiceStickCoordinator {
             record.clientMetadata = "{\"app_version\":\"\(version)\"}"
         }
         store.insert(record)
+        lastSessionHistoryID = pending.id
         return pending.id
+    }
+
+    // ---- 编辑追踪（用户数据飞轮 P0-2，Typeless 方案：上屏之后才算完）----
+    // 注入成功后启动有限读窗（8s 首读 + 每 10s 一读、最多 5 读）：读到的焦点字段
+    // 与注入文本做区间 diff，产物（改动 span）落 history.edited_text 并把「注入→
+    // 编辑后」对按 source=edit 记入纠错对库——用户手动修改是最强纠错信号。
+    // 隐私红线：字段全文只在内存参与 diff，落库的只有改动 span；读取闭包未装配
+    //（测试/未授权）整个追踪静默停用。
+
+    private func beginEditTracking(injectedText: String) {
+        finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
+        guard let readFocusedFieldText, let historyID = lastSessionHistoryID,
+              !injectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        editTrackingGeneration += 1
+        editTrackingSession = EditTrackingSession(
+            historyID: historyID, injectedText: injectedText, attempts: 0
+        )
+        if let store = sessionHistoryStore {
+            store.updateEditedText(
+                id: historyID, text: nil,
+                status: EditTrackingStatus.pending, attempts: 0
+            )
+        }
+        scheduleEditTrackingAttempt(delay: kEditTrackingFirstDelay)
+    }
+
+    private func scheduleEditTrackingAttempt(delay: TimeInterval) {
+        guard editTrackingSession != nil else { return }
+        let generation = editTrackingGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.runEditTrackingAttempt(generation: generation)
+        }
+    }
+
+    private func runEditTrackingAttempt(generation: Int) {
+        guard generation == editTrackingGeneration, let tracking = editTrackingSession else { return }
+        editTrackingSession?.attempts += 1
+        // 焦点不可读（应用无 AX 树/权限/无文本焦点）：窗口内重试，耗尽判 TIMEOUT。
+        guard let fieldText = readFocusedFieldText?(), !fieldText.isEmpty else {
+            if let current = editTrackingSession, current.attempts >= kEditTrackingMaxAttempts {
+                finishEditTracking(status: EditTrackingStatus.timeout, editedSpan: nil)
+                return
+            }
+            scheduleEditTrackingAttempt(delay: kEditTrackingRetryDelay)
+            return
+        }
+        // 未编辑（一致）或无法归因（公共前后缀 < 注入长度一半，焦点已切走/整体重写）：
+        // 按无编辑收口（首次可读即收，避免无编辑会话烧满窗口）。
+        guard let region = EditTracking.editedRegion(
+            fieldText: fieldText, injectedText: tracking.injectedText
+        ) else {
+            finishEditTracking(status: EditTrackingStatus.extracted, editedSpan: nil)
+            return
+        }
+        // 纯删除形态（字段侧中段为空）：无「错形→正形」锚点，不进纠错对库。
+        guard !region.after.isEmpty else {
+            finishEditTracking(status: EditTrackingStatus.extracted, editedSpan: nil)
+            return
+        }
+        // 用户改动：落 history.edited_text（只存改动区间），并把「注入中段→编辑后」
+        // 对按 source=edit 记入纠错对库（typeless P0-3 通道 2 的素材基础——用户手动
+        // 修改是最强纠错信号）。
+        finishEditTracking(status: EditTrackingStatus.extracted, editedSpan: region.after)
+        let pairs = CorrectionPairs.extractReplacementPairs(region.before, region.after)
+        CorrectionPairs.recordToDisk(
+            url: correctionPairsURL, pairs: pairs,
+            nowTs: Int64(Date().timeIntervalSince1970), source: "edit"
+        )
+        NSLog("edit tracking captured span len=%d", region.after.utf8.count)
+    }
+
+    private func finishEditTracking(status: String, editedSpan: String?) {
+        guard let tracking = editTrackingSession else { return }
+        editTrackingSession = nil
+        editTrackingGeneration += 1
+        sessionHistoryStore?.updateEditedText(
+            id: tracking.historyID, text: editedSpan, status: status, attempts: tracking.attempts
+        )
+        if status != EditTrackingStatus.pending {
+            NSLog("edit tracking finished status=%@ attempts=%d", status, tracking.attempts)
+        }
     }
 
     private func finishWithASRError(_ message: String) {
@@ -2533,6 +2634,7 @@ public final class VoiceStickCoordinator {
         sendUIStateForActiveDevice("ready")
         mainInputState = .ready
         inputInjector.paste(text: text, pressEnter: shouldPressEnter)
+        beginEditTracking(injectedText: text)
     }
 
     private var isWaitingForFinalText: Bool {

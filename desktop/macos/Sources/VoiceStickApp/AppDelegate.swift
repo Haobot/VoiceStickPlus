@@ -116,6 +116,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 会话历史（用户数据飞轮 P0-3）：系统 SQLite 落库识别会话（默认库与
         // config.toml 同目录）；打开/迁移失败由工厂返回 nil，记录降级停用。
         coordinator.makeSessionHistoryStore = { SessionHistoryStore(url: $0) }
+        // 编辑追踪（用户数据飞轮 P0-2）：AX 读取焦点字段文本（AppKit/ApplicationServices
+        // 合规层），与注入文本做区间 diff——字段全文只在内存参与 diff，落库的只有改动
+        // span。辅助功能权限与输入注入同源（CGEvent 已要求）。
+        coordinator.readFocusedFieldText = {
+            // 跨 SDK 兼容：AXUIElementCopyAttributeValue 在 macOS 27 SDK 头文件中
+            // 移除了 error 出参（3 参），旧 SDK 仍为 4 参——Swift 无法按 SDK 条件
+            // 编译，这里固定按 4 参 C ABI 经 dlsym 调用：新实现只读前 3 个寄存器
+            // 参数（多余寄存器实参在 arm64/x64 调用约定下无害），旧实现原样回填
+            // error。错误码一律以返回值为准。
+            typealias CopyAttr = @convention(c) (
+                AXUIElement, CFString,
+                UnsafeMutablePointer<CFTypeRef?>?,
+                UnsafeMutablePointer<AXError>?
+            ) -> AXError
+            guard let symbol = dlsym(dlopen(nil, RTLD_LAZY), "AXUIElementCopyAttributeValue") else {
+                return nil
+            }
+            let copyAttr = unsafeBitCast(symbol, to: CopyAttr.self)
+            var ignoredError = AXError.attributeUnsupported
+            let systemWide = AXUIElementCreateSystemWide()
+            var focused: CFTypeRef?
+            guard copyAttr(
+                systemWide, kAXFocusedUIElementAttribute as CFString, &focused, &ignoredError
+            ) == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+                return nil
+            }
+            var value: CFTypeRef?
+            guard copyAttr(
+                focused as! AXUIElement, kAXValueAttribute as CFString, &value, &ignoredError
+            ) == .success, let value, CFGetTypeID(value) == CFStringGetTypeID() else {
+                return nil
+            }
+            return (value as! CFString) as String
+        }
         coordinator.presentUpgradeAlertUI = { url, message in
             NSApp.activate(ignoringOtherApps: true)
 
