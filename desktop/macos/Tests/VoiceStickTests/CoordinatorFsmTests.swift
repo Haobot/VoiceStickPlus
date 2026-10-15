@@ -140,6 +140,7 @@ private final class FakeRefiner: RefinerServing {
     private(set) var lastText: String?
 
     func refineStream(_ text: String, promptOverride: String, hotwords: [String]?,
+                      corrections: [CorrectionPair],
                       cancel: RefineCancelToken,
                       onToken: @escaping (String) -> Void,
                       onComplete: @escaping (Bool, String, RefineFallback) -> Void) {

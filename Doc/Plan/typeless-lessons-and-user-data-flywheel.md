@@ -89,6 +89,8 @@ v2 增量(0011~0013):`user_id, server_updated_at, sync_status(默认 pending_upl
 
 ### P0 — 数据底座 + 编辑追踪(最高优先)
 
+> **落地注记（2026-10-15）**：P0-3 通道 2 的纠错对素材基础已落地——精修 diff 最小替换对提取与落库见 `correction_pairs` 模块（wetype 方案 §2 同构），编辑 diff（edited_text 对）接入随 P0-2 编辑追踪落地。
+
 **P0-1 SQLite 会话历史表**(macOS 用 GRDB,Windows 直接 sqlite3;不引入 Electron 栈的 drizzle)
 
 裁剪版 schema(VoiceStick 定位本地优先,砍掉 Typeless 的云侧字段):

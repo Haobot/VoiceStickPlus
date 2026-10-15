@@ -2708,6 +2708,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                             refine_history_.Add(text, final_text, instruction);
                         }
                         MineHotwordCandidatesFromRefinement(text, final_text);
+                        MineCorrectionPairsFromRefinement(text, final_text);
                     }
                     wrapped(true, final_text);
                     MaybeExtractHotwordCandidates(final_text);
@@ -2778,6 +2779,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                             // 用最终的累积文本做最后一次 UI 刷新
                             ui_->ShowPartial(result, device_id);
                             MineHotwordCandidatesFromRefinement(text, result);
+                            MineCorrectionPairsFromRefinement(text, result);
                         } else {
                             LogCoordinatorLine("refine corrupted a hotword present in ASR text; "
                                                "falling back to original");
@@ -2788,7 +2790,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                     MaybeExtractHotwordCandidates(final_text);
                 });
             },
-            cancel, HotwordsForLlmPrompts());
+            cancel, HotwordsForLlmPrompts(), CorrectionPairsForLlmPrompts());
         return;
     }
     wrapped(true, text);

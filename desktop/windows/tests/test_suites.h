@@ -42,3 +42,6 @@ void RunLicenseImaAtvvBatchTests();
 
 // N8 cut15（终刀）：device/plan/serial 等余量 20 测——core_tests.cc 收官为注册壳。
 void RunDevicePlanMiscBatchTests();
+
+// 用户数据飞轮 P0-1：纠错对资产化批（correction_pairs + prompt few-shot 注入）。
+void RunCorrectionPairsBatchTests();

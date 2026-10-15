@@ -1869,6 +1869,7 @@ public final class VoiceStickCoordinator {
                 text,
                 promptOverride: config.refinePrompt,
                 hotwords: hotwordsForLlmPrompts(),
+                corrections: correctionPairsForLlmPrompts(),
                 cancel: token,
                 onToken: { [weak self] delta in
                     guard let self, !token.isCancelled, !self.pastedFinalText else { return }
@@ -1908,6 +1909,9 @@ public final class VoiceStickCoordinator {
                               ok ? 1 : 0, Int(Date().timeIntervalSince(refineBeginAt) * 1000),
                               result.utf8.count, reason.rawValue)
                         if ok, !result.isEmpty, reason != .hotwordGuard {
+                            // 纠错对挖掘（用户数据飞轮 P0-1）：original→refined 提取最小
+                            // 替换片段对落盘，供后续精修 prompt few-shot 注入。
+                            self.recordCorrectionPairs(original: text, refined: result)
                             // 用最终累积文本做最后一次 UI 刷新。
                             self.statusController.showPartial(result, deviceID: overlayDeviceID)
                             self.finishWithRefinedText(result)
@@ -2268,6 +2272,31 @@ public final class VoiceStickCoordinator {
         )
         hotwordUsageStore = store
         HotwordSelector.saveUsage(store, url: hotwordUsageURL)
+    }
+
+    private var correctionPairsURL: URL {
+        AppConfig.configDirectory.appendingPathComponent("correction_pairs.json")
+    }
+
+    /// 精修 prompt 纠错 few-shot 段候选（用户数据飞轮 P0-1，对齐 Windows
+    /// CorrectionPairsForLlmPrompts）：按 count/新近度 top-8，每次精修从磁盘现读，
+    /// 不做内存缓存——文件小且写点分散。
+    private func correctionPairsForLlmPrompts() -> [CorrectionPair] {
+        return CorrectionPairs.trimForPrompt(
+            CorrectionPairs.load(url: correctionPairsURL),
+            maxPairs: kCorrectionPromptMaxPairs
+        )
+    }
+
+    /// 精修完成后的纠错对挖掘：original→refined 提取最小替换片段对，经 B13 单写
+    /// 入口落盘 correction_pairs.json（与 config.toml 同目录）。
+    private func recordCorrectionPairs(original: String, refined: String) {
+        guard original != refined else { return }
+        CorrectionPairs.recordToDisk(
+            url: correctionPairsURL,
+            pairs: CorrectionPairs.extractReplacementPairs(original, refined),
+            nowTs: Int64(Date().timeIntervalSince1970)
+        )
     }
 
     private func finishWithASRError(_ message: String) {

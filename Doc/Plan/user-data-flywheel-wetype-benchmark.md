@@ -57,6 +57,8 @@
 
 ## 2. P0-1：纠错对资产化（体感提升最大）
 
+> **状态：已实施**（feat/correction-pairs，2026-10-15）：双端 `correction_pairs` 模块（Windows `desktop/windows/src/correction_pairs.{h,cc}` / macOS `CorrectionPairs.swift`，1:1 移植同向量单测）——精修 diff 提取最小替换对落盘 `correction_pairs.json`（B13 单写入口），精修 prompt 注入 top-8 few-shot 段；先 JSON 存储，SQLite 迁移随 P2-1。反向校准（本节第 3 点）随 P1-4 落地。
+
 **目标**：同一个错误第二次不犯。这是「越用越准」体感的第一来源。
 
 **方案**：
