@@ -126,10 +126,10 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   快捷键语法（action=key）或 `"none"`（action=disabled）；未写出的键回落原生。加载时
   KeySpec 非法的条目忽略并回落原生；与默认一致的表不落盘。**长按连发节拍**：
   `repeat_delay_ms`（默认 300，区间 [100,1000]，越界回落默认）与 `repeat_interval_ms`
-  （默认 80，区间 [30,500]）——方向/返回（常映射删除）/音量类键（`supportsRepeat` 集
-  合）走 inject 动作时按下首发后按该节拍连发直至抬起，对齐系统键盘自动重复（macOS
-  HID 拦截层消费；ok/home/menu/tv 与语音键不连发；网关 `gateway_key` 沿不适用，
-  Windows 网关键连发另有独立实现）。消费端：B 级键走
+  （默认 80，区间 [30,500]）——除语音键外的映射键按住时首发后按该节拍重复注入直至
+  抬起，对齐系统键盘自动重复；直连路径消费 inject 动作（macOS HID 拦截层），网关
+  `gateway_key` 沿 key/native 动作皆连发（disabled 除外）；`voice_double_click`
+  （ATVV 层）不适用。消费端：B 级键走
   `XiaomiButtonInterceptManager`（IOHID 观察 + CGEvent tap 吞除 + `sendKeyCombo` 注入）；
   `voice_double_click` 走 ATVV 会话合成的 `button_double_click`（协调器按映射处置）；
   **网关模式**（遥控器配对在 StickS3、桌面端无 RC 条目）下，该表同时是

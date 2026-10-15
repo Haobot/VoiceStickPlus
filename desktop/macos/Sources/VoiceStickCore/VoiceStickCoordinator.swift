@@ -242,6 +242,13 @@ public final class VoiceStickCoordinator {
     private var pendingFirmwareUpdatePromptDeviceIDs: Set<String> = []
     // A15：gateway_keymap 分片回执的未完成累计（seq0 起攒，more=false 收口）。
     private var keymapReportPending: [GatewayKeymapRoute] = []
+    // 网关键长按连发（对齐 Windows gateway_repeater_）：gateway_key 按下沿首发 +
+    // 登记，抬起沿清除，定时器 poll 到点按 ButtonsSettings 节拍重复注入。
+    private var gatewayRepeater = RemoteButtonRepeater(timing: .init(
+        delayMs: ButtonsSettings.defaultRepeatDelayMs,
+        intervalMs: ButtonsSettings.defaultRepeatIntervalMs
+    ))
+    private var gatewayRepeatTimer: Timer?
     private var errorRecoveryToken = 0
     private var isShowingASRError = false
     private var subtitleCycles: [SubtitleCycleKey: SubtitleCycle] = [:]
@@ -449,6 +456,11 @@ public final class VoiceStickCoordinator {
         }
 
         self.config = config
+        // 网关键连发节拍热更（按键映射对话框保存路径）。
+        gatewayRepeater.setTiming(.init(
+            delayMs: config.buttonsSettings(for: activeXiaomiDeviceID).repeatDelayMs,
+            intervalMs: config.buttonsSettings(for: activeXiaomiDeviceID).repeatIntervalMs
+        ))
         ble.sendInteractionMode(config.interactionMode)
         ble.sendShowIMUDebug(config.showIMUDebug)
         // 编码器/交互设置按设备覆盖：对已连接 StickS3 逐台取其有效配置单播
@@ -791,37 +803,95 @@ public final class VoiceStickCoordinator {
         }
     }
 
-    /// 网关软件路由键消费（对齐 Windows OnGatewayKey）：只处理按下沿（抬起沿成对
-    /// 到达，注入为 down+up 点按）。映射取活跃 RC 的配置——与路由下发同源，保证
-    /// 「路由为 software 的键必能在此被消费」。禁用键吞掉；native 按 naturalSpec
-    /// 注入等价自然键（2026-10-12：macOS 系统级 HID 会话不可用，原生语义由桌面
-    /// 实现，见 GatewaySupport.routes 语义修正）；不可映射键（power/volume_mute，
-    /// 路由本就 passthrough 到不了这里）忽略防误注入。
+    /// 网关软件路由键消费（对齐 Windows OnGatewayKey）：按下沿首发注入 + 登记连发，
+    /// 抬起沿清除连发；重复注入由连发定时器按 ButtonsSettings 节拍驱动（对齐 Windows
+    /// gateway_repeater_）。映射取活跃 RC 的配置——与路由下发同源，保证「路由为
+    /// software 的键必能在此被消费」。禁用键吞掉；native 按 naturalSpec 注入等价自然键
+    /// （2026-10-12：macOS 系统级 HID 会话不可用，原生语义由桌面实现，见
+    /// GatewaySupport.routes 语义修正）；不可映射键（power/volume_mute，路由本就
+    /// passthrough 到不了这里）忽略防误注入。
     private func handleGatewayKey(_ event: StateEvent) {
-        guard event.gatewayPressed == true, let keyName = event.gatewayKey else { return }
+        guard let keyName = event.gatewayKey else { return }
         guard let button = RemoteButton(rawValue: keyName) else {
             NSLog("gateway key \(keyName) not mappable on macOS, ignored")
             return
         }
+        if event.gatewayPressed == true {
+            handleGatewayKeyDown(button)
+        } else {
+            if gatewayRepeater.release(button) {
+                NSLog("gateway key \(keyName) repeat stop")
+            }
+            syncGatewayRepeatTimer()
+        }
+    }
+
+    /// 网关键按下沿：解析映射（key=KeySpec / native=naturalSpec），首发注入并登记
+    /// 连发 hold；禁用或解析失败不登记（无连发）。
+    private func handleGatewayKeyDown(_ button: RemoteButton) {
         let mapping = config.buttonsSettings(for: activeXiaomiDeviceID).mapping(for: button)
+        guard let spec = gatewaySpec(for: button, mapping: mapping) else {
+            if mapping.action == .disabled {
+                NSLog("gateway key \(button.rawValue) disabled by mapping, swallowed")
+            } else {
+                NSLog("gateway key \(button.rawValue) invalid key spec \"\(mapping.key)\", ignored")
+            }
+            return
+        }
+        NSLog("gateway key \(button.rawValue) -> inject \(spec.displayText)")
+        inputInjector.sendKeyCombo(spec)
+        if gatewayRepeater.press(button, atMs: XiaomiMicOpenAnchor.nowMs()) {
+            NSLog("gateway key \(button.rawValue) repeat armed " +
+                  "delay=\(config.buttonsSettings(for: activeXiaomiDeviceID).repeatDelayMs)ms " +
+                  "interval=\(config.buttonsSettings(for: activeXiaomiDeviceID).repeatIntervalMs)ms")
+            syncGatewayRepeatTimer()
+        }
+    }
+
+    /// 映射 → 注入规格：key 动作解析 KeySpec（失败 nil），native 动作取桌面等价
+    /// 自然键（无等价语义的键如 menu/tv 返回 nil），disabled 一律 nil。
+    private func gatewaySpec(for button: RemoteButton, mapping: ButtonMapping) -> KeySpec? {
         switch mapping.action {
         case .key:
-            guard let spec = KeySpec.parse(mapping.key) else {
-                NSLog("gateway key \(keyName) invalid key spec \"\(mapping.key)\", ignored")
-                return
-            }
-            NSLog("gateway key \(keyName) -> inject \(spec.displayText)")
-            inputInjector.sendKeyCombo(spec)
-        case .disabled:
-            NSLog("gateway key \(keyName) disabled by mapping, swallowed")
+            return KeySpec.parse(mapping.key)
         case .native:
-            guard let spec = GatewaySupport.naturalSpec(for: button) else {
-                NSLog("gateway key \(keyName) native has no desktop equivalent, ignored (map it in Button Mapping)")
-                return
+            return GatewaySupport.naturalSpec(for: button)
+        case .disabled:
+            return nil
+        }
+    }
+
+    // MARK: - 网关键长按连发定时器
+
+    /// hold 存在性 ↔ 连发定时器开关联动（30ms 粒度；到期判定走绝对 deadline）。
+    private func syncGatewayRepeatTimer() {
+        if gatewayRepeater.hasHolds {
+            guard gatewayRepeatTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+                self?.fireGatewayRepeat()
             }
-            NSLog("gateway key \(keyName) -> native inject \(spec.displayText)")
+            RunLoop.main.add(timer, forMode: .common)
+            gatewayRepeatTimer = timer
+        } else if gatewayRepeatTimer != nil {
+            gatewayRepeatTimer?.invalidate()
+            gatewayRepeatTimer = nil
+        }
+    }
+
+    /// 连发轮询：到期按钮按当前映射重新解析注入（热改映射即刻生效；改失配则
+    /// 撤销该 hold 不再连发）。
+    private func fireGatewayRepeat() {
+        for button in gatewayRepeater.poll(atMs: XiaomiMicOpenAnchor.nowMs()) {
+            let mapping = config.buttonsSettings(for: activeXiaomiDeviceID).mapping(for: button)
+            guard let spec = gatewaySpec(for: button, mapping: mapping) else {
+                NSLog("gateway key \(button.rawValue) repeat drop (mapping changed)")
+                gatewayRepeater.release(button)
+                continue
+            }
+            NSLog("gateway key \(button.rawValue) repeat fire -> \(spec.displayText)")
             inputInjector.sendKeyCombo(spec)
         }
+        syncGatewayRepeatTimer()
     }
 
     /// 双击取消结构（对齐 Windows CancelActiveSessionsForDoubleClick）：取消当前活跃
@@ -2799,6 +2869,10 @@ public final class VoiceStickCoordinator {
     private func cancelActiveCycleIfDeviceDisconnected() {
         // 断连设备的体感态清理（对齐 Windows CancelActiveCycleIfDeviceDisconnected）。
         clearAirMouseForInactiveDevices(reason: "disconnected")
+        // 断连后不会再有 gateway_key 抬起沿：清连发 hold 防僵尸连发
+        //（repeater 另有 maxHoldMs 兜底，此处即时收敛）。
+        gatewayRepeater.reset()
+        syncGatewayRepeatTimer()
         let disconnectedSubtitleKeys = subtitleCycles.keys.filter { !ble.isConnected($0.peripheralID) }
         for key in disconnectedSubtitleKeys {
             guard let cycle = subtitleCycles[key] else { continue }

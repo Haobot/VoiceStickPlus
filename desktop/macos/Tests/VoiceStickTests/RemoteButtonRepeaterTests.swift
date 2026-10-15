@@ -7,20 +7,17 @@ import VoiceStickCore
 func runRemoteButtonRepeaterTests() {
     var repeater = RemoteButtonRepeater(timing: .init(delayMs: 100, intervalMs: 50))
 
-    // 非 repeatable 按钮：不登记、不连发（ok/home/menu/tv/语音键双击）。
-    check(!repeater.press(.ok, atMs: 0), "rr: ok 不连发登记")
-    check(!repeater.press(.home, atMs: 0), "rr: home 不连发登记")
-    check(!repeater.press(.voiceDoubleClick, atMs: 0), "rr: 语音键双击不经 HID 层不登记")
-    check(!repeater.hasHolds, "rr: 非 repeatable 无 hold")
-    check(repeater.poll(atMs: 10_000).isEmpty, "rr: 非 repeatable 永不连发")
-
-    // repeatable 集合钉死：方向/返回/音量。
-    for button in [RemoteButton.up, .down, .left, .right, .back, .volUp, .volDown] {
+    // 连发集合：除语音键双击外全部可映射键参与（用户的删除/导航/音量可能落在
+    // 任意映射位，如 ok→backspace 连删；语音键走 ATVV 层不经键路）。
+    for button in [RemoteButton.up, .down, .left, .right, .back, .ok, .home,
+                   .menu, .tv, .volUp, .volDown] {
         check(button.supportsRepeat, "rr: \(button.rawValue) 属连发集合")
     }
-    for button in [RemoteButton.ok, .home, .menu, .tv, .voiceDoubleClick] {
-        check(!button.supportsRepeat, "rr: \(button.rawValue) 不属连发集合")
-    }
+    check(!RemoteButton.voiceDoubleClick.supportsRepeat, "rr: 语音键双击不连发")
+
+    // 非 repeatable 按钮不登记（语音键双击为唯一例外）。
+    check(!repeater.press(.voiceDoubleClick, atMs: 0), "rr: 语音键双击不经键路不登记")
+    check(!repeater.hasHolds, "rr: 语音键双击无 hold")
 
     // delay 内不连发；到点首发的 deadline = 按下 + delay。
     check(repeater.press(.up, atMs: 0), "rr: up 登记成功")

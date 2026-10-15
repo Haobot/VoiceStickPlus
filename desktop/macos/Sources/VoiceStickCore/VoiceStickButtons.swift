@@ -22,17 +22,10 @@ public enum RemoteButton: String, CaseIterable, Codable, Equatable {
     /// 是否属于 B 级（HID 拦截层处置的键）；语音键双击走 ATVV 层，恒 false。
     public var requiresIntercept: Bool { self != .voiceDoubleClick }
 
-    /// 是否参与长按连发（inject 动作按住重复注入，对齐系统键盘自动重复）：
-    /// 方向/返回（常映射删除）/音量需要；ok/home/menu/tv 连发无意义（回车/主屏
-    /// 连击有害无益）；语音键走 ATVV 层不经 HID 拦截，天然不参与。
-    public var supportsRepeat: Bool {
-        switch self {
-        case .up, .down, .left, .right, .back, .volUp, .volDown:
-            return true
-        case .ok, .home, .menu, .tv, .voiceDoubleClick:
-            return false
-        }
-    }
+    /// 是否参与长按连发（按住重复注入，对齐系统键盘自动重复语义）：除语音键双击外
+    /// 全部可映射键参与——用户的删除/导航/音量键都可能落在任意映射位（如 ok→backspace
+    /// 连删、方向连移、音量连调）；语音键双击走 ATVV 层不经键路，天然不参与。
+    public var supportsRepeat: Bool { self != .voiceDoubleClick }
 }
 
 /// 单键动作（对齐方案动作词汇 v1：原生 / 禁用 / 键盘按键）。

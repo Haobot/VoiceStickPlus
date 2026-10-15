@@ -316,10 +316,10 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
         interceptCheck.frame = NSRect(x: 196, y: 392, width: 430, height: 20)
         contentView.addSubview(interceptCheck)
 
-        // ===== 长按连发区（全局节拍，非单键属性；inject 动作 + 方向/返回/音量生效）=====
+        // ===== 长按连发区（全局节拍，非单键属性；直连 HID inject 与网关 key 沿共用）=====
         repeatTitle.stringValue = l10n(
-            "长按连发 — 方向 / 返回删除 / 音量键按住重复（语音键不适用）",
-            "Hold-to-Repeat — arrows / back-delete / volume keys repeat when held (voice key excluded)"
+            "长按连发 — 按住映射键自动重复（语音键不适用）",
+            "Hold-to-Repeat — held mapped keys auto-repeat (voice key excluded)"
         )
         repeatTitle.font = NSFont.boldSystemFont(ofSize: 12)
         repeatTitle.frame = NSRect(x: 196, y: 360, width: 430, height: 18)
@@ -357,10 +357,6 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
         repeatIntervalValue.frame = NSRect(x: 508, y: 302, width: 118, height: 18)
         contentView.addSubview(repeatIntervalValue)
         refreshRepeatValues()
-        for view in [repeatTitle, repeatDelayLabel, repeatDelaySlider, repeatDelayValue,
-                     repeatIntervalLabel, repeatIntervalSlider, repeatIntervalValue] {
-            view.isHidden = hidesIntercept
-        }
 
         // ===== 底部：恢复默认 / 保存 =====
         restoreButton.target = self
