@@ -622,20 +622,13 @@ final class ASRWebSocketClient: ASRClient {
     }
 
     private func addHotwordsIfNeeded(to request: inout [String: Any]) {
-        let hotwords = sessionOptions.hotwords
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !hotwords.isEmpty else { return }
-
-        let context: [String: Any] = [
-            "hotwords": hotwords.map { ["word": $0] }
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: context),
-              let contextString = String(data: data, encoding: .utf8) else {
-            NSLog("ASR hotwords context JSON serialization failed")
+        // corpus.context 序列化收口 Core 纯函数（热词 + dialog_ctx 两段，皆空不带）。
+        guard let contextString = ASRCorpus.contextJSON(
+            hotwords: sessionOptions.hotwords,
+            dialogContext: sessionOptions.dialogContext
+        ) else {
             return
         }
-
         request["corpus"] = ["context": contextString]
     }
 

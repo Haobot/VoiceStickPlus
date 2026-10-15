@@ -1749,6 +1749,7 @@ public final class VoiceStickCoordinator {
         let useDefiniteSegments = shouldUseDefiniteSegments(for: outputProfile(for: cycle.deviceID))
         guard cycle.asr.start(options: ASRSessionOptions(
             hotwords: config.asrHotwords,
+            dialogContext: recentDialogContext(),
             resultType: useDefiniteSegments ? .single : .full,
             showUtterances: useDefiniteSegments
         )) else {
@@ -1824,6 +1825,7 @@ public final class VoiceStickCoordinator {
         let useDefiniteSegments = shouldUseDefiniteSegments(for: profile)
         guard asr.start(options: ASRSessionOptions(
             hotwords: config.asrHotwords,
+            dialogContext: recentDialogContext(),
             resultType: useDefiniteSegments ? .single : .full,
             showUtterances: useDefiniteSegments
         )) else {
@@ -2352,6 +2354,24 @@ public final class VoiceStickCoordinator {
         NSLog("hotword candidates suggested: %@", suggestions.joined(separator: ", "))
         let suffix = trText?("hotwordCandidateNotifyBodySuffix") ?? "hotwordCandidateNotifyBodySuffix"
         statusController.showTimedMessage(suggestions.joined(separator: ", ") + suffix, duration: 3)
+    }
+
+    /// 最近精修文本作为火山 dialog_ctx 上下文（用户数据飞轮 P1-6，零新数据纯接线）：
+    /// 取最近完成会话的 refined 文本（latestRefinedTexts 旧→新，符合对话语序），
+    /// 总量截到 600 字符（dialog_ctx 预算 800 tokens，留余量给分词差异）——让
+    /// 同音纠错在 ASR 第一遍发生，而不是等精修兜底。
+    private func recentDialogContext() -> [String] {
+        guard let store = sessionHistoryStore else { return [] }
+        var dialog: [String] = []
+        var total = 0
+        for text in store.latestRefinedTexts(limit: 3) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if total + trimmed.count > 600 { break }
+            dialog.append(trimmed)
+            total += trimmed.count
+        }
+        return dialog
     }
 
     /// 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立；空文本/工厂未装配

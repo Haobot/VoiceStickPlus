@@ -143,7 +143,9 @@ macOS 读选区照搬 Typeless 方案:AX 参数化读 `AXSelectedText`,失败回
 
 **P1-5 焦点应用 → 热词 profile 分层**:录音开始时取焦点应用(`NSWorkspace.frontmostApplication` / Windows 现有能力),维护 `app → 热词子集或权重加成` 的 profile(配置文件形态,如 `[hotword_profile."com.microsoft.VSCode"] weight_boost = 2.0`)。`HotwordSelector.score` 加 profile 加成项,同样 80-token 预算下提高有效命中率。配"不追踪应用"名单(反向借鉴 Typeless 黑白名单 schema:版本化 + 本地缓存;密码管理器/银行类默认列入)。
 
-**P1-6 dialog_ctx 接线(零新数据,纯接线收益)**:最近 2~3 轮**精修后的正确文本**作为火山 `corpus.context.dialog_ctx`(800 tokens/20 轮额度)随 ASR 请求发送,让同音纠错在第一遍发生。数据源:扩展 `RefineHistory`(仍内存)或读 history 表最近 N 行 completed 记录。
+**P1-6 dialog_ctx 接线(零新数据,纯接线收益)**
+
+> **状态：已实施（macOS 先行）**（feat/asr-dialog-context，2026-10-15）：`ASRSessionOptions.dialogContext` + Core 纯函数 `ASRCorpus.contextJSON`（hotwords/dialog_ctx 两段序列化收口，皆空不带 corpus 键，可单测）；协调器主/字幕两条 ASR 启动路径接 `recentDialogContext()`——读 history 表最近 3 条 refined 文本（旧→新），总量截 600 字符（800 tokens 预算留余量）。Windows 端（refine_history 内存源）待后续分支。:最近 2~3 轮**精修后的正确文本**作为火山 `corpus.context.dialog_ctx`(800 tokens/20 轮额度)随 ASR 请求发送,让同音纠错在第一遍发生。数据源:扩展 `RefineHistory`(仍内存)或读 history 表最近 N 行 completed 记录。
 
 **P1-7 热词命中率遥测与自动降权**:基于 P0-3 的命中归因,长期(如 30 天滑窗)零命中的热词自动降权,预算流向活跃词。`recordUsage` 的 count 语义升级为"命中次数"。
 
