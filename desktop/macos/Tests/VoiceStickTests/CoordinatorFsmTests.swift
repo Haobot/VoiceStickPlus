@@ -134,6 +134,9 @@ private final class FakeRefiner: RefinerServing {
         case completeAfter(TimeInterval, String)
         /// 永不回调（预算超时路径）。
         case neverComplete
+        /// 立即发一次端点活动信号（模拟推理型模型思考链增量），随后永不 complete
+        ///（P1 reasoning 活动喂活路径：首 token 预算不误杀，总预算仍兜底）。
+        case activityThenNeverComplete
     }
     var behavior: Behavior = .completeImmediately("精修结果")
     private(set) var callCount = 0
@@ -143,6 +146,7 @@ private final class FakeRefiner: RefinerServing {
                       corrections: [CorrectionPair],
                       cancel: RefineCancelToken,
                       onToken: @escaping (String) -> Void,
+                      onActivity: @escaping () -> Void,
                       onComplete: @escaping (Bool, String, RefineFallback) -> Void) {
         callCount += 1
         lastText = text
@@ -155,6 +159,8 @@ private final class FakeRefiner: RefinerServing {
             }
         case .neverComplete:
             break
+        case .activityThenNeverComplete:
+            onActivity()
         }
     }
 }
@@ -362,4 +368,18 @@ func runRefineBudgetTests() {
     checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 超时后仅一次粘贴")
     pumpMainRunLoop(0.6) // 越过 3.0s 迟到 complete
     checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 迟到 complete 被守卫丢弃")
+
+    // 5) P1 reasoning 活动喂活：思考链增量到达即失效首 token 预算——越过 2.5s
+    // 不回退原文；总预算（5s 地板）仍 armed，最终兜底粘贴原文。
+    h = makeRefineHarness()
+    h.refiner.behavior = .activityThenNeverComplete
+    h.asr.onFinal?(original)
+    pumpMainRunLoop(0.05)
+    pumpMainRunLoop(budgetProbe)
+    check(h.input.pastedTexts.isEmpty,
+          "refineBudget: 思考活动喂活后首 token 预算不误杀（2.9s 仍无粘贴）")
+    pumpMainRunLoop(2.6) // ≈5.55s：越过总预算地板 5s
+    checkEqual(h.input.pastedTexts.last, original,
+               "refineBudget: 思考活动不豁免总预算（5.5s 兜底粘贴原文）")
+    checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 总预算路径仅粘贴一次")
 }

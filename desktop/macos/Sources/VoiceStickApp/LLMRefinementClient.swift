@@ -15,7 +15,9 @@ final class LLMRefinementClient {
     }
 
     /// 流式精修（对齐 Windows RefineStream）：请求带 "stream":true，逐 token 回调
-    /// onToken（URLSession 回调线程，调用方自行节流/切主线程）；完成回调
+    /// onToken（URLSession 回调线程，调用方自行节流/切主线程）；onActivity 为端点
+    /// 存活信号（推理型模型思考链增量不进 onToken，但同样证明流活着，供调用方
+    /// 失效首 token 预算）；完成回调
     /// onComplete(ok, fullText, fallback)——SSE 失败（服务端不支持 stream/网络断）自动回退
     /// 非流式 refine()，再失败回传 ok=false（fallback 标记回退路径，供 B1 打点归因）。
     func refineStream(
@@ -25,6 +27,7 @@ final class LLMRefinementClient {
         corrections: [CorrectionPair] = [],
         cancel: RefineCancelToken,
         onToken: @escaping (String) -> Void,
+        onActivity: @escaping () -> Void,
         onComplete: @escaping (Bool, String, RefineFallback) -> Void
     ) {
         let effectiveHotwords = hotwords ?? config.asrHotwords
@@ -46,6 +49,8 @@ final class LLMRefinementClient {
                     case .token(let token):
                         full += token
                         onToken(token)
+                    case .reasoning:
+                        onActivity()
                     case .done:
                         onComplete(true, full, .none)
                         return
@@ -145,6 +150,15 @@ final class LLMRefinementClient {
             payload["enable_thinking"] = false
             payload["chat_template_kwargs"] = ["enable_thinking": false]
             payload["think"] = false
+        }
+        // DeepSeek V4 系列（deepseek-v4-flash / deepseek-v4-pro）思考模式默认开启且
+        // effort 默认为 high，上面三个通用字段 DeepSeek 官方端点不识别，思考链照跑、
+        // SSE 只推 reasoning_content，TTFT 被显著拖长（2026-10-16 日志实证 76% 精修
+        // 撞死首 token 预算）。模型名含 deepseek 时显式关闭思考模式（对齐 Windows
+        // llm_chat_client.cc，不受 llm_disable_thinking 门控；OpenAI 兼容端点对未知
+        // 字段静默忽略，非 DeepSeek 端点不受影响）。
+        if config.activeLlmModel.lowercased().contains("deepseek") {
+            payload["thinking"] = ["type": "disabled"]
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         return request

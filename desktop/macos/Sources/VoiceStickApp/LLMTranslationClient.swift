@@ -64,6 +64,12 @@ final class LLMTranslationClient {
             payload["enable_thinking"] = false
             payload["chat_template_kwargs"] = ["enable_thinking": false]
         }
+        // DeepSeek V4 系列思考模式默认开启且 effort 默认 high，上面两个通用字段
+        // DeepSeek 官方端点不识别；模型名含 deepseek 时显式关闭思考模式（对齐
+        // Windows llm_chat_client.cc 与精修客户端同款，未知字段其他端点静默忽略）。
+        if config.activeLlmModel.lowercased().contains("deepseek") {
+            payload["thinking"] = ["type": "disabled"]
+        }
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
