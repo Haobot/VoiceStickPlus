@@ -48,3 +48,6 @@ void RunCorrectionPairsBatchTests();
 
 // 用户数据飞轮 P1-1：负信号事件流水批（usage_events JSONL）。
 void RunUsageEventsBatchTests();
+
+// 用户数据飞轮 P0-3：会话历史批（SQLite history 表）。
+void RunSessionHistoryBatchTests();

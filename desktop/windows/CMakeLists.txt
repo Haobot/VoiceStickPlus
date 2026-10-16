@@ -189,6 +189,9 @@ add_library(voicestick_core STATIC
     src/local_refinement_client.cc
     src/correction_pairs.cc
     src/usage_events.cc
+    src/session_history.cc
+    # vendored SQLite amalgamation（公有领域，见 third_party/sqlite/README.md）
+    third_party/sqlite/sqlite3.c
     src/hotword_extractor.cc
     src/hotword_candidate_miner.cc
     src/hotword_selector.cc
@@ -230,7 +233,7 @@ add_library(voicestick_core STATIC
     third_party/monocypher/monocypher.c
 )
 
-target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus third_party/monocypher ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus third_party/monocypher third_party/sqlite ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(voicestick_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
@@ -516,6 +519,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_corrections.cc
     # 用户数据飞轮 P1-1: 负信号事件流水批
     tests/core_tests_usage_events.cc
+    # 用户数据飞轮 P0-3: 会话历史批
+    tests/core_tests_session_history.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入
