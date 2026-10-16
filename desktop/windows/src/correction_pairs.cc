@@ -1,6 +1,7 @@
 #include "correction_pairs.h"
 
 #include "cJSON.h"
+#include "pinyin_guard.h"
 
 #include <algorithm>
 #include <cctype>
@@ -179,11 +180,12 @@ std::vector<std::pair<std::string, std::string>> ExtractReplacementPairs(
 
 void RecordCorrectionPairs(std::vector<CorrectionPair>& store,
                            const std::vector<std::pair<std::string, std::string>>& pairs,
-                           std::int64_t now_ts) {
+                           std::int64_t now_ts, const std::string& app) {
     for (const auto& [before, after] : pairs) {
+        // 合并键含 app（对齐 doubao UNIQUE(src,dst,app_bucket)——同对在不同桶各自累计）。
         CorrectionPair* existing = nullptr;
         for (auto& entry : store) {
-            if (entry.before == before && entry.after == after && entry.app.empty()) {
+            if (entry.before == before && entry.after == after && entry.app == app) {
                 existing = &entry;
                 break;
             }
@@ -197,7 +199,10 @@ void RecordCorrectionPairs(std::vector<CorrectionPair>& store,
         entry.before = before;
         entry.after = after;
         entry.count = 1;
+        // 入表闸门（doubao §3.2 拼音校验前置）：同音/近音对标注，非同音不丢弃只降权。
+        entry.same_pronunciation = SameOrNearText(before, after);
         entry.last_seen_ts = now_ts;
+        entry.app = app;
         store.push_back(std::move(entry));
     }
     // 容量硬上限：count 升序、last_seen 升序、字典序稳定逐出。
@@ -250,6 +255,8 @@ std::vector<CorrectionPair> LoadCorrectionPairs(const std::filesystem::path& pat
         if (cJSON_IsNumber(count)) pair.count = count->valueint;
         auto* use_count = cJSON_GetObjectItemCaseSensitive(item, "use_count");
         if (cJSON_IsNumber(use_count)) pair.use_count = use_count->valueint;
+        auto* same = cJSON_GetObjectItemCaseSensitive(item, "same_pronunciation");
+        if (cJSON_IsBool(same)) pair.same_pronunciation = cJSON_IsTrue(same);
         auto* last_seen = cJSON_GetObjectItemCaseSensitive(item, "last_seen_ts");
         if (cJSON_IsNumber(last_seen)) pair.last_seen_ts = static_cast<std::int64_t>(last_seen->valuedouble);
         pair.source = str_field("source");
@@ -283,6 +290,7 @@ void SaveCorrectionPairs(const std::filesystem::path& path,
         cJSON_AddStringToObject(item, "after", entry->after.c_str());
         cJSON_AddNumberToObject(item, "count", entry->count);
         cJSON_AddNumberToObject(item, "use_count", entry->use_count);
+        cJSON_AddBoolToObject(item, "same_pronunciation", entry->same_pronunciation);
         cJSON_AddNumberToObject(item, "last_seen_ts", static_cast<double>(entry->last_seen_ts));
         cJSON_AddStringToObject(item, "source", entry->source.c_str());
         cJSON_AddStringToObject(item, "app", entry->app.c_str());
@@ -319,17 +327,30 @@ void SaveCorrectionPairs(const std::filesystem::path& path,
 
 void RecordCorrectionPairsToDisk(const std::filesystem::path& path,
                                  const std::vector<std::pair<std::string, std::string>>& pairs,
-                                 std::int64_t now_ts) {
+                                 std::int64_t now_ts, const std::string& app) {
     if (pairs.empty()) return;
     std::lock_guard lock(CorrectionPairsFileMutex());
     // 每次从磁盘重读（reload-merge-save）：绝不使用陈旧快照写回。
     std::vector<CorrectionPair> store = LoadCorrectionPairs(path);
-    RecordCorrectionPairs(store, pairs, now_ts);
+    RecordCorrectionPairs(store, pairs, now_ts, app);
     SaveCorrectionPairs(path, store);
 }
 
+// 分桶匹配（与 macOS isBucketMatch 同语义）：app 为空/nil（未分工桶）= 全局查询；
+// 否则当前应用桶 ∪ 全局桶。
+bool AnonBucketMatch(const std::string& entry_app, const std::string& app) {
+    if (app.empty()) return entry_app.empty();
+    return entry_app == app || entry_app.empty();
+}
+
+// 当前应用桶判定（与 macOS isCurrentBucket 同语义）。
+bool AnonIsCurrentBucket(const std::string& entry_app, const std::string& app) {
+    return !app.empty() && entry_app == app;
+}
+
 std::optional<CorrectionPair> ExactMatchCorrectionPair(
-    const std::string& text, const std::vector<CorrectionPair>& store) {
+    const std::string& text, const std::vector<CorrectionPair>& store,
+    const std::string& app) {
     // 去首尾 ASCII 空白后全串比较（ASR final 偶带首尾空格）。
     std::string trimmed(text);
     const auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -346,12 +367,29 @@ std::optional<CorrectionPair> ExactMatchCorrectionPair(
             std::find_if_not(before_trimmed.rbegin(), before_trimmed.rend(), is_space).base(),
             before_trimmed.end());
         if (before_trimmed != trimmed) continue;
-        // count 降序 → last_seen 降序 → 字典序（确定性）。
-        if (best == nullptr || entry.count > best->count ||
-            (entry.count == best->count && entry.last_seen_ts > best->last_seen_ts) ||
-            (entry.count == best->count && entry.last_seen_ts == best->last_seen_ts &&
-             (entry.before < best->before ||
-              (entry.before == best->before && entry.after < best->after)))) {
+        if (!AnonBucketMatch(entry.app, app)) continue;
+        // 当前桶优先 → 同音优先 → count 降序 → last_seen 降序 → 字典序（确定性）。
+        const bool entry_current = AnonIsCurrentBucket(entry.app, app);
+        if (best == nullptr) {
+            best = &entry;
+            continue;
+        }
+        const bool best_current = AnonIsCurrentBucket(best->app, app);
+        if (entry_current != best_current && entry_current) {
+            best = &entry;
+            continue;
+        }
+        if (entry_current == best_current && entry.same_pronunciation != best->same_pronunciation &&
+            entry.same_pronunciation) {
+            best = &entry;
+            continue;
+        }
+        if (entry_current == best_current && entry.same_pronunciation == best->same_pronunciation &&
+            (entry.count > best->count ||
+             (entry.count == best->count && entry.last_seen_ts > best->last_seen_ts) ||
+             (entry.count == best->count && entry.last_seen_ts == best->last_seen_ts &&
+              (entry.before < best->before ||
+               (entry.before == best->before && entry.after < best->after))))) {
             best = &entry;
         }
     }
@@ -374,15 +412,21 @@ void MarkCorrectionPairUsedOnDisk(const std::filesystem::path& path,
 }
 
 std::vector<CorrectionPair> TrimCorrectionPairsForPrompt(const std::vector<CorrectionPair>& store,
-                                                         int max_pairs) {
+                                                         int max_pairs, const std::string& app) {
     std::vector<const CorrectionPair*> candidates;
     candidates.reserve(store.size());
     for (const auto& entry : store) {
-        if (entry.count > 0) candidates.push_back(&entry);
+        if (entry.count > 0 && AnonBucketMatch(entry.app, app)) candidates.push_back(&entry);
     }
-    // count 降序 → last_seen 降序 → 字典序（确定性）。
+    // 当前桶优先 → 同音优先 → count 降序 → last_seen 降序 → 字典序（确定性）。
     std::sort(candidates.begin(), candidates.end(),
-              [](const CorrectionPair* lhs, const CorrectionPair* rhs) {
+              [app](const CorrectionPair* lhs, const CorrectionPair* rhs) {
+                  if (AnonIsCurrentBucket(lhs->app, app) != AnonIsCurrentBucket(rhs->app, app)) {
+                      return AnonIsCurrentBucket(lhs->app, app);
+                  }
+                  if (lhs->same_pronunciation != rhs->same_pronunciation) {
+                      return lhs->same_pronunciation;
+                  }
                   if (lhs->count != rhs->count) return lhs->count > rhs->count;
                   if (lhs->last_seen_ts != rhs->last_seen_ts) return lhs->last_seen_ts > rhs->last_seen_ts;
                   if (lhs->before != rhs->before) return lhs->before < rhs->before;

@@ -266,6 +266,62 @@ void TestExactMatchCorrectionPair() {
     fs::remove_all(dir, ec);
 }
 
+void TestCorrectionPairSchemaParityAndBuckets() {
+    // 双端 schema 对齐（与 macOS CorrectionPairsTests 同向量）：
+    // ① same_pronunciation 入表自动标注（非同音不丢弃只降权）。
+    std::vector<CorrectionPair> store;
+    RecordCorrectionPairs(store, {{"鱼器渍", "语气词"}, {"克劳德", "Claude"}}, 1000);
+    assert(store.size() == 2);
+    assert(store[0].before == "鱼器渍" && store[0].same_pronunciation);
+    assert(store[1].before == "克劳德" && !store[1].same_pronunciation);
+
+    // few-shot 排序：同音对优先。
+    const auto ranked = TrimCorrectionPairsForPrompt(store, 8);
+    assert(ranked.front().before == "鱼器渍");
+
+    // ② 分桶：同对不同桶各自累计（对齐 doubao UNIQUE(src,dst,app_bucket)）。
+    std::vector<CorrectionPair> buckets;
+    const Pairs bucket_pairs = {{"克劳德", "Claude"}, {"魏碑", "WeBank"}};
+    RecordCorrectionPairs(buckets, bucket_pairs, 1000, "code.exe");
+    RecordCorrectionPairs(buckets, bucket_pairs, 2000, "");
+    RecordCorrectionPairs(buckets, bucket_pairs, 3000, "code.exe");
+    assert(buckets.size() == 4);
+    assert(buckets[0].app == "code.exe" && buckets[0].count == 2);
+    assert(buckets[2].app.empty() && buckets[2].count == 1);
+
+    // ③ 精确命中：当前桶优先；其他 App 的桶不参与、全局桶兜底。
+    std::vector<CorrectionPair> mixed;
+    CorrectionPair app_pair;
+    app_pair.before = "部署到";
+    app_pair.after = "部署到服务器";
+    app_pair.count = 9;
+    app_pair.app = "code.exe";
+    CorrectionPair global_pair;
+    global_pair.before = "部署到";
+    global_pair.after = "部署到集群";
+    global_pair.count = 5;
+    mixed.push_back(app_pair);
+    mixed.push_back(global_pair);
+    assert(ExactMatchCorrectionPair("部署到", mixed, "code.exe")->after == "部署到服务器");
+    assert(ExactMatchCorrectionPair("部署到", mixed, "safari.exe")->after == "部署到集群");
+    assert(TrimCorrectionPairsForPrompt(mixed, 8, "safari.exe").size() == 1);
+    const auto bucket_first = TrimCorrectionPairsForPrompt(mixed, 1, "code.exe");
+    assert(bucket_first.size() == 1 && bucket_first.front().after == "部署到服务器");
+
+    // ④ JSON 往返保留 same_pronunciation / app。
+    const auto dir = fs::temp_directory_path() / "voicestick_schema_parity";
+    fs::create_directories(dir);
+    const auto path = dir / "correction_pairs.json";
+    std::error_code ec;
+    fs::remove(path, ec);
+    RecordCorrectionPairsToDisk(path, {{"鱼器渍", "语气词"}}, 1000, "code.exe");
+    const auto loaded = LoadCorrectionPairs(path);
+    assert(loaded.size() == 1);
+    assert(loaded.front().same_pronunciation);
+    assert(loaded.front().app == "code.exe");
+    fs::remove_all(dir, ec);
+}
+
 void RunCorrectionPairsBatchTests() {
     TestExtractReplacementPairs();
     TestCorrectionPairStoreMergeAndCap();
@@ -274,5 +330,6 @@ void RunCorrectionPairsBatchTests() {
     TestTrimCorrectionPairsForPrompt();
     TestCorrectionFewshotSection();
     TestExactMatchCorrectionPair();
+    TestCorrectionPairSchemaParityAndBuckets();
     TestBuildRefinePromptWithCorrections();
 }

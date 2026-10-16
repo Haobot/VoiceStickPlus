@@ -16,6 +16,8 @@
 #include <tuple>
 #include <utility>
 
+#include <tlhelp32.h>
+
 #include "voice_stick_coordinator_util.h"
 namespace voicestick {
 void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::string& original,
@@ -24,19 +26,53 @@ void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::strin
     if (!mined.empty()) RecordAndNotifyHotwordCandidates(mined);
 }
 
+std::string VoiceStickCoordinator::ForegroundAppBucket() {
+    // 前台应用分桶（doubao §3.4）：取前台窗口进程 exe 名（UTF-8 窄名；macOS 侧为
+    // bundle id——分桶是各机本地数据，两端标识格式不同无碍）。取不到返回空=全局桶。
+    const HWND foreground = GetForegroundWindow();
+    if (!foreground) return {};
+    DWORD pid = 0;
+    GetWindowThreadProcessId(foreground, &pid);
+    if (pid == 0) return {};
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return {};
+    std::wstring exe;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snap, &entry)) {
+        do {
+            if (entry.th32ProcessID == pid) {
+                exe = entry.szExeFile;
+                break;
+            }
+        } while (Process32NextW(snap, &entry));
+    }
+    CloseHandle(snap);
+    if (exe.empty()) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, 0, exe.c_str(),
+                                         static_cast<int>(exe.size()), nullptr, 0, nullptr, nullptr);
+    std::string narrowed(static_cast<std::size_t>(size), '\0');
+    if (size > 0) {
+        WideCharToMultiByte(CP_UTF8, 0, exe.c_str(), static_cast<int>(exe.size()),
+                            narrowed.data(), size, nullptr, nullptr);
+    }
+    return narrowed;
+}
+
 void VoiceStickCoordinator::MineCorrectionPairsFromRefinement(const std::string& original,
                                                               const std::string& refined) {
     // 精修没改动（原文回退路径）无对可提取，跳过磁盘事务。
     if (original == refined) return;
     RecordCorrectionPairsToDisk(CorrectionPairsPath(ConfigSnapshot()->ConfigPath()),
                                 ExtractReplacementPairs(original, refined),
-                                std::time(nullptr));
+                                std::time(nullptr), ForegroundAppBucket());
 }
 
 std::optional<std::string> VoiceStickCoordinator::ExactMatchCorrectionPairFromDisk(
     const std::string& text) {
     const auto path = CorrectionPairsPath(ConfigSnapshot()->ConfigPath());
-    const auto pair = ExactMatchCorrectionPair(text, LoadCorrectionPairs(path));
+    const auto pair = ExactMatchCorrectionPair(text, LoadCorrectionPairs(path),
+                                               ForegroundAppBucket());
     if (!pair) return std::nullopt;
     MarkCorrectionPairUsedOnDisk(path, *pair, std::time(nullptr));
     LogCoordinatorLine("correction pair applied exact len=" + std::to_string(pair->after.size()));
@@ -46,7 +82,7 @@ std::optional<std::string> VoiceStickCoordinator::ExactMatchCorrectionPairFromDi
 std::vector<CorrectionPair> VoiceStickCoordinator::CorrectionPairsForLlmPrompts() {
     return TrimCorrectionPairsForPrompt(
         LoadCorrectionPairs(CorrectionPairsPath(ConfigSnapshot()->ConfigPath())),
-        kCorrectionPromptMaxPairs);
+        kCorrectionPromptMaxPairs, ForegroundAppBucket());
 }
 
 void VoiceStickCoordinator::MaybeExtractHotwordCandidates(const std::string& final_text) {
