@@ -1,5 +1,6 @@
 #include "voice_stick_coordinator.h"
 
+#include "cJSON.h"
 #include "hotword_selector.h"  // B14b 提炼候选过滤
 #include "usage_events.h"
 #include "encoder_speed.h"
@@ -25,6 +26,88 @@ void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::strin
                                                                 const std::string& refined) {
     const auto mined = MineRefinementCandidates(original, refined, ConfigSnapshot()->asr_hotwords);
     if (!mined.empty()) RecordAndNotifyHotwordCandidates(mined);
+}
+
+std::string VoiceStickCoordinator::SessionHistoryProviderName() const {
+    switch (ConfigSnapshot()->asr_provider) {
+    case AsrProvider::kVoiceStickCloud: return "voicestick_cloud";
+    case AsrProvider::kVolcengine: return "volcengine";
+    case AsrProvider::kTencent: return "tencent";
+    }
+    return {};
+}
+
+void VoiceStickCoordinator::BeginSessionHistory(const std::string& raw_text) {
+    std::lock_guard lock(session_history_mutex_);
+    pending_session_history_.reset();
+    if (raw_text.empty()) return;
+    // 懒打开：首次落库时初始化；打开/迁移失败降级停用（Open 返回 nullptr），
+    // 绝不阻塞识别主链路（对齐 macOS makeSessionHistoryStore 语义）。
+    if (session_history_ == nullptr) {
+        session_history_ =
+            SessionHistoryStore::Open(ConfigSnapshot()->ConfigPath().parent_path() /
+                                      "session_history.db");
+    }
+    if (session_history_ == nullptr) return;
+    auto now = std::chrono::system_clock::now();
+    PendingSessionHistory pending;
+    pending.id = [] {
+        // 会话 UUID（无 boost/uuid：GetTickCount64 + 计数足以保证本进程唯一，
+        // 落库主键只要求进程内不重复）。
+        static std::atomic<std::uint64_t> seq{0};
+        return "s" + std::to_string(GetTickCount64()) + "-" + std::to_string(seq.fetch_add(1));
+    }();
+    pending.created_at = std::chrono::duration_cast<std::chrono::seconds>(
+                             now.time_since_epoch()).count();
+    pending.device = active_device_id_.value_or("");
+    pending.provider = SessionHistoryProviderName();
+    {
+        // 翻译/精修/直通统一经 TransformText 收口；mode 按输出 transform 判定。
+        const auto profile = OutputProfileForDevice(active_device_id_);
+        pending.mode = profile.transform == TextTransform::kTranslate ? "translate" : "original";
+    }
+    pending.raw = raw_text;
+    if (active_session_id_.has_value()) {
+        pending.duration = CurrentRecordingDurationSeconds();
+    }
+    // 热词 JSON 数组（cJSON 序列化，与 macOS JSONSerialization 数组形态一致）。
+    {
+        auto* array = cJSON_CreateArray();
+        if (array != nullptr) {
+            for (const auto& word : ConfigSnapshot()->asr_hotwords) {
+                cJSON_AddItemToArray(array, cJSON_CreateString(word.c_str()));
+            }
+            char* json = cJSON_PrintUnformatted(array);
+            if (json != nullptr) {
+                pending.hotwords = json;
+                cJSON_free(json);
+            }
+            cJSON_Delete(array);
+        }
+    }
+    pending_session_history_ = std::move(pending);
+}
+
+void VoiceStickCoordinator::CompleteSessionHistory(const std::string& final_text) {
+    std::lock_guard lock(session_history_mutex_);
+    if (session_history_ == nullptr || !pending_session_history_.has_value()) {
+        pending_session_history_.reset();
+        return;
+    }
+    const PendingSessionHistory pending = *pending_session_history_;
+    pending_session_history_.reset();
+    SessionHistoryRecord record;
+    record.id = pending.id;
+    record.created_at = pending.created_at;
+    record.device_id = pending.device;
+    record.asr_provider = pending.provider;
+    record.mode = pending.mode;
+    record.raw_asr = pending.raw;
+    record.refined_text = final_text;
+    record.injected_text = final_text;
+    record.duration = pending.duration;
+    record.hotwords_sent = pending.hotwords;
+    session_history_->Insert(record);
 }
 
 std::filesystem::path VoiceStickCoordinator::UsageEventsPath() {
