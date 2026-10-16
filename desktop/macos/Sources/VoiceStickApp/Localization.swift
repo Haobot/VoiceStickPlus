@@ -500,7 +500,7 @@ enum Localization {
         .glassNativeLiquid: "系统菜单玻璃",
         .glassSpecular: "高光玻璃",
         .glassDarkMirror: "深色镜面玻璃",
-        .glassOpacity: "透明度",
+        .glassOpacity: "不透明度",
         .menuHotkey: "热键",
         .menuEnableHotkey: "启用热键",
         .menuCustomHotkey: "自定义热键...",

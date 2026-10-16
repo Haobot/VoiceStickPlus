@@ -88,6 +88,21 @@ private enum ResolvedOverlayTheme {
         isNeutral ? NSColor.white.withAlphaComponent(alpha) : tintBase.withAlphaComponent(alpha)
     }
 
+    /// A 原生液态玻璃的滑杆「霜化」色（磨砂度而非亮度）：基底与玻璃同明暗族——
+    /// 深色玻璃（白字主题）叠黑霜＝更暗更实，浅色玻璃（黑字主题）叠白霜＝更奶
+    /// 更实，彩色主题叠主题色霜。深玻璃上叠白霜会被读成「调亮度」而非「调透明
+    /// 度」（真机验收反馈），且与系统材质的加深方向相反。
+    func glassFrostColor(alpha: CGFloat) -> NSColor {
+        switch self {
+        case .white:
+            return NSColor.black.withAlphaComponent(alpha)
+        case .black:
+            return NSColor.white.withAlphaComponent(alpha)
+        default:
+            return tintBase.withAlphaComponent(alpha)
+        }
+    }
+
     /// B 高光玻璃：tint 增艳，中性主题略降（×0.8）避免发白。
     func tintBoosted(alpha: CGFloat) -> NSColor {
         isNeutral ? tintBase.withAlphaComponent(alpha * 0.8) : tintBase.withAlphaComponent(alpha)
@@ -184,8 +199,8 @@ final class OverlayController {
     private var glassStyle: OverlayGlassStyle = .nativeLiquid
     /// 实际生效方案（与 glassStyle 一致；A 在 macOS < 26 底层退化为 .menu 材质）。
     private var effectiveGlassStyle: OverlayGlassStyle = .nativeLiquid
-    /// 玻璃 tint 浓度（透明度滑杆，0…1；A 方案 0 = 纯原生液态玻璃——真机对拍
-    /// 系统菜单零雾化，任何白雾都会盖掉玻璃的背景透染，即「不通透」的来源）。
+    /// 玻璃霜化浓度（不透明度滑杆，0…1；A 方案 0 = 纯原生液态玻璃）。A 的霜色走
+    /// glassFrostColor（同明暗族磨砂＝调「透/不透」），不是白雾调亮度。
     private var glassTintAlpha: CGFloat = 0.0
     private var position: OverlayPosition = .bottomCenter
     private var stackIndex = 0
@@ -761,16 +776,17 @@ final class OverlayController {
         glassEffectView?.appearance = theme.glassAppearance
         switch style {
         case .nativeLiquid:
-            // A(26+)：tint 直接走玻璃材质自身（0 = 纯原生玻璃）；低版本回退走雾化层。
+            // A(26+)：霜化直接走玻璃材质自身 tintColor（0 = 纯原生玻璃）；低版本
+            // 回退走 tintView 霜化层。色值取 glassFrostColor（同明暗族磨砂）。
             if #available(macOS 26.0, *) {
                 glassEffect?.tintColor =
-                    glassTintAlpha > 0.001 ? theme.glassTintColor(alpha: glassTintAlpha) : nil
+                    glassTintAlpha > 0.001 ? theme.glassFrostColor(alpha: glassTintAlpha) : nil
             }
             tintView.isHidden = nativeGlass || glassTintAlpha <= 0.001
             tintView.layer?.backgroundColor =
                 nativeGlass || glassTintAlpha <= 0.001
                     ? nil
-                    : theme.glassTintColor(alpha: glassTintAlpha).cgColor
+                    : theme.glassFrostColor(alpha: glassTintAlpha).cgColor
         case .specular:
             tintView.layer?.backgroundColor = theme.tintBoosted(alpha: glassTintAlpha).cgColor
             borderView.layer?.borderColor = theme.borderBoosted.cgColor
