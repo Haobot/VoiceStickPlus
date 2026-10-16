@@ -2441,6 +2441,18 @@ public final class VoiceStickCoordinator {
         )
     }
 
+    /// 取消结果文本中命中的热词负样本记分（评分负项，P1-1 采集的消费端）。
+    private func recordHotwordNegative(fromText text: String) {
+        guard !text.isEmpty, !config.asrHotwords.isEmpty else { return }
+        if hotwordUsageStore == nil {
+            hotwordUsageStore = HotwordSelector.loadUsage(url: hotwordUsageURL)
+        }
+        var store = hotwordUsageStore ?? [:]
+        HotwordSelector.recordNegative(&store, text: text, hotwords: config.asrHotwords)
+        hotwordUsageStore = store
+        HotwordSelector.saveUsage(store, url: hotwordUsageURL)
+    }
+
     private var correctionPairsURL: URL {
         (userDataDirectoryOverride ?? AppConfig.configDirectory)
             .appendingPathComponent("correction_pairs.json")
@@ -2847,8 +2859,9 @@ public final class VoiceStickCoordinator {
         guard activePeripheralID == peripheralID else { return }
         // P3 反馈环：应用后被取消 = 未保留，清锚不增 recall。
         appliedCorrectionPair = nil
-        // 负信号采集（P1-1）：待确认文本被取消 + 停留时长。
+        // 负信号采集（P1-1）：待确认文本被取消 + 停留时长 + 热词负样本记分。
         if case .waitingToPaste(let text) = pendingPasteState {
+            recordHotwordNegative(fromText: text)
             recordUsageEvent(
                 kind: UsageEventKind.pasteCanceled, text: text,
                 dwellSeconds: Date().timeIntervalSince(pendingPasteEnteredAt)

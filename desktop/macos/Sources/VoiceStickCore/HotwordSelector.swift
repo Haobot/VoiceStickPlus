@@ -12,6 +12,9 @@ import Foundation
 public let kHotwordWCount = 1.0
 public let kHotwordWRecency = 0.5
 public let kHotwordWManual = 2.0
+/// 负样本权重（用户数据飞轮 P1-1 评分负项）：score -= W_NEG · log1p(negative)。
+/// 与 hotword_selector.cc / hotword_select.py 三方同源。
+public let kHotwordWNegative = 1.0
 public let kHotwordRecencyTauS: Int64 = 30 * 24 * 3600
 
 /// 精修/翻译 prompt 热词段上限（防大库稀释小模型注意力）。
@@ -19,11 +22,14 @@ public let kHotwordPromptMaxWords = 50
 
 public struct HotwordUsage: Equatable {
     public var count: Int = 0                 // 出现在最终文本中的累计次数
+    public var negativeCount: Int = 0         // 结果被取消且文本含该词的次数（评分负项）
     public var lastUsedTs: Int64 = 0          // 最近使用 epoch 秒（0 = 未知，按最旧处理）
     public var source: String = "mined"       // "manual" / "mined"
 
-    public init(count: Int = 0, lastUsedTs: Int64 = 0, source: String = "mined") {
+    public init(count: Int = 0, negativeCount: Int = 0, lastUsedTs: Int64 = 0,
+                source: String = "mined") {
         self.count = count
+        self.negativeCount = negativeCount
         self.lastUsedTs = lastUsedTs
         self.source = source
     }
@@ -58,7 +64,8 @@ public enum HotwordSelector {
             recency = kHotwordWRecency * exp(-age / Double(kHotwordRecencyTauS))
         }
         let manual = usage.source == "manual" ? kHotwordWManual : 0.0
-        return countTerm + recency + manual
+        let negative = kHotwordWNegative * log1p(Double(max(0, usage.negativeCount)))
+        return countTerm + recency + manual - negative
     }
 
     /// 按评分降序返回；缺统计记录的词按 manual 处理（现状所有热词均由用户动作入表，
@@ -115,12 +122,26 @@ public enum HotwordSelector {
             guard let word = item["word"] as? String else { continue }
             var usage = HotwordUsage()
             if let count = item["count"] as? Int { usage.count = count }
+            if let negative = item["negative_count"] as? Int { usage.negativeCount = negative }
             if let ts = item["last_used_ts"] as? Int64 { usage.lastUsedTs = ts }
             if let ts = item["last_used_ts"] as? Int { usage.lastUsedTs = Int64(ts) }
             if let source = item["source"] as? String, !source.isEmpty { usage.source = source }
             store[word] = usage
         }
         return store
+    }
+
+    /// 记录负样本：结果被取消且文本含该词（大小写不敏感子串匹配）→ negativeCount+1。
+    /// 只更新内存 store，落盘由调用方负责（与 recordUsage 对称）。
+    public static func recordNegative(
+        _ store: inout HotwordUsageStore, text: String, hotwords: [String]
+    ) {
+        let lowered = text.lowercased()
+        for word in hotwords where !word.isEmpty && lowered.contains(word.lowercased()) {
+            var usage = store[word] ?? HotwordUsage(source: "manual")
+            usage.negativeCount += 1
+            store[word] = usage
+        }
     }
 
     /// JSON 写入（best-effort，写失败静默）。
@@ -131,6 +152,7 @@ public enum HotwordSelector {
                 [
                     "word": word,
                     "count": usage.count,
+                    "negative_count": usage.negativeCount,
                     "last_used_ts": usage.lastUsedTs,
                     "source": usage.source
                 ]

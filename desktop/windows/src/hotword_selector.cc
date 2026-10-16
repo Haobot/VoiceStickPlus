@@ -93,7 +93,9 @@ double HotwordScore(const HotwordUsage& usage, std::int64_t now_s) {
         recency = kHotwordWRecency * std::exp(-age / static_cast<double>(kHotwordRecencyTauS));
     }
     const double manual = usage.source == "manual" ? kHotwordWManual : 0.0;
-    return count_term + recency + manual;
+    const double negative =
+        kHotwordWNegative * std::log1p(static_cast<double>(std::max(0, usage.negative_count)));
+    return count_term + recency + manual - negative;
 }
 
 std::vector<std::string> RankHotwords(const HotwordUsageStore& store,
@@ -153,6 +155,20 @@ void RecordHotwordUsageInText(HotwordUsageStore& store,
     }
 }
 
+void RecordHotwordNegativeInText(HotwordUsageStore& store,
+                                 const std::string& text,
+                                 const std::vector<std::string>& hotwords) {
+    for (const auto& word : hotwords) {
+        if (word.empty() || !ContainsCaseInsensitive(text, word)) continue;
+        auto it = store.find(word);
+        if (it == store.end()) {
+            it = store.emplace(word, HotwordUsage{}).first;
+            it->second.source = "manual";
+        }
+        ++it->second.negative_count;
+    }
+}
+
 HotwordUsageStore LoadHotwordUsage(const std::filesystem::path& path) {
     HotwordUsageStore store;
     std::ifstream f(path, std::ios::binary);
@@ -180,6 +196,10 @@ HotwordUsageStore LoadHotwordUsage(const std::filesystem::path& path) {
             cJSON_IsString(source) && source->valuestring != nullptr) {
             usage.source = source->valuestring;
         }
+        if (auto* negative = cJSON_GetObjectItemCaseSensitive(item, "negative_count");
+            cJSON_IsNumber(negative)) {
+            usage.negative_count = negative->valueint;
+        }
         store[word->valuestring] = std::move(usage);
     }
     return store;
@@ -193,6 +213,7 @@ void SaveHotwordUsage(const std::filesystem::path& path, const HotwordUsageStore
         auto* item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "word", word.c_str());
         cJSON_AddNumberToObject(item, "count", usage.count);
+        cJSON_AddNumberToObject(item, "negative_count", usage.negative_count);
         cJSON_AddNumberToObject(item, "last_used_ts", static_cast<double>(usage.last_used_ts));
         cJSON_AddStringToObject(item, "source", usage.source.c_str());
         cJSON_AddItemToArray(root, item);

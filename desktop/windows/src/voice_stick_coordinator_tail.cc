@@ -312,6 +312,19 @@ std::vector<std::string> VoiceStickCoordinator::HotwordsForLlmPrompts() {
                                  kHotwordPromptMaxWords, std::time(nullptr));
 }
 
+void VoiceStickCoordinator::RecordHotwordNegativeFromText(const std::string& text) {
+    if (text.empty() || ConfigSnapshot()->asr_hotwords.empty()) return;
+    std::lock_guard lock(hotword_usage_mutex_);
+    if (!hotword_usage_loaded_) {
+        hotword_usage_ = LoadHotwordUsage(
+            ConfigSnapshot()->ConfigPath().parent_path() / "hotword_usage.json");
+        hotword_usage_loaded_ = true;
+    }
+    RecordHotwordNegativeInText(hotword_usage_, text, ConfigSnapshot()->asr_hotwords);
+    SaveHotwordUsage(ConfigSnapshot()->ConfigPath().parent_path() / "hotword_usage.json",
+                     hotword_usage_);
+}
+
 void VoiceStickCoordinator::RecordHotwordUsageFromText(const std::string& text) {
     if (text.empty() || ConfigSnapshot()->asr_hotwords.empty()) return;
     std::lock_guard lock(hotword_usage_mutex_);
@@ -629,6 +642,8 @@ void VoiceStickCoordinator::CancelPendingPaste(const std::string& device_id) {
         cancel_dwell = static_cast<double>(GetTickCount64() - pending_paste_entered_at_ms_) / 1000.0;
     }
     RecordUsageEvent(usage_event_kind::kPasteCanceled, pending_paste_state_.text, cancel_dwell);
+    // 热词负样本记分（评分负项）。
+    RecordHotwordNegativeFromText(pending_paste_state_.text);
     // P3 反馈环：应用后被取消 = 未保留，清锚不增 recall。
     applied_correction_pair_.reset();
     pending_paste_entered_at_ms_ = 0;
