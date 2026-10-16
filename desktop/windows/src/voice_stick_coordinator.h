@@ -636,8 +636,14 @@ private:
     void FinishWithFinalText(const std::string& text);
     void FinishWithAsrError(const std::string& message);
     void RecoverFromAsrError(bool hide_overlay = true);
-    void CommitPendingPaste(const std::string& text);
-    void CompletePendingPaste(const std::string& text);
+    void CommitPendingPaste(const std::string& text, bool manual);
+    // 负信号采集（用户数据飞轮 P1-1）：事件文件路径与埋点（usage_events.jsonl）。
+    std::filesystem::path UsageEventsPath();
+    void RecordUsageEvent(const std::string& kind, const std::string& text,
+                          std::optional<double> dwell_seconds = std::nullopt);
+    // 暂停确认态进入时刻（GetTickCount64；停留时长疑惑度信号，0=不在暂停态）。
+    ULONGLONG pending_paste_entered_at_ms_ = 0;
+    void CompletePendingPaste(const std::string& text, bool manual);
     bool RestoreLastInputConfirmation(std::optional<std::string> device_id);
     bool HandleFrontButtonDuringPendingPaste(const std::string& device_id);
     void CancelPendingPaste(const std::string& device_id);

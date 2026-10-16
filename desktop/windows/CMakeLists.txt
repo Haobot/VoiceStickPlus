@@ -188,6 +188,7 @@ add_library(voicestick_core STATIC
     src/text_refiner.cc
     src/local_refinement_client.cc
     src/correction_pairs.cc
+    src/usage_events.cc
     src/hotword_extractor.cc
     src/hotword_candidate_miner.cc
     src/hotword_selector.cc
@@ -513,6 +514,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_device_plan.cc
     # 用户数据飞轮 P0-1: 纠错对资产化批
     tests/core_tests_corrections.cc
+    # 用户数据飞轮 P1-1: 负信号事件流水批
+    tests/core_tests_usage_events.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入
