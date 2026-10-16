@@ -29,6 +29,16 @@ func runLlmSseParserTests() {
         .token("x"),
         "SSE data: 后无空格也接受"
     )
+    checkEqual(
+        LlmSseParser.parseLine("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考\"}}]}"),
+        .reasoning("思考"),
+        "SSE 思考链增量提取 reasoning_content"
+    )
+    checkEqual(
+        LlmSseParser.parseLine("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"\",\"content\":\"正\"}}]}"),
+        .token("正"),
+        "content 优先于 reasoning_content"
+    )
     // 累积语义：多行 token 拼出全文。
     var full = ""
     for line in [

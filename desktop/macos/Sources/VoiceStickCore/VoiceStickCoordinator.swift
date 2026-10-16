@@ -2020,6 +2020,14 @@ public final class VoiceStickCoordinator {
                         self.statusController.appendPartial(snapshot, deviceID: overlayDeviceID)
                     }
                 },
+                // 思考链活动同样证明端点存活：失效首 token 预算，防默认开思考的
+                // 模型被 2.5s 预算误杀（总预算仍全程 armed 兜底思考过长的长尾）。
+                onActivity: { [weak self] in
+                    DispatchQueue.main.async {
+                        self?.refineFirstTokenTimer?.invalidate()
+                        self?.refineFirstTokenTimer = nil
+                    }
+                },
                 onComplete: { [weak self] ok, result, fallback in
                     DispatchQueue.main.async {
                         guard let self, !token.isCancelled, !self.pastedFinalText else { return }

@@ -38,10 +38,13 @@ public enum RefineFallback: String {
 public protocol RefinerServing: AnyObject {
     /// corrections 非空时在精修 prompt 末尾追加用户历史纠正 few-shot 段
     /// （用户数据飞轮 P0-1，调用方传入按 count/新近度裁剪后的 top-N）。
+    /// onActivity：端点存活信号——推理型模型思考链增量（SSE reasoning_content）
+    /// 不经过 onToken，但同样证明流没死；调用方据此失效首 token 预算定时器。
     func refineStream(_ text: String, promptOverride: String, hotwords: [String]?,
                       corrections: [CorrectionPair],
                       cancel: RefineCancelToken,
                       onToken: @escaping (String) -> Void,
+                      onActivity: @escaping () -> Void,
                       onComplete: @escaping (Bool, String, RefineFallback) -> Void)
 }
 
