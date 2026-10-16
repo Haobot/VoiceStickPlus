@@ -35,6 +35,7 @@ struct CorrectionPair {
     std::string after;              // 精修后用户认可形式
     int count = 0;                  // 累计出现次数（精修 diff 挖掘 seen 计数）
     int use_count = 0;              // 自动应用次数（doubao 方案 use_count，反馈环基底）
+    int recall_count = 0;           // 应用后被用户保留次数（doubao recall_count，精确率 = recall/use）
     bool same_pronunciation = false;  // 同音/近音对（doubao P2 入表闸门：拼音校验前置）
     std::int64_t last_seen_ts = 0;  // 最近出现 epoch 秒
     std::string source = "refine";  // 产物来源（当前仅精修 diff）
@@ -73,6 +74,15 @@ void RecordCorrectionPairsToDisk(const std::filesystem::path& path,
 std::optional<CorrectionPair> ExactMatchCorrectionPair(
     const std::string& text, const std::vector<CorrectionPair>& store,
     const std::string& app = {});
+
+// doubao §3.3 降权判定：应用 ≥10 次且精确率（recall/use）< 0.5 → 自动应用池
+// 摘除、few-shot 沉底（与 macOS CorrectionPair.isDemoted 同语义）。
+bool IsCorrectionPairDemoted(const CorrectionPair& pair);
+
+// B13 单写入口：应用后用户确认保留（粘贴走完未取消）→ recall_count+1
+// （doubao §3.3 保留信号；取消/回退不增——调用方只在确认路径调）。
+void MarkCorrectionPairRecalledOnDisk(const std::filesystem::path& path,
+                                      const CorrectionPair& pair);
 
 // B13 单写入口：精确命中应用后 use_count+1 落盘（doubao 方案 use_count，
 // P3 反馈环的召回侧基底）。未命中该对（并发改写）静默跳过。

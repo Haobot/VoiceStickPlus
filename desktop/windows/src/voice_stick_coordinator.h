@@ -648,6 +648,8 @@ private:
                           std::optional<double> dwell_seconds = std::nullopt);
     // 暂停确认态进入时刻（GetTickCount64；停留时长疑惑度信号，0=不在暂停态）。
     ULONGLONG pending_paste_entered_at_ms_ = 0;
+    // P3 反馈环锚点：本会话精确命中应用的改写对（确认保留 → recall+1，取消清空）。
+    std::optional<CorrectionPair> applied_correction_pair_;
     void CompletePendingPaste(const std::string& text, bool manual);
     bool RestoreLastInputConfirmation(std::optional<std::string> device_id);
     bool HandleFrontButtonDuringPendingPaste(const std::string& device_id);
