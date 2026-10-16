@@ -193,7 +193,7 @@ final class StatusController {
 
     private static func loadGlassTintAlpha() -> CGFloat {
         guard let stored = UserDefaults.standard.object(forKey: glassTintAlphaDefaultsKey) as? Double else {
-            return 0.20
+            return 0.12
         }
         return CGFloat(min(max(stored, 0), 0.6))
     }

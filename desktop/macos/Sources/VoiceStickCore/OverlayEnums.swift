@@ -24,7 +24,8 @@ public enum OverlayThemeSize: String, CaseIterable {
 /// 悬浮窗背景玻璃方案（液态玻璃实验三选一：全局选项，不按设备）。实验期存
 /// UserDefaults（key `overlay.glassStyle`），用户定稿后迁 config.toml 并同步 Windows。
 public enum OverlayGlassStyle: String, CaseIterable {
-    /// A：系统原生液态玻璃（NSGlassEffectView，macOS 26+；低版本自动回退 specular）。
+    /// A：系统菜单同款玻璃（.menu 材质，macOS 26+ 即液态玻璃菜单；低版本自动
+    /// 退化为经典菜单模糊），无描边无高光，带菜单级柔和投影。
     case nativeLiquid = "native_liquid"
     /// B：高光玻璃（popover 材质 + 顶部镜面高光 + 双层描边 + tint 增强 + 柔和投影）。
     case specular

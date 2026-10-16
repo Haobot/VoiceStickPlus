@@ -83,7 +83,7 @@ private enum ResolvedOverlayTheme {
 
     var isNeutral: Bool { self == .white || self == .black }
 
-    /// A 原生液态玻璃：NSGlassEffectView tintColor（浓度直接由透明度滑杆驱动）。
+    /// A 系统菜单玻璃：菜单材质上的雾化补偿层（0 = 纯系统菜单观感）。
     func glassTintColor(alpha: CGFloat) -> NSColor {
         isNeutral ? NSColor.white.withAlphaComponent(alpha) : tintBase.withAlphaComponent(alpha)
     }
@@ -152,15 +152,8 @@ final class OverlayController {
     }
 
     private let window: NSPanel
-    /// B/C 柔和投影承重视图（layer shadow 画在玻璃矩形外侧；A 原生玻璃自带层次不用投影）。
+    /// 柔和投影承重视图（layer shadow 画在玻璃矩形外侧；三种方案都带菜单级投影）。
     private let shadowView = NSView()
-    /// A 方案背景（实际类型 NSGlassEffectView；类型本身 macOS 26+ 起可用，
-    /// 存储抹平为 NSView，取用走 glassEffect 计算属性 + #available）。
-    private var glassEffectView: NSView?
-
-    /// NSGlassEffectView 专属属性入口（cornerRadius/tintColor 不在 NSView 上）。
-    @available(macOS 26.0, *)
-    private var glassEffect: NSGlassEffectView? { glassEffectView as? NSGlassEffectView }
     private let glassView = NSVisualEffectView()
     private let tintView = NSView()
     /// B/C 顶部镜面高光渐变（玻璃上缘反光）。
@@ -182,10 +175,10 @@ final class OverlayController {
     private var resolvedTheme: ResolvedOverlayTheme = .black
     /// 用户选择的玻璃方案（托盘「悬浮窗玻璃方案」全局项）。
     private var glassStyle: OverlayGlassStyle = .nativeLiquid
-    /// 实际生效方案（A 在 macOS < 26 自动回退为 B）。
+    /// 实际生效方案（当前与 glassStyle 一致；.menu 材质全系统可用，无版本回退）。
     private var effectiveGlassStyle: OverlayGlassStyle = .nativeLiquid
-    /// 玻璃 tint 浓度（透明度滑杆，0…1；0.20 = 三方案历史默认档位）。
-    private var glassTintAlpha: CGFloat = 0.20
+    /// 玻璃 tint 浓度（透明度滑杆，0…1；A 方案 0 = 纯系统菜单观感）。
+    private var glassTintAlpha: CGFloat = 0.12
     private var position: OverlayPosition = .bottomCenter
     private var stackIndex = 0
     private var mode: IndicatorMode = .paused
@@ -235,7 +228,7 @@ final class OverlayController {
         container.wantsLayer = true
         window.contentView = container
 
-        // 背景栈 z 序：投影 → 原生玻璃(A) → 材质玻璃(B/C) → tint → 高光 → 内容 → 描边。
+        // 背景栈 z 序：投影 → 材质玻璃 → tint → 高光 → 内容 → 描边。
         shadowView.wantsLayer = true
         shadowView.layer?.shadowColor = NSColor.black.cgColor
         shadowView.layer?.shadowOpacity = 0
@@ -243,11 +236,6 @@ final class OverlayController {
         // 非 flipped 坐标系下 y 向上，负值投影朝下。
         shadowView.layer?.shadowOffset = NSSize(width: 0, height: -6)
 
-        if #available(macOS 26.0, *) {
-            let effect = NSGlassEffectView()
-            effect.wantsLayer = true
-            glassEffectView = effect
-        }
         glassView.blendingMode = .behindWindow
         glassView.state = .active
         glassView.material = .popover
@@ -293,9 +281,6 @@ final class OverlayController {
         hintLabel.maximumNumberOfLines = 1
 
         container.addSubview(shadowView)
-        if let glassEffectView {
-            container.addSubview(glassEffectView)
-        }
         container.addSubview(glassView)
         container.addSubview(tintView)
         container.addSubview(highlightView)
@@ -366,47 +351,39 @@ final class OverlayController {
 
     // MARK: - 玻璃背景方案
 
-    /// 窗口透明边距：B/C 带手绘柔和投影，在 12px 阴影边距外再多留 14px，
+    /// 窗口透明边距：三种方案都带手绘柔和投影，在 12px 阴影边距外再多留 14px，
     /// 否则投影下缘（offset 6 + radius 16）会被窗口边界裁切。
     private var windowPadding: CGFloat {
-        OverlayThemeMetrics.shadowPadding + (effectiveGlassStyle == .nativeLiquid ? 0 : 14)
+        OverlayThemeMetrics.shadowPadding + 14
     }
 
     private var effectiveCornerRadius: CGFloat {
         effectiveGlassStyle == .darkMirror ? 24 : OverlayThemeMetrics.cornerRadius
     }
 
-    /// 按 glassStyle 重建背景栈可见性与材质。A 方案内容仍以兄弟视图叠在玻璃之上
-    /// （标准 AppKit z 序可靠；NSGlassEffectView.contentView 契约只约束其自身子视图）。
+    /// 按方案重建背景栈可见性与材质。
+    /// A = 系统菜单同款 `.menu` 材质（macOS 26+ 菜单即液态玻璃；低版本自动退化为
+    /// 经典菜单模糊），无描边无高光，带菜单级柔和投影——这是截图对比出的「系统
+    /// 菜单观感」正解，NSGlassEffectView 是控制件玻璃（过透、无烟熏感）非菜单材质。
+    /// B/C = 自绘玻璃叠层。内容以兄弟视图叠在玻璃上（标准 AppKit z 序可靠）。
     private func applyGlassStyle() {
-        var style = glassStyle
-        if style == .nativeLiquid {
-            if #available(macOS 26.0, *) {} else {
-                style = .specular // 低版本无原生液态玻璃，回退 B 高光玻璃
-            }
-        }
-        effectiveGlassStyle = style
+        effectiveGlassStyle = glassStyle
+        let native = glassStyle == .nativeLiquid
+        let specular = glassStyle == .specular
 
-        let native = style == .nativeLiquid
-        let specular = style == .specular
-        glassEffectView?.isHidden = !native
-        glassView.isHidden = native
-        tintView.isHidden = native
+        glassView.material = native ? .menu : (glassStyle == .darkMirror ? .hudWindow : .popover)
+        tintView.isHidden = false
         highlightView.isHidden = native
-        shadowView.isHidden = native
+        shadowView.isHidden = false
         innerBorderView.isHidden = native
-        borderView.isHidden = native || !specular // C 用辉光描边替代普通描边
-        glowBorderView.isHidden = native || specular
+        borderView.isHidden = !specular // C 用辉光描边替代普通描边
+        glowBorderView.isHidden = glassStyle != .darkMirror
 
-        glassView.material = style == .darkMirror ? .hudWindow : .popover
         let radius = effectiveCornerRadius
         glassView.layer?.cornerRadius = radius
         tintView.layer?.cornerRadius = radius
         borderView.layer?.cornerRadius = radius
         innerBorderView.layer?.cornerRadius = max(0, radius - 1.5)
-        if #available(macOS 26.0, *) {
-            glassEffect?.cornerRadius = radius
-        }
         shadowView.layer?.shadowOpacity = 0.38
     }
 
@@ -669,7 +646,6 @@ final class OverlayController {
                 transform: nil
             )
         }
-        glassEffectView?.frame = glassRect
         glassView.frame = glassRect
         tintView.frame = glassRect
         highlightView.frame = glassRect
@@ -750,19 +726,15 @@ final class OverlayController {
         resolvedTheme = theme
         let style = effectiveGlassStyle
 
-        // A：原生玻璃（外观/tintColor 走 NSGlassEffectView 自身属性）。
-        glassEffectView?.appearance = theme.glassAppearance
-        if #available(macOS 26.0, *) {
-            glassEffect?.tintColor = theme.glassTintColor(alpha: glassTintAlpha)
-        }
-
-        // B/C：材质玻璃 + 色彩叠层；C 强制深色玻璃（控制中心风）。
+        // C 强制深色玻璃（控制中心风）；A/B 跟主题。
         glassView.appearance = style == .darkMirror
             ? NSAppearance(named: .darkAqua)
             : theme.glassAppearance
         switch style {
         case .nativeLiquid:
-            break
+            // 系统菜单玻璃：默认无雾化（纯菜单观感），滑杆 >0 时加主题色雾化层。
+            tintView.layer?.backgroundColor =
+                glassTintAlpha > 0.001 ? theme.glassTintColor(alpha: glassTintAlpha).cgColor : nil
         case .specular:
             tintView.layer?.backgroundColor = theme.tintBoosted(alpha: glassTintAlpha).cgColor
             borderView.layer?.borderColor = theme.borderBoosted.cgColor
