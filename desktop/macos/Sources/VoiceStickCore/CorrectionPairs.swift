@@ -24,22 +24,31 @@ public struct CorrectionPair: Equatable {
     public var after: String              // 精修后用户认可形式
     public var count: Int                 // 累计出现次数（精修 diff 挖掘 seen 计数）
     public var useCount: Int              // 自动应用次数（doubao 方案 use_count，反馈环基底）
+    public var recallCount: Int           // 应用后被用户保留次数（doubao recall_count，精确率 = recall/use）
     public var samePronunciation: Bool    // 同音/近音对（doubao P2 入表闸门：拼音校验前置）
     public var lastSeenTs: Int64          // 最近出现 epoch 秒
     public var source: String             // 产物来源（当前仅精修 diff）
     public var app: String                // 前台应用分桶（P1-2 接线，当前恒空=全局）
 
     public init(before: String, after: String, count: Int = 0, useCount: Int = 0,
-                samePronunciation: Bool = false, lastSeenTs: Int64 = 0,
+                recallCount: Int = 0, samePronunciation: Bool = false, lastSeenTs: Int64 = 0,
                 source: String = "refine", app: String = "") {
         self.before = before
         self.after = after
         self.count = count
         self.useCount = useCount
+        self.recallCount = recallCount
         self.samePronunciation = samePronunciation
         self.lastSeenTs = lastSeenTs
         self.source = source
         self.app = app
+    }
+
+    /// doubao §3.3 降权判定：应用 ≥10 次且精确率（recall/use）< 0.5 → 自动应用池
+    /// 摘除、few-shot 沉底（用户裁决前的保守隔离；设置页裁决随后续轮次）。
+    public var isDemoted: Bool {
+        guard useCount >= 10 else { return false }
+        return Double(recallCount) / Double(max(useCount, 1)) < 0.5
     }
 }
 
@@ -211,6 +220,7 @@ public enum CorrectionPairs {
             var pair = CorrectionPair(before: before, after: after)
             if let count = item["count"] as? Int { pair.count = count }
             if let useCount = item["use_count"] as? Int { pair.useCount = useCount }
+            if let recallCount = item["recall_count"] as? Int { pair.recallCount = recallCount }
             if let same = item["same_pronunciation"] as? Bool { pair.samePronunciation = same }
             if let ts = item["last_seen_ts"] as? Int64 { pair.lastSeenTs = ts }
             if let ts = item["last_seen_ts"] as? Int { pair.lastSeenTs = Int64(ts) }
@@ -234,6 +244,7 @@ public enum CorrectionPairs {
                 "after": pair.after,
                 "count": pair.count,
                 "use_count": pair.useCount,
+                "recall_count": pair.recallCount,
                 "same_pronunciation": pair.samePronunciation,
                 "last_seen_ts": pair.lastSeenTs,
                 "source": pair.source,
@@ -262,7 +273,8 @@ public enum CorrectionPairs {
     /// 应用位置 1（doubao 方案 §3.1）：全句精确命中——文本（去首尾空白）与某改写对
     /// before 完全相等时返回该对（跳过 LLM 直接替换的确定性路径）。分桶查询口径
     /// （§3.4）：app 非空时候选 = 当前应用桶 ∪ 全局桶（其他 App 的桶不参与），当前
-    /// 桶优先；桶内取（count 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
+    /// 桶优先；低精确率降权对（§3.3，isDemoted）从自动应用池摘除；桶内取（count
+    /// 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
     public static func exactReplacement(
         for text: String, in store: [CorrectionPair], app: String? = nil
     ) -> CorrectionPair? {
@@ -270,7 +282,7 @@ public enum CorrectionPairs {
         guard !trimmed.isEmpty else { return nil }
         return store
             .filter { entry in
-                guard entry.count > 0,
+                guard entry.count > 0, !entry.isDemoted,
                       entry.before.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else {
                     return false
                 }
@@ -313,6 +325,19 @@ public enum CorrectionPairs {
         save(store, url: url)
     }
 
+    /// B13 单写入口：应用后用户确认保留（粘贴走完未取消）→ recall_count+1
+    /// （doubao §3.3 保留信号；取消/回退不增——调用方只在确认路径调）。
+    public static func markRecalledOnDisk(url: URL, pair: CorrectionPair) {
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        var store = load(url: url)
+        guard let index = store.firstIndex(where: {
+            $0.before == pair.before && $0.after == pair.after && $0.app == pair.app
+        }) else { return }
+        store[index].recallCount += 1
+        save(store, url: url)
+    }
+
     /// prompt few-shot 候选：分桶查询（doubao §3.4）——app 非空时候选 = 当前应用桶
     /// ∪ 全局桶，当前桶优先占预算；桶内按 count 降序、last_seen 降序、字典序；
     /// 取前 maxPairs；count<=0 剔除。
@@ -330,6 +355,8 @@ public enum CorrectionPairs {
                 if lhs.samePronunciation != rhs.samePronunciation {
                     return lhs.samePronunciation
                 }
+                // 低精确率降权对沉底（§3.3：从自动应用池摘除后的 few-shot 保守位）。
+                if lhs.isDemoted != rhs.isDemoted { return !lhs.isDemoted }
                 if lhs.count != rhs.count { return lhs.count > rhs.count }
                 if lhs.lastSeenTs != rhs.lastSeenTs { return lhs.lastSeenTs > rhs.lastSeenTs }
                 if lhs.before != rhs.before { return lhs.before < rhs.before }

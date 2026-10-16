@@ -151,6 +151,8 @@ CREATE TABLE modify_exempt (          -- 豁免表（学豆包 AsrModifyExemptWo
 
 **"鱼器渍"用例走查**（验收基准）：`yu qi zi` vs `yu qi ci`，声母 z/c 属于平翘舌模糊对 → 近音判定通过 → 改写对"鱼器渍→语气词"入表 → 下次同错误全句片段命中，零 LLM 调用完成纠错。
 
+> **落地注记（2026-10-16）**：保留信号与降权已实施（双端同批，feat/correction-recall-loop）——`recall_count` 列（JSON `recall_count`）双端落库，精确应用的对在用户确认粘贴时 +1（取消/回退不增，锚点随会话清理）；`use_count ≥ 10 且 recall/use < 0.5` 的对（`isDemoted`/`IsCorrectionPairDemoted`）从自动应用池摘除、few-shot 沉底。**设置页「低置信改写」列表与连续回退即豁免（exempt 表）未做**（随设置页轮次）。
+
 ### 3.3 精确率反馈环
 
 - **命中计数**：每次规则应用 → `use_count += 1`；
