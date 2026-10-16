@@ -142,6 +142,9 @@ final class StatusController {
     private var globalHotkeyEnabled: Bool
     private var globalHotkey: String
     private var launchAtLogin: Bool
+    /// 悬浮窗玻璃方案（全局，液态玻璃实验三选一；实验期存 UserDefaults，
+    /// 定稿后迁 config.toml 并同步 Windows）。
+    private var glassStyle: OverlayGlassStyle
     /// 最近一次状态栏状态（语言切换时按它重建按钮文案）。
     private var currentStatus: AppStatus = .ready
 
@@ -167,9 +170,17 @@ final class StatusController {
         self.globalHotkeyEnabled = globalHotkeyEnabled
         self.globalHotkey = globalHotkey
         self.launchAtLogin = launchAtLogin
+        self.glassStyle = Self.loadGlassStyle()
         self.needsPairing = pairedDeviceIDs.isEmpty
         updateStatusButton(.ready)
         rebuildMenu()
+    }
+
+    private static let glassStyleDefaultsKey = "overlay.glassStyle"
+
+    private static func loadGlassStyle() -> OverlayGlassStyle {
+        UserDefaults.standard.string(forKey: glassStyleDefaultsKey)
+            .flatMap(OverlayGlassStyle.init(rawValue:)) ?? .nativeLiquid
     }
 
     func setPairedDeviceIDs(_ deviceIDs: [String]) {
@@ -366,6 +377,9 @@ final class StatusController {
 
         interactionItem.submenu = interactionSubmenu
         menu.addItem(interactionItem)
+
+        addOverlayGlassStyleItems()
+
         menu.addItem(NSMenuItem.separator())
     }
 
@@ -921,6 +935,7 @@ final class StatusController {
             return overlay
         }
         let overlay = OverlayController()
+        overlay.setGlassStyle(glassStyle)
         overlays[key] = overlay
         return overlay
     }
@@ -965,6 +980,45 @@ final class StatusController {
         overlay.setThemeColor(themeColor(for: deviceID))
         overlay.setThemeSize(themeSize(for: deviceID))
         overlay.setPosition(overlayPosition(for: deviceID))
+        overlay.setGlassStyle(glassStyle)
+    }
+
+    // MARK: - 悬浮窗玻璃方案（液态玻璃实验三选一，全局实时切换）
+
+    private func addOverlayGlassStyleItems() {
+        let item = makeMenuItem(
+            title: tr(.menuOverlayGlass),
+            symbolName: "sparkles",
+            action: nil
+        )
+        let submenu = NSMenu()
+        for style in OverlayGlassStyle.allCases {
+            let styleItem = NSMenuItem(
+                title: style.displayName,
+                action: #selector(selectOverlayGlassStyle),
+                keyEquivalent: ""
+            )
+            styleItem.target = self
+            styleItem.representedObject = style.rawValue
+            styleItem.state = glassStyle == style ? .on : .off
+            submenu.addItem(styleItem)
+        }
+        item.submenu = submenu
+        menu.addItem(item)
+    }
+
+    @objc private func selectOverlayGlassStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let style = OverlayGlassStyle(rawValue: raw) else { return }
+        glassStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: Self.glassStyleDefaultsKey)
+        rebuildMenu()
+        for overlay in overlays.values {
+            overlay.setGlassStyle(style)
+        }
+        // 预览：默认位置弹 2.2s 提示浮窗，不用说话即可对比三种方案。
+        let preview = overlay(for: nil)
+        preview.showTimedMessage("\(tr(.menuOverlayGlass)): \(style.displayName)", duration: 2.2)
     }
 
     @objc private func openSettings() {
