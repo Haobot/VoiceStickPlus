@@ -20,7 +20,7 @@ enum L10nKey: String, CaseIterable {
     case menuRestoreLastInput, menuPairDevice, menuSettings, menuWebsite
     case menuCheckAppUpdates, menuQuit, menuPressReturnAfterPaste, menuLaunchAtLogin
     case menuInteraction, menuHoldToTalk, menuClickToTalk
-    case menuOverlayGlass, glassNativeLiquid, glassSpecular, glassDarkMirror
+    case menuOverlayGlass, glassNativeLiquid, glassSpecular, glassDarkMirror, glassOpacity
     case menuHotkey, menuEnableHotkey, menuCustomHotkey, menuCustomHotkeyNamed
     case menuOutput, outputFocusedApp, outputSubtitle
 
@@ -220,6 +220,7 @@ enum Localization {
         .glassNativeLiquid: "Liquid Glass (Native)",
         .glassSpecular: "Specular Glass",
         .glassDarkMirror: "Dark Mirror Glass",
+        .glassOpacity: "Opacity",
         .menuHotkey: "Hotkey",
         .menuEnableHotkey: "Enable Hotkey",
         .menuCustomHotkey: "Custom Hotkey...",
@@ -499,6 +500,7 @@ enum Localization {
         .glassNativeLiquid: "原生液态玻璃",
         .glassSpecular: "高光玻璃",
         .glassDarkMirror: "深色镜面玻璃",
+        .glassOpacity: "透明度",
         .menuHotkey: "热键",
         .menuEnableHotkey: "启用热键",
         .menuCustomHotkey: "自定义热键...",

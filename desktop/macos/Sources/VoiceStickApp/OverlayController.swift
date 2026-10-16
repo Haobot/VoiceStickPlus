@@ -83,22 +83,19 @@ private enum ResolvedOverlayTheme {
 
     var isNeutral: Bool { self == .white || self == .black }
 
-    /// 玻璃 tint（对齐 GlassBackdropWindow::ThemeTint，mix 0.12 由调用侧 alpha 表达）。
-    var tint: NSColor { tintBase.withAlphaComponent(0.12) }
-
-    /// B 高光玻璃：tint 增艳（彩色 0.20 / 中性 0.16），色相在玻璃上更明显。
-    var tintBoosted: NSColor {
-        isNeutral ? tintBase.withAlphaComponent(0.16) : tintBase.withAlphaComponent(0.20)
+    /// A 原生液态玻璃：NSGlassEffectView tintColor（浓度直接由透明度滑杆驱动）。
+    func glassTintColor(alpha: CGFloat) -> NSColor {
+        isNeutral ? NSColor.white.withAlphaComponent(alpha) : tintBase.withAlphaComponent(alpha)
     }
 
-    /// A 原生液态玻璃：NSGlassEffectView tintColor（原生折射对 tint 更敏感，取值高于 B）。
-    var glassTintColor: NSColor {
-        isNeutral ? NSColor.white.withAlphaComponent(0.18) : tintBase.withAlphaComponent(0.28)
+    /// B 高光玻璃：tint 增艳，中性主题略降（×0.8）避免发白。
+    func tintBoosted(alpha: CGFloat) -> NSColor {
+        isNeutral ? tintBase.withAlphaComponent(alpha * 0.8) : tintBase.withAlphaComponent(alpha)
     }
 
-    /// C 深色镜面：玻璃内的主题色微光（彩色 0.14 / 中性近无 0.06）。
-    var tintGlow: NSColor {
-        isNeutral ? NSColor.white.withAlphaComponent(0.06) : tintBase.withAlphaComponent(0.14)
+    /// C 深色镜面：玻璃内主题色微光（系数压低保持深底），中性主题近无。
+    func tintGlow(alpha: CGFloat) -> NSColor {
+        isNeutral ? NSColor.white.withAlphaComponent(alpha * 0.3) : tintBase.withAlphaComponent(alpha * 0.7)
     }
 
     /// C 深色镜面：辉光描边渐变（对角线亮→暗，中性主题退化为银白）。
@@ -187,6 +184,8 @@ final class OverlayController {
     private var glassStyle: OverlayGlassStyle = .nativeLiquid
     /// 实际生效方案（A 在 macOS < 26 自动回退为 B）。
     private var effectiveGlassStyle: OverlayGlassStyle = .nativeLiquid
+    /// 玻璃 tint 浓度（透明度滑杆，0…1；0.20 = 三方案历史默认档位）。
+    private var glassTintAlpha: CGFloat = 0.20
     private var position: OverlayPosition = .bottomCenter
     private var stackIndex = 0
     private var mode: IndicatorMode = .paused
@@ -354,6 +353,15 @@ final class OverlayController {
         if isVisible {
             layoutAndPosition(animated: false)
         }
+    }
+
+    /// 玻璃 tint 浓度（透明度滑杆）：A 直接映射 NSGlassEffectView.tintColor 的 alpha，
+    /// B/C 按各自系数缩放（见 ResolvedOverlayTheme）。
+    func setGlassTintAlpha(_ alpha: CGFloat) {
+        let clamped = min(max(alpha, 0), 1)
+        guard glassTintAlpha != clamped else { return }
+        glassTintAlpha = clamped
+        applyResolvedTheme(resolvedTheme)
     }
 
     // MARK: - 玻璃背景方案
@@ -745,7 +753,7 @@ final class OverlayController {
         // A：原生玻璃（外观/tintColor 走 NSGlassEffectView 自身属性）。
         glassEffectView?.appearance = theme.glassAppearance
         if #available(macOS 26.0, *) {
-            glassEffect?.tintColor = theme.glassTintColor
+            glassEffect?.tintColor = theme.glassTintColor(alpha: glassTintAlpha)
         }
 
         // B/C：材质玻璃 + 色彩叠层；C 强制深色玻璃（控制中心风）。
@@ -756,7 +764,7 @@ final class OverlayController {
         case .nativeLiquid:
             break
         case .specular:
-            tintView.layer?.backgroundColor = theme.tintBoosted.cgColor
+            tintView.layer?.backgroundColor = theme.tintBoosted(alpha: glassTintAlpha).cgColor
             borderView.layer?.borderColor = theme.borderBoosted.cgColor
             innerBorderView.layer?.borderColor = NSColor.black.withAlphaComponent(60.0 / 255.0).cgColor
             highlightGradLayer?.colors = [
@@ -764,7 +772,7 @@ final class OverlayController {
                 NSColor.clear.cgColor
             ]
         case .darkMirror:
-            tintView.layer?.backgroundColor = theme.tintGlow.cgColor
+            tintView.layer?.backgroundColor = theme.tintGlow(alpha: glassTintAlpha).cgColor
             innerBorderView.layer?.borderColor = NSColor.black.withAlphaComponent(115.0 / 255.0).cgColor
             highlightGradLayer?.colors = [
                 NSColor.white.withAlphaComponent(0.18).cgColor,
