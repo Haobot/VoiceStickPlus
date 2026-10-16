@@ -128,6 +128,16 @@ static uint32_t s_agc_index = 0;
 static uint32_t s_agc_nf_valid = 0;
 static bool s_agc_nf_ready = false;
 static uint32_t s_agc_log_frames = 0;
+/* 帧周期自检：agc 日志每 25 帧一行，两条日志的间隔 / 25 = 实际每帧耗时（应 40000us）。
+ * 大于 40000 即说明 DMA 正在丢样（录音被时间压缩），是"听感语速变快"的直接判据。 */
+static int64_t s_agc_last_log_us = 0;
+/* 阶段耗时自检（2026-10-15 丢样排查）：按帧累计 read/dsp/encode 三段耗时，随 agc 日志
+ * 每 25 帧输出一次均值。判据：read 应 ≈40000us（I2S 阻塞读即实时节拍）；若 read 远超
+ * 40000 说明 DMA 等待异常，若 encode/dsp 大则说明编码/DSP 是瓶颈。 */
+static int64_t s_stage_read_us = 0;
+static int64_t s_stage_dsp_us = 0;
+static int64_t s_stage_enc_us = 0;
+static uint32_t s_stage_frames = 0;
 
 static inline int16_t agc_process(int16_t x)
 {
@@ -212,7 +222,22 @@ static void agc_process_frame(int16_t *pcm, int n)
         float gain_db = 20.0f * log10f(s_agc_gain + 1e-9f);
         float nf_db = (s_agc_nf >= AGC_NF_SENTINEL) ? -120.0f
                                                      : 20.0f * log10f(s_agc_nf / 32768.0f + 1e-9f);
-        ESP_LOGI(TAG, "agc env=%.1f dBFS nf=%.1f dBFS gain=%+.1f dB", env_db, nf_db, gain_db);
+        int64_t now_us = esp_timer_get_time();
+        int64_t frame_us = (s_agc_last_log_us != 0) ? (now_us - s_agc_last_log_us) / 25 : 0;
+        s_agc_last_log_us = now_us;
+        int64_t rd = 0, dp = 0, en = 0;
+        if (s_stage_frames > 0) {
+            rd = s_stage_read_us / (int64_t)s_stage_frames;
+            dp = s_stage_dsp_us / (int64_t)s_stage_frames;
+            en = s_stage_enc_us / (int64_t)s_stage_frames;
+            s_stage_read_us = s_stage_dsp_us = s_stage_enc_us = 0;
+            s_stage_frames = 0;
+        }
+        ESP_LOGI(TAG, "agc env=%.1f dBFS nf=%.1f dBFS gain=%+.1f dB frame=%lldus "
+                      "(read=%lld dsp=%lld enc=%lld) stretch=%.3f",
+                 env_db, nf_db, gain_db, (long long)frame_us,
+                 (long long)rd, (long long)dp, (long long)en,
+                 audio_pipeline_external_stretch());
     }
 }
 
@@ -475,8 +500,14 @@ static esp_err_t wait_for_tasks_to_exit(TickType_t timeout_ticks)
 static esp_err_t init_i2s(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 4;
-    chan_cfg.dma_frame_num = 120;
+    /* RX 环形缓冲必须显著大于一次读请求（40ms = 640 帧 × 2ch）：
+     * 旧值 4×120 = 480 帧（30ms）< 一次 40ms 请求 ⇒ 环内**零余量**，audio_task 每帧
+     * 的 DSP+Opus 编码耗时（实测 4ms 起，网关模式峰值 40ms）与调度抖动直接表现为
+     * I2S DMA 覆盖丢样 —— 录音被时间压缩（听感"语速变快"）+ 断续（音质下降）。
+     * 真机取证（2026-10-15）：设备 agc 日志按 25 帧一行，实测 45.9ms/帧（-13% 音频）
+     * 至 80ms/帧（-50%）。8×160 = 1280 帧 = 80ms ⇒ 40ms 余量，可吸收一帧内的抖动与编码耗时。 */
+    chan_cfg.dma_desc_num = 8;
+    chan_cfg.dma_frame_num = 160;
     chan_cfg.auto_clear = true;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx_handle, &s_rx_handle),
                         TAG, "create i2s channel");
@@ -703,7 +734,9 @@ static void audio_task(void *arg)
             /* 回放无 I2S 阻塞，按帧时长节流模拟实时采集节奏；否则全速循环会把 PCM 压缩成加速音频，ASR 无法识别。 */
             vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
         } else {
+            int64_t t_read0 = esp_timer_get_time();
             esp_err_t err = esp_codec_dev_read(s_codec, stereo, sizeof(stereo));
+            s_stage_read_us += esp_timer_get_time() - t_read0;
             if (err != ESP_OK) {
                 ++read_fail_streak;
                 ESP_LOGW(TAG, "codec read failed (%u consecutive): %s",
@@ -730,13 +763,18 @@ static void audio_task(void *arg)
         if (s_source != AUDIO_SOURCE_EXTERNAL) {
             click_guard_fade_in(mono, AUDIO_FRAME_SAMPLES);
         }
+        int64_t t_dsp0 = esp_timer_get_time();
         for (int i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
             mono[i] = hpf_process(mono[i]);
         }
         agc_process_frame(mono, AUDIO_FRAME_SAMPLES);
+        s_stage_dsp_us += esp_timer_get_time() - t_dsp0;
+        s_stage_frames++;
 
+        int64_t t_enc0 = esp_timer_get_time();
         opus_int32 encoded = opus_encode(s_opus_encoder, mono, AUDIO_FRAME_SAMPLES,
                                          opus_buf, sizeof(opus_buf));
+        s_stage_enc_us += esp_timer_get_time() - t_enc0;
         if (encoded < 0) {
             ++encode_fail_streak;
             ESP_LOGE(TAG, "opus encode failed (%u consecutive): %d",
@@ -1042,6 +1080,9 @@ static esp_err_t start_session(uint32_t session_id, audio_source_t source)
     s_agc_nf_valid = 0;
     s_agc_nf_ready = false;
     s_agc_log_frames = 0;
+    s_agc_last_log_us = 0;
+    s_stage_read_us = s_stage_dsp_us = s_stage_enc_us = 0;
+    s_stage_frames = 0;
     s_session_samples = 0;
     /* 回放模式：每次录音从缓冲开头重放，保证可重复。 */
     if (s_playback_active && s_playback_buffer != NULL) {
@@ -1066,8 +1107,10 @@ static esp_err_t start_session(uint32_t session_id, audio_source_t source)
      * 放 PSRAM 后不占内部 RAM；本任务只做 codec 读取与 opus 编码，不在 cache 禁用期
      * （flash 写）运行（OTA 与录音互斥），PSRAM 栈安全。栈 32768 给足余量杜绝溢出。
      * 配套：自删用 vTaskDeleteWithCaps。 */
+    /* 优先级 5→7（2026-10-15）：与 core1 上的渲染/网关任务竞争时，audio_task 被抢占
+     * 的毫秒级抖动以前会直接吃进 DMA 丢样；提高优先级 + 上面加深的环形缓冲一起兜住。 */
     ok = xTaskCreatePinnedToCoreWithCaps(audio_task, "audio_pipeline", 32768,
-                                         NULL, 5, &s_audio_task, 1, MALLOC_CAP_SPIRAM);
+                                         NULL, 7, &s_audio_task, 1, MALLOC_CAP_SPIRAM);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "create audio task failed, free internal=%u largest_internal=%u free_spiram=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -1102,6 +1145,92 @@ esp_err_t audio_pipeline_start_ext(uint32_t session_id)
     return start_session(session_id, AUDIO_SOURCE_EXTERNAL);
 }
 
+/* ---- 外部源时间基修正（线性插值时间伸缩）----------------------------------
+ * 小米遥控器自身的采集会丢掉约 9% 采样。真机取证（2026-10-15，同一人同一时段）：
+ *   - 基频中位：遥控器链路 108.1Hz vs Stick 麦克风 98.8Hz ⇒ 高 9.4%（≈1.5 半音）；
+ *   - 独立佐证：189 帧 × 40ms = 7.56s 对按键 8.314s ⇒ 少 9.1%。
+ * 两条测量吻合 ⇒ 遥控器音频被**均匀压缩**（不是丢包，丢包会在 15ms 帧边界留跳变，
+ * 实测跳变簇只有个位数）。听感即「语速变快 + 音色发薄」（音高被整体抬高）。
+ * 遥控器固件不可改（项目红线），故在 Stick 侧按实测到达速率把 PCM 用三次插值拉长，
+ * 让下游（ASR / 调试录音 / 虚拟麦）拿到实时基的 16 kHz 流。
+ * 估计器：实时期望样本数 / 实收样本数，0.5s 后启用、α=0.02 慢平滑、钳 [1.0,1.25]；
+ * 遥控器正常时比值≈1.0，自动退化为直通（零改动路径）。 */
+#define EXT_STRETCH_MIN 1.0f
+#define EXT_STRETCH_MAX 1.25f
+#define EXT_STRETCH_WARMUP_US 500000
+#define EXT_STRETCH_ALPHA 0.02f
+#define EXT_RESAMPLE_CHUNK 512
+static float s_ext_stretch = 1.0f;
+static float s_ext_phase = 0.0f;   /* 下一个输出样本在 [hist1, hist2) 内的位置 */
+/* Catmull-Rom 需要 4 点：段 [hist1,hist2] 的外点用 hist0 与"下一个到达的样本"，
+ * 故插值滞后一个输入样本（62.5us，可忽略）。 */
+static int16_t s_ext_hist[3];
+static int s_ext_hist_n = 0;
+static int64_t s_ext_start_us = 0;
+static uint64_t s_ext_in_samples = 0;
+static int16_t s_ext_resample_buf[EXT_RESAMPLE_CHUNK +
+                                  (size_t)(EXT_RESAMPLE_CHUNK * (EXT_STRETCH_MAX - 1.0f)) + 4];
+
+float audio_pipeline_external_stretch(void)
+{
+    return s_ext_stretch;
+}
+
+static void ext_resample_reset(void)
+{
+    s_ext_stretch = 1.0f;
+    s_ext_phase = 0.0f;
+    s_ext_hist[0] = s_ext_hist[1] = s_ext_hist[2] = 0;
+    s_ext_hist_n = 0;
+    s_ext_start_us = 0;
+    s_ext_in_samples = 0;
+}
+
+/* Catmull-Rom（4 点三次）插值：t∈[0,1) 在 [p1,p2] 段内。 */
+static inline float catmull_rom(float p0, float p1, float p2, float p3, float t)
+{
+    const float a0 = -0.5f * p0 + 1.5f * p1 - 1.5f * p2 + 0.5f * p3;
+    const float a1 = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
+    const float a2 = -0.5f * p0 + 0.5f * p2;
+    return ((a0 * t + a1) * t + a2) * t + p1;
+}
+
+/* 三次插值重采样：每个输入样本发出 1/stretch 间隔的输出样本（stretch>1 = 拉长）。
+ * 用三次而非线性插值：线性插值在 4kHz 处就有约 -3dB 衰减（高频整体被削，听感发闷/
+ * 偏低音，实测 4-6.5kHz 占比 16.5%→11.7%），三次插值基本平坦（→13.2%）。 */
+static size_t ext_resample_chunk(const int16_t *in, size_t n, int16_t *out, size_t out_cap)
+{
+    size_t m = 0;
+    const float step = 1.0f / s_ext_stretch;
+    for (size_t i = 0; i < n; ++i) {
+        if (s_ext_hist_n < 3) {
+            s_ext_hist[s_ext_hist_n++] = in[i];
+            if (s_ext_hist_n < 3) {
+                continue;   /* 前两个样本仅填充历史 */
+            }
+        } else {
+            s_ext_hist[0] = s_ext_hist[1];
+            s_ext_hist[1] = s_ext_hist[2];
+            s_ext_hist[2] = in[i];
+        }
+        const float p0 = (float)s_ext_hist[0];
+        const float p1 = (float)s_ext_hist[1];
+        const float p2 = (float)s_ext_hist[2];
+        const float p3 = (float)in[i];
+        while (s_ext_phase < 1.0f) {
+            const float v = catmull_rom(p0, p1, p2, p3, s_ext_phase);
+            if (m < out_cap) {
+                out[m++] = (int16_t)lroundf(v);
+            } else {
+                break;
+            }
+            s_ext_phase += step;
+        }
+        s_ext_phase -= 1.0f;
+    }
+    return m;
+}
+
 esp_err_t audio_pipeline_feed_pcm(const int16_t *pcm, size_t samples)
 {
     if (pcm == NULL || samples == 0) {
@@ -1110,14 +1239,44 @@ esp_err_t audio_pipeline_feed_pcm(const int16_t *pcm, size_t samples)
     if (ext_stream_ensure() != ESP_OK) {
         return ESP_ERR_NO_MEM;
     }
-    const size_t bytes = samples * sizeof(int16_t);
-    const size_t sent = xStreamBufferSend(s_ext_stream, pcm, bytes, 0);
-    if (sent < bytes) {
+
+    /* 时间基修正：按实测到达速率估计伸缩比（>1 = 输入比实时慢，需拉长）。 */
+    const int64_t now_us = esp_timer_get_time();
+    if (s_ext_start_us == 0) {
+        s_ext_start_us = now_us;
+    }
+    s_ext_in_samples += samples;
+    const int64_t elapsed_us = now_us - s_ext_start_us;
+    if (elapsed_us >= EXT_STRETCH_WARMUP_US && s_ext_in_samples > 0) {
+        const float expected = (float)elapsed_us * 0.016f;   /* 16kHz 实时应有样本数 */
+        float ratio = expected / (float)s_ext_in_samples;
+        if (ratio < EXT_STRETCH_MIN) ratio = EXT_STRETCH_MIN;
+        else if (ratio > EXT_STRETCH_MAX) ratio = EXT_STRETCH_MAX;
+        s_ext_stretch += (ratio - s_ext_stretch) * EXT_STRETCH_ALPHA;
+    }
+
+    size_t off = 0;
+    uint32_t dropped_total = 0;
+    while (off < samples) {
+        size_t n = samples - off;
+        if (n > EXT_RESAMPLE_CHUNK) n = EXT_RESAMPLE_CHUNK;
+        const size_t m = ext_resample_chunk(pcm + off, n, s_ext_resample_buf,
+                                            sizeof(s_ext_resample_buf) / sizeof(int16_t));
+        off += n;
+        if (m == 0) {
+            continue;
+        }
+        const size_t bytes = m * sizeof(int16_t);
+        const size_t sent = xStreamBufferSend(s_ext_stream, s_ext_resample_buf, bytes, 0);
+        if (sent < bytes) {
+            dropped_total += (uint32_t)((bytes - sent) / sizeof(int16_t));
+        }
+    }
+    if (dropped_total > 0) {
         /* 缓冲满（2s）：丢新保序。持续溢出=消费端停摆（未 start 的被拒会话），
          * 会话收尾 external_reset 清空即恢复。每丢满 1s 样本打一条。 */
-        const size_t dropped_samples = (bytes - sent) / sizeof(int16_t);
         const uint32_t before_sec = s_ext_overflow_drops / AUDIO_SAMPLE_RATE;
-        s_ext_overflow_drops += (uint32_t)dropped_samples;
+        s_ext_overflow_drops += dropped_total;
         if (s_ext_overflow_drops / AUDIO_SAMPLE_RATE != before_sec) {
             ESP_LOGW(TAG, "ext stream overflow, dropped samples total=%" PRIu32,
                      s_ext_overflow_drops);
@@ -1132,6 +1291,7 @@ void audio_pipeline_external_reset(void)
         xStreamBufferReset(s_ext_stream);
     }
     s_ext_overflow_drops = 0;
+    ext_resample_reset();
 }
 
 const char *audio_pipeline_last_error_step(void)

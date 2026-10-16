@@ -24,8 +24,12 @@ uint32_t audio_pipeline_session_id(void);
  *   溢出丢新保序；
  * - 懒创建缓冲（首次调用），audio_pipeline_external_reset 清空残留。 */
 esp_err_t audio_pipeline_feed_pcm(const int16_t *pcm, size_t samples);
-/* 清空外部源缓冲残留（语音键按下沿/会话收尾时调用，防跨会话污染）。 */
+/* 清空外部源缓冲残留（语音键按下沿/会话收尾时调用，防跨会话污染）；
+ * 同时复位时间基修正的伸缩估计与插值相位。 */
 void audio_pipeline_external_reset(void);
+/* 当前外部源时间伸缩比（1.000 = 直通；>1 = 遥控器采集丢样被拉长回实时基）。
+ * 仅供诊断日志使用。 */
+float audio_pipeline_external_stretch(void);
 /* 外部源缓冲预创建（网关模式入口调用，幂等）。把 64KB PSRAM 分配从「首次按
  * 语音键」挪到模式入口：① 分配不再落在按下→首帧的关键路径上；② 分配失败在
  * 模式入口一次性暴露，而不是每次按键刷屏；③ 模式入口时内存最干净。
