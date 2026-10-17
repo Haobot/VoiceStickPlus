@@ -335,6 +335,18 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 
 ---
 
+### 3.16 macOS 悬浮窗液态玻璃：`.clear` 控件性格 + `_subvariant` KVC 反噬（2026-10-18 定稿）
+
+细节见 `Doc/Expe/macos-overlay-liquid-glass-clear-style-2026-10-18.md`；定稿 commit `5d90aa8`（squash 自 feat/overlay-liquid-glass 六提交）。
+
+- **定稿配置**：NSGlassEffectView + `style=.clear`（控件级通透折射的关键旋钮）+ 内容入 `contentView`（与真菜单同构）+ 窗口级 hasShadow（NSPopupMenuWindow 同款）+ 圆角 12 + KVC `_adaptiveAppearance=1` + tint 霜化 0.10（同明暗族基底，白字主题叠黑霜）。
+- **`.regular`（默认）是菜单性格强磨砂，`.clear` 才是控件性格高通透**——要「Apple 宣传图那种玻璃」先切 `.clear`；VEV 的 `.menu`/`.popover`/`.hudWindow` 全是固定性格磨砂无背景自适应，「不通透」先怀疑材质再怀疑参数。
+- **`_subvariant="menu"` 绝不可 KVC 写**：菜单的 subvariant 是 SwiftUI 管线自设的渲染结果；外部写入触发错误重建路径，CABackdropLayer `glassBackground` 的 scale 从 0.5 掉 0.25（模糊发虚、纹理保留率 ~68%）。`_scrimState=1` 同病。私有属性只写实测单项无害的，写前 `responds(to:)` 探测。
+- **锁屏门控**：锁屏下 WindowServer 不采样 backdrop，玻璃截图全黑；`caffeinate -u` 只醒显示器解不了门控，CGSessionCopyDictionary 判锁（无 OnConsoleKey 且 ScreenIsLocked=1）。
+- **probe 方法**：backdrop 不采样同窗下层视图，背景必须放独立下层窗口（双层窗）；长命 harness 撞 `NSViewIsCurrentlyBuildingLayerTreeForDisplay` 断言，probe 做成 60s 自退进程；AX 点真菜单叶子项用 `AXPress`（`click` 只悬停）；多屏截图先拿浮窗 bounds 定位屏（浮窗跟随 NSScreen.main=用户焦点屏）。
+
+---
+
 ## 4. 微信输入法模式（wechat_input_method）
 
 ### 4.1 链路闭环与热键
@@ -615,3 +627,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **JS 模板写文件的转义陷阱家族（2026-10-09）**：反引号关模板、反斜杠+引号剥一层、换行转义变真行、插入块缺尾换行粘邻行——判据=Expected 型 JS 报错、C2001、1+1 异常 diff、RC=0 空转；修法=chr 圣经+write 先行+双门前置；生成代码两轮调不通即整段人写。详见 Doc/Expe/js-template-escape-trap-family-2026-10-09.md。
 - **macOS「配置保存后重启自定义全丢」/「网关按键全无作用」（2026-10-12 四断链）**：判据=序列化文本回读丢 `[output].target`（`AppConfig.parse` 静默回落 `loadLegacy` 不认 `[表]` 段；根因 `tomlNumber` 整数形态 Double `3`/`80` 撞 TOMLKit 严格 `.float` 解码）+ 连接日志整批 `gateway_keymap_set ... skipped` 且此后该 label 零成功（didConnect 早于控制特征就绪、无补推，真机 182/182）+ StickS3 子菜单无「按键映射…」（网关入口只挂在 RC 条目分支）。修复=读侧 `LenientDouble` + 写侧规范 float 双保险、`onControlChannelReady` 就绪补推、根 `[buttons]` 全局表与网关入口，见 `Doc/Expe/mac-gateway-keymap-restore-2026-10-12.md`。
 - **改 Windows core 纯逻辑但本机（macOS）无法跑 build_win.bat**：`pcm_postprocessor.cc`/`ima_adpcm_decoder.cc` 等无 Win32 依赖的 .cc 可直接 `clang++ -std=c++20 -fsyntax-only` 语法检查，并本地链接个小 main 与 Python 镜像 golden 对拍（本次 31104 样本 bit 级一致，检出力等同 ctest 对拍 2）。clang/MSVC 差异边界预存：`xiaomi_atvv_session.h` 嵌套 `Options = {}` 默认实参 clang 严格拒绝（MSVC 接受，勿误判改坏）；`localtime_s` MSVC 专属；initializer_list 喂 span 要显式 vector。另：**方案里的数值测试期望值先用常量对算一遍**（本次方案写「-40dBFS 拉起至 -6dBFS」，MAX_GAIN=+20dB 数学上只能到 ≈-20dBFS，照抄会把三端断言全写错）；DSP 链「分帧流式 == 整段一次」断言必红（平滑按 process 调用粒度作用，正确姿势=reset 后流式 vs 全新实例流式）。详见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`。
+- **macOS 玻璃材质「不通透/发虚/不像控件」三分流（2026-10-18）**：不通透=材质错（VEV 全磨砂无背景自适应，要用 NSGlassEffectView）；发虚=`_subvariant`/`_scrimState` KVC 反噬 backdrop scale 0.5→0.25（私有属性多为渲染结果非开关，别写）；不像宣传图控件=`style` 没切 `.clear`（默认 `.regular` 是菜单磨砂性格）。锁屏下玻璃截图全黑（backdrop 采样被门控），评估必须解锁后做。详见 §3.16 与 `Doc/Expe/macos-overlay-liquid-glass-clear-style-2026-10-18.md`。
