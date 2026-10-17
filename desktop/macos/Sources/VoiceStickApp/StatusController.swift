@@ -142,6 +142,11 @@ final class StatusController {
     private var globalHotkeyEnabled: Bool
     private var globalHotkey: String
     private var launchAtLogin: Bool
+    /// 悬浮窗玻璃方案（液态玻璃实验已定稿 A 系统菜单玻璃；无托盘 UI，仅
+    /// UserDefaults 隐藏键 `overlay.glassStyle` 兜底调试用）。
+    private var glassStyle: OverlayGlassStyle
+    /// 玻璃 tint 浓度（定稿 10%；隐藏键 `overlay.glassTintAlpha` 兜底）。
+    private var glassTintAlpha: CGFloat
     /// 最近一次状态栏状态（语言切换时按它重建按钮文案）。
     private var currentStatus: AppStatus = .ready
 
@@ -167,9 +172,26 @@ final class StatusController {
         self.globalHotkeyEnabled = globalHotkeyEnabled
         self.globalHotkey = globalHotkey
         self.launchAtLogin = launchAtLogin
+        self.glassStyle = Self.loadGlassStyle()
+        self.glassTintAlpha = Self.loadGlassTintAlpha()
         self.needsPairing = pairedDeviceIDs.isEmpty
         updateStatusButton(.ready)
         rebuildMenu()
+    }
+
+    private static let glassStyleDefaultsKey = "overlay.glassStyle"
+    private static let glassTintAlphaDefaultsKey = "overlay.glassTintAlpha"
+
+    private static func loadGlassStyle() -> OverlayGlassStyle {
+        UserDefaults.standard.string(forKey: glassStyleDefaultsKey)
+            .flatMap(OverlayGlassStyle.init(rawValue:)) ?? .nativeLiquid
+    }
+
+    private static func loadGlassTintAlpha() -> CGFloat {
+        guard let stored = UserDefaults.standard.object(forKey: glassTintAlphaDefaultsKey) as? Double else {
+            return 0.10
+        }
+        return CGFloat(min(max(stored, 0), 0.6))
     }
 
     func setPairedDeviceIDs(_ deviceIDs: [String]) {
@@ -366,6 +388,7 @@ final class StatusController {
 
         interactionItem.submenu = interactionSubmenu
         menu.addItem(interactionItem)
+
         menu.addItem(NSMenuItem.separator())
     }
 
@@ -921,6 +944,8 @@ final class StatusController {
             return overlay
         }
         let overlay = OverlayController()
+        overlay.setGlassStyle(glassStyle)
+        overlay.setGlassTintAlpha(glassTintAlpha)
         overlays[key] = overlay
         return overlay
     }
@@ -965,6 +990,8 @@ final class StatusController {
         overlay.setThemeColor(themeColor(for: deviceID))
         overlay.setThemeSize(themeSize(for: deviceID))
         overlay.setPosition(overlayPosition(for: deviceID))
+        overlay.setGlassStyle(glassStyle)
+        overlay.setGlassTintAlpha(glassTintAlpha)
     }
 
     @objc private func openSettings() {
