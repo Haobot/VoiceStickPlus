@@ -142,15 +142,11 @@ final class StatusController {
     private var globalHotkeyEnabled: Bool
     private var globalHotkey: String
     private var launchAtLogin: Bool
-    /// 悬浮窗玻璃方案（全局，液态玻璃实验三选一；实验期存 UserDefaults，
-    /// 定稿后迁 config.toml 并同步 Windows）。
+    /// 悬浮窗玻璃方案（液态玻璃实验已定稿 A 系统菜单玻璃；无托盘 UI，仅
+    /// UserDefaults 隐藏键 `overlay.glassStyle` 兜底调试用）。
     private var glassStyle: OverlayGlassStyle
-    /// 玻璃 tint 浓度（透明度滑杆 0…0.6；托盘子菜单内拖动实时调）。
+    /// 玻璃 tint 浓度（定稿 10%；隐藏键 `overlay.glassTintAlpha` 兜底）。
     private var glassTintAlpha: CGFloat
-    /// 滑杆行右侧的百分比标签（拖动时直接改文本，不走 rebuildMenu 以免打断拖拽）。
-    private weak var glassOpacityPercentLabel: NSTextField?
-    /// 预览浮窗节拍（拖动滑杆时 0.3s 节流重触发，showTimedMessage 自带续期）。
-    private var lastGlassPreviewAt: CFAbsoluteTime = 0
     /// 最近一次状态栏状态（语言切换时按它重建按钮文案）。
     private var currentStatus: AppStatus = .ready
 
@@ -193,7 +189,7 @@ final class StatusController {
 
     private static func loadGlassTintAlpha() -> CGFloat {
         guard let stored = UserDefaults.standard.object(forKey: glassTintAlphaDefaultsKey) as? Double else {
-            return 0.0
+            return 0.10
         }
         return CGFloat(min(max(stored, 0), 0.6))
     }
@@ -392,8 +388,6 @@ final class StatusController {
 
         interactionItem.submenu = interactionSubmenu
         menu.addItem(interactionItem)
-
-        addOverlayGlassStyleItems()
 
         menu.addItem(NSMenuItem.separator())
     }
@@ -998,102 +992,6 @@ final class StatusController {
         overlay.setPosition(overlayPosition(for: deviceID))
         overlay.setGlassStyle(glassStyle)
         overlay.setGlassTintAlpha(glassTintAlpha)
-    }
-
-    // MARK: - 悬浮窗玻璃方案（液态玻璃实验三选一，全局实时切换）
-
-    private func addOverlayGlassStyleItems() {
-        let item = makeMenuItem(
-            title: tr(.menuOverlayGlass),
-            symbolName: "sparkles",
-            action: nil
-        )
-        let submenu = NSMenu()
-        for style in OverlayGlassStyle.allCases {
-            let styleItem = NSMenuItem(
-                title: style.displayName,
-                action: #selector(selectOverlayGlassStyle),
-                keyEquivalent: ""
-            )
-            styleItem.target = self
-            styleItem.representedObject = style.rawValue
-            styleItem.state = glassStyle == style ? .on : .off
-            submenu.addItem(styleItem)
-        }
-        submenu.addItem(NSMenuItem.separator())
-        addGlassOpacitySlider(to: submenu)
-        item.submenu = submenu
-        menu.addItem(item)
-    }
-
-    /// 透明度滑杆行：玻璃 tint 浓度 0–60%（原生玻璃映射 NSGlassEffectView.tintColor
-    /// alpha；行内自绘 NSView，不走 rebuildMenu 的高亮态）。拖动中若遇 BLE 事件触发
-    /// rebuildMenu 会换掉行视图、拖拽中断——实验期可接受，不再额外加防重入。
-    private func addGlassOpacitySlider(to submenu: NSMenu) {
-        let row = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 26))
-
-        let label = NSTextField(labelWithString: tr(.glassOpacity))
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        label.frame = NSRect(x: 14, y: 6, width: 56, height: 15)
-        row.addSubview(label)
-
-        let slider = NSSlider(
-            value: Double(glassTintAlpha * 100),
-            minValue: 0,
-            maxValue: 60,
-            target: self,
-            action: #selector(glassOpacitySliderChanged)
-        )
-        slider.isContinuous = true
-        slider.frame = NSRect(x: 74, y: 4, width: 126, height: 19)
-        row.addSubview(slider)
-
-        let percent = NSTextField(labelWithString: "\(Int(round(glassTintAlpha * 100)))%")
-        percent.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        percent.textColor = .secondaryLabelColor
-        percent.alignment = .right
-        percent.frame = NSRect(x: 206, y: 6, width: 34, height: 15)
-        row.addSubview(percent)
-        glassOpacityPercentLabel = percent
-
-        let item = NSMenuItem()
-        item.view = row
-        submenu.addItem(item)
-    }
-
-    @objc private func selectOverlayGlassStyle(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let style = OverlayGlassStyle(rawValue: raw) else { return }
-        glassStyle = style
-        UserDefaults.standard.set(style.rawValue, forKey: Self.glassStyleDefaultsKey)
-        rebuildMenu()
-        for overlay in overlays.values {
-            overlay.setGlassStyle(style)
-        }
-        showGlassPreview()
-    }
-
-    @objc private func glassOpacitySliderChanged(_ sender: NSSlider) {
-        let alpha = CGFloat(min(max(sender.doubleValue, 0), 60) / 100)
-        glassTintAlpha = alpha
-        UserDefaults.standard.set(Double(alpha), forKey: Self.glassTintAlphaDefaultsKey)
-        glassOpacityPercentLabel?.stringValue = "\(Int(round(alpha * 100)))%"
-        for overlay in overlays.values {
-            overlay.setGlassTintAlpha(alpha)
-        }
-        // 滑杆 action 连续触发：0.3s 节流重弹预览（showTimedMessage 重置 2.2s 隐藏
-        // 计时，拖动期间浮窗保持可见，停手后自动收起）。
-        let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastGlassPreviewAt > 0.3 else { return }
-        lastGlassPreviewAt = now
-        showGlassPreview()
-    }
-
-    /// 默认位置弹预览浮窗，不用说话即可看当前玻璃效果。
-    private func showGlassPreview() {
-        let preview = overlay(for: nil)
-        preview.showTimedMessage("\(tr(.menuOverlayGlass)): \(glassStyle.displayName)", duration: 2.2)
     }
 
     @objc private func openSettings() {

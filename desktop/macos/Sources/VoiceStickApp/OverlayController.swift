@@ -88,7 +88,7 @@ private enum ResolvedOverlayTheme {
         isNeutral ? NSColor.white.withAlphaComponent(alpha) : tintBase.withAlphaComponent(alpha)
     }
 
-    /// A 原生液态玻璃的滑杆「霜化」色（磨砂度而非亮度）：基底与玻璃同明暗族——
+    /// A 原生液态玻璃的「霜化」tint 色（磨砂度而非亮度）：基底与玻璃同明暗族——
     /// 深色玻璃（白字主题）叠黑霜＝更暗更实，浅色玻璃（黑字主题）叠白霜＝更奶
     /// 更实，彩色主题叠主题色霜。深玻璃上叠白霜会被读成「调亮度」而非「调透明
     /// 度」（真机验收反馈），且与系统材质的加深方向相反。
@@ -172,6 +172,10 @@ final class OverlayController {
     /// A 方案背景（实际类型 NSGlassEffectView；类型本身 macOS 26+ 起可用，
     /// 存储抹平为 NSView，取用走 glassEffect 计算属性 + #available）。
     private var glassEffectView: NSView?
+    /// A 原生玻璃的内容宿主（官方契约：内容放 NSGlassEffectView.contentView，
+    /// 与真 NSMenu 结构同构——实测菜单 contentView 即 NSGlassEffectView 且菜单项
+    /// 在其 contentView 内）。
+    private let glassContentView = NSView()
 
     /// NSGlassEffectView 专属属性入口（cornerRadius/tintColor 不在 NSView 上）。
     @available(macOS 26.0, *)
@@ -195,13 +199,13 @@ final class OverlayController {
 
     private var themeColor: OverlayThemeColor = .auto
     private var resolvedTheme: ResolvedOverlayTheme = .black
-    /// 用户选择的玻璃方案（托盘「悬浮窗玻璃方案」全局项）。
+    /// 玻璃方案（液态玻璃实验已定稿 A；隐藏 UserDefaults 键兜底，见 StatusController）。
     private var glassStyle: OverlayGlassStyle = .nativeLiquid
     /// 实际生效方案（与 glassStyle 一致；A 在 macOS < 26 底层退化为 .menu 材质）。
     private var effectiveGlassStyle: OverlayGlassStyle = .nativeLiquid
-    /// 玻璃霜化浓度（不透明度滑杆，0…1；A 方案 0 = 纯原生液态玻璃）。A 的霜色走
+    /// 玻璃霜化浓度（0…1，定稿 0.10；A 方案 0 = 纯原生液态玻璃）。A 的霜色走
     /// glassFrostColor（同明暗族磨砂＝调「透/不透」），不是白雾调亮度。
-    private var glassTintAlpha: CGFloat = 0.0
+    private var glassTintAlpha: CGFloat = 0.10
     private var position: OverlayPosition = .bottomCenter
     private var stackIndex = 0
     private var mode: IndicatorMode = .paused
@@ -263,6 +267,14 @@ final class OverlayController {
         if #available(macOS 26.0, *) {
             let effect = NSGlassEffectView()
             effect.wantsLayer = true
+            // 控件级液态玻璃用 .clear：glasslab3 亮背景受控矩阵实测，.regular（默认）
+            // 是强磨砂色块（壁纸色糊成柔斑，菜单性格），.clear 才是高通透+边光折射的
+            // 控件性格（Apple Park 参考图同款）。私有属性 lensing/scrim/subvariant 等
+            // 实测均无正向收益（subvariant 写入反掉 backdrop scale，见调谐函数注释）。
+            effect.style = .clear
+            applyMenuVariantTuning(effect)
+            glassContentView.autoresizingMask = [.width, .height]
+            effect.contentView = glassContentView
             glassEffectView = effect
         }
         glassView.blendingMode = .behindWindow
@@ -372,7 +384,7 @@ final class OverlayController {
         }
     }
 
-    /// 玻璃 tint 浓度（透明度滑杆）：A 直接映射 NSGlassEffectView.tintColor 的 alpha，
+    /// 玻璃 tint 浓度：A 直接映射 NSGlassEffectView.tintColor 的 alpha，
     /// B/C 按各自系数缩放（见 ResolvedOverlayTheme）。
     func setGlassTintAlpha(_ alpha: CGFloat) {
         let clamped = min(max(alpha, 0), 1)
@@ -390,15 +402,49 @@ final class OverlayController {
     }
 
     private var effectiveCornerRadius: CGFloat {
-        effectiveGlassStyle == .darkMirror ? 24 : OverlayThemeMetrics.cornerRadius
+        // A(26+) 原生玻璃对齐真菜单圆角（NSPopupMenuWindow 玻璃实测 cornerRadius=12）。
+        if effectiveGlassStyle == .nativeLiquid && glassEffectView != nil { return 12 }
+        return effectiveGlassStyle == .darkMirror ? 24 : OverlayThemeMetrics.cornerRadius
+    }
+
+    /// A 原生玻璃的菜单化调谐：只设 `_adaptiveAppearance=1`（真菜单实测值，默认
+    /// 实例为 2）。**不要** KVC 写 `_subvariant="menu"`——variantprobe 实测：菜单的
+    /// `subvariant=menu` 是 SwiftUI 管线自设的渲染结果；外部写入触发错误重建路径，
+    /// backdrop 采样 scale 从 0.5（菜单同款强模糊）掉到 0.25（纹理保留率 68%，发虚
+    /// 不够糊）。零配置玻璃 scale=0.5 与真菜单一致。私有属性走 KVC，逐项探明 setter
+    /// 存在才写（未来 macOS 改名/移除时静默跳过）；自签分发非 App Store，风险已评估。
+    @available(macOS 26.0, *)
+    private func applyMenuVariantTuning(_ effect: NSGlassEffectView) {
+        if effect.responds(to: NSSelectorFromString("set_adaptiveAppearance:")) {
+            effect.setValue(1, forKey: "_adaptiveAppearance")
+        }
+    }
+
+    /// 内容（指示器/文字/提示）的父视图：A(26+) 放 NSGlassEffectView.contentView
+    /// （官方契约，与真菜单同构）；其余方案放窗口容器（叠在自绘背景栈上）。
+    private func reparentContentViews(nativeGlass: Bool) {
+        guard let container = window.contentView else { return }
+        let contentViews: [NSView] = [indicatorView, textClipView, hintLabel]
+        if nativeGlass {
+            for view in contentViews {
+                glassContentView.addSubview(view)
+            }
+        } else {
+            // 还原 z 序：内容在 highlight 之上、innerBorder 之下（与 init 栈一致）。
+            for view in contentViews {
+                container.addSubview(view, positioned: .below, relativeTo: innerBorderView)
+            }
+        }
     }
 
     /// 按方案重建背景栈可见性与材质。
     /// A = 原生液态玻璃 NSGlassEffectView（macOS 26+）。真机同屏对拍确认：系统
     /// 菜单玻璃即该材质性格——背景自适应透染（壁纸色清晰透出），而 VEV .menu 是
     /// 深 slate 磨砂、背景透不出来，正是「不通透」的根源；低版本回退 `.menu`
-    /// 经典菜单模糊。A 零雾化默认 + 菜单级柔和投影，滑杆 >0 才加 tint。
-    /// B/C = 自绘玻璃叠层。内容以兄弟视图叠在玻璃上（标准 AppKit z 序可靠）。
+    /// 经典菜单模糊。A tint 定稿 10% 霜化（0 = 纯原生）；投影：A(26+) 用窗口级
+    /// WindowServer 投影（真菜单同款），B/C 与低版本回退用手绘层投影。
+    /// B/C = 自绘玻璃叠层。内容父视图：A(26+) 放玻璃 contentView（官方契约，
+    /// 与真菜单同构），其余以兄弟视图叠在容器背景栈上（标准 AppKit z 序）。
     private func applyGlassStyle() {
         let nativeGlass = glassStyle == .nativeLiquid && glassEffectView != nil
         effectiveGlassStyle = glassStyle
@@ -412,10 +458,14 @@ final class OverlayController {
         // A(26+) 的 tint 走 glassEffect.tintColor；tintView 服务低版本回退与 B/C。
         tintView.isHidden = nativeGlass || (native && glassTintAlpha <= 0.001)
         highlightView.isHidden = native
-        shadowView.isHidden = false
+        // A(26+) 用窗口级投影（真菜单同款 WindowServer 投影，NSPopupMenuWindow 实测
+        // hasShadow=true）；B/C 与 A 低版本回退用手绘层投影。
+        shadowView.isHidden = nativeGlass
+        window.hasShadow = nativeGlass
         innerBorderView.isHidden = native
         borderView.isHidden = !specular // C 用辉光描边替代普通描边
         glowBorderView.isHidden = glassStyle != .darkMirror
+        reparentContentViews(nativeGlass: nativeGlass)
 
         let radius = effectiveCornerRadius
         if #available(macOS 26.0, *) {
@@ -609,6 +659,10 @@ final class OverlayController {
         )
         let origin = frameOrigin(in: screen.visibleFrame, windowSize: windowSize)
         window.setFrame(NSRect(origin: origin, size: windowSize), display: true)
+        // 窗口级投影（A 原生玻璃）在边框/形状变化后手动失效重算，跟随尺寸步进动画。
+        if window.hasShadow {
+            window.invalidateShadow()
+        }
     }
 
     private func frameOrigin(in visibleFrame: NSRect, windowSize: NSSize) -> CGPoint {
@@ -696,6 +750,11 @@ final class OverlayController {
         glowBorderView.frame = glassRect
         borderView.frame = glassRect
 
+        // A(26+) 内容在玻璃 contentView 内：坐标系原点移到玻璃左下角。
+        let contentInGlass = effectiveGlassStyle == .nativeLiquid && glassEffectView != nil
+        let contentOffset = contentInGlass ? glassRect.origin : NSPoint.zero
+        glassContentView.frame = NSRect(origin: .zero, size: glassRect.size)
+
         if effectiveGlassStyle == .darkMirror,
            glowBorderBuiltSize != glowBorderView.bounds.size {
             glowBorderBuiltSize = glowBorderView.bounds.size
@@ -704,8 +763,8 @@ final class OverlayController {
 
         let indicatorX = glassRect.minX + metrics.indicatorLeftMargin
         indicatorView.frame = NSRect(
-            x: indicatorX,
-            y: glassRect.midY - metrics.indicatorSize / 2,
+            x: indicatorX - contentOffset.x,
+            y: glassRect.midY - metrics.indicatorSize / 2 - contentOffset.y,
             width: metrics.indicatorSize,
             height: metrics.indicatorSize
         )
@@ -713,7 +772,12 @@ final class OverlayController {
 
         let textX = indicatorX + metrics.indicatorSize + metrics.textIndicatorGap
         let textWidth = max(1, glassRect.maxX - metrics.horizontalPadding - textX)
-        textClipView.frame = NSRect(x: textX, y: glassRect.minY, width: textWidth, height: glassRect.height)
+        textClipView.frame = NSRect(
+            x: textX - contentOffset.x,
+            y: glassRect.minY - contentOffset.y,
+            width: textWidth,
+            height: glassRect.height
+        )
         textLineView.frame = textClipView.bounds
         textLineView.setText(text, font: textFont(), ink: inkColor(alpha: 248))
 
@@ -732,8 +796,8 @@ final class OverlayController {
         hintLabel.sizeToFit()
         let hintWidth = min(hintLabel.frame.width, textWidth)
         hintLabel.frame = NSRect(
-            x: textX + max(0, (textWidth - hintWidth) / 2),
-            y: blockBottom,
+            x: textX + max(0, (textWidth - hintWidth) / 2) - contentOffset.x,
+            y: blockBottom - contentOffset.y,
             width: hintWidth,
             height: hintHeight
         )
