@@ -157,3 +157,13 @@ v2.3.9 自装 Mac 包经 Sparkle 升级 2.4.7 报「The update is improperly sig
 判定与出路：旧钥不可恢复 ⇒ 旧包的自动更新是**永久断点**，唯一修复＝手动下载新版 dmg/zip 覆盖安装一次（桥接升级），之后回到新钥链路。发布链自洽验证法（可复用）：`Curve25519.Signing.PublicKey(rawRepresentation: plist公钥)` 验 `appcast edSignature` 对 **COS 实际字节**（注意别拿本地重建产物验——签名钉死发布时字节，v2.4.7 当天就因用下午重建的 zip 验出假阴性）。
 
 教训：轮换任何「钉在已发布产物里的公钥」前，必须盘点**包括开发者本机在内的全部存量安装**；「没有公开发布过」≠「没有安装基数」。另：`security find-generic-password -s "Sparkle"` 查不到 Sparkle 默认钥——默认 service 是 `https://sparkle-project.org`（按 svce grep dump-keychain 才对）。
+
+## 追加：电源键（usage 0x66）开放映射与双形态 systemDefined 吞除（2026-10-19 真机验收）
+
+本拦截架构的键表此前刻意排除电源键（方案 C 级定案），2026-10-19 起开放：
+`RemoteButton.power` + `usageToButton[0x66]`，macOS 侧原生事件是 **systemDefined
+双形态**（subtype 1 首事件 + aux-control subtype 8 的 NX_POWER_KEY(6) down/up 对，
+不产生 keyDown），因"单次按下多形态"不能用本文主线的一次性消费吞除标记，
+改 300ms 非消耗吞除窗 + down/up 闩锁。常量与机制考证、真机验收结论、遗留项
+（网关 power 未验/原生行为未记录）见
+`Doc/Expe/macos-power-key-dual-form-system-defined-2026-10-19.md`（commit `3401845`）。
