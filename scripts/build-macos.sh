@@ -218,9 +218,9 @@ else
     echo "WARNING: App icon was not found: $ICON_PATH"
 fi
 
-# 按键映射对话框的遥控器照片（图片热区交互；app 运行时经 Bundle.main 读取，
-# 缺失时界面降级为占位提示而非崩溃）。
-REMOTE_PNG="$DESKTOP_DIR/Resources/xiaomi_remote_2pro.png"
+# 按键映射对话框的遥控器照片（图片热区交互；SwiftPM 资源目录为唯一源，此处拷入
+# Contents/Resources 供 Bundle.main 命中；缺失时界面降级为占位提示而非崩溃）。
+REMOTE_PNG="$DESKTOP_DIR/Sources/VoiceStickApp/Resources/xiaomi_remote_2pro.png"
 if [ -f "$REMOTE_PNG" ]; then
     cp "$REMOTE_PNG" "$APP_DIR/Contents/Resources/xiaomi_remote_2pro.png"
 else

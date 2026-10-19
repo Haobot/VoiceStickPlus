@@ -141,7 +141,8 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   macOS 无程序化配对 API、实测无 IOHIDDevice 节点，故原生键不走该路径）。
   托盘设备菜单「按键映射…」对话框：小米设备项编辑设备覆盖，StickS3 设备项（网关入口）
   编辑根 `[buttons]` 全局表；对话框为遥控器照片热区交互（点图选键，对齐 Windows
-  XiaomiKeymapDialog，照片资源 `Resources/xiaomi_remote_2pro.png` 随包体携带）。
+  XiaomiKeymapDialog，照片资源 `Sources/VoiceStickApp/Resources/xiaomi_remote_2pro.png`
+  经 SwiftPM 资源声明随构建产物携带，发布打包再拷入 .app/Contents/Resources）。
 
   ```toml
   [buttons]                 # 网关模式全局默认（无 RC 条目时的路由/消费取值源）

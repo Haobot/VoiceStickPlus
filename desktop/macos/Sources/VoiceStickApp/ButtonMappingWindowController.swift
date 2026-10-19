@@ -226,14 +226,37 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
     private let saveButton = NSButton(title: tr(.save), target: nil, action: nil)
     private var hotkeyCapture: HotkeyCaptureWindowController?
 
-    /// 照片资源（打包脚本拷入 .app/Contents/Resources；缺失时降级占位不崩溃）。
+    /// 照片资源（缺失时降级占位不崩溃）。双形态分发：
+    /// - 发布 .app：build-macos.sh 拷入 Contents/Resources，走 Bundle.main；
+    /// - SwiftPM 裸构建（swift build/run）：资源随可执行文件旁的 `<Package>_<Target>.bundle`
+    ///   分发，Bundle.main 查不到，需在可执行文件目录泛化扫 .bundle。
+    /// 不用 Bundle.module：其 accessor 找不到 bundle 时 fatalError，会崩掉发布 .app。
     private static let remoteImage: NSImage? = {
-        guard let path = Bundle.main.path(forResource: "xiaomi_remote_2pro", ofType: "png") else {
+        guard let path = remotePhotoPath() else {
             NSLog("ButtonMapping: remote photo missing in bundle \(Bundle.main.bundlePath)")
             return nil
         }
         return NSImage(contentsOfFile: path)
     }()
+
+    private static func remotePhotoPath() -> String? {
+        if let path = Bundle.main.path(forResource: "xiaomi_remote_2pro", ofType: "png") {
+            return path
+        }
+        var bases = [Bundle.main.bundleURL]
+        if let resourceURL = Bundle.main.resourceURL { bases.append(resourceURL) }
+        for base in bases {
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: base.path)
+            else { continue }
+            for name in names where name.hasSuffix(".bundle") {
+                if let bundle = Bundle(path: base.appendingPathComponent(name).path),
+                   let path = bundle.path(forResource: "xiaomi_remote_2pro", ofType: "png") {
+                    return path
+                }
+            }
+        }
+        return nil
+    }
 
     init(deviceID: String, settings: ButtonsSettings, defaults: ButtonsSettings,
          hidesIntercept: Bool = false,

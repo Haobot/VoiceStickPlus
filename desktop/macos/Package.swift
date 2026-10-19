@@ -26,6 +26,11 @@ let package = Package(
             ],
             path: "Sources/VoiceStickApp",
             exclude: ["Info.plist"],
+            resources: [
+                // 按键映射对话框的遥控器照片：SwiftPM 随构建产物分发资源 bundle，
+                // 裸二进制（swift build/run）与打包 .app 双形态都能找到。
+                .process("Resources"),
+            ],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
