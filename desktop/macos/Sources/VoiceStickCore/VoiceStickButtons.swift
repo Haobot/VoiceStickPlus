@@ -9,6 +9,7 @@ public enum RemoteButton: String, CaseIterable, Codable, Equatable {
     case back
     case menu
     case tv
+    case power
     case right
     case left
     case down

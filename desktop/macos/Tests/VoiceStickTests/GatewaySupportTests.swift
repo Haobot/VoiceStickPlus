@@ -62,11 +62,24 @@ func runGatewaySupportTests() {
     checkEqual(customRoutes.first { $0.key == "ok" }?.route, "software",
                "GatewayRoutes.nativeSoftware")
 
-    // 语音键不参与路由（ATVV 会话层固定语义）；桌面无映射面的键仍在全集内
-    //（保持 passthrough，OS 级配对可用时直通）。
+    // 语音键不参与路由（ATVV 会话层固定语义）；volume_mute 桌面无映射面仍在全集内
+    // （保持 passthrough，OS 级配对可用时直通）；power 自 2026-10-19 有映射面：
+    // native → passthrough（默认即此，见上断言），key/disabled → software。
     check(!GatewaySupport.routableKeys.contains("voice_double_click"), "GatewayRoutes.voiceExcluded")
     check(GatewaySupport.routableKeys.contains("power") &&
           GatewaySupport.routableKeys.contains("volume_mute"), "GatewayRoutes.powerMuteIncluded")
+
+    // ---- power 开放映射后的路由分派（2026-10-19，对齐 Windows has_mapping 口径）----
+    var powerSettings = ButtonsSettings.default
+    powerSettings.setMapping(ButtonMapping(action: .key, key: "f1"), for: .power)
+    checkEqual(GatewaySupport.routes(for: powerSettings).first { $0.key == "power" }?.route,
+               "software", "GatewayRoutes.powerKeySoftware")
+    powerSettings.setMapping(ButtonMapping(action: .disabled, key: ""), for: .power)
+    checkEqual(GatewaySupport.routes(for: powerSettings).first { $0.key == "power" }?.route,
+               "software", "GatewayRoutes.powerDisabledSoftware")
+    powerSettings.setMapping(.native, for: .power)
+    checkEqual(GatewaySupport.routes(for: powerSettings).first { $0.key == "power" }?.route,
+               "passthrough", "GatewayRoutes.powerNativePassthrough")
 
     // ---- 原生自然键映射（macOS 系统 HID 不可用时的原生语义实现）----
     checkEqual(GatewaySupport.naturalSpec(for: .volUp), KeySpec.parse("volumeup"),
@@ -80,6 +93,7 @@ func runGatewaySupportTests() {
     checkEqual(GatewaySupport.naturalSpec(for: .home), KeySpec.parse("home"), "GatewayNatural.home")
     check(GatewaySupport.naturalSpec(for: .menu) == nil, "GatewayNatural.menuNil")
     check(GatewaySupport.naturalSpec(for: .tv) == nil, "GatewayNatural.tvNil")
+    check(GatewaySupport.naturalSpec(for: .power) == nil, "GatewayNatural.powerNil")
 
     // ---- 目标机名规整 ----
     checkEqual(GatewaySupport.targetInfoName("MacBook Pro"), "MacBook Pro", "GatewayName.ascii")

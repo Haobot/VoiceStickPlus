@@ -791,8 +791,9 @@ public final class VoiceStickCoordinator {
     }
 
     /// 按本机按键映射逐键下发路由（macOS 语义见 GatewaySupport.routes：可映射键
-    /// 一律 software——原生=桌面自然键注入；power/volume_mute → passthrough。
-    /// key_map 是固件 NVS 全局态，两端各自连接时重发 = 当前活跃目标的配置生效）。
+    /// 一律 software——原生=桌面自然键注入；power native → passthrough、有映射 →
+    /// software；volume_mute → passthrough。key_map 是固件 NVS 全局态，两端各自
+    /// 连接时重发 = 当前活跃目标的配置生效）。
     private func pushGatewayKeymapRoutes(deviceID: String) {
         let settings = config.buttonsSettings(for: activeXiaomiDeviceID)
         for route in GatewaySupport.routes(for: settings) {
@@ -808,8 +809,8 @@ public final class VoiceStickCoordinator {
     /// gateway_repeater_）。映射取活跃 RC 的配置——与路由下发同源，保证「路由为
     /// software 的键必能在此被消费」。禁用键吞掉；native 按 naturalSpec 注入等价自然键
     /// （2026-10-12：macOS 系统级 HID 会话不可用，原生语义由桌面实现，见
-    /// GatewaySupport.routes 语义修正）；不可映射键（power/volume_mute，路由本就
-    /// passthrough 到不了这里）忽略防误注入。
+    /// GatewaySupport.routes 语义修正）；power 已可映射（2026-10-19），native 的
+    /// power 路由为 passthrough 不会到达这里；仅 volume_mute（桌面无映射面）忽略防误注入。
     private func handleGatewayKey(_ event: StateEvent) {
         guard let keyName = event.gatewayKey else { return }
         guard let button = RemoteButton(rawValue: keyName) else {
@@ -849,7 +850,7 @@ public final class VoiceStickCoordinator {
     }
 
     /// 映射 → 注入规格：key 动作解析 KeySpec（失败 nil），native 动作取桌面等价
-    /// 自然键（无等价语义的键如 menu/tv 返回 nil），disabled 一律 nil。
+    /// 自然键（无等价语义的键如 menu/tv/power 返回 nil），disabled 一律 nil。
     private func gatewaySpec(for button: RemoteButton, mapping: ButtonMapping) -> KeySpec? {
         switch mapping.action {
         case .key:

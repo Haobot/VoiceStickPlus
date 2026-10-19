@@ -630,7 +630,16 @@ for suppression, variable-element usage matching with page `0x07`), and a
 CGEvent tap only swallows the OS-native keyDown/systemDefined events to avoid
 double-firing — back (`0xF1`) and menu (`0x65`) never produce a keyDown
 CGEvent, and volume keys arrive as systemDefined (subtype 8), so suppression
-must be decided on the IOHID value callback. When a per-device
+must be decided on the IOHID value callback. The power key (`0x66`), mappable
+on both platforms since 2026-10-19 (macOS was the laggard; it was previously
+a macOS-only "C-level, not mappable" exception), produces **two** native
+systemDefined forms on macOS that both must be swallowed while the
+IOHID-decided suppress window (300 ms, non-consuming) is armed: an initial
+`NX_SUBTYPE_POWER_KEY` (subtype 1) event and an aux-control (subtype 8)
+down/up pair whose special key code is `NX_POWER_KEY` (6) — the same
+special-key posting channel as the volume keys, per Apple's `ev_keymap.h` /
+`IOLLEvent.h` and PowerKey's dual-form suppression. When unmapped (or
+`intercept` off) the power key keeps its native OS semantics. When a per-device
 `[device.<id>.buttons].intercept` switch is on and a non-voice button carries
 a `key`/`disabled` mapping, the OS-native key is suppressed and optionally
 replaced (Windows design: `Doc/Plan/xiaomi-keymap-consumer.md`; macOS side:

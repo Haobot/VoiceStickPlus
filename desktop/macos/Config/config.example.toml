@@ -108,6 +108,29 @@ air_mouse_curve_high_factor = 4.0   # 高速段相对增益（跨屏甩动）
 # hpf = true
 # agc = true
 
+# 小米遥控器按键映射（macOS；全局默认 [buttons] + 按设备覆盖 [device.<id>.buttons]，
+# 结构/语义对齐 Windows [xiaomi.keys]，托盘「按键映射…」照片热区对话框编辑）：
+# intercept：HID 拦截总开关（B 级键生效前提，默认 false，仅直连 RC 消费）；
+# keys 子表键为按钮 ID（power/up/down/left/right/ok/back/home/menu/tv/volume_up/
+# volume_down，另含 A 级 voice_double_click），值为 KeySpec 快捷键（action=key）
+# 或 "none"（action=disabled），未写出的键保持原生；网关模式下该表同时是
+# gateway_keymap_set 路由推导与 gateway_key 注入取值源（power 有映射 → software、
+# 原生 → passthrough，对齐 Windows 口径；其余可映射键一律 software）。
+# repeat_delay_ms / repeat_interval_ms：长按连发节拍（默认 300/80）。
+# [buttons]
+# intercept = true
+#
+# [buttons.keys]
+# power = "f1"                # 电源键 → F1（自定义后桌面吞掉系统电源事件）
+# back = "alt+left"           # 返回键 → Option+左方向
+# volume_up = "none"          # 禁用音量+
+#
+# [device.3A7F.buttons]
+# intercept = true
+#
+# [device.3A7F.buttons.keys]
+# voice_double_click = "cmd+t"  # 语音键双击（A 级，不受 intercept 门控）
+
 [output]
 target = "focused_app"
 transform = "original"

@@ -134,11 +134,19 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   `voice_double_click` 走 ATVV 会话合成的 `button_double_click`（协调器按映射处置）；
   **网关模式**（遥控器配对在 StickS3、桌面端无 RC 条目）下，该表同时是
   `gateway_keymap_set` 路由推导与 `gateway_key` 注入的取值源。**2026-10-12 路由语义
-  修正（macOS）**：可映射的 11 键（RemoteButton 集合）一律推 `software`——key/disabled
+  修正（macOS）**：可映射键一律推 `software`——key/disabled
   由映射注入/吞键，native 由桌面按 `GatewaySupport.naturalSpec` 注入等价自然键
   （方向/回车/退格/Home/音量±；menu/tv 无桌面等价语义，日志提示去对话框配置）；
-  桌面无映射面的 `power`/`volume_mute` 保持 `passthrough`（HOGP 直通需系统级配对，
-  macOS 无程序化配对 API、实测无 IOHIDDevice 节点，故原生键不走该路径）。
+  **2026-10-19 power 开放映射**（原 C 级"不可拦截"定案撤销，macOS 补齐 Windows
+  12 键全集）：直连模式 `power` 与其他 B 级键同路径（需 `intercept`），自定义/禁用后
+  桌面吞掉系统原生电源事件（macOS 上该事件为 systemDefined 双形态——subtype 1
+  首事件 + aux-control subtype 8 的 `NX_POWER_KEY(6)` down/up 对，吞除用 300ms
+  非消耗窗口 + down/up 闩锁，见 `XiaomiButtonInterceptManager`）；未映射时保持
+  系统原生电源语义（按电源键可能触发睡眠/关机对话框）。网关路由分派：
+  power 有映射（key/disabled）→ `software` 由 `gateway_key` 消费，native →
+  `passthrough`（无桌面等价语义，对齐 Windows `PushGatewayKeymapRoutesFor` 的
+  has_mapping 口径；macOS 系统 HID 会话不可用，passthrough 当前等价死键）；
+  桌面无映射面的 `volume_mute` 保持 `passthrough`。
   托盘设备菜单「按键映射…」对话框：小米设备项编辑设备覆盖，StickS3 设备项（网关入口）
   编辑根 `[buttons]` 全局表；对话框为遥控器照片热区交互（点图选键，对齐 Windows
   XiaomiKeymapDialog，照片资源 `Sources/VoiceStickApp/Resources/xiaomi_remote_2pro.png`
@@ -149,6 +157,7 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   repeat_delay_ms = 300     # 长按连发首次延迟（ms，默认 300）
   repeat_interval_ms = 80   # 长按连发重复间隔（ms，默认 80）
   [buttons.keys]
+  power = "f1"               # 电源键 → F1（自定义后桌面吞掉系统电源事件，2026-10-19 开放）
   back = "alt+left"          # 返回键 → Option+左方向
   volume_up = "none"         # 禁用音量+
 

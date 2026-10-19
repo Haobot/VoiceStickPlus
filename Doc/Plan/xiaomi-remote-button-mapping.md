@@ -51,7 +51,7 @@
 |---|---|---|
 | A：现在就能做 | 语音键双击、语音键单击（click_to_talk 模式下） | 事件已在 app 内，只需把硬编码动作改为配置驱动 |
 | B：需 HID 拦截层 | 方向×4、OK、返回、主页、菜单、TV、音量± | 桌面端当前不可见，必须新增拦截子系统 |
-| C：不建议开放 | 电源键 | 长按控制遥控器自身休眠/开关机，OS 电源语义有副作用；界面呈现但标注不可配置 |
+| C：不建议开放 | ~~电源键~~（2026-10-19 撤销：Windows 先行开放后 macOS 补齐，见 §4.2 电源键注记） | ~~长按控制遥控器自身休眠/开关机，OS 电源语义有副作用~~；实际两端的拦截层都能在映射生效时吞掉原生系统事件，未映射时保持原生语义，副作用可控 |
 | 固定语义 | 语音键按住=录音（PTT） | 与 ATVV 音频会话绑定，是产品核心功能，不开放 remap |
 
 ## 4. 总体架构（三层，自底向上）
@@ -101,11 +101,13 @@ voice_double_click_key    = "enter"
   OTA/ATVV 数据流误判）。VID 匹配天然带设备归因，无需时序关联。
 - **处置挂在 IOHID 回调**（而非 tap）：0xF1(back)/0x65(menu) 等键在 macOS 不产生
   keyDown CGEvent，挂 tap 的旧架构对它们永远静默。inject 在 IOHID 按下时即注入
-  KeySpec；该键若有原生行为（方向/OK/Home/TV→keyDown，音量→subtype=8 的
+  KeySpec；该键若有原生行为（方向/OK/Home/TV→keyDown，音量/电源→subtype=8 的
   systemDefined，data1=(keyCode<<16)|0xa00(down)/0xb00(up)），记吞除标记由 tap
   按 keycode/systemKey 反映射（`RemoteButtonHIDMap.usageToMacKeyCode` /
-  `volumeSystemKeyToUsage`）吞掉原生事件防双触发。吞除标记=一次性消费+300ms
-  短窗兜底；keyDown 吞后按 keycode 闩锁联动吞自动重复与 keyup；音量 down/up
+  `auxControlKeyToUsage`，2026-10-19 由 volumeSystemKeyToUsage 扩名并加入
+  NX_POWER_KEY=6→power）吞掉原生事件防双触发。吞除标记=一次性消费+300ms
+  短窗兜底（电源键例外：单次按下多形态，用非消耗窗口，见 §4.2 电源键注记/后文）；
+  keyDown 吞后按 keycode 闩锁联动吞自动重复与 keyup；音量/电源 down/up
   用闩锁配对（长按 up 可能超窗）。
 - native / intercept=false → 什么都不做，OS 原生消费，忠实透传。
 - 已否决备选（真机证据）：
@@ -117,7 +119,17 @@ voice_double_click_key    = "enter"
   IOHID 层（其余键静默，连系统音量都不响应）；**「忽略此设备」后重新配对
   （主页+菜单 3-5s）即恢复全部键报告**。排查「按键无报告」先重配对。
 
-**电源键**：两端都不进映射表（或仅可读展示），避免破坏遥控器自身电源管理。
+**电源键**：~~两端都不进映射表~~（2026-10-19 定案撤销）两端均开放——Windows
+先行（`kXiaomiMappableButtons` 12 键全集），macOS 本次补齐：`RemoteButton` 增
+`power`（usage 0x66），与 B 级键同路径（需 `intercept`）。macOS 原生事件为
+systemDefined 双形态（subtype 1 首事件 `NX_SUBTYPE_POWER_KEY` + aux-control
+subtype 8 的 `NX_POWER_KEY(6)` down/up 对，同音量 special-key 通道），单次按下
+多形态 ⇒ 吞除用 300ms 非消耗窗口 + down/up 闩锁（对齐 PowerKey 双形态吞除；
+常量实证 Apple `ev_keymap.h`/`IOLLEvent.h`）。未映射保持系统原生电源语义。
+网关路由：power 有映射（key/disabled）→ software，native → passthrough（对齐
+Windows `PushGatewayKeymapRoutesFor` has_mapping 口径；`naturalSpec(.power)`=nil，
+系统电源语义不可也不应合成）。遥控器自身「长按电源关机/休眠」为设备侧行为，
+与桌面映射互不干扰。
 
 **生命周期**：拦截随 app 进程存亡；进程退出/崩溃即回归原生，无残留状态。
 
@@ -148,7 +160,7 @@ voice_double_click_key    = "enter"
 交互细则（对齐 Logitech Options）：
 
 - 设备图上每个可配置键一个热点，hover 高亮，点击选中；也可直接点击弹动作菜单。
-- 已自定义的键带角标/着色；电源键置灰并提示「系统电源键，不可配置」。
+- 已自定义的键带角标/着色；~~电源键置灰并提示「系统电源键，不可配置」~~（2026-10-19 撤销，电源键热区常规可配，附原生系统电源语义提示文案）。
 - `键盘按键` 动作复用现有热键捕获件（macOS `HotkeyCaptureWindowController` / Windows hotkey 捕获对话框）+ `KeySpec` 校验。
 - 拦截总开关旁提示权限状态（macOS 输入监控/辅助功能；未授权给跳转引导，复用 onboarding 先例）。
 - 保存即写 config.toml 并经两端既有 `onConfigChanged`/`on_config_changed` 通道内存生效；HID 拦截开关变更即时启停拦截层。

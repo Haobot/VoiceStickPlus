@@ -25,15 +25,17 @@ public enum RemoteButtonHIDMap {
     /// HID usage id → RemoteButton。
     /// 值来源（方案 §3.1 / Doc/Ref/protocol.md 键码表）：
     ///   0x28=ok, 0x4A=home, 0xF1=back(非标准), 0x65=menu, 0x35=tv,
-    ///   0x4F/0x50=right/left, 0x51/0x52=down/up, 0x80/0x81=vol_up/vol_down。
-    /// 不入表 → button(forUsage:) 返回 nil，处置一律 native：
-    ///   0x66=power（C 级不可拦截）、0x7F=mute（预留）、其余未知 usage。
+    ///   0x4F/0x50=right/left, 0x51/0x52=down/up, 0x80/0x81=vol_up/vol_down,
+    ///   0x66=power（2026-10-19 自 C 级开放为可映射，对齐 Windows 12 键全集；
+    ///   原生事件为 systemDefined 双形态，见 XiaomiButtonInterceptManager）。
+    /// 不入表 → button(forUsage:) 返回 nil，处置一律 native：0x7F=mute（预留）、其余未知 usage。
     public static let usageToButton: [UInt32: RemoteButton] = [
         0x28: .ok,
         0x4A: .home,
         0xF1: .back,
         0x65: .menu,
         0x35: .tv,
+        0x66: .power,
         0x4F: .right,
         0x50: .left,
         0x51: .down,
@@ -46,14 +48,15 @@ public enum RemoteButtonHIDMap {
     public static let interceptableButtons: [RemoteButton] =
         RemoteButton.allCases.filter { $0.requiresIntercept }
 
-    /// HID usage id → RemoteButton；未映射（power/mute/未知）返回 nil。
+    /// HID usage id → RemoteButton；未映射（mute/未知 usage）返回 nil。
     public static func button(forUsage usage: UInt32) -> RemoteButton? {
         usageToButton[usage]
     }
 
     /// usage → macOS virtual keycode（仅 macOS HID→CGEvent 翻译层实际会产生 keyDown
     /// 的 usage 入表；真机实测：0xF1(back) 不产生 keyDown，0x80/0x81(vol) 走
-    /// systemDefined 而非 keyDown，0x65(menu) 未见 keyDown）。IOHID 驱动处置后
+    /// systemDefined 而非 keyDown，0x65(menu) 未见 keyDown；0x66(power) 同为
+    /// systemDefined 双形态，见 auxControlKeyToUsage）。IOHID 驱动处置后
     /// CGEvent tap 按此表反映射匹配要吞的原生 keyDown（二期 macOS 拦截重构）。
     public static let usageToMacKeyCode: [UInt32: Int64] = [
         0x28: 0x24,  // ok → kVK_Return
@@ -70,11 +73,16 @@ public enum RemoteButtonHIDMap {
         usageToMacKeyCode[usage]
     }
 
-    /// 音量键的 systemDefined 键码（NX_KEYTYPE_SOUND_UP/DOWN；data1 高 16 位）
-    /// ↔ usage 映射。音量键的原生事件形态是 subtype=8 的 NSSystemDefined。
-    public static let volumeSystemKeyToUsage: [Int64: UInt32] = [
+    /// systemDefined 事件 data1 高 16 位 special key code（NX_KEYTYPE_* / NX_POWER_KEY）
+    /// ↔ usage 映射。音量键的原生事件形态是 subtype=8（NX_SUBTYPE_AUX_CONTROL_BUTTONS）
+    /// 的 NSSystemDefined；电源键同一通道多一个形态：keyCode=NX_POWER_KEY(6) 的
+    /// down/up 对（另有 subtype=1 首事件，无 keyCode 语义，由 app 层按吞除窗吞除）。
+    /// 常量来源 Apple IOLLEvent.h / ev_keymap.h（NX_KEYTYPE_SOUND_UP=0、SOUND_DOWN=1、
+    /// NX_POWER_KEY=6）。
+    public static let auxControlKeyToUsage: [Int64: UInt32] = [
         0: 0x80,  // NX_KEYTYPE_SOUND_UP → vol_up
         1: 0x81,  // NX_KEYTYPE_SOUND_DOWN → vol_down
+        6: 0x66,  // NX_POWER_KEY → power
     ]
 
     /// 依据拦截总开关与单键映射产出处置：

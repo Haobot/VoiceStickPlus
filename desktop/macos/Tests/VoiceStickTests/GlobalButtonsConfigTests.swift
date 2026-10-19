@@ -45,15 +45,40 @@ func runGlobalButtonsConfigTests() {
           "gb: 无覆盖设备回落全局")
 
     // 路由推导与消费同源（2026-10-12 语义修正）：可映射键一律 software——
-    // 原生由桌面 naturalSpec 注入（macOS 系统级 HID 会话不可用）；桌面无映射面的
-    // power/volume_mute 保持 passthrough。
+    // 原生由桌面 naturalSpec 注入（macOS 系统级 HID 会话不可用）；未映射的 power
+    // 与无映射面的 volume_mute 保持 passthrough（power 有映射时 → software，见下）。
     let routes = GatewaySupport.routes(for: cfg.buttonsSettings(for: nil))
     check(routes.first { $0.key == "back" }?.route == "software",
           "gb: 映射键推软件路由")
     check(routes.first { $0.key == "up" }?.route == "software",
           "gb: 未映射键（原生）推软件路由（桌面自然键注入）")
     check(routes.first { $0.key == "power" }?.route == "passthrough",
-          "gb: 无映射面的 power 推直通")
+          "gb: 未映射的 power 推直通")
+
+    // power 映射（2026-10-19 开放，macOS 补齐 Windows 12 键全集）：解析/路由/序列化。
+    let powerCfg = AppConfig.parse(text: """
+    [buttons.keys]
+    power = "f1"
+    """)
+    check(powerCfg.globalButtonsSettings.mapping(for: .power)
+          == ButtonMapping(action: .key, key: "f1"),
+          "gb: power 键值 → action=key")
+    check(GatewaySupport.routes(for: powerCfg.globalButtonsSettings)
+          .first { $0.key == "power" }?.route == "software",
+          "gb: 有映射的 power 推软件路由（对齐 Windows has_mapping 口径）")
+    let powerDisabled = AppConfig.parse(text: """
+    [buttons.keys]
+    power = "none"
+    """)
+    check(powerDisabled.globalButtonsSettings.mapping(for: .power).action == .disabled,
+          "gb: power none 哨兵 → action=disabled")
+    check(GatewaySupport.routes(for: powerDisabled.globalButtonsSettings)
+          .first { $0.key == "power" }?.route == "software",
+          "gb: 禁用的 power 推软件路由（gateway_key 消费吞键）")
+    let powerText = powerCfg.serializedText()
+    check(powerText.contains("power = \"f1\""), "gb: 序列化写出 power 映射")
+    check(AppConfig.parse(text: powerText).globalButtonsSettings
+          == powerCfg.globalButtonsSettings, "gb: power save→load round-trip 恒等")
 
     // 整数形态 Double 宽容解码（LenientDouble）：%.4g 曾把 3/80/4000 写成 TOML
     // 整数，TOMLKit 严格 typeMismatch → 整表解码失败回落 legacy → 所有 [表] 段丢光。

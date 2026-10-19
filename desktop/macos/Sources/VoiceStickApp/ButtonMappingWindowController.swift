@@ -399,33 +399,25 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
 
     // MARK: - 状态同步
 
-    /// 当前选中热区对应的可映射键；power → nil（不可映射），mic → 语音键双击
-    ///（照片上的语音键在桌面侧的映射面即 A 级双击动作）。
+    /// 当前选中热区对应的可映射键；mic → 语音键双击（照片上的语音键在桌面侧的
+    /// 映射面即 A 级双击动作）。power 自 2026-10-19 起可映射（对齐 Windows 12 键
+    /// 全集），走常规 B 级路径（需 intercept 开启）。
     private func currentButton() -> RemoteButton? {
         guard canvas.selected >= 0, canvas.selected < kRemoteHotspots.count else { return nil }
         let id = kRemoteHotspots[canvas.selected].id
         if id == "mic" { return .voiceDoubleClick }
-        if id == "power" { return nil }
         return RemoteButton(rawValue: id)
     }
 
     private func refreshPanel() {
         guard canvas.selected >= 0, canvas.selected < kRemoteHotspots.count else { return }
-        let id = kRemoteHotspots[canvas.selected].id
-        if id == "power" {
-            keyNameLabel.stringValue = l10n("电源键", "Power")
-            hintLabel.stringValue = l10n(
-                "电源键由设备固件管理，不参与桌面映射（保持直通）。",
-                "Power is firmware-managed and not mappable (stays passthrough)."
-            )
-            actionPopup.isEnabled = false
-            keyField.isEnabled = false
-            captureButton.isEnabled = false
-            return
-        }
         guard let button = currentButton() else { return }
         keyNameLabel.stringValue = Self.buttonName(button)
-        hintLabel.stringValue = Self.normalHint
+        if button == .power {
+            hintLabel.stringValue = Self.powerHint
+        } else {
+            hintLabel.stringValue = Self.normalHint
+        }
         actionPopup.isEnabled = true
         captureButton.isEnabled = true
 
@@ -552,6 +544,15 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
         )
     }
 
+    /// 电源键说明：原生 = 系统电源语义（可能触发睡眠/关机），自定义/禁用后桌面
+    /// 拦截原生系统事件（需开启 HID 拦截）；网关模式下原生 = 直通。
+    private static var powerHint: String {
+        l10n(
+            "「原生」保持系统电源键行为；「按键」/「禁用」由桌面接管并吞掉系统电源事件（需开启 HID 拦截，未映射时按电源可能触发睡眠/关机对话框）。",
+            "\"Native\" keeps the OS power-button behavior; \"Key\"/\"Disabled\" is handled by the desktop, which swallows the OS power events (requires HID interception; when unmapped, pressing power may trigger the sleep/shutdown dialog)."
+        )
+    }
+
     /// 键显示名（未进 Localization 共享表，按生效语言取词，见文件头注释）。
     private static func buttonName(_ button: RemoteButton) -> String {
         let zh = Localization.current.effective == .zhHans
@@ -561,6 +562,7 @@ final class ButtonMappingWindowController: NSWindowController, NSTextFieldDelega
         case .back: return zh ? "返回" : "Back"
         case .menu: return zh ? "菜单" : "Menu"
         case .tv: return "TV"
+        case .power: return zh ? "电源" : "Power"
         case .right: return zh ? "右方向" : "Right"
         case .left: return zh ? "左方向" : "Left"
         case .down: return zh ? "下方向" : "Down"
