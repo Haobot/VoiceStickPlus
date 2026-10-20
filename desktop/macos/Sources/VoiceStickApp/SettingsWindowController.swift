@@ -8,6 +8,7 @@ import VoiceStickCore  // N1: XiaomiSettings 下沉 Core 后需显式导入
 ///   腾讯云的 API Key 框即 SecretId（对齐 Windows，SecretKey/AppId 只走 config.toml 手编）。
 /// - 文本精修：LLM Base URL/API Key/Model（开发者模式），精修勾选与提示词（勾选可见）。
 /// - 输出：输出目标（开发者模式；macOS 无微信输入法项）。
+/// - 语音编辑：语音编辑指令开关 + 单独「删除」默认字数 + 边界说明（始终可见）。
 /// - 系统（开发者模式）：开机自启（macOS 13+）、IMU 调试。
 /// - 音频文件（开发者模式）：调试音频开关与目录。
 /// 语言保存在 AppDelegate onConfigChanged 生效（重建托盘菜单）；本窗口自身靠
@@ -33,6 +34,11 @@ final class SettingsWindowController: NSWindowController {
     private let refinePromptTextView = NSTextView()
     private let refinePromptScrollView = NSScrollView()
     private let outputTargetPopup = NSPopUpButton()
+    // 语音编辑区块（方案 §9.2：开关 + 默认删除字数 + 边界说明）。
+    private let voiceEditButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let voiceEditDefaultCharsStepper = NSStepper()
+    private let voiceEditDefaultCharsValueLabel = NSTextField(labelWithString: "1")
+    private var voiceEditDefaultCharsRow: NSStackView?
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let imuDebugButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let debugAudioButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -198,6 +204,33 @@ final class SettingsWindowController: NSWindowController {
         self.outputRow = outputRow
         stack.addArrangedSubview(outputRow)
 
+        // ===== 语音编辑（Doc/Plan/voice-edit-commands.md §9.2；默认开，非开发者模式也可见）=====
+        stack.addArrangedSubview(sectionTitle(tr(.settingsSectionVoiceEdit)))
+        voiceEditButton.title = tr(.settingsVoiceEditEnabled)
+        voiceEditButton.target = self
+        voiceEditButton.action = #selector(voiceEditToggled)
+        stack.addArrangedSubview(row(label: "", control: voiceEditButton))
+        voiceEditDefaultCharsStepper.minValue = Double(VoiceEditSettings.defaultCharsRange.lowerBound)
+        voiceEditDefaultCharsStepper.maxValue = Double(VoiceEditSettings.defaultCharsRange.upperBound)
+        voiceEditDefaultCharsStepper.increment = 1
+        voiceEditDefaultCharsStepper.valueWraps = false
+        voiceEditDefaultCharsStepper.target = self
+        voiceEditDefaultCharsStepper.action = #selector(voiceEditDefaultCharsChanged)
+        voiceEditDefaultCharsValueLabel.alignment = .center
+        voiceEditDefaultCharsValueLabel.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        let voiceEditCharsControl = NSStackView()
+        voiceEditCharsControl.orientation = .horizontal
+        voiceEditCharsControl.alignment = .centerY
+        voiceEditCharsControl.spacing = 8
+        voiceEditCharsControl.addArrangedSubview(voiceEditDefaultCharsValueLabel)
+        voiceEditCharsControl.addArrangedSubview(voiceEditDefaultCharsStepper)
+        let voiceEditCharsRow = row(
+            label: tr(.settingsVoiceEditDefaultChars), control: voiceEditCharsControl
+        )
+        voiceEditDefaultCharsRow = voiceEditCharsRow
+        stack.addArrangedSubview(voiceEditCharsRow)
+        stack.addArrangedSubview(hintRow(tr(.settingsVoiceEditHint)))
+
         // ===== 系统 =====
         let systemTitle = sectionTitle(tr(.settingsSectionSystem))
         systemSectionTitle = systemTitle
@@ -354,6 +387,9 @@ final class SettingsWindowController: NSWindowController {
             : config.refinePrompt
 
         outputTargetPopup.selectItem(withTitle: config.defaultOutputProfile.target.displayName)
+        voiceEditButton.state = config.voiceEdit.enabled ? .on : .off
+        voiceEditDefaultCharsValueLabel.stringValue = "\(config.voiceEdit.defaultChars)"
+        voiceEditDefaultCharsStepper.intValue = Int32(config.voiceEdit.defaultChars)
         launchAtLoginButton.state = config.launchAtLogin ? .on : .off
         imuDebugButton.state = config.showIMUDebug ? .on : .off
         debugAudioButton.state = config.debugAudioCache ? .on : .off
@@ -422,6 +458,7 @@ final class SettingsWindowController: NSWindowController {
         llmAPIKeyRow?.isHidden = !developerMode
         llmModelRow?.isHidden = !developerMode
         refinePromptRow?.isHidden = refineButton.state != .on
+        voiceEditDefaultCharsRow?.isHidden = voiceEditButton.state != .on
 
         outputSectionTitle?.isHidden = !developerMode
         outputRow?.isHidden = !developerMode
@@ -470,6 +507,15 @@ final class SettingsWindowController: NSWindowController {
     @objc private func refineToggled() {
         updateVisibility()
         resizeWindowToFit(animated: true)
+    }
+
+    @objc private func voiceEditToggled() {
+        updateVisibility()
+        resizeWindowToFit(animated: true)
+    }
+
+    @objc private func voiceEditDefaultCharsChanged() {
+        voiceEditDefaultCharsValueLabel.stringValue = "\(voiceEditDefaultCharsStepper.intValue)"
     }
 
     @objc private func providerSelectionChanged() {
@@ -578,6 +624,11 @@ final class SettingsWindowController: NSWindowController {
         updatedConfig.defaultOutputProfile = outputProfile
         updatedConfig.deviceOutputProfiles = config.deviceOutputProfiles
         updatedConfig.autoEnter = config.autoEnter
+        // 语音编辑：只暴露开关与默认删除字数；其余字段（max_chars/scope_seconds/
+        // verify_mode/unverified_seconds）保留 config.toml 手编值。
+        updatedConfig.voiceEdit = config.voiceEdit
+        updatedConfig.voiceEdit.enabled = voiceEditButton.state == .on
+        updatedConfig.voiceEdit.defaultChars = Int(voiceEditDefaultCharsStepper.intValue)
         updatedConfig.debugAudioCache = debugAudioButton.state == .on
         updatedConfig.debugAudioDirectory = URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)
         updatedConfig.pairedDevices = config.pairedDevices

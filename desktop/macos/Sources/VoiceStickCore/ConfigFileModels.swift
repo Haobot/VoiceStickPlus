@@ -77,6 +77,8 @@ public struct ConfigFile: Decodable {
     public var device: [String: DeviceConfigFile]?
     /// 根 [buttons] 表（网关模式全局键位映射，Windows [xiaomi.keys] 的 macOS 对应物）。
     public var buttons: ButtonsConfigFile?
+    /// [voice_edit] 语音编辑指令配置表（方案 §9.1）。
+    public var voice_edit: VoiceEditConfigFile?
 }
 
 public struct OutputConfigFile: Decodable {
@@ -140,6 +142,17 @@ public struct ButtonsConfigFile: Decodable {
     public var keys: [String: String]?
     public var repeat_delay_ms: Int?
     public var repeat_interval_ms: Int?
+}
+
+/// [voice_edit] 表（方案 §9.1）：字段与默认值双端同名同默认；缺省字段回落默认，
+/// 数值越界由解析侧钳位（见 voiceEditSettingsValue）。
+public struct VoiceEditConfigFile: Decodable {
+    public var enabled: Bool?
+    public var default_chars: Int?
+    public var max_chars: Int?
+    public var scope_seconds: Int?
+    public var verify_mode: String?
+    public var unverified_seconds: Int?
 }
 
 /// [device.<id>.interaction] 表：键名与顶层一致。
@@ -243,4 +256,3 @@ public extension String {
             map[deviceID] = xiaomiSettings(from: xiaomi)
         }
     }
-

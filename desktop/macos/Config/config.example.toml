@@ -151,3 +151,16 @@ translation_target = "en"
 # global_hotkey = "Alt+X"         # 全局热键组合（托盘菜单可设）
 # developer_mode = false          # 开发者模式（解锁高级入口）
 # llm_disable_thinking = true     # 向 LLM 请求注入 enable_thinking:false 加速输出（见 desktop-config）
+
+# 语音编辑指令（Doc/Plan/voice-edit-commands.md §9.1）：
+# ASR final 文本先做本地整句白名单解析（如「删掉最后两个字」「删除最后一句」
+# 「删除刚才的/撤销」「删除」），命中后删掉最近一次语音输入、不粘贴命令文本、
+# 不写会话历史；仅对 focused_app 输出且光标仍在该文本末尾时生效（安全拒绝优先）。
+# 设置页「语音编辑」区块只暴露 enabled 与 default_chars，其余字段手编。
+[voice_edit]
+enabled = true
+default_chars = 1            # 单独说“删除”时删几个字（1~10）
+max_chars = 20               # 单条指令允许删除的最大字数（1~50，与 Windows 一致），超限按普通文本上屏
+scope_seconds = 120          # 只允许删除最近 N 秒内的语音注入（10~600）
+verify_mode = "auto"         # strict=读不到字段/光标一律拒绝 / auto=允许短窗盲删 / off=不校验
+unverified_seconds = 8       # auto 模式下不可验证的允许窗口秒数（0~30）

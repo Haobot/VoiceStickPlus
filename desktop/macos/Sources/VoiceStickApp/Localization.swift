@@ -124,6 +124,15 @@ enum L10nKey: String, CaseIterable {
     case batteryErrDisconnected, batteryErrLogCleared
     case batterySavedTo, batterySaveFailed, batteryNotEnoughSamples
     case batteryAxisTime, batteryAxisVoltage, batteryChartTitle
+
+    // 语音编辑（Voice Edit Commands；设置区块 + 命令轮 toast 双表）
+    case settingsSectionVoiceEdit, settingsVoiceEditEnabled, settingsVoiceEditDefaultChars
+    case settingsVoiceEditHint
+    case voiceEditDeletedChars, voiceEditDeletedSentences, voiceEditDeletedSentenceOne
+    case voiceEditDeletedAll, voiceEditUnverifiedSuffix
+    case voiceEditNoInjection, voiceEditScopeExpired, voiceEditAppChanged, voiceEditFieldMismatch
+    case voiceEditCaretNotEnd, voiceEditSelectionPresent, voiceEditVerifyUnavailable
+    case voiceEditForegroundElevated, voiceEditAccessibilityDenied, voiceEditInjectFailed
 }
 
 /// 界面文案查表。当前语言由 AppDelegate 在启动与配置变更时写入 `Localization.current`
@@ -459,6 +468,26 @@ enum Localization {
         .batteryAxisTime: "Time (min)",
         .batteryAxisVoltage: "Voltage (mV)",
         .batteryChartTitle: "VS-%@ battery voltage (%d points)",
+
+        .settingsSectionVoiceEdit: "Voice Editing",
+        .settingsVoiceEditEnabled: "Enable voice edit commands (say e.g. “delete the last two characters”)",
+        .settingsVoiceEditDefaultChars: "Characters deleted by “delete” alone",
+        .settingsVoiceEditHint: "Applies only to the most recent dictation, and only while the cursor is still at the end of that text. Subtitle and WeChat input-method modes are not supported.",
+        .voiceEditDeletedChars: "Deleted %d characters",
+        .voiceEditDeletedSentences: "Deleted the last %d sentences",
+        .voiceEditDeletedSentenceOne: "Deleted the last sentence",
+        .voiceEditDeletedAll: "Deleted this dictation",
+        .voiceEditUnverifiedSuffix: " (cursor unverified)",
+        .voiceEditNoInjection: "No voice input to delete",
+        .voiceEditScopeExpired: "The last dictation expired; nothing deleted",
+        .voiceEditAppChanged: "The app changed; nothing deleted",
+        .voiceEditFieldMismatch: "The cursor position changed; nothing deleted",
+        .voiceEditCaretNotEnd: "Move the cursor back to the end first",
+        .voiceEditSelectionPresent: "Clear the selection first",
+        .voiceEditVerifyUnavailable: "Cannot verify the cursor position in this app; nothing deleted",
+        .voiceEditForegroundElevated: "Cannot delete in an elevated window",
+        .voiceEditAccessibilityDenied: "Accessibility permission is not granted",
+        .voiceEditInjectFailed: "Deletion may not have been applied; check the text field",
     ]
 
     private static let chinese: [L10nKey: String] = [
@@ -736,6 +765,26 @@ enum Localization {
         .batteryAxisTime: "时间（分钟）",
         .batteryAxisVoltage: "电压（mV）",
         .batteryChartTitle: "VS-%@ 电池电压监测（%d 点）",
+
+        .settingsSectionVoiceEdit: "语音编辑",
+        .settingsVoiceEditEnabled: "启用语音编辑指令（说“删除最后两个字”等）",
+        .settingsVoiceEditDefaultChars: "单独说“删除”时删除字数",
+        .settingsVoiceEditHint: "仅对最近一次语音输入、且光标仍在该文本末尾时生效；字幕/微信输入法模式不支持。",
+        .voiceEditDeletedChars: "已删除 %d 个字",
+        .voiceEditDeletedSentences: "已删除最后 %d 句",
+        .voiceEditDeletedSentenceOne: "已删除最后一句",
+        .voiceEditDeletedAll: "已删除本次输入",
+        .voiceEditUnverifiedSuffix: "（未校验光标）",
+        .voiceEditNoInjection: "没有可删除的语音输入",
+        .voiceEditScopeExpired: "最近一次语音输入已过期，未删除",
+        .voiceEditAppChanged: "已切换应用，未删除",
+        .voiceEditFieldMismatch: "光标位置已变化，未删除",
+        .voiceEditCaretNotEnd: "请先将光标移回末尾",
+        .voiceEditSelectionPresent: "请先取消选中",
+        .voiceEditVerifyUnavailable: "当前应用无法确认光标位置，未删除",
+        .voiceEditForegroundElevated: "目标窗口权限较高，无法删除",
+        .voiceEditAccessibilityDenied: "辅助功能权限未授予",
+        .voiceEditInjectFailed: "删除可能未生效，请检查输入框",
     ]
 }
 

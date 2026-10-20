@@ -180,6 +180,36 @@ public struct AirMouseSettings: Equatable {
     }
 }
 
+/// 语音编辑指令配置（[voice_edit] 表，方案 §9.1；字段与默认值双端同名同默认）。
+/// 只有 default_chars/max_chars/scope_seconds/verify_mode/unverified_seconds 影响
+/// 解析与校验；enabled=false 时完全回到现状（不解析、不拦截）。
+public struct VoiceEditSettings: Equatable {
+    public init() {}
+
+    /// 总开关（决策点 D2：默认开，开箱即用）。
+    public var enabled = true
+    /// 单独说「删除」时删几个字（决策点 D1：默认 1，可连说）。
+    public var defaultChars = 1
+    /// 单条指令允许删除的最大字数；显式数量超限按普通文本上屏。
+    public var maxChars = 20
+    /// L0 作用域时间窗（秒）：只允许删除最近 N 秒内的语音注入。
+    public var scopeSeconds = 120
+    /// L1 校验模式（决策点 D8：默认 auto，本机 spike 覆盖良好后可调 strict）。
+    public var verifyMode: VoiceEditVerifyMode = .auto
+    /// auto 模式下不可验证时的允许窗口（秒）：短窗 + 前台应用一致才允许盲删。
+    public var unverifiedSeconds = 8
+
+    public static let `default` = VoiceEditSettings()
+
+    /// 加载钳位范围（方案 §9.1）：与 Windows app_config.h 的 kVoiceEdit*Min/Max 完全
+    /// 一致（max_chars 1..50），加载时按区间钳位（不是回落默认），保证同一份
+    /// config.toml 跨端行为一致。
+    public static let defaultCharsRange = 1...10
+    public static let maxCharsRange = 1...50
+    public static let scopeSecondsRange = 10...600
+    public static let unverifiedSecondsRange = 0...30
+}
+
 // ---- KeySpec（原 VoiceStickApp/KeySpec.swift） ----
 
 import CoreGraphics
@@ -590,6 +620,60 @@ public struct KeySpec: Equatable {
         }
     }
 
+    // ---- 语音编辑配置（[voice_edit] 表，方案 §9.1）----
+
+    /// [voice_edit] 表解析：字段缺省保留 fallback；数值越界按区间**钳位**（与 Windows
+    /// app_config.cc 的 std::clamp 同口径——回落默认会让同一份 config.toml 跨端行为
+    /// 不同：如 max_chars=51 时 Windows=50、回落默认=20）；verify_mode 非法值回 auto。
+    /// 各字段独立钳位、不做跨字段改写（同 Windows；default_chars > max_chars 时由
+    /// 解析器按 max_chars 收紧 effective 删除量，两端解析器同口径）。
+    public func voiceEditSettingsValue(
+        _ file: VoiceEditConfigFile?, default fallback: VoiceEditSettings
+    ) -> VoiceEditSettings {
+        guard let file else { return fallback }
+        var settings = fallback
+        if let enabled = file.enabled { settings.enabled = enabled }
+        if let value = file.default_chars {
+            settings.defaultChars = clampVoiceEditValue(
+                value, range: VoiceEditSettings.defaultCharsRange)
+        }
+        if let value = file.max_chars {
+            settings.maxChars = clampVoiceEditValue(value, range: VoiceEditSettings.maxCharsRange)
+        }
+        if let value = file.scope_seconds {
+            settings.scopeSeconds = clampVoiceEditValue(
+                value, range: VoiceEditSettings.scopeSecondsRange)
+        }
+        if let value = file.verify_mode {
+            settings.verifyMode = VoiceEditVerifyMode.parse(value)
+        }
+        if let value = file.unverified_seconds {
+            settings.unverifiedSeconds = clampVoiceEditValue(
+                value, range: VoiceEditSettings.unverifiedSecondsRange)
+        }
+        return settings
+    }
+
+    /// 整数区间钳位（对齐 Windows std::clamp(value, min, max)）。
+    private func clampVoiceEditValue(_ value: Int, range: ClosedRange<Int>) -> Int {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    /// legacy 逐行解析版：逐行解析器丢弃 `[voice_edit]` 表头，表内键以裸键名出现；
+    /// 历史配置无该表 → 全部回落默认。键名 `enabled` 等与顶层无冲突（顶层无同名字段）。
+    public func voiceEditSettingsValue(
+        _ values: [String: String], default fallback: VoiceEditSettings
+    ) -> VoiceEditSettings {
+        var file = VoiceEditConfigFile()
+        file.enabled = values["enabled"].map { boolValue($0, default: fallback.enabled) }
+        file.default_chars = values["default_chars"].flatMap(Int.init)
+        file.max_chars = values["max_chars"].flatMap(Int.init)
+        file.scope_seconds = values["scope_seconds"].flatMap(Int.init)
+        file.verify_mode = values["verify_mode"]
+        file.unverified_seconds = values["unverified_seconds"].flatMap(Int.init)
+        return voiceEditSettingsValue(file, default: fallback)
+    }
+
 // ---- 追加纯助手（boolValue/outputTargetValue/textTransformValue/outputProfile） ----
     public func boolValue(_ text: String?, default defaultValue: Bool) -> Bool {
         guard let text else { return defaultValue }
@@ -629,4 +713,3 @@ public struct KeySpec: Equatable {
             } ?? defaultValue.translationTarget
         )
     }
-

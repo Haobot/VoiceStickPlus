@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import ServiceManagement
 import Sparkle
 import VoiceStickCore
@@ -124,37 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 编辑追踪（用户数据飞轮 P0-2）：AX 读取焦点字段文本（AppKit/ApplicationServices
         // 合规层），与注入文本做区间 diff——字段全文只在内存参与 diff，落库的只有改动
         // span。辅助功能权限与输入注入同源（CGEvent 已要求）。
-        coordinator.readFocusedFieldText = {
-            // 跨 SDK 兼容：AXUIElementCopyAttributeValue 在 macOS 27 SDK 头文件中
-            // 移除了 error 出参（3 参），旧 SDK 仍为 4 参——Swift 无法按 SDK 条件
-            // 编译，这里固定按 4 参 C ABI 经 dlsym 调用：新实现只读前 3 个寄存器
-            // 参数（多余寄存器实参在 arm64/x64 调用约定下无害），旧实现原样回填
-            // error。错误码一律以返回值为准。
-            typealias CopyAttr = @convention(c) (
-                AXUIElement, CFString,
-                UnsafeMutablePointer<CFTypeRef?>?,
-                UnsafeMutablePointer<AXError>?
-            ) -> AXError
-            guard let symbol = dlsym(dlopen(nil, RTLD_LAZY), "AXUIElementCopyAttributeValue") else {
-                return nil
-            }
-            let copyAttr = unsafeBitCast(symbol, to: CopyAttr.self)
-            var ignoredError = AXError.attributeUnsupported
-            let systemWide = AXUIElementCreateSystemWide()
-            var focused: CFTypeRef?
-            guard copyAttr(
-                systemWide, kAXFocusedUIElementAttribute as CFString, &focused, &ignoredError
-            ) == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
-                return nil
-            }
-            var value: CFTypeRef?
-            guard copyAttr(
-                focused as! AXUIElement, kAXValueAttribute as CFString, &value, &ignoredError
-            ) == .success, let value, CFGetTypeID(value) == CFStringGetTypeID() else {
-                return nil
-            }
-            return (value as! CFString) as String
-        }
+        coordinator.readFocusedFieldText = { FocusedFieldAXReader.readText() }
+        // 语音编辑 L1 目标校验（方案 §6.3）：基础 AX 读取扩展为
+        // 字段全文 + kAXSelectedTextRange（caretUTF16 / selectionLength）；任一不可读
+        // 返回 nil = 不可验证。macOS 27 实测 system-wide 取焦点元素返回 -25204
+        //（kAXErrorCannotComplete），reader 内置前台应用级 AX 树 fallback（Lead spike 结论）。
+        coordinator.readFocusedFieldState = { FocusedFieldAXReader.readState() }
         coordinator.presentUpgradeAlertUI = { url, message in
             NSApp.activate(ignoringOtherApps: true)
 
@@ -1037,5 +1013,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController?.setConnectedDevices([])
         coordinator?.updatePairedDeviceIDs(config.pairedDeviceIDs)
         syncF5Suppressor()
+    }
+}
+
+/// 焦点字段 AX 读取（编辑追踪 + 语音编辑共用；App 层合规实现，Core 不引入 AppKit/AX）。
+/// 跨 SDK 兼容：AXUIElementCopyAttributeValue 在 macOS 27 SDK 头文件中移除了 error 出参
+///（3 参），旧 SDK 仍为 4 参——Swift 无法按 SDK 条件编译，这里固定按 4 参 C ABI 经
+/// dlsym 调用：新实现只读前 3 个寄存器参数（多余寄存器实参在 arm64/x64 调用约定下无害），
+/// 旧实现原样回填 error。错误码一律以返回值为准。
+private enum FocusedFieldAXReader {
+    typealias CopyAttr = @convention(c) (
+        AXUIElement, CFString,
+        UnsafeMutablePointer<CFTypeRef?>?,
+        UnsafeMutablePointer<AXError>?
+    ) -> AXError
+
+    private static func copyAttrFunction() -> CopyAttr? {
+        guard let symbol = dlsym(dlopen(nil, RTLD_LAZY), "AXUIElementCopyAttributeValue") else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: CopyAttr.self)
+    }
+
+    private static func copyAttribute(
+        _ copyAttr: CopyAttr, element: AXUIElement, attribute: CFString
+    ) -> CFTypeRef? {
+        var ignoredError = AXError.attributeUnsupported
+        var value: CFTypeRef?
+        guard copyAttr(element, attribute, &value, &ignoredError) == .success else { return nil }
+        return value
+    }
+
+    /// 焦点 UI 元素：先 system-wide（旧系统有效），失败后回落前台应用级 AX 树
+    ///（macOS 27 实测 system-wide 返回 -25204 kAXErrorCannotComplete；Lead spike 结论）。
+    private static func focusedElement(_ copyAttr: CopyAttr) -> AXUIElement? {
+        let systemWide = AXUIElementCreateSystemWide()
+        if let focused = copyAttribute(
+            copyAttr, element: systemWide, attribute: kAXFocusedUIElementAttribute as CFString
+        ), CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            return (focused as! AXUIElement)
+        }
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return nil
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        if let focused = copyAttribute(
+            copyAttr, element: appElement, attribute: kAXFocusedUIElementAttribute as CFString
+        ), CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            return (focused as! AXUIElement)
+        }
+        return nil
+    }
+
+    /// 焦点字段全文（编辑追踪既有行为：读不到返回 nil）。
+    static func readText() -> String? {
+        guard let copyAttr = copyAttrFunction(), let focused = focusedElement(copyAttr),
+              let value = copyAttribute(copyAttr, element: focused, attribute: kAXValueAttribute as CFString),
+              CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        return (value as! CFString) as String
+    }
+
+    /// 焦点字段状态（语音编辑 L1 校验）：text + caretUTF16 + selectionLength。
+    /// 以下任一情况返回 nil = 不可验证（方案 §6.3）：无焦点元素/值不可读（含安全输入框、
+    /// 非文本控件）/无 kAXSelectedTextRange/超大文本（主线程比对保护）。
+    static func readState() -> FocusedFieldState? {
+        guard let copyAttr = copyAttrFunction(), let focused = focusedElement(copyAttr),
+              let value = copyAttribute(copyAttr, element: focused, attribute: kAXValueAttribute as CFString),
+              CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        guard let rangeValue = copyAttribute(
+            copyAttr, element: focused, attribute: kAXSelectedTextRangeAttribute as CFString
+        ), CFGetTypeID(rangeValue) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else { return nil }
+        let text = (value as! CFString) as String
+        guard text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16 else { return nil }
+        return FocusedFieldState(
+            text: text, caretUTF16: range.location, selectionLength: range.length
+        )
     }
 }
