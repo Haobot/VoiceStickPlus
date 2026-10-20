@@ -488,6 +488,28 @@ enum class StringId {
 
     // D10b：键位映射对话框的设备路由回执行标签（值 = "key=route, …" 列表）
     kGatewayDeviceRoutesLabel,      // "Device routes:" / "设备路由回执："
+
+    // 语音编辑指令（Doc/Plan/voice-edit-commands.md）：设置区块 + 执行反馈。
+    // StringId 只允许在末尾追加（core_tests_license_ima.cc 的
+    // LocalizationTablesAreComplete 断言要求中英双表逐项非空）。
+    kVoiceEditSectionTitle,        // "Voice Editing" / "语音编辑"
+    kVoiceEditEnable,              // 开关
+    kVoiceEditDefaultChars,        // "Characters to delete for bare "delete"" / 默认删除字数
+    kVoiceEditHintRuntime,        // 作用域说明
+    kVoiceEditHintMode,           // 模式说明
+    kVoiceEditDeletedChars,       // "Deleted %d characters" / "已删除 %d 个字"
+    kVoiceEditDeletedSentence,    // "Deleted the last sentence" / "已删除最后一句"
+    kVoiceEditDeletedSentences,   // "Deleted the last %d sentences" / "已删除最后 %d 句"
+    kVoiceEditDeletedAll,         // "Deleted this dictation" / "已删除本次输入"
+    kVoiceEditNoTarget,           // "No voice input to delete" / "没有可删除的语音输入"
+    kVoiceEditWrongWindow,        // "The active window changed; nothing deleted"
+    kVoiceEditElevated,           // "Cannot delete in an elevated window"
+    kVoiceEditCursorMoved,        // "Cursor moved; nothing deleted"
+    kVoiceEditSelectionActive,    // "Clear the selection first"
+    kVoiceEditPassword,           // "Voice delete is not supported in password fields"
+    kVoiceEditTextChanged,        // "The dictated text has changed; nothing deleted"
+    kVoiceEditUnverifiedExpired,  // "Too late to verify the cursor; nothing deleted"
+    kVoiceEditUnreadable,         // "Cannot verify the cursor; nothing deleted"
 };
 
 // 返回 UTF-8 本地化文本

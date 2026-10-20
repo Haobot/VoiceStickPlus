@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kGatewayDeviceRoutesLabel) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kVoiceEditUnreadable) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -510,6 +510,33 @@ constexpr StringTable EnglishStrings() {
         "Windows Bluetooth pairing did not complete, so remote-control buttons may not reach "
         "this PC. Voice input still works. If buttons do nothing, remove this device in "
         "Windows Bluetooth settings and add it again.";
+    table[Index(StringId::kVoiceEditSectionTitle)] = "Voice Editing";
+    table[Index(StringId::kVoiceEditEnable)] =
+        "Enable voice editing commands (say \"delete last two characters\", \"undo\")";
+    table[Index(StringId::kVoiceEditDefaultChars)] =
+        "Characters deleted when you say \"delete\" alone";
+    table[Index(StringId::kVoiceEditHintRuntime)] =
+        "Works only on the most recent dictation, with the cursor still at its end.";
+    table[Index(StringId::kVoiceEditHintMode)] =
+        "Not available in subtitle or third-party input-method modes.";
+    table[Index(StringId::kVoiceEditDeletedChars)] = "Deleted %d characters";
+    table[Index(StringId::kVoiceEditDeletedSentence)] = "Deleted the last sentence";
+    table[Index(StringId::kVoiceEditDeletedSentences)] = "Deleted the last %d sentences";
+    table[Index(StringId::kVoiceEditDeletedAll)] = "Deleted this dictation";
+    table[Index(StringId::kVoiceEditNoTarget)] = "No voice input to delete";
+    table[Index(StringId::kVoiceEditWrongWindow)] =
+        "The active window changed; nothing deleted";
+    table[Index(StringId::kVoiceEditElevated)] = "Cannot delete in an elevated window";
+    table[Index(StringId::kVoiceEditCursorMoved)] = "Cursor moved; nothing deleted";
+    table[Index(StringId::kVoiceEditSelectionActive)] = "Clear the selection first";
+    table[Index(StringId::kVoiceEditPassword)] =
+        "Voice delete is not supported in password fields";
+    table[Index(StringId::kVoiceEditTextChanged)] =
+        "The dictated text has changed; nothing deleted";
+    table[Index(StringId::kVoiceEditUnverifiedExpired)] =
+        "Too late to verify the cursor; nothing deleted";
+    table[Index(StringId::kVoiceEditUnreadable)] =
+        "Cannot verify the cursor; nothing deleted";
     return table;
 }
 
@@ -983,6 +1010,26 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kPairOsBondOptionalFailed)] =
         "Windows 蓝牙配对未完成，遥控器按键可能无法进入本机；语音输入仍可用。若按键无反应，"
         "请在 Windows 蓝牙设置中删除本设备后重新添加。";
+    table[Index(StringId::kVoiceEditSectionTitle)] = "语音编辑";
+    table[Index(StringId::kVoiceEditEnable)] =
+        "启用语音编辑指令（说\"删除最后两个字\"、\"撤销\"等直接编辑刚输入的文本）";
+    table[Index(StringId::kVoiceEditDefaultChars)] = "单独说\"删除\"时删除的字数";
+    table[Index(StringId::kVoiceEditHintRuntime)] =
+        "仅对最近一次语音输入生效；光标须仍在该文本末尾。";
+    table[Index(StringId::kVoiceEditHintMode)] = "字幕 / 第三方输入法模式不支持。";
+    table[Index(StringId::kVoiceEditDeletedChars)] = "已删除 %d 个字";
+    table[Index(StringId::kVoiceEditDeletedSentence)] = "已删除最后一句";
+    table[Index(StringId::kVoiceEditDeletedSentences)] = "已删除最后 %d 句";
+    table[Index(StringId::kVoiceEditDeletedAll)] = "已删除本次输入";
+    table[Index(StringId::kVoiceEditNoTarget)] = "没有可删除的语音输入";
+    table[Index(StringId::kVoiceEditWrongWindow)] = "前台窗口已变化，未删除";
+    table[Index(StringId::kVoiceEditElevated)] = "目标窗口权限较高，无法删除";
+    table[Index(StringId::kVoiceEditCursorMoved)] = "光标位置已变化，未删除";
+    table[Index(StringId::kVoiceEditSelectionActive)] = "请先取消选中";
+    table[Index(StringId::kVoiceEditPassword)] = "密码框中不支持语音删除";
+    table[Index(StringId::kVoiceEditTextChanged)] = "语音输入内容已变化，未删除";
+    table[Index(StringId::kVoiceEditUnverifiedExpired)] = "已超过可校验时间，未删除";
+    table[Index(StringId::kVoiceEditUnreadable)] = "当前应用无法校验光标，未删除";
     return table;
 }
 

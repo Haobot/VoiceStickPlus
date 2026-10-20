@@ -1,6 +1,7 @@
 #pragma once
 
 #include "air_mouse_kin.h"
+#include "voice_edit_command.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -263,6 +264,36 @@ struct LicenseConfigEntry {
     bool operator==(const LicenseConfigEntry& other) const = default;
 };
 
+// 语音编辑指令（[voice_edit] 段，Doc/Plan/voice-edit-commands.md）：说“删除/删掉最后
+// 两个字/撤销”等指令，编辑最近一次语音注入到 focused_app 的文本。默认开启（零配置可用）。
+struct VoiceEditConfig {
+    // 总开关；false = 完全回到现状（指令按普通文本上屏）。
+    bool enabled = true;
+    // 单独说“删除/删掉”时删除的字数（1..10）。
+    int default_chars = 1;
+    // 单条显式数量指令允许删除的最大字数（1..50）；超限按普通文本处理。
+    int max_chars = 20;
+    // L0 作用域时间窗（秒，10..600）：注入后超过该时长不再允许语音编辑。
+    int scope_seconds = 120;
+    // L1 校验模式：strict / auto / off（见 Doc §6.5）。默认 auto。
+    VoiceEditVerifyMode verify_mode = VoiceEditVerifyMode::kAuto;
+    // auto 模式下字段/光标不可验证时允许执行的时间窗（秒，0..30）。
+    int unverified_seconds = 8;
+
+    bool operator==(const VoiceEditConfig& other) const = default;
+};
+
+// [voice_edit] 数值范围（Load 钳位与设置 UI 共用；设置 UI 只暴露 enabled 与
+// default_chars，其余字段供 config.toml 手改）。
+constexpr int kVoiceEditDefaultCharsMin = 1;
+constexpr int kVoiceEditDefaultCharsMax = 10;
+constexpr int kVoiceEditMaxCharsMin = 1;
+constexpr int kVoiceEditMaxCharsMax = 50;
+constexpr int kVoiceEditScopeSecondsMin = 10;
+constexpr int kVoiceEditScopeSecondsMax = 600;
+constexpr int kVoiceEditUnverifiedSecondsMin = 0;
+constexpr int kVoiceEditUnverifiedSecondsMax = 30;
+
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
 
@@ -312,6 +343,7 @@ struct AppConfig {
     WechatInputMethodConfig wechat_input_method;
     LocalAsrConfig local_asr;
     LicenseConfigEntry license;
+    VoiceEditConfig voice_edit;
     std::map<std::string, OutputProfile> device_output_profiles;
     // 粘贴文本后是否自动按回车确认。默认关闭（用户手动回车，避免误提交）。
     bool auto_enter = false;

@@ -3,6 +3,7 @@
 #include "asr_client_win.h"
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
+#include "focus_text_reader.h"
 #include "hotword_extractor.h"
 #include "hotword_selector.h"  // ValidateHotword（B14 统一口径）
 #include "license_runtime.h"
@@ -148,6 +149,21 @@ std::wstring CurrentExecutableDir() {
 // 进程名用 Toolhelp32 快照获取（不依赖对目标进程二次 OpenProcess，免受其 DACL 影响）。
 class Win32ForegroundProcessProbe : public IForegroundProcessProbe {
 public:
+    // 语音编辑（Doc/Plan/voice-edit-commands.md §6.1/§6.2）：记录并校验注入目标前台
+    // 窗口身份（HWND + 进程 exe 名）。两次读取间若前台变化，L0 会按不一致拒绝（安全方向）。
+    std::uintptr_t ForegroundWindow() override {
+        return reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
+    }
+
+    std::string ForegroundProcessName() override {
+        const HWND foreground = GetForegroundWindow();
+        if (!foreground) return {};
+        DWORD pid = 0;
+        GetWindowThreadProcessId(foreground, &pid);
+        if (pid == 0) return {};
+        return Utf8FromUtf16(ProcessExeNameByPid(pid));
+    }
+
     bool IsForegroundHigherIntegrity(std::wstring& process_name) override {
         const HWND foreground = GetForegroundWindow();
         if (!foreground) return false;
@@ -677,7 +693,10 @@ int Win32App::Run() {
             }
         };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
+        // 语音编辑（Doc/Plan/voice-edit-commands.md）复用同一探针的前台窗口/进程身份做 L0。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
+        // 注入焦点输入框 UIA 读取（语音编辑 L1 目标校验；仅 UI 线程调用，COM STA）。
+        coordinator_->SetFocusTextReader(CreateFocusTextReader());
 #ifdef VOICESTICK_LOCAL_ASR_ENABLED
         // 本机麦克风模式（[local_asr]，Doc/Plan/local-mic-mode.md）：安装 WASAPI
         // 采集器 + 本地 SenseVoice ASR 与按住说话热键。模型缺失不在启动期报错

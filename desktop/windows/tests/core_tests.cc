@@ -146,6 +146,7 @@ int main() {
     try {
     RunDevicePlanMiscBatchTests();  // N8 cut15 (final): suite in core_tests_device_plan.cc
     RunCorrectionPairsBatchTests();  // 用户数据飞轮 P0-1: suite in core_tests_corrections.cc
+    RunVoiceEditTests();  // 语音编辑指令: suite in core_tests_voice_edit.cc
     RunLicenseImaAtvvBatchTests();  // N8 cut14: suite in core_tests_license_ima.cc
     RunCoordinatorBatch6Tests();  // N8 cut9: suite in core_tests_coordinator6.cc
     printf(">> TestCoordinatorDeviceSessionRoutesToLocalAsrWhenEnabled\n"); fflush(stdout);

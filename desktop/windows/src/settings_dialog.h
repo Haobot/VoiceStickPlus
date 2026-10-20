@@ -176,6 +176,9 @@ private:
     // 授权（离线激活）：状态行 + 「激活…」按钮（Doc/Plan/offline-license-activation.md）。
     HWND license_status_label_ = nullptr;
     HWND license_activate_button_ = nullptr;
+    // 语音编辑指令（Doc/Plan/voice-edit-commands.md）：开关 + 单独说“删除”时删除字数。
+    HWND voice_edit_enable_check_ = nullptr;
+    HWND voice_edit_default_chars_combo_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -230,6 +233,9 @@ private:
     static constexpr UINT kIdLocalMicModelsDownload = 2047;
     static constexpr UINT kIdLocalRefineCrossCheck = 2048;
     static constexpr UINT kIdLicenseActivate = 2049;
+    // 语音编辑指令（Doc/Plan/voice-edit-commands.md）：设置区块控件 ID。
+    static constexpr UINT kIdVoiceEditEnable = 2052;
+    static constexpr UINT kIdVoiceEditDefaultChars = 2053;
 };
 
 } // namespace voicestick
