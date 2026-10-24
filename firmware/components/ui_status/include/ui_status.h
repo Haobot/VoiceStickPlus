@@ -5,6 +5,8 @@
 #include "esp_err.h"
 
 esp_err_t ui_status_init(void);
+// 动态调整 LVGL tick 周期（ms）：S2 息屏降频用（如 50ms），退出 S2 恢复 10ms。
+esp_err_t ui_status_set_lvgl_tick_period_ms(int period_ms);
 esp_err_t ui_status_set_brightness(uint8_t brightness);
 void ui_status_prepare_deep_sleep(void);
 void ui_status_set_device_name(const char *device_name);

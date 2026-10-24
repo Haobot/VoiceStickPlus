@@ -75,6 +75,16 @@ static const char *TAG = "voice_stick";
 // 编码器轮询周期。10ms=100Hz，与敲击轮询一致；按钮边沿与旋转增量都经此轮询采集。
 // 仅 MiniEncoderC 在线时运行；连续 I2C 失败后组件标记 absent，回调内停表。
 #define ENCODER_POLL_INTERVAL_US (10 * 1000ULL)
+// S2 息屏档轮询周期（方案 Doc/Plan/s2-cpu-dvfs-light-sleep.md §4.3）：SAVE 档需连续
+// 30ms 空闲才进 light sleep（IDLE_TIME_BEFORE_SLEEP=3），10ms 级周期定时器会切碎空闲
+// 窗口。S2 进出时由 enter/exit_s2_pm_save 重设定时器周期，退出即恢复原值。
+#define ENCODER_POLL_S2_INTERVAL_US (50 * 1000ULL)
+#define IMU_POLL_S2_INTERVAL_US (500 * 1000ULL)
+#define PICKUP_POLL_S2_INTERVAL_MS (1000)
+#define PICKUP_POLL_S2_INTERVAL_US (PICKUP_POLL_S2_INTERVAL_MS * 1000ULL)
+// LVGL tick 正常/S2 周期（ms），正常值须与 ui_status.c 的 LVGL_TICK_PERIOD_MS 一致。
+#define LVGL_TICK_NORMAL_PERIOD_MS 10
+#define LVGL_TICK_S2_PERIOD_MS 50
 // 按键事件后抑制敲击检测的窗口：覆盖"按下→录音启动"（hold_to_talk 300ms hold + 80ms 提示音
 // + codec 初始化）及松开后手指余震。该窗口内 tap 轮询直接 return，避免按语音键的手指动作
 // 被 IMU 误判为双击。仅作用于非录音态（录音态本就门控关闭 tap）。
@@ -104,6 +114,9 @@ static bool s_usb_auto_off = false;
 // 均为任务上下文非 ISR，单 64 位读写在 ESP32-S3 上可接受，无需锁。
 static int64_t s_tap_suppress_until_us = 0;
 static esp_pm_lock_handle_t s_cpu_freq_lock;
+// 录音/OTA 期间禁止 light sleep：SAVE 档（S2 息屏）下 light sleep 若切入会扰动
+// I2S/Opus 时序；两对 acquire/release 在现有 CPU_FREQ 锁之外对称追加（方案 §4.4）。
+static esp_pm_lock_handle_t s_no_light_sleep_lock;
 static esp_timer_handle_t s_display_dim_timer;
 static esp_timer_handle_t s_display_off_timer;   // S1→S2
 static esp_timer_handle_t s_poweroff_timer;      // S2→S3（原 deep_sleep_timer 改造）
@@ -364,6 +377,10 @@ static esp_err_t init_power_management(void)
     if (err != ESP_OK) {
         return err;
     }
+    err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "no_ls", &s_no_light_sleep_lock);
+    if (err != ESP_OK) {
+        return err;
+    }
     return ESP_OK;
 }
 
@@ -377,6 +394,11 @@ static esp_err_t acquire_recording_pm_locks(void)
     if (err != ESP_OK) {
         return err;
     }
+    err = esp_pm_lock_acquire(s_no_light_sleep_lock);
+    if (err != ESP_OK) {
+        (void)esp_pm_lock_release(s_cpu_freq_lock);
+        return err;
+    }
 
     s_recording_pm_locked = true;
     return ESP_OK;
@@ -388,6 +410,7 @@ static void release_recording_pm_locks(void)
         return;
     }
 
+    (void)esp_pm_lock_release(s_no_light_sleep_lock);
     (void)esp_pm_lock_release(s_cpu_freq_lock);
     s_recording_pm_locked = false;
 }
@@ -402,6 +425,11 @@ static esp_err_t acquire_ota_pm_locks(void)
     if (err != ESP_OK) {
         return err;
     }
+    err = esp_pm_lock_acquire(s_no_light_sleep_lock);
+    if (err != ESP_OK) {
+        (void)esp_pm_lock_release(s_cpu_freq_lock);
+        return err;
+    }
 
     s_ota_pm_locked = true;
     return ESP_OK;
@@ -413,8 +441,90 @@ static void release_ota_pm_locks(void)
         return;
     }
 
+    (void)esp_pm_lock_release(s_no_light_sleep_lock);
     (void)esp_pm_lock_release(s_cpu_freq_lock);
     s_ota_pm_locked = false;
+}
+
+// ===== S2 息屏省电：两档 PM 配置运行期切换（方案 Doc/Plan/s2-cpu-dvfs-light-sleep.md）=====
+// PERF（默认）：min=max=240MHz、关 light sleep——S0/S1、USB 供电任意态、录音/OTA 期间。
+// SAVE：min=40MHz(XTAL)、max=240MHz、开 light sleep——仅 S2 息屏且电池供电。
+// 锁 240MHz 只为 USB-Serial-JTAG 调试，电池态本无 COM 口可挂，SAVE 档代价为零；
+// esp_pm_configure 支持运行期重复调用，切换点全在既有状态机转移点。
+static bool s_pm_save_active;
+
+static void apply_pm_config_perf(void)
+{
+    if (!s_pm_save_active) {
+        return;
+    }
+    s_pm_save_active = false;
+    esp_pm_configure(&(esp_pm_config_t){
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .light_sleep_enable = false,
+    });
+    ESP_LOGI(TAG, "pm config -> PERF (240MHz lock)");
+}
+
+static void apply_pm_config_save(void)
+{
+    if (s_pm_save_active) {
+        return;
+    }
+    s_pm_save_active = true;
+    esp_pm_configure(&(esp_pm_config_t){
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = CONFIG_XTAL_FREQ,
+        .light_sleep_enable = true,
+    });
+    ESP_LOGI(TAG, "pm config -> SAVE (40-240MHz DFS + light sleep)");
+}
+
+// 周期轮询定时器切档：仅在定时器已运行时 stop+重启周期（未运行的不启动，保持现状语义）。
+static void set_poll_timer_period(esp_timer_handle_t timer, uint64_t normal_us,
+                                  uint64_t s2_us, bool in_s2)
+{
+    if (!timer || !esp_timer_is_active(timer)) {
+        return;
+    }
+    (void)esp_timer_stop(timer);
+    esp_err_t err = esp_timer_start_periodic(timer, in_s2 ? s2_us : normal_us);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "switch poll timer period failed: %s", esp_err_to_name(err));
+    }
+}
+
+// S2 进入（display_off_timer_cb 与供电态兜底路径）：切 SAVE 档并把周期轮询定时器降频（§4.3）。
+// 拿起轮询退出 S2 后即由 note_activity 停止，无需在 exit 侧恢复周期。
+static void enter_s2_pm_save(void)
+{
+    if (s_pm_save_active || !s_screen_off || s_recording || s_ota_updating ||
+        voice_ble_ota_is_active() || is_external_powered()) {
+        return;
+    }
+    apply_pm_config_save();
+    set_poll_timer_period(s_encoder_poll_timer, ENCODER_POLL_INTERVAL_US,
+                          ENCODER_POLL_S2_INTERVAL_US, true);
+    set_poll_timer_period(s_imu_poll_timer, IMU_POLL_INTERVAL_US,
+                          IMU_POLL_S2_INTERVAL_US, true);
+    set_poll_timer_period(s_pickup_poll_timer, PICKUP_POLL_INTERVAL_US,
+                          PICKUP_POLL_S2_INTERVAL_US, true);
+    (void)ui_status_set_lvgl_tick_period_ms(LVGL_TICK_S2_PERIOD_MS);
+}
+
+// S2 退出（note_activity）：先恢复各定时器原周期与 LVGL tick，再回 PERF 档。
+static void exit_s2_pm_save(void)
+{
+    if (!s_pm_save_active) {
+        return;
+    }
+    set_poll_timer_period(s_encoder_poll_timer, ENCODER_POLL_INTERVAL_US,
+                          ENCODER_POLL_S2_INTERVAL_US, false);
+    set_poll_timer_period(s_imu_poll_timer, IMU_POLL_INTERVAL_US,
+                          IMU_POLL_S2_INTERVAL_US, false);
+    (void)ui_status_set_lvgl_tick_period_ms(LVGL_TICK_NORMAL_PERIOD_MS);
+    apply_pm_config_perf();
 }
 
 static void restart_display_dim_timer(void)
@@ -478,7 +588,9 @@ static void cancel_disc_poweroff_timer(void);
 static void note_activity(void)
 {
     if (s_screen_off || s_display_dimmed) {
-        // S2/S1 → S0：恢复正常背光。S2 因没关 L3B、panel 一直供电，PWM 恢复即亮屏。
+        // S2 → S0：先回 PERF 档并恢复轮询周期，再恢复背光。S2 因没关 L3B、panel
+        // 一直供电，PWM 恢复即亮屏；S1 从未进 SAVE 档，exit_s2_pm_save 为空操作。
+        exit_s2_pm_save();
         esp_err_t err = ui_status_set_brightness(DISPLAY_ACTIVE_BRIGHTNESS);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "restore brightness failed: %s", esp_err_to_name(err));
@@ -1405,6 +1517,9 @@ static void apply_app_ui_state(const char *state, const char *text)
         note_activity();
         voice_ble_request_slow_interval();
     } else if (strcmp(state, "recording") == 0) {
+        // host click-to-talk 不经过 note_activity，显式回 PERF 档（§3 保险路径）；
+        // 按键路径在 note_activity 已回 PERF，此处去重为空操作。
+        apply_pm_config_perf();
         s_app_ui_state = APP_UI_STATE_RECORDING;
         if (!s_recording) {
             ui_status_set_recording(0);
@@ -1540,6 +1655,13 @@ static void app_event_task(void *arg)
             /* fall through */
         case APP_EVENT_BATTERY_REFRESH:
             update_battery_status();
+            // 供电态双向兜底（§4.5）：SAVE 中插入 USB → 回 PERF（USB 态调试行为与现状一致）；
+            // S2 息屏下拔出 USB → 补进 SAVE。进 SAVE 的录音/OTA 守卫在 enter_s2_pm_save 内。
+            if (s_pm_save_active && is_external_powered()) {
+                apply_pm_config_perf();
+            } else if (!s_pm_save_active && s_screen_off && !is_external_powered()) {
+                enter_s2_pm_save();
+            }
             break;
         case APP_EVENT_BATTERY_STATUS_REQUEST:
             update_battery_status();
@@ -1728,6 +1850,9 @@ static void display_off_timer_cb(void *arg)
         s_screen_off = true;
         s_power_screen_mode = POWER_MODE_S2_SCREEN_OFF;
         power_log_refresh_mode();
+        // 电池供电时切 SAVE 档（40MHz DFS + light sleep）并把轮询定时器降频（§4.3）；
+        // USB 供电保持 PERF 不变，COM 口调试行为不回归。
+        enter_s2_pm_save();
         ESP_LOGI(TAG, "display off after inactivity (S2), BLE & panel kept");
     }
 }
@@ -2671,12 +2796,13 @@ void app_main(void)
     ESP_LOGI(TAG, "configuring PMIC");
     esp_pm_config_t pm_config = {
         .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-        // 把 min_freq 设为与 max_freq 相同（即禁用 CPU 降频）：
-        // ESP32-S3 原生 USB-Serial-JTAG 需要稳定的 PLL 时钟产生 USB 48MHz，
-        // CPU 降到 40MHz (XTAL) 时 PLL 可能被关，导致 USB 设备不可用（COM 端口出现 PermissionError 13）。
-        // 同时关闭自动 light sleep：USB-Serial-JTAG 控制台下 light sleep 会让 USB 挂起、
-        // CONFIG_PM_SLP_DISABLE_GPIO=y 让按键 gpio_wakeup 失效。
-        // S0/S1/S2 省电靠：背光分级 + L3B 开关 + BLE modem sleep；S3 deep sleep 才是深度省电。
+        // 默认 PERF 档：锁 240MHz、关 light sleep。锁频是为 USB-Serial-JTAG 调试——
+        // CPU 降到 40MHz (XTAL) 时 PLL 可能被关，USB 48MHz 失效（COM 口 PermissionError 13）；
+        // 且 USB 控制台下 light sleep 会让 USB 挂起。
+        // 电池供电 S2 息屏时由 enter_s2_pm_save 切 SAVE 档（40MHz DFS + light sleep；
+        // CONFIG_PM_SLP_DISABLE_GPIO=n 保证 light sleep 期间按键 GPIO 唤醒可用），
+        // 见 Doc/Plan/s2-cpu-dvfs-light-sleep.md。
+        // S0/S1 省电靠：背光分级 + L3B 开关 + BLE modem sleep；S3 deep sleep 才是深度省电。
         .min_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
         .light_sleep_enable = false,
     };
