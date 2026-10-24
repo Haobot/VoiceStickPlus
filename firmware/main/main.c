@@ -288,6 +288,9 @@ static void queue_primary_up_event(app_input_source_t source, uint32_t request_i
 static void queue_encoder_rotate_event(int32_t delta);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
+static uint32_t elapsed_button_ms(int64_t down_us);
+static void schedule_idle_slow_interval(void);
+static void cancel_idle_slow_interval(void);
 static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
 static void load_usb_auto_off_from_nvs(void);
@@ -587,6 +590,11 @@ static void cancel_disc_poweroff_timer(void);
 // 活动复位钩子：按键/拿起/BLE事件/UI变化时调用，回到 S0 Active 态并重启全部空闲计时器。
 static void note_activity(void)
 {
+    // 任何用户活动（拿起/按键/编码器）都先把连接拉到快档并推迟空闲降档——
+    // 移植自 2.4.10 fb09bec（五连修 #3）：central 应用参数更新有 ~5s 延迟，
+    // 由「拿起到开口」的自然间隔吸收（幂等，已是快档时不发请求）。
+    cancel_idle_slow_interval();
+    (void)voice_ble_request_fast_interval();
     if (s_screen_off || s_display_dimmed) {
         // S2 → S0：先回 PERF 档并恢复轮询周期，再恢复背光。S2 因没关 L3B、panel
         // 一直供电，PWM 恢复即亮屏；S1 从未进 SAVE 档，exit_s2_pm_save 为空操作。
@@ -607,6 +615,80 @@ static void note_activity(void)
     // 任何活动均回到 S0 屏幕态；录音/OTA/广播期间 refresh 仍会上报叠加态。
     s_power_screen_mode = POWER_MODE_S0_ACTIVE;
     power_log_refresh_mode();
+}
+
+// 录音期间快连接间隔周期重申（移植自 2.4.10 fb09bec，2026-10-11）：录音开始时的
+// fast 请求可能丢失或被 central 静默忽略（实测音频通知塌到 ~2.4fps、3.4s 语音拖
+// 28s 才送完）。每 1.5s 重申一次；request_fast_interval 已幂等（已是快档不发请求），
+// 此调用开销可忽略。
+static esp_timer_handle_t s_fast_interval_reassert_timer;
+
+static void fast_interval_reassert_cb(void *arg)
+{
+    (void)arg;
+    (void)voice_ble_request_fast_interval();
+}
+
+static void start_fast_interval_reassert_timer(void)
+{
+    if (!s_fast_interval_reassert_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &fast_interval_reassert_cb,
+            .name = "fast_itvl_re",
+        };
+        if (esp_timer_create(&args, &s_fast_interval_reassert_timer) != ESP_OK) {
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_fast_interval_reassert_timer);
+    (void)esp_timer_start_periodic(s_fast_interval_reassert_timer, 1500 * 1000ULL);
+}
+
+static void stop_fast_interval_reassert_timer(void)
+{
+    if (s_fast_interval_reassert_timer) {
+        (void)esp_timer_stop(s_fast_interval_reassert_timer);
+    }
+}
+
+// 空闲降档延迟化（移植自 2.4.10 fb09bec，2026-10-11）：ready 即切 400ms 省电档
+// 会让下一次录音的头几秒音频在慢档里爬行——central 应用连接参数更新要 ~5s，短句
+// （3-4s）整段都在慢档，实测松键后 2.8s 才收到尾帧。改为「活动后 5 分钟内保持当前
+// 档位，纯空闲才降档」；拿起/按键等 note_activity 路径同时拉快档（幂等）。电池代价
+// 量化：快档比慢档多 ~0.5mA，5 分钟窗口每次活动只多 0.04mAh，可忽略；长时静置仍
+// 回省电档不变。
+#define IDLE_SLOW_DELAY_US (300ULL * 1000 * 1000)
+static esp_timer_handle_t s_idle_slow_timer;
+
+static void idle_slow_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_recording && s_app_ui_state == APP_UI_STATE_READY) {
+        ESP_LOGI(TAG, "idle 5min, dropping to power-save conn interval");
+        (void)voice_ble_request_slow_interval();
+    }
+}
+
+static void schedule_idle_slow_interval(void)
+{
+    if (!s_idle_slow_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &idle_slow_timer_cb,
+            .name = "idle_slow",
+        };
+        if (esp_timer_create(&args, &s_idle_slow_timer) != ESP_OK) {
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_idle_slow_timer);
+    (void)esp_timer_start_once(s_idle_slow_timer, IDLE_SLOW_DELAY_US);
+}
+
+static void cancel_idle_slow_interval(void)
+{
+    if (s_idle_slow_timer) {
+        (void)esp_timer_stop(s_idle_slow_timer);
+    }
 }
 
 static void stop_host_response_timer(void)
@@ -785,6 +867,7 @@ static uint32_t start_recording(void)
     restart_display_dim_timer();
     restart_poweroff_timer();
     ui_status_set_recording(session_id);
+    start_fast_interval_reassert_timer();
     return session_id;
 }
 
@@ -795,7 +878,12 @@ static uint32_t stop_recording(void)
     }
 
     const uint32_t session_id = audio_pipeline_session_id();
+    // 诊断锚点（移植自 2.4.10 fb09bec）：每次停录必打点，串口时间线
+    // 可直接对齐「松开→drain→audio_end→button_up」各段耗时与调用来源。
+    ESP_LOGI(TAG, "stop_recording session=%" PRIu32 " down_age_ms=%" PRIu32,
+             session_id, elapsed_button_ms(s_primary_down_us));
     s_recording = false;
+    stop_fast_interval_reassert_timer();
     audio_pipeline_stop();
     // 录音会话真正结束点：恢复到录音前的屏幕态/广播态（由 refresh 推导）。
     power_log_refresh_mode();
@@ -1515,7 +1603,10 @@ static void apply_app_ui_state(const char *state, const char *text)
         s_app_ui_state = APP_UI_STATE_READY;
         ui_status_set_idle();
         note_activity();
-        voice_ble_request_slow_interval();
+        // 延迟降档（原为立即 request_slow_interval）：ready 即切 400ms 省电档会让
+        // 下一次录音的头几秒音频在慢档里爬行（central 应用参数更新 ~5s），见
+        // IDLE_SLOW_DELAY_US 注释。移植自 2.4.10 fb09bec（五连修 #3）。
+        schedule_idle_slow_interval();
     } else if (strcmp(state, "recording") == 0) {
         // host click-to-talk 不经过 note_activity，显式回 PERF 档（§3 保险路径）；
         // 按键路径在 note_activity 已回 PERF，此处去重为空操作。

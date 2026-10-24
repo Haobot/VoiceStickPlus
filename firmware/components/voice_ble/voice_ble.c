@@ -57,6 +57,9 @@ typedef enum {
 
 static conn_itvl_target_t s_itvl_target;
 static bool s_itvl_update_pending;
+// 快档被拒后的自愈重申预算（每连接重置，见 CONN_UPDATE 处理）。
+// 移植自 2.4.10 fb09bec（语音延迟五连修 #3）。
+static uint8_t s_fast_reassert_count;
 
 typedef struct {
     bool active;
@@ -760,6 +763,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (phy_rc != 0 && phy_rc != BLE_HS_EALREADY) {
                     ESP_LOGW(TAG, "request 2M phy failed rc=%d", phy_rc);
                 }
+                s_fast_reassert_count = 0;
                 (void)voice_ble_request_fast_interval();
             }
             if (s_connection_cb) {
@@ -845,6 +849,20 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             } else if (s_itvl_target == CONN_ITVL_SLOW) {
                 voice_ble_request_slow_interval();
             }
+        }
+        // 快档目标下被授予慢参数即自愈重申（移植自 2.4.10 fb09bec，2026-10-11
+        // 实证：录音全程落回 interval=320/latency=4 或 latency=22 时音频通知
+        // ~2.4fps（正常 25fps），3.4s 语音拖成 28s 才送完——音频吞吐塌陷的直接
+        // 来源）。上限 5 次防止与顽固 central 来回拉锯；录音中另有 1.5s 周期
+        // 重申兜底（见 main.c fast_interval_reassert_timer）。
+        if (event->conn_update.conn_handle == s_conn_handle &&
+            s_itvl_target == CONN_ITVL_FAST &&
+            find_rc == 0 && (desc.conn_itvl > 24 || desc.conn_latency > 0) &&
+            s_fast_reassert_count < 5) {
+            s_fast_reassert_count++;
+            ESP_LOGW(TAG, "fast interval denied (itvl=%u latency=%u), re-request %u/5",
+                     desc.conn_itvl, desc.conn_latency, s_fast_reassert_count);
+            voice_ble_request_fast_interval();
         }
         return 0;
     }
@@ -1177,14 +1195,32 @@ esp_err_t voice_ble_request_fast_interval(void)
         return ESP_ERR_INVALID_STATE;
     }
     s_itvl_target = CONN_ITVL_FAST;
+    // 幂等化（移植自 2.4.10 fb09bec，2026-10-11）：已是目标快档就不再发起协商。
+    // 录音期间周期性重申（防请求丢失/central 静默忽略）因此可以安全高频调用；
+    // 同时避免 update→EALREADY→CONN_UPDATE→重请求 的无谓往返循环。
+    {
+        struct ble_gap_conn_desc cur;
+        if (ble_gap_conn_find(s_conn_handle, &cur) == 0 &&
+            cur.conn_itvl <= 24 && cur.conn_latency == 0) {
+            return ESP_OK;
+        }
+    }
     struct ble_gap_upd_params params = {
-        .itvl_min = 6,    // 7.5ms，固定不留给 central 上浮空间
-        .itvl_max = 6,    // 7.5ms
+        // 范围请求而非固定值（移植自 2.4.10 c5aa2e8 + fb09bec 修订）：macOS
+        // central 对「固定 7.5ms」的参数请求直接拒绝并单方面落回省电档（实测
+        // interval=320 即 400ms，OTA/音频吞吐被钉死在 ~1KB/s）。
+        // 2026-10-11 修订：下限 6→12（7.5ms→15ms）。实证（rc=530 = HCI 0x12
+        // Unsupported Remote Feature）：macOS 27 的 Apple 栈把含 <15ms 间隔的请求
+        // **整体拒绝**，录音全程锁死在 400ms 慢档，音频通知塌到 ~2.4fps（3.4s 语音
+        // 拖 34s 才送达）。下限 15ms 后请求能被接受；15-30ms 对 25fps 音频（每事件
+        // 可多包）与 Windows（取 min）都绰绰有余。CE 长度提示一并归零，排除其作为
+        // 拒绝因素（Apple 对 ce_len 无契约，此前 8/8 未带来可见收益）。
+        .itvl_min = 12,   // 15ms
+        .itvl_max = 24,   // 30ms
         .latency = 0,
         .supervision_timeout = 200,  // 2s
-        .min_ce_len = 8,  // 每 connection event 至少 5ms，1M PHY 下尽量多发几个
-                          // 音频通知，缓解 host mbuf 队列堆积导致的 alloc failed
-        .max_ce_len = 8,
+        .min_ce_len = 0,
+        .max_ce_len = 0,
     };
     int rc = ble_gap_update_params(s_conn_handle, &params);
     if (rc == BLE_HS_EALREADY) {
