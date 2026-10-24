@@ -48,6 +48,12 @@ scripts/e2e_test/battery_logs/
 # 热词验收测试产物（run_hotword_acceptance.py：生成的音频与报告，不入库）
 scripts/e2e_test/corpus/acceptance_*/
 
+# 语料音频产物（gen_corpus.py 依清单生成的 .pcm/.ogg/.txt 三件套，体积大不入库，
+# 本地保留；清单 corpus*.json 入库，换机可用 gen_corpus.py 一键重建）
+scripts/e2e_test/corpus/*.pcm
+scripts/e2e_test/corpus/*.ogg
+scripts/e2e_test/corpus/*.txt
+
 # ASR 评测产物不入库（bench_results 整目录；历史已跟踪文件不受 gitignore 影响）
 scripts/e2e_test/bench_results/
 

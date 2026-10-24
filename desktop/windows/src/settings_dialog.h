@@ -25,6 +25,11 @@ public:
     // 面板创建与「刷新」按钮时各取一次快照；未接线时显示空态。
     std::function<std::vector<HotwordTrayEntry>()> on_get_hotword_tray;
 
+    // 外部配置变更同步（协调器智能热词自动切换/逐出/回收落盘后由外壳转发）：
+    // 设置页打开期间活跃分类在后台被切换时，刷新分类下拉选中项、热词编辑框与热词碟，
+    // 避免界面停留在旧分类（对话框持有 config 快照，不自动感知外部变更）。
+    void SyncExternalHotwordConfig(const AppConfig& cfg);
+
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
     INT_PTR HandleMessage(UINT message, WPARAM w_param, LPARAM l_param);

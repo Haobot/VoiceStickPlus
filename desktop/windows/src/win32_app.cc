@@ -495,7 +495,12 @@ int Win32App::Run() {
         // 同步本地副本，严禁调用 UpdateConfig/ApplyUpdatedConfig（会取消进行中会话）。
         coordinator_->on_config_mutated = [this](AppConfig cfg) {
             DispatchToUi([this, cfg = std::move(cfg)]() mutable {
-                config_ = std::move(cfg);
+                config_ = cfg;
+                // 设置页打开期间后台自动切换/逐出/回收：同步热词区显示
+                // （对话框持有 config 快照，不自动感知外部变更）。
+                if (settings_dialog_) {
+                    settings_dialog_->SyncExternalHotwordConfig(cfg);
+                }
             });
         };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。

@@ -1856,6 +1856,49 @@ void SettingsDialog::RefreshHotwordTray() {
     SetWindowTextW(tray_hint_, Utf16(hint).c_str());
 }
 
+void SettingsDialog::SyncExternalHotwordConfig(const AppConfig& cfg) {
+    if (!hwnd_ || !IsWindow(hwnd_) || !hotword_category_combo_) return;
+    // 用户可能有未保存的热词编辑：先暂存（截断不弹窗，与 StoreCurrentCategoryWords
+    // 的截断语义一致，但同步路径不打扰用户），覆盖分类结构后回写同名分类。
+    const std::string editing_category = loaded_hotword_category_;
+    std::vector<std::string> editing_words;
+    bool has_editing = false;
+    if (hotwords_edit_) {
+        editing_words = ParseHotwordList(Utf8(GetWindowText(hotwords_edit_)));
+        if (editing_words.size() > HotwordCategory::kMaxWords) {
+            editing_words.resize(HotwordCategory::kMaxWords);
+        }
+        if (const auto* category = FindHotwordCategory(config_, editing_category)) {
+            has_editing = editing_words != category->words;
+        }
+    }
+    // 以协调器落盘为权威更新热词相关字段（自动切换/逐出/回收/碟配置的结果）。
+    config_.hotword_categories = cfg.hotword_categories;
+    config_.active_hotword_category = cfg.active_hotword_category;
+    config_.asr_hotwords = cfg.asr_hotwords;
+    config_.hotword_tray_enabled = cfg.hotword_tray_enabled;
+    config_.hotword_tray_size = cfg.hotword_tray_size;
+    config_.hotword_tray_min_score = cfg.hotword_tray_min_score;
+    config_.hotword_domain_map = cfg.hotword_domain_map;
+    // 回写用户未保存的编辑到新结构同名分类（编辑不属于外部变更目标时保留）。
+    if (has_editing) {
+        if (auto* category = FindHotwordCategory(config_, editing_category)) {
+            category->words = editing_words;
+        }
+    }
+    // 切到新活跃分类：刷新下拉选中项并重载编辑框词表；碟随统计变化一并刷新。
+    loaded_hotword_category_ = config_.active_hotword_category;
+    RefreshHotwordCategoryCombo();
+    if (hotwords_edit_) {
+        const auto* category = FindHotwordCategory(config_, loaded_hotword_category_);
+        SetWindowTextW(hotwords_edit_,
+                       Utf16(JoinHotwords(category ? category->words
+                                                   : std::vector<std::string>{}))
+                           .c_str());
+    }
+    RefreshHotwordTray();
+}
+
 void SettingsDialog::StoreCurrentCategoryWords() {
     if (!hotwords_edit_) return;
     auto* category = FindHotwordCategory(config_, loaded_hotword_category_);

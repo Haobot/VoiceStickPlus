@@ -46,6 +46,8 @@ DEFAULT_MANIFEST = CORPUS_DIR / "corpus.json"
 DEFAULT_OUT = HERE / "bench_results"
 STATE_FILE = DEFAULT_OUT / "audio_regression_state.json"
 
+import hotword_score_chart  # noqa: E402  热词活跃度评分柱状图（惰性导入 matplotlib）
+
 # ---- 预设质量标准 ----
 MIN_PCM_BYTES = 16000          # 0.5s @ 16kHz/16bit/mono（对齐固件 <0.5s 丢弃阈值）
 MAX_DURATION_S = 120.0         # 单条语料时长上限
@@ -315,7 +317,8 @@ CLS_LABEL = {"new_fail": "新增失败", "still_fail": "持续失败", "fixed": 
              "pass": "通过"}
 
 
-def write_reports(out_dir: Path, report: dict) -> tuple[Path, Path]:
+def write_reports(out_dir: Path, report: dict,
+                  chart_rel: str = "") -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = report["stamp"]
     jpath = out_dir / f"audio_regression_{stamp}.json"
@@ -355,6 +358,9 @@ def write_reports(out_dir: Path, report: dict) -> tuple[Path, Path]:
                   "修复后重跑本脚本直至全部通过。"]
     else:
         lines += ["全部语料合成与质量检测通过，无跟踪中的失败项。"]
+    if chart_rel:
+        lines += ["", "## 热词活跃度评分", "",
+                  f"![热词活跃度评分]({chart_rel})"]
     mpath.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return jpath, mpath
 
@@ -497,8 +503,28 @@ async def run_regression(args: argparse.Namespace) -> int:
             for r in results.values()
         ],
     }
-    jpath, mpath = write_reports(out_dir, report)
+    # 热词活跃度评分柱状图（失败不阻断回归结果）
+    chart_rel = ""
+    stats_path = (Path(args.stats_file) if args.stats_file
+                  else hotword_score_chart.default_usage_path())
+    if stats_path is None:
+        log("WARN: 未找到 hotword_usage.json，跳过评分图"
+            "（--stats-file 显式指定，或先运行桌面端产生统计）")
+    elif not stats_path.exists():
+        log(f"WARN: --stats-file 不存在 {stats_path}，跳过评分图")
+    else:
+        try:
+            chart_path = out_dir / f"hotword_score_{report['stamp']}.png"
+            hotword_score_chart.render_chart_from_file(
+                stats_path, chart_path, title_suffix=mode)
+            chart_rel = chart_path.name
+        except Exception as e:  # noqa: BLE001 - 图表失败不阻断回归结果
+            log(f"WARN: 评分图生成失败：{e}")
+
+    jpath, mpath = write_reports(out_dir, report, chart_rel=chart_rel)
     print_summary(report, STATE_FILE)
+    if chart_rel:
+        log(f"评分图：{chart_rel}")
     log(f"报告：{jpath.name} / {mpath.name}")
 
     if report["all_pass"]:
@@ -669,6 +695,9 @@ def main() -> int:
     ap.add_argument("--synth-timeout", type=float, default=60.0,
                     help="单条合成/转码超时秒数（默认 60）")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="报告输出目录")
+    ap.add_argument("--stats-file", default="",
+                    help="hotword_usage.json 路径（画活跃度评分图用，"
+                         "默认自动探测 %%APPDATA%%\\VoiceStick\\hotword_usage.json）")
     ap.add_argument("--offline", action="store_true",
                     help="离线快检：只校验资源库现有产物，不做合成")
     ap.add_argument("--allow-known-fail", action="store_true",

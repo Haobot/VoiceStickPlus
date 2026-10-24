@@ -24,11 +24,12 @@ corpus.json 每条字段：
 import argparse
 import asyncio
 import json
-import math
+import random
 import shutil
 import subprocess
 import sys
 import tempfile
+from array import array
 from pathlib import Path
 
 import edge_tts
@@ -47,21 +48,28 @@ def find_ffmpeg(explicit: str | None) -> str | None:
     return shutil.which("ffmpeg")
 
 
-def noise_amplitude(snr_db: float) -> float:
-    """把目标 SNR(dB) 折算成白噪声 amplitude（语音 rms 近似 0.5，仅粗略压力测试用）。"""
-    return round(0.5 * math.pow(10.0, -snr_db / 20.0), 4)
+def mix_noise_pcm(pcm_path: Path, snr_db: float, seed: str) -> None:
+    """把近似目标 SNR(dB) 的白噪声混入 s16le PCM（仅用于压力测试）。
 
-
-def mix_noise(ffmpeg: str, src: Path, dst: Path, snr_db: float) -> None:
-    """ffmpeg 混入白噪声：anoisesrc + amix，时长取语音长度。"""
-    amp = noise_amplitude(snr_db)
-    subprocess.run(
-        [ffmpeg, "-y", "-i", str(src),
-         "-f", "lavfi", "-i", "anoisesrc=color=white:amplitude=" + str(amp),
-         "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[a]",
-         "-map", "[a]", str(dst)],
-        check=True, capture_output=True,
-    )
+    纯 stdlib 实现，不依赖 ffmpeg 的 anoisesrc 滤镜（老版本 ffmpeg 无此滤镜）。
+    噪声幅度按 PCM 实际 RMS 折算；seed 固定使结果可复现。
+    """
+    raw = pcm_path.read_bytes()
+    samples = array("h")
+    samples.frombytes(raw[: (len(raw) // 2) * 2])
+    if not samples:
+        raise RuntimeError("pcm 为空，无法混噪")
+    speech_rms = (sum(s * s for s in samples) / len(samples)) ** 0.5 / 32768.0
+    if speech_rms <= 0:
+        raise RuntimeError("pcm 全静音，无法混噪")
+    noise_rms = speech_rms * (10.0 ** (-snr_db / 20.0))
+    rng = random.Random(seed)
+    scale = noise_rms * 32768.0
+    mixed = array("h", (
+        max(-32768, min(32767, int(s + rng.gauss(0.0, scale))))
+        for s in samples
+    ))
+    pcm_path.write_bytes(mixed.tobytes())
 
 
 async def gen_one(item: dict, default_voice: str, ffmpeg: str, tmpdir: Path,
@@ -90,24 +98,21 @@ async def gen_one(item: dict, default_voice: str, ffmpeg: str, tmpdir: Path,
     if not mp3.exists() or mp3.stat().st_size == 0:
         raise RuntimeError("edge-tts 生成空 mp3")
 
-    src = mp3
-    # 可选：混白噪声
-    if snr_db is not None:
-        noisy = tmpdir / f"{cid}_noise.mp3"
-        mix_noise(ffmpeg, mp3, noisy, float(snr_db))
-        src = noisy
-
     # 2. -> raw PCM 16kHz mono s16le
     subprocess.run(
-        [ffmpeg, "-y", "-i", str(src), "-ar", "16000", "-ac", "1", "-f", "s16le", str(pcm)],
+        [ffmpeg, "-y", "-i", str(mp3), "-ar", "16000", "-ac", "1", "-f", "s16le", str(pcm)],
         check=True, capture_output=True,
     )
     if not pcm.exists() or pcm.stat().st_size < 16000:
         raise RuntimeError(f"pcm 生成异常 size={pcm.stat().st_size if pcm.exists() else 0}")
 
+    # 可选：混白噪声（先转 PCM 再 Python 侧混入，不依赖 ffmpeg anoisesrc 滤镜）
+    if snr_db is not None:
+        mix_noise_pcm(pcm, float(snr_db), cid)
+
     # 3. -> Ogg Opus 16kHz mono 32kbps voip（对齐固件编码场景）
     subprocess.run(
-        [ffmpeg, "-y", "-i", str(src), "-ar", "16000", "-ac", "1",
+        [ffmpeg, "-y", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", str(pcm),
          "-c:a", "libopus", "-b:a", "32k", "-application", "voip", str(ogg)],
         check=True, capture_output=True,
     )
