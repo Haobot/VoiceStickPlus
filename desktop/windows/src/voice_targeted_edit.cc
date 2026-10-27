@@ -191,9 +191,10 @@ bool ContainsNegation(std::string_view target) {
     return trimmed.find("不要") != std::string::npos;
 }
 
-// 由 target（已定位的原始片段）构建指令；空目标/超长/空替换 → invalid。
+// 由 target（已定位的原始片段）构建指令；空目标/超长/空替换返回 false。
 bool BuildCommand(VoiceTargetedAction action, std::string_view target_raw,
-                  VoiceTargetedPosition position, VoiceTargetedCommand* out) {
+                  VoiceTargetedPosition position, bool has_explicit_scope,
+                  VoiceTargetedCommand* out) {
     const std::string target = TrimWhitespace(target_raw);
     if (target.empty()) return false;
     // P0 限单行：目标/替换含换行（\n 或 \r，防 CRLF 绕过）→ 非法指令。
@@ -214,19 +215,26 @@ bool BuildCommand(VoiceTargetedAction action, std::string_view target_raw,
     out->action = std::move(action);
     out->target = target;
     out->position = position;
+    out->has_explicit_scope = has_explicit_scope;
     return true;
 }
 
-// 语法主体：A. 动宾式 VERB SCOPE [POSITION] TARGET；B. 把字句
-// 把 SCOPE [POSITION] TARGET (TRAILING_DELETE_VERB | REPLACE_SEPARATOR REST)。
+// 显式作用域的异常结构吞掉并提示；自然简写结构异常时按普通文本处理。
+bool FailIfScoped(bool has_explicit_scope, bool* invalid_out) {
+    if (!has_explicit_scope) return false;
+    *invalid_out = true;
+    return true;
+}
+
+// 语法主体：A. 动宾式 VERB [SCOPE] [POSITION] TARGET；B. 把字句
+// 把 [SCOPE] [POSITION] TARGET (TRAILING_DELETE_VERB | REPLACE_SEPARATOR REST)。
+// SCOPE 可省略；简写由协调器按最近注入中的实际匹配决定是否接管。
 // 返回 true = 结构命中（cmd_out 有效或 *invalid_out）；false = 非指令。
 bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* invalid_out) {
     if (StartsWith(text, "把")) {
         // 注意 UTF-8 字节偏移：「把」= 3 字节（Swift 版按 Character 计数）。
         std::size_t index = std::string_view("把").size();
-        std::size_t scope_probe = index;
-        if (!ConsumeAny(text, &scope_probe, kScopeTokens)) return false;
-        index = scope_probe;
+        const bool has_explicit_scope = ConsumeAny(text, &index, kScopeTokens);
         VoiceTargetedPosition position = VoiceTargetedPosition::kUnspecified;
         if (ConsumeToken(text, &index, kPositionFirst)) {
             position = VoiceTargetedPosition::kFirst;
@@ -238,36 +246,28 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
             const std::string_view target = text.substr(index, separator->index - index);
             const std::string_view replacement =
                 text.substr(separator->index + separator->token.size());
-            // 「多个替换分隔符」/异常语法：target 或 replacement 内再含任何分隔符。
             if (ContainsAnyToken(target, kReplaceSeparators) ||
                 ContainsAnyToken(replacement, kReplaceSeparators)) {
-                *invalid_out = true;
-                return true;
+                return FailIfScoped(has_explicit_scope, invalid_out);
             }
             VoiceTargetedAction action{VoiceTargetedActionKind::kReplace,
                                        std::string(TrimWhitespace(replacement))};
-            if (!BuildCommand(std::move(action), target, position, cmd_out)) {
-                *invalid_out = true;
-                return true;
+            if (!BuildCommand(std::move(action), target, position, has_explicit_scope, cmd_out)) {
+                return FailIfScoped(has_explicit_scope, invalid_out);
             }
             return true;
         }
-        // 删除分支只在**没有替换分隔符**且删除动词恰好位于整句末尾时成立——
-        // 否则「把刚才的删除按钮改成红色」会被句中的「删除」截断而错过替换解析，
-        // 「把刚才的北京改成删除」会被句尾「删除」误吃 target。
+        // 删除分支只在**没有替换分隔符**且删除动词恰好位于整句末尾时成立。
         const auto delete_verb = LastTokenIndex(text, kTrailingDeleteVerbs);
         if (delete_verb.has_value()) {
             if (delete_verb->index + delete_verb->token.size() != text.size()) return false;
             const std::string_view target = text.substr(index, delete_verb->index - index);
-            // 否定副词：结构命中但语义为否定 → 吞掉提示。
             if (ContainsNegation(target)) {
-                *invalid_out = true;
-                return true;
+                return FailIfScoped(has_explicit_scope, invalid_out);
             }
             if (!BuildCommand(VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}},
-                              target, position, cmd_out)) {
-                *invalid_out = true;
-                return true;
+                              target, position, has_explicit_scope, cmd_out)) {
+                return FailIfScoped(has_explicit_scope, invalid_out);
             }
             return true;
         }
@@ -276,7 +276,7 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
     for (const auto verb : kLeadingDeleteVerbs) {
         if (!StartsWith(text, verb)) continue;
         std::size_t index = verb.size();
-        if (!ConsumeAny(text, &index, kScopeTokens)) continue;
+        const bool has_explicit_scope = ConsumeAny(text, &index, kScopeTokens);
         VoiceTargetedPosition position = VoiceTargetedPosition::kUnspecified;
         if (ConsumeToken(text, &index, kPositionFirst)) {
             position = VoiceTargetedPosition::kFirst;
@@ -284,17 +284,14 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
             position = VoiceTargetedPosition::kLast;
         }
         const std::string_view target = text.substr(index);
-        // 「删除刚才的」本身是旧解析器的整段删除：target 为空 → 让旧解析器优先
-        // （返回 false = 非 targeted 指令）。
+        // 「删除刚才的」与单独「删除」都交旧解析器。
         if (target.empty()) return false;
         if (ContainsNegation(target)) {
-            *invalid_out = true;
-            return true;
+            return FailIfScoped(has_explicit_scope, invalid_out);
         }
         if (!BuildCommand(VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}}, target,
-                          position, cmd_out)) {
-            *invalid_out = true;
-            return true;
+                          position, has_explicit_scope, cmd_out)) {
+            return FailIfScoped(has_explicit_scope, invalid_out);
         }
         return true;
     }

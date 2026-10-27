@@ -781,7 +781,7 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 
 ## 17. targeted 词/短语删除与替换（2026-10-27 实现）
 
-> 状态：已实现（工作区，未发布；2026-10-27 返修轮已合入）。macOS 本机 `swift build` 通过、`swift run VoiceStickTests` **PASSED 1525/1525**（基线 1351；含 targeted 解析/匹配/计划向量、协调器级调用顺序/安全闸/换行拆解/配置清理代际测试）。Windows 纯逻辑与 macOS 同向量、本机 clang `-Wall -Wextra -Werror` 对拍通过（另经 ASan+UBSan 构建运行通过，含既有套件回归，临时 harness 在 /tmp，不在仓库）；Windows MSVC 构建/CTest 与双端真机验收**待补**（§17.5）。
+> 状态：已实现（工作区，未发布；2026-10-27 返修轮已合入）。macOS 本机 `swift build` 通过、`swift run VoiceStickTests` **PASSED 1533/1533**（基线 1351；含 targeted 解析/匹配/计划向量、协调器级调用顺序/安全闸/换行拆解/配置清理代际测试）。Windows 纯逻辑与 macOS 同向量、本机 clang `-Wall -Wextra -Werror` 对拍通过（另经 ASan+UBSan 构建运行通过，含既有套件回归，临时 harness 在 /tmp，不在仓库）；Windows MSVC 构建/CTest 与双端真机验收**待补**（§17.5）。
 
 ### 17.1 需求与语法（P0）
 
@@ -794,10 +794,10 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 | 把字句替换 | 「把刚才的北京改成/改为/换成/替换为/替换成上海」 |
 | 位置限定 | 上述结构支持「第一个」「最后一个」（含「刚才的最后一个」语序）；无位置限定时**仅 1 个精确匹配才执行**，多处匹配安全拒绝并提示 |
 
-- **作用域强制**：不带「刚才的」的「把A改成B / 删除A」一律非指令（走普通文本），避免把口述「请把删除按钮改成红色」误判为命令。
+- **显式作用域 + 自然简写**：带「刚才的」时按明确指令处理；不带作用域的「把A改成B / 删除A」也解析为候选，但协调器只在最近一次注入中确实存在 A 时才接管，未匹配则回退普通文本。简写结构异常（空目标/空替换/多分隔符等）同样回退普通文本，避免无差别吞掉口述。
 - **词 = 连续文本片段精确匹配**（不引入分词依赖），非重叠匹配；目标 ≤32、替换 ≤64 graphemes（双端一致硬常量，独立于 `max_chars`，**无新配置字段**）。
 - **归一化**：去首尾空白/尾部标点、全角数字转半角、剥绝对开头礼貌前缀一层（请/帮我/麻烦…）、剥绝对结尾语气词一层（吧/啊/呀/哦/嘛）——**操作数内部有意义空白保留**（不照搬旧 parser 的全量去空白）；疑问尾「吗/呢」→ 非指令；否定（target 含「不要」或以「别」开头）→ 非法指令（吞掉提示）。已知限制：语气词剥离使「改成好吧」类替换得到「好」。
-- **解析三态**：指令 / `.invalid`（结构命中但空目标/空替换/多替换分隔符/超长——吞掉并提示，不上屏不修改）/ 非指令（原链路）。旧解析器优先、targeted 其次（「删除刚才的」仍是旧整段删除）。
+- **解析三态**：指令 / `.invalid`（显式作用域下结构命中但空目标/空替换/多替换分隔符/超长——吞掉并提示，不上屏不修改）/ 非指令（原链路；自然简写结构异常也走这里）。旧解析器优先、targeted 其次（「删除刚才的」仍是旧整段删除；「删除最后两个字」虽可形成简写候选，但协调器永远先走旧语义）。
 
 ### 17.2 安全模型（与旧尾部删除的关键差异）
 
@@ -828,9 +828,9 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 
 ### 17.4 验证证据与待补
 
-- macOS：`swift build` 通过；`swift run VoiceStickTests` PASSED 1525/1525（基线 1351）。协调器级 Fake 断言完整调用顺序：L1 读 → `select(loc,len)` → `selected`（==target）→ 一次 `backspace` 或 `paste(false)` → `select(end,0)` 恢复 → 终验 `state` 读；读回不符只在 `select(end,0)` 前停止；stale generation 不弹旧 toast 不污染新记录；off 模式不可验证仍拒绝；updateConfig 关闭功能清记录同时递增代际（在途终验被丢弃）；remaining 自身以换行结尾（口述多行 + auto_enter）选区/终验拆解正确（删「你好」→ 字段「\n\n」、remaining「\n」）。
+- macOS：`swift build` 通过；`swift run VoiceStickTests` PASSED 1533/1533（基线 1351）。协调器级 Fake 断言完整调用顺序：L1 读 → `select(loc,len)` → `selected`（==target）→ 一次 `backspace` 或 `paste(false)` → `select(end,0)` 恢复 → 终验 `state` 读；读回不符只在 `select(end,0)` 前停止；stale generation 不弹旧 toast 不污染新记录；off 模式不可验证仍拒绝；updateConfig 关闭功能清记录同时递增代际（在途终验被丢弃）；remaining 自身以换行结尾（口述多行 + auto_enter）选区/终验拆解正确（删「你好」→ 字段「\n\n」、remaining「\n」）。
 - Windows 纯逻辑：`clang++ -std=c++20 -Wall -Wextra -Werror` 编译 + 本地运行全部解析/matcher/planner 向量通过；**ASan+UBSan 构建同样通过**（`LastTokenIndex` 命中推进到 `text.size()` 后不再越界读）；仓库既有 voice edit 套件（重构 grapheme 抽取后）本地对拍 PASSED。
-- 解析器返修向量（双端同表）：`把刚才的删除按钮改成红色` → replace(删除按钮, 红色)；`把刚才的北京改成删除` → replace(北京, 删除)（**分隔符优先**：句中存在替换分隔符即按替换解析，删除分支仅在无分隔符且动词恰在整句末尾时成立）；`把刚才的删除删掉` → delete(删除)、`把刚才的删掉删除` → delete(删掉)（lastTokenIndex 命中即推进、不额外跳 grapheme，紧邻动词可被扫描为 best）；`请把删除按钮改成红色` 保持普通文本负例。
+- 解析器返修向量（双端同表）：`把刚才的删除按钮改成红色` → replace(删除按钮, 红色)；`把刚才的北京改成删除` → replace(北京, 删除)（**分隔符优先**：句中存在替换分隔符即按替换解析，删除分支仅在无分隔符且动词恰在整句末尾时成立）；`把刚才的删除删掉` → delete(删除)、`把刚才的删掉删除` → delete(删掉)（lastTokenIndex 命中即推进、不额外跳 grapheme，紧邻动词可被扫描为 best）。自然简写 `把北京改成上海` → replace(北京, 上海, hasExplicitScope=false)，仅在最近注入含北京时由协调器接管，无匹配则走普通文本。
 - **待补（阻塞发布）**：Windows `build_win.bat`/CTest（本机无 Win32 工具链，UIA/COM 代码未编译；含 512 窗口变长替换终验的 `_WIN32` Fake 用例待 Windows 环境执行）；双端真机验收（§11.3 矩阵 + targeted 专项：TextEdit/备忘录/记事本/Chrome/Word/VS Code 的 AX/UIA 选区写入覆盖率、CJK/emoji/组合字符选区、输入法组合态、auto_enter 换行场景、长文档 512 窗口边界）。
 
 ### 17.5 返修记录（2026-10-27，评审后）
@@ -842,3 +842,4 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 5. **解析一致性**：Swift 动宾式补 `ContainsNegation`（与 C++ 同语义）；单行约束双端同时拒 `\r` 与 `\n`（防 CRLF 绕过）。
 6. **macOS 配置清理代际**：`updateConfig` 关闭 voiceEdit / 离开 focused_app 清记录时同步 `voiceEditGeneration += 1`，在途 0.2s 终验不得弹旧成功 toast。
 7. **失败路径安全收尾**：Windows `SelectAndReadBack` 失败尽力 `MoveCaretToEnd()`；Backspace KeySpec 解析失败按修改前失败处理（恢复光标、记录保留、不按结果未确认清记录）；macOS 同查（select 写失败尽力恢复光标）。
+8. **自然简写无效果（用户实报）**：日志证实两轮 `我今天去北京上班。` 与 `把北京改成上海。` 中第二轮被当普通文本粘贴，根因是首版强制要求「刚才的」。修复为显式作用域 + 目标存在性门控的自然简写；双端协调器回归覆盖原话 → `我今天去上海上班。`，并验证无目标时回退普通文本、旧解析器优先和 auto_enter 不变。

@@ -1211,6 +1211,23 @@ void TestTargetedCoordinatorScopeAndInvalid() {
            TargetedToast(Tr(StringId::kVoiceTargetedInvalid, harness.language()).c_str()));
 }
 
+// 用户实报场景：两轮独立语音，自然简写在目标存在时执行，无目标时回退普通文本。
+void TestTargetedCoordinatorUnscopedReplace() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我今天去北京上班。", 206));
+    assert(harness.RunCommand("把北京改成上海。", 207));
+    assert(harness.field().doc == L"我今天去上海上班。");
+    assert(harness.input().pasted_text == "上海");
+    // 最近注入已是“我今天去上海上班。”，杭州指令中的“上海”虽存在，但目标
+    // “广州”不存在时必须作为普通正文，不得吞掉或误改。
+    assert(harness.PasteText("把广州改成杭州", 208));
+    assert(harness.input().pasted_text == "把广州改成杭州");
+    assert(harness.field().doc == L"我今天去上海上班。把广州改成杭州");
+}
+
 // 长文档终验：tail 恰为 512 窗口、替换变长使 expected_tail=514（>512）时，公共后缀
 // 比较必须判成功并更新记录（修复前 tail.size() >= expected_tail.size() 必误判
 // resultUnconfirmed）。
@@ -1245,7 +1262,8 @@ void TestTargetedCoordinatorLongDocLengtheningReplace() {
 
 void ExpectTargetedCommand(std::string_view text, VoiceTargetedActionKind kind,
                            std::string_view target, std::string_view replacement,
-                           VoiceTargetedPosition pos, const char* name) {
+                           VoiceTargetedPosition pos, const char* name,
+                           bool has_explicit_scope = true) {
     const auto r = ParseVoiceTargetedCommand(text);
     if (!r || r->invalid) {
         std::printf("FAIL targeted parse (expected command): %s [%s]\n", name,
@@ -1253,7 +1271,8 @@ void ExpectTargetedCommand(std::string_view text, VoiceTargetedActionKind kind,
         assert(false && "expected targeted command");
     }
     if (r->command.target != target || r->command.position != pos ||
-        r->command.action.kind != kind) {
+        r->command.action.kind != kind ||
+        r->command.has_explicit_scope != has_explicit_scope) {
         std::printf("FAIL targeted parse: %s\n", name);
         assert(false && "targeted command mismatch");
     }
@@ -1396,14 +1415,24 @@ void TestTargetedParserPositive() {
 }
 
 void TestTargetedParserNegative() {
-    ExpectNoTargeted("把北京改成上海", "无作用域把字句");
-    ExpectNoTargeted("删除北京", "无作用域删除");
-    ExpectNoTargeted("把北京删掉", "无作用域把字句删除");
-    ExpectNoTargeted("把第一个北京改成上海", "无作用域带位置");
+    // 自然简写：解析为 has_explicit_scope=false 的候选，协调器仅在目标存在时接管。
+    ExpectTargetedCommand("把北京改成上海", VoiceTargetedActionKind::kReplace, "北京", "上海",
+                          VoiceTargetedPosition::kUnspecified, "自然简写替换", false);
+    ExpectTargetedCommand("删除北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "自然简写删除", false);
+    ExpectTargetedCommand("把北京删掉", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "自然简写把字句删除", false);
+    ExpectTargetedCommand("把第一个北京改成上海", VoiceTargetedActionKind::kReplace, "北京", "上海",
+                          VoiceTargetedPosition::kFirst, "自然简写带位置", false);
+    ExpectTargetedCommand("请把删除按钮改成红色", VoiceTargetedActionKind::kReplace, "删除按钮", "红色",
+                          VoiceTargetedPosition::kUnspecified, "礼貌前缀自然简写", false);
+    ExpectNoTargeted("把改成上海", "简写空目标");
+    ExpectNoTargeted("把北京改成", "简写空替换");
+    ExpectNoTargeted("把北京改成上海改成广州", "简写多分隔符");
     ExpectNoTargeted("删除刚才的", "旧整段删除优先");
-    ExpectNoTargeted("删除最后两个字", "旧字删除");
+    ExpectTargetedCommand("删除最后两个字", VoiceTargetedActionKind::kDelete, "最后两个字", "",
+                          VoiceTargetedPosition::kUnspecified, "简写候选但协调器旧解析优先", false);
     ExpectNoTargeted("删除", "单独删除");
-    ExpectNoTargeted("请把删除按钮改成红色", "请把删除按钮改成红色");
     ExpectNoTargeted("你好删除刚才的北京", "混说");
     ExpectNoTargeted("把刚才的文件删除一下可以吗", "疑问夹带");
     ExpectNoTargeted("不删除刚才的北京", "否定前导");
@@ -1573,6 +1602,7 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorStaleGeneration();
     TestTargetedCoordinatorOldParserPriority();
     TestTargetedCoordinatorScopeAndInvalid();
+    TestTargetedCoordinatorUnscopedReplace();
     TestTargetedCoordinatorLongDocLengtheningReplace();
     std::printf(">> voice edit + targeted coordinator integration tests done\n");
 #endif

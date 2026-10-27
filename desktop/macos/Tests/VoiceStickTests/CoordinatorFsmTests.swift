@@ -748,6 +748,29 @@ func runVoiceTargetedCoordinatorTests() {
     checkEqual(h.field.text, "我去上海上班", "targeted: 替换后字段内容")
     checkEqual(h.sink.timedMessages.last, "voiceTargetedReplaced", "targeted: 替换成功 toast key")
 
+    // 用户实报场景：两轮独立语音，第二轮是不带「刚才的」且带句号的自然简写。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("我今天去北京上班。")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我今天去北京上班。"
+    h.field.selectionLocation = 9
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把北京改成上海。")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.ops.list,
+               ["state", "select(4,2)", "selected", "paste", "select(9,0)", "state"],
+               "targeted: 自然简写完整调用顺序")
+    checkEqual(h.field.text, "我今天去上海上班。", "targeted: 用户实报自然简写替换")
+    checkEqual(h.input.pastedTexts.last, "上海", "targeted: 自然简写不粘贴指令")
+    // 同一简写若目标不在最近注入中，仍按普通文本，不吞正常口述。
+    h.ops.clear()
+    h.asr.onFinal?("把广州改成杭州")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.ops.list, ["paste"], "targeted: 简写无目标匹配走普通文本")
+    checkEqual(h.field.text, "我今天去上海上班。把广州改成杭州\n",
+               "targeted: 简写无匹配时原文作为新正文（普通输入保留 auto_enter）")
+
     // auto_enter 换行保留：字段「你好世界\n」，删「世界」→ 终验「你好\n」，
     // pressedEnter 保持（记录仍含换行语义）。
     h = makeTargetedHarness()
@@ -950,7 +973,7 @@ func runVoiceTargetedCoordinatorTests() {
     checkEqual(h.sink.timedMessages.last, "voiceTargetedTextChanged",
                "targeted: 手工改动 fieldMismatch toast key")
 
-    // 无作用域简写 → 普通文本上屏；invalid 结构 → 吞掉提示不粘贴。
+    // 无最近注入时自然简写按普通文本；显式作用域 invalid 结构吞掉提示不粘贴。
     h = makeTargetedHarness()
     h.asr.onFinal?("把北京改成上海")
     pumpMainRunLoop(0.3)

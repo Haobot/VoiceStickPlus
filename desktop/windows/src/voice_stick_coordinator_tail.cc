@@ -883,6 +883,15 @@ bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& 
     }
     const auto parsed = ParseVoiceTargetedCommand(text);
     if (!parsed.has_value()) return false;  // 非指令：走原链路（普通文本上屏）
+    // 自然简写不带「刚才的」时，只有最近一次注入确实存在目标词才接管；
+    // 否则继续走普通文本，避免把不含上下文的「把A改成B」一律吞掉。
+    if (!parsed->invalid && !parsed->command.has_explicit_scope) {
+        if (!last_injection_.has_value() ||
+            FindTargetedOccurrences(parsed->command.target,
+                                    last_injection_->remaining_text).empty()) {
+            return false;
+        }
+    }
 
     // === 命中 targeted：本轮由 targeted 接管，绝不粘贴命令文本/精修/翻译/写历史 ===
     pasted_final_text_ = true;

@@ -37,14 +37,17 @@ private func expectNoTargeted(_ text: String, _ name: String) {
     checkNil(VoiceTargetedParser.parse(text), "\(name)（应为非指令）")
 }
 
-private func deleteCommand(_ target: String, _ position: VoiceTargetedPosition = .unspecified)
-    -> VoiceTargetedCommand {
-    VoiceTargetedCommand(action: .delete, target: target, position: position)
+private func deleteCommand(_ target: String, _ position: VoiceTargetedPosition = .unspecified,
+                           _ hasExplicitScope: Bool = true) -> VoiceTargetedCommand {
+    VoiceTargetedCommand(action: .delete, target: target, position: position,
+                         hasExplicitScope: hasExplicitScope)
 }
 
 private func replaceCommand(_ target: String, _ replacement: String,
-                            _ position: VoiceTargetedPosition = .unspecified) -> VoiceTargetedCommand {
-    VoiceTargetedCommand(action: .replace(replacement), target: target, position: position)
+                            _ position: VoiceTargetedPosition = .unspecified,
+                            _ hasExplicitScope: Bool = true) -> VoiceTargetedCommand {
+    VoiceTargetedCommand(action: .replace(replacement), target: target, position: position,
+                         hasExplicitScope: hasExplicitScope)
 }
 
 // ---- 解析器正例（首版全部句式）----
@@ -129,19 +132,29 @@ private func runTargetedParserPositiveTests() {
 // ---- 解析器负例与非法指令 ----
 
 private func runTargetedParserNegativeTests() {
-    // 无「刚才的」作用域：一律非指令（交旧解析器/普通文本链路）。
-    expectNoTargeted("把北京改成上海", "负例：无作用域把字句")
-    expectNoTargeted("删除北京", "负例：无作用域删除")
-    expectNoTargeted("把北京删掉", "负例：无作用域把字句删除")
-    expectNoTargeted("把第一个北京改成上海", "负例：无作用域带位置")
+    // 自然简写：解析为 hasExplicitScope=false 的候选，协调器仅在目标存在时接管。
+    expectTargeted("把北京改成上海", replaceCommand("北京", "上海", .unspecified, false),
+                   "正例：自然简写替换")
+    expectTargeted("删除北京", deleteCommand("北京", .unspecified, false),
+                   "正例：自然简写删除")
+    expectTargeted("把北京删掉", deleteCommand("北京", .unspecified, false),
+                   "正例：自然简写把字句删除")
+    expectTargeted("把第一个北京改成上海", replaceCommand("北京", "上海", .first, false),
+                   "正例：自然简写带位置")
+    expectTargeted("请把删除按钮改成红色", replaceCommand("删除按钮", "红色", .unspecified, false),
+                   "正例：礼貌前缀自然简写")
+    // 简写结构异常时无法可靠判断意图，回退普通文本而非吞掉。
+    expectNoTargeted("把改成上海", "负例：简写空目标")
+    expectNoTargeted("把北京改成", "负例：简写空替换")
+    expectNoTargeted("把北京改成上海改成广州", "负例：简写多分隔符")
 
-    // 旧解析器句式不得被 targeted 抢走（整段/字句删除）。
+    // 旧解析器在协调器优先。「删除最后两个字」可形成简写候选，但不会抢占旧语义。
     expectNoTargeted("删除刚才的", "负例：删除刚才的=旧整段删除")
-    expectNoTargeted("删除最后两个字", "负例：旧字删除")
+    expectTargeted("删除最后两个字", deleteCommand("最后两个字", .unspecified, false),
+                   "正例：旧字删除同时是简写候选（协调器旧解析优先）")
     expectNoTargeted("删除", "负例：单独删除")
 
     // 混合正文/包含式/否定/疑问：按普通文本上屏或判非法指令（吞掉提示，绝不修改）。
-    expectNoTargeted("请把删除按钮改成红色", "负例：请把删除按钮改成红色")
     expectNoTargeted("你好删除刚才的北京", "负例：正文+指令混说")
     expectNoTargeted("把刚才的文件删除一下可以吗", "负例：疑问+夹带")
     expectNoTargeted("不删除刚才的北京", "负例：否定（前导）")

@@ -6,7 +6,7 @@ import Foundation
 // voice_targeted_edit.{h,cc} 使用同一张语法表与同一份测试向量。
 //
 // 与旧 VoiceEditParser（字/句/整段尾部删除）的关系：旧解析器优先，本解析器其次；
-// 两者互斥——旧指令不带操作数，targeted 指令必须带「刚才的」作用域 + 操作数。
+// 两者互斥——旧指令不带操作数；targeted 支持显式作用域与目标匹配确认的自然简写。
 //
 // 职责边界：
 //   VoiceTargetedParser —— ASR final 文本 → 结构化指令或「结构命中但操作数非法」；
@@ -42,15 +42,21 @@ public struct VoiceTargetedCommand: Equatable {
     public let action: VoiceTargetedAction
     public let target: String
     public let position: VoiceTargetedPosition
+    /// 是否显式带「刚才的/刚刚」作用域。自然简写为 false，须由协调器先确认
+    /// 最近一次注入中确实存在 target 才接管本轮，否则按普通文本处理。
+    public let hasExplicitScope: Bool
 
-    public init(action: VoiceTargetedAction, target: String, position: VoiceTargetedPosition) {
+    public init(action: VoiceTargetedAction, target: String, position: VoiceTargetedPosition,
+                hasExplicitScope: Bool = true) {
         self.action = action
         self.target = target
         self.position = position
+        self.hasExplicitScope = hasExplicitScope
     }
 }
 
-/// 解析三态：指令 / 结构命中但操作数非法（吞掉并提示，不上屏）/ 非指令（走原链路）。
+/// 解析三态：指令 / 显式作用域下操作数非法（吞掉并提示，不上屏）/ 非指令（走原链路）。
+/// 自然简写操作数非法归非指令，避免无上下文时吞掉普通文本。
 public enum VoiceTargetedParseResult: Equatable {
     case command(VoiceTargetedCommand)
     case invalid
@@ -121,10 +127,10 @@ public enum VoiceTargetedPlanResult: Equatable {
 
 // ---- 解析器 ----
 
-/// 中文整句白名单解析器：只接受「整句恰好是一条带『刚才的』作用域的删除/替换指令」。
-/// 纯函数，无状态。词按连续文本片段精确匹配，不引入分词依赖。
+/// 中文整句白名单解析器：接受显式作用域指令与「把A改成B/删除A」自然简写。
+/// 简写是否执行由协调器根据最近注入中的实际匹配决定。词按连续片段精确匹配。
 public enum VoiceTargetedParser {
-    /// 作用域标记（必须出现且仅出现一次，位于动词之后或把字句的「把」之后）。
+    /// 可选作用域标记，位于动词之后或把字句的「把」之后。
     private static let scopeTokens: [String] = ["刚才的", "刚才", "刚刚的", "刚刚"]
     /// 位置限定词。
     private static let positionFirst = "第一个"
@@ -190,15 +196,16 @@ public enum VoiceTargetedParser {
         return fullWidthDigitsToHalfWidth(trimmed)
     }
 
-    /// 语法主体：两种句式——
-    ///   A. 动宾式：VERB SCOPE [POSITION] TARGET（整句消费完）；
-    ///   B. 把字句：把 SCOPE [POSITION] TARGET (TRAILING_DELETE_VERB | REPLACE_SEPARATOR REST)。
+    /// 语法主体：两种句式，SCOPE 均可省略——
+    ///   A. 动宾式：VERB [SCOPE] [POSITION] TARGET（整句消费完）；
+    ///   B. 把字句：把 [SCOPE] [POSITION] TARGET (TRAILING_DELETE_VERB | REPLACE_SEPARATOR REST)。
+    /// 省略 SCOPE 的结果标记 hasExplicitScope=false，由协调器按最近注入中的实际
+    /// 匹配决定是否接管；无匹配时回退普通文本。
     private static func parseBody(_ chars: [Character]) -> VoiceTargetedParseResult? {
         // B. 把字句。
         if hasPrefix(chars, "把") {
             var index = 1
-            // 把字句内「把」与作用域之间不允许再夹字。
-            guard consumeScope(chars, &index) else { return nil }
+            let hasExplicitScope = consumeScope(chars, &index)
             let position = consumePosition(chars, &index)
             // 替换分隔符优先：只要句中存在分隔符即按替换解析——否则句中/句尾的
             // 删除动词会截断 target（「把刚才的删除按钮改成红色」/「把刚才的北京改成
@@ -206,21 +213,26 @@ public enum VoiceTargetedParser {
             if let separator = lastTokenIndex(chars, replaceSeparators) {
                 let targetChars = Array(chars[index..<separator.index])
                 let replacementChars = Array(chars[(separator.index + separator.token.count)...])
-                // 「多个替换分隔符」/异常语法：target 或 replacement 内再含任何分隔符
-                // 都判定为非法指令（吞掉并提示，不产生修改）。
-                if containsAnyToken(targetChars, replaceSeparators) { return .invalid }
-                if containsAnyToken(replacementChars, replaceSeparators) { return .invalid }
+                // 多个分隔符只在显式作用域下判非法；简写无法确定意图时回退普通文本。
+                if containsAnyToken(targetChars, replaceSeparators) {
+                    return invalidIfScoped(hasExplicitScope)
+                }
+                if containsAnyToken(replacementChars, replaceSeparators) {
+                    return invalidIfScoped(hasExplicitScope)
+                }
                 let replacement = String(String(replacementChars)
                     .trimmingCharacters(in: .whitespacesAndNewlines))
                 return buildCommand(
-                    action: .replace(replacement), targetChars: targetChars, position: position)
+                    action: .replace(replacement), targetChars: targetChars, position: position,
+                    hasExplicitScope: hasExplicitScope)
             }
             if let deleteVerb = lastTokenIndex(chars, trailingDeleteVerbs) {
                 let targetChars = Array(chars[index..<deleteVerb.index])
                 guard deleteVerb.index + deleteVerb.token.count == chars.count else { return nil }
-                // 否定副词（「把刚才的北京不要删掉」）：结构命中但语义为否定 → 吞掉提示。
-                if containsNegation(targetChars) { return .invalid }
-                return buildCommand(action: .delete, targetChars: targetChars, position: position)
+                if containsNegation(targetChars) { return invalidIfScoped(hasExplicitScope) }
+                return buildCommand(
+                    action: .delete, targetChars: targetChars, position: position,
+                    hasExplicitScope: hasExplicitScope)
             }
             return nil
         }
@@ -228,37 +240,48 @@ public enum VoiceTargetedParser {
         for verb in leadingDeleteVerbs {
             guard hasPrefix(chars, verb) else { continue }
             var index = verb.count
-            guard consumeScope(chars, &index) else { continue }
+            let hasExplicitScope = consumeScope(chars, &index)
             let position = consumePosition(chars, &index)
             let targetChars = Array(chars[index...])
-            // 动宾式必须以作用域开头；「删除刚才的」本身是旧解析器的整段删除，
-            // 这里 target 为空 → 让旧解析器优先处理（返回 nil，非 targeted 指令）。
+            // 「删除刚才的」本身是旧解析器的整段删除；单独「删除」也交旧解析器。
             guard !targetChars.isEmpty else { return nil }
-            // 否定副词（与 C++ 同语义）：结构命中但语义为否定 → 吞掉提示。
-            if containsNegation(targetChars) { return .invalid }
-            return buildCommand(action: .delete, targetChars: targetChars, position: position)
+            if containsNegation(targetChars) { return invalidIfScoped(hasExplicitScope) }
+            return buildCommand(
+                action: .delete, targetChars: targetChars, position: position,
+                hasExplicitScope: hasExplicitScope)
         }
         return nil
     }
 
-    /// 由 target 字符（已定位）构建指令；空目标/超长 → nil（调用方决定 .invalid）。
+    /// 显式作用域的异常结构吞掉并提示；自然简写结构异常时按普通文本处理。
+    private static func invalidIfScoped(_ hasExplicitScope: Bool) -> VoiceTargetedParseResult? {
+        hasExplicitScope ? .invalid : nil
+    }
+
     private static func buildCommand(
-        action: VoiceTargetedAction, targetChars: [Character], position: VoiceTargetedPosition
+        action: VoiceTargetedAction, targetChars: [Character], position: VoiceTargetedPosition,
+        hasExplicitScope: Bool
     ) -> VoiceTargetedParseResult? {
         let target = String(String(targetChars).trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !target.isEmpty else { return .invalid }
+        guard !target.isEmpty else { return invalidIfScoped(hasExplicitScope) }
         // P0 限单行：目标/替换含换行（\n 或 \r，防 CRLF 绕过）→ 非法指令。
-        guard !target.contains("\n"), !target.contains("\r") else { return .invalid }
-        guard target.count <= kVoiceTargetedMaxTargetGraphemes else { return .invalid }
+        guard !target.contains("\n"), !target.contains("\r") else {
+            return invalidIfScoped(hasExplicitScope)
+        }
+        guard target.count <= kVoiceTargetedMaxTargetGraphemes else {
+            return invalidIfScoped(hasExplicitScope)
+        }
         if case .replace(let replacement) = action {
             guard !replacement.isEmpty,
                   !replacement.contains("\n"),
                   !replacement.contains("\r"),
                   replacement.count <= kVoiceTargetedMaxReplacementGraphemes else {
-                return .invalid
+                return invalidIfScoped(hasExplicitScope)
             }
         }
-        return .command(VoiceTargetedCommand(action: action, target: target, position: position))
+        return .command(VoiceTargetedCommand(
+            action: action, target: target, position: position,
+            hasExplicitScope: hasExplicitScope))
     }
 
     /// 否定副词检测（target 内出现「不要」或整词为「别」→ 视为否定式，拒绝执行）。

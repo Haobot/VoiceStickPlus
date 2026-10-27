@@ -3001,6 +3001,14 @@ public final class VoiceStickCoordinator {
         guard settings.enabled else { return false }
         guard outputProfile(for: activeDeviceID).target == .focusedApp else { return false }
         guard let parseResult = VoiceTargetedParser.parse(text) else { return false }
+        // 自然简写不带「刚才的」时，只有最近一次注入确实存在目标词才接管；
+        // 否则整句继续走普通文本，避免把不含上下文的「把A改成B」一律吞掉。
+        if case .command(let command) = parseResult, !command.hasExplicitScope {
+            guard let remainingText = lastInjection?.remainingText,
+                  !VoiceTargetedMatcher.occurrences(
+                      of: command.target, in: remainingText
+                  ).isEmpty else { return false }
+        }
 
         // 命中即吞掉本轮：置 pastedFinalText 阻止迟到回调二次粘贴；命令轮不属于
         // 「语音输入内容」——结束上一轮编辑追踪、停掉可能的精修、不写历史/纠错对。

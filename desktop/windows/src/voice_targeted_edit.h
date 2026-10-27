@@ -1,7 +1,7 @@
 #pragma once
 
 // Targeted 语音编辑纯逻辑（删除/替换最近一次语音输入中的指定词/短语）：
-//   1) 中文整句白名单解析（ParseVoiceTargetedCommand）——必须带「刚才的」作用域；
+//   1) 中文整句白名单解析（ParseVoiceTargetedCommand）——支持显式作用域与自然简写；
 //   2) remainingText 内目标词非重叠精确匹配（FindTargetedOccurrences）；
 //   3) L1 目标校验 + 执行计划（PlanVoiceTargeted）。
 //
@@ -45,14 +45,17 @@ struct VoiceTargetedCommand {
     VoiceTargetedAction action;
     std::string target;  // UTF-8，非空，<= kVoiceTargetedMaxTargetGraphemes graphemes
     VoiceTargetedPosition position = VoiceTargetedPosition::kUnspecified;
+    // 是否显式带「刚才的/刚刚」作用域。自然简写为 false，协调器仅在最近一次
+    // 注入确实存在 target 时接管，否则按普通文本处理。
+    bool has_explicit_scope = true;
 
     bool operator==(const VoiceTargetedCommand& other) const = default;
 };
 
 // 解析三态（对齐 macOS VoiceTargetedParseResult）：
 //   nullopt = 非指令（走原链路，按普通文本上屏）；
-//   result.invalid = 结构命中但操作数非法（空目标/空替换/多分隔符/否定——吞掉并
-//                    提示，不上屏、不修改）；
+//   result.invalid = 显式作用域下结构命中但操作数非法（空目标/空替换/多分隔符/否定
+//                    ——吞掉并提示，不上屏、不修改；自然简写异常归 nullopt）；
 //   result.command = 可执行指令。
 struct VoiceTargetedParseResult {
     bool invalid = false;
