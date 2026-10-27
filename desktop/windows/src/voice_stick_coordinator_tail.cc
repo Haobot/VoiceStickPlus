@@ -1,6 +1,7 @@
 #include "voice_stick_coordinator.h"
 
 #include "hotword_selector.h"  // B14b 提炼候选过滤
+#include "usage_events.h"
 #include "encoder_speed.h"
 #include "localization.h"
 #include "log.h"
@@ -24,6 +25,42 @@ void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::strin
                                                                 const std::string& refined) {
     const auto mined = MineRefinementCandidates(original, refined, ConfigSnapshot()->asr_hotwords);
     if (!mined.empty()) RecordAndNotifyHotwordCandidates(mined);
+}
+
+std::filesystem::path VoiceStickCoordinator::UsageEventsPath() {
+    return ConfigSnapshot()->ConfigPath().parent_path() / "usage_events.jsonl";
+}
+
+void VoiceStickCoordinator::RecordUsageEvent(const std::string& kind,
+                                             const std::string& text,
+                                             std::optional<double> dwell_seconds) {
+    // 负信号采集（用户数据飞轮 P1-1，对齐 macOS RecordUsageEvent）：只记文本长度
+    // 与热词命中名单（子串匹配的成员关系），绝不记文本本身。
+    std::string lowered;
+    lowered.reserve(text.size());
+    for (const char c : text) {
+        lowered += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    }
+    std::vector<std::string> matched;
+    for (const auto& word : ConfigSnapshot()->asr_hotwords) {
+        if (word.empty() || lowered.size() < word.size()) continue;
+        std::string word_lowered;
+        word_lowered.reserve(word.size());
+        for (const char c : word) {
+            word_lowered += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+        }
+        if (lowered.find(word_lowered) != std::string::npos) {
+            matched.push_back(word);
+        }
+    }
+    UsageEvent event;
+    event.kind = kind;
+    event.ts = std::time(nullptr);
+    event.device = active_device_id_.value_or("");
+    event.text_length = static_cast<int>(text.size());
+    event.hotwords = std::move(matched);
+    event.dwell_seconds = dwell_seconds;
+    AppendUsageEvent(UsageEventsPath(), event);
 }
 
 std::string VoiceStickCoordinator::ForegroundAppBucket() {
@@ -435,12 +472,21 @@ void VoiceStickCoordinator::RecoverFromAsrError(bool hide_overlay) {
     EnterReady("error_recovered", hide_overlay);
 }
 
-void VoiceStickCoordinator::CommitPendingPaste(const std::string& text) {
-    if (pending_paste_state_.text == text) CompletePendingPaste(text);
+void VoiceStickCoordinator::CommitPendingPaste(const std::string& text, bool manual) {
+    if (pending_paste_state_.text == text) CompletePendingPaste(text, manual);
 }
 
-void VoiceStickCoordinator::CompletePendingPaste(const std::string& text) {
+void VoiceStickCoordinator::CompletePendingPaste(const std::string& text, bool manual) {
     const bool should_press_enter = ConfigSnapshot()->auto_enter;
+    // 负信号采集（P1-1）：确认动作 + 暂停态停留时长（自动路径无停留 = nullopt）。
+    std::optional<double> dwell;
+    if (pending_paste_entered_at_ms_ != 0) {
+        dwell = static_cast<double>(GetTickCount64() - pending_paste_entered_at_ms_) / 1000.0;
+    }
+    RecordUsageEvent(manual ? usage_event_kind::kPasteManuallyConfirmed
+                            : usage_event_kind::kPasteAutoConfirmed,
+                     text, dwell);
+    pending_paste_entered_at_ms_ = 0;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
     // 时序探针汇总：button_up -> ready 各阶段耗时，定位 Thinking 延迟根因。
@@ -466,7 +512,7 @@ bool VoiceStickCoordinator::HandleFrontButtonDuringPendingPaste(const std::strin
         EnterPausedConfirmation(pending_paste_state_.text, "pause_pending_paste");
         return true;
     }
-    ui_->HideOverlay([this, text = pending_paste_state_.text] { CommitPendingPaste(text); });
+    ui_->HideOverlay([this, text = pending_paste_state_.text] { CommitPendingPaste(text, true); });
     return true;
 }
 
@@ -487,12 +533,22 @@ void VoiceStickCoordinator::CancelPendingPaste(const std::string& device_id) {
         return;
     }
     if (active_device_id_ != device_id) return;
+    // 负信号采集（P1-1）：待确认文本被取消 + 暂停态停留时长。
+    std::optional<double> cancel_dwell;
+    if (pending_paste_entered_at_ms_ != 0) {
+        cancel_dwell = static_cast<double>(GetTickCount64() - pending_paste_entered_at_ms_) / 1000.0;
+    }
+    RecordUsageEvent(usage_event_kind::kPasteCanceled, pending_paste_state_.text, cancel_dwell);
+    pending_paste_entered_at_ms_ = 0;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
     EnterReady("cancel_pending_paste");
 }
 
 void VoiceStickCoordinator::CancelRecognitionInProgress() {
+    // 负信号采集（P1-1）：识别中途取消/重录（无文本）。
+    RecordUsageEvent(usage_event_kind::kRecognitionCanceled, {});
+    pending_paste_entered_at_ms_ = 0;
     if (IsWechatInputMethodActive()) {
         StopWechatInputMethodSession();
         EnterReady("cancel_recognition_wechat");
@@ -837,10 +893,11 @@ void VoiceStickCoordinator::EnterPendingConfirmation(const std::string& text, st
         LogCoordinatorLine("ignore stale pending confirmation reason=" + std::string(reason));
         return;
     }
-    CompletePendingPaste(text);
+    CompletePendingPaste(text, /*manual=*/false);
 }
 
 void VoiceStickCoordinator::EnterPausedConfirmation(const std::string& text, std::string_view reason) {
+    pending_paste_entered_at_ms_ = GetTickCount64();
     pending_paste_state_ = {PendingPasteKind::kPaused, text};
     SetSessionState(SessionState::kPausedConfirmation, reason);
     ui_->ShowPausedFinal(text, active_device_id_);

@@ -45,3 +45,6 @@ void RunDevicePlanMiscBatchTests();
 
 // 用户数据飞轮 P0-1：纠错对资产化批（correction_pairs + prompt few-shot 注入）。
 void RunCorrectionPairsBatchTests();
+
+// 用户数据飞轮 P1-1：负信号事件流水批（usage_events JSONL）。
+void RunUsageEventsBatchTests();
