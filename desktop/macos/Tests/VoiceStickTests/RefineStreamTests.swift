@@ -117,7 +117,23 @@ func runHotwordSelectorTests() {
         HotwordSelector.loadUsage(url: url.appendingPathExtension("missing")).count, 0,
         "文件缺失返回空 store"
     )
+
+    // ---- 评分负项（用户数据飞轮 P1-1 消费端，与 hotword_select.py 三方同源）----
+    var negStore: HotwordUsageStore = [:]
+    HotwordSelector.recordNegative(&negStore, text: "讲一下语气词的用法", hotwords: ["语气词", "Claude"])
+    checkEqual(negStore["语气词"]?.negativeCount, 1, "负样本：命中词 negative+1")
+    check(negStore["Claude"] == nil, "负样本：未命中词不记")
+    let negScored = HotwordUsage(count: 50, negativeCount: 9, lastUsedTs: now - 100, source: "mined")
+    let posScored = HotwordUsage(count: 50, negativeCount: 0, lastUsedTs: now - 100, source: "mined")
+    check(
+        HotwordSelector.score(negScored, nowS: now) < HotwordSelector.score(posScored, nowS: now),
+        "负样本：负项降低评分"
+    )
+    let expectedNeg = HotwordUsage(count: 50, negativeCount: 9, lastUsedTs: now - 100, source: "mined")
+    let delta = HotwordSelector.score(posScored, nowS: now) - HotwordSelector.score(expectedNeg, nowS: now)
+    check(abs(delta - kHotwordWNegative * log1p(9.0)) < 1e-9, "负样本：负项量值 = W_NEG·log1p(neg)")
 }
+
 
 func runActiveSecretTests() {
     // 内置凭据回退（对齐 Windows ResolveActiveString）：配置值优先（trim 非空），

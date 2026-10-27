@@ -22,6 +22,9 @@ namespace voicestick {
 inline constexpr double kHotwordWCount = 1.0;
 inline constexpr double kHotwordWRecency = 0.5;
 inline constexpr double kHotwordWManual = 2.0;
+// 负样本权重（用户数据飞轮 P1-1 评分负项）：score -= W_NEG * log1p(negative)。
+// 与 macOS HotwordSelector.swift / hotword_select.py 三方同源。
+inline constexpr double kHotwordWNegative = 1.0;
 inline constexpr std::int64_t kHotwordRecencyTauS = 30LL * 24 * 3600;
 
 // 精修/翻译 prompt 热词段上限（防大库稀释小模型注意力，见
@@ -30,6 +33,7 @@ inline constexpr int kHotwordPromptMaxWords = 50;
 
 struct HotwordUsage {
     int count = 0;                 // 出现在最终文本中的累计次数
+    int negative_count = 0;        // 结果被取消且文本含该词的次数（评分负项）
     std::int64_t last_used_ts = 0; // 最近一次使用的 epoch 秒（0 = 未知，按最旧处理）
     std::string source = "mined";  // "manual"（用户手动加词）或 "mined"（候选挖掘）
 };
@@ -79,6 +83,12 @@ void RecordHotwordUsageInText(HotwordUsageStore& store,
                               const std::string& text,
                               const std::vector<std::string>& hotwords,
                               std::int64_t now_s);
+
+// 记录负样本：结果被取消且文本含该词（大小写不敏感子串匹配）→ negative_count+1。
+// 只更新内存 store，落盘由调用方负责（与 RecordHotwordUsageInText 对称）。
+void RecordHotwordNegativeInText(HotwordUsageStore& store,
+                                 const std::string& text,
+                                 const std::vector<std::string>& hotwords);
 
 // JSON 读写（数组形态 [{word,count,last_used_ts,source}, ...]，与
 // hotword_select.py 的 load_stats_json 列表形态兼容）；文件缺失/损坏返回空

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 W_COUNT = 1.0
 W_RECENCY = 0.5
 W_MANUAL = 2.0
+W_NEGATIVE = 1.0  # 负样本权重：score -= W_NEG * log1p(negative_count)
 RECENCY_TAU_S = 30.0 * 86400.0
 
 # 平台限额（调研结论见 Doc/Plan/hotword-eval-and-prioritization.md §1）。
@@ -37,11 +38,12 @@ MAX_ASCII_CHARS = 30            # ≤30 英文字符
 
 @dataclass
 class HotwordStat:
-    """单个热词的使用统计。count=历史出现/使用次数；last_used_ts=最近使用
-    时间戳（0=未知，按最旧处理）；source="manual"（用户手动加词）或 "mined"
-    （候选挖掘/精修 diff）。"""
+    """单个热词的使用统计。count=历史出现/使用次数；negative_count=结果被取消
+    且文本含该词的次数（评分负项）；last_used_ts=最近使用时间戳（0=未知，按
+    最旧处理）；source="manual"（用户手动加词）或 "mined"（候选挖掘/精修 diff）。"""
     word: str
     count: int = 0
+    negative_count: int = 0
     last_used_ts: float = 0.0
     source: str = "mined"
 
@@ -68,9 +70,11 @@ def score(stat: HotwordStat, now: float | None = None) -> float:
     age = max(0.0, now - stat.last_used_ts) if stat.last_used_ts > 0 else float("inf")
     recency = math.exp(-age / RECENCY_TAU_S) if math.isfinite(age) else 0.0
     manual = 1.0 if stat.source == "manual" else 0.0
+    negative = W_NEGATIVE * math.log1p(max(0, stat.negative_count))
     return (W_COUNT * math.log1p(max(0, stat.count))
             + W_RECENCY * recency
-            + W_MANUAL * manual)
+            + W_MANUAL * manual
+            - negative)
 
 
 def rank(stats: list[HotwordStat], now: float | None = None) -> list[str]:
@@ -130,6 +134,7 @@ def load_stats_json(path: str) -> list[HotwordStat]:
     if isinstance(data, dict):
         return [HotwordStat(word=w, count=int(c)) for w, c in data.items()]
     return [HotwordStat(word=item["word"], count=int(item.get("count", 0)),
+                        negative_count=int(item.get("negative_count", 0)),
                         last_used_ts=float(item.get("last_used_ts", 0.0)),
                         source=item.get("source", "mined"))
             for item in data]

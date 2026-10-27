@@ -646,6 +646,8 @@ private:
     std::filesystem::path UsageEventsPath();
     void RecordUsageEvent(const std::string& kind, const std::string& text,
                           std::optional<double> dwell_seconds = std::nullopt);
+    // 取消结果文本中命中的热词负样本记分（评分负项，P1-1 采集的消费端）。
+    void RecordHotwordNegativeFromText(const std::string& text);
     // 暂停确认态进入时刻（GetTickCount64；停留时长疑惑度信号，0=不在暂停态）。
     ULONGLONG pending_paste_entered_at_ms_ = 0;
     // P3 反馈环锚点：本会话精确命中应用的改写对（确认保留 → recall+1，取消清空）。
