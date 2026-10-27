@@ -697,6 +697,9 @@ int Win32App::Run() {
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
         // 注入焦点输入框 UIA 读取（语音编辑 L1 目标校验；仅 UI 线程调用，COM STA）。
         coordinator_->SetFocusTextReader(CreateFocusTextReader());
+        // 注入 targeted 编辑平台出口（UIA TextRange 精确选区 + 读回 + 末尾光标；
+        // 仅 UI 线程调用，COM STA）。
+        coordinator_->SetTargetedFieldEditor(CreateTargetedFieldEditor());
 #ifdef VOICESTICK_LOCAL_ASR_ENABLED
         // 本机麦克风模式（[local_asr]，Doc/Plan/local-mic-mode.md）：安装 WASAPI
         // 采集器 + 本地 SenseVoice ASR 与按住说话热键。模型缺失不在启动期报错

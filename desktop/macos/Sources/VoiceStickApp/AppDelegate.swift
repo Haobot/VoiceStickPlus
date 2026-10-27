@@ -131,6 +131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 返回 nil = 不可验证。macOS 27 实测 system-wide 取焦点元素返回 -25204
         //（kAXErrorCannotComplete），reader 内置前台应用级 AX 树 fallback（Lead spike 结论）。
         coordinator.readFocusedFieldState = { FocusedFieldAXReader.readState() }
+        // targeted 编辑平台出口（Doc/Plan/voice-edit-commands.md targeted 章节）：
+        // AX 精确选区写入 + 实际选中文本读回；能力缺失时协调器按不可验证拒绝
+        // （targeted 恒 verified，严禁盲改/全选重贴/系统撤销）。
+        coordinator.writeTargetedSelection = { location, length in
+            FocusedFieldAXReader.writeSelectedRange(locationUTF16: location, lengthUTF16: length)
+        }
+        coordinator.readTargetedSelectedText = { FocusedFieldAXReader.readSelectedText() }
         coordinator.presentUpgradeAlertUI = { url, message in
             NSApp.activate(ignoringOtherApps: true)
 
@@ -1090,5 +1097,29 @@ private enum FocusedFieldAXReader {
         return FocusedFieldState(
             text: text, caretUTF16: range.location, selectionLength: range.length
         )
+    }
+
+    /// targeted 编辑：设置焦点字段选区（kAXSelectedTextRange，UTF-16 location+length；
+    /// 只写选区，不写整个字段 Value）。成功返回 true；无焦点/越界/AX 拒绝返回 false
+    /// （调用方按不可验证拒绝，绝不降级为盲操作/全选重贴/撤销键）。
+    static func writeSelectedRange(locationUTF16: Int, lengthUTF16: Int) -> Bool {
+        guard locationUTF16 >= 0, lengthUTF16 >= 0,
+              let copyAttr = copyAttrFunction(),
+              let focused = focusedElement(copyAttr) else { return false }
+        var range = CFRange(location: locationUTF16, length: lengthUTF16)
+        guard let value = AXValueCreate(.cfRange, &range) else { return false }
+        return AXUIElementSetAttributeValue(
+            focused, kAXSelectedTextRangeAttribute as CFString, value
+        ) == .success
+    }
+
+    /// targeted 编辑：读回当前实际选中文本（kAXSelectedTextAttribute）。无选区属性/
+    /// 选区折叠为空串（调用方与目标词比对自然不符 → 拒绝）/读不到返回 nil。
+    static func readSelectedText() -> String? {
+        guard let copyAttr = copyAttrFunction(), let focused = focusedElement(copyAttr),
+              let value = copyAttribute(
+                  copyAttr, element: focused, attribute: kAXSelectedTextAttribute as CFString
+              ), CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        return (value as! CFString) as String
     }
 }

@@ -1,5 +1,9 @@
 # CHANGELOG.md
 
+## Unreleased
+
+- 新增（macOS + Windows）：**targeted 语音编辑**——说完话后直接说「删除刚才的北京」/「把刚才的北京删掉」/「把刚才最后一个北京改成上海」（删除动词：删除/删掉/删去/去掉；替换分隔符：改成/改为/换成/替换为/替换成；支持「第一个/最后一个」消歧，无位置限定时仅 1 个精确匹配才执行，多处匹配安全拒绝并提示）。仅编辑最近一次语音注入且仍完整位于焦点字段尾部的文本：targeted 动作**无论 `verify_mode` 都必须 verified**（严禁盲删/盲改），用平台精确选区（macOS AX `kAXSelectedTextRange` / Windows UIA TextRange `Select()`）选中目标词、读回逐字确认后一次 Backspace 或 `paste(pressEnter=false)`，恢复光标到字段末尾并终验，通过才更新记录；选区读回不符/终验不符零重试，终验失败使注入记录失效防陈旧偏移。明确带「刚才的」作用域且完整命中语法的命令即使失败也绝不把命令文本粘贴上屏；不带作用域的「把A改成B/删除A」继续按普通文本处理；旧字/句/整段删除指令行为不变（旧解析器优先）。目标词 ≤32、替换 ≤64 graphemes（双端一致硬上限，独立于 `max_chars`，无新配置项）。macOS 本机 `swift run VoiceStickTests` PASSED 1525/1525（新增解析/匹配/计划向量 + 协调器级调用顺序/安全闸/换行拆解/配置代际测试）；Windows 纯逻辑与 macOS 同向量（本机 clang 对拍 + ASan/UBSan 构建运行通过，含既有套件回归），MSVC 构建/CTest/双端真机验收待补。评审返修要点：把字句分隔符优先（`把刚才的删除按钮改成红色`→替换（删除按钮，红色）、`把刚才的北京改成删除`→替换（北京，删除））；C++ `LastTokenIndex` 越界修复；targeted 单行约束双端同拒 `\r`/`\n`；macOS remaining 换行结尾的后缀拆解对齐 Windows；Windows 长文档变长替换的终验改公共后缀比较；配置清理同步失效在途终验。设计见 `Doc/Plan/voice-edit-commands.md` targeted 章节。
+
 ## v2.4.10
 
 - 新增（macOS + Windows）：**语音编辑指令**——说完话后直接说"删掉最后两个字"/"删除最后一句"/"删除刚才的/撤销"/单独"删除"（默认删 1 字），桌面端在 ASR final 后本地整句白名单解析（零额外延迟、不依赖云端），删除最近一次语音注入到 focused_app 的文本尾部；支持字/句/整段，仅对最近一次注入且光标仍在该文本末尾时生效（字段+光标校验，失败安全拒绝并提示），字幕/微信输入法模式不支持。配置 `[voice_edit]` 默认开启，设置页「语音编辑」区块可关闭或调整单独"删除"的默认字数；设计见 `Doc/Plan/voice-edit-commands.md`，字段见 `Doc/Ref/desktop-config.md`。

@@ -16,6 +16,10 @@
 #include <thread>
 #endif
 
+#include <algorithm>
+
+#include "voice_targeted_edit.h"
+
 #include <cassert>
 #include <cstdio>
 #include <string>
@@ -800,7 +804,742 @@ void TestVoiceEditCoordinatorDisabledPastesNormally() {
     assert(harness.ui().timed_messages.empty());
 }
 
+// ======================= targeted 编辑：协调器级 Fake 验证 =======================
+// 与 macOS Tests/VoiceStickTests/CoordinatorFsmTests.swift 的 targeted 段同向量：
+// 完整调用顺序（select → 读回 → 一次 delete/paste(false) → 恢复末尾 → 终验 → 更新）、
+// 读回不符零修改、终验失败记录失效、stale generation 不覆盖新记录、off 仍拒绝盲改。
+
+std::wstring Utf16FromUtf8ForTest(std::string_view text) {
+    if (text.empty()) return {};
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                           static_cast<int>(text.size()), nullptr, 0);
+    std::wstring out(static_cast<std::size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        out.data(), length);
+    return out;
+}
+
+std::string Utf8FromUtf16ForTest(std::wstring_view text) {
+    if (text.empty()) return {};
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(),
+                                           static_cast<int>(text.size()), nullptr, 0,
+                                           nullptr, nullptr);
+    std::string out(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        out.data(), length, nullptr, nullptr);
+    return out;
+}
+
+// 模拟焦点应用字段（UTF-16 文档 + 选区）。
+class VoiceTargetedFakeField {
+public:
+    std::wstring doc;
+    std::size_t sel_start = 0;  // UTF-16
+    std::size_t sel_len = 0;
+
+    // Backspace：选区非空删选区，否则删最后一个字符（surrogate 对整体）。
+    void ApplyBackspace() {
+        if (sel_len > 0) {
+            doc.erase(sel_start, sel_len);
+        } else if (!doc.empty()) {
+            std::size_t count = 1;
+            if (doc.size() >= 2 &&
+                (doc[doc.size() - 1] & 0xFC00) == 0xDC00 &&   // low surrogate
+                (doc[doc.size() - 2] & 0xFC00) == 0xD800) {  // high surrogate
+                count = 2;
+            }
+            doc.erase(doc.size() - count, count);
+        }
+        sel_len = 0;
+    }
+};
+
+class VoiceTargetedFakeFocusReader : public IFocusTextReader {
+public:
+    bool ReadFocusedField(VoiceEditFieldState* out) override {
+        if (out == nullptr) return false;
+        *out = VoiceEditFieldState{};
+        if (!readable || field == nullptr) return false;
+        constexpr std::size_t kTail = 512;
+        const std::size_t tail_len = std::min(kTail, field->doc.size());
+        const std::size_t tail_start = field->doc.size() - tail_len;
+        out->readable = true;
+        out->tail_text = Utf8FromUtf16ForTest(
+            std::wstring_view(field->doc).substr(tail_start, tail_len));
+        out->tail_utf16_length = tail_len;
+        out->selection_collapsed = field->sel_len == 0;
+        out->caret_at_end = field->sel_start + field->sel_len == field->doc.size();
+        return true;
+    }
+    VoiceTargetedFakeField* field = nullptr;
+    bool readable = true;
+};
+
+class VoiceTargetedFakeEditor : public ITargetedFieldEditor {
+public:
+    bool SelectAndReadBack(std::size_t tail_relative_start_utf16, std::size_t length_utf16,
+                           std::string* selected_text) override {
+        if (selected_text == nullptr || field == nullptr) return false;
+        ops->push_back("select");
+        constexpr std::size_t kTail = 512;
+        const std::size_t tail_len = std::min(kTail, field->doc.size());
+        const std::size_t tail_start = field->doc.size() - tail_len;
+        if (tail_relative_start_utf16 + length_utf16 > tail_len) return false;
+        field->sel_start = tail_start + tail_relative_start_utf16;
+        field->sel_len = length_utf16;
+        if (drift) {
+            *selected_text = "北";  // 模拟平台读回漂移（≠ target）
+        } else {
+            *selected_text = Utf8FromUtf16ForTest(
+                std::wstring_view(field->doc).substr(field->sel_start, field->sel_len));
+        }
+        return true;
+    }
+    bool MoveCaretToEnd() override {
+        ops->push_back("end");
+        if (field == nullptr) return false;
+        field->sel_start = field->doc.size();
+        field->sel_len = 0;
+        return true;
+    }
+    VoiceTargetedFakeField* field = nullptr;
+    std::vector<std::string>* ops = nullptr;
+    bool drift = false;
+};
+
+class VoiceTargetedInputInjector : public FakeInputInjector {
+public:
+    void Paste(const std::string& text, bool press_enter) override {
+        FakeInputInjector::Paste(text, press_enter);
+        if (field == nullptr) return;
+        const std::wstring w = Utf16FromUtf8ForTest(text);
+        field->doc.replace(field->sel_start, field->sel_len, w);
+        field->sel_start += w.size();
+        field->sel_len = 0;
+        if (press_enter) {
+            field->doc.push_back(L'\n');
+            ++field->sel_start;
+        }
+    }
+    void SendKeyCombo(const KeySpec& spec) override {
+        FakeInputInjector::SendKeyCombo(spec);
+        if (spec.display_text == "Backspace") {
+            ops->push_back("backspace");
+            if (swallow_backspace) {
+                field->sel_len = 0;  // 吞掉注入：字段保持原样（终验失败路径）
+            } else {
+                field->ApplyBackspace();
+            }
+        }
+    }
+    VoiceTargetedFakeField* field = nullptr;
+    std::vector<std::string>* ops = nullptr;
+    bool swallow_backspace = false;
+};
+
+class VoiceTargetedHarness {
+public:
+    explicit VoiceTargetedHarness(const AppConfig& config) : config_(config) {
+        auto ble = std::make_unique<FakeBleCentral>();
+        ble_ = ble.get();
+        auto asr = std::make_unique<FakeAsrClient>();
+        asr_ = asr.get();
+        auto probe = std::make_unique<VoiceEditFakeForegroundProbe>();
+        probe_ = probe.get();
+        auto reader = std::make_unique<VoiceTargetedFakeFocusReader>();
+        reader_ = reader.get();
+        auto editor = std::make_unique<VoiceTargetedFakeEditor>();
+        editor_ = editor.get();
+        coordinator_ = std::make_unique<VoiceStickCoordinator>(
+            config_, std::move(ble), std::move(asr), &ui_, &input_);
+        coordinator_->SetForegroundProbe(std::move(probe));
+        coordinator_->SetFocusTextReader(std::move(reader));
+        coordinator_->SetTargetedFieldEditor(std::move(editor));
+        reader_->field = &field_;
+        editor_->field = &field_;
+        editor_->ops = &ops_;
+        input_.field = &field_;
+        input_.ops = &ops_;
+        coordinator_->SetUiDispatcher([this](std::function<void()> action) {
+            std::lock_guard lock(queue_mutex_);
+            queue_.push_back(std::move(action));
+        });
+        coordinator_->Start();
+    }
+    ~VoiceTargetedHarness() {
+        if (coordinator_) coordinator_->Shutdown();
+    }
+
+    FakeBleCentral& ble() { return *ble_; }
+    FakeAsrClient& asr() { return *asr_; }
+    FakeUi& ui() { return ui_; }
+    VoiceTargetedInputInjector& input() { return input_; }
+    VoiceTargetedFakeField& field() { return field_; }
+    std::vector<std::string>& ops() { return ops_; }
+    VoiceTargetedFakeEditor& editor() { return *editor_; }
+    VoiceTargetedFakeFocusReader& reader() { return *reader_; }
+    UiLanguage language() const { return EffectiveUiLanguage(config_.ui_language); }
+
+    bool PumpOnce() {
+        std::function<void()> action;
+        {
+            std::lock_guard lock(queue_mutex_);
+            if (queue_.empty()) return false;
+            action = std::move(queue_.front());
+            queue_.erase(queue_.begin());
+        }
+        action();
+        return true;
+    }
+    bool PumpUntil(const std::function<bool()>& done, int timeout_ms = 3000) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (true) {
+            if (done()) return true;
+            if (std::chrono::steady_clock::now() >= deadline) return done();
+            if (!PumpOnce()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    void RecordAndStop(std::uint32_t session_id) {
+        ble_->on_state_event("5A74", ButtonEvent("button_down", "primary", session_id));
+        ble_->on_audio_frame("5A74", AudioDataFrame(session_id, 1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        ble_->on_state_event("5A74", ButtonEvent("button_up", "primary", session_id));
+        ble_->on_audio_frame("5A74", EmptyEndFrame(session_id, 2));
+    }
+    bool PasteText(const std::string& text, std::uint32_t session_id) {
+        RecordAndStop(session_id);
+        asr_->on_final(text);
+        return PumpUntil([this, text] { return input_.pasted_text == text; });
+    }
+    bool RunCommand(const std::string& command_text, std::uint32_t session_id) {
+        const std::size_t toasts_before = ui_.timed_messages.size();
+        RecordAndStop(session_id);
+        asr_->on_final(command_text);
+        return PumpUntil([this, toasts_before] {
+            return ui_.timed_messages.size() > toasts_before;
+        });
+    }
+
+private:
+    AppConfig config_;
+    FakeUi ui_;
+    VoiceTargetedInputInjector input_;
+    VoiceTargetedFakeField field_;
+    std::vector<std::string> ops_;
+    VoiceEditFakeForegroundProbe* probe_ = nullptr;
+    VoiceTargetedFakeFocusReader* reader_ = nullptr;
+    VoiceTargetedFakeEditor* editor_ = nullptr;
+    FakeBleCentral* ble_ = nullptr;
+    FakeAsrClient* asr_ = nullptr;
+    std::mutex queue_mutex_;
+    std::vector<std::function<void()>> queue_;
+    std::unique_ptr<VoiceStickCoordinator> coordinator_;
+};
+
+std::string TargetedToast(const char* text) { return std::string(text) + ":3000"; }
+
+// 基本删除：选区 → 读回 → 一次 Backspace → 恢复末尾 → 终验 → 记录更新；
+// 命令轮不 Paste 指令本身；第二次 targeted 命令基于更新后的 remaining 继续执行。
+void TestTargetedCoordinatorDelete() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    harness.field().doc = L"";
+    assert(harness.PasteText("我去北京上班", 121));
+    // 粘贴后 fake 字段与记录一致（reader 从字段读，tail=全文）。
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 122));
+    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "end"}));
+    assert(harness.input().sent_key_combos.size() == 1);
+    assert(harness.input().pasted_text == "我去北京上班");  // 命令轮不粘贴
+    assert(harness.field().doc == L"我去上班");
+    std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
+    const auto marker = expected.find("%d");
+    expected.replace(marker, 2, "2");
+    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
+
+    // 记录已更新（remaining="我去上班"）：第二次删「上班」→ 字段「我去」。
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的上班", 123));
+    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "end"}));
+    assert(harness.field().doc == L"我去");
+}
+
+// 替换：paste(pressEnter=false) + 终验新文本。
+void TestTargetedCoordinatorReplace() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 131));
+    assert(harness.RunCommand("把刚才的北京改成上海", 132));
+    assert(harness.input().pasted_text == "上海");
+    assert(harness.input().pasted_enter == false);
+    assert(harness.field().doc == L"我去上海上班");
+    std::string expected = Tr(StringId::kVoiceTargetedReplaced, harness.language());
+    const auto marker = expected.find("%d");
+    expected.replace(marker, 2, "2");
+    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
+}
+
+// auto_enter 换行保留：字段「你好世界\n」，删「世界」→ 「你好\n」。
+void TestTargetedCoordinatorKeepsAutoEnterNewline() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = true;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("你好世界", 141));
+    assert(harness.field().doc == L"你好世界\n");
+    assert(harness.RunCommand("删除刚才的世界", 142));
+    assert(harness.field().doc == L"你好\n");
+}
+
+// 选区读回不符：零删除/零粘贴 + 恢复末尾光标 + TextChanged + 记录保留。
+void TestTargetedCoordinatorSelectionReadbackMismatch() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 151));
+    harness.editor().drift = true;
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 152));
+    assert((harness.ops() == std::vector<std::string>{"select", "end"}));  // 无 backspace
+    assert(harness.field().doc == L"我去北京上班");
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceTargetedTextChanged, harness.language()).c_str()));
+    // 记录保留：漂移关闭后同命令可再执行。
+    harness.editor().drift = false;
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 153));
+    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "end"}));
+    assert(harness.field().doc == L"我去上班");
+}
+
+// 终验失败（应用吞掉退格）：不重试、记录失效、提示检查。
+void TestTargetedCoordinatorFinalVerifyFailsInvalidates() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 161));
+    harness.input().swallow_backspace = true;
+    assert(harness.RunCommand("删除刚才的北京", 162));
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceTargetedUnconfirmed, harness.language()).c_str()));
+    // 记录已失效：再发 targeted 命令 → 没有可删除的语音输入。
+    harness.input().swallow_backspace = false;
+    assert(harness.RunCommand("删除刚才的北京", 163));
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceEditNoTarget, harness.language()).c_str()));
+}
+
+// verify_mode=off 且 UIA 不可读：targeted 恒 verified → 拒绝（严禁盲改）。
+void TestTargetedCoordinatorOffModeUnreadableRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    config.voice_edit.verify_mode = VoiceEditVerifyMode::kOff;
+    VoiceTargetedHarness harness(config);
+    harness.reader().readable = false;
+    assert(harness.PasteText("我去北京上班", 171));
+    assert(harness.RunCommand("删除刚才的北京", 172));
+    assert(harness.input().sent_key_combos.empty());
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceEditUnreadable, harness.language()).c_str()));
+}
+
+// stale generation：命令执行后、终验前发生新注入 → 旧回调不覆盖新记录。
+void TestTargetedCoordinatorStaleGeneration() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 181));
+    // 只泵到 backspace 已发、延时终验（200ms）未触发。
+    harness.RecordAndStop(182);
+    harness.asr().on_final("删除刚才的北京");
+    assert(harness.PumpUntil([&] { return harness.input().sent_key_combos.size() == 1; }));
+    // 新注入（覆盖记录、generation +1）。stale 终验未运行（光标未回末尾），
+    // 直接重置 fake 字段为干净的新注入态。
+    assert(harness.PasteText("全新输入", 183));
+    harness.field().doc = L"全新输入";
+    harness.field().sel_start = 4;
+    harness.field().sel_len = 0;
+    // 等过 200ms 终验窗口：stale 回调被丢弃（无 "end" op、无成功 toast）。
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    while (harness.PumpOnce()) {
+    }
+    assert((harness.ops() == std::vector<std::string>{"select", "backspace"}));
+    std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
+    for (const auto& toast : harness.ui().timed_messages) {
+        assert(toast.find(expected.substr(0, expected.find("%d"))) == std::string::npos);
+    }
+    // 新记录未被旧 new_remaining 覆盖：基于「全新输入」再编辑可用。
+    assert(harness.RunCommand("删除刚才的全新", 184));
+    assert(harness.field().doc == L"输入");
+}
+
+// 旧解析器优先：「删除刚才的」仍走旧整段删除（退格×N，不走 targeted 选区）。
+void TestTargetedCoordinatorOldParserPriority() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = true;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("你好世界", 191));
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的", 192));
+    assert(harness.input().sent_key_combos.size() == 5);  // 4 字 + 换行
+    assert(std::find(harness.ops().begin(), harness.ops().end(), "select") ==
+           harness.ops().end());
+}
+
+// 无作用域简写 → 普通文本上屏；invalid 结构 → 吞掉提示、不粘贴。
+void TestTargetedCoordinatorScopeAndInvalid() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("把北京改成上海", 201));  // 非指令：作为正文
+    assert(harness.input().pasted_text == "把北京改成上海");
+    assert(harness.PasteText("我去北京上班", 202));
+    assert(harness.RunCommand("把刚才的改成上海", 203));  // invalid：吞掉不粘贴
+    assert(harness.input().pasted_text == "我去北京上班");
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceTargetedInvalid, harness.language()).c_str()));
+}
+
+// 长文档终验：tail 恰为 512 窗口、替换变长使 expected_tail=514（>512）时，公共后缀
+// 比较必须判成功并更新记录（修复前 tail.size() >= expected_tail.size() 必误判
+// resultUnconfirmed）。
+void TestTargetedCoordinatorLongDocLengtheningReplace() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 211));
+    // 构造 512 UTF-16 前缀 + 注入文本（tail 窗口恰好满 512）。
+    harness.field().doc = std::wstring(506, L'前') + harness.field().doc;
+    harness.field().sel_start = harness.field().doc.size();
+    harness.field().sel_len = 0;
+    assert(harness.RunCommand("把刚才的北京改成上海上海", 212));
+    const std::wstring expected_doc =
+        std::wstring(506, L'前') + L"我去上海上海上班";
+    assert(harness.field().doc == expected_doc);
+    std::string expected = Tr(StringId::kVoiceTargetedReplaced, harness.language());
+    const auto marker = expected.find("%d");
+    expected.replace(marker, 2, "2");
+    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
+    // 记录已更新（remaining=我去上海上海上班）：基于新 remaining 再编辑可用。
+    assert(harness.RunCommand("把刚才的上海上海改成北京", 213));
+    assert(harness.field().doc == std::wstring(506, L'前') + L"我去北京上班");
+}
+
 #endif  // _WIN32
+
+// ======================= targeted 语音编辑（纯逻辑，双端同向量） =======================
+// 与 macOS Tests/VoiceStickTests/VoiceTargetedEditTests.swift 使用同一张向量表
+//（VoiceTargetedEdit.swift <-> voice_targeted_edit.cc 语法表逐字一致）。
+
+void ExpectTargetedCommand(std::string_view text, VoiceTargetedActionKind kind,
+                           std::string_view target, std::string_view replacement,
+                           VoiceTargetedPosition pos, const char* name) {
+    const auto r = ParseVoiceTargetedCommand(text);
+    if (!r || r->invalid) {
+        std::printf("FAIL targeted parse (expected command): %s [%s]\n", name,
+                    std::string(text).c_str());
+        assert(false && "expected targeted command");
+    }
+    if (r->command.target != target || r->command.position != pos ||
+        r->command.action.kind != kind) {
+        std::printf("FAIL targeted parse: %s\n", name);
+        assert(false && "targeted command mismatch");
+    }
+    if (kind == VoiceTargetedActionKind::kReplace &&
+        r->command.action.replacement != replacement) {
+        std::printf("FAIL targeted replacement: %s got [%s] want [%s]\n", name,
+                    r->command.action.replacement.c_str(), std::string(replacement).c_str());
+        assert(false && "targeted replacement mismatch");
+    }
+}
+
+void ExpectTargetedInvalid(std::string_view text, const char* name) {
+    const auto r = ParseVoiceTargetedCommand(text);
+    if (!r || !r->invalid) {
+        std::printf("FAIL targeted parse (expected invalid): %s [%s]\n", name,
+                    std::string(text).c_str());
+        assert(false && "expected targeted invalid");
+    }
+}
+
+void ExpectNoTargeted(std::string_view text, const char* name) {
+    if (ParseVoiceTargetedCommand(text).has_value()) {
+        std::printf("FAIL targeted parse (expected non-command): %s [%s]\n", name,
+                    std::string(text).c_str());
+        assert(false && "expected no targeted command");
+    }
+}
+
+VoiceTargetedCommand TargetedDelete(std::string target,
+                                    VoiceTargetedPosition pos = VoiceTargetedPosition::kUnspecified) {
+    VoiceTargetedCommand cmd;
+    cmd.action = VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}};
+    cmd.target = std::move(target);
+    cmd.position = pos;
+    return cmd;
+}
+
+VoiceTargetedCommand TargetedReplace(std::string target, std::string replacement,
+                                     VoiceTargetedPosition pos = VoiceTargetedPosition::kUnspecified) {
+    VoiceTargetedCommand cmd;
+    cmd.action = VoiceTargetedAction{VoiceTargetedActionKind::kReplace, std::move(replacement)};
+    cmd.target = std::move(target);
+    cmd.position = pos;
+    return cmd;
+}
+
+void TestTargetedParserPositive() {
+    ExpectTargetedCommand("删除刚才的北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "删除刚才的北京");
+    ExpectTargetedCommand("删掉刚才的北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "删掉刚才的北京");
+    ExpectTargetedCommand("删去刚才的北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "删去刚才的北京");
+    ExpectTargetedCommand("去掉刚才的北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "去掉刚才的北京");
+    ExpectTargetedCommand("删除刚刚的北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "刚刚作用域");
+    ExpectTargetedCommand("删除刚才北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "无「的」作用域");
+    ExpectTargetedCommand("删除刚才第一个北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kFirst, "第一个");
+    ExpectTargetedCommand("删除刚才最后一个北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kLast, "最后一个");
+    ExpectTargetedCommand("把刚才第一个北京删掉", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kFirst, "把字句第一个");
+    ExpectTargetedCommand("把刚才最后一个北京删掉", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kLast, "把字句最后一个");
+    ExpectTargetedCommand("把刚才的最后一个北京删掉", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kLast, "的最后一个语序");
+    ExpectTargetedCommand("把刚才的北京删掉", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "把字句删掉");
+    ExpectTargetedCommand("把刚才的北京删除", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "把字句删除");
+    ExpectTargetedCommand("把刚才的北京去掉", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "把字句去掉");
+    ExpectTargetedCommand("把刚才的北京删去", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "把字句删去");
+    ExpectTargetedCommand("请把刚才的北京删除", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "句尾删除动词（LastTokenIndex 边界）");
+    // 分隔符优先：句中/句尾出现删除动词仍按替换解析（最小复现回归）。
+    ExpectTargetedCommand("把刚才的删除按钮改成红色", VoiceTargetedActionKind::kReplace,
+                          "删除按钮", "红色", VoiceTargetedPosition::kUnspecified,
+                          "目标含删除动词的替换");
+    ExpectTargetedCommand("把刚才的北京改成删除", VoiceTargetedActionKind::kReplace, "北京",
+                          "删除", VoiceTargetedPosition::kUnspecified, "替换值为删除动词");
+    // 目标本身含删除动词、句尾动词的纯删除。
+    ExpectTargetedCommand("把刚才的删除删掉", VoiceTargetedActionKind::kDelete, "删除", "",
+                          VoiceTargetedPosition::kUnspecified, "目标=删除");
+    ExpectTargetedCommand("把刚才的删掉删除", VoiceTargetedActionKind::kDelete, "删掉", "",
+                          VoiceTargetedPosition::kUnspecified, "目标=删掉");
+    ExpectTargetedCommand("把刚才的北京改成上海", VoiceTargetedActionKind::kReplace, "北京", "上海",
+                          VoiceTargetedPosition::kUnspecified, "改成");
+    ExpectTargetedCommand("把刚才的北京改为上海", VoiceTargetedActionKind::kReplace, "北京", "上海",
+                          VoiceTargetedPosition::kUnspecified, "改为");
+    ExpectTargetedCommand("把刚才的北京换成上海", VoiceTargetedActionKind::kReplace, "北京", "上海",
+                          VoiceTargetedPosition::kUnspecified, "换成");
+    ExpectTargetedCommand("把刚才的北京替换为上海", VoiceTargetedActionKind::kReplace, "北京", "上海",
+                          VoiceTargetedPosition::kUnspecified, "替换为");
+    ExpectTargetedCommand("把刚才的北京替换成上海", VoiceTargetedActionKind::kReplace, "北京", "上海",
+                          VoiceTargetedPosition::kUnspecified, "替换成");
+    ExpectTargetedCommand("把刚才最后一个北京改成上海", VoiceTargetedActionKind::kReplace, "北京",
+                          "上海", VoiceTargetedPosition::kLast, "最后一个+改成");
+    ExpectTargetedCommand("删除刚才的北京大学", VoiceTargetedActionKind::kDelete, "北京大学", "",
+                          VoiceTargetedPosition::kUnspecified, "多字目标");
+    ExpectTargetedCommand("把刚才的北京大学改成清华大学", VoiceTargetedActionKind::kReplace,
+                          "北京大学", "清华大学", VoiceTargetedPosition::kUnspecified,
+                          "多字替换");
+    ExpectTargetedCommand("把刚才的new york改成上海", VoiceTargetedActionKind::kReplace,
+                          "new york", "上海", VoiceTargetedPosition::kUnspecified,
+                          "内部空白保留");
+    ExpectTargetedCommand("删除刚才的北京。", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "尾部句号");
+    ExpectTargetedCommand("  把刚才的北京改成上海。 ", VoiceTargetedActionKind::kReplace,
+                          "北京", "上海", VoiceTargetedPosition::kUnspecified, "空白+句号");
+    ExpectTargetedCommand("请把刚才的北京删掉", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "请前缀");
+    ExpectTargetedCommand("请帮我删除刚才的北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "请帮我前缀");
+    ExpectTargetedCommand("麻烦把刚才的北京改成上海", VoiceTargetedActionKind::kReplace, "北京",
+                          "上海", VoiceTargetedPosition::kUnspecified, "麻烦前缀");
+    ExpectTargetedCommand("把刚才的北京删掉吧", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "吧语气尾");
+    ExpectTargetedCommand("把刚才的北京改成上海吧", VoiceTargetedActionKind::kReplace, "北京",
+                          "上海", VoiceTargetedPosition::kUnspecified, "替换+吧");
+    ExpectTargetedCommand("删除刚才的北京啊", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kUnspecified, "啊语气尾");
+    ExpectTargetedCommand("删除刚才的吧", VoiceTargetedActionKind::kDelete, "吧", "",
+                          VoiceTargetedPosition::kUnspecified, "target=吧");
+    std::string t32, t33, r64, r65;
+    for (int i = 0; i < 32; ++i) t32 += "字";
+    for (int i = 0; i < 33; ++i) t33 += "字";
+    for (int i = 0; i < 64; ++i) r64 += "替";
+    for (int i = 0; i < 65; ++i) r65 += "替";
+    ExpectTargetedCommand("删除刚才的" + t32, VoiceTargetedActionKind::kDelete, t32, "",
+                          VoiceTargetedPosition::kUnspecified, "目标32边界");
+    ExpectTargetedCommand("把刚才的" + t32 + "改成" + r64, VoiceTargetedActionKind::kReplace,
+                          t32, r64, VoiceTargetedPosition::kUnspecified, "替换64边界");
+    ExpectTargetedInvalid("删除刚才的" + t33, "目标33超限");
+    ExpectTargetedInvalid("把刚才的" + t32 + "改成" + r65, "替换65超限");
+}
+
+void TestTargetedParserNegative() {
+    ExpectNoTargeted("把北京改成上海", "无作用域把字句");
+    ExpectNoTargeted("删除北京", "无作用域删除");
+    ExpectNoTargeted("把北京删掉", "无作用域把字句删除");
+    ExpectNoTargeted("把第一个北京改成上海", "无作用域带位置");
+    ExpectNoTargeted("删除刚才的", "旧整段删除优先");
+    ExpectNoTargeted("删除最后两个字", "旧字删除");
+    ExpectNoTargeted("删除", "单独删除");
+    ExpectNoTargeted("请把删除按钮改成红色", "请把删除按钮改成红色");
+    ExpectNoTargeted("你好删除刚才的北京", "混说");
+    ExpectNoTargeted("把刚才的文件删除一下可以吗", "疑问夹带");
+    ExpectNoTargeted("不删除刚才的北京", "否定前导");
+    ExpectTargetedInvalid("把刚才的北京不要删掉", "否定把字句");
+    ExpectTargetedInvalid("把刚才的别删掉", "别删掉");
+    ExpectNoTargeted("把刚才的北京删掉吗", "疑问吗");
+    ExpectNoTargeted("删除刚才的北京好吗", "疑问好吗");
+    ExpectTargetedInvalid("把刚才的改成上海", "空目标");
+    ExpectTargetedInvalid("把刚才的改成", "空目标无替换");
+    ExpectTargetedInvalid("把刚才的北京改成", "空替换");
+    ExpectTargetedInvalid("把刚才的 改成上海", "空白空目标");
+    ExpectTargetedInvalid("把刚才的北京改成上海改成广州", "多分隔符");
+    ExpectTargetedInvalid("把刚才的改成改成上海", "目标含分隔符");
+    ExpectTargetedInvalid("把刚才的第一个改成上海", "位置后无目标");
+    ExpectTargetedInvalid("把刚才的北京改成改成", "空替换多分隔符");
+    ExpectTargetedInvalid("删除刚才的北\n京", "多行目标");
+    ExpectTargetedInvalid("把刚才的北京改成上\n海", "多行替换");
+    ExpectTargetedInvalid("删除刚才的北\r京", "CR 目标（单行约束）");
+    ExpectTargetedInvalid("把刚才的北京改成上\r海", "CR 替换（单行约束）");
+    ExpectTargetedInvalid("删除刚才的别删", "动宾否定别");
+    ExpectTargetedInvalid("删除刚才的北京不要", "动宾否定不要");
+    ExpectNoTargeted("", "空串");
+    ExpectNoTargeted("把", "单字");
+    ExpectNoTargeted("把刚才的", "作用域后无内容");
+    ExpectNoTargeted("把刚才的北京", "把字句无动词");
+    ExpectNoTargeted("把刚才的北京删掉快点", "动词后夹带");
+    ExpectTargetedCommand("把刚才的北京改成上海然后继续", VoiceTargetedActionKind::kReplace,
+                          "北京", "上海然后继续", VoiceTargetedPosition::kUnspecified,
+                          "替换取剩余全文");
+    std::string huge = "删除刚才的" + std::string(130, 'x');
+    ExpectNoTargeted(huge, "超长指令");
+}
+
+void TestTargetedMatcher() {
+    const auto cjk = FindTargetedOccurrences("北京", "我去北京上班");
+    assert(cjk.size() == 1);
+    assert(cjk[0].grapheme_start == 2 && cjk[0].grapheme_end == 4);
+    assert(cjk[0].utf16_start == 2 && cjk[0].utf16_length == 2);
+    assert(cjk[0].total == 1);
+
+    const auto ascii = FindTargetedOccurrences("ab", "xabcab");
+    assert(ascii.size() == 2);
+    assert(ascii[0].grapheme_start == 1 && ascii[1].grapheme_start == 4);
+    assert(ascii[1].utf16_start == 4);
+
+    // 非重叠："aa" in "aaaa" → 2 处（0、2），不是 3 处。
+    const auto overlap = FindTargetedOccurrences("aa", "aaaa");
+    assert(overlap.size() == 2);
+    assert(overlap[0].grapheme_start == 0 && overlap[1].grapheme_start == 2);
+
+    // emoji（surrogate pair = 2 UTF-16，1 grapheme）。
+    const auto emoji = FindTargetedOccurrences("🙂", "好🙂吗🙂");
+    assert(emoji.size() == 2);
+    assert(emoji[0].utf16_start == 1 && emoji[0].utf16_length == 2);
+    assert(emoji[1].utf16_start == 4);
+
+    // 组合字符（e + U+0301 = 2 UTF-16，1 grapheme）。
+    const auto combining = FindTargetedOccurrences("é", "caféx");
+    assert(combining.size() == 1);
+    assert(combining[0].utf16_start == 3 && combining[0].utf16_length == 2);
+
+    // 开头/中间/末尾与空输入。
+    assert(FindTargetedOccurrences("你", "你好").size() == 1);
+    assert(FindTargetedOccurrences("你", "好你").front().grapheme_start == 1);
+    assert(FindTargetedOccurrences("你", "他好").empty());
+    assert(FindTargetedOccurrences("你", "").empty());
+    assert(FindTargetedOccurrences("", "你好").empty());
+}
+
+void TestTargetedPlanner() {
+    const auto del = TargetedDelete("北京");
+    const auto rep = TargetedReplace("北京", "上海");
+
+    auto p1 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班", true, true);
+    assert(p1.ok && p1.new_remaining_text == "我去上班");
+    assert(p1.target_graphemes == 2);
+    assert(p1.occurrence.utf16_start == 2 && p1.occurrence.utf16_length == 2);
+    assert(p1.tail_prefix.empty() && !p1.has_recorded_newline);
+    assert(p1.remaining_utf16_length == 6);
+
+    auto p2 = PlanVoiceTargeted(rep, "我去北京上班", false, true, "我去北京上班", true, true);
+    assert(p2.ok && p2.new_remaining_text == "我去上海上班");
+
+    // auto_enter 换行：pressedEnter=true、tail 以 \n 结尾 → 通过且换行保留。
+    auto p3 = PlanVoiceTargeted(del, "我去北京上班", true, true, "我去北京上班\n", true, true);
+    assert(p3.ok && p3.has_recorded_newline && p3.new_remaining_text == "我去上班");
+    // 未记录换行（pressedEnter=false 但 tail 多 \n）→ field_mismatch。
+    auto p4 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班\n", true, true);
+    assert(!p4.ok && p4.failure == VoiceTargetedFailure::kFieldMismatch);
+    // 字段前缀（用户既有内容）。
+    auto p5 = PlanVoiceTargeted(del, "我去北京上班", false, true, "前面的话我去北京上班", true, true);
+    assert(p5.ok && p5.tail_prefix == "前面的话" && p5.new_remaining_text == "我去上班");
+    // 手工改动 → 不用旧「最长前缀」容错。
+    auto p6 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北上班", true, true);
+    assert(!p6.ok && p6.failure == VoiceTargetedFailure::kFieldMismatch);
+    auto p6b = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班吗", true, true);
+    assert(!p6b.ok && p6b.failure == VoiceTargetedFailure::kFieldMismatch);
+    // 歧义 / 第一个 / 最后一个。
+    auto p7 = PlanVoiceTargeted(del, "北京和北京", false, true, "北京和北京", true, true);
+    assert(!p7.ok && p7.failure == VoiceTargetedFailure::kAmbiguous);
+    auto p8 = PlanVoiceTargeted(TargetedDelete("北京", VoiceTargetedPosition::kFirst),
+                                "北京和北京", false, true, "北京和北京", true, true);
+    assert(p8.ok && p8.new_remaining_text == "和北京" && p8.occurrence.index == 0);
+    auto p9 = PlanVoiceTargeted(TargetedReplace("北京", "上海", VoiceTargetedPosition::kLast),
+                                "北京和北京", false, true, "北京和北京", true, true);
+    assert(p9.ok && p9.new_remaining_text == "北京和上海" && p9.occurrence.index == 1);
+    // notFound / 光标 / 选区 / 不可读（targeted 恒 verified，无 verify_mode 分支）。
+    auto p10 = PlanVoiceTargeted(TargetedDelete("上海"), "我去北京上班", false, true,
+                                 "我去北京上班", true, true);
+    assert(!p10.ok && p10.failure == VoiceTargetedFailure::kNotFound);
+    auto p11 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班", false, true);
+    assert(!p11.ok && p11.failure == VoiceTargetedFailure::kCaretNotEnd);
+    auto p12 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班", true, false);
+    assert(!p12.ok && p12.failure == VoiceTargetedFailure::kSelectionPresent);
+    auto p13 = PlanVoiceTargeted(del, "我去北京上班", false, false, "", true, true);
+    assert(!p13.ok && p13.failure == VoiceTargetedFailure::kVerifyUnavailable);
+    // 连续两次编辑（计划级）。
+    auto p14 = PlanVoiceTargeted(TargetedDelete("上班"), p1.new_remaining_text, false, true,
+                                 "我去上班", true, true);
+    assert(p14.ok && p14.new_remaining_text == "我去");
+    // emoji 删除选区（UTF-16 长度 2）。
+    auto p15 = PlanVoiceTargeted(TargetedDelete("🙂"), "好🙂吗", false, true, "好🙂吗", true, true);
+    assert(p15.ok && p15.occurrence.utf16_start == 1 && p15.occurrence.utf16_length == 2 &&
+           p15.new_remaining_text == "好吗");
+    // remaining 自身以换行结尾（口述多行文本）：pressedEnter 优先按 remaining+"\n"
+    // 判定，避免误配裸后缀（与 macOS 协调器拆解同顺序）。
+    auto p16 = PlanVoiceTargeted(TargetedDelete("你好"), "你好\n", true, true, "你好\n\n", true, true);
+    assert(p16.ok && p16.new_remaining_text == "\n" && p16.occurrence.utf16_start == 0);
+    assert(p16.has_recorded_newline && p16.tail_prefix.empty());
+    // 无 auto_enter 换行（tail 恰为 remaining 裸后缀）同样通过。
+    auto p17 = PlanVoiceTargeted(TargetedDelete("你好"), "你好\n", true, true, "你好\n", true, true);
+    assert(p17.ok && p17.new_remaining_text == "\n" && !p17.has_recorded_newline);
+    // pressedEnter=false 但 tail 多一个换行 → 来历不明，拒绝。
+    auto p18 = PlanVoiceTargeted(TargetedDelete("你好"), "你好\n", false, true, "你好\n\n", true, true);
+    assert(!p18.ok && p18.failure == VoiceTargetedFailure::kFieldMismatch);
+}
 
 }  // namespace
 
@@ -812,6 +1551,10 @@ void RunVoiceEditTests() {
     TestVoiceEditPlannerVerified();
     TestVoiceEditPlannerUnverified();
     TestVoiceEditVerifyModeNames();
+    TestTargetedParserPositive();
+    TestTargetedParserNegative();
+    TestTargetedMatcher();
+    TestTargetedPlanner();
 #ifdef _WIN32
     TestVoiceEditConfigDefaultsAndPersistence();
     TestVoiceEditCoordinatorDeletesWithBackspace();
@@ -821,7 +1564,17 @@ void RunVoiceEditTests() {
     TestVoiceEditCoordinatorUnverifiedWindowExecutes();
     TestVoiceEditCoordinatorStrictRejectsUnreadable();
     TestVoiceEditCoordinatorDisabledPastesNormally();
-    std::printf(">> voice edit coordinator integration tests done\n");
+    TestTargetedCoordinatorDelete();
+    TestTargetedCoordinatorReplace();
+    TestTargetedCoordinatorKeepsAutoEnterNewline();
+    TestTargetedCoordinatorSelectionReadbackMismatch();
+    TestTargetedCoordinatorFinalVerifyFailsInvalidates();
+    TestTargetedCoordinatorOffModeUnreadableRejects();
+    TestTargetedCoordinatorStaleGeneration();
+    TestTargetedCoordinatorOldParserPriority();
+    TestTargetedCoordinatorScopeAndInvalid();
+    TestTargetedCoordinatorLongDocLengtheningReplace();
+    std::printf(">> voice edit + targeted coordinator integration tests done\n");
 #endif
     std::printf(">> voice edit pure logic tests done\n");
 }

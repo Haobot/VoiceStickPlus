@@ -170,6 +170,9 @@ add_library(voicestick_core STATIC
     # + UIA 焦点字段读取（focus_text_reader）。
     src/voice_edit_command.cc
     src/focus_text_reader.cc
+    # targeted 语音编辑（删除/替换最近一次输入中的指定词；Doc targeted 章节）：
+    # 纯逻辑解析/匹配/计划（零 Win32），与 macOS VoiceTargetedEdit.swift 同向量。
+    src/voice_targeted_edit.cc
     src/app_config.cc
     src/asr_protocol.cc
     src/audio_opus_decoder.cc

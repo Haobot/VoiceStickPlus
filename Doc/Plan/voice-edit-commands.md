@@ -776,3 +776,69 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 4. 设置对话框新增控件布局/中英文案、保存热更、重启持久化。
 5. UIPI 提权前台拒绝路径；快速单说"删除"是否过 0.5s 最短录音门槛。
 6. 整段删除长文本的实际耗时（12ms×字数）与可接受性。
+
+---
+
+## 17. targeted 词/短语删除与替换（2026-10-27 实现）
+
+> 状态：已实现（工作区，未发布；2026-10-27 返修轮已合入）。macOS 本机 `swift build` 通过、`swift run VoiceStickTests` **PASSED 1525/1525**（基线 1351；含 targeted 解析/匹配/计划向量、协调器级调用顺序/安全闸/换行拆解/配置清理代际测试）。Windows 纯逻辑与 macOS 同向量、本机 clang `-Wall -Wextra -Werror` 对拍通过（另经 ASan+UBSan 构建运行通过，含既有套件回归，临时 harness 在 /tmp，不在仓库）；Windows MSVC 构建/CTest 与双端真机验收**待补**（§17.5）。
+
+### 17.1 需求与语法（P0）
+
+在既有尾部删除之上，支持编辑最近一次语音输入中的**指定词/短语**：
+
+| 句式 | 例句 |
+|---|---|
+| 动宾式删除 | 「删除刚才的北京」「删掉刚才的北京」「删去/去掉刚才的北京」（作用域也认「刚才/刚刚/刚刚的」） |
+| 把字句删除 | 「把刚才的北京删掉/删除/去掉/删去」 |
+| 把字句替换 | 「把刚才的北京改成/改为/换成/替换为/替换成上海」 |
+| 位置限定 | 上述结构支持「第一个」「最后一个」（含「刚才的最后一个」语序）；无位置限定时**仅 1 个精确匹配才执行**，多处匹配安全拒绝并提示 |
+
+- **作用域强制**：不带「刚才的」的「把A改成B / 删除A」一律非指令（走普通文本），避免把口述「请把删除按钮改成红色」误判为命令。
+- **词 = 连续文本片段精确匹配**（不引入分词依赖），非重叠匹配；目标 ≤32、替换 ≤64 graphemes（双端一致硬常量，独立于 `max_chars`，**无新配置字段**）。
+- **归一化**：去首尾空白/尾部标点、全角数字转半角、剥绝对开头礼貌前缀一层（请/帮我/麻烦…）、剥绝对结尾语气词一层（吧/啊/呀/哦/嘛）——**操作数内部有意义空白保留**（不照搬旧 parser 的全量去空白）；疑问尾「吗/呢」→ 非指令；否定（target 含「不要」或以「别」开头）→ 非法指令（吞掉提示）。已知限制：语气词剥离使「改成好吧」类替换得到「好」。
+- **解析三态**：指令 / `.invalid`（结构命中但空目标/空替换/多替换分隔符/超长——吞掉并提示，不上屏不修改）/ 非指令（原链路）。旧解析器优先、targeted 其次（「删除刚才的」仍是旧整段删除）。
+
+### 17.2 安全模型（与旧尾部删除的关键差异）
+
+1. **targeted 动作任何 `verify_mode`（strict/auto/off）下都必须 verified**：读不到字段/光标一律拒绝，**不存在 8s unverified 盲删/盲改**。
+2. **L1 完整后缀校验**：字段（允许末尾一个**已记录** `auto_enter` 换行）必须以**完整** `remainingText` 为后缀——**不用旧「最长前缀」容错**（用户手工删改会使目标偏移不可靠，宁可拒绝）。
+3. **平台精确选区执行**（不轮询方向键、不全选重贴、不用系统撤销）：
+   - macOS：`AXUIElementSetAttributeValue(kAXSelectedTextRange)` 写选区 + `kAXSelectedTextAttribute` 读回（`FocusedFieldAXReader.writeSelectedRange/readSelectedText`，AppDelegate 注入协调器）。
+   - Windows：UIA TextRange `Select()` + `GetSelection()->GetText()` 读回（`ITargetedFieldEditor`，focus_text_reader.cc 生产实现；doc 长度用 Start 端点前进 INT_MAX 实测，tail 窗口同 reader 的 512 定义）。
+4. **读回逐字确认**：实际选中文本 == 目标词才执行；不符 → 恢复末尾光标、零删除/零粘贴、**记录保留**（字段文本未被改动）。
+5. **单次动作**：删除 = 一次 Backspace；替换 = 现有粘贴通道 `pressEnter=false`（不额外触发 Return，保留原 `auto_enter` 换行与 `pressedEnter`）。
+6. **恢复末尾光标 + 终验**：修改后把光标恢复到**字段末尾**（不是被改词之后），读回字段文本/光标终验；通过才更新 `remainingText`（`pressedEnter` 不变——targeted 不消费换行）并允许连续编辑。
+7. **结果未确认**：修改已发出但终验不符 → 不自动重试、不宣称成功、不盲目撤销；**注入记录失效**（防后续基于陈旧偏移继续编辑）+ 提示用户检查。修改前失败记录保留。
+8. **串行 + generation**：执行/终验回调携带 `voiceEditGeneration`（新注入 +1）；stale 回调直接丢弃，新注入/新记录不被旧回调覆盖。macOS 全程主线程（单次动作无循环、无 UI 阻塞）；Windows UIA COM STA 留 UI 线程，延时终验走 worker sleep + `RunOnUiThread` 回收（与既有退格执行同范式）。
+9. 选区非空、密码框、提权前台（Windows UIPI）、前台应用变化、超出作用域时间窗 → 全部拒绝并提示；拒绝路径**零文本修改**。
+
+### 17.3 实现落点（双端同构）
+
+| 层 | macOS | Windows |
+|---|---|---|
+| Core 纯逻辑 | `Sources/VoiceStickCore/VoiceTargetedEdit.swift`（Parser/Matcher/Planner + 失败码） | `src/voice_targeted_edit.{h,cc}` + 共享 `src/utf8_grapheme.h`（从 voice_edit_command.cc 抽出） |
+| 平台选区 | `FocusedFieldAXReader.writeSelectedRange/readSelectedText`；协调器闭包 `writeTargetedSelection/readTargetedSelectedText` | `ITargetedFieldEditor`（focus_text_reader.h/.cc），`SetTargetedFieldEditor` 注入 |
+| 协调器 | `handleVoiceTargetedEditIfMatched` / `evaluateVoiceTargetedCommand` / `executeVoiceTargetedEdit`（VoiceStickCoordinator.swift） | `HandleVoiceTargetedEditIfMatched` / `ExecuteVoiceTargetedEdit` / `FinalizeVoiceTargetedEdit`（voice_stick_coordinator_tail.cc） |
+| 拦截点 | `finishWithFinalText`（旧解析器之后） | `FinishWithFinalText` + finalizing watchdog（两处） |
+| 文案 | L10nKey `voiceTargeted*` ×7（中英双表） | StringId `kVoiceTargeted*` ×7（末尾追加，中英双表） |
+| 测试 | `VoiceTargetedEditTests.swift`（纯逻辑向量）+ CoordinatorFsmTests targeted 段（调用顺序/安全闸/stale） | core_tests_voice_edit.cc targeted 段（纯逻辑同向量 + _WIN32 协调器级 Fake） |
+
+日志纪律：只记动作、目标长度、匹配数/occurrence、结果码——不记目标词/替换词/字段内容。
+
+### 17.4 验证证据与待补
+
+- macOS：`swift build` 通过；`swift run VoiceStickTests` PASSED 1525/1525（基线 1351）。协调器级 Fake 断言完整调用顺序：L1 读 → `select(loc,len)` → `selected`（==target）→ 一次 `backspace` 或 `paste(false)` → `select(end,0)` 恢复 → 终验 `state` 读；读回不符只在 `select(end,0)` 前停止；stale generation 不弹旧 toast 不污染新记录；off 模式不可验证仍拒绝；updateConfig 关闭功能清记录同时递增代际（在途终验被丢弃）；remaining 自身以换行结尾（口述多行 + auto_enter）选区/终验拆解正确（删「你好」→ 字段「\n\n」、remaining「\n」）。
+- Windows 纯逻辑：`clang++ -std=c++20 -Wall -Wextra -Werror` 编译 + 本地运行全部解析/matcher/planner 向量通过；**ASan+UBSan 构建同样通过**（`LastTokenIndex` 命中推进到 `text.size()` 后不再越界读）；仓库既有 voice edit 套件（重构 grapheme 抽取后）本地对拍 PASSED。
+- 解析器返修向量（双端同表）：`把刚才的删除按钮改成红色` → replace(删除按钮, 红色)；`把刚才的北京改成删除` → replace(北京, 删除)（**分隔符优先**：句中存在替换分隔符即按替换解析，删除分支仅在无分隔符且动词恰在整句末尾时成立）；`把刚才的删除删掉` → delete(删除)、`把刚才的删掉删除` → delete(删掉)（lastTokenIndex 命中即推进、不额外跳 grapheme，紧邻动词可被扫描为 best）；`请把删除按钮改成红色` 保持普通文本负例。
+- **待补（阻塞发布）**：Windows `build_win.bat`/CTest（本机无 Win32 工具链，UIA/COM 代码未编译；含 512 窗口变长替换终验的 `_WIN32` Fake 用例待 Windows 环境执行）；双端真机验收（§11.3 矩阵 + targeted 专项：TextEdit/备忘录/记事本/Chrome/Word/VS Code 的 AX/UIA 选区写入覆盖率、CJK/emoji/组合字符选区、输入法组合态、auto_enter 换行场景、长文档 512 窗口边界）。
+
+### 17.5 返修记录（2026-10-27，评审后）
+
+1. **C++ `LastTokenIndex` 越界**：token 命中推进 `index == text.size()` 后仍 `DecodeUtf8(text, index)` 读越界；修复为命中即推进 + 循环边界保证（ASan 复核通过）。同函数顺带修复"命中后额外跳一个 grapheme"导致紧邻动词漏扫的语义缺陷（双端对齐为"命中即推进到 token 后"）。
+2. **把字句分支优先级**：分隔符优先于删除动词（两个最小复现见 §17.4）；删除分支要求无分隔符且动词恰在句尾。
+3. **Windows 终验公共后缀比较**：tail 为 512 窗口且替换变长（expected_tail>512）时按双方末尾 min(byteCount) 比较；expected 为空要求 actual 为空；可读/折叠光标/caret_at_end 校验不放松。`_WIN32` Fake 用例：506 前缀 + 6 字注入、替换 +2 → 必须成功并更新记录。
+4. **macOS remaining 换行结尾拆解**：planner 与协调器统一 pressedEnter 优先判 `remaining+"\n"`（对齐 Windows），`你好\n`/`你好\n\n` 场景选区偏移与终验文本正确。
+5. **解析一致性**：Swift 动宾式补 `ContainsNegation`（与 C++ 同语义）；单行约束双端同时拒 `\r` 与 `\n`（防 CRLF 绕过）。
+6. **macOS 配置清理代际**：`updateConfig` 关闭 voiceEdit / 离开 focused_app 清记录时同步 `voiceEditGeneration += 1`，在途 0.2s 终验不得弹旧成功 toast。
+7. **失败路径安全收尾**：Windows `SelectAndReadBack` 失败尽力 `MoveCaretToEnd()`；Backspace KeySpec 解析失败按修改前失败处理（恢复光标、记录保留、不按结果未确认清记录）；macOS 同查（select 写失败尽力恢复光标）。

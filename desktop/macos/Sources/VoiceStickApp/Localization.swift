@@ -133,6 +133,9 @@ enum L10nKey: String, CaseIterable {
     case voiceEditNoInjection, voiceEditScopeExpired, voiceEditAppChanged, voiceEditFieldMismatch
     case voiceEditCaretNotEnd, voiceEditSelectionPresent, voiceEditVerifyUnavailable
     case voiceEditForegroundElevated, voiceEditAccessibilityDenied, voiceEditInjectFailed
+    case voiceTargetedDeleted, voiceTargetedReplaced
+    case voiceTargetedNotFound, voiceTargetedAmbiguous, voiceTargetedInvalid
+    case voiceTargetedTextChanged, voiceTargetedUnconfirmed
 }
 
 /// 界面文案查表。当前语言由 AppDelegate 在启动与配置变更时写入 `Localization.current`
@@ -488,6 +491,13 @@ enum Localization {
         .voiceEditForegroundElevated: "Cannot delete in an elevated window",
         .voiceEditAccessibilityDenied: "Accessibility permission is not granted",
         .voiceEditInjectFailed: "Deletion may not have been applied; check the text field",
+        .voiceTargetedDeleted: "Deleted %d characters",
+        .voiceTargetedReplaced: "Replaced %d characters",
+        .voiceTargetedNotFound: "Not found in the last dictation; nothing changed",
+        .voiceTargetedAmbiguous: "Multiple matches; say “the first one” or “the last one”",
+        .voiceTargetedInvalid: "The command is incomplete; nothing changed",
+        .voiceTargetedTextChanged: "The dictated text changed; nothing modified",
+        .voiceTargetedUnconfirmed: "The edit could not be confirmed; please check the text field",
     ]
 
     private static let chinese: [L10nKey: String] = [
@@ -785,6 +795,13 @@ enum Localization {
         .voiceEditForegroundElevated: "目标窗口权限较高，无法删除",
         .voiceEditAccessibilityDenied: "辅助功能权限未授予",
         .voiceEditInjectFailed: "删除可能未生效，请检查输入框",
+        .voiceTargetedDeleted: "已删除 %d 个字",
+        .voiceTargetedReplaced: "已替换 %d 个字",
+        .voiceTargetedNotFound: "刚才的输入里没有找到该内容，未修改",
+        .voiceTargetedAmbiguous: "找到多处匹配，请说明第一个还是最后一个",
+        .voiceTargetedInvalid: "指令不完整，未修改",
+        .voiceTargetedTextChanged: "语音输入内容已变化，未修改",
+        .voiceTargetedUnconfirmed: "修改结果未能确认，请检查输入框",
     ]
 }
 

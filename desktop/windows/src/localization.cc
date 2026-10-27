@@ -537,6 +537,18 @@ constexpr StringTable EnglishStrings() {
         "Too late to verify the cursor; nothing deleted";
     table[Index(StringId::kVoiceEditUnreadable)] =
         "Cannot verify the cursor; nothing deleted";
+    table[Index(StringId::kVoiceTargetedDeleted)] = "Deleted %d characters";
+    table[Index(StringId::kVoiceTargetedReplaced)] = "Replaced %d characters";
+    table[Index(StringId::kVoiceTargetedNotFound)] =
+        "Not found in the last dictation; nothing changed";
+    table[Index(StringId::kVoiceTargetedAmbiguous)] =
+        "Multiple matches; say “the first one” or “the last one”";
+    table[Index(StringId::kVoiceTargetedInvalid)] =
+        "The command is incomplete; nothing changed";
+    table[Index(StringId::kVoiceTargetedTextChanged)] =
+        "The dictated text changed; nothing modified";
+    table[Index(StringId::kVoiceTargetedUnconfirmed)] =
+        "The edit could not be confirmed; please check the text field";
     return table;
 }
 
@@ -1030,6 +1042,13 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kVoiceEditTextChanged)] = "语音输入内容已变化，未删除";
     table[Index(StringId::kVoiceEditUnverifiedExpired)] = "已超过可校验时间，未删除";
     table[Index(StringId::kVoiceEditUnreadable)] = "当前应用无法校验光标，未删除";
+    table[Index(StringId::kVoiceTargetedDeleted)] = "已删除 %d 个字";
+    table[Index(StringId::kVoiceTargetedReplaced)] = "已替换 %d 个字";
+    table[Index(StringId::kVoiceTargetedNotFound)] = "刚才的输入里没有找到该内容，未修改";
+    table[Index(StringId::kVoiceTargetedAmbiguous)] = "找到多处匹配，请说明第一个还是最后一个";
+    table[Index(StringId::kVoiceTargetedInvalid)] = "指令不完整，未修改";
+    table[Index(StringId::kVoiceTargetedTextChanged)] = "语音输入内容已变化，未修改";
+    table[Index(StringId::kVoiceTargetedUnconfirmed)] = "修改结果未能确认，请检查输入框";
     return table;
 }
 

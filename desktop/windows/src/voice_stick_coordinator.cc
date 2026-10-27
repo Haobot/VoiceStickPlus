@@ -1248,6 +1248,11 @@ void VoiceStickCoordinator::SetFocusTextReader(std::unique_ptr<IFocusTextReader>
     focus_text_reader_ = std::move(reader);
 }
 
+void VoiceStickCoordinator::SetTargetedFieldEditor(
+    std::unique_ptr<ITargetedFieldEditor> editor) {
+    targeted_field_editor_ = std::move(editor);
+}
+
 bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& device_id) {
     if (!foreground_probe_) return false;
     std::wstring process_name;
@@ -2402,6 +2407,8 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
     // 不保存精修回退文本、不进入精修/翻译/粘贴。命中处理内部自行 FinishRecognitionCycle
     // + EnterReady，并异步退格。
     if (HandleVoiceEditIfMatched(text)) return;
+    // targeted 编辑（删除/替换最近一次输入中的指定词）：旧解析器优先、targeted 其次。
+    if (HandleVoiceTargetedEditIfMatched(text)) return;
     // 保存 ASR 原文作为 finalizing watchdog 的回退文本：后续 translate/refine 任一环节
     // 无响应时可直接粘贴原文，保证不丢本次输入。
     finalizing_fallback_text_ = text;

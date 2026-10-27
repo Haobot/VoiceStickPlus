@@ -510,6 +510,14 @@ enum class StringId {
     kVoiceEditTextChanged,        // "The dictated text has changed; nothing deleted"
     kVoiceEditUnverifiedExpired,  // "Too late to verify the cursor; nothing deleted"
     kVoiceEditUnreadable,         // "Cannot verify the cursor; nothing deleted"
+    // targeted 语音编辑（删除/替换最近一次输入中的指定词；只能在末尾追加）。
+    kVoiceTargetedDeleted,        // "Deleted %d characters" / "已删除 %d 个字"
+    kVoiceTargetedReplaced,       // "Replaced %d characters" / "已替换 %d 个字"
+    kVoiceTargetedNotFound,       // 目标词不在最近一次输入中
+    kVoiceTargetedAmbiguous,      // 多处匹配未指定位置
+    kVoiceTargetedInvalid,        // 指令不完整（空目标/空替换/多分隔符/否定）
+    kVoiceTargetedTextChanged,    // 字段尾部与记录不符（含手工改动/选区读回不符）
+    kVoiceTargetedUnconfirmed,    // 修改已发出但终验不符（记录已失效）
 };
 
 // 返回 UTF-8 本地化文本

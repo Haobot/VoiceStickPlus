@@ -87,6 +87,8 @@ struct VoiceEditFieldState {
     bool caret_at_end = false;
     // 字段尾部文本（UTF-8，约最后 512 个 UTF-16 码元）；仅用于尾部后缀匹配。
     std::string tail_text;
+    // tail_text 的 UTF-16 码元长度（targeted 编辑换算 tail 内选区偏移用）。
+    std::size_t tail_utf16_length = 0;
     // 尾部读取被截断（字段内容比 tail_text 长），仅供日志/排障。
     bool truncated = false;
 };

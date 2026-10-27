@@ -25,6 +25,7 @@
 #include "ogg_opus_muxer.h"
 #include "pcm_ring_buffer.h"
 #include "virtual_mic_renderer.h"
+#include "voice_targeted_edit.h"
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
 
@@ -299,6 +300,9 @@ public:
     // 注入焦点输入框读取实现（UIA TextPattern，须在 UI 线程/COM STA 调用；测试注入
     // Fake）。未注入时 L1 不可验证，按 verify_mode 走 auto 短窗/拒绝。须在 Start 前调用。
     void SetFocusTextReader(std::unique_ptr<IFocusTextReader> reader);
+    // 注入 targeted 编辑平台出口（UIA TextRange 精确选区 + 读回 + 末尾光标；测试注入
+    // Fake）。未注入时 targeted 一律按不可验证拒绝（targeted 恒 verified，严禁盲改）。
+    void SetTargetedFieldEditor(std::unique_ptr<ITargetedFieldEditor> editor);
     // 注入本机麦克风模式运行件（local-mic 会话，须在 Start 前调用，对齐
     // SetForegroundProbe 的注入模式）：采集器 + 本地 ASR 客户端。二者缺一或
     // config [local_asr] enabled=false 时按住说话热键完全旁路。
@@ -683,6 +687,16 @@ private:
     };
     // 命中指令并接管本轮返回 true（调用方不得继续精修/翻译/粘贴）；非指令返回 false。
     bool HandleVoiceEditIfMatched(const std::string& text);
+    // targeted 编辑（删除/替换最近一次输入中的指定词；旧解析器优先、targeted 其次）。
+    // 同样只在 finalizing 内接受；命中（含结构非法）即吞掉本轮并接管。
+    bool HandleVoiceTargetedEditIfMatched(const std::string& text);
+    // targeted 执行（UI 线程内同步完成选区+读回+单次动作；延时终验经 worker +
+    // RunOnUiThread 回收，generation 防 stale 回调覆盖新记录）。
+    void ExecuteVoiceTargetedEdit(const VoiceTargetedCommand& command,
+                                  const VoiceTargetedPlan& plan,
+                                  std::size_t tail_utf16_length);
+    void FinalizeVoiceTargetedEdit(std::uint64_t generation, const VoiceTargetedPlan& plan,
+                                   std::string expected_tail);
     // 唯一粘贴 chokepoint 记录本次注入（Paste 之后调用；无回执仍记录，靠 L1 兜底）。
     void RecordLastInjection(const std::string& text, bool pressed_enter);
     // 异步退格执行：std::thread 逐次 SendKeyCombo(backspace)（约 12ms 节拍），完成后
@@ -830,6 +844,8 @@ private:
     std::uint64_t voice_edit_generation_ = 0;
     // 焦点输入框读取实现（外壳注入；nullptr = L1 不可验证）。
     std::unique_ptr<IFocusTextReader> focus_text_reader_;
+    // targeted 编辑平台实现（外壳注入；nullptr = targeted 一律不可验证拒绝）。
+    std::unique_ptr<ITargetedFieldEditor> targeted_field_editor_;
     std::atomic_bool waiting_for_audio_end_{false};
     std::atomic_uint64_t audio_end_wait_generation_{0};
     // recording 硬超时兜底（可经构造注入，测试用短值；默认 kRecordingHardTimeout）。

@@ -30,4 +30,25 @@ public:
 // 生产实现（UIA）。须在 UI 线程调用 ReadFocusedField。
 std::unique_ptr<IFocusTextReader> CreateFocusTextReader();
 
+// targeted 编辑平台出口（UIA TextRange 精确选区；Doc targeted 章节）：
+// 只写选区、不写整个字段 Value；全部操作必须在 UI 线程（COM STA）。
+class ITargetedFieldEditor {
+public:
+    virtual ~ITargetedFieldEditor() = default;
+
+    // 选中字段尾部窗口内 [tail_relative_start, +length)（UTF-16 码元，相对
+    // focus_text_reader 尾部窗口起点换算后的文档绝对位置由实现完成），并读回
+    // 实际选中文本（UTF-8）写入 selected_text。成功返回 true；失败返回 false
+    // （调用方按不可验证拒绝，绝不降级为盲操作/全选重贴/Ctrl+Z）。
+    virtual bool SelectAndReadBack(std::size_t tail_relative_start_utf16,
+                                   std::size_t length_utf16,
+                                   std::string* selected_text) = 0;
+
+    // 光标折叠定位到文档末尾（修改后的安全光标恢复）。
+    virtual bool MoveCaretToEnd() = 0;
+};
+
+// 生产实现（UIA TextPattern）。须在 UI 线程调用。
+std::unique_ptr<ITargetedFieldEditor> CreateTargetedFieldEditor();
+
 }  // namespace voicestick
