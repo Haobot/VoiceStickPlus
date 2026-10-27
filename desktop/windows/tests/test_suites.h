@@ -51,3 +51,7 @@ void RunUsageEventsBatchTests();
 
 // 用户数据飞轮 P0-3：会话历史批（SQLite history 表）。
 void RunSessionHistoryBatchTests();
+
+// 语音编辑指令（Doc/Plan/voice-edit-commands.md）：解析/删除计划纯逻辑 +
+// 协调器接线批次（voice_edit_command + focus_text_reader + coordinator）。
+void RunVoiceEditTests();

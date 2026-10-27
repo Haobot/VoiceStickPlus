@@ -745,6 +745,33 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 }
             }
         }
+        // [voice_edit]：语音编辑指令（Doc/Plan/voice-edit-commands.md）。默认开启；
+        // 数值越界钳位到合法区间（与设置 UI/文档一致），verify_mode 未知值回落 auto。
+        if (const auto* voice_edit = table["voice_edit"].as_table()) {
+            if (auto value = TomlBool(*voice_edit, "enabled")) {
+                config.voice_edit.enabled = *value;
+            }
+            if (auto value = TomlInt(*voice_edit, "default_chars")) {
+                config.voice_edit.default_chars =
+                    std::clamp(*value, kVoiceEditDefaultCharsMin, kVoiceEditDefaultCharsMax);
+            }
+            if (auto value = TomlInt(*voice_edit, "max_chars")) {
+                config.voice_edit.max_chars =
+                    std::clamp(*value, kVoiceEditMaxCharsMin, kVoiceEditMaxCharsMax);
+            }
+            if (auto value = TomlInt(*voice_edit, "scope_seconds")) {
+                config.voice_edit.scope_seconds =
+                    std::clamp(*value, kVoiceEditScopeSecondsMin, kVoiceEditScopeSecondsMax);
+            }
+            if (auto value = TomlString(*voice_edit, "verify_mode")) {
+                config.voice_edit.verify_mode =
+                    VoiceEditVerifyModeFromName(Trim(*value), config.voice_edit.verify_mode);
+            }
+            if (auto value = TomlInt(*voice_edit, "unverified_seconds")) {
+                config.voice_edit.unverified_seconds = std::clamp(
+                    *value, kVoiceEditUnverifiedSecondsMin, kVoiceEditUnverifiedSecondsMax);
+            }
+        }
         // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
         // 设备表填平（ParseXiaomiSettings 的 fallback 拷贝）才能带上全局默认。
         if (const auto* xiaomi = table["xiaomi"].as_table()) {
@@ -1078,6 +1105,17 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
     if (local_asr.refine_cross_turn) {  // 默认关不落盘降噪
         output << "refine_cross_turn = true\n";
     }
+    // [voice_edit]：语音编辑指令。全字段落盘（含默认值），便于用户手改与排障；
+    // 注意 WriteTo 白名单——漏写即「设置保存后重启回默认」（xiaomi_gateway_repeat_interval_ms
+    // 的既有坑）。
+    output << "\n[voice_edit]\n";
+    output << "enabled = " << (voice_edit.enabled ? "true" : "false") << "\n";
+    output << "default_chars = " << voice_edit.default_chars << "\n";
+    output << "max_chars = " << voice_edit.max_chars << "\n";
+    output << "scope_seconds = " << voice_edit.scope_seconds << "\n";
+    output << "verify_mode = \""
+           << std::string(VoiceEditVerifyModeName(voice_edit.verify_mode)) << "\"\n";
+    output << "unverified_seconds = " << voice_edit.unverified_seconds << "\n";
     output << "\n[license]\n";
     output << "serial = \"" << TomlEscape(license.serial) << "\"\n";
     if (license.trial_anchor_days) {  // 未锚定（试用未开始）不落盘

@@ -1,5 +1,10 @@
 # CHANGELOG.md
 
+## v2.4.10
+
+- 新增（macOS + Windows）：**语音编辑指令**——说完话后直接说"删掉最后两个字"/"删除最后一句"/"删除刚才的/撤销"/单独"删除"（默认删 1 字），桌面端在 ASR final 后本地整句白名单解析（零额外延迟、不依赖云端），删除最近一次语音注入到 focused_app 的文本尾部；支持字/句/整段，仅对最近一次注入且光标仍在该文本末尾时生效（字段+光标校验，失败安全拒绝并提示），字幕/微信输入法模式不支持。配置 `[voice_edit]` 默认开启，设置页「语音编辑」区块可关闭或调整单独"删除"的默认字数；设计见 `Doc/Plan/voice-edit-commands.md`，字段见 `Doc/Ref/desktop-config.md`。
+- 工程：macOS 新增 VoiceEditParser/VoiceEditPlanner 纯逻辑（解析 52 正例/34 负例 + 计划向量）与协调器级命令轮集成测试，`swift run VoiceStickTests` PASSED 1336/1336（基线 1053）；Windows 侧纯逻辑与 macOS 同向量（本机 clang 对拍 + CTest 套件 `RunVoiceEditTests` 已注册，Windows 环境待执行）；AX 读取含 macOS 27 system-wide 失效时的前台应用级 fallback。真机验收矩阵见方案 §11.3。
+
 ## v2.4.9
 
 macOS 端 OTA 与体验修复轮（Windows MSI 无功能变更；固件含连接参数兼容性修复，Windows 用户无需升级）：

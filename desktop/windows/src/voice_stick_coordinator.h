@@ -14,6 +14,7 @@
 #include "device_switch_state.h"
 #include "encoder_speed.h"
 #include "firmware_manifest.h"
+#include "focus_text_reader.h"
 #include "hotword_candidate_miner.h"
 #include "hotword_selector.h"
 #include "key_spec.h"
@@ -265,6 +266,11 @@ public:
     virtual ~IForegroundProcessProbe() = default;
     // 前台进程高于本进程完整性时返回 true，并填入其可执行文件名（如 "Weixin.exe"）供提醒文案。
     virtual bool IsForegroundHigherIntegrity(std::wstring& process_name) = 0;
+    // 语音编辑（Doc/Plan/voice-edit-commands.md §6.1/§6.2）：前台窗口身份。
+    // 默认实现返回 0 / 空——既有测试 Fake 无需改动；语音编辑在缺失时 fail-closed
+    //（L0 判前台窗口不一致 → 不注入任何按键）。Win32 实现由外壳注入。
+    virtual std::uintptr_t ForegroundWindow() { return 0; }
+    virtual std::string ForegroundProcessName() { return {}; }
 };
 
 class VoiceStickCoordinator {
@@ -287,7 +293,12 @@ public:
     void Start();
     void Shutdown();
     // 注入前台进程完整性探测实现。未注入（nullptr）时跳过 UIPI 提权提醒。须在 Start 前调用。
+    // 语音编辑（Doc/Plan/voice-edit-commands.md）复用同一探针的 ForegroundWindow /
+    // ForegroundProcessName 做 L0 前台窗口一致性校验；未注入时语音编辑 fail-closed。
     void SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe);
+    // 注入焦点输入框读取实现（UIA TextPattern，须在 UI 线程/COM STA 调用；测试注入
+    // Fake）。未注入时 L1 不可验证，按 verify_mode 走 auto 短窗/拒绝。须在 Start 前调用。
+    void SetFocusTextReader(std::unique_ptr<IFocusTextReader> reader);
     // 注入本机麦克风模式运行件（local-mic 会话，须在 Start 前调用，对齐
     // SetForegroundProbe 的注入模式）：采集器 + 本地 ASR 客户端。二者缺一或
     // config [local_asr] enabled=false 时按住说话热键完全旁路。
@@ -660,6 +671,24 @@ private:
     void CancelActiveCycleIfDeviceDisconnected();
     void FinishRecognitionCycle();
     void CancelStreamingRefinement();
+    // ---- 语音编辑指令（Doc/Plan/voice-edit-commands.md）----
+    // 最近一次语音注入记录（方案 §6.1；唯一写点 CompletePendingPaste 的 Paste 之后）。
+    struct LastInjection {
+        std::string text;                 // 实际注入的最终文本
+        std::string remaining_text;       // 理论上仍留在输入框中的剩余文本
+        std::chrono::steady_clock::time_point injected_at{};  // 注入完成时刻（monotonic）
+        bool pressed_enter = false;       // 注入时 auto_enter 的实际值
+        std::uintptr_t foreground_window = 0;  // 注入目标前台窗口（L0 一致性校验）
+        std::string foreground_process;   // 目标窗口所属进程 exe 名（UTF-8）
+    };
+    // 命中指令并接管本轮返回 true（调用方不得继续精修/翻译/粘贴）；非指令返回 false。
+    bool HandleVoiceEditIfMatched(const std::string& text);
+    // 唯一粘贴 chokepoint 记录本次注入（Paste 之后调用；无回执仍记录，靠 L1 兜底）。
+    void RecordLastInjection(const std::string& text, bool pressed_enter);
+    // 异步退格执行：std::thread 逐次 SendKeyCombo(backspace)（约 12ms 节拍），完成后
+    // RunOnUiThread 更新记录并提示；不得阻塞 UI 线程。
+    void StartVoiceEditBackspaces(int count, std::uint64_t generation, std::string message,
+                                  std::string new_remaining_text, bool new_pressed_enter);
     void UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id);
     void CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors);
     void RefreshFirmwareAvailability();
@@ -795,6 +824,12 @@ private:
     bool asr_started_ = false;
     bool sent_final_audio_chunk_ = false;
     bool pasted_final_text_ = false;
+    // 语音编辑：最近一次注入记录 + 代际（新注入/配置更新使旧异步回调只更新同代记录）。
+    // last_injection_ 仅 UI 线程读写（注入执行 worker 经 RunOnUiThread 回收）。
+    std::optional<LastInjection> last_injection_;
+    std::uint64_t voice_edit_generation_ = 0;
+    // 焦点输入框读取实现（外壳注入；nullptr = L1 不可验证）。
+    std::unique_ptr<IFocusTextReader> focus_text_reader_;
     std::atomic_bool waiting_for_audio_end_{false};
     std::atomic_uint64_t audio_end_wait_generation_{0};
     // recording 硬超时兜底（可经构造注入，测试用短值；默认 kRecordingHardTimeout）。

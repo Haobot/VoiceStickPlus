@@ -166,6 +166,10 @@ configure_file(src/builtin_secrets.h.in ${CMAKE_CURRENT_BINARY_DIR}/builtin_secr
 add_library(voicestick_core STATIC
     src/air_mouse_kin.cc
     src/key_spec.cc
+    # 语音编辑指令（Doc/Plan/voice-edit-commands.md）：纯逻辑解析/删除计划（零 Win32）
+    # + UIA 焦点字段读取（focus_text_reader）。
+    src/voice_edit_command.cc
+    src/focus_text_reader.cc
     src/app_config.cc
     src/asr_protocol.cc
     src/audio_opus_decoder.cc
@@ -240,6 +244,8 @@ target_link_libraries(voicestick_core PUBLIC bcrypt)
 target_link_libraries(voicestick_core PUBLIC opus)
 target_link_libraries(voicestick_core PUBLIC rnnoise)
 target_link_libraries(voicestick_core PUBLIC mmdevapi ole32 uuid)
+# 语音编辑 L1：UIA TextPattern 客户端（CoCreateInstance CUIAutomation8）+ BSTR 释放。
+target_link_libraries(voicestick_core PUBLIC uiautomationcore oleaut32)
 target_link_libraries(voicestick_core PUBLIC setupapi)  # com_port_selector 串口枚举
 target_link_libraries(voicestick_core PUBLIC shell32)  # model_download_session SHGetKnownFolderPath
 if(VOICESTICK_ENABLE_LOCAL_ASR)
@@ -521,6 +527,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_usage_events.cc
     # 用户数据飞轮 P0-3: 会话历史批
     tests/core_tests_session_history.cc
+    # 语音编辑指令（Doc/Plan/voice-edit-commands.md）: 解析/删除计划 + 协调器接线
+    tests/core_tests_voice_edit.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入

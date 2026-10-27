@@ -1,6 +1,6 @@
 # 语音编辑指令（Voice Edit Commands）——需求分析与可行方案
 
-> 状态：设计方案（草案，2026-10-20，待评审拍板）
+> 状态：已实现（2026-10-20）。macOS 本机 swift build 通过、swift run VoiceStickTests PASSED 1336/1336；Windows 纯逻辑本机 clang 对拍通过，Windows MSVC 构建/CTest 与双端真机验收待补（见 §16 实施记录）。确认项：D1 单独"删除"=1 字、"撤销/撤回"=整段；D2 默认开启；D4 Windows 不可校验时 auto（8s 窗口）；D3 字/句/整段；D6 含常见自然句式；D7 仅 focused_app；D8 两端 auto（spike 后可调 macOS strict）；D9 暂不调 0.5s 门槛；D10 双端同期。
 > 关联：[交互模型](../Agent/interaction-model.md)、[桌面端配置](../Ref/desktop-config.md)、[协议参考](../Ref/protocol.md)、[用户数据飞轮](typeless-lessons-and-user-data-flywheel.md)、[语音输入延迟根因链](../Expe/voice-input-latency-root-cause-chain-2026-10-12.md)
 > 结论先行：需求可行。建议采用「ASR final 后本地规则解析 + 最近一次注入记录 + 焦点字段/光标校验 + 受控退格注入」四层方案；不改固件、不改 BLE 协议、不依赖云端 LLM。唯一硬假设（焦点字段 + 光标位置可读）需先做 0.5~1 天双端真机 spike 验证。
 
@@ -654,6 +654,8 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 
 ## 13. 待拍板决策点
 
+> 2026-10-20 用户已确认：全部采纳下表的推荐值（D1/D2/D4 等），本方案进入实现阶段；实现或验收中若发现推荐值不可行，按"安全优先"回落并同步记录。
+
 | # | 决策 | 推荐 | 备选/影响 |
 |---|---|---|---|
 | D1 | 单独说"删除"默认删多少 | **1 个字**（等价一次退格，可连说）；"撤销/撤回"=整段 | 2 个字（对齐用户示例）；整段（破坏性大） |
@@ -729,3 +731,48 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 - **L1 目标校验**：基于焦点字段文本 + 光标位置的精确校验（可验证平台）。
 - **verified / unverified**：本次删除是否通过了 L1 校验。
 - **grapheme**：用户可见字符（一个汉字/一个 emoji/一个组合字符均算 1）。
+
+## 16. 实施记录（2026-10-20）
+
+### 16.1 交付状态
+
+| 项 | 状态 |
+|---|---|
+| 方案与决策 | 已定案（D1/D2/D4 等默认值已确认） |
+| macOS 实现 | 完成；本机 `cd desktop/macos && swift build` 通过、`swift run VoiceStickTests` PASSED 1336/1336（基线 1053；含纯逻辑、配置、协调器级命令轮集成测试） |
+| Windows 实现 | 代码完成（纯逻辑 + UIA reader + 协调器/配置/设置 UI）；纯逻辑在本机用 clang++ 与临时 main 对拍通过（与 macOS 同向量、39 条整段白名单 parity 0 missing）；**Windows MSVC 构建/CTest/真机待补** |
+| 真机验收 | 待办（§11.3 矩阵；macOS 需 .app 形态 + 设备语音；Windows 需 Windows 机器） |
+
+### 16.2 实施中的偏差与取舍（待评审确认）
+
+1. **方案 §6.3 伪码与附录 A 矛盾修正**：字段以换行结尾时"remaining 前缀是字段后缀"必然不成立。实现改为先在"去掉一个尾随换行"的字段内容上做最长前缀匹配，再按实际字段是否真以换行结尾决定 newlineCount；U1 向量 count=3 与附录 A 一致。
+2. **verified 分支执行后 pressedEnter 恒置 false**（比伪码保守）：避免后续降级到 unverified 时重复多发退格。
+3. **同音别名"子→字"未纳入一期**：双端一致地不识别"删掉最后两个子"；该条从 §5.4 一期列表移到 P1（避免新增误判面）。
+4. **Windows 纯逻辑 max_chars 不在 parser 层二次钳制**：由配置层钳 1..50 + 显式数量超限即非指令；macOS planner 另有 maxChars 纵深防御（行为等价，保留）。
+5. **macOS AX 读取新增前台应用级 fallback**（Lead spike 实测 macOS 27 system-wide 返回 -25204）：`NSWorkspace.frontmostApplication → AXUIElementCreateApplication(pid) → kAXFocusedUIElementAttribute`，既有编辑追踪的 `readFocusedFieldText` 同步受益。
+6. **macOS 设置页只暴露 enabled/default_chars**；max_chars/scope_seconds/verify_mode/unverified_seconds 走 config.toml 手编（双端一致）。
+7. 本机 0.5s 最短录音门槛未调整（D9）；快速单说"删除"的真机通过率待 §11.3 验证，必要时再按 P1 方案放宽短会话。
+8. **配置数值钳位口径双端对齐**（2026-10-20 收尾修）：[voice_edit] 四个数值字段改为区间钳位（同 Windows std::clamp），不再 macOS 特有的"越界回落默认/跨字段改写"；max_chars 范围统一 1..50，default_chars > max_chars 时由两端解析器同口径收紧 effective 删除量。
+9. **Windows L1 只读字段尾部约 512 UTF-16**（方案 §6.3 的尾部窗口）：若 remainingText 长于该窗口，verified 分支会因尾部前缀不匹配而保守拒绝（安全方向，不误删）；macOS 为全量 AX + 2M 守卫，无等价窗口。
+10. **整段删除的退格次数 = 剩余 grapheme 数**（不套 max_chars 的 20 上限，方案 §7.1 整段例外）；12ms 节拍下长文本（如 200 字约 2.4s）的真机可接受性待验收；字/句动作仍受 max_chars 约束。
+
+### 16.3 验证证据（可复核）
+
+- macOS：`cd desktop/macos && swift build` → Build complete；`swift run VoiceStickTests` → PASSED 1336/1336（基线 1053）。
+- Windows 纯逻辑：`clang++ -std=c++20 -I desktop/windows/src desktop/windows/src/voice_edit_command.cc <临时 main>` 编译并运行全部解析/计划/UTF-8 grapheme 向量通过；Lead 独立 harness 与 39 条整段白名单 parity 复核通过。
+- Lead 独立 spike（自建 NSTextView 宿主 + CGEvent 注入）：AX app 级读字段/光标可用；1 次退格删 1 个汉字；emoji 按 1 grapheme 删除；auto_enter 换行 + N 字需 N+1 次退格；caret 在中间可被读取。
+- Windows 独立套件复核：`clang++ -std=c++20 -Wall -Wextra -Werror` 编译 `core_tests_voice_edit.cc` + 临时 main 运行 `RunVoiceEditTests()` exit=0（无 -DNDEBUG；assert 生效）；Lead fresh harness 32/32、双端整段白名单 parity 39/39。
+- 待补：Windows `build_win.bat`/CTest、双端 §11.3 真机验收（含 AX/UIA 在 TextEdit/Chrome/Word/VS Code/终端等的覆盖率）。
+
+### 16.4 后续（P1）
+
+词/行/段单位、英文指令、删除恢复（撤销删除）、待粘贴文本修正、选中内容删除、partial 提示；"子→字"同音别名。
+
+### 16.5 Windows 环境补验清单（阻塞发布）
+
+1. `build_win.bat`（MSVC）编译：UIA 头与调用签名、`uiautomationcore`/`oleaut32` 链接、`focus_text_reader.cc`。
+2. `ctest --test-dir desktop/windows/build-x64 --output-on-failure`：含 `RunVoiceEditTests`（纯逻辑 + 协调器集成）。
+3. 真机 UIA 覆盖率与退格粒度（§11.3 矩阵：记事本/Chrome/Word/VS Code/微信输入框/终端）。
+4. 设置对话框新增控件布局/中英文案、保存热更、重启持久化。
+5. UIPI 提权前台拒绝路径；快速单说"删除"是否过 0.5s 最短录音门槛。
+6. 整段删除长文本的实际耗时（12ms×字数）与可接受性。

@@ -3,6 +3,7 @@
 #include "encoder_speed.h"
 #include "localization.h"
 #include "log.h"
+#include "voice_edit_command.h"
 #include "xiaomi_buttons.h"
 
 #include <algorithm>
@@ -233,6 +234,9 @@ void VoiceStickCoordinator::Shutdown() {
     active_session_started_at_ = {};
     pending_paste_state_ = {};
     debug_audio_recorder_.Discard();
+    // 语音编辑：退出清理最近注入记录（Doc §6.1）。
+    last_injection_.reset();
+    ++voice_edit_generation_;
     ble_->Shutdown();
 }
 
@@ -259,6 +263,10 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
         std::lock_guard<std::mutex> write_lock(config_write_mutex_);
         config_.store(std::make_shared<const AppConfig>(std::move(config)));
     }
+    // 语音编辑（Doc §6.1 清理项）：配置更新（输出目标/auto_enter/开关等）后作废最近一次
+    // 注入记录，避免用旧配置口径的 pressedEnter/目标继续执行；代际 +1 使在途异步回调失效。
+    last_injection_.reset();
+    ++voice_edit_generation_;
     live_air_mouse_params_.clear();  // config_ 变化，运行期 live 参数跟随回退到 AirMouseParamsForDevice
     translator_ = LLMTranslationClient(*ConfigSnapshot());
     refiner_ = LLMRefinementClient(*ConfigSnapshot());
@@ -1234,6 +1242,10 @@ bool VoiceStickCoordinator::IsStaleWechatStopClick(
 
 void VoiceStickCoordinator::SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe) {
     foreground_probe_ = std::move(probe);
+}
+
+void VoiceStickCoordinator::SetFocusTextReader(std::unique_ptr<IFocusTextReader> reader) {
+    focus_text_reader_ = std::move(reader);
 }
 
 bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& device_id) {
@@ -2386,6 +2398,10 @@ void VoiceStickCoordinator::CancelShortRecording() {
 void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
     if (pasted_final_text_) return;
     pasted_final_text_ = true;
+    // 语音编辑（Doc/Plan/voice-edit-commands.md §5.6）：入口拦截——命中指令即接管本轮，
+    // 不保存精修回退文本、不进入精修/翻译/粘贴。命中处理内部自行 FinishRecognitionCycle
+    // + EnterReady，并异步退格。
+    if (HandleVoiceEditIfMatched(text)) return;
     // 保存 ASR 原文作为 finalizing watchdog 的回退文本：后续 translate/refine 任一环节
     // 无响应时可直接粘贴原文，保证不丢本次输入。
     finalizing_fallback_text_ = text;

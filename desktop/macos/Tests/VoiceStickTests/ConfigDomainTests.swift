@@ -72,4 +72,111 @@ func runConfigDomainTests() {
           "N1dom: EncoderSettings 默认")
     check(OutputProfile.default.target == .focusedApp,
           "N1dom: OutputProfile 默认 focusedApp")
+
+    // ---- [voice_edit] 语音编辑配置（方案 §9.1）----
+    check(VoiceEditSettings.default.enabled
+          && VoiceEditSettings.default.defaultChars == 1
+          && VoiceEditSettings.default.maxChars == 20
+          && VoiceEditSettings.default.scopeSeconds == 120
+          && VoiceEditSettings.default.verifyMode == .auto
+          && VoiceEditSettings.default.unverifiedSeconds == 8,
+          "N1dom: VoiceEditSettings 默认值（开启/1 字/20/120/auto/8s）")
+
+    let voiceEditToml = """
+    [voice_edit]
+    enabled = false
+    default_chars = 3
+    max_chars = 7
+    scope_seconds = 60
+    verify_mode = "strict"
+    unverified_seconds = 2
+    """
+    let voiceEditCfg = AppConfig.parse(text: voiceEditToml)
+    check(!voiceEditCfg.voiceEdit.enabled, "N1dom: voice_edit enabled=false 解析")
+    check(voiceEditCfg.voiceEdit.defaultChars == 3, "N1dom: voice_edit default_chars 解析")
+    check(voiceEditCfg.voiceEdit.maxChars == 7, "N1dom: voice_edit max_chars 解析")
+    check(voiceEditCfg.voiceEdit.scopeSeconds == 60, "N1dom: voice_edit scope_seconds 解析")
+    check(voiceEditCfg.voiceEdit.verifyMode == .strict, "N1dom: voice_edit verify_mode=strict")
+    check(voiceEditCfg.voiceEdit.unverifiedSeconds == 2, "N1dom: voice_edit unverified_seconds")
+
+    check(AppConfig.parse(text: "asr_provider = \"volcengine\"").voiceEdit
+          == VoiceEditSettings.default,
+          "N1dom: voice_edit 缺表回落默认")
+
+    let voiceEditClamped = AppConfig.parse(text: """
+    [voice_edit]
+    default_chars = 99
+    max_chars = 0
+    scope_seconds = 5
+    verify_mode = "bogus"
+    unverified_seconds = 99
+    """)
+    check(voiceEditClamped.voiceEdit.defaultChars == 10, "N1dom: default_chars 99 钳位 10")
+    check(voiceEditClamped.voiceEdit.maxChars == 1, "N1dom: max_chars 0 钳位 1")
+    check(voiceEditClamped.voiceEdit.scopeSeconds == 10, "N1dom: scope_seconds 5 钳位 10")
+    check(voiceEditClamped.voiceEdit.unverifiedSeconds == 30,
+          "N1dom: unverified_seconds 99 钳位 30")
+    check(voiceEditClamped.voiceEdit.verifyMode == .auto, "N1dom: verify_mode 非法回落 auto")
+
+    // 跨端一致性：Windows kVoiceEditMaxCharsMax=50（app_config.cc std::clamp），
+    // 同一份 config.toml 的 max_chars=51 在两端都必须得到 50。
+    let voiceEditMaxBound = AppConfig.parse(text: """
+    [voice_edit]
+    max_chars = 51
+    """)
+    check(voiceEditMaxBound.voiceEdit.maxChars == 50,
+          "N1dom: max_chars 51 钳位 50（对齐 Windows 上限）")
+
+    // 各字段独立钳位（同 Windows，不跨字段改写）；default_chars > max_chars 时由
+    // 解析器按 max_chars 收紧 effective 删除量（两端解析器同口径）。
+    let voiceEditTight = AppConfig.parse(text: """
+    [voice_edit]
+    default_chars = 8
+    max_chars = 3
+    """)
+    check(voiceEditTight.voiceEdit.defaultChars == 8 && voiceEditTight.voiceEdit.maxChars == 3,
+          "N1dom: voice_edit 各字段独立钳位（不跨字段改写）")
+    checkEqual(
+        VoiceEditParser.parse(
+            "删除", defaultChars: voiceEditTight.voiceEdit.defaultChars,
+            maxChars: voiceEditTight.voiceEdit.maxChars),
+        VoiceEditCommand(action: .deleteLastChars(3), source: .defaultCount),
+        "N1dom: default_chars>max_chars 时解析器收紧默认删除量（同 Windows）")
+
+    // 序列化往返（[voice_edit] 恒写出 + 幂等）。
+    var voiceEditRoundTrip = AppConfig.defaults
+    voiceEditRoundTrip.voiceEdit.enabled = false
+    voiceEditRoundTrip.voiceEdit.defaultChars = 4
+    voiceEditRoundTrip.voiceEdit.maxChars = 30
+    voiceEditRoundTrip.voiceEdit.scopeSeconds = 300
+    voiceEditRoundTrip.voiceEdit.verifyMode = .strict
+    voiceEditRoundTrip.voiceEdit.unverifiedSeconds = 3
+    let voiceEditText = voiceEditRoundTrip.serializedText()
+    check(voiceEditText.contains("[voice_edit]"), "N1dom: serializedText 含 [voice_edit]")
+    let voiceEditReparsed = AppConfig.parse(text: voiceEditText)
+    check(voiceEditReparsed.voiceEdit == voiceEditRoundTrip.voiceEdit,
+          "N1dom: voice_edit 序列化往返一致")
+    check(voiceEditReparsed.serializedText() == voiceEditText, "N1dom: voice_edit 序列化幂等")
+
+    // legacy 逐行解析（表头被丢弃，裸键名读取；历史配置无该表 → 默认）。
+    let voiceEditLegacy = voiceEditSettingsValue(
+        ["enabled": "false", "default_chars": "2", "verify_mode": "off"],
+        default: .default
+    )
+    check(!voiceEditLegacy.enabled && voiceEditLegacy.defaultChars == 2
+          && voiceEditLegacy.verifyMode == .off,
+          "N1dom: voice_edit legacy 裸键解析")
+    check(voiceEditSettingsValue([:], default: .default) == .default,
+          "N1dom: voice_edit legacy 缺键回落默认")
+
+    // config.example.toml 可被解析且 [voice_edit] 段生效（防示例与解析器漂移）。
+    let exampleURL = TestSupport.repoRoot
+        .appendingPathComponent("desktop/macos/Config/config.example.toml")
+    if let exampleText = try? String(contentsOf: exampleURL, encoding: .utf8) {
+        let example = AppConfig.parse(text: exampleText)
+        check(example.voiceEdit == VoiceEditSettings.default,
+              "N1dom: config.example.toml [voice_edit] 解析为默认值")
+    } else {
+        check(false, "N1dom: config.example.toml 不可读")
+    }
 }

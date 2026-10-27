@@ -6,6 +6,7 @@
 #include "encoder_speed.h"
 #include "localization.h"
 #include "log.h"
+#include "voice_edit_command.h"
 #include "xiaomi_buttons.h"
 
 #include <algorithm>
@@ -22,6 +23,72 @@
 
 #include "voice_stick_coordinator_util.h"
 namespace voicestick {
+
+namespace {
+
+// 语音编辑（Doc/Plan/voice-edit-commands.md §7.1/§8.2）：退格节拍与提示停留时长。
+constexpr int kVoiceEditBackspaceIntervalMs = 12;
+constexpr int kVoiceEditToastMs = 3000;
+
+std::string ReplaceFirstDecimal(std::string text, int value) {
+    const auto marker = text.find("%d");
+    if (marker != std::string::npos) {
+        text.replace(marker, 2, std::to_string(value));
+    }
+    return text;
+}
+
+StringId VoiceEditRejectMessageId(VoiceEditRejectReason reason) {
+    switch (reason) {
+        case VoiceEditRejectReason::kFieldUnreadable:
+            return StringId::kVoiceEditUnreadable;
+        case VoiceEditRejectReason::kUnverifiedNotAllowed:
+            return StringId::kVoiceEditUnverifiedExpired;
+        case VoiceEditRejectReason::kSelectionActive:
+            return StringId::kVoiceEditSelectionActive;
+        case VoiceEditRejectReason::kCaretNotAtEnd:
+            return StringId::kVoiceEditCursorMoved;
+        case VoiceEditRejectReason::kPasswordField:
+            return StringId::kVoiceEditPassword;
+        case VoiceEditRejectReason::kTextMismatch:
+            return StringId::kVoiceEditTextChanged;
+        case VoiceEditRejectReason::kEmptyTarget:
+        case VoiceEditRejectReason::kNothingToDelete:
+        case VoiceEditRejectReason::kNone:
+            break;
+    }
+    return StringId::kVoiceEditNoTarget;
+}
+
+std::string VoiceEditActionName(VoiceEditAction action) {
+    switch (action) {
+        case VoiceEditAction::kDeleteLastChars: return "chars";
+        case VoiceEditAction::kDeleteLastSentences: return "sentences";
+        case VoiceEditAction::kDeleteAll: return "all";
+    }
+    return "unknown";
+}
+
+std::string VoiceEditResultMessage(const VoiceEditCommand& command,
+                                   const VoiceEditPlan& plan, UiLanguage language) {
+    switch (command.action) {
+        case VoiceEditAction::kDeleteLastChars:
+            return ReplaceFirstDecimal(Tr(StringId::kVoiceEditDeletedChars, language),
+                                       plan.delete_graphemes);
+        case VoiceEditAction::kDeleteLastSentences:
+            if (plan.deleted_sentences <= 1) {
+                return Tr(StringId::kVoiceEditDeletedSentence, language);
+            }
+            return ReplaceFirstDecimal(Tr(StringId::kVoiceEditDeletedSentences, language),
+                                       plan.deleted_sentences);
+        case VoiceEditAction::kDeleteAll:
+            return Tr(StringId::kVoiceEditDeletedAll, language);
+    }
+    return {};
+}
+
+}  // namespace
+
 void VoiceStickCoordinator::MineHotwordCandidatesFromRefinement(const std::string& original,
                                                                 const std::string& refined) {
     const auto mined = MineRefinementCandidates(original, refined, ConfigSnapshot()->asr_hotwords);
@@ -499,8 +566,14 @@ void VoiceStickCoordinator::ScheduleFinalizingWatchdog() {
             }
             if (!fallback_text.empty()) {
                 // LLM 翻译/精修无响应：回退粘贴 ASR 原文，不丢本次输入。
+                // 语音编辑兜底（Doc §5.6/§8.1）：命令 final 不得因精修挂起被当正文粘贴。
+                // watchdog 在 detached 线程，先 RunOnUiThread 再进入状态机（避免并发写）。
                 LogCoordinatorLine("finalizing watchdog timeout; pasting unrefined final text");
-                EnterPendingConfirmation(fallback_text, "finalizing_watchdog");
+                RunOnUiThread([this, fallback_text = std::move(fallback_text)]() mutable {
+                    if (is_shutdown_) return;
+                    if (HandleVoiceEditIfMatched(fallback_text)) return;
+                    EnterPendingConfirmation(fallback_text, "finalizing_watchdog");
+                });
             } else {
                 // ASR 服务端始终未回 final：报错退出（用户确认后回 ready），不永久卡住。
                 LogCoordinatorLine("finalizing watchdog timeout; no final text, aborting");
@@ -596,6 +669,175 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& text, bool m
     LogLatencyProbeBreakdown("paste_complete");
     EnterReady("paste_complete");
     input_injector_->Paste(text, should_press_enter);
+    // 语音编辑（Doc §4 原则 2）：唯一粘贴 chokepoint 记录本次注入；Paste 无回执仍记录
+    //（UIA 不可读时靠 L1/短时间窗兜底，可读时 L1 校验兜底）。
+    RecordLastInjection(text, should_press_enter);
+}
+
+void VoiceStickCoordinator::RecordLastInjection(const std::string& text, bool pressed_enter) {
+    if (text.empty()) return;  // Paste 对空文本是 no-op，不记录（否则 L0 得到空目标）
+    LastInjection record;
+    record.text = text;
+    record.remaining_text = text;
+    record.injected_at = std::chrono::steady_clock::now();
+    record.pressed_enter = pressed_enter;
+    if (foreground_probe_) {
+        record.foreground_window = foreground_probe_->ForegroundWindow();
+        if (record.foreground_window != 0) {
+            record.foreground_process = foreground_probe_->ForegroundProcessName();
+        }
+    }
+    last_injection_ = std::move(record);
+    // 新注入覆盖旧记录（方案 §6.1：始终只保留最近一次）；代际 +1 使在途异步删除回调
+    // 只更新同一代记录。
+    ++voice_edit_generation_;
+    LogCoordinatorLine(
+        "voice edit record: len=" + std::to_string(last_injection_->remaining_text.size()) +
+        " enter=" + (pressed_enter ? "1" : "0") +
+        " hwnd=" + std::to_string(static_cast<unsigned long long>(
+                       last_injection_->foreground_window)) +
+        " proc=" + (last_injection_->foreground_process.empty()
+                        ? std::string("?")
+                        : last_injection_->foreground_process));
+}
+
+void VoiceStickCoordinator::StartVoiceEditBackspaces(int count, std::uint64_t generation,
+                                                     std::string message,
+                                                     std::string new_remaining_text,
+                                                     bool new_pressed_enter) {
+    if (count <= 0) return;
+    const auto parsed = ParseKeySpec("backspace");
+    if (!parsed.has_value()) {
+        // key_spec 白名单恒支持 backspace；防御性记录后放弃（不注入任何东西）。
+        LogCoordinatorLine("voice edit: ParseKeySpec(backspace) failed");
+        return;
+    }
+    const KeySpec backspace = *parsed;
+    const auto alive = alive_;
+    std::thread([this, alive, count, generation, backspace, message = std::move(message),
+                 new_remaining_text = std::move(new_remaining_text), new_pressed_enter]() {
+        for (int i = 0; i < count; ++i) {
+            if (!alive->load()) return;
+            input_injector_->SendKeyCombo(backspace);
+            if (i + 1 < count) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kVoiceEditBackspaceIntervalMs));
+            }
+        }
+        // 执行完成：回 UI 线程更新记录（仅同一代）+ 提示结果。SendInput 无回执，
+        // toast 只表示"已发出"，不是保证（Doc §7.4）。
+        RunOnUiThread([this, alive, generation, message = std::move(message),
+                       new_remaining_text = std::move(new_remaining_text),
+                       new_pressed_enter]() {
+            if (!alive->load()) return;
+            if (generation == voice_edit_generation_ && last_injection_.has_value()) {
+                last_injection_->remaining_text = new_remaining_text;
+                last_injection_->pressed_enter = new_pressed_enter;
+            }
+            ui_->ShowTimedMessage(message, kVoiceEditToastMs);
+        });
+    }).detach();
+}
+
+bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
+    if (is_shutdown_) return false;
+    // 只在 finalizing 内接受（迟到 final/取消后不误执行；watchdog 回 UI 线程后同样校验）。
+    if (session_state_ != SessionState::kFinalizing) return false;
+    const auto config = ConfigSnapshot();
+    const auto& voice_edit = config->voice_edit;
+    if (!voice_edit.enabled) return false;
+    // 仅 focused_app（Doc §6.2 #2）：字幕/微信输入法模式按原链路处理，不拦截。
+    if (OutputProfileForDevice(active_device_id_).target != OutputTarget::kFocusedApp) {
+        return false;
+    }
+    const auto command =
+        ParseVoiceEditCommand(text, voice_edit.default_chars, voice_edit.max_chars);
+    if (!command.has_value()) return false;  // 非指令：走原链路（普通文本上屏）
+
+    // === 命中指令：本轮由语音编辑接管，绝不进入精修/翻译/粘贴（Doc §8.1） ===
+    pasted_final_text_ = true;
+    const UiLanguage language = EffectiveUiLanguage(config->ui_language);
+    const auto reject = [this, language](StringId message_id, std::string_view reason) {
+        LogCoordinatorLine("voice edit rejected reason=" + std::string(reason));
+        FinishRecognitionCycle();
+        EnterReady("voice_edit_rejected");
+        ui_->ShowTimedMessage(Tr(message_id, language), kVoiceEditToastMs);
+    };
+
+    // ---- L0 作用域闸（Doc §6.2）----
+    const auto now = std::chrono::steady_clock::now();
+    if (!last_injection_.has_value() || last_injection_->remaining_text.empty()) {
+        reject(StringId::kVoiceEditNoTarget, "no_injection");
+        return true;
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        now - last_injection_->injected_at);
+    if (elapsed.count() > static_cast<long long>(voice_edit.scope_seconds)) {
+        reject(StringId::kVoiceEditNoTarget, "scope_expired");
+        return true;
+    }
+    // 前台窗口 + 进程一致（切应用/文本已提交到别处 → 拒绝；探针缺失时 fail-closed）。
+    const std::uintptr_t foreground_window =
+        foreground_probe_ ? foreground_probe_->ForegroundWindow() : 0;
+    const std::string foreground_process =
+        (foreground_probe_ && foreground_window != 0)
+            ? foreground_probe_->ForegroundProcessName()
+            : std::string();
+    if (!foreground_probe_ || foreground_window == 0 ||
+        last_injection_->foreground_window == 0 ||
+        foreground_window != last_injection_->foreground_window ||
+        foreground_process != last_injection_->foreground_process) {
+        reject(StringId::kVoiceEditWrongWindow, "app_changed");
+        return true;
+    }
+    // 前台进程完整性不得高于本进程（UIPI 会让 SendInput 静默失效，Doc §6.2 #6）。
+    {
+        std::wstring elevated_process;
+        if (foreground_probe_->IsForegroundHigherIntegrity(elevated_process)) {
+            reject(StringId::kVoiceEditElevated, "foreground_elevated");
+            return true;
+        }
+    }
+
+    // ---- L1 目标校验（Doc §6.3）：UIA 读取在 UI 线程（COM STA）----
+    VoiceEditFieldState field;
+    if (voice_edit.verify_mode != VoiceEditVerifyMode::kOff && focus_text_reader_) {
+        if (!focus_text_reader_->ReadFocusedField(&field)) {
+            field = VoiceEditFieldState{};  // 不可验证（auto 短窗/严格拒绝由 planner 决定）
+        }
+    }
+    const auto unverified_allowed =
+        voice_edit.verify_mode == VoiceEditVerifyMode::kAuto &&
+        elapsed.count() <= static_cast<long long>(voice_edit.unverified_seconds);
+    const auto plan = PlanVoiceEdit(last_injection_->remaining_text,
+                                    last_injection_->pressed_enter, *command, field,
+                                    voice_edit.verify_mode, unverified_allowed);
+    if (!plan.ok) {
+        reject(VoiceEditRejectMessageId(plan.reject_reason),
+               VoiceEditRejectReasonName(plan.reject_reason));
+        return true;
+    }
+
+    const auto generation = voice_edit_generation_;
+    const std::string message = VoiceEditResultMessage(*command, plan, language);
+    LogCoordinatorLine(
+        "voice edit action=" + VoiceEditActionName(command->action) +
+        " requested=" + std::to_string(command->count) +
+        " delete_chars=" + std::to_string(plan.delete_graphemes) +
+        " delete_sentences=" + std::to_string(plan.deleted_sentences) +
+        " newline=" + (plan.delete_newline ? "1" : "0") +
+        " backspace=" + std::to_string(plan.backspace_count) +
+        " verified=" + (plan.verified ? "1" : "0") +
+        " age_ms=" +
+        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now -
+                                                                            last_injection_->injected_at)
+                           .count()));
+    // 先收尾回 ready，再异步注入退格（不阻塞 UI；count 上限=剩余注入文本 grapheme 数）。
+    FinishRecognitionCycle();
+    EnterReady("voice_edit");
+    StartVoiceEditBackspaces(plan.backspace_count, generation, message,
+                             plan.new_remaining_text, plan.new_pressed_enter);
+    return true;
 }
 
 bool VoiceStickCoordinator::RestoreLastInputConfirmation(std::optional<std::string> device_id) {

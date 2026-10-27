@@ -30,8 +30,12 @@ private final class FakeStatusSink: VoiceStickStatusSink {
         // 模拟真机浮窗确认倒计时结束（OverlayController 延时回调 onHidden → 提交粘贴）。
         DispatchQueue.main.async { onHidden?() }
     }
+    /// 语音编辑 toast 断言用：记录 timed message 文案。
+    var timedMessages: [String] = []
     func showTimedMessage(_ text: String, duration: TimeInterval, deviceID: String?,
-                          onHidden: (() -> Void)?) {}
+                          onHidden: (() -> Void)?) {
+        timedMessages.append(text)
+    }
     func showError(_ text: String, deviceID: String?, onHidden: (() -> Void)?) {}
     func hideOverlay(onHidden: (() -> Void)?) {}
     func hideOverlay(deviceID: String?, onHidden: (() -> Void)?) {}
@@ -382,4 +386,181 @@ func runRefineBudgetTests() {
     checkEqual(h.input.pastedTexts.last, original,
                "refineBudget: 思考活动不豁免总预算（5.5s 兜底粘贴原文）")
     checkEqual(h.input.pastedTexts.count, 1, "refineBudget: 总预算路径仅粘贴一次")
+}
+
+// ---- 语音编辑指令：协调器接线（LastInjection / L0-L1 / 异步退格 / toast）----
+// 方案 §5.6/§6/§8.1：命令轮不粘贴、不写历史；L0/L1 失败零注入；成功按计划发退格。
+// 纯逻辑向量见 VoiceEditCommandTests；本组只验证接线与安全闸行为。
+
+/// 可变焦点字段状态容器（闭包按引用读取，模拟 AX 读取结果变化）。
+private final class FieldStateBox {
+    var state: FocusedFieldState?
+}
+
+private func makeVoiceEditHarness() -> (coordinator: VoiceStickCoordinator, sink: FakeStatusSink,
+                                        ble: FakeBleServing, input: FakeInput, asr: FakeASR,
+                                        field: FieldStateBox) {
+    let sink = FakeStatusSink()
+    let fakeBle = FakeBleServing()
+    let fakeInput = FakeInput()
+    let asr = FakeASR()
+    let coordinator = VoiceStickCoordinator(
+        config: .defaults,
+        statusController: sink,
+        ble: fakeBle,
+        makeAsr: { _ in asr },
+        makeTranslator: { _ in FakeTranslator() },
+        makeRefiner: { _ in FakeRefiner() },
+        inputInjector: fakeInput,
+        subtitleController: FakeSubtitle(),
+        makeDebugRecorder: { _ in FakeRecorder() }
+    )
+    coordinator.userDataDirectoryOverride = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voicestick_voice_edit_userdata")
+    coordinator.updateConfig(.defaults)
+    coordinator.isProcessTrusted = { true }
+    coordinator.frontmostAppBundleID = { "com.test.app" }
+    // 恒等 trText：toast 文案 = L10nKey 名（String(format:) 对无 %d 的串原样返回），
+    // 便于断言走到的文案 key，不依赖 App 模块的 Localization 表。
+    coordinator.trText = { $0 }
+    let field = FieldStateBox()
+    coordinator.readFocusedFieldState = { field.state }
+    return (coordinator, sink, fakeBle, fakeInput, asr, field)
+}
+
+private func voiceEditBackspaces(_ count: Int) -> [KeySpec] {
+    Array(repeating: KeySpec.parse("backspace")!, count: count)
+}
+
+func runVoiceEditCoordinatorTests() {
+    var h = makeVoiceEditHarness()
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    checkEqual(h.input.pastedTexts.count, 1, "voiceEdit: 普通输入注入一次")
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 普通输入不注入退格")
+
+    // U1：field "你好世界\n" + 光标末尾 → 2 字 + 1 换行 = 3 次退格；命令轮不粘贴。
+    h.field.state = FocusedFieldState(text: "你好世界\n", caretUTF16: 5, selectionLength: 0)
+    h.asr.onFinal?("删掉最后两个字。")
+    pumpMainRunLoop(0.5)
+    checkEqual(h.input.pastedTexts.count, 1, "voiceEdit: 命令轮不产生粘贴")
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(3),
+               "voiceEdit: U1 退格 3 次（2 字 + 换行）")
+    check(h.sink.timedMessages.contains("voiceEditDeletedChars"), "voiceEdit: 成功 toast key")
+    check(h.coordinator.fsmSnapshot.contains("main=ready"), "voiceEdit: 命令后回 ready")
+
+    // 记录更新：remainingText 变为 "你好"、pressedEnter=false；再删 1 字 → 1 次退格。
+    h.field.state = FocusedFieldState(text: "你好", caretUTF16: 2, selectionLength: 0)
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.5)
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(1),
+               "voiceEdit: 删除后 remainingText 更新 → 1 次退格")
+
+    // 无注入记录：命令轮吞掉不粘贴、零注入，toast no_injection。
+    h = makeVoiceEditHarness()
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.2)
+    checkEqual(h.input.pastedTexts.count, 0, "voiceEdit: 无目标命令不粘贴")
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 无目标零注入")
+    checkEqual(h.sink.timedMessages.last, "voiceEditNoInjection", "voiceEdit: 无目标 toast key")
+
+    // 前台应用变化 → app_changed，零注入。
+    h = makeVoiceEditHarness()
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.coordinator.frontmostAppBundleID = { "com.other.app" }
+    h.field.state = FocusedFieldState(text: "你好世界\n", caretUTF16: 5, selectionLength: 0)
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 切应用零注入")
+    checkEqual(h.sink.timedMessages.last, "voiceEditAppChanged", "voiceEdit: 切应用 toast key")
+
+    // auto + 不可验证 + 窗口关闭（unverified_seconds=0）→ verify_unavailable，不盲删。
+    h = makeVoiceEditHarness()
+    var closedWindowConfig = AppConfig.defaults
+    closedWindowConfig.voiceEdit.unverifiedSeconds = 0
+    h.coordinator.updateConfig(closedWindowConfig)
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.field.state = nil
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 不可验证且窗口关闭零注入")
+    checkEqual(h.sink.timedMessages.last, "voiceEditVerifyUnavailable",
+               "voiceEdit: 不可验证 toast key")
+
+    // auto + 不可验证 + 8s 窗口内 → unverified 盲删（1 字 + 换行 = 2 次退格）。
+    h = makeVoiceEditHarness()
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.field.state = nil
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.5)
+    checkEqual(h.input.sentKeyCombos.count, 2, "voiceEdit: auto 窗口内盲删 2 次退格")
+    check(h.sink.timedMessages.last?.contains("voiceEditDeletedChars") == true,
+          "voiceEdit: 盲删成功 toast key")
+    check(h.sink.timedMessages.last?.contains("voiceEditUnverifiedSuffix") == true,
+          "voiceEdit: 盲删标注未校验")
+
+    // 用户追加手打内容（字段尾部不匹配）→ field_mismatch，零注入。
+    h = makeVoiceEditHarness()
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.field.state = FocusedFieldState(text: "你好世界\n吗", caretUTF16: 6, selectionLength: 0)
+    h.asr.onFinal?("删除最后两个字")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 字段不匹配零注入")
+    checkEqual(h.sink.timedMessages.last, "voiceEditFieldMismatch",
+               "voiceEdit: 字段不匹配 toast key")
+
+    // 光标在中间 → caret_not_end；选区非空 → selection_present。
+    h.field.state = FocusedFieldState(text: "你好世界", caretUTF16: 2, selectionLength: 0)
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.2)
+    checkEqual(h.sink.timedMessages.last, "voiceEditCaretNotEnd", "voiceEdit: 光标不在末尾 toast key")
+    h.field.state = FocusedFieldState(text: "你好世界", caretUTF16: 0, selectionLength: 4)
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.2)
+    checkEqual(h.sink.timedMessages.last, "voiceEditSelectionPresent",
+               "voiceEdit: 选区存在 toast key")
+
+    // 字幕模式不拦截：命令按普通文本走字幕链路（不粘贴、不注入退格）。
+    h = makeVoiceEditHarness()
+    var subtitleConfig = AppConfig.defaults
+    subtitleConfig.defaultOutputProfile.target = .subtitle
+    h.coordinator.updateConfig(subtitleConfig)
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.2)
+    checkEqual(h.input.pastedTexts.count, 0, "voiceEdit: 字幕模式不粘贴")
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 字幕模式零退格")
+
+    // 功能关闭：命令文本按普通文本正常上屏（完全回到现状）。
+    h = makeVoiceEditHarness()
+    var disabledConfig = AppConfig.defaults
+    disabledConfig.voiceEdit.enabled = false
+    h.coordinator.updateConfig(disabledConfig)
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.2)
+    checkEqual(h.input.pastedTexts.last, "删除", "voiceEdit: 关闭后命令文本正常上屏")
+
+    // 普通文本回归（含「删除」字样但不构成指令）→ 正常粘贴、不注入退格。
+    h = makeVoiceEditHarness()
+    h.asr.onFinal?("请把删除按钮改成红色")
+    pumpMainRunLoop(0.2)
+    checkEqual(h.input.pastedTexts.last, "请把删除按钮改成红色", "voiceEdit: 普通文本回归")
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 普通文本零退格")
+
+    // 辅助功能权限缺失 → accessibility_denied，零注入。
+    h = makeVoiceEditHarness()
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.coordinator.isProcessTrusted = { false }
+    h.field.state = FocusedFieldState(text: "你好世界\n", caretUTF16: 5, selectionLength: 0)
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 无辅助功能权限零注入")
+    checkEqual(h.sink.timedMessages.last, "voiceEditAccessibilityDenied",
+               "voiceEdit: 无权限 toast key")
 }

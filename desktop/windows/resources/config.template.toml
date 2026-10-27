@@ -119,3 +119,21 @@ enabled = false
 models_dir = ""
 # 按住说话热键（right ctrl / left ctrl / right shift / f8 等单键）
 push_to_talk_key = "right ctrl"
+
+# ---- 语音编辑指令（说“删除/删掉最后两个字/撤销”等，直接编辑刚注入的文本）----
+# 仅对最近一次语音注入、且仍留在 focused_app 焦点输入框末尾的文本生效；
+# 字幕 / 第三方输入法模式不支持。详见 Doc/Plan/voice-edit-commands.md。
+[voice_edit]
+# 总开关；false = 指令按普通文本上屏（完全回到现状）
+enabled = true
+# 单独说“删除/删掉/去掉”时删除的字数（1~10）
+default_chars = 1
+# 单条指令允许删除的最大字数（1~50）；显式数量超限按普通文本处理
+max_chars = 20
+# 作用域时间窗（秒，10~600）：注入后超过该时长不再允许语音编辑
+scope_seconds = 120
+# 校验模式：auto（默认：可读字段/光标时必须校验；不可读仅 unverified_seconds 内允许执行）
+# | strict（读不到一律拒绝）| off（不校验，仅排障）
+verify_mode = "auto"
+# auto 模式下字段/光标不可验证时允许执行的时间窗（秒，0~30）
+unverified_seconds = 8

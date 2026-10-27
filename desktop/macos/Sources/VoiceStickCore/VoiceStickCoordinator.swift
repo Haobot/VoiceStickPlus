@@ -155,6 +155,10 @@ public final class VoiceStickCoordinator {
     /// 焦点字段文本读取闭包（编辑追踪用，App 侧 AX 实现；nil=编辑追踪停用）。
     /// 隐私约束：仅用于与本次注入文本做区间 diff，读取内容不落库、不打日志。
     public var readFocusedFieldText: (() -> String?)?
+    /// 焦点字段状态读取闭包（语音编辑 L1 校验用：字段全文 + 光标 UTF-16 偏移 +
+    /// 选区长度；App 侧 AX 实现，nil=不可验证）。隐私约束同 readFocusedFieldText：
+    /// 字段全文只在内存参与校验，不落库、不上传、不写日志内容。
+    public var readFocusedFieldState: (() -> FocusedFieldState?)?
     /// 前台应用 bundle id 闭包（App 场景分域用，App 侧 NSWorkspace 实现；nil=不分工
     /// 桶，全部落全局桶）。只取 bundle id，不读窗口内容。
     public var frontmostAppBundleID: (() -> String?)?
@@ -187,6 +191,18 @@ public final class VoiceStickCoordinator {
     private let kEditTrackingFirstDelay: TimeInterval = 8
     private let kEditTrackingRetryDelay: TimeInterval = 10
     private let kEditTrackingMaxAttempts = 5
+    /// 语音编辑：最近一次文本注入记录（方案 §6.1）。只保留最近一次（新注入覆盖），
+    /// 文本仅内存保存、不落库；remainingText 每成功删除一次后更新。
+    private struct LastInjection {
+        let text: String
+        var remainingText: String
+        let injectedAt: Date
+        var pressedEnter: Bool
+        let appID: String?
+    }
+    private var lastInjection: LastInjection?
+    /// 语音编辑退格注入串行队列（方案 §7.1：后台注入 + 约 12ms 节拍，不阻塞主线程）。
+    private let voiceEditInjectionQueue = DispatchQueue(label: "com.voicestick.voice-edit.backspace")
     // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
     public var fsmSnapshot: String {
         "main=\(mainInputState) pendingPaste=\(pendingPasteState) "
@@ -458,6 +474,11 @@ public final class VoiceStickCoordinator {
         }
 
         self.config = config
+        // 语音编辑记录清理（方案 §6.1）：关闭功能或当前输出目标不是 focused_app 时
+        // 旧注入记录不再有安全作用域，清掉避免误删。
+        if !config.voiceEdit.enabled || outputProfile(for: activeDeviceID).target != .focusedApp {
+            lastInjection = nil
+        }
         // 网关键连发节拍热更（按键映射对话框保存路径）。
         gatewayRepeater.setTiming(.init(
             delayMs: config.buttonsSettings(for: activeXiaomiDeviceID).repeatDelayMs,
@@ -1961,6 +1982,9 @@ public final class VoiceStickCoordinator {
 
     private func finishWithFinalText(_ text: String) {
         guard !pastedFinalText else { return }
+        // 语音编辑指令拦截（方案 §5.6/§4 关键原则 1）：必须在 beginSessionHistory /
+        // 精修 / 翻译 / 粘贴之前判定；命中即整轮按命令处理并 return（不粘贴、不写历史）。
+        if handleVoiceEditCommandIfMatched(text) { return }
         // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立，落库在
         // finishWithRefinedText（所有收口路径统一经过）。
         beginSessionHistory(rawAsr: text)
@@ -2771,7 +2795,176 @@ public final class VoiceStickCoordinator {
         sendUIStateForActiveDevice("ready")
         mainInputState = .ready
         inputInjector.paste(text: text, pressEnter: shouldPressEnter)
+        // 语音编辑：记录最近一次注入（方案 §6.1 记录点唯一 = 唯一粘贴 chokepoint）。
+        // 无辅助功能权限时 paste 的 CGEvent 会被系统静默丢弃，此时不记，避免后续
+        // 误以为自己注入过；新注入覆盖旧记录（始终只保留最近一次）。
+        if !text.isEmpty, isProcessTrusted?() ?? false {
+            lastInjection = LastInjection(
+                text: text,
+                remainingText: text,
+                injectedAt: Date(),
+                pressedEnter: shouldPressEnter,
+                appID: frontmostAppBundleID?()
+            )
+        }
         beginEditTracking(injectedText: text)
+    }
+
+    // MARK: - 语音编辑指令（Voice Edit Commands；Doc/Plan/voice-edit-commands.md §4/§6/§8.1）
+
+    /// finishWithFinalText 入口拦截：整句解析为编辑指令时吞掉本轮并按命令执行。
+    /// 返回 true = 已按命令处理（调用方直接 return，绝不再粘贴/精修/写历史）。
+    ///
+    /// 顺序（方案 §8.1）：parse → pastedFinalText=true → finishEditTracking(skipped)
+    /// → cancelStreamingRefinement → L0/L1 出计划 → 收尾（会清 pastedFinalText，故计划
+    /// 先算好）→ 异步退格 → 完成后回主线程更新 LastInjection + toast（放收尾后，
+    /// 避免被 hideOverlay 吞掉）。
+    private func handleVoiceEditCommandIfMatched(_ text: String) -> Bool {
+        let settings = config.voiceEdit
+        guard settings.enabled else { return false }
+        // 仅 focused_app 生效（决策点 D7）：字幕/微信输入法模式按原链路处理，不拦截。
+        guard outputProfile(for: activeDeviceID).target == .focusedApp else { return false }
+        guard let command = VoiceEditParser.parse(
+            text, defaultChars: settings.defaultChars, maxChars: settings.maxChars
+        ) else { return false }
+
+        // 命中即吞掉本轮：置 pastedFinalText 阻止迟到回调二次粘贴。
+        pastedFinalText = true
+        // 命令轮不属于「语音输入内容」：结束上一轮编辑追踪（否则退格造成的字段变化
+        // 会被误判为用户编辑写进纠错对），并停掉可能的精修（防御，正常不会在跑）。
+        finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
+        cancelStreamingRefinement()
+
+        let result = evaluateVoiceEditCommand(command, settings: settings)
+        let commandDescription = describeVoiceEditCommand(command)
+
+        // 收尾先做（命令轮不新增状态，方案 §8.1）：计划/记录已在上面算好；
+        // toast 必须在收尾之后，避免被 hideOverlay 吞掉。
+        finishRecognitionCycle()
+        statusController.hideOverlay()
+        statusController.setStatus("Ready")
+        sendUIStateForActiveDevice("ready")
+        mainInputState = .ready
+
+        switch result {
+        case .failure(let code):
+            NSLog("voice_edit command=%@ result=failure code=%@", commandDescription, code.rawValue)
+            showVoiceEditFailureToast(code)
+        case .plan(let plan):
+            NSLog("voice_edit command=%@ result=plan count=%d chars=%d newline=%d verification=%@",
+                  commandDescription, plan.count, plan.charCount, plan.newlineCount,
+                  plan.verification.rawValue)
+            injectVoiceEditBackspaces(plan.count) { [weak self] in
+                guard let self else { return }
+                self.lastInjection?.remainingText = plan.newRemainingText
+                self.lastInjection?.pressedEnter = plan.newPressedEnter
+                self.showVoiceEditSuccessToast(command: command, plan: plan)
+            }
+        }
+        return true
+    }
+
+    /// L0 作用域闸 + L1 目标校验（方案 §6.2/§6.3）：返回删除计划或拒绝码；
+    /// 任一闸失败都绝不注入按键。检查顺序 = 方案 §6.2 编号顺序（记录→时间→应用→权限）。
+    private func evaluateVoiceEditCommand(
+        _ command: VoiceEditCommand, settings: VoiceEditSettings
+    ) -> VoiceEditPlanResult {
+        guard let record = lastInjection, !record.remainingText.isEmpty else {
+            return .failure(.noInjection)
+        }
+        let elapsed = Date().timeIntervalSince(record.injectedAt)
+        guard elapsed <= TimeInterval(settings.scopeSeconds) else { return .failure(.scopeExpired) }
+        guard let recordedApp = record.appID, frontmostAppBundleID?() == recordedApp else {
+            return .failure(.appChanged)
+        }
+        // 辅助功能权限与 CGEvent 注入同源：权限被收回后注入会被静默丢弃。
+        guard isProcessTrusted?() ?? false else { return .failure(.accessibilityDenied) }
+        // L1：可验证→必须通过；不可验证→由 verify_mode + unverified 窗口决定（§6.5）。
+        let fieldState = readFocusedFieldState?()
+        return VoiceEditPlanner.plan(
+            remainingText: record.remainingText,
+            pressedEnter: record.pressedEnter,
+            action: command.action,
+            fieldText: fieldState?.text,
+            caretUTF16: fieldState?.caretUTF16,
+            selectionLength: fieldState?.selectionLength,
+            maxChars: settings.maxChars,
+            verifyMode: settings.verifyMode,
+            unverifiedWindowOpen: elapsed <= TimeInterval(settings.unverifiedSeconds)
+        )
+    }
+
+    /// 异步退格注入（方案 §7.1）：后台串行队列 + 约 12ms 节拍；完成后回主线程收尾。
+    /// CGEvent 投递线程安全（且 L0 已确认辅助功能权限），不占主线程。
+    private func injectVoiceEditBackspaces(_ count: Int, completion: @escaping () -> Void) {
+        guard count > 0, let backspace = KeySpec.parse("backspace") else {
+            DispatchQueue.main.async(execute: completion)
+            return
+        }
+        let injector = inputInjector
+        voiceEditInjectionQueue.async {
+            for index in 0..<count {
+                injector.sendKeyCombo(backspace)
+                if index + 1 < count { Thread.sleep(forTimeInterval: 0.012) }
+            }
+            DispatchQueue.main.async(execute: completion)
+        }
+    }
+
+    // ---- 反馈文案（经 trText 单点闭包；缺 key 时 trText 现有行为回落 statusError）----
+
+    private func describeVoiceEditCommand(_ command: VoiceEditCommand) -> String {
+        switch command.action {
+        case .deleteLastChars(let count): return "deleteLastChars(\(count))"
+        case .deleteLastSentences(let count): return "deleteLastSentences(\(count))"
+        case .deleteAll: return "deleteAll"
+        }
+    }
+
+    /// 文案取值：trText 返回格式串（含 %d 时按 count 插值）。测试可注入恒等闭包
+    ///（返回 key 本身）断言走到的 key。
+    private func voiceEditText(_ key: String, count: Int? = nil) -> String {
+        let format = trText?(key) ?? key
+        guard let count else { return format }
+        return String(format: format, count)
+    }
+
+    private func showVoiceEditFailureToast(_ code: VoiceEditFailureCode) {
+        let key: String
+        switch code {
+        case .noInjection: key = "voiceEditNoInjection"
+        case .scopeExpired: key = "voiceEditScopeExpired"
+        case .appChanged: key = "voiceEditAppChanged"
+        case .fieldMismatch: key = "voiceEditFieldMismatch"
+        case .caretNotEnd: key = "voiceEditCaretNotEnd"
+        case .selectionPresent: key = "voiceEditSelectionPresent"
+        case .verifyUnavailable: key = "voiceEditVerifyUnavailable"
+        case .foregroundElevated: key = "voiceEditForegroundElevated"
+        case .accessibilityDenied: key = "voiceEditAccessibilityDenied"
+        case .injectFailed: key = "voiceEditInjectFailed"
+        }
+        statusController.showTimedMessage(
+            voiceEditText(key), duration: 2.5, deviceID: activeDeviceID
+        )
+    }
+
+    private func showVoiceEditSuccessToast(command: VoiceEditCommand, plan: VoiceEditDeletionPlan) {
+        let message: String
+        switch command.action {
+        case .deleteLastChars:
+            message = voiceEditText("voiceEditDeletedChars", count: plan.charCount)
+        case .deleteLastSentences(let count):
+            message = count == 1
+                ? voiceEditText("voiceEditDeletedSentenceOne")
+                : voiceEditText("voiceEditDeletedSentences", count: count)
+        case .deleteAll:
+            message = voiceEditText("voiceEditDeletedAll")
+        }
+        let suffix = plan.verification == .unverified
+            ? voiceEditText("voiceEditUnverifiedSuffix") : ""
+        statusController.showTimedMessage(
+            message + suffix, duration: 2.0, deviceID: activeDeviceID
+        )
     }
 
     private var isWaitingForFinalText: Bool {

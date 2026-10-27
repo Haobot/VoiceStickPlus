@@ -358,6 +358,16 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdLicenseActivate:
             OnActivateLicense();
             return TRUE;
+        case kIdVoiceEditEnable:
+            // 语音编辑开关：关闭时禁用默认删除字数下拉（保存仍按控件值回写）。
+            if (HIWORD(w_param) == BN_CLICKED) {
+                EnableWindow(voice_edit_default_chars_combo_,
+                             SendMessageW(voice_edit_enable_check_, BM_GETCHECK, 0, 0) ==
+                                     BST_CHECKED
+                                 ? TRUE
+                                 : FALSE);
+            }
+            return TRUE;
         case kIdProviderCombo:
             if (HIWORD(w_param) == CBN_SELCHANGE) {
                 int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
@@ -623,6 +633,8 @@ void SettingsDialog::DestroyControls() {
     trigger_mode_click_radio_ = nullptr;
     license_status_label_ = nullptr;
     license_activate_button_ = nullptr;
+    voice_edit_enable_check_ = nullptr;
+    voice_edit_default_chars_combo_ = nullptr;
     save_button_ = nullptr;
     cancel_button_ = nullptr;
     if (ui_font_) {
@@ -732,6 +744,50 @@ void SettingsDialog::BuildControls() {
             {lang_label, Dp(10), Dp(3), label_w, Dp(20)},
             {language_combo_, ctrl_x, 0, ctrl_w, Dp(140)},
         });
+    }
+    separator();
+
+    // ===== 语音编辑（Doc/Plan/voice-edit-commands.md）=====
+    // 功能默认开启、面向所有用户，区块始终可见（不受开发者模式门槛）；max_chars/
+    // scope_seconds/verify_mode 属高级项，只由 config.toml 手改（见配置模板）。
+    section_title(StringId::kVoiceEditSectionTitle);
+    {
+        HWND ve_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        voice_edit_enable_check_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kVoiceEditEnable, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdVoiceEditEnable, instance_, BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {ve_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {voice_edit_enable_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        HWND vd_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kVoiceEditDefaultChars).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        voice_edit_default_chars_combo_ = remember(CreateCombo(
+            hwnd_, 0, 0, Dp(80), Dp(160), kIdVoiceEditDefaultChars, instance_));
+        for (int count = kVoiceEditDefaultCharsMin; count <= kVoiceEditDefaultCharsMax; ++count) {
+            const std::wstring text = std::to_wstring(count);
+            SendMessageW(voice_edit_default_chars_combo_, CB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(text.c_str()));
+        }
+        add(row_h + Dp(10), {
+            {vd_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {voice_edit_default_chars_combo_, ctrl_x, 0, Dp(80), Dp(160)},
+        });
+    }
+    {
+        HWND hint1 = remember_label(CreateLeftLabel(
+            hwnd_, TrW(StringId::kVoiceEditHintRuntime, language).c_str(),
+            0, 0, ctrl_x + ctrl_w - Dp(10), Dp(16), instance_));
+        add(Dp(20), {{hint1, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(16)}});
+    }
+    {
+        HWND hint2 = remember_label(CreateLeftLabel(
+            hwnd_, TrW(StringId::kVoiceEditHintMode, language).c_str(),
+            0, 0, ctrl_x + ctrl_w - Dp(10), Dp(16), instance_));
+        add(Dp(20), {{hint2, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(16)}});
     }
     separator();
 
@@ -1320,6 +1376,19 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(developer_mode_check_, BM_SETCHECK,
                  developer_mode_ ? BST_CHECKED : BST_UNCHECKED, 0);
 
+    // 语音编辑（Doc/Plan/voice-edit-commands.md）：开关 + 单独说“删除”时删除字数。
+    SendMessageW(voice_edit_enable_check_, BM_SETCHECK,
+                 config_.voice_edit.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    {
+        const int index = std::clamp(config_.voice_edit.default_chars,
+                                     kVoiceEditDefaultCharsMin,
+                                     kVoiceEditDefaultCharsMax) -
+                          kVoiceEditDefaultCharsMin;
+        SendMessageW(voice_edit_default_chars_combo_, CB_SETCURSEL, index, 0);
+        EnableWindow(voice_edit_default_chars_combo_,
+                     config_.voice_edit.enabled ? TRUE : FALSE);
+    }
+
     int language_index = 0;
     if (config_.ui_language == UiLanguage::kEnglish) language_index = 1;
     if (config_.ui_language == UiLanguage::kSimplifiedChinese) language_index = 2;
@@ -1533,6 +1602,18 @@ void SettingsDialog::SaveSettings() {
         SendMessageW(trigger_mode_click_radio_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config_.wechat_input_method.trigger_mode =
         click_trigger ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
+
+    // 语音编辑（Doc/Plan/voice-edit-commands.md）：开关 + 默认删除字数写入 [voice_edit]，
+    // 经 on_config_changed → SaveInputOptions → ApplyUpdatedConfig 热更到协调器。
+    config_.voice_edit.enabled =
+        SendMessageW(voice_edit_enable_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    {
+        const int index = static_cast<int>(
+            SendMessageW(voice_edit_default_chars_combo_, CB_GETCURSEL, 0, 0));
+        config_.voice_edit.default_chars = std::clamp(
+            kVoiceEditDefaultCharsMin + (index >= 0 ? index : 0),
+            kVoiceEditDefaultCharsMin, kVoiceEditDefaultCharsMax);
+    }
 
     // config_.SaveSettingsDialog() 可能在 config.toml 被其他进程占用（如 OneDrive 同步/杀毒扫描）
     // 时抛 runtime_error，或路径含 ACP 无法表示字符时抛 system_error。此处无 try-catch

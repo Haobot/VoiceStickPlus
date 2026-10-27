@@ -174,6 +174,8 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 
 - `resource_id`：火山方舟 SeedASR 资源 ID（随识别请求携带的资源标识，如 `volc.seedasr.sauc.duration`）。
 - `auto_enter`（默认 `true`）：文本粘贴完成后追加一次回车（pending-paste 收尾语义，两端一致）。
+
+- `[voice_edit]` 语音编辑指令（Doc/Plan/voice-edit-commands.md；默认开启，macOS + Windows 同字段同默认）：说完话后再说一句编辑指令，由桌面端在 ASR final 后本地整句白名单解析（零额外延迟、不依赖云端 LLM），删除最近一次语音注入到 `focused_app` 的文本尾部。字段：`enabled`（默认 `true`；false = 指令按普通文本上屏）、`default_chars`（默认 `1`，单独说"删除/删掉/去掉"时删除的字数，1..10）、`max_chars`（默认 `20`，单条指令允许删除的最大字数，1..50；超限按普通文本处理）、`scope_seconds`（默认 `120`，只允许删除最近 N 秒内的注入，10..600）、`verify_mode`（默认 `auto`：可读焦点字段/光标时必须校验；`strict` 不可验证一律拒绝；`off` 不校验仅排障）、`unverified_seconds`（默认 `8`，auto 模式下不可验证时的允许窗口，0..30）。仅对最近一次语音注入、且光标仍在该文本末尾的 `focused_app` 文本生效；字幕/微信输入法模式不支持；校验失败安全拒绝并提示。设置页「语音编辑」区块只暴露 `enabled` 与 `default_chars`，其余字段手编。
 - `debug_audio_cache`（默认 `false`）：录音调试缓存开关——开启后会话 PCM 落盘留档供回放排查（目录由 `debug_audio_directory` 配置；仅诊断用，发布默认关）。
 - `audio_noise_suppression`（默认 `false`，macOS + Windows 双端）：ASR 前桌面端 RNNoise 人声增强/降噪——Opus 解码（上采样 48kHz）→ RNNoise → 重编码回 16kHz 再送 ASR，抑制环境底噪与部分喷麦残留；增加约 10ms 处理时延，处理失败自动回退透传。PoC 阶段仅覆盖主输入路径（字幕路径不覆盖）。
 - `device_theme_colors`：按设备覆盖的悬浮窗主题色映射 CSV（空=跟随全局主题；设置页「悬浮窗」写入）。

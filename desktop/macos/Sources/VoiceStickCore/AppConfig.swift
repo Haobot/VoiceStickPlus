@@ -78,6 +78,9 @@ public struct AppConfig {
     public var globalButtonsSettings: ButtonsSettings = .default
     /// [device.<id>.buttons] 按设备覆盖（小米遥控器按键映射；键为归一化 4 位大写 hex ID）。
     public var deviceButtonsSettings: [String: ButtonsSettings]
+    /// [voice_edit] 语音编辑指令配置（方案 §9.1）：默认开、单独「删除」删 1 字、
+    /// verify_mode=auto（8s 不可验证窗口）；false 时完全回到现状。
+    public var voiceEdit: VoiceEditSettings
 
     public static var configDirectory: URL {
         FileManager.default
@@ -198,7 +201,8 @@ public struct AppConfig {
             encoderSettings: .default,
             deviceEncoderSettings: [:],
             airMouse: .default,
-            deviceButtonsSettings: [:]
+            deviceButtonsSettings: [:],
+            voiceEdit: .default
         )
     }
 
@@ -291,7 +295,8 @@ public struct AppConfig {
                 rateMaxSpeed: file.air_mouse_rate_max_speed?.value,
                 default: defaults.airMouse
             ),
-            deviceButtonsSettings: deviceButtonsSettingsMap(file.device)
+            deviceButtonsSettings: deviceButtonsSettingsMap(file.device),
+            voiceEdit: voiceEditSettingsValue(file.voice_edit, default: defaults.voiceEdit)
         )
         // 根 [buttons] 全局键位表（网关模式）；缺段回落默认。
         config.globalButtonsSettings = file.buttons.map {
@@ -404,9 +409,9 @@ public struct AppConfig {
         transform = "\(defaultOutputProfile.transform.rawValue)"
         translation_target = "\(defaultOutputProfile.translationTarget.tomlEscaped)"
         """
-        return text + globalButtonsText + deviceOutputProfileText + deviceXiaomiSettingsText
-            + deviceInteractionSettingsText + deviceEncoderSettingsText
-            + deviceButtonsSettingsText
+        return text + voiceEditText + globalButtonsText + deviceOutputProfileText
+            + deviceXiaomiSettingsText + deviceInteractionSettingsText
+            + deviceEncoderSettingsText + deviceButtonsSettingsText
     }
 
     private static func loadLegacy(text: String, defaults: AppConfig) -> AppConfig {
@@ -512,7 +517,8 @@ public struct AppConfig {
                 rateMaxSpeed: values["air_mouse_rate_max_speed"].flatMap(Double.init),
                 default: defaults.airMouse
             ),
-            deviceButtonsSettings: [:]
+            deviceButtonsSettings: [:],
+            voiceEdit: voiceEditSettingsValue(values, default: defaults.voiceEdit)
         )
         recoverTencentSecretID(&config)
         return config
@@ -880,6 +886,21 @@ public struct AppConfig {
         return lines
     }
 
+    /// [voice_edit] 表（方案 §9.1）：恒写出（含默认值），便于用户发现/手改配置；
+    /// 表结构自含、加载顺序无关。
+    private var voiceEditText: String {
+        """
+
+        [voice_edit]
+        enabled = \(voiceEdit.enabled.tomlValue)
+        default_chars = \(voiceEdit.defaultChars)
+        max_chars = \(voiceEdit.maxChars)
+        scope_seconds = \(voiceEdit.scopeSeconds)
+        verify_mode = "\(voiceEdit.verifyMode.rawValue)"
+        unverified_seconds = \(voiceEdit.unverifiedSeconds)
+        """
+    }
+
     /// 根 [buttons] 全局段（网关模式键位映射；与默认一致不写出 = Windows
     /// [xiaomi.keys] 同款「不落盘默认」语义；写出的表自含、加载顺序无关）。
     private var globalButtonsText: String {
@@ -971,4 +992,3 @@ public struct AppConfig {
             .joined(separator: "\n")
     }
 }
-
