@@ -241,6 +241,47 @@ func runCorrectionPairsTests() {
     let globalRanked = CorrectionPairs.trimForPrompt(mixed, maxPairs: 2, app: "com.apple.Safari")
     checkEqual(globalRanked.map(\.after), ["部署到集群"], "分域：无当前桶时只落全局桶")
 
+    // ---- P3 反馈环：recall_count + 精确率降权（doubao §3.3）----
+    let recallURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voicestick_recall_loop.json")
+    try? FileManager.default.removeItem(at: recallURL)
+    CorrectionPairs.recordToDisk(
+        url: recallURL,
+        pairs: [CorrectionReplacement(before: "鱼器渍", after: "语气词")],
+        nowTs: 1000
+    )
+    let recalledPair = CorrectionPairs.load(url: recallURL).first!
+    CorrectionPairs.markRecalledOnDisk(url: recallURL, pair: recalledPair)
+    CorrectionPairs.markRecalledOnDisk(url: recallURL, pair: recalledPair)
+    let recalled = CorrectionPairs.load(url: recallURL)
+    checkEqual(recalled.first?.recallCount, 2, "反馈环：确认保留 recall+1 落盘")
+    checkEqual(recalled.first?.useCount, 0, "反馈环：recall 不动 use")
+
+    // 降权判定：use ≥10 且 recall/use < 0.5。
+    let demoted = CorrectionPair(before: "坏对", after: "wrong", count: 1, useCount: 10, recallCount: 4)
+    let healthy = CorrectionPair(before: "好对", after: "right", count: 1, useCount: 10, recallCount: 8)
+    let young = CorrectionPair(before: "新对", after: "new", count: 1, useCount: 3, recallCount: 0)
+    check(demoted.isDemoted, "降权：use≥10 且精确率 <0.5")
+    check(!healthy.isDemoted, "降权：精确率充足不降权")
+    check(!young.isDemoted, "降权：应用不足 10 次不降权（观察期）")
+
+    // 精确命中：降权对从自动应用池摘除。
+    let demoteStore = [demoted, healthy, young]
+    checkEqual(
+        CorrectionPairs.exactReplacement(for: "坏对", in: demoteStore)?.after,
+        nil,
+        "降权：降权对不再自动应用"
+    )
+    checkEqual(
+        CorrectionPairs.exactReplacement(for: "好对", in: demoteStore)?.after,
+        "right",
+        "降权：健康对正常自动应用"
+    )
+    // few-shot：降权对沉底。
+    let sinkRanked = CorrectionPairs.trimForPrompt(demoteStore, maxPairs: 8)
+    checkEqual(sinkRanked.last?.before, "坏对", "降权：few-shot 降权对沉底")
+    checkEqual(sinkRanked.first?.before, "好对", "降权：观察期对正常排序（字典序）")
+
     // ---- recordToDisk：B13 reload-merge-save 跨调用累计 ----
     let diskURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("voicestick_correction_pairs_rw.json")

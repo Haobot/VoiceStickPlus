@@ -322,6 +322,58 @@ void TestCorrectionPairSchemaParityAndBuckets() {
     fs::remove_all(dir, ec);
 }
 
+void TestCorrectionPairRecallLoop() {
+    // P3 反馈环（与 macOS CorrectionPairsTests 同向量）：
+    // recall 落盘（确认保留 → recall+1，不动 use）。
+    const auto dir = fs::temp_directory_path() / "voicestick_recall_loop";
+    fs::create_directories(dir);
+    const auto path = dir / "correction_pairs.json";
+    std::error_code ec;
+    fs::remove(path, ec);
+    RecordCorrectionPairsToDisk(path, {{"鱼器渍", "语气词"}}, 1000);
+    const auto stored = LoadCorrectionPairs(path).front();
+    MarkCorrectionPairRecalledOnDisk(path, stored);
+    MarkCorrectionPairRecalledOnDisk(path, stored);
+    const auto recalled = LoadCorrectionPairs(path);
+    assert(recalled.size() == 1);
+    assert(recalled.front().recall_count == 2);
+    assert(recalled.front().use_count == 0);
+
+    // 降权判定：use ≥10 且 recall/use < 0.5；观察期（<10）不降权。
+    CorrectionPair demoted;
+    demoted.before = "坏对";
+    demoted.after = "wrong";
+    demoted.count = 1;
+    demoted.use_count = 10;
+    demoted.recall_count = 4;
+    CorrectionPair healthy;
+    healthy.before = "好对";
+    healthy.after = "right";
+    healthy.count = 1;
+    healthy.use_count = 10;
+    healthy.recall_count = 8;
+    CorrectionPair young;
+    young.before = "新对";
+    young.after = "new";
+    young.count = 1;
+    young.use_count = 3;
+    assert(voicestick::IsCorrectionPairDemoted(demoted));
+    assert(!voicestick::IsCorrectionPairDemoted(healthy));
+    assert(!voicestick::IsCorrectionPairDemoted(young));
+
+    // 精确命中：降权对从自动应用池摘除；健康对正常应用。
+    const std::vector<CorrectionPair> demote_store = {demoted, healthy, young};
+    assert(!ExactMatchCorrectionPair("坏对", demote_store).has_value());
+    assert(ExactMatchCorrectionPair("好对", demote_store)->after == "right");
+
+    // few-shot：降权对沉底（桶/同音 tie 后）。
+    const auto ranked = TrimCorrectionPairsForPrompt(demote_store, 8);
+    assert(ranked.back().before == "坏对");
+    assert(ranked.front().before == "好对");
+
+    fs::remove_all(dir, ec);
+}
+
 void RunCorrectionPairsBatchTests() {
     TestExtractReplacementPairs();
     TestCorrectionPairStoreMergeAndCap();
@@ -331,5 +383,6 @@ void RunCorrectionPairsBatchTests() {
     TestCorrectionFewshotSection();
     TestExactMatchCorrectionPair();
     TestCorrectionPairSchemaParityAndBuckets();
+    TestCorrectionPairRecallLoop();
     TestBuildRefinePromptWithCorrections();
 }

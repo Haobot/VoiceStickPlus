@@ -173,6 +173,8 @@ public final class VoiceStickCoordinator {
         let hotwordsSent: String?
     }
     private var pendingSessionHistory: PendingSessionHistory?
+    /// 本会话精确命中应用的改写对（P3 反馈环锚点：确认保留 → recall+1，取消清空）。
+    private var appliedCorrectionPair: CorrectionPair?
     /// 编辑追踪进行态（Typeless P0-2：注入后追踪用户修改；generation 防迟到回调）。
     private struct EditTrackingSession {
         let historyID: String
@@ -2487,6 +2489,7 @@ public final class VoiceStickCoordinator {
         CorrectionPairs.markUsedOnDisk(
             url: url, pair: pair, nowTs: Int64(Date().timeIntervalSince1970)
         )
+        appliedCorrectionPair = pair
         NSLog("correction pair applied exact: len=%d", pair.after.utf8.count)
         return pair.after
     }
@@ -2739,6 +2742,11 @@ public final class VoiceStickCoordinator {
         NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d",
               text.utf8.count, config.autoEnter ? 1 : 0, (isProcessTrusted?() ?? false) ? 1 : 0)
         let shouldPressEnter = config.autoEnter
+        // P3 反馈环保留信号（用户数据飞轮）：精确应用的对被用户确认保留 → recall+1。
+        if let pair = appliedCorrectionPair {
+            appliedCorrectionPair = nil
+            CorrectionPairs.markRecalledOnDisk(url: correctionPairsURL, pair: pair)
+        }
         // 负信号采集（P1-1）：确认动作 + 停留时长（疑惑度信号）。
         recordUsageEvent(
             kind: manual ? UsageEventKind.pasteManuallyConfirmed : UsageEventKind.pasteAutoConfirmed,
@@ -2846,6 +2854,8 @@ public final class VoiceStickCoordinator {
             return
         }
         guard activePeripheralID == peripheralID else { return }
+        // P3 反馈环：应用后被取消 = 未保留，清锚不增 recall。
+        appliedCorrectionPair = nil
         // 负信号采集（P1-1）：待确认文本被取消 + 停留时长。
         if case .waitingToPaste(let text) = pendingPasteState {
             recordUsageEvent(

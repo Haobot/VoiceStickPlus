@@ -196,6 +196,7 @@ std::optional<std::string> VoiceStickCoordinator::ExactMatchCorrectionPairFromDi
     if (!pair) return std::nullopt;
     MarkCorrectionPairUsedOnDisk(path, *pair, std::time(nullptr));
     LogCoordinatorLine("correction pair applied exact len=" + std::to_string(pair->after.size()));
+    applied_correction_pair_ = *pair;  // P3 反馈环锚点：确认保留 → recall+1
     return pair->after;
 }
 
@@ -569,6 +570,12 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& text, bool m
     RecordUsageEvent(manual ? usage_event_kind::kPasteManuallyConfirmed
                             : usage_event_kind::kPasteAutoConfirmed,
                      text, dwell);
+    // P3 反馈环保留信号（用户数据飞轮）：精确应用的对被用户确认保留 → recall+1。
+    if (applied_correction_pair_.has_value()) {
+        MarkCorrectionPairRecalledOnDisk(
+            CorrectionPairsPath(ConfigSnapshot()->ConfigPath()), *applied_correction_pair_);
+        applied_correction_pair_.reset();
+    }
     pending_paste_entered_at_ms_ = 0;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
@@ -622,6 +629,8 @@ void VoiceStickCoordinator::CancelPendingPaste(const std::string& device_id) {
         cancel_dwell = static_cast<double>(GetTickCount64() - pending_paste_entered_at_ms_) / 1000.0;
     }
     RecordUsageEvent(usage_event_kind::kPasteCanceled, pending_paste_state_.text, cancel_dwell);
+    // P3 反馈环：应用后被取消 = 未保留，清锚不增 recall。
+    applied_correction_pair_.reset();
     pending_paste_entered_at_ms_ = 0;
     pending_paste_state_ = {};
     FinishRecognitionCycle();
