@@ -910,5 +910,5 @@ false/127.0.0.1:11434/""/3000，Windows 按未知键忽略、无跨端破坏）�
 
 **待办**：Windows 同构（`voice_targeted_align.{h,cc}` 纯逻辑 + 复用 llama.cpp 常驻引擎，
 参照跨轮纠错管线；本机无 MSVC，纯逻辑可先 clang 对拍）；真机验收（ollama 常驻 +
-真实 BLE 链路对齐轮延迟/体验）；llama3.2:3b/qwen3:8b 补测；替换词侧漂移（伤害→上海）
+真实 BLE 链路对齐轮延迟/体验）；替换词侧漂移（伤害→上海）
 不在本层范围（replacement 无从校验，保持用户口述原样）。
