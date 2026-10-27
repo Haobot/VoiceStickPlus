@@ -118,6 +118,20 @@ extension OverlayPosition {
     }
 }
 
+// 液态玻璃实验：玻璃方案枚举 displayName（菜单与预览文案）。
+extension OverlayGlassStyle {
+    var displayName: String {
+        switch self {
+        case .nativeLiquid:
+            return tr(.glassNativeLiquid)
+        case .specular:
+            return tr(.glassSpecular)
+        case .darkMirror:
+            return tr(.glassDarkMirror)
+        }
+    }
+}
+
 // N1 S1：UiLanguage.displayName 随类型下沉迁入。
 extension UiLanguage {
     var displayName: String {
