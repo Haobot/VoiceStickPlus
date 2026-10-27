@@ -580,6 +580,9 @@ private:
     // 精修 prompt 纠错 few-shot 段候选（按 count/新近度 top-kCorrectionPromptMaxPairs，
     // 每次精修从磁盘现读，不做内存缓存——文件小且写点分散）。
     std::vector<CorrectionPair> CorrectionPairsForLlmPrompts();
+    // 前台应用分桶（App 场景分域，doubao §3.4）：前台窗口进程 exe 名（UTF-8）；
+    // 取不到为空=全局桶。只取进程名，不读窗口内容。
+    std::string ForegroundAppBucket();
     // 改写对全句精确命中应用（doubao 方案 §3.1 应用位置 1）：命中即返回替换文本并
     // 落 use_count；未命中/库停用返回 nullopt 走既有精修管线。
     std::optional<std::string> ExactMatchCorrectionPairFromDisk(const std::string& text);

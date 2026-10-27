@@ -35,9 +35,11 @@ struct CorrectionPair {
     std::string after;              // 精修后用户认可形式
     int count = 0;                  // 累计出现次数（精修 diff 挖掘 seen 计数）
     int use_count = 0;              // 自动应用次数（doubao 方案 use_count，反馈环基底）
+    bool same_pronunciation = false;  // 同音/近音对（doubao P2 入表闸门：拼音校验前置）
     std::int64_t last_seen_ts = 0;  // 最近出现 epoch 秒
     std::string source = "refine";  // 产物来源（当前仅精修 diff）
-    std::string app;                // 前台应用分桶（P1-2 接线，当前恒空=全局）
+    std::string app;                // 前台应用分桶（P1-2；空=全局。Windows 侧为前台
+                                    // 进程 exe 名，macOS 为 bundle id——各机本地一致）
 };
 
 // UTF-8 码点级最小编辑对齐：提取 refined 相对 original 被替换的连续片段对。
@@ -49,7 +51,7 @@ std::vector<std::pair<std::string, std::string>> ExtractReplacementPairs(
 // （count 升序、last_seen 升序、字典序）逐出。
 void RecordCorrectionPairs(std::vector<CorrectionPair>& store,
                            const std::vector<std::pair<std::string, std::string>>& pairs,
-                           std::int64_t now_ts);
+                           std::int64_t now_ts, const std::string& app = {});
 
 // JSON 读写（文件缺失/损坏返回空 store，写失败静默 best-effort；保存前按
 // (before, after, app) 字典序排序，输出确定性）。
@@ -58,25 +60,31 @@ void SaveCorrectionPairs(const std::filesystem::path& path,
                          const std::vector<CorrectionPair>& store);
 
 // B13 单写入口：进程级互斥 + 每次从磁盘重读后合并落盘（绝不使用陈旧快照写回）。
+// app 为当前前台应用分桶（空=全局；对齐 macOS recordToDisk(url:pairs:nowTs:source:app:)）。
 void RecordCorrectionPairsToDisk(const std::filesystem::path& path,
                                  const std::vector<std::pair<std::string, std::string>>& pairs,
-                                 std::int64_t now_ts);
+                                 std::int64_t now_ts, const std::string& app = {});
 
 // 应用位置 1（doubao 方案 §3.1）：全句精确命中——文本（去首尾空白）与某改写对
-// before 完全相等时返回该对（跳过 LLM 直接替换的确定性路径）。命中多条取
-// （count 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
+// before 完全相等时返回该对（跳过 LLM 直接替换的确定性路径）。分桶查询口径
+// （§3.4，与 macOS exactReplacement(for:in:app:) 同语义）：app 非空时候选 =
+// 当前应用桶 ∪ 全局桶（其他 App 的桶不参与），当前桶优先；桶内取（同音优先、
+// count 降序、last_seen 降序、字典序）最高者；count<=0 剔除。
 std::optional<CorrectionPair> ExactMatchCorrectionPair(
-    const std::string& text, const std::vector<CorrectionPair>& store);
+    const std::string& text, const std::vector<CorrectionPair>& store,
+    const std::string& app = {});
 
 // B13 单写入口：精确命中应用后 use_count+1 落盘（doubao 方案 use_count，
 // P3 反馈环的召回侧基底）。未命中该对（并发改写）静默跳过。
 void MarkCorrectionPairUsedOnDisk(const std::filesystem::path& path,
                                   const CorrectionPair& pair, std::int64_t now_ts);
 
-// prompt few-shot 候选：按 count 降序、last_seen 降序、(before, after, app) 字典序
-// 取前 max_pairs；count<=0 剔除。
+// prompt few-shot 候选：分桶查询（§3.4，与 macOS trimForPrompt(_:maxPairs:app:)
+// 同语义）——app 非空时候选 = 当前应用桶 ∪ 全局桶，当前桶优先占预算；桶内按
+// 同音优先、count 降序、last_seen 降序、字典序；取前 max_pairs；count<=0 剔除。
 std::vector<CorrectionPair> TrimCorrectionPairsForPrompt(const std::vector<CorrectionPair>& store,
-                                                         int max_pairs);
+                                                         int max_pairs,
+                                                         const std::string& app = {});
 
 // few-shot 段构造（两端逐字一致，双端单测钉死）。空集或全部被格式安全过滤
 // （含引号/换行的对）时返回空串。
