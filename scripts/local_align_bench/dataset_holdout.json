@@ -1,0 +1,19 @@
+{
+  "comment": "留出集（holdout）：全部新句/新词，不与主集及 few-shot 重叠，用于验证 prompt 未过拟合主集。",
+  "cases": [
+    {"id": "h1",  "kind": "drift", "command": "把航州改成苏州。", "target": "航州", "remaining": "我们下周去杭州参加会议。", "expected": "杭州"},
+    {"id": "h2",  "kind": "drift", "command": "把章维改成李明。", "target": "章维", "remaining": "把报告发给张伟吧。", "expected": "张伟"},
+    {"id": "h3",  "kind": "drift", "command": "把流奶改成酸奶。", "target": "流奶", "remaining": "记得买牛奶和面包。", "expected": "牛奶"},
+    {"id": "h4",  "kind": "drift", "command": "把平审时间改到明天。", "target": "平审", "remaining": "下午三点开产品评审会。", "expected": "评审"},
+    {"id": "h5",  "kind": "drift", "command": "把陈本降下来。", "target": "陈本", "remaining": "这个方案的成本太高了。", "expected": "成本"},
+    {"id": "h6",  "kind": "drift", "command": "把深镇改成广州。", "target": "深镇", "remaining": "他昨天去了深圳出差。", "expected": "深圳"},
+    {"id": "h7",  "kind": "drift", "command": "在午漏等我。", "target": "午漏", "remaining": "会议室在五楼。", "expected": "五楼", "note": "动宾式简写"},
+    {"id": "h8",  "kind": "drift", "command": "删除抒据库。", "target": "抒据库", "remaining": "他负责数据库迁移。", "expected": "数据库"},
+    {"id": "h13", "kind": "drift", "command": "把受机改成平板。", "target": "受机", "remaining": "我换了新手机号。", "expected": "手机"},
+    {"id": "h14", "kind": "drift", "command": "把近代同步一下。", "target": "近代", "remaining": "项目进度正常。", "expected": "进度"},
+    {"id": "h9",  "kind": "none",  "command": "把北京改成上海。", "target": "北京", "remaining": "我们下周去杭州参加会议。", "expected": "NONE"},
+    {"id": "h10", "kind": "none",  "command": "把啤酒改成可乐。", "target": "啤酒", "remaining": "记得买牛奶和面包。", "expected": "NONE"},
+    {"id": "h11", "kind": "none",  "command": "把裁员改成扩招。", "target": "裁员", "remaining": "下午三点开产品评审会。", "expected": "NONE"},
+    {"id": "h12", "kind": "none",  "command": "把广洲改成珠海。", "target": "广洲", "remaining": "他昨天去了深圳出差。", "expected": "NONE", "note": "上屏有深圳但与广洲不音近，须拒改"}
+  ]
+}
