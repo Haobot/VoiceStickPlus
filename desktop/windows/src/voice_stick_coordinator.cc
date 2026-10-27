@@ -2616,10 +2616,13 @@ void VoiceStickCoordinator::ShowSubtitleText(const std::string& text,
 void VoiceStickCoordinator::TransformText(const std::string& text,
                                           const OutputProfile& profile,
                                           std::function<void(bool, std::string)> completion) {
+    // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立。
+    BeginSessionHistory(text);
     // 最终文本产出时记录热词使用统计（计数+最近使用时间），供高频优先裁剪评分；
     // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。
     auto wrapped = [this, completion = std::move(completion)](bool ok, std::string result) mutable {
         if (ok) RecordHotwordUsageFromText(result);  // 内部持 hotword_usage_mutex_，任意线程安全
+        if (ok) CompleteSessionHistory(result);  // 内部判空，任意线程安全（Insert 自带串行化）
         if (!completion) return;
         // P0-3：翻译/精修完成回调可能来自 worker 线程，回到 UI 线程再收口。
         RunOnUiThread([completion = std::move(completion), ok, result = std::move(result)]() mutable {

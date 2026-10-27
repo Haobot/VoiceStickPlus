@@ -8,6 +8,7 @@
 #include "audio_opus_encoder.h"
 #include "ble_protocol.h"
 #include "correction_pairs.h"
+#include "session_history.h"
 #include "default_audio_device_controller.h"
 #include "debug_audio_recorder.h"
 #include "device_switch_state.h"
@@ -580,6 +581,10 @@ private:
     // 精修 prompt 纠错 few-shot 段候选（按 count/新近度 top-kCorrectionPromptMaxPairs，
     // 每次精修从磁盘现读，不做内存缓存——文件小且写点分散）。
     std::vector<CorrectionPair> CorrectionPairsForLlmPrompts();
+    // 会话历史（用户数据飞轮 P0-3，typeless 方案）：懒打开（首次落库时）、
+    // 打开/迁移失败降级停用；raw 在 TransformText 建立、final 在 wrapped 落库。
+    void BeginSessionHistory(const std::string& raw_text);
+    void CompleteSessionHistory(const std::string& final_text);
     // 前台应用分桶（App 场景分域，doubao §3.4）：前台窗口进程 exe 名（UTF-8）；
     // 取不到为空=全局桶。只取进程名，不读窗口内容。
     std::string ForegroundAppBucket();
@@ -713,6 +718,22 @@ private:
     std::optional<std::uint32_t> active_session_id_;
     std::optional<std::string> active_device_id_;
     std::chrono::steady_clock::time_point active_session_started_at_;
+    // 会话历史进行态草稿（用户数据飞轮 P0-3）。
+    struct PendingSessionHistory {
+        std::string id;
+        std::int64_t created_at = 0;
+        std::string device;
+        std::string provider;
+        std::string mode;
+        std::string raw;
+        std::optional<double> duration;
+        std::string hotwords;
+    };
+    std::unique_ptr<SessionHistoryStore> session_history_;
+    std::optional<PendingSessionHistory> pending_session_history_;
+    // wrapped 回调可能在 worker 线程（翻译/精修完成），Begin 在 ASR final 线程：
+    // 懒打开与草稿读写都经此互斥。
+    std::mutex session_history_mutex_;
     // 敲击注入方向键的节流时间戳：两次注入最短间隔 500ms，避免连击导致光标连续下移。
     std::chrono::steady_clock::time_point last_tap_inject_at_{};
     // 编码器快速手势后的停转锁定：快甩注入一次快速键后进入锁定，屏蔽所有旋转输出
