@@ -69,6 +69,12 @@ let package = Package(
         // 无框架测试 runner（本机无 Xcode，XCTest/swift-testing 均不可用）：
         // main.swift 顶层驱动 + 极简断言，移植 Windows tests/core_tests.cc 的
         // 小米 ATVV 链路用例。运行：swift run VoiceStickTests。
+        // 诊断工具：回放 DebugAudio 会话 ogg 过真实 LocalAsrClient（不入 app）。
+        .executableTarget(
+            name: "AsrReplayCli",
+            dependencies: ["VoiceStickCore"],
+            path: "Tools/AsrReplayCli"
+        ),
         .executableTarget(
             name: "VoiceStickTests",
             dependencies: ["VoiceStickCore", "COpus"],

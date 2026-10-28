@@ -87,6 +87,7 @@ public final class LocalAsrClient: ASRClient {
 
         // 引擎跨会话复用；会话输入状态整体重置（丢弃上一会话/取消后的残留数据）。
         ctx.lock()
+        let engineNew = ctx.engine == nil
         ctx.cancelled = false
         ctx.engine = engine
         ctx.owner = self   // 回调出口桥（emit* 经 weak owner 派发）
@@ -99,6 +100,9 @@ public final class LocalAsrClient: ASRClient {
             let thread = Thread { [ctx] in LocalAsrClient.runWorker(ctx) }
             thread.name = "LocalAsrClient.worker"
             thread.start()
+        }
+        if engineNew {
+            NSLog("LocalAsr engine ready models=%@ threads=%d", modelsDir, numThreads)
         }
         return true
     }
@@ -167,7 +171,11 @@ public final class LocalAsrClient: ASRClient {
         var oggVersion: UInt64 = 0    // 每次追加递增：worker 据此判断有新数据
         var isLastReceived = false
         var oggBuffer = Data()
-        weak var engine: SenseVoiceEngine?
+        // 强引用：引擎生命周期 = ctx = client（Windows「引擎跨会话复用」语义）。
+        // 曾为 weak 且 start 局部变量是唯一强引用——start 返回即释放引擎，
+        // sendOggOpusChunk 守卫两引用皆空静默丢音频、worker 永睡（真机 stuck
+        // listening 根因，2026-10-29；单测走 engineOverride 路径未覆盖）。
+        var engine: SenseVoiceEngine?
         weak var owner: LocalAsrClient?
 
         func lock() { cond.lock() }
@@ -307,6 +315,8 @@ public final class LocalAsrClient: ASRClient {
             nextDecodeTime = Date().addingTimeInterval(partialInterval)
             throttleArmed = true
             if finalJob {
+                NSLog("LocalAsr final chars=%d pcm=%.2fs", (text as NSString).length,
+                      Double(pcm.count) / 16000.0)
                 ctx.emitFinal?(text)
                 sessionFinalDone = true
             } else if !text.isEmpty {

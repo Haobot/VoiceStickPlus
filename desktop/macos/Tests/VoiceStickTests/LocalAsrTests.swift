@@ -342,6 +342,30 @@ func runLocalAsrTests() {
         let expected = "今天天气不错"
         check(text.contains(expected),
               "LAsr: 真实 SenseVoice 冒烟「\(expected)」（实际「\(text)」）")
+
+        // 生产构造（无 engineOverride）过完整 client 状态机——2026-10-29 真机
+        // stuck-listening 回归：引擎只被 ctx weak 持有时，start 返回即释放，
+        // sendOggOpusChunk 守卫静默丢音频。直连引擎测试抓不到，必须走生产构造。
+        let oggPath = repoRoot.appendingPathComponent(
+            "scripts/e2e_test/corpus/short_01.ogg")
+        guard let oggBytes = try? Data(contentsOf: oggPath), !oggBytes.isEmpty else {
+            check(false, "LAsr: 语料 ogg 缺失")
+            return
+        }
+        let client = LocalAsrClient(modelsDir: modelsDir)
+        var finalText: String?
+        var clientError: String?
+        client.onFinal = { finalText = $0 }
+        client.onError = { clientError = $0 }
+        check(client.start(options: ASRSessionOptions()), "LAsr: 生产 client start 成功")
+        client.sendOggOpusChunk(oggBytes, isLast: true)
+        // 等待 worker 出 final（引擎已热，应 <2s）。
+        for _ in 0..<100 where finalText == nil && clientError == nil {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let got = finalText ?? clientError ?? "无回调"
+        check(finalText?.contains(expected) == true,
+              "LAsr: 生产 client final 正确（实际「\(got)」）——weak 引擎回归")
     } catch {
         check(false, "LAsr: 真实模型冒烟异常 \(error)")
     }
