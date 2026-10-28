@@ -138,6 +138,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FocusedFieldAXReader.writeSelectedRange(locationUTF16: location, lengthUTF16: length)
         }
         coordinator.readTargetedSelectedText = { FocusedFieldAXReader.readSelectedText() }
+        // targeted 本地对齐兜底（Doc/Plan/voice-edit-commands.md targeted 章）：
+        // 自然简写门控未命中时问本地小模型（默认关；端点仅允许回环）。
+        coordinator.alignTarget = { [weak self] command, asrTarget, remainingText, candidates in
+            guard let self else { return nil }
+            let settings = self.config.voiceEdit
+            guard settings.localAlignEnabled, !settings.localAlignModel.isEmpty else { return nil }
+            return LocalAlignClient(
+                url: settings.localAlignURL,
+                model: settings.localAlignModel,
+                timeoutMS: settings.localAlignTimeoutMS
+            ).align(command: command, asrTarget: asrTarget,
+                    remainingText: remainingText, candidates: candidates)
+        }
         coordinator.presentUpgradeAlertUI = { url, message in
             NSApp.activate(ignoringOtherApps: true)
 

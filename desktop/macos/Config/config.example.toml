@@ -164,3 +164,11 @@ max_chars = 20               # 单条指令允许删除的最大字数（1~50，
 scope_seconds = 120          # 只允许删除最近 N 秒内的语音注入（10~600）
 verify_mode = "auto"         # strict=读不到字段/光标一律拒绝 / auto=允许短窗盲删 / off=不校验
 unverified_seconds = 8       # auto 模式下不可验证的允许窗口秒数（0~30）
+# targeted 目标词本地对齐兜底（默认关）：自然简写门控未命中（ASR 把目标词听成同音/近音）
+# 时，用拼音预筛候选 + 本地 ollama 小模型挑选对齐目标。候选恒为最近注入的真实子串，
+# 执行链 verified 选区/读回/终验零改动；NONE/失败/超时一律回退普通文本。
+# 需本机运行 ollama 并拉取模型（评测推荐 qwen2.5:1.5b-instruct，见 Doc/Test 评测报告）。
+local_align_enabled = false
+local_align_url = "http://127.0.0.1:11434"  # 仅允许本机回环（对齐请求带最近注入文本，不外发）
+local_align_model = ""                      # ollama 模型名，空 = 对齐兜底不可用；如 "qwen2.5:1.5b-instruct"
+local_align_timeout_ms = 3000               # 单次对齐超时（500~10000）

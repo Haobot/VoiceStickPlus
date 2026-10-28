@@ -781,7 +781,7 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 
 ## 17. targeted 词/短语删除与替换（2026-10-27 实现）
 
-> 状态：已实现（工作区，未发布；2026-10-27 返修轮已合入）。macOS 本机 `swift build` 通过、`swift run VoiceStickTests` **PASSED 1533/1533**（基线 1351；含 targeted 解析/匹配/计划向量、协调器级调用顺序/安全闸/换行拆解/配置清理代际测试）。Windows 纯逻辑与 macOS 同向量、本机 clang `-Wall -Wextra -Werror` 对拍通过（另经 ASan+UBSan 构建运行通过，含既有套件回归，临时 harness 在 /tmp，不在仓库）；Windows MSVC 构建/CTest 与双端真机验收**待补**（§17.5）。
+> 状态：已实现（工作区，未发布；2026-10-27 返修轮已合入；2026-10-28 本地对齐兜底层见 §17.7，macOS 测试 **PASSED 1584/1584**）。macOS 本机 `swift build` 通过、`swift run VoiceStickTests` **PASSED 1533/1533**（基线 1351；含 targeted 解析/匹配/计划向量、协调器级调用顺序/安全闸/换行拆解/配置清理代际测试）。Windows 纯逻辑与 macOS 同向量、本机 clang `-Wall -Wextra -Werror` 对拍通过（另经 ASan+UBSan 构建运行通过，含既有套件回归，临时 harness 在 /tmp，不在仓库）；Windows MSVC 构建/CTest 与双端真机验收**待补**（§17.5）。
 
 ### 17.1 需求与语法（P0）
 
@@ -843,3 +843,72 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
 6. **macOS 配置清理代际**：`updateConfig` 关闭 voiceEdit / 离开 focused_app 清记录时同步 `voiceEditGeneration += 1`，在途 0.2s 终验不得弹旧成功 toast。
 7. **失败路径安全收尾**：Windows `SelectAndReadBack` 失败尽力 `MoveCaretToEnd()`；Backspace KeySpec 解析失败按修改前失败处理（恢复光标、记录保留、不按结果未确认清记录）；macOS 同查（select 写失败尽力恢复光标）。
 8. **自然简写无效果（用户实报）**：日志证实两轮 `我今天去北京上班。` 与 `把北京改成上海。` 中第二轮被当普通文本粘贴，根因是首版强制要求「刚才的」。修复为显式作用域 + 目标存在性门控的自然简写；双端协调器回归覆盖原话 → `我今天去上海上班。`，并验证无目标时回退普通文本、旧解析器优先和 auto_enter 不变。
+
+### 17.6 准确率排查（2026-10-27 深夜，用户反馈「准确率不好」）
+
+用同端点同字节回放 DebugAudio 拿到逐轮识别文本（26/27 轮与日志 `text_len` 逐字节吻合），
+对 22:52–22:55 当前构建 26 轮有效会话逐层分类：**指令成功率 2/11（18%），但主要损失不在
+targeted 功能**——失败样本、指标、证据链与优化顺序见
+`Doc/Test/voice-targeted-accuracy-baseline-2026-10-27.md`。要点：
+
+1. **≈55% 音频传输层**：22:52:46–22:54:24 窗口设备端仅送出 56–78% 音频帧（其余时段
+   ≈100%），句尾整段丢失（判定链：BLE 同特征保序 + END 先于 button_up ⇒ 设备端丢弃；
+   回放音素时间轴语速正常且终止在最后一帧 ⇒ 连续前缀非均匀丢帧）。指令「把北京改成上海」
+   被截成「把北京改成」→ 空替换回退粘贴。**固件/BLE 问题，本功能红线固件零改动**，
+   桌面侧可先补 seq 缺口统计与「句尾可能缺失」提示。
+2. **≈27% ASR 指令轮变体**：低频目标词在「把X改成Y」句式下漂移（升旗→分析/身体、
+   成都→都、帮/把）；正文轮同词正常。方向：指令轮用最近注入 token 做热词偏置
+   （热词自动同步基础设施已存在）。
+3. **≈18% 回退污染记录（设计缺口）**：简写门控未命中的回退粘贴会覆盖 `LastInjection`，
+   导致正确重试必败（两次实证）且可编辑到已粘贴的指令文本上（一次实证）；「保留旧记录」
+   不可行（字段已被污染，L1 后缀校验会正确拒绝）——候选修复是给这类回退粘贴打
+   `isCommandFallback` 标记并让门控跳过，**涉及回退语义须评审后再动**。
+4. 可观测性缺口（双端同补）：execute 阶段结果码零日志（成功/select 读回不符/终验
+   unconfirmed 均不可复核）；音频 `seq` 缺口未统计。解析器/匹配器本身**普通文本误执行
+   0 例**，未发现需要放宽或收紧的证据；分隔符/助动词白名单维持不动。
+
+### 17.7 本地小模型目标词对齐兜底（2026-10-28 实现，feat/targeted-local-align 分支）
+
+> 状态：macOS 原型已实现（**默认关**，`[voice_edit].local_align_enabled`）；Windows 未实现。
+> 多模型评测与选型结论见 `Doc/Test/local-llm-target-alignment-eval-2026-10-28.md`，
+> 闭环评测 harness 在 `scripts/local_align_bench/`。
+
+**动机**：§17.6 的 B 层损失（ASR 指令轮目标词漂移，升旗→分析/身体、成都→都、北京→背景）。
+热词偏置之外的另一条路：门控未命中时用本地小模型把听漂的目标词**对齐回最近注入的真实子串**。
+
+**架构（对齐 Windows 跨轮纠错的「模型出指令、守卫代码层执行」house pattern）**：
+
+1. 拼音预筛（`VoiceTargetedAlign.candidates`，纯逻辑、PinyinGuard 同表口径分级评分）：
+   remainingText 连续窗口（长度=目标±1）；等长阈值 0.4 / 非等长 0.9（挡负例垃圾单词）；
+   **重叠簇只留与目标等长者**（重叠变体是全模型杀手，见评测报告迭代记录）。
+2. 本地模型挑选（ollama `/api/chat`，`think:false`、温度 0、`{reason,answer}` 结构化
+   schema，answer 枚举硬约束=候选+NONE；few-shot 5 例带真实短理由）。
+3. 确定性校验执行：答案必须精确命中候选枚举（代码复验），接管后走**零改动**的
+   verified 选区/读回/终验链。
+
+**安全不变式**：候选恒为 remainingText 真实子串 ⇒ 模型无法制造文本里不存在的编辑对象；
+对齐 NONE/失败/超时/模型答案不在枚举内 → 一律回退现行普通文本路径（行为与未开启时一致）；
+对齐每轮至多一次（回退重入 `finishWithFinalText` 时 `allowTargetedAlign:false`，
+防「吞轮→对齐→回退→再对齐」循环——评审发现的真 bug，已修并有测试钉住）。
+
+**macOS 落点**：Core `VoiceTargetedAlign.swift`（纯逻辑+单测）；协调器
+`attemptLocalAlignOrFallback`（异步：吞轮→后台问模型→主线程接管或回退；期间
+mainInputState 仍 finalizing=busy，新按键被现有语义忽略，无会话竞态，最坏锁窗=超时
+默认 3s）；App `LocalAlignClient`（**仅允许回环端点**——对齐请求带最近注入文本不外发）；
+配置 `[voice_edit].local_align_enabled/_url/_model/_timeout_ms`（默认
+false/127.0.0.1:11434/""/3000，Windows 按未知键忽略、无跨端破坏）。
+
+**验证**：macOS `swift build` 通过；`swift run VoiceStickTests` **PASSED 1584/1584**
+（基线 1533；+51：对齐评分/候选/prompt/解析向量 36 + 协调器对齐接管/NONE/失败/未启用/
+枚举逃逸 15）。端到端冒烟：LocalAlignClient→真实 ollama（qwen2.5:1.5b）三案例全对、
+非回环拒绝、稳态 ~87ms。**推荐模型 `qwen2.5:1.5b-instruct`**（主集 94%/86%、留出集
+80%/100%/零误选；qwen3 系在此任务形态下 NONE 崩塌——与 M0 纠错结论相反，不可搬用）。
+
+**风险与前置**：poisoned 桶（§17.6 C 层）未修时，对齐层可「合理地」选错对象（r3 在
+「把身体改成烤鸭。」里选「身体」语义自洽）——**C 层（isCommandFallback 标记+门控跳过）
+应先行或同批落地**。显式作用域（刚才的）路径未接对齐（session 12 类场景留待 P1）。
+
+**待办**：Windows 同构（`voice_targeted_align.{h,cc}` 纯逻辑 + 复用 llama.cpp 常驻引擎，
+参照跨轮纠错管线；本机无 MSVC，纯逻辑可先 clang 对拍）；真机验收（ollama 常驻 +
+真实 BLE 链路对齐轮延迟/体验）；替换词侧漂移（伤害→上海）
+不在本层范围（replacement 无从校验，保持用户口述原样）。

@@ -1,0 +1,266 @@
+{
+ "comment": "targeted 目标词本地对齐闭环评测集。kind: real=今晚真实样本(2026-10-27 22:52-22:55 及旧构建实报), drift=同音/近音/掉字合成, none=应答NONE负例, exact=门控本可直接命中的对照。expected=期望模型输出(NONE 或 remaining 中的真实子串)。",
+ "cases": [
+  {
+   "id": "r1",
+   "kind": "real",
+   "command": "把分析改成吃烤鸭。",
+   "target": "分析",
+   "remaining": "我要去北京看升旗。",
+   "expected": "升旗",
+   "note": "session 43 实况"
+  },
+  {
+   "id": "r2",
+   "kind": "poisoned",
+   "command": "把身体改成烤鸭。",
+   "target": "身体",
+   "remaining": "把分析改成吃烤鸭。",
+   "expected": "NONE",
+   "note": "session 44：记录已被污染；注：remaining 是上一轮失败指令的粘贴文本（C 层污染），C 修复后不进对齐——单桶报告"
+  },
+  {
+   "id": "r3",
+   "kind": "poisoned",
+   "command": "把升旗改成烤鸭。",
+   "target": "升旗",
+   "remaining": "把身体改成烤鸭。",
+   "expected": "NONE",
+   "note": "session 45：识别正确但上下文已脏；注：remaining 是上一轮失败指令的粘贴文本（C 层污染），C 修复后不进对齐——单桶报告"
+  },
+  {
+   "id": "r4",
+   "kind": "gate",
+   "command": "把都改成重庆。",
+   "target": "都",
+   "remaining": "好的，我现在又来到了成都，这里有很多美食。",
+   "expected": "成都",
+   "note": "session 38 回放文本：ASR 掉首字；注：目标词是 remaining 子串，生产中 exact 门控直接通过、不进对齐——不计分"
+  },
+  {
+   "id": "r5",
+   "kind": "poisoned",
+   "command": "把成都改成重庆。",
+   "target": "成都",
+   "remaining": "把都改成重庆。",
+   "expected": "NONE",
+   "note": "session 39：正确指令撞污染记录；注：remaining 是上一轮失败指令的粘贴文本（C 层污染），C 修复后不进对齐——单桶报告"
+  },
+  {
+   "id": "r6",
+   "kind": "real",
+   "command": "把刚才的背景改成伤害。",
+   "target": "背景",
+   "remaining": "12345678。我去北京上班。",
+   "expected": "北京",
+   "note": "旧构建 session 12 实况（显式作用域+双词漂移，本层只对齐目标词）"
+  },
+  {
+   "id": "r7",
+   "kind": "exact",
+   "command": "把北京改成上海。",
+   "target": "北京",
+   "remaining": "我今天去北京上班。",
+   "expected": "北京",
+   "note": "exact 门控路径对照：不应进对齐，进了一也应答对"
+  },
+  {
+   "id": "s1",
+   "kind": "drift",
+   "command": "把背景改成广州。",
+   "target": "背景",
+   "remaining": "我今天去北京上班。",
+   "expected": "北京",
+   "note": "同音漂移"
+  },
+  {
+   "id": "s2",
+   "kind": "drift",
+   "command": "把伤害改成杭州。",
+   "target": "伤害",
+   "remaining": "我明天要去上海出差。",
+   "expected": "上海",
+   "note": "shānghài/shànghǎi 同音漂移（session 12 替换词侧实况）"
+  },
+  {
+   "id": "s3",
+   "kind": "drift",
+   "command": "把声气改成仪式。",
+   "target": "声气",
+   "remaining": "我要去北京看升旗。",
+   "expected": "升旗",
+   "note": "声母后移漂移 shēngqì"
+  },
+  {
+   "id": "s4",
+   "kind": "drift",
+   "command": "把生气改成微笑。",
+   "target": "生气",
+   "remaining": "我要去北京看升旗。",
+   "expected": "升旗",
+   "note": "session 44 中间结果实词"
+  },
+  {
+   "id": "s5",
+   "kind": "drift",
+   "command": "把程度改成城市。",
+   "target": "程度",
+   "remaining": "我来到了美丽的成都。",
+   "expected": "成都",
+   "note": "近音漂移 chéngdù"
+  },
+  {
+   "id": "s6",
+   "kind": "drift",
+   "command": "把尘都改成城市。",
+   "target": "尘都",
+   "remaining": "我来到了美丽的成都。",
+   "expected": "成都",
+   "note": "首字同音漂移"
+  },
+  {
+   "id": "s7",
+   "kind": "gate",
+   "command": "把都改成重庆。",
+   "target": "都",
+   "remaining": "我来到了美丽的成都。",
+   "expected": "成都",
+   "note": "短句掉首字；注：目标词是 remaining 子串，生产中 exact 门控直接通过、不进对齐——不计分"
+  },
+  {
+   "id": "s8",
+   "kind": "drift",
+   "command": "把每时改成佳肴。",
+   "target": "每时",
+   "remaining": "好的，我现在又来到了成都，这里有很多美食。",
+   "expected": "美食",
+   "note": "同音漂移 měishí"
+  },
+  {
+   "id": "s9",
+   "kind": "drift",
+   "command": "把出猜改成休假。",
+   "target": "出猜",
+   "remaining": "我今天要去北京出差。",
+   "expected": "出差",
+   "note": "平翘舌漂移 chāi/cāi"
+  },
+  {
+   "id": "s10",
+   "kind": "drift",
+   "command": "把北晶改成首都。",
+   "target": "北晶",
+   "remaining": "我今天去北京上班。",
+   "expected": "北京",
+   "note": "次字同音漂移"
+  },
+  {
+   "id": "s11",
+   "kind": "drift",
+   "command": "把鱼器渍改成口头语。",
+   "target": "鱼器渍",
+   "remaining": "看看语气词有没有被过滤。",
+   "expected": "语气词",
+   "note": "M0 跨轮纠错真实案例（三字同音）"
+  },
+  {
+   "id": "s12",
+   "kind": "drift",
+   "command": "把蓝牙摇空器改成游戏手柄。",
+   "target": "蓝牙摇空器",
+   "remaining": "我用小米蓝牙遥控器控制电视。",
+   "expected": "蓝牙遥控器",
+   "note": "五字目标、次字近音 kong/kòng"
+  },
+  {
+   "id": "s13",
+   "kind": "drift",
+   "command": "把vs code改成IDE。",
+   "target": "vs code",
+   "remaining": "打开VS Code写代码。",
+   "expected": "VS Code",
+   "note": "英文大小写折叠"
+  },
+  {
+   "id": "s14",
+   "kind": "drift",
+   "command": "把三点改成四点。",
+   "target": "三点",
+   "remaining": "会议在3点开始。",
+   "expected": "3点",
+   "note": "中文数字→阿拉伯数字"
+  },
+  {
+   "id": "s15",
+   "kind": "drift",
+   "command": "把升旗改成升旗。",
+   "target": "生气",
+   "remaining": "天安门广场每天清晨都有升旗仪式。",
+   "expected": "升旗",
+   "note": "长句中目标词"
+  },
+  {
+   "id": "n1",
+   "kind": "none",
+   "command": "把长城改成故宫。",
+   "target": "长城",
+   "remaining": "我今天去北京上班。",
+   "expected": "NONE",
+   "note": "完全无关目标词"
+  },
+  {
+   "id": "n2",
+   "kind": "none",
+   "command": "把天气改成阴天。",
+   "target": "天气",
+   "remaining": "我今天去北京上班。",
+   "expected": "NONE",
+   "note": "无关常用词"
+  },
+  {
+   "id": "n3",
+   "kind": "none",
+   "command": "把北京改成上海。",
+   "target": "北京",
+   "remaining": "今天天气很好。",
+   "expected": "NONE",
+   "note": "正确指令、错误上下文（不得改写无关文本）"
+  },
+  {
+   "id": "n4",
+   "kind": "none",
+   "command": "把北京改成上海。",
+   "target": "北京",
+   "remaining": "我来到了美丽的成都。",
+   "expected": "NONE",
+   "note": "同上，另一句"
+  },
+  {
+   "id": "n5",
+   "kind": "none",
+   "command": "把烤鸭改成升旗。",
+   "target": "烤鸭",
+   "remaining": "我要去北京看升旗。",
+   "expected": "NONE",
+   "note": "指令词序颠倒"
+  },
+  {
+   "id": "n6",
+   "kind": "none",
+   "command": "把星期八改成星期天。",
+   "target": "星期八",
+   "remaining": "会议安排在星期一和星期三。",
+   "expected": "NONE",
+   "note": "同族词但不存在（星期一/三在场，须拒改）"
+  },
+  {
+   "id": "n7",
+   "kind": "none",
+   "command": "把米饭改成面条。",
+   "target": "米饭",
+   "remaining": "好的，我现在又来到了成都，这里有很多美食。",
+   "expected": "NONE",
+   "note": "主题相关词但不存在"
+  }
+ ]
+}

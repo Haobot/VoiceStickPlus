@@ -527,6 +527,14 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 
 设计方案存当前仓库 `Doc/Plan/`（大写 Doc，git 大小写敏感；早期文档写 `docs/` 是历史误导）。写前可 `git ls-files | grep -i doc` 确认。
 
+### 7.5 语音功能「不准/没效果」先分层定位（2026-10-28）
+
+三层分解法（targeted 编辑实战：11 轮指令 18% 成功率，两层损失不在被投诉功能里）：①**同字节回放转写**拿逐轮识别文本——用与 app 相同的腾讯实时 ASR 端点/签名/Opus 封装回放 `DebugAudio/*.ogg`，回放文本 UTF-8 字节与日志 `text_len` 逐轮对账（27 轮 26 轮逐字节吻合即可当实况）；②**帧比例指纹** `Audio stream summary` 的 `frames×40ms/span`：≈1.0 完整、恒 0.5~0.8=设备端尾帧丢弃（END 保序先到 ⇒ 设备没发；回放音素时间轴语速正常且止于最后一帧 ⇒ 连续前缀非均匀丢）；③解析 nil/门控未命中是**静默回退零日志**，没识别文本别下结论。详见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md`，回归表在 `Doc/Test/voice-targeted-accuracy-baseline-2026-10-27.md`。
+
+### 7.6 本地小模型任务形态三律（2026-10-28）
+
+①选型结论**不可跨任务形态搬用**（同一批模型：跨轮纠错 Qwen3-4B GO，few-shot+枚举约束对齐任务 qwen3 全家 NONE 崩塌，赢家 qwen2.5:1.5b 94%/80%/80ms——换任务先过 harness）；②能在确定性预筛层解决的不给模型（重叠候选簇是全模型杀手；负例垃圾单词用非等长阈值在预筛消灭）；③LLM 参与破坏性操作的安全形态=候选约束式（模型只在代码生成的候选枚举里选、代码复验、失败回退旧行为）。工程坑：异步吞轮回退重入原入口要带一次性闸防回环；swift build 新增源文件不进构建计划时清 `.build/out` 全量重建。详见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md`。
+
 ---
 
 ## 8. 遗留待办 / 待真机验证项
@@ -598,6 +606,8 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **广播报告是 watcher 的观察，不是设备的实时状态**：Windows 广告 watcher 会送**延迟/复用的报告**（尤其扫描开着时），曾让「已配对设备广播 ⇒ 旧链路已死」的守卫误杀**正在 OTA 的活会话**（网关模式 OTA 每次 +30s / 16% 断链的根因）。拆会话前先确认它真死了：最近 1s 内有入站数据或有固件升级在跑 ⇒ 绝不拆（真重启的设备 1s 内发不出数据，僵尸恢复不受影响）。见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md` §五。
 - **OTA `stalled` 且 `sent` 恒等于窗口值** ⇒ 流控互等死锁（app 在途窗口 < 固件回传间隔），不是无线问题；随机值才是链路抖动。app×固件流控参数是跨版本契约，改任一侧要在最旧服役固件上真机过 OTA。见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
 - **网关模式设备多连接**（OS-HID + app 两条链路，`BT_NIMBLE_MAX_CONNECTIONS=3`），而 voice_ble 的 `s_connected`/`s_conn_handle`/`current_peer` 都是**单值**——任一链路断连就清掉，曾让侧键预览误显 `No target`；显示层要**落表兜底**（已选目标→当前对端→表内最近目标），别只依赖单值 current_peer。深修（按连接计数）未做。见 `Doc/Expe/gateway-p1-ota-session-2026-09-20.md`。
+- **语音功能「准确率不好」先分层再动手**：DebugAudio 同字节回放腾讯实时 ASR 还原逐轮识别文本（与 text_len 对账校准）+ 帧比例 `frames×40ms/span` 恒 0.5~0.8=设备端尾帧丢弃（音频层问题，别改解析器/匹配），见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md`。
+- **本地小模型换任务必须重跑 harness 选型**（qwen3 纠错 GO ≠ 对齐 GO，赢家 qwen2.5:1.5b）；LLM 兜底用候选约束式（枚举+复验+回退），重叠候选先在预筛层收敛，见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md`。
 - **编码器按钮本身就是录音触发**（与主键同语义），长按会拉起语音识别——切换/菜单这类长按交互**别挂编码器**，放侧键（短按预览 → 3s 内再按轮流切换）。屏幕 135px 且 **LVGL 内嵌字体无 CJK**，UI 文案全英文；电量标签在电池壳下方 y≈20–38，顶部加行要避开（同行为佳、字号对齐）。
 - **本机会整机冻结数小时**（实测日志时间戳跳变 3h18m），冻结期一切「停住/超时」观测不可信；定位「卡住」类问题先用日志时间戳排除冻结，再判断是否真停。另：多日日志用「时:分」筛行会命中历史天同刻行，须同时确认日期/行号。
 - `device_info`/初始状态帧串曾超 BLE 通知 MTU 预算被截断——**两轮修复**：①（早期）把 device_info 从 258B 精简到 235B + 超预算告警；②（2026-09-20 真根因，commit `cc82fb18`）**订阅时 MTU 还没协商（`att_mtu=23`，预算仅 16B JSON），三个初始帧全被截断 ⇒ 对端活性证明超时 ⇒ 判僵尸 ⇒ 网关切换后目标机 14–26s 才恢复**；现改为「MTU≤23 时挂起帧串，`BLE_GAP_EVENT_MTU` 到了再推」（只晚 33–48ms，+1.2s 兜底定时器）。真机：恢复 14–26s → **2.5s**，截断告警归零。判据与通用规则见 §3.15 与 `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`

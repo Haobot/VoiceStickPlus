@@ -1004,3 +1004,100 @@ func runVoiceTargetedCoordinatorTests() {
     // 命令轮不 refine、不写历史（refiner 零调用）。
     checkEqual(h.refiner.callCount, 0, "targeted: 命令轮不进入精修")
 }
+
+/// targeted 本地对齐兜底（方案 targeted 章）：门控未命中 → 拼音候选 → 本地模型挑选 →
+/// 对齐接管或回退普通文本。Fake alignTarget 闭包注入；断言完整执行链与回退语义。
+func runVoiceTargetedAlignCoordinatorTests() {
+    func enableAlign(_ h: (coordinator: VoiceStickCoordinator, sink: FakeStatusSink,
+                           ble: FakeBleServing, input: FakeInput, asr: FakeASR,
+                           refiner: FakeRefiner, field: TargetedFieldBox, ops: TargetedOps)) {
+        var cfg = AppConfig.defaults
+        cfg.voiceEdit.localAlignEnabled = true
+        cfg.voiceEdit.localAlignModel = "fake-align-model"
+        h.coordinator.updateConfig(cfg)
+    }
+
+    // A. 对齐成功：注入「我要去北京看升旗。」→「把分析改成吃烤鸭。」（分析不在注入中）
+    //    → 模型对齐「升旗」→ 按 targeted 替换执行，字段=「我要去北京看吃烤鸭。」。
+    var h = makeTargetedHarness()
+    enableAlign(h)
+    h.coordinator.alignTarget = { _, asrTarget, _, candidates in
+        checkEqual(asrTarget, "分析", "align: 协调器传入 ASR 目标词")
+        check(candidates.contains("升旗"), "align: 候选含升旗（真实候选生成）")
+        return "升旗"
+    }
+    h.asr.onFinal?("我要去北京看升旗。")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我要去北京看升旗。"
+    h.field.selectionLocation = 9
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把分析改成吃烤鸭。")
+    pumpMainRunLoop(0.6)
+    check(!h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 对齐成功不粘贴指令文本")
+    checkEqual(h.ops.list,
+               ["state", "select(6,2)", "selected", "paste", "select(10,0)", "state"],
+               "align: 对齐接管完整调用顺序（目标=升旗）")
+    checkEqual(h.field.text, "我要去北京看吃烤鸭。", "align: 对齐替换后字段内容")
+    checkEqual(h.input.pastedEnterFlags.last, false, "align: 替换 pressEnter=false")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedReplaced", "align: 成功 toast key")
+
+    // B. 模型答 NONE：回退普通文本（指令文本上屏并成为新注入记录）。
+    h = makeTargetedHarness()
+    enableAlign(h)
+    h.coordinator.alignTarget = { _, _, _, _ in "NONE" }
+    h.asr.onFinal?("我要去北京看升旗。")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我要去北京看升旗。"
+    h.field.selectionLocation = 9
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把分析改成吃烤鸭。")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.ops.list, ["paste"], "align: NONE 回退普通文本")
+    check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: NONE 时指令按普通文本上屏")
+
+    // C. 模型失败/超时（nil）：同样回退普通文本。
+    h = makeTargetedHarness()
+    enableAlign(h)
+    h.coordinator.alignTarget = { _, _, _, _ in nil }
+    h.asr.onFinal?("我要去北京看升旗。")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我要去北京看升旗。"
+    h.field.selectionLocation = 9
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把分析改成吃烤鸭。")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.ops.list, ["paste"], "align: 失败回退普通文本")
+    check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 失败时指令按普通文本上屏")
+
+    // D. 未启用（local_align_enabled=false）：闭包在场也不走对齐，直接回退。
+    h = makeTargetedHarness()
+    h.coordinator.alignTarget = { _, _, _, _ in "升旗" }
+    h.asr.onFinal?("我要去北京看升旗。")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我要去北京看升旗。"
+    h.field.selectionLocation = 9
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把分析改成吃烤鸭。")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.ops.list, ["paste"], "align: 未启用直接回退（默认行为不变）")
+    check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 未启用时普通文本上屏")
+
+    // E. 对齐目标不在候选内（模型逃逸）：拒绝接管，回退普通文本。
+    h = makeTargetedHarness()
+    enableAlign(h)
+    h.coordinator.alignTarget = { _, _, _, _ in "火星" }
+    h.asr.onFinal?("我要去北京看升旗。")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我要去北京看升旗。"
+    h.field.selectionLocation = 9
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把分析改成吃烤鸭。")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.ops.list, ["paste"], "align: 枚举外答案拒绝接管回退")
+    checkEqual(h.field.text, "我要去北京看升旗。把分析改成吃烤鸭。\n", "align: 逃逸时字段=原文+指令（auto_enter）")
+}

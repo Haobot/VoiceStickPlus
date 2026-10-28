@@ -163,6 +163,10 @@ public final class VoiceStickCoordinator {
     /// location+length，只写选区不写 Value），成功返回 true；nil/失败 = 平台能力
     /// 不可用时按不可验证拒绝（targeted 恒 verified，严禁盲改）。
     public var writeTargetedSelection: ((Int, Int) -> Bool)?
+    /// targeted 本地对齐兜底（App 层注入；返回候选之一、"NONE" 或 nil=失败/超时）。
+    /// 在后台队列调用，实现必须线程安全且自带超时；详见 attemptLocalAlignOrFallback。
+    public var alignTarget: ((_ command: String, _ asrTarget: String,
+                              _ remainingText: String, _ candidates: [String]) -> String?)?
     /// targeted 编辑平台出口（App 侧 AX 实现）：读回当前实际选中文本；nil = 不可验证。
     /// 隐私约束：读回内容只与目标词逐字比对，不落库、不写日志。
     public var readTargetedSelectedText: (() -> String?)?
@@ -1995,14 +1999,17 @@ public final class VoiceStickCoordinator {
         mainInputState = .ready
     }
 
-    private func finishWithFinalText(_ text: String) {
+    /// - Parameter allowTargetedAlign: 本轮是否还允许 targeted 本地对齐兜底。对齐
+    ///   NONE/失败后回退重入本函数时必须传 false——否则门控未命中会再次触发对齐，
+    ///   形成「吞轮→对齐→回退→再对齐」循环（对齐每轮至多一次）。
+    private func finishWithFinalText(_ text: String, allowTargetedAlign: Bool = true) {
         guard !pastedFinalText else { return }
         // 语音编辑指令拦截（方案 §5.6/§4 关键原则 1）：必须在 beginSessionHistory /
         // 精修 / 翻译 / 粘贴之前判定；命中即整轮按命令处理并 return（不粘贴、不写历史）。
         if handleVoiceEditCommandIfMatched(text) { return }
         // targeted 编辑（删除/替换最近一次输入中的指定词）：旧解析器优先、targeted
         // 其次（互不重叠）；同样命中即整轮接管并 return。
-        if handleVoiceTargetedEditIfMatched(text) { return }
+        if handleVoiceTargetedEditIfMatched(text, allowAlign: allowTargetedAlign) { return }
         // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立，落库在
         // finishWithRefinedText（所有收口路径统一经过）。
         beginSessionHistory(rawAsr: text)
@@ -2996,20 +3003,75 @@ public final class VoiceStickCoordinator {
     /// verify_mode 都必须 verified（严禁复用 8s unverified 盲删/盲改）；L1 要求完整
     /// remainingText 仍是字段后缀（不用旧最长前缀容错）；执行用平台精确选区 +
     /// 读回逐字确认，一次 Backspace 或 paste(pressEnter=false)，恢复末尾光标后终验。
-    private func handleVoiceTargetedEditIfMatched(_ text: String) -> Bool {
+    private func handleVoiceTargetedEditIfMatched(_ text: String, allowAlign: Bool = true) -> Bool {
         let settings = config.voiceEdit
         guard settings.enabled else { return false }
         guard outputProfile(for: activeDeviceID).target == .focusedApp else { return false }
         guard let parseResult = VoiceTargetedParser.parse(text) else { return false }
         // 自然简写不带「刚才的」时，只有最近一次注入确实存在目标词才接管；
-        // 否则整句继续走普通文本，避免把不含上下文的「把A改成B」一律吞掉。
+        // 否则先尝试本地对齐兜底（ASR 把目标词听漂，每轮至多一次），仍无果走普通
+        // 文本，避免把不含上下文的「把A改成B」一律吞掉。
         if case .command(let command) = parseResult, !command.hasExplicitScope {
             guard let remainingText = lastInjection?.remainingText,
                   !VoiceTargetedMatcher.occurrences(
                       of: command.target, in: remainingText
-                  ).isEmpty else { return false }
+                  ).isEmpty else {
+                return allowAlign && attemptLocalAlignOrFallback(text: text, command: command)
+            }
         }
 
+        performTargetedTakeover(text: text, parseResult: parseResult)
+        return true
+    }
+
+    /// 自然简写门控未命中后的本地对齐兜底（Doc/Plan/voice-edit-commands.md targeted 章）：
+    /// 未启用/未配置模型/无注入记录/拼音预筛无候选 → false（现行普通文本回退，行为不变）；
+    /// 有候选 → **吞掉本轮同步路径**（置 pastedFinalText，阻止迟到粘贴），后台问本地模型，
+    /// 结果回主线程：对齐成功 → 按对齐目标接管；NONE/失败/超时 → 重入普通文本路径。
+    /// 期间用户开始新录音（activeSessionID 变化）→ 结果丢弃（本轮既不编辑也不粘贴）。
+    /// 安全不变式：对齐候选恒为 remainingText 的真实子串（VoiceTargetedAlign.candidates），
+    /// 模型输出被限制在候选枚举内；接管后仍走原 verified 选区/读回/终验链。
+    private func attemptLocalAlignOrFallback(text: String, command: VoiceTargetedCommand) -> Bool {
+        let settings = config.voiceEdit
+        guard settings.localAlignEnabled, !settings.localAlignModel.isEmpty,
+              let alignTarget,
+              let remainingText = lastInjection?.remainingText else { return false }
+        let candidates = VoiceTargetedAlign.candidates(
+            asrTarget: command.target, remainingText: remainingText
+        ).map { $0.text }
+        guard !candidates.isEmpty else { return false }
+
+        // 吞掉本轮：阻止 pending-confirmation 迟到粘贴；命令轮不新增状态。
+        pastedFinalText = true
+        finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
+        cancelStreamingRefinement()
+        statusController.setStatus("Processing")
+
+        let sessionID = activeSessionID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let answer = alignTarget(text, command.target, remainingText, candidates)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.activeSessionID == sessionID else { return }
+                if let aligned = answer, aligned != "NONE", candidates.contains(aligned) {
+                    NSLog("voice_targeted align=1 target_len=%d cands=%d",
+                          command.target.utf8.count, candidates.count)
+                    let alignedCommand = VoiceTargetedCommand(
+                        action: command.action, target: aligned,
+                        position: command.position, hasExplicitScope: true)
+                    self.performTargetedTakeover(text: text, parseResult: .command(alignedCommand))
+                } else {
+                    NSLog("voice_targeted align=0 cands=%d", candidates.count)
+                    self.pastedFinalText = false
+                    self.finishWithFinalText(text, allowTargetedAlign: false)
+                }
+            }
+        }
+        return true
+    }
+
+    /// targeted 接管主体（同步；原 handleVoiceTargetedEditIfMatched 后半段，供直命中与
+    /// 对齐兜底两条入口复用）。
+    private func performTargetedTakeover(text: String, parseResult: VoiceTargetedParseResult) {
         // 命中即吞掉本轮：置 pastedFinalText 阻止迟到回调二次粘贴；命令轮不属于
         // 「语音输入内容」——结束上一轮编辑追踪、停掉可能的精修、不写历史/纠错对。
         pastedFinalText = true
@@ -3042,7 +3104,6 @@ public final class VoiceStickCoordinator {
                   plan.occurrence.index + 1, plan.occurrence.total)
             executeVoiceTargetedEdit(command: command, plan: plan, context: context)
         }
-        return true
     }
 
     private enum VoiceTargetedOutcome {

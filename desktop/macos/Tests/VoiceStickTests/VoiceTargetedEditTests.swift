@@ -414,6 +414,84 @@ private func expectTargetedPlanFailure(
     checkEqual(code, expected, name)
 }
 
+// ---- 本地对齐（VoiceTargetedAlign：评分/候选/prompt/解析）----
+
+private func runVoiceTargetedAlignScoreTests() {
+    checkEqual(VoiceTargetedAlign.charScore("北", "北"), 1.0, "align.charScore 码点相同 1.0")
+    checkEqual(VoiceTargetedAlign.charScore("北", "背"), 0.9, "align.charScore 声韵全同 0.9（北/背 bei）")
+    checkEqual(VoiceTargetedAlign.charScore("班", "邦"), 0.8, "align.charScore 韵母模糊对+声同 0.8（班 ban/邦 bang）")
+    checkEqual(VoiceTargetedAlign.charScore("设", "识"), 0.8, "align.charScore e/i 卷舌弱化 0.8（设 she/识 shi）")
+    checkEqual(VoiceTargetedAlign.charScore("马", "打"), 0.55, "align.charScore 仅韵母同 0.55（马 ma/打 da）")
+    checkEqual(VoiceTargetedAlign.charScore("分", "升"), 0.35, "align.charScore 仅韵母模糊 0.35（分 fen/升 sheng）")
+    checkEqual(VoiceTargetedAlign.charScore("北", "上"), 0.0, "align.charScore 无关汉字 0")
+    checkEqual(VoiceTargetedAlign.charScore("a", "A"), 1.0, "align.charScore ASCII 折叠 1.0")
+    checkEqual(VoiceTargetedAlign.charScore("北", "a"), 0.0, "align.charScore 汉字 vs ASCII 0")
+    checkEqual(VoiceTargetedAlign.alignmentScore("背景", "北京"), 0.9, "align.alignmentScore 等长同音")
+    checkEqual(VoiceTargetedAlign.alignmentScore("都", "成都"), 1.0, "align.alignmentScore 掉字对齐 1.0")
+    checkEqual(VoiceTargetedAlign.alignmentScore("北京", "上海"), 0.0, "align.alignmentScore 无关等长 0")
+    checkEqual(VoiceTargetedAlign.alignmentScore("北京", "上海滩"), 0.0, "align.alignmentScore 长度差1但字全不同 0")
+}
+
+private func runVoiceTargetedAlignCandidateTests() {
+    let c1 = VoiceTargetedAlign.candidates(asrTarget: "背景", remainingText: "我今天去北京上班。")
+    checkEqual(c1.first?.text, "北京", "align.candidates 同音漂移首候选=北京")
+    check(!c1.contains { $0.text == "北京上" || $0.text == "去北京" },
+          "align.candidates 重叠簇只留等长候选（无 北京上/去北京）")
+    check(!c1.contains { $0.text == "北" || $0.text == "京" },
+          "align.candidates 非等长垃圾单词被 0.9 阈值挡下")
+    check(c1.allSatisfy { "我今天去北京上班。".contains($0.text) },
+          "align.candidates 候选恒为 remainingText 子串")
+
+    let c2 = VoiceTargetedAlign.candidates(asrTarget: "分析", remainingText: "我要去北京看升旗。")
+    check(c2.contains { $0.text == "升旗" }, "align.candidates 分析→升旗 入选（低分召回档）")
+
+    check(VoiceTargetedAlign.candidates(asrTarget: "长城", remainingText: "我今天去北京上班。").isEmpty,
+          "align.candidates 无关目标无候选（负例在预筛层消灭）")
+
+    let c4 = VoiceTargetedAlign.candidates(asrTarget: "vs code", remainingText: "打开VS Code写代码。")
+    check(c4.contains { $0.text == "VS Code" }, "align.candidates 英文短语+空格窗口/大小写折叠")
+
+    check(VoiceTargetedAlign.candidates(asrTarget: "", remainingText: "任意").isEmpty,
+          "align.candidates 空目标无候选")
+    check(VoiceTargetedAlign.candidates(asrTarget: "北京", remainingText: "").isEmpty,
+          "align.candidates 空文本无候选")
+}
+
+private func runVoiceTargetedAlignPromptTests() {
+    let body = VoiceTargetedAlign.chatRequestBody(
+        model: "m", command: "把背景改成伤害。", asrTarget: "背景",
+        remainingText: "我今天去北京上班。", candidates: ["北京", "上班"])
+    checkEqual(body["model"] as? String, "m", "align.chatRequest model 透传")
+    checkEqual(body["think"] as? Bool, false, "align.chatRequest 关思考")
+    let format = body["format"] as? [String: Any]
+    let answerSchema = format?["properties"] as? [String: Any]
+    let answerEnum = (answerSchema?["answer"] as? [String: Any])?["enum"] as? [String]
+    checkEqual(answerEnum, ["北京", "上班", "NONE"], "align.chatRequest answer 枚举=候选+NONE")
+    let messages = body["messages"] as? [[String: Any]]
+    checkEqual(messages?.count, 12, "align.chatRequest messages=system+5×fewshot(2)+query")
+    checkEqual(messages?.first?["role"] as? String, "system", "align.chatRequest 首条 system")
+    checkEqual(messages?.last?["content"] as? String,
+               VoiceTargetedAlign.userPrompt(
+                   command: "把背景改成伤害。", asrTarget: "背景",
+                   remainingText: "我今天去北京上班。", candidates: ["北京", "上班"]),
+               "align.chatRequest 末条=查询 prompt")
+}
+
+private func runVoiceTargetedAlignParseTests() {
+    let cands = ["北京", "上班"]
+    checkEqual(VoiceTargetedAlign.parseAnswer(#"{"answer":"北京","reason":"同音"}"#, candidates: cands),
+               "北京", "align.parse 结构化 JSON")
+    checkEqual(VoiceTargetedAlign.parseAnswer(#"{"reason":"x","answer":"NONE"}"#, candidates: cands),
+               "NONE", "align.parse 结构化 NONE")
+    checkEqual(VoiceTargetedAlign.parseAnswer("北京", candidates: cands), "北京", "align.parse 纯文本")
+    checkEqual(VoiceTargetedAlign.parseAnswer("\"北京\"", candidates: cands), "北京", "align.parse 带引号")
+    checkEqual(VoiceTargetedAlign.parseAnswer(" NONE ", candidates: cands), "NONE", "align.parse NONE 容错空白")
+    checkEqual(VoiceTargetedAlign.parseAnswer(#"{"answer":"火星"}"#, candidates: cands), nil,
+               "align.parse 枚举外答案拒绝")
+    checkEqual(VoiceTargetedAlign.parseAnswer("我不知道", candidates: cands), nil, "align.parse 逃逸拒绝")
+    checkEqual(VoiceTargetedAlign.parseAnswer("", candidates: cands), nil, "align.parse 空拒绝")
+}
+
 // ---- 入口 ----
 
 func runVoiceTargetedEditTests() {
@@ -421,4 +499,8 @@ func runVoiceTargetedEditTests() {
     runTargetedParserNegativeTests()
     runTargetedMatcherTests()
     runTargetedPlannerTests()
+    runVoiceTargetedAlignScoreTests()
+    runVoiceTargetedAlignCandidateTests()
+    runVoiceTargetedAlignPromptTests()
+    runVoiceTargetedAlignParseTests()
 }

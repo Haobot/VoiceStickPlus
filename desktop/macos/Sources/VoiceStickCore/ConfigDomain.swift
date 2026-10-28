@@ -199,6 +199,18 @@ public struct VoiceEditSettings: Equatable {
     /// auto 模式下不可验证时的允许窗口（秒）：短窗 + 前台应用一致才允许盲删。
     public var unverifiedSeconds = 8
 
+    /// targeted 目标词本地对齐（本地小模型兜底，**默认关**；方案 targeted 章 §对齐）：
+    /// 自然简写门控未命中（ASR 把目标词听漂）时，用拼音预筛候选 + 本地 ollama 模型
+    /// 挑选对齐目标。候选恒为最近注入的真实子串，执行链 verified 语义零改动。
+    public var localAlignEnabled = false
+    /// ollama /api/chat 基地址。对齐请求携带最近注入文本——**仅允许本机回环**
+    ///（LocalAlignClient 强制校验，非回环拒绝请求），不外发任何内容。
+    public var localAlignURL = "http://127.0.0.1:11434"
+    /// ollama 模型名（空 = 对齐兜底实际不可用；评测推荐见 Doc/Test 评测报告）。
+    public var localAlignModel = ""
+    /// 单次对齐请求超时（毫秒）；超时/失败一律回退普通文本路径。
+    public var localAlignTimeoutMS = 3000
+
     public static let `default` = VoiceEditSettings()
 
     /// 加载钳位范围（方案 §9.1）：与 Windows app_config.h 的 kVoiceEdit*Min/Max 完全
@@ -208,6 +220,7 @@ public struct VoiceEditSettings: Equatable {
     public static let maxCharsRange = 1...50
     public static let scopeSecondsRange = 10...600
     public static let unverifiedSecondsRange = 0...30
+    public static let localAlignTimeoutRange = 500...10000
 }
 
 // ---- KeySpec（原 VoiceStickApp/KeySpec.swift） ----
@@ -651,6 +664,18 @@ public struct KeySpec: Equatable {
             settings.unverifiedSeconds = clampVoiceEditValue(
                 value, range: VoiceEditSettings.unverifiedSecondsRange)
         }
+        if let value = file.local_align_enabled { settings.localAlignEnabled = value }
+        if let value = file.local_align_url?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            settings.localAlignURL = value
+        }
+        if let value = file.local_align_model?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            settings.localAlignModel = value
+        }
+        if let value = file.local_align_timeout_ms {
+            settings.localAlignTimeoutMS = clampVoiceEditValue(
+                value, range: VoiceEditSettings.localAlignTimeoutRange)
+        }
         return settings
     }
 
@@ -671,6 +696,11 @@ public struct KeySpec: Equatable {
         file.scope_seconds = values["scope_seconds"].flatMap(Int.init)
         file.verify_mode = values["verify_mode"]
         file.unverified_seconds = values["unverified_seconds"].flatMap(Int.init)
+        file.local_align_enabled = values["local_align_enabled"]
+            .map { boolValue($0, default: fallback.localAlignEnabled) }
+        file.local_align_url = values["local_align_url"]
+        file.local_align_model = values["local_align_model"]
+        file.local_align_timeout_ms = values["local_align_timeout_ms"].flatMap(Int.init)
         return voiceEditSettingsValue(file, default: fallback)
     }
 
