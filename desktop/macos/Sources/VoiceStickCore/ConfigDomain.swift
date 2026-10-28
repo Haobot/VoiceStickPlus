@@ -223,6 +223,48 @@ public struct VoiceEditSettings: Equatable {
     public static let localAlignTimeoutRange = 500...10000
 }
 
+/// 本地离线 ASR 配置（[local_asr] 表；字段与 Windows 同名，macOS 只消费
+/// enabled/models_dir）。默认关：不改变现有云端链路行为。
+public struct LocalAsrSettings: Equatable {
+    public init() {}
+
+    /// 总开关：true 时设备语音会话走本地 SenseVoice（断网可用、零 API 成本、
+    /// 音频不出本机）。模型/运行时未就位时 start 如实报错，不静默降级云端。
+    public var enabled = false
+    /// SenseVoice 模型目录（须含 model.int8.onnx + tokens.txt）。
+    /// 空 = 默认 `~/Library/Application Support/VoiceStick/models/sense-voice-int8-2024-07-17`
+    ///（与 Windows 离线包 scripts/pack_local_models.py 的目录布局同名）。
+    public var modelsDir = ""
+
+    public static let `default` = LocalAsrSettings()
+
+    /// 解析实际模型目录：空 = 默认路径；`~` 展开；相对路径以配置目录为基准。
+    public func resolvedModelsDir(configDirectory: URL) -> String {
+        let raw = modelsDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dir: URL
+        if raw.isEmpty {
+            dir = configDirectory.appendingPathComponent(
+                "models/sense-voice-int8-2024-07-17")
+        } else if raw.hasPrefix("~") {
+            let rest = raw.dropFirst().droppingLeadingSlash
+            dir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(String(rest))
+        } else if raw.hasPrefix("/") {
+            dir = URL(fileURLWithPath: raw)
+        } else {
+            dir = configDirectory.appendingPathComponent(raw)
+        }
+        return dir.path
+    }
+}
+
+extension Substring {
+    /// 去掉单个前导 "/"（`~/x` 展开用）。
+    var droppingLeadingSlash: Substring {
+        hasPrefix("/") ? dropFirst() : self
+    }
+}
+
 // ---- KeySpec（原 VoiceStickApp/KeySpec.swift） ----
 
 import CoreGraphics
@@ -677,6 +719,30 @@ public struct KeySpec: Equatable {
                 value, range: VoiceEditSettings.localAlignTimeoutRange)
         }
         return settings
+    }
+
+    /// [local_asr] 表解析（TOMLTable 版）：缺省保留 fallback；models_dir 不 Trim
+    /// 尾部换行（路径含空格合法），仅去首尾空白字符。
+    public func localAsrSettingsValue(
+        _ file: LocalAsrConfigFile?, default fallback: LocalAsrSettings
+    ) -> LocalAsrSettings {
+        guard let file else { return fallback }
+        var settings = fallback
+        if let enabled = file.enabled { settings.enabled = enabled }
+        if let value = file.models_dir?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            settings.modelsDir = value
+        }
+        return settings
+    }
+
+    /// legacy 逐行解析版（[local_asr] 表头被丢弃，键以裸名出现）。
+    public func localAsrSettingsValue(
+        _ values: [String: String], default fallback: LocalAsrSettings
+    ) -> LocalAsrSettings {
+        var file = LocalAsrConfigFile()
+        file.enabled = values["enabled"].map { boolValue($0, default: fallback.enabled) }
+        file.models_dir = values["models_dir"]
+        return localAsrSettingsValue(file, default: fallback)
     }
 
     /// 整数区间钳位（对齐 Windows std::clamp(value, min, max)）。

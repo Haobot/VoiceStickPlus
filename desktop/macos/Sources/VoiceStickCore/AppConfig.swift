@@ -81,6 +81,8 @@ public struct AppConfig {
     /// [voice_edit] 语音编辑指令配置（方案 §9.1）：默认开、单独「删除」删 1 字、
     /// verify_mode=auto（8s 不可验证窗口）；false 时完全回到现状。
     public var voiceEdit: VoiceEditSettings
+    /// [local_asr] 本地离线 ASR（SenseVoice；默认关，键名与 Windows 同名）。
+    public var localAsr: LocalAsrSettings
 
     public static var configDirectory: URL {
         FileManager.default
@@ -202,7 +204,8 @@ public struct AppConfig {
             deviceEncoderSettings: [:],
             airMouse: .default,
             deviceButtonsSettings: [:],
-            voiceEdit: .default
+            voiceEdit: .default,
+            localAsr: .default
         )
     }
 
@@ -296,7 +299,8 @@ public struct AppConfig {
                 default: defaults.airMouse
             ),
             deviceButtonsSettings: deviceButtonsSettingsMap(file.device),
-            voiceEdit: voiceEditSettingsValue(file.voice_edit, default: defaults.voiceEdit)
+            voiceEdit: voiceEditSettingsValue(file.voice_edit, default: defaults.voiceEdit),
+            localAsr: localAsrSettingsValue(file.local_asr, default: defaults.localAsr)
         )
         // 根 [buttons] 全局键位表（网关模式）；缺段回落默认。
         config.globalButtonsSettings = file.buttons.map {
@@ -409,9 +413,10 @@ public struct AppConfig {
         transform = "\(defaultOutputProfile.transform.rawValue)"
         translation_target = "\(defaultOutputProfile.translationTarget.tomlEscaped)"
         """
-        return text + voiceEditText + globalButtonsText + deviceOutputProfileText
-            + deviceXiaomiSettingsText + deviceInteractionSettingsText
-            + deviceEncoderSettingsText + deviceButtonsSettingsText
+        return text + voiceEditText + localAsrText + globalButtonsText
+            + deviceOutputProfileText + deviceXiaomiSettingsText
+            + deviceInteractionSettingsText + deviceEncoderSettingsText
+            + deviceButtonsSettingsText
     }
 
     private static func loadLegacy(text: String, defaults: AppConfig) -> AppConfig {
@@ -518,7 +523,8 @@ public struct AppConfig {
                 default: defaults.airMouse
             ),
             deviceButtonsSettings: [:],
-            voiceEdit: voiceEditSettingsValue(values, default: defaults.voiceEdit)
+            voiceEdit: voiceEditSettingsValue(values, default: defaults.voiceEdit),
+            localAsr: localAsrSettingsValue(AppConfig.localAsrValues(values), default: defaults.localAsr)
         )
         recoverTencentSecretID(&config)
         return config
@@ -884,6 +890,26 @@ public struct AppConfig {
             lines.append("repeat_interval_ms = \(settings.repeatIntervalMs)")
         }
         return lines
+    }
+
+    /// [local_asr] 表：恒写出（含默认值，models_dir 空即默认路径）。
+    private var localAsrText: String {
+        """
+
+        [local_asr]
+        enabled = \(localAsr.enabled.tomlValue)
+        models_dir = "\(localAsr.modelsDir.tomlEscaped)"
+        """
+    }
+
+    /// legacy 逐行解析的 [local_asr] 键提取：表头被丢弃后键以裸名出现，但顶层
+    /// 键解析器只收集首表——[local_asr] 非首表时拿不到。与 [voice_edit] 同约束
+    ///（见 voiceEditSettingsValue legacy 版注释），按现有 legacy 能力尽力而为。
+    private static func localAsrValues(_ values: [String: String]) -> LocalAsrConfigFile? {
+        var file = LocalAsrConfigFile()
+        file.enabled = values["enabled"].map { boolValue($0, default: false) }
+        file.models_dir = values["models_dir"]
+        return file
     }
 
     /// [voice_edit] 表（方案 §9.1）：恒写出（含默认值），便于用户发现/手改配置；

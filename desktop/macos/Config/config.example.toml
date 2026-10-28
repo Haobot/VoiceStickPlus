@@ -172,3 +172,13 @@ local_align_enabled = false
 local_align_url = "http://127.0.0.1:11434"  # 仅允许本机回环（对齐请求带最近注入文本，不外发）
 local_align_model = ""                      # ollama 模型名，空 = 对齐兜底不可用；如 "qwen2.5:1.5b-instruct"
 local_align_timeout_ms = 3000               # 单次对齐超时（500~10000）
+
+# 本地离线 ASR（SenseVoice，Windows + macOS 同键名；macOS 2026-10-28 起）：
+# enabled=true 时设备语音会话整体走本地识别——断网可用、零 API 成本、音频不出本机。
+# macOS 首次使用先跑 scripts/setup-mac-local-asr.sh 安装模型与 sherpa-onnx 运行库
+#（模型/运行时未就位时识别启动会如实报错，不静默回云端）。
+# models_dir 留空 = 默认路径（macOS: ~/Library/Application Support/VoiceStick/models/
+# sense-voice-int8-2024-07-17；Windows: exe 同级 models/）。
+[local_asr]
+enabled = false
+models_dir = ""

@@ -79,6 +79,9 @@ public struct ConfigFile: Decodable {
     public var buttons: ButtonsConfigFile?
     /// [voice_edit] 语音编辑指令配置表（方案 §9.1）。
     public var voice_edit: VoiceEditConfigFile?
+    /// [local_asr] 本地离线 ASR 表（SenseVoice；键名与 Windows 同名，
+    /// macOS 只消费 enabled/models_dir，其余键忽略）。
+    public var local_asr: LocalAsrConfigFile?
 }
 
 public struct OutputConfigFile: Decodable {
@@ -157,6 +160,14 @@ public struct VoiceEditConfigFile: Decodable {
     public var local_align_url: String?
     public var local_align_model: String?
     public var local_align_timeout_ms: Int?
+}
+
+/// [local_asr] 表：本地离线 ASR（SenseVoice）。字段与 Windows app_config.cc
+/// 的 [local_asr] 同名（Windows 另有 push_to_talk_key/refine_* 等本机麦克风
+/// 模式键，macOS 无该模式、忽略不解析）。
+public struct LocalAsrConfigFile: Decodable {
+    public var enabled: Bool?
+    public var models_dir: String?
 }
 
 /// [device.<id>.interaction] 表：键名与顶层一致。

@@ -48,10 +48,18 @@ let package = Package(
             dependencies: [
                 "COpus",
                 "CRnnoise",
+                // SenseVoice 本地 ASR 的 C 结构体定义（header-only，dylib 运行时 dlopen）。
+                "CSherpaOnnx",
                 // N1 根刀：AppConfig（TOML 读写）下迁 Core 需 TOMLKit（测试 runner 经 Core 传递获取，无需改 runner 声明）。
                 .product(name: "TOMLKit", package: "TOMLKit"),
             ],
             path: "Sources/VoiceStickCore"
+        ),
+        // sherpa-onnx v1.13.7 C API 头（header-only 桥接，见 Sources/CSherpaOnnx/README.md）。
+        .target(
+            name: "CSherpaOnnx",
+            path: "Sources/CSherpaOnnx",
+            publicHeadersPath: "include"
         ),
         .target(
             name: "CZlib",

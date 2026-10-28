@@ -88,8 +88,14 @@ qwen2.5:3b/1.5b）实测管线 CER 1.67%、零损伤、模型链路延迟 ≈110
 - **M1 Windows 精修升级**（改动最小、收益立现）：editform 路径 + 模型换
   Qwen2.5-3B/1.5B GGUF + det v5 规则。验收：`local_model_eval` harness 双端
   同分；真机 damage=0。
-- **M2 macOS 本地化补齐**：vendored SenseVoice（`provider=local`）+ ollama
-  editform 精修（`provider=local`）。验收：同 harness + 真机断网可用。
+- **M2 macOS 本地化补齐**：~~vendored SenseVoice~~ → **ASR 部分已落地（2026-10-28
+  第二批，`feat/local-model-fullstack`）**：`[local_asr] enabled=true`（键名与
+  Windows 同）设备会话路由本地 SenseVoice；CSherpaOnnx header-only 桥接 +
+  dlopen 运行库（`scripts/setup-mac-local-asr.sh` 安装，SHA 与 Windows 清单同源）；
+  调度与 Windows 同构（600ms 滚动 partial、松键复用、取消丢弃、失败不静默回云）。
+  **本地精修（editform）仍待做**。验收：单测 1623/1623 含真实模型冒烟
+ （short_01 逐字正确）；真机验收待用户（说话→本地识别→上屏，日志判据
+  `asr session` 无云端连接、final 文本即时）。
 - **M3 语音改字收口**：C 层 `isCommandFallback` 修复（双端，安全前置）+
   Windows 对齐同构。验收：`Doc/Test/targeted-local-align-acceptance` 七用例双端过。
 - **M4 默认翻转**：`local_first=true`（云端变回退档），配置与 UI 双端同步。
