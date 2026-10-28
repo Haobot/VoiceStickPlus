@@ -1,0 +1,414 @@
+{
+ "generated_at": "2026-10-28T03:58:18.686887+00:00",
+ "baseline_cer": {
+  "short_01": 0.0,
+  "short_02": 0.0,
+  "short_03": 0.0,
+  "long_01": 0.0,
+  "long_02": 0.0,
+  "num_01": 0.0,
+  "num_02": 0.0,
+  "mix_01": 0.0,
+  "mix_02": 0.0,
+  "punct_01": 0.0,
+  "command_01": 0.0,
+  "command_02": 0.0,
+  "fast_01": 0.0,
+  "fast_02": 0.08,
+  "fast_03": 0.0,
+  "slow_01": 0.0,
+  "slow_02": 0.0,
+  "noise_01": 0.1053,
+  "noise_02": 0.0,
+  "noise_03": 0.0,
+  "english_01": 0.0,
+  "english_02": 0.0,
+  "tech_01": 0.0,
+  "tech_02": 0.2174,
+  "tech_03": 0.0476,
+  "tech_04": 0.1667,
+  "verylong_01": 0.0,
+  "verylong_02": 0.0114,
+  "verylong_03": 0.0,
+  "voice_01": 0.0588,
+  "voice_02": 0.0
+ },
+ "hotwords": [
+  "ASR",
+  "Opus",
+  "Ogg",
+  "GitHub",
+  "pull request",
+  "BLE",
+  "ESP32",
+  "WebSocket",
+  "API",
+  "SDK",
+  "CPU",
+  "python"
+ ],
+ "engines": [
+  {
+   "model": "qwen2.5:1.5b-instruct",
+   "variant": "editform",
+   "n": 31,
+   "cer_mean": 0.0222,
+   "cer_worst": 0.2174,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0,
+   "improved": 0,
+   "damaged": 0,
+   "clean_damaged": 0,
+   "tech_cer_mean": 0.1079,
+   "parse_fail": 0,
+   "latency_p50_ms": 44,
+   "latency_p95_ms": 160,
+   "worst_cases": [
+    {
+     "item": "tech_02",
+     "cer": 0.2174,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "把A2的opus音频留峰装成Og格式再发送。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个poll reque"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下雨，因识别的准确率会明显下降。"
+    },
+    {
+     "item": "fast_02",
+     "cer": 0.08,
+     "ref": "明天上午十点的会议改到下午两点，请大家提前准备好",
+     "raw": "明天上午10点的会议改到下午2点，请大家提前准备",
+     "out": "明天上午10点的会议改到下午2点，请大家提前准备"
+    },
+    {
+     "item": "voice_01",
+     "cer": 0.0588,
+     "ref": "男声音色下的识别效果也需要单独验证。",
+     "raw": "男生音色下的识别效果也需要单独验证。",
+     "out": "男生音色下的识别效果也需要单独验证。"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:1.7b",
+   "variant": "editform",
+   "n": 31,
+   "cer_mean": 0.0222,
+   "cer_worst": 0.2174,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0,
+   "improved": 0,
+   "damaged": 0,
+   "clean_damaged": 0,
+   "tech_cer_mean": 0.1079,
+   "parse_fail": 0,
+   "latency_p50_ms": 41,
+   "latency_p95_ms": 155,
+   "worst_cases": [
+    {
+     "item": "tech_02",
+     "cer": 0.2174,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "把A2的opus音频留峰装成Og格式再发送。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个poll reque"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下雨，因识别的准确率会明显下降。"
+    },
+    {
+     "item": "fast_02",
+     "cer": 0.08,
+     "ref": "明天上午十点的会议改到下午两点，请大家提前准备好",
+     "raw": "明天上午10点的会议改到下午2点，请大家提前准备",
+     "out": "明天上午10点的会议改到下午2点，请大家提前准备"
+    },
+    {
+     "item": "voice_01",
+     "cer": 0.0588,
+     "ref": "男声音色下的识别效果也需要单独验证。",
+     "raw": "男生音色下的识别效果也需要单独验证。",
+     "out": "男生音色下的识别效果也需要单独验证。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:3b-instruct",
+   "variant": "editform",
+   "n": 31,
+   "cer_mean": 0.0279,
+   "cer_worst": 0.1875,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0057,
+   "improved": 1,
+   "damaged": 2,
+   "clean_damaged": 2,
+   "tech_cer_mean": 0.1053,
+   "parse_fail": 0,
+   "latency_p50_ms": 70,
+   "latency_p95_ms": 192,
+   "worst_cases": [
+    {
+     "item": "noise_03",
+     "cer": 0.1875,
+     "ref": "蓝牙连接不稳定会导致音频数据丢失。",
+     "raw": "蓝牙连接不稳定，会导致音频数据丢失。",
+     "out": "BLE连接不稳定，会导致音频数据丢失。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个poll reque"
+    },
+    {
+     "item": "tech_01",
+     "cer": 0.12,
+     "ref": "这个 API 的 SDK 需要支持 WebSoc",
+     "raw": "这个API的SDK需要支持web socket长",
+     "out": "这个API的SDK需要支持WebSocket。"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下雨，因识别的准确率会明显下降。"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.087,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "把ASR的opus音频留峰装成Ogg格式再发送。"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:4b",
+   "variant": "editform",
+   "n": 31,
+   "cer_mean": 0.0222,
+   "cer_worst": 0.2174,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0,
+   "improved": 0,
+   "damaged": 0,
+   "clean_damaged": 0,
+   "tech_cer_mean": 0.1079,
+   "parse_fail": 0,
+   "latency_p50_ms": 6774,
+   "latency_p95_ms": 7058,
+   "worst_cases": [
+    {
+     "item": "tech_02",
+     "cer": 0.2174,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "把A2的opus音频留峰装成Og格式再发送。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个poll reque"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下雨，因识别的准确率会明显下降。"
+    },
+    {
+     "item": "fast_02",
+     "cer": 0.08,
+     "ref": "明天上午十点的会议改到下午两点，请大家提前准备好",
+     "raw": "明天上午10点的会议改到下午2点，请大家提前准备",
+     "out": "明天上午10点的会议改到下午2点，请大家提前准备"
+    },
+    {
+     "item": "voice_01",
+     "cer": 0.0588,
+     "ref": "男声音色下的识别效果也需要单独验证。",
+     "raw": "男生音色下的识别效果也需要单独验证。",
+     "out": "男生音色下的识别效果也需要单独验证。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:7b-instruct",
+   "variant": "editform",
+   "n": 31,
+   "cer_mean": 0.0457,
+   "cer_worst": 0.5238,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0235,
+   "improved": 0,
+   "damaged": 3,
+   "clean_damaged": 1,
+   "tech_cer_mean": 0.2436,
+   "parse_fail": 0,
+   "latency_p50_ms": 135,
+   "latency_p95_ms": 606,
+   "worst_cases": [
+    {
+     "item": "tech_03",
+     "cer": 0.5238,
+     "ref": "ESP32 通过 BLE 把音频数据发送到桌面端",
+     "raw": "ESP32通过bl把音频数据发送到桌面端。",
+     "out": "音频数据发送到桌面端。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.2333,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在上创建一个poll request，并请求代码"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.2174,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "把A2的opus音频留峰装成Og格式再发送。"
+    },
+    {
+     "item": "noise_03",
+     "cer": 0.1875,
+     "ref": "蓝牙连接不稳定会导致音频数据丢失。",
+     "raw": "蓝牙连接不稳定，会导致音频数据丢失。",
+     "out": "BLE连接不稳定，会导致音频数据丢失。"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下雨，因识别的准确率会明显下降。"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:8b",
+   "variant": "editform",
+   "n": 31,
+   "cer_mean": 0.0267,
+   "cer_worst": 0.2174,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0045,
+   "improved": 1,
+   "damaged": 1,
+   "clean_damaged": 1,
+   "tech_cer_mean": 0.096,
+   "parse_fail": 0,
+   "latency_p50_ms": 128,
+   "latency_p95_ms": 455,
+   "worst_cases": [
+    {
+     "item": "tech_02",
+     "cer": 0.2174,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "把A2的opus音频装成Og格式再发送。"
+    },
+    {
+     "item": "noise_03",
+     "cer": 0.1875,
+     "ref": "蓝牙连接不稳定会导致音频数据丢失。",
+     "raw": "蓝牙连接不稳定，会导致音频数据丢失。",
+     "out": "BLE连接不稳定，会导致音频数据丢失。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个poll reque"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下雨，因识别的准确率会明显下降。"
+    },
+    {
+     "item": "fast_02",
+     "cer": 0.08,
+     "ref": "明天上午十点的会议改到下午两点，请大家提前准备好",
+     "raw": "明天上午10点的会议改到下午2点，请大家提前准备",
+     "out": "明天上午10点的会议改到下午2点，请大家提前准备"
+    }
+   ]
+  }
+ ],
+ "filler": [
+  {
+   "model": "qwen2.5:1.5b-instruct",
+   "variant": "editform",
+   "cer_mean": 0.2377,
+   "perfect": 0,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen3:1.7b",
+   "variant": "editform",
+   "cer_mean": 0.2104,
+   "perfect": 3,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen2.5:3b-instruct",
+   "variant": "editform",
+   "cer_mean": 0.2401,
+   "perfect": 1,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen3:4b",
+   "variant": "editform",
+   "cer_mean": 0.2377,
+   "perfect": 0,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen2.5:7b-instruct",
+   "variant": "editform",
+   "cer_mean": 0.1755,
+   "perfect": 4,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen3:8b",
+   "variant": "editform",
+   "cer_mean": 0.1053,
+   "perfect": 6,
+   "parse_fail": 0
+  }
+ ]
+}

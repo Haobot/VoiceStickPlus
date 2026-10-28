@@ -1,0 +1,534 @@
+{
+ "generated_at": "2026-10-28T03:29:33.906026+00:00",
+ "cloud_baseline": {
+  "tencent": {
+   "cer_mean": 0.0089,
+   "cer_worst": 0.1304,
+   "first_partial_p50_ms": 672,
+   "tail_p50_ms": 125
+  },
+  "volcengine": {
+   "cer_mean": 0.0134,
+   "cer_worst": 0.2609,
+   "first_partial_p50_ms": 4157,
+   "tail_p50_ms": 969
+  }
+ },
+ "engines": [
+  {
+   "engine": "whisper-tiny-zh",
+   "backend": "whisper.cpp lang='zh' threads=8 Metal=on quant=ggml-tiny.bin",
+   "runs": "93/93",
+   "fail_rate": 0.0,
+   "cer_mean": 0.3447,
+   "cer_median": 0.3333,
+   "cer_worst": 1.0,
+   "cer_by_category": {
+    "command": 0.3692,
+    "english": 0.5,
+    "fast": 0.4567,
+    "long": 0.5613,
+    "mix": 0.3152,
+    "noise": 0.3682,
+    "number": 0.1267,
+    "punct": 0.0,
+    "short": 0.5016,
+    "slow": 0.1417,
+    "tech": 0.1776,
+    "verylong": 0.3812,
+    "voice": 0.4118
+   },
+   "jitter_mean": 0.0,
+   "jitter_worst": 0.0,
+   "hot_ms_p50": 59.49,
+   "hot_ms_p95": 322.83,
+   "cold_ms_p50": 148.73195799999993,
+   "cold_ms_p95": 415.41441699999734,
+   "failures": [],
+   "top_worst": [
+    {
+     "item": "english_01",
+     "round": 1,
+     "cer": 1.0,
+     "reference": "The quick brown fox jumps over the lazy dog.",
+     "hypothesis": "把蝦子放在蝦子上的蝦子上"
+    },
+    {
+     "item": "english_01",
+     "round": 2,
+     "cer": 1.0,
+     "reference": "The quick brown fox jumps over the lazy dog.",
+     "hypothesis": "把蝦子放在蝦子上的蝦子上"
+    },
+    {
+     "item": "english_01",
+     "round": 3,
+     "cer": 1.0,
+     "reference": "The quick brown fox jumps over the lazy dog.",
+     "hypothesis": "把蝦子放在蝦子上的蝦子上"
+    },
+    {
+     "item": "noise_03",
+     "round": 1,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "蓝牙連接不穩定會導致一層數級優勢"
+    },
+    {
+     "item": "noise_03",
+     "round": 2,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "蓝牙連接不穩定會導致一層數級優勢"
+    },
+    {
+     "item": "noise_03",
+     "round": 3,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "蓝牙連接不穩定會導致一層數級優勢"
+    },
+    {
+     "item": "short_03",
+     "round": 1,
+     "cer": 0.6,
+     "reference": "现在几点了？",
+     "hypothesis": "現在極電了"
+    },
+    {
+     "item": "short_03",
+     "round": 2,
+     "cer": 0.6,
+     "reference": "现在几点了？",
+     "hypothesis": "現在極電了"
+    },
+    {
+     "item": "short_03",
+     "round": 3,
+     "cer": 0.6,
+     "reference": "现在几点了？",
+     "hypothesis": "現在極電了"
+    },
+    {
+     "item": "voice_02",
+     "round": 1,
+     "cer": 0.5882,
+     "reference": "不同说话人的发音习惯会影响识别结果。",
+     "hypothesis": "不同說話人的發音習慣會影響識別結果"
+    }
+   ]
+  },
+  {
+   "engine": "whisper-base-zh",
+   "backend": "whisper.cpp lang='zh' threads=8 Metal=on quant=ggml-base.bin",
+   "runs": "93/93",
+   "fail_rate": 0.0,
+   "cer_mean": 0.3749,
+   "cer_median": 0.381,
+   "cer_worst": 1.0,
+   "cer_by_category": {
+    "command": 0.4462,
+    "english": 0.5429,
+    "fast": 0.3239,
+    "long": 0.53,
+    "mix": 0.303,
+    "noise": 0.4578,
+    "number": 0.0882,
+    "punct": 0.5556,
+    "short": 0.3905,
+    "slow": 0.225,
+    "tech": 0.3697,
+    "verylong": 0.3646,
+    "voice": 0.3529
+   },
+   "jitter_mean": 0.0,
+   "jitter_worst": 0.0,
+   "hot_ms_p50": 85.65,
+   "hot_ms_p95": 280.07,
+   "cold_ms_p50": 192.97083399999693,
+   "cold_ms_p95": 381.43795799999936,
+   "failures": [],
+   "top_worst": [
+    {
+     "item": "english_02",
+     "round": 1,
+     "cer": 1.0,
+     "reference": "Please schedule a meeting with the engineering team tomorrow.",
+     "hypothesis": "请按个订阅与同一人的听词。"
+    },
+    {
+     "item": "english_02",
+     "round": 2,
+     "cer": 1.0,
+     "reference": "Please schedule a meeting with the engineering team tomorrow.",
+     "hypothesis": "请按个订阅与同一人的听词。"
+    },
+    {
+     "item": "english_02",
+     "round": 3,
+     "cer": 1.0,
+     "reference": "Please schedule a meeting with the engineering team tomorrow.",
+     "hypothesis": "请按个订阅与同一人的听词。"
+    },
+    {
+     "item": "command_01",
+     "round": 1,
+     "cer": 0.6923,
+     "reference": "新建一个文件夹并命名为测试。",
+     "hypothesis": "先見一個文件家並命為測試。"
+    },
+    {
+     "item": "command_01",
+     "round": 2,
+     "cer": 0.6923,
+     "reference": "新建一个文件夹并命名为测试。",
+     "hypothesis": "先見一個文件家並命為測試。"
+    },
+    {
+     "item": "command_01",
+     "round": 3,
+     "cer": 0.6923,
+     "reference": "新建一个文件夹并命名为测试。",
+     "hypothesis": "先見一個文件家並命為測試。"
+    },
+    {
+     "item": "noise_03",
+     "round": 1,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "藍牙連接不穩定會導致英雄數據丟失"
+    },
+    {
+     "item": "noise_03",
+     "round": 2,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "藍牙連接不穩定會導致英雄數據丟失"
+    },
+    {
+     "item": "noise_03",
+     "round": 3,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "藍牙連接不穩定會導致英雄數據丟失"
+    },
+    {
+     "item": "short_03",
+     "round": 1,
+     "cer": 0.6,
+     "reference": "现在几点了？",
+     "hypothesis": "現在極點了。"
+    }
+   ]
+  },
+  {
+   "engine": "whisper-small-zh",
+   "backend": "whisper.cpp lang='zh' threads=8 Metal=on quant=ggml-small.bin",
+   "runs": "93/93",
+   "fail_rate": 0.0,
+   "cer_mean": 0.1603,
+   "cer_median": 0.0588,
+   "cer_worst": 1.0,
+   "cer_by_category": {
+    "command": 0.1769,
+    "english": 0.5,
+    "fast": 0.0517,
+    "long": 0.0312,
+    "mix": 0.2364,
+    "noise": 0.2785,
+    "number": 0.0294,
+    "punct": 0.0,
+    "short": 0.1905,
+    "slow": 0.225,
+    "tech": 0.1387,
+    "verylong": 0.0138,
+    "voice": 0.2059
+   },
+   "jitter_mean": 0.0,
+   "jitter_worst": 0.0,
+   "hot_ms_p50": 206.68,
+   "hot_ms_p95": 550.72,
+   "cold_ms_p50": 397.4314579999998,
+   "cold_ms_p95": 738.0421249999997,
+   "failures": [],
+   "top_worst": [
+    {
+     "item": "english_02",
+     "round": 1,
+     "cer": 1.0,
+     "reference": "Please schedule a meeting with the engineering team tomorrow.",
+     "hypothesis": "请讨论明天认识订队的认识。"
+    },
+    {
+     "item": "english_02",
+     "round": 2,
+     "cer": 1.0,
+     "reference": "Please schedule a meeting with the engineering team tomorrow.",
+     "hypothesis": "请讨论明天认识订队的认识。"
+    },
+    {
+     "item": "english_02",
+     "round": 3,
+     "cer": 1.0,
+     "reference": "Please schedule a meeting with the engineering team tomorrow.",
+     "hypothesis": "请讨论明天认识订队的认识。"
+    },
+    {
+     "item": "noise_03",
+     "round": 1,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "藍牙連接不穩定會導致陰形數字丟失"
+    },
+    {
+     "item": "noise_03",
+     "round": 2,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "藍牙連接不穩定會導致陰形數字丟失"
+    },
+    {
+     "item": "noise_03",
+     "round": 3,
+     "cer": 0.625,
+     "reference": "蓝牙连接不稳定会导致音频数据丢失。",
+     "hypothesis": "藍牙連接不穩定會導致陰形數字丟失"
+    },
+    {
+     "item": "short_02",
+     "round": 1,
+     "cer": 0.5714,
+     "reference": "帮我打开浏览器。",
+     "hypothesis": "幫我打開瀏覽器。"
+    },
+    {
+     "item": "short_02",
+     "round": 2,
+     "cer": 0.5714,
+     "reference": "帮我打开浏览器。",
+     "hypothesis": "幫我打開瀏覽器。"
+    },
+    {
+     "item": "short_02",
+     "round": 3,
+     "cer": 0.5714,
+     "reference": "帮我打开浏览器。",
+     "hypothesis": "幫我打開瀏覽器。"
+    },
+    {
+     "item": "voice_01",
+     "round": 1,
+     "cer": 0.4118,
+     "reference": "男声音色下的识别效果也需要单独验证。",
+     "hypothesis": "男生音色下的識別效果也需要單獨驗證。"
+    }
+   ]
+  },
+  {
+   "engine": "whisper-turbo-zh",
+   "backend": "whisper.cpp lang='zh' threads=8 Metal=on quant=ggml-large-v3-turbo-q5_0.bin",
+   "runs": "93/93",
+   "fail_rate": 0.0,
+   "cer_mean": 0.0233,
+   "cer_median": 0.0,
+   "cer_worst": 0.1579,
+   "cer_by_category": {
+    "command": 0.0,
+    "english": 0.0,
+    "fast": 0.0111,
+    "long": 0.0,
+    "mix": 0.0333,
+    "noise": 0.0526,
+    "number": 0.0,
+    "punct": 0.0,
+    "short": 0.0,
+    "slow": 0.0,
+    "tech": 0.1017,
+    "verylong": 0.0,
+    "voice": 0.0294
+   },
+   "jitter_mean": 0.0,
+   "jitter_worst": 0.0,
+   "hot_ms_p50": 551.6,
+   "hot_ms_p95": 761.67,
+   "cold_ms_p50": 762.6656670000216,
+   "cold_ms_p95": 975.6312079999958,
+   "failures": [],
+   "top_worst": [
+    {
+     "item": "noise_01",
+     "round": 1,
+     "cer": 0.1579,
+     "reference": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "hypothesis": "在嘈杂环境下雨因时别的准确率会明显下降"
+    },
+    {
+     "item": "noise_01",
+     "round": 2,
+     "cer": 0.1579,
+     "reference": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "hypothesis": "在嘈杂环境下雨因时别的准确率会明显下降"
+    },
+    {
+     "item": "noise_01",
+     "round": 3,
+     "cer": 0.1579,
+     "reference": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "hypothesis": "在嘈杂环境下雨因时别的准确率会明显下降"
+    },
+    {
+     "item": "tech_03",
+     "round": 1,
+     "cer": 0.1429,
+     "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+     "hypothesis": "ESP32通过,把音频数据发送到桌面端。"
+    },
+    {
+     "item": "tech_03",
+     "round": 2,
+     "cer": 0.1429,
+     "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+     "hypothesis": "ESP32通过,把音频数据发送到桌面端。"
+    },
+    {
+     "item": "tech_03",
+     "round": 3,
+     "cer": 0.1429,
+     "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+     "hypothesis": "ESP32通过,把音频数据发送到桌面端。"
+    },
+    {
+     "item": "tech_04",
+     "round": 1,
+     "cer": 0.1333,
+     "reference": "在 GitHub 上创建一个 pull request 并请求代码审查。",
+     "hypothesis": "在Deckhub上,创建一个 \"Pull Request\",并请求代码审查。"
+    },
+    {
+     "item": "tech_04",
+     "round": 2,
+     "cer": 0.1333,
+     "reference": "在 GitHub 上创建一个 pull request 并请求代码审查。",
+     "hypothesis": "在Deckhub上,创建一个 \"Pull Request\",并请求代码审查。"
+    },
+    {
+     "item": "tech_04",
+     "round": 3,
+     "cer": 0.1333,
+     "reference": "在 GitHub 上创建一个 pull request 并请求代码审查。",
+     "hypothesis": "在Deckhub上,创建一个 \"Pull Request\",并请求代码审查。"
+    },
+    {
+     "item": "tech_02",
+     "round": 1,
+     "cer": 0.1304,
+     "reference": "把 ASR 的 Opus 音频流封装成 Ogg 格式再发送。",
+     "hypothesis": "把ASR的OPUS 音频流封装成AUK格式再发送"
+    }
+   ]
+  },
+  {
+   "engine": "whisper-turbo-auto",
+   "backend": "whisper.cpp lang='auto' threads=8 Metal=on quant=ggml-large-v3-turbo-q5_0.bin",
+   "runs": "93/93",
+   "fail_rate": 0.0,
+   "cer_mean": 0.0233,
+   "cer_median": 0.0,
+   "cer_worst": 0.1579,
+   "cer_by_category": {
+    "command": 0.0,
+    "english": 0.0,
+    "fast": 0.0111,
+    "long": 0.0,
+    "mix": 0.0333,
+    "noise": 0.0526,
+    "number": 0.0,
+    "punct": 0.0,
+    "short": 0.0,
+    "slow": 0.0,
+    "tech": 0.1017,
+    "verylong": 0.0,
+    "voice": 0.0294
+   },
+   "jitter_mean": 0.0,
+   "jitter_worst": 0.0,
+   "hot_ms_p50": 1080.7900000000002,
+   "hot_ms_p95": 1311.2399999999998,
+   "cold_ms_p50": 1299.637457999978,
+   "cold_ms_p95": 1534.210999999999,
+   "failures": [],
+   "top_worst": [
+    {
+     "item": "noise_01",
+     "round": 1,
+     "cer": 0.1579,
+     "reference": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "hypothesis": "在嘈杂环境下雨因时别的准确率会明显下降"
+    },
+    {
+     "item": "noise_01",
+     "round": 2,
+     "cer": 0.1579,
+     "reference": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "hypothesis": "在嘈杂环境下雨因时别的准确率会明显下降"
+    },
+    {
+     "item": "noise_01",
+     "round": 3,
+     "cer": 0.1579,
+     "reference": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "hypothesis": "在嘈杂环境下雨因时别的准确率会明显下降"
+    },
+    {
+     "item": "tech_03",
+     "round": 1,
+     "cer": 0.1429,
+     "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+     "hypothesis": "ESP32通过,把音频数据发送到桌面端。"
+    },
+    {
+     "item": "tech_03",
+     "round": 2,
+     "cer": 0.1429,
+     "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+     "hypothesis": "ESP32通过,把音频数据发送到桌面端。"
+    },
+    {
+     "item": "tech_03",
+     "round": 3,
+     "cer": 0.1429,
+     "reference": "ESP32 通过 BLE 把音频数据发送到桌面端。",
+     "hypothesis": "ESP32通过,把音频数据发送到桌面端。"
+    },
+    {
+     "item": "tech_04",
+     "round": 1,
+     "cer": 0.1333,
+     "reference": "在 GitHub 上创建一个 pull request 并请求代码审查。",
+     "hypothesis": "在Deckhub上,创建一个 \"Pull Request\",并请求代码审查。"
+    },
+    {
+     "item": "tech_04",
+     "round": 2,
+     "cer": 0.1333,
+     "reference": "在 GitHub 上创建一个 pull request 并请求代码审查。",
+     "hypothesis": "在Deckhub上,创建一个 \"Pull Request\",并请求代码审查。"
+    },
+    {
+     "item": "tech_04",
+     "round": 3,
+     "cer": 0.1333,
+     "reference": "在 GitHub 上创建一个 pull request 并请求代码审查。",
+     "hypothesis": "在Deckhub上,创建一个 \"Pull Request\",并请求代码审查。"
+    },
+    {
+     "item": "tech_02",
+     "round": 1,
+     "cer": 0.1304,
+     "reference": "把 ASR 的 Opus 音频流封装成 Ogg 格式再发送。",
+     "hypothesis": "把ASR的OPUS 音频流封装成AUK格式再发送"
+    }
+   ]
+  }
+ ]
+}
