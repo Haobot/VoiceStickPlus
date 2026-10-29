@@ -173,3 +173,40 @@ SenseVoice int8 + 确定性清理 + 受限编辑指令（editform）× qwen2.5:3
 任务形态定律（distilled §7.6）第三次验证，且新增一条：**本地精修的可行形态
 = 编辑指令 + 源校验守卫执行**（与 targeted 对齐、跨轮纠错同构——「模型出指令、
 守卫代码层执行」house pattern 现在有三个任务的实证）。
+
+## 9. 内嵌 llama.cpp 复测（2026-10-29，D1 验收）
+
+M2 内嵌化（`feat/macos-local-model-settings`，llama.cpp b10868 dlopen 引擎）后按
+task-shape 纪律复跑评测口径，与 Ollama 原始结论对拍：
+
+### 精修（det v5 + editform，31 例，与 §5 同输入集）
+
+| 运行时×模型文件 | CER | damage | p50/p95 | 判定 |
+|---|---|---|---|---|
+| Ollama（评测原始，Metal） | 1.67% | 0 | 70ms | 基线 |
+| **内嵌引擎 + Ollama registry blob（1.93GB）** | **1.78%** | **0** | 706ms/1199ms | **✅ 达标**（CPU） |
+| 内嵌引擎 + Qwen 官方 ModelScope Q4_K_M（2.10GB） | 2.86% | **1** | 179ms | ❌ damage 越线 |
+
+### 对齐（29 例全集，GBNF 枚举约束）
+
+| 运行时×模型文件 | hit | dangerous | 备注 |
+|---|---|---|---|
+| Ollama 今日全量复跑（格式约束） | 23/29 | 3 | 与当时 94%/主集口径一致级别 |
+| **内嵌引擎 + Ollama blob** | **22/29** | 5 | 与 Ollama 同 blob 仅差 1 例（数值噪声） |
+| 内嵌引擎 + Qwen 官方量化 | 20/29 | 5~7 | 明显劣化 |
+
+### 结论（写入清单与发布轨道的依据）
+
+1. **同名量化不同量化器产物行为有实质差异**：Qwen 官方 ModelScope Q4_K_M 与
+   Ollama 自家量化在对齐上差 6 个点、在 editform 上 damage 0→1。**LLM 档位
+   pin Ollama registry blob（评测原件，SHA=blob 名）**，不使用官方 ModelScope 件。
+2. **内嵌引擎忠实**：同 blob 下与 Ollama 差 ≤1 例（Metal vs CPU 的浮点数值在
+   边界 logit 上的翻面），KV 前缀复用/每例新建引擎结果逐例全同（复用路径无 bug）。
+3. **GBNF 枚举语法**（`llama_sampler_init_grammar`，约束先于贪心入链）是
+   Ollama `format` 约束解码的等价物——无约束纯 few-shot 会掉点（对齐 69%）。
+4. CPU 延迟：精修 3B p50 706ms（总预算 5s 内 ✓）；对齐 1.5B p50 ~700ms
+   （local_align_timeout 3000ms 内 ✓）。Metal 加速留后续里程碑。
+
+结果存档：`results/refine_embedded_20261029.json`、
+`refine_embedded_officialquant_20261029.json`、
+`scripts/local_align_bench/results/embedded_*.json`。

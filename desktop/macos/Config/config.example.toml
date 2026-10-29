@@ -169,8 +169,8 @@ unverified_seconds = 8       # auto 模式下不可验证的允许窗口秒数�
 # 执行链 verified 选区/读回/终验零改动；NONE/失败/超时一律回退普通文本。
 # 需本机运行 ollama 并拉取模型（评测推荐 qwen2.5:1.5b-instruct，见 Doc/Test 评测报告）。
 local_align_enabled = false
-local_align_url = "http://127.0.0.1:11434"  # 仅允许本机回环（对齐请求带最近注入文本，不外发）
-local_align_model = ""                      # ollama 模型名，空 = 对齐兜底不可用；如 "qwen2.5:1.5b-instruct"
+# local_align_url 已废弃（Ollama 时代端点；现走内嵌 llama.cpp，仅保留解析兼容）
+local_align_model = ""                      # 对齐档 GGUF 路径覆盖，空 = 默认 1.5B 档（模型目录下）
 local_align_timeout_ms = 3000               # 单次对齐超时（500~10000）
 
 # 本地离线 ASR（SenseVoice，Windows + macOS 同键名；macOS 2026-10-28 起）：
@@ -182,3 +182,6 @@ local_align_timeout_ms = 3000               # 单次对齐超时（500~10000）
 [local_asr]
 enabled = false
 models_dir = ""
+
+refine_model = ""                      # 本地 editform 精修 GGUF 路径覆盖，空 = 默认 3B 档
+refine_num_threads = 4                   # CPU 推理线程（1~32，M 系默认 4）

@@ -93,7 +93,7 @@ qwen2.5:3b/1.5b）实测管线 CER 1.67%、零损伤、模型链路延迟 ≈110
   Windows 同）设备会话路由本地 SenseVoice；CSherpaOnnx header-only 桥接 +
   dlopen 运行库（`scripts/setup-mac-local-asr.sh` 安装，SHA 与 Windows 清单同源）；
   调度与 Windows 同构（600ms 滚动 partial、松键复用、取消丢弃、失败不静默回云）。
-  **本地精修（editform）仍待做**。验收：单测 1623/1623 含真实模型冒烟
+  **本地精修已完成（2026-10-29 第三批，feat/macos-local-model-settings）：内嵌 llama.cpp（b10868 dlopen，非 Ollama）+ LocalEditformRefiner（L1 det v5→L2 editform→L3 守卫），D1 复测 damage=0 达标；targeted 对齐同步迁移内嵌引擎，LocalAlignClient(Ollama HTTP) 退役；设置 UI+应用内下载器（Phase A）落地**。验收：单测 1623/1623 含真实模型冒烟
  （short_01 逐字正确）；真机验收待用户（说话→本地识别→上屏，日志判据
   `asr session` 无云端连接、final 文本即时）。
 - **M3 语音改字收口**：C 层 `isCommandFallback` 修复（双端，安全前置）+

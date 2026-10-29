@@ -1,0 +1,364 @@
+{
+  "engine" : "embedded-llama.cpp-b10868",
+  "n" : 29,
+  "dangerous_picks" : 5,
+  "hit" : 20,
+  "accuracy" : 0.68965517241379315,
+  "latency_p50_ms" : 345,
+  "cases" : [
+    {
+      "answer" : "NONE",
+      "id" : "r1",
+      "expected" : "升旗",
+      "model_raw" : "NONE",
+      "hit" : false,
+      "dangerous" : false,
+      "candidates" : [
+        "升旗"
+      ],
+      "latency_ms" : 1681
+    },
+    {
+      "answer" : "NONE",
+      "expected" : "NONE",
+      "dangerous" : false,
+      "latency_ms" : 390,
+      "candidates" : [
+        "分析",
+        "成吃"
+      ],
+      "model_raw" : "{\"reason\":\"身体与吃烤鸭同音，用户想改的是吃烤鸭\",\"answer\":\"吃烤鸭\"}",
+      "hit" : true,
+      "id" : "r2"
+    },
+    {
+      "candidates" : [
+        "身体"
+      ],
+      "model_raw" : "{\"reason\":\"升旗与身体同音，用户想改的是身体\",\"answer\":\"身体\"}",
+      "latency_ms" : 345,
+      "id" : "r3",
+      "hit" : false,
+      "dangerous" : true,
+      "answer" : "身体",
+      "expected" : "NONE"
+    },
+    {
+      "dangerous" : false,
+      "expected" : "成都",
+      "latency_ms" : 356,
+      "model_raw" : "{\"reason\":\"都与候选里的词发音都不同，与指令无关\",\"answer\":\"NONE\"}",
+      "hit" : false,
+      "id" : "r4",
+      "answer" : "NONE",
+      "candidates" : [
+        "都"
+      ]
+    },
+    {
+      "answer" : "把都",
+      "latency_ms" : 345,
+      "candidates" : [
+        "把都",
+        "成重"
+      ],
+      "hit" : false,
+      "expected" : "NONE",
+      "model_raw" : "{\"reason\":\"成都与候选里的词发音都不同，与指令无关\",\"answer\":\"把都\"}",
+      "dangerous" : true,
+      "id" : "r5"
+    },
+    {
+      "id" : "r6",
+      "model_raw" : "NONE",
+      "latency_ms" : 174,
+      "expected" : "北京",
+      "answer" : "NONE",
+      "dangerous" : false,
+      "hit" : false,
+      "candidates" : [
+        "北京"
+      ]
+    },
+    {
+      "id" : "r7",
+      "answer" : "我今",
+      "model_raw" : "{\"reason\":\"北京与我今同音，用户想改的是我今\",\"answer\":\"我今\"}",
+      "expected" : "北京",
+      "candidates" : [
+        "北京",
+        "我今"
+      ],
+      "latency_ms" : 363,
+      "dangerous" : true,
+      "hit" : false
+    },
+    {
+      "expected" : "北京",
+      "hit" : false,
+      "dangerous" : true,
+      "model_raw" : "{\"reason\":\"北京与我今同音，用户想改的是我今\",\"answer\":\"我今\"}",
+      "candidates" : [
+        "北京",
+        "我今"
+      ],
+      "latency_ms" : 362,
+      "id" : "s1",
+      "answer" : "我今"
+    },
+    {
+      "expected" : "上海",
+      "candidates" : [
+        "上海"
+      ],
+      "latency_ms" : 309,
+      "id" : "s2",
+      "model_raw" : "{\"reason\":\"伤害与上海同音，用户想改的是上海\",\"answer\":\"上海\"}",
+      "hit" : true,
+      "dangerous" : false,
+      "answer" : "上海"
+    },
+    {
+      "candidates" : [
+        "升旗"
+      ],
+      "dangerous" : false,
+      "hit" : true,
+      "answer" : "升旗",
+      "id" : "s3",
+      "latency_ms" : 374,
+      "expected" : "升旗",
+      "model_raw" : "{\"reason\":\"声气与升旗同音，用户想改的是升旗\",\"answer\":\"升旗\"}"
+    },
+    {
+      "answer" : "升旗",
+      "hit" : true,
+      "model_raw" : "{\"reason\":\"生气与升旗同音，用户想改的是升旗\",\"answer\":\"升旗\"}",
+      "expected" : "升旗",
+      "candidates" : [
+        "升旗"
+      ],
+      "latency_ms" : 354,
+      "dangerous" : false,
+      "id" : "s4"
+    },
+    {
+      "candidates" : [
+        "成都"
+      ],
+      "latency_ms" : 308,
+      "id" : "s5",
+      "answer" : "成都",
+      "hit" : true,
+      "model_raw" : "{\"reason\":\"程度与成都同音，用户想改的是成都\",\"answer\":\"成都\"}",
+      "dangerous" : false,
+      "expected" : "成都"
+    },
+    {
+      "latency_ms" : 332,
+      "answer" : "成都",
+      "id" : "s6",
+      "expected" : "成都",
+      "dangerous" : false,
+      "hit" : true,
+      "model_raw" : "{\"reason\":\"尘都与成都同音，用户想改的是成都\",\"answer\":\"成都\"}",
+      "candidates" : [
+        "成都"
+      ]
+    },
+    {
+      "id" : "s7",
+      "candidates" : [
+        "都"
+      ],
+      "expected" : "成都",
+      "latency_ms" : 315,
+      "hit" : false,
+      "model_raw" : "{\"reason\":\"都与候选里的词发音都不同，与指令无关\",\"answer\":\"NONE\"}",
+      "answer" : "NONE",
+      "dangerous" : false
+    },
+    {
+      "id" : "s8",
+      "expected" : "美食",
+      "dangerous" : false,
+      "hit" : true,
+      "answer" : "美食",
+      "model_raw" : "{\"reason\":\"每时与美食同音，改成佳肴指的应是美食\",\"answer\":\"美食\"}",
+      "candidates" : [
+        "美食"
+      ],
+      "latency_ms" : 378
+    },
+    {
+      "hit" : true,
+      "latency_ms" : 331,
+      "dangerous" : false,
+      "id" : "s9",
+      "answer" : "出差",
+      "expected" : "出差",
+      "model_raw" : "{\"reason\":\"出猜与出差同音，用户想改的是出差\",\"answer\":\"出差\"}",
+      "candidates" : [
+        "出差"
+      ]
+    },
+    {
+      "dangerous" : false,
+      "latency_ms" : 351,
+      "id" : "s10",
+      "candidates" : [
+        "北京",
+        "我今"
+      ],
+      "hit" : true,
+      "expected" : "北京",
+      "model_raw" : "{\"reason\":\"北晶与北京同音，用户想改的是北京\",\"answer\":\"北京\"}",
+      "answer" : "北京"
+    },
+    {
+      "expected" : "语气词",
+      "hit" : true,
+      "answer" : "语气词",
+      "candidates" : [
+        "语气词"
+      ],
+      "model_raw" : "{\"reason\":\"语气词没有被过滤，候选词与指令无关\",\"answer\":\"语气词\"}",
+      "dangerous" : false,
+      "latency_ms" : 358,
+      "id" : "s11"
+    },
+    {
+      "candidates" : [
+        "蓝牙遥控器"
+      ],
+      "answer" : "蓝牙遥控器",
+      "dangerous" : false,
+      "expected" : "蓝牙遥控器",
+      "latency_ms" : 416,
+      "model_raw" : "{\"reason\":\"蓝牙摇空器与蓝牙遥控器同音，可能是听错\",\"answer\":\"蓝牙遥控器\"}",
+      "hit" : true,
+      "id" : "s12"
+    },
+    {
+      "expected" : "VS Code",
+      "id" : "s13",
+      "answer" : "VS Code",
+      "hit" : true,
+      "dangerous" : false,
+      "candidates" : [
+        "VS Code"
+      ],
+      "model_raw" : "{\"reason\":\"vs code与VS Code发音相同，但不是听错\",\"answer\":\"VS Code\"}",
+      "latency_ms" : 349
+    },
+    {
+      "answer" : "3点",
+      "dangerous" : false,
+      "latency_ms" : 323,
+      "hit" : true,
+      "expected" : "3点",
+      "candidates" : [
+        "3点"
+      ],
+      "id" : "s14",
+      "model_raw" : "{\"reason\":\"三点与3点同音，是听错\",\"answer\":\"3点\"}"
+    },
+    {
+      "model_raw" : "{\"reason\":\"生气与升旗发音不同，不是听错\",\"answer\":\"升旗\"}",
+      "hit" : true,
+      "answer" : "升旗",
+      "expected" : "升旗",
+      "latency_ms" : 345,
+      "id" : "s15",
+      "dangerous" : false,
+      "candidates" : [
+        "升旗"
+      ]
+    },
+    {
+      "candidates" : [
+
+      ],
+      "hit" : true,
+      "expected" : "NONE",
+      "dangerous" : false,
+      "latency_ms" : 0,
+      "id" : "n1",
+      "answer" : "NONE",
+      "model_raw" : ""
+    },
+    {
+      "dangerous" : true,
+      "id" : "n2",
+      "expected" : "NONE",
+      "candidates" : [
+        "天去"
+      ],
+      "latency_ms" : 358,
+      "answer" : "天去",
+      "model_raw" : "{\"reason\":\"天气与天去同音，用户想改的是天去\",\"answer\":\"天去\"}",
+      "hit" : false
+    },
+    {
+      "candidates" : [
+
+      ],
+      "answer" : "NONE",
+      "expected" : "NONE",
+      "id" : "n3",
+      "latency_ms" : 0,
+      "hit" : true,
+      "dangerous" : false,
+      "model_raw" : ""
+    },
+    {
+      "expected" : "NONE",
+      "candidates" : [
+
+      ],
+      "dangerous" : false,
+      "answer" : "NONE",
+      "hit" : true,
+      "id" : "n4",
+      "model_raw" : "",
+      "latency_ms" : 0
+    },
+    {
+      "id" : "n5",
+      "hit" : true,
+      "dangerous" : false,
+      "expected" : "NONE",
+      "candidates" : [
+
+      ],
+      "latency_ms" : 0,
+      "model_raw" : "",
+      "answer" : "NONE"
+    },
+    {
+      "latency_ms" : 179,
+      "id" : "n6",
+      "answer" : "NONE",
+      "candidates" : [
+        "星期一",
+        "星期三"
+      ],
+      "dangerous" : false,
+      "expected" : "NONE",
+      "model_raw" : "NONE",
+      "hit" : true
+    },
+    {
+      "candidates" : [
+
+      ],
+      "dangerous" : false,
+      "id" : "n7",
+      "expected" : "NONE",
+      "model_raw" : "",
+      "answer" : "NONE",
+      "hit" : true,
+      "latency_ms" : 0
+    }
+  ]
+}
