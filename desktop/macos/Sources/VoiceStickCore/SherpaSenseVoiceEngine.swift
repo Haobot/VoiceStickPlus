@@ -52,6 +52,11 @@ public final class SherpaSenseVoiceEngine: SenseVoiceEngine {
         UnsafePointer<SherpaOnnxOfflineRecognizerResult>?) -> Void)!
     private var destroyStream: (@convention(c) (OpaquePointer?) -> Void)!
 
+    /// 运行时 dylib 是否已就位（搜索序任一命中即真；设置状态行用，存在性检查）。
+    public static func runtimeDylibAvailable() -> Bool {
+        librarySearchPaths().contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
     /// dylib 搜索路径列表（出错时供诊断输出）。
     public static func librarySearchPaths() -> [String] {
         var paths: [String] = []

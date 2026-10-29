@@ -3,8 +3,10 @@ import VoiceStickCore  // N1: XiaomiSettings 下沉 Core 后需显式导入
 
 /// 设置窗口（布局与显隐规则对齐 Windows SettingsDialog）：
 /// - 通用：界面语言下拉（System/English/简体中文）+ 开发者模式勾选（始终可见，实时重排）。
-/// - 语音识别：Provider（VoiceStick Cloud 仅老配置仍为其时插入，对齐 Windows 下拉下线策略）、
-///   API Key/资源 ID（开发者模式可见；资源 ID 仅 Volcengine）、热词。
+/// - 语音识别：Provider（VoiceStick Cloud 仅老配置仍为其时插入，对齐 Windows 下拉下线策略；
+///   末位「本地语音识别（离线）」虚项——选中=local_asr.enabled 且 asrProvider 保留云端值，
+///   选中才显示模型目录/状态/下载按钮）、API Key/资源 ID（开发者模式可见；资源 ID 仅
+///   Volcengine；本地选中时一并隐藏）、热词。
 ///   腾讯云的 API Key 框即 SecretId（对齐 Windows，SecretKey/AppId 只走 config.toml 手编）。
 /// - 文本精修：LLM Base URL/API Key/Model（开发者模式），精修勾选与提示词（勾选可见）。
 /// - 输出：输出目标（开发者模式；macOS 无微信输入法项）。
@@ -43,6 +45,15 @@ final class SettingsWindowController: NSWindowController {
     private let imuDebugButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let debugAudioButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let debugAudioDirectoryField = NSTextField()
+    // 本地语音识别（离线）条件行（对齐 Windows D1/D2：provider 下拉本地虚项
+    // 选中才显示模型目录/状态/下载按钮；切换回去无缝恢复云端配置）。
+    private let localModelsDirField = NSTextField()
+    private let localStatusField = NSTextField(labelWithString: "")
+    private let downloadModelsButton = NSButton(title: "", target: nil, action: nil)
+    private var localModelsDirRow: NSStackView?
+    private var localStatusRow: NSStackView?
+    private var localModelsDirHintRow: NSStackView?
+    private var modelDownloadWindow: ModelDownloadWindowController?
     private let statusLabel = NSTextField(labelWithString: "")
 
     private let stack = NSStackView()
@@ -90,6 +101,12 @@ final class SettingsWindowController: NSWindowController {
             selector: #selector(apiKeyFieldDidChange),
             name: NSControl.textDidChangeNotification,
             object: apiKeyField
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(localModelsDirDidChange),
+            name: NSControl.textDidChangeNotification,
+            object: localModelsDirField
         )
     }
 
@@ -141,6 +158,39 @@ final class SettingsWindowController: NSWindowController {
         let resourceRow = row(label: tr(.settingsResourceId), control: resourcePopup)
         self.resourceRow = resourceRow
         stack.addArrangedSubview(resourceRow)
+        // 本地语音识别（离线）条件行（显隐见 updateVisibility；顺序对齐 Windows：
+        // provider → 密钥/资源 → 模型目录 → 状态+下载 → 热词）。
+        let localBrowseButton = NSButton(
+            title: tr(.settingsChooseDir), target: self, action: #selector(chooseLocalModelsDir))
+        let localDirControl = NSStackView()
+        localDirControl.orientation = .horizontal
+        localDirControl.alignment = .centerY
+        localDirControl.spacing = 8
+        localModelsDirField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        localDirControl.addArrangedSubview(localModelsDirField)
+        localDirControl.addArrangedSubview(localBrowseButton)
+        let localModelsDirRow = row(label: tr(.settingsLocalModelsDir), control: localDirControl)
+        self.localModelsDirRow = localModelsDirRow
+        stack.addArrangedSubview(localModelsDirRow)
+        downloadModelsButton.title = tr(.settingsDownloadModels)
+        downloadModelsButton.target = self
+        downloadModelsButton.action = #selector(downloadModels)
+        let localStatusControl = NSStackView()
+        localStatusControl.orientation = .horizontal
+        localStatusControl.alignment = .centerY
+        localStatusControl.spacing = 8
+        localStatusField.lineBreakMode = .byTruncatingMiddle
+        let statusSpacer = NSView()
+        statusSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        localStatusControl.addArrangedSubview(localStatusField)
+        localStatusControl.addArrangedSubview(statusSpacer)
+        localStatusControl.addArrangedSubview(downloadModelsButton)
+        let localStatusRow = row(label: "", control: localStatusControl)
+        self.localStatusRow = localStatusRow
+        stack.addArrangedSubview(localStatusRow)
+        let localHint = hintRow(tr(.settingsLocalModelsDirHint))
+        localModelsDirHintRow = localHint
+        stack.addArrangedSubview(localHint)
         configureMultiline(textView: hotwordsTextView, scrollView: hotwordsScrollView, height: 78)
         stack.addArrangedSubview(row(label: tr(.settingsHotwords), control: hotwordsScrollView))
         stack.addArrangedSubview(hintRow(tr(.settingsHotwordsHint)))
@@ -305,7 +355,8 @@ final class SettingsWindowController: NSWindowController {
         providerPopup.action = #selector(providerSelectionChanged)
     }
 
-    /// 重建 Provider 下拉项（对齐 Windows：VoiceStick Cloud 已下线，仅老配置仍为其时插入）。
+    /// 重建 Provider 下拉项（对齐 Windows：VoiceStick Cloud 已下线，仅老配置仍为其
+    /// 时插入；**本地虚项恒为末位**——索引语义见 ProviderPopupMapping）。
     private func rebuildProviderPopupItems() {
         providerPopup.removeAllItems()
         if config.asrProvider == .voiceStickCloud {
@@ -315,6 +366,7 @@ final class SettingsWindowController: NSWindowController {
             ASRProvider.volcengine.displayName,
             ASRProvider.tencent.displayName
         ])
+        providerPopup.addItem(withTitle: tr(.settingsProviderLocal))
     }
 
     private func configureApplyTrialAPIKeyButton() {
@@ -373,7 +425,12 @@ final class SettingsWindowController: NSWindowController {
         currentDisplayedProvider = config.asrProvider
         rebuildProviderPopupItems()
         providerPopup.selectItem(withTitle: config.asrProvider.displayName)
+        // 本地识别开启（虚项选中 = local_asr.enabled；asrProvider 保留云端值）。
+        if config.localAsr.enabled {
+            providerPopup.selectItem(at: providerPopup.numberOfItems - 1)
+        }
         apiKeyField.stringValue = apiKey(for: config.asrProvider)
+        localModelsDirField.stringValue = config.localAsr.modelsDir
         hotwordsTextView.string = config.asrHotwords.joined(separator: ",")
 
         llmBaseURLField.stringValue = config.llmBaseURL
@@ -400,6 +457,7 @@ final class SettingsWindowController: NSWindowController {
         }
         refreshHotwordCandidates()
         updateVisibility()
+        updateLocalAsrStatus()
         statusLabel.stringValue = ""
     }
 
@@ -452,8 +510,13 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func updateVisibility() {
-        apiKeyRow?.isHidden = !developerMode
-        resourceRow?.isHidden = !(developerMode && currentDisplayedProvider == .volcengine)
+        // 本地虚项选中态（末位判定；对齐 Windows ProviderComboLocalSelected）。
+        let localSelected = localProviderSelected()
+        apiKeyRow?.isHidden = !developerMode || localSelected
+        resourceRow?.isHidden = !(developerMode && currentDisplayedProvider == .volcengine) || localSelected
+        localModelsDirRow?.isHidden = !localSelected
+        localStatusRow?.isHidden = !localSelected
+        localModelsDirHintRow?.isHidden = !localSelected
         llmBaseURLRow?.isHidden = !developerMode
         llmAPIKeyRow?.isHidden = !developerMode
         llmModelRow?.isHidden = !developerMode
@@ -529,6 +592,66 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func apiKeyFieldDidChange() {
         updateApplyTrialButton()
+    }
+
+    @objc private func localModelsDirDidChange() {
+        updateLocalAsrStatus()
+    }
+
+    /// 本地虚项是否选中（索引末位判定；标题随界面语言变，不比标题）。
+    private func localProviderSelected() -> Bool {
+        ProviderPopupMapping.isLocal(
+            index: providerPopup.indexOfSelectedItem,
+            itemCount: providerPopup.numberOfItems)
+    }
+
+    /// 模型目录 + 运行时就位状态（存在性检查，UI 线程安全；全量 SHA 校验在
+    /// 下载会话的 worker 线程做——对齐 Windows 状态行只查存在的口径）。
+    private func updateLocalAsrStatus() {
+        var settings = LocalAsrSettings()
+        settings.modelsDir = localModelsDirField.stringValue
+        let resolved = settings.resolvedModelsDir(configDirectory: AppConfig.configDirectory)
+        if LocalAsrClient.validateModelsDir(resolved) == nil {
+            if SherpaSenseVoiceEngine.runtimeDylibAvailable() {
+                localStatusField.stringValue = tr(.settingsLocalStatusReady)
+                localStatusField.textColor = .systemGreen
+            } else {
+                localStatusField.stringValue = tr(.settingsLocalStatusMissingRuntime)
+                localStatusField.textColor = .systemOrange
+            }
+        } else {
+            localStatusField.stringValue = tr(.settingsLocalStatusMissingModel)
+            localStatusField.textColor = .systemRed
+        }
+    }
+
+    @objc private func chooseLocalModelsDir() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        let current = localModelsDirField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if current.isEmpty {
+            panel.directoryURL = AppConfig.configDirectory
+        } else if current.hasPrefix("/") {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            localModelsDirField.stringValue = url.path
+            updateLocalAsrStatus()
+        }
+    }
+
+    /// 「下载模型…」：打开下载向导（asr/llm 安装根 = 当前编辑框解析出的模型目录；
+    /// runtime 安装根固定 Application Support）。完成即刷新状态行，用户仍需点保存。
+    @objc private func downloadModels() {
+        var settings = LocalAsrSettings()
+        settings.modelsDir = localModelsDirField.stringValue
+        let resolved = settings.resolvedModelsDir(configDirectory: AppConfig.configDirectory)
+        let controller = ModelDownloadWindowController(asrModelsDir: resolved)
+        controller.onCompleted = { [weak self] in self?.updateLocalAsrStatus() }
+        modelDownloadWindow = controller
+        controller.show()
     }
 
     @objc private func applyTrialAPIKey() {
@@ -617,6 +740,11 @@ final class SettingsWindowController: NSWindowController {
         updatedConfig.uiLanguage = selectedLanguage()
         updatedConfig.resourceID = resourceID
         updatedConfig.asrHotwords = AppConfig.hotwordList(hotwordsTextView.string)
+        // 本地语音识别：虚项选中 = enabled（asrProvider 上面已按云端值写入）。
+        updatedConfig.localAsr = config.localAsr
+        updatedConfig.localAsr.enabled = localProviderSelected()
+        updatedConfig.localAsr.modelsDir = localModelsDirField.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         updatedConfig.pairedDeviceIDs = config.pairedDeviceIDs
         updatedConfig.deviceThemeColors = config.deviceThemeColors
         updatedConfig.deviceOverlayPositions = config.deviceOverlayPositions
@@ -724,6 +852,8 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func selectedProvider() -> ASRProvider {
+        // 本地虚项：保留云端值（切回云端项无缝恢复；asrProvider 落盘仍是云端）。
+        if localProviderSelected() { return currentDisplayedProvider }
         switch providerPopup.titleOfSelectedItem {
         case ASRProvider.voiceStickCloud.displayName:
             return .voiceStickCloud
