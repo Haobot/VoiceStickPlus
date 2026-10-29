@@ -535,6 +535,10 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 
 ①选型结论**不可跨任务形态搬用**（同一批模型：跨轮纠错 Qwen3-4B GO，few-shot+枚举约束对齐任务 qwen3 全家 NONE 崩塌，赢家 qwen2.5:1.5b 94%/80%/80ms——换任务先过 harness）；②能在确定性预筛层解决的不给模型（重叠候选簇是全模型杀手；负例垃圾单词用非等长阈值在预筛消灭）；③LLM 参与破坏性操作的安全形态=候选约束式（模型只在代码生成的候选枚举里选、代码复验、失败回退旧行为）。工程坑：异步吞轮回退重入原入口要带一次性闸防回环；swift build 新增源文件不进构建计划时清 `.build/out` 全量重建。**三度验证与新增形态（同日下午全栈评测）**：整句重写式精修对本地 ≤8B 判死（27 组合全灭，损伤含「我的→你的」代词翻转语义反向；7B 仅减到 5.15% 仍净负）——可行形态=editform 受限编辑指令「错词→热词/删除：片段」+守卫执行（qwen2.5:3b 1.67% 改善3/损伤0/70ms，小模型要有术语漂移教学例才出增益）；whisper tiny/base/small 在真机低码率音频崩塌（CER 16%~37%，公开榜不可迁移），本地 ASR 只认 SenseVoice int8；确定性规则层也要过真实数据（「这个API」指示代词误删教训）。详见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md` 追加节与 `Doc/Test/local-fullstack-eval-2026-10-28.md`。
 
+### 7.7 AX 写入后必须轮询确认，不能立即读回（2026-10-29）
+
+targeted 替换在 Chromium 系目标（Electron AXTextArea/浏览器 textarea）必败的根因：**AX 选区/光标写入（kAXSelectedTextRange）经 renderer 异步生效**，写调用返回 success 但立即读回拿到写入前旧值 → 验证式注入判「读回不符」零改动放弃（听写正文是 Cmd+V 粘贴填充故必踩；原生应用同步生效，原生目标验收测不出）。修法=读回与终验小步轮询（只追加读操作，耗尽才走拒绝路径，安全模型不变）。同构律：**平台返回的成功 ≠ 对端可见**（BLE CCCD 订阅假成功 §3.15 同族）。附带教训：执行环节静默路径必须补日志（本次 `voice_targeted action=` 后零日志是排障黑洞，已闭环 §7.5 引用文档待办第 3 条）；注入/AX 类功能验收必须覆盖一个 Electron/浏览器目标（原生目标通过≠Chromium 可用）。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
+
 ---
 
 ## 8. 遗留待办 / 待真机验证项
@@ -641,3 +645,4 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **macOS 玻璃材质「不通透/发虚/不像控件」三分流（2026-10-18）**：不通透=材质错（VEV 全磨砂无背景自适应，要用 NSGlassEffectView）；发虚=`_subvariant`/`_scrimState` KVC 反噬 backdrop scale 0.5→0.25（私有属性多为渲染结果非开关，别写）；不像宣传图控件=`style` 没切 `.clear`（默认 `.regular` 是菜单磨砂性格）。锁屏下玻璃截图全黑（backdrop 采样被门控），评估必须解锁后做。详见 §3.16 与 `Doc/Expe/macos-overlay-liquid-glass-clear-style-2026-10-18.md`。
 - **本地精修/ASR 选型先看形态再看模型（2026-10-28）**：判据=整句重写后 CER 不降反升（小模型改写正确文本、代词翻转）⇒ 形态错，换 editform 编辑指令+守卫；本地 ASR 公开榜排名无效（whisper 小档真机音频 CER≥16%），认 SenseVoice int8（40ms/条）。数据与复现：`Doc/Test/local-fullstack-eval-2026-10-28.md`、`scripts/local_model_eval/`。
 - **资源持有类对象绝不进 weak + 生产构造测试盲区（2026-10-29）**：macOS 本地 ASR 上线即卡 listening——引擎只被 ctx weak 持有，start 返回即释放，sendOggOpusChunk 守卫静默丢音频；状态机单测全走 engineOverride 注入零覆盖该路径。判据=回放 DebugAudio 会话（Tools/AsrReplayCli）零回调、日志零记录。另：git 走代理被断时用 SwiftPM 全局缓存镜像 + GIT_CONFIG_COUNT 注入 insteadOf 离线构建（mirror 目录带 .git、base 不带）。详见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md` 追加二。
+- **语音输入 targeted 替换「命中却零变化」（2026-10-29）**：AX 选区/光标写入在 Chromium 系目标经 renderer 异步生效，写后立即读回必拿旧值 → 验证式注入误判「读回不符」放弃；修=读回/终验小步轮询。律：**平台写成功 ≠ 已落地**，带验证的注入必须轮询确认；验收必须覆盖 Electron/浏览器目标。判据：`voice_targeted action=...` 后零日志=执行环节静默失败。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
