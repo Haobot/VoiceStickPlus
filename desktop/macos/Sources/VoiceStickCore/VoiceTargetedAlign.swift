@@ -5,15 +5,16 @@ import Foundation
 // 架构（Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md）：
 //   1. 拼音预筛（纯逻辑、PinyinGuard 同表口径的分级评分）从最近注入 remainingText
 //      生成 top-K 候选**子串**；
-//   2. 本地小模型（ollama /api/chat + JSON-schema enum 硬约束）从候选中挑一个或 NONE；
+//   2. 本地小模型（内嵌 llama.cpp，few-shot 同分布 JSON 输出）从候选中挑一个或 NONE；
 //   3. 输出必须精确命中候选枚举，任何失败回退现行「普通文本粘贴」路径。
 // 安全不变式：候选永远是 remainingText 的真实子串 ⇒ 对齐后的编辑仍走原 verified
 // 选区/读回/终验链，模型无法制造文本里不存在的编辑对象；默认关闭
 // （[voice_edit].local_align_enabled），见 Doc/Plan/voice-edit-commands.md targeted 章。
 //
-// 本文件纯逻辑（Foundation only）：候选生成/评分/prompt 构造/输出解析；HTTP 调用在
-// App 层（LocalAlignClient），协调器经闭包注入。Windows 侧同构落点
-// voice_targeted_align.{h,cc}（复用 llama.cpp 常驻引擎 + pinyin_guard，见方案）。
+// 本文件纯逻辑（Foundation only）：候选生成/评分/prompt 构造/输出解析；推理调用
+// 走内嵌引擎（LocalTargetedAlignEngine，LocalLlmRuntime.swift），协调器经闭包注入。
+// Windows 侧同构落点 voice_targeted_align.{h,cc}（复用 llama.cpp 常驻引擎 +
+// pinyin_guard，见方案）。
 
 /// 候选数与窗口长度的双端一致常量。
 public let kVoiceTargetedAlignMaxCandidates = 8
@@ -217,6 +218,43 @@ public enum VoiceTargetedAlign {
     无关时，answer 给 NONE。宁可 NONE 不可乱选。先在 reason 里用一句话说明判断依据，再把结论\
     写进 answer；answer 只能是候选词原样或 NONE。
     """
+
+    /// 引擎路径的 few-shot 轮次（assistant 侧 JSON 形态，与 ollama JSON-schema
+    /// 约束输出同分布——评测口径；内嵌引擎贪心采样下分布一致）。
+    public static func fewShotTurns() -> [(user: String, assistant: String)] {
+        fewShot.map { shot in
+            let reasonJSON = shot.reason
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return (
+                shot.user,
+                "{\"reason\":\"\(reasonJSON)\",\"answer\":\"\(shot.answer)\"}"
+            )
+        }
+    }
+
+    /// answer 枚举硬约束的 GBNF 语法（Ollama `format` JSON-schema 约束解码的
+    /// llama.cpp 等价移植——评测口径的一部分：answer 只能是候选原样或 NONE，
+    /// 模型无法制造候选之外的答案；reason 槽保留「先依据后结论」的 NONE 判断
+    /// 增益）。传 LlamaCppEngine.chat(grammar:)。
+    public static func answerEnumGrammar(candidates: [String]) -> String {
+        func escaped(_ text: String) -> String {
+            text.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+        let answers = (candidates + ["NONE"])
+            .map { "\"\\\"" + escaped($0) + "\\\"\"" }
+            .joined(separator: " | ")
+        // Ollama schema→grammar 转换器的等价形态：object 成员可选/任意序（模型
+        // 可跳过 reason 直出 answer——实测这个自由度正是 NONE 判断质量的关键，
+        // 强制 reason→answer 顺序会让小模型抄 few-shot 理由再答错）。
+        return "root ::= object\n"
+            + "object ::= \"{\" ws ( member (\",\" ws member)* )? \"}\"\n"
+            + "member ::= \"\\\"answer\\\"\" ws \":\" ws answer | \"\\\"reason\\\"\" ws \":\" ws string\n"
+            + "answer ::= " + answers + "\n"
+            + "string ::= \"\\\"\" ( [^\"\\\\] | \"\\\\\\\\\" ([\"\\\\\\\\bfnrt\"] | \"u\" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) )* \"\\\"\"\n"
+            + "ws ::= [ \\t\\n]*"
+    }
 
     /// 查询 prompt 主体（不含「输出：」尾缀也行，few-shot 已建立形态；保留尾缀）。
     public static func userPrompt(

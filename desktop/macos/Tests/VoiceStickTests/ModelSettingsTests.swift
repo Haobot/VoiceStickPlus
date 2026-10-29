@@ -81,7 +81,11 @@ private func testManifestWellFormedAndBucketGuard() {
     let kinds = ModelManifest.entries.map { $0.kind }
     check(kinds.contains(.asr), "Manifest.hasAsrEntry")
     check(kinds.contains(.runtime), "Manifest.hasRuntimeEntry")
-    check(ModelManifest.entries.allSatisfy { $0.required }, "Manifest.phaseAAllRequired")
+    // asr/runtime 必选、llm 档可选（下载向导勾选语义）。
+    check(ModelManifest.entries.filter { $0.kind == .asr || $0.kind == .runtime }
+        .allSatisfy { $0.required }, "Manifest.requiredSet")
+    check(ModelManifest.entries.filter { $0.kind != .asr && $0.kind != .runtime }
+        .allSatisfy { !$0.required }, "Manifest.llmOptional")
 
     // dylib 成员路径与引擎搜索序的安装位一致（lib/ 前缀）。
     let runtime = ModelManifest.entries.first { $0.kind == .runtime }

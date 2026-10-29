@@ -50,6 +50,9 @@ let package = Package(
                 "CRnnoise",
                 // SenseVoice 本地 ASR 的 C 结构体定义（header-only，dylib 运行时 dlopen）。
                 "CSherpaOnnx",
+                // llama.cpp b10868 C API 头（header-only 桥接，dylib 运行时 dlopen，
+                // 同 CSherpaOnnx 模式——仓库无 dylib 也能构建，见 Sources/CLlamaCpp/README.md）。
+                "CLlamaCpp",
                 // N1 根刀：AppConfig（TOML 读写）下迁 Core 需 TOMLKit（测试 runner 经 Core 传递获取，无需改 runner 声明）。
                 .product(name: "TOMLKit", package: "TOMLKit"),
             ],
@@ -59,6 +62,13 @@ let package = Package(
         .target(
             name: "CSherpaOnnx",
             path: "Sources/CSherpaOnnx",
+            publicHeadersPath: "include"
+        ),
+        // llama.cpp b10868 C API 头（header-only 桥接；dylib 由
+        // scripts/fetch-llama-cpp.sh 合成安装，运行时 dlopen）。
+        .target(
+            name: "CLlamaCpp",
+            path: "Sources/CLlamaCpp",
             publicHeadersPath: "include"
         ),
         .target(
@@ -74,6 +84,13 @@ let package = Package(
             name: "AsrReplayCli",
             dependencies: ["VoiceStickCore"],
             path: "Tools/AsrReplayCli"
+        ),
+        // 诊断/复测工具：内嵌 llama.cpp 引擎的 chat 冒烟 + 精修/对齐评测复测
+        //（D1 评测口径对拍；需先 scripts/fetch-llama-cpp.sh 安装 dylib）。
+        .executableTarget(
+            name: "LocalLlmCli",
+            dependencies: ["VoiceStickCore"],
+            path: "Tools/LocalLlmCli"
         ),
         .executableTarget(
             name: "VoiceStickTests",

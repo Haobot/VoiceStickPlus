@@ -67,6 +67,9 @@ enum L10nKey: String, CaseIterable {
     case modelDownloadTitle, modelDownloadIntro
     case modelDownloadEntryAsr, modelDownloadEntryRuntime, modelDownloadEntryLlm
     case modelDownloadSpaceNeeded, modelDownloadStart, modelDownloadPreparing, modelDownloadDone
+    // 本地文本精修 + 语音编辑目标词对齐（Phase C）
+    case settingsLocalRefine, settingsLocalRefineReady, settingsLocalRefineMissing, settingsLocalRefineNoRuntime
+    case settingsVoiceEditAlign, settingsVoiceEditAlignReady, settingsVoiceEditAlignMissing
 
     // 引导窗口
     case onboardingSetupTitle
@@ -315,6 +318,13 @@ enum Localization {
         .settingsLocalStatusMissingModel: "✗ Model files not found (need model.int8.onnx + tokens.txt)",
         .settingsLocalStatusMissingRuntime: "△ Models ready, but the ASR runtime is missing — click Download Models…",
         .settingsDownloadModels: "Download Models…",
+        .settingsLocalRefine: "Local text refinement (editform, offline)",
+        .settingsLocalRefineReady: "✓ Refine model ready (Qwen2.5 3B)",
+        .settingsLocalRefineMissing: "✗ Refine model not downloaded — degrades to rule-based cleanup (optional)",
+        .settingsLocalRefineNoRuntime: "△ Local LLM runtime not installed (run scripts/fetch-llama-cpp.sh)",
+        .settingsVoiceEditAlign: "Target-word local alignment (fixes misheard words)",
+        .settingsVoiceEditAlignReady: "✓ Alignment model ready (Qwen2.5 1.5B)",
+        .settingsVoiceEditAlignMissing: "✗ Alignment model not downloaded — misheard targets fall back to plain paste (optional)",
         .modelDownloadTitle: "Download Local Models",
         .modelDownloadIntro: "Downloads local models into your user library:",
         .modelDownloadEntryAsr: "Speech recognition model (required, ~240 MB)",
@@ -635,6 +645,13 @@ enum Localization {
         .settingsLocalStatusMissingModel: "✗ 未找到模型文件（需 model.int8.onnx 与 tokens.txt）",
         .settingsLocalStatusMissingRuntime: "△ 模型就绪，识别运行时缺失——点「下载模型…」安装",
         .settingsDownloadModels: "下载模型…",
+        .settingsLocalRefine: "本地文本精修（editform，离线）",
+        .settingsLocalRefineReady: "✓ 精修模型就绪（Qwen2.5 3B）",
+        .settingsLocalRefineMissing: "✗ 未下载精修模型——将降级为规则清理（可选）",
+        .settingsLocalRefineNoRuntime: "△ 本地 LLM 运行时未安装（先跑 scripts/fetch-llama-cpp.sh）",
+        .settingsVoiceEditAlign: "目标词本地对齐（听漂纠正）",
+        .settingsVoiceEditAlignReady: "✓ 对齐模型就绪（Qwen2.5 1.5B）",
+        .settingsVoiceEditAlignMissing: "✗ 未下载对齐模型——目标词听漂时回退普通粘贴（可选）",
         .modelDownloadTitle: "下载本地模型",
         .modelDownloadIntro: "将本地模型下载到用户目录：",
         .modelDownloadEntryAsr: "语音识别模型（必选，约 240 MB）",

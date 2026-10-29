@@ -78,3 +78,6 @@ scripts/license_test_vectors.json
 scripts/local_model_eval/models/
 scripts/local_model_eval/.venv/
 scripts/local_model_eval/wav_cache/
+
+# macOS 内嵌 llama.cpp 预编译产物（fetch-llama-cpp.sh 生成，pin b10868 与 Windows 同步）
+desktop/macos/Vendor/

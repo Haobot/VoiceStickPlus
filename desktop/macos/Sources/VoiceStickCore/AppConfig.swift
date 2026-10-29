@@ -899,6 +899,8 @@ public struct AppConfig {
         [local_asr]
         enabled = \(localAsr.enabled.tomlValue)
         models_dir = "\(localAsr.modelsDir.tomlEscaped)"
+        refine_model = "\(localAsr.refineModel.tomlEscaped)"
+        refine_num_threads = \(localAsr.refineNumThreads)
         """
     }
 
@@ -909,6 +911,8 @@ public struct AppConfig {
         var file = LocalAsrConfigFile()
         file.enabled = values["enabled"].map { boolValue($0, default: false) }
         file.models_dir = values["models_dir"]
+        file.refine_model = values["refine_model"]
+        file.refine_num_threads = values["refine_num_threads"].flatMap { Int($0) }
         return file
     }
 
@@ -925,7 +929,6 @@ public struct AppConfig {
         verify_mode = "\(voiceEdit.verifyMode.rawValue)"
         unverified_seconds = \(voiceEdit.unverifiedSeconds)
         local_align_enabled = \(voiceEdit.localAlignEnabled.tomlValue)
-        local_align_url = "\(voiceEdit.localAlignURL.tomlEscaped)"
         local_align_model = "\(voiceEdit.localAlignModel.tomlEscaped)"
         local_align_timeout_ms = \(voiceEdit.localAlignTimeoutMS)
         """

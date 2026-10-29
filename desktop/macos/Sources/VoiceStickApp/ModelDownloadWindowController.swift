@@ -55,17 +55,22 @@ final class ModelDownloadWindowController: NSWindowController, NSWindowDelegate 
         super.init(window: window)
         window.delegate = self
 
-        // 安装根：asr/llm 条目 = 设置解析出的模型目录；runtime 条目固定
-        // Application Support（SherpaSenseVoiceEngine.librarySearchPaths 的第 3 路径）。
-        var roots: [ModelManifest.EntrySpec.Kind: URL] = [
-            .asr: URL(fileURLWithPath: asrModelsDir, isDirectory: true),
-        ]
+        // 安装根：asr/llm 条目 = 设置解析出的模型目录（GGUF 落模型目录，Windows
+        // 同布局）；runtime 条目固定 Application Support（dylib 搜索序第 3 路径）。
+        let asrRoot = URL(fileURLWithPath: asrModelsDir, isDirectory: true)
+        var runtimeRoot: URL?
         if let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first {
-            roots[.runtime] = appSupport.appendingPathComponent("VoiceStick/models/sherpa-onnx")
+            runtimeRoot = appSupport.appendingPathComponent("VoiceStick/models/sherpa-onnx")
         }
         items = ModelManifest.entries.compactMap { entry in
-            guard let root = roots[entry.kind] else { return nil }
+            let root: URL
+            switch entry.kind {
+            case .asr, .llm: root = asrRoot
+            case .runtime:
+                guard let runtimeRoot else { return nil }
+                root = runtimeRoot
+            }
             return ItemState(
                 entry: entry, installRoot: root,
                 checkbox: NSButton(checkboxWithTitle: entryTitle(entry), target: self,

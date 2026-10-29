@@ -128,8 +128,22 @@ public enum ModelManifest {
     static let runtimeOrtSHA256 =
         "59665a56e6a95118606bebe583efa8a3528362fc1078f69fc27f36def905bb2c"
 
+    /// 本地 LLM GGUF：**Ollama registry 的 qwen2.5 Q4_K_M blob（评测验证过的
+    /// 原件——2026-10-29 复测：Qwen 官方 ModelScope Q4_K_M 在对齐任务上
+    /// accuracy 69% vs blob 76%、在 editform 精修上 damage=1 越线（blob damage=0），
+    /// 同名量化不同量化器产物行为有实质差异，故 pin 到评测原件）**。
+    /// SHA 即 registry blob 名（ollama blob 名 = 内容 sha256）。
+    static let llm15bBytes: Int64 = 986_048_512
+    static let llm15bSHA256 =
+        "183715c435899236895da3869489cc30ac241476b4971a20285b1a462818a5b4"
+    static let llm3bBytes: Int64 = 1_929_903_008
+    static let llm3bSHA256 =
+        "5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6"
+
     /// 全部条目（下载向导按此渲染勾选列表；顺序即展示序）。
-    public static let entries: [EntrySpec] = [asrEntry, runtimeEntry]
+    public static let entries: [EntrySpec] = [
+        asrEntry, runtimeEntry, llmAlignEntry, llmRefineEntry,
+    ]
 
     static let asrEntry = EntrySpec(
         kind: .asr,
@@ -188,6 +202,50 @@ public enum ModelManifest {
                 // 解包后两 dylib 合计 ~31MB；tar.bz2 压缩后以此为体积文案估计。
                 isArchive: true, approxArchiveBytes: 31_000_000),
         ])
+
+    /// 对齐档 1.5B（可选项；GGUF 直装模型目录，Windows 同布局）。
+    static let llmAlignEntry = EntrySpec(
+        kind: .llm("qwen2.5-1.5b"),
+        required: false,
+        installRoot: "sense-voice-int8-2024-07-17",
+        artifacts: [
+            ArtifactSpec(
+                urls: llmGGUFURLs(rel: LocalLlmRuntime.alignTierRelPath, registryBlobSHA: llm15bSHA256),
+                files: [
+                    FileSpec(
+                        relPath: LocalLlmRuntime.alignTierRelPath,
+                        bytes: llm15bBytes, sha256: llm15bSHA256, archiveMember: ""),
+                ],
+                isArchive: false, approxArchiveBytes: 0),
+        ])
+
+    /// 精修档 3B（可选项）。
+    static let llmRefineEntry = EntrySpec(
+        kind: .llm("qwen2.5-3b"),
+        required: false,
+        installRoot: "sense-voice-int8-2024-07-17",
+        artifacts: [
+            ArtifactSpec(
+                urls: llmGGUFURLs(rel: LocalLlmRuntime.refineTierRelPath, registryBlobSHA: llm3bSHA256),
+                files: [
+                    FileSpec(
+                        relPath: LocalLlmRuntime.refineTierRelPath,
+                        bytes: llm3bBytes, sha256: llm3bSHA256, archiveMember: ""),
+                ],
+                isArchive: false, approxArchiveBytes: 0),
+        ])
+
+    /// GGUF 三源：COS 主源/直连（发布侧上传后生效，此前 404 快速回退）→
+    /// Ollama registry blob 直链（权威原件，支持 Range 断点续传）→
+    /// GitHub model-pack。sha = blob 名（sha256）。
+    static func llmGGUFURLs(rel: String, registryBlobSHA: String) -> [String] {
+        [
+            cosPrimaryBase + "/sense-voice-int8-2024-07-17/" + rel,
+            cosDirectBase + "/sense-voice-int8-2024-07-17/" + rel,
+            "https://registry.ollama.ai/v2/library/qwen2.5/blobs/sha256:" + registryBlobSHA,
+            githubModelPackBase + "/sense-voice-int8-2024-07-17/" + rel,
+        ]
+    }
 
     // MARK: - 自洽校验（对齐 Windows ModelEntriesWellFormed）
 

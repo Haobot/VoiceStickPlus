@@ -53,6 +53,15 @@ final class SettingsWindowController: NSWindowController {
     private var localModelsDirRow: NSStackView?
     private var localStatusRow: NSStackView?
     private var localModelsDirHintRow: NSStackView?
+    // 本地文本精修（provider=local 时的条件区块；checkbox 与「文本精修」区块的
+    // refineButton 同步——两者绑同一顶层 refine_enabled）。
+    private let localRefineButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let localRefineStatusField = NSTextField(labelWithString: "")
+    private var localRefineRow: NSStackView?
+    // 语音编辑区块的目标词对齐行（voiceEdit 开关条件区）。
+    private let voiceEditAlignButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let voiceEditAlignStatusField = NSTextField(labelWithString: "")
+    private var voiceEditAlignRow: NSStackView?
     private var modelDownloadWindow: ModelDownloadWindowController?
     private let statusLabel = NSTextField(labelWithString: "")
 
@@ -191,6 +200,20 @@ final class SettingsWindowController: NSWindowController {
         let localHint = hintRow(tr(.settingsLocalModelsDirHint))
         localModelsDirHintRow = localHint
         stack.addArrangedSubview(localHint)
+        // 本地文本精修（对齐 Windows 本地区块：复选框 + 模型状态）。
+        localRefineButton.title = tr(.settingsLocalRefine)
+        localRefineButton.target = self
+        localRefineButton.action = #selector(localRefineToggled)
+        let refineControl = NSStackView()
+        refineControl.orientation = .vertical
+        refineControl.alignment = .leading
+        refineControl.spacing = 4
+        refineControl.addArrangedSubview(localRefineButton)
+        localRefineStatusField.textColor = .secondaryLabelColor
+        refineControl.addArrangedSubview(localRefineStatusField)
+        let localRefineRow = row(label: "", control: refineControl)
+        self.localRefineRow = localRefineRow
+        stack.addArrangedSubview(localRefineRow)
         configureMultiline(textView: hotwordsTextView, scrollView: hotwordsScrollView, height: 78)
         stack.addArrangedSubview(row(label: tr(.settingsHotwords), control: hotwordsScrollView))
         stack.addArrangedSubview(hintRow(tr(.settingsHotwordsHint)))
@@ -279,6 +302,20 @@ final class SettingsWindowController: NSWindowController {
         )
         voiceEditDefaultCharsRow = voiceEditCharsRow
         stack.addArrangedSubview(voiceEditCharsRow)
+        // 目标词本地对齐（voiceEdit 开关条件区；它服务于云端+本地两种 ASR）。
+        voiceEditAlignButton.title = tr(.settingsVoiceEditAlign)
+        voiceEditAlignButton.target = self
+        voiceEditAlignButton.action = #selector(voiceEditAlignToggled)
+        let alignControl = NSStackView()
+        alignControl.orientation = .vertical
+        alignControl.alignment = .leading
+        alignControl.spacing = 4
+        alignControl.addArrangedSubview(voiceEditAlignButton)
+        voiceEditAlignStatusField.textColor = .secondaryLabelColor
+        alignControl.addArrangedSubview(voiceEditAlignStatusField)
+        let alignRow = row(label: "", control: alignControl)
+        voiceEditAlignRow = alignRow
+        stack.addArrangedSubview(alignRow)
         stack.addArrangedSubview(hintRow(tr(.settingsVoiceEditHint)))
 
         // ===== 系统 =====
@@ -447,6 +484,8 @@ final class SettingsWindowController: NSWindowController {
         voiceEditButton.state = config.voiceEdit.enabled ? .on : .off
         voiceEditDefaultCharsValueLabel.stringValue = "\(config.voiceEdit.defaultChars)"
         voiceEditDefaultCharsStepper.intValue = Int32(config.voiceEdit.defaultChars)
+        localRefineButton.state = config.refineEnabled ? .on : .off
+        voiceEditAlignButton.state = config.voiceEdit.localAlignEnabled ? .on : .off
         launchAtLoginButton.state = config.launchAtLogin ? .on : .off
         imuDebugButton.state = config.showIMUDebug ? .on : .off
         debugAudioButton.state = config.debugAudioCache ? .on : .off
@@ -458,6 +497,7 @@ final class SettingsWindowController: NSWindowController {
         refreshHotwordCandidates()
         updateVisibility()
         updateLocalAsrStatus()
+        updateLocalLlmStatus()
         statusLabel.stringValue = ""
     }
 
@@ -517,6 +557,8 @@ final class SettingsWindowController: NSWindowController {
         localModelsDirRow?.isHidden = !localSelected
         localStatusRow?.isHidden = !localSelected
         localModelsDirHintRow?.isHidden = !localSelected
+        localRefineRow?.isHidden = !localSelected
+        voiceEditAlignRow?.isHidden = voiceEditButton.state != .on
         llmBaseURLRow?.isHidden = !developerMode
         llmAPIKeyRow?.isHidden = !developerMode
         llmModelRow?.isHidden = !developerMode
@@ -567,11 +609,6 @@ final class SettingsWindowController: NSWindowController {
         resizeWindowToFit(animated: true)
     }
 
-    @objc private func refineToggled() {
-        updateVisibility()
-        resizeWindowToFit(animated: true)
-    }
-
     @objc private func voiceEditToggled() {
         updateVisibility()
         resizeWindowToFit(animated: true)
@@ -596,6 +633,7 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func localModelsDirDidChange() {
         updateLocalAsrStatus()
+        updateLocalLlmStatus()
     }
 
     /// 本地虚项是否选中（索引末位判定；标题随界面语言变，不比标题）。
@@ -642,6 +680,48 @@ final class SettingsWindowController: NSWindowController {
         }
     }
 
+    /// 本地精修复选框：与「文本精修」区块的 refineButton 双向同步（绑同一字段）。
+    @objc private func localRefineToggled() {
+        refineButton.state = localRefineButton.state
+        updateVisibility()
+        resizeWindowToFit(animated: true)
+    }
+
+    @objc private func voiceEditAlignToggled() {
+        updateLocalLlmStatus()
+    }
+
+    /// refineButton 联动（refineToggled 里反向同步）。
+    @objc private func refineToggled() {
+        localRefineButton.state = refineButton.state
+        updateVisibility()
+        resizeWindowToFit(animated: true)
+    }
+
+    /// 本地 LLM 档位就位状态（存在性检查，UI 线程安全）：3B 精修 / 1.5B 对齐。
+    private func updateLocalLlmStatus() {
+        func llmStatus(tierPath: String?, readyText: String, missingText: String) -> String {
+            guard LlamaCppEngine.runtimeDylibAvailable() else {
+                return tr(.settingsLocalRefineNoRuntime)
+            }
+            return tierPath != nil ? readyText : missingText
+        }
+        localRefineStatusField.stringValue = llmStatus(
+            tierPath: LocalLlmRuntime.refineModelPath(
+                modelsDir: localModelsDirField.stringValue,
+                override: config.localAsr.refineModel,
+                configDirectory: AppConfig.configDirectory),
+            readyText: tr(.settingsLocalRefineReady),
+            missingText: tr(.settingsLocalRefineMissing))
+        voiceEditAlignStatusField.stringValue = llmStatus(
+            tierPath: LocalLlmRuntime.alignModelPath(
+                modelsDir: localModelsDirField.stringValue,
+                override: config.voiceEdit.localAlignModel,
+                configDirectory: AppConfig.configDirectory),
+            readyText: tr(.settingsVoiceEditAlignReady),
+            missingText: tr(.settingsVoiceEditAlignMissing))
+    }
+
     /// 「下载模型…」：打开下载向导（asr/llm 安装根 = 当前编辑框解析出的模型目录；
     /// runtime 安装根固定 Application Support）。完成即刷新状态行，用户仍需点保存。
     @objc private func downloadModels() {
@@ -649,7 +729,10 @@ final class SettingsWindowController: NSWindowController {
         settings.modelsDir = localModelsDirField.stringValue
         let resolved = settings.resolvedModelsDir(configDirectory: AppConfig.configDirectory)
         let controller = ModelDownloadWindowController(asrModelsDir: resolved)
-        controller.onCompleted = { [weak self] in self?.updateLocalAsrStatus() }
+        controller.onCompleted = { [weak self] in
+            self?.updateLocalAsrStatus()
+            self?.updateLocalLlmStatus()
+        }
         modelDownloadWindow = controller
         controller.show()
     }
@@ -757,6 +840,7 @@ final class SettingsWindowController: NSWindowController {
         updatedConfig.voiceEdit = config.voiceEdit
         updatedConfig.voiceEdit.enabled = voiceEditButton.state == .on
         updatedConfig.voiceEdit.defaultChars = Int(voiceEditDefaultCharsStepper.intValue)
+        updatedConfig.voiceEdit.localAlignEnabled = voiceEditAlignButton.state == .on
         updatedConfig.debugAudioCache = debugAudioButton.state == .on
         updatedConfig.debugAudioDirectory = URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)
         updatedConfig.pairedDevices = config.pairedDevices

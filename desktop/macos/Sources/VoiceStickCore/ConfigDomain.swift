@@ -200,13 +200,17 @@ public struct VoiceEditSettings: Equatable {
     public var unverifiedSeconds = 8
 
     /// targeted 目标词本地对齐（本地小模型兜底，**默认关**；方案 targeted 章 §对齐）：
-    /// 自然简写门控未命中（ASR 把目标词听漂）时，用拼音预筛候选 + 本地 ollama 模型
+    /// 自然简写门控未命中（ASR 把目标词听漂）时，用拼音预筛候选 + 本地模型
     /// 挑选对齐目标。候选恒为最近注入的真实子串，执行链 verified 语义零改动。
+    /// 2026-10-29 起推理改走**内嵌 llama.cpp 引擎**（不再依赖 Ollama）。
     public var localAlignEnabled = false
-    /// ollama /api/chat 基地址。对齐请求携带最近注入文本——**仅允许本机回环**
-    ///（LocalAlignClient 强制校验，非回环拒绝请求），不外发任何内容。
+    /// **已废弃**（Ollama 时代的 /api/chat 端点；内嵌引擎不使用。仅保留解析兼容，
+    /// 序列化不再写出）。
     public var localAlignURL = "http://127.0.0.1:11434"
-    /// ollama 模型名（空 = 对齐兜底实际不可用；评测推荐见 Doc/Test 评测报告）。
+    /// 对齐档 GGUF 路径覆盖：空 = 默认 1.5B 档
+    ///（`<models_dir>/Qwen2.5-1.5B-Instruct-Q4_K_M/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`，
+    /// 评测口径见 Doc/Test/local-llm-target-alignment-eval-2026-10-28.md）；
+    /// 绝对路径或相对路径（相对锚 models_dir）。
     public var localAlignModel = ""
     /// 单次对齐请求超时（毫秒）；超时/失败一律回退普通文本路径。
     public var localAlignTimeoutMS = 3000
@@ -223,8 +227,9 @@ public struct VoiceEditSettings: Equatable {
     public static let localAlignTimeoutRange = 500...10000
 }
 
-/// 本地离线 ASR 配置（[local_asr] 表；字段与 Windows 同名，macOS 只消费
-/// enabled/models_dir）。默认关：不改变现有云端链路行为。
+/// 本地离线 ASR 配置（[local_asr] 表；字段与 Windows 同名）。默认关：不改变现有
+/// 云端链路行为。macOS 2026-10-29 起消费 refine_model/refine_num_threads（本地
+/// editform 精修，与 Windows 的 llama.cpp 精修同键名）。
 public struct LocalAsrSettings: Equatable {
     public init() {}
 
@@ -234,9 +239,19 @@ public struct LocalAsrSettings: Equatable {
     /// SenseVoice 模型目录（须含 model.int8.onnx + tokens.txt）。
     /// 空 = 默认 `~/Library/Application Support/VoiceStick/models/sense-voice-int8-2024-07-17`
     ///（与 Windows 离线包 scripts/pack_local_models.py 的目录布局同名）。
+    /// 本地 LLM GGUF（精修/对齐档）也落在此目录下（Windows 同布局）。
     public var modelsDir = ""
+    /// 本地 editform 精修的 GGUF 路径覆盖：空 = 默认 3B 档
+    ///（`<models_dir>/Qwen2.5-3B-Instruct-Q4_K_M/Qwen2.5-3B-Instruct-Q4_K_M.gguf`）；
+    /// 绝对路径或相对路径（相对锚 models_dir）。
+    public var refineModel = ""
+    /// CPU 推理线程数（M 系性能/能效核混合，默认 4 稳妥；Windows 默认 6 为 x86）。
+    public var refineNumThreads = 4
 
     public static let `default` = LocalAsrSettings()
+
+    /// 加载钳位（与 Windows app_config.h kLocalRefineThreadsMin/Max 一致）。
+    public static let refineThreadsRange = 1...32
 
     /// 解析实际模型目录：空 = 默认路径；`~` 展开；相对路径以配置目录为基准。
     public func resolvedModelsDir(configDirectory: URL) -> String {
@@ -731,6 +746,14 @@ public struct KeySpec: Equatable {
         if let enabled = file.enabled { settings.enabled = enabled }
         if let value = file.models_dir?.trimmingCharacters(in: .whitespacesAndNewlines) {
             settings.modelsDir = value
+        }
+        if let value = file.refine_model?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            settings.refineModel = value
+        }
+        if let threads = file.refine_num_threads {
+            settings.refineNumThreads = min(
+                max(threads, LocalAsrSettings.refineThreadsRange.lowerBound),
+                LocalAsrSettings.refineThreadsRange.upperBound)
         }
         return settings
     }

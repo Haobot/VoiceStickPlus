@@ -168,6 +168,8 @@ public struct VoiceEditConfigFile: Decodable {
 public struct LocalAsrConfigFile: Decodable {
     public var enabled: Bool?
     public var models_dir: String?
+    public var refine_model: String?
+    public var refine_num_threads: Int?
 }
 
 /// [device.<id>.interaction] 表：键名与顶层一致。
