@@ -15,6 +15,8 @@ import VoiceStickCore  // N1: XiaomiSettings 下沉 Core 后需显式导入
 /// - 音频文件（开发者模式）：调试音频开关与目录。
 /// 语言保存在 AppDelegate onConfigChanged 生效（重建托盘菜单）；本窗口自身靠
 /// 关闭后重开重建文案（AppDelegate 保存后丢弃缓存的本控制器）。
+/// 整块内容装在滚动视图里：开发者模式全展开行数可能超过屏幕，窗口高度由
+/// resizeWindowToFit 封顶为屏幕可用高度，超出部分纵向滚动查看。
 final class SettingsWindowController: NSWindowController {
     private let languagePopup = NSPopUpButton()
     private let developerModeButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -143,8 +145,31 @@ final class SettingsWindowController: NSWindowController {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 16
+        // 24 内边距放进 edgeInsets（随内容滚动，滚动范围天然正确），不写进
+        // 文档视图对 clip view 的约束——那会被 AppKit 并入滚动定位导致贴边/范围错。
+        stack.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
+
+        // 内容装进滚动视图（开发者模式行数多，窗口封顶后靠滚动查看，见 resizeWindowToFit）。
+        // 文档视图必须是翻转容器：非翻转文档在内容增高时 AppKit 锚定左下角，
+        // 打开窗口会停内容底部；翻转后锚定左上角，打开即在顶部。
+        let documentView = FlippedDocumentView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor)
+        ])
+        let contentScrollView = NSScrollView()
+        contentScrollView.hasVerticalScroller = true
+        contentScrollView.autohidesScrollers = true
+        contentScrollView.drawsBackground = false
+        contentScrollView.automaticallyAdjustsContentInsets = false
+        contentScrollView.translatesAutoresizingMaskIntoConstraints = false
+        contentScrollView.documentView = documentView
+        contentView.addSubview(contentScrollView)
 
         // ===== 通用 =====
         stack.addArrangedSubview(sectionTitle(tr(.settingsSectionGeneral)))
@@ -377,9 +402,14 @@ final class SettingsWindowController: NSWindowController {
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 24)
+            contentScrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            contentScrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            contentScrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            contentScrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            // 文档视图（翻转容器）只钉上/左/右，高度随 stack intrinsic，才能纵向滚动。
+            documentView.topAnchor.constraint(equalTo: contentScrollView.contentView.topAnchor),
+            documentView.leadingAnchor.constraint(equalTo: contentScrollView.contentView.leadingAnchor),
+            documentView.trailingAnchor.constraint(equalTo: contentScrollView.contentView.trailingAnchor)
         ])
     }
 
@@ -590,11 +620,15 @@ final class SettingsWindowController: NSWindowController {
         updateApplyTrialButton()
     }
 
-    /// 按可见行动态调整窗口高度（保持顶边位置不动）。
+    /// 按可见行动态调整窗口高度（保持顶边位置不动）；高度封顶为屏幕可用高度减
+    /// 标题栏与安全边距，超出部分由滚动视图滚动（开发者模式全展开可能超屏）。
     private func resizeWindowToFit(animated: Bool) {
         guard let window, let contentView = window.contentView else { return }
         contentView.layoutSubtreeIfNeeded()
-        let targetHeight = stack.fittingSize.height + 48
+        var targetHeight = stack.fittingSize.height + 48
+        if let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            targetHeight = min(targetHeight, visibleFrame.height - 60)
+        }
         guard abs(contentView.frame.height - targetHeight) > 1 else { return }
         var frame = window.frame
         let delta = targetHeight - contentView.frame.height
@@ -1034,6 +1068,12 @@ final class SettingsWindowController: NSWindowController {
         row.addArrangedSubview(label)
         return row
     }
+}
+
+/// 滚动视图文档容器：翻转坐标系（原点左上）。NSStackView 非翻转，直接作
+/// documentView 时内容增高会被 AppKit 锚定左下角，窗口打开停在内容底部。
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 /// 8765 有监听即认为调试回放服务已起（loopback connect 收/拒均为即时返回）。
