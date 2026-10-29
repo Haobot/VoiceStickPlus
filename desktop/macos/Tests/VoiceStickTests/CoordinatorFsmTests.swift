@@ -842,8 +842,10 @@ func runVoiceTargetedCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.6)
-    checkEqual(h.ops.list, ["state", "select(2,2)", "selected", "select(6,0)"],
-               "targeted: 读回不符→恢复末尾光标，无 delete/paste")
+    checkEqual(h.ops.list,
+               ["state", "select(2,2)", "selected", "selected", "selected", "selected",
+                "selected", "select(6,0)"],
+               "targeted: 读回不符（重试耗尽）→恢复末尾光标，无 delete/paste")
     checkEqual(h.field.text, "我去北京上班", "targeted: 读回不符零文本修改")
     checkEqual(h.sink.timedMessages.last, "voiceTargetedTextChanged",
                "targeted: 读回不符 toast key")
