@@ -210,3 +210,38 @@ task-shape 纪律复跑评测口径，与 Ollama 原始结论对拍：
 结果存档：`results/refine_embedded_20261029.json`、
 `refine_embedded_officialquant_20261029.json`、
 `scripts/local_align_bench/results/embedded_*.json`。
+
+## 10. 三问复测（2026-10-29 傍晚：fp32 / 单模型合并 / qwen3.5）
+
+### SenseVoice fp32 vs int8（同 31 例设备语料 ×3 轮）
+
+| 量化 | CER | worst | hot p50/p95 |
+|---|---|---|---|
+| int8（现役） | 2.22% | 21.74% | 40ms |
+| **fp32（938MB）** | 2.14% | **21.74%（同一条）** | 42.7/141.8ms |
+
+差 0.08 点属噪声，worst 完全相同 ⇒ 错误根源在音频质量/模型能力而非量化；
+fp32 体积 ×4（下载/磁盘/内存）无对应收益。**维持 int8**（与 Windows 分发同锁）。
+
+### 精修/对齐单模型合并（内嵌引擎交叉实测）
+
+| 组合 | 结果 | 判定 |
+|---|---|---|
+| 对齐×1.5B（现役） | 22/29 (76%) | 基准 |
+| 对齐×3B | **18/29 (62%)，miss 多为正例 NONE** | 崩——同家族内「加参数量反而更差」再次成立 |
+| 精修×3B（现役） | CER 1.78% / damage 0 / p50 706ms | 基准 |
+| 精修×1.5B | CER 2.08% / damage 0 / improve 更少 / p50 103ms | 可用但修复力弱 |
+
+**维持双档**。省体积场景可用 refine_model 覆盖指向 1.5B（对齐不受影响）；
+反向（3B 兼对齐）不可取。两档懒加载、极少同时常驻。
+
+### qwen3.5:2b（Ollama 原版口径；结果存档 refine_20261029-173317）
+
+- 对齐：**15/29 (52%)**，miss 全为正例答 NONE——qwen3 家族在该形态的崩塌延续到 3.5。
+- 精修 det+editform：CER 1.92% / damage 0 / improve 2 / p50 466ms——全面劣于 qwen2.5:3b
+  （1.67% / improve 3 / 70ms）。
+- **工程硬门槛**：qwen3.5 改用 tensor 分片分发（`application/vnd.ollama.image.tensor`
+  多层 + RENDERER/PARSER 模型格式），**不再是 GGUF blob**——内嵌 llama.cpp 无法加载
+  （实测 model load 失败）；接入需退回 Ollama 或等上游支持。
+
+结论：三项都不换。qwen2.5 双档 + SenseVoice int8 维持现状。
