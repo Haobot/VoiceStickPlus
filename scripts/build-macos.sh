@@ -28,6 +28,11 @@ TARGET_ARCHS="${VOICESTICK_ARCHS:-arm64 x86_64}"
 SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-voicestick}"
 VOICESTICK_DEV_IDENTITY="${VOICESTICK_DEV_IDENTITY:-VoiceStick Local Code Signing}"
 
+# 内嵌 llama.cpp dylib（本地 LLM 精修/对齐）：幂等——已安装即跳过；
+# 无网络/跳过不影响构建（包退化为无 CLlamaCpp target？否——头文件入库，
+# 构建恒可，仅运行时该功能不可用）。
+"$SCRIPT_DIR/fetch-llama-cpp.sh" || echo "WARN: llama.cpp dylib 未安装，本地 LLM 功能不可用（其余不受影响）"
+
 case "$CONFIG" in
     --release)
         SWIFT_CONFIG="release"
@@ -159,7 +164,10 @@ for ARCH in $TARGET_ARCHS; do
     echo "Building VoiceStickApp for $ARCH..."
     SCRATCH="$DESKTOP_DIR/.build-$ARCH"
     rm -rf "$SCRATCH"
+    # --product 只编 app 链（测试 runner 的 main.swift 在 Release/WMO/显式
+    # 模块构建下有工具链兼容 bug——测试只走 debug 的 swift run VoiceStickTests）。
     swift build \
+        --product VoiceStickApp \
         --package-path "$DESKTOP_DIR" \
         -c "$SWIFT_CONFIG" \
         --arch "$ARCH" \

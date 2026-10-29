@@ -69,3 +69,12 @@ targeted 指定词删除/替换上线后用户反馈「有替换效果，但准�
 - Ogg 抽帧段表坑：`asr-bench-lessons-2026-08-01.md`
 - 音频质量分层先例：`remote-gateway-audio-speed-timbre-2026-10-16.md`
 - 延迟分段判据先例：`voice-input-latency-root-cause-chain-2026-10-12.md`
+
+## 追加（2026-10-29）：待办第 3 条已闭环——execute 阶段可观测性补齐 + Chromium 目标必败根因
+
+本文待办第 3 条（execute 阶段结果码零日志）已由 `780d1a2` 修复：选区读回重试/不符、终验
+未确认、成功现在都有 `voice_targeted` 日志。同次排查还发现了比准确率更底层的必败缺陷——
+**AX 选区/光标写入在 Chromium 系目标（Electron/浏览器）经 renderer 异步生效，写后立即读回
+必拿旧值**，验证式替换因此全部误判「读回不符」零改动放弃（原生目标同步生效，当时的真机
+验收测不出）。判据、修复与探针矩阵见
+`targeted-replace-chromium-ax-async-write-2026-10-29.md`。

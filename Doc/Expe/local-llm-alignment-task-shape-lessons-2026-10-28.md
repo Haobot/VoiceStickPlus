@@ -59,3 +59,55 @@ qwen3 全体带成 NONE 崩塌（示范必须真实）；few-shot 是 0.6~1.7B �
 - 排查与分层方法论：`targeted-edit-accuracy-layered-triage-2026-10-28.md`
 - Windows 本地 LLM 构建坑：`windows-local-llm-refine-build-test-traps-2026-09-09.md`
 - M0 spike（对照结论来源）：`../Plan/local-asr-accuracy-and-cross-turn-refinement.md`
+
+## 追加（2026-10-28 下午）：全栈评测三度验证 + 两个新形态结论
+
+同分支 `feat/local-model-fullstack` 把任务形态定律推到 ASR 与精修层
+（数据：`../../Test/local-fullstack-eval-2026-10-28.md`，
+harness：`scripts/local_model_eval/`）：
+
+1. **整句重写形态判死（新形态，负结论）**：云端精修 prompt（指令式或
+   few-shot）直接喂本地 ≤8B 模型，27 个模型×变体组合无一跑赢不精修
+   （损伤 20%~100%），取证到「帮我→请」改写、「我的→你的」**代词翻转
+   语义反向**、输出代码块三种损伤模式。7B 只减轻不消除（CER 5.15% vs
+   基线 2.22%）。**云端形态不可平移，精修必须换编辑指令形态。**
+2. **editform＝安全形态的第二实证**：「错词→热词原形 / 删除：片段」+
+   守卫执行（替换目标∈热词、错词/片段须真实存在于原文）→
+   qwen2.5:3b 管线 CER 1.67%（基线 2.22%），改善 3/损伤 0/clean 损伤 0，
+   70ms。与教训 4 的候选约束式、Windows 跨轮纠错构成三任务同构实证。
+   迭代关键：v1 零损伤但小模型全答「无」；**加一条术语漂移教学例
+   （换用不同术语，不泄题）后才有增益**——few-shot 既要教格式也要教知识形态。
+3. **whisper 小档在真机音频崩塌**：tiny/base/small（公开榜可用档）在本产品
+   低码率 Opus 转写音频上 CER 16%~37%、worst=100%（幻觉/空输出）——
+   公开榜干净音频排名不可迁移，又是「不可跨形态搬用」的 ASR 版实例。
+   本地 ASR 唯一推荐 SenseVoice int8（2.22%/40ms，Windows 在发同款）。
+4. 确定性层规则也要过真实数据：det v1 误删「这个 API」的「这个」
+   （指示代词≠填充词），v5 改为「指示词仅后跟逗号才剥」后损伤归零。
+5. 精修模型选型再证 ①：qwen2.5:1.5b（对齐王者）精修不敌同家族 3b；
+   qwen3 家族三任务两崩塌，全线出局。
+
+- 互链：`../Plan/local-first-voice-stack.md`（架构与迁移路径）、
+  `../../Test/local-fullstack-eval-2026-10-28.md`（评测报告与复现）
+
+## 追加二（2026-10-29）：macOS 本地 ASR 上线即卡 Listening——weak 引擎 + 测试盲区
+
+真机首验「悬浮窗一直 listening 无文字」，`5ba399b` 修复。三个教训：
+
+1. **weak 引用生命周期**：`ctx.engine` 曾为 weak，start() 局部变量是唯一强引用
+   ——start 返回引擎即释放；`sendOggOpusChunk` 的双引用守卫随后全空，**静默
+   return**（不缓冲、不唤醒、不报错），worker 永睡 distantFuture。资源持有型
+   对象（引擎/句柄）要么 let 属性、要么容器强持有，绝不进 weak。
+2. **测试盲区模式**：状态机单测全走 `engineOverride` 注入（`let engine` 恒非空
+   而非走 start() 创建路径）——守卫逻辑零覆盖。修复后把真实模型冒烟升级为
+   **生产构造（无 override）过完整状态机**，此类 bug 必红。资源创建路径与
+   注入路径行为不同时，必须有一条测试走生产构造。
+3. **排障第一步是可回放**：DebugAudio 逐轮落盘 + 新入库 `Tools/AsrReplayCli`
+   （回放任意会话 ogg 过真实 client+引擎逐步打印）把定位时间压到分钟级。
+   零日志静默路径再次背锅（§7.5 第二例）——已补 engine ready/final 日志。
+
+另（构建环境）：当日 git 走代理 TLS 握手被断（curl 通、git 断），release 脚本
+每次 `rm -rf` scratch 重拉依赖必死。解法=把 SwiftPM 全局缓存
+（`~/Library/Caches/org.swift.swiftpm/repositories/`）复制成本地 mirror，
+`GIT_CONFIG_COUNT` 环境注入 `url.<mirror>.insteadOf` 离线重定向——注意
+insteadOf 是前缀匹配，SwiftPM 用带 `.git` 后缀的 URL，mirror 目录要带
+`.git` 而 base 不带。

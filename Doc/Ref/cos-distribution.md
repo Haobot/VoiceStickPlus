@@ -43,6 +43,21 @@
 
 ## 模型对象清单（模型侧回填用）
 
+macOS 侧新增对象（`feat/macos-local-model-settings`，2026-10-29；上传前应用内下载器
+404 快速回退到各自权威源）：
+
+| 对象 | 字节 | SHA-256 | 权威回退源 |
+|---|---:|---|---|
+| `models/sherpa-onnx/sherpa-onnx-v1.13.7-osx-arm64-shared-lib.tar.bz2` | ~31MB | 按解包成员校验（见 `desktop/macos/Sources/VoiceStickCore/ModelManifest.swift`） | GitHub k2-fsa v1.13.7 |
+| `models/sense-voice-int8-2024-07-17/Qwen2.5-1.5B-Instruct-Q4_K_M/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` | 986,048,512 | `183715c435899236895da3869489cc30ac241476b4971a20285b1a462818a5b4` | `registry.ollama.ai/v2/library/qwen2.5/blobs/sha256:1837…`（评测原件） |
+| `models/sense-voice-int8-2024-07-17/Qwen2.5-3B-Instruct-Q4_K_M/Qwen2.5-3B-Instruct-Q4_K_M.gguf` | 1,929,903,008 | `5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6` | `registry.ollama.ai/v2/library/qwen2.5/blobs/sha256:5ee4…`（评测原件） |
+
+> LLM GGUF 是 **Ollama registry 的量化原件**（非 Qwen 官方 ModelScope 件——
+> 同名 Q4_K_M 量化器不同，复测在 editform 上 damage 0→1、对齐 -6 点，
+> 见 `Doc/Test/local-fullstack-eval-2026-10-28.md` §9）。llama.cpp 运行时
+> dylib 不走 COS（由 `scripts/fetch-llama-cpp.sh` 本地编译合成安装）。
+
+
 对象键与 `%LOCALAPPDATA%\VoiceStick\models\` 下的目录结构完全一致。完整性由桌面端下载器做 SHA-256 校验把关（COS 的 ETag 不是 SHA-256，勿比对）。
 
 | 对象键 | 字节数 | SHA-256 |

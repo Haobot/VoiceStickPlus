@@ -96,7 +96,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ble: BleCentral(pairedDeviceIDs: config.pairedDeviceIDs),
             makeAsr: { ASRClientFactory.makeClient(config: $0) },
             makeTranslator: { LLMTranslationClient(config: $0) },
-            makeRefiner: { LLMRefinementClient(config: $0) },
+            // 精修路由（本地优先）：本地 ASR 会话 → 内嵌 llama.cpp editform
+            //（模型缺失自动降级 L1 纯规则，LocalEditformRefiner 内处理）；
+            // 云端会话照旧云端 LLM。Windows SyncLocalRefiner 同语义。
+            makeRefiner: { config in
+                if config.localAsr.enabled {
+                    return LocalEditformRefiner(engineProvider: {
+                        guard let path = LocalLlmRuntime.refineModelPath(
+                            modelsDir: config.localAsr.modelsDir,
+                            override: config.localAsr.refineModel,
+                            configDirectory: AppConfig.configDirectory) else { return nil }
+                        return LocalLlmRuntime.shared.engine(
+                            modelPath: path,
+                            numThreads: Int32(config.localAsr.refineNumThreads))
+                    })
+                }
+                return LLMRefinementClient(config: config)
+            },
             inputInjector: InputInjector(),
             subtitleController: SubtitleController(),
             makeDebugRecorder: { cfg in
@@ -139,17 +155,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         coordinator.readTargetedSelectedText = { FocusedFieldAXReader.readSelectedText() }
         // targeted 本地对齐兜底（Doc/Plan/voice-edit-commands.md targeted 章）：
-        // 自然简写门控未命中时问本地小模型（默认关；端点仅允许回环）。
+        // 自然简写门控未命中时问本地小模型（默认关）。2026-10-29 起走内嵌
+        // llama.cpp 引擎（对齐档 1.5B；原 Ollama HTTP 客户端退役）。
         coordinator.alignTarget = { [weak self] command, asrTarget, remainingText, candidates in
             guard let self else { return nil }
             let settings = self.config.voiceEdit
-            guard settings.localAlignEnabled, !settings.localAlignModel.isEmpty else { return nil }
-            return LocalAlignClient(
-                url: settings.localAlignURL,
-                model: settings.localAlignModel,
-                timeoutMS: settings.localAlignTimeoutMS
-            ).align(command: command, asrTarget: asrTarget,
-                    remainingText: remainingText, candidates: candidates)
+            guard settings.localAlignEnabled else { return nil }
+            guard let modelPath = LocalLlmRuntime.alignModelPath(
+                modelsDir: self.config.localAsr.modelsDir,
+                override: settings.localAlignModel,
+                configDirectory: AppConfig.configDirectory) else { return nil }
+            guard let engine = LocalLlmRuntime.shared.engine(
+                modelPath: modelPath,
+                numThreads: Int32(self.config.localAsr.refineNumThreads)) else { return nil }
+            return LocalTargetedAlignEngine.align(
+                engine: engine, command: command, asrTarget: asrTarget,
+                remainingText: remainingText, candidates: candidates,
+                timeoutMS: settings.localAlignTimeoutMS)
         }
         coordinator.presentUpgradeAlertUI = { url, message in
             NSApp.activate(ignoringOtherApps: true)

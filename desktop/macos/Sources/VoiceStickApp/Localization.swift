@@ -58,6 +58,18 @@ enum L10nKey: String, CaseIterable {
     case settingsApplyingTrial, settingsTrialApplied, settingsTrialPageOpened
     case settingsTrialOpenFailedTitle, settingsTrialFailedTitle
     case settingsSaved, settingsSaveFailedTitle
+    // 本地语音识别（provider 下拉本地虚项 + 条件行，对齐 Windows D1/D2）
+    case settingsProviderLocal
+    case settingsLocalModelsDir, settingsLocalModelsDirHint
+    case settingsLocalStatusReady, settingsLocalStatusMissingModel, settingsLocalStatusMissingRuntime
+    case settingsDownloadModels
+    // 模型下载窗口（对齐 Windows ModelDownloadDialog 文案）
+    case modelDownloadTitle, modelDownloadIntro
+    case modelDownloadEntryAsr, modelDownloadEntryRuntime, modelDownloadEntryLlm
+    case modelDownloadSpaceNeeded, modelDownloadStart, modelDownloadPreparing, modelDownloadDone
+    // 本地文本精修 + 语音编辑目标词对齐（Phase C）
+    case settingsLocalRefine, settingsLocalRefineReady, settingsLocalRefineMissing, settingsLocalRefineNoRuntime
+    case settingsVoiceEditAlign, settingsVoiceEditAlignReady, settingsVoiceEditAlignMissing
 
     // 引导窗口
     case onboardingSetupTitle
@@ -299,6 +311,29 @@ enum Localization {
         .settingsResourceId: "Resource ID",
         .settingsHotwords: "Hotwords",
         .settingsHotwordsHint: "Separate hotwords with commas or new lines.",
+        .settingsProviderLocal: "Local ASR (offline, no cloud key)",
+        .settingsLocalModelsDir: "Models Directory",
+        .settingsLocalModelsDirHint: "Leave empty to use the default location under ~/Library/Application Support/VoiceStick/models.",
+        .settingsLocalStatusReady: "✓ Models ready (SenseVoice found)",
+        .settingsLocalStatusMissingModel: "✗ Model files not found (need model.int8.onnx + tokens.txt)",
+        .settingsLocalStatusMissingRuntime: "△ Models ready, but the ASR runtime is missing — click Download Models…",
+        .settingsDownloadModels: "Download Models…",
+        .settingsLocalRefine: "Local text refinement (editform, offline)",
+        .settingsLocalRefineReady: "✓ Refine model ready (Qwen2.5 3B)",
+        .settingsLocalRefineMissing: "✗ Refine model not downloaded — degrades to rule-based cleanup (optional)",
+        .settingsLocalRefineNoRuntime: "△ Local LLM runtime not installed (run scripts/fetch-llama-cpp.sh)",
+        .settingsVoiceEditAlign: "Target-word local alignment (fixes misheard words)",
+        .settingsVoiceEditAlignReady: "✓ Alignment model ready (Qwen2.5 1.5B)",
+        .settingsVoiceEditAlignMissing: "✗ Alignment model not downloaded — misheard targets fall back to plain paste (optional)",
+        .modelDownloadTitle: "Download Local Models",
+        .modelDownloadIntro: "Downloads local models into your user library:",
+        .modelDownloadEntryAsr: "Speech recognition model (required, ~240 MB)",
+        .modelDownloadEntryRuntime: "Recognition runtime (required, ~30 MB)",
+        .modelDownloadEntryLlm: "Local LLM model (%@, optional)",
+        .modelDownloadSpaceNeeded: "Disk space needed: ~%@",
+        .modelDownloadStart: "Start Download",
+        .modelDownloadPreparing: "Preparing…",
+        .modelDownloadDone: "Download complete. Return to Settings and click Save to enable local ASR.",
         .hotwordCandidateNotifyBodySuffix: " appeared several times. Add or dismiss it in Settings → Hotword Candidates.",
         .settingsSectionHotwordCandidates: "Hotword Candidates",
         .settingsHotwordCandidateAdd: "Add Hotword",
@@ -603,6 +638,29 @@ enum Localization {
         .settingsResourceId: "资源 ID",
         .settingsHotwords: "热词",
         .settingsHotwordsHint: "使用逗号或换行分隔热词。",
+        .settingsProviderLocal: "本地语音识别（离线，无需云端密钥）",
+        .settingsLocalModelsDir: "模型目录",
+        .settingsLocalModelsDirHint: "留空使用默认位置（~/Library/Application Support/VoiceStick/models/sense-voice-int8-2024-07-17）。",
+        .settingsLocalStatusReady: "✓ 模型就绪（已找到 SenseVoice）",
+        .settingsLocalStatusMissingModel: "✗ 未找到模型文件（需 model.int8.onnx 与 tokens.txt）",
+        .settingsLocalStatusMissingRuntime: "△ 模型就绪，识别运行时缺失——点「下载模型…」安装",
+        .settingsDownloadModels: "下载模型…",
+        .settingsLocalRefine: "本地文本精修（editform，离线）",
+        .settingsLocalRefineReady: "✓ 精修模型就绪（Qwen2.5 3B）",
+        .settingsLocalRefineMissing: "✗ 未下载精修模型——将降级为规则清理（可选）",
+        .settingsLocalRefineNoRuntime: "△ 本地 LLM 运行时未安装（先跑 scripts/fetch-llama-cpp.sh）",
+        .settingsVoiceEditAlign: "目标词本地对齐（听漂纠正）",
+        .settingsVoiceEditAlignReady: "✓ 对齐模型就绪（Qwen2.5 1.5B）",
+        .settingsVoiceEditAlignMissing: "✗ 未下载对齐模型——目标词听漂时回退普通粘贴（可选）",
+        .modelDownloadTitle: "下载本地模型",
+        .modelDownloadIntro: "将本地模型下载到用户目录：",
+        .modelDownloadEntryAsr: "语音识别模型（必选，约 240 MB）",
+        .modelDownloadEntryRuntime: "识别运行时（必选，约 30 MB）",
+        .modelDownloadEntryLlm: "本地大模型（%@，可选）",
+        .modelDownloadSpaceNeeded: "需要磁盘空间：约 %@",
+        .modelDownloadStart: "开始下载",
+        .modelDownloadPreparing: "准备中…",
+        .modelDownloadDone: "下载完成。回到设置页点击「保存」即可启用本地语音识别。",
         .hotwordCandidateNotifyBodySuffix: " 已多次出现，可在设置-热词候选区加入或忽略。",
         .settingsSectionHotwordCandidates: "热词候选",
         .settingsHotwordCandidateAdd: "加入热词",

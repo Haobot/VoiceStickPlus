@@ -218,6 +218,13 @@ public final class VoiceStickCoordinator {
     /// targeted 编辑终验等待时长：给目标应用消化 一次 Backspace / 一次粘贴 的时间
     /// （InputInjector.paste 剪贴板恢复窗口同为 0.2s 量级）。
     private let kVoiceTargetedVerifyDelay: TimeInterval = 0.2
+    /// targeted 选区读回与终验的重试节拍：Chromium 系目标（Electron/浏览器）的 AX
+    /// 选区与光标写入经 renderer 异步生效，写入后立即读回会拿到写入前的旧值
+    /// （2026-10-29 实测：粘贴填充的字段写选区后即刻读回恒为空串——targeted 必然
+    /// 误判「读回不符」放弃；原生应用同步生效，首次读回即中、零重试）。轮询只追加
+    /// 读操作，不改字段状态；耗尽才走拒绝路径。
+    private let kVoiceTargetedReadbackPollDelays: [TimeInterval] = [0.03, 0.06, 0.12, 0.2]
+    private let kVoiceTargetedVerifyPollDelays: [TimeInterval] = [0.05, 0.1, 0.2]
     /// 语音编辑退格注入串行队列（方案 §7.1：后台注入 + 约 12ms 节拍，不阻塞主线程）。
     private let voiceEditInjectionQueue = DispatchQueue(label: "com.voicestick.voice-edit.backspace")
     // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
@@ -3033,7 +3040,9 @@ public final class VoiceStickCoordinator {
     /// 模型输出被限制在候选枚举内；接管后仍走原 verified 选区/读回/终验链。
     private func attemptLocalAlignOrFallback(text: String, command: VoiceTargetedCommand) -> Bool {
         let settings = config.voiceEdit
-        guard settings.localAlignEnabled, !settings.localAlignModel.isEmpty,
+        // localAlignModel 空 = 内嵌引擎默认档（LocalLlmRuntime 解析；模型缺失在
+        // alignTarget 闭包内返回 nil → 普通文本回退），不再作为启用条件。
+        guard settings.localAlignEnabled,
               let alignTarget,
               let remainingText = lastInjection?.remainingText else { return false }
         let candidates = VoiceTargetedAlign.candidates(
@@ -3188,7 +3197,7 @@ public final class VoiceStickCoordinator {
         context: VoiceTargetedEditContext
     ) {
         let generation = voiceEditGeneration
-        guard let writer = writeTargetedSelection, let selectionReader = readTargetedSelectedText else {
+        guard let writer = writeTargetedSelection, readTargetedSelectedText != nil else {
             // 平台能力缺失 = 不可验证：targeted 恒 verified → 拒绝（不修改）。
             showVoiceTargetedFailureToast(.verifyUnavailable)
             return
@@ -3205,11 +3214,44 @@ public final class VoiceStickCoordinator {
             showVoiceTargetedFailureToast(.verifyUnavailable)
             return
         }
-        // 2. 读回实际选中文本并逐字确认。
-        let selectedText = selectionReader()
+        // 2. 读回实际选中文本并逐字确认（带重试轮询，Chromium 系目标写入异步生效）。
+        verifyTargetedSelectionThenAct(
+            command: command, plan: plan, context: context,
+            generation: generation, fieldUTF16: fieldUTF16, attempt: 0)
+    }
+
+    /// 步骤 2（读回确认，可重试）+ 步骤 3（执行单次动作）+ 步骤 4/5 排程。
+    /// 读回不符先按节拍重试再拒绝；重试耗尽仍不符才恢复安全光标（末尾折叠）+
+    /// 提示，零删除/零粘贴，记录保留——字段文本未被改动。
+    private func verifyTargetedSelectionThenAct(
+        command: VoiceTargetedCommand, plan: VoiceTargetedPlan,
+        context: VoiceTargetedEditContext,
+        generation: Int, fieldUTF16: Int, attempt: Int
+    ) {
+        guard generation == voiceEditGeneration else { return }
+        guard let writer = writeTargetedSelection, readTargetedSelectedText != nil else {
+            showVoiceTargetedFailureToast(.verifyUnavailable)
+            return
+        }
+        let selectedText = readTargetedSelectedText?()
         guard selectedText == command.target else {
-            // 选区读回不符（含读不到 nil）：恢复安全光标（末尾折叠），零删除/零粘贴；
-            // 字段文本未被改动 → 记录保留有效。
+            if attempt < kVoiceTargetedReadbackPollDelays.count {
+                if attempt == 0 {
+                    NSLog("voice_targeted readback retry got_len=%d",
+                          selectedText?.utf8.count ?? -1)
+                }
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + kVoiceTargetedReadbackPollDelays[attempt]
+                ) { [weak self] in
+                    self?.verifyTargetedSelectionThenAct(
+                        command: command, plan: plan, context: context,
+                        generation: generation, fieldUTF16: fieldUTF16,
+                        attempt: attempt + 1)
+                }
+                return
+            }
+            NSLog("voice_targeted readback mismatch expected_len=%d got_len=%d",
+                  command.target.utf8.count, selectedText?.utf8.count ?? -1)
             _ = writer(fieldUTF16, 0)
             showVoiceTargetedFailureToast(.fieldMismatch)
             return
@@ -3232,21 +3274,45 @@ public final class VoiceStickCoordinator {
         let expectedFinalText = context.fieldPrefix + plan.newRemainingText
             + (context.hasRecordedNewline ? "\n" : "")
         DispatchQueue.main.asyncAfter(deadline: .now() + kVoiceTargetedVerifyDelay) { [weak self] in
-            guard let self else { return }
-            guard generation == self.voiceEditGeneration else { return }
-            _ = self.writeTargetedSelection?(expectedFinalText.utf16.count, 0)
-            guard let state = self.readFocusedFieldState?(),
-                  state.text == expectedFinalText,
-                  state.caretUTF16 == expectedFinalText.utf16.count,
-                  state.selectionLength == 0 else {
-                // 结果未确认：不自动重试、不宣称成功、不盲目撤销；记录失效。
-                self.invalidateVoiceTargetedRecord(generation: generation)
-                self.showVoiceTargetedFailureToast(.resultUnconfirmed)
-                return
-            }
-            self.lastInjection?.remainingText = plan.newRemainingText
-            self.showVoiceTargetedSuccessToast(plan: plan)
+            self?.finalizeTargetedEdit(
+                expectedFinalText: expectedFinalText, plan: plan,
+                generation: generation, attempt: 0)
         }
+    }
+
+    /// 步骤 4/5（终验，可重试）：光标恢复写与 Backspace/粘贴一样在部分目标应用
+    /// 异步落地，立即读可能仍见写入前状态；重试耗尽才判未确认——不自动重试修改、
+    /// 不宣称成功、不盲目撤销，记录失效防陈旧偏移继续编辑。
+    private func finalizeTargetedEdit(
+        expectedFinalText: String, plan: VoiceTargetedPlan,
+        generation: Int, attempt: Int
+    ) {
+        guard generation == voiceEditGeneration else { return }
+        _ = writeTargetedSelection?(expectedFinalText.utf16.count, 0)
+        let state = readFocusedFieldState?()
+        if let state,
+           state.text == expectedFinalText,
+           state.caretUTF16 == expectedFinalText.utf16.count,
+           state.selectionLength == 0 {
+            lastInjection?.remainingText = plan.newRemainingText
+            NSLog("voice_targeted result=ok target_len=%d", plan.targetLength)
+            showVoiceTargetedSuccessToast(plan: plan)
+            return
+        }
+        if attempt < kVoiceTargetedVerifyPollDelays.count {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + kVoiceTargetedVerifyPollDelays[attempt]
+            ) { [weak self] in
+                self?.finalizeTargetedEdit(
+                    expectedFinalText: expectedFinalText, plan: plan,
+                    generation: generation, attempt: attempt + 1)
+            }
+            return
+        }
+        NSLog("voice_targeted verify unconfirmed expected_len=%d actual_len=%d",
+              expectedFinalText.utf8.count, state?.text.utf8.count ?? -1)
+        invalidateVoiceTargetedRecord(generation: generation)
+        showVoiceTargetedFailureToast(.resultUnconfirmed)
     }
 
     private func invalidateVoiceTargetedRecord(generation: Int) {

@@ -73,3 +73,11 @@ _realtest_shots/
 # 离线授权发卡私钥与测试向量（开发密钥，绝不可提交；见 Doc/Plan/offline-license-activation.md）
 scripts/license_private_key.hex
 scripts/license_test_vectors.json
+
+# 本地全栈小模型评估：模型权重/venv/wav 缓存不入库（结果 JSON/MD 入库）
+scripts/local_model_eval/models/
+scripts/local_model_eval/.venv/
+scripts/local_model_eval/wav_cache/
+
+# macOS 内嵌 llama.cpp 预编译产物（fetch-llama-cpp.sh 生成，pin b10868 与 Windows 同步）
+desktop/macos/Vendor/

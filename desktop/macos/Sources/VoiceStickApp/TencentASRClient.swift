@@ -558,6 +558,14 @@ final class TencentASRClient: ASRClient {
 /// 按 asr_provider 创建对应 ASR 客户端（对齐 Windows win32_app.cc 的 make_asr 工厂）。
 enum ASRClientFactory {
     static func makeClient(config: AppConfig) -> any ASRClient {
+        // [local_asr] enabled（与 Windows 同语义）：设备语音会话整体走本地
+        // SenseVoice，优先级高于 asr_provider——本地是显式隐私选择，模型/运行时
+        // 未就位时 start 如实报错，不静默回云。键名与 Windows [local_asr] 同名。
+        if config.localAsr.enabled {
+            return LocalAsrClient(
+                modelsDir: config.localAsr.resolvedModelsDir(
+                    configDirectory: AppConfig.configDirectory))
+        }
         switch config.asrProvider {
         case .tencent:
             return TencentASRClient(config: config)

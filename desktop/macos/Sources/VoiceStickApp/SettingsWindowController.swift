@@ -3,8 +3,10 @@ import VoiceStickCore  // N1: XiaomiSettings 下沉 Core 后需显式导入
 
 /// 设置窗口（布局与显隐规则对齐 Windows SettingsDialog）：
 /// - 通用：界面语言下拉（System/English/简体中文）+ 开发者模式勾选（始终可见，实时重排）。
-/// - 语音识别：Provider（VoiceStick Cloud 仅老配置仍为其时插入，对齐 Windows 下拉下线策略）、
-///   API Key/资源 ID（开发者模式可见；资源 ID 仅 Volcengine）、热词。
+/// - 语音识别：Provider（VoiceStick Cloud 仅老配置仍为其时插入，对齐 Windows 下拉下线策略；
+///   末位「本地语音识别（离线）」虚项——选中=local_asr.enabled 且 asrProvider 保留云端值，
+///   选中才显示模型目录/状态/下载按钮）、API Key/资源 ID（开发者模式可见；资源 ID 仅
+///   Volcengine；本地选中时一并隐藏）、热词。
 ///   腾讯云的 API Key 框即 SecretId（对齐 Windows，SecretKey/AppId 只走 config.toml 手编）。
 /// - 文本精修：LLM Base URL/API Key/Model（开发者模式），精修勾选与提示词（勾选可见）。
 /// - 输出：输出目标（开发者模式；macOS 无微信输入法项）。
@@ -13,6 +15,8 @@ import VoiceStickCore  // N1: XiaomiSettings 下沉 Core 后需显式导入
 /// - 音频文件（开发者模式）：调试音频开关与目录。
 /// 语言保存在 AppDelegate onConfigChanged 生效（重建托盘菜单）；本窗口自身靠
 /// 关闭后重开重建文案（AppDelegate 保存后丢弃缓存的本控制器）。
+/// 整块内容装在滚动视图里：开发者模式全展开行数可能超过屏幕，窗口高度由
+/// resizeWindowToFit 封顶为屏幕可用高度，超出部分纵向滚动查看。
 final class SettingsWindowController: NSWindowController {
     private let languagePopup = NSPopUpButton()
     private let developerModeButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -43,6 +47,24 @@ final class SettingsWindowController: NSWindowController {
     private let imuDebugButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let debugAudioButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let debugAudioDirectoryField = NSTextField()
+    // 本地语音识别（离线）条件行（对齐 Windows D1/D2：provider 下拉本地虚项
+    // 选中才显示模型目录/状态/下载按钮；切换回去无缝恢复云端配置）。
+    private let localModelsDirField = NSTextField()
+    private let localStatusField = NSTextField(labelWithString: "")
+    private let downloadModelsButton = NSButton(title: "", target: nil, action: nil)
+    private var localModelsDirRow: NSStackView?
+    private var localStatusRow: NSStackView?
+    private var localModelsDirHintRow: NSStackView?
+    // 本地文本精修（provider=local 时的条件区块；checkbox 与「文本精修」区块的
+    // refineButton 同步——两者绑同一顶层 refine_enabled）。
+    private let localRefineButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let localRefineStatusField = NSTextField(labelWithString: "")
+    private var localRefineRow: NSStackView?
+    // 语音编辑区块的目标词对齐行（voiceEdit 开关条件区）。
+    private let voiceEditAlignButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let voiceEditAlignStatusField = NSTextField(labelWithString: "")
+    private var voiceEditAlignRow: NSStackView?
+    private var modelDownloadWindow: ModelDownloadWindowController?
     private let statusLabel = NSTextField(labelWithString: "")
 
     private let stack = NSStackView()
@@ -91,6 +113,12 @@ final class SettingsWindowController: NSWindowController {
             name: NSControl.textDidChangeNotification,
             object: apiKeyField
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(localModelsDirDidChange),
+            name: NSControl.textDidChangeNotification,
+            object: localModelsDirField
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -117,8 +145,31 @@ final class SettingsWindowController: NSWindowController {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 16
+        // 24 内边距放进 edgeInsets（随内容滚动，滚动范围天然正确），不写进
+        // 文档视图对 clip view 的约束——那会被 AppKit 并入滚动定位导致贴边/范围错。
+        stack.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
+
+        // 内容装进滚动视图（开发者模式行数多，窗口封顶后靠滚动查看，见 resizeWindowToFit）。
+        // 文档视图必须是翻转容器：非翻转文档在内容增高时 AppKit 锚定左下角，
+        // 打开窗口会停内容底部；翻转后锚定左上角，打开即在顶部。
+        let documentView = FlippedDocumentView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor)
+        ])
+        let contentScrollView = NSScrollView()
+        contentScrollView.hasVerticalScroller = true
+        contentScrollView.autohidesScrollers = true
+        contentScrollView.drawsBackground = false
+        contentScrollView.automaticallyAdjustsContentInsets = false
+        contentScrollView.translatesAutoresizingMaskIntoConstraints = false
+        contentScrollView.documentView = documentView
+        contentView.addSubview(contentScrollView)
 
         // ===== 通用 =====
         stack.addArrangedSubview(sectionTitle(tr(.settingsSectionGeneral)))
@@ -141,6 +192,53 @@ final class SettingsWindowController: NSWindowController {
         let resourceRow = row(label: tr(.settingsResourceId), control: resourcePopup)
         self.resourceRow = resourceRow
         stack.addArrangedSubview(resourceRow)
+        // 本地语音识别（离线）条件行（显隐见 updateVisibility；顺序对齐 Windows：
+        // provider → 密钥/资源 → 模型目录 → 状态+下载 → 热词）。
+        let localBrowseButton = NSButton(
+            title: tr(.settingsChooseDir), target: self, action: #selector(chooseLocalModelsDir))
+        let localDirControl = NSStackView()
+        localDirControl.orientation = .horizontal
+        localDirControl.alignment = .centerY
+        localDirControl.spacing = 8
+        localModelsDirField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        localDirControl.addArrangedSubview(localModelsDirField)
+        localDirControl.addArrangedSubview(localBrowseButton)
+        let localModelsDirRow = row(label: tr(.settingsLocalModelsDir), control: localDirControl)
+        self.localModelsDirRow = localModelsDirRow
+        stack.addArrangedSubview(localModelsDirRow)
+        downloadModelsButton.title = tr(.settingsDownloadModels)
+        downloadModelsButton.target = self
+        downloadModelsButton.action = #selector(downloadModels)
+        let localStatusControl = NSStackView()
+        localStatusControl.orientation = .horizontal
+        localStatusControl.alignment = .centerY
+        localStatusControl.spacing = 8
+        localStatusField.lineBreakMode = .byTruncatingMiddle
+        let statusSpacer = NSView()
+        statusSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        localStatusControl.addArrangedSubview(localStatusField)
+        localStatusControl.addArrangedSubview(statusSpacer)
+        localStatusControl.addArrangedSubview(downloadModelsButton)
+        let localStatusRow = row(label: "", control: localStatusControl)
+        self.localStatusRow = localStatusRow
+        stack.addArrangedSubview(localStatusRow)
+        let localHint = hintRow(tr(.settingsLocalModelsDirHint))
+        localModelsDirHintRow = localHint
+        stack.addArrangedSubview(localHint)
+        // 本地文本精修（对齐 Windows 本地区块：复选框 + 模型状态）。
+        localRefineButton.title = tr(.settingsLocalRefine)
+        localRefineButton.target = self
+        localRefineButton.action = #selector(localRefineToggled)
+        let refineControl = NSStackView()
+        refineControl.orientation = .vertical
+        refineControl.alignment = .leading
+        refineControl.spacing = 4
+        refineControl.addArrangedSubview(localRefineButton)
+        localRefineStatusField.textColor = .secondaryLabelColor
+        refineControl.addArrangedSubview(localRefineStatusField)
+        let localRefineRow = row(label: "", control: refineControl)
+        self.localRefineRow = localRefineRow
+        stack.addArrangedSubview(localRefineRow)
         configureMultiline(textView: hotwordsTextView, scrollView: hotwordsScrollView, height: 78)
         stack.addArrangedSubview(row(label: tr(.settingsHotwords), control: hotwordsScrollView))
         stack.addArrangedSubview(hintRow(tr(.settingsHotwordsHint)))
@@ -229,6 +327,20 @@ final class SettingsWindowController: NSWindowController {
         )
         voiceEditDefaultCharsRow = voiceEditCharsRow
         stack.addArrangedSubview(voiceEditCharsRow)
+        // 目标词本地对齐（voiceEdit 开关条件区；它服务于云端+本地两种 ASR）。
+        voiceEditAlignButton.title = tr(.settingsVoiceEditAlign)
+        voiceEditAlignButton.target = self
+        voiceEditAlignButton.action = #selector(voiceEditAlignToggled)
+        let alignControl = NSStackView()
+        alignControl.orientation = .vertical
+        alignControl.alignment = .leading
+        alignControl.spacing = 4
+        alignControl.addArrangedSubview(voiceEditAlignButton)
+        voiceEditAlignStatusField.textColor = .secondaryLabelColor
+        alignControl.addArrangedSubview(voiceEditAlignStatusField)
+        let alignRow = row(label: "", control: alignControl)
+        voiceEditAlignRow = alignRow
+        stack.addArrangedSubview(alignRow)
         stack.addArrangedSubview(hintRow(tr(.settingsVoiceEditHint)))
 
         // ===== 系统 =====
@@ -290,9 +402,14 @@ final class SettingsWindowController: NSWindowController {
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 24)
+            contentScrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            contentScrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            contentScrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            contentScrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            // 文档视图（翻转容器）只钉上/左/右，高度随 stack intrinsic，才能纵向滚动。
+            documentView.topAnchor.constraint(equalTo: contentScrollView.contentView.topAnchor),
+            documentView.leadingAnchor.constraint(equalTo: contentScrollView.contentView.leadingAnchor),
+            documentView.trailingAnchor.constraint(equalTo: contentScrollView.contentView.trailingAnchor)
         ])
     }
 
@@ -305,7 +422,8 @@ final class SettingsWindowController: NSWindowController {
         providerPopup.action = #selector(providerSelectionChanged)
     }
 
-    /// 重建 Provider 下拉项（对齐 Windows：VoiceStick Cloud 已下线，仅老配置仍为其时插入）。
+    /// 重建 Provider 下拉项（对齐 Windows：VoiceStick Cloud 已下线，仅老配置仍为其
+    /// 时插入；**本地虚项恒为末位**——索引语义见 ProviderPopupMapping）。
     private func rebuildProviderPopupItems() {
         providerPopup.removeAllItems()
         if config.asrProvider == .voiceStickCloud {
@@ -315,6 +433,7 @@ final class SettingsWindowController: NSWindowController {
             ASRProvider.volcengine.displayName,
             ASRProvider.tencent.displayName
         ])
+        providerPopup.addItem(withTitle: tr(.settingsProviderLocal))
     }
 
     private func configureApplyTrialAPIKeyButton() {
@@ -373,7 +492,12 @@ final class SettingsWindowController: NSWindowController {
         currentDisplayedProvider = config.asrProvider
         rebuildProviderPopupItems()
         providerPopup.selectItem(withTitle: config.asrProvider.displayName)
+        // 本地识别开启（虚项选中 = local_asr.enabled；asrProvider 保留云端值）。
+        if config.localAsr.enabled {
+            providerPopup.selectItem(at: providerPopup.numberOfItems - 1)
+        }
         apiKeyField.stringValue = apiKey(for: config.asrProvider)
+        localModelsDirField.stringValue = config.localAsr.modelsDir
         hotwordsTextView.string = config.asrHotwords.joined(separator: ",")
 
         llmBaseURLField.stringValue = config.llmBaseURL
@@ -390,6 +514,8 @@ final class SettingsWindowController: NSWindowController {
         voiceEditButton.state = config.voiceEdit.enabled ? .on : .off
         voiceEditDefaultCharsValueLabel.stringValue = "\(config.voiceEdit.defaultChars)"
         voiceEditDefaultCharsStepper.intValue = Int32(config.voiceEdit.defaultChars)
+        localRefineButton.state = config.refineEnabled ? .on : .off
+        voiceEditAlignButton.state = config.voiceEdit.localAlignEnabled ? .on : .off
         launchAtLoginButton.state = config.launchAtLogin ? .on : .off
         imuDebugButton.state = config.showIMUDebug ? .on : .off
         debugAudioButton.state = config.debugAudioCache ? .on : .off
@@ -400,6 +526,8 @@ final class SettingsWindowController: NSWindowController {
         }
         refreshHotwordCandidates()
         updateVisibility()
+        updateLocalAsrStatus()
+        updateLocalLlmStatus()
         statusLabel.stringValue = ""
     }
 
@@ -452,8 +580,15 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func updateVisibility() {
-        apiKeyRow?.isHidden = !developerMode
-        resourceRow?.isHidden = !(developerMode && currentDisplayedProvider == .volcengine)
+        // 本地虚项选中态（末位判定；对齐 Windows ProviderComboLocalSelected）。
+        let localSelected = localProviderSelected()
+        apiKeyRow?.isHidden = !developerMode || localSelected
+        resourceRow?.isHidden = !(developerMode && currentDisplayedProvider == .volcengine) || localSelected
+        localModelsDirRow?.isHidden = !localSelected
+        localStatusRow?.isHidden = !localSelected
+        localModelsDirHintRow?.isHidden = !localSelected
+        localRefineRow?.isHidden = !localSelected
+        voiceEditAlignRow?.isHidden = voiceEditButton.state != .on
         llmBaseURLRow?.isHidden = !developerMode
         llmAPIKeyRow?.isHidden = !developerMode
         llmModelRow?.isHidden = !developerMode
@@ -485,11 +620,15 @@ final class SettingsWindowController: NSWindowController {
         updateApplyTrialButton()
     }
 
-    /// 按可见行动态调整窗口高度（保持顶边位置不动）。
+    /// 按可见行动态调整窗口高度（保持顶边位置不动）；高度封顶为屏幕可用高度减
+    /// 标题栏与安全边距，超出部分由滚动视图滚动（开发者模式全展开可能超屏）。
     private func resizeWindowToFit(animated: Bool) {
         guard let window, let contentView = window.contentView else { return }
         contentView.layoutSubtreeIfNeeded()
-        let targetHeight = stack.fittingSize.height + 48
+        var targetHeight = stack.fittingSize.height + 48
+        if let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            targetHeight = min(targetHeight, visibleFrame.height - 60)
+        }
         guard abs(contentView.frame.height - targetHeight) > 1 else { return }
         var frame = window.frame
         let delta = targetHeight - contentView.frame.height
@@ -500,11 +639,6 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func developerModeToggled() {
         developerMode = developerModeButton.state == .on
-        updateVisibility()
-        resizeWindowToFit(animated: true)
-    }
-
-    @objc private func refineToggled() {
         updateVisibility()
         resizeWindowToFit(animated: true)
     }
@@ -529,6 +663,112 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func apiKeyFieldDidChange() {
         updateApplyTrialButton()
+    }
+
+    @objc private func localModelsDirDidChange() {
+        updateLocalAsrStatus()
+        updateLocalLlmStatus()
+    }
+
+    /// 本地虚项是否选中（索引末位判定；标题随界面语言变，不比标题）。
+    private func localProviderSelected() -> Bool {
+        ProviderPopupMapping.isLocal(
+            index: providerPopup.indexOfSelectedItem,
+            itemCount: providerPopup.numberOfItems)
+    }
+
+    /// 模型目录 + 运行时就位状态（存在性检查，UI 线程安全；全量 SHA 校验在
+    /// 下载会话的 worker 线程做——对齐 Windows 状态行只查存在的口径）。
+    private func updateLocalAsrStatus() {
+        var settings = LocalAsrSettings()
+        settings.modelsDir = localModelsDirField.stringValue
+        let resolved = settings.resolvedModelsDir(configDirectory: AppConfig.configDirectory)
+        if LocalAsrClient.validateModelsDir(resolved) == nil {
+            if SherpaSenseVoiceEngine.runtimeDylibAvailable() {
+                localStatusField.stringValue = tr(.settingsLocalStatusReady)
+                localStatusField.textColor = .systemGreen
+            } else {
+                localStatusField.stringValue = tr(.settingsLocalStatusMissingRuntime)
+                localStatusField.textColor = .systemOrange
+            }
+        } else {
+            localStatusField.stringValue = tr(.settingsLocalStatusMissingModel)
+            localStatusField.textColor = .systemRed
+        }
+    }
+
+    @objc private func chooseLocalModelsDir() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        let current = localModelsDirField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if current.isEmpty {
+            panel.directoryURL = AppConfig.configDirectory
+        } else if current.hasPrefix("/") {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            localModelsDirField.stringValue = url.path
+            updateLocalAsrStatus()
+        }
+    }
+
+    /// 本地精修复选框：与「文本精修」区块的 refineButton 双向同步（绑同一字段）。
+    @objc private func localRefineToggled() {
+        refineButton.state = localRefineButton.state
+        updateVisibility()
+        resizeWindowToFit(animated: true)
+    }
+
+    @objc private func voiceEditAlignToggled() {
+        updateLocalLlmStatus()
+    }
+
+    /// refineButton 联动（refineToggled 里反向同步）。
+    @objc private func refineToggled() {
+        localRefineButton.state = refineButton.state
+        updateVisibility()
+        resizeWindowToFit(animated: true)
+    }
+
+    /// 本地 LLM 档位就位状态（存在性检查，UI 线程安全）：3B 精修 / 1.5B 对齐。
+    private func updateLocalLlmStatus() {
+        func llmStatus(tierPath: String?, readyText: String, missingText: String) -> String {
+            guard LlamaCppEngine.runtimeDylibAvailable() else {
+                return tr(.settingsLocalRefineNoRuntime)
+            }
+            return tierPath != nil ? readyText : missingText
+        }
+        localRefineStatusField.stringValue = llmStatus(
+            tierPath: LocalLlmRuntime.refineModelPath(
+                modelsDir: localModelsDirField.stringValue,
+                override: config.localAsr.refineModel,
+                configDirectory: AppConfig.configDirectory),
+            readyText: tr(.settingsLocalRefineReady),
+            missingText: tr(.settingsLocalRefineMissing))
+        voiceEditAlignStatusField.stringValue = llmStatus(
+            tierPath: LocalLlmRuntime.alignModelPath(
+                modelsDir: localModelsDirField.stringValue,
+                override: config.voiceEdit.localAlignModel,
+                configDirectory: AppConfig.configDirectory),
+            readyText: tr(.settingsVoiceEditAlignReady),
+            missingText: tr(.settingsVoiceEditAlignMissing))
+    }
+
+    /// 「下载模型…」：打开下载向导（asr/llm 安装根 = 当前编辑框解析出的模型目录；
+    /// runtime 安装根固定 Application Support）。完成即刷新状态行，用户仍需点保存。
+    @objc private func downloadModels() {
+        var settings = LocalAsrSettings()
+        settings.modelsDir = localModelsDirField.stringValue
+        let resolved = settings.resolvedModelsDir(configDirectory: AppConfig.configDirectory)
+        let controller = ModelDownloadWindowController(asrModelsDir: resolved)
+        controller.onCompleted = { [weak self] in
+            self?.updateLocalAsrStatus()
+            self?.updateLocalLlmStatus()
+        }
+        modelDownloadWindow = controller
+        controller.show()
     }
 
     @objc private func applyTrialAPIKey() {
@@ -617,6 +857,11 @@ final class SettingsWindowController: NSWindowController {
         updatedConfig.uiLanguage = selectedLanguage()
         updatedConfig.resourceID = resourceID
         updatedConfig.asrHotwords = AppConfig.hotwordList(hotwordsTextView.string)
+        // 本地语音识别：虚项选中 = enabled（asrProvider 上面已按云端值写入）。
+        updatedConfig.localAsr = config.localAsr
+        updatedConfig.localAsr.enabled = localProviderSelected()
+        updatedConfig.localAsr.modelsDir = localModelsDirField.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         updatedConfig.pairedDeviceIDs = config.pairedDeviceIDs
         updatedConfig.deviceThemeColors = config.deviceThemeColors
         updatedConfig.deviceOverlayPositions = config.deviceOverlayPositions
@@ -629,6 +874,7 @@ final class SettingsWindowController: NSWindowController {
         updatedConfig.voiceEdit = config.voiceEdit
         updatedConfig.voiceEdit.enabled = voiceEditButton.state == .on
         updatedConfig.voiceEdit.defaultChars = Int(voiceEditDefaultCharsStepper.intValue)
+        updatedConfig.voiceEdit.localAlignEnabled = voiceEditAlignButton.state == .on
         updatedConfig.debugAudioCache = debugAudioButton.state == .on
         updatedConfig.debugAudioDirectory = URL(fileURLWithPath: debugAudioDirectoryField.stringValue, isDirectory: true)
         updatedConfig.pairedDevices = config.pairedDevices
@@ -724,6 +970,8 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func selectedProvider() -> ASRProvider {
+        // 本地虚项：保留云端值（切回云端项无缝恢复；asrProvider 落盘仍是云端）。
+        if localProviderSelected() { return currentDisplayedProvider }
         switch providerPopup.titleOfSelectedItem {
         case ASRProvider.voiceStickCloud.displayName:
             return .voiceStickCloud
@@ -820,6 +1068,12 @@ final class SettingsWindowController: NSWindowController {
         row.addArrangedSubview(label)
         return row
     }
+}
+
+/// 滚动视图文档容器：翻转坐标系（原点左上）。NSStackView 非翻转，直接作
+/// documentView 时内容增高会被 AppKit 锚定左下角，窗口打开停在内容底部。
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 /// 8765 有监听即认为调试回放服务已起（loopback connect 收/拒均为即时返回）。

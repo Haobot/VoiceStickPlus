@@ -48,10 +48,28 @@ let package = Package(
             dependencies: [
                 "COpus",
                 "CRnnoise",
+                // SenseVoice 本地 ASR 的 C 结构体定义（header-only，dylib 运行时 dlopen）。
+                "CSherpaOnnx",
+                // llama.cpp b10868 C API 头（header-only 桥接，dylib 运行时 dlopen，
+                // 同 CSherpaOnnx 模式——仓库无 dylib 也能构建，见 Sources/CLlamaCpp/README.md）。
+                "CLlamaCpp",
                 // N1 根刀：AppConfig（TOML 读写）下迁 Core 需 TOMLKit（测试 runner 经 Core 传递获取，无需改 runner 声明）。
                 .product(name: "TOMLKit", package: "TOMLKit"),
             ],
             path: "Sources/VoiceStickCore"
+        ),
+        // sherpa-onnx v1.13.7 C API 头（header-only 桥接，见 Sources/CSherpaOnnx/README.md）。
+        .target(
+            name: "CSherpaOnnx",
+            path: "Sources/CSherpaOnnx",
+            publicHeadersPath: "include"
+        ),
+        // llama.cpp b10868 C API 头（header-only 桥接；dylib 由
+        // scripts/fetch-llama-cpp.sh 合成安装，运行时 dlopen）。
+        .target(
+            name: "CLlamaCpp",
+            path: "Sources/CLlamaCpp",
+            publicHeadersPath: "include"
         ),
         .target(
             name: "CZlib",
@@ -61,6 +79,19 @@ let package = Package(
         // 无框架测试 runner（本机无 Xcode，XCTest/swift-testing 均不可用）：
         // main.swift 顶层驱动 + 极简断言，移植 Windows tests/core_tests.cc 的
         // 小米 ATVV 链路用例。运行：swift run VoiceStickTests。
+        // 诊断工具：回放 DebugAudio 会话 ogg 过真实 LocalAsrClient（不入 app）。
+        .executableTarget(
+            name: "AsrReplayCli",
+            dependencies: ["VoiceStickCore"],
+            path: "Tools/AsrReplayCli"
+        ),
+        // 诊断/复测工具：内嵌 llama.cpp 引擎的 chat 冒烟 + 精修/对齐评测复测
+        //（D1 评测口径对拍；需先 scripts/fetch-llama-cpp.sh 安装 dylib）。
+        .executableTarget(
+            name: "LocalLlmCli",
+            dependencies: ["VoiceStickCore"],
+            path: "Tools/LocalLlmCli"
+        ),
         .executableTarget(
             name: "VoiceStickTests",
             dependencies: ["VoiceStickCore", "COpus"],
