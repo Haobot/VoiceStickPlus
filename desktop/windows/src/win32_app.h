@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "battery_monitor_dialog.h"
 #include "cmd_line.h"
+#include "correction_dialog.h"
 #include "encoder_settings_dialog.h"
 #include "firmware_update_dialog.h"
 #include "interaction_settings_dialog.h"
@@ -173,6 +174,9 @@ private:
     void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
     void SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile);
+    // 设备级麦克风模式切换（托盘设备子菜单复选框）：勾选 = 输出目标覆盖为
+    // wechat_input_method（音频渲染到虚拟麦克风），取消 = 恢复全局默认输出。
+    void ToggleDeviceMicMode(const std::string& device_id);
     void ApplyOverlayStyle(const std::optional<std::string>& device_id);
     void StartFirmwareUpdate(const std::string& device_id);
     void StartFirmwareUpdateFromFile(const std::string& device_id);
@@ -252,6 +256,7 @@ private:
     std::unique_ptr<SelectionCorrectionDialog> selection_correction_dialog_;
     // 划词纠错确认的回写目标（打开对话框前的前台窗口），用毕即清。
     HWND selection_correction_target_hwnd_ = nullptr;
+    std::unique_ptr<CorrectionDialog> correction_dialog_;
     class BleCentralWin* ble_central_ = nullptr;
     // 小米遥控器 F5 抑制：xiaomi_last_mic_open_ms_ 由 BLE 层在 MIC_OPEN 时写入，
     // VoiceF5Suppressor 键盘钩子据此在 80ms 窗内吞掉遥控器附带的 F5 按键。

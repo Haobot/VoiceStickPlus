@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <cwchar>
 #include <string>
 
 namespace voicestick {
@@ -105,6 +106,25 @@ std::optional<ControlCliRequest> ParseControlCliArgs(int argc, const wchar_t* co
             if (json.empty()) return std::nullopt;
         }
         return ControlCliRequest{std::move(json)};
+    }
+    return std::nullopt;
+}
+
+std::optional<RenameVirtualMicCliRequest> ParseRenameVirtualMicArgs(
+    int argc, const wchar_t* const argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::wcscmp(argv[i], L"--rename-virtual-mic") != 0) continue;
+        if (i + 2 >= argc) return std::nullopt;  // 缺 endpoint-id 或 name
+        RenameVirtualMicCliRequest request;
+        request.endpoint_id = argv[i + 1];
+        // name 取该选项后剩余全部参数以空格连接：调用方整体加引号时
+        // CommandLineToArgvW 已拆成多个 argv，这里拼回原名（支持含空格的名字）。
+        for (int j = i + 2; j < argc; ++j) {
+            if (j > i + 2) request.new_name += L' ';
+            request.new_name += argv[j];
+        }
+        if (request.endpoint_id.empty() || request.new_name.empty()) return std::nullopt;
+        return request;
     }
     return std::nullopt;
 }

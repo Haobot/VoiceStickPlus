@@ -1556,16 +1556,23 @@ OutputProfile VoiceStickCoordinator::OutputProfileForDevice(const std::optional<
     return ConfigSnapshot()->OutputProfileForDevice(device_id);
 }
 
-InteractionMode VoiceStickCoordinator::InteractionModeToSend() const {
-    // wechat 模式按其专属触发模式（trigger_mode，与全局 interaction_mode 解耦）决定下发：
+InteractionMode VoiceStickCoordinator::InteractionModeToSend(
+    const std::optional<std::string>& device_id) const {
+    // wechat 模式（麦克风模式）按其专属触发模式（trigger_mode，与全局 interaction_mode 解耦）
+    // 决定下发：
     //   hold -> hold_to_talk_instant（按下即录音跳过 300ms 阈值，降低弹框延迟）
     //   click -> click_to_talk
     // 非 wechat 模式（focused_app/字幕）仍下发全局 interaction_mode（托盘菜单控制），
-    // 不被 wechat 的点按式选择污染。
-    if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kWechatInputMethod) {
-        return ConfigSnapshot()->wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
-                   ? InteractionMode::kHoldToTalkInstant
-                   : InteractionMode::kClickToTalk;
+    // 不被 wechat 的点按式选择污染。输出目标按设备生效（麦克风模式为设备级覆盖，
+    // nullopt 广播场景取全局默认，与旧行为一致）。
+    // virtual_mic 直通模式同 wechat：按 trigger_mode 决定（无弹框但按下即出声同样最优）。
+    {
+        const OutputTarget target = ConfigSnapshot()->OutputProfileForDevice(device_id).target;
+        if (target == OutputTarget::kWechatInputMethod || target == OutputTarget::kVirtualMic) {
+            return ConfigSnapshot()->wechat_input_method.trigger_mode == InteractionMode::kHoldToTalk
+                       ? InteractionMode::kHoldToTalkInstant
+                       : InteractionMode::kClickToTalk;
+        }
     }
     return ConfigSnapshot()->interaction_mode;
 }

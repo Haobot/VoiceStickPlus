@@ -310,6 +310,8 @@ class ComWasapiRenderSink : public WasapiRenderSink {
 // 渲染迭代：读 padding → 算可提交（buffer_frame_count - padding，不再受 render_period
 // 上限约束）→ GetBuffer → 从 ring 读，不足补静音 → ReleaseBuffer。提交量严格跟随 WASAPI
 // 实际腾出的空间，保证稳态消费 1.0×，消除 underrun 静音。
+// ring 供不上时补静音并计入 underrun 统计（会话结束汇总打日志，用于诊断 BLE 抖动
+// 击穿缓冲导致的输出卡顿）。
 UINT32 RenderPump::PumpOnce() {
   if (sink_ == nullptr) {
     return 0;
@@ -339,8 +341,11 @@ UINT32 RenderPump::PumpOnce() {
   if (source_ != nullptr) {
     read = source_->Read(read_buffer_.data(), samples_to_read, 0);
   }
-  // ring 数据不足时补静音，避免播放残留或 pop 噪声。
+  ++total_pumps_;
+  // ring 数据不足时补静音，避免播放残留或 pop 噪声；记录 underrun 供诊断。
   if (read < samples_to_read) {
+    ++underrun_pumps_;
+    underrun_samples_ += samples_to_read - read;
     std::fill(read_buffer_.begin() + read,
               read_buffer_.begin() + samples_to_read,
               static_cast<int16_t>(0));
@@ -432,6 +437,19 @@ class WasapiVirtualMicRenderer::Impl {
       }
       pump.PumpOnce();
     }
+
+    // 会话统计：underrun 次数/占比/静音毫秒数。占比高说明 BLE 供给抖动击穿
+    // WASAPI 缓冲（表现为输出断续卡顿）；为 0 则卡顿另有来源（CABLE/应用侧）。
+    const double underrun_ratio =
+        pump.total_pumps() > 0
+            ? 100.0 * static_cast<double>(pump.underrun_pumps()) /
+                  static_cast<double>(pump.total_pumps())
+            : 0.0;
+    LogApp("VirtualMic session: pumps=" + std::to_string(pump.total_pumps()) +
+           " underruns=" + std::to_string(pump.underrun_pumps()) +
+           " (" + std::to_string(underrun_ratio).substr(0, 5) + "%)" +
+           " silence_ms=" +
+           std::to_string(pump.underrun_samples() / options_.sample_rate));
 
     if (thread_com_initialized) {
       CoUninitialize();

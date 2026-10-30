@@ -114,6 +114,11 @@ void VoiceStickCoordinator::Start() {
         RefreshFirmwareAvailability();
         ui_->SetStatus(paired_device_ids_.empty() ? "Pair a VoiceStick" : "Ready");
         ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
+        // 交互模式下发按设备生效值单播：麦克风模式设备覆盖为 wechat trigger_mode
+        //（无覆盖设备收到全局默认，与广播等价；小米遥控器被 BLE 层按类门控跳过）。
+        for (const auto& dev : devices) {
+            ble_->SendInteractionMode(InteractionModeToSend(dev.id), dev.id);
+        }
         ble_->SendShowImuDebug(ConfigSnapshot()->show_imu_debug, std::nullopt);
         // D9：连接即上报本端协议版本，设备恒以 proto_info 应答（双向可见）。
         ble_->SendProtoNegotiate(std::nullopt);
@@ -271,6 +276,11 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     translator_ = LLMTranslationClient(*ConfigSnapshot());
     refiner_ = LLMRefinementClient(*ConfigSnapshot());
     ble_->SendInteractionMode(InteractionModeToSend(), std::nullopt);
+    // 麦克风模式热切换（托盘复选框）：按设备生效值单播交互模式，覆盖上方广播值
+    //（无覆盖设备收到全局默认，与广播等价；小米遥控器被 BLE 层按类门控跳过）。
+    for (const auto& device_id : connected_device_ids_) {
+        ble_->SendInteractionMode(InteractionModeToSend(device_id), device_id);
+    }
     ble_->SendShowImuDebug(ConfigSnapshot()->show_imu_debug, std::nullopt);
     // 编码器/体感交互设置按设备覆盖：对已连接设备逐个取其有效配置单播
     // （InteractionSettingsForDevice 含 default 回退，故每个设备都已覆盖全局默认）。
@@ -814,7 +824,10 @@ void VoiceStickCoordinator::HandleWechatInputMethodPrimaryButtonDown(
 
     // 前台为高权限程序时 SendInput 注入必被 UIPI 丢弃，启动会话无意义且留空转残留。
     // 检测到则气泡提醒用户提权运行并跳过启动；按进程名去重，同一高权限程序本次运行只提醒一次。
-    if (MaybeWarnForegroundElevated(device_id)) {
+    // 仅第三方输入法模式需要（有 SendInput 注入）；virtual_mic 直通模式不注入，跳过检测。
+    if (ConfigSnapshot()->OutputProfileForDevice(device_id).target ==
+            OutputTarget::kWechatInputMethod &&
+        MaybeWarnForegroundElevated(device_id)) {
         ble_->SendUiState("ready", "", device_id);
         return;
     }
@@ -937,10 +950,18 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
             } else {
                 wechat_ring_buffer_->Write(pcm, result.decoded_samples);
 
+                // 首帧可见性：直通模式也打首帧延迟日志（无热键动作），用于诊断
+                // "按下 → 首帧音频"链路延迟（BLE 建链 + 首包传输）。
+                if (!wechat_first_frame_logged_) {
+                    wechat_first_frame_logged_ = true;
+                    LogWechatLatency(wechat_session_uses_hotkey_
+                                         ? "first frame decoded, SendDown begin"
+                                         : "first frame decoded (direct mode)");
+                }
                 // 首帧解码成功入 ring_buffer：持锁 SendDown 弹框，弹框前 CABLE Output 已有 PCM，
                 // 微信弹框即取到有效音频（避免弹框早于音频就绪的首字卡顿）。持锁避免与 Stop race。
-                if (!wechat_hotkey_sent_down_) {
-                    LogWechatLatency("first frame decoded, SendDown begin");
+                // virtual_mic 直通模式不触发热键：应用自行从虚拟麦克风取音。
+                if (wechat_session_uses_hotkey_ && !wechat_hotkey_sent_down_) {
                     // 点按式发完整点击（down+up），hold 模式发按下：Typeless 等点按式输入法
                     // 靠完整 click 触发，仅按下不释放不弹框。
                     const bool click_mode = (ConfigSnapshot()->wechat_input_method.EffectiveSessionModel() ==
@@ -996,6 +1017,12 @@ void VoiceStickCoordinator::HandleWechatInputMethodAudioFrame(
 
 bool VoiceStickCoordinator::StartWechatInputMethodSession(
     std::optional<std::uint32_t> session_id, const std::string& device_id) {
+    // 会话行为按输出目标分流：wechat_input_method 触发第三方输入法热键 + auto_switch；
+    // virtual_mic 直通模式只渲染虚拟麦克风（不 SendDown/不切设备），由当前应用自行
+    // 从虚拟麦克风取音识别（应用内需选择该设备，如 CABLE Output）。
+    wechat_session_uses_hotkey_ =
+        ConfigSnapshot()->OutputProfileForDevice(device_id).target !=
+        OutputTarget::kVirtualMic;
     if (!wechat_decoder_) {
         wechat_decoder_ = std::make_unique<AudioOpusDecoder>(16000, 1);
     }
@@ -1035,7 +1062,10 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
     // auto_switch：录音期把默认录音设备(eConsole)切到虚拟麦克风(CABLE Output)，松开切回。
     // 角色分离只切 eConsole，eCommunications 保持真实麦不动，Teams/Skype 通信类会议零干扰。
     // 必须在 SendDown 之前完成：微信弹框即从默认设备取音，未切好会取到真实麦。
-    if (!direct_mic && ConfigSnapshot()->wechat_input_method.auto_switch_default_recording_device) {
+    // virtual_mic 直通模式不切：用户在应用内显式选择虚拟麦克风，切默认反而干扰其他应用。
+    if (!direct_mic &&
+        ConfigSnapshot()->wechat_input_method.auto_switch_default_recording_device &&
+        wechat_session_uses_hotkey_) {
         LogWechatLatency("auto_switch begin");
         if (!wechat_device_switcher_) {
             wechat_device_switcher_ = wechat_device_switcher_factory_
@@ -1090,6 +1120,7 @@ bool VoiceStickCoordinator::StartWechatInputMethodSession(
                                     IsXiaomiRemoteDevice(device_id) ? "RC-" : "VS-");
         wechat_audio_end_received_ = false;
         wechat_hotkey_sent_down_ = false;
+        wechat_first_frame_logged_ = false;
         received_audio_frames_ = 0;
         active_session_id_ = session_id;
         active_device_id_ = device_id;
@@ -1200,8 +1231,10 @@ void VoiceStickCoordinator::StopWechatInputMethodSession() {
     active_session_id_.reset();
     active_device_id_.reset();
     wechat_input_method_active_ = false;
+    wechat_session_uses_hotkey_ = false;
     wechat_hotkey_sent_down_ = false;
     wechat_session_direct_mic_ = false;
+    wechat_first_frame_logged_ = false;
     wechat_latency_anchor_.reset();
 }
 
@@ -1314,7 +1347,10 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             input_injector_->ClickLeftButton();
             return;
         }
-        if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kSubtitle) {
+        // 输出目标按设备生效（麦克风模式为设备级覆盖，无覆盖回全局默认）。
+        const OutputTarget device_target =
+            ConfigSnapshot()->OutputProfileForDevice(device_id).target;
+        if (device_target == OutputTarget::kSubtitle) {
             if (ConfigSnapshot()->interaction_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
@@ -1341,7 +1377,8 @@ void VoiceStickCoordinator::HandleButtonClick(const StateEvent& event, const std
             }
             return;
         }
-        if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kWechatInputMethod) {
+        if (device_target == OutputTarget::kWechatInputMethod ||
+            device_target == OutputTarget::kVirtualMic) {
             if (ConfigSnapshot()->wechat_input_method.trigger_mode != InteractionMode::kClickToTalk) {
                 ble_->SendUiState("ready", "", device_id);
                 return;
@@ -1923,11 +1960,14 @@ void VoiceStickCoordinator::HandlePrimaryButtonDown(std::optional<std::uint32_t>
     if (IsAirMouseActive(device_id)) {
         return;
     }
-    if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kWechatInputMethod) {
+    // 输出目标按设备生效（麦克风模式为设备级覆盖，无覆盖回全局默认）。
+    const OutputTarget device_target = ConfigSnapshot()->OutputProfileForDevice(device_id).target;
+    if (device_target == OutputTarget::kWechatInputMethod ||
+        device_target == OutputTarget::kVirtualMic) {
         HandleWechatInputMethodPrimaryButtonDown(session_id, device_id);
         return;
     }
-    if (ConfigSnapshot()->default_output_profile.target == OutputTarget::kSubtitle) {
+    if (device_target == OutputTarget::kSubtitle) {
         HandleSubtitlePrimaryButtonDown(session_id, device_id);
         return;
     }
@@ -2641,6 +2681,16 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                                           std::function<void(bool, std::string)> completion) {
     // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立。
     BeginSessionHistory(text);
+    // 热词纠错自动替换：翻译/精修/直通三条路径统一在最前面做错误文本替换，
+    // 保证后续精修 prompt 与最终注入/字幕/翻译都吃已修正文本。
+    std::string corrected =
+        ApplyHotwordCorrections(text, ConfigSnapshot()->hotword_corrections);
+    if (corrected != text) {
+        LogCoordinatorLine("hotword correction applied: len " +
+                           std::to_string(text.size()) + " -> " +
+                           std::to_string(corrected.size()));
+    }
+    const std::string& effective = corrected;
     // 最终文本产出时记录热词使用统计（计数+最近使用时间），供高频优先裁剪评分；
     // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。
     auto wrapped = [this, completion = std::move(completion)](bool ok, std::string result) mutable {
@@ -2654,7 +2704,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
     };
     if (profile.transform == TextTransform::kTranslate) {
         // 翻译 prompt 热词段同样按高频评分取 top-N，防大库稀释小模型注意力。
-        translator_.Translate(text, profile.translation_target, HotwordsForLlmPrompts(),
+        translator_.Translate(effective, profile.translation_target, HotwordsForLlmPrompts(),
                               std::move(wrapped));
         return;
     }
@@ -2751,7 +2801,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         return;
     }
     // 原文路径：若启用精修，过一道 LLM 去停顿空格 / 修标点 / 去口头语；best-effort，失败回退原文。
-    if (ConfigSnapshot()->refine_enabled && !text.empty()) {
+    if (ConfigSnapshot()->refine_enabled && !effective.empty()) {
         // 流式精修：on_token 在后台线程节流式追加显示（用 AppendPartial 跳过文字滚动
         // 动画，避免高频 token 反复重置 140ms 动画导致闪动；overlay OnTimer 已优化为
         // 文本未变时不重建 D2D 文本布局，避免卡死）。
@@ -2771,7 +2821,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         auto throttle = std::make_shared<ThrottleState>();
 
         refiner_.RefineStream(
-            text,
+            effective,
             ConfigSnapshot()->refine_prompt,
             // on_token（后台线程）：节流式追加更新悬浮窗
             [this, alive, cancel, device_id, throttle](std::string token) {
@@ -2794,7 +2844,7 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                 }
             },
             // on_complete（后台线程）：最终文本已就绪
-            [this, alive, cancel, text, device_id,
+            [this, alive, cancel, text = effective, device_id, throttle,
              wrapped = std::move(wrapped)](bool ok, std::string result) mutable {
                 if (!alive->load() || (cancel && cancel->load())) return;
                 // P0-3：on_complete 在精修 worker 线程，整段收口回 UI 线程执行。
@@ -2826,8 +2876,8 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
             cancel, HotwordsForLlmPrompts(), CorrectionPairsForLlmPrompts());
         return;
     }
-    wrapped(true, text);
-    MaybeExtractHotwordCandidates(text);
+    wrapped(true, effective);
+    MaybeExtractHotwordCandidates(effective);
 }
 
 } // namespace voicestick

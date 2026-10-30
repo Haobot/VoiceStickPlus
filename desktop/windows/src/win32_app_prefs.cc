@@ -91,10 +91,11 @@ void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPo
 
 void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile) {
     try {
-        profile.target = config_.default_output_profile.target;
-        OutputProfile default_profile = config_.default_output_profile;
-        default_profile.target = profile.target;
-        if (profile.transform == default_profile.transform &&
+        // target 允许设备级覆盖（麦克风模式）；transform/translation_target 与全局
+        // 默认相同且 target 未覆盖时移除覆盖条目（落盘自然清除）。
+        const OutputProfile& default_profile = config_.default_output_profile;
+        const bool target_overridden = profile.target != default_profile.target;
+        if (!target_overridden && profile.transform == default_profile.transform &&
             profile.translation_target == default_profile.translation_target) {
             config_.device_output_profiles.erase(device_id);
         } else {
@@ -108,6 +109,43 @@ void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfi
         LogLine(std::string("Output profile save failed: ") + error.what());
         SetStatus("Output save failed");
     }
+}
+
+void Win32App::ToggleDeviceMicMode(const std::string& device_id) {
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    OutputProfile profile = config_.OutputProfileForDevice(device_id);
+    bool enabled;
+    if (profile.target == OutputTarget::kVirtualMic ||
+        profile.target == OutputTarget::kWechatInputMethod) {
+        // 取消勾选：恢复全局默认输出（默认语音识别）；全局默认同为麦克风模式时
+        // 显式回退 focused_app，保证复选框可关闭。
+        profile.target = config_.default_output_profile.target;
+        if (profile.target == OutputTarget::kVirtualMic ||
+            profile.target == OutputTarget::kWechatInputMethod) {
+            profile.target = OutputTarget::kFocusedApp;
+        }
+        enabled = false;
+    } else {
+        // 麦克风模式 = virtual_mic 直通：音频只进虚拟麦克风，应用内自行选择该设备
+        // 取音识别（不触发第三方输入法；需要输入法热键的用 设置→输出目标→第三方输入法）。
+        profile.target = OutputTarget::kVirtualMic;
+        enabled = true;
+    }
+    SaveDeviceOutputProfile(device_id, profile);
+    // 即时视觉反馈：托盘气泡 + 状态栏文本；设备子菜单复选框/状态行在下次打开时呈现。
+    ShowNotification(Tr(StringId::kMenuMicMode, language),
+                     Tr(enabled ? StringId::kNotificationMicModeOnBody
+                                : StringId::kNotificationMicModeOffBody,
+                        language));
+    // 类别前缀取自 config 持久化的 hardware（与菜单构建处判定一致，简化为仅看配对条目）。
+    const auto entry_it =
+        std::find_if(config_.paired_devices.begin(), config_.paired_devices.end(),
+                     [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
+    const bool is_xiaomi =
+        entry_it != config_.paired_devices.end() &&
+        entry_it->hardware == kHardwareXiaomiRemote2Pro;
+    LogLine("Mic mode toggled " + std::string(is_xiaomi ? "RC-" : "VS-") +
+            device_id + " -> " + (enabled ? "on" : "off"));
 }
 
 void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {
@@ -614,6 +652,13 @@ void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {
     const auto state_it = usb_auto_off_state_.find(device_id);
     if (state_it != usb_auto_off_state_.end()) {
         battery_monitor_dialog_->OnPowerMgmtState(device_id, state_it->second);
+    }
+    // 若已缓存设备上报的电池状态（连接时固件会推送），立即刷新供电指示器。
+    const auto battery_it = device_battery_map_.find(device_id);
+    if (battery_it != device_battery_map_.end()) {
+        battery_monitor_dialog_->OnBatteryStatus(
+            device_id, battery_it->second.level_percent, battery_it->second.charging,
+            battery_it->second.usb_powered);
     }
     LogLine("Battery monitor opened for VS-" + device_id);
 }

@@ -90,6 +90,9 @@ constexpr UINT kMenuRemoteSettingsEnd = 6699;
 // 设备级按键映射入口：每设备一项（kMenuXiaomiKeymapBase + 设备索引，仅小米遥控器显示）。
 constexpr UINT kMenuXiaomiKeymapBase = 6700;
 constexpr UINT kMenuXiaomiKeymapEnd = 6799;
+// 设备级麦克风模式复选框：每设备一项（kMenuMicModeBase + 设备索引）。
+constexpr UINT kMenuMicModeBase = 6800;
+constexpr UINT kMenuMicModeEnd = 6899;
 constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
@@ -814,12 +817,21 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
             last_logged_device_ids_ = devices;
             license_runtime_->LogStatus("devices_changed");
         }
-        // 电池电压监测窗口：监测中设备断连立即中止（避免干等导出超时）。
+        // 电池电压监测窗口：监测中链路断开时转入等待重连（设备端 power_log
+        // 持续记录，数据不丢）；设备重新在线（GATT 已就绪）时恢复增量续传。
         if (battery_monitor_dialog_) {
+            bool monitor_device_connected = false;
             for (const auto& dev : devices) {
-                if (battery_monitor_dialog_->IsSameDevice(dev.id)) return;
+                if (battery_monitor_dialog_->IsSameDevice(dev.id)) {
+                    monitor_device_connected = true;
+                    break;
+                }
             }
-            battery_monitor_dialog_->NotifyAllDisconnected();
+            if (monitor_device_connected) {
+                battery_monitor_dialog_->NotifyDeviceReconnected();
+            } else {
+                battery_monitor_dialog_->NotifyAllDisconnected();
+            }
         }
         // 命令行 --control 自启动场景：连上设备后补发控制帧。
         if (pending_raw_control_.has_value() && !connected_devices_.empty()) {
@@ -946,6 +958,11 @@ void Win32App::SetDeviceBattery(const std::string& device_id, int level_percent,
                 " charging=" + std::to_string(charging) +
                 " usb=" + std::to_string(usb_powered));
         device_battery_map_[device_id] = {level_percent, charging, usb_powered};
+        // 实时电池状态路由到监测窗口左上角的供电指示器（窗口未开时丢弃）。
+        if (battery_monitor_dialog_) {
+            battery_monitor_dialog_->OnBatteryStatus(device_id, level_percent, charging,
+                                                      usb_powered);
+        }
         UpdateTrayIcon();
     });
 }
@@ -1475,6 +1492,11 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                         ShowGatewayKeymapDialog();
                     }
                 }
+            } else if (cmd >= kMenuMicModeBase && cmd <= kMenuMicModeEnd) {
+                std::size_t index = cmd - kMenuMicModeBase;
+                if (index < paired_device_ids_.size()) {
+                    ToggleDeviceMicMode(paired_device_ids_[index]);
+                }
             }
             return 0;
         }
@@ -1884,10 +1906,59 @@ bool Win32App::CreateWindowInternal() {
                 }
                 AddHotwordAndNotify(text);
             };
-        // 划词纠错（S1）：错词 → 纠错对话框 → 正确词入表（S2 锚点域生效）。
-        selection_hotword_manager_->on_correct_hotword =
-            [this](const std::string& text) {
-                OpenSelectionCorrectionDialog(text);
+        // on_correction_requested 回调：弹出纠错对话框（错误文本 + AI 建议输入）。
+        selection_hotword_manager_->on_correction_requested =
+            [this](const std::string& text, HWND target_hwnd) {
+                if (text.empty() || !correction_dialog_) return;
+                POINT pt{};
+                GetCursorPos(&pt);
+                correction_dialog_->Show(text, pt, target_hwnd, config_);
+            };
+    }
+    LogLine("Creating correction dialog");
+    correction_dialog_ = std::make_unique<CorrectionDialog>(instance_, hwnd_);
+    if (correction_dialog_) {
+        correction_dialog_->SetLanguage(EffectiveUiLanguage(config_.ui_language));
+        // on_save 回调：写入热词纠错映射（错误文本 -> 正确文本），正确文本同时加入
+        // 热词表（提升后续 ASR 识别），持久化并应用到协调器；随后把正确文本粘贴回
+        // 划词目标窗口的选区，原地替换错误文本（一步到位，无需手动删改）。
+        correction_dialog_->on_save =
+            [this](const std::string& wrong, const std::string& right,
+                   HWND target_hwnd) {
+                const auto lang = EffectiveUiLanguage(config_.ui_language);
+                const bool is_update = config_.hotword_corrections.contains(wrong);
+                config_.hotword_corrections[wrong] = right;
+                // 正确文本加入热词表（若尚未存在且长度合规）。
+                if (right.size() <= SelectionHotwordManager::kMaxHotwordLen &&
+                    std::find(config_.asr_hotwords.begin(), config_.asr_hotwords.end(),
+                              right) == config_.asr_hotwords.end()) {
+                    config_.asr_hotwords.push_back(right);
+                }
+                try {
+                    config_.SavePreservingDiskCredentials();
+                } catch (const std::exception& e) {
+                    LogLine(std::string("Save config on correction save failed: ") + e.what());
+                }
+                ApplyUpdatedConfig();
+                // 原地替换：激活划词目标窗口，把正确文本粘贴到原选区（粘贴自动替换
+                // 选中内容）。对话框刚隐藏，本进程仍是前台进程，SetForegroundWindow
+                // 允许。窗口失效（已关闭/极小化）则跳过替换，仅保存规则。
+                if (target_hwnd && IsWindow(target_hwnd) && IsWindowVisible(target_hwnd)) {
+                    if (SetForegroundWindow(target_hwnd)) {
+                        // 等焦点切换完成再粘贴（Paste 内部还有 40ms 剪贴板缓冲）。
+                        Sleep(100);
+                        input_injector_.Paste(right, false);
+                    } else {
+                        LogLine("Correction replace: SetForegroundWindow failed err=" +
+                                std::to_string(GetLastError()));
+                    }
+                }
+                ShowNotification(
+                    Tr(StringId::kCorrectionSavedTitle, lang),
+                    Tr(is_update ? StringId::kCorrectionDuplicateBody
+                                 : StringId::kCorrectionSavedBody,
+                       lang) +
+                        wrong + " -> " + right);
             };
     }
     return true;
@@ -2109,6 +2180,13 @@ void Win32App::ShowTrayMenu() {
                 : (firmware_it != firmware_info_map_.end() ? firmware_it->second.current_version : std::string{});
         auto identity_text = FirmwareIdentityText(hardware, firmware_version);
         AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0, identity_text.c_str());
+        // 设备状态显示：麦克风模式启用时明确标识（与复选框勾选态一致）。
+        // virtual_mic（直通）与 wechat_input_method（第三方输入法）都算麦克风模式启用。
+        if (config_.OutputProfileForDevice(id).target == OutputTarget::kVirtualMic ||
+            config_.OutputProfileForDevice(id).target == OutputTarget::kWechatInputMethod) {
+            AppendMenuW(submenu, MF_STRING | MF_DISABLED, 0,
+                        TrW(StringId::kStatusMicModeEnabled, language).c_str());
+        }
 
         HMENU theme_menu = CreatePopupMenu();
         const auto theme_it = config_.device_theme_colors.find(id);
@@ -2187,6 +2265,19 @@ void Win32App::ShowTrayMenu() {
         }
         AppendMenuW(submenu, MF_POPUP, reinterpret_cast<UINT_PTR>(translation_menu),
                     TrW(StringId::kMenuTranslation, language).c_str());
+
+        // 麦克风模式复选框：勾选后该设备输出目标覆盖为 virtual_mic（音频只渲染到系统
+        // 虚拟麦克风，由当前应用自行取音识别，不触发第三方输入法热键），取消即恢复全局
+        // 默认输出。StickS3 与小米遥控器音频在协调器前已归一化，通用。
+        const OutputTarget device_mic_target =
+            config_.OutputProfileForDevice(id).target;
+        const bool mic_mode_enabled =
+            device_mic_target == OutputTarget::kVirtualMic ||
+            device_mic_target == OutputTarget::kWechatInputMethod;
+        AppendMenuW(submenu,
+                    MF_STRING | (mic_mode_enabled ? MF_CHECKED : 0),
+                    kMenuMicModeBase + static_cast<UINT>(i),
+                    TrW(StringId::kMenuMicMode, language).c_str());
 
         // 编码器设置入口：仅 StickS3 且编码器在线（encoder_present）时显示；
         // 未知（老固件/未上报）默认显示，避免误隐藏；小米遥控器无编码器，不显示。
@@ -2504,6 +2595,9 @@ void Win32App::SyncSelectionHotword() {
                                                  ? SelectionHotwordManager::kMaxProcessLen
                                                  : SelectionHotwordManager::kMaxHotwordLen);
     selection_hotword_manager_->SetEnabled(config_.selection_hotword_enabled);
+    if (correction_dialog_) {
+        correction_dialog_->SetLanguage(EffectiveUiLanguage(config_.ui_language));
+    }
 }
 
 void Win32App::ProcessHotwordWithLlm(const std::string& text) {

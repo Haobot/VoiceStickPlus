@@ -43,10 +43,11 @@ public:
     // 调用方负责把它加入热词库、持久化配置并给出反馈（通知/字幕等）。
     std::function<void(const std::string& text)> on_add_hotword;
 
-    // 用户点击"✎ 纠错"时回调，参数为规范化后的选中文本（≤kMaxHotwordLen，
-    // 超长选区点击无效——长文提炼场景无纠错语义）。调用方弹出纠错对话框，
-    // 用户确认的正确词入热词表后经 S2 守卫锚点域自动纠正后续变体。
-    std::function<void(const std::string& text)> on_correct_hotword;
+    // 用户点击"纠错"按钮（位于"添加到热词"右侧）时回调，参数为规范化后的
+    // 选中文本（即被识别错误的文本）与划词发生时的前台窗口（纠错保存后把正确
+    // 文本粘贴回该窗口的选区，实现错误文本原地替换）。调用方负责弹出纠错对话框。
+    // 纠错只对词级选区有意义：超长选区（热词提炼场景）由弹窗置灰并在 helper 侧拒点。
+    std::function<void(const std::string& text, HWND target_hwnd)> on_correction_requested;
 
     static constexpr int kMaxHotwordLen = 64;      // 未启用热词处理：超长选区忽略
     static constexpr int kMaxProcessLen = 2000;    // 启用热词处理：长文送 LLM 提炼
@@ -94,6 +95,7 @@ private:
     UINT_PTR auto_hide_timer_id_ = 0;
     bool popup_visible_ = false;
     std::string pending_text_;       // 弹窗当前对应的选中文本（已规范化）
+    HWND selection_target_hwnd_ = nullptr;  // 划词发生时的前台窗口（纠错回填目标）
     int max_length_ = kMaxHotwordLen;  // 当前生效的划词长度上限
     int hover_zone_ = -1;            // 弹窗 hover 区（-1 无 / 0 加词 / 1 纠错）
     bool tracking_mouse_ = false;    // TrackMouseEvent(WM_MOUSELEAVE) 已注册
@@ -105,7 +107,8 @@ private:
     static constexpr int kAutoHideMs = 4000;       // 弹窗 4 秒自动隐藏
     static constexpr int kPopupOffsetX = 8;        // 弹窗相对光标的偏移
     static constexpr int kPopupOffsetY = 18;
-    static constexpr int kPopupWidthDp = 224;      // 弹窗宽度（双动作分区，DIP）
+    // 双按钮弹窗：左侧"添加到热词" + 右侧"纠错"，各占一半宽度。
+    static constexpr int kPopupWidthDp = 248;      // 弹窗宽度（DIP）
     static constexpr int kPopupHeightDp = 32;      // 弹窗高度（DIP）
     static constexpr wchar_t kHelperWindowClass[] = L"VoiceStickSelectionHelper";
     static constexpr wchar_t kPopupWindowClass[] = L"VoiceStickSelectionPopup";

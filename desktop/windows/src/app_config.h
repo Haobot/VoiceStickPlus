@@ -70,6 +70,9 @@ enum class OutputTarget {
     kFocusedApp,
     kSubtitle,
     kWechatInputMethod,
+    // 虚拟麦克风直通：音频只渲染到系统虚拟麦克风，由当前应用自行取音识别，
+    // 不触发第三方输入法热键、不切默认录音设备（应用内需选择虚拟麦克风）。
+    kVirtualMic,
 };
 
 enum class TextTransform {
@@ -334,6 +337,9 @@ struct AppConfig {
     UiLanguage ui_language = UiLanguage::kSystem;
     std::string resource_id = "volc.seedasr.sauc.duration";
     std::vector<std::string> asr_hotwords;
+    // 热词纠错映射：错误文本 -> 正确文本（TOML [hotword_corrections] 表）。
+    // 划词点"纠错"保存；ASR 最终文本输出前自动按此表替换（ApplyHotwordCorrections）。
+    std::map<std::string, std::string> hotword_corrections;
     std::vector<std::string> paired_device_ids;
     std::vector<PairedDeviceEntry> paired_devices;
     std::map<std::string, OverlayThemeColor> device_theme_colors;
@@ -536,6 +542,12 @@ TextTransform TextTransformFromName(std::string_view name);
 std::string TextTransformDisplayName(TextTransform transform);
 std::vector<std::string> ParseDeviceIdList(std::string_view text);
 std::vector<std::string> ParseHotwordList(std::string_view text);
+// 热词纠错自动替换（可单测纯函数）：在 text 中从左到右扫描，凡命中 corrections
+// 键（错误文本）的位置用对应正确文本替换；替换结果不参与二次匹配（防 A->B、
+// B->C 链式循环）。UTF-8 字节流按子串匹配，中文/英文均可。
+std::string ApplyHotwordCorrections(
+    const std::string& text,
+    const std::map<std::string, std::string>& corrections);
 std::string ImuWakeSensitivityName(ImuWakeSensitivity sensitivity);
 ImuWakeSensitivity ImuWakeSensitivityFromName(std::string_view name);
 std::string ImuWakeSensitivityDisplayName(ImuWakeSensitivity sensitivity);

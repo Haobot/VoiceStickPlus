@@ -74,6 +74,8 @@ private:
     bool IsLocalRefineChecked() const;
     bool IsLocalRefineCrossChecked() const;
     void UpdateLocalRefineStatus();
+    // 虚拟麦克风改名：把录音端设备显示名改为设备名（如 VS-091C），提权子进程执行。
+    void OnRenameVirtualMicButton();
     // 启动频谱查看器（scripts/e2e_test/spectrogram_server.py，经 py/python 启动）。
     void OpenSpectrogramViewer();
     bool IsLabelControl(HWND control) const;
@@ -226,6 +228,7 @@ private:
     static constexpr UINT kIdHotwordCandidateDismiss = 2038;
     static constexpr UINT kIdDeveloperMode = 2039;
     static constexpr UINT kIdOpenSpectrogram = 2040;
+    static constexpr UINT kIdRenameVirtualMic = 2041;
     static constexpr UINT kIdLocalMicModelsDirEdit = 2042;
     static constexpr UINT kIdLocalMicModelsDirBrowse = 2044;
     static constexpr UINT kIdLocalRefineCheck = 2045;

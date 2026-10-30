@@ -59,6 +59,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsOutputTargetFocusedApp)] = "Focused App";
     table[Index(StringId::kSettingsOutputTargetSubtitle)] = "Subtitle";
     table[Index(StringId::kSettingsOutputTargetWechatInputMethod)] = "Third-party Input Method";
+    table[Index(StringId::kSettingsOutputTargetVirtualMic)] = "Virtual Microphone (app recognition)";
     table[Index(StringId::kSettingsWechatHotkey)] = "Voice Hotkey";
     table[Index(StringId::kSettingsWechatVirtualMic)] = "Virtual Microphone Playback Name";
     table[Index(StringId::kSettingsWechatAutoSwitch)] = "Auto-switch default recording device during recording";
@@ -66,6 +67,22 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsTriggerMode)] = "Trigger Mode";
     table[Index(StringId::kSettingsTriggerModeHold)] = "Hold (WeChat Input Method)";
     table[Index(StringId::kSettingsTriggerModeClick)] = "Click (Typeless, etc.)";
+    table[Index(StringId::kSettingsRenameVirtualMic)] = "Virtual Microphone";
+    table[Index(StringId::kSettingsRenameVirtualMicButton)] = "Show as device name";
+    table[Index(StringId::kRenameVirtualMicConfirmTitle)] = "Rename Virtual Microphone";
+    table[Index(StringId::kRenameVirtualMicConfirmBody)] =
+        "Rename the system virtual microphone (e.g. CABLE Output) to your device name "
+        "(e.g. VS-091C), so it is easy to find in app microphone lists. "
+        "Administrator approval is required; reinstalling VB-CABLE restores the original "
+        "name. Continue?";
+    table[Index(StringId::kRenameVirtualMicSuccess)] =
+        "Virtual microphone renamed. If an app still shows the old name, restart that app.";
+    table[Index(StringId::kRenameVirtualMicFailed)] = "Failed to rename virtual microphone.";
+    table[Index(StringId::kRenameVirtualMicNotFound)] =
+        "Virtual microphone device not found. Please install VB-CABLE first "
+        "(https://vb-audio.com/Cable/), then try again.";
+    table[Index(StringId::kRenameVirtualMicAlreadyNamed)] =
+        "Virtual microphone already shows the device name.";
     table[Index(StringId::kSettingsDebugDir)] = "Audio Folder";
     table[Index(StringId::kSettingsChooseDir)] = "Choose...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "Open Config Folder";
@@ -324,6 +341,25 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsHotwordCandidateAddButton)] = "Add";
     table[Index(StringId::kSettingsHotwordCandidateDismissButton)] = "Dismiss";
 
+    // 热词纠错（划词纠错按钮 + 纠错对话框 + 保存反馈）
+    table[Index(StringId::kSelectionCorrectionButton)] = "Correct";
+    table[Index(StringId::kCorrectionDialogTitle)] = "Hotword Correction";
+    table[Index(StringId::kCorrectionWrongLabel)] = "Wrong text:";
+    table[Index(StringId::kCorrectionRightLabel)] = "Correct text:";
+    table[Index(StringId::kCorrectionSuggestLabel)] =
+        "AI suggestions (click one to save):";
+    table[Index(StringId::kCorrectionSuggestLoading)] = "Fetching AI suggestions...";
+    table[Index(StringId::kCorrectionSuggestNone)] = "(no suggestions)";
+    table[Index(StringId::kCorrectionSuggestFailed)] = "Failed to get AI suggestions";
+    table[Index(StringId::kCorrectionNoKey)] = "LLM API key not configured";
+    table[Index(StringId::kCorrectionSaveButton)] = "Save Correction";
+    table[Index(StringId::kCorrectionSavedTitle)] = "Correction Saved";
+    table[Index(StringId::kCorrectionSavedBody)] = "Correction rule saved: ";
+    table[Index(StringId::kCorrectionEmptyTitle)] = "No Correction Text";
+    table[Index(StringId::kCorrectionEmptyBody)] = "Please enter the correct text.";
+    table[Index(StringId::kCorrectionDuplicateBody)] =
+        "An existing rule for this wrong text was updated to: ";
+
     // 热词处理（LLM 提炼）
     table[Index(StringId::kHotwordProcessExtracting)] = "Extracting hotwords...";
     table[Index(StringId::kHotwordProcessAdded)] = "Hotwords added: ";
@@ -377,11 +413,11 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kBatteryMonitorExportPng)] = "Export PNG...";
     table[Index(StringId::kBatteryMonitorClose)] = "Close";
     table[Index(StringId::kBatteryMonitorStatusIdle)] =
-        "Idle. Click Start to run a 60-minute monitoring session (one sample per minute).";
+        "Idle. Click Start to run a {0}-minute monitoring session (one sample per minute).";
     table[Index(StringId::kBatteryMonitorStatusAnchoring)] = "Synchronizing time anchor...";
     table[Index(StringId::kBatteryMonitorStatusProbing)] = "Probing log baseline...";
     table[Index(StringId::kBatteryMonitorStatusMonitoring)] =
-        "Monitoring: cycle {0}/60, {1} points, next sample in {2}";
+        "Monitoring: cycle {0}/{3}, {1} points, next sample in {2}";
     table[Index(StringId::kBatteryMonitorStatusFinished)] =
         "Finished: {0} points collected.";
     table[Index(StringId::kBatteryMonitorStatusError)] = "Aborted: {0}";
@@ -402,12 +438,28 @@ constexpr StringTable EnglishStrings() {
     // {0}=设备ID {1}=点数
     table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} battery voltage ({1} points)";
     table[Index(StringId::kBatteryMonitorUsbAutoOff)] = "Auto power-off on USB (10 min)";
+    table[Index(StringId::kBatteryMonitorDevMode)] = "Developer mode";
+    table[Index(StringId::kBatteryMonitorStatusIdleDev)] =
+        "Developer mode: total duration shortened to 10 minutes (default 60) for quick "
+        "verification. Click Start.";
+    // {0}=预计充满分钟数
+    table[Index(StringId::kBatteryMonitorCharging)] = "Charging: full in {0} min";
+    table[Index(StringId::kBatteryMonitorChargingAlmostFull)] = "Charging: almost full";
+    // {0}=预计可用时长（X min / Xh Ym）
+    table[Index(StringId::kBatteryMonitorOnBattery)] = "Est. runtime: {0}";
     table[Index(StringId::kHotwordTrimTitle)] = "Hotword Budget Trimmed";
     table[Index(StringId::kHotwordTrimBodyPrefix)] =
         "Hotwords exceed the per-session budget; kept by usage frequency: ";
     table[Index(StringId::kHotwordTrimBodySuffix)] =
         ". The rest are skipped this session (see log for details).";
     table[Index(StringId::kMenuXiaomiKeymap)] = "Key mapping...";
+    table[Index(StringId::kMenuMicMode)] = "Microphone Mode";
+    table[Index(StringId::kStatusMicModeEnabled)] = "Microphone Mode Enabled";
+    table[Index(StringId::kNotificationMicModeOnBody)] =
+        "This device now streams audio to the system virtual microphone. "
+        "Select it as the input device in your app (e.g. CABLE Output).";
+    table[Index(StringId::kNotificationMicModeOffBody)] =
+        "This device is back to voice recognition.";
     table[Index(StringId::kXiaomiKeymapTitle)] = "Key mapping - RC-{0}";
     table[Index(StringId::kXiaomiKeymapCurrentMapping)] = "Current mapping";
     table[Index(StringId::kXiaomiKeymapNotMapped)] = "Not mapped (system default behavior)";
@@ -594,6 +646,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsOutputTargetFocusedApp)] = "当前应用";
     table[Index(StringId::kSettingsOutputTargetSubtitle)] = "字幕";
     table[Index(StringId::kSettingsOutputTargetWechatInputMethod)] = "第三方输入法";
+    table[Index(StringId::kSettingsOutputTargetVirtualMic)] = "虚拟麦克风（应用内识别）";
     table[Index(StringId::kSettingsWechatHotkey)] = "语音热键";
     table[Index(StringId::kSettingsWechatVirtualMic)] = "虚拟麦克风播放端名称";
     table[Index(StringId::kSettingsWechatAutoSwitch)] = "录音时自动切换默认录音设备";
@@ -601,6 +654,19 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsTriggerMode)] = "触发方式";
     table[Index(StringId::kSettingsTriggerModeHold)] = "长按式（微信输入法）";
     table[Index(StringId::kSettingsTriggerModeClick)] = "点按式（Typeless 等）";
+    table[Index(StringId::kSettingsRenameVirtualMic)] = "虚拟麦克风";
+    table[Index(StringId::kSettingsRenameVirtualMicButton)] = "显示为设备名";
+    table[Index(StringId::kRenameVirtualMicConfirmTitle)] = "重命名虚拟麦克风";
+    table[Index(StringId::kRenameVirtualMicConfirmBody)] =
+        "将系统虚拟麦克风（如 CABLE Output）重命名为设备名（如 VS-091C），"
+        "方便在应用的麦克风列表中找到它。需要管理员权限；VB-CABLE 重装后会恢复"
+        "原名。是否继续？";
+    table[Index(StringId::kRenameVirtualMicSuccess)] =
+        "虚拟麦克风已重命名。若应用中仍显示旧名称，请重启该应用。";
+    table[Index(StringId::kRenameVirtualMicFailed)] = "重命名虚拟麦克风失败。";
+    table[Index(StringId::kRenameVirtualMicNotFound)] =
+        "未找到虚拟麦克风设备。请先安装 VB-CABLE（https://vb-audio.com/Cable/）后重试。";
+    table[Index(StringId::kRenameVirtualMicAlreadyNamed)] = "虚拟麦克风已是设备名，无需重命名。";
     table[Index(StringId::kSettingsDebugDir)] = "音频文件夹";
     table[Index(StringId::kSettingsChooseDir)] = "选择...";
     table[Index(StringId::kSettingsOpenConfigFolder)] = "打开配置文件夹";
@@ -853,6 +919,23 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsHotwordCandidateAddButton)] = "加入";
     table[Index(StringId::kSettingsHotwordCandidateDismissButton)] = "忽略";
 
+    // 热词纠错（划词纠错按钮 + 纠错对话框 + 保存反馈）
+    table[Index(StringId::kSelectionCorrectionButton)] = "纠错";
+    table[Index(StringId::kCorrectionDialogTitle)] = "热词纠错";
+    table[Index(StringId::kCorrectionWrongLabel)] = "错误文本：";
+    table[Index(StringId::kCorrectionRightLabel)] = "正确文本：";
+    table[Index(StringId::kCorrectionSuggestLabel)] = "AI 建议词汇（点击即保存）：";
+    table[Index(StringId::kCorrectionSuggestLoading)] = "正在获取 AI 建议…";
+    table[Index(StringId::kCorrectionSuggestNone)] = "（暂无建议）";
+    table[Index(StringId::kCorrectionSuggestFailed)] = "AI 建议获取失败";
+    table[Index(StringId::kCorrectionNoKey)] = "未配置 LLM API Key，无法提供 AI 建议";
+    table[Index(StringId::kCorrectionSaveButton)] = "保存纠错";
+    table[Index(StringId::kCorrectionSavedTitle)] = "纠错已保存";
+    table[Index(StringId::kCorrectionSavedBody)] = "已保存纠错规则：";
+    table[Index(StringId::kCorrectionEmptyTitle)] = "无纠错文本";
+    table[Index(StringId::kCorrectionEmptyBody)] = "请输入正确文本。";
+    table[Index(StringId::kCorrectionDuplicateBody)] = "该错误文本已有纠错规则，已更新为：";
+
     // 热词处理（LLM 提炼）
     table[Index(StringId::kHotwordProcessExtracting)] = "热词提炼中…";
     table[Index(StringId::kHotwordProcessAdded)] = "已添加热词：";
@@ -905,11 +988,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kBatteryMonitorExportPng)] = "导出 PNG…";
     table[Index(StringId::kBatteryMonitorClose)] = "关闭";
     table[Index(StringId::kBatteryMonitorStatusIdle)] =
-        "空闲。点击「开始监测」启动 60 分钟监测（每分钟 1 个采样点）。";
+        "空闲。点击「开始监测」启动 {0} 分钟监测（每分钟 1 个采样点）。";
     table[Index(StringId::kBatteryMonitorStatusAnchoring)] = "正在同步时间锚点…";
     table[Index(StringId::kBatteryMonitorStatusProbing)] = "正在探测日志基线…";
     table[Index(StringId::kBatteryMonitorStatusMonitoring)] =
-        "监测中：第 {0}/60 周期，{1} 个数据点，下次采集 {2}";
+        "监测中：第 {0}/{3} 周期，{1} 个数据点，下次采集 {2}";
     table[Index(StringId::kBatteryMonitorStatusFinished)] =
         "监测完成：共 {0} 个数据点。";
     table[Index(StringId::kBatteryMonitorStatusError)] = "已中止：{0}";
@@ -929,10 +1012,24 @@ constexpr StringTable ChineseStrings() {
     // {0}=设备ID {1}=点数
     table[Index(StringId::kBatteryMonitorChartTitle)] = "VS-{0} 电池电压监测（{1} 点）";
     table[Index(StringId::kBatteryMonitorUsbAutoOff)] = "供电时10分钟自动关机";
+    table[Index(StringId::kBatteryMonitorDevMode)] = "开发者模式";
+    table[Index(StringId::kBatteryMonitorStatusIdleDev)] =
+        "开发者模式已启用：监测总时长缩短为 10 分钟（默认 60 分钟），用于快速验证链路。"
+        "点击「开始监测」启动。";
+    // {0}=预计充满分钟数
+    table[Index(StringId::kBatteryMonitorCharging)] = "充电中: {0}分钟充满";
+    table[Index(StringId::kBatteryMonitorChargingAlmostFull)] = "充电中: 即将充满";
+    // {0}=预计可用时长（X分钟 / X小时Y分钟）
+    table[Index(StringId::kBatteryMonitorOnBattery)] = "预计可用: {0}";
     table[Index(StringId::kHotwordTrimTitle)] = "热词预算裁剪";
     table[Index(StringId::kHotwordTrimBodyPrefix)] = "热词超出单次会话直传预算，已按使用频率优先保留 ";
     table[Index(StringId::kHotwordTrimBodySuffix)] = " 个，其余本次不参与识别（明细见日志）。";
     table[Index(StringId::kMenuXiaomiKeymap)] = "按键映射…";
+    table[Index(StringId::kMenuMicMode)] = "麦克风模式";
+    table[Index(StringId::kStatusMicModeEnabled)] = "麦克风模式已启用";
+    table[Index(StringId::kNotificationMicModeOnBody)] =
+        "该设备音频已输出到系统虚拟麦克风，请在应用的麦克风设置中选择该设备（如 CABLE Output）。";
+    table[Index(StringId::kNotificationMicModeOffBody)] = "该设备已恢复语音识别。";
     table[Index(StringId::kXiaomiKeymapTitle)] = "按键映射 - RC-{0}";
     table[Index(StringId::kXiaomiKeymapCurrentMapping)] = "当前映射";
     table[Index(StringId::kXiaomiKeymapNotMapped)] = "未映射（系统原生行为）";

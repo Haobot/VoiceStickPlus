@@ -17,6 +17,9 @@ inline constexpr std::uint8_t kPowerLogFlagTimeAnchor = 0x10;       // bit4 时�
 // 时间锚点条目的 mode 值。
 inline constexpr std::uint8_t kPowerLogModeTimeAnchor = 0xFF;
 
+// power_log 导出流头字节数（写位置/条目数等元信息），条目区从该偏移开始。
+inline constexpr std::uint32_t kPowerLogStreamHeaderSize = 16;
+
 // 单条 12 字节 power_log 条目的解析结果（多字节字段均为小端）。
 struct PowerLogEntryData {
     std::uint32_t uptime_s = 0;      // esp_timer 相对秒
@@ -58,6 +61,8 @@ public:
     const std::vector<PowerLogSample>& samples() const { return samples_; }
     // 已见最大周期采样 uptime（尚无采样时为 0）。
     std::uint32_t last_uptime_s() const { return last_uptime_s_; }
+    // 是否已收到时间锚点条目（决定样本能否换算出墙钟 epoch_s）。
+    bool has_anchor() const { return has_anchor_; }
     // 导出 CSV，列与 battery_voltage_monitor.py 相同：
     // seq,timestamp_iso,epoch_s,uptime_s,vbat_mv,vbat_v,charging,usb_powered,mode_name,valid
     std::string FormatCsv() const;

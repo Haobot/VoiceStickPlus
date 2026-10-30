@@ -724,9 +724,11 @@ private:
     // 内部取 firmware_mutex_，调用方不得持有该锁。
     bool IsXiaomiRemoteDevice(const std::string& device_id);
     OutputProfile OutputProfileForDevice(const std::optional<std::string>& device_id) const;
-    // 返回要下发给固件的交互模式：wechat 模式 + hold_to_talk 时派生为 kHoldToTalkInstant
-    // （按下即录音，跳过 300ms 阈值，降低按下到弹框延迟），其余按用户配置原样下发。
-    InteractionMode InteractionModeToSend() const;
+    // 返回要下发给固件的交互模式：wechat 模式（含麦克风模式设备级覆盖）+ hold_to_talk
+    // 时派生为 kHoldToTalkInstant（按下即录音，跳过 300ms 阈值，降低按下到弹框延迟），
+    // 其余按用户配置原样下发。device_id 为 nullopt 时取全局默认输出目标（广播场景）。
+    InteractionMode InteractionModeToSend(
+        const std::optional<std::string>& device_id = std::nullopt) const;
     OverlayThemeColor ThemeColorForDevice(const std::string& device_id) const;
     bool ShouldUseDefiniteSegments(const OutputProfile& profile) const;
     double CurrentRecordingDurationSeconds() const;
@@ -959,6 +961,9 @@ private:
     // 已提醒过提权的前台进程名（按进程名去重，避免同一高权限程序重复弹气泡）。
     std::optional<std::wstring> elevation_warned_process_;
     bool wechat_input_method_active_ = false;
+    // 本次虚拟麦会话是否触发第三方输入法热键：wechat_input_method 模式 true；
+    // virtual_mic 直通模式 false（不 SendDown/不 auto_switch，由应用自行取音识别）。
+    bool wechat_session_uses_hotkey_ = false;
     // 是否已收到本次 wechat 会话的 audio_end 帧；用于 Stop 时判断是否需补 EOS 页。
     bool wechat_audio_end_received_ = false;
     // 是否已对本次会话发送 SendDown（首帧 Opus 解码成功才发送）；决定 Stop 是否配对 SendUp。
@@ -966,6 +971,8 @@ private:
     // 当前 wechat 会话是否直连默认麦克风（方案 A 修订）：true 时停止路径跳过
     // 本端采集/渲染/设备切换拆除段（无管道可拆，WeType 自行停采）。
     bool wechat_session_direct_mic_ = false;
+    // 本会话是否已打首帧延迟日志（wechat/直通两模式共用，每会话一次）。
+    bool wechat_first_frame_logged_ = false;
     // 最近一次停止的 wechat 会话 session_id 与时刻：点按式 audio_end 抢跑 button_click
     // 时，用于识别并忽略迟到的停止 click，避免误启动新会话。
     std::optional<std::uint32_t> last_stopped_wechat_session_id_;

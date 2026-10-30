@@ -202,6 +202,7 @@ add_library(voicestick_core STATIC
     src/hotword_extractor.cc
     src/hotword_candidate_miner.cc
     src/hotword_selector.cc
+    src/hotword_suggest_client.cc
     src/localization.cc
     src/pinyin_guard.cc
     src/pinyin_data.cc
@@ -222,6 +223,7 @@ add_library(voicestick_core STATIC
     src/voice_stick_coordinator.cc
     # N7 cut2: 协调器尾段（热词/看门狗/粘贴域）方法拆出
     src/voice_stick_coordinator_tail.cc
+    src/virtual_mic_renamer.cc
     src/wasapi_virtual_mic_renderer.cc
     src/wechat_input_method_hotkey.cc
     src/device_switch_state.cc
@@ -352,6 +354,7 @@ add_executable(VoiceStickApp WIN32
     src/selection_hotword_manager.cc
     src/selection_correction.cc
     src/selection_correction_dialog.cc
+    src/correction_dialog.cc
     src/voice_f5_suppressor.cc
     src/xiaomi_keymap_hook.cc
     src/xiaomi_usage_tap_manager.cc

@@ -772,6 +772,19 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                     *value, kVoiceEditUnverifiedSecondsMin, kVoiceEditUnverifiedSecondsMax);
             }
         }
+        // 顶层 [hotword_corrections]：热词纠错映射（错误文本 -> 正确文本）。
+        if (const auto* corrections = table["hotword_corrections"].as_table()) {
+            for (const auto& [key, node] : *corrections) {
+                const auto value = node.value<std::string>();
+                if (!value) {
+                    LogApp("hotword_corrections: 忽略非字符串值 key=" +
+                           std::string(key.str()));
+                    continue;
+                }
+                if (key.str().empty() || value->empty()) continue;
+                config.hotword_corrections[std::string(key.str())] = *value;
+            }
+        }
         // 顶层 [xiaomi.keys]：全局按键映射默认。必须先于 [device] 循环解析，
         // 设备表填平（ParseXiaomiSettings 的 fallback 拷贝）才能带上全局默认。
         if (const auto* xiaomi = table["xiaomi"].as_table()) {
@@ -787,9 +800,10 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 const auto* device_table = node.as_table();
                 if (!device_table) continue;
                 if (const auto* output = (*device_table)["output"].as_table()) {
+                    // 设备级输出覆盖：transform/translation_target 以全局默认填平；
+                    // target 键（麦克风模式设备级覆盖）存在则保留，缺失跟随全局默认。
                     config.device_output_profiles[device_id] = ParseOutputProfile(
-                        *output, config.default_output_profile, false);
-                    config.device_output_profiles[device_id].target = config.default_output_profile.target;
+                        *output, config.default_output_profile, true);
                 }
                 if (const auto* encoder = (*device_table)["encoder"].as_table()) {
                     config.device_encoder_settings[device_id] = ParseEncoderSettings(
@@ -1078,6 +1092,15 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
             output << button_id << " = \"" << TomlEscape(spec) << "\"\n";
         }
     }
+    if (!hotword_corrections.empty()) {
+        // 顶层 [hotword_corrections] 表：错误文本 -> 正确文本。TOML 表头会吞
+        // 后续裸键，故写在顶层标量区末尾、[output] 之前。
+        output << "\n[hotword_corrections]\n";
+        for (const auto& [wrong, right] : hotword_corrections) {
+            output << "\"" << TomlEscape(wrong) << "\" = \""
+                   << TomlEscape(right) << "\"\n";
+        }
+    }
     output << "\n[output]\n";
     output << "target = \"" << OutputTargetName(default_output_profile.target) << "\"\n";
     output << "transform = \"" << TextTransformName(default_output_profile.transform) << "\"\n";
@@ -1128,11 +1151,16 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
         if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
             continue;
         }
+        // target 为设备级覆盖（麦克风模式）：与全局默认不同时落盘 target 键；
+        // transform/translation_target 维度与全局相同且 target 未覆盖则整表跳过。
+        const bool target_overridden = profile.target != default_output_profile.target;
         OutputProfile comparable = profile;
         comparable.target = default_output_profile.target;
-        OutputProfile default_comparable = default_output_profile;
-        if (comparable == default_comparable) continue;
+        if (!target_overridden && comparable == default_output_profile) continue;
         output << "\n[device." << device_id << ".output]\n";
+        if (target_overridden) {
+            output << "target = \"" << OutputTargetName(profile.target) << "\"\n";
+        }
         output << "transform = \"" << TextTransformName(profile.transform) << "\"\n";
         output << "translation_target = \"" << TomlEscape(profile.translation_target) << "\"\n";
     }
@@ -1398,9 +1426,9 @@ OutputProfile AppConfig::OutputProfileForDevice(const std::optional<std::string>
     const auto normalized = BleProtocol::NormalizeDeviceId(*device_id);
     auto it = device_output_profiles.find(normalized);
     if (it == device_output_profiles.end()) return default_output_profile;
-    OutputProfile profile = it->second;
-    profile.target = default_output_profile.target;
-    return profile;
+    // target 含设备级覆盖（麦克风模式 = wechat_input_method）；无覆盖时
+    // 加载/写入侧已用全局默认填平，返回覆盖表即可。
+    return it->second;
 }
 
 const EncoderSettings& AppConfig::EncoderSettingsForDevice(
@@ -1629,6 +1657,7 @@ std::string OutputTargetName(OutputTarget target) {
     switch (target) {
         case OutputTarget::kSubtitle: return "subtitle";
         case OutputTarget::kWechatInputMethod: return "wechat_input_method";
+        case OutputTarget::kVirtualMic: return "virtual_mic";
         case OutputTarget::kFocusedApp: return "focused_app";
     }
     return "focused_app";
@@ -1637,6 +1666,7 @@ std::string OutputTargetName(OutputTarget target) {
 OutputTarget OutputTargetFromName(std::string_view name) {
     if (name == "subtitle") return OutputTarget::kSubtitle;
     if (name == "wechat_input_method") return OutputTarget::kWechatInputMethod;
+    if (name == "virtual_mic") return OutputTarget::kVirtualMic;
     return OutputTarget::kFocusedApp;
 }
 
@@ -1644,6 +1674,7 @@ std::string OutputTargetDisplayName(OutputTarget target) {
     switch (target) {
         case OutputTarget::kSubtitle: return "Subtitle";
         case OutputTarget::kWechatInputMethod: return "Third-party Input Method";
+        case OutputTarget::kVirtualMic: return "Virtual Microphone";
         case OutputTarget::kFocusedApp: return "Focused App";
     }
     return "Focused App";
@@ -1765,6 +1796,35 @@ std::vector<std::string> ParseHotwordList(std::string_view text) {
         start = end + 1;
     }
     return hotwords;
+}
+
+std::string ApplyHotwordCorrections(
+    const std::string& text,
+    const std::map<std::string, std::string>& corrections) {
+    if (corrections.empty() || text.empty()) return text;
+    // 从左到右单遍扫描：每个位置查所有错误文本是否命中，命中即替换并跳过替换
+    // 结果（防 A->B、B->C 链式循环）。热词库规模（百级）× 文本长度（百级）在
+    // 最终文本产出路径上开销可接受。
+    std::string result;
+    result.reserve(text.size());
+    std::size_t i = 0;
+    while (i < text.size()) {
+        bool replaced = false;
+        for (const auto& [wrong, right] : corrections) {
+            if (wrong.empty() || wrong.size() > text.size() - i) continue;
+            if (text.compare(i, wrong.size(), wrong) == 0) {
+                result += right;
+                i += wrong.size();
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            result += text[i];
+            ++i;
+        }
+    }
+    return result;
 }
 
 } // namespace voicestick

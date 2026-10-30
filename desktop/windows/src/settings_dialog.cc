@@ -1,6 +1,7 @@
 #include "settings_dialog.h"
 #include "ble_protocol.h"
 #include "dpi_util.h"
+#include "default_audio_device_controller.h"
 #include "hotword_candidate_miner.h"
 #include "hotword_extractor.h"
 #include "key_spec.h"
@@ -13,6 +14,7 @@
 #include "model_download_dialog.h"
 #include "serial_base32.h"
 #include "voice_stick_cloud_api_win.h"
+#include "virtual_mic_renamer.h"
 
 #include <ShlObj.h>
 #include <CommCtrl.h>
@@ -418,6 +420,9 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
             return TRUE;
         case kIdDeveloperMode:
             if (HIWORD(w_param) == BN_CLICKED) OnDeveloperModeToggled();
+            return TRUE;
+        case kIdRenameVirtualMic:
+            if (HIWORD(w_param) == BN_CLICKED) OnRenameVirtualMicButton();
             return TRUE;
         case kIdOpenSpectrogram:
             OpenSpectrogramViewer();
@@ -1085,6 +1090,8 @@ void SettingsDialog::BuildControls() {
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetSubtitle, language).c_str()));
         SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetWechatInputMethod, language).c_str()));
+        SendMessageW(output_target_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsOutputTargetVirtualMic, language).c_str()));
         add(row_h + Dp(10), {
             {ot_label, Dp(10), Dp(3), label_w, Dp(20)},
             {output_target_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
@@ -1128,14 +1135,31 @@ void SettingsDialog::BuildControls() {
             {trigger_mode_click_radio_, ctrl_x + hold_w + Dp(10), 0, click_w, Dp(20)},
         }, [this]() {
             int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
-            return idx == 2;  // 第三方输入法
+            return idx == 2 || idx == 3;  // 第三方输入法 / 虚拟麦克风（都按 trigger_mode 触发）
+        });
+    }
+    {
+        // 虚拟麦克风改名：把录音端设备显示名改为设备名（如 VS-091C），应用麦克风列表
+        // 直接可见可认。提权操作（UAC），与第三方输入法/虚拟麦克风两模式都相关。
+        HWND rm_label = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsRenameVirtualMic).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        HWND rm_button = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsRenameVirtualMicButton, language).c_str(),
+            0, 0, Dp(180), Dp(24), kIdRenameVirtualMic, instance_));
+        add(row_h + Dp(10), {
+            {rm_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {rm_button, ctrl_x, 0, Dp(180), Dp(24)},
+        }, [this]() {
+            int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
+            return idx == 2 || idx == 3;  // 第三方输入法 / 虚拟麦克风
         });
     }
     // 分隔线与上面 wechat 两行同显隐：非 wechat 模式本分区块内容全隐藏，
     // 始终可见会与热词处理区块的尾部分隔线连成双分隔线。
     separator([this]() {
         int idx = static_cast<int>(SendMessageW(output_target_combo_, CB_GETCURSEL, 0, 0));
-        return idx == 2;  // 第三方输入法
+        return idx == 2 || idx == 3;  // 第三方输入法 / 虚拟麦克风
     });
 
     // 设备交互设置已迁出：全局设置对话框不再含设备交互区块（IMU 唤醒灵敏度、敲击映射
@@ -1469,6 +1493,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     int output_target_idx = 0;
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
+    if (config_.default_output_profile.target == OutputTarget::kVirtualMic) output_target_idx = 3;
     SendMessageW(output_target_combo_, CB_SETCURSEL, output_target_idx, 0);
     // 热键编辑框显示当前触发模式对应的热键（长按式/点按式各自记忆）。
     loaded_hotkey_mode_ = config_.wechat_input_method.trigger_mode;
@@ -1586,6 +1611,8 @@ void SettingsDialog::SaveSettings() {
         config_.default_output_profile.target = OutputTarget::kSubtitle;
     } else if (output_target_idx == 2) {
         config_.default_output_profile.target = OutputTarget::kWechatInputMethod;
+    } else if (output_target_idx == 3) {
+        config_.default_output_profile.target = OutputTarget::kVirtualMic;
     } else {
         config_.default_output_profile.target = OutputTarget::kFocusedApp;
     }
@@ -1831,8 +1858,63 @@ void SettingsDialog::OnActivateLicense() {
                 title.c_str(), MB_OK | MB_ICONINFORMATION);
     // 热更：外壳侧重建运行件（SetLicenseGate 等）并刷新托盘提示。
     if (on_config_changed) on_config_changed(config_);
-    RefreshLicenseStatus();
-}
+    RefreshLicenseStatus();}
+
+void SettingsDialog::OnRenameVirtualMicButton() {
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    // 1. 定位虚拟麦克风录音端：优先按配置名匹配；已改名但配置未同步时按
+    //    "CABLE"（VB-CABLE 特征子串）兜底。
+    DefaultAudioDeviceController controller;
+    auto device = controller.FindCaptureByName(
+        Utf16(config_.wechat_input_method.virtual_mic_capture_name));
+    if (!device) device = controller.FindCaptureByName(L"CABLE");
+    if (!device) {
+        MessageBoxW(hwnd_, TrW(StringId::kRenameVirtualMicNotFound, language).c_str(),
+                    TrW(StringId::kRenameVirtualMicConfirmTitle, language).c_str(),
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    // 2. 目标名：第一台 StickS3 配对设备名（如 VS-091C）。
+    const std::wstring new_name = PickVirtualMicDisplayName(config_);
+    if (device->friendly_name == new_name) {
+        MessageBoxW(hwnd_, TrW(StringId::kRenameVirtualMicAlreadyNamed, language).c_str(),
+                    TrW(StringId::kRenameVirtualMicConfirmTitle, language).c_str(),
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    // 3. 确认后提权执行（UAC 由系统弹出）。
+    if (MessageBoxW(hwnd_, TrW(StringId::kRenameVirtualMicConfirmBody, language).c_str(),
+                    TrW(StringId::kRenameVirtualMicConfirmTitle, language).c_str(),
+                    MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+        return;
+    }
+    wchar_t exe_path[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH) == 0) {
+        MessageBoxW(hwnd_, TrW(StringId::kRenameVirtualMicFailed, language).c_str(),
+                    TrW(StringId::kRenameVirtualMicConfirmTitle, language).c_str(),
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+    std::string error;
+    if (!LaunchRenameVirtualMicElevated(exe_path, device->id, new_name, &error)) {
+        LogApp("Settings: rename virtual mic failed: " + error);
+        MessageBoxW(hwnd_, TrW(StringId::kRenameVirtualMicFailed, language).c_str(),
+                    TrW(StringId::kRenameVirtualMicConfirmTitle, language).c_str(),
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+    // 4. 同步配置：auto_switch 按名字找录音端设备，改名后必须更新为设备名。
+    //    磁盘直接改（避免对话框内未保存的其他 UI 编辑被连带写入），副本同步
+    //    （防止后续 SaveSettings 用旧名覆盖磁盘）。
+    {
+        AppConfig disk = AppConfig::Load();
+        disk.wechat_input_method.virtual_mic_capture_name = Utf8(new_name);
+        disk.SavePreservingDiskCredentials();
+    }
+    config_.wechat_input_method.virtual_mic_capture_name = Utf8(new_name);
+    MessageBoxW(hwnd_, TrW(StringId::kRenameVirtualMicSuccess, language).c_str(),
+                TrW(StringId::kRenameVirtualMicConfirmTitle, language).c_str(),
+                MB_OK | MB_ICONINFORMATION);}
 
 void SettingsDialog::ChooseDebugDirectory() {
     ChooseFolderInto(debug_dir_edit_);
