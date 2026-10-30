@@ -33,13 +33,13 @@ grep -E "correction pair applied|hotword candidates suggested|edit tracking (cap
 |---|---|---|---|
 | T1 | 会话历史落库 | ✅ 已过 | 2026-10-16 三行真实数据，id/device/duration 均正常 |
 | T2 | 编辑追踪 | 🔄 部分 | EXTRACTED/TIMEOUT 均已见；待验证 edited_text 非空路径 |
-| T3 | 纠错对采集（精修 diff 源） | ⬜ | |
-| T4 | 拼音闸门标注 | ⬜ | |
-| T5 | App 场景分域 | ⬜ | 基线已有 dev.zcode.app / com.kimi.code.desktop 两桶真实数据 |
+| T3 | 纠错对采集（精修 diff 源） | ✅ 已过 | 2026-10-21 数据验证：refine 源 3+ 对真实入表 |
+| T4 | 拼音闸门标注 | ✅ 已过 | 2026-10-21 数据验证：那→哪 true、并→被/着→在 false |
+| T5 | App 场景分域 | ✅ 已过 | 2026-10-21 数据验证：4 个 app 桶真实分布 |
 | T6 | 全句精确命中（零 LLM） | ⬜ | |
 | T7 | use/recall 反馈环 + 降权 | ⬜ | |
 | T8 | 热词候选挖掘 | ⬜ | |
-| T9 | 负信号事件流 | ⬜ | |
+| T9 | 负信号事件流 | 🔄 部分 | 事件流 265 条持续工作；取消路径未被自然触发，待一次主动取消 |
 | T10 | 热词评分负项 | ⬜ | |
 | T11 | dialog_ctx（行为观察） | ⬜ | |
 
@@ -77,21 +77,21 @@ grep -E "correction pair applied|hotword candidates suggested|edit tracking (cap
   python3 -c "import json;d=json.load(open('$HOME/Library/Application Support/VoiceStick/correction_pairs.json'));print([(p['before'],p['after'],p.get('same_pronunciation')) for p in d['pairs']][-3:])"
   ```
 - **预期**：`鱼器渍→语气词` 入表且 `same_pronunciation=true`。非同音对（语序调整等）也入表但标注 false——不丢弃只降权。
-- **结果记录**：
+- **结果记录**：✅ 2026-10-21 数据侧验证（免人工构造）：正常使用已自然积累 21 对，其中 refine 源含「那→哪」「并→被」「着→在」等真实精修纠错，采集通道确认工作。
 
 ## T4 拼音闸门标注
 
 - **操作**：随 T3 顺带——再说「克劳德」被纠为「Claude」。
 - **验证**：同 T3 命令，对比两对的 same_pronunciation。
 - **预期**：CJK 同音对 = true；拉丁对照 = false。
-- **结果记录**：
+- **结果记录**：✅ 2026-10-21 数据验证：「那→哪」same_pronunciation=true（同音放行正确）、「并→被」「着→在」=false（非同音降权路径正确）。
 
 ## T5 App 场景分域
 
 - **操作**：在 IDE/编辑器前台与浏览器前台，各说一遍同样的同音错词句。
 - **验证**：correction_pairs.json 出现**同 before/after、不同 app 字段**的两条各自累计。
 - **预期**：对齐 doubao UNIQUE(src,dst,app_bucket)——同对在不同桶各自独立计数。（基线已有 dev.zcode.app 与 com.kimi.code.desktop 两桶真实数据。）
-- **结果记录**：
+- **结果记录**：✅ 2026-10-21 数据验证：分桶分布 4 个应用（dev.zcode.app / com.kimi.code.desktop / com.deepseek.dsh / com.tencent.yuanbao），同对不同桶各自累计。
 
 ## T6 全句精确命中（零 LLM 纠错，体感核心）
 
@@ -130,7 +130,7 @@ grep -E "correction pair applied|hotword candidates suggested|edit tracking (cap
   tail -3 ~/Library/Application\ Support/VoiceStick/usage_events.jsonl
   ```
 - **预期**：`paste_canceled`（带 dwell_s）/ `recognition_canceled`（无文本）。隐私红线：所有事件只有 text_length 与热词名单，**绝无文本内容**。
-- **结果记录**：
+- **结果记录**：🔄 2026-10-21 数据验证：事件流累计 265 条（auto_confirmed 263 + manual 2），dwell_s 正常记录、无文本字段；**取消路径未自然触发**——剩余一次主动操作：粘贴前按取消后查文件尾部。
 
 ## T10 热词评分负项
 
