@@ -107,7 +107,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 - `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证）。
 - macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须先判 `peripheral.state`——对断开外设空发 discoverServices 无任何回调（静默卡死），详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
 - **遥控器（网关模式）音频"变快/发闷"= 三个独立缺陷叠加**（2026-10-16 修完）：① I2S DMA 环（30ms）小于一次读请求（40ms）⇒ 零余量，Stick 麦克风链路丢样 13%~50%（修：环 80ms + audio_task 优先级 7）；② 遥控器自身采集均匀压缩 ~9%（基频 108.1 vs Stick 98.8Hz、帧数比 0.909 两条互证）⇒ 在 Stick 侧做时间基修正（自适应伸缩比）；③ 修正的插值**必须用三次（Catmull-Rom）**，线性插值 4kHz 就 -3dB（听感发闷）。判据：设备串口 `source=`（0=Stick 麦/1=遥控器中继，**app 日志与文件名都区分不了**）、`frame=`（应 =40000us）、`stretch=`。详见 `Doc/Plan/xiaomi-gateway-audio-timebase-and-dma.md` 与 `Doc/Expe/remote-gateway-audio-speed-timbre-2026-10-16.md`。
-- 语音功能反馈「准确率不好/没效果」先分层再改代码：用 DebugAudio 同字节回放腾讯实时 ASR 逐轮还原识别文本（与日志 text_len 对账校准）；`Audio stream summary` 帧比例恒 0.5~0.8＝设备端尾帧丢弃（音频传输层问题，勿改解析器/匹配）。本地小模型兜底一律候选约束式（模型只在候选枚举内选+代码复验+失败回退旧行为），且换任务形态必须重跑 `scripts/local_align_bench` 选型（模型结论不可跨任务搬用）。详见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md` 与 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md`。
+- 语音功能反馈「准确率不好/没效果」先分层再改代码：用 DebugAudio 同字节回放腾讯实时 ASR 逐轮还原识别文本（与日志 text_len 对账校准）；`Audio stream summary` 帧比例恒 0.5~0.8＝设备端尾帧丢弃（音频传输层问题，勿改解析器/匹配）。判断「这次音频本身好不好/两个音源谁更好」用 `scripts/e2e_test/audio_lab.py`（三层指标红绿灯 + A/B 双轨对比 + 左右分耳同步试听；macOS 会话自动标注来源 VS-/VG-/RC- 并带侧车 json，`<名>.raw.ogg`=增强前原件），标准与阈值见 `Doc/Ref/audio-quality-metrics.md`。本地小模型兜底一律候选约束式（模型只在候选枚举内选+代码复验+失败回退旧行为），且换任务形态必须重跑 `scripts/local_align_bench` 选型（模型结论不可跨任务搬用）。详见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md` 与 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md`。
 - macOS 内嵌 llama.cpp（本地 LLM 精修/对齐）：运行时 dylib 由 `scripts/fetch-llama-cpp.sh` 编译合成（pin b10868 与 Windows 同步，build-macos.sh 首步自动跑；无 dylib 也能构建，功能如实降级）；LLM GGUF 档位 pin **Ollama registry blob**（评测原件，非 Qwen 官方量化——同名量化行为有实质差异，见 Doc/Test/local-fullstack-eval §9）；模型设置/下载入口在设置「服务提供方」本地虚项。
 - macOS AX 选区/光标写入（kAXSelectedTextRange 等）在 Chromium 系目标（Electron/浏览器）经 renderer **异步生效**：写后立即读回必拿旧值，验证式注入（targeted 编辑类）必须小步轮询确认；注入/AX 类功能验收必须覆盖一个 Electron/浏览器文本目标（原生 TextEdit 通过≠Chromium 可用）。判据：`voice_targeted action=...` 后零日志＝执行环节静默失败。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
 - macOS 端排障日志在 `~/Library/Application Support/VoiceStick/VoiceStickApp.log`（统一日志对 NSLog 脱敏成 `<private>` 读不到内容；文件由 AppFileLog 进程入口 dup2 stderr 生成、8MB 轮转）。**CLI 直接启动 app 会因 TCC 归因失效静默失去蓝牙**（判据：进程日志零 CoreBluetooth 活动），测试一律 `open` 启动；语音延迟判据与根因链见 `Doc/Expe/voice-input-latency-root-cause-chain-2026-10-12.md`。
@@ -129,6 +129,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 | 发布流程与安全细节 | `Doc/Agent/release-and-security.md`；权威流程 `Doc/Ref/release.md` |
 | BLE 协议与帧格式（含小米 ATVV 档案） | `Doc/Ref/protocol.md` |
 | 桌面端配置字段 | `Doc/Ref/desktop-config.md` |
+| 音频质量评价标准与实验台（三层指标/来源标注/A/B 对比） | `Doc/Ref/audio-quality-metrics.md` |
 | 腾讯 COS 分发渠道约定（桶/域名/布局/防盗链/模型清单） | `Doc/Ref/cos-distribution.md` |
 | E2E 真机验证工具链 | `Doc/Ref/e2e-test-toolchain.md` |
 | 经验教训记忆（排查问题前先查） | `Doc/Expe/claude-memory-distilled.md`（寄存器值/阈值/行号为记录时点结论，引用前以当前源码为准） |

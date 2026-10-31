@@ -23,15 +23,30 @@ public protocol VoiceStickSubtitleServing: AnyObject {
 }
 
 /// 调试录音出口（对齐 DebugAudioRecorder 2 面）。
+/// 新增面（音频质量实验台 2026-10-31）带默认实现，既有 conformance 不破：
+/// 带后缀/指定起始时间的 start、写侧车的 finish、finalText 补写。
 public protocol VoiceStickDebugRecordServing: AnyObject {
     func start(deviceID: String?, sessionID: UInt32?, devicePrefix: String)
     func append(_ data: Data)
     func finish()
     func discard()
+    func start(deviceID: String?, sessionID: UInt32?, devicePrefix: String,
+               filenameSuffix: String, startedAt: Date?)
+    func finish(sidecar: DebugAudioSidecar?)
+    func updateLastSidecar(finalText: String)
 }
 
 public extension VoiceStickDebugRecordServing {
     func start(deviceID: String?, sessionID: UInt32?) {
         start(deviceID: deviceID, sessionID: sessionID, devicePrefix: "VS-")
     }
+
+    func start(deviceID: String?, sessionID: UInt32?, devicePrefix: String,
+               filenameSuffix: String, startedAt: Date?) {
+        start(deviceID: deviceID, sessionID: sessionID, devicePrefix: devicePrefix)
+    }
+
+    func finish(sidecar: DebugAudioSidecar?) { finish() }
+
+    func updateLastSidecar(finalText: String) {}
 }

@@ -242,6 +242,15 @@ public final class VoiceStickCoordinator {
     private let inputInjector: any VoiceStickInputServing
     private let firmwareManifestClient = FirmwareManifestClient()
     private var debugAudioRecorder: any VoiceStickDebugRecordServing
+    /// 增强开启时的「增强前」配对记录器（落 `<名>.raw.ogg`，与主记录器共享
+    /// 时间戳基名），供 audio_lab 前后对比；增强关闭时不启动、零开销。
+    private var rawDebugAudioRecorder: any VoiceStickDebugRecordServing
+    private let rawOggMuxer = OggOpusMuxer(sampleRate: 16_000, channels: 1)
+    /// BLE 音频帧 seq 缺口实测（会话内累计，写侧车 droppedFrames）。
+    private var audioSeqGapTracker = AudioSeqGapTracker()
+    /// 当前会话音频来源（会话启动时按触发按键 source + 设备类解析，决定
+    /// DebugAudio 前缀 VS-/VG-/RC- 与侧车 source 字段）。
+    private var currentSessionSource: AudioSessionSource = .stickMic
     private let minimumRecordingDuration: TimeInterval = 0.5
     private let audioEndTimeout: TimeInterval = 1.0
     // ---- 精修预算与短文本跳过（B2/B3；常量先硬编码，是否提 config 字段留作后续）----
@@ -375,6 +384,7 @@ public final class VoiceStickCoordinator {
         self.translator = makeTranslator(config)
         self.refiner = makeRefiner(config)
         self.debugAudioRecorder = makeDebugRecorder(config)
+        self.rawDebugAudioRecorder = makeDebugRecorder(config)
         // 小米遥控器接入：paired_device 条目表注入（实时读最新 config，配对/遗忘
         // 即时生效）；同款注入方式见 BleCentral.pairedDevicesProvider 注释。
         ble.pairedDevicesProvider = { [weak self] in self?.config.pairedDevices ?? [] }
@@ -491,6 +501,7 @@ public final class VoiceStickCoordinator {
             mainInputState = .ready
             pendingPasteState = .idle
             debugAudioRecorder.discard()
+            rawDebugAudioRecorder.discard()
             statusController.hideOverlay()
             subtitleController.hideAll()
             sendUIStateForActiveDevice("ready")
@@ -521,6 +532,7 @@ public final class VoiceStickCoordinator {
             pushGatewayKeymapRoutes(deviceID: deviceID)
         }
         debugAudioRecorder = makeDebugRecorder(config)
+        rawDebugAudioRecorder = makeDebugRecorder(config)
         asr = makeAsr(config)
         translator = makeTranslator(config)
         refiner = makeRefiner(config)
@@ -957,10 +969,12 @@ public final class VoiceStickCoordinator {
     }
 
     private func handleButtonDown(_ event: StateEvent, peripheralID: UUID) {
-        NSLog("Button down button=\(event.button ?? "nil") dev=VS-\(deviceID(for: peripheralID) ?? "unknown") session=\(event.sessionID.map(String.init) ?? "nil")")
+        NSLog("Button down button=\(event.button ?? "nil") dev=VS-\(deviceID(for: peripheralID) ?? "unknown") session=\(event.sessionID.map(String.init) ?? "nil") source=\(event.source ?? "nil")")
         switch event.button {
         case "primary":
-            handlePrimaryButtonDown(sessionID: event.sessionID, peripheralID: peripheralID)
+            handlePrimaryButtonDown(
+                sessionID: event.sessionID, peripheralID: peripheralID,
+                triggerSource: event.source)
         case "secondary":
             break
         default:
@@ -1022,7 +1036,9 @@ public final class VoiceStickCoordinator {
                     ble.sendUIState("thinking", to: peripheralID)
                     return
                 }
-                handlePrimaryButtonDown(sessionID: event.sessionID, peripheralID: peripheralID)
+                handlePrimaryButtonDown(
+                    sessionID: event.sessionID, peripheralID: peripheralID,
+                    triggerSource: event.source)
                 return
             }
             // 旧固件无 duration_ms：回退本地状态判定。
@@ -1034,7 +1050,9 @@ public final class VoiceStickCoordinator {
                 NSLog("Ignoring primary button click while recording is finalizing")
                 ble.sendUIState("thinking", to: peripheralID)
             } else {
-                handlePrimaryButtonDown(sessionID: event.sessionID, peripheralID: peripheralID)
+                handlePrimaryButtonDown(
+                    sessionID: event.sessionID, peripheralID: peripheralID,
+                    triggerSource: event.source)
             }
         case "secondary":
             handleSecondaryButtonClick(peripheralID: peripheralID)
@@ -1528,11 +1546,14 @@ public final class VoiceStickCoordinator {
         encoderRotateTimer = nil
     }
 
-    private func handlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID) {
+    private func handlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID,
+                                         triggerSource: String? = nil) {
         // 体感态：主键长按/按下不启动录音（点击由 button_click 映射为左键，对齐 Windows）。
         if isAirMouseActive(deviceID: deviceID(for: peripheralID)) { return }
         if config.defaultOutputProfile.target == .subtitle {
-            handleSubtitlePrimaryButtonDown(sessionID: sessionID, peripheralID: peripheralID)
+            handleSubtitlePrimaryButtonDown(
+                sessionID: sessionID, peripheralID: peripheralID,
+                triggerSource: triggerSource)
             return
         }
         if handleFrontButtonDuringPendingPaste(peripheralID: peripheralID) {
@@ -1553,7 +1574,13 @@ public final class VoiceStickCoordinator {
             return
         }
 
-        mainInputState = .recording(sessionID: sessionID, peripheralID: peripheralID, startedAt: Date())
+        let sessionStartedAt = Date()
+        mainInputState = .recording(sessionID: sessionID, peripheralID: peripheralID, startedAt: sessionStartedAt)
+        // 会话音频来源（VS-/VG-/RC-）：网关中继遥控器语音键带 source=="xiaomi"。
+        currentSessionSource = AudioSessionSource.resolve(
+            triggerSource: triggerSource,
+            deviceClass: ble.deviceClass(for: peripheralID))
+        audioSeqGapTracker.reset()
         receivedAudioFrames = 0
         firstAudioFrameAt = nil
         lastAudioFrameAt = nil
@@ -1565,6 +1592,7 @@ public final class VoiceStickCoordinator {
         pendingPasteState = .idle
         isShowingASRError = false
         oggMuxer.reset()
+        rawOggMuxer.reset()
         if config.audioNoiseSuppression {
             do {
                 audioEnhancer = try AudioEnhancer()
@@ -1576,8 +1604,18 @@ public final class VoiceStickCoordinator {
             audioEnhancer = nil
         }
         audioEnhancerFallbackLogged = false
-        debugAudioRecorder.start(deviceID: deviceID(for: peripheralID), sessionID: sessionID,
-                                 devicePrefix: deviceNamePrefix(for: peripheralID))
+        if audioEnhancer != nil {
+            // 增强开启：另存「增强前」配对文件（共享时间戳基名），供 audio_lab
+            // 前后对比；字幕路径不增强，无 raw 副本。
+            rawDebugAudioRecorder.start(
+                deviceID: deviceID(for: peripheralID), sessionID: sessionID,
+                devicePrefix: currentSessionSource.filenamePrefix,
+                filenameSuffix: ".raw", startedAt: sessionStartedAt)
+        }
+        debugAudioRecorder.start(
+            deviceID: deviceID(for: peripheralID), sessionID: sessionID,
+            devicePrefix: currentSessionSource.filenamePrefix,
+            filenameSuffix: "", startedAt: sessionStartedAt)
         statusController.showListening(deviceID: deviceID(for: peripheralID))
         sendUIStateForActiveDevice("recording")
     }
@@ -1607,6 +1645,7 @@ public final class VoiceStickCoordinator {
             return
         }
         guard frame.sessionID == activeSessionID, activePeripheralID == peripheralID else { return }
+        audioSeqGapTracker.feed(frame.seq)
         guard !sentFinalAudioChunk || (frame.isEnd && frame.payload.isEmpty) else { return }
 
         if frame.isEnd && frame.payload.isEmpty {
@@ -1621,6 +1660,11 @@ public final class VoiceStickCoordinator {
         if firstAudioFrameAt == nil { firstAudioFrameAt = frameArrivedAt }
         lastAudioFrameAt = frameArrivedAt
         armRecordingInactivityWatchdog(sessionID: frame.sessionID, peripheralID: peripheralID)
+        if audioEnhancer != nil {
+            // 增强前原件（含增强失败回退透传的帧——如实记录 ASR 实际消费前的形态）。
+            rawDebugAudioRecorder.append(rawOggMuxer.append(
+                opusPayload: frame.payload, isLast: frame.isEnd))
+        }
         var payload = frame.payload
         if let audioEnhancer {
             if let enhanced = audioEnhancer.processFrame(frame.payload) {
@@ -1645,11 +1689,11 @@ public final class VoiceStickCoordinator {
             if !asrStarted && recordingDuration < minimumRecordingDuration {
                 cancelShortRecording()
             } else if asrStarted {
-                debugAudioRecorder.finish()
+                finishDebugAudioRecording(recordingDuration: recordingDuration)
                 statusController.setStatus("Processing")
                 sendUIStateForActiveDevice("thinking")
             } else {
-                debugAudioRecorder.finish()
+                finishDebugAudioRecording(recordingDuration: recordingDuration)
                 if !startASRAndFlushBufferedChunks(lastChunkIsFinal: true) {
                     finishWithASRError("Failed to start ASR")
                     return
@@ -1719,7 +1763,8 @@ public final class VoiceStickCoordinator {
         }
     }
 
-    private func handleSubtitlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID) {
+    private func handleSubtitlePrimaryButtonDown(sessionID: UInt32?, peripheralID: UUID,
+                                                  triggerSource: String? = nil) {
         guard let sessionID, sessionID != 0 else {
             NSLog("Ignoring subtitle button_down with missing/zero session dev=VS-\(deviceID(for: peripheralID) ?? "unknown"); sending ready")
             ble.sendUIState("ready", to: peripheralID)
@@ -1747,8 +1792,11 @@ public final class VoiceStickCoordinator {
         configureSubtitleASRCallbacks(for: cycle)
         subtitleCycles[SubtitleCycleKey(peripheralID: peripheralID, sessionID: sessionID)] = cycle
         activeSubtitleSessions[peripheralID] = sessionID
+        let cycleSource = AudioSessionSource.resolve(
+            triggerSource: triggerSource,
+            deviceClass: ble.deviceClass(for: peripheralID))
         cycle.debugAudioRecorder.start(deviceID: deviceID, sessionID: sessionID,
-                                       devicePrefix: deviceNamePrefix(for: peripheralID))
+                                       devicePrefix: cycleSource.filenamePrefix)
         NSLog("Subtitle cycle start dev=VS-\(deviceID ?? "unknown") session=\(sessionID)")
         statusController.showListening(deviceID: deviceID)
         ble.sendUIState("recording", to: peripheralID)
@@ -1937,10 +1985,32 @@ public final class VoiceStickCoordinator {
 
         let finalChunk = oggMuxer.finish()
         debugAudioRecorder.append(finalChunk)
-        debugAudioRecorder.finish()
+        finishDebugAudioRecording(recordingDuration: recordingDuration)
         sendOrBufferOggChunk(finalChunk, isLast: true, canStartASR: true)
         statusController.setStatus("Processing")
         sendUIStateForActiveDevice("thinking")
+    }
+
+    /// 调试音频落盘唯一出口：主 ogg + 侧车 + （增强会话）raw 配对收尾。
+    /// 传输层指标口径与 Audio stream summary 日志一致（frames/span/recording）。
+    private func finishDebugAudioRecording(recordingDuration: TimeInterval) {
+        let streamSpan = (firstAudioFrameAt != nil && lastAudioFrameAt != nil)
+            ? lastAudioFrameAt!.timeIntervalSince(firstAudioFrameAt!)
+            : 0
+        let sidecar = DebugAudioSidecar(
+            source: currentSessionSource.rawValue,
+            deviceClass: currentSessionSource.deviceClassTag,
+            sessionID: activeSessionID,
+            frames: receivedAudioFrames,
+            streamSpanSeconds: streamSpan,
+            recordingSeconds: recordingDuration,
+            droppedFrames: audioSeqGapTracker.droppedFrames,
+            noiseSuppression: audioEnhancer != nil)
+        debugAudioRecorder.finish(sidecar: sidecar)
+        if audioEnhancer != nil {
+            rawDebugAudioRecorder.append(rawOggMuxer.finish())
+            rawDebugAudioRecorder.finish()
+        }
     }
 
     private func shouldSendPartialToDevice() -> Bool {
@@ -2000,6 +2070,7 @@ public final class VoiceStickCoordinator {
         sentFinalAudioChunk = false
         pastedFinalText = false
         debugAudioRecorder.discard()
+        rawDebugAudioRecorder.discard()
         statusController.setStatus("Ready")
         statusController.hideOverlay()
         sendUIStateForActiveDevice("ready")
@@ -2010,6 +2081,7 @@ public final class VoiceStickCoordinator {
     ///   NONE/失败后回退重入本函数时必须传 false——否则门控未命中会再次触发对齐，
     ///   形成「吞轮→对齐→回退→再对齐」循环（对齐每轮至多一次）。
     private func finishWithFinalText(_ text: String, allowTargetedAlign: Bool = true) {
+        debugAudioRecorder.updateLastSidecar(finalText: text)
         guard !pastedFinalText else { return }
         // 语音编辑指令拦截（方案 §5.6/§4 关键原则 1）：必须在 beginSessionHistory /
         // 精修 / 翻译 / 粘贴之前判定；命中即整轮按命令处理并 return（不粘贴、不写历史）。
@@ -2745,6 +2817,7 @@ public final class VoiceStickCoordinator {
         asr.cancel()
         pendingPasteState = .idle
         debugAudioRecorder.discard()
+        rawDebugAudioRecorder.discard()
         isShowingASRError = true
         errorRecoveryToken += 1
         let token = errorRecoveryToken
@@ -3508,6 +3581,7 @@ public final class VoiceStickCoordinator {
         pendingPasteState = .idle
         mainInputState = .ready
         debugAudioRecorder.discard()
+        rawDebugAudioRecorder.discard()
         finishRecognitionCycle()
         statusController.hideOverlay()
         subtitleController.hideAll()
@@ -3694,11 +3768,6 @@ public final class VoiceStickCoordinator {
 
     private func deviceID(for peripheralID: UUID) -> String? {
         ble.deviceID(for: peripheralID)
-    }
-
-    /// 调试录音文件名前缀（RC- / VS-，按设备类）。
-    private func deviceNamePrefix(for peripheralID: UUID) -> String {
-        ble.deviceClass(for: peripheralID) == .xiaomiRemote2Pro ? "RC-" : "VS-"
     }
 
     // MARK: - 全局热键（对齐 Windows HandleGlobalHotkeyPressed/Released）
