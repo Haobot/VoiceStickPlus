@@ -858,7 +858,8 @@ func runVoiceTargetedCoordinatorTests() {
                ["state", "select(2,2)", "selected", "key:Backspace", "select(4,0)", "state"],
                "targeted: 修改前失败后记录仍有效")
 
-    // 终验失败（模拟应用未应用退格）：不重试、记录失效、提示检查。
+    // 终验未落地（模拟应用吞掉退格）：窗末文本仍是动作前原样 → 提示未确认但
+    // **记录保留**（2026-10-31 语义：仅文本真不符才失效），同命令可直接重试。
     h = makeTargetedHarness()
     h.asr.onFinal?("我去北京上班")
     pumpMainRunLoop(0.1)
@@ -869,18 +870,53 @@ func runVoiceTargetedCoordinatorTests() {
     h.input.onSendKeyCombo = { spec in
         h.ops.record("key:\(spec.displayText)")
         if spec.displayText == "Backspace" || spec.displayText == "backspace" {
-            fieldRef.selectionLength = 0  // 吞掉注入：字段保持原样
+            fieldRef.selectionLength = 0  // 吞掉注入：字段保持原样（=动作前文本）
         }
     }
     h.asr.onFinal?("删除刚才的北京")
-    pumpMainRunLoop(0.6)
+    pumpMainRunLoop(3.0)   // 覆盖 0.2s 首验 + [0.1, 0.2, 0.4, 0.8, 1.0] 轮询窗
     checkEqual(h.sink.timedMessages.last, "voiceTargetedUnconfirmed",
-               "targeted: 终验失败 toast key")
+               "targeted: 终验未落地 toast key")
+    // 记录保留：恢复正常注入后同命令直接重试成功。
+    h.input.onSendKeyCombo = { spec in
+        h.ops.record("key:\(spec.displayText)")
+        if spec.displayText == "Backspace" || spec.displayText == "backspace" {
+            fieldRef.applyBackspace()
+        }
+    }
+    h.ops.clear()
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.ops.list,
+               ["state", "select(2,2)", "selected", "key:Backspace", "select(4,0)", "state"],
+               "targeted: 未落地后记录保留可重试")
+    checkEqual(h.field.text, "我去上班", "targeted: 重试后字段内容")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted",
+               "targeted: 未落地后重试成功 toast key")
+
+    // 终验真不符（字段被第三方改成第三种文本）：窗末失效记录，防陈旧偏移继续编辑。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    let mismatchField = h.field
+    h.input.onSendKeyCombo = { spec in
+        h.ops.record("key:\(spec.displayText)")
+        if spec.displayText == "Backspace" || spec.displayText == "backspace" {
+            mismatchField.text = "完全无关的新文本"   // 既非动作前也非预期 → 真不符
+        }
+    }
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(3.0)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedUnconfirmed",
+               "targeted: 真不符 toast key")
     // 记录已失效：再发 targeted 命令 → no_injection。
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.3)
     checkEqual(h.sink.timedMessages.last, "voiceEditNoInjection",
-               "targeted: 终验失败后记录失效")
+               "targeted: 真不符后记录失效")
 
     // stale generation：命令执行后、终验前发生新注入 → 旧回调不得覆盖新记录。
     h = makeTargetedHarness()
@@ -998,7 +1034,7 @@ func runVoiceTargetedCoordinatorTests() {
     }
     h.ops.clear()
     h.asr.onFinal?("删除刚才的北京")
-    pumpMainRunLoop(0.8)   // 覆盖 0.2s 首验 + [0.05,0.1,0.2] 轮询窗
+    pumpMainRunLoop(3.0)   // 覆盖 0.2s 首验 + [0.1, 0.2, 0.4, 0.8, 1.0] 轮询窗
     checkEqual(h.field.text, "我去上班", "targeted: 光标恢复未落地字段仍正确")
     checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted",
                "targeted: 光标恢复未落地仍成功")
