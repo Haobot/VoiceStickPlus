@@ -1071,12 +1071,12 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
     }
     // 终验：当前尾部文本以期望文本的**可重叠公共后缀**结尾（原 tail 是 512 窗口
     // 时，变长替换会使 expected_tail 超过窗口长——不能要求 tail 全长覆盖 expected）。
-    // expected 为空时要求 actual 也为空，避免空串万能匹配。字段可读/折叠光标/
-    // caret_at_end 校验不放松。
+    // expected 为空时要求 actual 也为空，避免空串万能匹配。成功判据是尾部文本终验
+    // （2026-10-31 起光标/选区不再作为失败条件，恢复末尾只作 best-effort）。
     VoiceEditFieldState field;
     bool verified = false;
-    if (focus_text_reader_ && focus_text_reader_->ReadFocusedField(&field) && field.readable &&
-        field.selection_collapsed && field.caret_at_end) {
+    bool caret_restored = false;
+    if (focus_text_reader_ && focus_text_reader_->ReadFocusedField(&field) && field.readable) {
         const std::string tail = NormalizeVoiceEditLineBreaks(field.tail_text);
         if (expected_tail.empty()) {
             verified = tail.empty();
@@ -1086,6 +1086,7 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
                                     expected_tail.data() + expected_tail.size() - overlap,
                                     overlap) == 0;
         }
+        caret_restored = field.selection_collapsed && field.caret_at_end;
     }
     if (!verified) {
         // 结果未确认：不自动重试、不宣称成功、不盲目撤销；记录失效防陈旧偏移。
@@ -1095,6 +1096,10 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
                language),
             kVoiceEditToastMs);
         return;
+    }
+    if (!caret_restored) {
+        // 文本已确认但光标恢复写未落地：修改本身已验证完成，只记日志不判失败。
+        LogCoordinatorLine("voice targeted: caret restore unconfirmed (best-effort)");
     }
     if (generation == voice_edit_generation_ && last_injection_.has_value()) {
         last_injection_->remaining_text = plan.new_remaining_text;

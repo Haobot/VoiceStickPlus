@@ -1539,14 +1539,15 @@ void TestTargetedPlanner() {
     auto p9 = PlanVoiceTargeted(TargetedReplace("北京", "上海", VoiceTargetedPosition::kLast),
                                 "北京和北京", false, true, "北京和北京", true, true);
     assert(p9.ok && p9.new_remaining_text == "北京和上海" && p9.occurrence.index == 1);
-    // notFound / 光标 / 选区 / 不可读（targeted 恒 verified，无 verify_mode 分支）。
+    // notFound / 不可读（targeted 恒 verified，无 verify_mode 分支）。
     auto p10 = PlanVoiceTargeted(TargetedDelete("上海"), "我去北京上班", false, true,
                                  "我去北京上班", true, true);
     assert(!p10.ok && p10.failure == VoiceTargetedFailure::kNotFound);
+    // 光标/选区不拦截（2026-10-31 放宽：双击核对目标词是常态动作）→ 计划成功。
     auto p11 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班", false, true);
-    assert(!p11.ok && p11.failure == VoiceTargetedFailure::kCaretNotEnd);
+    assert(p11.ok && p11.new_remaining_text == "我去上班");
     auto p12 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班", true, false);
-    assert(!p12.ok && p12.failure == VoiceTargetedFailure::kSelectionPresent);
+    assert(p12.ok && p12.new_remaining_text == "我去上班");
     auto p13 = PlanVoiceTargeted(del, "我去北京上班", false, false, "", true, true);
     assert(!p13.ok && p13.failure == VoiceTargetedFailure::kVerifyUnavailable);
     // 连续两次编辑（计划级）。

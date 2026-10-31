@@ -72,8 +72,9 @@ enum class VoiceTargetedFailure {
     kAmbiguous,          // 多处匹配但未指定第一个/最后一个
     kInvalid,            // 结构命中但操作数非法（解析层已吞，协调器防御复用）
     kFieldMismatch,      // 字段尾部不再以完整 remainingText 为后缀（含手工改动）
-    kCaretNotEnd,        // 光标不在字段末尾
-    kSelectionPresent,   // 选区非空
+    kCaretNotEnd,        // 已不再由 targeted planner 返回（2026-10-31 光标门槛放宽）；
+                         // 保留枚举位与双端失败名表/日志码对齐
+    kSelectionPresent,   // 同上（选区门槛一并放宽）
     kVerifyUnavailable,  // 读不到字段/光标（targeted 恒 verified，一律拒绝）
     kResultUnconfirmed,  // 修改已发出但终验不符（记录应失效）
     // L0 作用域层（与旧 VoiceEditRejectReason 同语义；toast 复用旧 StringId）。
@@ -108,7 +109,8 @@ std::size_t VoiceTargetedUtf16Length(std::string_view text);
 //     拒绝，严禁复用 8s unverified 盲删/盲改；
 //   * L1 要求**完整** remainingText 仍是字段尾部后缀（允许末尾一个**已记录**
 //     auto_enter 换行），不做旧「最长前缀」容错——用户手工变化会使目标偏移不可靠；
-//   * 选区非空、光标不在末尾 → 拒绝。
+//   * 光标位置/既有选区不拦截（2026-10-31 放宽：定位靠完整后缀校验 + 计划时刻
+//     现算偏移，与光标位置无关；双击核对目标词是常态动作）。
 struct VoiceTargetedPlan {
     bool ok = false;
     VoiceTargetedFailure failure = VoiceTargetedFailure::kNone;
@@ -128,7 +130,8 @@ struct VoiceTargetedPlan {
 
 // L1 校验 + 执行计划（纯逻辑）。
 //   field_tail: 字段尾部文本（UTF-8，UIA 尾部窗口，\r 段分隔已归一为 \n）；
-//   field_readable/caret_at_end/selection_collapsed: 字段状态（不可读传 readable=false）。
+//   field_readable: 字段可读性（不可读传 false → verifyUnavailable）；
+//   caret_at_end/selection_collapsed: 保留参数（2026-10-31 起 planner 不再按其拒绝）。
 VoiceTargetedPlan PlanVoiceTargeted(const VoiceTargetedCommand& command,
                                     std::string_view remaining_text, bool pressed_enter,
                                     bool field_readable, std::string_view field_tail,

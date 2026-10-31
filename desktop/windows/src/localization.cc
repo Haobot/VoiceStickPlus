@@ -568,7 +568,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kVoiceEditDefaultChars)] =
         "Characters deleted when you say \"delete\" alone";
     table[Index(StringId::kVoiceEditHintRuntime)] =
-        "Works only on the most recent dictation, with the cursor still at its end.";
+        "Works only on the most recent dictation, with its text unchanged; deleting "
+        "trailing words still requires the cursor at its end.";
     table[Index(StringId::kVoiceEditHintMode)] =
         "Not available in subtitle or third-party input-method modes.";
     table[Index(StringId::kVoiceEditDeletedChars)] = "Deleted %d characters";
@@ -1124,7 +1125,7 @@ constexpr StringTable ChineseStrings() {
         "启用语音编辑指令（说\"删除最后两个字\"、\"撤销\"等直接编辑刚输入的文本）";
     table[Index(StringId::kVoiceEditDefaultChars)] = "单独说\"删除\"时删除的字数";
     table[Index(StringId::kVoiceEditHintRuntime)] =
-        "仅对最近一次语音输入生效；光标须仍在该文本末尾。";
+        "仅对最近一次语音输入、文本未被改动时生效；「删掉最后几个字」仍需光标在文本末尾。";
     table[Index(StringId::kVoiceEditHintMode)] = "字幕 / 第三方输入法模式不支持。";
     table[Index(StringId::kVoiceEditDeletedChars)] = "已删除 %d 个字";
     table[Index(StringId::kVoiceEditDeletedSentence)] = "已删除最后一句";

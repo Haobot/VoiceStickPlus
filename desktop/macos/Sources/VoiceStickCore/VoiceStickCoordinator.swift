@@ -3223,6 +3223,7 @@ public final class VoiceStickCoordinator {
         guard let fieldState = readFocusedFieldState?() else {
             return .failure(.verifyUnavailable)
         }
+        NSLog("voice_targeted field len=\(fieldState.text.utf16.count) caret=\(fieldState.caretUTF16.map(String.init) ?? "nil") sel=\(fieldState.selectionLength.map(String.init) ?? "nil")")
         let planResult = VoiceTargetedPlanner.plan(
             command: command,
             remainingText: record.remainingText,
@@ -3354,19 +3355,22 @@ public final class VoiceStickCoordinator {
     }
 
     /// 步骤 4/5（终验，可重试）：光标恢复写与 Backspace/粘贴一样在部分目标应用
-    /// 异步落地，立即读可能仍见写入前状态；重试耗尽才判未确认——不自动重试修改、
-    /// 不宣称成功、不盲目撤销，记录失效防陈旧偏移继续编辑。
+    /// 异步落地，立即读可能仍见写入前状态；**成功判据是字段文本终验**——光标/
+    /// 选区只作 best-effort 恢复（2026-10-31 起不再作为失败条件，未落地只记日志）。
+    /// 文本不符重试耗尽才判未确认——不自动重试修改、不宣称成功、不盲目撤销，
+    /// 记录失效防陈旧偏移继续编辑。
     private func finalizeTargetedEdit(
         expectedFinalText: String, plan: VoiceTargetedPlan,
         generation: Int, attempt: Int
     ) {
         guard generation == voiceEditGeneration else { return }
+        // 光标恢复末尾 best-effort（保持「听写追加到末尾」不变量）。
         _ = writeTargetedSelection?(expectedFinalText.utf16.count, 0)
         let state = readFocusedFieldState?()
-        if let state,
-           state.text == expectedFinalText,
-           state.caretUTF16 == expectedFinalText.utf16.count,
-           state.selectionLength == 0 {
+        let textMatches = state?.text == expectedFinalText
+        if textMatches,
+           state?.caretUTF16 == expectedFinalText.utf16.count,
+           state?.selectionLength == 0 {
             lastInjection?.remainingText = plan.newRemainingText
             NSLog("voice_targeted result=ok target_len=%d", plan.targetLength)
             showVoiceTargetedSuccessToast(plan: plan)
@@ -3380,6 +3384,17 @@ public final class VoiceStickCoordinator {
                     expectedFinalText: expectedFinalText, plan: plan,
                     generation: generation, attempt: attempt + 1)
             }
+            return
+        }
+        if textMatches {
+            // 文本已确认但光标恢复写未落地：修改本身已验证完成，不再判「结果未
+            // 确认」，只记日志；记录照常更新，允许连续编辑。
+            NSLog("voice_targeted caret restore unconfirmed caret=%d sel=%d count=%d",
+                  state?.caretUTF16 ?? -1, state?.selectionLength ?? -1,
+                  expectedFinalText.utf16.count)
+            lastInjection?.remainingText = plan.newRemainingText
+            NSLog("voice_targeted result=ok target_len=%d", plan.targetLength)
+            showVoiceTargetedSuccessToast(plan: plan)
             return
         }
         NSLog("voice_targeted verify unconfirmed expected_len=%d actual_len=%d",

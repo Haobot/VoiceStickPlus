@@ -342,15 +342,26 @@ private func runTargetedPlannerTests() {
         fieldText: "我去北京上班", caretUTF16: 6, selectionLength: 0,
         .notFound, "计划：目标不存在 → notFound")
 
-    // 光标/选区/不可验证闸（任何 verify_mode 语义下 targeted 都强制——planner 无模式参数）。
-    expectTargetedPlanFailure(
+    // 光标/选区不拦截（2026-10-31 放宽：定位靠完整后缀校验 + 计划时刻偏移，与光标
+    // 位置无关；双击核对目标词导致的非空选区/非末尾光标是常态动作）。不可验证仍拒绝。
+    guard case .plan(let caretMidPlan) = VoiceTargetedPlanner.plan(
         command: deleteCommand("北京"), remainingText: "我去北京上班",
-        fieldText: "我去北京上班", caretUTF16: 3, selectionLength: 0,
-        .caretNotEnd, "计划：光标在中间 → caretNotEnd")
-    expectTargetedPlanFailure(
+        fieldText: "我去北京上班", caretUTF16: 3, selectionLength: 0) else {
+        check(false, "计划：光标在中间应成功（门槛放宽）")
+        return
+    }
+    checkEqual(caretMidPlan.newRemainingText, "我去上班", "计划：光标在中间 newRemaining")
+    checkEqual(caretMidPlan.occurrence.utf16Start, 2, "计划：光标在中间 utf16Start")
+    checkEqual(caretMidPlan.occurrence.utf16Length, 2, "计划：光标在中间 utf16Length")
+    guard case .plan(let selectionPlan) = VoiceTargetedPlanner.plan(
         command: deleteCommand("北京"), remainingText: "我去北京上班",
-        fieldText: "我去北京上班", caretUTF16: 0, selectionLength: 6,
-        .selectionPresent, "计划：选区非空 → selectionPresent")
+        fieldText: "我去北京上班", caretUTF16: 0, selectionLength: 6) else {
+        check(false, "计划：选区非空应成功（门槛放宽）")
+        return
+    }
+    checkEqual(selectionPlan.newRemainingText, "我去上班", "计划：选区非空 newRemaining")
+    checkEqual(selectionPlan.occurrence.utf16Start, 2, "计划：选区非空 utf16Start")
+    checkEqual(selectionPlan.occurrence.utf16Length, 2, "计划：选区非空 utf16Length")
     expectTargetedPlanFailure(
         command: deleteCommand("北京"), remainingText: "我去北京上班",
         .verifyUnavailable, "计划：不可验证 → verifyUnavailable")
