@@ -2119,7 +2119,14 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 LogBleLine("state event VS-" + device_id + " type=" + event->event +
                            (event->firmware_version.empty()
                                 ? std::string()
-                                : " firmware=" + event->firmware_version));
+                                : " firmware=" + event->firmware_version) +
+                           (event->dc_reason.has_value()
+                                ? " dc reason=" + std::to_string(*event->dc_reason) +
+                                      " conn_ms=" + std::to_string(event->dc_conn_ms.value_or(0)) +
+                                      " itvl=" + std::to_string(event->dc_itvl.value_or(0)) +
+                                      " latency=" + std::to_string(event->dc_latency.value_or(0)) +
+                                      " timeout=" + std::to_string(event->dc_timeout.value_or(0))
+                                : std::string()));
                 DispatchToUiThread([this, device_id, e = std::move(*event)]() {
                     if (on_state_event) on_state_event(device_id, e);
                 });

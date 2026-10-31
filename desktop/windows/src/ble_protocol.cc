@@ -194,6 +194,13 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
     event.direction = JsonStringValue(json, "direction");
     event.steps = JsonU32Value(json, "steps");
     event.source = JsonStringValue(json, "source");
+    if (event.event == "last_disconnect") {
+        event.dc_reason = JsonU32Value(json, "reason");
+        event.dc_conn_ms = JsonU32Value(json, "conn_ms");
+        event.dc_itvl = JsonU32Value(json, "itvl");
+        event.dc_latency = JsonU32Value(json, "latency");
+        event.dc_timeout = JsonU32Value(json, "timeout");
+    }
 
     return event;
 }

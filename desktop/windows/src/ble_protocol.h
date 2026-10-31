@@ -49,6 +49,13 @@ struct StateEvent {
     std::optional<int> battery_level;
     std::optional<bool> battery_charging;
     std::optional<bool> battery_usb_powered;
+    // last_disconnect 事件（固件 ble_diag NVS 上报）携带的断连诊断字段，
+    // 仅用于日志定位偶发断链原因；其余事件不解析这些键。
+    std::optional<std::uint32_t> dc_reason;
+    std::optional<std::uint32_t> dc_conn_ms;
+    std::optional<std::uint32_t> dc_itvl;
+    std::optional<std::uint32_t> dc_latency;
+    std::optional<std::uint32_t> dc_timeout;
     // 编码器旋转事件字段：direction 为 "cw"/"ccw"（固件上报的原始物理方向，
     // 语义映射在桌面端完成）；steps 为该帧内同向累计格数（>=1）。非旋转事件为空。
     std::string direction;

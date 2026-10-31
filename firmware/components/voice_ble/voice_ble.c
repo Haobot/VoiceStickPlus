@@ -15,6 +15,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "power_log.h"
 
@@ -60,6 +61,56 @@ static bool s_itvl_update_pending;
 // 快档被拒后的自愈重申预算（每连接重置，见 CONN_UPDATE 处理）。
 // 移植自 2.4.10 fb09bec（语音延迟五连修 #3）。
 static uint8_t s_fast_reassert_count;
+// 最近一次生效的连接参数缓存（conn initial / CONN_UPDATE 时刷新），
+// 断连时随 reason 一起写入 NVS 供桌面端诊断（见 ble_diag_save/report）。
+static uint16_t s_last_conn_itvl;
+static uint16_t s_last_conn_latency;
+static uint16_t s_last_conn_timeout;
+
+// 断连诊断持久化（移植 whisper_pen 手法，根记忆 esp32-usb-jtag-runtime-log-trap：
+// USB 日志抓不到运行时事件，关键数据走 NVS 持久化 + 重连后 state_tx 上报）。
+// 断连即写 ble_diag/dc，state_tx 订阅成功后上报并擦除——桌面端日志无需串口
+// 即可读到每次断连的 reason 与当时连接参数。
+static esp_err_t send_state_json(const char *json);
+
+static void ble_diag_save_disconnect(int reason, uint32_t conn_dur_ms)
+{
+    nvs_handle_t h;
+    if (nvs_open("ble_diag", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    char buf[112];
+    snprintf(buf, sizeof(buf),
+             "{\"event\":\"last_disconnect\",\"reason\":%d,\"conn_ms\":%lu,"
+             "\"itvl\":%u,\"latency\":%u,\"timeout\":%u}",
+             reason, (unsigned long)conn_dur_ms,
+             s_last_conn_itvl, s_last_conn_latency, s_last_conn_timeout);
+    nvs_set_str(h, "dc", buf);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void ble_diag_report_pending(void)
+{
+    nvs_handle_t h;
+    char buf[112];
+    size_t len = sizeof(buf);
+    if (nvs_open("ble_diag", NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    esp_err_t rc = nvs_get_str(h, "dc", buf, &len);
+    nvs_close(h);
+    if (rc != ESP_OK) {
+        return;
+    }
+    esp_err_t send_rc = send_state_json(buf);
+    ESP_LOGI(TAG, "last_disconnect reported rc=%d: %s", send_rc, buf);
+    if (nvs_open("ble_diag", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "dc");
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
 
 typedef struct {
     bool active;
@@ -744,6 +795,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (desc_rc == 0) {
                     ESP_LOGI(TAG, "conn initial: interval=%u latency=%u timeout=%u",
                              desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+                    s_last_conn_itvl = desc.conn_itvl;
+                    s_last_conn_latency = desc.conn_latency;
+                    s_last_conn_timeout = desc.supervision_timeout;
                 }
                 int mtu_rc = ble_gattc_exchange_mtu(s_conn_handle, NULL, NULL);
                 if (mtu_rc != 0 && mtu_rc != BLE_HS_EALREADY) {
@@ -781,6 +835,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnected reason=%d conn_dur=%" PRIu32 "ms",
                  event->disconnect.reason, esp_log_timestamp() - s_connected_ms);
+        ble_diag_save_disconnect(event->disconnect.reason,
+                                 esp_log_timestamp() - s_connected_ms);
         if (s_ota.active) {
             (void)esp_ota_abort(s_ota.handle);
             ota_clear_state();
@@ -827,6 +883,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (rc != ESP_OK) {
                     ESP_LOGW(TAG, "encoder_status send failed err=0x%x", rc);
                 }
+                // 上报上次断连诊断（NVS 持久化，见 ble_diag_save_disconnect）
+                ble_diag_report_pending();
             }
         }
         return 0;
@@ -838,6 +896,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "conn updated: status=%d interval=%u latency=%u timeout=%u",
                      event->conn_update.status,
                      desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+            s_last_conn_itvl = desc.conn_itvl;
+            s_last_conn_latency = desc.conn_latency;
+            s_last_conn_timeout = desc.supervision_timeout;
         } else {
             ESP_LOGI(TAG, "conn updated: status=%d (desc unavailable)",
                      event->conn_update.status);
