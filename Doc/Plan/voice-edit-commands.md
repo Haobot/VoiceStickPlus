@@ -808,10 +808,10 @@ Spike 结论（覆盖率表）直接决定 verify_mode 默认值与 Windows 是�
    - Windows：UIA TextRange `Select()` + `GetSelection()->GetText()` 读回（`ITargetedFieldEditor`，focus_text_reader.cc 生产实现；doc 长度用 Start 端点前进 INT_MAX 实测，tail 窗口同 reader 的 512 定义）。
 4. **读回逐字确认**：实际选中文本 == 目标词才执行；不符 → 恢复末尾光标、零删除/零粘贴、**记录保留**（字段文本未被改动）。
 5. **单次动作**：删除 = 一次 Backspace；替换 = 现有粘贴通道 `pressEnter=false`（不额外触发 Return，保留原 `auto_enter` 换行与 `pressedEnter`）。
-6. **恢复末尾光标 + 终验**：修改后把光标恢复到**字段末尾**（不是被改词之后），读回字段文本/光标终验；通过才更新 `remainingText`（`pressedEnter` 不变——targeted 不消费换行）并允许连续编辑。
+6. **恢复末尾光标 + 终验**：修改后把光标恢复到**字段末尾**（不是被改词之后；best-effort），读回字段文本终验——**成功判据是字段文本**（2026-10-31 修订：光标位置/既有选区不再拦截，光标恢复未落地只记日志不判失败）；通过才更新 `remainingText`（`pressedEnter` 不变——targeted 不消费换行）并允许连续编辑。
 7. **结果未确认**：修改已发出但终验不符 → 不自动重试、不宣称成功、不盲目撤销；**注入记录失效**（防后续基于陈旧偏移继续编辑）+ 提示用户检查。修改前失败记录保留。
 8. **串行 + generation**：执行/终验回调携带 `voiceEditGeneration`（新注入 +1）；stale 回调直接丢弃，新注入/新记录不被旧回调覆盖。macOS 全程主线程（单次动作无循环、无 UI 阻塞）；Windows UIA COM STA 留 UI 线程，延时终验走 worker sleep + `RunOnUiThread` 回收（与既有退格执行同范式）。
-9. 选区非空、密码框、提权前台（Windows UIPI）、前台应用变化、超出作用域时间窗 → 全部拒绝并提示；拒绝路径**零文本修改**。
+9. 密码框、提权前台（Windows UIPI）、前台应用变化、超出作用域时间窗 → 全部拒绝并提示；拒绝路径**零文本修改**。（2026-10-31 修订：选区非空、光标不在末尾不再拦截——定位靠完整后缀校验 + 计划时刻现算偏移，与光标位置无关，双击核对目标词是常态动作。）
 
 ### 17.3 实现落点（双端同构）
 

@@ -421,7 +421,7 @@ std::vector<VoiceTargetedOccurrence> FindTargetedOccurrences(std::string_view ta
 VoiceTargetedPlan PlanVoiceTargeted(const VoiceTargetedCommand& command,
                                     std::string_view remaining_text, bool pressed_enter,
                                     bool field_readable, std::string_view field_tail,
-                                    bool caret_at_end, bool selection_collapsed) {
+                                    bool /*caret_at_end*/, bool /*selection_collapsed*/) {
     VoiceTargetedPlan plan;
     plan.action = command.action;
 
@@ -447,17 +447,11 @@ VoiceTargetedPlan PlanVoiceTargeted(const VoiceTargetedCommand& command,
             break;
     }
 
-    // L1：targeted 恒 verified——任何 verify_mode 下都强制字段/光标校验。
+    // L1：targeted 恒 verified——任何 verify_mode 下都强制字段可读校验；光标/选区
+    // 不拦截（2026-10-31 放宽：定位靠完整后缀校验 + 计划时刻偏移，与光标位置无关；
+    // 双击核对目标词导致的非空选区/非末尾光标是常态动作）。
     if (!field_readable) {
         plan.failure = VoiceTargetedFailure::kVerifyUnavailable;
-        return plan;
-    }
-    if (!selection_collapsed) {
-        plan.failure = VoiceTargetedFailure::kSelectionPresent;
-        return plan;
-    }
-    if (!caret_at_end) {
-        plan.failure = VoiceTargetedFailure::kCaretNotEnd;
         return plan;
     }
     // 完整 remainingText 后缀校验（允许末尾一个**已记录** auto_enter 换行）；

@@ -69,6 +69,8 @@ public enum VoiceTargetedFailureCode: String, CaseIterable, Equatable {
     case ambiguous = "target_ambiguous"
     case invalid = "target_invalid"
     case fieldMismatch = "field_mismatch"
+    // 以下两个已不再由 targeted planner 返回（2026-10-31 光标门槛放宽，见
+    // VoiceTargetedPlanner）；保留枚举位与双端失败名表/日志码对齐。
     case caretNotEnd = "caret_not_end"
     case selectionPresent = "selection_present"
     case verifyUnavailable = "verify_unavailable"
@@ -434,7 +436,10 @@ public enum VoiceTargetedMatcher {
 ///     严禁复用 8s unverified 盲删/盲改；读不到字段/光标一律拒绝；
 ///   * L1 要求**完整** remainingText 仍是字段后缀（允许末尾一个已记录 auto_enter
 ///     换行），不做旧「最长前缀」容错——用户手工变化会使目标偏移不可靠；
-///   * 选区非空、光标不在字段末尾 → 拒绝。
+///   * 光标位置/既有选区**不拦截**（2026-10-31 放宽）：目标偏移由后缀锚定 + 计划
+///     时刻从当前字段现算，误改风险由「选区读回逐字确认 + 单次动作 + 文本终验」
+///     兜底——光标在句中、双击选中核对是替换的常态动作，按光标拒绝会让功能不可用。
+///     caret/selection 读值仅作诊断日志（协调器）。
 public enum VoiceTargetedPlanner {
     public static func plan(
         command: VoiceTargetedCommand,
@@ -458,13 +463,12 @@ public enum VoiceTargetedPlanner {
             selected = matches[0]
         }
 
-        // L1：targeted 恒 verified——任何 verify_mode 下都强制字段/光标校验。
+        // L1：targeted 恒 verified——任何 verify_mode 下都强制字段/光标/选区**可读**
+        // （读不到一律拒绝）；读到的光标/选区值不作拒绝条件（2026-10-31 放宽，见上）。
         guard let fieldText, fieldText.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16,
-              let caretUTF16, let selectionLength else {
+              caretUTF16 != nil, selectionLength != nil else {
             return .failure(.verifyUnavailable)
         }
-        if selectionLength > 0 { return .failure(.selectionPresent) }
-        guard caretUTF16 == fieldText.utf16.count else { return .failure(.caretNotEnd) }
         // 完整 remainingText 后缀校验（允许末尾一个**已记录** auto_enter 换行；
         // targeted 不消费该换行，pressedEnter 保持原值）。不使用旧「最长前缀」容错。
         guard isFieldTailValid(fieldText: fieldText, remainingText: remainingText,

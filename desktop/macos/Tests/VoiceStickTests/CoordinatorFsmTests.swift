@@ -927,7 +927,8 @@ func runVoiceTargetedCoordinatorTests() {
     checkEqual(h.sink.timedMessages.last, "voiceEditVerifyUnavailable",
                "targeted: off 模式不可验证 toast key")
 
-    // L0/L1 拒绝路径：notFound / ambiguous / caret 移开 / 选区非空 / 字段被改。
+    // L0/L1 拒绝路径：notFound / ambiguous / 字段被改（caret/selection 已不拦截，
+    // 2026-10-31 放宽，专项用例见下）。
     // 歧义需要 remainingText 本身多处匹配：注入「北京和北京」。
     h = makeTargetedHarness()
     h.asr.onFinal?("北京和北京")
@@ -942,26 +943,65 @@ func runVoiceTargetedCoordinatorTests() {
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.3)
     checkEqual(h.sink.timedMessages.last, "voiceTargetedAmbiguous", "targeted: 歧义 toast key")
+    checkEqual(h.input.sentKeyCombos.count, 0, "targeted: 歧义零注入")
     // 指定「最后一个」→ 执行成功（消歧路径）。
     h.ops.clear()
     h.asr.onFinal?("删除刚才最后一个北京")
     pumpMainRunLoop(0.6)
     checkEqual(h.field.text, "北京和", "targeted: 最后一个消歧执行")
-    h.field.text = "北京和"
-    h.field.selectionLocation = 1   // 光标移开
+
+    // 光标在中间不再拦截（2026-10-31 放宽）：新 harness 重新注入，删除照常执行。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 3   // 光标在中间（如双击核对后未回末尾）
     h.field.selectionLength = 0
+    h.ops.clear()
     h.asr.onFinal?("删除刚才的北京")
-    pumpMainRunLoop(0.3)
-    checkEqual(h.sink.timedMessages.last, "voiceEditCaretNotEnd", "targeted: 光标移开 toast key")
-    h.field.text = "北京和"
-    h.field.selectionLocation = 0
-    h.field.selectionLength = 3     // 已有选区
+    pumpMainRunLoop(0.6)
+    check(h.ops.list.contains("key:Backspace"), "targeted: 光标在中间仍执行删除")
+    checkEqual(h.field.text, "我去上班", "targeted: 光标在中间删除后字段")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted",
+               "targeted: 光标在中间成功 toast key")
+
+    // 选区非空不再拦截（2026-10-31 放宽）：双击核对目标词是常态动作。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 2   // 已选中「北京」
+    h.field.selectionLength = 2
+    h.ops.clear()
     h.asr.onFinal?("删除刚才的北京")
-    pumpMainRunLoop(0.3)
-    checkEqual(h.sink.timedMessages.last, "voiceEditSelectionPresent",
-               "targeted: 选区非空 toast key")
-    // 拒绝路径零注入（notFound/ambiguous/caret/selection 全部零；消歧成功 1 次）。
-    checkEqual(h.input.sentKeyCombos.count, 1, "targeted: 拒绝路径零注入（仅消歧成功 1 次）")
+    pumpMainRunLoop(0.6)
+    check(h.ops.list.contains("key:Backspace"), "targeted: 选区非空仍执行删除")
+    checkEqual(h.field.text, "我去上班", "targeted: 选区非空删除后字段")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted",
+               "targeted: 选区非空成功 toast key")
+
+    // 文本终验通过但光标恢复写未落地：仍判成功（恢复是 best-effort，不判未确认）。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    let swallowField = h.field
+    let swallowOps = h.ops
+    h.coordinator.writeTargetedSelection = { location, length in
+        swallowOps.record("select(\(location),\(length))")
+        if length == 0 { return true }   // 恢复写被目标应用吞掉：字段不移动
+        swallowField.selectionLocation = location
+        swallowField.selectionLength = length
+        return true
+    }
+    h.ops.clear()
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.8)   // 覆盖 0.2s 首验 + [0.05,0.1,0.2] 轮询窗
+    checkEqual(h.field.text, "我去上班", "targeted: 光标恢复未落地字段仍正确")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted",
+               "targeted: 光标恢复未落地仍成功")
 
     // 手工改变 remaining（旧最长前缀容错不得生效）→ fieldMismatch 类拒绝。
     h = makeTargetedHarness()
