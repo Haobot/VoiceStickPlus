@@ -10,10 +10,12 @@ namespace voicestick {
 DebugAudioRecorder::DebugAudioRecorder(bool enabled, std::filesystem::path directory)
     : enabled_(enabled), directory_(std::move(directory)) {}
 
-void DebugAudioRecorder::Start(std::optional<std::string> device_id, std::optional<std::uint32_t> session_id) {
+void DebugAudioRecorder::Start(std::optional<std::string> device_id, std::optional<std::uint32_t> session_id,
+                               std::string_view device_prefix) {
     if (!enabled_) return;
     current_device_id_ = std::move(device_id);
     current_session_id_ = session_id;
+    current_device_prefix_ = std::string(device_prefix);
     current_started_at_ = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     current_audio_.clear();
 }
@@ -51,6 +53,7 @@ void DebugAudioRecorder::Discard() {
 void DebugAudioRecorder::Reset() {
     current_device_id_.reset();
     current_session_id_.reset();
+    current_device_prefix_ = "VS-";
     current_started_at_ = 0;
     current_audio_.clear();
 }
@@ -60,7 +63,9 @@ std::filesystem::path DebugAudioRecorder::FilePath() const {
     localtime_s(&local_time, &current_started_at_);
     std::ostringstream name;
     name << std::put_time(&local_time, "%Y%m%d-%H%M%S");
-    name << "-VS-" << current_device_id_.value_or("unknown-device");
+    // 设备前缀按设备类参数化（对齐 macOS：StickS3 为 "VS-"，小米遥控器为 "RC-"），
+    // 调试会话页可从文件名区分会话来源。
+    name << "-" << current_device_prefix_ << current_device_id_.value_or("unknown-device");
     name << "-session-" << (current_session_id_ ? std::to_string(*current_session_id_) : "unknown");
     name << ".ogg";
     return directory_ / name.str();

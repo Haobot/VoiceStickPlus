@@ -4,18 +4,17 @@
 #include "key_spec.h"
 #include "log.h"
 #include "resource.h"
-#include "xiaomi_buttons.h"
 
 #include <CommCtrl.h>
-#include <objidl.h>
-#include <gdiplus.h>
+#include <shlwapi.h>
 #include <windowsx.h>
 
+#include <gdiplus.h>
+
 #include <algorithm>
-#include <cctype>
-#include <cstdio>
-#include <cstring>
+#include <iterator>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -37,20 +36,12 @@ std::wstring Utf16(std::string_view text) {
 std::string Utf8(const std::wstring& text) {
     if (text.empty()) return {};
     const int len = WideCharToMultiByte(CP_UTF8, 0, text.data(),
-                                        static_cast<int>(text.size()), nullptr, 0,
-                                        nullptr, nullptr);
+                                        static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
     if (len <= 0) return {};
     std::string out(static_cast<std::size_t>(len), '\0');
     WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
                         out.data(), len, nullptr, nullptr);
     return out;
-}
-
-std::string ToLowerAscii(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return text;
 }
 
 std::wstring GetEditText(HWND hwnd) {
@@ -75,51 +66,6 @@ std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> v
     }
     return text;
 }
-
-// 按键 ID → 本地化按键名。
-StringId ButtonNameId(std::string_view button_id) {
-    if (button_id == "power") return StringId::kXiaomiButtonPower;
-    if (button_id == "mic") return StringId::kXiaomiButtonMic;
-    if (button_id == "up") return StringId::kXiaomiButtonUp;
-    if (button_id == "down") return StringId::kXiaomiButtonDown;
-    if (button_id == "left") return StringId::kXiaomiButtonLeft;
-    if (button_id == "right") return StringId::kXiaomiButtonRight;
-    if (button_id == "ok") return StringId::kXiaomiButtonOk;
-    if (button_id == "back") return StringId::kXiaomiButtonBack;
-    if (button_id == "home") return StringId::kXiaomiButtonHome;
-    if (button_id == "volume_up") return StringId::kXiaomiButtonVolumeUp;
-    if (button_id == "volume_down") return StringId::kXiaomiButtonVolumeDown;
-    if (button_id == "menu") return StringId::kXiaomiButtonMenu;
-    return StringId::kXiaomiButtonTv;
-}
-
-// 画布热区：设计稿 600×1280 像素（与 scripts/make_xiaomi_remote_png.ps1 一致），
-// 坐标归一化到图片宽/高，半径相对图片宽。生成图改动时必须同步本表。
-struct CanvasButton {
-    std::string_view id;
-    double cx;
-    double cy;
-    double r;  // 相对图片宽
-};
-
-constexpr double kCanvasWidth = 600.0;
-constexpr double kCanvasHeight = 1280.0;
-
-constexpr CanvasButton kCanvasButtons[] = {
-    {"power", 300.0 / kCanvasWidth, 130.0 / kCanvasHeight, 55.0 / kCanvasWidth},
-    {"mic", 300.0 / kCanvasWidth, 250.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"up", 300.0 / kCanvasWidth, 350.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"left", 185.0 / kCanvasWidth, 470.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"ok", 300.0 / kCanvasWidth, 470.0 / kCanvasHeight, 62.0 / kCanvasWidth},
-    {"right", 415.0 / kCanvasWidth, 470.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"down", 300.0 / kCanvasWidth, 590.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"back", 210.0 / kCanvasWidth, 720.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"home", 390.0 / kCanvasWidth, 720.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"volume_up", 210.0 / kCanvasWidth, 840.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"volume_down", 390.0 / kCanvasWidth, 840.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"menu", 300.0 / kCanvasWidth, 960.0 / kCanvasHeight, 48.0 / kCanvasWidth},
-    {"tv", 300.0 / kCanvasWidth, 1080.0 / kCanvasHeight, 55.0 / kCanvasWidth},
-};
 
 void AlignDialogData(std::vector<BYTE>* buffer, std::size_t alignment) {
     while (buffer->size() % alignment != 0) buffer->push_back(0);
@@ -146,8 +92,9 @@ void AppendDialogWideString(std::vector<BYTE>* buffer, const wchar_t* text) {
     AppendDialogWord(buffer, 0);
 }
 
-HWND CreateLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h, HINSTANCE inst) {
-    return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
+HWND CreateLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h, HINSTANCE inst,
+                 DWORD extra_style = 0) {
+    return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT | extra_style,
                            x, y, w, h, parent, nullptr, inst, nullptr);
 }
 
@@ -158,26 +105,376 @@ HWND CreateButton(HWND parent, const wchar_t* text, int x, int y, int w, int h,
                            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), inst, nullptr);
 }
 
+HWND CreateEdit(HWND parent, int x, int y, int w, int h, UINT id, HINSTANCE inst) {
+    return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                           WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                           x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
+                           inst, nullptr);
+}
+
+// 选中键名称用粗体大字：基于 UI 字体放大 1.5 倍并加粗。
+HFONT CreateLargeBoldFont(HFONT base) {
+    LOGFONTW lf{};
+    if (GetObjectW(base, sizeof(lf), &lf) == 0) return nullptr;
+    lf.lfHeight = lf.lfHeight * 3 / 2;
+    lf.lfWeight = FW_BOLD;
+    return CreateFontIndirectW(&lf);
+}
+
+// 遥控器照片热区表（原始图片坐标系 228×889；oval=椭圆框高亮，rect=矩形框；
+// 命中检测按矩形包含即可，ok 与方向键边界相接处优先 ok）。
+struct Hotspot {
+    std::string_view id;  // xiaomi_buttons.h button_id；mic 不在可映射表内但可选中查看说明
+    int x1, y1, x2, y2;
+    bool oval;
+};
+
+constexpr int kImageWidth = 228;
+constexpr int kImageHeight = 889;
+
+constexpr Hotspot kHotspots[] = {
+    {"power",         36,  18, 114,  96, true},
+    {"mic",          116,  18, 192,  96, true},
+    {"up",            67, 102, 157, 152, false},
+    {"left",          18, 152,  67, 242, false},
+    {"ok",            67, 152, 157, 242, true},
+    {"right",        157, 152, 206, 242, false},
+    {"down",          67, 242, 157, 292, false},
+    {"back",          18, 303,  99, 382, true},
+    {"volume_up",    125, 300, 208, 393, false},
+    {"home",          18, 385,  99, 467, true},
+    {"volume_down",  125, 393, 208, 488, false},
+    {"menu",          18, 470,  99, 550, true},
+    {"tv",           125, 470, 208, 550, true},
+};
+// kHotspots 中 "ok" 的索引（命中检测优先）。
+constexpr int kOkHotspotIndex = 4;
+
+// RCDATA 内嵌 PNG → GDI+ Bitmap（FindResource/LoadResource/LockResource
+// + SHCreateMemStream 内存流解码）。失败返回 nullptr（调用方降级为无图）。
+std::unique_ptr<Gdiplus::Bitmap> LoadPngFromResource(HINSTANCE instance, int resource_id) {
+    // 工程未定义 UNICODE，RT_RCDATA 是 ANSI 宏；RCDATA 类型 ID 恒为 10，用宽版宏。
+    HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(resource_id), MAKEINTRESOURCEW(10));
+    if (!resource) return nullptr;
+    HGLOBAL handle = LoadResource(instance, resource);
+    if (!handle) return nullptr;
+    const void* data = LockResource(handle);
+    const DWORD size = SizeofResource(instance, resource);
+    if (!data || size == 0) return nullptr;
+    IStream* stream = SHCreateMemStream(static_cast<const BYTE*>(data), size);
+    if (!stream) return nullptr;
+    auto bitmap = std::make_unique<Gdiplus::Bitmap>(stream);
+    stream->Release();
+    if (bitmap->GetLastStatus() != Gdiplus::Ok) return nullptr;
+    return bitmap;
+}
+
+// button_id → 本地化按键名（13 个：kXiaomiMappableButtons 12 键 + mic）。
+StringId ButtonNameStringId(std::string_view button_id) {
+    if (button_id == "power") return StringId::kXiaomiButtonPower;
+    if (button_id == "mic") return StringId::kXiaomiButtonMic;
+    if (button_id == "up") return StringId::kXiaomiButtonUp;
+    if (button_id == "down") return StringId::kXiaomiButtonDown;
+    if (button_id == "left") return StringId::kXiaomiButtonLeft;
+    if (button_id == "right") return StringId::kXiaomiButtonRight;
+    if (button_id == "ok") return StringId::kXiaomiButtonOk;
+    if (button_id == "back") return StringId::kXiaomiButtonBack;
+    if (button_id == "home") return StringId::kXiaomiButtonHome;
+    if (button_id == "volume_up") return StringId::kXiaomiButtonVolumeUp;
+    if (button_id == "volume_down") return StringId::kXiaomiButtonVolumeDown;
+    if (button_id == "menu") return StringId::kXiaomiButtonMenu;
+    return StringId::kXiaomiButtonTv;
+}
+
+constexpr wchar_t kCanvasClassName[] = L"VoiceStickXiaomiRemoteCanvas";
+
 } // namespace
+
+// 遥控器照片画布：自绘子窗口（RegisterClassExW 一次性注册，双缓冲 GDI+ 绘制），
+// 图片等比缩放居中显示；热区悬停高亮 + 手型光标，点击命中后经 WM_COMMAND
+//（LOWORD=控件 ID，HIWORD=热区索引）通知对话框。
+class XiaomiRemoteCanvas {
+public:
+    XiaomiRemoteCanvas() = default;
+    ~XiaomiRemoteCanvas() {
+        if (hwnd_) DestroyWindow(hwnd_);
+    }
+    XiaomiRemoteCanvas(const XiaomiRemoteCanvas&) = delete;
+    XiaomiRemoteCanvas& operator=(const XiaomiRemoteCanvas&) = delete;
+
+    HWND Create(HINSTANCE instance, HWND parent, int x, int y, int w, int h, UINT control_id) {
+        EnsureClassRegistered(instance);
+        control_id_ = control_id;
+        CreateWindowExW(0, kCanvasClassName, L"", WS_CHILD | WS_VISIBLE,
+                        x, y, w, h, parent,
+                        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(control_id)),
+                        instance, this);
+        return hwnd_;
+    }
+
+    // 非拥有指针：对话框持有 Bitmap 所有权（画布窗口先于 Bitmap 销毁，见 Show()）。
+    void SetImage(Gdiplus::Bitmap* image) {
+        image_ = image;
+        Invalidate();
+    }
+
+    void SetSelected(int index) {
+        selected_ = index;
+        Invalidate();
+    }
+
+    void SetHint(std::wstring text, UiLanguage language) {
+        hint_ = std::move(text);
+        language_ = language;
+        Invalidate();
+    }
+
+    int selected() const { return selected_; }
+
+private:
+    static void EnsureClassRegistered(HINSTANCE instance) {
+        static bool registered = false;
+        if (registered) return;
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = XiaomiRemoteCanvas::WndProc;
+        wc.hInstance = instance;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = kCanvasClassName;
+        if (RegisterClassExW(&wc) != 0) registered = true;
+    }
+
+    static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
+        auto* canvas = reinterpret_cast<XiaomiRemoteCanvas*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (message == WM_NCCREATE) {
+            const auto* cs = reinterpret_cast<CREATESTRUCTW*>(l_param);
+            canvas = static_cast<XiaomiRemoteCanvas*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(canvas));
+            canvas->hwnd_ = hwnd;
+        }
+        return canvas ? canvas->HandleMessage(message, w_param, l_param)
+                      : DefWindowProcW(hwnd, message, w_param, l_param);
+    }
+
+    LRESULT HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
+        switch (message) {
+        case WM_PAINT:
+            OnPaint();
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;  // 双缓冲自绘，不擦背景
+        case WM_MOUSEMOVE: {
+            if (!tracking_leave_) {
+                TRACKMOUSEEVENT tme{};
+                tme.cbSize = sizeof(tme);
+                tme.dwFlags = TME_LEAVE;
+                tme.hwndTrack = hwnd_;
+                TrackMouseEvent(&tme);
+                tracking_leave_ = true;
+            }
+            const int hover = HitTest({GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)});
+            if (hover != hover_) {
+                hover_ = hover;
+                Invalidate();
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            tracking_leave_ = false;
+            if (hover_ >= 0) {
+                hover_ = -1;
+                Invalidate();
+            }
+            return 0;
+        case WM_LBUTTONDOWN: {
+            const int hit = HitTest({GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)});
+            if (hit >= 0) {
+                selected_ = hit;
+                Invalidate();
+                SendMessageW(GetParent(hwnd_), WM_COMMAND,
+                             MAKEWPARAM(control_id_, static_cast<WPARAM>(hit)),
+                             reinterpret_cast<LPARAM>(hwnd_));
+            }
+            return 0;
+        }
+        case WM_SETCURSOR:
+            if (LOWORD(l_param) == HTCLIENT) {
+                POINT pt{};
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd_, &pt);
+                SetCursor(LoadCursor(nullptr, HitTest(pt) >= 0 ? IDC_HAND : IDC_ARROW));
+                return TRUE;
+            }
+            break;
+        case WM_DESTROY:
+            hwnd_ = nullptr;
+            return 0;
+        default:
+            break;
+        }
+        return DefWindowProcW(hwnd_, message, w_param, l_param);
+    }
+
+    void Invalidate() {
+        if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    // 图片显示区域：等比缩放到可用高度，水平居中；底部留提示文字条。
+    bool ComputeDisplay(float* origin_x, float* origin_y, float* scale) const {
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        const UINT dpi = GetDpiForHwnd(hwnd_);
+        const float margin = static_cast<float>(ScalePx(6, dpi));
+        const float hint_h = static_cast<float>(ScalePx(24, dpi));
+        const float avail_h = static_cast<float>(client.bottom) - hint_h - margin * 2.0f;
+        if (avail_h <= 0.0f) return false;
+        *scale = avail_h / static_cast<float>(kImageHeight);
+        const float display_w = static_cast<float>(kImageWidth) * *scale;
+        *origin_x = (static_cast<float>(client.right) - display_w) / 2.0f;
+        *origin_y = margin;
+        return true;
+    }
+
+    int HitTest(POINT pt) const {
+        float origin_x = 0.0f, origin_y = 0.0f, scale = 1.0f;
+        if (!ComputeDisplay(&origin_x, &origin_y, &scale)) return -1;
+        const float ix = (static_cast<float>(pt.x) - origin_x) / scale;
+        const float iy = (static_cast<float>(pt.y) - origin_y) / scale;
+        if (ix < 0.0f || ix >= kImageWidth || iy < 0.0f || iy >= kImageHeight) return -1;
+        const auto contains = [ix, iy](const Hotspot& hs) {
+            return ix >= hs.x1 && ix <= hs.x2 && iy >= hs.y1 && iy <= hs.y2;
+        };
+        // ok 优先：ok 与方向键热区边界相接，重叠命中时取 ok。
+        if (contains(kHotspots[kOkHotspotIndex])) return kOkHotspotIndex;
+        for (int i = 0; i < static_cast<int>(std::size(kHotspots)); ++i) {
+            if (i != kOkHotspotIndex && contains(kHotspots[i])) return i;
+        }
+        return -1;
+    }
+
+    void DrawOutline(Gdiplus::Graphics* graphics, int index, bool selected,
+                     float origin_x, float origin_y, float scale, UINT dpi) const {
+        const Hotspot& hs = kHotspots[index];
+        // 选中 3px 蓝（RGB(22,119,255)），悬停 2px 浅蓝。
+        Gdiplus::Pen pen(selected ? Gdiplus::Color(255, 22, 119, 255)
+                                  : Gdiplus::Color(255, 145, 200, 255),
+                         static_cast<float>(ScalePx(selected ? 3 : 2, dpi)));
+        const float x = origin_x + hs.x1 * scale;
+        const float y = origin_y + hs.y1 * scale;
+        const float w = (hs.x2 - hs.x1) * scale;
+        const float h = (hs.y2 - hs.y1) * scale;
+        if (hs.oval) {
+            graphics->DrawEllipse(&pen, x, y, w, h);
+        } else {
+            graphics->DrawRectangle(&pen, x, y, w, h);
+        }
+    }
+
+    void OnPaint() {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd_, &ps);
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+
+        HDC mem_dc = CreateCompatibleDC(hdc);
+        HBITMAP mem_bitmap = CreateCompatibleBitmap(hdc, width, height);
+        HGDIOBJ old_bitmap = SelectObject(mem_dc, mem_bitmap);
+        {
+            Gdiplus::Graphics graphics(mem_dc);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+            graphics.Clear(Gdiplus::Color(255, 255, 255, 255));
+
+            const UINT dpi = GetDpiForHwnd(hwnd_);
+            float origin_x = 0.0f, origin_y = 0.0f, scale = 1.0f;
+            if (ComputeDisplay(&origin_x, &origin_y, &scale) && image_) {
+                graphics.DrawImage(image_, origin_x, origin_y,
+                                   static_cast<float>(kImageWidth) * scale,
+                                   static_cast<float>(kImageHeight) * scale);
+            }
+            if (hover_ >= 0 && hover_ != selected_) {
+                DrawOutline(&graphics, hover_, false, origin_x, origin_y, scale, dpi);
+            }
+            if (selected_ >= 0) {
+                DrawOutline(&graphics, selected_, true, origin_x, origin_y, scale, dpi);
+            }
+
+            // 底部提示（GDI+ 不做字体回退链接，中文界面显式用雅黑避免方框）。
+            if (!hint_.empty()) {
+                const float hint_h = static_cast<float>(ScalePx(24, dpi));
+                Gdiplus::FontFamily font_family(
+                    language_ == UiLanguage::kSimplifiedChinese ? L"Microsoft YaHei" : L"Segoe UI");
+                Gdiplus::Font font(&font_family, static_cast<float>(ScalePx(11, dpi)),
+                                   Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+                Gdiplus::SolidBrush brush(Gdiplus::Color(255, 110, 110, 110));
+                Gdiplus::StringFormat center_format;
+                center_format.SetAlignment(Gdiplus::StringAlignmentCenter);
+                center_format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                graphics.DrawString(hint_.c_str(), -1, &font,
+                                    Gdiplus::RectF(0.0f, static_cast<float>(height) - hint_h,
+                                                   static_cast<float>(width), hint_h),
+                                    &center_format, &brush);
+            }
+        }
+        BitBlt(hdc, 0, 0, width, height, mem_dc, 0, 0, SRCCOPY);
+        SelectObject(mem_dc, old_bitmap);
+        DeleteObject(mem_bitmap);
+        DeleteDC(mem_dc);
+        EndPaint(hwnd_, &ps);
+    }
+
+    HWND hwnd_ = nullptr;
+    UINT control_id_ = 0;
+    Gdiplus::Bitmap* image_ = nullptr;
+    int hover_ = -1;
+    int selected_ = -1;
+    bool tracking_leave_ = false;
+    std::wstring hint_;
+    UiLanguage language_ = UiLanguage::kSystem;
+};
 
 XiaomiKeymapDialog::XiaomiKeymapDialog(HINSTANCE instance, HWND parent,
                                        std::string device_id,
                                        XiaomiSettings current,
                                        XiaomiSettings defaults,
-                                       UiLanguage language)
+                                       UiLanguage language,
+                                       int repeat_interval_ms)
     : instance_(instance), parent_(parent), device_id_(std::move(device_id)),
       current_(std::move(current)), defaults_(std::move(defaults)),
-      language_(language) {}
+      language_(language), working_key_map_(current_.key_map),
+      repeat_interval_ms_(repeat_interval_ms) {}
 
 XiaomiKeymapDialog::~XiaomiKeymapDialog() {
+    capture_.Cancel();
     if (hwnd_) DestroyWindow(hwnd_);
-    if (ui_font_) DeleteObject(ui_font_);
-    if (title_font_) DeleteObject(title_font_);
+    if (ui_font_) {
+        DeleteObject(ui_font_);
+        ui_font_ = nullptr;
+    }
+    if (name_font_) {
+        DeleteObject(name_font_);
+        name_font_ = nullptr;
+    }
 }
 
 void XiaomiKeymapDialog::Show() {
+    // GDI+ 由本对话框自行初始化/配对关闭（win32_app 不持有 GDI+；
+    // 参照 battery_monitor_dialog 的做法）。失败则降级为无图。
+    Gdiplus::GdiplusStartupInput gdiplus_input;
+    if (Gdiplus::GdiplusStartup(&gdiplus_token_, &gdiplus_input, nullptr) != Gdiplus::Ok) {
+        gdiplus_token_ = 0;
+    }
     DialogBoxIndirectParamW(instance_, BuildDialogTemplate(), parent_,
                             XiaomiKeymapDialog::DialogProc, reinterpret_cast<LPARAM>(this));
+    // GDI+ 对象必须先于 GdiplusShutdown 释放。
+    image_.reset();
+    if (gdiplus_token_ != 0) {
+        Gdiplus::GdiplusShutdown(gdiplus_token_);
+        gdiplus_token_ = 0;
+    }
 }
 
 INT_PTR CALLBACK XiaomiKeymapDialog::DialogProc(HWND hwnd, UINT message, WPARAM w_param,
@@ -188,39 +485,10 @@ INT_PTR CALLBACK XiaomiKeymapDialog::DialogProc(HWND hwnd, UINT message, WPARAM 
         SetWindowLongPtrW(hwnd, DWLP_USER, reinterpret_cast<LONG_PTR>(dialog));
         dialog->hwnd_ = hwnd;
         dialog->dpi_ = GetDpiForHwnd(hwnd);
-        Gdiplus::GdiplusStartupInput gdiplus_input;
-        if (Gdiplus::GdiplusStartup(&dialog->gdiplus_token_, &gdiplus_input, nullptr) ==
-            Gdiplus::Ok) {
-            // RCDATA 内嵌 PNG → 内存流 → GDI+ 解码（图片随 exe 分发，无外部依赖）。
-            if (const HRSRC res = FindResourceW(dialog->instance_,
-                                                MAKEINTRESOURCEW(IDR_XIAOMI_REMOTE_PNG),
-                                                MAKEINTRESOURCEW(10) /* RT_RCDATA */)) {
-                if (const HGLOBAL handle = LoadResource(dialog->instance_, res)) {
-                    const void* data = LockResource(handle);
-                    const DWORD size = SizeofResource(dialog->instance_, res);
-                    if (data && size > 0) {
-                        if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, size)) {
-                            if (void* dst = GlobalLock(mem)) {
-                                std::memcpy(dst, data, size);
-                                GlobalUnlock(mem);
-                                IStream* stream = nullptr;
-                                if (SUCCEEDED(CreateStreamOnHGlobal(mem, TRUE, &stream))) {
-                                    dialog->remote_image_ = Gdiplus::Bitmap::FromStream(stream);
-                                    stream->Release();
-                                } else {
-                                    GlobalFree(mem);
-                                }
-                            } else {
-                                GlobalFree(mem);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        SetWindowTextW(hwnd, FormatText(TrW(StringId::kXiaomiKeymapTitle,
-                                            EffectiveUiLanguage(dialog->language_)),
-                                        {Utf16(dialog->device_id_)}).c_str());
+        const auto language = EffectiveUiLanguage(dialog->language_);
+        dialog->title_ = FormatText(TrW(StringId::kXiaomiKeymapTitle, language),
+                                    {Utf16(dialog->device_id_)});
+        SetWindowTextW(hwnd, dialog->title_.c_str());
         const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
         const DWORD ex_style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
         RECT desired{0, 0, dialog->Dp(kClientWidth), dialog->Dp(kClientHeight)};
@@ -228,7 +496,6 @@ INT_PTR CALLBACK XiaomiKeymapDialog::DialogProc(HWND hwnd, UINT message, WPARAM 
         SetWindowPos(hwnd, nullptr, 0, 0, desired.right - desired.left,
                      desired.bottom - desired.top, SWP_NOMOVE | SWP_NOZORDER);
         dialog->BuildControls();
-        dialog->SelectButton("power");
         RECT window_rect{};
         GetWindowRect(hwnd, &window_rect);
         const int window_width = window_rect.right - window_rect.left;
@@ -246,6 +513,9 @@ INT_PTR XiaomiKeymapDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
     switch (message) {
     case WM_COMMAND:
         switch (LOWORD(w_param)) {
+        case kIdCanvas:
+            OnCanvasButtonClicked(static_cast<int>(HIWORD(w_param)));
+            return TRUE;
         case kIdCapture:
             StartCapture();
             return TRUE;
@@ -253,41 +523,78 @@ INT_PTR XiaomiKeymapDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l
             ApplyManualInput();
             return TRUE;
         case kIdClear:
-            ApplyMapping(selected_button_, "");
+            ClearMapping();
             return TRUE;
-        case kIdClose:
-            EndDialog(hwnd_, IDOK);
+        case kIdRestoreDefaults:
+            RestoreDefaults();
+            return TRUE;
+        case kIdSave:
+            SaveSettings();
+            return TRUE;
+        case kIdCancel:
+            capture_.Cancel();
+            EndDialog(hwnd_, IDCANCEL);
+            return TRUE;
+        case kIdHidTapToggle:
+            if (HIWORD(w_param) == BN_CLICKED && hid_tap_toggle_) {
+                const bool checked = SendMessageW(hid_tap_toggle_, BM_GETCHECK, 0, 0) ==
+                                     BST_CHECKED;
+                current_.hid_tap_enabled = checked;
+                if (on_hid_tap_changed) on_hid_tap_changed(device_id_, checked);
+                RefreshTapStateLabel();
+            }
             return TRUE;
         }
         break;
-    case WM_LBUTTONUP: {
-        const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
-        std::string button_id;
-        if (!capturing_ && HitTestCanvas(point, &button_id)) {
-            SelectButton(button_id);
-        }
-        return TRUE;
-    }
-    case WM_PAINT: {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd_, &ps);
-        PaintCanvas(dc);
-        EndPaint(hwnd_, &ps);
-        return TRUE;
-    }
     case WM_CLOSE:
-        EndDialog(hwnd_, IDOK);
+        capture_.Cancel();
+        EndDialog(hwnd_, IDCANCEL);
         return TRUE;
-    case WM_DESTROY: {
-        delete static_cast<Gdiplus::Image*>(remote_image_);
-        remote_image_ = nullptr;
-        if (gdiplus_token_) {
-            Gdiplus::GdiplusShutdown(gdiplus_token_);
-            gdiplus_token_ = 0;
+    case WM_TIMER:
+        if (w_param == kCaptureHintTimerId) {
+            // 录入期间长时间无键盘事件：大概率前台是提权窗口（UIPI 隔离钩子事件）。
+            // 只提示一次，不中断捕获。
+            KillTimer(hwnd_, kCaptureHintTimerId);
+            if (capture_.active()) {
+                LogApp("XiaomiKeymapDialog: capture hint shown (no keyboard event within " +
+                       std::to_string(kCaptureHintTimeoutMs) + "ms)");
+                const auto language = EffectiveUiLanguage(language_);
+                MessageBoxW(hwnd_,
+                            TrW(StringId::kXiaomiKeymapCaptureHintBody, language).c_str(),
+                            TrW(StringId::kXiaomiKeymapCaptureHintTitle, language).c_str(),
+                            MB_OK | MB_ICONINFORMATION);
+            }
+            return TRUE;
         }
+        if (w_param == kTapStateTimerId) {
+            RefreshTapStateLabel();
+            return TRUE;
+        }
+        break;
+    case WM_HSCROLL:
+        if (reinterpret_cast<HWND>(l_param) == repeat_slider_) {
+            OnRepeatSliderScroll(static_cast<int>(LOWORD(w_param)));
+            return TRUE;
+        }
+        break;
+    case WM_CTLCOLORSTATIC: {
+        const auto control = reinterpret_cast<HWND>(l_param);
+        if (std::find(label_controls_.begin(), label_controls_.end(), control) !=
+            label_controls_.end()) {
+            auto dc = reinterpret_cast<HDC>(w_param);
+            SetBkMode(dc, OPAQUE);
+            SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+        break;
+    }
+    case WM_DESTROY:
+        StopCaptureHintTimer();
+        KillTimer(hwnd_, kTapStateTimerId);
+        capture_.Cancel();
         hwnd_ = nullptr;
         return TRUE;
-    }
     default:
         break;
     }
@@ -304,8 +611,8 @@ LPCDLGTEMPLATE XiaomiKeymapDialog::BuildDialogTemplate() {
     dialog_template.cdit = 0;
     dialog_template.x = 0;
     dialog_template.y = 0;
-    dialog_template.cx = 400;
-    dialog_template.cy = 300;
+    dialog_template.cx = 300;
+    dialog_template.cy = 210;
 
     AppendDialogData(&dialog_template_, &dialog_template, sizeof(dialog_template));
     AppendDialogWord(&dialog_template_, 0);
@@ -323,266 +630,299 @@ void XiaomiKeymapDialog::BuildControls() {
     InitCommonControlsEx(&icc);
 
     ui_font_ = CreateUiFont(dpi_);
-    title_font_ = CreateUiFontBold(dpi_);
+    name_font_ = CreateLargeBoldFont(ui_font_);
     const auto language = EffectiveUiLanguage(language_);
 
-    button_name_label_ = CreateLabel(hwnd_, L"", 0, 0, 0, 0, instance_);
-    mapping_value_label_ = CreateLabel(hwnd_, L"", 0, 0, 0, 0, instance_);
-    mic_note_label_ = CreateLabel(hwnd_, TrW(StringId::kXiaomiKeymapMicNote, language).c_str(),
-                                  0, 0, 0, 0, instance_);
-    capture_button_ = CreateButton(
+    auto remember = [&](HWND control) {
+        if (control) all_controls_.push_back(control);
+        return control;
+    };
+    auto remember_label = [&](HWND control) {
+        if (control) label_controls_.push_back(control);
+        return remember(control);
+    };
+
+    // ===== 左侧：遥控器照片画布 =====
+    canvas_ = std::make_unique<XiaomiRemoteCanvas>();
+    canvas_->Create(instance_, hwnd_, Dp(10), Dp(10), Dp(180), Dp(600), kIdCanvas);
+    canvas_->SetHint(TrW(StringId::kXiaomiKeymapClickHint, language), language);
+    if (gdiplus_token_ != 0) {
+        image_ = LoadPngFromResource(instance_, IDR_XIAOMI_REMOTE_PNG);
+        if (image_) canvas_->SetImage(image_.get());
+    }
+
+    // ===== 右侧：选中键信息与映射编辑 =====
+    const int rx = Dp(210);
+    const int rw = Dp(kClientWidth) - rx - Dp(10);
+
+    key_name_label_ = remember_label(CreateLabel(
+        hwnd_, L"", rx, Dp(12), rw, Dp(32), instance_));
+    mapping_label_ = remember_label(CreateLabel(
+        hwnd_, TrW(StringId::kXiaomiKeymapCurrentMapping, language).c_str(),
+        rx, Dp(56), rw, Dp(20), instance_));
+    mapping_value_ = remember_label(CreateLabel(
+        hwnd_, L"", rx, Dp(78), rw, Dp(22), instance_));
+    capture_button_ = remember(CreateButton(
         hwnd_, TrW(StringId::kXiaomiKeymapCapture, language).c_str(),
-        0, 0, 0, 0, kIdCapture, instance_);
-    manual_hint_label_ = CreateLabel(
+        rx, Dp(112), rw, Dp(32), kIdCapture, instance_));
+    manual_hint_label_ = remember_label(CreateLabel(
         hwnd_, TrW(StringId::kXiaomiKeymapManualHint, language).c_str(),
-        0, 0, 0, 0, instance_);
-    manual_edit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                   WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                   0, 0, 0, 0, hwnd_,
-                                   reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kIdApply)),
-                                   instance_, nullptr);
-    apply_button_ = CreateButton(hwnd_, TrW(StringId::kXiaomiKeymapApply, language).c_str(),
-                                 0, 0, 0, 0, kIdApply, instance_, BS_DEFPUSHBUTTON);
-    clear_button_ = CreateButton(hwnd_, TrW(StringId::kXiaomiKeymapClear, language).c_str(),
-                                 0, 0, 0, 0, kIdClear, instance_);
-    click_hint_label_ = CreateLabel(hwnd_, TrW(StringId::kXiaomiKeymapClickHint, language).c_str(),
-                                    0, 0, 0, 0, instance_);
-    close_button_ = CreateButton(hwnd_, TrW(StringId::kClose, language).c_str(),
-                                 0, 0, 0, 0, kIdClose, instance_);
+        rx, Dp(156), rw, Dp(20), instance_));
+    manual_edit_ = remember(CreateEdit(
+        hwnd_, rx, Dp(178), rw - Dp(100), Dp(24), kIdManualEdit, instance_));
+    apply_button_ = remember(CreateButton(
+        hwnd_, TrW(StringId::kXiaomiKeymapApply, language).c_str(),
+        rx + rw - Dp(90), Dp(178), Dp(90), Dp(24), kIdApply, instance_));
+    clear_button_ = remember(CreateButton(
+        hwnd_, TrW(StringId::kXiaomiKeymapClear, language).c_str(),
+        rx, Dp(216), Dp(150), Dp(30), kIdClear, instance_));
+    // mic 键说明文案：仅 mic 选中时显示（创建时不带 WS_VISIBLE）。
+    mic_note_label_ = CreateWindowExW(
+        0, L"STATIC", TrW(StringId::kXiaomiKeymapMicNote, language).c_str(),
+        WS_CHILD | SS_LEFT, rx, Dp(56), rw, Dp(190), hwnd_, nullptr, instance_, nullptr);
+    remember_label(mic_note_label_);
 
-    // 对话框背景（COLOR_BTNFACE）上绘制静态文本。
-    for (HWND control : {button_name_label_, mapping_value_label_, mic_note_label_,
-                         manual_hint_label_, click_hint_label_}) {
+    // ===== 增强按键识别（usage tap）：开关 + 说明 + 链路状态行 =====
+    // 右侧面板下半区（mapping 编辑区之下）。开关即时生效（on_hid_tap_changed
+    // 保存并同步钩子），不随「保存」走——UAC 授权流程需要即时反馈。
+    hid_tap_toggle_ = remember(CreateButton(
+        hwnd_, TrW(StringId::kXiaomiHidTapToggleLabel, language).c_str(),
+        rx, Dp(300), rw, Dp(28), kIdHidTapToggle, instance_, BS_AUTOCHECKBOX));
+    SendMessageW(hid_tap_toggle_, BM_SETCHECK,
+                 current_.hid_tap_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    hid_tap_hint_label_ = remember_label(CreateLabel(
+        hwnd_, TrW(StringId::kXiaomiHidTapHint, language).c_str(),
+        rx, Dp(332), rw, Dp(56), instance_));
+    hid_tap_state_label_ = remember_label(CreateLabel(
+        hwnd_, L"", rx, Dp(392), rw, Dp(20), instance_));
+    RefreshTapStateLabel();
+    SetTimer(hwnd_, kTapStateTimerId, kTapStateTimerMs, nullptr);
+
+    // ===== 网关长按连发间隔滑块：即时生效（on_repeat_interval_changed 保存
+    // 并热更连发状态机），不随「保存」走。拖动中只刷数值标签，松手/离散步进
+    // 才触发回调（避免逐 tick 落盘）。范围 [30,300]ms，与连发状态机钳位一致。
+    repeat_label_ = remember_label(CreateLabel(
+        hwnd_, L"", rx, Dp(424), rw, Dp(20), instance_));
+    repeat_slider_ = remember(CreateWindowExW(
+        0, TRACKBAR_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
+        rx, Dp(446), rw, Dp(30), hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdRepeatSlider)),
+        instance_, nullptr));
+    SendMessageW(repeat_slider_, TBM_SETRANGE, TRUE,
+                 MAKELPARAM(kRepeatSliderMin, kRepeatSliderMax));
+    SendMessageW(repeat_slider_, TBM_SETTICFREQ, 30, 0);
+    SendMessageW(repeat_slider_, TBM_SETPOS, TRUE,
+                 static_cast<LPARAM>(repeat_interval_ms_));
+    RefreshRepeatIntervalLabel();
+
+    const int btn_y = Dp(kClientHeight) - Dp(45);
+    restore_defaults_button_ = remember(CreateButton(
+        hwnd_, TrW(StringId::kEncoderSettingsRestoreDefaults, language).c_str(),
+        Dp(10), btn_y, Dp(110), Dp(30), kIdRestoreDefaults, instance_));
+    save_button_ = remember(CreateButton(
+        hwnd_, TrW(StringId::kSave, language).c_str(),
+        Dp(kClientWidth - 200), btn_y, Dp(80), Dp(30), kIdSave, instance_, BS_DEFPUSHBUTTON));
+    cancel_button_ = remember(CreateButton(
+        hwnd_, TrW(StringId::kCancel, language).c_str(),
+        Dp(kClientWidth - 105), btn_y, Dp(80), Dp(30), kIdCancel, instance_));
+
+    for (HWND control : all_controls_) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
     }
-    SendMessageW(button_name_label_, WM_SETFONT, reinterpret_cast<WPARAM>(title_font_), TRUE);
-    for (HWND control : {capture_button_, apply_button_, clear_button_, close_button_}) {
-        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
+    if (name_font_ && key_name_label_) {
+        SendMessageW(key_name_label_, WM_SETFONT, reinterpret_cast<WPARAM>(name_font_), TRUE);
     }
-    SendMessageW(manual_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
 
-    // 编辑框回车 = 应用。
-    SendMessageW(manual_edit_, EM_SETCUEBANNER, TRUE,
-                 reinterpret_cast<LPARAM>(L"ctrl+shift+v"));
-
-    Relayout();
+    // 默认选中第一个按键（power），给出即时反馈。
+    selected_hotspot_ = 0;
+    canvas_->SetSelected(0);
+    RefreshSidePanel();
 }
 
-void XiaomiKeymapDialog::Relayout() {
-    if (!hwnd_) return;
-
-    // 左侧画布：图片 600:1280（宽:高），contain 适配 150×340 区域后垂直居中。
-    const int canvas_x = Dp(10);
-    const int canvas_y = Dp(10);
-    const int canvas_w = Dp(150);
-    const int canvas_h = Dp(340);
-    const int image_w = canvas_w;
-    const int image_h = static_cast<int>(image_w * kCanvasHeight / kCanvasWidth);
-    image_rect_ = {canvas_x, canvas_y + (canvas_h - image_h) / 2, image_w, image_h};
-
-    const int right_x = Dp(175);
-    const int right_w = Dp(kClientWidth - 185);
-
-    SetWindowPos(button_name_label_, nullptr, right_x, Dp(42), right_w, Dp(26),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(mapping_value_label_, nullptr, right_x, Dp(72), right_w, Dp(20),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(mic_note_label_, nullptr, right_x, Dp(100), right_w, Dp(48),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(capture_button_, nullptr, right_x, Dp(160), Dp(160), Dp(32),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(manual_hint_label_, nullptr, right_x, Dp(206), right_w, Dp(20),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(manual_edit_, nullptr, right_x, Dp(230), right_w - Dp(115), Dp(26),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(apply_button_, nullptr, Dp(kClientWidth - 105), Dp(228), Dp(95), Dp(30),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(clear_button_, nullptr, right_x, Dp(272), Dp(160), Dp(32),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(click_hint_label_, nullptr, canvas_x, Dp(358), canvas_w, Dp(40),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowPos(close_button_, nullptr, Dp(kClientWidth - 105), Dp(390), Dp(95), Dp(30),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
+void XiaomiKeymapDialog::SetDeviceReceipt(const std::wstring& text) {
+    // D10b：回显设备侧真实路由表（打开预填 + 回执推送两用）。
+    if (gateway_receipt_label_ == nullptr) return;
+    SetWindowTextW(gateway_receipt_label_, text.c_str());
 }
 
-void XiaomiKeymapDialog::PaintCanvas(HDC dc) {
-    RECT client{};
-    GetClientRect(hwnd_, &client);
-    FillRect(dc, &client, reinterpret_cast<HBRUSH>(GetSysColorBrush(COLOR_BTNFACE)));
-
-    // 画布底板：浅色内嵌矩形，与对话框背景区分。
-    const int canvas_x = Dp(10);
-    const int canvas_y = Dp(10);
-    const int canvas_w = Dp(150);
-    const int canvas_h = Dp(340);
-    RECT canvas_rect{canvas_x, canvas_y, canvas_x + canvas_w, canvas_y + canvas_h};
-    FillRect(dc, &canvas_rect, reinterpret_cast<HBRUSH>(GetSysColorBrush(COLOR_WINDOW)));
-
-    if (!remote_image_) return;
-    auto* image = static_cast<Gdiplus::Image*>(remote_image_);
-    Gdiplus::Graphics graphics(dc);
-    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-    graphics.DrawImage(image,
-                       static_cast<float>(image_rect_.left),
-                       static_cast<float>(image_rect_.top),
-                       static_cast<float>(image_rect_.right - image_rect_.left),
-                       static_cast<float>(image_rect_.bottom - image_rect_.top));
-
-    // 选中按键：圆角描边高亮。
-    for (const CanvasButton& button : kCanvasButtons) {
-        if (button.id != selected_button_) continue;
-        Gdiplus::Pen pen(Gdiplus::Color(255, 0, 120, 215), 3.0f);
-        const double scale_x = static_cast<double>(image_rect_.right - image_rect_.left);
-        const double scale_y = static_cast<double>(image_rect_.bottom - image_rect_.top);
-        const double center_x = image_rect_.left + button.cx * scale_x;
-        const double center_y = image_rect_.top + button.cy * scale_y;
-        const double radius = button.r * scale_x + 3.0;
-        graphics.DrawEllipse(&pen, static_cast<float>(center_x - radius),
-                             static_cast<float>(center_y - radius),
-                             static_cast<float>(radius * 2.0),
-                             static_cast<float>(radius * 2.0));
-    }
-}
-
-bool XiaomiKeymapDialog::HitTestCanvas(POINT point, std::string* button_id) const {
-    if (point.x < image_rect_.left || point.x >= image_rect_.right ||
-        point.y < image_rect_.top || point.y >= image_rect_.bottom) {
-        return false;
-    }
-    // 客户区坐标 → 设计稿像素（600×1280），与热区表同尺度比较。
-    const double scale_x = static_cast<double>(image_rect_.right - image_rect_.left);
-    const double scale_y = static_cast<double>(image_rect_.bottom - image_rect_.top);
-    const double x = (point.x - image_rect_.left) / scale_x * kCanvasWidth;
-    const double y = (point.y - image_rect_.top) / scale_y * kCanvasHeight;
-    const CanvasButton* best = nullptr;
-    double best_dist = 0.0;
-    for (const CanvasButton& button : kCanvasButtons) {
-        const double cx = button.cx * kCanvasWidth;
-        const double cy = button.cy * kCanvasHeight;
-        const double r = button.r * kCanvasWidth * 1.25;  // 宽松 25% 命中余量
-        const double dist = std::hypot(x - cx, y - cy);
-        if (dist <= r && (!best || dist < best_dist)) {
-            best = &button;
-            best_dist = dist;
-        }
-    }
-    if (!best) return false;
-    *button_id = std::string(best->id);
-    return true;
-}
-
-void XiaomiKeymapDialog::SelectButton(const std::string& button_id) {
-    selected_button_ = button_id;
-    UpdateRightPanel();
-    // 重绘画布高亮。
-    RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-}
-
-void XiaomiKeymapDialog::UpdateRightPanel() {
+void XiaomiKeymapDialog::RefreshRepeatIntervalLabel() {
+    if (repeat_label_ == nullptr) return;
     const auto language = EffectiveUiLanguage(language_);
-    const bool is_mic = selected_button_ == "mic";
+    const std::wstring text =
+        TrW(StringId::kXiaomiGatewayRepeatLabel, language) + L": " +
+        std::to_wstring(repeat_interval_ms_) + L" ms";
+    SetWindowTextW(repeat_label_, text.c_str());
+}
 
-    SetWindowTextW(button_name_label_, TrW(ButtonNameId(selected_button_), language).c_str());
-
-    // 当前映射：key_map 空串/缺失 → 未映射（系统原生行为）。
-    std::wstring mapping_text;
-    if (!is_mic) {
-        const auto it = current_.key_map.find(selected_button_);
-        if (it != current_.key_map.end() && !it->second.empty()) {
-            if (const auto spec = ParseKeySpec(it->second)) {
-                mapping_text = Utf16(spec->display_text);
-            }
-        }
+void XiaomiKeymapDialog::OnRepeatSliderScroll(int scroll_code) {
+    const int pos = static_cast<int>(
+        SendMessageW(repeat_slider_, TBM_GETPOS, 0, 0));
+    repeat_interval_ms_ = pos;
+    RefreshRepeatIntervalLabel();
+    // 拖动中（TB_THUMBTRACK）只刷标签；松手（TB_ENDTRACK）与键盘/翻页等
+    // 离散步进才触发回调（保存配置 + 热更连发状态机）。
+    if (scroll_code == TB_THUMBTRACK) return;
+    if (on_repeat_interval_changed) {
+        on_repeat_interval_changed(repeat_interval_ms_);
     }
-    if (mapping_text.empty()) {
-        mapping_text = TrW(StringId::kXiaomiKeymapNotMapped, language);
-    }
-    SetWindowTextW(mapping_value_label_, mapping_text.c_str());
+}
 
+void XiaomiKeymapDialog::OnCanvasButtonClicked(int hotspot_index) {
+    if (hotspot_index < 0 || hotspot_index >= static_cast<int>(std::size(kHotspots))) return;
+    // 切换按键时中止进行中的捕获（Cancel 不触发回调，手动恢复按钮文案）。
+    if (capture_.active()) {
+        capture_.Cancel();
+        RestoreCaptureButtonText();
+    }
+    selected_hotspot_ = hotspot_index;
+    canvas_->SetSelected(hotspot_index);
+    RefreshSidePanel();
+}
+
+void XiaomiKeymapDialog::RefreshSidePanel() {
+    if (!hwnd_ || selected_hotspot_ < 0) return;
+    const auto language = EffectiveUiLanguage(language_);
+    const Hotspot& hotspot = kHotspots[selected_hotspot_];
+    const bool is_mic = hotspot.id == "mic";
+    SetWindowTextW(key_name_label_, TrW(ButtonNameStringId(hotspot.id), language).c_str());
+
+    // mic 为语音输入专用：右侧只显示说明文案，录入/手动/清除全部禁用。
+    ShowWindow(mapping_label_, is_mic ? SW_HIDE : SW_SHOW);
+    ShowWindow(mapping_value_, is_mic ? SW_HIDE : SW_SHOW);
     ShowWindow(mic_note_label_, is_mic ? SW_SHOW : SW_HIDE);
-    const BOOL enable = is_mic ? FALSE : TRUE;
-    EnableWindow(capture_button_, enable);
-    EnableWindow(manual_edit_, enable);
-    EnableWindow(apply_button_, enable);
-    EnableWindow(clear_button_, enable);
+    EnableWindow(capture_button_, !is_mic);
+    EnableWindow(manual_edit_, !is_mic);
+    EnableWindow(apply_button_, !is_mic);
+    EnableWindow(clear_button_, !is_mic);
+    if (is_mic) return;
+
+    const std::string button_id(hotspot.id);
+    const auto it = working_key_map_.find(button_id);
+    if (it != working_key_map_.end() && !it->second.empty()) {
+        // 显示时规范化（配置里可能是手写的 "ctrl+shift+v"），解析失败则原文展示。
+        const auto spec = ParseKeySpec(it->second);
+        SetWindowTextW(mapping_value_,
+                       Utf16(spec ? spec->display_text : it->second).c_str());
+    } else {
+        SetWindowTextW(mapping_value_,
+                       TrW(StringId::kXiaomiKeymapNotMapped, language).c_str());
+    }
 }
 
 void XiaomiKeymapDialog::StartCapture() {
-    if (capturing_ || selected_button_ == "mic") return;
+    if (selected_hotspot_ < 0 || capture_.active()) return;
     const auto language = EffectiveUiLanguage(language_);
-    capturing_ = true;
     SetWindowTextW(capture_button_,
                    TrW(StringId::kXiaomiKeymapCapturing, language).c_str());
-    EnableWindow(manual_edit_, FALSE);
-    EnableWindow(apply_button_, FALSE);
-    EnableWindow(clear_button_, FALSE);
-    const std::string button = selected_button_;
-    capture_.on_captured = [this, button](const ShortcutCapture::Result& result) {
-        const KeySpec spec = MakeKeySpecFromVk(result.modifiers, result.vk);
-        ApplyMapping(button, ToLowerAscii(spec.display_text));
+    const int hotspot = selected_hotspot_;
+    capture_.on_captured = [this, hotspot](const ShortcutCapture::Result& result) {
+        const std::string button_id(kHotspots[hotspot].id);
+        // 覆盖旧值（含覆盖为空串的显式取消）。
+        working_key_map_[button_id] =
+            MakeKeySpecFromVk(result.modifiers, result.vk).display_text;
+        RestoreCaptureButtonText();
+        RefreshSidePanel();
     };
-    capture_.on_rejected_no_modifier = nullptr;
+    capture_.on_rejected_no_modifier = [this](UINT) {
+        // require_modifier=false 不会触发；防御性恢复按钮文案。
+        RestoreCaptureButtonText();
+    };
     capture_.on_cancelled = [this]() {
-        // 仅在仍处于捕获态时恢复（ApplyMapping 回调链可能已复位界面）。
-        if (!capturing_) return;
-        capturing_ = false;
-        const auto lang = EffectiveUiLanguage(language_);
-        SetWindowTextW(capture_button_, TrW(StringId::kXiaomiKeymapCapture, lang).c_str());
-        EnableWindow(manual_edit_, TRUE);
-        EnableWindow(apply_button_, TRUE);
-        EnableWindow(clear_button_, TRUE);
+        RestoreCaptureButtonText();
     };
     ShortcutCapture::Options options;
-    options.require_modifier = false;  // 按键映射允许单键（如 esc、f5）。
-    if (!capture_.Start(options)) {
-        capturing_ = false;
-        SetWindowTextW(capture_button_, TrW(StringId::kXiaomiKeymapCapture, language).c_str());
-        EnableWindow(manual_edit_, TRUE);
-        EnableWindow(apply_button_, TRUE);
-        EnableWindow(clear_button_, TRUE);
+    options.require_modifier = false;  // 按键映射场景：单键也可
+    capture_.Start(options);
+    // 录入超时提示：kCaptureHintTimeoutMs 内无任何键盘事件时弹一次 UIPI 引导
+    //（捕获不中断，用户关掉提示后仍可继续按键）。
+    if (hwnd_ && capture_.active()) {
+        SetTimer(hwnd_, kCaptureHintTimerId, kCaptureHintTimeoutMs, nullptr);
+    }
+}
+
+void XiaomiKeymapDialog::RestoreCaptureButtonText() {
+    // 捕获结束的公共汇合点：停掉超时提示定时器（幂等）。
+    StopCaptureHintTimer();
+    if (!capture_button_) return;
+    SetWindowTextW(capture_button_,
+                   TrW(StringId::kXiaomiKeymapCapture, EffectiveUiLanguage(language_)).c_str());
+}
+
+void XiaomiKeymapDialog::StopCaptureHintTimer() {
+    if (hwnd_) {
+        KillTimer(hwnd_, kCaptureHintTimerId);
     }
 }
 
 void XiaomiKeymapDialog::ApplyManualInput() {
-    if (selected_button_ == "mic") return;
-    const std::string text = ToLowerAscii(Utf8(GetEditText(manual_edit_)));
-    if (text.empty()) return;
+    if (selected_hotspot_ < 0) return;
+    const std::string text = Utf8(GetEditText(manual_edit_));
     const auto spec = ParseKeySpec(text);
-    if (!spec) {
+    if (!spec.has_value()) {
         MessageBoxW(hwnd_, TrW(StringId::kXiaomiKeymapInvalid,
                                EffectiveUiLanguage(language_)).c_str(),
-                    L"VoiceStick", MB_OK | MB_ICONWARNING);
-        return;
+                    title_.c_str(), MB_OK | MB_ICONWARNING);
+        return;  // 非法输入不写入工作副本
     }
-    ApplyMapping(selected_button_, ToLowerAscii(spec->display_text));
+    const std::string button_id(kHotspots[selected_hotspot_].id);
+    working_key_map_[button_id] = spec->display_text;
     SetWindowTextW(manual_edit_, L"");
+    RefreshSidePanel();
 }
 
-void XiaomiKeymapDialog::ApplyMapping(const std::string& button_id, const std::string& spec_text) {
-    if (!IsXiaomiMappableButton(button_id)) return;
+void XiaomiKeymapDialog::ClearMapping() {
+    if (selected_hotspot_ < 0) return;
+    const std::string button_id(kHotspots[selected_hotspot_].id);
+    working_key_map_[button_id] = "";  // 显式取消（含取消全局默认）
+    RefreshSidePanel();
+}
 
-    XiaomiSettings edited = current_;
-    // 与全局默认相同 → 从设备覆盖中删除（回落全局）；否则写入（空串 = 显式取消）。
-    const auto default_it = defaults_.key_map.find(button_id);
-    const bool same_as_default = default_it != defaults_.key_map.end() &&
-                                 default_it->second == spec_text;
-    if (same_as_default) {
-        edited.key_map.erase(button_id);
-    } else {
-        edited.key_map[button_id] = spec_text;
+void XiaomiKeymapDialog::RestoreDefaults() {
+    working_key_map_ = defaults_.key_map;
+    RefreshSidePanel();
+}
+
+void XiaomiKeymapDialog::RefreshTapStateLabel() {
+    if (!hid_tap_state_label_) return;
+    const auto language = EffectiveUiLanguage(language_);
+    StringId state_id = StringId::kXiaomiHidTapStateDisabled;
+    if (current_.hid_tap_enabled && tap_state_query) {
+        const auto state = tap_state_query();
+        if (state.has_value()) {
+            switch (*state) {
+                case XiaomiUsageTapManager::LinkState::kNoHost:
+                    state_id = StringId::kXiaomiHidTapStateNoHost;
+                    break;
+                case XiaomiUsageTapManager::LinkState::kInjectPending:
+                    state_id = StringId::kXiaomiHidTapStatePending;
+                    break;
+                case XiaomiUsageTapManager::LinkState::kConnected:
+                    state_id = StringId::kXiaomiHidTapStateConnected;
+                    break;
+                case XiaomiUsageTapManager::LinkState::kStale:
+                    state_id = StringId::kXiaomiHidTapStateStale;
+                    break;
+            }
+        }
     }
-    current_ = edited;
-    UpdateRightPanel();
-    RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-    FireChanged();
+    SetWindowTextW(hid_tap_state_label_, TrW(state_id, language).c_str());
 }
 
-void XiaomiKeymapDialog::FireChanged() {
-    if (!on_settings_changed) return;
-    if (current_ == defaults_) {
-        on_settings_changed(device_id_, std::nullopt);
-    } else {
-        on_settings_changed(device_id_, current_);
+void XiaomiKeymapDialog::SaveSettings() {
+    // 捕获进行中保存：先取消，避免回调写到已关闭对话框。
+    capture_.Cancel();
+    XiaomiSettings edited = current_;
+    edited.key_map = working_key_map_;
+    current_ = edited;
+    EndDialog(hwnd_, IDOK);
+    if (on_settings_changed) {
+        // 与全局默认一致 → nullopt（调用方清除覆盖，回落默认）。
+        if (current_ == defaults_) {
+            on_settings_changed(device_id_, std::nullopt);
+        } else {
+            on_settings_changed(device_id_, current_);
+        }
     }
 }
 

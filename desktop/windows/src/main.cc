@@ -38,6 +38,8 @@ private:
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     // 命令行 --ota <path> [--device <id>]：解析请求，优先转发给已运行实例。
     std::optional<voicestick::OtaCliRequest> ota_request;
+    std::optional<voicestick::GatewayTargetCliRequest> gateway_target_request;
+    std::optional<voicestick::ControlCliRequest> control_request;
     // 命令行 --rename-virtual-mic <endpoint-id> <name>：提权子进程分支（设置对话框
     // runas 启动），执行完直接退出——必须在单例 Mutex 之前，与已运行主进程并存。
     std::optional<voicestick::RenameVirtualMicCliRequest> rename_mic_request;
@@ -48,6 +50,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         wchar_t** argv = CommandLineToArgvW(raw, &argc);
         if (argv) {
             ota_request = voicestick::ParseOtaCliArgs(argc, argv);
+            gateway_target_request = voicestick::ParseGatewayTargetCliArgs(argc, argv);
+            control_request = voicestick::ParseControlCliArgs(argc, argv);
             rename_mic_request = voicestick::ParseRenameVirtualMicArgs(argc, argv);
             LocalFree(argv);
         }
@@ -55,6 +59,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     if (rename_mic_request) {
         return voicestick::RunRenameVirtualMicElevated(rename_mic_request->endpoint_id,
                                                        rename_mic_request->new_name);
+    }
+    if (gateway_target_request) {
+        // P1 切换器：--gateway-target self|clear。已有实例则转发后退出；否则正常启动并由
+        // SetConnectedDevices 在连上设备后补发（与 --ota 同款语义）。
+        HWND existing = FindWindowW(L"VoiceStickWindow", nullptr);
+        if (existing) {
+            std::string payload = gateway_target_request->self ? "self" : "clear";
+            COPYDATASTRUCT cds{};
+            cds.dwData = voicestick::kGatewayTargetCopyDataId;
+            cds.cbData = payload.size() + 1;
+            cds.lpData = payload.data();
+            SendMessageW(existing, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
+            return 0;
+        }
+    }
+    if (control_request) {
+        // 调试/自动化：--control '<json>' 原样转发给已运行实例（无实例时正常启动后补发）。
+        HWND existing = FindWindowW(L"VoiceStickWindow", nullptr);
+        if (existing) {
+            COPYDATASTRUCT cds{};
+            cds.dwData = voicestick::kControlCopyDataId;
+            cds.cbData = control_request->json.size() + 1;
+            cds.lpData = control_request->json.data();
+            SendMessageW(existing, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
+            return 0;
+        }
     }
     if (ota_request) {
         // 已有运行实例：WM_COPYDATA 转发后退出，不碰单例 Mutex。
@@ -118,6 +148,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         if (ota_request) {
             app.SetPendingOtaRequest(std::move(ota_request->file_path),
                                       std::move(ota_request->device_id));
+        }
+        // 无运行实例时 --gateway-target 自启动：连上设备后由 SetConnectedDevices 补发。
+        if (gateway_target_request) {
+            app.ApplyGatewayTargetSelection(gateway_target_request->self);
+        }
+        if (control_request) {
+            app.ApplyRawControl(control_request->json);
         }
         return app.Run();
     } catch (const winrt::hresult_error& error) {

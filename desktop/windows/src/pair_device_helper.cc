@@ -12,6 +12,54 @@ std::optional<std::string> ParseManualPairDeviceId(std::string_view input) {
     return normalized;
 }
 
+namespace {
+
+int HexDigitValue(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+} // namespace
+
+std::optional<std::uint64_t> ParseBluetoothAddressString(std::string_view text) {
+    // Windows 设备地址属性转 48 位地址，供「忘记设备」清 OS bond 时按地址匹配
+    // DeviceInformation。真机事实（2026-09-07 probe）：DeviceInterface 属性为无
+    // 分隔符 12 位十六进制（"c05d39c36459"），Aep 属性为冒号分隔
+    //（"c0:5d:39:c3:64:59"），两种都必须可解析。仅容错首尾空白、大小写与
+    // : / - 分隔差异；段长、段数、段内空白从严（解析面越宽，误匹配面越大）。
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
+        text.remove_suffix(1);
+    }
+    std::uint64_t address = 0;
+    if (text.size() == 12) {
+        for (const char c : text) {
+            const int digit = HexDigitValue(c);
+            if (digit < 0) return std::nullopt;
+            address = (address << 4) | static_cast<std::uint64_t>(digit);
+        }
+        return address;
+    }
+    if (text.size() != 17) return std::nullopt;
+    for (int group = 0; group < 6; ++group) {
+        const std::size_t base = static_cast<std::size_t>(group) * 3;
+        if (group > 0) {
+            const char separator = text[base - 1];
+            if (separator != ':' && separator != '-') return std::nullopt;
+        }
+        for (int i = 0; i < 2; ++i) {
+            const int digit = HexDigitValue(text[base + i]);
+            if (digit < 0) return std::nullopt;
+            address = (address << 4) | static_cast<std::uint64_t>(digit);
+        }
+    }
+    return address;
+}
+
 std::optional<PairingAdvertisementMatch> ClassifyPairingAdvertisement(
     std::string_view local_name,
     bool has_voice_stick_service,

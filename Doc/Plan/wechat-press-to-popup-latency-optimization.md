@@ -1,4 +1,5 @@
 # wechat 模式按下到弹框延迟优化
+> 状态：已实施（代码实证：selection_hotword_manager.cc + win32_app.cc 弹出路径。核销 2026-10-08/N10）
 
 ## 背景
 

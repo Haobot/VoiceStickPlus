@@ -63,11 +63,23 @@ void LLMRefinementClient::Refine(std::string text,
                                  std::string prompt_override,
                                  std::function<void(bool, std::string)> completion,
                                  std::vector<std::string> hotwords,
-                                 const std::string& domain_hint) const {
-    ChatAsync(BuildRefinePrompt(prompt_override,
-                                hotwords.empty() ? config().asr_hotwords : hotwords,
-                                domain_hint),
-              std::move(text), std::move(completion));
+                                 const std::string& domain_hint,
+                                 std::vector<CorrectionPair> correction_pairs) const {
+    RefineWithConfig(config(), std::move(text), std::move(prompt_override),
+                     std::move(completion), std::move(hotwords), domain_hint,
+                     std::move(correction_pairs));
+}
+
+void LLMRefinementClient::RefineWithConfig(
+    AppConfig config, std::string text, std::string prompt_override,
+    std::function<void(bool, std::string)> completion, std::vector<std::string> hotwords,
+    const std::string& domain_hint, std::vector<CorrectionPair> correction_pairs) {
+    const auto system_prompt =
+        BuildRefinePrompt(std::move(prompt_override),
+                          hotwords.empty() ? config.asr_hotwords : hotwords, domain_hint,
+                          correction_pairs);
+    ChatAsyncWithConfig(std::move(config), system_prompt, std::move(text),
+                        std::move(completion));
 }
 
 void LLMRefinementClient::RefineStream(std::string text,
@@ -76,31 +88,69 @@ void LLMRefinementClient::RefineStream(std::string text,
                                        std::function<void(bool ok, std::string full_text)> on_complete,
                                        std::shared_ptr<std::atomic_bool> cancel,
                                        std::vector<std::string> hotwords,
-                                       const std::string& domain_hint) const {
+                                       const std::string& domain_hint,
+                                       std::vector<CorrectionPair> correction_pairs) const {
     const auto effective_hotwords =
         hotwords.empty() ? config().asr_hotwords : hotwords;
     const auto system_prompt = BuildRefinePrompt(prompt_override, effective_hotwords,
-                                                 domain_hint);
+                                                 domain_hint, correction_pairs);
     StreamCallbacks cbs;
     cbs.on_token = std::move(on_token);
     cbs.on_done = [on_complete](std::string full_text) {
         if (on_complete) on_complete(true, std::move(full_text));
     };
-    cbs.on_error = [this, text, prompt = std::move(prompt_override),
+    cbs.on_error = [config = config(), text, prompt = std::move(prompt_override),
                     hotwords = std::move(effective_hotwords),
-                    domain_hint, on_complete](std::string error) mutable {
+                    domain_hint,
+                    correction_pairs = std::move(correction_pairs),
+                    on_complete](std::string error) mutable {
         // SSE 流式失败（服务端不支持 stream:true 或网络超时等）：
-        // 回退到非流式 ChatAsync → ChatSync 精修，不丢精修能力。
+        // 回退到非流式精修，不丢精修能力。经 config 快照走静态链——本回调可能
+        // 在 refiner_ 被 UpdateConfig 重建/销毁后触发（ChatStream 由工作线程
+        // 阻塞执行，期间对象可被并发替换），经 this 重入是 UAF。
         (void)error;
-        Refine(std::move(text), std::move(prompt), std::move(on_complete),
-               std::move(hotwords), domain_hint);
+        RefineWithConfig(std::move(config), std::move(text), std::move(prompt),
+                         std::move(on_complete), std::move(hotwords), domain_hint,
+                         std::move(correction_pairs));
+    };
+    // B18：取消完成 ok=false（协调器完成 lambda 已有 cancel 守卫——注释明示 !ok=取消）。
+    cbs.on_cancelled = [on_complete]() {
+        if (on_complete) on_complete(false, std::string());
     };
     ChatStream(system_prompt, text, std::move(cbs), std::move(cancel));
 }
 
+namespace {
+
+// C8：系统提示词封顶（4096 字节）。prompt_override 来自配置（用户可任意长）、热词表
+// 也随配置增长，无上限会让每次精修的 token 成本与上下文无界。截断按 UTF-8 字符边界
+// 回退，绝不发出半截码点（否则对端解析可能出错）。
+std::string ClampRefinePrompt(std::string prompt) {
+    constexpr std::size_t kMaxBytes = 4096;
+    if (prompt.size() <= kMaxBytes) return prompt;
+    std::size_t pos = 0;
+    std::size_t good = 0;
+    while (pos < kMaxBytes) {
+        const auto lead = static_cast<unsigned char>(prompt[pos]);
+        const std::size_t len = lead < 0x80   ? 1
+                                : (lead & 0xE0) == 0xC0 ? 2
+                                : (lead & 0xF0) == 0xE0 ? 3
+                                : (lead & 0xF8) == 0xF0 ? 4
+                                                        : 1;
+        if (pos + len > kMaxBytes) break;
+        pos += len;
+        good = pos;
+    }
+    prompt.resize(good);
+    return prompt;
+}
+
+}  // namespace
+
 std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_override,
                                                    const std::vector<std::string>& hotwords,
-                                                   const std::string& domain_hint) {
+                                                   const std::string& domain_hint,
+                                                   const std::vector<CorrectionPair>& correction_pairs) {
     const auto trimmed = Trim(prompt_override);
     std::string prompt;
     if (!trimmed.empty()) {
@@ -128,7 +178,13 @@ std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_ove
         prompt += "\n\n领域语境：";
         prompt += hint_trimmed;
     }
-    if (hotwords.empty()) return prompt;
+    if (hotwords.empty()) {
+        // 纠错 few-shot 段（用户数据飞轮 P0-1）：无热词段时独立追加；超预算由
+        // ClampRefinePrompt 尾部截断——few-shot 在末尾，天然先被裁（裁段顺序：
+        // 先 few-shot 后热词，对齐 wetype 方案 §2 预算约束）。
+        prompt += BuildCorrectionFewshotSection(correction_pairs);
+        return ClampRefinePrompt(prompt);
+    }
 
     prompt += "\n\n用户常用术语热词表：";
     for (std::size_t i = 0; i < hotwords.size(); ++i) {
@@ -140,7 +196,8 @@ std::string LLMRefinementClient::BuildRefinePrompt(const std::string& prompt_ove
               "示例：热词表含「AGENTS.md」时，识别文本「编辑 agentsdmd 这个文件」"
               "应改为「编辑 AGENTS.md 这个文件」。"
               "原文中已经正确出现的热词必须原样保留，不得改写。";
-    return prompt;
+    prompt += BuildCorrectionFewshotSection(correction_pairs);
+    return ClampRefinePrompt(prompt);
 }
 
 bool LLMRefinementClient::RefineResultKeepsHotwords(const std::string& original,
@@ -159,20 +216,22 @@ void LLMRefinementClient::ExtractHotwordCandidates(
     std::vector<std::string> hotwords,
     std::function<void(bool, std::vector<std::string>)> completion,
     std::function<void(const std::string&)> log) const {
-    ExtractHotwordCandidatesAttempt(std::move(text), std::move(hotwords), 1,
-                                    std::move(completion), std::move(log));
+    ExtractHotwordCandidatesWithConfig(config(), std::move(text), std::move(hotwords), 1,
+                                       std::move(completion), std::move(log));
 }
 
-void LLMRefinementClient::ExtractHotwordCandidatesAttempt(
+void LLMRefinementClient::ExtractHotwordCandidatesWithConfig(
+    AppConfig config,
     std::string text,
     std::vector<std::string> hotwords,
-    int attempt,
+    const int attempt,
     std::function<void(bool, std::vector<std::string>)> completion,
-    std::function<void(const std::string&)> log) const {
-    ChatAsync(BuildHotwordExtractionPrompt(hotwords), text,
-              [this, text = std::move(text), hotwords = std::move(hotwords), attempt,
-               completion = std::move(completion),
-               log = std::move(log)](bool ok, std::string response) mutable {
+    std::function<void(const std::string&)> log) {
+    // 实参与捕获均按值拷贝（同一变量既作实参又被 move 捕获时求值顺序未指定）；
+    // AppConfig/text 等在重试分支再 move。
+    ChatAsyncWithConfig(config, BuildHotwordExtractionPrompt(hotwords), text,
+                        [config, text, hotwords, attempt, completion,
+                         log](bool ok, std::string response) mutable {
                   if (!ok) {
                       // response 此时是 WinHTTP 错误码文本，不含用户内容。
                       if (log) log("hotword extraction llm_error: " + response);
@@ -204,13 +263,15 @@ void LLMRefinementClient::ExtractHotwordCandidatesAttempt(
                   // 模型 temp 0 非完全确定：同一输入偶发返回 []（实测同一句离线 6/6 中、
                   // 线上 2/2 空）。成功但 0 候选且文本含大写字母（目标候选的典型形态）时
                   // 重试一次；纯中文等无候选文本不重试，避免每次会话白调一次 LLM。
+                  // 重试经 config 快照走静态链（本回调可能在对象销毁后执行）。
                   const bool has_capital = std::any_of(text.begin(), text.end(), [](char ch) {
                       return ch >= 'A' && ch <= 'Z';
                   });
                   if (words.empty() && attempt == 1 && has_capital) {
                       if (log) log("hotword extraction retry: attempt 1 returned no candidates");
-                      ExtractHotwordCandidatesAttempt(std::move(text), std::move(hotwords), 2,
-                                                      std::move(completion), std::move(log));
+                      ExtractHotwordCandidatesWithConfig(
+                          std::move(config), std::move(text), std::move(hotwords), 2,
+                          std::move(completion), std::move(log));
                       return;
                   }
                   completion(true, std::move(words));

@@ -1,4 +1,5 @@
 # 优化 overlay 渲染，恢复流式精修逐字显示
+> 状态：已实施（代码实证：overlay_window.cc + local_refinement 精修链。核销 2026-10-08/N10）
 
 ## 背景
 

@@ -1,0 +1,195 @@
+{
+  "$comment": "Derived from protocol.md Control Event examples (D11-2 / r128). Regenerate when the doc changes; guard protocol-events+control-frame-schema enforce parity.",
+  "events": {
+    "ui_state": {
+      "type": "object",
+      "properties": {
+        "state": "string",
+        "text": "string"
+      },
+      "required": [
+        "state",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "interaction_mode": {
+      "type": "object",
+      "properties": {
+        "mode": "string"
+      },
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "show_imu_debug": {
+      "type": "object",
+      "properties": {
+        "enabled": "boolean"
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "imu_wake_sensitivity": {
+      "type": "object",
+      "properties": {
+        "threshold": "integer"
+      },
+      "required": [
+        "threshold"
+      ],
+      "additionalProperties": false
+    },
+    "tap_enabled": {
+      "type": "object",
+      "properties": {
+        "enabled": "boolean"
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "tap_sensitivity": {
+      "type": "object",
+      "properties": {
+        "level": "integer"
+      },
+      "required": [
+        "level"
+      ],
+      "additionalProperties": false
+    },
+    "air_mouse_enabled": {
+      "type": "object",
+      "properties": {
+        "enabled": "boolean"
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "encoder_led_color": {
+      "type": "object",
+      "properties": {
+        "color": "string"
+      },
+      "required": [
+        "color"
+      ],
+      "additionalProperties": false
+    },
+    "encoder_recording_gate": {
+      "type": "object",
+      "properties": {
+        "enabled": "boolean"
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "gateway_keymap_set": {
+      "type": "object",
+      "properties": {
+        "key": "string",
+        "route": "string"
+      },
+      "required": [
+        "key",
+        "route"
+      ],
+      "additionalProperties": false
+    },
+    "gateway_keymap_get": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "usb_auto_off": {
+      "type": "object",
+      "properties": {
+        "enabled": "boolean"
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "usb_auto_off_get": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "battery_status_request": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "remote_button_down": {
+      "type": "object",
+      "properties": {
+        "button": "string",
+        "source": "string",
+        "request_id": "integer"
+      },
+      "required": [
+        "button",
+        "source",
+        "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "test_playback": {
+      "type": "object",
+      "properties": {
+        "file": "string"
+      },
+      "required": [
+        "file"
+      ],
+      "additionalProperties": false
+    },
+    "proto_negotiate": {
+      "type": "object",
+      "properties": {
+        "proto": "integer"
+      },
+      "required": [
+        "proto"
+      ],
+      "additionalProperties": false
+    },
+    "remote_button_up": {
+      "type": "object",
+      "properties": {
+        "button": "string",
+        "source": "string",
+        "request_id": "integer"
+      },
+      "required": [
+        "button",
+        "source",
+        "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "power_mgmt": {
+      "type": "object",
+      "properties": {
+        "usb_auto_off": "boolean"
+      },
+      "required": [
+        "usb_auto_off"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

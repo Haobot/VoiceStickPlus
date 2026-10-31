@@ -44,6 +44,8 @@ public:
                              const std::optional<std::string>& device_id) override;
     void SendShowImuDebug(bool enabled,
                           const std::optional<std::string>& device_id) override;
+    void SendProtoNegotiate(const std::optional<std::string>& device_id) override;
+    void SendGatewayKeymapGet(const std::optional<std::string>& device_id) override;
     void SendTapEnabled(bool enabled,
                         const std::optional<std::string>& device_id) override;
     void SendTapSensitivity(int level,
@@ -52,6 +54,17 @@ public:
                              const std::optional<std::string>& device_id) override;
     void SendEncoderRecordingGate(bool enabled,
                                   const std::optional<std::string>& device_id) override;
+    void SendGatewayKeymapSet(const std::string& key, bool software,
+                              const std::optional<std::string>& device_id) override;
+    // P1 目标表：上报本机显示名（主机名），固件绑定到当前连接对端（见 gateway_targets）。
+    void SendGatewayTargetInfo(const std::string& name,
+                               const std::optional<std::string>& device_id) override;
+    // P1 切换器：选择/清除网关目标（见 Doc/Ref/protocol.md gateway_select_target）。
+    void SendGatewaySelectTarget(bool self,
+                                 const std::optional<std::string>& device_id) override;
+    // 原始控制帧（调试/自动化；不做语义校验，直接写 control_rx）。
+    void SendRawControl(const std::string& json,
+                        const std::optional<std::string>& device_id) override;
     void SendAirMouseEnabled(bool enabled,
                              const std::optional<std::string>& device_id) override;
     void SendImuWakeSensitivity(int threshold_lsb,
@@ -76,6 +89,14 @@ public:
     // 会话才能恢复。
     void RestartForResume();
 
+    // 「忘记设备」的 OS 侧清理：按蓝牙地址枚举系统已配对 BLE 设备，移除 Windows
+    // 配对记录（bond/LTK），使设备不再残留于系统蓝牙设备列表。与连接状态无关
+    //（未连接也能清，调用方须在拆会话之后调用）。幂等：系统已无该地址配对记录
+    // 时按成功处理。completion 经 UI 线程分发，true=已清除或无需清除。
+    winrt::fire_and_forget UnpairOsBondAsync(std::string device_id,
+                                              std::uint64_t bluetooth_address,
+                                              std::function<void(bool)> completion);
+
     // ---- 小米遥控器 2 Pro（ATVV）接线 ----
     // MIC_OPEN 时刻写出点（steady_clock epoch ms）：ValueChanged 回调线程直接写、
     // F5 抑制钩子（voice_f5_suppressor）读。须在 Start 前设置，之后不再变更。
@@ -92,6 +113,9 @@ public:
 private:
     struct DeviceSession {
         std::uint64_t bluetooth_address = 0;
+        // 连接时使用的地址类型：僵尸自愈后按地址主动直连需要它（ConnectPairedDevice
+        // 的地址类型参数），会话不记就只能退回 Unspecified 单参 FromBluetoothAddressAsync。
+        BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
         ConnectedDevice device;
         DeviceClass device_class = DeviceClass::kStickS3;
         winrt::Windows::Devices::Bluetooth::BluetoothLEDevice ble_device{nullptr};
@@ -131,6 +155,9 @@ private:
         bool state_subscribed = false;
         bool ota_state_subscribed = false;
         bool ready = false;
+        // 固件上报的网关模式（gateway_status 小帧）：true=该 StickS3 正在做网关中转。
+        // 桌面端据此抑制「直连遥控器 ATVV」。老固件不上报 ⇒ 恒 false ⇒ 不抑制。
+        bool gateway_mode = false;
         // 心跳探活：任意入站 GATT 流量（audio/state/ota_state notify）刷新的时间戳
         //（steady_clock epoch 毫秒）。心跳线程据此判定对端静默消失的僵尸会话。
         std::atomic<std::int64_t> last_rx_ms{0};
@@ -200,6 +227,48 @@ private:
     void StartHeartbeat();
     void StopHeartbeat();
     void HeartbeatLoop();
+    // 心跳周期检查 pending_proactive_reconnects_ 到期项并按地址发起直连
+    //（DispatchToUiThread 后走 ConnectPairedDevice 的正常 claim 路径）。
+    void RunDueProactiveReconnects();
+    // ---- 僵尸会话自愈（P0，见 Doc/Plan/xiaomi-gateway-p0-zombie-self-heal.md）----
+    // 登记一次僵尸判定并返回本次应采取的力度（纯函数 PlanZombieHeal 决定，
+    // 记账含故障期过期重置）。kFullRepair 时把地址标记为「下次连接前先做全量修复」。
+    ZombieHealLevel NoteZombieEpisode(std::uint64_t bluetooth_address, bool is_voice_stick);
+    // 消费上述标记（一次性）：ConnectDeviceAsync 打开设备后据此执行全量修复。
+    bool ConsumeZombieRepair(std::uint64_t bluetooth_address);
+    // 会话真的结束（链路断/设备重启）时清空故障期记账：新链路是新的故障期，自愈
+    // 预算不该被上一轮吃掉（真机事故：设备重启前后各一次僵尸判定叠加，导致重启后
+    // 一上来就被判 kUserAction 而不再尝试自愈）。
+    void ClearZombieEpisode(std::uint64_t bluetooth_address);
+    // 末级用户提示是否到期（故障期已持续 kZombieUserPromptDelay）：避免设备被 HID 宿主
+    // 短暂持有期间误报「需要重新配对」。
+    bool ShouldPromptZombieUser(std::uint64_t bluetooth_address) const;
+    // 僵尸拆除后按地址直连：登记主动重连队列（心跳 30s 周期兜底）+ 延迟线程提前唤醒，
+    // 避免自愈最坏要等满一个心跳周期。设备已不配对时不登记。
+    void ScheduleZombieReconnect(const std::shared_ptr<DeviceSession>& session,
+                                 std::chrono::milliseconds delay);
+    // 按 delay 提前唤醒主动重连队列（心跳 30s 周期只作兜底），带代数守卫。
+    void WakeProactiveReconnectsAfter(std::chrono::milliseconds delay);
+    // 网关是否活跃（存在已就绪且上报 gateway 模式的 StickS3 会话）。调用者须持 mutex_。
+    // 用于 HandleAdvertisement 抑制对小米遥控器的直连 ATVV 尝试。
+    bool GatewayModeActiveLocked() const;
+    // 限时 CCCD 写（best-effort，结果只记日志）：用于订阅前的「缓存击穿」——
+    // Windows 缓存了 CCCD 值，值未变化时写操作会被本地短路（返回 Success 却不发空口包），
+    // 设备侧因此收不到订阅。先写 None 再写 Notify 保证至少有一次是真实变化。
+    winrt::Windows::Foundation::IAsyncAction WriteCccdBestEffortAsync(
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic characteristic,
+        winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattClientCharacteristicConfigurationDescriptorValue value,
+        std::string device_id,
+        std::string label);
+    // ---- 系统配对（bond）看门狗：只补不删 ----
+    // 节流判定（按地址，10min 间隔 + 每次运行最多 3 次），返回 true 表示可以开始一次检查。
+    bool BeginOsBondCheck(std::uint64_t bluetooth_address);
+    // 会话健康但 Windows 无系统级 bond 时重建它（HOGP 按键直通的前提）。
+    // 执行前会拆掉本会话让设备重新广播（PairAsync 在设备被 app 连上时必失败）。
+    winrt::fire_and_forget RepairOsBondAsync(std::shared_ptr<DeviceSession> session,
+                                             std::string device_id);
+    // 末级力度才打扰用户（托盘气泡指引到系统蓝牙设置重配）。UI 线程派发。
+    void NotifyZombieUserAction(const std::string& device_id);
     void ProbeSessions();
     // 扫描健康看门狗（心跳线程周期调用）：清理滞留超时的在途连接 claim，
     // 并检测广告 watcher 静默失效（有配对设备待发现却长时间零广告）后重建扫描。
@@ -235,6 +304,30 @@ private:
     // 让下一条广播立即触发重试（覆盖连按重启产生的多重僵尸）。
     std::map<std::uint64_t, std::pair<std::chrono::steady_clock::time_point, int>>
         zombie_suspect_marks_;
+    // 僵尸自愈故障期记账：key=蓝牙地址。一次故障期内累计各力度已用次数，
+    // 由 PlanZombieHeal 决定升级；会话恢复（连接期活性证明通过）即清零。
+    struct ZombieEpisode {
+        int light_attempts = 0;
+        int full_repairs = 0;
+        std::chrono::steady_clock::time_point last_at{};
+        // 本次故障期起点：末级用户提示要等它过去 kZombieUserPromptDelay，避免误报。
+        std::chrono::steady_clock::time_point started_at{};
+    };
+    std::map<std::uint64_t, ZombieEpisode> zombie_episodes_;
+    // 已判定「下次连接前先做全量修复（B）」的地址（一次性标记，连接时消费）。
+    std::set<std::uint64_t> zombie_repair_pending_;
+    // 已配对设备最近一次广播时间（steady_clock epoch ms）：bond 重建的前置条件是
+    // 「设备在广播且 Windows 已看到」（见 RepairOsBondAsync）。
+    std::map<std::uint64_t, std::int64_t> adv_seen_ms_by_address_;
+    // 系统配对看门狗节流：上次检查时间与本次运行已用重建次数（按地址）。
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> os_bond_check_at_;
+    std::map<std::uint64_t, int> os_bond_repair_attempts_;
+    // 网关模式抑制直连 ATVV 的日志节流：上次打日志时间 + 已记录过的遥控器设备 ID
+    //（每个地址首次必记一条，其后按 kGatewaySkipLogIntervalMs 节流）。
+    std::int64_t gateway_skip_log_at_ms_ = 0;
+    std::set<std::string> gateway_suppressed_rc_;
+    // 延迟唤醒线程的代数守卫：Shutdown 递增使其失效（同 scan_epoch_ 手法）。
+    std::atomic<std::uint64_t> reconnect_wake_epoch_{0};
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher_{nullptr};
     winrt::event_token received_token_{};
     winrt::event_token stopped_token_{};
@@ -244,7 +337,9 @@ private:
     // 应用自己执行 radio reset（陈旧 bond 恢复）期间置位：StateChanged 处理器
     // 据此跳过自建重置引发的重建（该路径已显式 StartScan，避免与在途连接争抢）。
     std::atomic<bool> self_radio_reset_{false};
-    std::chrono::steady_clock::time_point scan_started_at_{};
+    // B20：扫描起点跨线程（写=StartScan、读=广告命中回调线程）——改原子毫秒，
+    // 对齐同组 last_adv_received_ms_/scan_epoch_ 既有原子风格；0=未在扫描。
+    std::atomic<std::int64_t> scan_started_ms_{0};
     // watcher 存活证明：HandleAdvertisement 收到任意广告包即刷新（steady_clock
     // epoch 毫秒）。CheckScanHealth() 用它检测 watcher 静默失效；StartScan()
     // 成功时写入当前时间作为基线。
@@ -260,6 +355,17 @@ private:
     // claim 被拒日志的限流（key=蓝牙地址，value=上次记录的 steady_clock epoch
     // 毫秒）：正常重连中广告风暴期每秒数十次拒绝，逐条记录会刷屏。
     std::map<std::uint64_t, std::int64_t> claim_denied_log_ms_;
+    // 僵尸链路拆除后的主动重连调度：纯等广播自愈有盲区——遥控器 HID 通道仍被
+    // OS 蓝牙栈维持时它认为「已连接」不再广播，VoiceStick 等广告等不到即永久
+    // 失联（2026-09-11 事故）。拆除时登记（not_before=安定窗之后），心跳到期且
+    // 仍未连接则按地址直连；连接成功/设备移除后自然清理（到期检查时剔除）。
+    struct ProactiveReconnect {
+        std::string device_id;
+        BluetoothAddressKind address_kind = BluetoothAddressKind::kUnspecified;
+        DeviceClass device_class = DeviceClass::kStickS3;
+        std::chrono::steady_clock::time_point not_before{};
+    };
+    std::map<std::uint64_t, ProactiveReconnect> pending_proactive_reconnects_;
     std::thread heartbeat_thread_;
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;

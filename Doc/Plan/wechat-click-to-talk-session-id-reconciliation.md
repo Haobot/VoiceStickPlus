@@ -1,4 +1,5 @@
 # 点动模式快速点动错位修复（session_id 校验）
+> 状态：已实施（代码实证：voice_stick_coordinator.cc active_session_id_/local_mic_active_session_id_ 生命周期。核销 2026-10-08/N10）
 
 ## 根因（确证，代码级）
 

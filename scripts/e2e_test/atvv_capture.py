@@ -6,6 +6,7 @@
 # 用法：
 #   python scripts/e2e_test/atvv_capture.py [--address ADDR | --name NAME]
 #       [--out-dir DIR] [--gain-db 0.0] [--duration 60] [--max-sessions 3]
+#       [--no-hpf] [--no-agc]
 #   python scripts/e2e_test/atvv_capture.py --self-test   # 纯逻辑自测，不连设备
 #
 # 注意：
@@ -356,18 +357,188 @@ def smooth3(samples: list) -> list:
     return out
 
 
+def lround(v: float) -> int:
+    """half-away-from-zero 舍入，与 C++ std::lround / Swift .rounded() 逐样本对齐
+    （golden 对拍要求）。"""
+    return int(math.floor(v + 0.5)) if v >= 0 else -int(math.floor(-v + 0.5))
+
+
 def apply_gain(samples: list, gain_db: float) -> list:
-    """增益（gain_db 钳位到 ±24dB），int16 限幅。
-    舍入用 half-away-from-zero，与 C++ std::lround 逐样本对齐（golden 对拍要求）。"""
+    """增益（gain_db 钳位到 ±24dB），int16 限幅。"""
     gain_db = max(-24.0, min(24.0, gain_db))
     if gain_db == 0.0:
         return [max(-32768, min(32767, s)) for s in samples]
     factor = math.pow(10.0, gain_db / 20.0)
-
-    def lround(v: float) -> int:
-        return int(math.floor(v + 0.5)) if v >= 0 else -int(math.floor(-v + 0.5))
-
     return [max(-32768, min(32767, lround(s * factor))) for s in samples]
+
+
+# ---- 直连桌面链路后处理链（对齐固件 audio_pipeline.c 与桌面端 PcmPostprocessor）----
+# 链：smooth3 → HPF(120Hz) → 固定增益 → AGC v2（含 0.8FS 瞬时限幅），级间量化回 int16。
+# 常量逐字拷贝固件 audio_pipeline.c（HPF 系数 + AGC v2 常量），
+# 三端（Swift/C++/Python）bit 级对齐 golden fixture 对拍。
+# 2026-10-14：HPF 90→120Hz（喷麦爆点能量集中在 100-150Hz）、AGC 目标 -6→-12dBFS。
+# 2026-10-15 AGC v2（耳语电平修复，方案 Doc/Plan/whisper-level-agc-v2.md）：
+#   旧版「env < -45dBFS ⇒ desired = 1.0」把耳语前级包络（-42~-52dBFS）整段挡在门外
+#   （实测 22:2x 耳语会话生效增益 ≈0dB），门限之上又被 +12dB 上限截断在 -33dBFS。
+#   新版把 -45dBFS 从「门限」改为「噪声预算」：判为噪声段时只允许把本底抬到 -45dBFS，
+#   语音段放开到 +36dB；本底用冷启动窗（120~480ms）估计，门限 = 本底 +12dB。
+
+# 二阶 Butterworth 高通（transposed DF-II），fc≈120Hz @16kHz，Q=0.707：
+# 120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / ≥300Hz ~0dB。
+_HPF_B0 = 0.967227
+_HPF_B1 = -1.934455
+_HPF_B2 = 0.967227
+_HPF_A1 = -1.933380
+_HPF_A2 = 0.935529
+
+_AGC_TARGET = 8192.0            # -12 dBFS（不变）
+_AGC_MAX_GAIN = 63.0            # +36 dB（2026-10-15 由 +12dB 放开：耳语需 +30~+40dB）
+_AGC_MIN_GAIN = 0.1             # -20 dB
+_AGC_NOISE_BUDGET = 184.0       # -45 dBFS：噪声段被放大后的上限（旧 NOISE_FLOOR 语义纠正）
+_AGC_ENV_ATTACK = 0.98758       # exp(-1/(16000*0.005)) 5ms
+_AGC_ENV_RELEASE = 0.99979      # exp(-1/(16000*0.300)) 300ms
+_AGC_GAIN_UP = 0.99988          # exp(-1/(16000*0.500))：小误差慢上 500ms
+_AGC_GAIN_UP_FAST = 0.9993752   # exp(-1/(16000*0.100))：大误差快上 100ms
+_AGC_GAIN_DOWN = 0.73162        # 快下（τ≈0.2ms；旧注释写 2ms，实测系数对应 0.2ms）
+_AGC_FAST_RATIO = 4.0           # desired > 4×gain 时走快攻
+_AGC_CEIL = 26214.0             # 0.8FS 瞬时限幅（Opus 解码 +1.5~2dB 过冲余量）
+_AGC_NF_ABS = 16.0              # -66 dBFS：门限绝对下限
+_AGC_NF_RATIO = 3.0             # 门限 = 本底 +9.5 dB
+_AGC_NF_NEAR = 2.0              # 仅 env < 2×nf 时缓升本底
+_AGC_NF_RISE = 6.25e-5          # 1/(16000*1)：本底缓升 τ=1s
+_AGC_NF_TRUST_MIN = 1.0         # 本底低于此视为数字静音（不可信 → 取绝对下限）
+_AGC_NF_MAX_TRUST = 184.0       # 本底估计上限 = -45 dBFS（防语音污染后压死语音）
+# 冷启动：跳过前置无效区（固件 = click guard 斜坡 120ms；桌面端无 guard，同样跳 120ms
+# 以免 ATVV/ATVV 归一化链路的起始瞬态污染本底），随后只统计「有效信号」（env >= MIN）
+# 累计 60ms 即可定本底；index >= 4800（300ms）封顶强制就绪。
+_AGC_NF_SKIP_SAMPLES = 1920     # 前置无效区 120ms
+_AGC_NF_WARM_SAMPLES = 960      # 有效信号累计 60ms
+_AGC_NF_WARM_MAX_SAMPLES = 4800 # 绝对封顶 300ms
+_AGC_NF_SENTINEL = 1e30         # nf 初值（尚未观测）
+
+
+class Hpf120Hz:
+    """二阶 Butterworth 高通滤波器（逐样本，transposed DF-II，double）。"""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.z1 = 0.0
+        self.z2 = 0.0
+
+    def process(self, samples: list) -> list:
+        out = []
+        for x in samples:
+            v = _HPF_B0 * x + self.z1
+            self.z1 = _HPF_B1 * x - _HPF_A1 * v + self.z2
+            self.z2 = _HPF_B2 * x - _HPF_A2 * v
+            y = max(-32768.0, min(32767.0, v))
+            out.append(max(-32768, min(32767, lround(y))))
+        return out
+
+
+class Agc:
+    """软件 AGC v2（逐样本，double，状态跨 process 调用保持）：
+
+    - 包络：|x| 一阶峰值跟随，快攻 5ms / 慢释 300ms（不变）。
+    - 本底估计 nf：跳过前置无效区（120ms）后，只统计「有效信号」的最小包络，累计
+      60ms 定罪（300ms 封顶）；上限钳到 -45dBFS；之后瞬时下降、仅 env < 2×nf 时 τ=1s 缓升。
+      **前置无效区是硬要求**：固件端按键咔哒必须由 click guard 在 AGC 之前抑制，
+      否则 300ms 慢释包络被咔哒抬起来整场污染本底（v2.1 真机根因）。
+    - 噪声段（env < max(-66dBFS, nf×3)）：增益上限 = -45dBFS/env，即只允许把本底
+      抬到 -45dBFS，绝不放大噪声。
+    - 语音段：desired = clamp(-12dBFS/env, -20dB, +36dB)。
+    - 增益平滑：下降快（τ≈0.2ms）；上升在大误差（desired > 4×gain）时 100ms、
+      否则 500ms。0.8FS 瞬时限幅无记忆、不回写增益状态。
+    - 冷启动窗直通（增益 1.0），仅保留 0.8FS 限幅。"""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.env = 0.0
+        self.gain = 1.0
+        self.nf = _AGC_NF_SENTINEL
+        self.index = 0
+        self.valid = 0
+        self.nf_ready = False
+
+    def process(self, samples: list) -> list:
+        out = []
+        for sample in samples:
+            x = float(sample)
+            ax = abs(x)
+            if not self.nf_ready:
+                # 冷启动窗：只测本底，本底可信前直通（首样本直接取 |x|，跳过包络爬升）。
+                if self.index == 0:
+                    self.env = ax
+                else:
+                    ec = _AGC_ENV_ATTACK if ax > self.env else _AGC_ENV_RELEASE
+                    self.env = ec * self.env + (1.0 - ec) * ax
+                if (self.index >= _AGC_NF_SKIP_SAMPLES
+                        and self.env >= _AGC_NF_TRUST_MIN):
+                    if self.env < self.nf:
+                        self.nf = self.env
+                    self.valid += 1
+                if (self.valid >= _AGC_NF_WARM_SAMPLES
+                        or self.index >= _AGC_NF_WARM_MAX_SAMPLES):
+                    nf = self.nf if self.valid > 0 else _AGC_NF_ABS
+                    if nf < _AGC_NF_TRUST_MIN:
+                        nf = _AGC_NF_ABS
+                    elif nf > _AGC_NF_MAX_TRUST:
+                        nf = _AGC_NF_MAX_TRUST
+                    self.nf = nf
+                    self.nf_ready = True
+                self.index += 1
+                g = 1.0
+                if ax > 1.0:
+                    c = _AGC_CEIL / ax
+                    if g > c:
+                        g = c
+                out.append(lround(max(-32768.0, min(32767.0, x * g))))
+                continue
+            ec = _AGC_ENV_ATTACK if ax > self.env else _AGC_ENV_RELEASE
+            self.env = ec * self.env + (1.0 - ec) * ax
+            if self.env < self.nf:
+                self.nf = self.env
+            elif self.env < self.nf * _AGC_NF_NEAR:
+                self.nf += (self.env - self.nf) * _AGC_NF_RISE
+            if self.nf > _AGC_NF_MAX_TRUST:
+                self.nf = _AGC_NF_MAX_TRUST
+            gated = self.env < max(_AGC_NF_ABS, self.nf * _AGC_NF_RATIO)
+            desired = min(max(_AGC_TARGET / max(self.env, 1.0), _AGC_MIN_GAIN),
+                          _AGC_MAX_GAIN)
+            if gated:
+                cap = _AGC_NOISE_BUDGET / max(self.env, 1.0)
+                if cap < desired:
+                    desired = cap
+            if desired < self.gain:
+                gc = _AGC_GAIN_DOWN
+            elif desired > _AGC_FAST_RATIO * self.gain:
+                gc = _AGC_GAIN_UP_FAST
+            else:
+                gc = _AGC_GAIN_UP
+            self.gain = gc * self.gain + (1.0 - gc) * desired
+            g = self.gain
+            if ax > 1.0:
+                c = _AGC_CEIL / ax
+                if g > c:
+                    g = c
+            out.append(lround(max(-32768.0, min(32767.0, x * g))))
+        return out
+
+
+def postprocess(samples: list, gain_db: float, hpf: bool = True, agc: bool = True) -> list:
+    """完整后处理链（单次入口，滤波/增益状态从零开始）：
+    smooth3 → HPF → 固定增益 → AGC，按开关跳过对应级。"""
+    out = smooth3(samples)
+    if hpf:
+        out = Hpf120Hz().process(out)
+    out = apply_gain(out, gain_db)
+    if agc:
+        out = Agc().process(out)
+    return out
 
 
 def write_wav(path: Path, samples: list, sample_rate: int) -> None:
@@ -497,7 +668,9 @@ class AtvvCapture:
         adpcm_path.write_bytes(raw)
         # raw.wav：纯解码（无平滑/增益），供单测 golden 逐样本对拍
         write_wav(raw_wav_path, self.pcm_samples, self.session_rate)
-        samples = apply_gain(smooth3(self.pcm_samples), self.args.gain_db)
+        # wav：完整后处理链（smooth3+HPF+增益+AGC），与桌面端 PcmPostprocessor 对齐
+        samples = postprocess(self.pcm_samples, self.args.gain_db,
+                              hpf=self.args.hpf, agc=self.args.agc)
         write_wav(wav_path, samples, self.session_rate)
         duration_s = len(self.pcm_samples) / float(self.session_rate)
         latency_ms = None
@@ -967,6 +1140,91 @@ def self_test() -> int:
         # gain_db 钳位 ±24：30dB 按 24dB 处理
         assert apply_gain([1000], 30.0) == apply_gain([1000], 24.0)
 
+    def test_hpf_dc_decay() -> None:
+        # 恒定 5000 输入 1000 样本：HPF 抑制 DC，末 100 样本 |out| < 50
+        h = Hpf120Hz()
+        out = h.process([5000] * 1000)
+        assert max(abs(s) for s in out[-100:]) < 50, max(abs(s) for s in out[-100:])
+
+    def test_hpf_frequency_response() -> None:
+        # 50Hz 对 1kHz 稳态 RMS 比 ≥ 13dB 衰减（120Hz 档位参考频响 50Hz -15.3dB，
+        # 留 2.3dB 余量；旧 90Hz 档位 -10.6dB≈0.295 会触红，可防系数回退）
+        def sine(amp: float, freq: float, n: int) -> list:
+            return [int(amp * math.sin(2.0 * math.pi * freq * i / 16000.0))
+                    for i in range(n)]
+
+        def steady_rms(samples: list) -> float:
+            tail = samples[-8000:]
+            return math.sqrt(sum(s * s for s in tail) / len(tail))
+
+        out50 = Hpf120Hz().process(sine(10000.0, 50.0, 16000))
+        out1k = Hpf120Hz().process(sine(10000.0, 1000.0, 16000))
+        ratio = steady_rms(out50) / steady_rms(out1k)
+        assert ratio <= 10.0 ** (-13.0 / 20.0), f"50Hz/1kHz RMS ratio {ratio:.3f}"
+
+    def test_agc_pullup() -> None:
+        # AGC v2 轻声拉起：120ms 极低底噪（本底估计窗）铺垫后，8 段「200ms 幅度 100
+        # （-50dBFS）1kHz 正弦 + 150ms 静音」。稳态输出峰值 ≈6269（+36dB 上限：
+        # -50dBFS 到目标 -12dBFS 需 +38dB，被 MAX_GAIN 截断）。
+        def sine(amp: float, freq: float, n: int) -> list:
+            return [lround(amp * math.sin(2.0 * math.pi * freq * i / 16000.0))
+                    for i in range(n)]
+
+        pcm = [3 if i % 2 else -3 for i in range(2880)]   # 1920 跳过区 + 960 有效底噪
+        for _ in range(8):
+            pcm += sine(100.0, 1000.0, 3200) + [0] * 2400
+        out = postprocess(pcm, 0.0)          # 全链：smooth3 → HPF → 增益 → AGC
+        steady = [abs(v) for k in range(8)
+                  for v in out[2880 + k * 5600 + 1600: 2880 + k * 5600 + 3200]]
+        peak = max(steady)
+        assert 5300 <= peak <= 6600, f"pull-up peak {peak}"
+
+    def test_agc_noise_budget() -> None:
+        # 噪声预算：确定性 LCG 白噪声（RMS≈173 ≈ -45.5dBFS）不得被放大
+        #（AGC v2 语义 = 只允许把本底抬到 -45dBFS；旧版 +12dB 上限会把它抬起来）。
+        # 确定性 LCG 均匀白噪声（RMS≈173 ≈ -45.6dBFS）：跨端同序列，可逐样本对拍。
+        state = 12345
+        pcm = []
+        for _ in range(48000):
+            state = (1103515245 * state + 12345) & 0x7FFFFFFF
+            pcm.append(int((((state >> 8) & 0xFFFF) - 32768) * 300 / 32768))
+        out = postprocess(pcm, 0.0)         # 全链：smooth3 → HPF → 增益 → AGC
+        peak_in = max(abs(v) for v in pcm)
+        peak_out = max(abs(v) for v in out)
+        assert peak_out <= peak_in * 1.2, f"noise amplified: peak {peak_in} -> {peak_out}"
+        rms_in = math.sqrt(sum(v * v for v in pcm) / len(pcm))
+        rms_out = math.sqrt(sum(v * v for v in out) / len(out))
+        assert rms_out <= rms_in * 1.1, f"noise rms {rms_in:.1f} -> {rms_out:.1f}"
+
+    def test_agc_instant_ceil() -> None:
+        # 满幅（±32000）突发起音：0.8FS 瞬时限幅 |out| ≤ 26215（且不削波到 32767）
+        pcm = [32000 if i % 2 == 0 else -32000 for i in range(2000)]
+        out = Agc().process(pcm)
+        peak = max(abs(s) for s in out)
+        assert peak <= 26215, f"instant ceil peak {peak}"
+        assert peak >= 26000, f"signal lost: peak {peak}"
+
+    def test_filter_reset_idempotent() -> None:
+        # reset() 后同一输入输出逐样本一致；且连续流式分块处理与整段处理一致。
+        pcm = [int(6000.0 * math.sin(2.0 * math.pi * 300.0 * i / 16000.0)
+                   + 2000.0 * math.sin(2.0 * math.pi * 1.0 * i / 16000.0))
+               for i in range(16000)]
+        for filt in (Hpf120Hz(), Agc()):
+            full = filt.process(pcm)
+            filt.reset()
+            assert filt.process(pcm) == full
+            # 流式连续性：640 样本帧逐帧处理 == 整段一次处理
+            filt.reset()
+            chunked = []
+            for i in range(0, len(pcm), 640):
+                chunked += filt.process(pcm[i:i + 640])
+            assert chunked == full
+        # 组合入口 = 手动链（smooth3 → HPF → 增益 → AGC）
+        manual = Agc().process(apply_gain(Hpf120Hz().process(smooth3(pcm)), 12.0))
+        assert postprocess(pcm, 12.0) == manual
+        # 开关关闭：回退旧链（仅 smooth3+增益）
+        assert postprocess(pcm, 12.0, hpf=False, agc=False) == apply_gain(smooth3(pcm), 12.0)
+
     def test_session_sidecar_segments() -> None:
         # 离线模拟一次会话（不调 GATT 回调的 asyncio 路径），验证 raw.wav /
         # sidecar 段落记账与解码可复现性。
@@ -976,7 +1234,8 @@ def self_test() -> int:
         encoded, expected = ima_encode(pcm_src)   # 400 字节
         with tempfile.TemporaryDirectory() as td:
             args = types.SimpleNamespace(out_dir=td, gain_db=6.0,
-                                         duration=1.0, max_sessions=1)
+                                         duration=1.0, max_sessions=1,
+                                         hpf=True, agc=True)
             cap = AtvvCapture(args)
             cap.accum.frame_len = 120
             cap._begin_session(3, CODEC_16K, 7)
@@ -1008,9 +1267,9 @@ def self_test() -> int:
                                              seg["offset"] + seg["bytes"]])
             pcm_from_raw = read_wav_samples(out / "session_1.raw.wav")
             assert reproduced == pcm_from_raw
-            # wav = raw 经 smooth3+gain(6dB)
+            # wav = raw 经完整后处理链 smooth3→HPF→gain(6dB)→AGC
             pcm_from_wav = read_wav_samples(out / "session_1.wav")
-            assert pcm_from_wav == apply_gain(smooth3(reproduced), 6.0)
+            assert pcm_from_wav == postprocess(reproduced, 6.0)
             assert (out / "events.jsonl").exists()
 
     check("adpcm_basic", test_adpcm_basic)
@@ -1023,9 +1282,15 @@ def self_test() -> int:
     check("caps_bad", test_caps_bad)
     check("smooth", test_smooth)
     check("gain", test_gain)
+    check("hpf_dc_decay", test_hpf_dc_decay)
+    check("hpf_frequency_response", test_hpf_frequency_response)
+    check("agc_pullup", test_agc_pullup)
+    check("agc_noise_budget", test_agc_noise_budget)
+    check("agc_instant_ceil", test_agc_instant_ceil)
+    check("filter_reset_idempotent", test_filter_reset_idempotent)
     check("session_sidecar_segments", test_session_sidecar_segments)
 
-    total = 11
+    total = 17
     print(f"---- self-test: {total - len(failures)}/{total} passed ----",
           flush=True)
     return 1 if failures else 0
@@ -1040,6 +1305,10 @@ def main() -> int:
                     help="输出目录（默认 scripts/e2e_test/fixtures/xiaomi/<timestamp>/）")
     ap.add_argument("--gain-db", type=float, default=0.0,
                     help="PCM 增益 dB（钳位 ±24，默认 0）")
+    ap.add_argument("--no-hpf", action="store_true",
+                    help="关闭 90Hz 高通滤波（A/B 对照用，默认开）")
+    ap.add_argument("--no-agc", action="store_true",
+                    help="关闭软件 AGC（A/B 对照用，默认开）")
     ap.add_argument("--duration", type=float, default=60.0,
                     help="总采集时长上限秒数（默认 60）")
     ap.add_argument("--max-sessions", type=int, default=3,

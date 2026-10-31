@@ -1,0 +1,3 @@
+# 本地/CI 生成的发布数据，不进仓库（CI 在 deploy-website.yml 中生成）
+public/downloads.json
+public/firmware/

@@ -152,8 +152,23 @@ for %%P in (
     )
 )
 
+REM Detect local llama.cpp source to bypass download (offline/dev builds; same
+REM pattern as WinSparkle; mirrors FETCHCONTENT_SOURCE_DIR_LLAMA_CPP in CMakeLists).
+set "LLAMA_CMAKE_ARGS="
+for %%P in (
+    "%ROOT_DIR%\..\llama-b10868\llama.cpp-b10868"
+    "%ROOT_DIR%\..\llama.cpp-b10868"
+    "%ROOT_DIR%\..\llama.cpp"
+) do (
+    if not defined LLAMA_CMAKE_ARGS if exist "%%~P\CMakeLists.txt" (
+        echo   - Using local llama.cpp source: %%~P
+        set "LLAMA_CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_LLAMA_CPP=%%~P"
+    )
+)
+
 cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" -G Ninja ^
     %WINSPARKLE_CMAKE_ARGS% ^
+    %LLAMA_CMAKE_ARGS% ^
     -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%" ^
     -DVOICESTICK_BUILTIN_TENCENT_SECRET_ID="%VOICESTICK_BUILTIN_TENCENT_SECRET_ID%" ^
     -DVOICESTICK_BUILTIN_TENCENT_SECRET_KEY="%VOICESTICK_BUILTIN_TENCENT_SECRET_KEY%" ^

@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kHotwordActivityClearConfirmBodySuffix) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kVoiceTargetedUnconfirmed) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -29,6 +29,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsLanguageEnglish)] = "English";
     table[Index(StringId::kSettingsLanguageChineseSimplified)] = "Simplified Chinese";
     table[Index(StringId::kSettingsProvider)] = "Provider";
+    table[Index(StringId::kSettingsProviderLocal)] = "Local ASR (offline, no cloud key)";
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "Resource ID";
     table[Index(StringId::kSettingsHotwords)] = "Hotwords";
@@ -107,6 +108,39 @@ constexpr StringTable EnglishStrings() {
         "Could not launch the spectrum viewer. Make sure Python is installed and "
         "scripts/e2e_test/spectrogram_server.py exists in the repository.";
     table[Index(StringId::kSettingsDeveloperMode)] = "Developer Mode (show all advanced settings)";
+    table[Index(StringId::kSettingsLocalMicModelsDir)] = "Models directory";
+    table[Index(StringId::kSettingsLocalMicHotkey)] = "Push-to-talk key";
+    table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
+        "Examples: right ctrl / capslock / f9. Hold to talk, release to insert.";
+    table[Index(StringId::kSettingsLocalMicBrowse)] = "Browse...";
+    table[Index(StringId::kSettingsLocalMicCapture)] = "Capture key";
+    table[Index(StringId::kSettingsLocalMicCapturing)] = "Press a key (Esc to cancel)...";
+    table[Index(StringId::kSettingsLocalMicHotkeyUnsupported)] =
+        "That key is not supported for push-to-talk. Try right/left ctrl|shift|alt, "
+        "capslock, f1-f24 or a letter/number key.";
+    table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ Models ready (SenseVoice found)";
+    table[Index(StringId::kSettingsLocalMicModelsMissing)] =
+        "✗ Model files not found (need model.int8.onnx + tokens.txt)";
+    table[Index(StringId::kSettingsLocalMicDownload)] = "Download models...";
+    table[Index(StringId::kModelDownloadTitle)] = "Download Local Models";
+    table[Index(StringId::kModelDownloadIntro)] =
+        "Downloads local recognition & refinement models to your user folder. "
+        "About 240 MB (required) + 1.1 GB (optional).";
+    table[Index(StringId::kModelDownloadAsrItem)] =
+        "Speech recognition model (required, ~240 MB)";
+    table[Index(StringId::kModelDownloadRefineItem)] =
+        "Text refinement model (optional, ~1.1 GB, skip for rules-only)";
+    table[Index(StringId::kModelDownloadDiskSpace)] = "Disk space needed: about %s";
+    table[Index(StringId::kModelDownloadStart)] = "Start download";
+    table[Index(StringId::kModelDownloadRunning)] = "Downloading...";
+    table[Index(StringId::kModelDownloadDone)] =
+        "Download complete. Click \"Save\" to enable local speech recognition.";
+    table[Index(StringId::kModelDownloadDoneRefineMissing)] =
+        "Recognition model ready. Refinement model was not downloaded; "
+        "rule-based refinement will be used.";
+    table[Index(StringId::kModelDownloadFailed)] = "Download failed:";
+    table[Index(StringId::kModelDownloadCancelled)] =
+        "Cancelled. Partial progress is kept and resumes next time.";
     table[Index(StringId::kMenuPairDevice)] = "Pair Device...";
     table[Index(StringId::kMenuSettings)] = "Settings...";
     table[Index(StringId::kMenuQuit)] = "Quit";
@@ -136,6 +170,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kMenuHotkey)] = "Hotkey";
     table[Index(StringId::kMenuHotkeyEnabled)] = "Enable Hotkey";
     table[Index(StringId::kMenuHotkeyCustom)] = "Customize Hotkey...";
+    table[Index(StringId::kMenuLocalMicHotkey)] = "Push-to-talk key...";
     table[Index(StringId::kMenuHotkeyConflictTitle)] = "Hotkey registration failed";
     table[Index(StringId::kMenuHotkeyConflictBody)] = "The selected hotkey is already in use. Choose another hotkey from the menu.";
     table[Index(StringId::kStatusNoPairedDevices)] = "No paired VoiceStick devices";
@@ -177,6 +212,10 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kPairXiaomiOsPairing)] = "Pairing with Windows Bluetooth...";
     table[Index(StringId::kPairXiaomiBondFailed)] =
         "Windows pairing failed. Remove the remote in Bluetooth settings, then re-add it and rescan.";
+    table[Index(StringId::kPairGatewayRelayedSuffix)] = " (relayed by the StickS3)";
+    table[Index(StringId::kPairGatewayRelayedBlocked)] =
+        "Gateway mode is on: the remote is relayed by the StickS3 and must not be paired with this PC. "
+        "Turn gateway mode off on the device to use the remote directly.";
     table[Index(StringId::kOnboardingTitle)] = "Welcome to VoiceStick";
     table[Index(StringId::kOnboardingSubtitle)] = "Pair your device and start voice input from anywhere.";
     table[Index(StringId::kOnboardingGetStarted)] = "Get Started";
@@ -247,6 +286,12 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotkeyMissingModifier)] = "Error: at least 1 modifier is required (Ctrl/Alt/Shift/Win)";
     table[Index(StringId::kHotkeyConflictTitle)] = "Hotkey conflict";
     table[Index(StringId::kHotkeyConflictMessage)] = "This hotkey is already used by another app. Choose another combination.";
+    table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "Hotkey capture";
+    table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
+        "No key press was detected, so compatibility capture mode is now active. Press the "
+        "target hotkey again — it is now recognized no matter which window has focus, "
+        "including elevated (administrator) ones. Note: in this mode the key press also "
+        "reaches the foreground window.";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud needs attention";
     table[Index(StringId::kCloudOpenPageQuestion)] = "Open the VoiceStick Cloud page?";
 
@@ -266,6 +311,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kNotificationManualPairSavedBody)] = "Waiting for VS-%s to advertise.";
     table[Index(StringId::kNotificationFirmwareUpdatedTitle)] = "VoiceStick firmware updated";
     table[Index(StringId::kNotificationFirmwareUpdatedBody)] = "The device is rebooting into the new firmware.";
+    table[Index(StringId::kNotificationAppUpdateTitle)] = "VoiceStick update available";
+    table[Index(StringId::kNotificationAppUpdateBody)] = "A new version of VoiceStick is available. Click here to learn more.";
     table[Index(StringId::kOverlayListening)] = "Listening...";
     table[Index(StringId::kOverlayThinking)] = "Thinking...";
     table[Index(StringId::kOverlayError)] = "Error";
@@ -284,6 +331,10 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "No selectable text was found.";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "Selection Too Long";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "Selection is too long to be a hotword and was ignored.";
+    table[Index(StringId::kSelectionHotwordInvalidTitle)] = "Invalid Hotword";
+    table[Index(StringId::kSelectionHotwordInvalidBody)] =
+        "Selection has unsupported characters or exceeds the hotword limits; ignored: ";
+    table[Index(StringId::kGatewayDeviceRoutesLabel)] = "Device routes:";
     table[Index(StringId::kHotwordCandidateNotifyTitle)] = "Hotword Suggestion";
     table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
         " was corrected repeatedly. Review it in Settings - Hotwords.";
@@ -426,6 +477,15 @@ constexpr StringTable EnglishStrings() {
         "The voice key is reserved for voice input. To customize the voice trigger hotkey, "
         "configure it in Settings -> Third-party Input Method.";
     table[Index(StringId::kXiaomiKeymapClickHint)] = "Click any button in the photo";
+    table[Index(StringId::kXiaomiKeymapCaptureHintTitle)] = "Key capture";
+    table[Index(StringId::kXiaomiKeymapCaptureHintBody)] =
+        "No key press was detected, so compatibility capture mode is now active. Press the "
+        "target key on your computer keyboard again (e.g. Backspace) — it is now recognized "
+        "no matter which window has focus.\n"
+        "Note: in this mode the key press also reaches the foreground window. If capture "
+        "still does not respond, use manual input below (e.g. backspace or alt+left). The "
+        "BACK key on some Xiaomi remote batches (RC003) is dropped by the Windows Bluetooth "
+        "stack and never reaches the system, so it can only be bound via manual input.";
     table[Index(StringId::kXiaomiButtonPower)] = "Power";
     table[Index(StringId::kXiaomiButtonMic)] = "Microphone";
     table[Index(StringId::kXiaomiButtonUp)] = "Up";
@@ -495,6 +555,110 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kHotwordActivityStatusNormal)] = "normal";
     table[Index(StringId::kHotwordActivityEvictedGroup)] =
         "Evicted pool (auto-reclaims on reuse)";
+    table[Index(StringId::kXiaomiHidTapToggleLabel)] =
+        "Enhanced keys (Back / Volume) — requires admin approval";
+    table[Index(StringId::kXiaomiHidTapHint)] =
+        "Enables the three keys the Windows Bluetooth stack drops, via a helper "
+        "component injected into the system HID host. Re-approval is needed after "
+        "the remote reconnects or the app updates.";
+    table[Index(StringId::kXiaomiHidTapStateDisabled)] = "Enhanced keys: off";
+    table[Index(StringId::kXiaomiGatewayRepeatLabel)] =
+        "Long-press repeat interval";
+    table[Index(StringId::kXiaomiHidTapStateNoHost)] =
+        "Enhanced keys: waiting for the remote to connect";
+    table[Index(StringId::kXiaomiHidTapStatePending)] =
+        "Enhanced keys: waiting for administrator approval...";
+    table[Index(StringId::kXiaomiHidTapStateConnected)] =
+        "Enhanced keys: active";
+    table[Index(StringId::kXiaomiHidTapStateStale)] =
+        "Enhanced keys: link lost, reconnect the remote";
+    table[Index(StringId::kSettingsLocalRefineEnable)] =
+        "Local text refinement (filter filler words)";
+    table[Index(StringId::kSettingsLocalRefineModelOk)] =
+        "✓ Refine model ready (Qwen3 GGUF found)";
+    table[Index(StringId::kSettingsLocalRefineModelMissing)] =
+        "✗ Refine model not found; falls back to rule-based cleanup";
+    table[Index(StringId::kSettingsLocalRefinePrompt)] = "Local refine prompt";
+    table[Index(StringId::kSettingsLocalRefineCrossTurn)] =
+        "Cross-turn context correction (Qwen3-4B)";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnOk)] =
+        "✓ Cross-turn model ready (Qwen3-4B)";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnDegraded)] =
+        "△ Qwen3-4B not found; cross-turn falls back to 1.7B (weaker)";
+    table[Index(StringId::kSelectionHotwordCorrectButton)] = "✎ Correct";
+    table[Index(StringId::kSelectionCorrectionTitle)] = "Fix Misrecognition";
+    table[Index(StringId::kSelectionCorrectionWrongLabel)] = "Misrecognized:";
+    table[Index(StringId::kSelectionCorrectionCandidatesLabel)] =
+        "Candidates (click to use):";
+    table[Index(StringId::kSelectionCorrectionLoading)] =
+        "Generating candidates...";
+    table[Index(StringId::kSelectionCorrectionNoCandidates)] =
+        "No candidates; type the correct word below";
+    table[Index(StringId::kSelectionCorrectionManualLabel)] = "Correct word:";
+    table[Index(StringId::kLicenseSectionTitle)] = "License";
+    table[Index(StringId::kLicenseStatusTrial)] = "Trial: %d days remaining";
+    table[Index(StringId::kLicenseStatusActive)] = "Licensed until %s";
+    table[Index(StringId::kLicenseStatusPerpetual)] = "Licensed (perpetual)";
+    table[Index(StringId::kLicenseStatusExpired)] = "License expired";
+    table[Index(StringId::kLicenseActivateButton)] = "Activate...";
+    table[Index(StringId::kLicenseActivatePrompt)] = "Enter license key:";
+    table[Index(StringId::kLicenseActivateSuccess)] = "License activated.";
+    table[Index(StringId::kLicenseActivateFailFormat)] = "Invalid license key format.";
+    table[Index(StringId::kLicenseActivateFailBinding)] =
+        "This key is bound to another device/machine.";
+    table[Index(StringId::kLicenseActivateFailExpired)] = "This license key has expired.";
+    table[Index(StringId::kLicenseDeviceRequired)] =
+        "Connect your paired voice device first.";
+    table[Index(StringId::kLicenseLocalBlocked)] =
+        "Local ASR requires an active license (trial expired).";
+    table[Index(StringId::kStaleSessionTitle)] = "Voice input needs re-pairing";
+    table[Index(StringId::kStaleSessionBody)] =
+        "The Bluetooth session went stale, so voice input is unavailable. Open Windows "
+        "Bluetooth settings, remove this VoiceStick device, then add it back and let the app "
+        "reconnect. Remote control buttons keep working meanwhile.";
+    table[Index(StringId::kPairOsBondOptionalFailed)] =
+        "Windows Bluetooth pairing did not complete, so remote-control buttons may not reach "
+        "this PC. Voice input still works. If buttons do nothing, remove this device in "
+        "Windows Bluetooth settings and add it again.";
+    table[Index(StringId::kVoiceEditSectionTitle)] = "Voice Editing";
+    table[Index(StringId::kVoiceEditEnable)] =
+        "Enable voice editing commands (say \"delete last two characters\", \"undo\")";
+    table[Index(StringId::kVoiceEditDefaultChars)] =
+        "Characters deleted when you say \"delete\" alone";
+    table[Index(StringId::kVoiceEditHintRuntime)] =
+        "Works only on the most recent dictation, with the cursor still at its end.";
+    table[Index(StringId::kVoiceEditHintMode)] =
+        "Not available in subtitle or third-party input-method modes.";
+    table[Index(StringId::kVoiceEditDeletedChars)] = "Deleted %d characters";
+    table[Index(StringId::kVoiceEditDeletedSentence)] = "Deleted the last sentence";
+    table[Index(StringId::kVoiceEditDeletedSentences)] = "Deleted the last %d sentences";
+    table[Index(StringId::kVoiceEditDeletedAll)] = "Deleted this dictation";
+    table[Index(StringId::kVoiceEditNoTarget)] = "No voice input to delete";
+    table[Index(StringId::kVoiceEditWrongWindow)] =
+        "The active window changed; nothing deleted";
+    table[Index(StringId::kVoiceEditElevated)] = "Cannot delete in an elevated window";
+    table[Index(StringId::kVoiceEditCursorMoved)] = "Cursor moved; nothing deleted";
+    table[Index(StringId::kVoiceEditSelectionActive)] = "Clear the selection first";
+    table[Index(StringId::kVoiceEditPassword)] =
+        "Voice delete is not supported in password fields";
+    table[Index(StringId::kVoiceEditTextChanged)] =
+        "The dictated text has changed; nothing deleted";
+    table[Index(StringId::kVoiceEditUnverifiedExpired)] =
+        "Too late to verify the cursor; nothing deleted";
+    table[Index(StringId::kVoiceEditUnreadable)] =
+        "Cannot verify the cursor; nothing deleted";
+    table[Index(StringId::kVoiceTargetedDeleted)] = "Deleted %d characters";
+    table[Index(StringId::kVoiceTargetedReplaced)] = "Replaced %d characters";
+    table[Index(StringId::kVoiceTargetedNotFound)] =
+        "Not found in the last dictation; nothing changed";
+    table[Index(StringId::kVoiceTargetedAmbiguous)] =
+        "Multiple matches; say “the first one” or “the last one”";
+    table[Index(StringId::kVoiceTargetedInvalid)] =
+        "The command is incomplete; nothing changed";
+    table[Index(StringId::kVoiceTargetedTextChanged)] =
+        "The dictated text changed; nothing modified";
+    table[Index(StringId::kVoiceTargetedUnconfirmed)] =
+        "The edit could not be confirmed; please check the text field";
     return table;
 }
 
@@ -510,6 +674,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsLanguageEnglish)] = "英文";
     table[Index(StringId::kSettingsLanguageChineseSimplified)] = "简体中文";
     table[Index(StringId::kSettingsProvider)] = "服务提供方";
+    table[Index(StringId::kSettingsProviderLocal)] = "本地语音识别（离线，无需云端密钥）";
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "资源 ID";
     table[Index(StringId::kSettingsHotwords)] = "热词";
@@ -584,6 +749,37 @@ constexpr StringTable ChineseStrings() {
         "无法启动频谱查看器。请确认已安装 Python，且仓库中存在 "
         "scripts/e2e_test/spectrogram_server.py。";
     table[Index(StringId::kSettingsDeveloperMode)] = "开发者模式（显示全部高级设置）";
+    table[Index(StringId::kSettingsLocalMicModelsDir)] = "模型目录";
+    table[Index(StringId::kSettingsLocalMicHotkey)] = "按住说话热键";
+    table[Index(StringId::kSettingsLocalMicHotkeyHint)] =
+        "示例：right ctrl / capslock / f9。按住说话，松开注入文本。";
+    table[Index(StringId::kSettingsLocalMicBrowse)] = "浏览…";
+    table[Index(StringId::kSettingsLocalMicCapture)] = "录入";
+    table[Index(StringId::kSettingsLocalMicCapturing)] = "按下想要的键…（Esc 取消）";
+    table[Index(StringId::kSettingsLocalMicHotkeyUnsupported)] =
+        "该键不支持按住说话。可用：right/left ctrl|shift|alt、capslock、f1-f24 或字母/数字键。";
+    table[Index(StringId::kSettingsLocalMicModelsOk)] = "✓ 模型就绪（已找到 SenseVoice）";
+    table[Index(StringId::kSettingsLocalMicModelsMissing)] =
+        "✗ 未找到模型文件（需 model.int8.onnx 与 tokens.txt）";
+    table[Index(StringId::kSettingsLocalMicDownload)] = "下载模型…";
+    table[Index(StringId::kModelDownloadTitle)] = "下载本地模型";
+    table[Index(StringId::kModelDownloadIntro)] =
+        "将本地识别与文本精修模型下载到用户目录：识别约 240 MB（必选）+ "
+        "精修约 1.1 GB（可选）。";
+    table[Index(StringId::kModelDownloadAsrItem)] =
+        "语音识别模型（必选，约 240 MB）";
+    table[Index(StringId::kModelDownloadRefineItem)] =
+        "文本精修模型（可选，约 1.1 GB，跳过则仅规则精修）";
+    table[Index(StringId::kModelDownloadDiskSpace)] = "需要磁盘空间：约 %s";
+    table[Index(StringId::kModelDownloadStart)] = "开始下载";
+    table[Index(StringId::kModelDownloadRunning)] = "正在下载…";
+    table[Index(StringId::kModelDownloadDone)] =
+        "下载完成。回到设置页点击“保存”即可启用本地语音识别。";
+    table[Index(StringId::kModelDownloadDoneRefineMissing)] =
+        "识别模型就绪。精修模型未下载，将使用规则精修（可稍后重新下载）。";
+    table[Index(StringId::kModelDownloadFailed)] = "下载失败：";
+    table[Index(StringId::kModelDownloadCancelled)] =
+        "已取消。已下载部分会保留，下次继续（断点续传）。";
     table[Index(StringId::kMenuPairDevice)] = "配对设备...";
     table[Index(StringId::kMenuSettings)] = "设置...";
     table[Index(StringId::kMenuQuit)] = "退出";
@@ -613,6 +809,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kMenuHotkey)] = "热键";
     table[Index(StringId::kMenuHotkeyEnabled)] = "启用热键";
     table[Index(StringId::kMenuHotkeyCustom)] = "自定义热键...";
+    table[Index(StringId::kMenuLocalMicHotkey)] = "按住说话热键...";
     table[Index(StringId::kMenuHotkeyConflictTitle)] = "热键注册失败";
     table[Index(StringId::kMenuHotkeyConflictBody)] = "所选热键已被其他程序占用，请在菜单中更换其他热键。";
     table[Index(StringId::kStatusNoPairedDevices)] = "没有已配对的 VoiceStick 设备";
@@ -654,6 +851,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kPairXiaomiOsPairing)] = "正在通过 Windows 蓝牙配对…";
     table[Index(StringId::kPairXiaomiBondFailed)] =
         "系统配对失败。请先在 Windows 蓝牙设置中删除并重新添加遥控器，然后重新扫描。";
+    table[Index(StringId::kPairGatewayRelayedSuffix)] = "（由 StickS3 中转）";
+    table[Index(StringId::kPairGatewayRelayedBlocked)] =
+        "网关模式已开启：遥控器由 StickS3 中转，不应与本机配对。"
+        "如需直连遥控器，请先在设备上关闭网关模式。";
     table[Index(StringId::kOnboardingTitle)] = "欢迎使用 VoiceStick";
     table[Index(StringId::kOnboardingSubtitle)] = "配对设备后，即可在任意位置使用语音输入。";
     table[Index(StringId::kOnboardingGetStarted)] = "开始使用";
@@ -724,6 +925,11 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotkeyMissingModifier)] = "错误：至少需要 1 个修饰键（Ctrl/Alt/Shift/Win）";
     table[Index(StringId::kHotkeyConflictTitle)] = "热键冲突";
     table[Index(StringId::kHotkeyConflictMessage)] = "该快捷键已被其他程序占用，请选择其他组合。";
+    table[Index(StringId::kHotkeyCaptureTimeoutTitle)] = "快捷键录入";
+    table[Index(StringId::kHotkeyCaptureTimeoutBody)] =
+        "几秒内未检测到按键，已自动切换为兼容录入模式。请再按一次目标快捷键：现在无论"
+        "焦点在哪个窗口（包括管理员权限的窗口）都能识别。注意：兼容模式无法屏蔽按键"
+        "透传，按下的键可能同时作用于当前前台窗口。";
     table[Index(StringId::kCloudNeedsAttentionTitle)] = "VoiceStick Cloud 需要处理";
     table[Index(StringId::kCloudOpenPageQuestion)] = "是否打开 VoiceStick Cloud 页面？";
 
@@ -740,6 +946,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kNotificationManualPairSavedBody)] = "正在等待 VS-%s 广播。";
     table[Index(StringId::kNotificationFirmwareUpdatedTitle)] = "VoiceStick 固件已更新";
     table[Index(StringId::kNotificationFirmwareUpdatedBody)] = "设备正在重启到新固件。";
+    table[Index(StringId::kNotificationAppUpdateTitle)] = "发现 VoiceStick 新版本";
+    table[Index(StringId::kNotificationAppUpdateBody)] = "点击此处查看更新内容。";
     table[Index(StringId::kOverlayListening)] = "正在聆听...";
     table[Index(StringId::kOverlayThinking)] = "正在思考...";
     table[Index(StringId::kOverlayError)] = "错误";
@@ -758,6 +966,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSelectionHotwordEmptyBody)] = "未找到可划选的文本。";
     table[Index(StringId::kSelectionHotwordTooLongTitle)] = "选区过长";
     table[Index(StringId::kSelectionHotwordTooLongBody)] = "选区过长不适合作为热词，已忽略。";
+    table[Index(StringId::kSelectionHotwordInvalidTitle)] = "非法热词";
+    table[Index(StringId::kSelectionHotwordInvalidBody)] =
+        "选区含不支持的字符或超出热词限制，已忽略：";
+    table[Index(StringId::kGatewayDeviceRoutesLabel)] = "设备路由回执：";
     table[Index(StringId::kHotwordCandidateNotifyTitle)] = "热词候选建议";
     table[Index(StringId::kHotwordCandidateNotifyBodySuffix)] =
         " 反复被精修纠正，可在设置-热词中确认加入。";
@@ -890,6 +1102,13 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kXiaomiKeymapMicNote)] =
         "语音键为语音输入专用。要自定义语音触发热键，请在 设置 → 微信输入法模式 中配置。";
     table[Index(StringId::kXiaomiKeymapClickHint)] = "点击照片中的任意按键";
+    table[Index(StringId::kXiaomiKeymapCaptureHintTitle)] = "按键录入";
+    table[Index(StringId::kXiaomiKeymapCaptureHintBody)] =
+        "几秒内未检测到按键，已自动切换为兼容录入模式。请再按一次要绑定的电脑键盘按键"
+        "（如 Backspace）：现在无论焦点在哪个窗口都能识别。\n"
+        "注意：兼容模式无法屏蔽按键透传，按下的键可能同时作用于当前前台窗口。若仍无"
+        "反应，请使用下方手动输入（例如 backspace 或 alt+left）。部分批次遥控器"
+        "（RC003）的返回键事件会被 Windows 蓝牙栈丢弃、系统永远收不到，只能手动输入绑定。";
     table[Index(StringId::kXiaomiButtonPower)] = "电源键";
     table[Index(StringId::kXiaomiButtonMic)] = "麦克风键";
     table[Index(StringId::kXiaomiButtonUp)] = "上";
@@ -957,6 +1176,89 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kHotwordActivityStatusMonitoring)] = "监控中";
     table[Index(StringId::kHotwordActivityStatusNormal)] = "正常";
     table[Index(StringId::kHotwordActivityEvictedGroup)] = "回收池（活跃度回升自动回归）";
+    table[Index(StringId::kXiaomiHidTapToggleLabel)] =
+        "增强按键识别（返回 / 音量键）——需要管理员授权";
+    table[Index(StringId::kXiaomiHidTapHint)] =
+        "启用 Windows 蓝牙栈会丢弃的三个按键（返回 / 音量+ / 音量-），通过注入系统"
+        " HID 宿主的辅助组件实现。遥控器重连或应用更新后需重新授权。";
+    table[Index(StringId::kXiaomiHidTapStateDisabled)] = "增强按键识别：未启用";
+    table[Index(StringId::kXiaomiGatewayRepeatLabel)] = "长按连发间隔";
+    table[Index(StringId::kXiaomiHidTapStateNoHost)] =
+        "增强按键识别：等待遥控器连接";
+    table[Index(StringId::kXiaomiHidTapStatePending)] =
+        "增强按键识别：等待管理员授权…";
+    table[Index(StringId::kXiaomiHidTapStateConnected)] =
+        "增强按键识别：工作正常";
+    table[Index(StringId::kXiaomiHidTapStateStale)] =
+        "增强按键识别：连接异常，请重新连接遥控器";
+    table[Index(StringId::kSettingsLocalRefineEnable)] =
+        "本地文本精修（过滤口水词）";
+    table[Index(StringId::kSettingsLocalRefineModelOk)] =
+        "✓ 精修模型就绪（已找到 Qwen3 GGUF）";
+    table[Index(StringId::kSettingsLocalRefineModelMissing)] =
+        "✗ 未找到精修模型，将退化为规则级清理";
+    table[Index(StringId::kSettingsLocalRefinePrompt)] = "本地精修提示词";
+    table[Index(StringId::kSettingsLocalRefineCrossTurn)] =
+        "跨轮上下文纠错（Qwen3-4B）";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnOk)] =
+        "✓ 跨轮纠错模型就绪（Qwen3-4B）";
+    table[Index(StringId::kSettingsLocalRefineCrossTurnDegraded)] =
+        "△ 未找到 Qwen3-4B，跨轮纠错降级 1.7B（纠正能力弱）";
+    table[Index(StringId::kSelectionHotwordCorrectButton)] = "✎ 纠错";
+    table[Index(StringId::kSelectionCorrectionTitle)] = "纠错";
+    table[Index(StringId::kSelectionCorrectionWrongLabel)] = "识别错误：";
+    table[Index(StringId::kSelectionCorrectionCandidatesLabel)] = "候选（点击选用）：";
+    table[Index(StringId::kSelectionCorrectionLoading)] = "正在生成候选…";
+    table[Index(StringId::kSelectionCorrectionNoCandidates)] =
+        "无候选，请在下方输入正确词";
+    table[Index(StringId::kSelectionCorrectionManualLabel)] = "正确词：";
+    table[Index(StringId::kLicenseSectionTitle)] = "授权";
+    table[Index(StringId::kLicenseStatusTrial)] = "试用剩余 %d 天";
+    table[Index(StringId::kLicenseStatusActive)] = "已授权至 %s";
+    table[Index(StringId::kLicenseStatusPerpetual)] = "已授权（买断）";
+    table[Index(StringId::kLicenseStatusExpired)] = "授权已到期，请购买续期";
+    table[Index(StringId::kLicenseActivateButton)] = "激活…";
+    table[Index(StringId::kLicenseActivatePrompt)] = "请输入授权码：";
+    table[Index(StringId::kLicenseActivateSuccess)] = "激活成功";
+    table[Index(StringId::kLicenseActivateFailFormat)] = "授权码格式无效";
+    table[Index(StringId::kLicenseActivateFailBinding)] = "该授权码绑定了其他设备/电脑";
+    table[Index(StringId::kLicenseActivateFailExpired)] = "该授权码已过期";
+    table[Index(StringId::kLicenseDeviceRequired)] = "请先连接已配对的语音设备";
+    table[Index(StringId::kLicenseLocalBlocked)] = "本地语音识别需要有效授权（试用已到期）";
+    table[Index(StringId::kStaleSessionTitle)] = "语音输入需要重新配对";
+    table[Index(StringId::kStaleSessionBody)] =
+        "蓝牙会话已失效，语音输入暂时不可用。请打开 Windows 蓝牙设置，删除本 VoiceStick "
+        "设备后重新添加并等待应用自动连接。期间遥控器按键不受影响。";
+    table[Index(StringId::kPairOsBondOptionalFailed)] =
+        "Windows 蓝牙配对未完成，遥控器按键可能无法进入本机；语音输入仍可用。若按键无反应，"
+        "请在 Windows 蓝牙设置中删除本设备后重新添加。";
+    table[Index(StringId::kVoiceEditSectionTitle)] = "语音编辑";
+    table[Index(StringId::kVoiceEditEnable)] =
+        "启用语音编辑指令（说\"删除最后两个字\"、\"撤销\"等直接编辑刚输入的文本）";
+    table[Index(StringId::kVoiceEditDefaultChars)] = "单独说\"删除\"时删除的字数";
+    table[Index(StringId::kVoiceEditHintRuntime)] =
+        "仅对最近一次语音输入生效；光标须仍在该文本末尾。";
+    table[Index(StringId::kVoiceEditHintMode)] = "字幕 / 第三方输入法模式不支持。";
+    table[Index(StringId::kVoiceEditDeletedChars)] = "已删除 %d 个字";
+    table[Index(StringId::kVoiceEditDeletedSentence)] = "已删除最后一句";
+    table[Index(StringId::kVoiceEditDeletedSentences)] = "已删除最后 %d 句";
+    table[Index(StringId::kVoiceEditDeletedAll)] = "已删除本次输入";
+    table[Index(StringId::kVoiceEditNoTarget)] = "没有可删除的语音输入";
+    table[Index(StringId::kVoiceEditWrongWindow)] = "前台窗口已变化，未删除";
+    table[Index(StringId::kVoiceEditElevated)] = "目标窗口权限较高，无法删除";
+    table[Index(StringId::kVoiceEditCursorMoved)] = "光标位置已变化，未删除";
+    table[Index(StringId::kVoiceEditSelectionActive)] = "请先取消选中";
+    table[Index(StringId::kVoiceEditPassword)] = "密码框中不支持语音删除";
+    table[Index(StringId::kVoiceEditTextChanged)] = "语音输入内容已变化，未删除";
+    table[Index(StringId::kVoiceEditUnverifiedExpired)] = "已超过可校验时间，未删除";
+    table[Index(StringId::kVoiceEditUnreadable)] = "当前应用无法校验光标，未删除";
+    table[Index(StringId::kVoiceTargetedDeleted)] = "已删除 %d 个字";
+    table[Index(StringId::kVoiceTargetedReplaced)] = "已替换 %d 个字";
+    table[Index(StringId::kVoiceTargetedNotFound)] = "刚才的输入里没有找到该内容，未修改";
+    table[Index(StringId::kVoiceTargetedAmbiguous)] = "找到多处匹配，请说明第一个还是最后一个";
+    table[Index(StringId::kVoiceTargetedInvalid)] = "指令不完整，未修改";
+    table[Index(StringId::kVoiceTargetedTextChanged)] = "语音输入内容已变化，未修改";
+    table[Index(StringId::kVoiceTargetedUnconfirmed)] = "修改结果未能确认，请检查输入框";
     return table;
 }
 

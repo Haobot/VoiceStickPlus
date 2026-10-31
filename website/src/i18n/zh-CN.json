@@ -72,18 +72,44 @@
       "connecting": "正在同步 ESP32-S3 bootloader...",
       "downloading": "正在下载 Release 固件...",
       "downloaded": "固件下载完成：{size}",
+      "fallback": "主源下载失败，改用 GitHub Release 备用源...",
+      "verified": "SHA-256 完整性校验通过。",
       "flashing": "开始写入 merged 固件到 0x0...",
       "done": "烧录完成，已发送设备重启信号。"
     },
     "error": {
       "downloadFailed": "固件下载失败，HTTP {status}",
+      "manifestFailed": "无法获取固件清单（HTTP {status}），为避免写入未校验镜像已中止。",
+      "missingHash": "固件清单缺少 SHA-256，已中止烧录。",
+      "sizeMismatch": "固件大小不符（期望 {expected} 字节，实际 {actual} 字节），已中止。",
+      "hashMismatch": "固件 SHA-256 校验失败，镜像可能被篡改，已中止烧录。",
       "wrongChip": "检测到 {chip}，请连接 M5Stack StickS3。"
     }
   },
   "download": {
     "title": "需要其他文件？",
-    "body": "GitHub Release 里还有校验和、appcast 文件和固件镜像。",
-    "cta": "查看全部发布文件"
+    "body": "下载页里有全部平台的安装包、固件镜像与校验和。",
+    "cta": "打开下载页"
+  },
+  "downloads": {
+    "eyebrow": "程序与固件",
+    "title": "下载",
+    "lead": "获取最新版本的桌面程序与 StickS3 固件，也提供历史版本与校验和。",
+    "loading": "正在加载版本信息...",
+    "loadFailed": "无法加载版本信息，请稍后重试，或直接前往 GitHub Releases 下载。",
+    "viewOnGithub": "在 GitHub 查看全部发布文件",
+    "latest": "最新版本",
+    "prerelease": "预发布",
+    "releasedAt": "发布于 {date}",
+    "minFirmware": "最低兼容固件 {version}",
+    "history": "历史版本",
+    "checksum": "SHA-256",
+      "fallback": "备用源（GitHub）",
+    "platform": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "firmware": "固件（StickS3）"
+    }
   },
   "footer": {
     "appcast": "Appcast"

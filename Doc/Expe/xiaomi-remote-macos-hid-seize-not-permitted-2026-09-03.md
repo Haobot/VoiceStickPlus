@@ -97,7 +97,7 @@ macOS 对暴露为「键盘类」的 HID 设备（usage page 键盘/消费控制
 
 ### 遗留 / 观察项（2026-09-04）
 
-- 自签证书已生成导入登录钥匙串（`~/.voicestick-sign/`，CN="VoiceStick Local Code Signing"），但私钥访问需用户在 SecurityAgent 弹窗点「始终允许」（两次命令行尝试均因弹窗未处理超时）。完成后把 `scripts/build-macos.sh` 签名优先级改为 Developer ID → 自签 → ad-hoc，TCC 权限跨构建才稳。
+- **已完成（2026-09-22）**：`scripts/build-macos.sh` 签名优先级已改为 Developer ID → 自签 → ad-hoc，自签分支不带 `--options runtime`（无 Team ID，同 ad-hoc 一样会触发库校验崩溃）。原证书「valid identity 但签名报 errSecInternalComponent」的根因是私钥未授权 codesign 访问且旧钥匙串项无法补授权；处置：重建同 CN 证书（`openssl req -x509` + `EKU=codeSigning`/`KU=digitalSignature`，**不要画蛇添足加 Basic Constraints**——加了反而被 `find-identity` 判 invalid，尽管 `codesign --sign` 实际可用）、p12 密码不能空串（否则 `security import` 报 MAC verification failed）、先删旧证书项再以 `-T /usr/bin/codesign` 导入登录钥匙串。另注意新版 macOS `find-identity -p codesigning` 不列出该自签身份（0 valid），属正常，签名/验签均通过；designated requirement 变为 `identifier "app.voicestick.mac" and certificate leaf = H"…"`，授权一次后跨编译保持。
 - 遥控器休眠后 app 的 `central.connect` 重连依赖按键唤醒广播；若长时间不回连，检查遥控器电量与蓝牙设置里的连接状态。
 - Windows 端二期/三期代码仍未编译验证（本机无 MSVC），沿用旧结论。
 
@@ -108,3 +108,62 @@ macOS 对暴露为「键盘类」的 HID 设备（usage page 键盘/消费控制
 - **macOS**：`swift build` 通过；`VoiceStickTests` **494/494** 全绿（一期 420 + 二期 usage/decision + 三期 app 合并单测）。已实现：配置 schema、语音键双击可配、罗技式映射窗、非独占 IOHID 观察 + CGEvent tap 关联拦截、前台应用切换映射（`NSWorkspace.didActivate` → `FrontmostAppProvider`）。
 - **Windows**：全部功能代码落地但**未编译验证**（本机无 MSVC），靠模式模仿 + 逐块自查；含 Raw Input + `WH_KEYBOARD_LL` 关联拦截、`EVENT_SYSTEM_FOREGROUND` 前台映射。落地前须在 Windows 机 `build_win.bat` + `ctest --test-dir desktop\windows\build-x64 --output-on-failure`。
 - **共同待真机验证**（人手按遥控器按钮）：①非独占 IOHID/Raw Input 能否稳定收到该设备报告；②逐键 usage page 归属与实际上报值；③tap/hook 与观察事件的 80ms 时序关联在方向键连发、音量连按、与真键盘并发下的错配率；④拦截开启后未自定义键 1:1 透传与 app 退出后回归原生；⑤多台同型 RC 的按句柄/设备独立映射（现取首台配对 RC 配置）。
+
+## 追加：自签证书固定 TCC 身份——落地实录与排障链（2026-09-22）
+
+任务：无 Apple Developer 认证的前提下，让 TCC 权限（蓝牙/输入监控/辅助功能）跨编译保持。方案＝自签代码签名证书固定签名身份：designated requirement 从「锚定二进制 cdhash」变为「`identifier "app.voicestick.mac" and certificate leaf = H"…"`」，授权一次后重编译不再失效。`scripts/build-macos.sh` 签名优先级改为 Developer ID → 自签（`VOICESTICK_DEV_IDENTITY`，默认 CN `"VoiceStick Local Code Signing"`）→ ad-hoc；自签与 ad-hoc 分支均不带 `--options runtime`（无 Team ID，带则 Sparkle dyld 崩，见 `Doc/Expe/app-update-mechanism-and-fork-migration-2026-07-30.md`）。pem 源在 `~/.voicestick-sign/`（旧 pem 备份 `*.bak-20260922`）。验证：arm64-only debug 包 `valid on disk` + `satisfies its Designated Requirement`；用户真机授权一次后重编译权限保持（2026-09-22 验证通过）。
+
+排障链（按踩坑顺序，均为 macOS 27 实测）：
+
+1. **`errSecInternalComponent`（证书显示 valid identity 但签名失败）**：根因＝私钥的 partition list 未授权 codesign 访问。修法＝**先删除钥匙串中旧证书项**（不删的话 import 不会修复既有密钥的 ACL），再 `security import sign.p12 -T /usr/bin/codesign` 导入登录钥匙串。`security set-key-partition-list` 路线需要钥匙串密码，非交互场景不可行。
+2. **重建证书不要画蛇添足加 Basic Constraints**：可用形态＝`openssl req -x509` + `-addext "extendedKeyUsage=codeSigning"` + `-addext "keyUsage=digitalSignature"`，**不加 Basic Constraints**。加了 CA:FALSE 或 CA:TRUE 都会被 `find-identity -p codesigning` 判为 invalid identity（0 valid）——尽管 `codesign --sign` 实际仍可用，但会让一切依赖 find-identity 的检测逻辑误判。
+3. **新版 macOS 特性**：`find-identity -p codesigning` 不再把自签证书列为 valid identity（输出 0 valid 属正常）；按证书名 `codesign -s "CN"` 签名、`codesign --verify --strict` 验签均正常。脚本里探测证书/私钥要用 `security find-certificate -c` + `security find-key -l`，不能依赖 find-identity。
+4. **空密码 p12 陷阱**：`openssl pkcs12 -export -passout pass:`（空密码）生成的 p12 会被 `security import` 以 `MAC verification failed` 拒收；给任意非空密码、导入时 `-P` 传入即可。
+5. **自签证书只认登录钥匙串**：导入自定义钥匙串（`security create-keychain` + `set-key-partition-list` + `add-trusted-cert` 全套）依然 0 valid identity、无法签名；放登录钥匙串才生效。
+
+## 追加：换机后无人值守签名链定案——登录钥匙串 ACL 死锁，自建钥匙串 + 显式 --keychain 可用（2026-10-02）
+
+场景：换机重建签名链（本机此前无 `~/.voicestick-sign/`）。按 2026-09-22 配方 `security import sign.p12 -T /usr/bin/codesign` 导入登录钥匙串后，**`codesign --sign` 无限挂起**（0 CPU，SecurityAgent 进程在场）——登录钥匙串中新建私钥首次被 codesign 访问会弹 ACL 授权 GUI，无人值守无法放行，且 `security import -A`（允许任意应用）同样被拦（新版 securityd 强制 partition ID 校验）。`set-key-partition-list` 需要用户钥匙串密码，深夜无人值守不可行。
+
+**修正 2026-09-22 结论 5「自签证书只认登录钥匙串」**：该结论过时/不完整。定案配方（2026-10-02 macOS 27 实测，签名+验签通过、app 冒烟启动正常）：
+
+1. `security create-keychain -p <自定密码>` 自建钥匙串（密码已知 → 可非交互操作）。
+2. `security set-keychain-settings -lut 999999`（防自动锁定）+ `unlock-keychain`。
+3. `security import sign.p12 -k <自建钥匙串> -P <p12密码> -T /usr/bin/codesign`。
+4. `security set-key-partition-list -S apple-tool:,apple:,codesign: -k <自定密码> <自建钥匙串>`（这一步在自建钥匙串上**不需要用户密码**，是整条链的关键）。
+5. 签名时**必须显式** `codesign --keychain <自建钥匙串路径> --sign "CN"`——不加 `--keychain` 时 codesign 只搜钥匙串搜索列表，找不到身份（或命中登录钥匙串里的残留身份继续挂死）。
+6. 登录钥匙串中若已导入过同 CN 身份，务必删除（`security delete-identity -c <CN> login.keychain-db`），否则不带 `--keychain` 的签名调用会命中它并挂死。
+
+判据（下次快速识别）：`codesign` 长时间 0 CPU 挂起 + `ps` 有 `SecurityAgent` = 钥匙串 ACL 授权弹窗在等人；不是死锁也不是证书问题。
+
+工程化：`scripts/build-macos.sh` 新增 `VOICESTICK_CODESIGN_KEYCHAIN` env（sign 追加 `--keychain`）；`scripts/make-dmg.sh` 新增「已带有效非 ad-hoc 签名则跳过重签」（旧逻辑会把自签产物降级为 ad-hoc + `--options runtime` → Sparkle 库校验崩溃，即 2026-09-22 修复过的同一坑的死而复生）。本机资产与密码见 `~/.voicestick-sign/README.md`（不入仓库）。
+
+## 追加：自建钥匙串睡眠锁定弹窗定案（2026-10-02 下午，用户实测踩坑）
+
+用户白天构建时遇到密码弹窗，输入开机密码与 Apple ID 密码均「不对」。**判据**：弹窗文案「"security"想使用"voicestick-sign"钥匙串。请输入钥匙串密码」＝自建签名钥匙串的**解锁窗**，预期密码是创建钥匙串时自设的（`~/.voicestick-sign/keychain-password`），与用户系统凭据无关——所以怎么输都不对。诱因＝凌晨创建时 `set-keychain-settings -lut 999999` 的 `-l`（睡眠锁定）：机器睡眠后钥匙串回锁定态，任何裸访问（含 `security show-keychain-info`，不止 codesign）都会触发 GUI 解锁。
+
+修复（三层，2026-10-02 定案）：
+
+1. `security set-keychain-settings <KC>`（不带任何标志）→ `no-timeout`（清除睡眠锁定与超时锁定；重启后仍会回锁定态，此项只是减少触发面）。
+2. 密码落 `~/.voicestick-sign/keychain-password`（chmod 600）；`build-macos.sh` / `make-dmg.sh` 签名前 `security unlock-keychain -p "$(cat …)"`（幂等，已解锁也安全）。
+3. 两脚本自动发现默认钥匙串路径（未显式设 `VOICESTICK_CODESIGN_KEYCHAIN` 且默认路径存在即采用），防照抄旧命令静默降级 ad-hoc。
+
+附带修正：make-dmg.sh 跳过重签的判据从 `codesign -dvv | grep "Authority="` 改为 `! grep "Signature=adhoc"`——本机自签证书的 `-dvv` 输出可能不含 Authority 行（2026-10-02 实测），按 Authority 判会漏判、对自签产物白白重签。
+
+## 追加：Sparkle EdDSA 密钥轮换断点——「无安装基数」误判（2026-10-02 下午定案）
+
+v2.3.9 自装 Mac 包经 Sparkle 升级 2.4.7 报「The update is improperly signed and could not be validated」。根因＝发布时轮换了 EdDSA 密钥对（旧私钥不在本机），而旧公钥自 2026-05-07 起钉在 plist 里——**开发者自己的旧自装包就是「安装基数」**，发布时断言「无 2.x Mac 安装基数，无升级影响」是误判。排查链：登录钥匙串 `svce="https://sparkle-project.org"` 条目是新生成钥（generate_keys 当时打印「Generating a new signing key」= 事前无旧钥）；文件系统/本地 TM 快照无导出物；**旧公钥连上游 0.3.2 的 appcast 签名都验不过**（CryptoKit 验证脚本实测）= 它是 fork 后自生成钥、私钥已丢失，非上游 CI 之钥。
+
+判定与出路：旧钥不可恢复 ⇒ 旧包的自动更新是**永久断点**，唯一修复＝手动下载新版 dmg/zip 覆盖安装一次（桥接升级），之后回到新钥链路。发布链自洽验证法（可复用）：`Curve25519.Signing.PublicKey(rawRepresentation: plist公钥)` 验 `appcast edSignature` 对 **COS 实际字节**（注意别拿本地重建产物验——签名钉死发布时字节，v2.4.7 当天就因用下午重建的 zip 验出假阴性）。
+
+教训：轮换任何「钉在已发布产物里的公钥」前，必须盘点**包括开发者本机在内的全部存量安装**；「没有公开发布过」≠「没有安装基数」。另：`security find-generic-password -s "Sparkle"` 查不到 Sparkle 默认钥——默认 service 是 `https://sparkle-project.org`（按 svce grep dump-keychain 才对）。
+
+## 追加：电源键（usage 0x66）开放映射与双形态 systemDefined 吞除（2026-10-19 真机验收）
+
+本拦截架构的键表此前刻意排除电源键（方案 C 级定案），2026-10-19 起开放：
+`RemoteButton.power` + `usageToButton[0x66]`，macOS 侧原生事件是 **systemDefined
+双形态**（subtype 1 首事件 + aux-control subtype 8 的 NX_POWER_KEY(6) down/up 对，
+不产生 keyDown），因"单次按下多形态"不能用本文主线的一次性消费吞除标记，
+改 300ms 非消耗吞除窗 + down/up 闩锁。常量与机制考证、真机验收结论、遗留项
+（网关 power 未验/原生行为未记录）见
+`Doc/Expe/macos-power-key-dual-form-system-defined-2026-10-19.md`（commit `3401845`）。

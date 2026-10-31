@@ -15,26 +15,26 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.2</string>
+	<string>2.4.10</string>
 	<key>CFBundleVersion</key>
-	<string>0.2.2</string>
+	<string>2.4.10</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>VoiceStick uses Bluetooth to connect to the VoiceStick microphone.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>VoiceStick uses Bluetooth to connect to the VoiceStick microphone.</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://haobot.github.io/VoiceStickPlus/appcast.xml</string>
+	<string>https://dl.davenger.cloud/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>3JnsktQiuygz/L9+t9w2fnvryjWNH3yq5+o6Osed2aM=</string>
+	<string>edLoTxJwkX8YQvDk3uW0kq3xNPXVFJZs6r7DAsOTgzQ=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>

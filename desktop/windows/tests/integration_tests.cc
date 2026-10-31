@@ -77,6 +77,8 @@ public:
         sent_interaction_modes.push_back(std::pair{mode, device_id});
     }
     void SendShowImuDebug(bool, const std::optional<std::string>&) override {}
+    void SendProtoNegotiate(const std::optional<std::string>&) override {}
+    void SendGatewayKeymapGet(const std::optional<std::string>&) override {}
     void SendTapEnabled(bool enabled, const std::optional<std::string>& device_id) override {
         sent_tap_enabled.push_back(std::pair{enabled, device_id});
     }
@@ -92,6 +94,11 @@ public:
     }
     void SendEncoderLedColor(const std::string&, const std::optional<std::string>&) override {}
     void SendEncoderRecordingGate(bool, const std::optional<std::string>&) override {}
+    void SendGatewayKeymapSet(const std::string&, bool,
+                              const std::optional<std::string>&) override {}
+    void SendGatewayTargetInfo(const std::string&, const std::optional<std::string>&) override {}
+    void SendGatewaySelectTarget(bool, const std::optional<std::string>&) override {}
+    void SendRawControl(const std::string&, const std::optional<std::string>&) override {}
     void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
         battery_status_requests.push_back(device_id);
     }
@@ -139,6 +146,7 @@ public:
     }
     void SetDeviceInfo(const DeviceInfo& info) override { device_infos.push_back(info); }
     void SetDeviceEncoderPresent(const std::string&, bool) override {}
+    void SetDeviceGatewayMode(const std::string&, bool) override {}
     void SetDeviceBattery(const std::string&, int, bool, bool) override {}
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info) override {
         firmware_info_by_device_id = info;
@@ -699,6 +707,8 @@ bool RunOneXiaomiGolden(const AtvvGoldenInfo& info, const AppConfig& base_config
 }  // namespace
 
 int main() {
+    // 无缓冲 stdout：真实网络链路测试崩溃时进度输出可留存。
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     const std::filesystem::path corpus_dir = "scripts/e2e_test/corpus";
 
     // 加载 config.toml（火山 key），关闭精修/翻译测纯 ASR。

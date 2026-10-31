@@ -1,0 +1,500 @@
+{
+  "schema": 1,
+  "generated_by": "tests/contract/generate_fixtures.py",
+  "spec": "Doc/Ref/protocol.md",
+  "state_frames": [
+    {
+      "name": "device_info",
+      "hex": "0110f7007b226576656e74223a226465766963655f696e666f222c226861726477617265223a22737469636b5f7333222c226669726d776172655f76657273696f6e223a22302e322e32222c22627574746f6e73223a5b227072696d617279222c227365636f6e64617279225d2c22696e746572616374696f6e5f6d6f646573223a5b22686f6c645f746f5f74616c6b222c22636c69636b5f746f5f74616c6b225d2c2275695f737461746573223a5b227265616479222c227265636f7264696e67222c227468696e6b696e67222c2270656e64696e675f636f6e6669726d6174696f6e222c226572726f72222c226169725f6d6f757365225d7d",
+      "expect": {
+        "event": "device_info",
+        "hardware": "stick_s3",
+        "firmware_version": "0.2.2"
+      }
+    },
+    {
+      "name": "encoder_status",
+      "hex": "011029007b226576656e74223a22656e636f6465725f737461747573222c2270726573656e74223a747275657d",
+      "expect": {
+        "event": "encoder_status",
+        "present": true
+      }
+    },
+    {
+      "name": "battery_status",
+      "hex": "011049007b226576656e74223a22626174746572795f737461747573222c226c6576656c223a38372c226368617267696e67223a66616c73652c227573625f706f7765726564223a747275657d",
+      "expect": {
+        "event": "battery_status",
+        "level": 87,
+        "charging": false,
+        "usb_powered": true
+      }
+    },
+    {
+      "name": "button_down_session",
+      "hex": "01103c007b226576656e74223a22627574746f6e5f646f776e222c22627574746f6e223a227072696d617279222c2273657373696f6e5f6964223a313233347d",
+      "expect": {
+        "event": "button_down",
+        "button": "primary",
+        "session_id": 1234
+      }
+    },
+    {
+      "name": "button_up_session",
+      "hex": "01104c007b226576656e74223a22627574746f6e5f7570222c22627574746f6e223a227072696d617279222c226475726174696f6e5f6d73223a3632302c2273657373696f6e5f6964223a313233347d",
+      "expect": {
+        "event": "button_up",
+        "button": "primary",
+        "duration_ms": 620,
+        "session_id": 1234
+      }
+    },
+    {
+      "name": "button_down_secondary",
+      "hex": "01102c007b226576656e74223a22627574746f6e5f646f776e222c22627574746f6e223a227365636f6e64617279227d",
+      "expect": {
+        "event": "button_down",
+        "button": "secondary"
+      }
+    },
+    {
+      "name": "button_up_secondary",
+      "hex": "01103b007b226576656e74223a22627574746f6e5f7570222c22627574746f6e223a227365636f6e64617279222c226475726174696f6e5f6d73223a39307d",
+      "expect": {
+        "event": "button_up",
+        "button": "secondary",
+        "duration_ms": 90
+      }
+    },
+    {
+      "name": "button_double_click",
+      "hex": "011032007b226576656e74223a22627574746f6e5f646f75626c655f636c69636b222c22627574746f6e223a227072696d617279227d",
+      "expect": {
+        "event": "button_double_click",
+        "button": "primary"
+      }
+    },
+    {
+      "name": "button_click_encoder",
+      "hex": "011050007b226576656e74223a22627574746f6e5f636c69636b222c22627574746f6e223a227072696d617279222c226475726174696f6e5f6d73223a3133312c22736f75726365223a22656e636f646572227d",
+      "expect": {
+        "event": "button_click",
+        "button": "primary",
+        "duration_ms": 131,
+        "source": "encoder"
+      }
+    },
+    {
+      "name": "tap",
+      "hex": "011021007b226576656e74223a22746170222c22627574746f6e223a22646f75626c65227d",
+      "expect": {
+        "event": "tap",
+        "button": "double"
+      }
+    },
+    {
+      "name": "encoder_rotate",
+      "hex": "011035007b226576656e74223a22656e636f6465725f726f74617465222c22646972656374696f6e223a226377222c227374657073223a327d",
+      "expect": {
+        "event": "encoder_rotate",
+        "direction": "cw",
+        "steps": 2
+      }
+    },
+    {
+      "name": "gateway_key",
+      "hex": "011033007b226576656e74223a22676174657761795f6b6579222c226b6579223a226261636b222c2270726573736564223a747275657d",
+      "expect": {
+        "event": "gateway_key",
+        "key": "back",
+        "pressed": true
+      }
+    },
+    {
+      "name": "gateway_keymap",
+      "hex": "011047007b226576656e74223a22676174657761795f6b65796d6170222c22726f75746573223a5b7b226b6579223a226261636b222c22726f757465223a22736f667477617265227d5d7d",
+      "expect": {
+        "event": "gateway_keymap"
+      }
+    },
+    {
+      "name": "gateway_status",
+      "hex": "01102b007b226576656e74223a22676174657761795f737461747573222c226d6f6465223a2267617465776179227d",
+      "expect": {
+        "event": "gateway_status",
+        "mode": "gateway"
+      }
+    }
+  ],
+  "power_mgmt_frames": [
+    {
+      "name": "power_mgmt_on",
+      "hex": "01102a007b226576656e74223a22706f7765725f6d676d74222c227573625f6175746f5f6f6666223a747275657d",
+      "expect": {
+        "event": "power_mgmt",
+        "usb_auto_off": true
+      }
+    },
+    {
+      "name": "power_mgmt_off",
+      "hex": "01102b007b226576656e74223a22706f7765725f6d676d74222c227573625f6175746f5f6f6666223a66616c73657d",
+      "expect": {
+        "event": "power_mgmt",
+        "usb_auto_off": false
+      }
+    }
+  ],
+  "ota_state_frames": [
+    {
+      "name": "ota_ready",
+      "hex": "013044007b226576656e74223a227265616479222c227472616e736665725f6964223a312c2273697a65223a313338353736302c22706172746974696f6e223a226f74615f31227d",
+      "expect": {
+        "event": "ready",
+        "transfer_id": 1,
+        "size": 1385760
+      }
+    },
+    {
+      "name": "ota_progress",
+      "hex": "013043007b226576656e74223a2270726f6772657373222c227472616e736665725f6964223a312c227772697474656e223a33323736382c2273697a65223a313338353736307d",
+      "expect": {
+        "event": "progress",
+        "transfer_id": 1,
+        "written": 32768,
+        "size": 1385760
+      }
+    },
+    {
+      "name": "ota_done",
+      "hex": "013030007b226576656e74223a22646f6e65222c227472616e736665725f6964223a312c227265626f6f745f6d73223a3530307d",
+      "expect": {
+        "event": "done",
+        "transfer_id": 1,
+        "reboot_ms": 500
+      }
+    },
+    {
+      "name": "ota_error",
+      "hex": "013033007b226576656e74223a226572726f72222c22636f6465223a226261645f6f6666736574222c226573705f657272223a3235387d",
+      "expect": {
+        "event": "error",
+        "code": "bad_offset",
+        "esp_err": 258
+      }
+    },
+    {
+      "name": "ota_aborted",
+      "hex": "013013007b226576656e74223a2261626f72746564227d",
+      "expect": {
+        "event": "aborted"
+      }
+    }
+  ],
+  "binary_frames": [
+    {
+      "name": "audio_start",
+      "kind": "audio",
+      "hex": "01011000785634120100000001000400deadbeef",
+      "expect": {
+        "session_id": 305419896,
+        "seq": 1,
+        "flags": 1,
+        "payload_hex": "deadbeef"
+      }
+    },
+    {
+      "name": "audio_data",
+      "kind": "audio",
+      "hex": "01011000785634120200000000000300010203",
+      "expect": {
+        "session_id": 305419896,
+        "seq": 2,
+        "flags": 0,
+        "payload_hex": "010203"
+      }
+    },
+    {
+      "name": "audio_end",
+      "kind": "audio",
+      "hex": "01011000785634120300000002000000",
+      "expect": {
+        "session_id": 305419896,
+        "seq": 3,
+        "flags": 2,
+        "payload_hex": ""
+      }
+    },
+    {
+      "name": "motion",
+      "kind": "motion",
+      "hex": "011130f8d204",
+      "expect": {
+        "dx": -2000,
+        "dy": 1234
+      }
+    },
+    {
+      "name": "motion_clamp_bound",
+      "kind": "motion",
+      "hex": "0111401fc0e0",
+      "expect": {
+        "dx": 8000,
+        "dy": -8000
+      }
+    }
+  ],
+  "control_payloads": [
+    {
+      "name": "ui_state_ready",
+      "kind": "ui_state",
+      "args": {
+        "state": "ready",
+        "text": ""
+      },
+      "expect": {
+        "event": "ui_state",
+        "state": "ready",
+        "text": ""
+      }
+    },
+    {
+      "name": "ui_state_thinking",
+      "kind": "ui_state",
+      "args": {
+        "state": "thinking",
+        "text": "partial text"
+      },
+      "expect": {
+        "event": "ui_state",
+        "state": "thinking",
+        "text": "partial text"
+      }
+    },
+    {
+      "name": "interaction_mode_hold",
+      "kind": "interaction_mode",
+      "args": {
+        "mode": "hold_to_talk"
+      },
+      "expect": {
+        "event": "interaction_mode",
+        "mode": "hold_to_talk"
+      }
+    },
+    {
+      "name": "show_imu_debug",
+      "kind": "show_imu_debug",
+      "args": {
+        "enabled": true
+      },
+      "expect": {
+        "event": "show_imu_debug",
+        "enabled": true
+      }
+    },
+    {
+      "name": "imu_wake_sensitivity",
+      "kind": "imu_wake_sensitivity",
+      "args": {
+        "threshold": 500
+      },
+      "expect": {
+        "event": "imu_wake_sensitivity",
+        "threshold": 500
+      }
+    },
+    {
+      "name": "tap_enabled",
+      "kind": "tap_enabled",
+      "args": {
+        "enabled": true
+      },
+      "expect": {
+        "event": "tap_enabled",
+        "enabled": true
+      }
+    },
+    {
+      "name": "tap_sensitivity",
+      "kind": "tap_sensitivity",
+      "args": {
+        "level": 5
+      },
+      "expect": {
+        "event": "tap_sensitivity",
+        "level": 5
+      }
+    },
+    {
+      "name": "encoder_led_color",
+      "kind": "encoder_led_color",
+      "args": {
+        "color": "red"
+      },
+      "expect": {
+        "event": "encoder_led_color",
+        "color": "red"
+      }
+    },
+    {
+      "name": "encoder_recording_gate",
+      "kind": "encoder_recording_gate",
+      "args": {
+        "enabled": true
+      },
+      "expect": {
+        "event": "encoder_recording_gate",
+        "enabled": true
+      }
+    },
+    {
+      "name": "gateway_keymap_set",
+      "kind": "gateway_keymap_set",
+      "args": {
+        "key": "back",
+        "route": "software"
+      },
+      "expect": {
+        "event": "gateway_keymap_set",
+        "key": "back",
+        "route": "software"
+      }
+    },
+    {
+      "name": "gateway_target_info",
+      "kind": "gateway_target_info",
+      "args": {
+        "name": "DESKTOP-CI"
+      },
+      "expect": {
+        "event": "gateway_target_info",
+        "name": "DESKTOP-CI"
+      }
+    },
+    {
+      "name": "air_mouse_enabled",
+      "kind": "air_mouse_enabled",
+      "args": {
+        "enabled": true
+      },
+      "expect": {
+        "event": "air_mouse_enabled",
+        "enabled": true
+      }
+    },
+    {
+      "name": "usb_auto_off",
+      "kind": "usb_auto_off",
+      "args": {
+        "enabled": true
+      },
+      "expect": {
+        "event": "usb_auto_off",
+        "enabled": true
+      }
+    },
+    {
+      "name": "battery_status_request",
+      "kind": "battery_status_request",
+      "args": {},
+      "expect": {
+        "event": "battery_status_request"
+      }
+    },
+    {
+      "name": "remote_button_down",
+      "kind": "remote_button",
+      "args": {
+        "action": "down",
+        "button": "primary",
+        "source": "global_hotkey",
+        "request_id": 7
+      },
+      "expect": {
+        "event": "remote_button_down",
+        "button": "primary",
+        "source": "global_hotkey",
+        "request_id": 7
+      }
+    },
+    {
+      "name": "remote_button_up",
+      "kind": "remote_button",
+      "args": {
+        "action": "up",
+        "button": "primary",
+        "source": "global_hotkey",
+        "request_id": 7
+      },
+      "expect": {
+        "event": "remote_button_up",
+        "button": "primary",
+        "source": "global_hotkey",
+        "request_id": 7
+      }
+    },
+    {
+      "name": "power_log_dump",
+      "kind": "power_log_dump",
+      "args": {
+        "offset": 0,
+        "max": 65536
+      },
+      "expect": {
+        "power_log": {
+          "cmd": "dump",
+          "offset": 0,
+          "max": 65536
+        }
+      }
+    },
+    {
+      "name": "power_log_clear",
+      "kind": "power_log_clear",
+      "args": {},
+      "expect": {
+        "power_log": {
+          "cmd": "clear"
+        }
+      }
+    }
+  ],
+  "ota_control_frames": [
+    {
+      "name": "ota_begin",
+      "kind": "ota_begin",
+      "args": {
+        "image_size": 1385760,
+        "transfer_id": 1
+      },
+      "hex": "01200c002025150001000000"
+    },
+    {
+      "name": "ota_data",
+      "kind": "ota_data",
+      "args": {
+        "transfer_id": 1,
+        "offset": 12288,
+        "chunk_hex": "a1a2a3a4a5a6a7a8"
+      },
+      "hex": "01210c000100000000300000a1a2a3a4a5a6a7a8"
+    },
+    {
+      "name": "ota_end",
+      "kind": "ota_end",
+      "args": {
+        "transfer_id": 1,
+        "image_size": 1385760
+      },
+      "hex": "01220c000100000020251500"
+    },
+    {
+      "name": "ota_abort",
+      "kind": "ota_abort",
+      "args": {
+        "transfer_id": 1
+      },
+      "hex": "0123080001000000"
+    }
+  ]
+}

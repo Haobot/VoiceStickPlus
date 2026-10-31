@@ -8,6 +8,7 @@
 #include "firmware_update_dialog.h"
 #include "interaction_settings_dialog.h"
 #include "global_hotkey_win.h"
+#include "mic_mode_hotkey.h"
 #include "hotkey_settings_dialog.h"
 #include "hotword_activity_dialog.h"
 #include "input_injector_win.h"
@@ -17,10 +18,12 @@
 #include "remote_settings_dialog.h"
 #include "xiaomi_keymap_dialog.h"
 #include "selection_hotword_manager.h"
+#include "selection_correction_dialog.h"
 #include "settings_dialog.h"
 #include "air_mouse_tuning_window.h"
 #include "subtitle_window.h"
 #include "voice_f5_suppressor.h"
+#include "xiaomi_keymap_hook.h"
 #include "voice_stick_coordinator.h"
 
 #include <Windows.h>
@@ -36,6 +39,10 @@ namespace voicestick {
 
 // WM_COPYDATA.dwData 标识：命令行 --ota 实例转发给已运行实例的 OTA 请求。'VSOT'。
 constexpr ULONG_PTR kOtaCopyDataId = 0x56534F54;
+// WM_COPYDATA.dwData 标识：命令行 --gateway-target 实例转发给已运行实例的目标选择请求。'VSGT'。
+constexpr ULONG_PTR kGatewayTargetCopyDataId = 0x56534754;
+// WM_COPYDATA.dwData 标识：命令行 --control 实例转发给已运行实例的原始控制帧。'VSCT'。
+constexpr ULONG_PTR kControlCopyDataId = 0x56534354;
 
 } // namespace voicestick
 #include <vector>
@@ -48,15 +55,33 @@ struct DeviceBattery {
     bool usb_powered = false;
 };
 
+class LicenseRuntime;
+
+// 托盘气泡的点击动作：区分"发现程序新版本"（打开 WinSparkle 对话框）与
+// "固件可升级"（打开对应设备固件升级流程）。
+struct BalloonAction {
+    enum class Kind {
+        kAppUpdate,
+        kFirmwareUpdate,
+    };
+    Kind kind = Kind::kAppUpdate;
+    std::string device_id;  // 仅 kFirmwareUpdate 使用
+};
+
 class Win32App : public VoiceStickUi {
 public:
     explicit Win32App(HINSTANCE instance);
+    ~Win32App() override;
     int Run();
 
     void SetStatus(const std::string& status) override;
     void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) override;
     void SetDeviceInfo(const DeviceInfo& info) override;
     void SetDeviceEncoderPresent(const std::string& device_id, bool present) override;
+    void SetDeviceGatewayMode(const std::string& device_id, bool gateway) override;
+    // D10b：完整路由回执 → 现开的键位映射对话框回显设备真表。
+    void OnGatewayKeymapReport(
+        const std::vector<StateEvent::KeyRoute>& routes) override;
     void SetDeviceBattery(const std::string& device_id, int level_percent,
                            bool charging, bool usb_powered) override;
     void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override;
@@ -87,10 +112,18 @@ public:
                       OverlayThemeColor color) override;
     void HideSubtitles() override;
     void ShowNotification(const std::string& title, const std::string& body) override;
+    void ShowFirmwareUpdateBalloon(const std::string& device_id,
+                                   const std::string& current_version,
+                                   const std::string& latest_version,
+                                   bool is_below_minimum) override;
     void ShowTimedMessage(const std::string& message, int duration_ms) override;
     // 无运行实例时由命令行入口(--ota)注入的待处理 OTA 请求，连上设备后自动触发。
     void SetPendingOtaRequest(std::string file_path,
                               std::optional<std::string> device_id);
+    // 命令行入口(--gateway-target)转发/注入的网关目标选择请求（P1 切换器）。
+    void ApplyGatewayTargetSelection(bool self);
+    // 命令行入口(--control)转发/注入的原始控制帧（调试/自动化）。
+    void ApplyRawControl(const std::string& json);
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -117,6 +150,9 @@ private:
     void ShowRemoteSettingsDialog(const std::string& device_id);
     // 打开指定设备的按键映射对话框（托盘设备子菜单「按键映射…」，仅小米遥控器显示）。
     void ShowXiaomiKeymapDialog(const std::string& device_id);
+    // 打开网关模式遥控器按键映射对话框（StickS3 设备子菜单入口）：编辑全局默认
+    // [xiaomi.keys]，协调器经 gateway_keymap_set 下发固件软件路由（P1）。
+    void ShowGatewayKeymapDialog();
     // 打开指定设备的电池电压监测窗口（托盘设备子菜单「电池电压监测…」，仅连接设备）。
     void ShowBatteryMonitorDialog(const std::string& device_id);
     void ShowAirMouseTuning();
@@ -128,6 +164,15 @@ private:
     void ProcessHotwordWithLlm(const std::string& text);
     // 提炼完成（UI 线程）：解析、去重、写表、浮窗反馈 3 秒。
     void OnHotwordExtracted(bool ok, const std::string& result);
+    // 词级热词入表公共路径（划词加词与纠错确认共用）：去重、保存、通知。
+    void AddHotwordAndNotify(const std::string& text);
+    // 划词纠错入口（S1）：错词 → 候选对话框（云端 LLM 优先，退本地精修引擎）。
+    void OpenSelectionCorrectionDialog(const std::string& wrong_text);
+    // 纠错确认后的回写（真机反馈 2026-09-10）：把目标应用中选中的错词直接
+    // 替换为正确词（借道剪贴板+Ctrl+V 覆盖选区）——否则用户划词修正完还得
+    // 在输入框里手动再改一遍。目标窗口在打开对话框前记录（弹层
+    // WS_EX_NOACTIVATE 不抢前台，此刻前台即目标应用）。
+    void ReplaceSelectionInTarget(const std::string& replacement);
     void SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color);
     void SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size);
     void SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position);
@@ -147,11 +192,41 @@ private:
     void HandlePairingCompleted(const std::string& device_id, std::optional<DeviceInfo> info);
     std::wstring Utf16(const std::string& text) const;
     void DispatchToUi(std::function<void()> action);
+    // 带点击动作的托盘气泡：ShowNotification 的增强版，用户点气泡（NIN_BALLOONUSERCLICK）
+    // 时触发 action；气泡超时/被新气泡顶替则丢弃。仅 UI 线程调用。
+    void ShowActionableNotification(const std::string& title, const std::string& body,
+                                    BalloonAction action);
+    // WinSparkle did_find_update 回调（工作线程）的 UI 侧处理：每会话只气泡一次。
+    void OnAppUpdateFound();
+    // WinSparkle 静默检查到新版本：气泡 → 用户点击 → check_update_with_ui 标准对话框。
+    static void __cdecl WinSparkleFoundUpdateBridge();
+    // 更新安装前探询（WinSparkle 工作线程）：应用无可阻断的未保存状态，随时可退出。
+    static int __cdecl WinSparkleCanShutdownBridge();
+    // 用户确认安装后（WinSparkle 工作线程）：封送 UI 线程优雅退出（托盘清理 +
+    // 协调器 Shutdown）；应用退出后 WinSparkle 等安装器跑完并自动重启新版本。
+    // 不注册这对回调时 WinSparkle 不等关闭直接跑安装器——运行中的 exe 不可替换，
+    // 表现为「装完要手动关掉老程序再开」（2026-09-27 用户报告）。
+    static void __cdecl WinSparkleShutdownRequestBridge();
     void ShutdownAndQuit();
     // 以管理员身份重启自身：ShellExecuteW runas 触发 UAC，新 High 实例启动后旧实例清理退出。
     void RelaunchElevatedAndQuit();
     // 按 config_.xiaomi_suppress_f5 启停 F5 抑制钩子（配置热更入口，幂等）。
     void SyncF5Suppressor();
+    // 按键映射消费端启停/热更：门控「有配对/连接 RC 设备 且 有效 key_map 非空」，
+    // 刷新时机对齐 SyncF5Suppressor（幂等）。
+    void SyncXiaomiKeymapHook();
+    // 网关抑制态汇总：任一已连接 StickS3 处于网关模式 ⇒ 配对对话框禁用遥控器行。
+    void SyncGatewayModeSuppression();
+    // 本机麦克风模式运行件与按住说话热键的启停/热更（幂等）：enabled 时按需
+    // （模型目录变化才）重建采集器+本地 ASR，热键变化换键；关闭时拆除运行件
+    // 与热键。协调器侧 SetLocalMicRuntime 负责会话安全。
+    void SyncLocalMicRuntime();
+    // 本地文本精修引擎的装配/热更（幂等，SyncLocalMicRuntime 尾部调用）：
+    // [local_asr] enabled+refine_enabled 且 GGUF 模型在位才建 LlamaCppEngine；
+    // 缺模型/初始化失败注入 nullptr（协调器钉住条件自动退化为原文直通，
+    // 不阻塞本地语音输入）。模型加载为同步 mmap（1.1GB 约 1s 级，启动/设置
+    // 保存各承担一次）。
+    void SyncLocalRefiner();
     // 配置变更统一入口：先同步协调器，再按新配置同步 F5 抑制钩子。
     void ApplyUpdatedConfig();
 
@@ -163,6 +238,10 @@ private:
     InputInjectorWin input_injector_;
     std::unique_ptr<GlobalHotkeyWin> global_hotkey_;
     std::unique_ptr<VoiceStickCoordinator> coordinator_;
+    // 离线授权运行时（Doc/Plan/offline-license-activation.md）：授权状态装配 +
+    // 试用锚点/last_seen 持久化 + 协调器本地引擎闸判定源。持有 AppConfig* 指向
+    // 本类 config_ 值成员——move 赋值不改对象地址，不悬垂。
+    std::unique_ptr<LicenseRuntime> license_runtime_;
     std::unique_ptr<PairDeviceDialog> pair_device_dialog_;
     std::unique_ptr<SettingsDialog> settings_dialog_;
     std::unique_ptr<EncoderSettingsDialog> encoder_settings_dialog_;
@@ -178,20 +257,44 @@ private:
     std::unique_ptr<OverlayWindow> overlay_;
     std::unique_ptr<SubtitleWindow> subtitles_;
     std::unique_ptr<SelectionHotwordManager> selection_hotword_manager_;
+    std::unique_ptr<SelectionCorrectionDialog> selection_correction_dialog_;
+    // 划词纠错确认的回写目标（打开对话框前的前台窗口），用毕即清。
+    HWND selection_correction_target_hwnd_ = nullptr;
     std::unique_ptr<CorrectionDialog> correction_dialog_;
     class BleCentralWin* ble_central_ = nullptr;
     // 小米遥控器 F5 抑制：xiaomi_last_mic_open_ms_ 由 BLE 层在 MIC_OPEN 时写入，
     // VoiceF5Suppressor 键盘钩子据此在 80ms 窗内吞掉遥控器附带的 F5 按键。
     std::unique_ptr<VoiceF5Suppressor> f5_suppressor_;
     std::atomic<std::int64_t> xiaomi_last_mic_open_ms_{0};
+    // 小米遥控器按键映射消费端：LL 钩子拦截 + Raw Input 佐证 + 注入映射键
+    //（Doc/Plan/xiaomi-keymap-consumer.md）。
+    std::unique_ptr<XiaomiKeymapHook> xiaomi_keymap_hook_;
+    // 本机麦克风模式按住说话热键（LL 钩子观察，Doc/Plan/local-mic-mode.md）：
+    // 按下/释放转发协调器 local-mic 会话；配置 [local_asr] enabled 时安装。
+    std::unique_ptr<MicModeHotkey> mic_mode_hotkey_;
+    // 已注入协调器的本机麦克风运行件对应的模型目录（绝对路径口径与启动一致）；
+    // 与当前配置不同才重建（SetLocalMicRuntime 会换 local_asr_ 实例）。
+    std::string local_mic_models_dir_applied_;
+    // 已注入精修引擎的组合键（"模型绝对路径#线程数"）；与当前应装状态不同才
+    // 重建引擎（引擎构造含 1.1GB 模型加载，幂等门控避免重复开销）。
+    std::string local_refine_key_applied_;
     std::string status_ = "Ready";
     std::vector<ConnectedDevice> connected_devices_;
+    // 上次记过授权状态日志的连接集合（去抖：设备无变化不重复记）。
+    std::vector<ConnectedDevice> last_logged_device_ids_;
     std::vector<std::string> paired_device_ids_;
+    // 方案 2 升级解绑：待解除 OS 配对的 StickS3 地址（注册表 SeedUnpairPendingAddresses
+    // 的内存映像，构造函数填充、coordinator 创建后逐个消费）。空 = 无待办。
+    std::vector<std::uint64_t> seed_unpair_pending_;
     std::map<std::string, DeviceInfo> device_info_map_;
     std::map<std::string, DeviceBattery> device_battery_map_;
     std::map<std::string, DeviceFirmwareInfo> firmware_info_map_;
     std::optional<PairedDeviceEntry> pending_pairing_entry_;
     std::optional<OtaCliRequest> pending_ota_request_;
+    // 无运行实例时 --gateway-target 注入的待发目标选择（连上设备后补发）。
+    std::optional<bool> pending_gateway_target_;
+    // 无运行实例时 --control 注入的待发控制帧（连上设备后补发）。
+    std::optional<std::string> pending_raw_control_;
     bool has_recoverable_input_ = false;
     bool is_shutting_down_ = false;
     static constexpr UINT_PTR kAirMouseTimerId = 100;
@@ -207,10 +310,29 @@ private:
     //（长按阈值确认、尾包宽限、双击窗到期、CAPS 超时）。
     static constexpr UINT_PTR kXiaomiSessionTickTimerId = 103;
     static constexpr UINT kXiaomiSessionTickMs = 50;
+    // 程序更新静默检查：关闭 WinSparkle 自带定时检查后自行驱动。启动 30s 后首查
+    //（避开启动带宽争抢），之后每 24h 静默查一次；发现新版本经气泡提醒（每会话一次）。
+    static constexpr UINT_PTR kAppUpdateSilentCheckTimerId = 104;
+    static constexpr UINT kAppUpdateFirstCheckDelayMs = 30'000;
+    static constexpr UINT kAppUpdateCheckIntervalMs = 24 * 60 * 60'000;
+    // 固件 manifest 周期检查：每 12h 静默拉一次（协调器内同长度缓存配合），
+    // 已连接设备固件落后时发托盘气泡提醒。
+    static constexpr UINT_PTR kFirmwarePeriodicCheckTimerId = 105;
+    static constexpr UINT kFirmwarePeriodicCheckIntervalMs = 12 * 60 * 60'000;
+    // 授权 last_seen 周期推进（防时钟回拨基准）：每 6h 一次，now > last_seen 才落盘。
+    static constexpr UINT_PTR kLicenseLastSeenTimerId = 106;
+    static constexpr UINT kLicenseLastSeenIntervalMs = 6 * 60 * 60'000;
     bool air_mouse_timer_active_ = false;
     bool encoder_rotate_pending_timer_active_ = false;
     bool xiaomi_tick_timer_active_ = false;
     std::chrono::steady_clock::time_point last_battery_status_request_{};
+    // 当前托盘气泡附带的点击动作（空=普通通知气泡）；仅 UI 线程访问。
+    std::optional<BalloonAction> pending_balloon_action_{};
+    // 本会话是否已发过程序更新气泡（避免重启循环里反复打扰；用户可在 WinSparkle
+    // 对话框选"跳过此版本"永久静音该版本）。
+    bool app_update_balloon_shown_ = false;
+    // WinSparkle 无 user_data 的 C 回调 → 实例桥接（进程内单实例）。
+    static Win32App* active_instance_;
 };
 
 } // namespace voicestick

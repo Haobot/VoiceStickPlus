@@ -1,36 +1,10 @@
 import Foundation
+import VoiceStickCore
 import CZlib
 
-enum ASRResultType: String {
-    case full
-    case single
-}
+// N1 切5 闸1：ASRResultType/ASRSessionOptions/ASRSegment/ASRClient 协议已下沉
+// VoiceStickCore/AsrServing.swift（本类经 import 见之）。
 
-struct ASRSessionOptions {
-    var hotwords: [String] = []
-    var resultType: ASRResultType = .full
-    var showUtterances: Bool = false
-}
-
-struct ASRSegment {
-    let text: String
-    let definite: Bool
-    let startTime: Int?
-    let endTime: Int?
-}
-
-protocol ASRClient: AnyObject {
-    var onPartial: ((String) -> Void)? { get set }
-    var onSegment: ((ASRSegment) -> Void)? { get set }
-    var onFinal: ((String) -> Void)? { get set }
-    var onError: ((String) -> Void)? { get set }
-    var onUpgradeURL: ((URL, String) -> Void)? { get set }
-
-    func start(options: ASRSessionOptions) -> Bool
-    func sendOggOpusChunk(_ data: Data, isLast: Bool)
-    func finish()
-    func cancel()
-}
 
 final class ASRWebSocketClient: ASRClient {
     private enum ConnectionState {
@@ -137,7 +111,10 @@ final class ASRWebSocketClient: ASRClient {
         case .voiceStickCloud:
             return config.voiceStickAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         case .volcengine:
-            return config.volcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            return config.activeVolcengineAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .tencent:
+            // 走 TencentASRClient（见 ASRClientFactory），此分支仅为穷举兜底。
+            return config.tencentSecretID
         }
     }
 
@@ -147,6 +124,8 @@ final class ASRWebSocketClient: ASRClient {
             return config.voiceStickCloudURL.trimmingCharacters(in: .whitespacesAndNewlines)
         case .volcengine:
             return AppConfig.volcengineWebSocketURL
+        case .tencent:
+            return ""
         }
     }
 
@@ -643,20 +622,13 @@ final class ASRWebSocketClient: ASRClient {
     }
 
     private func addHotwordsIfNeeded(to request: inout [String: Any]) {
-        let hotwords = sessionOptions.hotwords
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !hotwords.isEmpty else { return }
-
-        let context: [String: Any] = [
-            "hotwords": hotwords.map { ["word": $0] }
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: context),
-              let contextString = String(data: data, encoding: .utf8) else {
-            NSLog("ASR hotwords context JSON serialization failed")
+        // corpus.context 序列化收口 Core 纯函数（热词 + dialog_ctx 两段，皆空不带）。
+        guard let contextString = ASRCorpus.contextJSON(
+            hotwords: sessionOptions.hotwords,
+            dialogContext: sessionOptions.dialogContext
+        ) else {
             return
         }
-
         request["corpus"] = ["context": contextString]
     }
 

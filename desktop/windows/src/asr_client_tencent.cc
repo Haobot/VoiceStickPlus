@@ -142,10 +142,67 @@ std::string JsonEscape(std::string_view value) {
 
 } // namespace
 
-AsrClientTencent::AsrClientTencent(AppConfig config) : config_(std::move(config)) {}
+AsrClientTencent::AsrClientTencent(AppConfig config) : config_(std::move(config)) {
+    // B7 启动预热：构造点在锁外（UpdateConfig / 字幕周期创建），立即把热词表同步丢到
+    // 后台线程，使首次 Start 时通常已就绪——首会话不再因同步未完成而缺失自动热词表。
+    KickHotwordVocabSync(config_.asr_hotwords);
+}
 
 AsrClientTencent::~AsrClientTencent() {
     ShutdownConnection();
+}
+
+// ============================================================
+// 热词表同步（B7）
+// ============================================================
+
+void AsrClientTencent::KickHotwordVocabSync(const std::vector<std::string>& hotwords) {
+    if (!config_.tencent_hotword_id.empty()) return;  // 用户自管 VocabId，不自动同步
+    if (hotwords.empty()) return;
+    {
+        std::lock_guard lock(vocab_sync_->mu);
+        // 幂等：已在飞不重复起；已成功不再重跑（词表变更由 UpdateConfig 重建客户端覆盖）。
+        if (vocab_sync_->in_flight || vocab_sync_->succeeded) return;
+        vocab_sync_->in_flight = true;
+    }
+    // 全部按值捕获：线程不持有 this，客户端被 UpdateConfig 重建 / 字幕周期销毁时
+    // 后台同步仍能安全收尾，也无需在析构里 join（避免销毁路径再引入网络阻塞）。
+    auto state = vocab_sync_;
+    auto sync_fn = vocab_sync_fn_for_test_;  // 测试缝快照（生产为 nullptr → 真实 HTTP）
+    AppConfig config = config_;
+    std::vector<std::string> words = hotwords;
+    std::thread([state, sync_fn, config = std::move(config), words = std::move(words)]() {
+        std::string id;
+        if (sync_fn) {
+            id = sync_fn(config, words);
+        } else {
+            TencentAsrVocabClient client(config);
+            id = client.SyncHotwords(words);
+        }
+        std::lock_guard lock(state->mu);
+        state->in_flight = false;
+        if (!id.empty()) {
+            state->vocab_id = id;
+            state->succeeded = true;
+        }
+    }).detach();
+}
+
+std::string AsrClientTencent::CachedVocabId() const {
+    std::lock_guard lock(vocab_sync_->mu);
+    return vocab_sync_->vocab_id;
+}
+
+void AsrClientTencent::SetWinHttpTestSeams(WebSocketReceiveFn receive, WebSocketCloseFn ws_close,
+                                           HandleCloseFn close) {
+    websocket_receive_ = receive;
+    websocket_close_ = ws_close;
+    handle_close_ = close;
+}
+
+void AsrClientTencent::SetWebSocketHandleForTest(HINTERNET handle) {
+    std::lock_guard lock(mutex_);
+    websocket_ = handle;
 }
 
 // ============================================================
@@ -170,17 +227,10 @@ bool AsrClientTencent::Start(AsrSessionOptions options) {
     emitted_definite_segment_keys_.clear();
     latest_transcript_.clear();
 
-    // 热词自动同步：在主线程执行（worker 线程产生前），避免跨线程 HTTP 请求死锁。
-    // 仅首次调用时触发（cached_vocab_id_ 为空且配置未指定 hotword_id）。
-    if (config_.tencent_hotword_id.empty() &&
-        cached_vocab_id_.empty() &&
-        !session_options_.hotwords.empty()) {
-        TencentAsrVocabClient vocab_client(config_);
-        auto synced_id = vocab_client.SyncHotwords(session_options_.hotwords);
-        if (!synced_id.empty()) {
-            cached_vocab_id_ = synced_id;
-        }
-    }
+    // B7：热词表同步已移出本路径——Start 常在调用方持 audio_mutex_ 时执行，早先在这里
+    // 内联 HTTP 会把状态机/按键/音频帧冻结至超时（最长 ~80s）。此处只做幂等触发：
+    // 尚未成功且未在飞才起后台线程；本次会话若未就绪则不带自动热词表，完成后下次生效。
+    KickHotwordVocabSync(session_options_.hotwords);
 
     {
         std::lock_guard lock(mutex_);
@@ -319,6 +369,11 @@ std::string AsrClientTencent::UrlEncode(std::string_view value) {
         }
     }
     return out;
+}
+
+std::string AsrClientTencent::UrlWithoutQuery(std::string_view url) {
+    const auto cut = url.find_first_of("?#");
+    return std::string(url.substr(0, cut));
 }
 
 std::string AsrClientTencent::BuildSignedUrl(const AppConfig& config,
@@ -685,10 +740,11 @@ void AsrClientTencent::RunWebSocket() {
         }
     } fire_guard{this};
 
-    // 热词表 ID：优先使用配置的 VocabId，否则使用本次会话缓存（Start 中同步获取）
+    // 热词表 ID：优先使用配置的 VocabId，否则用后台同步已完成的结果（B7：Start 不再
+    // 内联同步，未就绪时本会话不带自动热词表，由构造预热/后续 Start 补上）。
     std::string hotword_id = config_.tencent_hotword_id;
-    if (hotword_id.empty() && !cached_vocab_id_.empty()) {
-        hotword_id = cached_vocab_id_;
+    if (hotword_id.empty()) {
+        hotword_id = CachedVocabId();
     }
 
     // 复制本次会话的 voice_id（在锁外使用）
@@ -704,7 +760,8 @@ void AsrClientTencent::RunWebSocket() {
         signed_config.tencent_hotword_id = hotword_id;
     }
     auto signed_url = BuildSignedUrl(signed_config, voice_id);
-    Log("TASR", "connecting to: " + signed_url.substr(0, 150) + "...");
+    // C8：只记 scheme/host/path——签名串在 query 里，截前 150 字符照样会带出片段。
+    Log("TASR", "connecting to: " + UrlWithoutQuery(signed_url));
 
     URL_COMPONENTSW components{};
     components.dwStructSize = sizeof(components);
@@ -822,15 +879,50 @@ void AsrClientTencent::RunWebSocket() {
     Log("TASR", "WebSocket connected, voice_id=" + voice_id + ", flushing queued audio");
     FlushQueuedAudioChunks();
 
+    ReceiveLoop(websocket);
+
+    // 连接关闭兜底：正常流程服务端先发 final=1 再断开（EmitFinalText 已触发 on_final）。
+    // 若服务端异常只断开未发 final=1，且本会话已发 end（kFinishing）并有累积文本，
+    // 则补触发一次 on_final，避免 button_up 后丢文本。主动取消（cancelled_）不补。
+    if (!cancelled_.load()) {
+        bool need_fallback = false;
+        {
+            std::lock_guard lock(mutex_);
+            need_fallback = !final_emitted_ &&
+                            session_state_ == SessionState::kFinishing &&
+                            !accumulated_final_text_.empty();
+        }
+        if (need_fallback) {
+            Log("TASR", "connection closed without final=1, emitting accumulated text as fallback");
+            EmitFinalText();
+        }
+    }
+
+    // websocket 句柄所有权判断：ShutdownConnection 强制关闭时已把成员置空并
+    // close 过句柄，此处只关闭仍归本 worker 所有的句柄，避免 double close。
+    HINTERNET websocket_to_close = nullptr;
+    {
+        std::lock_guard lock(mutex_);
+        if (websocket_ == websocket) {
+            websocket_to_close = websocket;
+            websocket_ = nullptr;
+        }
+        connection_state_ = ConnectionState::kDisconnected;
+    }
+    if (websocket_to_close) handle_close_(websocket_to_close);
+    CloseHandles(session, connect, request, nullptr);
+}
+
+void AsrClientTencent::ReceiveLoop(HINTERNET websocket) {
     // 接收循环
     int receive_timeouts = 0;
     while (!cancelled_) {
         std::array<std::uint8_t, 64 * 1024> buffer{};
         DWORD bytes_read = 0;
         WINHTTP_WEB_SOCKET_BUFFER_TYPE type{};
-        const DWORD result = WinHttpWebSocketReceive(websocket, buffer.data(),
-                                                     static_cast<DWORD>(buffer.size()),
-                                                     &bytes_read, &type);
+        const DWORD result = websocket_receive_(websocket, buffer.data(),
+                                                static_cast<DWORD>(buffer.size()),
+                                                &bytes_read, &type);
         if (result == ERROR_WINHTTP_TIMEOUT) {
             ++receive_timeouts;
             Log("TASR", "websocket receive timeout #" + std::to_string(receive_timeouts));
@@ -858,47 +950,27 @@ void AsrClientTencent::RunWebSocket() {
             HandleTextResponse(text, websocket);
         }
         // 忽略二进制帧（腾讯云不发送二进制帧）
-    }
 
-    // 连接关闭兜底：正常流程服务端先发 final=1 再断开（EmitFinalText 已触发 on_final）。
-    // 若服务端异常只断开未发 final=1，且本会话已发 end（kFinishing）并有累积文本，
-    // 则补触发一次 on_final，避免 button_up 后丢文本。主动取消（cancelled_）不补。
-    if (!cancelled_.load()) {
-        bool need_fallback = false;
+        // final=1 已触发 on_final，整段识别结束——主动退出接收循环。实测服务端
+        // 在 final=1 后可能保持连接不断开，此时 WinHttpWebSocketReceive 无有效
+        // 超时（WinHttpSetTimeouts 的接收超时对 WebSocket Receive 不生效）会无限
+        // 阻塞，曾致析构时 join 卡死 UI 线程 30s+（2026-09-10 事故）。
         {
             std::lock_guard lock(mutex_);
-            need_fallback = !final_emitted_ &&
-                            session_state_ == SessionState::kFinishing &&
-                            !accumulated_final_text_.empty();
-        }
-        if (need_fallback) {
-            Log("TASR", "connection closed without final=1, emitting accumulated text as fallback");
-            EmitFinalText();
+            if (final_emitted_) break;
         }
     }
-
-    {
-        std::lock_guard lock(mutex_);
-        if (websocket_ == websocket) websocket_ = nullptr;
-        connection_state_ = ConnectionState::kDisconnected;
-    }
-    CloseHandles(session, connect, request, websocket);
 }
 
 void AsrClientTencent::ShutdownConnection() {
     cancelled_ = true;
     const bool has_worker = worker_.joinable();
+    HINTERNET force_close = nullptr;
     {
         std::lock_guard lock(mutex_);
-        if (websocket_) {
-            WinHttpWebSocketClose(websocket_,
-                                  WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,
-                                  nullptr, 0);
-            if (!has_worker) {
-                WinHttpCloseHandle(websocket_);
-                websocket_ = nullptr;
-            }
-        }
+        // 句柄所有权移交本函数：worker 收尾按所有权判断跳过已关闭的句柄，避免 double close。
+        force_close = websocket_;
+        websocket_ = nullptr;
         queued_audio_chunks_.clear();
         current_voice_id_.clear();
         latest_transcript_.clear();
@@ -906,6 +978,12 @@ void AsrClientTencent::ShutdownConnection() {
         session_state_ = SessionState::kIdle;
         connection_state_ = ConnectionState::kDisconnected;
     }
+    // 锁外强制关闭：WinHttpCloseHandle 使该句柄上未完成的 WinHttpWebSocketReceive
+    // 立即返回 OPERATION_CANCELLED（worker 自行收尾退出，join 快速返回）。不能用
+    // WinHttpWebSocketClose——它要与 worker 阻塞中的 Receive 并发操作同一句柄
+    //（WinHTTP 并发限制），且 close 握手需等服务端 ack（服务端不断开时永久等待），
+    // 曾在 UI 线程同步析构路径死锁 30s+（2026-09-10 事故）。
+    if (force_close) handle_close_(force_close);
     if (has_worker) {
         if (worker_.get_id() == std::this_thread::get_id()) {
             worker_.detach();

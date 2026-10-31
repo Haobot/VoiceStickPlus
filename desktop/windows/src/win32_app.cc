@@ -3,10 +3,22 @@
 #include "asr_client_win.h"
 #include "asr_client_tencent.h"
 #include "ble_central_win.h"
+#include "focus_text_reader.h"
 #include "hotword_extractor.h"
+#include "hotword_selector.h"  // ValidateHotword（B14 统一口径）
+#include "license_runtime.h"
+#include "local_asr_client_win.h"
+#include "machine_guid_win.h"
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+#include "llama_cpp_engine.h"
+#include "local_refinement_client.h"
+#endif
 #include "localization.h"
 #include "log.h"
+#include "mic_mode_hotkey.h"
+#include "push_to_talk_key.h"
 #include "resource.h"
+#include "wasapi_mic_capture.h"
 
 #include <Shellapi.h>
 #include <commdlg.h>
@@ -18,6 +30,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <initializer_list>
 #include <iterator>
@@ -27,13 +40,13 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "win32_app_util.h"
 namespace voicestick {
 
 namespace {
 
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kUiDispatchMessage = WM_APP + 2;
-constexpr UINT kTrayIconId = 1;
 constexpr UINT kMenuRestore = 1001;
 constexpr UINT kMenuSettings = 1002;
 constexpr UINT kMenuQuit = 1005;
@@ -84,6 +97,8 @@ constexpr UINT kMenuOptionsPerDevice = 24;
 constexpr UINT kMenuTranslationsPerDevice = 24;
 constexpr UINT kMenuHotkeyEnabled = 5801;
 constexpr UINT kMenuHotkeyCustom = 5802;
+// 按住说话热键（本地语音识别 [local_asr].push_to_talk_key）设置入口。
+constexpr UINT kMenuLocalMicHotkey = 5803;
 constexpr UINT kMenuHotkeyBase = 5810;
 constexpr UINT kMenuHotkeyEnd = 5899;
 // COM 口固件烧录工具入口（VoiceStickFlash.exe），菜单 ID 新段 7000 起。
@@ -101,12 +116,11 @@ constexpr HotkeyPreset kHotkeyPresets[] = {
 };
 
 #ifndef VOICESTICK_APPCAST_URL
-#define VOICESTICK_APPCAST_URL "https://haobot.github.io/VoiceStickPlus/appcast.xml"
+// 国内 COS 分发面（Doc/Rfc/tencent-cos-domestic-distribution-2026-09-09.md）：
+// WinSparkle 仅支持单一 appcast URL，不做运行时回退；github.io feed 由 deploy workflow 继续更新兜底
+#define VOICESTICK_APPCAST_URL "https://dl.davenger.cloud/appcast.xml"
 #endif
 
-void LogLine(std::string_view message) {
-    voicestick::LogApp(message);
-}
 
 std::wstring CurrentExecutableCommand() {
     std::wstring path(MAX_PATH, L'\0');
@@ -120,11 +134,39 @@ std::wstring CurrentExecutableCommand() {
     return L"\"" + path + L"\"";
 }
 
+// exe 所在目录（无引号）：相对资源路径（本机麦克风模型目录等）的解析基准。
+std::wstring CurrentExecutableDir() {
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    while (length == path.size()) {
+        path.resize(path.size() * 2);
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    }
+    if (length == 0) return {};
+    path.resize(length);
+    return std::filesystem::path(path).parent_path().wstring();
+}
+
 // 探测前台窗口所属进程是否高于本进程完整性：asInvoker（Medium）对 High 进程
 // OpenProcess(PROCESS_QUERY_INFORMATION) 返回 ERROR_ACCESS_DENIED，借此判断 UIPI 隔离。
 // 进程名用 Toolhelp32 快照获取（不依赖对目标进程二次 OpenProcess，免受其 DACL 影响）。
 class Win32ForegroundProcessProbe : public IForegroundProcessProbe {
 public:
+    // 语音编辑（Doc/Plan/voice-edit-commands.md §6.1/§6.2）：记录并校验注入目标前台
+    // 窗口身份（HWND + 进程 exe 名）。两次读取间若前台变化，L0 会按不一致拒绝（安全方向）。
+    std::uintptr_t ForegroundWindow() override {
+        return reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
+    }
+
+    std::string ForegroundProcessName() override {
+        const HWND foreground = GetForegroundWindow();
+        if (!foreground) return {};
+        DWORD pid = 0;
+        GetWindowThreadProcessId(foreground, &pid);
+        if (pid == 0) return {};
+        return Utf8FromUtf16(ProcessExeNameByPid(pid));
+    }
+
     bool IsForegroundHigherIntegrity(std::wstring& process_name) override {
         const HWND foreground = GetForegroundWindow();
         if (!foreground) return false;
@@ -162,22 +204,22 @@ private:
     }
 };
 
-std::wstring Utf16FromUtf8(std::string_view text) {
-    if (text.empty()) return {};
-    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (length <= 0) return {};
-    std::wstring wide(static_cast<std::size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
-    return wide;
-}
 
-std::string Utf8FromUtf16(std::wstring_view text) {
-    if (text.empty()) return {};
-    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    if (length <= 0) return {};
-    std::string out(static_cast<std::size_t>(length), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), length, nullptr, nullptr);
-    return out;
+
+// 本机显示名（网关目标表用，P1）：Windows 计算机名转 UTF-8，按固件侧
+// GATEWAY_TARGET_NAME_MAX(24) 截断到 23 字节，避免被固件判为超长丢弃。
+// 定义在文件前部：协调器创建处（约 line 508）就要用它注入。
+std::string LocalHostNameForGatewayTarget() {
+    wchar_t buffer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD size = static_cast<DWORD>(std::size(buffer));
+    if (!GetComputerNameW(buffer, &size) || size == 0) {
+        return "Windows PC";
+    }
+    auto name = Utf8FromUtf16(std::wstring_view(buffer, size));
+    if (name.size() > 23) {
+        name.resize(23);
+    }
+    return name;
 }
 
 std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
@@ -189,14 +231,6 @@ std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> v
     return text;
 }
 
-std::string FormatUtf8(std::string text, std::initializer_list<std::string> values) {
-    for (const auto& value : values) {
-        const auto pos = text.find("%s");
-        if (pos == std::string::npos) break;
-        text.replace(pos, 2, value);
-    }
-    return text;
-}
 
 std::wstring FirmwareIdentityText(const std::string& hardware, const std::string& version) {
     if (!hardware.empty() && !version.empty()) {
@@ -332,39 +366,130 @@ std::wstring LocalizedTranslationTargetName(const TranslationTarget& target, UiL
     return target.name;
 }
 
-// 拉起 VoiceStickFlash.exe（COM 口固件烧录工具）：与 VoiceStick.exe 同级目录，
-// 开发构建在 build-x64，MSI 安装在 INSTALLFOLDER。未安装时给出明确提示。
-void LaunchFlashToolExe(HWND owner) {
-    std::wstring path(MAX_PATH, L'\0');
-    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    while (length == path.size()) {
-        path.resize(path.size() * 2);
-        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    }
-    if (length == 0) return;
-    path.resize(length);
-    const auto flash_exe = std::filesystem::path(path).parent_path() / L"VoiceStickFlash.exe";
-    std::error_code ec;
-    if (!std::filesystem::exists(flash_exe, ec)) {
-        MessageBoxW(owner,
-                    L"未找到 VoiceStickFlash.exe（应与 VoiceStick.exe 同目录）。\n"
-                    L"MSI 安装版自带该工具；便携版暂不包含。",
-                    L"VoiceStick", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    ShellExecuteW(owner, L"open", flash_exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
 
 } // namespace
 
+// 升级首启解绑标记（方案 2，见 Win32App 构造函数内的消费点）：MSI 每次安装/
+// 升级经 SeedUnpairSticks CustomAction 写入，app 首启消费后删除。键路径与
+// 卸载清理（RemoveUserDataExec）的 TenClass\VoiceStick 同根，卸载时一并移除。
+namespace {
+constexpr wchar_t kSeedUnpairFlagKey[] = L"Software\\TenClass\\VoiceStick";
+constexpr wchar_t kSeedUnpairFlagName[] = L"SeedUnpairSticks";
+
+bool ReadSeedUnpairSticksFlag() {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    return RegGetValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairFlagName,
+                        RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS &&
+           value != 0;
+}
+
+void DeleteSeedUnpairSticksFlag() {
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairFlagName);
+}
+
+// 待解绑地址清单（REG_SZ，逗号分隔十进制地址）：OS 侧解绑的持久待办。
+// MSI 标记只表示「本次升级需要清 StickS3 配对」，消费后即删；地址清单由 app
+// 维护到 OS 解绑真正完成为止（后台执行可能跨越本次进程生命周期）。
+constexpr wchar_t kSeedUnpairPendingName[] = L"SeedUnpairPendingAddresses";
+
+std::vector<std::uint64_t> ReadSeedUnpairPendingAddresses() {
+    std::vector<std::uint64_t> out;
+    wchar_t buf[1024] = {};
+    DWORD size = sizeof(buf);
+    if (RegGetValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairPendingName,
+                     RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS) {
+        return out;
+    }
+    std::wstring raw(buf);
+    std::size_t pos = 0;
+    while (pos < raw.size()) {
+        const std::size_t comma = raw.find(L',', pos);
+        const std::wstring token = raw.substr(
+            pos, comma == std::wstring::npos ? std::wstring::npos : comma - pos);
+        if (!token.empty()) {
+            try {
+                out.push_back(std::stoull(token));
+            } catch (...) {
+                // 坏段跳过（手工改动防御），不阻断其余地址。
+            }
+        }
+        if (comma == std::wstring::npos) break;
+        pos = comma + 1;
+    }
+    return out;
+}
+
+void WriteSeedUnpairPendingAddresses(const std::vector<std::uint64_t>& addresses) {
+    std::wstring raw;
+    for (std::size_t i = 0; i < addresses.size(); i++) {
+        if (i > 0) raw += L',';
+        raw += std::to_wstring(addresses[i]);
+    }
+    RegSetKeyValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairPendingName,
+                    REG_SZ, raw.c_str(),
+                    static_cast<DWORD>((raw.size() + 1) * sizeof(wchar_t)));
+}
+
+void DeleteSeedUnpairPendingAddresses() {
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, kSeedUnpairFlagKey, kSeedUnpairPendingName);
+}
+} // namespace
+
+Win32App* Win32App::active_instance_ = nullptr;
+
 Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig::Load()) {
-    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
+    active_instance_ = this;    LogApp("Config loaded from: " + AppConfig::ConfigPath().string() +
            " portable_mode=" + std::string(config_.portable_mode ? "true" : "false") +
            " provider=" + AsrProviderName(config_.asr_provider));
+    LogApp("local_asr boot: enabled=" + std::string(config_.local_asr.enabled ? "true" : "false") +
+           " models_dir=" + config_.local_asr.models_dir +
+           " ptt=" + config_.local_asr.push_to_talk_key);
     if (config_.asr_provider == AsrProvider::kTencent) {
         LogApp("Tencent config appid=" + config_.tencent_appid +
                " secret_id=" + config_.tencent_secret_id.substr(0, 8) + "..." +
                " secret_key_len=" + std::to_string(config_.tencent_secret_key.size()));
+    }
+    // 升级首启解绑（方案 2）：MSI 升级安装写入标记 → 此处解除所有 StickS3 的
+    // OS 级配对并清本地配对条目，让下次绑定从干净状态开始；小米遥控器条目
+    // 保留（其 OS bond 承载 HOGP 按键直通，解绑会弄死按键，绝不可动）。
+    // 必须在 paired_device_ids_/device_info_map_ 同步与 BLE 协调器创建之前
+    // 完成，避免旧配对参与首轮自动重连。解绑失败保留标记，下次启动重试
+    //（按地址匹配，无系统配对记录的地址按已清除处理，天然幂等）。
+    if (ReadSeedUnpairSticksFlag()) {
+        std::vector<std::uint64_t> stick_addresses;
+        std::vector<std::string> stick_ids;
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.hardware != kHardwareXiaomiRemote2Pro && entry.bluetooth_address != 0) {
+                stick_addresses.push_back(entry.bluetooth_address);
+                stick_ids.push_back(entry.device_id);
+            }
+        }
+        LogApp("seed unpair: flag present, " + std::to_string(stick_addresses.size()) +
+               " StickS3 device(s) to clear");
+        for (const auto& device_id : stick_ids) {
+            // 内部含 Save() 与 per-device 配置段清理；此时协调器尚未创建，
+            // 无需会话侧清理。本地条目即时清除 → BLE 协调器拿到干净的配对
+            // 列表，启动后直接进配对引导（升级后绑定流畅的关键）。
+            config_.RemovePairedDevice(device_id);
+            LogApp("seed unpair: forgot " + device_id);
+        }
+        // OS 侧解绑移交后台（WinRT 枚举冷启动可达 15s+ 且不可预测，实测同步
+        // 等待两轮分别 15s/45s 超时——不能阻塞启动路径）。地址并入持久待办
+        // 清单，coordinator 创建后逐个消费；进程中途退出由下次启动续做。
+        auto pending = ReadSeedUnpairPendingAddresses();
+        for (const auto& address : stick_addresses) {
+            if (std::find(pending.begin(), pending.end(), address) == pending.end()) {
+                pending.push_back(address);
+            }
+        }
+        WriteSeedUnpairPendingAddresses(pending);
+        DeleteSeedUnpairSticksFlag();
+    }
+    seed_unpair_pending_ = ReadSeedUnpairPendingAddresses();
+    if (!seed_unpair_pending_.empty()) {
+        LogApp("seed unpair: " + std::to_string(seed_unpair_pending_.size()) +
+               " OS bond(s) pending removal (background)");
     }
     paired_device_ids_ = config_.paired_device_ids;
     for (const auto& entry : config_.paired_devices) {
@@ -377,6 +502,10 @@ Win32App::Win32App(HINSTANCE instance) : instance_(instance), config_(AppConfig:
             };
         }
     }
+}
+
+Win32App::~Win32App() {
+    active_instance_ = nullptr;
 }
 
 int Win32App::Run() {
@@ -407,17 +536,59 @@ int Win32App::Run() {
         if (!config_.portable_mode) {
             LogLine("Initializing WinSparkle");
             win_sparkle_set_appcast_url(VOICESTICK_APPCAST_URL);
-            win_sparkle_set_automatic_check_for_updates(1);
-            win_sparkle_set_update_check_interval(86400);
+            // 自带定时检查改为手动驱动：did_find_update 无 UI 回调链让我们能以托盘
+            // 气泡（可点击）代替 WinSparkle 默认的静默后台下载/弹窗节奏。首查延迟
+            // 30s 避开启动带宽争抢，此后每 24h 静默检查一次（见 WM_TIMER 104）。
+            win_sparkle_set_automatic_check_for_updates(0);
+            win_sparkle_set_did_find_update_callback(&WinSparkleFoundUpdateBridge);
+            // 更新安装链：先探询可关闭，再请求优雅退出（托盘清理+协调器 Shutdown），
+            // 应用退出后 WinSparkle 等安装器完成并自动重启新版本。
+            win_sparkle_set_can_shutdown_callback(&WinSparkleCanShutdownBridge);
+            win_sparkle_set_shutdown_request_callback(&WinSparkleShutdownRequestBridge);
             win_sparkle_init();
+            SetTimer(hwnd_, kAppUpdateSilentCheckTimerId, kAppUpdateFirstCheckDelayMs, nullptr);
             LogLine("WinSparkle initialized");
         } else {
             LogLine("Portable mode — skipping WinSparkle init");
         }
+        // 固件 manifest 周期检查：每 12h 静默拉取；已连接设备落后时协调器发气泡。
+        SetTimer(hwnd_, kFirmwarePeriodicCheckTimerId, kFirmwarePeriodicCheckIntervalMs, nullptr);
 
         LogLine("Creating BLE coordinator");
         auto ble = std::make_unique<BleCentralWin>(config_.paired_device_ids, hwnd_);
         ble_central_ = ble.get();
+
+        // 方案 2 升级解绑的 OS 侧收尾：待办地址逐个解除 Windows 配对（复用
+        // 「忘记设备」的 UnpairOsBondAsync，幂等——系统无该地址记录按成功）。
+        // 全程后台，不阻塞启动；全部完成后把失败子集写回持久待办（空则删），
+        // 进程中途退出/回调未派发时待办保留，下次启动续做。remote 拒绝或
+        // rolled keys 的特例见 UnpairOsBondAsync 注释（升级解绑场景无在连
+        // 会话，无此分支）。
+        if (!seed_unpair_pending_.empty()) {
+            LogLine("seed unpair: removing " + std::to_string(seed_unpair_pending_.size()) +
+                    " OS bond(s) in background");
+            const auto failed = std::make_shared<std::vector<std::uint64_t>>();
+            const auto remaining =
+                std::make_shared<std::atomic<std::size_t>>(seed_unpair_pending_.size());
+            for (const auto& address : seed_unpair_pending_) {
+                ble_central_->UnpairOsBondAsync(
+                    std::to_string(address), address,
+                    [this, failed, remaining, address](bool ok) {
+                        if (!ok) failed->push_back(address);
+                        if (remaining->fetch_sub(1) == 1) {
+                            if (failed->empty()) {
+                                DeleteSeedUnpairPendingAddresses();
+                                LogApp("seed unpair: all OS bonds removed");
+                            } else {
+                                WriteSeedUnpairPendingAddresses(*failed);
+                                LogApp("seed unpair: " + std::to_string(failed->size()) +
+                                       " bond(s) failed, kept for retry");
+                            }
+                            seed_unpair_pending_.clear();
+                        }
+                    });
+            }
+        }
 
         // 小米遥控器接线：MIC_OPEN 时刻写入原子量供 F5 抑制钩子消费；ATVV 会话
         // Options 在会话创建时（UI 线程）从 config_ 现取，配置热更对新连接生效。
@@ -427,11 +598,20 @@ int Win32App::Run() {
             const auto& xiaomi = config_.XiaomiSettingsForDevice(device_id);
             options.gain_db = xiaomi.gain_db;
             options.double_click_window_ms = xiaomi.double_click_ms;
+            options.hpf = xiaomi.hpf;
+            options.agc = xiaomi.agc;
             options.interaction_mode =
                 config_.OutputProfileForDevice(device_id).target ==
                         OutputTarget::kWechatInputMethod
                     ? config_.wechat_input_method.trigger_mode
                     : config_.interaction_mode;
+            // 方案 A：wechat 点按触发 + 按住式输入法（WeType）——语音键折叠为
+            // click toggle（音频弃用，改由本机麦克风供给）。
+            options.wechat_click_toggle =
+                config_.OutputProfileForDevice(device_id).target ==
+                    OutputTarget::kWechatInputMethod &&
+                config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+                config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
             return options;
         });
 
@@ -456,6 +636,22 @@ int Win32App::Run() {
             [make_asr](const AppConfig& config) {
                 return make_asr(config);
             });
+        // P0-3：ASR/精修/翻译完成回调统一封送回 UI 线程再进入协调器状态机。
+        // DispatchToUi 在 UI 线程内联执行，非 UI 线程 PostMessage 到消息循环。
+        coordinator_->SetUiDispatcher([this](std::function<void()> action) {
+            DispatchToUi(std::move(action));
+        });
+        // P1 目标表：注入本机显示名（主机名）。实际发送在协调器的「设备已连接」回调里
+        //（那时会话才 ready——gateway_status 帧先于 ready 到达，提前发会被丢弃）。
+        coordinator_->SetLocalHostName(LocalHostNameForGatewayTarget());
+#ifdef VOICESTICK_LICENSE_ENABLED
+        // 离线授权运行时：授权状态装配（设备 ID + MachineGuid + config）与
+        // 试用锚点/last_seen 持久化。config 取 Win32App::config_ 地址——
+        // 设置保存/引导完成时的 move 赋值不改变该对象地址，指针不悬垂。
+        // 默认不编译（VOICESTICK_ENABLE_LICENSE=OFF）：runtime 恒空，授权闸
+        // 不装配（协调器默认放行），last_seen 定时器回调按空指针短路。
+        license_runtime_ = std::make_unique<LicenseRuntime>(&config_, coordinator_.get());
+#endif
         LogLine("Starting coordinator");
         coordinator_->on_air_mouse_active_changed = [this](bool active) {
             // 有设备进入体感时启动 60Hz 定时器驱动 AirMouseTick；全部退出时停止。
@@ -475,6 +671,14 @@ int Win32App::Run() {
             } else if (!pending && encoder_rotate_pending_timer_active_) {
                 KillTimer(hwnd_, kEncoderRotatePendingTimerId);
                 encoder_rotate_pending_timer_active_ = false;
+            }
+        };
+        // 网关按键沿（P1 隧道融合）：软件路由键的 gateway_key 事件 → keymap hook
+        // 查映射注入（主线程：BLE 状态事件已在 UI 线程派发）。未挂载时丢弃
+        //（无映射配置则路由本不应为 software）。
+        coordinator_->on_gateway_key = [this](const std::string& key, bool pressed) {
+            if (xiaomi_keymap_hook_) {
+                xiaomi_keymap_hook_->OnGatewayKeyEdge(key, pressed);
             }
         };
         // power_log 分片路由到电池电压监测窗口（UI 线程回调，窗口未开时丢弃）。
@@ -504,12 +708,35 @@ int Win32App::Run() {
             });
         };
         // 注入前台进程完整性探测：asInvoker 实例在微信等高权限前台按下设备键时气泡提醒提权。
+        // 语音编辑（Doc/Plan/voice-edit-commands.md）复用同一探针的前台窗口/进程身份做 L0。
         coordinator_->SetForegroundProbe(std::make_unique<Win32ForegroundProcessProbe>());
+        // 注入焦点输入框 UIA 读取（语音编辑 L1 目标校验；仅 UI 线程调用，COM STA）。
+        coordinator_->SetFocusTextReader(CreateFocusTextReader());
+        // 注入 targeted 编辑平台出口（UIA TextRange 精确选区 + 读回 + 末尾光标；
+        // 仅 UI 线程调用，COM STA）。
+        coordinator_->SetTargetedFieldEditor(CreateTargetedFieldEditor());
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+        // 本机麦克风模式（[local_asr]，Doc/Plan/local-mic-mode.md）：安装 WASAPI
+        // 采集器 + 本地 SenseVoice ASR 与按住说话热键。模型缺失不在启动期报错
+        // ——首次会话 LocalAsrClient::Start 失败走既有 ASR 错误路径如实提示。
+        SyncLocalMicRuntime();
+#endif
         coordinator_->Start();
         LogLine("Coordinator started");
 
+        // 离线授权（Doc/Plan/offline-license-activation.md）：首次启用本地识别
+        // 立即写试用锚点；启动即推进 last_seen（防时钟回拨基准），此后每 6h 定时推进。
+        if (license_runtime_) {
+            license_runtime_->EnsureTrialAnchor();
+            license_runtime_->AdvanceLastSeen();
+            license_runtime_->LogStatus("startup");
+        }
+        SetTimer(hwnd_, kLicenseLastSeenTimerId, kLicenseLastSeenIntervalMs, nullptr);
+
         f5_suppressor_ = std::make_unique<VoiceF5Suppressor>();
         SyncF5Suppressor();
+        xiaomi_keymap_hook_ = std::make_unique<XiaomiKeymapHook>();
+        SyncXiaomiKeymapHook();
 
         LogLine("Initializing global hotkey");
         global_hotkey_ = std::make_unique<GlobalHotkeyWin>(hwnd_);
@@ -593,7 +820,15 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
     DispatchToUi([this, devices] {
         connected_devices_ = devices;
         if (pair_device_dialog_) pair_device_dialog_->SetConnectedDevices(devices);
+        // 连接集合变化会影响「网关是否活跃」（网关设备可能刚连上/刚断开）。
+        SyncGatewayModeSuppression();
         UpdateTrayIcon();
+        // 授权状态依赖已连接设备列表：连接集合变化时记录一次（启动时设备未连，
+        // 日志会误导为 expired/trial——此处的记录才是带设备的真实状态）。
+        if (license_runtime_ && last_logged_device_ids_ != devices) {
+            last_logged_device_ids_ = devices;
+            license_runtime_->LogStatus("devices_changed");
+        }
         // 电池电压监测窗口：监测中链路断开时转入等待重连（设备端 power_log
         // 持续记录，数据不丢）；设备重新在线（GATT 已就绪）时恢复增量续传。
         if (battery_monitor_dialog_) {
@@ -609,6 +844,18 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
             } else {
                 battery_monitor_dialog_->NotifyAllDisconnected();
             }
+        }
+        // 命令行 --control 自启动场景：连上设备后补发控制帧。
+        if (pending_raw_control_.has_value() && !connected_devices_.empty()) {
+            const auto json = *pending_raw_control_;
+            pending_raw_control_.reset();
+            ApplyRawControl(json);
+        }
+        // 命令行 --gateway-target 自启动场景：连上设备后补发目标选择。
+        if (pending_gateway_target_.has_value() && !connected_devices_.empty()) {
+            const bool self = *pending_gateway_target_;
+            pending_gateway_target_.reset();
+            ApplyGatewayTargetSelection(self);
         }
         // 命令行 --ota 自启动场景：连上设备后触发 pending 请求。
         if (pending_ota_request_ && !connected_devices_.empty()) {
@@ -633,6 +880,8 @@ void Win32App::SetConnectedDevices(const std::vector<ConnectedDevice>& devices) 
         }
         // 连接集变化同步刷新 F5 钩子门控（连接态可见 RC 设备时也视为有小米）。
         SyncF5Suppressor();
+        // 活跃 RC 设备可能变化（key_map 按活跃设备取覆盖），同步刷新映射钩子。
+        SyncXiaomiKeymapHook();
     });
 }
 
@@ -646,6 +895,60 @@ void Win32App::SetDeviceInfo(const DeviceInfo& info) {
             pair_device_dialog_->SetDeviceInfo(info);
         }
     });
+}
+
+void Win32App::ApplyRawControl(const std::string& json) {
+    LogLine("ApplyRawControl " + json);
+    if (!coordinator_) return;
+    if (connected_devices_.empty()) {
+        // 显式记一行：静默入队曾让一次验收误判为"命令没生效"（2026-09-20 真机）。
+        LogLine("ApplyRawControl queued (no connected device yet)");
+        pending_raw_control_ = json;  // 连上设备后由 SetConnectedDevices 补发
+        return;
+    }
+    coordinator_->SendRawControl(json);
+}
+
+void Win32App::ApplyGatewayTargetSelection(bool self) {
+    LogLine(std::string("ApplyGatewayTargetSelection ") + (self ? "self" : "clear"));
+    if (!coordinator_) return;
+    if (connected_devices_.empty()) {
+        // 还没连上设备：记下待发，连上后由 SetConnectedDevices 补发（对齐 pending_ota 手法）。
+        pending_gateway_target_ = self;
+        return;
+    }
+    coordinator_->SelectGatewayTarget(self);
+}
+
+void Win32App::SetDeviceGatewayMode(const std::string& device_id, bool gateway) {
+    DispatchToUi([this, device_id, gateway] {
+        // device_info 尚未到达时先建条目（同 SetDeviceEncoderPresent 手法）。
+        auto& info = device_info_map_[device_id];
+        if (info.device_id.empty()) info.device_id = device_id;
+        if (info.gateway_mode == gateway) return;
+        info.gateway_mode = gateway;
+        LogLine("SetDeviceGatewayMode VS-" + device_id +
+                (gateway ? " mode=gateway (direct ATVV to remotes suppressed)"
+                         : " mode=normal"));
+        SyncGatewayModeSuppression();
+    });
+}
+
+// 网关抑制态汇总：任一台已连接 StickS3 处于网关模式 ⇒ 配对对话框禁用遥控器行。
+// 与 BleCentralWin::GatewayModeActiveLocked 同一判据（那边管自动连接，这边管 UI）。
+void Win32App::SyncGatewayModeSuppression() {
+    bool active = false;
+    for (const auto& device : connected_devices_) {
+        const auto it = device_info_map_.find(device.id);
+        if (it != device_info_map_.end() && it->second.hardware != kHardwareXiaomiRemote2Pro &&
+            it->second.gateway_mode) {
+            active = true;
+            break;
+        }
+    }
+    if (pair_device_dialog_) {
+        pair_device_dialog_->SetGatewayModeActive(active);
+    }
 }
 
 void Win32App::SetDeviceEncoderPresent(const std::string& device_id, bool present) {
@@ -710,6 +1013,8 @@ void Win32App::HandlePairingCompleted(const std::string& device_id, std::optiona
         LogLine("Confirmed paired device " + std::string(id_prefix) + device_id);
         // 配对完成即刻刷新 F5 钩子门控（新配对的小米遥控器无需等下次启动/热更）。
         SyncF5Suppressor();
+        // 新配对的小米遥控器即刻生效其按键映射。
+        SyncXiaomiKeymapHook();
     }
     std::string detail = std::string(id_prefix) + device_id + " paired";
     if (info && !info->hardware.empty()) detail += " (" + info->hardware + ")";
@@ -910,6 +1215,24 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                     StartOtaFromFile(path, device_id);
                 });
             }
+        } else if (cds && cds->dwData == kGatewayTargetCopyDataId && cds->lpData &&
+                   cds->cbData > 0) {
+            // payload 格式："self" 或 "clear"（P1 切换器目标选择）。
+            std::string payload(static_cast<const char*>(cds->lpData), cds->cbData);
+            const auto nul = payload.find('\0');
+            if (nul != std::string::npos) payload.resize(nul);
+            if (payload == "self" || payload == "clear") {
+                const bool self = payload == "self";
+                DispatchToUi([this, self] { ApplyGatewayTargetSelection(self); });
+            }
+        } else if (cds && cds->dwData == kControlCopyDataId && cds->lpData && cds->cbData > 0) {
+            // payload 为完整控制帧 JSON（--control，调试/自动化用）。
+            std::string payload(static_cast<const char*>(cds->lpData), cds->cbData);
+            const auto nul = payload.find('\0');
+            if (nul != std::string::npos) payload.resize(nul);
+            if (!payload.empty()) {
+                DispatchToUi([this, payload] { ApplyRawControl(payload); });
+            }
         }
         return 0;
     }
@@ -925,6 +1248,26 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
         if (event == NIN_POPUPOPEN || event == WM_MOUSEMOVE) {
             RebuildTooltip();
             RequestConnectedBatteryStatus();
+            return 0;
+        }
+        if (event == NIN_BALLOONUSERCLICK) {
+            // 只在动作仍挂着时消费：普通气泡（无动作）被点击不触发任何流程。
+            const auto action = std::move(pending_balloon_action_);
+            pending_balloon_action_.reset();
+            if (action.has_value()) {
+                if (action->kind == BalloonAction::Kind::kAppUpdate) {
+                    if (!config_.portable_mode) {
+                        win_sparkle_check_update_with_ui();
+                    }
+                } else if (action->kind == BalloonAction::Kind::kFirmwareUpdate) {
+                    StartFirmwareUpdate(action->device_id);
+                }
+            }
+            return 0;
+        }
+        if (event == NIN_BALLOONTIMEOUT || event == NIN_BALLOONHIDE) {
+            // 气泡未被点击即消失：动作作废，避免下次点击普通气泡误触发。
+            pending_balloon_action_.reset();
             return 0;
         }
         if (event == WM_RBUTTONUP || event == WM_LBUTTONUP ||
@@ -1011,6 +1354,21 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             dialog->Show();
             return 0;
         }
+        case kMenuLocalMicHotkey: {
+            // 按住说话热键录入：单键模式（修饰键本身可作键），确认后经
+            // SaveInputOptions（内含 ApplyUpdatedConfig → SyncLocalMicRuntime）热更重装钩子。
+            auto dialog = std::make_unique<HotkeySettingsDialog>(
+                instance_, hwnd_, EffectiveUiLanguage(config_.ui_language),
+                HotkeySettingsDialog::Mode::kPushToTalk,
+                config_.local_asr.push_to_talk_key);
+            dialog->on_hotkey_confirmed = [this](const std::string& key) {
+                config_.local_asr.push_to_talk_key = key;
+                SaveInputOptions();
+                SetStatus("Local mic push-to-talk key set to: " + key);
+            };
+            dialog->Show();
+            return 0;
+        }
         default: {
             UINT cmd = LOWORD(w_param);
             if (cmd >= kMenuHotkeyBase && cmd <= kMenuHotkeyEnd) {
@@ -1033,11 +1391,29 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
                                      [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
                     const bool is_xiaomi = entry_it != config_.paired_devices.end() &&
                                            entry_it->hardware == kHardwareXiaomiRemote2Pro;
+                    // OS bond 清理按地址匹配系统配对记录，删除前先取地址
+                    //（RemovePairedDevice 后迭代器失效）。
+                    const std::uint64_t os_unpair_address =
+                        entry_it != config_.paired_devices.end() ? entry_it->bluetooth_address : 0;
                     coordinator_->RemovePairedDevice(device_id);
                     config_.RemovePairedDevice(device_id);
                     // 忘掉最后一台 RC 设备时卸载 F5 键盘钩子（按需装载的逆操作）。
                     SyncF5Suppressor();
-                    LogLine("Forgot device " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id);
+                    const std::string label = std::string(is_xiaomi ? "RC-" : "VS-") + device_id;
+                    LogLine("Forgot device " + label);
+                    // 同步清除 Windows 系统级配对记录：设备不再残留于系统蓝牙
+                    // 设备列表，用户无需再去系统设置删除（失败时状态栏兜底提示）。
+                    if (ble_central_ && os_unpair_address != 0) {
+                        ble_central_->UnpairOsBondAsync(device_id, os_unpair_address,
+                                                        [this, label](bool ok) {
+                                                            SetStatus(ok ? "Forgot " + label +
+                                                                      " (removed from Windows Bluetooth)"
+                                                                        : "Forgot " + label +
+                                                                      "; remove it in Windows Bluetooth settings");
+                                                        });
+                    } else {
+                        SetStatus("Forgot device " + label);
+                    }
                 }
             } else if (cmd >= kMenuUpdateFirmwareBase && cmd <= kMenuUpdateFirmwareEnd) {
                 std::size_t index = cmd - kMenuUpdateFirmwareBase;
@@ -1114,7 +1490,19 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             } else if (cmd >= kMenuXiaomiKeymapBase && cmd <= kMenuXiaomiKeymapEnd) {
                 std::size_t index = cmd - kMenuXiaomiKeymapBase;
                 if (index < paired_device_ids_.size()) {
-                    ShowXiaomiKeymapDialog(paired_device_ids_[index]);
+                    // 按设备类型分发：直连遥控器编辑其设备覆盖；StickS3 设备项
+                    // 是网关模式遥控器映射（编辑全局默认 [xiaomi.keys]）。
+                    const auto& id = paired_device_ids_[index];
+                    const auto entry_it = std::find_if(
+                        config_.paired_devices.begin(), config_.paired_devices.end(),
+                        [&id](const auto& e) { return e.device_id == id; });
+                    const bool is_xiaomi = entry_it != config_.paired_devices.end() &&
+                                           entry_it->hardware == kHardwareXiaomiRemote2Pro;
+                    if (is_xiaomi) {
+                        ShowXiaomiKeymapDialog(id);
+                    } else {
+                        ShowGatewayKeymapDialog();
+                    }
                 }
             } else if (cmd >= kMenuMicModeBase && cmd <= kMenuMicModeEnd) {
                 std::size_t index = cmd - kMenuMicModeBase;
@@ -1143,6 +1531,23 @@ LRESULT Win32App::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
             KillTimer(hwnd_, kResumeRestartTimerId);
             LogLine("resume timer fired: restarting BLE after power resume");
             if (ble_central_) ble_central_->RestartForResume();
+            return 0;
+        }
+        if (w_param == kAppUpdateSilentCheckTimerId) {
+            // 首查后转为 24h 周期；portable 模式不 init WinSparkle 也不会设此 timer。
+            SetTimer(hwnd_, kAppUpdateSilentCheckTimerId, kAppUpdateCheckIntervalMs, nullptr);
+            LogLine("app update silent check triggered");
+            win_sparkle_check_update_without_ui();
+            return 0;
+        }
+        if (w_param == kFirmwarePeriodicCheckTimerId && coordinator_) {
+            // 周期静默拉 manifest；协调器 12h 缓存内直接复用，真拉由后台线程完成。
+            coordinator_->CheckFirmwareUpdatesPeriodically();
+            return 0;
+        }
+        if (w_param == kLicenseLastSeenTimerId && license_runtime_) {
+            // now > last_seen 才推进并落盘（幂等，时钟回拨时自动跳过）。
+            license_runtime_->AdvanceLastSeen();
             return 0;
         }
         break;
@@ -1185,6 +1590,9 @@ void Win32App::ShutdownAndQuit() {
     if (global_hotkey_) {
         global_hotkey_->Unregister();
     }
+    // 先拆本机麦克风热键（LL 钩子）再 Shutdown 协调器：避免关停期间按键事件
+    // 继续进入协调器。
+    mic_mode_hotkey_.reset();
     pair_device_dialog_.reset();
     if (coordinator_) coordinator_->Shutdown();
     DestroyWindow(hwnd_);
@@ -1261,9 +1669,214 @@ void Win32App::SyncF5Suppressor() {
     }
 }
 
+void Win32App::SyncXiaomiKeymapHook() {
+    if (!xiaomi_keymap_hook_) return;
+    // 连发间隔先于启停判定热更：配置滑块保存路径（ApplyUpdatedConfig）在钩子
+    // 未运行时也把新值带入，Start 后立即按新节拍工作。
+    xiaomi_keymap_hook_->SetGatewayRepeatIntervalMs(
+        config_.xiaomi_gateway_repeat_interval_ms);
+    // 按需装载：「有已配对/已连接 RC 设备（直连模式）或有 StickS3 设备（网关
+    // 模式，P1） 且 有效 key_map 非空」时挂钩。key_map 非空即用户显式配置了映射
+    //（空串显式取消留在表内，由决策层放行），不再叠加全局开关。
+    // 刷新时机与 SyncF5Suppressor 一致。
+    std::optional<std::string> active_rc;
+    for (const auto& dev : connected_devices_) {
+        if (dev.hardware == kHardwareXiaomiRemote2Pro) {
+            active_rc = dev.id;
+            break;
+        }
+    }
+    if (!active_rc.has_value()) {
+        for (const auto& entry : config_.paired_devices) {
+            if (entry.hardware == kHardwareXiaomiRemote2Pro) {
+                active_rc = entry.device_id;
+                break;
+            }
+        }
+    }
+    // 网关模式（遥控器只连 StickS3）：映射消费走 gateway_key 事件，挂载条件放宽
+    // 到「存在 StickS3 设备」，key_map 取全局默认（RC 设备不存在）。
+    bool gateway_stick_present = false;
+    if (!active_rc.has_value()) {
+        for (const auto& dev : connected_devices_) {
+            if (dev.hardware == kHardwareStickS3) {
+                gateway_stick_present = true;
+                break;
+            }
+        }
+        if (!gateway_stick_present) {
+            for (const auto& entry : config_.paired_devices) {
+                if (entry.hardware == kHardwareStickS3) {
+                    gateway_stick_present = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!active_rc.has_value() && !gateway_stick_present) {
+        xiaomi_keymap_hook_->Stop();
+        return;
+    }
+    // Raw Input 佐证只有 VID/PID 粒度（同型号多台无法区分），key_map 统一取
+    // 活跃 RC 设备的有效映射（设备覆盖填平后回落全局默认）；网关模式取全局默认。
+    const auto xiaomi_settings = config_.XiaomiSettingsForDevice(active_rc);
+    auto key_map = xiaomi_settings.key_map;
+    bool has_mapping = false;
+    for (const auto& [button, spec] : key_map) {
+        if (!spec.empty()) { has_mapping = true; break; }
+    }
+    if (has_mapping) {
+        // usage tap 探针链路随钩子启停，开关为设备级设置（按键映射对话框）。
+        // 网关模式遥控器不经 Windows HID 栈，探针自然闲置（无管道对端即静默）。
+        xiaomi_keymap_hook_->Start(std::move(key_map),
+                                   xiaomi_settings.hid_tap_enabled);
+    } else {
+        xiaomi_keymap_hook_->Stop();
+    }
+}
+
+// 本机麦克风模式运行件与按住说话热键的启停/热更（幂等，设置保存与启动共用）。
+// 模型目录（空→"models"，相对→exe 目录基准，与旧启动逻辑同口径）变化才重建
+// 运行件；热键解析失败如实记日志不装钩子。
+void Win32App::SyncLocalMicRuntime() {
+#ifdef VOICESTICK_LOCAL_ASR_ENABLED
+    if (coordinator_ == nullptr) return;
+
+    // 授权闸（离线授权）：会话将路由本地引擎时按当前授权状态放行
+    // （试用期内或已激活）。空/缺 runtime 时协调器默认放行，行为不变。
+    if (license_runtime_) {
+        coordinator_->SetLicenseGate(
+            [this] { return license_runtime_->LocalAsrAllowed(); });
+        // 用户本次才启用本地识别：立即写试用锚点（幂等，已有锚点跳过）。
+        license_runtime_->EnsureTrialAnchor();
+    }
+
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：wechat 点按触发
+    // 组合（trigger=click_to_talk + session_model=hold_to_talk）下小米会话的音频
+    // 来自本机麦克风——不依赖 [local_asr] enabled，注入采集器即可（不加载模型）。
+    const bool wechat_click_hold =
+        config_.default_output_profile.target == OutputTarget::kWechatInputMethod &&
+        config_.wechat_input_method.trigger_mode == InteractionMode::kClickToTalk &&
+        config_.wechat_input_method.EffectiveSessionModel() == InteractionMode::kHoldToTalk;
+
+    if (config_.local_asr.enabled) {
+        // 空 = exe/models、相对路径锚 exe 目录（口径与设置界面状态检查共用）。
+        const std::string models_dir = ResolveLocalMicModelsDir(
+            config_.local_asr.models_dir,
+            std::filesystem::path(CurrentExecutableDir()).string());
+        if (models_dir != local_mic_models_dir_applied_) {
+            coordinator_->SetLocalMicRuntime(
+                std::make_unique<WasapiMicCapture>(),
+                std::make_unique<LocalAsrClient>(models_dir));
+            local_mic_models_dir_applied_ = models_dir;
+            LogLine("Local mic runtime ready, models: " + models_dir);
+        }
+    } else if (wechat_click_hold) {
+        // 仅方案 A：注入采集器不建本地 ASR（WeType 识别，不占模型内存）。
+        if (local_mic_models_dir_applied_.empty()) {
+            coordinator_->SetLocalMicRuntime(std::make_unique<WasapiMicCapture>(), nullptr);
+            local_mic_models_dir_applied_ = "wechat-click-hold";
+            LogLine("Local mic capture ready for wechat click toggle (no local ASR)");
+        }
+    } else if (!local_mic_models_dir_applied_.empty()) {
+        // 关闭：拆运行件与热键（协调器侧负责取消活跃会话，采集器析构即 Stop）。
+        coordinator_->SetLocalMicRuntime(nullptr, nullptr);
+        local_mic_models_dir_applied_.clear();
+        mic_mode_hotkey_.reset();
+        LogLine("Local mic mode disabled");
+        return;
+    }
+
+    const auto ptt_vk = ParsePushToTalkKey(config_.local_asr.push_to_talk_key);
+    if (config_.local_asr.enabled && ptt_vk) {
+        if (!mic_mode_hotkey_) {
+            mic_mode_hotkey_ = std::make_unique<MicModeHotkey>();
+            mic_mode_hotkey_->on_pressed = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyPressed();
+            };
+            mic_mode_hotkey_->on_released = [this] {
+                if (coordinator_) coordinator_->HandleLocalMicHotkeyReleased();
+            };
+        }
+        if (!mic_mode_hotkey_->Start(*ptt_vk)) {
+            mic_mode_hotkey_.reset();
+            SetStatus("Local mic hotkey install failed");
+        }
+    } else {
+        if (config_.local_asr.enabled) {
+            LogLine("local_asr push_to_talk_key invalid: " +
+                    config_.local_asr.push_to_talk_key);
+        }
+        mic_mode_hotkey_.reset();
+    }
+
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+    SyncLocalRefiner();
+#endif
+#endif
+}
+
+#ifdef VOICESTICK_LOCAL_REFINE_ENABLED
+void Win32App::SyncLocalRefiner() {
+    if (coordinator_ == nullptr) return;
+
+    std::string model_path;
+    if (config_.local_asr.enabled && config_.local_asr.refine_enabled) {
+        const std::string models_dir = ResolveLocalMicModelsDir(
+            config_.local_asr.models_dir,
+            std::filesystem::path(CurrentExecutableDir()).string());
+        // 跨轮开时优先 4B（解析口径与设置界面回显一致）；4B 缺失回退
+        // 1.7B——纠正能力降级为安全弱档（守卫保底不变），日志明示。
+        model_path = ResolveLocalRefineModelPath(
+            models_dir, config_.local_asr.refine_model,
+            config_.local_asr.refine_cross_turn);
+        if (config_.local_asr.refine_cross_turn && !model_path.empty() &&
+            model_path.find("Qwen3-4B") == std::string::npos) {
+            LogLine("Cross-turn refine prefers Qwen3-4B (missing); "
+                    "falling back with weaker correction: " + model_path);
+        }
+    }
+    // 幂等键含提示词：自定义 few-shot 变化 → 前缀变 → 必须重建引擎
+    //（llama.cpp KV 前缀按首次 Chat 的 system+few-shot 钉住，改提示词
+    // 不重建会继续用旧前缀解码）。
+    const std::string key = model_path + "#" +
+                            std::to_string(config_.local_asr.refine_num_threads) +
+                            "#" + config_.local_asr.refine_prompt;
+    if (key == local_refine_key_applied_) return;  // 幂等：状态未变不重建
+    local_refine_key_applied_ = key;
+
+    if (model_path.empty()) {
+        coordinator_->SetLocalRefiner(nullptr);
+        if (config_.local_asr.enabled && config_.local_asr.refine_enabled) {
+            LogLine("Local refine model missing; local ASR falls back to "
+                    "rule-only passthrough");
+        }
+        return;
+    }
+    auto engine = LlamaCppEngine::Create(model_path,
+                                         config_.local_asr.refine_num_threads);
+    if (!engine) {
+        // 加载失败（损坏/显存与内存不足等）：注入空指针退化直通，并清空幂等键
+        // 让下次 Sync（如设置再保存）重试。
+        LogLine("Local refine engine init failed: " + model_path);
+        coordinator_->SetLocalRefiner(nullptr);
+        local_refine_key_applied_.clear();
+        return;
+    }
+    coordinator_->SetLocalRefiner(std::make_unique<LocalRefinementClient>(
+        std::move(engine), config_.local_asr.refine_prompt,
+        [](std::string_view message) {
+            LogLine("Local refine " + std::string(message));
+        }));
+    LogLine("Local refine engine ready: " + model_path);
+}
+#endif  // VOICESTICK_LOCAL_REFINE_ENABLED
+
 void Win32App::ApplyUpdatedConfig() {
     if (coordinator_) coordinator_->UpdateConfig(config_);
     SyncF5Suppressor();
+    SyncXiaomiKeymapHook();
+    SyncLocalMicRuntime();
 }
 
 bool Win32App::CreateWindowInternal() {
@@ -1303,46 +1916,7 @@ bool Win32App::CreateWindowInternal() {
                     ProcessHotwordWithLlm(text);
                     return;
                 }
-                const auto lang = EffectiveUiLanguage(config_.ui_language);
-                // 添加到当前活跃分类（去重 + 每分类 25 上限，同步 asr_hotwords 投影）。
-                if (std::find(config_.asr_hotwords.begin(), config_.asr_hotwords.end(), text) !=
-                    config_.asr_hotwords.end()) {
-                    ShowNotification(
-                        Tr(StringId::kSelectionHotwordDuplicateTitle, lang),
-                        Tr(StringId::kSelectionHotwordDuplicateBody, lang) + text);
-                    return;
-                }
-                // 智能热词管理开启时经协调器加词：满 25 自动逐出低活跃度词腾位，
-                // 返回已落盘的最新配置拷贝（不能再走 Save+ApplyUpdatedConfig，避免
-                // 用本地旧副本覆盖协调器新状态）。
-                if (config_.smart_hotword_enabled && coordinator_) {
-                    if (auto updated = coordinator_->AddHotwordWithEviction(text)) {
-                        config_ = std::move(*updated);
-                        ShowNotification(
-                            Tr(StringId::kSelectionHotwordAddedTitle, lang),
-                            Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
-                        return;
-                    }
-                    ShowNotification(
-                        Tr(StringId::kSelectionHotwordCategoryFullTitle, lang),
-                        Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
-                    return;
-                }
-                if (!AddHotwordToActiveCategory(config_, text)) {
-                    ShowNotification(
-                        Tr(StringId::kSelectionHotwordCategoryFullTitle, lang),
-                        Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
-                    return;
-                }
-                try {
-                    config_.SavePreservingDiskCredentials();
-                } catch (const std::exception& e) {
-                    LogLine(std::string("Save config on hotword add failed: ") + e.what());
-                }
-                ApplyUpdatedConfig();
-                ShowNotification(
-                    Tr(StringId::kSelectionHotwordAddedTitle, lang),
-                    Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
+                AddHotwordAndNotify(text);
             };
         // on_correction_requested 回调：弹出纠错对话框（错误文本 + AI 建议输入）。
         selection_hotword_manager_->on_correction_requested =
@@ -1407,6 +1981,117 @@ bool Win32App::CreateWindowInternal() {
             };
     }
     return true;
+}
+
+void Win32App::AddHotwordAndNotify(const std::string& text) {
+    const auto lang = EffectiveUiLanguage(config_.ui_language);
+    // 添加到当前活跃分类（去重 + 每分类 25 上限，同步 asr_hotwords 投影）。
+    auto& hotwords = config_.asr_hotwords;
+    if (std::find(hotwords.begin(), hotwords.end(), text) != hotwords.end()) {
+        ShowNotification(Tr(StringId::kSelectionHotwordDuplicateTitle, lang),
+                         Tr(StringId::kSelectionHotwordDuplicateBody, lang) + text);
+        return;
+    }
+    if (text.size() > static_cast<std::size_t>(
+                          SelectionHotwordManager::kMaxHotwordLen)) {
+        ShowNotification(Tr(StringId::kSelectionHotwordTooLongTitle, lang),
+                         Tr(StringId::kSelectionHotwordTooLongBody, lang));
+        return;
+    }
+    // B14：统一口径（原只查重复+长度，空格/标点可入配置却被下游过滤 →
+    //「加进去但不生效」且无提示）。拒绝时给出具体原因提示。
+    if (ValidateHotword(text) != HotwordRejectReason::kNone) {
+        ShowNotification(Tr(StringId::kSelectionHotwordInvalidTitle, lang),
+                         Tr(StringId::kSelectionHotwordInvalidBody, lang) + text);
+        return;
+    }
+    // 智能热词管理开启时经协调器加词：满 25 自动逐出低活跃度词腾位，
+    // 返回已落盘的最新配置拷贝（不能再走 Save+ApplyUpdatedConfig，避免
+    // 用本地旧副本覆盖协调器新状态）。
+    if (config_.smart_hotword_enabled && coordinator_) {
+        if (auto updated = coordinator_->AddHotwordWithEviction(text)) {
+            config_ = std::move(*updated);
+            ShowNotification(Tr(StringId::kSelectionHotwordAddedTitle, lang),
+                             Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
+            return;
+        }
+        ShowNotification(Tr(StringId::kSelectionHotwordCategoryFullTitle, lang),
+                         Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
+        return;
+    }
+    if (!AddHotwordToActiveCategory(config_, text)) {
+        ShowNotification(Tr(StringId::kSelectionHotwordCategoryFullTitle, lang),
+                         Tr(StringId::kSelectionHotwordCategoryFullBody, lang));
+        return;
+    }
+    try {
+        config_.SavePreservingDiskCredentials();
+    } catch (const std::exception& e) {
+        LogLine(std::string("Save config on hotword add failed: ") + e.what());
+    }
+    ApplyUpdatedConfig();
+    ShowNotification(Tr(StringId::kSelectionHotwordAddedTitle, lang),
+                     Tr(StringId::kSelectionHotwordAddedBody, lang) + text);
+}
+
+void Win32App::OpenSelectionCorrectionDialog(const std::string& wrong_text) {
+    if (wrong_text.empty()) return;
+    // 已开着先关（新错词顶替旧会话）。
+    selection_correction_dialog_.reset();
+    // 记录回写目标：弹层 WS_EX_NOACTIVATE 不抢前台，此刻前台即划词所在的
+    // 目标应用窗口（纠错确认后把选中的错词替换为正确词）。
+    selection_correction_target_hwnd_ = GetForegroundWindow();
+
+    // 候选提供器：云端 LLM（llm_* 配置齐备）优先，退本地精修引擎，再退纯手输。
+    // 热词表注入候选 prompt（触类旁通：错词是热词漏字变体时候选仍可出现）。
+    const std::string context = coordinator_
+                                    ? coordinator_->RecentRefineContextText()
+                                    : std::string();
+    const std::vector<std::string> hotwords = config_.asr_hotwords;
+    SelectionCorrectionDialog::CandidatesProvider provider =
+        [this, wrong_text, context, hotwords](
+            std::function<void(bool ok, std::vector<std::string> candidates)>
+                on_done) {
+        if (!config_.llm_api_key.empty() && !config_.llm_model.empty()) {
+            LlmCorrectionCandidatesClient client(config_);
+            client.Request(wrong_text, context, hotwords, std::move(on_done));
+            return;
+        }
+        if (coordinator_) {
+            coordinator_->GenerateCorrectionCandidates(wrong_text, context,
+                                                       hotwords,
+                                                       std::move(on_done));
+            return;
+        }
+        on_done(false, {});
+    };
+
+    selection_correction_dialog_ =
+        std::make_unique<SelectionCorrectionDialog>(
+            instance_, hwnd_, wrong_text,
+            EffectiveUiLanguage(config_.ui_language), std::move(provider));
+    selection_correction_dialog_->on_confirm =
+        [this](const std::string& correct_word) {
+            // 纠错确认是词级输入：不走长文 LLM 提炼分支。
+            const std::string normalized = correct_word;
+            if (normalized.empty()) return;
+            AddHotwordAndNotify(normalized);
+            ReplaceSelectionInTarget(normalized);
+        };
+    selection_correction_dialog_->Show();
+}
+
+void Win32App::ReplaceSelectionInTarget(const std::string& replacement) {
+    const HWND target = selection_correction_target_hwnd_;
+    selection_correction_target_hwnd_ = nullptr;
+    if (!target || !IsWindow(target) || replacement.empty()) return;
+    // 对话框已在 ConfirmWord 中先销毁（激活权仍在本进程，可切前台）。
+    // SetForegroundWindow 异步生效，短暂等待激活完成再注入，否则 Ctrl+V
+    // 可能仍打进销毁对话框前的旧前台。Paste 内含剪贴板快照与恢复。
+    if (!SetForegroundWindow(target)) return;
+    Sleep(60);
+    input_injector_.Paste(replacement, /*press_enter=*/false);
+    LogLine("selection correction replaced in target window");
 }
 
 void Win32App::AddTrayIcon() {
@@ -1661,6 +2346,13 @@ void Win32App::ShowTrayMenu() {
             AppendMenuW(submenu, MF_STRING,
                         kMenuXiaomiKeymapBase + static_cast<UINT>(i),
                         TrW(StringId::kMenuXiaomiKeymap, language).c_str());
+        } else {
+            // 网关模式按键映射入口（P1）：遥控器配对在 StickS3 上（不直连桌面端），
+            // 映射编辑走全局默认 [xiaomi.keys]，协调器经 gateway_keymap_set 下发
+            // 固件软件路由，按键沿以 gateway_key 事件回流注入。
+            AppendMenuW(submenu, MF_STRING,
+                        kMenuXiaomiKeymapBase + static_cast<UINT>(i),
+                        TrW(StringId::kMenuXiaomiKeymap, language).c_str());
         }
 
         // 电池电压监测入口：仅 StickS3 连接设备显示（power_log 导出需要活跃 BLE
@@ -1771,6 +2463,13 @@ void Win32App::ShowTrayMenu() {
         }
     }
     AppendMenuW(hotkey_menu, custom_menu_flags, kMenuHotkeyCustom, custom_menu_text.c_str());
+    // 按住说话热键（本地语音识别）：常驻显示当前键名，点击打开录入对话框
+    //（HotkeySettingsDialog PTT 模式，单键语义如 right ctrl）。
+    std::wstring ptt_menu_text = TrW(StringId::kMenuLocalMicHotkey, language);
+    if (!config_.local_asr.push_to_talk_key.empty()) {
+        ptt_menu_text += L" " + Utf16FromUtf8(config_.local_asr.push_to_talk_key);
+    }
+    AppendMenuW(hotkey_menu, MF_STRING, kMenuLocalMicHotkey, ptt_menu_text.c_str());
     if (global_hotkey_ && !global_hotkey_->IsRegistered()) {
         AppendMenuW(hotkey_menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(hotkey_menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0,
@@ -2033,298 +2732,6 @@ void Win32App::OnHotwordExtracted(bool ok, const std::string& result) {
     LogLine("Hotwords extracted and added: " + joined);
 }
 
-void Win32App::SaveDeviceThemeColor(const std::string& device_id, OverlayThemeColor color) {
-    try {
-        if (color == DefaultOverlayThemeColor()) {
-            config_.device_theme_colors.erase(device_id);
-        } else {
-            config_.device_theme_colors[device_id] = color;
-        }
-        config_.SavePreservingDiskCredentials();
-        ApplyOverlayStyle(device_id);
-        LogLine("Theme color saved VS-" + device_id + "=" + OverlayThemeColorName(color));
-    } catch (const std::exception& error) {
-        LogLine(std::string("Theme color save failed: ") + error.what());
-        SetStatus("Theme save failed");
-    }
-}
-
-void Win32App::SaveDeviceThemeSize(const std::string& device_id, OverlayThemeSize size) {
-    try {
-        if (size == OverlayThemeSize::kBig) {
-            config_.device_theme_sizes.erase(device_id);
-        } else {
-            config_.device_theme_sizes[device_id] = size;
-        }
-        config_.SavePreservingDiskCredentials();
-        ApplyOverlayStyle(device_id);
-        LogLine("Theme size saved VS-" + device_id + "=" + OverlayThemeSizeName(size));
-    } catch (const std::exception& error) {
-        LogLine(std::string("Theme size save failed: ") + error.what());
-        SetStatus("Theme size save failed");
-    }
-}
-
-void Win32App::SaveDeviceOverlayPosition(const std::string& device_id, OverlayPosition position) {
-    try {
-        if (position == DefaultOverlayPosition()) {
-            config_.device_overlay_positions.erase(device_id);
-        } else {
-            config_.device_overlay_positions[device_id] = position;
-        }
-        config_.SavePreservingDiskCredentials();
-        ApplyOverlayStyle(device_id);
-        LogLine("Overlay position saved VS-" + device_id + "=" + OverlayPositionName(position));
-    } catch (const std::exception& error) {
-        LogLine(std::string("Overlay position save failed: ") + error.what());
-        SetStatus("Position save failed");
-    }
-}
-
-void Win32App::SaveDeviceOutputProfile(const std::string& device_id, OutputProfile profile) {
-    try {
-        // target 允许设备级覆盖（麦克风模式）；transform/translation_target 与全局
-        // 默认相同且 target 未覆盖时移除覆盖条目（落盘自然清除）。
-        const OutputProfile& default_profile = config_.default_output_profile;
-        const bool target_overridden = profile.target != default_profile.target;
-        if (!target_overridden && profile.transform == default_profile.transform &&
-            profile.translation_target == default_profile.translation_target) {
-            config_.device_output_profiles.erase(device_id);
-        } else {
-            config_.device_output_profiles[device_id] = profile;
-        }
-        config_.SavePreservingDiskCredentials();
-        ApplyUpdatedConfig();
-        LogLine("Output profile saved VS-" + device_id + "=" +
-                TextTransformName(profile.transform) + ":" + profile.translation_target);
-    } catch (const std::exception& error) {
-        LogLine(std::string("Output profile save failed: ") + error.what());
-        SetStatus("Output save failed");
-    }
-}
-
-void Win32App::ToggleDeviceMicMode(const std::string& device_id) {
-    const auto language = EffectiveUiLanguage(config_.ui_language);
-    OutputProfile profile = config_.OutputProfileForDevice(device_id);
-    bool enabled;
-    if (profile.target == OutputTarget::kVirtualMic ||
-        profile.target == OutputTarget::kWechatInputMethod) {
-        // 取消勾选：恢复全局默认输出（默认语音识别）；全局默认同为麦克风模式时
-        // 显式回退 focused_app，保证复选框可关闭。
-        profile.target = config_.default_output_profile.target;
-        if (profile.target == OutputTarget::kVirtualMic ||
-            profile.target == OutputTarget::kWechatInputMethod) {
-            profile.target = OutputTarget::kFocusedApp;
-        }
-        enabled = false;
-    } else {
-        // 麦克风模式 = virtual_mic 直通：音频只进虚拟麦克风，应用内自行选择该设备
-        // 取音识别（不触发第三方输入法；需要输入法热键的用 设置→输出目标→第三方输入法）。
-        profile.target = OutputTarget::kVirtualMic;
-        enabled = true;
-    }
-    SaveDeviceOutputProfile(device_id, profile);
-    // 即时视觉反馈：托盘气泡 + 状态栏文本；设备子菜单复选框/状态行在下次打开时呈现。
-    ShowNotification(Tr(StringId::kMenuMicMode, language),
-                     Tr(enabled ? StringId::kNotificationMicModeOnBody
-                                : StringId::kNotificationMicModeOffBody,
-                        language));
-    // 类别前缀取自 config 持久化的 hardware（与菜单构建处判定一致，简化为仅看配对条目）。
-    const auto entry_it =
-        std::find_if(config_.paired_devices.begin(), config_.paired_devices.end(),
-                     [&](const PairedDeviceEntry& e) { return e.device_id == device_id; });
-    const bool is_xiaomi =
-        entry_it != config_.paired_devices.end() &&
-        entry_it->hardware == kHardwareXiaomiRemote2Pro;
-    LogLine("Mic mode toggled " + std::string(is_xiaomi ? "RC-" : "VS-") +
-            device_id + " -> " + (enabled ? "on" : "off"));
-}
-
-void Win32App::ApplyOverlayStyle(const std::optional<std::string>& device_id) {
-    if (!overlay_) return;
-    OverlayThemeColor color = DefaultOverlayThemeColor();
-    OverlayThemeSize size = OverlayThemeSize::kBig;
-    OverlayPosition position = DefaultOverlayPosition();
-    if (device_id.has_value()) {
-        if (auto color_it = config_.device_theme_colors.find(*device_id);
-            color_it != config_.device_theme_colors.end()) {
-            color = color_it->second;
-        }
-        if (auto size_it = config_.device_theme_sizes.find(*device_id);
-            size_it != config_.device_theme_sizes.end()) {
-            size = size_it->second;
-        }
-        if (auto position_it = config_.device_overlay_positions.find(*device_id);
-            position_it != config_.device_overlay_positions.end()) {
-            position = position_it->second;
-        }
-    }
-    overlay_->SetThemeColor(color);
-    overlay_->SetThemeSize(size);
-    overlay_->SetPosition(position);
-}
-
-void Win32App::RebuildTooltip() {
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd_;
-    data.uID = kTrayIconId;
-    data.uFlags = NIF_TIP | NIF_SHOWTIP;
-    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
-    std::wstring tip;
-    if (connected_devices_.empty()) {
-        tip = L"VoiceStick - " + TrW(StringId::kStatusDisconnected, language);
-    } else {
-        bool first = true;
-        for (const auto& device : connected_devices_) {
-            if (!first) tip += L", ";
-            first = false;
-            std::wstring device_text = Utf16(device.name.empty() ? "VS-" + device.id : device.name);
-            const auto it = device_battery_map_.find(device.id);
-            if (it != device_battery_map_.end()) {
-                device_text = DeviceTitleWithBattery(device_text,
-                                                     it->second.level_percent,
-                                                     it->second.charging,
-                                                     it->second.usb_powered,
-                                                     language);
-            }
-            tip += device_text;
-        }
-    }
-    wcsncpy_s(data.szTip, tip.c_str(), _TRUNCATE);
-    Shell_NotifyIconW(NIM_MODIFY, &data);
-}
-
-void Win32App::UpdateTrayIcon() {
-    if (!hwnd_) return;
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd_;
-    data.uID = kTrayIconId;
-    data.uFlags = NIF_ICON;
-
-    HICON icon = nullptr;
-    if (connected_devices_.empty()) {
-        icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_DISCONNECTED));
-    } else {
-        int min_level = 100;
-        bool charging = false;
-        for (const auto& device : connected_devices_) {
-            const auto it = device_battery_map_.find(device.id);
-            if (it != device_battery_map_.end()) {
-                min_level = std::min(min_level, it->second.level_percent);
-                if (it->second.charging) charging = true;
-            }
-        }
-        if (charging) {
-            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_CHARGING));
-        } else if (min_level >= 75) {
-            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_100));
-        } else if (min_level >= 50) {
-            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_75));
-        } else if (min_level >= 25) {
-            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_50));
-        } else if (min_level > 0) {
-            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_25));
-        } else {
-            icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_TRAY_BATTERY_0));
-        }
-    }
-    if (!icon) {
-        icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_VOICESTICK_TRAY));
-    }
-    data.hIcon = icon;
-    Shell_NotifyIconW(NIM_MODIFY, &data);
-    if (icon) DestroyIcon(icon);
-    RebuildTooltip();
-}
-
-void Win32App::RequestConnectedBatteryStatus() {
-    if (!ble_central_ || connected_devices_.empty()) return;
-    const auto now = std::chrono::steady_clock::now();
-    if (last_battery_status_request_ != std::chrono::steady_clock::time_point{} &&
-        now - last_battery_status_request_ < std::chrono::seconds(1)) {
-        return;
-    }
-    last_battery_status_request_ = now;
-    ble_central_->RequestBatteryStatus(std::nullopt);
-}
-
-void Win32App::RegisterTaskbarMessage() {
-    taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
-}
-
-bool Win32App::ShowOnboardingIfNeeded() {
-    if (!NeedsOnboarding(config_)) return true;
-    if (!ShowOnboarding()) {
-        LogLine("Initial onboarding cancelled; exiting");
-        return false;
-    }
-    return true;
-}
-
-bool Win32App::ShowOnboarding() {
-    OnboardingDialog dialog(instance_, hwnd_, config_);
-    dialog.on_pair_device_requested = [this] {
-        ShowPairDeviceDialog();
-    };
-    dialog.on_config_completed = [this](AppConfig new_config) {
-        config_ = std::move(new_config);
-        paired_device_ids_ = config_.paired_device_ids;
-        ApplyUpdatedConfig();
-        RebuildTooltip();
-        LogLine("Onboarding completed");
-    };
-    return dialog.Show();
-}
-
-void Win32App::ShowPairDeviceDialog() {
-    pair_device_dialog_ = std::make_unique<PairDeviceDialog>(
-        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), config_.paired_device_ids,
-        [this](std::string device_id, std::uint64_t bluetooth_address,
-               BluetoothAddressKind address_kind, std::string name) {
-            PairDevice(device_id, bluetooth_address, address_kind, name);
-        },
-        [this](std::string device_id, std::optional<DeviceInfo> info) {
-            HandlePairingCompleted(device_id, std::move(info));
-        });
-    pair_device_dialog_->SetManualPairHandler([this](std::string device_id) {
-        PairDeviceByManualId(device_id);
-    });
-    pair_device_dialog_->on_pair_timeout = [this](std::string device_id) {
-        // 类别感知日志前缀：与 SetPairingError 同模式，reset 前先判定。
-        const bool is_xiaomi =
-            pending_pairing_entry_ && pending_pairing_entry_->device_id == device_id &&
-            BleProtocol::DeviceClassFromName(pending_pairing_entry_->name)
-                    .value_or(DeviceClass::kStickS3) == DeviceClass::kXiaomiRemote2Pro;
-        pending_pairing_entry_.reset();
-        if (coordinator_) coordinator_->CancelPendingConnect(device_id);
-        LogLine("Pairing timed out " + std::string(is_xiaomi ? "RC-" : "VS-") + device_id);
-    };
-    pair_device_dialog_->Show();
-}
-
-void Win32App::ShowSettings() {
-    // 每次重新进入时重建（与 ShowEncoderSettingsDialog 同模式）：SettingsDialog 内部
-    // 持有 config_ 的快照，复用旧实例会用过期快照覆盖当前 config_，丢失其他对话框
-    // （如编码器设置）在两次打开之间所做的按设备覆盖修改。
-    settings_dialog_ = std::make_unique<SettingsDialog>(instance_, hwnd_, config_);
-    settings_dialog_->on_config_changed = [this](AppConfig new_config) {
-        config_ = std::move(new_config);
-        // SaveInputOptions 内部已调用 coordinator_->UpdateConfig(config_) 完成同步。
-        SaveInputOptions();
-        RebuildTooltip();
-        LogLine("Settings saved");
-    };
-    settings_dialog_->on_open_hotword_activity = [this]() {
-        ShowHotwordActivityDialog();
-    };
-    settings_dialog_->on_get_hotword_tray = [this]() {
-        return coordinator_->TakeHotwordTraySnapshot();
-    };
-    settings_dialog_->Show();
-}
-
 void Win32App::ShowHotwordActivityDialog() {
     if (!coordinator_) return;
     // 每次重建（与 ShowSettings 同模式）：快照对话框只读，重建确保拿到最新接线和语言。
@@ -2340,382 +2747,5 @@ void Win32App::ShowHotwordActivityDialog() {
     hotword_activity_dialog_->Show();
 }
 
-void Win32App::ShowEncoderSettingsDialog(const std::string& device_id) {
-    // 单实例策略：模态对话框同时只开一个，重新进入时重建（Show 内同步阻塞至关闭）。
-    encoder_settings_dialog_ = std::make_unique<EncoderSettingsDialog>(
-        instance_, hwnd_, device_id,
-        config_.EncoderSettingsForDevice(device_id),
-        config_.default_encoder_settings,
-        config_.ui_language);
-    encoder_settings_dialog_->on_settings_changed =
-        [this](const std::string& id, std::optional<EncoderSettings> override) {
-            if (override.has_value()) {
-                config_.device_encoder_settings[id] = *override;
-            } else {
-                // 与全局默认一致：清除覆盖，回落默认。
-                config_.device_encoder_settings.erase(id);
-            }
-            // Save() 可能因 config.toml 被占用抛异常，与 SaveDeviceOutputProfile 同模式捕获。
-            try {
-                config_.SavePreservingDiskCredentials();
-            } catch (const std::exception& e) {
-                LogLine(std::string("Encoder settings: config_.Save failed: ") + e.what());
-                return;
-            }
-            ApplyUpdatedConfig();
-            LogLine("Encoder settings saved for VS-" + id);
-        };
-    encoder_settings_dialog_->Show();
-}
-
-void Win32App::ShowAirMouseTuning() {
-    // 体感鼠标调参按"激活设备"：多个设备进入体感时取第一个激活设备；
-    // 无激活设备时取第一个已连接设备（允许用户进入体感前预调）。
-    std::string target_device;
-    if (coordinator_) {
-        for (const auto& dev : connected_devices_) {
-            if (coordinator_->IsAirMouseActive(dev.id)) { target_device = dev.id; break; }
-        }
-    }
-    if (target_device.empty()) {
-        for (const auto& dev : connected_devices_) { target_device = dev.id; break; }
-    }
-    if (target_device.empty()) {
-        LogLine("ShowAirMouseTuning: no connected device, skip");
-        return;
-    }
-    const std::string device_id = target_device;
-    if (!air_mouse_tuning_window_ || !air_mouse_tuning_window_->IsOpen() ||
-        air_mouse_tuning_window_->device_id() != device_id) {
-        air_mouse_tuning_window_ = std::make_unique<AirMouseTuningWindow>(
-            instance_, hwnd_, device_id,
-            coordinator_ ? coordinator_->GetAirMouseParamsForTuning(device_id) : AirMouseParams{});
-        air_mouse_tuning_window_->on_params_changed = [this, device_id](const AirMouseTuningState& state) {
-            if (coordinator_) coordinator_->UpdateAirMouseParams(device_id, state.ToParams());
-        };
-        air_mouse_tuning_window_->on_save_requested = [this, device_id](const AirMouseTuningState& state) {
-            // 灵敏度按设备覆盖写入 InteractionSettings（其余进阶参数仍走全局 config_）。
-            InteractionSettings settings = config_.InteractionSettingsForDevice(device_id);
-            settings.air_mouse_sensitivity_x = state.sensitivity_x;
-            settings.air_mouse_sensitivity_y = state.sensitivity_y;
-            if (settings == config_.default_interaction_settings) {
-                config_.device_interaction_settings.erase(device_id);
-            } else {
-                config_.device_interaction_settings[device_id] = settings;
-            }
-            // 进阶 air_mouse 参数（tau/invert_y/curve/rate/neutral_deadzone/control_mode）保持全局。
-            config_.air_mouse_tau = state.tau;
-            config_.air_mouse_invert_y = state.invert_y;
-            config_.air_mouse_curve_low_thresh = state.curve.low_thresh;
-            config_.air_mouse_curve_high_thresh = state.curve.high_thresh;
-            config_.air_mouse_curve_low_factor = state.curve.low_factor;
-            config_.air_mouse_curve_high_factor = state.curve.high_factor;
-            config_.air_mouse_neutral_deadzone = state.neutral_deadzone;
-            config_.air_mouse_control_mode = AirMouseControlModeName(state.control_mode);
-            config_.air_mouse_rate_gain = state.rate_gain;
-            config_.air_mouse_rate_friction = state.rate_friction;
-            config_.air_mouse_rate_max_speed = state.rate_max_speed;
-            try {
-                config_.SavePreservingDiskCredentials();
-            } catch (const std::exception& e) {
-                LogLine(std::string("Air mouse tuning: config_.Save failed: ") + e.what());
-                return;
-            }
-            ApplyUpdatedConfig();
-            LogLine("Air mouse tuning saved for VS-" + device_id);
-        };
-    }
-    air_mouse_tuning_window_->Show();
-}
-
-void Win32App::ShowInteractionSettingsDialog(const std::string& device_id) {
-    // 单实例策略：模态对话框重入时若目标设备不同则重建。
-    interaction_settings_dialog_ = std::make_unique<InteractionSettingsDialog>(
-        instance_, hwnd_, device_id,
-        config_.InteractionSettingsForDevice(device_id),
-        config_.default_interaction_settings,
-        config_.ui_language);
-    interaction_settings_dialog_->on_settings_changed =
-        [this](const std::string& id, std::optional<InteractionSettings> override) {
-            if (override.has_value()) {
-                config_.device_interaction_settings[id] = *override;
-            } else {
-                // 与全局默认一致：清除覆盖，回落默认。
-                config_.device_interaction_settings.erase(id);
-            }
-            try {
-                config_.SavePreservingDiskCredentials();
-            } catch (const std::exception& e) {
-                LogLine(std::string("Interaction settings: config_.Save failed: ") + e.what());
-                return;
-            }
-            ApplyUpdatedConfig();
-            LogLine("Interaction settings saved for VS-" + id);
-        };
-    interaction_settings_dialog_->Show();
-}
-
-void Win32App::ShowRemoteSettingsDialog(const std::string& device_id) {
-    // 单实例策略：模态对话框同时只开一个，重新进入时重建（Show 内同步阻塞至关闭）。
-    remote_settings_dialog_ = std::make_unique<RemoteSettingsDialog>(
-        instance_, hwnd_, device_id,
-        config_.XiaomiSettingsForDevice(device_id),
-        config_.default_xiaomi_settings,
-        config_.ui_language);
-    remote_settings_dialog_->on_settings_changed =
-        [this](const std::string& id, std::optional<XiaomiSettings> override) {
-            if (override.has_value()) {
-                config_.device_xiaomi_settings[id] = *override;
-            } else {
-                // 与全局默认一致：清除覆盖，回落默认。
-                config_.device_xiaomi_settings.erase(id);
-            }
-            // Save() 可能因 config.toml 被占用抛异常，与 SaveDeviceOutputProfile 同模式捕获。
-            try {
-                config_.SavePreservingDiskCredentials();
-            } catch (const std::exception& e) {
-                LogLine(std::string("Remote settings: config_.Save failed: ") + e.what());
-                return;
-            }
-            ApplyUpdatedConfig();
-            LogLine("Remote settings saved for RC-" + id);
-        };
-    remote_settings_dialog_->Show();
-}
-
-void Win32App::ShowXiaomiKeymapDialog(const std::string& device_id) {
-    // 单实例策略：模态对话框同时只开一个，重新进入时重建（Show 内同步阻塞至关闭）。
-    xiaomi_keymap_dialog_ = std::make_unique<XiaomiKeymapDialog>(
-        instance_, hwnd_, device_id,
-        config_.XiaomiSettingsForDevice(device_id),
-        config_.default_xiaomi_settings,
-        config_.ui_language);
-    xiaomi_keymap_dialog_->on_settings_changed =
-        [this](const std::string& id, std::optional<XiaomiSettings> override) {
-            if (override.has_value()) {
-                config_.device_xiaomi_settings[id] = *override;
-            } else {
-                // 与全局默认一致：清除覆盖，回落默认。
-                config_.device_xiaomi_settings.erase(id);
-            }
-            // Save() 可能因 config.toml 被占用抛异常，与 SaveDeviceOutputProfile 同模式捕获。
-            try {
-                config_.SavePreservingDiskCredentials();
-            } catch (const std::exception& e) {
-                LogLine(std::string("Keymap: config_.Save failed: ") + e.what());
-                return;
-            }
-            ApplyUpdatedConfig();
-            LogLine("Keymap saved for RC-" + id);
-        };
-    xiaomi_keymap_dialog_->Show();
-}
-
-void Win32App::ShowBatteryMonitorDialog(const std::string& device_id) {
-    // 单实例非模态窗口：重入（同设备）置前即可，换目标设备则重建（旧监测会话丢弃）。
-    if (battery_monitor_dialog_ && battery_monitor_dialog_->IsSameDevice(device_id)) {
-        battery_monitor_dialog_->Show();
-        return;
-    }
-    battery_monitor_dialog_ = std::make_unique<BatteryMonitorDialog>(
-        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), device_id);
-    battery_monitor_dialog_->on_send_command =
-        [this](const std::string& id, ByteVector payload) {
-            if (coordinator_) coordinator_->SendPowerLogCommand(id, std::move(payload));
-        };
-    battery_monitor_dialog_->on_closed = [this] {
-        // 窗口销毁后释放对象（分片路由指针随之失效）。
-        battery_monitor_dialog_.reset();
-    };
-    battery_monitor_dialog_->Show();
-    // 若已缓存设备上报的开关状态（连接时固件会推送），立即同步勾选框。
-    const auto state_it = usb_auto_off_state_.find(device_id);
-    if (state_it != usb_auto_off_state_.end()) {
-        battery_monitor_dialog_->OnPowerMgmtState(device_id, state_it->second);
-    }
-    // 若已缓存设备上报的电池状态（连接时固件会推送），立即刷新供电指示器。
-    const auto battery_it = device_battery_map_.find(device_id);
-    if (battery_it != device_battery_map_.end()) {
-        battery_monitor_dialog_->OnBatteryStatus(
-            device_id, battery_it->second.level_percent, battery_it->second.charging,
-            battery_it->second.usb_powered);
-    }
-    LogLine("Battery monitor opened for VS-" + device_id);
-}
-
-void Win32App::StartFirmwareUpdate(const std::string& device_id) {
-    if (!coordinator_) return;
-    auto firmware_it = firmware_info_map_.find(device_id);
-    const std::string version = firmware_it != firmware_info_map_.end()
-                                    ? firmware_it->second.latest_version
-                                    : std::string();
-    firmware_update_dialog_ = std::make_unique<FirmwareUpdateDialog>(
-        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language), version.empty() ? "latest" : version);
-    firmware_update_dialog_->on_cancel = [this] {
-        if (coordinator_) coordinator_->CancelFirmwareUpdate();
-    };
-    firmware_update_dialog_->on_advanced = [this] { LaunchFlashToolExe(hwnd_); };
-    firmware_update_dialog_->Show();
-    coordinator_->UpdateFirmwareFromLatest(
-        device_id,
-        [this](FirmwareUpdateProgress progress) {
-            DispatchToUi([this, progress] {
-                if (firmware_update_dialog_) firmware_update_dialog_->UpdateProgress(progress);
-            });
-        },
-        [this](bool success, std::string message) {
-            DispatchToUi([this, success, message] {
-                if (firmware_update_dialog_) firmware_update_dialog_->Finish(success, message);
-                if (success) {
-                    const auto language = EffectiveUiLanguage(config_.ui_language);
-                    ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
-                                     Tr(StringId::kNotificationFirmwareUpdatedBody, language));
-                }
-            });
-        });
-}
-
-void Win32App::StartFirmwareUpdateFromFile(const std::string& device_id) {
-    if (!coordinator_) return;
-    wchar_t path[MAX_PATH] = {};
-    const auto language = EffectiveUiLanguage(config_.ui_language);
-    const auto title = TrW(StringId::kMenuUpdateFirmwareFromFile, language);
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd_;
-    ofn.lpstrFilter = L"Firmware binary (*.bin)\0*.bin\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = path;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    ofn.lpstrTitle = title.c_str();
-    if (!GetOpenFileNameW(&ofn)) return;  // 用户取消或打开失败
-    StartOtaFromFile(Utf8FromUtf16(path), device_id);
-}
-
-void Win32App::StartOtaFromFile(const std::string& file_path,
-                                const std::optional<std::string>& device_id) {
-    if (!coordinator_) return;
-    const auto language = EffectiveUiLanguage(config_.ui_language);
-
-    // 自动选设备：指定且已连接用之；未指定取第一个；均无则提示。
-    std::string target_device;
-    if (device_id.has_value()) {
-        bool connected = false;
-        for (const auto& dev : connected_devices_) {
-            if (dev.id == *device_id) { connected = true; break; }
-        }
-        if (!connected) {
-            ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
-                            "设备 VS-" + *device_id + " 未连接，无法更新固件");
-            return;
-        }
-        target_device = *device_id;
-    } else if (!connected_devices_.empty()) {
-        target_device = connected_devices_.front().id;
-    } else {
-        ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
-                        "无已连接设备，无法更新固件");
-        return;
-    }
-
-    firmware_update_dialog_ = std::make_unique<FirmwareUpdateDialog>(
-        instance_, hwnd_, language, "local file");
-    firmware_update_dialog_->on_cancel = [this] {
-        if (coordinator_) coordinator_->CancelFirmwareUpdate();
-    };
-    firmware_update_dialog_->on_advanced = [this] { LaunchFlashToolExe(hwnd_); };
-    firmware_update_dialog_->Show();
-    coordinator_->UpdateFirmwareFromFile(
-        file_path, target_device,
-        [this](FirmwareUpdateProgress progress) {
-            DispatchToUi([this, progress] {
-                if (firmware_update_dialog_) firmware_update_dialog_->UpdateProgress(progress);
-            });
-        },
-        [this](bool success, std::string message) {
-            DispatchToUi([this, success, message] {
-                if (firmware_update_dialog_) firmware_update_dialog_->Finish(success, message);
-                if (success) {
-                    const auto language = EffectiveUiLanguage(config_.ui_language);
-                    ShowNotification(Tr(StringId::kNotificationFirmwareUpdatedTitle, language),
-                                     Tr(StringId::kNotificationFirmwareUpdatedBody, language));
-                }
-            });
-        });
-}
-
-void Win32App::SetPendingOtaRequest(std::string file_path,
-                                     std::optional<std::string> device_id) {
-    pending_ota_request_ = OtaCliRequest{std::move(file_path), std::move(device_id)};
-}
-
-void Win32App::PairDevice(const std::string& device_id, std::uint64_t bluetooth_address,
-                          BluetoothAddressKind address_kind, const std::string& name) {
-    if (coordinator_) {
-        const auto device_class =
-            BleProtocol::DeviceClassFromName(name).value_or(DeviceClass::kStickS3);
-        pending_pairing_entry_ = PairedDeviceEntry{device_id, bluetooth_address, address_kind, name};
-        // 小米遥控器配对完成时走 finalize 定时器兜底（无 firmware_version 不进
-        // HandlePairingSucceeded），hardware 字段不会被 device_info 覆盖；这里按
-        // 配对时的设备类别先写入，保证重启后 config 里的 hardware 仍是
-        // xiaomi_remote_2_pro，不会回落成 StickS3 直连。
-        if (device_class == DeviceClass::kXiaomiRemote2Pro) {
-            pending_pairing_entry_->hardware = std::string(kHardwareXiaomiRemote2Pro);
-        }
-        coordinator_->ConnectPairedDevice(device_id, bluetooth_address, address_kind, name,
-                                          device_class);
-        LogLine("Pairing device " +
-                std::string(device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-") +
-                device_id);
-    }
-}
-
-void Win32App::PairDeviceByManualId(const std::string& device_id) {
-    // 手动输入存 entry 时 hardware 为空（无法从 ID 判断类别）：小米遥控器（RC-XXXX）
-    // 首连前菜单会短暂按 StickS3 显隐（多出交互/编码器等不适用项）。首连时 BLE 层
-    // 按名称/ATVV UUID 识别并合成 device_info，hardware 随之落盘自愈，属可接受取舍。
-    config_.SavePairedDeviceInfo(device_id, {}, {});
-    pending_pairing_entry_.reset();
-    paired_device_ids_ = config_.paired_device_ids;
-    if (coordinator_) {
-        coordinator_->ConfirmPairedDeviceIds(config_.paired_device_ids);
-        coordinator_->ReconnectPairedDevices();
-    }
-    const auto language = EffectiveUiLanguage(config_.ui_language);
-    ShowNotification(Tr(StringId::kNotificationManualPairSavedTitle, language),
-                     FormatUtf8(Tr(StringId::kNotificationManualPairSavedBody, language), {device_id}));
-    RebuildTooltip();
-    LogLine("Manual pairing saved VS-" + device_id);
-}
-
-void Win32App::ShowNotification(const std::string& title, const std::string& body) {
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd_;
-    data.uID = kTrayIconId;
-    data.uFlags = NIF_INFO;
-    const auto title_w = Utf16(title);
-    const auto body_w = Utf16(body);
-    wcsncpy_s(data.szInfoTitle, title_w.c_str(), _TRUNCATE);
-    wcsncpy_s(data.szInfo, body_w.c_str(), _TRUNCATE);
-    data.dwInfoFlags = NIIF_INFO;
-    Shell_NotifyIconW(NIM_MODIFY, &data);
-}
-
-void Win32App::ShowTimedMessage(const std::string& message, int duration_ms) {
-    // 可能被后台线程调用（如 LLM 提炼回调），封送到 UI 线程再碰 overlay。
-    DispatchToUi([this, message, duration_ms]() {
-        // 会话活跃时浮窗被状态机占用（确认倒计时等），回退托盘气泡。
-        if ((coordinator_ && coordinator_->HasActiveSession()) || !overlay_) {
-            ShowNotification({}, message);
-            return;
-        }
-        overlay_->ShowTimedMessage(message, duration_ms);
-    });
-}
-
-std::wstring Win32App::Utf16(const std::string& text) const {
-    return Utf16FromUtf8(text);
-}
-
 } // namespace voicestick
+

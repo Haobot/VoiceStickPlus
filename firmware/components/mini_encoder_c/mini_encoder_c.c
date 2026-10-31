@@ -6,6 +6,8 @@
 
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "stick_s3_board.h"
 
 static const char *TAG = "mini_encoder_c";
@@ -28,12 +30,33 @@ static const char *TAG = "mini_encoder_c";
 
 // 连续 I2C 失败达到此次数后标记 absent、由调用方停止轮询，避免日志刷屏。
 #define MINI_ENCODER_C_MAX_FAIL_STREAK 10
+// A10：absent 后的重探测间隔——降级/缺席可恢复（原为单向终态），在独立任务里跑
+//（init 含 I2C 探测，不能进 esp_timer 共享任务，否则拖累双击窗等定时器=A9 同类问题）。
+#define MINI_ENCODER_C_REPROBE_MS (30 * 1000)
+
 
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
 // 会被 esp_timer 回调上下文（read_*）与 app_event_task 上下文（set_led）同时访问。
 static _Atomic bool s_present;
 static _Atomic int s_fail_streak;
+static _Atomic bool s_reprobe_task_pending;
+
+static void arm_reprobe(void);
+
+// A10：释放第二路 I2C 总线（失败候选/终局失败不留占——G0 是 strapping 脚，
+// 失败后挂着内部上拉即泄漏）。init_bus_on 入口与 init 终局失败共用。
+static void release_bus(void)
+{
+    if (s_dev) {
+        (void)i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+    }
+    if (s_bus) {
+        (void)i2c_del_master_bus(s_bus);
+        s_bus = NULL;
+    }
+}
 
 static void note_i2c_result(esp_err_t err, const char *what)
 {
@@ -48,6 +71,10 @@ static void note_i2c_result(esp_err_t err, const char *what)
         if (s_fail_streak >= MINI_ENCODER_C_MAX_FAIL_STREAK) {
             s_present = false;
             ESP_LOGW(TAG, "too many I2C failures, mark encoder absent");
+            // A10：原为单向终态（一次总线抖动即永久失效）——标记缺席后链式重探测
+            // （总线由重探测的 init 入口清理，避免在降级瞬间释放 s_dev 与
+            // app 任务在途 set_led 竞争）。
+            arm_reprobe();
         }
     }
 }
@@ -61,14 +88,7 @@ static esp_err_t read_regs(uint8_t reg, uint8_t *data, size_t len)
 // 第二路 I2C 总线用内部总线之外的另一个端口（ESP32-S3 只有 NUM_0/NUM_1 两个）。
 static esp_err_t init_bus_on(gpio_num_t sda, gpio_num_t scl)
 {
-    if (s_dev) {
-        (void)i2c_master_bus_rm_device(s_dev);
-        s_dev = NULL;
-    }
-    if (s_bus) {
-        (void)i2c_del_master_bus(s_bus);
-        s_bus = NULL;
-    }
+    release_bus();
 
     const i2c_master_bus_config_t bus_config = {
         .i2c_port = (stick_s3_board_i2c_port() == I2C_NUM_1) ? I2C_NUM_0 : I2C_NUM_1,
@@ -127,9 +147,43 @@ esp_err_t mini_encoder_c_init(void)
                  candidates[i].sda, candidates[i].scl, esp_err_to_name(last_err));
     }
 
+    // A10：终局失败必须释放本候选占用的 I2C 总线（原泄漏：探测成功建总线、
+    // probe 失败后带着 s_bus/s_dev 返回，G0 strapping 上拉被永久占住）。
+    release_bus();
     s_present = false;
-    ESP_LOGW(TAG, "MiniEncoderC absent: %s", esp_err_to_name(last_err));
+    ESP_LOGW(TAG, "MiniEncoderC absent: %s (reprobe in %d ms)",
+             esp_err_to_name(last_err), MINI_ENCODER_C_REPROBE_MS);
+    arm_reprobe();
     return last_err;
+}
+
+// A10：链式重探测——独立任务内等待+init（init 失败会再次 arm），成功即停止。
+// 任务上下文跑 init，不占用 esp_timer 共享任务（否则探测期 I2C 交易会拖累
+// 双击窗/空闲计时等全部定时器，即评审 A9 的同类问题）。
+static void reprobe_task(void *arg)
+{
+    (void)arg;
+    s_reprobe_task_pending = false;
+    vTaskDelay(pdMS_TO_TICKS(MINI_ENCODER_C_REPROBE_MS));
+    if (!s_present) {
+        esp_err_t err = mini_encoder_c_init();
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "MiniEncoderC recovered after reprobe");
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+static void arm_reprobe(void)
+{
+    if (s_present || s_reprobe_task_pending) {
+        return;
+    }
+    s_reprobe_task_pending = true;
+    if (xTaskCreate(reprobe_task, "enc_reprobe", 4096, NULL, 5, NULL) != pdPASS) {
+        s_reprobe_task_pending = false;
+        ESP_LOGE(TAG, "create reprobe task failed; encoder stays absent until reboot");
+    }
 }
 
 bool mini_encoder_c_present(void)

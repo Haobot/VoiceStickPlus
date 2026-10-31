@@ -1,4 +1,5 @@
 # 微信输入法虚拟麦克风事件驱动渲染（方案 A）
+> 状态：已实施（代码实证：desktop/windows/src/virtual_mic_renderer.h 专文件。核销 2026-10-08/N10）
 
 ## 背景
 

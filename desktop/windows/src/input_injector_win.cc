@@ -1,5 +1,9 @@
 #include "input_injector_win.h"
 
+#include "clipboard_vault.h"
+#include "log.h"
+
+#include <optional>
 #include <vector>
 
 namespace voicestick {
@@ -9,6 +13,19 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
     const std::wstring wide = Utf16FromUtf8(text);
     if (wide.empty()) return;
 
+    // 注入借道剪贴板，粘贴后须完整还原用户原内容（文本以外的格式不做恢复会被
+    // 永久覆盖，P1 clipboard_vault 真机验证语义）。快照拿不到就不恢复——不能
+    // 因恢复失败误清用户剪贴板。
+    std::optional<ClipboardSnapshot> clipboard_snapshot;
+    try {
+        clipboard_snapshot = ClipboardVault().Save();
+    } catch (const std::runtime_error& e) {
+        LogApp(std::string("clipboard snapshot failed, skip restore: ") + e.what());
+    }
+
+    // 剪贴板写入必须确认成功：旧实现忽略 OpenClipboard/SetClipboardData 返回值，
+    // 失败仍发 Ctrl+V 会把用户上一次复制的内容粘进前台应用。
+    bool clipboard_updated = false;
     if (OpenClipboard(nullptr)) {
         EmptyClipboard();
         const SIZE_T bytes = (wide.size() + 1) * sizeof(wchar_t);
@@ -18,12 +35,30 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
             if (target != nullptr) {
                 memcpy(target, wide.c_str(), bytes);
                 GlobalUnlock(memory);
-                SetClipboardData(CF_UNICODETEXT, memory);
-                memory = nullptr;
+                if (SetClipboardData(CF_UNICODETEXT, memory) != nullptr) {
+                    clipboard_updated = true;
+                    memory = nullptr;  // 所有权已移交系统
+                } else {
+                    LogApp("clipboard SetClipboardData failed err=" +
+                           std::to_string(GetLastError()));
+                }
             }
             if (memory != nullptr) GlobalFree(memory);
+        } else {
+            LogApp("clipboard GlobalAlloc failed err=" + std::to_string(GetLastError()));
         }
         CloseClipboard();
+    } else {
+        LogApp("clipboard OpenClipboard failed err=" + std::to_string(GetLastError()));
+    }
+
+    if (!clipboard_updated) {
+        // 未写入成功就不粘贴（避免注入旧内容）；EmptyClipboard 已清空时尽量还原快照。
+        if (clipboard_snapshot) {
+            ClipboardVault().Restore(*clipboard_snapshot);
+        }
+        LogApp("paste aborted: clipboard not updated");
+        return;
     }
 
     Sleep(40);
@@ -31,6 +66,12 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
     if (press_enter) {
         Sleep(120);
         SendEnter();
+    }
+
+    if (clipboard_snapshot) {
+        // 目标应用异步读剪贴板，立即恢复会粘贴出旧内容（P1 restore_delay=150ms）。
+        Sleep(150);
+        ClipboardVault().Restore(*clipboard_snapshot);
     }
 }
 

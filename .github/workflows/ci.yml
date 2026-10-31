@@ -1,0 +1,161 @@
+name: CI
+
+# P0-1 回归门禁：任一分支都要能构建 macOS/Windows 并跑测试；
+# P0-3（回调线程封送）与 P0-4（凭据扫描）的改动必须在这里被编译/测试覆盖。
+# release-guard + website：跟进评审（Doc/Plan/architecture-review-followup-2026-10-07.md）
+# 阶段 0 动作 0.2/0.3——一致性硬门禁与网站构建，防止版本/协议/Hub/文档漂移与网页编译错后置暴露。
+on:
+  push:
+    branches: [main, "feat/**", "fix/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS build + tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain info
+        working-directory: desktop/macos
+        run: |
+          xcode-select -p
+          xcodebuild -version || true
+          swift --version
+      - name: swift build
+        working-directory: desktop/macos
+        # -v：fatalError 需要定位到具体命令（2026-10-07 起 CI 恒红于最后一步，
+        # 本地 CLT-only 全绿）；pipefail 保住退出码，tail 限制日志体积。
+        run: |
+          set -o pipefail
+          swift build -v 2>&1 | tail -200
+      - name: swift run VoiceStickTests
+        working-directory: desktop/macos
+        run: swift run VoiceStickTests
+
+  firmware:
+    name: Firmware build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: idf.py build (esp32s3)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: firmware
+          command: idf.py build
+
+  host-tests:
+    name: Firmware host tests (pure-C logic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run gateway + voice_ble host tests
+        # E8：跨平台运行器（POSIX cc -Wall -Wextra -Werror），5 个纯逻辑目标
+        #（gateway logic/atvv/targets/switcher + voice_ble conn_table）。
+        run: python3 firmware/components/gateway/test/run_tests.py
+
+  windows:
+    name: Windows build + ctest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Cache sherpa-onnx (local ASR runtime)
+        id: sherpa-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sherpa-onnx-win-x64
+          key: sherpa-onnx-v1.13.7-win-x64-shared-MT-Release
+      - name: Fetch sherpa-onnx (official release, SHA256 pinned)
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/sherpa-onnx-v1.13.7-win-x64-shared-MT-Release.tar.bz2"
+          $sha = "0b8f4a8cdde53cee671b0647947c66e10efec1b63ed2606c8eeac650071c9c60"
+          $dst = Join-Path $env:RUNNER_TEMP "sherpa-onnx.tgz"
+          curl.exe -sSL --retry 3 -o $dst $url
+          $hash = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $sha) { throw "sherpa-onnx SHA256 mismatch: $hash" }
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "sherpa-onnx-win-x64") | Out-Null
+          tar -xjf $dst -C (Join-Path $env:RUNNER_TEMP "sherpa-onnx-win-x64")
+      - name: Configure (Debug, local ASR via cache, local refine off)
+        # 本地 LLM（llama.cpp 源码）不在 git 中，CI 关闭（core_tests 有 REFINE 守卫）；
+        # 本地 ASR 保持默认 ON——sherpa-onnx 官方包 SHA256 钉死并缓存，使 CI 与发行
+        # 默认配置同构、LocalAsrClient 测试全量覆盖（此前 ASR-OFF 配置从未构建过，链接即失败）。
+        # Debug 保留 assert，测试才有意义（RelWithDebInfo 的 NDEBUG 会让断言整段消失）。
+        env:
+          VOICESTICK_SHERPA_ONNX_DIR: ${{ runner.temp }}/sherpa-onnx-win-x64/sherpa-onnx-v1.13.7-win-x64-shared-MT-Release
+        run: >
+          cmake -S desktop/windows -B desktop/windows/build-x64 -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DVOICESTICK_ENABLE_LOCAL_REFINE=OFF
+          -DVOICESTICK_DETOURS_URL=https://github.com/microsoft/Detours/archive/refs/tags/v4.0.1.zip
+      - name: Build
+        run: cmake --build desktop/windows/build-x64
+      - name: ctest
+        run: ctest --test-dir desktop/windows/build-x64 --output-on-failure
+      # E4：flash payload 供应链锁的真实执行验证——哈希锁定 pip 闭包 + embed zip 校验
+      # 在 Windows/py3.12 上端到端跑通（幂等跳过外的每次 CI 都重建），任何哈希/
+      # 依赖/参数错误在此暴露，而不是发布日。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Flash payload supply-chain smoke (hash-locked)
+        shell: pwsh
+        run: |
+          ./scripts/prepare_flash_payload.ps1 -OutputDir (Join-Path $env:RUNNER_TEMP 'flash_payload_ci')
+
+  script-tests:
+    name: Script unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run script unit tests
+        run: |
+          set -euo pipefail
+          python3 scripts/test_scan_release_artifacts.py
+          python3 scripts/test_update_appcast.py
+          python3 scripts/test_mirror_urls.py
+          python3 scripts/test_update_downloads.py
+          python3 scripts/test_cos_scripts.py
+
+  release-guard:
+    name: Release consistency guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tag 检查需要完整历史与标签（浅克隆拿不到 v* tag 会退化为 SKIP）
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Guard unit tests
+        run: python3 scripts/test_release_guard.py
+      - name: Run release guard
+        run: python3 scripts/release_guard.py
+
+  website:
+    name: Website build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: npm ci
+        working-directory: website
+        run: npm ci
+      - name: npm run build
+        working-directory: website
+        run: npm run build

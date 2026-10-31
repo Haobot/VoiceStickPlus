@@ -2,18 +2,27 @@
 
 #include "app_config.h"
 #include "hotword_activity.h"
+#include "model_download_session.h"
+#include "provider_combo.h"
 
 #include <Windows.h>
 
 #include <functional>
+#include <memory>
 #include <utility>
 #include <vector>
 
 namespace voicestick {
 
+class ModelDownloadDialog;
+
 class SettingsDialog {
 public:
-    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config);
+    // connected_device_ids/machine_guid 为打开时刻的快照（Win32App 每次重建本
+    // 对话框，快照即最新值），供授权状态显示与激活验签的绑定键计算。
+    SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
+                   std::vector<std::string> connected_device_ids = {},
+                   std::string machine_guid = {});
     ~SettingsDialog();
 
     void Show();
@@ -29,6 +38,10 @@ public:
     // 设置页打开期间活跃分类在后台被切换时，刷新分类下拉选中项、热词编辑框与热词碟，
     // 避免界面停留在旧分类（对话框持有 config 快照，不自动感知外部变更）。
     void SyncExternalHotwordConfig(const AppConfig& cfg);
+
+    // 激活输入模态框内控件（独立小对话框，ID 仅在其内有效）。
+    static constexpr UINT kIdLicensePromptLabel = 2050;
+    static constexpr UINT kIdLicensePromptEdit = 2051;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
@@ -64,7 +77,27 @@ private:
     // 编辑框内容（ParseHotwordList + 25 上限截断）写回 loaded_hotword_category_ 分类。
     void StoreCurrentCategoryWords();
     void ApplyTrialApiKey();
+    // 授权（离线激活）：刷新状态行（EvaluateLicense 纯函数，不依赖协调器）。
+    void RefreshLicenseStatus();
+    // 「激活…」：模态输入串码 → 归一化设备 + MachineGuid 验签 → 落盘 + 热更。
+    void OnActivateLicense();
+    // 激活输入模态框（内存 DLGTEMPLATE + edit + OK/Cancel）；取消返回 false。
+    bool PromptLicenseSerial(std::wstring* serial, UiLanguage language);
+    static INT_PTR CALLBACK LicensePromptDialogProc(HWND hwnd, UINT message,
+                                                    WPARAM w_param, LPARAM l_param);
     void ChooseDebugDirectory();
+    // 通用文件夹选择（IFileDialog FOS_PICKFOLDERS）：选定路径写入目标编辑框，
+    // ChooseDebugDirectory 与本地识别模型目录共用。
+    void ChooseFolderInto(HWND target_edit);
+    // 本地语音识别：模型目录浏览 + 即时有效性回显（与启动校验同一口径）。
+    void ChooseLocalMicModelsDir();
+    void UpdateLocalMicModelsStatus();
+    // 拉起本地模型下载向导；ASR 成功后回填模型目录编辑框并刷新状态回显。
+    void OpenModelDownloadDialog();
+    // 本地文本精修：复选框勾选态与模型在位状态回显（与外壳装配同一解析口径）。
+    bool IsLocalRefineChecked() const;
+    bool IsLocalRefineCrossChecked() const;
+    void UpdateLocalRefineStatus();
     // 虚拟麦克风改名：把录音端设备显示名改为设备名（如 VS-091C），提权子进程执行。
     void OnRenameVirtualMicButton();
     // 启动频谱查看器（scripts/e2e_test/spectrogram_server.py，经 py/python 启动）。
@@ -77,9 +110,8 @@ private:
     void ResizeWindow(int client_h);
     // 行内条件：apply_trial_button 显隐 + api_key_edit 宽度，在 Relayout 末尾调用。
     void ApplyApiKeyLayout();
-    // 服务商下拉框索引 ↔ AsrProvider 映射；provider_combo_has_cloud_ 时 0 号位为 Cloud。
-    AsrProvider ProviderAtComboIndex(int idx) const;
-    int ComboIndexForProvider(AsrProvider provider) const;
+    // 提供方下拉框当前是否选中「本地语音识别」末位虚拟项（索引映射见 provider_combo.h）。
+    bool ProviderComboLocalSelected() const;
 
     // 布局模型：把每行/块抽象为可独立显隐的条目，Relayout 统一应用定位。
     struct LayoutPart {
@@ -102,6 +134,9 @@ private:
     HWND parent_;
     HWND hwnd_ = nullptr;
     AppConfig config_;
+    // 授权区块（离线激活）输入快照：打开时刻的已连接设备 ID 与本机 MachineGuid。
+    std::vector<std::string> connected_device_ids_;
+    std::string machine_guid_;
     UINT dpi_ = 96;
     // 开发者模式：true 时设置页放出全部高级功能。从 config_.developer_mode 加载，
     // 切换复选框时实时更新并 Relayout，无需重建控件。
@@ -159,6 +194,31 @@ private:
     InteractionMode loaded_hotkey_mode_ = InteractionMode::kHoldToTalk;
     HWND debug_dir_edit_ = nullptr;
     HWND resource_label_ = nullptr;
+    // 本地语音识别（原「本机麦克风」区合并进「语音识别」，见
+    // Doc/Plan/asr-settings-local-provider-merge.md）：模型目录 + 有效性回显，
+    // 选中提供方下拉框「本地语音识别」时显示；按住说话热键移托管盘菜单。
+    HWND local_mic_models_dir_edit_ = nullptr;
+    HWND local_mic_models_dir_browse_button_ = nullptr;
+    // 模型目录有效性回显（✓ 就绪 / ✗ 缺文件），与 Resolve+Validate 同口径。
+    HWND local_mic_models_status_label_ = nullptr;
+    // 「下载模型…」：拉起 ModelDownloadDialog（本地模型按需下载向导）。
+    HWND local_mic_download_button_ = nullptr;
+    std::unique_ptr<ModelDownloadDialog> model_download_dialog_;
+    // 本地文本精修（Doc/Plan/local-text-refinement.md）：复选框 + 精修 GGUF
+    // 模型状态回显（✓ Qwen3-1.7B 在位 / ✗ 缺模型仅规则精修）。
+    HWND local_refine_check_ = nullptr;
+    HWND local_refine_status_label_ = nullptr;
+    HWND local_refine_prompt_label_ = nullptr;
+    HWND local_refine_prompt_edit_ = nullptr;
+    // 跨轮上下文纠错（refine_cross_turn）：勾选后携带最近 5 轮历史走纠正
+    // 指令管线，模型档位切 Qwen3-4B 优先（M3）。
+    HWND local_refine_cross_check_ = nullptr;
+    // 授权（离线激活）：状态行 + 「激活…」按钮（Doc/Plan/offline-license-activation.md）。
+    HWND license_status_label_ = nullptr;
+    HWND license_activate_button_ = nullptr;
+    // 语音编辑指令（Doc/Plan/voice-edit-commands.md）：开关 + 单独说“删除”时删除字数。
+    HWND voice_edit_enable_check_ = nullptr;
+    HWND voice_edit_default_chars_combo_ = nullptr;
     HWND save_button_ = nullptr;
     HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
@@ -207,13 +267,25 @@ private:
     static constexpr UINT kIdDeveloperMode = 2039;
     static constexpr UINT kIdOpenSpectrogram = 2040;
     static constexpr UINT kIdRenameVirtualMic = 2041;
-    static constexpr UINT kIdHotwordCategoryCombo = 2042;
-    static constexpr UINT kIdHotwordCategoryAdd = 2043;
-    static constexpr UINT kIdHotwordCategoryDelete = 2044;
-    static constexpr UINT kIdSmartHotwordEnable = 2045;
-    static constexpr UINT kIdHotwordActivity = 2046;
-    static constexpr UINT kIdHotwordTrayRefresh = 2047;
-    static constexpr UINT kIdHotwordTrayEdit = 2048;
+    static constexpr UINT kIdLocalMicModelsDirEdit = 2042;
+    static constexpr UINT kIdLocalMicModelsDirBrowse = 2044;
+    static constexpr UINT kIdLocalRefineCheck = 2045;
+    static constexpr UINT kIdLocalRefinePromptEdit = 2046;
+    static constexpr UINT kIdLocalMicModelsDownload = 2047;
+    static constexpr UINT kIdLocalRefineCrossCheck = 2048;
+    static constexpr UINT kIdLicenseActivate = 2049;
+    // 语音编辑指令（Doc/Plan/voice-edit-commands.md）：设置区块控件 ID。
+    static constexpr UINT kIdVoiceEditEnable = 2052;
+    static constexpr UINT kIdVoiceEditDefaultChars = 2053;
+    // 热词分类/智能热词/活跃度/热词碟（本地热词功能）：合并分支时原 2042-2048
+    // 与本地精修/许可控件 ID 冲突，重编号为 2054-2060（引用处均为符号名）。
+    static constexpr UINT kIdHotwordCategoryCombo = 2054;
+    static constexpr UINT kIdHotwordCategoryAdd = 2055;
+    static constexpr UINT kIdHotwordCategoryDelete = 2056;
+    static constexpr UINT kIdSmartHotwordEnable = 2057;
+    static constexpr UINT kIdHotwordActivity = 2058;
+    static constexpr UINT kIdHotwordTrayRefresh = 2059;
+    static constexpr UINT kIdHotwordTrayEdit = 2060;
 };
 
 } // namespace voicestick

@@ -3,92 +3,159 @@
 #include "app_config.h"
 #include "localization.h"
 #include "shortcut_capture.h"
+#include "xiaomi_usage_tap_manager.h"
 
 #include <Windows.h>
 
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
+#include <vector>
+
+namespace Gdiplus {
+class Bitmap;
+}
 
 namespace voicestick {
 
-// 设备级按键映射对话框：从托盘设备子菜单「按键映射…」打开（仅小米遥控器显示）。
-// 左侧为遥控器产品图画布，点击图中按键选中；右侧对该键录入（真实键盘捕获或
-// 手动输入语法）或清除映射，每次修改立即经 on_settings_changed 持久化。
-// 传入的 current 为已用全局默认填平的有效值；保存时与 defaults 相同则回调
-// std::nullopt（调用方 erase 覆盖，回落全局默认）。mic 语音键不可映射。
+class XiaomiRemoteCanvas;
+
+// 小米遥控器按键映射对话框：从托盘设备子菜单「按键映射…」打开（仅小米遥控器显示）。
+// 左侧为遥控器照片画布（点击选中按键），右侧编辑选中键的 key_map 映射
+//（真实键盘录入 / 手动输入 / 清除）。传入的 current 为已用全局默认填平的有效值；
+// 保存时与 defaults 相同则回调 std::nullopt（调用方 erase 覆盖，回落全局默认）。
 class XiaomiKeymapDialog {
 public:
     XiaomiKeymapDialog(HINSTANCE instance, HWND parent,
                        std::string device_id,
                        XiaomiSettings current,
                        XiaomiSettings defaults,
-                       UiLanguage language);
+                       UiLanguage language,
+                       int repeat_interval_ms = 120);
     ~XiaomiKeymapDialog();
 
     void Show();
 
+    // D10b：回显设备侧真实路由表（打开预填 + 每次回执到达推送）。
+    void SetDeviceReceipt(const std::wstring& text);
+
     // (device_id, override)：override 为 nullopt 表示与全局默认一致（清除覆盖）。
     std::function<void(const std::string& device_id,
                        std::optional<XiaomiSettings> override)> on_settings_changed;
+    // 增强按键识别开关即时回调（勾选即保存生效，不等「保存」——探针链路的
+    // UAC 授权流程需要即时反馈）。nullopt = 链路未启用/未运行。
+    std::function<void(const std::string& device_id, bool enabled)> on_hid_tap_changed;
+    std::function<std::optional<XiaomiUsageTapManager::LinkState>()> tap_state_query;
+    // 网关长按连发间隔滑块即时回调（拖动释放即保存生效，不等「保存」）。
+    std::function<void(int interval_ms)> on_repeat_interval_changed;
 
 private:
     static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param);
     INT_PTR HandleMessage(UINT message, WPARAM w_param, LPARAM l_param);
     LPCDLGTEMPLATE BuildDialogTemplate();
     void BuildControls();
-    void Relayout();
-    void PaintCanvas(HDC dc);
-    void SelectButton(const std::string& button_id);
-    void UpdateRightPanel();
+    // 画布按键命中回调：切换选中键，刷新右侧面板。
+    void OnCanvasButtonClicked(int hotspot_index);
+    // 按当前选中键与 working_key_map_ 刷新右侧全部控件（含 mic 键特判）。
+    void RefreshSidePanel();
+    // 「按真实键盘录入」：启动 ShortcutCapture（require_modifier=false）。
     void StartCapture();
+    // 捕获结束/取消/切换按键后恢复录入按钮文案。
+    void RestoreCaptureButtonText();
+    // 录入超时收尾：停提示定时器（幂等）。
+    void StopCaptureHintTimer();
+    // 「应用」：ParseKeySpec 校验手动输入，非法弹提示且不写入。
     void ApplyManualInput();
-    void ApplyMapping(const std::string& button_id, const std::string& spec_text);
-    void FireChanged();
-    bool HitTestCanvas(POINT point, std::string* button_id) const;
+    // 「清除映射」：显式取消当前键映射（写空串，含取消全局默认）。
+    void ClearMapping();
+    // 「恢复默认」：工作副本重置为 defaults_.key_map 并刷新。
+    void RestoreDefaults();
+    void SaveSettings();
+    // 增强按键识别链路状态行刷新（2s 定时器 + 开关切换即时刷）。
+    void RefreshTapStateLabel();
+    // 长按连发间隔滑块：标签刷新 + WM_HSCROLL 处理（拖动中只刷标签，
+    // 释放/离散步进才触发回调，避免逐 tick 落盘）。
+    void RefreshRepeatIntervalLabel();
+    void OnRepeatSliderScroll(int scroll_code);
     int Dp(int px) const;
 
     HINSTANCE instance_;
     HWND parent_;
     HWND hwnd_ = nullptr;
     std::string device_id_;
-    XiaomiSettings current_;     // 编辑中的设备有效值（每次修改立即回调持久化）
-    XiaomiSettings defaults_;    // 全局默认（回调 nullopt 的比较基准）
+    XiaomiSettings current_;     // 当前有效值（key_map 加载进工作副本；保存时回写）
+    XiaomiSettings defaults_;    // 全局默认（「恢复默认」按钮与保存比较基准）
     UiLanguage language_;
     UINT dpi_ = 96;
+    std::wstring title_;         // 「按键映射 - RC-{0}」，兼作 MessageBox 标题
 
-    ShortcutCapture capture_;
-    bool capturing_ = false;
+    // 工作副本：button_id → key_spec 串（空串=显式取消）。初始为 current_.key_map。
+    std::map<std::string, std::string> working_key_map_;
+    int selected_hotspot_ = -1;  // 画布热区表索引（-1 = 未选中）
 
-    // GDI+（图片解码/绘制）。token 在 WM_INITDIALOG 启动、WM_DESTROY 关闭。
-    ULONG_PTR gdiplus_token_ = 0;
-    void* remote_image_ = nullptr;  // Gdiplus::Image*（void* 避免头文件泄漏进公共头）
+    std::unique_ptr<XiaomiRemoteCanvas> canvas_;
+    std::unique_ptr<Gdiplus::Bitmap> image_;  // 从 RCDATA 资源解码的遥控器照片
+    ULONG_PTR gdiplus_token_ = 0;             // 0 = GDI+ 未初始化（降级无图）
 
-    std::string selected_button_;
-    RECT image_rect_{};  // 画布内图片显示矩形（客户区像素，Relayout 更新）
-
-    HWND button_name_label_ = nullptr;
-    HWND mapping_value_label_ = nullptr;
-    HWND mic_note_label_ = nullptr;
+    HWND key_name_label_ = nullptr;
+    HWND mapping_label_ = nullptr;
+    HWND mapping_value_ = nullptr;
     HWND capture_button_ = nullptr;
     HWND manual_hint_label_ = nullptr;
     HWND manual_edit_ = nullptr;
     HWND apply_button_ = nullptr;
     HWND clear_button_ = nullptr;
-    HWND click_hint_label_ = nullptr;
-    HWND close_button_ = nullptr;
+    // mic 键选中时显示的说明文案（其余按键隐藏）。
+    HWND mic_note_label_ = nullptr;
+    // 增强按键识别（usage tap）开关与链路状态行。
+    HWND hid_tap_toggle_ = nullptr;
+    HWND hid_tap_hint_label_ = nullptr;
+    HWND hid_tap_state_label_ = nullptr;
+    // 网关长按连发间隔滑块与数值标签。
+    HWND repeat_slider_ = nullptr;
+    HWND repeat_label_ = nullptr;
+    // D10b：设备路由回执行（gateway_keymap 攒全表后由 Win32App 推送文本）。
+    HWND gateway_receipt_label_ = nullptr;
+    int repeat_interval_ms_ = 120;
+    HWND restore_defaults_button_ = nullptr;
+    HWND save_button_ = nullptr;
+    HWND cancel_button_ = nullptr;
     HFONT ui_font_ = nullptr;
-    HFONT title_font_ = nullptr;
+    HFONT name_font_ = nullptr;  // 选中键名称：粗体大字
+
+    ShortcutCapture capture_;
 
     std::vector<BYTE> dialog_template_;
+    std::vector<HWND> all_controls_;
+    std::vector<HWND> label_controls_;
 
-    static constexpr int kClientWidth = 560;
-    static constexpr int kClientHeight = 430;
+    static constexpr int kClientWidth = 620;
+    static constexpr int kClientHeight = 660;
+    static constexpr int kRepeatSliderMin = 30;
+    static constexpr int kRepeatSliderMax = 300;
 
-    static constexpr UINT kIdApply = 2800;
-    static constexpr UINT kIdClear = 2801;
-    static constexpr UINT kIdCapture = 2802;
-    static constexpr UINT kIdClose = 2803;
+    static constexpr UINT kIdCapture = 2800;
+    static constexpr UINT kIdManualEdit = 2801;
+    static constexpr UINT kIdApply = 2802;
+    static constexpr UINT kIdClear = 2803;
+    static constexpr UINT kIdSave = 2804;
+    static constexpr UINT kIdCancel = 2805;
+    static constexpr UINT kIdRestoreDefaults = 2806;
+    // 画布子窗口控件 ID：命中通知走 WM_COMMAND，LOWORD=kIdCanvas、HIWORD=热区索引。
+    static constexpr UINT kIdCanvas = 2807;
+    // 增强按键识别开关（BS_AUTOCHECKBOX）。
+    static constexpr UINT kIdHidTapToggle = 2808;
+    static constexpr UINT kIdRepeatSlider = 2809;
+
+    // 录入超时提示定时器：录入启动后 kCaptureHintTimeoutMs 内无任何键盘事件到
+    // 达（UIPI 前台提权隔离等）时弹一次引导，不中断进行中的捕获。
+    static constexpr UINT_PTR kCaptureHintTimerId = 0x5343;
+    static constexpr UINT kCaptureHintTimeoutMs = 3000;
+    // 增强按键识别链路状态行刷新定时器（探针连接/授权进度跟随）。
+    static constexpr UINT_PTR kTapStateTimerId = 0x5450;
+    static constexpr UINT kTapStateTimerMs = 2000;
 };
 
 } // namespace voicestick

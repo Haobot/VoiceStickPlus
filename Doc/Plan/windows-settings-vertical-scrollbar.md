@@ -1,4 +1,5 @@
 # Windows 设置界面垂直滚动条方案
+> 状态：已实施（代码实证：settings_dialog.cc 滚动实现（含 flash_tool_dialog 同模式）。核销 2026-10-08/N10）
 
 ## 背景
 

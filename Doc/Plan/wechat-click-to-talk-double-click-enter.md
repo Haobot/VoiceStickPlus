@@ -1,4 +1,5 @@
 # 点动模式双击回车（双击不录音直接回车，语义 c）
+> 状态：已实施（代码实证：firmware/main/main.c button_double_click + desktop app_config.h 键面。核销 2026-10-08/N10）
 
 ## 根因（确证）
 

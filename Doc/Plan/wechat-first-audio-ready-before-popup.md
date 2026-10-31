@@ -1,4 +1,5 @@
 # 微信模式：首帧音频就绪再弹微信输入法框
+> 状态：已实施（代码实证：first_audio 断言载 tests/core_tests_coordinator5.cc。核销 2026-10-08/N10）
 
 ## 背景
 

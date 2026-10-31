@@ -1,4 +1,5 @@
 # RFC：ASR 文本 LLM 精修（Windows 端）
+> 状态：已实施（代码实证：desktop/windows/src/text_refiner.cc、local_refinement_client.cc。核销 2026-10-08/N10）
 
 ## 背景与目标
 

@@ -1,5 +1,8 @@
 idf_component_register(
-    SRCS "voice_ble.c"
+    SRCS
+    "voice_ble.c"
+    "conn_table.c"
+    "control_cmd.c"
     INCLUDE_DIRS "include"
     REQUIRES app_update bt nvs_flash json power_log
 )

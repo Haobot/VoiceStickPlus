@@ -1,4 +1,5 @@
 # 热词评测系统与高频热词优先策略设计
+> 状态：已实施（代码实证：desktop/windows/src/hotword_selector.h 专文件。核销 2026-10-08/N10）
 
 ## 背景与目标
 

@@ -22,6 +22,9 @@ namespace voicestick {
 inline constexpr double kHotwordWCount = 1.0;
 inline constexpr double kHotwordWRecency = 0.5;
 inline constexpr double kHotwordWManual = 2.0;
+// 负样本权重（用户数据飞轮 P1-1 评分负项）：score -= W_NEG * log1p(negative)。
+// 与 macOS HotwordSelector.swift / hotword_select.py 三方同源。
+inline constexpr double kHotwordWNegative = 1.0;
 inline constexpr std::int64_t kHotwordRecencyTauS = 30LL * 24 * 3600;
 
 // 精修/翻译 prompt 热词段上限（防大库稀释小模型注意力，见
@@ -30,15 +33,33 @@ inline constexpr int kHotwordPromptMaxWords = 50;
 
 struct HotwordUsage {
     int count = 0;                 // 出现在最终文本中的累计次数
+    int negative_count = 0;        // 结果被取消且文本含该词的次数（评分负项）
     std::int64_t last_used_ts = 0; // 最近一次使用的 epoch 秒（0 = 未知，按最旧处理）
     std::string source = "mined";  // "manual"（用户手动加词）或 "mined"（候选挖掘）
 };
 
 using HotwordUsageStore = std::map<std::string, HotwordUsage>;
 
-// 两平台共同的硬约束：不含空白，≤10 汉字 / ≤30 英文字符
-// （与 hotword_select.py 的 is_valid_word 一致）。
+// 热词合法性拒绝原因（B14：统一原四套口径，调用方据此给出具体提示）。
+enum class HotwordRejectReason { kNone, kEmpty, kWhitespace, kCharset, kTooLong };
+
+// B14 **平台权威口径**：与 hotword_select.py 的 is_valid_word 严格对齐——
+//   非空；不含 ASCII 空白；≤10 个非 ASCII 字符 / ≤30 个 ASCII 字符。
+// 拒绝原因供 UI 提示与单测断言。**不设字符集限制**（点号等是本项目旗舰热词
+// CLAUDE.md/AGENTS.md 的一部分，selector/LLM 提炼/加词入口都必须放行）。
+HotwordRejectReason ValidateHotword(std::string_view word);
+
+// B14 腾讯专用口径 = 平台权威 **再收窄**（腾讯词表 API 只接受 [0-9A-Za-z_-]，
+// 点号等会被 API 拒绝）。这是**有意的、唯一的** API 适配差异：调用处必须记录
+// 被拒词与原因（SyncHotwords 已做），不得静默丢弃——「加进去但不生效」的根治
+// 就在「权威统一 + 收窄处显式可观测」。
+HotwordRejectReason ValidateHotwordForTencent(std::string_view word);
+
+// 上述口径的布尔包装（保持既有调用方签名不变）。
 bool IsValidHotword(const std::string& word);
+// B14b（r141 拍板并入③）：提炼候选进池前过滤——单一权威口径（ValidateHotword）。
+// 返回按原序过滤后的合法词（空/超长/含空白等被拒）。
+std::vector<std::string> FilterValidHotwordCandidates(const std::vector<std::string>& words);
 
 // 评分；last_used_ts 未知（0）时新近度记 0。
 double HotwordScore(const HotwordUsage& usage, std::int64_t now_s);
@@ -62,6 +83,12 @@ void RecordHotwordUsageInText(HotwordUsageStore& store,
                               const std::string& text,
                               const std::vector<std::string>& hotwords,
                               std::int64_t now_s);
+
+// 记录负样本：结果被取消且文本含该词（大小写不敏感子串匹配）→ negative_count+1。
+// 只更新内存 store，落盘由调用方负责（与 RecordHotwordUsageInText 对称）。
+void RecordHotwordNegativeInText(HotwordUsageStore& store,
+                                 const std::string& text,
+                                 const std::vector<std::string>& hotwords);
 
 // JSON 读写（数组形态 [{word,count,last_used_ts,source}, ...]，与
 // hotword_select.py 的 load_stats_json 列表形态兼容）；文件缺失/损坏返回空

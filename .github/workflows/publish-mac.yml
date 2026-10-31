@@ -1,0 +1,437 @@
+name: Publish macOS Release
+
+# Mac 端无人值守发布轨道（CI 代理发布）。背景：发布凭据（gh PAT / COS 密钥）只存在
+# Windows 签名机与 Actions secrets，Mac 侧唯一可用通道是 SSH git push；且 CI 海外
+# runner 到 COS ap-shanghai 跨境上行 ≥1MB 必死（Doc/Ref/cos-distribution.md 待办 3），
+# 而物理上在国内的 Mac 可直传 COS。方案＝CI 持 GITHUB_TOKEN + COS secrets 做两件事：
+# GitHub Release 的建/传，与 COS 大文件对象的「预签名 PUT/DELETE URL」签发；大文件
+# 本体由 Mac 拿 URL 后国内直传。
+#
+# 两个入口（均由 push 触发，产物/标记随分支携带）：
+#   ci/publish-stage-v*     dist/ 资产 + RELEASE_NOTES.md → 建/补 Release + 传 Mac 资产
+#                           + 从 release.yml 固件门禁产物取固件件上传 + P0-4 扫描
+#                           + 签发 COS 预签名 URL 清单 cos-urls.json 提交回本分支。
+#   ci/publish-finalize-v*  标记文件 FINALIZE → appcast/downloads/Pages 部署（复刻
+#                           deploy-website.yml）+ COS 整站文件（--base=/ 构建）与
+#                           firmware/latest/ 旧版本清理的预签名清单 cos-site-urls.json
+#                           提交回本分支。
+#
+# 安全：预签名 URL 仅覆盖既定对象键、有效期 2 小时；ci/publish-* 分支用毕即删。
+# 注意：GITHUB_TOKEN 的 push 不会再次触发 workflow（GitHub 平台限制），清单回写安全。
+
+on:
+  push:
+    branches:
+      - "ci/publish-stage-v*"
+      - "ci/publish-finalize-v*"
+      - "ci/firmware-*"
+      - "feat/stick-gateway"
+    paths:
+      - "dist/**"
+      - "RELEASE_NOTES.md"
+      - "FINALIZE"
+      - ".publish-finalize"
+      - "FWBUILD"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  COS_BUCKET: voicestick-dl-1329978361
+  COS_REGION: ap-shanghai
+  DIST_DOMAIN: https://dl.davenger.cloud
+
+jobs:
+  stage:
+    name: Stage release assets + presign COS
+    if: startsWith(github.ref_name, 'ci/publish-stage-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate inputs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(head -n1 VERSION | tr -d '[:space:]')"
+          TAG="v${VERSION}"
+          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error ::bad VERSION"; exit 1; }
+          [ -f RELEASE_NOTES.md ] || { echo "::error ::RELEASE_NOTES.md missing"; exit 1; }
+          ls dist/ | grep -q "VoiceStick-${VERSION}.zip" || { echo "::error ::mac zip missing"; exit 1; }
+          # 固件门禁必须已成功（release.yml 由 Mac 侧先推 tag 触发）。
+          # 用 gh api 全量拉取后自行按 head_branch 匹配：gh run list --branch 对
+          # tag 触发 run 的过滤不稳（v2.4.8 实测漏匹配致 validate 误杀）。
+          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?per_page=20")"
+          # 取「已完成的最新一条」（list 可能混入同分支的 in_progress run，
+          # 其 conclusion 为 null——v2.4.9 首跑实锤）：按 completed_at 降序取首条。
+          JQ_COMPLETED='[.workflow_runs[] | select(.head_branch == $tag and .status == "completed")] | sort_by(.created_at) | last'
+          RUN_ID="$(printf '%s' "${RUN_JSON}" | jq -r --arg tag "${TAG}" "${JQ_COMPLETED} | .id")"
+          RUN_CONCLUSION="$(printf '%s' "${RUN_JSON}" | jq -r --arg tag "${TAG}" "${JQ_COMPLETED} | .conclusion")"
+          if [ -z "${RUN_ID}" ] || [ "${RUN_ID}" = "null" ]; then
+            echo "::error ::release.yml run for ${TAG} not found; workflow_runs head_branches:"
+            printf '%s' "${RUN_JSON}" | jq -r '.workflow_runs[].head_branch' | head -10
+            exit 1
+          fi
+          [ "${RUN_CONCLUSION}" = "success" ] || { echo "::error ::release.yml gate not success (${RUN_CONCLUSION})"; exit 1; }
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "FW_RUN_ID=${RUN_ID}" >> "$GITHUB_ENV"
+
+      - name: Fetch firmware from release.yml artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh run download "${FW_RUN_ID}" \
+            --name "voicestick-firmware-${VERSION}" --dir firmware-dist
+          ls -la firmware-dist/
+
+      - name: P0-4 credential scan (--allow-builtin：内测渠道既有约定)
+        run: |
+          set -euo pipefail
+          python3 scripts/scan_release_artifacts.py --allow-builtin \
+            dist/* firmware-dist/*
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}"; then
+            gh release edit "${TAG}" --notes-file RELEASE_NOTES.md --latest
+          else
+            gh release create "${TAG}" --title "VoiceStick ${VERSION}" \
+              --notes-file RELEASE_NOTES.md --latest
+          fi
+          gh release upload "${TAG}" dist/* firmware-dist/* --clobber
+
+      - name: Presign COS upload URLs
+        env:
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          pip install --quiet cos-python-sdk-v5
+          python3 - <<'PY'
+          import json, mimetypes, os, pathlib
+          from qcloud_cos import CosConfig, CosS3Client
+
+          secret_id = os.environ.get("TENCENT_COS_SECRET_ID") or os.environ.get("TENCENTCLOUD_SECRET_ID")
+          secret_key = os.environ.get("TENCENT_COS_SECRET_KEY") or os.environ.get("TENCENTCLOUD_SECRET_KEY")
+          if not (secret_id and secret_key):
+              raise SystemExit("::error ::COS secrets missing (TENCENT_COS_* / TENCENTCLOUD_*)")
+          tag = os.environ["TAG"]
+          client = CosS3Client(CosConfig(
+              Region=os.environ["COS_REGION"], SecretId=secret_id, SecretKey=secret_key, Scheme="https"))
+
+          # Content-Type/Cache-Control 必须签入 URL 并在直传时原样回放：COS 签名
+          # 校验按请求头重建，直传多带未签名的头会 403，不带则对象落默认
+          # octet-stream 且无缓存策略（浏览器拒渲染 HTML/模块 JS → 全站白屏）。
+          def headers_for(key):
+              ct = mimetypes.guess_type(key)[0]
+              if key.endswith(".js"):
+                  ct = "text/javascript"
+              ct = ct or "application/octet-stream"
+              cc = "no-cache" if key.endswith((".html", ".json", ".xml")) else "max-age=31536000"
+              return {"Content-Type": ct, "Cache-Control": cc}
+
+          objects = []
+          for name in sorted(p.name for p in pathlib.Path("dist").iterdir() if p.is_file()):
+              if name.startswith("VoiceStick-"):
+                  objects.append({"local": f"dist/{name}", "key": f"software/macos/{tag}/{name}"})
+          for name in sorted(p.name for p in pathlib.Path("firmware-dist").iterdir() if p.is_file()):
+              objects.append({"local": f"firmware-dist/{name}", "key": f"firmware/{tag}/{name}"})
+          for obj in objects:
+              headers = headers_for(obj["key"])
+              obj["content_type"] = headers["Content-Type"]
+              obj["cache_control"] = headers["Cache-Control"]
+              obj["url"] = client.get_presigned_url(
+                  Method="PUT", Bucket=os.environ["COS_BUCKET"], Key=obj["key"], Expired=7200,
+                  Headers=headers)
+          pathlib.Path("cos-urls.json").write_text(json.dumps(objects, indent=2) + "\n")
+          print(f"presigned {len(objects)} objects")
+          PY
+
+      - name: Publish URL manifest as release asset
+        # 清单以 Release 资产下发（Mac 侧匿名可下载）。git push 回写在 GITHUB_TOKEN
+        # 下曾被拒（2026-10-02 首跑实测），资产通道更稳且免去分支同步。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cp cos-urls.json "cos-presign-${TAG}.json"
+          gh release upload "${TAG}" "cos-presign-${TAG}.json" --clobber
+
+  finalize:
+    name: Website refresh + COS site presign
+    # 两条触发路径：ci/publish-finalize-* 标记分支；或 feat/stick-gateway 上
+    # .publish-finalize 标记文件变化（Pages environment 部署分支保护只放行
+    # 主发布分支——ci/* 分支直接部署会 2 秒内 startup failure，2026-10-02 实测）。
+    if: startsWith(github.ref_name, 'ci/publish-finalize-') || github.ref_name == 'feat/stick-gateway'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: website
+
+      - name: Update appcast from latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml" \
+            -o website/public/appcast.xml || true
+          tag="$(gh release view --json tagName -q .tagName)"
+          version="${tag#v}"
+          appcast_url="${DIST_DOMAIN}/appcast.xml"
+          zip_asset="VoiceStick-${version}.zip"
+          sig_asset="VoiceStick-${version}.signature"
+          zip_length="$(gh release view "$tag" --json assets \
+            -q ".assets[] | select(.name == \"${zip_asset}\") | .size" || true)"
+          msi_asset="VoiceStick_${version}_zh-CN.msi"
+          msi_length="$(gh release view "$tag" --json assets \
+            -q ".assets[] | select(.name == \"${msi_asset}\") | .size" || true)"
+          if [ -n "${zip_length:-}" ]; then
+            gh release download "$tag" --pattern "$sig_asset" --dir "$RUNNER_TEMP"
+            signature="$(cat "$RUNNER_TEMP/$sig_asset" | tr -d '\n')"
+          else
+            signature=""
+          fi
+          notes="$(gh release view "$tag" --json body -q .body)"
+          args=(
+            --version "$version"
+            --appcast-url "$appcast_url"
+            --release-notes "$notes"
+            --mirror-base "${DIST_DOMAIN}"
+          )
+          if [ -n "${zip_length:-}" ]; then
+            args+=(
+              --zip-url "https://github.com/${{ github.repository }}/releases/download/${tag}/${zip_asset}" \
+              --signature "$signature" \
+              --length "$zip_length"
+            )
+          fi
+          if [ -n "${msi_length:-}" ]; then
+            args+=(
+              --msi-url "https://github.com/${{ github.repository }}/releases/download/${tag}/${msi_asset}" \
+              --msi-length "$msi_length" \
+            )
+          fi
+          python3 scripts/update-appcast.py "${args[@]}"
+
+      - name: Generate downloads.json
+        run: |
+          set -euo pipefail
+          python3 scripts/update-downloads.py \
+            --repo "${{ github.repository }}" \
+            --output website/public/downloads.json \
+            --mirror-base "${DIST_DOMAIN}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync firmware to Pages origin
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --json tagName -q .tagName)"
+          version="${tag#v}"
+          mkdir -p website/public/firmware/latest
+          gh release download "$tag" \
+            --pattern "voicestick-firmware-sticks3-merged-*.bin" \
+            --pattern "manifest.json" \
+            --dir website/public/firmware/latest
+          python3 - "${{ github.repository_owner }}" "${{ github.event.repository.name }}" <<'PY'
+          import json, os, sys
+          repo_owner, repo_name = sys.argv[1], sys.argv[2]
+          base = f"https://{repo_owner}.github.io/{repo_name}/firmware/latest/"
+          path = "website/public/firmware/latest/manifest.json"
+          with open(path, encoding="utf-8") as f:
+              manifest = json.load(f)
+          merged = os.path.basename(manifest["merged_url"])
+          manifest["merged_url"] = base + merged
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PY
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build website (Pages base)
+        run: npm run build
+        working-directory: website
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Build website (COS base=/) and presign site URLs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          # COS 同源 manifest：merged_url 改指 dl.davenger.cloud（COS 站烧录器同源取固件），
+          # 再以 --base=/ 重建（默认 base=/VoiceStickPlus/ 误传 COS 即全站白屏）。
+          python3 - <<'PY'
+          import json, os, pathlib
+          path = pathlib.Path("website/public/firmware/latest/manifest.json")
+          if path.exists():
+              m = json.loads(path.read_text(encoding="utf-8"))
+              m["merged_url"] = os.environ["DIST_DOMAIN"] + "/firmware/latest/" + m["merged_url"].rsplit("/", 1)[-1]
+              path.write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
+          PY
+          (cd website && rm -rf dist && npm run build -- --base=/)
+          pip install --quiet cos-python-sdk-v5
+          python3 - <<'PY'
+          import json, mimetypes, os, pathlib
+          from qcloud_cos import CosConfig, CosS3Client
+
+          secret_id = os.environ.get("TENCENT_COS_SECRET_ID") or os.environ.get("TENCENTCLOUD_SECRET_ID")
+          secret_key = os.environ.get("TENCENT_COS_SECRET_KEY") or os.environ.get("TENCENTCLOUD_SECRET_KEY")
+          if not (secret_id and secret_key):
+              print("::warning ::COS secrets missing; site presign skipped (Pages 已更新，COS 整站待补)")
+              pathlib.Path("cos-site-urls.json").write_text('{"objects":[],"deletes":[]}\n')
+              raise SystemExit(0)
+          client = CosS3Client(CosConfig(
+              Region=os.environ["COS_REGION"], SecretId=secret_id, SecretKey=secret_key, Scheme="https"))
+
+          # Content-Type/Cache-Control 必须签入 URL 并在直传时原样回放：COS 签名
+          # 校验按请求头重建，直传多带未签名的头会 403，不带则对象落默认
+          # octet-stream 且无缓存策略（浏览器拒渲染 HTML/模块 JS → 全站白屏）。
+          def headers_for(key):
+              ct = mimetypes.guess_type(key)[0]
+              if key.endswith(".js"):
+                  ct = "text/javascript"
+              ct = ct or "application/octet-stream"
+              cc = "no-cache" if key.endswith((".html", ".json", ".xml")) else "max-age=31536000"
+              return {"Content-Type": ct, "Cache-Control": cc}
+
+          objects = []
+          for p in sorted(pathlib.Path("website/dist").rglob("*")):
+              if p.is_file():
+                  key = p.relative_to("website/dist").as_posix()
+                  headers = headers_for(key)
+                  objects.append({
+                      "local": str(p),
+                      "key": key,
+                      "content_type": headers["Content-Type"],
+                      "cache_control": headers["Cache-Control"],
+                      "url": client.get_presigned_url(
+                          Method="PUT", Bucket=os.environ["COS_BUCKET"], Key=key, Expired=7200,
+                          Headers=headers),
+                  })
+          # firmware/latest/ 旧版本 bin 清理（upload 只增不删；显式列出待删键）。
+          deletes = []
+          current_merged = None
+          for obj in objects:
+              if obj["key"].startswith("firmware/latest/") and obj["key"].endswith(".bin"):
+                  current_merged = obj["key"]
+          if current_merged:
+              resp = client.list_objects(Bucket=os.environ["COS_BUCKET"], Prefix="firmware/latest/")
+              for item in resp.get("Contents", []):
+                  key = item["Key"]
+                  if key.endswith(".bin") and key != current_merged:
+                      deletes.append({
+                          "key": key,
+                          "url": client.get_presigned_url(
+                              Method="DELETE", Bucket=os.environ["COS_BUCKET"], Key=key, Expired=7200),
+                      })
+          pathlib.Path("cos-site-urls.json").write_text(
+              json.dumps({"objects": objects, "deletes": deletes}, indent=2) + "\n")
+          print(f"presigned {len(objects)} site objects, {len(deletes)} deletes")
+          PY
+
+      - name: Publish site dist + URL manifest as release assets
+        # dist 以 zip 资产下发：Mac 侧本地重建 dist 的产物哈希可能与 CI 不同
+        #（预签名键按文件名钉死），必须用 CI 构建的原始字节上传。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="$(gh release view --json tagName -q .tagName)"
+          cp cos-site-urls.json "cos-site-presign-${TAG}.json"
+          (cd website && zip -qr "$RUNNER_TEMP/cos-site-dist-${TAG}.zip" dist)
+          gh release upload "${TAG}" "cos-site-presign-${TAG}.json" \
+            "$RUNNER_TEMP/cos-site-dist-${TAG}.zip" --clobber
+
+  firmware-build:
+    name: Build test firmware bin
+    # Mac 无 ESP-IDF/Docker 时的固件代构建轨道：推 ci/firmware-* 分支（含
+    # FWBUILD 标记），构建 app bin + merged bin，经回传分支（首选）或 Release
+    # 资产（回退）送达 Mac 侧。临时验证用，正式固件仍走 release.yml 门禁。
+    if: startsWith(github.ref_name, 'ci/firmware-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build firmware and merged image
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: firmware
+          command: |
+            idf.py build
+            cd build
+            esptool.py --chip esp32s3 merge_bin -o ../../fw-merged.bin @flash_args
+            cp voice_stick.bin ../../fw-app.bin
+
+      - name: Push bins back to an output branch
+        run: |
+          set -euo pipefail
+          OUT="ci/firmware-out-$(git rev-parse --short HEAD)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$OUT"
+          git add fw-app.bin fw-merged.bin
+          git commit -m "firmware test bins $(git rev-parse --short HEAD~1)"
+          if git push origin "$OUT"; then
+            echo "OUT_BRANCH=$OUT" >> "$GITHUB_ENV"
+          else
+            echo "push-back failed; falling back to release asset"
+          fi
+
+      - name: Fallback upload to release assets
+        if: env.OUT_BRANCH == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="$(gh release view --json tagName -q .tagName)"
+          SHA="$(git rev-parse --short HEAD)"
+          cp fw-app.bin "firmware-test-app-${SHA}.bin"
+          cp fw-merged.bin "firmware-test-merged-${SHA}.bin"
+          gh release upload "$TAG" "firmware-test-app-${SHA}.bin" "firmware-test-merged-${SHA}.bin" --clobber

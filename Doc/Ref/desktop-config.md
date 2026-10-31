@@ -13,28 +13,38 @@ Windows MSI 还会把 `config.template.toml` 装到 `%ProgramFiles%\VoiceStick\`
 
 - `asr_provider`：ASR 提供商，可选 `volcengine`、`voicestick_cloud` 或 `tencent`（腾讯为 v1.8.2 新增）。
 - `volcengine_api_key` / `voicestick_api_key` / `voicestick_cloud_url`：火山直连密钥，或 VoiceStick Cloud 中转密钥与 WebSocket URL。
-- `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山自学习平台热词表/替换词表 ID（控制台创建），作为 `corpus.boosting_table_id` / `corpus.correct_table_id` 发送；背景见 `Doc/Ref/volcengine-asr.md`（corpus 热词直传只在流式第一遍生效，二遍最终文本不吃直传，精修 prompt 会附加热词表由 LLM 兜底纠正）。
+- `volcengine_boosting_table_id` / `volcengine_correct_table_id`：火山自学习平台热词表/替换词表 ID（控制台创建；仅 Windows 消费），作为 `corpus.boosting_table_id` / `corpus.correct_table_id` 发送；背景见 `Doc/Ref/volcengine-asr.md`（corpus 热词直传只在流式第一遍生效，二遍最终文本不吃直传，精修 prompt 会附加热词表由 LLM 兜底纠正）。
 - `tencent_secret_id` / `tencent_secret_key` / `tencent_appid`：腾讯云 ASR 凭据（加载时自动 Trim 去前后空格）。
-- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认 `false`（v2.3.2 起需用户手动开启）。
+- **内置凭据回退（内部测试构建，v2.4.8 起 macOS 与 Windows 同语义）**：`volcengine_api_key` / `tencent_secret_id` / `tencent_secret_key` / `tencent_appid` / `llm_api_key` / `llm_base_url` / `llm_model` 七项在配置值为空（trim 后）时回退编译期内置值（`AppConfig.active*` 访问器），不落盘；内测安装包开箱即用，公开构建内置值为空、行为不变。`config.toml` 缺失 + 内置凭据在场时 macOS 首启自动落默认配置（provider=内置方）跳过 onboarding。
+- `llm_base_url` / `llm_api_key` / `llm_model`：OpenAI 兼容 LLM，用于翻译与精修；`refine_enabled` 默认值 Windows 一直为 `true`，macOS 自 v2.4.7 起对齐为 `true`（此前默认 `false`）。精修走 SSE 流式（token 级增量上屏，失败自动回退非流式，两端一致）。
 - `llm_disable_thinking`（默认 `true`）：向所有 LLM 请求（精修/翻译/热词提取）注入 `enable_thinking:false` 与 `chat_template_kwargs.enable_thinking:false`，关闭推理型模型（DeepSeek-R1、Qwen3 混合思考等）的深度思考以加快输出；对接严格校验未知字段、报 400 的 OpenAI 官方 API 时可设 `false` 关闭该组参数。
 - `hotword_process_enabled` / `hotword_process_prompt`：热词处理（Windows），划词加词时用 LLM 提炼热词，复用 `llm_*` 连接配置；默认关闭。
 - `hotword_mining_enabled`：热词候选挖掘（Windows，默认关闭）。两条挖掘通道共用计数存储：①精修 diff 挖掘（精修纠回不在表标识符时计数，无开关）；②LLM 主动提炼（本开关打开时，每会话完成后异步让 LLM 从最终文本提炼候选）。同一词达 3 次（`kHotwordCandidateThreshold`）弹托盘通知并在设置-热词区给出「加入/忽略」候选；计数存 `%APPDATA%\VoiceStick\hotword_candidates.json`。明确不做全自动入表，原因见 `Doc/Expe/hotword-two-pass-and-candidate-mining-2026-07-28.md`。
-- `asr_hotwords` 发送策略（Windows）：火山 corpus 直传前按「频率 × 新近度 × 手动加权」评分排序并装入 80 tokens 预算（`kHotwordCorpusTokenBudget`），超预算时优先保留高频/新近/手动词，其余本次会话不参与识别（每次运行提示一次，明细见日志）；使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本本身）存 `%APPDATA%\VoiceStick\hotword_usage.json`。评分模型与 `scripts/e2e_test/asr_bench/hotword_select.py` 一致，设计见 `Doc/Plan/hotword-eval-and-prioritization.md` §3；实现 `desktop/windows/src/hotword_selector.cc`。精修/翻译 prompt 的热词段取评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。
+- `asr_hotwords` 发送策略（Windows）：火山 corpus 直传前按「频率 × 新近度 × 手动加权」评分排序并装入 80 tokens 预算（`kHotwordCorpusTokenBudget`），超预算时优先保留高频/新近/手动词，其余本次会话不参与识别（每次运行提示一次，明细见日志）；使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本本身）Windows 存 `%APPDATA%\VoiceStick\hotword_usage.json`、macOS 存 `~/Library/Application Support/VoiceStick/hotword_usage.json`（v2.4.7 起，JSON 形态两端一致）。评分模型与 `scripts/e2e_test/asr_bench/hotword_select.py` 一致，设计见 `Doc/Plan/hotword-eval-and-prioritization.md` §3；实现 `desktop/windows/src/hotword_selector.cc` 与 `desktop/macos/Sources/VoiceStickCore/HotwordSelector.swift`。精修/翻译 prompt 的热词段取评分 top-50（`kHotwordPromptMaxWords`，两端一致），防大库稀释小模型注意力。
 - `hotword_categories`（Windows，热词分区管理）：热词库按分类分区存储的事实源，JSON 数组字符串，如 `[{"name":"","words":"词1,词2"},{"name":"语文","words":"杜甫"}]`；`name` 为空字符串表示"默认"分类（UI 按界面语言本地化显示），`words` 复用 `asr_hotwords` 的逗号/换行切分语法。每分类热词上限 25 个（`HotwordCategory::kMaxWords`）。首次使用（无分区数据）预置 默认/语文/数学/程序/AI 五个分类，旧配置的 `asr_hotwords` 自动迁入默认分类。
 - `active_hotword_category`（Windows）：当前活跃分类名（空字符串 = 默认分类）。**ASR 识别仅使用活跃分类的热词**（切分类即切换识别场景）；`asr_hotwords` 始终等于活跃分类的词表（投影），下游 ASR/精修/统计零改动，老版本 exe 读新配置也只认 `asr_hotwords`，可无损回滚。设置 → 热词区顶部的分类下拉可切换/新增（≤30 字符，不可重名）/删除（至少保留一个）分类；划词添加、LLM 提炼、纠错保存的热词一律进入当前活跃分类。
 - `smart_hotword_enabled`（Windows，默认 `true`，设置 → 热词区「智能热词管理」开关）：智能热词管理，在手动分区之上叠加三层自动化——① **上下文识别自动切换**：对 ASR 最终文本做关键词加权评分（内置 20 领域词表：程序/AI/数学/语文 + 英语/历史/地理/物理/化学/生物/医学/法律/金融/音乐/美术/体育/烹饪/游戏/汽车/航空航天，`hotword_context.cc`），得分 ≥2.5、命中 ≥3 词、连续 2 次决策一致且距上次切换 ≥300s 才切换活跃分类（当前分类热词命中时拒绝切换，切换只改热词分类、不触碰文本纠错/注入路径）；② **容量动态管理**：活跃分类默认软限 5 词（超出进入"监控中"状态，仅日志与可视化标注），硬上限仍 25 词，加词满员时自动逐出活跃度最低词腾位；③ **活跃度评估与回收**：活跃度复用 `hotword_usage.json` 统计（`HotwordScore`：次数 × 30 天时间衰减 + manual 加成），被逐出的词连同统计进回收池 `%APPDATA%\VoiceStick\hotword_evicted.json`，池内词再次出现在最终文本即视为活跃度回升、自动回归当前活跃分类（池内记录的原分类仅供展示，不作回归目标——词可能被加进与语义无关的分类；活跃分类已满时先逐出更冷的词）。设置 → 热词区「活跃度…」按钮打开可视化对话框（各分类词表/使用次数/活跃度/闲置天数 + 回收池 + 监控状态；回收池行首 ✗ 图标点击即删除该词，「清空回收池」按钮一键删除全部池内词、清空前有确认，删除即时落地到 hotword_evicted.json）。关闭后恢复纯手动分区管理。
 - `hotword_tray_enabled` / `hotword_tray_size` / `hotword_tray_min_score`（Windows，热词碟，方案 `Doc/Plan/hotword-tray-and-domain-context.md`）：跨分类高活跃词聚合视图。碟 = 全部分类词 ∪ 回收池词按 `HotwordScore` 降序（同分按次数、字典序，确定性）取前 N 个（`hotword_tray_size`，钳位 6~24，默认 12），入碟门槛 `hotword_tray_min_score`（默认 0.5），来源分类最多 3 个（含回收池，防跨域混碟稀释 corpus 偏置）。碟不落盘，是活跃度统计的投影视图（单一事实源仍为分类词表 + hotword_usage.json），随统计与词表变更即时更新。两个消费点：①设置 → 热词区「热词碟」只读展示块（`[词 ★评分·来源]` chip 流，「刷新」按钮即时重建）；②**碟优先匹配**——碟开启时 ASR corpus 预算分配顺序变为碟词在前 + 活跃分类词补足（保序进入 80 token 裁剪），精修 prompt 热词段同序取碟词在前；碟关闭回落原「活跃分类词」逻辑。关闭开关仅隐藏 UI 块并回落 corpus 原序。
 - `[hotword_domain_map]`（Windows，可选 TOML 表）：内置领域名 → 用户分类名映射，如 `"数学" = "高数"`。上下文自动切换识别出内置领域、但该领域名不在用户分类中存在时，按映射落到目标用户分类；映射目标不存在则维持当前分类。仅影响自动切换的落点，不影响识别判定。
 - 内容深度适配（Windows，随智能热词管理自动生效，无独立开关）：精修前对文本做领域评分与深度分档（`hotword_context.cc`：≤30 字符或零领域命中 → 轻量档；>120 字符或领域词命中 ≥5 → 专业档；其余标准档）。标准/专业档向精修 prompt 注入一行「领域语境：…」提示（位于基础 prompt 之后、热词段之前；专业档追加「专业术语与专有名词必须保持原文」强约束；轻量档不注入）。提示语初版由开发者起草，按方案 §8 决议需逐领域人工评审后定稿。
+- 纠错对资产（用户数据飞轮 P0-1）：每次精修完成时从 original→refined 提取最小替换片段对（仅保留两侧非空的「替换」形态，纯标点/空白调整与整句改写不入表），存 Windows `%APPDATA%\VoiceStick\correction_pairs.json`、macOS `~/Library/Application Support/VoiceStick/correction_pairs.json`；精修 prompt 注入按 count/新近度排序的 top-8 few-shot 段（超预算由 prompt 尾部截断先裁 few-shot 再裁热词）。仅本地存储，随精修 prompt 进入用户自配 LLM 端点（与热词段同通道），无遥测。实现 `desktop/windows/src/correction_pairs.{h,cc}` 与 `desktop/macos/Sources/VoiceStickCore/CorrectionPairs.swift`（1:1 同向量单测）。
+- 负信号事件流水（用户数据飞轮 P1-1）：待确认文本的自动/手动确认（含暂停态停留时长——疑惑度信号）、待确认取消、识别中途取消四类动作全埋点，JSONL 追加 Windows `%APPDATA%\VoiceStick\usage_events.jsonl`、macOS `~/Library/Application Support/VoiceStick/usage_events.jsonl`（双端同构）。事件只记文本长度与热词命中名单（成员关系），绝不记文本本身；纯本地追加无遥测。实现 `desktop/windows/src/usage_events.{h,cc}` 与 `desktop/macos/Sources/VoiceStickCore/UsageEvents.swift`。
+- 会话历史数据底座（用户数据飞轮 P0-3，typeless 方案）：每次识别会话落一行（raw/refined/injected、设备/Provider/mode/时长/下发热词；edited_* 三件套预留编辑追踪），SQLite 库 Windows `%APPDATA%\VoiceStick\session_history.db`（vendored SQLite 3.50.4，`third_party/sqlite/`）、macOS `~/Library/Application Support/VoiceStick/session_history.db`（系统 libsqlite3），双端同 schema 同迁移。打开/迁移失败降级停用，绝不阻塞识别主链路。实现 `desktop/windows/src/session_history.{h,cc}` 与 `desktop/macos/Sources/VoiceStickCore/SessionHistory.swift`。
 - `interaction_mode`：`hold_to_talk`（默认）或 `click_to_talk`，控制 focused_app/字幕模式的触发方式（托盘菜单可切）。wechat 模式的触发方式由 `[wechat_input_method].trigger_mode` 独立控制，不联动全局 `interaction_mode`。
-- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`。
+- `ui_language`：界面语言（Windows + macOS），`system`（默认，按系统 locale：zh 前缀→简体中文，否则英文）/ `en` / `zh-Hans`；加载兼容 `zh_CN`/`zh-CN`/`zh`，非法值回 `system`。设置窗「界面语言」下拉改写，保存后立即重建托盘/窗口文案。
+- `paired_device_ids`：已配对设备 4 位十六进制 ID 列表，如 `C3D8,09AF`（`VS-`/`RC-` 前缀均可，加载时剥前缀归一化）。
+- `paired_device`：配对设备条目列表，每行 CSV `id,addr,kind,name[,hardware,firmware_version]`（`hardware` 取值 `stick_s3`/`xiaomi_remote_2_pro`，驱动能力显隐）。addr/kind 语义按平台：Windows 存 12 位 hex MAC，kind 为地址类型 `0`/`1`/`2` 原样透传；macOS 存 `CBPeripheral.identifier` UUID 大写串，kind 恒为 `uuid`，重连按 UUID→ID 映射（`retrievePeripherals`）。
 - `[output].target`：`focused_app`（默认）、`subtitle`、`wechat_input_method` 或 `virtual_mic`；`[output].transform`：`original` 或 `translate`；可用 `[device.<id>.output]` 按设备覆盖（`transform`/`translation_target` 维度，以及 `target` 维度=麦克风模式设备级开关，见下）。
 - `[device.<id>.output].target`（麦克风模式，仅 Windows）：设备级输出目标覆盖，写 `wechat_input_method` 或 `virtual_mic` 即把该设备切为麦克风模式——录音不再走 ASR，而是解码 PCM 渲染到 `[wechat_input_method].virtual_mic_playback_name` 指定的虚拟麦克风播放端（系统应用从对应虚拟麦克风采集端即可录到该设备音频）。两者区别：`wechat_input_method` 额外触发第三方输入法语音热键（并可在录音期自动切默认录音设备）；`virtual_mic` 为直通模式，不触发热键、不切默认设备，由应用自行从虚拟麦克风采集端（如 CABLE Output）取音识别。缺失该键时设备跟随全局 `[output].target`（旧配置行为不变）。托盘设备子菜单「麦克风模式」复选框即此开关：勾选写入 `virtual_mic` 覆盖、取消回落全局默认（全局默认同为麦克风模式时显式回 `focused_app`，保证可关闭）；仅写入与全局默认不同的覆盖（相等则不落盘）。
-- `[wechat_input_method]`：微信输入法模式专属配置，含 `trigger_mode`（wechat/virtual_mic 共用的触发方式，`hold_to_talk` 默认或 `click_to_talk`，与全局 `interaction_mode` 解耦）、`hotkey_hold` / `hotkey_click`（长按式/点按式各自记忆的触发热键，默认 `ctrl+win` / `ralt`，仅 `wechat_input_method` 模式发送）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回；仅 `wechat_input_method` 模式生效，`virtual_mic` 直通模式不切）。
+- `[wechat_input_method]`：微信输入法模式专属配置，含 `trigger_mode`（wechat/virtual_mic 共用的触发方式，`hold_to_talk` 默认或 `click_to_talk`，与全局 `interaction_mode` 解耦）、`session_model`（输入法会话模型，`hold_to_talk` 默认或 `click_to_talk`，与 `trigger_mode` 正交：trigger 描述用户怎么按设备键，session model 描述怎么驱动输入法——hold=注入按住热键 SendDown/SendUp 对，click=注入单次 SendClick；未显式配置时跟随 `trigger_mode`，保存时按推导值固化写盘。组合 `trigger_mode="click_to_talk"` + `session_model="hold_to_talk"` 为「点按折叠」方案：设备键点按即折叠为 button_click、立即注入按住热键（**限时 2.5s 自动松开**——持续 repeats 会让用户任何关闭面板的尝试被立即重新弹开）；小米遥控器下会话音频由 WeType **直接采集默认录音设备（真实麦克风）**——本端不启动采集/虚拟麦渲染/设备切换（2026-09-11 修订，此前「本机麦直供虚拟麦」管道在 keyup 后拆除会卡死 WeType）。停止击 = **SendUp + 两次鼠标左键点击（1.5s/3s，光标位置）**触发 WeType 浮窗 detach 关闭——WeType 语音热键只能启动/重启会话，keyup/ESC 无收尾作用；文字提交只在「**松开时语音仍活跃**」触发，故**使用约定：说完话的同时/紧接着点停止**（太晚点会致本次文字滞留后被 detach 清除）；2026-09-12 定案，见 RFC 修订 2 节；StickS3 同组合仍走 BLE 音频经虚拟麦克风管道。背景与设计见 `Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md`）、`hotkey_hold` / `hotkey_click`（长按式/点按式各自记忆的触发热键，默认 `ctrl+win` / `ralt`，仅 `wechat_input_method` 模式发送）、`virtual_mic_playback_name` / `virtual_mic_capture_name`（虚拟麦克风播放/采集端设备名，通常对应 VB-CABLE 两端，仅 BLE 音频路径使用）、`auto_switch_default_recording_device`（录音期自动把系统默认录音设备切到虚拟麦克风采集端，松开切回；仅 BLE 音频经虚拟麦的路径生效，小米 click/hold 直连组合与 `virtual_mic` 直通模式均不生效）。
 - 虚拟麦克风改名（设置 → 输出目标=第三方输入法/虚拟麦克风时出现「虚拟麦克风：显示为设备名」按钮）：把系统录音端虚拟麦克风（CABLE Output）的设备友好名改为第一台 StickS3 配对设备名（如 `VS-091C`，无配对设备时为 `VoiceStick`），方便在应用（Clash/浏览器等）的麦克风列表中直接找到。需管理员权限：主进程 `runas` 提权启动自身 `--rename-virtual-mic <endpoint-id> <name>` 子进程执行（main.cc 分支），写入走 IPolicyConfig::SetPropertyValue，失败回退写 HKLM MMDevices 注册表 + 重启音频服务；改名成功后 `virtual_mic_capture_name` 自动同步为新名（auto_switch 按名找设备）。VB-CABLE 重装会恢复默认名，重新执行改名即可。实现 `desktop/windows/src/virtual_mic_renamer.{h,cc}`。
+- `[local_asr]`（Windows 本机麦克风模式见本条尾部；**macOS 2026-10-28 起支持设备会话本地识别**，方案见 Doc/Plan/local-first-voice-stack.md）：双端共用键 `enabled`（默认 false）与 `models_dir`（SenseVoice 模型目录，须含 model.int8.onnx + tokens.txt）。**macOS（2026-10-29 起含设置 UI 与应用内下载）**：设置「语音识别 → 服务提供方」末位「本地语音识别（离线，无需云端密钥）」虚项选中即 `enabled=true`（`asr_provider` 保留云端值供切回），选中才显示模型目录/状态（✓/✗/△ 运行时）/「下载模型…」按钮（多源回退+SHA-256 校验+断点续传；清单含 SenseVoice 模型、sherpa-onnx dylib、可选 LLM GGUF 双档）；`refine_model`（本地 editform 精修 GGUF 路径覆盖，空=默认 3B 档 `<models_dir>/Qwen2.5-3B-Instruct-Q4_K_M/`，**仅 macOS 2026-10-29 起**）、`refine_num_threads`（CPU 推理线程，默认 4，1..32）。`enabled=true` 时设备语音会话整体路由本地 SenseVoice，断网可用、音频不出本机；`models_dir` 空 = `~/Library/Application Support/VoiceStick/models/sense-voice-int8-2024-07-17`，`~` 展开、相对路径锚配置目录；模型与 sherpa-onnx dylib 用 `scripts/setup-mac-local-asr.sh` 一键安装（SHA-256 与 Windows 分发清单同源锁定，dylib 搜索序 = env `VOICESTICK_SHERPA_ONNX_DIR` → app bundle Frameworks → Application Support models/sherpa-onnx/lib）；模型/运行时未就位时 start 如实报错**不静默降级云端**；录音期 600ms 滚动重解码出 partial、松键复用末次推理（与 Windows 同调度语义）。**Windows**（本机麦克风模式，Doc/Plan/local-mic-mode.md；设置入口合并方案见 Doc/Plan/asr-settings-local-provider-merge.md；流式 partial 设计见 Doc/Plan/local-asr-streaming-partial.md）：`enabled` 开启后安装按住说话 LL 热键、`models_dir` 空 = exe 同级 models/ 相对路径以 exe 目录为基准、`push_to_talk_key`（按住说话单键，默认 `right ctrl`；支持 right/left ctrl|shift|alt、f1-f24、capslock 等见 push_to_talk_key.h，**仅 Windows**）。按住说话→本机麦克风采集→SenseVoice 本地识别→注入，无 BLE 设备可用；录音期间按 600ms 节流周期对全量音频滚动重解码持续产出 partial（与云端同一条 `on_partial`→悬浮窗/字幕/设备屏显示路径），松键无新增音频时直接复用上次结果出 final；**`enabled=true` 时设备会话（遥控器语音键/全局热键触发的设备录音）同样路由本地 SenseVoice，断网可用**——云端热词/实时分段自然降级，`asr_provider` 保留云端值供切回时无缝恢复。设置入口：设置「语音识别 → 服务提供方」下拉框末位「本地语音识别（离线，无需云端密钥）」选中即 `enabled=true`，选中后才显示「模型目录」行；按住说话热键在托盘菜单「热键」子菜单「按住说话热键...」中设置。保存即热更生效：模型目录变化重建运行件，热键变化即时重装钩子，无需重启；手改 config.toml 仍需重启应用。
+- `[local_asr]` 本地文本精修（Doc/Plan/local-text-refinement.md，仅 Windows，随 llama.cpp 静态链入，断网可用）：`refine_enabled`（默认 true；本地识别会话的 final 文本过「L1 规则 → L2 本地 LLM（Qwen3-1.7B-Q4_K_M）→ L3 守卫」三层精修，逐层回退最差不劣于规则级；缺模型自动退化直通不阻塞输入）、`refine_model`（GGUF 模型路径，空 = 按档位探测默认模型（见 `refine_cross_turn`），相对路径锚 models_dir；env `VOICESTICK_REFINE_MODEL` 最高优先供测试）、`refine_num_threads`（CPU 推理线程数，默认 6，范围 1..32）、`refine_prompt`（本地精修 system prompt 含 few-shot 示例，多行文本；空 = 内置默认，可在设置 → 本地语音识别区块「本地精修提示词」多行框查看与编辑，保存时与默认等值自动归空=清空即恢复默认；改动经幂等键触发引擎重建重算 KV 前缀，注意 few-shot 格式须保持「输入：/输出：」示例对——0.6B/1.7B 对指令式 prompt 无法跟随，few-shot 是硬要求）、`refine_cross_turn`（跨轮上下文纠错，默认 false，设置界面复选框「跨轮上下文纠错（Qwen3-4B）」；开启后本地精修携带最近 5 轮历史（2 分钟 TTL）走纠正指令管线——模型只输出「错词→纠正词/待删片段」指令行，执行在拼音守卫代码层（等长+上文出现+逐字近音+幅度回退），空历史首轮也走该管线保证形态与 KV 前缀一致；模型档位优先 `Qwen3-4B-Q4_K_M`（M0 spike GO 口径，常驻内存 +1.4GB，Release 实测 2.5~5s/句随轮数增长），缺失回退 1.7B（纠正能力降级为安全弱档，守卫保底不变）；设计见 Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md）。与云端 `refine_enabled` 互斥：本地识别会话（含 enabled=true 时的设备会话）优先走本地精修。保存热更：模型路径/线程数/提示词（及跨轮开关引起的档位切换）变化重建引擎（1.7B 约 1.1GB 加载约 1s；4B 约 2.5GB）。
+- `[license]`（仅 Windows，离线授权激活，Doc/Plan/offline-license-activation.md）：`serial`（授权串码原文，含连字符；EdDSA 签名的自包含凭证，客户端内嵌公钥离线验签，空 = 未激活）、`trial_anchor_days`（30 天试用起锚，自 2026-01-01 的天数；缺省 = 试用未开始，运行时首次启用本地识别后立即写入）、`last_seen_days`（见过的最大日期，同口径，单调不减；时钟回拨检测 + 7 天宽限）。锚点与 last_seen 未写时不落盘降噪；串码是密文签名，落盘无妨。
 - `tap_to_arrow`：IMU 敲击映射方向键开关（顶层键为全局默认；v1.8.x 旧配置仍可加载，见下方「设备交互配置」按设备覆盖）。
+- `show_imu_debug`（bool，默认 `false`，Windows + macOS）：固件屏上 IMU 加速度调试浮层开关，经 control_rx 下发固件，并在新连接控制特征就绪时随 `interaction_mode` 一起回放。
 
-### 编码器配置（仅 Windows 消费）
+### 编码器配置（Windows + macOS）
 
 MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像 `[device.<id>.output]`：
 
@@ -42,7 +52,7 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   - `encoder_to_arrow`（true）：旋转是否注入按键；关闭后旋转行（方向翻转/cw/ccw 按键/快慢阈值/快速档按键）在设备级对话框中隐藏。
   - `encoder_rotation_invert`（false）：方向翻转，true 时顺时针→Up。
   - `encoder_rotate_cw_key` / `encoder_rotate_ccw_key`：顺时针/逆时针自定义按键（热键语法，如 `down`/`up`）。
-  - `encoder_rotate_fast_threshold`（200）：旋转快慢分档阈值（格/秒）。固件 10ms 窗口计数的单窗口格速（steps × 100 格/秒）量化到 100 格/秒，直接比较会让 100~200 间阈值失效且偶发 2 步窗误判快，故桌面端对单窗口格速做 EWMA 平滑（α=0.5 按事件更新，与墙钟无关，新手势静默 >250ms 后从零冷启动，见 `desktop/windows/src/encoder_speed.h`），平滑估计 ≥ 阈值判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，锁定期间屏蔽所有旋转输出（含减速段慢速事件与换向事件），直到静默 >250ms 判定停稳才恢复识别；快速档按键非法时回退普通按键。设备级对话框中阈值为滑杆（范围 100–300，超出范围的配置值显示时钳制）。
+  - `encoder_rotate_fast_threshold`（200）：旋转快慢分档阈值（格/秒）。固件 10ms 窗口计数的单窗口格速（steps × 100 格/秒）量化到 100 格/秒，直接比较会让 100~200 间阈值失效且偶发 2 步窗误判快，故桌面端对单窗口格速做 EWMA 平滑（α=0.5 按事件更新，与墙钟无关，新手势静默 >250ms 后从零冷启动；Windows 实现见 `desktop/windows/src/encoder_speed.h`，macOS 见 `desktop/macos/Sources/VoiceStickApp/EncoderRotateSpeedEstimator.swift`），平滑估计 ≥ 阈值判为快速手势，改注快速档按键（默认 cw=`pagedown` / ccw=`pageup`，慢速逐行、快速翻页）；一次快速手势只注入一次并进入停转锁定，锁定期间屏蔽所有旋转输出（含减速段慢速事件与换向事件），直到静默 >250ms 判定停稳才恢复识别；快速档按键非法时回退普通按键。Windows 设备级对话框中阈值为滑杆（范围 100–300，超出范围的配置值显示时钳制）；macOS 对话框为编辑框。
   - `encoder_rotate_decide_window_ms`（80）：慢速注入延迟判定窗（0 = 立即注入）。慢速事件先挂起累计，窗内判快则整段丢弃（消除快甩加速段误注入），到期由 30ms 定时器驱动的 `EncoderRotateTick()` 冲刷补注；慢转因此有 ≤80ms 注入延迟、连续慢转按窗成批注入、总量不变。仅 config.toml 高级项，不进对话框。
   - `encoder_rotate_cw_fast_key` / `encoder_rotate_ccw_fast_key`：快速档 cw/ccw 按键（默认 `pagedown`/`pageup`）。
   - `encoder_led_color`：编码器录音灯颜色（red/green/blue/yellow/purple/cyan/white/off），BLE 下发固件 NVS 持久化。
@@ -59,11 +69,11 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
 
 - **UI 入口**：编码器设置已从「设置」对话框移除，改为从托盘设备子菜单的「编码器设置…」（Encoder settings...）打开**设备级对话框**，仅当设备 `encoder_present`（固件上报 MiniEncoderC 探测成功）时显示该菜单项。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。
 
-以上编码器设置项仅 Windows 端消费。
+以上编码器设置项 Windows 与 macOS 两端均消费：连接与配置更新时向已连接 StickS3 逐台单播有效设置（`encoder_led_color`/`encoder_recording_gate` 经 control_rx 下发固件），旋转注入、快慢分档与判定窗逻辑两端一致。
 
-- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等）。其中 `air_mouse_sensitivity_x/y`（左右/上下灵敏度档 1~10）为**设备级覆盖**字段，详见下方「设备交互配置」；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍为全局唯一值，完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
+- `air_mouse_*`：体感鼠标参数（`air_mouse_sensitivity_x/y`、`air_mouse_tau`、`air_mouse_invert_y`、`air_mouse_curve_*`、`air_mouse_control_mode`、`air_mouse_rate_*` 等），v2.4.7 起 **Windows 与 macOS 两端均消费**（macOS 运动学自 Windows `air_mouse_kin` 逐行移植，配置键同名同默认值、文件跨端通用；两端入口差异：Windows 入口自 v2.3.x 起隐藏，macOS 在托盘设备子菜单「体感鼠标」开关）。其中 `air_mouse_sensitivity_x/y`（左右/上下灵敏度档 1~10）为**设备级覆盖**字段，详见下方「设备交互配置」；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍为全局唯一值，完整字段见 `desktop/macos/Config/config.example.toml` 与 `desktop/windows/src/app_config.cc`。
 
-### 设备交互配置（仅 Windows 消费）
+### 设备交互配置（Windows + macOS）
 
 设备交互设置（IMU 唤醒灵敏度、敲击映射方向键、敲击灵敏度、体感鼠标左右/上下灵敏度）为**全局默认 + 按设备覆盖**，结构镜像 `[device.<id>.output]` 与 `[device.<id>.encoder]`：
 
@@ -79,17 +89,20 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   air_mouse_sensitivity_y = 6
   ```
 
-- **UI 入口**：设备交互设置已从「设置」对话框移除，改为从托盘设备子菜单的「设备交互设置…」（Device interaction settings...）打开**设备级对话框**（所有设备都显示该菜单项）。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。连接时与配置更新时，协调器对所有已连接设备逐台单播其有效交互设置（无覆盖设备收到全局默认）。
-- **体感鼠标热调参**：托盘「体感鼠标调参」打开非模态窗口，标题带设备 ID，按**当前激活设备**调参。其中的左右/上下灵敏度滑杆写入该设备的 `[device.<id>.interaction]` 覆盖；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍写全局 `config.toml`。
+- **UI 入口**：设备交互设置已从「设置」对话框移除，改为从托盘设备子菜单的「设备交互设置…」（Device interaction settings...）打开**设备级对话框**（仅 StickS3 显示该菜单项，两端一致；小米遥控器无 IMU/编码器硬件）。对话框「恢复默认」按钮等同于清除该设备覆盖、回落全局默认。连接时与配置更新时，协调器对所有已连接 StickS3 逐台单播其有效交互设置（无覆盖设备收到全局默认；Windows 与 macOS 均如此）。
+- **体感鼠标热调参**（仅 Windows；macOS 无体感鼠标）：托盘「体感鼠标调参」打开非模态窗口，标题带设备 ID，按**当前激活设备**调参。其中的左右/上下灵敏度滑杆写入该设备的 `[device.<id>.interaction]` 覆盖；其余进阶参数（`tau`/`invert_y`/`curve_*`/`control_mode`/`rate_*`/`neutral_deadzone`）仍写全局 `config.toml`。
 
-### 小米遥控器配置（仅 Windows 消费）
+### 小米遥控器配置（Windows + macOS 双端消费）
 
 小米蓝牙遥控器 2 Pro（ATVV 协议）相关配置。设备 ID 形如 `RC-XXXX`（4 位大写 hex，与 StickS3 的 `VS-XXXX` 双前缀并存；内部存储与 `[device.<id>.*]` 表键均用去前缀的 4 位 hex，如 `[device.3A7F.xiaomi]`），ID 由 BLE 地址低 16 位分配，名称白名单/`RC-` 前缀识别见 `BleProtocol::DeviceClassFromName`。
 
-- `xiaomi_suppress_f5`（bool，默认 `true`）：全局 F5 抑制开关。遥控器语音键按下时 Windows 会收到附带的 F5 按键（HID 副作用）；开启后桌面端用低级键盘钩子（`WH_KEYBOARD_LL`）在「80ms 窗内有 ATVV MIC_OPEN」时吞掉该 F5。
+- `xiaomi_suppress_f5`（bool，默认 `true`）：全局 F5 抑制开关。遥控器语音键按下时系统会收到附带的 F5 按键（HID 副作用）；开启后桌面端吞掉该 F5（Windows 低级键盘钩子 / macOS CGEvent tap）。
 - **按设备覆盖**：`[device.<id>.xiaomi]` 表，结构镜像 `[device.<id>.output]`。未写的字段回落 `default_xiaomi_settings` 结构默认值；仅写入与默认不同的覆盖（相等则不落盘）。字段：
-  - `gain_db`（double，默认 `12.0`）：ADPCM 解码后增益（dB），±24 dB 限幅在消费侧（`PcmPostprocessor`）完成。
+  - `gain_db`（double，默认 `12.0`）：ADPCM 解码后固定预增益（dB），±24 dB 限幅在消费侧（`PcmPostprocessor`）完成；语义为 HPF 之后、AGC 之前的固定增益。
   - `double_click_ms`（int >0，默认 `350`）：语音键双击判定窗（毫秒），镜像固件 `DOUBLE_CLICK_WINDOW_MS` 语义；非正值忽略并保留默认值。「遥控器设置…」UI 对话框将其限制在 200~600ms（越界 clamp）；手写配置 >0 均接受。
+  - `hid_tap_enabled`（bool，默认 `false`）：**增强按键识别**（usage tap）。启用 `back`/`volume_up`/`volume_down` 三键——这三键走厂商页 0xFF00 HID 报告，被 Windows HidOverGatt 蓝牙栈在翻译层丢弃，系统输入链路收不到。链路 = 特权注入器把只读探针 DLL 注入系统 HID 宿主（WUDFHost），经命名管道回传原始报文，桌面端直触发注入映射。涉及 UAC 管理员授权（遥控器重连/宿主重启后需重新授权），默认关闭，在「按键映射…」对话框开关（即时生效并保存）。设计见 `Doc/Plan/xiaomi-remote-usage-tap.md`。
+  - `hpf`（bool，默认 `true`）：直连桌面链路 120Hz 二阶 Butterworth 高通滤波（去 20–150Hz 爆破音，避免固定增益把低频推进 int16 饱和削波；2026-10-14 由 90Hz 上调）。
+  - `agc`（bool，默认 `true`）：直连桌面链路软件 AGC（-12dBFS 目标、+12dB 上限、-45dBFS 噪声门、快下慢上、0.8FS 瞬时限幅；2026-10-14 由 -6dBFS/+20dB 收紧），与固件链路算法一致。`hpf = false` + `agc = false` 即回滚旧行为（平滑+固定增益）。
 
   示例：
 
@@ -97,4 +110,100 @@ MiniEncoderC 编码器配置为**全局默认 + 按设备覆盖**，结构镜像
   [device.3A7F.xiaomi]
   gain_db = 18.0
   double_click_ms = 400
+  hid_tap_enabled = true   # 增强按键识别（返回/音量键）
+  hpf = true               # 120Hz 高通去爆破音
+  agc = true               # 自动增益控制
   ```
+
+- **按键映射**（Windows，2026-09 起）：`[xiaomi.keys]` 全局默认表 + `[device.<id>.xiaomi.keys]` 按设备覆盖表，键为 12 个可映射按钮 ID（`power`/`up`/`left`/`ok`/`right`/`down`/`back`/`volume_up`/`home`/`volume_down`/`menu`/`tv`；语音键 `mic` 不参与映射），值为 key_spec 快捷键语法（同热键语法，如 `backspace`、`ctrl+shift+v`，见 `key_spec.h`）。空串显式取消该键映射。设备覆盖与全局默认相同的条目不落盘。消费端为 Windows 端 LL 钩子拦截 + Raw Input VID/PID 佐证 + SendInput 注入（设计见 `Doc/Plan/xiaomi-keymap-consumer.md`），未映射的键保持系统原生行为。托盘「按键映射…」对话框编辑（仅对已配对小米遥控器显示）。同型号多台遥控器无法按设备区分时，映射取活跃设备的有效值。
+
+  示例：
+
+  ```toml
+  [xiaomi.keys]
+  back = "backspace"        # 返回键 → 退格删除
+
+  [device.3A7F.xiaomi.keys]
+  home = "win+d"            # 该设备主页键 → 显示桌面
+  menu = ""                 # 该设备菜单键显式取消映射
+  ```
+
+- **按键映射（macOS）**：根 `[buttons]` 全局默认表（2026-10-12 起，网关模式写入目标，
+  语义对齐 Windows `[xiaomi.keys]`）+ `[device.<id>.buttons]` 按设备覆盖表（直连小米
+  遥控器的设备级覆盖优先；无覆盖回落全局）。`intercept` 为 HID 拦截总开关（B 级键生效
+  前提，默认 `false`，仅直连 RC 消费）；`keys` 子表键为 12 个按钮 ID（同 Windows 键表，
+  另含 `voice_double_click` 语音键双击，A 级、不受 `intercept` 门控），值为 KeySpec
+  快捷键语法（action=key）或 `"none"`（action=disabled）；未写出的键回落原生。加载时
+  KeySpec 非法的条目忽略并回落原生；与默认一致的表不落盘。**长按连发节拍**：
+  `repeat_delay_ms`（默认 300，区间 [100,1000]，越界回落默认）与 `repeat_interval_ms`
+  （默认 80，区间 [30,500]）——除语音键外的映射键按住时首发后按该节拍重复注入直至
+  抬起，对齐系统键盘自动重复；直连路径消费 inject 动作（macOS HID 拦截层），网关
+  `gateway_key` 沿 key/native 动作皆连发（disabled 除外）；`voice_double_click`
+  （ATVV 层）不适用。消费端：B 级键走
+  `XiaomiButtonInterceptManager`（IOHID 观察 + CGEvent tap 吞除 + `sendKeyCombo` 注入）；
+  `voice_double_click` 走 ATVV 会话合成的 `button_double_click`（协调器按映射处置）；
+  **网关模式**（遥控器配对在 StickS3、桌面端无 RC 条目）下，该表同时是
+  `gateway_keymap_set` 路由推导与 `gateway_key` 注入的取值源。**2026-10-12 路由语义
+  修正（macOS）**：可映射键一律推 `software`——key/disabled
+  由映射注入/吞键，native 由桌面按 `GatewaySupport.naturalSpec` 注入等价自然键
+  （方向/回车/退格/Home/音量±；menu/tv 无桌面等价语义，日志提示去对话框配置）；
+  **2026-10-19 power 开放映射**（原 C 级"不可拦截"定案撤销，macOS 补齐 Windows
+  12 键全集）：直连模式 `power` 与其他 B 级键同路径（需 `intercept`），自定义/禁用后
+  桌面吞掉系统原生电源事件（macOS 上该事件为 systemDefined 双形态——subtype 1
+  首事件 + aux-control subtype 8 的 `NX_POWER_KEY(6)` down/up 对，吞除用 300ms
+  非消耗窗口 + down/up 闩锁，见 `XiaomiButtonInterceptManager`）；未映射时保持
+  系统原生电源语义（按电源键可能触发睡眠/关机对话框）。网关路由分派：
+  power 有映射（key/disabled）→ `software` 由 `gateway_key` 消费，native →
+  `passthrough`（无桌面等价语义，对齐 Windows `PushGatewayKeymapRoutesFor` 的
+  has_mapping 口径；macOS 系统 HID 会话不可用，passthrough 当前等价死键）；
+  桌面无映射面的 `volume_mute` 保持 `passthrough`。
+  托盘设备菜单「按键映射…」对话框：小米设备项编辑设备覆盖，StickS3 设备项（网关入口）
+  编辑根 `[buttons]` 全局表；对话框为遥控器照片热区交互（点图选键，对齐 Windows
+  XiaomiKeymapDialog，照片资源 `Sources/VoiceStickApp/Resources/xiaomi_remote_2pro.png`
+  经 SwiftPM 资源声明随构建产物携带，发布打包再拷入 .app/Contents/Resources）。
+
+  ```toml
+  [buttons]                 # 网关模式全局默认（无 RC 条目时的路由/消费取值源）
+  repeat_delay_ms = 300     # 长按连发首次延迟（ms，默认 300）
+  repeat_interval_ms = 80   # 长按连发重复间隔（ms，默认 80）
+  [buttons.keys]
+  power = "f1"               # 电源键 → F1（自定义后桌面吞掉系统电源事件，2026-10-19 开放）
+  back = "alt+left"          # 返回键 → Option+左方向
+  volume_up = "none"         # 禁用音量+
+
+  [device.3A7F.buttons]
+  intercept = true
+
+  [device.3A7F.buttons.keys]
+  voice_double_click = "cmd+t"  # 语音键双击 → Command+T
+  ```
+
+**补录（2026-10-08 r107 三面盘点）**：以下字段见于 `desktop/macos/Config/config.example.toml` 而本文此前未收录；语义按 example 内联注释与两端实现对齐补录。
+
+- `resource_id`：火山方舟 SeedASR 资源 ID（随识别请求携带的资源标识，如 `volc.seedasr.sauc.duration`）。
+- `auto_enter`（默认 `true`）：文本粘贴完成后追加一次回车（pending-paste 收尾语义，两端一致）。
+
+- `[voice_edit]` 语音编辑指令（Doc/Plan/voice-edit-commands.md；默认开启，macOS + Windows 同字段同默认）：说完话后再说一句编辑指令，由桌面端在 ASR final 后本地整句白名单解析（零额外延迟、不依赖云端 LLM），删除最近一次语音注入到 `focused_app` 的文本尾部。字段：`enabled`（默认 `true`；false = 指令按普通文本上屏）、`default_chars`（默认 `1`，单独说"删除/删掉/去掉"时删除的字数，1..10）、`max_chars`（默认 `20`，单条指令允许删除的最大字数，1..50；超限按普通文本处理）、`scope_seconds`（默认 `120`，只允许删除最近 N 秒内的注入，10..600）、`verify_mode`（默认 `auto`：可读焦点字段/光标时必须校验；`strict` 不可验证一律拒绝；`off` 不校验仅排障）、`unverified_seconds`（默认 `8`，auto 模式下不可验证时的允许窗口，0..30）。仅对最近一次语音注入、且光标仍在该文本末尾的 `focused_app` 文本生效；字幕/微信输入法模式不支持；校验失败安全拒绝并提示。设置页「语音编辑」区块只暴露 `enabled` 与 `default_chars`，其余字段手编。
+  - targeted 目标词本地对齐兜底（2026-10-28 起，**仅 macOS，默认关**；Windows 待同构）：`local_align_enabled`（默认 `false`）、`local_align_model`（对齐档 GGUF 路径覆盖，空=默认 1.5B 档 `<models_dir>/Qwen2.5-1.5B-Instruct-Q4_K_M/`）、`local_align_timeout_ms`（默认 `3000`，500..10000）。**2026-10-29 起推理走内嵌 llama.cpp 引擎**（不再依赖 Ollama）：`local_align_url` 已废弃（仅保留解析兼容不写出）。设置入口在「语音编辑」区块（开关勾选后显示 1.5B 模型状态行）。评测见 `Doc/Test/local-llm-target-alignment-eval-2026-10-28.md` 与 `local-fullstack-eval-2026-10-28.md` §9。自然简写门控未命中（ASR 把目标词听漂）时：拼音预筛候选（恒为最近注入真实子串）→ 本地模型枚举约束挑选 → 命中则按原 verified 选区/读回/终验链执行；NONE/失败/超时一律回退普通文本。
+  - targeted 词/短语删除与替换（vNext，同 `[voice_edit].enabled` 开关，无新字段）：支持「删除刚才的北京」/「把刚才的北京改成上海」等显式作用域句式，以及「删除北京」/「把北京改成上海」自然简写，删除/替换**最近一次注入文本中**的指定词；自然简写仅在最近注入确实存在目标时接管，无匹配时按普通文本上屏（目标 ≤32、替换 ≤64 graphemes 双端硬上限，独立于 `max_chars`）。与旧尾部删除不同：targeted 动作**任何 `verify_mode`（含 `off`）下都必须 verified**——读不到字段/光标一律拒绝，不存在 unverified 盲改窗口；L1 要求完整剩余注入文本仍是字段后缀（不用旧「最长前缀」容错），选区读回逐字确认后才执行一次 Backspace 或 `pressEnter=false` 粘贴，执行后恢复光标到字段末尾并终验，失败使注入记录失效。空目标/空替换/多替换分隔符/否定式等异常语法只提示不修改。
+- `debug_audio_cache`（默认 `false`）：录音调试缓存开关——开启后会话 PCM 落盘留档供回放排查（目录由 `debug_audio_directory` 配置；仅诊断用，发布默认关）。
+- `audio_noise_suppression`（默认 `false`，macOS + Windows 双端）：ASR 前桌面端 RNNoise 人声增强/降噪——Opus 解码（上采样 48kHz）→ RNNoise → 重编码回 16kHz 再送 ASR，抑制环境底噪与部分喷麦残留；增加约 10ms 处理时延，处理失败自动回退透传。PoC 阶段仅覆盖主输入路径（字幕路径不覆盖）。
+- `device_theme_colors`：按设备覆盖的悬浮窗主题色映射 CSV（空=跟随全局主题；设置页「悬浮窗」写入）。
+- `device_overlay_positions`：按设备覆盖的悬浮窗位置映射 CSV（空=跟随默认位置；同上）。
+- `translation_target`（默认 `en`）：`[output].transform = translate` 时 LLM 翻译的目标语言代码。
+- `air_mouse_neutral_deadzone`（默认 `3.0`，区间 [1, 10]）：体感鼠标方向锁中立区死区。
+- `air_mouse_rate_gain`（默认 `80.0`，区间 [10, 500]）：rate 模式 θ→加速度增益。
+- `air_mouse_rate_friction`（默认 `0.05`，区间 [0, 0.5]）：rate 模式速度摩擦系数（单位 1/s）。
+- `air_mouse_rate_max_speed`（默认 `4000.0`，区间 [500, 8000]）：rate 模式速度上限（像素/秒）。
+- `air_mouse_curve_low_thresh`（默认 `100.0`）/ `air_mouse_curve_high_thresh`（默认 `333.0`）：sigmoid 增益曲线特征点（单位=固件缩放角速率 dps×4）。
+- `air_mouse_curve_low_factor`（默认 `0.25`）：低速段相对增益（精准对位）。
+- `air_mouse_curve_high_factor`（默认 `4.0`）：高速段相对增益（跨屏甩动）。
+
+**补录（2026-10-08 r112 双模板对账续·文档侧）**：以下 template 键本文此前零现（4 个跨平台键同 r111 已补 example、3 个 Windows 侧键、2 个兼容别名）。
+
+- `launch_at_login`（默认 `true`）：开机自启动（设置页可切，macOS 与 Windows 同义；Windows 走 HKCU Run 键同步）。
+- `global_hotkey_enabled`（默认 `true`）/ `global_hotkey`（默认 `Alt+X`）：全局热键开关与组合键（托盘菜单「热键」子菜单可设）。
+- `developer_mode`（默认 `false`）：开发者模式（解锁高级/诊断入口）。
+- `selection_hotword_enabled`（Windows，`hotword_process_enabled` 同族）：划词加词时 LLM 提炼热词的启用开关（与 `hotword_process_enabled` 配合，见上文热词处理节）。
+- `tencent_engine_model_type` / `tencent_hotword_id`：腾讯云 ASR 请求参数——引擎模型类型与热词表 ID（`tencent` 提供商在场时随识别请求携带）。
+- `output_target` / `text_transform`：Windows 兼容平表别名（与 `[output].target` / `[output].transform` 等义；新配置一律用 `[output]` 正典形态，见上文输出节）。

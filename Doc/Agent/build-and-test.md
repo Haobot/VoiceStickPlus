@@ -43,7 +43,22 @@ SPARKLE_PUBLIC_ED_KEY="..." scripts/build-macos.sh --release
 scripts/make-dmg.sh
 ```
 
-macOS 端目前没有专用测试目标，无法运行单个测试；验证方式主要是 `swift build` 编译通过和运行时手动测试。
+`build-macos.sh` 签名身份自动选择，优先级递减：
+
+1. **Developer ID Application**（发布机，带 `--options runtime`）；
+2. **本地自签证书**（默认 CN `"VoiceStick Local Code Signing"`，可用 `VOICESTICK_DEV_IDENTITY` 覆盖）：开发构建用它固定 TCC 身份，蓝牙/输入监控/辅助功能授权一次即可跨编译保持；pem 源在 `~/.voicestick-sign/`，生成与排障见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md`；
+3. **ad-hoc**：无证书时回退，每次编译 cdhash 变化，TCC 权限失效需重新授权。
+
+架构与工具链注意：默认产出 universal（`arm64 x86_64`），可用 `VOICESTICK_ARCHS` 覆盖（如 `VOICESTICK_ARCHS=arm64`）。**本机 CLT（macOS 27 SDK）的 Swift 兼容静态库（libswiftCompatibility56/Packs.a）已不含 x86_64 slice，x86_64 可执行文件链接必失败**——本机开发构建一律 `VOICESTICK_ARCHS=arm64`；universal 发布包需在发布机（有 Xcode 或旧 SDK）构建。另：SwiftPM 拉 GitHub 依赖需代理（直连不通），见上方「给 Agent 的提示」的代理说明。
+
+macOS 端测试用 executable runner（非 XCTest——本机 CLT-only 无 Xcode，`swift test` 不可用）：
+
+```sh
+cd desktop/macos
+swift run VoiceStickTests   # VoiceStickCore 纯逻辑断言（含 ATVV golden fixtures 回放、Opus 回环），全过 exit 0
+```
+
+runner 覆盖 VoiceStickCore（ATVV 协议/ADPCM/后处理/Opus/会话状态机/设备 ID 辅助），不覆盖 AppConfig 与 app 层；app 层仍以 `swift build` 编译通过 + 运行时手动测试为准。
 
 ### Windows 桌面端（CMake + Ninja + MSVC 2022 x64）
 
@@ -78,6 +93,8 @@ ctest --test-dir desktop\windows\build-x64 --output-on-failure -R voicestick_win
 
 `voicestick_windows_tests` 基于 `assert`，目前不支持按测试函数名过滤；新增核心测试时把 `Test...()` 函数加入 `desktop/windows/tests/core_tests.cc` 的 `main()`。`-R voicestick_integration_tests` 单独跑集成测试，需联网与 `volcengine_api_key`，无 key 时该测试返回 77 被 CTest 标记为 SKIP。
 
+⚠️ 集成测试会**写用户 config.toml**：`integration_tests.cc` 直接 `AppConfig::Load()` 用户文件，加载路径中 `MaybeRecoverTencentSecretId` 命中迁移或新增序列化字段时会 `Save()` 回写（2026-09-11 实证：跑集成测试把 `session_model` 行补写进了用户配置）。排查「配置莫名变化」时先对时间戳与测试运行时刻；根治需给集成测试换独立临时配置路径，尚未做。
+
 运行应用：
 
 ```powershell
@@ -92,7 +109,7 @@ scripts\build-msi.bat
 
 该脚本在 WiX 构建前自动调用 `scripts\prepare_flash_payload.ps1` 准备 VoiceStickFlash 的自包含 esptool payload（`build-msi-x64\flash_payload\`，gitignored 构建产物），并随 MSI 安装到 `INSTALLFOLDER\FlashTool\`（exe 本体装到 `INSTALLFOLDER\VoiceStickFlash.exe`）。脚本还会用 `extract_builtin_key.ps1` 输出 7 项内置凭据环境变量供 cmake 注入，并调用 `generate_msi_config.ps1` 生成含 key 的 MSI config 产物。
 
-注意：`build_native.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。
+注意：`build_win.bat`、`do_build.bat`、`desktop\windows\build.bat` 包含本机绝对路径或固定版本号，复用前必须先检查内容；根目录 `test.bat` 目前只是占位脚本，不运行 CTest。仓库根目录散落的 `*.log` 与 `%BUILD_LOG%` 等文件是历次本地构建的残留日志，不是源码。
 
 ### 网站（Vue 3 + Vite，Node 22）
 
@@ -109,7 +126,9 @@ npm run preview  # 预览生产构建
 ## 测试策略
 
 - **Windows**：`desktop/windows/tests/core_tests.cc` 使用自定义 Fake/Mock 对 `voicestick_core` 中的状态机、配置解析、协议编解码、Ogg Opus mux 等进行单元测试（不联网）。`desktop/windows/tests/integration_tests.cc` 是 L1 ASR 链路集成测试，连真实火山 ASR，无 key 时返回 77 被 CTest 标记为 SKIP。运行命令：`ctest --test-dir desktop/windows/build-x64 --output-on-failure`。
-- **macOS**：目前没有专用测试目标。验证方式主要是 `swift build` 编译通过和运行时手动测试。
+- **macOS**：`swift run VoiceStickTests`（desktop/macos/Tests/VoiceStickTests/，executable 测试 runner，非 XCTest——本机 CLT-only 无 Xcode）覆盖 VoiceStickCore 纯逻辑（ATVV 协议/ADPCM golden 对拍/Opus 回环/会话状态机），全过 exit 0；app 层无自动化测试，靠 `swift build` + 手动测试。
+- **协调器事件链测试范式**（r116-r119 四链沉淀，`Tests/VoiceStickTests/CoordinatorFsmTests.swift`）：统一走「公共注册 API `start()` 装配 ble 闭包 → 测试直调 fake 捕获的闭包（真回调形态）→ 协调器内部处理 → FakeStatusSink 记录数组 / 协调器公共出口闭包可观察 → `fsmSnapshot` 一致性兜底」。已覆盖四链：连接链（+4，连接即 Ready 与交互模式下发）、状态链（+3，device_info 落固件字典）、电量透传链（+3，base64 负载保真）、电源链（+3）。扩展三坑：① ble 闭包只在 `start()` 装配（非 init）；② StateEvent 等 JSON 键走 CodingKeys snake_case（firmware_version）；③ public struct 成员构造跨模块为 internal——要么 JSONDecoder 构造，要么 Core 补一行 public init（PowerMgmtEvent 先例）。按键/字幕链需 pairing 前置，成本升档、暂不扩。**Windows 镜像（r121-r123 已闭）**：§core_tests_coordinator.cc§ 三链同范式（连接=二轮绿、电量/电源=首轮绿；device_id 由 BLE 层直传故无映射步、状态 device_info 走既有 coordinator3 覆盖防重），C++ 侧扩展要点=raw 指针保留 + chr 法造 printf 转义 + RunCoordinatorBatchTests 注册。
 - **固件**：没有自动化单元测试。验证方式是 `idf.py build` 编译通过和真机运行时测试。
 - **网站**：没有自动化测试。验证方式是 `npm run build` 构建通过。
+- **Script（发布链脚本）**：`scripts/test_*.py` 共 7 个——CI `script-tests` job 跑其中 5 个（scan_release_artifacts / update_appcast / mirror_urls / update_downloads / cos_scripts）+ `test_release_guard.py`（单测 30 例：backlog 结构、protocol-events、control-frame-schema、i18n 占位符等 13 检查族）+ `release_guard.py` 本体（`release-guard` job，13 检查）；`test_publish_cos.py` 为发布机本地档不入 CI。本地等价命令：`python3 -m unittest scripts.test_release_guard` 与 `python3 scripts/release_guard.py`。
 - **Python E2E 真机验证**：`scripts/e2e_test/` 是跨固件+Windows 端到端的半自动验证工具链（L0 语料、L3 固件回放、L4 微信输入法、ASR/热词离线评测、功耗记账导出），用真实 BLE 连接与真实 ASR/音频链路，不伪造结果。各工具用法与评测结论索引见 `Doc/Ref/e2e-test-toolchain.md`；依赖 `bleak` / `numpy` / `sounddevice`，**未列入根目录 `requirements.txt`**（该文件只含 `pyyaml` / `pyserial` / `Pillow`），运行前需另行 `pip install`；设计文档见 `Doc/Plan/windows-e2e-test-plan.md` 与 `Doc/Plan/windows-e2e-next-steps.md`。小米遥控器另有 ATVV 工具组：`atvv_capture.py`（真机 golden 采集）、`atvv_bench.py`（golden 会话离线 ASR 评测，裸 PCM 直送）、`atvv_probe.py`（会话延迟/尾包时延/长连接静置探针）；golden fixtures 接入 C++ 单测（`TestImaAdpcmDecoderGoldenFixtures` 扫描 `scripts/e2e_test/fixtures/xiaomi/**` 逐样本对拍，无 fixtures 打印 SKIP 不算失败）与集成测试回放，其中 `fixtures/xiaomi/demo_synthetic/` 入库作冒烟资产、真机采集目录 gitignore（详见 `Doc/Ref/e2e-test-toolchain.md`）。

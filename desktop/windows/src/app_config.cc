@@ -461,6 +461,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
     if (key == "launch_at_login") config.launch_at_login = BoolValue(value, config.launch_at_login);
     if (key == "selection_hotword_enabled") config.selection_hotword_enabled = BoolValue(value, config.selection_hotword_enabled);
     if (key == "debug_audio_cache") config.debug_audio_cache = BoolValue(value, config.debug_audio_cache);
+    if (key == "audio_noise_suppression") config.audio_noise_suppression = BoolValue(value, config.audio_noise_suppression);
     if (key == "developer_mode") config.developer_mode = BoolValue(value, config.developer_mode);
     if (key == "debug_audio_dir" && !value.empty()) config.debug_audio_directory = std::filesystem::path(Utf16FromUtf8(value));
     if (key == "paired_device") {
@@ -562,6 +563,9 @@ XiaomiSettings ParseXiaomiSettings(const toml::table& table, const XiaomiSetting
     XiaomiSettings settings = fallback;
     if (auto value = TomlDouble(table, "gain_db")) settings.gain_db = *value;
     if (auto value = TomlInt(table, "double_click_ms"); value && *value > 0) settings.double_click_ms = static_cast<int>(*value);
+    if (auto value = TomlBool(table, "hid_tap_enabled")) settings.hid_tap_enabled = *value;
+    if (auto value = TomlBool(table, "hpf")) settings.hpf = *value;
+    if (auto value = TomlBool(table, "agc")) settings.agc = *value;
     if (const auto* keys = table["keys"].as_table()) {
         settings.key_map = ParseXiaomiKeyMap(*keys, settings.key_map);
     }
@@ -611,6 +615,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
 
     try {
         auto table = toml::parse(input, path.native());
+        // 立即关闭读句柄：下方迁移回写会 Save 到同一路径，原子替换（MoveFileEx）
+        // 要求目标无占用句柄，自持读句柄会 ERROR_ACCESS_DENIED（B9，CI 实锤）。
+        input.close();
         bool needs_wechat_trigger_migration_save = false;
 
         if (auto value = TomlString(table, "asr_provider")) config.asr_provider = AsrProviderFromName(*value);
@@ -710,6 +717,85 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 config.interaction_mode = InteractionMode::kHoldToTalk;
                 needs_wechat_trigger_migration_save = true;
             }
+            if (auto value = TomlString(*wechat, "session_model")) {
+                config.wechat_input_method.session_model = InteractionModeFromName(*value);
+            }
+            // 未配置保持 nullopt：运行时经 EffectiveSessionModel() 按 trigger_mode
+            // 推导（click_to_talk→click 保持 Typeless 现状；方案 A 用户显式配
+            // session_model = "hold_to_talk" 覆盖）。
+        }
+        // [local_asr]：本机麦克风模式（local-mic 会话 + SenseVoice 本地识别）。
+        if (const auto* local_asr = table["local_asr"].as_table()) {
+            if (auto value = TomlBool(*local_asr, "enabled")) {
+                config.local_asr.enabled = *value;
+            }
+            if (auto value = TomlString(*local_asr, "models_dir")) {
+                config.local_asr.models_dir = *value;
+            }
+            if (auto value = TomlString(*local_asr, "push_to_talk_key")) {
+                config.local_asr.push_to_talk_key = Trim(*value);
+            }
+            if (auto value = TomlBool(*local_asr, "refine_enabled")) {
+                config.local_asr.refine_enabled = *value;
+            }
+            if (auto value = TomlString(*local_asr, "refine_model")) {
+                config.local_asr.refine_model = Trim(*value);
+            }
+            if (auto value = TomlInt(*local_asr, "refine_num_threads")) {
+                if (*value >= 1 && *value <= 32) {
+                    config.local_asr.refine_num_threads = *value;
+                }
+            }
+            if (auto value = TomlString(*local_asr, "refine_prompt")) {
+                config.local_asr.refine_prompt = *value;  // 多行不 Trim
+            }
+            if (auto value = TomlBool(*local_asr, "refine_cross_turn")) {
+                config.local_asr.refine_cross_turn = *value;
+            }
+        }
+        // [license]：离线授权（串码激活 + 试用锚点 + 防回拨 last_seen）。
+        // 串码是密文签名，落盘无妨；不敏感之外的内容不落盘。
+        if (const auto* license = table["license"].as_table()) {
+            if (auto value = TomlString(*license, "serial")) {
+                config.license.serial = Trim(*value);
+            }
+            if (auto value = TomlInt(*license, "trial_anchor_days")) {
+                if (*value >= 0) {
+                    config.license.trial_anchor_days = static_cast<std::uint32_t>(*value);
+                }
+            }
+            if (auto value = TomlInt(*license, "last_seen_days")) {
+                if (*value >= 0) {
+                    config.license.last_seen_days = static_cast<std::uint32_t>(*value);
+                }
+            }
+        }
+        // [voice_edit]：语音编辑指令（Doc/Plan/voice-edit-commands.md）。默认开启；
+        // 数值越界钳位到合法区间（与设置 UI/文档一致），verify_mode 未知值回落 auto。
+        if (const auto* voice_edit = table["voice_edit"].as_table()) {
+            if (auto value = TomlBool(*voice_edit, "enabled")) {
+                config.voice_edit.enabled = *value;
+            }
+            if (auto value = TomlInt(*voice_edit, "default_chars")) {
+                config.voice_edit.default_chars =
+                    std::clamp(*value, kVoiceEditDefaultCharsMin, kVoiceEditDefaultCharsMax);
+            }
+            if (auto value = TomlInt(*voice_edit, "max_chars")) {
+                config.voice_edit.max_chars =
+                    std::clamp(*value, kVoiceEditMaxCharsMin, kVoiceEditMaxCharsMax);
+            }
+            if (auto value = TomlInt(*voice_edit, "scope_seconds")) {
+                config.voice_edit.scope_seconds =
+                    std::clamp(*value, kVoiceEditScopeSecondsMin, kVoiceEditScopeSecondsMax);
+            }
+            if (auto value = TomlString(*voice_edit, "verify_mode")) {
+                config.voice_edit.verify_mode =
+                    VoiceEditVerifyModeFromName(Trim(*value), config.voice_edit.verify_mode);
+            }
+            if (auto value = TomlInt(*voice_edit, "unverified_seconds")) {
+                config.voice_edit.unverified_seconds = std::clamp(
+                    *value, kVoiceEditUnverifiedSecondsMin, kVoiceEditUnverifiedSecondsMax);
+            }
         }
         // 顶层 [hotword_corrections]：热词纠错映射（错误文本 -> 正确文本）。
         if (const auto* corrections = table["hotword_corrections"].as_table()) {
@@ -776,6 +862,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlString(table, "global_hotkey")) config.global_hotkey = *value;
         if (auto value = TomlBool(table, "show_imu_debug")) config.show_imu_debug = *value;
         if (auto value = TomlBool(table, "xiaomi_suppress_f5")) config.xiaomi_suppress_f5 = *value;
+        if (auto value = TomlInt(table, "xiaomi_gateway_repeat_interval_ms")) config.xiaomi_gateway_repeat_interval_ms = *value;
         if (auto value = TomlString(table, "imu_wake_sensitivity")) config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivityFromName(*value);
         if (auto value = TomlBool(table, "tap_to_arrow")) config.default_interaction_settings.tap_to_arrow = *value;
         if (auto value = TomlBool(table, "encoder_to_arrow")) config.default_encoder_settings.to_arrow = *value;
@@ -808,6 +895,7 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (auto value = TomlBool(table, "launch_at_login")) config.launch_at_login = *value;
         if (auto value = TomlBool(table, "selection_hotword_enabled")) config.selection_hotword_enabled = *value;
         if (auto value = TomlBool(table, "debug_audio_cache")) config.debug_audio_cache = *value;
+        if (auto value = TomlBool(table, "audio_noise_suppression")) config.audio_noise_suppression = *value;
         if (auto value = TomlBool(table, "developer_mode")) config.developer_mode = *value;
         if (auto value = TomlString(table, "debug_audio_dir"); value && !value->empty()) {
             config.debug_audio_directory = std::filesystem::path(Utf16FromUtf8(*value));
@@ -860,6 +948,8 @@ void AppConfig::SavePreservingDiskCredentials(const std::filesystem::path& path)
     // 修复路径 A：程序运行时不重读 config.toml，运行时 Save 若用内存过期凭据会覆盖用户手改的 key。
     AppConfig disk = Load(path);
     AppConfig merged = *this;
+    // [license] 磁盘即权威（B9）：本对象是运行期副本，license 可能早于激活/锚点写入。
+    merged.license = disk.license;
     merged.voicestick_api_key = disk.voicestick_api_key;
     merged.voicestick_cloud_url = disk.voicestick_cloud_url;
     merged.volcengine_api_key = disk.volcengine_api_key;
@@ -895,6 +985,8 @@ void AppConfig::SaveSettingsDialog(const std::filesystem::path& path) const {
     }
     AppConfig disk = Load(path);
     AppConfig merged = *this;
+    // [license] 磁盘即权威（B9）：同 SavePreservingDiskCredentials。
+    merged.license = disk.license;
     // 内存值（用户刚输入的）优先；空字段用磁盘值兜底，避免内存过期空值覆盖磁盘 key。
     auto keep_memory_if_nonempty = [](const std::string& memory_value,
                                       const std::string& disk_value) {
@@ -926,11 +1018,23 @@ void AppConfig::SaveSettingsDialog(const std::filesystem::path& path) const {
 }
 
 void AppConfig::Save(const std::filesystem::path& path) const {
+    // [license] 语义（B9 定案）：Save 写**本对象**的 license——LicenseRuntime 经
+    // config_->Save() 持久化激活/锚点/last_seen，必须写内存值，故此处不做全局重取。
+    // 持有陈旧副本的保存方由各合并路径自行重取磁盘（SavePreservingDiskCredentials /
+    // SaveSettingsDialog / SavePairedDeviceInfo），谁的副本谁负责。
+    WriteTo(path);
+}
+
+void AppConfig::WriteTo(const std::filesystem::path& path) const {
     // create_directories 用 error_code 版本：目录已存在或创建失败都不抛，
     // 避免路径无效时抛 filesystem_error（ofstream 后续会兜底报错）。
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    std::ofstream output(path, std::ios::trunc);
+    // 原子写（B9）：先写同目录 .tmp，完整落盘后原子替换——崩溃/断电最多丢本次
+    // 修改，绝不产生半截 config.toml（原 trunc 直写窗口 = 数据丢失面）。
+    std::filesystem::path tmp = path;
+    tmp += ".tmp";
+    std::ofstream output(tmp, std::ios::trunc);
     if (!output) {
         throw std::runtime_error("failed to open config for writing");
     }
@@ -1019,6 +1123,7 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "launch_at_login = " << (launch_at_login ? "true" : "false") << "\n";
     output << "selection_hotword_enabled = " << (selection_hotword_enabled ? "true" : "false") << "\n";
     output << "debug_audio_cache = " << (debug_audio_cache ? "true" : "false") << "\n";
+    output << "audio_noise_suppression = " << (audio_noise_suppression ? "true" : "false") << "\n";
     output << "developer_mode = " << (developer_mode ? "true" : "false") << "\n";
     output << "debug_audio_dir = \"" << TomlEscape(Utf8FromUtf16(debug_audio_directory.wstring())) << "\"\n";
     if (!paired_devices.empty()) {
@@ -1061,10 +1166,44 @@ void AppConfig::Save(const std::filesystem::path& path) const {
     output << "hotkey_hold = \"" << TomlEscape(wechat_input_method.hotkey_hold) << "\"\n";
     output << "hotkey_click = \"" << TomlEscape(wechat_input_method.hotkey_click) << "\"\n";
     output << "trigger_mode = \"" << InteractionModeName(wechat_input_method.trigger_mode) << "\"\n";
+    output << "session_model = \"" << InteractionModeName(
+                   wechat_input_method.EffectiveSessionModel()) << "\"\n";
     output << "virtual_mic_playback_name = \"" << TomlEscape(wechat_input_method.virtual_mic_playback_name) << "\"\n";
     output << "virtual_mic_capture_name = \"" << TomlEscape(wechat_input_method.virtual_mic_capture_name) << "\"\n";
     output << "auto_switch_default_recording_device = "
            << (wechat_input_method.auto_switch_default_recording_device ? "true" : "false") << "\n";
+    output << "\n[local_asr]\n";
+    output << "enabled = " << (local_asr.enabled ? "true" : "false") << "\n";
+    output << "models_dir = \"" << TomlEscape(local_asr.models_dir) << "\"\n";
+    output << "push_to_talk_key = \"" << TomlEscape(local_asr.push_to_talk_key) << "\"\n";
+    output << "refine_enabled = " << (local_asr.refine_enabled ? "true" : "false") << "\n";
+    output << "refine_model = \"" << TomlEscape(local_asr.refine_model) << "\"\n";
+    output << "refine_num_threads = " << local_asr.refine_num_threads << "\n";
+    if (!local_asr.refine_prompt.empty()) {  // 空=内置默认，不落盘降噪
+        output << "refine_prompt = \"" << TomlEscape(local_asr.refine_prompt) << "\"\n";
+    }
+    if (local_asr.refine_cross_turn) {  // 默认关不落盘降噪
+        output << "refine_cross_turn = true\n";
+    }
+    // [voice_edit]：语音编辑指令。全字段落盘（含默认值），便于用户手改与排障；
+    // 注意 WriteTo 白名单——漏写即「设置保存后重启回默认」（xiaomi_gateway_repeat_interval_ms
+    // 的既有坑）。
+    output << "\n[voice_edit]\n";
+    output << "enabled = " << (voice_edit.enabled ? "true" : "false") << "\n";
+    output << "default_chars = " << voice_edit.default_chars << "\n";
+    output << "max_chars = " << voice_edit.max_chars << "\n";
+    output << "scope_seconds = " << voice_edit.scope_seconds << "\n";
+    output << "verify_mode = \""
+           << std::string(VoiceEditVerifyModeName(voice_edit.verify_mode)) << "\"\n";
+    output << "unverified_seconds = " << voice_edit.unverified_seconds << "\n";
+    output << "\n[license]\n";
+    output << "serial = \"" << TomlEscape(license.serial) << "\"\n";
+    if (license.trial_anchor_days) {  // 未锚定（试用未开始）不落盘
+        output << "trial_anchor_days = " << *license.trial_anchor_days << "\n";
+    }
+    if (license.last_seen_days) {  // 未写过不落盘
+        output << "last_seen_days = " << *license.last_seen_days << "\n";
+    }
     for (const auto& [device_id, profile] : device_output_profiles) {
         if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
             continue;
@@ -1124,10 +1263,13 @@ void AppConfig::Save(const std::filesystem::path& path) const {
         }
         // 与全局默认相同则跳过，不落盘冗余覆盖。
         if (settings == default_xiaomi_settings) continue;
-        // 覆盖表全量写出 2 个字段，保证表自含、加载顺序无关。
+        // 覆盖表全量写出 5 个字段，保证表自含、加载顺序无关。
         output << "\n[device." << device_id << ".xiaomi]\n";
         output << "gain_db = " << settings.gain_db << "\n";
         output << "double_click_ms = " << settings.double_click_ms << "\n";
+        output << "hid_tap_enabled = " << (settings.hid_tap_enabled ? "true" : "false") << "\n";
+        output << "hpf = " << (settings.hpf ? "true" : "false") << "\n";
+        output << "agc = " << (settings.agc ? "true" : "false") << "\n";
         // key_map 只写与全局默认不同的条目（设备端空串 = 显式取消全局映射，也算不同）。
         bool keys_header_written = false;
         for (const auto& [button_id, spec] : settings.key_map) {
@@ -1138,6 +1280,38 @@ void AppConfig::Save(const std::filesystem::path& path) const {
                 keys_header_written = true;
             }
             output << button_id << " = \"" << TomlEscape(spec) << "\"\n";
+        }
+    }
+
+    output.close();
+    if (!output) {
+        std::filesystem::remove(tmp, ec);
+        throw std::runtime_error("failed to write config: " + path.string() +
+                                 " err=" + std::to_string(GetLastError()));
+    }
+    // 原子替换：MoveFileExW 同卷原子替换 + WRITE_THROUGH（半截文件不再可能）。
+    if (!MoveFileExW(tmp.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const DWORD move_err = GetLastError();
+        std::error_code rename_ec;
+        std::filesystem::rename(tmp, path, rename_ec);
+        if (rename_ec) {
+            // 目标被无 FILE_SHARE_DELETE 的句柄占用（外部编辑器打开 config.toml 等）：
+            // 原子替换物理不可行，降级为原地覆盖（CopyFile 走写共享，fopen 类句柄
+            // 默认允许）——保保存成功而不是抛错丢配置（与 B9 前行为对齐）。
+            std::error_code copy_ec;
+            std::filesystem::copy_file(tmp, path,
+                                       std::filesystem::copy_options::overwrite_existing,
+                                       copy_ec);
+            std::filesystem::remove(tmp, ec);
+            if (copy_ec) {
+                throw std::runtime_error(
+                    "failed to replace config: path=" + path.string() +
+                    " tmp=" + tmp.string() +
+                    " move_err=" + std::to_string(move_err) +
+                    " rename_err=" + rename_ec.message() +
+                    " copy_err=" + copy_ec.message());
+            }
         }
     }
 }
@@ -1246,6 +1420,13 @@ void AppConfig::SavePairedDevice(const PairedDeviceEntry& entry) {
 void AppConfig::SavePairedDeviceInfo(const std::string& device_id,
                                      const std::string& hardware,
                                      const std::string& firmware_version) {
+    SavePairedDeviceInfo(ConfigPath(), device_id, hardware, firmware_version);
+}
+
+void AppConfig::SavePairedDeviceInfo(const std::filesystem::path& path,
+                                     const std::string& device_id,
+                                     const std::string& hardware,
+                                     const std::string& firmware_version) {
     bool found = false;
     for (auto& existing : paired_devices) {
         if (existing.device_id == device_id) {
@@ -1256,16 +1437,27 @@ void AppConfig::SavePairedDeviceInfo(const std::string& device_id,
         }
     }
     if (!found) {
-        PairedDeviceEntry entry;
-        entry.device_id = device_id;
-        entry.hardware = hardware;
-        entry.firmware_version = firmware_version;
-        paired_devices.push_back(entry);
+        // 内存配对列表无此设备（未配对或来自无配对状态的配置副本）时不新建条目：
+        // 新建的零地址条目对用户无价值（启动排队连接要求地址非零），且随后的全量
+        // Save 会用这份（可能缺配对/凭据的）配置覆盖真实 config.toml——2026-09-11
+        // 事故：测试进程经此路径把用户配置整份抹成 Defaults。hardware 只对既有
+        // 配对条目的自愈有意义，此处直接跳过。
+        return;
     }
     if (std::find(paired_device_ids.begin(), paired_device_ids.end(), device_id) == paired_device_ids.end()) {
         paired_device_ids.push_back(device_id);
     }
-    Save();
+    // license 段归 LicenseRuntime（win32_app 内存）所有：协调器持有的 config_ 副本
+    // 可能早于试用锚点/last_seen/串码写入，直接全量 Save 会把磁盘上的新值抹掉。
+    // 磁盘是 license 的最新可信源（激活/锚点/last_seen 写入都立即落盘），保存前重取。
+    ReloadLicenseFromDisk(path);
+    Save(path);
+}
+
+void AppConfig::ReloadLicenseFromDisk(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return;
+    license = Load(path).license;
 }
 
 void AppConfig::RemovePairedDevice(const std::string& device_id) {

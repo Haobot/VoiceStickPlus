@@ -67,8 +67,9 @@ enum class XiaomiAtvvSessionState {
 //   第二击合成 button_double_click。
 // - 重开拒绝窗：经过 kStreaming 的键程 STOP 后 300ms 内忽略 MIC_OPEN（不回 ACK、
 //   不开新会话）；双击路径走 kWaitSecondTap 不受影响。
-// 音频路径：ADPCM 累积切帧 → IMA 解码 → 三点平滑+增益 → Opus（640 采样/帧）→
-// AudioFrame（session_id 每录音会话自增，与 button_down 一致；flags bit0 首帧 bit1 末帧）。
+// 音频路径：ADPCM 累积切帧 → IMA 解码 → 后处理链（三点平滑+HPF+增益+AGC）
+// → Opus（640 采样/帧）→ AudioFrame（session_id 每录音会话自增，与 button_down
+// 一致；flags bit0 首帧 bit1 末帧）。
 // 线程契约：全部公开入口（Start/Stop/HandleControlCommand/HandleAudioData/Tick）须在
 // 单一线程串行调用（集成层负责 marshal 到 UI 线程），本类无内部锁。
 // 构造函数可抛 std::runtime_error（opus_encoder_create 失败时，来自 AudioOpusEncoder）。
@@ -76,9 +77,17 @@ class XiaomiAtvvSession {
 public:
     struct Options {
         InteractionMode interaction_mode = InteractionMode::kHoldToTalk;
-        double gain_db = 12.0;              // ADPCM 解码后增益（±24dB 限幅）
+        double gain_db = 12.0;              // ADPCM 解码后增益（±24dB 限幅，HPF 后、AGC 前）
         int double_click_window_ms = 350;   // [device.<id>.xiaomi] double_click_ms；
                                             // 有意小于固件 500ms 窗（更快确认单击），勿对齐
+        // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）：wechat 模式 +
+        // click_to_talk + 按住式输入法（WeType）时把语音键折叠为 click toggle——
+        // 按下无事件、按住音频丢弃、松开合成 button_click。此时遥控器 ATVV 音频
+        // 链路弃用，会话音频由桌面端本机麦克风供给；物理 F5 按住流会毒化 WeType
+        // 的普通键活动静默期（hold 交互物理性冲突，见 Doc/Expe/ 三轮终版）。
+        bool wechat_click_toggle = false;
+        bool hpf = true;                    // [device.<id>.xiaomi] hpf：90Hz 高通去爆破音
+        bool agc = true;                    // [device.<id>.xiaomi] agc：自动增益控制（含 0.8FS 限幅）
     };
 
     // 时序常量：hold 阈值对齐固件 DOUBLE_CLICK_HOLD_THRESHOLD_MS；尾包宽限见协议 §3.2。
@@ -152,6 +161,12 @@ private:
 
     std::uint32_t next_session_id_ = 1;   // 每次发出 button_down 时取用并自增
     std::uint32_t current_session_id_ = 0;
+    // wechat_click_toggle 的 toggle 状态：启动击分配新 id 并置位，停止击复用该 id
+    // 并复位——协调器 wechat click 分支的停止匹配（*event.session_id ==
+    // *active_session_id_）据此命中，无需改动。id 复用仅存在于本模式的 StateEvent
+    // 合成，不触碰「session 计数递增不复用」的 AudioFrame 帧匹配不变量。
+    bool wechat_click_active_ = false;
+    std::uint32_t wechat_click_session_id_ = 0;
     std::uint32_t next_seq_ = 1;
     bool session_frame_started_ = false;  // 首帧 start flag 是否已打
     // TapPending 期间已编码未确认归属会话的 Opus 帧（确认长按后补 session/seq 发出）。

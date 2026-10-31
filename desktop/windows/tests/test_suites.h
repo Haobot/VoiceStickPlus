@@ -1,0 +1,57 @@
+#pragma once
+
+// N8：测试套件注册表（core_tests.cc 按域拆分后的唯一调用点清单）。
+// 新拆套件在此声明，并在 core_tests.cc 的 main() 中各调用一次。
+void RunProtocolContractTests();
+
+// N8 cut3：协调器第一批（20 测连续段）。
+void RunCoordinatorBatchTests();
+
+// N8 cut4：协调器第二批（17 测连续段）。
+void RunCoordinatorBatch2Tests();
+
+// N8 cut5：协调器第三批（11 测连续段，注册与他域交错、按名逐删）。
+void RunCoordinatorBatch3Tests();
+
+// N8 cut6：协调器第四批（9 测，跨段依赖预检=0）。
+void RunCoordinatorBatch4Tests();
+
+// N8 cut7：小米 ATVV 会话批（8 测；6 个共用助手随预检入 test_support.h）。
+void RunXiaomiAtvvBatchTests();
+
+// N8 cut8：协调器第五批（8 测；预检含多行签名定义头感知）。
+void RunCoordinatorBatch5Tests();
+
+// N8 cut9：协调器第六批（LocalMic 组 8 测）。
+void RunCoordinatorBatch6Tests();
+
+// N8 cut10：小米 usage-tap 批（8 测；MakeTapReport 同批迁 support）。
+void RunXiaomiUsageTapBatchTests();
+
+// N8 cut11：腾讯 ASR 批（15 测）。
+void RunTencentBatchTests();
+
+// N8 cut12：设备/输入杂项批（59 测——最大连续块，纯测试体三断言全净）。
+void RunDeviceInputMiscBatchTests();
+
+// N8 cut13：编解码/夹具/串口/esptool/flash/电源批（106 测——收敛循环迁移 6 组共享助手后切出）。
+void RunCodecFixtureSerialBatchTests();
+
+// N8 cut14：license/ima/asr-refiner/caps 批（40 测；孤儿注册修复 + 16 助手收敛迁移 + ns 配对闸首用）。
+void RunLicenseImaAtvvBatchTests();
+
+// N8 cut15（终刀）：device/plan/serial 等余量 20 测——core_tests.cc 收官为注册壳。
+void RunDevicePlanMiscBatchTests();
+
+// 用户数据飞轮 P0-1：纠错对资产化批（correction_pairs + prompt few-shot 注入）。
+void RunCorrectionPairsBatchTests();
+
+// 用户数据飞轮 P1-1：负信号事件流水批（usage_events JSONL）。
+void RunUsageEventsBatchTests();
+
+// 用户数据飞轮 P0-3：会话历史批（SQLite history 表）。
+void RunSessionHistoryBatchTests();
+
+// 语音编辑指令（Doc/Plan/voice-edit-commands.md）：解析/删除计划纯逻辑 +
+// 协调器接线批次（voice_edit_command + focus_text_reader + coordinator）。
+void RunVoiceEditTests();

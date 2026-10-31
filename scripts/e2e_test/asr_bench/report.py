@@ -117,8 +117,9 @@ def build_markdown(report: dict) -> str:
         lines.append("|---|---|---|---|---|")
         for c in failed:
             srv = "; ".join(c["server_errors"]).replace("|", "\\|")[:120]
+            err = c["error"].replace("|", "\\|")
             lines.append(f"| {c['clip_id']} | {c['provider']} | {c['round']} | "
-                         f"{c['error'].replace('|', '\\|')} | {srv} |")
+                         f"{err} | {srv} |")
 
     lines.append("")
     return "\n".join(lines)

@@ -41,6 +41,9 @@ Write-Host "[1/4] 收集产物..." -ForegroundColor Yellow
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStick.exe') $OutDir -Force
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\WinSparkle.dll') $OutDir -Force
 Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStickFlash.exe') $OutDir -Force
+# usage tap 探针 DLL + 提权注入器（增强按键识别链路）：注入器从 exe 同目录取 DLL 源。
+Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStickHidTap.dll') $OutDir -Force
+Copy-Item (Join-Path $Root 'desktop\windows\build-x64\VoiceStickTapInject.exe') $OutDir -Force
 
 # 烧录工具运行时：FlashTool\python\python.exe + site-packages（esptool）。
 # 优先复用 MSI 打包已生成的 build-msi-x64\flash_payload（幂等，避免重复下载），
@@ -65,13 +68,15 @@ $Config = @'
 asr_provider = "volcengine"
 voicestick_api_key = ""
 voicestick_cloud_url = "wss://api.xiaozhi.me/voicestick/asr/"
-volcengine_api_key = "your_volcengine_asr_api_key"
-# 腾讯云 ASR（仅在 asr_provider = "tencent" 时需要）
+# 本包 exe 已内置 ASR 凭据，留空即自动生效；填入自己的 key 可覆盖内置值。
+volcengine_api_key = ""
+# 腾讯云 ASR（仅在 asr_provider = "tencent" 时需要；本包同样已内置，留空即可）
 # tencent_secret_id = "AKID..."
 # tencent_secret_key = "..."
 # tencent_appid = "1234567890"
 llm_base_url = "https://api.openai.com/v1"
-llm_api_key = "your_openai_compatible_llm_api_key"
+# 本包 exe 已内置 LLM 凭据（DeepSeek），留空即自动生效；填入自己的 key 可覆盖。
+llm_api_key = ""
 llm_model = "gpt-5.5"
 refine_enabled = true
 interaction_mode = "hold_to_talk"
@@ -95,9 +100,11 @@ VoiceStick 绿色便携版 v$Version
 ================================
 
 使用方法：
-1. 编辑 config.toml，填入 API Key 等配置（至少需要 ASR 的 API Key）
-2. 双击 VoiceStick.exe 启动
-3. 在系统托盘中右键图标进行配对等操作
+1. 双击 VoiceStick.exe 启动（本包已内置 ASR/LLM 凭据，开箱即用，无需填写 API Key）
+2. 在系统托盘中右键图标进行配对等操作
+3. 如需使用自己的 API Key，编辑 config.toml 填入即可覆盖内置凭据
+
+注意：本包内含内置凭据，仅限内测分发，请勿公开发布。
 
 固件烧录工具（VoiceStickFlash）：
 - 双击 VoiceStickFlash.exe 打开 COM 口固件烧录工具

@@ -1,0 +1,302 @@
+# BLE 僵尸会话自愈：订阅「假成功」的判据，以及自愈路径绝不可 unpair
+
+> 日期：2026-09-19　相关 commit：`1557276e`（P0 实现）
+> 相关文件：`desktop/windows/src/ble_central_win.cc`、`desktop/windows/src/ble_protocol.{h,cc}`、
+> `desktop/windows/tests/core_tests.cc`；
+> 方案：`Doc/Plan/xiaomi-gateway-p0-zombie-self-heal.md`；
+> 源头需求：`Doc/Plan/xiaomi-gateway-followup-roadmap.md` §2-P0
+> 同主题旧文：`Doc/Expe/ble-zombie-link-reboot-reconnect.md`（僵尸链路与快速重启回连）、
+> `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`（2026-09-20 补：**僵尸判定的第三例**——
+> 设备侧首帧被 MTU 预算截断也会让对端判僵尸，且它出现在网关切换等正常重连路径上，不是故障）、
+> `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`（系统配对与 HOGP）
+> 设备：VS-53A8（COM19，固件 2.3.9）；日志：`%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`
+
+## 症状
+
+设备（重启 / 烧录 / 崩溃）之后，app 显示已连接但**语音静默失效**：按语音键无文字上屏，
+且要等很久（甚至永远）才恢复。旧实现下最终表现为「必须由用户到 Windows 蓝牙设置
+删除并重新添加设备」。
+
+## 日志判据（下次快速识别）
+
+| 现象 | 判据 |
+|---|---|
+| 订阅**假成功** | `state subscribe VS-XXXX status=Success` 之后**长时间零入站 notify**。健康连接必然伴随 `state notify`（`device_info` 或回包 `battery_status`）。直接对照同一份日志里健康连接的时间差：订阅完成到首个 notify 通常 <1s |
+| 设备侧真的没登记订阅 | 设备串口 `send_state_json gated: state_sub=0`（本机 USB 运行时日志不稳，以主机侧零入站反推） |
+| 发现了僵尸但救不回来 | 只有 `device disconnected …; restarting scan for reconnection` 而**没有** `proactive reconnect` ⇒ 死路（设备被系统 HID 宿主连上、停广播，扫描永远等不到） |
+| 设备已被系统 HID 宿主连上 | 日志出现 `XiaomiKeymapHook: raw input device not remote: …HID#{00001812-…}_<地址>…` |
+| HOGP 按键直通已死 | `BTHPORT\Parameters\Devices\<地址>` 有密钥而 `Enum\BTHLE\Dev_<地址>` 无节点（同 §1.10 判据） |
+| 新实现的自愈轨迹 | `zombie session … heal level=light-reconnect(A)` / `zombie heal B: radio reset …` / `zombie reconnect queued … (heartbeat fallback + early wake)` / `zombie heal B scheduled …` |
+
+## 根因（两个独立缺陷）
+
+### A. 判「连接成功」只看 CCCD 写返回 Success —— 假成功被当成真连接
+
+加密上下文陈旧（设备重启致 LTK 轮换、WinRT 缓存未失效）时，`WriteClientCharacteristic
+ConfigurationDescriptorAsync` 返回 Success 而设备侧什么都没收到。旧代码据此置
+`ready = true`、向协调器发布「已连接」，于是 UI 显示正常、录音却必被拒（固件
+`voice_ble_is_ready()` 要求 state+audio 均已订阅），且要等 **90s 心跳超时**才发现。
+2026-09-18 真机实证：`14:31:05 state subscribe Success` → `14:31:06 connected` →
+`14:32:42 heartbeat teardown reason=no_rx_timeout silent_ms=96520`。
+
+### B. 判出僵尸后只重扫 —— 而设备已经不广播了
+
+`ProbeSessions` 判僵尸后调 `HandleDeviceDisconnected` → 只 `StartScan()`。
+但固件连接成功即 `stop_advertising()`，而设备此时多已被系统 HID 宿主连上
+（`Enum\BTHLE` 节点存在时 Windows 会自动连），**扫描永远等不到**。
+实测 14:55:20 拆除后连续 **8 小时**零恢复，直到进程重启。
+
+> 这条也是「A 方案（轻量重连）无效」这一旧判断的证伪：僵尸路径压根没发起过重连，
+> 谈不上验证过轻量重连的成败。
+
+## 修复
+
+### 1. 连接期活性证明（判据从「写入返回」改为「设备有回音」）
+
+audio 订阅完成后、`ready = true` 之前，等 `kSessionLivenessTimeout{2500}` 内的
+**首个入站 notify**；证据取 `session->last_rx_ms > 0`（新会话初值 0，未被任何写入污染）。
+取不到即判僵尸，`fail()` 走自愈梯度，**不再向协调器发布假「已连接」**。
+
+两个通知来源：
+
+- 固件在 `state_subscribed` 置位时立即下发 `device_info` + `encoder_status`
+  （`voice_ble.c` 的 `BLE_GAP_EVENT_SUBSCRIBE`）——**但这两帧是本连接的第一个通知，
+  实测常被 Windows BTHLE 在 handler 接线完成前吞掉**（本机日志约半数连接收不到，
+  如 02:51 那次全程无 `device_info`）。所以不能只依赖它。
+- 因此补发 `battery_status_request`（与 30s 心跳同一机制）主动索要回包：固件
+  `send_state_json` 受 `s_state_subscribed` 门控，收到回包即证明设备侧确实登记了订阅。
+  fire-and-forget（僵尸链路上该写会挂到 OS 宣告链路死亡，不能阻塞连接协程）。
+  健康链路实测 <1s 回 `battery_status`（连接总耗时因此 +0.7~0.9s）。
+
+### 2. 僵尸拆除后必须按地址主动直连
+
+`ScheduleZombieReconnect(session, delay)`：登记 `pending_proactive_reconnects_`（心跳
+30s 周期兜底）+ 延迟线程提前唤醒（`WakeProactiveReconnectsAfter`，代数守卫同
+`scan_epoch_` 手法），自愈压到秒级。
+
+### 3. 自愈梯度（纯函数 + 有界）
+
+`BleProtocol::PlanZombieHeal(light_attempts, full_repairs, full_repair_allowed)`
+→ `kLightReconnect(A)` / `kFullRepair(B)` / `kUserAction`，host 单测 `TestPlanZombieHeal`：
+
+| 级 | 动作 | 副作用 |
+|---|---|---|
+| A | 只 `Close` GattSession + BluetoothLEDevice 后按地址重连 | 无（不动系统配对） |
+| B | `radio off/on`（`TryResetBluetoothRadioAsync`） | 一次全链路中断 ~5s；**系统配对保留** |
+| 末级 | 保留现状，托盘气泡指引用户重配 | 打扰用户 |
+
+故障期记账 `zombie_episodes_[addr]`（10min 窗，会话恢复即清零）：A 用满
+`kZombieLightAttemptsBeforeRepair{2}` 次才升 B，B 用满 `kZombieMaxFullRepairsPerEpisode{1}` 次
+才转用户；末级之后重连退到 `kZombieGiveUpRetry{60}` 一次，避免空转。
+
+## 最重要的教训：自愈路径**绝不可** unpair
+
+首版按仓库既有「stale bond 恢复」套路实现 B 级：`TryUnpairAsync` + radio reset +
+`TryRestoreOsBondAsync`。真机结果：
+
+```
+02:59:13 zombie heal B: full repair VS-53A8 (unpair + radio reset + reopen + PairAsync rebuild)
+02:59:21 zombie heal B: radio reset succeeded, reopening device
+02:59:22 os bond restore VS-53A8: failed status=19 (HID passthrough stays dead …)
+02:59:23 connected VS-53A8 / stage=ready          ← 语音自愈成功
+```
+
+随后核对注册表：`BTHPORT\Parameters\Devices\70041ddc53aa` 仍有密钥，但
+`Enum\BTHLE\Dev_70041ddc53aa` 节点与 HID 设备**都消失了** ⇒ **按键直通被这次「自愈」弄死**。
+
+事后单独复现 `PairAsync`（PowerShell + WinRT，`DeviceInformationPairing.PairAsync`）：
+
+- 设备被 app 连上（NimBLE 连上即 `stop_advertising()`）时：**连续 12 次全部 status=19
+  （`DevicePairingResultStatus_Failed`）**；
+- 停掉 app、设备重新广播后仍失败（串口抓包显示**设备侧连连接都没发生** ⇒ Windows 侧
+  根本没发起配对，属主机侧状态问题）；
+- 对照：同日 01:54 用户经**配对对话框**（自带 `pair scan` 扫描看到广播后再
+  `FromBluetoothAddressAsync` + `PairAsync`）**成功** `VS os pairing bonded`。
+
+结论与整改：
+
+1. **B 级改为只重置 Bluetooth radio**，系统配对一律不动 —— 设备侧 bond 在 NVS 里、
+   Windows 侧 bond 也没变，重置后 HID 宿主用同一把 LTK 自行恢复按键直通。
+2. 缺 bond 的重建改由**独立看门狗**（`RepairOsBondAsync`）负责：只读查询
+   `Pairing().IsPaired()` 确认缺失后才动手，且要求「无会话 + 设备在广播」，
+   `PairAsync` 重试 3 次；每次运行最多 1 轮（重建要拆掉健康会话，失败即白付一次语音空窗）。
+   它**只补不删**，因此不可能把可用状态弄坏。
+3. 若用户遇到「按键全死、语音正常」，先查上面那条注册表判据；修复路径仍是去 Windows
+   蓝牙设置删除并重新添加设备（`PairAsync` 在此状态下无法自动完成）。
+
+## 验证（真机 VS-53A8，2026-09-19 03:17-03:20）
+
+连续 4 次 DTR 重启设备，**全程不改任何系统设置、不做人工干预**：
+
+| 次数 | 重启 → `stage=ready` | 路径 |
+|---|---|---|
+| 1 | 03:17:19 → 03:17:29.8（**10.4s**） | 广告拆陈旧会话 → 安定窗 1.5s → 首连 `state subscribe timeout` → `[zombie-suspect: no cooldown, immediate retry #1]` → 二次连接收到 `device_info` → ready |
+| 2 | 03:17:37 → 03:18:33.5 | 同上（重启被广告发现较晚；连接本身 5.5s） |
+| 3 | 03:18:40 → 03:18:52.7（**12.7s**） | 同 1 |
+| 4 | 03:18:59 → 03:19:57.3 | 同 2（连接本身 5.9s） |
+
+- **A/B 级未被触发**（无 `heal level=full-repair` / 无 radio reset 日志）——轻量路径就够。
+- 连接期活性证明在首版构建的真机循环里**已实测触发并正确判僵尸**
+  （`zombie session VS-53A8: subscriptions reported success but device sent nothing within
+  2500ms (device-side state_sub=0); heal level=light-reconnect(A)`），是本次自愈的入口。
+- 构建 `build_win.bat` + CTest 2/2 通过。
+
+## 二轮修复（2026-09-19 08:16-08:31，真机暴露的两个新缺陷）
+
+系统配对恢复后重跑重启验证，暴露两处与「有系统配对」相伴的新问题：
+
+### 缺陷 C：真断连路径只重扫，设备被 HID 宿主抢走后永久失联
+
+`connection status VS-53A8 = disconnected` → `device disconnected …; restarting scan` →
+**3 分钟零恢复**，随后日志出现 `XiaomiKeymapHook: raw input device not remote: …HID#{…}_70041ddc53aa…`
+⇒ 设备已被系统 HID 宿主连上并 `stop_advertising()`，扫描永远等不到。
+这与僵尸路径（D2）是同一个盲区，但发生在 `PlanZombieRecovery` 返回 `kScanOnly` 的分支上——
+原修复只给僵尸分支补了主动直连。
+
+**修复**：把按地址主动直连下沉到 `HandleDeviceDisconnected`（所有断连来源共用），
+僵尸分支再用自愈梯度算出的延迟覆盖队列项。登记是无条件安全的：
+`RunDueProactiveReconnects` 在设备未配对/已有会话/已有在途连接时自动清项，
+失败按 `kProactiveReconnectRetry{60s}` 节流。
+
+> **判据**：设备有 OS 配对时，「重启后 app 连不上」几乎必然走这条路径——HID 宿主会在
+> ~1s 内抢走设备。看到 `restarting scan` 之后再无 `advertisement matched` 即为此症。
+
+### 缺陷 D：故障期记账跨会话累积，重启后被一上来就判「自愈用尽」
+
+日志：`heal level=user-action` 出现在设备刚重启、梯度本应从零开始的时刻。
+原因：`zombie_episodes_` 只在**连接成功**时清零，而设备重启前后的多次僵尸判定落在
+同一个 10min 窗内（重启前 3 次 + 重启后第 1 次即触发 `kUserAction`），此后重连被节流到
+60s 且不再尝试 A/B —— 真正的故障期（设备重启后的全新链路）反而得不到自愈预算。
+
+**修复**：`ClearZombieEpisode` —— 真实断连（`ConnectionStatusChanged=Disconnected`、
+`GattSessionStatus::Closed`、心跳判 `kScanOnly`）时清空记账；`ProbeSessions` 里把
+`HandleDeviceDisconnected` 放到 `NoteZombieEpisode` **之前**，避免僵尸路径自己把刚登记的
+计数清掉（顺序敏感，注释已写明）。
+
+修复后日志轨迹符合设计：`heal level=light-reconnect(A)` → 仍僵尸 →
+`heal level=full-repair(B)` → `zombie heal B: radio reset` → 仍僵尸 → `kUserAction`（含气泡）。
+
+### 观察 E：设备被系统 HID 宿主持有的窗口内，一切重连都是「假成功」
+
+用户按键重启设备后（08:43:20-08:46:51）的完整轨迹：
+
+| 时刻 | 事件 |
+|---|---|
+| 08:43:20 / 08:43:25 | A 级重连 ×2 → `state/audio subscribe Success` 但零入站 ⇒ 判僵尸 |
+| 08:43:30-08:43:42 | B 级 `radio reset` 执行成功、重开设备 |
+| 08:43:43 | 重连：`link-layer connected after 0ms polls=0`、订阅 26ms/17ms 极快、仍零入站 ⇒ **假成功** |
+| 08:43:46 | 梯度用满 ⇒ 末级（弹了「请重新配对」气泡） |
+| 08:45:54 | 60s 节流后再试 ⇒ 仍假成功 |
+| **08:46:50** | **设备自己重新广播**（`advertisement matched scan_to_adv_ms=187428`） |
+| 08:46:51 | 一次连接成功（`t=1008ms`）⇒ `stage=ready` |
+
+结论：
+
+- 这段窗口里 app 做的一切（轻量重连、radio reset、立即重连）都**徒劳**——设备被 HID 宿主
+  持有、不广播，而 app 的连接全部落在 Windows 的本地缓存上（`polls=0` + 订阅几毫秒完成 +
+  零入站是**判据**）。真正的恢复来自设备重新广播。
+- 因此 08:43:46 的「请重新配对」气泡是**误报**（app 3.5 分钟后自行恢复，全程无需用户动作）。
+
+**处置**：末级用户提示延后 `kZombieUserPromptDelay{120s}`（从故障期起点计时）——
+窗口内自行恢复就不打扰用户，真有硬故障仍能在 2 分钟内拿到指引。
+
+**未解决（下一步方向）**：为什么设备重启后被 HID 宿主持有 ~3.5 分钟才重新广播；
+以及窗口内应当**优先等广播**而不是盲目直连（需要区分「设备在场但不广播」与「设备真的不在」，
+当前二者都表现为连接失败/假成功）。真机复现方式：设备重启后观察 `polls=0` + 订阅耗时
+是否毫秒级 + 是否零入站。
+
+### 测试装置教训：自动化 DTR 复位会让设备进入不可用状态
+
+本轮用 pyserial 的 `dtr=False→True 0.3s→False` 序列自动重启设备，前几轮正常；
+08:16 之后该设备 **USB 停止枚举**（`COM19` 消失、PnP 设备状态 Unknown），
+而 BLE 侧仍被系统 HID 宿主持有 ⇒ app 的所有重连都「假成功」（GATT 无响应）。
+这种状态下 radio reset / 换句柄都无效，**只能给设备断电重启**（拔插 USB 或按前面板键）。
+教训：**连续自动复位设备做验证时要留人工兜底**，别在无人值守时反复 DTR 复位；
+设备侧还有没有响应，看它是否还发 `advertisement`（`advertisement matched` 日志）比看 USB 更可靠。
+
+## 三、根因定案（2026-09-19 12:00）：订阅假成功 = Windows 缓存 CCCD 值
+
+上面「观察 E」把假成功归因于「设备被 HID 宿主持有 + app 的 GATT 操作落在本地缓存」，
+方向对但没落到具体机制。当天下午拿到**决定性证据**后定案：
+
+- 设备串口持续输出 `W voice_ble: send_state_json gated: connected=1 state_sub=0 conn=1`
+  ⇒ 链路活着、订阅从没登记；而 app 侧 `state subscribe status=Success` 只花 **17ms**。
+- 机制：**Windows 缓存了 CCCD 值**（上次会话成功订阅过），再次写同一个值时本地直接返回
+  Success 而不发空口包；设备侧 NimBLE 在连接建立时清 CCCD ⇒ 两边状态漂移。
+- 修复：订阅前先写 `None` 再写 `Notify`（缓存击穿）。真机验证：同一故障状态（已连续失败
+  3 小时）换上新构建后 **696ms 恢复 ready**，设备串口 gated 告警消失。
+
+⇒ 本文此前的判断「加密上下文陈旧 / 只能靠 unpair 或用户重配」**已被推翻**：设备重启后
+语音静默失效并不需要重新配对。完整根因、判据与修复见
+`Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md`。
+
+## 长期技术记忆 / 经验
+
+1. **「写成功」不等于「对端收到」**。BLE/ATT 应用的订阅、写入在加密上下文陈旧时会
+   静默假成功；判定连接健康必须取对端的**反向证据**（收到的通知/回包），而非本机
+   API 的返回码。同源先例：NimBLE 对未订阅连接 `ble_gatts_notify_custom` 也返回成功。
+2. **自愈/恢复路径的力度必须按「破坏性」而不是按「彻底性」排序**。删系统配对看起来
+   更彻底，实际是**不可逆地弄坏一条独立功能**（HOGP 按键直通），且重建所需 API
+   （`PairAsync`）在故障态下恰好不可用。先做零副作用动作（回收句柄 / 重置无线电），
+   把破坏性动作留给用户决策。
+3. **不要用「重扫」兜底需要主动连接的场景**。设备作为 peripheral 一旦被任一宿主连上
+   就停广播，纯等广告的恢复路径存在结构性盲区；按地址直连才是可靠兜底
+   （同 `Doc/Expe/ble-startup-connect-failure-permanent-stuck-2026-09-14.md`）。
+4. **首帧通知不可靠**。CCCD 刚订阅完成时的第一个通知常被 Windows BTHLE 在 handler
+   接线窗口内吞掉；依赖「订阅后必有一帧」的判定要补主动探测（写一个小请求要回包）。
+5. **诊断「Windows 侧到底有没有发起动作」要用设备侧日志**。串口运行时日志虽不稳，
+   但 NimBLE 的 `GATT procedure initiated` 能读到；本次正是靠「设备侧连连接都没有」
+   把 `PairAsync` 失败定位为主机侧状态问题，而不是设备拒绝配对。
+6. **纯函数记账 + 有界梯度**让自愈可测可推理：把「力度选择」抽成
+   `PlanZombieHeal` 后，边界（第几次升级、用满怎么办）用 host 单测锁住，
+   真机上只需观察日志里的 `heal level=`。
+
+## 遗留 / 观察项
+
+1. **VS-53A8 的 HOGP 系统配对于 2026-09-19 03:00 被首版自愈删除，需用户手动重新添加一次**
+   （Windows 蓝牙设置，或走 app 自己的「配对设备」对话框——那条路径 01:54 实测成功）；
+   重配后 `IsPaired()` 为真，看门狗不再介入。
+   **自动重建在本机该状态下无法完成**（`PairAsync` 恒 `status=19 Failed`），已排除的可能：
+   - 设备被 app 连上（停广播）——已拆会话让设备重新广播，并在收到广播后 1.5s 内配对，仍失败；
+   - Windows 侧僵尸链路 —— 已加 `TryResetBluetoothRadioAsync` 清链路状态后再配对，仍失败；
+   - 主机侧根本没发起配对 —— 串口抓包显示设备侧零连接活动，故是 Windows 侧状态问题。
+
+   **判据（新增）**：app 停掉 9s 后 `BluetoothLEDevice::FromBluetoothAddressAsync()` 仍返回
+   `ConnectionStatus=Connected` = Windows 侧僵尸链路；此状态下 `PairAsync` 必失败。
+   剩余怀疑方向：`Enum\BTHLE` 节点被删后 `DeviceInformation` 已无活体关联，需按 Settings 的
+   DeviceWatcher / AssociationEndpoint 路径重建（未验证）。
+2. **缺 bond 时目前只记日志，没有用户提示**（`kPairOsBondOptionalFailed` 文案已存在，
+   但只在配对对话框里用过）。「静默失效」在本项上仍然存在，建议后续补托盘气泡。
+   看门狗现状：`ProbeSessions` 每 10min 探测一次、每次运行最多重建 1 轮（`PairAsync` 重试 3 次），
+   并在重建前重置无线电 —— 即使配对失败也**只补不删**，不会把可用状态弄坏。
+3. 组件级 `heal level=full-repair(B)`（radio reset）**尚无成功样本**：08:31 那次是唯一
+   真机样本，但当时设备已进入 USB 掉线/固件不可用状态（见「测试装置教训」），
+   B 级执行成功却没能恢复 —— 该样本不能作为 B 级有效性的证据，需要在健康设备上重测。
+4. 设备重启被广告发现的延迟波动较大（3s ~ 51s，串口 DTR 复位的时机不完全可控），
+   自愈时长的主要构成不是 app 侧逻辑。
+---
+
+## 五、广播报告 ≠ 设备此刻在广播（2026-09-20 真机：陈旧会话守卫的误杀，导致网关模式 OTA 必死）
+
+本文 §根因 把「已配对设备带着本地就绪会话重新广播」当成**旧链路已死的铁证**（固件只在未连接时广播）。
+这条铁证在 2026-09-20 被推翻：
+
+- **现象**：网关模式下从 app 触发固件 OTA，传输每次在开始后 ~30s（16–17%，~270KB）被断链，
+  气泡报「Device disconnected during firmware update」。
+- **设备侧反证**：新加的 OTA 停摆看门狗在断链后仍持续打印 `OTA stalled … written=298352` 两分钟，
+  `ota_clear_state` 从未被调用 ⇒ 设备一直以为连接还在、且数据一直在正常写入（`write_max=1ms`）。
+- **app 侧真相**：每次断链都与一条 `advertisement from paired VS-53A8 while session still registered`
+  严格同刻。固件 `start_advertising_with_mode` 在 `s_connected` 时直接 return（不会在连接中广播），
+  故这条报告是 **Windows 广告 watcher 送来的延迟/复用报告**，并非设备真在广播。守卫据此误杀活会话。
+
+**修复**：在守卫里加「会话仍活着」否决——有固件升级在跑，或最近 1s 内仍有入站数据，就不拆会话
+（真重启的设备 1s 内发不出数据，故不影响原有的僵尸恢复路径）。真机：16:31:18 命中一次
+`ignoring advertisement for VS-53A8 (session still active: ota_in_progress)`，随后 OTA **100% 完成**、
+设备重启回连 778ms。
+
+**教训**：
+1. **广播报告是 watcher 的观察，不是设备的实时状态**——Windows 会送延迟/复用的报告，尤其扫描开着的时候。
+   凡是「看到广播 ⇒ 判定对端状态」的逻辑，先取对端的反向证据（有没有业务数据 / 有没有显式断连）。
+2. 拆会话前先确认它**真的死了**：入站数据在最近 1s 内 → 一定还活着，绝不拆。
+3. 本次附带把 OTA 进度回传间隔从 32KB 收到 8KB、在途窗口 48KB→24KB（降突发实验的保留），
+   **非根因修复**，与否决同一次运行验证通过但未单独证明必要性。

@@ -1,0 +1,873 @@
+import Foundation
+import VoiceStickCore
+
+
+/// 稳定语义 key（对齐 Windows StringId；不要用英文原文做 key，以免文案微调破坏索引）。
+/// 只覆盖 macOS 现有 UI 点位；英文文案与 macOS 原有硬编码一致，中文文案逐条对齐
+/// Windows localization.cc 中文表（含 win32_app.cc 的 Localized*Name 辅助函数）。
+enum L10nKey: String, CaseIterable {
+    // 通用
+    case ok, cancel, save, close, restoreDefaults
+
+    // 语言下拉
+    case languageSystem, languageEnglish, languageChineseSimplified
+
+    // 状态栏按钮
+    case statusPairVoiceStick, statusListening, statusProcessing, statusReady, statusError
+    case statusPair
+
+    // 托盘主菜单
+    case menuRestoreLastInput, menuPairDevice, menuSettings, menuWebsite
+    case menuCheckAppUpdates, menuQuit, menuPressReturnAfterPaste, menuLaunchAtLogin
+    case menuInteraction, menuHoldToTalk, menuClickToTalk
+    case menuHotkey, menuEnableHotkey, menuCustomHotkey, menuCustomHotkeyNamed
+    case menuOutput, outputFocusedApp, outputSubtitle
+
+    // 设备子菜单
+    case stateScanning, stateConnected
+    case menuThemeColor, menuThemeSize, menuOverlayPosition
+    case menuTranslation, textOriginal, menuTranslateTo
+    case menuInteractionSettings, menuEncoderSettings, menuRemoteSettings, menuButtonMapping, menuBatteryMonitor, menuAirMouse
+    case menuUpdateFirmwareFromFile, menuForgetDevice
+    case firmwareMacSpeedLimited
+    case firmwareCheckingUpdates, firmwareUpdateCheckFailed, firmwareUpdateTo, menuFirmwareUpToDate
+
+    // 主题/灵敏度/编码器枚举显示名
+    case themeAuto, themeWhite, themeBlack, themePink, themeGreen, themeYellow, themeBlue, themePurple
+    case sizeBig, sizeMedium, sizeSmall
+    case positionCenter, positionBottomCenter, positionTopLeft, positionTopRight
+    case positionBottomLeft, positionBottomRight
+    case wakeLow, wakeMedium, wakeHigh
+    case ledRed, ledGreen, ledBlue, ledYellow, ledPurple, ledCyan, ledWhite, ledOff
+    case actionRecording, actionCustomKey
+
+    // 设置窗口
+    case settingsTitle, settingsLanguage
+    case settingsSectionGeneral, settingsDeveloperMode
+    case settingsSectionAsr, settingsProvider, settingsApiKey, settingsApplyTrial
+    case settingsResourceId, settingsHotwords, settingsHotwordsHint
+    case hotwordCandidateNotifyBodySuffix
+    case settingsSectionHotwordCandidates, settingsHotwordCandidateAdd, settingsHotwordCandidateDismiss, settingsHotwordCandidatesHint
+    case settingsSectionRefine, settingsLlmBaseUrl, settingsLlmModel
+    case settingsRefineText, settingsRefinePrompt
+    case settingsSectionOutput, settingsOutputTarget
+    case settingsSectionSystem, settingsLaunchAtLogin, settingsShowImuDebug
+    case settingsSectionAudioFiles, settingsDebugAudio, settingsDebugDir, settingsChooseDir
+    case settingsOpenConfigFolder
+    case settingsAudioDebug, settingsAudioDebugFailedTitle, settingsAudioDebugNotFound
+    case settingsApplyingTrial, settingsTrialApplied, settingsTrialPageOpened
+    case settingsTrialOpenFailedTitle, settingsTrialFailedTitle
+    case settingsSaved, settingsSaveFailedTitle
+    // 本地语音识别（provider 下拉本地虚项 + 条件行，对齐 Windows D1/D2）
+    case settingsProviderLocal
+    case settingsLocalModelsDir, settingsLocalModelsDirHint
+    case settingsLocalStatusReady, settingsLocalStatusMissingModel, settingsLocalStatusMissingRuntime
+    case settingsDownloadModels
+    // 模型下载窗口（对齐 Windows ModelDownloadDialog 文案）
+    case modelDownloadTitle, modelDownloadIntro
+    case modelDownloadEntryAsr, modelDownloadEntryRuntime, modelDownloadEntryLlm
+    case modelDownloadSpaceNeeded, modelDownloadStart, modelDownloadPreparing, modelDownloadDone
+    // 本地文本精修 + 语音编辑目标词对齐（Phase C）
+    case settingsLocalRefine, settingsLocalRefineReady, settingsLocalRefineMissing, settingsLocalRefineNoRuntime
+    case settingsVoiceEditAlign, settingsVoiceEditAlignReady, settingsVoiceEditAlignMissing
+
+    // 引导窗口
+    case onboardingSetupTitle
+    case onboardingStepPairDevice, onboardingStepAsrKey, onboardingStepAccessibility, onboardingStepReady
+    case onboardingBack, onboardingContinue, onboardingFinish
+    case onboardingPairTitle, onboardingPairDetail
+    case onboardingProviderTitle, onboardingProviderDetail
+    case onboardingAccessibilityTitle, onboardingAccessibilityDetail
+    case onboardingReadyTitle, onboardingReadyDetail
+    case onboardingOpenAccessibilitySettings
+    case columnDevice, columnId, columnRssi
+    case bluetoothUnavailable, foundCount, selectDevice
+    case onboardingSelectedDevice, valueNotPaired, valueAllowed, valueNotAllowedYet
+    case applyTrialFailed, saveFailedWithError
+    case openedSystemSettings, openAccessibilityManually
+    case accessibilityAllowed, accessibilityNotAllowed
+    case accessibilityPasteBlocked, accessibilityAlertTitle, accessibilityAlertBody
+    case selectDeviceFirst, enterApiKeyFor, enterValidCloudURL, allowAccessibilityFirst
+
+    // 配对窗口
+    case pairTitle, pairColumnType, pairButton, pairNamePaired
+    case deviceTypeVoiceStick, deviceTypeXiaomiRemote
+    case pairInProgress, pairAlreadyPaired, pairIdConflict, pairDeviceLost, pairPairingDevice
+    case pairTimeoutManual, pairConnectFailedManual, pairDisconnectedManual
+    case pairAtvvServiceMissingManual, pairAtvvCharacteristicsMissingManual, pairSubscribeFailedManual
+
+    // 固件更新窗口与提示
+    case firmwareWindowTitle, firmwareUpdatingTitle, firmwarePreparing
+    case firmwareSpeed, firmwareEstimatingTime, firmwareTimeRemaining, firmwareFinishingOnDevice
+    case firmwareUpdatedTitle, firmwareUpdatedDetail, firmwareDone
+    case firmwareUpdateFailedTitle, firmwareKeptCurrent
+    case firmwareCancellingTitle, firmwareCancellingDetail, firmwareCancelling
+    case firmwareLocalFile
+    case firmwarePromptTitleRequired, firmwarePromptTitleAvailable, firmwarePromptBody
+    case firmwarePromptUpdateButton, firmwarePromptLaterButton
+
+    // 热键捕获窗口
+    case hotkeyCaptureTitle, hotkeyCaptureHint, hotkeyCaptureMissingModifier, hotkeyCaptureApplyHint, hotkeyCaptureAnyKeyHint
+
+    // 设备交互设置窗口
+    case interactionSettingsTitle
+    case settingsWakeSensitivity, settingsTapToArrow, settingsTapSensitivity
+    case settingsAirMouseX, settingsAirMouseY
+
+    // 编码器设置窗口
+    case encoderSettingsTitle, settingsSectionEncoder
+    case encoderToArrow, encoderRotationInvert
+    case encoderRotateCwKey, encoderRotateCcwKey
+    case encoderRotateFastThreshold, encoderRotateCwFastKey, encoderRotateCcwFastKey
+    case encoderDecideWindow, encoderLedColor
+    case encoderPressAction, encoderPressKey, encoderDoubleClickAction, encoderDoubleClickKey
+    case encoderInvalidKey
+
+    // 遥控器设置窗口
+    case remoteSettingsTitle, remoteSettingsSection
+    case remoteGainDb, remoteDoubleClickMs, remoteEffectiveNextConnect
+
+    // 电池电压监测窗口
+    case batteryMonitorTitle, batteryUsbAutoOff, batteryWarnUsb
+    case batteryStart, batteryStop, batteryExportCsv, batteryExportPng
+    case batteryStatusIdle, batteryStatusAnchoring, batteryStatusProbing
+    case batteryStatusMonitoring, batteryStatusFinished, batteryStatusError
+    case batteryErrProbeTimeout, batteryErrDumpTimeout, batteryErrRestart
+    case batteryErrDisconnected, batteryErrLogCleared
+    case batterySavedTo, batterySaveFailed, batteryNotEnoughSamples
+    case batteryAxisTime, batteryAxisVoltage, batteryChartTitle
+
+    // 语音编辑（Voice Edit Commands；设置区块 + 命令轮 toast 双表）
+    case settingsSectionVoiceEdit, settingsVoiceEditEnabled, settingsVoiceEditDefaultChars
+    case settingsVoiceEditHint
+    case voiceEditDeletedChars, voiceEditDeletedSentences, voiceEditDeletedSentenceOne
+    case voiceEditDeletedAll, voiceEditUnverifiedSuffix
+    case voiceEditNoInjection, voiceEditScopeExpired, voiceEditAppChanged, voiceEditFieldMismatch
+    case voiceEditCaretNotEnd, voiceEditSelectionPresent, voiceEditVerifyUnavailable
+    case voiceEditForegroundElevated, voiceEditAccessibilityDenied, voiceEditInjectFailed
+    case voiceTargetedDeleted, voiceTargetedReplaced
+    case voiceTargetedNotFound, voiceTargetedAmbiguous, voiceTargetedInvalid
+    case voiceTargetedTextChanged, voiceTargetedUnconfirmed
+}
+
+/// 界面文案查表。当前语言由 AppDelegate 在启动与配置变更时写入 `Localization.current`
+///（存配置值；查表时取 `effective`，调用时读取、不缓存）。
+enum Localization {
+    static var current: UiLanguage = .system
+
+    static func tr(_ key: L10nKey) -> String {
+        let table = current.effective == .zhHans ? chinese : english
+        return table[key] ?? english[key] ?? key.rawValue
+    }
+
+    static func tr(_ key: L10nKey, _ args: CVarArg...) -> String {
+        String(format: tr(key), arguments: args)
+    }
+
+    /// 电量后缀（对齐 Windows BatteryStatusText）："NN%" + 「充电中」（优先）/「外接电源」。
+    static func batteryStatusText(level: Int, charging: Bool, usbPowered: Bool) -> String {
+        var text = "\(level)%"
+        if charging {
+            text += current.effective == .zhHans ? "，充电中" : ", charging"
+        } else if usbPowered {
+            text += current.effective == .zhHans ? "，外接电源" : ", plugged in"
+        }
+        return text
+    }
+
+    /// 翻译目标语言显示名（对齐 Windows LocalizedTranslationTargetName：
+    /// 中文界面用中文语言名，其余语言界面保持英文名）。
+    static func translationTargetName(code: String, englishName: String) -> String {
+        guard current.effective == .zhHans else { return englishName }
+        return chineseLanguageNames[code] ?? englishName
+    }
+
+    /// 自检：英文表和中文表对所有 key 都有条目（对齐 Windows LocalizationTablesAreComplete）。
+    static func tablesAreComplete() -> Bool {
+        L10nKey.allCases.allSatisfy { english[$0] != nil && chinese[$0] != nil }
+    }
+
+    private static let chineseLanguageNames: [String: String] = [
+        "en": "英文",
+        "zh-Hans": "简体中文",
+        "zh-Hant": "繁体中文",
+        "ja": "日文",
+        "ko": "韩文",
+        "ru": "俄文",
+        "fr": "法文",
+        "de": "德文",
+        "es": "西班牙文",
+        "it": "意大利文",
+        "pt": "葡萄牙文",
+        "nl": "荷兰文",
+        "sv": "瑞典文",
+        "pl": "波兰文",
+        "tr": "土耳其文",
+        "ar": "阿拉伯文",
+        "hi": "印地文",
+        "id": "印尼文",
+        "vi": "越南文",
+        "th": "泰文",
+    ]
+
+    private static let english: [L10nKey: String] = [
+        .ok: "OK",
+        .cancel: "Cancel",
+        .save: "Save",
+        .close: "Close",
+        .restoreDefaults: "Restore defaults",
+
+        .languageSystem: "Follow System",
+        .languageEnglish: "English",
+        .languageChineseSimplified: "Simplified Chinese",
+
+        .statusPairVoiceStick: "Pair VoiceStick",
+        .statusListening: "Listening",
+        .statusProcessing: "Processing",
+        .statusReady: "Ready",
+        .statusError: "Error",
+        .statusPair: "Pair",
+
+        .menuRestoreLastInput: "Restore Last Input",
+        .menuPairDevice: "Pair Device...",
+        .menuSettings: "Settings...",
+        .menuWebsite: "Website",
+        .menuCheckAppUpdates: "Check for App Updates...",
+        .menuQuit: "Quit",
+        .menuPressReturnAfterPaste: "Press Return After Paste",
+        .menuLaunchAtLogin: "Launch at Login",
+        .menuInteraction: "Interaction",
+        .menuHoldToTalk: "Hold to Talk",
+        .menuClickToTalk: "Click to Talk",
+        .menuHotkey: "Hotkey",
+        .menuEnableHotkey: "Enable Hotkey",
+        .menuCustomHotkey: "Custom Hotkey...",
+        .menuCustomHotkeyNamed: "Custom Hotkey (%@)...",
+        .menuOutput: "Output",
+        .outputFocusedApp: "Focused App",
+        .outputSubtitle: "Subtitle",
+
+        .stateScanning: "Scanning",
+        .stateConnected: "Connected",
+        .menuThemeColor: "Theme Color",
+        .menuThemeSize: "Theme Size",
+        .menuOverlayPosition: "Overlay Position",
+        .menuTranslation: "Translation",
+        .textOriginal: "Original",
+        .menuTranslateTo: "Translate to %@",
+        .menuInteractionSettings: "Device interaction settings...",
+        .menuEncoderSettings: "Encoder settings...",
+        .menuAirMouse: "Air mouse",
+        .menuRemoteSettings: "Remote settings...",
+        .menuButtonMapping: "Button Mapping...",
+        .menuBatteryMonitor: "Battery voltage monitor...",
+        .menuUpdateFirmwareFromFile: "Update Firmware from File...",
+        .menuForgetDevice: "Forget This Device",
+        .firmwareCheckingUpdates: "Checking for Updates",
+        .firmwareMacSpeedLimited: "macOS Bluetooth is rate-limited (system HID scheduling); use a USB cable for serial flashing (~10 s) instead",
+        .firmwareUpdateCheckFailed: "Update Check Failed",
+        .firmwareUpdateTo: "Update to %@...",
+        .menuFirmwareUpToDate: "Firmware Up to Date",
+
+        .themeAuto: "Auto",
+        .themeWhite: "White",
+        .themeBlack: "Black",
+        .themePink: "Pink",
+        .themeGreen: "Green",
+        .themeYellow: "Yellow",
+        .themeBlue: "Blue",
+        .themePurple: "Purple",
+        .sizeBig: "Big",
+        .sizeMedium: "Medium",
+        .sizeSmall: "Small",
+        .positionCenter: "Center",
+        .positionBottomCenter: "Bottom Center",
+        .positionTopLeft: "Top Left",
+        .positionTopRight: "Top Right",
+        .positionBottomLeft: "Bottom Left",
+        .positionBottomRight: "Bottom Right",
+        .wakeLow: "Low",
+        .wakeMedium: "Medium",
+        .wakeHigh: "High",
+        .ledRed: "Red",
+        .ledGreen: "Green",
+        .ledBlue: "Blue",
+        .ledYellow: "Yellow",
+        .ledPurple: "Purple",
+        .ledCyan: "Cyan",
+        .ledWhite: "White",
+        .ledOff: "Off",
+        .actionRecording: "Recording",
+        .actionCustomKey: "Custom key",
+
+        .settingsTitle: "VoiceStick Settings",
+        .settingsLanguage: "Language",
+        .settingsSectionGeneral: "General",
+        .settingsDeveloperMode: "Developer Mode",
+        .settingsSectionAsr: "Speech Recognition",
+        .settingsProvider: "Provider",
+        .settingsApiKey: "API Key",
+        .settingsApplyTrial: "Apply Trial",
+        .settingsResourceId: "Resource ID",
+        .settingsHotwords: "Hotwords",
+        .settingsHotwordsHint: "Separate hotwords with commas or new lines.",
+        .settingsProviderLocal: "Local ASR (offline, no cloud key)",
+        .settingsLocalModelsDir: "Models Directory",
+        .settingsLocalModelsDirHint: "Leave empty to use the default location under ~/Library/Application Support/VoiceStick/models.",
+        .settingsLocalStatusReady: "✓ Models ready (SenseVoice found)",
+        .settingsLocalStatusMissingModel: "✗ Model files not found (need model.int8.onnx + tokens.txt)",
+        .settingsLocalStatusMissingRuntime: "△ Models ready, but the ASR runtime is missing — click Download Models…",
+        .settingsDownloadModels: "Download Models…",
+        .settingsLocalRefine: "Local text refinement (editform, offline)",
+        .settingsLocalRefineReady: "✓ Refine model ready (Qwen2.5 3B)",
+        .settingsLocalRefineMissing: "✗ Refine model not downloaded — degrades to rule-based cleanup (optional)",
+        .settingsLocalRefineNoRuntime: "△ Local LLM runtime not installed (run scripts/fetch-llama-cpp.sh)",
+        .settingsVoiceEditAlign: "Target-word local alignment (fixes misheard words)",
+        .settingsVoiceEditAlignReady: "✓ Alignment model ready (Qwen2.5 1.5B)",
+        .settingsVoiceEditAlignMissing: "✗ Alignment model not downloaded — misheard targets fall back to plain paste (optional)",
+        .modelDownloadTitle: "Download Local Models",
+        .modelDownloadIntro: "Downloads local models into your user library:",
+        .modelDownloadEntryAsr: "Speech recognition model (required, ~240 MB)",
+        .modelDownloadEntryRuntime: "Recognition runtime (required, ~30 MB)",
+        .modelDownloadEntryLlm: "Local LLM model (%@, optional)",
+        .modelDownloadSpaceNeeded: "Disk space needed: ~%@",
+        .modelDownloadStart: "Start Download",
+        .modelDownloadPreparing: "Preparing…",
+        .modelDownloadDone: "Download complete. Return to Settings and click Save to enable local ASR.",
+        .hotwordCandidateNotifyBodySuffix: " appeared several times. Add or dismiss it in Settings → Hotword Candidates.",
+        .settingsSectionHotwordCandidates: "Hotword Candidates",
+        .settingsHotwordCandidateAdd: "Add Hotword",
+        .settingsHotwordCandidateDismiss: "Dismiss",
+        .settingsHotwordCandidatesHint: "New words repeatedly corrected by the refiner appear here; click Save after adding to apply.",
+        .settingsSectionRefine: "Text Refinement",
+        .settingsLlmBaseUrl: "Base URL",
+        .settingsLlmModel: "Model",
+        .settingsRefineText: "Refine Recognized Text",
+        .settingsRefinePrompt: "Prompt",
+        .settingsSectionOutput: "Output",
+        .settingsOutputTarget: "Target",
+        .settingsSectionSystem: "System",
+        .settingsLaunchAtLogin: "Launch at Login",
+        .settingsShowImuDebug: "Show IMU Debug on Device",
+        .settingsSectionAudioFiles: "Audio Files",
+        .settingsDebugAudio: "Save debug audio files",
+        .settingsDebugDir: "Audio Folder",
+        .settingsChooseDir: "Choose...",
+        .settingsOpenConfigFolder: "Open Config Folder",
+        .settingsAudioDebug: "Audio Debug",
+        .settingsAudioDebugFailedTitle: "Could Not Start Audio Debug",
+        .settingsAudioDebugNotFound: "Make sure Python is installed and scripts/e2e_test/spectrogram_server.py exists in the repository.",
+        .settingsApplyingTrial: "Applying trial API key...",
+        .settingsTrialApplied: "Trial API key applied.",
+        .settingsTrialPageOpened: "Opened trial application page.",
+        .settingsTrialOpenFailedTitle: "Could Not Open Trial Page",
+        .settingsTrialFailedTitle: "Could Not Apply Trial API Key",
+        .settingsSaved: "Saved.",
+        .settingsSaveFailedTitle: "Could Not Save Settings",
+
+        .onboardingSetupTitle: "Set Up VoiceStick",
+        .onboardingStepPairDevice: "Pair Device",
+        .onboardingStepAsrKey: "ASR Key",
+        .onboardingStepAccessibility: "Accessibility",
+        .onboardingStepReady: "Ready",
+        .onboardingBack: "Back",
+        .onboardingContinue: "Continue",
+        .onboardingFinish: "Finish",
+        .onboardingPairTitle: "Pair your VoiceStick",
+        .onboardingPairDetail: "Choose a nearby VS-XXXX device. VoiceStick needs a paired device before the app can listen.",
+        .onboardingProviderTitle: "Choose your speech provider",
+        .onboardingProviderDetail: "Pick the ASR provider and enter the key or endpoint settings it needs.",
+        .onboardingAccessibilityTitle: "Allow text insertion",
+        .onboardingAccessibilityDetail: "VoiceStick pastes recognized text at your cursor, so macOS Accessibility permission is required.",
+        .onboardingReadyTitle: "VoiceStick is ready",
+        .onboardingReadyDetail: "The device and ASR settings are configured. Finish setup to start scanning and connecting.",
+        .onboardingOpenAccessibilitySettings: "Open Accessibility Settings",
+        .columnDevice: "Device",
+        .columnId: "ID",
+        .columnRssi: "RSSI",
+        .bluetoothUnavailable: "Bluetooth unavailable",
+        .foundCount: "%d found",
+        .selectDevice: "Select a device",
+        .onboardingSelectedDevice: "Selected VS-%@",
+        .valueNotPaired: "Not paired",
+        .valueAllowed: "Allowed",
+        .valueNotAllowedYet: "Not allowed yet",
+        .applyTrialFailed: "Apply failed: %@",
+        .saveFailedWithError: "Save failed: %@",
+        .openedSystemSettings: "Opened System Settings.",
+        .openAccessibilityManually: "Open System Settings, then go to Privacy & Security > Accessibility.",
+        .accessibilityAllowed: "Accessibility permission is allowed.",
+        .accessibilityNotAllowed: "Accessibility permission is not allowed yet.",
+        .accessibilityPasteBlocked: "Accessibility permission missing — text not pasted",
+        .accessibilityAlertTitle: "Accessibility Permission Required",
+        .accessibilityAlertBody: "VoiceStick inserts recognized text at the cursor by simulating Cmd+V, which macOS blocks without Accessibility permission. Grant it in System Settings > Privacy & Security > Accessibility, then quit and relaunch VoiceStick — permission changes only take effect after relaunch.",
+        .selectDeviceFirst: "Select a VoiceStick device first.",
+        .enterApiKeyFor: "Enter the API key for %@.",
+        .enterValidCloudURL: "Enter a valid Cloud URL.",
+        .allowAccessibilityFirst: "Allow Accessibility permission before continuing.",
+
+        .pairTitle: "Pair VoiceStick",
+        .pairColumnType: "Type",
+        .pairButton: "Pair",
+        .pairNamePaired: "%@ (paired)",
+        .deviceTypeVoiceStick: "Voice Stick",
+        .deviceTypeXiaomiRemote: "Xiaomi Remote",
+        .pairInProgress: "Pairing in progress",
+        .pairAlreadyPaired: "Already paired",
+        .pairIdConflict: "ID %@ conflicts with another paired device",
+        .pairDeviceLost: "Device lost; keep scanning",
+        .pairPairingDevice: "Pairing %@...",
+        .pairTimeoutManual: "Pairing timed out. Pair manually in System Settings > Bluetooth.",
+        .pairConnectFailedManual: "Connect failed. Pair manually in System Settings > Bluetooth.",
+        .pairDisconnectedManual: "Disconnected during pairing. Pair manually in System Settings > Bluetooth.",
+        .pairAtvvServiceMissingManual: "ATVV service not found. Pair manually in System Settings > Bluetooth.",
+        .pairAtvvCharacteristicsMissingManual: "ATVV characteristics missing. Pair manually in System Settings > Bluetooth.",
+        .pairSubscribeFailedManual: "Subscribe failed. Pair manually in System Settings > Bluetooth.",
+
+        .firmwareWindowTitle: "Firmware Update",
+        .firmwareUpdatingTitle: "Updating Firmware",
+        .firmwarePreparing: "Preparing update...",
+        .firmwareSpeed: "Speed %@",
+        .firmwareEstimatingTime: "Estimating time remaining",
+        .firmwareTimeRemaining: "%@ remaining",
+        .firmwareFinishingOnDevice: "Finishing on device",
+        .firmwareUpdatedTitle: "Firmware Updated",
+        .firmwareUpdatedDetail: "The device is rebooting into the new firmware.",
+        .firmwareDone: "Done",
+        .firmwareUpdateFailedTitle: "Update Failed",
+        .firmwareKeptCurrent: "The device kept its current firmware.",
+        .firmwareCancellingTitle: "Cancelling Firmware Update",
+        .firmwareCancellingDetail: "Stopping transfer and asking the device to abort.",
+        .firmwareCancelling: "Cancelling",
+        .firmwareLocalFile: "local file",
+        .firmwarePromptTitleRequired: "Firmware update recommended",
+        .firmwarePromptTitleAvailable: "Firmware update available",
+        .firmwarePromptBody: "VS-%@ is running firmware %@. The latest firmware is %@.",
+        .firmwarePromptUpdateButton: "Update Firmware",
+        .firmwarePromptLaterButton: "Later",
+
+        .hotkeyCaptureTitle: "Custom Hotkey",
+        .hotkeyCaptureHint: "Press the new hotkey (modifier + key). Esc cancels.",
+        .hotkeyCaptureMissingModifier: "Hotkey needs at least one modifier (Control/Option/Shift/Command).",
+        .hotkeyCaptureApplyHint: "Press OK to apply, or press another combination.",
+        .hotkeyCaptureAnyKeyHint: "Press the key to bind — single keys (e.g. Backspace) are fine, modifiers optional. Esc cancels.",
+
+        .interactionSettingsTitle: "Device interaction - VS-%@",
+        .settingsWakeSensitivity: "Wake Sensitivity",
+        .settingsTapToArrow: "Double-tap device to press Down arrow",
+        .settingsTapSensitivity: "Tap Sensitivity",
+        .settingsAirMouseX: "Left/Right Sensitivity",
+        .settingsAirMouseY: "Up/Down Sensitivity",
+
+        .encoderSettingsTitle: "Encoder settings - VS-%@",
+        .settingsSectionEncoder: "Encoder",
+        .encoderToArrow: "Inject keys on rotate",
+        .encoderRotationInvert: "Invert rotation direction",
+        .encoderRotateCwKey: "Clockwise key",
+        .encoderRotateCcwKey: "Counter-clockwise key",
+        .encoderRotateFastThreshold: "Fast threshold (detents/s)",
+        .encoderRotateCwFastKey: "Fast clockwise key",
+        .encoderRotateCcwFastKey: "Fast counter-clockwise key",
+        .encoderDecideWindow: "Decide window (ms)",
+        .encoderLedColor: "Recording LED color",
+        .encoderPressAction: "Press action",
+        .encoderPressKey: "Press key",
+        .encoderDoubleClickAction: "Double-click action",
+        .encoderDoubleClickKey: "Double-click key",
+        .encoderInvalidKey: "Invalid encoder key syntax (e.g. \"down\", \"ctrl+z\"); the field was not saved.",
+
+        .remoteSettingsTitle: "Remote settings - RC-%@",
+        .remoteSettingsSection: "Remote settings",
+        .remoteGainDb: "Gain (dB, -24 to 24)",
+        .remoteDoubleClickMs: "Double-click window (ms, 200 to 600)",
+        .remoteEffectiveNextConnect: "Changes take effect on the next connection.",
+
+        .batteryMonitorTitle: "Battery Voltage Monitor - VS-%@",
+        .batteryUsbAutoOff: "Auto power-off on USB (10 min)",
+        .batteryWarnUsb: "Tip: keep the device on USB power while monitoring; on battery it powers off after about 10 minutes idle.",
+        .batteryStart: "Start",
+        .batteryStop: "Stop",
+        .batteryExportCsv: "Export CSV...",
+        .batteryExportPng: "Export PNG...",
+        .batteryStatusIdle: "Idle. Click Start to run a 60-minute monitoring session (one sample per minute).",
+        .batteryStatusAnchoring: "Synchronizing time anchor...",
+        .batteryStatusProbing: "Probing log baseline...",
+        .batteryStatusMonitoring: "Monitoring: cycle %d/%d, %d points, next sample in %@",
+        .batteryStatusFinished: "Finished: %d points collected.",
+        .batteryStatusError: "Aborted: %@",
+        .batteryErrProbeTimeout: "log probe timed out (device not responding)",
+        .batteryErrDumpTimeout: "voltage log export timed out repeatedly",
+        .batteryErrRestart: "device restarted (uptime went backwards)",
+        .batteryErrDisconnected: "device disconnected",
+        .batteryErrLogCleared: "device log was cleared (total shrank)",
+        .batterySavedTo: "Saved: %@",
+        .batterySaveFailed: "save failed: %@",
+        .batteryNotEnoughSamples: "save failed: not enough valid samples",
+        .batteryAxisTime: "Time (min)",
+        .batteryAxisVoltage: "Voltage (mV)",
+        .batteryChartTitle: "VS-%@ battery voltage (%d points)",
+
+        .settingsSectionVoiceEdit: "Voice Editing",
+        .settingsVoiceEditEnabled: "Enable voice edit commands (say e.g. “delete the last two characters”)",
+        .settingsVoiceEditDefaultChars: "Characters deleted by “delete” alone",
+        .settingsVoiceEditHint: "Applies only to the most recent dictation, and only while the cursor is still at the end of that text. Subtitle and WeChat input-method modes are not supported.",
+        .voiceEditDeletedChars: "Deleted %d characters",
+        .voiceEditDeletedSentences: "Deleted the last %d sentences",
+        .voiceEditDeletedSentenceOne: "Deleted the last sentence",
+        .voiceEditDeletedAll: "Deleted this dictation",
+        .voiceEditUnverifiedSuffix: " (cursor unverified)",
+        .voiceEditNoInjection: "No voice input to delete",
+        .voiceEditScopeExpired: "The last dictation expired; nothing deleted",
+        .voiceEditAppChanged: "The app changed; nothing deleted",
+        .voiceEditFieldMismatch: "The cursor position changed; nothing deleted",
+        .voiceEditCaretNotEnd: "Move the cursor back to the end first",
+        .voiceEditSelectionPresent: "Clear the selection first",
+        .voiceEditVerifyUnavailable: "Cannot verify the cursor position in this app; nothing deleted",
+        .voiceEditForegroundElevated: "Cannot delete in an elevated window",
+        .voiceEditAccessibilityDenied: "Accessibility permission is not granted",
+        .voiceEditInjectFailed: "Deletion may not have been applied; check the text field",
+        .voiceTargetedDeleted: "Deleted %d characters",
+        .voiceTargetedReplaced: "Replaced %d characters",
+        .voiceTargetedNotFound: "Not found in the last dictation; nothing changed",
+        .voiceTargetedAmbiguous: "Multiple matches; say “the first one” or “the last one”",
+        .voiceTargetedInvalid: "The command is incomplete; nothing changed",
+        .voiceTargetedTextChanged: "The dictated text changed; nothing modified",
+        .voiceTargetedUnconfirmed: "The edit could not be confirmed; please check the text field",
+    ]
+
+    private static let chinese: [L10nKey: String] = [
+        .ok: "确定",
+        .cancel: "取消",
+        .save: "保存",
+        .close: "关闭",
+        .restoreDefaults: "恢复默认",
+
+        .languageSystem: "跟随系统",
+        .languageEnglish: "英文",
+        .languageChineseSimplified: "简体中文",
+
+        .statusPairVoiceStick: "配对 VoiceStick",
+        .statusListening: "正在聆听",
+        .statusProcessing: "处理中",
+        .statusReady: "就绪",
+        .statusError: "错误",
+        .statusPair: "配对",
+
+        .menuRestoreLastInput: "恢复上次输入",
+        .menuPairDevice: "配对设备...",
+        .menuSettings: "设置...",
+        .menuWebsite: "官网",
+        .menuCheckAppUpdates: "检查应用更新...",
+        .menuQuit: "退出",
+        .menuPressReturnAfterPaste: "粘贴后按回车",
+        .menuLaunchAtLogin: "开机自启动",
+        .menuInteraction: "交互方式",
+        .menuHoldToTalk: "按住说话",
+        .menuClickToTalk: "点击说话",
+        .menuHotkey: "热键",
+        .menuEnableHotkey: "启用热键",
+        .menuCustomHotkey: "自定义热键...",
+        .menuCustomHotkeyNamed: "自定义热键（%@）...",
+        .menuOutput: "输出",
+        .outputFocusedApp: "当前应用",
+        .outputSubtitle: "字幕",
+
+        .stateScanning: "正在扫描...",
+        .stateConnected: "已连接",
+        .menuThemeColor: "主题颜色",
+        .menuThemeSize: "主题大小",
+        .menuOverlayPosition: "悬浮窗位置",
+        .menuTranslation: "翻译",
+        .textOriginal: "原文",
+        .menuTranslateTo: "翻译为 %@",
+        .menuInteractionSettings: "设备交互设置…",
+        .menuEncoderSettings: "编码器设置…",
+        .menuAirMouse: "体感鼠标",
+        .menuRemoteSettings: "遥控器设置…",
+        .menuButtonMapping: "按键映射…",
+        .menuBatteryMonitor: "电池电压监测…",
+        .menuUpdateFirmwareFromFile: "从本地文件更新固件...",
+        .menuForgetDevice: "忘记设备",
+        .firmwareCheckingUpdates: "正在检查固件更新...",
+        // N9：此条原误置于 english 字典（与英文条目相邻），chinese 表实缺 →
+        // 中文界面经 tr() 回退显示英文长文案；静态奇偶守护首跑即抓出。
+        .firmwareMacSpeedLimited: "macOS 蓝牙限速（系统 HID 调度）；可改用 USB 数据线串口烧录（约 10 秒）",
+        .firmwareUpdateCheckFailed: "固件检查失败",
+        .firmwareUpdateTo: "更新到 %@...",
+        .menuFirmwareUpToDate: "固件已是最新",
+
+        .themeAuto: "自动",
+        .themeWhite: "白色",
+        .themeBlack: "黑色",
+        .themePink: "粉色",
+        .themeGreen: "绿色",
+        .themeYellow: "黄色",
+        .themeBlue: "蓝色",
+        .themePurple: "紫色",
+        .sizeBig: "大",
+        .sizeMedium: "中",
+        .sizeSmall: "小",
+        .positionCenter: "居中",
+        .positionBottomCenter: "底部居中",
+        .positionTopLeft: "左上",
+        .positionTopRight: "右上",
+        .positionBottomLeft: "左下",
+        .positionBottomRight: "右下",
+        .wakeLow: "低",
+        .wakeMedium: "中",
+        .wakeHigh: "高",
+        .ledRed: "红",
+        .ledGreen: "绿",
+        .ledBlue: "蓝",
+        .ledYellow: "黄",
+        .ledPurple: "紫",
+        .ledCyan: "青",
+        .ledWhite: "白",
+        .ledOff: "关",
+        .actionRecording: "录音",
+        .actionCustomKey: "自定义按键",
+
+        .settingsTitle: "VoiceStick 设置",
+        .settingsLanguage: "界面语言",
+        .settingsSectionGeneral: "通用",
+        .settingsDeveloperMode: "开发者模式（显示全部高级设置）",
+        .settingsSectionAsr: "语音识别",
+        .settingsProvider: "服务提供方",
+        .settingsApiKey: "API Key",
+        .settingsApplyTrial: "申请试用",
+        .settingsResourceId: "资源 ID",
+        .settingsHotwords: "热词",
+        .settingsHotwordsHint: "使用逗号或换行分隔热词。",
+        .settingsProviderLocal: "本地语音识别（离线，无需云端密钥）",
+        .settingsLocalModelsDir: "模型目录",
+        .settingsLocalModelsDirHint: "留空使用默认位置（~/Library/Application Support/VoiceStick/models/sense-voice-int8-2024-07-17）。",
+        .settingsLocalStatusReady: "✓ 模型就绪（已找到 SenseVoice）",
+        .settingsLocalStatusMissingModel: "✗ 未找到模型文件（需 model.int8.onnx 与 tokens.txt）",
+        .settingsLocalStatusMissingRuntime: "△ 模型就绪，识别运行时缺失——点「下载模型…」安装",
+        .settingsDownloadModels: "下载模型…",
+        .settingsLocalRefine: "本地文本精修（editform，离线）",
+        .settingsLocalRefineReady: "✓ 精修模型就绪（Qwen2.5 3B）",
+        .settingsLocalRefineMissing: "✗ 未下载精修模型——将降级为规则清理（可选）",
+        .settingsLocalRefineNoRuntime: "△ 本地 LLM 运行时未安装（先跑 scripts/fetch-llama-cpp.sh）",
+        .settingsVoiceEditAlign: "目标词本地对齐（听漂纠正）",
+        .settingsVoiceEditAlignReady: "✓ 对齐模型就绪（Qwen2.5 1.5B）",
+        .settingsVoiceEditAlignMissing: "✗ 未下载对齐模型——目标词听漂时回退普通粘贴（可选）",
+        .modelDownloadTitle: "下载本地模型",
+        .modelDownloadIntro: "将本地模型下载到用户目录：",
+        .modelDownloadEntryAsr: "语音识别模型（必选，约 240 MB）",
+        .modelDownloadEntryRuntime: "识别运行时（必选，约 30 MB）",
+        .modelDownloadEntryLlm: "本地大模型（%@，可选）",
+        .modelDownloadSpaceNeeded: "需要磁盘空间：约 %@",
+        .modelDownloadStart: "开始下载",
+        .modelDownloadPreparing: "准备中…",
+        .modelDownloadDone: "下载完成。回到设置页点击「保存」即可启用本地语音识别。",
+        .hotwordCandidateNotifyBodySuffix: " 已多次出现，可在设置-热词候选区加入或忽略。",
+        .settingsSectionHotwordCandidates: "热词候选",
+        .settingsHotwordCandidateAdd: "加入热词",
+        .settingsHotwordCandidateDismiss: "忽略",
+        .settingsHotwordCandidatesHint: "精修纠错中反复出现的新词会进入候选；「加入热词」后需点保存生效。",
+        .settingsSectionRefine: "文本精修",
+        .settingsLlmBaseUrl: "Base URL",
+        .settingsLlmModel: "模型",
+        .settingsRefineText: "精修文本（去除停顿空格、修正标点、清理口头语）",
+        .settingsRefinePrompt: "精修提示词",
+        .settingsSectionOutput: "输出",
+        .settingsOutputTarget: "输出目标",
+        .settingsSectionSystem: "系统",
+        .settingsLaunchAtLogin: "登录时自动运行 VoiceStick",
+        .settingsShowImuDebug: "显示加速度调试数值",
+        .settingsSectionAudioFiles: "音频文件",
+        .settingsDebugAudio: "保存调试音频文件",
+        .settingsDebugDir: "音频文件夹",
+        .settingsChooseDir: "选择...",
+        .settingsOpenConfigFolder: "打开配置文件夹",
+        .settingsAudioDebug: "启动音频调试",
+        .settingsAudioDebugFailedTitle: "无法启动音频调试",
+        .settingsAudioDebugNotFound: "请确认已安装 Python，且仓库中存在 scripts/e2e_test/spectrogram_server.py。",
+        .settingsApplyingTrial: "正在申请试用 API Key...",
+        .settingsTrialApplied: "试用 API Key 已应用。",
+        .settingsTrialPageOpened: "已打开试用申请页面。",
+        .settingsTrialOpenFailedTitle: "无法打开试用申请页面",
+        .settingsTrialFailedTitle: "无法申请试用 API Key",
+        .settingsSaved: "设置已保存。",
+        .settingsSaveFailedTitle: "无法保存设置。",
+
+        .onboardingSetupTitle: "设置 VoiceStick",
+        .onboardingStepPairDevice: "配对设备",
+        .onboardingStepAsrKey: "语音识别",
+        .onboardingStepAccessibility: "辅助功能",
+        .onboardingStepReady: "就绪",
+        .onboardingBack: "上一步",
+        .onboardingContinue: "下一步",
+        .onboardingFinish: "完成",
+        .onboardingPairTitle: "配对你的 VoiceStick 设备。",
+        .onboardingPairDetail: "选择附近的 VS-XXXX 设备。VoiceStick 需要配对设备后才能开始语音输入。",
+        .onboardingProviderTitle: "选择语音识别服务。",
+        .onboardingProviderDetail: "选择语音识别服务方，并填写所需的 Key 或接入点设置。",
+        .onboardingAccessibilityTitle: "允许文本插入",
+        .onboardingAccessibilityDetail: "VoiceStick 会在光标处粘贴识别文本，因此需要 macOS 辅助功能权限。",
+        .onboardingReadyTitle: "VoiceStick 已就绪。",
+        .onboardingReadyDetail: "设备与语音识别设置已完成。点击完成开始扫描并连接设备。",
+        .onboardingOpenAccessibilitySettings: "打开辅助功能设置",
+        .columnDevice: "设备",
+        .columnId: "ID",
+        .columnRssi: "信号",
+        .bluetoothUnavailable: "蓝牙不可用",
+        .foundCount: "找到 %d 个设备",
+        .selectDevice: "请选择设备",
+        .onboardingSelectedDevice: "已选择 VS-%@",
+        .valueNotPaired: "未配对",
+        .valueAllowed: "已允许",
+        .valueNotAllowedYet: "尚未允许",
+        .applyTrialFailed: "申请试用失败：%@",
+        .saveFailedWithError: "保存失败：%@",
+        .openedSystemSettings: "已打开系统设置。",
+        .openAccessibilityManually: "请打开系统设置，进入「隐私与安全性 > 辅助功能」。",
+        .accessibilityAllowed: "已获得辅助功能权限。",
+        .accessibilityNotAllowed: "尚未获得辅助功能权限。",
+        .accessibilityPasteBlocked: "缺少辅助功能权限，文本未粘贴",
+        .accessibilityAlertTitle: "需要辅助功能权限",
+        .accessibilityAlertBody: "VoiceStick 通过模拟 Cmd+V 在光标处插入识别文本，macOS 需要辅助功能权限才会放行。请在「系统设置 > 隐私与安全性 > 辅助功能」中授权，然后退出并重新打开 VoiceStick——权限变更要在重启应用后才生效。",
+        .selectDeviceFirst: "请先配对 VoiceStick 设备。",
+        .enterApiKeyFor: "请输入 %@ 的 API Key。",
+        .enterValidCloudURL: "请输入有效的 Cloud URL。",
+        .allowAccessibilityFirst: "请先允许辅助功能权限再继续。",
+
+        .pairTitle: "配对 VoiceStick",
+        .pairColumnType: "类型",
+        .pairButton: "配对",
+        .pairNamePaired: "%@（已配对）",
+        .deviceTypeVoiceStick: "语音棒",
+        .deviceTypeXiaomiRemote: "小米遥控器",
+        .pairInProgress: "正在配对...",
+        .pairAlreadyPaired: "该设备已配对",
+        .pairIdConflict: "ID %@ 与另一台已配对设备冲突",
+        .pairDeviceLost: "设备已丢失，继续扫描",
+        .pairPairingDevice: "正在配对 %@...",
+        .pairTimeoutManual: "配对超时。请在「系统设置 > 蓝牙」中手动配对。",
+        .pairConnectFailedManual: "连接失败。请在「系统设置 > 蓝牙」中手动配对。",
+        .pairDisconnectedManual: "配对过程中连接断开。请在「系统设置 > 蓝牙」中手动配对。",
+        .pairAtvvServiceMissingManual: "未找到 ATVV 服务。请在「系统设置 > 蓝牙」中手动配对。",
+        .pairAtvvCharacteristicsMissingManual: "缺少 ATVV 特征。请在「系统设置 > 蓝牙」中手动配对。",
+        .pairSubscribeFailedManual: "订阅失败。请在「系统设置 > 蓝牙」中手动配对。",
+
+        .firmwareWindowTitle: "固件更新",
+        .firmwareUpdatingTitle: "正在更新固件...",
+        .firmwarePreparing: "正在准备更新...",
+        .firmwareSpeed: "速度 %@",
+        .firmwareEstimatingTime: "正在估算剩余时间",
+        .firmwareTimeRemaining: "剩余 %@",
+        .firmwareFinishingOnDevice: "正在设备上完成",
+        .firmwareUpdatedTitle: "固件已更新",
+        .firmwareUpdatedDetail: "设备正在重启到新固件。",
+        .firmwareDone: "完成",
+        .firmwareUpdateFailedTitle: "固件更新失败。",
+        .firmwareKeptCurrent: "设备仍运行当前固件。",
+        .firmwareCancellingTitle: "正在取消固件更新",
+        .firmwareCancellingDetail: "正在停止传输并通知设备中止。",
+        .firmwareCancelling: "正在取消",
+        .firmwareLocalFile: "本地文件",
+        .firmwarePromptTitleRequired: "建议更新固件",
+        .firmwarePromptTitleAvailable: "有可用固件更新",
+        .firmwarePromptBody: "VS-%@ 当前运行固件 %@。\n\n最新固件为 %@。",
+        .firmwarePromptUpdateButton: "更新固件",
+        .firmwarePromptLaterButton: "稍后",
+
+        .hotkeyCaptureTitle: "自定义热键",
+        .hotkeyCaptureHint: "请按下新的快捷键（修饰键 + 主键），Esc 取消。",
+        .hotkeyCaptureMissingModifier: "错误：至少需要 1 个修饰键（Control/Option/Shift/Command）",
+        .hotkeyCaptureApplyHint: "按「确定」应用，或按下其他组合。",
+        .hotkeyCaptureAnyKeyHint: "请按下要绑定的按键——允许单键（如 Backspace），修饰键可选。Esc 取消。",
+
+        .interactionSettingsTitle: "设备交互 - VS-%@",
+        .settingsWakeSensitivity: "拿起灵敏度",
+        .settingsTapToArrow: "双击设备按下方向键↓",
+        .settingsTapSensitivity: "敲击灵敏度",
+        .settingsAirMouseX: "左右灵敏度",
+        .settingsAirMouseY: "上下灵敏度",
+
+        .encoderSettingsTitle: "编码器设置 - VS-%@",
+        .settingsSectionEncoder: "编码器",
+        .encoderToArrow: "旋转时注入按键",
+        .encoderRotationInvert: "旋转方向翻转",
+        .encoderRotateCwKey: "顺时针按键",
+        .encoderRotateCcwKey: "逆时针按键",
+        .encoderRotateFastThreshold: "快慢阈值（格/秒）",
+        .encoderRotateCwFastKey: "快速顺时针按键",
+        .encoderRotateCcwFastKey: "快速逆时针按键",
+        .encoderDecideWindow: "判定窗口（毫秒）",
+        .encoderLedColor: "录音灯颜色",
+        .encoderPressAction: "单击动作",
+        .encoderPressKey: "单击按键",
+        .encoderDoubleClickAction: "双击动作",
+        .encoderDoubleClickKey: "双击按键",
+        .encoderInvalidKey: "编码器按键语法无效（示例：down、ctrl+z），该字段未保存。",
+
+        .remoteSettingsTitle: "遥控器设置 - RC-%@",
+        .remoteSettingsSection: "遥控器设置",
+        .remoteGainDb: "增益（dB，-24~24）",
+        .remoteDoubleClickMs: "双击窗口（ms，200~600）",
+        .remoteEffectiveNextConnect: "设置将在下次连接时生效。",
+
+        .batteryMonitorTitle: "电池电压监测 - VS-%@",
+        .batteryUsbAutoOff: "供电时10分钟自动关机",
+        .batteryWarnUsb: "提示：建议监测期间保持设备 USB 供电；电池供电下设备空闲约 10 分钟会自动关机。",
+        .batteryStart: "开始监测",
+        .batteryStop: "停止",
+        .batteryExportCsv: "导出 CSV…",
+        .batteryExportPng: "导出 PNG…",
+        .batteryStatusIdle: "空闲。点击「开始监测」启动 60 分钟监测（每分钟 1 个采样点）。",
+        .batteryStatusAnchoring: "正在同步时间锚点…",
+        .batteryStatusProbing: "正在探测日志基线…",
+        .batteryStatusMonitoring: "监测中：第 %d/%d 周期，%d 个数据点，下次采集 %@",
+        .batteryStatusFinished: "监测完成：共 %d 个数据点。",
+        .batteryStatusError: "已中止：%@",
+        .batteryErrProbeTimeout: "日志基线探测超时（设备无响应）",
+        .batteryErrDumpTimeout: "电压日志导出反复超时",
+        .batteryErrRestart: "设备已重启（uptime 回退）",
+        .batteryErrDisconnected: "设备连接已断开",
+        .batteryErrLogCleared: "设备端日志被清空（总长度回退）",
+        .batterySavedTo: "已保存：%@",
+        .batterySaveFailed: "保存失败：%@",
+        .batteryNotEnoughSamples: "保存失败：有效采样点不足",
+        .batteryAxisTime: "时间（分钟）",
+        .batteryAxisVoltage: "电压（mV）",
+        .batteryChartTitle: "VS-%@ 电池电压监测（%d 点）",
+
+        .settingsSectionVoiceEdit: "语音编辑",
+        .settingsVoiceEditEnabled: "启用语音编辑指令（说“删除最后两个字”等）",
+        .settingsVoiceEditDefaultChars: "单独说“删除”时删除字数",
+        .settingsVoiceEditHint: "仅对最近一次语音输入、且光标仍在该文本末尾时生效；字幕/微信输入法模式不支持。",
+        .voiceEditDeletedChars: "已删除 %d 个字",
+        .voiceEditDeletedSentences: "已删除最后 %d 句",
+        .voiceEditDeletedSentenceOne: "已删除最后一句",
+        .voiceEditDeletedAll: "已删除本次输入",
+        .voiceEditUnverifiedSuffix: "（未校验光标）",
+        .voiceEditNoInjection: "没有可删除的语音输入",
+        .voiceEditScopeExpired: "最近一次语音输入已过期，未删除",
+        .voiceEditAppChanged: "已切换应用，未删除",
+        .voiceEditFieldMismatch: "光标位置已变化，未删除",
+        .voiceEditCaretNotEnd: "请先将光标移回末尾",
+        .voiceEditSelectionPresent: "请先取消选中",
+        .voiceEditVerifyUnavailable: "当前应用无法确认光标位置，未删除",
+        .voiceEditForegroundElevated: "目标窗口权限较高，无法删除",
+        .voiceEditAccessibilityDenied: "辅助功能权限未授予",
+        .voiceEditInjectFailed: "删除可能未生效，请检查输入框",
+        .voiceTargetedDeleted: "已删除 %d 个字",
+        .voiceTargetedReplaced: "已替换 %d 个字",
+        .voiceTargetedNotFound: "刚才的输入里没有找到该内容，未修改",
+        .voiceTargetedAmbiguous: "找到多处匹配，请说明第一个还是最后一个",
+        .voiceTargetedInvalid: "指令不完整，未修改",
+        .voiceTargetedTextChanged: "语音输入内容已变化，未修改",
+        .voiceTargetedUnconfirmed: "修改结果未能确认，请检查输入框",
+    ]
+}
+
+/// 查表便捷入口（当前语言见 Localization.current）。
+func tr(_ key: L10nKey) -> String {
+    Localization.tr(key)
+}
+
+func tr(_ key: L10nKey, _ args: CVarArg...) -> String {
+    String(format: Localization.tr(key), arguments: args)
+}

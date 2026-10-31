@@ -12,8 +12,12 @@ import VoiceStickCore
 ///     keyDown CGEvent，tap 驱动的旧架构对它们永远静默（这正是「返回键设 Delete
 ///     无反应」的根因之一）。
 ///   - inject：IOHID 按下即注入目标 KeySpec（点按式）；若该键有 macOS 原生行为
-///     （方向/OK/Home/TV 产生 keyDown，音量产生 subtype=8 的 systemDefined），
+///     （方向/OK/Home/TV 产生 keyDown，音量/电源产生 systemDefined），
 ///     同时记吞除标记，由 tap 按 keycode/systemKey 反映射吞掉原生事件防双触发。
+///     电源键（0x66，2026-10-19 开放映射）原生事件为双形态——subtype=1 首事件
+///     （NX_SUBTYPE_POWER_KEY）+ aux-control（subtype 8）NX_POWER_KEY(6) 的
+///     down/up 对——单次按下多形态，吞除用 300ms 非消耗窗口（pendingSuppress
+///     一次性消费会漏吞后续形态，对齐 PowerKey 的双形态吞除）。
 ///   - suppress(disabled)：只记吞除标记。
 ///   - native / intercept=false：什么都不做（OS 原生消费，忠实透传）。
 ///
@@ -37,11 +41,25 @@ final class XiaomiButtonInterceptManager {
     private static let suppressWindowMs: Int64 = 300
     /// systemDefined 事件的 aux-control subtype（NX_SUBTYPE_AUX_CONTROL_BUTTONS）。
     private static let auxControlSubtype = 8
+    /// 电源键首事件 subtype（NX_SUBTYPE_POWER_KEY，IOLLEvent.h）——单次按下先到的
+    /// 无 keyCode/状态语义形态（PowerKey 实测内置电源键按一次产生本形态 + aux-control
+    /// down/up 对共三类事件；外接键盘 0x66 走同一 special-key 通道，按吞除窗兜底吞除）。
+    private static let powerKeySubtype = 1
+    /// 电源键 HID usage（keyboard page 0x07）。
+    private static let powerUsage: UInt32 = 0x66
     /// systemDefined data1 低位状态：0xa00=按下，0xb00=抬起（真机实测）。
     private static let auxKeyDownLow: Int64 = 0xa00
     private static let auxKeyUpLow: Int64 = 0xb00
 
     private let inputInjector = InputInjector()
+    /// 长按连发状态机（supportsRepeat 按钮的 inject 动作；节拍热更随 settings 同步）。
+    private var repeater = RemoteButtonRepeater(timing: .init(
+        delayMs: ButtonsSettings.defaultRepeatDelayMs,
+        intervalMs: ButtonsSettings.defaultRepeatIntervalMs
+    ))
+    /// 连发轮询定时器（主 RunLoop；有 hold 才运行，30ms 粒度——连发判定走绝对
+    /// deadline，粒度抖动不累积误差；对齐 Windows kRepeatTimerMs=40 量级）。
+    private var repeatTimer: Timer?
 
     private var manager: IOHIDManager?
     private var tap: CFMachPort?
@@ -49,12 +67,18 @@ final class XiaomiButtonInterceptManager {
     /// 当前设备按键映射（AppDelegate sync 时下发；nil=未启用）。
     private var settings: ButtonsSettings?
     /// 待吞原生事件的标记：usage → 按下时间戳（一次性消费；超时兜底失效）。
+    /// 仅用于原生形态唯一的键（keyDown 键 / 音量 systemDefined）；电源键一次按下
+    /// 产生多个原生形态，走 powerSuppressUntilMs 窗口期吞除。
     private var pendingSuppressByUsage: [UInt32: Int64] = [:]
+    /// 电源键原生事件吞除窗截止时刻：单次按下在 macOS 产生首事件（subtype=1）+
+    /// aux-control down/up 对多个形态，一次性消费会漏吞后续形态，故窗内（300ms）
+    /// 命中电源形态一律吞掉（非消耗式）。
+    private var powerSuppressUntilMs: Int64?
     /// 正在吞的键盘序列 keycode（吞 keydown 后，自动重复与同 keycode 的 keyup 联动吞）。
     private var latchedKeyCode: Int64?
-    /// 正在吞的音量 systemDefined 序列（usage；down 吞入闩，up 吞出闩——长按音量时
-    /// up 可能超 300ms 窗，闩锁保证配对吞除）。
-    private var latchedVolumeUsage: UInt32?
+    /// 正在吞的 systemDefined 序列 usage（音量/电源 down 吞入闩、up 吞出闩——
+    /// 长按 up 可能超 300ms 窗，闩锁保证配对吞除；同一时刻至多一键序列）。
+    private var latchedAuxKeyUsage: UInt32?
 
     /// 拦截层是否可用：输入监控（IOHID 键盘观察）+ 辅助功能（tap/注入）。
     static func isAvailable() -> Bool {
@@ -65,6 +89,8 @@ final class XiaomiButtonInterceptManager {
     /// 权限缺失只 NSLog 放弃（权限引导在按键映射窗/Onboarding）。
     func start(settings: ButtonsSettings) {
         self.settings = settings
+        repeater.setTiming(.init(delayMs: settings.repeatDelayMs,
+                                 intervalMs: settings.repeatIntervalMs))
         guard tap == nil else { return }
         guard Self.isAvailable() else {
             NSLog("XiaomiButtonInterceptManager: input-monitoring or accessibility permission missing; " +
@@ -79,8 +105,12 @@ final class XiaomiButtonInterceptManager {
     func stop() {
         settings = nil
         pendingSuppressByUsage = [:]
+        powerSuppressUntilMs = nil
         latchedKeyCode = nil
-        latchedVolumeUsage = nil
+        latchedAuxKeyUsage = nil
+        repeater.reset()
+        repeatTimer?.invalidate()
+        repeatTimer = nil
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
@@ -136,13 +166,16 @@ final class XiaomiButtonInterceptManager {
         let usage = IOHIDElementGetUsage(element)
         guard usage != 0xFFFF_FFFF,
               IOHIDElementGetUsagePage(element) == 0x07 else { return }
-        guard IOHIDValueGetIntegerValue(value) != 0 else { return }  // 抬起无需处置
+        if IOHIDValueGetIntegerValue(value) == 0 {
+            handleRemoteButtonUp(usage: usage)  // 抬起沿：仅连发 hold 清理消费
+            return
+        }
         NSLog("XiaomiButtonInterceptManager: button down usage=0x%x", usage)
         handleRemoteButtonDown(usage: usage)
     }
 
     /// 遥控器按键按下处置（IOHID 驱动）：
-    ///   - native / 未映射（含 power/voice F5）→ 无操作，OS 原生消费；
+    ///   - native / 未映射（含 voice F5）→ 无操作，OS 原生消费；
     ///   - disabled → 记吞除标记（tap 吞原生事件）；
     ///   - key → 立即注入目标 KeySpec + 记吞除标记；KeySpec 解析失败回落 native
     ///     （不注入也不吞，对齐旧语义）。
@@ -154,17 +187,94 @@ final class XiaomiButtonInterceptManager {
         case .native:
             return
         case .suppress:
-            pendingSuppressByUsage[usage] = XiaomiMicOpenAnchor.nowMs()
+            armSuppress(button: button, usage: usage)
             NSLog("XiaomiButtonInterceptManager: suppress \(button.rawValue)")
         case .inject(let keyText):
             guard let spec = KeySpec.parse(keyText) else {
                 NSLog("XiaomiButtonInterceptManager: invalid key \"\(keyText)\" for \(button.rawValue) -> pass native")
                 return
             }
-            pendingSuppressByUsage[usage] = XiaomiMicOpenAnchor.nowMs()
+            armSuppress(button: button, usage: usage)
             NSLog("XiaomiButtonInterceptManager: inject \(button.rawValue) -> \(spec.displayText)")
             inputInjector.sendKeyCombo(spec)
+            // 按住连发登记（方向/返回删除/音量类；按下首发已完成，delay 后 poll 接管）。
+            if repeater.press(button, atMs: XiaomiMicOpenAnchor.nowMs()) {
+                NSLog("XiaomiButtonInterceptManager: repeat armed \(button.rawValue) " +
+                      "delay=\(settings.repeatDelayMs)ms interval=\(settings.repeatIntervalMs)ms")
+                syncRepeatTimer()
+            }
         }
+    }
+
+    /// 记原生事件吞除标记：电源键单次按下在 macOS 上产生多个原生事件形态
+    /// （subtype=1 首事件 + aux-control down/up 对，对齐 PowerKey 双形态吞除），
+    /// 一次性消费标记会漏吞后续形态，故用非消耗式吞除窗；其余键原生形态唯一
+    /// （keyDown 序列或音量 systemDefined），沿用一次性消费标记。
+    private func armSuppress(button: RemoteButton, usage: UInt32) {
+        if button == .power {
+            powerSuppressUntilMs = XiaomiMicOpenAnchor.nowMs() + Self.suppressWindowMs
+        } else {
+            pendingSuppressByUsage[usage] = XiaomiMicOpenAnchor.nowMs()
+        }
+    }
+
+    /// 电源键吞除窗是否有效（过期顺手清理）。
+    private func isPowerSuppressActive() -> Bool {
+        guard let untilMs = powerSuppressUntilMs else { return false }
+        guard XiaomiMicOpenAnchor.nowMs() <= untilMs else {
+            powerSuppressUntilMs = nil
+            return false
+        }
+        return true
+    }
+
+    /// 遥控器按键抬起处置：只消费连发 hold 清理（吞除标记/闩锁面向 down，抬起无关）。
+    private func handleRemoteButtonUp(usage: UInt32) {
+        guard settings != nil,
+              let button = RemoteButtonHIDMap.button(forUsage: usage) else { return }
+        if repeater.release(button) {
+            NSLog("XiaomiButtonInterceptManager: repeat stop \(button.rawValue)")
+            syncRepeatTimer()
+        }
+    }
+
+    // MARK: - 长按连发定时器
+
+    /// hold 存在性 ↔ 连发定时器开关联动（对齐 Windows SyncRepeatTimer）。
+    private func syncRepeatTimer() {
+        if repeater.hasHolds {
+            guard repeatTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+                self?.fireRepeat()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            repeatTimer = timer
+        } else if repeatTimer != nil {
+            repeatTimer?.invalidate()
+            repeatTimer = nil
+        }
+    }
+
+    /// 连发轮询：到期按钮按当前映射重新解析注入（热改映射即刻生效；改失配则
+    /// 撤销该 hold 不再连发）。注入事件 sourceUnixProcessID≠0，tap 侧放行。
+    private func fireRepeat() {
+        guard let settings else {
+            repeater.reset()
+            syncRepeatTimer()
+            return
+        }
+        for button in repeater.poll(atMs: XiaomiMicOpenAnchor.nowMs()) {
+            let mapping = settings.mapping(for: button)
+            guard case .inject(let keyText) = RemoteButtonHIDMap.decision(intercept: settings.intercept, mapping: mapping),
+                  let spec = KeySpec.parse(keyText) else {
+                NSLog("XiaomiButtonInterceptManager: repeat drop \(button.rawValue) (mapping changed)")
+                repeater.release(button)
+                continue
+            }
+            NSLog("XiaomiButtonInterceptManager: repeat fire \(button.rawValue) -> \(spec.displayText)")
+            inputInjector.sendKeyCombo(spec)
+        }
+        syncRepeatTimer()
     }
 
     /// 吞除标记查询（一次性消费 + 短窗兜底）：命中即清除并返回 true。
@@ -253,29 +363,59 @@ final class XiaomiButtonInterceptManager {
         return nil
     }
 
-    /// 音量键 systemDefined 吞除：down 命中吞除标记 → 吞并入闩；up 配闩吞出闩。
-    /// 未命中一律放行（真实键盘音量键/OS 自身音量事件不受影响）。
+    /// systemDefined 吞除：电源键首事件（subtype=1）吞除窗内一律吞；aux-control
+    /// （subtype=8）按 special key code 反映射分派——电源（NX_POWER_KEY=6）走窗口期
+    /// 吞除（down 入闩、up 出闩，闩锁与音量共享），音量（0/1）维持一次性消费标记。
+    /// 未命中一律放行（真实键盘音量/电源键、OS 自身事件不受影响）。
     private func handleSystemDefinedEvent(_ event: CGEvent) -> Unmanaged<CGEvent>? {
         guard event.getIntegerValueField(.eventSourceUnixProcessID) == 0,
-              let nsEvent = NSEvent(cgEvent: event),
-              Int(nsEvent.subtype.rawValue) == Self.auxControlSubtype else {
+              let nsEvent = NSEvent(cgEvent: event) else {
             return Unmanaged.passRetained(event)
+        }
+        let subtype = Int(nsEvent.subtype.rawValue)
+        // 电源键首事件形态（NX_SUBTYPE_POWER_KEY=1）：无 keyCode/状态语义，窗内吞。
+        if subtype == Self.powerKeySubtype {
+            return isPowerSuppressActive() ? nil : Unmanaged.passRetained(event)
+        }
+        guard subtype == Self.auxControlSubtype else {
+            return Unmanaged.passRetained(event)  // 播放/静音/Touch ID 等 → 放行
         }
         let keyCode = Int64(nsEvent.data1 >> 16)
         let low = Int64(nsEvent.data1 & 0xFF00)
-        guard let usage = RemoteButtonHIDMap.volumeSystemKeyToUsage[keyCode] else {
-            return Unmanaged.passRetained(event)  // 非音量键（播放/静音等）→ 放行
+        guard let usage = RemoteButtonHIDMap.auxControlKeyToUsage[keyCode] else {
+            return Unmanaged.passRetained(event)  // 非音量/电源 special key → 放行
         }
-        if low == Self.auxKeyDownLow {
-            guard latchedVolumeUsage == nil, consumePendingSuppress(usage: usage) else {
-                if latchedVolumeUsage == usage { return nil }  // 序列内重复 down
+        // 电源键：一次按下产生首事件 + down/up 对多形态，吞除窗非消耗式（窗内一律吞）；
+        // down 入闩、up 出闩，长按超窗后抬起仍配对吞除（同音量闩锁语义）。
+        if usage == Self.powerUsage {
+            if low == Self.auxKeyDownLow {
+                if isPowerSuppressActive() || latchedAuxKeyUsage == usage {
+                    latchedAuxKeyUsage = usage
+                    return nil
+                }
                 return Unmanaged.passRetained(event)
             }
-            latchedVolumeUsage = usage
+            if low == Self.auxKeyUpLow {
+                if latchedAuxKeyUsage == usage {
+                    latchedAuxKeyUsage = nil
+                    return nil
+                }
+                if isPowerSuppressActive() { return nil }
+                return Unmanaged.passRetained(event)
+            }
+            return Unmanaged.passRetained(event)
+        }
+        // 音量键：down 命中吞除标记 → 吞并入闩；up 配闩吞出闩。
+        if low == Self.auxKeyDownLow {
+            guard latchedAuxKeyUsage == nil, consumePendingSuppress(usage: usage) else {
+                if latchedAuxKeyUsage == usage { return nil }  // 序列内重复 down
+                return Unmanaged.passRetained(event)
+            }
+            latchedAuxKeyUsage = usage
             return nil
         }
-        if low == Self.auxKeyUpLow, latchedVolumeUsage == usage {
-            latchedVolumeUsage = nil
+        if low == Self.auxKeyUpLow, latchedAuxKeyUsage == usage {
+            latchedAuxKeyUsage = nil
             return nil
         }
         return Unmanaged.passRetained(event)

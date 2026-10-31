@@ -1,4 +1,5 @@
 # 屏幕亮度与亮屏时间续航优化方案
+> 状态：已实施（代码实证：firmware/components/ui_status/ui_status.c、main.c。核销 2026-10-08/N10）
 
 - 版本：v1.0
 - 日期：2026-07-09

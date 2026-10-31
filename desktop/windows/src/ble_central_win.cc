@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "ble_protocol.h"
 #include "log.h"
+#include "pair_device_helper.h"
 #include "xiaomi_atvv_protocol.h"
 
 #include <winrt/Windows.Devices.Enumeration.h>
@@ -15,6 +16,8 @@
 #include <chrono>
 #include <random>
 #include <utility>
+
+#include "ble_central_win_util.h"
 
 namespace voicestick {
 
@@ -45,38 +48,20 @@ using winrt::Windows::Storage::Streams::DataWriter;
 constexpr int kServiceDiscoveryAttempts = 6;
 constexpr std::chrono::milliseconds kServiceDiscoveryRetryDelay{1000};
 constexpr std::chrono::milliseconds kServiceDiscoveryTimeout{8000};
-constexpr std::chrono::milliseconds kCharacteristicDiscoveryTimeout{5000};
 constexpr std::chrono::milliseconds kDeviceReopenDelay{800};
 constexpr std::chrono::milliseconds kConnectionSettleDelay{100};
-constexpr std::chrono::milliseconds kValueChangedHandlerSettleDelay{100};
 constexpr std::chrono::milliseconds kDeviceInfoSettleDelay{100};
 
-// 心跳探活：周期性向每个已连接会话写 battery_status_request（固件收到必回
-// battery_status，见 firmware/main/main.c 的 APP_EVENT_BATTERY_STATUS_REQUEST），
-// 并跟踪入站流量时间戳；超过 kHeartbeatTimeout 无任何入站即判定僵尸会话并拆除
-// 重连。这是对端静默消失、WinRT 断连事件未投递时的兜底通道；该写入不会重启固件
-// 的 5 分钟待机断电计时器，不会改变设备省电行为。
-constexpr std::chrono::seconds kHeartbeatInterval{30};
-constexpr std::chrono::milliseconds kHeartbeatTimeout{90000};
 
-// 僵尸链路安定窗：设备快速重启（手动复位/OTA/崩溃）后，Windows 仍持有旧链路
-// （对端静默消失时断连事件不投递）。此时立即重连会挂在僵尸链路上——OS 认为
-// "已连接"（link-layer connected after 0ms polls=0），首个空口 ATT 操作挂起，
-// 直到旧链路监督超时（实测重启后 ~3.5-4.0s）OS 宣告断连，订阅被取消，再叠加
-// 5s 失败退避，全程 ~11s（两次真机复现，见 Doc/Expe/ble-zombie-link-reboot-reconnect.md）。
-// 拆旧会话时若设备"刚刚还活跃"（last_rx 在 kZombieFreshThreshold 内），说明这是
-// 快速重启场景，延迟 kReconnectSettleDelay 等 OS 埋掉僵尸链路再连。
-// 判出僵尸时已主动 Close gatt_session/ble_device（栈立即发 LL_TERMINATE），
-// 不需要等被动监督超时的 3.5-4s；撞未死僵尸由 kSubscribeTimeout 兜底（见订阅处）。
-// 深睡唤醒的会话安静了数分钟（last_rx 远超阈值），僵尸链路早已死亡，不进窗口，
-// 保持快速回连路径。
-constexpr std::chrono::milliseconds kReconnectSettleDelay{1500};
 constexpr std::int64_t kZombieFreshThresholdMs{45000};
+// 连接失败后的退避期：扫描→立即重试→再失败的 tight-loop 防护。5 秒足以让
+// Windows BLE 栈从异常状态中恢复；同时也是失败入队主动重连的首次重试延迟。
+constexpr std::chrono::seconds kConnectFailureCooldown{5};
 
-// 链上首个 ATT 操作（state 订阅）的应用层超时。正常几十 ms 完成；撞上未死
-// 僵尸链路时 OS 要 ~3.5-4s 才宣告断连，这里 2.5s 提前取消并走失败路径，
-// 配合 zombie_suspect 免退避把最坏回连压在 ~5.5s 而不是 ~10s。
-constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
+
+// 广播报告的"会话仍活着"否决窗（见 HandleAdvertisement 的 stale_session 分支）：
+// 1s 内还有入站数据的会话不因一条广播被拆；真重启的设备 1s 内发不出任何数据。
+constexpr std::int64_t kAliveAdvVetoMs{1000};
 
 // zombie_suspect 免退避重试的窗口与上限：连按重启会产生多重僵尸，
 // 单次免退避不够；但无限免退避会让持续失败的设备 tight-loop，
@@ -84,38 +69,33 @@ constexpr std::chrono::milliseconds kSubscribeTimeout{2500};
 constexpr std::chrono::milliseconds kZombieSuspectWindow{15000};
 constexpr int kZombieSuspectMaxFreeRetries = 3;
 
+// 连接期活性证明（P0 僵尸自愈）：CCCD 写返回 Success 只说明本机 ATT 层认为写完了。
+// 加密上下文陈旧（设备重启致 LTK 轮换、WinRT 缓存未失效）时该写「假成功」而设备侧
+// 从未登记（固件 voice_ble 的 state_sub 仍为 0）⇒ voice_ble_is_ready() 恒假、录音必被
+// 拒，UI 却显示已连接。判据取「订阅后是否收到任何入站 notify」——固件的
+// send_state_json 受 s_state_subscribed 门控，收到任何 state 通知即证明设备侧确实登记
+// 了订阅（僵尸链路上一个字节都收不到）。
+// 超时 2.5s 的依据：健康链路上主动索要的回包（battery_status，见下方探针）实测
+// <1s 到达；僵尸链路上不会有任何回包，2.5s 即判死，远快于旧路径的 90s 心跳超时。
+constexpr std::chrono::milliseconds kSessionLivenessTimeout{2500};
+constexpr std::chrono::milliseconds kSessionLivenessPollInterval{100};
+
+// 网关模式下「跳过直连遥控器」日志的节流间隔（每个遥控器地址首次必记一条）。
+constexpr std::chrono::milliseconds kGatewaySkipLogIntervalMs{300000};
+
+
 // watcher 异常停止的退避重启：3s 内再次异常停止视为连续失败，指数退避
 // 1s→2s→4s→…→30s 封顶。radio 坏状态下无退避会形成每秒数百次扫描热循环。
 constexpr std::int64_t kScanRestartStreakWindowMs{3000};
 constexpr int kScanRestartMaxBackoffMs{30000};
 
-// 扫描健康看门狗：BluetoothLEAdvertisementWatcher 会在蓝牙无线电状态变化
-// （包括应用自己触发的 radio reset）或驱动异常后静默失效——仍报告 Started
-// 却不再投递任何广告包，设备持续广播而主机永远收不到，只能重启进程恢复
-// （见 Doc/Expe/ble-watcher-silent-death-pairing-stuck.md）。无线电开关切换
-// 由 StateChanged 事件秒级覆盖（见 InitRadioWatcherAsync），本看门狗是其余
-// 失效场景的兜底：心跳线程按 kScanSilenceTimeout 检测并重建 watcher；
-// kScanWatchdogMinRestartInterval 节流，避免 RF 静默环境（设备深睡且周围
-// 无其他 BLE 设备）下空转刷日志。
-constexpr std::chrono::seconds kScanSilenceTimeout{60};
-constexpr std::chrono::seconds kScanWatchdogMinRestartInterval{120};
 
-// 标准 GATT Battery Service（小米遥控器电量，可选）与 GAP 设备名（心跳保活兜底读）。
-constexpr const wchar_t* kBatteryServiceUuid = L"0000180f-0000-1000-8000-00805f9b34fb";
-constexpr const wchar_t* kBatteryLevelUuid = L"00002a19-0000-1000-8000-00805f9b34fb";
-constexpr const wchar_t* kGapServiceUuid = L"00001800-0000-1000-8000-00805f9b34fb";
-constexpr const wchar_t* kGapDeviceNameUuid = L"00002a00-0000-1000-8000-00805f9b34fb";
 
 // 小米电池/保活 setup 的总超时：内部为裸 WinRT co_await 串（服务发现/特征发现/
 // CCCD/初始读），任一步被楔死都会挂住 ready 前的连接序列；超时即放弃电池特征
 // 继续主连接（心跳保活随之缺失，90s 静默拆除兜底）。
 constexpr std::chrono::milliseconds kXiaomiBatterySetupTimeout{5000};
 
-// 在途连接 claim 的滞留上限：ConnectDeviceAsync 若在任一无超时的 WinRT
-// co_await 上永久挂起（既不 fail 也不 ready），claim 永不释放，该地址的
-// 后续广播全被 try_claim_connect 否决，形成重连自我封锁。最坏正常连接
-// 耗时实测 ~65s（6 次服务发现重试 + radio reset），120s 留出充足余量。
-constexpr std::chrono::seconds kConnectClaimTimeout{120};
 
 // HRESULT_FROM_WIN32(ERROR_BAD_COMMAND): Windows surfaces this for our
 // scenario when the OS thinks the device is already paired/bonded but the
@@ -129,22 +109,7 @@ long long ElapsedMs(std::chrono::steady_clock::time_point start) {
         std::chrono::steady_clock::now() - start).count();
 }
 
-std::int64_t NowSteadyMs() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
 
-BluetoothAddressType ToBluetoothAddressType(BluetoothAddressKind kind) {
-    switch (kind) {
-    case BluetoothAddressKind::kPublic:
-        return BluetoothAddressType::Public;
-    case BluetoothAddressKind::kRandom:
-        return BluetoothAddressType::Random;
-    case BluetoothAddressKind::kUnspecified:
-    default:
-        return BluetoothAddressType::Unspecified;
-    }
-}
 
 const char* AddressKindName(BluetoothAddressKind kind) {
     switch (kind) {
@@ -162,12 +127,6 @@ std::string Utf8FromHstring(const winrt::hstring& value) {
     return winrt::to_string(value);
 }
 
-ByteVector BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer) {
-    DataReader reader = DataReader::FromBuffer(buffer);
-    ByteVector bytes(reader.UnconsumedBufferLength());
-    if (!bytes.empty()) reader.ReadBytes(bytes);
-    return bytes;
-}
 
 struct AdvertisementIdentity {
     std::string local_name;
@@ -196,27 +155,9 @@ AdvertisementIdentity AdvertisementIdentityFrom(
     return identity;
 }
 
-bool HasNotify(const GattCharacteristic& characteristic) {
-    return (characteristic.CharacteristicProperties() & GattCharacteristicProperties::Notify) ==
-           GattCharacteristicProperties::Notify;
-}
 
-bool HasWriteWithoutResponse(const GattCharacteristic& characteristic) {
-    return (characteristic.CharacteristicProperties() & GattCharacteristicProperties::WriteWithoutResponse) ==
-           GattCharacteristicProperties::WriteWithoutResponse;
-}
 
-bool HasWrite(const GattCharacteristic& characteristic) {
-    return (characteristic.CharacteristicProperties() & GattCharacteristicProperties::Write) ==
-           GattCharacteristicProperties::Write;
-}
 
-winrt::Windows::Storage::Streams::IBuffer BufferFromBytes(std::span<const std::uint8_t> payload) {
-    DataWriter writer;
-    ByteVector bytes(payload.begin(), payload.end());
-    writer.WriteBytes(bytes);
-    return writer.DetachBuffer();
-}
 
 std::uint32_t RandomTransferId() {
     static std::random_device rd;
@@ -225,23 +166,7 @@ std::uint32_t RandomTransferId() {
     return dist(rng);
 }
 
-std::string FormatBluetoothAddress(std::uint64_t address) {
-    char buffer[18]{};
-    snprintf(buffer, sizeof(buffer), "%02llX:%02llX:%02llX:%02llX:%02llX:%02llX",
-             (address >> 40) & 0xff,
-             (address >> 32) & 0xff,
-             (address >> 24) & 0xff,
-             (address >> 16) & 0xff,
-             (address >> 8) & 0xff,
-             address & 0xff);
-    return buffer;
-}
 
-std::string FormatHresult(std::int32_t code) {
-    char buffer[16]{};
-    snprintf(buffer, sizeof(buffer), "0x%08X", static_cast<unsigned int>(code));
-    return buffer;
-}
 
 bool CanReadAdvertisementAddressType() {
     static const bool available =
@@ -259,24 +184,7 @@ std::string ScanStartFailureMessage(const winrt::hresult_error& error) {
     return message;
 }
 
-std::string GattStatusName(GattCommunicationStatus status) {
-    switch (status) {
-    case GattCommunicationStatus::Success:
-        return "Success";
-    case GattCommunicationStatus::Unreachable:
-        return "Unreachable";
-    case GattCommunicationStatus::ProtocolError:
-        return "ProtocolError";
-    case GattCommunicationStatus::AccessDenied:
-        return "AccessDenied";
-    default:
-        return "Unknown";
-    }
-}
 
-void LogBleLine(const std::string& message) {
-    LogBle(message);
-}
 
 std::string PreviewBytes(std::span<const std::uint8_t> bytes, std::size_t limit = 96) {
     std::string out;
@@ -293,17 +201,6 @@ std::string PreviewBytes(std::span<const std::uint8_t> bytes, std::size_t limit 
     return out;
 }
 
-std::string HexDump(std::span<const std::uint8_t> bytes) {
-    std::string out;
-    out.reserve(bytes.size() * 3);
-    static const char* hex = "0123456789abcdef";
-    for (std::size_t i = 0; i < bytes.size(); ++i) {
-        if (i > 0) out.push_back(' ');
-        out.push_back(hex[bytes[i] >> 4]);
-        out.push_back(hex[bytes[i] & 0x0f]);
-    }
-    return out;
-}
 
 } // namespace
 
@@ -348,6 +245,8 @@ void BleCentralWin::Start() {
 void BleCentralWin::Shutdown() {
     // 使在途的延迟扫描重启线程失效（防止 Shutdown 后 StartScan 踩空）。
     scan_epoch_.fetch_add(1, std::memory_order_release);
+    // 同理使在途的僵尸自愈提前唤醒线程失效。
+    reconnect_wake_epoch_.fetch_add(1, std::memory_order_release);
     StopHeartbeat();
     StopScan();
     if (bluetooth_radio_) {
@@ -477,6 +376,66 @@ void BleCentralWin::ConnectPairedDevice(const std::string& device_id,
                        device_class);
 }
 
+namespace {
+
+// 前置声明：定义于本文件后部，与服务发现 stale bond 恢复路径共用。
+winrt::Windows::Foundation::IAsyncOperation<bool> TryUnpairAsync(winrt::hstring device_id);
+
+} // namespace
+
+winrt::fire_and_forget BleCentralWin::UnpairOsBondAsync(
+    std::string device_id,
+    std::uint64_t bluetooth_address,
+    std::function<void(bool)> completion) {
+    // 「忘记设备」的 OS 侧清理（见 Doc/Plan/device-forget-os-unpair.md）：不依赖
+    // 在连会话（调用前会话已拆），统一按地址枚举系统配对记录，VS/RC 两类通用。
+    if (bluetooth_address == 0 || !completion) co_return;
+    try {
+        // 地址属性两个都请求、任一可解析即匹配（真机 probe：DeviceInterface 属性
+        // 为无分隔符 12 位十六进制，Aep 属性为冒号分隔，解析函数两者兼容）。
+        constexpr wchar_t kIfDeviceAddressProp[] = L"System.DeviceInterface.Bluetooth.DeviceAddress";
+        constexpr wchar_t kAepDeviceAddressProp[] = L"System.Devices.Aep.DeviceAddress";
+        const auto selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true);
+        // FindAllAsync 附加属性参数只收 initializer_list/右值 vector（param::
+        // async_iterable 约束），const 左值 vector 无法匹配重载。
+        const auto infos = co_await DeviceInformation::FindAllAsync(
+            selector, {winrt::hstring{kIfDeviceAddressProp}, winrt::hstring{kAepDeviceAddressProp}});
+        for (const auto& info : infos) {
+            std::optional<std::uint64_t> info_address;
+            for (const wchar_t* prop : {kIfDeviceAddressProp, kAepDeviceAddressProp}) {
+                const auto value = info.Properties().TryLookup(prop);
+                if (!value) continue;
+                try {
+                    info_address = ParseBluetoothAddressString(
+                        winrt::to_string(winrt::unbox_value<winrt::hstring>(value)));
+                } catch (...) {
+                    // 属性非字符串类型（异常装箱），跳过该属性。
+                }
+                if (info_address.has_value()) break;
+            }
+            if (!info_address.has_value() || *info_address != bluetooth_address) continue;
+            // 同一物理地址可能枚举出多条接口（GATT/HID/电池各一条），UnpairAsync
+            // 作用于设备容器，仅对首条命中执行。
+            LogBleLine("os unpair: removing Windows pairing of " +
+                       FormatBluetoothAddress(bluetooth_address) + " (device " + device_id + ")");
+            const bool ok = co_await TryUnpairAsync(info.Id());
+            DispatchToUiThread([completion, ok]() { completion(ok); });
+            co_return;
+        }
+        LogBleLine("os unpair: no Windows pairing record of " +
+                   FormatBluetoothAddress(bluetooth_address) + " (device " + device_id +
+                   "); treating as done");
+        DispatchToUiThread([completion]() { completion(true); });
+    } catch (const winrt::hresult_error& error) {
+        LogBleLine("os unpair: enumeration failed hr=" + FormatHresult(error.code()) +
+                   " (device " + device_id + ")");
+        DispatchToUiThread([completion]() { completion(false); });
+    } catch (...) {
+        LogBleLine("os unpair: unknown exception (device " + device_id + ")");
+        DispatchToUiThread([completion]() { completion(false); });
+    }
+}
+
 void BleCentralWin::SendUiState(const std::string& state,
                                 const std::string& text,
                                 const std::optional<std::string>& device_id) {
@@ -569,6 +528,52 @@ void BleCentralWin::SendShowImuDebug(bool enabled,
     }
 }
 
+void BleCentralWin::SendGatewayKeymapGet(const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::GatewayKeymapGetPayload();
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
+            }
+        }
+    }
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::SendProtoNegotiate(const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::ProtoNegotiatePayload();
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
+            }
+        }
+    }
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
 void BleCentralWin::SendTapEnabled(bool enabled,
                                    const std::optional<std::string>& device_id) {
     auto payload = BleProtocol::TapEnabledPayload(enabled);
@@ -639,6 +644,114 @@ void BleCentralWin::SendEncoderRecordingGate(bool enabled,
         }
     }
 
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::SendGatewayKeymapSet(const std::string& key, bool software,
+                                         const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::GatewayKeymapSetPayload(key, software);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
+            }
+        }
+    }
+
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::SendGatewayTargetInfo(const std::string& name,
+                                          const std::optional<std::string>& device_id) {
+    if (name.empty()) return;
+    auto payload = BleProtocol::GatewayTargetInfoPayload(name);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
+            }
+        }
+    }
+    if (targets.empty()) {
+        LogBleLine("gateway target info dropped: no ready StickS3 session (device_id=" +
+                   device_id.value_or("<any>") + ")");
+        return;
+    }
+    for (auto& session : targets) {
+        // 固件把名字绑定到「当前连接对端」的 identity address，故只对目标设备自身下发。
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::SendGatewaySelectTarget(bool self,
+                                             const std::optional<std::string>& device_id) {
+    auto payload = BleProtocol::GatewaySelectTargetPayload(self);
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready &&
+                it->second->device_class == DeviceClass::kStickS3) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready && session->device_class == DeviceClass::kStickS3)
+                    targets.push_back(session);
+            }
+        }
+    }
+    for (auto& session : targets) {
+        WriteControlPayloadAsync(std::move(session), payload);
+    }
+}
+
+void BleCentralWin::SendRawControl(const std::string& json,
+                                    const std::optional<std::string>& device_id) {
+    if (json.empty()) return;
+    auto payload = ByteVector(json.begin(), json.end());
+    std::vector<std::shared_ptr<DeviceSession>> targets;
+    {
+        std::lock_guard lock(mutex_);
+        if (device_id.has_value()) {
+            auto it = sessions_by_device_id_.find(*device_id);
+            if (it != sessions_by_device_id_.end() && it->second->ready) {
+                targets.push_back(it->second);
+            }
+        } else {
+            for (const auto& [_, session] : sessions_by_device_id_) {
+                if (session->ready) targets.push_back(session);
+            }
+        }
+    }
+    if (targets.empty()) {
+        LogBleLine("raw control dropped: no ready session (device_id=" +
+                   device_id.value_or("<any>") + ")");
+        return;
+    }
     for (auto& session : targets) {
         WriteControlPayloadAsync(std::move(session), payload);
     }
@@ -943,7 +1056,7 @@ void BleCentralWin::StartScan() {
         });
     try {
         watcher_.Start();
-        scan_started_at_ = std::chrono::steady_clock::now();
+        scan_started_ms_.store(NowSteadyMs(), std::memory_order_relaxed);
         last_adv_received_ms_.store(NowSteadyMs(), std::memory_order_relaxed);
         LogBleLine("scan started");
     } catch (const winrt::hresult_error& error) {
@@ -1000,9 +1113,20 @@ void BleCentralWin::StopScan() {
         }
         stopped_token_ = {};
         watcher_ = nullptr;
-        scan_started_at_ = {};
+        scan_started_ms_.store(0, std::memory_order_relaxed);
         LogBleLine("scan stopped");
     }
+}
+
+// 网关是否活跃：存在「已就绪且固件上报 gateway 模式」的 StickS3 会话。
+// 调用者必须持有 mutex_。老固件不上报 gateway_status ⇒ gateway_mode 恒 false ⇒ 不抑制。
+bool BleCentralWin::GatewayModeActiveLocked() const {
+    for (const auto& [device_id, session] : sessions_by_device_id_) {
+        if (!session) continue;
+        if (session->device_class == DeviceClass::kXiaomiRemote2Pro) continue;
+        if (session->gateway_mode && session->ready) return true;
+    }
+    return false;
 }
 
 void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
@@ -1081,17 +1205,60 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
     bool claimed = false;
     bool stale_session = false;
     bool stale_recently_alive = false;
+    // 见下方 stale_session 分支：广播报告不足以判定"活着的会话已死"。
+    bool stale_drop_vetoed = false;
+    const char* stale_veto_reason = "";
     {
         std::lock_guard lock(mutex_);
         if (!paired_device_ids_.contains(*device_id)) return;
+        // 网关模式下抑制「直连遥控器 ATVV」：遥控器 bond 在 StickS3 上，桌面端直连必然
+        // 失败（atvv control subscribe timeout），只会刷连接与日志。判据取固件上报的
+        // gateway_status（device_info 已到长度预算，故走独立小帧）；老固件不上报 ⇒
+        // gateway_mode 缺省 false ⇒ 行为与今天一致，不误抑制。
+        // 只挡新连接：已在运行的直连会话不主动拆（P0 教训：不破坏当前可用状态）。
+        if (device_class == DeviceClass::kXiaomiRemote2Pro && GatewayModeActiveLocked()) {
+            // 每个地址首次必记一条，其后按全局节流（避免广告反复触发刷屏）。
+            const auto now = NowSteadyMs();
+            const bool first_for_device = gateway_suppressed_rc_.insert(*device_id).second;
+            if (first_for_device ||
+                now - gateway_skip_log_at_ms_ >= kGatewaySkipLogIntervalMs.count()) {
+                gateway_skip_log_at_ms_ = now;
+                LogBleLine("gateway mode active: skipping direct ATVV for " +
+                           std::string(id_prefix) + *device_id +
+                           " (remote is relayed by the StickS3)");
+            }
+            return;
+        }
+        // 已配对设备最近一次广播时间：bond 重建要等设备重新广播（见 RepairOsBondAsync）。
+        adv_seen_ms_by_address_[bluetooth_address] = NowSteadyMs();
         auto session_it = sessions_by_device_id_.find(*device_id);
         stale_session = session_it != sessions_by_device_id_.end();
         if (stale_session && session_it->second) {
             const auto last_rx = session_it->second->last_rx_ms.load(std::memory_order_relaxed);
             stale_recently_alive =
                 last_rx > 0 && (NowSteadyMs() - last_rx) < kZombieFreshThresholdMs;
+            // 「广播 ⇒ 旧链路已死」这条铁证的**前提**是"固件只在未连接时广播"。但一条广播报告
+            // 并不总是设备此刻真的在广播（Windows 广告 watcher 会送来延迟/复用的报告），
+            // 而拆掉一个**活着**的会话代价极高。2026-09-20 真机：网关模式 OTA 传到 ~270KB
+            // （开始后 ~30s）时来了这样一条报告，守卫据此拆会话 ⇒ OTA 必死（两次复现都在
+            // +30s / 16-17%；设备侧看门狗证明设备一直以为连接还在、数据也一直在写）。
+            // 判据：①有固件升级正在跑；②会话 1s 内还有入站数据（真重启的设备发不出数据）。
+            const bool ota_in_progress = firmware_update_session_ != nullptr &&
+                                         firmware_update_session_->device_id == *device_id;
+            const auto last_rx_now = session_it->second->last_rx_ms.load(std::memory_order_relaxed);
+            const bool alive_now =
+                last_rx_now > 0 && (NowSteadyMs() - last_rx_now) < kAliveAdvVetoMs;
+            if (ota_in_progress || alive_now) {
+                stale_drop_vetoed = true;
+                stale_veto_reason = ota_in_progress ? "ota_in_progress" : "alive_now";
+            }
         }
         if (!stale_session) claimed = try_claim_connect();
+    }
+    if (stale_session && stale_drop_vetoed) {
+        LogBleLine("ignoring advertisement for " + std::string(id_prefix) + *device_id +
+                   " (session still active: " + stale_veto_reason + ")");
+        return;
     }
     if (stale_session) {
         // 固件只在未连接时广播（连接成功即停广播，断连后才恢复广播），
@@ -1111,6 +1278,16 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
             std::lock_guard lock(mutex_);
             reconnect_settle_until_[bluetooth_address] =
                 std::chrono::steady_clock::now() + kReconnectSettleDelay;
+            // 纯等广播有盲区：遥控器 HID 通道仍被 OS 维持时它不再广播，上面的
+            // settle 窗等不到下一条广告即永久失联（2026-09-11 事故）。安定窗后
+            // 由心跳主动按地址直连兜底。
+            BleCentralWin::ProactiveReconnect pending;
+            pending.device_id = *device_id;
+            pending.address_kind = address_kind;
+            pending.device_class = device_class;
+            pending.not_before =
+                std::chrono::steady_clock::now() + kReconnectSettleDelay;
+            pending_proactive_reconnects_[bluetooth_address] = std::move(pending);
             LogBleLine("reconnect settle " + std::string(id_prefix) + *device_id + ": delaying " +
                        std::to_string(kReconnectSettleDelay.count()) +
                        "ms for OS to tear down the zombie link");
@@ -1140,20 +1317,19 @@ void BleCentralWin::HandleAdvertisement(const BluetoothLEAdvertisementWatcher&,
         return;
     }
 
+    const auto scan_started = scan_started_ms_.load(std::memory_order_relaxed);
+    const auto scan_to_adv = scan_started > 0 ? (NowSteadyMs() - scan_started) : -1;
     LogBleLine("advertisement matched " + std::string(id_prefix) + *device_id + " address=" +
                FormatBluetoothAddress(bluetooth_address) +
                " kind=" + AddressKindName(address_kind) +
-               " scan_to_adv_ms=" + std::to_string(ElapsedMs(scan_started_at_)));
+               " scan_to_adv_ms=" + std::to_string(scan_to_adv));
     ConnectDeviceAsync(bluetooth_address, address_kind, identity.local_name, *device_id,
                        device_class);
 }
 
 namespace {
 
-winrt::Windows::Foundation::IAsyncAction WaitMs(std::chrono::milliseconds delay) {
-    using winrt::Windows::Foundation::TimeSpan;
-    co_await winrt::resume_after(TimeSpan{delay});
-}
+
 
 std::string UnpairStatusName(DeviceUnpairingResultStatus status) {
     switch (status) {
@@ -1199,40 +1375,7 @@ winrt::Windows::Foundation::IAsyncOperation<bool> TryUnpairAsync(winrt::hstring 
     }
 }
 
-winrt::Windows::Foundation::IAsyncOperation<bool> TryResetBluetoothRadioAsync() {
-    using winrt::Windows::Devices::Radios::Radio;
-    using winrt::Windows::Devices::Radios::RadioKind;
-    using winrt::Windows::Devices::Radios::RadioState;
-    using winrt::Windows::Devices::Radios::RadioAccessStatus;
-    try {
-        auto access = co_await Radio::RequestAccessAsync();
-        if (access != RadioAccessStatus::Allowed) {
-            LogBleLine("radio reset: access denied");
-            co_return false;
-        }
-        auto radios = co_await Radio::GetRadiosAsync();
-        for (const auto& radio : radios) {
-            if (radio.Kind() == RadioKind::Bluetooth) {
-                LogBleLine("radio reset: turning off");
-                co_await radio.SetStateAsync(RadioState::Off);
-                co_await WaitMs(std::chrono::milliseconds(2000));
-                LogBleLine("radio reset: turning on");
-                co_await radio.SetStateAsync(RadioState::On);
-                co_await WaitMs(std::chrono::milliseconds(3000));
-                LogBleLine("radio reset: complete");
-                co_return true;
-            }
-        }
-        LogBleLine("radio reset: no Bluetooth radio found");
-        co_return false;
-    } catch (const winrt::hresult_error& error) {
-        LogBleLine("radio reset: failed hr=" + FormatHresult(error.code()));
-        co_return false;
-    } catch (...) {
-        LogBleLine("radio reset: unknown error");
-        co_return false;
-    }
-}
+
 
 bool IsLikelyStaleBondError(std::int32_t hresult) {
     // Common HRESULTs we have observed when Windows trips over a stale bond
@@ -1267,6 +1410,8 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                                                          DeviceClass device_class) {
     auto session = std::make_shared<DeviceSession>();
     session->bluetooth_address = bluetooth_address;
+    // 记下地址类型：僵尸自愈要按地址重连（见 ScheduleZombieReconnect）。
+    session->address_kind = address_kind;
     session->device_class = device_class;
     const bool is_xiaomi = device_class == DeviceClass::kXiaomiRemote2Pro;
     const char* id_prefix = is_xiaomi ? "RC-" : "VS-";
@@ -1302,9 +1447,12 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         s->session_status_token = {};
     };
 
-    auto fail = [this, bluetooth_address, device_id, session, detach_device_handlers,
+    auto fail = [this, bluetooth_address, address_kind, device_id, session,
+                 detach_device_handlers,
                  detach_session_status_handler](const std::string& message) {
         int zombie_free_retry = 0;
+        bool reconnect_queued = false;
+        std::chrono::milliseconds reconnect_delay{};
         {
             std::lock_guard lock(mutex_);
             auto mark = zombie_suspect_marks_.find(bluetooth_address);
@@ -1319,13 +1467,31 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 if (mark != zombie_suspect_marks_.end()) {
                     zombie_suspect_marks_.erase(mark);
                 }
-                // 连接失败后设置 5 秒退避期，防止扫描→立即重试→再失败的
-                // tight-loop。5 秒足以让 Windows BLE 栈从异常状态中恢复。
+                // 连接失败后设置退避期，防止扫描→立即重试→再失败的
+                // tight-loop。退避期内 Windows BLE 栈得以从异常状态中恢复。
                 connect_cooldown_until_[bluetooth_address] =
-                    std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    std::chrono::steady_clock::now() + kConnectFailureCooldown;
             }
             connecting_addresses_.erase(bluetooth_address);
             cancelled_device_ids_.erase(device_id);
+            // 失败即入队主动重连（2026-09-14 定案，详见
+            // PlanReconnectAfterConnectFailure 注释）：广播触发的重连对「设备
+            // 在场但不广播」天然失明（小米被系统 HID 连上即停广播），心跳按
+            // 地址直连是唯一可靠兜底。取消/已忘记由纯函数守卫拦下。
+            const auto plan = BleProtocol::PlanReconnectAfterConnectFailure(
+                message, paired_device_ids_.contains(device_id),
+                zombie_free_retry > 0, kConnectFailureCooldown);
+            if (plan.schedule) {
+                BleCentralWin::ProactiveReconnect pending;
+                pending.device_id = device_id;
+                pending.address_kind = address_kind;
+                pending.device_class = session->device_class;
+                pending.not_before =
+                    std::chrono::steady_clock::now() + plan.delay;
+                pending_proactive_reconnects_[bluetooth_address] = std::move(pending);
+                reconnect_queued = true;
+                reconnect_delay = plan.delay;
+            }
         }
         detach_device_handlers(session);
         detach_session_status_handler(session);
@@ -1351,6 +1517,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                    (zombie_free_retry > 0
                         ? " [zombie-suspect: no cooldown, immediate retry #" +
                               std::to_string(zombie_free_retry) + "]"
+                        : "") +
+                   (reconnect_queued
+                        ? " [proactive reconnect queued in " +
+                              std::to_string(reconnect_delay.count()) + "ms]"
                         : ""));
         if (on_connection_error) on_connection_error(device_id, message);
     };
@@ -1371,7 +1541,11 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                 LogBleLine("connection status VS-" + device_id + " = " +
                            (status == BluetoothConnectionStatus::Connected ? "connected" : "disconnected"));
                 if (status == BluetoothConnectionStatus::Disconnected) {
-                    HandleDeviceDisconnected(device_id, weak_session.lock());
+                    auto session = weak_session.lock();
+                    // 真实断连（设备重启/关机）= 会话结束：故障期记账清零，下一次连接
+                    // 从零副作用的 A 级重新开始。
+                    if (session) ClearZombieEpisode(session->bluetooth_address);
+                    HandleDeviceDisconnected(device_id, std::move(session));
                 }
             });
         // GattServicesChanged fires when Windows invalidates its system-wide
@@ -1400,7 +1574,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                                (status == GattSessionStatus::Active ? "active" : "closed") +
                                " error=" + std::to_string(static_cast<int>(args.Error())));
                     if (status == GattSessionStatus::Closed) {
-                        HandleDeviceDisconnected(device_id, weak_session.lock());
+                        auto session = weak_session.lock();
+                        if (session) ClearZombieEpisode(session->bluetooth_address);
+                        HandleDeviceDisconnected(device_id, std::move(session));
                     }
                 });
         } catch (const winrt::hresult_error& error) {
@@ -1445,6 +1621,61 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                    " device_id=" + winrt::to_string(session->ble_device.DeviceId()));
         log_stage("open_device_done", "device_id=" + winrt::to_string(session->ble_device.DeviceId()));
         attach_device_handlers(session);
+
+        // 僵尸自愈 B 级（2026-09-19 P0）：只重置 Bluetooth radio，**不动系统配对**。
+        // 判定依据：《轻量重连已用满仍未恢复 ⇒ 失效的加密上下文不在应用可控层级》
+        // 成立（BTHLE 在 controller 级另有 key cache，Close 设备对象清不掉），
+        // 但清掉它只需要 radio reset —— 设备侧 bond 仍在 NVS 里，Windows 侧 bond 也
+        // 没变，重置后 HID 宿主会用同一把 LTK 自行恢复按键直通。
+        // **红线（真机实测得出）**：绝不在自愈里 unpair。整条 Windows 配对记录含
+        // HOGP HID 节点，删掉后重建依赖 PairAsync —— 而实测 PairAsync 在「设备已被
+        // app 连上（停广播）」时必失败（status=19 Failed，12 次复现）；2026-09-19 03:00
+        // 一次全量修复就是这样把按键直通弄死的（BTHPORT 有密钥、Enum\BTHLE 无节点）。
+        // 需要重建 bond 的场景改由独立的 bond 看门狗处理（见 RepairOsBondAsync），
+        // 它的执行条件是「无会话 + 设备在广播」，与配对对话框流程一致。
+        if (ConsumeZombieRepair(bluetooth_address)) {
+            LogBleLine("zombie heal B: radio reset VS-" + device_id +
+                       " (clears controller key cache; OS pairing left intact)");
+            detach_device_handlers(session);
+            detach_session_status_handler(session);
+            if (session->gatt_session) {
+                try { session->gatt_session.MaintainConnection(false); session->gatt_session.Close(); } catch (...) {}
+                session->gatt_session = nullptr;
+            }
+            try { session->ble_device.Close(); } catch (...) {}
+            session->ble_device = nullptr;
+
+            // 标记自建重置，StateChanged(On) 处理器据此跳过重建
+            //（本路径末尾已显式 StartScan）。
+            self_radio_reset_.store(true, std::memory_order_relaxed);
+            if (co_await TryResetBluetoothRadioAsync()) {
+                LogBleLine("zombie heal B: radio reset succeeded, reopening device");
+            } else {
+                LogBleLine("zombie heal B: radio reset skipped/failed, reopening after delay");
+                co_await WaitMs(kDeviceReopenDelay);
+            }
+            co_await WaitMs(std::chrono::milliseconds(500));
+            self_radio_reset_.store(false, std::memory_order_relaxed);
+            // 无线电关开会杀死广告 watcher（静默失效，见 RestartForResume 注释）：
+            // 无论本次重连成败都必须重建扫描。
+            DispatchToUiThread([this] { StartScan(); });
+
+            session->ble_device = co_await open_device(address_type);
+            if (!session->ble_device) {
+                fail("Windows could not reopen the BLE device after zombie radio reset.");
+                co_return;
+            }
+            attach_device_handlers(session);
+            try {
+                session->gatt_session = co_await GattSession::FromDeviceIdAsync(
+                    session->ble_device.BluetoothDeviceId());
+                if (session->gatt_session) {
+                    session->gatt_session.MaintainConnection(true);
+                    attach_session_status_handler(session);
+                }
+            } catch (...) {}
+            co_await WaitMs(kConnectionSettleDelay);
+        }
 
         // Give the controller a brief moment to actually establish the link
         // before triggering service discovery.
@@ -1505,7 +1736,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     cancelled = cancelled_device_ids_.contains(device_id);
                 }
                 if (cancelled) {
-                    fail("cancelled");
+                    fail(std::string(kConnectFailureReasonCancelled));
                     co_return;
                 }
             }
@@ -1533,7 +1764,7 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     }
                     if (cancelled) {
                         async_op.Cancel();
-                        fail("cancelled");
+                        fail(std::string(kConnectFailureReasonCancelled));
                         co_return;
                     }
                 }
@@ -1557,7 +1788,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                            " attempt=" + std::to_string(attempt) +
                            " hr=" + FormatHresult(throw_hresult) +
                            " message=" + throw_message);
-                if (!unpair_attempted && IsLikelyStaleBondError(throw_hresult)) {
+                // B16 红线闸（10-08）：自愈路径绝不 unpair RC——删 Enum\BTHLE 即毁
+                // HOGP 按键直通，且 PairAsync 于已连设备必失败；RC 陈旧键走本 fail 路径
+                //（用户手动重配对）。VS 无 HOGP 键盘角色，保留陈旧键恢复。
+                if (!unpair_attempted && !is_xiaomi && IsLikelyStaleBondError(throw_hresult)) {
                     unpair_attempted = true;
                     LogBleLine("attempting to remove stale Windows pairing for VS-" + device_id);
                     co_await TryUnpairAsync(session->ble_device.DeviceId());
@@ -1598,6 +1832,8 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                         co_return;
                     }
                     attach_device_handlers(session);
+                    // 恢复动作里的 unpair 顺带删掉了 HOGP HID 节点，必须补回 bond
+                    co_await TryRestoreOsBondAsync(session->ble_device, device_id);
                     try {
                         session->gatt_session = co_await GattSession::FromDeviceIdAsync(
                             session->ble_device.BluetoothDeviceId());
@@ -1691,7 +1927,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             // Unreachable usually means the peripheral rejected the encrypted
             // link (stale bond / LTK mismatch). Unpair, reset the Bluetooth
             // radio to flush the controller-level key cache, then recycle.
-            if (status == GattCommunicationStatus::Unreachable && !unpair_attempted) {
+            // B16 红线闸（10-08）：同上——RC 自愈绝不 unpair（见 1792 处闸注释）。
+            if (status == GattCommunicationStatus::Unreachable && !unpair_attempted
+                && !is_xiaomi) {
                 unpair_attempted = true;
                 LogBleLine("Unreachable: removing stale Windows pairing for VS-" + device_id);
                 co_await TryUnpairAsync(session->ble_device.DeviceId());
@@ -1728,6 +1966,8 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                     co_return;
                 }
                 attach_device_handlers(session);
+                // 恢复动作里的 unpair 顺带删掉了 HOGP HID 节点，必须补回 bond
+                co_await TryRestoreOsBondAsync(session->ble_device, device_id);
                 try {
                     session->gatt_session = co_await GattSession::FromDeviceIdAsync(
                         session->ble_device.BluetoothDeviceId());
@@ -1911,6 +2151,10 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
             // 先 Control 后 Audio：MIC_OPEN/STOP 控制帧优先级高于音频流。
             LogBleLine("subscribing atvv control notifications RC-" + device_id);
+            // 同 VS 路径的 CCCD 缓存击穿：先写 None 再写 Notify。
+            co_await WriteCccdBestEffortAsync(
+                session->xiaomi_control_characteristic,
+                GattClientCharacteristicConfigurationDescriptorValue::None, device_id, "atvv_control");
             auto atvv_control_op = session->xiaomi_control_characteristic
                 .WriteClientCharacteristicConfigurationDescriptorAsync(
                     GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -1930,6 +2174,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                        " status=" + GattStatusName(atvv_control_subscribe));
 
             LogBleLine("subscribing atvv audio notifications RC-" + device_id);
+            co_await WriteCccdBestEffortAsync(
+                session->xiaomi_audio_characteristic,
+                GattClientCharacteristicConfigurationDescriptorValue::None, device_id, "atvv_audio");
             auto atvv_audio_op = session->xiaomi_audio_characteristic
                 .WriteClientCharacteristicConfigurationDescriptorAsync(
                     GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -2127,6 +2374,16 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
                                       " latency=" + std::to_string(event->dc_latency.value_or(0)) +
                                       " timeout=" + std::to_string(event->dc_timeout.value_or(0))
                                 : std::string()));
+                if (event->gateway_mode.has_value()) {
+                    // 网关模式标记：只存会话里供 HandleAdvertisement 判定，不改变
+                    // 与协调器之间的既有事件流（gateway_status 继续下发给 UI 层）。
+                    if (auto s = weak_session.lock()) {
+                        std::lock_guard lock(mutex_);
+                        s->gateway_mode = *event->gateway_mode;
+                    }
+                    LogBleLine("gateway status VS-" + device_id + " mode=" +
+                               (*event->gateway_mode ? "gateway" : "normal"));
+                }
                 DispatchToUiThread([this, device_id, e = std::move(*event)]() {
                     if (on_state_event) on_state_event(device_id, e);
                 });
@@ -2143,6 +2400,12 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
         // state second has been observed to push device_info out by ~1s.
         LogBleLine("subscribing state notifications VS-" + device_id);
         log_stage("state_subscribe_begin");
+        // CCCD 缓存击穿：先写 None，使紧随其后的 Notify 一定是「值变化」，Windows 才不会
+        // 用缓存短路掉这次写（真机取证见 WriteCccdBestEffortAsync 注释与
+        // Doc/Expe/xiaomi-gateway-voice-key-stops-after-while-2026-09-19.md）。
+        co_await WriteCccdBestEffortAsync(session->state_characteristic,
+                                          GattClientCharacteristicConfigurationDescriptorValue::None,
+                                          device_id, "state");
         auto state_op = session->state_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -2173,6 +2436,9 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
         LogBleLine("subscribing audio notifications VS-" + device_id);
         log_stage("audio_subscribe_begin");
+        co_await WriteCccdBestEffortAsync(session->audio_characteristic,
+                                          GattClientCharacteristicConfigurationDescriptorValue::None,
+                                          device_id, "audio");
         auto audio_op = session->audio_characteristic
             .WriteClientCharacteristicConfigurationDescriptorAsync(
                 GattClientCharacteristicConfigurationDescriptorValue::Notify);
@@ -2201,6 +2467,92 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             co_return;
         }
 
+        // 连接期活性证明（P0）：CCCD 写返回 Success 只说明本机 ATT 层认为写完了 ——
+        // 加密上下文陈旧（设备重启致 LTK 轮换、WinRT 缓存未失效）时该写「假成功」而
+        // 设备侧从未登记（state_sub 仍为 0），此后录音必被拒，UI 却显示已连接。
+        // 2026-09-18 真机实例：14:31:05 state/audio 订阅双双 Success、14:31:06 报
+        // connected，随后零入站，直到 14:32:42（96.5s）才被心跳判僵尸。
+        // 证据取「订阅后是否收到任何入站 notify」。固件在 state_subscribed 置位时立即
+        // 下发 device_info + encoder_status（见 voice_ble.c 的 BLE_GAP_EVENT_SUBSCRIBE），
+        // 但那两帧是本连接的第一个通知，实测常被 Windows BTHLE 驱动在 handler 接线完成
+        // 前吞掉（本机日志里多次连接只有约半数收到 device_info，例如 02:51 那次连接
+        // 全程无 device_info）⇒ 不能只依赖它。
+        // 因此补一发 battery_status_request（与 30s 心跳同一机制）主动索要回包：
+        // 固件 send_state_json 受 s_state_subscribed 门控，收到回包即证明设备侧确实登记了
+        // 订阅（僵尸链路不会有任何回包）。fire-and-forget，僵尸链路上该写可能挂到 OS
+        // 宣告链路死亡，不能阻塞连接协程。
+        [](std::shared_ptr<DeviceSession> s) -> winrt::fire_and_forget {
+            try {
+                auto payload = BleProtocol::BatteryStatusRequestPayload();
+                // B20：检查-使用间成员可被断链线程改写——先拷局部句柄再用（含空值守卫）。
+                const GattCharacteristic control = s->control_characteristic;
+                if (!control) co_return;
+                DataWriter writer;
+                writer.WriteBytes(payload);
+                co_await control.WriteValueAsync(
+                    writer.DetachBuffer(), GattWriteOption::WriteWithoutResponse);
+            } catch (...) {
+            }
+        }(session);
+        for (auto waited = std::chrono::milliseconds::zero();
+             session->last_rx_ms.load(std::memory_order_relaxed) <= 0 &&
+             waited < kSessionLivenessTimeout;
+             waited += kSessionLivenessPollInterval) {
+            co_await WaitMs(kSessionLivenessPollInterval);
+        }
+        if (session->last_rx_ms.load(std::memory_order_relaxed) <= 0) {
+            // 诊断探针（区分两种僵尸成因）：强制走空口的未缓存读取。
+            //   · 读到应答（哪怕 ATT 错误）= 链路真的在收发 ⇒ 问题在 Windows 把 CCCD 写
+            //     短路在本地缓存里；
+            //   · 超时 = ATT 承载已死（Windows 只是还记着「已连接」）⇒ 必须重建链路。
+            try {
+                auto read_op =
+                    session->state_characteristic.ReadValueAsync(BluetoothCacheMode::Uncached);
+                auto read_wait = [](decltype(read_op) op)
+                    -> winrt::Windows::Foundation::IAsyncAction {
+                    try { co_await op; } catch (...) {}
+                }(read_op);
+                co_await winrt::when_any(read_wait, WaitMs(kSessionLivenessTimeout));
+                if (read_op.Status() == winrt::Windows::Foundation::AsyncStatus::Completed) {
+                    const auto read_result = read_op.GetResults();
+                    LogBleLine("zombie probe VS-" + device_id + ": uncached read status=" +
+                               GattStatusName(read_result.Status()) + " bytes=" +
+                               std::to_string(read_result.Value().Length()) +
+                               " (ATT bearer alive ⇒ CCCD write was short-circuited locally)");
+                } else {
+                    try { read_op.Cancel(); } catch (...) {}
+                    LogBleLine("zombie probe VS-" + device_id +
+                               ": uncached read TIMED OUT (ATT bearer looks dead)");
+                }
+            } catch (const winrt::hresult_error& error) {
+                LogBleLine("zombie probe VS-" + device_id + " uncached read threw hr=" +
+                           FormatHresult(error.code()));
+            } catch (...) {
+                LogBleLine("zombie probe VS-" + device_id + " uncached read threw unknown");
+            }
+            const auto heal = NoteZombieEpisode(bluetooth_address, !is_xiaomi);
+            LogBleLine("zombie session VS-" + device_id +
+                       ": subscriptions reported success but device sent nothing within " +
+                       std::to_string(kSessionLivenessTimeout.count()) +
+                       "ms (device-side state_sub=0); heal level=" +
+                       std::string(ZombieHealLevelName(heal)));
+            if (heal == ZombieHealLevel::kUserAction && ShouldPromptZombieUser(bluetooth_address)) {
+                LogBleLine("zombie session VS-" + device_id +
+                           ": self-heal exhausted (A and B both failed); prompting user to "
+                           "re-pair in Windows Bluetooth settings");
+                NotifyZombieUserAction(device_id);
+            }
+            fail("notification subscriptions reported success but the device never acknowledged "
+                 "them (zombie session: device-side state_sub=0); reconnecting");
+            // fail() 已按地址入队主动重连；这里覆盖成安定窗后的更早到期点并提前唤醒，
+            // 让自愈在秒级发生而不是等满一个心跳周期。梯度用满（kUserAction）后不再
+            // 几秒一次空转，退到分钟级（此时已提示用户）。
+            ScheduleZombieReconnect(session,
+                                    heal == ZombieHealLevel::kUserAction ? kZombieGiveUpRetry
+                                                                        : kReconnectSettleDelay);
+            co_return;
+        }
+
         session->audio_subscribed = true;
         session->state_subscribed = true;
         session->ready = true;
@@ -2210,6 +2562,8 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
             sessions_by_device_id_[device_id] = session;
             connecting_addresses_.erase(bluetooth_address);
             zombie_suspect_marks_.erase(bluetooth_address);
+            // 会话恢复：故障期记账清零，下次故障重新从零副作用的轻量重连开始。
+            zombie_episodes_.erase(bluetooth_address);
         }
         PublishConnections();
         LogBleLine("connected VS-" + device_id);
@@ -2233,12 +2587,14 @@ winrt::fire_and_forget BleCentralWin::ConnectDeviceAsync(std::uint64_t bluetooth
 
 winrt::fire_and_forget BleCentralWin::WriteControlPayloadAsync(std::shared_ptr<DeviceSession> session, ByteVector payload) {
     if (!session || !session->ready || !session->control_characteristic) co_return;
+    // B20：检查后先拷局部句柄再用——成员可被断链线程并发改写（检查-使用间 TOCTOU）。
+    const GattCharacteristic control = session->control_characteristic;
     const std::string device_id = session->device.id;
     GattCommunicationStatus status = GattCommunicationStatus::Unreachable;
     try {
         DataWriter writer;
         writer.WriteBytes(payload);
-        status = co_await session->control_characteristic.WriteValueAsync(
+        status = co_await control.WriteValueAsync(
             writer.DetachBuffer(), GattWriteOption::WriteWithoutResponse);
     } catch (const winrt::hresult_error& error) {
         // 写入抛异常说明 GATT 对象已不可用（句柄失效/设备对象被关闭/协议栈
@@ -2259,801 +2615,6 @@ winrt::fire_and_forget BleCentralWin::WriteControlPayloadAsync(std::shared_ptr<D
         // 链路仍活着，是 ATT 层拒绝，不应误拆。
         HandleDeviceDisconnected(device_id, session);
     }
-}
-
-// ---- 小米 ATVV 会话辅助实现 ----
-
-void BleCentralWin::DriveXiaomiSession(
-    const std::shared_ptr<DeviceSession>& session,
-    const std::function<std::vector<XiaomiAtvvAction>(XiaomiAtvvSession&)>& entry) {
-    if (!session) return;
-    std::vector<XiaomiAtvvAction> actions;
-    {
-        std::lock_guard lock(session->xiaomi_mutex);
-        if (!session->xiaomi_atvv_session) return;
-        actions = entry(*session->xiaomi_atvv_session);
-    }
-    if (!actions.empty()) DispatchXiaomiActions(session, std::move(actions));
-}
-
-void BleCentralWin::DispatchXiaomiActions(const std::shared_ptr<DeviceSession>& session,
-                                          std::vector<XiaomiAtvvAction> actions) {
-    if (!session) return;
-    const std::string device_id = session->device.id;
-    for (auto& action : actions) {
-        std::visit(
-            [&](auto&& a) {
-                using T = std::decay_t<decltype(a)>;
-                if constexpr (std::is_same_v<T, XiaomiAtvvWriteTx>) {
-                    WriteXiaomiTxAsync(session, std::move(a.bytes));
-                } else if constexpr (std::is_same_v<T, XiaomiAtvvStateEvent>) {
-                    LogBleLine("atvv event RC-" + device_id + " type=" + a.event.event);
-                    if (on_state_event) on_state_event(device_id, a.event);
-                } else if constexpr (std::is_same_v<T, XiaomiAtvvAudioFrame>) {
-                    if (on_audio_frame) on_audio_frame(device_id, a.frame);
-                } else if constexpr (std::is_same_v<T, XiaomiAtvvError>) {
-                    LogBleLine("xiaomi session error RC-" + device_id + " code=" + a.code);
-                    if (a.code == "caps_timeout") {
-                        // CAPS 应答超时多为半开链路（ATT 通但对端会话栈已乱）：
-                        // 直接拆链走扫描快速重连，而不是只 SetPairingError 后挂着
-                        // 等 90s 心跳超时。注意 DriveXiaomiSession 分发在锁外，
-                        // 此处拆链不会递归持 xiaomi_mutex。
-                        HandleDeviceDisconnected(device_id, session);
-                    } else if (on_connection_error) {
-                        on_connection_error(device_id, "Xiaomi remote error: " + a.code);
-                    }
-                }
-            },
-            std::move(action));
-    }
-}
-
-winrt::fire_and_forget BleCentralWin::WriteXiaomiTxAsync(std::shared_ptr<DeviceSession> session,
-                                                         ByteVector payload) {
-    // 特征句柄先拷局部再 co_await：CloseSession 在别的线程会把成员置空，
-    // 持局部拷贝消除「判空后、挂起点恢复前」的读写竞争窗口。
-    const auto tx = session ? session->xiaomi_tx_characteristic : nullptr;
-    if (!tx) co_return;
-    const std::string device_id = session->device.id;
-    LogBleLine("atvv tx write RC-" + device_id + " len=" + std::to_string(payload.size()) +
-               " hex=" + HexDump(payload));
-    GattCommunicationStatus status = GattCommunicationStatus::Unreachable;
-    try {
-        DataWriter writer;
-        writer.WriteBytes(payload);
-        status = co_await tx.WriteValueAsync(
-            writer.DetachBuffer(), GattWriteOption::WriteWithoutResponse);
-    } catch (const winrt::hresult_error& error) {
-        // 与 control 写同一语义：抛异常说明 GATT 对象已不可用，按链路已死拆除。
-        LogBleLine("atvv tx write threw RC-" + device_id + " hr=" + FormatHresult(error.code()) +
-                   "; tearing down session");
-        HandleDeviceDisconnected(device_id, session);
-        co_return;
-    } catch (...) {
-        LogBleLine("atvv tx write threw RC-" + device_id + " unknown exception");
-        co_return;
-    }
-    if (status == GattCommunicationStatus::Success) co_return;
-    LogBleLine("atvv tx write failed RC-" + device_id + " status=" + GattStatusName(status));
-    if (status == GattCommunicationStatus::Unreachable) {
-        HandleDeviceDisconnected(device_id, session);
-    }
-}
-
-winrt::Windows::Foundation::IAsyncAction BleCentralWin::SetupXiaomiBatteryAsync(
-    std::shared_ptr<DeviceSession> session,
-    std::string device_id) {
-    if (!session || !session->ble_device) co_return;
-    try {
-        auto services_result = co_await session->ble_device.GetGattServicesForUuidAsync(
-            winrt::guid{kBatteryServiceUuid}, BluetoothCacheMode::Cached);
-        if (services_result.Status() == GattCommunicationStatus::Success &&
-            services_result.Services().Size() > 0) {
-            session->xiaomi_battery_service = services_result.Services().GetAt(0);
-            auto chars_result = co_await session->xiaomi_battery_service
-                .GetCharacteristicsForUuidAsync(winrt::guid{kBatteryLevelUuid},
-                                                BluetoothCacheMode::Cached);
-            if (chars_result.Status() == GattCommunicationStatus::Success &&
-                chars_result.Characteristics().Size() > 0) {
-                session->battery_characteristic = chars_result.Characteristics().GetAt(0);
-                session->probe_characteristic = session->battery_characteristic;
-                if (HasNotify(session->battery_characteristic)) {
-                    session->battery_value_changed_token =
-                        session->battery_characteristic.ValueChanged(
-                            [this, device_id,
-                             weak_session = std::weak_ptr<DeviceSession>(session)](
-                                const GattCharacteristic&, const auto& args) {
-                                if (auto s = weak_session.lock()) {
-                                    s->last_rx_ms.store(NowSteadyMs(),
-                                                        std::memory_order_relaxed);
-                                }
-                                auto bytes = BytesFromBuffer(args.CharacteristicValue());
-                                if (bytes.empty()) return;
-                                StateEvent event;
-                                event.event = "battery_status";
-                                event.battery_level = static_cast<int>(bytes[0]);
-                                DispatchToUiThread([this, device_id, e = std::move(event)]() {
-                                    if (on_state_event) on_state_event(device_id, e);
-                                });
-                            });
-                    // 此处有意省略 ATVV 订阅用的 kValueChangedHandlerSettleDelay：
-                    // 电量是低频辅助信息，紧随其后的初始 Uncached 读已兜底拿到一次
-                    // 电量，极端情况下最多丢首条 notify，不值得为它对就绪路径再付
-                    // 一次 settle 延迟。
-                    const auto cccd = co_await session->battery_characteristic
-                        .WriteClientCharacteristicConfigurationDescriptorAsync(
-                            GattClientCharacteristicConfigurationDescriptorValue::Notify);
-                    if (cccd != GattCommunicationStatus::Success) {
-                        LogBleLine("battery notify subscribe RC-" + device_id +
-                                   " status=" + GattStatusName(cccd));
-                    }
-                }
-                // 初始读：立即拿到一次电量（同时刷新 last_rx 作为心跳基线）。
-                const auto read = co_await session->battery_characteristic
-                    .ReadValueAsync(BluetoothCacheMode::Uncached);
-                if (read.Status() == GattCommunicationStatus::Success) {
-                    auto bytes = BytesFromBuffer(read.Value());
-                    if (!bytes.empty()) {
-                        session->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
-                        StateEvent event;
-                        event.event = "battery_status";
-                        event.battery_level = static_cast<int>(bytes[0]);
-                        DispatchToUiThread([this, device_id, e = std::move(event)]() {
-                            if (on_state_event) on_state_event(device_id, e);
-                        });
-                    }
-                }
-                co_return;
-            }
-        }
-        LogBleLine("battery service unavailable RC-" + device_id +
-                   "; falling back to GAP device name as keepalive probe");
-    } catch (const winrt::hresult_error& error) {
-        LogBleLine("battery service setup threw RC-" + device_id +
-                   " hr=" + FormatHresult(error.code()));
-    } catch (...) {
-        LogBleLine("battery service setup threw RC-" + device_id + " unknown exception");
-    }
-    // 无电量特征：GAP 设备名读作心跳保活特征（句柄存入 xiaomi_battery_service
-    // 保持服务存活并随 CloseSession 关闭）。
-    if (session->probe_characteristic) co_return;
-    try {
-        auto gap_services = co_await session->ble_device.GetGattServicesForUuidAsync(
-            winrt::guid{kGapServiceUuid}, BluetoothCacheMode::Cached);
-        if (gap_services.Status() == GattCommunicationStatus::Success &&
-            gap_services.Services().Size() > 0) {
-            session->xiaomi_battery_service = gap_services.Services().GetAt(0);
-            auto name_chars = co_await session->xiaomi_battery_service
-                .GetCharacteristicsForUuidAsync(winrt::guid{kGapDeviceNameUuid},
-                                                BluetoothCacheMode::Cached);
-            if (name_chars.Status() == GattCommunicationStatus::Success &&
-                name_chars.Characteristics().Size() > 0) {
-                session->probe_characteristic = name_chars.Characteristics().GetAt(0);
-                LogBleLine("keepalive probe via GAP device name RC-" + device_id);
-            }
-        }
-    } catch (...) {
-        LogBleLine("GAP keepalive probe setup threw RC-" + device_id);
-    }
-}
-
-winrt::fire_and_forget BleCentralWin::ProbeXiaomiSessionAsync(
-    std::shared_ptr<DeviceSession> session) {
-    // 与 WriteXiaomiTxAsync 同理：特征句柄先拷局部，消除与 CloseSession 置空的竞争窗口。
-    const auto probe = session ? session->probe_characteristic : nullptr;
-    if (!probe) co_return;
-    const std::string device_id = session->device.id;
-    GattCommunicationStatus status = GattCommunicationStatus::Unreachable;
-    try {
-        const auto read = co_await probe.ReadValueAsync(
-            BluetoothCacheMode::Uncached);
-        status = read.Status();
-    } catch (const winrt::hresult_error& error) {
-        LogBleLine("keepalive probe threw RC-" + device_id +
-                   " hr=" + FormatHresult(error.code()) + "; tearing down session");
-        HandleDeviceDisconnected(device_id, session);
-        co_return;
-    } catch (...) {
-        LogBleLine("keepalive probe threw RC-" + device_id +
-                   " unknown exception; tearing down session");
-        HandleDeviceDisconnected(device_id, session);
-        co_return;
-    }
-    if (status == GattCommunicationStatus::Success) {
-        session->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
-        co_return;
-    }
-    LogBleLine("keepalive probe failed RC-" + device_id + " status=" + GattStatusName(status));
-    if (status == GattCommunicationStatus::Unreachable) {
-        // 与心跳写同一语义：只对 Unreachable 拆链，ProtocolError/AccessDenied 仅记日志。
-        HandleDeviceDisconnected(device_id, session);
-    }
-}
-
-void BleCentralWin::StopXiaomiSessionBestEffort(const std::shared_ptr<DeviceSession>& session) {
-    if (!session) return;
-    DriveXiaomiSession(session, [now = NowSteadyMs()](XiaomiAtvvSession& sess) {
-        return sess.Stop(now);
-    });
-}
-
-void BleCentralWin::TickXiaomiSessions() {
-    std::vector<std::shared_ptr<DeviceSession>> sessions;
-    {
-        std::lock_guard lock(mutex_);
-        for (const auto& [_, session] : sessions_by_device_id_) {
-            if (session->ready && session->device_class == DeviceClass::kXiaomiRemote2Pro) {
-                sessions.push_back(session);
-            }
-        }
-    }
-    for (auto& session : sessions) {
-        DriveXiaomiSession(session, [now = NowSteadyMs()](XiaomiAtvvSession& sess) {
-            return sess.Tick(now);
-        });
-    }
-}
-
-winrt::Windows::Foundation::IAsyncOperation<bool> BleCentralWin::EnsureOtaCharacteristicsAsync(
-    std::shared_ptr<DeviceSession> session,
-    std::string device_id) {
-    using winrt::Windows::Foundation::AsyncStatus;
-    using GattCharsResult = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicsResult;
-
-    if (!session || !session->service) co_return false;
-    if (session->ota_rx_characteristic && session->ota_state_characteristic &&
-        session->ota_state_subscribed) {
-        co_return true;
-    }
-
-    co_await winrt::resume_background();
-    auto discover_ota_characteristic = [&](const winrt::guid& uuid,
-                                           const char* label) -> GattCharsResult {
-        LogBleLine("OTA lazy characteristic discovery begin VS-" + device_id + " label=" + label);
-        auto op = session->service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode::Uncached);
-        if (op.wait_for(kCharacteristicDiscoveryTimeout) == AsyncStatus::Started) {
-            op.Cancel();
-            LogBleLine("OTA lazy characteristic discovery timed out VS-" + device_id + " label=" + label);
-            return nullptr;
-        }
-        auto result = op.GetResults();
-        LogBleLine("OTA lazy characteristic discovery done VS-" + device_id +
-                   " label=" + label +
-                   " status=" + GattStatusName(result.Status()) +
-                   " count=" + std::to_string(result.Characteristics().Size()));
-        return result;
-    };
-
-    if (!session->ota_rx_characteristic) {
-        auto ota_rx_result = discover_ota_characteristic(winrt::guid{BleProtocol::ota_rx_uuid}, "ota_rx");
-        if (!ota_rx_result || ota_rx_result.Status() != GattCommunicationStatus::Success ||
-            ota_rx_result.Characteristics().Size() == 0) {
-            co_return false;
-        }
-        auto characteristic = ota_rx_result.Characteristics().GetAt(0);
-        if (!HasWrite(characteristic) && !HasWriteWithoutResponse(characteristic)) {
-            co_return false;
-        }
-        session->ota_rx_characteristic = characteristic;
-    }
-
-    if (!session->ota_state_characteristic) {
-        auto ota_state_result = discover_ota_characteristic(winrt::guid{BleProtocol::ota_state_uuid}, "ota_state");
-        if (!ota_state_result || ota_state_result.Status() != GattCommunicationStatus::Success ||
-            ota_state_result.Characteristics().Size() == 0) {
-            co_return false;
-        }
-        auto characteristic = ota_state_result.Characteristics().GetAt(0);
-        if (!HasNotify(characteristic)) {
-            co_return false;
-        }
-        session->ota_state_characteristic = characteristic;
-    }
-
-    if (session->ota_state_value_changed_token.value == 0) {
-        session->ota_state_value_changed_token = session->ota_state_characteristic.ValueChanged(
-            [this, device_id, weak_session = std::weak_ptr<DeviceSession>(session)](
-                const GattCharacteristic&, const auto& args) {
-                if (auto s = weak_session.lock()) {
-                    s->last_rx_ms.store(NowSteadyMs(), std::memory_order_relaxed);
-                }
-                auto bytes = BytesFromBuffer(args.CharacteristicValue());
-                auto event = BleProtocol::ParseFirmwareOtaStateEvent(bytes);
-                if (!event.has_value()) {
-                    LogBleLine("ota state notify VS-" + device_id + " parse failed");
-                    return;
-                }
-                DispatchToUiThread([this, device_id, e = std::move(*event)]() {
-                    HandleFirmwareOtaStateEvent(device_id, e);
-                });
-            });
-    }
-
-    if (!session->ota_state_subscribed) {
-        LogBleLine("subscribing OTA state notifications VS-" + device_id);
-        auto status = co_await session->ota_state_characteristic
-            .WriteClientCharacteristicConfigurationDescriptorAsync(
-                GattClientCharacteristicConfigurationDescriptorValue::Notify);
-        LogBleLine("ota state subscribe VS-" + device_id + " status=" + GattStatusName(status));
-        if (status != GattCommunicationStatus::Success) {
-            co_return false;
-        }
-        session->ota_state_subscribed = true;
-    }
-
-    co_return true;
-}
-
-winrt::fire_and_forget BleCentralWin::UpdateFirmwareAsync(
-    std::shared_ptr<DeviceSession> session,
-    std::shared_ptr<FirmwareUpdateSession> update_session) {
-    try {
-        if (!session || !update_session ||
-            !(co_await EnsureOtaCharacteristicsAsync(session, update_session->device_id))) {
-            FinishFirmwareUpdate(update_session, false, "The connected firmware does not expose BLE OTA.");
-            co_return;
-        }
-
-        auto write_payload = [&](const ByteVector& payload, GattWriteOption option)
-            -> winrt::Windows::Foundation::IAsyncOperation<GattCommunicationStatus> {
-            return session->ota_rx_characteristic.WriteValueAsync(BufferFromBytes(payload), option);
-        };
-        const bool ota_supports_write_without_response =
-            HasWriteWithoutResponse(session->ota_rx_characteristic);
-
-        LogBleLine("OTA begin VS-" + update_session->device_id +
-                   " transfer=" + std::to_string(update_session->transfer_id) +
-                   " size=" + std::to_string(update_session->image.size()));
-        auto begin = BleProtocol::OtaBeginPayload(
-            static_cast<std::uint32_t>(update_session->image.size()),
-            update_session->transfer_id);
-        auto status = co_await write_payload(begin, GattWriteOption::WriteWithResponse);
-        if (status != GattCommunicationStatus::Success) {
-            FinishFirmwareUpdate(update_session, false, "BLE OTA begin failed: " + GattStatusName(status));
-            co_return;
-        }
-
-        const std::size_t max_pdu = session->gatt_session ? session->gatt_session.MaxPduSize() : 247;
-        const std::size_t chunk_size = std::max<std::size_t>(
-            20, std::min<std::size_t>(max_pdu > 15 ? max_pdu - 15 : 20, 244));
-        const std::size_t max_in_flight = 48 * 1024;
-        LogBleLine("OTA data VS-" + update_session->device_id +
-                   " chunk_size=" + std::to_string(chunk_size) +
-                   " max_pdu=" + std::to_string(max_pdu) +
-                   " write_without_response=" +
-                   (ota_supports_write_without_response ? "true" : "false"));
-        std::size_t offset = 0;
-        std::size_t last_progress = 0;
-        while (offset < update_session->image.size()) {
-            if (update_session->cancel_requested) co_return;
-            if (ota_supports_write_without_response &&
-                offset > update_session->device_confirmed_written.load() + max_in_flight) {
-                co_await winrt::resume_after(std::chrono::milliseconds(20));
-                continue;
-            }
-            const auto end = std::min(offset + chunk_size, update_session->image.size());
-            auto payload = BleProtocol::OtaDataPayload(
-                update_session->transfer_id,
-                static_cast<std::uint32_t>(offset),
-                std::span<const std::uint8_t>(update_session->image.data() + offset, end - offset));
-            status = co_await write_payload(
-                payload,
-                ota_supports_write_without_response
-                    ? GattWriteOption::WriteWithoutResponse
-                    : GattWriteOption::WriteWithResponse);
-            if (status != GattCommunicationStatus::Success) {
-                LogBleLine("OTA write failed VS-" + update_session->device_id +
-                           " offset=" + std::to_string(offset) +
-                           " status=" + GattStatusName(status));
-                FinishFirmwareUpdate(update_session, false, "BLE OTA write failed: " + GattStatusName(status));
-                co_return;
-            }
-            offset = end;
-            if (offset - last_progress >= 64 * 1024 || offset == update_session->image.size()) {
-                last_progress = offset;
-                LogBleLine("OTA sent VS-" + update_session->device_id +
-                           " written=" + std::to_string(offset) +
-                           "/" + std::to_string(update_session->image.size()));
-                if (update_session->progress) {
-                    update_session->progress(FirmwareUpdateProgress{
-                        static_cast<int>(offset),
-                        static_cast<int>(update_session->image.size()),
-                        false});
-                }
-            }
-        }
-
-        auto final_wait_started = std::chrono::steady_clock::now();
-        while (update_session->device_confirmed_written.load() < update_session->image.size()) {
-            if (update_session->cancel_requested) co_return;
-            if (std::chrono::steady_clock::now() - final_wait_started > std::chrono::seconds(10)) {
-                LogBleLine("OTA final device progress timed out VS-" + update_session->device_id +
-                           " confirmed=" +
-                           std::to_string(update_session->device_confirmed_written.load()) +
-                           "/" + std::to_string(update_session->image.size()));
-                FinishFirmwareUpdate(update_session, false,
-                                     "Device stopped confirming OTA progress.");
-                co_return;
-            }
-            co_await winrt::resume_after(std::chrono::milliseconds(20));
-        }
-
-        LogBleLine("OTA end VS-" + update_session->device_id +
-                   " transfer=" + std::to_string(update_session->transfer_id) +
-                   " size=" + std::to_string(update_session->image.size()));
-        auto end = BleProtocol::OtaEndPayload(
-            update_session->transfer_id,
-            static_cast<std::uint32_t>(update_session->image.size()));
-        status = co_await write_payload(end, GattWriteOption::WriteWithResponse);
-        if (status != GattCommunicationStatus::Success) {
-            LogBleLine("OTA end failed VS-" + update_session->device_id +
-                       " status=" + GattStatusName(status));
-            FinishFirmwareUpdate(update_session, false, "BLE OTA end failed: " + GattStatusName(status));
-        }
-    } catch (const winrt::hresult_error& error) {
-        FinishFirmwareUpdate(update_session, false,
-                             "BLE OTA failed: " + FormatHresult(error.code()) +
-                                 ": " + winrt::to_string(error.message()));
-    } catch (...) {
-        FinishFirmwareUpdate(update_session, false, "BLE OTA failed.");
-    }
-}
-
-void BleCentralWin::HandleFirmwareOtaStateEvent(const std::string& device_id,
-                                                const FirmwareOtaStateEvent& event) {
-    std::shared_ptr<FirmwareUpdateSession> update_session;
-    {
-        std::lock_guard lock(mutex_);
-        update_session = firmware_update_session_;
-    }
-    if (!update_session || update_session->device_id != device_id) return;
-    if (event.transfer_id.has_value() && *event.transfer_id != update_session->transfer_id) return;
-
-    if (event.event == "progress") {
-        if (event.written.has_value() && event.size.has_value() && update_session->progress) {
-            update_session->device_confirmed_written.store(*event.written);
-            LogBleLine("OTA device progress VS-" + device_id +
-                       " written=" + std::to_string(*event.written) +
-                       "/" + std::to_string(*event.size));
-            update_session->progress(FirmwareUpdateProgress{
-                static_cast<int>(*event.written),
-                static_cast<int>(*event.size),
-                true});
-        }
-    } else if (event.event == "done") {
-        LogBleLine("OTA device done VS-" + device_id);
-        if (update_session->progress) {
-            update_session->progress(FirmwareUpdateProgress{
-                static_cast<int>(update_session->image.size()),
-                static_cast<int>(update_session->image.size()),
-                true});
-        }
-        FinishFirmwareUpdate(update_session, true, {});
-    } else if (event.event == "error") {
-        LogBleLine("OTA device error VS-" + device_id +
-                   " code=" + (event.code.empty() ? "unknown" : event.code));
-        FinishFirmwareUpdate(update_session, false,
-                             "Device rejected OTA: " + (event.code.empty() ? "unknown" : event.code));
-    }
-}
-
-void BleCentralWin::FinishFirmwareUpdate(std::shared_ptr<FirmwareUpdateSession> update_session,
-                                         bool success,
-                                         const std::string& message) {
-    if (!update_session) return;
-    {
-        std::lock_guard lock(mutex_);
-        if (firmware_update_session_ != update_session) return;
-        firmware_update_session_.reset();
-    }
-    if (update_session->completion) {
-        DispatchToUiThread([completion = std::move(update_session->completion), success, message] {
-            completion(success, message);
-        });
-    }
-}
-
-void BleCentralWin::HandleDeviceDisconnected(const std::string& device_id,
-                                              std::shared_ptr<DeviceSession> session) {
-    std::shared_ptr<DeviceSession> removed;
-    {
-        std::lock_guard lock(mutex_);
-        auto it = sessions_by_device_id_.find(device_id);
-        if (it == sessions_by_device_id_.end()) return;
-        if (session && it->second != session) return;
-        removed = std::move(it->second);
-        sessions_by_device_id_.erase(it);
-        if (removed) connecting_addresses_.erase(removed->bluetooth_address);
-    }
-    std::shared_ptr<FirmwareUpdateSession> update_session;
-    {
-        std::lock_guard lock(mutex_);
-        if (firmware_update_session_ && firmware_update_session_->device_id == device_id) {
-            update_session = firmware_update_session_;
-        }
-    }
-    if (update_session) {
-        FinishFirmwareUpdate(update_session, false, "Device disconnected during firmware update.");
-    }
-    // 小米会话拆除前尽力发 MIC_CLOSE（遥控器侧 mic 可能仍开着），再复位状态机。
-    // 前缀类感知：removed 缺失（重复拆链/会话已被先摘走的二次调用）时回落到
-    // 调用方持有的 session 引用，仍无法判定才用通用 VS- 前缀。
-    const auto* class_source = removed ? removed.get() : session.get();
-    const char* id_prefix =
-        class_source && class_source->device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-"
-                                                                                     : "VS-";
-    if (removed && removed->device_class == DeviceClass::kXiaomiRemote2Pro) {
-        StopXiaomiSessionBestEffort(removed);
-    }
-    if (removed) CloseSession(std::move(removed));
-    LogBleLine("device disconnected " + std::string(id_prefix) + device_id +
-               "; restarting scan for reconnection");
-    LogConnectionSnapshot("disconnected");
-    DispatchToUiThread([this] {
-        PublishConnections();
-        StartScan();
-    });
-}
-
-void BleCentralWin::CloseSession(std::shared_ptr<DeviceSession> session) {
-    if (!session) return;
-    if (session->audio_characteristic && session->audio_value_changed_token.value != 0) {
-        try { session->audio_characteristic.ValueChanged(session->audio_value_changed_token); } catch (...) {}
-    }
-    if (session->state_characteristic && session->state_value_changed_token.value != 0) {
-        try { session->state_characteristic.ValueChanged(session->state_value_changed_token); } catch (...) {}
-    }
-    if (session->ota_state_characteristic && session->ota_state_value_changed_token.value != 0) {
-        try { session->ota_state_characteristic.ValueChanged(session->ota_state_value_changed_token); } catch (...) {}
-    }
-    if (session->ble_device && session->connection_status_token.value != 0) {
-        try { session->ble_device.ConnectionStatusChanged(session->connection_status_token); } catch (...) {}
-    }
-    if (session->ble_device && session->gatt_services_changed_token.value != 0) {
-        try { session->ble_device.GattServicesChanged(session->gatt_services_changed_token); } catch (...) {}
-    }
-    if (session->gatt_session && session->session_status_token.value != 0) {
-        try { session->gatt_session.SessionStatusChanged(session->session_status_token); } catch (...) {}
-    }
-    if (session->gatt_session) {
-        try {
-            session->gatt_session.MaintainConnection(false);
-            session->gatt_session.Close();
-        } catch (...) {}
-        session->gatt_session = nullptr;
-    }
-    {
-        std::lock_guard lock(session->xiaomi_mutex);
-        session->xiaomi_atvv_session.reset();
-    }
-    if (session->xiaomi_audio_characteristic &&
-        session->xiaomi_audio_value_changed_token.value != 0) {
-        try { session->xiaomi_audio_characteristic.ValueChanged(session->xiaomi_audio_value_changed_token); } catch (...) {}
-        session->xiaomi_audio_value_changed_token = {};
-    }
-    if (session->xiaomi_control_characteristic &&
-        session->xiaomi_control_value_changed_token.value != 0) {
-        try { session->xiaomi_control_characteristic.ValueChanged(session->xiaomi_control_value_changed_token); } catch (...) {}
-        session->xiaomi_control_value_changed_token = {};
-    }
-    if (session->battery_characteristic && session->battery_value_changed_token.value != 0) {
-        try { session->battery_characteristic.ValueChanged(session->battery_value_changed_token); } catch (...) {}
-        session->battery_value_changed_token = {};
-    }
-    if (session->xiaomi_battery_service) {
-        try { session->xiaomi_battery_service.Close(); } catch (...) {}
-        session->xiaomi_battery_service = nullptr;
-    }
-    if (session->service) {
-        try { session->service.Close(); } catch (...) {}
-        session->service = nullptr;
-    }
-    if (session->ble_device) {
-        try { session->ble_device.Close(); } catch (...) {}
-        session->ble_device = nullptr;
-    }
-    session->audio_characteristic = nullptr;
-    session->state_characteristic = nullptr;
-    session->control_characteristic = nullptr;
-    session->ota_rx_characteristic = nullptr;
-    session->ota_state_characteristic = nullptr;
-    session->xiaomi_tx_characteristic = nullptr;
-    session->xiaomi_audio_characteristic = nullptr;
-    session->xiaomi_control_characteristic = nullptr;
-    session->battery_characteristic = nullptr;
-    session->probe_characteristic = nullptr;
-    session->ready = false;
-}
-
-void BleCentralWin::CloseSessions() {
-    std::map<std::string, std::shared_ptr<DeviceSession>> sessions;
-    {
-        std::lock_guard lock(mutex_);
-        sessions.swap(sessions_by_device_id_);
-    }
-    for (auto& [_, session] : sessions) {
-        if (session->device_class == DeviceClass::kXiaomiRemote2Pro) {
-            StopXiaomiSessionBestEffort(session);
-        }
-        CloseSession(std::move(session));
-    }
-}
-
-void BleCentralWin::StartHeartbeat() {
-    {
-        std::lock_guard lock(heartbeat_mutex_);
-        if (heartbeat_thread_.joinable()) return;
-        heartbeat_stop_ = false;
-    }
-    heartbeat_thread_ = std::thread([this] { HeartbeatLoop(); });
-}
-
-void BleCentralWin::StopHeartbeat() {
-    {
-        std::lock_guard lock(heartbeat_mutex_);
-        heartbeat_stop_ = true;
-    }
-    heartbeat_cv_.notify_all();
-    if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
-}
-
-void BleCentralWin::HeartbeatLoop() {
-    std::unique_lock lock(heartbeat_mutex_);
-    while (!heartbeat_stop_) {
-        if (heartbeat_cv_.wait_for(lock, kHeartbeatInterval, [this] { return heartbeat_stop_; })) break;
-        lock.unlock();
-        CheckScanHealth();
-        ProbeSessions();
-        lock.lock();
-    }
-}
-
-void BleCentralWin::CheckScanHealth() {
-    // Claim 滞留清理：ConnectDeviceAsync 若在任一无超时的 WinRT co_await 上
-    // 永久挂起（既不 fail 也不 ready），claim 永不释放，该地址的后续广播全被
-    // try_claim_connect 否决，重连自我封锁（设备卡 Pairing，重启设备无用，
-    // 只有重启进程能恢复）。最坏正常连接实测 ~65s，超时强制释放兜底。
-    std::vector<std::uint64_t> expired_claims;
-    {
-        std::lock_guard lock(mutex_);
-        const auto now = std::chrono::steady_clock::now();
-        for (const auto& [address, claimed_at] : connecting_addresses_) {
-            if (now - claimed_at > kConnectClaimTimeout) expired_claims.push_back(address);
-        }
-        for (const auto address : expired_claims) connecting_addresses_.erase(address);
-    }
-    for (const auto address : expired_claims) {
-        LogBleLine("connect claim expired after " +
-                   std::to_string(kConnectClaimTimeout.count()) +
-                   "s (hung connect coroutine?); releasing address=" +
-                   FormatBluetoothAddress(address));
-    }
-
-    // watcher 静默失效检测：有配对设备待发现、扫描在跑、却长时间收不到任何
-    // 广告包（任意设备的广告都算存活证明）→ 判定 watcher 假活并重建。
-    {
-        std::lock_guard lock(mutex_);
-        bool needs_discovery = false;
-        for (const auto& id : paired_device_ids_) {
-            auto it = sessions_by_device_id_.find(id);
-            if (it == sessions_by_device_id_.end() || !it->second->ready) {
-                needs_discovery = true;
-                break;
-            }
-        }
-        if (!needs_discovery || watcher_ == nullptr) return;
-    }
-    const auto silent_ms =
-        NowSteadyMs() - last_adv_received_ms_.load(std::memory_order_relaxed);
-    if (silent_ms < std::chrono::duration_cast<std::chrono::milliseconds>(
-                        kScanSilenceTimeout).count()) return;
-    {
-        std::lock_guard lock(mutex_);
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_scan_watchdog_restart_at_ < kScanWatchdogMinRestartInterval) return;
-        last_scan_watchdog_restart_at_ = now;
-    }
-    LogBleLine("scan watchdog: no advertisements for " +
-               std::to_string(silent_ms / 1000) +
-               "s with paired device undiscovered; restarting watcher");
-    LogConnectionSnapshot("scan_watchdog_rebuild");
-    DispatchToUiThread([this] { StartScan(); });
-}
-
-void BleCentralWin::ProbeSessions() {
-    std::vector<std::shared_ptr<DeviceSession>> sessions;
-    {
-        std::lock_guard lock(mutex_);
-        for (const auto& [_, session] : sessions_by_device_id_) {
-            if (session->ready) sessions.push_back(session);
-        }
-    }
-    if (sessions.empty()) return;
-    const auto now_ms = NowSteadyMs();
-    const auto timeout_ms = kHeartbeatTimeout.count();
-    const auto payload = BleProtocol::BatteryStatusRequestPayload();
-    for (auto& session : sessions) {
-        // 便宜预检：ConnectionStatus 属性已翻成 Disconnected 但事件未投递时，
-        // 不必再等心跳超时。属性访问本身抛异常同样按链路已死处理。
-        bool link_gone = false;
-        try {
-            link_gone = session->ble_device &&
-                session->ble_device.ConnectionStatus() == BluetoothConnectionStatus::Disconnected;
-        } catch (...) {
-            link_gone = true;
-        }
-        const auto last_rx = session->last_rx_ms.load(std::memory_order_relaxed);
-        const auto silent_ms = last_rx > 0 ? now_ms - last_rx : -1;
-        const bool silent_too_long = silent_ms > timeout_ms;
-        if (link_gone || silent_too_long) {
-            LogBleLine(std::string("heartbeat teardown ") +
-                       (session->device_class == DeviceClass::kXiaomiRemote2Pro ? "RC-" : "VS-") +
-                       session->device.id +
-                       " reason=" + (link_gone ? "connection_status_disconnected" : "no_rx_timeout") +
-                       " silent_ms=" + std::to_string(silent_ms));
-            HandleDeviceDisconnected(session->device.id, session);
-            continue;
-        }
-        if (session->device_class == DeviceClass::kXiaomiRemote2Pro) {
-            // 小米无 control_rx 心跳写通道：读电量/GAP 特征强制链路层收发，
-            // 成功刷新 last_rx_ms；Unreachable/异常按链路已死拆除。
-            ProbeXiaomiSessionAsync(std::move(session));
-            continue;
-        }
-        // 向 control_rx 写心跳：对端存活时固件必回 battery_status（刷新
-        // last_rx_ms）；链路静默死亡时该写迫使控制器发包，加速协议栈通过
-        // supervision timeout / 后续写入失败发现断链。
-        WriteControlPayloadAsync(std::move(session), payload);
-    }
-}
-
-ByteVector BleCentralWin::BytesFromBuffer(const winrt::Windows::Storage::Streams::IBuffer& buffer) {
-    DataReader reader = DataReader::FromBuffer(buffer);
-    ByteVector bytes(reader.UnconsumedBufferLength());
-    if (!bytes.empty()) {
-        reader.ReadBytes(bytes);
-    }
-    return bytes;
-}
-
-void BleCentralWin::PublishConnections() {
-    if (!on_connection_change) return;
-    std::vector<ConnectedDevice> devices;
-    {
-        std::lock_guard lock(mutex_);
-        for (const auto& [_, session] : sessions_by_device_id_) {
-            if (session->ready) devices.push_back(session->device);
-        }
-    }
-    std::sort(devices.begin(), devices.end(), [](const ConnectedDevice& lhs, const ConnectedDevice& rhs) {
-        return lhs.id < rhs.id;
-    });
-    on_connection_change(devices);
-}
-
-void BleCentralWin::LogConnectionSnapshot(std::string_view reason) {
-    std::lock_guard lock(mutex_);
-    std::string line = "conn_snapshot reason=";
-    line += std::string(reason);
-    line += " paired=[";
-    bool first = true;
-    for (const auto& id : paired_device_ids_) {
-        if (!first) line += " ";
-        first = false;
-        auto it = sessions_by_device_id_.find(id);
-        // 前缀类感知：有会话按 device_class，无会话（未连接）无法判定用通用 VS-。
-        line += (it != sessions_by_device_id_.end() && it->second &&
-                 it->second->device_class == DeviceClass::kXiaomiRemote2Pro)
-                    ? "RC-" + id
-                    : "VS-" + id;
-        if (it != sessions_by_device_id_.end() && it->second) {
-            line += it->second->ready ? "(ready)" : "(session,!ready)";
-        } else {
-            line += "(no_session)";
-        }
-    }
-    line += "]";
-    LogBleLine(line);
 }
 
 } // namespace voicestick

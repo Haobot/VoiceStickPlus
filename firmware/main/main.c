@@ -9,6 +9,7 @@
 
 #include "button_gpio.h"
 #include "cJSON.h"
+#include "control_cmd.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_pm.h"
@@ -21,6 +22,13 @@
 
 #include "audio_pipeline.h"
 #include "bmi270.h"
+#include "gateway_hid_host.h"
+#include "gateway_hogp.h"
+#include "gateway_keymap.h"
+#include "gateway_mode.h"
+#include "gateway_switcher.h"
+#include "gateway_targets.h"
+#include "xiaomi_atvv_client.h"
 #include "mini_encoder_c.h"
 #include "power_log.h"
 #include "stick_s3_board.h"
@@ -37,6 +45,13 @@ static const char *TAG = "voice_stick";
 #define POWEROFF_TIMEOUT_MS (5 * 60 * 1000)    // T_pwr：S2 ScreenOff → S3 PowerOff（连接态）
 #define DISC_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)  // T_disc：BLE 断连 → S3 PowerOff
 #define USB_POWEROFF_TIMEOUT_MS (10 * 60 * 1000)   // T_usb：usb_auto_off 开启时的供电态关机时长
+// A6：rollback 签到延后窗口——新固件稳定运行这么久后才 mark_app_valid。
+#define ROLLBACK_SIGNOFF_DELAY_MS (15 * 1000)
+// A17：主机 ui_state 无响应看门狗。桌面端自身 finalizing 看门狗
+// kFinalizingWatchdogTimeout=15s 会先兜住正常收尾，故取 30s：只有主机真的
+// 静默（超时后仍无 ui_state）才强制回 ready；cb 内 !s_recording 条件保证
+// 录音中不误伤。
+#define HOST_RESPONSE_TIMEOUT_MS (30 * 1000)
 #define DISPLAY_ACTIVE_BRIGHTNESS 20
 #define DISPLAY_DIM_BRIGHTNESS 4
 #define DISPLAY_DIM_TIMEOUT_US (DISPLAY_DIM_TIMEOUT_MS * 1000ULL)
@@ -105,7 +120,10 @@ static bool s_battery_charging;
 static bool s_usb_powered;
 static int s_battery_level = 0;
 static bool s_show_imu_debug = false;
-static bool s_tap_enabled = true;
+// A12：默认 false——对齐 protocol.md「tap_enabled ... Default false」与桌面端
+// InteractionSettings::tap_to_arrow 默认值；开箱（NVS 空 + 桌面未连接前）不注入
+// Down 键。桌面连接后按设备逐台下发其有效值（连接变更与配置变更两处）。
+static bool s_tap_enabled = false;
 // 供电态（USB）自动关机开关：默认关闭（保持 USB 充电常亮行为）。开启后外部供电时
 // 关机准入放行，空闲 T_usb=10min 关机。NVS 持久化，由电池监测窗口的勾选开关控制。
 static bool s_usb_auto_off = false;
@@ -123,12 +141,40 @@ static esp_timer_handle_t s_poweroff_timer;      // S2→S3（原 deep_sleep_tim
 static esp_timer_handle_t s_disc_poweroff_timer; // BLE 断连→S3
 static esp_timer_handle_t s_battery_refresh_timer;
 static esp_timer_handle_t s_host_response_timer;
+// A19：PMIC IRQ ISR 队列满时置位，由周期电池刷新（清源后）补臂中断线。
+static volatile bool s_pmic_irq_dropped;
 static esp_timer_handle_t s_pickup_poll_timer;
 static esp_timer_handle_t s_imu_poll_timer;
 static esp_timer_handle_t s_tap_poll_timer;
 static esp_timer_handle_t s_air_mouse_poll_timer;
 static esp_timer_handle_t s_encoder_poll_timer;
-static bool s_encoder_button_pressed;
+// A9b：5 轮询位 + 专用传感任务（Doc/Plan/sensor-poll-task-2026-10-08.md）。
+// timer 回调只守卫+踢任务；I2C 全部迁 sensor_poll_task（最坏 30-100ms 超时只卡本任务，
+// 不再连坐共享 esp_timer 任务的双击窗/看门狗/息屏）。
+#define SENSOR_POLL_PICKUP_BIT (1u << 0)
+#define SENSOR_POLL_TAP_BIT (1u << 1)
+#define SENSOR_POLL_ENCODER_BIT (1u << 2)
+#define SENSOR_POLL_AIR_MOUSE_BIT (1u << 3)
+#define SENSOR_POLL_IMU_BIT (1u << 4)
+#define SENSOR_POLL_POWER_LOG_BIT (1u << 5)
+static TaskHandle_t s_sensor_task_handle;
+static volatile uint32_t s_sensor_poll_pending;
+static portMUX_TYPE s_sensor_poll_mux = portMUX_INITIALIZER_UNLOCKED;
+// A9b 二期（power_log 模式切换 I2C 2 笔 @power_log.c:94/104）：refresh 侧纯状态推导，
+// 记条目改入本环由 sensor_poll_task 执行（电量/充电读不再卡 display 定时器与 app_event 任务）；
+// S3 关机条目仍由 enter_power_off 直呼同步（组件内唯一同步 flush 点，勿走本环）。
+static power_mode_t s_power_note_ring[4];
+static uint8_t s_power_note_head;
+static uint8_t s_power_note_tail;static bool s_encoder_button_pressed;
+// 小米语音键按住态缓存（NimBLE 任务写/app_event 与 timer 读，可接受竞态，
+// 与 s_encoder_button_pressed 同模式）：ATVV 会话 STREAMING 期间为 true。
+static bool s_xiaomi_voice_pressed;
+// 小米源延迟停录挂起：ATVV STOP 后 150ms 尾包宽限期内不立即 stop_recording，
+// 宽限过后再走 drain→button_up 收尾（对齐物理键「drain 完才发 button_up」次序）。
+static bool s_xiaomi_stop_pending;
+// 延迟量 = 尾包宽限 150ms + 余量 20ms（audio_task 40ms 帧粒度）。
+#define XIAOMI_STOP_DELAY_MS 170
+static esp_timer_handle_t s_xiaomi_stop_delay_timer;
 // MiniEncoderC 每格（detent）产生 2 个正交计数（真机验证）：跨轮询窗口累计计数，
 // 每满 2 个同向计数上报 1 步；方向反转时丢弃反向余数。取值为 [-1,1] 的余数。
 static int32_t s_encoder_count_rem;
@@ -153,6 +199,8 @@ static bool s_click_to_talk_pending_start;      // click_to_talk 首击后等双
 // button_double_click。用于桌面端把侧键单击/双击映射到不同语义（进体感 vs 恢复上次输入）。
 static bool s_side_click_pending;                // 侧键等待第二击（双击窗口内）
 static uint32_t s_side_pending_duration_ms;      // 暂存第一次侧键短按时长（窗口超时后补发 button_click）
+static bool s_side_switch_preview;               // 侧键切换器（网关模式）：预览窗开启中
+static uint32_t s_side_switch_preview_ms;        // 预览窗起始时刻（esp_log_timestamp）
 static esp_timer_handle_t s_side_double_click_timer;
 
 // power_log 模式钩子状态：叠加优先级 录音/OTA > 广播 > 屏幕态（S0/S1/S2）。
@@ -177,6 +225,10 @@ typedef enum {
     // click_to_talk、体感映射），仅日志里用 source 值区分来源；owner 仲裁独立
     // （PRIMARY_OWNER_ENCODER），避免与物理键互相截断录音。
     APP_INPUT_SOURCE_ENCODER,
+    // 小米遥控器语音键（网关模式 ATVV 会话沿）：手势语义同 PHYSICAL（走同一
+    // 交互状态机），但音频源是 ATVV PCM 馈送而非 ES8311（start_recording 按
+    // 本来源路由 start_ext）；owner 独立，与本地 mic 会话互斥。
+    APP_INPUT_SOURCE_XIAOMI,
 } app_input_source_t;
 
 static void apply_app_ui_state(const char *state, const char *text);
@@ -188,6 +240,8 @@ typedef enum {
     // 编码器按钮：手势语义同 PHYSICAL（见 is_local_primary_source），
     // 但 owner 仲裁独立，避免两个本地源互相截断对方的录音。
     PRIMARY_OWNER_ENCODER,
+    // 小米语音键：同上，owner 独立（本地 mic 录音中按语音键被拒，反之亦然）。
+    PRIMARY_OWNER_XIAOMI,
 } primary_owner_t;
 
 static primary_owner_t s_primary_owner = PRIMARY_OWNER_NONE;
@@ -257,10 +311,20 @@ typedef enum {
     APP_EVENT_OTA_DONE,
     APP_EVENT_OTA_END,
     APP_EVENT_HOST_RESPONSE_TIMEOUT,
+    // A9：double_click_timer_cb 的重活移交（原在 esp_timer 共享任务内联启动录音
+    // 并发 BLE 帧）——处理器以标志复核方式领取执行。
+    APP_EVENT_CLICK_TO_TALK_CONFIRM,
+    APP_EVENT_RECORDING_RETRY_TICK,
+    APP_EVENT_HOLD_THRESHOLD_CONFIRM,
+    APP_EVENT_DOUBLE_CLICK_TIMEOUT,
     APP_EVENT_PICKUP,
     APP_EVENT_TAP,
     APP_EVENT_ENCODER_ROTATE,
     APP_EVENT_ENTER_POWER_OFF,
+    // 小米语音键尾包宽限到期：执行延迟停录收尾（stop_recording + button_up）。
+    APP_EVENT_XIAOMI_STOP_DUE,
+    // gateway_keymap 回执延迟发送（2026-10-12 栈压穿修复，见生产者处注释）。
+    APP_EVENT_GW_KEYMAP_REPORT,
 } app_event_type_t;
 
 typedef struct {
@@ -288,9 +352,17 @@ static void queue_primary_up_event(app_input_source_t source, uint32_t request_i
 static void queue_encoder_rotate_event(int32_t delta);
 static void handle_primary_down(app_input_source_t source, uint32_t request_id);
 static void handle_primary_up(app_input_source_t source, uint32_t request_id);
+static void finish_primary_release(app_input_source_t source);
 static uint32_t elapsed_button_ms(int64_t down_us);
 static void schedule_idle_slow_interval(void);
 static void cancel_idle_slow_interval(void);
+static void save_gateway_key_routes(void);
+static void load_gateway_key_routes(void);
+static void send_gateway_keymap_report(void);
+// gateway_keymap 回执待发标志：nimble host 任务（ATT 写回调）置位，app_event_task
+// 消费。volatile：跨核（双核）单标志单向流，丢标仅致一次回执延迟，连接/热更会
+// 重推全表自愈。
+static volatile bool s_gw_keymap_report_pending;
 static void load_pickup_threshold_from_nvs(void);
 static void save_pickup_threshold_to_nvs(int32_t threshold);
 static void load_usb_auto_off_from_nvs(void);
@@ -301,10 +373,45 @@ static void load_encoder_settings_from_nvs(void);
 static void save_encoder_settings_to_nvs(void);
 static void set_tap_polling_enabled(bool enabled);
 static void set_air_mouse_enabled(bool enabled);
+static void sensor_poll_task(void *arg);
+// A9b 二期：消费 power_log 记条目环（组件内去重兜底，逐条直呼同步原函数）。
+static void sensor_poll_power_log(void)
+{
+    for (;;) {
+        power_mode_t mode;
+        bool have = false;
+        portENTER_CRITICAL(&s_sensor_poll_mux);
+        if (s_power_note_tail != s_power_note_head) {
+            mode = s_power_note_ring[s_power_note_tail];
+            s_power_note_tail = (uint8_t)((s_power_note_tail + 1) % 4);
+            have = true;
+        }
+        portEXIT_CRITICAL(&s_sensor_poll_mux);
+        if (!have) {
+            break;
+        }
+        power_log_note_mode(mode);
+    }
+}
 
+static void sensor_poll_kick(uint32_t bit);
+static void sensor_poll_pickup(void);
+static void sensor_poll_tap(void);
+static void sensor_poll_encoder(void);
+static void sensor_poll_air_mouse(void);
+static void sensor_poll_power_log(void);
+static void sensor_poll_imu(void);
 static bool is_external_powered(void)
 {
     return s_battery_charging || s_usb_powered;
+}
+
+// 供电态屏幕常亮：外部供电（充电/USB）且用户未开启 usb_auto_off 时跳过 dim/off
+// 空闲降级。网关模式下灭屏/深睡会让小米遥控器链路「像失联」（深睡只能按主键
+// 唤醒）；插电即常驻是桌面网关的预期形态，拔电回到电池空闲策略。
+static bool display_keep_awake(void)
+{
+    return is_external_powered() && !s_usb_auto_off;
 }
 
 // 由当前状态推导上报模式并去重记录。各转移点只更新 s_power_screen_mode 或
@@ -323,7 +430,22 @@ static void power_log_refresh_mode(void)
     }
     if (mode != s_power_reported_mode) {
         s_power_reported_mode = mode;
-        power_log_note_mode(mode);
+        // A9b 二期：记条目（含 2 笔 I2C 读）入环异步执行；本函数保持纯状态推导，
+        // 调用方（display 定时器/app_event/note_activity 等）不再内联阻塞在 I2C 上。
+        bool pushed = false;
+        portENTER_CRITICAL(&s_sensor_poll_mux);
+        uint8_t next = (uint8_t)((s_power_note_head + 1) % 4);
+        if (next != s_power_note_tail) {
+            s_power_note_ring[s_power_note_head] = mode;
+            s_power_note_head = next;
+            pushed = true;
+        }
+        portEXIT_CRITICAL(&s_sensor_poll_mux);
+        if (pushed) {
+            sensor_poll_kick(SENSOR_POLL_POWER_LOG_BIT);
+        } else {
+            ESP_LOGW(TAG, "power note ring full, dropped mode=%d", (int)mode);
+        }
     }
 }
 
@@ -343,6 +465,7 @@ static bool poweroff_allowed_now(void)
 
 // 主键当前是否处于按住态：正面物理键（GPIO 低电平）或编码器按钮任一按下即视为按住。
 // app 任务上下文（如关机前按住检查）用此活读判定；编码器 absent 时退化为纯 GPIO 判定。
+// 小米语音键无本地 GPIO：以 ATVV 会话 STREAMING 态代替（MIC_OPEN 后未 STOP）。
 // esp_timer 上下文（双击/hold 阈值定时器）改用 primary_button_held_from_timer()。
 static bool primary_button_held(void)
 {
@@ -355,14 +478,17 @@ static bool primary_button_held(void)
             return true;
         }
     }
-    return false;
+    return xiaomi_atvv_client_voice_pressed();
 }
 
 // esp_timer 上下文专用：编码器按钮态复用轮询缓存（同一任务，无竞态），
 // 避免再做一次带超时的 I2C 活读——瞬时 I2C 失败会误判"已松开"。
+// 小米语音键同样用缓存态（s_xiaomi_voice_pressed，NimBLE 任务写/app 任务读，
+// 与 s_encoder_button_pressed 同模式的可接受竞态）。
 static bool primary_button_held_from_timer(void)
 {
-    return gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0 || s_encoder_button_pressed;
+    return gpio_get_level(STICK_S3_PIN_BUTTON_FRONT) == 0 || s_encoder_button_pressed ||
+           s_xiaomi_voice_pressed;
 }
 
 static esp_err_t init_power_management(void)
@@ -536,6 +662,9 @@ static void restart_display_dim_timer(void)
         return;
     }
     (void)esp_timer_stop(s_display_dim_timer);
+    if (display_keep_awake()) {
+        return;  // 供电态常亮：不进入 S1 dim 降级（空闲时也无操作可省）
+    }
     if (!s_recording && !s_ota_updating) {
         esp_err_t err = esp_timer_start_once(s_display_dim_timer, DISPLAY_DIM_TIMEOUT_US);
         if (err != ESP_OK) {
@@ -551,7 +680,8 @@ static void restart_display_off_timer(void)
         return;
     }
     (void)esp_timer_stop(s_display_off_timer);
-    if (s_display_dimmed && !s_screen_off && !s_recording && !s_ota_updating) {
+    if (s_display_dimmed && !s_screen_off && !display_keep_awake() &&
+        !s_recording && !s_ota_updating) {
         esp_err_t err = esp_timer_start_once(s_display_off_timer, DISPLAY_OFF_TIMEOUT_US);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "start display-off timer failed: %s", esp_err_to_name(err));
@@ -617,84 +747,26 @@ static void note_activity(void)
     power_log_refresh_mode();
 }
 
-// 录音期间快连接间隔周期重申（移植自 2.4.10 fb09bec，2026-10-11）：录音开始时的
-// fast 请求可能丢失或被 central 静默忽略（实测音频通知塌到 ~2.4fps、3.4s 语音拖
-// 28s 才送完）。每 1.5s 重申一次；request_fast_interval 已幂等（已是快档不发请求），
-// 此调用开销可忽略。
-static esp_timer_handle_t s_fast_interval_reassert_timer;
-
-static void fast_interval_reassert_cb(void *arg)
-{
-    (void)arg;
-    (void)voice_ble_request_fast_interval();
-}
-
-static void start_fast_interval_reassert_timer(void)
-{
-    if (!s_fast_interval_reassert_timer) {
-        const esp_timer_create_args_t args = {
-            .callback = &fast_interval_reassert_cb,
-            .name = "fast_itvl_re",
-        };
-        if (esp_timer_create(&args, &s_fast_interval_reassert_timer) != ESP_OK) {
-            return;
-        }
-    }
-    (void)esp_timer_stop(s_fast_interval_reassert_timer);
-    (void)esp_timer_start_periodic(s_fast_interval_reassert_timer, 1500 * 1000ULL);
-}
-
-static void stop_fast_interval_reassert_timer(void)
-{
-    if (s_fast_interval_reassert_timer) {
-        (void)esp_timer_stop(s_fast_interval_reassert_timer);
-    }
-}
-
-// 空闲降档延迟化（移植自 2.4.10 fb09bec，2026-10-11）：ready 即切 400ms 省电档
-// 会让下一次录音的头几秒音频在慢档里爬行——central 应用连接参数更新要 ~5s，短句
-// （3-4s）整段都在慢档，实测松键后 2.8s 才收到尾帧。改为「活动后 5 分钟内保持当前
-// 档位，纯空闲才降档」；拿起/按键等 note_activity 路径同时拉快档（幂等）。电池代价
-// 量化：快档比慢档多 ~0.5mA，5 分钟窗口每次活动只多 0.04mAh，可忽略；长时静置仍
-// 回省电档不变。
-#define IDLE_SLOW_DELAY_US (300ULL * 1000 * 1000)
-static esp_timer_handle_t s_idle_slow_timer;
-
-static void idle_slow_timer_cb(void *arg)
-{
-    (void)arg;
-    if (!s_recording && s_app_ui_state == APP_UI_STATE_READY) {
-        ESP_LOGI(TAG, "idle 5min, dropping to power-save conn interval");
-        (void)voice_ble_request_slow_interval();
-    }
-}
-
-static void schedule_idle_slow_interval(void)
-{
-    if (!s_idle_slow_timer) {
-        const esp_timer_create_args_t args = {
-            .callback = &idle_slow_timer_cb,
-            .name = "idle_slow",
-        };
-        if (esp_timer_create(&args, &s_idle_slow_timer) != ESP_OK) {
-            return;
-        }
-    }
-    (void)esp_timer_stop(s_idle_slow_timer);
-    (void)esp_timer_start_once(s_idle_slow_timer, IDLE_SLOW_DELAY_US);
-}
-
-static void cancel_idle_slow_interval(void)
-{
-    if (s_idle_slow_timer) {
-        (void)esp_timer_stop(s_idle_slow_timer);
-    }
-}
-
 static void stop_host_response_timer(void)
 {
     if (s_host_response_timer) {
         (void)esp_timer_stop(s_host_response_timer);
+    }
+}
+
+// A17：原 timer 只创建/只停止、全仓从不 start（死代码）——主机不回 ui_state 时
+// 设备永远停在 recording/thinking。进入非 ready 态即武装，超时由
+// host_response_timer_cb → APP_EVENT_HOST_RESPONSE_TIMEOUT 收尾。
+static void start_host_response_timer(void)
+{
+    if (!s_host_response_timer) {
+        return;
+    }
+    (void)esp_timer_stop(s_host_response_timer);
+    esp_err_t err = esp_timer_start_once(s_host_response_timer,
+                                         HOST_RESPONSE_TIMEOUT_MS * 1000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "start host response timer failed: %s", esp_err_to_name(err));
     }
 }
 
@@ -766,8 +838,9 @@ static void enter_power_off(void)
         (void)voice_ble_disconnect(1000);
     }
 
-    ui_status_prepare_deep_sleep();
-    stick_s3_board_prepare_deep_sleep();
+    /* 关机准备（关背光/面板、断 L3B 麦克风供电）必须放在所有可能中止的分支之后：
+       旧顺序在 ext1 配置失败或主键仍按住而中止时已执行不可逆准备，导致设备仍在运行
+       但屏幕永久黑、麦克风断电。见 Doc/Plan/architecture-review-... P1-A5。 */
 
     /* Clear any stale wakeup source bits left over from light sleep / esp_pm
        configuration (e.g. gpio_wakeup_enable on the PMIC IRQ line). Without
@@ -809,12 +882,87 @@ static void enter_power_off(void)
     // 放在所有中止检查之后，确保只在真正 commit 深睡时落一条 S3 记录。
     s_power_reported_mode = POWER_MODE_S3_POWER_OFF;
     power_log_note_mode(POWER_MODE_S3_POWER_OFF);
+    // 到这里已不可能中止：执行不可逆的关机准备，然后立刻深睡。
+    ui_status_prepare_deep_sleep();
+    stick_s3_board_prepare_deep_sleep();
     esp_deep_sleep_start();
 }
 
 static bool app_ui_allows_recording_start(void)
 {
     return s_app_ui_state != APP_UI_STATE_PENDING_CONFIRMATION;
+}
+
+// 录音期间快连接间隔周期重申（2026-10-11）：录音开始时的 fast 请求可能丢失或被
+// central 静默忽略（实测音频通知塌到 ~2.4fps、3.4s 语音拖 28s 才送完）。每 1.5s
+// 重申一次；request_fast_interval 已幂等（已是快档不发请求），此调用开销可忽略。
+static esp_timer_handle_t s_fast_interval_reassert_timer;
+
+static void fast_interval_reassert_cb(void *arg)
+{
+    (void)arg;
+    (void)voice_ble_request_fast_interval();
+}
+
+static void start_fast_interval_reassert_timer(void)
+{
+    if (!s_fast_interval_reassert_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &fast_interval_reassert_cb,
+            .name = "fast_itvl_re",
+        };
+        if (esp_timer_create(&args, &s_fast_interval_reassert_timer) != ESP_OK) {
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_fast_interval_reassert_timer);
+    (void)esp_timer_start_periodic(s_fast_interval_reassert_timer, 1500 * 1000ULL);
+}
+
+static void stop_fast_interval_reassert_timer(void)
+{
+    if (s_fast_interval_reassert_timer) {
+        (void)esp_timer_stop(s_fast_interval_reassert_timer);
+    }
+}
+
+// 空闲降档延迟化（2026-10-11）：ready 即切 400ms 省电档会让下一次录音的头几秒
+// 音频在慢档里爬行——macOS 应用连接参数更新要 ~5s，短句（3-4s）整段都在慢档，
+// 实测松键后 2.8s 才收到尾帧。改为「活动后 5 分钟内保持当前档位，纯空闲才降档」；
+// 拿起/按键等 note_activity 路径同时拉快档（幂等）。电池代价量化：快档比慢档多
+// ~0.5mA，5 分钟窗口每次活动只多 0.04mAh，可忽略；长时静置仍回省电档不变。
+#define IDLE_SLOW_DELAY_US (300ULL * 1000 * 1000)
+static esp_timer_handle_t s_idle_slow_timer;
+
+static void idle_slow_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_recording && s_app_ui_state == APP_UI_STATE_READY) {
+        ESP_LOGI(TAG, "idle 5min, dropping to power-save conn interval");
+        (void)voice_ble_request_slow_interval();
+    }
+}
+
+static void schedule_idle_slow_interval(void)
+{
+    if (!s_idle_slow_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &idle_slow_timer_cb,
+            .name = "idle_slow",
+        };
+        if (esp_timer_create(&args, &s_idle_slow_timer) != ESP_OK) {
+            return;
+        }
+    }
+    (void)esp_timer_stop(s_idle_slow_timer);
+    (void)esp_timer_start_once(s_idle_slow_timer, IDLE_SLOW_DELAY_US);
+}
+
+static void cancel_idle_slow_interval(void)
+{
+    if (s_idle_slow_timer) {
+        (void)esp_timer_stop(s_idle_slow_timer);
+    }
 }
 
 static uint32_t start_recording(void)
@@ -843,7 +991,14 @@ static uint32_t start_recording(void)
         return 0;
     }
 
-    err = audio_pipeline_start(session_id);
+    // 源路由：小米语音键走外部 PCM 馈送（ATVV 解码后的 16kHz PCM），其余
+    // （物理/编码器/远程热键）走 ES8311 采集。s_primary_press_source 由本次
+    // 按下沿设置，timer 确认路径（hold 阈值/重试）读取同一变量。
+    if (s_primary_press_source == APP_INPUT_SOURCE_XIAOMI) {
+        err = audio_pipeline_start_ext(session_id);
+    } else {
+        err = audio_pipeline_start(session_id);
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "audio start failed: %s", esp_err_to_name(err));
         release_recording_pm_locks();
@@ -902,6 +1057,44 @@ static void queue_app_event(app_event_type_t type)
     queue_app_event_with_ota(type, 0, 0);
 }
 
+// 关键事件不允许静默丢弃：队列满时旧实现直接丢，曾让录音/OTA/断连状态机卡死
+//（XIAOMI_STOP_DUE 丢失 = 永久录音；OTA_END 丢失 = 永久拒绝录音/关机）。
+// A7：关键事件入队失败的重试槽与累计计数——槽=单件暂存（关键事件并发极低），
+// app_event_task 每消费一件即回灌；计数=丢弃事件分类累计（上报通道另见 A7b）。
+static app_event_t s_critical_retry_pending;
+static volatile bool s_critical_retry_valid;
+static portMUX_TYPE s_crit_retry_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_app_event_dropped_total;
+static volatile uint32_t s_app_event_critical_dropped;
+
+static bool app_event_is_critical(app_event_type_t type)
+{
+    switch (type) {
+    case APP_EVENT_BLE_DISCONNECTED:
+    case APP_EVENT_OTA_BEGIN:
+    case APP_EVENT_OTA_DONE:
+    case APP_EVENT_OTA_END:
+    case APP_EVENT_XIAOMI_STOP_DUE:
+    case APP_EVENT_ENTER_POWER_OFF:
+    // A9：双击定时器派发的录音启动链——丢失即手势卡死（按住不录音/单击无回执），
+    // 与 XIAOMI_STOP_DUE 同级关键。
+    case APP_EVENT_CLICK_TO_TALK_CONFIRM:
+    case APP_EVENT_RECORDING_RETRY_TICK:
+    case APP_EVENT_HOLD_THRESHOLD_CONFIRM:
+    case APP_EVENT_DOUBLE_CLICK_TIMEOUT:
+    // 按键沿事件与录音开停直接成对（2026-10-11 实证：编码器旋转风暴挤满事件队列时
+    // FRONT_UP 走非关键路径被静默丢弃，录音无人停——桌面端 33s 幽灵会话/收不到
+    // button_up 的根因）。丢失即状态机失步，与 XIAOMI_STOP_DUE 同级关键。
+    case APP_EVENT_FRONT_DOWN:
+    case APP_EVENT_FRONT_UP:
+    case APP_EVENT_SIDE_DOWN:
+    case APP_EVENT_SIDE_UP:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, uint32_t size)
 {
     if (s_app_event_queue) {
@@ -912,11 +1105,41 @@ static void queue_app_event_with_ota(app_event_type_t type, uint32_t written, ui
             .written = written,
             .size = size,
         };
-        (void)xQueueSend(s_app_event_queue, &event, 0);
+        // 关键事件最多等 20ms 让消费者腾出槽位（任务上下文，最坏一次短阻塞），
+        // 仍失败则一定留下告警日志，不再无声吞掉。
+        const TickType_t wait = app_event_is_critical(type) ? pdMS_TO_TICKS(20) : 0;
+        if (xQueueSend(s_app_event_queue, &event, wait) != pdTRUE) {
+            // A7：关键事件不再一丢了之——20ms 后仍满则存单槽待 app_event_task 回灌；
+            // 槽占用与丢弃分类累计入告警日志（计数保留在静态量，待 A7b 上报通道）。
+            if (app_event_is_critical(type)) {
+                bool stashed = false;
+                portENTER_CRITICAL(&s_crit_retry_mux);
+                if (!s_critical_retry_valid) {
+                    s_critical_retry_pending = event;
+                    s_critical_retry_valid = true;
+                    stashed = true;
+                }
+                s_app_event_critical_dropped++;
+                uint32_t critical_dropped = s_app_event_critical_dropped;
+                portEXIT_CRITICAL(&s_crit_retry_mux);
+                ESP_LOGW(TAG, "app event queue full: critical type=%d %s (critical_dropped=%u)",
+                         (int)type, stashed ? "stashed for retry" : "STASH ALSO FULL",
+                         (unsigned)critical_dropped);
+            } else {
+                portENTER_CRITICAL(&s_crit_retry_mux);
+                s_app_event_dropped_total++;
+                uint32_t dropped = s_app_event_dropped_total;
+                portEXIT_CRITICAL(&s_crit_retry_mux);
+                ESP_LOGW(TAG, "app event queue full: dropped type=%d (dropped_total=%u)",
+                         (int)type, (unsigned)dropped);
+            }
+        }
     }
 }
 
-static void queue_app_event_from_isr(app_event_type_t type, BaseType_t *high_task_woken)
+// A19：返回是否成功入队——调用方（PMIC IRQ ISR）据此补臂中断线；原 void 返回把
+// xQueueSendFromISR 的失败静默丢掉，是「中断线永久失效」的根因之一。
+static bool queue_app_event_from_isr(app_event_type_t type, BaseType_t *high_task_woken)
 {
     if (s_app_event_queue) {
         app_event_t event = {
@@ -926,8 +1149,9 @@ static void queue_app_event_from_isr(app_event_type_t type, BaseType_t *high_tas
             .written = 0,
             .size = 0,
         };
-        (void)xQueueSendFromISR(s_app_event_queue, &event, high_task_woken);
+        return xQueueSendFromISR(s_app_event_queue, &event, high_task_woken) == pdTRUE;
     }
+    return pdTRUE;  // 队列尚未创建（启动早期）：不计「丢弃」，避免补臂告警刷屏
 }
 
 static void queue_primary_down_event(app_input_source_t source, uint32_t request_id)
@@ -1054,65 +1278,113 @@ static bool encoder_led_rgb_from_name(const char *name, uint32_t *rgb_out)
     return false;
 }
 
-static void ble_control_cb(const char *json)
-{
-    cJSON *root = cJSON_Parse(json);
-    if (!root) {
-        ESP_LOGW(TAG, "ignore invalid control json");
-        return;
-    }
+// P1 切换器入口（定义在下方，控制命令回调需要前向声明）。
+void gateway_select_target(int target_index, bool clear);
+void gateway_select_self(void);
+// 侧键切换器（网关模式）入口：定义在 gateway_switcher_timer_cb 之前，侧键释放处需要前向声明。
+static void side_switch_show_current(void);
+static void side_switch_cycle(void);
 
-    const cJSON *event = cJSON_GetObjectItemCaseSensitive(root, "event");
-    const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
-    const cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
-    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
-    const cJSON *button = cJSON_GetObjectItemCaseSensitive(root, "button");
-    const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
-    const cJSON *threshold_item = cJSON_GetObjectItemCaseSensitive(root, "threshold");
-    const cJSON *request_id_json = cJSON_GetObjectItemCaseSensitive(root, "request_id");
-    uint32_t request_id = 0;
-    if (cJSON_IsNumber(request_id_json)) {
-        request_id = (uint32_t)request_id_json->valueint;
-    }
-    if (cJSON_IsString(event) && strcmp(event->valuestring, "ui_state") == 0 &&
-        cJSON_IsString(state)) {
-        queue_ui_state_event(state->valuestring, cJSON_IsString(text) ? text->valuestring : "");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "interaction_mode") == 0 &&
-               cJSON_IsString(mode)) {
-        if (strcmp(mode->valuestring, "click_to_talk") == 0) {
+// 解析/执行分层（0.1 固件端契约 reader，2026-10-08）：control_rx JSON 的结构化解析
+// 在 voice_ble/control_cmd.c（纯逻辑、宿主编译可测、消费 tests/contract 黄金样本）；
+// 本函数只做副作用执行——每个 case 的分支体与原 if-else 链逐条等价（含告警文案）。
+static void execute_control_cmd(const control_cmd_t *cmd)
+{
+    switch (cmd->kind) {
+    case CONTROL_CMD_UI_STATE:
+        queue_ui_state_event(cmd->str1, cmd->text);
+        break;
+    case CONTROL_CMD_INTERACTION_MODE:
+        if (strcmp(cmd->str1, "click_to_talk") == 0) {
             apply_interaction_mode(INTERACTION_MODE_CLICK_TO_TALK);
-        } else if (strcmp(mode->valuestring, "hold_to_talk") == 0) {
+        } else if (strcmp(cmd->str1, "hold_to_talk") == 0) {
             apply_interaction_mode(INTERACTION_MODE_HOLD_TO_TALK);
-        } else if (strcmp(mode->valuestring, "hold_to_talk_instant") == 0) {
+        } else if (strcmp(cmd->str1, "hold_to_talk_instant") == 0) {
             apply_interaction_mode(INTERACTION_MODE_HOLD_TO_TALK_INSTANT);
         } else {
-            ESP_LOGW(TAG, "unknown interaction_mode %s", mode->valuestring);
+            ESP_LOGW(TAG, "unknown interaction_mode %s", cmd->str1);
         }
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "show_imu_debug") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_show_imu_debug = cJSON_IsTrue(enabled);
+        break;
+    case CONTROL_CMD_SHOW_IMU_DEBUG:
+        s_show_imu_debug = cmd->enabled;
         ESP_LOGI(TAG, "show_imu_debug %s", s_show_imu_debug ? "enabled" : "disabled");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "battery_status_request") == 0) {
+        break;
+    case CONTROL_CMD_BATTERY_STATUS_REQUEST:
         queue_app_event(APP_EVENT_BATTERY_STATUS_REQUEST);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "usb_auto_off") == 0 &&
-               cJSON_IsBool(enabled)) {
+        break;
+    case CONTROL_CMD_USB_AUTO_OFF: {
         // 供电态（USB）10min 自动关机开关：电池监测窗口勾选框控制，NVS 持久化。
-        s_usb_auto_off = cJSON_IsTrue(enabled);
+        s_usb_auto_off = cmd->enabled;
         save_usb_auto_off_to_nvs(s_usb_auto_off);
+        // 开关切换即时改变供电态屏幕常亮与关机准入，按新状态刷新空闲计时器
+        //（LEDC 亮度与 esp_timer 启停均可跨任务调用，BLE 回调上下文安全）。
+        note_activity();
         restart_poweroff_timer();
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
         ESP_LOGI(TAG, "usb_auto_off %s", s_usb_auto_off ? "enabled" : "disabled");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "usb_auto_off_get") == 0) {
+        break;
+    }
+    case CONTROL_CMD_GATEWAY_SELECT_TARGET:
+        // P1 切换器：由桌面端/自动化选择目标（设备菜单是主入口，本命令供桌面端选择与 E2E
+        // 驱动；index 超范围或非网关模式时静默忽略）。clear=true 回到"不限制"。
+        if (cmd->flag_clear) {
+            ESP_LOGI(TAG, "gateway_select_target clear");
+            gateway_select_target(-1, true);
+        } else if (cmd->flag_self) {
+            // 桌面端口语化入口："把本机设为网关目标" —— 目标是当前连接对端，无需知道表下标。
+            ESP_LOGI(TAG, "gateway_select_target self");
+            gateway_select_self();
+        } else if (cmd->has_number) {
+            ESP_LOGI(TAG, "gateway_select_target index=%d", (int)cmd->value);
+            gateway_select_target(cmd->value, false);
+        } else {
+            ESP_LOGW(TAG, "gateway_select_target 缺少 index/clear");
+        }
+        break;
+    case CONTROL_CMD_GATEWAY_SIDE_SWITCH:
+        // 调试/自动化：驱动侧键切换器（预览当前目标 / 轮流切换），无需手按侧键。
+        // 走与侧键短按完全相同的内核（handle_side_up 的网关分支只多一层"录音中转发取消"）。
+        if (cmd->has_str1) {
+            ESP_LOGI(TAG, "gateway_side_switch action=%s", cmd->str1);
+            if (strcmp(cmd->str1, "preview") == 0) {
+                side_switch_show_current();
+            } else if (strcmp(cmd->str1, "cycle") == 0) {
+                side_switch_cycle();
+            } else {
+                ESP_LOGW(TAG, "gateway_side_switch 未知 action=%s", cmd->str1);
+            }
+        } else {
+            ESP_LOGW(TAG, "gateway_side_switch 缺少 action");
+        }
+        break;
+    case CONTROL_CMD_GATEWAY_TARGET_INFO: {
+        // P1 目标表：桌面端连上后上报自己的显示名（主机名）。命名对象是「当前连接对端」
+        // 的 identity address —— 桌面端无从得知自己的 RPA/identity 地址，由固件侧绑定。
+        uint8_t id_addr[6];
+        uint8_t addr_type = 0;
+        if (cmd->has_str1 && gateway_targets_current_peer(id_addr, &addr_type)) {
+            if (gateway_targets_set_name(id_addr, addr_type, cmd->str1) >= 0) {
+                ESP_LOGI(TAG, "网关目标命名: %s", cmd->str1);
+            } else {
+                ESP_LOGW(TAG, "网关目标命名失败（表内无该对端）");
+            }
+        } else {
+            ESP_LOGW(TAG, "gateway_target_info 缺少 name 或无当前对端");
+        }
+        break;
+    }
+    case CONTROL_CMD_USB_AUTO_OFF_GET:
         (void)voice_ble_send_power_mgmt_status(s_usb_auto_off);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_down") == 0 &&
-               cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
-        ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, request_id);
-        queue_primary_down_event(APP_INPUT_SOURCE_REMOTE, request_id);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "remote_button_up") == 0 &&
-               cJSON_IsString(button) && strcmp(button->valuestring, "primary") == 0) {
-        ESP_LOGI(TAG, "remote primary up request_id=%" PRIu32, request_id);
-        queue_primary_up_event(APP_INPUT_SOURCE_REMOTE, request_id);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "ota_commit") == 0) {
+        break;
+    case CONTROL_CMD_REMOTE_BUTTON_DOWN:
+        ESP_LOGI(TAG, "remote primary down request_id=%" PRIu32, (uint32_t)cmd->value);
+        queue_primary_down_event(APP_INPUT_SOURCE_REMOTE, (uint32_t)cmd->value);
+        break;
+    case CONTROL_CMD_REMOTE_BUTTON_UP:
+        ESP_LOGI(TAG, "remote primary up request_id=%" PRIu32, (uint32_t)cmd->value);
+        queue_primary_up_event(APP_INPUT_SOURCE_REMOTE, (uint32_t)cmd->value);
+        break;
+    case CONTROL_CMD_OTA_COMMIT: {
         // 桌面端手动确认新固件健康：直接签到 mark_app_valid_cancel_rollback。
         // 正常情况下 boot 时已无条件自动签到，此命令作为手动兜底。
         ESP_LOGI(TAG, "ota_commit");
@@ -1121,88 +1393,177 @@ static void ble_control_cb(const char *json)
             mark_err != ESP_ERR_INVALID_STATE) {
             ESP_LOGW(TAG, "ota_commit mark_valid failed: %s", esp_err_to_name(mark_err));
         }
-    } else if (cJSON_IsString(event) &&
-               strcmp(event->valuestring, "imu_wake_sensitivity") == 0 &&
-               cJSON_IsNumber(threshold_item)) {
-        double threshold_raw = threshold_item->valuedouble;
-        if (threshold_raw < BMI270_PICKUP_THRESHOLD_MIN_LSB) {
-            threshold_raw = BMI270_PICKUP_THRESHOLD_MIN_LSB;
-        } else if (threshold_raw > BMI270_PICKUP_THRESHOLD_MAX_LSB) {
-            threshold_raw = BMI270_PICKUP_THRESHOLD_MAX_LSB;
+        break;
+    }
+    case CONTROL_CMD_IMU_WAKE_SENSITIVITY: {
+        int32_t threshold = cmd->value;
+        if (threshold < BMI270_PICKUP_THRESHOLD_MIN_LSB) {
+            threshold = BMI270_PICKUP_THRESHOLD_MIN_LSB;
+        } else if (threshold > BMI270_PICKUP_THRESHOLD_MAX_LSB) {
+            threshold = BMI270_PICKUP_THRESHOLD_MAX_LSB;
         }
-        int32_t threshold = (int32_t)threshold_raw;
         bmi270_set_pickup_threshold((float)threshold);
         save_pickup_threshold_to_nvs(threshold);
         ESP_LOGI(TAG, "imu_wake_sensitivity threshold=%" PRId32, threshold);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_enabled") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_tap_enabled = cJSON_IsTrue(enabled);
+        break;
+    }
+    case CONTROL_CMD_TAP_ENABLED:
+        s_tap_enabled = cmd->enabled;
         bmi270_set_tap_enabled(s_tap_enabled);
         set_tap_polling_enabled(s_tap_enabled);
         save_tap_settings_to_nvs(s_tap_enabled, (int32_t)-1);
         ESP_LOGI(TAG, "tap_enabled %s", s_tap_enabled ? "true" : "false");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "encoder_led_color") == 0) {
-        const cJSON *color_item = cJSON_GetObjectItemCaseSensitive(root, "color");
+        break;
+    case CONTROL_CMD_ENCODER_LED_COLOR: {
         uint32_t rgb = 0;
-        if (cJSON_IsString(color_item) &&
-            encoder_led_rgb_from_name(color_item->valuestring, &rgb)) {
+        if (cmd->has_str1 && encoder_led_rgb_from_name(cmd->str1, &rgb)) {
             s_encoder_led_rgb = rgb;
             save_encoder_settings_to_nvs();
             ESP_LOGI(TAG, "encoder_led_color %s -> 0x%06" PRIX32,
-                     color_item->valuestring, s_encoder_led_rgb);
+                     cmd->str1, s_encoder_led_rgb);
         } else {
             ESP_LOGW(TAG, "unknown encoder_led_color ignored: %s",
-                     cJSON_IsString(color_item) ? color_item->valuestring : "<missing>");
+                     cmd->has_str1 ? cmd->str1 : "<missing>");
         }
-    } else if (cJSON_IsString(event) &&
-               strcmp(event->valuestring, "encoder_recording_gate") == 0 &&
-               cJSON_IsBool(enabled)) {
-        s_encoder_recording_gate = cJSON_IsTrue(enabled);
+        break;
+    }
+    case CONTROL_CMD_ENCODER_RECORDING_GATE:
+        s_encoder_recording_gate = cmd->enabled;
         save_encoder_settings_to_nvs();
         ESP_LOGI(TAG, "encoder_recording_gate %s",
                  s_encoder_recording_gate ? "enabled" : "disabled");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "tap_sensitivity") == 0) {
+        break;
+    case CONTROL_CMD_TAP_SENSITIVITY: {
         // 灵敏度 1..10（用户面向）：1=最不灵敏，10=最灵敏，默认 5。
         // 兼容 legacy 字符串 low/medium/high -> 2/5/9。
-        const cJSON *level_item = cJSON_GetObjectItemCaseSensitive(root, "level");
+        // A13：缺字段/未知字符串 → 告警后**显式 break**（原实现静默按默认 5 落盘，
+        // 会把用户 NVS 里的既有设置覆盖掉）；数值一律夹取到协议契约 1..10 再下发+落盘。
+        if (!cmd->has_number && !cmd->has_str1) {
+            ESP_LOGW(TAG, "tap_sensitivity missing level field; keeping current value");
+            break;
+        }
         int32_t sensitivity = 5;
-        if (cJSON_IsNumber(level_item)) {
-            sensitivity = (int32_t)level_item->valueint;
-        } else if (cJSON_IsString(level_item)) {
-            if (strcmp(level_item->valuestring, "low") == 0) {
-                sensitivity = 2;
-            } else if (strcmp(level_item->valuestring, "medium") == 0) {
-                sensitivity = 5;
-            } else if (strcmp(level_item->valuestring, "high") == 0) {
-                sensitivity = 9;
-            } else {
-                ESP_LOGW(TAG, "unknown tap_sensitivity %s", level_item->valuestring);
-            }
+        if (cmd->has_number) {
+            sensitivity = cmd->value;
+        } else if (strcmp(cmd->str1, "low") == 0) {
+            sensitivity = 2;
+        } else if (strcmp(cmd->str1, "medium") == 0) {
+            sensitivity = 5;
+        } else if (strcmp(cmd->str1, "high") == 0) {
+            sensitivity = 9;
         } else {
-            ESP_LOGW(TAG, "tap_sensitivity missing level field");
+            ESP_LOGW(TAG, "unknown tap_sensitivity %s; keeping current value", cmd->str1);
+            break;
+        }
+        if (sensitivity < 1) {
+            sensitivity = 1;
+        } else if (sensitivity > 10) {
+            sensitivity = 10;
         }
         bmi270_set_tap_sensitivity((int)sensitivity);
         save_tap_settings_to_nvs(s_tap_enabled, sensitivity);
         ESP_LOGI(TAG, "tap_sensitivity=%" PRId32, sensitivity);
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "air_mouse_enabled") == 0 &&
-               cJSON_IsBool(enabled)) {
+        break;
+    }
+    case CONTROL_CMD_AIR_MOUSE_ENABLED:
         // 体感鼠标开关：由桌面端状态机权威控制。开启时校准零偏并启动 20ms 轮询上报 motion。
-        set_air_mouse_enabled(cJSON_IsTrue(enabled));
-        ESP_LOGI(TAG, "air_mouse_enabled %s", cJSON_IsTrue(enabled) ? "true" : "false");
-    } else if (cJSON_IsString(event) && strcmp(event->valuestring, "test_playback") == 0) {
+        set_air_mouse_enabled(cmd->enabled);
+        ESP_LOGI(TAG, "air_mouse_enabled %s", cmd->enabled ? "true" : "false");
+        break;
+    case CONTROL_CMD_TEST_PLAYBACK:
         // 测试回放（L3 端到端测试）：设置预存 PCM 文件名，audio_task 从该文件读 PCM 替代采集。
         // file 为空或缺失则关闭回放恢复 ES8311 采集。仅端到端测试用，正常使用不触发。
-        const cJSON *file_item = cJSON_GetObjectItemCaseSensitive(root, "file");
-        if (cJSON_IsString(file_item) && file_item->valuestring[0] != '\0') {
-            esp_err_t pb_err = audio_pipeline_set_playback_file(file_item->valuestring);
-            ESP_LOGI(TAG, "test_playback file=%s -> %s", file_item->valuestring,
-                     esp_err_to_name(pb_err));
+        if (cmd->has_str1 && cmd->str1[0] != '\0') {
+            // 安全：test_playback 只服务 L3 回放，文件名必须是 SPIFFS 根下的裸名字。
+            // 拒绝路径分隔符与 ".."，避免已连接 peer 把它当作任意路径读取原语。
+            if (strchr(cmd->str1, '/') != NULL || strchr(cmd->str1, '\\') != NULL ||
+                strstr(cmd->str1, "..") != NULL) {
+                ESP_LOGW(TAG, "test_playback rejected: path separators/.. not allowed");
+            } else {
+                esp_err_t pb_err = audio_pipeline_set_playback_file(cmd->str1);
+                ESP_LOGI(TAG, "test_playback file=%s -> %s", cmd->str1,
+                         esp_err_to_name(pb_err));
+            }
         } else {
             audio_pipeline_set_playback_file(NULL);
             ESP_LOGI(TAG, "test_playback cleared (restore capture)");
         }
+        break;
+    case CONTROL_CMD_GATEWAY_KEYMAP_SET:
+        // P1 按键自定义：设置单键路由（key=协议键名，route=passthrough|software），
+        // 成功即持久化并回执全表。语音键不在可路由表内（返回 usage=0 静默忽略）。
+        if (cmd->has_str1 && cmd->has_str2) {
+            uint16_t usage = 0;
+            for (size_t i = 0; i < gateway_keymap_routable_key_count(); i++) {
+                uint16_t candidate = gateway_keymap_routable_usage_at(i);
+                const char *name = gateway_keymap_key_name(candidate);
+                if (name != NULL && strcmp(name, cmd->str1) == 0) {
+                    usage = candidate;
+                    break;
+                }
+            }
+            if (usage != 0) {
+                gateway_route_t route =
+                    strcmp(cmd->str2, "software") == 0
+                        ? GATEWAY_ROUTE_SOFTWARE : GATEWAY_ROUTE_PASSTHROUGH;
+                if (gateway_keymap_set_route(usage, route) == 0) {
+                    save_gateway_key_routes();
+                    ESP_LOGI(TAG, "gateway_keymap_set %s -> %s", cmd->str1,
+                             route == GATEWAY_ROUTE_SOFTWARE ? "software" : "passthrough");
+                    // 回执延迟到 app_event_task 发送（2026-10-12 串口实证修复）：
+                    // 本回调跑在 nimble host 任务（栈仅 4096B）的 ATT 写处理深处，
+                    // 内联发回执（分片拼装 routes/entry + json[512] + ble_att_mtu 加锁）
+                    // 把栈压穿、砸毁堆上 FreeRTOS 队列对象 → xQueueSemaphoreTake
+                    // (uxItemSize==0) assert → 设备 4-5s 崩溃重启循环。批量 13 键
+                    // 经标志合并为 app 任务一次全表回执。
+                    s_gw_keymap_report_pending = true;
+                    queue_app_event(APP_EVENT_GW_KEYMAP_REPORT);
+                }
+            } else {
+                ESP_LOGW(TAG, "gateway_keymap_set unknown key: %s", cmd->str1);
+            }
+        }
+        break;
+    case CONTROL_CMD_GATEWAY_KEYMAP_GET:
+        // 同 SET：回执移交 app 任务（host 任务栈上发回执会压穿，见 SET 处注释）。
+        s_gw_keymap_report_pending = true;
+        queue_app_event(APP_EVENT_GW_KEYMAP_REPORT);
+        break;
+    case CONTROL_CMD_PROTO_NEGOTIATE:
+        // D9：桌面端协议版本上报——无论是否出界都回发 proto_info（对端据此对齐，
+        // 出界仅多一条 WARN）。双方版本从此可见，静默不兼容被消除。
+        if (cmd->has_number && cmd->value >= VOICE_BLE_PROTO_MIN_VERSION &&
+            cmd->value <= VOICE_BLE_PROTO_VERSION) {
+            ESP_LOGI(TAG, "desktop proto=%d within [%d,%d]",
+                     cmd->value, VOICE_BLE_PROTO_MIN_VERSION, VOICE_BLE_PROTO_VERSION);
+        } else {
+            ESP_LOGW(TAG, "desktop proto=%d OUT OF RANGE [%d,%d]; replying proto_info",
+                     cmd->value, VOICE_BLE_PROTO_MIN_VERSION, VOICE_BLE_PROTO_VERSION);
+        }
+        (void)voice_ble_send_proto_info();
+        break;
+    case CONTROL_CMD_POWER_LOG_DUMP:
+    case CONTROL_CMD_POWER_LOG_CLEAR:
+    case CONTROL_CMD_POWER_LOG_TIME_ANCHOR:
+    case CONTROL_CMD_POWER_LOG_UNKNOWN:
+        // power_log 命令族由 voice_ble 内部执行（control_access_cb 分流），
+        // main 侧保持原行为：静默忽略。
+        break;
+    case CONTROL_CMD_NONE:
+    default:
+        // 未知/不完整事件静默忽略（等价原 if-else 链 fallthrough）。
+        break;
     }
-    cJSON_Delete(root);
+}
+
+static void ble_control_cb(const char *json)
+{
+    control_cmd_t cmd;
+    if (!control_cmd_parse(json, &cmd)) {
+        ESP_LOGW(TAG, "ignore invalid control json");
+        return;
+    }
+    execute_control_cmd(&cmd);
 }
 
 static uint32_t elapsed_button_ms(int64_t down_us)
@@ -1220,24 +1581,29 @@ static uint32_t elapsed_button_ms(int64_t down_us)
 // 编码器按钮与正面物理键在交互语义上完全等价：双击检测、hold 阈值、click_to_talk、
 // 体感鼠标映射对两者一视同仁（见 app_input_source_t 注释）；owner 仲裁按来源独立
 // （见 primary_owner_from_source），避免两个本地源互相截断录音。
+// 小米语音键同样纳入本地源：双击检测归位固件（网关方案 §5.3）。
 static bool is_local_primary_source(app_input_source_t source)
 {
-    return source == APP_INPUT_SOURCE_PHYSICAL || source == APP_INPUT_SOURCE_ENCODER;
+    return source == APP_INPUT_SOURCE_PHYSICAL || source == APP_INPUT_SOURCE_ENCODER ||
+           source == APP_INPUT_SOURCE_XIAOMI;
 }
 
-// 输入源 → owner 映射：三个来源各自独立仲裁，本地两源（物理/编码器）手势语义相同
-// 但 owner 不同，互相按住时不截断对方录音（与本地 vs 远程同一互斥行为）。
+// 输入源 → owner 映射：各来源各自独立仲裁，本地源（物理/编码器/小米）手势语义
+// 相同但 owner 不同，互相按住时不截断对方录音（与本地 vs 远程同一互斥行为）。
 static primary_owner_t primary_owner_from_source(app_input_source_t source)
 {
     return source == APP_INPUT_SOURCE_PHYSICAL ? PRIMARY_OWNER_PHYSICAL :
            source == APP_INPUT_SOURCE_ENCODER  ? PRIMARY_OWNER_ENCODER :
+           source == APP_INPUT_SOURCE_XIAOMI   ? PRIMARY_OWNER_XIAOMI :
                                                  PRIMARY_OWNER_REMOTE;
 }
 
-// 主键事件的 source 标签：编码器返回 "encoder"，其它来源返回 NULL（省略字段）。
+// 主键事件的 source 标签：编码器返回 "encoder"，小米语音键返回 "xiaomi"，
+// 其它来源返回 NULL（省略字段）。
 static const char *primary_button_source_tag(void)
 {
-    return s_primary_press_source == APP_INPUT_SOURCE_ENCODER ? "encoder" : NULL;
+    return s_primary_press_source == APP_INPUT_SOURCE_ENCODER ? "encoder" :
+           s_primary_press_source == APP_INPUT_SOURCE_XIAOMI  ? "xiaomi" : NULL;
 }
 
 // 侧键双击窗口超时：确认为单次点击，补发 button_click secondary（原单击语义）。
@@ -1254,10 +1620,29 @@ static void side_double_click_timer_cb(void *arg)
 
 // 侧键释放：单击延迟到双击窗口超时后确认；窗口内第二击直接发 button_double_click。
 // 桌面端据此把侧键单击/双击映射到不同语义（单击进体感、双击恢复上次输入）。
+// 网关模式下侧键改为「设备切换器」（本地处理，不进双击窗口）：短按一次预览当前目标，
+// 3s 内再短按一次轮流切换；录音进行中保留取消语义（转发桌面端）。
 static void handle_side_up(void)
 {
     const uint32_t duration_ms = elapsed_button_ms(s_secondary_down_us);
     s_secondary_down_us = 0;
+    ESP_LOGI(TAG, "side_up: gateway=%d rec=%d preview=%d dur=%" PRIu32,
+             gateway_mode_get() == GATEWAY_MODE_GATEWAY, (int)s_recording,
+             (int)s_side_switch_preview, duration_ms);
+
+    if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
+        if (s_recording) {
+            ESP_LOGI(TAG, "侧键: 录音中，转发取消语义");
+            (void)voice_ble_send_button_click("secondary", duration_ms, 0, NULL);
+            return;
+        }
+        if (s_side_switch_preview) {
+            side_switch_cycle();
+        } else {
+            side_switch_show_current();
+        }
+        return;
+    }
 
     // 双击窗口内第二次释放：确认双击。
     if (s_side_click_pending) {
@@ -1293,7 +1678,9 @@ static void handle_primary_down(app_input_source_t source, uint32_t request_id)
     s_primary_press_source = source;
     note_activity();
     // 按键按下抑制敲击检测，避免手指动作被 IMU 误判为双击（见 TAP_SUPPRESS_AFTER_BUTTON_MS）。
-    s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
+    __atomic_store_n(&s_tap_suppress_until_us,
+                     esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL),
+                     __ATOMIC_RELAXED);
 
     // 体感鼠标态：主键不启动本地录音（否则设备录音、屏幕卡 Recording，而桌面端在体感态
     // 会无视 button_down 不起 ASR，两端状态分裂）。仅记录按下时刻，松开时上报 button_click
@@ -1482,7 +1869,9 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     ESP_LOGI(TAG, "button front up source=%d", source);
     note_activity();
     // 按键松开同样抑制，覆盖松开瞬间手指余震。
-    s_tap_suppress_until_us = esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL);
+    __atomic_store_n(&s_tap_suppress_until_us,
+                     esp_timer_get_time() + (TAP_SUPPRESS_AFTER_BUTTON_MS * 1000LL),
+                     __ATOMIC_RELAXED);
 
     // 体感鼠标态：主键松开上报 button_click，桌面端映射为鼠标左键单击。不涉及录音。
     if (s_air_mouse_enabled && is_local_primary_source(source)) {
@@ -1498,6 +1887,11 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
         ESP_LOGI(TAG, "button front up ignored (second press of double-click)");
         s_double_click_second_press = false;
         s_primary_down_us = 0;
+        // A16：双击确认后 owner 必须清零——down#2 已停止双击窗定时器，原先那条
+        // 定时器里的 owner 清理永远不会跑，owner 残留会让后续异源按键被仲裁拒绝
+        //（编码器"自定义键"失效的根因）。session 同清（双击确认路径不存在录音会话）。
+        s_primary_session_id = 0;
+        s_primary_owner = PRIMARY_OWNER_NONE;
         return;
     }
 
@@ -1520,6 +1914,28 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     }
 
     if (s_interaction_mode == INTERACTION_MODE_CLICK_TO_TALK) {
+        // A16：远程热键按下即启动（远程不走双击窗，见 down 侧注释），**松手必须停录**
+        // ——原实现无条件 return，远程 up 被忽略，录音无人停（直到下一次 down 才被
+        // 1418 分支关掉）。本地源保持点按切换语义（停录在下一次 down）不变。
+        // owner 门：只停本源启动的，防混源误停（等价 UP 侧既有仲裁）。
+        if (source == APP_INPUT_SOURCE_REMOTE && s_recording &&
+            s_primary_owner == PRIMARY_OWNER_REMOTE) {
+            const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
+            s_primary_session_id = stop_recording();
+            esp_err_t primary_up_err =
+                voice_ble_send_button_click("primary", primary_duration_ms,
+                                            s_primary_session_id,
+                                            primary_button_source_tag());
+            if (s_primary_session_id != 0 && primary_up_err != ESP_OK) {
+                apply_app_ui_state("ready", "");
+            }
+            s_primary_down_us = 0;
+            s_primary_session_id = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            ESP_LOGI(TAG, "click_to_talk remote up stopped recording (%" PRIu32 " ms)",
+                     primary_duration_ms);
+            return;
+        }
         return;
     }
 
@@ -1558,6 +1974,25 @@ static void handle_primary_up(app_input_source_t source, uint32_t request_id)
     if (!s_recording && s_primary_session_id == 0 && s_primary_down_us == 0) {
         return;
     }
+
+    // 小米源：ATVV STOP 后有 150ms 尾包宽限（Audio/Control 双特征异步），立即停录
+    // 会丢尾音——延迟停录让 audio_task 在宽限期内实时发出尾包，到期再走
+    // drain→button_up 收尾（对齐物理键「drain 完才发 button_up」次序）。
+    if (source == APP_INPUT_SOURCE_XIAOMI && s_recording && !s_xiaomi_stop_pending) {
+        s_xiaomi_stop_pending = true;
+        (void)esp_timer_start_once(s_xiaomi_stop_delay_timer,
+                                   XIAOMI_STOP_DELAY_MS * 1000ULL);
+        ESP_LOGI(TAG, "xiaomi voice up, delaying stop by %dms for audio tail",
+                 XIAOMI_STOP_DELAY_MS);
+        return;
+    }
+
+    finish_primary_release(source);
+}
+
+// 主键松开收尾（handle_primary_up 与小米延迟停录共用）：停录 → 双击窗或 button_up。
+static void finish_primary_release(app_input_source_t source)
+{
     const uint32_t primary_duration_ms = elapsed_button_ms(s_primary_down_us);
     if (s_recording) {
         s_primary_session_id = stop_recording();
@@ -1595,6 +2030,11 @@ static void apply_app_ui_state(const char *state, const char *text)
              app_ui_state_name(s_app_ui_state),
              s_recording);
     stop_host_response_timer();
+    // A17：进入非 ready 态即武装主机无响应看门狗（下一次 ui_state 到达会重新
+    // stop+按需 start，故每次状态迁移都会刷新窗口）。
+    if (state != NULL && strcmp(state, "ready") != 0) {
+        start_host_response_timer();
+    }
     if (strcmp(state, "ready") == 0) {
         if (s_recording) {
             ESP_LOGI(TAG, "ignore ready ui_state while recording");
@@ -1682,6 +2122,28 @@ static void app_event_task(void *arg)
             continue;
         }
 
+        // A7：回灌重试槽——刚取走一件，槽位在手即回灌；临界区内拷+清单一并完成
+        // （防生产者在拷贝与清位之间覆盖）；发送失败（间隙被填满）原样回存。
+        app_event_t retry_event;
+        bool have_retry = false;
+        portENTER_CRITICAL(&s_crit_retry_mux);
+        if (s_critical_retry_valid) {
+            retry_event = s_critical_retry_pending;
+            s_critical_retry_valid = false;
+            have_retry = true;
+        }
+        portEXIT_CRITICAL(&s_crit_retry_mux);
+        if (have_retry && xQueueSend(s_app_event_queue, &retry_event, 0) != pdTRUE) {
+            portENTER_CRITICAL(&s_crit_retry_mux);
+            if (!s_critical_retry_valid) {
+                s_critical_retry_pending = retry_event;
+                s_critical_retry_valid = true;
+            } else {
+                s_app_event_critical_dropped++;
+            }
+            portEXIT_CRITICAL(&s_crit_retry_mux);
+        }
+
         switch (event.type) {
         case APP_EVENT_FRONT_DOWN:
             handle_primary_down(event.source, event.request_id);
@@ -1742,16 +2204,26 @@ static void app_event_task(void *arg)
             power_log_refresh_mode();
             break;
         case APP_EVENT_POWER_IRQ:
-            gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
-            /* fall through */
-        case APP_EVENT_BATTERY_REFRESH:
+            // A19：**先清源再 enable**——原顺序 enable 在前，此时 PMIC 源未清、
+            // 线仍为低电平（GPIO_INTR_LOW_LEVEL），ISR 立即重入（disable→队列→
+            // enable→…），期间任一次队列满即永久失效。
             update_battery_status();
+            gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
             // 供电态双向兜底（§4.5）：SAVE 中插入 USB → 回 PERF（USB 态调试行为与现状一致）；
             // S2 息屏下拔出 USB → 补进 SAVE。进 SAVE 的录音/OTA 守卫在 enter_s2_pm_save 内。
             if (s_pm_save_active && is_external_powered()) {
                 apply_pm_config_perf();
             } else if (!s_pm_save_active && s_screen_off && !is_external_powered()) {
                 enter_s2_pm_save();
+            }
+            break;
+        case APP_EVENT_BATTERY_REFRESH:
+            update_battery_status();  // 同时清 PMIC IRQ 源
+            if (s_pmic_irq_dropped) {
+                // A19：ISR 队列满导致的丢失补臂（清源已在其上方完成，此刻 enable 安全）。
+                s_pmic_irq_dropped = false;
+                ESP_LOGW(TAG, "PMIC IRQ event dropped earlier (queue full); re-arming line");
+                gpio_intr_enable(STICK_S3_PIN_PMIC_IRQ);
             }
             break;
         case APP_EVENT_BATTERY_STATUS_REQUEST:
@@ -1792,6 +2264,115 @@ static void app_event_task(void *arg)
             ui_status_set_idle();
             note_activity();
             break;
+        // A9：double_click_timer_cb 派发的重活在 app_event_task 上下文执行
+        //（原回调内联 start_recording 的 I2S/ES8311/Opus 初始化与 BLE 帧发送，
+        // 挤占 esp_timer 共享任务致手势窗口/空闲计时/OTA 看门狗抖动）。
+        // 每案首行**复核标志**：派发与执行之间状态可能被新按键周期消费
+        //（双击定时器与按键事件共用同一状态机），复核失败即安全空操作。
+        case APP_EVENT_CLICK_TO_TALK_CONFIRM: {
+            if (!s_click_to_talk_pending_start) break;
+            s_click_to_talk_pending_start = false;
+            ESP_LOGI(TAG, "click_to_talk pending start timeout, confirming recording");
+            s_primary_session_id = start_recording();
+            if (s_primary_session_id != 0) {
+                esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag());
+                if (err != ESP_OK) {
+                    (void)stop_recording();
+                    s_primary_session_id = 0;
+                    s_primary_owner = PRIMARY_OWNER_NONE;
+                    apply_app_ui_state("ready", "");
+                }
+            } else {
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+            }
+            break;
+        }
+        case APP_EVENT_RECORDING_RETRY_TICK: {
+            if (!s_recording_retry_pending) break;
+            // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
+            s_recording_retry_pending = false;
+            // 用户已松开 → 干净放弃（未发过 button_down，无需补 button_up）。
+            if (!primary_button_held_from_timer()) {
+                ESP_LOGI(TAG, "recording start retry aborted: button released");
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                break;
+            }
+            if (esp_timer_get_time() >= s_recording_retry_deadline_us) {
+                ESP_LOGW(TAG, "recording start retry timed out (ble not ready in window)");
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+                break;
+            }
+            if (!voice_ble_is_ready()) {
+                // 仍未就绪，继续重试。
+                s_recording_retry_pending = true;
+                (void)esp_timer_start_once(s_double_click_timer,
+                                           RECORDING_RETRY_INTERVAL_MS * 1000ULL);
+                break;
+            }
+            // ble_ready 已就绪，启动录音（复用现有成功路径）。
+            ESP_LOGI(TAG, "recording start retry: ble ready, starting");
+            s_primary_session_id = start_recording();
+            if (s_primary_session_id != 0) {
+                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
+                if (err != ESP_OK) {
+                    (void)stop_recording();
+                    s_primary_session_id = 0;
+                    s_primary_owner = PRIMARY_OWNER_NONE;
+                    apply_app_ui_state("ready", "");
+                }
+            } else {
+                // ble_ready=1 仍失败 → 不可恢复原因，放弃。
+                s_primary_down_us = 0;
+                s_primary_owner = PRIMARY_OWNER_NONE;
+            }
+            break;
+        }
+        case APP_EVENT_HOLD_THRESHOLD_CONFIRM: {
+            if (!s_hold_threshold_pending) break;
+            // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
+            s_hold_threshold_pending = false;
+            if (primary_button_held_from_timer()) {
+                ESP_LOGI(TAG, "hold threshold reached, starting recording");
+                s_primary_session_id = start_recording();
+                if (s_primary_session_id != 0) {
+                    esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
+                    if (err != ESP_OK) {
+                        (void)stop_recording();
+                        s_primary_session_id = 0;
+                        s_primary_owner = PRIMARY_OWNER_NONE;
+                        apply_app_ui_state("ready", "");
+                    }
+                } else if (!voice_ble_is_ready()) {
+                    // ble_ready=0 可恢复：按住等待重试，覆盖 Windows 订阅完成的过渡期。
+                    ESP_LOGI(TAG, "ble not ready, deferring recording start (retrying)");
+                    s_recording_retry_pending = true;
+                    s_recording_retry_deadline_us =
+                        esp_timer_get_time() + RECORDING_RETRY_WINDOW_MS * 1000LL;
+                    (void)esp_timer_start_once(s_double_click_timer,
+                                               RECORDING_RETRY_INTERVAL_MS * 1000ULL);
+                    // 保留 s_primary_owner / s_primary_down_us 不变。
+                } else {
+                    // 不可恢复原因，放弃。
+                    s_primary_down_us = 0;
+                }
+            }
+            break;
+        }
+        case APP_EVENT_DOUBLE_CLICK_TIMEOUT: {
+            if (!s_double_click_pending) break;
+            // 双击窗口超时：单次短击。
+            s_double_click_pending = false;
+            ESP_LOGI(TAG, "double-click window expired, sending button_click");
+            voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0,
+                                        primary_button_source_tag());
+            s_primary_down_us = 0;
+            s_primary_session_id = 0;
+            s_primary_owner = PRIMARY_OWNER_NONE;
+            break;
+        }
         case APP_EVENT_HOST_RESPONSE_TIMEOUT:
             if (!s_recording && (s_app_ui_state == APP_UI_STATE_RECORDING ||
                                  s_app_ui_state == APP_UI_STATE_THINKING)) {
@@ -1831,6 +2412,24 @@ static void app_event_task(void *arg)
                          direction, (unsigned)event.encoder_steps);
                 voice_ble_send_encoder_rotate(direction, event.encoder_steps);
                 note_activity();
+            }
+            break;
+        case APP_EVENT_XIAOMI_STOP_DUE:
+            // 小米语音键尾包宽限到期：ATVV 尾包已在宽限期内实时发出，走正常
+            // 停录收尾（stop drain → 双击窗/button_up）。非挂起态到达（如链路
+            // 断开补发后定时器又到期）为重复事件，忽略。
+            if (s_xiaomi_stop_pending) {
+                s_xiaomi_stop_pending = false;
+                ESP_LOGI(TAG, "xiaomi audio tail grace done, finishing release");
+                finish_primary_release(APP_INPUT_SOURCE_XIAOMI);
+            }
+            break;
+        case APP_EVENT_GW_KEYMAP_REPORT:
+            // 清标先行：发送期间新到的 set 重新置标，其事件会再触发一轮（幂等
+            // 全表回执）；清标与置标竞争最多漏发一次，连接/热更重推自愈。
+            if (s_gw_keymap_report_pending) {
+                s_gw_keymap_report_pending = false;
+                send_gateway_keymap_report();
             }
             break;
         }
@@ -1886,8 +2485,15 @@ static esp_err_t init_buttons(void)
         return err;
     }
 
-    BaseType_t ok = xTaskCreate(app_event_task, "app_event_task", 4096,
+    // 5120（2026-10-12 +1024）：承担原在 host 任务内联的 gateway_keymap 回执发送
+    //（json[512]+分片拼装 ≈800B），留足基线余量。
+    BaseType_t ok = xTaskCreate(app_event_task, "app_event_task", 5120,
                                 NULL, 6, NULL);
+    if (ok != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+    ok = xTaskCreate(sensor_poll_task, "sensor_poll_task", 3072,
+                      NULL, 6, &s_sensor_task_handle);
     return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
@@ -1961,108 +2567,31 @@ static void double_click_timer_cb(void *arg)
 {
     (void)arg;
 
+    // A9：双击回调原在此内联启动录音（I2S/ES8311/Opus 初始化，毫秒~百毫秒级）
+    // 并发 BLE 帧，全部挤在 esp_timer 共享任务里 → 手势窗口/空闲计时/OTA 看门狗
+    // 抖动。现只派发事件，重活移交 app_event_task（同 disc_poweroff 范式）；
+    // 处理器以**标志复核**领取（派发延迟窗口内被新按键周期消费则安全空操作）。
     // click_to_talk 首击延迟确认：双击窗口超时无第二次 click -> 确认启动录音。
     if (s_click_to_talk_pending_start) {
-        s_click_to_talk_pending_start = false;
-        ESP_LOGI(TAG, "click_to_talk pending start timeout, confirming recording");
-        s_primary_session_id = start_recording();
-        if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_click("primary", 0, s_primary_session_id, primary_button_source_tag());
-            if (err != ESP_OK) {
-                (void)stop_recording();
-                s_primary_session_id = 0;
-                s_primary_owner = PRIMARY_OWNER_NONE;
-                apply_app_ui_state("ready", "");
-            }
-        } else {
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-        }
+        queue_app_event(APP_EVENT_CLICK_TO_TALK_CONFIRM);
         return;
     }
 
     if (s_recording_retry_pending) {
-        // 录音启动重试：hold threshold 到点时 ble_ready 未就绪被拒，按住期间续重试。
-        s_recording_retry_pending = false;
-        // 用户已松开 → 干净放弃（未发过 button_down，无需补 button_up）。
-        if (!primary_button_held_from_timer()) {
-            ESP_LOGI(TAG, "recording start retry aborted: button released");
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-            return;
-        }
-        if (esp_timer_get_time() >= s_recording_retry_deadline_us) {
-            ESP_LOGW(TAG, "recording start retry timed out (ble not ready in window)");
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-            return;
-        }
-        if (!voice_ble_is_ready()) {
-            // 仍未就绪，继续重试。
-            s_recording_retry_pending = true;
-            (void)esp_timer_start_once(s_double_click_timer,
-                                       RECORDING_RETRY_INTERVAL_MS * 1000ULL);
-            return;
-        }
-        // ble_ready 已就绪，启动录音（复用现有成功路径）。
-        ESP_LOGI(TAG, "recording start retry: ble ready, starting");
-        s_primary_session_id = start_recording();
-        if (s_primary_session_id != 0) {
-            esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
-            if (err != ESP_OK) {
-                (void)stop_recording();
-                s_primary_session_id = 0;
-                s_primary_owner = PRIMARY_OWNER_NONE;
-                apply_app_ui_state("ready", "");
-            }
-        } else {
-            // ble_ready=1 仍失败 → 不可恢复原因，放弃。
-            s_primary_down_us = 0;
-            s_primary_owner = PRIMARY_OWNER_NONE;
-        }
+        // A9：重活（start_recording + BLE 帧 + 重试续臂）移交 app_event_task。
+        queue_app_event(APP_EVENT_RECORDING_RETRY_TICK);
         return;
     }
 
     if (s_hold_threshold_pending) {
-        // 按住阈值达成：按钮仍按下则确认为长按，启动录音。
-        s_hold_threshold_pending = false;
-        if (primary_button_held_from_timer()) {
-            ESP_LOGI(TAG, "hold threshold reached, starting recording");
-            s_primary_session_id = start_recording();
-            if (s_primary_session_id != 0) {
-                esp_err_t err = voice_ble_send_button_down("primary", s_primary_session_id, primary_button_source_tag());
-                if (err != ESP_OK) {
-                    (void)stop_recording();
-                    s_primary_session_id = 0;
-                    s_primary_owner = PRIMARY_OWNER_NONE;
-                    apply_app_ui_state("ready", "");
-                }
-            } else if (!voice_ble_is_ready()) {
-                // ble_ready=0 可恢复：按住等待重试，覆盖 Windows 订阅完成的过渡期。
-                ESP_LOGI(TAG, "ble not ready, deferring recording start (retrying)");
-                s_recording_retry_pending = true;
-                s_recording_retry_deadline_us =
-                    esp_timer_get_time() + RECORDING_RETRY_WINDOW_MS * 1000LL;
-                (void)esp_timer_start_once(s_double_click_timer,
-                                           RECORDING_RETRY_INTERVAL_MS * 1000ULL);
-                // 保留 s_primary_owner / s_primary_down_us 不变。
-            } else {
-                // 不可恢复原因，放弃。
-                s_primary_down_us = 0;
-            }
-        }
+        // A9：重活（start_recording + button_down + 可能的重试续臂）移交 app_event_task。
+        queue_app_event(APP_EVENT_HOLD_THRESHOLD_CONFIRM);
         return;
     }
 
     if (s_double_click_pending) {
-        // 双击窗口超时：单次短击。
-        s_double_click_pending = false;
-        ESP_LOGI(TAG, "double-click window expired, sending button_click");
-        voice_ble_send_button_click("primary", s_pending_button_up_duration_ms, 0,
-                                    primary_button_source_tag());
-        s_primary_down_us = 0;
-        s_primary_session_id = 0;
-        s_primary_owner = PRIMARY_OWNER_NONE;
+        // A9：BLE 帧发送（mbuf 分配 + 协议编码）也移交 app_event_task。
+        queue_app_event(APP_EVENT_DOUBLE_CLICK_TIMEOUT);
     }
 }
 
@@ -2190,9 +2719,58 @@ static void set_pickup_polling_enabled(bool enabled)
     }
 }
 
+static void sensor_poll_kick(uint32_t bit)
+{
+    portENTER_CRITICAL(&s_sensor_poll_mux);
+    s_sensor_poll_pending |= bit;
+    portEXIT_CRITICAL(&s_sensor_poll_mux);
+    if (s_sensor_task_handle) {
+        xTaskNotify(s_sensor_task_handle, bit, eSetBits);
+    }
+}
+
+// A9b：传感轮询任务——合并唤醒、逐位执行原 I2C+出口体（函数体自各 timer 回调原样迁移）。
+static void sensor_poll_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        portENTER_CRITICAL(&s_sensor_poll_mux);
+        uint32_t pending = s_sensor_poll_pending;
+        s_sensor_poll_pending = 0;
+        portEXIT_CRITICAL(&s_sensor_poll_mux);
+        if (pending & SENSOR_POLL_PICKUP_BIT) {
+            sensor_poll_pickup();
+        }
+        if (pending & SENSOR_POLL_TAP_BIT) {
+            sensor_poll_tap();
+        }
+        if (pending & SENSOR_POLL_ENCODER_BIT) {
+            sensor_poll_encoder();
+        }
+        if (pending & SENSOR_POLL_AIR_MOUSE_BIT) {
+            sensor_poll_air_mouse();
+        }
+        if (pending & SENSOR_POLL_IMU_BIT) {
+            sensor_poll_imu();
+        }
+        if (pending & SENSOR_POLL_POWER_LOG_BIT) {
+            sensor_poll_power_log();
+        }
+    }
+}
+
 static void pickup_poll_timer_cb(void *arg)
 {
     (void)arg;
+    if (!s_display_dimmed || s_recording || s_ota_updating) {
+        return;
+    }
+    sensor_poll_kick(SENSOR_POLL_PICKUP_BIT);
+}
+
+static void sensor_poll_pickup(void)
+{
     // 仅在 Resting（dimmed 且非录音/OTA）态判定拿起，其余态直接忽略避免误触。
     if (!s_display_dimmed || s_recording || s_ota_updating) {
         return;
@@ -2219,8 +2797,19 @@ static void tap_poll_timer_cb(void *arg)
     if (!s_tap_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
         return;
     }
+    if (esp_timer_get_time() < __atomic_load_n(&s_tap_suppress_until_us, __ATOMIC_RELAXED)) {
+        return;
+    }
+    sensor_poll_kick(SENSOR_POLL_TAP_BIT);
+}
+
+static void sensor_poll_tap(void)
+{
+    if (!s_tap_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
+        return;
+    }
     // 按键事件抑制窗口内不检测，避免按语音键的手指动作误触发双击。
-    if (esp_timer_get_time() < s_tap_suppress_until_us) {
+    if (esp_timer_get_time() < __atomic_load_n(&s_tap_suppress_until_us, __ATOMIC_RELAXED)) {
         return;
     }
     if (bmi270_tap_poll()) {
@@ -2255,15 +2844,479 @@ static void set_tap_polling_enabled(bool enabled)
     }
 }
 
+// ---- 网关（小米中转）接线 ----
+
+// 按键路由表持久化：NVS blob（"gateway" 命名空间，13 字节与 keymap 可路由键表同序，
+// 值为 gateway_route_t）。语音键不在表内（固定 ATVV 语义）。
+static void save_gateway_key_routes(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("gateway", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    uint8_t blob[GATEWAY_KEYMAP_ROUTABLE_COUNT];
+    for (size_t i = 0; i < GATEWAY_KEYMAP_ROUTABLE_COUNT; i++) {
+        blob[i] = (uint8_t)gateway_keymap_get_route(gateway_keymap_routable_usage_at(i));
+    }
+    (void)nvs_set_blob(h, "key_routes", blob, sizeof(blob));
+    (void)nvs_commit(h);
+    nvs_close(h);
+}
+
+static void load_gateway_key_routes(void)
+{
+    gateway_keymap_reset_routes();
+    nvs_handle_t h;
+    if (nvs_open("gateway", NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    uint8_t blob[GATEWAY_KEYMAP_ROUTABLE_COUNT];
+    size_t len = sizeof(blob);
+    if (nvs_get_blob(h, "key_routes", blob, &len) == ESP_OK &&
+        len == GATEWAY_KEYMAP_ROUTABLE_COUNT) {
+        for (size_t i = 0; i < len; i++) {
+            if (blob[i] == GATEWAY_ROUTE_SOFTWARE) {
+                (void)gateway_keymap_set_route(gateway_keymap_routable_usage_at(i),
+                                               GATEWAY_ROUTE_SOFTWARE);
+            }
+        }
+    }
+    nvs_close(h);
+}
+
+// gateway_keymap_get 命令回执：全键路由表（桌面端配置 UI 同步用）
+static void send_gateway_keymap_report(void)
+{
+    // A15：13 键全表 ≈470B 超 state_tx 单帧预算（ATT MTU 247 → JSON ≤240B）。原实现
+    // routes[400] + snprintf 返回值累加会让 off 越过 sizeof，收尾 `off < sizeof` 恒假
+    // → **整帧静默丢**（路由设置界面永远拿不到表）。改为按预算分片（seq/more，
+    // protocol.md）：每片 = 57B 包络 + routes ≤179B + '}' ≤237B，预算由 send_state_json
+    // 的既有告警复核；尾片 more=false（空表即 "[]"）。
+    char routes[180];
+    size_t off = 0;
+    unsigned seq = 0;
+    routes[0] = '\0';
+    for (size_t i = 0; i < gateway_keymap_routable_key_count(); i++) {
+        uint16_t usage = gateway_keymap_routable_usage_at(i);
+        const char *name = gateway_keymap_key_name(usage);
+        const char *route = gateway_keymap_get_route(usage) == GATEWAY_ROUTE_SOFTWARE
+                                ? "software" : "passthrough";
+        char entry[64];
+        int written = snprintf(entry, sizeof(entry), "%s{\"key\":\"%s\",\"route\":\"%s\"}",
+                               off ? "," : "", name ? name : "?", route);
+        if (written <= 0 || (size_t)written >= sizeof(entry)) {
+            break;  // 防御：键名为编译期常量（最长 volume_mute ≈42B），正常不可达
+        }
+        if (off + (size_t)written + 1 > sizeof(routes)) {
+            // 当前片放不下 → 发出（more=true）后开新片重拼（去掉前导逗号）。
+            (void)voice_ble_send_gateway_keymap(routes, seq, true);
+            seq++;
+            off = 0;
+            written = snprintf(entry, sizeof(entry), "{\"key\":\"%s\",\"route\":\"%s\"}",
+                               name ? name : "?", route);
+            if (written <= 0 || (size_t)written >= sizeof(entry)) {
+                break;
+            }
+        }
+        memcpy(routes + off, entry, (size_t)written);
+        off += (size_t)written;
+        routes[off] = '\0';
+    }
+    (void)voice_ble_send_gateway_keymap(routes, seq, false);  // 尾片（含空表）
+}
+
+// 按键沿：小米 usage 经 keymap 翻译后按动作路由——键盘/Consumer 直通 HOGP 输出给
+// 目标设备系统层；截留键（语音/电源/tv）中语音键会话沿由 ATVV 帧驱动
+// （gateway_atvv_on_press），HID 0x003E 沿忽略防双触发，电源/tv 仅日志。
+static void gateway_on_key(uint16_t usage, bool pressed)
+{
+    gateway_key_action_t action = gateway_keymap_translate(usage);
+    // INFO（2026-10-12 提级）：按键到达是「遥控器→设备 HID 报告通道」的唯一观测点，
+    // DEBUG 级在默认日志电平下不可见，曾让"语音键正常、其它键全死"的双通道问题
+    // 无法分叉（到达?→发送?→门控?）。
+    ESP_LOGI(TAG, "gw key usage=0x%04x %s kind=%d value=0x%lx", usage,
+             pressed ? "down" : "up", (int)action.kind, (unsigned long)action.value);
+    switch (action.kind) {
+    case GATEWAY_KEY_KEYBOARD: {
+        // A20：返回值不再丢——HOGP 发送失败（链路未就绪/mbuf 耗尽）必须可见。
+        const int rc = gateway_hogp_send_keyboard((uint8_t)action.value, pressed);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "hogp keyboard send 0x%02x %s rc=%d",
+                     (unsigned)(action.value & 0xFF), pressed ? "down" : "up", rc);
+        }
+        break;
+    }
+    case GATEWAY_KEY_CONSUMER: {
+        const int rc = gateway_hogp_send_consumer(action.value, pressed);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "hogp consumer send usage=0x%lx %s rc=%d",
+                     (unsigned long)action.value, pressed ? "down" : "up", rc);
+        }
+        break;
+    }
+    case GATEWAY_KEY_SOFTWARE:
+        // P1 隧道融合：软件路由键经 state_tx 上报桌面端自定义（网关模式才有小米
+        // 按键流，普通模式此分支不可达）
+        (void)voice_ble_send_gateway_key(gateway_keymap_key_name(usage), pressed);
+        break;
+    case GATEWAY_KEY_INTERCEPT:
+        ESP_LOGI(TAG, "小米键截留 usage=0x%04x %s", usage, pressed ? "按下" : "松开");
+        break;
+    }
+}
+
+// 小米语音键会话沿（ATVV control 帧驱动，NimBLE host 任务上下文）：
+// 与物理主键同链（APP_INPUT_SOURCE_XIAOMI），交互状态机无感知切换。
+static void gateway_atvv_on_press(bool pressed)
+{
+    s_xiaomi_voice_pressed = pressed;
+    if (pressed) {
+        // 清上一会话残留（含被拒会话溢出的样本），hold 阈值期间新语音重新暂存
+        audio_pipeline_external_reset();
+        queue_primary_down_event(APP_INPUT_SOURCE_XIAOMI, 0);
+    } else {
+        queue_primary_up_event(APP_INPUT_SOURCE_XIAOMI, 0);
+    }
+}
+
+// ATVV 解码 PCM 帧 → audio_pipeline 外部源缓冲
+static void gateway_atvv_on_pcm(const int16_t *pcm, size_t samples)
+{
+    (void)audio_pipeline_feed_pcm(pcm, samples);
+}
+
+// 尾包宽限到期：入队由 app_event_task 执行停录收尾（stop 同步等 drain，勿在
+// esp_timer 任务上下文长阻塞——tap/encoder 轮询定时器在同任务）。
+static void xiaomi_stop_delay_timer_cb(void *arg)
+{
+    (void)arg;
+    queue_app_event(APP_EVENT_XIAOMI_STOP_DUE);
+}
+
+static void gateway_on_link(bool connected)
+{
+    // 屏幕提示用英文：LVGL 内嵌字体无 CJK 字形（现有 UI 文案全英文），中文会渲染成方框。
+    // 短文案适配 135px 宽屏顶部调试行（电量百分比左侧仅约 66px 可用）。
+    ui_status_set_gateway_link(connected ? "RC: OK" : "RC: LOST");
+    ESP_LOGI(TAG, "小米链路%s", connected ? "就绪" : "断开");
+    if (connected) {
+        // ATVV 发现串行在 HID 发现之后（NimBLE 每连接同时仅一个 GATT 过程）
+        xiaomi_atvv_client_on_link_ready(gateway_hid_host_conn_handle());
+    } else {
+        xiaomi_atvv_client_on_link_down();
+        // 链路断开释放悬挂按住态：否则语音键会话沿丢失，主键状态机永远等不到 up
+        if (s_xiaomi_voice_pressed) {
+            s_xiaomi_voice_pressed = false;
+            queue_primary_up_event(APP_INPUT_SOURCE_XIAOMI, 0);
+        }
+        if (s_xiaomi_stop_pending) {
+            // 宽限未到期链路先断：录音已无新尾包，立即收尾
+            s_xiaomi_stop_pending = false;
+            (void)esp_timer_stop(s_xiaomi_stop_delay_timer);
+            queue_app_event(APP_EVENT_XIAOMI_STOP_DUE);
+        }
+    }
+}
+
+// ---- P1 切换器（目标选择）----
+static gateway_switcher_t s_switcher;
+static esp_timer_handle_t s_switcher_timer;
+
+static gateway_switcher_peer_t switcher_peer_from(const uint8_t id_addr[6], uint8_t addr_type)
+{
+    gateway_switcher_peer_t peer;
+    memcpy(peer.addr, id_addr, 6);
+    peer.addr_type = addr_type;
+    return peer;
+}
+
+// 屏幕上的目标提示：切换中显示"正在切换"，连上后显示目标名。
+static void gateway_switcher_show_target(const char *prefix)
+{
+    uint8_t id_addr[6];
+    uint8_t addr_type = 0;
+    char display[40];
+    if (gateway_targets_current_peer(id_addr, &addr_type)) {
+        const int index =
+            gateway_targets_core_find(gateway_targets_table(), id_addr, addr_type);
+        if (index >= 0) {
+            char name[32];
+            gateway_targets_core_display_name(&gateway_targets_table()->items[index], name,
+                                              sizeof(name));
+            snprintf(display, sizeof(display), "%s%s", prefix, name);
+            ui_status_set_gateway_link(display);
+            return;
+        }
+    }
+    ui_status_set_gateway_link(prefix[0] ? prefix : NULL);
+}
+
+// 执行切换器产出的动作（纯逻辑只给意图，这里落 NimBLE/屏幕）。
+static void gateway_switcher_run(const gateway_switcher_actions_t *actions)
+{
+    for (int i = 0; i < actions->count; i++) {
+        const gateway_switcher_action_t action = actions->items[i];
+        ESP_LOGI(TAG, "切换器动作: %s (state=%s)", gateway_switcher_action_name(action),
+                 gateway_switcher_state_name(s_switcher.state));
+        switch (action) {
+        case GATEWAY_SWITCHER_ACTION_DISCONNECT_CURRENT:
+            if (voice_ble_is_connected()) {
+                (void)voice_ble_disconnect(0);
+            }
+            break;
+        case GATEWAY_SWITCHER_ACTION_START_ADV:
+            // 广播由 voice_ble 的看门狗在断开后自动重开，这里只记日志（显式重开见
+            // voice_ble_ensure_advertising，本阶段不需要）。
+            break;
+        case GATEWAY_SWITCHER_ACTION_REJECT_PEER:
+            ESP_LOGW(TAG, "非目标桌面端连接，主动断开");
+            (void)voice_ble_disconnect(0);
+            break;
+        case GATEWAY_SWITCHER_ACTION_ACCEPT_PEER:
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_SWITCHING:
+            gateway_switcher_show_target("切换中: ");
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_CONNECTED:
+            gateway_switcher_show_target("");
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_ERROR:
+            ESP_LOGW(TAG, "切换超时，回退上一目标");
+            ui_status_set_gateway_link("切换失败");
+            break;
+        case GATEWAY_SWITCHER_ACTION_UI_IDLE:
+            ui_status_set_gateway_link(NULL);
+            break;
+        case GATEWAY_SWITCHER_ACTION_NONE:
+        default:
+            break;
+        }
+    }
+}
+
+// ─── 侧键切换器（网关模式）─────────────────────────────────────────────
+// 短按一次：显示当前目标（3s 预览窗）；窗口内再短按一次：轮流切换到下一个目标。
+// 录音进行中保留侧键的取消语义（转发桌面端）。普通模式侧键行为完全不变。
+#define SIDE_SWITCH_PREVIEW_WINDOW_MS 5000u
+
+// 显示当前目标到浮窗。优先已选目标 → 当前连接对端 → 表里最近一次连上的目标。
+// 注意：voice_ble 的 s_current_peer 是**单值**，而网关模式下设备同时维持 OS-HID 链路与
+// 桌面端 app 链路（CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3），任一链路断连都会把单值 current_peer
+// 清掉（app 仍在连时也如此）——所以这里不能只依赖 current_peer，必须落到目标表兜底。
+static void side_switch_show_current(void)
+{
+    char name[32] = {0};
+    uint8_t id_addr[6];
+    uint8_t addr_type = 0;
+    const gateway_target_table_t *table = gateway_targets_table();
+
+    if (s_switcher.selected_valid) {
+        const int idx = gateway_targets_core_find(table, s_switcher.selected.addr,
+                                                  s_switcher.selected.addr_type);
+        if (idx >= 0) {
+            gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
+        }
+    }
+    if (name[0] == '\0' && gateway_targets_current_peer(id_addr, &addr_type)) {
+        const int idx = gateway_targets_core_find(table, id_addr, addr_type);
+        if (idx >= 0) {
+            gateway_targets_core_display_name(&table->items[idx], name, sizeof(name));
+        }
+    }
+    if (name[0] == '\0' && table->count > 0) {
+        int best = 0;
+        for (int i = 1; i < table->count; i++) {
+            if (table->items[i].last_seen_s > table->items[best].last_seen_s) {
+                best = i;
+            }
+        }
+        gateway_targets_core_display_name(&table->items[best], name, sizeof(name));
+    }
+
+    const bool peer_ok = gateway_targets_current_peer(id_addr, &addr_type);
+    ui_status_show_switch_preview(name[0] ? name : "No target");
+    s_side_switch_preview = true;
+    s_side_switch_preview_ms = (uint32_t)esp_log_timestamp();
+    ESP_LOGI(TAG, "侧键预览目标: %s (peer=%d sel=%d count=%d)",
+             name[0] ? name : "(none)", (int)peer_ok, (int)s_switcher.selected_valid, table->count);
+}
+
+// 轮流切换到下一个目标（到头回绕）；目标表只有 1 项时不动。
+static void side_switch_cycle(void)
+{
+    const gateway_target_table_t *table = gateway_targets_table();
+    const int count = table->count;
+    if (count <= 0) {
+        ESP_LOGW(TAG, "侧键切换: 目标表为空");
+        return;
+    }
+    int cur = 0;
+    if (s_switcher.selected_valid) {
+        const int f = gateway_targets_core_find(table, s_switcher.selected.addr,
+                                                s_switcher.selected.addr_type);
+        if (f >= 0) {
+            cur = f;
+        }
+    }
+    if (count == 1) {
+        ESP_LOGI(TAG, "侧键切换: 仅一个目标，无需轮换");
+        ui_status_show_switch_preview("1 target only");
+        s_side_switch_preview_ms = (uint32_t)esp_log_timestamp();
+        return;
+    }
+    const int next = (cur + 1) % count;
+    s_side_switch_preview = false;
+    ui_status_hide_switch_preview();
+    ESP_LOGI(TAG, "侧键切换: #%d -> #%d (共 %d)", cur, next, count);
+    gateway_select_target(next, false);
+}
+
+static void gateway_switcher_timer_cb(void *arg)
+{
+    (void)arg;
+    if (gateway_mode_get() != GATEWAY_MODE_GATEWAY) {
+        return;
+    }
+    // 侧键预览超时：恢复常规目标名显示（不切换）。
+    if (s_side_switch_preview &&
+        (uint32_t)(esp_log_timestamp() - s_side_switch_preview_ms) >=
+            SIDE_SWITCH_PREVIEW_WINDOW_MS) {
+        s_side_switch_preview = false;
+        ui_status_hide_switch_preview();
+        ESP_LOGI(TAG, "侧键预览超时关闭");
+    }
+    gateway_switcher_actions_t actions;
+    gateway_switcher_tick(&s_switcher, (uint32_t)(esp_log_timestamp()), &actions);
+    gateway_switcher_run(&actions);
+}
+
+// 把「当前连接的对端」设为网关目标（桌面端 --gateway-target self 用）。对端未连接时忽略。
+void gateway_select_self(void)
+{
+    uint8_t id_addr[6];
+    uint8_t addr_type = 0;
+    if (!gateway_targets_current_peer(id_addr, &addr_type)) {
+        ESP_LOGW(TAG, "gateway_select_target self: 当前无对端");
+        return;
+    }
+    const int index = gateway_targets_core_find(gateway_targets_table(), id_addr, addr_type);
+    if (index < 0) {
+        ESP_LOGW(TAG, "gateway_select_target self: 对端不在目标表内");
+        return;
+    }
+    ESP_LOGI(TAG, "gateway_select_target self -> #%d", index);
+    gateway_select_target(index, false);
+}
+
+// 用户从菜单选定目标（P1 第 5 步的 LVGL 菜单调用）。
+void gateway_select_target(int target_index, bool clear)
+{
+    gateway_switcher_actions_t actions;
+    if (clear) {
+        gateway_switcher_clear_selection(&s_switcher, &actions);
+        gateway_switcher_run(&actions);
+        return;
+    }
+    const gateway_target_table_t *table = gateway_targets_table();
+    if (target_index < 0 || target_index >= table->count) {
+        return;
+    }
+    const gateway_target_t *item = &table->items[target_index];
+    const gateway_switcher_peer_t peer = switcher_peer_from(item->id_addr, item->addr_type);
+    ESP_LOGI(TAG, "选择目标 #%d", target_index);
+    gateway_switcher_select(&s_switcher, &peer, (uint32_t)esp_log_timestamp(), &actions);
+    gateway_switcher_run(&actions);
+}
+
+// 目标侧（peripheral）对端身份：桌面端连上/断开时更新当前对端，并在连接建立时登记到
+// 目标表（P1 切换器用它列目标）。切到别的模式不影响表内容，只影响是否继续登记。
+static void gateway_on_peer(bool connected, const uint8_t id_addr[6], uint8_t addr_type)
+{
+    gateway_targets_set_current_peer(connected, id_addr, addr_type);
+    if (gateway_mode_get() != GATEWAY_MODE_GATEWAY) {
+        return;
+    }
+    const uint32_t now_ms = (uint32_t)esp_log_timestamp();
+    gateway_switcher_actions_t actions;
+    if (connected) {
+        int index = gateway_targets_note_peer(id_addr, addr_type);
+        if (index >= 0) {
+            char display[32];
+            gateway_targets_core_display_name(&gateway_targets_table()->items[index], display,
+                                              sizeof(display));
+            ESP_LOGI(TAG, "网关目标 #%d: %s", index, display);
+        }
+        const gateway_switcher_peer_t peer = switcher_peer_from(id_addr, addr_type);
+        gateway_switcher_peer_connected(&s_switcher, &peer, now_ms, &actions);
+    } else {
+        gateway_switcher_peer_disconnected(&s_switcher, now_ms, &actions);
+    }
+    gateway_switcher_run(&actions);
+}
+
+// 按当前模式启动/停止小米链路并刷新屏幕提示；boot 翻转后与运行期复用同一入口
+static void gateway_apply_mode(void)
+{
+    ESP_LOGI(TAG, "boot 模式应用：%s", gateway_mode_name(gateway_mode_get()));
+    // 桌面端据此抑制「直连遥控器 ATVV」；未连接时静默返回，订阅成功后会补发。
+    voice_ble_set_gateway_mode(gateway_mode_get() == GATEWAY_MODE_GATEWAY);
+    (void)voice_ble_send_gateway_status();
+    // 目标表 + 切换器：网关模式才有意义（普通模式不登记，避免污染表内容）。
+    if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
+        gateway_targets_init();
+        gateway_switcher_init(&s_switcher);
+        voice_ble_set_peer_callback(gateway_on_peer);
+        if (!s_switcher_timer) {
+            // 500ms 轮询：只用于切换超时判定（纯逻辑无内部定时器）。
+            const esp_timer_create_args_t args = {
+                .callback = gateway_switcher_timer_cb,
+                .name = "gw_switcher",
+            };
+            if (esp_timer_create(&args, &s_switcher_timer) == ESP_OK) {
+                (void)esp_timer_start_periodic(s_switcher_timer, 500 * 1000);
+            }
+        }
+    } else {
+        voice_ble_set_peer_callback(NULL);
+        if (s_switcher_timer) {
+            (void)esp_timer_stop(s_switcher_timer);
+        }
+    }
+    if (gateway_mode_get() == GATEWAY_MODE_GATEWAY) {
+        ui_status_set_gateway_link("RC: ...");
+        // 外部源 PCM 缓冲在模式入口预创建：把 64KB PSRAM 分配移出「按下→首帧」
+        // 关键路径；失败在此一次性暴露（语音键按下时 start_ext 仍会自行重试）。
+        esp_err_t ext_err = audio_pipeline_external_prepare();
+        if (ext_err != ESP_OK) {
+            ESP_LOGE(TAG, "网关外部音频缓冲预创建失败: %s", esp_err_to_name(ext_err));
+        }
+        gateway_hid_host_set_notify_router(xiaomi_atvv_client_notify_router);
+        ESP_ERROR_CHECK(xiaomi_atvv_client_start(gateway_atvv_on_press,
+                                                 gateway_atvv_on_pcm));
+        ESP_ERROR_CHECK(gateway_hid_host_start(gateway_on_key, gateway_on_link));
+    } else {
+        xiaomi_atvv_client_stop();
+        gateway_hid_host_set_notify_router(NULL);
+        gateway_hid_host_stop();
+        ui_status_set_gateway_link(NULL);  // 普通模式不显示网关调试行
+    }
+}
+
 // 编码器轮询：按钮边沿 → 主键 down/up 事件（APP_INPUT_SOURCE_ENCODER，语义等价物理键）；
 // 旋转增量 → APP_EVENT_ENCODER_ROTATE（非零读数即入队，发送门控在 app_event_task）。
 // 在 timer 任务上下文做 I2C 读，与 air_mouse_poll_timer_cb 同一先例（负载轻）。
 // I2C 失败 streak 期间每次轮询最坏占 60ms（6 倍轮询周期，按钮+增量两次 I2C 交易），
 // 与双击 500ms/hold 300ms 窗口相比可忽略；累计 10 次失败即停表降级。
 // 组件连续 I2C 失败标记 absent 后停表，避免空转与日志刷屏。
+// ---- P1 切换器：编码器菜单交互 ----
 static void encoder_poll_timer_cb(void *arg)
 {
     (void)arg;
+    sensor_poll_kick(SENSOR_POLL_ENCODER_BIT);
+}
+
+static void sensor_poll_encoder(void)
+{
     if (!mini_encoder_c_present()) {
         // 按住期间掉线（拔线/松线）：补发 up 事件释放悬挂按下态，否则录音无法结束。
         if (s_encoder_button_pressed) {
@@ -2318,6 +3371,14 @@ static esp_err_t init_encoder_poll_timer(void)
 static void air_mouse_poll_timer_cb(void *arg)
 {
     (void)arg;
+    if (!s_air_mouse_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
+            return;
+        }
+    sensor_poll_kick(SENSOR_POLL_AIR_MOUSE_BIT);
+}
+
+static void sensor_poll_air_mouse(void)
+{
     if (!s_air_mouse_enabled || !voice_ble_is_connected() || s_recording || s_ota_updating) {
         return;
     }
@@ -2397,6 +3458,11 @@ static void update_display_orientation(float x_g)
 static void imu_poll_timer_cb(void *arg)
 {
     (void)arg;
+    sensor_poll_kick(SENSOR_POLL_IMU_BIT);
+}
+
+static void sensor_poll_imu(void)
+{
 
     if (!bmi270_present()) {
         ui_status_set_imu_text("IMU: n/a");
@@ -2448,7 +3514,12 @@ static void IRAM_ATTR pmic_irq_isr(void *arg)
     gpio_intr_disable(STICK_S3_PIN_PMIC_IRQ);
 
     BaseType_t high_task_woken = pdFALSE;
-    queue_app_event_from_isr(APP_EVENT_POWER_IRQ, &high_task_woken);
+    if (!queue_app_event_from_isr(APP_EVENT_POWER_IRQ, &high_task_woken)) {
+        // A19：队列满 → 事件丢失且线已 disable，原实现无补救 → 中断线永久失效
+        //（只剩 10s 电池兜底）。置位交给周期电池刷新：**先清源再 enable**。
+        // 刻意不在 ISR 内直接 enable：源未清时 line 仍为低电平会无限自激。
+        s_pmic_irq_dropped = true;
+    }
     if (high_task_woken) {
         portYIELD_FROM_ISR();
     }
@@ -2527,7 +3598,9 @@ static void update_battery_status(void)
         if (external_power_changed) {
             ESP_LOGI(TAG, "power source changed charging=%d usb=%d",
                      charging, usb_powered);
-            restart_poweroff_timer();
+            // 插电瞬间若已 dim/screen-off 立即恢复常亮；拔电瞬间回到电池空闲策略
+            // （note_activity 按新供电状态重启三级空闲计时器并覆盖关机计时）。
+            note_activity();
         }
     } else {
         ESP_LOGW(TAG, "battery read failed: %s", esp_err_to_name(err));
@@ -2639,7 +3712,8 @@ static void load_tap_settings_from_nvs(void)
 {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("voicestick", NVS_READONLY, &handle);
-    int32_t enabled = 1;  // 默认开启
+    int32_t enabled = 0;  // 默认关闭（A12：对齐 protocol.md Default false；仅 NVS
+                          // 缺 key 时生效，用户已存值不受影响）
     int32_t sensitivity = 5;  // 默认档 5（对应原 medium 体验）
     bool migrated = false;
     if (err == ESP_OK) {
@@ -2780,6 +3854,26 @@ static void save_tap_settings_to_nvs(bool enabled, int32_t sensitivity)
     nvs_close(handle);
 }
 
+// A6：rollback 签到延后的一次性定时器（定义在 app_main 前）。
+static esp_timer_handle_t s_rollback_signoff_timer;
+
+static void rollback_signoff_timer_cb(void *arg)
+{
+    (void)arg;
+    // boot 无条件 mark 会让「能启动但不健康」的新固件立即被背书，坏固件永不回滚
+    //（评审 A6）。延后窗口内任何复位 → 仍处 PENDING_VERIFY → bootloader 回滚到上一版。
+    // 手动 ota_commit（control_rx）仍可立即签到，作为逃生门。
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "rollback signoff after %d ms stable uptime (A6)",
+                 ROLLBACK_SIGNOFF_DELAY_MS);
+    } else if (err == ESP_ERR_NOT_SUPPORTED || err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGD(TAG, "rollback signoff no-op: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGW(TAG, "rollback signoff failed: %s", esp_err_to_name(err));
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "boot reset_reason=%d wakeup_cause=%d ext1_status=0x%llx",
@@ -2803,6 +3897,12 @@ void app_main(void)
     voice_ble_set_connection_callback(ble_connection_cb);
     voice_ble_set_control_callback(ble_control_cb);
     voice_ble_set_ota_callback(ble_ota_cb);
+    // 网关：模式初始化与 HOGP 服务注入都必须在 voice_ble_init（NimBLE 注册窗口）之前。
+    // 设备恒定工作在网关模式（向下兼容普通模式行为），历史上「冷启动按住主键翻转
+    // 模式」的入口已随 gateway_mode_toggle 一并移除。
+    ESP_ERROR_CHECK(gateway_mode_init());
+    voice_ble_set_extra_svcs(gateway_hogp_services);
+
     esp_err_t err = voice_ble_init();
     ESP_ERROR_CHECK(ui_status_init());
     ESP_ERROR_CHECK(init_display_dim_timer());
@@ -2835,12 +3935,26 @@ void app_main(void)
     //（桌面端据此显隐编码器设置）。
     voice_ble_set_encoder_present(mini_encoder_c_present());
     ESP_ERROR_CHECK(init_encoder_poll_timer());
+    // 小米语音键延迟停录定时器（一次性，尾包宽限到期入队收尾事件）
+    {
+        const esp_timer_create_args_t timer_args = {
+            .callback = xiaomi_stop_delay_timer_cb,
+            .name = "xiaomi_stop_delay",
+            .skip_unhandled_events = true,
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_xiaomi_stop_delay_timer));
+    }
     ESP_ERROR_CHECK(init_buttons());
     // 仅在线时启动 10ms 轮询；必须在 init_buttons 之后（事件队列已创建）。
     if (mini_encoder_c_present()) {
         ESP_ERROR_CHECK(esp_timer_start_periodic(s_encoder_poll_timer,
                                                  ENCODER_POLL_INTERVAL_US));
     }
+
+    // 网关模式：启动小米 central 链路（HOGP 服务已在 voice_ble 注册窗口注入）；
+    // 先载入按键路由表（普通模式无小米链路，路由表加载无副作用）
+    load_gateway_key_routes();
+    gateway_apply_mode();
 
     // voice_ble_init 已提前到 ui_status_init 之前执行（见上方注释），此处仅处理其结果。
     if (err != ESP_OK) {
@@ -2856,6 +3970,10 @@ void app_main(void)
     load_tap_settings_from_nvs();
     load_encoder_settings_from_nvs();
     set_tap_polling_enabled(s_tap_enabled);
+    // 主动读一次供电状态：s_battery_charging/s_usb_powered 的缓存初值是 false，
+    // 只靠 60s 周期采样/PMIC IRQ 更新会让「插线开机」先按电池策略 dim/off，
+    // 几十秒后供电变化事件才恢复常亮（先暗后亮的假性失联窗口）。
+    update_battery_status();
 
     esp_err_t audio_err = audio_pipeline_init();
     if (audio_err != ESP_OK) {
@@ -2868,16 +3986,34 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Voice Stick booted");
 
-    // OTA rollback 签到（CONFIG_APP_ROLLBACK_ENABLE=y）：新固件首次启动处于
-    // PENDING_VERIFY，必须签到否则 bootloader 超时回滚。BLE OTA 与 COM 口烧录的
-    // OTA 都依赖此签到，故 boot 时无条件直接 mark_app_valid_cancel_rollback。
-    esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
-    if (mark_err == ESP_OK) {
-        ESP_LOGI(TAG, "mark_app_valid_cancel_rollback ok");
-    } else if (mark_err == ESP_ERR_NOT_SUPPORTED || mark_err == ESP_ERR_INVALID_STATE) {
-        ESP_LOGD(TAG, "mark_valid no-op: %s", esp_err_to_name(mark_err));
+    // A6：rollback 签到**延后**——原 boot 无条件 mark 让「能启动但不健康」的
+    // 新固件立即被背书，坏固件永不回滚（评审 A6）。改为一次性定时器：稳定运行
+    // ROLLBACK_SIGNOFF_DELAY_MS 后签到；窗口内复位则保持 PENDING_VERIFY →
+    // bootloader 回滚。BLE OTA 与 COM 口烧录同样受益；手动 ota_commit 仍即时签到。
+    // 定时器创建/启动任一失败 → 回退旧行为（立即签到）并大声报错：宁可退回
+    //「坏固件不回滚」也不能让健康固件因超时被误回滚。
+    const esp_timer_create_args_t rollback_args = {
+        .callback = rollback_signoff_timer_cb,
+        .name = "rollback_signoff",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_handle_t rollback_timer = NULL;
+    esp_err_t rollback_err = esp_timer_create(&rollback_args, &rollback_timer);
+    if (rollback_err == ESP_OK) {
+        rollback_err = esp_timer_start_once(rollback_timer,
+                                            ROLLBACK_SIGNOFF_DELAY_MS * 1000);
+    }
+    if (rollback_err == ESP_OK) {
+        ESP_LOGI(TAG, "rollback signoff scheduled in %d ms (A6)",
+                 ROLLBACK_SIGNOFF_DELAY_MS);
     } else {
-        ESP_LOGW(TAG, "mark_valid failed: %s", esp_err_to_name(mark_err));
+        ESP_LOGE(TAG, "rollback signoff timer failed (%s); falling back to immediate mark",
+                 esp_err_to_name(rollback_err));
+        esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
+        if (mark_err != ESP_OK && mark_err != ESP_ERR_NOT_SUPPORTED &&
+            mark_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "mark_valid failed: %s", esp_err_to_name(mark_err));
+        }
     }
 
     update_battery_status();

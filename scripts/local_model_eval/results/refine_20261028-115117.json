@@ -1,0 +1,1548 @@
+{
+ "generated_at": "2026-10-28T03:51:17.184333+00:00",
+ "baseline_cer": {
+  "short_01": 0.0,
+  "short_02": 0.0,
+  "short_03": 0.0,
+  "long_01": 0.0,
+  "long_02": 0.0,
+  "num_01": 0.0,
+  "num_02": 0.0,
+  "mix_01": 0.0,
+  "mix_02": 0.0,
+  "punct_01": 0.0,
+  "command_01": 0.0,
+  "command_02": 0.0,
+  "fast_01": 0.0,
+  "fast_02": 0.08,
+  "fast_03": 0.0,
+  "slow_01": 0.0,
+  "slow_02": 0.0,
+  "noise_01": 0.1053,
+  "noise_02": 0.0,
+  "noise_03": 0.0,
+  "english_01": 0.0,
+  "english_02": 0.0,
+  "tech_01": 0.0,
+  "tech_02": 0.2174,
+  "tech_03": 0.0476,
+  "tech_04": 0.1667,
+  "verylong_01": 0.0,
+  "verylong_02": 0.0114,
+  "verylong_03": 0.0,
+  "voice_01": 0.0588,
+  "voice_02": 0.0
+ },
+ "hotwords": [
+  "ASR",
+  "Opus",
+  "Ogg",
+  "GitHub",
+  "pull request",
+  "BLE",
+  "ESP32",
+  "WebSocket",
+  "API",
+  "SDK",
+  "CPU",
+  "python"
+ ],
+ "engines": [
+  {
+   "model": "qwen2.5:0.5b-instruct",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 0.3353,
+   "cer_worst": 3.2,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.3131,
+   "improved": 0,
+   "damaged": 16,
+   "clean_damaged": 12,
+   "tech_cer_mean": 0.5197,
+   "parse_fail": 0,
+   "latency_p50_ms": 65,
+   "latency_p95_ms": 204,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 3.2,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Sure, please provide the"
+    },
+    {
+     "item": "noise_02",
+     "cer": 2.0,
+     "ref": "请帮我查一下明天从北京到上海的高铁票。",
+     "raw": "请帮我查一下明天从北京到上海的高铁票。",
+     "out": "对不起，我目前无法提供明天从北京到上海的高铁票。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 1.3667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "抱歉，我无法提供您所要求的API。如果您需要代码"
+    },
+    {
+     "item": "short_02",
+     "cer": 0.8571,
+     "ref": "帮我打开浏览器。",
+     "raw": "帮我打开浏览器。",
+     "out": "打开浏览器，输入网址。"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.5217,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "A2的opus音频已成功装成Og格式，现在可以发"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:0.5b-instruct",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 3.1955,
+   "cer_worst": 94.8,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 3.1733,
+   "improved": 1,
+   "damaged": 11,
+   "clean_damaged": 9,
+   "tech_cer_mean": 0.1093,
+   "parse_fail": 0,
+   "latency_p50_ms": 64,
+   "latency_p95_ms": 202,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 94.8,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Sure, here is the text t"
+    },
+    {
+     "item": "mix_01",
+     "cer": 1.2273,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "hello world program usin"
+    },
+    {
+     "item": "short_02",
+     "cer": 0.8571,
+     "ref": "帮我打开浏览器。",
+     "raw": "帮我打开浏览器。",
+     "out": "打开浏览器，输入网址。"
+    },
+    {
+     "item": "long_01",
+     "cer": 0.4,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "好的，请上传会议记录，我会帮您整理成要点并发送给"
+    },
+    {
+     "item": "voice_02",
+     "cer": 0.3529,
+     "ref": "不同说话人的发音习惯会影响识别结果。",
+     "raw": "不同说话人的发音习惯会影响识别结果。",
+     "out": "不同说话人的发音习惯会影响语音识别的准确性。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:0.5b-instruct",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 0.4067,
+   "cer_worst": 6.3,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.3845,
+   "improved": 0,
+   "damaged": 12,
+   "clean_damaged": 10,
+   "tech_cer_mean": 0.1854,
+   "parse_fail": 0,
+   "latency_p50_ms": 66,
+   "latency_p95_ms": 197,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 6.3,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Sure, here is the text t"
+    },
+    {
+     "item": "english_02",
+     "cer": 1.0,
+     "ref": "Please schedule a meetin",
+     "raw": "Please schedule a meetin",
+     "out": "请明天下午三点与工程团队会面。"
+    },
+    {
+     "item": "slow_01",
+     "cer": 0.9,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "好的，请上传文件。"
+    },
+    {
+     "item": "long_01",
+     "cer": 0.84,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "好的，请提供会议记录的内容。"
+    },
+    {
+     "item": "short_03",
+     "cer": 0.8,
+     "ref": "现在几点了？",
+     "raw": "现在几点了？",
+     "out": "现在是10点。"
+    }
+   ]
+  },
+  {
+   "model": "gemma3:1b",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 7.3691,
+   "cer_worst": 72.4,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 7.3469,
+   "improved": 0,
+   "damaged": 25,
+   "clean_damaged": 20,
+   "tech_cer_mean": 14.8844,
+   "parse_fail": 0,
+   "latency_p50_ms": 162,
+   "latency_p95_ms": 1142,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 72.4,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Okay, here’s the English"
+    },
+    {
+     "item": "slow_01",
+     "cer": 58.0,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "好的，以下是这份文件3份的打印版本：\n\n**打印"
+    },
+    {
+     "item": "tech_04",
+     "cer": 56.8667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "```\npoll request:\n\n**Tas"
+    },
+    {
+     "item": "punct_01",
+     "cer": 19.0,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "去除因语音停顿产生的多余空格，尤其中文、日文、韩"
+    },
+    {
+     "item": "noise_02",
+     "cer": 8.9444,
+     "ref": "请帮我查一下明天从北京到上海的高铁票。",
+     "raw": "请帮我查一下明天从北京到上海的高铁票。",
+     "out": "我无法提供实时的票务信息。我是一个语言模型，无法"
+    }
+   ]
+  },
+  {
+   "model": "gemma3:1b",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 8.1478,
+   "cer_worst": 98.2,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 8.1256,
+   "improved": 0,
+   "damaged": 21,
+   "clean_damaged": 18,
+   "tech_cer_mean": 11.572,
+   "parse_fail": 0,
+   "latency_p50_ms": 205,
+   "latency_p95_ms": 2573,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 98.2,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Okay, here’s the English"
+    },
+    {
+     "item": "slow_01",
+     "cer": 58.1,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "好的，以下是这份文件3份的打印版本：\n\n**文件"
+    },
+    {
+     "item": "tech_04",
+     "cer": 43.6333,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "```\nRequest: Create a po"
+    },
+    {
+     "item": "fast_03",
+     "cer": 19.4,
+     "ref": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "raw": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "out": "好的，理解了。这个功能的实现需要考虑网络不稳定情"
+    },
+    {
+     "item": "voice_02",
+     "cer": 15.6471,
+     "ref": "不同说话人的发音习惯会影响识别结果。",
+     "raw": "不同说话人的发音习惯会影响识别结果。",
+     "out": "• 去除因语音停顿产生的多余空格，尤其中文、日文"
+    }
+   ]
+  },
+  {
+   "model": "gemma3:1b",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 4.3673,
+   "cer_worst": 64.0,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 4.3451,
+   "improved": 0,
+   "damaged": 22,
+   "clean_damaged": 17,
+   "tech_cer_mean": 3.916,
+   "parse_fail": 0,
+   "latency_p50_ms": 206,
+   "latency_p95_ms": 1690,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 64.0,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Okay, here's the English"
+    },
+    {
+     "item": "fast_03",
+     "cer": 18.9667,
+     "ref": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "raw": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "out": "好的，明白了。这个功能的实现需要考虑网络不稳定情"
+    },
+    {
+     "item": "tech_04",
+     "cer": 14.4333,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "好的，以下是dek hubb上创建一个 poll"
+    },
+    {
+     "item": "slow_01",
+     "cer": 13.1,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "好的，以下是3份清理语音识别文本的输出：\n\n**"
+    },
+    {
+     "item": "noise_02",
+     "cer": 9.1111,
+     "ref": "请帮我查一下明天从北京到上海的高铁票。",
+     "raw": "请帮我查一下明天从北京到上海的高铁票。",
+     "out": "很抱歉，我无法直接查询明天从北京到上海的高铁票。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:1.5b-instruct",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 0.1942,
+   "cer_worst": 1.1111,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.172,
+   "improved": 0,
+   "damaged": 14,
+   "clean_damaged": 11,
+   "tech_cer_mean": 0.1436,
+   "parse_fail": 0,
+   "latency_p50_ms": 101,
+   "latency_p95_ms": 334,
+   "worst_cases": [
+    {
+     "item": "punct_01",
+     "cer": 1.1111,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "好的，请提供需要处理的原始文本。"
+    },
+    {
+     "item": "long_01",
+     "cer": 0.8,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "请提供会议记录文本。"
+    },
+    {
+     "item": "command_02",
+     "cer": 0.8,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "请提供需要翻译的文本。"
+    },
+    {
+     "item": "slow_01",
+     "cer": 0.5,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "请打印该文件三份。"
+    },
+    {
+     "item": "mix_01",
+     "cer": 0.4091,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "```python\nprint(\"Hello, "
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:1.5b-instruct",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 0.1471,
+   "cer_worst": 1.1111,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.1249,
+   "improved": 0,
+   "damaged": 11,
+   "clean_damaged": 9,
+   "tech_cer_mean": 0.1416,
+   "parse_fail": 0,
+   "latency_p50_ms": 111,
+   "latency_p95_ms": 331,
+   "worst_cases": [
+    {
+     "item": "punct_01",
+     "cer": 1.1111,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "好的，请提供需要处理的原始文本。"
+    },
+    {
+     "item": "command_02",
+     "cer": 0.8,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "请提供需要翻译的文本。"
+    },
+    {
+     "item": "mix_01",
+     "cer": 0.4091,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "```python\nprint(\"hello w"
+    },
+    {
+     "item": "short_03",
+     "cer": 0.4,
+     "ref": "现在几点了？",
+     "raw": "现在几点了？",
+     "out": "现在是几点？"
+    },
+    {
+     "item": "long_01",
+     "cer": 0.32,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "请帮我整理会议记录，并发送给所有参会人员。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:1.5b-instruct",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 3.4099,
+   "cer_worst": 57.2,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 3.3877,
+   "improved": 0,
+   "damaged": 19,
+   "clean_damaged": 14,
+   "tech_cer_mean": 2.5198,
+   "parse_fail": 0,
+   "latency_p50_ms": 112,
+   "latency_p95_ms": 1597,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 57.2,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Sure, here is the transl"
+    },
+    {
+     "item": "voice_02",
+     "cer": 14.4118,
+     "ref": "不同说话人的发音习惯会影响识别结果。",
+     "raw": "不同说话人的发音习惯会影响识别结果。",
+     "out": "是的，不同说话人的发音习惯确实会影响语音识别的结"
+    },
+    {
+     "item": "long_01",
+     "cer": 13.2,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "好的，以下是整理后的会议记录要点：\n\n1. 会议"
+    },
+    {
+     "item": "tech_04",
+     "cer": 9.7667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个poll reque"
+    },
+    {
+     "item": "noise_02",
+     "cer": 2.6111,
+     "ref": "请帮我查一下明天从北京到上海的高铁票。",
+     "raw": "请帮我查一下明天从北京到上海的高铁票。",
+     "out": "很抱歉，我无法提供实时的火车票预订服务。建议您访"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:1.7b",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 0.3695,
+   "cer_worst": 5.96,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.3473,
+   "improved": 0,
+   "damaged": 6,
+   "clean_damaged": 5,
+   "tech_cer_mean": 0.1188,
+   "parse_fail": 0,
+   "latency_p50_ms": 114,
+   "latency_p95_ms": 374,
+   "worst_cases": [
+    {
+     "item": "long_01",
+     "cer": 5.96,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "会议记录整理要点如下：\n\n1. 会议时间：202"
+    },
+    {
+     "item": "command_02",
+     "cer": 3.6,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Translate the following "
+    },
+    {
+     "item": "mix_01",
+     "cer": 0.5455,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "Hello world."
+    },
+    {
+     "item": "noise_02",
+     "cer": 0.3333,
+     "ref": "请帮我查一下明天从北京到上海的高铁票。",
+     "raw": "请帮我查一下明天从北京到上海的高铁票。",
+     "out": "明天从北京到上海的高铁票"
+    },
+    {
+     "item": "short_02",
+     "cer": 0.2857,
+     "ref": "帮我打开浏览器。",
+     "raw": "帮我打开浏览器。",
+     "out": "打开浏览器。"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:1.7b",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 0.511,
+   "cer_worst": 8.68,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.4888,
+   "improved": 0,
+   "damaged": 9,
+   "clean_damaged": 8,
+   "tech_cer_mean": 0.1188,
+   "parse_fail": 0,
+   "latency_p50_ms": 112,
+   "latency_p95_ms": 381,
+   "worst_cases": [
+    {
+     "item": "long_01",
+     "cer": 8.68,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "会议记录整理要点如下：\n\n1. 会议主题：讨论项"
+    },
+    {
+     "item": "command_02",
+     "cer": 3.6,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Translate the following "
+    },
+    {
+     "item": "punct_01",
+     "cer": 0.8889,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "好的，我将按照您的要求处理。"
+    },
+    {
+     "item": "slow_01",
+     "cer": 0.6,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "打印3份"
+    },
+    {
+     "item": "mix_01",
+     "cer": 0.5455,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "Hello world"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:1.7b",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 0.7953,
+   "cer_worst": 14.0,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.7731,
+   "improved": 0,
+   "damaged": 7,
+   "clean_damaged": 6,
+   "tech_cer_mean": 0.1317,
+   "parse_fail": 0,
+   "latency_p50_ms": 126,
+   "latency_p95_ms": 388,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 14.0,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Translate the following "
+    },
+    {
+     "item": "long_01",
+     "cer": 5.44,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "会议记录整理要点如下：\n\n1. 会议主题：讨论项"
+    },
+    {
+     "item": "mix_01",
+     "cer": 2.5,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "以下是一个用 Python 编写的 Hello "
+    },
+    {
+     "item": "english_02",
+     "cer": 1.0,
+     "ref": "Please schedule a meetin",
+     "raw": "Please schedule a meetin",
+     "out": "请安排明天与工程团队开会。"
+    },
+    {
+     "item": "slow_01",
+     "cer": 0.6,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "打印3份。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:3b-instruct",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 0.1296,
+   "cer_worst": 1.2,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.1074,
+   "improved": 1,
+   "damaged": 11,
+   "clean_damaged": 9,
+   "tech_cer_mean": 0.1652,
+   "parse_fail": 0,
+   "latency_p50_ms": 183,
+   "latency_p95_ms": 570,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 1.2,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "请提供需要处理的文字内容。"
+    },
+    {
+     "item": "slow_01",
+     "cer": 0.5,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "请打印该文件3份。"
+    },
+    {
+     "item": "mix_01",
+     "cer": 0.4091,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "```python\nprint(\"Hello, "
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.4,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个poll请求，并请求"
+    },
+    {
+     "item": "punct_01",
+     "cer": 0.3333,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "好的，马上处理。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:3b-instruct",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 0.1011,
+   "cer_worst": 1.1,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0789,
+   "improved": 2,
+   "damaged": 6,
+   "clean_damaged": 6,
+   "tech_cer_mean": 0.0877,
+   "parse_fail": 0,
+   "latency_p50_ms": 179,
+   "latency_p95_ms": 585,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 1.1,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "请提供需要处理的原始文本。"
+    },
+    {
+     "item": "slow_01",
+     "cer": 0.4,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "请打印这份文件3份。"
+    },
+    {
+     "item": "punct_01",
+     "cer": 0.3333,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "好的，马上处理。"
+    },
+    {
+     "item": "long_01",
+     "cer": 0.32,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "请帮我整理会议记录并发送给所有参会人员。"
+    },
+    {
+     "item": "num_02",
+     "cer": 0.2308,
+     "ref": "今天是二零二六年七月十五日。",
+     "raw": "今天是2026年7月15日。",
+     "out": "2026年7月15日。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:3b-instruct",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 0.2783,
+   "cer_worst": 5.5,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.2561,
+   "improved": 0,
+   "damaged": 10,
+   "clean_damaged": 8,
+   "tech_cer_mean": 0.1188,
+   "parse_fail": 0,
+   "latency_p50_ms": 190,
+   "latency_p95_ms": 583,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 5.5,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Sure, please provide the"
+    },
+    {
+     "item": "mix_01",
+     "cer": 0.4091,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "```python\nprint(\"Hello, "
+    },
+    {
+     "item": "slow_01",
+     "cer": 0.4,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "请打印这份文件3份。"
+    },
+    {
+     "item": "noise_02",
+     "cer": 0.3889,
+     "ref": "请帮我查一下明天从北京到上海的高铁票。",
+     "raw": "请帮我查一下明天从北京到上海的高铁票。",
+     "out": "帮我在明天从北京到上海查一下高铁票。"
+    },
+    {
+     "item": "fast_01",
+     "cer": 0.375,
+     "ref": "语音识别系统需要在保证准确率的同时尽可能降低延迟",
+     "raw": "语音识别系统需要在保证准确率的同时尽可能降低延迟",
+     "out": "语音识别系统需要尽可能降低延迟。"
+    }
+   ]
+  },
+  {
+   "model": "llama3.2:3b",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 5.6772,
+   "cer_worst": 74.2,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 5.655,
+   "improved": 0,
+   "damaged": 24,
+   "clean_damaged": 18,
+   "tech_cer_mean": 10.1448,
+   "parse_fail": 0,
+   "latency_p50_ms": 274,
+   "latency_p95_ms": 2678,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 74.2,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "I am a post-processing t"
+    },
+    {
+     "item": "tech_01",
+     "cer": 26.84,
+     "ref": "这个 API 的 SDK 需要支持 WebSoc",
+     "raw": "这个API的SDK需要支持web socket长",
+     "out": "支持WebSockets长连接的API SDK需"
+    },
+    {
+     "item": "slow_01",
+     "cer": 26.8,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "我是语音识别后处理器，无法直接打印文件。然而，我"
+    },
+    {
+     "item": "fast_03",
+     "cer": 14.3,
+     "ref": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "raw": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "out": "确保功能的可靠性和数据一致性对于实现语音识别后处"
+    },
+    {
+     "item": "tech_02",
+     "cer": 13.087,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "我是语音识别后处理器。为了将A2的opus音频留"
+    }
+   ]
+  },
+  {
+   "model": "llama3.2:3b",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 7.5807,
+   "cer_worst": 104.4,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 7.5585,
+   "improved": 1,
+   "damaged": 27,
+   "clean_damaged": 21,
+   "tech_cer_mean": 0.8616,
+   "parse_fail": 0,
+   "latency_p50_ms": 219,
+   "latency_p95_ms": 5331,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 104.4,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "I am a post-processing t"
+    },
+    {
+     "item": "noise_02",
+     "cer": 29.7778,
+     "ref": "请帮我查一下明天从北京到上海的高铁票。",
+     "raw": "请帮我查一下明天从北京到上海的高铁票。",
+     "out": "我无法提供您购买高铁票的直接帮助，但我可以提供一"
+    },
+    {
+     "item": "voice_01",
+     "cer": 29.0,
+     "ref": "男声音色下的识别效果也需要单独验证。",
+     "raw": "男生音色下的识别效果也需要单独验证。",
+     "out": "我可以帮助你实现这个功能。下面是我的处理流程：\n"
+    },
+    {
+     "item": "voice_02",
+     "cer": 20.6471,
+     "ref": "不同说话人的发音习惯会影响识别结果。",
+     "raw": "不同说话人的发音习惯会影响识别结果。",
+     "out": "不同说话人的发音习惯确实会影响语音识别的准确性。"
+    },
+    {
+     "item": "fast_03",
+     "cer": 17.6,
+     "ref": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "raw": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "out": "### 语音识别后处理器\n\n#### 1. 输入"
+    }
+   ]
+  },
+  {
+   "model": "llama3.2:3b",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 6.6287,
+   "cer_worst": 54.8,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 6.6065,
+   "improved": 1,
+   "damaged": 22,
+   "clean_damaged": 16,
+   "tech_cer_mean": 4.7914,
+   "parse_fail": 0,
+   "latency_p50_ms": 271,
+   "latency_p95_ms": 4245,
+   "worst_cases": [
+    {
+     "item": "slow_01",
+     "cer": 54.8,
+     "ref": "请把这份文件打印三份。",
+     "raw": "请把这份文件打印3份。",
+     "out": "我无法直接打印文件，但我可以提供以下内容：\n\n*"
+    },
+    {
+     "item": "command_02",
+     "cer": 34.8,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Here is the translation:"
+    },
+    {
+     "item": "voice_02",
+     "cer": 24.5882,
+     "ref": "不同说话人的发音习惯会影响识别结果。",
+     "raw": "不同说话人的发音习惯会影响识别结果。",
+     "out": "不同说话人的发音习惯确实会影响语音识别的结果。发"
+    },
+    {
+     "item": "fast_03",
+     "cer": 20.6,
+     "ref": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "raw": "这个功能的实现需要考虑网络不稳定情况下的重试机制",
+     "out": "实现这个功能的实现需要考虑网络不稳定情况下的重试"
+    },
+    {
+     "item": "mix_01",
+     "cer": 19.0455,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "**Hello World Program in"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:4b",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 39.354,
+   "cer_worst": 127.2,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 39.3318,
+   "improved": 0,
+   "damaged": 31,
+   "clean_damaged": 24,
+   "tech_cer_mean": 25.1809,
+   "parse_fail": 0,
+   "latency_p50_ms": 8043,
+   "latency_p95_ms": 8678,
+   "worst_cases": [
+    {
+     "item": "short_03",
+     "cer": 127.2,
+     "ref": "现在几点了？",
+     "raw": "现在几点了？",
+     "out": "首先，用户输入是：\"现在几点了？\"。这是一个中文"
+    },
+    {
+     "item": "short_01",
+     "cer": 98.5,
+     "ref": "今天天气不错。",
+     "raw": "今天天气不错。",
+     "out": "首先，用户输入是：\"今天天气不错。\" 这是一个中"
+    },
+    {
+     "item": "short_02",
+     "cer": 89.4286,
+     "ref": "帮我打开浏览器。",
+     "raw": "帮我打开浏览器。",
+     "out": "首先，用户输入是：\"帮我打开浏览器。\" 这是一个"
+    },
+    {
+     "item": "command_02",
+     "cer": 68.4,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "首先，用户说：“把这段文字翻译成英文。” 这是中"
+    },
+    {
+     "item": "punct_01",
+     "cer": 63.7778,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "首先，用户输入是：\"好的，没问题，马上处理。\" "
+    }
+   ]
+  },
+  {
+   "model": "qwen3:4b",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 40.266,
+   "cer_worst": 124.8,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 40.2438,
+   "improved": 0,
+   "damaged": 31,
+   "clean_damaged": 24,
+   "tech_cer_mean": 25.5857,
+   "parse_fail": 0,
+   "latency_p50_ms": 8173,
+   "latency_p95_ms": 8451,
+   "worst_cases": [
+    {
+     "item": "short_03",
+     "cer": 124.8,
+     "ref": "现在几点了？",
+     "raw": "现在几点了？",
+     "out": "首先，用户输入是：\"现在几点了？\"。这是一个中文"
+    },
+    {
+     "item": "short_01",
+     "cer": 110.6667,
+     "ref": "今天天气不错。",
+     "raw": "今天天气不错。",
+     "out": "首先，用户输入是：\"今天天气不错。\" 这是一个中"
+    },
+    {
+     "item": "short_02",
+     "cer": 93.4286,
+     "ref": "帮我打开浏览器。",
+     "raw": "帮我打开浏览器。",
+     "out": "首先，用户输入是：\"帮我打开浏览器。\" 这是一个"
+    },
+    {
+     "item": "command_02",
+     "cer": 72.1,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "首先，用户要求：“把这段文字翻译成英文。” 但用"
+    },
+    {
+     "item": "punct_01",
+     "cer": 67.6667,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "首先，用户输入是：\"好的，没问题，马上处理。\" "
+    }
+   ]
+  },
+  {
+   "model": "qwen3:4b",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 36.8677,
+   "cer_worst": 116.6,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 36.8455,
+   "improved": 0,
+   "damaged": 31,
+   "clean_damaged": 24,
+   "tech_cer_mean": 23.0541,
+   "parse_fail": 0,
+   "latency_p50_ms": 7838,
+   "latency_p95_ms": 8299,
+   "worst_cases": [
+    {
+     "item": "short_03",
+     "cer": 116.6,
+     "ref": "现在几点了？",
+     "raw": "现在几点了？",
+     "out": "首先，用户输入是：\"现在几点了？\"。我需要清理这"
+    },
+    {
+     "item": "short_01",
+     "cer": 96.1667,
+     "ref": "今天天气不错。",
+     "raw": "今天天气不错。",
+     "out": "首先，任务是清理语音识别文本。我需要删除无意义的"
+    },
+    {
+     "item": "short_02",
+     "cer": 80.4286,
+     "ref": "帮我打开浏览器。",
+     "raw": "帮我打开浏览器。",
+     "out": "首先，用户要求我清理语音识别文本。规则是：删除无"
+    },
+    {
+     "item": "command_02",
+     "cer": 78.0,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "首先，用户要求：“把这段文字翻译成英文。” 但用"
+    },
+    {
+     "item": "punct_01",
+     "cer": 62.3333,
+     "ref": "好的，没问题，马上处理。",
+     "raw": "好的，没问题，马上处理。",
+     "out": "首先，用户提供了几个示例，展示了如何清理语音识别"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:8b",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 0.1245,
+   "cer_worst": 2.8,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.1023,
+   "improved": 1,
+   "damaged": 7,
+   "clean_damaged": 5,
+   "tech_cer_mean": 0.1224,
+   "parse_fail": 0,
+   "latency_p50_ms": 381,
+   "latency_p95_ms": 1314,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 2.8,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Translate this text into"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.2609,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "将A2的Opus音频转成OGG格式再发送"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1333,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在Dek Hub上创建一个poll reques"
+    },
+    {
+     "item": "long_01",
+     "cer": 0.12,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "请将这段会议记录整理成要点，并发送给所有参会人员"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下，识别的准确率会明显下降。"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:8b",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 0.1387,
+   "cer_worst": 3.4,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.1165,
+   "improved": 2,
+   "damaged": 4,
+   "clean_damaged": 3,
+   "tech_cer_mean": 0.1203,
+   "parse_fail": 0,
+   "latency_p50_ms": 420,
+   "latency_p95_ms": 1281,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 3.4,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Please translate this te"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.3478,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "将A2的Opus音频留峰转换为Ogg格式再发送"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1333,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在 Dek Hubb 上创建一个 pull re"
+    },
+    {
+     "item": "long_01",
+     "cer": 0.12,
+     "ref": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "raw": "请帮我把这段会议记录整理成要点，并发送给所有参会",
+     "out": "请将这段会议记录整理成要点，并发送给所有参会人员"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下，识别的准确率会明显下降。"
+    }
+   ]
+  },
+  {
+   "model": "qwen3:8b",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 0.2146,
+   "cer_worst": 3.4,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.1924,
+   "improved": 2,
+   "damaged": 7,
+   "clean_damaged": 6,
+   "tech_cer_mean": 0.1188,
+   "parse_fail": 0,
+   "latency_p50_ms": 416,
+   "latency_p95_ms": 1274,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 3.4,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Please translate this te"
+    },
+    {
+     "item": "mix_01",
+     "cer": 1.5,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "以下是一个用 Python 编写的 \"Hello"
+    },
+    {
+     "item": "english_02",
+     "cer": 1.0,
+     "ref": "Please schedule a meetin",
+     "raw": "Please schedule a meetin",
+     "out": "请安排与工程团队的会议。"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.2609,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "将A2的opus音频转成ogg格式再发送。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在 dek hubb 上创建一个 poll re"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:7b-instruct",
+   "variant": "cloud",
+   "n": 31,
+   "cer_mean": 0.0515,
+   "cer_worst": 0.8,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0293,
+   "improved": 2,
+   "damaged": 3,
+   "clean_damaged": 2,
+   "tech_cer_mean": 0.1213,
+   "parse_fail": 0,
+   "latency_p50_ms": 364,
+   "latency_p95_ms": 1229,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 0.8,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "请提供需要翻译的文本。"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.3043,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "将A2的opus音频转换为ogg格式再发送。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1333,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hub上创建一个poll reques"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下，识别的准确率会明显下降。"
+    },
+    {
+     "item": "fast_02",
+     "cer": 0.08,
+     "ref": "明天上午十点的会议改到下午两点，请大家提前准备好",
+     "raw": "明天上午10点的会议改到下午2点，请大家提前准备",
+     "out": "明天上午10点的会议改到下午2点，请大家提前准备"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:7b-instruct",
+   "variant": "cloud+hw",
+   "n": 31,
+   "cer_mean": 0.0827,
+   "cer_worst": 1.0,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.0605,
+   "improved": 3,
+   "damaged": 5,
+   "clean_damaged": 4,
+   "tech_cer_mean": 0.1094,
+   "parse_fail": 0,
+   "latency_p50_ms": 380,
+   "latency_p95_ms": 1196,
+   "worst_cases": [
+    {
+     "item": "english_02",
+     "cer": 1.0,
+     "ref": "Please schedule a meetin",
+     "raw": "Please schedule a meetin",
+     "out": "请与工程团队明天开会。"
+    },
+    {
+     "item": "command_02",
+     "cer": 0.8,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "请提供需要翻译的文字。"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.3043,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "将A2的opus音频转换为Ogg格式再发送。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1333,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在dek hubb上创建一个pull reque"
+    },
+    {
+     "item": "noise_01",
+     "cer": 0.1053,
+     "ref": "在嘈杂环境下语音识别的准确率会明显下降。",
+     "raw": "在嘈杂环境下雨，因识别的准确率会明显下降。",
+     "out": "在嘈杂环境下，识别的准确率会明显下降。"
+    }
+   ]
+  },
+  {
+   "model": "qwen2.5:7b-instruct",
+   "variant": "fewshot",
+   "n": 31,
+   "cer_mean": 0.2305,
+   "cer_worst": 4.2,
+   "baseline_cer_mean": 0.0222,
+   "delta_mean": 0.2083,
+   "improved": 1,
+   "damaged": 4,
+   "clean_damaged": 3,
+   "tech_cer_mean": 0.1188,
+   "parse_fail": 0,
+   "latency_p50_ms": 389,
+   "latency_p95_ms": 1191,
+   "worst_cases": [
+    {
+     "item": "command_02",
+     "cer": 4.2,
+     "ref": "把这段文字翻译成英文。",
+     "raw": "把这段文字翻译成英文。",
+     "out": "Sure, please provide the"
+    },
+    {
+     "item": "mix_01",
+     "cer": 1.2273,
+     "ref": "用 python 写一个 hello world",
+     "raw": "用python写一个hello world程序。",
+     "out": "用Python写一个\"Hello World\"程"
+    },
+    {
+     "item": "english_02",
+     "cer": 1.0,
+     "ref": "Please schedule a meetin",
+     "raw": "Please schedule a meetin",
+     "out": "请明天与工程团队安排一个会议。"
+    },
+    {
+     "item": "tech_02",
+     "cer": 0.2609,
+     "ref": "把 ASR 的 Opus 音频流封装成 Ogg ",
+     "raw": "把A2的opus音频留峰装成Og格式再发送。",
+     "out": "把A2的opus音频转换成Og格式再发送。"
+    },
+    {
+     "item": "tech_04",
+     "cer": 0.1667,
+     "ref": "在 GitHub 上创建一个 pull requ",
+     "raw": "在dek hubb上创建一个poll reque",
+     "out": "在 dek hubb 上创建一个 poll re"
+    }
+   ]
+  }
+ ],
+ "filler": [
+  {
+   "model": "qwen2.5:0.5b-instruct",
+   "variant": "fewshot",
+   "cer_mean": 0.0724,
+   "perfect": 9,
+   "parse_fail": 0
+  },
+  {
+   "model": "gemma3:1b",
+   "variant": "fewshot",
+   "cer_mean": 0.0892,
+   "perfect": 7,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen2.5:1.5b-instruct",
+   "variant": "fewshot",
+   "cer_mean": 0.0208,
+   "perfect": 11,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen3:1.7b",
+   "variant": "fewshot",
+   "cer_mean": 0.0215,
+   "perfect": 10,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen2.5:3b-instruct",
+   "variant": "fewshot",
+   "cer_mean": 0.029,
+   "perfect": 10,
+   "parse_fail": 0
+  },
+  {
+   "model": "llama3.2:3b",
+   "variant": "fewshot",
+   "cer_mean": 0.109,
+   "perfect": 9,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen3:4b",
+   "variant": "fewshot",
+   "cer_mean": 57.4277,
+   "perfect": 0,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen3:8b",
+   "variant": "fewshot",
+   "cer_mean": 0.0152,
+   "perfect": 11,
+   "parse_fail": 0
+  },
+  {
+   "model": "qwen2.5:7b-instruct",
+   "variant": "fewshot",
+   "cer_mean": 0.029,
+   "perfect": 10,
+   "parse_fail": 0
+  }
+ ]
+}

@@ -1,4 +1,5 @@
 # Windows 内置 ASR API Key 方案
+> 状态：已实施（代码实证：builtin_secrets.h.in 与 BuiltinSecrets.swift（产物 gitignored=设计中在案）。核销 2026-10-08/N10）
 
 ## 背景与根因
 

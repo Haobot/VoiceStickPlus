@@ -33,26 +33,55 @@ bool ContainsCaseInsensitive(const std::string& text, const std::string& needle)
 
 } // namespace
 
-bool IsValidHotword(const std::string& word) {
-    if (word.empty()) return false;
+HotwordRejectReason ValidateHotword(std::string_view word) {
+    if (word.empty()) return HotwordRejectReason::kEmpty;
     int cjk = 0;
     int ascii = 0;
     for (std::size_t i = 0; i < word.size();) {
         const auto lead = static_cast<unsigned char>(word[i]);
         if (lead < 0x80) {
-            if (std::isspace(lead) != 0) return false;
+            if (std::isspace(lead) != 0) return HotwordRejectReason::kWhitespace;
             ++ascii;
             ++i;
         } else {
-            std::size_t seq_len = 1;
+            std::size_t seq_len = 0;
             if ((lead & 0xe0) == 0xc0) seq_len = 2;
             else if ((lead & 0xf0) == 0xe0) seq_len = 3;
             else if ((lead & 0xf8) == 0xf0) seq_len = 4;
+            else return HotwordRejectReason::kCharset;  // 孤立续字节/非法 lead：非合法 UTF-8
             ++cjk;
             i += seq_len;
         }
     }
-    return cjk <= 10 && ascii <= 30;
+    if (cjk > 10 || ascii > 30) return HotwordRejectReason::kTooLong;
+    return HotwordRejectReason::kNone;
+}
+
+HotwordRejectReason ValidateHotwordForTencent(std::string_view word) {
+    const auto base = ValidateHotword(word);
+    if (base != HotwordRejectReason::kNone) return base;
+    for (const unsigned char c : word) {
+        if (c >= 0x80) continue;  // UTF-8 多字节（CJK 等）腾讯放行
+        const bool allowed = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                             (c >= 'A' && c <= 'Z') || c == '_' || c == '-';
+        if (!allowed) return HotwordRejectReason::kCharset;  // 点号等 API 会拒
+    }
+    return HotwordRejectReason::kNone;
+}
+
+bool IsValidHotword(const std::string& word) {
+    return ValidateHotword(word) == HotwordRejectReason::kNone;
+}
+
+std::vector<std::string> FilterValidHotwordCandidates(const std::vector<std::string>& words) {
+    std::vector<std::string> out;
+    out.reserve(words.size());
+    for (const auto& w : words) {
+        if (ValidateHotword(w) == HotwordRejectReason::kNone) {
+            out.push_back(w);
+        }
+    }
+    return out;
 }
 
 double HotwordScore(const HotwordUsage& usage, std::int64_t now_s) {
@@ -64,7 +93,9 @@ double HotwordScore(const HotwordUsage& usage, std::int64_t now_s) {
         recency = kHotwordWRecency * std::exp(-age / static_cast<double>(kHotwordRecencyTauS));
     }
     const double manual = usage.source == "manual" ? kHotwordWManual : 0.0;
-    return count_term + recency + manual;
+    const double negative =
+        kHotwordWNegative * std::log1p(static_cast<double>(std::max(0, usage.negative_count)));
+    return count_term + recency + manual - negative;
 }
 
 std::vector<std::string> RankHotwords(const HotwordUsageStore& store,
@@ -124,6 +155,20 @@ void RecordHotwordUsageInText(HotwordUsageStore& store,
     }
 }
 
+void RecordHotwordNegativeInText(HotwordUsageStore& store,
+                                 const std::string& text,
+                                 const std::vector<std::string>& hotwords) {
+    for (const auto& word : hotwords) {
+        if (word.empty() || !ContainsCaseInsensitive(text, word)) continue;
+        auto it = store.find(word);
+        if (it == store.end()) {
+            it = store.emplace(word, HotwordUsage{}).first;
+            it->second.source = "manual";
+        }
+        ++it->second.negative_count;
+    }
+}
+
 HotwordUsageStore LoadHotwordUsage(const std::filesystem::path& path) {
     HotwordUsageStore store;
     std::ifstream f(path, std::ios::binary);
@@ -151,6 +196,10 @@ HotwordUsageStore LoadHotwordUsage(const std::filesystem::path& path) {
             cJSON_IsString(source) && source->valuestring != nullptr) {
             usage.source = source->valuestring;
         }
+        if (auto* negative = cJSON_GetObjectItemCaseSensitive(item, "negative_count");
+            cJSON_IsNumber(negative)) {
+            usage.negative_count = negative->valueint;
+        }
         store[word->valuestring] = std::move(usage);
     }
     return store;
@@ -164,6 +213,7 @@ void SaveHotwordUsage(const std::filesystem::path& path, const HotwordUsageStore
         auto* item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "word", word.c_str());
         cJSON_AddNumberToObject(item, "count", usage.count);
+        cJSON_AddNumberToObject(item, "negative_count", usage.negative_count);
         cJSON_AddNumberToObject(item, "last_used_ts", static_cast<double>(usage.last_used_ts));
         cJSON_AddStringToObject(item, "source", usage.source.c_str());
         cJSON_AddItemToArray(root, item);

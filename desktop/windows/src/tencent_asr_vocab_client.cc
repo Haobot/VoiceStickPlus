@@ -1,6 +1,10 @@
 #include "tencent_asr_vocab_client.h"
 
+#include "hotword_selector.h"  // ValidateHotword（B14 统一口径）
+
 #include "cJSON.h"
+
+#include "log.h"
 
 #include <Windows.h>
 #include <Winhttp.h>
@@ -274,12 +278,15 @@ std::string TencentAsrVocabClient::CallApi(const std::string& action,
         return {};
     }
 
-    auto payload_wide = Utf16FromUtf8(payload);
+    // WinHttpSendRequest 的 body 长度单位是字节，body 必须与 Content-Type 声明的
+    // UTF-8 一致。旧实现传 UTF-16 元素数并喂 wchar 缓冲：只发出应有字节数的一半，
+    // 且内容不是 UTF-8（服务端判非法 JSON），业务错误又被静默当成功。
     if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            const_cast<wchar_t*>(payload_wide.c_str()),
-                            static_cast<DWORD>(payload_wide.size()),
-                            static_cast<DWORD>(payload_wide.size()), 0) ||
+                            const_cast<char*>(payload.data()),
+                            static_cast<DWORD>(payload.size()),
+                            static_cast<DWORD>(payload.size()), 0) ||
         !WinHttpReceiveResponse(request, nullptr)) {
+        LogApp("tencent vocab HTTP request failed err=" + std::to_string(GetLastError()));
         WinHttpCloseHandle(request);
         WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
@@ -384,16 +391,9 @@ std::string TencentAsrVocabClient::FindVocabId(const std::string& name) {
 }
 
 bool TencentAsrVocabClient::IsValidHotwordChars(std::string_view word) {
-    if (word.empty()) return false;
-    for (const unsigned char c : word) {
-        if (c >= 0x80) continue;  // UTF-8 多字节序列（CJK 等）放行
-        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') || c == '_' || c == '-') {
-            continue;
-        }
-        return false;  // '.'、空格及其余 ASCII 标点腾讯词表 API 会拒绝
-    }
-    return true;
+    // B14：委托腾讯专用口径（平台权威 + API 字符集收窄）——原实现无长度/CJK 上限且对
+    // 孤立续字节放行。与其余三处的分歧属于**有意的 API 适配差异**，必须在同步处记录。
+    return ValidateHotwordForTencent(word) == HotwordRejectReason::kNone;
 }
 
 std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& hotwords) {
@@ -401,8 +401,10 @@ std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& 
 
     if (config_.tencent_secret_id.empty() || config_.tencent_secret_key.empty()) return {};
 
-    // 构建 HotWordEntry 列表（权重默认 10）
+    // 构建 HotWordEntry 列表（权重默认 10）；被过滤的词计数上报，避免「加进去但
+    // 永不生效」却零线索。
     std::vector<HotWordEntry> entries;
+    std::vector<std::string> rejected;
     for (const auto& word : hotwords) {
         auto trimmed = word;
         // 去除首尾空格
@@ -411,11 +413,22 @@ std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& 
         auto end = trimmed.find_last_not_of(" \t\n\r");
         trimmed = trimmed.substr(start, end - start + 1);
         if (trimmed.empty()) continue;
-        // 限制词长
-        if (trimmed.size() > 30) continue;
-        // 过滤腾讯词表 API 不接受的字符（如 '.'），避免一个非法词毁掉整表同步
-        if (!IsValidHotwordChars(trimmed)) continue;
+        // B14：过统一的腾讯口径（平台权威 + API 字符集收窄）；被拒必须**带词记录**——
+        // 否则热词进了配置却在这里静默失效，正是「加进去但不生效」的现场。
+        if (ValidateHotwordForTencent(trimmed) != HotwordRejectReason::kNone) {
+            rejected.push_back(trimmed);
+            continue;
+        }
         entries.push_back({trimmed, 10});
+    }
+    if (!rejected.empty()) {
+        std::string detail;
+        for (std::size_t i = 0; i < rejected.size() && i < 5; ++i) {
+            if (i != 0) detail += ", ";
+            detail += rejected[i];
+        }
+        LogApp("tencent vocab sync: " + std::to_string(rejected.size()) +
+               " hotword(s) rejected by Tencent charset/length rules: " + detail);
     }
     if (entries.empty()) return {};
 
@@ -431,25 +444,36 @@ std::string TencentAsrVocabClient::SyncHotwords(const std::vector<std::string>& 
         response = CreateVocab(kDefaultVocabName, entries, "Voice Stick 自动管理热词表");
     }
 
-    // 解析响应获取 VocabId
-    if (!response.empty()) {
-        auto root = cJSON_ParseWithLength(response.data(), response.size());
-        if (root) {
-            const auto* resp = cJSON_GetObjectItemCaseSensitive(root, "Response");
-            if (resp) {
-                const auto* id_item = cJSON_GetObjectItemCaseSensitive(resp, "VocabId");
-                if (id_item && cJSON_IsString(id_item)) {
-                    vocab_id = id_item->valuestring;
-                }
-                // UpdateAsrVocab 不返回 VocabId，使用请求中的 vocab_id
-                const auto* req_id = cJSON_GetObjectItemCaseSensitive(resp, "RequestId");
-                if (req_id && cJSON_IsString(req_id) && !vocab_id.empty()) {
-                    // 更新成功，VocabId 不变
-                }
-            }
-            cJSON_Delete(root);
-        }
+    // 解析响应获取 VocabId；腾讯业务错误（Response.Error）必须显式失败：鉴权失败/
+    // 限流/参数非法绝不能当成「同步成功」继续用旧表。
+    if (response.empty()) {
+        LogApp("tencent vocab sync: empty response");
+        return {};
     }
+    auto root = cJSON_ParseWithLength(response.data(), response.size());
+    if (root == nullptr) {
+        LogApp("tencent vocab sync: invalid JSON response: " + response.substr(0, 256));
+        return {};
+    }
+    const auto* resp = cJSON_GetObjectItemCaseSensitive(root, "Response");
+    if (resp == nullptr) {
+        LogApp("tencent vocab sync: response has no Response object: " +
+               response.substr(0, 256));
+        cJSON_Delete(root);
+        return {};
+    }
+    const auto* err = cJSON_GetObjectItemCaseSensitive(resp, "Error");
+    if (err != nullptr && !cJSON_IsNull(err)) {
+        LogApp("tencent vocab sync failed: " + response.substr(0, 256));
+        cJSON_Delete(root);
+        return {};
+    }
+    const auto* id_item = cJSON_GetObjectItemCaseSensitive(resp, "VocabId");
+    if (id_item && cJSON_IsString(id_item)) {
+        vocab_id = id_item->valuestring;
+    }
+    // UpdateAsrVocab 不返回 VocabId，使用请求中的 vocab_id（保持不变）。
+    cJSON_Delete(root);
 
     return vocab_id;
 }

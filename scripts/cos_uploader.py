@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""腾讯 COS 上传共用模块（GitHub Actions 内使用）。
+
+凭据从环境变量 TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY 读取
+（GitHub Secrets 注入，不入仓库）；qcloud_cos SDK 延迟导入，纯逻辑
+（cache_control_for / require_credentials）可在未装 SDK 的环境单测。
+"""
+import mimetypes
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def require_credentials():
+    # CI 注入 TENCENT_COS_*；本机发布常见命名是 TENCENTCLOUD_*，作回退兼容。
+    secret_id = (os.environ.get("TENCENT_COS_SECRET_ID")
+                 or os.environ.get("TENCENTCLOUD_SECRET_ID") or "").strip()
+    secret_key = (os.environ.get("TENCENT_COS_SECRET_KEY")
+                  or os.environ.get("TENCENTCLOUD_SECRET_KEY") or "").strip()
+    if not secret_id or not secret_key:
+        sys.exit("Error: TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY "
+                 "(或 TENCENTCLOUD_SECRET_ID / TENCENTCLOUD_SECRET_KEY) "
+                 "environment variables are required.")
+    return secret_id, secret_key
+
+
+def cache_control_for(key: str) -> str:
+    """更新元数据类文件（appcast/manifest/页面数据）禁缓存；版本化二进制长缓存。"""
+    if key.endswith((".html", ".json", ".xml")):
+        return "no-cache"
+    return "max-age=31536000"
+
+
+def content_type_for(key: str) -> str:
+    """按扩展名猜 MIME；qcloud SDK 不做任何猜测，不传即落 octet-stream
+    （浏览器拒渲染 HTML/模块 JS → 白屏）。.js 固定 text/javascript 供
+    <script type="module"> 的严格 MIME 检查。"""
+    if key.endswith(".js"):
+        return "text/javascript"
+    return mimetypes.guess_type(key)[0] or "application/octet-stream"
+
+
+def collect_dir(local_dir: str, key_prefix: str):
+    """目录递归映射为 (local_path, cos_key) 列表；空前缀表示同步到 bucket 根。"""
+    root = Path(local_dir)
+    prefix = key_prefix.strip("/")
+    return [
+        (str(path), path.relative_to(root).as_posix() if not prefix
+         else f"{prefix}/{path.relative_to(root).as_posix()}")
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    ]
+
+
+def upload_files(bucket: str, region: str, files) -> None:
+    """逐个上传 (local_path, cos_key)；任一失败抛异常终止（不静默跳过）。"""
+    from qcloud_cos import CosConfig, CosS3Client
+
+    secret_id, secret_key = require_credentials()
+    client = CosS3Client(CosConfig(Region=region, SecretId=secret_id, SecretKey=secret_key))
+    for local, key in files:
+        client.upload_file(
+            Bucket=bucket,
+            Key=key,
+            LocalFilePath=local,
+            ContentType=content_type_for(key),
+            CacheControl=cache_control_for(key),
+            EnableMD5=False,
+        )
+        print(f"uploaded {key}")

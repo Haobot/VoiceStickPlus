@@ -1,0 +1,321 @@
+{
+  "latency_p50_ms" : 706,
+  "threads" : 4,
+  "latency_p95_ms" : 1199,
+  "parse_fail" : 0,
+  "n" : 31,
+  "engine" : "embedded-llama.cpp-b10868",
+  "pipeline" : "det_v5+editform",
+  "cases" : [
+    {
+      "reference" : "今天天气不错。",
+      "latency_ms" : 2010,
+      "parse_fail" : false,
+      "id" : "short_01",
+      "raw_asr" : "今天天气不错。",
+      "base" : "今天天气不错。",
+      "model_raw" : "无。",
+      "refined" : "今天天气不错。"
+    },
+    {
+      "latency_ms" : 821,
+      "parse_fail" : false,
+      "id" : "short_02",
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython→python\n浏览器→浏览器",
+      "refined" : "帮我打开浏览器。",
+      "raw_asr" : "帮我打开浏览器。",
+      "reference" : "帮我打开浏览器。",
+      "base" : "帮我打开浏览器。"
+    },
+    {
+      "refined" : "现在几点了？",
+      "parse_fail" : false,
+      "latency_ms" : 109,
+      "raw_asr" : "现在几点了？",
+      "base" : "现在几点了？",
+      "id" : "short_03",
+      "model_raw" : "无。",
+      "reference" : "现在几点了？"
+    },
+    {
+      "raw_asr" : "请帮我把这段会议记录整理成要点，并发送给所有参会人员。",
+      "parse_fail" : false,
+      "reference" : "请帮我把这段会议记录整理成要点，并发送给所有参会人员。",
+      "latency_ms" : 177,
+      "model_raw" : "无",
+      "base" : "请帮我把这段会议记录整理成要点，并发送给所有参会人员。",
+      "refined" : "请帮我把这段会议记录整理成要点，并发送给所有参会人员。",
+      "id" : "long_01"
+    },
+    {
+      "refined" : "这个项目的目标是构建一个端到端的语音输入测试系统，覆盖软硬件全链路。",
+      "id" : "long_02",
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython→python",
+      "reference" : "这个项目的目标是构建一个端到端的语音输入测试系统，覆盖软硬件全链路。",
+      "parse_fail" : false,
+      "latency_ms" : 857,
+      "raw_asr" : "这个项目的目标是构建一个端到端的语音输入测试系统，覆盖软硬件全链路。",
+      "base" : "这个项目的目标是构建一个端到端的语音输入测试系统，覆盖软硬件全链路。"
+    },
+    {
+      "parse_fail" : false,
+      "id" : "num_01",
+      "raw_asr" : "我的手机号是13800138000。",
+      "base" : "我的手机号是13800138000。",
+      "latency_ms" : 181,
+      "reference" : "我的手机号是一三八零零一三八零零零。",
+      "model_raw" : "无。",
+      "refined" : "我的手机号是13800138000。"
+    },
+    {
+      "raw_asr" : "今天是2026年7月15日。",
+      "parse_fail" : false,
+      "latency_ms" : 1012,
+      "base" : "今天是2026年7月15日。",
+      "id" : "num_02",
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython→python\n2026年7月15日→无",
+      "refined" : "今天是2026年7月15日。",
+      "reference" : "今天是二零二六年七月十五日。"
+    },
+    {
+      "raw_asr" : "用python写一个hello world程序。",
+      "refined" : "用python写一个hello world程序。",
+      "latency_ms" : 136,
+      "base" : "用python写一个hello world程序。",
+      "id" : "mix_01",
+      "model_raw" : "无。",
+      "parse_fail" : false,
+      "reference" : "用 python 写一个 hello world 程序。"
+    },
+    {
+      "raw_asr" : "把CPU使用率报警阈值设为80%。",
+      "latency_ms" : 885,
+      "id" : "mix_02",
+      "base" : "把CPU使用率报警阈值设为80%。",
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\nCPU→CPU\npython→无",
+      "refined" : "把CPU使用率报警阈值设为80%。",
+      "reference" : "把 cpu 使用率报警阈值设为百分之八十。",
+      "parse_fail" : false
+    },
+    {
+      "parse_fail" : false,
+      "raw_asr" : "好的，没问题，马上处理。",
+      "reference" : "好的，没问题，马上处理。",
+      "base" : "好的，没问题，马上处理。",
+      "id" : "punct_01",
+      "refined" : "好的，没问题，马上处理。",
+      "latency_ms" : 833,
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython好的，没问题，马上处理。"
+    },
+    {
+      "id" : "command_01",
+      "latency_ms" : 135,
+      "model_raw" : "无。",
+      "reference" : "新建一个文件夹并命名为测试。",
+      "parse_fail" : false,
+      "base" : "新建一个文件夹，并命名为测试。",
+      "raw_asr" : "新建一个文件夹，并命名为测试。",
+      "refined" : "新建一个文件夹，并命名为测试。"
+    },
+    {
+      "reference" : "把这段文字翻译成英文。",
+      "latency_ms" : 121,
+      "parse_fail" : false,
+      "id" : "command_02",
+      "raw_asr" : "把这段文字翻译成英文。",
+      "base" : "把这段文字翻译成英文。",
+      "model_raw" : "无。",
+      "refined" : "把这段文字翻译成英文。"
+    },
+    {
+      "latency_ms" : 171,
+      "id" : "fast_01",
+      "raw_asr" : "语音识别系统需要在保证准确率的同时尽可能降低延迟。",
+      "base" : "语音识别系统需要在保证准确率的同时尽可能降低延迟。",
+      "refined" : "语音识别系统需要在保证准确率的同时尽可能降低延迟。",
+      "parse_fail" : false,
+      "model_raw" : "无。",
+      "reference" : "语音识别系统需要在保证准确率的同时尽可能降低延迟。"
+    },
+    {
+      "parse_fail" : false,
+      "raw_asr" : "明天上午10点的会议改到下午2点，请大家提前准备好材料。",
+      "latency_ms" : 1199,
+      "id" : "fast_02",
+      "refined" : "明天上午10点的会议改到下午2点，请大家提前准备好材料。",
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython→python\n明天上午10点的会议改到下午2点，请大家提前准备好材料。→无",
+      "reference" : "明天上午十点的会议改到下午两点，请大家提前准备好材料。",
+      "base" : "明天上午10点的会议改到下午2点，请大家提前准备好材料。"
+    },
+    {
+      "reference" : "这个功能的实现需要考虑网络不稳定情况下的重试机制和数据一致性。",
+      "raw_asr" : "这个功能的实现需要考虑网络不稳定情况下的重试机制和数据一致性。",
+      "base" : "这个功能的实现需要考虑网络不稳定情况下的重试机制和数据一致性。",
+      "model_raw" : "无。",
+      "latency_ms" : 206,
+      "id" : "fast_03",
+      "refined" : "这个功能的实现需要考虑网络不稳定情况下的重试机制和数据一致性。",
+      "parse_fail" : false
+    },
+    {
+      "latency_ms" : 134,
+      "model_raw" : "无。",
+      "id" : "slow_01",
+      "refined" : "请把这份文件打印3份。",
+      "reference" : "请把这份文件打印三份。",
+      "raw_asr" : "请把这份文件打印3份。",
+      "parse_fail" : false,
+      "base" : "请把这份文件打印3份。"
+    },
+    {
+      "base" : "下周三之前要完成代码审查。",
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython下周三之前要完成代码审查。→python下周三之前要完成代码审查。",
+      "raw_asr" : "下周三之前要完成代码审查。",
+      "id" : "slow_02",
+      "refined" : "下周三之前要完成代码审查。",
+      "latency_ms" : 1038,
+      "parse_fail" : false,
+      "reference" : "下周三之前要完成代码审查。"
+    },
+    {
+      "base" : "在嘈杂环境下雨，因识别的准确率会明显下降。",
+      "parse_fail" : false,
+      "reference" : "在嘈杂环境下语音识别的准确率会明显下降。",
+      "raw_asr" : "在嘈杂环境下雨，因识别的准确率会明显下降。",
+      "model_raw" : "无。",
+      "id" : "noise_01",
+      "refined" : "在嘈杂环境下雨，因识别的准确率会明显下降。",
+      "latency_ms" : 183
+    },
+    {
+      "latency_ms" : 184,
+      "parse_fail" : false,
+      "model_raw" : "无。",
+      "base" : "请帮我查一下明天从北京到上海的高铁票。",
+      "refined" : "请帮我查一下明天从北京到上海的高铁票。",
+      "id" : "noise_02",
+      "raw_asr" : "请帮我查一下明天从北京到上海的高铁票。",
+      "reference" : "请帮我查一下明天从北京到上海的高铁票。"
+    },
+    {
+      "parse_fail" : false,
+      "latency_ms" : 706,
+      "raw_asr" : "蓝牙连接不稳定，会导致音频数据丢失。",
+      "refined" : "蓝牙连接不稳定，会导致音频数据丢失。",
+      "id" : "noise_03",
+      "reference" : "蓝牙连接不稳定会导致音频数据丢失。",
+      "base" : "蓝牙连接不稳定，会导致音频数据丢失。",
+      "model_raw" : "ASR→ASR\npull request→GitHub\nBLE→蓝牙\nESP32→API\nWebSocket→WebSocket\npython蓝牙连接不稳定，会导致音频数据丢失。"
+    },
+    {
+      "id" : "english_01",
+      "refined" : "The quick brown fox jumps over the lazy dog.",
+      "parse_fail" : false,
+      "latency_ms" : 941,
+      "reference" : "The quick brown fox jumps over the lazy dog.",
+      "raw_asr" : "The quick brown fox jumps over the lazy dog.",
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npythonThe quick brown fox jumps over the lazy dog.→无",
+      "base" : "The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "id" : "english_02",
+      "model_raw" : "无。",
+      "refined" : "Please schedule a meeting with the engineering team tomorrow.",
+      "reference" : "Please schedule a meeting with the engineering team tomorrow.",
+      "latency_ms" : 157,
+      "raw_asr" : "Please schedule a meeting with the engineering team tomorrow.",
+      "parse_fail" : false,
+      "base" : "Please schedule a meeting with the engineering team tomorrow."
+    },
+    {
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython→python\nweb socket→WebSocket",
+      "raw_asr" : "这个API的SDK需要支持web socket长连接。",
+      "latency_ms" : 853,
+      "refined" : "这个API的SDK需要支持WebSocket长连接。",
+      "base" : "这个API的SDK需要支持web socket长连接。",
+      "reference" : "这个 API 的 SDK 需要支持 WebSocket 长连接。",
+      "parse_fail" : false,
+      "id" : "tech_01"
+    },
+    {
+      "parse_fail" : false,
+      "base" : "把A2的opus音频留峰装成Og格式再发送。",
+      "refined" : "把ASR的opus音频留峰装成Og格式再发送。",
+      "raw_asr" : "把A2的opus音频留峰装成Og格式再发送。",
+      "model_raw" : "A2→ASR",
+      "id" : "tech_02",
+      "reference" : "把 ASR 的 Opus 音频流封装成 Ogg 格式再发送。",
+      "latency_ms" : 247
+    },
+    {
+      "raw_asr" : "ESP32通过bl把音频数据发送到桌面端。",
+      "id" : "tech_03",
+      "reference" : "ESP32 通过 BLE 把音频数据发送到桌面端。",
+      "model_raw" : "bl→BLE",
+      "base" : "ESP32通过bl把音频数据发送到桌面端。",
+      "parse_fail" : false,
+      "refined" : "ESP32通过BLE把音频数据发送到桌面端。",
+      "latency_ms" : 190
+    },
+    {
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython在dek hubb上创建一个poll request，并请求代码审查。",
+      "latency_ms" : 1030,
+      "parse_fail" : false,
+      "id" : "tech_04",
+      "raw_asr" : "在dek hubb上创建一个poll request，并请求代码审查。",
+      "base" : "在dek hubb上创建一个poll request，并请求代码审查。",
+      "refined" : "在dek hubb上创建一个poll request，并请求代码审查。",
+      "reference" : "在 GitHub 上创建一个 pull request 并请求代码审查。"
+    },
+    {
+      "refined" : "我们计划在下个季度完成语音识别系统的全面升级，包括引入新的声学模型，优化音频前处理流水线，增加对多方言的支持，并且要把端到端的识别延迟降低30%以上。",
+      "parse_fail" : false,
+      "reference" : "我们计划在下个季度完成语音识别系统的全面升级，包括引入新的声学模型、优化音频前处理流水线、增加对多方言的支持，并且要把端到端的识别延迟降低百分之三十以上。",
+      "latency_ms" : 1038,
+      "base" : "我们计划在下个季度完成语音识别系统的全面升级，包括引入新的声学模型，优化音频前处理流水线，增加对多方言的支持，并且要把端到端的识别延迟降低30%以上。",
+      "id" : "verylong_01",
+      "raw_asr" : "我们计划在下个季度完成语音识别系统的全面升级，包括引入新的声学模型，优化音频前处理流水线，增加对多方言的支持，并且要把端到端的识别延迟降低30%以上。",
+      "model_raw" : "ASR→ASR\npull request→GitHub\nBLE→蓝牙\nESP32→无\nWebSocket→无\nAPI→无\nSDK→无\nCPU→无\npython→无"
+    },
+    {
+      "raw_asr" : "语音输入设备的核心价值在于让用户能够在双手被占用的场景下高效的完成文字录入。因此，我们必须在准确率、响应速度和稳定性三个维度上同时达到可用的水平。任何一个维度的短板都会严重影响用户体验。",
+      "refined" : "语音输入设备的核心价值在于让用户能够在双手被占用的场景下高效的完成文字录入。因此，我们必须在准确率、响应速度和稳定性三个维度上同时达到可用的水平。任何一个维度的短板都会严重影响用户体验。",
+      "base" : "语音输入设备的核心价值在于让用户能够在双手被占用的场景下高效的完成文字录入。因此，我们必须在准确率、响应速度和稳定性三个维度上同时达到可用的水平。任何一个维度的短板都会严重影响用户体验。",
+      "latency_ms" : 401,
+      "parse_fail" : false,
+      "model_raw" : "无。",
+      "reference" : "语音输入设备的核心价值在于让用户能够在双手被占用的场景下高效地完成文字录入，因此我们必须在准确率、响应速度和稳定性三个维度上同时达到可用的水平，任何一个维度的短板都会严重影响用户体验。",
+      "id" : "verylong_02"
+    },
+    {
+      "raw_asr" : "经过3个月的测试，我们发现设备在安静办公室环境下的识别准确率可以达到95%以上。但是在地铁、商场等嘈杂环境中，准确率会下降到80%左右。这说明我们的降噪算法还有很大的改进空间。",
+      "model_raw" : "ASR→ASR\npull request→GitHub\nBLE→蓝牙\nESP32→无\nWebSocket→无\nAPI→无\nSDK→无\npython经过3个月的测试，我们发现设备在安静办公室环境下的识别准确率可以达到95%以上。但是在地铁、商场等嘈杂环境中，准确率会下降到80%左右。这说明我们的降噪算法还有很大的改进空间。",
+      "id" : "verylong_03",
+      "base" : "经过3个月的测试，我们发现设备在安静办公室环境下的识别准确率可以达到95%以上。但是在地铁、商场等嘈杂环境中，准确率会下降到80%左右。这说明我们的降噪算法还有很大的改进空间。",
+      "refined" : "经过3个月的测试，我们发现设备在安静办公室环境下的识别准确率可以达到95%以上。但是在地铁、商场等嘈杂环境中，准确率会下降到80%左右。这说明我们的降噪算法还有很大的改进空间。",
+      "latency_ms" : 1936,
+      "parse_fail" : false,
+      "reference" : "经过三个月的测试我们发现，设备在安静办公室环境下的识别准确率可以达到百分之九十五以上，但是在地铁、商场等嘈杂环境中准确率会下降到百分之八十左右，这说明我们的降噪算法还有很大的改进空间。"
+    },
+    {
+      "id" : "voice_01",
+      "refined" : "男生音色下的识别效果也需要单独验证。",
+      "latency_ms" : 1023,
+      "raw_asr" : "男生音色下的识别效果也需要单独验证。",
+      "base" : "男生音色下的识别效果也需要单独验证。",
+      "reference" : "男声音色下的识别效果也需要单独验证。",
+      "parse_fail" : false,
+      "model_raw" : "ASR→ASR\npull request→pull request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\nCPU→CPU\npython男生音色→python男生音色（无）"
+    },
+    {
+      "reference" : "不同说话人的发音习惯会影响识别结果。",
+      "latency_ms" : 1080,
+      "raw_asr" : "不同说话人的发音习惯会影响识别结果。",
+      "base" : "不同说话人的发音习惯会影响识别结果。",
+      "parse_fail" : false,
+      "model_raw" : "ASR→ASR\npull request→pull_request\nBLE→BLE\nESP32→ESP32\nWebSocket→WebSocket\nAPI→API\nSDK→SDK\npython不同说话人的发音习惯会影响识别结果→python不同说话人的发音习惯会影响识别结果",
+      "refined" : "不同说话人的发音习惯会影响识别结果。",
+      "id" : "voice_02"
+    }
+  ]
+}

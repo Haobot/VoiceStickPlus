@@ -10,7 +10,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 Voice Stick 将 M5Stack StickS3（ESP32-S3）改造为桌面端蓝牙按键语音输入设备。设备采集按键、音频与 IMU 经 BLE 上报；**桌面端是状态唯一可信源**，负责交互状态机、ASR、文本显示与注入；网站负责落地页、浏览器端 USB 固件烧录（esptool-js）和 Sparkle/WinSparkle 更新源。
 
-输入设备两类并存：自研 StickS3（设备 ID `VS-XXXX`，配固件）与小米蓝牙遥控器 2 Pro（`RC-XXXX`，仅 Windows 端，**固件零改动**，ATVV 接入全部在桌面端）。
+输入设备两类并存：自研 StickS3（设备 ID `VS-XXXX`，配固件）与小米蓝牙遥控器 2 Pro（`RC-XXXX`，Windows + macOS 双端，**固件零改动**，ATVV 接入全部在桌面端）。
 
 核心音频数据流：
 
@@ -34,12 +34,14 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 
 固件关键外部依赖：`espressif/button` ^4.1.6、`espressif/esp_codec_dev` ^1.3.4 + `78/esp-opus` ^1.0.5、`lvgl/lvgl` 9.2.0，由 ESP-IDF component manager 经各组件 `idf_component.yml` 管理。
 
+macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `desktop/windows/third_party/opus` 同源拷贝），供小米遥控器 ATVV 链路把 PCM 归一化为标准 Opus 帧。RNNoise 人声增强（`audio_noise_suppression`，默认关）双端 vendored 同源：macOS `Sources/CRnnoise`、Windows `desktop/windows/third_party/rnnoise`（xiph/rnnoise master 2026-10-14，BSD-2，仅推理最小集，改动须双侧同步）。
+
 ## 构建与测试速查
 
 | 模块 | 最小验证 | 测试 |
 |---|---|---|
-| 固件 | `cd firmware && idf.py build`（Windows 可用 `python scripts/idf_cli.py -c`） | 无单测，编译通过 + 真机验证 |
-| macOS | `cd desktop/macos && swift build` | 无测试目标，编译通过 + 手动测试 |
+| 固件 | `cd firmware && idf.py build`（Windows 可用 `python scripts/idf_cli.py -c`） | host 单测：`python3 firmware/components/gateway/test/run_tests.py`（gateway+voice_ble 纯逻辑 5 目标，CI `host-tests` job）；整机=编译通过 + 真机验证 |
+| macOS | `cd desktop/macos && swift build` | `swift run VoiceStickTests`（executable 测试 runner，非 XCTest——本机 CLT-only 无 Xcode）+ 手动测试 |
 | Windows | 根目录 `build_win.bat` | `ctest --test-dir desktop\windows\build-x64 --output-on-failure` |
 | 网站 | `cd website && npm run build` | 无自动化测试 |
 
@@ -71,7 +73,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 - API 密钥等凭据只存在于本机 `config.toml`，不进仓库；示例配置用占位符。
 - 内置凭据（`VOICESTICK_BUILTIN_*`）与 MSI 打包链路生成的含 key 产物均 gitignored，不得提交。
 - 集成测试与 E2E 坚持「不伪造结果」：无凭据/无设备时 SKIP 或报错，不 mock 真实链路。
-- 固件 OTA 与桌面端自动更新走官方渠道（GitHub Release + 阿里云 OSS + appcast），不绕过签名校验。
+- 固件 OTA 与桌面端自动更新走官方渠道（国内 COS 主源 dl.davenger.cloud + GitHub Release 回退 + appcast），不绕过签名校验。
 
 细节见 `Doc/Agent/release-and-security.md`；发布权威流程见 `Doc/Ref/release.md`。
 
@@ -83,12 +85,36 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 - Windows 构建目录统一用 `desktop/windows/build-x64`；旧 `desktop/windows/build` 可能混入错误 VS/SDK 缓存。
 - 搜索仓库时排除 `website/node_modules/` 和 `firmware/build/`。
 - 同步规则：改网站 UI 文案同步 `website/src/i18n/zh-CN.json` + `en-US.json`；改 `README.md` 同步 `README.zh-CN.md`；改 `VERSION` 同步 `firmware/version.txt`；改协议同步 `Doc/Ref/protocol.md` 与全部实现端。
-- `Doc/` 子目录语义：`Ref/`（协议/配置/流程等事实参考）、`Plan/`（设计方案）、`Guide/`（第三方服务接入指南）、`Expe/`（经验教训）、`Agent/`（面向 AI 助手的工作知识，即本 Hub 的扩展文档）。根目录 `docs/superpowers/`（小写）是历史产物，不再维护，新设计方案放 `Doc/Plan/`。
-- `build_native.bat` / `do_build.bat` / `desktop\windows\build.bat` 含本机绝对路径或固定版本号，复用前先检查内容；根目录 `test.bat` 是占位脚本；根目录散落的 `*.log`、`%BUILD_LOG%` 等是构建残留日志，不是源码。
+- `Doc/` 子目录语义：`Ref/`（协议/配置/流程等事实参考）、`Plan/`（设计方案）、`Guide/`（第三方服务接入指南）、`Expe/`（经验教训）、`Agent/`（面向 AI 助手的工作知识，即本 Hub 的扩展文档）。历史根目录 `docs/superpowers/` 已于 r142 移除（历史见 git），新设计方案一律放 `Doc/Plan/`。
+- 根目录 .bat 仅存 `build_win.bat`（文档构建入口）与 `do_build.bat`（r142 清理：其余 7 个历史/残留脚本已删除，见 git 历史；`do_build` 与 `desktop\windows\build.bat` 含本机绝对路径或固定版本号，复用前先检查内容）；根目录散落的 `*.log`、`%BUILD_LOG%` 等是构建残留日志，不是源码。
 - Windows 构建若报 `C1083: winrt/base.h` 找不到：`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 生成投影头到 `desktop/windows/generated_winrt/`（gitignored）并 prepend 到 `INCLUDE`；手动 vcvars64 构建时须同样加入。
+- 本机（macOS）改完 Windows core 无法跑 `build_win.bat` 时：`desktop/windows` 里**无 Win32 依赖的纯逻辑 .cc**（如 `pcm_postprocessor.cc`/`ima_adpcm_decoder.cc`）可用 `clang++ -std=c++20 -fsyntax-only` 语法检查 + 本地链接小 main 与 Python 镜像 golden 对拍做预验证；`xiaomi_atvv_session.h` 嵌套 `Options = {}` 默认实参与 `localtime_s` 是 clang/MSVC 预存差异，勿误判为自己改坏。方案的数值测试期望值**先用算法常量对算一遍**（先例：-40dBFS 输入经 MAX_GAIN=+20dB 只能到 ≈-20dBFS，方案写「拉起至 -6dBFS」系笔误）；DSP 链「分帧流式 == 整段一次」断言必红（平滑按 process 调用粒度作用），正确姿势是 reset 后流式 vs 全新实例流式。详见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`。
+- macOS 端拉取 SwiftPM 依赖（Sparkle/TOMLKit 走 GitHub）需走系统代理（github 直连不通）：命令前缀 `https_proxy=http://127.0.0.1:5782`（端口以 `scutil --proxy` 为准）。
+- 本机 `~/esp/esp-idf` 已切到 **v6.1 主线**（esp32s31 项目用）；本项目固件仍须用 **ESP-IDF v5.5.1**（`/Users/hwp/esp/v5.5.1/esp-idf`）：构建 `source /Users/hwp/esp/v5.5.1/esp-idf/export.sh && idf.py build`，烧录 `python3 scripts/idf_cli.py -u --idf-path /Users/hwp/esp/v5.5.1/esp-idf`——误 source `~/esp/esp-idf/export.sh` 会拉到 v6.1 构建失败。
+- 本机（CLT-only，macOS 27 SDK）构建 macOS 桌面端必须加 `VOICESTICK_ARCHS=arm64`（Swift 兼容静态库已不含 x86_64 slice，x86_64 链接必失败；脚本默认仍 universal，发布机不受影响）；开发包签名已内置自签证书固定 TCC 身份（CN `"VoiceStick Local Code Signing"`），蓝牙/输入监控/辅助功能授权一次跨编译保持，证书排障与构建链三坑见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节与 `Doc/Expe/macos-clt27-build-chain-traps-2026-09-22.md`。
+- macOS 发布打包：`SPARKLE_PRIVATE_ED_KEY="$(cat ~/.voicestick-sign/sparkle/ed-private-key)" VOICESTICK_ARCHS=arm64 scripts/build-macos.sh --release`（须带代理 env：脚本用独立 scratch path 会重新拉 SwiftPM 依赖）→ `scripts/make-dmg.sh`。内测包须见日志 `Injecting built-in credentials into VoiceStickApp`（源=本机 config.toml，构建后 BuiltinSecrets.swift 自动恢复占位；`VOICESTICK_EMBED_BUILTIN_KEYS=0` 为公开包）。Sparkle EdDSA 密钥对（2026-10-02 起现行）与自签代码证书都只在 `~/.voicestick-sign/`；证书放在自建钥匙串 `~/Library/Keychains/voicestick-sign.keychain-db`（两脚本自动发现+自动解锁，密码文件 `~/.voicestick-sign/keychain-password`；见「voicestick-sign 钥匙串弹窗≠开机密码」条）；换机器须重做，公钥在 Info.plist `SUPublicEDKey`。
+- 「"xxx"想使用"voicestick-sign"钥匙串」弹窗＝自建签名钥匙串的**解锁窗**（睡眠/重启后回锁定态触发），密码是 `~/.voicestick-sign/keychain-password` 的内容，**不是**开机/Apple ID 密码；打包脚本已内置自动解锁，见到它说明绕过脚本裸调 security/codesign 了。
+- Mac 端无人值守发布轨道 = `.github/workflows/publish-mac.yml`（Mac 无 gh/COS 凭据、CI 跨境上传大文件必死，故 Mac 仅 SSH push `ci/publish-stage-v*`（携带 dist 资产）与 `ci/publish-finalize-v*`（标记文件），CI 代理建 Release/传资产并签发 COS 预签名 PUT/DELETE URL 提交回分支，Mac 国内直传后删分支）。固件件复用 release.yml tag 门禁的 artifact。
 - MiniEncoderC 编码器是 I2C 外设，不能作为深睡唤醒源；主键（GPIO11）是唯一唤醒键。Grove 口 5V 不启用，编码器由顶部 Hat 排针供电。
+- 固件里给 FreeRTOS 对象（StreamBuffer/Queue 等）配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 硬编码限死在内部 RAM（`portFREERTOS_HEAP_CAPS`），`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它。详见 `Doc/Expe/claude-memory-distilled.md` §1.6。
+- 小米网关「语音键正常、其他按键没反应」先查 HID 侧：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道会互相掩盖；BLE HID 直通还要求目标机与设备有 **OS 级配对**（Windows 设置里手动配对），详见 `Doc/Expe/claude-memory-distilled.md` §1.10。
+- 设备重启后 app 显示已连接却语音静默失效 = 订阅「假成功」（`state subscribe status=Success` 后长时间零入站 notify，设备串口 `send_state_json gated: state_sub=0`）。**真根因是 Windows 缓存 CCCD 值：要写的值与缓存相同就不发空口包**（Success 只花十几毫秒即为判据），修复=订阅前先写 `None` 再写 `Notify`（缓存击穿）。判定连接健康必须取对端反向证据；**BLE 自愈/恢复路径绝不可 unpair** —— 会删 `Enum\BTHLE` 节点弄死 HOGP 按键直通，且 `PairAsync` 在设备已被 app 连上时必失败 status=19。细节见 `Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md` 与 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md`。
+- **广播报告 ≠ 设备此刻在广播**：Windows 广告 watcher 会送**延迟/复用**的报告（尤其扫描开着时），曾让「已配对设备广播 ⇒ 旧链路已死」的陈旧会话守卫误杀**正在 OTA 的活会话**（网关模式 OTA 每次 +30s / 16% 断链的根因）。**拆会话前先确认它真死了**：最近 1s 内有入站数据、或有固件升级在跑 ⇒ 绝不拆（真重启的设备 1s 内发不出数据，原僵尸恢复路径不受影响）。见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md` §五。
+- **网关模式设备多连接（OS-HID + app），voice_ble 已按 conn_handle 记账入站连接表（A4 深修，2026-10-08）**：断开只清本链路（重连后旧 handle 的 stale 断连不再清掉新连接的订阅态）、状态突发/OTA/间隔/功耗日志只绑应用链路（state/audio 订阅者）、peer/connection 回调仅在入站归零时发 false；`s_connected`/`current_peer` 仍按「有没有链路」的单值语义供消费方使用（`current_peer` 首连置位/归零清除），**显示层三级兜底保留**；广播仍维持「有任一入站即停播」——广播放开已于 r141 拍板维持现状（backlog A4b 已闭）。见 `Doc/Expe/gateway-p1-ota-session-2026-09-20.md`。
+- **「订阅成功但对端收不到帧」有两个根因家族**：设备侧有 `state json … exceeds notify budget (att_mtu=23)` ⇒ **首帧撞 MTU 未协商被截断**（初始状态帧串已改为等 `BLE_GAP_EVENT_MTU` 再推，commit `cc82fb18`）；没有这条而 CCCD 写只花十几毫秒 ⇒ **Windows CCCD 缓存没发空口包**。两者桌面端都表现为 `state subscribe timeout`/僵尸判定。**新增 `state_tx` 帧先按 MTU 23 的 16B 预算算一遍**。详见 `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md` 与 distilled §3.15。
+- **BLE OTA `stalled` 且 `sent` 恒等于窗口值** ⇒ app 在途窗口与固件进度回传间隔互等死锁（v2.4.0 app 的 24KB 窗口对 v2.3.8 固件的 32KB 间隔曾必死锁），不是无线问题；随机值才是链路抖动。app×固件流控参数是跨版本契约，改任一侧要在最旧服役固件上真机过一遍 OTA。详见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
+- **E2E 别指望第三方 BLE central 驱动设备**：app 退出后 Windows 会用系统级 HOGP 配对自动连走设备并停止广播，`bleak`/`nRF Connect` 既扫不到也连不上；自动化一律走 app（如 `VoiceStick.exe --gateway-target self|clear`）。**测试也绝不能解除系统配对**（会弄死 HOGP 按键直通）。
 - VoiceStickFlash 改动除构建/CTest 外，用 `scripts\prepare_flash_payload.ps1` 冒烟 payload；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。
 - `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证，含音频回归 `run_audio_regression.py`：语料合成回归闭环，支持 `--watch` 监听与 `--install-hook` commit 触发）。
+- macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须先判 `peripheral.state`——对断开外设空发 discoverServices 无任何回调（静默卡死），详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
+- **遥控器（网关模式）音频"变快/发闷"= 三个独立缺陷叠加**（2026-10-16 修完）：① I2S DMA 环（30ms）小于一次读请求（40ms）⇒ 零余量，Stick 麦克风链路丢样 13%~50%（修：环 80ms + audio_task 优先级 7）；② 遥控器自身采集均匀压缩 ~9%（基频 108.1 vs Stick 98.8Hz、帧数比 0.909 两条互证）⇒ 在 Stick 侧做时间基修正（自适应伸缩比）；③ 修正的插值**必须用三次（Catmull-Rom）**，线性插值 4kHz 就 -3dB（听感发闷）。判据：设备串口 `source=`（0=Stick 麦/1=遥控器中继，**app 日志与文件名都区分不了**）、`frame=`（应 =40000us）、`stretch=`。详见 `Doc/Plan/xiaomi-gateway-audio-timebase-and-dma.md` 与 `Doc/Expe/remote-gateway-audio-speed-timbre-2026-10-16.md`。
+- 语音功能反馈「准确率不好/没效果」先分层再改代码：用 DebugAudio 同字节回放腾讯实时 ASR 逐轮还原识别文本（与日志 text_len 对账校准）；`Audio stream summary` 帧比例恒 0.5~0.8＝设备端尾帧丢弃（音频传输层问题，勿改解析器/匹配）。本地小模型兜底一律候选约束式（模型只在候选枚举内选+代码复验+失败回退旧行为），且换任务形态必须重跑 `scripts/local_align_bench` 选型（模型结论不可跨任务搬用）。详见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md` 与 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md`。
+- macOS 内嵌 llama.cpp（本地 LLM 精修/对齐）：运行时 dylib 由 `scripts/fetch-llama-cpp.sh` 编译合成（pin b10868 与 Windows 同步，build-macos.sh 首步自动跑；无 dylib 也能构建，功能如实降级）；LLM GGUF 档位 pin **Ollama registry blob**（评测原件，非 Qwen 官方量化——同名量化行为有实质差异，见 Doc/Test/local-fullstack-eval §9）；模型设置/下载入口在设置「服务提供方」本地虚项。
+- macOS AX 选区/光标写入（kAXSelectedTextRange 等）在 Chromium 系目标（Electron/浏览器）经 renderer **异步生效**：写后立即读回必拿旧值，验证式注入（targeted 编辑类）必须小步轮询确认；注入/AX 类功能验收必须覆盖一个 Electron/浏览器文本目标（原生 TextEdit 通过≠Chromium 可用）。判据：`voice_targeted action=...` 后零日志＝执行环节静默失败。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
+- macOS 端排障日志在 `~/Library/Application Support/VoiceStick/VoiceStickApp.log`（统一日志对 NSLog 脱敏成 `<private>` 读不到内容；文件由 AppFileLog 进程入口 dup2 stderr 生成、8MB 轮转）。**CLI 直接启动 app 会因 TCC 归因失效静默失去蓝牙**（判据：进程日志零 CoreBluetooth 活动），测试一律 `open` 启动；语音延迟判据与根因链见 `Doc/Expe/voice-input-latency-root-cause-chain-2026-10-12.md`。
+- 仅固件轮发布后同步静态网页三件套：先补 MSI 上 Release（appcast 依赖）→ `gh workflow run deploy-website.yml --ref feat/stick-gateway` 刷 Pages → COS 整站必须在 PowerShell 跑 `npm run build -- --base=/` 后整站重传，并显式删 `firmware/latest/` 旧版本 bin（默认 base=/VoiceStickPlus/ 误传 COS 即全站白屏；版本号构建时内联进 JS，只更新数据文件不重建无效）；验证引用必须 grep 全路径模式 `[^"']*assets/`。详见 `Doc/Expe/cos-website-fullsite-sync-traps-2026-09-27.md`。
+
+- 协议演进纪律：改 `Doc/Ref/protocol.md` 控制帧示例（Control Event 的 JSON）后必须重生成 `Doc/Ref/control-frame-schema.json`（r128 起 release_guard 第 12 检查 control-frame-schema 强制 schema 与 doc 双向对拍：事件集/键型/必填任一漂移即红）；协议事件名三端存在性由第 11 检查 protocol-events 覆盖（State/Control 切向 + 分端豁免表——新增事件名须在三端或豁免表落字面量）。
 
 ## 文档索引
 
@@ -104,6 +130,7 @@ ASR 路径不把 Opus 解码回 PCM；微信输入法模式是例外（解码 PC
 | 发布流程与安全细节 | `Doc/Agent/release-and-security.md`；权威流程 `Doc/Ref/release.md` |
 | BLE 协议与帧格式（含小米 ATVV 档案） | `Doc/Ref/protocol.md` |
 | 桌面端配置字段 | `Doc/Ref/desktop-config.md` |
+| 腾讯 COS 分发渠道约定（桶/域名/布局/防盗链/模型清单） | `Doc/Ref/cos-distribution.md` |
 | E2E 真机验证工具链 | `Doc/Ref/e2e-test-toolchain.md` |
 | 经验教训记忆（排查问题前先查） | `Doc/Expe/claude-memory-distilled.md`（寄存器值/阈值/行号为记录时点结论，引用前以当前源码为准） |
-| 项目 Skills（`.agents/skills/`，场景命中自动加载） | `sticks3-flash-ota`（固件烧录/OTA）、`build-windows`、`build-firmware`、`usb-jtag-flash-log`（串口日志采集）、`work-summary-retro`（工作总结/经验沉淀/教训反思的文档管理）；新增/修改 Skill 后需重启会话刷新 |
+| 项目 Skills（`.agents/skills/`，场景命中自动加载） | `sticks3-flash-ota`（固件烧录/OTA）、`build-windows`、`build-firmware`、`usb-jtag-flash-log`（串口日志采集）、`work-summary-retro`（工作总结/经验沉淀/教训反思的文档管理）、`release-publish`（发布操作全流程：GitHub Release + COS + 静态网页三渠道同步，含轮次决策/整站配方/终验清单/已踩坑）；新增/修改 Skill 后需重启会话刷新 |

@@ -1,15 +1,16 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ESPLoader, Transport } from 'esptool-js'
 import { setLocale } from './i18n'
+import DownloadPage from './DownloadPage.vue'
+import { downloads, loadDownloads, pickLatestAsset } from './downloads'
 import productPhoto from './assets/sticks3.png'
 // 版本号以仓库根目录 VERSION 文件为准（单一版本来源），避免与 package.json 脱节
 import appVersion from '../../VERSION?raw'
 
 const { locale, t } = useI18n()
 const version = appVersion.trim()
-const releaseUrl = 'https://github.com/Haobot/VoiceStickPlus/releases/latest'
 const githubUrl = 'https://github.com/Haobot/VoiceStickPlus'
 const releaseDownloadBase = `https://github.com/Haobot/VoiceStickPlus/releases/download/v${version}`
 const macDownloadUrl = `${releaseDownloadBase}/VoiceStick-${version}.dmg`
@@ -17,12 +18,48 @@ const macDownloadUrl = `${releaseDownloadBase}/VoiceStick-${version}.dmg`
 const windowsDownloadUrl = computed(
   () => `${releaseDownloadBase}/VoiceStick_${version}_${locale.value === 'zh-CN' ? 'zh-CN' : 'en-US'}.msi`,
 )
-// 固件同源托管于 GitHub Pages（CI 部署时从最新 Release 同步到 /firmware/），
-// 避免 GitHub release-assets 域无 CORS 头导致浏览器 fetch 跨域失败（Failed to fetch）。
-const firmwareBaseUrl = `${import.meta.env.BASE_URL}firmware/`
+
+// hash 路由：#/download 切换到下载页（无 vue-router，GitHub Pages 静态托管无需 404 回退）
+const currentHash = ref(window.location.hash)
+window.addEventListener('hashchange', () => {
+  currentHash.value = window.location.hash
+})
+const showDownloads = computed(() => currentHash.value === '#/download')
+watch(showDownloads, (visible) => {
+  if (visible) {
+    window.scrollTo(0, 0)
+  }
+})
+
+// hero 下载按钮运行时从 downloads.json 取最新版真实 URL（消除构建期 VERSION
+// 与已发布 Release 不同步的 404 风险）；加载中/失败回退上面构建期拼接的 URL
+loadDownloads()
+const heroMacUrl = computed(() => {
+  const data = downloads.value.state === 'ready' ? downloads.value.data : null
+  return (
+    pickLatestAsset(data, (asset) => asset.platform === 'macos' && asset.name.endsWith('.dmg'))?.url
+    || pickLatestAsset(data, (asset) => asset.platform === 'macos')?.url
+    || macDownloadUrl
+  )
+})
+const heroWindowsUrl = computed(() => {
+  const data = downloads.value.state === 'ready' ? downloads.value.data : null
+  const preferred = locale.value === 'zh-CN' ? 'zh-CN.msi' : 'en-US.msi'
+  return (
+    pickLatestAsset(data, (asset) => asset.platform === 'windows' && asset.name.endsWith(preferred))?.url
+    || pickLatestAsset(data, (asset) => asset.platform === 'windows' && asset.name.endsWith('.msi'))?.url
+    || windowsDownloadUrl.value
+  )
+})
+// 固件同源托管（Pages 与国内 COS 整站均由 CI 部署时从最新 Release 同步到
+// /firmware/latest/），避免 GitHub release-assets 域无 CORS 头导致浏览器
+// fetch 跨域失败（Failed to fetch）。
+const firmwareBaseUrl = `${import.meta.env.BASE_URL}firmware/latest/`
 const defaultFirmwareUrl = `${firmwareBaseUrl}voicestick-firmware-sticks3-merged-${version}.bin`
 const firmwareManifestUrl = `${firmwareBaseUrl}manifest.json`
 const firmwareUrl = ref(defaultFirmwareUrl)
+const firmwareFallbackUrl = ref('')
+const firmwareManifest = ref(null)
 const appResetSequence = 'D0|R1|W100|R0|W500|D0'
 
 const languageLabel = computed(() => (locale.value === 'zh-CN' ? t('language.en') : t('language.zh')))
@@ -78,17 +115,51 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+async function sha256Hex(data) {
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function expectedFirmwareHash(firmware) {
+  const expectedSize = Number(firmwareManifest.value?.merged_size)
+  const expectedHash = String(firmwareManifest.value?.merged_sha256 || '').toLowerCase()
+  if (!expectedHash) {
+    throw new Error(t('flasher.error.missingHash'))
+  }
+  if (Number.isFinite(expectedSize) && expectedSize > 0 && firmware.byteLength !== expectedSize) {
+    throw new Error(t('flasher.error.sizeMismatch', {
+      expected: expectedSize,
+      actual: firmware.byteLength,
+    }))
+  }
+  return expectedHash
+}
+
 async function fetchFirmware() {
   flashStatus.value = 'downloading'
   appendLog(t('flasher.log.downloading'))
 
   await resolveFirmwareUrl()
-  const response = await fetch(firmwareUrl.value, { cache: 'no-store' })
+  let response = await fetch(firmwareUrl.value, { cache: 'no-store' })
+  if (!response.ok && firmwareFallbackUrl.value) {
+    appendLog(t('flasher.log.fallback'))
+    response = await fetch(firmwareFallbackUrl.value, { cache: 'no-store' })
+  }
   if (!response.ok) {
     throw new Error(t('flasher.error.downloadFailed', { status: response.status }))
   }
 
   const firmware = new Uint8Array(await response.arrayBuffer())
+  // 完整性门禁：manifest 的 sha256/size 之前完全没被消费，链路任一环被篡改都会
+  // 直接写入 0x0（含 bootloader/分区表）。校验通过才交给 esptool-js。
+  const expectedHash = expectedFirmwareHash(firmware)
+  const actualHash = await sha256Hex(firmware)
+  if (actualHash !== expectedHash) {
+    throw new Error(t('flasher.error.hashMismatch'))
+  }
+  appendLog(t('flasher.log.verified'))
   firmwareSize.value = formatBytes(firmware.byteLength)
   appendLog(t('flasher.log.downloaded', { size: firmwareSize.value }))
   return firmware
@@ -101,12 +172,16 @@ async function resolveFirmwareUrl() {
 
   const response = await fetch(firmwareManifestUrl, { cache: 'no-store' })
   if (!response.ok) {
-    return
+    throw new Error(t('flasher.error.manifestFailed', { status: response.status }))
   }
 
   const manifest = await response.json()
+  firmwareManifest.value = manifest
   if (manifest?.merged_url) {
     firmwareUrl.value = manifest.merged_url
+  }
+  if (manifest?.merged_url_fallback) {
+    firmwareFallbackUrl.value = manifest.merged_url_fallback
   }
 }
 
@@ -191,6 +266,7 @@ async function flashFirmware() {
         <span>VoiceStickPlus</span>
       </a>
       <nav>
+        <a href="#/download">{{ t('nav.download') }}</a>
         <a href="#flash">{{ t('nav.flash') }}</a>
         <a :href="githubUrl">{{ t('nav.github') }}</a>
         <button class="language-button" type="button" :aria-label="t('language.label')" @click="toggleLanguage">
@@ -201,14 +277,17 @@ async function flashFirmware() {
   </header>
 
   <main>
+    <DownloadPage v-if="showDownloads" />
+
+    <template v-else>
     <section class="hero">
       <div class="hero-copy">
         <p class="eyebrow">{{ t('hero.eyebrow') }}</p>
         <h1>{{ t('hero.title') }}</h1>
         <p class="lead">{{ t('hero.lead') }}</p>
         <div class="actions">
-          <a class="button primary mac" :href="macDownloadUrl">{{ t('hero.downloadMac') }}</a>
-          <a class="button primary windows" :href="windowsDownloadUrl">{{ t('hero.downloadWindows') }}</a>
+          <a class="button primary mac" :href="heroMacUrl">{{ t('hero.downloadMac') }}</a>
+          <a class="button primary windows" :href="heroWindowsUrl">{{ t('hero.downloadWindows') }}</a>
         </div>
       </div>
       <div class="product-visual" :aria-label="t('hero.imageAlt')">
@@ -293,9 +372,10 @@ async function flashFirmware() {
           <h2>{{ t('download.title') }}</h2>
           <p>{{ t('download.body') }}</p>
         </div>
-        <a class="button secondary" :href="releaseUrl">{{ t('download.cta') }}</a>
+        <a class="button secondary" href="#/download">{{ t('download.cta') }}</a>
       </div>
     </section>
+    </template>
   </main>
 
   <footer>

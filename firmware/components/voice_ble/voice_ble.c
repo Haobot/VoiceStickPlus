@@ -7,6 +7,7 @@
 #include <sys/param.h>
 
 #include "cJSON.h"
+#include "control_cmd.h"
 #include "esp_check.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
@@ -23,19 +24,34 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
+#include "host/ble_store.h"
 #include "host/ble_uuid.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "services/dis/ble_svc_dis.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#include "voice_ble_conn_table.h"
+#include "voice_ble_ota_policy.h"
 
 static const char *TAG = "voice_ble";
 
-#define OTA_PROGRESS_NOTIFY_BYTES (32 * 1024)
+// 进度回传间隔，同时是**桌面端流控的粒度**（app 的"在途窗口"必须大于它，否则双方互等死锁）。
+// 2026-09-20 真机：48KB 在途窗口下传输会在 230KB 左右被对端单方面断链（设备侧看门狗证实数据本身
+// 没问题、flash 也不慢）。降到 8KB 后，桌面可把在途窗口压到 ~24KB，一次只灌 ~100 个无确认包，
+// 显著降低把控制器缓冲打满 / 触发对端超时的概率（代价仅每 8KB 一条状态通知，~15KB/s 下每秒 2 条）。
+#define OTA_PROGRESS_NOTIFY_BYTES (8 * 1024)
 
 static bool s_connected;
 static bool s_audio_subscribed;
 static bool s_state_subscribed;
+// 初始状态帧串（device_info/encoder_status/gateway_status）延迟标志：SUBSCRIBE 往往在我们
+// 自己发起的 MTU 交换完成之前到达，此时 att_mtu 仍是 23，235B 的 device_info 会被截断成
+// 20B，桌面端解析失败 → 它的"订阅存活证明"2.5s 超时 → 走 zombie-suspect 重连风暴。
+// 真机实测（网关切换后）：目标机 app 要 14-26s 才恢复；根因即此（见 P4 device_info 截断项）。
+static bool s_state_burst_pending;
+static esp_timer_handle_t s_state_burst_timer;
+static esp_timer_handle_t s_ota_watchdog_timer;
 static uint32_t s_mbuf_fail_streak;   // 连续 mbuf alloc failed 次数（用于告警节流）
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint8_t s_own_addr_type;
@@ -45,10 +61,20 @@ static uint16_t s_ota_state_attr_handle;
 static char s_device_id[5] = "0000";
 static char s_device_name[8] = VOICE_BLE_DEVICE_NAME_PREFIX "-0000";
 static voice_ble_connection_cb_t s_connection_cb;
+static voice_ble_peer_cb_t s_peer_cb;
 static voice_ble_control_cb_t s_control_cb;
 static voice_ble_ota_cb_t s_ota_cb;
 static uint32_t s_adv_started_ms;
 static uint32_t s_connected_ms;   // 连接建立时间戳，断连时算连接时长（辅助判 supervision timeout）
+
+// ---- A4 入站连接表（2026-10-08，9-22 评审 A4 深修）----
+// conn_table 为多链路真相；上方 s_connected / s_conn_handle / s_*_subscribed 全部是
+// 「应用链路视图」镜像（见 gap_event_cb 前的 sync_app_mirrors），所有既有发送/门控点
+// 零改动。断开按 handle 只清本条：重连后旧 handle 的 stale DISCONNECT 迟到不再清掉
+// 新连接的订阅态（gateway-p1-ota-session-2026-09-20 复盘事故的根因）。
+// 静态零值即 init。广播维持策略不变（有任一入站即停播）——OS-HID+app 双入站并存
+// 的广播放开属产品决策，见 backlog A4b。
+static voice_ble_conn_table_t s_conns;
 
 typedef enum {
     CONN_ITVL_NONE,
@@ -120,6 +146,15 @@ typedef struct {
     uint32_t next_progress;
     esp_ota_handle_t handle;
     const esp_partition_t *partition;
+    // 吞吐诊断（2026-09-20）：实测 OTA 吞吐仅 ~9KB/s（MTU 247 + WriteWithoutResponse 本应
+    // 50–150KB/s），且传输会中途完全停住。嫌疑是 esp_ota_write 在 NimBLE 回调里同步做 flash
+    // 擦写（长时间关 cache）饿死协议栈。埋点记录单次写入耗时与两次回调之间的间隔，
+    // 在每次 32KB 进度日志里一并打印，用来证实/证伪。
+    int64_t last_cb_us;
+    int64_t write_max_us;
+    int64_t gap_max_us;
+    int64_t begin_us;
+    int64_t last_watchdog_log_us;
 } voice_ble_ota_state_t;
 
 static voice_ble_ota_state_t s_ota;
@@ -146,6 +181,7 @@ static const ble_uuid128_t s_ota_state_uuid =
 static void start_advertising(void);
 static void start_advertising_with_mode(bool fast);
 static void stop_advertising(void);
+static void send_state_burst(void);
 static esp_err_t send_state_json(const char *json);
 static struct ble_npl_callout s_adv_retry_callout;
 static struct ble_npl_callout s_adv_slow_callout;
@@ -160,9 +196,13 @@ static void adv_retry_callout_cb(struct ble_npl_event *ev)
 {
     (void)ev;
     if (!s_connected && !ble_gap_adv_active()) {
-        ESP_LOGI(TAG, "retrying advertising after earlier failure");
+        ESP_LOGI(TAG, "advertising not active while disconnected; restarting");
         start_advertising();
     }
+    // 看门狗化：周期性自查并重新武装。NimBLE preempt（配对/隐私解析列表更新，
+    // ble_hs_pvcy.c）会静默停广播且失败不上报应用层（真机实测：网关模式连小米后
+    // HCI 0x212，广播再无恢复，Windows/桌面端无法连接）；一次性重试盖不住。
+    ble_npl_callout_reset(&s_adv_retry_callout, pdMS_TO_TICKS(ADV_RETRY_DELAY_MS));
 }
 
 static void adv_slow_callout_cb(struct ble_npl_event *ev)
@@ -187,9 +227,37 @@ static uint32_t read_le32(const uint8_t *data)
            ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
 }
 
+// OTA 停摆看门狗（2026-09-20）：真机上传输会中途停住，而**设备侧看不到任何异常**——
+// 因为停摆时根本没有回调被触发（没有日志可打），只能靠"没有日志"反推。
+// 这个每秒一次的定时器在有传输但超过 1s 没收到新分块时主动报出 written/耗时统计，
+// 把"设备在忙"与"设备根本没收到数据"分开。
+static void ota_watchdog_cb(void *arg)
+{
+    (void)arg;
+    if (!s_ota.active) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    const int64_t idle_us = now - (s_ota.last_cb_us ? s_ota.last_cb_us : s_ota.begin_us);
+    if (idle_us < 1000000) {
+        return;
+    }
+    if (now - s_ota.last_watchdog_log_us < 1000000) {
+        return;
+    }
+    s_ota.last_watchdog_log_us = now;
+    ESP_LOGW(TAG, "OTA stalled %lldms without data: written=%" PRIu32 "/%" PRIu32
+             " write_max=%lldms gap_max=%lldms",
+             (long long)(idle_us / 1000), s_ota.written, s_ota.image_size,
+             (long long)(s_ota.write_max_us / 1000), (long long)(s_ota.gap_max_us / 1000));
+}
+
 static void ota_clear_state(void)
 {
     memset(&s_ota, 0, sizeof(s_ota));
+    if (s_ota_watchdog_timer) {
+        (void)esp_timer_stop(s_ota_watchdog_timer);
+    }
 }
 
 static esp_err_t ota_send_state_json(const char *json)
@@ -235,6 +303,20 @@ static void ota_send_error(const char *code, esp_err_t err)
     voice_ble_request_slow_interval();
 }
 
+// A6：终局错误统一 abort + 清状态——原实现发完 error 后 s_ota.active 残留，
+// voice_ble_ota_is_active() 恒真 → 录音/关机被永久拒绝（评审「一次 OTA 报错后
+// 永久拒绝录音/关机」）。仅用于本传输已失步/不可续的错误；not_active 与
+// transfer 不匹配（D7）不得走此路径——那可能属于另一条在飞传输。
+static void ota_fail_terminal(const char *code, esp_err_t err)
+{
+    ota_send_error(code, err);
+    if (s_ota.active) {
+        (void)esp_ota_abort(s_ota.handle);
+        ota_clear_state();
+        ESP_LOGW(TAG, "OTA %s: transfer aborted, state cleared (A6)", code);
+    }
+}
+
 static int ota_begin(uint32_t transfer_id, uint32_t image_size)
 {
     if (s_ota.active) {
@@ -264,6 +346,14 @@ static int ota_begin(uint32_t transfer_id, uint32_t image_size)
     s_ota.image_size = image_size;
     s_ota.written = 0;
     s_ota.next_progress = OTA_PROGRESS_NOTIFY_BYTES;
+    s_ota.last_cb_us = 0;
+    s_ota.write_max_us = 0;
+    s_ota.gap_max_us = 0;
+    s_ota.begin_us = esp_timer_get_time();
+    s_ota.last_watchdog_log_us = 0;
+    if (s_ota_watchdog_timer) {
+        (void)esp_timer_start_periodic(s_ota_watchdog_timer, 1000 * 1000);
+    }
     s_ota.handle = handle;
     s_ota.partition = partition;
 
@@ -293,13 +383,24 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
     if (offset != s_ota.written ||
         payload_len == 0 ||
         s_ota.written + payload_len > s_ota.image_size) {
-        ota_send_error("bad_offset", ESP_ERR_INVALID_ARG);
+        // A6：偏移失步即终局（桌面端不会回退重排），清状态避免 active 残留。
+        ota_fail_terminal("bad_offset", ESP_ERR_INVALID_ARG);
         return BLE_ATT_ERR_INVALID_OFFSET;
     }
 
+    const int64_t cb_enter_us = esp_timer_get_time();
+    if (s_ota.last_cb_us != 0) {
+        const int64_t gap = cb_enter_us - s_ota.last_cb_us;
+        if (gap > s_ota.gap_max_us) s_ota.gap_max_us = gap;
+    }
+    s_ota.last_cb_us = cb_enter_us;
+
     esp_err_t err = esp_ota_write(s_ota.handle, payload, payload_len);
+    const int64_t write_us = esp_timer_get_time() - cb_enter_us;
+    if (write_us > s_ota.write_max_us) s_ota.write_max_us = write_us;
     if (err != ESP_OK) {
-        ota_send_error("write_failed", err);
+        // A6：闪存写失败不可续传，终局清理（否则 active 残留永久锁死录音/关机）。
+        ota_fail_terminal("write_failed", err);
         return BLE_ATT_ERR_UNLIKELY;
     }
 
@@ -316,9 +417,10 @@ static int ota_write_data(uint32_t transfer_id, uint32_t offset,
         if (s_ota_cb) {
             s_ota_cb(VOICE_BLE_OTA_EVENT_PROGRESS, s_ota.written, s_ota.image_size);
         }
-        ESP_LOGI(TAG, "OTA progress %" PRIu32 "/%" PRIu32 " (%d%%)",
+        ESP_LOGI(TAG, "OTA progress %" PRIu32 "/%" PRIu32 " (%d%%) write_max=%lldms gap_max=%lldms",
                  s_ota.written, s_ota.image_size,
-                 (int)(s_ota.written * 100 / s_ota.image_size));
+                 (int)(s_ota.written * 100 / s_ota.image_size),
+                 (long long)(s_ota.write_max_us / 1000), (long long)(s_ota.gap_max_us / 1000));
         while (s_ota.written >= s_ota.next_progress) {
             s_ota.next_progress += OTA_PROGRESS_NOTIFY_BYTES;
         }
@@ -334,7 +436,8 @@ static int ota_finish(uint32_t transfer_id, uint32_t image_size)
         return BLE_ATT_ERR_UNLIKELY;
     }
     if (image_size != s_ota.image_size || s_ota.written != s_ota.image_size) {
-        ota_send_error("incomplete", ESP_ERR_INVALID_SIZE);
+        // A6：END 已到且长度不符 = 终局（桌面端不会再补数据），清状态。
+        ota_fail_terminal("incomplete", ESP_ERR_INVALID_SIZE);
         return BLE_ATT_ERR_UNLIKELY;
     }
 
@@ -369,7 +472,18 @@ static int ota_finish(uint32_t transfer_id, uint32_t image_size)
 
 static int ota_abort(uint32_t transfer_id)
 {
-    if (s_ota.active && transfer_id == s_ota.transfer_id) {
+    // D7：id 不匹配且有活动传输 → **拒绝**（返回错误、不清理、不发帧）。原实现跳过
+    // esp_ota_abort 却照旧 ota_clear_state() + 发 aborted + ABORT 回调：进行中的
+    // 传输被悄悄废掉而 esp_ota_handle 泄漏，桌面端还拿到假 aborted 帧误判已中止。
+    if (!voice_ble_ota_abort_allowed(s_ota.active, transfer_id, s_ota.transfer_id)) {
+        ESP_LOGW(TAG,
+                 "OTA abort rejected (transfer mismatch): incoming=%" PRIu32
+                 " active=%" PRIu32 " -- keeping in-flight transfer",
+                 transfer_id, s_ota.transfer_id);
+        ota_send_error("transfer_mismatch", ESP_ERR_INVALID_STATE);
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    if (s_ota.active) {
         (void)esp_ota_abort(s_ota.handle);
         ESP_LOGI(TAG, "OTA aborted transfer=%" PRIu32, transfer_id);
     }
@@ -553,6 +667,13 @@ static void power_log_dump_send_next(void)
     // 避免 got==0 时空片死循环。
     const int eof = (got < want ||
                      s_plog_dump.offset + got >= s_plog_dump.total) ? 1 : 0;
+    if (got < want) {
+        // A20：短读收尾是有意的（并发 clear），但 FS 读故障同样表现为短读——
+        // 原先零日志、两种原因不可分辨，导出静默截断不可观测。
+        ESP_LOGW(TAG, "power_log dump short read got=%u want=%u offset=%" PRIu32
+                 " total=%" PRIu32 " (treated as EOF)",
+                 (unsigned)got, (unsigned)want, s_plog_dump.offset, s_plog_dump.total);
+    }
 
     char b64[((POWER_LOG_CHUNK_RAW_MAX + 2) / 3) * 4 + 1];
     (void)base64_encode(raw, got, b64, sizeof(b64));
@@ -642,48 +763,37 @@ static void power_log_dump_start(uint32_t offset, uint32_t max_bytes)
 
 static void handle_power_log_control(const char *json)
 {
-    cJSON *root = cJSON_Parse(json);
-    if (!root) {
+    // 0.1 契约 reader：power_log 族解析与 main 共用 control_cmd（纯逻辑，宿主可测）。
+    control_cmd_t cmd;
+    if (!control_cmd_parse(json, &cmd)) {
         ESP_LOGW(TAG, "power_log control json parse failed");
         return;
     }
-    const cJSON *plog = cJSON_GetObjectItemCaseSensitive(root, "power_log");
-    const cJSON *cmd = plog ? cJSON_GetObjectItemCaseSensitive(plog, "cmd") : NULL;
-    if (!cJSON_IsString(cmd)) {
-        cJSON_Delete(root);
-        return;
-    }
-
-    if (strcmp(cmd->valuestring, "dump") == 0) {
-        uint32_t offset = 0;
-        uint32_t max_bytes = 0;
-        const cJSON *offset_item = cJSON_GetObjectItemCaseSensitive(plog, "offset");
-        const cJSON *max_item = cJSON_GetObjectItemCaseSensitive(plog, "max");
-        if (cJSON_IsNumber(offset_item) && offset_item->valuedouble > 0) {
-            offset = (uint32_t)offset_item->valuedouble;
-        }
-        if (cJSON_IsNumber(max_item) && max_item->valuedouble > 0) {
-            max_bytes = (uint32_t)max_item->valuedouble;
-        }
-        power_log_dump_start(offset, max_bytes);
-    } else if (strcmp(cmd->valuestring, "clear") == 0) {
+    switch (cmd.kind) {
+    case CONTROL_CMD_POWER_LOG_DUMP:
+        power_log_dump_start((uint32_t)cmd.value, cmd.uvalue);
+        break;
+    case CONTROL_CMD_POWER_LOG_CLEAR:
         power_log_dump_abort("cleared");
         power_log_clear();
         ESP_LOGI(TAG, "power_log cleared");
         (void)send_state_json("{\"power_log\":{\"cmd\":\"clear\",\"ok\":true}}");
-    } else if (strcmp(cmd->valuestring, "time_anchor") == 0) {
-        const cJSON *epoch_item = cJSON_GetObjectItemCaseSensitive(plog, "epoch");
-        if (cJSON_IsNumber(epoch_item) && epoch_item->valuedouble > 0) {
-            power_log_set_time_anchor((uint32_t)epoch_item->valuedouble);
-            ESP_LOGI(TAG, "power_log time anchor epoch=%" PRIu32,
-                     (uint32_t)epoch_item->valuedouble);
+        break;
+    case CONTROL_CMD_POWER_LOG_TIME_ANCHOR:
+        if (cmd.has_number && cmd.value > 0) {
+            power_log_set_time_anchor((uint32_t)cmd.value);
+            ESP_LOGI(TAG, "power_log time anchor epoch=%" PRIu32, (uint32_t)cmd.value);
         } else {
             ESP_LOGW(TAG, "power_log time_anchor missing epoch field");
         }
-    } else {
-        ESP_LOGW(TAG, "unknown power_log cmd: %s", cmd->valuestring);
+        break;
+    case CONTROL_CMD_POWER_LOG_UNKNOWN:
+        ESP_LOGW(TAG, "unknown power_log cmd: %s", cmd.str1);
+        break;
+    default:
+        // power_log 键存在但缺 cmd：原实现静默 return，此处等价静默。
+        break;
     }
-    cJSON_Delete(root);
 }
 
 static int control_access_cb(uint16_t conn_handle, uint16_t attr_handle,
@@ -699,8 +809,15 @@ static int control_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 
     char buffer[512] = {0};
     const uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    const uint16_t copy_len = MIN(len, sizeof(buffer) - 1);
-    int rc = ble_hs_mbuf_to_flat(ctxt->om, buffer, copy_len, NULL);
+    // A14：超缓冲的控制写**拒绝**而非静默截断——截断出的半截 JSON 必 parse 失败，
+    // 只会无信号整帧丢（原实现）。桌面端已按 244B 预算发送（protocol.md ui_state），
+    // 正常帧永不到此；到此即为异常，给 ATT 错误让发送端可见。
+    if (len >= sizeof(buffer)) {
+        ESP_LOGW(TAG, "control write %uB exceeds buffer %u, rejected",
+                 (unsigned)len, (unsigned)sizeof(buffer));
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    int rc = ble_hs_mbuf_to_flat(ctxt->om, buffer, len, NULL);
     if (rc != 0) {
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -726,6 +843,10 @@ static int notify_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     (void)arg;
     return 0;
 }
+
+// 额外 GATT 服务注入（gateway HOGP 等，见 voice_ble.h 注释）
+static voice_ble_extra_svcs_fn_t s_extra_svcs;
+void voice_ble_set_extra_svcs(voice_ble_extra_svcs_fn_t fn) { s_extra_svcs = fn; }
 
 static const struct ble_gatt_svc_def s_gatt_services[] = {
     {
@@ -766,6 +887,27 @@ static const struct ble_gatt_svc_def s_gatt_services[] = {
     {0},
 };
 
+// 应用链路 = 已订阅 state/audio 特征的入站连接（OS-HID 中央只订 HID 服务，不入选）。
+static uint16_t derive_app_handle(void)
+{
+    return voice_ble_conn_table_app_handle(&s_conns);
+}
+
+// 表 → 镜像同步：send/门控仍读旧单值，语义收敛为「应用链路」。
+static void sync_app_mirrors(void)
+{
+    const uint16_t app = derive_app_handle();
+    s_conn_handle = app;
+    if (app == BLE_HS_CONN_HANDLE_NONE) {
+        s_audio_subscribed = false;
+        s_state_subscribed = false;
+        return;
+    }
+    const voice_ble_conn_t *e = voice_ble_conn_table_find(&s_conns, app);
+    s_audio_subscribed = e && e->audio_sub;
+    s_state_subscribed = e && e->state_sub;
+}
+
 static int gap_event_cb(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
@@ -773,14 +915,18 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
-            s_connected = true;
-            s_audio_subscribed = false;
-            s_state_subscribed = false;
-            s_conn_handle = event->connect.conn_handle;
+            const uint16_t conn = event->connect.conn_handle;
+            if (!voice_ble_conn_table_add(&s_conns, conn, esp_log_timestamp(), NULL)) {
+                ESP_LOGW(TAG, "conn table full; handle=%u left untracked", conn);
+            }
+            s_connected = voice_ble_conn_table_count(&s_conns) > 0;
+            // 不再无条件清订阅镜像：旧链路尚未断连时其订阅态仍有效（stale 断连场景）。
+            sync_app_mirrors();
             uint32_t connected_ms = esp_log_timestamp();
             s_connected_ms = connected_ms;
-            ESP_LOGI(TAG, "connected handle=%u ts=%" PRIu32 " since_adv=%" PRIu32 "ms",
-                     s_conn_handle, connected_ms, connected_ms - s_adv_started_ms);
+            ESP_LOGI(TAG, "connected handle=%u ts=%" PRIu32 " since_adv=%" PRIu32 "ms links=%d",
+                     conn, connected_ms, connected_ms - s_adv_started_ms,
+                     voice_ble_conn_table_count(&s_conns));
             stop_advertising();
             // Some BLE centrals (notably WinRT on Windows) do not always
             // initiate the ATT MTU exchange themselves. Without it the MTU
@@ -791,15 +937,20 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             // measure so the link is usable for both audio and state.
             {
                 struct ble_gap_conn_desc desc;
-                int desc_rc = ble_gap_conn_find(s_conn_handle, &desc);
+                int desc_rc = ble_gap_conn_find(conn, &desc);
                 if (desc_rc == 0) {
                     ESP_LOGI(TAG, "conn initial: interval=%u latency=%u timeout=%u",
                              desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
                     s_last_conn_itvl = desc.conn_itvl;
                     s_last_conn_latency = desc.conn_latency;
                     s_last_conn_timeout = desc.supervision_timeout;
+                    // 对端身份上报（网关目标表用）：identity address 在 bond 生命周期内稳定，
+                    // 即便 Windows 用 RPA 轮换地址也能命中同一目标。
+                    if (s_peer_cb) {
+                        s_peer_cb(true, desc.peer_id_addr.val, desc.peer_id_addr.type);
+                    }
                 }
-                int mtu_rc = ble_gattc_exchange_mtu(s_conn_handle, NULL, NULL);
+                int mtu_rc = ble_gattc_exchange_mtu(conn, NULL, NULL);
                 if (mtu_rc != 0 && mtu_rc != BLE_HS_EALREADY) {
                     ESP_LOGW(TAG, "mtu exchange request failed rc=%d", mtu_rc);
                 }
@@ -810,7 +961,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 // central 不支持 2M 时自动回退，零兼容风险。PHY 更新异步完成，
                 // 结果由 BLE_GAP_EVENT_PHY_UPDATE_COMPLETE 回报。
                 int phy_rc = ble_gap_set_prefered_le_phy(
-                    s_conn_handle,
+                    conn,
                     BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
                     BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK,
                     0);
@@ -832,56 +983,129 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         }
         return 0;
 
-    case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected reason=%d conn_dur=%" PRIu32 "ms",
-                 event->disconnect.reason, esp_log_timestamp() - s_connected_ms);
-        ble_diag_save_disconnect(event->disconnect.reason,
-                                 esp_log_timestamp() - s_connected_ms);
-        if (s_ota.active) {
-            (void)esp_ota_abort(s_ota.handle);
-            ota_clear_state();
-            if (s_ota_cb) {
-                s_ota_cb(VOICE_BLE_OTA_EVENT_ABORT, 0, 0);
+    case BLE_GAP_EVENT_DISCONNECT: {
+        // IDF v5.5.1 的 BLE_GAP_EVENT_DISCONNECT 不携带 conn_handle（编译实测：
+        // 'struct <anonymous> has no member conn_handle'）。反查法：事件时点 NimBLE
+        // 已把断开的连接从 GAP 连接集移除，表内已 find 不到的条目即本次断开的链路；
+        // 其他存活 handle 仍可 find。stale 断连（重连后旧 handle 迟到）因此只清它自己。
+        uint16_t dead[VOICE_BLE_CONN_MAX];
+        int dead_count = 0;
+        for (int i = 0; i < VOICE_BLE_CONN_MAX; ++i) {
+            const voice_ble_conn_t *e = &s_conns.entries[i];
+            struct ble_gap_conn_desc probe;
+            if (e->used && ble_gap_conn_find(e->handle, &probe) != 0) {
+                dead[dead_count++] = e->handle;
             }
-            ESP_LOGI(TAG, "OTA aborted after disconnect");
         }
-        s_connected = false;
-        s_audio_subscribed = false;
-        s_state_subscribed = false;
-        s_mbuf_fail_streak = 0;
-        s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        s_itvl_target = CONN_ITVL_NONE;
-        s_itvl_update_pending = false;
-        power_log_dump_abort("disconnect");
-        start_advertising();
-        if (s_connection_cb) {
-            s_connection_cb(false);
+        if (dead_count == 0) {
+            // 表内全部仍可 find（事件与查询竞态 / 未知 handle）：不动状态，绝不误清。
+            ESP_LOGW(TAG, "disconnect event but no tracked handle gone; state untouched");
+            return 0;
+        }
+        bool was_app = false;
+        bool last = false;
+        for (int d = 0; d < dead_count; ++d) {
+            const uint16_t conn = dead[d];
+            const bool conn_was_app = (conn == s_conn_handle);
+            was_app = was_app || conn_was_app;
+            voice_ble_conn_t *found = voice_ble_conn_table_find(&s_conns, conn);
+            voice_ble_conn_t removed = {0};
+            if (found) {
+                removed = *found;
+            }
+            voice_ble_conn_table_remove(&s_conns, conn, &last);
+            ESP_LOGI(TAG,
+                     "disconnected handle=%u reason=%d dur=%" PRIu32 "ms was_app=%d links=%d",
+                     conn, event->disconnect.reason,
+                     esp_log_timestamp() - removed.connected_ms,
+                     conn_was_app ? 1 : 0, voice_ble_conn_table_count(&s_conns));
+            if (conn_was_app) {
+                // 断连诊断（本地）：应用链路断开即持久化 reason 与当时连接参数，
+                // state_tx 订阅成功后上报并擦除，桌面端免串口可读。
+                ble_diag_save_disconnect(event->disconnect.reason,
+                                         esp_log_timestamp() - removed.connected_ms);
+            }
+        }
+        s_connected = voice_ble_conn_table_count(&s_conns) > 0;
+        if (was_app) {
+            // 只有应用链路断开才中止与它绑定的会话资源（OTA/状态突发/间隔/功耗日志）。
+            if (s_ota.active) {
+                (void)esp_ota_abort(s_ota.handle);
+                ota_clear_state();
+                if (s_ota_cb) {
+                    s_ota_cb(VOICE_BLE_OTA_EVENT_ABORT, 0, 0);
+                }
+                ESP_LOGI(TAG, "OTA aborted after app link disconnect");
+            }
+            s_mbuf_fail_streak = 0;
+            s_state_burst_pending = false;
+            if (s_state_burst_timer) {
+                (void)esp_timer_stop(s_state_burst_timer);
+            }
+            s_itvl_target = CONN_ITVL_NONE;
+            s_itvl_update_pending = false;
+            power_log_dump_abort("disconnect");
+        }
+        sync_app_mirrors();
+        if (last) {
+            // 归零才发 false：单值消费方（main / gateway_targets current_peer、显示层）
+            // 的语义是「还有没有对端」，多链路下中途一条断开不再误清（A4 事故根因）。
+            start_advertising();
+            if (s_peer_cb) {
+                s_peer_cb(false, NULL, 0);
+            }
+            if (s_connection_cb) {
+                s_connection_cb(false);
+            }
         }
         return 0;
+    }
 
-    case BLE_GAP_EVENT_SUBSCRIBE:
-        // SUBSCRIBE always implies an active connection on this conn_handle.
-        // Defensively re-sync our cached state in case a stale DISCONNECT
-        // for an older connection arrived out of order and cleared things,
-        // which would otherwise make send_state_json bail with INVALID_STATE.
-        if (!s_connected || s_conn_handle != event->subscribe.conn_handle) {
-            ESP_LOGW(TAG, "subscribe state desync: cached conn=%u connected=%d, event conn=%u; resyncing",
-                     s_conn_handle, s_connected, event->subscribe.conn_handle);
-            s_connected = true;
-            s_conn_handle = event->subscribe.conn_handle;
+    case BLE_GAP_EVENT_SUBSCRIBE: {
+        const uint16_t conn = event->subscribe.conn_handle;
+        // 每个订阅都记一行：OTA 的 CCCD 订阅此前完全不可观测，桌面端卡在
+        // "subscribing OTA state notifications" 时无法判断写是否到了设备（2026-09-20 排查）。
+        ESP_LOGI(TAG, "subscribe conn=%u attr=%u notify=%d indicate=%d (audio=%u state=%u ota_state=%u)",
+                 conn, event->subscribe.attr_handle, event->subscribe.cur_notify,
+                 event->subscribe.cur_indicate, s_audio_attr_handle, s_state_attr_handle,
+                 s_ota_state_attr_handle);
+        // A4：防御性补录进表（替代原「resync 覆盖单值」）——SUBSCRIBE 隐含连接存在，
+        // 记录缺失说明 CONNECT 事件乱序，补一条即可，不再覆盖任何既有链路状态。
+        const bool known = voice_ble_conn_table_find(&s_conns, conn) != NULL;
+        voice_ble_conn_t *entry = voice_ble_conn_table_touch(&s_conns, conn,
+                                                             esp_log_timestamp());
+        if (entry == NULL) {
+            ESP_LOGW(TAG, "conn table full; subscribe from conn=%u dropped", conn);
+            return 0;
         }
+        if (!known) {
+            ESP_LOGW(TAG, "subscribe without connect record; added conn=%u", conn);
+            s_connected = voice_ble_conn_table_count(&s_conns) > 0;
+        }
+        bool became_state_app = false;
         if (event->subscribe.attr_handle == s_audio_attr_handle) {
-            s_audio_subscribed = event->subscribe.cur_notify;
+            entry->audio_sub = event->subscribe.cur_notify;
         } else if (event->subscribe.attr_handle == s_state_attr_handle) {
-            s_state_subscribed = event->subscribe.cur_notify;
-            if (s_state_subscribed) {
-                esp_err_t rc = voice_ble_send_device_info();
-                if (rc != ESP_OK) {
-                    ESP_LOGW(TAG, "device_info send failed err=0x%x", rc);
-                }
-                rc = voice_ble_send_encoder_status();
-                if (rc != ESP_OK) {
-                    ESP_LOGW(TAG, "encoder_status send failed err=0x%x", rc);
+            entry->state_sub = event->subscribe.cur_notify;
+            became_state_app = entry->state_sub && (conn == derive_app_handle());
+        }
+        sync_app_mirrors();
+        if (became_state_app) {
+                // MTU 未协商完就推 235B 的 device_info 会被截断（att_mtu=23 ⇒ 20B 负载），
+                // 桌面端解析失败会把这次连接判成僵尸（订阅存活证明超时）。等我们自己在
+                // 连接时发起的 MTU 交换完成后再推；兜底定时器防对端不响应交换。
+                const uint16_t mtu_now = ble_att_mtu(event->subscribe.conn_handle);
+                if (mtu_now <= 23) {
+                    s_state_burst_pending = true;
+                    if (s_state_burst_timer) {
+                        (void)esp_timer_stop(s_state_burst_timer);
+                        (void)esp_timer_start_once(s_state_burst_timer, 1200 * 1000);
+                    }
+                    ESP_LOGI(TAG,
+                             "state burst deferred until MTU exchange completes (att_mtu=%u)",
+                             mtu_now);
+                } else {
+                    send_state_burst();
                 }
                 // 上报上次断连诊断（NVS 持久化，见 ble_diag_save_disconnect）
                 ble_diag_report_pending();
@@ -903,7 +1127,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "conn updated: status=%d (desc unavailable)",
                      event->conn_update.status);
         }
-        if (s_itvl_update_pending) {
+        // A4：间隔重请求只对应用链路（镜像句柄）的 CONN_UPDATE 生效，
+        // OS-HID/第三方链路的参数协商不牵动应用链路。
+        if (s_itvl_update_pending && event->conn_update.conn_handle == s_conn_handle) {
             s_itvl_update_pending = false;
             if (s_itvl_target == CONN_ITVL_FAST) {
                 voice_ble_request_fast_interval();
@@ -929,7 +1155,19 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     }
 
     case BLE_GAP_EVENT_MTU:
-        ESP_LOGD(TAG, "mtu=%u", event->mtu.value);
+        ESP_LOGI(TAG, "mtu=%u", event->mtu.value);
+        // A4：只有应用链路自身的 MTU 真正协商成功（>23）才冲状态突发——用实测值
+        // 而非事件句柄（v5.5.1 的 MTU 事件同样不带 conn_handle），其他链路的 MTU
+        // 完成不会触发；对端不响应时由 1.2s fallback 定时器兜底。
+        if (s_state_burst_pending && s_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+            ble_att_mtu(s_conn_handle) > 23) {
+            s_state_burst_pending = false;
+            if (s_state_burst_timer) {
+                (void)esp_timer_stop(s_state_burst_timer);
+            }
+            ESP_LOGI(TAG, "state burst flushed after MTU exchange (att_mtu=%u)", event->mtu.value);
+            send_state_burst();
+        }
         return 0;
 
     case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
@@ -947,7 +1185,31 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                  event->enc_change.status);
         return 0;
 
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        // 双方 bond 不一致（Windows 删过设备/历史配对残留）时 NimBLE 发此事件，
+        // 要求应用先删旧 bond。返回 0 会被当作 FAIL 直接中止配对——真机日志即此
+        // 症状：事件到达后无 SMP 活动、Windows 30 秒超时断开（0x213）。
+        // 按 bleprph 例程：删除对端 bond 并 RETRY，让 SMP 重新完整走一遍。
+        struct ble_gap_conn_desc desc;
+        int find_rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
+        ESP_LOGW(TAG, "repeat pairing conn=%u cur(sc=%u auth=%u): delete stale bond, retry",
+                 event->repeat_pairing.conn_handle,
+                 event->repeat_pairing.cur_sc, event->repeat_pairing.cur_authenticated);
+        if (find_rc == 0) {
+            ble_store_util_delete_peer(&desc.peer_id_addr);
+        }
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
+
+    case BLE_GAP_EVENT_PARING_COMPLETE:
+        ESP_LOGI(TAG, "pairing complete conn=%u status=%d",
+                 event->pairing_complete.conn_handle, event->pairing_complete.status);
+        return 0;
+
     default:
+        // 未处理的 GAP 事件（事件号见 ble_gap.h BLE_GAP_EVENT_*）：debug 级留痕，
+        // 排查 SMP/连接类问题时可临时抬到 INFO。
+        ESP_LOGD(TAG, "gap event type=%d (unhandled)", event->type);
         return 0;
     }
 }
@@ -1021,6 +1283,55 @@ static void start_advertising_with_mode(bool fast)
     }
 }
 
+// 订阅成功后的初始状态帧串：device_info（能力/版本）+ encoder_status + gateway_status。
+// 桌面端靠这几帧完成能力登记与网关模式判定；正常在 MTU 协商完成后调用（见 SUBSCRIBE/MTU 分支）。
+// D9：协议版本小帧（独立发送以规避 device_info 的 MTU 预算，同 encoder_status
+// /gateway_status 先例）。桌面端解析 proto/min_proto 后记日志、出界即告警——
+// 消除「未来协议升级即静默不兼容」。
+esp_err_t voice_ble_send_proto_info(void)
+{
+    char json[96];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"proto_info\",\"proto\":%d,\"min_proto\":%d}",
+             VOICE_BLE_PROTO_VERSION, VOICE_BLE_PROTO_MIN_VERSION);
+    return send_state_json(json);
+}
+
+static void send_state_burst(void)
+{
+    esp_err_t rc = voice_ble_send_device_info();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "device_info send failed err=0x%x", rc);
+    }
+    rc = voice_ble_send_proto_info();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "proto_info send failed err=0x%x", rc);
+    }
+    rc = voice_ble_send_encoder_status();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "encoder_status send failed err=0x%x", rc);
+    }
+    // 网关模式随订阅成功一起补发：桌面端据此判断是否抑制直连遥控器 ATVV
+    // （见 Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）。
+    rc = voice_ble_send_gateway_status();
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "gateway_status send failed err=0x%x", rc);
+    }
+}
+
+// 兜底：对端不接受 MTU 交换（事件不来）时，仍按旧行为在短延迟后推送（会被截断，但不至于静默）。
+static void state_burst_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_state_burst_pending) {
+        return;
+    }
+    s_state_burst_pending = false;
+    ESP_LOGW(TAG, "state burst fallback: MTU exchange not completed, sending at att_mtu=%u",
+             ble_att_mtu(s_conn_handle));
+    send_state_burst();
+}
+
 static void stop_advertising(void)
 {
     ble_npl_callout_stop(&s_adv_slow_callout);
@@ -1087,14 +1398,58 @@ esp_err_t voice_ble_init(void)
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
+    // Windows HOGP 枚举 HID 设备依赖 DIS PnP ID；缺失时配对 30 秒后断开
+    // （reason=0x213，真机排查结论）。appearance=961 声明为键盘。
+    ble_svc_dis_init();
+    ble_svc_dis_manufacturer_name_set("VoiceStick");
+    static const char s_pnp_id[7] = {0x02, 0x3A, 0x30, 0x53, 0x56, 0x00, 0x01};
+    ble_svc_dis_pnp_id_set(s_pnp_id);
 
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_mitm = 0;
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
+    // LE Secure Connections + 完整密钥分发：与网关 spike（配对成功基线）一致，
+    // 仅 ENC 分发时小米遥控器拒配（Phase 1 真机排查）
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID |
+                                 BLE_SM_PAIR_KEY_DIST_SIGN;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID |
+                                   BLE_SM_PAIR_KEY_DIST_SIGN;
+
+    // bond 存储初始化（官方 blecent 例程同款前置声明）：ESP-IDF 不会自动调用，
+    // 缺失时 store_read_cb 为 NULL，任何配对发起都会同步返回 ENOTSUP(8)
+    // （网关模式小米 central 链路真机排查教训，Phase 1）
+    void ble_store_config_init(void);
+    ble_store_config_init();
+
+    // 初始状态帧串的兜底定时器（见 send_state_burst：MTU 协商完成前不推大帧）。
+    if (!s_state_burst_timer) {
+        const esp_timer_create_args_t burst_timer_args = {
+            .callback = state_burst_timer_cb,
+            .name = "state_burst",
+            .skip_unhandled_events = true,
+        };
+        esp_err_t timer_err = esp_timer_create(&burst_timer_args, &s_state_burst_timer);
+        if (timer_err != ESP_OK) {
+            ESP_LOGW(TAG, "state burst timer create failed err=0x%x", timer_err);
+            s_state_burst_timer = NULL;
+        }
+    }
+
+    // OTA 停摆看门狗（周期 1s，回调内自行判断是否真的有传输）。
+    if (!s_ota_watchdog_timer) {
+        const esp_timer_create_args_t ota_wd_args = {
+            .callback = ota_watchdog_cb,
+            .name = "ota_watchdog",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&ota_wd_args, &s_ota_watchdog_timer) != ESP_OK) {
+            ESP_LOGW(TAG, "ota watchdog timer create failed");
+            s_ota_watchdog_timer = NULL;
+        }
+    }
 
     int rc = ble_svc_gap_device_name_set(s_device_name);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "set device name failed rc=%d", rc);
@@ -1104,12 +1459,32 @@ esp_err_t voice_ble_init(void)
     rc = ble_gatts_add_svcs(s_gatt_services);
     ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "add gatt failed rc=%d", rc);
 
+    // 额外服务注入（gateway HOGP 等）：与主服务同一注册窗口，多次 count/add 为
+    // NimBLE 支持的合法用法，需在 host 任务启动（下方 freertos_init）前完成
+    if (s_extra_svcs != NULL) {
+        size_t extra_count = 0;
+        const struct ble_gatt_svc_def *extra = s_extra_svcs(&extra_count);
+        if (extra != NULL && extra_count > 0) {
+            rc = ble_gatts_count_cfg(extra);
+            ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "count extra gatt failed rc=%d", rc);
+            rc = ble_gatts_add_svcs(extra);
+            ESP_RETURN_ON_FALSE(rc == 0, ESP_FAIL, TAG, "add extra gatt failed rc=%d", rc);
+            // 声明数据库变更：extra 服务在编译期就参与注册（两种模式都在），但固件
+            // 升级会改变句柄排布，已 bond 对端的 GATT 缓存随之失效。注册后声明一次，
+            // 让订阅了 Service Changed 的对端重新发现，避免按旧句柄访问失败。
+            ble_svc_gatt_changed(1, 0xFFFF);
+        }
+    }
+
     ble_npl_callout_init(&s_adv_retry_callout, nimble_port_get_dflt_eventq(),
                          adv_retry_callout_cb, NULL);
     ble_npl_callout_init(&s_adv_slow_callout, nimble_port_get_dflt_eventq(),
                          adv_slow_callout_cb, NULL);
     ble_npl_callout_init(&s_plog_dump_callout, nimble_port_get_dflt_eventq(),
                          power_log_dump_callout_cb, NULL);
+
+    // 广播看门狗启动（回调内自续期，见 adv_retry_callout_cb 注释）
+    ble_npl_callout_reset(&s_adv_retry_callout, pdMS_TO_TICKS(ADV_RETRY_DELAY_MS));
 
     nimble_port_freertos_init(nimble_host_task);
     ESP_LOGI(TAG, "BLE initialized as %s", s_device_name);
@@ -1129,6 +1504,11 @@ const char *voice_ble_device_name(void)
 void voice_ble_set_connection_callback(voice_ble_connection_cb_t callback)
 {
     s_connection_cb = callback;
+}
+
+void voice_ble_set_peer_callback(voice_ble_peer_cb_t callback)
+{
+    s_peer_cb = callback;
 }
 
 void voice_ble_set_control_callback(voice_ble_control_cb_t callback)
@@ -1351,7 +1731,7 @@ static esp_err_t send_state_json(const char *json)
                  json_len, att_mtu);
     }
     uint8_t header[4] = {
-        1,
+        VOICE_BLE_PROTO_VERSION,  // 帧首字节 version == 协议版本（D9）
         0x10,
         json_len & 0xff,
         json_len >> 8,
@@ -1400,6 +1780,30 @@ esp_err_t voice_ble_send_power_mgmt_status(bool usb_auto_off)
     snprintf(json, sizeof(json),
              "{\"event\":\"power_mgmt\",\"usb_auto_off\":%s}",
              usb_auto_off ? "true" : "false");
+    return send_state_json(json);
+}
+
+// 网关模式标志：由 main 在模式应用/翻转后设置。桌面端据此抑制「直连遥控器 ATVV」——
+// 网关模式下遥控器 bond 在本机，桌面端直连必然失败（订阅超时），白白刷连接与日志。
+// 注意：不复用 device_info 承载（该帧已到 BLE 通知长度预算，见其注释），走独立小帧。
+static bool s_gateway_mode;
+
+void voice_ble_set_gateway_mode(bool gateway)
+{
+    s_gateway_mode = gateway;
+}
+
+esp_err_t voice_ble_send_gateway_status(void)
+{
+    // 未连接/未订阅时静默返回：模式在开机时就已确定，此时桌面端多半还没连上，
+    // 真正需要送达的时机是 state 订阅成功后的补发（见 BLE_GAP_EVENT_SUBSCRIBE）。
+    if (!s_connected || !s_state_subscribed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    char json[64];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"gateway_status\",\"mode\":\"%s\"}",
+             s_gateway_mode ? "gateway" : "normal");
     return send_state_json(json);
 }
 
@@ -1520,6 +1924,41 @@ esp_err_t voice_ble_send_encoder_rotate(const char *direction, uint8_t steps)
              "{\"event\":\"encoder_rotate\",\"direction\":\"%s\",\"steps\":%u}",
              direction ? direction : "cw", (unsigned)steps);
     // 与 send_motion 静默先例一致：旋转帧可能 100 帧/秒，成功路径不打日志。
+    return send_state_json(json);
+}
+
+esp_err_t voice_ble_send_gateway_key(const char *key, bool pressed)
+{
+    if (key == NULL || key[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char json[96];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"gateway_key\",\"key\":\"%s\",\"pressed\":%s}",
+             key, pressed ? "true" : "false");
+    ESP_LOGI(TAG, "gateway key=%s %s", key, pressed ? "down" : "up");
+    return send_state_json(json);
+}
+
+esp_err_t voice_ble_send_gateway_keymap(const char *routes_json, unsigned seq, bool more)
+{
+    // A15：分片回执（seq/more，见 protocol.md）——单帧只装得下 13 键表的一部分，
+    // 超预算帧会被 ATT 层截断、对端 JSON 解析失败（send_state_json 有预算告警）。
+    // 2026-10-12：分片体是 {"key":...},{...} 条目序列，必须包成 JSON 数组再嵌入——
+    // A15 分片重写漏了方括号，产出 "routes":{...},{...} 非法 JSON，桌面端 JSON
+    // 解码失败静默丢弃全部回执（键位映射对话框永远拿不到表）；空表兜底本就是
+    // "[]"，掩盖了非空路径的缺陷。串口+app 侧 DIAG payload 实证后修复。
+    char wrapped[200];
+    if (routes_json && routes_json[0]) {
+        snprintf(wrapped, sizeof(wrapped), "[%s]", routes_json);
+    } else {
+        snprintf(wrapped, sizeof(wrapped), "[]");
+    }
+    char json[512];
+    snprintf(json, sizeof(json),
+             "{\"event\":\"gateway_keymap\",\"seq\":%u,\"more\":%s,\"routes\":%s}",
+             seq, more ? "true" : "false", wrapped);
+    ESP_LOGI(TAG, "gateway keymap report seq=%u more=%d", seq, more ? 1 : 0);
     return send_state_json(json);
 }
 

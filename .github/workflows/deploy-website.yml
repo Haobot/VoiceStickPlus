@@ -17,6 +17,13 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# GitHub Pages 国际/备胎站点部署：appcast、downloads.json、烧录器同源固件。
+# COS 国内源的同步（软件/固件/整站/appcast 转传）已移交签名机发布流程
+# scripts/release.ps1 -> scripts/publish_cos.py（CI 海外 runner 跨境上行
+# 大文件必死，Doc/Ref/cos-distribution.md 待办 3 定案）。
+env:
+  VOICESTICK_DIST_DOMAIN: "https://dl.davenger.cloud"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -43,12 +50,15 @@ jobs:
             -o website/public/appcast.xml || true
           tag="$(gh release view --json tagName -q .tagName)"
           version="${tag#v}"
-          appcast_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml"
+          appcast_url="${VOICESTICK_DIST_DOMAIN}/appcast.xml"
           zip_asset="VoiceStick-${version}.zip"
           sig_asset="VoiceStick-${version}.signature"
           zip_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${zip_asset}\") | .size" || true)"
-          msi_asset="VoiceStick_${version}_en-US.msi"
+          # appcast 只能挂一个包（WinSparkle 0.9.2 不支持按语言选 enclosure）。
+          # 2026-09-27 起挂 zh-CN：当前用户群全中文，走自动更新的安装界面随包语言；
+          # zh-CN 与 en-US MSI 内容除语言外完全一致。改回 en-US 需同步 Doc/Ref/release.md。
+          msi_asset="VoiceStick_${version}_zh-CN.msi"
           msi_length="$(gh release view "$tag" --json assets \
             -q ".assets[] | select(.name == \"${msi_asset}\") | .size" || true)"
           if [ -n "${zip_length:-}" ]; then
@@ -59,9 +69,10 @@ jobs:
           fi
           notes="$(gh release view "$tag" --json body -q .body)"
           args=(
-            --version "$version" \
-            --appcast-url "$appcast_url" \
+            --version "$version"
+            --appcast-url "$appcast_url"
             --release-notes "$notes"
+            --mirror-base "${VOICESTICK_DIST_DOMAIN}"
           )
           if [ -n "${zip_length:-}" ]; then
             args+=(
@@ -80,26 +91,35 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync firmware to Pages origin
-        # 浏览器烧录器从 /firmware/ 同源 fetch 固件（GitHub release-assets 域无 CORS 头，
-        # 直接 fetch Release 资产会被浏览器跨域拦截，见 Doc/Expe/ 相关记录）。
+      - name: Generate downloads.json
         run: |
           set -euo pipefail
-          curl -fsSL "https://78.github.io/voicestick/appcast.xml" \
-            -o website/public/appcast.xml || true
+          python3 scripts/update-downloads.py \
+            --repo "${{ github.repository }}" \
+            --output website/public/downloads.json \
+            --mirror-base "${VOICESTICK_DIST_DOMAIN}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync firmware to Pages origin
+        # 浏览器烧录器从 /firmware/latest/ 同源 fetch 固件与 manifest（GitHub
+        # release-assets 域无 CORS 头，直接 fetch Release 资产会被浏览器跨域拦截）。
+        # appcast.xml 已在上一步更新到 website/public/，此处不再重新下载。
+        run: |
+          set -euo pipefail
           tag="$(gh release view --json tagName -q .tagName)"
           version="${tag#v}"
-          mkdir -p website/public/firmware
+          mkdir -p website/public/firmware/latest
           gh release download "$tag" \
             --pattern "voicestick-firmware-sticks3-merged-*.bin" \
             --pattern "manifest.json" \
-            --dir website/public/firmware
-          # 把 manifest 内的 merged_url 重写为 Pages 同源地址，避免浏览器再去 fetch GitHub 域
+            --dir website/public/firmware/latest
+          # 把 manifest 内的 merged_url 重写为 Pages 同源地址，避免浏览器再去 fetch 跨域资产
           python3 - "${{ github.repository_owner }}" "${{ github.event.repository.name }}" <<'PY'
           import json, os, sys
           repo_owner, repo_name = sys.argv[1], sys.argv[2]
-          base = f"https://{repo_owner}.github.io/{repo_name}/firmware/"
-          path = "website/public/firmware/manifest.json"
+          base = f"https://{repo_owner}.github.io/{repo_name}/firmware/latest/"
+          path = "website/public/firmware/latest/manifest.json"
           with open(path, encoding="utf-8") as f:
               manifest = json.load(f)
           merged = os.path.basename(manifest["merged_url"])
@@ -111,7 +131,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build website
+      - name: Build website (Pages base)
         run: npm run build
         working-directory: website
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "air_mouse_kin.h"
+#include "voice_edit_command.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -142,6 +143,15 @@ struct XiaomiSettings {
     double gain_db = 12.0;
     // 语音键双击时序窗（ms）：第一次短击释放后等待第二次按下的最大窗口。默认 350。
     int double_click_ms = 350;
+    // usage tap 增强按键识别（Doc/Plan/xiaomi-remote-usage-tap.md）：启用
+    // back/volume_up/volume_down 三键（系统蓝牙栈丢弃）的探针注入链路。
+    // 涉及 UAC 提权注入，默认关闭，用户在按键映射对话框主动开启。
+    bool hid_tap_enabled = false;
+    // 90Hz 高通滤波开关（直连链路去爆破音，Doc/Plan/xiaomi-direct-desktop-hpf-agc.md）。
+    // 默认开。
+    bool hpf = true;
+    // 软件 AGC 开关（含 0.8FS 瞬时限幅）。默认开。
+    bool agc = true;
     // 按键映射：button_id（见 xiaomi_buttons.h，mic 除外）→ key_spec 字符串
     //（空串=显式取消该键映射，覆盖全局默认）。空 map = 全部保持系统原生行为。
     std::map<std::string, std::string> key_map;
@@ -181,6 +191,19 @@ struct WechatInputMethodConfig {
     // 不污染 focused_app/字幕的全局 interaction_mode（切输出目标时不再互相影响）。
     // 旧配置迁移：加载时若缺此字段，从顶层 interaction_mode 继承并把顶层重置为 kHoldToTalk。
     InteractionMode trigger_mode = InteractionMode::kHoldToTalk;
+    // 第三方输入法会话模型（与 trigger_mode 正交）：hold_to_talk=按住式（WeType：
+    // 启动 SendDown+repeat 维持、停止 SendUp）/ click_to_talk=点按式（Typeless：
+    // 启动/停止 SendClick）。nullopt=未显式配置，运行时按 trigger_mode 推导
+    //（访问时经 EffectiveSessionModel()，设置热切 trigger 后语义同步跟随）。
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md）组合 =
+    // trigger_mode=click_to_talk + session_model="hold_to_talk"：用户点按 toggle、
+    // 对输入法维持按住注入（规避物理 F5 流对 WeType 静默期的毒化）。
+    std::optional<InteractionMode> session_model;
+
+    // 本会话生效的输入法会话模型：显式配置优先，否则跟随 trigger_mode。
+    InteractionMode EffectiveSessionModel() const {
+        return session_model.value_or(trigger_mode);
+    }
     // 虚拟麦克风播放端名称子串，例如 "CABLE Input (VB-Audio Virtual Cable)"。
     std::string virtual_mic_playback_name = "CABLE Input";
     // 虚拟麦克风录音端名称子串，例如 "CABLE Output (VB-Audio Virtual Cable)"。
@@ -210,6 +233,82 @@ struct HotwordCategory {
 inline int HotwordTraySizeClamp(int size) {
     return size < 6 ? 6 : (size > 24 ? 24 : size);
 }
+
+// 本机麦克风模式配置（[local_asr] 段，Windows 端）：本机麦克风采集 + SenseVoice
+// 本地离线识别 + 按住热键说话，无 BLE 设备也可语音输入（P1 核心闭环并入产品）。
+// 默认关闭：不改变现有设备链路行为。
+struct LocalAsrConfig {
+    // 模式总开关：false 时按住说话热键完全旁路。
+    bool enabled = false;
+    // SenseVoice 模型目录（须含 model.int8.onnx + tokens.txt）。空 = exe 同级 models/。
+    std::string models_dir;
+    // 按住说话热键键名（right ctrl 等，见 push_to_talk_key.h 支持列表）。
+    std::string push_to_talk_key = "right ctrl";
+    // 本地文本精修开关（L1 规则 + 本地 LLM 三层防御，见
+    // Doc/Plan/local-text-refinement.md）。默认开：选本地识别的用户目的就是
+    // 干净文本；模型缺失自动降级纯规则层并在设置界面明示。
+    bool refine_enabled = true;
+    // 精修 GGUF 模型路径。空 = models_dir（或 exe 旁 models/）下
+    // Qwen3-1.7B-Q4_K_M/Qwen3-1.7B-Q4_K_M.gguf（下载向导的缓存布局同名）。
+    std::string refine_model;
+    // 精修 CPU 推理线程数（默认 6：SenseVoice 2 线程 + UI/注入留余量）。
+    int refine_num_threads = 6;
+    // 本地精修 system prompt（含 few-shot 示例）。空 = 内置默认
+    // （LocalRefinementClient::BuildSystemPrompt）；多行文本，不 Trim。
+    std::string refine_prompt;
+    // 跨轮上下文纠错（Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md）：
+    // 开启后本地精修携带最近 5 轮历史走纠正指令管线（模型只出「错词→纠正词」
+    // 指令，拼音守卫代码层执行），纠错模型口径 Qwen3-4B（M0 spike GO 判定；
+    // 4B 缺失时回退 1.7B，纠正能力降级为安全弱档）。默认关：改写能力先以
+    // 设置开关观察（对齐「守卫保底不劣化」原则）。
+    bool refine_cross_turn = false;
+
+    bool operator==(const LocalAsrConfig& other) const = default;
+};
+
+// 离线授权配置（[license] 段，Windows 端）：串码激活 + 30 天试用锚点 +
+// 防时钟回拨 last_seen。见 Doc/Plan/offline-license-activation.md。
+struct LicenseConfigEntry {
+    // 原文串码（含连字符）。空 = 未激活，走试用/过期判定。
+    std::string serial;
+    // 试用期起锚（自 2026-01-01 的天数）。nullopt = 未锚定，
+    // 运行时在首次启用本地识别后立即写入并保存。
+    std::optional<std::uint32_t> trial_anchor_days;
+    // 见过的最大日期（同口径，单调不减），时钟回拨检测与 7 天宽限。
+    std::optional<std::uint32_t> last_seen_days;
+
+    bool operator==(const LicenseConfigEntry& other) const = default;
+};
+
+// 语音编辑指令（[voice_edit] 段，Doc/Plan/voice-edit-commands.md）：说“删除/删掉最后
+// 两个字/撤销”等指令，编辑最近一次语音注入到 focused_app 的文本。默认开启（零配置可用）。
+struct VoiceEditConfig {
+    // 总开关；false = 完全回到现状（指令按普通文本上屏）。
+    bool enabled = true;
+    // 单独说“删除/删掉”时删除的字数（1..10）。
+    int default_chars = 1;
+    // 单条显式数量指令允许删除的最大字数（1..50）；超限按普通文本处理。
+    int max_chars = 20;
+    // L0 作用域时间窗（秒，10..600）：注入后超过该时长不再允许语音编辑。
+    int scope_seconds = 120;
+    // L1 校验模式：strict / auto / off（见 Doc §6.5）。默认 auto。
+    VoiceEditVerifyMode verify_mode = VoiceEditVerifyMode::kAuto;
+    // auto 模式下字段/光标不可验证时允许执行的时间窗（秒，0..30）。
+    int unverified_seconds = 8;
+
+    bool operator==(const VoiceEditConfig& other) const = default;
+};
+
+// [voice_edit] 数值范围（Load 钳位与设置 UI 共用；设置 UI 只暴露 enabled 与
+// default_chars，其余字段供 config.toml 手改）。
+constexpr int kVoiceEditDefaultCharsMin = 1;
+constexpr int kVoiceEditDefaultCharsMax = 10;
+constexpr int kVoiceEditMaxCharsMin = 1;
+constexpr int kVoiceEditMaxCharsMax = 50;
+constexpr int kVoiceEditScopeSecondsMin = 10;
+constexpr int kVoiceEditScopeSecondsMax = 600;
+constexpr int kVoiceEditUnverifiedSecondsMin = 0;
+constexpr int kVoiceEditUnverifiedSecondsMax = 30;
 
 struct AppConfig {
     static constexpr std::string_view minimum_compatible_firmware_version = "0.3.0";
@@ -281,6 +380,9 @@ struct AppConfig {
     std::map<std::string, OverlayPosition> device_overlay_positions;
     OutputProfile default_output_profile;
     WechatInputMethodConfig wechat_input_method;
+    LocalAsrConfig local_asr;
+    LicenseConfigEntry license;
+    VoiceEditConfig voice_edit;
     std::map<std::string, OutputProfile> device_output_profiles;
     // 粘贴文本后是否自动按回车确认。默认关闭（用户手动回车，避免误提交）。
     bool auto_enter = false;
@@ -305,6 +407,9 @@ struct AppConfig {
     XiaomiSettings default_xiaomi_settings;
     std::map<std::string, XiaomiSettings> device_xiaomi_settings;
     bool xiaomi_suppress_f5 = true;
+    // 网关软件路由键长按连发间隔（ms）：按键映射对话框滑块调整，钳位
+    // [30, 300]（对话框/连发状态机双重钳位），默认 120ms（音量键直触发同款）。
+    int xiaomi_gateway_repeat_interval_ms = 120;
     // 体感鼠标：速度环时间常数（秒），手停滑行 ≈ 3×tau，越大缓停越长。默认 0.05。
     double air_mouse_tau = 0.05;
     // 体感鼠标：是否反转 Y 轴（适配用户习惯）。默认不反转。
@@ -336,6 +441,8 @@ struct AppConfig {
     bool selection_hotword_enabled = false;
     bool debug_audio_cache = false;
     std::filesystem::path debug_audio_directory;
+    // RNNoise 人声增强/降噪（ASR 前；PoC，默认关；仅主输入路径，字幕/微信路径不覆盖）。
+    bool audio_noise_suppression = false;
     // 便携模式：当 exe 同级目录存在 config.toml 时自动激活，
     // 所有数据（配置/日志/调试音频）存储在 exe 目录而非 %APPDATA%。
     bool portable_mode = false;
@@ -362,6 +469,9 @@ struct AppConfig {
 
     void Save() const;
     void Save(const std::filesystem::path& path) const;
+    // 实际写入器（B9）：序列化到同目录 .tmp 后 MoveFileExW 原子替换，不处理
+    // [license] 重取（Save 包装器负责）。一般不直接调用，测试可用。
+    void WriteTo(const std::filesystem::path& path) const;
     // 运行时 Save：先重读磁盘最新凭据覆盖到副本再写回，避免内存过期凭据覆盖用户手改的 key。
     // onboarding/设置对话框保存仍用普通 Save()（需写入用户刚输入的 key）。
     void SavePreservingDiskCredentials() const;
@@ -375,6 +485,15 @@ struct AppConfig {
     void SavePairedDeviceInfo(const std::string& device_id,
                               const std::string& hardware,
                               const std::string& firmware_version);
+    // 测试/工具用：同 SavePairedDeviceInfo，但写指定路径而非 ConfigPath()。
+    void SavePairedDeviceInfo(const std::filesystem::path& path,
+                              const std::string& device_id,
+                              const std::string& hardware,
+                              const std::string& firmware_version);
+    // 用磁盘上的 [license] 覆盖本对象内存值。license 段由 LicenseRuntime 在 win32_app
+    // 内存中维护，而协调器等组件持有的是更早的 config 快照；快照落盘前须调用本方法，
+    // 否则会把磁盘上更新的试用锚点/last_seen/串码抹掉（见 SavePairedDeviceInfo）。
+    void ReloadLicenseFromDisk(const std::filesystem::path& path);
     void RemovePairedDevice(const std::string& device_id);
     std::string ActiveApiKey() const;
     // 腾讯云 ASR 凭据：配置空则回退编译期内置值（预配置 MSI 分发用；不落盘）。

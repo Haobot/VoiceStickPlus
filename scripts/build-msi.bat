@@ -40,11 +40,19 @@ echo [1/4] CMake RelWithDebInfo build...
 :: Baked into VoiceStick.exe at compile time; Active*() accessors fall back to them on
 :: first launch, skipping the ASR onboarding step for new users.
 :: See Doc/Plan/windows-builtin-api-key.md.
-for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1"`) do set "%%a=%%b"
-if not defined VOICESTICK_BUILTIN_API_KEY (
-    echo WARNING: volcengine_api_key not found; exe will have no built-in ASR key, new users must fill it in onboarding.
+:: P0-4 note: 本项目当前为内部测试模式，默认嵌入内置凭据（开箱即用免输 API Key）；
+:: 显式 VOICESTICK_EMBED_BUILTIN_KEYS=0 才构建无凭据公开包。配套门禁
+:: scan_release_artifacts.py 需加 --allow-builtin（内测包命中仅告警不阻断）。
+if not defined VOICESTICK_EMBED_BUILTIN_KEYS set "VOICESTICK_EMBED_BUILTIN_KEYS=1"
+if /I "%VOICESTICK_EMBED_BUILTIN_KEYS%"=="1" (
+    for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0extract_builtin_key.ps1" -ConfigPath "%PROJECT_DIR%\desktop\Ref\Config\config.toml"`) do set "%%a=%%b"
+    if not defined VOICESTICK_BUILTIN_API_KEY (
+        echo WARNING: VOICESTICK_EMBED_BUILTIN_KEYS=1 but volcengine_api_key not found; exe has no built-in ASR key.
+    ) else (
+        echo Injecting built-in credentials into VoiceStick.exe [OPT-IN]
+    )
 ) else (
-    echo Injecting built-in credentials into VoiceStick.exe
+    echo NOTICE: VOICESTICK_EMBED_BUILTIN_KEYS=0 - building WITHOUT built-in credentials.
 )
 cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
     -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%" ^
@@ -79,8 +87,27 @@ if not exist "%BUILD_DIR%\WinSparkle.dll" (
     echo ERROR: WinSparkle.dll not found in build directory.
     exit /b 1
 )
+:: Local ASR runtime deps (copied from third_party/sherpa-onnx by CMake file(COPY)).
+:: VoiceStick.exe implicitly links sherpa-onnx-c-api.dll, which loads onnxruntime.dll;
+:: missing either file makes the installed app fail at launch with a loader error.
+if not exist "%BUILD_DIR%\sherpa-onnx-c-api.dll" (
+    echo ERROR: sherpa-onnx-c-api.dll not found in build directory.
+    exit /b 1
+)
+if not exist "%BUILD_DIR%\onnxruntime.dll" (
+    echo ERROR: onnxruntime.dll not found in build directory.
+    exit /b 1
+)
 if not exist "%BUILD_DIR%\VoiceStickFlash.exe" (
     echo ERROR: VoiceStickFlash.exe not found in build directory.
+    exit /b 1
+)
+if not exist "%BUILD_DIR%\VoiceStickHidTap.dll" (
+    echo ERROR: VoiceStickHidTap.dll not found in build directory.
+    exit /b 1
+)
+if not exist "%BUILD_DIR%\VoiceStickTapInject.exe" (
+    echo ERROR: VoiceStickTapInject.exe not found in build directory.
     exit /b 1
 )
 
@@ -127,36 +154,21 @@ if defined SIGNING_SHA1 (
 ) else (
     set SIGN_ARGS=/v /fd sha256 /a /uw /tr http://timestamp.sectigo.com /td sha256
 )
-"%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStick.exe"
-if errorlevel 1 (
-    echo ERROR: Signing VoiceStick.exe failed.
-    exit /b 1
-)
-powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\VoiceStick.exe'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
-if errorlevel 1 (
-    echo ERROR: VoiceStick.exe is not signed.
-    exit /b 1
-)
-"%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\WinSparkle.dll"
-if errorlevel 1 (
-    echo ERROR: Signing WinSparkle.dll failed.
-    exit /b 1
-)
-powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\WinSparkle.dll'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
-if errorlevel 1 (
-    echo ERROR: WinSparkle.dll is not signed.
-    exit /b 1
-)
-"%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStickFlash.exe"
-if errorlevel 1 (
-    echo ERROR: Signing VoiceStickFlash.exe failed.
-    exit /b 1
-)
-powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\VoiceStickFlash.exe'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
-if errorlevel 1 (
-    echo ERROR: VoiceStickFlash.exe is not signed.
-    exit /b 1
-)
+:: Third-party ASR runtime DLLs shipped inside the MSI (sherpa-onnx + onnxruntime);
+:: signing them like WinSparkle.dll keeps a consistent publisher across all packaged
+:: binaries. All sign calls go through :SignAndVerify below, which retries once per
+:: transient Defender real-time-scan hook (CRYPT_E_BAD_ENCODE 0x80093102) that
+:: intermittently fails random files during SignerSign.
+call :SignAndVerify "%BUILD_DIR%\VoiceStick.exe" || exit /b 1
+call :SignAndVerify "%BUILD_DIR%\WinSparkle.dll" || exit /b 1
+call :SignAndVerify "%BUILD_DIR%\sherpa-onnx-c-api.dll" || exit /b 1
+call :SignAndVerify "%BUILD_DIR%\onnxruntime.dll" || exit /b 1
+call :SignAndVerify "%BUILD_DIR%\VoiceStickFlash.exe" || exit /b 1
+:: usage tap 探针 DLL 与提权注入器（增强按键识别链路）：注入系统 HID 宿主的
+:: 组件必须签名（AV/SmartScreen 关注度低；注入器部署前按签名后的文件做
+:: SHA-256 一致性校验）。
+call :SignAndVerify "%BUILD_DIR%\VoiceStickHidTap.dll" || exit /b 1
+call :SignAndVerify "%BUILD_DIR%\VoiceStickTapInject.exe" || exit /b 1
 
 :: Step 3: Build MSI with WiX
 echo.
@@ -168,32 +180,44 @@ if errorlevel 1 (
     echo ERROR: prepare_flash_payload failed.
     exit /b 1
 )
-:: Generate MSI config.template.toml with real test keys so installed users get
-:: Volcengine/Tencent/LLM working out of the box. Default source: the local
-:: %APPDATA%\VoiceStick\config.toml (same file extract_builtin_key.ps1 reads for
-:: exe-baked credentials). Override with VOICESTICK_MSI_CONFIG_SOURCE.
-:: Secrets live in the generated build-dir copy only, never committed.
+:: P0-4: the real-key config.template.toml is now explicit opt-in. Unless
+:: VOICESTICK_MSI_CONFIG_SOURCE is set (or VOICESTICK_MSI_EMBED_REAL_KEYS=1), the
+:: placeholder template copied by CMake POST_BUILD stays in place - public MSI has no keys.
 if not defined VOICESTICK_MSI_CONFIG_SOURCE (
-    set "VOICESTICK_MSI_CONFIG_SOURCE=%APPDATA%\VoiceStick\config.toml"
+    if /I "%VOICESTICK_MSI_EMBED_REAL_KEYS%"=="1" set "VOICESTICK_MSI_CONFIG_SOURCE=%APPDATA%\VoiceStick\config.toml"
 )
-if not exist "%VOICESTICK_MSI_CONFIG_SOURCE%" (
-    echo WARNING: MSI config source not found: %VOICESTICK_MSI_CONFIG_SOURCE%
-    echo          Falling back to placeholder template from resources\config.template.toml
-) else (
-    echo Generating MSI config with test keys from: %VOICESTICK_MSI_CONFIG_SOURCE%
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0generate_msi_config.ps1" ^
-        -SourceConfig "%VOICESTICK_MSI_CONFIG_SOURCE%" ^
-        -TemplateConfig "%PROJECT_DIR%\desktop\windows\resources\config.template.toml" ^
-        -OutputConfig "%BUILD_DIR%\config.template.toml"
-    if errorlevel 1 (
-        echo ERROR: Failed to generate MSI config from test keys.
-        exit /b 1
+if defined VOICESTICK_MSI_CONFIG_SOURCE (
+    if not exist "%VOICESTICK_MSI_CONFIG_SOURCE%" (
+        echo WARNING: MSI config source not found: %VOICESTICK_MSI_CONFIG_SOURCE%
+        echo          Using placeholder template from resources\config.template.toml
+    ) else (
+        echo Generating MSI config with real keys from: %VOICESTICK_MSI_CONFIG_SOURCE% [OPT-IN]
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0generate_msi_config.ps1" ^
+            -SourceConfig "%VOICESTICK_MSI_CONFIG_SOURCE%" ^
+            -TemplateConfig "%PROJECT_DIR%\desktop\windows\resources\config.template.toml" ^
+            -OutputConfig "%BUILD_DIR%\config.template.toml"
+        if errorlevel 1 (
+            echo ERROR: Failed to generate MSI config from test keys.
+            exit /b 1
+        )
     )
+) else (
+    echo NOTICE: MSI config uses placeholder template - no real keys embedded [OPT-IN off]
 )
 :: Optional: inject a real config (with secrets) via VOICESTICK_CONFIG_TEMPLATE to override the placeholder.
 :: Used to distribute a pre-configured MSI to testers; secrets are injected only at local build time, never committed.
 :: On first launch the exe-adjacent config.template.toml is copied to %APPDATA%\VoiceStick\config.toml if absent.
 :: See Doc/Plan/windows-msi-config-template-seed.md for details.
+:: 内部测试模式：未设置时默认用测试凭据配置（开箱即用免输 API Key）；设 none 则强制用占位模板。
+if not defined VOICESTICK_CONFIG_TEMPLATE (
+    if exist "%PROJECT_DIR%\desktop\Ref\Config\config.toml" (
+        set "VOICESTICK_CONFIG_TEMPLATE=%PROJECT_DIR%\desktop\Ref\Config\config.toml"
+    )
+)
+if /I "%VOICESTICK_CONFIG_TEMPLATE%"=="none" (
+    set "VOICESTICK_CONFIG_TEMPLATE="
+    echo NOTICE: VOICESTICK_CONFIG_TEMPLATE=none - using placeholder template.
+)
 if defined VOICESTICK_CONFIG_TEMPLATE (
     if exist "%VOICESTICK_CONFIG_TEMPLATE%" (
         echo Overriding MSI config template from: %VOICESTICK_CONFIG_TEMPLATE%
@@ -245,14 +269,18 @@ echo.
 echo [4/4] Signing MSI...
 for %%C in (zh-CN en-US) do (
     echo Signing VoiceStick_%VERSION%_%%C.msi...
-    "%SIGNTOOL%" sign %SIGN_ARGS% "%BUILD_DIR%\VoiceStick_%VERSION%_%%C.msi"
+    call :SignAndVerify "%BUILD_DIR%\VoiceStick_%VERSION%_%%C.msi" || exit /b 1
+)
+
+:: Step 5: Verify MSI contents (post-build gate). The packaging list is hand-maintained;
+:: v2.4.1 shipped without sherpa-onnx-c-api.dll/onnxruntime.dll and nothing downstream
+:: caught it. This fails the build if any required top-level file is missing from the MSI.
+echo.
+echo Step 4b: Verifying MSI contents...
+for %%C in (zh-CN en-US) do (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify_msi_contents.ps1" -Msi "%BUILD_DIR%\VoiceStick_%VERSION%_%%C.msi"
     if errorlevel 1 (
-        echo ERROR: Signing %%C MSI failed.
-        exit /b 1
-    )
-    powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '%BUILD_DIR%\VoiceStick_%VERSION%_%%C.msi'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
-    if errorlevel 1 (
-        echo ERROR: %%C MSI is not signed.
+        echo ERROR: %%C MSI content verification failed.
         exit /b 1
     )
 )
@@ -261,3 +289,30 @@ echo.
 echo Success:
 echo   %BUILD_DIR%\VoiceStick_%VERSION%_zh-CN.msi
 echo   %BUILD_DIR%\VoiceStick_%VERSION%_en-US.msi
+exit /b 0
+
+:: 签名单个文件并验证。Defender 实时扫描会在 SignerSign 写证书表时钩住文件，
+:: 间歇性返回 CRYPT_E_BAD_ENCODE (0x80093102) 且随机命中不同文件——对失败重试
+:: （最多 3 次尝试，间隔 2s），重试仍败才算签名失败。
+:: 用法: call :SignAndVerify "<文件路径>" || exit /b 1
+:SignAndVerify
+set "SIGN_TARGET=%~1"
+set /a SIGN_ATTEMPT=0
+:SignAndVerifyRetry
+"%SIGNTOOL%" sign %SIGN_ARGS% "%SIGN_TARGET%"
+if not errorlevel 1 goto SignAndVerifyCheck
+set /a SIGN_ATTEMPT+=1
+if !SIGN_ATTEMPT! GEQ 3 (
+    echo ERROR: Signing "!SIGN_TARGET!" failed after !SIGN_ATTEMPT! attempts.
+    exit /b 1
+)
+echo Signing "!SIGN_TARGET!" failed ^(attempt !SIGN_ATTEMPT!^), retrying in 2s...
+ping -n 3 127.0.0.1 >nul
+goto SignAndVerifyRetry
+:SignAndVerifyCheck
+powershell -NoProfile -Command "$sig = Get-AuthenticodeSignature -FilePath '!SIGN_TARGET!'; if ($sig.SignerCertificate) { exit 0 }; exit 1"
+if errorlevel 1 (
+    echo ERROR: "!SIGN_TARGET!" is not signed.
+    exit /b 1
+)
+goto :eof

@@ -2,6 +2,8 @@
 
 #include "byte_utils.h"
 
+#include <chrono>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +21,58 @@ enum class DeviceClass {
 // StickS3 固件在 device_info 中自报 "stick_s3"；小米遥控器无固件版本概念，
 // 由桌面端合成 device_info 时填入本常量。
 inline constexpr std::string_view kHardwareXiaomiRemote2Pro = "xiaomi_remote_2_pro";
+// StickS3 自报硬件标识（device_info.hardware）。
+inline constexpr std::string_view kHardwareStickS3 = "stick_s3";
+
+// 直连失败后的主动重连调度决策（PlanReconnectAfterConnectFailure 的返回值）：
+// schedule=false 不重试；否则 delay 毫秒后由 BleCentralWin 心跳按地址兜底直连。
+struct ConnectFailureReconnectPlan {
+    bool schedule = false;
+    std::chrono::milliseconds delay{0};
+};
+
+// 心跳探测发现会话长时间零入站时的处置决策（PlanZombieRecovery 的返回值）。
+// 抽纯函数便于单测；消费方为 BleCentralWin 心跳线程 ProbeSessions。
+enum class ZombieRecoveryAction {
+    kNone,        // 会话健康，继续心跳探测
+    kScanOnly,    // 链路真的断了：按普通断连处理，重扫等待设备自然回连
+    kRepairBond,  // 僵尸会话（订阅假成功、设备侧 state_sub=0）：重扫等不到（设备
+                  // 多已被另一宿主连上而停止广播），必须按地址主动直连并走自愈梯度
+                  //（见 ZombieHealLevel）
+};
+
+// 僵尸会话自愈梯度（PlanZombieHeal 的返回值）。抽纯函数便于单测；消费方为
+// BleCentralWin（心跳判僵尸 / 连接期活性证明失败）。三级由弱到强，只有在上一级
+// 用满次数后才升级——力度越大代价越大（见 ble_protocol.cc 实现注释）。
+enum class ZombieHealLevel {
+    kLightReconnect,  // A：只回收 WinRT 侧对象后按地址直连。零副作用，不动系统配对，
+                      //    因此 HOGP 按键直通不受影响。
+    kFullRepair,      // B：重置 Bluetooth radio 清 controller 级加密上下文缓存。
+                      //    **不动系统配对** —— 2026-09-19 真机实测：unpair 会连 HOGP
+                      //    HID 节点一起删掉，而 PairAsync 在「设备已被 app 连上（停广播）」
+                      //    时必失败（status=19 Failed，12 次复现），按键直通就此死掉。
+                      //    代价是一次全链路中断（radio 灭约 5s），bond 保留、HID 宿主自行
+                      //    恢复。缺 bond 的重建改由独立的看门狗在「无会话 + 设备在广播」
+                      //    条件下做（BleCentralWin::RepairOsBondAsync）。
+    kUserAction,      // 末级：两级都恢复不了，保留现状，托盘气泡指引用户手动重配。
+};
+
+// 僵尸自愈梯度参数：一次故障期内先做 kZombieLightAttemptsBeforeRepair 次轻量重连，
+// 仍判定僵尸才升级为全量修复；全量修复一次故障期最多 kZombieMaxFullRepairsPerEpisode
+// 次（radio reset 是重动作，不能反复做），用满仍失败即转用户处理。
+inline constexpr int kZombieLightAttemptsBeforeRepair = 2;
+inline constexpr int kZombieMaxFullRepairsPerEpisode = 1;
+
+// 系统级配对尝试结束后的后续动作（PlanAfterOsBondAttempt 的返回值）。
+enum class OsBondFollowUp {
+    kContinue,             // 已配对：直接继续 GATT 连接
+    kAbortWithError,       // 未配对且为硬前置：报错中止本次配对
+    kContinueWithWarning,  // 未配对但可降级：提示后继续 GATT 连接
+};
+
+// 连接失败 reason 中代表「用户主动取消」的标识（CancelPendingConnect 路径
+// 的 fail 调用统一使用该字面量，纯函数据此拒绝对已取消连接自动重连）。
+inline constexpr std::string_view kConnectFailureReasonCancelled = "cancelled";
 
 struct AudioFrame {
     std::uint32_t session_id = 0;
@@ -62,6 +116,30 @@ struct StateEvent {
     std::optional<std::uint32_t> steps;
     // 事件来源标签：编码器按钮事件为 "encoder"；物理键/远程键省略该字段（空串）。
     std::string source;
+    // 网关按键事件（gateway_key，P1 隧道融合）：key 为固件协议键名（如 "back"），
+    // pressed 为按下沿。非网关按键事件为空/缺省。
+    std::string gateway_key;
+    std::optional<bool> gateway_pressed;
+    // 网关模式（gateway_status 独立小帧）：true=网关模式。老固件不发送该事件，
+    // 消费端按「未知」处理（不抑制直连 ATVV），见
+    // Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md。
+    std::optional<bool> gateway_mode;
+    // 网关路由回执（gateway_keymap，D10）：固件回发当前生效的 key→route 表
+    //（gateway_keymap_get 或 set 之后）。非该事件为空；此前 Windows 完全不解析
+    // 被静默丢弃 → 路由 UI 无法回显（macOS 侧已解析）。
+    struct KeyRoute {
+        std::string key;
+        std::string route;
+    };
+    std::vector<KeyRoute> keymap_routes;
+    // A15：分片回执（seq/more，protocol.md）——13 键全表 ≈470B 超单帧预算
+    //（ATT MTU 247 → JSON ≤240B），固件按片发送；旧式单帧缺此二字段时
+    // 保持 seq=0/more=false = 完整单帧（向后兼容）。
+    unsigned keymap_seq = 0;
+    bool keymap_more = false;
+    // D9：proto_info 小帧字段（设备协议版本；非该事件为空）。
+    std::optional<int> proto;
+    std::optional<int> min_proto;
 };
 
 struct FirmwareOtaStateEvent {
@@ -70,6 +148,8 @@ struct FirmwareOtaStateEvent {
     std::optional<std::uint32_t> written;
     std::optional<std::uint32_t> size;
     std::string code;
+    // 固件侧 esp_err_t 原始错误码（最有排查价值；老固件可能不发）。
+    std::optional<std::uint32_t> esp_err;
     std::optional<std::uint32_t> reboot_ms;
 };
 
@@ -102,6 +182,20 @@ public:
 
     static std::optional<AudioFrame> ParseAudioFrame(std::span<const std::uint8_t> data);
     static std::optional<StateEvent> ParseStateEvent(std::span<const std::uint8_t> data);
+
+    // A15：gateway_keymap 分片累计（纯逻辑，单测直驱）。语义见 protocol.md：
+    // seq==0 重启未完成的累计；more=false 时返回 true 表示 pending 即完整路由表
+    //（旧式单帧缺 seq/more → seq0/false → 即到即完整，向后兼容）。
+    static bool AccumulateKeymap(std::vector<StateEvent::KeyRoute>& pending,
+                                 const StateEvent& event);
+
+    // D9：协议版本（= state_tx 帧首字节 version 的取值）。与固件
+    // VOICE_BLE_PROTO_VERSION、macOS BleProtocol 常量三端同步演进，见
+    // protocol.md「Protocol version & negotiation」。
+    static constexpr int kProtocolVersion = 1;
+    static constexpr int kProtocolMinVersion = 1;
+    // D9：桌面端版本上报帧 {"event":"proto_negotiate","proto":N}。
+    static ByteVector ProtoNegotiatePayload();
     static std::optional<MotionEvent> ParseMotionFrame(std::span<const std::uint8_t> data);
     // power_log 分片帧（type==0x10，payload 含 "power_log" 键；ParseStateEvent 对
     // 其返回 nullopt，因无 "event" 字段）。
@@ -117,6 +211,16 @@ public:
     static ByteVector TapEnabledPayload(bool enabled);
     static ByteVector EncoderLedColorPayload(std::string_view color);
     static ByteVector EncoderRecordingGatePayload(bool enabled);
+    // 网关按键路由命令（P1）：key 为固件协议键名（gateway_keymap_key_name 口径），
+    // software=true 设软件路由（gateway_key 事件上报）、false 恢复 HOGP 直通。
+    static ByteVector GatewayKeymapSetPayload(std::string_view key, bool software);
+    static ByteVector GatewayKeymapGetPayload();
+    // P1 目标表：桌面端上报自己的显示名（主机名），固件把它绑定到当前连接对端的
+    // identity address 上。仅网关模式有意义（固件侧据此给目标表命名）。
+    static ByteVector GatewayTargetInfoPayload(std::string_view name);
+    // P1 切换器：选择网关目标。self=true = "把本机（当前连接对端）设为目标"，
+    // false = 清除选择（回到不限制）。桌面端无需知道设备目标表的下标。
+    static ByteVector GatewaySelectTargetPayload(bool self);
     static ByteVector TapSensitivityPayload(int level);
     static ByteVector AirMouseEnabledPayload(bool enabled);
     static ByteVector BatteryStatusRequestPayload();
@@ -137,8 +241,18 @@ public:
                                           std::uint32_t request_id);
     static ByteVector OtaBeginPayload(std::uint32_t image_size, std::uint32_t transfer_id);
     static ByteVector OtaDataPayload(std::uint32_t transfer_id, std::uint32_t offset, std::span<const std::uint8_t> chunk);
+    // D6：OTA 数据分块 = max_pdu −15（12B 帧头 + 3B ATT 头，MaxPduSize 口径含 ATT），
+    // **无下限兜底**；放不下返回 0（调用方据此报错，绝不构造超 MTU 的包——原
+    // max(20,…) 在 MTU 退化到 20 时必 bad_offset）。
+    static std::size_t OtaChunkSizeForPdu(std::size_t max_pdu);
     static ByteVector OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size);
     static ByteVector OtaAbortPayload(std::uint32_t transfer_id);
+    // OTA 发送在途窗口（字节），随设备已确认字节数变化：
+    // 未收到首条确认时放宽到 40KB——v2.3.8 及更早固件的进度回传间隔是 32KB，
+    // 24KB 窗口会在首条确认到达前与设备互等死锁（15s stalled，2026-09-26 真机）；
+    // 首条确认证明回传通道活着，立即收紧回 24KB（8KB 回传间隔的 3 倍余量，
+    // 2026-09-20 定的流控节拍：窗口过大持续在途曾把对端控制器灌满断链）。
+    static std::size_t OtaMaxInFlightBytes(std::uint32_t confirmed_written);
     // 设备 ID 双前缀：StickS3 广播名 VS-XXXX，小米遥控器分配 RC-XXXX；
     // 两者均归一化为 4 位大写 hex（内部存储形式，向后兼容旧配置）。
     static std::optional<std::string> DeviceIdFromName(std::string_view name);
@@ -157,6 +271,30 @@ public:
     static bool IsXiaomiRemoteName(std::string_view name);
     // 名称 → 设备类别：白名单或 RC- 前缀 → 小米；VS- 前缀 → StickS3；其余 nullopt。
     static std::optional<DeviceClass> DeviceClassFromName(std::string_view name);
+    // 直连失败后是否入队主动重连（心跳兜底直连）及首次重试延迟。决策抽纯函数
+    // 便于单测；消费方为 BleCentralWin 连接失败路径。
+    static ConnectFailureReconnectPlan PlanReconnectAfterConnectFailure(
+        std::string_view failure_reason,
+        bool device_still_paired,
+        bool zombie_free_retry,
+        std::chrono::milliseconds failure_cooldown);
+    // 心跳静默超时后的处置决策。silent_ms < 0 表示本会话从未收到任何入站流量，
+    // 按既有语义不判僵尸（避免刚就绪的会话被误拆）。
+    static ZombieRecoveryAction PlanZombieRecovery(bool link_gone,
+                                                   std::int64_t silent_ms,
+                                                   std::int64_t timeout_ms,
+                                                   bool is_voice_stick);
+    // 僵尸会话自愈力度：同一次故障期内先轻量重连（A），试满次数升级为全量修复（B），
+    // 全量修复也用满仍失败则转用户处理。full_repair_allowed=false（小米遥控器：无系统
+    // 级 bond 概念，HOGP 直通也不适用）时永远停留在轻量重连。
+    static ZombieHealLevel PlanZombieHeal(int light_attempts_in_episode,
+                                          int full_repairs_in_episode,
+                                          bool full_repair_allowed);
+    // 系统级配对（WinRT PairAsync）尝试结束后的后续动作。bond_required 区分两类设备：
+    // 小米遥控器是硬前置（ATVV GATT 的读取/订阅要求 OS bond，失败必须中止）；
+    // VS 设备是软前置（HOGP 按键直通需要 bond，但 app 自身的 GATT 不需要，失败降级继续）。
+    // 决策抽纯函数便于单测；消费方为 PairDeviceDialog::HandleBondFinished。
+    static OsBondFollowUp PlanAfterOsBondAttempt(bool bonded, bool bond_required);
 };
 
 } // namespace voicestick

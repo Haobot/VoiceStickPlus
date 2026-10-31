@@ -201,8 +201,64 @@ std::optional<StateEvent> BleProtocol::ParseStateEvent(std::span<const std::uint
         event.dc_latency = JsonU32Value(json, "latency");
         event.dc_timeout = JsonU32Value(json, "timeout");
     }
+    // 网关按键事件（网关模式软件路由键）：
+    // {"event":"gateway_key","key":"back","pressed":true}
+    if (event.event == "gateway_key") {
+        event.gateway_key = JsonStringValue(json, "key");
+        event.gateway_pressed = JsonBoolValue(json, "pressed");
+    }
+    // 网关模式：{"event":"gateway_status","mode":"gateway"|"normal"}
+    // 独立小帧（device_info 已到 MTU 预算）；老固件不发送 ⇒ 保持 nullopt = 未知。
+    if (event.event == "gateway_status") {
+        const auto mode = JsonStringValue(json, "mode");
+        if (!mode.empty()) {
+            event.gateway_mode = (mode == "gateway");
+        }
+    }
+    // 网关路由回执（D10）：{"event":"gateway_keymap","routes":[{"key":"back",
+    // "route":"software"}, ...]}——按本文件既有字符串扫描风格逐对象提取
+    //（macOS 侧已解析；此前 Windows 丢弃 → 路由 UI 无法回显）。
+    if (event.event == "proto_info") {
+        // D9：{"event":"proto_info","proto":1,"min_proto":1} 独立小帧。
+        event.proto = JsonIntValue(json, "proto");
+        event.min_proto = JsonIntValue(json, "min_proto");
+    }
+    if (event.event == "gateway_keymap") {
+        // A15：分片字段（缺省 = 旧式完整单帧）。固件格式为 "seq":N、"more":true/false。
+        if (const auto seq = JsonU32Value(json, "seq")) {
+            event.keymap_seq = (unsigned)*seq;
+        }
+        event.keymap_more = json.find("\"more\":true") != std::string::npos;
+        const auto routes_pos = json.find("\"routes\"");
+        const auto arr_open = routes_pos == std::string::npos ? std::string::npos
+                                                              : json.find('[', routes_pos);
+        const auto arr_close = arr_open == std::string::npos ? std::string::npos
+                                                             : json.find(']', arr_open);
+        std::size_t pos = arr_open == std::string::npos ? 0 : arr_open + 1;
+        while (arr_close != std::string::npos && pos < arr_close) {
+            const auto obj_open = json.find('{', pos);
+            if (obj_open == std::string::npos || obj_open >= arr_close) break;
+            const auto obj_close = json.find('}', obj_open);
+            if (obj_close == std::string::npos || obj_close > arr_close) break;
+            const auto object = std::string_view(json).substr(obj_open, obj_close - obj_open + 1);
+            const auto key = JsonStringValue(object, "key");
+            if (!key.empty()) {
+                event.keymap_routes.push_back({key, JsonStringValue(object, "route")});
+            }
+            pos = obj_close + 1;
+        }
+    }
 
     return event;
+}
+
+bool BleProtocol::AccumulateKeymap(std::vector<StateEvent::KeyRoute>& pending,
+                                    const StateEvent& event) {
+    if (event.keymap_seq == 0) {
+        pending.clear();
+    }
+    pending.insert(pending.end(), event.keymap_routes.begin(), event.keymap_routes.end());
+    return !event.keymap_more;
 }
 
 std::optional<MotionEvent> BleProtocol::ParseMotionFrame(std::span<const std::uint8_t> data) {
@@ -286,13 +342,41 @@ std::optional<FirmwareOtaStateEvent> BleProtocol::ParseFirmwareOtaStateEvent(std
     event.written = JsonU32Value(json, "written");
     event.size = JsonU32Value(json, "size");
     event.code = JsonStringValue(json, "code");
+    event.esp_err = JsonU32Value(json, "esp_err");
     event.reboot_ms = JsonU32Value(json, "reboot_ms");
     return event;
 }
 
+// A14：在 UTF-8 边界去掉末尾一个码点（不产生半截多字节）。
+static std::string_view TrimLastUtf8Codepoint(std::string_view s) {
+    if (s.empty()) return s;
+    std::size_t n = s.size() - 1;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
+    return s.substr(0, n);
+}
+
 ByteVector BleProtocol::UiStatePayload(std::string_view state, std::string_view text) {
-    const auto json = std::string("{\"event\":\"ui_state\",\"state\":\"") +
-                      JsonEscape(state) + "\",\"text\":\"" + JsonEscape(text) + "\"}";
+    // A14：control_rx 单帧预算 = ATT MTU247-3 = 244B（.withoutResponse 的硬上限）。
+    // 原发送端零校验：超长 text 让固件 512B 接收缓冲静默截断 → JSON 半截 parse
+    // 失败**整帧丢**（state 一起丢 → 设备屏卡在 thinking），text 字段固件侧
+    // char[256] 亦会静默切。按预算 UTF-8 边界截断 text，state 恒短保完整；
+    // protocol.md ui_state 行载明同约束（macOS 端同口径 244B）。
+    constexpr std::size_t kControlFrameMaxBytes = 244;
+    auto build = [](std::string_view s, std::string_view t) {
+        return std::string("{\"event\":\"ui_state\",\"state\":\"") +
+               JsonEscape(s) + "\",\"text\":\"" + JsonEscape(t) + "\"}";
+    };
+    auto json = build(state, text);
+    while (json.size() > kControlFrameMaxBytes && !text.empty()) {
+        text = TrimLastUtf8Codepoint(text);
+        json = build(state, text);
+    }
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::ProtoNegotiatePayload() {
+    const auto json = std::string("{\"event\":\"proto_negotiate\",\"proto\":") +
+                      std::to_string(kProtocolVersion) + "}";
     return ByteVector(json.begin(), json.end());
 }
 
@@ -323,6 +407,31 @@ ByteVector BleProtocol::EncoderLedColorPayload(std::string_view color) {
 ByteVector BleProtocol::EncoderRecordingGatePayload(bool enabled) {
     const auto json = std::string("{\"event\":\"encoder_recording_gate\",\"enabled\":") +
                       (enabled ? "true" : "false") + "}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::GatewayKeymapSetPayload(std::string_view key, bool software) {
+    const auto json = std::string("{\"event\":\"gateway_keymap_set\",\"key\":\"") +
+                      JsonEscape(key) + "\",\"route\":\"" +
+                      (software ? "software" : "passthrough") + "\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::GatewayTargetInfoPayload(std::string_view name) {
+    const auto json = std::string("{\"event\":\"gateway_target_info\",\"name\":\"") +
+                      JsonEscape(name) + "\"}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::GatewaySelectTargetPayload(bool self) {
+    const std::string json = self
+        ? "{\"event\":\"gateway_select_target\",\"self\":true}"
+        : "{\"event\":\"gateway_select_target\",\"clear\":true}";
+    return ByteVector(json.begin(), json.end());
+}
+
+ByteVector BleProtocol::GatewayKeymapGetPayload() {
+    const std::string json = "{\"event\":\"gateway_keymap_get\"}";
     return ByteVector(json.begin(), json.end());
 }
 
@@ -407,6 +516,13 @@ ByteVector BleProtocol::OtaDataPayload(std::uint32_t transfer_id,
     return data;
 }
 
+std::size_t BleProtocol::OtaChunkSizeForPdu(std::size_t max_pdu) {
+    constexpr std::size_t kOverhead = 15;  // 12B OTA 数据帧头 + 3B ATT 头（MaxPduSize 口径）
+    constexpr std::size_t kMaxChunk = 244;
+    if (max_pdu <= kOverhead) return 0;
+    return std::min(max_pdu - kOverhead, kMaxChunk);
+}
+
 ByteVector BleProtocol::OtaEndPayload(std::uint32_t transfer_id, std::uint32_t image_size) {
     ByteVector data = {1, ota_type_end, 12, 0};
     AppendLe32(data, transfer_id);
@@ -418,6 +534,11 @@ ByteVector BleProtocol::OtaAbortPayload(std::uint32_t transfer_id) {
     ByteVector data = {1, ota_type_abort, 8, 0};
     AppendLe32(data, transfer_id);
     return data;
+}
+
+std::size_t BleProtocol::OtaMaxInFlightBytes(std::uint32_t confirmed_written) {
+    // 数值语义见头文件注释：首窗覆盖旧固件 32KB 回传间隔，确认流动后收紧 24KB。
+    return confirmed_written == 0 ? std::size_t{40} * 1024 : std::size_t{24} * 1024;
 }
 
 std::optional<std::string> BleProtocol::DeviceIdFromName(std::string_view name) {
@@ -499,6 +620,74 @@ std::optional<DeviceClass> BleProtocol::DeviceClassFromName(std::string_view nam
     }
     if (value.starts_with("VS-") && IsHex4(value.substr(3, 4))) return DeviceClass::kStickS3;
     return std::nullopt;
+}
+
+ConnectFailureReconnectPlan BleProtocol::PlanReconnectAfterConnectFailure(
+    std::string_view failure_reason,
+    bool device_still_paired,
+    bool zombie_free_retry,
+    std::chrono::milliseconds failure_cooldown) {
+    // 2026-09-14 事故定案：开机自启的启动直连失败后无人重试——小米遥控器被
+    // 系统 HID 连上后不再广播，扫描路径与仅由广播触发的主动重连入队都永远
+    // 等不到，应用停在「正在连接...」直到手动忘记重配。凡非取消、仍配对的
+    // 失败一律入队心跳兜底直连；设备到位（含已被系统 HID 连上）后一次成功。
+    // 取消优先于一切：用户主动取消的连接不得被自动重试复活。
+    if (failure_reason == kConnectFailureReasonCancelled || !device_still_paired) {
+        return {};
+    }
+    ConnectFailureReconnectPlan plan;
+    plan.schedule = true;
+    // 僵尸拆链免退避窗口与失败退避互斥：免退避路径立即到期，心跳下一跳即重试。
+    plan.delay = zombie_free_retry ? std::chrono::milliseconds(0) : failure_cooldown;
+    return plan;
+}
+
+ZombieRecoveryAction BleProtocol::PlanZombieRecovery(bool link_gone,
+                                                     std::int64_t silent_ms,
+                                                     std::int64_t timeout_ms,
+                                                     bool is_voice_stick) {
+    // 链路属性已翻 Disconnected：普通断连，重扫等设备回连即可。
+    if (link_gone) return ZombieRecoveryAction::kScanOnly;
+    if (silent_ms < 0 || silent_ms <= timeout_ms) return ZombieRecoveryAction::kNone;
+    // 超时静默但链路属性仍是 Connected ⇒ 僵尸会话：CCCD 订阅与写入全部「假成功」，
+    // 设备侧从未登记订阅（固件日志 send_state_json gated: state_sub=0），因此
+    // 录音被拒（voice_ble_is_ready 需要 state+audio 均已订阅）。
+    // 重扫救不了：VS 设备此际多已被系统 HID 宿主连上并停止广播（voice_ble 连上
+    // 即 stop_advertising），应用扫描永远等不到广播 —— 必须按地址主动直连，再按
+    // PlanZombieHeal 的梯度升级（2026-09-19 P0，见 Doc/Plan/
+    // xiaomi-gateway-p0-zombie-self-heal.md；此前的「只能由用户手动重配」结论已废弃）。
+    // 小米遥控器不走本路径：其会话由 ProbeXiaomiSessionAsync 单独探测，且不存在
+    // 系统级 bond 概念，误报只会打扰用户。
+    return is_voice_stick ? ZombieRecoveryAction::kRepairBond
+                          : ZombieRecoveryAction::kScanOnly;
+}
+
+ZombieHealLevel BleProtocol::PlanZombieHeal(int light_attempts_in_episode,
+                                            int full_repairs_in_episode,
+                                            bool full_repair_allowed) {
+    // 小米遥控器没有系统级 bond 概念（ATVV GATT 不依赖 OS 配对，HOGP 直通也不适用
+    // RC 设备），全量修复对它只有副作用，一律停在轻量重连。
+    if (!full_repair_allowed) return ZombieHealLevel::kLightReconnect;
+    // 全量修复次数先判：用满即转用户，避免 radio reset 反复中断全链路。
+    if (full_repairs_in_episode >= kZombieMaxFullRepairsPerEpisode) {
+        return ZombieHealLevel::kUserAction;
+    }
+    // 轻量重连（只回收 WinRT 对象、按地址直连）零副作用，先用满它再升级。
+    if (light_attempts_in_episode >= kZombieLightAttemptsBeforeRepair) {
+        return ZombieHealLevel::kFullRepair;
+    }
+    return ZombieHealLevel::kLightReconnect;
+}
+
+OsBondFollowUp BleProtocol::PlanAfterOsBondAttempt(bool bonded, bool bond_required) {
+    if (bonded) return OsBondFollowUp::kContinue;
+    // 硬前置（小米遥控器）：ATVV GATT 的读取/订阅要求 OS bond，没有 bond 连上也没用，
+    // 半可用状态只会让用户困惑，直接中止并给系统蓝牙设置引导。
+    if (bond_required) return OsBondFollowUp::kAbortWithError;
+    // 软前置（VS 设备）：app 自身 GATT 不需要 bond，只有 HOGP 按键直通需要。
+    // 失败降级继续，保住「语音可用」这条既有路径，并用状态栏把补救方式讲清楚。
+    // 2026-09-18 定案：不让系统侧的问题把整个设备卡死。
+    return OsBondFollowUp::kContinueWithWarning;
 }
 
 } // namespace voicestick

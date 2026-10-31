@@ -22,6 +22,7 @@ enum class StringId {
     kSettingsLanguageEnglish,
     kSettingsLanguageChineseSimplified,
     kSettingsProvider,
+    kSettingsProviderLocal,
     kSettingsApiKey,
     kSettingsResourceId,
     kSettingsHotwords,
@@ -89,6 +90,27 @@ enum class StringId {
     kSettingsOpenSpectrogram,
     kSettingsSpectrogramNotFound,
     kSettingsDeveloperMode,
+    kSettingsLocalMicModelsDir,
+    kSettingsLocalMicHotkey,
+    kSettingsLocalMicHotkeyHint,
+    kSettingsLocalMicBrowse,
+    kSettingsLocalMicCapture,
+    kSettingsLocalMicCapturing,
+    kSettingsLocalMicHotkeyUnsupported,
+    kSettingsLocalMicModelsOk,
+    kSettingsLocalMicModelsMissing,
+    kSettingsLocalMicDownload,
+    kModelDownloadTitle,
+    kModelDownloadIntro,
+    kModelDownloadAsrItem,
+    kModelDownloadRefineItem,
+    kModelDownloadDiskSpace,
+    kModelDownloadStart,
+    kModelDownloadRunning,
+    kModelDownloadDone,
+    kModelDownloadDoneRefineMissing,
+    kModelDownloadFailed,
+    kModelDownloadCancelled,
 
     // 托盘菜单
     kMenuPairDevice,
@@ -120,6 +142,7 @@ enum class StringId {
     kMenuHotkey,
     kMenuHotkeyEnabled,
     kMenuHotkeyCustom,
+    kMenuLocalMicHotkey,
     kMenuHotkeyConflictTitle,
     kMenuHotkeyConflictBody,
 
@@ -165,6 +188,9 @@ enum class StringId {
     kDeviceTypeXiaomiRemote2Pro,
     kPairXiaomiOsPairing,
     kPairXiaomiBondFailed,
+    // 网关模式下抑制直连遥控器（Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）
+    kPairGatewayRelayedSuffix,
+    kPairGatewayRelayedBlocked,
 
     // 引导窗口
     kOnboardingTitle,
@@ -239,6 +265,9 @@ enum class StringId {
     kHotkeyMissingModifier,
     kHotkeyConflictTitle,
     kHotkeyConflictMessage,
+    // 快捷键录入超时提示（前台为提权窗口时键盘事件被 UIPI 隔离的引导）。
+    kHotkeyCaptureTimeoutTitle,
+    kHotkeyCaptureTimeoutBody,
 
     // 云服务提示
     kCloudNeedsAttentionTitle,
@@ -257,6 +286,8 @@ enum class StringId {
     kNotificationManualPairSavedBody,
     kNotificationFirmwareUpdatedTitle,
     kNotificationFirmwareUpdatedBody,
+    kNotificationAppUpdateTitle,
+    kNotificationAppUpdateBody,
 
     // 悬浮窗
     kOverlayListening,
@@ -425,6 +456,9 @@ enum class StringId {
     kXiaomiKeymapMicNote,
     // 画布底部提示
     kXiaomiKeymapClickHint,
+    // 录入超时提示（UIPI 隔离 + RC003 批次返回键被系统丢弃，两种原因并存）
+    kXiaomiKeymapCaptureHintTitle,
+    kXiaomiKeymapCaptureHintBody,
     // 13 个按键名（kXiaomiMappableButtons 12 键 + mic）
     kXiaomiButtonPower,
     kXiaomiButtonMic,
@@ -501,6 +535,93 @@ enum class StringId {
     kHotwordActivityClearConfirmTitle,
     kHotwordActivityClearConfirmBodyPrefix,
     kHotwordActivityClearConfirmBodySuffix,
+    // usage tap 增强按键识别（按键映射对话框开关 + 链路状态行）
+    kXiaomiHidTapToggleLabel,
+    kXiaomiHidTapHint,
+    kXiaomiHidTapStateDisabled,
+    kXiaomiHidTapStateNoHost,
+    kXiaomiHidTapStatePending,
+    kXiaomiHidTapStateConnected,
+    // 网关软件路由键长按连发间隔（按键映射对话框滑块）
+    kXiaomiGatewayRepeatLabel,
+    kXiaomiHidTapStateStale,
+    kSettingsLocalRefineEnable,
+    kSettingsLocalRefineModelOk,
+    kSettingsLocalRefineModelMissing,
+    kSettingsLocalRefinePrompt,
+    kSettingsLocalRefineCrossTurn,
+    kSettingsLocalRefineCrossTurnOk,
+    kSettingsLocalRefineCrossTurnDegraded,
+
+    // 划词纠错（S1）
+    kSelectionHotwordCorrectButton,
+    kSelectionCorrectionTitle,
+    kSelectionCorrectionWrongLabel,
+    kSelectionCorrectionCandidatesLabel,
+    kSelectionCorrectionLoading,
+    kSelectionCorrectionNoCandidates,
+    kSelectionCorrectionManualLabel,
+
+    // 离线授权（Doc/Plan/offline-license-activation.md）
+    kLicenseSectionTitle,        // "License" / "授权"
+    kLicenseStatusTrial,         // "Trial: %d days remaining" / "试用剩余 %d 天"
+    kLicenseStatusActive,        // "Licensed until %s" / "已授权至 %s"
+    kLicenseStatusPerpetual,     // "Licensed (perpetual)" / "已授权（买断）"
+    kLicenseStatusExpired,       // "License expired" / "授权已到期，请购买续期"
+    kLicenseActivateButton,      // "Activate..." / "激活…"
+    kLicenseActivatePrompt,      // "Enter license key:" / "请输入授权码："
+    kLicenseActivateSuccess,     // "License activated." / "激活成功"
+    kLicenseActivateFailFormat,  // "Invalid license key format." / "授权码格式无效"
+    kLicenseActivateFailBinding, // "This key is bound to another device/machine." / "该授权码绑定了其他设备/电脑"
+    kLicenseActivateFailExpired, // "This license key has expired." / "该授权码已过期"
+    kLicenseDeviceRequired,      // "Connect your paired voice device first." / "请先连接已配对的语音设备"
+    kLicenseLocalBlocked,        // "Local ASR requires an active license (trial expired)." / "本地语音识别需要有效授权（试用已到期）"
+
+    // 僵尸会话（心跳静默超时）提示：必须由用户到系统蓝牙设置重新配对才能恢复。
+    // 放在 kLicenseLocalBlocked 之后，localization.cc 的 kStringCount 哨兵同步更新。
+    kStaleSessionTitle,          // "Voice input needs re-pairing" / "语音输入需要重新配对"
+    kStaleSessionBody,           // 说明删除并重新添加设备的操作步骤
+
+    // VS 设备配对时系统级配对失败（软前置降级）：提示补救方式但继续配对
+    kPairOsBondOptionalFailed,
+
+    // B14：热词统一口径（hotword_selector::ValidateHotword）的拒绝提示——原四处各写
+    // 一套规则，"加进去但不生效"且无提示。
+    kSelectionHotwordInvalidTitle,  // "Invalid Hotword" / "非法热词"
+    kSelectionHotwordInvalidBody,   // 说明字符/长度原因 + 追加原文
+
+    // D10b：键位映射对话框的设备路由回执行标签（值 = "key=route, …" 列表）
+    kGatewayDeviceRoutesLabel,      // "Device routes:" / "设备路由回执："
+
+    // 语音编辑指令（Doc/Plan/voice-edit-commands.md）：设置区块 + 执行反馈。
+    // StringId 只允许在末尾追加（core_tests_license_ima.cc 的
+    // LocalizationTablesAreComplete 断言要求中英双表逐项非空）。
+    kVoiceEditSectionTitle,        // "Voice Editing" / "语音编辑"
+    kVoiceEditEnable,              // 开关
+    kVoiceEditDefaultChars,        // "Characters to delete for bare "delete"" / 默认删除字数
+    kVoiceEditHintRuntime,        // 作用域说明
+    kVoiceEditHintMode,           // 模式说明
+    kVoiceEditDeletedChars,       // "Deleted %d characters" / "已删除 %d 个字"
+    kVoiceEditDeletedSentence,    // "Deleted the last sentence" / "已删除最后一句"
+    kVoiceEditDeletedSentences,   // "Deleted the last %d sentences" / "已删除最后 %d 句"
+    kVoiceEditDeletedAll,         // "Deleted this dictation" / "已删除本次输入"
+    kVoiceEditNoTarget,           // "No voice input to delete" / "没有可删除的语音输入"
+    kVoiceEditWrongWindow,        // "The active window changed; nothing deleted"
+    kVoiceEditElevated,           // "Cannot delete in an elevated window"
+    kVoiceEditCursorMoved,        // "Cursor moved; nothing deleted"
+    kVoiceEditSelectionActive,    // "Clear the selection first"
+    kVoiceEditPassword,           // "Voice delete is not supported in password fields"
+    kVoiceEditTextChanged,        // "The dictated text has changed; nothing deleted"
+    kVoiceEditUnverifiedExpired,  // "Too late to verify the cursor; nothing deleted"
+    kVoiceEditUnreadable,         // "Cannot verify the cursor; nothing deleted"
+    // targeted 语音编辑（删除/替换最近一次输入中的指定词；只能在末尾追加）。
+    kVoiceTargetedDeleted,        // "Deleted %d characters" / "已删除 %d 个字"
+    kVoiceTargetedReplaced,       // "Replaced %d characters" / "已替换 %d 个字"
+    kVoiceTargetedNotFound,       // 目标词不在最近一次输入中
+    kVoiceTargetedAmbiguous,      // 多处匹配未指定位置
+    kVoiceTargetedInvalid,        // 指令不完整（空目标/空替换/多分隔符/否定）
+    kVoiceTargetedTextChanged,    // 字段尾部与记录不符（含手工改动/选区读回不符）
+    kVoiceTargetedUnconfirmed,    // 修改已发出但终验不符（记录已失效）
 };
 
 // 返回 UTF-8 本地化文本

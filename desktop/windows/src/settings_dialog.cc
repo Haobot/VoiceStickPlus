@@ -1,12 +1,18 @@
 #include "settings_dialog.h"
+#include "ble_protocol.h"
 #include "dpi_util.h"
 #include "default_audio_device_controller.h"
 #include "hotword_candidate_miner.h"
 #include "hotword_extractor.h"
 #include "key_spec.h"
+#include "license.h"
 #include "llm_refinement_client.h"
 #include "localization.h"
+#include "local_asr_client_win.h"
+#include "local_refinement_client.h"
 #include "log.h"
+#include "model_download_dialog.h"
+#include "serial_base32.h"
 #include "voice_stick_cloud_api_win.h"
 #include "virtual_mic_renamer.h"
 
@@ -16,6 +22,8 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <iterator>
 #include <string>
@@ -115,6 +123,23 @@ HWND CreateMultilineEdit(HWND parent, int x, int y, int w, int h, UINT id, HINST
                                ES_AUTOVSCROLL | ES_WANTRETURN,
                            x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
                            inst, nullptr);
+}
+
+// 多行编辑控件返回 CRLF，LLM 提示词用 LF：保存前统一归一化。
+std::string NormalizeEditNewlines(std::string_view text) {
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') {
+            normalized.push_back('\n');
+            ++i;
+        } else if (text[i] == '\r') {
+            normalized.push_back('\n');
+        } else {
+            normalized.push_back(text[i]);
+        }
+    }
+    return normalized;
 }
 
 // 候选热词列表：LISTBOX，LBS_NOTIFY 使选区变化以 WM_COMMAND 上报父窗口。
@@ -272,10 +297,97 @@ std::wstring PromptForText(HWND parent, const std::wstring& title, const std::ws
     return ok ? state.result : std::wstring();
 }
 
+// days（自 2026-01-01）→ "YYYY-MM-DD"（Howard Hinnant civil_from_days 逆变换，
+// 与 license.cc DateToDays 互逆）。
+std::string LicenseDateString(std::uint32_t days_since_epoch) {
+    const std::int64_t z =
+        static_cast<std::int64_t>(days_since_epoch) + 719468 + kLicenseEpochDays;
+    const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = static_cast<unsigned>(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+    const int year =
+        static_cast<int>(yoe) + static_cast<int>(era) * 400 + (m <= 2 ? 1 : 0);
+    char buffer[16] = {};
+    snprintf(buffer, sizeof(buffer), "%04d-%02u-%02u", year, m, d);
+    return buffer;
+}
+
+// 本地化模板里的首个占位符替换（"%d"/"%s" 调用点替换，仿 kModelDownloadDiskSpace）。
+std::string ReplaceFirst(std::string text, std::string_view token, const std::string& value) {
+    const auto pos = text.find(token);
+    if (pos == std::string::npos) return text;
+    text.replace(pos, token.size(), value);
+    return text;
+}
+
+// 激活输入模态框的内存模板：static 提示 + edit + OK/Cancel（DS_SETFONT，
+// 文本运行时填充——提示/标题/按钮均走本地化）。
+LPCDLGTEMPLATE BuildLicensePromptTemplate(std::vector<BYTE>* storage) {
+    storage->clear();
+    AlignDialogData(storage, 4);
+    DLGTEMPLATE dialog{};
+    dialog.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT;
+    dialog.dwExtendedStyle = WS_EX_DLGMODALFRAME;
+    dialog.cdit = 4;
+    dialog.x = 0;
+    dialog.y = 0;
+    dialog.cx = 260;
+    dialog.cy = 96;
+    AppendDialogData(storage, &dialog, sizeof(dialog));
+    AppendDialogWord(storage, 0);            // menu
+    AppendDialogWord(storage, 0);            // class
+    AppendDialogWideString(storage, L"");    // 标题运行时设置
+    AppendDialogWord(storage, 9);            // 字号
+    AppendDialogWideString(storage, L"Segoe UI");
+    auto item = [&](DWORD style, int x, int y, int cx, int cy, WORD id,
+                    WORD class_ordinal, const wchar_t* title) {
+        AlignDialogData(storage, 4);
+        const DWORD ex_style = 0;
+        const short coords[4] = {static_cast<short>(x), static_cast<short>(y),
+                                 static_cast<short>(cx), static_cast<short>(cy)};
+        AppendDialogData(storage, &style, sizeof(style));
+        AppendDialogData(storage, &ex_style, sizeof(ex_style));
+        AppendDialogData(storage, coords, sizeof(coords));
+        AppendDialogWord(storage, id);
+        AppendDialogWord(storage, 0xFFFF);   // 0xFFFF 前缀 = 序数类名
+        AppendDialogWord(storage, class_ordinal);
+        AppendDialogWideString(storage, title);
+        AppendDialogWord(storage, 0);        // 无额外数据
+    };
+    item(WS_CHILD | WS_VISIBLE | SS_LEFT, 8, 8, 244, 14,
+         SettingsDialog::kIdLicensePromptLabel, 0x0082, L"");
+    item(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+         8, 26, 244, 16, SettingsDialog::kIdLicensePromptEdit, 0x0081, L"");
+    item(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+         92, 56, 76, 18, IDOK, 0x0080, L"OK");
+    item(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+         176, 56, 76, 18, IDCANCEL, 0x0080, L"Cancel");
+    return reinterpret_cast<LPCDLGTEMPLATE>(storage->data());
+}
+
+// 激活输入模态框运行期状态（DWLP_USER 挂载）。
+struct LicensePromptState {
+    std::wstring title;
+    std::wstring prompt;
+    std::wstring ok_text;
+    std::wstring cancel_text;
+    std::wstring serial;
+};
+
 } // namespace
 
-SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config)
-    : instance_(instance), parent_(parent), config_(std::move(config)) {}
+SettingsDialog::SettingsDialog(HINSTANCE instance, HWND parent, AppConfig config,
+                               std::vector<std::string> connected_device_ids,
+                               std::string machine_guid)
+    : instance_(instance),
+      parent_(parent),
+      config_(std::move(config)),
+      connected_device_ids_(std::move(connected_device_ids)),
+      machine_guid_(std::move(machine_guid)) {}
 
 SettingsDialog::~SettingsDialog() {
     if (hwnd_) DestroyWindow(hwnd_);
@@ -339,20 +451,54 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdChooseDir:
             ChooseDebugDirectory();
             return TRUE;
+        case kIdLocalMicModelsDirBrowse:
+            ChooseLocalMicModelsDir();
+            return TRUE;
+        case kIdLocalMicModelsDownload:
+            OpenModelDownloadDialog();
+            return TRUE;
+        case kIdLocalMicModelsDirEdit:
+            // 离开编辑框即时重估模型有效性（与浏览/加载共用同一回显口径）。
+            if (HIWORD(w_param) == EN_KILLFOCUS) UpdateLocalMicModelsStatus();
+            return TRUE;
+        case kIdLocalRefineCheck:
+            // 勾选态切换即刷新精修模型状态行（可见性回调依赖勾选态）。
+            if (HIWORD(w_param) == BN_CLICKED) UpdateLocalRefineStatus();
+            return TRUE;
+        case kIdLocalRefineCrossCheck:
+            // 跨轮勾选切换模型探测口径（4B 优先/1.7B），状态行联动刷新。
+            if (HIWORD(w_param) == BN_CLICKED) UpdateLocalRefineStatus();
+            return TRUE;
         case kIdApplyTrialApiKey:
             ApplyTrialApiKey();
+            return TRUE;
+        case kIdLicenseActivate:
+            OnActivateLicense();
+            return TRUE;
+        case kIdVoiceEditEnable:
+            // 语音编辑开关：关闭时禁用默认删除字数下拉（保存仍按控件值回写）。
+            if (HIWORD(w_param) == BN_CLICKED) {
+                EnableWindow(voice_edit_default_chars_combo_,
+                             SendMessageW(voice_edit_enable_check_, BM_GETCHECK, 0, 0) ==
+                                     BST_CHECKED
+                                 ? TRUE
+                                 : FALSE);
+            }
             return TRUE;
         case kIdProviderCombo:
             if (HIWORD(w_param) == CBN_SELCHANGE) {
                 int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-                const std::string& key = [&]() -> const std::string& {
-                    switch (ProviderAtComboIndex(idx)) {
-                        case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
-                        case AsrProvider::kTencent: return config_.tencent_secret_id;
-                        default: return config_.volcengine_api_key;
-                    }
-                }();
-                SetWindowTextW(api_key_edit_, Utf16(key).c_str());
+                // 本地虚拟项无 API Key 概念；切回云端项时把对应密钥回填编辑框。
+                if (!ProviderComboIsLocal(idx, provider_combo_has_cloud_)) {
+                    const std::string& key = [&]() -> const std::string& {
+                        switch (ProviderComboCloudAt(idx, provider_combo_has_cloud_)) {
+                            case AsrProvider::kVoiceStickCloud: return config_.voicestick_api_key;
+                            case AsrProvider::kTencent: return config_.tencent_secret_id;
+                            default: return config_.volcengine_api_key;
+                        }
+                    }();
+                    SetWindowTextW(api_key_edit_, Utf16(key).c_str());
+                }
                 UpdateProviderVisibility();
             }
             return TRUE;
@@ -518,6 +664,14 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         debug_audio_check_ = nullptr;
         show_imu_debug_check_ = nullptr;
         debug_dir_edit_ = nullptr;
+        local_mic_models_dir_edit_ = nullptr;
+        local_mic_models_dir_browse_button_ = nullptr;
+        local_mic_models_status_label_ = nullptr;
+        local_mic_download_button_ = nullptr;
+        local_refine_check_ = nullptr;
+        local_refine_status_label_ = nullptr;
+        local_refine_prompt_label_ = nullptr;
+        local_refine_prompt_edit_ = nullptr;
         resource_label_ = nullptr;
         output_target_combo_ = nullptr;
         wechat_hotkey_edit_ = nullptr;
@@ -525,6 +679,8 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         trigger_mode_label_ = nullptr;
         trigger_mode_hold_radio_ = nullptr;
         trigger_mode_click_radio_ = nullptr;
+        license_status_label_ = nullptr;
+        license_activate_button_ = nullptr;
         all_controls_.clear();
         label_controls_.clear();
         title_controls_.clear();
@@ -612,6 +768,14 @@ void SettingsDialog::DestroyControls() {
     selection_hotword_check_ = nullptr;
     show_imu_debug_check_ = nullptr;
     debug_dir_edit_ = nullptr;
+    local_mic_models_dir_edit_ = nullptr;
+    local_mic_models_dir_browse_button_ = nullptr;
+    local_mic_models_status_label_ = nullptr;
+    local_mic_download_button_ = nullptr;
+    local_refine_check_ = nullptr;
+    local_refine_status_label_ = nullptr;
+    local_refine_prompt_label_ = nullptr;
+    local_refine_prompt_edit_ = nullptr;
     resource_label_ = nullptr;
     output_target_combo_ = nullptr;
     wechat_hotkey_edit_ = nullptr;
@@ -619,6 +783,10 @@ void SettingsDialog::DestroyControls() {
     trigger_mode_label_ = nullptr;
     trigger_mode_hold_radio_ = nullptr;
     trigger_mode_click_radio_ = nullptr;
+    license_status_label_ = nullptr;
+    license_activate_button_ = nullptr;
+    voice_edit_enable_check_ = nullptr;
+    voice_edit_default_chars_combo_ = nullptr;
     save_button_ = nullptr;
     cancel_button_ = nullptr;
     if (ui_font_) {
@@ -731,6 +899,72 @@ void SettingsDialog::BuildControls() {
     }
     separator();
 
+    // ===== 语音编辑（Doc/Plan/voice-edit-commands.md）=====
+    // 功能默认开启、面向所有用户，区块始终可见（不受开发者模式门槛）；max_chars/
+    // scope_seconds/verify_mode 属高级项，只由 config.toml 手改（见配置模板）。
+    section_title(StringId::kVoiceEditSectionTitle);
+    {
+        HWND ve_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        voice_edit_enable_check_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kVoiceEditEnable, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdVoiceEditEnable, instance_, BS_AUTOCHECKBOX));
+        add(row_h + Dp(10), {
+            {ve_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {voice_edit_enable_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        });
+    }
+    {
+        HWND vd_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kVoiceEditDefaultChars).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        voice_edit_default_chars_combo_ = remember(CreateCombo(
+            hwnd_, 0, 0, Dp(80), Dp(160), kIdVoiceEditDefaultChars, instance_));
+        for (int count = kVoiceEditDefaultCharsMin; count <= kVoiceEditDefaultCharsMax; ++count) {
+            const std::wstring text = std::to_wstring(count);
+            SendMessageW(voice_edit_default_chars_combo_, CB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(text.c_str()));
+        }
+        add(row_h + Dp(10), {
+            {vd_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {voice_edit_default_chars_combo_, ctrl_x, 0, Dp(80), Dp(160)},
+        });
+    }
+    {
+        HWND hint1 = remember_label(CreateLeftLabel(
+            hwnd_, TrW(StringId::kVoiceEditHintRuntime, language).c_str(),
+            0, 0, ctrl_x + ctrl_w - Dp(10), Dp(16), instance_));
+        add(Dp(20), {{hint1, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(16)}});
+    }
+    {
+        HWND hint2 = remember_label(CreateLeftLabel(
+            hwnd_, TrW(StringId::kVoiceEditHintMode, language).c_str(),
+            0, 0, ctrl_x + ctrl_w - Dp(10), Dp(16), instance_));
+        add(Dp(20), {{hint2, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(16)}});
+    }
+    separator();
+
+#ifdef VOICESTICK_LICENSE_ENABLED
+    // ===== 授权（本地识别离线授权：30 天试用 + 串码激活，
+    // Doc/Plan/offline-license-activation.md）=====
+    // 默认不编译（VOICESTICK_ENABLE_LICENSE=OFF）：不创建状态行/激活按钮，
+    // RefreshLicenseStatus 按空指针直接返回。保留上一条 separator 作为
+    // 语言区块与语音识别区块之间的分隔。
+    section_title(StringId::kLicenseSectionTitle);
+    {
+        HWND lic_label = remember_label(CreateLabel(hwnd_, L"", 0, 0, label_w, Dp(20), instance_));
+        license_status_label_ = lic_label;
+        const int activate_w = Dp(110);
+        license_activate_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kLicenseActivateButton, language).c_str(),
+            0, 0, activate_w, Dp(24), kIdLicenseActivate, instance_));
+        add(row_h + Dp(10), {
+            {lic_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {license_activate_button_, ctrl_x, 0, activate_w, Dp(24)},
+        });
+    }
+    separator();
+#endif
+
     // ===== 语音识别 =====
     section_title(StringId::kSettingsSectionAsr);
     {
@@ -739,20 +973,25 @@ void SettingsDialog::BuildControls() {
         provider_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
                                                kIdProviderCombo, instance_));
         // VoiceStick Cloud 已从下拉框下线；仅老配置仍为 cloud 时临时插入该项（0 号位）。
+        // 末位「本地语音识别」为虚拟项（provider_combo.h）：映射 [local_asr].enabled，
+        // 选中时显示模型目录、隐藏 API Key/资源 ID，asr_provider 保留云端值。
         provider_combo_has_cloud_ = (config_.asr_provider == AsrProvider::kVoiceStickCloud);
         if (provider_combo_has_cloud_) {
             SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"VoiceStick Cloud"));
         }
         SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Volcengine"));
         SendMessageW(provider_combo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Tencent Cloud ASR"));
+        SendMessageW(provider_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(TrW(StringId::kSettingsProviderLocal, language).c_str()));
         add(row_h + Dp(10), {
             {prov_label, Dp(10), Dp(3), label_w, Dp(20)},
             {provider_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
         });
     }
     {
-        // API Key 行：普通模式隐藏，开发者模式显示。apply_trial_button 显隐由
-        // ApplyApiKeyLayout 行内条件控制（defer_visibility=true），不被 Relayout 强制 show。
+        // API Key 行：普通模式或选中本地识别时隐藏，开发者模式 + 云端项才显示。
+        // apply_trial_button 显隐由 ApplyApiKeyLayout 行内条件控制（defer_visibility=true），
+        // 不被 Relayout 强制 show。
         HWND api_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsApiKey).c_str(),
                                                     0, 0, label_w, Dp(20), instance_));
         const int apply_btn_w = Dp(102);
@@ -765,10 +1004,10 @@ void SettingsDialog::BuildControls() {
             {api_label, Dp(10), Dp(3), label_w, Dp(20)},
             {api_key_edit_, ctrl_x, 0, ctrl_w, Dp(24)},
             {apply_trial_button_, ctrl_x + ctrl_w - apply_btn_w, 0, apply_btn_w, Dp(24), true},
-        }, [this]() { return developer_mode_; });
+        }, [this]() { return developer_mode_ && !ProviderComboLocalSelected(); });
     }
     {
-        // 资源 ID 行：普通模式隐藏，开发者模式显示。
+        // 资源 ID 行：普通模式或选中本地识别时隐藏，开发者模式 + 云端项才显示。
         resource_label_ = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsResourceId).c_str(),
                                                      0, 0, label_w, Dp(20), instance_));
         resource_combo_ = remember(CreateCombo(hwnd_, 0, 0, ctrl_w, Dp(200),
@@ -780,7 +1019,80 @@ void SettingsDialog::BuildControls() {
         add(row_h + Dp(10), {
             {resource_label_, Dp(10), Dp(3), label_w, Dp(20)},
             {resource_combo_, ctrl_x, 0, ctrl_w, Dp(200)},
-        }, [this]() { return developer_mode_; });
+        }, [this]() { return developer_mode_ && !ProviderComboLocalSelected(); });
+    }
+    {
+        // 本地语音识别模型目录（原「本机麦克风」区并入）：仅提供方选中本地时显示，
+        // 不再受开发者模式门槛。保存热更即时重建本地识别运行件。
+        HWND md_label = remember_label(CreateLabel(
+            hwnd_, label_text(StringId::kSettingsLocalMicModelsDir).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        const int browse_w = Dp(78);
+        local_mic_models_dir_edit_ = remember(CreateEdit(hwnd_, 0, 0, ctrl_w - browse_w - Dp(6),
+                                                         Dp(24), kIdLocalMicModelsDirEdit, instance_));
+        local_mic_models_dir_browse_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicBrowse, language).c_str(),
+            0, 0, browse_w, Dp(24), kIdLocalMicModelsDirBrowse, instance_));
+        add(row_h + Dp(6), {
+            {md_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_mic_models_dir_edit_, ctrl_x, 0, ctrl_w - browse_w - Dp(6), Dp(24)},
+            {local_mic_models_dir_browse_button_, ctrl_x + ctrl_w - browse_w, 0, browse_w, Dp(24)},
+        }, [this]() { return ProviderComboLocalSelected(); });
+        // 模型目录有效性回显行（✓/✗ + 说明，Resolve+Validate 与启动校验同口径）
+        // 右端挂「下载模型…」入口：本地模型缺失时一键按需下载（迭代二）。
+        const int download_w = Dp(110);
+        local_mic_models_status_label_ = remember_label(CreateLabel(
+            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10) - download_w - Dp(8), Dp(18), instance_));
+        local_mic_download_button_ = remember(CreateButton(
+            hwnd_, TrW(StringId::kSettingsLocalMicDownload, language).c_str(),
+            0, 0, download_w, Dp(22), kIdLocalMicModelsDownload, instance_));
+        add(Dp(20), {
+            {local_mic_models_status_label_, Dp(10), 0,
+             ctrl_x + ctrl_w - Dp(10) - download_w - Dp(8), Dp(18)},
+            {local_mic_download_button_, ctrl_x + ctrl_w - download_w, 0, download_w, Dp(22)},
+        }, [this]() { return ProviderComboLocalSelected(); });
+    }
+    {
+        // 本地文本精修（Doc/Plan/local-text-refinement.md）：final 文本过
+        // 规则 → 本地 LLM → 守卫三层；缺模型自动降级纯规则，勾选项仍可开。
+        local_refine_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsLocalRefineEnable, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdLocalRefineCheck, instance_,
+            BS_AUTOCHECKBOX));
+        add(row_h + Dp(6), {
+            {local_refine_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        }, [this]() { return ProviderComboLocalSelected(); });
+        // 精修模型状态回显（✓ Qwen3-1.7B 在位 / ✗ 仅规则精修），勾选时显示。
+        local_refine_status_label_ = remember_label(CreateLabel(
+            hwnd_, L"", 0, 0, ctrl_x + ctrl_w - Dp(10), Dp(18), instance_));
+        add(Dp(20), {
+            {local_refine_status_label_, Dp(10), 0, ctrl_x + ctrl_w - Dp(10), Dp(18)},
+        }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
+        // 跨轮上下文纠错（M3，Doc/Plan/local-asr-accuracy-and-cross-turn-refinement.md）：
+        // 勾选后本地精修携带最近 5 轮历史，纠正指令管线 + 拼音守卫；模型档位
+        // 切 Qwen3-4B 优先（状态行探测口径联动）。
+        local_refine_cross_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsLocalRefineCrossTurn, language).c_str(),
+            0, 0, ctrl_w, Dp(22), kIdLocalRefineCrossCheck, instance_,
+            BS_AUTOCHECKBOX));
+        add(row_h + Dp(6), {
+            {local_refine_cross_check_, ctrl_x, 0, ctrl_w, Dp(22)},
+        }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
+    }
+    {
+        // 本地精修提示词块（对齐云端 refine_prompt 块模式）：编辑框初始显示
+        // 当前生效提示词（空配置填内置 few-shot 默认）；保存时与默认等值归
+        // 空（空 = 默认），清空编辑框即恢复默认。
+        local_refine_prompt_label_ = remember_label(CreateLabel(hwnd_,
+            label_text(StringId::kSettingsLocalRefinePrompt).c_str(),
+            0, 0, label_w, Dp(20), instance_));
+        local_refine_prompt_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(64),
+                                                                 kIdLocalRefinePromptEdit,
+                                                                 instance_));
+        add(Dp(70), {
+            {local_refine_prompt_label_, Dp(10), Dp(3), label_w, Dp(20)},
+            {local_refine_prompt_edit_, ctrl_x, 0, ctrl_w, Dp(64)},
+        }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
     }
     {
         // 热词块：分类行 + label + 多行 edit + 提示行，作为一个整体推进。
@@ -1254,30 +1566,23 @@ void SettingsDialog::ResizeWindow(int client_h) {
                  SWP_NOMOVE | SWP_NOZORDER);
 }
 
-AsrProvider SettingsDialog::ProviderAtComboIndex(int idx) const {
-    if (provider_combo_has_cloud_) {
-        if (idx == 0) return AsrProvider::kVoiceStickCloud;
-        --idx;
-    }
-    return idx == 1 ? AsrProvider::kTencent : AsrProvider::kVolcengine;
-}
-
-int SettingsDialog::ComboIndexForProvider(AsrProvider provider) const {
-    if (provider == AsrProvider::kVoiceStickCloud) return 0;  // 仅 has_cloud 时存在
-    const int idx = (provider == AsrProvider::kTencent) ? 1 : 0;
-    return provider_combo_has_cloud_ ? idx + 1 : idx;
+bool SettingsDialog::ProviderComboLocalSelected() const {
+    if (provider_combo_ == nullptr) return false;
+    const int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
+    return ProviderComboIsLocal(idx, provider_combo_has_cloud_);
 }
 
 void SettingsDialog::ApplyApiKeyLayout() {
     if (!api_key_edit_ || !apply_trial_button_ || !provider_combo_) return;
-    // 普通模式下 API Key 行整体隐藏（developer_mode_=false），试用按钮必须随之隐藏，
-    // 否则会因未被 Relayout 定位而残留显示在 (0,0)。
-    if (!developer_mode_) {
+    // 普通模式或选中本地识别时 API Key 行整体隐藏（developer_mode_/ProviderComboLocalSelected
+    // 控），试用按钮必须随之隐藏，否则会因未被 Relayout 定位而残留显示在 (0,0)。
+    if (!developer_mode_ || ProviderComboLocalSelected()) {
         ShowWindow(apply_trial_button_, SW_HIDE);
         return;
     }
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    const bool is_cloud = (ProviderAtComboIndex(idx) == AsrProvider::kVoiceStickCloud);
+    const bool is_cloud =
+        (ProviderComboCloudAt(idx, provider_combo_has_cloud_) == AsrProvider::kVoiceStickCloud);
     const bool api_key_empty = GetWindowText(api_key_edit_).empty();
     const bool show_trial = is_cloud && api_key_empty;
     ShowWindow(apply_trial_button_, show_trial ? SW_SHOW : SW_HIDE);
@@ -1293,12 +1598,30 @@ void SettingsDialog::LoadConfigIntoControls() {
     SendMessageW(developer_mode_check_, BM_SETCHECK,
                  developer_mode_ ? BST_CHECKED : BST_UNCHECKED, 0);
 
+    // 语音编辑（Doc/Plan/voice-edit-commands.md）：开关 + 单独说“删除”时删除字数。
+    SendMessageW(voice_edit_enable_check_, BM_SETCHECK,
+                 config_.voice_edit.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    {
+        const int index = std::clamp(config_.voice_edit.default_chars,
+                                     kVoiceEditDefaultCharsMin,
+                                     kVoiceEditDefaultCharsMax) -
+                          kVoiceEditDefaultCharsMin;
+        SendMessageW(voice_edit_default_chars_combo_, CB_SETCURSEL, index, 0);
+        EnableWindow(voice_edit_default_chars_combo_,
+                     config_.voice_edit.enabled ? TRUE : FALSE);
+    }
+
     int language_index = 0;
     if (config_.ui_language == UiLanguage::kEnglish) language_index = 1;
     if (config_.ui_language == UiLanguage::kSimplifiedChinese) language_index = 2;
     SendMessageW(language_combo_, CB_SETCURSEL, language_index, 0);
 
-    int provider_idx = ComboIndexForProvider(config_.asr_provider);
+    // 提供方下拉框：[local_asr].enabled=true → 末位「本地语音识别」虚拟项；
+    // 否则按 asr_provider 定位云端项（索引映射见 provider_combo.h）。
+    const int provider_idx = config_.local_asr.enabled
+                                  ? ProviderComboLocalIndex(provider_combo_has_cloud_)
+                                  : ProviderComboCloudIndexOf(config_.asr_provider,
+                                                              provider_combo_has_cloud_);
     SendMessageW(provider_combo_, CB_SETCURSEL, provider_idx, 0);
 
     const auto& key = [&]() -> const std::string& {
@@ -1357,6 +1680,22 @@ void SettingsDialog::LoadConfigIntoControls() {
 
     SetWindowTextW(debug_dir_edit_, config_.debug_audio_directory.c_str());
 
+    // 本地语音识别：模型目录为空显示默认值提示（留空 = exe 目录下 models/）。
+    SetWindowTextW(local_mic_models_dir_edit_, Utf16(config_.local_asr.models_dir).c_str());
+    UpdateLocalMicModelsStatus();
+    // 本地文本精修：勾选态 + 模型在位状态回显 + 当前生效提示词（空配置填
+    // 内置 few-shot 默认，让用户看得见、改得动）。
+    SendMessageW(local_refine_check_, BM_SETCHECK,
+                 config_.local_asr.refine_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(local_refine_cross_check_, BM_SETCHECK,
+                 config_.local_asr.refine_cross_turn ? BST_CHECKED : BST_UNCHECKED,
+                 0);
+    UpdateLocalRefineStatus();
+    SetWindowTextW(local_refine_prompt_edit_, Utf16(
+        config_.local_asr.refine_prompt.empty()
+            ? LocalRefinementClient::BuildSystemPrompt()
+            : config_.local_asr.refine_prompt).c_str());
+
     int output_target_idx = 0;
     if (config_.default_output_profile.target == OutputTarget::kSubtitle) output_target_idx = 1;
     if (config_.default_output_profile.target == OutputTarget::kWechatInputMethod) output_target_idx = 2;
@@ -1377,6 +1716,7 @@ void SettingsDialog::LoadConfigIntoControls() {
     UpdateProviderVisibility();
 
     RefreshHotwordCandidates();
+    RefreshLicenseStatus();
 }
 
 void SettingsDialog::SaveSettings() {
@@ -1391,37 +1731,46 @@ void SettingsDialog::SaveSettings() {
         config_.ui_language = UiLanguage::kSystem;
     }
 
+    // 语音识别提供方：选中本地虚拟项 → [local_asr].enabled=true 且 asr_provider
+    // 保留云端值（设备会话继续云端识别）；选中云端项 → 关本地、切 asr_provider。
+    // 保存后经 on_config_changed → ApplyUpdatedConfig 热更（重建采集器/本地 ASR）。
     int provider_idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    AsrProvider new_provider = ProviderAtComboIndex(provider_idx);
-
-    auto api_key = Utf8(GetWindowText(api_key_edit_));
-    switch (new_provider) {
-        case AsrProvider::kVoiceStickCloud: config_.voicestick_api_key = api_key; break;
-        case AsrProvider::kVolcengine: config_.volcengine_api_key = api_key; break;
-        case AsrProvider::kTencent: config_.tencent_secret_id = api_key; break;
+    const bool local_selected = ProviderComboIsLocal(provider_idx, provider_combo_has_cloud_);
+    if (!local_selected) {
+        AsrProvider new_provider = ProviderComboCloudAt(provider_idx, provider_combo_has_cloud_);
+        auto api_key = Utf8(GetWindowText(api_key_edit_));
+        switch (new_provider) {
+            case AsrProvider::kVoiceStickCloud: config_.voicestick_api_key = api_key; break;
+            case AsrProvider::kVolcengine: config_.volcengine_api_key = api_key; break;
+            case AsrProvider::kTencent: config_.tencent_secret_id = api_key; break;
+        }
+        config_.asr_provider = new_provider;
     }
-    config_.asr_provider = new_provider;
+    config_.local_asr.enabled = local_selected;
+    // 按住说话热键不再由设置页编辑（移托管盘菜单「热键 → 按住说话热键」），保留原值。
+    config_.local_asr.models_dir = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    config_.local_asr.refine_enabled =
+        SendMessageW(local_refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.local_asr.refine_cross_turn =
+        SendMessageW(local_refine_cross_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    {   // 与默认等值归空（空 = 默认），清空编辑框即恢复默认
+        const std::string normalized = NormalizeEditNewlines(
+            Utf8(GetWindowText(local_refine_prompt_edit_)));
+        config_.local_asr.refine_prompt =
+            (normalized == LocalRefinementClient::BuildSystemPrompt())
+                ? std::string()
+                : normalized;
+    }
     config_.llm_base_url = Utf8(GetWindowText(llm_base_url_edit_));
     config_.llm_api_key = Utf8(GetWindowText(llm_api_key_edit_));
     config_.llm_model = Utf8(GetWindowText(llm_model_edit_));
     config_.refine_enabled = SendMessageW(refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     {
         auto prompt = Utf8(GetWindowText(refine_prompt_edit_));
-        // 归一化 \r\n → \n（编辑控件返回 CRLF，LLM 用 LF）。
-        std::string normalized;
-        normalized.reserve(prompt.size());
-        for (std::size_t i = 0; i < prompt.size(); ++i) {
-            if (prompt[i] == '\r' && i + 1 < prompt.size() && prompt[i + 1] == '\n') {
-                normalized.push_back('\n');
-                ++i;
-            } else if (prompt[i] == '\r') {
-                normalized.push_back('\n');
-            } else {
-                normalized.push_back(prompt[i]);
-            }
-        }
         auto default_prompt = LLMRefinementClient::BuildRefinePrompt("");
-        config_.refine_prompt = (normalized == default_prompt) ? std::string() : normalized;
+        config_.refine_prompt =
+            (NormalizeEditNewlines(prompt) == default_prompt) ? std::string()
+                                                              : NormalizeEditNewlines(prompt);
     }
     config_.hotword_process_enabled =
         SendMessageW(hotword_process_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -1494,6 +1843,18 @@ void SettingsDialog::SaveSettings() {
     config_.wechat_input_method.trigger_mode =
         click_trigger ? InteractionMode::kClickToTalk : InteractionMode::kHoldToTalk;
 
+    // 语音编辑（Doc/Plan/voice-edit-commands.md）：开关 + 默认删除字数写入 [voice_edit]，
+    // 经 on_config_changed → SaveInputOptions → ApplyUpdatedConfig 热更到协调器。
+    config_.voice_edit.enabled =
+        SendMessageW(voice_edit_enable_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    {
+        const int index = static_cast<int>(
+            SendMessageW(voice_edit_default_chars_combo_, CB_GETCURSEL, 0, 0));
+        config_.voice_edit.default_chars = std::clamp(
+            kVoiceEditDefaultCharsMin + (index >= 0 ? index : 0),
+            kVoiceEditDefaultCharsMin, kVoiceEditDefaultCharsMax);
+    }
+
     // config_.SaveSettingsDialog() 可能在 config.toml 被其他进程占用（如 OneDrive 同步/杀毒扫描）
     // 时抛 runtime_error，或路径含 ACP 无法表示字符时抛 system_error。此处无 try-catch
     // 会直接 std::terminate 闪退。捕获后提示用户，保留对话框不关闭，便于重试。
@@ -1549,7 +1910,9 @@ void SettingsDialog::OnDeveloperModeToggled() {
 
 void SettingsDialog::ApplyTrialApiKey() {
     int idx = static_cast<int>(SendMessageW(provider_combo_, CB_GETCURSEL, 0, 0));
-    if (ProviderAtComboIndex(idx) != AsrProvider::kVoiceStickCloud) return;
+    if (ProviderComboCloudAt(idx, provider_combo_has_cloud_) != AsrProvider::kVoiceStickCloud) {
+        return;
+    }
     const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
 
     EnableWindow(apply_trial_button_, FALSE);
@@ -1588,6 +1951,127 @@ void SettingsDialog::ApplyTrialApiKey() {
                 TrW(StringId::kSettingsTrialFailedTitle, language).c_str(), MB_ICONERROR | MB_OK);
     UpdateProviderVisibility();
 }
+
+void SettingsDialog::RefreshLicenseStatus() {
+    if (license_status_label_ == nullptr) return;
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    LicenseConfig cfg;
+    cfg.serial = config_.license.serial;
+    cfg.trial_anchor_days = config_.license.trial_anchor_days;
+    cfg.last_seen_days = config_.license.last_seen_days;
+    const auto status = EvaluateLicense(cfg, LicenseBindingDevices(connected_device_ids_, config_.paired_device_ids),
+                                        machine_guid_, DaysSinceEpochTodayUtc());
+    std::string text;
+    switch (status.state) {
+        case LicenseState::kTrial:
+            // 无锚点时 EvaluateLicense 返回满试用期（30 天），锚点由运行时落盘。
+            text = ReplaceFirst(Tr(StringId::kLicenseStatusTrial, language), "%d",
+                                std::to_string(status.days_remaining));
+            break;
+        case LicenseState::kActive:
+            text = status.perpetual
+                       ? Tr(StringId::kLicenseStatusPerpetual, language)
+                       : ReplaceFirst(Tr(StringId::kLicenseStatusActive, language), "%s",
+                                      LicenseDateString(status.expiry_days));
+            break;
+        case LicenseState::kExpired:
+            text = Tr(StringId::kLicenseStatusExpired, language);
+            break;
+    }
+    SetWindowTextW(license_status_label_, Utf16(text).c_str());
+}
+
+bool SettingsDialog::PromptLicenseSerial(std::wstring* serial, UiLanguage language) {
+    LicensePromptState state;
+    state.title = TrW(StringId::kLicenseSectionTitle, language);
+    state.prompt = TrW(StringId::kLicenseActivatePrompt, language);
+    state.ok_text = TrW(StringId::kOk, language);
+    state.cancel_text = TrW(StringId::kCancel, language);
+    std::vector<BYTE> template_storage;
+    const INT_PTR result = DialogBoxIndirectParamW(
+        instance_, BuildLicensePromptTemplate(&template_storage), hwnd_,
+        SettingsDialog::LicensePromptDialogProc, reinterpret_cast<LPARAM>(&state));
+    if (result != IDOK) return false;
+    *serial = state.serial;
+    return true;
+}
+
+INT_PTR CALLBACK SettingsDialog::LicensePromptDialogProc(HWND hwnd, UINT message,
+                                                         WPARAM w_param, LPARAM l_param) {
+    auto* state = reinterpret_cast<LicensePromptState*>(GetWindowLongPtrW(hwnd, DWLP_USER));
+    switch (message) {
+    case WM_INITDIALOG:
+        state = reinterpret_cast<LicensePromptState*>(l_param);
+        SetWindowLongPtrW(hwnd, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+        SetWindowTextW(hwnd, state->title.c_str());
+        SetDlgItemTextW(hwnd, kIdLicensePromptLabel, state->prompt.c_str());
+        SetDlgItemTextW(hwnd, IDOK, state->ok_text.c_str());
+        SetDlgItemTextW(hwnd, IDCANCEL, state->cancel_text.c_str());
+        SetFocus(GetDlgItem(hwnd, kIdLicensePromptEdit));
+        return FALSE;  // 已显式设置焦点
+    case WM_COMMAND:
+        if (LOWORD(w_param) == IDOK) {
+            wchar_t buffer[256] = {};
+            GetDlgItemTextW(hwnd, kIdLicensePromptEdit, buffer, 256);
+            state->serial = buffer;
+            EndDialog(hwnd, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(w_param) == IDCANCEL) {
+            EndDialog(hwnd, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+void SettingsDialog::OnActivateLicense() {
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    const auto title = TrW(StringId::kLicenseSectionTitle, language);
+    const auto devices = LicenseBindingDevices(connected_device_ids_, config_.paired_device_ids);
+    if (devices.empty()) {
+        MessageBoxW(hwnd_, TrW(StringId::kLicenseDeviceRequired, language).c_str(),
+                    title.c_str(), MB_ICONWARNING | MB_OK);
+        return;
+    }
+    std::wstring serial_wide;
+    if (!PromptLicenseSerial(&serial_wide, language)) return;
+    const std::string serial = Utf8(serial_wide);
+    // 串码 = Crockford Base32(payload 15B || sig 64B) = 定长 79 字节。
+    constexpr std::size_t kSerialBytes = 79;
+    const auto decoded = SerialBase32Decode(serial);
+    if (!decoded.has_value() || decoded->size() != kSerialBytes) {
+        MessageBoxW(hwnd_, TrW(StringId::kLicenseActivateFailFormat, language).c_str(),
+                    title.c_str(), MB_ICONWARNING | MB_OK);
+        return;
+    }
+    const auto result = VerifyLicenseSerial(serial, devices, machine_guid_);
+    if (!result.ok) {
+        const StringId message_id =
+            result.reason == LicenseError::kWrongBinding
+                ? StringId::kLicenseActivateFailBinding
+                : result.reason == LicenseError::kExpired
+                      ? StringId::kLicenseActivateFailExpired
+                      : StringId::kLicenseActivateFailFormat;
+        MessageBoxW(hwnd_, TrW(message_id, language).c_str(), title.c_str(),
+                    MB_ICONWARNING | MB_OK);
+        return;
+    }
+    config_.license.serial = serial;
+    try {
+        config_.SaveSettingsDialog();
+    } catch (const std::exception& error) {
+        LogApp(std::string("OnActivateLicense: config save failed: ") + error.what());
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsSaveFailed, language).c_str(),
+                    title.c_str(), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    MessageBoxW(hwnd_, TrW(StringId::kLicenseActivateSuccess, language).c_str(),
+                title.c_str(), MB_OK | MB_ICONINFORMATION);
+    // 热更：外壳侧重建运行件（SetLicenseGate 等）并刷新托盘提示。
+    if (on_config_changed) on_config_changed(config_);
+    RefreshLicenseStatus();}
 
 void SettingsDialog::OnRenameVirtualMicButton() {
     const auto language = EffectiveUiLanguage(config_.ui_language);
@@ -1643,10 +2127,14 @@ void SettingsDialog::OnRenameVirtualMicButton() {
     config_.wechat_input_method.virtual_mic_capture_name = Utf8(new_name);
     MessageBoxW(hwnd_, TrW(StringId::kRenameVirtualMicSuccess, language).c_str(),
                 TrW(StringId::kRenameVirtualMicConfirmTitle, language).c_str(),
-                MB_OK | MB_ICONINFORMATION);
-}
+                MB_OK | MB_ICONINFORMATION);}
 
 void SettingsDialog::ChooseDebugDirectory() {
+    ChooseFolderInto(debug_dir_edit_);
+}
+
+void SettingsDialog::ChooseFolderInto(HWND target_edit) {
+    if (target_edit == nullptr) return;
     IFileDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
                                 IID_IFileDialog, reinterpret_cast<void**>(&dialog)))) {
@@ -1654,7 +2142,7 @@ void SettingsDialog::ChooseDebugDirectory() {
     }
     dialog->SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
 
-    auto current_dir = GetWindowText(debug_dir_edit_);
+    auto current_dir = GetWindowText(target_edit);
     if (!current_dir.empty()) {
         IShellItem* folder = nullptr;
         if (SUCCEEDED(SHCreateItemFromParsingName(current_dir.c_str(), nullptr,
@@ -1669,13 +2157,144 @@ void SettingsDialog::ChooseDebugDirectory() {
         if (SUCCEEDED(dialog->GetResult(&result))) {
             PWSTR path = nullptr;
             if (SUCCEEDED(result->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-                SetWindowTextW(debug_dir_edit_, path);
+                SetWindowTextW(target_edit, path);
                 CoTaskMemFree(path);
             }
             result->Release();
         }
     }
     dialog->Release();
+}
+
+void SettingsDialog::ChooseLocalMicModelsDir() {
+    ChooseFolderInto(local_mic_models_dir_edit_);
+    UpdateLocalMicModelsStatus();
+}
+
+void SettingsDialog::UpdateLocalMicModelsStatus() {
+#ifndef VOICESTICK_LOCAL_ASR_ENABLED
+    // 本地识别未编译（-DVOICESTICK_ENABLE_LOCAL_ASR=OFF）：三个解析函数在
+    // local_asr_client_win.cc 内随 sherpa 一起被裁剪，引用即链接失败（CI 首次实锤）。
+    // 状态行留空，其余 UI 行为不变。
+    if (local_mic_models_status_label_ != nullptr) {
+        SetWindowTextW(local_mic_models_status_label_, L"");
+    }
+    return;
+#else
+    if (local_mic_models_status_label_ == nullptr || local_mic_models_dir_edit_ == nullptr) {
+        return;
+    }
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    // 与启动接线（SyncLocalMicRuntime）同一解析口径：空 = exe/models，相对锚 exe。
+    const std::string configured = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    const std::string exe_dir = [&]() {
+        std::wstring exe_path(MAX_PATH, L'\0');
+        DWORD length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                          static_cast<DWORD>(exe_path.size()));
+        while (length == exe_path.size()) {
+            exe_path.resize(exe_path.size() * 2);
+            length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                        static_cast<DWORD>(exe_path.size()));
+        }
+        if (length == 0) return std::string();
+        exe_path.resize(length);
+        return std::filesystem::path(exe_path).parent_path().string();
+    }();
+    const std::string resolved = ResolveLocalMicModelsDir(configured, exe_dir);
+    const bool ready = !ValidateSenseVoiceModelsDir(resolved).has_value();
+    SetWindowTextW(local_mic_models_status_label_,
+                   TrW(ready ? StringId::kSettingsLocalMicModelsOk
+                             : StringId::kSettingsLocalMicModelsMissing,
+                       language)
+                       .c_str());
+    // 精修模型探测锚同一 models_dir（编辑框当前值）：目录变化联动刷新精修状态。
+    UpdateLocalRefineStatus();
+#endif
+}
+
+void SettingsDialog::OpenModelDownloadDialog() {
+    if (model_download_dialog_) {
+        // 向导已打开：置前即可（重复点击不并发起两个下载）。
+        model_download_dialog_->Show();
+        return;
+    }
+    model_download_dialog_ = std::make_unique<ModelDownloadDialog>(
+        instance_, hwnd_, EffectiveUiLanguage(config_.ui_language));
+    // ASR 成功即回填缓存目录到编辑框（用户仍可改，点保存才落盘）并刷新回显。
+    model_download_dialog_->on_complete = [this](const ModelDownloadSummary& summary) {
+        if (summary.asr_ok && local_mic_models_dir_edit_) {
+            SetWindowTextW(local_mic_models_dir_edit_,
+                           Utf16(LocalModelCacheModelsDir().string()).c_str());
+            UpdateLocalMicModelsStatus();
+        }
+    };
+    model_download_dialog_->Show();
+}
+
+bool SettingsDialog::IsLocalRefineChecked() const {
+    return local_refine_check_ != nullptr &&
+           SendMessageW(local_refine_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+bool SettingsDialog::IsLocalRefineCrossChecked() const {
+    return local_refine_cross_check_ != nullptr &&
+           SendMessageW(local_refine_cross_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+void SettingsDialog::UpdateLocalRefineStatus() {
+#ifndef VOICESTICK_LOCAL_ASR_ENABLED
+    // 同 UpdateLocalMicModelsStatus：瘦构建下解析符号被裁剪，状态行留空。
+    if (local_refine_status_label_ != nullptr) {
+        SetWindowTextW(local_refine_status_label_, L"");
+    }
+    return;
+#else
+    if (local_refine_status_label_ == nullptr || local_mic_models_dir_edit_ == nullptr) {
+        return;
+    }
+    const UiLanguage language = EffectiveUiLanguage(config_.ui_language);
+    // 与外壳装配（SyncLocalRefiner）同一解析口径：模型目录取编辑框当前值
+    //（未保存也能即时反馈），refine_model 尚无编辑入口走默认档位探测。
+    const std::string configured = Utf8(GetWindowText(local_mic_models_dir_edit_));
+    const std::string exe_dir = []() {
+        std::wstring exe_path(MAX_PATH, L'\0');
+        DWORD length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                          static_cast<DWORD>(exe_path.size()));
+        while (length == exe_path.size()) {
+            exe_path.resize(exe_path.size() * 2);
+            length = GetModuleFileNameW(nullptr, exe_path.data(),
+                                        static_cast<DWORD>(exe_path.size()));
+        }
+        if (length == 0) return std::string();
+        exe_path.resize(length);
+        return std::filesystem::path(exe_path).parent_path().string();
+    }();
+    const std::string models_dir = ResolveLocalMicModelsDir(configured, exe_dir);
+    // 与外壳装配（SyncLocalRefiner）同一解析口径：跨轮勾选时优先 4B 探测
+    //（未保存也能即时反馈），refine_model 尚无编辑入口走默认档位探测。
+    const bool cross = IsLocalRefineCrossChecked();
+    const std::string model = ResolveLocalRefineModelPath(
+        models_dir, config_.local_asr.refine_model, cross);
+    // 跨轮勾选时明确档位：4B 就绪 / 缺 4B 降级 1.7B（弱档必须可见——曾因
+    // 笼统显示「模型就绪」掩盖降级，用户以为在跑 4B 实为 NO-GO 的 1.7B）。
+    if (cross) {
+        const bool four_b = model.find("Qwen3-4B") != std::string::npos;
+        SetWindowTextW(local_refine_status_label_,
+                       TrW(model.empty()
+                               ? StringId::kSettingsLocalRefineModelMissing
+                               : (four_b
+                                      ? StringId::kSettingsLocalRefineCrossTurnOk
+                                      : StringId::kSettingsLocalRefineCrossTurnDegraded),
+                           language)
+                           .c_str());
+        return;
+    }
+    SetWindowTextW(local_refine_status_label_,
+                   TrW(model.empty() ? StringId::kSettingsLocalRefineModelMissing
+                                     : StringId::kSettingsLocalRefineModelOk,
+                       language)
+                       .c_str());
+#endif
 }
 
 void SettingsDialog::OpenSpectrogramViewer() {
@@ -1747,7 +2366,7 @@ void SettingsDialog::UpdateHotwordProcessPromptVisibility() {
 
 void SettingsDialog::RefreshHotwordCandidates() {
     if (!candidates_list_) return;
-    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
+    const auto path = HotwordCandidatesPath(AppConfig::ConfigPath());
     const auto store = LoadHotwordCandidates(path);
     candidate_words_ = PendingHotwordSuggestions(store);
     SendMessageW(candidates_list_, LB_RESETCONTENT, 0, 0);
@@ -1774,11 +2393,8 @@ void SettingsDialog::OnHotwordCandidateAdd() {
     SetWindowTextW(hotwords_edit_,
                    current.empty() ? wide_word.c_str() : (current + L"," + wide_word).c_str());
     // 候选已入表，从存储中移除（notified 一并清掉，避免残留状态）。
-    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
-    auto store = LoadHotwordCandidates(path);
-    store.counts.erase(word);
-    store.notified.erase(word);
-    SaveHotwordCandidates(path, store);
+    const auto path = HotwordCandidatesPath(AppConfig::ConfigPath());
+    ConsumeHotwordCandidateOnDisk(path, word);  // B13：唯一写入口（互斥 + 重读后改写）
     RefreshHotwordCandidates();
 }
 
@@ -1788,12 +2404,8 @@ void SettingsDialog::OnHotwordCandidateDismiss() {
     if (sel < 0 || sel >= static_cast<int>(candidate_words_.size())) return;
     const std::string word = candidate_words_[static_cast<std::size_t>(sel)];
     // 忽略：记入 dismissed（永不建议），并从 counts/notified 移除。
-    const auto path = AppConfig::ConfigPath().parent_path() / "hotword_candidates.json";
-    auto store = LoadHotwordCandidates(path);
-    store.dismissed.insert(word);
-    store.counts.erase(word);
-    store.notified.erase(word);
-    SaveHotwordCandidates(path, store);
+    const auto path = HotwordCandidatesPath(AppConfig::ConfigPath());
+    DismissHotwordCandidateOnDisk(path, word);  // B13：唯一写入口（互斥 + 重读后改写）
     RefreshHotwordCandidates();
 }
 

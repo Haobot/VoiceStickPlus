@@ -10,6 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# 全树钉死静态库：llama.cpp/ggml 子项目的 option(BUILD_SHARED_LIBS)（默认 ON）
+# 会写入 CMakeCache，下次 regenerate 时回灌，把本项目所有未指定类型的
+# add_library（opus / voicestick_core）悄悄变成 DLL——符号不导出致下游
+# LNK2019、还引入运行时 DLL 依赖。在任何 add_library/add_subdirectory 之前
+# FORCE 关闭，ggml/llama/opus 全静态链入（无新增运行时 DLL）。
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
 if(MSVC)
     add_compile_options(/utf-8)
 endif()
@@ -24,10 +31,29 @@ set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
 set_target_properties(opus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# 默认从 github 拉 WinSparkle；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
+# rnnoise：vendored xiph/rnnoise（BSD-2，third_party/rnnoise/README.md 记 provenance，
+# 与 desktop/macos/Sources/CRnnoise 同源同版，仅推理最小集）。ASR 前 RNNoise
+# 人声增强/降噪（audio_enhancer；audio_noise_suppression 开关，默认关）。
+add_library(rnnoise STATIC
+    third_party/rnnoise/src/celt_lpc.c
+    third_party/rnnoise/src/denoise.c
+    third_party/rnnoise/src/kiss_fft.c
+    third_party/rnnoise/src/pitch.c
+    third_party/rnnoise/src/rnn.c
+    third_party/rnnoise/src/rnn_data.c
+)
+target_include_directories(rnnoise PUBLIC third_party/rnnoise/include)
+target_include_directories(rnnoise PRIVATE third_party/rnnoise/src)
+# MSVC 的 math.h 需要此宏才暴露 M_PI（denoise.c 用）；clang 不需要，留平台构建层
+target_compile_definitions(rnnoise PRIVATE _USE_MATH_DEFINES)
+
+# 默认从 github 拉 WinSparkle（官方仓库 vslavik/winsparkle；旧 vslavnik fork 已 404，
+# 曾致 CI 与全新克隆 configure 必失败）；网络不可达时可设 VOICESTICK_WINSPARKLE_URL 指向本地 zip：
 #   用户环境变量 VOICESTICK_WINSPARKLE_URL=C:/path/to/WinSparkle-0.9.2.zip
 # 或 cmake -DVOICESTICK_WINSPARKLE_URL=C:/path/... -S desktop\windows -B ...
 set(_winsparkle_default_url "https://github.com/vslavik/winsparkle/releases/download/v0.9.2/WinSparkle-0.9.2.zip")
+# 默认下载钉死 SHA256（供应链完整性；本地覆盖 URL 时不校验，便于内网/缓存副本）
+set(_winsparkle_default_sha256 "2a5facf5a22056edf7afc4d0a4bf05620b7aa7cc1619c3078b281e374cdb9996")
 if(DEFINED ENV{VOICESTICK_WINSPARKLE_URL})
     set(_winsparkle_url "$ENV{VOICESTICK_WINSPARKLE_URL}")
 elseif(DEFINED VOICESTICK_WINSPARKLE_URL)
@@ -39,19 +65,73 @@ message(STATUS "WinSparkle source: ${_winsparkle_url}")
 # Allow pre-extracted source dir to bypass download (for offline/dev builds):
 #   cmake -DFETCHCONTENT_SOURCE_DIR_WINSPARKLE=C:/path/to/winsparkle ...
 set(FETCHCONTENT_SOURCE_DIR_WINSPARKLE "" CACHE PATH "WinSparkle pre-extracted source dir (optional, for offline builds)")
+set(_winsparkle_declare_args URL ${_winsparkle_url})
+if(_winsparkle_url STREQUAL "${_winsparkle_default_url}")
+    list(APPEND _winsparkle_declare_args URL_HASH SHA256=${_winsparkle_default_sha256})
+endif()
 FetchContent_Declare(
     winsparkle
-    URL ${_winsparkle_url}
+    ${_winsparkle_declare_args}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(winsparkle)
 
+# 官方 zip 带顶层目录（WinSparkle-0.9.2/），手动解压或本地缓存可能是扁平布局：自动识别根。
+set(_winsparkle_root "${winsparkle_SOURCE_DIR}")
+if(NOT EXISTS "${_winsparkle_root}/x64/Release/WinSparkle.lib")
+    file(GLOB _winsparkle_nested "${winsparkle_SOURCE_DIR}/*/x64/Release/WinSparkle.lib")
+    if(_winsparkle_nested)
+        get_filename_component(_winsparkle_dir "${_winsparkle_nested}" DIRECTORY)  # <top>/x64/Release
+        get_filename_component(_winsparkle_dir "${_winsparkle_dir}" DIRECTORY)     # <top>/x64
+        get_filename_component(_winsparkle_root "${_winsparkle_dir}" DIRECTORY)    # <top>
+        message(STATUS "WinSparkle layout: nested root ${_winsparkle_root}")
+    endif()
+endif()
+if(NOT EXISTS "${_winsparkle_root}/x64/Release/WinSparkle.lib")
+    message(FATAL_ERROR "WinSparkle x64/Release/WinSparkle.lib not found under ${winsparkle_SOURCE_DIR}")
+endif()
+
 add_library(winsparkle_lib SHARED IMPORTED GLOBAL)
 set_target_properties(winsparkle_lib PROPERTIES
-    IMPORTED_IMPLIB "${winsparkle_SOURCE_DIR}/x64/Release/WinSparkle.lib"
-    IMPORTED_LOCATION "${winsparkle_SOURCE_DIR}/x64/Release/WinSparkle.dll"
-    INTERFACE_INCLUDE_DIRECTORIES "${winsparkle_SOURCE_DIR}/include"
+    IMPORTED_IMPLIB "${_winsparkle_root}/x64/Release/WinSparkle.lib"
+    IMPORTED_LOCATION "${_winsparkle_root}/x64/Release/WinSparkle.dll"
+    INTERFACE_INCLUDE_DIRECTORIES "${_winsparkle_root}/include"
 )
+
+# sherpa-onnx C API（本机麦克风模式迭代一：SenseVoice 本地离线识别，v1.13.7）。
+# 二进制不进 git；来源二选一：
+#   1) m0/.venv wheel 同款文件（与 Python 端同版本同 ABI，推荐开发机）：
+#      m0/.venv/Lib/site-packages/sherpa_onnx/{include,lib}
+#   2) GitHub release v1.13.7 sherpa-onnx-v1.13.7-win-x64-shared-MT-Release.tar.bz2
+#      的 include/lib（旧 plain 命名 win-x64 包已不存在；CI 缓存注入同款，SHA256 见 ci.yml）
+# 放到 third_party/sherpa-onnx/（include/ + lib/），或用 VOICESTICK_SHERPA_ONNX_DIR
+# 指向解压目录。显式 -DVOICESTICK_ENABLE_LOCAL_ASR=OFF 可跳过（不需要本地识别时）。
+option(VOICESTICK_ENABLE_LOCAL_ASR "SenseVoice local offline ASR (local mic mode)" ON)
+set(_sherpa_onnx_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx")
+if(DEFINED ENV{VOICESTICK_SHERPA_ONNX_DIR})
+    set(_sherpa_onnx_dir "$ENV{VOICESTICK_SHERPA_ONNX_DIR}")
+elseif(DEFINED VOICESTICK_SHERPA_ONNX_DIR)
+    set(_sherpa_onnx_dir "${VOICESTICK_SHERPA_ONNX_DIR}")
+endif()
+if(VOICESTICK_ENABLE_LOCAL_ASR)
+    if(NOT EXISTS "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.lib")
+        message(FATAL_ERROR
+            "sherpa-onnx 未就位: ${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.lib 不存在。\n"
+            "获取方式：从 m0/.venv/Lib/site-packages/sherpa_onnx/ 复制 include 与 lib 到 "
+            "third_party/sherpa-onnx/，或设 VOICESTICK_SHERPA_ONNX_DIR 指向解压的 "
+            "GitHub v1.13.7 win-x64 包；不需要本地识别可 -DVOICESTICK_ENABLE_LOCAL_ASR=OFF。")
+    endif()
+    add_library(sherpa_onnx_c_api SHARED IMPORTED GLOBAL)
+    set_target_properties(sherpa_onnx_c_api PROPERTIES
+        IMPORTED_IMPLIB "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.lib"
+        IMPORTED_LOCATION "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${_sherpa_onnx_dir}/include"
+    )
+    # 运行时依赖：sherpa-onnx-c-api.dll + onnxruntime.dll 随构建产物部署。
+    file(COPY "${_sherpa_onnx_dir}/lib/sherpa-onnx-c-api.dll"
+              "${_sherpa_onnx_dir}/lib/onnxruntime.dll"
+         DESTINATION "${CMAKE_BINARY_DIR}")
+endif()
 
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 
@@ -80,13 +160,24 @@ foreach(var
 endforeach()
 configure_file(src/builtin_secrets.h.in ${CMAKE_CURRENT_BINARY_DIR}/builtin_secrets.h @ONLY)
 
-add_library(voicestick_core
+# 显式 STATIC：llama.cpp 子项目的 option(BUILD_SHARED_LIBS) 会向 CMakeCache
+# 写入默认 ON，下次 regenerate 时回灌，把未指定类型的本库悄悄变成 DLL
+#（符号不导出、下游链接 LNK2019）。显式类型免疫缓存污染。
+add_library(voicestick_core STATIC
     src/air_mouse_kin.cc
     src/key_spec.cc
+    # 语音编辑指令（Doc/Plan/voice-edit-commands.md）：纯逻辑解析/删除计划（零 Win32）
+    # + UIA 焦点字段读取（focus_text_reader）。
+    src/voice_edit_command.cc
+    src/focus_text_reader.cc
+    # targeted 语音编辑（删除/替换最近一次输入中的指定词；Doc targeted 章节）：
+    # 纯逻辑解析/匹配/计划（零 Win32），与 macOS VoiceTargetedEdit.swift 同向量。
+    src/voice_targeted_edit.cc
     src/app_config.cc
     src/asr_protocol.cc
     src/audio_opus_decoder.cc
     src/audio_opus_encoder.cc
+    src/audio_enhancer.cc
     src/ble_protocol.cc
     src/cmd_line.cc
     src/com_port_selector.cc
@@ -95,9 +186,19 @@ add_library(voicestick_core
     src/esptool_progress.cc
     src/voice_stick_flash_tool.cc
     src/firmware_manifest.cc
+    src/model_manifest.cc
+    src/model_downloader.cc
+    src/model_download_session.cc
     src/llm_chat_client.cc
     src/llm_translation_client.cc
     src/llm_refinement_client.cc
+    src/text_refiner.cc
+    src/local_refinement_client.cc
+    src/correction_pairs.cc
+    src/usage_events.cc
+    src/session_history.cc
+    # vendored SQLite amalgamation（公有领域，见 third_party/sqlite/README.md）
+    third_party/sqlite/sqlite3.c
     src/hotword_extractor.cc
     src/hotword_candidate_miner.cc
     src/hotword_activity.cc
@@ -105,6 +206,14 @@ add_library(voicestick_core
     src/hotword_selector.cc
     src/hotword_suggest_client.cc
     src/localization.cc
+    src/pinyin_guard.cc
+    src/pinyin_data.cc
+    src/selection_correction.cc
+    src/refine_history.cc
+    src/push_to_talk_key.cc
+    src/provider_combo.cc
+    src/clipboard_vault.cc
+    src/shortcut_capture.cc
     third_party/cjson/cJSON.c
     src/log.cc
     src/ogg_crc.cc
@@ -114,6 +223,8 @@ add_library(voicestick_core
     src/pcm_ring_buffer.cc
     src/power_log_monitor.cc
     src/voice_stick_coordinator.cc
+    # N7 cut2: 协调器尾段（热词/看门狗/粘贴域）方法拆出
+    src/voice_stick_coordinator_tail.cc
     src/virtual_mic_renamer.cc
     src/wasapi_virtual_mic_renderer.cc
     src/wechat_input_method_hotkey.cc
@@ -121,26 +232,110 @@ add_library(voicestick_core
     src/default_audio_device_controller.cc
     src/ima_adpcm_decoder.cc
     src/pcm_postprocessor.cc
+    src/wasapi_mic_capture.cc
     src/xiaomi_atvv_protocol.cc
     src/xiaomi_atvv_session.cc
+    src/xiaomi_keymap_interceptor.cc
+    src/xiaomi_usage_tap.cc
+    src/xiaomi_usage_tap_decoder.cc
+    src/xiaomi_usage_tap_host.cc
+    src/serial_base32.cc
+    src/license.cc
+    third_party/monocypher/monocypher.c
 )
 
-target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(voicestick_core PUBLIC src third_party/cjson third_party/tomlplusplus third_party/monocypher third_party/sqlite ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(voicestick_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(voicestick_core PUBLIC winhttp)
 target_link_libraries(voicestick_core PUBLIC bcrypt)
 target_link_libraries(voicestick_core PUBLIC opus)
+target_link_libraries(voicestick_core PUBLIC rnnoise)
 target_link_libraries(voicestick_core PUBLIC mmdevapi ole32 uuid)
+# 语音编辑 L1：UIA TextPattern 客户端（CoCreateInstance CUIAutomation8）+ BSTR 释放。
+target_link_libraries(voicestick_core PUBLIC uiautomationcore oleaut32)
 target_link_libraries(voicestick_core PUBLIC setupapi)  # com_port_selector 串口枚举
+target_link_libraries(voicestick_core PUBLIC shell32)  # model_download_session SHGetKnownFolderPath
+if(VOICESTICK_ENABLE_LOCAL_ASR)
+    target_sources(voicestick_core PRIVATE src/local_asr_client_win.cc)
+    target_link_libraries(voicestick_core PUBLIC sherpa_onnx_c_api)
+    target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LOCAL_ASR_ENABLED=1)
+endif()
+
+# 离线授权（串码激活 + 30 天试用，Doc/Plan/offline-license-activation.md）：
+# 默认关闭——不装配 LicenseRuntime（门控为空=本地识别默认放行）且设置对话框
+# 隐藏「授权」区块（激活时间/试用状态行 + 激活按钮）。license.cc/license_runtime.cc
+# 仍编译入库（纯函数单测继续覆盖），恢复发行时 -DVOICESTICK_ENABLE_LICENSE=ON。
+option(VOICESTICK_ENABLE_LICENSE "Offline license activation (serial + 30-day trial)" OFF)
+if(VOICESTICK_ENABLE_LICENSE)
+    target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LICENSE_ENABLED=1)
+endif()
+
+# llama.cpp（本地文本精修 LLM 推理，Qwen3-1.7B GGUF）：pin b10868（与
+# m0/refine spike 验证版一致，Doc/Plan/local-text-refinement.md）。
+# 源码经 FetchContent 拉取（WinSparkle 同款模式），静态链入 voicestick_core，
+# 无新增 DLL、与 sherpa-onnx 的 onnxruntime 零冲突。默认走镜像加速源；
+# 网络受限时设 VOICESTICK_LLAMA_CPP_URL 指向本地 zip
+# （file:///C:/path/llama-b10868.zip），或 FETCHCONTENT_SOURCE_DIR_LLAMA_CPP
+# 指向已解压源码目录。显式 -DVOICESTICK_ENABLE_LOCAL_REFINE=OFF 可跳过。
+option(VOICESTICK_ENABLE_LOCAL_REFINE "Local LLM text refinement via llama.cpp" ON)
+set(_llama_cpp_default_url "https://ghfast.top/https://github.com/ggml-org/llama.cpp/archive/refs/tags/b10868.zip")
+if(DEFINED ENV{VOICESTICK_LLAMA_CPP_URL})
+    set(_llama_cpp_url "$ENV{VOICESTICK_LLAMA_CPP_URL}")
+elseif(DEFINED VOICESTICK_LLAMA_CPP_URL)
+    set(_llama_cpp_url "${VOICESTICK_LLAMA_CPP_URL}")
+else()
+    set(_llama_cpp_url "${_llama_cpp_default_url}")
+endif()
+if(VOICESTICK_ENABLE_LOCAL_REFINE)
+    message(STATUS "llama.cpp source: ${_llama_cpp_url}")
+    # 子项目开关：只编 ggml(CPU) + llama 核心静态库，裁掉工具/示例/测试/下载
+    set(LLAMA_STANDALONE OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_APP OFF CACHE BOOL "" FORCE)
+    set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+    set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+    set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+    set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+    set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+    set(GGML_RPC OFF CACHE BOOL "" FORCE)
+    # MSVC 下 OpenMP 依赖发现不稳（BuildTools 常缺 LLVM OpenMP），
+    # 单句生成场景线程池已并行，收益小风险大，直接关。
+    set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        llama_cpp
+        URL ${_llama_cpp_url}
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(llama_cpp)
+    # MSVC 默认 __cplusplus 报 199711L（无 /Zc:__cplusplus），b10868 的 LU8 宏
+    # 因此走 C++17 分支产出裸 u8"" 字面量；而 /std:c++20 又启用了 char8_t，
+    # u8"" 成 char8_t[] 无法传 const char* 参数（llama-chat.cpp C2664）。
+    # 关闭 char8_t 特性恢复 C++17 行为，与宏分支自洽，改动面最小。
+    if(MSVC)
+        target_compile_options(llama PRIVATE /Zc:char8_t-)
+    endif()
+    target_sources(voicestick_core PRIVATE src/llama_cpp_engine.cc)
+    target_link_libraries(voicestick_core PRIVATE llama)
+    target_compile_definitions(voicestick_core PUBLIC VOICESTICK_LOCAL_REFINE_ENABLED=1)
+endif()
 
 add_executable(VoiceStickApp WIN32
     src/main.cc
     src/win32_app.cc
+    # N7 cut3: 设备偏好/覆盖层/托盘域方法拆出（同 VoiceStickApp target；共享助手在 win32_app_util.h）
+    src/win32_app_prefs.cc
     src/asr_client_win.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
     src/input_injector_win.cc
     src/ble_central_win.cc
+    # N7 cut1: 小米/OTA/心跳僵尸域方法拆出（共享助手在 ble_central_win_util.h）
+    src/ble_central_win_xiaomi.cc
     src/global_hotkey_win.cc
     src/voice_stick_cloud_api_win.cc
     src/firmware_update_dialog.cc
@@ -150,6 +345,7 @@ add_executable(VoiceStickApp WIN32
     src/pair_device_dialog.cc
     src/onboarding_dialog.cc
     src/settings_dialog.cc
+    src/model_download_dialog.cc
     src/encoder_settings_dialog.cc
     src/interaction_settings_dialog.cc
     src/remote_settings_dialog.cc
@@ -157,11 +353,17 @@ add_executable(VoiceStickApp WIN32
     src/battery_monitor_dialog.cc
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
-    src/shortcut_capture.cc
     src/selection_hotword_manager.cc
     src/hotword_activity_dialog.cc
+    src/selection_correction.cc
+    src/selection_correction_dialog.cc
     src/correction_dialog.cc
     src/voice_f5_suppressor.cc
+    src/xiaomi_keymap_hook.cc
+    src/xiaomi_usage_tap_manager.cc
+    src/mic_mode_hotkey.cc
+    src/machine_guid_win.cc
+    src/license_runtime.cc
     resources/VoiceStick.rc
 )
 
@@ -220,6 +422,53 @@ add_custom_command(TARGET VoiceStickApp POST_BUILD
         "$<TARGET_FILE_DIR:VoiceStickApp>/config.template.toml"
 )
 
+# ---- 小米遥控器 usage tap 注入探针（Doc/Plan/xiaomi-remote-usage-tap.md §3）----
+# Detours v4.0.1（MIT，Microsoft 官方维护）：探针 DLL 的 hook 引擎。源码经
+# FetchContent 拉取（WinSparkle/llama 同款模式）静态链入。默认镜像加速源；
+# 离线时 VOICESTICK_DETOURS_URL 指向本地 zip，或
+# FETCHCONTENT_SOURCE_DIR_DETOURS 指向已解压源码目录。
+set(_detours_default_url "https://ghfast.top/https://github.com/microsoft/Detours/archive/refs/tags/v4.0.1.zip")
+if(DEFINED ENV{VOICESTICK_DETOURS_URL})
+    set(_detours_url "$ENV{VOICESTICK_DETOURS_URL}")
+elseif(DEFINED VOICESTICK_DETOURS_URL)
+    set(_detours_url "${VOICESTICK_DETOURS_URL}")
+else()
+    set(_detours_url "${_detours_default_url}")
+endif()
+option(VOICESTICK_ENABLE_XIAOMI_USAGE_TAP "Xiaomi remote usage tap probe (WUDFHost injection)" ON)
+if(VOICESTICK_ENABLE_XIAOMI_USAGE_TAP)
+    message(STATUS "Detours source: ${_detours_url}")
+    FetchContent_Declare(
+        detours
+        URL ${_detours_url}
+    )
+    FetchContent_MakeAvailable(detours)  # Detours 无 CMakeLists，仅解压取源
+    # 手动编静态库（x64 核心；creatwth.cpp 是 DetourCreateProcessWithDll 用
+    # 途且 C++ 编译下 goto 初始化报错，本项目不用，不编）。
+    add_library(detours STATIC
+        ${detours_SOURCE_DIR}/src/detours.cpp
+        ${detours_SOURCE_DIR}/src/disasm.cpp
+        ${detours_SOURCE_DIR}/src/disolx64.cpp
+        ${detours_SOURCE_DIR}/src/image.cpp
+        ${detours_SOURCE_DIR}/src/modules.cpp
+    )
+    target_include_directories(detours PUBLIC ${detours_SOURCE_DIR}/src)
+    target_compile_definitions(detours PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+
+    # VoiceStickHidTap.dll：注入 WUDFHost 的只读探针（零侵入，/MT 全局已钉）。
+    add_library(VoiceStickHidTap SHARED
+        src/hid_tap/hid_tap_dll.cc
+    )
+    target_link_libraries(VoiceStickHidTap PRIVATE detours)
+    set_target_properties(VoiceStickHidTap PROPERTIES OUTPUT_NAME VoiceStickHidTap)
+
+    # VoiceStickTapInject.exe：按需 UAC 的提权注入器（console，主程序 runas 启动）。
+    add_executable(VoiceStickTapInject
+        src/hid_tap/tap_inject_main.cc
+    )
+    target_link_libraries(VoiceStickTapInject PRIVATE voicestick_core advapi32 bcrypt)
+endif()
+
 # VoiceStickFlash：独立 COM 口固件烧录小工具（BLE OTA 之外的用户级兜底链路）。
 # 外壳只做 UI + 子进程，可测试逻辑在 voicestick_core（com_port_selector /
 # esptool_flash_command / esptool_progress / voice_stick_flash_tool）。
@@ -253,14 +502,57 @@ target_link_libraries(VoiceStickFlash PRIVATE
 
 add_executable(voicestick_windows_tests
     tests/core_tests.cc
+    # N8: first split suite (protocol/contract cluster), declared in tests/test_suites.h
+    tests/core_tests_protocol.cc
+    # N8 cut3: coordinator batch (20 tests)
+    tests/core_tests_coordinator.cc
+    # N8 cut4: coordinator batch 2 (17 tests)
+    tests/core_tests_coordinator2.cc
+    # N8 cut5: coordinator batch 3 (11 tests)
+    tests/core_tests_coordinator3.cc
+    # N8 cut6: coordinator batch 4 (9 tests)
+    tests/core_tests_coordinator4.cc
+    # N8 cut7: xiaomi ATVV batch (8 tests)
+    tests/core_tests_xiaomi_atvv.cc
+    # N8 cut8: coordinator batch 5 (8 tests)
+    tests/core_tests_coordinator5.cc
+    # N8 cut9: coordinator batch 6 / LocalMic (8 tests)
+    tests/core_tests_coordinator6.cc
+    # N8 cut10: xiaomi usage-tap batch (8 tests)
+    tests/core_tests_xiaomi_usage_tap.cc
+    # N8 cut11: tencent ASR batch (15 tests)
+    tests/core_tests_tencent.cc
+    # N8 cut12: device/input misc batch (59 tests)
+    tests/core_tests_device_misc.cc
+    # N8 cut13: codec/fixture/serial/esptool batch (106 tests)
+    tests/core_tests_codec_serial.cc
+    # N8 cut14: license/ima/asr batch (40 tests)
+    tests/core_tests_license_ima.cc
+    # N8 cut15 (final): device/plan/serial remainder (20 tests)
+    tests/core_tests_device_plan.cc
+    # 用户数据飞轮 P0-1: 纠错对资产化批
+    tests/core_tests_corrections.cc
+    # 用户数据飞轮 P1-1: 负信号事件流水批
+    tests/core_tests_usage_events.cc
+    # 用户数据飞轮 P0-3: 会话历史批
+    tests/core_tests_session_history.cc
+    # 语音编辑指令（Doc/Plan/voice-edit-commands.md）: 解析/删除计划 + 协调器接线
+    tests/core_tests_voice_edit.cc
     src/asr_client_tencent.cc
     src/tencent_asr_vocab_client.cc
+    # B2：usage tap 管理器的「退出有界」用例——壳层文件与 asr_client_tencent 同先例单独编入
+    src/xiaomi_usage_tap_manager.cc
 )
 
-target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt)
+# ole32/shell32：manager 的 RequestInject 走 CoInitializeEx/ShellExecuteW（提权注入器）
+target_link_libraries(voicestick_windows_tests PRIVATE voicestick_core winhttp bcrypt ws2_32 ole32 shell32)
 # golden fixtures（ATVV 采集）相对仓库根解析，不依赖测试进程工作目录
 target_compile_definitions(voicestick_windows_tests PRIVATE
     VOICESTICK_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
+# E7：测试目标无论何种构建配置都保留 assert()——RelWithDebInfo/Release 的 NDEBUG
+# 会把 assert 编译成空操作，本地跑出「假绿」（评审 E7）。-UNDEBUG 追加在配置
+# 标志之后，cl 按顺序解析 → 宏被撤销；CI 用 Debug 本就无 NDEBUG，此标志无副作用。
+target_compile_options(voicestick_windows_tests PRIVATE -UNDEBUG)
 
 enable_testing()
 add_test(NAME voicestick_windows_tests COMMAND voicestick_windows_tests)
@@ -273,6 +565,8 @@ add_executable(voicestick_integration_tests
     src/asr_client_win.cc
 )
 target_link_libraries(voicestick_integration_tests PRIVATE voicestick_core winhttp bcrypt)
+# E7：同 voicestick_windows_tests——任何配置下断言必须真实生效。
+target_compile_options(voicestick_integration_tests PRIVATE -UNDEBUG)
 add_test(NAME voicestick_integration_tests COMMAND voicestick_integration_tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set_tests_properties(voicestick_integration_tests PROPERTIES SKIP_RETURN_CODE 77)

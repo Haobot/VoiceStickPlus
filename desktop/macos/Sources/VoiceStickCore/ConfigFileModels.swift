@@ -1,0 +1,275 @@
+// N1 第三刀：TOML/配置文件模型闭包下沉（纯 Decodable，无需 TOMLKit 入 Core）——
+// ConfigFile 根模型 + Output/Device/Buttons/Interaction/Encoder/Xiaomi 子表 +
+// toml 转义助手（App 的 load 侧 TOMLDecoder 解码、save 侧字符串构建共用）+
+// xiaomi 纯转换器（依赖集合 ⊆ Core：模型/normalizedDeviceID/XiaomiSettings）。
+// interaction/encoder/buttons/output 转换器因依赖 App 域类型（KeySpec 等）暂留 AppConfig。
+
+public struct ConfigFile: Decodable {
+    public var asr_provider: String?
+    public var voicestick_api_key: String?
+    public var voicestick_cloud_url: String?
+    public var volcengine_api_key: String?
+    public var api_key: String?
+    public var tencent_secret_id: String?
+    public var tencent_secret_key: String?
+    public var tencent_appid: String?
+    public var tencent_engine_model_type: String?
+    public var tencent_hotword_id: String?
+    public var llm_base_url: String?
+    public var llm_api_key: String?
+    public var llm_model: String?
+    public var refine_enabled: Bool?
+    public var refine_prompt: String?
+    public var llm_disable_thinking: Bool?
+    public var interaction_mode: String?
+    public var ui_language: String?
+    public var output_target: String?
+    public var text_transform: String?
+    public var translation_target: String?
+    public var resource_id: String?
+    public var asr_hotwords: String?
+    public var paired_device_ids: String?
+    public var device_theme_colors: String?
+    public var device_overlay_positions: String?
+    public var device_theme_sizes: String?
+    public var auto_enter: Bool?
+    public var debug_audio_cache: Bool?
+    public var debug_audio_dir: String?
+    public var audio_noise_suppression: Bool?
+    public var paired_device: [String]?
+    public var xiaomi_suppress_f5: Bool?
+    public var global_hotkey_enabled: Bool?
+    public var global_hotkey: String?
+    public var launch_at_login: Bool?
+    public var developer_mode: Bool?
+    public var show_imu_debug: Bool?
+    public var imu_wake_sensitivity: String?
+    public var tap_to_arrow: Bool?
+    public var tap_sensitivity: Int?
+    public var air_mouse_sensitivity_x: Int?
+    public var air_mouse_sensitivity_y: Int?
+    // 9 个 air_mouse 双精度字段走 LenientDouble（整数形态宽容，见其文档注释）。
+    public var air_mouse_tau: LenientDouble?
+    public var air_mouse_invert_y: Bool?
+    public var air_mouse_curve_low_thresh: LenientDouble?
+    public var air_mouse_curve_high_thresh: LenientDouble?
+    public var air_mouse_curve_low_factor: LenientDouble?
+    public var air_mouse_curve_high_factor: LenientDouble?
+    public var air_mouse_neutral_deadzone: LenientDouble?
+    public var air_mouse_control_mode: String?
+    public var air_mouse_rate_gain: LenientDouble?
+    public var air_mouse_rate_friction: LenientDouble?
+    public var air_mouse_rate_max_speed: LenientDouble?
+    public var encoder_to_arrow: Bool?
+    public var encoder_rotation_invert: Bool?
+    public var encoder_rotate_cw_key: String?
+    public var encoder_rotate_ccw_key: String?
+    public var encoder_rotate_fast_threshold: Int?
+    public var encoder_rotate_cw_fast_key: String?
+    public var encoder_rotate_ccw_fast_key: String?
+    public var encoder_rotate_decide_window_ms: Int?
+    public var encoder_led_color: String?
+    public var encoder_press_action: String?
+    public var encoder_press_key: String?
+    public var encoder_double_click_action: String?
+    public var encoder_double_click_key: String?
+    public var output: OutputConfigFile?
+    public var device: [String: DeviceConfigFile]?
+    /// 根 [buttons] 表（网关模式全局键位映射，Windows [xiaomi.keys] 的 macOS 对应物）。
+    public var buttons: ButtonsConfigFile?
+    /// [voice_edit] 语音编辑指令配置表（方案 §9.1）。
+    public var voice_edit: VoiceEditConfigFile?
+    /// [local_asr] 本地离线 ASR 表（SenseVoice；键名与 Windows 同名，
+    /// macOS 只消费 enabled/models_dir，其余键忽略）。
+    public var local_asr: LocalAsrConfigFile?
+}
+
+public struct OutputConfigFile: Decodable {
+    public var target: String?
+    public var transform: String?
+    public var translation_target: String?
+}
+
+public struct DeviceConfigFile: Decodable {
+    public var output: OutputConfigFile?
+    public var xiaomi: XiaomiConfigFile?
+    public var interaction: InteractionConfigFile?
+    public var encoder: EncoderConfigFile?
+    public var buttons: ButtonsConfigFile?
+
+    /// 跨模块构造（测试与转换器侧）；解码走 Decodable init(from:)。
+    public init(output: OutputConfigFile? = nil,
+                xiaomi: XiaomiConfigFile? = nil,
+                interaction: InteractionConfigFile? = nil,
+                encoder: EncoderConfigFile? = nil,
+                buttons: ButtonsConfigFile? = nil) {
+        self.output = output
+        self.xiaomi = xiaomi
+        self.interaction = interaction
+        self.encoder = encoder
+        self.buttons = buttons
+    }
+}
+
+/// TOML 整数形态宽容双精度：`%.4g` 序列化的整数值（3/80/4000 等）落盘为 TOML 整数，
+/// 而 TOMLKit 的 decode(Double) 严格要求 .double 类型——单字段 typeMismatch 会让
+/// ConfigFile 整表解码失败并静默回落 loadLegacy（不认任何 [表] 段），把所有
+/// [device.*] 表与根 [buttons] 表在下次启动时丢光。与 XiaomiConfigFile.gain_db 的
+/// 整数宽容同一根因（Windows C++ << 整数值 double 同款形态），回归断言见
+/// GlobalButtonsConfigTests 的「整数形态 Double 宽容解码」与「解码主路径」两条。
+public struct LenientDouble: Decodable {
+    public var value: Double
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let double = try? container.decode(Double.self) {
+            value = double
+        } else if let int = try? container.decode(Int.self) {
+            value = Double(int)
+        } else {
+            throw DecodingError.typeMismatch(
+                Double.self,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Expected number (int or float)"
+                )
+            )
+        }
+    }
+}
+
+/// [device.<id>.buttons] 表：intercept + keys 子表（键为 RemoteButton rawValue，
+/// 值为 KeySpec 文本或 "none"=禁用）+ repeat_* 长按连发节拍（缺省回落默认）。
+public struct ButtonsConfigFile: Decodable {
+    public var intercept: Bool?
+    public var keys: [String: String]?
+    public var repeat_delay_ms: Int?
+    public var repeat_interval_ms: Int?
+}
+
+/// [voice_edit] 表（方案 §9.1）：字段与默认值双端同名同默认；缺省字段回落默认，
+/// 数值越界由解析侧钳位（见 voiceEditSettingsValue）。
+public struct VoiceEditConfigFile: Decodable {
+    public var enabled: Bool?
+    public var default_chars: Int?
+    public var max_chars: Int?
+    public var scope_seconds: Int?
+    public var verify_mode: String?
+    public var unverified_seconds: Int?
+    public var local_align_enabled: Bool?
+    public var local_align_url: String?
+    public var local_align_model: String?
+    public var local_align_timeout_ms: Int?
+}
+
+/// [local_asr] 表：本地离线 ASR（SenseVoice）。字段与 Windows app_config.cc
+/// 的 [local_asr] 同名（Windows 另有 push_to_talk_key/refine_* 等本机麦克风
+/// 模式键，macOS 无该模式、忽略不解析）。
+public struct LocalAsrConfigFile: Decodable {
+    public var enabled: Bool?
+    public var models_dir: String?
+    public var refine_model: String?
+    public var refine_num_threads: Int?
+}
+
+/// [device.<id>.interaction] 表：键名与顶层一致。
+public struct InteractionConfigFile: Decodable {
+    public var imu_wake_sensitivity: String?
+    public var tap_to_arrow: Bool?
+    public var tap_sensitivity: Int?
+    public var air_mouse_sensitivity_x: Int?
+    public var air_mouse_sensitivity_y: Int?
+}
+
+/// [device.<id>.encoder] 表：键名去掉顶层 encoder_ 前缀。
+public struct EncoderConfigFile: Decodable {
+    public var to_arrow: Bool?
+    public var rotation_invert: Bool?
+    public var rotate_cw_key: String?
+    public var rotate_ccw_key: String?
+    public var rotate_fast_threshold: Int?
+    public var rotate_cw_fast_key: String?
+    public var rotate_ccw_fast_key: String?
+    public var rotate_decide_window_ms: Int?
+    public var led_color: String?
+    public var press_action: String?
+    public var press_key: String?
+    public var double_click_action: String?
+    public var double_click_key: String?
+}
+
+/// [device.<id>.xiaomi] 表。gain_db 宽容接受 TOML 整数（Windows C++ << 对整数值
+/// double 会写出 "gain_db = 18" 这种整数形态），double_click_ms 严格整数；
+/// hpf/agc 普通 Bool 解码。
+public struct XiaomiConfigFile: Decodable {
+    public var gain_db: Double?
+    public var double_click_ms: Int?
+    public var hpf: Bool?
+    public var agc: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case gain_db = "gain_db"
+        case double_click_ms = "double_click_ms"
+        case hpf = "hpf"
+        case agc = "agc"
+    }
+
+    /// 跨模块构造（测试与转换器侧）；解码走 Decodable init(from:)。
+    public init(gain_db: Double? = nil, double_click_ms: Int? = nil,
+                hpf: Bool? = nil, agc: Bool? = nil) {
+        self.gain_db = gain_db
+        self.double_click_ms = double_click_ms
+        self.hpf = hpf
+        self.agc = agc
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let gain = try? container.decode(Double.self, forKey: .gain_db) {
+            gain_db = gain
+        } else if let gainInt = try? container.decode(Int.self, forKey: .gain_db) {
+            gain_db = Double(gainInt)
+        } else {
+            gain_db = nil
+        }
+        double_click_ms = try? container.decodeIfPresent(Int.self, forKey: .double_click_ms)
+        hpf = try? container.decodeIfPresent(Bool.self, forKey: .hpf)
+        agc = try? container.decodeIfPresent(Bool.self, forKey: .agc)
+    }
+}
+
+public extension Bool {
+    public var tomlValue: String { self ? "true" : "false" }
+}
+
+public extension String {
+    public var tomlEscaped: String {
+        replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+    public func xiaomiSettings(from file: XiaomiConfigFile,
+                                       fallback: XiaomiSettings = .default) -> XiaomiSettings {
+        var settings = fallback
+        if let gainDb = file.gain_db { settings.gainDb = gainDb }
+        if let doubleClickMs = file.double_click_ms, doubleClickMs > 0 {
+            settings.doubleClickMs = doubleClickMs
+        }
+        if let hpf = file.hpf { settings.hpf = hpf }
+        if let agc = file.agc { settings.agc = agc }
+        return settings
+    }
+
+    public func deviceXiaomiSettingsMap(
+        _ devices: [String: DeviceConfigFile]?
+    ) -> [String: XiaomiSettings] {
+        guard let devices else { return [:] }
+        return devices.reduce(into: [:]) { map, pair in
+            let deviceID = normalizedDeviceID(pair.key)
+            guard deviceID.count == 4, deviceID.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+                  let xiaomi = pair.value.xiaomi else {
+                return
+            }
+            map[deviceID] = xiaomiSettings(from: xiaomi)
+        }
+    }

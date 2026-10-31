@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -56,6 +58,53 @@ public:
     static std::string SegmentKey(int start_ms, int end_ms, std::string_view text);
     /// 把单句稳态结果累积到已确定文本上。空 sentence 不改变累积。
     static std::string AccumulateSentence(std::string_view current, std::string_view sentence);
+    /// C8：日志脱敏——去掉 URL 的 query 与 fragment，只留 scheme/host/path。
+    /// 腾讯签名串（authorization=…/signature=…）就在 query 里，整串入日志等于泄密钥。
+    static std::string UrlWithoutQuery(std::string_view url);
+
+    // ---- 单元测试缝（公开以便单元测试；生产路径走真实 WinHTTP 默认值）----
+    // WinHTTP 函数指针注入：测试替换为 fake 免真实网络，可复刻「服务端 final=1
+    // 后不断开、Receive 无限期阻塞」等死锁场景。
+    using WebSocketReceiveFn = DWORD (WINAPI*)(HINTERNET, PVOID, DWORD, DWORD*,
+                                               WINHTTP_WEB_SOCKET_BUFFER_TYPE*);
+    using WebSocketCloseFn = DWORD (WINAPI*)(HINTERNET, USHORT, PVOID, DWORD);
+    using HandleCloseFn = BOOL (WINAPI*)(HINTERNET);
+    void SetWinHttpTestSeams(WebSocketReceiveFn receive, WebSocketCloseFn ws_close,
+                             HandleCloseFn close);
+    /// 直接设置 websocket_ 成员（配合 ShutdownConnection 单测，不走真实连接）。
+    void SetWebSocketHandleForTest(HINTERNET handle);
+    /// 接收循环（RunWebSocket 的收帧分发段）：独立成函数便于单测 final=1 退出行为。
+    void ReceiveLoop(HINTERNET websocket);
+    /// 关停连接（公开以便单测断言强制关闭路径）。
+    void ShutdownConnection();
+
+    // ---- 热词表同步（B7）----
+    // 同步是纯网络操作（Find+Update/Create，WinHTTP 各阶段 10s 超时）。Start() 常被
+    // 调用方持 audio_mutex_ 调用（HandleAudioFrame → SendOrBufferOggChunk → Start），
+    // 在其中同步等待会把状态机/按键/音频帧全部冻结——故改为后台线程预热 + 幂等触发，
+    // 本方法绝不阻塞。线程只持有 config/词表的值拷贝与共享状态，不触碰 this。
+    void KickHotwordVocabSync(const std::vector<std::string>& hotwords);
+    /// 后台同步已完成后返回词表 ID；未就绪返回空（本次会话不带自动热词表）。
+    std::string CachedVocabId() const;
+
+    // ---- 单元测试缝（公开以便单元测试；生产路径 nullptr → 真实 HTTP）----
+    using VocabSyncFn =
+        std::function<std::string(const AppConfig&, const std::vector<std::string>&)>;
+    /// 注入同步实现。**必须在构造实例之前设置**（构造即预热，否则预热线程会走真实
+    /// HTTP）；进程级静态，仅单测使用。
+    static void SetVocabSyncTestSeam(VocabSyncFn fn) { vocab_sync_fn_for_test_ = std::move(fn); }
+
+private:
+    inline static VocabSyncFn vocab_sync_fn_for_test_;
+
+    /// 热词表同步的共享状态：后台线程与 RunWebSocket（锁外）通过它交换结果。
+    struct VocabSyncState {
+        mutable std::mutex mu;
+        std::string vocab_id;  // 成功后写入
+        bool succeeded = false;
+        bool in_flight = false;
+    };
+    std::shared_ptr<VocabSyncState> vocab_sync_ = std::make_shared<VocabSyncState>();
 
 private:
     enum class ConnectionState {
@@ -78,7 +127,6 @@ private:
 
     // ---- WebSocket 生命周期 ----
     void RunWebSocket();
-    void ShutdownConnection();
     void FailSession(const std::string& message);
 
     // ---- 帧发送 ----
@@ -117,8 +165,11 @@ private:
     std::set<std::string> emitted_definite_segment_keys_;
     AsrSessionOptions session_options_;
     HINTERNET websocket_ = nullptr;
+    // 测试缝默认值：生产路径等价直调对应 WinHTTP 函数。
+    WebSocketReceiveFn websocket_receive_ = &WinHttpWebSocketReceive;
+    WebSocketCloseFn websocket_close_ = &WinHttpWebSocketClose;
+    HandleCloseFn handle_close_ = &WinHttpCloseHandle;
     std::string last_start_error_;
-    std::string cached_vocab_id_;      // 本次会话自动创建的热词表 ID
     std::string pending_error_message_; // 延迟触发的错误消息（避免跨线程死锁）
 };
 

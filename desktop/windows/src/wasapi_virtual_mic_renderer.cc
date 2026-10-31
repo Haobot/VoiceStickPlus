@@ -157,16 +157,14 @@ class ComWasapiRenderSink : public WasapiRenderSink {
       return false;
     }
 
-    // 如果未指定名称子串，则使用默认播放设备。
+    // 空设备名必须拒绝而非回退默认播放设备：虚拟麦渲染的语义就是写入指定
+    // 设备（VB-CABLE 播放端），回退默认扬声器会把语音 PCM 实时播出——用户
+    // 会听到自己声音的回放（2026-09-11 事故，config 两个虚拟麦字段为空时
+    // 整个 wechat 模式渲染到扬声器）。失败走协调器「未找到虚拟麦克风」提示。
     if (options_.device_name_substring.empty()) {
-      hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
-                                                  device_.GetAddressOf());
-      if (SUCCEEDED(hr) && device_ != nullptr) {
-        active_device_name_ = GetDeviceFriendlyName(device_.Get());
-      } else {
-        LogApp("WASAPI OpenDevice: GetDefaultAudioEndpoint failed " + HrToHex(hr));
-      }
-      return SUCCEEDED(hr) && device_ != nullptr;
+      LogApp("WASAPI OpenDevice: device name substring is empty; refusing to "
+             "fall back to the default playback device");
+      return false;
     }
 
     ComPtr<IMMDeviceCollection> devices;

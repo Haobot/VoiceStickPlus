@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import ServiceManagement
 import Sparkle
 import VoiceStickCore
@@ -35,6 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         assert(Localization.tablesAreComplete())
         configureMainMenu()
         configureApplicationIcon()
+        // 内测包首启引导：内置凭据在场时落默认配置（provider 指向内置方），
+        // 跳过 onboarding 向导开箱即用；公开构建（无内置）保持原行为。
+        AppConfig.bootstrapBuiltinDefaultsIfNeeded()
+        // N1 S3：内置凭据灌槽必须先于任何 AppConfig.load()（active 解析读槽）。
+        BuiltinSecrets.loadIntoCoreSlots()
         if AppConfig.configExists {
             startApp(config: AppConfig.load())
         } else {
@@ -83,14 +89,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             globalHotkey: config.globalHotkey,
             launchAtLogin: config.launchAtLogin
         )
-        let coordinator = VoiceStickCoordinator(config: config, statusController: statusController)
+        // N1 切5 第二步：BLE 具体类外置构造注入（协调器只持协议）。
+        let coordinator = VoiceStickCoordinator(
+            config: config,
+            statusController: statusController,
+            ble: BleCentral(pairedDeviceIDs: config.pairedDeviceIDs),
+            makeAsr: { ASRClientFactory.makeClient(config: $0) },
+            makeTranslator: { LLMTranslationClient(config: $0) },
+            // 精修路由（本地优先）：本地 ASR 会话 → 内嵌 llama.cpp editform
+            //（模型缺失自动降级 L1 纯规则，LocalEditformRefiner 内处理）；
+            // 云端会话照旧云端 LLM。Windows SyncLocalRefiner 同语义。
+            makeRefiner: { config in
+                if config.localAsr.enabled {
+                    return LocalEditformRefiner(engineProvider: {
+                        guard let path = LocalLlmRuntime.refineModelPath(
+                            modelsDir: config.localAsr.modelsDir,
+                            override: config.localAsr.refineModel,
+                            configDirectory: AppConfig.configDirectory) else { return nil }
+                        return LocalLlmRuntime.shared.engine(
+                            modelPath: path,
+                            numThreads: Int32(config.localAsr.refineNumThreads))
+                    })
+                }
+                return LLMRefinementClient(config: config)
+            },
+            inputInjector: InputInjector(),
+            subtitleController: SubtitleController(),
+            makeDebugRecorder: { cfg in
+                DebugAudioRecorder(enabled: cfg.debugAudioCache,
+                                    directory: cfg.debugAudioDirectory)
+            }
+        )
 
         self.statusController = statusController
         self.coordinator = coordinator
 
         // 三期：注入前台应用追踪（双击动作按前台应用取 app 覆盖）；
         // 前台应用切换 → 重新 resolve + 刷新 intercept 层。
-        coordinator.frontmostAppProvider = frontmostAppProvider
+        // N1 切5 闸5：AppKit 原语闭包注入（告警 UI 块自协调器原样迁入）。
+        coordinator.openExternalURL = { NSWorkspace.shared.open($0) }
+        coordinator.isProcessTrusted = { AXIsProcessTrusted() }
+        coordinator.trText = { key in tr(L10nKey(rawValue: key) ?? .statusError) }
+        // 会话历史（用户数据飞轮 P0-3）：系统 SQLite 落库识别会话（默认库与
+        // config.toml 同目录）；打开/迁移失败由工厂返回 nil，记录降级停用。
+        coordinator.makeSessionHistoryStore = { SessionHistoryStore(url: $0) }
+        // App 场景分域（用户数据飞轮 P1-2 纠错对部分）：只取 bundle id，不读窗口内容。
+        coordinator.frontmostAppBundleID = { [frontmostAppProvider] in
+            let bundleID = frontmostAppProvider.currentBundleIdentifier
+            return bundleID.isEmpty ? nil : bundleID
+        }
+        // 编辑追踪（用户数据飞轮 P0-2）：AX 读取焦点字段文本（AppKit/ApplicationServices
+        // 合规层），与注入文本做区间 diff——字段全文只在内存参与 diff，落库的只有改动
+        // span。辅助功能权限与输入注入同源（CGEvent 已要求）。
+        coordinator.readFocusedFieldText = { FocusedFieldAXReader.readText() }
+        // 语音编辑 L1 目标校验（方案 §6.3）：基础 AX 读取扩展为
+        // 字段全文 + kAXSelectedTextRange（caretUTF16 / selectionLength）；任一不可读
+        // 返回 nil = 不可验证。macOS 27 实测 system-wide 取焦点元素返回 -25204
+        //（kAXErrorCannotComplete），reader 内置前台应用级 AX 树 fallback（Lead spike 结论）。
+        coordinator.readFocusedFieldState = { FocusedFieldAXReader.readState() }
+        // targeted 编辑平台出口（Doc/Plan/voice-edit-commands.md targeted 章节）：
+        // AX 精确选区写入 + 实际选中文本读回；能力缺失时协调器按不可验证拒绝
+        // （targeted 恒 verified，严禁盲改/全选重贴/系统撤销）。
+        coordinator.writeTargetedSelection = { location, length in
+            FocusedFieldAXReader.writeSelectedRange(locationUTF16: location, lengthUTF16: length)
+        }
+        coordinator.readTargetedSelectedText = { FocusedFieldAXReader.readSelectedText() }
+        // targeted 本地对齐兜底（Doc/Plan/voice-edit-commands.md targeted 章）：
+        // 自然简写门控未命中时问本地小模型（默认关）。2026-10-29 起走内嵌
+        // llama.cpp 引擎（对齐档 1.5B；原 Ollama HTTP 客户端退役）。
+        coordinator.alignTarget = { [weak self] command, asrTarget, remainingText, candidates in
+            guard let self else { return nil }
+            let settings = self.config.voiceEdit
+            guard settings.localAlignEnabled else { return nil }
+            guard let modelPath = LocalLlmRuntime.alignModelPath(
+                modelsDir: self.config.localAsr.modelsDir,
+                override: settings.localAlignModel,
+                configDirectory: AppConfig.configDirectory) else { return nil }
+            guard let engine = LocalLlmRuntime.shared.engine(
+                modelPath: modelPath,
+                numThreads: Int32(self.config.localAsr.refineNumThreads)) else { return nil }
+            return LocalTargetedAlignEngine.align(
+                engine: engine, command: command, asrTarget: asrTarget,
+                remainingText: remainingText, candidates: candidates,
+                timeoutMS: settings.localAlignTimeoutMS)
+        }
+        coordinator.presentUpgradeAlertUI = { url, message in
+            NSApp.activate(ignoringOtherApps: true)
+
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "VoiceStick Cloud needs attention"
+            alert.informativeText = message
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(url)
+            }
+        }
         frontmostAppProvider.onActiveAppChange = { [weak self] _ in
             self?.syncButtonsIntercept()
         }
@@ -172,11 +267,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController.onOpenEncoderSettings = { [weak self] deviceID in
             self?.showEncoderSettings(for: deviceID)
         }
+        statusController.onToggleAirMouse = { [weak self] deviceID in
+            self?.coordinator?.toggleAirMouse(deviceID: deviceID)
+        }
         statusController.onOpenRemoteSettings = { [weak self] deviceID in
             self?.showRemoteSettings(for: deviceID)
         }
         statusController.onOpenButtonMapping = { [weak self] deviceID in
             self?.showButtonMapping(for: deviceID)
+        }
+        statusController.onOpenGatewayButtonMapping = { [weak self] deviceID in
+            self?.showGatewayButtonMapping(for: deviceID)
         }
         statusController.onOpenBatteryMonitor = { [weak self] deviceID in
             self?.showBatteryMonitor(for: deviceID)
@@ -329,7 +430,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return XiaomiAtvvSession.Options(
                 interactionMode: self.config.interactionMode,
                 gainDb: settings.gainDb,
-                doubleClickWindowMs: settings.doubleClickMs
+                doubleClickWindowMs: settings.doubleClickMs,
+                hpf: settings.hpf,
+                agc: settings.agc
             )
         }
     }
@@ -672,11 +775,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showRemoteSettings(for deviceID: String) {
+        let effective = config.xiaomiSettings(for: deviceID)
         let controller = RemoteSettingsWindowController(
             deviceID: deviceID,
             settings: XiaomiSettings(
-                gainDb: config.xiaomiSettings(for: deviceID).gainDb,
-                doubleClickMs: config.xiaomiSettings(for: deviceID).doubleClickMs
+                gainDb: effective.gainDb,
+                doubleClickMs: effective.doubleClickMs,
+                hpf: effective.hpf,
+                agc: effective.agc
             ),
             defaults: .default
         ) { [weak self] override in
@@ -704,6 +810,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.show()
     }
 
+    /// 网关模式按键映射窗口（对齐 Windows ShowGatewayKeymapDialog）：遥控器配对在
+    /// StickS3、无 RC 配对条目，编辑全局 [buttons] 默认表——协调器无配对 RC 时的
+    /// gateway_keymap 路由推导与 gateway_key 消费即取该表，保存经 updateConfig
+    /// 热更即时下发（连接态逐键重发）。HID 拦截是直连 RC 专属能力，网关模式隐藏。
+    private func showGatewayButtonMapping(for deviceID: String) {
+        let controller = ButtonMappingWindowController(
+            deviceID: deviceID,
+            settings: config.buttonsSettings,
+            defaults: .default,
+            hidesIntercept: true
+        ) { [weak self] override in
+            self?.updateGlobalButtonsSettings(override)
+        }
+        buttonMappingWindowController = controller
+        showDockIconWhileWindowVisible(controller)
+        controller.show()
+    }
+
     /// 保存语义同 updateDeviceEncoderSettings；语音键双击动作消费 config，
     /// 须走 coordinator.updateConfig 热更即时生效。
     private func updateDeviceButtonsSettings(deviceID: String, override: ButtonsSettings?) {
@@ -718,6 +842,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.config = config
             coordinator?.updateConfig(config)
             syncButtonsIntercept()
+        } catch {
+            statusController?.setStatus("Button mapping save failed")
+        }
+    }
+
+    /// 全局 [buttons] 保存（网关模式对话框）：nil=恢复默认（清空全局表）。落盘后经
+    /// coordinator.updateConfig 热更——连接中的 StickS3 逐键重发 gateway_keymap_set。
+    private func updateGlobalButtonsSettings(_ override: ButtonsSettings?) {
+        var config = self.config
+        config.globalButtonsSettings = override ?? .default
+        do {
+            try config.save()
+            self.config = config
+            coordinator?.updateConfig(config)
         } catch {
             statusController?.setStatus("Button mapping save failed")
         }
@@ -917,5 +1055,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController?.setConnectedDevices([])
         coordinator?.updatePairedDeviceIDs(config.pairedDeviceIDs)
         syncF5Suppressor()
+    }
+}
+
+/// 焦点字段 AX 读取（编辑追踪 + 语音编辑共用；App 层合规实现，Core 不引入 AppKit/AX）。
+/// 跨 SDK 兼容：AXUIElementCopyAttributeValue 在 macOS 27 SDK 头文件中移除了 error 出参
+///（3 参），旧 SDK 仍为 4 参——Swift 无法按 SDK 条件编译，这里固定按 4 参 C ABI 经
+/// dlsym 调用：新实现只读前 3 个寄存器参数（多余寄存器实参在 arm64/x64 调用约定下无害），
+/// 旧实现原样回填 error。错误码一律以返回值为准。
+private enum FocusedFieldAXReader {
+    typealias CopyAttr = @convention(c) (
+        AXUIElement, CFString,
+        UnsafeMutablePointer<CFTypeRef?>?,
+        UnsafeMutablePointer<AXError>?
+    ) -> AXError
+
+    private static func copyAttrFunction() -> CopyAttr? {
+        guard let symbol = dlsym(dlopen(nil, RTLD_LAZY), "AXUIElementCopyAttributeValue") else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: CopyAttr.self)
+    }
+
+    private static func copyAttribute(
+        _ copyAttr: CopyAttr, element: AXUIElement, attribute: CFString
+    ) -> CFTypeRef? {
+        var ignoredError = AXError.attributeUnsupported
+        var value: CFTypeRef?
+        guard copyAttr(element, attribute, &value, &ignoredError) == .success else { return nil }
+        return value
+    }
+
+    /// 焦点 UI 元素：先 system-wide（旧系统有效），失败后回落前台应用级 AX 树
+    ///（macOS 27 实测 system-wide 返回 -25204 kAXErrorCannotComplete；Lead spike 结论）。
+    private static func focusedElement(_ copyAttr: CopyAttr) -> AXUIElement? {
+        let systemWide = AXUIElementCreateSystemWide()
+        if let focused = copyAttribute(
+            copyAttr, element: systemWide, attribute: kAXFocusedUIElementAttribute as CFString
+        ), CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            return (focused as! AXUIElement)
+        }
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return nil
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        if let focused = copyAttribute(
+            copyAttr, element: appElement, attribute: kAXFocusedUIElementAttribute as CFString
+        ), CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            return (focused as! AXUIElement)
+        }
+        return nil
+    }
+
+    /// 焦点字段全文（编辑追踪既有行为：读不到返回 nil）。
+    static func readText() -> String? {
+        guard let copyAttr = copyAttrFunction(), let focused = focusedElement(copyAttr),
+              let value = copyAttribute(copyAttr, element: focused, attribute: kAXValueAttribute as CFString),
+              CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        return (value as! CFString) as String
+    }
+
+    /// 焦点字段状态（语音编辑 L1 校验）：text + caretUTF16 + selectionLength。
+    /// 以下任一情况返回 nil = 不可验证（方案 §6.3）：无焦点元素/值不可读（含安全输入框、
+    /// 非文本控件）/无 kAXSelectedTextRange/超大文本（主线程比对保护）。
+    static func readState() -> FocusedFieldState? {
+        guard let copyAttr = copyAttrFunction(), let focused = focusedElement(copyAttr),
+              let value = copyAttribute(copyAttr, element: focused, attribute: kAXValueAttribute as CFString),
+              CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        guard let rangeValue = copyAttribute(
+            copyAttr, element: focused, attribute: kAXSelectedTextRangeAttribute as CFString
+        ), CFGetTypeID(rangeValue) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else { return nil }
+        let text = (value as! CFString) as String
+        guard text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16 else { return nil }
+        return FocusedFieldState(
+            text: text, caretUTF16: range.location, selectionLength: range.length
+        )
+    }
+
+    /// targeted 编辑：设置焦点字段选区（kAXSelectedTextRange，UTF-16 location+length；
+    /// 只写选区，不写整个字段 Value）。成功返回 true；无焦点/越界/AX 拒绝返回 false
+    /// （调用方按不可验证拒绝，绝不降级为盲操作/全选重贴/撤销键）。
+    static func writeSelectedRange(locationUTF16: Int, lengthUTF16: Int) -> Bool {
+        guard locationUTF16 >= 0, lengthUTF16 >= 0,
+              let copyAttr = copyAttrFunction(),
+              let focused = focusedElement(copyAttr) else { return false }
+        var range = CFRange(location: locationUTF16, length: lengthUTF16)
+        guard let value = AXValueCreate(.cfRange, &range) else { return false }
+        return AXUIElementSetAttributeValue(
+            focused, kAXSelectedTextRangeAttribute as CFString, value
+        ) == .success
+    }
+
+    /// targeted 编辑：读回当前实际选中文本（kAXSelectedTextAttribute）。无选区属性/
+    /// 选区折叠为空串（调用方与目标词比对自然不符 → 拒绝）/读不到返回 nil。
+    static func readSelectedText() -> String? {
+        guard let copyAttr = copyAttrFunction(), let focused = focusedElement(copyAttr),
+              let value = copyAttribute(
+                  copyAttr, element: focused, attribute: kAXSelectedTextAttribute as CFString
+              ), CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
+        return (value as! CFString) as String
     }
 }

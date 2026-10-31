@@ -7,17 +7,72 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# 兼容 importlib 按路径加载与直接运行两种方式，确保同目录模块可导入
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mirror_urls import mirror_asset_url
+
 
 def existing_item(path: Path, sparkle_os: str) -> str:
+    """返回 appcast 中匹配 sparkle:os 的单个 <item> 块（含行尾换行）。
+
+    必须按 item 边界切分后再过滤：旧正则会跨 item 贪婪匹配，当首个 item 是另一
+    平台时会把它连同目标 item 一起返回，输出里就会出现重复 item。
+    """
     if not path.exists():
         return ""
     content = path.read_text(encoding="utf-8")
-    match = re.search(
-        rf'    <item>\s*.*?sparkle:os="{re.escape(sparkle_os)}".*?    </item>\r?\n?',
-        content,
-        flags=re.DOTALL,
-    )
-    return match.group(0) if match else ""
+    for block in re.findall(r"    <item>.*?    </item>\r?\n?", content, flags=re.DOTALL):
+        if f'sparkle:os="{sparkle_os}"' in block:
+            return block
+    return ""
+
+
+def _version_key(version: str) -> tuple:
+    """x.y.z 转可比较元组；非数字形态返回空元组（调用方跳过单调性检查）。"""
+    parts = version.strip().split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        return ()
+    return tuple(int(p) for p in parts)
+
+
+def newest_version_in_appcast(path: Path) -> tuple:
+    if not path.exists():
+        return ()
+    versions = re.findall(r'sparkle:version="([^"]+)"', path.read_text(encoding="utf-8"))
+    keys = [key for key in (_version_key(v) for v in versions) if key]
+    return max(keys) if keys else ()
+
+
+def render_notes_html(md_text: str) -> str:
+    """受控 markdown 发行说明 → WinSparkle 展示用 HTML。
+
+    显式亮色内联样式：WinSparkle 的内嵌浏览器（mshtml）在系统深色模式下对
+    无样式 HTML 黑底渲染、文字默认黑，黑底黑字不可读（2026-09-27 用户报告）。
+    先整行转义再做标记替换，发行说明内容无法注入 HTML 标签。
+    """
+    items: list[str] = []
+    blocks: list[str] = []
+    for line in md_text.replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        s = html.escape(s, quote=False)
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+        if s.startswith("## "):
+            blocks.append("<b>" + s[3:].strip() + "</b>")
+        elif s.startswith("- "):
+            items.append("<li>" + s[2:].strip() + "</li>")
+        else:
+            blocks.append("<div>" + s + "</div>")
+    inner = "".join(blocks)
+    if items:
+        inner += "<ul>" + "".join(items) + "</ul>"
+    if not inner:
+        inner = "<ul><li>VoiceStick release.</li></ul>"
+    style = ("background:#ffffff;color:#1a1a1a;"
+             "font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;")
+    return f'<div style="{style}">{inner}</div>'
 
 
 def main() -> None:
@@ -31,8 +86,20 @@ def main() -> None:
     parser.add_argument("--output", default="website/public/appcast.xml")
     parser.add_argument("--appcast-url", required=True,
                         help="Public URL where this appcast will be hosted.")
+    parser.add_argument("--mirror-base", default=None,
+                        help="COS 国内分发面域名（如 https://dl.davenger.cloud）；"
+                             "提供时 enclosure URL 改写为镜像路径，须先完成 Release 资产镜像上传")
     parser.add_argument("--release-notes", default="VoiceStick release.")
+    parser.add_argument("--allow-version-downgrade", action="store_true",
+                        help="允许 appcast 广播版本回退（默认拒绝：旧线补丁发布会把高版本用户永久锁死）")
     args = parser.parse_args()
+
+    # 长度与签名仍对资产内容本身，URL 指向镜像不影响校验链
+    if args.mirror_base:
+        if args.msi_url:
+            args.msi_url = mirror_asset_url(args.msi_url, args.mirror_base)
+        if args.zip_url:
+            args.zip_url = mirror_asset_url(args.zip_url, args.mirror_base)
 
     has_macos = args.zip_url or args.signature or args.length is not None
     has_windows = args.msi_url or args.msi_length is not None
@@ -52,20 +119,23 @@ def main() -> None:
     if not (has_macos or has_windows):
         sys.exit("Error: provide at least one platform item (macOS ZIP or Windows MSI).")
 
-    notes = "".join(f"<li>{html.escape(line)}</li>" for line in args.release_notes.splitlines() if line.strip())
-    if not notes:
-        notes = "<li>VoiceStick release.</li>"
+    # 版本单调性：appcast 是两端共用的更新源，广播版本回退会让高版本用户永久收不到更新。
+    output_path = Path(args.output)
+    newest = newest_version_in_appcast(output_path)
+    current = _version_key(args.version)
+    if newest and current and current < newest and not args.allow_version_downgrade:
+        sys.exit(f"Error: refusing to downgrade appcast from {'.'.join(map(str, newest))} "
+                 f"to {args.version}; pass --allow-version-downgrade to override.")
+
+    notes = render_notes_html(args.release_notes)
 
     pub_date = email.utils.format_datetime(datetime.now(timezone.utc))
-    output_path = Path(args.output)
     windows_item = ""
     if has_windows:
         windows_item = f"""    <item>
       <title>Version {html.escape(args.version)}</title>
       <description><![CDATA[
-        <ul>
-          {notes}
-        </ul>
+        {notes}
       ]]></description>
       <pubDate>{pub_date}</pubDate>
       <enclosure
@@ -87,9 +157,7 @@ def main() -> None:
         macos_item = f"""    <item>
       <title>Version {html.escape(args.version)}</title>
       <description><![CDATA[
-        <ul>
-          {notes}
-        </ul>
+        {notes}
       ]]></description>
       <pubDate>{pub_date}</pubDate>
       <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>

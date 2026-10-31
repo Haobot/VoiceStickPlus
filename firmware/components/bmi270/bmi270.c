@@ -426,6 +426,12 @@ esp_err_t bmi270_init(void)
         if (cfg_err != ESP_OK) {
             ESP_LOGE(TAG, "BMI270 config load failed: %s (acc data will be invalid)",
                      esp_err_to_name(cfg_err));
+            // A11：config file 是有效数据的前提（上方注释）——加载失败时 ACC 恒 0，
+            // 原实现仅 LOG 后继续，s_present 保持 true → 拿起/旋转/敲击/体感全部
+            // 静默失灵却对主机显示在线。与 softreset 探测失败同口径：标记缺席、
+            // 早退优雅降级（所有消费方均走 bmi270_present() 门，read_acc_raw 亦拒读）。
+            s_present = false;
+            return ESP_OK;
         }
 
         // config 就绪后配 ACC：性能模式 + 100Hz + ±2g。

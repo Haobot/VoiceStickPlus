@@ -3,13 +3,18 @@
 #include "air_mouse_kin.h"
 #include "app_config.h"
 #include "asr_protocol.h"
+#include "audio_enhancer.h"
 #include "audio_opus_decoder.h"
+#include "audio_opus_encoder.h"
 #include "ble_protocol.h"
+#include "correction_pairs.h"
+#include "session_history.h"
 #include "default_audio_device_controller.h"
 #include "debug_audio_recorder.h"
 #include "device_switch_state.h"
 #include "encoder_speed.h"
 #include "firmware_manifest.h"
+#include "focus_text_reader.h"
 #include "hotword_activity.h"
 #include "hotword_candidate_miner.h"
 #include "hotword_context.h"
@@ -17,9 +22,12 @@
 #include "key_spec.h"
 #include "llm_translation_client.h"
 #include "llm_refinement_client.h"
+#include "local_refinement_client.h"
+#include "mic_capture.h"
 #include "ogg_opus_muxer.h"
 #include "pcm_ring_buffer.h"
 #include "virtual_mic_renderer.h"
+#include "voice_targeted_edit.h"
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
 
@@ -48,6 +56,8 @@ struct ConnectedDevice {
     std::string name;
     // 设备类标识（kHardwareXiaomiRemote2Pro 等；StickS3 在拿到 device_info 前为空）。
     std::string hardware;
+
+    bool operator==(const ConnectedDevice& other) const = default;
 };
 
 struct DeviceInfo {
@@ -57,6 +67,10 @@ struct DeviceInfo {
     // MiniEncoderC 编码器是否在线（来自 encoder_status 事件）。
     // 默认 true：老固件/尚未收到 encoder_status 时保持编码器设置可见，避免误隐藏。
     bool encoder_present = true;
+    // 固件是否处于网关模式（来自 gateway_status 事件）。默认 false=未知：
+    // 老固件不上报该事件，此时不得抑制直连遥控器 ATVV（见
+    // Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md）。
+    bool gateway_mode = false;
 };
 
 struct FirmwareUpdateProgress {
@@ -82,6 +96,9 @@ public:
                                      const std::optional<std::string>& device_id) = 0;
     virtual void SendShowImuDebug(bool enabled,
                                   const std::optional<std::string>& device_id) = 0;
+    // D9：桌面端协议版本上报（proto_negotiate，见 protocol.md「Protocol version &
+    // negotiation」）；设备恒以 proto_info 应答，出界即双方告警。
+    virtual void SendProtoNegotiate(const std::optional<std::string>& device_id) = 0;
     virtual void SendTapEnabled(bool enabled,
                                 const std::optional<std::string>& device_id) = 0;
     virtual void SendTapSensitivity(int level,
@@ -93,6 +110,21 @@ public:
     // （桌面端把单击配为自定义按键时下发 false，从 encoder_press_action 派生）。
     virtual void SendEncoderRecordingGate(bool enabled,
                                           const std::optional<std::string>& device_id) = 0;
+    // 网关按键路由（P1 隧道融合）：key 为固件协议键名，software=true 设软件路由
+    //（gateway_key 事件上报桌面端）、false 恢复 HOGP 直通。仅对 StickS3 设备生效。
+    virtual void SendGatewayKeymapSet(const std::string& key, bool software,
+                                      const std::optional<std::string>& device_id) = 0;
+    // D10b：拉取当前路由表——回执经 gateway_keymap 分片回流，coordinator 攒全表。
+    virtual void SendGatewayKeymapGet(const std::optional<std::string>& device_id) = 0;
+    // P1 目标表：上报本机显示名（主机名）给网关设备，供其目标表命名。
+    virtual void SendGatewayTargetInfo(const std::string& name,
+                                       const std::optional<std::string>& device_id) = 0;
+    // P1 切换器：选择网关目标（self=true 本机 / false 清除选择）。
+    virtual void SendGatewaySelectTarget(bool self,
+                                         const std::optional<std::string>& device_id) = 0;
+    // 原始控制帧下发（调试/自动化入口，见 cmd_line.h --control）。
+    virtual void SendRawControl(const std::string& json,
+                                const std::optional<std::string>& device_id) = 0;
     // 开关体感鼠标模式：enabled=true 时固件校准陀螺仪零偏并开始上报 motion 帧。
     virtual void SendAirMouseEnabled(bool enabled,
                                      const std::optional<std::string>& device_id) = 0;
@@ -126,6 +158,12 @@ public:
     std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
     // 供电态（USB）自动关机开关状态回调：(device_id, usb_auto_off)。UI 线程派发。
     std::function<void(std::string, bool)> on_power_mgmt_state;
+    // 僵尸会话自愈失败回调：(device_id)。心跳或连接期活性证明发现链路仍报
+    // Connected 却零入站——订阅与写入全部「假成功」但设备侧从未登记（state_sub=0），
+    // 录音必然被拒。BleCentralWin 会先自行按地址重连（A）与全量修复（B）；只有两级
+    // 都用满仍失败才回调此处，提示用户到系统蓝牙设置删除并重新配对。
+    // UI 线程派发，同一设备在一次会话内只报一次。
+    std::function<void(std::string)> on_session_zombie;
 };
 
 class AsrClient {
@@ -154,6 +192,12 @@ public:
     virtual void SetDeviceInfo(const DeviceInfo& info) = 0;
     // 编码器在线状态（encoder_status 事件）：驱动设置对话框编码器区块显隐。
     virtual void SetDeviceEncoderPresent(const std::string& device_id, bool present) = 0;
+    // 网关模式上报（gateway_status）：网关模式下不得直连遥控器 ATVV。
+    virtual void SetDeviceGatewayMode(const std::string& device_id, bool gateway) = 0;
+    // D10b：完整路由回执到达（gateway_keymap 分片攒全表）——现开的键位映射对话框
+    // 据此回显设备侧真实路由表。默认空实现保护既有实现者。
+    virtual void OnGatewayKeymapReport(
+        const std::vector<StateEvent::KeyRoute>&) {}
     virtual void SetDeviceBattery(const std::string& device_id, int level_percent,
                                    bool charging, bool usb_powered) = 0;
     virtual void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) = 0;
@@ -187,6 +231,13 @@ public:
                               OverlayThemeColor color) = 0;
     virtual void HideSubtitles() = 0;
     virtual void ShowNotification(const std::string& title, const std::string& body) = 0;
+    // 固件更新托盘气泡（周期检查/连接后发现已连接设备固件落后时）：
+    // 与 ShowFirmwareUpdatePrompt（配对后模态询问）互补，不打断当前操作。
+    // 默认空实现便于测试与轻量 UI 接入。
+    virtual void ShowFirmwareUpdateBalloon(const std::string& device_id,
+                                           const std::string& current_version,
+                                           const std::string& latest_version,
+                                           bool is_below_minimum) {}
     // 悬浮窗临时消息（duration_ms 后自动隐藏）：托盘气球可能被系统勿扰/通知设置
     // 静默拦截且无返回值可查，需要用户必现的提示（如热词候选建议）走这条。
     // 实现方负责：会话活跃（浮窗被状态机占用）时回退托盘气泡、UI 线程封送。
@@ -218,6 +269,11 @@ public:
     virtual ~IForegroundProcessProbe() = default;
     // 前台进程高于本进程完整性时返回 true，并填入其可执行文件名（如 "Weixin.exe"）供提醒文案。
     virtual bool IsForegroundHigherIntegrity(std::wstring& process_name) = 0;
+    // 语音编辑（Doc/Plan/voice-edit-commands.md §6.1/§6.2）：前台窗口身份。
+    // 默认实现返回 0 / 空——既有测试 Fake 无需改动；语音编辑在缺失时 fail-closed
+    //（L0 判前台窗口不一致 → 不注入任何按键）。Win32 实现由外壳注入。
+    virtual std::uintptr_t ForegroundWindow() { return 0; }
+    virtual std::string ForegroundProcessName() { return {}; }
 };
 
 // 热词活跃度快照 HotwordActivitySnapshot 定义在 hotword_activity.h。
@@ -242,8 +298,89 @@ public:
     void Start();
     void Shutdown();
     // 注入前台进程完整性探测实现。未注入（nullptr）时跳过 UIPI 提权提醒。须在 Start 前调用。
+    // 语音编辑（Doc/Plan/voice-edit-commands.md）复用同一探针的 ForegroundWindow /
+    // ForegroundProcessName 做 L0 前台窗口一致性校验；未注入时语音编辑 fail-closed。
     void SetForegroundProbe(std::unique_ptr<IForegroundProcessProbe> probe);
+    // 注入焦点输入框读取实现（UIA TextPattern，须在 UI 线程/COM STA 调用；测试注入
+    // Fake）。未注入时 L1 不可验证，按 verify_mode 走 auto 短窗/拒绝。须在 Start 前调用。
+    void SetFocusTextReader(std::unique_ptr<IFocusTextReader> reader);
+    // 注入 targeted 编辑平台出口（UIA TextRange 精确选区 + 读回 + 末尾光标；测试注入
+    // Fake）。未注入时 targeted 一律按不可验证拒绝（targeted 恒 verified，严禁盲改）。
+    void SetTargetedFieldEditor(std::unique_ptr<ITargetedFieldEditor> editor);
+    // 注入本机麦克风模式运行件（local-mic 会话，须在 Start 前调用，对齐
+    // SetForegroundProbe 的注入模式）：采集器 + 本地 ASR 客户端。二者缺一或
+    // config [local_asr] enabled=false 时按住说话热键完全旁路。
+    void SetLocalMicRuntime(std::unique_ptr<IMicCapture> capture,
+                            std::unique_ptr<AsrClient> local_asr);
+    // 本地引擎授权闸（app shell 注入；空 = 放行，默认空不影响既有行为）：
+    // 会话将路由本地引擎（local-mic 或 [local_asr].enabled 的设备会话）且闸返回
+    // false 时，通知用户并放弃本次会话。见 Doc/Plan/offline-license-activation.md。
+    void SetLicenseGate(std::function<bool()> allow_local_asr);
+    // P0-3：UI 线程封送器（app shell 注入；空 = 在当前线程同步执行，测试保持原行为）。
+    // ASR / 精修 / 翻译的完成回调从各自 worker 线程到达，必须先回到 UI 线程再进入
+    // 状态机，否则会与 UI 线程并发读写 pending_paste_state_ / active_session_id_ /
+    // buffered_ogg_chunks_ / subtitle_cycles_ 等字段（数据竞争 = UB）。
+    // 见 Doc/Plan/architecture-review-and-optimization-2026-09-22.md P0-3。
+    void SetUiDispatcher(std::function<void(std::function<void()>)> dispatcher);
+    // 方案 A 停止宽限：keyup 先于采集停止发出后，保留音频流至多这么久再停采
+    // （模拟物理松开时麦克风仍在供电的语义，WeType finalize/commit 依赖）。
+    // 须在 Start 前调用；测试注入 0 以免拖慢单测，生产默认见成员定义。
+    void SetWechatStopAudioGrace(std::chrono::milliseconds grace) {
+        wechat_stop_audio_grace_ = grace;
+    }
+    // 点按折叠（click/hold）按住流自动松开延迟：按住只为满足 WeType 长按检测
+    // 弹框，面板弹出后必须松开——持续 repeats 会让任何关闭动作（鼠标 detach/VAD
+    // 收尾/超时）被下一个 keydown 立即重新弹开面板（「浮窗点关又弹出」真机复验）；
+    // 松开后会话仍存活，文字提交由停止击的「新按住提交」保证，不依赖松开时机。
+    // 须在 Start 前调用；测试注入 0 或长值以免干扰计数。
+    void SetWechatClickHoldRelease(std::chrono::milliseconds delay) {
+        wechat_click_hold_release_ = delay;
+    }
+    // 点按折叠停止击的 detach 点击延迟/间隔（见 SetWechatDetachClickDelay）。
+    // 生产 1500ms：detach 从请求到完成约 1.8s，按此间隔连点两次（末次加倍等待）
+    // 保证浮窗关闭（2026-09-12 真机复验）。须在 Start 前调用；测试注入 0。
+    void SetWechatDetachClickDelay(std::chrono::milliseconds delay) {
+        wechat_detach_click_delay_ = delay;
+    }
+    // 注入本地文本精修客户端（本地识别会话的 final 文本走 L1 规则 → L2 本地
+    // LLM → L3 守卫三层防御，内部逐层回退，Doc/Plan/local-text-refinement.md）。
+    // nullptr 允许：本地会话退化为纯规则精修。与 SetLocalMicRuntime 同为外壳
+    // 注入件；config [local_asr] refine_enabled=false 时外壳不注入。
+    void SetLocalRefiner(std::unique_ptr<LocalRefinementClient> refiner);
+    // 划词纠错候选生成（S1）：委托本地精修客户端（引擎互斥内与精修串行）。
+    // hotwords 注入候选 prompt（触类旁通）。refiner 未注入回调 (false, {})，
+    // 调用方退化为纯手输。
+    void GenerateCorrectionCandidates(
+        const std::string& wrong_text, const std::string& context_text,
+        const std::vector<std::string>& hotwords,
+        LocalRefinementClient::CandidatesComplete on_done);
+    // 最近跨轮精修上文（划词纠错候选生成的上下文源，空串=无上文）。
+    std::string RecentRefineContextText() const;
+    // 按住说话热键按下（外壳 LL 钩子转发）：以 kLocalMicDeviceId 建立主会话并
+    // 启动采集。释放：停采（join 采集线程）、尾帧补零冲刷、发空 END 帧复用主会话
+    // audio_end 收尾路径（短按丢弃/最终块发送/finalizing 全部既有逻辑）。
+    void HandleLocalMicHotkeyPressed();
+    void HandleLocalMicHotkeyReleased();
+    // 方案 A（Doc/Rfc/xiaomi-wechat-click-toggle-2026-09-12.md，2026-09-11 修订）：
+    // 小米设备 + click/hold 组合的会话由 WeType 直接采集默认录音设备（真实麦克风），
+    // 本端跳过 auto_switch/虚拟麦渲染/本机麦采集——CABLE 绕行在 keyup 后被拆除会
+    // 卡死 WeType finalize（真机定案，见 Doc/Expe/ 同日新文）。
+    bool WechatSessionUsesDefaultMicDirectly(const std::string& device_id);
     void UpdateConfig(AppConfig config);
+    // D10b：最近一次完整路由回执（打开键位映射对话框时回显）。
+    const std::vector<StateEvent::KeyRoute>& LastGatewayKeymapReport() const {
+        return keymap_report_routes_;
+    }
+    // D10b：向设备请求当前路由表（打开对话框时拉取；回执分片回流）。
+    void RequestGatewayKeymapReport();
+private:
+    // 网关按键路由下发（P1）：对该设备逐键同步软件路由/直通（见 .cc 注释）。
+    void PushGatewayKeymapRoutesFor(const std::string& device_id);
+    // A15：gateway_keymap 分片回执的未完成累计（seq0 起攒，more=false 收口）。
+    std::vector<StateEvent::KeyRoute> keymap_report_pending_;
+    // D10b：收口后的完整表**留存**（打开对话框回显；原攒完即清 UI 无从取）。
+    std::vector<StateEvent::KeyRoute> keymap_report_routes_;
+public:
     // 热调参：仅更新运行期某设备的 air_mouse 参数（轻量，不存盘不重建 LLM）。调参窗口即时调。
     void UpdateAirMouseParams(const std::string& device_id, const AirMouseParams& params);
     // 取某设备当前运行期 air_mouse 参数（调参窗口初始值）。无运行期覆盖时回退配置派生值。
@@ -251,6 +388,15 @@ public:
     // 系统休眠/恢复后由平台层调用：丢弃 ASR 保活连接，下次录音重新握手。
     void InvalidateAsrConnection();
     void ReconnectPairedDevices();
+    // P1 目标表：把本机显示名（主机名）上报给网关设备（其固件把名字绑定到当前连接对端）。
+    // 幂等，可在每次进入网关模式/重连后调用。
+    void SendGatewayTargetInfo(const std::string& device_id, const std::string& name);
+    // 本机显示名（主机名）由平台层启动时注入，用于网关目标表命名（见上）。
+    void SetLocalHostName(std::string name);
+    // P1 切换器：把本机设为网关目标 / 清除选择（桌面端 --gateway-target 入口调用）。
+    void SelectGatewayTarget(bool self);
+    // 原始控制帧下发（桌面端 --control 入口调用）。
+    void SendRawControl(const std::string& json);
     void ConnectPairedDevice(const std::string& device_id,
                              std::uint64_t bluetooth_address,
                              BluetoothAddressKind address_kind,
@@ -261,6 +407,9 @@ public:
     void CancelPendingConnect(const std::string& device_id);
     bool RestoreLastInputConfirmation();
     void CheckFirmwareUpdatesNow();
+    // 周期静默检查（平台层 12h 定时器驱动）：缓存期内复用上次 manifest 不真拉，
+    // 与 Now()（force+显示错误）互补，供已连接设备的固件落后气泡提醒。
+    void CheckFirmwareUpdatesPeriodically() { CheckFirmwareUpdatesIfNeeded(false, false); }
     void CheckFirmwareAfterPairing(const std::string& device_id);
     void UpdateFirmwareFromLatest(const std::string& device_id,
                                   std::function<void(FirmwareUpdateProgress)> progress,
@@ -271,6 +420,9 @@ public:
                                std::function<void(FirmwareUpdateProgress)> progress,
                                std::function<void(bool, std::string)> completion);
     void CancelFirmwareUpdate();
+    // 当前已连接设备 ID 列表（on_connection_change 时刷新；只读访问，
+    // 供 app shell 侧装配授权绑定键等设备相关查询）。
+    const std::vector<std::string>& ConnectedDeviceIds() const { return connected_device_ids_; }
 
     static OverlayThemeColor ThemeColorForConfig(const AppConfig& config, const std::string& device_id);
 
@@ -283,6 +435,9 @@ public:
     void EncoderRotateTick();
     // 编码器慢速 pending 有无变化通知（true=有挂起，false=已清空）。平台层据此启停定时器。
     std::function<void(bool)> on_encoder_rotate_pending_changed;
+    // 网关按键沿（P1 隧道融合）：网关模式软件路由键的 gateway_key 事件
+    //（key 为协议键名，pressed 为按下沿）。UI 线程派发，keymap hook 消费。
+    std::function<void(const std::string& key, bool pressed)> on_gateway_key;
     // 体感鼠标激活态变化通知（true=有设备进入体感，false=全部退出）。平台层据此启停定时器。
     std::function<void(bool)> on_air_mouse_active_changed;
     // 查询某设备是否处于体感鼠标模式（供托盘菜单提示，避免用户不知情下主键变鼠标左键）。
@@ -357,6 +512,20 @@ private:
     };
 
     void ConfigureAsrCallbacks();
+    void WireAsrClientCallbacks(AsrClient* client);
+    // 主会话当前应使用的 ASR 客户端：会话建立时钉住（local-mic→local_asr_，其余→
+    // 云端 asr_），EnterReady/UpdateConfig/Shutdown 解除。final 块发送前会话 id 已被
+    // 重置，路由不能按会话身份现算。调用方须持有 audio_mutex_。
+    AsrClient* SessionAsrClient();
+    // 会话级 ASR 路由钉住指针（生命周期见 SessionAsrClient；所有权在外部成员）。
+    AsrClient* session_asr_ = nullptr;
+    // 会话级精修路由钉住：本会话 final 文本是否走本地精修（本地 ASR 路由 &&
+    // refine_enabled && 已注入 refiner）。与 session_asr_ 同生命周期同复位点；
+    // 翻译 profile（kTranslate）仍优先走云端翻译，不经本地精修。
+    bool session_uses_local_refine_ = false;
+    // 取消全部主会话 ASR 客户端（云端 + 本地）。会话取消/收尾路径使用，避免在
+    // 会话归属已重置时漏取消。调用方须持有 audio_mutex_。
+    void CancelAsrClients();
     void ConfigureSubtitleAsrCallbacks(SubtitleCycle* cycle);
     void HandleStateEvent(const StateEvent& event, const std::string& device_id);
     void HandleButtonDown(const StateEvent& event, const std::string& device_id);
@@ -377,6 +546,12 @@ private:
     void HandlePrimaryButtonDown(std::optional<std::uint32_t> session_id, const std::string& device_id);
     void HandlePrimaryButtonUp(const std::string& device_id);
     void HandleAudioFrame(const AudioFrame& frame, const std::string& device_id);
+    // 采集线程回调：PCM 切帧编码为 Opus，以 local-mic 会话身份喂 HandleAudioFrame
+    //（复用主会话全部帧处理：seq 校验/stall 刷新/ogg 组包/ASR 发送）。
+    // slicer/encoder/seq 仅采集线程与其后 join 的释放线程访问，无锁。
+    void FeedLocalMicPcm(std::span<const std::int16_t> pcm);
+    // local-mic 会话是否活跃（须持有 audio_mutex_）。
+    bool LocalMicSessionActiveLocked() const;
     void HandleWechatInputMethodPrimaryButtonDown(std::optional<std::uint32_t> session_id,
                                                    const std::string& device_id);
     void HandleWechatInputMethodPrimaryButtonUp(const std::string& device_id);
@@ -384,6 +559,10 @@ private:
     bool StartWechatInputMethodSession(std::optional<std::uint32_t> session_id,
                                        const std::string& device_id);
     void StopWechatInputMethodSession();
+    // B3：把 auto_switch 切走的默认录音设备切回并清落盘状态（幂等；未切过为 no-op）。
+    // 启动失败路径与 Stop 共用——失败不回滚会让默认麦长期停在 CABLE（静音），且下次
+    // 会话把 CABLE 当"原设备"存回（毒化后续会话）。
+    void RestoreDefaultCaptureDevice();
     // 检测前台是否高权限进程，若是则气泡提醒（按进程名去重防打扰）。返回 true 表示已检测到高权限
     // 前台、调用方应跳过本次会话启动（SendInput 必被 UIPI 丢弃，启动无意义且会留空转残留）。
     bool MaybeWarnForegroundElevated(const std::string& device_id);
@@ -431,6 +610,25 @@ private:
     // 由用户在设置-热词区确认后才真正入表。
     void MineHotwordCandidatesFromRefinement(const std::string& original,
                                              const std::string& refined);
+    // 精修完成后的纠错对挖掘（用户数据飞轮 P0-1）：original→refined 提取最小替换
+    // 片段对，经 B13 单写入口落盘 correction_pairs.json（与 config.toml 同目录）。
+    void MineCorrectionPairsFromRefinement(const std::string& original,
+                                           const std::string& refined);
+    // 精修 prompt 纠错 few-shot 段候选（按 count/新近度 top-kCorrectionPromptMaxPairs，
+    // 每次精修从磁盘现读，不做内存缓存——文件小且写点分散）。
+    std::vector<CorrectionPair> CorrectionPairsForLlmPrompts();
+    // 会话历史（用户数据飞轮 P0-3，typeless 方案）：懒打开（首次落库时）、
+    // 打开/迁移失败降级停用；raw 在 TransformText 建立、final 在 wrapped 落库。
+    void BeginSessionHistory(const std::string& raw_text);
+    void CompleteSessionHistory(const std::string& final_text);
+    // 会话历史 provider 字符串（session_history.db provider 列；远程 tail.cc 定义）。
+    std::string SessionHistoryProviderName() const;
+    // 前台应用分桶（App 场景分域，doubao §3.4）：前台窗口进程 exe 名（UTF-8）；
+    // 取不到为空=全局桶。只取进程名，不读窗口内容。
+    std::string ForegroundAppBucket();
+    // 改写对全句精确命中应用（doubao 方案 §3.1 应用位置 1）：命中即返回替换文本并
+    // 落 use_count；未命中/库停用返回 nullopt 走既有精修管线。
+    std::optional<std::string> ExactMatchCorrectionPairFromDisk(const std::string& text);
     // LLM 主动提炼挖掘（hotword_mining_enabled）：识别会话完成后异步让 LLM 从
     // 最终文本提炼候选热词，覆盖 diff 挖掘够不到的场景（ASR 本来就识别对、或
     // LLM 不认识的全新词无法被纠错引入）。不阻塞粘贴。
@@ -470,6 +668,10 @@ private:
     // 超时未收到结束信号则 CancelShortRecording 回 ready，覆盖 button_up 与 audio_end 同时丢失的卡死。
     void ScheduleRecordingHardTimeout();
     void CancelRecordingHardTimeout();
+    // 点按折叠（click/hold）按住流自动松开：SendDown 后延迟 wechat_click_hold_release_
+    // 自动 SendUp（见 SetWechatClickHoldRelease 注释）。停止路径/新会话 bump
+    // wechat_click_hold_generation_ 取消未触发的释放。
+    void ScheduleWechatClickHoldRelease();
     // 录音音频流停滞 watchdog：focused_app 进 kRecording 时启动，每帧音频刷新时间戳。
     // 正常录音固件 25fps 持续发帧，超过 audio_stall_timeout_ 无任何帧说明 button_up 与
     // audio_end 双丢（或链路卡死），按 audio_stall 走 audio_end 等待路径收尾，
@@ -495,8 +697,18 @@ private:
     void FinishWithFinalText(const std::string& text);
     void FinishWithAsrError(const std::string& message);
     void RecoverFromAsrError(bool hide_overlay = true);
-    void CommitPendingPaste(const std::string& text);
-    void CompletePendingPaste(const std::string& text);
+    void CommitPendingPaste(const std::string& text, bool manual);
+    // 负信号采集（用户数据飞轮 P1-1）：事件文件路径与埋点（usage_events.jsonl）。
+    std::filesystem::path UsageEventsPath();
+    void RecordUsageEvent(const std::string& kind, const std::string& text,
+                          std::optional<double> dwell_seconds = std::nullopt);
+    // 取消结果文本中命中的热词负样本记分（评分负项，P1-1 采集的消费端）。
+    void RecordHotwordNegativeFromText(const std::string& text);
+    // 暂停确认态进入时刻（GetTickCount64；停留时长疑惑度信号，0=不在暂停态）。
+    ULONGLONG pending_paste_entered_at_ms_ = 0;
+    // P3 反馈环锚点：本会话精确命中应用的改写对（确认保留 → recall+1，取消清空）。
+    std::optional<CorrectionPair> applied_correction_pair_;
+    void CompletePendingPaste(const std::string& text, bool manual);
     bool RestoreLastInputConfirmation(std::optional<std::string> device_id);
     bool HandleFrontButtonDuringPendingPaste(const std::string& device_id);
     void CancelPendingPaste(const std::string& device_id);
@@ -504,6 +716,34 @@ private:
     void CancelActiveCycleIfDeviceDisconnected();
     void FinishRecognitionCycle();
     void CancelStreamingRefinement();
+    // ---- 语音编辑指令（Doc/Plan/voice-edit-commands.md）----
+    // 最近一次语音注入记录（方案 §6.1；唯一写点 CompletePendingPaste 的 Paste 之后）。
+    struct LastInjection {
+        std::string text;                 // 实际注入的最终文本
+        std::string remaining_text;       // 理论上仍留在输入框中的剩余文本
+        std::chrono::steady_clock::time_point injected_at{};  // 注入完成时刻（monotonic）
+        bool pressed_enter = false;       // 注入时 auto_enter 的实际值
+        std::uintptr_t foreground_window = 0;  // 注入目标前台窗口（L0 一致性校验）
+        std::string foreground_process;   // 目标窗口所属进程 exe 名（UTF-8）
+    };
+    // 命中指令并接管本轮返回 true（调用方不得继续精修/翻译/粘贴）；非指令返回 false。
+    bool HandleVoiceEditIfMatched(const std::string& text);
+    // targeted 编辑（删除/替换最近一次输入中的指定词；旧解析器优先、targeted 其次）。
+    // 同样只在 finalizing 内接受；命中（含结构非法）即吞掉本轮并接管。
+    bool HandleVoiceTargetedEditIfMatched(const std::string& text);
+    // targeted 执行（UI 线程内同步完成选区+读回+单次动作；延时终验经 worker +
+    // RunOnUiThread 回收，generation 防 stale 回调覆盖新记录）。
+    void ExecuteVoiceTargetedEdit(const VoiceTargetedCommand& command,
+                                  const VoiceTargetedPlan& plan,
+                                  std::size_t tail_utf16_length);
+    void FinalizeVoiceTargetedEdit(std::uint64_t generation, const VoiceTargetedPlan& plan,
+                                   std::string expected_tail);
+    // 唯一粘贴 chokepoint 记录本次注入（Paste 之后调用；无回执仍记录，靠 L1 兜底）。
+    void RecordLastInjection(const std::string& text, bool pressed_enter);
+    // 异步退格执行：std::thread 逐次 SendKeyCombo(backspace)（约 12ms 节拍），完成后
+    // RunOnUiThread 更新记录并提示；不得阻塞 UI 线程。
+    void StartVoiceEditBackspaces(int count, std::uint64_t generation, std::string message,
+                                  std::string new_remaining_text, bool new_pressed_enter);
     void UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id);
     void CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors);
     void RefreshFirmwareAvailability();
@@ -537,22 +777,53 @@ private:
     // 与 focused_app/subtitle 路径对齐，避免无意点按 / button_up 抢跑产生极小 ogg 文件。
     bool ShouldDiscardWechatRecording() const;
     std::optional<std::string> ResolveHotkeyTargetDevice() const;
+    // 把 fn 投递到 UI 线程执行；未注入 dispatcher 时在当前线程同步执行。
+    void RunOnUiThread(std::function<void()> fn);
 
-    AppConfig config_;
+    // B8 配置快照：整份值语义原子换入——后台线程（ASR/LLM/热词回调）读取不再与
+    // UI 线程 UpdateConfig/配对写入构成数据竞争（原裸成员跨线程读写 = UB）。读方
+    // 经 ConfigSnapshot() 拿 shared_ptr 快照（活到所在完整表达式结束；同一逻辑需
+    // 多次读取时先取局部快照）；写方在 config_write_mutex_ 下 copy-mutate-store。
+    // 禁止保存 config_ 的引用/指针（换入即悬垂）。
+    std::atomic<std::shared_ptr<const AppConfig>> config_;
+    std::mutex config_write_mutex_;
+    std::shared_ptr<const AppConfig> ConfigSnapshot() const { return config_.load(); }
     std::unique_ptr<BleCentral> ble_;
     std::unique_ptr<AsrClient> asr_;
     std::function<std::unique_ptr<AsrClient>(const AppConfig&)> asr_factory_;
     LLMTranslationClient translator_;
     LLMRefinementClient refiner_;
     VoiceStickUi* ui_;
+    // UI 线程封送器（见 SetUiDispatcher）；空时 RunOnUiThread 同步执行。
+    std::function<void(std::function<void()>)> ui_dispatcher_;
     InputInjector* input_injector_;
     std::mutex audio_mutex_;
     OggOpusMuxer ogg_muxer_{16000, 1};
     DebugAudioRecorder debug_audio_recorder_;
+    // RNNoise 人声增强（主输入路径，按会话创建；audio_noise_suppression 开关，
+    // 默认关）。创建/处理失败回退透传原始帧，后者每会话只记一次日志。
+    std::unique_ptr<AudioEnhancer> audio_enhancer_;
+    bool audio_enhancer_fallback_logged_ = false;
     SessionState session_state_ = SessionState::kReady;
     std::optional<std::uint32_t> active_session_id_;
     std::optional<std::string> active_device_id_;
     std::chrono::steady_clock::time_point active_session_started_at_;
+    // 会话历史进行态草稿（用户数据飞轮 P0-3）。
+    struct PendingSessionHistory {
+        std::string id;
+        std::int64_t created_at = 0;
+        std::string device;
+        std::string provider;
+        std::string mode;
+        std::string raw;
+        std::optional<double> duration;
+        std::string hotwords;
+    };
+    std::unique_ptr<SessionHistoryStore> session_history_;
+    std::optional<PendingSessionHistory> pending_session_history_;
+    // wrapped 回调可能在 worker 线程（翻译/精修完成），Begin 在 ASR final 线程：
+    // 懒打开与草稿读写都经此互斥。
+    std::mutex session_history_mutex_;
     // 敲击注入方向键的节流时间戳：两次注入最短间隔 500ms，避免连击导致光标连续下移。
     std::chrono::steady_clock::time_point last_tap_inject_at_{};
     // 编码器快速手势后的停转锁定：快甩注入一次快速键后进入锁定，屏蔽所有旋转输出
@@ -610,10 +881,28 @@ private:
     bool asr_started_ = false;
     bool sent_final_audio_chunk_ = false;
     bool pasted_final_text_ = false;
+    // 语音编辑：最近一次注入记录 + 代际（新注入/配置更新使旧异步回调只更新同代记录）。
+    // last_injection_ 仅 UI 线程读写（注入执行 worker 经 RunOnUiThread 回收）。
+    std::optional<LastInjection> last_injection_;
+    std::uint64_t voice_edit_generation_ = 0;
+    // 焦点输入框读取实现（外壳注入；nullptr = L1 不可验证）。
+    std::unique_ptr<IFocusTextReader> focus_text_reader_;
+    // targeted 编辑平台实现（外壳注入；nullptr = targeted 一律不可验证拒绝）。
+    std::unique_ptr<ITargetedFieldEditor> targeted_field_editor_;
     std::atomic_bool waiting_for_audio_end_{false};
     std::atomic_uint64_t audio_end_wait_generation_{0};
     // recording 硬超时兜底（可经构造注入，测试用短值；默认 kRecordingHardTimeout）。
     std::chrono::milliseconds recording_hard_timeout_{kRecordingHardTimeout};
+    // 方案 A 停止宽限（keyup 先行，音频流保留窗口）。生产 600ms：覆盖 WeType
+    // 收到 keyup 后 finalize 起步的最短存活需求；经验文档 2026-09-11 追加节。
+    std::chrono::milliseconds wechat_stop_audio_grace_{600};
+    // 点按折叠按住流自动松开延迟（见 SetWechatClickHoldRelease）。生产 2500ms：
+    // 覆盖 WeType 弹框静默期 0.53~1.4s（偶发更慢）实测分布。
+    std::chrono::milliseconds wechat_click_hold_release_{2500};
+    std::atomic_uint64_t wechat_click_hold_generation_{0};
+    // 点按折叠停止击的 detach 点击延迟/间隔（见 SetWechatDetachClickDelay）。
+    // 生产 1500ms（末次点击加倍等待，覆盖 detach 链 ~1.8s）。
+    std::chrono::milliseconds wechat_detach_click_delay_{1500};
     std::atomic_uint64_t recording_hard_timeout_generation_{0};
     // 录音音频流停滞 watchdog（可经构造注入，测试用短值；默认 kAudioStallTimeout）。
     std::chrono::milliseconds audio_stall_timeout_{kAudioStallTimeout};
@@ -640,6 +929,8 @@ private:
     std::optional<std::string> last_recoverable_text_;
     std::optional<std::string> last_recoverable_device_id_;
     std::vector<std::string> paired_device_ids_;
+    // 本机显示名（主机名）：网关目标表命名用，由平台层注入（空则不上报）。
+    std::string local_host_name_;
     std::vector<std::string> connected_device_ids_;
     bool hotkey_is_down_ = false;
     std::optional<std::string> hotkey_active_device_id_;
@@ -650,15 +941,20 @@ private:
     bool has_last_firmware_manifest_check_at_ = false;
     bool firmware_manifest_check_in_flight_ = false;
     std::set<std::string> pending_firmware_update_prompt_device_ids_;
+    // 固件更新气泡去重（device_id@latest_version）：同一设备同一目标版本
+    // 每个进程会话只提醒一次，避免周期检查反复打扰。
+    std::set<std::string> firmware_update_balloon_sent_keys_;
+    // 僵尸会话提示去重：同一设备在一次故障期间只弹一次气泡，避免心跳每轮重复
+    // 打扰；设备重新连上（on_connection_change 中出现）即清除，允许下次再提示。
+    std::set<std::string> stale_session_notified_devices_;
     FirmwareManifestClient firmware_manifest_client_;
     std::mutex firmware_mutex_;
     std::shared_ptr<std::atomic_bool> alive_{std::make_shared<std::atomic_bool>(true)};
     std::shared_ptr<std::atomic_bool> refinement_cancel_token_;
     // 热词候选挖掘存储（懒加载，见 RecordAndNotifyHotwordCandidates）。
     // 精修回调与 LLM 提炼回调都可能落在后台线程，用互斥锁串行化。
-    HotwordCandidateStore hotword_candidates_;
-    bool hotword_candidates_loaded_ = false;
-    std::mutex hotword_candidates_mutex_;
+    // B13：候选文件不再在协调器里缓存——统一走 hotword_candidate_miner 的唯一写入口
+    //（进程级互斥 + 每次重读磁盘），原 load-once 缓存是「用户忽略的词反复弹回」的根因。
     // 热词使用统计存储（懒加载，见 RankedHotwordsForAsr/RecordHotwordUsageFromText）。
     // TransformText 完成回调可能落在 LLM 后台线程，用互斥锁串行化。
     HotwordUsageStore hotword_usage_;
@@ -688,6 +984,31 @@ private:
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;
+    // ===== 本机麦克风模式（local-mic，Doc/Plan/local-mic-mode.md）=====
+    // 设备 ID：非 BLE 设备，不进 connected 列表；会话走主会话状态机，
+    // 下发 ui_state 由 BleCentral 对未知设备静默跳过。
+    static constexpr std::string_view kLocalMicDeviceId = "local-mic";
+    // 运行件（外壳注入）：采集器 + 本地 ASR。hotkey 回调入口做存在性门控。
+    std::unique_ptr<IMicCapture> local_mic_capture_;
+    std::unique_ptr<AsrClient> local_asr_;
+    // 本地文本精修客户端（外壳注入，本地识别会话专用）。
+    std::unique_ptr<LocalRefinementClient> local_refiner_;
+    // 本地引擎授权闸（外壳注入；空 = 放行）。见 SetLicenseGate。
+    std::function<bool()> allow_local_asr_;
+    // 跨轮上下文纠错历史（refine_cross_turn 开关，方案 §3.4）：全局单缓冲
+    // 最近 5 轮 + 2 分钟 TTL；Turns() 供引擎续写重放，Add 由精修完成回调
+    // 写入（取消轮不写入）。线程安全（会话线程读/精修后台线程写）。
+    RefineHistory refine_history_;
+    // PCM 切帧（640 采样=40ms，对齐固件帧规格）+ Opus 编码器。
+    // 生命周期：会话建立时 Reset；采集线程写；释放线程 Stop join 后读余量。
+    OpusFrameSlicer local_mic_slicer_;
+    AudioOpusEncoder local_mic_encoder_;
+    // 采集线程快速门控：非 0 = local-mic 会话进行中（音频帧路径的实际会话校验
+    // 仍在 HandleAudioFrame 的锁内完成，这里只做无锁早退）。
+    std::atomic_uint32_t local_mic_active_session_id_{0};
+    std::uint32_t local_mic_next_seq_ = 1;
+    std::uint32_t next_local_mic_session_id_ = 1;
+    bool local_mic_hotkey_down_ = false;
     std::map<std::pair<std::string, std::uint32_t>, std::unique_ptr<SubtitleCycle>> subtitle_cycles_;
     std::map<std::string, std::uint32_t> active_subtitle_sessions_;
     // wechat_input_method 模式下的当前会话资源。
@@ -707,6 +1028,9 @@ private:
     bool wechat_audio_end_received_ = false;
     // 是否已对本次会话发送 SendDown（首帧 Opus 解码成功才发送）；决定 Stop 是否配对 SendUp。
     bool wechat_hotkey_sent_down_ = false;
+    // 当前 wechat 会话是否直连默认麦克风（方案 A 修订）：true 时停止路径跳过
+    // 本端采集/渲染/设备切换拆除段（无管道可拆，WeType 自行停采）。
+    bool wechat_session_direct_mic_ = false;
     // 本会话是否已打首帧延迟日志（wechat/直通两模式共用，每会话一次）。
     bool wechat_first_frame_logged_ = false;
     // 最近一次停止的 wechat 会话 session_id 与时刻：点按式 audio_end 抢跑 button_click
@@ -740,7 +1064,9 @@ private:
     static constexpr std::chrono::seconds kAudioStallTimeout{5};
     // finalizing 闲置上限：等 ASR final / LLM 精修期间无任何进展超过该时长则兜底退出。
     static constexpr std::chrono::seconds kFinalizingWatchdogTimeout{15};
-    static constexpr std::chrono::hours kFirmwareManifestCacheDuration{24};
+    // manifest 缓存时长 = 周期检查间隔：桌面端每 12h 静默拉一次 manifest，
+    // 连接/配对触发的检查在缓存期内直接复用，跨过缓存期才会真拉。
+    static constexpr std::chrono::hours kFirmwareManifestCacheDuration{12};
 };
 
 } // namespace voicestick

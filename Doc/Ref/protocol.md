@@ -49,7 +49,7 @@ struct AudioBleFrame {
 }
 ```
 
-The payload contains one raw Opus packet when `payload_len > 0`. The firmware currently encodes 60 ms of 16 kHz mono audio per packet. When recording stops, the firmware also sends an end frame with `flags & 0x02` and an empty payload.
+The payload contains one raw Opus packet when `payload_len > 0`. The firmware currently encodes 40 ms of 16 kHz mono audio per packet. When recording stops, the firmware also sends an end frame with `flags & 0x02` and an empty payload.
 
 The macOS app wraps incoming Opus packets into an Ogg Opus stream before sending them to ASR. It does not decode Opus to PCM.
 
@@ -59,7 +59,7 @@ All multibyte fields are little-endian.
 
 ```text
 struct StateBleFrame {
-  uint8_t  version;       // 1
+  uint8_t  version;       // 1 = protocol version (see "Protocol version & negotiation")
   uint8_t  type;          // 0x10 state
   uint16_t payload_len;
   uint8_t  json[payload_len];
@@ -77,11 +77,26 @@ this and was slimmed; new capabilities should use separate small frames such as
 `encoder_status`). The firmware logs a warning when a state frame exceeds the
 budget.
 
+**Initial state burst timing (2026-09-20):** the burst sent on state
+subscription (`device_info` + `encoder_status` + `gateway_status`) is deferred
+until the ATT MTU exchange completes, because that exchange is still in flight
+when the SUBSCRIBE event arrives and the default MTU (23) leaves only a 16-byte
+JSON budget — every frame in the burst would be truncated, and peers that treat
+"subscribed but no parsable frame" as a dead subscription would reconnect
+(a real-device gateway switch took the peer 14–26s to recover this way; now
+~2.5s). The firmware logs `state burst deferred until MTU exchange completes`
+followed by `state burst flushed after MTU exchange (att_mtu=…)` (typically
+30–50 ms later); a 1.2s fallback timer flushes the burst anyway if the peer
+never completes the exchange. Counters: any `state_tx` frame must fit the
+**MTU 23 budget (16 bytes of JSON)** or be deferred, so compute the smallest
+budget when adding fields.
+
 Currently emitted state events:
 
 ```json
 {"event":"device_info","hardware":"stick_s3","firmware_version":"0.2.2","buttons":["primary","secondary"],"interaction_modes":["hold_to_talk","click_to_talk"],"ui_states":["ready","recording","thinking","pending_confirmation","error","air_mouse"]}
 {"event":"encoder_status","present":true}
+{"event":"proto_info","proto":1,"min_proto":1}
 {"event":"battery_status","level":87,"charging":false,"usb_powered":true}
 {"event":"button_down","button":"primary","session_id":1234}
 {"event":"button_up","button":"primary","duration_ms":620,"session_id":1234}
@@ -91,6 +106,9 @@ Currently emitted state events:
 {"event":"button_click","button":"primary","duration_ms":131,"source":"encoder"}
 {"event":"tap","button":"double"}
 {"event":"encoder_rotate","direction":"cw","steps":2}
+{"event":"gateway_key","key":"back","pressed":true}
+{"event":"gateway_keymap","routes":[{"key":"back","route":"software"}]}
+{"event":"gateway_status","mode":"gateway"}
 ```
 
 `encoder_status` (added after v2.2.0) reports whether the firmware detected
@@ -110,9 +128,34 @@ and `usb_powered`. The firmware sends it once after each BLE connection, on
 charger/USB power transitions, and in reply to a `battery_status_request`
 control event. Both desktops surface it in the tray device submenu title
 (`VS-XXXX (87%)`, with a charging/plugged-in suffix). Windows additionally
-uses `battery_status_request` as a periodic link heartbeat; macOS does not
-send it and relies on CoreBluetooth disconnect callbacks plus the
-connect/transition pushes.
+uses `battery_status_request` as a periodic link heartbeat (every 30s; the
+firmware's reply is the reverse liveness proof). **macOS sends it too since the
+D3b link-liveness monitor**: a 30s probe per connected StickS3, and if no
+state/audio inbound has been seen for >90s the device is flagged, and if the
+next tick is still silent the connection is cancelled so the normal
+disconnect → rescan → resubscribe path recovers it (never unpair). This makes
+"CCCD still on but silently dead" links observable and recoverable on macOS;
+CoreBluetooth disconnect callbacks remain the coarse fallback.
+
+`gateway_status` reports the firmware's gateway/normal mode (`mode`:
+  `"gateway"` | `"normal"`). Like `encoder_status` it is a separate small
+  frame — `device_info` is already near the MTU limit and must not grow. The
+  firmware sends it right after `device_info`/ `encoder_status` on state
+  subscription, and again whenever the mode changes while connected. Desktops
+  use it to suppress **direct ATVV connections to a Xiaomi remote**: in gateway
+  mode the remote's bond lives on the StickS3, so a desktop-side direct
+  connection can only fail (`atvv control subscribe timeout`). Firmware older
+  than this event never sends it — desktops must treat the absence as "unknown"
+  and keep the previous behaviour (no suppression). See
+  `Doc/Plan/xiaomi-gateway-direct-atvv-suppression.md`.
+
+  Since the always-gateway firmware change (2026-09-27), the StickS3 firmware
+  boots in gateway mode unconditionally, overwrites the persisted NVS mode to
+  `"gateway"` on every boot, and the "hold primary button during cold boot to
+  toggle" entry point is removed. Devices on that firmware always report
+  `"mode":"gateway"`; `"normal"` can only come from older firmware. The wire
+  format and both values stay valid so old/new firmware/desktop combinations
+  keep working.
 
 Buttons are named by role instead of physical placement. On StickS3, the front
 button maps to `primary` and the side button maps to `secondary`. `session_id` is
@@ -130,7 +173,24 @@ The button events (`button_down` / `button_up` / `button_click` /
 `button_double_click`) carry an optional `source` field identifying the input
 origin. Events from the MiniEncoderC encoder button (on the top Hat header)
 include `"source":"encoder"`; physical-button and remote (hotkey) events omit
-the field. Older desktops ignore the unknown field, so no migration is needed.
+the field. In gateway mode the Xiaomi remote voice button surfaces as primary
+presses with `"source":"xiaomi"` — the firmware drives them from the ATVV
+control frames (MIC_OPEN/STREAM_START/STOP), so the desktop coordinator treats
+them exactly like physical-button presses. Older desktops ignore the unknown
+field, so no migration is needed.
+
+`gateway_key` (gateway mode, P1 tunnel fusion — see
+`Doc/Plan/xiaomi-remote-stick-gateway.md` §5.3) reports a Xiaomi remote key that
+was routed to software via the `gateway_keymap_set` control command. `key` is
+the protocol key name (`ok`/`right`/`left`/`down`/`up`/`menu`/`home`/`back`/
+`volume_up`/`volume_down`/`volume_mute`/`power`/`tv`), `pressed` is the edge
+(pressed/released arrive in pairs; the firmware synthesizes a release edge if
+the remote link drops mid-press). The Windows desktop consumes these through the
+same keymap used for direct-connection mode and injects the configured mapping.
+`gateway_keymap` is the routing-table report sent in reply to
+`gateway_keymap_set`/`gateway_keymap_get`. It is **chunked** (`seq`/`more`)
+whenever the full table does not fit one `state_tx` frame — see the event
+table below for the accumulation rules.
 
 `button_double_click` is emitted when the firmware detects two consecutive short
 presses of the primary button within 500 ms (each press < 300 ms). The desktop
@@ -209,6 +269,14 @@ the gain/acceleration curve and integrates them into cursor motion. The int16 ra
 Motion frames are emitted only while air-mouse mode is enabled
 (see `air_mouse_enabled` control event). See `Doc/Plan/imu-air-mouse.md`.
 
+`proto_info` (D9) carries the firmware's protocol version: `proto` (identical
+  to the frame `version` byte) and `min_proto` (the oldest desktop version this
+  firmware still understands). It is a separate small frame included in the initial
+  state burst, and it is also the firmware's reply to every `proto_negotiate` —
+  so both directions of the version handshake are visible in logs instead of a
+  future upgrade failing silently. Semantics and evolution rules: see
+  "Protocol version & negotiation" below.
+
 Deprecated firmware-to-app events:
 
 | Event | Replacement | Reason |
@@ -216,6 +284,38 @@ Deprecated firmware-to-app events:
 | `press_start` | `button_down` with `button:"primary"` | The old name assumed the front button and implied recording semantics. |
 | `press_end` | `button_up` with `button:"primary"` | The old name implied recording semantics and did not include a button role. |
 | `cancel` | `button_down` / `button_up` with `button:"secondary"` | The old event encoded app meaning; the same button can cancel, restore, or be ignored depending on app state. |
+
+## Protocol Version & Negotiation
+
+Two coupled numbers, kept equal by contract:
+
+- **Frame byte 0** (`version` in every `state`/`audio`/`ota` frame): the wire
+  frame layout generation. Hardcoded `1` on all three ends today
+  (firmware `VOICE_BLE_PROTO_VERSION`, Windows `BleProtocol`, macOS
+  `BleProtocol`).
+- **`proto` in JSON events**: the semantic version carried by `proto_info`
+  (device → desktop) and `proto_negotiate` (desktop → device).
+
+Negotiation flow, on every connection:
+
+1. After state subscription (post deferred-MTU burst) the firmware includes
+   `{"event":"proto_info","proto":1,"min_proto":1}`.
+2. The desktop announces its own version with
+   `{"event":"proto_negotiate","proto":1}` on `control_rx`.
+3. The firmware always answers with `proto_info`, warning when the desktop's
+   value is outside `[min_proto, proto]`; desktops warn on receipt when the
+   device's value is outside their own supported range.
+
+Evolution rules:
+
+- **Backward-compatible additions** (new optional JSON fields/events): change no
+  version — parsers must ignore unknown fields and events (all three ends do).
+- **Breaking changes** (field removed/renamed/meaning changes or frame byte
+  change): bump the shared constants on firmware + both desktops **in one
+  change** (red line: protocol changes update this file and every
+  implementation), widen `min_proto` only while old counterparts can still be
+  served, and keep the out-of-range warnings **loud** — this chapter exists so
+  that a future upgrade can never be quietly incompatible.
 
 ## Control Event
 
@@ -241,16 +341,20 @@ Current desktop events:
 {"event":"air_mouse_enabled","enabled":true}
 {"event":"encoder_led_color","color":"red"}
 {"event":"encoder_recording_gate","enabled":true}
+{"event":"gateway_keymap_set","key":"back","route":"software"}
+{"event":"gateway_keymap_get"}
 {"event":"usb_auto_off","enabled":true}
 {"event":"usb_auto_off_get"}
 {"event":"battery_status_request"}
 {"event":"remote_button_down","button":"primary","source":"global_hotkey","request_id":7}
+{"event":"test_playback","file":"lab_sample.pcm"}
+{"event":"proto_negotiate","proto":1}
 {"event":"remote_button_up","button":"primary","source":"global_hotkey","request_id":7}
 ```
 
 | Event | Field | Direction | Meaning |
 | --- | --- | --- | --- |
-| `ui_state` | `state`: string, `text`: string | Desktop -> StickS3 | Authoritative display state from the app to the firmware display. |
+| `ui_state` | `state`: string, `text`: string | Desktop -> StickS3 | Authoritative display state from the app to the firmware display. **Frame budget: 244 bytes (ATT MTU 247 − 3, the hard cap of a `withoutResponse` write).** Senders must truncate `text` on a character/UTF-8 boundary until the whole JSON fits — an oversize write gets truncated by the firmware's 512B receive buffer mid-JSON, fails to parse, and is dropped **together with `state`** (screen stuck on the previous hint); `text` is additionally capped at 255 bytes on the firmware side (`char text[256]`). The firmware rejects control writes ≥512B with an ATT length error instead of truncating. |
 | `interaction_mode` | `mode`: string | Desktop -> StickS3 | Controls the front-button behavior and idle screen hint. |
 | `show_imu_debug` | `enabled`: boolean | Desktop -> StickS3 | Toggles the on-screen IMU acceleration debug overlay. Default false. |
 | `imu_wake_sensitivity` | `threshold`: integer (LSB) | Desktop -> StickS3 | Sets the pick-up/shake-to-wake sensitivity threshold. Recommended range 50–2000 LSB; lower values are more sensitive. Default 800 LSB. |
@@ -261,8 +365,14 @@ Current desktop events:
 | `encoder_recording_gate` | `enabled`: boolean | Desktop -> StickS3 | Gates whether the MiniEncoderC button starts a recording session. When disabled, encoder presses never emit `button_down`/`button_up` and never start audio; they only feed the firmware double-click window, which emits `button_click`/`button_double_click` with `source:"encoder"`. The physical primary button and `remote_button_*` control events are not gated. Persisted in firmware NVS. Default true. |
 | `usb_auto_off` | `enabled`: boolean | Desktop -> StickS3 | Enables/disables auto power-off while USB powered. When enabled, the device powers off after 10 idle minutes even on external power (recording/OTA still block it; the BLE-disconnect timer also applies). Persisted in firmware NVS. Default false. |
 | `usb_auto_off_get` | — | Windows -> StickS3 | Queries the current `usb_auto_off` state; the firmware replies with a `power_mgmt` state event on `state_tx`. (macOS does not send it — the firmware pushes `power_mgmt` once after each connection, which is sufficient.) |
-| `battery_status_request` | — | Windows -> StickS3 | Asks the firmware to re-send `battery_status`; the firmware always replies, so the Windows desktop also uses it as a periodic link heartbeat. macOS does not send it. |
+| `battery_status_request` | — | Desktop -> StickS3 | Asks the firmware to re-send `battery_status`; the firmware always replies, so both desktops use it as a periodic 30s link heartbeat — the reply doubles as the reverse liveness proof (D3b macOS silence monitor keys off it). |
 | `remote_button_down` / `remote_button_up` | `button`: `"primary"`, `source`: string, `request_id`: uint32 | Desktop -> StickS3 | Injects a virtual primary-button press/release (`APP_INPUT_SOURCE_REMOTE`), used by the desktop global hotkey and the encoder double-click recording toggle. Not gated by `encoder_recording_gate`. |
+| `gateway_keymap_set` | `key`: string, `route`: `"passthrough"` \| `"software"` | Desktop -> StickS3 | Gateway mode (P1 tunnel fusion, `Doc/Plan/xiaomi-remote-stick-gateway.md` §5.3): per-key routing for the Xiaomi remote keys relayed by this StickS3. `software` routes the key over `state_tx` as a `gateway_key` event (desktop keymap consumes it); `passthrough` (default) forwards it as standard HID via the HOGP peripheral to the OS. `key` is one of `ok`/`right`/`left`/`down`/`up`/`menu`/`home`/`back`/`volume_up`/`volume_down`/`volume_mute`/`power`/`tv`. The voice key is not routable (fixed ATVV session semantics); unknown keys are rejected. Persisted in firmware NVS. On success the firmware replies with a `gateway_keymap` report. |
+| `gateway_keymap_get` | — | Desktop -> StickS3 | Queries the current routing table; the firmware replies on `state_tx` with one or more **chunked** reports: `{"event":"gateway_keymap","seq":N,"more":bool,"routes":[{"key":"back","route":"software"},...]}`. Chunks arrive in ascending `seq` starting at 0; the table is complete when `more:false` arrives — the desktop accumulates from `seq:0` (a new `seq:0` restarts an incomplete accumulation) and replaces its view only on completion. Chunking is mandatory: the full 13-key table (~470B) exceeds the single-frame budget (ATT MTU 247 → JSON ≤ 240B), and a truncated frame fails JSON parsing on the desktop. |
+| `gateway_select_target` | `self`: boolean | `index`: integer | `clear`: boolean | Desktop -> StickS3 | Gateway mode (P1 switcher): chooses which bonded desktop is allowed to hold the peripheral link. `self:true` = "make this PC (the currently connected peer) the target" (the firmware resolves the index itself — the desktop cannot know its own identity address); `index:N` = pick entry N of the on-device target table (automation); `clear:true` = drop the restriction (any bonded PC may connect, the default). A switch disconnects the current target, re-advertises, and accepts only the selected peer; non-selected peers are disconnected on connect. The Xiaomi (central) link is never touched. Persisted? No — the selection is runtime state and resets to "unrestricted" on reboot. |
+| `gateway_target_info` | `name`: string (≤23 bytes) | Desktop -> StickS3 | Gateway mode (P1 switcher, `Doc/Plan/xiaomi-gateway-p1-switcher.md`): the desktop reports its own display name (Windows computer name) so the firmware can label this PC in its target table. The firmware binds the name to the **identity address of the currently connected peer** (the desktop cannot know its own identity address) and persists it in NVS. Names longer than 23 bytes are rejected; unknown/absent name is ignored. |
+| `test_playback` | `file`: string | Desktop -> StickS3 | **Test/debug control (L3 end-to-end replay), not part of normal user flows.** Points audio capture at a pre-recorded PCM file in the SPIFFS root so the whole pipeline runs without the microphone; `file` empty/absent restores ES8311 capture. The filename must be a bare name — path separators (`/`/\`) and `..` are rejected (a connected peer must not gain an arbitrary-path read primitive). Restricting this control to debug builds is tracked as P0-2. |
+| `proto_negotiate` | `proto`: integer | Desktop -> StickS3 | D9: the desktop announces its supported protocol version; the firmware always replies with a `proto_info` state event and logs a warning when the value is outside `[min_proto, proto]`. See "Protocol version & negotiation". |
 
 For `ui_state`, the desktop helper always includes a `text` field; older firmware
 can ignore it. Firmware may immediately render local physical feedback, such as
@@ -396,6 +506,17 @@ The device sends progress notifications roughly every 32 KB of accepted firmware
 
 The macOS app starts OTA for one connected device at a time. It discovers updates from the latest firmware manifest, downloads the manifest `ota_url`, verifies byte size and SHA-256, then sends the verified app-slot image over BLE. The browser flasher uses the manifest `merged_url` instead because USB flashing writes a merged image at offset `0x0`.
 
+The manifest is generated by the release workflow. Desktop clients fetch the COS primary source `https://dl.davenger.cloud/firmware/latest/manifest.json` (falling back to `releases/latest/download/manifest.json` on GitHub), and the browser flasher uses the same-origin copy under `/firmware/latest/` (the Pages copy rewrites `merged_url` to its same-origin address). Fields:
+
+| Field | Meaning |
+| --- | --- |
+| `hardware` | Target hardware, currently `stick_s3`. |
+| `version` | Firmware version of this release. |
+| `min_version` | Minimum compatible firmware version (v2.3.9+). Devices below it get a mandatory upgrade prompt; at-or-above but below `version` is optional. Source: repo-root `FIRMWARE_MIN_VERSION`. Clients fall back to their local config when absent (older releases). |
+| `ota_url` / `ota_sha256` / `ota_size` | App-slot image for BLE OTA, with SHA-256 and byte size for verification. `ota_url` points to the COS domestic mirror. |
+| `ota_url_fallback` / `merged_url_fallback` | Optional (v2.3.10+) GitHub Release fallback URLs; clients retry these when the primary source fails. Older manifests omit them. |
+| `merged_url` / `merged_sha256` / `merged_size` | Merged 0x0 image for USB flashing, with checksums. `merged_url` points to the COS domestic mirror. |
+
 The 8 MB flash layout uses two 3 MB OTA app slots and keeps the remaining flash as a reserved SPIFFS data partition:
 
 | Name | Offset | Size |
@@ -495,16 +616,35 @@ from the old host (or disable Bluetooth there) first.
 
 All keys except the voice key travel over the standard HID service `0x1812`
 (Report ID 1, up to three 16-bit little-endian HID usages per report) and are
-consumed natively by the OS as keyboard/consumer keys — the desktop app does
-not intercept them. (Optional per-device HID interception for key remapping
-landed in the button-mapping feature: when `[device.<id>.buttons].intercept`
-is true and a non-voice button carries a `key`/`disabled` mapping, the
-desktop supresses the OS-native key and optionally injects the target — macOS:
-non-exclusive `IOHIDManager` observation drives the decision (IOHID value
-callback → inject KeySpec / mark for suppression), with a CGEvent tap only
-swallowing the OS-native keyDown/systemDefined events to avoid double-firing;
-Windows: Raw Input + `WH_KEYBOARD_LL`; see `Doc/Plan/xiaomi-remote-button-mapping.md`
-§4.2.) The voice key is **not** an ordinary HID key: pressing it
+consumed natively by the OS as keyboard/consumer keys. On Windows the desktop
+app can optionally **rebind** them via the per-device/global key map
+(`[xiaomi.keys]` / `[device.<id>.xiaomi.keys]`, config keys are the 12
+mappable button ids from `xiaomi_buttons.h`): a `WH_KEYBOARD_LL` hook
+swallows the original key and `SendInput`s the mapped shortcut, with device
+attribution proven by a Raw Input (RIDEV_INPUTSINK) correlator that matches
+the HID VID `0x2717`/PID `0x32B8`. Keys without a mapping keep their native
+OS behavior. On macOS the equivalent interception is implemented by
+`XiaomiButtonInterceptManager` instead: a non-exclusive `IOHIDManager`
+observation drives the decision (IOHID value callback → inject KeySpec / mark
+for suppression, variable-element usage matching with page `0x07`), and a
+CGEvent tap only swallows the OS-native keyDown/systemDefined events to avoid
+double-firing — back (`0xF1`) and menu (`0x65`) never produce a keyDown
+CGEvent, and volume keys arrive as systemDefined (subtype 8), so suppression
+must be decided on the IOHID value callback. The power key (`0x66`), mappable
+on both platforms since 2026-10-19 (macOS was the laggard; it was previously
+a macOS-only "C-level, not mappable" exception), produces **two** native
+systemDefined forms on macOS that both must be swallowed while the
+IOHID-decided suppress window (300 ms, non-consuming) is armed: an initial
+`NX_SUBTYPE_POWER_KEY` (subtype 1) event and an aux-control (subtype 8)
+down/up pair whose special key code is `NX_POWER_KEY` (6) — the same
+special-key posting channel as the volume keys, per Apple's `ev_keymap.h` /
+`IOLLEvent.h` and PowerKey's dual-form suppression. When unmapped (or
+`intercept` off) the power key keeps its native OS semantics. When a per-device
+`[device.<id>.buttons].intercept` switch is on and a non-voice button carries
+a `key`/`disabled` mapping, the OS-native key is suppressed and optionally
+replaced (Windows design: `Doc/Plan/xiaomi-keymap-consumer.md`; macOS side:
+`Doc/Plan/xiaomi-remote-button-mapping.md` §4.2). The
+voice key is **not** an ordinary HID key: pressing it
 makes the remote start an ATVV session (below), and the remote additionally
 emits an F5 keystroke to the OS, which the desktop suppresses while a session
 is starting (config `xiaomi_suppress_f5`; the mechanism differs per platform,
@@ -552,8 +692,15 @@ mono. Audio notifications carry a headerless, sequence-number-free ADPCM byte
 stream; the desktop accumulates bytes across notifications and cuts frames at
 the CAPS-negotiated frame length (default 120 bytes = 240 samples), decodes to
 int16 PCM, then re-encodes to Opus so the downstream Ogg/ASR pipeline is
-identical to the StickS3 path. With no sequence numbers, a lost packet drifts
-the decoder until the next sync.
+identical to the StickS3 path. Between decode and re-encode the desktop runs a
+PCM post-processing chain: three-point smoothing → 120 Hz Butterworth high-pass
+(plosive suppression) → fixed `gain_db` pre-gain → software AGC (-12 dBFS
+target, +12 dB max gain, noise gate, 0.8FS instantaneous limiter) — algorithmically identical to
+the firmware chain (`audio_pipeline.c`), each stage re-quantized to int16 and
+bit-aligned across the Swift/C++/Python implementations, with per-session
+`hpf`/`agc` kill switches in `[device.<id>.xiaomi]` (see
+`Doc/Plan/xiaomi-direct-desktop-hpf-agc.md`). With no sequence numbers, a lost
+packet drifts the decoder until the next sync.
 
 Key mapping: ATVV voice-key press (`0x08` MIC_OPEN on RC003, `0x04`
 STREAM_START on the 2 Pro) and release (`0x00` STOP) are normalized to

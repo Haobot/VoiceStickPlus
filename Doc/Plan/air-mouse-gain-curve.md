@@ -1,4 +1,5 @@
 # 体感鼠标三段线性增益曲线 + 固件死区下调
+> 状态：已实施（代码实证：gain_curve 相关断言载于 tests/core_tests_codec_serial.cc。核销 2026-10-08/N10）
 
 ## 1. 背景与目标
 

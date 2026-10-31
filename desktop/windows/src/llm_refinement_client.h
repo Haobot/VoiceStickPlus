@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_config.h"
+#include "correction_pairs.h"
 #include "llm_chat_client.h"
 
 #include <atomic>
@@ -22,28 +23,34 @@ public:
                 std::string prompt_override,
                 std::function<void(bool, std::string)> completion,
                 std::vector<std::string> hotwords = {},
-                const std::string& domain_hint = {}) const;
+                const std::string& domain_hint = {},
+                std::vector<CorrectionPair> correction_pairs = {}) const;
 
     // 流式精修：逐 token 回调 on_token（后台线程），完成时回调 on_complete。
     // cancel 为可选的取消令牌，设为 true 可中断流式精修。
     // hotwords 非空时覆盖 config().asr_hotwords 作为精修 prompt 热词段
     // （调用方按高频优先评分裁剪后的 top-N，防大库稀释小模型注意力）。
     // domain_hint 非空时在 prompt 注入领域语境提示（深度适配，见 hotword_context.h）。
+    // correction_pairs 非空时在 prompt 末尾追加用户历史纠正 few-shot 段
+    // （用户数据飞轮 P0-1，超预算由 ClampRefinePrompt 尾部先裁）。
     void RefineStream(std::string text,
                       std::string prompt_override,
                       std::function<void(std::string token)> on_token,
                       std::function<void(bool ok, std::string full_text)> on_complete,
                       std::shared_ptr<std::atomic_bool> cancel = nullptr,
                       std::vector<std::string> hotwords = {},
-                      const std::string& domain_hint = {}) const;
+                      const std::string& domain_hint = {},
+                      std::vector<CorrectionPair> correction_pairs = {}) const;
 
     // 可单测纯函数：override 非空（去空白后）返回 override，否则返回内置默认精修 prompt。
     // hotwords 非空时在末尾追加热词替换指引：火山二遍 ASR 不吃 corpus 热词直传
     // （流式第一遍生效、nostream 第二遍覆盖后丢失），由 LLM 精修按热词表兜底纠正。
     // domain_hint 非空时在热词段之前插入领域语境提示段（深度适配）。
+    // correction_pairs 非空时在热词段之后追加纠错 few-shot 段。
     static std::string BuildRefinePrompt(const std::string& prompt_override,
                                          const std::vector<std::string>& hotwords = {},
-                                         const std::string& domain_hint = {});
+                                         const std::string& domain_hint = {},
+                                         const std::vector<CorrectionPair>& correction_pairs = {});
 
     // 精修结果守卫（纯函数可单测）：凡是在 ASR 原文中已正确出现的热词，精修后必须
     // 仍然存在；有任何一个被改丢则返回 false，调用方应回退原文。用于兜底小模型
@@ -90,13 +97,24 @@ public:
         HotwordExtractionStats* stats = nullptr);
 
 private:
-    // 单次提炼尝试（ExtractHotwordCandidates 的内部实现，attempt 用于重试标记与日志）。
-    void ExtractHotwordCandidatesAttempt(
+    // 静态执行链（生命周期修复）：refiner_ 是协调器值成员，UpdateConfig 重建/协调器
+    // Shutdown 会在途 ChatAsync 回调之后销毁本对象——异步完成回调一律携带 config
+    // 快照重入静态链，绝不触碰 this（否则 UAF，integration golden 崩溃实证）。
+    static void RefineWithConfig(AppConfig config,
+                                 std::string text,
+                                 std::string prompt_override,
+                                 std::function<void(bool, std::string)> completion,
+                                 std::vector<std::string> hotwords,
+                                 const std::string& domain_hint,
+                                 std::vector<CorrectionPair> correction_pairs);
+    // 单次提炼尝试（attempt 用于重试标记与日志）。
+    static void ExtractHotwordCandidatesWithConfig(
+        AppConfig config,
         std::string text,
         std::vector<std::string> hotwords,
         int attempt,
         std::function<void(bool, std::vector<std::string>)> completion,
-        std::function<void(const std::string&)> log) const;
+        std::function<void(const std::string&)> log);
 };
 
 } // namespace voicestick

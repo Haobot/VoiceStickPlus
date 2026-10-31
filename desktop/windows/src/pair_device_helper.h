@@ -53,6 +53,11 @@ struct RetainedPairingCandidate {
 };
 
 std::optional<std::string> ParseManualPairDeviceId(std::string_view input);
+// Windows 设备地址属性字符串转 48 位蓝牙地址：「忘记设备」清 OS bond 时按地址
+// 匹配 DeviceInformation 用。接受两种真机实测格式：无分隔符 12 位十六进制
+//（DeviceInterface 属性，"c05d39c36459"）与冒号/横线分隔（Aep 属性与
+// FormatBluetoothAddress，"c0:5d:39:c3:64:59"）；首尾空白/大小写容错，段结构从严。
+std::optional<std::uint64_t> ParseBluetoothAddressString(std::string_view text);
 // 异步配对消息与 pending 候选的地址匹配判定：陈旧消息（上一目标的迟到回调）
 // 地址不符即丢弃，防止错位命中新配对目标。
 bool MatchesPendingPairAddress(std::uint64_t message_address, std::uint64_t pending_address);

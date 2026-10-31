@@ -23,9 +23,20 @@ $ErrorActionPreference = 'Stop'
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 
 $markerPath = Join-Path $OutputDir 'payload.version'
-$markerContent = "python=$PythonVersion esptool=$EsptoolVersion"
+$reqFile = Join-Path $PSScriptRoot 'flash_payload_requirements.txt'
+if (-not (Test-Path $reqFile)) { throw "hash lock not found: $reqFile" }
+# E4：幂等标记纳入锁文件哈希——锁更新（版本或哈希轮换）会强制重建 payload。
+$lockHash = (Get-FileHash $reqFile -Algorithm SHA256).Hash.ToLower()
+$markerContent = "python=$PythonVersion esptool=$EsptoolVersion lock=$lockHash"
 $pythonDir = Join-Path $OutputDir 'python'
 $pythonExe = Join-Path $pythonDir 'python.exe'
+
+# E4：embeddable CPython 官方 sha256（python.org SBOM SPDXRef-PACKAGE-cpython，
+# 2026-10-08 取）。VOICESTICK_PYTHON_EMBED_URL 指向镜像/本地 zip 时**同样**校验：
+# 官方制品逐字节相同才放行。确需换制品先更新本常量，或以
+# VOICESTICK_PYTHON_EMBED_SHA256 显式覆盖（须自行确认来源）。
+$pythonEmbedSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
+if ($env:VOICESTICK_PYTHON_EMBED_SHA256) { $pythonEmbedSha256 = $env:VOICESTICK_PYTHON_EMBED_SHA256.ToLower() }
 
 function Test-Payload {
     if (-not (Test-Path $pythonExe)) { return $false }
@@ -46,14 +57,30 @@ if (-not $url) {
     $url = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
 }
 $zip = Join-Path $env:TEMP "voicestick-python-embed-$PythonVersion.zip"
+$zipFromCache = $false
 if (Test-Path $url) {
     Write-Host "[flash_payload] using local zip: $url"
     Copy-Item $url $zip -Force
-} elseif (-not (Test-Path $zip)) {
+} elseif (Test-Path $zip) {
+    Write-Host "[flash_payload] using cached $zip"
+    $zipFromCache = $true
+} else {
     Write-Host "[flash_payload] downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-} else {
-    Write-Host "[flash_payload] using cached $zip"
+}
+# E4：解压前强制哈希校验——原实现仅 HTTPS + %TEMP% 缓存**零校验**，缓存可被
+# 污染即任意代码进已签名 MSI。失败且来自缓存 → 删缓存重下一次再验；仍不过硬失败。
+$zipHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
+if ($zipHash -ne $pythonEmbedSha256) {
+    if ($zipFromCache) {
+        Write-Warning "[flash_payload] cached zip hash mismatch ($zipHash), re-downloading once"
+        Remove-Item $zip -Force
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        $zipHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
+    }
+    if ($zipHash -ne $pythonEmbedSha256) {
+        throw "[flash_payload] python embed sha256 mismatch: got $zipHash want $pythonEmbedSha256"
+    }
 }
 Expand-Archive -Path $zip -DestinationPath $pythonDir -Force
 
@@ -69,27 +96,32 @@ Lib\site-packages
 import site
 "@ | Set-Content -Path $pthPath -Encoding Ascii
 
-# 3) 用本机 python 的 pip 装 esptool 到 payload（锁定 win_amd64 / cp3xx 二进制 wheel，
-#    避免本机 python 版本与 embeddable 不一致时装错 ABI 的包）
+# 3) 哈希锁定安装（E4 供应链锚点）：
+#    - esptool 5.2.0 在 PyPI **只有 sdist、没有 wheel**——原「严格 wheel 路径必失败
+#      → 降级裸装 fallback」的两段结构在生产上恒走 fallback，等于零锚点；
+#    - 整体改为单路径 pip install --require-hashes -r flash_payload_requirements.txt
+#      （18 件闭包：esptool(sdist)+bitstring+cryptography+pyserial+reedsolo+PyYAML+
+#      intelhex+rich-click+click 及传递依赖，win_amd64/CPython3.12 哈希钉死）。
+#      镜像 VOICESTICK_PIP_INDEX_URL 只能投递**逐字节相同**的制品，无法夹带代码；
+#    - 宿主 python 必须与 embed 同为 $pyMM：哈希锁是 ABI 专属（cffi/PyYAML/bitarray/
+#      tibs/cryptography 是二进制包），错 ABI 会让冒烟测试在 payload 内 ImportError。
 $sitePackages = Join-Path $pythonDir 'Lib\site-packages'
 $hostPython = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $hostPython) { throw 'host python not found in PATH (required to pip-install esptool into payload)' }
-# pip 索引：默认官方 PyPI（部分镜像可能缺 esptool 包），可用 VOICESTICK_PIP_INDEX_URL 覆盖。
+$hostVer = (& $hostPython -c "import platform;print(platform.python_version())" 2>&1 | Out-String).Trim()
+if ($hostVer -notlike "$pyMM.*") {
+    throw "host python $hostVer != payload $pyMM.* — hash lock is ABI-specific (install CPython $pyMM x64)"
+}
+# pip 索引：默认官方 PyPI，可用 VOICESTICK_PIP_INDEX_URL 覆盖（哈希锁定使镜像不可夹带）。
 $pipIndex = $env:VOICESTICK_PIP_INDEX_URL
 if (-not $pipIndex) { $pipIndex = 'https://pypi.org/simple' }
-Write-Host "[flash_payload] installing esptool==$EsptoolVersion into $sitePackages"
+Write-Host "[flash_payload] installing hash-locked requirements (lock=$($lockHash.Substring(0, 12))…) into $sitePackages"
 & $hostPython -m pip install --disable-pip-version-check --no-input `
+    --require-hashes `
+    --requirement $reqFile `
     --index-url $pipIndex `
-    --target $sitePackages `
-    --python-version $pyMM --platform win_amd64 --only-binary :all: `
-    "esptool==$EsptoolVersion" pyserial pyyaml
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning 'strict wheel mode failed, falling back to plain --target install (host interpreter wheels)'
-    & $hostPython -m pip install --disable-pip-version-check --no-input `
-        --index-url $pipIndex `
-        --target $sitePackages "esptool==$EsptoolVersion" pyserial pyyaml
-    if ($LASTEXITCODE -ne 0) { throw 'pip install esptool failed' }
-}
+    --target $sitePackages
+if ($LASTEXITCODE -ne 0) { throw 'pip install (require-hashes) failed — see scripts/flash_payload_requirements.txt' }
 
 # 4) 冒烟验证 + 写幂等标记
 $ver = & $pythonExe -m esptool version 2>&1 | Out-String

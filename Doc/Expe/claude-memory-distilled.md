@@ -39,9 +39,10 @@
 
 `audio_pipeline.c` 在 PCM 抽单声道后、Opus 编码前加二阶 Butterworth HPF（transposed direct form II），抑制 20–100Hz 呼吸气流爆破音；硬件 ES8311 HPF 截止太低（去 DC 级）对爆破音无效。去掉 100Hz 以下气流噪声后 ASR 字错率也明显改善。
 
-- 参数：fc≈90Hz @16kHz，Q=0.707；b0=0.975318 b1=-1.950637 b2=0.975318 a1=-1.950028 a2=0.951246。
-- 频响：90Hz -3dB / 50Hz -10.6dB / 30Hz -19dB / 150Hz -0.5dB / 300Hz+ ~0dB。
+- 参数（2026-10-14 起）：fc≈120Hz @16kHz，Q=0.707；b0=0.967227 b1=-1.934455 b2=0.967227 a1=-1.933380 a2=0.935529（爆点能量实测集中 100-150Hz；旧 90Hz 系数 b0=0.975318 b1=-1.950637 b2=0.975318 a1=-1.950028 a2=0.951246）。
+- 频响：120Hz -3.0dB / 50Hz -15.3dB / 30Hz -24.1dB / 200Hz -0.5dB / 300Hz+ ~0dB。
 - 调参：男声偏闷调到 100–120Hz；爆破残留调到 70–80Hz。状态每会话 start 清零；**audio_task 与 drain 路径都要过滤**；`hpf_process` 用 lround 取整+软限幅防漂移。
+- **2026-10-13 起桌面端镜像同一链路**：小米直连桌面（ATVV）后处理 = 三点平滑 → HPF(120Hz) → 固定增益 → AGC（0.8FS 限幅），算法/常量逐字拷贝、级间 int16 量化、Swift/C++/Python 三端 bit 级对齐（golden fixture 对拍），`[device.<id>.xiaomi]` 加 `hpf`/`agc` 开关（默认开，关=旧行为）。**2026-10-14 参数收紧**：HPF 90→120Hz、AGC 目标 -6→-12dBFS、上限 +20→+12dB（动机与新常量见 `Doc/Plan/software-agc.md` 附录）；RNNoise 人声增强 PoC（`audio_noise_suppression` 配置项，默认关；macOS `AudioEnhancer.swift` + Windows `audio_enhancer.cc` 双端镜像：Opus 解码@48k → RNNoise → 重编码 16k，仅主输入路径，失败回退透传）。实施与跨端对拍手法见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`，方案见 `Doc/Plan/xiaomi-direct-desktop-hpf-agc.md`。
 
 ### 1.4 尾音丢失：button_up 抢跑 drain（已根治）
 
@@ -68,6 +69,13 @@
 
 - 大栈任务（audio_task 32KB 等）用 `xTaskCreatePinnedToCoreWithCaps(..., MALLOC_CAP_SPIRAM)` + `vTaskDeleteWithCaps(NULL)`，需 `#include "freertos/idf_additions.h"` 与 `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y`。内部 RAM 不足时普通 xTaskCreate 报 `ESP_ERR_NO_MEM`（曾表现为按录音键屏幕报 `Audio audio_task: ESP_ERR_NO_MEM`）。audio_task 栈 24KB 在加 LVGL 后会溢出，须 32768。
 - **PSRAM 栈任务里不能做 flash 操作**（L3 回放钩子坑）：audio_task 里 fread SPIFFS 触发 `assert failed: esp_task_stack_is_sane_cache_disabled`（cache 禁用期 PSRAM 栈不可访问）。解法：在内部 RAM 栈任务（main）预读整个文件到 PSRAM buffer（`heap_caps_malloc MALLOC_CAP_SPIRAM`），PSRAM 栈任务仅 memcpy。串口抓到 assert+Rebooting 是铁证。
+- **FreeRTOS 动态对象默认只能拿内部 RAM**（2026-09-18 定案）：`xStreamBufferCreate`/`xQueueCreate` 等内部走
+  `pvPortMalloc`，而 IDF 把 `portFREERTOS_HEAP_CAPS` **硬编码为 `(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)`**
+  （`components/freertos/heap_idf.c`）——PSRAM 根本不在候选里，PSRAM 再空也没用。要放 PSRAM 必须用
+  `xStreamBufferCreateWithCaps(..., MALLOC_CAP_SPIRAM)` / `xQueueCreateWithCaps` 系列（同上头文件）。
+  **`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 只管普通 `malloc()`（`heap_caps_malloc_default`），对 `pvPortMalloc` 无效**——
+  曾据此在注释里写下「>16KB 会自动走 SPIRAM」而踩坑：网关模式 64KB 外部源 PCM 缓冲创建必失败，
+  表现为按语音键屏幕报 `Audio wait:ESP_ERR_NO_MEM`。与上面 audio_task 栈是同一个坑的两种表现。
 - 诊断内存：`heap_caps_get_free_size/largest_free_block(MALLOC_CAP_INTERNAL)`、`uxTaskGetStackHighWaterMark`。
 
 ### 1.7 深睡 / 电源管理
@@ -78,6 +86,78 @@
 ### 1.8 FreeRTOS 回调栈陷阱（通用）
 
 Wi-Fi 链路 API（`esp_wifi_set_config/connect/disconnect`）单次调用需 3–4KB 局部栈，`Tmr Svc`（`CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=2048`）和 `sys_evt`（`CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304`）都不够，在 timer/event 回调里直接调会栈溢出 panic（backtrace 常 CORRUPTED，**看任务名比 backtrace 重要**）。正确做法：专用 worker task（栈 ≥6KB）+ timer 回调只 `xQueueSend` 投递命令。同理，timer/event 上下文里调 esp_http_client/mbedtls 等大栈 API 前先问"这个上下文栈够吗"。（Wi-Fi 代码虽已删除，此教训对任何大栈 API 仍适用。）
+
+### 1.9 NimBLE 自定义 GATT 描述符必须显式声明 att_flags（2026-09-18 定案）
+
+`struct ble_gatt_dsc_def` 的 `att_flags` **没有默认值语义**：留 0 就是"无任何权限"。
+NimBLE 把它原样登记为属性权限（`ble_gatts_register_dsc` → `ble_att_svr_register`），
+而读权限检查要求 `ha_flags & BLE_ATT_F_READ`，且**位于访问回调之前**
+（`nimble/host/src/ble_att_svr.c: ble_att_svr_check_perms`）——于是读请求被直接回
+`Read Not Permitted`（ATT 0x02），**自己的 access_cb 一行日志都不会打**，排查时极易
+误判为"主机根本没读这个描述符"。写权限同理（`BLE_ATT_F_WRITE`）。
+
+真机代价（Phase 1 网关）：HOGP 的 Report Reference 描述符（0x2908）漏配
+`att_flags = BLE_ATT_F_READ`，Windows `hidbthle` / 安卓 `bta_hh_le` 拿不到
+"特征句柄 ↔ Report ID/类型"映射，直接拒绝启动 HID 设备——Windows 侧表现是
+"符合蓝牙低能耗 GATT 的 HID 设备"节点 **Code 10 / 0xC00000E5（hidbthle.inf）**，
+而 DIS/GAP/GATT/电量等服务节点全部正常；安卓侧表现为配对后报"驱动程序错误"。
+官方参照：NimBLE 自带 HID 服务（`services/hid/ble_svc_hid.c`）对两个 0x2908 均显式写
+`.att_flags = BLE_ATT_F_READ`；自研服务定义应与官方实现逐字段对齐，不要依赖"零值即默认"。
+
+同批 HOGP 报文事实：Report 特征值**不含 Report ID 前缀**（ID 由 0x2908 承载，
+键盘 8 字节首字节为 modifier），多带一次会让按键永不生效；Report Map 里
+`0x2A FF 00` 是两字节形式的 Usage Maximum（`0x29` 才是一字节形式），不是笔误。
+纯逻辑模块 + host 侧描述符结构校验（usage 范围成对且 min ≤ max、各 Report ID 位宽 =
+报文长度）能同时锁住这两类问题。详见 `Doc/Plan/xiaomi-remote-stick-gateway.md` §6.2。
+
+### 1.10 小米网关：语音键与 HID 直通是两条独立通道（2026-09-18 定案）
+
+**「语音键正常、其他按键全死」先怀疑 HID 订阅与系统配对，不要往 ATVV/音频侧深挖。**
+语音键会话沿由 **ATVV Control 帧**驱动（`gateway_atvv_on_press`，与 HID 通道无关），其他按键才走
+**HOGP HID Report**；两条路的失败会互相掩盖。当日四处独立根因：
+
+1. **HID 侧只认了 1/7 个带 notify 的 Report 特征**。真机枚举小米 HID 服务有 **25 个 Report(0x2A4D)**
+   特征、其中 **7 个带 notify**（props=0x1A）。原实现发现阶段只锁第一个（0x0064）、接收阶段按
+   `attr_handle != s_report_handle` 过滤 ⇒ 其余 6 个特征上的按键报文被当成 ATVV 包丢弃。
+   教训：**多实例 GATT 特征必须全量收集**，「只取第一个匹配」是危险默认。
+2. **CCCD 句柄不要靠「特征值句柄 +1」猜**：Report 0x0076 的真 CCCD 在 **0x0078**，猜出的 0x0077
+   被以 ATT 0x03 Write Not Permitted 拒绝；且原实现一个句柄失败就卡死整条链。改描述符枚举
+   （`disc_all_dscs` 找 0x2902，与 `xiaomi_atvv_client` 同手法）+ 枚举不到才回退 +1 + 失败跳过。
+3. **`ble_gatts_notify_custom` 对未订阅连接返回成功但不下发**——`gateway_hogp` 原先只发第一条
+   role=slave 连接，挑中桌面端 app 那条（app 从不订阅 HOGP）时报文静默消失。改为向所有 role=slave
+   广播，并在一条都没有时告警。**发送成功 ≠ 送达**。
+4. **BLE HID 直通要求目标机与设备有 OS 级配对**，这是固件之外的硬前提：没有
+   `Enum\BTHLE\Dev_<地址>` 节点就没有 HOGP HID 链路。判据极为好用：注册表
+   `BTHPORT\Parameters\Devices` **有**密钥而 `Enum\BTHLE` **无**节点 = 密钥残留、节点被删。
+   恢复 = 在 **Windows 设置 → 添加设备 → 蓝牙** 手动配对（设备需处于广播态）。
+
+配套事实：**Windows 的 HID 主机与 app 复用同一条 ACL 链路**（app 重连日志
+`link-layer connected VS-53A8 after 0ms`，设备侧始终只有一条 peripheral 连接）——共存不需要第二条
+连接、也不需要保持广播，勿据此改 `voice_ble` 的 `stop_advertising()` 策略。
+
+**桌面端的三处修复（都已落地，别再按旧结论排查）**：
+
+1. 失效恢复路径（`IsLikelyStaleBondError` / `Unreachable`）里的 `TryUnpairAsync` 会**删掉整条**
+   Windows 配对记录（含 HOGP HID 节点），此前**没人补回来** ⇒ 按键直通静默失效。已加
+   `TryRestoreOsBondAsync` 在两条恢复路径重开后补一次 `PairAsync`（`e0db7c63`）。
+2. 僵尸会话（链路仍 Connected 却长时间零入站、订阅与写入全部假成功）此前只重扫，而设备此时
+   多已被系统 HID 宿主连上并停止广播，扫描永远等不到。已加纯函数 `BleProtocol::PlanZombieRecovery` +
+   `on_session_zombie` 托盘气泡指引用户重配（`e0db7c63`）。**僵尸本身仍需用户手动到系统设置重配一次**。
+3. app 配对 VS 设备时**自动完成系统级配对**（`PairDeviceDialog::AttemptOsPairing`，失败策略由纯函数
+   `BleProtocol::PlanAfterOsBondAttempt` 决定：小米硬前置 / VS 软前置降级）；忘记设备时也已自动清系统配对。
+   ⇒ **用户不需要再被指引去 Windows 蓝牙设置手动配对**，只在僵尸会话气泡提示时才需要（`43789aa9`）。
+
+详见 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md` 与 `Doc/Plan/windows-app-os-pairing.md`。
+
+**语音输入端到端延迟根因链（2026-10-11/12 五连修，commit `fb09bec`，实测松键→粘贴 25.6s→0.44s）**：
+
+1. **按键事件曾被事件队列静默挤丢**（队列 12 深度 + FRONT/SIDE DOWN/UP 非 critical，编码器旋转风暴是触发条件）→ 录音无人停、button_up 不发 = 幽灵录音/永久等待；已升 A7 关键事件。判据：`Button up duration_ms` 与 down→up 间隔对不上。
+2. **macOS 拒绝含 <15ms 的连接参数范围请求**（`ble_gap_update_params` rc=530 = 0x200+HCI 0x12，Apple 按范围整体校验非选档），链路锁死 400ms 慢档、音频通知塌到 ~2.4fps（3.4s 语音拖 28-35s）——**语音延迟最大头**；快档下限 15ms（`itvl_min=12`）即被接受，**推翻** `mac-ble-ota-400ms-hid-scheduling-2026-10-02.md` 的「无解」定案（详见其追加节）。
+3. **空闲即降 400ms + macOS 应用参数更新 ~5s 延迟** = 短句整段在慢档爬行；已改「活动即拉快档（幂等）+ 空闲 5 分钟才降档」+ CONN_UPDATE 慢参数自愈重申 + 录音中 1.5s 周期重申。
+4. 确认倒计时 1.2s→0.4s（`showFinal`/`ShowFinalCountdown` 两端同步）；桌面录音静默看门狗 3s + 停录 sentinel 3s 有界 + tx 重试 2ms 粒度。
+5. **macOS 排障基建**：统一日志对 NSLog 脱敏 `<private>` ⇒ 文件日志 `~/Library/Application Support/VoiceStick/App.log`（AppFileLog，8MB 轮转）；**CLI 直接启动 app 因 TCC 归因失效会静默失去蓝牙**（判据：进程零 CoreBluetooth 日志），测试一律 `open` 启动。
+
+完整判据表/三轮实测对照/遗留项见 `Doc/Expe/voice-input-latency-root-cause-chain-2026-10-12.md`。
 
 ---
 
@@ -93,6 +173,8 @@ Wi-Fi STA 配网与 LAN HTTP OTA 已**物理删除**（voice_net 组件、Window
 4. **USB COM 烧录**：`python scripts/idf_cli.py -u`。
 
 本地 bin 在 `firmware/build/voice_stick.bin`；验证靠设备串口 `OTA complete, rebooting`。`ota_commit` BLE 命令保留（boot 已自动签到，双槽分区表与 `CONFIG_APP_ROLLBACK_ENABLE=y` 不变）。烧录 skill（`.agents/skills/sticks3-flash-ota/`，另有 `.claude/skills/`、`skills/` 两处同步副本，改时三处同步）2026-07-09 已重写为上述流程，旧 VoiceStickCtl/HTTP OTA 描述已清除。
+
+**OTA 流控是 app×固件跨版本契约**（2026-09-26）：桌面端在途窗口（`OtaMaxInFlightBytes`，首条确认前 40KB/之后 24KB）必须大于**对端固件实际**的进度回传间隔（现行 8KB，v2.3.8 及更早 32KB），且超窗等待时按 200ms/块降速续发——2026-09-20 只按当时固件调优，v2.4.0 app 对 v2.3.8 设备 OTA 必死锁（`sent` 恒等于窗口值 + `confirmed=0` + 设备端 begin 成功零 progress = 互等死锁判据；random 数值才是无线问题）。发布前在最旧服役固件上真机过一遍 OTA。见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
 
 ### 2.2 Stick S3 Boot 按键时序
 
@@ -197,6 +279,7 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 - **免退避必须有界**（次数+时间双上限），打标时间不能在重试间刷新（settle 条目放行即擦除，重试不会重新打标——保持这点，否则计数约束失效）。
 - **回连时长硬成本**（继续压缩空间有限）：固件 boot→广播 ~1s + 安定窗 1.5s + 扫描/认领 ~0.5s + Windows 建链/发现 ~2s（`GattServicesChanged` 每次连接都使 GATT 缓存失效，cached 发现实际走空口 ~760ms）。
 - **遗留观察项**：`Status()==Error` 的快速真实失败会被误标为 "timeout" 日志（行为正确，只损诊断精度，两次审查裁定可接受）；若日常日志频繁出现 `retry #2/#3`，说明 1.5s 安定窗偏短需上调。
+- **后续（2026-09-19）**：本节机制之上补了「连接期活性证明 + 僵尸后主动直连 + 有界自愈梯度」，并定下**自愈路径绝不 unpair** 的红线，见 §3.14。
 
 ### 3.11 COM 口烧录工具（VoiceStickFlash）与串口枚举（2026-08-07）
 
@@ -217,7 +300,52 @@ MSI 装 `config.template.toml` 到 `Program Files\VoiceStick\`，首启 `AppConf
 
 修复：参数改按值传递 `std::string device_id`，消除引用别名；回归测试 `TestEncoderRotateCustomKeysPendingPathDeviceOverride`（设备覆盖 + pending → Tick 冲刷）。**教训**：const 引用参数若可能指向会被函数体修改的成员，必须先复制或按值传参；单测要覆盖"设备覆盖 ≠ 全局默认"场景（此前 pending 路径测试全用全局默认键，查回默认也断言通过，掩盖了回落路径）。
 
-### 3.13 智能热词管理与回收池分类错位（2026-09-26）
+### 3.13 小米遥控器按键映射：LL 钩子吞键与设备证据三重死结（2026-09-07 定案）
+
+症状：`home→Backspace` 映射三轮迭代各有真机故障——钩子内等待佐证版不删字（佐证 2ms 后才到）；先吞后验版不删字（被吞键无 MAKE raw，超时全走物理补偿）；信用制版物理键盘 Home 误删且 30s 窗内无法自愈（纠正信号 BREAK 也被吞）。
+
+根因（结构性，非时序抖动）：WH_KEYBOARD_LL 是 RIT 同步调用，钩子阻塞期间本次 WM_INPUT 不投递；钩子返回 1 吞掉的键 MAKE/BREAK 沿**双双不投递**。任何 keydown 时刻的归属决策都只能靠先验（信用/时序窗），物理键盘同特征键误判后落入无证据死区。
+
+修复（v4 keyup 后置决策）：keydown/按住重复一律吞 + 登记 Pending；keyup **放行**（孤立 up 无系统副作用，是取证动作）让 BREAK 沿带 `hDevice` 投递；主线程收到证据后遥控器→注入映射 down+up 对、物理→补偿原键 down+up 对；BREAK 异常丢失 200ms WM_TIMER 按物理兜底。代价：反馈延迟到松手、按住连删退化为单击多次。详见 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`，设计 `Doc/Plan/xiaomi-keymap-consumer.md`。
+
+附带坑：`RIDI_DEVICEINFO` 对 BTHLE 遥控器（呈现为 RIM_TYPEKEYBOARD）`hid.dwVendorId` 恒 0 静默失效，VID/PID 必须走 `RIDI_DEVICENAME` 接口路径解析，且 BTHLE 容器 VID 字段是六位十六进制（`012717`），须按低 16 位比对；RC003（RC-6459）back 键固件上报 usage 0xF1 被 WUDFHost 翻译层丢弃，PC 端零事件不可消费，勿再按"原生 Backspace"假设排查（早期 VK_BACK 日志是物理键盘污染）。录入侧兜底（2026-09-15，0f9c4fbb）：录入窗 3 秒零事件提示已同时覆盖 UIPI 隔离与本死键两种原因并引导手动输入（`backspace`/`alt+left`），提示触发落日志；配对记录无可靠批次识别信号（持久化 name 只有通用值），不做猜测性检测。
+
+### 3.14 BLE 僵尸会话自愈：活性证明与「不删系统配对」红线（2026-09-19 定案）
+
+设备重启后语音静默失效的根治（P0，commit `1557276e`），细节见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md`，设计 `Doc/Plan/xiaomi-gateway-p0-zombie-self-heal.md`：
+
+- **订阅「假成功」的判据**：`state subscribe … status=Success` 之后长时间零入站 notify。CCCD 写返回 Success 而设备侧从未登记（`state_sub=0`）。**判定连接健康必须取对端反向证据**（收到的通知/回包），不是本机 API 返回码。
+- **假成功的真根因（2026-09-19 二次定案，修正本节早期「加密上下文陈旧」的推断）：Windows 缓存了 CCCD 值**。要写的值与缓存里记的相同（上次会话成功订阅过）时，Windows **本地返回 Success 而不发空口包**；设备侧 NimBLE 在连接建立时把 CCCD 清零 ⇒ 两边认知漂移 ⇒ 订阅永远到不了设备。**修复 = CCCD 缓存击穿：订阅前先写 `None` 再写 `Notify`**（`WriteCccdBestEffortAsync`，VS 的 state/audio 与小米 ATVV 的 control/audio 四处订阅点），无论缓存记的是哪个值，两次写里至少一次是「值变化」必须下发。**判据**：`state subscribe … Success` 只花十几毫秒 = 被本地缓存短路（真实 ATT 往返是 100ms~1.5s）。这也解释了为什么未配对设备反而正常（未配对会失效 GATT 缓存）与为什么手动重新添加设备能修（unpair 清掉整份缓存）。详见 `Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md`。
+- **连接期活性证明**：audio 订阅后等 `kSessionLivenessTimeout{2500}` 内首个入站 notify 才置 `ready`（旧实现据此发布假「已连接」，要等 90s 心跳才发现僵尸）。证据取 `last_rx_ms > 0`。**`device_info` 是本连接第一个通知、常被 BTHLE 在 handler 接线前吞掉（约半数连接收不到）**，故补发 `battery_status_request` 主动索要回包（<1s，代价 +0.7~0.9s 连接耗时）。
+- **僵尸拆除后必须按地址主动直连**：原先只 `StartScan()` 是死路——固件连接成功即停广播，而设备多已被系统 HID 宿主连上，实测零恢复 8 小时。新增 `ScheduleZombieReconnect`（队列 + 延迟线程提前唤醒）。
+- **自愈梯度绝不可 unpair**（本次最大教训）：`PlanZombieHeal` 三级 = A 只回收 WinRT 对象重连 → B **只重置 Bluetooth radio** → 末级托盘气泡。首版照旧 stale-bond 套路做 unpair + radio reset + `PairAsync`，**语音自愈成功却把 HOGP 按键直通弄死**（`BTHPORT` 有密钥、`Enum\BTHLE` 无节点）。实测 `PairAsync` 在设备被 app 连上（停广播）时必失败 `status=19 Failed`（12/12），停掉 app 后仍失败（串口证明设备侧连连接都没发生）。**恢复路径按「破坏性」而非「彻底性」排序**；破坏性动作留给用户。
+- **bond 只补不删**：`RepairOsBondAsync` 只读 `Pairing().IsPaired()` 确认缺失后才动手，条件是「无会话 + 设备在广播 + 先 radio reset 清 Windows 僵尸链路」，重试 3 次，每次运行最多 1 轮。**判据**：app 停掉 9s 后 `FromBluetoothAddressAsync` 仍报 `ConnectionStatus=Connected` = Windows 侧僵尸链路，此状态下 `PairAsync` 必失败（status=19）。彻底删过 `Enum\BTHLE` 节点后，本机三种自动重建尝试（拆会话后 / 见广播后 / radio reset 后）全部失败，仍需用户重新添加设备。
+- **真机验收**：连续 4 次重启全部自动 `stage=ready`（最快 10.4s），A/B 级未触发。B 级（radio reset）尚无真机样本。
+
+### 3.15 订阅首帧撞 MTU 未协商 ⇒ 对端把健康会话判成僵尸（2026-09-20 定案）
+
+细节见 `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`；修复 commit `cc82fb18`。
+
+- **判据（一眼分流「订阅假成功」的两个家族）**：设备侧出现 `state json <n>B + 4B header exceeds notify budget (att_mtu=23), peer will truncate` ⇒ 是**帧被截断**；没有这条而 CCCD 写只花十几毫秒 ⇒ 是 **Windows CCCD 缓存没发空口包**（§3.14）。两者桌面端症状都是 `state subscribe timeout`/僵尸判定，但根因完全不同。
+- **机制**：`BLE_GAP_EVENT_SUBSCRIBE` 里立刻推初始状态帧串（device_info/encoder_status/gateway_status），而连接时自己发起的 MTU 交换还在途，`att_mtu=23` ⇒ 通知预算只有 **16B JSON**。三个帧全超 ⇒ 对端拿不到可解析帧 ⇒ 活性证明 2.5s 超时 ⇒ 判僵尸 ⇒ 免退避重试风暴。**跟帧多大无关**：早先把 device_info 从 258B 精简到 235B 并没解决（41B 的 encoder_status 同样过不去）。
+- **修复**：订阅时 `ble_att_mtu(conn) <= 23` 就挂起帧串，等 `BLE_GAP_EVENT_MTU` 再推（实测只晚 33–48ms）；1.2s 兜底定时器防对端不响应；断连清标志。
+- **真机收益**（网关切换路径）：目标机 app 恢复 **14–26s → 2.5s**；设备侧切换 9 轮 avg **690ms/worst 893ms**；订阅时截断告警归零。
+- **通用设计规则**：任何新增/扩容 `state_tx` 帧，先按最小预算（MTU 23 ⇒ 16B）算一遍；超预算的首帧要么等 MTU、要么不发——**别靠「把帧缩小一点」**。
+- **附带（E2E）**：app 退出后 Windows 会用系统级 HOGP 配对自动连走设备并停止广播 ⇒ `bleak` 等第三方 central **驱动不了设备**，自动化只能走 app（本轮为此加了 `VoiceStick.exe --gateway-target self|clear`）；测试也**绝不能解除系统配对**（红线，见 §3.14）。
+
+---
+
+### 3.16 macOS 悬浮窗液态玻璃：`.clear` 控件性格 + `_subvariant` KVC 反噬（2026-10-18 定稿）
+
+细节见 `Doc/Expe/macos-overlay-liquid-glass-clear-style-2026-10-18.md`；定稿 commit `5d90aa8`（squash 自 feat/overlay-liquid-glass 六提交）。
+
+- **定稿配置**：NSGlassEffectView + `style=.clear`（控件级通透折射的关键旋钮）+ 内容入 `contentView`（与真菜单同构）+ 窗口级 hasShadow（NSPopupMenuWindow 同款）+ 圆角 12 + KVC `_adaptiveAppearance=1` + tint 霜化 0.10（同明暗族基底，白字主题叠黑霜）。
+- **`.regular`（默认）是菜单性格强磨砂，`.clear` 才是控件性格高通透**——要「Apple 宣传图那种玻璃」先切 `.clear`；VEV 的 `.menu`/`.popover`/`.hudWindow` 全是固定性格磨砂无背景自适应，「不通透」先怀疑材质再怀疑参数。
+- **`_subvariant="menu"` 绝不可 KVC 写**：菜单的 subvariant 是 SwiftUI 管线自设的渲染结果；外部写入触发错误重建路径，CABackdropLayer `glassBackground` 的 scale 从 0.5 掉 0.25（模糊发虚、纹理保留率 ~68%）。`_scrimState=1` 同病。私有属性只写实测单项无害的，写前 `responds(to:)` 探测。
+- **锁屏门控**：锁屏下 WindowServer 不采样 backdrop，玻璃截图全黑；`caffeinate -u` 只醒显示器解不了门控，CGSessionCopyDictionary 判锁（无 OnConsoleKey 且 ScreenIsLocked=1）。
+- **probe 方法**：backdrop 不采样同窗下层视图，背景必须放独立下层窗口（双层窗）；长命 harness 撞 `NSViewIsCurrentlyBuildingLayerTreeForDisplay` 断言，probe 做成 60s 自退进程；AX 点真菜单叶子项用 `AXPress`（`click` 只悬停）；多屏截图先拿浮窗 bounds 定位屏（浮窗跟随 NSScreen.main=用户焦点屏）。
+
+### 3.17 智能热词管理与回收池分类错位（2026-09-26）
 
 智能热词管理三层自动化（上下文切换/容量动态管理/活跃度回收池）当日落地，细节见 `Doc/Expe/smart-hotword-pool-reclaim-2026-09-26.md`。核心教训：
 
@@ -295,6 +423,10 @@ wechat 路径曾缺最短时长过滤，落盘出极小 ogg（128 字节=Ogg 头
 
 Qt 迁移暂缓；优先"随包带 VB-CABLE 原始 zip+首启自动装驱动+自动切设备"（方案 `Doc/Plan/windows-vbcable-as-is-bundling.md`，AS IS SHA256 校验贯穿）。**VB-CABLE 是 VB-Audio donationware，随包携带属再分发，条款 3.4 一手原文未取得：公开发布前必须改走 B2-下载（首启从官方源拉取）或取得商业授权，禁止直接沿用携带模式公开发布。**
 
+### 4.12 方案 A 直连默认麦克风（2026-09-11 修订，09-12 二修）
+
+方案 A（小米 click toggle + 按住式 WeType）的「本机麦直通 + auto_switch + CABLE 渲染」管道已废弃：keyup 后 600ms 拆除管道会卡死 WeType TSF 宿主（面板不退、文字不上屏、之后新会话连 `start_received` 都没有——判据：WeType 两进程诊断日志同时停笔）。修订为直连默认麦克风：本端零采集/零切换/零渲染，WeType 弹框后直接采默认录音设备（真实麦克风）。二修（09-12 定案）：**WeType 语音热键只能启动/重启会话，keyup/ESC 均无收尾作用，面板唯一关闭路径是鼠标点击 detach**；**commit 只在「松开时语音仍活跃（或刚停 <~1s）」时触发**（点击折叠停止击天然晚于语音结束 → SendUp 不 commit）。启动击按住流**限时 2.5s 自动松开**（持续 repeats 会让用户任何关面板尝试被下一个 keydown 立即重新弹开——「浮窗点关又弹出」）；停止击（方案 B）= **SendUp + 两次左键点击（1.5s/3s 间隔，detach 链约 1.8s 需补一次）**。文字提交靠「松开时语音仍活跃」触发 → **使用约定「说完即点停止」**；「新按住提交」虽可无条件提交但会重开无 composition 的空会话、浮窗残留只能手动关，故弃用。StickS3 BLE 音频仍走 CABLE 管道。详见 `Doc/Expe/wetype-finalize-wedge-cable-teardown-2026-09-11.md` 追加节。
+
 ---
 
 ## 5. 交互 / 体感
@@ -335,6 +467,10 @@ Qt 迁移暂缓；优先"随包带 VB-CABLE 原始 zip+首启自动装驱动+自
 ### 5.4 侧键单/双击冲突（已定案）
 
 用户拍板（2026-07-03）：侧键**单击**=进/退体感鼠标，**双击**=恢复上次输入确认；有活跃录音/识别/待粘贴时单击仍走取消语义。固件层 `s_side_double_click_timer` 区分：单击延迟 500ms 双击窗口超时后发 `button_click secondary`，窗口内第二击发 `button_double_click secondary`；桌面端 `HandleButtonDoubleClick` secondary 分支调 `RestoreLastInputConfirmation`，体感态下双击忽略。代价：侧键单击响应延迟 500ms（可接受）。
+
+### 5.5 网关按键自定义恢复（macOS 四断链，2026-10-12）
+
+用户报「手柄自定义界面和功能都不见了、除录音键外按键全无作用」（网关模式）= 四条独立断链叠加：①托盘「按键映射…」只在 `isXiaomi`（RC 条目）分支出现，网关模式桌面端无 RC 条目 ⇒ 入口永不可见（Windows `b65baf3` 有 StickS3 分支先例，macOS 未移植）；②`AppConfig.buttonsSettings` 恒返回 `.default` 且无存储——「无 RC 回落全局」是没有支撑的死路；③`onConnectionChange`（didConnect）早于控制特征就绪 ~0.8s，`gateway_target_info`+13 键 `gateway_keymap_set` 全部 `(not connected)` 丢弃且此后无补推（判据：**整批 skipped、该 label 再无成功行**，真机日志 182/182）；④**静默丢表**：`tomlNumber`（`%.4g`）把整数 Double 写成 `3`/`80`（TOML 整数形态），TOMLKit 解 Double 严格判 `.float` → 单字段 typeMismatch → `ConfigFile` 整表解码失败 → `AppConfig.parse` 静默回落 `loadLegacy`（不认任何 `[表]` 段、零日志）⇒ 每次重启所有 `[device.*]` 表蒸发（`gain_db` 同族问题当年只修 xiaomi 子表、根表 9 个 `air_mouse_*` Double 漏网）。修复 `65a94f7`：网关入口 + `hidesIntercept`、根 `[buttons]` 全局表（`globalButtonsSettings` 存储/解析/序列化，入口-存储-消费三层同源）、`onControlChannelReady` 就绪补推、`LenientDouble` + `tomlNumber` 规范 float 双保险；判别 parse 走没走主路径用「回读 `[output].target`」（legacy 只读根 `output_target`）。测试 798/798。详见 `Doc/Expe/mac-gateway-keymap-restore-2026-10-12.md`。**真机端到端再暴露固件两雷（commit `7736441`，已烧录）**：①`gateway_keymap` 回执在 ATT 写回调内联执行压穿 nimble host 任务栈（4096B）→ `xQueueSemaphoreTake (uxItemSize==0)` assert 每 4-5s 崩溃重启循环（判据=串口同款 assert+backtrace 刷屏 / app `Connected VoiceStick` 每 4-5s 一条）——回执移交 app 任务+双栈 5120；②A15 分片体漏包数组括号 → `"routes":{...},{...}` 非法 JSON 桌面端静默丢全部回执（判据=固件已发 seq 日志而 app 完成日志恒 0，DIAG payload 见畸形）——发送前包 `[...]`，Windows 同固件族对话框回执同病同修。出 Boot 新判据：该板 `--after watchdog_reset` 免手动按键。详见同文 §8。**三轮（同日）**：音量±等键全灭根因 = macOS 无 OS 级 HID 会话（`hidutil`/`ioreg` 无 IOHIDDevice 节点，system_profiler 的 Connected 只是 app 的 CoreBluetooth 链路）→ 可映射 11 键路由改全 software、`.native` 按 `naturalSpec` 自然键注入（`7109936`）；映射对话框恢复遥控器照片热区交互（`d433763`，手写 frame 结构性规避窗口塌缩）。详见同文 §9。
 
 ---
 
@@ -401,6 +537,18 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 
 设计方案存当前仓库 `Doc/Plan/`（大写 Doc，git 大小写敏感；早期文档写 `docs/` 是历史误导）。写前可 `git ls-files | grep -i doc` 确认。
 
+### 7.5 语音功能「不准/没效果」先分层定位（2026-10-28）
+
+三层分解法（targeted 编辑实战：11 轮指令 18% 成功率，两层损失不在被投诉功能里）：①**同字节回放转写**拿逐轮识别文本——用与 app 相同的腾讯实时 ASR 端点/签名/Opus 封装回放 `DebugAudio/*.ogg`，回放文本 UTF-8 字节与日志 `text_len` 逐轮对账（27 轮 26 轮逐字节吻合即可当实况）；②**帧比例指纹** `Audio stream summary` 的 `frames×40ms/span`：≈1.0 完整、恒 0.5~0.8=设备端尾帧丢弃（END 保序先到 ⇒ 设备没发；回放音素时间轴语速正常且止于最后一帧 ⇒ 连续前缀非均匀丢）；③解析 nil/门控未命中是**静默回退零日志**，没识别文本别下结论。详见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md`，回归表在 `Doc/Test/voice-targeted-accuracy-baseline-2026-10-27.md`。
+
+### 7.6 本地小模型任务形态三律（2026-10-28）
+
+①选型结论**不可跨任务形态搬用**（同一批模型：跨轮纠错 Qwen3-4B GO，few-shot+枚举约束对齐任务 qwen3 全家 NONE 崩塌，赢家 qwen2.5:1.5b 94%/80%/80ms——换任务先过 harness）；②能在确定性预筛层解决的不给模型（重叠候选簇是全模型杀手；负例垃圾单词用非等长阈值在预筛消灭）；③LLM 参与破坏性操作的安全形态=候选约束式（模型只在代码生成的候选枚举里选、代码复验、失败回退旧行为）。工程坑：异步吞轮回退重入原入口要带一次性闸防回环；swift build 新增源文件不进构建计划时清 `.build/out` 全量重建。**三度验证与新增形态（同日下午全栈评测）**：整句重写式精修对本地 ≤8B 判死（27 组合全灭，损伤含「我的→你的」代词翻转语义反向；7B 仅减到 5.15% 仍净负）——可行形态=editform 受限编辑指令「错词→热词/删除：片段」+守卫执行（qwen2.5:3b 1.67% 改善3/损伤0/70ms，小模型要有术语漂移教学例才出增益）；whisper tiny/base/small 在真机低码率音频崩塌（CER 16%~37%，公开榜不可迁移），本地 ASR 只认 SenseVoice int8；确定性规则层也要过真实数据（「这个API」指示代词误删教训）。详见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md` 追加节与 `Doc/Test/local-fullstack-eval-2026-10-28.md`。
+
+### 7.7 AX 写入后必须轮询确认，不能立即读回（2026-10-29）
+
+targeted 替换在 Chromium 系目标（Electron AXTextArea/浏览器 textarea）必败的根因：**AX 选区/光标写入（kAXSelectedTextRange）经 renderer 异步生效**，写调用返回 success 但立即读回拿到写入前旧值 → 验证式注入判「读回不符」零改动放弃（听写正文是 Cmd+V 粘贴填充故必踩；原生应用同步生效，原生目标验收测不出）。修法=读回与终验小步轮询（只追加读操作，耗尽才走拒绝路径，安全模型不变）。同构律：**平台返回的成功 ≠ 对端可见**（BLE CCCD 订阅假成功 §3.15 同族）。附带教训：执行环节静默路径必须补日志（本次 `voice_targeted action=` 后零日志是排障黑洞，已闭环 §7.5 引用文档待办第 3 条）；注入/AX 类功能验收必须覆盖一个 Electron/浏览器目标（原生目标通过≠Chromium 可用）。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
+
 ---
 
 ## 8. 遗留待办 / 待真机验证项
@@ -419,7 +567,7 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - **firmware 偶发断连 reason=8 排查**：whisper_pen 已定位为 slow interval(latency=4)+supervision timeout（PM 配置补全根治）；firmware 是否也有此偶发断连待验证（差别点 MAX_BONDS=1 vs 3）。
 - **Qt 迁移**：暂缓，留作后续 UI 美化方向。
 - **回连二轮观察项**（2026-07-25 增补）：安定窗 1.5s 若日常日志频繁出现 `retry #2/#3` 需上调；`Status()==Error` 误标 timeout 的诊断精度可留待需要时细分；连按风暴双僵尸已由 15s/3 次免退避覆盖，长期体感待观察。
-- **BLE OTA 停滞根因未查**（2026-07-25 增补）：07:45 曾现 65656 字节处卡 5 分钟（旧固件+新 app），当时走串口绕过；用户再提 OTA 失败时从桌面端 OTA 发送节奏/流控与 `voice_ble.c` 的 ota_write_data 查起。
+- **BLE OTA 停滞根因已查**（2026-07-25 增补，2026-09-26 定案销项）：65656 字节处卡住 = 旧固件 32KB 回传间隔与新 app 流控窗口互等死锁的中间态，非个例。修复见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
 - **文本精修效果不理想**（2026-07-25 增补）：用户最初目标之一，尚未动；本机配置 `refine_enabled=false`。再做时先确认期望行为（准确理解意图+快速完成），参考 §3.8 流式精修与微信输入法的对标。
 
 ---
@@ -449,10 +597,13 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 
 以下来自根指南「经验教训记忆」章节的高频速查清单，含蒸馏日之后（2026-07-17 至 2026-08-01）的新增条目：
 
+- **macOS 无人值守打包签名挂死（codesign 0 CPU + SecurityAgent 在场）**＝登录钥匙串 ACL 授权弹窗在等人：走自建钥匙串 + 显式 `--keychain`（`VOICESTICK_CODESIGN_KEYCHAIN`），详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 2026-10-02 追加节。
+
 - 桌面端日志在 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`（非 Roaming 的 `%APPDATA%`）。
+- **macOS 端日志**在 `~/Library/Application Support/VoiceStick/VoiceStickApp.log`（统一日志对 NSLog 脱敏 `<private>` 不可读；CLI 直接启动 app 因 TCC 归因失效静默失去蓝牙，测试一律 `open` 启动）。语音延迟分段判据 `Audio stream summary frames/span` + 串口 `fast interval request failed rc=530`，见 `Doc/Expe/voice-input-latency-root-cause-chain-2026-10-12.md`。
 - 任何「按住开始/松开结束」的音频会话，固件 `*_stop` 必须同步等 drain 完成再返回，否则 button_up 抢跑丢尾音。
 - SendInput 注入第三方输入法热键必须带 scan code（`MapVirtualKey`），仅 wVk 时输入法不响应。
-- BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。
+- BLE 音频拥堵根治组合（禁 Wi-Fi + 7.5ms interval + MSYS1 扩到 200 块）勿回退。**2026-10-11 修订**：连接参数**请求范围**下限改 15ms（macOS 拒绝含 <15ms 的范围请求 rc=530、链路塌到 2.4fps），勿把 `itvl_min` 改回 6。
 - ES8311 ALC 寄存器位域以 Linux 主线 `es8311.h` 为准，不信 `es8311_reg.h` 注释。
 - 设备 EN 复位后 USB JTAG 重枚举，间隙内 boot 日志直接丢失，循环重开 pyserial 也盖不住；boot→广播耗时从主机日志反推（断连事件→`advertisement matched` 时间差），不要试图串口抓 boot。
 - 排查 BLE 回连/僵尸链路先看 `Doc/Expe/ble-zombie-link-reboot-reconnect.md`；`link-layer connected` 的 `polls=0` 是典型僵尸，`polls=1` 也可能是垂死链路（ATT 挂起），勿凭 polls 单一判据下结论。
@@ -461,10 +612,19 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - 旁路（非协调器状态机）要碰 overlay 先查 `coordinator_->HasActiveSession()`：会话活跃时反馈必须走托盘气泡，否则 `kAutoHideTimerId`/`pending_callback_` 共享资源被覆盖会踩掉确认倒计时的自动粘贴，见 `Doc/Expe/hotword-processing-implementation-2026-07-28.md`。
 - 提升权限运行的 VoiceStick.exe 会锁定链接产物且 `build_win.bat` 杀不掉仍报成功，判据是 exe 时间戳；`ctest` 不在裸 cmd PATH，用 VS BuildTools 全路径。
 - ASR 离线评测/回放 ffmpeg 语料：Ogg 抽帧必须按段表（lacing），「一页一帧」会让腾讯报 4007 断连（表现为 SSL EOF 易误判为网络问题）；用 `asr_bench/wsproto.py::demux_ogg_packets`。评测入口 `run_asr_bench.py --provider all`，结论见 `Doc/Expe/asr-bench-lessons-2026-08-01.md`。
+- 网关 P1 三件事（2026-09-24）：托盘设备子菜单的功能入口门控要写「设备类型×使用模式」——只判 is_xiaomi 曾让网关模式按键映射永远够不着（链路全通但 UI 缺口），已加 StickS3 设备入口 + `ShowGatewayKeymapDialog`（编全局 `[xiaomi.keys]`，与协调器下发同源）；网关软件路由键长按连发 `XiaomiGatewayKeyRepeater`（音量键同款 400/120 节拍、复用 kRepeatTimerId）；连发间隔滑块 `xiaomi_gateway_repeat_interval_ms`（30–300ms，THUMBTRACK 刷标签/ENDTRACK 才落盘），详见 `Doc/Expe/gateway-p1-keymap-ui-repeat-slider-2026-09-24.md`。
 - 火山 nonstream 二遍会把第一遍正确的术语改错（Opus→Auk 稳定复现）；内联热词与 `boosting_table_id` 对二遍最终文本均无效（真实表 ID 实测），唯一兜底是 LLM 精修。评估热词效果必须分清看的是第一遍 partial 还是二遍 final。
 - 热词「没识别到」先查三个运行时事实：`asr_provider`、热词构成、`refine_enabled`。含空格/`.` 的词（Claude Code、CLAUDE.md）进不了腾讯任何热词通道（词表/临时表均拒收），火山侧评分模型同样过滤，唯一兜底是开启 LLM 精修。评测/验收报告里「C++ 策略同向/已实现」这类实现状态断言要回源码核对（2026-08-01 bench 结论 5 与代码不符的先例）。热词改动后用 `run_hotword_acceptance.py`（桌面同款发送回归，基线+desktop 两组即可）验收，不要每次烧 bench 全矩阵；`--report-only` 可从部分结果续报。详见 `Doc/Expe/hotword-recognition-diagnosis-2026-08-11.md`。
 - 火山首 partial 延迟 ≈ 音频全长，与 result_type/enable_nonstream/enable_ddc 无关（5 组消融完全相同），不要再消融这三个参数；腾讯发包节奏测量用 select 零超时（1ms 超时 recv 在 Windows 实际 10–15ms/帧，会严重污染总延迟）。
-- `device_info` 曾超 BLE 通知 MTU 预算被截断（258B JSON，MTU 247 链路截到 244B、桌面 parse failed）——已修复：精简到 235B + `send_state_json` 超预算告警（4B 帧头 + JSON ≤ ATT MTU−3，预算 240B@MTU247）。state 帧仍严禁盲目加字段，新增状态走独立小帧（先例 `encoder_status`）。改 BLE 协议后必须看一次真机连接日志。见 `Doc/Expe/encoder-present-reporting-2026-08-02.md`。
+- Windows 上同一文件里同类操作可能**有的带超时封装、有的是裸 `co_await`**：BLE 订阅路径 state/audio 套了 `WriteCccdBestEffortAsync`（None 击穿缓存）+ `when_any(kSubscribeTimeout)`，而 **OTA 的 `ota_state` 订阅曾是裸 await ⇒ 固件 OTA 永远卡 0%**（固件侧新增的 `subscribe attr=… notify=… (audio=… state=… ota_state=…)` 一行可判定写是否到达设备：到了 ⇒ 卡的是 Windows 回调、通道其实可用）。改「少用路径」时先抄旁边成熟路径的封装。见 `Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md` 追加节。
+- **广播报告是 watcher 的观察，不是设备的实时状态**：Windows 广告 watcher 会送**延迟/复用的报告**（尤其扫描开着时），曾让「已配对设备广播 ⇒ 旧链路已死」的守卫误杀**正在 OTA 的活会话**（网关模式 OTA 每次 +30s / 16% 断链的根因）。拆会话前先确认它真死了：最近 1s 内有入站数据或有固件升级在跑 ⇒ 绝不拆（真重启的设备 1s 内发不出数据，僵尸恢复不受影响）。见 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md` §五。
+- **OTA `stalled` 且 `sent` 恒等于窗口值** ⇒ 流控互等死锁（app 在途窗口 < 固件回传间隔），不是无线问题；随机值才是链路抖动。app×固件流控参数是跨版本契约，改任一侧要在最旧服役固件上真机过 OTA。见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
+- **网关模式设备多连接**（OS-HID + app 两条链路，`BT_NIMBLE_MAX_CONNECTIONS=3`），而 voice_ble 的 `s_connected`/`s_conn_handle`/`current_peer` 都是**单值**——任一链路断连就清掉，曾让侧键预览误显 `No target`；显示层要**落表兜底**（已选目标→当前对端→表内最近目标），别只依赖单值 current_peer。深修（按连接计数）未做。见 `Doc/Expe/gateway-p1-ota-session-2026-09-20.md`。
+- **语音功能「准确率不好」先分层再动手**：DebugAudio 同字节回放腾讯实时 ASR 还原逐轮识别文本（与 text_len 对账校准）+ 帧比例 `frames×40ms/span` 恒 0.5~0.8=设备端尾帧丢弃（音频层问题，别改解析器/匹配），见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md`。
+- **本地小模型换任务必须重跑 harness 选型**（qwen3 纠错 GO ≠ 对齐 GO，赢家 qwen2.5:1.5b）；LLM 兜底用候选约束式（枚举+复验+回退），重叠候选先在预筛层收敛，见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md`。
+- **编码器按钮本身就是录音触发**（与主键同语义），长按会拉起语音识别——切换/菜单这类长按交互**别挂编码器**，放侧键（短按预览 → 3s 内再按轮流切换）。屏幕 135px 且 **LVGL 内嵌字体无 CJK**，UI 文案全英文；电量标签在电池壳下方 y≈20–38，顶部加行要避开（同行为佳、字号对齐）。
+- **本机会整机冻结数小时**（实测日志时间戳跳变 3h18m），冻结期一切「停住/超时」观测不可信；定位「卡住」类问题先用日志时间戳排除冻结，再判断是否真停。另：多日日志用「时:分」筛行会命中历史天同刻行，须同时确认日期/行号。
+- `device_info`/初始状态帧串曾超 BLE 通知 MTU 预算被截断——**两轮修复**：①（早期）把 device_info 从 258B 精简到 235B + 超预算告警；②（2026-09-20 真根因，commit `cc82fb18`）**订阅时 MTU 还没协商（`att_mtu=23`，预算仅 16B JSON），三个初始帧全被截断 ⇒ 对端活性证明超时 ⇒ 判僵尸 ⇒ 网关切换后目标机 14–26s 才恢复**；现改为「MTU≤23 时挂起帧串，`BLE_GAP_EVENT_MTU` 到了再推」（只晚 33–48ms，+1.2s 兜底定时器）。真机：恢复 14–26s → **2.5s**，截断告警归零。判据与通用规则见 §3.15 与 `Doc/Expe/ble-state-burst-mtu-truncation-2026-09-20.md`
 - `VoiceStickUi` 接口有三处实现（`Win32App`、`core_tests.cc` 与 `integration_tests.cc` 的 FakeUi），加纯虚函数必须三处同改；设置对话框控件一律创建、未入 `layout_` 表的由 BuildControls 隐藏但 Load/Save 照常读写（整段隐藏不丢配置），区块前置 `separator()` 要挂同一可见性谓词。
 - 首次 GitHub Release / fork 迁移发布全流程（坑：`gh release view` 无 Release 即炸、MSI 上传与网站部署竞态、`gh` 不在 Bash PATH、PowerShell 读 octet-stream 给字节数组、CI 固件与本地固件体积不同），见 `Doc/Expe/release-v236-first-github-release-2026-08-10.md`。
 - macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须按 `peripheral.state` 分支 connect——对断开外设空发 discoverServices 无任何回调（静默卡死），判据是「恢复日志后 didDiscoverServices 静默」；另有「闭包注入读到的 config 快照陈旧致配对后 RC 永不连接」（判据：F5 tap installed 但零 `connected RC-` 日志）。CLT-only 机器 `swift test` 不可用（XCTest/swift-testing 均无），测试用 executable runner。详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
@@ -474,3 +634,26 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 - macOS 拦截「键盘/消费控制类」蓝牙 HID 按键做逐键自定义：纯用户态 `IOHIDDeviceOpen`+`kIOHIDOptionsTypeSeizeDevice` 被 `kIOReturnNotPermitted`（0xe00002c1）拒绝（app 内含 matching 回调抢占时机同样被拒，结论已加固），Karabiner 式独占不可行（其真实路线是内核/DriverKit 虚拟 HID 驱动）。spike 探针 `scripts/ref/hid_seize_probe.swift`，详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md`。
 - 智能热词回收池词挂错"原分类"（数学词全标语文）：逐出记录的是"当时所在分类"而非语义归属，回归目标已改为当前活跃分类（切换决策后执行）；日志 `evicted 'X' to make room for 'Y'` 连续密集 + 同语义域 = 批量划词进错分类连环逐出。单词语义判定不可依赖关键词表（领域术语覆盖不全）。跑 Windows 单测前先结束运行中的 VoiceStick.exe（时序断言偶发失败且失败点漂移）。详见 `Doc/Expe/smart-hotword-pool-reclaim-2026-09-26.md`。
 - 小米遥控器 macOS 按键自定义（二期拦截层，2026-09-04 重构定稿）：**IOHID 观察驱动处置 + tap 只吞除原生事件**——处置（inject/suppress）挂 IOHID value 回调（variable 元素 usage 精确 + page==0x07 过滤 vendor 数据流），因 0xF1(back)/0x65(menu) 在 macOS 不产生 keyDown CGEvent，挂 tap 的旧「锚点+时序关联」架构对它们永远静默；音量键原生事件是 systemDefined（subtype=8，data1=(keyCode<<16)|0xa00 down/0xb00 up），非 keyDown。**「按键报告连 IOHID 层都收不到」先重配对**（蓝牙设置忽略设备 + 主页菜单长按重配对即恢复全键报告；判据：连系统音量 OSD 都不变）。TCC 权限结论须以 `open` 启动形态复核（终端直接执行 .app 二进制时 TCC 归终端身份），`log stream` 可见 `kTCCServiceListenEvent auth_value` 判定明细。详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节。
+- **macOS 拦截键盘电源键（usage 0x66，2026-10-19 真机验收）**：原生事件是 systemDefined **双形态**——subtype 1 首事件（NX_SUBTYPE_POWER_KEY）+ aux-control subtype 8 的 NX_POWER_KEY(6) down/up 对（同音量 special-key 通道，不产生 keyDown）；单次按下多形态 ⇒ 吞除必须**非消耗窗口期**（一次性消费标记会漏吞后续形态，电源对话框照弹），down 入闩/up 出闩配对长按超窗。常量实证 Apple `ev_keymap.h`/`IOLLEvent.h`（CLT SDK 缺该头，用 phracker/MacOSX-SDKs dump 查证 + PowerKey 开源交叉验证）。网关路由对齐 Windows has_mapping 口径（native → passthrough，有映射 → software；系统电源语义不可合成 naturalSpec=nil）。详见 `Doc/Expe/macos-power-key-dual-form-system-defined-2026-10-19.md`。
+- LL 键盘钩子吞掉的键在 Raw Input 里 MAKE/BREAK 双双不存在，钩子内也等不到本次 WM_INPUT（RIT 同步）；要设备归属证据只能放行取 BREAK 沿（hDevice），决策后置到 keyup——先吞后验/时序窗/信用制全被证伪，见 §3.13 与 `Doc/Expe/ll-hook-swallow-device-evidence-deadlock-2026-09-07.md`。
+- Windows 本地 LLM 精修落地五坑（2026-09-09）：①**assert 里写数据准备调用**（解析/读文件/存在性）在 NDEBUG 下整式 `((void)0)` 吞掉、函数根本不执行——Release 假 FAIL + exit 0 假绿而 Debug 全绿（判据：FAIL 打印但 exit 0，或函数内探针零输出），数据准备必须显式 if+失败计数+abort，Release 首跑必读输出文本；②第三方子项目 `option(BUILD_SHARED_LIBS ON)` 经 CMakeCache 回灌把本项目未指定类型的 add_library 污染成 DLL（判据：LNK2019 大面积缺符号+产物冒 dll），顶部 FORCE OFF + 显式 STATIC 双保险；③ggml 在 Debug(/Od) 下慢 20~40 倍（700ms/token），性能验证必须 RelWithDebInfo 独立目录，性能断言 Debug 下 SKIP；llama.cpp b10868 附带 tokenize 负返回=所需长度、sampler idx 传 -1、LU8 需 /Zc:char8_t- 三坑；④Git Bash 调 cmd 构建：`cmd //c` + 8.3 短路径 + VS cmake 全路径 + 先验 VCVARS_OK 再验产物时间戳，链接 LNK1104=运行中 exe 锁文件先杀进程；⑤多文件改动提交前必须 `git diff --stat` 全量审计+新键两侧 grep 对数（本次 localization.cc 表条目落盘丢失致 kStringCount 越界 UB）。详见 `Doc/Expe/windows-local-llm-refine-build-test-traps-2026-09-09.md`。
+- 方案 A 真机首验两缺陷（2026-09-11）：①「auto_switch 切默认录音设备 + 本机麦直供虚拟麦」架构里采集器**必须钉住切换前端点**（`SetPreferredEndpointId`），事后按默认设备解析会采到自己渲染的虚拟麦回环（判据：`auto_switch end` 之后才 `capturing from default microphone` 且 WeType 音量条零动）；②**协调器测试喂带 hardware 的 device_info 事件 = 触发 SavePairedDeviceInfo 落盘真实 config.toml**——未知设备未找到分支曾把测试 Defaults 整份覆盖用户配置（凭据尽失+配对地址清零致设备永远"正在连接中"，判据：启动日志缺 `Queueing paired device connect`），需要小米身份的在测试 config seed paired_devices 条目替代喂事件；全单测前后 md5 config.toml 是防回归的硬验证。详见 `Doc/Expe/wechat-click-toggle-acceptance-defects-2026-09-11.md`。（当日修订：①的绕行架构整体废弃，钉扎链已删，见下一条。）
+- 方案 A 最终修订（2026-09-11/12）：小米 click/hold 会话**直连默认麦克风**——本端零采集/零 auto_switch/零 CABLE 渲染；**WeType 语音热键只能启动/重启会话，keyup/ESC 无收尾作用，面板唯一关闭路径=鼠标点击 detach**——启动击按住流限时 2.5s 自动松开（**持续 repeats 会让用户任何关面板尝试被下一个 keydown 立即重新弹开**——「浮窗点关又弹出」）；停止击（方案 B）=SendUp+两次左键点击（1.5s/3s，detach 链约 1.8s 需补一次）；文字提交靠「松开时语音仍活跃」→**说完即点停止**；「新按住提交」虽可无条件提交但会重开无 composition 的空会话、浮窗残留只能手动关，故弃用。旧管道「keyup 后拆除」曾永久卡死 WeType TSF 宿主（判据：两进程诊断日志同时停笔、无 `terminated composition`/无 `abort reason=`；TSF 宿主 pid=焦点应用进程，卡死只影响该应用，换记事本可隔离验证）。给第三方语音输入法供音优先直接采真实设备（物理同构），CABLE 绕行只在音频源头非 Windows 设备（BLE 流）时必要。详见 `Doc/Expe/wetype-finalize-wedge-cable-teardown-2026-09-11.md`。
+- 重启后已配对小米遥控器永久卡「正在连接」（2026-09-14，66796df3）：开机自启直连失败（重启后蓝牙栈未就绪，`polls=40 status=disconnected`+`max_pdu_size=23` 全程死链，cached 发现假成功，CCCD 订阅 2.5s 超时）后**零重试**——扫描路径救不了（小米被系统 HID 连上即停广播），主动重连队列唯一入队口在广播分支。修复=fail lambda 统一经 `BleProtocol::PlanReconnectAfterConnectFailure` 纯函数决策入队心跳兜底直连（取消/忘记拦截，5s 退避）。判连接健康先看 max_pdu_size 协商没协商（23=死链 247=活链）；重连机制审计要覆盖失败路径而非只覆盖断连路径。重启场景真机验收待下次重启（预期 `proactive reconnect queued`→`proactive reconnect`→`connected` 日志序列）。详见 `Doc/Expe/ble-startup-connect-failure-permanent-stuck-2026-09-14.md`。
+- 按键映射「录入」完全无反应：日志只有 `ShortcutCapture: started`、没有 `first keyboard event` = 按键根本没到系统层，**不是捕获代码缺陷**（机制层已 spike + 真机注入双重证无罪，勿再怀疑钩子/链序/模态循环）。两种原因：①前台是提权窗口被 UIPI 隔离（点普通窗口重试）；②按的是 RC003 批次返回键（WUDF 丢弃，系统零事件，只能改用手动输入绑定）。3 秒零事件提示已双因覆盖并落日志（0f9c4fbb），详见 `Doc/Plan/xiaomi-keymap-hotkey-capture-issue.md` §0.1。
+- 小米网关「语音键正常、其他按键全死」先查 HID 侧不要查音频：语音键走 ATVV Control 帧、其他键走 HOGP HID Report，两条独立通道互相掩盖。四处根因（只认 1/7 个带 notify 的 Report 特征、CCCD 靠「特征值+1」猜被拒、HOGP 只发第一条 slave 链路、**Windows 无 OS 级配对节点**）见 §1.10 与 `Doc/Expe/xiaomi-gateway-voice-key-and-hid-passthrough-2026-09-18.md`；判据：`BTHPORT` 有密钥而 `Enum\BTHLE` 无节点 = 缺系统配对（app 配对时已会自动补，见 §1.10）。
+- 固件里给 StreamBuffer/Queue 之类 FreeRTOS 对象配大缓冲，必须用 `...WithCaps(..., MALLOC_CAP_SPIRAM)`：默认 `pvPortMalloc` 被 IDF 限死在内部 RAM，`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` 管不着它（见 §1.6）。
+- 设备重启后「app 显示已连接但语音静默失效」：判据是 `state subscribe status=Success` 后长时间零入站 notify（订阅假成功、设备侧 `state_sub=0`）。**真根因是 Windows 缓存 CCCD 值导致这次写被本地短路**（`Success` 只花十几毫秒；设备串口 `send_state_json gated: state_sub=0` 是决定性判据），修复=订阅前先写 `None` 再写 `Notify`；配套连接期活性证明 + 僵尸后按地址主动直连 + 有界自愈梯度；**自愈路径绝不可 unpair**（会删 `Enum\BTHLE` 节点弄死 HOGP 按键直通，且 `PairAsync` 在设备已连上时必失败 status=19），见 §3.14、`Doc/Expe/ble-cccd-cache-subscription-not-delivered-2026-09-19.md` 与 `Doc/Expe/ble-zombie-self-heal-2026-09-19.md`。
+- **本机 macOS 桌面端构建两个前缀**：`https_proxy=http://127.0.0.1:5782 http_proxy=http://127.0.0.1:5782`（GitHub 依赖直连不通）+ `VOICESTICK_ARCHS=arm64`（CLT macOS 27 的 `libswiftCompatibility56/Packs.a` 无 x86_64 slice，x86_64 链接必死，默认 universal 仅发布机构建）；`swift build` 成功但脚本取不到产物＝新工具链产物在 `.build-<arch>/out/Products/<Config>/`，旧 `<triple>/<config>` 布局已废，取产物路径必须双布局探测；「单架构编译过、另一架构报 cannot find type」先查是否边构建边改文件的竞态（文件 mtime vs 编译计划生成时刻），别先怀疑代码。详见 `Doc/Expe/macos-clt27-build-chain-traps-2026-09-22.md`。
+- **macOS 无 Apple Developer 固定 TCC 身份（自签证书）**：`build-macos.sh` 已内置 Developer ID → 自签证书（CN `"VoiceStick Local Code Signing"`，pem 在 `~/.voicestick-sign/`）→ ad-hoc 三级签名，蓝牙/输入监控/辅助功能授权一次跨编译保持（2026-09-22 真机验证通过）。排障链：`errSecInternalComponent`＝私钥 partition list 未授权 codesign（先删旧证书项再 `-T /usr/bin/codesign` 重导，set-key-partition-list 需钥匙串密码不可行）；重建证书只加 EKU=codeSigning/KU=digitalSignature，**勿加 Basic Constraints**（加了被 find-identity 判 invalid）；新版 macOS `find-identity` 不列自签身份（0 valid 属正常），探测用 `find-certificate`/`find-key`；空密码 p12 被 `security import` 拒（MAC verification failed）；~~自签只认登录钥匙串~~（**2026-10-02 修正**：登录钥匙串在无人值守下 codesign 首访私钥必弹 SecurityAgent ACL 授权且 `-A` 也拦、set-key-partition-list 要用户密码——死路；正确配方＝自建钥匙串（密码已知可非交互 set-key-partition-list）+ 签名时**显式 `--keychain`**，且删除登录钥匙串同 CN 残留防误命中挂死；工程化 env `VOICESTICK_CODESIGN_KEYCHAIN`，判据＝codesign 0 CPU 挂起 + SecurityAgent 在场）。详见 `Doc/Expe/xiaomi-remote-macos-hid-seize-not-permitted-2026-09-03.md` 追加节（2026-09-22 与 2026-10-02 两节）。
+- **MSI 全新安装启动即报「找不到 sherpa-onnx-c-api.dll」（2026-09-27）**：v2.4.0 起所有 MSI 都没打包本机 ASR 运行时依赖（`sherpa-onnx-c-api.dll` + 二级依赖 `onnxruntime.dll`）——打包清单手工维护，三道关口（wxs 组件/bat 检查/发布门禁）都只认固定文件表；老机器靠旧目录散落 DLL 残留掩盖（MSI 卸载只删组件登记文件）。修复=补两组件 + `verify_msi_contents.ps1` 构建后枚举 MSI File 表做内容门禁（判据：老机器正常、全新安装必现缺文件 ⇒ 先怀疑历史产物同缺被环境掩盖）；另 signtool `0x80093102` 随机命中文件 = Defender 实时扫描钩 SignerSign 的瞬态竞态，签名必须带重试。详见 `Doc/Expe/msi-missing-sherpa-dll-defender-sign-flake-2026-09-27.md`。
+
+- **仅固件轮发布后静态网页三层坑（2026-09-27）**：①deploy-website.yml 不自动跑，Pages/COS 网页停在旧版，且 appcast 依赖 MSI 资产——补网页前必须先补传 MSI；②COS 整站构建必须 PowerShell 跑 `npm run build -- --base=/`（vite.config 默认 base=/VoiceStickPlus/ 为 Pages 设计，裸构建产出全资源 404 白屏；MSYS 下 `/` 被转成 Git 安装路径）；③`website/public/firmware/latest/` 残留旧 bin 会被打进 dist，`publish_cos.py firmware` 只覆盖 manifest 不清理——整站上传后必须显式删 `latest/` 旧版本 bin。判据：资源 URL 带 `/VoiceStickPlus/` 前缀＝base 错误；页面正常但下载指旧版＝旧 bundle（版本号经 `VERSION?raw` 构建时内联）；验证 index.html 引用必须 grep `[^"]*assets/...` 全路径（`assets/...` 模式截前缀漏检）。完整配方与终验六点见 `Doc/Expe/cos-website-fullsite-sync-traps-2026-09-27.md`。
+
+- **JS 模板写文件的转义陷阱家族（2026-10-09）**：反引号关模板、反斜杠+引号剥一层、换行转义变真行、插入块缺尾换行粘邻行——判据=Expected 型 JS 报错、C2001、1+1 异常 diff、RC=0 空转；修法=chr 圣经+write 先行+双门前置；生成代码两轮调不通即整段人写。详见 Doc/Expe/js-template-escape-trap-family-2026-10-09.md。
+- **macOS「配置保存后重启自定义全丢」/「网关按键全无作用」（2026-10-12 四断链）**：判据=序列化文本回读丢 `[output].target`（`AppConfig.parse` 静默回落 `loadLegacy` 不认 `[表]` 段；根因 `tomlNumber` 整数形态 Double `3`/`80` 撞 TOMLKit 严格 `.float` 解码）+ 连接日志整批 `gateway_keymap_set ... skipped` 且此后该 label 零成功（didConnect 早于控制特征就绪、无补推，真机 182/182）+ StickS3 子菜单无「按键映射…」（网关入口只挂在 RC 条目分支）。修复=读侧 `LenientDouble` + 写侧规范 float 双保险、`onControlChannelReady` 就绪补推、根 `[buttons]` 全局表与网关入口，见 `Doc/Expe/mac-gateway-keymap-restore-2026-10-12.md`。
+- **改 Windows core 纯逻辑但本机（macOS）无法跑 build_win.bat**：`pcm_postprocessor.cc`/`ima_adpcm_decoder.cc` 等无 Win32 依赖的 .cc 可直接 `clang++ -std=c++20 -fsyntax-only` 语法检查，并本地链接个小 main 与 Python 镜像 golden 对拍（本次 31104 样本 bit 级一致，检出力等同 ctest 对拍 2）。clang/MSVC 差异边界预存：`xiaomi_atvv_session.h` 嵌套 `Options = {}` 默认实参 clang 严格拒绝（MSVC 接受，勿误判改坏）；`localtime_s` MSVC 专属；initializer_list 喂 span 要显式 vector。另：**方案里的数值测试期望值先用常量对算一遍**（本次方案写「-40dBFS 拉起至 -6dBFS」，MAX_GAIN=+20dB 数学上只能到 ≈-20dBFS，照抄会把三端断言全写错）；DSP 链「分帧流式 == 整段一次」断言必红（平滑按 process 调用粒度作用，正确姿势=reset 后流式 vs 全新实例流式）。详见 `Doc/Expe/xiaomi-direct-desktop-hpf-agc-lessons-2026-10-13.md`。
+- **macOS 玻璃材质「不通透/发虚/不像控件」三分流（2026-10-18）**：不通透=材质错（VEV 全磨砂无背景自适应，要用 NSGlassEffectView）；发虚=`_subvariant`/`_scrimState` KVC 反噬 backdrop scale 0.5→0.25（私有属性多为渲染结果非开关，别写）；不像宣传图控件=`style` 没切 `.clear`（默认 `.regular` 是菜单磨砂性格）。锁屏下玻璃截图全黑（backdrop 采样被门控），评估必须解锁后做。详见 §3.16 与 `Doc/Expe/macos-overlay-liquid-glass-clear-style-2026-10-18.md`。
+- **本地精修/ASR 选型先看形态再看模型（2026-10-28）**：判据=整句重写后 CER 不降反升（小模型改写正确文本、代词翻转）⇒ 形态错，换 editform 编辑指令+守卫；本地 ASR 公开榜排名无效（whisper 小档真机音频 CER≥16%），认 SenseVoice int8（40ms/条）。数据与复现：`Doc/Test/local-fullstack-eval-2026-10-28.md`、`scripts/local_model_eval/`。
+- **资源持有类对象绝不进 weak + 生产构造测试盲区（2026-10-29）**：macOS 本地 ASR 上线即卡 listening——引擎只被 ctx weak 持有，start 返回即释放，sendOggOpusChunk 守卫静默丢音频；状态机单测全走 engineOverride 注入零覆盖该路径。判据=回放 DebugAudio 会话（Tools/AsrReplayCli）零回调、日志零记录。另：git 走代理被断时用 SwiftPM 全局缓存镜像 + GIT_CONFIG_COUNT 注入 insteadOf 离线构建（mirror 目录带 .git、base 不带）。详见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md` 追加二。
+- **语音输入 targeted 替换「命中却零变化」（2026-10-29）**：AX 选区/光标写入在 Chromium 系目标经 renderer 异步生效，写后立即读回必拿旧值 → 验证式注入误判「读回不符」放弃；修=读回/终验小步轮询。律：**平台写成功 ≠ 已落地**，带验证的注入必须轮询确认；验收必须覆盖 Electron/浏览器目标。判据：`voice_targeted action=...` 后零日志=执行环节静默失败。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。

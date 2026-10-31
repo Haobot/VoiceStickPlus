@@ -1,5 +1,6 @@
 #include "xiaomi_atvv_session.h"
 
+#include <algorithm>
 #include <optional>
 #include <string_view>
 
@@ -20,7 +21,8 @@ StateEvent MakePrimaryButtonEvent(std::string_view event,
 } // namespace
 
 XiaomiAtvvSession::XiaomiAtvvSession(Options options)
-    : options_(options), postprocessor_(options.gain_db) {}
+    : options_(options),
+      postprocessor_(options.gain_db, options.hpf, options.agc) {}
 
 std::vector<XiaomiAtvvAction> XiaomiAtvvSession::Start(std::int64_t now_ms) {
     std::vector<XiaomiAtvvAction> actions;
@@ -49,10 +51,12 @@ std::vector<XiaomiAtvvAction> XiaomiAtvvSession::Stop(std::int64_t now_ms) {
     press_started_at_ = 0;
     stop_received_at_ = 0;
     double_click_deadline_ = 0;
+    wechat_click_active_ = false;
     decoder_.Reset(0, 0);
     encoder_.Reset();
     accumulator_.Reset();
     slicer_.Reset();
+    postprocessor_.Reset();
     pending_payloads_.clear();
     current_session_id_ = 0;
     next_seq_ = 1;
@@ -133,7 +137,25 @@ std::vector<XiaomiAtvvAction> XiaomiAtvvSession::HandleControlCommand(
             // 注意不清 stream_active_：Audio 与 Control 是两条独立特征，
             // STOP 后 150ms 宽限内的音频尾包仍须接收（FinalizeStream 才清）。
             stop_received_at_ = now_ms;
-            if (state_ == XiaomiAtvvSessionState::kTapPending) {
+            if (state_ == XiaomiAtvvSessionState::kTapPending && options_.wechat_click_toggle) {
+                // 方案 A：松开沿合成 click toggle。启动击分配新 id、停止击复用同 id
+                // （协调器停止匹配用）；不开双击窗（第二击就是下一次 toggle），设
+                // 重开拒绝窗防遥控器抖动。
+                DiscardPressBuffer();
+                StateEvent click = MakePrimaryButtonEvent("button_click", std::nullopt);
+                if (!wechat_click_active_) {
+                    wechat_click_session_id_ = next_session_id_++;
+                    wechat_click_active_ = true;
+                } else {
+                    wechat_click_active_ = false;
+                }
+                click.session_id = wechat_click_session_id_;
+                click.duration_ms = static_cast<std::uint32_t>(
+                    std::max<std::int64_t>(now_ms - press_started_at_, 1));
+                actions.push_back(XiaomiAtvvStateEvent{click});
+                state_ = XiaomiAtvvSessionState::kReady;
+                reject_reopen_until_ = now_ms + kReopenRejectMs;
+            } else if (state_ == XiaomiAtvvSessionState::kTapPending) {
                 DiscardPressBuffer();
                 if (press_suppressed_) {
                     // 被双击消费的第二次按下：松开不再发事件。
@@ -194,8 +216,10 @@ std::vector<XiaomiAtvvAction> XiaomiAtvvSession::Tick(std::int64_t now_ms) {
             }
             break;
         case XiaomiAtvvSessionState::kTapPending:
-            // 按住 ≥300ms 确认长按；被双击消费的按下不确认。
-            if (!press_suppressed_ && now_ms - press_started_at_ >= kHoldThresholdMs) {
+            // 按住 ≥300ms 确认长按；被双击消费的按下不确认。方案 A 的
+            // wechat_click_toggle 无长按语义（长按也是一次 click），跳过确认。
+            if (!press_suppressed_ && !options_.wechat_click_toggle &&
+                now_ms - press_started_at_ >= kHoldThresholdMs) {
                 ConfirmLongPress(actions);
             }
             break;
@@ -267,6 +291,7 @@ void XiaomiAtvvSession::HardResetStream() {
     decoder_.Reset(0, 0);
     accumulator_.Reset();
     slicer_.Reset();
+    postprocessor_.Reset();
     pending_payloads_.clear();
     stream_active_ = true;
 }
@@ -289,8 +314,10 @@ void XiaomiAtvvSession::BeginPress(std::vector<XiaomiAtvvAction>& actions,
         // 编码器状态被人为切断）。
         encoder_.Reset();
     }
-    if (!suppressed && options_.interaction_mode == InteractionMode::kClickToTalk) {
+    if (!suppressed && options_.interaction_mode == InteractionMode::kClickToTalk &&
+        !options_.wechat_click_toggle) {
         // click_to_talk：MIC_OPEN 立即发 button_down（协调器按 down/up 处理）。
+        // wechat_click_toggle 例外：等 STOP 合成 button_click（方案 A）。
         current_session_id_ = next_session_id_++;
         next_seq_ = 1;
         session_frame_started_ = false;
@@ -304,6 +331,9 @@ void XiaomiAtvvSession::BeginPress(std::vector<XiaomiAtvvAction>& actions,
 
 void XiaomiAtvvSession::EmitPcmFrame(std::vector<XiaomiAtvvAction>& actions,
                                      std::span<const std::int16_t> pcm) {
+    // 方案 A：wechat click toggle 会话的音频由桌面端本机麦克风供给，
+    // 遥控器 ATVV 音频链路弃用——按住期间的音频帧直接丢弃。
+    if (options_.wechat_click_toggle) return;
     const auto processed = postprocessor_.Process(pcm);
     std::uint8_t buffer[1500];  // 32kbps × 40ms ≈ 160B，余量充足
     const auto result = encoder_.Encode(processed.data(), processed.size(), buffer, sizeof(buffer));

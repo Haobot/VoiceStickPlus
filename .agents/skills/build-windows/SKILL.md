@@ -10,6 +10,28 @@ description: >-
 
 在 Visual Studio 2022 BuildTools + Ninja 环境下构建 Windows 端，并运行 CTest。
 
+## ⚠️ 增量构建的两个坑（2026-09-20 真机踩坑，务必先读）
+
+1. **中文环境下改 .h 不会触发重编**：MSVC 输出 `注意: 包含文件:` 而非 `Note: including file:`，
+   CMake 解析不了这个前缀 ⇒ **Ninja 从不记录头文件依赖** ⇒ 改了头文件（加字段/虚函数）后旧的
+   `.obj` 照样参与链接。症状极具迷惑性：编译"成功"，但测试/运行期出现**确定性假失败**
+   （实测：给 UI 接口加一个纯虚函数后 `core_tests` 报 `ui.show_listening_count == 1` 断言失败，
+   真实原因是旧 TU 的 vtable 错位）。
+   **更糟的变体（2026-09-20 夜实测）**：依赖表一旦不可信，**改 .cc 也可能不重编**——新增
+   `VoiceStickCoordinator::SendGatewayTargetInfo` 后构建"成功"却报 `LNK2019 无法解析的外部符号`，
+   手工 touch 该 .cc 立刻通过；同一晚还出现过测试二进制未重编导致 `FakeBleCentral 抽象类` 报错
+   在"成功"的构建里被掩盖。**结论：这套构建的依赖判定整体不可信，别做选择性重编。**
+   **做法**：构建前 `set VSLANG=1033`，并且**每次构建前 touch 全部自有源码**（src + tests 的 *.cc/*.h）——
+   ```powershell
+   Get-ChildItem desktop\windows\src,desktop\windows\tests -Recurse -Include *.cc,*.h |
+       ForEach-Object { $_.LastWriteTime = Get-Date }
+   ```
+   全量重编我们的 TU 约 3-5 分钟，依赖缓存（WinRT 投影、llama.cpp）不受影响；**比"省 3 分钟但
+   交付一个没生效的二进制"便宜得多**——今晚为此浪费了 3 轮构建 + 一次差点漏掉的测试回归。
+2. **链接失败会被误判为成功**：`LNK1104 无法打开 VoiceStick.exe` 的根因是 **VoiceStick.exe 正在运行**
+   （文件被占用）。任何自建增量脚本都必须先 `taskkill /f /im VoiceStick.exe`，并且**校验 exe 时间戳**
+   或 `%ERRORLEVEL%`——只看"没有报错输出"会把没生效的构建当成成功（实测连续两次改动都没进二进制）。
+
 ## 前置环境
 
 - Visual Studio 2022（含 C++ 工作负载，或 BuildTools）

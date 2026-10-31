@@ -1,9 +1,16 @@
 import AppKit
 import Foundation
+import VoiceStickCore
 
 final class InputInjector {
+    /// 无辅助功能权限时的回调（CGEvent 键盘注入会被系统静默丢弃；由协调器接 UI 提示）。
+    /// 注意：独立 .app 的 TCC 身份与终端不同——从终端跑裸二进制会寄生终端的授权，
+    /// 掩盖权限缺失，验收注入类功能必须用最终 .app 形态。
+    var onAccessibilityPermissionMissing: (() -> Void)?
+
     func paste(text: String, pressEnter: Bool) {
         guard !text.isEmpty else { return }
+        guard requireAccessibility("paste") else { return }
 
         let pasteboard = NSPasteboard.general
         let previousItems = pasteboard.pasteboardItems?.map(PasteboardItemSnapshot.init)
@@ -32,6 +39,15 @@ final class InputInjector {
         }
     }
 
+    /// CGEvent 键盘注入需要 macOS 辅助功能权限（Windows SendInput 无对应要求）；
+    /// 无权限时事件被系统静默丢弃——记日志并上报，不做任何注入动作。
+    private func requireAccessibility(_ action: String) -> Bool {
+        guard !AXIsProcessTrusted() else { return true }
+        NSLog("InputInjector \(action) blocked: Accessibility permission not granted")
+        onAccessibilityPermissionMissing?()
+        return false
+    }
+
     private func sendCommandV() {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }
         let commandDown = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: true)
@@ -56,6 +72,7 @@ final class InputInjector {
     }
 
     func sendEnter() {
+        guard requireAccessibility("enter") else { return }
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: false)
@@ -63,6 +80,113 @@ final class InputInjector {
         keyUp?.flags = []
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
+    }
+
+    /// 注入一组按键（对齐 Windows InputInjector::SendKeyCombo）：修饰键 + 主键一次点按。
+    /// 音量键走 NX_SYSDEFINED 媒体键事件；f21-f24 无 macOS 键码，忽略注入。
+    func sendKeyCombo(_ spec: KeySpec) {
+        if let mediaKey = spec.mediaKey {
+            sendMediaKey(mediaKey)
+            return
+        }
+        guard requireAccessibility("key \(spec.displayText)") else { return }
+        guard let keyCode = spec.keyCode else {
+            NSLog("InputInjector key without macOS keycode ignored: \(spec.displayText)")
+            return
+        }
+
+        var flags = CGEventFlags()
+        if spec.control { flags.insert(.maskControl) }
+        if spec.option { flags.insert(.maskAlternate) }
+        if spec.shift { flags.insert(.maskShift) }
+        if spec.command { flags.insert(.maskCommand) }
+
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        keyDown?.flags = flags
+        keyUp?.flags = flags
+        keyDown?.post(tap: .cghidEventTap)
+        keyUp?.post(tap: .cghidEventTap)
+    }
+
+    func sendArrowUp() {
+        sendKeyCombo(KeySpec(keyCode: 126, mediaKey: nil, displayText: "Up"))
+    }
+
+    func sendArrowDown() {
+        sendKeyCombo(KeySpec(keyCode: 125, mediaKey: nil, displayText: "Down"))
+    }
+
+    // ---- 体感鼠标注入（对齐 Windows MoveMouse/ClickLeftButton）----
+
+    /// 相对移动光标（像素）。Windows dy 正值向下；CGEventDeltaY 正值向上，注入前取反。
+    /// delta 字段注入保留原始相对位移（不经过系统指针加速），手感与 Windows 一致；
+    /// .mouseMoved 事件的位置参数被 HID 系统忽略，以 delta 合成当前位置的相对移动。
+    func moveMouse(dx: Int, dy: Int) {
+        guard dx != 0 || dy != 0 else { return }
+        guard requireAccessibility("mouse move") else { return }
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        guard let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: .zero,
+            mouseButton: .center
+        ) else { return }
+        event.setIntegerValueField(.mouseEventDeltaX, value: Int64(dx))
+        event.setIntegerValueField(.mouseEventDeltaY, value: Int64(-dy))
+        event.post(tap: .cghidEventTap)
+    }
+
+    /// 在当前光标位置点按鼠标左键（体感态主键语义）。NSEvent.mouseLocation 为
+    /// AppKit 全局坐标（主屏左下原点），CG 事件坐标为主屏左上原点，翻转 Y。
+    func clickLeftButton() {
+        guard requireAccessibility("mouse click") else { return }
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        let mouseLocation = NSEvent.mouseLocation
+        let mainHeight = CGDisplayBounds(CGMainDisplayID()).height
+        let position = CGPoint(x: mouseLocation.x, y: mainHeight - mouseLocation.y)
+        let down = CGEvent(
+            mouseEventSource: source,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: position,
+            mouseButton: .left
+        )
+        let up = CGEvent(
+            mouseEventSource: source,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: position,
+            mouseButton: .left
+        )
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
+
+    /// 媒体键（音量增/减/静音）：NSEvent systemDefined，subtype 8，data1 = keyCode<<16 | down<<8。
+    /// keyCode：0=音量增，1=音量减，7=静音。
+    private func sendMediaKey(_ key: KeySpec.MediaKey) {
+        let rawCode: Int
+        switch key {
+        case .volumeUp: rawCode = 0
+        case .volumeDown: rawCode = 1
+        case .volumeMute: rawCode = 7
+        }
+        for keyDown in [true, false] {
+            let data1 = (rawCode << 16) | ((keyDown ? 0x0A : 0x0B) << 8)
+            if let event = NSEvent.otherEvent(
+                with: .systemDefined,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: 8,
+                data1: data1,
+                data2: -1
+            ) {
+                event.cgEvent?.post(tap: .cghidEventTap)
+            }
+        }
     }
 
     private func sendReturn() {

@@ -66,8 +66,11 @@ private:
     FlashMode mode_ = FlashMode::kFullMerged;
     int baud_ = 921600;
 
-    std::unique_ptr<FlashTool> flash_tool_;
-    std::unique_ptr<IFlashProcessRunner> runner_;
+    // B1 生命周期：worker 线程经 FlashThreadCtx 持有这两者的共享引用（见 .cc），
+    // 对话框关窗/析构的 5s 有界等待超时后（esptool 子进程卡死）可安全释放本侧引用，
+    // worker 跑完 Run() 对象才真正析构——原独占持有下超时即 use-after-free。
+    std::shared_ptr<FlashTool> flash_tool_;
+    std::shared_ptr<IFlashProcessRunner> runner_;
     HANDLE flash_thread_ = nullptr;
     bool flashing_ = false;
 

@@ -368,6 +368,173 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+/* ---------- 下载页（#/download） ---------- */
+
+.downloads {
+  background: var(--paper);
+}
+
+.downloads-inner {
+  padding-top: clamp(40px, 7vw, 76px);
+  padding-bottom: clamp(40px, 7vw, 76px);
+}
+
+.downloads-inner > h1 {
+  margin: 0;
+}
+
+.downloads-header .lead {
+  margin-top: 20px;
+}
+
+.downloads-github {
+  display: inline-block;
+  margin-top: 12px;
+  color: var(--accent-dark);
+  font-weight: 650;
+}
+
+.downloads-status {
+  margin-top: 40px;
+  color: var(--muted);
+  font-size: 17px;
+}
+
+.downloads-status.error {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.downloads-card {
+  margin-top: 36px;
+  padding: clamp(18px, 3vw, 30px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.downloads-card-head h2 {
+  font-size: clamp(20px, 2.6vw, 28px);
+}
+
+.downloads-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.downloads-badge {
+  padding: 2px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent-dark);
+  font-weight: 650;
+}
+
+.downloads-minfw {
+  color: var(--muted);
+}
+
+.downloads-group {
+  margin-top: 26px;
+}
+
+.downloads-group h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.downloads-assets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.downloads-assets li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.downloads-assets li > .button {
+  min-height: 40px;
+  font-size: 15px;
+}
+
+.downloads-assets.compact li > .button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.downloads-asset-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.downloads-checksum {
+  color: var(--accent-dark);
+  font-weight: 650;
+}
+
+.downloads-history {
+  margin-top: 44px;
+}
+
+.downloads-release {
+  border-bottom: 1px solid var(--line);
+}
+
+.downloads-release summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 4px;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.downloads-release-version {
+  font-weight: 720;
+}
+
+.downloads-release-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.downloads-release-body {
+  padding: 4px 4px 18px;
+}
+
+.downloads-notes {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 footer {
   padding: 22px 0;
   color: var(--muted);
