@@ -224,7 +224,12 @@ public final class VoiceStickCoordinator {
     /// 误判「读回不符」放弃；原生应用同步生效，首次读回即中、零重试）。轮询只追加
     /// 读操作，不改字段状态；耗尽才走拒绝路径。
     private let kVoiceTargetedReadbackPollDelays: [TimeInterval] = [0.03, 0.06, 0.12, 0.2]
-    private let kVoiceTargetedVerifyPollDelays: [TimeInterval] = [0.05, 0.1, 0.2]
+    /// 终验轮询节拍（在 kVoiceTargetedVerifyDelay 之后）：动作本体（Cmd+V 粘贴/退格）
+    /// 在 Chromium 系目标同样异步落地，2026-10-31 实测 0.6s 窗仍读到动作前旧文本
+    /// （同长替换误判「结果未确认」并连锁失效记录）——总窗加长到 ≈2.7s 覆盖粘贴
+    /// 落地时延；窗末按内容分类：仍是动作前文本（未落地）→ 记录保留只提示，
+    /// 真不符才失效记录。
+    private let kVoiceTargetedVerifyPollDelays: [TimeInterval] = [0.1, 0.2, 0.4, 0.8, 1.0]
     /// 语音编辑退格注入串行队列（方案 §7.1：后台注入 + 约 12ms 节拍，不阻塞主线程）。
     private let voiceEditInjectionQueue = DispatchQueue(label: "com.voicestick.voice-edit.backspace")
     // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
@@ -3347,9 +3352,12 @@ public final class VoiceStickCoordinator {
         // 4/5. 延时恢复末尾光标 + 终验（stale generation 直接丢弃，不覆盖新记录）。
         let expectedFinalText = context.fieldPrefix + plan.newRemainingText
             + (context.hasRecordedNewline ? "\n" : "")
+        // 动作前字段全文（终验窗末区分「动作未落地」与「真不符」用）。
+        let preActionText = context.fieldPrefix + context.remainingText
+            + (context.hasRecordedNewline ? "\n" : "")
         DispatchQueue.main.asyncAfter(deadline: .now() + kVoiceTargetedVerifyDelay) { [weak self] in
             self?.finalizeTargetedEdit(
-                expectedFinalText: expectedFinalText, plan: plan,
+                expectedFinalText: expectedFinalText, preActionText: preActionText, plan: plan,
                 generation: generation, attempt: 0)
         }
     }
@@ -3357,10 +3365,13 @@ public final class VoiceStickCoordinator {
     /// 步骤 4/5（终验，可重试）：光标恢复写与 Backspace/粘贴一样在部分目标应用
     /// 异步落地，立即读可能仍见写入前状态；**成功判据是字段文本终验**——光标/
     /// 选区只作 best-effort 恢复（2026-10-31 起不再作为失败条件，未落地只记日志）。
-    /// 文本不符重试耗尽才判未确认——不自动重试修改、不宣称成功、不盲目撤销，
-    /// 记录失效防陈旧偏移继续编辑。
+    /// 文本不符重试耗尽才判未确认——不自动重试修改、不宣称成功、不盲目撤销。
+    /// 窗末按内容分类（2026-10-31）：文本仍是动作前原样＝动作未落地（粘贴迟到/
+    /// 丢失）→ **记录保留**只提示——后缀不变量仍成立，重试命令要么直接生效、要么
+    /// 被 planner 字段校验拦下，均不污染字段；文本变成第三种内容＝真不符 → 记录
+    /// 失效防陈旧偏移继续编辑。
     private func finalizeTargetedEdit(
-        expectedFinalText: String, plan: VoiceTargetedPlan,
+        expectedFinalText: String, preActionText: String, plan: VoiceTargetedPlan,
         generation: Int, attempt: Int
     ) {
         guard generation == voiceEditGeneration else { return }
@@ -3372,7 +3383,7 @@ public final class VoiceStickCoordinator {
            state?.caretUTF16 == expectedFinalText.utf16.count,
            state?.selectionLength == 0 {
             lastInjection?.remainingText = plan.newRemainingText
-            NSLog("voice_targeted result=ok target_len=%d", plan.targetLength)
+            NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
             showVoiceTargetedSuccessToast(plan: plan)
             return
         }
@@ -3381,24 +3392,28 @@ public final class VoiceStickCoordinator {
                 deadline: .now() + kVoiceTargetedVerifyPollDelays[attempt]
             ) { [weak self] in
                 self?.finalizeTargetedEdit(
-                    expectedFinalText: expectedFinalText, plan: plan,
-                    generation: generation, attempt: attempt + 1)
+                    expectedFinalText: expectedFinalText, preActionText: preActionText,
+                    plan: plan, generation: generation, attempt: attempt + 1)
             }
             return
         }
         if textMatches {
             // 文本已确认但光标恢复写未落地：修改本身已验证完成，不再判「结果未
             // 确认」，只记日志；记录照常更新，允许连续编辑。
-            NSLog("voice_targeted caret restore unconfirmed caret=%d sel=%d count=%d",
-                  state?.caretUTF16 ?? -1, state?.selectionLength ?? -1,
-                  expectedFinalText.utf16.count)
+            NSLog("voice_targeted caret restore unconfirmed caret=\(state?.caretUTF16 ?? -1) sel=\(state?.selectionLength ?? -1) count=\(expectedFinalText.utf16.count)")
             lastInjection?.remainingText = plan.newRemainingText
-            NSLog("voice_targeted result=ok target_len=%d", plan.targetLength)
+            NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
             showVoiceTargetedSuccessToast(plan: plan)
             return
         }
-        NSLog("voice_targeted verify unconfirmed expected_len=%d actual_len=%d",
-              expectedFinalText.utf8.count, state?.text.utf8.count ?? -1)
+        let stillOld = state?.text == preActionText
+        NSLog("voice_targeted verify unconfirmed expected_len=\(expectedFinalText.utf8.count) actual_len=\(state?.text.utf8.count ?? -1) still_old=\(stillOld ? 1 : 0)")
+        if stillOld {
+            // 动作未落地（粘贴迟到/丢失）：记录保留，允许同命令直接重试。
+            showVoiceTargetedFailureToast(.resultUnconfirmed)
+            return
+        }
+        // 真不符：记录失效防陈旧偏移继续编辑。
         invalidateVoiceTargetedRecord(generation: generation)
         showVoiceTargetedFailureToast(.resultUnconfirmed)
     }

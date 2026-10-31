@@ -1050,20 +1050,41 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(const VoiceTargetedCommand&
     // 4/5. 延时后回 UI 线程恢复末尾光标 + 终验（stale generation 直接丢弃）。
     const std::string expected_tail =
         plan.tail_prefix + plan.new_remaining_text + (plan.has_recorded_newline ? "\n" : "");
+    // 动作前尾部全文（终验窗末区分「动作未落地」与「真不符」用；此刻 last_injection_
+    // 仍是动作前记录，FinishRecognitionCycle 不清它）。
+    const std::string pre_action_tail =
+        last_injection_.has_value()
+            ? plan.tail_prefix + last_injection_->remaining_text +
+                  (plan.has_recorded_newline ? "\n" : "")
+            : std::string();
     const auto alive = alive_;
-    std::thread([this, alive, generation, plan, expected_tail]() {
+    std::thread([this, alive, generation, plan, expected_tail, pre_action_tail]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         if (!alive->load()) return;
-        RunOnUiThread([this, alive, generation, plan, expected_tail]() {
+        RunOnUiThread([this, alive, generation, plan, expected_tail, pre_action_tail]() {
             if (!alive->load()) return;
-            FinalizeVoiceTargetedEdit(generation, plan, expected_tail);
+            FinalizeVoiceTargetedEdit(generation, plan, expected_tail, pre_action_tail, 0);
         });
     }).detach();
 }
 
+namespace {
+// 与终验同一「可重叠公共后缀」比较（tail 是 512 窗口，窗口截断前缀时二者只在重叠段
+// 比较）：true ＝ actual 与 reference 互为后缀。
+bool VoiceTargetedTailOverlaps(const std::string& actual, const std::string& reference) {
+    if (reference.empty()) return actual.empty();
+    if (actual.empty()) return false;
+    const std::size_t overlap = std::min(actual.size(), reference.size());
+    return actual.compare(actual.size() - overlap, overlap,
+                          reference.data() + reference.size() - overlap, overlap) == 0;
+}
+}  // namespace
+
 void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
                                                       const VoiceTargetedPlan& plan,
-                                                      std::string expected_tail) {
+                                                      std::string expected_tail,
+                                                      std::string pre_action_tail,
+                                                      int attempt) {
     if (generation != voice_edit_generation_) return;  // stale：不覆盖新记录
     const UiLanguage language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
     if (targeted_field_editor_ != nullptr) {
@@ -1074,38 +1095,64 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
     // expected 为空时要求 actual 也为空，避免空串万能匹配。成功判据是尾部文本终验
     // （2026-10-31 起光标/选区不再作为失败条件，恢复末尾只作 best-effort）。
     VoiceEditFieldState field;
+    std::string tail;
     bool verified = false;
     bool caret_restored = false;
     if (focus_text_reader_ && focus_text_reader_->ReadFocusedField(&field) && field.readable) {
-        const std::string tail = NormalizeVoiceEditLineBreaks(field.tail_text);
-        if (expected_tail.empty()) {
-            verified = tail.empty();
-        } else if (!tail.empty()) {
-            const std::size_t overlap = std::min(tail.size(), expected_tail.size());
-            verified = tail.compare(tail.size() - overlap, overlap,
-                                    expected_tail.data() + expected_tail.size() - overlap,
-                                    overlap) == 0;
-        }
+        tail = NormalizeVoiceEditLineBreaks(field.tail_text);
+        verified = VoiceTargetedTailOverlaps(tail, expected_tail);
         caret_restored = field.selection_collapsed && field.caret_at_end;
     }
-    if (!verified) {
-        // 结果未确认：不自动重试、不宣称成功、不盲目撤销；记录失效防陈旧偏移。
-        if (generation == voice_edit_generation_) last_injection_.reset();
-        ui_->ShowTimedMessage(
-            Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kResultUnconfirmed),
-               language),
-            kVoiceEditToastMs);
+    if (verified) {
+        if (!caret_restored) {
+            // 文本已确认但光标恢复写未落地：修改本身已验证完成，只记日志不判失败。
+            LogCoordinatorLine("voice targeted: caret restore unconfirmed (best-effort)");
+        }
+        if (generation == voice_edit_generation_ && last_injection_.has_value()) {
+            last_injection_->remaining_text = plan.new_remaining_text;
+            // pressed_enter 不变（targeted 不消费换行）。
+        }
+        ui_->ShowTimedMessage(VoiceTargetedResultMessage(plan, language), kVoiceEditToastMs);
         return;
     }
-    if (!caret_restored) {
-        // 文本已确认但光标恢复写未落地：修改本身已验证完成，只记日志不判失败。
-        LogCoordinatorLine("voice targeted: caret restore unconfirmed (best-effort)");
+    // 未通过：动作（粘贴/退格）在部分目标异步落地，中间态还可能是第三方文本——
+    // 未到窗末不判死，按节拍延时后同参重入（代际守卫在入口，stale 即停）。
+    static constexpr std::chrono::milliseconds kVoiceTargetedVerifyPollDelays[] = {
+        std::chrono::milliseconds(100), std::chrono::milliseconds(200),
+        std::chrono::milliseconds(400), std::chrono::milliseconds(800),
+        std::chrono::milliseconds(1000)};
+    static constexpr int kVoiceTargetedVerifyAttempts =
+        static_cast<int>(sizeof(kVoiceTargetedVerifyPollDelays) /
+                         sizeof(kVoiceTargetedVerifyPollDelays[0]));
+    if (attempt < kVoiceTargetedVerifyAttempts) {
+        const auto alive = alive_;
+        std::thread([this, alive, generation, plan, expected_tail, pre_action_tail, attempt]() {
+            std::this_thread::sleep_for(kVoiceTargetedVerifyPollDelays[attempt]);
+            if (!alive->load()) return;
+            RunOnUiThread(
+                [this, alive, generation, plan, expected_tail, pre_action_tail, attempt]() {
+                    if (!alive->load()) return;
+                    FinalizeVoiceTargetedEdit(generation, plan, expected_tail, pre_action_tail,
+                                              attempt + 1);
+                });
+        }).detach();
+        return;
     }
-    if (generation == voice_edit_generation_ && last_injection_.has_value()) {
-        last_injection_->remaining_text = plan.new_remaining_text;
-        // pressed_enter 不变（targeted 不消费换行）。
+    // 窗末分类（2026-10-31）：尾部仍是动作前原样＝动作未落地（粘贴迟到/丢失）→
+    // **记录保留**只提示——后缀不变量仍成立，重试命令要么直接生效、要么被 planner
+    // 字段校验拦下，均不污染字段；变成第三种内容＝真不符 → 记录失效防陈旧偏移。
+    const bool still_old = VoiceTargetedTailOverlaps(tail, pre_action_tail);
+    LogCoordinatorLine("voice targeted: verify unconfirmed expected_len=" +
+                       std::to_string(expected_tail.size()) +
+                       " actual_len=" + std::to_string(tail.size()) +
+                       " still_old=" + (still_old ? "1" : "0"));
+    if (!still_old && generation == voice_edit_generation_) {
+        last_injection_.reset();
     }
-    ui_->ShowTimedMessage(VoiceTargetedResultMessage(plan, language), kVoiceEditToastMs);
+    ui_->ShowTimedMessage(
+        Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kResultUnconfirmed),
+           language),
+        kVoiceEditToastMs);
 }
 
 bool VoiceStickCoordinator::RestoreLastInputConfirmation(std::optional<std::string> device_id) {
