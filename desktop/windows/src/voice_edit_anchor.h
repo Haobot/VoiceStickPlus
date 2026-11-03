@@ -69,7 +69,7 @@ bool IsMidlineInsertion(std::string_view field_utf8, std::size_t caret_utf16);
 
 // 句中插入且文本以一个句号结尾 → 去掉末尾一个字符。句号集合：。(U+3002)、
 // ．(U+FF0E) 直接剥；.(U+002E) 仅当前一字符不是 ASCII 字母/数字（保「3.」「v1.」）；
-// ！？等语气标点不去。
+// ！？等语气标点不去。裸句号（句号前无实际内容，如标点独词注入的「。」）恒保留。
 std::string StripMidlinePeriod(std::string_view text_utf8, bool is_midline);
 
 // 快速预检：文本以可剥离候选句号结尾（协调器据此避免不必要的字段读取）。
