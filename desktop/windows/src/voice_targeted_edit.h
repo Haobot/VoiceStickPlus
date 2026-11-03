@@ -40,19 +40,35 @@ struct VoiceTargetedAction {
 enum class VoiceTargetedPosition {
     kFirst,
     kLast,
+    // 批次 2：第 N 个（1 基，域内文档顺序）/ 倒数第 N 个（kLast 等价 kFromEnd(1)，
+    // 保留枚举位）。N 存于 VoiceTargetedCommand::position_n（C++ 枚举无关联值，
+    // 与 macOS 关联值枚举的映射差异见 command 注释）。
+    kOrdinal,
+    kFromEnd,
     kUnspecified,  // 仅 1 个精确匹配才允许
+};
+
+// 位置选择结果（批次 2；对齐 macOS VoiceTargetedPositionOutcome）：选中一处 /
+// 未指定且多处（歧义，交追问）/ 序号越界。SelectTargetedOccurrence 输出。
+enum class VoiceTargetedPositionOutcome {
+    kSelected,
+    kAmbiguous,
+    kOutOfRange,
 };
 
 struct VoiceTargetedCommand {
     VoiceTargetedAction action;
     std::string target;  // UTF-8，非空，<= kVoiceTargetedMaxTargetGraphemes graphemes
     VoiceTargetedPosition position = VoiceTargetedPosition::kUnspecified;
+    // position == kOrdinal / kFromEnd 时的 N（1 基；其余位置忽略）。
+    int position_n = 0;
     // 是否显式带「刚才的/刚刚」作用域。自然简写为 false，协调器仅在最近一次
     // 注入确实存在 target 时接管，否则按普通文本处理。
     bool has_explicit_scope = true;
 
     bool operator==(const VoiceTargetedCommand& other) const = default;
 };
+
 
 // 解析三态（对齐 macOS VoiceTargetedParseResult）：
 //   nullopt = 非指令（走原链路，按普通文本上屏）；
@@ -87,6 +103,9 @@ enum class VoiceTargetedFailure {
     kForegroundElevated,
     // 批次 1（字段内定位）尾部追加：anchored 段在字段中出现 ≥2 次且 P1 全 miss。
     kAnchorAmbiguous,
+    // 批次 2（整框搜索域 + 位置限定扩展）尾部追加（双端同构，别插中间）：
+    kFieldTooLong,        // 整框域字段超长（> 200,000 UTF-16 码元）
+    kPositionOutOfRange,  // 第 N 个 / 倒数第 N 个越界（域内出现次数不足 N）
 };
 
 std::string_view VoiceTargetedFailureName(VoiceTargetedFailure failure);
@@ -104,6 +123,13 @@ struct VoiceTargetedOccurrence {
 // 非重叠精确匹配（target 为空返回空表；匹配按 grapheme 前进整个 needle）。
 std::vector<VoiceTargetedOccurrence> FindTargetedOccurrences(std::string_view target,
                                                              std::string_view remaining);
+
+// 在非空匹配表中选择目标 occurrence（双端同构；matches 为空按越界处理）。
+// count_out 回填域内出现次数（歧义/越界提示用，可为 nullptr）。
+VoiceTargetedPositionOutcome SelectTargetedOccurrence(
+    const VoiceTargetedCommand& command,
+    const std::vector<VoiceTargetedOccurrence>& matches,
+    VoiceTargetedOccurrence* selected, int* count_out = nullptr);
 
 // UTF-8 文本的 UTF-16 码元长度（协调器换算选区偏移用；转发 utf8_grapheme.h）。
 std::size_t VoiceTargetedUtf16Length(std::string_view text);

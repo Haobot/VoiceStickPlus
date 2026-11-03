@@ -564,6 +564,15 @@ enum class StringId {
     // LocalizationTablesAreComplete 断言双表逐项非空）。
     kVoiceEditAnchorAmbiguous,   // anchored 段出现多次（零容错拒绝）
     kVoiceEditCaretMoveFailed,   // 尾删前置光标移动失败（零退格）
+    // 语音编辑批次 2（整框搜索域 + 追问 + 撤销）：新失败码/追问/撤销文案
+    //（只能在末尾追加，双端与 macOS L10nKey 同语义）。
+    kVoiceEditFieldTooLong,      // 整框域字段超长
+    kVoiceTargetedOrdinalRange,  // 位置序号越界（只有 N 处，请说第 1 到第 N 个）
+    kVoiceTargetedClarifyPrompt, // 追问「第几个」（%d 处 + 目标词 %@）
+    kVoiceTargetedClarifyCancelled,  // 已取消修改
+    kVoiceTargetedClarifyChanged,    // 文本已变化，请重新说修改指令
+    kVoiceTargetedUndoOk,       // 已撤销修改
+    kVoiceTargetedUndoChanged,  // 文本已变化，无法撤销
 };
 
 // 返回 UTF-8 本地化文本

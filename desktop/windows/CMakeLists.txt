@@ -171,8 +171,11 @@ add_library(voicestick_core STATIC
     src/voice_edit_command.cc
     src/focus_text_reader.cc
     # targeted 语音编辑（删除/替换最近一次输入中的指定词；Doc targeted 章节）：
-    # 纯逻辑解析/匹配/计划（零 Win32），与 macOS VoiceTargetedEdit.swift 同向量。
+    # 纯逻辑解析/匹配/计划（零 Win32），与 macOS VoiceTargetedEdit.swift 同向量；
+    # 批次 2 域解析/序数应答/光标平移（voice_targeted_domain，与
+    # macOS VoiceTargetedDomain.swift/VoiceEditOrdinalReply.swift 同向量）。
     src/voice_targeted_edit.cc
+    src/voice_targeted_domain.cc
     # 字段内定位器（批次 1：P1a/P1b/P1c/P2 多级锚 + 句中句号剥离纯函数；零 Win32），
     # 与 macOS VoiceEditAnchor.swift 同向量。
     src/voice_edit_anchor.cc

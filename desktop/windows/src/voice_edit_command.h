@@ -95,6 +95,14 @@ struct VoiceEditFieldState {
     // 旧布尔（caret_at_end/selection_collapsed）保留（派生诊断）；P1a/P1b 锚定
     // 与句中句号判定用本偏移。窗口外/不可得 = kCaretOutsideTail。
     std::size_t caret_tail_utf16 = static_cast<std::size_t>(-1);
+    // ---- 批次 2（整框搜索域）：全文读取（ReadFocusedFieldFullText 填充）----
+    // 字段全文（UTF-8）；超上限（kFieldScopeFullTextMaxUtf16）时为空且
+    // full_truncated=true（调用方按 field_too_long 拒绝）。
+    std::string full_text;
+    std::size_t full_utf16_length = 0;
+    bool full_truncated = false;
+    // 光标的文档绝对偏移（整框域坐标；kCaretOutsideTail 同款哨兵表示不可得）。
+    std::size_t caret_abs_utf16 = static_cast<std::size_t>(-1);
 };
 
 // caret_tail_utf16 的「不可得」哨兵（窗口外/平台未实现偏移读取）。
@@ -141,6 +149,9 @@ struct VoiceEditPlan {
     // 且 needs_caret_move=false（盲退格窗口语义不变）。----
     std::size_t anchor_end_utf16 = kCaretOutsideTail;
     bool needs_caret_move = false;
+    // ---- 批次 2（交付 D）：定位失败且选区折叠且 field_scope 开时，降级为删光标
+    // 前 N 字/句（anchor_end_utf16 = 光标、needs_caret_move=false、注入记录不变）。----
+    bool caret_fallback = false;
 };
 
 // L1 校验 + 删除计划（纯逻辑，算法见 Doc/Plan/voice-edit-commands.md §6.3 与
@@ -154,10 +165,17 @@ struct VoiceEditPlan {
 //    才按不可验证分支执行；
 //  - off：不校验，按不可验证分支执行（密码框仍拒绝）。
 //  - caret_tail_utf16 == kCaretOutsideTail 时 P1a/P1b 不可判，仅 P1c/P2 可命中。
+//  - field_scope_enabled（批次 2 交付 D，默认 false=批次 1 行为）：verified 定位
+//    失败（text_mismatch/anchor_ambiguous）且选区折叠时，字/句动作降级为删光标前
+//    N 字/句（deleteAll 不降级）；降级计划 caret_fallback=true。
 VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
                             const VoiceEditCommand& command,
                             const VoiceEditFieldState& field,
                             VoiceEditVerifyMode verify_mode,
-                            bool unverified_allowed);
+                            bool unverified_allowed,
+                            bool field_scope_enabled = false);
+
+// 批次 2（交付 E）：上下文撤销短语白名单（撤销/撤回/撤销刚才的/撤回刚才的）。
+bool IsVoiceEditUndoPhrase(std::string_view text);
 
 } // namespace voicestick

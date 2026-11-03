@@ -4,6 +4,7 @@
 #include <span>
 
 #include "utf8_grapheme.h"
+#include "voice_targeted_domain.h"
 
 namespace voicestick {
 
@@ -16,6 +17,43 @@ std::size_t VoiceTargetedUtf16Length(std::string_view text) {
     return Utf16Length(text);
 }
 
+VoiceTargetedPositionOutcome SelectTargetedOccurrence(
+    const VoiceTargetedCommand& command,
+    const std::vector<VoiceTargetedOccurrence>& matches,
+    VoiceTargetedOccurrence* selected, int* count_out) {
+    if (count_out != nullptr) *count_out = static_cast<int>(matches.size());
+    if (matches.empty()) return VoiceTargetedPositionOutcome::kOutOfRange;
+    switch (command.position) {
+        case VoiceTargetedPosition::kFirst:
+            *selected = matches.front();
+            return VoiceTargetedPositionOutcome::kSelected;
+        case VoiceTargetedPosition::kLast:
+            *selected = matches.back();
+            return VoiceTargetedPositionOutcome::kSelected;
+        case VoiceTargetedPosition::kOrdinal: {
+            if (command.position_n < 1 ||
+                static_cast<std::size_t>(command.position_n) > matches.size()) {
+                return VoiceTargetedPositionOutcome::kOutOfRange;
+            }
+            *selected = matches[static_cast<std::size_t>(command.position_n) - 1];
+            return VoiceTargetedPositionOutcome::kSelected;
+        }
+        case VoiceTargetedPosition::kFromEnd: {
+            if (command.position_n < 1 ||
+                static_cast<std::size_t>(command.position_n) > matches.size()) {
+                return VoiceTargetedPositionOutcome::kOutOfRange;
+            }
+            *selected = matches[matches.size() - static_cast<std::size_t>(command.position_n)];
+            return VoiceTargetedPositionOutcome::kSelected;
+        }
+        case VoiceTargetedPosition::kUnspecified:
+            if (matches.size() != 1) return VoiceTargetedPositionOutcome::kAmbiguous;
+            *selected = matches.front();
+            return VoiceTargetedPositionOutcome::kSelected;
+    }
+    return VoiceTargetedPositionOutcome::kAmbiguous;
+}
+
 namespace {
 
 // ============================ 解析器白名单 ============================
@@ -25,6 +63,10 @@ namespace {
 constexpr std::string_view kScopeTokens[] = {"刚才的", "刚才", "刚刚的", "刚刚"};
 constexpr std::string_view kPositionFirst = "第一个";
 constexpr std::string_view kPositionLast = "最后一个";
+constexpr std::string_view kPositionDaoShuDi = "倒数第";
+constexpr std::string_view kPositionDi = "第";
+constexpr std::string_view kPositionUnitGe = "个";
+constexpr std::string_view kPositionUnitChu = "处";
 // 前行动词（动宾式「VERB 刚才的 …」）。
 constexpr std::string_view kLeadingDeleteVerbs[] = {"删除", "删掉", "删去", "去掉"};
 // 后置删除动词（把字句尾部）。
@@ -142,6 +184,53 @@ bool ConsumeAny(std::string_view text, std::size_t* index, std::span<const std::
     return false;
 }
 
+// 位置限定词（可选；批次 2 扩展）：第一个/最后一个专词优先，其后 第N个/第N处/
+// 倒数第N个/倒数第N处（N = 中文一…九十九或阿拉伯 1–99，全角已在归一化转半角）。
+// 命中消费并回填 *position/*position_n；未命中 index 不动。
+void ConsumePosition(std::string_view text, std::size_t* index,
+                     VoiceTargetedPosition* position, int* position_n) {
+    *position = VoiceTargetedPosition::kUnspecified;
+    *position_n = 0;
+    if (ConsumeToken(text, index, kPositionFirst)) {
+        *position = VoiceTargetedPosition::kFirst;
+        return;
+    }
+    if (ConsumeToken(text, index, kPositionLast)) {
+        *position = VoiceTargetedPosition::kLast;
+        return;
+    }
+    // 倒数第 N 个/处
+    {
+        std::size_t probe = *index;
+        if (ConsumeToken(text, &probe, kPositionDaoShuDi)) {
+            const auto n = ParseVoiceEditOrdinalNumber(text, &probe, 99);
+            if (n.has_value() &&
+                (ConsumeToken(text, &probe, kPositionUnitGe) ||
+                 ConsumeToken(text, &probe, kPositionUnitChu))) {
+                *index = probe;
+                *position = VoiceTargetedPosition::kFromEnd;
+                *position_n = *n;
+                return;
+            }
+        }
+    }
+    // 第 N 个/处
+    {
+        std::size_t probe = *index;
+        if (ConsumeToken(text, &probe, kPositionDi)) {
+            const auto n = ParseVoiceEditOrdinalNumber(text, &probe, 99);
+            if (n.has_value() &&
+                (ConsumeToken(text, &probe, kPositionUnitGe) ||
+                 ConsumeToken(text, &probe, kPositionUnitChu))) {
+                *index = probe;
+                *position = VoiceTargetedPosition::kOrdinal;
+                *position_n = *n;
+                return;
+            }
+        }
+    }
+}
+
 struct TokenHit {
     std::size_t index = 0;
     std::string_view token;
@@ -193,7 +282,7 @@ bool ContainsNegation(std::string_view target) {
 
 // 由 target（已定位的原始片段）构建指令；空目标/超长/空替换返回 false。
 bool BuildCommand(VoiceTargetedAction action, std::string_view target_raw,
-                  VoiceTargetedPosition position, bool has_explicit_scope,
+                  VoiceTargetedPosition position, int position_n, bool has_explicit_scope,
                   VoiceTargetedCommand* out) {
     const std::string target = TrimWhitespace(target_raw);
     if (target.empty()) return false;
@@ -215,6 +304,7 @@ bool BuildCommand(VoiceTargetedAction action, std::string_view target_raw,
     out->action = std::move(action);
     out->target = target;
     out->position = position;
+    out->position_n = position_n;
     out->has_explicit_scope = has_explicit_scope;
     return true;
 }
@@ -236,11 +326,8 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
         std::size_t index = std::string_view("把").size();
         const bool has_explicit_scope = ConsumeAny(text, &index, kScopeTokens);
         VoiceTargetedPosition position = VoiceTargetedPosition::kUnspecified;
-        if (ConsumeToken(text, &index, kPositionFirst)) {
-            position = VoiceTargetedPosition::kFirst;
-        } else if (ConsumeToken(text, &index, kPositionLast)) {
-            position = VoiceTargetedPosition::kLast;
-        }
+        int position_n = 0;
+        ConsumePosition(text, &index, &position, &position_n);
         const auto separator = LastTokenIndex(text, kReplaceSeparators);
         if (separator.has_value()) {
             const std::string_view target = text.substr(index, separator->index - index);
@@ -252,7 +339,8 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
             }
             VoiceTargetedAction action{VoiceTargetedActionKind::kReplace,
                                        std::string(TrimWhitespace(replacement))};
-            if (!BuildCommand(std::move(action), target, position, has_explicit_scope, cmd_out)) {
+            if (!BuildCommand(std::move(action), target, position, position_n,
+                              has_explicit_scope, cmd_out)) {
                 return FailIfScoped(has_explicit_scope, invalid_out);
             }
             return true;
@@ -266,7 +354,7 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
                 return FailIfScoped(has_explicit_scope, invalid_out);
             }
             if (!BuildCommand(VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}},
-                              target, position, has_explicit_scope, cmd_out)) {
+                              target, position, position_n, has_explicit_scope, cmd_out)) {
                 return FailIfScoped(has_explicit_scope, invalid_out);
             }
             return true;
@@ -278,11 +366,8 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
         std::size_t index = verb.size();
         const bool has_explicit_scope = ConsumeAny(text, &index, kScopeTokens);
         VoiceTargetedPosition position = VoiceTargetedPosition::kUnspecified;
-        if (ConsumeToken(text, &index, kPositionFirst)) {
-            position = VoiceTargetedPosition::kFirst;
-        } else if (ConsumeToken(text, &index, kPositionLast)) {
-            position = VoiceTargetedPosition::kLast;
-        }
+        int position_n = 0;
+        ConsumePosition(text, &index, &position, &position_n);
         const std::string_view target = text.substr(index);
         // 「删除刚才的」与单独「删除」都交旧解析器。
         if (target.empty()) return false;
@@ -290,7 +375,7 @@ bool ParseBody(std::string_view text, VoiceTargetedCommand* cmd_out, bool* inval
             return FailIfScoped(has_explicit_scope, invalid_out);
         }
         if (!BuildCommand(VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}}, target,
-                          position, has_explicit_scope, cmd_out)) {
+                          position, position_n, has_explicit_scope, cmd_out)) {
             return FailIfScoped(has_explicit_scope, invalid_out);
         }
         return true;
@@ -364,6 +449,8 @@ std::string_view VoiceTargetedFailureName(VoiceTargetedFailure failure) {
         case VoiceTargetedFailure::kAccessibilityDenied: return "accessibility_denied";
         case VoiceTargetedFailure::kForegroundElevated: return "foreground_elevated";
         case VoiceTargetedFailure::kAnchorAmbiguous: return "anchor_ambiguous";
+        case VoiceTargetedFailure::kFieldTooLong: return "field_too_long";
+        case VoiceTargetedFailure::kPositionOutOfRange: return "position_out_of_range";
     }
     return "unknown";
 }
@@ -444,20 +531,15 @@ bool BuildTargetedPlan(const VoiceTargetedCommand& command,
         plan->failure = VoiceTargetedFailure::kNotFound;
         return false;
     }
-    switch (command.position) {
-        case VoiceTargetedPosition::kFirst:
-            *selected = matches.front();
+    switch (SelectTargetedOccurrence(command, matches, selected)) {
+        case VoiceTargetedPositionOutcome::kSelected:
             break;
-        case VoiceTargetedPosition::kLast:
-            *selected = matches.back();
-            break;
-        case VoiceTargetedPosition::kUnspecified:
-            if (matches.size() != 1) {
-                plan->failure = VoiceTargetedFailure::kAmbiguous;
-                return false;
-            }
-            *selected = matches.front();
-            break;
+        case VoiceTargetedPositionOutcome::kAmbiguous:
+            plan->failure = VoiceTargetedFailure::kAmbiguous;
+            return false;
+        case VoiceTargetedPositionOutcome::kOutOfRange:
+            plan->failure = VoiceTargetedFailure::kPositionOutOfRange;
+            return false;
     }
     // L1：targeted 恒 verified——任何 verify_mode 下都强制字段可读校验。
     if (!field_readable) {

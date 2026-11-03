@@ -9,6 +9,8 @@
 #include "voice_edit_command.h"
 #include "voice_edit_anchor.h"
 #include "voice_targeted_edit.h"
+#include "voice_targeted_domain.h"
+#include "utf8_grapheme.h"
 #include "xiaomi_buttons.h"
 
 #include <algorithm>
@@ -36,6 +38,26 @@ std::string ReplaceFirstDecimal(std::string text, int value) {
     const auto marker = text.find("%d");
     if (marker != std::string::npos) {
         text.replace(marker, 2, std::to_string(value));
+    }
+    return text;
+}
+
+// 批次 2：「%d…%d」（voiceTargetedOrdinalRange）与「%d…%s」（clarify prompt）。
+std::string ReplaceTwoDecimals(std::string text, int first, int second) {
+    const auto marker = text.find("%d");
+    if (marker == std::string::npos) return text;
+    text.replace(marker, 2, std::to_string(first));
+    return ReplaceFirstDecimal(std::move(text), second);
+}
+
+std::string ReplaceDecimalAndString(std::string text, int value, std::string_view replacement) {
+    const auto marker = text.find("%d");
+    if (marker != std::string::npos) {
+        text.replace(marker, 2, std::to_string(value));
+    }
+    const auto string_marker = text.find("%s");
+    if (string_marker != std::string::npos) {
+        text.replace(string_marker, 2, replacement);
     }
     return text;
 }
@@ -607,6 +629,7 @@ void VoiceStickCoordinator::ScheduleFinalizingWatchdog() {
                 LogCoordinatorLine("finalizing watchdog timeout; pasting unrefined final text");
                 RunOnUiThread([this, fallback_text = std::move(fallback_text)]() mutable {
                     if (is_shutdown_) return;
+                    if (HandlePendingClarificationIfMatched(fallback_text)) return;
                     if (HandleVoiceEditIfMatched(fallback_text)) return;
                     if (HandleVoiceTargetedEditIfMatched(fallback_text)) return;
                     EnterPendingConfirmation(fallback_text, "finalizing_watchdog");
@@ -814,7 +837,10 @@ void VoiceStickCoordinator::RecordLastInjection(const std::string& text, bool pr
     }
     last_injection_ = std::move(record);
     // 新注入覆盖旧记录（方案 §6.1：始终只保留最近一次）；代际 +1 使在途异步删除回调
-    // 只更新同一代记录。
+    // 只更新同一代记录。批次 2：新注入清追问 pending 与撤销记录（字段必不等于编辑
+    // 后状态，撤销锚点一并作废）。
+    pending_clarification_.reset();
+    last_voice_edit_.reset();
     ++voice_edit_generation_;
     LogCoordinatorLine(
         "voice edit record: len=" + std::to_string(last_injection_->remaining_text.size()) +
@@ -826,10 +852,10 @@ void VoiceStickCoordinator::RecordLastInjection(const std::string& text, bool pr
                         : last_injection_->foreground_process));
 }
 
-void VoiceStickCoordinator::StartVoiceEditBackspaces(int count, std::uint64_t generation,
-                                                     std::string message,
-                                                     std::string new_remaining_text,
-                                                     bool new_pressed_enter) {
+void VoiceStickCoordinator::StartVoiceEditBackspaces(
+    int count, std::uint64_t generation, std::string message,
+    std::string new_remaining_text, bool new_pressed_enter,
+    std::optional<TailUndoIngredients> undo_ingredients) {
     if (count <= 0) return;
     const auto parsed = ParseKeySpec("backspace");
     if (!parsed.has_value()) {
@@ -840,7 +866,8 @@ void VoiceStickCoordinator::StartVoiceEditBackspaces(int count, std::uint64_t ge
     const KeySpec backspace = *parsed;
     const auto alive = alive_;
     std::thread([this, alive, count, generation, backspace, message = std::move(message),
-                 new_remaining_text = std::move(new_remaining_text), new_pressed_enter]() {
+                 new_remaining_text = std::move(new_remaining_text), new_pressed_enter,
+                 undo_ingredients = std::move(undo_ingredients)]() {
         for (int i = 0; i < count; ++i) {
             if (!alive->load()) return;
             input_injector_->SendKeyCombo(backspace);
@@ -850,15 +877,17 @@ void VoiceStickCoordinator::StartVoiceEditBackspaces(int count, std::uint64_t ge
             }
         }
         // 执行完成：回 UI 线程更新记录（仅同一代）+ 提示结果。SendInput 无回执，
-        // toast 只表示"已发出"，不是保证（Doc §7.4）。
+        // toast 只表示"已发出"，不是保证（Doc §7.4）。批次 2 交付 E：读一次字段
+        // 落撤销记录（读不到不记，撤销不可用）。
         RunOnUiThread([this, alive, generation, message = std::move(message),
                        new_remaining_text = std::move(new_remaining_text),
-                       new_pressed_enter]() {
+                       new_pressed_enter, undo_ingredients]() {
             if (!alive->load()) return;
             if (generation == voice_edit_generation_ && last_injection_.has_value()) {
                 last_injection_->remaining_text = new_remaining_text;
                 last_injection_->pressed_enter = new_pressed_enter;
             }
+            RecordTailDeletionUndo(undo_ingredients, generation);
             ui_->ShowTimedMessage(message, kVoiceEditToastMs);
         });
     }).detach();
@@ -879,8 +908,17 @@ bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
         ParseVoiceEditCommand(text, voice_edit.default_chars, voice_edit.max_chars);
     if (!command.has_value()) return false;  // 非指令：走原链路（普通文本上屏）
 
+    // 批次 2 交付 E：「撤销/撤回(刚才的)」按上下文分流——有可用撤销记录时优先
+    // 还原上一次语音修改（吞轮执行）；不满足返回 false 落回原 deleteAll 语义。
+    if (command->action == VoiceEditAction::kDeleteAll && IsVoiceEditUndoPhrase(text) &&
+        TryHandleVoiceEditUndo(text)) {
+        return true;
+    }
+
     // === 命中指令：本轮由语音编辑接管，绝不进入精修/翻译/粘贴（Doc §8.1） ===
     pasted_final_text_ = true;
+    // 批次 2 交付 B：其他语音编辑指令使旧追问失效。
+    pending_clarification_.reset();
     const UiLanguage language = EffectiveUiLanguage(config->ui_language);
     const auto reject = [this, language](StringId message_id, std::string_view reason) {
         LogCoordinatorLine("voice edit rejected reason=" + std::string(reason));
@@ -943,7 +981,8 @@ bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
         elapsed.count() <= static_cast<long long>(voice_edit.unverified_seconds);
     const auto plan = PlanVoiceEdit(last_injection_->remaining_text,
                                     last_injection_->pressed_enter, *command, field,
-                                    voice_edit.verify_mode, unverified_allowed);
+                                    voice_edit.verify_mode, unverified_allowed,
+                                    voice_edit.field_scope);
     if (!plan.ok) {
         reject_with_stage(VoiceEditRejectMessageId(plan.reject_reason),
                           VoiceEditRejectReasonName(plan.reject_reason),
@@ -961,30 +1000,38 @@ bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
         " newline=" + (plan.delete_newline ? "1" : "0") +
         " backspace=" + std::to_string(plan.backspace_count) +
         " verified=" + (plan.verified ? "1" : "0") +
+        " fallback=" + (plan.caret_fallback ? "1" : "0") +
         " age_ms=" +
         std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now -
                                                                             last_injection_->injected_at)
                            .count()));
+    if (plan.caret_fallback) {
+        LogCoordinatorLine("voice edit tail_caret_fallback=1 backspace=" +
+                           std::to_string(plan.backspace_count));
+    }
+    // 批次 2 交付 E：尾删撤销素材（计划时刻算好；unverified 计划不记）。
+    const auto undo_ingredients = ComputeTailUndoIngredients(plan, field);
     // 先收尾回 ready，再异步注入退格（不阻塞 UI；count 上限=剩余注入文本 grapheme 数）。
     FinishRecognitionCycle();
     EnterReady("voice_edit");
     // 批次 1（字段内定位）：光标不在 anchorEnd 时先移光标（选区写 + 轮询确认），
     // 移动失败零退格、记录保留；unverified 计划无锚（盲退格窗口语义不变）。
     if (plan.verified && plan.needs_caret_move) {
-        MoveCaretForVoiceEditDeletion(plan, *command, generation, 0);
+        MoveCaretForVoiceEditDeletion(plan, *command, undo_ingredients, generation, 0);
         return true;
     }
     StartVoiceEditBackspaces(plan.backspace_count, generation, message,
-                             plan.new_remaining_text, plan.new_pressed_enter);
+                             plan.new_remaining_text, plan.new_pressed_enter,
+                             undo_ingredients);
     return true;
 }
 
 // 批次 1（字段内定位）：尾删前置光标移动。须在 UI 线程调用（UIA）；每次重试重写
 // 同一目标（幂等；与 targeted 读回同一节拍）。TODO(win): 待 Windows 机编译+CTest 验证。
-void VoiceStickCoordinator::MoveCaretForVoiceEditDeletion(const VoiceEditPlan& plan,
-                                                          const VoiceEditCommand& command,
-                                                          std::uint64_t generation,
-                                                          int attempt) {
+void VoiceStickCoordinator::MoveCaretForVoiceEditDeletion(
+    const VoiceEditPlan& plan, const VoiceEditCommand& command,
+    std::optional<TailUndoIngredients> undo_ingredients, std::uint64_t generation,
+    int attempt) {
     if (generation != voice_edit_generation_) return;  // stale：不覆盖新记录
     const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
     const auto fail = [this, language]() {
@@ -1009,7 +1056,8 @@ void VoiceStickCoordinator::MoveCaretForVoiceEditDeletion(const VoiceEditPlan& p
         const std::string message = VoiceEditResultMessage(
             command, plan, EffectiveUiLanguage(ConfigSnapshot()->ui_language));
         StartVoiceEditBackspaces(plan.backspace_count, generation, message,
-                                 plan.new_remaining_text, plan.new_pressed_enter);
+                                 plan.new_remaining_text, plan.new_pressed_enter,
+                                 undo_ingredients);
         return;
     }
     // 轮询节拍与 targeted 读回一致（30/60/120/200ms）；耗尽 → caret_move_failed。
@@ -1020,12 +1068,16 @@ void VoiceStickCoordinator::MoveCaretForVoiceEditDeletion(const VoiceEditPlan& p
         static_cast<int>(sizeof(kCaretMovePollDelays) / sizeof(kCaretMovePollDelays[0]));
     if (attempt < kCaretMoveAttempts) {
         const auto alive = alive_;
-        std::thread([this, alive, plan, command, generation, attempt]() {
+        std::thread([this, alive, plan, command, undo_ingredients = std::move(undo_ingredients),
+                     generation, attempt]() {
             std::this_thread::sleep_for(kCaretMovePollDelays[attempt]);
             if (!alive->load()) return;
-            RunOnUiThread([this, alive, plan, command, generation, attempt]() {
+            RunOnUiThread([this, alive, plan, command,
+                           undo_ingredients = std::move(undo_ingredients), generation,
+                           attempt]() {
                 if (!alive->load() || is_shutdown_) return;
-                MoveCaretForVoiceEditDeletion(plan, command, generation, attempt + 1);
+                MoveCaretForVoiceEditDeletion(plan, command, std::move(undo_ingredients),
+                                              generation, attempt + 1);
             });
         }).detach();
         return;
@@ -1047,18 +1099,48 @@ bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& 
     }
     const auto parsed = ParseVoiceTargetedCommand(text);
     if (!parsed.has_value()) return false;  // 非指令：走原链路（普通文本上屏）
-    // 自然简写不带「刚才的」时，只有最近一次注入确实存在目标词才接管；
-    // 否则继续走普通文本，避免把不含上下文的「把A改成B」一律吞掉。
+    // 自然简写不带「刚才的」时：X 在最近一次注入里存在才接管；批次 2（交付 C，
+    // field_scope 开）再读一次字段全文——X 在整个输入框存在也接管（Tier 1 不命中
+    // 时域解析落整框）；都不存在 → 普通文本。
     if (!parsed->invalid && !parsed->command.has_explicit_scope) {
-        if (!last_injection_.has_value() ||
-            FindTargetedOccurrences(parsed->command.target,
-                                    last_injection_->remaining_text).empty()) {
+        bool in_recent = false;
+        if (last_injection_.has_value()) {
+            in_recent = !FindTargetedOccurrences(parsed->command.target,
+                                                 last_injection_->remaining_text)
+                            .empty();
+        }
+        if (!in_recent) {
+            if (voice_edit.field_scope && focus_text_reader_) {
+                VoiceEditFieldState gate_field;
+                if (focus_text_reader_->ReadFocusedFieldFullText(&gate_field) &&
+                    gate_field.readable && !gate_field.full_truncated &&
+                    !gate_field.is_password) {
+                    const std::string gate_text =
+                        NormalizeVoiceEditLineBreaks(gate_field.full_text);
+                    if (!FindTargetedOccurrences(parsed->command.target, gate_text)
+                             .empty()) {
+                        return TakeOverTargetedCommand(text, *parsed, config);
+                    }
+                }
+            }
             return false;
         }
     }
 
+    return TakeOverTargetedCommand(text, *parsed, config);
+}
+
+// targeted 接管主体（原 HandleVoiceTargetedEditIfMatched 后半段，供直命中与整框
+// 门控命中两条入口复用；对齐 macOS performTargetedTakeover）。
+bool VoiceStickCoordinator::TakeOverTargetedCommand(
+    const std::string& text, const VoiceTargetedParseResult& parse_result,
+    std::shared_ptr<const AppConfig> config) {
+    (void)text;
+    const auto& voice_edit = config->voice_edit;
     // === 命中 targeted：本轮由 targeted 接管，绝不粘贴命令文本/精修/翻译/写历史 ===
     pasted_final_text_ = true;
+    // 批次 2 交付 B：新的语音编辑指令使旧追问失效（clarify 分支会存入新 pending）。
+    pending_clarification_.reset();
     const UiLanguage language = EffectiveUiLanguage(config->ui_language);
     const auto reject = [this, language](VoiceTargetedFailure failure) {
         LogCoordinatorLine("voice targeted rejected reason=" +
@@ -1073,117 +1155,307 @@ bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& 
     };
 
     // 结构命中但操作数非法（空目标/空替换/多分隔符/否定）：吞掉并提示。
-    if (parsed->invalid) {
+    if (parse_result.invalid) {
         reject(VoiceTargetedFailure::kInvalid);
         return true;
     }
-    const VoiceTargetedCommand& command = parsed->command;
+    const VoiceTargetedCommand& command = parse_result.command;
 
-    // ---- L0 作用域闸（与旧编辑同一套）----
     const auto now = std::chrono::steady_clock::now();
-    if (!last_injection_.has_value() || last_injection_->remaining_text.empty()) {
-        reject(VoiceTargetedFailure::kNoInjection);
-        return true;
-    }
-    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-        now - last_injection_->injected_at);
-    if (elapsed.count() > static_cast<long long>(voice_edit.scope_seconds)) {
-        reject(VoiceTargetedFailure::kScopeExpired);
-        return true;
-    }
-    const std::uintptr_t foreground_window =
-        foreground_probe_ ? foreground_probe_->ForegroundWindow() : 0;
-    const std::string foreground_process =
-        (foreground_probe_ && foreground_window != 0)
-            ? foreground_probe_->ForegroundProcessName()
-            : std::string();
-    if (!foreground_probe_ || foreground_window == 0 ||
-        last_injection_->foreground_window == 0 ||
-        foreground_window != last_injection_->foreground_window ||
-        foreground_process != last_injection_->foreground_process) {
-        reject(VoiceTargetedFailure::kAppChanged);
-        return true;
-    }
-    {
-        std::wstring elevated_process;
-        if (foreground_probe_->IsForegroundHigherIntegrity(elevated_process)) {
-            reject(VoiceTargetedFailure::kForegroundElevated);
+    // ---- field_scope 关：批次 1 原路径（L0 记录闸 → 尾窗锚定 → planner；行为
+    // 逐字节一致——回归开关红线）----
+    if (!voice_edit.field_scope) {
+        // ---- L0 作用域闸（与旧编辑同一套）----
+        if (!last_injection_.has_value() || last_injection_->remaining_text.empty()) {
+            reject(VoiceTargetedFailure::kNoInjection);
             return true;
         }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            now - last_injection_->injected_at);
+        if (elapsed.count() > static_cast<long long>(voice_edit.scope_seconds)) {
+            reject(VoiceTargetedFailure::kScopeExpired);
+            return true;
+        }
+        const std::uintptr_t foreground_window =
+            foreground_probe_ ? foreground_probe_->ForegroundWindow() : 0;
+        const std::string foreground_process =
+            (foreground_probe_ && foreground_window != 0)
+                ? foreground_probe_->ForegroundProcessName()
+                : std::string();
+        if (!foreground_probe_ || foreground_window == 0 ||
+            last_injection_->foreground_window == 0 ||
+            foreground_window != last_injection_->foreground_window ||
+            foreground_process != last_injection_->foreground_process) {
+            reject(VoiceTargetedFailure::kAppChanged);
+            return true;
+        }
+        {
+            std::wstring elevated_process;
+            if (foreground_probe_->IsForegroundHigherIntegrity(elevated_process)) {
+                reject(VoiceTargetedFailure::kForegroundElevated);
+                return true;
+            }
+        }
+        // ---- L1 目标校验：targeted 恒 verified ----
+        VoiceEditFieldState field;
+        if (focus_text_reader_) {
+            focus_text_reader_->ReadFocusedField(&field);
+        }
+        if (field.is_password) {
+            reject(VoiceTargetedFailure::kVerifyUnavailable);
+            return true;
+        }
+        const std::string field_tail = NormalizeVoiceEditLineBreaks(field.tail_text);
+        // 批次 1（字段内定位）：读得到光标偏移 → 多级锚定；读不到 → P1c 等价路径。
+        // TODO(win): 待 Windows 机编译+CTest 验证（偏移换算路径）。
+        VoiceTargetedPlan plan;
+        if (field.readable && field.caret_tail_utf16 != kCaretOutsideTail) {
+            const std::string anchored = last_injection_->pressed_enter
+                                             ? last_injection_->remaining_text + "\n"
+                                             : last_injection_->remaining_text;
+            const auto anchor_result =
+                LocateVoiceEditAnchor(field_tail, field.caret_tail_utf16,
+                                      field.selection_collapsed ? 0 : 1, anchored,
+                                      /*anchored_has_recorded_newline=*/
+                                      last_injection_->pressed_enter);
+            if (!anchor_result.ok) {
+                reject(anchor_result.failure == VoiceEditAnchorFailure::kAnchorAmbiguous
+                           ? VoiceTargetedFailure::kAnchorAmbiguous
+                           : VoiceTargetedFailure::kFieldMismatch);
+                return true;
+            }
+            plan = PlanVoiceTargetedAnchored(command, last_injection_->remaining_text,
+                                             last_injection_->pressed_enter, field.readable,
+                                             field_tail, anchor_result.anchor);
+        } else {
+            plan = PlanVoiceTargeted(command, last_injection_->remaining_text,
+                                     last_injection_->pressed_enter, field.readable,
+                                     field_tail, field.caret_at_end,
+                                     field.selection_collapsed);
+        }
+        if (!plan.ok) {
+            reject(plan.failure);
+            return true;
+        }
+        // 防御：尾部窗口与 remaining/前缀长度不自洽 → 安全拒绝。
+        const std::size_t tail_prefix_utf16 = VoiceTargetedUtf16Length(plan.tail_prefix);
+        const std::size_t expected_tail_utf16 =
+            tail_prefix_utf16 + plan.remaining_utf16_length +
+            (plan.has_recorded_newline ? 1 : 0) +
+            VoiceTargetedUtf16Length(plan.anchor_after_text);
+        if (field.tail_utf16_length < expected_tail_utf16) {
+            reject(VoiceTargetedFailure::kFieldMismatch);
+            return true;
+        }
+        LogCoordinatorLine(
+            "voice targeted action=" +
+            std::string(plan.action.kind == VoiceTargetedActionKind::kDelete ? "delete"
+                                                                            : "replace") +
+            " target_len=" + std::to_string(plan.target_graphemes) +
+            " occ=" + std::to_string(plan.occurrence.index + 1) + "/" +
+            std::to_string(plan.occurrence.total) +
+            " age_ms=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                               now - last_injection_->injected_at)
+                               .count()));
+        FinishRecognitionCycle();
+        EnterReady("voice_targeted");
+        // 批次 1 路径：尾窗坐标、lastInjection 域记录维护（终验成功写新 remaining）。
+        TargetedExecutionContext exec;
+        exec.domain = VoiceTargetedDomainKind::kLastInjection;
+        exec.original_caret_utf16 = field.caret_tail_utf16;
+        exec.pre_edit_remaining_text = last_injection_->remaining_text;
+        exec.pre_action_text =
+            plan.tail_prefix + last_injection_->remaining_text +
+            (plan.has_recorded_newline ? "\n" : "") + plan.anchor_after_text;
+        ExecuteVoiceTargetedEdit(command, plan, field.tail_utf16_length, exec);
+        return true;
     }
 
-    // ---- L1 目标校验：targeted 恒 verified（任何 verify_mode 都必须可验证）----
+    // ---- 批次 2（交付 C）：整框搜索域——全文读取 + 域解析（Tier 1 优先 → 整框）。
+    // TODO(win): 待 Windows 机编译+CTest 验证（全文读取/绝对选区路径）。
     VoiceEditFieldState field;
+    bool field_read = false;
     if (focus_text_reader_) {
-        // 输出先整体重置（生产/Fake 同约定），返回 false 亦安全读 is_password。
-        focus_text_reader_->ReadFocusedField(&field);
+        field_read = focus_text_reader_->ReadFocusedFieldFullText(&field);
     }
     if (field.is_password) {
         reject(VoiceTargetedFailure::kVerifyUnavailable);
         return true;
     }
-    const std::string field_tail = NormalizeVoiceEditLineBreaks(field.tail_text);
-    // 批次 1（字段内定位）：读得到光标偏移（Fake/新 UIA）→ 多级锚定（P1a 光标
-    // 前缀/P1b 光标后缀/P1c 字段末尾/P2 唯一出现，零容错），失败码透传；读不到
-    // （旧 UIA 无偏移）→ 沿用 P1c 等价后缀校验路径（行为不变，兼容过渡）。
-    // TODO(win): 待 Windows 机编译+CTest 验证（偏移换算路径）。
-    VoiceTargetedPlan plan;
-    if (field.readable && field.caret_tail_utf16 != kCaretOutsideTail) {
-        const std::string anchored = last_injection_->pressed_enter
-                                         ? last_injection_->remaining_text + "\n"
-                                         : last_injection_->remaining_text;
-        const auto anchor_result =
-            LocateVoiceEditAnchor(field_tail, field.caret_tail_utf16,
-                                  field.selection_collapsed ? 0 : 1, anchored,
-                                  /*anchored_has_recorded_newline=*/last_injection_->pressed_enter);
-        if (!anchor_result.ok) {
-            reject(anchor_result.failure == VoiceEditAnchorFailure::kAnchorAmbiguous
-                       ? VoiceTargetedFailure::kAnchorAmbiguous
-                       : VoiceTargetedFailure::kFieldMismatch);
+    if (!field_read || !field.readable || field.full_truncated ||
+        field.caret_abs_utf16 == kCaretOutsideTail) {
+        // 全文读不到/超长/无绝对光标 → 整框域不可验证（field_too_long 单列）。
+        reject(field.full_truncated ? VoiceTargetedFailure::kFieldTooLong
+                                    : VoiceTargetedFailure::kVerifyUnavailable);
+        return true;
+    }
+    const std::string field_full = NormalizeVoiceEditLineBreaks(field.full_text);
+    // 最近一次语音输入域可用性 = L0 批次 1 闸（记录/时间窗/同前台窗口与进程）+ 锚定。
+    std::optional<VoiceTargetedRecentDomain> recent;
+    if (last_injection_.has_value() && !last_injection_->remaining_text.empty()) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            now - last_injection_->injected_at);
+        const std::uintptr_t foreground_window =
+            foreground_probe_ ? foreground_probe_->ForegroundWindow() : 0;
+        const std::string foreground_process =
+            (foreground_probe_ && foreground_window != 0)
+                ? foreground_probe_->ForegroundProcessName()
+                : std::string();
+        if (elapsed.count() <= static_cast<long long>(voice_edit.scope_seconds) &&
+            foreground_probe_ && foreground_window != 0 &&
+            last_injection_->foreground_window != 0 &&
+            foreground_window == last_injection_->foreground_window &&
+            foreground_process == last_injection_->foreground_process) {
+            const std::string anchored = last_injection_->pressed_enter
+                                             ? last_injection_->remaining_text + "\n"
+                                             : last_injection_->remaining_text;
+            const auto anchor_result = LocateVoiceEditAnchor(
+                field_full, field.caret_abs_utf16,
+                field.selection_collapsed ? 0 : 1, anchored,
+                /*anchored_has_recorded_newline=*/last_injection_->pressed_enter);
+            if (anchor_result.ok) {
+                recent = VoiceTargetedRecentDomain{last_injection_->remaining_text,
+                                                   anchor_result.anchor};
+            }
+        }
+    }
+    const auto domain_outcome = ResolveVoiceTargetedDomain(command, recent ? &*recent : nullptr,
+                                                           field_full);
+    if (domain_outcome.kind == VoiceTargetedDomainOutcome::Kind::kFailure) {
+        reject(domain_outcome.failure);
+        return true;
+    }
+    if (domain_outcome.kind == VoiceTargetedDomainOutcome::Kind::kOutOfRange) {
+        LogVoiceEditFailure("anchor", "position_out_of_range");
+        LogCoordinatorLine("voice targeted out_of_range count=" +
+                           std::to_string(domain_outcome.count));
+        FinishRecognitionCycle();
+        EnterReady("voice_targeted_out_of_range");
+        ui_->ShowTimedMessage(ReplaceTwoDecimals(
+                                  Tr(StringId::kVoiceTargetedOrdinalRange, language),
+                                  domain_outcome.count, domain_outcome.count),
+                              kVoiceEditToastMs);
+        return true;
+    }
+    if (domain_outcome.kind == VoiceTargetedDomainOutcome::Kind::kClarify) {
+        // 批次 2 交付 B：多处未消歧 → 存 pending 追问「第几个」。
+        PendingVoiceEditClarification pending;
+        pending.command = command;
+        pending.domain = domain_outcome.domain;
+        pending.occurrence_count = domain_outcome.count;
+        if (foreground_probe_) {
+            pending.foreground_window = foreground_probe_->ForegroundWindow();
+            if (pending.foreground_window != 0) {
+                pending.foreground_process = foreground_probe_->ForegroundProcessName();
+            }
+        }
+        pending.created_at = now;
+        pending.generation = voice_edit_generation_;
+        pending_clarification_ = std::move(pending);
+        LogCoordinatorLine("voice targeted clarify count=" +
+                           std::to_string(domain_outcome.count) +
+                           " domain=" +
+                           (domain_outcome.domain == VoiceTargetedDomainKind::kWholeField
+                                ? "whole_field"
+                                : "last_injection"));
+        FinishRecognitionCycle();
+        EnterReady("voice_targeted_clarify");
+        // 提示可显示目标词（本地 UI）；日志只记计数与域。
+        ui_->ShowTimedMessage(ReplaceDecimalAndString(
+                                  Tr(StringId::kVoiceTargetedClarifyPrompt, language),
+                                  domain_outcome.count, command.target),
+                              kVoiceEditToastMs);
+        return true;
+    }
+    // kExecute：按域构建计划与执行上下文。
+    {
+        std::string domain_text;
+        bool pressed_enter = false;
+        VoiceEditAnchor anchor;
+        TargetedExecutionContext exec;
+        exec.absolute_coords = true;  // 全文坐标（绝对选区 + 全文终验）
+        exec.original_caret_utf16 = field.caret_abs_utf16;
+        if (domain_outcome.domain == VoiceTargetedDomainKind::kLastInjection) {
+            domain_text = recent->remaining_text;
+            pressed_enter = last_injection_->pressed_enter;
+            anchor = recent->anchor;
+            exec.pre_edit_remaining_text = domain_text;  // pre_action_text 计划后回填
+        } else {
+            domain_text = field_full;
+            pressed_enter = false;
+            exec.pre_action_text = field_full;
+            anchor.kind = VoiceEditAnchor::Kind::kWholeField;
+            anchor.anchor_start = 0;
+            anchor.anchor_end = VoiceTargetedUtf16Length(field_full);
+            // 注入记录维护三情形（计划时刻锚定可定位时）。
+            if (recent.has_value()) {
+                const std::size_t edit_start = domain_outcome.selected.utf16_start;
+                const std::size_t edit_end =
+                    edit_start + domain_outcome.selected.utf16_length;
+                const std::size_t rem_start = recent->anchor.anchor_start;
+                const std::size_t rem_end =
+                    rem_start + VoiceTargetedUtf16Length(recent->remaining_text);
+                if (edit_start >= rem_start && edit_end <= rem_end) {
+                    exec.record_action =
+                        TargetedExecutionContext::RecordAction::kUpdate;
+                    exec.record_update_remaining = MapWholeFieldEditToRemaining(
+                        recent->remaining_text, edit_start - rem_start,
+                        domain_outcome.selected.utf16_length,
+                        command.action.kind == VoiceTargetedActionKind::kDelete
+                            ? std::string_view()
+                            : std::string_view(command.action.replacement));
+                } else if (edit_end <= recent->anchor.anchor_start ||
+                           edit_start >= recent->anchor.anchor_end) {
+                    exec.record_action =
+                        TargetedExecutionContext::RecordAction::kKeep;
+                } else {
+                    exec.record_action =
+                        TargetedExecutionContext::RecordAction::kInvalidate;
+                }
+                exec.pre_edit_remaining_text = recent->remaining_text;
+            }
+        }
+        VoiceTargetedPlan plan = PlanVoiceTargetedAnchored(
+            command, domain_text, pressed_enter, field.readable, field_full, anchor);
+        if (!plan.ok) {
+            reject(plan.failure);
             return true;
         }
-        plan = PlanVoiceTargetedAnchored(command, last_injection_->remaining_text,
-                                         last_injection_->pressed_enter, field.readable,
-                                         field_tail, anchor_result.anchor);
-    } else {
-        plan = PlanVoiceTargeted(command, last_injection_->remaining_text,
-                                 last_injection_->pressed_enter, field.readable, field_tail,
-                                 field.caret_at_end, field.selection_collapsed);
-    }
-    if (!plan.ok) {
-        reject(plan.failure);
-        return true;
-    }
-    // 防御：尾部窗口与 remaining/前缀长度不自洽（Fake/异常 UIA 行为）→ 安全拒绝。
-    const std::size_t tail_prefix_utf16 = VoiceTargetedUtf16Length(plan.tail_prefix);
-    const std::size_t expected_tail_utf16 =
-        tail_prefix_utf16 + plan.remaining_utf16_length +
-        (plan.has_recorded_newline ? 1 : 0) +
-        VoiceTargetedUtf16Length(plan.anchor_after_text);
-    if (field.tail_utf16_length < expected_tail_utf16) {
-        reject(VoiceTargetedFailure::kFieldMismatch);
-        return true;
-    }
-
-    LogCoordinatorLine(
-        "voice targeted action=" +
-        std::string(plan.action.kind == VoiceTargetedActionKind::kDelete ? "delete" : "replace") +
-        " target_len=" + std::to_string(plan.target_graphemes) +
-        " occ=" + std::to_string(plan.occurrence.index + 1) + "/" +
-        std::to_string(plan.occurrence.total) +
-        " age_ms=" +
-        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+        if (domain_outcome.domain == VoiceTargetedDomainKind::kLastInjection) {
+            exec.pre_action_text =
+                plan.tail_prefix + domain_text +
+                (plan.has_recorded_newline ? "\n" : "") + plan.anchor_after_text;
+        }
+        LogCoordinatorLine(
+            "voice targeted action=" +
+            std::string(plan.action.kind == VoiceTargetedActionKind::kDelete ? "delete"
+                                                                            : "replace") +
+            " target_len=" + std::to_string(plan.target_graphemes) +
+            " occ=" + std::to_string(plan.occurrence.index + 1) + "/" +
+            std::to_string(plan.occurrence.total) +
+            " domain=" +
+            (domain_outcome.domain == VoiceTargetedDomainKind::kWholeField
+                 ? "whole_field"
+                 : "last_injection") +
+            " age_ms=" +
+            (last_injection_.has_value()
+                 ? std::to_string(
+                       std::chrono::duration_cast<std::chrono::milliseconds>(
                            now - last_injection_->injected_at)
-                           .count()));
-    FinishRecognitionCycle();
-    EnterReady("voice_targeted");
-    ExecuteVoiceTargetedEdit(command, plan, field.tail_utf16_length);
-    return true;
+                           .count())
+                 : std::string("-1")));
+        FinishRecognitionCycle();
+        EnterReady("voice_targeted");
+        ExecuteVoiceTargetedEdit(command, plan,
+                                 VoiceTargetedUtf16Length(field_full), exec);
+        return true;
+    }
 }
 
-void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(const VoiceTargetedCommand& command,
-                                                     const VoiceTargetedPlan& plan,
-                                                     std::size_t tail_utf16_length) {
+void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(
+    const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
+    std::size_t tail_utf16_length, const TargetedExecutionContext& exec) {
     const auto generation = voice_edit_generation_;
     auto* editor = targeted_field_editor_.get();
     if (editor == nullptr || tail_utf16_length == 0) {
@@ -1194,15 +1466,22 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(const VoiceTargetedCommand&
             kVoiceEditToastMs);
         return;
     }
-    // tail 内偏移 = anchored 段起点 + remaining 内偏移（锚段/换行已在计划期确定性
-    // 拆解；P1c 下 anchor_start_utf16 == Utf16Length(tail_prefix)，与旧公式一致）。
-    const std::size_t tail_relative = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
+    // 选区偏移：批次 1（尾窗坐标）/ 批次 2（全文绝对坐标，exec.absolute_coords）。
+    // 尾窗：anchored 段起点 + remaining 内偏移（锚段/换行已在计划期确定性拆解；
+    // P1c 下 anchor_start_utf16 == Utf16Length(tail_prefix)，与旧公式一致）。
+    // 绝对：整框/全文域下计划偏移即文档绝对偏移。
+    const std::size_t selection_start = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
 
     // 1. 平台精确选区 + 读回实际选中文本；2. 逐字 == target 才继续。
     // 选区已尝试但任一步失败：尽力恢复安全光标（末尾），按不可验证拒绝（不修改）。
     std::string selected_text;
-    if (!editor->SelectAndReadBack(tail_relative, plan.occurrence.utf16_length,
-                                   &selected_text)) {
+    const bool selected_ok =
+        exec.absolute_coords
+            ? editor->SelectAndReadBackAbsolute(selection_start,
+                                                plan.occurrence.utf16_length, &selected_text)
+            : editor->SelectAndReadBack(selection_start, plan.occurrence.utf16_length,
+                                        &selected_text);
+    if (!selected_ok) {
         editor->MoveCaretToEnd();
         ui_->ShowTimedMessage(
             Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kVerifyUnavailable),
@@ -1240,6 +1519,8 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(const VoiceTargetedCommand&
     }
     // 4/5. 延时后回 UI 线程恢复光标 + 终验（stale generation 直接丢弃）。
     // 批次 1：期望尾部按锚定结构（P1c 时 anchor_after_text=""，与旧公式逐字节一致）。
+    // 批次 2（交付 C）：光标恢复统一「原位置 + 平移」——末尾追加情形与批次 1
+    // 「恢复段末/字段末」结果一致（回归底线）；P1b/段中留在原位附近（有意变化）。
     const std::string expected_tail = plan.tail_prefix + plan.new_remaining_text +
                                       (plan.has_recorded_newline ? "\n" : "") +
                                       plan.anchor_after_text;
@@ -1252,12 +1533,15 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(const VoiceTargetedCommand&
                   (plan.has_recorded_newline ? "\n" : "") + plan.anchor_after_text
             : std::string();
     const auto alive = alive_;
-    std::thread([this, alive, generation, plan, expected_tail, pre_action_tail]() {
+    std::thread([this, alive, generation, plan, command, exec, expected_tail,
+                 pre_action_tail]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         if (!alive->load()) return;
-        RunOnUiThread([this, alive, generation, plan, expected_tail, pre_action_tail]() {
+        RunOnUiThread([this, alive, generation, plan, command, exec, expected_tail,
+                       pre_action_tail]() {
             if (!alive->load()) return;
-            FinalizeVoiceTargetedEdit(generation, plan, expected_tail, pre_action_tail, 0);
+            FinalizeVoiceTargetedEdit(generation, plan, expected_tail, pre_action_tail,
+                                      command, exec, 0);
         });
     }).detach();
 }
@@ -1274,43 +1558,62 @@ bool VoiceTargetedTailOverlaps(const std::string& actual, const std::string& ref
 }
 }  // namespace
 
-void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
-                                                      const VoiceTargetedPlan& plan,
-                                                      std::string expected_tail,
-                                                      std::string pre_action_tail,
-                                                      int attempt) {
+void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(
+    std::uint64_t generation, const VoiceTargetedPlan& plan, std::string expected_tail,
+    std::string pre_action_tail, const VoiceTargetedCommand& command,
+    const TargetedExecutionContext& exec, int attempt) {
     if (generation != voice_edit_generation_) return;  // stale：不覆盖新记录
     const UiLanguage language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
+    // 批次 2（交付 C）：光标恢复统一「原位置 + 平移」（末尾追加情形与批次 1
+    // 「恢复段末」一致；P1b/段中留在原位附近——有意变化）。绝对坐标（整框域）用
+    // MoveCaretToAbsolute；尾窗坐标沿用批次 1 语义（原光标读不到时恢复段末）。
+    const std::size_t selection_start =
+        plan.anchor_start_utf16 + plan.occurrence.utf16_start;
+    const std::size_t inserted_length =
+        plan.action.kind == VoiceTargetedActionKind::kDelete
+            ? 0
+            : VoiceTargetedUtf16Length(plan.action.replacement);
+    const std::size_t restore_caret =
+        exec.original_caret_utf16 != kCaretOutsideTail
+            ? VoiceTargetedRestoredCaret(exec.original_caret_utf16, selection_start,
+                                         plan.occurrence.utf16_length, inserted_length)
+            : VoiceTargetedUtf16Length(expected_tail) -
+                  VoiceTargetedUtf16Length(plan.anchor_after_text);
     if (targeted_field_editor_ != nullptr) {
-        // 批次 1：恢复光标到「编辑后 anchored 段末尾」（P1c = 文档末尾，与旧
-        // MoveCaretToEnd 行为一致；P1a/P1b/P2 = 段后内容之前）。
-        // TODO(win): 待 Windows 机编译+CTest 验证（MoveCaretTo 的 UIA 路径）。
-        const std::size_t restore = VoiceTargetedUtf16Length(expected_tail) -
-                                     VoiceTargetedUtf16Length(plan.anchor_after_text);
-        targeted_field_editor_->MoveCaretTo(restore);
+        // TODO(win): 待 Windows 机编译+CTest 验证（MoveCaretTo/Absolute 的 UIA 路径）。
+        if (exec.absolute_coords) {
+            targeted_field_editor_->MoveCaretToAbsolute(restore_caret);
+        } else {
+            targeted_field_editor_->MoveCaretTo(restore_caret);
+        }
     }
-    // 终验：当前尾部文本以期望文本的**可重叠公共后缀**结尾（原 tail 是 512 窗口
-    // 时，变长替换会使 expected_tail 超过窗口长——不能要求 tail 全长覆盖 expected）。
-    // expected 为空时要求 actual 也为空，避免空串万能匹配。成功判据是尾部文本终验
-    // （2026-10-31 起光标/选区不再作为失败条件，恢复末尾只作 best-effort）。
+    // 终验：批次 2 绝对坐标（整框域）→ 全文读回**精确相等**（全文 ≤200k，无窗口
+    // 截断问题）；批次 1 尾窗 → 可重叠公共后缀比较（原 tail 是 512 窗口时，变长
+    // 替换会使 expected_tail 超过窗口长——不能要求 tail 全长覆盖 expected）。
+    // 成功判据是文本终验（光标/选区只作 best-effort，未落地只记日志）。
     VoiceEditFieldState field;
-    std::string tail;
+    std::string actual;
     bool verified = false;
-    bool caret_restored = false;
-    if (focus_text_reader_ && focus_text_reader_->ReadFocusedField(&field) && field.readable) {
-        tail = NormalizeVoiceEditLineBreaks(field.tail_text);
-        verified = VoiceTargetedTailOverlaps(tail, expected_tail);
-        caret_restored = field.selection_collapsed && field.caret_at_end;
+    bool read_ok = false;
+    if (exec.absolute_coords) {
+        // TODO(win): 待 Windows 机编译+CTest 验证（全文终验读取路径）。
+        if (focus_text_reader_ && focus_text_reader_->ReadFocusedFieldFullText(&field) &&
+            field.readable && !field.full_truncated) {
+            actual = NormalizeVoiceEditLineBreaks(field.full_text);
+            read_ok = true;
+            verified = actual == expected_tail;
+        }
+    } else if (focus_text_reader_ &&
+               focus_text_reader_->ReadFocusedField(&field) && field.readable) {
+        actual = NormalizeVoiceEditLineBreaks(field.tail_text);
+        read_ok = true;
+        verified = VoiceTargetedTailOverlaps(actual, expected_tail);
     }
     if (verified) {
-        if (!caret_restored) {
-            // 文本已确认但光标恢复写未落地：修改本身已验证完成，只记日志不判失败。
-            LogCoordinatorLine("voice targeted: caret restore unconfirmed (best-effort)");
-        }
-        if (generation == voice_edit_generation_ && last_injection_.has_value()) {
-            last_injection_->remaining_text = plan.new_remaining_text;
-            // pressed_enter 不变（targeted 不消费换行）。
-        }
+        // 批次 2 交付 C：注入记录维护（lastInjection 域写新 remaining；整框域
+        // update/keep/invalidate 三情形）+ 交付 E：撤销记录。
+        ApplyTargetedRecordMaintenance(plan, exec);
+        RecordTargetedUndo(command, plan, exec, expected_tail);
         ui_->ShowTimedMessage(VoiceTargetedResultMessage(plan, language), kVoiceEditToastMs);
         return;
     }
@@ -1325,26 +1628,28 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
                          sizeof(kVoiceTargetedVerifyPollDelays[0]));
     if (attempt < kVoiceTargetedVerifyAttempts) {
         const auto alive = alive_;
-        std::thread([this, alive, generation, plan, expected_tail, pre_action_tail, attempt]() {
+        std::thread([this, alive, generation, plan, command, exec, expected_tail,
+                     pre_action_tail, attempt]() {
             std::this_thread::sleep_for(kVoiceTargetedVerifyPollDelays[attempt]);
             if (!alive->load()) return;
-            RunOnUiThread(
-                [this, alive, generation, plan, expected_tail, pre_action_tail, attempt]() {
-                    if (!alive->load()) return;
-                    FinalizeVoiceTargetedEdit(generation, plan, expected_tail, pre_action_tail,
-                                              attempt + 1);
-                });
+            RunOnUiThread([this, alive, generation, plan, command, exec, expected_tail,
+                           pre_action_tail, attempt]() {
+                if (!alive->load()) return;
+                FinalizeVoiceTargetedEdit(generation, plan, expected_tail, pre_action_tail,
+                                          command, exec, attempt + 1);
+            });
         }).detach();
         return;
     }
-    // 窗末分类（2026-10-31）：尾部仍是动作前原样＝动作未落地（粘贴迟到/丢失）→
-    // **记录保留**只提示——后缀不变量仍成立，重试命令要么直接生效、要么被 planner
-    // 字段校验拦下，均不污染字段；变成第三种内容＝真不符 → 记录失效防陈旧偏移。
+    // 窗末分类：仍是动作前原样＝动作未落地 → 记录保留只提示；变成第三种内容＝
+    // 真不符 → 记录失效防陈旧偏移（批次 2 绝对坐标用 pre_action_text 精确比较）。
     LogVoiceEditFailure("field_text", "result_unconfirmed");
-    const bool still_old = VoiceTargetedTailOverlaps(tail, pre_action_tail);
+    const bool still_old = exec.absolute_coords
+                               ? (read_ok && actual == exec.pre_action_text)
+                               : VoiceTargetedTailOverlaps(actual, pre_action_tail);
     LogCoordinatorLine("voice targeted: verify unconfirmed expected_len=" +
                        std::to_string(expected_tail.size()) +
-                       " actual_len=" + std::to_string(tail.size()) +
+                       " actual_len=" + std::to_string(actual.size()) +
                        " still_old=" + (still_old ? "1" : "0"));
     if (!still_old && generation == voice_edit_generation_) {
         last_injection_.reset();
@@ -1353,6 +1658,509 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
         Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kResultUnconfirmed),
            language),
         kVoiceEditToastMs);
+}
+
+// 批次 2（交付 C）：终验成功后的注入记录维护。lastInjection 域 → 写
+// plan.new_remaining_text（批次 1 行为不变）；整框域 → update 同步映射 / keep
+// 不变 / invalidate 作废 / none（计划时刻不可定位）不变。须在 UI 线程调用。
+void VoiceStickCoordinator::ApplyTargetedRecordMaintenance(
+    const VoiceTargetedPlan& plan, const TargetedExecutionContext& exec) {
+    switch (exec.domain) {
+        case VoiceTargetedDomainKind::kLastInjection:
+            if (last_injection_.has_value()) {
+                last_injection_->remaining_text = plan.new_remaining_text;
+                // pressed_enter 不变（targeted 不消费换行）。
+            }
+            break;
+        case VoiceTargetedDomainKind::kWholeField:
+            switch (exec.record_action) {
+                case TargetedExecutionContext::RecordAction::kNone:
+                case TargetedExecutionContext::RecordAction::kKeep:
+                    break;  // 计划时刻不可定位 / 编辑完全在锚段外 → 记录不变
+                case TargetedExecutionContext::RecordAction::kUpdate:
+                    if (last_injection_.has_value()) {
+                        last_injection_->remaining_text = exec.record_update_remaining;
+                        LogCoordinatorLine("voice targeted record update len=" +
+                                           std::to_string(
+                                               exec.record_update_remaining.size()));
+                    }
+                    break;
+                case TargetedExecutionContext::RecordAction::kInvalidate:
+                    LogCoordinatorLine("voice targeted record invalidate");
+                    last_injection_.reset();
+                    break;
+            }
+            break;
+    }
+}
+
+// ================== 批次 2 交付 B：追问「第几个」状态机 ==================
+
+// finishWithFinalText 最前面：pending 存在且有效（20 秒 + 同前台 + 同代际）且本句
+// 是序数应答 → 吞轮处理；非应答一律清 pending 放行正常链路（绝不吞正常说话）。
+// 须在 UI 线程调用。
+bool VoiceStickCoordinator::HandlePendingClarificationIfMatched(const std::string& text) {
+    if (is_shutdown_) return false;
+    if (!pending_clarification_.has_value()) return false;
+    const auto& pending = *pending_clarification_;
+    const auto now = std::chrono::steady_clock::now();
+    const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - pending.created_at);
+    std::uintptr_t foreground_window = 0;
+    std::string foreground_process;
+    if (foreground_probe_) {
+        foreground_window = foreground_probe_->ForegroundWindow();
+        if (foreground_window != 0) {
+            foreground_process = foreground_probe_->ForegroundProcessName();
+        }
+    }
+    const bool app_changed = foreground_window != pending.foreground_window ||
+                             foreground_process != pending.foreground_process;
+    if (age.count() > 20 || app_changed || pending.generation != voice_edit_generation_) {
+        pending_clarification_.reset();
+        return false;
+    }
+    const auto reply = ParseVoiceEditOrdinalReply(text, pending.command.target);
+    if (!reply.has_value()) {
+        pending_clarification_.reset();  // 非应答：清 pending、按正常链路放行
+        return false;
+    }
+    // 序数应答：吞轮（不粘贴、不精修、不写历史）。pending 清除时机：取消/域变化/
+    // 执行接管各自清理；越界**保留**（等下一句应答，与 macOS 同构）。
+    pasted_final_text_ = true;
+    const auto config = ConfigSnapshot();
+    const UiLanguage language = EffectiveUiLanguage(config->ui_language);
+    switch (reply->kind) {
+        case VoiceEditOrdinalReply::Kind::kCancel:
+            pending_clarification_.reset();
+            LogCoordinatorLine("voice edit clarify cancel");
+            FinishRecognitionCycle();
+            EnterReady("voice_edit_clarify_cancel");
+            ui_->ShowTimedMessage(Tr(StringId::kVoiceTargetedClarifyCancelled, language),
+                                  kVoiceEditToastMs);
+            return true;
+        case VoiceEditOrdinalReply::Kind::kOrdinal:
+        case VoiceEditOrdinalReply::Kind::kFromEnd:
+            ExecuteClarifiedReply(*reply, pending);
+            return true;
+    }
+    return true;
+}
+
+// 应答执行：重新过 L0 闸 + 读字段 + 锚定，在同一域内重算出现次数——次数变化 →
+// 「文本已变化」清 pending；越界 → 「只有 N 处」提示且**保留** pending（等下一句
+// 应答）；一致 → 复用接管主体（TakeOverTargetedCommand 会清 pending）执行。
+// TODO(win): 待 Windows 机编译+CTest 验证。
+void VoiceStickCoordinator::ExecuteClarifiedReply(
+    const VoiceEditOrdinalReply& reply, const PendingVoiceEditClarification& pending) {
+    const auto config = ConfigSnapshot();
+    const auto& voice_edit = config->voice_edit;
+    const UiLanguage language = EffectiveUiLanguage(config->ui_language);
+    const auto reject_changed = [this, language]() {
+        pending_clarification_.reset();
+        LogCoordinatorLine("voice edit clarify changed");
+        FinishRecognitionCycle();
+        EnterReady("voice_edit_clarify_changed");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceTargetedClarifyChanged, language),
+                              kVoiceEditToastMs);
+    };
+    if (pending.domain == VoiceTargetedDomainKind::kWholeField) {
+        VoiceEditFieldState field;
+        if (!focus_text_reader_ || !focus_text_reader_->ReadFocusedFieldFullText(&field) ||
+            !field.readable || field.full_truncated || field.is_password ||
+            field.caret_abs_utf16 == kCaretOutsideTail) {
+            reject_changed();
+            return;
+        }
+        const std::string field_full = NormalizeVoiceEditLineBreaks(field.full_text);
+        const auto matches =
+            FindTargetedOccurrences(pending.command.target, field_full);
+        if (static_cast<int>(matches.size()) != pending.occurrence_count) {
+            reject_changed();
+            return;
+        }
+        int requested = 0;
+        if (reply.kind == VoiceEditOrdinalReply::Kind::kOrdinal) {
+            requested = reply.n;
+        } else {
+            requested = static_cast<int>(matches.size()) - reply.n + 1;
+        }
+        if (requested < 1 || requested > static_cast<int>(matches.size())) {
+            LogCoordinatorLine("voice edit clarify out_of_range n=" + std::to_string(requested) +
+                               " count=" + std::to_string(matches.size()));
+            ui_->ShowTimedMessage(
+                ReplaceTwoDecimals(Tr(StringId::kVoiceTargetedOrdinalRange, language),
+                                   static_cast<int>(matches.size()),
+                                   static_cast<int>(matches.size())),
+                kVoiceEditToastMs);
+            return;
+        }
+        VoiceTargetedCommand command = pending.command;
+        command.position = VoiceTargetedPosition::kOrdinal;
+        command.position_n = requested;
+        command.has_explicit_scope = true;
+        TakeOverTargetedCommand(/*text=*/"", VoiceTargetedParseResult{false, command},
+                                config);
+        return;
+    }
+    // lastInjection 域：记录闸 + 锚定 + remaining 重算。
+    if (!last_injection_.has_value() || last_injection_->remaining_text.empty()) {
+        reject_changed();
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::seconds>(now - last_injection_->injected_at);
+    std::uintptr_t foreground_window = 0;
+    std::string foreground_process;
+    if (foreground_probe_) {
+        foreground_window = foreground_probe_->ForegroundWindow();
+        if (foreground_window != 0) {
+            foreground_process = foreground_probe_->ForegroundProcessName();
+        }
+    }
+    if (elapsed.count() > static_cast<long long>(voice_edit.scope_seconds) ||
+        foreground_window == 0 || last_injection_->foreground_window == 0 ||
+        foreground_window != last_injection_->foreground_window ||
+        foreground_process != last_injection_->foreground_process) {
+        reject_changed();
+        return;
+    }
+    VoiceEditFieldState field;
+    if (!focus_text_reader_ || !focus_text_reader_->ReadFocusedField(&field) ||
+        !field.readable || field.is_password ||
+        field.caret_tail_utf16 == kCaretOutsideTail) {
+        reject_changed();
+        return;
+    }
+    const std::string field_tail = NormalizeVoiceEditLineBreaks(field.tail_text);
+    const std::string anchored = last_injection_->pressed_enter
+                                     ? last_injection_->remaining_text + "\n"
+                                     : last_injection_->remaining_text;
+    const auto anchor_result =
+        LocateVoiceEditAnchor(field_tail, field.caret_tail_utf16,
+                              field.selection_collapsed ? 0 : 1, anchored,
+                              /*anchored_has_recorded_newline=*/last_injection_->pressed_enter);
+    if (!anchor_result.ok) {
+        reject_changed();  // 字段已变化（锚定失败）
+        return;
+    }
+    const auto matches =
+        FindTargetedOccurrences(pending.command.target, last_injection_->remaining_text);
+    if (static_cast<int>(matches.size()) != pending.occurrence_count) {
+        reject_changed();  // 出现次数变化：宁拒勿错
+        return;
+    }
+    int requested = 0;
+    if (reply.kind == VoiceEditOrdinalReply::Kind::kOrdinal) {
+        requested = reply.n;
+    } else {
+        requested = static_cast<int>(matches.size()) - reply.n + 1;
+    }
+    if (requested < 1 || requested > static_cast<int>(matches.size())) {
+        LogCoordinatorLine("voice edit clarify out_of_range n=" + std::to_string(requested) +
+                           " count=" + std::to_string(matches.size()));
+        FinishRecognitionCycle();
+        EnterReady("voice_edit_clarify_out_of_range");
+        ui_->ShowTimedMessage(
+            ReplaceTwoDecimals(Tr(StringId::kVoiceTargetedOrdinalRange, language),
+                               static_cast<int>(matches.size()),
+                               static_cast<int>(matches.size())),
+            kVoiceEditToastMs);
+        return;
+    }
+    VoiceTargetedCommand command = pending.command;
+    command.position = VoiceTargetedPosition::kOrdinal;
+    command.position_n = requested;
+    command.has_explicit_scope = true;
+    LogCoordinatorLine("voice edit clarify execute n=" + std::to_string(requested) +
+                       " count=" + std::to_string(matches.size()));
+    // 复用接管主体（field_scope 开 → 走域解析；合成指令带位置唯一命中）。
+    TakeOverTargetedCommand(/*text=*/"", VoiceTargetedParseResult{false, command}, config);
+}
+
+// ================== 批次 2 交付 E：上下文撤销 ==================
+
+// 撤销可用性 + 分流：「撤销/撤回(刚才的)」在记录 ≤30s + 同前台窗口/进程 + 字段
+// 可读时：字段全文严格等于 post_edit_field_text → 执行还原（吞轮）；字段已变化 →
+// 提示无法撤销；其余返回 false 落回原 deleteAll 语义（行为不变）。UI 线程。
+// TODO(win): 待 Windows 机编译+CTest 验证。
+bool VoiceStickCoordinator::TryHandleVoiceEditUndo(const std::string& text) {
+    (void)text;
+    if (!last_voice_edit_.has_value()) return false;
+    const auto& record = *last_voice_edit_;
+    const auto now = std::chrono::steady_clock::now();
+    const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - record.created_at);
+    if (age.count() > 30) return false;
+    std::uintptr_t foreground_window = 0;
+    std::string foreground_process;
+    if (foreground_probe_) {
+        foreground_window = foreground_probe_->ForegroundWindow();
+        if (foreground_window != 0) {
+            foreground_process = foreground_probe_->ForegroundProcessName();
+        }
+    }
+    if (foreground_window == 0 || record.foreground_window == 0 ||
+        foreground_window != record.foreground_window ||
+        foreground_process != record.foreground_process) {
+        return false;
+    }
+    if (!focus_text_reader_) return false;
+    VoiceEditFieldState field;
+    if (!focus_text_reader_->ReadFocusedFieldFullText(&field) || !field.readable ||
+        field.is_password || field.full_truncated) {
+        return false;  // 不可读 → 原语义
+    }
+    pasted_final_text_ = true;
+    pending_clarification_.reset();
+    const auto config = ConfigSnapshot();
+    const UiLanguage language = EffectiveUiLanguage(config->ui_language);
+    FinishRecognitionCycle();
+    EnterReady("voice_edit_undo");
+    if (NormalizeVoiceEditLineBreaks(field.full_text) != record.post_edit_field_text) {
+        last_voice_edit_.reset();  // 一次性尝试：字段已变化即放弃该撤销锚点
+        LogCoordinatorLine("voice edit undo result=failure code=field_changed");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceTargetedUndoChanged, language),
+                              kVoiceEditToastMs);
+        return true;
+    }
+    LastVoiceEditRecord record_copy = record;
+    ExecuteVoiceEditUndo(record_copy);
+    return true;
+}
+
+// UTF-16 偏移 → 字节偏移（撤销终验构造用；与 domain.cc MapWholeFieldEditToRemaining
+// 同口径的本地实现）。TODO(win): 待 Windows 机编译+CTest 验证。
+std::size_t ByteOffsetAtUtf16ForUndo(std::string_view text, std::size_t target_utf16) {
+    std::size_t utf16_offset = 0;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        if (utf16_offset >= target_utf16) return pos;
+        const auto decoded = voicestick::utf8::DecodeUtf8(text, pos);
+        utf16_offset += decoded.value <= 0xFFFF ? 1 : 2;
+        pos += decoded.length;
+    }
+    return text.size();
+}
+
+// 撤销执行（沿用 targeted verified 链形态）：选中编辑后区间（删除类折叠）→ 读回
+// 确认（替换类逐字 == 插入文本）→ 粘贴原文本 → 终验 == 编辑前全文 → 恢复
+// remainingText。记录进入即清（一级撤销，撤销本身不可再撤销）。UI 线程。
+// TODO(win): 待 Windows 机编译+CTest 验证。
+void VoiceStickCoordinator::ExecuteVoiceEditUndo(const LastVoiceEditRecord& record) {
+    last_voice_edit_.reset();
+    const auto config = ConfigSnapshot();
+    const UiLanguage language = EffectiveUiLanguage(config->ui_language);
+    auto* editor = targeted_field_editor_.get();
+    if (editor == nullptr) {
+        LogCoordinatorLine("voice edit undo result=failure code=verify_unavailable");
+        LogVoiceEditFailure("selected_range", "verify_unavailable");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceEditUnreadable, language), kVoiceEditToastMs);
+        return;
+    }
+    // 1. 选中编辑后区间（删除类折叠）+ 读回实际选中文本；2. 替换类逐字 == 插入
+    //    文本才继续（删除类折叠区间跳过读回比对）。
+    std::string selected_text;
+    if (!editor->SelectAndReadBackAbsolute(record.edit_start_utf16,
+                                           record.edit_length_utf16, &selected_text)) {
+        editor->MoveCaretToEnd();
+        LogCoordinatorLine("voice edit undo result=failure code=verify_unavailable");
+        LogVoiceEditFailure("selected_range", "verify_unavailable");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceEditUnreadable, language), kVoiceEditToastMs);
+        return;
+    }
+    if (record.edit_length_utf16 > 0 && selected_text != record.inserted_text) {
+        editor->MoveCaretToEnd();
+        LogCoordinatorLine("voice edit undo result=failure code=field_mismatch");
+        LogVoiceEditFailure("selected_text", "field_mismatch");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceTargetedUndoChanged, language),
+                              kVoiceEditToastMs);
+        return;
+    }
+    // 单次动作：粘贴原文本（删除类在折叠光标处插入；替换类覆盖选区）。
+    input_injector_->Paste(record.original_text, /*press_enter=*/false);
+    // 终验 == 编辑前全文（post_edit 全文按区间替换回原文本）。
+    const std::size_t edit_end = record.edit_start_utf16 + record.edit_length_utf16;
+    const std::string expected =
+        record.post_edit_field_text.substr(
+            0, ByteOffsetAtUtf16ForUndo(record.post_edit_field_text, record.edit_start_utf16)) +
+        record.original_text +
+        record.post_edit_field_text.substr(
+            ByteOffsetAtUtf16ForUndo(record.post_edit_field_text, edit_end));
+    const std::size_t restore_caret =
+        record.edit_start_utf16 + VoiceTargetedUtf16Length(record.original_text);
+    const auto generation = voice_edit_generation_;
+    const auto alive = alive_;
+    std::thread([this, alive, generation, record, expected, restore_caret]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (!alive->load()) return;
+        RunOnUiThread([this, alive, generation, record, expected, restore_caret]() {
+            if (!alive->load()) return;
+            FinalizeVoiceEditUndo(generation, record, expected, restore_caret, 0);
+        });
+    }).detach();
+}
+
+// 撤销终验（可重试）：全文读回精确相等 → 恢复 remainingText + 成功提示；窗末
+// 未落地/真不符按 still_old 分类记日志。TODO(win): 待 Windows 机编译+CTest 验证。
+void VoiceStickCoordinator::FinalizeVoiceEditUndo(std::uint64_t generation,
+                                                  const LastVoiceEditRecord record,
+                                                  std::string expected_text,
+                                                  std::size_t restore_caret_utf16,
+                                                  int attempt) {
+    if (generation != voice_edit_generation_) return;
+    const auto config = ConfigSnapshot();
+    const UiLanguage language = EffectiveUiLanguage(config->ui_language);
+    if (targeted_field_editor_ != nullptr) {
+        targeted_field_editor_->MoveCaretToAbsolute(restore_caret_utf16);
+    }
+    VoiceEditFieldState field;
+    std::string actual;
+    bool read_ok = false;
+    if (focus_text_reader_ && focus_text_reader_->ReadFocusedFieldFullText(&field) &&
+        field.readable && !field.full_truncated) {
+        actual = NormalizeVoiceEditLineBreaks(field.full_text);
+        read_ok = true;
+    }
+    if (read_ok && actual == expected_text) {
+        if (record.pre_edit_remaining_text.has_value() && last_injection_.has_value()) {
+            last_injection_->remaining_text = *record.pre_edit_remaining_text;
+        }
+        LogCoordinatorLine("voice edit undo result=ok len=" +
+                           std::to_string(record.original_text.size()));
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceTargetedUndoOk, language), kVoiceEditToastMs);
+        return;
+    }
+    static constexpr std::chrono::milliseconds kUndoVerifyPollDelays[] = {
+        std::chrono::milliseconds(100), std::chrono::milliseconds(200),
+        std::chrono::milliseconds(400), std::chrono::milliseconds(800),
+        std::chrono::milliseconds(1000)};
+    static constexpr int kUndoVerifyAttempts =
+        static_cast<int>(sizeof(kUndoVerifyPollDelays) / sizeof(kUndoVerifyPollDelays[0]));
+    if (attempt < kUndoVerifyAttempts) {
+        const auto alive = alive_;
+        std::thread([this, alive, generation, record, expected_text, restore_caret_utf16,
+                     attempt]() {
+            std::this_thread::sleep_for(kUndoVerifyPollDelays[attempt]);
+            if (!alive->load()) return;
+            RunOnUiThread([this, alive, generation, record, expected_text,
+                           restore_caret_utf16, attempt]() {
+                if (!alive->load()) return;
+                FinalizeVoiceEditUndo(generation, record, expected_text, restore_caret_utf16,
+                                      attempt + 1);
+            });
+        }).detach();
+        return;
+    }
+    const bool still_old = read_ok && actual == record.post_edit_field_text;
+    LogCoordinatorLine("voice edit undo result=failure code=result_unconfirmed still_old=" +
+                       std::string(still_old ? "1" : "0"));
+    LogVoiceEditFailure("field_text", "result_unconfirmed");
+    ui_->ShowTimedMessage(
+        Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kResultUnconfirmed), language),
+        kVoiceEditToastMs);
+}
+
+// ================== 批次 2 交付 D/E：尾删撤销素材与记录 ==================
+
+// 尾删撤销素材（计划时刻算好）：正常计划 = remaining 尾部 charCount 个 grapheme
+//（+ 已记录换行）；降级计划 = 光标前 charCount 个 grapheme（尾窗前缀）。unverified
+// 计划不记（无从定位）。
+std::optional<VoiceStickCoordinator::TailUndoIngredients>
+VoiceStickCoordinator::ComputeTailUndoIngredients(const VoiceEditPlan& plan,
+                                                  const VoiceEditFieldState& field) const {
+    if (!plan.verified || plan.anchor_end_utf16 == kCaretOutsideTail) return std::nullopt;
+    TailUndoIngredients ingredients;
+    ingredients.pre_edit_remaining_text =
+        last_injection_.has_value() ? last_injection_->remaining_text : std::string();
+    if (plan.caret_fallback) {
+        const std::string prefix =
+            NormalizeVoiceEditLineBreaks(field.tail_text)
+                .substr(0, plan.anchor_end_utf16);  // 字节偏移≈尾窗前缀（caret_tail 基准）
+        const auto spans = utf8::SplitGraphemes(prefix);
+        const std::size_t take =
+            std::min<std::size_t>(spans.size(), static_cast<std::size_t>(plan.delete_graphemes));
+        if (take == 0) return std::nullopt;
+        std::string deleted;
+        for (std::size_t i = spans.size() - take; i < spans.size(); ++i) {
+            deleted.append(prefix.substr(spans[i].offset, spans[i].length));
+        }
+        ingredients.deleted_text = deleted;
+        ingredients.edit_start_utf16 =
+            plan.anchor_end_utf16 - VoiceTargetedUtf16Length(deleted);
+        return ingredients;
+    }
+    const std::string remaining =
+        NormalizeVoiceEditLineBreaks(last_injection_.has_value()
+                                         ? last_injection_->remaining_text
+                                         : std::string());
+    const auto spans = utf8::SplitGraphemes(remaining);
+    const std::size_t take =
+        std::min<std::size_t>(spans.size(), static_cast<std::size_t>(plan.delete_graphemes));
+    if (take == 0 && !plan.delete_newline) return std::nullopt;
+    std::string deleted;
+    for (std::size_t i = take == 0 ? spans.size() : spans.size() - take; i < spans.size();
+         ++i) {
+        deleted.append(remaining.substr(spans[i].offset, spans[i].length));
+    }
+    if (plan.delete_newline) deleted += "\n";
+    ingredients.deleted_text = deleted;
+    ingredients.edit_start_utf16 =
+        plan.anchor_end_utf16 - VoiceTargetedUtf16Length(deleted);
+    return ingredients;
+}
+
+// 退格完成回调：读一次字段全文得 postEditFieldText 落撤销记录；读不到不记。
+void VoiceStickCoordinator::RecordTailDeletionUndo(
+    std::optional<TailUndoIngredients> ingredients, std::uint64_t generation) {
+    if (generation != voice_edit_generation_) return;
+    if (!ingredients.has_value() || !focus_text_reader_) return;
+    VoiceEditFieldState field;
+    if (!focus_text_reader_->ReadFocusedFieldFullText(&field) || !field.readable ||
+        field.full_truncated) {
+        return;
+    }
+    LastVoiceEditRecord record;
+    record.post_edit_field_text = NormalizeVoiceEditLineBreaks(field.full_text);
+    record.edit_start_utf16 = ingredients->edit_start_utf16;
+    record.edit_length_utf16 = 0;  // 删除类折叠点
+    record.inserted_text = "";
+    record.original_text = ingredients->deleted_text;
+    record.pre_edit_remaining_text = ingredients->pre_edit_remaining_text;
+    if (foreground_probe_) {
+        record.foreground_window = foreground_probe_->ForegroundWindow();
+        if (record.foreground_window != 0) {
+            record.foreground_process = foreground_probe_->ForegroundProcessName();
+        }
+    }
+    record.created_at = std::chrono::steady_clock::now();
+    record.generation = generation;
+    last_voice_edit_ = std::move(record);
+}
+
+// targeted 成功后记撤销锚点：编辑后区间 = [选区起点, 插入长度)，原文本 = 目标词。
+void VoiceStickCoordinator::RecordTargetedUndo(const VoiceTargetedCommand& command,
+                                               const VoiceTargetedPlan& plan,
+                                               const TargetedExecutionContext& exec,
+                                               const std::string& post_edit_text) {
+    LastVoiceEditRecord record;
+    record.post_edit_field_text = post_edit_text;
+    record.edit_start_utf16 =
+        plan.anchor_start_utf16 + plan.occurrence.utf16_start;
+    record.inserted_text = plan.action.kind == VoiceTargetedActionKind::kDelete
+                               ? std::string()
+                               : plan.action.replacement;
+    record.edit_length_utf16 = VoiceTargetedUtf16Length(record.inserted_text);
+    record.original_text = command.target;
+    record.pre_edit_remaining_text = exec.pre_edit_remaining_text;
+    if (foreground_probe_) {
+        record.foreground_window = foreground_probe_->ForegroundWindow();
+        if (record.foreground_window != 0) {
+            record.foreground_process = foreground_probe_->ForegroundProcessName();
+        }
+    }
+    record.created_at = std::chrono::steady_clock::now();
+    record.generation = voice_edit_generation_;
+    last_voice_edit_ = std::move(record);
 }
 
 bool VoiceStickCoordinator::RestoreLastInputConfirmation(std::optional<std::string> device_id) {

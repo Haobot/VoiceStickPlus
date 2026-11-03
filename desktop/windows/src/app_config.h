@@ -282,6 +282,10 @@ struct VoiceEditConfig {
     VoiceEditVerifyMode verify_mode = VoiceEditVerifyMode::kAuto;
     // auto 模式下字段/光标不可验证时允许执行的时间窗（秒，0..30）。
     int unverified_seconds = 8;
+    // 批次 2（整框搜索域）：true（默认）= 无位置限定的「把X改成Y/删除X」在最近
+    // 一次语音输入唯一命中时优先改它，否则扩展到整个输入框；false = 完全回到批次 1
+    // 行为（回归开关）。与 macOS [voice_edit].field_scope 同名同默认。
+    bool field_scope = true;
 
     bool operator==(const VoiceEditConfig& other) const = default;
 };
