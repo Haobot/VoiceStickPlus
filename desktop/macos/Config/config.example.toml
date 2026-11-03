@@ -135,6 +135,9 @@ air_mouse_curve_high_factor = 4.0   # 高速段相对增益（跨屏甩动）
 target = "focused_app"
 transform = "original"
 translation_target = "en"
+# 句中插入去句末句号（默认 true）：光标后同一逻辑行还有非空白字符时，去掉注入
+# 文本末尾一个句号（。/．/.（前字符非 ASCII 字母数字））；！？不去；读不到字段不处理。
+midline_strip_period = true
 
 # Optional per-device output overrides:
 # [device.C3D8.output]

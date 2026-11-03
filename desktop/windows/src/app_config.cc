@@ -413,6 +413,7 @@ void ApplyConfigValue(AppConfig& config, const std::string& key, const std::stri
         config.wechat_input_method.auto_switch_default_recording_device = BoolValue(value, false);
     }
     if (key == "auto_enter") config.auto_enter = BoolValue(value, config.auto_enter);
+    if (key == "midline_strip_period") config.midline_strip_period = BoolValue(value, config.midline_strip_period);
     if (key == "global_hotkey_enabled") config.global_hotkey_enabled = BoolValue(value, config.global_hotkey_enabled);
     if (key == "global_hotkey") config.global_hotkey = value;
     if (key == "show_imu_debug") config.show_imu_debug = BoolValue(value, config.show_imu_debug);
@@ -656,6 +657,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
         if (const auto* output = table["output"].as_table()) {
             config.default_output_profile = ParseOutputProfile(
                 *output, config.default_output_profile, true);
+            if (auto value = TomlBool(*output, "midline_strip_period")) {
+                config.midline_strip_period = *value;
+            }
         }
         if (const auto* wechat = table["wechat_input_method"].as_table()) {
             // legacy hotkey 字段：旧配置只有它，回退到 hotkey_hold/hotkey_click，不丢用户自定义。
@@ -1105,6 +1109,7 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
     output << "target = \"" << OutputTargetName(default_output_profile.target) << "\"\n";
     output << "transform = \"" << TextTransformName(default_output_profile.transform) << "\"\n";
     output << "translation_target = \"" << TomlEscape(default_output_profile.translation_target) << "\"\n";
+    output << "midline_strip_period = " << (midline_strip_period ? "true" : "false") << "\n";
     output << "\n[wechat_input_method]\n";
     output << "hotkey_hold = \"" << TomlEscape(wechat_input_method.hotkey_hold) << "\"\n";
     output << "hotkey_click = \"" << TomlEscape(wechat_input_method.hotkey_click) << "\"\n";

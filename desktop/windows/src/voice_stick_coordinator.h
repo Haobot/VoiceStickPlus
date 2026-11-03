@@ -668,6 +668,9 @@ private:
     // P3 反馈环锚点：本会话精确命中应用的改写对（确认保留 → recall+1，取消清空）。
     std::optional<CorrectionPair> applied_correction_pair_;
     void CompletePendingPaste(const std::string& text, bool manual);
+    // 批次 1（字段内定位）：句中句号剥离（CompletePendingPaste 入口；须在 UI 线程
+    // 调用——内部经 focus_text_reader_ 读 UIA）。返回 possibly-stripped 文本。
+    std::string ApplyMidlinePeriodStrip(const std::string& text);
     bool RestoreLastInputConfirmation(std::optional<std::string> device_id);
     bool HandleFrontButtonDuringPendingPaste(const std::string& device_id);
     void CancelPendingPaste(const std::string& device_id);

@@ -683,7 +683,14 @@ void VoiceStickCoordinator::CommitPendingPaste(const std::string& text, bool man
     if (pending_paste_state_.text == text) CompletePendingPaste(text, manual);
 }
 
-void VoiceStickCoordinator::CompletePendingPaste(const std::string& text, bool manual) {
+void VoiceStickCoordinator::CompletePendingPaste(const std::string& raw_text, bool manual) {
+    // 批次 1（句中插入去句末句号，[output].midline_strip_period，默认 true）：仅
+    // focused_app 且配置开；先做零成本预检（文本不以可剥离句号结尾 → 不读字段），
+    // 候选才读一次焦点字段（UIA，须在 UI 线程），光标后同一逻辑行还有非空白字符
+    // （句中插入）时去掉注入文本末尾一个句号。读不到字段原样注入（零行为变化）。
+    // 处理点在本入口 = 送 Paste / RecordLastInjection / usage 事件之前（记录一致）。
+    // TODO(win): 待 Windows 机编译+CTest 验证（UIA 读取在 UI 线程的路径不变）。
+    const std::string text = ApplyMidlinePeriodStrip(raw_text);
     const bool should_press_enter = ConfigSnapshot()->auto_enter;
     // 负信号采集（P1-1）：确认动作 + 暂停态停留时长（自动路径无停留 = nullopt）。
     std::optional<double> dwell;
@@ -762,6 +769,34 @@ std::string_view VoiceStickCoordinator::VoiceTargetedFailureStage(VoiceTargetedF
         case VoiceTargetedFailure::kNone: break;
     }
     return "focused_element";
+}
+
+// ---- 批次 1 交付 C：句中句号剥离（CompletePendingPaste 入口；UI 线程）----
+
+std::string VoiceStickCoordinator::ApplyMidlinePeriodStrip(const std::string& text) {
+    const auto config = ConfigSnapshot();
+    if (!config->midline_strip_period || text.empty()) return text;
+    if (OutputProfileForDevice(active_device_id_).target != OutputTarget::kFocusedApp) {
+        return text;
+    }
+    if (!MidlinePeriodStrippable(text)) return text;  // 零成本预检：无候选不读字段
+    // TODO(win): 待 Windows 机编译+CTest 验证（UIA 读取路径不变，此处只加偏移判定）。
+    VoiceEditFieldState field;
+    if (!focus_text_reader_ || !focus_text_reader_->ReadFocusedField(&field)) return text;
+    if (!field.readable || !field.selection_collapsed ||
+        field.caret_tail_utf16 == kCaretOutsideTail) {
+        return text;
+    }
+    if (!IsMidlineInsertion(NormalizeVoiceEditLineBreaks(field.tail_text),
+                            field.caret_tail_utf16)) {
+        return text;
+    }
+    const std::string stripped = StripMidlinePeriod(text, /*is_midline=*/true);
+    if (stripped != text) {
+        LogCoordinatorLine("voice edit midline strip: len=" + std::to_string(text.size()) +
+                           "->" + std::to_string(stripped.size()));
+    }
+    return stripped;
 }
 
 void VoiceStickCoordinator::RecordLastInjection(const std::string& text, bool pressed_enter) {

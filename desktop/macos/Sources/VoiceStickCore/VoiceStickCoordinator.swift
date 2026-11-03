@@ -2818,9 +2818,18 @@ public final class VoiceStickCoordinator {
         onAccessibilityPermissionMissing?()
     }
 
-    private func completePendingPaste(text: String, manual: Bool) {
-        NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d",
-              text.utf8.count, config.autoEnter ? 1 : 0, (isProcessTrusted?() ?? false) ? 1 : 0)
+    private func completePendingPaste(text rawText: String, manual: Bool) {
+        // 批次 1（句中插入去句末句号，[output].midline_strip_period）：仅
+        // focused_app 且配置开；读一次焦点字段，可读且光标后同一逻辑行还有非空白
+        // 字符（句中插入）时去掉注入文本末尾一个句号。读不到字段（不可验证应用）
+        // 原样注入，零行为变化。处理点在本入口 = 送 paste / lastInjection /
+        // beginEditTracking 之前，历史库 injected 回填在后——三处记录一致，避免
+        // 「记录的文本和字段里的不一致」重新制造 field_mismatch。翻译模式产物以
+        // 句号结尾是正常语义，本逻辑同样适用（判定只看插入位置，不看模式）。
+        let text = applyMidlinePeriodStrip(rawText)
+        NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d midline_stripped=%d",
+              text.utf8.count, config.autoEnter ? 1 : 0, (isProcessTrusted?() ?? false) ? 1 : 0,
+              text != rawText ? 1 : 0)
         let shouldPressEnter = config.autoEnter
         // P3 反馈环保留信号（用户数据飞轮）：精确应用的对被用户确认保留 → recall+1。
         if let pair = appliedCorrectionPair {
@@ -2855,6 +2864,25 @@ public final class VoiceStickCoordinator {
         beginEditTracking(injectedText: text)
     }
 
+    /// 句中句号剥离（交付 C 入口纯逻辑编排）：先做零成本预检（文本不以可剥离
+    /// 句号结尾 → 不读字段，普通注入零额外开销）；候选才读一次焦点字段（含
+    /// Electron 三级回退）判定句中插入并剥句号；剥了则回填会话历史 injected 文本
+    ///（历史库/编辑追踪/lastInjection 三处一致）。读不到字段/非句中/配置关 → 原文。
+    private func applyMidlinePeriodStrip(_ text: String) -> String {
+        guard config.midlineStripPeriod,
+              outputProfile(for: activeDeviceID).target == .focusedApp,
+              VoiceEditAnchor.midlinePeriodStrippable(text) else { return text }
+        guard let state = readFocusedFieldStateForVoiceEdit(),
+              let caret = state.caretUTF16,
+              state.selectionLength == 0,
+              VoiceEditAnchor.isMidlineInsertion(fieldText: state.text, caretUTF16: caret)
+        else { return text }
+        let stripped = VoiceEditAnchor.stripMidlinePeriod(text: text, isMidline: true)
+        if stripped != text, let historyID = lastSessionHistoryID {
+            sessionHistoryStore?.updateInjectedText(id: historyID, text: stripped)
+        }
+        return stripped
+    }
 
     // MARK: - 语音编辑指令（Voice Edit Commands；Doc/Plan/voice-edit-commands.md §4/§6/§8.1）
 

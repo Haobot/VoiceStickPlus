@@ -1171,7 +1171,7 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.6)
-    checkEqual(h.ops.list, ["paste"], "align: NONE 回退普通文本")
+    checkEqual(h.ops.list, ["state", "paste"], "align: NONE 回退普通文本（state=句中句号预检读）")
     check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: NONE 时指令按普通文本上屏")
 
     // C. 模型失败/超时（nil）：同样回退普通文本。
@@ -1186,7 +1186,7 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.6)
-    checkEqual(h.ops.list, ["paste"], "align: 失败回退普通文本")
+    checkEqual(h.ops.list, ["state", "paste"], "align: 失败回退普通文本")
     check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 失败时指令按普通文本上屏")
 
     // D. 未启用（local_align_enabled=false）：闭包在场也不走对齐，直接回退。
@@ -1200,7 +1200,7 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.3)
-    checkEqual(h.ops.list, ["paste"], "align: 未启用直接回退（默认行为不变）")
+    checkEqual(h.ops.list, ["state", "paste"], "align: 未启用直接回退（默认行为不变）")
     check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 未启用时普通文本上屏")
 
     // E. 对齐目标不在候选内（模型逃逸）：拒绝接管，回退普通文本。
@@ -1215,7 +1215,7 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.6)
-    checkEqual(h.ops.list, ["paste"], "align: 枚举外答案拒绝接管回退")
+    checkEqual(h.ops.list, ["state", "paste"], "align: 枚举外答案拒绝接管回退")
     checkEqual(h.field.text, "我要去北京看升旗。把分析改成吃烤鸭。\n", "align: 逃逸时字段=原文+指令（auto_enter）")
 }
 
@@ -1275,11 +1275,59 @@ func runVoiceEditAnchorCoordinatorTests() {
     checkEqual(h.sink.timedMessages.last, "voiceEditAnchorAmbiguous",
                "anchor T5: anchor_ambiguous toast key")
 
-    // （交付 C 句中句号剥离用例随 C 接线 commit 入库）
+    // T13 句中句号剥离注入点三处一致：注入「今天很好。」到句中（光标后同一逻辑
+    // 行还有「尾」）→ 剥成「今天很好」；粘贴文本 / lastInjection / 历史库 injected
+    // 三处一致；后续尾删按剥离后记录工作。
+    var he = makeVoiceEditHarness()
+    he.coordinator.updateConfig(noEnter)  // autoEnter=false：聚焦注入文本本身
+    // 会话历史：装配指向临时文件的 store（不触真实用户库）。
+    let historyURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voicestick_midline_history_\(UUID().uuidString).sqlite")
+    let store = SessionHistoryStore(url: historyURL)
+    he.coordinator.makeSessionHistoryStore = { _ in store }
+    he.field.state = FocusedFieldState(text: "序尾", caretUTF16: 1, selectionLength: 0)
+    he.asr.onFinal?("今天很好。")
+    pumpMainRunLoop(0.3)
+    checkEqual(he.input.pastedTexts.last, "今天很好", "midline: 句中注入剥掉句号")
+    checkEqual(lastInjectedTextFromHistory(dbURL: historyURL), "今天很好",
+               "midline: 历史库 injected 为剥离后文本")
+    // lastInjection 一致：尾删 2 字按剥离后记录工作（字段=序+今天很好+尾，光标段尾）。
+    he.field.state = FocusedFieldState(text: "序今天很好尾", caretUTF16: 5, selectionLength: 0)
+    he.input.sentKeyCombos.removeAll()
+    he.asr.onFinal?("删除最后两个字")
+    pumpMainRunLoop(0.3)
+    checkEqual(he.input.sentKeyCombos, voiceEditBackspaces(2),
+               "midline: 尾删按剥离后 remainingText 工作（P1a 命中）")
+
+    // 非句中（光标在字段末尾）→ 不剥。
+    he = makeVoiceEditHarness()
+    he.coordinator.updateConfig(noEnter)
+    he.field.state = FocusedFieldState(text: "序", caretUTF16: 1, selectionLength: 0)
+    he.asr.onFinal?("今天很好。")
+    pumpMainRunLoop(0.3)
+    checkEqual(he.input.pastedTexts.last, "今天很好。", "midline: 非句中不剥句号")
+
+    // 读不到字段（不可验证应用）→ 原样注入，不处理。
+    he = makeVoiceEditHarness()
+    he.coordinator.updateConfig(noEnter)
+    he.field.state = nil
+    he.asr.onFinal?("今天很好。")
+    pumpMainRunLoop(0.3)
+    checkEqual(he.input.pastedTexts.last, "今天很好。", "midline: 字段不可读原样注入")
+
+    // 配置关闭（midline_strip_period=false）→ 原样注入。
+    he = makeVoiceEditHarness()
+    var stripOff = noEnter
+    stripOff.midlineStripPeriod = false
+    he.coordinator.updateConfig(stripOff)
+    he.field.state = FocusedFieldState(text: "序尾", caretUTF16: 1, selectionLength: 0)
+    he.asr.onFinal?("今天很好。")
+    pumpMainRunLoop(0.3)
+    checkEqual(he.input.pastedTexts.last, "今天很好。", "midline: 配置关闭不剥")
 
     // T14 Electron 三级回退：首读 nil → 设置 AXManualAccessibility 后二次读成功 →
     // 功能恢复；同一 bundle 第二轮不再设置（缓存生效）。
-    var he = makeVoiceEditHarness()
+    he = makeVoiceEditHarness()
     var axCfg = noEnter
     axCfg.voiceEdit.unverifiedSeconds = 0  // 第二轮读不到时不得盲删（auto 窗口关闭）
     he.coordinator.updateConfig(axCfg)

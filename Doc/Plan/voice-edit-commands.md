@@ -912,3 +912,90 @@ false/127.0.0.1:11434/""/3000，Windows 按未知键忽略、无跨端破坏）�
 参照跨轮纠错管线；本机无 MSVC，纯逻辑可先 clang 对拍）；真机验收（ollama 常驻 +
 真实 BLE 链路对齐轮延迟/体验）；替换词侧漂移（伤害→上海）
 不在本层范围（replacement 无从校验，保持用户口述原样）。
+
+### 17.8 批次 1：字段内定位（P1）+ 可观测性/Electron 支持（P4）+ 句中插入去句号（2026-11-03 实现）
+
+> 状态：已实现（工作区 `fix/voice-edit-anchor`，未发布；分支另含先期返修 f81cd8b/b604e15）。
+> macOS `swift build` 通过、`swift run VoiceStickTests` **PASSED 1836/1836**（本批前基线 1718）；
+> Windows 纯逻辑与 macOS 同向量、本机 clang `-std=c++20` 编译并运行通过（临时 main 在
+> /tmp 不入库）；Windows MSVC 构建/CTest 与双端真机验收**待补**（见下方清单）。
+
+**背景**：Chromium 系目标（ZCode/Electron）与「句中插入」场景大量
+`field_mismatch`/`caret_not_end`——整条编辑链假设「听写追加在字段末尾且其后无内容」。
+本批把「定位」从「字段末尾后缀」升级为**字段内多级锚定**，并让尾删能先把光标移回去。
+
+**A. 定位器（纯逻辑双端同构）**：`desktop/macos/Sources/VoiceStickCore/VoiceEditAnchor.swift`
+与 `desktop/windows/src/voice_edit_anchor.{h,cc}`。判定顺序固定、零容错（禁止模糊/
+最长前缀）：P1a 光标前缀锚（前缀 `[0,caret)` 以 anchored 结尾）→ P1b 光标后缀锚
+（后缀 `[caret,len)` 以 anchored 开头）→ P1c 字段末尾锚（含现行「remaining+已记录
+\n 优先、裸 remaining 回落」语义）→ P2 唯一出现锚（非重叠精确出现恰好一次；≥2 次
+`anchor_ambiguous`）→ 全 miss `field_mismatch`。口径 UTF-16 码元精确相等。注意
+anchored 比字段长**不是**拒绝条件（P1c 裸回落仍可能命中）。实现说明：Swift 侧
+任务书给出的 struct+enum 同名签名在 Swift 不合法，`locate` 作为 struct 的静态方法
+落位（调用形状 `VoiceEditAnchor.locate(...)` 不变）；C++ 侧按任务书 4 参签名加一个
+带默认值的第 5 参 `anchored_has_recorded_newline`（裸回落需要知道末尾换行是否
+「已记录的」，否则会误剥口述换行）。
+
+**B. 协调器接入**：
+- targeted（evaluate→execute→finalize）：先构造 anchored 调定位器（失败码透传：
+  `anchor_ambiguous` 新增进 `VoiceTargetedFailureCode` 尾部），成功后带锚进新
+  planner 重载（旧签名 = P1c 等价实现，现有向量不动仍全绿）。上下文扩展
+  `anchorKind/anchorStartUTF16/textAfterAnchor`；选区 = anchorStart + occurrence
+  偏移；终验期望 = fieldPrefix + newRemaining + (hasRecordedNewline?"\n":"") +
+  textAfterAnchor（P1c 时 textAfterAnchor=""，与旧公式**逐字节一致**——回归底线）；
+  光标恢复到「编辑后 anchored 段末尾」（P1c = 字段末尾，旧行为不变）。
+- 尾删（VoiceEditPlanner verified 分支）：**行为变化（有意）**——① 移除
+  「caret==字段末尾」门槛（`caret_not_end` 不再由 planner 返回，枚举位与文案保留
+  双端对齐）；② 移除旧「最长前缀」容错（用户手删段内尾部 → 现按 `field_mismatch`
+  拒绝，宁拒勿错）；③ 计划新增 `anchorEndUTF16`/`needsCaretMove`，P1c 且
+  caret==anchorEnd 时与旧计划逐字段等价（T10 向量断言）。协调器：needsCaretMove →
+  `writeTargetedSelection(anchorEnd,0)` + 按 `[0.03,0.06,0.12,0.2]s` 轮询确认
+  caret 到位再退格；耗尽 → `caret_move_failed`（新失败码）**零退格、记录保留**。
+  unverified 降级路径（strict/auto/off 语义）**不变**（无字段可读无从定位，盲退格
+  窗口照旧——红线）。
+- Windows：`PlanVoiceTargetedAnchored` 新签名 + 旧签名委托 FieldEndAnchor；尾删
+  同构（`VoiceEditFieldState` 新增 `caret_tail_utf16`，kCaretOutsideTail 哨兵表示
+  不可得——此时用 caret_at_end 兜底判定 needs_caret_move，旧协调器测试行为不变）；
+  `ITargetedFieldEditor` 泛化 `MoveCaretTo(tail_relative)`（MoveCaretToEnd 保留）。
+
+**C. 句中插入去句末句号**：新配置 `[output].midline_strip_period`（bool 默认
+**true**，双端同名同默认；macOS ConfigFileModels/AppConfig 三处解析 + 回写，
+Windows app_config [output] 表 + legacy + 回写）。作用点 completePendingPaste 入口：
+零成本预检（不以可剥离句号结尾不读字段）→ 读一次焦点字段 → 光标折叠且其后同一
+逻辑行还有非空白字符（句中插入）→ 去掉注入文本末尾一个句号（`。`/`．`/`.`（前
+字符非 ASCII 字母数字，保「3.」「v1.」）；`！？`不去；翻译产物同样适用——判定只看
+插入位置不看模式）。读不到字段原样注入零变化。历史库 injected/lastInjection/
+编辑追踪记录的都是处理后文本（macOS 变化时回填 session_history.injected_text）。
+纯函数 `stripMidlinePeriod`/`isMidlineInsertion`/`midlinePeriodStrippable`
+（C++ `StripMidlinePeriod`/`IsMidlineInsertion`/`MidlinePeriodStrippable`）。
+
+**D. 可观测性 + Electron AX**：失败路径（尾删/targeted 各 toast 调用点）统一一行
+`voice_edit fail_stage=<stage> bundle=<bundleID|unknown> code=<code>`；stage ∈
+{focused_element, field_text, selected_range, selected_text, anchor, caret_move}
+（L0 拒绝读取链未启动归 focused_element；定位器语义失败 anchor；终验 field_text；
+读回 selected_text；光标移动 caret_move）。macOS 协调器提供 `voiceEditLog` 钩子
+（默认 NSLog，测试注入收集）；Windows 用 LogCoordinatorLine（bundle 以前台进程名）。
+Electron 三级回退：macOS 两级聚焦失败 → `enableFocusedAppManualAccessibility`
+（FocusedFieldAXReader：读 AXManualAccessibility，false/不可读则 3 参
+AXUIElementSetAttributeValue 设 true——SDK 未声明该常量，按 AX 属性名约定用
+字面量 "AXManualAccessibility"）→ 重读一次；每 bundle 至多一次（协调器内存缓存，
+不落盘），日志 `voice_edit ax_manual=0/1 bundle=…`。实现位置说明：任务书描述落在
+FocusedFieldAXReader.focusedElement 内，但测试目标只链 Core——重试编排与缓存放
+协调器（Core，T14 可测），实际 AX 设置闭包由 AppDelegate 装配，功能等价。
+
+**测试（双端同向量 T1-T13 + macOS 协调器级 T14/T15）**：macOS 新增
+`VoiceEditAnchorTests.swift`（定位器/句号剥离全表）+ VoiceTargetedEditTests 锚
+计划向量 + VoiceEditCommandTests 向量按新语义更新（V4/V15/V29 零容错拒绝、V5 P2
+命中、V6/V30 needsCaretMove）+ CoordinatorFsmTests（T1 P1a 全链路调用顺序、T5
+anchor_ambiguous toast、句号剥离三处一致（粘贴/历史库 injected/尾删记录）、非句中/
+不可读/配置关不剥、T14 Electron 回退 + 缓存、T15 fail_stage/bundle 日志、尾删先移
+后删/移动失败零退格）。Windows `core_tests_voice_edit.cc` 同向量
+（TestVoiceEditAnchorLocator/TestVoiceEditAnchorPlanner/TestTargetedAnchorPlanner
++ 协调器级 TestVoiceEditCoordinatorCaretMove，后者随 WIN32 段待 Windows 机执行）。
+
+**Windows 待编译清单（本机无 MSVC）**：`voice_stick_coordinator_tail.cc`（锚定接入/
+光标移动/句号剥离/fail 日志）、`focus_text_reader.cc`（caret_tail_utf16 换算 +
+MoveCaretTo UIA）、`app_config.cc/.h`、`localization.cc/.h`、`CMakeLists.txt`、
+`voice_stick_coordinator.h`、`core_tests_voice_edit.cc` WIN32 段；纯逻辑
+`voice_edit_anchor.{h,cc}`/`voice_edit_command.cc`/`voice_targeted_edit.cc` 已过
+clang `-std=c++20` 且本地链接运行全绿。
