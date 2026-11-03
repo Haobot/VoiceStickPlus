@@ -1017,7 +1017,10 @@ func runVoiceTargetedCoordinatorTests() {
     checkEqual(h.input.sentKeyCombos.count, 0, "targeted: 未找到零注入")
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.3)
-    checkEqual(h.sink.timedMessages.last, "voiceTargetedAmbiguous", "targeted: 歧义 toast key")
+    // 批次 2 交付 B（field_scope 默认开）：歧义从旧 ambiguous toast 升级为追问
+    // 「第几个」（pending 等应答）；零注入不变。
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedClarifyPrompt",
+               "targeted: 歧义弹追问（批次 2 有意变化）")
     checkEqual(h.input.sentKeyCombos.count, 0, "targeted: 歧义零注入")
     // 指定「最后一个」→ 执行成功（消歧路径）。
     h.ops.clear()
@@ -1120,6 +1123,192 @@ func runVoiceTargetedCoordinatorTests() {
 
     // 命令轮不 refine、不写历史（refiner 零调用）。
     checkEqual(h.refiner.callCount, 0, "targeted: 命令轮不进入精修")
+}
+
+// ---- 语音编辑批次 2 交付 B：追问「第几个」全流程 ----
+// 歧义 → 提示含计数 → 「第二个」吞轮执行第 2 处；越界保留 pending；取消；超时；
+// 非应答放行粘贴；重算（锚定/域）变化拒绝；新注入清 pending；field_scope=false
+// 保持批次 1 旧 ambiguous toast（回归开关红线）。
+
+func runVoiceTargetedClarifyCoordinatorTests() {
+    // 1) 歧义 → 提示（含计数与目标词，恒等 trText 下格式串原样）→ 无执行。
+    var h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedClarifyPrompt",
+               "clarify: 歧义弹追问提示")
+    check(!h.ops.list.contains("selected"), "clarify: 歧义轮零执行")
+    check(!h.ops.list.contains { $0.hasPrefix("key:") }, "clarify: 歧义轮零退格")
+    checkEqual(h.input.pastedTexts.count, 1, "clarify: 歧义轮不粘贴指令")
+
+    // 2)「第二个」吞轮执行第 2 处（select(3,2) → Backspace → 字段「北京和」）。
+    h.ops.clear()
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.input.pastedTexts.count, 1, "clarify: 应答句不上屏")
+    checkEqual(h.field.text, "北京和", "clarify: 第二个执行第 2 处")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted", "clarify: 执行成功 toast")
+    checkEqual(h.ops.list,
+               ["state", "select(3,2)", "selected", "key:Backspace", "select(3,0)", "state"],
+               "clarify: 执行调用顺序（第 2 处绝对选区）")
+
+    // 3) 越界保留 pending：「第五个」（只有 2 处）→ ordinalRange 提示后「第一个」仍执行。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    h.asr.onFinal?("第五个")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedOrdinalRange",
+               "clarify: 越界提示 ordinalRange")
+    check(!h.ops.list.contains("selected"), "clarify: 越界零执行")
+    h.asr.onFinal?("第一个")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "和北京", "clarify: 越界后保留 pending，第一个执行")
+
+    // 4) 取消：「算了」→ 已取消提示；随后「第二个」按普通文本上屏（pending 已清）。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    h.asr.onFinal?("算了")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedClarifyCancelled",
+               "clarify: 取消提示")
+    checkEqual(h.input.pastedTexts.count, 1, "clarify: 取消句不上屏")
+    let pastedBefore = h.input.pastedTexts.count
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.pastedTexts.count, pastedBefore + 1, "clarify: 取消后应答句按普通文本上屏")
+    checkEqual(h.input.pastedTexts.last, "第二个", "clarify: 取消后 pending 已清")
+
+    // 5) 超时（测试注入窗口 0.1s）：过期后「第二个」按普通文本上屏。
+    h = makeTargetedHarness()
+    h.coordinator.clarificationTimeoutOverride = 0.1
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    pumpMainRunLoop(0.2)   // 越过 0.1s 窗
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.pastedTexts.last, "第二个", "clarify: 超时后应答句按普通文本上屏")
+    check(!h.ops.list.contains("selected"), "clarify: 超时后零执行")
+
+    // 6) 非应答放行：pending 下说正常句子 → 按普通文本上屏且 pending 清除。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    h.asr.onFinal?("今天天气不错")
+    pumpMainRunLoop(0.3)
+    check(h.input.pastedTexts.contains("今天天气不错"), "clarify: 非应答放行上屏")
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    check(h.input.pastedTexts.contains("第二个"), "clarify: 非应答后 pending 已清（第二句也上屏）")
+
+    // 7) 域变化拒绝：pending 后字段被改（锚定失败）→「第二个」提示文本已变化、零执行。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    h.field.text = "北京和别的"   // remaining 不再可锚定
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedClarifyChanged",
+               "clarify: 域变化拒绝提示")
+    check(!h.ops.list.contains("selected"), "clarify: 域变化零执行")
+    checkEqual(h.input.pastedTexts.count, 1, "clarify: 域变化应答句不上屏")
+
+    // 8) 新注入清 pending：追问后口述新句 → 记录与 pending 都换新，「第二个」上屏。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    h.field.text = "北京和北京新句子"
+    h.field.selectionLocation = 9
+    h.field.selectionLength = 0
+    h.asr.onFinal?("新句子")
+    pumpMainRunLoop(0.3)
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    check(h.input.pastedTexts.contains("第二个"), "clarify: 新注入后应答句按普通文本上屏")
+
+    // 9) 前台应用变化清 pending：应答句按普通文本放行（不吞正常说话）、零执行。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    h.coordinator.frontmostAppBundleID = { "com.other.app" }
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    check(!h.ops.list.contains("selected"), "clarify: 换应用零执行")
+    check(h.input.pastedTexts.contains("第二个"), "clarify: 换应用后应答句按普通文本放行")
+
+    // 10) field_scope=false：歧义走批次 1 旧 ambiguous toast（无 pending）。
+    h = makeTargetedHarness()
+    var scopeOff = AppConfig.defaults
+    scopeOff.voiceEdit.fieldScope = false
+    h.coordinator.updateConfig(scopeOff)
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedAmbiguous",
+               "clarify: field_scope=false 保持批次 1 歧义 toast")
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    check(h.input.pastedTexts.contains("第二个"), "clarify: field_scope=false 无 pending（应答句上屏）")
+
+    // 11) 倒数应答：「倒数第一个」= 最后一个。
+    h = makeTargetedHarness()
+    h.asr.onFinal?("北京和北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.3)
+    h.asr.onFinal?("倒数第一个")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "北京和", "clarify: 倒数第一个执行最后处")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted", "clarify: 倒数应答成功 toast")
 }
 
 /// targeted 本地对齐兜底（方案 targeted 章）：门控未命中 → 拼音候选 → 本地模型挑选 →

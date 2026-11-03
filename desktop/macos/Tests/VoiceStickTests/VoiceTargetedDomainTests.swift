@@ -203,3 +203,81 @@ func runVoiceTargetedDomainTests() {
     runDomainRuleTests()
     runCursorRestoreTests()
 }
+
+// ---- 序数应答解析（交付 B；与 Windows 同向量）----
+
+private func expectReply(
+    _ text: String, target: String?, _ expected: VoiceEditOrdinalReply, _ name: String
+) {
+    checkEqual(VoiceEditOrdinalReplyParser.parse(text, target: target), expected, name)
+}
+
+private func expectNoReply(_ text: String, target: String?, _ name: String) {
+    checkNil(VoiceEditOrdinalReplyParser.parse(text, target: target), name)
+}
+
+func runVoiceEditOrdinalReplyTests() {
+    // 基本形态。
+    expectReply("第二个", target: "北京", .ordinal(2), "reply: 第二个")
+    expectReply("第2个", target: "北京", .ordinal(2), "reply: 阿拉伯数字")
+    expectReply("第十一", target: "北京", .ordinal(11), "reply: 裸第N（无数位）")
+    expectReply("第十一处", target: "北京", .ordinal(11), "reply: 第N处")
+    expectReply("第2处", target: "北京", .ordinal(2), "reply: 阿拉伯第N处")
+    expectReply("倒数第二个", target: "北京", .fromEnd(2), "reply: 倒数第二个")
+    expectReply("倒数第3个", target: "北京", .fromEnd(3), "reply: 倒数阿拉伯")
+    expectReply("倒数第一处", target: "北京", .fromEnd(1), "reply: 倒数第一处")
+    expectReply("最后一个", target: "北京", .fromEnd(1), "reply: 最后一个")
+    expectReply("最后那个", target: "北京", .fromEnd(1), "reply: 最后那个")
+    expectReply("最后一处", target: "北京", .fromEnd(1), "reply: 最后一处")
+    // 带目标词（与 pending 目标一致）。
+    expectReply("第二个北京", target: "北京", .ordinal(2), "reply: 第N个+目标")
+    expectReply("倒数第二个北京", target: "北京", .fromEnd(2), "reply: 倒数+目标")
+    expectReply("最后一个北京", target: "北京", .fromEnd(1), "reply: 最后+目标")
+    expectNoReply("第二个上海", target: "北京", "reply: 目标不一致非应答")
+    // 前缀（剥一层，最长优先）。
+    expectReply("就第二个", target: nil, .ordinal(2), "reply: 前缀就")
+    expectReply("就是第二个", target: nil, .ordinal(2), "reply: 前缀就是")
+    expectReply("选择第二个", target: nil, .ordinal(2), "reply: 前缀选择")
+    expectReply("选第三个", target: nil, .ordinal(3), "reply: 前缀选")
+    expectReply("是第二个", target: nil, .ordinal(2), "reply: 前缀是")
+    expectReply("要第二个", target: nil, .ordinal(2), "reply: 前缀要")
+    expectReply("改第三个", target: nil, .ordinal(3), "reply: 前缀改")
+    // 尾缀（剥一层，最长优先）+ 标点。
+    expectReply("第二个吧", target: nil, .ordinal(2), "reply: 尾缀吧")
+    expectReply("第二个啊", target: nil, .ordinal(2), "reply: 尾缀啊")
+    expectReply("第二个呀", target: nil, .ordinal(2), "reply: 尾缀呀")
+    expectReply("第二个的", target: nil, .ordinal(2), "reply: 尾缀的")
+    expectReply("第二个就行", target: nil, .ordinal(2), "reply: 尾缀就行")
+    expectReply("倒数第二个那个", target: nil, .fromEnd(2), "reply: 尾缀那个")
+    expectReply("第二个。", target: nil, .ordinal(2), "reply: 尾部句号")
+    expectReply("第二个！", target: nil, .ordinal(2), "reply: 尾部叹号")
+    expectReply("就第二个吧", target: nil, .ordinal(2), "reply: 前缀+尾缀")
+    expectReply("就第二个北京吧", target: "北京", .ordinal(2), "reply: 前缀+目标+尾缀")
+    expectReply(" 第二个 ", target: nil, .ordinal(2), "reply: 首尾空白")
+    expectReply("第２个", target: nil, .ordinal(2), "reply: 全角数字转半角")
+    // 裸数字（中文一…二十、阿拉伯 1–20）。
+    expectReply("五", target: nil, .ordinal(5), "reply: 裸中文五")
+    expectReply("3", target: nil, .ordinal(3), "reply: 裸阿拉伯")
+    expectReply("二十", target: nil, .ordinal(20), "reply: 裸二十（上限）")
+    expectReply("一", target: nil, .ordinal(1), "reply: 裸一")
+    expectReply("两", target: nil, .ordinal(2), "reply: 裸两")
+    expectReply("就三", target: nil, .ordinal(3), "reply: 前缀+裸数字")
+    expectNoReply("二十一", target: nil, "reply: 裸二十一超限")
+    expectNoReply("0", target: nil, "reply: 裸 0")
+    expectNoReply("零", target: nil, "reply: 裸零")
+    expectNoReply("一百", target: nil, "reply: 裸一百非应答")
+    // 取消类。
+    expectReply("取消", target: nil, .cancel, "reply: 取消")
+    expectReply("算了", target: nil, .cancel, "reply: 算了")
+    expectReply("不改了", target: nil, .cancel, "reply: 不改了")
+    expectReply("不用了", target: nil, .cancel, "reply: 不用了")
+    expectReply("不要了", target: nil, .cancel, "reply: 不要了")
+    expectReply("算了吧", target: nil, .cancel, "reply: 取消+尾缀")
+    expectReply("就取消", target: nil, .cancel, "reply: 取消+前缀")
+    // 非应答（放行正常链路）。
+    expectNoReply("你好", target: nil, "reply: 普通文本非应答")
+    expectNoReply("把北京改成上海", target: nil, "reply: 完整指令非应答")
+    expectNoReply("删除刚才的北京", target: nil, "reply: 删除指令非应答")
+    expectNoReply("第二个北京怎么样", target: "北京", "reply: 目标后夹带非应答")
+    expectNoReply("", target: nil, "reply: 空串")
+}

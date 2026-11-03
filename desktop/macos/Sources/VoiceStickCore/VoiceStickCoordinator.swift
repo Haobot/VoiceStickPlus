@@ -177,6 +177,10 @@ public final class VoiceStickCoordinator {
     /// 语音编辑失败日志钩子（默认 NSLog；测试注入收集断言 fail_stage/bundle 字段）。
     /// 内容纪律：只记长度/锚点种类/UTF-16 偏移/结果码，不记文本内容。
     public var voiceEditLog: ((String) -> Void)?
+    /// 测试注入：追问有效窗覆盖（nil = 默认 20s；CoordinatorFsmTests 超时用例用）。
+    public var clarificationTimeoutOverride: TimeInterval?
+    /// 测试注入：上下文撤销时间窗覆盖（nil = 默认 30s；批次 2 交付 E 用例用）。
+    public var undoWindowOverride: TimeInterval?
     /// 前台应用 bundle id 闭包（App 场景分域用，App 侧 NSWorkspace 实现；nil=不分工
     /// 桶，全部落全局桶）。只取 bundle id，不读窗口内容。
     public var frontmostAppBundleID: (() -> String?)?
@@ -222,6 +226,22 @@ public final class VoiceStickCoordinator {
     /// 语音编辑代际：新注入覆盖记录时 +1；targeted 异步收尾只认同代（防旧回调覆盖
     /// 新注入的记录）。
     private var voiceEditGeneration = 0
+    /// 批次 2 交付 B：追问「第几个」的 pending——targeted 目标多处时存下命令与域，
+    /// 下一句是序数应答（第N个/倒数/最后/裸数字）则吞轮直接执行；20 秒有效。
+    /// 清除时机：执行完成、取消、超时、任何新注入（completePendingPaste）、任何
+    /// 其他语音编辑指令、前台应用变化（应答时判定）、updateConfig。
+    private struct PendingVoiceEditClarification {
+        let command: VoiceTargetedCommand
+        let domain: VoiceTargetedDomainKind
+        let occurrenceCount: Int
+        let appBundleID: String?
+        let createdAt: Date
+        /// 建立时的语音编辑代际（新注入即失效）。
+        let generation: Int
+    }
+    private var pendingClarification: PendingVoiceEditClarification?
+    /// 追问有效窗（秒）：用户看到提示后开口说「第二个」的余量。
+    private let kVoiceEditClarificationTimeout: TimeInterval = 20
     /// targeted 编辑终验等待时长：给目标应用消化 一次 Backspace / 一次粘贴 的时间
     /// （InputInjector.paste 剪贴板恢复窗口同为 0.2s 量级）。
     private let kVoiceTargetedVerifyDelay: TimeInterval = 0.2
@@ -510,6 +530,8 @@ public final class VoiceStickCoordinator {
         }
 
         self.config = config
+        // 配置变化清追问 pending（批次 2 交付 B：任何 updateConfig 都使等待失效）。
+        pendingClarification = nil
         // 语音编辑记录清理（方案 §6.1）：关闭功能或当前输出目标不是 focused_app 时
         // 旧注入记录不再有安全作用域，清掉避免误删。清理同时递增代际：在途 targeted
         // 终验回调（0.2s 窗口）只认同代，避免对已被配置清掉的记录弹旧成功 toast。
@@ -2023,6 +2045,9 @@ public final class VoiceStickCoordinator {
     ///   形成「吞轮→对齐→回退→再对齐」循环（对齐每轮至多一次）。
     private func finishWithFinalText(_ text: String, allowTargetedAlign: Bool = true) {
         guard !pastedFinalText else { return }
+        // 批次 2 交付 B：追问「第几个」的序数应答最优先（早于旧解析器与 targeted
+        // 拦截；非应答一律放行，标点独词路径不受影响——收口仍在 finishWithRefinedText）。
+        if handlePendingClarificationIfMatched(text) { return }
         // 语音编辑指令拦截（方案 §5.6/§4 关键原则 1）：必须在 beginSessionHistory /
         // 精修 / 翻译 / 粘贴之前判定；命中即整轮按命令处理并 return（不粘贴、不写历史）。
         if handleVoiceEditCommandIfMatched(text) { return }
@@ -2876,6 +2901,8 @@ public final class VoiceStickCoordinator {
             )
             voiceEditGeneration += 1
         }
+        // 新注入清追问 pending（批次 2 交付 B：pending 只等待对上一条指令的应答）。
+        pendingClarification = nil
         beginEditTracking(injectedText: text)
     }
 
@@ -2919,6 +2946,8 @@ public final class VoiceStickCoordinator {
 
         // 命中即吞掉本轮：置 pastedFinalText 阻止迟到回调二次粘贴。
         pastedFinalText = true
+        // 其他语音编辑指令清追问 pending（批次 2 交付 B）。
+        pendingClarification = nil
         // 命令轮不属于「语音输入内容」：结束上一轮编辑追踪（否则退格造成的字段变化
         // 会被误判为用户编辑写进纠错对），并停掉可能的精修（防御，正常不会在跑）。
         finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
@@ -3257,6 +3286,8 @@ public final class VoiceStickCoordinator {
         // 命中即吞掉本轮：置 pastedFinalText 阻止迟到回调二次粘贴；命令轮不属于
         // 「语音输入内容」——结束上一轮编辑追踪、停掉可能的精修、不写历史/纠错对。
         pastedFinalText = true
+        // 新的语音编辑指令使旧追问失效（下方 .clarify 分支会存入新 pending）。
+        pendingClarification = nil
         finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
         cancelStreamingRefinement()
 
@@ -3295,13 +3326,161 @@ public final class VoiceStickCoordinator {
                   describeVoiceTargetedAction(command.action), plan.targetLength,
                   plan.occurrence.index + 1, plan.occurrence.total)
             executeVoiceTargetedEdit(command: command, plan: plan, context: context)
+        case .clarify(let count, let domain):
+            // 批次 2 交付 B：多处未消歧 → 存 pending 追问「第几个」。提示可显示
+            // 目标词（本地 UI）；日志只记计数与域。
+            guard case .command(let clarifyCommand) = parseResult else { return }
+            pendingClarification = PendingVoiceEditClarification(
+                command: clarifyCommand, domain: domain, occurrenceCount: count,
+                appBundleID: frontmostAppBundleID?(), createdAt: Date(),
+                generation: voiceEditGeneration)
+            NSLog("voice_targeted clarify count=%d domain=%@", count, domain.rawValue)
+            statusController.showTimedMessage(
+                voiceEditTextCountText("voiceTargetedClarifyPrompt", count, clarifyCommand.target),
+                duration: 4.0, deviceID: activeDeviceID)
         }
+    }
+
+    /// 「%d + %@」格式化助手（voiceTargetedClarifyPrompt）。
+    private func voiceEditTextCountText(_ key: String, _ count: Int, _ text: String) -> String {
+        let format = trText?(key) ?? key
+        return String(format: format, count, text)
+    }
+
+    // ---- 批次 2 交付 B：追问「第几个」状态机 ----
+
+    /// finishWithFinalText 最前面（早于旧解析器与 targeted 拦截）：pending 存在且
+    /// 有效（20 秒 + 同前台应用 + 同代际）且本句是序数应答 → 吞轮处理；非应答内容
+    /// 一律清 pending 放行正常链路（绝不吞用户的正常说话）。
+    private func handlePendingClarificationIfMatched(_ text: String) -> Bool {
+        guard let pending = pendingClarification else { return false }
+        let timeout = clarificationTimeoutOverride ?? kVoiceEditClarificationTimeout
+        let expired = Date().timeIntervalSince(pending.createdAt) > timeout
+        let appChanged = frontmostAppBundleID?() != pending.appBundleID
+        let staleGeneration = pending.generation != voiceEditGeneration
+        if expired || appChanged || staleGeneration {
+            pendingClarification = nil
+            return false
+        }
+        guard let reply = VoiceEditOrdinalReplyParser.parse(
+            text, target: pending.command.target) else {
+            pendingClarification = nil   // 非应答：清 pending、按正常链路放行
+            return false
+        }
+        // 序数应答：吞轮（不粘贴、不精修、不写历史）。
+        pastedFinalText = true
+        finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
+        cancelStreamingRefinement()
+        finishRecognitionCycle()
+        statusController.hideOverlay()
+        statusController.setStatus("Ready")
+        sendUIStateForActiveDevice("ready")
+        mainInputState = .ready
+        switch reply {
+        case .cancel:
+            pendingClarification = nil
+            NSLog("voice_edit clarify cancel")
+            statusController.showTimedMessage(
+                voiceEditText("voiceTargetedClarifyCancelled"), duration: 2.5,
+                deviceID: activeDeviceID)
+        case .ordinal, .fromEnd:
+            executeClarifiedReply(reply, pending: pending)
+        }
+        return true
+    }
+
+    /// 应答执行：重新过 L0 闸 + 读字段 + 锚定，在同一域内重算出现次数——
+    /// 次数变化 → 「文本已变化」清 pending；越界 → 「只有 N 处」**保留** pending；
+    /// 一致 → 走原 verified 链执行第 N 个。
+    private func executeClarifiedReply(
+        _ reply: VoiceEditOrdinalReply, pending: PendingVoiceEditClarification
+    ) {
+        func rejectChanged() {
+            pendingClarification = nil
+            NSLog("voice_edit clarify changed")
+            statusController.showTimedMessage(
+                voiceEditText("voiceTargetedClarifyChanged"), duration: 2.5,
+                deviceID: activeDeviceID)
+        }
+        // 同域（批次 2 交付 B 时域恒为 lastInjection；交付 C 扩展整框域）重算。
+        guard pending.domain == .lastInjection else {
+            rejectChanged()
+            return
+        }
+        guard let record = lastInjection, !record.remainingText.isEmpty,
+              Date().timeIntervalSince(record.injectedAt)
+                  <= TimeInterval(config.voiceEdit.scopeSeconds),
+              let recordedApp = record.appID, frontmostAppBundleID?() == recordedApp,
+              isProcessTrusted?() ?? false else {
+            rejectChanged()
+            return
+        }
+        guard let fieldState = readFocusedFieldStateForVoiceEdit(),
+              let caret = fieldState.caretUTF16, let selection = fieldState.selectionLength,
+              fieldState.text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16 else {
+            pendingClarification = nil
+            logVoiceEditFailure(stage: "focused_element",
+                                code: VoiceTargetedFailureCode.verifyUnavailable.rawValue)
+            showVoiceTargetedFailureToast(.verifyUnavailable)
+            return
+        }
+        let anchorResult = VoiceEditAnchor.locate(
+            remaining: record.remainingText, pressedEnter: record.pressedEnter,
+            fieldText: fieldState.text, caretUTF16: caret, selectionLength: selection)
+        guard case .anchored(let anchor) = anchorResult else {
+            rejectChanged()   // 字段已变化（锚定失败）
+            return
+        }
+        let matches = VoiceTargetedMatcher.occurrences(
+            of: pending.command.target, in: record.remainingText)
+        guard matches.count == pending.occurrenceCount else {
+            rejectChanged()   // 出现次数变化：宁拒勿错
+            return
+        }
+        // 序号选择（第 N / 倒数第 N）；越界：吞轮提示「只有 N 处」，**保留** pending。
+        let requested: Int
+        switch reply {
+        case .ordinal(let n): requested = n
+        case .fromEnd(let n): requested = matches.count - n + 1
+        case .cancel: return
+        }
+        guard requested >= 1, requested <= matches.count else {
+            NSLog("voice_edit clarify out_of_range n=%d count=%d", requested, matches.count)
+            statusController.showTimedMessage(
+                voiceEditText2("voiceTargetedOrdinalRange", matches.count, matches.count),
+                duration: 2.5, deviceID: activeDeviceID)
+            return
+        }
+        // 次数一致：合成带位置指令走原 verified 链。
+        pendingClarification = nil
+        let command = VoiceTargetedCommand(
+            action: pending.command.action, target: pending.command.target,
+            position: .ordinal(requested), hasExplicitScope: true)
+        let planResult = VoiceTargetedPlanner.plan(
+            command: command, remainingText: record.remainingText,
+            pressedEnter: record.pressedEnter, anchor: anchor,
+            fieldText: fieldState.text, caretUTF16: caret, selectionLength: selection)
+        guard case .plan(let plan) = planResult else {
+            if case .failure(let code) = planResult {
+                NSLog("voice_edit clarify execute failure code=%@", code.rawValue)
+                logVoiceEditFailure(stage: voiceTargetedFailureStage(for: code), code: code.rawValue)
+                showVoiceTargetedFailureToast(code, count: matches.count)
+            }
+            return
+        }
+        let context = makeTargetedEditContext(
+            remainingText: record.remainingText, pressedEnter: record.pressedEnter,
+            fieldText: fieldState.text, caretUTF16: caret, anchor: anchor)
+        NSLog("voice_edit clarify execute n=%d count=%d", requested, matches.count)
+        executeVoiceTargetedEdit(command: command, plan: plan, context: context)
     }
 
     private enum VoiceTargetedOutcome {
         case failure(VoiceTargetedFailureCode)
         /// 执行上下文快照（值类型拷贝；异步终验时不受记录后续变化影响）。
         case context(VoiceTargetedCommand, VoiceTargetedPlan, VoiceTargetedEditContext)
+        /// 批次 2 交付 B：目标多处未消歧 → 追问「第几个」（count=域内出现次数）。
+        case clarify(count: Int, domain: VoiceTargetedDomainKind)
     }
 
     /// targeted 执行上下文：计划时刻从 LastInjection + 字段状态确定性拆解出的
@@ -3370,6 +3549,16 @@ public final class VoiceStickCoordinator {
             }
             return .failure(.fieldMismatch)
         }
+        // 批次 2 交付 B：field_scope 开且未指定位置、remaining 内多处 → 追问
+        //「第几个」（不进 planner）。field_scope=false 保持批次 1 语义（planner
+        // ambiguous → 旧 toast，无 pending——回归开关红线）。
+        if config.voiceEdit.fieldScope, case .unspecified = command.position {
+            let matches = VoiceTargetedMatcher.occurrences(
+                of: command.target, in: record.remainingText)
+            if matches.count > 1 {
+                return .clarify(count: matches.count, domain: .lastInjection)
+            }
+        }
         let planResult = VoiceTargetedPlanner.plan(
             command: command,
             remainingText: record.remainingText,
@@ -3383,16 +3572,27 @@ public final class VoiceStickCoordinator {
             if case .failure(let code) = planResult { return .failure(code) }
             return .failure(.verifyUnavailable)
         }
-        // 锚定结构拆解（快照；UTF-16 码元切片 → String，与选区 API 同口径）。
-        let fieldUnits = Array(fieldState.text.utf16)
+        let context = makeTargetedEditContext(
+            remainingText: record.remainingText, pressedEnter: record.pressedEnter,
+            fieldText: fieldState.text, caretUTF16: caret, anchor: anchor)
+        return .context(command, plan, context)
+    }
+
+    /// 锚定结构拆解（快照；UTF-16 码元切片 → String，与选区 API 同口径）。
+    /// evaluate 与追问应答执行共用，保证上下文构造唯一。
+    private func makeTargetedEditContext(
+        remainingText: String, pressedEnter: Bool, fieldText: String,
+        caretUTF16: Int, anchor: VoiceEditAnchor
+    ) -> VoiceTargetedEditContext {
+        let fieldUnits = Array(fieldText.utf16)
         let fieldPrefix = String(decoding: fieldUnits[..<anchor.anchorStart], as: UTF16.self)
         let textAfterAnchor = String(decoding: fieldUnits[anchor.anchorEnd...], as: UTF16.self)
         // 已记录换行：锚段长度 = remaining+1（P1c 裸回落/无换行时 = remaining）。
-        let hasNewline = record.pressedEnter
-            && anchor.anchorEnd - anchor.anchorStart == record.remainingText.utf16.count + 1
-        let context = VoiceTargetedEditContext(
-            remainingText: record.remainingText,
-            pressedEnter: record.pressedEnter,
+        let hasNewline = pressedEnter
+            && anchor.anchorEnd - anchor.anchorStart == remainingText.utf16.count + 1
+        return VoiceTargetedEditContext(
+            remainingText: remainingText,
+            pressedEnter: pressedEnter,
             hasRecordedNewline: hasNewline,
             fieldPrefix: fieldPrefix,
             anchorKind: anchor.kind,
@@ -3400,7 +3600,6 @@ public final class VoiceStickCoordinator {
             anchorEndUTF16: anchor.anchorEnd,
             textAfterAnchor: textAfterAnchor
         )
-        return .context(command, plan, context)
     }
 
     /// targeted 执行（主线程串行；单条命令内无循环注入，无 UI 阻塞）：
