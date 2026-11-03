@@ -802,11 +802,12 @@ func runVoiceTargetedCoordinatorTests() {
                "targeted: 自然简写完整调用顺序")
     checkEqual(h.field.text, "我今天去上海上班。", "targeted: 用户实报自然简写替换")
     checkEqual(h.input.pastedTexts.last, "上海", "targeted: 自然简写不粘贴指令")
-    // 同一简写若目标不在最近注入中，仍按普通文本，不吞正常口述。
+    // 同一简写若目标不在最近注入与整框中，仍按普通文本，不吞正常口述（整框门控
+    // 的存在性读 = 首个 state；句中句号预检读 = 第二个 state）。
     h.ops.clear()
     h.asr.onFinal?("把广州改成杭州")
     pumpMainRunLoop(0.3)
-    checkEqual(h.ops.list, ["paste"], "targeted: 简写无目标匹配走普通文本")
+    checkEqual(h.ops.list, ["state", "paste"], "targeted: 简写无目标匹配走普通文本（state=整框门控读）")
     checkEqual(h.field.text, "我今天去上海上班。把广州改成杭州\n",
                "targeted: 简写无匹配时原文作为新正文（普通输入保留 auto_enter）")
 
@@ -926,8 +927,10 @@ func runVoiceTargetedCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.6)
+    // 光标恢复批次 2 语义（原位置+平移）：吞退格后光标停在 2（编辑区间起点前）
+    // → 恢复 2（批次 1 会移到段末 4——有意变化）。
     checkEqual(h.ops.list,
-               ["state", "select(2,2)", "selected", "key:Backspace", "select(4,0)", "state"],
+               ["state", "select(2,2)", "selected", "key:Backspace", "select(2,0)", "state"],
                "targeted: 未落地后记录保留可重试")
     checkEqual(h.field.text, "我去上班", "targeted: 重试后字段内容")
     checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted",
@@ -951,11 +954,12 @@ func runVoiceTargetedCoordinatorTests() {
     pumpMainRunLoop(3.0)
     checkEqual(h.sink.timedMessages.last, "voiceTargetedUnconfirmed",
                "targeted: 真不符 toast key")
-    // 记录已失效：再发 targeted 命令 → no_injection。
+    // 记录已失效：再发 targeted 命令 → 域解析落整框（批次 2）→ 目标不在字段 →
+    // notFound（批次 1 为 no_injection——field_scope 下的有意变化）。
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.3)
-    checkEqual(h.sink.timedMessages.last, "voiceEditNoInjection",
-               "targeted: 真不符后记录失效")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedNotFound",
+               "targeted: 真不符后记录失效（整框 notFound）")
 
     // stale generation：命令执行后、终验前发生新注入 → 旧回调不得覆盖新记录。
     h = makeTargetedHarness()
@@ -1081,7 +1085,9 @@ func runVoiceTargetedCoordinatorTests() {
     checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted",
                "targeted: 光标恢复未落地仍成功")
 
-    // 手工改变 remaining（旧最长前缀容错不得生效）→ fieldMismatch 类拒绝。
+    // 手工改变 remaining（旧最长前缀容错不得生效）：批次 2 域解析——锚定失败退整框，
+    // 目标也不在字段 → notFound（批次 1 为 fieldMismatch——field_scope 下有意变化；
+    // field_scope=false 的 fieldMismatch 回归见批次 2 C 组用例）。
     h = makeTargetedHarness()
     h.asr.onFinal?("我去北京上班")
     pumpMainRunLoop(0.1)
@@ -1090,8 +1096,8 @@ func runVoiceTargetedCoordinatorTests() {
     h.field.selectionLength = 0
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.3)
-    checkEqual(h.sink.timedMessages.last, "voiceTargetedTextChanged",
-               "targeted: 手工改动 fieldMismatch toast key")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedNotFound",
+               "targeted: 手工改动后整框亦无目标 notFound")
 
     // 无最近注入时自然简写按普通文本；显式作用域 invalid 结构吞掉提示不粘贴。
     h = makeTargetedHarness()
@@ -1311,6 +1317,160 @@ func runVoiceTargetedClarifyCoordinatorTests() {
     checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted", "clarify: 倒数应答成功 toast")
 }
 
+// ---- 语音编辑批次 2 交付 C：整框搜索域 + 记录维护三情形 + 光标平移 ----
+// 批次 1 验收 C2（注入被手改后替换失败）修复、手打文字可编辑、注入记录
+// update/keep/invalidate 三情形、整框追问应答、field_too_long、光标原位平移。
+
+func runVoiceTargetedFieldScopeCoordinatorTests() {
+    var noEnter = AppConfig.defaults
+    noEnter.autoEnter = false
+
+    // 1) C2 修复：注入被手改（北京→背景 + 前后手打），简写替换落整框成功；
+    //    计划时刻锚定不可定位 → 记录不变；其后显式作用域命令按新字段工作。
+    var h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "手打开头我去背景上班"
+    h.field.selectionLocation = 10
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把背景改成北京")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "手打开头我去北京上班", "fieldScope: C2 手改后整框替换成功")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedReplaced", "fieldScope: C2 成功 toast")
+    checkEqual(h.ops.list.first, "state", "fieldScope: 门控读字段（state）")
+    check(h.ops.list.contains("select(6,2)"), "fieldScope: C2 选区=整框绝对偏移(6,2)")
+    // 记录未更新（不可定位 → 不变）：remaining 仍「我去北京上班」，字段已含该段
+    //（P2 唯一出现）→ 显式作用域删除「上班」仍可用。
+    h.ops.clear()
+    h.asr.onFinal?("删除刚才的上班")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "手打开头我去北京", "fieldScope: 记录不变后续编辑可用")
+
+    // 2) 手打文字（无注入记录）整框删除：无记录 → 整框唯一匹配执行。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.field.text = "手打北京内容"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("删除北京")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "手打内容", "fieldScope: 无记录手打文字整框删除")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted", "fieldScope: 手打删除成功 toast")
+
+    // 3) 记录维护 update：整框编辑完全落在 remaining 内 → 记录同步映射。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京我去北京上班"
+    h.field.selectionLocation = 8
+    h.field.selectionLength = 0
+    h.asr.onFinal?("把第二个北京改成上海")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "北京我去上海上班", "fieldScope: 整框第 2 个替换（域内那个）")
+    // remaining 已同步为「我去上海上班」：显式作用域删「上班」工作。
+    h.asr.onFinal?("删除刚才的上班")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "北京我去上海", "fieldScope: update 后记录可续编辑")
+
+    // 4) 记录维护 keep：整框编辑完全在锚段外 → 记录不变。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京我去北京上班"
+    h.field.selectionLocation = 8
+    h.field.selectionLength = 0
+    h.asr.onFinal?("把第一个北京改成上海")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "上海我去北京上班", "fieldScope: 整框第 1 个替换（锚段外）")
+    h.asr.onFinal?("删除刚才的上班")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "上海我去北京", "fieldScope: keep 后记录不变可续编辑")
+
+    // 5) 记录维护 invalidate：整框编辑跨越锚段边界 → 记录作废。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去上班了"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    h.asr.onFinal?("把上班了改成完毕")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "我去完毕", "fieldScope: 跨界整框替换执行")
+    // 记录已作废：尾删「删除」→ no_injection（整框域不适用旧通道）。
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceEditNoInjection",
+               "fieldScope: invalidate 后旧通道 no_injection")
+
+    // 6) 整框追问应答：无记录、字段 2 处 → 追问（wholeField）→「第二个」执行第 2 处；
+    //    应答前字段变化（计数 3）→ 拒绝重说。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除北京")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedClarifyPrompt",
+               "fieldScope: 无记录整框多处追问")
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "北京和", "fieldScope: 整框追问应答执行第 2 处")
+    check(!h.input.pastedTexts.contains("第二个"), "fieldScope: 整框应答句不上屏")
+
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.field.text = "北京和北京"
+    h.field.selectionLocation = 5
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除北京")
+    pumpMainRunLoop(0.3)
+    h.field.text = "北京和北京和北京"   // 用户又打了一段：计数 2 → 3
+    h.field.selectionLocation = 8
+    h.field.selectionLength = 0
+    h.asr.onFinal?("第二个")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedClarifyChanged",
+               "fieldScope: 整框计数变化拒绝")
+    checkEqual(h.field.text, "北京和北京和北京", "fieldScope: 整框计数变化零执行")
+
+    // 7) field_too_long：整框域 >200k → 拒绝（最近注入域不受限）。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.field.text = String(repeating: "字", count: 200_000) + "北京"
+    h.field.selectionLocation = h.field.text.utf16.count
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除北京")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceEditFieldTooLong",
+               "fieldScope: 超长字段整框拒绝")
+    checkEqual(h.field.text.utf16.count, 200_002, "fieldScope: 超长零修改")
+
+    // 8) 光标平移有意变化（P1b）：光标在段首 → 编辑后光标留在原位（批次 1 移到
+    //    段末）；末尾追加情形与批次 1 一致已由既有用例覆盖（targeted: 删除完整
+    //    调用顺序 select(4,0)）。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 2
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把刚才的北京改成杭州")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.ops.list,
+               ["state", "select(2,2)", "selected", "paste", "select(2,0)", "state"],
+               "fieldScope: P1b 光标原位平移（select(2,0)，批次 1 为段末 4——有意变化）")
+    checkEqual(h.field.text, "我去杭州上班", "fieldScope: P1b 替换后字段内容")
+}
+
 /// targeted 本地对齐兜底（方案 targeted 章）：门控未命中 → 拼音候选 → 本地模型挑选 →
 /// 对齐接管或回退普通文本。Fake alignTarget 闭包注入；断言完整执行链与回退语义。
 func runVoiceTargetedAlignCoordinatorTests() {
@@ -1342,8 +1502,8 @@ func runVoiceTargetedAlignCoordinatorTests() {
     pumpMainRunLoop(0.6)
     check(!h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 对齐成功不粘贴指令文本")
     checkEqual(h.ops.list,
-               ["state", "select(6,2)", "selected", "paste", "select(10,0)", "state"],
-               "align: 对齐接管完整调用顺序（目标=升旗）")
+               ["state", "state", "select(6,2)", "selected", "paste", "select(10,0)", "state"],
+               "align: 对齐接管完整调用顺序（目标=升旗；首个 state=整框存在性门控读）")
     checkEqual(h.field.text, "我要去北京看吃烤鸭。", "align: 对齐替换后字段内容")
     checkEqual(h.input.pastedEnterFlags.last, false, "align: 替换 pressEnter=false")
     checkEqual(h.sink.timedMessages.last, "voiceTargetedReplaced", "align: 成功 toast key")
@@ -1360,7 +1520,8 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.6)
-    checkEqual(h.ops.list, ["state", "paste"], "align: NONE 回退普通文本（state=句中句号预检读）")
+    checkEqual(h.ops.list, ["state", "state", "state", "paste"],
+               "align: NONE 回退普通文本（state=门控读+回退重入门控读+句号预检读）")
     check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: NONE 时指令按普通文本上屏")
 
     // C. 模型失败/超时（nil）：同样回退普通文本。
@@ -1375,7 +1536,7 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.6)
-    checkEqual(h.ops.list, ["state", "paste"], "align: 失败回退普通文本")
+    checkEqual(h.ops.list, ["state", "state", "state", "paste"], "align: 失败回退普通文本")
     check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 失败时指令按普通文本上屏")
 
     // D. 未启用（local_align_enabled=false）：闭包在场也不走对齐，直接回退。
@@ -1389,7 +1550,7 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.3)
-    checkEqual(h.ops.list, ["state", "paste"], "align: 未启用直接回退（默认行为不变）")
+    checkEqual(h.ops.list, ["state", "state", "paste"], "align: 未启用直接回退（门控读+句号预检读）")
     check(h.input.pastedTexts.contains("把分析改成吃烤鸭。"), "align: 未启用时普通文本上屏")
 
     // E. 对齐目标不在候选内（模型逃逸）：拒绝接管，回退普通文本。
@@ -1404,7 +1565,7 @@ func runVoiceTargetedAlignCoordinatorTests() {
     h.ops.clear()
     h.asr.onFinal?("把分析改成吃烤鸭。")
     pumpMainRunLoop(0.6)
-    checkEqual(h.ops.list, ["state", "paste"], "align: 枚举外答案拒绝接管回退")
+    checkEqual(h.ops.list, ["state", "state", "state", "paste"], "align: 枚举外答案拒绝接管回退")
     checkEqual(h.field.text, "我要去北京看升旗。把分析改成吃烤鸭。\n", "align: 逃逸时字段=原文+指令（auto_enter）")
 }
 
@@ -1450,7 +1611,8 @@ func runVoiceEditAnchorCoordinatorTests() {
     checkEqual(h.field.text, "我去杭州上班", "anchor T1: 句中替换后字段内容")
     checkEqual(h.sink.timedMessages.last, "voiceTargetedReplaced", "anchor T1: 成功 toast key")
 
-    // T5 协调器级：段出现两次且 P1 全 miss → anchor_ambiguous toast。
+    // T5 协调器级：段出现两次且 P1 全 miss → 批次 2 域解析退整框（字段内 2 处 →
+    // 追问「第几个」，wholeField 域）；「第一个」应答执行第 1 处。
     // 全新 harness（T1 替换后 remaining=杭州，需注入新段重造双出现场景）。
     h = makeTargetedHarness()
     h.coordinator.updateConfig(noEnter)
@@ -1461,8 +1623,26 @@ func runVoiceEditAnchorCoordinatorTests() {
     h.field.selectionLength = 0
     h.asr.onFinal?("删除刚才的北京")
     pumpMainRunLoop(0.4)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedClarifyPrompt",
+               "anchor T5: 锚定歧义退整框追问（批次 2 有意变化）")
+    h.asr.onFinal?("第一个")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "很好，我去北京出差", "anchor T5: 第一个应答执行第 1 处")
+
+    // T5b field_scope=false：锚定歧义保持批次 1 anchor_ambiguous toast（回归开关）。
+    h = makeTargetedHarness()
+    var scopeOff = noEnter
+    scopeOff.voiceEdit.fieldScope = false
+    h.coordinator.updateConfig(scopeOff)
+    h.asr.onFinal?("北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京很好，我去北京出差"
+    h.field.selectionLocation = 11
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.4)
     checkEqual(h.sink.timedMessages.last, "voiceEditAnchorAmbiguous",
-               "anchor T5: anchor_ambiguous toast key")
+               "anchor T5b: field_scope=false 保持 anchor_ambiguous toast")
 
     // T13 句中句号剥离注入点三处一致：注入「今天很好。」到句中（光标后同一逻辑
     // 行还有「尾」）→ 剥成「今天很好」；粘贴文本 / lastInjection / 历史库 injected
@@ -1573,9 +1753,12 @@ func runVoiceEditAnchorCoordinatorTests() {
         $0.contains("fail_stage=anchor") && $0.contains("bundle=com.test.app")
             && $0.contains("code=field_mismatch")
     }, "anchor T15: 尾删失败日志含 fail_stage/bundle/code")
-    // targeted 通道同样打日志（anchor_ambiguous 样本）。
+    // targeted 通道同样打日志（field_scope=false 下 anchor_ambiguous 样本——
+    // field_scope 开时锚定歧义已被域解析吸收为整框追问，不再打该失败码）。
     var ht = makeTargetedHarness()
-    ht.coordinator.updateConfig(noEnter)
+    var htScopeOff = noEnter
+    htScopeOff.voiceEdit.fieldScope = false
+    ht.coordinator.updateConfig(htScopeOff)
     var targetedLines: [String] = []
     ht.coordinator.voiceEditLog = { targetedLines.append($0) }
     ht.asr.onFinal?("北京")
@@ -1588,5 +1771,5 @@ func runVoiceEditAnchorCoordinatorTests() {
     check(targetedLines.contains {
         $0.contains("fail_stage=anchor") && $0.contains("bundle=com.test.app")
             && $0.contains("code=anchor_ambiguous")
-    }, "anchor T15: targeted anchor_ambiguous 失败日志")
+    }, "anchor T15: targeted anchor_ambiguous 失败日志（field_scope=false）")
 }

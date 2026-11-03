@@ -30,6 +30,9 @@ public struct VoiceEditAnchor: Equatable {
         case caretSuffix
         case fieldEnd
         case uniqueOccurrence
+        /// 批次 2（整框搜索域）：合成锚——域文本 = 字段全文（起点 0、终点 = 全长）。
+        /// 不来自 locate，仅供 planner 可读性守卫与执行上下文快照携带域信息。
+        case wholeField
     }
 
     public let kind: Kind

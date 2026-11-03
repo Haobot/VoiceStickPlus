@@ -3217,14 +3217,25 @@ public final class VoiceStickCoordinator {
         guard settings.enabled else { return false }
         guard outputProfile(for: activeDeviceID).target == .focusedApp else { return false }
         guard let parseResult = VoiceTargetedParser.parse(text) else { return false }
-        // 自然简写不带「刚才的」时，只有最近一次注入确实存在目标词才接管；
-        // 否则先尝试本地对齐兜底（ASR 把目标词听漂，每轮至多一次），仍无果走普通
-        // 文本，避免把不含上下文的「把A改成B」一律吞掉。
+        // 自然简写不带「刚才的」时：X 在最近一次注入里存在才接管；批次 2（交付 C，
+        // field_scope 开）再读一次字段——X 在整个输入框存在也接管（Tier 1 不命中时
+        // 域解析落整框）；都不存在 → 本地对齐兜底（仍只针对最近一次注入，每轮至多
+        // 一次），仍无果走普通文本，避免把不含上下文的「把A改成B」一律吞掉。
         if case .command(let command) = parseResult, !command.hasExplicitScope {
-            guard let remainingText = lastInjection?.remainingText,
-                  !VoiceTargetedMatcher.occurrences(
-                      of: command.target, in: remainingText
-                  ).isEmpty else {
+            var inRecent = false
+            if let remainingText = lastInjection?.remainingText {
+                inRecent = !VoiceTargetedMatcher.occurrences(
+                    of: command.target, in: remainingText).isEmpty
+            }
+            if !inRecent {
+                if config.voiceEdit.fieldScope,
+                   let fieldState = readFocusedFieldStateForVoiceEdit(),
+                   fieldState.text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16,
+                   !VoiceTargetedMatcher.occurrences(
+                       of: command.target, in: fieldState.text).isEmpty {
+                    performTargetedTakeover(text: text, parseResult: parseResult)
+                    return true
+                }
                 return allowAlign && attemptLocalAlignOrFallback(text: text, command: command)
             }
         }
@@ -3338,6 +3349,14 @@ public final class VoiceStickCoordinator {
             statusController.showTimedMessage(
                 voiceEditTextCountText("voiceTargetedClarifyPrompt", count, clarifyCommand.target),
                 duration: 4.0, deviceID: activeDeviceID)
+        case .outOfRange(let count):
+            // 批次 2 交付 C：直发指令带位置但序号越界（只有 N 处却说第五个）。
+            NSLog("voice_targeted out_of_range count=%d", count)
+            logVoiceEditFailure(stage: "anchor",
+                                code: VoiceTargetedFailureCode.positionOutOfRange.rawValue)
+            statusController.showTimedMessage(
+                voiceEditText2("voiceTargetedOrdinalRange", count, count),
+                duration: 2.5, deviceID: activeDeviceID)
         }
     }
 
@@ -3391,7 +3410,8 @@ public final class VoiceStickCoordinator {
 
     /// 应答执行：重新过 L0 闸 + 读字段 + 锚定，在同一域内重算出现次数——
     /// 次数变化 → 「文本已变化」清 pending；越界 → 「只有 N 处」**保留** pending；
-    /// 一致 → 走原 verified 链执行第 N 个。
+    /// 一致 → 走原 verified 链执行第 N 个。批次 2 交付 C 起支持整框域（重算对象
+    /// = 字段全文）。
     private func executeClarifiedReply(
         _ reply: VoiceEditOrdinalReply, pending: PendingVoiceEditClarification
     ) {
@@ -3402,16 +3422,7 @@ public final class VoiceStickCoordinator {
                 voiceEditText("voiceTargetedClarifyChanged"), duration: 2.5,
                 deviceID: activeDeviceID)
         }
-        // 同域（批次 2 交付 B 时域恒为 lastInjection；交付 C 扩展整框域）重算。
-        guard pending.domain == .lastInjection else {
-            rejectChanged()
-            return
-        }
-        guard let record = lastInjection, !record.remainingText.isEmpty,
-              Date().timeIntervalSince(record.injectedAt)
-                  <= TimeInterval(config.voiceEdit.scopeSeconds),
-              let recordedApp = record.appID, frontmostAppBundleID?() == recordedApp,
-              isProcessTrusted?() ?? false else {
+        guard isProcessTrusted?() ?? false else {
             rejectChanged()
             return
         }
@@ -3424,15 +3435,26 @@ public final class VoiceStickCoordinator {
             showVoiceTargetedFailureToast(.verifyUnavailable)
             return
         }
-        let anchorResult = VoiceEditAnchor.locate(
-            remaining: record.remainingText, pressedEnter: record.pressedEnter,
+        let recentContext = availableRecentTargetedDomain(
             fieldText: fieldState.text, caretUTF16: caret, selectionLength: selection)
-        guard case .anchored(let anchor) = anchorResult else {
-            rejectChanged()   // 字段已变化（锚定失败）
-            return
+        // 同域重算出现次数。
+        let domainText: String
+        switch pending.domain {
+        case .lastInjection:
+            guard let recentContext else {
+                rejectChanged()   // 域已不可定位（记录/锚定变化）
+                return
+            }
+            domainText = recentContext.recent.remainingText
+        case .wholeField:
+            guard fieldState.text.utf16.count <= kVoiceTargetedFieldScopeMaxUTF16 else {
+                rejectChanged()
+                return
+            }
+            domainText = fieldState.text
         }
         let matches = VoiceTargetedMatcher.occurrences(
-            of: pending.command.target, in: record.remainingText)
+            of: pending.command.target, in: domainText)
         guard matches.count == pending.occurrenceCount else {
             rejectChanged()   // 出现次数变化：宁拒勿错
             return
@@ -3451,27 +3473,25 @@ public final class VoiceStickCoordinator {
                 duration: 2.5, deviceID: activeDeviceID)
             return
         }
-        // 次数一致：合成带位置指令走原 verified 链。
+        // 次数一致：合成带位置指令走原 verified 链（与 evaluate 同一构建路径）。
         pendingClarification = nil
         let command = VoiceTargetedCommand(
             action: pending.command.action, target: pending.command.target,
             position: .ordinal(requested), hasExplicitScope: true)
-        let planResult = VoiceTargetedPlanner.plan(
-            command: command, remainingText: record.remainingText,
-            pressedEnter: record.pressedEnter, anchor: anchor,
-            fieldText: fieldState.text, caretUTF16: caret, selectionLength: selection)
-        guard case .plan(let plan) = planResult else {
-            if case .failure(let code) = planResult {
+        let outcome = buildTargetedExecution(
+            command, domain: pending.domain, selected: matches[requested - 1],
+            recentContext: recentContext, fieldState: fieldState,
+            caret: caret, selection: selection)
+        guard case .context(_, let plan, let context) = outcome else {
+            if case .failure(let code) = outcome {
                 NSLog("voice_edit clarify execute failure code=%@", code.rawValue)
                 logVoiceEditFailure(stage: voiceTargetedFailureStage(for: code), code: code.rawValue)
                 showVoiceTargetedFailureToast(code, count: matches.count)
             }
             return
         }
-        let context = makeTargetedEditContext(
-            remainingText: record.remainingText, pressedEnter: record.pressedEnter,
-            fieldText: fieldState.text, caretUTF16: caret, anchor: anchor)
-        NSLog("voice_edit clarify execute n=%d count=%d", requested, matches.count)
+        NSLog("voice_edit clarify execute n=%d count=%d domain=%@",
+              requested, matches.count, pending.domain.rawValue)
         executeVoiceTargetedEdit(command: command, plan: plan, context: context)
     }
 
@@ -3481,18 +3501,34 @@ public final class VoiceStickCoordinator {
         case context(VoiceTargetedCommand, VoiceTargetedPlan, VoiceTargetedEditContext)
         /// 批次 2 交付 B：目标多处未消歧 → 追问「第几个」（count=域内出现次数）。
         case clarify(count: Int, domain: VoiceTargetedDomainKind)
+        /// 批次 2 交付 C：位置序号越界（count=域内出现次数，直发指令路径）。
+        case outOfRange(count: Int)
     }
 
-    /// targeted 执行上下文：计划时刻从 LastInjection + 字段状态确定性拆解出的
-    /// 锚定结构（值类型快照，供异步终验计算期望文本/光标，不引用可变记录）。
-    /// 批次 1 起扩展锚点字段：fieldPrefix = anchored 段之前的字段内容（P1c 路径
-    /// 与旧后缀拆解逐字节一致——回归底线）；textAfterAnchor = anchored 段之后的
-    /// 字段内容（P1c 恒 ""，P1a/P1b/P2 为实际段后文本）。
+    /// 整框域编辑后的注入记录维护决定（计划时刻锚定可定位时计算，终验成功后应用）。
+    private enum VoiceTargetedRecordAction: Equatable {
+        /// lastInjection 域（成功后写 plan.newRemainingText）或计划时刻不可定位（不变）。
+        case none
+        /// 编辑区间完全落在 remaining 内 → 同步更新（携带新 remaining）。
+        case update(String)
+        /// 完全在锚段外 → 记录不变。
+        case keep
+        /// 跨越边界（含吃掉已记录换行）→ 记录作废。
+        case invalidate
+    }
+
+    /// targeted 执行上下文：计划时刻从域文本 + 字段状态确定性拆解出的结构
+    ///（值类型快照，供异步终验计算期望文本/光标，不引用可变记录）。
+    /// 批次 1 语义：fieldPrefix/textAfterAnchor 按 anchored 段拆解（P1c 路径与旧
+    /// 后缀拆解逐字节一致——回归底线）。批次 2（交付 C）：remainingText 泛化为
+    /// **域文本**（lastInjection = remaining；wholeField = 字段全文，此时
+    /// fieldPrefix/textAfterAnchor 恒 ""、anchor 为合成整框锚），并携带
+    /// originalCaretUTF16（光标恢复「原位置+平移」）与 recordAction。
     private struct VoiceTargetedEditContext {
         let remainingText: String
         let pressedEnter: Bool
         /// anchored 段是否覆盖 remaining+1（= 旧 hasRecordedNewline：字段末尾存在
-        /// 已记录 auto_enter 换行；P1c 裸回落时 false）。
+        /// 已记录 auto_enter 换行；P1c 裸回落时 false；整框域恒 false）。
         let hasRecordedNewline: Bool
         /// anchored 段之前的字段内容（用户既有内容，可空）。
         let fieldPrefix: String
@@ -3505,6 +3541,12 @@ public final class VoiceStickCoordinator {
         /// anchored 段之后的字段内容（终验期望文本 = fieldPrefix + newRemaining +
         /// (hasRecordedNewline ? "\n" : "") + textAfterAnchor；P1c 恒 ""）。
         let textAfterAnchor: String
+        // ---- 批次 2（整框搜索域）扩展 ----
+        let domain: VoiceTargetedDomainKind
+        /// 计划时刻光标（UTF-16；光标恢复「原位置 + 平移」的基准）。
+        let originalCaretUTF16: Int
+        /// 整框域编辑后的注入记录维护决定（lastInjection 域恒 .none）。
+        let recordAction: VoiceTargetedRecordAction
 
         /// 动作前字段全文（终验窗末区分「动作未落地」与「真不符」用）。
         var preActionText: String {
@@ -3513,9 +3555,48 @@ public final class VoiceStickCoordinator {
     }
 
     /// L0 作用域闸 + L1 目标校验（targeted 恒 verified）→ 执行上下文或拒绝码。
-    /// 批次 1 起 L1 定位走字段内多级锚定（VoiceEditAnchor），失败码透传。
+    /// 批次 2（交付 C）：`[voice_edit].field_scope` 开 → 域解析（Tier 1 最近一次
+    /// 语音输入优先 → 整框；VoiceTargetedDomain 规则表）；关 → 批次 1 原路径
+    ///（逐字节一致，回归开关红线）。
     private func evaluateVoiceTargetedCommand(
         _ command: VoiceTargetedCommand
+    ) -> VoiceTargetedOutcome {
+        guard isProcessTrusted?() ?? false else { return .failure(.accessibilityDenied) }
+        guard let fieldState = readFocusedFieldStateForVoiceEdit(),
+              let caret = fieldState.caretUTF16, let selection = fieldState.selectionLength,
+              fieldState.text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16 else {
+            return .failure(.verifyUnavailable)
+        }
+        NSLog("voice_targeted field len=\(fieldState.text.utf16.count) caret=\(caret) sel=\(selection)")
+        guard config.voiceEdit.fieldScope else {
+            return evaluateTargetedBatch1(
+                command, fieldState: fieldState, caret: caret, selection: selection)
+        }
+        // 最近一次语音输入域可用性 = L0 批次 1 闸（记录/时间窗/同前台应用）+ 锚定。
+        let recentContext = availableRecentTargetedDomain(
+            fieldText: fieldState.text, caretUTF16: caret, selectionLength: selection)
+        let domainOutcome = VoiceTargetedDomain.resolve(
+            command: command, recent: recentContext?.recent, fieldText: fieldState.text)
+        switch domainOutcome {
+        case .failure(let code):
+            return .failure(code)
+        case .clarify(let count, let domain):
+            return .clarify(count: count, domain: domain)
+        case .outOfRange(let count):
+            return .outOfRange(count: count)
+        case .execute(let domain, let selected):
+            return buildTargetedExecution(
+                command, domain: domain, selected: selected,
+                recentContext: recentContext, fieldState: fieldState,
+                caret: caret, selection: selection)
+        }
+    }
+
+    /// 批次 1 原路径（field_scope=false；与批次 1 逐字节一致）：L0 记录闸 → 锚定 →
+    /// planner（无追问/整框；歧义 = 旧 ambiguous 失败）。
+    private func evaluateTargetedBatch1(
+        _ command: VoiceTargetedCommand,
+        fieldState: FocusedFieldState, caret: Int, selection: Int
     ) -> VoiceTargetedOutcome {
         guard let record = lastInjection, !record.remainingText.isEmpty else {
             return .failure(.noInjection)
@@ -3527,15 +3608,6 @@ public final class VoiceStickCoordinator {
         guard let recordedApp = record.appID, frontmostAppBundleID?() == recordedApp else {
             return .failure(.appChanged)
         }
-        guard isProcessTrusted?() ?? false else { return .failure(.accessibilityDenied) }
-        guard let fieldState = readFocusedFieldStateForVoiceEdit(),
-              let caret = fieldState.caretUTF16, let selection = fieldState.selectionLength,
-              fieldState.text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16 else {
-            return .failure(.verifyUnavailable)
-        }
-        NSLog("voice_targeted field len=\(fieldState.text.utf16.count) caret=\(caret) sel=\(selection)")
-        // 字段内多级锚定（P1a 光标前缀 → P1b 光标后缀 → P1c 字段末尾 → P2 唯一
-        // 出现；零容错）。失败码透传（anchor_ambiguous / field_mismatch）。
         let anchorResult = VoiceEditAnchor.locate(
             remaining: record.remainingText,
             pressedEnter: record.pressedEnter,
@@ -3548,16 +3620,6 @@ public final class VoiceStickCoordinator {
                 return .failure(code == .anchorAmbiguous ? .anchorAmbiguous : .fieldMismatch)
             }
             return .failure(.fieldMismatch)
-        }
-        // 批次 2 交付 B：field_scope 开且未指定位置、remaining 内多处 → 追问
-        //「第几个」（不进 planner）。field_scope=false 保持批次 1 语义（planner
-        // ambiguous → 旧 toast，无 pending——回归开关红线）。
-        if config.voiceEdit.fieldScope, case .unspecified = command.position {
-            let matches = VoiceTargetedMatcher.occurrences(
-                of: command.target, in: record.remainingText)
-            if matches.count > 1 {
-                return .clarify(count: matches.count, domain: .lastInjection)
-            }
         }
         let planResult = VoiceTargetedPlanner.plan(
             command: command,
@@ -3578,11 +3640,111 @@ public final class VoiceStickCoordinator {
         return .context(command, plan, context)
     }
 
+    /// 最近一次语音输入域可用性（批次 2 域解析输入）：L0 批次 1 闸（记录非空 /
+    /// 时间窗 / 同前台应用）+ 字段内多级锚定全通过才非 nil；锚定失败码不透传
+    ///（域语义＝「不可定位 → 整框」，与 VoiceTargetedDomain 规则表一致）。
+    private func availableRecentTargetedDomain(
+        fieldText: String, caretUTF16: Int, selectionLength: Int
+    ) -> (recent: VoiceTargetedRecentDomain, record: LastInjection)? {
+        guard let record = lastInjection, !record.remainingText.isEmpty else { return nil }
+        guard Date().timeIntervalSince(record.injectedAt)
+            <= TimeInterval(config.voiceEdit.scopeSeconds) else { return nil }
+        guard let recordedApp = record.appID, frontmostAppBundleID?() == recordedApp else {
+            return nil
+        }
+        let anchorResult = VoiceEditAnchor.locate(
+            remaining: record.remainingText,
+            pressedEnter: record.pressedEnter,
+            fieldText: fieldText,
+            caretUTF16: caretUTF16,
+            selectionLength: selectionLength
+        )
+        guard case .anchored(let anchor) = anchorResult else { return nil }
+        return (
+            VoiceTargetedRecentDomain(remainingText: record.remainingText, anchor: anchor),
+            record
+        )
+    }
+
+    /// 域解析 execute → planner + 执行上下文（两域共用；wholeField 用合成整框锚 +
+    /// 记录维护三情形计算）。
+    private func buildTargetedExecution(
+        _ command: VoiceTargetedCommand,
+        domain: VoiceTargetedDomainKind,
+        selected: VoiceTargetedOccurrence,
+        recentContext: (recent: VoiceTargetedRecentDomain, record: LastInjection)?,
+        fieldState: FocusedFieldState, caret: Int, selection: Int
+    ) -> VoiceTargetedOutcome {
+        let domainText: String
+        let pressedEnter: Bool
+        let anchor: VoiceEditAnchor
+        var recordAction = VoiceTargetedRecordAction.none
+        switch domain {
+        case .lastInjection:
+            guard let recentContext else { return .failure(.fieldMismatch) }  // 防御（resolver 保证）
+            domainText = recentContext.recent.remainingText
+            pressedEnter = recentContext.record.pressedEnter
+            anchor = recentContext.recent.anchor
+        case .wholeField:
+            domainText = fieldState.text
+            pressedEnter = false
+            anchor = VoiceEditAnchor(
+                kind: .wholeField, anchorStart: 0,
+                anchorEnd: fieldState.text.utf16.count)
+            // 注入记录维护三情形（计划时刻锚定可定位时；交付 C）。
+            if let recentContext {
+                let editStart = selected.utf16Start
+                let editEnd = editStart + selected.utf16Length
+                let remStart = recentContext.recent.anchor.anchorStart
+                let remEnd = remStart + recentContext.recent.remainingText.utf16.count
+                if editStart >= remStart && editEnd <= remEnd {
+                    // 完全在内：把同一编辑映射到 remaining（UTF-16 拼接，grapheme 对齐）。
+                    let replacement: String
+                    switch command.action {
+                    case .delete: replacement = ""
+                    case .replace(let text): replacement = text
+                    }
+                    let units = Array(recentContext.recent.remainingText.utf16)
+                    let relStart = editStart - remStart
+                    var newUnits = Array(units[0..<relStart])
+                    newUnits.append(contentsOf: Array(replacement.utf16))
+                    newUnits.append(contentsOf: Array(units[(relStart + selected.utf16Length)...]))
+                    recordAction = .update(String(decoding: newUnits, as: UTF16.self))
+                } else if editEnd <= recentContext.recent.anchor.anchorStart
+                    || editStart >= recentContext.recent.anchor.anchorEnd {
+                    recordAction = .keep
+                } else {
+                    recordAction = .invalidate
+                }
+            }
+        }
+        let planResult = VoiceTargetedPlanner.plan(
+            command: command,
+            remainingText: domainText,
+            pressedEnter: pressedEnter,
+            anchor: anchor,
+            fieldText: fieldState.text,
+            caretUTF16: caret,
+            selectionLength: selection
+        )
+        guard case .plan(let plan) = planResult else {
+            if case .failure(let code) = planResult { return .failure(code) }
+            return .failure(.verifyUnavailable)
+        }
+        let context = makeTargetedEditContext(
+            remainingText: domainText, pressedEnter: pressedEnter,
+            fieldText: fieldState.text, caretUTF16: caret, anchor: anchor,
+            domain: domain, recordAction: recordAction)
+        return .context(command, plan, context)
+    }
+
     /// 锚定结构拆解（快照；UTF-16 码元切片 → String，与选区 API 同口径）。
     /// evaluate 与追问应答执行共用，保证上下文构造唯一。
     private func makeTargetedEditContext(
         remainingText: String, pressedEnter: Bool, fieldText: String,
-        caretUTF16: Int, anchor: VoiceEditAnchor
+        caretUTF16: Int, anchor: VoiceEditAnchor,
+        domain: VoiceTargetedDomainKind = .lastInjection,
+        recordAction: VoiceTargetedRecordAction = .none
     ) -> VoiceTargetedEditContext {
         let fieldUnits = Array(fieldText.utf16)
         let fieldPrefix = String(decoding: fieldUnits[..<anchor.anchorStart], as: UTF16.self)
@@ -3598,7 +3760,10 @@ public final class VoiceStickCoordinator {
             anchorKind: anchor.kind,
             anchorStartUTF16: anchor.anchorStart,
             anchorEndUTF16: anchor.anchorEnd,
-            textAfterAnchor: textAfterAnchor
+            textAfterAnchor: textAfterAnchor,
+            domain: domain,
+            originalCaretUTF16: caretUTF16,
+            recordAction: recordAction
         )
     }
 
@@ -3695,16 +3860,28 @@ public final class VoiceStickCoordinator {
         }
         // 4/5. 延时恢复光标 + 终验（stale generation 直接丢弃，不覆盖新记录）。
         // 批次 1：终验期望文本按锚定结构（P1c 时 textAfterAnchor=""，与旧公式
-        // 逐字节一致）；恢复光标到「编辑后 anchored 段末尾」（P1c = 字段末尾，
-        // 与旧行为一致；P1a/P1b/P2 = 段后内容之前）。
+        // 逐字节一致）。
+        // 批次 2（交付 C）：光标恢复统一为「原位置 + 平移」——原光标 ≤ 编辑区间
+        // 起点 → 不变；≥ 终点 → 加长度差（末尾追加情形与批次 1「恢复段末/字段末」
+        // 结果完全一致——回归底线）；区间内 → 编辑后区间末尾（P1b/段中由「移到
+        // 段末」改为留在原位附近，属有意变化，见 Doc/Plan §17）。
         let expectedFinalText = context.fieldPrefix + plan.newRemainingText
             + (context.hasRecordedNewline ? "\n" : "") + context.textAfterAnchor
         let preActionText = context.preActionText
-        let restoreCaretUTF16 = expectedFinalText.utf16.count - context.textAfterAnchor.utf16.count
+        let insertedLength: Int
+        switch plan.action {
+        case .delete: insertedLength = 0
+        case .replace(let replacement): insertedLength = replacement.utf16.count
+        }
+        let restoreCaretUTF16 = VoiceTargetedCursorMath.restoredCaret(
+            originalCaretUTF16: context.originalCaretUTF16,
+            rangeStartUTF16: context.anchorStartUTF16 + plan.occurrence.utf16Start,
+            rangeLengthUTF16: plan.occurrence.utf16Length,
+            insertedLengthUTF16: insertedLength)
         DispatchQueue.main.asyncAfter(deadline: .now() + kVoiceTargetedVerifyDelay) { [weak self] in
             self?.finalizeTargetedEdit(
                 expectedFinalText: expectedFinalText, preActionText: preActionText, plan: plan,
-                restoreCaretUTF16: restoreCaretUTF16,
+                restoreCaretUTF16: restoreCaretUTF16, context: context,
                 generation: generation, attempt: 0)
         }
     }
@@ -3719,18 +3896,19 @@ public final class VoiceStickCoordinator {
     /// 失效防陈旧偏移继续编辑。
     private func finalizeTargetedEdit(
         expectedFinalText: String, preActionText: String, plan: VoiceTargetedPlan,
-        restoreCaretUTF16: Int, generation: Int, attempt: Int
+        restoreCaretUTF16: Int, context: VoiceTargetedEditContext,
+        generation: Int, attempt: Int
     ) {
         guard generation == voiceEditGeneration else { return }
-        // 光标恢复到编辑后 anchored 段末尾 best-effort（P1c = 字段末尾，保持
-        // 「听写追加到末尾」不变量；P1a/P1b/P2 = 段末，即用户原光标锚位）。
+        // 光标恢复 best-effort（批次 2 交付 C：原位置+平移；末尾追加情形与批次 1
+        // 「恢复段末/字段末」结果一致）。
         _ = writeTargetedSelection?(restoreCaretUTF16, 0)
         let state = readFocusedFieldStateForVoiceEdit()
         let textMatches = state?.text == expectedFinalText
         if textMatches,
            state?.caretUTF16 == restoreCaretUTF16,
            state?.selectionLength == 0 {
-            lastInjection?.remainingText = plan.newRemainingText
+            applyTargetedRecordMaintenance(context: context, plan: plan)
             NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
             showVoiceTargetedSuccessToast(plan: plan)
             return
@@ -3741,7 +3919,7 @@ public final class VoiceStickCoordinator {
             ) { [weak self] in
                 self?.finalizeTargetedEdit(
                     expectedFinalText: expectedFinalText, preActionText: preActionText,
-                    plan: plan, restoreCaretUTF16: restoreCaretUTF16,
+                    plan: plan, restoreCaretUTF16: restoreCaretUTF16, context: context,
                     generation: generation, attempt: attempt + 1)
             }
             return
@@ -3750,7 +3928,7 @@ public final class VoiceStickCoordinator {
             // 文本已确认但光标恢复写未落地：修改本身已验证完成，不再判「结果未
             // 确认」，只记日志；记录照常更新，允许连续编辑。
             NSLog("voice_targeted caret restore unconfirmed caret=\(state?.caretUTF16 ?? -1) sel=\(state?.selectionLength ?? -1) count=\(restoreCaretUTF16)")
-            lastInjection?.remainingText = plan.newRemainingText
+            applyTargetedRecordMaintenance(context: context, plan: plan)
             NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
             showVoiceTargetedSuccessToast(plan: plan)
             return
@@ -3772,6 +3950,31 @@ public final class VoiceStickCoordinator {
     private func invalidateVoiceTargetedRecord(generation: Int) {
         guard generation == voiceEditGeneration else { return }
         lastInjection = nil
+    }
+
+    /// 终验成功后的注入记录维护（批次 2 交付 C）：
+    /// lastInjection 域 → 写 plan.newRemainingText（批次 1 行为不变）；整框域 →
+    /// 三情形（update 同步映射 / keep 不变 / invalidate 作废）。
+    private func applyTargetedRecordMaintenance(
+        context: VoiceTargetedEditContext, plan: VoiceTargetedPlan
+    ) {
+        switch context.domain {
+        case .lastInjection:
+            lastInjection?.remainingText = plan.newRemainingText
+        case .wholeField:
+            switch context.recordAction {
+            case .none:
+                break   // 计划时刻最近输入不可定位 → 记录不变
+            case .update(let newRemaining):
+                lastInjection?.remainingText = newRemaining
+                NSLog("voice_targeted record update len=%d", newRemaining.utf16.count)
+            case .keep:
+                break   // 编辑完全在锚段外 → 记录不变
+            case .invalidate:
+                NSLog("voice_targeted record invalidate")
+                lastInjection = nil
+            }
+        }
     }
 
     private func describeVoiceTargetedAction(_ action: VoiceTargetedAction) -> String {
